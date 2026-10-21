@@ -161,13 +161,72 @@ export function ListToolbar<T>({
   const hasSecondaryActions = Boolean(onImport || onRefresh || exportSpec || onPrint || secondaryActions?.length);
 
   return (
-    <div className="flex flex-col gap-2" data-operational-toolbar>
-      <WorkspaceBar variant="command" label="أوامر القائمة" className="justify-between overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+    <div className="flex flex-col gap-1.5" data-operational-toolbar>
+      <WorkspaceBar variant="command" label="أوامر القائمة" className="flex-wrap items-center justify-between gap-2">
         <div className="flex min-w-0 shrink-0 items-center gap-2">
           {title != null && (pageTitle ? <h1 className="text-base font-semibold">{title}</h1> : <span className="text-base font-semibold">{title}</span>)}
           {(count != null || loading) && <span className="shrink-0 text-xs text-muted-foreground">{loading ? "جارٍ التحميل…" : `${(count ?? 0).toLocaleString("ar-IQ-u-nu-latn")} صفّ`}</span>}
         </div>
-        <div className="list-toolbar-actions flex min-w-max shrink-0 items-center gap-1.5 whitespace-nowrap [&>*]:shrink-0">
+
+        {hasFilterSection && (
+          <div className="list-toolbar-filter-panel order-3 flex w-full min-w-0 flex-wrap items-center gap-1.5 lg:order-none lg:w-auto lg:flex-1 lg:flex-nowrap">
+            {search && (
+              <UnifiedSearchInput
+                value={search.value}
+                onChange={search.onChange}
+                placeholder={search.placeholder ?? "بحث…"}
+                aria-label={search.ariaLabel ?? search.placeholder ?? "بحث في القائمة"}
+                barcode={Boolean(search.barcode)}
+                autoFocus={search.autoFocus}
+                f2Shortcut={true}
+                size="compact"
+                className={cn("min-w-0 flex-1 sm:min-w-44 lg:max-w-sm", search.barcode && "sm:min-w-56 lg:max-w-md")}
+              />
+            )}
+            {quickFilters && <div className="hidden min-w-0 overflow-x-auto sm:block [&>div]:!flex-nowrap">{quickFilters}</div>}
+            {(filters || quickFilters || activeFilterCount > 0) && (
+              <Sheet open={filtersOpen} onOpenChange={setFiltersOpen}>
+                <SheetTrigger asChild>
+                  <Button variant="outline" size="sm" className="h-8 shrink-0">
+                    <SlidersHorizontal aria-hidden className="size-3.5" />
+                    الفلاتر
+                    {activeFilterCount > 0 && <span className="rounded bg-primary px-1.5 text-2xs font-bold text-primary-foreground">{activeFilterCount.toLocaleString("ar-IQ-u-nu-latn")}</span>}
+                  </Button>
+                </SheetTrigger>
+                <SheetContent side="left" className="w-[min(92vw,34rem)] sm:max-w-lg">
+                  <SheetHeader className="border-b">
+                    <SheetTitle>فلاتر القائمة</SheetTitle>
+                    <SheetDescription>الفلاتر الثانوية محفوظة خارج مساحة البيانات وتظهر نتائجها فوراً.</SheetDescription>
+                  </SheetHeader>
+                  <div className="grid min-h-0 flex-1 grid-cols-1 content-start gap-3 overflow-y-auto p-4 sm:grid-cols-2">
+                    {quickFilters && <div className="sm:hidden">{quickFilters}</div>}
+                    {filters}
+                  </div>
+                  <SheetFooter className="flex-row border-t">
+                    {showResetButton && (
+                      <Button type="button" variant="ghost" onClick={onResetFilters}>
+                        مسح الفلاتر
+                      </Button>
+                    )}
+                    <SheetClose asChild>
+                      <Button type="button" className="ms-auto">
+                        عرض النتائج
+                      </Button>
+                    </SheetClose>
+                  </SheetFooter>
+                </SheetContent>
+              </Sheet>
+            )}
+            {showResetButton && (
+              <Button variant="ghost" size="sm" onClick={onResetFilters} className="h-8 shrink-0 text-muted-foreground">
+                <X aria-hidden className="size-3.5" />
+                مسح
+              </Button>
+            )}
+          </div>
+        )}
+
+        <div className="list-toolbar-actions ms-auto flex min-w-max shrink-0 items-center gap-1.5 whitespace-nowrap [&>*]:shrink-0">
           {add &&
             ("href" in add ? (
               <Button asChild size="sm" className="h-8">
@@ -237,63 +296,6 @@ export function ListToolbar<T>({
           )}
         </div>
       </WorkspaceBar>
-
-      {hasFilterSection && (
-        <WorkspaceBar variant="filters" label="البحث والفلاتر" className="list-toolbar-filter-panel overflow-hidden">
-          {search && (
-            <UnifiedSearchInput
-              value={search.value}
-              onChange={search.onChange}
-              placeholder={search.placeholder ?? "بحث…"}
-              aria-label={search.ariaLabel ?? search.placeholder ?? "بحث في القائمة"}
-              barcode={Boolean(search.barcode)}
-              autoFocus={search.autoFocus}
-              size="compact"
-              className={cn("min-w-0 flex-1 sm:min-w-40", search.barcode && "sm:min-w-64")}
-            />
-          )}
-          {quickFilters && <div className="hidden min-w-0 overflow-x-auto sm:block [&>div]:!flex-nowrap">{quickFilters}</div>}
-          {(filters || quickFilters || activeFilterCount > 0) && (
-            <Sheet open={filtersOpen} onOpenChange={setFiltersOpen}>
-              <SheetTrigger asChild>
-                <Button variant="outline" size="sm" className="h-8 shrink-0">
-                  <SlidersHorizontal aria-hidden className="size-3.5" />
-                  الفلاتر
-                  {activeFilterCount > 0 && <span className="rounded bg-primary px-1.5 text-2xs font-bold text-primary-foreground">{activeFilterCount.toLocaleString("ar-IQ-u-nu-latn")}</span>}
-                </Button>
-              </SheetTrigger>
-              <SheetContent side="left" className="w-[min(92vw,34rem)] sm:max-w-lg">
-                <SheetHeader className="border-b">
-                  <SheetTitle>فلاتر القائمة</SheetTitle>
-                  <SheetDescription>الفلاتر الثانوية محفوظة خارج مساحة البيانات وتظهر نتائجها فوراً.</SheetDescription>
-                </SheetHeader>
-                <div className="grid min-h-0 flex-1 grid-cols-1 content-start gap-3 overflow-y-auto p-4 sm:grid-cols-2">
-                  {quickFilters && <div className="sm:hidden">{quickFilters}</div>}
-                  {filters}
-                </div>
-                <SheetFooter className="flex-row border-t">
-                  {showResetButton && (
-                    <Button type="button" variant="ghost" onClick={onResetFilters}>
-                      مسح الفلاتر
-                    </Button>
-                  )}
-                  <SheetClose asChild>
-                    <Button type="button" className="ms-auto">
-                      عرض النتائج
-                    </Button>
-                  </SheetClose>
-                </SheetFooter>
-              </SheetContent>
-            </Sheet>
-          )}
-          {showResetButton && (
-            <Button variant="ghost" size="sm" onClick={onResetFilters} className="h-8 shrink-0 text-muted-foreground">
-              <X aria-hidden className="size-3.5" />
-              مسح
-            </Button>
-          )}
-        </WorkspaceBar>
-      )}
     </div>
   );
 }

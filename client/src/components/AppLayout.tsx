@@ -486,7 +486,27 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
               <Search className="size-4" aria-hidden />
             </Button>
           )}
-          <div className="flex-1" />
+          <nav aria-label="أقسام سريعة" className="flex flex-1 flex-col items-center gap-1 overflow-y-auto py-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {visibleNav.slice(0, 8).map((item) => {
+              const Icon = item.icon;
+              const active = loc === item.href || loc.startsWith(item.href + "/");
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  title={item.label}
+                  aria-label={item.label}
+                  className={`flex size-8 shrink-0 items-center justify-center rounded-md transition-colors ${
+                    active
+                      ? "bg-[color:var(--sidebar-active-bg)] text-[color:var(--sidebar-active-fg)]"
+                      : "text-[color:var(--sidebar-on)] hover:bg-[color:var(--sidebar-soft)] hover:text-[color:var(--sidebar-on-strong)]"
+                  }`}
+                >
+                  <Icon className="size-4" aria-hidden />
+                </Link>
+              );
+            })}
+          </nav>
           <NotificationBell enabled={!coldStudio && Boolean(me.data)} identity={String(me.data?.id ?? "")} />
           <ThemeToggle />
           <Link

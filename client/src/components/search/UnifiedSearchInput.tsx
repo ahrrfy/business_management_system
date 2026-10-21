@@ -248,7 +248,15 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
     React.useEffect(() => {
       if (!enableF2 || disabled) return;
       const handleGlobalKeyDown = (e: KeyboardEvent) => {
-        if (e.key === "F2" && !e.defaultPrevented && internalRef.current) {
+        if (e.defaultPrevented || !internalRef.current) return;
+        const active = document.activeElement as HTMLElement | null;
+        const isEditable =
+          active &&
+          (active.tagName === "INPUT" ||
+            active.tagName === "TEXTAREA" ||
+            active.tagName === "SELECT" ||
+            active.isContentEditable);
+        if (e.key === "F2" || (e.key === "/" && !isEditable && !e.ctrlKey && !e.metaKey && !e.altKey)) {
           e.preventDefault();
           internalRef.current.focus();
           internalRef.current.select();

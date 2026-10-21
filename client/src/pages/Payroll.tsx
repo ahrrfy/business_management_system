@@ -613,7 +613,6 @@ export default function Payroll() {
     <div className="space-y-4">
       <PageHeader
         title="الرواتب"
-        description="مسيّر استحقاقي شهري: الاعتماد يثبت تكلفة العمل والتزاماتها، ثم تُسوّى الرواتب والضريبة والضمان بمسارات دفع مستقلة."
         actions={
           <div className="flex items-center gap-2 flex-wrap">
             <AppSelect
@@ -638,7 +637,7 @@ export default function Payroll() {
 
       {/* تنبيه استباقي للمكونات القانونية والضمان */}
       {legalSettingsQ.data && !legalSettingsQ.data.socialSecurityEnabled && !legalSettingsQ.data.incomeTaxEnabled && (
-        <div className="flex items-center justify-between gap-3 rounded-lg border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-4 py-2.5 text-xs text-[var(--sem-warn)]">
+        <div className="flex items-center justify-between gap-2 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-3 py-1.5 text-xs text-[var(--sem-warn)]">
           <div className="flex items-center gap-2">
             <ShieldCheck className="size-4 shrink-0" />
             <span>المكوّنات القانونية (الضمان الاجتماعي وضريبة الدخل) معطّلة افتراضياً. يمكنك مراجعتها وضبطها بالتنسيق مع المحاسب القانوني.</span>

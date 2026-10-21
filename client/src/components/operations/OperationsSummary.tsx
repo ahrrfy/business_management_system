@@ -26,13 +26,68 @@ export function OperationsSummary({
   metrics,
   footer,
   loading,
+  compact = false,
 }: {
   title: string;
   subtitle?: string;
   metrics: OperationsMetric[];
   footer?: ReactNode;
   loading?: boolean;
+  compact?: boolean;
 }) {
+  if (compact) {
+    return (
+      <div className="rounded-lg border bg-card/80 px-2.5 py-1.5 space-y-1.5" aria-label={title}>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-xs font-medium text-muted-foreground me-1" title={subtitle}>
+            {title}:
+          </span>
+          {metrics.map((metric) => {
+            const content = (
+              <>
+                <span className="text-muted-foreground">{metric.label}:</span>
+                <strong className="font-semibold tabular-nums text-foreground">
+                  {loading ? "…" : metric.value}
+                </strong>
+                {metric.detail && (
+                  <span className="hidden xl:inline text-[11px] text-muted-foreground">
+                    ({metric.detail})
+                  </span>
+                )}
+              </>
+            );
+            const cls = cn(
+              "inline-flex items-center gap-1.5 rounded-md border bg-background px-2.5 py-1 text-xs transition-colors",
+              toneClass[metric.tone ?? "neutral"],
+              metric.onClick &&
+                "cursor-pointer hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              metric.active && "bg-accent ring-2 ring-primary/40",
+            );
+            return metric.onClick ? (
+              <button key={metric.key} type="button" className={cls} onClick={metric.onClick}>
+                {content}
+              </button>
+            ) : (
+              <div key={metric.key} className={cls}>
+                {content}
+              </div>
+            );
+          })}
+          {footer && (
+            <details className="ms-auto text-xs">
+              <summary className="cursor-pointer select-none rounded border px-2 py-0.5 text-muted-foreground hover:bg-accent hover:text-foreground">
+                تفاصيل التحصيل
+              </summary>
+              <div className="mt-1.5 rounded-md border bg-background p-2.5 shadow-sm">
+                {footer}
+              </div>
+            </details>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <Card>
       <CardHeader className="pb-3">

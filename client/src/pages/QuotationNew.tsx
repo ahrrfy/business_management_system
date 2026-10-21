@@ -588,13 +588,15 @@ export default function QuotationNew() {
 
         <aside className="flex w-72 shrink-0 flex-col gap-1.5">
           <TotalsPanel items={state.items} state={state} dispatch={dispatch} showTaxToggle />
-          <ActionButtons
-            invoiceType={INVOICE_TYPE}
-            items={state.items}
-            saving={isSaving}
-            pasteAvailable={!isEdit && pasteAvailable}
-            onAction={handleAction}
-          />
+          <div className="sticky bottom-0 z-10 bg-background/95 backdrop-blur pt-1.5 border-t">
+            <ActionButtons
+              invoiceType={INVOICE_TYPE}
+              items={state.items}
+              saving={isSaving}
+              pasteAvailable={!isEdit && pasteAvailable}
+              onAction={handleAction}
+            />
+          </div>
           <TermsAndNotes state={state} dispatch={dispatch} />
         </aside>
       </div>

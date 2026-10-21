@@ -1239,15 +1239,17 @@ export default function SalesInvoice() {
               pendingCod={pendingCodCorrection}
             />
           )}
-          <ActionButtons
-            invoiceType={INVOICE_TYPE}
-            items={state.items}
-            saving={submitPending}
-            pasteAvailable={pasteAvailable}
-            availableActions={availableActions}
-            primaryLabel={isCorrection ? "حفظ التعديل" : undefined}
-            onAction={handleAction}
-          />
+          <div className="sticky bottom-0 z-10 bg-background/95 backdrop-blur pt-1.5 border-t">
+            <ActionButtons
+              invoiceType={INVOICE_TYPE}
+              items={state.items}
+              saving={submitPending}
+              pasteAvailable={pasteAvailable}
+              availableActions={availableActions}
+              primaryLabel={isCorrection ? "حفظ التعديل" : undefined}
+              onAction={handleAction}
+            />
+          </div>
           <TermsAndNotes state={state} dispatch={dispatch} />
         </aside>
       </div>

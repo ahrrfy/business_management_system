@@ -5,7 +5,6 @@
 
 import { lazy, Suspense } from "react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { PageHeader } from "@/components/PageHeader";
 import { ACTION_LABELS } from "@shared/actionLabels";
 
 const SalesReport = lazy(() => import("./SalesReport"));
@@ -19,11 +18,7 @@ function TabFallback() {
 
 export default function SalesReportsHub() {
   return (
-    <div className="p-4 max-w-7xl space-y-4">
-      <PageHeader
-        title="تقارير المبيعات"
-        description="أربع زوايا للنظر إلى مبيعاتك: الملخّص، التفصيل بنداً-بنداً، التوزيع حسب البُعد (عميل/فرع/طريقة دفع/كاشير)، وربحية أوامر الشغل."
-      />
+    <div className="p-4 max-w-7xl space-y-2.5">
       <Tabs defaultValue="summary" className="w-full">
         <TabsList>
           <TabsTrigger value="summary">ملخّص</TabsTrigger>

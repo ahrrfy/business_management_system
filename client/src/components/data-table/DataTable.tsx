@@ -705,6 +705,7 @@ export function DataTable<T, K = string>({
                 serverSearch ? serverSearch.onChange(value) : setGlobalFilter(value);
               }}
               barcode={Boolean(barcodeSearch)}
+              f2Shortcut={true}
               size="compact"
               className={cn("min-w-40 flex-1", barcodeSearch ? "max-w-sm" : "max-w-xs")}
             />

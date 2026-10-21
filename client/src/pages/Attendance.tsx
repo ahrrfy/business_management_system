@@ -363,9 +363,9 @@ export default function Attendance() {
       {/* الترويسة */}
       <PageHeader
         title="الحضور والانصراف"
-        description="نظام احتساب بالساعة — أجر اليوم = ساعات الحضور × سعر ساعة ذلك اليوم. المصدر: أجهزة البصمة."
         actions={
           <div className="flex items-center gap-2 flex-wrap">
+            <AttendanceSettingsCard />
             <Button asChild variant="outline" size="sm">
               <Link href="/reports/attendance-monthly"><Clock className="size-4" /> التقرير الشهريّ</Link>
             </Button>
@@ -376,15 +376,37 @@ export default function Attendance() {
         }
       />
 
-      {/* مؤشرات */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatCard label={`إجمالي ساعات ${rangeLabel}`} value={approx(totalHours.toNumber().toLocaleString("en-US"))} sub={partialTotals ? "مجموعٌ جزئيّ — ضيّق النطاق" : "حسب النطاق المختار"} icon={<Clock className="size-5" />} />
-        <StatCard label="المبلغ المستحق" value={approx(iqd(totalAmount.toFixed(2)))} sub={partialTotals ? "مجموعٌ جزئيّ — ضيّق النطاق" : "د.ع — قبل الاستقطاع"} accent="var(--status-active, #16a34a)" icon={<Wallet className="size-5" />} />
-        <StatCard label="سجلات بصمة" value={fingerprintCount.toLocaleString("en-US")} sub="مزامنة تلقائية" icon={<Fingerprint className="size-5" />} />
-        <StatCard label="إدخالات يدوية" value={manualCount.toLocaleString("en-US")} sub="تحتاج توثيقاً" accent="var(--stock-low, #d97706)" icon={<PenLine className="size-5" />} />
+      {/* شريط المؤشرات والفلاتر السريعة */}
+      <div className="flex flex-wrap items-center gap-1.5 rounded-lg border bg-card/80 px-2.5 py-1.5 text-xs">
+        <div className="inline-flex items-center gap-1.5 rounded-md border bg-background px-2.5 py-1">
+          <Clock className="size-3.5 text-muted-foreground" />
+          <span className="text-muted-foreground">إجمالي ساعات {rangeLabel}:</span>
+          <strong className="font-semibold tabular-nums">{approx(totalHours.toNumber().toLocaleString("en-US"))}</strong>
+        </div>
+        <div className="inline-flex items-center gap-1.5 rounded-md border border-[var(--status-active,#16a34a)]/40 bg-background px-2.5 py-1">
+          <Wallet className="size-3.5 text-[var(--status-active,#16a34a)]" />
+          <span className="text-muted-foreground">المبلغ المستحق:</span>
+          <strong className="font-semibold tabular-nums">{approx(iqd(totalAmount.toFixed(2)))} د.ع</strong>
+        </div>
+        <button
+          type="button"
+          onClick={() => setF({ source: f.source === "fingerprint" ? "" : "fingerprint" })}
+          className={`inline-flex items-center gap-1.5 rounded-md border bg-background px-2.5 py-1 transition-colors hover:bg-accent/60 ${f.source === "fingerprint" ? "ring-2 ring-primary/40 bg-accent" : ""}`}
+        >
+          <Fingerprint className="size-3.5 text-muted-foreground" />
+          <span className="text-muted-foreground">سجلات بصمة:</span>
+          <strong className="font-semibold tabular-nums">{fingerprintCount.toLocaleString("en-US")}</strong>
+        </button>
+        <button
+          type="button"
+          onClick={() => setF({ source: f.source === "manual" ? "" : "manual" })}
+          className={`inline-flex items-center gap-1.5 rounded-md border border-[var(--stock-low,#d97706)]/45 bg-background px-2.5 py-1 transition-colors hover:bg-accent/60 ${f.source === "manual" ? "ring-2 ring-primary/40 bg-accent" : ""}`}
+        >
+          <PenLine className="size-3.5 text-[var(--stock-low,#d97706)]" />
+          <span className="text-muted-foreground">إدخالات يدوية:</span>
+          <strong className="font-semibold tabular-nums">{manualCount.toLocaleString("en-US")}</strong>
+        </button>
       </div>
-
-      <AttendanceSettingsCard />
 
       {/* نطاقٌ تجاوز سقف المسح الحيّ ⇒ المجاميع جزئية. لا تُعرَض رقماً نهائياً صامتاً. */}
       {partialTotals && (
@@ -624,26 +646,18 @@ function AttendanceSettingsCard() {
 
   return (
     <>
-      <Card>
-        <CardContent className="p-3 flex items-center justify-between gap-3 flex-wrap text-sm">
-          <div className="flex items-center gap-2 flex-wrap">
-            <Clock className="size-4 text-muted-foreground" />
-            <span>الأجر بالحضور:</span>
-            <span className={s?.attendancePayEnabled ? "font-medium text-[var(--status-active,#16a34a)]" : "text-muted-foreground"}>
-              {q.isLoading ? "…" : s?.attendancePayEnabled ? `مفعَّل من ${String(s.attendancePayFrom ?? "").slice(0, 10)}` : "معطَّل"}
-            </span>
-            <span className="text-muted-foreground">·</span>
-            <span>سقف اليوم:</span>
-            <span className="font-medium tabular-nums" dir="ltr">{q.isLoading ? "…" : `${Number(s?.maxDailyHours ?? 12)} ساعة`}</span>
-            <span className="text-muted-foreground">·</span>
-            <span>الوردية الليلية:</span>
-            <span className={s?.nightShiftEnabled ? "font-medium text-[var(--status-active,#16a34a)]" : "text-muted-foreground"}>
-              {q.isLoading ? "…" : s?.nightShiftEnabled ? `مفعَّلة — الفصل ${Number(s.nightShiftCutoffHour ?? 8)}:00` : "معطَّلة"}
-            </span>
-          </div>
-          <Button variant="outline" size="sm" onClick={() => setOpen(true)}>تعديل</Button>
-        </CardContent>
-      </Card>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => setOpen(true)}
+        title={q.isLoading ? "إعدادات الاحتساب" : `الأجر بالحضور: ${s?.attendancePayEnabled ? `مفعَّل من ${String(s.attendancePayFrom ?? "").slice(0, 10)}` : "معطَّل"} · سقف اليوم: ${Number(s?.maxDailyHours ?? 12)} ساعة · الوردية الليلية: ${s?.nightShiftEnabled ? `مفعَّلة (${Number(s.nightShiftCutoffHour ?? 8)}:00)` : "معطَّلة"}`}
+      >
+        <Clock className="size-4" />
+        <span className="hidden sm:inline">سياسة الاحتساب:</span>
+        <span className="font-normal text-muted-foreground">
+          {q.isLoading ? "…" : `${Number(s?.maxDailyHours ?? 12)}س`}
+        </span>
+      </Button>
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>

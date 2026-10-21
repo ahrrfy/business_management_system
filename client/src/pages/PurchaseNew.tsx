@@ -951,22 +951,6 @@ export default function PurchaseNew() {
         </div>
       ) : null}
 
-      {!state.entityId && (
-        <div className="rounded-lg border border-[var(--sem-info)]/30 bg-[var(--sem-info-bg)]/20 px-3 py-2 text-xs text-foreground flex items-start gap-2 animate-in fade-in">
-          <ClipboardList className="size-4 shrink-0 text-[var(--sem-info)] mt-0.5" />
-          <div>
-            <div className="font-bold text-foreground">
-              نمط تأمين السوق العراقي (مسودة مفتوحة بدون مورد):
-            </div>
-            <p className="mt-0.5 text-muted-foreground">
-              نظراً لتقلبات الأسعار وتوفر الأصناف بين موردي الجملة (الشورجة / جميلة / السنك)، يمكنك حفظ هذه المسودة كـ
-              <strong className="text-foreground"> «طلب تأمين وإسناد للمدير» </strong>
-              ليتولى الاتصال بالموردين وتثبيت الأسعار، ثم تحويلها إلى أمر شراء نهائي بضغطة زر.
-            </p>
-          </div>
-        </div>
-      )}
-
       {/* Header card (document metadata + supplier + terms + PO reference) */}
       <InvoiceHeader
         state={state}
@@ -1023,21 +1007,6 @@ export default function PurchaseNew() {
             currency={state.currency}
             showDetailedDistribution
           />
-
-          <section className="rounded-lg border bg-card px-3 py-2 text-xs">
-            <div className="font-extrabold">سياسة تسوية المورد</div>
-            {state.paymentTerms === "CASH" ? (
-              <p className="mt-1 text-muted-foreground">
-                نقدي: وصف لطريقة السداد المتوقعة فقط. اعتماد الفاتورة لا يثبت دفع المورد؛
-                وثق السداد ومصدره من طلب سداد مستقل، ولا تحمل وردية المعتمد أي صرف.
-              </p>
-            ) : (
-              <p className="mt-1 text-muted-foreground">
-                آجل: قيمة المستلم تُثبت ذمة على المورد، ولا تُسدد إلا بدفعة
-                صريحة لاحقاً.
-              </p>
-            )}
-          </section>
 
           <TotalsPanel
             items={state.items}
@@ -1114,15 +1083,17 @@ export default function PurchaseNew() {
               </Button>
             </section>
           )}
-          <ActionButtons
-            invoiceType={INVOICE_TYPE}
-            items={state.items}
-            onAction={handleAction}
-            saving={create.isPending || createRequisition.isPending}
-            pasteAvailable={pasteAvailable}
-            availableActions={canLifecycleOperation(me.data, "purchases.createOrder", true) ? NEW_ACTIONS : NEW_ACTIONS.filter((action) => action !== "save")}
-            primaryLabel="حفظ المسودة"
-          />
+          <div className="sticky bottom-0 z-10 bg-background/95 backdrop-blur pt-1.5 border-t">
+            <ActionButtons
+              invoiceType={INVOICE_TYPE}
+              items={state.items}
+              onAction={handleAction}
+              saving={create.isPending || createRequisition.isPending}
+              pasteAvailable={pasteAvailable}
+              availableActions={canLifecycleOperation(me.data, "purchases.createOrder", true) ? NEW_ACTIONS : NEW_ACTIONS.filter((action) => action !== "save")}
+              primaryLabel="حفظ المسودة"
+            />
+          </div>
           <TermsAndNotes state={state} dispatch={dispatch} />
         </aside>
       </div>

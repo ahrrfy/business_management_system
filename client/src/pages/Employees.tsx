@@ -7,7 +7,6 @@ import { FILTER_LABELS } from "@shared/uiContracts";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 
 import { FilterField, ListToolbar } from "@/components/list";
-import { PageHeader } from "@/components/PageHeader";
 
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
@@ -146,16 +145,12 @@ export default function Employees() {
   ], []);
 
   return (
-    <div className="space-y-4">
-      <PageHeader
-        title="الموظفون"
-        description="قائمة الموظفين — الأقسام والفروع، نوع الأجر، ربط جهاز الحضور، والحالة الوظيفية."
-      />
-
+    <div className="space-y-2.5">
       <Card>
         <CardHeader>
           <ListToolbar
-            title="القائمة"
+            title="الموظفون"
+            pageTitle
             count={total}
             loading={list.isLoading}
             search={{
