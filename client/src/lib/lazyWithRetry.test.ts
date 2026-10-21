@@ -1,6 +1,7 @@
 import type { ComponentType } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { lazyWithRetry } from "./lazyWithRetry";
+import { realtimeManager } from "./realtime/realtimeManager";
 
 type LazyPayloadLoader<T> = {
   _payload: {
@@ -417,5 +418,214 @@ describe("lazyWithRetry", () => {
       events.some((e) => e === "sw:PWA_ACTIVATE" || e === "sw:SKIP_WAITING"),
     ).toBe(true);
     expect(events[events.length - 1]).toBe("window:reload");
+  });
+
+  it("suspends realtime SSE streams before SW activation and prevents sibling resolutions during async SW preparation from deleting the reload guard", async () => {
+    const events: string[] = [];
+    const suspendSpy = vi
+      .spyOn(realtimeManager, "suspendForPwaUpdate")
+      .mockImplementation(() => {
+        events.push("realtime:suspend");
+        return () => {
+          events.push("realtime:resume");
+        };
+      });
+
+    const chunkErr = new TypeError(
+      "Failed to fetch dynamically imported module: https://erp.alarabiya.online/assets/Dashboard-Cdl1COE7.js",
+    );
+    const DummyComp = () => null;
+
+    const oldActiveWorker = {
+      state: "activated" as ServiceWorkerState,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      postMessage: vi.fn(),
+    };
+
+    const listeners = new Set<() => void>();
+    const waitingWorker = {
+      state: "installed" as ServiceWorkerState,
+      addEventListener: vi.fn((type: string, cb: () => void) => {
+        if (type === "statechange") listeners.add(cb);
+      }),
+      removeEventListener: vi.fn((type: string, cb: () => void) => {
+        if (type === "statechange") listeners.delete(cb);
+      }),
+      postMessage: vi.fn((msg: { type?: string }) => {
+        if (msg?.type === "SKIP_WAITING" || msg?.type === "PWA_ACTIVATE") {
+          events.push(`sw:${msg.type}`);
+          setTimeout(() => {
+            waitingWorker.state = "activated";
+            registration.waiting = null;
+            registration.active = waitingWorker as unknown as ServiceWorker;
+            listeners.forEach((cb) => cb());
+          }, 15);
+        }
+      }),
+    };
+
+    const registration = {
+      active: oldActiveWorker as unknown as ServiceWorker,
+      waiting: waitingWorker as unknown as ServiceWorker,
+      installing: null as ServiceWorker | null,
+      update: vi.fn(async () => undefined),
+    };
+
+    reloadMock.mockImplementation(() => {
+      events.push("window:reload");
+    });
+
+    vi.stubGlobal("navigator", {
+      serviceWorker: {
+        controller: oldActiveWorker,
+        getRegistration: vi.fn(async () => registration),
+      },
+    });
+
+    // Both factories share the same normalized guardValue ("./Dashboard.js") on Load 1:
+    // FailingDashboard fails at t=1ms (initiating async SW preparation that takes ~15ms),
+    // while SiblingSameTarget resolves at t=5ms (while SW preparation is still in flight).
+    const failingFactory = () =>
+      Promise.reject(chunkErr) as Promise<{ default: ComponentType }>;
+    Object.defineProperty(failingFactory, "toString", {
+      value: () => '() => import("./Dashboard-Cdl1COE7.js")',
+    });
+    const resolvingSiblingFactory = () =>
+      new Promise<{ default: ComponentType }>((resolve) => {
+        setTimeout(() => resolve({ default: DummyComp }), 5);
+      });
+    Object.defineProperty(resolvingSiblingFactory, "toString", {
+      value: () => '() => import("./Dashboard-Cdl1COE7.js")',
+    });
+
+    const FailingDashboardLoad1 = lazyWithRetry(failingFactory);
+    const ResolvingSiblingLoad1 = lazyWithRetry(resolvingSiblingFactory);
+
+    void invokeLazyLoader(FailingDashboardLoad1);
+    const siblingMod = await invokeLazyLoader(ResolvingSiblingLoad1);
+    expect(siblingMod.default).toBe(DummyComp);
+
+    // Even after SiblingSameTarget resolved during async SW preparation, the reload guard MUST still be present!
+    expect(storage.getItem("alroya:chunk-reload-attempted")).not.toBeNull();
+
+    await vi.waitFor(() => expect(reloadMock).toHaveBeenCalledTimes(1));
+    expect(suspendSpy).toHaveBeenCalledTimes(1);
+    expect(events.indexOf("realtime:suspend")).toBeGreaterThanOrEqual(0);
+    expect(events.indexOf("realtime:suspend")).toBeLessThan(
+      events.findIndex((e) => e === "sw:PWA_ACTIVATE" || e === "sw:SKIP_WAITING"),
+    );
+    expect(events).toContain("realtime:resume");
+    expect(events[events.length - 1]).toBe("window:reload");
+
+    // On Load 2 (after window:reload), if Dashboard still fails, it must reject to ErrorBoundary without a second reload
+    const FailingDashboardLoad2 = lazyWithRetry(failingFactory);
+    await expect(invokeLazyLoader(FailingDashboardLoad2)).rejects.toThrow(
+      "Failed to fetch dynamically imported module",
+    );
+    expect(reloadMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps dynamically created child lazyWithRetry components in Suspense without throwing to ErrorBoundary while async Service Worker preparation is in flight", async () => {
+    const chunkErr = new TypeError(
+      "Failed to fetch dynamically imported module: https://erp.alarabiya.online/assets/SalesHub-Cdl1COE7.js",
+    );
+
+    const oldActiveWorker = {
+      state: "activated" as ServiceWorkerState,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      postMessage: vi.fn(),
+    };
+
+    const listeners = new Set<() => void>();
+    const waitingWorker = {
+      state: "installed" as ServiceWorkerState,
+      addEventListener: vi.fn((type: string, cb: () => void) => {
+        if (type === "statechange") listeners.add(cb);
+      }),
+      removeEventListener: vi.fn((type: string, cb: () => void) => {
+        if (type === "statechange") listeners.delete(cb);
+      }),
+      postMessage: vi.fn((msg: { type?: string }) => {
+        if (msg?.type === "SKIP_WAITING" || msg?.type === "PWA_ACTIVATE") {
+          setTimeout(() => {
+            waitingWorker.state = "activated";
+            registration.waiting = null;
+            registration.active = waitingWorker as unknown as ServiceWorker;
+            listeners.forEach((cb) => cb());
+          }, 25);
+        }
+      }),
+    };
+
+    const registration = {
+      active: oldActiveWorker as unknown as ServiceWorker,
+      waiting: waitingWorker as unknown as ServiceWorker,
+      installing: null as ServiceWorker | null,
+      update: vi.fn(async () => undefined),
+    };
+
+    vi.stubGlobal("navigator", {
+      serviceWorker: {
+        controller: oldActiveWorker,
+        getRegistration: vi.fn(async () => registration),
+      },
+    });
+
+    // Route fails at t=0 and starts async SW preparation (takes ~25ms before reload)
+    const PrimaryRoute = lazyWithRetry(async () => {
+      throw chunkErr;
+    });
+    void invokeLazyLoader(PrimaryRoute);
+
+    // At t=5ms (while SW preparation is still in flight), a newly evaluated parent module constructs DynamicChild
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(reloadMock).not.toHaveBeenCalled();
+
+    const DynamicChild = lazyWithRetry(async () => {
+      throw chunkErr;
+    });
+    const childOutcome = await Promise.race([
+      invokeLazyLoader(DynamicChild).then(
+        () => "resolved",
+        () => "rejected-to-error-boundary",
+      ),
+      new Promise<string>((resolve) => setTimeout(() => resolve("pending"), 15)),
+    ]);
+
+    // Must remain in Suspense ("pending") rather than flashing ErrorBoundary before reload finishes
+    expect(childOutcome).toBe("pending");
+    await vi.waitFor(() => expect(reloadMock).toHaveBeenCalledTimes(1));
+  });
+
+  it("does not allow a cached sibling chunk (QuranStationDrawer) to clear a legacy or fallback '1' reload guard", async () => {
+    const DrawerComp = () => null;
+    const dashboardErr = new TypeError(
+      "Failed to fetch dynamically imported module: https://erp.alarabiya.online/assets/Dashboard-Cdl1COE7.js",
+    );
+
+    // Simulate a legacy "1" guard in sessionStorage from a pre-upgrade bundle reload
+    storage.setItem("alroya:chunk-reload-attempted", "1");
+
+    const drawerFactory = () => Promise.resolve({ default: DrawerComp });
+    Object.defineProperty(drawerFactory, "toString", {
+      value: () => '() => import("./QuranStationDrawer-Dz5S4onU.js")',
+    });
+    const QuranStationDrawer = lazyWithRetry(drawerFactory);
+
+    const mod = await invokeLazyLoader(QuranStationDrawer);
+    expect(mod.default).toBe(DrawerComp);
+
+    // Guard "1" must remain intact because QuranStationDrawer has guardValue "./QuranStationDrawer.js" !== "1"
+    expect(storage.getItem("alroya:chunk-reload-attempted")).toBe("1");
+
+    const Dashboard = lazyWithRetry(async () => {
+      throw dashboardErr;
+    });
+    await expect(invokeLazyLoader(Dashboard)).rejects.toThrow(
+      "Failed to fetch dynamically imported module",
+    );
+    expect(reloadMock).not.toHaveBeenCalled();
   });
 });

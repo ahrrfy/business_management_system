@@ -23,13 +23,16 @@ import {
   activateRegistrationUpdate,
   requestStorefrontPersistence,
 } from "./pwaUpdateLifecycle";
+import { realtimeManager } from "./realtime/realtimeManager";
 
 const RELOAD_GUARD_KEY = "alroya:chunk-reload-attempted";
 const RELOAD_GUARD_TTL_MS = 30_000;
 const SW_UPDATE_TIMEOUT_MS = 4_000;
 const SW_INSTALL_TIMEOUT_MS = 8_000;
 const SW_ACTIVATE_TIMEOUT_MS = 6_000;
+const moduleLoadTimestamp = Date.now();
 let reloadEpoch = 0;
+let reloadInFlight = false;
 
 function preserveDraftsBeforeReload(): void {
   try {
@@ -111,11 +114,37 @@ async function prepareServiceWorkerBeforeReload(): Promise<void> {
 
     const latest = (await sw.getRegistration()) ?? refreshed;
     if (latest.waiting || latest.active?.state === "activating") {
-      await activateRegistrationUpdate({
-        getRegistration: () => sw.getRegistration(),
-        timeoutMs: SW_ACTIVATE_TIMEOUT_MS,
-        pollIntervalMs: 25,
-      });
+      let resumeRealtime: (() => void) | null = null;
+      try {
+        resumeRealtime = realtimeManager.suspendForPwaUpdate(
+          SW_ACTIVATE_TIMEOUT_MS + 3_000,
+        );
+      } catch {
+        /* تَجاهل */
+      }
+      if (typeof fetch === "function") {
+        void fetch("/api/realtime/pwa-quiesce", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: {
+            "Content-Type": "application/json",
+            "x-erp-csrf": "1",
+          },
+          body: "{}",
+        }).catch(() => {});
+      }
+      try {
+        const activation = await activateRegistrationUpdate({
+          getRegistration: () => sw.getRegistration(),
+          timeoutMs: SW_ACTIVATE_TIMEOUT_MS,
+          pollIntervalMs: 25,
+        });
+        if (activation.status === "activated") {
+          resumeRealtime?.();
+        }
+      } catch {
+        resumeRealtime?.();
+      }
     }
   } catch {
     /* فشل تحديث/تفعيل Service Worker لا يمنع محاولة reload الاحتياطية */
@@ -147,15 +176,22 @@ function parseReloadGuard(raw: string | null, now = Date.now()): {
   target: string | null;
 } {
   if (!raw) return { active: false, target: null };
-  if (raw === "1") return { active: true, target: "1" };
   const sepIndex = raw.lastIndexOf("\n");
   if (sepIndex === -1) {
-    return { active: true, target: raw };
+    const ageMs = now - moduleLoadTimestamp;
+    return {
+      active: ageMs < RELOAD_GUARD_TTL_MS,
+      target: raw,
+    };
   }
   const target = raw.slice(0, sepIndex) || "1";
   const ts = Number(raw.slice(sepIndex + 1));
   if (!Number.isFinite(ts)) {
-    return { active: true, target };
+    const ageMs = now - moduleLoadTimestamp;
+    return {
+      active: ageMs < RELOAD_GUARD_TTL_MS,
+      target,
+    };
   }
   const ageMs = now - ts;
   return {
@@ -193,22 +229,21 @@ export function lazyWithRetry<T extends ComponentType<any>>(
   return lazy(async () => {
     try {
       const mod = await factory();
-      // نَجَح ⇒ امسح الحَارس فقط إن كان يَخصّ هَذا الـchunk نَفسه أو انتهت صَلاحيته
-      // (حَتى لا يَمسح chunk شَقيق مُخبّأ مثل QuranStationDrawer حَارسَ صَفحةٍ فاشلة مثل Dashboard فَيُسبّب حَلَقة reload لا نِهائية).
-      try {
-        const rawGuard = sessionStorage.getItem(RELOAD_GUARD_KEY);
-        if (rawGuard !== null) {
-          const parsed = parseReloadGuard(rawGuard);
-          if (
-            !parsed.active ||
-            parsed.target === "1" ||
-            parsed.target === guardValue
-          ) {
-            sessionStorage.removeItem(RELOAD_GUARD_KEY);
+      // نَجَح ⇒ امسح الحَارس فقط إن لم يَكن reload جارياً في هَذا التَّحميل، وكان الحَارس
+      // يَخصّ هَذا الـchunk نَفسه أو انتهت صَلاحيته (حَتى لا يَمسح chunk شَقيق مُخبّأ مثل
+      // QuranStationDrawer حَارسَ صَفحةٍ فاشلة مثل Dashboard فَيُسبّب حَلَقة reload لا نِهائية).
+      if (!reloadInFlight && createdEpoch === reloadEpoch) {
+        try {
+          const rawGuard = sessionStorage.getItem(RELOAD_GUARD_KEY);
+          if (rawGuard !== null) {
+            const parsed = parseReloadGuard(rawGuard);
+            if (!parsed.active || parsed.target === guardValue) {
+              sessionStorage.removeItem(RELOAD_GUARD_KEY);
+            }
           }
+        } catch {
+          /* sessionStorage مَحجوب في وَضع خاصّ — تَجاهل */
         }
-      } catch {
-        /* sessionStorage مَحجوب في وَضع خاصّ — تَجاهل */
       }
       return mod;
     } catch (err) {
@@ -216,7 +251,7 @@ export function lazyWithRetry<T extends ComponentType<any>>(
 
       // إن كان chunk شَقيق في نَفس التَّحميل الجَاري قَد طَلَب reload بالفعل،
       // ابقَ في وَضع Suspense حَتى يَكتمل خروج الصَّفحة دون مَسح الحَارس أو وَميض ErrorBoundary.
-      if (createdEpoch !== reloadEpoch) {
+      if (reloadInFlight || createdEpoch !== reloadEpoch) {
         return new Promise<{ default: T }>(() => {});
       }
 
@@ -251,6 +286,7 @@ export function lazyWithRetry<T extends ComponentType<any>>(
       }
 
       reloadEpoch += 1;
+      reloadInFlight = true;
       preserveDraftsBeforeReload();
       if (
         typeof navigator !== "undefined" &&
@@ -258,9 +294,12 @@ export function lazyWithRetry<T extends ComponentType<any>>(
         typeof navigator.serviceWorker.getRegistration === "function"
       ) {
         void prepareServiceWorkerBeforeReload().finally(() => {
+          reloadEpoch += 1;
+          reloadInFlight = false;
           window.location.reload();
         });
       } else {
+        reloadInFlight = false;
         window.location.reload();
       }
       // promise لا يَحلّ أبَداً ⇒ Suspense fallback يَبقى ظَاهراً حَتى يَنتهي reload
