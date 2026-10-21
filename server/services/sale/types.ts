@@ -111,6 +111,8 @@ export interface CreateSaleInput {
    *  (نمط deliver.ts — append-only)؛ مسار التثبيت يمرّرها فارغةً ويختم أحاديّ الهدف
    *  في allocateAtCommit حيث تُعرف وحدة الهدف. */
   preCollected?: { amount: string; receiptIds: number[] } | null;
+  /** Internal correction phase: settle only after the original allocations move. */
+  deferCustomerSettlement?: boolean;
   clientRequestId?: string | null;
   /**
    * **تفويضٌ داخليّ حصراً — لا يقبله أيّ راوتر.** نسبةُ البيع (`invoices.createdBy` +

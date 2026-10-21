@@ -708,7 +708,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
         title={isReceipt ? "سند قبض جديد" : "سند صرف جديد"}
         description={
           isReceipt
-            ? "إيرادات/تحصيلات مستقلّة بلا فاتورة (مثل: دفعة من عميل بلا تخصيص، إيرادات متفرّقة، استرداد من مورّد)."
+            ? "تحصيلات العملاء تسدد فواتيرهم تلقائياً من الأقدم، أو إيرادات متفرقة واسترداد من مورد."
             : "طلب صرف مستقلّ بلا أثر مالي عند الإرسال؛ ينفّذه مالك آخر لاحقاً عبر «اعتماد وصرف» بعد التحقق من الرصيد."
         }
         actions={
@@ -1030,7 +1030,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                 />
                 {customerId != null && (
                   <div className="space-y-1">
-                    <Label>ربط بفاتورة (اختياري)</Label>
+                    <Label>تخصيص فاتورة محددة (اختياري)</Label>
                     <UnifiedSearchInput
                       value={invoiceQ}
                       onChange={setInvoiceQ}
@@ -1077,7 +1077,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                     <p className="text-[11px] text-muted-foreground">
                       {customerInvoices.isFetching
                         ? "جارٍ جلب الفواتير المستحقّة…"
-                        : "يَظهر هذا السند في سجلّ دفعات الفاتورة المُختارة (تتبّع تسديد دَين مُحدَّد). المتبقّي = الإجمالي − المدفوع − المُرتجَع."}
+                        : "اترك الاختيار فارغاً ليوزع النظام القبض تلقائياً من أقدم فواتير العميل في هذا الفرع، ويخفض الذمة عند التنفيذ. المبلغ الزائد يبقى رصيداً دائناً. اختيار فاتورة يخصص القبض لها وحدها."}
                     </p>
                   </div>
                 )}

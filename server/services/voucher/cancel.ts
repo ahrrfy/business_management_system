@@ -12,7 +12,7 @@ import {
 import { money, toDbMoney } from "../money";
 import { getActiveLock } from "../periodLockService";
 import { type Actor } from "../tx";
-import { withSupplierBookReversalTx } from "../purchase/supplierBookReversalTx";
+import { withSupplierBookVoucherTx, receiptNeedsSupplierBookGateTx } from "./supplierSettlement";
 import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { assertBranchOwnership } from "./helpers";
 import {
@@ -56,7 +56,7 @@ export async function cancelVoucher(
   actor: Actor,
 ): Promise<CancelVoucherResult> {
   // Owner auto-approval may reverse a BOOK source in this same transaction.
-  return withSupplierBookReversalTx(async () => ({ sourceReceiptId: receiptId }), async (tx) => {
+  return withSupplierBookVoucherTx(tx => receiptNeedsSupplierBookGateTx(tx, receiptId), async (tx) => {
     let [preview] = await tx
       .select()
       .from(receipts)

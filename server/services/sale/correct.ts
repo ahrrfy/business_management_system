@@ -1,3 +1,7 @@
+import { autoSettleCustomerAccountTx } from "../reconciliation/autoSettlementService";
+import { customerReceiptAllocatedAmountTx, transferCustomerReceiptAllocationsTx } from "../customerReceiptSettlement";
+import { loadCustomerReceiptInvoicePayments } from "../customerReceiptProjection";
+import { withSupplierBookVoucherTx } from "../voucher/supplierSettlement";
 // تصحيح فاتورة بيع مُثبَّتة (0168) — «عكسٌ كامل + إعادة إصدار» ذرّياً.
 //
 // الوثيقة الحاكمة: docs/invoice-correction-design-2026-08-10.md (مُعتمَدةٌ بقرارات المالك §١٠).
@@ -47,7 +51,7 @@ import { money, round2, toDbMoney } from "../money";
 import { returnSaleInTx } from "../returnService";
 import { openShiftIdTx, resolveBranchCashShiftTx } from "../shiftService";
 import { loadRefundCaps } from "../returns/refundCaps";
-import { withTx, type Actor } from "../tx";
+import { type Actor } from "../tx";
 import { extractInsertId } from "../../lib/insertId";
 import { createSaleInTx } from "./create";
 import { mixedAwarePaymentMethod } from "./payment";
@@ -144,7 +148,7 @@ export interface CorrectSaleResult {
 
 export async function correctSale(input: CorrectSaleInput, actor: Actor & { role?: string },
 ): Promise<CorrectSaleResult> {
-  return withTx((tx) => correctSaleInTx(tx, input, actor));
+  return withSupplierBookVoucherTx(async tx => (await customerReceiptAllocatedAmountTx(tx, input.originalInvoiceId)).gt(0), tx => correctSaleInTx(tx, input, actor));
 }
 
 /** جسم إعادة الإصدار/الاستبدال داخل معاملة قائمة لضمان ذرية الاعتماد مع سجل التحكم. */
@@ -531,7 +535,7 @@ export async function correctSaleInTx(
     //    reception/deposits.ts + returnService.ts). حينها detachedSum < paidAmount، فيُعيد
     //    الترحيلُ تحميلَ الفرق ذمّةً وهميّةً على العميل. الحلّ: لا نُصحّح إن اختلّ المجموع — بل
     //    نوجّه لإلغاءٍ كامل ثمّ إعادة بيع. (المجموع محسوبٌ قبل أيّ تعديل ⇒ رفضٌ فاشلٌ نظيف.)
-    const payRcpts = await tx.select().from(receipts).where(and(
+    const directPayRcpts = await tx.select().from(receipts).where(and(
       eq(receipts.invoiceId, input.originalInvoiceId),
       eq(receipts.direction, "IN"),
       eq(receipts.status, "COMPLETED"),
@@ -539,7 +543,20 @@ export async function correctSaleInTx(
       sql`NOT EXISTS (SELECT 1 FROM accountingEntries ae WHERE ae.receiptId = ${receipts.id} AND ae.entryType = 'DELIVERY_FEE_HELD')`,
     ),
       ).for("update");
-    const detachedIds = payRcpts.map((r) => Number(r.id));
+    const allocationPayments = (await loadCustomerReceiptInvoicePayments(tx, input.originalInvoiceId))
+      .filter(row => row.direction === "IN" && row.status === "COMPLETED");
+    const allocatedAmount = await customerReceiptAllocatedAmountTx(tx, input.originalInvoiceId);
+    // Virtual portions are used only to reconcile the pool. The original multi-invoice
+    // receipt is never detached, re-stamped or re-recorded by this correction.
+    const allocatedSources = allocationPayments.length
+      ? await tx.select().from(receipts).where(inArray(receipts.id, allocationPayments.map(row => Number(row.id))))
+      : [];
+    const payRcpts = [...directPayRcpts, ...allocationPayments.map(row => {
+      const source = allocatedSources.find(r => r.id === Number(row.id));
+      if (!source) throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: "تعذر تصحيح الفاتورة", why: "مصدر تخصيص القبض مفقود", doThis: "راجع سند القبض وتوزيعه في كشف العميل قبل إعادة التصحيح" }) });
+      return { ...source, amount: row.amount, invoiceId: input.originalInvoiceId };
+    })];
+    const detachedIds = directPayRcpts.map((r) => Number(r.id));
     const priorRefunds = await tx.select()
       .from(receipts).where(and(
         eq(receipts.invoiceId, input.originalInvoiceId), eq(receipts.direction, "OUT"),
@@ -601,6 +618,9 @@ export async function correctSaleInTx(
       customerChanged
       || receivedPrior.minus(deliveryPaid).lt(detachedSum)
     );
+    if (allocatedAmount.gt(0) && needsSettlement) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({ what: "تعذر نقل مقبوض الفاتورة إلى حساب آخر", why: "سند القبض موزع على عدة فواتير للعميل الأصلي", doThis: "اعكس سند القبض الأصلي أولاً ثم أعد تخصيص المقبوض لصاحب الحساب الصحيح" }) });
+    }
     // A physical OUT cannot be split or reassigned as two invented receipts.
     // Retain store refunds with their original IN/compensation; only wholly
     // courier-funded refunds follow the collection's consignment.
@@ -718,6 +738,7 @@ export async function correctSaleInTx(
           : null,
         preCollected: carriedSum.gt(0) || carriedIds.length > 0 ? { amount: carriedSum.toFixed(2), receiptIds: carriedIds } : null,
       allowPreCollectedOverpay: true,
+      deferCustomerSettlement: allocatedAmount.gt(0),
       ...(deliveryAmendment
         ? { codDispatchPending: true, paymentMode: "COD" as const }
         : {}),
@@ -735,6 +756,14 @@ export async function correctSaleInTx(
     );
     const newId = repost.invoiceId;
     const newTotal = round2(money(repost.total));
+    if (allocatedAmount.gt(0)) {
+      const cashRefund = input.overpayHandling === "CASH_REFUND";
+      const nativeGross = directPayRcpts.reduce((sum, r) => sum.plus(r.amount), money(0));
+      // Retain gross portions behind actual refunds. A credited price difference
+      // becomes tracked advance; an actual cash refund stays in the invoice pool.
+      const capacity = cashRefund ? allocatedAmount : Decimal.max(0, newTotal.minus(deliveryPaid).minus(nativeGross).plus(priorRefundAmount));
+      await transferCustomerReceiptAllocationsTx(tx, input.originalInvoiceId, newId, capacity);
+    }
     if (deliveryAmendment) {
       const reversedExcess = await reverseInvoiceDeliveryExcessTx(tx, deliveryAmendment,
         round2(Decimal.max(0, carriedSum.minus(newTotal))), actor,
@@ -850,6 +879,8 @@ export async function correctSaleInTx(
         eq(receipts.status, "COMPLETED"),
       ))
       .orderBy(receipts.id);
+    const allocatedMethods = await loadCustomerReceiptInvoicePayments(tx, newId);
+    transferredPaymentMethods.push(...allocatedMethods.filter(row => row.direction === "IN" && row.status === "COMPLETED").map(row => ({ method: row.paymentMethod })));
     const displayedPaymentMethod = transferredPaymentMethods.reduce<string | null>(
       (current, row) => mixedAwarePaymentMethod(current, row.method),
       deliveryPaid.gt(0) ? "CASH" : null,
@@ -974,6 +1005,10 @@ export async function correctSaleInTx(
     if (deliveryAmendment) {
       await rebindCorrectedInvoiceDeliveryTx(tx, deliveryAmendment, newId, actor,
         input.clientRequestId ?? `correct-${input.originalInvoiceId}`, retainedRefundIds);
+    }
+
+    if (allocatedAmount.gt(0) && targetCustomerId != null) {
+      await autoSettleCustomerAccountTx(tx, targetCustomerId, actor);
     }
 
     // ── ١٠) تسجيل مفتاح idempotency (refId = الفاتورة الجديدة) ──

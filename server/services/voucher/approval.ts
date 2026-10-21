@@ -1,3 +1,4 @@
+import { settleCustomerReceiptTx, consumeCustomerReceiptCreditTx, reverseCustomerReceiptSettlementTx } from "../customerReceiptSettlement";
 import { prepareSupplierBookVoucherTx, applySupplierBookVoucherTx, type LiveSupplierBookVoucherPlan } from "../purchase/supplierBookSettlement";
 // اعتماد/رفض سند مُعلَّق (Maker-Checker، SOD-04: مالك نشط والمُعتمِد ≠ المُنشئ بلا استثناء).
 import { TRPCError } from "@trpc/server";
@@ -10,7 +11,6 @@ import { assertBranchOwnership } from "./helpers";
 import { createSupplierVoucherSettlementTx, prepareSupplierVoucherSettlementTx, withSupplierBookVoucherTx, receiptNeedsSupplierBookGateTx, loadSupplierBookVoucherMarkerTx, recordSupplierBookVoucherMarkerTx } from "./supplierSettlement";
 import { decideSupplierPaymentInTx, SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY } from "../purchase/supplierPayments";
 import {
-  autoSettleCustomerAccountTx,
   autoSettleSupplierAccountTx,
 } from "../reconciliation/autoSettlementService";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
@@ -18,7 +18,6 @@ import {
   accountingEntries,
   accrualObligationEvents,
   assetMaintenance,
-  customers,
   digitalWalletTransactions,
   digitalWallets,
   employees,
@@ -2293,7 +2292,10 @@ export async function approveVoucherTx(
     // يتحرّكا معاً**: تقويمُ أحدهما وحده يصنع ABBA بينهما — محاسبٌ يعتمد سنداً معلَّقاً على
     // فاتورة، وكاشيرٌ يسجّل سنداً مباشراً على نفس الفاتورة والعميل في اللحظة ذاتها. وخطرُه
     // غيرُ متكافئ: `createVoucher` محميّ بـ`withMysqlDeadlockRetry` بينما الاعتماد بلا غلاف.
-    if (r.invoiceId != null) {
+    const reversedCustomerAllocation = cancellationOriginal
+      ? await reverseCustomerReceiptSettlementTx(tx, Number(cancellationOriginal.id), receiptId, actor)
+      : false;
+    if (!reversedCustomerAllocation && r.invoiceId != null) {
       const allocation = await allocateVoucherToInvoiceTx(tx, {
         invoiceId: Number(r.invoiceId),
         amount,
@@ -2301,6 +2303,7 @@ export async function approveVoucherTx(
         paymentMethod,
         voucherBranchId: Number(r.branchId),
         gracefulSettledInvoice: true,
+        restoreReversedRefund: cancellationOriginal?.direction === "OUT",
       });
 
       if (!allocation.allocated) {
@@ -2349,20 +2352,18 @@ export async function approveVoucherTx(
         );
       }
     }
+    if (!cancellationOriginal) {
+      const [currentReceipt] = await tx.select({ invoiceId: receipts.invoiceId }).from(receipts).where(eq(receipts.id, receiptId));
+      if (currentReceipt?.invoiceId == null) {
+        if (direction === "IN") await settleCustomerReceiptTx(tx, receiptId, actor);
+        else await consumeCustomerReceiptCreditTx(tx, receiptId, actor);
+      }
+    }
     await adjustCustomerBalance(
       tx,
       partyId,
       direction === "IN" ? amount.neg() : amount,
     );
-    if (direction === "IN") {
-      const [c] = await tx
-        .select({ currentBalance: customers.currentBalance })
-        .from(customers)
-        .where(eq(customers.id, partyId));
-      if (c && money(c.currentBalance).lte(0)) {
-        await autoSettleCustomerAccountTx(tx, partyId, actor);
-      }
-    }
     // ردُّ بيعٍ مؤجَّل (تحويل/صك/محفظة) صار مصروفاً باعتماد سنده: أغلِق أثرَي السجلّ اللذين
     // تركهما المحرّك مفتوحَين بقصد — `PAID_AMOUNT` (نطاق البيع) والرصيد الدائن المعلَّق — كي لا
     // يبقى السجلُّ يبلّغ ردّاً غير مدفوعٍ وائتماناً بعد صرف المال (Codex P2). `direction === "OUT"`
