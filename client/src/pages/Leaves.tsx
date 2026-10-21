@@ -338,7 +338,7 @@ export default function Leaves() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         title="الإجازات"
         description="طلبات الإجازات وأرصدتها — سنوية، مرضية، أمومة، بدون راتب."

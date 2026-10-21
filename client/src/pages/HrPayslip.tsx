@@ -79,7 +79,7 @@ export default function HrPayslip() {
   };
 
   return (
-    <div className="container max-w-4xl py-6 space-y-6">
+    <div className="container max-w-4xl py-6 space-y-2.5">
       <PageHeader
         title={
           <div className="flex items-center gap-2">

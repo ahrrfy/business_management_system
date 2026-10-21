@@ -396,7 +396,7 @@ export default function GiftsHub() {
   }
 
   return (
-    <div className="mx-auto max-w-6xl space-y-4 p-4">
+    <div className="mx-auto max-w-6xl space-y-2.5 p-4">
       <PageHeader
         title="الهدايا والمجانيات"
         description="الوارد المجّاني من الموردين (صفر تكلفة يخفّف متوسّط الكلفة، بلا دين) والصادر للعملاء (مصروف ترويجيّ بحوكمة اعتماد)."

@@ -271,61 +271,31 @@ export default function KioskDevices() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         title="شاشات قارئ الأسعار (الأجهزة الخارجية)"
         description={
           <>
             أجهزة مستقلّة تعرض الأسعار للزبون عبر المتصفّح بوضع كشك. كل جهاز يُصادَق برمز
             <b> للقراءة فقط</b> مربوط بفرع — لا يرى التكلفة ولا المخزون، وقابل للإلغاء فوراً.
+            {" "}نزّل مُشغّل الكشك مرّةً واحدة، انسخه على جهاز الشاشة، الصق رمز الجهاز واضغط Enter ليفعّل ملء الشاشة والإقلاع التلقائي.
           </>
         }
+        actions={
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Link href="/settings?tab=shelf-qr">
+              <Button variant="outline" size="sm" className="inline-flex items-center gap-1.5">
+                <QrCode aria-hidden className="size-3.5" />
+                <span>انتقل إلى مولّد ملصقات الرفوف</span>
+                <ArrowLeft aria-hidden className="size-3.5" />
+              </Button>
+            </Link>
+            <Button size="sm" className="inline-flex items-center gap-1.5" onClick={() => downloadInstallerCmd({ origin })}>
+              <Download aria-hidden className="size-3.5" />تنزيل مُشغّل الكشك (.cmd)
+            </Button>
+          </div>
+        }
       />
-
-      {/* بطاقة وصول سريعة لملصقات الرفوف لهواتف الزبائن */}
-      <Card className="border-border bg-card/60">
-        <CardContent className="p-4 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-primary/10 text-primary">
-              <QrCode aria-hidden className="size-5" />
-            </div>
-            <div>
-              <div className="font-semibold text-sm">ملصقات QR للرفوف (مسح بهاتف الزبون)</div>
-              <div className="text-xs text-muted-foreground">
-                تريد أن يفحص الزبائن الأسعار بكاميرات هواتفهم المحمولة مباشرة على الرفوف؟ يمكنك توليد وطباعة ملصقات الرفوف وشيتات A4 بضغطة واحدة.
-              </div>
-            </div>
-          </div>
-          <Link href="/settings?tab=shelf-qr">
-            <Button variant="outline" size="sm" className="inline-flex items-center gap-1.5 shrink-0">
-              <span>انتقل إلى مولّد ملصقات الرفوف</span>
-              <ArrowLeft aria-hidden className="size-4" />
-            </Button>
-          </Link>
-        </CardContent>
-      </Card>
-
-      {/* المُشغّل الكوني — يُنزَّل مرّة، يُنسَخ على كل جهاز، يُلصَق فيه الرمز */}
-      <Card className="border-primary/40 bg-primary/5">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base">مُشغّل الكشك (ملف واحد لكل الأجهزة)</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <ol className="list-decimal pr-5 space-y-1.5 text-sm text-muted-foreground marker:text-foreground/70">
-            <li>نزّل الملف مرّةً واحدة أدناه ← انسخه على كل جهاز شاشة.</li>
-            <li>شغّله على الجهاز ← الصق <b>رمز الجهاز</b> (من أدناه) ← Enter.</li>
-            <li>يفعّل الجهاز فوراً، يفتح ملء الشاشة، ويُثبّت نفسه للإقلاع التلقائي (تأخير 5 ثوانٍ بعد كل تشغيل للوندوز).</li>
-          </ol>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button className="inline-flex items-center gap-1.5" onClick={() => downloadInstallerCmd({ origin })}>
-              <Download aria-hidden className="size-4" />تنزيل مُشغّل الكشك (.cmd)
-            </Button>
-            <span className="text-xs text-muted-foreground self-center">
-              الخادم مضمَّن في الملف — لا حاجة لأي إعداد يدوي على جهاز الشاشة.
-            </span>
-          </div>
-        </CardContent>
-      </Card>
 
       {/* الرمز المكشوف مرّة واحدة — يبقى `print:hidden` **حزاماً ثانياً**: زرّ «طباعة» أدناه صار
           يبني مستند A4 من صفوف الجدول (بادئة الرمز فقط) لا من الصفحة، لكنّ طباعة المتصفّح

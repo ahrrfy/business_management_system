@@ -1062,7 +1062,7 @@ function UserManagerBadgeCard({
           اعتماد المدير وشارة الباركود (نقطة البيع والاستقبال)
         </CardTitle>
       </CardHeader>
-      <CardContent className="space-y-6">
+      <CardContent className="space-y-2.5">
         <p className="text-xs text-muted-foreground">
           تُتيح للمدير والمسؤول اعتماد سقف الائتمان، وردّ العربون، وردّ أمانة التوصيل، والتسليم على الحساب بمسح الباركود المباشر أو إدخال رمز PIN السريع دون الحاجة لكتابة كلمة المرور الكاملة.
         </p>

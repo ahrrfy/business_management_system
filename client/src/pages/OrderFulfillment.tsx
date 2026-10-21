@@ -888,7 +888,7 @@ export default function OrderFulfillment() {
     <div className="space-y-2.5">
       <PageHeader
         title="طلبات الموقع"
-        description="راجع الطلبات الواردة، ثبّتها وجهّزها للتوصيل"
+        description={`راجع الطلبات الواردة، ثبّتها وجهّزها للتوصيل — سير العمل: ثبّت الطلب أولاً، ثم اطبع ورقة التجهيز وابدأ العمل. حدّث العميل عبر واتساب: «${orderStatusLabelForCustomer("CONFIRMED")}» بعد التثبيت و«${orderStatusLabelForCustomer("SHIPPED")}» عند إسناده لمندوب؛ ويؤكّد المندوب التسليم والتحصيل من «توصيلاتي».`}
         icon={<Store aria-hidden className="size-5" />}
         actions={
           <div className="flex items-center gap-2">
@@ -954,13 +954,6 @@ export default function OrderFulfillment() {
           )}
         </section>
       )}
-
-      <div role="note" className="flex gap-2 rounded-lg border border-[var(--sem-info)]/40 bg-[var(--sem-info-bg)] px-2.5 py-1.5 text-xs leading-snug text-muted-foreground">
-        <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0 text-[var(--sem-info)]" />
-        <p>
-          <span className="font-bold text-foreground">سير العمل:</span> ثبّت الطلب أولاً، ثم اطبع ورقة التجهيز وابدأ العمل. حدّث العميل عبر واتساب: «{orderStatusLabelForCustomer("CONFIRMED")}» بعد التثبيت و«{orderStatusLabelForCustomer("SHIPPED")}» عند إسناده لمندوب؛ ويؤكّد المندوب التسليم والتحصيل من «توصيلاتي».
-        </p>
-      </div>
 
       {/* بطاقات الحالة */}
       <div className="grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-5">
