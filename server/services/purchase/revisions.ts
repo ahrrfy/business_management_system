@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
+import { variantDescriptor } from "@shared/variantDisplay";
 import { and, desc, eq } from "drizzle-orm";
 import {
   productUnits,
@@ -86,6 +87,9 @@ export async function createPurchaseOrderRevisionTx(
       usdTotal: purchaseOrderItems.usdTotal,
       productName: products.name,
       variantName: productVariants.variantName,
+      color: productVariants.color,
+      size: productVariants.size,
+      variantKind: productVariants.variantKind,
       sku: productVariants.sku,
       unitName: productUnits.unitName,
     })
@@ -110,28 +114,40 @@ export async function createPurchaseOrderRevisionTx(
     .orderBy(desc(purchaseOrderRevisions.revisionNo))
     .limit(1);
 
-  const items = rows.map((row, index) => ({
-    lineNo: index + 1,
-    variantId: Number(row.variantId),
-    productUnitId: row.productUnitId == null ? null : Number(row.productUnitId),
-    quantity: String(row.quantity),
-    baseQuantity: Number(row.baseQuantity),
-    listUnitPrice: String(row.listUnitPrice ?? row.unitPrice),
-    unitPrice: String(row.unitPrice),
-    lineTotal: String(row.total),
-    usdListUnitPrice:
-      row.usdListUnitPrice == null
-        ? row.usdUnitPrice == null
-          ? null
-          : String(row.usdUnitPrice)
-        : String(row.usdListUnitPrice),
-    usdUnitPrice: row.usdUnitPrice == null ? null : String(row.usdUnitPrice),
-    usdLineTotal: row.usdTotal == null ? null : String(row.usdTotal),
-    productNameSnapshot: String(row.productName),
-    variantNameSnapshot: row.variantName == null ? null : String(row.variantName),
-    skuSnapshot: row.sku == null ? null : String(row.sku),
-    unitNameSnapshot: row.unitName == null ? null : String(row.unitName),
-  }));
+  const items = rows.map((row, index) => {
+    const desc = variantDescriptor({
+      productName: row.productName,
+      variantName: row.variantName,
+      color: row.color,
+      size: row.size,
+      variantKind: row.variantKind,
+      sku: row.sku,
+    });
+    const resolvedVariantName =
+      desc || (row.variantName == null ? null : String(row.variantName).trim() || null);
+    return {
+      lineNo: index + 1,
+      variantId: Number(row.variantId),
+      productUnitId: row.productUnitId == null ? null : Number(row.productUnitId),
+      quantity: String(row.quantity),
+      baseQuantity: Number(row.baseQuantity),
+      listUnitPrice: String(row.listUnitPrice ?? row.unitPrice),
+      unitPrice: String(row.unitPrice),
+      lineTotal: String(row.total),
+      usdListUnitPrice:
+        row.usdListUnitPrice == null
+          ? row.usdUnitPrice == null
+            ? null
+            : String(row.usdUnitPrice)
+          : String(row.usdListUnitPrice),
+      usdUnitPrice: row.usdUnitPrice == null ? null : String(row.usdUnitPrice),
+      usdLineTotal: row.usdTotal == null ? null : String(row.usdTotal),
+      productNameSnapshot: String(row.productName),
+      variantNameSnapshot: resolvedVariantName,
+      skuSnapshot: row.sku == null ? null : String(row.sku),
+      unitNameSnapshot: row.unitName == null ? null : String(row.unitName),
+    };
+  });
   const payload = {
     supplierId: Number(po.supplierId),
     branchId: Number(po.branchId),
@@ -324,11 +340,33 @@ export async function getPurchaseOrderRevision(
   if (!revision) {
     throw new TRPCError({ code: "NOT_FOUND", message: "مراجعة أمر الشراء غير موجودة" });
   }
-  const items = await db
-    .select()
+  const rawItems = await db
+    .select({
+      item: purchaseOrderRevisionItems,
+      variantName: productVariants.variantName,
+      color: productVariants.color,
+      size: productVariants.size,
+      variantKind: productVariants.variantKind,
+      sku: productVariants.sku,
+    })
     .from(purchaseOrderRevisionItems)
+    .leftJoin(productVariants, eq(purchaseOrderRevisionItems.variantId, productVariants.id))
     .where(eq(purchaseOrderRevisionItems.revisionId, input.revisionId))
     .orderBy(purchaseOrderRevisionItems.lineNo);
+  const items = rawItems.map(({ item, variantName, color, size, variantKind, sku }) => {
+    const fallbackDesc = variantDescriptor({
+      productName: item.productNameSnapshot,
+      variantName,
+      color,
+      size,
+      variantKind,
+      sku: item.skuSnapshot ?? sku,
+    });
+    return {
+      ...item,
+      variantNameSnapshot: item.variantNameSnapshot?.trim() || fallbackDesc || null,
+    };
+  });
   return { ...revision, items };
 }
 

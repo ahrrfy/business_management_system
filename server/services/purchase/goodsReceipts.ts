@@ -22,6 +22,7 @@ import {
 } from "../../../drizzle/schema";
 import { goodsReceiptReversalTrigger } from "@shared/approvalTriggers";
 import { appErrorMessage } from "@shared/errors";
+import { variantDescriptor } from "@shared/variantDisplay";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
@@ -1510,7 +1511,7 @@ export async function getGoodsReceipt(goodsReceiptId: number, actor: Actor) {
           }),
         });
       assertPurchaseBranch(receipt, actor);
-      const items = await tx
+      const rawItems = await tx
         .select({
           id: goodsReceiptItems.id,
           goodsReceiptId: goodsReceiptItems.goodsReceiptId,
@@ -1518,6 +1519,11 @@ export async function getGoodsReceipt(goodsReceiptId: number, actor: Actor) {
           purchaseOrderItemId: goodsReceiptItems.purchaseOrderItemId,
           variantId: goodsReceiptItems.variantId,
           productName: products.name,
+          variantName: productVariants.variantName,
+          color: productVariants.color,
+          colorHex: productVariants.colorHex,
+          size: productVariants.size,
+          variantKind: productVariants.variantKind,
           variantSku: productVariants.sku,
           receivedBaseQuantity: goodsReceiptItems.receivedBaseQuantity,
           acceptedBaseQuantity: goodsReceiptItems.acceptedBaseQuantity,
@@ -1533,6 +1539,20 @@ export async function getGoodsReceipt(goodsReceiptId: number, actor: Actor) {
         .innerJoin(products, eq(products.id, productVariants.productId))
         .where(eq(goodsReceiptItems.goodsReceiptId, goodsReceiptId))
         .orderBy(asc(goodsReceiptItems.lineNo));
+      const items = rawItems.map((item) => ({
+        ...item,
+        variantName:
+          variantDescriptor({
+            productName: item.productName,
+            variantName: item.variantName,
+            color: item.color,
+            size: item.size,
+            variantKind: item.variantKind,
+            sku: item.variantSku,
+          }) ||
+          item.variantName ||
+          null,
+      }));
       const reversalRequests = await tx
         .select()
         .from(goodsReceiptReversalRequests)

@@ -10,6 +10,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { fmtDateTime } from "@/lib/date";
+import { fmtAr, formatQuantity } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 
 const HEAD_LABEL: Record<string, string> = {
@@ -30,9 +31,47 @@ const HEAD_LABEL: Record<string, string> = {
   notesSnapshot: "الملاحظات",
 };
 
+const ITEM_FIELD_LABEL: Array<{ key: string; label: string; kind?: "money" | "qty" }> = [
+  { key: "productNameSnapshot", label: "الصنف" },
+  { key: "variantNameSnapshot", label: "المتغيّر" },
+  { key: "skuSnapshot", label: "رمز SKU" },
+  { key: "unitNameSnapshot", label: "الوحدة" },
+  { key: "quantity", label: "الكمية", kind: "qty" },
+  { key: "baseQuantity", label: "الكمية الأساسية", kind: "qty" },
+  { key: "listUnitPrice", label: "سعر القائمة", kind: "money" },
+  { key: "lineDiscountPercent", label: "نسبة الخصم %" },
+  { key: "unitPrice", label: "سعر الوحدة", kind: "money" },
+  { key: "lineTotal", label: "إجمالي السطر", kind: "money" },
+  { key: "usdUnitPrice", label: "سعر الوحدة ($)", kind: "money" },
+  { key: "usdLineTotal", label: "إجمالي السطر ($)", kind: "money" },
+  { key: "taxRate", label: "نسبة الضريبة %" },
+  { key: "taxAmount", label: "مبلغ الضريبة", kind: "money" },
+];
+
 function valueText(value: unknown) {
   if (value == null || value === "") return "—";
   return typeof value === "object" ? JSON.stringify(value) : String(value);
+}
+
+function formatItemFieldValue(
+  item: Record<string, unknown> | null | undefined,
+  key: string,
+  kind?: "money" | "qty",
+): string {
+  if (!item) return "—";
+  const raw = item[key];
+  if (raw == null || raw === "") return "—";
+  if (kind === "money") return fmtAr(String(raw));
+  if (kind === "qty") return formatQuantity(String(raw));
+  return String(raw);
+}
+
+function formatRevisionLineHeadline(item: Record<string, unknown> | null | undefined): string {
+  if (!item) return "سطر محذوف";
+  const product = String(item.productNameSnapshot ?? "صنف");
+  const variant = item.variantNameSnapshot ? ` — ${String(item.variantNameSnapshot)}` : "";
+  const sku = item.skuSnapshot ? ` [${String(item.skuSnapshot)}]` : "";
+  return `${product}${variant}${sku}`;
 }
 
 export function PurchaseOrderGovernance({
@@ -232,26 +271,45 @@ export function PurchaseOrderGovernance({
                         </span>
                       </div>
                     ))}
-                    {diff.data.items.map((change) => (
-                      <details
-                        key={change.lineNo}
-                        className="rounded border p-2"
-                      >
-                        <summary className="cursor-pointer font-semibold">
-                          تغيير السطر {change.lineNo}
-                        </summary>
-                        <pre
-                          dir="ltr"
-                          className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted p-2 text-start text-xs"
+                    {diff.data.items.map((change) => {
+                      const beforeRec = (change.before ?? null) as Record<string, unknown> | null;
+                      const afterRec = (change.after ?? null) as Record<string, unknown> | null;
+                      const changedFields = ITEM_FIELD_LABEL.filter(({ key }) => {
+                        const b = String(beforeRec?.[key] ?? "");
+                        const a = String(afterRec?.[key] ?? "");
+                        return b !== a;
+                      });
+                      const headline = formatRevisionLineHeadline(afterRec ?? beforeRec);
+                      return (
+                        <details
+                          key={change.lineNo}
+                          open
+                          className="rounded border p-2.5"
                         >
-                          {JSON.stringify(
-                            { before: change.before, after: change.after },
-                            null,
-                            2,
-                          )}
-                        </pre>
-                      </details>
-                    ))}
+                          <summary className="cursor-pointer font-semibold">
+                            تغيير السطر {change.lineNo}: {headline}
+                          </summary>
+                          <div className="mt-2 space-y-1.5 text-xs">
+                            {changedFields.map(({ key, label, kind }) => (
+                              <div
+                                key={key}
+                                className="grid gap-1 rounded bg-muted/40 p-1.5 sm:grid-cols-[8rem_1fr_1fr]"
+                              >
+                                <span className="font-medium text-muted-foreground">
+                                  {label}
+                                </span>
+                                <span className="text-[var(--sem-neg)]">
+                                  قبل: {formatItemFieldValue(beforeRec, key, kind)}
+                                </span>
+                                <span className="text-[var(--sem-pos)]">
+                                  بعد: {formatItemFieldValue(afterRec, key, kind)}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                      );
+                    })}
                     {!diff.data.head.length && !diff.data.items.length ? (
                       <div className="rounded border p-4 text-center text-muted-foreground">
                         لا فرق بين المراجعتين.
