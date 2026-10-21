@@ -39,6 +39,7 @@ const ITEM_FIELD_LABEL: Array<{ key: string; label: string; kind?: "money" | "qt
   { key: "quantity", label: "الكمية", kind: "qty" },
   { key: "baseQuantity", label: "الكمية الأساسية", kind: "qty" },
   { key: "listUnitPrice", label: "سعر القائمة", kind: "money" },
+  { key: "usdListUnitPrice", label: "سعر القائمة ($)", kind: "money" },
   { key: "lineDiscountPercent", label: "نسبة الخصم %" },
   { key: "unitPrice", label: "سعر الوحدة", kind: "money" },
   { key: "lineTotal", label: "إجمالي السطر", kind: "money" },
@@ -279,7 +280,13 @@ export function PurchaseOrderGovernance({
                         const a = String(afterRec?.[key] ?? "");
                         return b !== a;
                       });
+                      if (!changedFields.length) return null;
                       const headline = formatRevisionLineHeadline(afterRec ?? beforeRec);
+                      const changeKindLabel = !beforeRec
+                        ? `إضافة السطر ${change.lineNo}`
+                        : !afterRec
+                          ? `حذف السطر ${change.lineNo}`
+                          : `تغيير السطر ${change.lineNo}`;
                       return (
                         <details
                           key={change.lineNo}
@@ -287,7 +294,7 @@ export function PurchaseOrderGovernance({
                           className="rounded border p-2.5"
                         >
                           <summary className="cursor-pointer font-semibold">
-                            تغيير السطر {change.lineNo}: {headline}
+                            {changeKindLabel}: {headline}
                           </summary>
                           <div className="mt-2 space-y-1.5 text-xs">
                             {changedFields.map(({ key, label, kind }) => (

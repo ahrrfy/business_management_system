@@ -208,7 +208,9 @@ export function DecisionRow({ row, onDecided, initialResult = null, onDismiss }:
                   const displayLabel =
                     variantBadge && it.label.endsWith(` · ${variantBadge}`)
                       ? it.label.slice(0, -(` · ${variantBadge}`.length))
-                      : it.label;
+                      : variantBadge && it.label.endsWith(` — ${variantBadge}`)
+                        ? it.label.slice(0, -(` — ${variantBadge}`.length))
+                        : it.label;
                   const validColorHex =
                     it.colorHex && /^#[0-9a-fA-F]{6}$/.test(it.colorHex) ? it.colorHex : null;
                   return (

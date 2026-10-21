@@ -516,11 +516,16 @@ export const giftSource: DecisionSource = {
         const mine = lines.filter((l) => Number(l.giftVoucherId) === Number(r.id));
         const lineItems: DecisionSummaryItem[] = mine.map((l) => {
           const v = variants.get(Number(l.variantId));
+          const variantText = v?.descriptor || v?.variantName || null;
           return {
-            label: itemLabel([v?.productName, v?.variantName]) || `صنف #${l.variantId}`,
+            label: itemLabel([v?.productName, variantText]) || `صنف #${l.variantId}`,
+            variant: variantText,
+            colorHex: v?.colorHex ?? null,
+            sku: v?.sku ?? null,
             qty: String(l.quantity),
             unit: `${units.get(Number(l.productUnitId)) ?? ""} (${l.baseQuantity} بالوحدة الأساس)`.trim(),
             unitPrice: l.unitCostSnapshot,
+            lineTotal: l.lineCost,
           };
         });
         return buildRow(

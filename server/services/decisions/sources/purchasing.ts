@@ -937,7 +937,10 @@ export const supplierInvoiceApprovalSource: DecisionSource = {
       db.select().from(supplierInvoiceLines).where(inArray(supplierInvoiceLines.supplierInvoiceId, invoiceIds)),
     ]);
     const invoiceById = new Map(invoices.map((i) => [Number(i.id), i]));
-    const look = await lookups(db, { suppliers: invoices.map((i) => i.supplierId), users: rows.map((r) => r.requestedBy), branches: rows.map((r) => r.branchId) });
+    const [look, variants] = await Promise.all([
+      lookups(db, { suppliers: invoices.map((i) => i.supplierId), users: rows.map((r) => r.requestedBy), branches: rows.map((r) => r.branchId) }),
+      variantLabels(db, ids(lines.map((l) => l.variantId))),
+    ]);
     return rows
       .filter((r) => {
         const inv = invoiceById.get(Number(r.supplierInvoiceId));
@@ -964,7 +967,20 @@ export const supplierInvoiceApprovalSource: DecisionSource = {
             summaryItems: [
               ...lines
                 .filter((l) => Number(l.supplierInvoiceId) === Number(r.supplierInvoiceId))
-                .map((l) => ({ label: l.description, qty: l.invoicedBaseQuantity, unit: "بالوحدة الأساس", unitPrice: usd ? l.usdUnitPrice : l.unitPriceIqd })),
+                .map((l) => {
+                  const v = l.variantId != null ? variants.get(Number(l.variantId)) : undefined;
+                  const variantText = v?.descriptor || v?.variantName || null;
+                  return {
+                    label: l.description || itemLabel([v?.productName, variantText]),
+                    variant: variantText,
+                    colorHex: v?.colorHex ?? null,
+                    sku: v?.sku ?? null,
+                    qty: l.invoicedBaseQuantity,
+                    unit: "بالوحدة الأساس",
+                    unitPrice: usd ? l.usdUnitPrice : l.unitPriceIqd,
+                    lineTotal: usd ? (l.usdTotal ?? l.totalAmount) : l.totalAmount,
+                  };
+                }),
               ...(r.evidenceReference ? [{ label: `الدليل: ${r.evidenceType ?? ""} — ${r.evidenceReference}` }] : []),
             ],
             reason: r.reason,

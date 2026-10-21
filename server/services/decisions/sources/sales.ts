@@ -174,14 +174,22 @@ export const salesControlSource: DecisionSource = {
                 const item = itemById.get(Number(line.invoiceItemId));
                 const v = item ? variants.get(Number(item.variantId)) : undefined;
                 const variantText = v?.descriptor || v?.variantName || null;
+                const qty = line.baseQuantity == null ? null : Number(line.baseQuantity);
+                const lineTotal =
+                  item && qty != null
+                    ? Number(item.baseQuantity) > 0
+                      ? money(item.total).times(qty).div(Number(item.baseQuantity)).toDecimalPlaces(2).toFixed(2)
+                      : money(item.unitPrice).times(qty).toDecimalPlaces(2).toFixed(2)
+                    : null;
                 return {
                   label: itemLabel([v?.productName, variantText]) || `بند #${String(line.invoiceItemId ?? "?")}`,
                   variant: variantText,
                   colorHex: v?.colorHex ?? null,
                   sku: v?.sku ?? null,
-                  qty: line.baseQuantity == null ? null : Number(line.baseQuantity),
+                  qty,
                   unit: "بالوحدة الأساس",
                   unitPrice: item?.unitPrice ?? null,
+                  lineTotal,
                 };
               })
             : type === "SALES_REISSUE" || type === "SALES_EXCHANGE"
@@ -189,13 +197,20 @@ export const salesControlSource: DecisionSource = {
                   const line = asRecord(l);
                   const v = variants.get(Number(line.variantId));
                   const variantText = v?.descriptor || v?.variantName || null;
+                  const qty = line.quantity == null ? null : String(line.quantity);
+                  const unitPrice = line.unitPriceOverride == null ? null : String(line.unitPriceOverride);
+                  const lineTotal =
+                    qty != null && unitPrice != null
+                      ? money(unitPrice).times(Number(qty)).toDecimalPlaces(2).toFixed(2)
+                      : null;
                   return {
                     label: itemLabel([v?.productName, variantText]) || `صنف #${String(line.variantId ?? "?")}`,
                     variant: variantText,
                     colorHex: v?.colorHex ?? null,
                     sku: v?.sku ?? null,
-                    qty: line.quantity == null ? null : String(line.quantity),
-                    unitPrice: line.unitPriceOverride == null ? null : String(line.unitPriceOverride),
+                    qty,
+                    unitPrice,
+                    lineTotal,
                   };
                 })
               : [];
