@@ -119,6 +119,7 @@
 .wob-col-hint { display: none; }
 .wob-col-count { flex: 0 0 auto; background: var(--c-soft); color: var(--c-text); font-weight: 800; font-size: 11px; min-width: 22px; height: 20px; padding: 0 6px; border-radius: 6px; display: grid; place-items: center; }
 .wob-col-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding: 2px 1px 6px; border-radius: var(--wob-radius); transition: background 0.15s, box-shadow 0.15s; border: 1.5px dashed transparent; scroll-behavior: smooth; scrollbar-width: thin; overscroll-behavior: contain; }
+.wob-col-body > * { flex-shrink: 0; }
 .wob-col-body::-webkit-scrollbar { width: 6px; }
 .wob-col-body::-webkit-scrollbar-thumb { background: color-mix(in oklch, var(--c-solid, var(--border-strong)) 35%, transparent); border-radius: 4px; }
 .wob-col-body::-webkit-scrollbar-thumb:hover { background: color-mix(in oklch, var(--c-solid, var(--border-strong)) 60%, transparent); }
@@ -127,6 +128,7 @@
 
 /* ─── البطاقة ─── */
 .wob-card {
+  flex-shrink: 0;
   background:
     linear-gradient(180deg,
       color-mix(in oklch, var(--c-soft, transparent) 45%, var(--card)) 0%,

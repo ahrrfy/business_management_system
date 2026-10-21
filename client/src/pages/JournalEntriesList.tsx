@@ -147,7 +147,7 @@ export default function JournalEntriesList() {
   );
 
   return (
-    <div className="space-y-6 max-w-7xl mx-auto p-4 md:p-6" dir="rtl">
+    <div className="space-y-2.5 max-w-7xl mx-auto p-4 md:p-6" dir="rtl">
       <PageHeader
         title="سجل القيود اليومية اليدوية"
         description="استعراض وتدقيق قيود اليومية اليدوية والتسويات المحاسبية المعتمدة ومطابقتها"

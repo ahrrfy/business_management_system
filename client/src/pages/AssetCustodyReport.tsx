@@ -6,7 +6,6 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { ListToolbar } from "@/components/list";
-import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { CategoryIcon, StatCard, iqd } from "@/lib/assets/ui";
 import { D } from "@/lib/money";
@@ -146,13 +145,8 @@ export default function AssetCustodyReport() {
   }
 
   return (
-    <div className="space-y-4">
-      <PageHeader
-        title="تقرير العهد"
-        actions={<Link href="/assets/register"><Button variant="outline" size="sm">سجلّ الأصول</Button></Link>}
-      />
-
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+    <div className="space-y-2.5">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
         <StatCard label="موظفون لديهم عهد" value={iqd(d.byEmployee.length)} icon={Users} />
         <StatCard label="أصول تحت العهدة" value={iqd(totalAssets)} icon={ShieldCheck} />
         <StatCard label="إجمالي القيمة الدفترية" value={iqd(totalValue)} icon={Wallet} sub="د.ع" />
@@ -162,7 +156,9 @@ export default function AssetCustodyReport() {
       <Card>
         <CardHeader>
           <ListToolbar
-            title="العهد حسب الموظف"
+            title="تقرير العهد"
+            pageTitle
+            actions={<Link href="/assets/register"><Button variant="outline" size="sm">سجلّ الأصول</Button></Link>}
             count={filteredByEmployee.length}
             search={{ value: search, onChange: setSearch, placeholder: "بحث (موظف/أصل/رمز/تسلسلي)" }}
             filters={

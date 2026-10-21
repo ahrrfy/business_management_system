@@ -359,7 +359,7 @@ export default function Attendance() {
   ], [navigate, partialTotals, visHours, visAmount]);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       {/* الترويسة */}
       <PageHeader
         title="الحضور والانصراف"

@@ -229,10 +229,10 @@ export default function ExpenseCategories() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         title="فئات المصروفات"
-        description="تصنيف تشغيلي دقيق للمصروفات فوق الدلو المحاسبي — الفئة تُصنِّف والدلو يُحاسِب."
+        description="تصنيف تشغيلي دقيق للمصروفات فوق الدلو المحاسبي — الفئة تُصنِّف والدلو يُحاسِب. الدلو المحاسبي هو ما يقرأه دفتر الأستاذ والتقارير وجاهزية إقفال الشهر، وهو ثابت بثمانية بنود."
         actions={
           canManage ? (
             <div className="flex flex-wrap gap-2">
@@ -261,18 +261,6 @@ export default function ExpenseCategories() {
           ) : undefined
         }
       />
-
-      <Card className="border-[var(--sem-info)]/40 bg-[var(--sem-info-bg)]">
-        <CardContent className="p-3 text-sm text-[var(--sem-info)] flex items-start gap-2">
-          <Info aria-hidden className="size-4 mt-0.5 shrink-0" />
-          <span>
-            الدلو المحاسبي هو ما يقرأه دفتر الأستاذ والتقارير وجاهزية إقفال
-            الشهر، وهو ثابت بثمانية بنود. الفئة طبقة تشغيلية فوقه: تُغيّر
-            التصنيف الذي تراه في تقاريرك بلا أي تغيير في الحساب الذي يهبط فيه
-            المصروف. لذلك لا يتغيّر دلو فئة ارتبطت بمصروفات.
-          </span>
-        </CardContent>
-      </Card>
 
       {!canManage && (
         <Card>

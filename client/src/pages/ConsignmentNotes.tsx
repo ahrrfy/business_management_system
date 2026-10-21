@@ -154,7 +154,7 @@ export default function ConsignmentNotes() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         title="سندات الأمانة"
         description="إيداع/سحب/استبدال بضاعة المودِعين — حركات مخزون بلا أثر ماليّ (المستحق يتكوّن عند البيع)."

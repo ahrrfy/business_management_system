@@ -545,7 +545,7 @@ export default function Announcements() {
   ];
 
   return (
-    <div className="space-y-6" dir="rtl">
+    <div className="space-y-2.5" dir="rtl">
       <PageHeader
         title="إدارة ونشر إعلانات الشركة"
         description="بث التوجيهات الإدارية، إعلانات الفروع، وتتبع إقرارات وقراءات الكوادر"

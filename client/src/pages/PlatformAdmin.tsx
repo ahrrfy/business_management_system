@@ -432,7 +432,7 @@ function CompanyInspectionDrawer({
         )}
 
         {company && (
-          <div className="space-y-6 pt-4">
+          <div className="space-y-2.5 pt-4">
             {/* التبديل الفوري لحالة التفعيل من داخل الدرج */}
             <div className="flex items-center justify-between p-3 rounded-lg border bg-muted/20">
               <div className="space-y-0.5">

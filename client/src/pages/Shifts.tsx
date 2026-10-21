@@ -1,7 +1,6 @@
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
 import { DataTable } from "@/components/data-table/DataTable";
 import { Button } from "@/components/ui/button";
@@ -521,11 +520,7 @@ export default function Shifts() {
   const to = Math.min((page + 1) * PAGE, total);
 
   return (
-    <div className="space-y-4">
-      <PageHeader
-        title="سجلّ الورديات"
-        description="ورديات الكاشير (فتح/إغلاق الصندوق) مع النقد المتوقّع والمعدود والفرق. أعد طباعة تقرير نهاية الوردية (Z) لأي وردية مغلقة."
-      />
+    <div className="space-y-2.5">
 
       {(fundingRequestsQ.data?.length ?? 0) > 0 && (
         <Card className="border-warning/50">
@@ -630,7 +625,8 @@ export default function Shifts() {
       <Card>
         <CardHeader>
           <ListToolbar
-            title="الورديات"
+            title="سجلّ الورديات"
+            pageTitle
             count={total}
             loading={list.isLoading}
             search={{

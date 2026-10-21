@@ -181,6 +181,8 @@ export default defineConfig({
       "client/src/pages/EmployeeAdvanceRepayment.test.tsx",
       "client/src/pages/YearEnd.test.ts",
       "client/src/lib/assetAccrualStatus.test.ts",
+      "client/src/pages/__tests__/adaptiveWorkspaceHardening.test.ts",
+      "client/src/pages/__tests__/OrderFulfillment.test.tsx",
       "client/src/pages/__tests__/auditedUxContracts.test.ts",
       "client/src/pages/__tests__/filterFieldCoverage.test.ts",
       "client/src/pages/__tests__/m3ChallengerAdversarial.test.ts",

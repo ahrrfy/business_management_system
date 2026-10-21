@@ -3,7 +3,6 @@ import { Button } from "@/components/ui/button";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { FILTER_LABELS } from "@shared/uiContracts";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { PageHeader } from "@/components/PageHeader";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -187,40 +186,35 @@ export default function AssetRegister() {
   const filtersActive = activeFilterCount > 0 || f.q.trim() !== "";
 
   return (
-    <div className="space-y-4">
-      <PageHeader
-        title="سجلّ الأصول"
-        description="قائمة الأصول الثابتة وفق المعيار الدولي IAS 16 — التكلفة، إهلاك ما قبل النظام، إهلاك النظام، ومجمع الإهلاك."
-      />
-
+    <div className="space-y-2.5">
       {report.data?.kpis && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-          <Card className="p-3 bg-card/60">
-            <div className="text-muted-foreground text-xs mb-1">إجمالي التكلفة التاريخية</div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+          <Card className="px-2.5 py-1.5 bg-card/60">
+            <div className="text-muted-foreground text-[11px] leading-tight mb-0.5">إجمالي التكلفة التاريخية</div>
             <div className="text-base font-bold tabular-nums text-foreground" dir="ltr">
               {iqd(report.data.kpis.totalCost)} <span className="text-xs font-normal text-muted-foreground">د.ع</span>
             </div>
           </Card>
-          <Card className="p-3 bg-card/60">
-            <div className="text-muted-foreground text-xs mb-1">إهلاك ما قبل النظام</div>
+          <Card className="px-2.5 py-1.5 bg-card/60">
+            <div className="text-muted-foreground text-[11px] leading-tight mb-0.5">إهلاك ما قبل النظام</div>
             <div className="text-base font-bold tabular-nums text-foreground" dir="ltr">
               {iqd(report.data.kpis.totalOpeningDepreciation)} <span className="text-xs font-normal text-muted-foreground">د.ع</span>
             </div>
           </Card>
-          <Card className="p-3 bg-card/60">
-            <div className="text-muted-foreground text-xs mb-1">إهلاك النظام المرحل</div>
+          <Card className="px-2.5 py-1.5 bg-card/60">
+            <div className="text-muted-foreground text-[11px] leading-tight mb-0.5">إهلاك النظام المرحل</div>
             <div className="text-base font-bold tabular-nums text-foreground" dir="ltr">
               {iqd(report.data.kpis.totalSystemDepreciation)} <span className="text-xs font-normal text-muted-foreground">د.ع</span>
             </div>
           </Card>
-          <Card className="p-3 bg-card/60">
-            <div className="text-muted-foreground text-xs mb-1">إجمالي مجمع الإهلاك</div>
+          <Card className="px-2.5 py-1.5 bg-card/60">
+            <div className="text-muted-foreground text-[11px] leading-tight mb-0.5">إجمالي مجمع الإهلاك</div>
             <div className="text-base font-bold tabular-nums text-foreground" dir="ltr">
               {iqd(report.data.kpis.totalAccumulatedDepreciation)} <span className="text-xs font-normal text-muted-foreground">د.ع</span>
             </div>
           </Card>
-          <Card className="p-3 bg-card/60">
-            <div className="text-muted-foreground text-xs mb-1">صافي القيمة الدفترية</div>
+          <Card className="px-2.5 py-1.5 bg-card/60">
+            <div className="text-muted-foreground text-[11px] leading-tight mb-0.5">صافي القيمة الدفترية</div>
             <div className="text-base font-bold tabular-nums text-primary" dir="ltr">
               {iqd(report.data.kpis.totalNetBookValue)} <span className="text-xs font-normal text-muted-foreground">د.ع</span>
             </div>
@@ -231,7 +225,8 @@ export default function AssetRegister() {
       <Card>
         <CardHeader>
           <ListToolbar
-            title="القائمة"
+            title="سجلّ الأصول"
+            pageTitle
             count={rows.length}
             loading={list.isLoading}
             search={{ value: f.q, onChange: (v) => setF({ q: v }), placeholder: "بحث (اسم/رمز/تسلسلي/عهدة/موقع)" }}

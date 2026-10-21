@@ -416,7 +416,7 @@ export default function Stocktakes() {
   /* غير مخوَّل (كاشير/مستخدم عام): الخادم يرفض أصلاً — نعرض توجيهاً واضحاً بدل أخطاء. */
   if (me.data && !canReadList) {
     return (
-      <div className="space-y-4">
+      <div className="space-y-2.5">
         <PageHeader title="الجرد والتسوية" />
         <Card>
           <CardContent className="p-8 text-center text-sm text-muted-foreground">

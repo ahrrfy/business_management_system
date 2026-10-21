@@ -140,6 +140,9 @@ describe("عقد صلاحيات وفشل واجهات أوامر الشغل ال
     expect(board).toContain("toAccessibleMoney(colStats.totalValue)");
     expect(board).toContain('<bdi dir="ltr" aria-hidden="true">');
     expect(board).toContain("wob-curr");
+    const boardCss = readPage("WorkOrders.board.css");
+    expect(boardCss).toContain(".wob-col-body > * { flex-shrink: 0; }");
+    expect(boardCss).toMatch(/\.wob-card\s*\{[\s\S]*?flex-shrink:\s*0;/);
   });
 
   it("⭐ يحرس ظهور أوامر الشغل لفني المطبعة والمنفذ وإتاحة السحب والإعادة للطابور والانتقال بين المراحل", async () => {
