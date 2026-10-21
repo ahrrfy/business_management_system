@@ -469,19 +469,67 @@ async function loadContext(
       if (order?.settlementType === "CASH") continue;
       fail(`حالة أمر شراء الفاتورة ${invoice.id} غير مؤهلة`);
     }
-    if (invoice.liabilityClass === "LEGACY_UNKNOWN") {
+    if (
+      invoice.liabilityClass === "LEGACY_UNKNOWN" ||
+      (invoice.liabilityClass === "LEGACY_AP" &&
+        invoice.paymentGate === "BLOCKED_REVIEW")
+    ) {
       const recognized = entries.filter(
         (e) =>
           e.purchaseOrderId === order.id &&
           e.entryType === "PURCHASE" &&
           e.purchaseLiabilityAccount !== "CASH_CLEARING",
       );
+      const poPaymentEntries = entries.filter(
+        (e) =>
+          e.purchaseOrderId === order.id &&
+          ["PAYMENT_OUT", "PAYMENT_IN", "EXCHANGE_SETTLE"].includes(
+            e.entryType,
+          ) &&
+          e.purchaseLiabilityAccount !== "CASH_CLEARING" &&
+          !e.postingProfile?.includes("SHIPPING") &&
+          !e.dedupeKey?.startsWith("PURCHASE_CHARGE_"),
+      );
+      const poInvoices = invoices.filter(
+        (i) =>
+          i.status === "POSTED" &&
+          i.draftState !== "VOIDED" &&
+          i.liabilityClass !== "LEGACY_CASH_CLEARING" &&
+          links.get(i.id)?.has(order.id),
+      );
+      const ownEntry =
+        invoice.postingEntryId != null
+          ? recognized.find((e) => e.id === invoice.postingEntryId)
+          : recognized.length === 1
+            ? recognized[0]
+            : undefined;
+      const recognizedTotal = recognized.reduce(
+        (s, e) => s.plus(e.amount),
+        money(0),
+      );
+      const poInvoicesTotal = poInvoices.reduce(
+        (s, i) => s.plus(i.totalAmount),
+        money(0),
+      );
       if (
         invoice.origin !== "LEGACY" ||
-        recognized.length !== 1 ||
-        !money(recognized[0].amount).eq(invoice.totalAmount) ||
-        !money(order.total).eq(invoice.totalAmount) ||
-        recognized[0].branchId !== input.branchId
+        !money(invoice.legacySettledAmount).isZero() ||
+        poPaymentEntries.length > 0 ||
+        !ownEntry ||
+        !money(ownEntry.amount).eq(invoice.totalAmount) ||
+        recognized.some((e) => e.branchId !== input.branchId) ||
+        poInvoices.length !== recognized.length ||
+        (recognized.length > 1 &&
+          (poInvoices.some(
+            (i) =>
+              i.origin !== "LEGACY" ||
+              i.postingEntryId == null ||
+              !recognized.some((e) => e.id === i.postingEntryId),
+          ) ||
+            new Set(poInvoices.map((i) => i.postingEntryId)).size !==
+              recognized.length)) ||
+        !recognizedTotal.eq(order.total) ||
+        !poInvoicesTotal.eq(order.total)
       )
         fail(`تعذر إثبات أصل الذمة الإرثية ${invoice.id}`);
       classify.push(invoice);
@@ -634,6 +682,30 @@ async function loadContext(
       !money(receipt.amount).eq(entry.amount)
     )
       continue;
+    if (receipt.referenceNumber?.startsWith("CANCEL-VCH-")) {
+      const cancelledId = Number(
+        /^CANCEL-VCH-([1-9][0-9]*)$/.exec(receipt.referenceNumber)?.[1],
+      );
+      const cancelled = originalReceipts.find((r) => r.id === cancelledId);
+      const cancelledEntries = entries.filter(
+        (e) =>
+          e.receiptId === cancelledId &&
+          e.entryType === "PAYMENT_IN" &&
+          e.purchaseOrderId == null &&
+          e.branchId === input.branchId &&
+          money(e.amount).eq(entry.amount),
+      );
+      if (
+        !cancelled ||
+        cancelled.status !== "REVERSED" ||
+        cancelled.direction !== "IN" ||
+        cancelled.branchId !== input.branchId ||
+        !money(cancelled.amount).eq(entry.amount) ||
+        cancelledEntries.length !== 1
+      )
+        fail(`إيصال العكس ${receipt.id} لا يملك سند قبض أصلي معكوساً مطابقاً`);
+      continue;
+    }
     if (
       pendingCancellations.some(
         (c) => c.reference === `CANCEL-VCH-${receipt.id}`,
@@ -857,21 +929,6 @@ export async function prepareSupplierBookVoucherTx(
     actor.role !== "admin"
   )
     fail("فرع سند الصرف خارج نطاق المستخدم");
-  // An explicitly reviewed legacy block is not an invitation to infer its old
-  // ownership again. Keep the existing eligible-invoice path for that scope.
-  const [reviewedBlock] = await tx
-    .select({ id: supplierInvoices.id })
-    .from(supplierInvoices)
-    .where(
-      and(
-        eq(supplierInvoices.supplierId, input.supplierId),
-        eq(supplierInvoices.status, "POSTED"),
-        eq(supplierInvoices.liabilityClass, "LEGACY_AP"),
-        eq(supplierInvoices.paymentGate, "BLOCKED_REVIEW"),
-      ),
-    )
-    .limit(1);
-  if (reviewedBlock) return null;
   const [opening] = await tx
     .select({ id: accountingEntries.id })
     .from(accountingEntries)

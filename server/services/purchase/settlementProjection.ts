@@ -1,5 +1,8 @@
 import { loadSupplierFormalCreditTotals } from "./supplierFormalCreditProjection";
-import { loadSupplierBookInvoiceTotals, supplierBookSourceClaimedSql } from "./supplierBookProjection";
+import {
+  loadSupplierBookInvoiceTotals,
+  supplierBookSourceClaimedSql,
+} from "./supplierBookProjection";
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import Decimal from "decimal.js";
 import { alias } from "drizzle-orm/mysql-core";
@@ -27,7 +30,9 @@ import { money, round2, toDbMoney } from "../money";
 import { GRNI_SUPPLIER_INVOICE_FORWARD_REGEXP } from "../ledger/supplierApEffect";
 import { usdReturnAmountWithFinalResidual } from "./returnGovernance";
 
-export type PurchaseSettlementProjection = PurchaseSettlementEvidence & { bookPaidAmountIqd?: string };
+export type PurchaseSettlementProjection = PurchaseSettlementEvidence & {
+  bookPaidAmountIqd?: string;
+};
 
 export async function loadPurchasePaymentEvidenceCases(
   db: DB | Tx,
@@ -148,7 +153,6 @@ export async function loadPurchaseSettlements(
     : invoiceQuery);
   const invoiceIds = invoices.map((invoice) => Number(invoice.id));
   const book = await loadSupplierBookInvoiceTotals(db, invoiceIds, options);
-  const formalCredits = await loadSupplierFormalCreditTotals(db, invoiceIds, options);
   const allocationQuery = db
     .select({
       invoiceId: supplierPaymentAllocations.supplierInvoiceId,
@@ -354,7 +358,12 @@ export async function loadPurchaseSettlements(
   }
   for (const [id, totals] of Array.from(book)) {
     const native = paidByInvoice.get(id);
-    paidByInvoice.set(id, { amount: money(native?.amount).plus(totals.paidAmount), currencyAmount: money(native?.currencyAmount).plus(totals.paidCurrencyAmount) });
+    paidByInvoice.set(id, {
+      amount: money(native?.amount).plus(totals.paidAmount),
+      currencyAmount: money(native?.currencyAmount).plus(
+        totals.paidCurrencyAmount,
+      ),
+    });
   }
   const reversedByReturn = new Map<number, Decimal>();
   for (const row of reversals)
@@ -362,7 +371,57 @@ export async function loadPurchaseSettlements(
       Number(row.returnId),
       (reversedByReturn.get(Number(row.returnId)) ?? money(0)).plus(row.amount),
     );
-  const creditByInvoice = new Map(Array.from(formalCredits, ([id, amount]) => [id, money(amount)]));
+  const formalCreditReasonByPo = new Map<number, string>();
+  let formalCredits: Map<number, string>;
+  if (options.currentRead) {
+    formalCredits = await loadSupplierFormalCreditTotals(
+      db,
+      invoiceIds,
+      options,
+    );
+  } else {
+    const singlePoInvoiceIds = invoiceIds.filter(
+      (id) => (links.get(id)?.size ?? 0) <= 1,
+    );
+    try {
+      formalCredits = await loadSupplierFormalCreditTotals(
+        db,
+        singlePoInvoiceIds,
+        options,
+      );
+    } catch {
+      formalCredits = new Map<number, string>();
+      for (const order of orders) {
+        const orderInvoiceIds = invoices
+          .filter(
+            (invoice) =>
+              links.get(Number(invoice.id))?.has(Number(order.id)) &&
+              (links.get(Number(invoice.id))?.size ?? 0) <= 1,
+          )
+          .map((invoice) => Number(invoice.id));
+        if (!orderInvoiceIds.length) continue;
+        try {
+          const perOrderCredits = await loadSupplierFormalCreditTotals(
+            db,
+            orderInvoiceIds,
+            options,
+          );
+          for (const [invId, amt] of Array.from(perOrderCredits))
+            formalCredits.set(invId, amt);
+        } catch (err) {
+          formalCreditReasonByPo.set(
+            Number(order.id),
+            err instanceof Error
+              ? err.message
+              : "تعذر تحديد رصيد مرتجع المورد؛ راجع ربط المرتجع بفاتورة الذمة",
+          );
+        }
+      }
+    }
+  }
+  const creditByInvoice = new Map(
+    Array.from(formalCredits, ([id, amount]) => [id, money(amount)]),
+  );
   const creditByPo = new Map<number, Decimal>();
   for (const row of returns) {
     const credit = nonNegative(
@@ -372,7 +431,6 @@ export async function loadPurchaseSettlements(
       Number(row.poId),
       (creditByPo.get(Number(row.poId)) ?? money(0)).plus(credit),
     );
-
   }
   const ledgerByPo = new Map(ledger.map((row) => [Number(row.poId), row]));
   for (const refund of orphanRefunds) {
@@ -392,11 +450,14 @@ export async function loadPurchaseSettlements(
         Number(row.poId) === Number(order.id) ||
         related.some((invoice) => Number(invoice.id) === Number(row.invoiceId)),
     );
-    const paymentReviewReason = paymentEvidenceCase
-      ? `السداد السابق غير محسوم في قضية ${paymentEvidenceCase.caseNumber}؛ أكمل المطابقة قبل أي صرف جديد`
-      : undefined;
+    const paymentReviewReason =
+      (paymentEvidenceCase
+        ? `السداد السابق غير محسوم في قضية ${paymentEvidenceCase.caseNumber}؛ أكمل المطابقة قبل أي صرف جديد`
+        : undefined) ?? formalCreditReasonByPo.get(Number(order.id));
     const native = relatedDocuments.some(
-      (invoice) => invoice.origin === "NATIVE" && (invoice.status === "POSTED" || invoice.status === "REVERSED"),
+      (invoice) =>
+        invoice.origin === "NATIVE" &&
+        (invoice.status === "POSTED" || invoice.status === "REVERSED"),
     );
     const total = money(order.total);
     const currencyTotal =
@@ -418,7 +479,7 @@ export async function loadPurchaseSettlements(
       );
       continue;
     }
-    if (native || related.some(invoice => book.has(Number(invoice.id)))) {
+    if (native || related.some((invoice) => book.has(Number(invoice.id)))) {
       let paid = money(0),
         currencyPaid = money(0),
         credited = money(0),
@@ -434,7 +495,8 @@ export async function loadPurchaseSettlements(
         if (money(invoice.legacySettledAmount).gt(legacy))
           reason ??= "تسوية إرثية بلا دليل مثبت";
         const netPaid = nonNegative(money(allocated?.amount));
-        const formalCredit = creditByInvoice.get(Number(invoice.id)) ?? money(0);
+        const formalCredit =
+          creditByInvoice.get(Number(invoice.id)) ?? money(0);
         const bookCredit = book.get(Number(invoice.id));
         const netCredit = formalCredit.plus(bookCredit?.creditedAmount ?? 0);
         const rate = money(invoice.agreedRate);
@@ -464,7 +526,11 @@ export async function loadPurchaseSettlements(
               : money(0)
             : formalCredit,
         );
-        currencyCredited = currencyCredited.plus(dollars ? (bookCredit?.creditedCurrencyAmount ?? 0) : (bookCredit?.creditedAmount ?? 0));
+        currencyCredited = currencyCredited.plus(
+          dollars
+            ? (bookCredit?.creditedCurrencyAmount ?? 0)
+            : (bookCredit?.creditedAmount ?? 0),
+        );
         if (dollars && !rate.gt(0)) reason ??= "سعر صرف فاتورة المورد غير صالح";
         if (
           (order.supplierId != null &&
@@ -474,7 +540,10 @@ export async function loadPurchaseSettlements(
         )
           reason ??= "هوية المورد أو الفرع لا تطابق أمر الشراء";
       }
-      if (money(order.paidAmount).gt(paid) && !related.some(invoice => book.has(Number(invoice.id))))
+      if (
+        money(order.paidAmount).gt(paid) &&
+        !related.some((invoice) => book.has(Number(invoice.id)))
+      )
         reason ??=
           "المدفوع المحفوظ على الأمر يتجاوز تخصيصات السداد المثبتة؛ يلزم تدقيق السجل التاريخي";
       if (money(ledgerByPo.get(Number(order.id))?.paid).gt(paid))
@@ -490,7 +559,13 @@ export async function loadPurchaseSettlements(
           currencyCredited,
           reason,
         ),
-        bookPaidAmountIqd: toDbMoney(related.reduce((sum, invoice) => sum.plus(book.get(Number(invoice.id))?.paidAmount ?? 0), money(0))),
+        bookPaidAmountIqd: toDbMoney(
+          related.reduce(
+            (sum, invoice) =>
+              sum.plus(book.get(Number(invoice.id))?.paidAmount ?? 0),
+            money(0),
+          ),
+        ),
         recognizedAmountIqd: toDbMoney(recognized),
         recognizedAmountCurrency: toDbMoney(currencyRecognized),
       });

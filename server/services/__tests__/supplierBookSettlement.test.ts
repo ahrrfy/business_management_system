@@ -10,6 +10,7 @@ import { money, toDbMoney } from "../money";
 import {
   adoptSupplierBookSettlement,
   adoptSupplierBookSettlementBatch,
+  prepareSupplierBookVoucherTx,
   previewSupplierBookSettlement,
   unapplySupplierBookSettlementSourceTx,
   buildSupplierBookFifo,
@@ -677,5 +678,314 @@ describe("owned full-source supplier book settlement", () => {
     expect((await db().select().from(s.purchaseOrders))[0].paidAmount).toBe(
       "100.00",
     );
+  });
+  it("proves, classifies, and settles multi-batch LEGACY_UNKNOWN invoices on a single PO with a PO-only credit return", async () => {
+    await fixture({ opening: "0.00", payment: "80.00" });
+    const [first] = await db().select().from(s.supplierInvoices);
+    const secondPurchaseEntryId = extractInsertId(
+      await db()
+        .insert(s.accountingEntries)
+        .values({
+          entryType: "PURCHASE",
+          entryDate: new Date("2026-01-03T00:00:00Z"),
+          supplierId: 1,
+          branchId: 1,
+          purchaseOrderId: 1,
+          amount: "50.00",
+          purchaseLiabilityAccount: "AP",
+          createdBy: 7,
+        }),
+    );
+    await db()
+      .insert(s.supplierInvoices)
+      .values({
+        ...first,
+        id: 2,
+        invoiceNumber: "BOOK-SIN-2",
+        clientRequestId: "BOOK-INVOICE-2",
+        postingEntryId: secondPurchaseEntryId,
+        invoiceDate: "2026-01-03",
+        subtotal: "50.00",
+        totalAmount: "50.00",
+        liabilityClass: "LEGACY_UNKNOWN",
+        paymentGate: "BLOCKED_REVIEW",
+      });
+    const returnEntryId = extractInsertId(
+      await db()
+        .insert(s.accountingEntries)
+        .values({
+          entryType: "RETURN",
+          entryDate: new Date("2026-01-03T00:00:00Z"),
+          supplierId: 1,
+          branchId: 1,
+          purchaseOrderId: 1,
+          amount: "-30.00",
+          createdBy: 7,
+        }),
+    );
+    await db()
+      .insert(s.purchaseReturns)
+      .values({
+        returnNumber: `RET-${returnEntryId}`,
+        clientRequestId: `ret-${returnEntryId}`,
+        origin: "LEGACY",
+        supplierInvoiceId: null,
+        purchaseOrderId: 1,
+        supplierId: 1,
+        branchId: 1,
+        accountingEntryId: returnEntryId,
+        settlement: "CREDIT",
+        netAmount: "30.00",
+        totalAmount: "30.00",
+        creditOffsetAmount: "30.00",
+        createdBy: 7,
+        createdByNameSnapshot: "owner",
+      });
+    await db()
+      .update(s.purchaseOrders)
+      .set({ total: "150.00", subtotal: "150.00" })
+      .where(eq(s.purchaseOrders.id, 1));
+    // Total AP: 100 + 50 - 30 (return) - 80 (payment) = 40.00
+    await db()
+      .update(s.suppliers)
+      .set({ currentBalance: "40.00" })
+      .where(eq(s.suppliers.id, 1));
+    await adopt();
+    const invoices = await db().select().from(s.supplierInvoices);
+    const inv1 = invoices.find((i) => i.id === 1)!;
+    const inv2 = invoices.find((i) => i.id === 2)!;
+    expect(inv1.liabilityClass).toBe("LEGACY_AP");
+    expect(inv2.liabilityClass).toBe("LEGACY_AP");
+    // Invoice 1 (100) has 30 credit + 70 payment = 100 -> SETTLED
+    expect(inv1.paymentGate).toBe("SETTLED");
+    // Invoice 2 (50) has 10 payment -> OPEN (40 remaining)
+    expect(inv2.paymentGate).toBe("OPEN");
+    const [order] = await db().select().from(s.purchaseOrders);
+    expect(order.paidAmount).toBe("80.00");
+    const projection = (await loadPurchaseSettlements(db(), [order])).get(1)!;
+    expect(projection).toMatchObject({
+      recognizedAmountIqd: "150.00",
+      returnedAmountIqd: "30.00",
+      paidAmountIqd: "80.00",
+      remainingAmountIqd: "40.00",
+      requiresReview: false,
+    });
+  });
+  it("proves and unblocks multi-batch LEGACY_AP + BLOCKED_REVIEW invoices on a PO with a PO-only credit return and resolves LEGACY_PAYMENT_ALLOCATION_AMBIGUOUS cases", async () => {
+    await fixture({ opening: "0.00", payment: "20.00" });
+    await db()
+      .update(s.supplierInvoices)
+      .set({
+        liabilityClass: "LEGACY_AP",
+        paymentGate: "BLOCKED_REVIEW",
+      })
+      .where(eq(s.supplierInvoices.id, 1));
+    const [first] = await db().select().from(s.supplierInvoices);
+    const secondPurchaseEntryId = extractInsertId(
+      await db()
+        .insert(s.accountingEntries)
+        .values({
+          entryType: "PURCHASE",
+          entryDate: new Date("2026-01-03T00:00:00Z"),
+          supplierId: 1,
+          branchId: 1,
+          purchaseOrderId: 1,
+          amount: "50.00",
+          purchaseLiabilityAccount: "AP",
+          createdBy: 7,
+        }),
+    );
+    await db()
+      .insert(s.supplierInvoices)
+      .values({
+        ...first,
+        id: 2,
+        invoiceNumber: "BOOK-SIN-2",
+        clientRequestId: "BOOK-INVOICE-2",
+        postingEntryId: secondPurchaseEntryId,
+        invoiceDate: "2026-01-03",
+        subtotal: "50.00",
+        totalAmount: "50.00",
+        liabilityClass: "LEGACY_AP",
+        paymentGate: "BLOCKED_REVIEW",
+      });
+    // PO-only credit return of 100.00 fully covers invoice 1 (100.00) with 0 payment needed on invoice 1
+    const returnEntryId = extractInsertId(
+      await db()
+        .insert(s.accountingEntries)
+        .values({
+          entryType: "RETURN",
+          entryDate: new Date("2026-01-03T00:00:00Z"),
+          supplierId: 1,
+          branchId: 1,
+          purchaseOrderId: 1,
+          amount: "-100.00",
+          createdBy: 7,
+        }),
+    );
+    await db()
+      .insert(s.purchaseReturns)
+      .values({
+        returnNumber: `RET-${returnEntryId}`,
+        clientRequestId: `ret-${returnEntryId}`,
+        origin: "LEGACY",
+        supplierInvoiceId: null,
+        purchaseOrderId: 1,
+        supplierId: 1,
+        branchId: 1,
+        accountingEntryId: returnEntryId,
+        settlement: "CREDIT",
+        netAmount: "100.00",
+        totalAmount: "100.00",
+        creditOffsetAmount: "100.00",
+        createdBy: 7,
+        createdByNameSnapshot: "owner",
+      });
+    await db()
+      .update(s.purchaseOrders)
+      .set({ total: "150.00", subtotal: "150.00" })
+      .where(eq(s.purchaseOrders.id, 1));
+    // Total AP: 100 + 50 - 100 (return) - 20 (payment) = 30.00
+    await db()
+      .update(s.suppliers)
+      .set({ currentBalance: "30.00" })
+      .where(eq(s.suppliers.id, 1));
+    await openPurchaseIntegrityCase(
+      {
+        caseKey: "MULTI-BATCH-AMBIGUOUS-1",
+        branchId: 1,
+        supplierId: 1,
+        purchaseOrderId: 1,
+        supplierInvoiceId: 1,
+        code: "LEGACY_PAYMENT_ALLOCATION_AMBIGUOUS",
+        severity: "HIGH",
+        title: "Multi-invoice PO ambiguity",
+        description: "Multi-invoice PO had candidateInvoiceCount > 1",
+        reason: "Historical migration blocked review",
+        evidence: { invoiceId: 1 },
+      },
+      actor,
+    );
+    await openPurchaseIntegrityCase(
+      {
+        caseKey: "MULTI-BATCH-AMBIGUOUS-2",
+        branchId: 1,
+        supplierId: 1,
+        purchaseOrderId: 1,
+        supplierInvoiceId: 2,
+        code: "LEGACY_PAYMENT_ALLOCATION_AMBIGUOUS",
+        severity: "HIGH",
+        title: "Multi-invoice PO ambiguity",
+        description: "Multi-invoice PO had candidateInvoiceCount > 1",
+        reason: "Historical migration blocked review",
+        evidence: { invoiceId: 2 },
+      },
+      actor,
+    );
+
+    // prepareSupplierBookVoucherTx should also prepare a plan instead of returning null on provable BLOCKED_REVIEW
+    await withGovernanceTx(async (tx) => {
+      const prepared = await prepareSupplierBookVoucherTx(
+        tx,
+        {
+          supplierId: 1,
+          branchId: 1,
+          amount: "10.00",
+        },
+        actor,
+      );
+      expect(prepared).not.toBeNull();
+    });
+
+    await adopt();
+    const invoices = await db().select().from(s.supplierInvoices);
+    const inv1 = invoices.find((i) => i.id === 1)!;
+    const inv2 = invoices.find((i) => i.id === 2)!;
+    // Invoice 1 (100) is 100% settled by the PO-only credit return even with 0 payment allocated to it
+    expect(inv1.paymentGate).toBe("SETTLED");
+    // Invoice 2 (50) has 20 payment -> OPEN (30 remaining)
+    expect(inv2.paymentGate).toBe("OPEN");
+    const cases = await db().select().from(s.purchaseIntegrityCases);
+    expect(cases.every((c) => c.status === "RESOLVED")).toBe(true);
+  });
+  it("ignores a compensating CANCEL-VCH-* OUT receipt paired with a REVERSED IN PAYMENT_IN receipt and fails closed on an unmatched CANCEL-VCH-* receipt", async () => {
+    await fixture({ opening: "0.00", payment: "80.00" });
+    const reversedInReceiptId = extractInsertId(
+      await db()
+        .insert(s.receipts)
+        .values({
+          direction: "IN",
+          branchId: 1,
+          amount: "50.00",
+          paymentMethod: "CASH",
+          partyType: "SUPPLIER",
+          partyId: 1,
+          voucherNumber: "IN-VCH-1",
+          voucherDate: new Date("2026-01-04T00:00:00Z"),
+          createdBy: 7,
+          status: "REVERSED",
+          approvalStatus: "APPROVED",
+          approvedBy: 9,
+          approvedAt: new Date("2026-01-04T00:00:00Z"),
+        }),
+    );
+    await db()
+      .insert(s.accountingEntries)
+      .values({
+        entryType: "PAYMENT_IN",
+        entryDate: new Date("2026-01-04T00:00:00Z"),
+        supplierId: 1,
+        branchId: 1,
+        receiptId: reversedInReceiptId,
+        amount: "50.00",
+        createdBy: 7,
+      });
+    const cancelOutReceiptId = extractInsertId(
+      await db()
+        .insert(s.receipts)
+        .values({
+          direction: "OUT",
+          branchId: 1,
+          amount: "50.00",
+          paymentMethod: "CASH",
+          partyType: "SUPPLIER",
+          partyId: 1,
+          voucherNumber: "OUT-CANCEL-1",
+          referenceNumber: `CANCEL-VCH-${reversedInReceiptId}`,
+          voucherDate: new Date("2026-01-04T00:00:00Z"),
+          createdBy: 7,
+          status: "COMPLETED",
+          approvalStatus: "APPROVED",
+          approvedBy: 9,
+          approvedAt: new Date("2026-01-04T00:00:00Z"),
+        }),
+    );
+    await db()
+      .insert(s.accountingEntries)
+      .values({
+        entryType: "PAYMENT_OUT",
+        entryDate: new Date("2026-01-04T00:00:00Z"),
+        supplierId: 1,
+        branchId: 1,
+        receiptId: cancelOutReceiptId,
+        amount: "50.00",
+        createdBy: 7,
+      });
+
+    const preview = await previewSupplierBookSettlement({
+      supplierId: 1,
+      branchId: 1,
+    });
+    expect(preview.remaining).toBe("20.00");
+    expect(preview.sources).toHaveLength(1);
+
+    // Corrupting the CANCEL-VCH reference to a non-existent receipt ID must fail closed
+    await db()
+      .update(s.receipts)
+      .set({ referenceNumber: "CANCEL-VCH-999999" })
+      .where(eq(s.receipts.id, cancelOutReceiptId));
+    await expect(
+      previewSupplierBookSettlement({ supplierId: 1, branchId: 1 }),
+    ).rejects.toThrow(/لا يملك سند قبض أصلي معكوساً مطابقاً/);
   });
 });

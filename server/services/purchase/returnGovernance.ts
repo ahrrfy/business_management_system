@@ -313,34 +313,61 @@ async function assertNoPendingSupplierPayment(tx: Tx, supplierInvoiceId: number)
 }
 
 async function netInvoiceCreditReturns(tx: Tx, invoiceId: number): Promise<Decimal> {
-  const credited = (await tx.select({ amount: sql<string>`COALESCE(SUM(${purchaseReturns.creditOffsetAmount}),0)` })
-    .from(purchaseReturns)
-    .where(eq(purchaseReturns.supplierInvoiceId, invoiceId)))[0];
-  const reversed = (await tx.select({ amount: sql<string>`COALESCE(SUM(${purchaseReturnReversals.totalAmount}),0)` })
-    .from(purchaseReturnReversals)
-    .innerJoin(purchaseReturns, eq(purchaseReturns.id, purchaseReturnReversals.purchaseReturnId))
-    .where(and(eq(purchaseReturnReversals.supplierInvoiceId, invoiceId), eq(purchaseReturns.settlement, "CREDIT"))))[0];
-  return Decimal.max(money(credited?.amount).minus(reversed?.amount ?? 0), 0);
+  const formalCredits = await loadSupplierFormalCreditTotals(tx, [invoiceId], { currentRead: true });
+  return money(formalCredits.get(invoiceId) ?? 0);
 }
 
 async function refreshInvoiceCreditState(tx: Tx, invoice: typeof supplierInvoices.$inferSelect): Promise<void> {
   const invoiceId = Number(invoice.id);
-  const formalCredits = await loadSupplierFormalCreditTotals(tx, [invoiceId], { currentRead: true });
-  const book = (await loadSupplierBookInvoiceTotals(tx, [invoiceId], { currentRead: true })).get(invoiceId);
+  const supplierInvoiceRows = await tx
+    .select()
+    .from(supplierInvoices)
+    .where(
+      and(
+        eq(supplierInvoices.supplierId, Number(invoice.supplierId)),
+        eq(supplierInvoices.status, "POSTED"),
+      ),
+    )
+    .orderBy(asc(supplierInvoices.id))
+    .for("share");
+  const targetInvoices = supplierInvoiceRows.filter(
+    (row) =>
+      Number(row.id) === invoiceId ||
+      (row.draftState !== "VOIDED" &&
+        (row.paymentGate === "OPEN" || row.paymentGate === "SETTLED") &&
+        ["NATIVE_AP", "LEGACY_AP"].includes(row.liabilityClass)),
+  );
+  const targetIds = targetInvoices.map((row) => Number(row.id));
+  const formalCredits = await loadSupplierFormalCreditTotals(tx, targetIds, { currentRead: true });
+  const bookTotals = await loadSupplierBookInvoiceTotals(tx, targetIds, { currentRead: true });
   // Raw locking rows preserve a current read after earlier transaction snapshots.
-  const allocations = await tx.select({ amount: supplierPaymentAllocations.allocatedAmount, refundedAmount: supplierPaymentAllocations.refundedAmount })
+  const allocations = await tx
+    .select({
+      supplierInvoiceId: supplierPaymentAllocations.supplierInvoiceId,
+      amount: supplierPaymentAllocations.allocatedAmount,
+      refundedAmount: supplierPaymentAllocations.refundedAmount,
+    })
     .from(supplierPaymentAllocations)
-    .where(eq(supplierPaymentAllocations.supplierInvoiceId, invoiceId))
-    .orderBy(asc(supplierPaymentAllocations.id)).for("share");
-  const paid = allocations.reduce((sum, row) => sum.plus(row.amount).minus(row.refundedAmount), money(book?.paidAmount ?? 0));
-  const netCredit = money(formalCredits.get(invoiceId) ?? 0).plus(book?.creditedAmount ?? 0);
-  const effectiveTotal = Decimal.max(money(invoice.totalAmount).minus(netCredit), 0);
-  const settled = money(invoice.legacySettledAmount).plus(paid).gte(effectiveTotal);
-  await tx.update(supplierInvoices).set({
-    version: sql`${supplierInvoices.version} + 1`,
-    paymentGate: settled ? "SETTLED" : "OPEN",
-    paymentGateReason: settled ? "سُوّيت بالكامل بعد صافي المرتجعات وتخصيصات الدفع" : null,
-  }).where(eq(supplierInvoices.id, Number(invoice.id)));
+    .where(inArray(supplierPaymentAllocations.supplierInvoiceId, targetIds))
+    .orderBy(asc(supplierPaymentAllocations.id))
+    .for("share");
+  for (const target of targetInvoices) {
+    const id = Number(target.id);
+    const book = bookTotals.get(id);
+    const paid = allocations
+      .filter((row) => Number(row.supplierInvoiceId) === id)
+      .reduce((sum, row) => sum.plus(row.amount).minus(row.refundedAmount), money(book?.paidAmount ?? 0));
+    const netCredit = money(formalCredits.get(id) ?? 0).plus(book?.creditedAmount ?? 0);
+    const effectiveTotal = Decimal.max(money(target.totalAmount).minus(netCredit), 0);
+    const settled = money(target.legacySettledAmount).plus(paid).gte(effectiveTotal);
+    const nextGate = settled ? "SETTLED" : "OPEN";
+    if (id !== invoiceId && target.paymentGate === nextGate) continue;
+    await tx.update(supplierInvoices).set({
+      version: sql`${supplierInvoices.version} + 1`,
+      paymentGate: nextGate,
+      paymentGateReason: settled ? "?????? ??????? ??? ???? ????????? ???????? ?????" : null,
+    }).where(eq(supplierInvoices.id, id));
+  }
 }
 
 function decisionHash(requestId: number, action: string, reviewReason: string): string {

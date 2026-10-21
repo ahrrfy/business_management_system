@@ -116,26 +116,22 @@ async function seedBase() {
         isOwner: true,
       },
     ]);
-  await db()
-    .insert(s.suppliers)
-    .values({
-      id: 1,
-      name: "مورد اختبار حوكمة المرتجع",
-      currentBalance: "0.00",
-    });
+  await db().insert(s.suppliers).values({
+    id: 1,
+    name: "مورد اختبار حوكمة المرتجع",
+    currentBalance: "0.00",
+  });
   await db().insert(s.products).values({ id: 1, name: "ورق تصوير" });
   await db()
     .insert(s.productVariants)
     .values({ id: 1, productId: 1, sku: "PR-GOV-1", costPrice: "0.00" });
-  await db()
-    .insert(s.productUnits)
-    .values({
-      id: 1,
-      variantId: 1,
-      unitName: "قطعة",
-      conversionFactor: "1",
-      isBaseUnit: true,
-    });
+  await db().insert(s.productUnits).values({
+    id: 1,
+    variantId: 1,
+    unitName: "قطعة",
+    conversionFactor: "1",
+    isBaseUnit: true,
+  });
 }
 
 beforeEach(async () => {
@@ -325,6 +321,7 @@ async function makeGovernedReturnSource() {
   expect(postedInvoice.status).toBe("POSTED");
 
   return {
+    purchaseOrderId: order.purchaseOrderId,
     supplierInvoiceId: Number(postedInvoice.id),
     supplierInvoiceVersion: Number(postedInvoice.version),
     matchRunId: Number(match.matchRunId),
@@ -363,21 +360,19 @@ async function seedBookSource(
   const receiptId =
     kind === "PAYMENT"
       ? extractInsertId(
-          await db()
-            .insert(s.receipts)
-            .values({
-              branchId: 1,
-              direction: "OUT",
-              partyType: "SUPPLIER",
-              partyId: 1,
-              amount,
-              paymentMethod: "TRANSFER",
-              referenceNumber: "BANK-BOOK",
-              status: "COMPLETED",
-              approvalStatus: "APPROVED",
-              createdBy: PURCHASING.userId,
-              approvedBy: OWNER.userId,
-            }),
+          await db().insert(s.receipts).values({
+            branchId: 1,
+            direction: "OUT",
+            partyType: "SUPPLIER",
+            partyId: 1,
+            amount,
+            paymentMethod: "TRANSFER",
+            referenceNumber: "BANK-BOOK",
+            status: "COMPLETED",
+            approvalStatus: "APPROVED",
+            createdBy: PURCHASING.userId,
+            approvedBy: OWNER.userId,
+          }),
         )
       : null;
   const entryId = extractInsertId(
@@ -513,4 +508,139 @@ describe("return gate refresh preserves canonical BOOK allocations", () => {
       ).toEqual(beforeAlloc);
     },
   );
+  it("refreshes sibling invoice paymentGate when a direct credit return causes a PO-only credit return to spill over and retract", async () => {
+    const source = await makeGovernedReturnSource();
+    // Invoice 1 (source.supplierInvoiceId) is 200.00 on PO 1.
+    // Add a sibling legacy invoice (100.00) on PO 1 and a PO-only credit return of 200.00 on PO 1.
+    // Initially: PO-only credit (200.00) is 100% absorbed by Invoice 1 (200.00) -> Invoice 1 is SETTLED, Sibling Invoice is OPEN.
+    const siblingPurchaseEntryId = extractInsertId(
+      await db()
+        .insert(s.accountingEntries)
+        .values({
+          entryType: "PURCHASE",
+          branchId: 1,
+          supplierId: 1,
+          purchaseOrderId: source.purchaseOrderId,
+          amount: "100.00",
+          entryDate: new Date("2026-10-25T00:00:00Z"),
+        }),
+    );
+    const siblingInvoiceId = extractInsertId(
+      await db()
+        .insert(s.supplierInvoices)
+        .values({
+          invoiceNumber: "SI-SIBLING-2",
+          clientRequestId: `sibling-inv-${randomUUID()}`,
+          origin: "LEGACY",
+          legacyPurchaseOrderId: source.purchaseOrderId,
+          supplierId: 1,
+          branchId: 1,
+          status: "POSTED",
+          liabilityClass: "LEGACY_AP",
+          paymentGate: "OPEN",
+          invoiceDate: "2026-10-25",
+          currency: "IQD",
+          subtotal: "100.00",
+          totalAmount: "100.00",
+          payloadCanonical: "{}",
+          payloadHash: "d".repeat(64),
+          evidenceType: "LEGACY_LEDGER",
+          legacySettlementEvidenceHash: "e".repeat(64),
+          postingEntryId: siblingPurchaseEntryId,
+        }),
+    );
+    const poReturnEntryId = extractInsertId(
+      await db()
+        .insert(s.accountingEntries)
+        .values({
+          entryType: "RETURN",
+          branchId: 1,
+          supplierId: 1,
+          purchaseOrderId: source.purchaseOrderId,
+          amount: "-200.00",
+          entryDate: new Date("2026-10-25T00:00:00Z"),
+        }),
+    );
+    await db()
+      .insert(s.purchaseReturns)
+      .values({
+        returnNumber: `PR-PO-${poReturnEntryId}`,
+        clientRequestId: `pr-po-${randomUUID()}`,
+        origin: "LEGACY",
+        supplierInvoiceId: null,
+        purchaseOrderId: source.purchaseOrderId,
+        supplierId: 1,
+        branchId: 1,
+        accountingEntryId: poReturnEntryId,
+        settlement: "CREDIT",
+        netAmount: "200.00",
+        totalAmount: "200.00",
+        creditOffsetAmount: "200.00",
+        createdBy: OWNER.userId,
+        createdByNameSnapshot: "المالك",
+      });
+    await db()
+      .update(s.suppliers)
+      .set({ currentBalance: "100.00" })
+      .where(eq(s.suppliers.id, 1));
+    await db()
+      .update(s.supplierInvoices)
+      .set({ paymentGate: "SETTLED" })
+      .where(eq(s.supplierInvoices.id, source.supplierInvoiceId));
+
+    // Post a governed direct CREDIT return of 100.00 on Invoice 1:
+    // Invoice 1 now has 100.00 direct credit + 100.00 PO-only credit = 200.00 (SETTLED),
+    // and the remaining 100.00 of the PO-only credit spills over to Sibling Invoice (100.00 -> SETTLED).
+    const [invoice] = await db()
+      .select()
+      .from(s.supplierInvoices)
+      .where(eq(s.supplierInvoices.id, source.supplierInvoiceId));
+    const posted = await requestPurchaseReturn(
+      returnRequestInput({
+        ...source,
+        supplierInvoiceVersion: invoice.version,
+      }),
+      OWNER,
+    );
+    expect(posted.status).toBe("APPROVED");
+    const [siblingAfterReturn] = await db()
+      .select()
+      .from(s.supplierInvoices)
+      .where(eq(s.supplierInvoices.id, siblingInvoiceId));
+    expect(siblingAfterReturn.paymentGate).toBe("SETTLED");
+
+    // Reversing the direct credit return on Invoice 1 pulls the 100.00 PO-only credit back to Invoice 1,
+    // reopening Sibling Invoice (SETTLED -> OPEN) while Invoice 1 stays SETTLED.
+    const [purchaseReturn] = await db()
+      .select()
+      .from(s.purchaseReturns)
+      .where(eq(s.purchaseReturns.id, posted.purchaseReturnId!));
+    const [item] = await db()
+      .select()
+      .from(s.purchaseReturnItems)
+      .where(eq(s.purchaseReturnItems.purchaseReturnId, purchaseReturn.id));
+    const reversed = await requestPurchaseReturnReversal(
+      {
+        purchaseReturnId: purchaseReturn.id,
+        expectedReturnVersion: purchaseReturn.version,
+        requestKey: randomUUID(),
+        evidenceType: "SIGNED_APPROVAL",
+        evidenceReference: "BOOK-SIBLING-GATE-REVERSAL",
+        reason: "عكس مرتجع مباشر لإعادة توزيع مرتجع أمر الشراء",
+        lines: [{ purchaseReturnItemId: item.id, baseQuantity: 1 }],
+      },
+      OWNER,
+    );
+    expect(reversed.status).toBe("APPROVED");
+    const [inv1AfterReversal] = await db()
+      .select()
+      .from(s.supplierInvoices)
+      .where(eq(s.supplierInvoices.id, source.supplierInvoiceId));
+    const [siblingAfterReversal] = await db()
+      .select()
+      .from(s.supplierInvoices)
+      .where(eq(s.supplierInvoices.id, siblingInvoiceId));
+    expect(inv1AfterReversal.paymentGate).toBe("SETTLED");
+    expect(siblingAfterReversal.paymentGate).toBe("OPEN");
+  });
 });
