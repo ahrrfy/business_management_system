@@ -34,7 +34,8 @@ import { requireDb } from "../../tx";
 import { serviceActor } from "../gate";
 import { buildRow, decided, defaultMessage, itemLabel } from "../rows";
 import type { DecisionSource } from "../types";
-import { branchNames, freshnessFrom, ids, scopeBranch, sodHidden } from "./common";
+import { branchNames, freshnessFrom, ids, scopeBranch, sodHidden, variantLabels } from "./common";
+import { variantDescriptor } from "@shared/variantDisplay";
 
 /**
  * [`inventoryRouter.ts:430`](../../../routers/inventoryRouter.ts) ⇐ `approveStockAdjustment`.
@@ -55,11 +56,22 @@ export const stockAdjustmentSource: DecisionSource = {
       .map((r) => {
         const current = Number(r.currentQuantity ?? r.expectedQuantity ?? 0);
         const target = Number(r.targetQuantity);
+        const variantText =
+          variantDescriptor({
+            productName: r.productName,
+            variantName: r.variantName,
+            color: r.color,
+            size: r.size,
+            variantKind: r.variantKind,
+            sku: r.sku,
+          }) ||
+          r.variantName ||
+          null;
         return buildRow(
           {
             kind: "inventory.adjustment.approve",
             id: Number(r.id),
-            title: `تسوية مخزون · ${itemLabel([r.productName, r.variantName, r.sku])}`,
+            title: `تسوية مخزون · ${itemLabel([r.productName, variantText, r.sku])}`,
             subkind: r.reason ? String(r.reason) : null,
             branchId: Number(r.branchId),
             branchName: names.get(Number(r.branchId)) ?? null,
@@ -67,7 +79,14 @@ export const stockAdjustmentSource: DecisionSource = {
             requestedByName: r.createdByName ?? null,
             requestedAt: r.createdAt,
             summaryItems: [
-              { label: itemLabel([r.productName, r.variantName]), qty: `${current} → ${target}`, unit: "بالوحدة الأساس" },
+              {
+                label: itemLabel([r.productName, variantText]),
+                variant: variantText,
+                colorHex: r.colorHex ?? null,
+                sku: r.sku ?? null,
+                qty: `${current} → ${target}`,
+                unit: "بالوحدة الأساس",
+              },
               { label: "الفرق", qty: target - current },
             ],
             reason: r.notes ?? null,
@@ -117,14 +136,17 @@ export const costRevaluationSource: DecisionSource = {
     const branchId = scopeBranch(actor, scope);
     if (branchId === "NONE") return [];
     const rows = await listCostRevaluations({ status: "PENDING_APPROVAL", branchId, limit: 200, order: "ASC" }, serviceActor(actor));
+    const variants = await variantLabels(requireDb(), ids(rows.map((r) => r.variantId)));
     return rows
       .filter((r) => !sodHidden({ blocked: [r.createdBy], actor, adminExempt: true, trigger: "ERASE_EFFECT" }))
-      .map((r) =>
-        buildRow(
+      .map((r) => {
+        const v = variants.get(Number(r.variantId));
+        const variantText = v?.descriptor || r.variantLabel || null;
+        return buildRow(
           {
             kind: "inventory.costRevaluation.approve",
             id: r.id,
-            title: `اعادة تقييم تكلفة · ${itemLabel([r.productName, r.variantLabel])}`,
+            title: `اعادة تقييم تكلفة · ${itemLabel([r.productName, variantText])}`,
             subkind: decisionSubkindLabel(r.purpose),
             amount: r.expectedValueDelta,
             branchId: r.branchId,
@@ -133,6 +155,14 @@ export const costRevaluationSource: DecisionSource = {
             requestedByName: r.createdByName,
             requestedAt: r.createdAt,
             summaryItems: [
+              {
+                label: itemLabel([r.productName, variantText]),
+                variant: variantText,
+                colorHex: v?.colorHex ?? null,
+                sku: v?.sku ?? null,
+                qty: r.expectedQuantity,
+                unit: "بالوحدة الأساس",
+              },
               { label: "التكلفة الحالية", unitPrice: r.oldCost },
               { label: "التكلفة الجديدة", unitPrice: r.newCost },
               { label: "الكمية المتأثرة", qty: r.expectedQuantity, unit: "بالوحدة الأساس" },
@@ -141,8 +171,8 @@ export const costRevaluationSource: DecisionSource = {
             trigger: costRevaluationApprovalTrigger("APPROVE"),
           },
           scope.now,
-        ),
-      );
+        );
+      });
   },
   freshness: (id) =>
     freshnessFrom(

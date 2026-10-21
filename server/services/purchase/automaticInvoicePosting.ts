@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
-import { asc, eq } from "drizzle-orm";
+import { variantDescriptor } from "@shared/variantDisplay";
+import { asc, eq, inArray } from "drizzle-orm";
 import {
   accountingEntries,
   expenses,
   goodsReceiptItems,
   goodsReceipts,
+  productVariants,
   purchaseOrderItems,
   purchaseOrderRevisionItems,
   purchaseOrderRevisions,
@@ -495,6 +497,24 @@ export async function postApprovedPurchaseInvoiceInTx(
       : receiptResult.id,
   );
 
+  const revisionVariantIds = Array.from(
+    new Set(revisionItems.map((item) => Number(item.variantId))),
+  );
+  const variantRows = revisionVariantIds.length
+    ? await tx
+        .select({
+          id: productVariants.id,
+          variantName: productVariants.variantName,
+          color: productVariants.color,
+          size: productVariants.size,
+          variantKind: productVariants.variantKind,
+          sku: productVariants.sku,
+        })
+        .from(productVariants)
+        .where(inArray(productVariants.id, revisionVariantIds))
+    : [];
+  const variantById = new Map(variantRows.map((row) => [Number(row.id), row]));
+
   const invoiceDate = toDateStr(new Date(po.approvedAt));
   const invoiceResult = await createSupplierInvoiceInTx(
     tx,
@@ -525,9 +545,21 @@ export async function postApprovedPurchaseInvoiceInTx(
             message: `إجمالي بند النسخة المعتمدة ${item.lineNo} مفقود`,
           });
         }
+        const liveVariant = variantById.get(Number(item.variantId));
+        const resolvedVariantName =
+          item.variantNameSnapshot?.trim() ||
+          variantDescriptor({
+            productName: item.productNameSnapshot,
+            variantName: liveVariant?.variantName,
+            color: liveVariant?.color,
+            size: liveVariant?.size,
+            variantKind: liveVariant?.variantKind,
+            sku: liveVariant?.sku,
+          }) ||
+          null;
         return {
           purchaseOrderRevisionItemId: Number(item.id),
-          description: [item.productNameSnapshot, item.variantNameSnapshot]
+          description: [item.productNameSnapshot, resolvedVariantName]
             .filter(Boolean)
             .join(" — "),
           invoicedBaseQuantity: Number(item.baseQuantity),

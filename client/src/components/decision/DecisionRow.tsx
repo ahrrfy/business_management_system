@@ -192,33 +192,73 @@ export function DecisionRow({ row, onDecided, initialResult = null, onDismiss }:
         )}
 
         {/* ─── ما يُقرَّر عليه وبيان الأصناف المستلمة ─── */}
-        {row.summaryItems.length > 0 && (
-          <div className="space-y-1">
-            <p className="text-2xs font-extrabold text-muted-foreground px-1">
-              بيان البنود والمستندات ({row.summaryItems.length})
-            </p>
-            <ul className="divide-y rounded-md border text-xs bg-muted/10">
-              {row.summaryItems.map((it, i) => (
-                <li key={i} className="flex flex-wrap items-center justify-between gap-2 px-3 py-1.5">
-                  <span className="min-w-0 flex-1 truncate font-medium" title={it.label}>{it.label}</span>
-                  {it.qty != null && it.qty !== "" && (
-                    <span className="tabular-nums text-muted-foreground bg-muted px-1.5 py-0.5 rounded text-2xs" dir="ltr">
-                      {formatQuantity(it.qty)}{it.unit ? ` ${it.unit}` : ""}
-                    </span>
-                  )}
-                  {it.unitPrice != null && it.unitPrice !== "" && (
-                    <span className="font-bold tabular-nums" dir="ltr">{fmtAr(it.unitPrice)}</span>
-                  )}
-                  {it.timestamp && (
-                    <span className="text-muted-foreground tabular-nums text-2xs" dir="ltr">
-                      {it.timestamp ? fmtDateTime(it.timestamp) : ""}
-                    </span>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
+        {(() => {
+          const visibleItems = row.operationalContext
+            ? row.summaryItems.filter((it) => !it.label.startsWith("شحن/كمرك "))
+            : row.summaryItems;
+          if (visibleItems.length === 0) return null;
+          return (
+            <div className="space-y-1">
+              <p className="text-2xs font-extrabold text-muted-foreground px-1">
+                بيان البنود والمستندات ({visibleItems.length})
+              </p>
+              <ul className="divide-y rounded-md border text-xs bg-muted/10">
+                {visibleItems.map((it, i) => {
+                  const variantBadge = it.variant?.trim() || null;
+                  const displayLabel =
+                    variantBadge && it.label.endsWith(` · ${variantBadge}`)
+                      ? it.label.slice(0, -(` · ${variantBadge}`.length))
+                      : it.label;
+                  const validColorHex =
+                    it.colorHex && /^#[0-9a-fA-F]{6}$/.test(it.colorHex) ? it.colorHex : null;
+                  return (
+                  <li key={i} className="flex flex-wrap items-center justify-between gap-2 px-3 py-1.5">
+                    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+                      <span className="truncate font-medium" title={it.label}>{displayLabel}</span>
+                      {(variantBadge || validColorHex) && (
+                        <span className="inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-2xs font-medium text-primary">
+                          {validColorHex && (
+                            <span
+                              className="inline-block size-2.5 shrink-0 rounded-full border border-border/60"
+                              style={{ backgroundColor: validColorHex }}
+                              title={variantBadge ?? validColorHex}
+                            />
+                          )}
+                          {variantBadge && <span>{variantBadge}</span>}
+                        </span>
+                      )}
+                      {it.sku && (
+                        <span className="font-mono text-2xs text-muted-foreground" dir="ltr">
+                          [{it.sku}]
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {it.qty != null && it.qty !== "" && (
+                        <span className="tabular-nums text-muted-foreground bg-muted px-1.5 py-0.5 rounded text-2xs" dir="ltr">
+                          {formatQuantity(it.qty)}{it.unit ? ` ${it.unit}` : ""}
+                        </span>
+                      )}
+                      {it.unitPrice != null && it.unitPrice !== "" && (
+                        <span className="font-bold tabular-nums" dir="ltr">
+                          {it.lineTotal != null && it.lineTotal !== "" && Number(it.lineTotal) !== Number(it.unitPrice)
+                            ? `× ${fmtAr(it.unitPrice)} = ${fmtAr(it.lineTotal)}`
+                            : fmtAr(it.unitPrice)}
+                        </span>
+                      )}
+                      {it.timestamp && (
+                        <span className="text-muted-foreground tabular-nums text-2xs" dir="ltr">
+                          {it.timestamp ? fmtDateTime(it.timestamp) : ""}
+                        </span>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
+              </ul>
+            </div>
+          );
+        })()}
 
         {row.reason && (
           <div className="rounded-md bg-muted/40 border border-muted/80 p-2.5 text-2xs leading-relaxed">

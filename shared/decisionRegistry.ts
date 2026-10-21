@@ -1726,9 +1726,17 @@ export type DecisionTrigger = "MONEY_OUT" | "ERASE_EFFECT";
 /** بندٌ ممّا يُقرَّر عليه فعلاً: صنفٌ بكمّيته وسعره، أو فاتورةٌ بمبلغها. */
 export interface DecisionSummaryItem {
   label: string;
+  /** وصف المتغيّر (اللون/الحجم/الاسم) للعرض بشارة مميّزة بجانب الصنف */
+  variant?: string | null;
+  /** كود اللون السداسي (#RRGGBB) لعرض نقطة اللون بجانب المتغيّر */
+  colorHex?: string | null;
+  /** رمز الصنف (SKU) عند توفّره */
+  sku?: string | null;
   qty?: number | string | null;
   unit?: string | null;
   unitPrice?: string | null;
+  /** إجمالي السطر (الكمية × سعر الوحدة) عند توفّره */
+  lineTotal?: string | number | null;
   /** لحظة ISO تُصيّغها الواجهة محلياً؛ لا يجمّد الخادم منطقةً زمنيةً داخل النص. */
   timestamp?: string | null;
 }
@@ -1769,7 +1777,7 @@ export interface DecisionOperationalContext {
   } | null;
   /** مصدر النقد أو الحساب المتأثر بالصرف */
   fundingSource?: {
-    mode: "DRAWER" | "TREASURY" | "BANK" | "WALLET" | "EXCHANGE";
+    mode: "DRAWER" | "TREASURY" | "BANK" | "WALLET" | "EXCHANGE" | "CREDIT";
     label: string;
     shiftId?: number | null;
   } | null;
