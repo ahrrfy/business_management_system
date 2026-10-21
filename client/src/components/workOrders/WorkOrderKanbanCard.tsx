@@ -20,6 +20,7 @@ import {
 import { deriveWoDeliveryState, woDeliveryStateLabel } from "@shared/workOrderDeliveryState";
 import {
   type WO,
+  type Status,
   PRIORITIES,
   progressOf,
   dueInfo,
@@ -48,6 +49,8 @@ export function WorkOrderKanbanCard({
   onClaim,
   onRelease,
   claimPending,
+  onAdvance,
+  advancePending,
 }: {
   o: WO;
   onPointerDown?: (e: React.PointerEvent) => void;
@@ -70,6 +73,9 @@ export function WorkOrderKanbanCard({
   onClaim?: (orderId: number) => void;
   onRelease?: (orderId: number) => void;
   claimPending?: boolean;
+  /** انتقال سريع للمرحلة التالية مباشرة من البطاقة (بدء التنفيذ ← جاهز ← تسليم) */
+  onAdvance?: (o: WO, to: Status) => void;
+  advancePending?: boolean;
 }) {
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -299,7 +305,40 @@ export function WorkOrderKanbanCard({
           )}
           <span className="wob-who-name">{o.assigneeName ?? "غير مُسنَد"}</span>
         </div>
-        <span onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+        <span className="inline-flex items-center gap-1 shrink-0" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+          {!ghost && onAdvance && o.status === "RECEIVED" && o.assignedTo != null && (
+            <button
+              type="button"
+              className="wob-btn wob-btn-primary h-6 px-2 text-[10.5px]"
+              disabled={advancePending}
+              onClick={() => onAdvance(o, "IN_PROGRESS")}
+              title="بدء التنفيذ وخصم المواد تلقائياً"
+            >
+              <ChevronRight aria-hidden className="size-3" /> بدء التنفيذ
+            </button>
+          )}
+          {!ghost && onAdvance && o.status === "IN_PROGRESS" && (
+            <button
+              type="button"
+              className="wob-btn wob-btn-primary h-6 px-2 text-[10.5px]"
+              disabled={advancePending}
+              onClick={() => onAdvance(o, "READY")}
+              title="تحويل الأمر إلى جاهز للتسليم"
+            >
+              <CheckCircle2 aria-hidden className="size-3" /> جاهز
+            </button>
+          )}
+          {!ghost && onAdvance && o.status === "READY" && !o.hasDelivery && Number(o.deposit ?? 0) < Number(o.salePrice) && (
+            <button
+              type="button"
+              className="wob-btn wob-btn-primary h-6 px-2 text-[10.5px]"
+              disabled={advancePending}
+              onClick={() => onAdvance(o, "DELIVERED")}
+              title="تحصيل المبلغ المتبقي وتسليم الأمر"
+            >
+              <Package aria-hidden className="size-3" /> تسليم
+            </button>
+          )}
           <WhatsAppShare
             phone={o.customerPhone}
             alternativePhones={[o.deliveryPhone]}

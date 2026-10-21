@@ -85,6 +85,7 @@ export default function UnifiedCommissionsHub() {
   const [activeView, setActiveView] = useState<HubSubView>(() =>
     resolveViewFromUrl(search),
   );
+  const [showAttributionGuide, setShowAttributionGuide] = useState(false);
 
   // التزامن التفاعلي مع تغيير الرابط الخارجي (مثل روابط شاشة الرواتب أو الرجوع بالمتصفح)
   useEffect(() => {
@@ -355,7 +356,7 @@ export default function UnifiedCommissionsHub() {
           <CardContent className="p-2.5">
             <div className="flex items-center justify-between text-muted-foreground text-xs">
               <span>المحقق من الأهداف</span>
-              <span className="text-blue-600 dark:text-blue-400">
+              <span className="text-[var(--sem-info)]">
                 <TrendingUp className="size-3.5" aria-hidden />
               </span>
             </div>
@@ -565,22 +566,29 @@ export default function UnifiedCommissionsHub() {
       >
         {/* جدول كادر صالة العرض والأدوار البيعية المسندة + ملخص قابل للطي لهندسة الإسناد */}
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between py-2.5 px-3.5">
-            <div>
-              <CardTitle className="text-sm font-bold flex items-center gap-1.5">
-                <Users className="size-4 text-primary" aria-hidden />
-                كادر صالة العرض وتوزيع الأدوار البيعية
-              </CardTitle>
-              <div className="text-xs text-muted-foreground mt-0.5">
-                سجل موظفي الصالة ومسؤولي المبيعات والاستقبال المؤهلين لاحتساب العمولات في الفروع.
+          <CardHeader className="py-2.5 px-3.5 space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <CardTitle className="text-sm font-bold flex items-center gap-1.5">
+                  <Users className="size-4 text-primary" aria-hidden />
+                  كادر صالة العرض وتوزيع الأدوار البيعية
+                </CardTitle>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  سجل موظفي الصالة ومسؤولي المبيعات والاستقبال المؤهلين لاحتساب العمولات في الفروع.
+                </div>
               </div>
-            </div>
-            <details className="relative text-xs">
-              <summary className="cursor-pointer select-none inline-flex items-center gap-1 rounded-md border border-primary/20 bg-primary/5 px-2.5 py-1 font-semibold text-primary hover:bg-primary/10">
+              <button
+                type="button"
+                aria-expanded={showAttributionGuide}
+                onClick={() => setShowAttributionGuide((v) => !v)}
+                className="cursor-pointer select-none inline-flex items-center gap-1 rounded-md border border-primary/20 bg-primary/5 px-2.5 py-1 text-xs font-semibold text-primary hover:bg-primary/10"
+              >
                 <Sparkles className="size-3.5" aria-hidden />
                 هندسة إسناد المبيعات (٣ أنماط)
-              </summary>
-              <Card className="mt-2 grid grid-cols-1 md:grid-cols-3 gap-2 p-2.5 text-xs shadow-sm">
+              </button>
+            </div>
+            {showAttributionGuide && (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2 rounded-lg border bg-muted/20 p-2.5 text-xs">
                 <div className="space-y-0.5">
                   <div className="font-bold text-foreground flex items-center gap-1">
                     <Check className="size-3 text-primary" aria-hidden />
@@ -608,8 +616,8 @@ export default function UnifiedCommissionsHub() {
                     تجميع عمولات الفرع في وعاء مشترك وتوزيعها بالتساوي أو بحسب الساعات.
                   </div>
                 </div>
-              </Card>
-            </details>
+              </div>
+            )}
           </CardHeader>
           <CardContent className="p-3 pt-0">
             <DataTable

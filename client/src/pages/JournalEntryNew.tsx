@@ -17,14 +17,12 @@ import {
   Trash2,
   Building2,
   Calendar,
-  FileText,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { D, fmtAr, moneyInput } from "@/lib/money";
@@ -356,7 +354,7 @@ export default function JournalEntryNew() {
                 <TableHead className="w-40 px-2.5 py-1.5 text-right font-semibold text-money-positive">
                   مدين (Debit)
                 </TableHead>
-                <TableHead className="w-40 px-2.5 py-1.5 text-right font-semibold text-blue-600 dark:text-blue-400">
+                <TableHead className="w-40 px-2.5 py-1.5 text-right font-semibold text-primary">
                   دائن (Credit)
                 </TableHead>
                 <TableHead className="w-12 px-2 py-1.5 text-center font-semibold">حذف</TableHead>

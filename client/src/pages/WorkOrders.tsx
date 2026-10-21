@@ -136,7 +136,17 @@ export default function WorkOrders() {
 
   // الفلاتر في querystring — تنجو من فتح التفاصيل والرجوع وتُشارَك رابطاً.
   // pri/ch/branch/tech بقيمة "all" (لا "") لأن AppSelect يعامل "" كـplaceholder غير قابل لإعادة الاختيار.
-  const [f, setF, resetF] = useUrlFilters({ q: "", pri: "all", ch: "all", branch: "all", from: "", to: "", tech: "all", scope: "branch", stale: "", gb: "stage", late: "", unassigned: "", dueToday: "", blocked: "", d: "normal", deliv: "" });
+  const defaultDensity = useMemo(() => {
+    if (typeof window === "undefined") return "normal";
+    const saved = window.localStorage.getItem("wo-density");
+    return saved === "compact" || saved === "detailed" || saved === "normal" ? saved : "normal";
+  }, []);
+  const [f, setF, resetF] = useUrlFilters({ q: "", pri: "all", ch: "all", branch: "all", from: "", to: "", tech: "all", scope: "branch", stale: "", gb: "stage", late: "", unassigned: "", dueToday: "", blocked: "", d: defaultDensity, deliv: "" });
+  useEffect(() => {
+    if (f.d === "compact" || f.d === "normal" || f.d === "detailed") {
+      window.localStorage.setItem("wo-density", f.d);
+    }
+  }, [f.d]);
   const dq = useDebouncedValue(f.q, 250);
   const [sel, setSel] = useState<number | null>(null);
   const [editTarget, setEditTarget] = useState<number | null>(null);
@@ -619,7 +629,7 @@ export default function WorkOrders() {
   const boardError = activeQ.isError || deliveredQ.isError || (canReadCounts && countsQ.isError);
 
   return (
-    <div className="wob">
+    <div className={`wob ${view === "board" ? "wob--board" : "wob--list"}`}>
       <WorkOrderRefundApprovals isOwner={isOwner} />
       <WorkOrderControlApprovals
         canReview={canReviewWorkOrderControls}
@@ -699,6 +709,32 @@ export default function WorkOrders() {
           <Truck aria-hidden className="size-3.5" /> قيد التوصيل
         </button>
         <UnifiedSearchInput barcode={false} debounceMs={0} value={f.q} onChange={(q) => setF({ q })} placeholder="بحث (رقم / عنوان / عميل)..." className="flex-1 min-w-[180px] max-w-[300px]" />
+
+        {view === "board" && (
+          <>
+            <AppSelect
+              value={f.gb}
+              onValueChange={(v) => setF({ gb: v })}
+              className="hidden xl:inline-flex h-[30px] text-xs w-[150px]"
+              aria-label="تجميع البطاقات"
+            >
+              <option value="stage">حسب المرحلة (افتراضيّ)</option>
+              <option value="technician">حسب الفنّيّ</option>
+              <option value="channel">حسب القناة</option>
+              <option value="priority">حسب الأولويّة</option>
+            </AppSelect>
+            <AppSelect
+              value={f.d}
+              onValueChange={(v) => setF({ d: v })}
+              className="hidden lg:inline-flex h-[30px] text-xs w-[112px]"
+              aria-label="كثافة العرض"
+            >
+              <option value="compact">كثافة: مضغوط</option>
+              <option value="normal">كثافة: عاديّ</option>
+              <option value="detailed">كثافة: مفصَّل</option>
+            </AppSelect>
+          </>
+        )}
 
         <Popover>
           <PopoverTrigger asChild>
@@ -999,6 +1035,14 @@ export default function WorkOrders() {
                         onClaim={canClaim ? (orderId) => claim.mutate({ workOrderId: orderId }) : undefined}
                         onRelease={canReleaseOrder(o) ? (orderId) => release.mutate({ workOrderId: orderId }) : undefined}
                         claimPending={claim.isPending || release.isPending}
+                        onAdvance={
+                          (o.status === "RECEIVED" && canStart) ||
+                          (o.status === "IN_PROGRESS" && canMarkReady) ||
+                          (o.status === "READY" && canDeliver)
+                            ? attemptMove
+                            : undefined
+                        }
+                        advancePending={start.isPending || markReady.isPending || deliver.isPending}
                         onOpenCustomer={canReadCustomerContext ? setCustomerContextId : undefined}
                         // Codex #6: النقطة تفاعليّة لمن يستطيع الكتابة فقط؛ لغيرهم تُعرض قراءةً
                         // (عرضاً غير-NORMAL فقط — بلا زرّ يفشل بـFORBIDDEN).
