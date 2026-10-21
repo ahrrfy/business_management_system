@@ -404,10 +404,21 @@ export function diffPurchaseOrderRevisions(
   const lineNos = Array.from(
     new Set([...Array.from(fromItems.keys()), ...Array.from(toItems.keys())]),
   ).sort((a, b) => a - b);
+  const comparableLine = (
+    item: PurchaseRevisionComparable["items"][number] | null,
+  ) => {
+    if (!item) return null;
+    const { id: _id, revisionId: _revisionId, ...rest } = item;
+    return rest;
+  };
   const items = lineNos.flatMap((lineNo) => {
     const before = fromItems.get(lineNo) ?? null;
     const after = toItems.get(lineNo) ?? null;
-    if (canonicalJson(before) === canonicalJson(after)) return [];
+    if (
+      canonicalJson(comparableLine(before)) ===
+      canonicalJson(comparableLine(after))
+    )
+      return [];
     return [{ lineNo, before, after }];
   });
   return { fromRevisionId: Number(from.id), toRevisionId: Number(to.id), head, items };

@@ -234,3 +234,111 @@ describe("ادوات صغيرة", () => {
     expect(isoOf("2026-09-01T00:00:00.000Z")).toBe("2026-09-01T00:00:00.000Z");
   });
 });
+
+describe("diffPurchaseOrderRevisions — مقارنة مراجعات أمر الشراء بلا ضجيج الهوية", async () => {
+  const { diffPurchaseOrderRevisions } = await import("../../purchase/revisions");
+
+  const baseRev = {
+    id: 101,
+    purchaseOrderId: 10,
+    revisionNumber: 1,
+    supplierId: 1,
+    branchId: 1,
+    orderDate: new Date("2026-09-01T00:00:00.000Z"),
+    expectedDeliveryDate: null,
+    settlementType: "CREDIT" as const,
+    agreedCurrency: "IQD" as const,
+    agreedRate: null,
+    subtotal: "4000.00",
+    taxAmount: "0.00",
+    shippingCost: "0.00",
+    shippingFundingSource: "TREASURY" as const,
+    shippingFundingShiftId: null,
+    customsCost: "0.00",
+    invoiceDiscount: "0.00",
+    usdInvoiceDiscount: null,
+    total: "4000.00",
+    usdTotal: null,
+    notesSnapshot: null,
+    payloadHash: "h1",
+    changeReason: "إنشاء",
+    createdBy: 1,
+    createdAt: NOW,
+    items: [
+      {
+        id: 501,
+        revisionId: 101,
+        lineNo: 1,
+        variantId: 1,
+        productUnitId: 1,
+        productNameSnapshot: "ورق A4",
+        variantNameSnapshot: "أبيض / 80g",
+        unitNameSnapshot: "رزمة",
+        skuSnapshot: "PAP-A4",
+        quantity: "10.000",
+        baseQuantity: 10,
+        unitPrice: "200.00",
+        lineTotal: "2000.00",
+        usdUnitPrice: null,
+        usdLineTotal: null,
+        listUnitPrice: null,
+        usdListUnitPrice: null,
+      },
+      {
+        id: 502,
+        revisionId: 101,
+        lineNo: 2,
+        variantId: 2,
+        productUnitId: 2,
+        productNameSnapshot: "حبر أسود",
+        variantNameSnapshot: null,
+        unitNameSnapshot: "علبة",
+        skuSnapshot: "INK-BLK",
+        quantity: "1.000",
+        baseQuantity: 1,
+        unitPrice: "2000.00",
+        lineTotal: "2000.00",
+        usdUnitPrice: null,
+        usdLineTotal: null,
+        listUnitPrice: null,
+        usdListUnitPrice: null,
+      },
+    ],
+  };
+
+  it("يتجاهل اختلاف id وrevisionId للسطر غير المعدل ويعرض فقط السطر المعدل", () => {
+    const nextRev = {
+      ...baseRev,
+      id: 102,
+      revisionNumber: 2,
+      subtotal: "5000.00",
+      total: "5000.00",
+      items: [
+        // السطر 1 لم يتغير تجارياً، لكن تغير id و revisionId في جدول المراجعات
+        { ...baseRev.items[0]!, id: 601, revisionId: 102 },
+        // السطر 2 تغيرت كميته وإجماليه
+        {
+          ...baseRev.items[1]!,
+          id: 602,
+          revisionId: 102,
+          quantity: "1.500",
+           lineTotal: "3000.00",
+        },
+      ],
+    };
+
+    const diff = diffPurchaseOrderRevisions(baseRev, nextRev);
+    expect(diff.fromRevisionId).toBe(101);
+    expect(diff.toRevisionId).toBe(102);
+    expect(diff.head).toEqual([
+      { field: "subtotal", before: "4000.00", after: "5000.00" },
+      { field: "total", before: "4000.00", after: "5000.00" },
+    ]);
+    // السطر 1 يجب ألا يظهر في الفروق لأن حقوله التجارية متطابقة
+    expect(diff.items).toHaveLength(1);
+    expect(diff.items[0]?.lineNo).toBe(2);
+    expect(diff.items[0]?.before?.quantity).toBe("1.000");
+    expect(diff.items[0]?.after?.quantity).toBe("1.500");
+  });
+});
+

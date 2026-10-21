@@ -31,7 +31,9 @@ const HEAD_LABEL: Record<string, string> = {
   notesSnapshot: "الملاحظات",
 };
 
-const ITEM_FIELD_LABEL: Array<{ key: string; label: string; kind?: "money" | "qty" }> = [
+const ITEM_FIELD_LABEL: Array<{ key: string; label: string; kind?: "money" | "usdUnitPrice" | "qty" }> = [
+  { key: "variantId", label: "معرّف المتغيّر" },
+  { key: "productUnitId", label: "معرّف الوحدة" },
   { key: "productNameSnapshot", label: "الصنف" },
   { key: "variantNameSnapshot", label: "المتغيّر" },
   { key: "skuSnapshot", label: "رمز SKU" },
@@ -39,10 +41,11 @@ const ITEM_FIELD_LABEL: Array<{ key: string; label: string; kind?: "money" | "qt
   { key: "quantity", label: "الكمية", kind: "qty" },
   { key: "baseQuantity", label: "الكمية الأساسية", kind: "qty" },
   { key: "listUnitPrice", label: "سعر القائمة", kind: "money" },
+  { key: "usdListUnitPrice", label: "سعر القائمة ($)", kind: "usdUnitPrice" },
   { key: "lineDiscountPercent", label: "نسبة الخصم %" },
   { key: "unitPrice", label: "سعر الوحدة", kind: "money" },
   { key: "lineTotal", label: "إجمالي السطر", kind: "money" },
-  { key: "usdUnitPrice", label: "سعر الوحدة ($)", kind: "money" },
+  { key: "usdUnitPrice", label: "سعر الوحدة ($)", kind: "usdUnitPrice" },
   { key: "usdLineTotal", label: "إجمالي السطر ($)", kind: "money" },
   { key: "taxRate", label: "نسبة الضريبة %" },
   { key: "taxAmount", label: "مبلغ الضريبة", kind: "money" },
@@ -56,12 +59,18 @@ function valueText(value: unknown) {
 function formatItemFieldValue(
   item: Record<string, unknown> | null | undefined,
   key: string,
-  kind?: "money" | "qty",
+  kind?: "money" | "usdUnitPrice" | "qty",
 ): string {
   if (!item) return "—";
   const raw = item[key];
   if (raw == null || raw === "") return "—";
   if (kind === "money") return fmtAr(String(raw));
+  if (kind === "usdUnitPrice") {
+    const n = Number(raw);
+    return Number.isFinite(n)
+      ? n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 })
+      : String(raw);
+  }
   if (kind === "qty") return formatQuantity(String(raw));
   return String(raw);
 }
@@ -279,7 +288,13 @@ export function PurchaseOrderGovernance({
                         const a = String(afterRec?.[key] ?? "");
                         return b !== a;
                       });
+                      if (!changedFields.length) return null;
                       const headline = formatRevisionLineHeadline(afterRec ?? beforeRec);
+                      const changeKindLabel = !beforeRec
+                        ? `إضافة السطر ${change.lineNo}`
+                        : !afterRec
+                          ? `حذف السطر ${change.lineNo}`
+                          : `تغيير السطر ${change.lineNo}`;
                       return (
                         <details
                           key={change.lineNo}
@@ -287,7 +302,7 @@ export function PurchaseOrderGovernance({
                           className="rounded border p-2.5"
                         >
                           <summary className="cursor-pointer font-semibold">
-                            تغيير السطر {change.lineNo}: {headline}
+                            {changeKindLabel}: {headline}
                           </summary>
                           <div className="mt-2 space-y-1.5 text-xs">
                             {changedFields.map(({ key, label, kind }) => (
