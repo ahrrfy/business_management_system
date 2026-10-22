@@ -680,20 +680,7 @@ export default function Treasury({ operationalOnly = false }: { operationalOnly?
   }, [dashboardData]);
 
   return (
-    <div className="mx-auto max-w-[1600px] space-y-4" dir="rtl">
-      {/* ═══ Header / Toolbar ═══ */}
-      {/* رأسٌ يدويّ (أيقونة + h1 + آخر تحديث + شريط أدوات بـ`mr-auto`) ⇐ PageHeader الموحّد.
-          هذه الصفحة تبويبُ «لوحة الخزينة» داخل TreasuryHub، وPageTabs لا يرسم h1 بنفسه
-          (كل صفحة مُضمَّنة تحمل رأسها) — فالرأس هنا رأسُ الشاشة لا عنوانَ قسم.
-          حاوية `actions` في PageHeader هي نفسها `flex flex-wrap items-center gap-2`، فسقط
-          الغلاف و`mr-auto` معاً (المحاذاة صارت بـ`justify-between` من الرأس). */}
-      {/* الأيقونة رمزٌ عارٍ `h-5 w-5 text-primary` — لا رقاقة ٤٠px كما كان الرأس اليدويّ.
-          `icon` يُصيَّر **داخل `<h1>`**، فرقاقةٌ بخلفيةٍ ترفع سطر العنوان إلى ٤٠px بينما
-          أشقّاء التبويب في TreasuryHub بين بلا أيقونة (المصروفات/السندات/الورديات/الفئتين)
-          وبين رمزٍ عارٍ بنفس المقاس (TreasuryTransfers: `<Send className="h-5 w-5 text-primary" />`)
-          ⇒ التنقّل بين تبويبات الوحدة نفسها كان يُقفز المحتوى رأسياً. ولا نظيرَ للرقاقة في
-          أيّ استعمالٍ آخر لـ`PageHeader` في المستودع — وإبقاؤها يُبقي زخرفةَ الرأس اليدويّ
-          داخل المكوّن الموحّد، وهو عين ما يُلغيه العقد. */}
+    <div className="mx-auto max-w-[1600px] space-y-2.5" dir="rtl">
       <PageHeader
         icon={<Vault aria-hidden className="h-5 w-5 text-primary" />}
         title={operationalOnly ? "العهدة والتمويل" : "لوحة الخزينة"}
@@ -706,9 +693,35 @@ export default function Treasury({ operationalOnly = false }: { operationalOnly?
         }
         actions={
           <>
+            {!operationalOnly && <Link href="/vouchers/receipt/new">
+              <Button size="sm" variant="default" className="h-8 gap-1 text-xs"><ArrowDownLeft className="h-3.5 w-3.5" />سند قبض</Button>
+            </Link>}
+            {!operationalOnly && <Link href="/vouchers/payment/new">
+              <Button size="sm" variant="outline" className="h-8 gap-1 text-xs"><ArrowUpRight className="h-3.5 w-3.5" />سند صرف</Button>
+            </Link>}
+            {!operationalOnly && <Link href="/expenses/new">
+              <Button size="sm" variant="outline" className="h-8 gap-1 text-xs"><ReceiptIcon className="h-3.5 w-3.5" />مصروف يومي</Button>
+            </Link>}
+            {!operationalOnly && canAccessTransfers && (
+              <Link href="/treasury?tab=transfers">
+                <Button size="sm" variant="outline" className="h-8 gap-1 text-xs"><Send className="h-3.5 w-3.5" />تحويل</Button>
+              </Link>
+            )}
+            {treasuryOperationAllowed(me.data, "treasury.fundTreasury", isAdmin || isManager) && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 gap-1 text-xs"
+                onClick={() => setFundOpen(true)}
+                title="إيداع رأس مال / رصيد افتتاحيّ في الخزينة"
+              >
+                <Vault className="h-3.5 w-3.5" />
+                تمويل الخزينة
+              </Button>
+            )}
             {canChooseBranch && (branches.data?.length ?? 0) > 1 && (
               <AppSelect
-                className="h-9"
+                className="h-8 text-xs"
                 value={String(branchId)}
                 onValueChange={(value) =>
                   setBranchId(value ? Number(value) : "")
@@ -723,7 +736,7 @@ export default function Treasury({ operationalOnly = false }: { operationalOnly?
               </AppSelect>
             )}
             {!operationalOnly && <AppSelect
-              className="h-9"
+              className="h-8 text-xs"
               value={period}
               onValueChange={(value) => setPeriod(value as Period)}
             >
@@ -736,6 +749,7 @@ export default function Treasury({ operationalOnly = false }: { operationalOnly?
             <Button
               size="sm"
               variant="outline"
+              className="h-8 text-xs"
               onClick={refreshAll}
               title="تحديث"
             >
@@ -745,39 +759,6 @@ export default function Treasury({ operationalOnly = false }: { operationalOnly?
           </>
         }
       />
-
-      {/* ═══ شريط أزرار سريعة ═══ */}
-      <div className="flex flex-wrap gap-2">
-        {!operationalOnly && <Link href="/vouchers/receipt/new">
-          <Button size="sm" variant="default" className="gap-1.5"><ArrowDownLeft className="h-4 w-4" />سند قبض</Button>
-        </Link>}
-        {!operationalOnly && <Link href="/vouchers/payment/new">
-          <Button size="sm" variant="outline" className="gap-1.5"><ArrowUpRight className="h-4 w-4" />سند صرف</Button>
-        </Link>}
-        {!operationalOnly && <Link href="/expenses/new">
-          <Button size="sm" variant="outline" className="gap-1.5"><ReceiptIcon className="h-4 w-4" />مصروف يومي</Button>
-        </Link>}
-        {!operationalOnly && canAccessTransfers && (
-          <Link href="/treasury?tab=transfers">
-            <Button size="sm" variant="outline" className="gap-1.5"><Send className="h-4 w-4" />تحويل بين الخزائن</Button>
-          </Link>
-        )}
-        {!operationalOnly && <Link href="/shifts">
-          <Button size="sm" variant="ghost" className="gap-1.5"><Layers className="h-4 w-4" />الورديات<ArrowRight className="h-3 w-3" /></Button>
-        </Link>}
-        {treasuryOperationAllowed(me.data, "treasury.fundTreasury", isAdmin || isManager) && (
-          <Button
-            size="sm"
-            variant="outline"
-            className="gap-1.5"
-            onClick={() => setFundOpen(true)}
-            title="إيداع رأس مال / رصيد افتتاحيّ في الخزينة"
-          >
-            <Vault className="h-4 w-4" />
-            تمويل الخزينة
-          </Button>
-        )}
-      </div>
 
       {!operationalOnly && treasuryOperationAllowed(me.data, "delivery.partyBoard", true) && treasuryOperationAllowed(me.data, "delivery.deliveryUiFlags", true) && <DeliveryCustodyCard branchId={branchId !== "" ? Number(branchId) : undefined} />}
 

@@ -289,52 +289,41 @@ export default function CardAccount() {
         ))}
       </div>
 
-      {/* ── بطاقات الملخّص ── */}
+      {/* ── شريط الملخّص المدمج ── */}
       {summary.isLoading ? (
         <LoadingState />
       ) : (
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-          <Card className="border-primary/30">
-            <CardContent className="p-4">
-              <div className="flex items-center gap-2 text-muted-foreground text-sm">
-                <Landmark aria-hidden className="size-4" />
-                الرصيد الحالي
-              </div>
-              <div className={`mt-1 text-2xl font-bold ${s && D(s.balance).lt(0) ? "text-[var(--money-negative)]" : ""}`}>
-                {formatIqd(s?.balance ?? "0")}
-              </div>
-              {s?.branchId == null && <div className="mt-0.5 text-xs text-muted-foreground">مجموع كل الفروع</div>}
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center gap-2 text-muted-foreground text-sm">
-                <ArrowDownCircle aria-hidden className="size-4 text-[var(--money-positive)]" />
-                دخل اليوم
-              </div>
-              <div className="mt-1 text-xl font-semibold text-[var(--money-positive)]">{fmtAr(s?.todayIn ?? "0")}</div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center gap-2 text-muted-foreground text-sm">
-                <ArrowUpCircle aria-hidden className="size-4 text-[var(--money-negative)]" />
-                صرف اليوم
-              </div>
-              <div className="mt-1 text-xl font-semibold text-[var(--money-negative)]">{fmtAr(s?.todayOut ?? "0")}</div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4">
-              <div className="text-muted-foreground text-sm">إجمالي دخل/صرف {isTelecom ? "رصيد زين" : "البطاقة"}</div>
-              <div className="mt-1 text-sm">
-                <span className="text-[var(--money-positive)]">{fmtAr(s?.totalIn ?? "0")}</span>
-                <span className="mx-1 text-muted-foreground">/</span>
-                <span className="text-[var(--money-negative)]">{fmtAr(s?.totalOut ?? "0")}</span>
-              </div>
-              <div className="mt-0.5 text-xs text-muted-foreground">{fmtAr(String(s?.movementCount ?? 0))} حركة</div>
-            </CardContent>
-          </Card>
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-xl border border-primary/25 bg-muted/20 px-3.5 py-2 text-xs">
+          <div className="flex items-center gap-1.5">
+            <Landmark aria-hidden className="size-3.5 text-primary" />
+            <span className="text-muted-foreground">الرصيد الحالي:</span>
+            <span className={`font-extrabold tabular-nums ${s && D(s.balance).lt(0) ? "text-[var(--money-negative)]" : "text-foreground"}`}>
+              {formatIqd(s?.balance ?? "0")}
+            </span>
+            {s?.branchId == null && <span className="text-[11px] text-muted-foreground">(كل الفروع)</span>}
+          </div>
+          <span className="text-border">|</span>
+          <div className="flex items-center gap-1.5">
+            <ArrowDownCircle aria-hidden className="size-3.5 text-[var(--money-positive)]" />
+            <span className="text-muted-foreground">دخل اليوم:</span>
+            <span className="font-extrabold tabular-nums text-[var(--money-positive)]">{fmtAr(s?.todayIn ?? "0")}</span>
+          </div>
+          <span className="text-border">|</span>
+          <div className="flex items-center gap-1.5">
+            <ArrowUpCircle aria-hidden className="size-3.5 text-[var(--money-negative)]" />
+            <span className="text-muted-foreground">صرف اليوم:</span>
+            <span className="font-extrabold tabular-nums text-[var(--money-negative)]">{fmtAr(s?.todayOut ?? "0")}</span>
+          </div>
+          <span className="text-border">|</span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-muted-foreground">إجمالي دخل/صرف {isTelecom ? "رصيد زين" : "البطاقة"}:</span>
+            <span className="font-semibold tabular-nums">
+              <span className="text-[var(--money-positive)]">{fmtAr(s?.totalIn ?? "0")}</span>
+              <span className="mx-1 text-muted-foreground">/</span>
+              <span className="text-[var(--money-negative)]">{fmtAr(s?.totalOut ?? "0")}</span>
+            </span>
+            <span className="text-[11px] text-muted-foreground">({fmtAr(String(s?.movementCount ?? 0))} حركة)</span>
+          </div>
         </div>
       )}
 

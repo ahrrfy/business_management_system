@@ -6,7 +6,6 @@ import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { ImportDialog } from "@/components/import/ImportDialog";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
-import { PageHeader } from "@/components/PageHeader";
 import { FILTER_LABELS } from "@shared/uiContracts";
 import { OperationsSummary } from "@/components/operations/OperationsSummary";
 import { confirm } from "@/lib/confirm";
@@ -307,11 +306,7 @@ export default function Suppliers() {
   ];
 
   return (
-    <div className="space-y-4">
-      <PageHeader
-        title="الموردون"
-        description="إدارة الموردين: إضافة، تعديل، تعطيل، بحث، ومتابعة الرصيد الدائن المفتوح."
-      />
+    <div className="space-y-2.5">
 
       <ImportDialog<SupplierImportRow>
         open={importOpen}
@@ -340,10 +335,68 @@ export default function Suppliers() {
         }}
       />
 
+      {isElevated && (
+        <OperationsSummary
+          compact
+          title={kind === "CONSIGNOR" ? "ملخص مودعي الأمانة" : "ملخص نتائج الموردين"}
+          subtitle="جميع الصفحات وفق البحث والفلاتر الحالية — الدينار والدولار محسوبان كلٌّ على حدة."
+          loading={summary.isLoading}
+          metrics={[
+            {
+              key: "total",
+              label: "إجمالي الموردين",
+              value: (summary.data?.total ?? 0).toLocaleString("ar-IQ-u-nu-latn"),
+              detail: `${summary.data?.active ?? 0} مفعّل · ${summary.data?.inactive ?? 0} معطّل`,
+            },
+            {
+              key: "payable",
+              label: "لهم علينا",
+              value: `${fmt(summary.data?.payableIqd ?? 0)} د.ع`,
+              detail: `${summary.data?.nonZeroBalances ?? 0} أصحاب أرصدة`,
+              tone: "danger",
+            },
+            {
+              key: "receivable",
+              label: "لنا عليهم",
+              value: `${fmt(summary.data?.receivableIqd ?? 0)} د.ع`,
+              tone: "success",
+            },
+            {
+              key: "net",
+              label: Number(summary.data?.netIqd ?? 0) === 0 ? "الصافي متعادل" : Number(summary.data?.netIqd ?? 0) > 0 ? "صافي علينا" : "صافي لنا",
+              value: `${fmt(Math.abs(Number(summary.data?.netIqd ?? 0)))} د.ع`,
+              tone: Number(summary.data?.netIqd ?? 0) === 0 ? "neutral" : Number(summary.data?.netIqd ?? 0) > 0 ? "danger" : "success",
+            },
+            {
+              key: "usd",
+              label: "الرصيد الدولاري",
+              value: `${fmt(summary.data?.payableUsd ?? 0)} علينا`,
+              detail: `${fmt(summary.data?.receivableUsd ?? 0)} لنا`,
+              tone: "info",
+            },
+            {
+              key: "highest",
+              label: "أعلى التزام",
+              value: summary.data?.highestPayable ? `${fmt(summary.data.highestPayable.amount)} د.ع` : "—",
+              detail: summary.data?.highestPayable?.supplierName ?? "لا توجد أرصدة مستحقة",
+              tone: "warning",
+              onClick: summary.data?.highestPayable
+                ? () => setQ(summary.data!.highestPayable!.supplierName)
+                : undefined,
+            },
+          ]}
+          footer={
+            <p className="text-xs text-muted-foreground">
+              التوزيع: {summary.data?.regular ?? 0} مورد اعتيادي · {summary.data?.consignors ?? 0} مودع أمانة.
+            </p>
+          }
+        />
+      )}
       <Card>
         <CardHeader>
           <ListToolbar
-            title="القائمة"
+            title="الموردون"
+            pageTitle
             count={total}
             loading={list.isLoading}
             search={{
@@ -454,62 +507,6 @@ export default function Suppliers() {
       </Card>
 
 
-      {isElevated && (
-        <OperationsSummary
-          title={kind === "CONSIGNOR" ? "ملخص مودعي الأمانة" : "ملخص نتائج الموردين"}
-          subtitle="جميع الصفحات وفق البحث والفلاتر الحالية — الدينار والدولار محسوبان كلٌّ على حدة."
-          loading={summary.isLoading}
-          metrics={[
-            {
-              key: "total",
-              label: "إجمالي الموردين",
-              value: (summary.data?.total ?? 0).toLocaleString("ar-IQ-u-nu-latn"),
-              detail: `${summary.data?.active ?? 0} مفعّل · ${summary.data?.inactive ?? 0} معطّل`,
-            },
-            {
-              key: "payable",
-              label: "لهم علينا",
-              value: `${fmt(summary.data?.payableIqd ?? 0)} د.ع`,
-              detail: `${summary.data?.nonZeroBalances ?? 0} أصحاب أرصدة`,
-              tone: "danger",
-            },
-            {
-              key: "receivable",
-              label: "لنا عليهم",
-              value: `${fmt(summary.data?.receivableIqd ?? 0)} د.ع`,
-              tone: "success",
-            },
-            {
-              key: "net",
-              label: Number(summary.data?.netIqd ?? 0) === 0 ? "الصافي متعادل" : Number(summary.data?.netIqd ?? 0) > 0 ? "صافي علينا" : "صافي لنا",
-              value: `${fmt(Math.abs(Number(summary.data?.netIqd ?? 0)))} د.ع`,
-              tone: Number(summary.data?.netIqd ?? 0) === 0 ? "neutral" : Number(summary.data?.netIqd ?? 0) > 0 ? "danger" : "success",
-            },
-            {
-              key: "usd",
-              label: "الرصيد الدولاري",
-              value: `$${fmt(summary.data?.payableUsd ?? 0)} علينا`,
-              detail: `$${fmt(summary.data?.receivableUsd ?? 0)} لنا`,
-              tone: "info",
-            },
-            {
-              key: "highest",
-              label: "أعلى التزام",
-              value: summary.data?.highestPayable ? `${fmt(summary.data.highestPayable.amount)} د.ع` : "—",
-              detail: summary.data?.highestPayable?.supplierName ?? "لا توجد أرصدة مستحقة",
-              tone: "warning",
-              onClick: summary.data?.highestPayable
-                ? () => setQ(summary.data!.highestPayable!.supplierName)
-                : undefined,
-            },
-          ]}
-          footer={
-            <p className="text-xs text-muted-foreground">
-              التوزيع: {summary.data?.regular ?? 0} مورد اعتيادي · {summary.data?.consignors ?? 0} مودع أمانة.
-            </p>
-          }
-        />
-      )}
     </div>
   );
 }

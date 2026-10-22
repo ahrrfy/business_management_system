@@ -1,5 +1,6 @@
 // معاملات المراجعة قبل الاعتماد: طلب إعادة العدّ، فصل التعارض، القرار الصريح، والتوقيع الأول.
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "../../../shared/errors";
 import { and, desc, eq, sql } from "drizzle-orm";
 import {
   stocktakeAssignments,
@@ -413,6 +414,8 @@ export async function approveStocktakeItems(
     const invalid = variantIds
       .map((id) => byId.get(id)!)
       .filter((r) => {
+        if (r.interveningStocktake != null || r.activeStocktakeOverlap != null)
+          return true;
         if (r.reviewApproved?.isCurrent) return false;
         if (
           r.rawCount == null ||
@@ -550,6 +553,22 @@ export async function firstSignStocktake(
       true,
     );
     assertNoCountInputAnomalies(await findCountInputAnomalies(tx, rows));
+    if (
+      rows.some(
+        (r) =>
+          r.interveningStocktake != null || r.activeStocktakeOverlap != null,
+      )
+    ) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذّر توقيع الجرد بسبب تداخل العدّ",
+          why: "توجد أصناف في جرد نشط آخر أو اعتُمد جرد آخر بعد عدّها",
+          doThis:
+            "أكمل أو ألغِ الجرد الآخر واطلب إعادة عدّ الأصناف التي تخللها اعتماد أحدث، ثم أعد مراجعتها",
+        }),
+      });
+    }
     assertOpeningValuationSafe(
       await buildOpeningValuationIntegrity(tx, s, rows),
     );

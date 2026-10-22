@@ -1,30 +1,7 @@
-/**
- * تخصيص سند العميل لفاتورةٍ بعينها — **المنفذ الوحيد** الذي يُحرّك `invoices.paidAmount`
- * من مسار السندات (إنشاءً واعتماداً وإلغاءً).
- *
- * ## العلّة التي يُغلقها
- *
- * `createVoucher` كان يخزّن `receipts.invoiceId` ويُرحّل القيد ويُنقص رصيد العميل — ولا يمسّ
- * الفاتورة إطلاقاً (وُصف الربط في `cancel.ts` بأنه «توثيقيّ بحت»). فينشأ تناقضٌ على **شاشةٍ
- * واحدة**: `sales.get` يُرجع كلّ إيصالات الفاتورة في «سجلّ الدفعات» — ومنها إيصال السند —
- * فيرى الموظّف قبضاً بـ١٠٠٬٠٠٠ مسجَّلاً، وفوقه «المدفوع: ٠» و«المتبقّي: الإجمالي» وشارة
- * «غير مدفوعة».
- *
- * والأخطر أنّ `sales.pay` يشتقّ المتبقّي من `paidAmount` وحده ⇒ **لا شيء يمنع تحصيل المبلغ
- * نفسه مرّتين**: الأولى بسندٍ مربوط، والثانية من زرّ الدفع على الفاتورة. رصيد العميل ينقلب
- * دائناً بالفرق (مالٌ قابلٌ للاسترداد، لكنّه قُبض مرّتين بلا حارس).
- *
- * ## القاعدة
- *
- * ربطُ السند بفاتورة **قرارُ تخصيصٍ ماليّ لا حاشية توثيقية**: الشاشة تُرشّح للمحاسب فواتير
- * العميل المستحقّة ويختار واحدة، فالنيّة صريحة. لذا يُعامَل القبض المربوط معاملة `sales.pay`
- * حرفياً — نفس الحرّاس، ونفس تحديث الحالة، ونفس الاشتقاق.
- *
- * ## لماذا يُرفَض الفائض بدل تقصيصه
- *
- * السقف يُرفَض صراحةً (لا يُخصَّص جزءٌ ويُترك الباقي رصيداً) كي يبقى **الإلغاء عكساً تامّاً**:
- * لا عمود يحفظ «كم خُصِّص فعلاً» من الإيصال، فالتقصيص يجعل عكس الإلغاء تخميناً. والمحاسب
- * الذي يقبض مبلغاً يغطّي عدّة فواتير يترك الربط فارغاً (اختياريّ) أو يقسّمه — والرسالة تقول له ذلك.
+import { activeDeliveryInvoiceIdsTx } from "../delivery/guards";
+/** Locked single-invoice allocation kernel. Generic receipts use the persisted
+ * FIFO portions in customerReceiptSettlement.ts; explicitly selected invoices
+ * retain their strict remaining-amount guard. No cash, GL or AR is posted here.
  */
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
@@ -35,6 +12,7 @@ import type { Tx } from "../../db";
 import { isDeadInvoice } from "@shared/predicates";
 import { computeInvoiceStatus } from "../ledgerService";
 import { money, toDbMoney } from "../money";
+import { mixedAwarePaymentMethod } from "../sale/payment";
 
 export interface VoucherInvoiceAllocationInput {
   invoiceId: number;
@@ -54,13 +32,15 @@ export interface VoucherInvoiceAllocationInput {
    * لا يرمي خطأً يعطل الاعتماد بل يعيد { allocated: false } لفك ربط الفاتورة وقيد المبلغ على حساب العميل.
    */
   gracefulSettledInvoice?: boolean;
+  /** Trusted inverse of an actual OUT; restores paid even on a terminal invoice. */
+  restoreReversedRefund?: boolean;
 }
 
 export interface VoucherInvoiceAllocationResult {
   paidAmount: string;
   status: string;
   allocated: boolean;
-  unallocatedReason?: "DEAD_INVOICE" | "ALREADY_SETTLED" | "EXCEEDS_REMAINING" | "EXCEEDS_PAID";
+  unallocatedReason?: "DEAD_INVOICE" | "ALREADY_SETTLED" | "EXCEEDS_REMAINING" | "EXCEEDS_PAID" | "DELIVERY_ACTIVE";
 }
 
 /**
@@ -98,6 +78,14 @@ export async function allocateVoucherToInvoiceTx(
 
   // اتجاه الأثر: القبض يزيد المدفوع، والردّ/الإلغاء ينقصه.
   const isCredit = input.direction === "IN";
+  if ((await activeDeliveryInvoiceIdsTx(tx, [inv.id])).has(inv.id)) {
+    if (isCredit && input.gracefulSettledInvoice) return { paidAmount: inv.paidAmount, status: inv.status, allocated: false, unallocatedReason: "DELIVERY_ACTIVE" };
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+      what: "تعذر تخصيص سند عام لفاتورة توصيل نشطة",
+      why: "للإرسالية عهدة تحصيل وتوريد مستقلة، حتى عند ثبوت وصول الطرد",
+      doThis: "استخدم تحصيل الإرسالية أو أكمل إلغاء إسنادها من مسار التوصيل؛ السند العام يسدد الفواتير المؤهلة فقط",
+    }) });
+  }
   const paid = money(inv.paidAmount);
   const net = money(inv.total).minus(money(inv.returnedTotal ?? "0"));
 
@@ -106,7 +94,7 @@ export async function allocateVoucherToInvoiceTx(
   // ⚠️ **الإنقاص مُستثنى دائماً**: هو ردٌّ أو عكسُ سندٍ مُلغى، ويجب أن يبقى ممكناً مهما صارت
   // حالة الفاتورة — وإلّا احتُجز مالٌ مخصَّصٌ لفاتورةٍ ماتت بلا أيّ مخرج (نقضٌ للمبدأ الحاكم:
   // كل مالٍ محتجَز يلزمه مسار خروجٍ ممكنٌ دائماً).
-  if (isCredit && isDeadInvoice(inv)) {
+  if (isCredit && isDeadInvoice(inv) && !input.restoreReversedRefund) {
     if (input.gracefulSettledInvoice) {
       return {
         paidAmount: inv.paidAmount,
@@ -121,7 +109,7 @@ export async function allocateVoucherToInvoiceTx(
     });
   }
 
-  if (isCredit) {
+  if (isCredit && !input.restoreReversedRefund) {
     const remaining = net.minus(paid);
     if (input.amount.gt(remaining)) {
       if (input.gracefulSettledInvoice) {
@@ -140,7 +128,7 @@ export async function allocateVoucherToInvoiceTx(
           `لقيده على حساب العميل، أو قسّمه على فواتيره.`,
       });
     }
-  } else {
+  } else if (!isCredit) {
     // الإنقاص لا يُنزل المدفوع تحت الصفر (دفاعٌ متعمّق ضدّ عكسٍ مزدوج).
     if (input.amount.gt(paid)) {
       if (input.gracefulSettledInvoice) {
@@ -181,10 +169,8 @@ export async function allocateVoucherToInvoiceTx(
       ...(isCredit
         ? {
             paymentDate: new Date(),
-            // COALESCE لا OVERWRITE: فاتورةٌ عربونها بطاقة ثمّ سُدّدت بسندٍ نقديّ تبقى «بطاقة»
-            // بدل أن تدهسها آخر دفعة — نفس اصطلاح مسارات تحصيل التوصيل.
             ...(input.paymentMethod
-              ? { paymentMethod: sql`COALESCE(${invoices.paymentMethod}, ${input.paymentMethod})` }
+              ? { paymentMethod: mixedAwarePaymentMethod(inv.paymentMethod, input.paymentMethod) }
               : {}),
           }
         : {}),

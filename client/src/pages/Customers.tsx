@@ -14,7 +14,6 @@ import { DataTable } from "@/components/data-table/DataTable";
 import { StackedEntityCell } from "@/components/data-table/StackedEntityCell";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useFocusHighlight } from "@/components/search/useFocusHighlight";
-import { PageHeader } from "@/components/PageHeader";
 import { OperationsSummary } from "@/components/operations/OperationsSummary";
 import { CustomerFollowUpDialog, type FollowUpValue } from "@/components/customers/CustomerFollowUpDialog";
 import { Badge } from "@/components/ui/badge";
@@ -699,11 +698,7 @@ export default function Customers() {
   ];
 
   return (
-    <div className="space-y-4">
-      <PageHeader
-        title="العملاء"
-        description="إدارة العملاء (أفراد/تجّار/شركات/حكومي): إضافة، تعديل، تعطيل، بحث، ومتابعة الرصيد المفتوح."
-      />
+    <div className="space-y-2.5">
 
       {/* الأدمن/المدير بلا فرع مُسنَد يختار الفرع صراحةً قبل تسجيل متابعة/إنشاء مهمة (نمط PR #288). */}
       {needsBranchChoice && effectiveFollowUpBranchId == null && (
@@ -750,10 +745,114 @@ export default function Customers() {
         }}
       />
 
+      {usesOperations && (
+        <OperationsSummary
+          compact
+          title="ملخص العملاء والتحصيل"
+          subtitle="جميع الصفحات وفق البحث والفلاتر الحالية. المتأخرات محسوبة من الاستحقاقات، ولا تساوي الرصيد الإجمالي بالضرورة."
+          loading={operations.isLoading}
+          metrics={[
+            {
+              key: "total",
+              label: "إجمالي العملاء",
+              value: (summary?.total ?? 0).toLocaleString("ar-IQ-u-nu-latn"),
+              detail: `${summary?.active ?? 0} مفعّل · ${summary?.inactive ?? 0} معطّل`,
+              onClick: resetOperationalFilters,
+            },
+            {
+              key: "receivable",
+              label: "لنا عليهم",
+              value: `${fmt(summary?.receivable ?? 0)} د.ع`,
+              detail: `${summary?.debtors ?? 0} عميلاً`,
+              tone: "danger",
+              active: balanceFilter === "RECEIVABLE",
+              onClick: () => { setBalanceFilter(balanceFilter === "RECEIVABLE" ? "" : "RECEIVABLE"); setPage(0); },
+            },
+            {
+              key: "credit",
+              label: "لهم علينا",
+              value: `${fmt(summary?.customerCredit ?? 0)} د.ع`,
+              detail: `${summary?.creditors ?? 0} عميلاً`,
+              tone: "success",
+              active: balanceFilter === "CREDIT",
+              onClick: () => { setBalanceFilter(balanceFilter === "CREDIT" ? "" : "CREDIT"); setPage(0); },
+            },
+            {
+              key: "net",
+              label: Number(summary?.net ?? 0) === 0 ? "الصافي متعادل" : Number(summary?.net ?? 0) > 0 ? "صافي لنا" : "صافي علينا",
+              value: `${fmt(Math.abs(Number(summary?.net ?? 0)))} د.ع`,
+              detail: `${summary?.cashOnly ?? 0} نقدي فقط · ${summary?.unlimited ?? 0} بلا حد`,
+              tone: Number(summary?.net ?? 0) === 0 ? "neutral" : Number(summary?.net ?? 0) > 0 ? "danger" : "success",
+            },
+            {
+              key: "overdue",
+              label: "متأخرات واجبة التحصيل",
+              value: `${fmt(summary?.overdueAmount ?? 0)} د.ع`,
+              detail: `${summary?.overdueCustomers ?? 0} عميلاً متأخراً`,
+              tone: "warning",
+              active: collectionFilter === "OVERDUE",
+              onClick: () => { setCollectionFilter(collectionFilter === "OVERDUE" ? "" : "OVERDUE"); setPage(0); },
+            },
+            {
+              key: "limits",
+              label: "تجاوزوا الحد الائتماني",
+              value: (summary?.overLimit ?? 0).toLocaleString("ar-IQ-u-nu-latn"),
+              detail: `${summary?.nearLimit ?? 0} بلغوا 80%`,
+              tone: "danger",
+              active: creditFilter === "OVER_LIMIT",
+              onClick: () => { setCreditFilter(creditFilter === "OVER_LIMIT" ? "" : "OVER_LIMIT"); setPage(0); },
+            },
+          ]}
+          footer={
+            <div className="space-y-3 border-t pt-3">
+              <div className="grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
+                <button type="button" className="rounded-md border p-2 text-start hover:bg-accent" onClick={() => { setCollectionFilter("PROMISE_DUE"); setPage(0); }}>
+                  <strong className="block">وعود مستحقة أو مخلفة</strong>
+                  <span className="text-muted-foreground">{summary?.promiseDue ?? 0} اليوم · {summary?.promiseBroken ?? 0} مخلفة</span>
+                </button>
+                <div className="rounded-md border p-2">
+                  <strong className="block">أعلى مديونية</strong>
+                  <span className="text-muted-foreground">
+                    {summary?.highestDebtor ? `${summary.highestDebtor.customerName} · ${fmt(summary.highestDebtor.amount)} د.ع` : "لا توجد مديونية"}
+                  </span>
+                </div>
+                <div className="rounded-md border p-2">
+                  <strong className="block">تركّز أكبر 5 عملاء</strong>
+                  <span className="text-muted-foreground">{summary?.topFiveConcentrationPct ?? 0}% من إجمالي الذمم</span>
+                </div>
+                <button type="button" className="rounded-md border p-2 text-start hover:bg-accent" onClick={() => { setInactivityDays(30); setPage(0); }}>
+                  <strong className="block">لم يشتروا منذ 30 يوماً</strong>
+                  <span className="text-muted-foreground">{summary?.noRecentPurchase30 ?? 0} عميلاً</span>
+                </button>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Link href="/reports/ar-reminders"><Button size="sm">برنامج التحصيل اليوم</Button></Link>
+                <Link href="/crm?tab=aging"><Button size="sm" variant="outline">أعمار الذمم</Button></Link>
+                <Link href="/crm?tab=followups"><Button size="sm" variant="outline">سجل المتابعات</Button></Link>
+              </div>
+              {(summary?.collectorActivity30d?.length ?? 0) > 0 && (
+                <details className="text-xs">
+                  <summary className="cursor-pointer font-medium">نشاط فريق التحصيل خلال 30 يوماً</summary>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                    {summary!.collectorActivity30d.map((person) => (
+                      <div key={person.userId} className="rounded-md border p-2">
+                        <strong>{person.userName}</strong>
+                        <p className="text-muted-foreground">{person.sent} تذكيراً · {person.promisesRecorded} وعداً مسجلاً</p>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+            </div>
+          }
+        />
+      )}
+
       <Card>
         <CardHeader>
           <ListToolbar
-            title="القائمة"
+            title="العملاء"
+            pageTitle
             count={total}
             loading={list.isLoading}
             search={{
@@ -967,108 +1066,6 @@ export default function Customers() {
         </CardContent>
       </Card>
 
-
-      {usesOperations && (
-        <OperationsSummary
-          title="ملخص العملاء والتحصيل"
-          subtitle="جميع الصفحات وفق البحث والفلاتر الحالية. المتأخرات محسوبة من الاستحقاقات، ولا تساوي الرصيد الإجمالي بالضرورة."
-          loading={operations.isLoading}
-          metrics={[
-            {
-              key: "total",
-              label: "إجمالي العملاء",
-              value: (summary?.total ?? 0).toLocaleString("ar-IQ-u-nu-latn"),
-              detail: `${summary?.active ?? 0} مفعّل · ${summary?.inactive ?? 0} معطّل`,
-              onClick: resetOperationalFilters,
-            },
-            {
-              key: "receivable",
-              label: "لنا عليهم",
-              value: `${fmt(summary?.receivable ?? 0)} د.ع`,
-              detail: `${summary?.debtors ?? 0} عميلاً`,
-              tone: "danger",
-              active: balanceFilter === "RECEIVABLE",
-              onClick: () => { setBalanceFilter(balanceFilter === "RECEIVABLE" ? "" : "RECEIVABLE"); setPage(0); },
-            },
-            {
-              key: "credit",
-              label: "لهم علينا",
-              value: `${fmt(summary?.customerCredit ?? 0)} د.ع`,
-              detail: `${summary?.creditors ?? 0} عميلاً`,
-              tone: "success",
-              active: balanceFilter === "CREDIT",
-              onClick: () => { setBalanceFilter(balanceFilter === "CREDIT" ? "" : "CREDIT"); setPage(0); },
-            },
-            {
-              key: "net",
-              label: Number(summary?.net ?? 0) === 0 ? "الصافي متعادل" : Number(summary?.net ?? 0) > 0 ? "صافي لنا" : "صافي علينا",
-              value: `${fmt(Math.abs(Number(summary?.net ?? 0)))} د.ع`,
-              detail: `${summary?.cashOnly ?? 0} نقدي فقط · ${summary?.unlimited ?? 0} بلا حد`,
-              tone: Number(summary?.net ?? 0) === 0 ? "neutral" : Number(summary?.net ?? 0) > 0 ? "danger" : "success",
-            },
-            {
-              key: "overdue",
-              label: "متأخرات واجبة التحصيل",
-              value: `${fmt(summary?.overdueAmount ?? 0)} د.ع`,
-              detail: `${summary?.overdueCustomers ?? 0} عميلاً متأخراً`,
-              tone: "warning",
-              active: collectionFilter === "OVERDUE",
-              onClick: () => { setCollectionFilter(collectionFilter === "OVERDUE" ? "" : "OVERDUE"); setPage(0); },
-            },
-            {
-              key: "limits",
-              label: "تجاوزوا الحد الائتماني",
-              value: (summary?.overLimit ?? 0).toLocaleString("ar-IQ-u-nu-latn"),
-              detail: `${summary?.nearLimit ?? 0} بلغوا 80%`,
-              tone: "danger",
-              active: creditFilter === "OVER_LIMIT",
-              onClick: () => { setCreditFilter(creditFilter === "OVER_LIMIT" ? "" : "OVER_LIMIT"); setPage(0); },
-            },
-          ]}
-          footer={
-            <div className="space-y-3 border-t pt-3">
-              <div className="grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
-                <button type="button" className="rounded-md border p-2 text-start hover:bg-accent" onClick={() => { setCollectionFilter("PROMISE_DUE"); setPage(0); }}>
-                  <strong className="block">وعود مستحقة أو مخلفة</strong>
-                  <span className="text-muted-foreground">{summary?.promiseDue ?? 0} اليوم · {summary?.promiseBroken ?? 0} مخلفة</span>
-                </button>
-                <div className="rounded-md border p-2">
-                  <strong className="block">أعلى مديونية</strong>
-                  <span className="text-muted-foreground">
-                    {summary?.highestDebtor ? `${summary.highestDebtor.customerName} · ${fmt(summary.highestDebtor.amount)} د.ع` : "لا توجد مديونية"}
-                  </span>
-                </div>
-                <div className="rounded-md border p-2">
-                  <strong className="block">تركّز أكبر 5 عملاء</strong>
-                  <span className="text-muted-foreground">{summary?.topFiveConcentrationPct ?? 0}% من إجمالي الذمم</span>
-                </div>
-                <button type="button" className="rounded-md border p-2 text-start hover:bg-accent" onClick={() => { setInactivityDays(30); setPage(0); }}>
-                  <strong className="block">لم يشتروا منذ 30 يوماً</strong>
-                  <span className="text-muted-foreground">{summary?.noRecentPurchase30 ?? 0} عميلاً</span>
-                </button>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Link href="/reports/ar-reminders"><Button size="sm">برنامج التحصيل اليوم</Button></Link>
-                <Link href="/crm?tab=aging"><Button size="sm" variant="outline">أعمار الذمم</Button></Link>
-                <Link href="/crm?tab=followups"><Button size="sm" variant="outline">سجل المتابعات</Button></Link>
-              </div>
-              {(summary?.collectorActivity30d?.length ?? 0) > 0 && (
-                <details className="text-xs">
-                  <summary className="cursor-pointer font-medium">نشاط فريق التحصيل خلال 30 يوماً</summary>
-                  <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                    {summary!.collectorActivity30d.map((person) => (
-                      <div key={person.userId} className="rounded-md border p-2">
-                        <strong>{person.userName}</strong>
-                        <p className="text-muted-foreground">{person.sent} تذكيراً · {person.promisesRecorded} وعداً مسجلاً</p>
-                      </div>
-                    ))}
-                  </div>
-                </details>
-              )}
-            </div>
-          }
-        />
-      )}
 
       <CustomerFollowUpDialog
         open={followTarget != null}

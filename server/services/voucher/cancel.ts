@@ -1,15 +1,18 @@
 // إلغاء سند قبض/صرف مستقلّ — المرآة الدقيقة لـcreateVoucher (إيصال تعويضي + قيد معاكس + عكس رصيد).
 import { TRPCError } from "@trpc/server";
+import { withdrawSupplierVoucherSettlementTx } from "./supplierSettlement";
 import { asc, eq, inArray } from "drizzle-orm";
 import {
   accountingEntries,
   purchaseOrders,
   receipts,
   shifts,
+  suppliers,
 } from "../../../drizzle/schema";
 import { money, toDbMoney } from "../money";
 import { getActiveLock } from "../periodLockService";
-import { type Actor, withTx } from "../tx";
+import { type Actor } from "../tx";
+import { withSupplierBookVoucherTx, receiptNeedsSupplierBookGateTx } from "./supplierSettlement";
 import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { assertBranchOwnership } from "./helpers";
 import {
@@ -52,7 +55,8 @@ export async function cancelVoucher(
   receiptId: number,
   actor: Actor,
 ): Promise<CancelVoucherResult> {
-  return withTx(async (tx) => {
+  // Owner auto-approval may reverse a BOOK source in this same transaction.
+  return withSupplierBookVoucherTx(tx => receiptNeedsSupplierBookGateTx(tx, receiptId), async (tx) => {
     let [preview] = await tx
       .select()
       .from(receipts)
@@ -61,6 +65,14 @@ export async function cancelVoucher(
     if (!preview) {
       throw new TRPCError({ code: "NOT_FOUND", message: "السند غير موجود" });
     }
+    // Serialize a legacy pending voucher with the native upgrade before reading its link.
+    // Withdrawal takes no PO/cash locks; upgrade follows supplier -> request -> receipt.
+    if (preview.direction === "OUT" && preview.partyType === "SUPPLIER" && preview.partyId && preview.status === "PENDING" &&
+      !hasSystemPaymentRequestEnvelope(preview.internalNote) && !isSystemPaymentReference(preview.referenceNumber)) {
+      await tx.select({ id: suppliers.id }).from(suppliers).where(eq(suppliers.id, preview.partyId)).for("update");
+    }
+    const supplierWithdrawal = await withdrawSupplierVoucherSettlementTx(tx, receiptId, actor);
+    if (supplierWithdrawal) return supplierWithdrawal;
     if (preview.voucherNumber == null) {
       // الإصدار القديم من settlePurchaseUsdDirect كتب إيصالاً بلا envelope.
       // حتى مع اكتمال قيوده لا يمكن إثبات أن caches الحالية ما زالت تحمل تخصيص

@@ -1,3 +1,4 @@
+import { loadCustomerReceiptAllocationSources } from "../customerReceiptProjection";
 import Decimal from "decimal.js";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
@@ -16,6 +17,7 @@ import type { Actor } from "../tx";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
 import { deliveryCustodyReturnIntent } from "./posting";
 import { allocateCorrectionRefunds } from "../sale/correctionReceiptSettlement";
+import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
 import {
   createPostingIntent,
   signedPostingLines,
@@ -38,7 +40,7 @@ export async function invoiceDeliveryAmendmentTx(tx: Tx, invoiceId: number) {
       amount: deliveryLedgerEntries.amount,
     })
     .from(deliveryLedgerEntries)
-    .where(eq(deliveryLedgerEntries.consignmentId, Number(cn.id)))
+    .where(and(eq(deliveryLedgerEntries.consignmentId, Number(cn.id)), effectiveDeliveryLedgerEntrySql()))
     .for("update");
   const sum = (...types: string[]) =>
     round2(
@@ -97,7 +99,8 @@ export async function invoiceDeliveryAmendmentTx(tx: Tx, invoiceId: number) {
       ),
     )
     .for("update");
-  const allocation = allocateCorrectionRefunds(materializedReceipts.filter(row => row.direction === "IN"),
+  const fundedSources = [...materializedReceipts.filter(row => row.direction === "IN"), ...await loadCustomerReceiptAllocationSources(tx, invoiceId)];
+  const allocation = allocateCorrectionRefunds(fundedSources,
     materializedReceipts.filter(row => row.direction === "OUT"), grossSettled);
   return {
     cn,

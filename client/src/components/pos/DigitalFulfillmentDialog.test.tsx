@@ -33,7 +33,7 @@ describe("نافذة تنفيذ الكروت — سبب فشل التثبيت ا
   it("يدعم POS قبض CARD لسلة رقمية بربط محاولة الدفع المؤكدة مع النية", () => {
     expect(pos).toContain('if (activeTab.method !== "CASH" && activeTab.method !== "CARD")');
     expect(pos).toContain("externalPaymentAttemptId: activeTab.externalPayment!.attemptId!");
-    expect(pos).toContain('!(cartHasDigital && activeTab.method !== "CASH" && activeTab.method !== "CARD")');
+    expect(pos).toContain('!(cartHasDigital && (isSplitPayment || (activeTab.method !== "CASH" && activeTab.method !== "CARD")))');
   });
 });
 

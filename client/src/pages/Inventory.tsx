@@ -41,6 +41,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 import { InventoryModals } from "@/components/inventory/InventoryModals";
 import { LowStockReorderBanner } from "@/components/inventory/LowStockReorderBanner";
+import { MovementSource, movementSourceText } from "@/components/inventory/MovementSource";
 
 const MTYPE: Record<string, string> = {
   IN: "وارد",
@@ -621,7 +622,7 @@ export default function Inventory() {
   ];
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         title="المخزون"
         description="الأرصدة الحالية لكل منتج مع تسوية يدوية (جرد/تلف/تصحيح) تُسجَّل كحركة تدقيق، وسجلّ آخر الحركات."
@@ -659,12 +660,12 @@ export default function Inventory() {
         }}
         toggles={
           <>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" className="size-4" checked={lowOnly} onChange={(e) => patchF({ low: e.target.checked ? "1" : "" })} />
+            <label className="flex items-center gap-2 text-xs">
+              <input type="checkbox" className="size-3.5" checked={lowOnly} onChange={(e) => patchF({ low: e.target.checked ? "1" : "" })} />
               <span className="text-muted-foreground">تحت الحد الأدنى فقط</span>
             </label>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" className="size-4" checked={negativeOnly} onChange={(e) => patchF({ neg: e.target.checked ? "1" : "" })} />
+            <label className="flex items-center gap-2 text-xs">
+              <input type="checkbox" className="size-3.5" checked={negativeOnly} onChange={(e) => patchF({ neg: e.target.checked ? "1" : "" })} />
               <span className="text-muted-foreground">السوالب فقط (بانتظار الجرد الافتتاحي)</span>
             </label>
           </>
@@ -684,7 +685,7 @@ export default function Inventory() {
           </FilterField>
         )}
         <FilterField label="بحث (اسم/SKU/متغيّر/باركود)" wide>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
             <SearchField
               className="min-w-0 flex-1"
               value={f.q}
@@ -700,7 +701,7 @@ export default function Inventory() {
               type="button"
               variant="outline"
               size="icon"
-              className="size-10 shrink-0"
+              className="size-8 shrink-0"
               onClick={() => setCameraOpen(true)}
               aria-label="مسح باركود المخزون بالكاميرا"
               title="مسح بالكاميرا"
@@ -768,12 +769,12 @@ export default function Inventory() {
 
       {scannedSearchActive && !scannedLookupLoading && !scannedRow && (
         <div ref={scanIdentityRef}>
-          <Card className="border-destructive/40 bg-destructive/[0.04] py-4" role="alert">
-            <CardContent className="flex items-start gap-3">
-              <XCircle aria-hidden className="mt-0.5 size-5 shrink-0 text-destructive" />
+          <Card className="border-destructive/40 bg-destructive/[0.04] py-2.5" role="alert">
+            <CardContent className="flex items-start gap-2.5">
+              <XCircle aria-hidden className="mt-0.5 size-4 shrink-0 text-destructive" />
               <div>
-                <p className="font-bold text-destructive">الباركود غير مرتبط بأي مادة</p>
-                <p className="mt-1 text-sm text-muted-foreground" dir="auto">
+                <p className="font-bold text-sm text-destructive">الباركود غير مرتبط بأي مادة</p>
+                <p className="mt-0.5 text-xs text-muted-foreground" dir="auto">
                   لم يُعثر على باركود أساسي أو بديل مطابق: {lastScannedBarcode}
                 </p>
               </div>
@@ -1091,7 +1092,9 @@ export default function Inventory() {
               {
                 id: "ref",
                 header: "المرجع",
-                cell: ({ row }) => (
+                accessorFn: (r) => r.stocktakeSource ? movementSourceText(r.stocktakeSource) : `${r.referenceType ?? "—"}${r.referenceId ? ` #${r.referenceId}` : ""}`,
+                meta: { wrap: true },
+                cell: ({ row }) => row.original.stocktakeSource ? <MovementSource source={row.original.stocktakeSource} /> : (
                   <span className="text-muted-foreground text-xs">
                     {row.original.referenceType ?? "—"}{row.original.referenceId ? ` #${row.original.referenceId}` : ""}
                   </span>

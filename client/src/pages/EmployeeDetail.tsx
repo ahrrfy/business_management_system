@@ -84,7 +84,7 @@ export default function EmployeeDetail() {
   const isTerminated = e.employmentStatus === "terminated";
 
   return (
-    <div className="space-y-4 max-w-5xl">
+    <div className="space-y-3 max-w-5xl">
       <PageHeader
         title="بطاقة الموظف"
         backHref="/hr/employees"
@@ -93,12 +93,12 @@ export default function EmployeeDetail() {
 
       {/* ترويسة الموظف */}
       <Card>
-        <CardContent className="p-4 flex items-start justify-between flex-wrap gap-3">
-          <div className="flex items-start gap-3">
-            <EmpAvatar name={e.fullName} color={e.colorTag} photoUrl={e.photoUrl} sizePx={56} />
+        <CardContent className="p-3 flex items-center justify-between flex-wrap gap-2.5">
+          <div className="flex items-center gap-2.5">
+            <EmpAvatar name={e.fullName} color={e.colorTag} photoUrl={e.photoUrl} sizePx={44} />
             <div>
-              <div className="text-lg font-bold leading-tight">{e.fullName}</div>
-              <div className="flex items-center gap-2 mt-1 text-sm text-muted-foreground flex-wrap">
+              <div className="text-base font-bold leading-tight">{e.fullName}</div>
+              <div className="flex items-center gap-1.5 mt-0.5 text-xs text-muted-foreground flex-wrap">
                 {e.position && <span>{e.position}</span>}
                 {e.department && <><span>·</span><span>{e.department}</span></>}
                 {e.branchName && <><span>·</span><span>{e.branchName}</span></>}
@@ -107,22 +107,8 @@ export default function EmployeeDetail() {
               </div>
             </div>
           </div>
-          <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-1.5 flex-wrap">
             {can("employees.update") && <Link href={`/hr/employees/${id}/edit`}><Button variant="outline" size="sm">تعديل</Button></Link>}
-            {/*
-             * مبدّل الحالة **زوجٌ كامل** — لكل حالةٍ طريقُ رجوع. كان «إعادة للعمل» مشروطاً
-             * بـ`isTerminated` وحده، فالموظف الموضوع على «في إجازة» يعلق فيها بلا أيّ مخرجٍ
-             * في الويب: خيارُه الوحيد المعروض كان «إنهاء الخدمة». وتطبيق أندرويد يملك
-             * الزرَّين معاً (`HrAdminScreen.kt`) ⇒ يُوضَع بإجازةٍ من هناك ولا يُعاد من هنا.
-             *
-             * والعلوقُ ليس تجميلياً: `employmentStatus='active'` شرطٌ في منتقي التسجيل
-             * اليدوي للحضور (`attendanceService`) وفي تسجيل العهدة (`assets/lifecycle`)
-             * وفي قائمة المدراء المرشّحين (`employeeService`) ⇒ الموظف يختفي من هذه
-             * المسارات كلّها وهو على رأس عمله.
-             *
-             * ⛔ «إنهاء الخدمة» خارج هذا المبدّل عمداً — الراوتر يرفض الحالة
-             * `terminated` صراحةً ويحيل إلى مسار التسوية الرسميّ (فصلُ مهامٍ واعتمادٌ ثانٍ).
-             */}
             {e.employmentStatus === "active" ? (
               <Button
                 variant="outline"
@@ -157,15 +143,6 @@ export default function EmployeeDetail() {
               >إعادة للعمل</Button>
             )}
             {!isTerminated && can("promotions.createTermination") && (
-              // إنهاء الخدمة لا يُنفَّذ من بطاقة الموظف: `employees.setStatus` يرفض
-              // `terminated` صراحةً، والمسار الرسميّ وحده يحمل Maker-Checker وتسوية
-              // المستحقات النهائية. الزرّ يُحيل إليه بدل نافذةٍ تفشل عند كل ضغطة.
-              //
-              // والرابط يحمل **النيّة والموظف** لا التبويب وحده (Codex P2، ٣١/٨): `tab`
-              // للـhub، و`sub` لتبويب الإنهاءات داخل الشاشة، و`employee` لانتقائه سلفاً.
-              // بدونها يهبط المستعمل على تبويب الترقيات — وزرّ «إنهاء خدمة» لا يُرسَم أصلاً
-              // إلا على تبويب الإنهاءات — فيلزمه نقرتان وإعادةُ اختيارٍ من مئتَي اسم:
-              // بابُ إنهاءِ خدمةٍ للموظف الخطأ، وهو فعلٌ ماليّ لا رجعة فيه.
               <Link href={`/hr?tab=promotions&sub=terminations&employee=${id}`}>
                 <Button variant="outline" size="sm" className="text-destructive" title="يُنفَّذ من مسار إنهاء الخدمة الرسميّ — بتسوية مستحقات واعتماد ثانٍ">إنهاء الخدمة</Button>
               </Link>
@@ -187,10 +164,10 @@ export default function EmployeeDetail() {
           <TabsTrigger value="operations">العمليات والسلف</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="overview">
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <TabsContent value="overview" className="space-y-3">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
             <Card className="lg:col-span-2">
-              <CardContent className="p-4 grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
+              <CardContent className="p-3.5 grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
                 <Field label="القسم" value={e.department} />
                 <Field label="المسمى الوظيفي" value={e.position} />
                 <Field label="الفرع" value={e.branchName} />
@@ -207,12 +184,55 @@ export default function EmployeeDetail() {
               </CardContent>
             </Card>
             <Card>
-              <CardHeader><CardTitle className="text-base">بطاقة الموظف</CardTitle></CardHeader>
+              <CardHeader className="py-2.5"><CardTitle className="text-sm">بطاقة الموظف</CardTitle></CardHeader>
               <CardContent className="flex flex-col items-center gap-2 py-2">
                 <BarcodeDisplay barcodeSet={{ barcode128: `EMP-${e.id}`, qrPayload: `EMP-${e.id}`, displayLabel: `${e.fullName}\nEMP-${e.id}` }} size="md" showCode128={false} />
               </CardContent>
             </Card>
           </div>
+
+          {/* كشف الحضور اليوميّ — من ساعة إلى ساعة، سعر الساعة وأجر اليوم (قرار المالك ٣١/٧) */}
+          <EmployeeStatementCard employeeId={id} phone={e.phone} />
+
+          {/* ربط جهاز الحضور — يُدار من بطاقة الموظف لا من شاشة الأجهزة وحدها */}
+          <DeviceLinkCard employeeId={id} employeeName={e.fullName} hireDate={e.hireDate} links={e.deviceLinks ?? []} isTerminated={isTerminated} onChanged={refresh} />
+
+          {/* الوصول لحساب المستخدم المرتبط + الحذف النهائي */}
+          <Card className="border-destructive/40">
+            <CardHeader className="py-2.5"><CardTitle className="text-sm text-destructive">أدوات الموظف — الحذف النهائي</CardTitle></CardHeader>
+            <CardContent className="space-y-2.5 p-3.5 pt-0">
+              {e.userId ? (
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="text-muted-foreground">حساب المستخدم المرتبط:</span>
+                  {isAdmin ? (
+                    <Link href={`/users/${e.userId}/edit`} className="text-primary underline">فتح حساب المستخدم #{e.userId}</Link>
+                  ) : (
+                    <span className="font-mono" dir="ltr">USER-{e.userId} <span className="text-xs text-muted-foreground">(إدارته للإدارة فقط)</span></span>
+                  )}
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">لا حساب مستخدم (دخول للنظام) مرتبط بهذا الموظف.</p>
+              )}
+              <p className="text-xs text-muted-foreground">
+                يُحذف الموظف نهائياً من القاعدة ولا يمكن التراجع. متاح فقط للموظف «النظيف» (بلا حضور/عُهد/رواتب/إجازات/ترقيات).
+                البديل الآمن القابل للتراجع: «إنهاء الخدمة» أعلاه.
+              </p>
+              <UsagePanel usage={usage.data} />
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-destructive border-destructive/50 hover:bg-destructive/10"
+                disabled={!can("employees.delete") || (usage.isLoading || !usage.data?.clean || del.isPending)}
+                onClick={() => void (async () => {
+                  if (!usage.data?.clean) return;
+                  if (!(await confirm({ variant: "danger", title: "حذف الموظف نهائياً", description: `سيُحذف «${e.fullName}» نهائياً من القاعدة ولا يمكن التراجع. (متاح لأنّه نظيف بلا نشاط.) هل تتابع؟`, confirmText: "حذف نهائياً" }))) return;
+                  del.mutate({ id });
+                })()}
+              >
+                {del.isPending ? ACTION_LABELS.deleting : "حذف نهائياً"}
+              </Button>
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="personal">
@@ -300,48 +320,6 @@ export default function EmployeeDetail() {
           />
         </TabsContent>
       </Tabs>
-
-      {/* كشف الحضور اليوميّ — من ساعة إلى ساعة، سعر الساعة وأجر اليوم (قرار المالك ٣١/٧) */}
-      <EmployeeStatementCard employeeId={id} phone={e.phone} />
-
-      {/* ربط جهاز الحضور — يُدار من بطاقة الموظف لا من شاشة الأجهزة وحدها */}
-      <DeviceLinkCard employeeId={id} employeeName={e.fullName} hireDate={e.hireDate} links={e.deviceLinks ?? []} isTerminated={isTerminated} onChanged={refresh} />
-
-      {/* الوصول لحساب المستخدم المرتبط + الحذف النهائي */}
-      <Card className="border-destructive/40">
-        <CardHeader><CardTitle className="text-base text-destructive">أدوات الموظف — الحذف النهائي</CardTitle></CardHeader>
-        <CardContent className="space-y-3">
-          {e.userId ? (
-            <div className="flex items-center gap-2 text-sm">
-              <span className="text-muted-foreground">حساب المستخدم المرتبط:</span>
-              {isAdmin ? (
-                <Link href={`/users/${e.userId}/edit`} className="text-primary underline">فتح حساب المستخدم #{e.userId}</Link>
-              ) : (
-                <span className="font-mono" dir="ltr">USER-{e.userId} <span className="text-xs text-muted-foreground">(إدارته للإدارة فقط)</span></span>
-              )}
-            </div>
-          ) : (
-            <p className="text-xs text-muted-foreground">لا حساب مستخدم (دخول للنظام) مرتبط بهذا الموظف.</p>
-          )}
-          <p className="text-xs text-muted-foreground">
-            يُحذف الموظف نهائياً من القاعدة ولا يمكن التراجع. متاح فقط للموظف «النظيف» (بلا حضور/عُهد/رواتب/إجازات/ترقيات).
-            البديل الآمن القابل للتراجع: «إنهاء الخدمة» أعلاه.
-          </p>
-          <UsagePanel usage={usage.data} />
-          <Button
-            variant="outline"
-            className="text-destructive border-destructive/50 hover:bg-destructive/10"
-            disabled={!can("employees.delete") || (usage.isLoading || !usage.data?.clean || del.isPending)}
-            onClick={() => void (async () => {
-              if (!usage.data?.clean) return;
-              if (!(await confirm({ variant: "danger", title: "حذف الموظف نهائياً", description: `سيُحذف «${e.fullName}» نهائياً من القاعدة ولا يمكن التراجع. (متاح لأنّه نظيف بلا نشاط.) هل تتابع؟`, confirmText: "حذف نهائياً" }))) return;
-              del.mutate({ id });
-            })()}
-          >
-            {del.isPending ? ACTION_LABELS.deleting : "حذف نهائياً"}
-          </Button>
-        </CardContent>
-      </Card>
     </div>
   );
 }

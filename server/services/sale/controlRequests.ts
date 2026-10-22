@@ -32,7 +32,7 @@ import { money, round2 } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
 import type { ReturnSaleInput } from "../returnService";
 import { returnSaleInTx } from "../returnService";
-import { requireDb, type Actor, withTx } from "../tx";
+import { requireDb, type Actor, withTx, withGovernanceTx } from "../tx";
 import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import { cancelSaleInTx, type CancelSaleInput } from "./cancel";
 import {
@@ -322,7 +322,7 @@ export async function replaySalesControlRequest(
         }),
       });
     }
-    const [refund] = await tx
+    const refunds = await tx
       .select({
         amount: receipts.amount,
         approvalStatus: receipts.approvalStatus,
@@ -335,23 +335,26 @@ export async function replaySalesControlRequest(
         eq(receipts.direction, "OUT"),
         eq(receipts.description, `استرداد إلغاء فاتورة ${invoice.invoiceNumber}`),
       ))
-      .orderBy(desc(receipts.id))
-      .limit(1);
+      .orderBy(desc(receipts.id));
+    const completedSum = round2(
+      refunds
+        .filter((r) => r.status === "COMPLETED" && r.approvalStatus === "APPROVED")
+        .reduce((acc, r) => acc.plus(money(r.amount)), money(0)),
+    );
+    const pendingSum = round2(
+      refunds
+        .filter((r) => r.status === "PENDING" && r.approvalStatus === "PENDING_APPROVAL")
+        .reduce((acc, r) => acc.plus(money(r.amount)), money(0)),
+    );
     return {
       ...replay,
       replayed: true as const,
       cancellation: {
         invoiceId: Number(invoice.id),
         invoiceNumber: invoice.invoiceNumber,
-        refundAmount:
-          refund?.status === "COMPLETED" && refund.approvalStatus === "APPROVED"
-            ? money(refund.amount).toFixed(2)
-            : "0.00",
-        refundVoucherNumber: refund?.voucherNumber ?? null,
-        pendingRefundAmount:
-          refund?.status === "PENDING" && refund.approvalStatus === "PENDING_APPROVAL"
-            ? money(refund.amount).toFixed(2)
-            : "0.00",
+        refundAmount: completedSum.toFixed(2),
+        refundVoucherNumber: refunds[0]?.voucherNumber ?? null,
+        pendingRefundAmount: pendingSum.toFixed(2),
       },
     };
   }, { gate: "NONE" });
@@ -429,7 +432,7 @@ export async function requestSalesControl(
   const reason = normalizeReason(input.reason);
   const payloadHash = idempotencyHash(input.payload);
   let requestReview = input.requestReview === true;
-  const writeRequest = () => withTx(async (tx) => {
+  const writeRequest = () => withGovernanceTx(async (tx) => {
     const replay = await loadByKey(tx, requestKey);
     if (replay) {
       assertBranch(Number(replay.branchId), actor);
@@ -698,7 +701,22 @@ export async function requestSalesControl(
     const executed = requestReview ? null : await executeCorrectionAsActiveOwner(Number(result.id), actor, reason);
     if (executed) return { ...result, status: "APPROVED" as const, resultInvoiceId: executed.resultInvoiceId, ownerExecuted: true as const };
   }
-  const approved = !needsCorrectionReview && await autoDecideForActiveOwner(actor, {
+  const cancelPayload = input.requestType === "SALES_CANCEL"
+    ? (input.payload as SalesCancelControlPayload)
+    : null;
+  const returnPayload = input.requestType === "SALES_RETURN"
+    ? (input.payload as SalesReturnControlPayload)
+    : null;
+  const returnMoney = returnPayload?.resolution ?? returnPayload?.refund;
+  const needsCardReferenceAtApproval = Boolean(
+    (cancelPayload &&
+      !cancelPayload.reference?.trim() &&
+      (cancelPayload.refundPaymentMethod === "CARD" ||
+        cancelPayload.refundPaymentMethod === "MIXED" ||
+        cancelPayload.refunds?.some((r) => r.method === "CARD" && !r.reference?.trim()))) ||
+      (returnMoney?.method === "CARD" && !returnMoney.reference?.trim()),
+  );
+  const approved = !needsCorrectionReview && !needsCardReferenceAtApproval && await autoDecideForActiveOwner(actor, {
     kind: "sales.control.approve",
     id: Number(result.id),
     reason,
@@ -930,12 +948,27 @@ function applyCancelCashRouting(
   // = مسحه المُعتمِد عمداً (لا يطابق قسيمة الجهاز) — يُفرَض غيابه فعلياً فيرفضه cancelSaleInTx
   // حتماً لـCARD، لا رجوعٌ صامتٌ لِما أرسله الطالب (مراجعة Codex P1 على PR #997).
   if (!routing) return payload;
-  const routesCash = payload.refundPaymentMethod === "CASH" && (
+  const hasCashRail =
+    payload.refundPaymentMethod === "CASH" ||
+    payload.refundPaymentMethod === "MIXED" ||
+    Boolean(payload.refunds?.some((r) => r.method === "CASH"));
+  const routesCash = hasCashRail && (
     routing.cashBucket != null || routing.shiftId != null || routing.clearShift === true
   );
   return {
     ...payload,
-    ...(routing.reference !== undefined ? { reference: routing.reference } : {}),
+    ...(routing.reference !== undefined
+      ? {
+          reference: routing.reference,
+          ...(payload.refunds
+            ? {
+                refunds: payload.refunds.map((leg) =>
+                  leg.method === "CARD" ? { ...leg, reference: routing.reference } : leg,
+                ),
+              }
+            : {}),
+        }
+      : {}),
     ...(routesCash ? {
       refundCashBucket: routing.cashBucket ?? (routing.shiftId != null ? "DRAWER" : null),
       refundShiftId: routing.clearShift || routing.cashBucket === "TREASURY"
@@ -1178,7 +1211,7 @@ export async function approveSalesControlRequest(
     actor,
     cashRouting,
   );
-  const executeApproval = () => withTx(async (tx) => {
+  const executeApproval = () => withGovernanceTx(async (tx) => {
     await assertOperationAuthorityTx(tx, actor, "salesControl.approve", actor.role === "admin" || actor.role === "manager", actor.operationAuthority);
     const request = (
       await tx.select().from(salesControlRequests)

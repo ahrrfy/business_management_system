@@ -46,10 +46,10 @@ export default function PrintPricingSettings() {
   const invalidate = () => utils.printPricing.settings.invalidate();
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         title="إعدادات تسعير الطباعة"
-        icon={<SlidersHorizontal aria-hidden className="size-6 text-primary" />}
+        icon={<SlidersHorizontal aria-hidden className="size-4 text-primary" />}
         description="اضبط أسعار الوجه والوسائط والتشطيب — الحاسبة تستعملها مباشرةً. المطبعة ديجيتال: سعر الوجه يشمل الورق."
         actions={
           <Link href="/work-orders?tab=print-pricing">
@@ -59,9 +59,9 @@ export default function PrintPricingSettings() {
       />
 
       {bundle.isLoading ? (
-        <Card><CardContent className="p-6 text-center text-muted-foreground">{ACTION_LABELS.loading}</CardContent></Card>
+        <Card><CardContent className="p-4 text-center text-muted-foreground">{ACTION_LABELS.loading}</CardContent></Card>
       ) : bundle.isError ? (
-        <Card><CardContent className="p-6 text-center text-[var(--sem-warn)]">{bundle.error?.message}</CardContent></Card>
+        <Card><CardContent className="p-4 text-center text-[var(--sem-warn)]">{bundle.error?.message}</CardContent></Card>
       ) : (
         <>
           <GeneralSettings settings={bundle.data!.settings} onSaved={invalidate} />
@@ -99,12 +99,12 @@ function GeneralSettings({
   if (!form) return null;
   return (
     <Card>
-      <CardHeader className="pb-3"><CardTitle className="text-base">الإعدادات العامّة</CardTitle></CardHeader>
-      <CardContent className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <CardHeader className="pb-2"><CardTitle className="text-sm font-bold">الإعدادات العامّة</CardTitle></CardHeader>
+      <CardContent className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
         <div className="space-y-1">
           <Label>وضع التسعير</Label>
           <AppSelect
-            className="h-9"
+            className="h-8"
             value={form.pricingMode}
             onValueChange={(next) => setForm({ ...form, pricingMode: next as PricingMode })}
           >
@@ -132,6 +132,7 @@ function GeneralSettings({
         </div>
         <div className="sm:col-span-3">
           <Button
+            size="sm"
             onClick={() => save.mutate({ pricingMode: form.pricingMode, defaultMarginPercent: form.defaultMarginPercent || "0", setupFee: form.setupFee || "0" })}
             disabled={save.isPending}
             className="bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos)]/90"
@@ -222,20 +223,20 @@ function FacePricesSection({
 
   return (
     <Card>
-      <CardHeader className="pb-3">
-        <CardTitle className="text-base">أسعار الوجه المطبوع (الورق مشمول)</CardTitle>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-bold">أسعار الوجه المطبوع (الورق مشمول)</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="space-y-2.5">
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
-          <AppSelect className="h-9" value={mode} onValueChange={(next) => setMode(next as ColorMode)} aria-label="النمط">
+          <AppSelect className="h-8" value={mode} onValueChange={(next) => setMode(next as ColorMode)} aria-label="النمط">
             {COLOR_MODES.map((m) => <option key={m} value={m}>{COLOR_MODE_AR[m]}</option>)}
           </AppSelect>
-          <AppSelect className="h-9" value={size} onValueChange={(next) => setSize(next as PaperSizeCode)} aria-label="المقاس">
+          <AppSelect className="h-8" value={size} onValueChange={(next) => setSize(next as PaperSizeCode)} aria-label="المقاس">
             {PAPER_SIZES.map((s) => <option key={s.code} value={s.code}>{s.label}</option>)}
           </AppSelect>
           <MoneyInput value={price} onChange={setPrice} ariaLabel="سعر الوجه" placeholder="سعر الوجه" />
-          <Button onClick={submit} disabled={upsert.isPending} className="bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos)]/90">
-            <Plus aria-hidden className="size-4 ms-1" /> حفظ السعر
+          <Button size="sm" onClick={submit} disabled={upsert.isPending} className="bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos)]/90">
+            <Plus aria-hidden className="size-3.5 ms-1" /> حفظ السعر
           </Button>
         </div>
 

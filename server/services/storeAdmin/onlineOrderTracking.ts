@@ -1,3 +1,4 @@
+import { effectiveDeliveryLedgerEntrySql } from "../delivery/legacyLedger";
 import { eq, inArray, sql } from "drizzle-orm";
 import {
   auditLogs,
@@ -63,6 +64,7 @@ export async function loadOnlineOrderLifecycles(
       customerCollectedAmount: sql<string>`COALESCE((SELECT SUM(CASE WHEN dl.entryType = 'COD_COLLECTED' THEN dl.amount
       WHEN dl.entryType = 'COD_RETURNED' THEN -dl.amount ELSE 0 END) FROM deliveryLedgerEntries dl
       WHERE dl.consignmentId = ${deliveryConsignments.id} AND dl.partyId = ${deliveryConsignments.partyId}
+      AND ${effectiveDeliveryLedgerEntrySql("dl")}
       AND dl.occurredAt >= ${deliveryConsignments.dispatchedAt}), 0)`,
       customerCounterCollectedAmount: sql<string>`COALESCE((SELECT SUM(CAST(JSON_UNQUOTE(JSON_EXTRACT(ce.payload, '$.amount')) AS DECIMAL(15,2)))
       FROM deliveryEvents ce WHERE ce.consignmentId = ${deliveryConsignments.id} AND ce.eventType = 'COUNTER_SETTLED'

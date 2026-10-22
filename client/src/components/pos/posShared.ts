@@ -25,6 +25,14 @@ export type ExternalPaymentDraft = {
   deviceId?: string;
 };
 
+export type PosPaymentLegDraft = {
+  id: string;
+  method: PaymentMethod;
+  amount: string;
+  paymentRef: string;
+  externalPayment: ExternalPaymentDraft | null;
+};
+
 /** وسم سطر بطاقة رقمية (ش٥). كل مثيل مستقلّ حتى لو تكرّرت الفئة نفسها في السلة. */
 export type DigitalLineMeta = {
   offeringId: number;
@@ -77,6 +85,8 @@ export type POSTab = {
   /** مرجع عملية الدفع غير النقدي؛ يُثبّت أولاً في محاولة خادمية مستقلة. */
   paymentRef: string;
   externalPayment: ExternalPaymentDraft | null;
+  /** دفعات متعدّدة (دفع مختلط: نقدي + بطاقة/تحويل/محفظة). فارغة أو غائبة = وضع الدفعة الواحدة الافتراضي. */
+  paymentLegs?: PosPaymentLegDraft[];
   /** تاريخ استحقاق البيع الآجل (YYYY-MM-DD، اختياري) — يصحّح أعمار الذمم والتذكيرات. */
   dueDate: string;
   /** خصم على رأس الفاتورة كنسبة مئوية (٠–١٥) أو كمبلغ ديناري. */
@@ -120,8 +130,10 @@ export type Receipt = {
   change: number;
   credit: number;
   method: string;
-  /** كود الطريقة الخام (CASH/CARD/TRANSFER/WALLET) — للشارة الملوّنة والحفظ الأوفلاين. */
+  /** كود الطريقة الخام (CASH/CARD/TRANSFER/WALLET/MIXED) — للشارة الملوّنة والحفظ الأوفلاين. */
   methodCode?: string;
+  /** تفصيل دفعات الفاتورة عند الدفع المختلط (MIXED) */
+  paymentLegs?: ReceiptBrowserData["paymentLegs"];
   isCredit: boolean;
   /** ش١٠: لقطات الكروت الرقمية من الخادم (اسم الكرت/المرجع/بيانات الطالب) — بلا أرقام داخلية. */
   digitalDetails?: DigitalReceiptDetail[] | null;
@@ -240,6 +252,7 @@ export const createTab = (id: number, label?: string): POSTab => ({
   couponLabel: null,
   paymentRef: "",
   externalPayment: null,
+  paymentLegs: [],
   dueDate: "",
   invoiceDiscountPct: "",
   invoiceDiscountType: "percent",
@@ -398,6 +411,7 @@ export function buildBrandedReceipt(r: Receipt): ReceiptBrowserData {
     change: r.isCredit || r.change <= 0 ? null : r.change,
     credit: r.isCredit ? r.credit : null,
     paymentMethod: r.method,
+    paymentLegs: r.paymentLegs ?? null,
     // ش١٠: تفاصيل الكروت تأتي من الخادم بعد التثبيت (§١٢.٣) — لا من حالة React قبل الحفظ.
     digitalDetails: r.digitalDetails ?? null,
     // م١ PR-B: كتلة التوصيل تُطبع بالراسم القائم نفسه (٨/٨) — الأجرة تمريرٌ لا إيراد.

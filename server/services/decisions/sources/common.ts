@@ -58,6 +58,7 @@ export interface VariantLabel {
   productName: string;
   variantName: string | null;
   color?: string | null;
+  colorHex?: string | null;
   size?: string | null;
   variantKind?: string | null;
   sku: string | null;
@@ -73,6 +74,7 @@ export async function variantLabels(db: Db, variantIds: number[]): Promise<Map<n
       productName: products.name,
       variantName: productVariants.variantName,
       color: productVariants.color,
+      colorHex: productVariants.colorHex,
       size: productVariants.size,
       variantKind: productVariants.variantKind,
       sku: productVariants.sku,
@@ -105,6 +107,7 @@ export async function variantLabels(db: Db, variantIds: number[]): Promise<Map<n
           productName: pName,
           variantName: desc || r.variantName || null,
           color: r.color ?? null,
+          colorHex: r.colorHex ?? null,
           size: r.size ?? null,
           variantKind: r.variantKind ?? null,
           sku: r.sku ?? null,

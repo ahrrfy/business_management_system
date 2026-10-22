@@ -714,7 +714,7 @@ export default function SalesControlApprovals() {
         {pending.data?.map((request) => {
           const isPendingCorrection = request.status === "PENDING"
             && (request.requestType === "SALES_REISSUE" || request.requestType === "SALES_EXCHANGE");
-          const reviewerConflict = isReviewerConflict(me.data?.id, request);
+          const reviewerConflict = !me.data?.isOwner && isReviewerConflict(me.data?.id, request);
           const correctionPayload = request.payload as CorrectionComparisonPayload;
           const correctionNeedsCashRouting = isPendingCorrection && (
             correctionPayload.additionalPayment?.method === "CASH"
@@ -731,8 +731,19 @@ export default function SalesControlApprovals() {
           const returnNeedsCashRouting = request.requestType === "SALES_RETURN"
             && returnMoney?.method === "CASH"
             && D(returnMoney.amount ?? "0").gt(0);
+          const cancelPayload = request.payload as {
+            refundPaymentMethod?: string;
+            reference?: string;
+            refunds?: Array<{ method?: string; reference?: string }>;
+          } | null;
           const cancelNeedsCashRouting = request.requestType === "SALES_CANCEL"
-            && (request.payload as { refundPaymentMethod?: string } | null)?.refundPaymentMethod === "CASH";
+            && (cancelPayload?.refundPaymentMethod === "CASH"
+              || cancelPayload?.refundPaymentMethod === "MIXED"
+              || Boolean(cancelPayload?.refunds?.some((r) => r.method === "CASH")));
+          const cancelNeedsCardReference = request.requestType === "SALES_CANCEL"
+            && (cancelPayload?.refundPaymentMethod === "CARD"
+              || cancelPayload?.refundPaymentMethod === "MIXED"
+              || Boolean(cancelPayload?.refunds?.some((r) => r.method === "CARD")));
           const useTreasuryForThisRequest = routingFor === Number(request.id) && routingUseTreasury;
           return (
           <Card key={request.id} className={isPendingCorrection ? "xl:col-span-2" : undefined}>
@@ -900,9 +911,7 @@ export default function SalesControlApprovals() {
                   </p>
                 </div>
               )}
-              {canReview && request.requestType === "SALES_CANCEL"
-                && (request.payload as { refundPaymentMethod?: string } | null)?.refundPaymentMethod === "CARD"
-                && !reviewerConflict && (
+              {canReview && cancelNeedsCardReference && !reviewerConflict && (
                 <div className="space-y-1 rounded-md border border-dashed p-3">
                   <Label htmlFor={`cancel-ref-${request.id}`} className="inline-flex items-center gap-1.5 text-xs">
                     <CardBrandLogos size="xs" />
@@ -915,7 +924,7 @@ export default function SalesControlApprovals() {
                     placeholder="رقم العملية / كود الموافقة"
                     value={routingFor === Number(request.id)
                       ? routingReference
-                      : String((request.payload as { reference?: string } | null)?.reference ?? "")}
+                      : String(cancelPayload?.reference ?? cancelPayload?.refunds?.find((r) => r.method === "CARD")?.reference ?? "")}
                     onChange={(event) => {
                       beginRouting(Number(request.id));
                       setRoutingReference(event.target.value);

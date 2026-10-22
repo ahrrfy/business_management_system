@@ -25,11 +25,20 @@ import {
 } from "../posExternalPayment";
 import { assertNoInTransitConsignment } from "../delivery/guards";
 
-export interface ProcessPaymentInput {
-  invoiceId: number;
+export interface PaymentSettlementLegInput {
   amount: string;
   method: PaymentMethod;
   reference?: string | null;
+  externalPaymentAttemptId?: number | null;
+  externalPaymentDeviceId?: string | null;
+}
+
+export interface ProcessPaymentInput {
+  invoiceId: number;
+  amount?: string;
+  method?: PaymentMethod;
+  reference?: string | null;
+  payments?: PaymentSettlementLegInput[];
   shiftId?: number | null;
   /** إن حُدِّد، يُرفض الدفع على فاتورة فرعٍ مغاير (عزل الفروع لغير المدير). */
   enforceBranchId?: number | null;
@@ -49,102 +58,197 @@ export interface ProcessPaymentInput {
 
 /** Record a later payment against a credit invoice; updates status + AR. */
 export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
-  // يسبق idempotency وقراءة الفاتورة؛ المرجع اليدوي ليس تسوية بنكية أو مزوّداً موثوقاً.
-  assertPosPaymentMethodEnabled(input.method);
-  if (input.method === "CASH") {
-    if (
-      input.externalPaymentAttemptId != null ||
-      input.externalPaymentDeviceId?.trim()
+  const legs: PaymentSettlementLegInput[] =
+    input.payments && input.payments.length > 0
+      ? input.payments.map((leg) => ({
+          amount: leg.amount,
+          method: leg.method,
+          reference: leg.reference ?? null,
+          externalPaymentAttemptId: leg.externalPaymentAttemptId ?? null,
+          externalPaymentDeviceId:
+            leg.externalPaymentDeviceId ?? input.externalPaymentDeviceId ?? null,
+        }))
+      : [
+          {
+            amount: input.amount ?? "0",
+            method: (input.method ?? "CASH") as PaymentMethod,
+            reference: input.reference ?? null,
+            externalPaymentAttemptId: input.externalPaymentAttemptId ?? null,
+            externalPaymentDeviceId: input.externalPaymentDeviceId ?? null,
+          },
+        ];
+
+  const seenAttemptIds = new Set<number>();
+  for (const leg of legs) {
+    // يسبق idempotency وقراءة الفاتورة؛ المرجع اليدوي ليس تسوية بنكية أو مزوّداً موثوقاً.
+    assertPosPaymentMethodEnabled(leg.method);
+    if (leg.method === "CASH") {
+      if (
+        leg.externalPaymentAttemptId != null ||
+        leg.externalPaymentDeviceId?.trim()
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل الدفعة النقدية",
+            why: "الطلب يحمل محاولة دفعٍ خارجية (بطاقة/تحويل)، والنقد يدخل الدرج مباشرةً بلا جهاز",
+            doThis: "إن قبضتَ نقداً فأعِد المحاولة بلا ربط جهاز؛ وإن قبضتَ بالبطاقة فاختر «بطاقة» لتُستهلَك محاولة الجهاز مع الإيصال",
+          }),
+        });
+      }
+    } else if (
+      !leg.externalPaymentAttemptId ||
+      !leg.externalPaymentDeviceId?.trim()
     ) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
-          what: "تعذّر تسجيل الدفعة النقدية",
-          why: "الطلب يحمل محاولة دفعٍ خارجية (بطاقة/تحويل)، والنقد يدخل الدرج مباشرةً بلا جهاز",
-          doThis: "إن قبضتَ نقداً فأعِد المحاولة بلا ربط جهاز؛ وإن قبضتَ بالبطاقة فاختر «بطاقة» لتُستهلَك محاولة الجهاز مع الإيصال",
+          // ⚠️ «أكّد الدفع الخارجي» أوّلَ النصّ: تُطابقه اختبارات fail-closed في `nonCashScreensEnabled`
+          // و`posPaymentFailClosedApi` بالتعبير النمطيّ — أعِد صياغة ما بعده لا هو.
+          what: "أكّد الدفع الخارجي على هذا الجهاز قبل تسجيل الدفعة",
+          why: "غير النقد لا يُقيَّد بإقرار الموظّف وحده — يلزمه إثباتٌ مؤكَّدٌ من جهاز الدفع يُستهلَك مرّةً واحدة مع الإيصال",
+          doThis: "نفّذ العملية على جهاز الدفع حتى تظهر «تأكّد الدفع الخارجي»، ثمّ اضغط تسجيل الدفعة؛ وإن رفض الجهاز فاقبض نقداً بدل تسجيل قبضٍ بلا إثبات",
         }),
       });
+    } else {
+      const attemptId = Number(leg.externalPaymentAttemptId);
+      if (seenAttemptIds.has(attemptId)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل الدفعة المجزأة",
+            why: `محاولة الدفع الخارجي رقم ${attemptId} مكرّرة في أكثر من جزء داخل نفس التحصيل`,
+            doThis: "أكّد كل دفعة غير نقدية بمحاولة جهاز مستقلة قبل تسجيل الدفعة",
+          }),
+        });
+      }
+      seenAttemptIds.add(attemptId);
     }
-  } else if (
-    !input.externalPaymentAttemptId ||
-    !input.externalPaymentDeviceId?.trim()
-  ) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: appErrorMessage({
-        // ⚠️ «أكّد الدفع الخارجي» أوّلَ النصّ: تُطابقه اختبارات fail-closed في `nonCashScreensEnabled`
-        // و`posPaymentFailClosedApi` بالتعبير النمطيّ — أعِد صياغة ما بعده لا هو.
-        what: "أكّد الدفع الخارجي على هذا الجهاز قبل تسجيل الدفعة",
-        why: "غير النقد لا يُقيَّد بإقرار الموظّف وحده — يلزمه إثباتٌ مؤكَّدٌ من جهاز الدفع يُستهلَك مرّةً واحدة مع الإيصال",
-        doThis: "نفّذ العملية على جهاز الدفع حتى تظهر «تأكّد الدفع الخارجي»، ثمّ اضغط تسجيل الدفعة؛ وإن رفض الجهاز فاقبض نقداً بدل تسجيل قبضٍ بلا إثبات",
-      }),
-    });
   }
+
   return withTx(async (tx) => {
     // Idempotency (نمط جذري ١): قبل أيّ replay، نتحقّق أنّ الإيصال المخزَّن يخصّ نفس الفاتورة
     // وفرع المستخدم الحقيقي. كان الـreplay يَعود قبل enforceBranchId وقبل أيّ ربط بـinput.invoiceId
     // ⇒ مفتاح يُعاد استعماله على فاتورة مختلفة كان يُرجع نجاحاً صامتاً (no-op) فيتلقّى الكاشير «مدفوع»
     // ولا تُسجَّل دفعةٌ ثانية فعلياً ⇒ منفذ سرقة نقد. التأكيد يغلق الفئة بأكملها.
     if (input.clientRequestId) {
-      const existingRefId = await findIdempotentRefId(tx, "sale.pay", input.clientRequestId,
-      );
+      const existingRefId = await findIdempotentRefId(tx, "sale.pay", input.clientRequestId);
       if (existingRefId != null) {
-        const r = (await tx.select().from(receipts).where(eq(receipts.id, existingRefId)).limit(1))[0];
-        if (!r || Number(r.invoiceId) !== Number(input.invoiceId)) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: appErrorMessage({
-              what: "تعذّر تسجيل الدفعة",
-              why: `تعارض idempotency: مفتاح هذه العملية مستعمَلٌ سلفاً لدفعةٍ على فاتورةٍ أخرى (${r ? `رقم ${Number(r.invoiceId)}` : "لم يعد إيصالها موجوداً"})`,
-              doThis: "أعِد تحميل شاشة الفاتورة وابدأ عملية تحصيلٍ جديدة — لا تُعِد إرسال الطلب نفسه؛ وتحقّق أولاً من كشف الفاتورة أنّ المبلغ لم يُقبَض فعلاً",
-            }),
-          });
-        }
-        if (money(r.amount).toFixed(2) !== money(input.amount).toFixed(2)) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: appErrorMessage({
-              what: "تعذّر تسجيل الدفعة",
-              why: `تعارض idempotency: المفتاح نفسه سُجِّل به مبلغ ${money(r.amount).toFixed(2)} والآن يُرسَل ${money(input.amount).toFixed(2)}`,
-              doThis: `الدفعة الأولى (${money(r.amount).toFixed(2)}) مُثبَتةٌ فعلاً — أعِد تحميل الفاتورة، وإن بقي مستحقٌّ فسجّل الفرق بعملية تحصيلٍ جديدة`,
-            }),
-          });
-        }
-        if ((r.paymentMethod ?? null) !== (input.method ?? null)) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: appErrorMessage({
-              what: "تعذّر تسجيل الدفعة",
-              why: `تعارض idempotency: المفتاح نفسه سُجِّل بطريقة «${paymentMethodCompact(r.paymentMethod)}» والآن يُرسَل بطريقة «${paymentMethodCompact(input.method)}»`,
-              doThis: "أعِد تحميل الفاتورة وتحقّق من الإيصال المُثبَت؛ ولتصحيح طريقة السداد المسجَّلة اعكس الإيصال وسجّله بطريقته الصحيحة",
-            }),
-          });
-        }
-        if (input.method !== "CASH") {
-          await assertExternalPaymentReplay(
-            tx,
-            input.invoiceId,
-            {
-              branchId: Number(r.branchId),
-              channel: "SALES_COLLECTION",
-              method: input.method,
-              amount: input.amount,
-              attemptId: input.externalPaymentAttemptId,
-              deviceId: input.externalPaymentDeviceId,
-            },
-            actor,
-            Number(r.id),
-          );
-        } else if (
-          (r.referenceNumber ?? null) !== (input.reference?.trim() || null)) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: appErrorMessage({
-              what: "تعذّر تسجيل الدفعة",
-              why: `تعارض idempotency: الإيصال المُثبَت بهذا المفتاح يحمل مرجعاً مختلفاً (${r.referenceNumber ?? "بلا مرجع"})`,
-              doThis: "أعِد تحميل الفاتورة وراجع الإيصال المُثبَت؛ ولتصحيح المرجع وحده عدّله على الإيصال بدل إعادة إرسال دفعةٍ ثانية",
-            }),
-          });
+        if (legs.length === 1) {
+          const singleLeg = legs[0]!;
+          const r = (await tx.select().from(receipts).where(eq(receipts.id, existingRefId)).limit(1))[0];
+          if (!r || Number(r.invoiceId) !== Number(input.invoiceId)) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: appErrorMessage({
+                what: "تعذّر تسجيل الدفعة",
+                why: `تعارض idempotency: مفتاح هذه العملية مستعمَلٌ سلفاً لدفعةٍ على فاتورةٍ أخرى (${r ? `رقم ${Number(r.invoiceId)}` : "لم يعد إيصالها موجوداً"})`,
+                doThis: "أعِد تحميل شاشة الفاتورة وابدأ عملية تحصيلٍ جديدة — لا تُعِد إرسال الطلب نفسه؛ وتحقّق أولاً من كشف الفاتورة أنّ المبلغ لم يُقبَض فعلاً",
+              }),
+            });
+          }
+          if (money(r.amount).toFixed(2) !== money(singleLeg.amount).toFixed(2)) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: appErrorMessage({
+                what: "تعذّر تسجيل الدفعة",
+                why: `تعارض idempotency: المفتاح نفسه سُجِّل به مبلغ ${money(r.amount).toFixed(2)} والآن يُرسَل ${money(singleLeg.amount).toFixed(2)}`,
+                doThis: `الدفعة الأولى (${money(r.amount).toFixed(2)}) مُثبَتةٌ فعلاً — أعِد تحميل الفاتورة، وإن بقي مستحقٌّ فسجّل الفرق بعملية تحصيلٍ جديدة`,
+              }),
+            });
+          }
+          if ((r.paymentMethod ?? null) !== (singleLeg.method ?? null)) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: appErrorMessage({
+                what: "تعذّر تسجيل الدفعة",
+                why: `تعارض idempotency: المفتاح نفسه سُجِّل بطريقة «${paymentMethodCompact(r.paymentMethod)}» والآن يُرسَل بطريقة «${paymentMethodCompact(singleLeg.method)}»`,
+                doThis: "أعِد تحميل الفاتورة وتحقّق من الإيصال المُثبَت؛ ولتصحيح طريقة السداد المسجَّلة اعكس الإيصال وسجّله بطريقته الصحيحة",
+              }),
+            });
+          }
+          if (singleLeg.method !== "CASH") {
+            await assertExternalPaymentReplay(
+              tx,
+              input.invoiceId,
+              {
+                branchId: Number(r.branchId),
+                channel: "SALES_COLLECTION",
+                method: singleLeg.method,
+                amount: singleLeg.amount,
+                attemptId: singleLeg.externalPaymentAttemptId,
+                deviceId: singleLeg.externalPaymentDeviceId,
+              },
+              actor,
+              Number(r.id),
+            );
+          } else if (
+            (r.referenceNumber ?? null) !== (singleLeg.reference?.trim() || null)
+          ) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: appErrorMessage({
+                what: "تعذّر تسجيل الدفعة",
+                why: `تعارض idempotency: الإيصال المُثبَت بهذا المفتاح يحمل مرجعاً مختلفاً (${r.referenceNumber ?? "بلا مرجع"})`,
+                doThis: "أعِد تحميل الفاتورة وراجع الإيصال المُثبَت؛ ولتصحيح المرجع وحده عدّله على الإيصال بدل إعادة إرسال دفعةٍ ثانية",
+              }),
+            });
+          }
+        } else {
+          const allInvoiceReceipts = await tx
+            .select()
+            .from(receipts)
+            .where(eq(receipts.invoiceId, input.invoiceId));
+          const matchedReceipts = allInvoiceReceipts
+            .filter((row) => row.direction === "IN" && Number(row.id) >= existingRefId)
+            .sort((a, b) => Number(a.id) - Number(b.id))
+            .slice(0, legs.length);
+          if (
+            matchedReceipts.length !== legs.length ||
+            Number(matchedReceipts[0]?.id) !== existingRefId
+          ) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: appErrorMessage({
+                what: "تعذّر تسجيل الدفعة",
+                why: "تعارض idempotency: مفتاح هذه العملية مستعمَلٌ سلفاً لتحصيلٍ مختلف",
+                doThis: "أعِد تحميل شاشة الفاتورة وابدأ عملية تحصيلٍ جديدة",
+              }),
+            });
+          }
+          for (let idx = 0; idx < legs.length; idx++) {
+            const leg = legs[idx]!;
+            const r = matchedReceipts[idx]!;
+            if (
+              money(r.amount).toFixed(2) !== money(leg.amount).toFixed(2) ||
+              (r.paymentMethod ?? null) !== (leg.method ?? null)
+            ) {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: appErrorMessage({
+                  what: "تعذّر تسجيل الدفعة",
+                  why: "تعارض idempotency: تفاصيل الدفعات المجزأة لا تطابق العملية المسجَّلة سلفاً بهذا المفتاح",
+                  doThis: "أعِد تحميل الفاتورة وتحقّق من الإيصالات المُثبَتة قبل إرسال دفعةٍ جديدة",
+                }),
+              });
+            }
+            if (leg.method !== "CASH") {
+              await assertExternalPaymentReplay(
+                tx,
+                input.invoiceId,
+                {
+                  branchId: Number(r.branchId),
+                  channel: "SALES_COLLECTION",
+                  method: leg.method,
+                  amount: leg.amount,
+                  attemptId: leg.externalPaymentAttemptId,
+                  deviceId: leg.externalPaymentDeviceId,
+                },
+                actor,
+                Number(r.id),
+              );
+            }
+          }
         }
         // أعِد قراءة الفاتورة لإرجاع حالتها الحديثة (replay آمن، لا كتابة).
         const inv = (await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).limit(1))[0];
@@ -167,14 +271,28 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
       }
     }
 
-    const amount = money(input.amount);
-    if (amount.lte(0)) {
+    let amount = money(0);
+    for (const leg of legs) {
+      const legAmount = money(leg.amount);
+      if (legAmount.lte(0)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل الدفعة",
+            why: `المبلغ يجب أن يكون موجباً، والمُرسَل ${legAmount.toFixed(2)}`,
+            doThis: "أدخِل المبلغ المقبوض فعلاً؛ ولإرجاع مالٍ إلى الزبون استعمل المرتجع أو سند الصرف لا دفعةً بالسالب",
+          }),
+        });
+      }
+      amount = amount.plus(legAmount);
+    }
+    if (input.amount != null && input.payments && input.payments.length > 0 && !money(input.amount).eq(amount)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
-          what: "تعذّر تسجيل الدفعة",
-          why: `المبلغ يجب أن يكون موجباً، والمُرسَل ${amount.toFixed(2)}`,
-          doThis: "أدخِل المبلغ المقبوض فعلاً؛ ولإرجاع مالٍ إلى الزبون استعمل المرتجع أو سند الصرف لا دفعةً بالسالب",
+          what: "تعذّر تسجيل الدفعة المجزأة",
+          why: `مجموع الدفعات المجزأة (${amount.toFixed(2)}) لا يطابق إجمالي الدفعة المحدّد (${money(input.amount).toFixed(2)})`,
+          doThis: "تأكّد من مطابقة مجموع الأجزاء للمبلغ المراد تحصيله ثم أعِد المحاولة",
         }),
       });
     }
@@ -204,8 +322,9 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
         }),
       });
     }
+    const hasCashLeg = legs.some((leg) => leg.method === "CASH");
     let prelockedShiftId: number | null = null;
-    if (input.method === "CASH") {
+    if (hasCashLeg) {
       prelockedShiftId = input.shiftId ??
         (await openShiftIdTx(tx, actor.userId, Number(invPreview.branchId)));
       if (prelockedShiftId == null) {
@@ -225,238 +344,274 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
       });
     }
 
-    const writePayment = async (paymentReference: string | null) => {
+    const writePayment = async (referenceByLegIndex: Map<number, string | null>) => {
       const rows = await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).for("update").limit(1);
-    const inv = rows[0];
-    if (!inv) {
-      throw new TRPCError({
-        code: "NOT_FOUND",
-        message: appErrorMessage({
-          what: "تعذّر تسجيل الدفعة",
-          why: `الفاتورة رقم ${input.invoiceId} لم تعد موجودة — حُذفت بين فتح الشاشة وحفظ الدفعة`,
-          doThis: "أعِد تحميل قائمة المبيعات وابحث عن الفاتورة برقمها أو باسم الزبون، ولا تسلّم إيصالاً قبل ثبوت القبض",
-        }),
-      });
-    }
-    if (Number(inv.branchId) !== Number(invPreview.branchId)) {
-      throw new TRPCError({
-        code: "CONFLICT",
-        message: appErrorMessage({
-          what: "تعذّر تسجيل الدفعة",
-          why: `تغيّر فرع الفاتورة أثناء الدفع (كان ${Number(invPreview.branchId)} وصار ${Number(inv.branchId)}) — والدفع يُقفل على فرعٍ واحد كي لا يدخل النقد درج فرعٍ غير فرعها`,
-          doThis: "أعِد تحميل الفاتورة وتحقّق من فرعها ثمّ أعِد التحصيل",
-        }),
-      });
-    }
-    // عزل الفرع: غير المدير لا يدفع على فاتورة فرع آخر (منع IDOR).
-    if (input.enforceBranchId != null && Number(inv.branchId) !== input.enforceBranchId) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: appErrorMessage({
-          what: "لا تملك صلاحية على فاتورة فرع آخر",
-          why: `الفاتورة تخصّ الفرع رقم ${Number(inv.branchId)} وأنت مقيَّدٌ بالفرع رقم ${input.enforceBranchId} — عزل الفروع يمنع دخول تحصيل فرعٍ في درج فرعٍ آخر`,
-          doThis: "حصّل الفاتورة من كاشير فرعها، أو اطلب من المدير تحصيلها (عبورُ الفروع له وحده)",
-        }),
-      });
-    }
-    if (inv.status === "CANCELLED" || inv.status === "RETURNED" || inv.status === "SUPERSEDED") {
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: appErrorMessage({
-          what: `تعذّر التحصيل على الفاتورة ${inv.invoiceNumber}`,
-          why: `حالتها «${invoiceStatusLabel(inv.status)}» — والمستند المنتهي لا يقبل قبضاً جديداً عليه`,
-          doThis:
-            inv.status === "SUPERSEDED"
-              ? "حصّل على الفاتورة البديلة التي حلّت محلّها (تجدها من كشف الفاتورة)"
-              : "أنشئ فاتورةً جديدة بما يُباع فعلاً وحصّل عليها؛ ولردّ مالٍ قُبض سابقاً استعمل المرتجع أو سند الصرف",
-        }),
-      });
-    }
-    if (inv.status === "PAID") {
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: appErrorMessage({
-          // ⚠️ «مدفوعة بالكامل» متعاقَدٌ عليها: يطابقها `voucherInvoiceAllocation.test.ts` حارساً
-          // لِبابِ التحصيل المزدوج. أعِد صياغة ما حولها لا هي.
-          what: `الفاتورة ${inv.invoiceNumber} مدفوعة بالكامل`,
-          why: `المسدَّد ${money(inv.paidAmount).toFixed(2)} من إجمالي ${money(inv.total).toFixed(2)} — ولا يُقبض على مستندٍ لا مستحقَّ عليه (بابُ تحصيلٍ مزدوج)`,
-          doThis: "راجع كشف الفاتورة قبل قبض أيّ مبلغ؛ وإن كان الزبون يسدّد فاتورةً أخرى فافتحها من كشف حسابه وحصّل عليها",
-        }),
-      });
-    }
-    const remaining = money(inv.total)
-      .minus(money(inv.returnedTotal ?? "0"))
-      .minus(money(inv.paidAmount));
-    if (remaining.lte(0)) {
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: appErrorMessage({
-          what: `لا يوجد مبلغ مستحق على الفاتورة ${inv.invoiceNumber}`,
-          why: `الإجمالي ${money(inv.total).toFixed(2)} والمرتجع منه ${money(inv.returnedTotal ?? "0").toFixed(2)} والمسدَّد ${money(inv.paidAmount).toFixed(2)}، فالمتبقّي ${remaining.toFixed(2)}`,
-          doThis: remaining.lt(0)
-            ? "الزبون دفع زيادةً عن المستحقّ — ردّ الفرق بسند صرفٍ على حسابه بدل قبض المزيد"
-            : "لا تقبض شيئاً على هذه الفاتورة؛ افتح كشف حساب الزبون وحصّل على فاتورةٍ ما تزال مستحقّة",
-        }),
-      });
-    }
-    if (amount.gt(remaining)) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: appErrorMessage({
-          // ⚠️ «تتجاوز المتبقي» متعاقَدٌ عليها: تطابقها ثلاثة اختبارات لحارس الدفع الزائد.
-          what: `الدفعة (${amount.toFixed(2)}) تتجاوز المتبقي على الفاتورة ${inv.invoiceNumber} (${remaining.toFixed(2)})`,
-          why: `الفرق ${amount.minus(remaining).toFixed(2)} زائدٌ عن المستحقّ، وقبضُه يقلب ذمّة الزبون إلى دائنٍ بلا مستند`,
-          doThis: `أنقص المبلغ إلى ${remaining.toFixed(2)}، واقبض الزائد على فاتورةٍ أخرى مستحقّة أو سجّله دفعةً مقدَّمة بسند قبضٍ على حساب الزبون`,
-        }),
-      });
-    }
-
-    // إن مُرِّر shiftId: تَحقّق من حالة الوردية وملكيتها (M5 + M9).
-    if (input.method === "CASH" && input.shiftId != null) {
-      const sRows = await tx
-        .select()
-        .from(shifts)
-        .where(eq(shifts.id, input.shiftId))
-        .for("update")
-        .limit(1);
-      const s = sRows[0];
-      if (!s) {
+      const inv = rows[0];
+      if (!inv) {
         throw new TRPCError({
           code: "NOT_FOUND",
           message: appErrorMessage({
-            what: "تعذّر تحصيل الدفعة نقداً",
-            why: `الوردية رقم ${input.shiftId} المرسَلة مع الطلب غير موجودة — يبدو أنّ الشاشة تحمل وردية قديمة`,
-            doThis: "أعِد تحميل الشاشة لتلتقط ورديتك المفتوحة، أو افتح وردية على درجك من الخزينة ← الورديات ثمّ أعِد التحصيل",
+            what: "تعذّر تسجيل الدفعة",
+            why: `الفاتورة رقم ${input.invoiceId} لم تعد موجودة — حُذفت بين فتح الشاشة وحفظ الدفعة`,
+            doThis: "أعِد تحميل قائمة المبيعات وابحث عن الفاتورة برقمها أو باسم الزبون، ولا تسلّم إيصالاً قبل ثبوت القبض",
           }),
         });
       }
-      if (s.status !== "OPEN") {
+      if (Number(inv.branchId) !== Number(invPreview.branchId)) {
         throw new TRPCError({
-          code: "PRECONDITION_FAILED",
+          code: "CONFLICT",
           message: appErrorMessage({
-            what: "تعذّر تحصيل الدفعة نقداً — الوردية مغلقة",
-            why: `الوردية رقم ${Number(s.id)} أُقفِلت وصدر تقريرها (Z)، والمغلقة لا تقبل حركة نقدٍ جديدة وإلّا انحرف نقدُها المعدود عمّا يُظهره التقرير`,
-            doThis: "افتح وردية جديدة على درجك من الخزينة ← الورديات ثمّ أعِد التحصيل؛ ولا تُدخِل النقد في الدرج قبل أن يُثبَّت الإيصال",
+            what: "تعذّر تسجيل الدفعة",
+            why: `تغيّر فرع الفاتورة أثناء الدفع (كان ${Number(invPreview.branchId)} وصار ${Number(inv.branchId)}) — والدفع يُقفل على فرعٍ واحد كي لا يدخل النقد درج فرعٍ غير فرعها`,
+            doThis: "أعِد تحميل الفاتورة وتحقّق من فرعها ثمّ أعِد التحصيل",
           }),
         });
       }
-      // لا يكفي أن تكون الوردية مفتوحة ومملوكة للفاعل: يجب أن تكون درجاً من
-      // الفرع نفسه للفـاتورة. من دون ذلك يمكن تمرير وردية فرعٍ آخر فتُسجّل
-      // مقبوضات الفرع A في Z-report للفرع B (مع receipt.branchId=A)، وهو
-      // انحراف نقدي لا يمكن تسويته على مستوى الفرع.
-      if (Number(s.branchId) !== Number(inv.branchId)) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: appErrorMessage({
-            what: "تعذّر تحصيل الدفعة نقداً — الوردية لا تخص فرع الفاتورة",
-            why: `الوردية درجٌ في الفرع رقم ${Number(s.branchId)} والفاتورة في الفرع رقم ${Number(inv.branchId)} — وقبضُها هنا يُدرِج نقد فرعٍ في تقرير فرعٍ آخر فلا يُسوّى`,
-            doThis: "حصّل من وردية فرع الفاتورة نفسه؛ وإن كنتَ في فرعٍ آخر فاتركها لكاشير فرعها",
-          }),
-        });
-      }
-      // SHIFT-OWN (حظر انتحال الورديات - Fail-Closed): فرض ملكية الوردية للجميع بلا استثناء
-      // النقد المقبوض يدخل درج الوردية، لذا يُمنع على أي فاعل تسجيل قبض نقدي على وردية موظف آخر.
-      if (Number(s.userId) !== Number(actor.userId)) {
+      // عزل الفرع: غير المدير لا يدفع على فاتورة فرع آخر (منع IDOR).
+      if (input.enforceBranchId != null && Number(inv.branchId) !== input.enforceBranchId) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: appErrorMessage({
-            what: "لا تَستطيع التسجيل على وردية مستخدم آخر",
-            why: `الوردية رقم ${Number(s.id)} مفتوحةٌ لموظّفٍ آخر، ونقدُها يُحاسَب عليه هو في تسوية درجه`,
-            doThis: "افتح وردية على درجك من الخزينة ← الورديات وحصّل عليها، أو سلّم النقد إلى صاحب الوردية ليقبض هو",
+            what: "لا تملك صلاحية على فاتورة فرع آخر",
+            why: `الفاتورة تخصّ الفرع رقم ${Number(inv.branchId)} وأنت مقيَّدٌ بالفرع رقم ${input.enforceBranchId} — عزل الفروع يمنع دخول تحصيل فرعٍ في درج فرعٍ آخر`,
+            doThis: "حصّل الفاتورة من كاشير فرعها، أو اطلب من المدير تحصيلها (عبورُ الفروع له وحده)",
           }),
         });
       }
-    }
-    // انسب الدفع النقدي لوردية الموظّف المفتوحة إن لم يُمرَّر صراحةً (تسوية الصندوق).
-    const shiftId = prelockedShiftId;
-    // حارس بنيوي: حظر تحصيل أي فاتورة شحنتها بالطريق مع المندوب دون استثناء.
-    await assertNoInTransitConsignment(tx, input.invoiceId);
-    if (input.preInsertCheck) await input.preInsertCheck(tx);
-    const rRes = await tx.insert(receipts).values({
-      invoiceId: input.invoiceId,
-      branchId: Number(inv.branchId),
-      shiftId,
-      // cashBucket=DRAWER للنقد، NULL لغير النقد — مرآة لـcreateSale ولـvoucherService.
-      cashBucket: input.method === "CASH" ? "DRAWER" : null,
-      direction: "IN",
-      amount: toDbMoney(amount),
-      paymentMethod: input.method,
-      referenceNumber: paymentReference,
-      status: "COMPLETED",
-      createdBy: actor.userId,
-    });
-    const receiptId = extractInsertId(rRes);
-    if (input.clientRequestId) await recordIdempotencyKey(tx, "sale.pay", input.clientRequestId, receiptId,
-        );
+      if (inv.status === "CANCELLED" || inv.status === "RETURNED" || inv.status === "SUPERSEDED") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: `تعذّر التحصيل على الفاتورة ${inv.invoiceNumber}`,
+            why: `حالتها «${invoiceStatusLabel(inv.status)}» — والمستند المنتهي لا يقبل قبضاً جديداً عليه`,
+            doThis:
+              inv.status === "SUPERSEDED"
+                ? "حصّل على الفاتورة البديلة التي حلّت محلّها (تجدها من كشف الفاتورة)"
+                : "أنشئ فاتورةً جديدة بما يُباع فعلاً وحصّل عليها؛ ولردّ مالٍ قُبض سابقاً استعمل المرتجع أو سند الصرف",
+          }),
+        });
+      }
+      if (inv.status === "PAID") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            // ⚠️ «مدفوعة بالكامل» متعاقَدٌ عليها: يطابقها `voucherInvoiceAllocation.test.ts` حارساً
+            // لِبابِ التحصيل المزدوج. أعِد صياغة ما حولها لا هي.
+            what: `الفاتورة ${inv.invoiceNumber} مدفوعة بالكامل`,
+            why: `المسدَّد ${money(inv.paidAmount).toFixed(2)} من إجمالي ${money(inv.total).toFixed(2)} — ولا يُقبض على مستندٍ لا مستحقَّ عليه (بابُ تحصيلٍ مزدوج)`,
+            doThis: "راجع كشف الفاتورة قبل قبض أيّ مبلغ؛ وإن كان الزبون يسدّد فاتورةً أخرى فافتحها من كشف حسابه وحصّل عليها",
+          }),
+        });
+      }
+      const remaining = money(inv.total)
+        .minus(money(inv.returnedTotal ?? "0"))
+        .minus(money(inv.paidAmount));
+      if (remaining.lte(0)) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: `لا يوجد مبلغ مستحق على الفاتورة ${inv.invoiceNumber}`,
+            why: `الإجمالي ${money(inv.total).toFixed(2)} والمرتجع منه ${money(inv.returnedTotal ?? "0").toFixed(2)} والمسدَّد ${money(inv.paidAmount).toFixed(2)}، فالمتبقّي ${remaining.toFixed(2)}`,
+            doThis: remaining.lt(0)
+              ? "الزبون دفع زيادةً عن المستحقّ — ردّ الفرق بسند صرفٍ على حسابه بدل قبض المزيد"
+              : "لا تقبض شيئاً على هذه الفاتورة؛ افتح كشف حساب الزبون وحصّل على فاتورةٍ ما تزال مستحقّة",
+          }),
+        });
+      }
+      if (amount.gt(remaining)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            // ⚠️ «تتجاوز المتبقي» متعاقَدٌ عليها: تطابقها ثلاثة اختبارات لحارس الدفع الزائد.
+            what: `الدفعة (${amount.toFixed(2)}) تتجاوز المتبقي على الفاتورة ${inv.invoiceNumber} (${remaining.toFixed(2)})`,
+            why: `الفرق ${amount.minus(remaining).toFixed(2)} زائدٌ عن المستحقّ، وقبضُه يقلب ذمّة الزبون إلى دائنٍ بلا مستند`,
+            doThis: `أنقص المبلغ إلى ${remaining.toFixed(2)}، واقبض الزائد على فاتورةٍ أخرى مستحقّة أو سجّله دفعةً مقدَّمة بسند قبضٍ على حساب الزبون`,
+          }),
+        });
+      }
 
-    const newPaid = money(inv.paidAmount).plus(amount);
-    const status = computeInvoiceStatus(inv.total, toDbMoney(newPaid), inv.returnedTotal ?? "0",
-      );
-    await tx
-      .update(invoices)
-      .set({
+      // إن مُرِّر shiftId: تَحقّق من حالة الوردية وملكيتها (M5 + M9).
+      if (hasCashLeg && input.shiftId != null) {
+        const sRows = await tx
+          .select()
+          .from(shifts)
+          .where(eq(shifts.id, input.shiftId))
+          .for("update")
+          .limit(1);
+        const s = sRows[0];
+        if (!s) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: appErrorMessage({
+              what: "تعذّر تحصيل الدفعة نقداً",
+              why: `الوردية رقم ${input.shiftId} المرسَلة مع الطلب غير موجودة — يبدو أنّ الشاشة تحمل وردية قديمة`,
+              doThis: "أعِد تحميل الشاشة لتلتقط ورديتك المفتوحة، أو افتح وردية على درجك من الخزينة ← الورديات ثمّ أعِد التحصيل",
+            }),
+          });
+        }
+        if (s.status !== "OPEN") {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: appErrorMessage({
+              what: "تعذّر تحصيل الدفعة نقداً — الوردية مغلقة",
+              why: `الوردية رقم ${Number(s.id)} أُقفِلت وصدر تقريرها (Z)، والمغلقة لا تقبل حركة نقدٍ جديدة وإلّا انحرف نقدُها المعدود عمّا يُظهره التقرير`,
+              doThis: "افتح وردية جديدة على درجك من الخزينة ← الورديات ثمّ أعِد التحصيل؛ ولا تُدخِل النقد في الدرج قبل أن يُثبَّت الإيصال",
+            }),
+          });
+        }
+        if (Number(s.branchId) !== Number(inv.branchId)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "تعذّر تحصيل الدفعة نقداً — الوردية لا تخص فرع الفاتورة",
+              why: `الوردية درجٌ في الفرع رقم ${Number(s.branchId)} والفاتورة في الفرع رقم ${Number(inv.branchId)} — وقبضُها هنا يُدرِج نقد فرعٍ في تقرير فرعٍ آخر فلا يُسوّى`,
+              doThis: "حصّل من وردية فرع الفاتورة نفسه؛ وإن كنتَ في فرعٍ آخر فاتركها لكاشير فرعها",
+            }),
+          });
+        }
+        if (Number(s.userId) !== Number(actor.userId)) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "لا تَستطيع التسجيل على وردية مستخدم آخر",
+              why: `الوردية رقم ${Number(s.id)} مفتوحةٌ لموظّفٍ آخر، ونقدُها يُحاسَب عليه هو في تسوية درجه`,
+              doThis: "افتح وردية على درجك من الخزينة ← الورديات وحصّل عليها، أو سلّم النقد إلى صاحب الوردية ليقبض هو",
+            }),
+          });
+        }
+      }
+      // انسب الدفع النقدي لوردية الموظّف المفتوحة إن لم يُمرَّر صراحةً (تسوية الصندوق).
+      const shiftId = prelockedShiftId;
+      // حارس بنيوي: حظر تحصيل أي فاتورة شحنتها بالطريق مع المندوب دون استثناء.
+      await assertNoInTransitConsignment(tx, input.invoiceId);
+      if (input.preInsertCheck) await input.preInsertCheck(tx);
+
+      const receiptIds: number[] = [];
+      let nextPaymentMethod: string | null = inv.paymentMethod ?? null;
+      for (let idx = 0; idx < legs.length; idx++) {
+        const leg = legs[idx]!;
+        const legAmount = money(leg.amount);
+        const legRef =
+          leg.method === "CASH"
+            ? leg.reference?.trim() || null
+            : (referenceByLegIndex.get(idx) ?? null);
+        const rRes = await tx.insert(receipts).values({
+          invoiceId: input.invoiceId,
+          branchId: Number(inv.branchId),
+          shiftId: leg.method === "CASH" ? shiftId : null,
+          // cashBucket=DRAWER للنقد، NULL لغير النقد — مرآة لـcreateSale ولـvoucherService.
+          cashBucket: leg.method === "CASH" ? "DRAWER" : null,
+          direction: "IN",
+          amount: toDbMoney(legAmount),
+          paymentMethod: leg.method,
+          referenceNumber: legRef,
+          status: "COMPLETED",
+          createdBy: actor.userId,
+        });
+        const legReceiptId = extractInsertId(rRes);
+        receiptIds.push(legReceiptId);
+        nextPaymentMethod = mixedAwarePaymentMethod(nextPaymentMethod, leg.method);
+
+        const paymentRole = paymentAssetRole(
+          leg.method,
+          leg.method === "CASH" ? "DRAWER" : null,
+          "IN",
+        );
+        const paymentPostingSource = {
+          roleDebits: { [paymentRole]: legAmount },
+          roleCredits: { AR: legAmount },
+        };
+        await postEntry(tx, {
+          entryType: "PAYMENT_IN",
+          branchId: Number(inv.branchId),
+          invoiceId: input.invoiceId,
+          receiptId: legReceiptId,
+          customerId: inv.customerId,
+          amount: legAmount,
+          postingIntent: createPostingIntent(
+            "PAYMENT_IN_CUSTOMER",
+            "PAYMENT_IN",
+            [debitLine(paymentRole, legAmount), creditLine("AR", legAmount)],
+            paymentPostingSource,
+          ),
+          postingSourceComponents: paymentPostingSource,
+        });
+      }
+
+      const firstReceiptId = receiptIds[0]!;
+      if (input.clientRequestId) {
+        await recordIdempotencyKey(tx, "sale.pay", input.clientRequestId, firstReceiptId);
+      }
+
+      const newPaid = money(inv.paidAmount).plus(amount);
+      const status = computeInvoiceStatus(inv.total, toDbMoney(newPaid), inv.returnedTotal ?? "0");
+      await tx
+        .update(invoices)
+        .set({
+          paidAmount: toDbMoney(newPaid),
+          status,
+          paymentDate: new Date(),
+          paymentMethod: nextPaymentMethod,
+        })
+        .where(eq(invoices.id, input.invoiceId));
+
+      if (inv.customerId) {
+        await adjustCustomerBalance(tx, Number(inv.customerId), amount.neg());
+      }
+
+      return {
+        invoiceId: input.invoiceId,
+        receiptId: firstReceiptId,
+        receiptIds,
         paidAmount: toDbMoney(newPaid),
         status,
-        paymentDate: new Date(),
-        // «آخر دفعة تفوز» كان يكذب على الفاتورة المختلطة: ٤٩٠٬٠٠٠ نقداً ثمّ ١٠٬٠٠٠ تحويلاً
-        // تُخزَّن «تحويل» فتسقط من فلتر «نقدي» كلياً، وفاتورةُ بطاقةٍ يليها فكٌّ نقديّ تخرج من
-        // قائمة CARD ⇒ تنهار مطابقة يوم البطاقات وهي الحاجة التشغيلية المعلَنة للفلتر نفسه.
-        // القيمة الصادقة عند الاختلاف هي MIXED؛ ومصدر الحقيقة التفصيليّ يبقى `receipts`.
-        paymentMethod: mixedAwarePaymentMethod(inv.paymentMethod, input.method,
-          ),
-      })
-      .where(eq(invoices.id, input.invoiceId));
-
-    const paymentRole = paymentAssetRole(input.method, input.method === "CASH" ? "DRAWER" : null, "IN",
-      );
-    const paymentPostingSource = {
-      roleDebits: { [paymentRole]: amount },
-      roleCredits: { AR: amount },
-    };
-    await postEntry(tx, {
-      entryType: "PAYMENT_IN",
-      branchId: Number(inv.branchId),
-      invoiceId: input.invoiceId,
-      receiptId,
-      customerId: inv.customerId,
-      amount,
-      postingIntent: createPostingIntent("PAYMENT_IN_CUSTOMER", "PAYMENT_IN", [debitLine(paymentRole, amount), creditLine("AR", amount)], paymentPostingSource,
-        ),
-      postingSourceComponents: paymentPostingSource,
-    });
-    if (inv.customerId) {
-      await adjustCustomerBalance(tx, Number(inv.customerId), amount.neg());
-    }
-
-    return { invoiceId: input.invoiceId,
-        receiptId,
-        paidAmount: toDbMoney(newPaid), status,
       };
-  };
+    };
 
-    if (input.method !== "CASH") {
-      return consumeConfirmedExternalPaymentAttemptTx(
-        tx,
-        {
-          branchId: Number(invPreview.branchId),
-          channel: "SALES_COLLECTION",
-          method: input.method,
-          amount: input.amount,
-          attemptId: input.externalPaymentAttemptId,
-          deviceId: input.externalPaymentDeviceId,
-        },
-        actor,
-        async (attempt) => {
-          const value = await writePayment(attempt.externalReference);
-          return {
-            invoiceId: value.invoiceId,
-            receiptId: value.receiptId,
-            value,
-          };
-        },
+    const nonCashIndexed = legs
+      .map((leg, index) => ({ leg, index }))
+      .filter((item) => item.leg.method !== "CASH")
+      .sort(
+        (a, b) =>
+          Number(a.leg.externalPaymentAttemptId ?? 0) -
+          Number(b.leg.externalPaymentAttemptId ?? 0),
       );
+
+    if (nonCashIndexed.length > 0) {
+      const referenceByLegIndex = new Map<number, string | null>();
+      const consumeFrom = async (
+        cursor: number,
+      ): Promise<Awaited<ReturnType<typeof writePayment>>> => {
+        if (cursor >= nonCashIndexed.length) {
+          return writePayment(referenceByLegIndex);
+        }
+        const { leg, index } = nonCashIndexed[cursor]!;
+        return consumeConfirmedExternalPaymentAttemptTx(
+          tx,
+          {
+            branchId: Number(invPreview.branchId),
+            channel: "SALES_COLLECTION",
+            method: leg.method,
+            amount: leg.amount,
+            attemptId: leg.externalPaymentAttemptId,
+            deviceId: leg.externalPaymentDeviceId,
+          },
+          actor,
+          async (attempt) => {
+            referenceByLegIndex.set(index, attempt.externalReference);
+            const value = await consumeFrom(cursor + 1);
+            return {
+              invoiceId: value.invoiceId,
+              receiptId: value.receiptIds[index] ?? value.receiptId,
+              value,
+            };
+          },
+        );
+      };
+      return consumeFrom(0);
     }
-    return writePayment(input.reference?.trim() || null);
+
+    return writePayment(new Map());
   });
 }
 

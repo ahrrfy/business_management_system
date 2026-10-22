@@ -187,8 +187,8 @@ export default function PointOfSale() {
   return (
     <div className="pos-workspace flex h-dvh flex-col overflow-hidden bg-background" dir="rtl" data-pos-mode={activeMode}>
       {/* شريط الأوضاع — مَوحَّد عبر الأوضاع الثلاثة */}
-      <div className="pos-modebar flex flex-shrink-0 items-center gap-2 overflow-x-auto border-b bg-card px-3 py-1.5">
-        <div className="flex items-center gap-1.5" role="tablist" aria-label="أوضاع نقطة البيع">
+      <div className="pos-modebar flex flex-shrink-0 items-center gap-2 overflow-x-auto border-b bg-card px-2.5 py-1">
+        <div className="flex items-center gap-1" role="tablist" aria-label="أوضاع نقطة البيع">
           {visibleModes.map((m) => {
             const active = m.v === activeMode;
             return (
@@ -199,24 +199,24 @@ export default function PointOfSale() {
                 aria-selected={active}
                 onClick={() => setMode(m.v)}
                 className={cn(
-                  "inline-flex h-[var(--ui-control)] items-center gap-2 rounded-lg border-2 px-3 text-sm font-bold transition-all",
+                  "inline-flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border px-2.5 text-xs font-bold transition-all",
                   active ? m.activeCls : "border-transparent bg-muted/40 hover:bg-muted",
                 )}
                 title={`${m.label} — ${m.subtitle} (Ctrl+${MODES.indexOf(m) + 1})`}
               >
-                <m.Icon aria-hidden className="size-4" />
+                <m.Icon aria-hidden className="size-3.5" />
                 <span>{m.label}</span>
               </button>
             );
           })}
           {reservationsWorkspace && (
-            <span className="inline-flex h-[var(--ui-control)] items-center gap-2 rounded-lg border-2 border-primary bg-primary/10 px-3 text-sm font-bold text-primary">
-              <CalendarClock aria-hidden className="size-4" />
+            <span className="inline-flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border border-primary bg-primary/10 px-2.5 text-xs font-bold text-primary">
+              <CalendarClock aria-hidden className="size-3.5" />
               حجوزات خدمة العملاء
             </span>
           )}
         </div>
-        <div className="pos-modebar-meta ms-auto flex shrink-0 items-center gap-3">
+        <div className="pos-modebar-meta ms-auto flex shrink-0 items-center gap-2">
           {/* صدق الهوية: صاحب الدور المخصّص المحصور بقسمٍ (مثل «كاشير طباعة») يرى لماذا
               يظهر له قسم واحد — كان يظهر تبويب وحيد بلا تفسير فيبدو النظام «غير منطقي».
               والتخصيص الفرديّ (permissionsOverride بلا دور مخصّص) يُعلَن كذلك — نفس الفجوة بطريق ثانٍ. */}

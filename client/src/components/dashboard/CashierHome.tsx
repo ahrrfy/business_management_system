@@ -69,15 +69,15 @@ function TileGroup({
 }) {
   if (tiles.length === 0) return null;
   return (
-    <section style={{ display: "flex", flexDirection: "column", gap: 14 }} aria-label={label}>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-        <h2 style={{ fontSize: "0.8125rem", fontWeight: 800, color: T.secLabel, margin: 0, letterSpacing: "0.04em" }}>
+    <section style={{ display: "flex", flexDirection: "column", gap: 10 }} aria-label={label}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+        <h2 style={{ fontSize: "0.75rem", fontWeight: 800, color: T.secLabel, margin: 0, letterSpacing: "0.04em" }}>
           {label}
         </h2>
-        {hint && <span style={{ fontSize: "0.75rem", color: T.muted }}>{hint}</span>}
+        {hint && <span style={{ fontSize: "0.6875rem", color: T.muted }}>{hint}</span>}
         <div style={{ flex: 1, height: 1, background: T.secLine }} aria-hidden />
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(264px, 1fr))", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10 }}>
         {tiles.map((t) => {
           const Icon = t.icon;
           const badgeBg =
@@ -101,18 +101,18 @@ function TileGroup({
                 position: "relative",
                 background: T.cardBg,
                 border: `1px solid ${T.cardBord}`,
-                borderRadius: 14,
-                padding: "18px 18px",
+                borderRadius: 12,
+                padding: "12px 14px",
                 textDecoration: "none",
                 display: "flex",
                 flexDirection: "column",
-                gap: 8,
-                minHeight: 96,
+                gap: 5,
+                minHeight: 72,
                 transition: "transform 0.1s ease, border-color 0.15s ease",
               }}
             >
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   {Icon && (
                     <span
                       aria-hidden
@@ -120,29 +120,29 @@ function TileGroup({
                         display: "flex",
                         alignItems: "center",
                         justifyContent: "center",
-                        width: 32,
-                        height: 32,
-                        borderRadius: 9,
+                        width: 28,
+                        height: 28,
+                        borderRadius: 8,
                         background: "var(--muted)",
                         color: "var(--foreground)",
                         flexShrink: 0,
                       }}
                     >
-                      <Icon style={{ width: 17, height: 17 }} />
+                      <Icon style={{ width: 15, height: 15 }} />
                     </span>
                   )}
-                  <span style={{ fontSize: "1rem", fontWeight: 700, color: T.text }}>{t.name}</span>
+                  <span style={{ fontSize: "0.875rem", fontWeight: 700, color: T.text }}>{t.name}</span>
                 </div>
                 {Boolean(t.badge && t.badge > 0) && (
                   <span
                     title={t.badgeHint}
                     style={{
-                      minWidth: 24,
-                      padding: "2px 8px",
+                      minWidth: 22,
+                      padding: "1px 7px",
                       borderRadius: 999,
                       background: badgeBg,
                       color: badgeColor,
-                      fontSize: "0.75rem",
+                      fontSize: "0.6875rem",
                       fontWeight: 800,
                       textAlign: "center",
                     }}
@@ -151,7 +151,7 @@ function TileGroup({
                   </span>
                 )}
               </div>
-              <div style={{ fontSize: "0.8125rem", color: T.muted, lineHeight: 1.6 }}>{t.desc}</div>
+              <div style={{ fontSize: "0.75rem", color: T.muted, lineHeight: 1.45 }}>{t.desc}</div>
             </Link>
           );
         })}
@@ -408,21 +408,21 @@ export function CashierHome({
         direction: "rtl",
         fontFamily: "'Cairo', sans-serif",
         margin: "-24px",
-        padding: "clamp(24px, 4vw, 44px) clamp(20px, 4vw, 48px) 56px",
+        padding: "clamp(16px, 2.5vw, 28px) clamp(16px, 3vw, 32px) 36px",
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
-        gap: 32,
+        gap: 20,
       }}
     >
-      <div style={{ width: "100%", maxWidth: 1180, display: "flex", flexDirection: "column", gap: 32 }}>
+      <div style={{ width: "100%", maxWidth: 1180, display: "flex", flexDirection: "column", gap: 20 }}>
         {/* الترويسة الترحيبية */}
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           <div>
-            <h1 style={{ fontSize: "clamp(22px, 2.4vw, 30px)", fontWeight: 800, color: T.text, margin: 0, letterSpacing: "-0.01em" }}>
+            <h1 style={{ fontSize: "clamp(18px, 2vw, 24px)", fontWeight: 800, color: T.text, margin: 0, letterSpacing: "-0.01em" }}>
               أهلاً {me.data?.name ?? ""}
             </h1>
-            <p style={{ fontSize: "0.875rem", color: T.sub, margin: "8px 0 0", lineHeight: 1.7 }}>
+            <p style={{ fontSize: "0.8125rem", color: T.sub, margin: "4px 0 0", lineHeight: 1.5 }}>
               {roleLabel} · محطة عملك: افتح ورديتك، استقبل طلبات عملائك، سلّم بالباركود، أغلق وسلّم الصندوق.
             </p>
           </div>
@@ -436,17 +436,17 @@ export function CashierHome({
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
-                    gap: 8,
-                    padding: "7px 14px",
+                    gap: 6,
+                    padding: "5px 12px",
                     borderRadius: 999,
                     background: "var(--sem-pos-bg)",
                     border: "1px solid var(--sem-pos)",
                     color: "var(--sem-pos)",
-                    fontSize: "0.8125rem",
+                    fontSize: "0.75rem",
                     fontWeight: 800,
                   }}
                 >
-                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--sem-pos)", display: "inline-block" }} />
+                  <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--sem-pos)", display: "inline-block" }} />
                   <span>الوردية مفتوحة #{shift.id}</span>
                 </div>
               </FinancialCellProvenanceHover>
@@ -455,17 +455,17 @@ export function CashierHome({
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
-                  gap: 8,
-                  padding: "7px 14px",
+                  gap: 6,
+                  padding: "5px 12px",
                   borderRadius: 999,
                   background: "var(--sem-warn-bg)",
                   border: "1px solid var(--sem-warn)",
                   color: "var(--sem-warn)",
-                  fontSize: "0.8125rem",
+                  fontSize: "0.75rem",
                   fontWeight: 800,
                 }}
               >
-                <Clock style={{ width: 14, height: 14 }} />
+                <Clock style={{ width: 13, height: 13 }} />
                 <span>لا توجد وردية مفتوحة</span>
               </div>
             )}
@@ -480,24 +480,24 @@ export function CashierHome({
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
-              gap: 12,
-              padding: "12px 18px",
-              borderRadius: 12,
+              gap: 10,
+              padding: "9px 14px",
+              borderRadius: 10,
               background: "var(--sem-warn-bg)",
               border: "1px solid var(--sem-warn)",
               color: "var(--sem-warn)",
               textDecoration: "none",
-              fontSize: "0.875rem",
+              fontSize: "0.8125rem",
               fontWeight: 700,
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <ShoppingBag style={{ width: 18, height: 18, flexShrink: 0 }} />
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <ShoppingBag style={{ width: 16, height: 16, flexShrink: 0 }} />
               <span>
                 تنبيه: يوجد {pendingStoreOrders.toLocaleString("ar-IQ-u-nu-latn")} طلب متجر إلكتروني بحاجة للمتابعة والتجهيز
               </span>
             </div>
-            <span style={{ fontSize: "0.8125rem", textDecoration: "underline" }}>
+            <span style={{ fontSize: "0.75rem", textDecoration: "underline" }}>
               فتح شاشة التجهيز
             </span>
           </Link>
@@ -510,36 +510,36 @@ export function CashierHome({
             display: "block",
             background: T.featuredBg,
             border: `2px solid ${T.featuredBd}`,
-            borderRadius: 18,
-            padding: "clamp(24px, 3vw, 36px) clamp(22px, 3vw, 32px)",
+            borderRadius: 14,
+            padding: "clamp(16px, 2vw, 22px) clamp(16px, 2.2vw, 24px)",
             textDecoration: "none",
             transition: "all 0.15s ease",
           }}
         >
-          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span
                   aria-hidden
                   style={{
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
-                    width: 40,
-                    height: 40,
-                    borderRadius: 12,
+                    width: 34,
+                    height: 34,
+                    borderRadius: 10,
                     background: "var(--dash-card-bg)",
                     border: "1px solid var(--dash-card-bord)",
                     color: "var(--dash-text)",
                   }}
                 >
-                  <Store style={{ width: 22, height: 22 }} />
+                  <Store style={{ width: 18, height: 18 }} />
                 </span>
-                <div style={{ fontSize: "clamp(22px, 2.4vw, 30px)", fontWeight: 800, color: T.text, letterSpacing: "-0.01em" }}>
+                <div style={{ fontSize: "clamp(18px, 2vw, 24px)", fontWeight: 800, color: T.text, letterSpacing: "-0.01em" }}>
                   {stationTitle}
                 </div>
               </div>
-              <div style={{ fontSize: "0.875rem", color: T.sub, lineHeight: 1.7, maxWidth: "68ch" }}>
+              <div style={{ fontSize: "0.8125rem", color: T.sub, lineHeight: 1.55, maxWidth: "68ch" }}>
                 {stationDescription}
               </div>
             </div>
@@ -551,12 +551,12 @@ export function CashierHome({
                     display: "inline-flex",
                     alignItems: "center",
                     gap: 6,
-                    padding: "8px 16px",
-                    borderRadius: 12,
+                    padding: "6px 14px",
+                    borderRadius: 10,
                     background: "var(--dash-card-bg)",
                     border: "1px solid var(--dash-card-bord)",
                     color: T.text,
-                    fontSize: "0.8125rem",
+                    fontSize: "0.75rem",
                     fontWeight: 800,
                   }}
                 >
@@ -568,12 +568,12 @@ export function CashierHome({
                     display: "inline-flex",
                     alignItems: "center",
                     gap: 6,
-                    padding: "8px 16px",
-                    borderRadius: 12,
+                    padding: "6px 14px",
+                    borderRadius: 10,
                     background: "var(--dash-card-bg)",
                     border: "1px solid var(--dash-card-bord)",
                     color: T.text,
-                    fontSize: "0.8125rem",
+                    fontSize: "0.75rem",
                     fontWeight: 800,
                   }}
                 >

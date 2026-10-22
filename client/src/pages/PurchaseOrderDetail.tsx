@@ -75,11 +75,22 @@ function poItemColumns(isUsd: boolean): ColumnDef<PoItemRow, unknown>[] {
           sku: it.sku,
         });
         return (
-          <div className="flex flex-col">
-            <span className="font-semibold text-foreground">
-              {it.productName ?? "—"}
-              {desc ? <span className="text-muted-foreground font-normal"> — {desc}</span> : null}
-            </span>
+          <div className="flex flex-col gap-0.5">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="font-semibold text-foreground">{it.productName ?? "—"}</span>
+              {desc ? (
+                <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground font-normal">
+                  {it.colorHex && /^#[0-9a-fA-F]{6}$/.test(it.colorHex) ? (
+                    <span
+                      aria-hidden="true"
+                      className="inline-block size-2.5 shrink-0 rounded-full border border-border/60"
+                      style={{ backgroundColor: it.colorHex }}
+                    />
+                  ) : null}
+                  <span>{desc}</span>
+                </span>
+              ) : null}
+            </div>
             {it.sku ? (
               <span className="text-[11px] text-muted-foreground font-mono" dir="ltr">
                 {it.sku}
@@ -252,7 +263,7 @@ export default function PurchaseOrderDetail() {
     !D(d.paidUsd ?? 0).gt(0);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         title={`أمر شراء ${d.poNumber ?? `#${d.id}`}`}
         actions={
@@ -286,7 +297,7 @@ export default function PurchaseOrderDetail() {
       />
 
       {d.status === "RECEIVED" && canReverseReceipt && (
-        <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/30 p-3 text-xs text-muted-foreground">
+        <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
           <div className="flex items-center gap-2">
             <CheckCircle2 aria-hidden className="size-4 text-[var(--sem-pos)]" />
             <span>
@@ -300,10 +311,10 @@ export default function PurchaseOrderDetail() {
       )}
 
       <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">بيانات الأمر</CardTitle>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-bold">بيانات الأمر</CardTitle>
         </CardHeader>
-        <CardContent className="grid grid-cols-2 gap-4 md:grid-cols-4">
+        <CardContent className="grid grid-cols-2 gap-3 md:grid-cols-4">
           <Field label="المورّد">
             {d.supplierId ? (
               <Link
@@ -333,7 +344,7 @@ export default function PurchaseOrderDetail() {
 
       {/* بعد cutover، الدفع يُخصَّص إلى فاتورة مورد مرحّلة لا إلى أمر الشراء مباشرةً. */}
       {settlement.requiresReview ? (
-        <p role="alert" className="border border-money-negative p-3 text-sm text-money-negative">
+        <p role="alert" className="border border-money-negative p-2.5 text-xs text-money-negative">
           دليل السداد يحتاج مراجعة. طلب السداد متوقف حتى مطابقة المستندات.
         </p>
       ) : null}
@@ -343,10 +354,10 @@ export default function PurchaseOrderDetail() {
       remaining != null &&
       remaining.gt(0) ? (
         <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">تسديد للمورّد</CardTitle>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-bold">تسديد للمورّد</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-3">
+          <CardContent className="space-y-2">
             <p className="text-xs leading-relaxed text-muted-foreground">
               يظهر في الأمر رصيد مرجعي قدره {fmtAr(remaining.toFixed(2))}{" "}
               {isUsd ? "$" : "د.ع"}. السداد الجديد يبدأ من فاتورة المورد
@@ -363,8 +374,8 @@ export default function PurchaseOrderDetail() {
       ) : null}
 
       <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">البنود</CardTitle>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-bold">البنود</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
           {/* مُضمَّن: البطاقة تحمل عنوان «البنود»، والإجماليات في بطاقةٍ مستقلّة أدناه. */}
@@ -381,8 +392,8 @@ export default function PurchaseOrderDetail() {
       </Card>
 
       <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">الإجماليات</CardTitle>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-bold">الإجماليات</CardTitle>
         </CardHeader>
         <CardContent>
           {costHidden ? (
@@ -390,12 +401,12 @@ export default function PurchaseOrderDetail() {
               قيم التكلفة محجوبة عن صلاحيّتك.
             </p>
           ) : (
-            <div className="space-y-4">
+            <div className="space-y-3">
               {/* ما يُحسَب فعلاً ضمن «الإجمالي» وذمّة المورّد — بضاعةٌ فقط، بلا شحن ولا كمرك
                   (قرار المالك ٥/٨/٢٦: order.ts `total = subtotal + tax`). كانا سابقاً يُعرَضان
                   كسطرَين مجاورَين لهذه المجموعة فيبدوان مطروحَين منها رغم أنهما لم يدخلاها قطّ —
                   فُصلا بصرياً أدناه ليزول هذا الالتباس. */}
-              <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
                 <Field label="المجموع قبل الضريبة">{fmtAr(d.subtotal)}</Field>
                 {/* خصم فاتورة المورّد (0204): **مطبَّقٌ في الأعمدة أعلاه** — المجموع صافٍ بعده،
                     والذمّة وتكلفة المخزون كذلك. يُعرَض إفصاحاً لا بنداً يُطرَح مرّةً أخرى. */}
@@ -446,8 +457,8 @@ export default function PurchaseOrderDetail() {
 
               {(D(d.shippingCost ?? 0).gt(0) || D(d.customsCost ?? 0).gt(0)) && (
                 <Card>
-                  <CardContent className="p-4 space-y-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-2.5">
+                  <CardContent className="p-3 space-y-2.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-2">
                       <div className="flex items-center gap-2">
                         <Truck className="size-4 text-primary" aria-hidden />
                         <span className="font-semibold text-sm">أجور الشحن والكمرك والتفريغ</span>
@@ -455,28 +466,28 @@ export default function PurchaseOrderDetail() {
                       <div>
                         {d.shippingPayment?.obligationStatus === "PAID" ? (
                           d.shippingPayment.cashBucket === "DRAWER" ? (
-                            <Badge variant="outline" className="border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] gap-1.5 py-1">
+                            <Badge variant="outline" className="border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] gap-1.5 py-0.5">
                               <CheckCircle2 className="size-3.5" aria-hidden />
                               مدفوع نقداً من درج الوردية #{d.shippingPayment.shiftId}
                             </Badge>
                           ) : d.shippingPayment.cashBucket === "TREASURY" ? (
-                            <Badge variant="outline" className="border-[var(--sem-info)]/40 bg-[var(--sem-info-bg)] text-[var(--sem-info)] gap-1.5 py-1">
+                            <Badge variant="outline" className="border-[var(--sem-info)]/40 bg-[var(--sem-info-bg)] text-[var(--sem-info)] gap-1.5 py-0.5">
                               <Landmark className="size-3.5" aria-hidden />
                               مدفوع من الخزينة الإدارية
                             </Badge>
                           ) : (
-                            <Badge variant="outline" className="border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] gap-1.5 py-1">
+                            <Badge variant="outline" className="border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] gap-1.5 py-0.5">
                               <CheckCircle2 className="size-3.5" aria-hidden />
                               تم السداد بالكامل
                             </Badge>
                           )
                         ) : d.shippingPayment?.obligationStatus === "PAYMENT_PENDING" ? (
-                          <Badge variant="outline" className="border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] gap-1.5 py-1">
+                          <Badge variant="outline" className="border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] gap-1.5 py-0.5">
                             <Clock className="size-3.5" aria-hidden />
                             طلب صرف بانتظار اعتماد المالك
                           </Badge>
                         ) : (
-                          <Badge variant="outline" className="border-[var(--sem-danger)]/40 bg-[var(--sem-danger-bg)] text-[var(--sem-danger)] gap-1.5 py-1">
+                          <Badge variant="outline" className="border-[var(--sem-danger)]/40 bg-[var(--sem-danger-bg)] text-[var(--sem-danger)] gap-1.5 py-0.5">
                             <AlertTriangle className="size-3.5" aria-hidden />
                             {purchaseShippingAdjustmentLabel(d.shippingPayment?.obligationStatus) ?? "مستحق غير مسدد"}
                           </Badge>
@@ -484,7 +495,7 @@ export default function PurchaseOrderDetail() {
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+                    <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
                       <Field label="أجور الشحن">{fmtAr(d.shippingCost)} د.ع</Field>
                       <Field label="الرسوم الجمركية">{fmtAr(d.customsCost)} د.ع</Field>
                       <Field label="إجمالي المصروف الإضافي">

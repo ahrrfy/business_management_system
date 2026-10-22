@@ -189,32 +189,32 @@ export default function Transfers() {
   );
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         title="تحويل بين الفروع"
         description="بخطوتين: الإرسال يخصم المصدر ويضع البضاعة «بالطريق»، والفرع الوجهة يستلمها بمطابقة فعلية — العجز يُوثَّق على السند."
         // كان يشير إلى «/inventory» (مركز المخزون، تبويبه الافتراضي ليس الحركات) — رابطٌ يحمل اسم
         // «حركات المخزون» يجب أن يفتح شاشتها فعلاً لا مركزاً عاماً.
-        actions={<Link href="/inventory-movements" className="text-sm text-muted-foreground">حركات المخزون ←</Link>}
+        actions={<Link href="/inventory-movements" className="text-xs text-muted-foreground">حركات المخزون ←</Link>}
       />
 
       {/* تبويبا الشاشة: إنشاء سند | سجلّ السندات (مع شارة الوارد بالطريق) */}
-      <div className="flex items-center gap-2 border-b">
+      <div className="flex items-center gap-1.5 border-b">
         <button
           type="button"
           onClick={() => setTab("new")}
-          className={`inline-flex items-center gap-1.5 px-3 py-2 text-sm border-b-2 -mb-px ${tab === "new" ? "border-primary font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}
+          className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs border-b-2 -mb-px ${tab === "new" ? "border-primary font-semibold text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}
         >
-          <PackagePlus aria-hidden className="size-4" /> إنشاء تحويل
+          <PackagePlus aria-hidden className="size-3.5" /> إنشاء تحويل
         </button>
         <button
           type="button"
           onClick={() => setTab("log")}
-          className={`inline-flex items-center gap-1.5 px-3 py-2 text-sm border-b-2 -mb-px ${tab === "log" ? "border-primary font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}
+          className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs border-b-2 -mb-px ${tab === "log" ? "border-primary font-semibold text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}
         >
-          <Inbox aria-hidden className="size-4" /> سجلّ التحويلات
+          <Inbox aria-hidden className="size-3.5" /> سجلّ التحويلات
           {(pending.data ?? 0) > 0 && (
-            <span className="rounded-full bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] text-xs px-2 py-0.5 tabular-nums">
+            <span className="rounded-full bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] text-[11px] px-1.5 py-0.5 tabular-nums">
               {fmtInt(pending.data ?? 0)} بانتظار الاستلام
             </span>
           )}
@@ -227,9 +227,9 @@ export default function Transfers() {
       <>
       {/* الفروع: من → إلى + عكس */}
       <Card>
-        <CardHeader><CardTitle className="text-base">الفروع</CardTitle></CardHeader>
+        <CardHeader className="pb-2"><CardTitle className="text-sm font-bold">الفروع</CardTitle></CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-3 items-end">
+          <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-2.5 items-end">
             {/* المصدرُ استنتاجٌ خادميّ (م٤ ق١): «فرعك المسند» للمخزن قراءةً (الخادم يُلزمه به)،
                 وزرُّ «تغيير» للأدمن/المالك — ولا «الفرع الأوّل في القائمة» صامتاً. */}
             <InferredBranchField
@@ -239,16 +239,16 @@ export default function Transfers() {
               onChange={changeFrom}
               disabled={transfer.isPending}
             />
-            <div className="flex justify-center pb-1">
+            <div className="flex justify-center pb-0.5">
               {canCrossBranches && (
-                <Button type="button" variant="outline" size="icon" title="عكس الاتجاه" onClick={swap} className="rounded-full">
-                  <ArrowRightLeft aria-hidden className="h-4 w-4" />
+                <Button type="button" variant="outline" size="icon" title="عكس الاتجاه" onClick={swap} className="size-8 rounded-full">
+                  <ArrowRightLeft aria-hidden className="h-3.5 w-3.5" />
                 </Button>
               )}
             </div>
             <div className="space-y-1">
               <Label>إلى فرع *</Label>
-              <AppSelect className="h-9" value={String(effectiveTo || "")} onValueChange={(next) => setToBranchId(next ? Number(next) : "")}>
+              <AppSelect className="h-8" value={String(effectiveTo || "")} onValueChange={(next) => setToBranchId(next ? Number(next) : "")}>
                 <option value="">— اختر —</option>
                 {(branches.data ?? []).filter((b) => Number(b.id) !== Number(effectiveFrom)).map(branchOption)}
               </AppSelect>
@@ -260,15 +260,15 @@ export default function Transfers() {
       {/* رأس السند: رقم/سبب/مسؤول/ملاحظات */}
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-base flex items-center justify-between">
+          <CardTitle className="text-sm font-bold flex items-center justify-between">
             <span>سند تحويل مخزني</span>
             <span className="text-xs font-mono text-muted-foreground" dir="ltr">{trf}</span>
           </CardTitle>
         </CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <div className="space-y-1">
             <Label htmlFor="trf-reason">سبب التحويل</Label>
-            <AppSelect id="trf-reason" className="h-9" value={reason} onValueChange={(next) => setReason(next)}>
+            <AppSelect id="trf-reason" className="h-8" value={reason} onValueChange={(next) => setReason(next)}>
               {REASONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
             </AppSelect>
           </div>
@@ -282,12 +282,12 @@ export default function Transfers() {
           />
           <div className="space-y-1">
             <Label htmlFor="trf-notes">ملاحظات</Label>
-            <Input id="trf-notes" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="اختياري" />
+            <Input id="trf-notes" className="h-8" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="اختياري" />
           </div>
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-3 items-start">
         {/* سلة الأصناف — جدول الفاتورة المتقدمة (بحث حيّ + ماسح + إضافة متعددة) */}
         {effectiveFrom != null ? (
           <TransferCart
@@ -301,16 +301,16 @@ export default function Transfers() {
         ) : (
           // لا سلّةَ بلا مصدر: البحثُ والأرصدة تُقرأ بفرعٍ محدَّد، ولا فرعَ يُخترَع.
           <Card>
-            <CardContent className="p-6 text-center text-sm text-muted-foreground">
+            <CardContent className="p-4 text-center text-sm text-muted-foreground">
               يُحدَّد فرعُ المصدر أوّلاً — تُفتَح سلّةُ الأصناف بعده.
             </CardContent>
           </Card>
         )}
 
         {/* ملخّص التحويل (لاصق) */}
-        <Card className="lg:sticky lg:top-4">
-          <CardHeader className="pb-2"><CardTitle className="text-base">ملخّص التحويل</CardTitle></CardHeader>
-          <CardContent className="space-y-3 text-sm">
+        <Card className="lg:sticky lg:top-3">
+          <CardHeader className="pb-2"><CardTitle className="text-sm font-bold">ملخّص التحويل</CardTitle></CardHeader>
+          <CardContent className="space-y-2 text-xs">
             <div className="flex justify-between"><span className="text-muted-foreground">من</span><span className="font-medium">{fromName}</span></div>
             <div className="flex justify-between"><span className="text-muted-foreground">إلى</span><span className="font-medium">{toName}</span></div>
             <div className="flex justify-between"><span className="text-muted-foreground">أسطر السلة</span><span className="font-semibold tabular-nums" dir="ltr">{fmtInt(cart.length)}</span></div>
@@ -319,13 +319,13 @@ export default function Transfers() {
             {cart.length > aggregated.length && (
               <p className="text-[11px] text-muted-foreground">وحدات متعددة لنفس المنتج تُدمَج في بندٍ واحد بالوحدة الأساس.</p>
             )}
-            {blocking && <p className="text-sm text-destructive" role="alert">{blocking}</p>}
-            {error && <p className="text-sm text-destructive" role="alert">{error}</p>}
-            {done && <p className="text-sm text-money-positive">{done}</p>}
-            <Button className="w-full" onClick={submit} disabled={transfer.isPending || !valid}>
+            {blocking && <p className="text-xs text-destructive" role="alert">{blocking}</p>}
+            {error && <p className="text-xs text-destructive" role="alert">{error}</p>}
+            {done && <p className="text-xs text-money-positive">{done}</p>}
+            <Button size="sm" className="w-full" onClick={submit} disabled={transfer.isPending || !valid}>
               {transfer.isPending ? ACTION_LABELS.sending : "إرسال السند (بالطريق)"}
             </Button>
-            <Button variant="ghost" className="w-full" onClick={() => { setCart([]); setNotes(""); setError(""); setDone(""); }}>تفريغ السند</Button>
+            <Button size="sm" variant="ghost" className="w-full" onClick={() => { setCart([]); setNotes(""); setError(""); setDone(""); }}>تفريغ السند</Button>
           </CardContent>
         </Card>
       </div>

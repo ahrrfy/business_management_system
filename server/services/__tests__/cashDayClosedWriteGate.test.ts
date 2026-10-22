@@ -61,7 +61,7 @@ const RECEIPT_INSERT_INVENTORY: Readonly<Record<string, number>> = {
   "returnService.ts": 5,
   // م٢ ق٧: ردُّ إلغاء البيع/المرتجع الكامل وردُّ عكس تسليم أمر الشغل يكتبهما منفّذا محرّك العكس —
   // `sale/cancel.ts` و`workOrder/reverseDelivery.ts` لم يعودا يكتبان إيصالاً (يقفلان المصدر وحسب).
-  "reversal/executors/invoiceRefund.ts": 1,
+  "reversal/executors/invoiceRefund.ts": 2,
   "reversal/executors/workOrderDelivery.ts": 1,
   "sale/correct.ts": 1,
   "sale/correctionReceiptSettlement.ts": 2,
@@ -263,6 +263,7 @@ describe("closed cash-day writer inventory", () => {
       "exchange/reverse.ts",
       "expenseService.ts",
       "purchase/pay.ts",
+      "purchase/supplierPayments.ts",
       "shiftFundingService.ts",
       "treasury/pendingReceipts.ts",
       "voucher/approval.ts",

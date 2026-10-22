@@ -1,3 +1,4 @@
+import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
 import { TRPCError } from "@trpc/server";
 import { and, eq, isNull, or, sql } from "drizzle-orm";
 import {
@@ -382,6 +383,7 @@ export async function getDeliveryFinancialSummary(partyId: number, assignedUserI
       .leftJoin(deliveryConsignments, eq(deliveryConsignments.id, deliveryLedgerEntries.consignmentId))
       .where(and(
         eq(deliveryLedgerEntries.partyId, partyId),
+        effectiveDeliveryLedgerEntrySql(),
           scopedBranchId == null
             ? undefined
             : eq(deliveryLedgerEntries.branchId, scopedBranchId),

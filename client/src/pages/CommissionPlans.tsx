@@ -23,7 +23,6 @@ import {
 } from "@/components/ui/dialog";
 import { ListToolbar, RowActions } from "@/components/list";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { DataTable } from "@/components/data-table/DataTable";
 import { CommissionGuide } from "@/components/commissions/CommissionGuide";
@@ -269,32 +268,28 @@ export default function CommissionPlans() {
   }
 
   return (
-    <div className="space-y-4">
-      <PageHeader
-        title="خطط العمولات"
-        description="الخطة تحدّد كم يستحق البائع مقابل مبيعاته. لكل خطة مستويات مرتّبة من الأدنى إلى الأعلى: بلوغ حدّ المستوى يمنح نسبته على كامل مبيعات الموظف المحتسَبة + مكافأة ثابتة اختيارية."
-        actions={
-          <div className="flex items-center gap-2">
-            {canManageAssignments && (
-              <Button size="sm" variant="outline" onClick={() => setAssignOpen(true)} disabled={!commissionAccess.can("commissions.plans.assignmentBoard")}>
-                <Users className="size-4" /> ربط موظفي النطاق بالخطط
-              </Button>
-            )}
-            {canManagePlans && (
-              <Button size="sm" onClick={openAdd}>
-                <Plus className="size-4" /> خطة جديدة
-              </Button>
-            )}
-          </div>
-        }
-      />
-
+    <div className="space-y-2.5">
       <CommissionGuide />
-
       <Card>
         <CardHeader>
           <ListToolbar
             title="خطط العمولات"
+            pageTitle
+            actions={
+              <div className="flex flex-wrap items-center gap-1.5">
+                {/* CommissionGuide rendered full-width above Card */}
+                {canManageAssignments && (
+                  <Button size="sm" variant="outline" onClick={() => setAssignOpen(true)} disabled={!commissionAccess.can("commissions.plans.assignmentBoard")}>
+                    <Users className="size-4" /> ربط موظفي النطاق بالخطط
+                  </Button>
+                )}
+                {canManagePlans && (
+                  <Button size="sm" onClick={openAdd}>
+                    <Plus className="size-4" /> خطة جديدة
+                  </Button>
+                )}
+              </div>
+            }
             count={visibleRows.length}
             loading={list.isLoading}
             search={{ value: query, onChange: setQuery, placeholder: "اسم الخطة، طريقة الاحتساب، المستويات أو الملاحظات…" }}

@@ -1940,23 +1940,23 @@ export function SalesReturnPortal({
       </div>
 
       {/* العمود الجانبي: التسوية المالية والتأكيد الذري */}
-      <div className="lg:col-span-4 space-y-5">
+      <div className="lg:col-span-4 space-y-3">
         <Card className="shadow-sm border-emerald-500/30">
-          <CardHeader className="p-4 pb-2 border-b bg-muted/20">
+          <CardHeader className="p-3 pb-2 border-b bg-muted/20">
             <CardTitle className="text-sm font-bold flex items-center gap-2">
               <Wallet className="size-4 text-emerald-600" aria-hidden />
               <span>طريقة الاسترداد المالي والتأكيد</span>
             </CardTitle>
           </CardHeader>
-          <CardContent className="p-4 space-y-4">
+          <CardContent className="p-3 space-y-2.5">
             {/* كارت المبلغ الإجمالي */}
-            <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-center space-y-1">
+            <div className="p-2.5 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-center space-y-0.5">
               <span className="text-xs text-muted-foreground font-medium">
                 قيمة المرتجع
               </span>
-              <div className="text-2xl font-black text-emerald-700 dark:text-emerald-400 font-mono">
+              <div className="text-xl font-black text-emerald-700 dark:text-emerald-400 font-mono">
                 {fmt(String(salesTotal))}{" "}
-                <span className="text-sm font-bold">د.ع</span>
+                <span className="text-xs font-bold">د.ع</span>
               </div>
               <span className="text-[11px] text-muted-foreground">
                 إجمالي الأصناف: {salesCart.length} ({salesTotalPieces} قطعة)

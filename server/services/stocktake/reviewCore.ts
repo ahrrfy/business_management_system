@@ -1,6 +1,6 @@
 // محرّك المراجعة: إعادة الحساب الكامل (٦ استعلامات بلا N+1) + الحدود + الإجماليات + الحواجز.
 // المعادلات حرفياً من العقد §٢ (docs/stocktake-contract.md).
-import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import {
   branchStock,
@@ -13,6 +13,7 @@ import {
   stocktakeCounts,
   stocktakeDecisions,
   stocktakeItems,
+  stocktakeSessions,
   users,
 } from "../../../drizzle/schema";
 // INV-001: signedMoveQty (وadjustSignedDelta) في inventoryService — مصدر واحد للإشارة يستعمله
@@ -21,6 +22,7 @@ import { signedMoveQty } from "../inventoryService";
 import { money, toDbMoney } from "../money";
 import { requireDb } from "../tx";
 import { chunk, loadSessionHeader, type DbLike } from "./internal";
+import { loadActiveStocktakeOverlaps } from "./overlapGuard";
 import {
   findCountInputAnomalies,
   type CountInputAnomaly,
@@ -89,6 +91,8 @@ export interface ReviewRow {
   } | null;
   movesAfter: { type: string; qty: number; ref: string; at: Date }[];
   netAfter: number;
+  interveningStocktake: { sessionId: number; at: Date } | null;
+  activeStocktakeOverlap: { sessionId: number; code: string } | null;
   adjustedCount: number | null;
   bookNow: number;
   diff: number | null;
@@ -262,6 +266,10 @@ async function loadReviewCore(
 
   // (٤) أرصدة الآن (bookNow) لكل أصناف الجلسة.
   const variantIds = items.map((r) => Number(r.variantId));
+  const activeOverlaps =
+    s.status === "COUNTING" || s.status === "REVIEW"
+      ? await loadActiveStocktakeOverlaps(db, branchId, variantIds, sessionId)
+      : new Map<number, { sessionId: number; code: string }>();
   const stockNow = new Map<number, number>();
   for (const part of chunk(variantIds)) {
     const rows = await db
@@ -301,6 +309,21 @@ async function loadReviewCore(
     createdAt: Date;
   };
   const movesByVariant = new Map<number, MoveRow[]>();
+  // A matching/KEEP approval also supersedes an old physical count even when it
+  // produces no movement. Use the approved document, not only movement history.
+  const approvedBasisByVariant = new Map<number, { sessionId: number; at: Date }>();
+  if (minCountedAt) {
+    for (const part of chunk(variantIds)) {
+      const approvals = await db.select({ variantId: stocktakeItems.variantId, sessionId: stocktakeSessions.id, at: stocktakeSessions.approvedAt })
+        .from(stocktakeItems).innerJoin(stocktakeSessions, eq(stocktakeSessions.id, stocktakeItems.sessionId))
+        .where(and(eq(stocktakeSessions.branchId, branchId), eq(stocktakeSessions.status, "APPROVED"),
+          ne(stocktakeSessions.id, sessionId), inArray(stocktakeItems.variantId, part), gte(stocktakeSessions.approvedAt, minCountedAt)))
+        .orderBy(desc(stocktakeSessions.approvedAt), desc(stocktakeSessions.id));
+      for (const approval of approvals) if (approval.at && !approvedBasisByVariant.has(Number(approval.variantId))) {
+        approvedBasisByVariant.set(Number(approval.variantId), { sessionId: Number(approval.sessionId), at: approval.at });
+      }
+    }
+  }
   if (countedVariantIds.length && minCountedAt) {
     for (const part of chunk(countedVariantIds)) {
       const rows = await db
@@ -319,7 +342,7 @@ async function loadReviewCore(
           and(
             eq(inventoryMovements.branchId, branchId),
             inArray(inventoryMovements.variantId, part),
-            gt(inventoryMovements.createdAt, minCountedAt),
+            gte(inventoryMovements.createdAt, minCountedAt),
           ),
         )
         .orderBy(asc(inventoryMovements.createdAt), asc(inventoryMovements.id));
@@ -450,6 +473,25 @@ async function loadReviewCore(
     }));
     const netAfter = movesAfter.reduce((acc, m) => acc + m.qty, 0);
 
+    const interveningStocktakeMovement =
+      used == null
+        ? null
+        : (movesByVariant.get(v) ?? []).find(
+            (m) =>
+              m.createdAt >= used!.countedAt &&
+              m.referenceId != null &&
+              (m.referenceType === "STOCKTAKE" ||
+                m.referenceType === "OPENING"),
+          );
+    const latestApproval = approvedBasisByVariant.get(v);
+    const interveningStocktake = used && latestApproval && latestApproval.at >= used.countedAt
+      ? latestApproval
+      : interveningStocktakeMovement ? { sessionId: Number(interveningStocktakeMovement.referenceId), at: interveningStocktakeMovement.createdAt } : null;
+    const activeStocktakeOverlap = activeOverlaps.get(v) ?? null;
+    const countBasisBlocked =
+      s.status !== "APPROVED" &&
+      s.status !== "CANCELLED" &&
+      (interveningStocktake != null || activeStocktakeOverlap != null);
     const adjustedCount =
       rawCount == null ? null : rawCount + (autoAdjust ? netAfter : 0);
     const bookNow = stockNow.get(v) ?? 0;
@@ -524,6 +566,7 @@ async function loadReviewCore(
       ? stocktakeReviewSnapshotLegacyHash(snapshotInput)
       : null;
     const reviewApprovalCurrent =
+      !countBasisBlocked &&
       it.reviewApprovedAt != null &&
       it.reviewApprovedSnapshotHash != null &&
       (s.status === "APPROVED" ||
@@ -537,6 +580,7 @@ async function loadReviewCore(
               latestCountOperationId)));
 
     const readyForReviewApproval =
+      !countBasisBlocked &&
       rawCount != null &&
       it.recountStatus !== "PENDING" &&
       !openConflict &&
@@ -569,6 +613,8 @@ async function loadReviewCore(
       conflict,
       movesAfter,
       netAfter,
+      interveningStocktake,
+      activeStocktakeOverlap,
       adjustedCount,
       bookNow,
       diff,
@@ -714,6 +760,9 @@ function buildBarriers(
     );
   const canApprove =
     s.status === "REVIEW" &&
+    !rows.some(
+      (r) => r.interveningStocktake != null || r.activeStocktakeOverlap != null,
+    ) &&
     valuationIntegrity.blockingCount === 0 &&
     countInputAnomalies.length === 0 &&
     notCounted === 0 &&
@@ -731,6 +780,12 @@ function buildBarriers(
         !reviewerFinalSeparationBlocked));
   return {
     notCounted,
+    interveningStocktakeCounts: rows.filter(
+      (r) => r.interveningStocktake != null,
+    ).length,
+    activeStocktakeOverlaps: rows.filter(
+      (r) => r.activeStocktakeOverlap != null,
+    ).length,
     reviewApproved,
     staleReviewApprovals,
     readyForReviewApproval,

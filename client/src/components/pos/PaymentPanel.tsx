@@ -14,26 +14,21 @@ import { type PaymentMethod, type NumMode, QUICK_AMTS, fmt, type PosColors as C 
 import { PaymentTotals } from "./PaymentTotals";
 import { Numpad } from "./Numpad";
 import { PaymentActions } from "./PaymentActions";
+import { SplitPaymentSection, type SplitPaymentSectionProps } from "./SplitPaymentSection";
 
 export interface PaymentPanelProps {
   C: C;
   total: number; payInput: string;
-  /** المجموع قبل خصم رأس الفاتورة (subtotal). = total إن كان الخصم صفراً. */
   subtotal: number;
-  /** مبلغ خصم رأس الفاتورة المُحتسَب من النسبة، للعرض والتحقّق البصريّ. */
   invoiceDiscountAmount: number;
-  /** نصّ نسبة خصم رأس الفاتورة (٠–١٥) — سلسلة كي تقبل حالة «فارغ = صفر». */
   invoiceDiscountPct: string;
   setInvoiceDiscountPct: (value: string) => void;
   invoiceDiscountType?: "percent" | "amount";
   invoiceDiscountValue?: string;
   onInvoiceDiscountChange?: (value: string, type: "percent" | "amount") => void;
   maxDiscountAmount?: number;
-  /** false ⇒ الحقل غير مسموحٍ (مثلاً سلّة كرت رقميّ) — يُعطَّل بصرياً وتبطل قيمته الفعلية. */
   invoiceDiscountAllowed: boolean;
-  /** السقفُ الفعّال المتبقّي بالنقاط المئوية (يُقصّ سلطةَ الكاشير حين توجد خصوماتُ سطرٍ مسبقة). */
   effectiveHeaderCapPct: number;
-  /** فرقُ التقريب النقديّ الحاليّ (± د.ع) — يُعرض إفصاحاً حين لا يكون صفراً. */
   cashRoundingDelta: number;
   setPayInput: (updater: string | ((s: string) => string)) => void;
   paid: number; change: number; credit: number;
@@ -52,25 +47,15 @@ export interface PaymentPanelProps {
   couponInput: string; couponCode: string | null; couponLabel: string | null;
   setCouponInput: (value: string) => void; onApplyCoupon: () => void; onClearCoupon: () => void;
   couponPending: boolean;
-  /** م١ PR-B — وضع «توصيل» (COD): يُمرَّر إلى منطقة الفعل لتبديل نصوص الزرّ/المؤشّر. */
   codMode?: boolean;
   isCreditBlocked?: boolean;
+  splitPayment?: Omit<SplitPaymentSectionProps, "C" | "total" | "cartLen">;
 }
 
-export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscountPct, setInvoiceDiscountPct, invoiceDiscountAllowed, effectiveHeaderCapPct, cashRoundingDelta, payInput, setPayInput, paid, change, credit, isChange, isOwing, method, setMethod, paymentRef, setPaymentRef, externalPaymentConfirmed, externalPaymentPending, onConfirmExternalPayment, dueDate, setDueDate, numMode, setNumMode, numPress, onPay, onQuickPay, cartLen, isPending, canPay, hasCustomer, isCreditBlocked = false, saleError, onDismissError, stacked, couponInput, couponCode, couponLabel, setCouponInput, onApplyCoupon, onClearCoupon, couponPending, codMode = false, invoiceDiscountType, invoiceDiscountValue, onInvoiceDiscountChange, maxDiscountAmount }: PaymentPanelProps) {
-
-  // ── الاحتواء الديناميكي: تركيبٌ متكيّف قبل المقياس ───────────────────────────
-  // شاشات الكاشير الفيزيائية صغيرة، والمطلوب وضوحٌ وكِبَرٌ لا انكماش. لذلك عند ضيق
-  // الارتفاع **يُحذف الثانويّ** (رقائق المبالغ، الكوبون، سطور التلميح) ويُعاد تركيب
-  // طرق الدفع صفّاً واحداً — بدل تصغير الأساسيّ. الحدّ الأدنى للمفتاح 44px (هدف
-  // اللمس المعياريّ) فلا ينزل تحته مهما ضاقت المساحة، والتمرير يبقى شبكة أمانٍ
-  // أخيرة لا تُبلَغ في مدى التشغيل الفعليّ.
+export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscountPct, setInvoiceDiscountPct, invoiceDiscountAllowed, effectiveHeaderCapPct, cashRoundingDelta, payInput, setPayInput, paid, change, credit, isChange, isOwing, method, setMethod, paymentRef, setPaymentRef, externalPaymentConfirmed, externalPaymentPending, onConfirmExternalPayment, dueDate, setDueDate, numMode, setNumMode, numPress, onPay, onQuickPay, cartLen, isPending, canPay, hasCustomer, isCreditBlocked = false, saleError, onDismissError, stacked, couponInput, couponCode, couponLabel, setCouponInput, onApplyCoupon, onClearCoupon, couponPending, codMode = false, invoiceDiscountType, invoiceDiscountValue, onInvoiceDiscountChange, maxDiscountAmount, splitPayment }: PaymentPanelProps) {
+  const isSplitPayment = (splitPayment?.paymentLegs.length ?? 0) > 0;
   const dense = useMediaQuery("(max-height: 820px)");
   const ultra = useMediaQuery("(max-height: 660px)");
-  // ٢٣/٨ (Codex P1 v2): حقلُ المبلغ يفصل «العرض» (raw ما يكتبه الكاشير) عن «القيمة الملتزمة»
-  // (`payInput` المطبَّعة). عقد التطبيع من `shared/numberNormalize` هو المرجع — `1,5` ⇒ `1.5`،
-  // `1,234` ⇒ `1234`، `1،5` كذلك. الحالات الوسطى الملتبسة تبقى في العرض ولا تُلتزم كي لا تتحطّم
-  // `D()` عليها. الأزرارُ السريعة/`+/-` تكتب على `payInput` مباشرةً؛ نُزامن العرضَ حينها.
   const [displayPay, setDisplayPay] = useState(payInput);
   useEffect(() => {
     try {
@@ -80,14 +65,7 @@ export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoic
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [payInput]);
   const [couponOpen, setCouponOpen] = useState(false);
-  // الكوبون يظهر دائماً وهو مُطبَّق (لا يُخفى خصمٌ سارٍ)، أو عند طلبه صراحةً.
   const showCoupon = !!couponCode || couponOpen;
-  // ٢٣/٨ — طيّ لوحة الأرقام: الشاشات القصيرة (dense) كانت تُخفي طرقَ الدفع تحت التمرير لأنّ
-  // اللوحةَ داخل منطقة تمرير مشتركة. الطيّ يُعيد ~٢٠٠px عمودياً فتظهر الأزرارُ كلّها بلا تمرير.
-  // الافتراضي: مطويّة على dense، مفتوحة على الشاشات الطويلة. القرارُ محفوظٌ في localStorage
-  // فيبقى تفضيلُ الكاشير بين الجلسات. حقلُ المبلغ يقبل الكتابةَ المباشرة بلوحة المفاتيح (بلا حاجة
-  // إلى النمباد أصلاً على أجهزة الديسك)، والأزرارُ الثلاثة (كمية/%/مبلغ) تُبقي اللمس ممكناً
-  // بفتح اللوحة تلقائياً عند اختيار وضعِ كميةٍ أو خصم.
   const [numpadOpen, setNumpadOpen] = useState<boolean>(() => {
     try {
       const stored = typeof window !== "undefined" ? window.localStorage.getItem("pos.numpadOpen") : null;
@@ -100,16 +78,11 @@ export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoic
     setNumpadOpen(open);
     try { window.localStorage.setItem("pos.numpadOpen", open ? "1" : "0"); } catch { /* ignore */ }
   };
-  // فتحٌ تلقائيّ عند اختيار وضع «الكمية» أو «%»: بلا نمباد لا سبيل لتعديلهما هنا (مجهود لمس)،
-  // فيُفتح تلقائياً كي لا يعمى الكاشير عن مدخلٍ لا يراه. وضعُ «المبلغ» يبقى قابلاً للطيّ لأنّ
-  // الحقل نفسه صار `<input>` يقبل الكتابة المباشرة.
   const setNumModeAndReveal = (m: NumMode) => {
     setNumMode(m);
     if ((m === "QTY" || m === "DISC") && !numpadOpen) persistNumpad(true);
   };
-  const showQuickPay = !hasCustomer && !isOwing;
-  // حشوة الكتل الداخلية تضيق في أضيق مستوى — آخر ما يُقتطع بعد حذف الثانويّ،
-  // ولا يمسّ مقاسات الأزرار نفسها (تبقى ≥44px).
+  const showQuickPay = !hasCustomer && !isOwing && !isSplitPayment;
   const blockPad = ultra ? "2px 11px 0" : "4px 11px 3px";
 
   // `cqh` تقيس ارتفاع اللوحة الفعليّ (لا الشاشة) ⇒ تتبع الزوم والدقّة والنافذة
@@ -175,6 +148,7 @@ export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoic
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", scrollbarWidth: "thin" }}>
 
       {/* طريقة الدفع — ٤ أزرار متساوية في صفٍّ واحد بأعلى اللوحة لسرعة الاختيار */}
+      {!isSplitPayment && (
       <div style={{ padding: "4px 11px 2px", flexShrink: 0 }}>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 5 }}>
           <button type="button" style={payMethodStyle(method === "CASH")}     onClick={() => setMethod("CASH")}>
@@ -197,8 +171,14 @@ export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoic
           </div>
         )}
       </div>
+      )}
+
+      {splitPayment && (
+        <SplitPaymentSection C={C} total={total} cartLen={cartLen} {...splitPayment} />
+      )}
 
       {/* Amount display — حقل إدخال المبلغ وزر طي النمباد */}
+      {!isSplitPayment && (
       <div style={{ padding: "2px 11px 0", flexShrink: 0 }}>
         <div style={{ background: C.muted, border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "2px 8px 2px 10px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, minHeight: fluid(ultra ? 32 : 36, 4.8, 42) }}>
           <span style={{ fontSize: 12, color: C.mutedFg, flexShrink: 0 }}>{modeLabel}</span>
@@ -257,9 +237,10 @@ export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoic
           </div>
         </div>
       </div>
+      )}
 
       {/* Quick amounts — رقائق المبالغ السريعة للنقد فقط */}
-      {numMode === "PAY" && method === "CASH" && !dense && (
+      {!isSplitPayment && numMode === "PAY" && method === "CASH" && !dense && (
         <div style={{ padding: "2px 11px 0", display: "flex", gap: 3, flexWrap: "wrap", flexShrink: 0 }}>
           {QUICK_AMTS.map((a) => (
             <button key={a} type="button" onClick={() => setPayInput(String(a))}
@@ -291,6 +272,7 @@ export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoic
       />
 
       {/* مرجع ومحاولة الدفع غير النقدي — لا يُفتح الإتمام قبل CONFIRMED خادمية */}
+      {!isSplitPayment && (
       <PaymentReferenceField
         value={paymentRef}
         onChange={setPaymentRef}
@@ -302,6 +284,7 @@ export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoic
         colors={{ border: C.border, muted: C.muted, mutedFg: C.mutedFg, fg: C.fg, amber: C.amber, success: C.success }}
         style={{ padding: blockPad, flexShrink: 0 }}
       />
+      )}
 
       {/* تاريخ استحقاق الآجل (اختياري) — يظهر مع دفعة جزئية فقط */}
       {isOwing && (
@@ -366,11 +349,9 @@ export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoic
 
       </div>{/* ← نهاية منطقة الإدخال القابلة للتمرير */}
 
-      {/* منطقة الفعل — خارج التمرير ولا تنكمش أبداً: الباقي/المتبقي + زرّا الدفع.
-          هذه هي الضمانة الصلبة بأنّ زرّ الدفع لا يختفي مهما بلغ الزوم. */}
       <PaymentActions
         C={C} dense={dense} ultra={ultra} fluid={fluid}
-        total={total} cartLen={cartLen} payInput={payInput}
+        total={total} cartLen={cartLen} payInput={isSplitPayment ? String(paid) : payInput}
         isChange={isChange} isOwing={isOwing} change={change} credit={credit}
         showQuickPay={showQuickPay}
         codMode={codMode}
@@ -378,7 +359,8 @@ export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoic
         canPay={canPay} isPending={isPending} hasCustomer={hasCustomer}
         method={method} externalPaymentConfirmed={externalPaymentConfirmed}
         onPay={onPay} onQuickPay={onQuickPay}
-      />{/* ← نهاية منطقة الفعل */}
+        onEnableSplit={!isSplitPayment && splitPayment ? splitPayment.onEnableSplit : undefined}
+      />
     </div>
   );
 }

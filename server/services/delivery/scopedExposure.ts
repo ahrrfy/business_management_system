@@ -4,6 +4,7 @@ import { DELIVERY_CASH_CUSTODY_SIGN } from "@shared/deliveryLedgerEntryType";
 import type { Tx } from "../../db";
 import { money, round2 } from "../money";
 import { loadPartyExposureInputsTx } from "./exposureInputs";
+import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
 
 /** Keep the shared exposure model, with ledger facts restricted to the caller branch. */
 export async function loadScopedPartyExposureInputsTx(
@@ -24,6 +25,7 @@ export async function loadScopedPartyExposureInputsTx(
       and(
         inArray(deliveryLedgerEntries.partyId, partyIds),
         eq(deliveryLedgerEntries.branchId, branchId),
+        effectiveDeliveryLedgerEntrySql(),
       ),
     )
     .groupBy(deliveryLedgerEntries.partyId, deliveryLedgerEntries.entryType);

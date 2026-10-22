@@ -47,6 +47,7 @@ import { consumeApproval, validateApproval } from "./creditApprovalService";
 import { assertCreditLimit } from "../lib/credit";
 import { extractInsertId } from "../lib/insertId";
 import { userNameSnapshot } from "./userSnapshot";
+import { mixedAwarePaymentMethod } from "./sale/payment";
 import { paymentAssetRole } from "./sale/paymentPosting";
 import type { Tx } from "../db";
 import { titleForChannel } from "@shared/productChannelTitles";
@@ -83,6 +84,13 @@ function printServiceCatalogError(why: string): string {
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" | "TELECOM";
 
+export interface PrintSalePaymentLegInput {
+  amount: string;
+  method: PaymentMethod;
+  reference?: string | null;
+  externalPaymentAttemptId?: number | null;
+}
+
 export interface PrintSaleLineInput {
   variantId: number;
   productUnitId: number;
@@ -108,12 +116,8 @@ export interface CreatePrintSaleInput {
   isReservation?: boolean;
   priceTier?: PriceTier | null;
   lines: PrintSaleLineInput[];
-  payment?: {
-    amount: string;
-    method: PaymentMethod;
-    reference?: string | null;
-    externalPaymentAttemptId?: number | null;
-  } | null;
+  payment?: PrintSalePaymentLegInput | null;
+  payments?: PrintSalePaymentLegInput[] | null;
   /** داخلي: printPosRouter وحده يفعّله؛ مسارات الاستقبال/الأوفلاين القديمة لا تتظاهر بتأكيد خارجي. */
   requireExternalPaymentAttempt?: boolean;
   /** كود محطة الطباعة للتطابق مع محاولة الدفع، حين يكون متاحاً. */
@@ -195,23 +199,39 @@ export async function createPrintSaleInTx(
     // نستبعده من البصمة وحدها — نظير `createSaleInTx`.
     const { paymentMode: _fingerprintExcludedPaymentMode, ...fingerprintInput } = input;
     const requestFingerprint = input.clientRequestId ? idempotencyHash(fingerprintInput) : null;
+    const hasExplicitLegs = Array.isArray(input.payments) && input.payments.length > 0;
+    const rawPaymentLegs = hasExplicitLegs
+      ? input.payments!
+      : input.payment
+        ? [input.payment]
+        : [];
     // حارس النواة لا وسم الراوتر: الاستقبال وتثبيت المسوّدة يستدعيان
     // هذه الخدمة مباشرةً بلا requireExternalPaymentAttempt؛ لذلك يُرفض غير النقدي قبل
     // idempotency أو أي قراءة/كتابة مالية أو مخزنية.
-    if (input.payment) {
-      assertPosPaymentMethodEnabled(input.payment.method);
-      // ثابت «لا قبضَ بلا أثرٍ قابلٍ للمطابقة»: نظير الحارس في `sale/payment.ts`. كانت هذه
-      // القناة تُنشئ إيصالها بنفسها، فمرّ قبضٌ غير نقديّ بلا مرجعٍ حين تُستدعى الخدمة مباشرةً.
-      // المرجع الحاكم إمّا محاولةٌ مؤكَّدة (قناة PrintPOS تُرسل معرّفها ويُقرأ مرجعها تحت القفل)
-      // أو نصٌّ يدخله الموظّف (قناة الاستقبال). أحدهما إلزاميّ: لا قبضَ بلا أثرٍ قابلٍ للمطابقة.
+    for (const leg of rawPaymentLegs) {
+      assertPosPaymentMethodEnabled(leg.method);
+      if (hasExplicitLegs && money(leg.amount).lte(0)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر تثبيت الدفعات المقسّمة",
+            why: "مبلغ كل دفعة مقسّمة يجب أن يكون أكبر من صفر",
+            doThis: "أدخل مبلغاً موجباً لكل دفعة أو احذف الدفعة الفارغة",
+          }),
+        });
+      }
       if (
-        input.payment.method !== "CASH"
-        && !(input.payment.reference ?? "").trim()
-        && input.payment.externalPaymentAttemptId == null
+        leg.method !== "CASH"
+        && !(leg.reference ?? "").trim()
+        && leg.externalPaymentAttemptId == null
       ) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع عملية البطاقة/التحويل مطلوب" });
       }
     }
+    const effectiveInvoicePaymentMethod = rawPaymentLegs.reduce<string | null>(
+      (acc, leg) => mixedAwarePaymentMethod(acc, leg.method),
+      null,
+    );
     // ١. Idempotency: أعِد الفاتورة القائمة لنفس clientRequestId (نقرة مزدوجة/إعادة إرسال).
     if (input.clientRequestId) {
       await checkIdempotency(tx, "printSale.create", input.clientRequestId, requestFingerprint);
@@ -233,19 +253,49 @@ export async function createPrintSaleInTx(
         if (storedCustomerId !== requestedCustomerId) {
           throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: المفتاح مستعمَل لبيع عميل مختلف" });
         }
-        const requestedMethod = input.payment?.method ?? null;
+        const requestedMethod = effectiveInvoicePaymentMethod;
         if ((ex.paymentMethod ?? null) !== requestedMethod) {
           throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: المفتاح مستعمَل لبيع بطريقة دفع مختلفة" });
         }
-        if (input.requireExternalPaymentAttempt && input.payment) {
-          await assertExternalPaymentReplay(tx, Number(ex.id), {
-            branchId: input.branchId,
-            channel: "PRINT_POS",
-            method: input.payment.method,
-            amount: input.payment.amount,
-            attemptId: input.payment.externalPaymentAttemptId,
-            deviceId: input.deviceId,
-          }, actor);
+        if (input.requireExternalPaymentAttempt && rawPaymentLegs.length > 0) {
+          if (hasExplicitLegs) {
+            const nonCashLegs = rawPaymentLegs.filter((l) => l.method !== "CASH");
+            const preIds = new Set(input.preCollected?.receiptIds ?? []);
+            const replayReceipts = (
+              await tx
+                .select({ id: receipts.id })
+                .from(receipts)
+                .where(
+                  and(
+                    eq(receipts.invoiceId, Number(ex.id)),
+                    eq(receipts.direction, "IN"),
+                    sql`${receipts.paymentMethod} <> 'CASH'`,
+                  ),
+                )
+                .orderBy(receipts.id)
+            ).filter((r) => !preIds.has(Number(r.id)));
+            for (let i = 0; i < nonCashLegs.length; i++) {
+              const leg = nonCashLegs[i];
+              const expectedReceiptId = replayReceipts[i] ? Number(replayReceipts[i].id) : -1;
+              await assertExternalPaymentReplay(tx, Number(ex.id), {
+                branchId: input.branchId,
+                channel: "PRINT_POS",
+                method: leg.method,
+                amount: leg.amount,
+                attemptId: leg.externalPaymentAttemptId,
+                deviceId: input.deviceId,
+              }, actor, expectedReceiptId);
+            }
+          } else if (input.payment) {
+            await assertExternalPaymentReplay(tx, Number(ex.id), {
+              branchId: input.branchId,
+              channel: "PRINT_POS",
+              method: input.payment.method,
+              amount: input.payment.amount,
+              attemptId: input.payment.externalPaymentAttemptId,
+              deviceId: input.deviceId,
+            }, actor);
+          }
         }
         const existingItems = await tx
           .select({
@@ -285,7 +335,7 @@ export async function createPrintSaleInTx(
 
     // PRINT-CASH-SHIFT (تدقيق ٢/٧): بيع طباعة نقديّ بلا shiftId كان يكتب نقداً «يتيماً» لا يدخل تسوية
     // أي وردية (بعكس createSale الذي يشترط وردية للنقد). نفرض نفس البوّابة.
-    const isCashPayment = input.payment?.method === "CASH" && money(input.payment?.amount ?? "0").gt(0);
+    const isCashPayment = rawPaymentLegs.some((leg) => leg.method === "CASH" && money(leg.amount ?? "0").gt(0));
     if (isCashPayment && input.shiftId == null) {
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "يَلزم وردية مفتوحة للبيع النقدي" });
     }
@@ -663,13 +713,14 @@ export async function createPrintSaleInTx(
       });
     }
 
-    // ٨. تقريب نقدي IQD للبيع النقدي الكامل (نفس سياسة saleService): يُقرَّب الإجمالي، النقد = المقرّب،
-    //    والفرق قيد ADJUST ⇒ (SALE.amount + ADJUST.amount) = الإجمالي المقرّب = النقد المستلم.
-    const roundCash = !!input.cashRoundIQD && input.payment?.method === "CASH";
+    // ٨. تقريب نقدي IQD للبيع النقدي الكامل فقط (عندما تكون جميع أرجل الدفع نقدية):
+    const hasCashLeg = rawPaymentLegs.some((leg) => leg.method === "CASH");
+    const allCashLegs = rawPaymentLegs.length > 0 && rawPaymentLegs.every((leg) => leg.method === "CASH");
+    const roundCash = !!input.cashRoundIQD && allCashLegs;
     const grandTotalD = money(totals.total);
     // ش٦ — تقريب السلّة المختلطة: الفرق مُشتقٌّ خادمياً (نفس منطق sale/create حرفياً — PR #495).
     let overrideD: ReturnType<typeof money> | null = null;
-    if (input.cashRoundingBasketOthers != null && input.payment?.method === "CASH") {
+    if (input.cashRoundingBasketOthers != null && allCashLegs) {
       const basketRawD = round2(grandTotalD.plus(money(input.cashRoundingBasketOthers)));
       const deltaD = roundCashIQD(basketRawD).minus(basketRawD);
       const cand = round2(grandTotalD.plus(deltaD));
@@ -677,7 +728,15 @@ export async function createPrintSaleInTx(
     }
     const effectiveTotalD = overrideD ?? (roundCash ? roundCashIQD(grandTotalD) : grandTotalD);
     const cashRoundingAdj = effectiveTotalD.minus(grandTotalD);
-    const tendered = money(input.payment?.amount ?? "0");
+    const tendered = rawPaymentLegs.reduce(
+      (sum, leg) => sum.plus(round2(money(leg.amount))),
+      money(0),
+    );
+    const nonCashTenderedD = rawPaymentLegs.reduce(
+      (sum, leg) =>
+        leg.method === "CASH" ? sum : sum.plus(round2(money(leg.amount))),
+      money(0),
+    );
     // ش٤ (§٧.٢): المقبوض سلفاً يدخل الحساب قبل حرّاس الآجل/الائتمان (مرآة sale/create — حاصرة ١.١).
     const preCollectedD = round2(money(input.preCollected?.amount ?? "0"));
     if (preCollectedD.gt(effectiveTotalD)) {
@@ -688,10 +747,16 @@ export async function createPrintSaleInTx(
     }
     // SALES-05 (تدقيق ٢/٧): كنفس إصلاح saleService — التقريب على الإجمالي دائماً، لكن paidNow=الإجمالي
     // المقرّب فقط عند دفعٍ كامل فعلاً؛ الدفعة الجزئية تُسجَّل بالمبلغ المُسلَّم والباقي ذمّة.
-    if (input.payment?.method !== "CASH" && preCollectedD.plus(tendered).gt(effectiveTotalD)) {
+    if (
+      (!hasCashLeg && preCollectedD.plus(tendered).gt(effectiveTotalD)) ||
+      (hasCashLeg && preCollectedD.plus(nonCashTenderedD).gt(effectiveTotalD))
+    ) {
+      const offendingAmount = hasCashLeg
+        ? preCollectedD.plus(nonCashTenderedD)
+        : preCollectedD.plus(tendered);
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `المبلغ المدفوع (${preCollectedD.plus(tendered).toFixed(2)}) يتجاوز مستحق الفاتورة (${effectiveTotalD.toFixed(2)}).`,
+        message: `المبلغ المدفوع (${offendingAmount.toFixed(2)}) يتجاوز مستحق الفاتورة (${effectiveTotalD.toFixed(2)}).`,
       });
     }
     // ما زاد نقداً هو باقي للعميل، وليس دفعة أو نقداً باقياً في الدرج.
@@ -700,21 +765,42 @@ export async function createPrintSaleInTx(
     const paidNow = totalTenderedD.gt(effectiveTotalD) ? effectiveTotalD : totalTenderedD;
     const newMoneyD = round2(paidNow.minus(preCollectedD));
     const unpaid = effectiveTotalD.minus(paidNow);
-    let externalPaymentAttempt: LockedExternalPaymentAttempt | null = null;
-    if (input.requireExternalPaymentAttempt && input.payment) {
-      if (input.payment.method === "CASH") {
-        if (input.payment.externalPaymentAttemptId != null) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "الدفع النقدي لا يحمل محاولة دفع خارجية" });
+    const lockedAttemptsByLegIdx = new Map<number, LockedExternalPaymentAttempt>();
+    if (input.requireExternalPaymentAttempt && rawPaymentLegs.length > 0) {
+      const seenAttemptIds = new Set<number>();
+      for (const leg of rawPaymentLegs) {
+        if (leg.method === "CASH") {
+          if (leg.externalPaymentAttemptId != null) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "الدفع النقدي لا يحمل محاولة دفع خارجية" });
+          }
+        } else if (leg.externalPaymentAttemptId != null) {
+          if (seenAttemptIds.has(leg.externalPaymentAttemptId)) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: appErrorMessage({
+                what: "تعذّر إتمام الدفع المقسّم",
+                why: `إثبات الدفع الخارجي رقم ${leg.externalPaymentAttemptId} مكرّر في أكثر من دفعة داخل نفس الفاتورة`,
+                doThis: "أكّد لكل دفعة غير نقدية إثبات عملية مستقلّاً من جهاز الدفع",
+              }),
+            });
+          }
+          seenAttemptIds.add(leg.externalPaymentAttemptId);
         }
-      } else {
-        externalPaymentAttempt = await lockConfirmedExternalPaymentAttempt(tx, {
+      }
+      const nonCashLegs = rawPaymentLegs
+        .map((leg, idx) => ({ leg, idx }))
+        .filter((x) => x.leg.method !== "CASH" && round2(money(x.leg.amount)).gt(0))
+        .sort((a, b) => (a.leg.externalPaymentAttemptId ?? 0) - (b.leg.externalPaymentAttemptId ?? 0));
+      for (const { leg, idx } of nonCashLegs) {
+        const locked = await lockConfirmedExternalPaymentAttempt(tx, {
           branchId: input.branchId,
           channel: "PRINT_POS",
-          method: input.payment.method,
-          amount: toDbMoney(newMoneyD),
-          attemptId: input.payment.externalPaymentAttemptId,
+          method: leg.method,
+          amount: toDbMoney(hasExplicitLegs ? round2(money(leg.amount)) : newMoneyD),
+          attemptId: leg.externalPaymentAttemptId,
           deviceId: input.deviceId,
         }, actor);
+        lockedAttemptsByLegIdx.set(idx, locked);
       }
     }
     // ش٧: متبقّي فاتورة التوصيل عهدةُ مندوبٍ تُرفع في نفس المعاملة (مرآة sale/create حرفياً).
@@ -854,7 +940,7 @@ export async function createPrintSaleInTx(
       cashRoundingAdjustment: toDbMoney(cashRoundingAdj),
       status,
       paidAmount: toDbMoney(paidNow),
-      paymentMethod: input.payment?.method ?? null,
+      paymentMethod: effectiveInvoicePaymentMethod,
       // م١ (PR-1): يُختَم COD حين يمرّره الاستقبال مع توصيل (مرآة sale/create) — كان يبقى PREPAID دائماً.
       // ⚠️ Codex #1006 P2 — فاتورةُ المطبعة في السلّة المختلطة تُدفَع كاملةً عمداً لتكون الفاتورةُ
       // العاديّة حاملةَ COD وحدها؛ فمتى لا متبقٍّ تحمله الإرساليّة فهي PREPAID لا COD (نشتقّه من المتبقّي).
@@ -987,43 +1073,69 @@ export async function createPrintSaleInTx(
     }
 
     // ١٣. الدفع + الذمم — ش٤ (I5): الإيصال والقيد للجزء الجديد وحده (مرآة sale/create).
-    if (newMoneyD.gt(0)) {
-      const rRes = await tx.insert(receipts).values({
-        invoiceId,
-        branchId: input.branchId,
-        shiftId: input.shiftId ?? null,
-        // CASH-BUCKET (تدقيق ٢/٧، حرج): كان هذا الإيصال يُدرَج **بلا cashBucket** بينما إغلاق الوردية
-        // يحسب النقد المتوقَّع بفلتر cashBucket='DRAWER' ⇒ كل نقد مبيعات الطباعة يختفي من تسوية الصندوق
-        // ومن رصيد الخزينة (منفذ اختلاس + عجز/فائض مزوّر). الآن مطابق تماماً لمسار البيع العادي.
-        cashBucket: input.payment!.method === "CASH" ? "DRAWER" : null,
-        direction: "IN",
-        amount: toDbMoney(newMoneyD),
-        paymentMethod: input.payment!.method,
-        referenceNumber: externalPaymentAttempt?.externalReference ?? (input.payment!.reference?.trim() || null),
-        status: "COMPLETED",
-        approvalStatus: "APPROVED",
-        createdBy: actor.userId,
-      });
-      const receiptId = extractInsertId(rRes);
-      if (externalPaymentAttempt) {
-        await bindExternalPaymentAttempt(tx, Number(externalPaymentAttempt.id), invoiceId, receiptId);
+    if (newMoneyD.gt(0) && rawPaymentLegs.length > 0) {
+      let remainingNonCashBudget = newMoneyD.lt(nonCashTenderedD)
+        ? newMoneyD
+        : nonCashTenderedD;
+      const rawCashBudget = round2(newMoneyD.minus(remainingNonCashBudget));
+      let remainingCashBudget = rawCashBudget.gt(0) ? rawCashBudget : money(0);
+      for (let legIdx = 0; legIdx < rawPaymentLegs.length; legIdx++) {
+        const leg = rawPaymentLegs[legIdx]!;
+        const legTenderedD = round2(money(leg.amount));
+        if (legTenderedD.lte(0)) continue;
+        let legRecordedD: ReturnType<typeof money>;
+        if (leg.method === "CASH") {
+          legRecordedD = legTenderedD.lt(remainingCashBudget)
+            ? legTenderedD
+            : remainingCashBudget;
+          remainingCashBudget = round2(remainingCashBudget.minus(legRecordedD));
+        } else {
+          legRecordedD = legTenderedD.lt(remainingNonCashBudget)
+            ? legTenderedD
+            : remainingNonCashBudget;
+          remainingNonCashBudget = round2(
+            remainingNonCashBudget.minus(legRecordedD),
+          );
+        }
+        if (legRecordedD.lte(0)) continue;
+        const lockedAttempt = lockedAttemptsByLegIdx.get(legIdx) ?? null;
+        const rRes = await tx.insert(receipts).values({
+          invoiceId,
+          branchId: input.branchId,
+          shiftId: input.shiftId ?? null,
+          // CASH-BUCKET (تدقيق ٢/٧، حرج): كان هذا الإيصال يُدرَج **بلا cashBucket** بينما إغلاق الوردية
+          // يحسب النقد المتوقَّع بفلتر cashBucket='DRAWER' ⇒ كل نقد مبيعات الطباعة يختفي من تسوية الصندوق
+          // ومن رصيد الخزينة (منفذ اختلاس + عجز/فائض مزوّر). الآن مطابق تماماً لمسار البيع العادي.
+          cashBucket: leg.method === "CASH" ? "DRAWER" : null,
+          direction: "IN",
+          amount: toDbMoney(legRecordedD),
+          paymentMethod: leg.method,
+          referenceNumber: lockedAttempt?.externalReference ?? (leg.reference?.trim() || null),
+          status: "COMPLETED",
+          approvalStatus: "APPROVED",
+          createdBy: actor.userId,
+        });
+        const receiptId = extractInsertId(rRes);
+        if (lockedAttempt) {
+          await bindExternalPaymentAttempt(tx, Number(lockedAttempt.id), invoiceId, receiptId);
+        }
+        const paymentRole = paymentAssetRole(leg.method, leg.method === "CASH" ? "DRAWER" : null, "IN");
+        const paymentPostingSource = {
+          roleDebits: { [paymentRole]: legRecordedD },
+          roleCredits: { AR: legRecordedD },
+        };
+        await postEntry(tx, {
+          entryType: "PAYMENT_IN",
+          branchId: input.branchId,
+          invoiceId,
+          receiptId,
+          customerId: input.customerId ?? null,
+          amount: legRecordedD,
+          paymentMethod: leg.method, // دلو النقد للدفتر المزدوج (لا يُخزَّن)
+          postingIntent: createPostingIntent("PAYMENT_IN_CUSTOMER", "PAYMENT_IN", [debitLine(paymentRole, legRecordedD), creditLine("AR", legRecordedD)], paymentPostingSource),
+          postingSourceComponents: paymentPostingSource,
+        });
       }
-      const paymentRole = paymentAssetRole(input.payment!.method, input.payment!.method === "CASH" ? "DRAWER" : null, "IN");
-      const paymentPostingSource = {
-        roleDebits: { [paymentRole]: newMoneyD },
-        roleCredits: { AR: newMoneyD },
-      };
-      await postEntry(tx, {
-        entryType: "PAYMENT_IN",
-        branchId: input.branchId,
-        invoiceId,
-        receiptId,
-        customerId: input.customerId ?? null,
-        amount: newMoneyD,
-        paymentMethod: input.payment!.method, // دلو النقد للدفتر المزدوج (لا يُخزَّن)
-      postingIntent: createPostingIntent("PAYMENT_IN_CUSTOMER", "PAYMENT_IN", [debitLine(paymentRole, newMoneyD), creditLine("AR", newMoneyD)], paymentPostingSource),
-      postingSourceComponents: paymentPostingSource,
-    });
     }
     for (const preReceiptId of input.preCollected?.receiptIds ?? []) {
       await tx

@@ -555,53 +555,62 @@ export default function Vouchers() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         title="سندات القبض والصرف"
         description="سندات مستقلّة بلا فاتورة — رواتب، إيجارات، إيرادات متفرّقة، دفعات لعميل/مورّد بلا ربط بفاتورة محدّدة."
         actions={
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-1.5">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={rows.length === 0 || exporting}
+              onClick={() => void exportAll()}
+            >
+              {exporting ? "جارٍ التحضير…" : "تصدير Excel"}
+            </Button>
             <Link href="/voucher-categories">
               <Button variant="outline" size="sm">
                 إدارة الفئات
               </Button>
             </Link>
             <Link href="/vouchers/receipt/new">
-              <Button variant="success" disabled={!treasuryOperationAllowed(me.data, "vouchers.create", true)}>+ سند قبض</Button>
+              <Button size="sm" variant="success" disabled={!treasuryOperationAllowed(me.data, "vouchers.create", true)}>+ سند قبض</Button>
             </Link>
             <Link href="/vouchers/payment/new">
-              <Button variant="destructive" disabled={!treasuryOperationAllowed(me.data, "vouchers.create", true)}>+ طلب صرف</Button>
+              <Button size="sm" variant="destructive" disabled={!treasuryOperationAllowed(me.data, "vouchers.create", true)}>+ طلب صرف</Button>
             </Link>
           </div>
         }
       />
 
-      <Card>
-        <CardHeader className="flex-row items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <CardTitle className="text-base">فلاتر</CardTitle>
-            {activeFilterCount > 0 && (
-              <span className="rounded-md bg-primary/10 px-2 py-1 text-xs font-semibold text-primary">
-                {activeFilterCount.toLocaleString("ar-IQ-u-nu-latn")} فلاتر
-              </span>
-            )}
-          </div>
-          {(activeFilterCount > 0 || f.q.trim()) && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={resetFilters}
-              className="text-muted-foreground"
-            >
-              <X aria-hidden className="size-4" />
-              {FILTER_LABELS.reset}
-            </Button>
-          )}
-        </CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-3 items-end">
+      {/* البطاقات من aggregate الخادمي — كامل النطاق المفلتر لا صفوف الصفحة الحالية. */}
+      <VoucherSummaryCards
+        totalIn={totalIn}
+        totalOut={totalOut}
+        netTotal={netTotal}
+        filterType={f.type}
+        reversedCount={agg.data?.reversedCount ?? 0}
+        pendingTotal={agg.data?.pendingTotal ?? "0"}
+        pendingCount={agg.data?.pendingCount ?? 0}
+      />
+
+      <Card className="p-2.5">
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2 items-end">
+          <FilterField label="بحث (رقم/وصف/اسم مُستفيد)" className="col-span-2 md:col-span-2 lg:col-span-2">
+            <UnifiedSearchInput
+              value={f.q}
+              onChange={(val) => applyFilter({ q: val })}
+              placeholder="رقم السند، الوصف، المستفيد، المرجع، الفاتورة… (F2)"
+              debounceMs={250}
+              barcode={true}
+              size="default"
+              autoFocus
+            />
+          </FilterField>
           <FilterField label="النوع">
             <AppSelect
-              className="h-9"
+              className="h-8 text-xs"
               value={f.type}
               onValueChange={(value) => applyFilter({ type: value })}
             >
@@ -612,7 +621,7 @@ export default function Vouchers() {
           </FilterField>
           <FilterField label="الطرف">
             <AppSelect
-              className="h-9"
+              className="h-8 text-xs"
               value={f.party}
               onValueChange={(value) => applyFilter({ party: value })}
             >
@@ -625,14 +634,13 @@ export default function Vouchers() {
           </FilterField>
           <FilterField label="طريقة الدفع">
             <AppSelect
-              className="h-9"
+              className="h-8 text-xs"
               value={f.method}
               onValueChange={(value) => applyFilter({ method: value })}
             >
               <option value="">الكل</option>
               <option value="CASH">نقدي</option>
               <option value="CARD">بطاقة</option>
-              {/* صكّ: للسجلات التاريخية فقط — الإنشاء الجديد بلا صكوك (قرار المالك). */}
               <option value="CHECK">صكّ</option>
               <option value="TRANSFER">تحويل</option>
               <option value="WALLET">محفظة</option>
@@ -641,7 +649,7 @@ export default function Vouchers() {
           </FilterField>
           <FilterField label="الاعتماد">
             <AppSelect
-              className="h-9"
+              className="h-8 text-xs"
               value={f.approval}
               onValueChange={(value) => applyFilter({ approval: value })}
             >
@@ -665,6 +673,7 @@ export default function Vouchers() {
           </FilterField>
           <FilterField label="حالة السند">
             <AppSelect
+              className="h-8 text-xs"
               value={f.status || "all"}
               onValueChange={(v) =>
                 applyFilter({ status: v === "all" ? "" : v })
@@ -679,6 +688,7 @@ export default function Vouchers() {
           {canFilterBranch && (
             <FilterField label="الفرع">
               <AppSelect
+                className="h-8 text-xs"
                 value={f.branch || "all"}
                 onValueChange={(v) =>
                   applyFilter({ branch: v === "all" ? "" : v })
@@ -696,7 +706,7 @@ export default function Vouchers() {
           )}
           <FilterField label="الفئة">
             <AppSelect
-              className="h-9"
+              className="h-8 text-xs"
               value={f.cat}
               onValueChange={(value) => applyFilter({ cat: value })}
             >
@@ -712,6 +722,7 @@ export default function Vouchers() {
             <Input
               type="date"
               dir="ltr"
+              className="h-8 text-xs"
               value={f.from}
               onChange={(e) => applyFilter({ from: e.target.value })}
             />
@@ -720,39 +731,12 @@ export default function Vouchers() {
             <Input
               type="date"
               dir="ltr"
+              className="h-8 text-xs"
               value={f.to}
               onChange={(e) => applyFilter({ to: e.target.value })}
             />
           </FilterField>
-          <FilterField label="بحث (رقم/وصف/اسم مُستفيد)" className="md:col-span-3 lg:col-span-5">
-            <UnifiedSearchInput
-              value={f.q}
-              onChange={(val) => applyFilter({ q: val })}
-              placeholder="رقم السند، الوصف، المستفيد، المرجع، الفاتورة أو امسح الباركود… (F2)"
-              debounceMs={250}
-              barcode={true}
-              size="default"
-              autoFocus
-            />
-          </FilterField>
-        </CardContent>
-      </Card>
-
-      {/* البطاقات من aggregate الخادمي — كامل النطاق المفلتر لا صفوف الصفحة الحالية. */}
-      <VoucherSummaryCards
-        totalIn={totalIn}
-        totalOut={totalOut}
-        netTotal={netTotal}
-        filterType={f.type}
-        reversedCount={agg.data?.reversedCount ?? 0}
-        pendingTotal={agg.data?.pendingTotal ?? "0"}
-        pendingCount={agg.data?.pendingCount ?? 0}
-      />
-
-      <Card>
-        <CardHeader className="flex-row items-center justify-between">
-          <CardTitle className="text-base">القائمة</CardTitle>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center justify-end gap-2">
             <span className="text-xs text-muted-foreground">
               {list.isLoading
                 ? ""
@@ -760,16 +744,22 @@ export default function Vouchers() {
                   ? `${totalCount.toLocaleString("ar-IQ-u-nu-latn")} سند`
                   : `${rows.length.toLocaleString("ar-IQ-u-nu-latn")} سند`}
             </span>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={rows.length === 0 || exporting}
-              onClick={() => void exportAll()}
-            >
-              {exporting ? "جارٍ التحضير…" : "تصدير Excel"}
-            </Button>
+            {(activeFilterCount > 0 || f.q.trim()) && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={resetFilters}
+                className="h-8 px-2 text-xs text-muted-foreground"
+              >
+                <X aria-hidden className="size-3.5" />
+                {FILTER_LABELS.reset}
+              </Button>
+            )}
           </div>
-        </CardHeader>
+        </div>
+      </Card>
+
+      <Card>
         <CardContent className="p-0">
           <DataTable<VoucherRow>
             data={rows}

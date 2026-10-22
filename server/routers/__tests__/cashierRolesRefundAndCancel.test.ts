@@ -290,6 +290,65 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
     expect(refundReceipt).toBeDefined();
     expect(refundReceipt.paymentMethod).toBe("CARD");
     expect(refundReceipt.referenceNumber).toBe("POS-REF-987654");
+
+    // فاتورة مختلطة (25.00 نقدي + 25.00 بطاقة = 50.00): الاسترداد بالبطاقة لا يجوز أن يتجاوز شِقّ البطاقة (25.00) حتى لو كان ضمن إجمالي المدفوع (50.00)
+    const mixedCardSale = await createSale(
+      {
+        branchId: 1,
+        shiftId,
+        customerId: 1,
+        sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }], // 50.00
+        payments: [
+          { amount: "25.00", method: "CASH" },
+          { amount: "25.00", method: "CARD", reference: "POS-SWIPE-MIX-1" },
+        ],
+      },
+      { userId: 11, branchId: 1, role: "user" },
+    );
+
+    await expect(
+      caller.executeSalesReturnCart({
+        invoiceNumber: mixedCardSale.invoiceNumber,
+        customer: { customerId: 1 },
+        items: [
+          {
+            variantId: 1,
+            productName: "كارت شخصي",
+            quantity: 2,
+            unitPrice: "25.00",
+          },
+        ],
+        settlement: {
+          method: "CARD",
+          totalAmount: "50.00",
+          reference: "POS-REF-OVER-CARD",
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: expect.stringMatching(/مبلغ الاسترداد للبطاقة يتجاوز صافي المقبوض بالبطاقة/),
+    });
+
+    const partialCardReturn = await caller.executeSalesReturnCart({
+      invoiceNumber: mixedCardSale.invoiceNumber,
+      customer: { customerId: 1 },
+      items: [
+        {
+          variantId: 1,
+          productName: "كارت شخصي",
+          quantity: 1,
+          unitPrice: "25.00",
+        },
+      ],
+      settlement: {
+        method: "CARD",
+        totalAmount: "25.00",
+        reference: "POS-REF-MIX-OK",
+      },
+    });
+    expect(partialCardReturn.ok).toBe(true);
+    expect(partialCardReturn.totalAmount).toBe("25.00");
   });
 
   it("٢ب. الرد النقدي يستعمل وردية الكاشير الحالية بعد إغلاق الأصلية", async () => {

@@ -95,7 +95,7 @@ type RemittanceRow = RouterOutputs["delivery"]["remittances"][number];
 
 const tabBtn = (active: boolean) =>
   cn(
-    "rounded-lg px-4 py-2 text-sm font-bold transition-colors",
+    "rounded-lg px-3 py-1.5 text-xs font-bold transition-colors",
     active ? "bg-primary text-primary-foreground" : "border bg-card hover:bg-muted/60",
   );
 
@@ -143,27 +143,27 @@ export default function DeliveryHub() {
     },
   );
   return (
-    <div className="space-y-5 p-4 md:p-6" dir="rtl">
+    <div className="space-y-3 p-3 md:p-4" dir="rtl">
       <PageHeader
         title="إدارة التوصيل"
         description="طاولة قيادة كاملة لدورة حياة الطرد: من الإسناد إلى التسليم إلى التسوية والتحصيل، بلا طلبٍ ضائعٍ أو صامت."
-        icon={<Truck className="size-6 text-primary" aria-hidden />}
+        icon={<Truck className="size-5 text-primary" aria-hidden />}
         actions={
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
             <ShippingLabelSizeSelect />
-            <Button variant="outline" asChild className="gap-1.5 font-bold border-primary/40 bg-primary/5 text-primary hover:bg-primary/10">
+            <Button size="sm" variant="outline" asChild className="gap-1.5 font-bold border-primary/40 bg-primary/5 text-primary hover:bg-primary/10">
               <Link href="/delivery?tab=workflow">
-                <ScanBarcode className="size-4" aria-hidden />
+                <ScanBarcode className="size-3.5" aria-hidden />
                 سير العمل بالباركود (إسناد وتحصيل)
               </Link>
             </Button>
-            <Button variant="outline" asChild>
+            <Button size="sm" variant="outline" asChild>
               <Link href="/delivery?tab=parties">جهات التوصيل وذممها</Link>
             </Button>
           </div>
         }
       />
-      <div className="flex gap-2">
+      <div className="flex gap-1.5">
         <button className={tabBtn(tab === "dispatch")} onClick={() => setTab("dispatch")}>جاهز للإرسال</button>
         <button className={tabBtn(tab === "transit")} onClick={() => setTab("transit")}>
           قيد التوصيل

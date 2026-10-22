@@ -679,7 +679,7 @@ export function DataTable<T, K = string>({
             <td
               key={h.id}
               className={cn(
-                "px-[var(--ui-table-cell-inline)] py-2.5 align-middle",
+                "px-[var(--ui-table-cell-inline)] py-1.5 align-middle",
                 grid && "[&:not(:last-child)]:border-e [&:not(:last-child)]:border-border/60",
                 columnPresentationClass(h.column)
               )}
@@ -705,6 +705,7 @@ export function DataTable<T, K = string>({
                 serverSearch ? serverSearch.onChange(value) : setGlobalFilter(value);
               }}
               barcode={Boolean(barcodeSearch)}
+              f2Shortcut={true}
               size="compact"
               className={cn("min-w-40 flex-1", barcodeSearch ? "max-w-sm" : "max-w-xs")}
             />
@@ -796,7 +797,7 @@ export function DataTable<T, K = string>({
                             <th
                               key={h.id}
                               className={cn(
-                                "border-b border-border/80 px-[var(--ui-table-cell-inline)] py-2.5 text-xs font-bold text-foreground align-middle",
+                                "border-b border-border/80 px-[var(--ui-table-cell-inline)] py-1.5 text-xs font-bold text-foreground align-middle",
                                 grid && TABLE_GRID_HEAD_BORDER_CLS,
                                 columnPresentationClass(h.column),
                                 sortable && "cursor-pointer select-none hover:bg-muted/80 group"
@@ -886,7 +887,7 @@ export function DataTable<T, K = string>({
                             <td
                               key={cell.id}
                               className={cn(
-                                "border-b border-border/55 px-[var(--ui-table-cell-inline)] py-2.5 align-middle",
+                                "border-b border-border/55 px-[var(--ui-table-cell-inline)] py-1.5 align-middle",
                                 grid && TABLE_GRID_CELL_BORDER_CLS,
                                 columnPresentationClass(cell.column)
                               )}
@@ -953,7 +954,7 @@ export function DataTable<T, K = string>({
                         <th
                           key={h.id}
                           className={cn(
-                            "border-b border-border/80 px-[var(--ui-table-cell-inline)] py-2.5 text-xs font-bold text-foreground align-middle",
+                            "border-b border-border/80 px-[var(--ui-table-cell-inline)] py-1.5 text-xs font-bold text-foreground align-middle",
                             grid && TABLE_GRID_HEAD_BORDER_CLS,
                             columnPresentationClass(h.column),
                             sortable && "cursor-pointer select-none hover:bg-muted/80 group"
@@ -1036,7 +1037,7 @@ export function DataTable<T, K = string>({
                         <td
                           key={cell.id}
                           className={cn(
-                            "border-b border-border/55 px-[var(--ui-table-cell-inline)] py-2.5 align-middle",
+                            "border-b border-border/55 px-[var(--ui-table-cell-inline)] py-1.5 align-middle",
                             grid && TABLE_GRID_CELL_BORDER_CLS,
                             columnPresentationClass(cell.column)
                           )}

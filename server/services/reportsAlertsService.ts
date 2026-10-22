@@ -7,6 +7,7 @@
 // ⚠️ أسماء أعمدة DB الخام: invoices.invoiceStatus · shifts.shiftStatus · workOrders.workOrderStatus
 // · deliveryConsignments.consignmentStatus (خاصية Drizzle اسمها `status` — راجع [[raw-sql-column-names]]).
 // مرساة «اليوم» UTC_DATE() (نظير بقيّة التقارير). كل الأموال نصّاً decimal (§٥).
+import { effectiveDeliveryLedgerEntrySql } from "./delivery/legacyLedger";
 import { sql } from "drizzle-orm";
 import { DELIVERY_AGE_DANGER_HOURS } from "@shared/deliveryAging";
 import { getDb } from "../db";
@@ -281,6 +282,7 @@ async function computeManagementAlerts(opts: {
             ELSE 0 END) AS due
         FROM deliveryLedgerEntries l
         WHERE l.entryType IN ('FEE_EARNED','FEE_PAID','FEE_OFFSET','FEE_REFUNDED')
+          AND ${effectiveDeliveryLedgerEntrySql("l")}
           ${branchLed}
         GROUP BY l.partyId
         HAVING due > 0

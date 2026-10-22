@@ -29,24 +29,32 @@ export function DriftSection({
   names?: Map<number, string>;
 }) {
   const val = (s: string) => (money ? fmt(s) : s);
+  const isClean = rows.length === 0;
   return (
     <Card>
       <CardContent className="p-0">
-        <div className="flex items-center justify-between gap-2 border-b p-3">
-          <div>
-            <h2 className="font-semibold">{title}</h2>
-            <p className="text-xs text-muted-foreground">{desc}</p>
+        <div
+          className={`flex items-center justify-between gap-2 ${
+            isClean ? "px-3 py-1.5" : "border-b px-3 py-2"
+          }`}
+          title={isClean ? desc : undefined}
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            <h2 className="text-xs font-semibold shrink-0">{title}</h2>
+            {!isClean && (
+              <p className="text-[11px] text-muted-foreground truncate">{desc}</p>
+            )}
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {action}
             <span
-              className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold inline-flex items-center gap-1 ${
-                rows.length === 0 ? "badge-status-active" : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]"
+              className={`shrink-0 rounded-full px-2.5 py-0.5 text-[11px] font-semibold inline-flex items-center gap-1 ${
+                isClean ? "badge-status-active" : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]"
               }`}
             >
-              {rows.length === 0 ? (
+              {isClean ? (
                 <>
-                  <Check aria-hidden className="size-3.5" />
+                  <Check aria-hidden className="size-3" />
                   لا انحراف
                 </>
               ) : (

@@ -1271,22 +1271,30 @@ export const returnRouter = router({
       // رافدا الردّ وحدهما (قرار المالك ١٧/٨: نقدٌ أو بطاقة) — لا تُعرَض طريقةٌ لا يريدها العمل.
       const isWalkIn = inv.customerId == null;
       const surfacedMethods = SURFACED_REFUND_METHODS;
-      const refundOptions = surfacedMethods.map((m) => ({
-        method: m,
-        cap: (caps.capByMethod.get(m) ?? money(0)).toFixed(2),
-        /** صافي المقبوض بهذا الرافد (زين مطويٌّ في النقد) — إفصاحٌ يشرح للموظف مصدر المال. */
-        paid: (caps.netByMethod.get(m) ?? money(0)).toFixed(2),
-        // الحجب يعني «لا يمكن **ردّ نقدٍ** بهذا الرافد» لا «لا يمكن تسجيل مرتجع». النصّ السابق
-        // كان يُقرأ منعاً للمرتجع كلّه على فاتورةٍ لم تُقبض (بلاغ المالك ١٨/٨) — والمرتجع بلا ردّ
-        // مقبولٌ خادمياً أصلاً: يُخصَم من المتبقّي ومن ذمّة العميل.
-        blockedReason: (caps.capByMethod.get(m) ?? money(0)).lte(0)
-          ? isWalkIn
-            ? caps.hasUnremittedDelivery
-              ? "الطلب مرتبط بشحنة توصيل لم يورَّد نقدها بعد؛ سيتم عكس عهدة التوصيل آلياً دون إخراج نقد من الدرج."
-              : "لا يوجد مقبوض يستوجب الرد؛ سجّل المرتجع بلا إخراج نقد وبلا وردية صرف."
-            : "لا يوجد متبقٍّ من المقبوض على هذه الفاتورة — يبقى المرتجع بلا ردّ نقديّ متاحاً (يُخصَم من المتبقّي/الذمّة)"
-          : null,
-      }));
+      const refundOptions = surfacedMethods.map((m) => {
+        const rawCap = caps.capByMethod.get(m) ?? money(0);
+        const rawPaid = caps.netByMethod.get(m) ?? money(0);
+        const effectiveCap =
+          inv.paymentMethod === "MIXED" && m !== "CASH"
+            ? Decimal.min(rawCap, rawPaid)
+            : rawCap;
+        return {
+          method: m,
+          cap: effectiveCap.toFixed(2),
+          /** صافي المقبوض بهذا الرافد (زين مطويٌّ في النقد) — إفصاحٌ يشرح للموظف مصدر المال. */
+          paid: rawPaid.toFixed(2),
+          // الحجب يعني «لا يمكن **ردّ نقدٍ** بهذا الرافد» لا «لا يمكن تسجيل مرتجع». النصّ السابق
+          // كان يُقرأ منعاً للمرتجع كلّه على فاتورةٍ لم تُقبض (بلاغ المالك ١٨/٨) — والمرتجع بلا ردّ
+          // مقبولٌ خادمياً أصلاً: يُخصَم من المتبقّي ومن ذمّة العميل.
+          blockedReason: effectiveCap.lte(0)
+            ? isWalkIn
+              ? caps.hasUnremittedDelivery
+                ? "الطلب مرتبط بشحنة توصيل لم يورَّد نقدها بعد؛ سيتم عكس عهدة التوصيل آلياً دون إخراج نقد من الدرج."
+                : "لا يوجد مقبوض يستوجب الرد؛ سجّل المرتجع بلا إخراج نقد وبلا وردية صرف."
+              : "لا يوجد متبقٍّ من المقبوض على هذه الفاتورة — يبقى المرتجع بلا ردّ نقديّ متاحاً (يُخصَم من المتبقّي/الذمّة)"
+            : null,
+        };
+      });
 
       // أدراج الفرع المفتوحة — تُجلب هنا مع التفاصيل لا بطلبٍ ثانٍ مشروط، كي لا تُبنى الشاشة
       // على حالةٍ ناقصة («جارٍ فحص الورديات…» ثمّ رفضٌ عند الحفظ). قرار المالك (١٧/٨): الاسترداد
@@ -1788,7 +1796,7 @@ export const returnRouter = router({
           if (entry.notes?.includes("رصيد متجر")) method = "STORE_CREDIT";
           else if (entry.notes?.includes("بطاقة")) method = "CARD";
           else if (entry.notes?.includes("نقدي")) method = "CASH";
-          else method = inv.paymentMethod || "CASH";
+          else method = inv.paymentMethod && inv.paymentMethod !== "MIXED" ? inv.paymentMethod : "CASH";
         }
 
         let disposition: "RESTOCK" | "DAMAGED" = "RESTOCK";
@@ -3134,37 +3142,37 @@ export const returnRouter = router({
             matchedActualPayout = (input.settlement.method === "CASH" || input.settlement.method === "CARD")
               ? actualRefundPayoutDec : money(0);
 
-            // Reject impossible settlement rails before approval routing. A manager may
-            // approve an exceptional workflow, but the cart executor must never pay out
-            // more than the invoice actually collected or offset more than its open debt.
-            if (
-              (input.settlement.method === "CASH" ||
-                input.settlement.method === "CARD") &&
-              (actualRefundPayoutDec.lte(0) ||
-                actualRefundPayoutDec.gt(lockedRefundCaps.pool))
-            ) {
+            if ((input.settlement.method === "CASH" || input.settlement.method === "CARD") && (actualRefundPayoutDec.lte(0) || actualRefundPayoutDec.gt(lockedRefundCaps.pool))) {
               throw new TRPCError({
                 code: "BAD_REQUEST",
                 message: appErrorMessage({
                   what: "مبلغ الاسترداد يتجاوز المدفوع الفعلي للفاتورة",
                   why: `المبلغ المطلوب استرداده (${returnTotalDec.toFixed(2)} د.ع) أكبر من إجمالي المسدد فعلياً على الفاتورة (${paidAmount.toFixed(2)} د.ع)${paidAmount.lte(0) ? " — الفاتورة آجلة بالكامل ولم يُقبض منها أي مبلغ" : ""}`,
-                  doThis:
-                    "لا يمكن صرف مبلغ يفوق ما قبضه المحل؛ استخدم معادلة الذمة للجزء الآجل",
+                  doThis: "لا يمكن صرف مبلغ يفوق ما قبضه المحل؛ استخدم معادلة الذمة للجزء الآجل",
                 }),
               });
             }
-            if (input.settlement.method === "CREDIT_OFFSET") {
-              if (returnTotalDec.gt(maxCreditOffsetAmount)) {
-                throw new TRPCError({
-                  code: "BAD_REQUEST",
-                  message: appErrorMessage({
-                    what: "مبلغ معادلة الذمة يتجاوز الرصيد القابل للعكس",
-                    why: `المبلغ المطلوب (${returnTotalDec.toFixed(2)} د.ع) أكبر من مجموع الجزء الآجل والعهدة الحية غير الموردة (${maxCreditOffsetAmount.toFixed(2)} د.ع)`,
-                    doThis:
-                      "خفّض مبلغ معادلة الذمة إلى الرصيد القابل للعكس، وعالج أي جزء مدفوع بطريقة الدفع الأصلية",
-                  }),
-                });
-              }
+            if (input.settlement.method === "CARD" && lockedRefundCaps.pool.gt(0) && (!directLimitsApply || (lockedRefundCaps.netByMethod.get("CARD") ?? money(0)).gt(0)) && actualRefundPayoutDec.gt(lockedRefundCaps.netByMethod.get("CARD") ?? money(0))) {
+              const cardCap = lockedRefundCaps.netByMethod.get("CARD") ?? money(0);
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: appErrorMessage({
+                  what: "مبلغ الاسترداد للبطاقة يتجاوز صافي المقبوض بالبطاقة",
+                  why: `المبلغ المطلوب استرداده عبر البطاقة (${actualRefundPayoutDec.toFixed(2)} د.ع) أكبر من صافي ما قُبض بالبطاقة على هذه الفاتورة (${cardCap.toFixed(2)} د.ع)`,
+                  doThis:
+                    "استرد بالبطاقة في حدود المقبوض بالبطاقة فقط أو اختر النقد/رصيد المتجر للجزء المتبقي",
+                }),
+              });
+            }
+            if (input.settlement.method === "CREDIT_OFFSET" && returnTotalDec.gt(maxCreditOffsetAmount)) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: appErrorMessage({
+                  what: "مبلغ معادلة الذمة يتجاوز الرصيد القابل للعكس",
+                  why: `المبلغ المطلوب (${returnTotalDec.toFixed(2)} د.ع) أكبر من مجموع الجزء الآجل والعهدة الحية غير الموردة (${maxCreditOffsetAmount.toFixed(2)} د.ع)`,
+                  doThis: "خفّض مبلغ معادلة الذمة إلى الرصيد القابل للعكس، وعالج أي جزء مدفوع بطريقة الدفع الأصلية",
+                }),
+              });
             }
 
             if (directLimitsApply) {

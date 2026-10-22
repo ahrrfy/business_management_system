@@ -39,7 +39,7 @@ export function FilterField({
 }: FilterFieldProps) {
   const captionId = React.useId();
   const caption = (
-    <span id={asGroup ? captionId : undefined} className="px-0.5 text-xs font-semibold text-muted-foreground">
+    <span id={asGroup ? captionId : undefined} className="px-0.5 text-2xs font-bold text-muted-foreground leading-tight">
       {label}
       {required && <span className="text-destructive"> *</span>}
     </span>
@@ -56,7 +56,7 @@ export function FilterField({
     </>
   );
 
-  const wrapperCls = cn("flex min-w-0 flex-col gap-1", wide && "sm:col-span-2", className);
+  const wrapperCls = cn("flex min-w-0 flex-col gap-0.5", wide && "sm:col-span-2", className);
 
   if (asGroup) {
     return (

@@ -27,6 +27,67 @@ import { barcodeIdentityColumn, barcodeIdentitySql } from "./barcodeIdentitySql"
 import type { DigitalCheckoutSnapshot } from "../shared/digitalSale";
 import type { OperationPolicy } from "../shared/operationPermissions";
 
+/** One real customer receipt; allocation never posts cash or AR a second time. */
+export const customerReceiptSettlements = mysqlTable("customerReceiptSettlements", {
+  id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+  receiptId: bigint("receiptId", { mode: "number" }).notNull(),
+  customerId: bigint("customerId", { mode: "number" }).notNull(),
+  branchId: bigint("branchId", { mode: "number" }).notNull(),
+  amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+  accountAmount: decimal("accountAmount", { precision: 15, scale: 2 }).notNull(),
+  unallocatedAmount: decimal("unallocatedAmount", { precision: 15, scale: 2 }).notNull(),
+  initialUnallocatedAmount: decimal("initialUnallocatedAmount", { precision: 15, scale: 2 }).notNull(),
+  refundedAmount: decimal("refundedAmount", { precision: 15, scale: 2 }).notNull().default("0"),
+  sourceHash: char("sourceHash", { length: 64 }).notNull(),
+  reversalReceiptId: bigint("reversalReceiptId", { mode: "number" }),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, t => ({
+  receiptUq: unique("uq_customer_receipt_settlement").on(t.receiptId),
+  reversalUq: unique("uq_customer_receipt_reversal").on(t.reversalReceiptId),
+  partyIdx: index("idx_customer_receipt_scope").on(t.customerId, t.branchId),
+  receiptFk: foreignKey({ name: "fk_crs_receipt", columns: [t.receiptId], foreignColumns: [receipts.id] }),
+  customerFk: foreignKey({ name: "fk_crs_customer", columns: [t.customerId], foreignColumns: [customers.id] }),
+  branchFk: foreignKey({ name: "fk_crs_branch", columns: [t.branchId], foreignColumns: [branches.id] }),
+  reversalFk: foreignKey({ name: "fk_crs_reversal", columns: [t.reversalReceiptId], foreignColumns: [receipts.id] }),
+  actorFk: foreignKey({ name: "fk_crs_actor", columns: [t.createdBy], foreignColumns: [users.id] }),
+  moneyCheck: check("chk_crs_money", sql`${t.amount} > 0 AND ${t.accountAmount} >= 0 AND ${t.unallocatedAmount} >= 0 AND ${t.refundedAmount} >= 0 AND ${t.accountAmount} + ${t.unallocatedAmount} + ${t.refundedAmount} <= ${t.amount}`),
+}));
+
+/** An actual OUT consumes advance credit; its actual IN cancellation restores it. */
+export const customerReceiptCreditUses = mysqlTable("customerReceiptCreditUses", {
+  id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+  settlementId: bigint("settlementId", { mode: "number" }).notNull(),
+  receiptId: bigint("receiptId", { mode: "number" }).notNull(),
+  amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+  reversalReceiptId: bigint("reversalReceiptId", { mode: "number" }),
+}, t => ({
+  sourceUq: unique("uq_customer_credit_use").on(t.settlementId, t.receiptId),
+  receiptIdx: index("idx_customer_credit_use_receipt").on(t.receiptId),
+  sourceFk: foreignKey({ name: "fk_ccu_source", columns: [t.settlementId], foreignColumns: [customerReceiptSettlements.id] }),
+  receiptFk: foreignKey({ name: "fk_ccu_receipt", columns: [t.receiptId], foreignColumns: [receipts.id] }),
+  reversalFk: foreignKey({ name: "fk_ccu_reversal", columns: [t.reversalReceiptId], foreignColumns: [receipts.id] }),
+  moneyCheck: check("chk_ccu_money", sql`${t.amount} > 0`),
+}));
+
+/** Current invoice target plus original target retained across corrections. */
+export const customerReceiptAllocations = mysqlTable("customerReceiptAllocations", {
+  id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+  settlementId: bigint("settlementId", { mode: "number" }).notNull(),
+  invoiceId: bigint("invoiceId", { mode: "number" }).notNull(),
+  originalInvoiceId: bigint("originalInvoiceId", { mode: "number" }).notNull(),
+  originalAmount: decimal("originalAmount", { precision: 15, scale: 2 }).notNull(),
+  amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, t => ({
+  targetUq: unique("uq_customer_receipt_invoice").on(t.settlementId, t.invoiceId),
+  invoiceIdx: index("idx_customer_receipt_invoice").on(t.invoiceId),
+  sourceFk: foreignKey({ name: "fk_cra_source", columns: [t.settlementId], foreignColumns: [customerReceiptSettlements.id] }),
+  invoiceFk: foreignKey({ name: "fk_cra_invoice", columns: [t.invoiceId], foreignColumns: [invoices.id] }),
+  originalFk: foreignKey({ name: "fk_cra_original", columns: [t.originalInvoiceId], foreignColumns: [invoices.id] }),
+  moneyCheck: check("chk_cra_money", sql`${t.amount} >= 0`),
+}));
+
 /** Raw binary storage for small, validated documents that must travel with DB backups. */
 const mediumblob = customType<{ data: Buffer; driverData: Buffer }>({
   dataType: () => "mediumblob",
@@ -7304,6 +7365,154 @@ export const legacySupplierInvoiceSettlements = mysqlTable(
       "chk_legacy_supplier_settlement_amount",
       sql`${table.amount} > 0`,
     ),
+  }),
+);
+
+/** Existing money/credit owned once; book allocations never create cash or AP. */
+export const supplierBookSettlementSources = mysqlTable(
+  "supplierBookSettlementSources",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    supplierId: bigint("supplierId", { mode: "number" }).notNull(),
+    branchId: bigint("branchId", { mode: "number" }).notNull(),
+    sourceAccountingEntryId: bigint("sourceAccountingEntryId", {
+      mode: "number",
+    })
+      .notNull()
+      .unique("uq_sbs_entry"),
+    sourceReceiptId: bigint("sourceReceiptId", { mode: "number" }).unique(
+      "uq_sbs_receipt",
+    ),
+    sourceExchangeTransactionId: bigint("sourceExchangeTransactionId", {
+      mode: "number",
+    }).unique("uq_sbs_exchange"),
+    kind: mysqlEnum("kind", ["PAYMENT", "CREDIT"]).notNull(),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    reversedAmount: decimal("reversedAmount", { precision: 15, scale: 2 })
+      .notNull()
+      .default("0"),
+    status: mysqlEnum("status", ["APPLIED", "PARTIALLY_REVERSED", "REVERSED"])
+      .notNull()
+      .default("APPLIED"),
+    version: int("version").notNull().default(1),
+    sourceSnapshot: mediumtext("sourceSnapshot").notNull(),
+    sourceHash: char("sourceHash", { length: 64 }).notNull(),
+    planHash: char("planHash", { length: 64 }).notNull(),
+    adoptionKey: varchar("adoptionKey", { length: 120 })
+      .notNull()
+      .unique("uq_sbs_adoption_key"),
+    adoptedBy: int("adoptedBy").notNull(),
+    adoptedAt: timestamp("adoptedAt").notNull().defaultNow(),
+    reversalHistory: mediumtext("reversalHistory").notNull(),
+  },
+  (t) => ({
+    supplierFk: foreignKey({
+      name: "fk_sbs_supplier",
+      columns: [t.supplierId],
+      foreignColumns: [suppliers.id],
+    }),
+    branchFk: foreignKey({
+      name: "fk_sbs_branch",
+      columns: [t.branchId],
+      foreignColumns: [branches.id],
+    }),
+    entryFk: foreignKey({
+      name: "fk_sbs_entry",
+      columns: [t.sourceAccountingEntryId],
+      foreignColumns: [accountingEntries.id],
+    }),
+    receiptFk: foreignKey({
+      name: "fk_sbs_receipt",
+      columns: [t.sourceReceiptId],
+      foreignColumns: [receipts.id],
+    }),
+    exchangeFk: foreignKey({
+      name: "fk_sbs_exchange",
+      columns: [t.sourceExchangeTransactionId],
+      foreignColumns: [exchangeTransactions.id],
+    }),
+    ownerFk: foreignKey({
+      name: "fk_sbs_owner",
+      columns: [t.adoptedBy],
+      foreignColumns: [users.id],
+    }),
+    scopeIdx: index("idx_sbs_scope").on(t.supplierId, t.branchId, t.status),
+    amounts: check(
+      "chk_sbs_amounts",
+      sql`${t.amount}>0 AND ${t.reversedAmount}>=0 AND ${t.reversedAmount}<=${t.amount} AND ${t.version}>0`,
+    ),
+    lifecycle: check(
+      "chk_sbs_lifecycle",
+      sql`(${t.status}='APPLIED' AND ${t.reversedAmount}=0) OR (${t.status}='PARTIALLY_REVERSED' AND ${t.reversedAmount}>0 AND ${t.reversedAmount}<${t.amount}) OR (${t.status}='REVERSED' AND ${t.reversedAmount}=${t.amount})`,
+    ),
+    sourceShape: check(
+      "chk_sbs_source",
+      sql`(${t.kind}='PAYMENT' AND ${t.sourceReceiptId} IS NOT NULL) OR (${t.kind}='CREDIT' AND ${t.sourceReceiptId} IS NULL AND ${t.sourceExchangeTransactionId} IS NULL)`,
+    ),
+    jsonShape: check(
+      "chk_sbs_json",
+      sql`JSON_VALID(${t.sourceSnapshot}) AND JSON_VALID(${t.reversalHistory})`,
+    ),
+  }),
+);
+
+export const supplierBookSettlementAllocations = mysqlTable(
+  "supplierBookSettlementAllocations",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    sourceId: bigint("sourceId", { mode: "number" }).notNull(),
+    supplierInvoiceId: bigint("supplierInvoiceId", { mode: "number" }),
+    openingEntryId: bigint("openingEntryId", { mode: "number" }),
+    allocatedAmount: decimal("allocatedAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    allocatedCurrencyAmount: decimal("allocatedCurrencyAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    reversedAmount: decimal("reversedAmount", { precision: 15, scale: 2 })
+      .notNull()
+      .default("0"),
+    reversedCurrencyAmount: decimal("reversedCurrencyAmount", {
+      precision: 15,
+      scale: 2,
+    })
+      .notNull()
+      .default("0"),
+    targetSnapshot: mediumtext("targetSnapshot").notNull(),
+    targetHash: char("targetHash", { length: 64 }).notNull(),
+    createdAt: timestamp("createdAt").notNull().defaultNow(),
+  },
+  (t) => ({
+    sourceFk: foreignKey({
+      name: "fk_sbsa_source",
+      columns: [t.sourceId],
+      foreignColumns: [supplierBookSettlementSources.id],
+    }),
+    invoiceFk: foreignKey({
+      name: "fk_sbsa_invoice",
+      columns: [t.supplierInvoiceId],
+      foreignColumns: [supplierInvoices.id],
+    }),
+    openingFk: foreignKey({
+      name: "fk_sbsa_opening",
+      columns: [t.openingEntryId],
+      foreignColumns: [accountingEntries.id],
+    }),
+    invoiceUq: unique("uq_sbsa_invoice").on(t.sourceId, t.supplierInvoiceId),
+    openingUq: unique("uq_sbsa_opening").on(t.sourceId, t.openingEntryId),
+    invoiceIdx: index("idx_sbsa_invoice").on(t.supplierInvoiceId),
+    openingIdx: index("idx_sbsa_opening").on(t.openingEntryId),
+    targetShape: check(
+      "chk_sbsa_target",
+      sql`(${t.supplierInvoiceId} IS NOT NULL AND ${t.openingEntryId} IS NULL) OR (${t.supplierInvoiceId} IS NULL AND ${t.openingEntryId} IS NOT NULL)`,
+    ),
+    amounts: check(
+      "chk_sbsa_amounts",
+      sql`${t.allocatedAmount}>0 AND ${t.allocatedCurrencyAmount}>=0 AND ${t.reversedAmount}>=0 AND ${t.reversedAmount}<=${t.allocatedAmount} AND ${t.reversedCurrencyAmount}>=0 AND ${t.reversedCurrencyAmount}<=${t.allocatedCurrencyAmount}`,
+    ),
+    jsonShape: check("chk_sbsa_json", sql`JSON_VALID(${t.targetSnapshot})`),
   }),
 );
 

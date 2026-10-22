@@ -430,14 +430,14 @@ describe("الإنشاء واللقطة", () => {
     await setStockRow(1, 10);
     const year = new Date().getFullYear();
     const r1 = await mkSession({ variantIds: [1] });
-    const r2 = await mkSession({ variantIds: [1] });
+    const r2 = await mkSession({ variantIds: [2] });
     // البادئة التسلسلية تُبقي القراءة البشرية والترتيب، واللاحقة العشوائية تمنع تخمين الرمز.
     expect(r1.code).toMatch(new RegExp(`^CNT-${year}-0001-[0-9A-Z]{4}$`));
     expect(r2.code).toMatch(new RegExp(`^CNT-${year}-0002-[0-9A-Z]{4}$`));
 
     const [r3, r4] = await Promise.all([
-      mkSession({ variantIds: [1] }),
-      mkSession({ variantIds: [1] }),
+      mkSession({ variantIds: [3] }),
+      mkSession({ variantIds: [4] }),
     ]);
     const codes = [r1.code, r2.code, r3.code, r4.code];
     expect(new Set(codes).size).toBe(4);
@@ -479,6 +479,7 @@ describe("الإنشاء واللقطة", () => {
     );
 
     // قسمة غير متكافئة: 5 أصناف بلا ادعاءات على تكليفين ⇒ كتلتان 3 و2 (±1) متتاليتان تصاعدياً.
+    await cancelStocktakeSession({ sessionId: r.sessionId }, actor);
     const r2 = await mkSession({
       variantIds: [1, 2, 3, 4, 5],
       assignments: [
@@ -496,6 +497,7 @@ describe("الإنشاء واللقطة", () => {
     );
 
     // تكليف واحد ⇒ السلوك القديم نفسه: كل النطاق له.
+    await cancelStocktakeSession({ sessionId: r2.sessionId }, actor);
     const r3 = await mkSession({ variantIds: [1, 2, 3] });
     expect(r3.assignments[0].itemCount).toBe(3);
     expect(await ownedBy(r3.sessionId, r3.assignments[0].assignmentId)).toEqual(
@@ -2072,6 +2074,7 @@ describe("مخرجات بلا تسريب", () => {
     expect(review.totals.counted).toBe(1);
     expect(review.barriers.notCounted).toBe(0);
 
+    await cancelStocktakeSession({ sessionId: r.sessionId }, actor);
     const incomplete = await mkSession({ variantIds: [1, 2] });
     const incompleteAid = incomplete.assignments[0].assignmentId;
     await insertCount(incomplete.sessionId, 1, incompleteAid, 10);

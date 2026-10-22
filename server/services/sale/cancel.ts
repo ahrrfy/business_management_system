@@ -39,7 +39,7 @@ import {
   shifts,
 } from "../../../drizzle/schema";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
-import { money, toDbMoney } from "../money";
+import { money, round2, toDbMoney } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
 import { openShiftIdTx, resolveBranchCashShiftTx, shiftIdForCashTx } from "../shiftService";
 import {
@@ -52,6 +52,7 @@ import { withTx, type Actor } from "../tx";
 import { logAuditTx } from "../auditService";
 import { reverseInvoiceSaleInTx } from "../reversal/invoiceReversal";
 import { invoicePaidPool } from "../reversal/materialize/invoice";
+import type { RefundLegDecision } from "../reversal/types";
 import { loadRefundCaps } from "../returns/refundCaps";
 import { userNameSnapshot } from "../userSnapshot";
 import { assertInvoiceCancellationDeliverySafeTx } from "./invoiceCancellationGuard";
@@ -79,13 +80,22 @@ import {
 // TRANSFER تُمرَّر بلا shift-guard إن غاب — النقد وحده يستوجب shiftIdForCashTx.
 export type CancelRefundMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
 
+export interface CancelRefundLegInput {
+  method: CancelRefundMethod;
+  amount: string;
+  reference?: string | null;
+}
+
 export interface CancelSaleInput {
   invoiceId: number;
   /**
-   * جهة الاسترداد الإلزامية — طريقة الدفع للسند الصادر بمبلغ الاسترداد.
+   * جهة الاسترداد الإلزامية — طريقة الدفع للسند الصادر بمبلغ الاسترداد، أو `MIXED` لتفريق الاسترداد
+   * تلقائياً بحسب طرق القبض الفعلية المسجَّلة على الفاتورة.
    * النقد يمرّ shiftIdForCashTx فيُعيَّن الدلو تلقائياً (DRAWER للمشغّل ذي الوردية، TREASURY للأدمن/مدير بلا وردية).
    */
-  refundPaymentMethod: CancelRefundMethod;
+  refundPaymentMethod: CancelRefundMethod | "MIXED";
+  /** تفاصيل أجزاء الاسترداد المتعددة عند استرداد فاتورة مختلطة (نقد + بطاقة / إلخ). */
+  refunds?: CancelRefundLegInput[] | null;
   /** مرجع عملية الاسترداد على جهاز الدفع — تفرضه الخدمة إلزامياً لِـCARD وحدها؛ نظير ReturnSaleInput.refund.reference. */
   reference?: string | null;
   /** Internal reviewer-selected cash source; direct API requests cannot set it. */
@@ -204,38 +214,39 @@ export async function cancelSaleInTx(
           throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "تعذر إعادة طلب إلغاء COD",
             why: "الفاتورة لا تطابق نطاق الإلغاء دون قبض", doThis: "افتح فاتورة في فرعك وأعد المحاولة" }) });
         }
-        // أحدث خروج قد يكون نقداً منفذاً أو طلب سند غير نقدي ما زال معلقاً.
-        const priorRefund = (
-          await tx
-            .select({
-              amount: receipts.amount,
-              id: receipts.id,
-              status: receipts.status,
-              approvalStatus: receipts.approvalStatus,
-              voucherNumber: receipts.voucherNumber,
-            })
-            .from(receipts)
-            .where(
-              and(
-                eq(receipts.invoiceId, input.invoiceId),
-                eq(receipts.direction, "OUT"),
-                eq(receipts.description, `استرداد إلغاء فاتورة ${rInv.invoiceNumber}`),
-              ),
-            )
-            .orderBy(sql`${receipts.id} DESC`)
-            .limit(1)
-        )[0];
+        // أحدث خروج قد يكون نقداً منفذاً أو طلب سند غير نقدي ما زال معلقاً (أو عدة إيصالات عند الاسترداد المقسم).
+        const priorRefunds = await tx
+          .select({
+            amount: receipts.amount,
+            id: receipts.id,
+            status: receipts.status,
+            approvalStatus: receipts.approvalStatus,
+            voucherNumber: receipts.voucherNumber,
+          })
+          .from(receipts)
+          .where(
+            and(
+              eq(receipts.invoiceId, input.invoiceId),
+              eq(receipts.direction, "OUT"),
+              eq(receipts.description, `استرداد إلغاء فاتورة ${rInv.invoiceNumber}`),
+            ),
+          )
+          .orderBy(sql`${receipts.id} DESC`);
+        const replayedRefundAmount = priorRefunds
+          .filter((r) => r.status === "COMPLETED" && r.approvalStatus === "APPROVED")
+          .reduce((acc, r) => acc.plus(money(r.amount)), money(0));
+        const replayedPendingAmount = priorRefunds
+          .filter((r) => r.status === "PENDING" && r.approvalStatus === "PENDING_APPROVAL")
+          .reduce((acc, r) => acc.plus(money(r.amount)), money(0));
+        const replayedVoucherNumber =
+          priorRefunds.find((r) => r.voucherNumber != null)?.voucherNumber ?? null;
         return {
           invoiceId: input.invoiceId,
           invoiceNumber: rInv.invoiceNumber,
           cancelledAt: rInv.cancelledAt ?? new Date(),
-          refundAmount: priorRefund?.status === "COMPLETED" && priorRefund.approvalStatus === "APPROVED"
-            ? money(priorRefund.amount).toFixed(2)
-            : "0.00",
-          refundVoucherNumber: priorRefund?.voucherNumber ?? null,
-          pendingRefundAmount: priorRefund?.status === "PENDING" && priorRefund.approvalStatus === "PENDING_APPROVAL"
-            ? money(priorRefund.amount).toFixed(2)
-            : "0.00",
+          refundAmount: replayedRefundAmount.toFixed(2),
+          refundVoucherNumber: replayedVoucherNumber,
+          pendingRefundAmount: replayedPendingAmount.toFixed(2),
           idempotentReplay: true,
         };
       }
@@ -346,15 +357,22 @@ export async function cancelSaleInTx(
     }
     let prelockedCashSource: Awaited<ReturnType<typeof shiftIdForCashTx>> | null = null;
     let prelockedCashAccount: Awaited<ReturnType<typeof lockCashSourceForUpdate>> | null = null;
+    const wantsCashOrMixed =
+      input.refundPaymentMethod === "CASH" ||
+      input.refundPaymentMethod === "MIXED" ||
+      Boolean(input.refunds?.some((r) => r.method === "CASH"));
     const previewRefundCaps =
-      input.refundPaymentMethod === "CASH"
+      !input.unpaidCodOnly && wantsCashOrMixed
         ? await loadRefundCaps(tx, input.invoiceId)
         : null;
+    const previewCashNet = previewRefundCaps?.netByMethod.get("CASH") ?? money(0);
     const expectsCashRefund =
       !input.unpaidCodOnly &&
-      input.refundPaymentMethod === "CASH" &&
       previewRefundCaps != null &&
-      previewRefundCaps.pool.gt(0);
+      previewRefundCaps.pool.gt(0) &&
+      (input.refundPaymentMethod === "CASH" ||
+        (input.refundPaymentMethod === "MIXED" && previewCashNet.gt(0)) ||
+        Boolean(input.refunds?.some((r) => r.method === "CASH" && money(r.amount || 0).gt(0))));
     if (expectsCashRefund) {
       const directLimitsApply =
         input.enforceOperationalDecision === true &&
@@ -504,6 +522,35 @@ export async function cancelSaleInTx(
         doThis: "حدث الفاتورة؛ أحل الفاتورة المقبوضة إلى موظف مخول بالاسترداد" }) });
     }
     const lockedRefundable = lockedPaidPool.totalIn.minus(lockedPaidPool.outPrior);
+    let resolvedLegs: RefundLegDecision[] | null = null;
+    if (input.refunds && input.refunds.length > 0) {
+      resolvedLegs = input.refunds.map((leg) => ({
+        method: leg.method,
+        amount: round2(money(leg.amount)),
+        reference: leg.reference ?? (leg.method === "CARD" ? input.reference ?? null : null),
+        cashSource: leg.method === "CASH" ? prelockedCashSource : null,
+      }));
+    } else if (lockedRefundable.gt(0) && input.refundPaymentMethod === "MIXED") {
+      const entries = Object.entries(lockedPaidPool.byMethod).filter(([, amt]) => money(amt).gt(0));
+      if (entries.length > 0) {
+        resolvedLegs = entries.map(([method, amount]) => ({
+          method: method as CancelRefundMethod,
+          amount: round2(money(amount)),
+          reference: method === "CARD" ? input.reference ?? null : null,
+          cashSource: method === "CASH" ? prelockedCashSource : null,
+        }));
+      }
+    }
+    const cashRefundAmount =
+      resolvedLegs != null
+        ? resolvedLegs
+            .filter((leg) => leg.method === "CASH")
+            .reduce((acc, leg) => acc.plus(money(leg.amount)), money(0))
+        : input.refundPaymentMethod === "CASH"
+          ? lockedRefundable
+          : money(0);
+    const hasCashRefund = cashRefundAmount.gt(0);
+
     let directDecision: OperationalDecision | undefined;
     if (
       (input.enforceOperationalDecision || input.unpaidCodOnly) &&
@@ -513,8 +560,7 @@ export async function cancelSaleInTx(
       const pool = lockedPaidPool;
       const refundable = lockedRefundable;
       const drawerHasFunds =
-        input.refundPaymentMethod !== "CASH" ||
-        refundable.lte(0) ||
+        !hasCashRefund ||
         prelockedCashAccount == null ||
         (prelockedCashAccount?.cashBucket === "DRAWER" &&
           prelockedCashAccount.shiftId != null &&
@@ -522,29 +568,57 @@ export async function cancelSaleInTx(
             tx,
             prelockedCashAccount.shiftId,
             prelockedCashAccount.openingBalance ?? "0",
-          )).gte(refundable));
+          )).gte(cashRefundAmount));
+      const requestedByMethod = new Map<string, Decimal>();
+      if (resolvedLegs) {
+        for (const leg of resolvedLegs) {
+          requestedByMethod.set(
+            leg.method,
+            (requestedByMethod.get(leg.method) ?? money(0)).plus(money(leg.amount)),
+          );
+        }
+      }
+      const failingLegEntry = resolvedLegs
+        ? Array.from(requestedByMethod.entries()).find(([m, amt]) => {
+            const cap = money(pool.byMethod[m] ?? "0");
+            return cap.lte(0) || amt.gt(cap);
+          })
+        : undefined;
+      const legsMatchOriginalRails =
+        resolvedLegs != null && resolvedLegs.length > 0 && failingLegEntry == null;
+
       directDecision = evaluateRefundOperationalDecision({
         operationAllowed: currentCancellationAllowed,
         sameBranch: Number(inv.branchId) === Number(actor.branchId),
         ownsTransaction: Number(inv.createdBy) === Number(actor.userId),
-        cashSourceReady: refundable.lte(0) || input.refundPaymentMethod !== "CASH" ||
+        cashSourceReady:
+          !hasCashRefund ||
           (prelockedCashSource?.cashBucket === "DRAWER" && prelockedCashSource.shiftId != null),
         sameOpenShift:
-          refundable.lte(0) ||
-          input.refundPaymentMethod !== "CASH" ||
+          !hasCashRefund ||
           (prelockedCashSource?.cashBucket === "DRAWER" &&
             prelockedCashSource.shiftId != null &&
-            money(lockedPaidPool.cashByShift[String(prelockedCashSource.shiftId)] ?? "0").gte(refundable)),
+            money(lockedPaidPool.cashByShift[String(prelockedCashSource.shiftId)] ?? "0").gte(cashRefundAmount)),
         sameBusinessDay: inv.invoiceDate.toISOString().slice(0, 10) === todayUtcDate(),
         accountingPeriodOpen: true,
         hasDownstreamEffects: returnedTotalDec.gt(0),
         hasSourceDocument: true,
-        refundAmountIqd: refundable.toFixed(2),
+        refundAmountIqd: (failingLegEntry ? failingLegEntry[1] : refundable).toFixed(2),
         sourcePaidAmountIqd: Decimal.max(money(inv.paidAmount), refundable, deliveryAmendment?.custody ?? money(0)).toFixed(2),
         maxRefundAmountIqd: currentOperationalAuthority.caps.maxRefundAmountIqd,
-        refundMethod: input.refundPaymentMethod,
-        originalPaymentMethods: Object.keys(pool.byMethod),
-        originalPaymentAmounts: pool.byMethod,
+        refundMethod: resolvedLegs
+          ? legsMatchOriginalRails
+            ? "MIXED"
+            : (failingLegEntry?.[0] ?? "MIXED")
+          : input.refundPaymentMethod,
+        originalPaymentMethods:
+          resolvedLegs && legsMatchOriginalRails
+            ? [...Object.keys(pool.byMethod), "MIXED"]
+            : Object.keys(pool.byMethod),
+        originalPaymentAmounts:
+          resolvedLegs && legsMatchOriginalRails
+            ? { ...pool.byMethod, MIXED: refundable.toFixed(2) }
+            : pool.byMethod,
         drawerHasFunds,
         approvalOperation: "salesControl.requestCancel",
       });
@@ -553,18 +627,42 @@ export async function cancelSaleInTx(
       if (directDecision.result === "DENY")
         throw new TRPCError({ code: "FORBIDDEN", message: directDecision.reason });
     }
-    if (
-      input.refundPaymentMethod === "CASH" &&
-      lockedRefundable.gt(0) &&
-      !prelockedCashSource
-    ) {
+    if (lockedRefundable.gt(0)) {
+      const requestedNonCash = new Map<string, Decimal>();
+      if (resolvedLegs) {
+        for (const leg of resolvedLegs) {
+          if (leg.method !== "CASH") {
+            requestedNonCash.set(
+              leg.method,
+              (requestedNonCash.get(leg.method) ?? money(0)).plus(money(leg.amount)),
+            );
+          }
+        }
+      } else if (
+        inv.paymentMethod === "MIXED" &&
+        input.refundPaymentMethod !== "CASH" &&
+        input.refundPaymentMethod !== "MIXED"
+      ) {
+        requestedNonCash.set(input.refundPaymentMethod, lockedRefundable);
+      }
+      for (const [m, amt] of Array.from(requestedNonCash.entries())) {
+        const cap = money(lockedPaidPool.byMethod[m] ?? "0");
+        if (amt.gt(cap)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: `تعذّر تسجيل استرداد إلغاء الفاتورة عبر ${m}`,
+              why: `المبلغ المطلوب ردّه عبر ${m} (${amt.toFixed(2)} د.ع) يتجاوز صافي المقبوض الفعلي بهذه الوسيلة (${cap.toFixed(2)} د.ع)`,
+              doThis: "استخدم الاسترداد المقسّم وفق وسائل القبض الفعلية أو استرد الجزء النقدي نقداً",
+            }),
+          });
+        }
+      }
+    }
+    if (hasCashRefund && !prelockedCashSource) {
       throw new CashRefundSourceChangedError();
     }
-    if (
-      input.refundPaymentMethod === "CASH" &&
-      lockedRefundable.gt(0) &&
-      prelockedCashSource
-    ) {
+    if (hasCashRefund && prelockedCashSource) {
       // The final source is checked only after the direct/approval decision. A
       // short cashier drawer therefore creates an approval request; an approved
       // manager execution checks its newly selected drawer/treasury here.
@@ -572,7 +670,7 @@ export async function cancelSaleInTx(
         branchId: Number(inv.branchId),
         cashBucket: prelockedCashSource.cashBucket,
         shiftId: prelockedCashSource.shiftId,
-        amount: lockedRefundable,
+        amount: cashRefundAmount,
         operation: "رد إلغاء فاتورة من مصدر النقد المعتمد",
       });
     }
@@ -665,18 +763,23 @@ export async function cancelSaleInTx(
     // الإثباتُ لا الإقفال (سياسة القبض ١٦/٨): المرجع هو الأثر الوحيد الذي يربط المبلغَ الخارج من
     // حسابنا البنكيّ بمستنده. منفّذُ الردّ في المحرّك يفرضه أيضاً لكلّ مستدعٍ؛ وهنا يُرفض مبكّراً
     // بلا تجسيدٍ ولا كتابة — والنصّ متعاقَدٌ عليه في `saleCancel.test.ts` (check:message-drift).
-    if (input.refundPaymentMethod === "CARD" && !input.reference?.trim()) {
-      const refundable = lockedRefundable;
-      if (refundable.gt(0)) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: appErrorMessage({
-            what: "تعذّر تسجيل استرداد إلغاء الفاتورة على البطاقة",
-            why: `مرجع عملية الاسترداد من جهاز الدفع لم يصل، وهو الأثر الوحيد الذي يربط ${refundable.toFixed(2)} د.ع خرجت من حسابنا البنكيّ بمستندها`,
-            doThis: "نفّذ الاسترداد على جهاز الدفع أوّلاً، ثمّ أدخِل رقم العملية أو كود الموافقة المطبوع على قسيمة الجهاز في حقل المرجع",
-          }),
-        });
-      }
+    const missingCardRefAmount =
+      resolvedLegs != null
+        ? resolvedLegs
+            .filter((leg) => leg.method === "CARD" && money(leg.amount).gt(0) && !leg.reference?.trim())
+            .reduce((acc, leg) => acc.plus(money(leg.amount)), money(0))
+        : input.refundPaymentMethod === "CARD" && !input.reference?.trim()
+          ? lockedRefundable
+          : money(0);
+    if (missingCardRefAmount.gt(0)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل استرداد إلغاء الفاتورة على البطاقة",
+          why: `مرجع عملية الاسترداد من جهاز الدفع لم يصل، وهو الأثر الوحيد الذي يربط ${missingCardRefAmount.toFixed(2)} د.ع خرجت من حسابنا البنكيّ بمستندها`,
+          doThis: "نفّذ الاسترداد على جهاز الدفع أوّلاً، ثمّ أدخِل رقم العملية أو كود الموافقة المطبوع على قسيمة الجهاز في حقل المرجع",
+        }),
+      });
     }
 
     // ═══ ٣) الأثرُ كلُّه عبر محرّك العكس (ق٧): مخزون · أمانة · قيد · هدايا · تقريب · ردّ مال · ذمّة · كوبون ═══
@@ -700,10 +803,11 @@ export async function cancelSaleInTx(
         reasonNote,
         restock: true,
         refund: {
-          method: input.refundPaymentMethod,
+          method: input.refundPaymentMethod === "MIXED" ? "CASH" : input.refundPaymentMethod,
           reference: input.reference ?? null,
           cashSource: prelockedCashSource,
           requestFingerprint,
+          legs: resolvedLegs,
         },
       },
       actor,

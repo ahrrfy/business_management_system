@@ -287,7 +287,7 @@ export default function SalesReport() {
 
       {/* فلاتر مشتركة */}
       <Card>
-        <CardContent className="pt-4 pb-3 space-y-3">
+        <CardContent className="p-2.5 space-y-2">
           {tab !== "slow" && (
             <PeriodFilter
               value={period}
@@ -484,33 +484,28 @@ function InvoicesTab({
         </div>
       )}
       {totals && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <Card>
-            <CardContent className="pt-4 pb-3 text-center">
-              <p className="text-xs text-muted-foreground">عدد الفواتير</p>
-              <p className="text-2xl font-bold tabular-nums">{totals.count}</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="pt-4 pb-3 text-center">
-              <p className="text-xs text-muted-foreground">الإجمالي</p>
-              <p className="text-xl font-bold tabular-nums" dir="ltr">{fmt(totals.total)}</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="pt-4 pb-3 text-center">
-              <p className="text-xs text-muted-foreground">المحصَّل</p>
-              <p className="text-xl font-bold tabular-nums text-money-positive" dir="ltr">{fmt(totals.paid)}</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="pt-4 pb-3 text-center">
-              <p className="text-xs text-muted-foreground">المتبقّي</p>
-              <p className={`text-xl font-bold tabular-nums ${D(totals.unpaid).gt(0) ? "text-money-negative" : "text-foreground"}`} dir="ltr">
-                {fmt(totals.unpaid)}
-              </p>
-            </CardContent>
-          </Card>
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-xl border bg-muted/20 px-3.5 py-2 text-xs">
+          <div className="flex items-center gap-1.5">
+            <span className="text-muted-foreground">عدد الفواتير:</span>
+            <span className="font-extrabold tabular-nums">{totals.count}</span>
+          </div>
+          <span className="text-border">|</span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-muted-foreground">الإجمالي:</span>
+            <span className="font-extrabold tabular-nums" dir="ltr">{fmt(totals.total)}</span>
+          </div>
+          <span className="text-border">|</span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-muted-foreground">المحصَّل:</span>
+            <span className="font-extrabold tabular-nums text-money-positive" dir="ltr">{fmt(totals.paid)}</span>
+          </div>
+          <span className="text-border">|</span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-muted-foreground">المتبقّي:</span>
+            <span className={`font-extrabold tabular-nums ${D(totals.unpaid).gt(0) ? "text-money-negative" : "text-foreground"}`} dir="ltr">
+              {fmt(totals.unpaid)}
+            </span>
+          </div>
         </div>
       )}
       <DataTable

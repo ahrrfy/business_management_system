@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { PageHeader } from "@/components/PageHeader";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
@@ -545,7 +545,7 @@ export default function Announcements() {
   ];
 
   return (
-    <div className="space-y-6" dir="rtl">
+    <div className="space-y-2.5" dir="rtl">
       <PageHeader
         title="إدارة ونشر إعلانات الشركة"
         description="بث التوجيهات الإدارية، إعلانات الفروع، وتتبع إقرارات وقراءات الكوادر"
@@ -567,80 +567,44 @@ export default function Announcements() {
         }
       />
 
-      {/* بطاقات المؤشرات العلوية */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-xs font-semibold text-muted-foreground flex items-center justify-between">
-              <span>الإعلانات النشطة</span>
-              <BellRing className="size-4 text-primary" aria-hidden />
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-black text-foreground">
-              {activeCount.toLocaleString("ar-IQ-u-nu-latn")}
-            </div>
-            <p className="text-[11px] text-muted-foreground mt-1">
-              إعلانات سارية الصلاحية
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-xs font-semibold text-muted-foreground flex items-center justify-between">
-              <span>توجيهات عاجلة وطارئة</span>
-              <ShieldAlert className="size-4 text-destructive" aria-hidden />
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-black text-destructive">
-              {criticalCount.toLocaleString("ar-IQ-u-nu-latn")}
-            </div>
-            <p className="text-[11px] text-muted-foreground mt-1">
-              تظهر في صدارة شريط السبتلايت
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-xs font-semibold text-muted-foreground flex items-center justify-between">
-              <span>إجمالي القراءات</span>
-              <Eye className="size-4 text-primary" aria-hidden />
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-black text-foreground">
-              {totalReads.toLocaleString("ar-IQ-u-nu-latn")}
-            </div>
-            <p className="text-[11px] text-muted-foreground mt-1">
-              اطلاع موثق من حسابات الكوادر
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-xs font-semibold text-muted-foreground flex items-center justify-between">
-              <span>الإقرارات الرسمية بالعلم</span>
-              <CheckCircle2 className="size-4 text-money-positive" aria-hidden />
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-black text-money-positive">
-              {totalAcks.toLocaleString("ar-IQ-u-nu-latn")}
-            </div>
-            <p className="text-[11px] text-muted-foreground mt-1">
-              إقرار رقمي معتمد بالنظام
-            </p>
-          </CardContent>
-        </Card>
+      {/* شريط المؤشرات العلوي المدمج */}
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-xl border bg-muted/20 px-3.5 py-2 text-xs">
+        <div className="flex items-center gap-1.5">
+          <BellRing className="size-3.5 text-primary" aria-hidden />
+          <span className="text-muted-foreground">الإعلانات النشطة:</span>
+          <span className="font-extrabold tabular-nums text-foreground">
+            {activeCount.toLocaleString("ar-IQ-u-nu-latn")}
+          </span>
+        </div>
+        <span className="text-border">|</span>
+        <div className="flex items-center gap-1.5">
+          <ShieldAlert className="size-3.5 text-destructive" aria-hidden />
+          <span className="text-muted-foreground">توجيهات عاجلة وطارئة:</span>
+          <span className="font-extrabold tabular-nums text-destructive">
+            {criticalCount.toLocaleString("ar-IQ-u-nu-latn")}
+          </span>
+        </div>
+        <span className="text-border">|</span>
+        <div className="flex items-center gap-1.5">
+          <Eye className="size-3.5 text-primary" aria-hidden />
+          <span className="text-muted-foreground">إجمالي القراءات:</span>
+          <span className="font-extrabold tabular-nums text-foreground">
+            {totalReads.toLocaleString("ar-IQ-u-nu-latn")}
+          </span>
+        </div>
+        <span className="text-border">|</span>
+        <div className="flex items-center gap-1.5">
+          <CheckCircle2 className="size-3.5 text-money-positive" aria-hidden />
+          <span className="text-muted-foreground">الإقرارات الرسمية بالعلم:</span>
+          <span className="font-extrabold tabular-nums text-money-positive">
+            {totalAcks.toLocaleString("ar-IQ-u-nu-latn")}
+          </span>
+        </div>
       </div>
 
       {/* شريط البحث والتصفية */}
       <Card>
-        <CardContent className="p-4">
+        <CardContent className="p-2.5">
           <div className="flex flex-col md:flex-row items-center gap-3">
             <UnifiedSearchInput
               debounceMs={0}

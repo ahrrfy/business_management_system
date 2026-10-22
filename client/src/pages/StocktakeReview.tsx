@@ -16,6 +16,7 @@ import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
+import { StocktakeOverlapNotice, StocktakeOverlapRow } from "@/components/stocktake/StocktakeOverlapNotice";
 import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
@@ -626,6 +627,10 @@ export default function StocktakeReview() {
     ? isApproved
       ? "الجلسة معتمدة ومقفلة"
       : "الاعتماد متاح لجلسة قيد المراجعة فقط"
+    : barriers.activeStocktakeOverlaps > 0
+      ? `${nf(barriers.activeStocktakeOverlaps)} صنف مرتبط بجرد نشط آخر — أكمله أو ألغِه أولاً`
+      : barriers.interveningStocktakeCounts > 0
+        ? `${nf(barriers.interveningStocktakeCounts)} عدّ قديم تخلله اعتماد جرد آخر — اطلب إعادة عدّ الأصناف المتأثرة`
     : barriers.valuationBlockingAnomalies > 0
       ? `${nf(barriers.valuationBlockingAnomalies)} تضخم تكلفة/وحدة مادي يحجب الاعتماد`
       : barriers.countInputAnomalies > 0
@@ -1042,6 +1047,7 @@ export default function StocktakeReview() {
           </Link>
         </div>
       )}
+      {isOperational && <StocktakeOverlapNotice barriers={barriers} />}
       {isOperational &&
         (barriers.openConflicts > 0 ||
           barriers.pendingRecounts > 0 ||
@@ -1504,6 +1510,7 @@ export default function StocktakeReview() {
                       >
                         {r.sku}
                       </p>
+                      {isOperational && <StocktakeOverlapRow row={r} />}
                       <p className="text-[11px] text-muted-foreground">
                         الوحدة: {r.baseUnit}
                         {r.zone ? ` · المنطقة: ${r.zone}` : ""}

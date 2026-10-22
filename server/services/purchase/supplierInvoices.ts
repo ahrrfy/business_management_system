@@ -44,6 +44,8 @@ import {
 import { supplierInvoiceApprovalTrigger } from "@shared/approvalTriggers";
 import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
 import { payloadHashMatches } from "../idempotency";
+import { loadSupplierBookInvoiceTotals } from "./supplierBookProjection";
+import { appErrorMessage } from "@shared/errors";
 
 const supplierInvoiceCreator = alias(users, "supplierInvoiceCreator");
 const supplierInvoicePoster = alias(users, "supplierInvoicePoster");
@@ -97,6 +99,7 @@ function required(
 }
 
 export function assertSupplierInvoiceReversalDependenciesClear(input: {
+  bookTotals?: { paidAmount: string; creditedAmount: string };
   paymentAllocations: Array<{
     allocatedAmount: string | number | Decimal;
     refundedAmount: string | number | Decimal;
@@ -107,6 +110,16 @@ export function assertSupplierInvoiceReversalDependenciesClear(input: {
     reversalAmounts: Array<string | number | Decimal>;
   }>;
 }): void {
+  if (money(input.bookTotals?.paidAmount ?? 0).gt(0) || money(input.bookTotals?.creditedAmount ?? 0).gt(0)) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذر عكس فاتورة المورد",
+        why: "الفاتورة تحمل تخصيص تسوية دفترية نشطاً من سداد أو مرتجع",
+        doThis: "اعكس مصدر التسوية من وحدته أولاً ثم أعد طلب عكس الفاتورة",
+      }),
+    });
+  }
   const asAmount = (value: string | number | Decimal) =>
     value instanceof Decimal ? value : money(value);
   const unsettledPayment = input.paymentAllocations.some((allocation) =>
@@ -1218,6 +1231,7 @@ export async function decideSupplierInvoiceApproval(
         reversalsByReturn.set(purchaseReturnId, amounts);
       }
       assertSupplierInvoiceReversalDependenciesClear({
+        bookTotals: (await loadSupplierBookInvoiceTotals(tx, [Number(invoice.id)], { currentRead: true })).get(Number(invoice.id)),
         paymentAllocations,
         purchaseReturns: linkedReturns.map((purchaseReturn) => ({
           id: Number(purchaseReturn.id),

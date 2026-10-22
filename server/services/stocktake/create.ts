@@ -25,6 +25,7 @@ import type { StkActor } from "./types";
 import { chunk } from "./internal";
 import { loadOpeningPurchaseLinkedVariantIds } from "./openingEligibility";
 import type { CountMethod } from "../../../shared/stocktakeCountMethod";
+import { assertNoActiveStocktakeOverlap } from "./overlapGuard";
 
 /** PIN رباعي عشوائي مشفّر التوليد (crypto) فريد ضمن المجموعة المُمرَّرة. */
 function generateUniquePin(used: Set<string>): string {
@@ -364,6 +365,7 @@ async function createSessionInTx(tx: Tx, input: CreateStocktakeInput, actor: Stk
 
   // النطاق.
   const scope = await resolveScope(tx, input);
+  await assertNoActiveStocktakeOverlap(tx, input.branchId, scope.variantIds);
 
   // (د) الجرد الافتتاحي يؤسس فقط الرصيد الذي لم يدخل مسار المشتريات. الارتباط بقائمة مشتريات
   // غير ملغاة في الفرع كافٍ للاستبعاد مهما كانت حالتها؛ فالمنتج صار ذا مصدر شرائي معلوم.

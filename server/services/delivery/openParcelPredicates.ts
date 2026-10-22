@@ -13,6 +13,7 @@ import type Decimal from "decimal.js";
 import { deliveryConsignments, deliveryLedgerEntries } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { money, round2 } from "../money";
+import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
 
 /**
  * م١ (PR-2) — **عجزُ التسليم المُقيَّد على الطرد** (`SHORTFALL_ASSIGNED` بمرجع الطرد، Slice DFP1):
@@ -31,6 +32,7 @@ export const consignmentShortfallAssignedSql = sql<string>`(SELECT COALESCE(SUM(
     ELSE 0 END), 0)
   FROM deliveryLedgerEntries dle
   WHERE dle.consignmentId = deliveryConsignments.id
+    AND ${effectiveDeliveryLedgerEntrySql("dle")}
     AND dle.entryType IN ('SHORTFALL_ASSIGNED','SHORTFALL_SETTLED'))`;
 
 /** نفس المعنى لطردٍ واحدٍ داخل معاملة (حلقة التوريد تقرأ الطرود واحداً واحداً تحت القفل). */
@@ -44,6 +46,7 @@ export async function shortfallAssignedForConsignmentTx(tx: Tx, consignmentId: n
       .from(deliveryLedgerEntries)
       .where(and(
         eq(deliveryLedgerEntries.consignmentId, consignmentId),
+        effectiveDeliveryLedgerEntrySql(),
         inArray(deliveryLedgerEntries.entryType, ["SHORTFALL_ASSIGNED", "SHORTFALL_SETTLED"]),
       ))
   )[0];

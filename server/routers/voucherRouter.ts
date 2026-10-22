@@ -46,6 +46,7 @@ import {
   parseSystemPaymentRequest,
 } from "../services/voucher/create";
 import { withMysqlDeadlockRetry } from "../services/voucher/deadlockRetry";
+import { positiveMoneyString } from "../lib/schemas";
 
 const partyType = z.enum(["CUSTOMER", "SUPPLIER", "DELIVERY_PARTY", "OTHER"]);
 // قرار المالك (٢٢/٧): لا تعامل بالصكوك — CHECK محذوف من طرق الإنشاء، ويبقى في reportableMethod
@@ -109,6 +110,7 @@ export const voucherRouter = router({
         internalNote: z.string().max(2000).nullish(),
         // attachment-upload (٥/٧): ربط سند العميل بفاتورة بيع مُحدَّدة (اختياري).
         invoiceId: z.number().int().positive().nullish(),
+        supplierAllocations: z.array(z.object({ supplierInvoiceId: z.number().int().positive(), invoiceVersion: z.number().int().positive(), amount: positiveMoneyString })).min(1).max(500).optional(),
         clientRequestId: z.string().min(1).max(80),
       }),
     )

@@ -394,21 +394,21 @@ export default function ExchangeStatement() {
   }, [houseRows, houseId, st.data, sum, from, to, me.data?.name]);
 
   return (
-    <div className="space-y-4" dir="rtl">
+    <div className="space-y-2.5" dir="rtl">
       <PageHeader
         icon={<FileText className="h-5 w-5 text-primary" />}
         title="كشف حساب الصيرفة"
         description="رصيد التعامل مع الصيرفة على مستوى الشركة، وحيازة الدولار الفعلية مفصّلة حسب الفرع."
         actions={
           houseId > 0 && st.data ? (
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
               <Button
                 variant="outline"
                 size="sm"
                 className="gap-1.5"
                 onClick={printFullStatement}
               >
-                <Printer className="size-4" aria-hidden />
+                <Printer className="size-3.5" aria-hidden />
                 طباعة / PDF الكشف
               </Button>
               <Button
@@ -417,7 +417,7 @@ export default function ExchangeStatement() {
                 className="gap-1.5"
                 onClick={exportStatementExcel}
               >
-                <FileSpreadsheet className="size-4" aria-hidden />
+                <FileSpreadsheet className="size-3.5" aria-hidden />
                 تصدير Excel
               </Button>
             </div>
@@ -425,55 +425,63 @@ export default function ExchangeStatement() {
         }
       />
 
-      <Card className="p-3">
-        <div className="flex flex-wrap items-end gap-3">
+      <Card className="p-2.5">
+        <div className="flex flex-wrap items-end gap-2.5">
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">الصيرفة</label>
-            <AppSelect className="h-9" value={String(houseId)} onValueChange={(value) => setHouseId(Number(value))}>
+            <AppSelect className="h-8 text-xs" value={String(houseId)} onValueChange={(value) => setHouseId(Number(value))}>
               <option value={0}>— اختر —</option>
               {houseRows.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
             </AppSelect>
           </div>
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">من تاريخ</label>
-            <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-9" dir="ltr" />
+            <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-8 text-xs" dir="ltr" />
           </div>
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">إلى تاريخ</label>
-            <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-9" dir="ltr" />
+            <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-8 text-xs" dir="ltr" />
           </div>
         </div>
       </Card>
 
       {houseId > 0 && sum && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-          <StatCard label="حساب الصيرفة — دينار" value={fmtAr(sum.currentBalanceIqd)} sub="شركة ككل" tone={D(sum.currentBalanceIqd).isNegative() ? "negative" : "positive"} />
-          <StatCard label="حساب الصيرفة — دولار" value={fmtAr(sum.currentBalanceUsd)} sub="كمية control، شركة ككل" tone={D(sum.currentBalanceUsd).isNegative() ? "negative" : "positive"} />
-          <StatCard label="قيمة control الدفترية" value={fmtAr(sum.currentControlCarryingIqd)} sub="د.ع — ليست نقداً فعلياً" tone={D(sum.currentControlCarryingIqd).isNegative() ? "negative" : "positive"} />
-          <StatCard label="ذمة الصيرفة المدينة — دينار" value={fmtAr(sum.iqdControlReceivableIqd)} sub="د.ع" tone="positive" />
-          <StatCard label="ذمة الصيرفة الدائنة — دينار" value={fmtAr(sum.iqdControlPayableIqd)} sub="د.ع" tone={D(sum.iqdControlPayableIqd).isZero() ? "default" : "negative"} />
-          <StatCard label="ذمة الصيرفة المدينة — دولار" value={fmtAr(sum.usdControlReceivableIqd)} sub="قيمة دفترية د.ع" tone="positive" />
-          <StatCard label="ذمة الصيرفة الدائنة — دولار" value={fmtAr(sum.usdControlPayableIqd)} sub="قيمة دفترية د.ع" tone={D(sum.usdControlPayableIqd).isZero() ? "default" : "negative"} />
-          <StatCard label="إجمالي الإيداعات (دينار)" value={fmtAr(sum.totalDepositIqd)} sub="د.ع" />
-          <StatCard label="إجمالي الإيداعات (دولار)" value={fmtAr(sum.totalDepositUsd)} sub="$" />
-          <StatCard label="إجمالي السحب (دينار)" value={fmtAr(sum.totalWithdrawIqd)} sub="د.ع" />
-          <StatCard label="إجمالي السحب (دولار)" value={fmtAr(sum.totalWithdrawUsd)} sub="$" />
-          <StatCard label="إجمالي الدولار المشترى" value={fmtAr(sum.totalUsdBought)} sub="$" />
-          <StatCard label="إجمالي التسديدات" value={fmtAr(sum.totalSettledIqd)} sub="د.ع" />
-          <StatCard label="إجمالي العمولات" value={fmtAr(sum.totalFeesIqd)} sub="د.ع" tone="warning" />
-          <StatCard label="صافي فروق الصرف" value={fmtAr(sum.totalFxDiff)} sub="د.ع" tone={D(sum.totalFxDiff).isNegative() ? "negative" : "positive"} />
+        <div className="space-y-2">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+            <StatCard label="حساب الصيرفة — دينار" value={fmtAr(sum.currentBalanceIqd)} sub="شركة ككل" tone={D(sum.currentBalanceIqd).isNegative() ? "negative" : "positive"} />
+            <StatCard label="حساب الصيرفة — دولار" value={fmtAr(sum.currentBalanceUsd)} sub="كمية control، شركة ككل" tone={D(sum.currentBalanceUsd).isNegative() ? "negative" : "positive"} />
+            <StatCard label="قيمة control الدفترية" value={fmtAr(sum.currentControlCarryingIqd)} sub="د.ع — ليست نقداً فعلياً" tone={D(sum.currentControlCarryingIqd).isNegative() ? "negative" : "positive"} />
+            <StatCard label="صافي فروق الصرف" value={fmtAr(sum.totalFxDiff)} sub={`العمولات: ${fmtAr(sum.totalFeesIqd)} د.ع`} tone={D(sum.totalFxDiff).isNegative() ? "negative" : "positive"} />
+          </div>
+          <details className="rounded-md border bg-card px-3 py-1.5 text-xs">
+            <summary className="cursor-pointer font-medium text-muted-foreground hover:text-foreground">
+              تفصيل الذمم ومجاميع الإيداع والسحب والدولار المشترى (11 مؤشراً إضافياً)
+            </summary>
+            <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 pt-2 border-t">
+              <StatCard label="ذمة الصيرفة المدينة — دينار" value={fmtAr(sum.iqdControlReceivableIqd)} sub="د.ع" tone="positive" />
+              <StatCard label="ذمة الصيرفة الدائنة — دينار" value={fmtAr(sum.iqdControlPayableIqd)} sub="د.ع" tone={D(sum.iqdControlPayableIqd).isZero() ? "default" : "negative"} />
+              <StatCard label="ذمة الصيرفة المدينة — دولار" value={fmtAr(sum.usdControlReceivableIqd)} sub="قيمة دفترية د.ع" tone="positive" />
+              <StatCard label="ذمة الصيرفة الدائنة — دولار" value={fmtAr(sum.usdControlPayableIqd)} sub="قيمة دفترية د.ع" tone={D(sum.usdControlPayableIqd).isZero() ? "default" : "negative"} />
+              <StatCard label="إجمالي الإيداعات (دينار)" value={fmtAr(sum.totalDepositIqd)} sub="د.ع" />
+              <StatCard label="إجمالي الإيداعات (دولار)" value={fmtAr(sum.totalDepositUsd)} sub="$" />
+              <StatCard label="إجمالي السحب (دينار)" value={fmtAr(sum.totalWithdrawIqd)} sub="د.ع" />
+              <StatCard label="إجمالي السحب (دولار)" value={fmtAr(sum.totalWithdrawUsd)} sub="$" />
+              <StatCard label="إجمالي الدولار المشترى" value={fmtAr(sum.totalUsdBought)} sub="$" />
+              <StatCard label="إجمالي التسديدات" value={fmtAr(sum.totalSettledIqd)} sub="د.ع" />
+              <StatCard label="إجمالي العمولات" value={fmtAr(sum.totalFeesIqd)} sub="د.ع" tone="warning" />
+            </div>
+          </details>
         </div>
       )}
 
       {houseId > 0 && st.data && (
-        <Card className="p-4">
-          <div className="mb-3">
-            <h3 className="text-sm font-semibold">النقد الدولاري الفعلي حسب الفرع</h3>
-            <p className="text-xs text-muted-foreground">
+        <Card className="p-3">
+          <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+            <h3 className="text-xs font-semibold">النقد الدولاري الفعلي حسب الفرع</h3>
+            <p className="text-[11px] text-muted-foreground">
               الكمية والقيمة الدفترية أدناه أصل نقدي فعلي في الفرع؛ وهي منفصلة عن رصيد التعامل مع الصيرفة أعلاه.
             </p>
           </div>
-          {/* مُضمَّن: عنوان القسم وشرحه أعلاه، فلا شريطَ حالةٍ ولا منتقيَ أعمدة. */}
           <DataTable<PhysicalUsdRow>
             embedded
             searchable={false}
@@ -486,7 +494,7 @@ export default function ExchangeStatement() {
         </Card>
       )}
 
-      <Card className="p-4">
+      <Card className="p-3">
         <div className="overflow-x-auto">
           <DataTable
             data={(st.data?.transactions ?? []) as TxnRow[]}

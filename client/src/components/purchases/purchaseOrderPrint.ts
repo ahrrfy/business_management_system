@@ -20,6 +20,7 @@ export interface PrintPurchaseOrderOptions {
   customsCost: string;
   notes: string;
   terms?: string;
+  poReference?: string;
   supplierName: string;
   items: InvoiceLine[];
   docTotals: {
@@ -47,6 +48,7 @@ export function printPurchaseOrderDoc({
   customsCost,
   notes,
   terms,
+  poReference,
   supplierName,
   items,
   docTotals,
@@ -168,6 +170,9 @@ export function printPurchaseOrderDoc({
       : []),
     ...(notes.trim()
       ? [{ label: "ملاحظات", value: notes.trim() }]
+      : []),
+    ...((poReference ?? "").trim()
+      ? [{ label: "مرجع أمر الشراء", value: (poReference ?? "").trim() }]
       : []),
     ...((terms ?? "").trim()
       ? [{ label: "الشروط والأحكام", value: (terms ?? "").trim() }]

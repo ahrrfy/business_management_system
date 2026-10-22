@@ -9,6 +9,7 @@
 // «المتعذّر» = طلب CANCELLED يحمل cancelReason (أي أُلغي عبر «تعذّر التسليم» للمندوب) — يميّزه
 // عن إلغاء الموظّف قبل الإرسال (بلا سبب مُسجَّل، وغالباً بلا جهة مُسنَدة). المصدر الوحيد للحقيقة
 // المالية يبقى الدفتر؛ هذا تقرير تشغيليّ للعدّ والقيمة يقرأ حالة الطلب وفاتورته فقط (بلا كتابة).
+import { effectiveDeliveryLedgerEntrySql } from "../delivery/legacyLedger";
 import { and, eq, isNotNull, sql } from "drizzle-orm";
 import Decimal from "decimal.js";
 import { deliveryConsignments, deliveryLedgerEntries, deliveryParties, deliveryRemittances, invoices, onlineOrders, users } from "../../../drizzle/schema";
@@ -269,14 +270,14 @@ export async function getCourierPerformance(
     .leftJoin(users, eq(deliveryParties.userId, users.id))
     .where(sql`${deliveryParties.id} IN (${sql.join(partyIds, sql`, `)})`);
   const partyMap = new Map(parties.map((p) => [Number(p.id), p]));
-  const custodyConds = [sql`${deliveryLedgerEntries.entryType} IN ('COD_COLLECTED','COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF')`];
+  const custodyConds = [sql`${deliveryLedgerEntries.entryType} IN ('COD_COLLECTED','COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF')`, effectiveDeliveryLedgerEntrySql()];
   if (input.branchId) custodyConds.push(eq(deliveryLedgerEntries.branchId, input.branchId));
   const custodyAgg = await db.select({
     partyId: deliveryLedgerEntries.partyId,
     value: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} = 'COD_COLLECTED' THEN ${deliveryLedgerEntries.amount} ELSE -${deliveryLedgerEntries.amount} END),0)`,
   }).from(deliveryLedgerEntries).where(and(...custodyConds)).groupBy(deliveryLedgerEntries.partyId);
   const custodyMap = new Map(custodyAgg.map((r) => [Number(r.partyId), String(r.value)]));
-  const collectedConds = [eq(deliveryLedgerEntries.entryType, "COD_COLLECTED")];
+  const collectedConds = [eq(deliveryLedgerEntries.entryType, "COD_COLLECTED"), effectiveDeliveryLedgerEntrySql()];
   if (input.from) collectedConds.push(sql`${deliveryLedgerEntries.occurredAt} >= ${localDayStart(input.from)}`);
   if (input.to) collectedConds.push(sql`${deliveryLedgerEntries.occurredAt} < ${localNextDayStart(input.to)}`);
   if (input.branchId) collectedConds.push(eq(deliveryLedgerEntries.branchId, input.branchId));

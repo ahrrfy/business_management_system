@@ -26,7 +26,7 @@ import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
-import { PageHeader } from "@/components/PageHeader";
+import { PageHeader, EmbeddedPageHeaderProvider } from "@/components/PageHeader";
 import { FeedbackModal } from "@/components/crm/FeedbackModal";
 import { CustomerDossierDrawer } from "@/components/crm/CustomerDossierDrawer";
 import { InstantGiftModal } from "@/components/crm/InstantGiftModal";
@@ -191,8 +191,9 @@ function CustomerComplaintsView() {
   }
 
   return (
-    <div className="mx-auto max-w-7xl space-y-5 pb-8">
+    <div className="mx-auto max-w-7xl space-y-2.5 pb-4">
       <PageHeader
+        embedded
         title="الشكاوى ومستوى رضا الزبائن"
         description="متابعة جودة الخدمة ورضا الزبائن ومعالجة الشكاوى التشغيلية المرتبطة بمحطات العمل والطباعة."
         actions={
@@ -212,54 +213,30 @@ function CustomerComplaintsView() {
         }
       />
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Card className="rounded-xl border border-border/80 shadow-xs">
-          <CardContent className="flex items-center gap-3 p-4">
-            <div className="flex size-11 items-center justify-center rounded-xl bg-primary/10 text-primary">
-              <Star className="size-5 fill-current" aria-hidden />
-            </div>
-            <div>
-              <div className="text-xs text-muted-foreground">متوسط التقييم العام</div>
-              <div className="text-2xl font-black">{metrics.avgRating} <span className="text-xs font-normal text-muted-foreground">/ 5</span></div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="rounded-xl border border-border/80 shadow-xs">
-          <CardContent className="flex items-center gap-3 p-4">
-            <div className="flex size-11 items-center justify-center rounded-xl bg-primary/10 text-primary">
-              <MessageSquare className="size-5" aria-hidden />
-            </div>
-            <div>
-              <div className="text-xs text-muted-foreground">إجمالي التقييمات والشكاوى</div>
-              <div className="text-2xl font-black">{metrics.total}</div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="rounded-xl border border-border/80 shadow-xs">
-          <CardContent className="flex items-center gap-3 p-4">
-            <div className="flex size-11 items-center justify-center rounded-xl bg-[var(--sem-warn)]/10 text-[var(--sem-warn)]">
-              <Clock className="size-5" aria-hidden />
-            </div>
-            <div>
-              <div className="text-xs text-muted-foreground">شكاوى قيد المتابعة</div>
-              <div className="text-2xl font-black">{metrics.openCount}</div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="rounded-xl border border-border/80 shadow-xs">
-          <CardContent className="flex items-center gap-3 p-4">
-            <div className="flex size-11 items-center justify-center rounded-xl bg-[var(--sem-pos)]/10 text-[var(--sem-pos)]">
-              <CheckCircle2 className="size-5" aria-hidden />
-            </div>
-            <div>
-              <div className="text-xs text-muted-foreground">شكاوى تم حلها بنجاح</div>
-              <div className="text-2xl font-black">{metrics.resolvedCount}</div>
-            </div>
-          </CardContent>
-        </Card>
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-xl border border-border/80 bg-muted/20 px-3.5 py-2 text-xs">
+        <div className="flex items-center gap-1.5">
+          <Star className="size-3.5 fill-current text-primary" aria-hidden />
+          <span className="text-muted-foreground">متوسط التقييم العام:</span>
+          <span className="font-extrabold tabular-nums">{metrics.avgRating} / 5</span>
+        </div>
+        <span className="text-border">|</span>
+        <div className="flex items-center gap-1.5">
+          <MessageSquare className="size-3.5 text-primary" aria-hidden />
+          <span className="text-muted-foreground">إجمالي التقييمات والشكاوى:</span>
+          <span className="font-extrabold tabular-nums">{metrics.total}</span>
+        </div>
+        <span className="text-border">|</span>
+        <div className="flex items-center gap-1.5">
+          <Clock className="size-3.5 text-[var(--sem-warn)]" aria-hidden />
+          <span className="text-muted-foreground">شكاوى قيد المتابعة:</span>
+          <span className="font-extrabold tabular-nums text-[var(--sem-warn)]">{metrics.openCount}</span>
+        </div>
+        <span className="text-border">|</span>
+        <div className="flex items-center gap-1.5">
+          <CheckCircle2 className="size-3.5 text-[var(--sem-pos)]" aria-hidden />
+          <span className="text-muted-foreground">شكاوى تم حلها بنجاح:</span>
+          <span className="font-extrabold tabular-nums text-[var(--sem-pos)]">{metrics.resolvedCount}</span>
+        </div>
       </div>
 
       {/* شريط الفلاتر: فلاتر محطات الطباعة وفلاتر حالات الشكاوى */}
@@ -654,8 +631,8 @@ function TabFallback() {
 }
 
 const tabClass = cn(
-  "inline-flex h-11 shrink-0 cursor-pointer select-none items-center gap-2 rounded-xl border px-4",
-  "text-sm font-semibold whitespace-nowrap outline-none transition-all duration-200 ease-out",
+  "inline-flex h-[var(--ui-tab-h,34px)] shrink-0 cursor-pointer select-none items-center gap-1.5 rounded-lg border px-2.5",
+  "text-xs font-semibold whitespace-nowrap outline-none transition-all duration-200 ease-out",
   "border-border bg-card text-muted-foreground shadow-xs",
   "hover:border-primary/40 hover:bg-accent hover:text-foreground",
   "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
@@ -742,12 +719,12 @@ function CrmWingTabs({
       value={active.value}
       onValueChange={onSelectTab}
       dir="rtl"
-      className="min-w-0 max-w-full space-y-4 overflow-x-hidden"
+      className="min-w-0 max-w-full space-y-2.5 overflow-x-hidden"
     >
-      <div className="flex items-start gap-3">
+      <div className="flex items-start gap-2">
         <TabsPrimitive.List
           aria-label={ariaLabel}
-          className="flex min-w-0 flex-1 flex-nowrap items-center gap-2 overflow-x-auto px-1 pb-1.5 scroll-px-1 [scrollbar-width:none] md:flex-wrap md:overflow-x-visible [&::-webkit-scrollbar]:hidden"
+          className="flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 overflow-x-auto px-1 pb-1 scroll-px-1 [scrollbar-width:none] md:flex-wrap md:overflow-x-visible [&::-webkit-scrollbar]:hidden"
         >
           {visible.map((t) => (
             <TabsPrimitive.Trigger
@@ -761,16 +738,18 @@ function CrmWingTabs({
           ))}
         </TabsPrimitive.List>
       </div>
-      {visible.map((t) => {
-        const Active = t.Component;
-        return (
-          <TabsPrimitive.Content key={t.value} value={t.value} className="outline-none">
-            <Suspense fallback={<TabFallback />}>
-              <Active />
-            </Suspense>
-          </TabsPrimitive.Content>
-        );
-      })}
+      <EmbeddedPageHeaderProvider>
+        {visible.map((t) => {
+          const Active = t.Component;
+          return (
+            <TabsPrimitive.Content key={t.value} value={t.value} className="outline-none">
+              <Suspense fallback={<TabFallback />}>
+                <Active />
+              </Suspense>
+            </TabsPrimitive.Content>
+          );
+        })}
+      </EmbeddedPageHeaderProvider>
     </TabsPrimitive.Root>
   );
 }
@@ -834,13 +813,13 @@ export default function CrmHub() {
   }, [activeWing]);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       {/* المستوى الأول: مبدل الأجنحة الوظيفية الأربعة + لوحة المتابعة */}
       <div className="mx-auto max-w-7xl px-2 sm:px-4">
         <div
           role="tablist"
           aria-label="أجنحة إدارة العملاء والعمليات"
-          className="flex flex-wrap items-center gap-1.5 sm:gap-2 rounded-2xl border border-border/70 bg-card/60 p-1.5 sm:p-2 shadow-xs backdrop-blur-sm"
+          className="flex flex-wrap items-center gap-1 rounded-xl border border-border/70 bg-card/60 p-1 shadow-xs backdrop-blur-sm"
         >
           {WING_CONFIGS.map((wing) => {
             const WingIcon = wing.icon;
@@ -853,14 +832,14 @@ export default function CrmHub() {
                 aria-selected={isSelected}
                 onClick={() => handleSelectWing(wing.id)}
                 className={cn(
-                  "inline-flex h-11 flex-1 min-w-[130px] sm:min-w-[150px] items-center justify-center gap-2 rounded-xl px-3 text-xs sm:text-sm font-semibold transition-all duration-200 select-none cursor-pointer outline-none",
+                  "inline-flex h-8 flex-1 min-w-[115px] sm:min-w-[130px] items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold transition-all duration-200 select-none cursor-pointer outline-none",
                   isSelected
                     ? "border border-primary bg-primary text-primary-foreground shadow-sm"
                     : "border border-transparent bg-transparent text-muted-foreground hover:bg-accent/70 hover:text-foreground",
                   "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
                 )}
               >
-                <WingIcon className="size-4 shrink-0" aria-hidden />
+                <WingIcon className="size-3.5 shrink-0" aria-hidden />
                 <span className="truncate">{wing.label}</span>
               </button>
             );
@@ -870,7 +849,9 @@ export default function CrmHub() {
 
       {/* المستوى الثاني: التبويبات المتخصصة الحصرية للجناح المختار */}
       {activeWing === "overview" ? (
-        <CrmOverview />
+        <EmbeddedPageHeaderProvider>
+          <CrmOverview />
+        </EmbeddedPageHeaderProvider>
       ) : (
         <CrmWingTabs
           key={activeWing}

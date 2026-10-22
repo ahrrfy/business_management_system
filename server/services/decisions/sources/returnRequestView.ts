@@ -12,6 +12,7 @@ import type {
   DecisionTrigger,
 } from "@shared/decisionRegistry";
 import { paymentMethodCompact } from "@shared/terms";
+import { variantDescriptor } from "@shared/variantDisplay";
 
 export interface ReturnRequestDecisionLine {
   invoiceItemId: number;
@@ -23,6 +24,10 @@ export interface ReturnRequestDecisionItem {
   itemNameSnapshot?: string | null;
   productName?: string | null;
   variantName?: string | null;
+  color?: string | null;
+  colorHex?: string | null;
+  size?: string | null;
+  variantKind?: string | null;
   sku?: string | null;
   unitName?: string | null;
   conversionFactor?: number | null;
@@ -75,10 +80,22 @@ function round(value: Decimal): Decimal {
   return value.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
 }
 
+function itemVariantText(item: ReturnRequestDecisionItem): string | null {
+  const desc = variantDescriptor({
+    productName: item.productName,
+    variantName: item.variantName,
+    color: item.color,
+    size: item.size,
+    variantKind: item.variantKind,
+    sku: item.sku,
+  });
+  return desc || item.variantName?.trim() || null;
+}
+
 function itemName(item: ReturnRequestDecisionItem): string {
   const snapshot = item.itemNameSnapshot?.trim();
   if (snapshot) return snapshot;
-  const live = [item.productName, item.variantName]
+  const live = [item.productName, itemVariantText(item)]
     .map((part) => part?.trim())
     .filter((part): part is string => !!part)
     .join(" · ");
@@ -117,7 +134,23 @@ function lineSummary(
   const unitPrice = rawUnitPrice
     ? fixed(asSellingUnit || factor === 1 ? rawUnitPrice : rawUnitPrice.dividedBy(factor))
     : null;
-  return { label: itemName(item), qty, unit, unitPrice };
+  const rawTotal = decimal(item.total);
+  const lineTotal =
+    rawTotal && item.baseQuantity > 0 && line.baseQuantity > 0
+      ? fixed(rawTotal.times(new Decimal(line.baseQuantity).dividedBy(item.baseQuantity)))
+      : unitPrice && typeof qty === "number"
+        ? fixed(new Decimal(unitPrice).times(qty))
+        : null;
+  return {
+    label: itemName(item),
+    variant: itemVariantText(item),
+    colorHex: item.colorHex ?? null,
+    sku: item.sku?.trim() || null,
+    qty,
+    unit,
+    unitPrice,
+    lineTotal,
+  };
 }
 
 export function buildReturnRequestDecisionView(args: {

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Link } from "wouter";
 import { CheckCircle2, Clock, ExternalLink } from "lucide-react";
 import { getPurchaseSettlement } from "@shared/purchaseSettlement";
+import { variantDescriptor } from "@shared/variantDisplay";
 
 export function PurchaseOrderDrilldownView({ poId }: { poId: number }) {
   const q = trpc.purchases.get.useQuery({ purchaseOrderId: poId });
@@ -84,14 +85,48 @@ export function PurchaseOrderDrilldownView({ poId }: { poId: number }) {
               <span className="col-span-2 text-end">الإجمالي</span>
             </div>
             <div className="divide-y max-h-48 overflow-y-auto">
-              {po.items.map((item, idx) => (
-                <div key={item.id ?? idx} className="p-2 text-xs grid grid-cols-12 gap-2 items-center">
-                  <span className="col-span-6 font-medium">{item.productName ?? `صنف #${item.productId}`}</span>
-                  <span className="col-span-2 text-center tabular-nums">{formatQuantity(item.quantity)}</span>
-                  <span className="col-span-2 text-end tabular-nums" dir="ltr">{(po.agreedCurrency === "USD" ? item.usdUnitPrice : item.unitPrice) == null ? "—" : fmt(po.agreedCurrency === "USD" ? item.usdUnitPrice : item.unitPrice)}</span>
-                  <span className="col-span-2 text-end tabular-nums font-semibold" dir="ltr">{(po.agreedCurrency === "USD" ? item.usdTotal : item.total) == null ? "—" : fmt(po.agreedCurrency === "USD" ? item.usdTotal : item.total)}</span>
-                </div>
-              ))}
+              {po.items.map((item, idx) => {
+                const desc = variantDescriptor({
+                  productName: item.productName ?? "",
+                  variantName: item.variantName,
+                  color: item.color,
+                  size: item.size,
+                  variantKind: item.variantKind,
+                  sku: item.sku,
+                });
+                return (
+                  <div key={item.id ?? idx} className="p-2 text-xs grid grid-cols-12 gap-2 items-center">
+                    <div className="col-span-6 flex flex-col gap-0.5">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="font-medium">{item.productName ?? `صنف #${item.productId}`}</span>
+                        {desc ? (
+                          <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                            {item.colorHex && /^#[0-9a-fA-F]{6}$/.test(item.colorHex) ? (
+                              <span
+                                aria-hidden="true"
+                                className="inline-block size-2 shrink-0 rounded-full border border-border/60"
+                                style={{ backgroundColor: item.colorHex }}
+                              />
+                            ) : null}
+                            <span>{desc}</span>
+                          </span>
+                        ) : null}
+                      </div>
+                      {item.sku ? (
+                        <span className="text-[10px] font-mono text-muted-foreground" dir="ltr">
+                          {item.sku}
+                        </span>
+                      ) : null}
+                    </div>
+                    <span className="col-span-2 text-center tabular-nums">
+                      {formatQuantity(item.quantity)}
+                      {item.unitName ? <span className="text-muted-foreground ms-1">{item.unitName}</span> : null}
+                    </span>
+                    <span className="col-span-2 text-end tabular-nums" dir="ltr">{(po.agreedCurrency === "USD" ? item.usdUnitPrice : item.unitPrice) == null ? "—" : fmt(po.agreedCurrency === "USD" ? item.usdUnitPrice : item.unitPrice)}</span>
+                    <span className="col-span-2 text-end tabular-nums font-semibold" dir="ltr">{(po.agreedCurrency === "USD" ? item.usdTotal : item.total) == null ? "—" : fmt(po.agreedCurrency === "USD" ? item.usdTotal : item.total)}</span>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>

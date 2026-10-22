@@ -6,7 +6,6 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { AppSelect } from "@/components/ui/AppSelect";
 
-import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { FilterField, ListToolbar } from "@/components/list";
 import { fmtDate } from "@/lib/date";
@@ -107,13 +106,8 @@ export default function AssetDisposalLog() {
   const netGain = disposed.reduce((s, r) => s + Number(r.gain ?? 0), 0);
 
   return (
-    <div className="space-y-4">
-      <PageHeader
-        title="سجلّ الاستبعاد والإخراج"
-        actions={<Link href="/assets/register"><Button variant="outline" size="sm">سجلّ الأصول</Button></Link>}
-      />
-
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+    <div className="space-y-2.5">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
         <StatCard label="مُستبعَد (بيع/خردة)" value={iqd(disposed.length)} icon={Archive} />
         <StatCard label="خارج الخدمة" value={iqd(retired.length)} icon={CircleSlash} />
         <StatCard label="إجمالي العائد" value={iqd(totalProceeds)} icon={Wallet} sub="د.ع" />
@@ -123,7 +117,9 @@ export default function AssetDisposalLog() {
       <Card>
         <CardHeader>
           <ListToolbar
-            title="القائمة"
+            title="سجلّ الاستبعاد والإخراج"
+            pageTitle
+            actions={<Link href="/assets/register"><Button variant="outline" size="sm">سجلّ الأصول</Button></Link>}
             count={rows.length}
             search={{ value: f.q, onChange: (v) => setF({ q: v }), placeholder: "بحث بالأصل/الرمز…" }}
             filters={

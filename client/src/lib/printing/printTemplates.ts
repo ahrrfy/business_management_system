@@ -136,6 +136,12 @@ export interface InvoicePrintData {
   barcodePlacement?: 'beside' | 'below';
   /** نمط الدفع (PREPAID/COD/CREDIT) — يميّز فواتير الدفع عند الاستلام عن الفواتير الآجلة. */
   paymentMode?: string | null;
+  /** تفصيل دفعات الفاتورة عند تعدّد طرق الدفع (MIXED) */
+  paymentLegs?: Array<{
+    method: string;
+    amount: string | number;
+    reference?: string | null;
+  }> | null;
 }
 
 export async function printInvoiceA4(d: InvoicePrintData): Promise<boolean> {
@@ -179,6 +185,7 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<boolean> {
     customerAddress: d.customerAddress,
     customerPhone: d.customerPhone,
     paymentMethod: d.paymentMethod,
+    paymentLegs: d.paymentLegs ?? null,
     salesRep: d.salespersonName,
     customerBalanceBefore: balBefore,
     customerBalanceAfter: balAfter,
@@ -981,8 +988,14 @@ export interface ReceiptBrowserData {
   credit?: string | number | null;
   /** نمط الدفع (PREPAID/COD/CREDIT) — للتمييز بين المتبقي الآجل والمطلوب عند الاستلام (COD) */
   paymentMode?: string | null;
-  /** طريقة الدفع كنصّ جاهز للعرض (نقدي/بطاقة/تحويل/محفظة/صك) — تظهر في كتلة الإجماليات */
+  /** طريقة الدفع كنصّ جاهز للعرض (نقدي/بطاقة/تحويل/محفظة/صك/مختلطة) — تظهر في كتلة الإجماليات */
   paymentMethod?: string | null;
+  /** تفصيل دفعات الفاتورة عند تعدّد طرق الدفع (MIXED) */
+  paymentLegs?: Array<{
+    method: string;
+    amount: string | number;
+    reference?: string | null;
+  }> | null;
   /** البطاقات الرقمية (ش١٠): تفاصيل كل كرت — بلا أيّ حقلٍ ماليّ داخليّ (§١٢.٢). */
   digitalDetails?: DigitalReceiptDetail[] | null;
   /** إخفاء وسط أرقام الهواتف في النسخة المطبوعة (افتراضياً مُفعَّل). */
@@ -1181,6 +1194,7 @@ export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
         </td>
       </tr>
       ${d.paymentMethod ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">طريقة الدفع</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">${formatPaymentMethodPrintHtml(d.paymentMethod, esc, { heightPx: 14 })}</td></tr>` : ''}
+      ${(d.paymentLegs && d.paymentLegs.length > 1) ? d.paymentLegs.map((leg) => `<tr><td style="font-weight:800;border:1px solid #000;padding:0.8mm 1.5mm;font-size:10.5px;">• ${formatPaymentMethodPrintHtml(`${leg.method}${leg.reference ? ` (${leg.reference})` : ''}`, esc, { heightPx: 12 })}</td><td style="font-weight:900;border:1px solid #000;padding:0.8mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;font-size:10.5px;">${fmt(leg.amount)}</td></tr>`).join('') : ''}
       ${d.paid != null ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">المبلغ المدفوع</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.paid)}</td></tr>` : ''}
       ${d.change != null ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">المبلغ المتبقي (الفكة)</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.change)}</td></tr>` : ''}
       ${Number(d.heldDeposits ?? 0) > 0 ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">عربون محتجز</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.heldDeposits)}</td></tr>` : ''}

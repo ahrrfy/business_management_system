@@ -42,21 +42,6 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-function StatCard({ label, value, sub, accent, icon }: { label: string; value: string; sub?: string; accent?: string; icon: React.ReactNode }) {
-  return (
-    <Card>
-      <CardContent className="p-4">
-        <div className="flex items-center justify-between">
-          <div className="text-muted-foreground text-xs">{label}</div>
-          <span style={{ color: accent }}>{icon}</span>
-        </div>
-        <div className="mt-1 text-2xl font-bold tabular-nums" dir="ltr" style={{ color: accent }}>{value}</div>
-        {sub && <div className="text-muted-foreground text-xs mt-0.5">{sub}</div>}
-      </CardContent>
-    </Card>
-  );
-}
-
 /** شريط تقدّم الإنجاز — أخضر عند بلوغ الهدف، أزرق دونه. */
 function AchievementBar({ pct }: { pct: number }) {
   const capped = Math.max(0, Math.min(pct, 130));
@@ -356,7 +341,7 @@ export default function CommissionRuns() {
   ];
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         title="احتساب العمولات الشهري"
         description="في نهاية كل شهر يجمع النظام مبيعات كل بائع من الفواتير، يطرح مرتجعاته، ثم يطبّق خطته ويخرج عمولته. يبدأ الكشف «مسوّدة» قابلة للتعديل، ويعتمده شخص غير الذي احتسبه، ثم يُصرَف بنداً في مسيّر رواتب الشهر نفسه."
@@ -393,11 +378,30 @@ export default function CommissionRuns() {
         />
       )}
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatCard label="المبيعات المحتسَبة" value={iqd(stats.netBase)} sub="المبيعات بعد خصم المرتجعات (د.ع)" icon={<Wallet className="size-4" />} />
-        <StatCard label="إجمالي العمولات" value={iqd(stats.commission)} sub="د.ع مستحقة للموظفين" accent="var(--status-done, #059669)" icon={<Check className="size-4" />} />
-        <StatCard label="حقّقوا هدفهم" value={`${stats.reached}/${stats.withTarget}`} sub="موظف بلغ 100% من هدفه" accent="var(--status-active, #2563eb)" icon={<TrendingUp className="size-4" />} />
-        <StatCard label="يُرحَّل للشهر القادم" value={iqd(stats.carryNeg)} sub="سالب يُخصم من عمولة الشهر القادم" accent="var(--money-negative, #dc2626)" icon={<Undo2 className="size-4" />} />
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-xl border bg-muted/20 px-3.5 py-2 text-xs">
+        <div className="flex items-center gap-1.5">
+          <Wallet className="size-3.5 text-muted-foreground" aria-hidden />
+          <span className="text-muted-foreground">المبيعات المحتسَبة:</span>
+          <span className="font-extrabold tabular-nums" dir="ltr">{iqd(stats.netBase)}</span>
+        </div>
+        <span className="text-border">|</span>
+        <div className="flex items-center gap-1.5">
+          <Check className="size-3.5 text-money-positive" aria-hidden />
+          <span className="text-muted-foreground">إجمالي العمولات:</span>
+          <span className="font-extrabold tabular-nums text-money-positive" dir="ltr">{iqd(stats.commission)}</span>
+        </div>
+        <span className="text-border">|</span>
+        <div className="flex items-center gap-1.5">
+          <TrendingUp className="size-3.5 text-primary" aria-hidden />
+          <span className="text-muted-foreground">حقّقوا هدفهم:</span>
+          <span className="font-extrabold tabular-nums" dir="ltr">{`${stats.reached}/${stats.withTarget}`}</span>
+        </div>
+        <span className="text-border">|</span>
+        <div className="flex items-center gap-1.5">
+          <Undo2 className="size-3.5 text-money-negative" aria-hidden />
+          <span className="text-muted-foreground">يُرحَّل للشهر القادم:</span>
+          <span className="font-extrabold tabular-nums text-money-negative" dir="ltr">{iqd(stats.carryNeg)}</span>
+        </div>
       </div>
 
       {run && (

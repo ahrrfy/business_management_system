@@ -2,7 +2,6 @@ import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 import { useEffect, useState } from "react";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { ShieldCheck, Truck, XCircle } from "lucide-react";
-import { PageHeader } from "@/components/PageHeader";
 import { ErrorState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -70,13 +69,6 @@ export default function DeliveryParties() {
 
   return (
     <div className="space-y-5 p-4 md:p-6" dir="rtl">
-      <PageHeader
-        title="جهات التوصيل وذممها"
-        description="لوحة الخمسة أعمدة لكلّ جهة (مُسنَد · بالطريق · سُلِّم ولم يُورَّد · رجع · أُلغي) والنقد بيدها وأجورها — «سوِّ اليوم» بتأكيدٍ واحد من الصفّ."
-        icon={<Truck className="size-6 text-primary" aria-hidden />}
-        actions={<Button onClick={() => setShowCreate(true)} disabled={!isManager}>+ جهة جديدة</Button>}
-      />
-
       {canReviewWriteOff && (
         <WriteOffApprovalQueue
           userId={Number(me.data?.id ?? 0)}
@@ -88,7 +80,9 @@ export default function DeliveryParties() {
       )}
 
       <ListToolbar
-        title="الجهات"
+        title="جهات التوصيل وذممها"
+        pageTitle
+        add={isManager ? { onClick: () => setShowCreate(true), label: "جهة جديدة" } : undefined}
         count={visibleRows.length}
         loading={list.isLoading}
         activeFilterCount={activeFilterCount}

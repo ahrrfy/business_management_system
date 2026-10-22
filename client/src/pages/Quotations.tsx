@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
-import { PageHeader } from "@/components/PageHeader";
 import { confirm } from "@/lib/confirm";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { fmtDate } from "@/lib/date";
@@ -401,35 +400,12 @@ export default function Quotations() {
   ], [canManage, setStatusMut.isPending]);
 
   return (
-    <div className="space-y-4">
-      <PageHeader
-        title="عروض الأسعار والمقايسات"
-        description="عروض الأسعار مستندات تفاوضية بلا أثر على المخزون حتى تُحوَّل إلى فاتورة."
-        actions={
-          <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={printQuotationsSummaryReport}
-              disabled={items.length === 0}
-              className="gap-1.5"
-            >
-              <Printer className="size-4" aria-hidden />
-              طباعة تقرير العروض
-            </Button>
-            {canManage && (
-              <Button asChild size="sm">
-                <Link href="/quotations/new">عرض سعر جديد</Link>
-              </Button>
-            )}
-          </div>
-        }
-      />
+    <div className="space-y-2.5">
       <Card>
         <CardHeader>
           <ListToolbar
-            title="القائمة"
+            title="عروض الأسعار والمقايسات"
+            pageTitle
             count={items.length}
             loading={rows.isLoading}
             search={{
@@ -439,6 +415,10 @@ export default function Quotations() {
             }}
             activeFilterCount={activeFilterCount}
             onResetFilters={resetF}
+            onPrint={printQuotationsSummaryReport}
+            printLabel="طباعة تقرير العروض"
+            printDisabled={items.length === 0}
+            add={canManage ? { href: "/quotations/new", label: "عرض سعر جديد" } : undefined}
             filters={
               <>
                 {/* FilterField يُظهر التسمية دائماً — title كخاصية HTML أصيلة يظهر hover فقط

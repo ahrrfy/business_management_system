@@ -749,13 +749,9 @@ export default function WorkOrderStation() {
   }
 
   return (
-    <div className="flex flex-col lg:flex-row gap-4 h-[calc(100vh-7rem)]">
+    <div className="flex flex-col lg:flex-row gap-3 h-[calc(100dvh-6.5rem)]">
       {/* القائمة الجانبية */}
-      <div className="lg:w-[300px] lg:flex-none flex flex-col gap-3 overflow-y-auto">
-        {/* رأسٌ يدويّ (h1 + رابط «اللوحة ←» بمحرفٍ خامّ) ⇐ PageHeader بصيغة `workspace`:
-            شريط 44px بنفس مقاس العنوان الحاليّ (text-lg font-bold) كي لا يقضم عمودَ القوائم
-            في تخطيط `h-[calc(100vh-7rem)]`، والوجهة `/work-orders` كما هي (هذه الشاشة تبويبٌ
-            داخل PrintHub، فالرجوع إلى تبويب اللوحة). */}
+      <div className="lg:w-[270px] lg:flex-none flex flex-col gap-2.5 overflow-y-auto">
         <PageHeader variant="workspace" title="محطة التنفيذ" backHref="/work-orders" backLabel="اللوحة" />
 
         <UnifiedSearchInput
@@ -765,15 +761,15 @@ export default function WorkOrderStation() {
           value={search}
           onChange={setSearch}
           placeholder="ابحث برقم الأمر/العنوان/العميل…"
-          inputClassName="h-9"
+          inputClassName="h-8"
         />
 
         <div>
-          <div className="text-xs font-semibold text-muted-foreground mb-1.5">أوامري ({mine.length})</div>
-          <div className="space-y-2">
+          <div className="text-2xs font-bold text-muted-foreground mb-1">أوامري ({mine.length})</div>
+          <div className="space-y-1.5">
             {mine.map((o) => <OrderRow key={o.id} o={o} mine active={selId === o.id} onClick={() => setSelId(o.id)} />)}
             {mine.length === 0 && (
-              <div className="text-xs text-muted-foreground border rounded-lg p-3 text-center">
+              <div className="text-2xs text-muted-foreground border rounded-lg p-2.5 text-center">
                 {mineAll.length === 0 ? "لا أوامر مُسنَدة إليك — اسحب من الطابور العام أدناه." : "لا نتائج مطابقة للبحث."}
               </div>
             )}
@@ -781,8 +777,8 @@ export default function WorkOrderStation() {
         </div>
 
         <div>
-          <div className="text-xs font-semibold text-muted-foreground mb-1.5 inline-flex items-center gap-1"><CornerDownLeft aria-hidden className="size-3.5" /> الطابور العام — مشترك للجميع ({queue.length})</div>
-          <div className="space-y-2">
+          <div className="text-2xs font-bold text-muted-foreground mb-1 inline-flex items-center gap-1"><CornerDownLeft aria-hidden className="size-3" /> الطابور العام — مشترك للجميع ({queue.length})</div>
+          <div className="space-y-1.5">
             {queue.map((o) => {
               const isLockedByOther =
                 claimedLocks[o.id] != null && claimedLocks[o.id] !== me.data?.id;
@@ -792,7 +788,7 @@ export default function WorkOrderStation() {
                   <Button
                     size="sm"
                     variant={isLockedByOther ? "outline" : "secondary"}
-                    className="absolute bottom-2 left-2 h-6 text-[11px]"
+                    className="absolute bottom-1.5 left-1.5 h-6 text-[10.5px] px-2"
                     disabled={!canClaim || claim.isPending || isLockedByOther}
                     onClick={(e) => { e.stopPropagation(); claim.mutate({ workOrderId: o.id }); }}
                   >
@@ -802,7 +798,7 @@ export default function WorkOrderStation() {
               );
             })}
             {queue.length === 0 && (
-              <div className="text-xs text-muted-foreground border rounded-lg p-3 text-center">
+              <div className="text-2xs text-muted-foreground border rounded-lg p-2.5 text-center">
                 {queueAll.length === 0 ? "الطابور فارغ." : "لا نتائج مطابقة للبحث."}
               </div>
             )}
@@ -815,7 +811,7 @@ export default function WorkOrderStation() {
         {selId != null ? (
           <StationDetail id={selId} canOperateWorkOrders={canOperateWorkOrders} onChanged={() => { /* القوائم تُبطَّل داخلياً */ }} />
         ) : (
-          <div className="grid place-items-center h-full text-muted-foreground">اختر أمراً من القائمة لبدء التنفيذ.</div>
+          <div className="grid place-items-center h-full text-muted-foreground text-xs">اختر أمراً من القائمة لبدء التنفيذ.</div>
         )}
       </div>
     </div>

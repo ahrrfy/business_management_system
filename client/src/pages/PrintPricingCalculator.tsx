@@ -170,34 +170,35 @@ export default function PrintPricingCalculator() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         title="حاسبة تسعير الطباعة"
-        icon={<Calculator aria-hidden className="size-6 text-primary" />}
+        icon={<Calculator aria-hidden className="size-4 text-primary" />}
         description="تقدير كلفة وسعر الطباعة الرقمية — بالوجه (المقاس × النمط، الورق مشمول) أو بالمتر المربّع للعريض. الأرقام من الإعدادات."
         actions={
           <Link href="/work-orders?tab=print-pricing-settings">
             <Button variant="outline" size="sm">
-              <Settings2 aria-hidden className="size-4 ms-1" /> إعدادات التسعير
+              <Settings2 aria-hidden className="size-3.5 ms-1" /> إعدادات التسعير
             </Button>
           </Link>
         }
       />
 
       {bundle.isLoading ? (
-        <Card><CardContent className="p-6 text-center text-muted-foreground">جارٍ تحميل الإعدادات…</CardContent></Card>
+        <Card><CardContent className="p-4 text-center text-muted-foreground">جارٍ تحميل الإعدادات…</CardContent></Card>
       ) : (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
           {/* ─── المدخلات ─── */}
           <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">تفاصيل الطلب</CardTitle>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-bold">تفاصيل الطلب</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-3">
               {/* الفئة */}
-              <div className="flex gap-2">
+              <div className="flex gap-1.5">
                 <Button
                   type="button"
+                  size="sm"
                   variant={category === "SMALL" ? "default" : "outline"}
                   className="flex-1"
                   onClick={() => setCategory("SMALL")}
@@ -206,6 +207,7 @@ export default function PrintPricingCalculator() {
                 </Button>
                 <Button
                   type="button"
+                  size="sm"
                   variant={category === "WIDE" ? "default" : "outline"}
                   className="flex-1"
                   onClick={() => setCategory("WIDE")}
@@ -215,10 +217,10 @@ export default function PrintPricingCalculator() {
               </div>
 
               {category === "SMALL" ? (
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-2 gap-2.5">
                   <div className="space-y-1">
                     <Label>النمط</Label>
-                    <AppSelect className="h-9" value={colorMode} onValueChange={(next) => setColorMode(next as ColorMode)}>
+                    <AppSelect className="h-8" value={colorMode} onValueChange={(next) => setColorMode(next as ColorMode)}>
                       {COLOR_MODES.map((m) => (
                         <option key={m} value={m}>{COLOR_MODE_AR[m]}</option>
                       ))}
@@ -226,7 +228,7 @@ export default function PrintPricingCalculator() {
                   </div>
                   <div className="space-y-1">
                     <Label>المقاس (ISO)</Label>
-                    <AppSelect className="h-9" value={paperSize} onValueChange={(next) => setPaperSize(next as PaperSizeCode)}>
+                    <AppSelect className="h-8" value={paperSize} onValueChange={(next) => setPaperSize(next as PaperSizeCode)}>
                       <option value="">— اختر مقاساً مُسعّراً —</option>
                       {pricedSizes.map((s) => (
                         <option key={s} value={s}>{sizeLabel(s)}</option>
@@ -238,7 +240,7 @@ export default function PrintPricingCalculator() {
                   </div>
                   <div className="space-y-1">
                     <Label>الأوجه</Label>
-                    <AppSelect className="h-9" value={String(sides)} onValueChange={(next) => setSides(Number(next) === 2 ? 2 : 1)}>
+                    <AppSelect className="h-8" value={String(sides)} onValueChange={(next) => setSides(Number(next) === 2 ? 2 : 1)}>
                       <option value={1}>وجه واحد</option>
                       <option value={2}>وجهان</option>
                     </AppSelect>

@@ -11,6 +11,7 @@ import {
 import { normalizeNumberInput } from "@shared/numberNormalize";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { roundCashIQD } from "@/lib/money";
+import { METHOD_LABEL } from "@/lib/paymentMethod";
 import { CopyButton } from "@/components/CopyButton";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
@@ -51,9 +52,12 @@ export interface PrintBottomToolbarProps {
   contactName: string;
   contactPhone: string;
   editingInvoice: EditingInvoiceInfo | null;
+  splitMode?: boolean;
+  onToggleSplitMode?: () => void;
+  splitTotalPaid?: number;
+  splitLegsValid?: boolean;
 }
 
-const METHOD_LABEL: Record<PaymentMethod, string> = { CASH: "نقدي", CARD: "بطاقة", TRANSFER: "تحويل" };
 const fmt = (n: number) => Number(n || 0).toLocaleString("en-US");
 const riqd = (n: number) => roundCashIQD(n).toNumber();
 
@@ -129,6 +133,10 @@ export function PrintBottomToolbar({
   contactName,
   contactPhone,
   editingInvoice,
+  splitMode = false,
+  onToggleSplitMode,
+  splitTotalPaid = 0,
+  splitLegsValid = false,
 }: PrintBottomToolbarProps) {
   const [displayPay, setDisplayPay] = useState(payInput);
 
@@ -142,23 +150,27 @@ export function PrintBottomToolbar({
   }, [payInput]);
 
   const cartLen = cart.length;
-  const paid = Number(payInput || 0);
-  const cashTotal = method === "CASH" ? riqd(total) : total;
+  const paid = splitMode ? splitTotalPaid : Number(payInput || 0);
+  const cashTotal = !splitMode && method === "CASH" ? riqd(total) : total;
   const change = paid - cashTotal;
   const credit = cashTotal - paid;
-  const isChange = paid > 0 && paid >= cashTotal;
-  const isOwing = payInput !== "" && paid < cashTotal;
+  const isChange = !splitMode && paid > 0 && paid >= cashTotal;
+  const isOwing = splitMode
+    ? paid + 0.005 < cashTotal
+    : payInput !== "" && paid < cashTotal;
   const hasZeroLine = cart.some((c) => c.price <= 0);
 
   const hasCustomerInfo =
     customerId != null || contactName.trim().length > 0 || contactPhone.trim().length > 0;
-  const canReserve = cartLen > 0 && !hasZeroLine && hasCustomerInfo && !editingInvoice;
+  const canReserve = cartLen > 0 && !hasZeroLine && hasCustomerInfo && !editingInvoice && (!splitMode || splitLegsValid);
   const canPay =
     cartLen > 0 &&
     !hasZeroLine &&
     (editingInvoice != null ||
-      ((!isOwing || customerId != null) && externalPaymentConfirmed));
-  const canQuickPay = cartLen > 0 && !hasZeroLine && !editingInvoice && externalFullPaymentConfirmed;
+      (splitMode
+        ? splitLegsValid && (!isOwing || customerId != null)
+        : (!isOwing || customerId != null) && externalPaymentConfirmed));
+  const canQuickPay = !splitMode && cartLen > 0 && !hasZeroLine && !editingInvoice && externalFullPaymentConfirmed;
 
   return (
     <div
@@ -347,6 +359,31 @@ export function PrintBottomToolbar({
               {fmt(credit)} د.ع
             </span>
             <CopyButton value={credit} title="نسخ المتبقي" successMessage="تم نسخ المتبقي" />
+            {!splitMode && onToggleSplitMode && !editingInvoice && Number(payInput) > 0 && credit > 0 && (
+              <button
+                type="button"
+                onClick={onToggleSplitMode}
+                data-testid="print-pos-complete-remaining-split"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  height: 26,
+                  padding: "0 8px",
+                  borderRadius: 6,
+                  border: `1px solid ${C.primary}`,
+                  background: C.primarySoft,
+                  color: C.primary,
+                  fontFamily: "inherit",
+                  fontSize: 11.5,
+                  fontWeight: 800,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {method === "CASH" ? "استكمال ببطاقة/طريقة أخرى" : "استكمال نقداً/طريقة أخرى"}
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -363,7 +400,7 @@ export function PrintBottomToolbar({
           m="CASH"
           Icon={Banknote}
           label="نقدي"
-          active={method === "CASH"}
+          active={!splitMode && method === "CASH"}
           onClick={() => setMethod("CASH")}
           activeColor="#10b981"
           activeGradient="linear-gradient(135deg, #10b981, #059669)"
@@ -376,7 +413,7 @@ export function PrintBottomToolbar({
           m="CARD"
           Icon={CreditCard}
           label="بطاقة"
-          active={method === "CARD"}
+          active={!splitMode && method === "CARD"}
           onClick={() => setMethod("CARD")}
           activeColor="#2563eb"
           activeGradient="linear-gradient(135deg, #2563eb, #1d4ed8)"
@@ -389,7 +426,7 @@ export function PrintBottomToolbar({
           m="TRANSFER"
           Icon={RefreshCw}
           label="تحويل"
-          active={method === "TRANSFER"}
+          active={!splitMode && method === "TRANSFER"}
           onClick={() => setMethod("TRANSFER")}
           activeColor="#8b5cf6"
           activeGradient="linear-gradient(135deg, #8b5cf6, #7c3aed)"
@@ -397,7 +434,34 @@ export function PrintBottomToolbar({
           shadowColor="rgba(139, 92, 246, 0.35)"
         />
 
-        {method !== "CASH" && (
+        {onToggleSplitMode && !editingInvoice && (
+          <button
+            type="button"
+            onClick={onToggleSplitMode}
+            data-testid="print-pos-toggle-split-payment"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              height: 42,
+              minHeight: 0,
+              padding: "0 14px",
+              borderRadius: 9,
+              border: splitMode ? `2px solid ${C.primary}` : `1.5px dashed ${C.border}`,
+              background: splitMode ? C.primary : C.muted,
+              color: splitMode ? C.primaryFg : C.fg,
+              fontWeight: 900,
+              fontSize: 13,
+              cursor: "pointer",
+              fontFamily: "inherit",
+              whiteSpace: "nowrap",
+            }}
+          >
+            <span>{splitMode ? "إلغاء التقسيم" : "تقسيم الدفع"}</span>
+          </button>
+        )}
+
+        {!splitMode && method !== "CASH" && (
           <div style={{ flexShrink: 0, minWidth: 180 }}>
             <PaymentReferenceField
               value={paymentRef}

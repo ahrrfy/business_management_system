@@ -36,7 +36,6 @@ import { fmtDateTime } from "@/lib/date";
 import { PRODUCT_FIELDS } from "@/lib/importFields";
 import type { ProductImportRow } from "@/lib/importTypes";
 import { notify } from "@/lib/notify";
-import { PageHeader } from "@/components/PageHeader";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { fmtAr, formatQuantity } from "@/lib/money";
@@ -352,29 +351,7 @@ export default function Products() {
   }
 
   return (
-    <div className="space-y-4">
-      <PageHeader
-        title="المنتجات"
-        description="عرض المنتجات بوحداتها وأسعارها ومخزونها وحالة صورها — مع رفع سريع بالكاميرا والذكاء."
-        actions={
-          canQuickStudio ? (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="gap-1.5 border-primary/40 bg-primary/5 text-primary hover:bg-primary/10"
-              onClick={() => setStudioScannerOpen(true)}
-              data-testid="products-quick-camera-scan-btn"
-              title="مسح باركود المنتج بكاميرا الهاتف لفتح نافذة التصوير والمعالجة بالذكاء فوراً"
-            >
-              <Camera className="w-4 h-4" />
-              <span>مسح وتصوير بالذكاء</span>
-              <Sparkles className="w-3.5 h-3.5" />
-            </Button>
-          ) : undefined
-        }
-      />
-
+    <div className="space-y-2.5">
       <ImportDialog<ProductImportRow>
         open={importOpen}
         onOpenChange={setImportOpen}
@@ -408,7 +385,8 @@ export default function Products() {
       <Card>
         <CardHeader>
           <ListToolbar
-            title="القائمة"
+            title="المنتجات"
+            pageTitle
             count={total}
             loading={list.isLoading}
             search={{
@@ -592,7 +570,23 @@ export default function Products() {
             onImport={can("imports.products", me.data?.role === "admin" || me.data?.role === "manager") ? () => setImportOpen(true) : undefined}
             importLabel="استيراد Excel"
             add={can("catalog.createProduct") ? { href: "/products/new", label: "إضافة منتج" } : undefined}
-          />
+          >
+            {canQuickStudio && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 border-primary/40 bg-primary/5 text-primary hover:bg-primary/10"
+                onClick={() => setStudioScannerOpen(true)}
+                data-testid="products-quick-camera-scan-btn"
+                title="مسح باركود المنتج بكاميرا الهاتف لفتح نافذة التصوير والمعالجة بالذكاء فوراً"
+              >
+                <Camera className="w-4 h-4" />
+                <span>مسح وتصوير بالذكاء</span>
+                <Sparkles className="w-3.5 h-3.5" />
+              </Button>
+            )}
+          </ListToolbar>
         </CardHeader>
         <CardContent className="p-0">
           <DataTable<Row, string>

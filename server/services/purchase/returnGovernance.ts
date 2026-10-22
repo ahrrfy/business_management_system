@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { appErrorMessage } from "@shared/errors";
+import { variantDescriptor } from "@shared/variantDisplay";
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
@@ -51,6 +52,10 @@ import { money, round2, sumMoney, toDbMoney, toDbQty } from "../money";
 import { paymentAssetRole } from "../sale/paymentPosting";
 import { shiftIdForCashTx } from "../shiftService";
 import { withTx, type Actor } from "../tx";
+import { withSupplierBookReversalTx } from "./supplierBookReversalTx";
+import { unapplySupplierBookSettlementSourceTx } from "./supplierBookSettlement";
+import { loadSupplierBookInvoiceTotals } from "./supplierBookProjection";
+import { loadSupplierFormalCreditTotals } from "./supplierFormalCreditProjection";
 import { sha256, stableCanonical } from "./grniAccounting";
 import { assertPurchaseBranch } from "./internal";
 import { purchaseReturnReversalTrigger, purchaseReturnTrigger } from "@shared/approvalTriggers";
@@ -309,28 +314,61 @@ async function assertNoPendingSupplierPayment(tx: Tx, supplierInvoiceId: number)
 }
 
 async function netInvoiceCreditReturns(tx: Tx, invoiceId: number): Promise<Decimal> {
-  const credited = (await tx.select({ amount: sql<string>`COALESCE(SUM(${purchaseReturns.creditOffsetAmount}),0)` })
-    .from(purchaseReturns)
-    .where(eq(purchaseReturns.supplierInvoiceId, invoiceId)))[0];
-  const reversed = (await tx.select({ amount: sql<string>`COALESCE(SUM(${purchaseReturnReversals.totalAmount}),0)` })
-    .from(purchaseReturnReversals)
-    .innerJoin(purchaseReturns, eq(purchaseReturns.id, purchaseReturnReversals.purchaseReturnId))
-    .where(and(eq(purchaseReturnReversals.supplierInvoiceId, invoiceId), eq(purchaseReturns.settlement, "CREDIT"))))[0];
-  return Decimal.max(money(credited?.amount).minus(reversed?.amount ?? 0), 0);
+  const formalCredits = await loadSupplierFormalCreditTotals(tx, [invoiceId], { currentRead: true });
+  return money(formalCredits.get(invoiceId) ?? 0);
 }
 
 async function refreshInvoiceCreditState(tx: Tx, invoice: typeof supplierInvoices.$inferSelect): Promise<void> {
-  const netCredit = await netInvoiceCreditReturns(tx, Number(invoice.id));
-  const paid = (await tx.select({ amount: sql<string>`COALESCE(SUM(${supplierPaymentAllocations.allocatedAmount} - ${supplierPaymentAllocations.refundedAmount}),0)` })
+  const invoiceId = Number(invoice.id);
+  const supplierInvoiceRows = await tx
+    .select()
+    .from(supplierInvoices)
+    .where(
+      and(
+        eq(supplierInvoices.supplierId, Number(invoice.supplierId)),
+        eq(supplierInvoices.status, "POSTED"),
+      ),
+    )
+    .orderBy(asc(supplierInvoices.id))
+    .for("share");
+  const targetInvoices = supplierInvoiceRows.filter(
+    (row) =>
+      Number(row.id) === invoiceId ||
+      (row.draftState !== "VOIDED" &&
+        (row.paymentGate === "OPEN" || row.paymentGate === "SETTLED") &&
+        ["NATIVE_AP", "LEGACY_AP"].includes(row.liabilityClass)),
+  );
+  const targetIds = targetInvoices.map((row) => Number(row.id));
+  const formalCredits = await loadSupplierFormalCreditTotals(tx, targetIds, { currentRead: true });
+  const bookTotals = await loadSupplierBookInvoiceTotals(tx, targetIds, { currentRead: true });
+  // Raw locking rows preserve a current read after earlier transaction snapshots.
+  const allocations = await tx
+    .select({
+      supplierInvoiceId: supplierPaymentAllocations.supplierInvoiceId,
+      amount: supplierPaymentAllocations.allocatedAmount,
+      refundedAmount: supplierPaymentAllocations.refundedAmount,
+    })
     .from(supplierPaymentAllocations)
-    .where(eq(supplierPaymentAllocations.supplierInvoiceId, Number(invoice.id))))[0];
-  const effectiveTotal = Decimal.max(money(invoice.totalAmount).minus(netCredit), 0);
-  const settled = money(invoice.legacySettledAmount).plus(paid?.amount ?? 0).gte(effectiveTotal);
-  await tx.update(supplierInvoices).set({
-    version: sql`${supplierInvoices.version} + 1`,
-    paymentGate: settled ? "SETTLED" : "OPEN",
-    paymentGateReason: settled ? "سُوّيت بالكامل بعد صافي المرتجعات وتخصيصات الدفع" : null,
-  }).where(eq(supplierInvoices.id, Number(invoice.id)));
+    .where(inArray(supplierPaymentAllocations.supplierInvoiceId, targetIds))
+    .orderBy(asc(supplierPaymentAllocations.id))
+    .for("share");
+  for (const target of targetInvoices) {
+    const id = Number(target.id);
+    const book = bookTotals.get(id);
+    const paid = allocations
+      .filter((row) => Number(row.supplierInvoiceId) === id)
+      .reduce((sum, row) => sum.plus(row.amount).minus(row.refundedAmount), money(book?.paidAmount ?? 0));
+    const netCredit = money(formalCredits.get(id) ?? 0).plus(book?.creditedAmount ?? 0);
+    const effectiveTotal = Decimal.max(money(target.totalAmount).minus(netCredit), 0);
+    const settled = money(target.legacySettledAmount).plus(paid).gte(effectiveTotal);
+    const nextGate = settled ? "SETTLED" : "OPEN";
+    if (id !== invoiceId && target.paymentGate === nextGate) continue;
+    await tx.update(supplierInvoices).set({
+      version: sql`${supplierInvoices.version} + 1`,
+      paymentGate: nextGate,
+      paymentGateReason: settled ? "?????? ??????? ??? ???? ????????? ???????? ?????" : null,
+    }).where(eq(supplierInvoices.id, id));
+  }
 }
 
 function decisionHash(requestId: number, action: string, reviewReason: string): string {
@@ -816,7 +854,16 @@ export async function decidePurchaseReturn(input: DecidePurchaseReturnInput, act
     await lockInventoryVariants(tx, variantIds);
     await ensureBranchStockRows(tx, variantIds, Number(request.branchId));
     await tx.select({ id: branchStock.id }).from(branchStock).where(and(eq(branchStock.branchId, Number(request.branchId)), inArray(branchStock.variantId, variantIds))).orderBy(asc(branchStock.variantId)).for("update");
-    const variants = await tx.select({ id: productVariants.id, costPrice: productVariants.costPrice, productName: products.name, variantName: productVariants.variantName })
+    const variants = await tx.select({
+      id: productVariants.id,
+      costPrice: productVariants.costPrice,
+      productName: products.name,
+      variantName: productVariants.variantName,
+      color: productVariants.color,
+      size: productVariants.size,
+      variantKind: productVariants.variantKind,
+      sku: productVariants.sku,
+    })
       .from(productVariants).innerJoin(products, eq(products.id, productVariants.productId)).where(inArray(productVariants.id, variantIds)).orderBy(asc(productVariants.id)).for("update");
     const variantById = new Map(variants.map((row) => [Number(row.id), row]));
     const unitIds = Array.from(new Set(poItems.map((row) => Number(row.productUnitId)).filter(Boolean)));
@@ -898,7 +945,15 @@ export async function decidePurchaseReturn(input: DecidePurchaseReturnInput, act
         unitPrice: item.unitPriceIqd, lineTotal: item.totalAmount,
         inventoryMovementId: movement.movementId,
         productNameSnapshot: variant.productName,
-        variantNameSnapshot: variant.variantName,
+        variantNameSnapshot:
+          variantDescriptor({
+            productName: variant.productName,
+            variantName: variant.variantName,
+            color: variant.color,
+            size: variant.size,
+            variantKind: variant.variantKind,
+            sku: variant.sku,
+          }) || variant.variantName,
         unitNameSnapshot: poItem.productUnitId == null ? null : unitById.get(Number(poItem.productUnitId)) ?? null,
       });
       const poUpdated = await tx.update(purchaseOrderItems).set({ returnedBaseQuantity: sql`${purchaseOrderItems.returnedBaseQuantity} + ${item.requestedBaseQuantity}` })
@@ -1099,7 +1154,13 @@ export async function decidePurchaseReturnReversal(input: DecidePurchaseReturnRe
   const key = required(input.decisionKey, "مفتاح القرار", 120);
   const reviewReason = required(input.reviewReason, "سبب القرار", 500);
   const hash = decisionHash(input.requestId, input.action, reviewReason);
-  return withTx(async (tx) => {
+  return withSupplierBookReversalTx(async (tx) => {
+    const [source] = await tx.select({ accountingEntryId: purchaseReturns.accountingEntryId })
+      .from(purchaseReturnReversalRequests)
+      .innerJoin(purchaseReturns, eq(purchaseReturns.id, purchaseReturnReversalRequests.purchaseReturnId))
+      .where(eq(purchaseReturnReversalRequests.id, input.requestId)).limit(1);
+    return source?.accountingEntryId == null ? null : { sourceAccountingEntryId: Number(source.accountingEntryId) };
+  }, async (tx) => {
     const preview = (await tx.select().from(purchaseReturnReversalRequests).where(eq(purchaseReturnReversalRequests.id, input.requestId)).limit(1))[0];
     if (!preview)
       throw new TRPCError({
@@ -1241,6 +1302,13 @@ export async function decidePurchaseReturnReversal(input: DecidePurchaseReturnRe
         assertNonPhysicalOutReceipt({ classification: "NON_CASH_METHOD", paymentMethod: purchaseReturn.paymentMethod, cashBucket: null, approvalStatus: "APPROVED", operation: "إعادة استرداد مرتجع للمورد" });
       }
     }
+    if (purchaseReturn.accountingEntryId != null) {
+      await unapplySupplierBookSettlementSourceTx(tx, {
+        sourceAccountingEntryId: Number(purchaseReturn.accountingEntryId),
+        amount: toDbMoney(total),
+        reversalKey: `PURCHASE_RETURN_REVERSAL_REQUEST:${input.requestId}`,
+      }, actor);
+    }
     await postEntry(tx, { entryType: "RETURN", branchId: Number(purchaseReturn.branchId), purchaseOrderId: Number(purchaseReturn.purchaseOrderId), supplierId: Number(purchaseReturn.supplierId), purchaseLiabilityAccount: "AP", cost: inventory, taxAmount: tax, amount: total, profit: variance, createdBy: actor.userId, dedupeKey, notes: request.reason, postingIntent: createPostingIntent("RETURN_PURCHASE_INVENTORY", "RETURN", [debitLine("INVENTORY", inventory), ...(tax.gt(0) ? [debitLine("TAX_PAYABLE", tax)] : []), ...(variance.lt(0) ? [debitLine("PURCHASE_PRICE_VARIANCE", variance.abs())] : []), creditLine("AP", total), ...(variance.gt(0) ? [creditLine("PURCHASE_PRICE_VARIANCE", variance)] : [])], source), postingSourceComponents: source });
     const accountingEntryId = await entryId(tx, dedupeKey);
     let cashReceiptId: number | null = null;
@@ -1343,13 +1411,43 @@ export async function listPurchaseReturnReversalSources(
     const returns = await tx.select().from(purchaseReturns).where(and(eq(purchaseReturns.branchId, input.branchId), eq(purchaseReturns.origin, "NATIVE"), sql`${purchaseReturns.status} <> 'REVERSED'`)).orderBy(desc(purchaseReturns.postedAt), desc(purchaseReturns.id)).limit(Math.min(input.limit ?? 100, 200));
     if (!returns.length) return [];
     const ids = returns.map((row) => Number(row.id));
-    const items = await tx.select().from(purchaseReturnItems).where(inArray(purchaseReturnItems.purchaseReturnId, ids)).orderBy(asc(purchaseReturnItems.purchaseReturnId), asc(purchaseReturnItems.id));
-    const itemIds = items.map((row) => Number(row.id));
+    const items = await tx
+      .select({
+        item: purchaseReturnItems,
+        liveVariantName: productVariants.variantName,
+        liveColor: productVariants.color,
+        liveSize: productVariants.size,
+        liveVariantKind: productVariants.variantKind,
+        liveSku: productVariants.sku,
+      })
+      .from(purchaseReturnItems)
+      .leftJoin(productVariants, eq(productVariants.id, purchaseReturnItems.variantId))
+      .where(inArray(purchaseReturnItems.purchaseReturnId, ids))
+      .orderBy(asc(purchaseReturnItems.purchaseReturnId), asc(purchaseReturnItems.id));
+    const itemIds = items.map((row) => Number(row.item.id));
     const reversed = itemIds.length ? await tx.select({ itemId: purchaseReturnReversalItems.purchaseReturnItemId, quantity: sql<string>`COALESCE(SUM(${purchaseReturnReversalItems.baseQuantity}),0)` }).from(purchaseReturnReversalItems).where(inArray(purchaseReturnReversalItems.purchaseReturnItemId, itemIds)).groupBy(purchaseReturnReversalItems.purchaseReturnItemId) : [];
     const pending = itemIds.length ? await tx.select({ itemId: purchaseReturnReversalRequestItems.purchaseReturnItemId, quantity: sql<string>`COALESCE(SUM(${purchaseReturnReversalRequestItems.baseQuantity}),0)` }).from(purchaseReturnReversalRequestItems).innerJoin(purchaseReturnReversalRequests, eq(purchaseReturnReversalRequests.id, purchaseReturnReversalRequestItems.requestId)).where(and(eq(purchaseReturnReversalRequests.status, "PENDING"), inArray(purchaseReturnReversalRequestItems.purchaseReturnItemId, itemIds))).groupBy(purchaseReturnReversalRequestItems.purchaseReturnItemId) : [];
     const reversedById = new Map(reversed.map((row) => [Number(row.itemId), Number(row.quantity)])); const pendingById = new Map(pending.map((row) => [Number(row.itemId), Number(row.quantity)]));
     const itemsByReturn = new Map<number, Array<{ id: number; productName: string; variantName: string | null; baseQuantity: number; remainingBaseQuantity: number; lineTotal: string }>>();
-    for (const item of items) { const remaining = Number(item.baseQuantity) - (reversedById.get(Number(item.id)) ?? 0) - (pendingById.get(Number(item.id)) ?? 0); if (remaining <= 0) continue; const list = itemsByReturn.get(Number(item.purchaseReturnId)) ?? []; list.push({ id: Number(item.id), productName: item.productNameSnapshot, variantName: item.variantNameSnapshot, baseQuantity: Number(item.baseQuantity), remainingBaseQuantity: remaining, lineTotal: item.lineTotal }); itemsByReturn.set(Number(item.purchaseReturnId), list); }
+    for (const row of items) {
+      const { item } = row;
+      const remaining = Number(item.baseQuantity) - (reversedById.get(Number(item.id)) ?? 0) - (pendingById.get(Number(item.id)) ?? 0);
+      if (remaining <= 0) continue;
+      const list = itemsByReturn.get(Number(item.purchaseReturnId)) ?? [];
+      const resolvedVariantName =
+        item.variantNameSnapshot?.trim() ||
+        variantDescriptor({
+          productName: item.productNameSnapshot,
+          variantName: row.liveVariantName,
+          color: row.liveColor,
+          size: row.liveSize,
+          variantKind: row.liveVariantKind,
+          sku: row.liveSku,
+        }) ||
+        null;
+      list.push({ id: Number(item.id), productName: item.productNameSnapshot, variantName: resolvedVariantName, baseQuantity: Number(item.baseQuantity), remainingBaseQuantity: remaining, lineTotal: item.lineTotal });
+      itemsByReturn.set(Number(item.purchaseReturnId), list);
+    }
     return returns.map((row) => ({ id: Number(row.id), returnNumber: row.returnNumber, version: Number(row.version), status: row.status, supplierId: Number(row.supplierId), supplierInvoiceId: Number(row.supplierInvoiceId), settlement: row.settlement, totalAmount: row.totalAmount, postedAt: row.postedAt, items: itemsByReturn.get(Number(row.id)) ?? [] })).filter((row) => row.items.length > 0);
   }, { gate: "NONE" });
 }
