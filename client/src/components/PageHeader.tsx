@@ -9,6 +9,23 @@ import { WorkspaceBar } from "@/components/workspace/OperationalWorkspace";
 /** عنصر مسار تنقّل — رابط للأصل (href) أو الصفحة الحالية (بلا href). */
 export type Crumb = { label: string; href?: string };
 
+const EmbeddedPageHeaderContext = React.createContext<boolean>(false);
+
+/** مزوّد سياق تضمين الترويسة — يكتم العنوان المكرر للتبويبات الداخلية داخل المحاور (Hubs) مع الإبقاء على أزرار الإجراءات. */
+export function EmbeddedPageHeaderProvider({
+  value = true,
+  children,
+}: {
+  value?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <EmbeddedPageHeaderContext.Provider value={value}>
+      {children}
+    </EmbeddedPageHeaderContext.Provider>
+  );
+}
+
 type PageHeaderProps = {
   title: React.ReactNode;
   /** وصف موجز تحت العنوان — سياق/إرشاد للمستخدم. */
@@ -49,10 +66,13 @@ type PageHeaderProps = {
  * أو padding/تباعد متباين. ضعه أعلى كل صفحة قائمة/لوحة داخل حاوية `space-y-3`.
  */
 export function PageHeader({ title, description, actions, actionsClassName, icon, breadcrumbs, backHref, backLabel, homeHref, variant = "default", embedded = false, className }: PageHeaderProps) {
-  if (embedded) {
-    if (!actions) return null;
+  const contextEmbedded = React.useContext(EmbeddedPageHeaderContext);
+  const isEmbedded = embedded || contextEmbedded;
+  if (isEmbedded) {
+    if (!actions) return <h1 className="sr-only">{title}</h1>;
     return (
       <div data-page-header-actions className={cn("flex min-w-0 flex-wrap items-center justify-end gap-1.5", actionsClassName, className)}>
+        <h1 className="sr-only">{title}</h1>
         {actions}
       </div>
     );

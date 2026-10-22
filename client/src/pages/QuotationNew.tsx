@@ -31,10 +31,14 @@ import {
   TotalsPanel,
   ActionButtons,
   TermsAndNotes,
+  composeDocumentNotes,
+  splitDocumentNotes,
   ShortcutsBar,
   invoiceReducer,
   createInitialState,
   calcTotals,
+  calcLineTotal,
+  allocateLineTax,
   INVOICE_TYPES,
   type InvoiceActionKind,
 } from "@/components/invoice";
@@ -85,6 +89,7 @@ export default function QuotationNew() {
       navigate(`/quotations/${quotation.id}`);
       return;
     }
+    const parsedNotes = splitDocumentNotes(quotation.notes);
     dispatch({
       type: "REPLACE_STATE",
       state: {
@@ -95,7 +100,8 @@ export default function QuotationNew() {
         branchId: Number(quotation.branchId),
         tier: quotation.priceTier,
         validUntil: quotation.validUntil ? String(quotation.validUntil).slice(0, 10) : "",
-        notes: quotation.notes ?? "",
+        notes: parsedNotes.notes,
+        terms: parsedNotes.terms,
         globalDiscount: quotation.discountAmount ?? "0",
         globalDiscountType: "amount",
         taxEnabled: D(quotation.taxRatePercent ?? "0").gt(0),
@@ -204,6 +210,86 @@ export default function QuotationNew() {
     }
   }, [isEdit, taxSettingsQuery.data]);
 
+  // مزامنة أرصدة المخزون الحيّة للوحدات المضافة أو المحمّلة من مسودة/طلب متجر (بما في ذلك ما يتجاوز 500 وحدة عبر دفعات)
+  const allStockUnitIds = useMemo(
+    () => Array.from(new Set(state.items.map((item) => item.productUnitId))),
+    [state.items],
+  );
+  const stockUnitIds = useMemo(() => allStockUnitIds.slice(0, 500), [allStockUnitIds]);
+  const liveStockQ = trpc.catalog.stockByUnitIds.useQuery(
+    { branchId: state.branchId, productUnitIds: stockUnitIds },
+    {
+      enabled: stockUnitIds.length > 0,
+      staleTime: 0,
+      refetchInterval: stockUnitIds.length > 0 ? 15_000 : false,
+      refetchOnWindowFocus: true,
+    },
+  );
+  useEffect(() => {
+    dispatch({ type: "MARK_STOCK_STALE" });
+  }, [state.branchId]);
+  useEffect(() => {
+    const snapshot = liveStockQ.data;
+    if (!snapshot) return;
+    if (snapshot.branchId !== state.branchId) {
+      dispatch({ type: "SET_FIELD", field: "branchId", value: snapshot.branchId });
+      return;
+    }
+    const baseRows = snapshot.rows;
+    let cancelled = false;
+    async function applyAllSnapshots() {
+      const allRows = [...baseRows];
+      if (allStockUnitIds.length > 500) {
+        const extraChunks: number[][] = [];
+        for (let i = 500; i < allStockUnitIds.length; i += 500) {
+          extraChunks.push(allStockUnitIds.slice(i, i + 500));
+        }
+        const extraSnapshots = await Promise.all(
+          extraChunks.map((chunk) =>
+            utils.catalog.stockByUnitIds.fetch({ branchId: state.branchId, productUnitIds: chunk }),
+          ),
+        );
+        for (const extra of extraSnapshots) {
+          allRows.push(...extra.rows);
+        }
+      }
+      if (cancelled) return;
+      dispatch({
+        type: "SET_STOCK_SNAPSHOTS",
+        snapshotsByUnitId: Object.fromEntries(
+          allRows.map((row) => [
+            row.productUnitId,
+            {
+              stockBase: row.stockBase,
+              stockBranchId: row.branchId,
+              reservedBase: row.reservedBase,
+              availableBase: row.availableBase,
+              isService: row.isService,
+              allowBackorder: row.allowBackorder,
+            },
+          ]),
+        ),
+      });
+    }
+    void applyAllSnapshots();
+    return () => {
+      cancelled = true;
+    };
+  }, [liveStockQ.data, state.branchId, allStockUnitIds, utils.catalog.stockByUnitIds]);
+
+  const totals = useMemo(() => calcTotals(state.items, state), [state.items, state]);
+  const taxShares = useMemo(
+    () =>
+      state.taxEnabled && D(totals.totalTax).gt(0)
+        ? allocateLineTax(
+            state.items.map((item) => ({ total: calcLineTotal(item) })),
+            totals.totalTax,
+            totals.afterDiscount,
+          )
+        : null,
+    [state.taxEnabled, state.items, totals.totalTax, totals.afterDiscount],
+  );
+
   // idempotency (F3): مفتاح ثابت لكل محاولة إنشاء يُرسَل ضمن الحمولة ⇒ النقر المزدوج/إعادة
   // الشبكة لا تُنشئ عرضين (الراوتر/الخدمة يُعيدان الأول). يُجدَّد بعد كل حفظ ناجح/تفريغ.
   const [clientRequestId, setClientRequestId] = useState<string>(() => crypto.randomUUID());
@@ -285,7 +371,7 @@ export default function QuotationNew() {
       customerId: state.entityId ?? undefined,
       priceTier: state.tier,
       validUntil: state.validUntil || undefined,
-      notes: state.notes?.trim() || undefined,
+      notes: composeDocumentNotes({ notes: state.notes, terms: state.terms }),
       storefrontQuoteRequestId: sourceQuoteRequestId ?? undefined,
       clientRequestId,
       invoiceDiscount: D(totals.globalDiscAmt).gt(0) ? totals.globalDiscAmt : undefined,
@@ -486,7 +572,7 @@ export default function QuotationNew() {
     },
     enabled: !isSaving,
   });
-  useUnsavedGuard(state.items.length > 0 || state.entityId != null || state.notes.trim() !== "");
+  useUnsavedGuard(state.items.length > 0 || state.entityId != null || state.notes.trim() !== "" || Boolean(state.terms?.trim()));
 
   if (isEdit && editQuery.isLoading) {
     return <div className="p-10 text-center text-muted-foreground">جارٍ تحميل مسوّدة عرض السعر…</div>;
@@ -527,13 +613,20 @@ export default function QuotationNew() {
   }
 
   return (
-    <div className="flex h-full flex-col gap-2">
+    <div className="flex flex-col gap-2">
       {/* شريط العنوان */}
       <PageHeader
         icon={(() => { const TIcon = typeInfo.icon; return <TIcon aria-hidden className="size-5 text-primary" />; })()}
         title={isEdit ? `تعديل ${typeInfo.label}` : `${typeInfo.label} جديد`}
         backHref="/quotations"
         backLabel="رجوع للعروض"
+        actions={
+          <span className="hidden text-xs font-semibold text-muted-foreground sm:inline">
+            الإجمالي:{" "}
+            <span className="font-extrabold text-foreground" dir="ltr">{totals.grandTotal}</span>{" "}
+            د.ع
+          </span>
+        }
       />
 
       {!isEdit && sourceQuoteRequest.data && (
@@ -559,9 +652,9 @@ export default function QuotationNew() {
         </div>
       )}
 
-      {/* البنية الأساسية: جدول البنود يساراً + لوحة الإجماليات والإجراءات يميناً */}
-      <div className="flex min-h-0 flex-1 gap-2.5">
-        <div className="flex min-w-0 flex-1 flex-col gap-2">
+      {/* البنية الأساسية: جدول البنود + لوحة الإجماليات والإجراءات — تدفّق طبيعي بلا حبس ارتفاع */}
+      <div className="flex flex-col gap-2.5 xl:flex-row xl:items-start">
+        <div className="flex min-w-0 flex-1 flex-col gap-2 h-[62vh] min-h-[380px] print:h-auto print:min-h-fit">
           <ProductTable
             items={state.items}
             dispatch={dispatch}
@@ -571,6 +664,7 @@ export default function QuotationNew() {
             pricingIntentEpoch={pricingIntentEpochRef.current}
             invoiceType={INVOICE_TYPE}
             showCost={showCost}
+            taxShares={taxShares}
             onOpenBulkPicker={() => setBulkOpen(true)}
             onNotify={(msg, kind) => (kind === "error" ? notify.err(msg) : notify.info(msg))}
           />
@@ -586,8 +680,16 @@ export default function QuotationNew() {
           />
         </div>
 
-        <aside className="flex w-72 shrink-0 flex-col gap-1.5">
-          <TotalsPanel items={state.items} state={state} dispatch={dispatch} showTaxToggle />
+        <aside className="flex w-full shrink-0 flex-col gap-1.5 xl:w-72">
+          <TotalsPanel
+            items={state.items}
+            state={state}
+            dispatch={dispatch}
+            showTaxToggle
+            showShipping={false}
+            showOtherExpenses={false}
+            showPayment={false}
+          />
           <div className="sticky bottom-0 z-10 bg-background/95 backdrop-blur pt-1.5 border-t">
             <ActionButtons
               invoiceType={INVOICE_TYPE}

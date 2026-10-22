@@ -52,6 +52,7 @@ import {
   ShortcutsBar,
   SupplierInvoiceMatch,
   TermsAndNotes,
+  composeDocumentNotes,
   TotalsPanel,
   calcLineTotal,
   calcTotals,
@@ -469,6 +470,8 @@ export default function PurchaseNew() {
     state.entityId != null ||
     state.items.length > 0 ||
     state.notes.trim() !== "" ||
+    Boolean(state.terms?.trim()) ||
+    state.poReference.trim() !== "" ||
     state.supplierInvoiceTotal.trim() !== "" ||
     state.globalDiscount.trim() !== "" ||
     shippingCost.trim() !== "" ||
@@ -650,7 +653,11 @@ export default function PurchaseNew() {
             ];
           })
         : undefined,
-      notes: state.notes.trim() || undefined,
+      notes: composeDocumentNotes({
+        notes: state.notes,
+        terms: state.terms,
+        poReference: state.poReference,
+      }),
       // USD: أسعار البنود نفسها بالدولار، والخادم يحوّلها إلى التكلفة الدينارية بسعر التثبيت.
       agreedCurrency: state.currency,
       // ملاحظة (إصلاح رسالة «لا يطابق مجموع البنود»): لا نُرسل usdTotal. حين يوجد «سعر التثبيت»
@@ -796,6 +803,7 @@ export default function PurchaseNew() {
       customsCost,
       notes: state.notes,
       terms: state.terms,
+      poReference: state.poReference,
       supplierName: supplierRow.data?.name ?? "—",
       items: state.items,
       docTotals: {

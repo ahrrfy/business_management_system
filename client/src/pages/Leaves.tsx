@@ -352,11 +352,22 @@ export default function Leaves() {
         }
       />
 
-      {/* المؤشّرات */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <Card><CardContent className="p-4"><div className="text-xs text-muted-foreground">طلبات قيد الموافقة</div><div className="text-2xl font-bold mt-1 tabular-nums" dir="ltr">{kpiPending}</div></CardContent></Card>
-        <Card><CardContent className="p-4"><div className="text-xs text-muted-foreground">موافق عليها</div><div className="text-2xl font-bold mt-1 tabular-nums" dir="ltr">{kpiApproved}</div></CardContent></Card>
-        <Card><CardContent className="p-4"><div className="text-xs text-muted-foreground">أيام إجازة هذا الشهر</div><div className="text-2xl font-bold mt-1 tabular-nums" dir="ltr">{kpiMonthDays}</div></CardContent></Card>
+      {/* شريط المؤشّرات المدمج */}
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-xl border bg-muted/20 px-3.5 py-2 text-xs">
+        <div className="flex items-center gap-1.5">
+          <span className="text-muted-foreground">طلبات قيد الموافقة:</span>
+          <span className="font-extrabold tabular-nums" dir="ltr">{kpiPending}</span>
+        </div>
+        <span className="text-border">|</span>
+        <div className="flex items-center gap-1.5">
+          <span className="text-muted-foreground">موافق عليها:</span>
+          <span className="font-extrabold tabular-nums" dir="ltr">{kpiApproved}</span>
+        </div>
+        <span className="text-border">|</span>
+        <div className="flex items-center gap-1.5">
+          <span className="text-muted-foreground">أيام إجازة هذا الشهر:</span>
+          <span className="font-extrabold tabular-nums" dir="ltr">{kpiMonthDays}</span>
+        </div>
       </div>
 
       <Tabs defaultValue="requests">

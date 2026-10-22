@@ -174,7 +174,7 @@ export default function Recruitment() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader title="التوظيف" description="أعلِن الوظائف الشاغرة على المعرض العام، وتابِع المتقدّمين عبر مسار المراحل." />
 
       <Tabs value={tab} onValueChange={setTab}>

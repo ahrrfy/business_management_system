@@ -333,7 +333,7 @@ export default function ARReminders() {
   }
 
   return (
-    <div className="space-y-4 p-4">
+    <div className="space-y-2.5">
       <PageHeader
         title="تذكيرات الذمم الآجلة"
         description="قائمة العملاء المتأخّرين ≥٧ أيام. راجع، ثم أرسل تذكيراً عبر واتساب أو تخطَّ برأي مُوثَّق."
@@ -383,35 +383,31 @@ export default function ARReminders() {
         </div>
       )}
 
-      {/* شريط الملخّص */}
+      {/* شريط الملخّص المدمج */}
       {tab === "queue" && queue.data && queue.data.length > 0 && (
-        <div className="grid gap-3 sm:grid-cols-3">
-          <Card>
-            <CardContent className="flex items-center justify-between p-4">
-              <span className="text-sm text-muted-foreground">عملاء بحاجة تذكير</span>
-              <span className="text-xl font-bold tabular-nums">
-                {filteredQueue.length === queue.data.length
-                  ? queue.data.length
-                  : `${filteredQueue.length} من ${queue.data.length}`}
-              </span>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="flex items-center justify-between p-4">
-              <span className="text-sm text-muted-foreground">إجمالي الذمم</span>
-              <span className="text-xl font-bold tabular-nums text-money-negative" dir="ltr">{fmtAmount(totalUnpaidSum)} د.ع</span>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="flex items-center justify-between p-4">
-              <span className="text-sm text-muted-foreground">أقدم تأخّر</span>
-              <span className="text-xl font-bold tabular-nums">
-                {filteredQueue.length > 0
-                  ? Math.max(...filteredQueue.map((r) => r.daysOverdue))
-                  : 0} يوماً
-              </span>
-            </CardContent>
-          </Card>
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-xl border bg-muted/20 px-3.5 py-2 text-xs">
+          <div className="flex items-center gap-1.5">
+            <span className="text-muted-foreground">عملاء بحاجة تذكير:</span>
+            <span className="font-extrabold tabular-nums">
+              {filteredQueue.length === queue.data.length
+                ? queue.data.length
+                : `${filteredQueue.length} من ${queue.data.length}`}
+            </span>
+          </div>
+          <span className="text-border">|</span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-muted-foreground">إجمالي الذمم:</span>
+            <span className="font-extrabold tabular-nums text-money-negative" dir="ltr">{fmtAmount(totalUnpaidSum)} د.ع</span>
+          </div>
+          <span className="text-border">|</span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-muted-foreground">أقدم تأخّر:</span>
+            <span className="font-extrabold tabular-nums">
+              {filteredQueue.length > 0
+                ? Math.max(...filteredQueue.map((r) => r.daysOverdue))
+                : 0} يوماً
+            </span>
+          </div>
         </div>
       )}
 
