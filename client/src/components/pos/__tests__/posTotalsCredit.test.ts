@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { computePOSTotals, evaluatePosCreditPrompt } from "../posTotals";
-import type { CartItem, POSTab } from "../posShared";
+import {
+  computePOSTotals,
+  computePosSaleReceiptSnapshot,
+  computeSplitLegFingerprint,
+  evaluatePosCreditPrompt,
+  validatePosSaleBeforeSubmit,
+} from "../posTotals";
+import type { CartItem, POSTab, PosPaymentLegDraft } from "../posShared";
 
 function makeItem(price: number, qty = 1): CartItem {
   return {
@@ -186,4 +192,183 @@ describe("evaluatePosCreditPrompt — credit limit pre-flight evaluation", () =>
     expect(res).toContain("موافقة مدير");
   });
 });
+
+function makeConfirmedLeg(
+  id: string,
+  method: PosPaymentLegDraft["method"],
+  amount: string,
+  paymentRef = "",
+  attemptId = 101,
+): PosPaymentLegDraft {
+  const base: PosPaymentLegDraft = {
+    id,
+    method,
+    amount,
+    paymentRef,
+    externalPayment: null,
+  };
+  if (method !== "CASH") {
+    base.externalPayment = {
+      attemptId,
+      requestId: `req-${id}`,
+      fingerprint: computeSplitLegFingerprint(base),
+      state: "CONFIRMED",
+      deviceId: "DEV-1",
+    };
+  }
+  return base;
+}
+
+describe("computePOSTotals & helpers — split / mixed payment legs", () => {
+  it("computes exact Cash + Card split payment with confirmed external attempt", () => {
+    const cart = [makeItem(10000, 1)];
+    const activeTab = makeTab({
+      paymentLegs: [
+        makeConfirmedLeg("leg-1", "CASH", "6000"),
+        makeConfirmedLeg("leg-2", "CARD", "4000", "auth-7788", 202),
+      ],
+    });
+
+    const res = computePOSTotals({ cart, activeTab });
+    expect(res.isSplitPayment).toBe(true);
+    expect(res.paid).toBe(10000);
+    expect(res.total).toBe(10000);
+    expect(res.change).toBe(0);
+    expect(res.credit).toBe(0);
+    expect(res.isChange).toBe(true);
+    expect(res.isCredit).toBe(false);
+    expect(res.splitInvalidLeg).toBe(false);
+    expect(res.splitNonCashOverpay).toBe(false);
+    expect(res.externalPaymentConfirmed).toBe(true);
+  });
+
+  it("allows cash overpayment in Cash + Card split and caps cash leg in receipt snapshot", () => {
+    const cart = [makeItem(10000, 1)];
+    const activeTab = makeTab({
+      paymentLegs: [
+        makeConfirmedLeg("leg-1", "CARD", "4000", "AUTH-1", 301),
+        makeConfirmedLeg("leg-2", "CASH", "7500"),
+      ],
+    });
+
+    const res = computePOSTotals({ cart, activeTab });
+    expect(res.isSplitPayment).toBe(true);
+    expect(res.paid).toBe(11500);
+    expect(res.change).toBe(1500);
+    expect(res.isChange).toBe(true);
+    expect(res.splitNonCashOverpay).toBe(false);
+    expect(res.externalPaymentConfirmed).toBe(true);
+
+    const snap = computePosSaleReceiptSnapshot({
+      activeTab,
+      effectiveTotalD: res.effectiveTotalD,
+      cashRoundedPaidD: res.cashRoundedPaidD,
+      paidD: res.paidD,
+      isCredit: res.isCredit,
+      codMode: res.codMode,
+    });
+    expect(snap.effectiveMethodCode).toBe("MIXED");
+    expect(snap.method).toBe("مختلطة");
+    expect(snap.received).toBe(10000);
+    expect(snap.change).toBe(1500);
+    expect(snap.paymentLegs).toEqual([
+      { method: "بطاقة", amount: 4000, reference: "AUTH-1" },
+      { method: "نقدي", amount: 6000, reference: null },
+    ]);
+  });
+
+  it("flags splitNonCashOverpay when non-cash legs exceed invoice total", () => {
+    const cart = [makeItem(10000, 1)];
+    const activeTab = makeTab({
+      paymentLegs: [
+        makeConfirmedLeg("leg-1", "CARD", "7000", "AUTH-1", 401),
+        makeConfirmedLeg("leg-2", "TRANSFER", "4000", "TRX-2", 402),
+      ],
+    });
+
+    const res = computePOSTotals({ cart, activeTab });
+    expect(res.splitNonCashOverpay).toBe(true);
+    expect(res.externalPaymentConfirmed).toBe(false);
+
+    const err = validatePosSaleBeforeSubmit({
+      activeTab,
+      cart,
+      codMode: res.codMode,
+      isSplitPayment: res.isSplitPayment,
+      splitInvalidLeg: res.splitInvalidLeg,
+      splitNonCashOverpay: res.splitNonCashOverpay,
+      externalPaymentConfirmed: res.externalPaymentConfirmed,
+      isCredit: res.isCredit,
+    });
+    expect(err).toContain("مجموع الدفعات غير النقدية لا يمكن أن يتجاوز إجمالي الفاتورة");
+  });
+
+  it("blocks externalPaymentConfirmed when a non-cash leg is unconfirmed or its amount/reference drifted", () => {
+    const cart = [makeItem(10000, 1)];
+    const leg2 = makeConfirmedLeg("leg-2", "CARD", "4000", "AUTH-1", 501);
+    const driftedLeg2: PosPaymentLegDraft = { ...leg2, amount: "4500" };
+    const activeTab = makeTab({
+      paymentLegs: [
+        makeConfirmedLeg("leg-1", "CASH", "5500"),
+        driftedLeg2,
+      ],
+    });
+
+    const res = computePOSTotals({ cart, activeTab });
+    expect(res.externalPaymentConfirmed).toBe(false);
+  });
+
+  it("flags splitInvalidLeg when fewer than 2 legs or a leg has zero/empty amount", () => {
+    const cart = [makeItem(10000, 1)];
+    const singleLegTab = makeTab({
+      paymentLegs: [makeConfirmedLeg("leg-1", "CASH", "10000")],
+    });
+    expect(computePOSTotals({ cart, activeTab: singleLegTab }).splitInvalidLeg).toBe(true);
+
+    const zeroLegTab = makeTab({
+      paymentLegs: [
+        makeConfirmedLeg("leg-1", "CASH", "10000"),
+        makeConfirmedLeg("leg-2", "CARD", "0", "AUTH-1", 601),
+      ],
+    });
+    expect(computePOSTotals({ cart, activeTab: zeroLegTab }).splitInvalidLeg).toBe(true);
+  });
+
+  it("supports partial split payment with remaining credit on customer account", () => {
+    const cart = [makeItem(10000, 1)];
+    const activeTab = makeTab({
+      customerId: 42,
+      paymentLegs: [
+        makeConfirmedLeg("leg-1", "CASH", "3000"),
+        makeConfirmedLeg("leg-2", "WALLET", "4000", "ZAIN-99", 701),
+      ],
+    });
+
+    const res = computePOSTotals({ cart, activeTab });
+    expect(res.isSplitPayment).toBe(true);
+    expect(res.isCredit).toBe(true);
+    expect(res.paid).toBe(7000);
+    expect(res.credit).toBe(3000);
+    expect(res.externalPaymentConfirmed).toBe(true);
+  });
+
+  it("parses thousands separators and Arabic numerals in split payment leg amounts without truncating", () => {
+    const cart = [makeItem(40000, 1)];
+    const activeTab = makeTab({
+      paymentLegs: [
+        makeConfirmedLeg("leg-1", "CASH", "25,000"),
+        makeConfirmedLeg("leg-2", "CARD", "١٥٬٠٠٠", "AUTH-AR", 801),
+      ],
+    });
+
+    const res = computePOSTotals({ cart, activeTab });
+    expect(res.paid).toBe(40000);
+    expect(res.change).toBe(0);
+    expect(res.credit).toBe(0);
+    expect(res.isCredit).toBe(false);
+    expect(res.splitInvalidLeg).toBe(false);
+    expect(res.externalPaymentConfirmed).toBe(true);
+  });
+});
+
 

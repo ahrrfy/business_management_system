@@ -232,13 +232,20 @@ function assertAttemptActorAuthority(
   }
 }
 
-export type ConfirmedPosSaleInput = Omit<CreateSaleInput, "payment"> & {
-  payment?:
-    | (NonNullable<CreateSaleInput["payment"]> & {
-    externalPaymentAttemptId?: number | null;
-    /** حجز داخلي للبطاقات الرقمية؛ لا يقبله راوتر البيع العام. */
-    externalPaymentIntentId?: number | null;
-  }) | null;
+export type ConfirmedPosSalePaymentLeg = NonNullable<
+  CreateSaleInput["payment"]
+> & {
+  externalPaymentAttemptId?: number | null;
+  /** حجز داخلي للبطاقات الرقمية؛ لا يقبله راوتر البيع العام. */
+  externalPaymentIntentId?: number | null;
+};
+
+export type ConfirmedPosSaleInput = Omit<
+  CreateSaleInput,
+  "payment" | "payments"
+> & {
+  payment?: ConfirmedPosSalePaymentLeg | null;
+  payments?: ConfirmedPosSalePaymentLeg[] | null;
   /** حارس القناة العامة؛ تُبقي الاستدعاءات الداخلية القديمة خارج نطاق شريحة POS. */
   requireExternalPaymentAttempt?: boolean;
 };
@@ -988,11 +995,28 @@ export async function consumeConfirmedExternalPaymentAttemptTx<T>(
   return consumed.value;
 }
 
-function coreSaleInput(input: ConfirmedPosSaleInput, reference?: string,
+function coreSaleInput(
+  input: ConfirmedPosSaleInput,
+  reference?: string,
+  referencesByLegIndex?: ReadonlyMap<number, string>,
 ): CreateSaleInput {
-  const { requireExternalPaymentAttempt: _required, payment, ...rest } = input;
+  const {
+    requireExternalPaymentAttempt: _required,
+    payment,
+    payments,
+    ...rest
+  } = input;
+  const mappedPayments =
+    Array.isArray(payments) && payments.length > 0
+      ? payments.map((leg, idx) => ({
+          amount: leg.amount,
+          method: leg.method,
+          reference: referencesByLegIndex?.get(idx) ?? leg.reference ?? null,
+        }))
+      : undefined;
   return {
     ...rest,
+    ...(mappedPayments ? { payments: mappedPayments } : {}),
     payment: payment
       ? {
           amount: payment.amount,
@@ -1013,6 +1037,204 @@ export async function createConfirmedPosSaleInTx(
   actor: Actor,
   capability?: typeof DIGITAL_SALE_CAPABILITY,
 ): Promise<CreateSaleResult> {
+  if (Array.isArray(input.payments) && input.payments.length > 0) {
+    for (const leg of input.payments) {
+      assertPosPaymentMethodEnabled(leg.method);
+      if (leg.method === "CASH" && leg.externalPaymentAttemptId != null) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر إتمام البيع النقديّ",
+            why: "الطلب اختار النقد ومعه إثبات دفعٍ خارجيّ، والنقدُ يدخل الدرج مباشرةً بلا جهاز",
+            doThis:
+              "إن قبضتَ نقداً فأعِد إتمام البيع بلا تأكيد دفعٍ خارجيّ؛ وإن مرّرتَ البطاقة فاختر «بطاقة» ليُستهلَك إثبات الجهاز",
+          }),
+        });
+      }
+    }
+    const nonCashLegs = input.payments
+      .map((leg, idx) => ({ leg, idx }))
+      .filter((item) => item.leg.method !== "CASH");
+    const seenAttemptIds = new Set<number>();
+    for (const { leg } of nonCashLegs) {
+      if (leg.externalPaymentAttemptId != null) {
+        if (seenAttemptIds.has(leg.externalPaymentAttemptId)) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: appErrorMessage({
+              what: "تعذّر إتمام الدفع المقسّم",
+              why: `إثبات الدفع الخارجي رقم ${leg.externalPaymentAttemptId} مكرّر في أكثر من دفعة داخل نفس الفاتورة`,
+              doThis: "أكّد لكل دفعة غير نقدية إثبات عملية مستقلّاً من جهاز الدفع",
+            }),
+          });
+        }
+        seenAttemptIds.add(leg.externalPaymentAttemptId);
+      }
+    }
+    if (nonCashLegs.length === 0) {
+      return createSaleInTx(tx, coreSaleInput(input), actor, capability);
+    }
+
+    const existingInvoice = input.clientRequestId
+      ? (
+          await tx
+            .select({ id: invoices.id })
+            .from(invoices)
+            .where(eq(invoices.sourceId, input.clientRequestId))
+            .limit(1)
+        )[0]
+      : null;
+    const preIds = new Set(input.preCollected?.receiptIds ?? []);
+    if (existingInvoice) {
+      const replayRefs = new Map<number, string>();
+      for (const { leg, idx } of nonCashLegs) {
+        if (leg.externalPaymentAttemptId != null) {
+          const att = (
+            await tx
+              .select({
+                externalReference: externalPaymentAttempts.externalReference,
+              })
+              .from(externalPaymentAttempts)
+              .where(eq(externalPaymentAttempts.id, leg.externalPaymentAttemptId))
+              .limit(1)
+          )[0];
+          if (att?.externalReference) {
+            replayRefs.set(idx, att.externalReference);
+          }
+        }
+      }
+      const replay = await createSaleInTx(
+        tx,
+        coreSaleInput(input, undefined, replayRefs),
+        actor,
+        capability,
+      );
+      const replayReceipts = (
+        await tx
+          .select({ id: receipts.id })
+          .from(receipts)
+          .where(
+            and(
+              eq(receipts.invoiceId, replay.invoiceId),
+              eq(receipts.direction, "IN"),
+              sql`${receipts.paymentMethod} <> 'CASH'`,
+            ),
+          )
+          .orderBy(receipts.id)
+      ).filter((r) => !preIds.has(Number(r.id)));
+      for (let i = 0; i < nonCashLegs.length; i++) {
+        const { leg } = nonCashLegs[i];
+        const expectedReceiptId = replayReceipts[i]
+          ? Number(replayReceipts[i].id)
+          : -1;
+        await assertExternalPaymentReplay(
+          tx,
+          replay.invoiceId,
+          {
+            branchId: input.branchId,
+            channel: "POS",
+            method: leg.method,
+            amount: leg.amount,
+            attemptId: leg.externalPaymentAttemptId,
+            deviceId: input.deviceId,
+            digitalSaleIntentId: leg.externalPaymentIntentId,
+          },
+          actor,
+          expectedReceiptId,
+        );
+      }
+      return replay;
+    }
+
+    const lockedByLegIndex = new Map<number, LockedExternalPaymentAttempt>();
+    const refsByLegIndex = new Map<number, string>();
+    const sortedNonCashLegs = [...nonCashLegs].sort(
+      (a, b) =>
+        (a.leg.externalPaymentAttemptId ?? 0) -
+        (b.leg.externalPaymentAttemptId ?? 0),
+    );
+    for (const { leg, idx } of sortedNonCashLegs) {
+      const attempt = await lockConfirmedExternalPaymentAttempt(
+        tx,
+        {
+          branchId: input.branchId,
+          channel: "POS",
+          method: leg.method,
+          amount: leg.amount,
+          attemptId: leg.externalPaymentAttemptId,
+          deviceId: input.deviceId,
+          digitalSaleIntentId: leg.externalPaymentIntentId,
+        },
+        actor,
+      );
+      lockedByLegIndex.set(idx, attempt);
+      refsByLegIndex.set(idx, attempt.externalReference);
+    }
+
+    const sale = await createSaleInTx(
+      tx,
+      coreSaleInput(input, undefined, refsByLegIndex),
+      actor,
+      capability,
+    );
+    if (sale.idempotentReplay) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر إتمام البيع — تراجعت الفاتورة بالكامل (تعارض idempotency أثناء استهلاك الإثبات)",
+          why: "نواةُ البيع أعادت فاتورةً سابقة بينما الإثبات لم يُستهلَك بعد، وربطُه ثانيةً يُنتج قبضاً مزدوجاً",
+          doThis:
+            "أعِد تحميل الشاشة واقرأ الفاتورة من قائمة المبيعات قبل أيّ إعادة، وأبلِغ مسؤول النظام برقم مرجع العملية",
+        }),
+      });
+    }
+
+    const createdNonCashReceipts = (
+      await tx
+        .select({
+          id: receipts.id,
+          amount: receipts.amount,
+          paymentMethod: receipts.paymentMethod,
+        })
+        .from(receipts)
+        .where(
+          and(
+            eq(receipts.invoiceId, sale.invoiceId),
+            eq(receipts.direction, "IN"),
+            sql`${receipts.paymentMethod} <> 'CASH'`,
+          ),
+        )
+        .orderBy(receipts.id)
+    ).filter((r) => !preIds.has(Number(r.id)));
+    for (let i = 0; i < nonCashLegs.length; i++) {
+      const { leg, idx } = nonCashLegs[i];
+      const attempt = lockedByLegIndex.get(idx)!;
+      const receipt = createdNonCashReceipts[i];
+      if (
+        !receipt ||
+        receipt.paymentMethod !== leg.method ||
+        !money(receipt.amount).eq(money(attempt.amount))
+      ) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: appErrorMessage({
+            what: "تعذّر إتمام البيع — تراجعت الفاتورة بالكامل",
+            why: `لم يُنشأ إيصالٌ يطابق الإثبات: المتوقَّع ${paymentMethodCompact(leg.method)} بمبلغ ${money(attempt.amount).toFixed(2)}، ولا تُقفَل فاتورةٌ بقبضٍ لا يطابق إثباته`,
+            doThis:
+              "لا تُمرّر البطاقة ثانيةً — تحقّق من حالة العملية على الجهاز، وأبلِغ مسؤول النظام بمرجع العملية قبل أيّ إعادة بيع",
+          }),
+        });
+      }
+      await bindExternalPaymentAttempt(
+        tx,
+        Number(attempt.id),
+        sale.invoiceId,
+        Number(receipt.id),
+      );
+    }
+    return sale;
+  }
+
   const payment = input.payment;
   if (payment) assertPosPaymentMethodEnabled(payment.method);
   if (!payment) {
@@ -1042,7 +1264,20 @@ export async function createConfirmedPosSaleInTx(
         .limit(1))[0]
     : null;
   if (existingInvoice) {
-    const replay = await createSaleInTx(tx, coreSaleInput(input), actor, capability,
+    let replayRef: string | undefined;
+    if (payment.externalPaymentAttemptId != null) {
+      const att = (
+        await tx
+          .select({
+            externalReference: externalPaymentAttempts.externalReference,
+          })
+          .from(externalPaymentAttempts)
+          .where(eq(externalPaymentAttempts.id, payment.externalPaymentAttemptId))
+          .limit(1)
+      )[0];
+      replayRef = att?.externalReference;
+    }
+    const replay = await createSaleInTx(tx, coreSaleInput(input, replayRef), actor, capability,
     );
     await assertExternalPaymentReplay(tx, replay.invoiceId, {
       branchId: input.branchId,

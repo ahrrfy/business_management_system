@@ -355,6 +355,12 @@ export async function receiptToCanvas(
   y += 34;
 
   if (d.paymentMethod) totRow("طريقة الدفع:", d.paymentMethod, true);
+  if (d.paymentLegs && d.paymentLegs.length > 1) {
+    for (const leg of d.paymentLegs) {
+      const legLabel = `  • ${leg.method}${leg.reference ? ` (${leg.reference})` : ""}:`;
+      totRow(legLabel, fmt(leg.amount));
+    }
+  }
   if (d.paid != null) totRow("المدفوع:", fmt(d.paid), true);
   if (d.change != null) totRow("الباقي:", fmt(d.change), true);
   if (Number(d.heldDeposits ?? 0) > 0) totRow("عربون محتجز:", fmt(d.heldDeposits), true);

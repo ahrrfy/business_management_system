@@ -130,7 +130,7 @@ export default function InvoiceDetail() {
 
   // حوار الإلغاء (قرار مالك ١٢/٨): جهة الصرف إلزاميّة + سبب اختياريّ + تأكيد بكتابة رقم الفاتورة.
   const [cancelOpen, setCancelOpen] = useState(false);
-  const [cancelMethod, setCancelMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
+  const [cancelMethod, setCancelMethod] = useState<(typeof METHODS)[number]["v"] | "MIXED">("CASH");
   const [cancelReason, setCancelReason] = useState("");
   const [cancelConfirmText, setCancelConfirmText] = useState("");
   const [cancelRequestId, setCancelRequestId] = useState(() => crypto.randomUUID());
@@ -146,6 +146,9 @@ export default function InvoiceDetail() {
         .minus(D(inv.data.paidAmount)),
     );
     setPayAmount(remaining.gt(0) ? remaining.toFixed(2) : "");
+    if (inv.data.paymentMethod === "MIXED") {
+      setCancelMethod("MIXED");
+    }
   }, [inv.data]);
 
   const pay = trpc.sales.pay.useMutation({
@@ -331,9 +334,16 @@ export default function InvoiceDetail() {
   const useLimitedCancellation = !canCancelInvoice && canCancelUnpaidCodInvoice && data.unpaidCodCancellationEligible;
   const canCancelCurrentInvoice = canCancelInvoice || useLimitedCancellation;
   const cancellationPending = cancel.isPending || cancelUnpaidCod.isPending;
+  const refundableByMethod =
+    (data as { refundableByMethod?: Record<string, string> }).refundableByMethod ?? {};
+  const isMixedRefundable =
+    data.paymentMethod === "MIXED" || Object.keys(refundableByMethod).length > 1;
   // مرجع جهاز الدفع إلزاميّ لِـCARD وحدها (تفرضه الخدمة) — ومقصورٌ على حالة وجود استردادٍ فعليّ
   // كي لا يحجب فاتورةً بلا استرداد بسبب طريقةٍ متبقّية من فتحةٍ سابقة للحوار.
-  const needsCardReference = paidAmountForRefund.gt(0) && cancelMethod === "CARD";
+  const needsCardReference =
+    paidAmountForRefund.gt(0) &&
+    (cancelMethod === "CARD" ||
+      (cancelMethod === "MIXED" && D(refundableByMethod.CARD ?? "0").gt(0)));
   const hasDiscount = D(data.discountAmount ?? "0").gt(0);
   const hasTax = D(data.taxAmount ?? "0").gt(0);
   // «تصحيح كامل» (عكس وإعادة إصدار، 0168) — أضيق من «تعديل البيانات»: يُقصَر على فاتورة بيعٍ
@@ -1164,6 +1174,9 @@ export default function InvoiceDetail() {
                   value={cancelMethod}
                   onValueChange={(value) => setCancelMethod(value as typeof cancelMethod)}
                 >
+                  {isMixedRefundable && (
+                    <option value="MIXED">دفع مختلط (عكس تلقائي حسب طرق القبض الأصلية)</option>
+                  )}
                   {METHODS.map((m) => (
                     <option key={m.v} value={m.v}>{m.label}</option>))}
                 </AppSelect>

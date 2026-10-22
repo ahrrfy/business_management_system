@@ -79,6 +79,14 @@ export type ExecutionOutcome =
     }
   | { status: "LEFT_OPEN"; why: string; payloadJson?: unknown };
 
+/** جزءٌ واحد من ردّ مالٍ مجزّأ على أكثر من رافد (مثلاً نقد + بطاقة). */
+export interface RefundLegDecision {
+  method: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
+  amount: Decimal;
+  reference?: string | null;
+  cashSource?: { shiftId: number | null; cashBucket: "DRAWER" | "TREASURY" } | null;
+}
+
 /** حمولةُ ردّ المال التي يقرّرها البشر ويمرّرها المستدعي — لا تُخمَّن داخل المحرّك. */
 export interface RefundDecision {
   /**
@@ -102,6 +110,8 @@ export interface RefundDecision {
   cashSource?: { shiftId: number | null; cashBucket: "DRAWER" | "TREASURY" } | null;
   /** بصمةُ الطلب — تدخل في مرجع الإيصال المعلَّق كي يبقى فريداً لكلّ محاولة. */
   requestFingerprint?: string | null;
+  /** أجزاءُ الردّ المتعدّدة عند استرداد فاتورة مختلطة (نقد + بطاقة / إلخ) كلّ رافدٍ بمبلغه. */
+  legs?: RefundLegDecision[] | null;
 }
 
 /**

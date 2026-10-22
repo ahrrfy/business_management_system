@@ -59,6 +59,7 @@ export function usePOSTabsDraft({
         method: "CASH" as PaymentMethod,
         paymentRef: "",
         externalPayment: null,
+        paymentLegs: [],
         dueDate: t.dueDate ?? "",
         // مسوّداتٌ محفوظة قبل إضافة بوليصة الشركة لا تحمل الحقول الجديدة؛ نطبّعها كي
         // تبقى المدخلات controlled ويُستكمل partyType من قائمة الجهات عند تحميلها.

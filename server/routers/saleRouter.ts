@@ -69,6 +69,7 @@ import {
   requestSalesControl,
 } from "../services/sale/controlRequests";
 import { cancelSale, isUnpaidCodCancellationSource } from "../services/sale/cancel";
+import { money } from "../services/money";
 import { loadRefundCaps } from "../services/returns/refundCaps";
 import { loadCustomerReceiptInvoicePayments } from "../services/customerReceiptProjection";
 import { OperationalApprovalRequiredError } from "@shared/operationalDecision";
@@ -1212,12 +1213,24 @@ export const saleRouter = router({
               externalPaymentAttemptId: z.number().int().positive().optional(),
             })
             .optional(),
+          payments: z
+            .array(
+              z.object({
+                amount: positiveMoneyString,
+                method: posPaymentMethod,
+                externalPaymentAttemptId: z
+                  .number()
+                  .int()
+                  .positive()
+                  .optional(),
+              }),
+            )
+            .min(1)
+            .max(10)
+            .optional(),
           // dueDate للبيع الآجل (YYYY-MM-DD) — يُحفظ على invoices.dueDate ليظهر في AR aging
           // ولينبّه على الفواتير المتأخرة. اختياري؛ إن غاب فلا تاريخ استحقاق محدّد.
-          dueDate: z
-            .string()
-            .regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)")
-            .optional(),
+          dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)").optional(),
           // تقريب نقدي IQD للبيع النقدي الكامل (يُحسب على الخادم، يُسجَّل ADJUST لفرق التقريب).
           cashRoundIQD: z.boolean().optional(),
           clientRequestId: z.string().optional(),
@@ -1242,38 +1255,26 @@ export const saleRouter = router({
           managerApproval: managerApprovalSchema.optional(),
         })
         .superRefine((input, ctx) => {
-          // الإثبات = محاولة دفع خارجية مؤكَّدة خادمياً، لا نصٌّ يكتبه الكاشير. (الإقفال الشامل
-          // للطرق غير النقدية أُلغي في ١٦/٨/٢٦ — كان يعطّل بيع البطاقة كلّياً بلا مقابل نزاهةٍ إضافيّ.)
           if (
             input.payment &&
             input.payment.method !== "CASH" &&
             !input.payment.externalPaymentAttemptId
           ) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["payment", "externalPaymentAttemptId"],
-              message: "أكّد الدفع الخارجي قبل إتمام البيع",
-            });
+            ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["payment", "externalPaymentAttemptId"], message: "أكّد الدفع الخارجي قبل إتمام البيع" });
           }
-          if (
-            input.payment?.method === "CASH" &&
-            input.payment.externalPaymentAttemptId != null
-          ) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["payment", "externalPaymentAttemptId"],
-              message: "الدفع النقدي لا يحمل محاولة دفع خارجية",
-            });
+          if (input.payment?.method === "CASH" && input.payment.externalPaymentAttemptId != null) {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["payment", "externalPaymentAttemptId"], message: "الدفع النقدي لا يحمل محاولة دفع خارجية" });
+          }
+          const legs = input.payments ?? [];
+          for (let idx = 0; idx < legs.length; idx++) {
+            const leg = legs[idx]!;
+            if (leg.method !== "CASH" && !leg.externalPaymentAttemptId) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["payments", idx, "externalPaymentAttemptId"], message: "أكّد الدفع الخارجي قبل إتمام البيع" });
+            if (leg.method === "CASH" && leg.externalPaymentAttemptId != null) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["payments", idx, "externalPaymentAttemptId"], message: "الدفع النقدي لا يحمل محاولة دفع خارجية" });
           }
         }),
     )
     .mutation(async ({ input, ctx }) => {
       // عزل الفرع: غير المدير يُجبَر على فرعه (لا يُصدَّق branchId القادم من العميل — منع IDOR).
-      // G1 (تدقيق ١٤/٦/٢٦): قبل الإصلاح كان `ctx.user.branchId ?? input.branchId` يسمح
-      // لكاشير بـbranchId=null أن يحقن أي input.branchId (بيع في فرع آخر — IDOR مالي).
-      // الآن: throw FORBIDDEN صريح (نمط F4 expense.create).
-      // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران (owner مُطبَّع ⇒ admin)؛ المدير
-      // يبيع بفرعه المُسنَد فقط (كان `|| manager` يسمح له بالبيع على فرعٍ آخر عبر input.branchId).
       const elevated = ctx.user.role === "admin";
       let effectiveBranchId = input.branchId;
       if (!elevated) {
@@ -1435,16 +1436,79 @@ export const saleRouter = router({
         .object({
           // SALES-04: المبلغ مُقيّد موجباً بـ٢ منازل (كان z.string() ⇒ يَقبل أُسّاً/أكثر من منزلتين).
           invoiceId: z.number().int().positive(),
-          amount: positiveMoneyString,
-          method: posPaymentMethod,
+          amount: positiveMoneyString.optional(),
+          method: posPaymentMethod.optional(),
           reference: z.string().trim().max(100).nullish(),
           shiftId: z.number().int().positive().optional(),
           externalPaymentAttemptId: z.number().int().positive().nullish(),
           externalPaymentDeviceId: z.string().trim().min(1).max(64).nullish(),
+          payments: z
+            .array(
+              z.object({
+                amount: positiveMoneyString,
+                method: posPaymentMethod,
+                reference: z.string().trim().max(100).nullish(),
+                externalPaymentAttemptId: z.number().int().positive().nullish(),
+                externalPaymentDeviceId: z.string().trim().min(1).max(64).nullish(),
+              }),
+            )
+            .min(1)
+            .max(10)
+            .optional(),
           // idempotency: نفس المفتاح ⇒ دفعة واحدة (لا إيصال/قيد PAYMENT_IN/خصم AR مزدوج عند النقر المزدوج).
           clientRequestId: z.string().min(1).max(80).optional(),
         })
         .superRefine((input, ctx) => {
+          if (input.payments && input.payments.length > 0) {
+            for (let idx = 0; idx < input.payments.length; idx++) {
+              const leg = input.payments[idx]!;
+              if (leg.method !== "CASH" && !leg.externalPaymentAttemptId) {
+                ctx.addIssue({
+                  code: z.ZodIssueCode.custom,
+                  path: ["payments", idx, "externalPaymentAttemptId"],
+                  message: "أكّد الدفع الخارجي قبل تسجيل الدفعة",
+                });
+              }
+              if (
+                leg.method !== "CASH" &&
+                !leg.externalPaymentDeviceId &&
+                !input.externalPaymentDeviceId
+              ) {
+                ctx.addIssue({
+                  code: z.ZodIssueCode.custom,
+                  path: ["payments", idx, "externalPaymentDeviceId"],
+                  message: "جهاز محاولة الدفع مطلوب",
+                });
+              }
+              if (
+                leg.method === "CASH" &&
+                (leg.externalPaymentAttemptId != null ||
+                  leg.externalPaymentDeviceId != null)
+              ) {
+                ctx.addIssue({
+                  code: z.ZodIssueCode.custom,
+                  path: ["payments", idx, "externalPaymentAttemptId"],
+                  message: "الدفع النقدي لا يحمل محاولة دفع خارجية",
+                });
+              }
+            }
+            return;
+          }
+          if (!input.amount) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["amount"],
+              message: "المبلغ مطلوب",
+            });
+          }
+          if (!input.method) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["method"],
+              message: "طريقة الدفع مطلوبة",
+            });
+            return;
+          }
           if (input.method !== "CASH" && !input.externalPaymentAttemptId) {
             ctx.addIssue({
               code: z.ZodIssueCode.custom,
@@ -1504,6 +1568,14 @@ export const saleRouter = router({
       } else {
         actorBranchId = enforceBranchId!;
       }
+      const totalPaymentAmount =
+        input.payments && input.payments.length > 0
+          ? input.payments
+              .reduce((acc, l) => acc.plus(money(l.amount)), money(0))
+              .toFixed(2)
+          : (input.amount ?? "0.00");
+      const effectiveMethod =
+        input.method ?? input.payments?.[0]?.method ?? "CASH";
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           // حارس «الإرسالية بالطريق» (مراجعة عدائية ٩/٨): كان في مسار الاستقبال وحده بينما هذه
@@ -1516,12 +1588,19 @@ export const saleRouter = router({
           const res = await processPayment(
             {
               ...input,
+              amount: totalPaymentAmount,
+              method: effectiveMethod,
+              payments: input.payments?.map((l) => ({
+                ...l,
+                externalPaymentDeviceId:
+                  l.externalPaymentDeviceId ?? input.externalPaymentDeviceId,
+              })),
               enforceBranchId,
               preInsertCheck: async (tx) => {
                 await assertNoInTransitConsignment(tx, input.invoiceId);
                 await registerCounterCollectionTx(tx, {
                   invoiceId: input.invoiceId,
-                  amount: input.amount,
+                  amount: totalPaymentAmount,
                   actorUserId: ctx.user.id,
                   refKey: input.clientRequestId ?? randomUUID(),
                 });
@@ -1537,7 +1616,13 @@ export const saleRouter = router({
             action: "sale.pay",
             entityType: "invoice",
             entityId: input.invoiceId,
-            newValue: { amount: input.amount, method: input.method },
+            newValue: {
+              amount: totalPaymentAmount,
+              method:
+                input.payments && input.payments.length > 1
+                  ? "MIXED"
+                  : effectiveMethod,
+            },
           });
           return res;
         } catch (e: any) {
@@ -2535,6 +2620,11 @@ export const saleRouter = router({
       const refundCaps = await loadRefundCaps(db, Number(inv.id));
       const refundPreview = {
         refundablePaidAmount: refundCaps.pool.toFixed(2),
+        refundableByMethod: Object.fromEntries(
+          Array.from(refundCaps.netByMethod.entries())
+            .filter(([, amt]) => amt.gt(0))
+            .map(([m, amt]) => [m, amt.toFixed(2)]),
+        ),
         unpaidCodCancellationEligible: Number(inv.branchId) === Number(ctx.user.branchId) &&
           isUnpaidCodCancellationSource(inv, refundCaps.grossIn, refundCaps.grossOut,
             refundCaps.unremittedDeliveryCustody, payments),
@@ -2610,7 +2700,18 @@ export const saleRouter = router({
       z.object({
         invoiceId: z.number().int().positive(),
         // «لا دينار بلا مسار/سند/قيد» — طريقة الاسترداد إلزاميّة، لا افتراضية.
-        refundPaymentMethod: method,
+        refundPaymentMethod: z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "MIXED"]),
+        refunds: z
+          .array(
+            z.object({
+              method: method,
+              amount: positiveMoneyString,
+              reference: z.string().trim().min(1).max(100).nullish(),
+            }),
+          )
+          .min(1)
+          .max(10)
+          .optional(),
         // مرجع عملية جهاز الدفع — إلزاميّ للردّ بالبطاقة (تفرضه الخدمة، لا مجرّد تزيين واجهة).
         reference: z.string().trim().min(1).max(100).optional(),
         reason: z.string().trim().min(3).max(500),
@@ -2637,6 +2738,16 @@ export const saleRouter = router({
         isOwner: ctx.user.isOwner,
         operationalCaps: ctx.user.resolvedOperationalCaps,
       };
+      const db = getDb();
+      let mixedHasCardRail = false;
+      if (input.refundPaymentMethod === "MIXED" && db) {
+        const caps = await loadRefundCaps(db, input.invoiceId);
+        mixedHasCardRail = (caps.netByMethod.get("CARD") ?? money(0)).gt(0);
+      }
+      const involvesCardRail =
+        input.refundPaymentMethod === "CARD" ||
+        mixedHasCardRail ||
+        Boolean(input.refunds?.some((r) => r.method === "CARD"));
       const controlRequestInput = {
         requestKey: input.clientRequestId ?? randomUUID(),
         invoiceId: input.invoiceId,
@@ -2644,8 +2755,16 @@ export const saleRouter = router({
         reason: input.reason,
         payload: {
           refundPaymentMethod: input.refundPaymentMethod,
+          ...(input.refunds
+            ? {
+                refunds: input.refunds.map((r) => ({
+                  ...r,
+                  reference: r.method === "CARD" ? null : (r.reference ?? null),
+                })),
+              }
+            : {}),
           // مرجع البطاقة يثبته المراجع بعد قبول الطلب، لا منشئ الطلب قبل معرفة القرار.
-          reference: input.refundPaymentMethod === "CARD" ? null : input.reference ?? null,
+          reference: involvesCardRail ? null : input.reference ?? null,
         },
       };
       const controlReplay = input.clientRequestId
@@ -2669,7 +2788,12 @@ export const saleRouter = router({
         };
       }
       try {
-        if (input.refundPaymentMethod === "CARD" && input.reference?.trim()) {
+        const hasPrematureCardReference =
+          (input.refundPaymentMethod === "CARD" && input.reference?.trim()) ||
+          (involvesCardRail &&
+            (Boolean(input.reference?.trim()) ||
+              Boolean(input.refunds?.some((r) => r.method === "CARD" && r.reference?.trim()))));
+        if (hasPrematureCardReference) {
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: appErrorMessage({
@@ -2679,7 +2803,7 @@ export const saleRouter = router({
             }),
           });
         }
-        if (input.refundPaymentMethod === "CARD") {
+        if (involvesCardRail) {
           throw new OperationalApprovalRequiredError({
             result: "APPROVAL_REQUIRED",
             reason: "رد البطاقة ينفذه المراجع المستقل بعد قبول طلب الإلغاء",

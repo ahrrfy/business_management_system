@@ -1297,6 +1297,12 @@ export async function returnSaleInTx(
         refundMethod,
         returnedTotalForRefund,
       );
+      if (inv.paymentMethod === "MIXED" && refundMethod !== "CASH") {
+        refundCap = Decimal.min(
+          refundCap,
+          caps.netByMethod.get(refundMethod) ?? money(0),
+        );
+      }
     }
     // ⭐ الزبون العابر: الرد يساوي فقط ما صار زائداً من المال المقبوض بعد المرتجع.
     // فاتورة COD غير المدفوعة = صفر، والإلغاء الكامل بعد عربون = العربون فقط.
@@ -3139,7 +3145,11 @@ export async function returnSaleDirect(
           refundAmountIqd: directRefund?.amount ?? "0.00",
           sourcePaidAmountIqd: sourcePaidAmount.toFixed(2),
           maxRefundAmountIqd: resolvedCaps.maxRefundAmountIqd,
-          refundMethod: directRefund?.method ?? invRow.paymentMethod ?? "CASH",
+          refundMethod:
+            directRefund?.method ??
+            (invRow.paymentMethod && invRow.paymentMethod !== "MIXED"
+              ? invRow.paymentMethod
+              : (originalPaymentMethods[0] ?? "CASH")),
           originalPaymentMethods,
           originalPaymentAmounts,
           drawerHasFunds,

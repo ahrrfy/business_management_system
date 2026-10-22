@@ -37,13 +37,22 @@ import { CopyButton } from "@/components/CopyButton";
 import { notify } from "@/lib/notify";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { loadPosTabsDraft, posTabsDraftKey, savePosTabsDraft, type PosDraftScope } from "@/lib/cartDraft";
-import { paymentMethodLabel } from "@/lib/paymentMethod";
+import { METHOD_LABEL } from "@/lib/paymentMethod";
 import { normalizeSearchText } from "@shared/searchNormalize";
 import { POS_EXTERNAL_PAYMENT_PROOF_HINT } from "@shared/posPaymentPolicy";
 import { ReceiptOverlay } from "@/components/pos/ReceiptOverlay";
 import { CreditApprovalDialog } from "@/components/pos/CreditApprovalDialog";
 import type { ManagerApprovalInput } from "@shared/managerApproval";
-import { type Receipt, POS_COLORS } from "@/components/pos/posShared";
+import { type Receipt, type PosPaymentLegDraft, POS_COLORS } from "@/components/pos/posShared";
+import { SplitPaymentSection } from "@/components/pos/SplitPaymentSection";
+import { computeSplitLegFingerprint, parsePosLegAmountD } from "@/components/pos/posTotals";
+import {
+  appendPrintSplitLeg,
+  buildInitialPrintSplitLegs,
+  buildPrintSplitSubmitPayload,
+  computePrintPosSplitMetrics,
+  patchPrintSplitLeg,
+} from "@/components/print-pos/printPosSplitPayment";
 import { ShiftCloseDialog } from "@/components/pos/ShiftCloseDialog";
 import { PrintCartLine as CartLine } from "@/components/printPos/PrintCartList";
 import { PrintServiceGrid } from "@/components/printPos/PrintServiceGrid";
@@ -83,6 +92,8 @@ type Tab = {
   /** مرجع ومحاولة الدفع غير النقدي المؤكدة خادمياً. */
   paymentRef: string;
   externalPayment: ExternalPaymentDraft | null;
+  splitMode?: boolean;
+  splitLegs?: PosPaymentLegDraft[];
 };
 
 // ─── Dark mode (يتبع الوضع العام للنظام عبر صنف <html>) ──────────────────────
@@ -118,7 +129,6 @@ type C = typeof LIGHT;
 
 const SHOP = "الرؤية العربية";
 const DEPT = "قسم الطباعة والاستنساخ";
-const METHOD_LABEL: Record<PaymentMethod, string> = { CASH: "نقدي", CARD: "بطاقة", TRANSFER: "تحويل" };
 const fmt = (n: number) => Number(n || 0).toLocaleString("en-US");
 const riqd = (n: number) => roundCashIQD(n).toNumber();
 
@@ -138,6 +148,8 @@ const newTab = (id: number, label?: string): Tab => ({
   selUid: null,
   paymentRef: "",
   externalPayment: null,
+  splitMode: false,
+  splitLegs: [],
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -215,6 +227,19 @@ export default function PrintPOS() {
   const tab = tabs.find((t) => t.id === activeId) ?? tabs[0];
   const cart = tab.cart;
   const total = cart.reduce((s, c) => s + c.price * c.qty, 0);
+  const {
+    splitLegs,
+    isSplitPayment,
+    splitTotalPaidD,
+    splitNonCashOverpay,
+    splitLegsValid,
+  } = computePrintPosSplitMetrics({
+    splitMode: tab.splitMode,
+    splitLegs: tab.splitLegs,
+    editingInvoice: tab.editingInvoice,
+    total,
+  });
+  const [confirmingLegId, setConfirmingLegId] = useState<string | null>(null);
   const paymentInputAmount = Number(tab.payInput || 0);
   const paymentIsCredit = paymentInputAmount > 0 && paymentInputAmount < total;
   const externalPaymentAmount = (paymentIsCredit ? paymentInputAmount : total).toFixed(2);
@@ -255,7 +280,8 @@ export default function PrintPOS() {
   // لقطة الإيصال تُلتقط لحظة الإرسال بقيم متّسقة مع ما يسجّله الخادم (نقد مقرّب) ⇒ لا إعادة حساب
   // من حالة لاحقة/سلة مُفرَّغة، ولا «باقي/آجل» وهميّ من فرق التقريب.
   const pendingRef = useRef<{
-    lines: Receipt["lines"]; customerName?: string; method: PaymentMethod;
+    lines: Receipt["lines"]; customerName?: string; method: PaymentMethod | "MIXED";
+    paymentLegs?: Receipt["paymentLegs"];
     cashTotal: number; rawTotal: number; cashRounding: number; received: number; change: number; credit: number; isCredit: boolean;
   } | null>(null);
 
@@ -304,6 +330,8 @@ export default function PrintPOS() {
         method: "CASH" as PaymentMethod,
         paymentRef: "",
         externalPayment: null,
+        splitMode: false,
+        splitLegs: [],
       })));
       setActiveId(saved.tabs.some((t) => t.id === saved.activeId) ? saved.activeId : saved.tabs[0].id);
     } else {
@@ -344,6 +372,35 @@ export default function PrintPOS() {
     setTabs((prev) => prev.map((t) => (t.id !== activeId ? t : { ...t, cart: typeof u === "function" ? u(t.cart) : u })));
   const setPayInput = (u: string | ((s: string) => string)) =>
     setTabs((prev) => prev.map((t) => (t.id !== activeId ? t : { ...t, payInput: typeof u === "function" ? u(t.payInput) : u })));
+
+  function toggleSplitMode() {
+    if (tab.splitMode) {
+      const first = tab.splitLegs?.[0];
+      patch({
+        splitMode: false, splitLegs: [],
+        ...(first ? { method: first.method as PaymentMethod, payInput: first.amount, paymentRef: first.paymentRef, externalPayment: first.externalPayment } : {}),
+      });
+      return;
+    }
+    patch({ splitMode: true, splitLegs: buildInitialPrintSplitLegs({ payInput: tab.payInput, total, method: tab.method, paymentRef: tab.paymentRef }) });
+  }
+  const addSplitLeg = () => patch({ splitLegs: appendPrintSplitLeg(tab.splitLegs ?? [], total, splitTotalPaidD.toNumber()) });
+  const updateSplitLeg = (legId: string, legPatch: Partial<Pick<PosPaymentLegDraft, "method" | "amount" | "paymentRef">>) =>
+    patch({ splitLegs: patchPrintSplitLeg(tab.splitLegs ?? [], legId, legPatch, total) });
+  function removeSplitLeg(legId: string) {
+    const remaining = (tab.splitLegs ?? []).filter((l) => l.id !== legId);
+    if (remaining.length <= 1) {
+      const sole = remaining[0];
+      patch({
+        splitMode: false, splitLegs: [],
+        ...(sole ? { method: sole.method as PaymentMethod, payInput: sole.amount, paymentRef: sole.paymentRef, externalPayment: sole.externalPayment } : {}),
+      });
+      return;
+    }
+    patch({ splitLegs: remaining });
+  }
+  const patchSplitLegExternalPayment = (tabId: number, legId: string, externalPayment: PosPaymentLegDraft["externalPayment"]) =>
+    setTabs((prev) => prev.map((t) => (t.id === tabId ? { ...t, splitLegs: (t.splitLegs ?? []).map((l) => (l.id === legId ? { ...l, externalPayment } : l)) } : t)));
 
   function addTab() { const id = TAB_SEQ++; setTabs((p) => [...p, newTab(id)]); setActiveId(id); }
   function closeTab(id: number) {
@@ -413,7 +470,7 @@ export default function PrintPOS() {
   async function clearCart() {
     if (!cart.length) return;
     if (!(await confirm({ variant: "warning", title: "تفريغ الفاتورة", description: "ستُفقد كل الخدمات المُضافة. هل تتابع؟", confirmText: "تفريغ" }))) return;
-    setCart([]); setPayInput(""); patch({ selUid: null });
+    setCart([]); setPayInput(""); patch({ selUid: null, splitMode: false, splitLegs: [] });
   }
 
   // ── الدفع ──
@@ -444,11 +501,12 @@ export default function PrintPOS() {
         credit: p?.credit ?? 0,
         method: METHOD_LABEL[p?.method ?? "CASH"],
         methodCode: p?.method,
+        paymentLegs: p?.paymentLegs,
         isCredit: p?.isCredit ?? false,
       };
       setReceipt(rec);
       setLastInv({ num: r.invoiceNumber, total: p?.cashTotal ?? 0 });
-      setCart([]); setPayInput(""); patch({ selUid: null, paymentRef: "", externalPayment: null });
+      setCart([]); setPayInput(""); patch({ selUid: null, paymentRef: "", externalPayment: null, splitMode: false, splitLegs: [] });
       setClientRequestId(crypto.randomUUID());
       const printed = await printAuthorizedReceipt(rec).catch((error) => { notify.err(error); return { ok: false as const, via: "browser" as const }; });
       setMessage({
@@ -486,21 +544,28 @@ export default function PrintPOS() {
   const initiateExternalPayment = trpc.printPos.initiateExternalPayment.useMutation();
   const confirmExternalPaymentMutation = trpc.printPos.confirmExternalPayment.useMutation();
 
-  async function confirmCurrentExternalPayment() {
-    if (!shift || !cart.length || tab.method === "CASH") return;
+  async function confirmCurrentExternalPayment(legId?: string) {
+    if (!shift || !cart.length) return;
     const tabId = tab.id;
-    const reference = (tab.paymentRef ?? "").trim();
+    const leg = legId ? (tab.splitLegs ?? []).find((l) => l.id === legId) : null;
+    if (legId && !leg) return;
+    const method = leg ? leg.method : tab.method;
+    if (method === "CASH") return;
+    const reference = (leg ? leg.paymentRef : (tab.paymentRef ?? "")).trim();
     if (!reference) {
       setMessage({ kind: "err", text: "أدخل مرجع الدفع الخارجي أولاً." });
       return;
     }
-    if (tab.payInput.trim() !== "" && Number(tab.payInput) <= 0) {
+    const legAmtD = leg ? parsePosLegAmountD(leg.amount) : null;
+    if (leg ? legAmtD!.lte(0) : (tab.payInput.trim() !== "" && Number(tab.payInput) <= 0)) {
       setMessage({ kind: "err", text: "مبلغ الدفع يجب أن يكون موجباً قبل تأكيد العملية الخارجية." });
       return;
     }
 
-    const fingerprint = externalPaymentFingerprint;
-    const prior = tab.externalPayment?.fingerprint === fingerprint ? tab.externalPayment : null;
+    const amountStr = leg ? legAmtD!.toFixed(2) : externalPaymentAmount;
+    const fingerprint = leg ? computeSplitLegFingerprint(leg) : externalPaymentFingerprint;
+    const priorExt = leg ? leg.externalPayment : tab.externalPayment;
+    const prior = priorExt?.fingerprint === fingerprint ? priorExt : null;
     const requestId = prior?.requestId ?? crypto.randomUUID();
     let deviceId = prior?.deviceId;
     if (!deviceId) {
@@ -511,33 +576,35 @@ export default function PrintPOS() {
         return;
       }
     }
-    patchTab(tabId, { externalPayment: {
-      attemptId: prior?.attemptId ?? null,
-      requestId,
-      fingerprint,
-      state: prior?.state ?? "INITIATED",
-      deviceId,
-    } });
+    const writeExt = (state: "INITIATED" | "CONFIRMED", attemptId: number | null) => {
+      const nextExt = { attemptId, requestId, fingerprint, state, deviceId: deviceId! };
+      if (legId) patchSplitLegExternalPayment(tabId, legId, nextExt);
+      else patchTab(tabId, { externalPayment: nextExt });
+    };
+    if (legId) setConfirmingLegId(legId);
+    writeExt(prior?.state ?? "INITIATED", prior?.attemptId ?? null);
 
     try {
       let attemptId = prior?.attemptId ?? null;
       if (!attemptId) {
         const initiated = await initiateExternalPayment.mutateAsync({
           branchId,
-          method: tab.method,
-          amount: externalPaymentAmount,
+          method,
+          amount: amountStr,
           reference,
           requestId,
           deviceId,
         });
         attemptId = initiated.attemptId;
-        patchTab(tabId, { externalPayment: { attemptId, requestId, fingerprint, state: "INITIATED", deviceId } });
+        writeExt("INITIATED", attemptId);
       }
       await confirmExternalPaymentMutation.mutateAsync({ branchId, attemptId, deviceId });
-      patchTab(tabId, { externalPayment: { attemptId, requestId, fingerprint, state: "CONFIRMED", deviceId } });
+      writeExt("CONFIRMED", attemptId);
       setMessage({ kind: "ok", text: `تأكّد الدفع الخارجي وثُبّت المرجع ${reference}.` });
     } catch (error) {
       setMessage({ kind: "err", text: error instanceof Error ? error.message : "تعذّر تثبيت تأكيد الدفع الخارجي" });
+    } finally {
+      if (legId) setConfirmingLegId(null);
     }
   }
 
@@ -808,11 +875,40 @@ export default function PrintPOS() {
     }
 
     if (offline) {
-      if (isReservation) {
-        setMessage({ kind: "err", text: "الدفع عند الاستلام والبيع الآجل يتطلب الاتصال بالخادم." });
+      if (isReservation || isSplitPayment) {
+        setMessage({ kind: "err", text: "الدفع عند الاستلام والبيع الآجل والدفع المقسّم يتطلّب الاتصال بالخادم." });
         return;
       }
       void captureOfflinePrintSale(forceFullPayment);
+      return;
+    }
+
+    if (isSplitPayment) {
+      if (!splitLegsValid) {
+        setMessage({ kind: "err", text: splitNonCashOverpay ? "مجموع الدفعات غير النقدية يتجاوز إجمالي الفاتورة." : "أكمل مبالغ الدفعات وثبّت مراجع الدفعات غير النقدية أولاً." });
+        return;
+      }
+      const splitSub = buildPrintSplitSubmitPayload({
+        cart, splitLegs, total, isReservation: Boolean(isReservation),
+        customerName: selectedCustomer?.name ?? (tab.contactName || undefined),
+      });
+      if (isReservation && tab.customerId == null && !tab.contactName.trim() && !tab.contactPhone.trim()) {
+        setMessage({ kind: "err", text: "الدفع عند الاستلام يتطلّب تحديد عميل مسجل أو إدخال اسم/هاتف الزبون." }); return;
+      }
+      if (!isReservation && splitSub.isCredit && tab.customerId == null) {
+        setMessage({ kind: "err", text: "البيع الآجل يتطلّب اختيار عميل مسجّل ذو ذمة وحساب." }); return;
+      }
+      pendingRef.current = splitSub.pendingSnapshot;
+      sale.mutate({
+        branchId, shiftId: shift.id, clientRequestId,
+        ...(splitSub.splitDeviceId ? { deviceId: splitSub.splitDeviceId } : {}),
+        customerId: tab.customerId ?? undefined, contactName: tab.contactName.trim() || undefined, contactPhone: tab.contactPhone.trim() || undefined,
+        channel: tab.channel, isReservation: isReservation ? true : undefined, priceTier: "RETAIL",
+        lines: cart.map((c) => ({ variantId: c.svc.variantId, productUnitId: c.svc.productUnitId, quantity: String(c.qty), unitPriceOverride: c.price.toFixed(2) })),
+        payments: splitSub.paymentsPayload,
+        ...(splitSub.cashFull ? { cashRoundIQD: true } : {}),
+        ...(approval ? { managerApproval: approval } : {}),
+      });
       return;
     }
 
@@ -922,7 +1018,7 @@ export default function PrintPOS() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cart, sale.isPending, receipt, creditPrompt, shifting, tab.method, tab.payInput, total, externalPaymentConfirmed, externalFullPaymentConfirmed]);
+  }, [cart, sale.isPending, receipt, creditPrompt, shifting, tab.method, tab.payInput, total, externalPaymentConfirmed, externalFullPaymentConfirmed, isSplitPayment, splitLegsValid]);
 
   // ── الطابعة الحرارية (WebUSB) + جسر الخادم ──
   const connectPrinter = async () => {
@@ -1118,6 +1214,25 @@ export default function PrintPOS() {
         <PrintServiceGrid C={C} services={services} loading={servicesQ.isLoading} cats={cats} catId={effectiveCatId} setCatId={setCatId} search={search} onAdd={addService} recentIds={recentIds} />
       </div>
 
+      {tab.splitMode && !tab.editingInvoice && (
+        <div style={{ borderTop: `1px solid ${C.border}`, background: C.card, padding: "4px 12px", maxHeight: 240, overflowY: "auto", flexShrink: 0 }}>
+          <SplitPaymentSection
+            C={POS_COLORS}
+            total={total}
+            cartLen={cart.length}
+            paymentLegs={splitLegs}
+            onEnableSplit={toggleSplitMode}
+            onDisableSplit={toggleSplitMode}
+            onAddLeg={addSplitLeg}
+            onUpdateLeg={updateSplitLeg}
+            onRemoveLeg={removeSplitLeg}
+            onConfirmLegExternalPayment={(legId) => { void confirmCurrentExternalPayment(legId); }}
+            confirmingLegId={confirmingLegId}
+            splitNonCashOverpay={splitNonCashOverpay}
+          />
+        </div>
+      )}
+
       {/* مسطرة الدفع والتحصيل أسفل الصفحة */}
       <PrintBottomToolbar
         C={C}
@@ -1141,6 +1256,10 @@ export default function PrintPOS() {
         contactName={tab.contactName}
         contactPhone={tab.contactPhone}
         editingInvoice={tab.editingInvoice}
+        splitMode={Boolean(tab.splitMode)}
+        onToggleSplitMode={toggleSplitMode}
+        splitTotalPaid={splitTotalPaidD.toNumber()}
+        splitLegsValid={splitLegsValid}
       />
 
       {receipt && (

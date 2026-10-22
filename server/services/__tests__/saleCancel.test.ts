@@ -1641,4 +1641,134 @@ describe.sequential("cancelSale — حارس التوصيل الموحّد", () 
     // المخزون: 10 - 4 (بيع) + 1 (مرتجع) + 3 (إلغاء المتبقي) = 10
     expect(await stockOf(1, 1)).toBe(10);
   });
+
+  it("إلغاء فاتورة MIXED بـrefundPaymentMethod='MIXED' يسترد كل وسيلة بمقدارها الفعلي ويرفض استرداد كامل المبلغ بالبطاقة", async () => {
+    await setStock(1, 1, 10);
+    const sale = await createSale(
+      {
+        branchId: 1,
+        customerId: 1,
+        shiftId: 1,
+        sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+        payments: [
+          { method: "CASH", amount: "400.00" },
+          { method: "CARD", amount: "600.00", reference: "CARD-ORIG-600" },
+        ],
+      },
+      manager,
+    );
+    expect(sale.status).toBe("PAID");
+
+    // محاولة ردّ كامل المبلغ (1000) بالبطاقة بينما المقبوض بالبطاقة 600 فقط ⇒ تُرفض
+    await expect(
+      cancelSale(
+        {
+          invoiceId: sale.invoiceId,
+          refundPaymentMethod: "CARD",
+          reference: "CARD-REFUND-ALL",
+        },
+        admin,
+      ),
+    ).rejects.toThrow(/يتجاوز صافي المقبوض الفعلي بهذه الوسيلة/);
+
+    // ردّ MIXED مع مرجع استرداد البطاقة ⇒ يولّد إيصالَي OUT (400 نقداً + 600 بطاقة) وقيدَي PAYMENT_OUT
+    const reqKey = "cancel-mixed-key-1";
+    const cancelRes = await cancelSale(
+      {
+        invoiceId: sale.invoiceId,
+        refundPaymentMethod: "MIXED",
+        reference: "CARD-REFUND-600",
+        clientRequestId: reqKey,
+      },
+      admin,
+    );
+    expect(cancelRes.refundAmount).toBe("1000.00");
+
+    const outReceipts = (await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, sale.invoiceId)))
+      .filter((r) => r.direction === "OUT");
+    expect(outReceipts).toHaveLength(2);
+    const cashOut = outReceipts.find((r) => r.paymentMethod === "CASH")!;
+    const cardOut = outReceipts.find((r) => r.paymentMethod === "CARD")!;
+    expect(cashOut.amount).toBe("400.00");
+    expect(cashOut.cashBucket).toBe("TREASURY");
+    expect(cardOut.amount).toBe("600.00");
+    expect(cardOut.cashBucket).toBeNull();
+    expect(cardOut.referenceNumber).toBe("CARD-REFUND-600");
+
+    // Replay بنفس clientRequestId يُعيد المجموع الكلّي للمستردّ (1000.00)
+    const replayRes = await cancelSale(
+      {
+        invoiceId: sale.invoiceId,
+        refundPaymentMethod: "MIXED",
+        reference: "CARD-REFUND-600",
+        clientRequestId: reqKey,
+      },
+      admin,
+    );
+    expect(replayRes.idempotentReplay).toBe(true);
+    expect(replayRes.refundAmount).toBe("1000.00");
+  });
+
+  it("مرتجع جزئي بالبطاقة على فاتورة MIXED ثم إلغاء MIXED يردّ المتبقي الفعلي لكل وسيلة بدقة", async () => {
+    await setStock(1, 1, 10);
+    const sale = await createSale(
+      {
+        branchId: 1,
+        customerId: 1,
+        shiftId: 1,
+        sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }],
+        payments: [
+          { method: "CASH", amount: "800.00" },
+          { method: "CARD", amount: "1200.00", reference: "CARD-ORIG-1200" },
+        ],
+      },
+      manager,
+    );
+    const [item] = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId));
+
+    // محاولة ردّ 1500 بالبطاقة في مرتجعٍ جزئيّ تتجاوز مقبوض البطاقة (1200) ⇒ تُرفض
+    await expect(
+      returnSale(
+        {
+          invoiceId: sale.invoiceId,
+          lines: [{ invoiceItemId: Number(item.id), baseQuantity: 2 }],
+          refund: { method: "CARD", amount: "1500.00", reference: "CARD-RET-OVER" },
+          restock: true,
+        },
+        admin,
+      ),
+    ).rejects.toThrow(/المطلوب ردّه بـCARD هو 1500\.00 د\.ع، وهو يتجاوز المسموح 1200\.00 د\.ع/);
+
+    // مرتجع قطعة واحدة (1000) بالبطاقة ⇒ يتبقى 800 نقداً + 200 بطاقة
+    await returnSale(
+      {
+        invoiceId: sale.invoiceId,
+        lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
+        refund: { method: "CARD", amount: "1000.00", reference: "CARD-RET-1000" },
+        restock: true,
+      },
+      admin,
+    );
+
+    const cancelRes = await cancelSale(
+      {
+        invoiceId: sale.invoiceId,
+        refundPaymentMethod: "MIXED",
+        reference: "CARD-CANCEL-200",
+      },
+      admin,
+    );
+    expect(cancelRes.refundAmount).toBe("1000.00");
+
+    const cancelOuts = (await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, sale.invoiceId)))
+      .filter((r) => r.direction === "OUT" && r.description?.includes("استرداد إلغاء فاتورة"));
+    expect(cancelOuts).toHaveLength(2);
+    expect(cancelOuts.find((r) => r.paymentMethod === "CASH")?.amount).toBe("800.00");
+    expect(cancelOuts.find((r) => r.paymentMethod === "CARD")?.amount).toBe("200.00");
+    expect(cancelOuts.find((r) => r.paymentMethod === "CARD")?.referenceNumber).toBe("CARD-CANCEL-200");
+  });
 });
+
+

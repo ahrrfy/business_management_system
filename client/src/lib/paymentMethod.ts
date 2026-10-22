@@ -50,6 +50,7 @@ export const INVOICE_FILTER_METHODS: readonly InvoiceFilterMethod[] = [
   "TRANSFER",
   "WALLET",
   "TELECOM",
+  "MIXED",
 ] as const;
 
 /**

@@ -12,6 +12,7 @@ import type { Tx } from "../../db";
 import { isDeadInvoice } from "@shared/predicates";
 import { computeInvoiceStatus } from "../ledgerService";
 import { money, toDbMoney } from "../money";
+import { mixedAwarePaymentMethod } from "../sale/payment";
 
 export interface VoucherInvoiceAllocationInput {
   invoiceId: number;
@@ -168,10 +169,8 @@ export async function allocateVoucherToInvoiceTx(
       ...(isCredit
         ? {
             paymentDate: new Date(),
-            // COALESCE لا OVERWRITE: فاتورةٌ عربونها بطاقة ثمّ سُدّدت بسندٍ نقديّ تبقى «بطاقة»
-            // بدل أن تدهسها آخر دفعة — نفس اصطلاح مسارات تحصيل التوصيل.
             ...(input.paymentMethod
-              ? { paymentMethod: sql`COALESCE(${invoices.paymentMethod}, ${input.paymentMethod})` }
+              ? { paymentMethod: mixedAwarePaymentMethod(inv.paymentMethod, input.paymentMethod) }
               : {}),
           }
         : {}),

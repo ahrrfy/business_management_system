@@ -90,6 +90,7 @@ import type { Tx } from "../../db";
 import { flowNotify } from "../whatsapp";
 import { readOpeningWindowState } from "../openingModeService";
 import { classifyGiftPosting } from "./giftPosting";
+import { mixedAwarePaymentMethod } from "./payment";
 import { paymentAssetRole } from "./paymentPosting";
 import { userNameSnapshot } from "../userSnapshot";
 import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
@@ -193,24 +194,42 @@ export async function createSaleInTx(
   const requestFingerprint = input.clientRequestId
     ? idempotencyHash(fingerprintInput)
     : null;
+  const hasExplicitLegs =
+    Array.isArray(input.payments) && input.payments.length > 0;
+  const rawPaymentLegs = hasExplicitLegs
+    ? input.payments!
+    : input.payment
+      ? [input.payment]
+      : [];
   // نواة الفاتورة هي حدّ الأمان الأخير: لا نعتمد على راوتر أو marker لإثبات قبض خارجي.
-  if (input.payment) {
-    assertPosPaymentMethodEnabled(input.payment.method);
+  for (const leg of rawPaymentLegs) {
+    assertPosPaymentMethodEnabled(leg.method);
+    if (hasExplicitLegs && money(leg.amount).lte(0)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر تثبيت الدفعات المقسّمة",
+          why: "مبلغ كل دفعة مقسّمة يجب أن يكون أكبر من صفر",
+          doThis: "أدخل مبلغاً موجباً لكل دفعة أو احذف الدفعة الفارغة",
+        }),
+      });
+    }
     // ثابت «لا قبضَ بلا أثرٍ قابلٍ للمطابقة»: هذه النواة تُنشئ إيصالها بنفسها (بند ١٢ أدناه)
     // فلا يمرّ بحارس `sale/payment.ts`. كل مسارات البيع تصبّ هنا (الكاشير، المطبعة، تحويل
     // عرض السعر، الحجز، أمر الشغل)، فوَضعُ الشرط هنا يغلق الباب على كلّها مرّةً واحدة بدل
     // تكراره في كل مستدعٍ — والمرجع يأتي إمّا نصّاً من الموظّف أو من محاولةٍ مؤكَّدة
     // (createConfirmedPosSaleInTx يحقن مرجع المحاولة في الحمولة قبل بلوغ هذه النقطة).
-    if (
-      input.payment.method !== "CASH" &&
-      !(input.payment.reference ?? "").trim()
-    ) {
+    if (leg.method !== "CASH" && !(leg.reference ?? "").trim()) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: "مرجع عملية البطاقة/التحويل مطلوب",
       });
     }
   }
+  const effectiveInvoicePaymentMethod = rawPaymentLegs.reduce<string | null>(
+    (acc, leg) => mixedAwarePaymentMethod(acc, leg.method),
+    null,
+  );
   // This namespace is generated only by the trusted digital-card finalizer.  Check it
   // before idempotency lookup so a public POS request cannot replay an existing
   // digital invoice merely by guessing its sourceId.
@@ -258,7 +277,7 @@ export async function createSaleInTx(
           message: "تعارض idempotency: المفتاح مستعمَل لبيع عميل مختلف",
         });
       }
-      const requestedMethod = input.payment?.method ?? null;
+      const requestedMethod = effectiveInvoicePaymentMethod;
       if ((ex.paymentMethod ?? null) !== requestedMethod) {
         throw new TRPCError({
           code: "CONFLICT",
@@ -340,6 +359,21 @@ export async function createSaleInTx(
               .limit(1)
           )[0]
         : undefined;
+      const preIds = new Set(input.preCollected?.receiptIds ?? []);
+      const replayReceipts = (
+        await tx
+          .select({ id: receipts.id })
+          .from(receipts)
+          .where(
+            and(
+              eq(receipts.invoiceId, Number(ex.id)),
+              eq(receipts.direction, "IN"),
+            ),
+          )
+          .orderBy(receipts.id)
+      )
+        .map((r) => Number(r.id))
+        .filter((id) => !preIds.has(id));
       return {
         invoiceId: Number(ex.id),
         invoiceNumber: ex.invoiceNumber,
@@ -349,6 +383,8 @@ export async function createSaleInTx(
         shiftId: ex.shiftId ?? null,
         total: ex.total,
         status: ex.status as CreateSaleResult["status"],
+        createdReceiptId: replayReceipts[0] ?? null,
+        createdReceiptIds: replayReceipts,
         idempotentReplay: true,
         ...(replayConsignment
           ? {
@@ -370,9 +406,9 @@ export async function createSaleInTx(
   // 2. Shift must be OPEN and belong to the branch (when provided — POS).
   //    .for("update") يُسَلْسِل البيع مع closeShift على نفس الصفّ ⇒ إمّا يقفل البيع قبل
   //    الإغلاق ويُحتسَب، أو يُرفض إن سبق الإغلاق فلا يدخل receipt بعد قطع الـZ-report.
-  const isCashPayment =
-    input.payment?.method === "CASH" &&
-    money(input.payment?.amount ?? "0").gt(0);
+  const isCashPayment = rawPaymentLegs.some(
+    (leg) => leg.method === "CASH" && money(leg.amount ?? "0").gt(0),
+  );
   if (isCashPayment && input.shiftId == null) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
@@ -1319,9 +1355,13 @@ export async function createSaleInTx(
     });
   }
 
-  // 7. تقريب نقدي IQD للبيع النقدي الكامل: يُقرَّب الإجمالي لفئة 250، فالنقد المستلم = الإجمالي المقرّب
-  //    (لا فائض/عجز وهمي عند الرفع، ولا رفض بيع نقدي عند الخفض). الفرق يُسجَّل قيد ADJUST لاحقاً.
-  const roundCash = !!input.cashRoundIQD && input.payment?.method === "CASH";
+  // 7. تقريب نقدي IQD للبيع النقدي الكامل فقط (عندما تكون جميع أرجل الدفع نقدية):
+  //    في الدفعات المختلطة (نقد + بطاقة) يبقى الإجمالي الدقيق دون تقريب لئلا ينجرف الخادم عن العميل.
+  const hasCashLeg = rawPaymentLegs.some((leg) => leg.method === "CASH");
+  const allCashLegs =
+    rawPaymentLegs.length > 0 &&
+    rawPaymentLegs.every((leg) => leg.method === "CASH");
+  const roundCash = !!input.cashRoundIQD && allCashLegs;
   const grandTotalD = money(totals.total);
   // ش٦ — تقريب السلّة المختلطة: هذه الفاتورة تحمل فرق تقريب السلّة كلّها (checkoutReception
   // يضبطه حصراً). مراجعة PR #495: الفرق **يُشتقّ خادمياً** من إجماليّ الأسطر المحسوب هنا
@@ -1330,7 +1370,7 @@ export async function createSaleInTx(
   let overrideD: ReturnType<typeof money> | null = null;
   if (
     input.cashRoundingBasketOthers != null &&
-    input.payment?.method === "CASH"
+    allCashLegs
   ) {
     const basketRawD = round2(
       grandTotalD.plus(money(input.cashRoundingBasketOthers)),
@@ -1342,7 +1382,15 @@ export async function createSaleInTx(
   const effectiveTotalD =
     overrideD ?? (roundCash ? roundCashIQD(grandTotalD) : grandTotalD);
   const cashRoundingAdj = effectiveTotalD.minus(grandTotalD); // ± (صفر إن لا تقريب)
-  const tendered = money(input.payment?.amount ?? "0");
+  const tendered = rawPaymentLegs.reduce(
+    (sum, leg) => sum.plus(round2(money(leg.amount))),
+    money(0),
+  );
+  const nonCashTenderedD = rawPaymentLegs.reduce(
+    (sum, leg) =>
+      leg.method === "CASH" ? sum : sum.plus(round2(money(leg.amount))),
+    money(0),
+  );
   // ش٤ (§٧.٢): المقبوض سلفاً (عرابين المسوّدة) يدخل الحساب **قبل** حرّاس الآجل/الائتمان —
   // هذا هو الترتيب الحاسم: لولاه لرُفض زبونٌ عابر سدّد عربوناً كاملاً بحجّة «البيع الآجل
   // يتطلب عميلاً» بينما ماله محبوسٌ في receipts (الحاصرة ١.١).
@@ -1360,17 +1408,18 @@ export async function createSaleInTx(
   // (والنقد الوهمي يظهر عجزاً بدرج الكاشير). الآن: التقريب يطبَّق على الإجمالي دائماً، لكن نعامل
   // البيع كمدفوعٍ بالكامل (paidNow = الإجمالي المقرّب) فقط إذا كان المُسلَّم يغطّي الإجمالي فعلاً؛
   // وإلا فهي دفعة جزئية ⇒ paidNow = المُسلَّم بالضبط والباقي ذمّة على العميل.
-  // تصحيح الفاتورة (0168): allowPreCollectedOverpay يرفع هذا الحارس الثاني أيضاً — overpay-down
-  // بلا دفعةٍ جديدة (method=undefined≠CASH) كان يُرمى هنا؛ paidNow يُقصَر على الإجمالي أدناه
-  // والفائض يُردّ/يُرصَّد في correctSale.
+  // في الدفعات المقسّمة: مجموع الدفعات غير النقدية (أو الإجمالي عند غياب النقد) لا يجوز أن يتجاوز الفاتورة.
   if (
     !input.allowPreCollectedOverpay &&
-    input.payment?.method !== "CASH" &&
-    preCollectedD.plus(tendered).gt(effectiveTotalD)
+    ((!hasCashLeg && preCollectedD.plus(tendered).gt(effectiveTotalD)) ||
+      (hasCashLeg && preCollectedD.plus(nonCashTenderedD).gt(effectiveTotalD)))
   ) {
+    const offendingAmount = hasCashLeg
+      ? preCollectedD.plus(nonCashTenderedD)
+      : preCollectedD.plus(tendered);
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: `المبلغ المدفوع (${preCollectedD.plus(tendered).toFixed(2)}) يتجاوز مستحق الفاتورة (${effectiveTotalD.toFixed(2)}).`,
+      message: `المبلغ المدفوع (${offendingAmount.toFixed(2)}) يتجاوز مستحق الفاتورة (${effectiveTotalD.toFixed(2)}).`,
     });
   }
   // الزيادة النقدية هي باقي للعميل، لا paidAmount ولا receipt ولا نقداً باقياً في الدرج.
@@ -1594,7 +1643,7 @@ export async function createSaleInTx(
     deliveryWaivedAmount: toDbMoney(isFreeDelivery ? waivedDelivery : money(0)),
     status,
     paidAmount: toDbMoney(paidNow),
-    paymentMethod: input.payment?.method ?? null,
+    paymentMethod: effectiveInvoicePaymentMethod,
     // paymentMode (٢٨/٨/٢٦، هجرة 0276): افتراضي PREPAID للحفاظ على السلوك الحاليّ لكلّ فاتورةٍ
     // بلا مسار COD صريح. يُمرَّر من `checkoutReception` عند طلب توصيلٍ نقديٍّ عند التسليم.
     // ⚠️ Codex #1006 P2 — COD يعني «تحصيلٌ عند التسليم»؛ فبيعٌ بتوصيلٍ **مدفوعٍ كاملاً** عند الإنشاء
@@ -1780,8 +1829,10 @@ export async function createSaleInTx(
     (input.sourceType === "ORDER" ||
       input.sourceType === "WORKORDER" ||
       ((input.sourceType ?? "POS") === "POS" &&
-        (((input.payment?.method === "CASH" ||
-          input.payment?.method === "CARD") &&
+        ((rawPaymentLegs.length > 0 &&
+          rawPaymentLegs.every(
+            (leg) => leg.method === "CASH" || leg.method === "CARD",
+          ) &&
           unpaid.lte(0)) ||
           (input.codDispatchPending === true &&
             input.openingSellUnavailableConfirmed === true) ||
@@ -2182,47 +2233,76 @@ export async function createSaleInTx(
   // 12. Payment + AR.
   //     ش٤ (I5): الإيصال والقيد للجزء **الجديد** وحده (newMoneyD) — المقبوض سلفاً له إيصاله
   //     وقيده منذ لحظة القبض (deposits.ts)، وإنشاء ثانٍ له = نقدٌ وهميّ يمنع إغلاق الوردية.
-  if (newMoneyD.gt(0)) {
-    const rRes = await tx.insert(receipts).values({
-      invoiceId,
-      branchId: input.branchId,
-      shiftId: input.shiftId ?? null,
-      // cashBucket=DRAWER للنقد (يدخل تسوية Z-report)، NULL لغير النقد (لا يَمسّ صندوقاً).
-      // مرآة لنمط voucherService — يَحرس مستقبلاً صيَغ reconcile/cashOrphans التي تَفلتر بـcashBucket.
-      cashBucket: input.payment!.method === "CASH" ? "DRAWER" : null,
-      direction: "IN",
-      amount: toDbMoney(newMoneyD),
-      paymentMethod: input.payment!.method,
-      referenceNumber: input.payment!.reference?.trim() || null,
-      status: "COMPLETED",
-      approvalStatus: "APPROVED",
-      createdBy: actor.userId,
-    });
-    const receiptId = extractInsertId(rRes);
-    const paymentRole = paymentAssetRole(
-      input.payment!.method,
-      input.payment!.method === "CASH" ? "DRAWER" : null,
-      "IN",
-    );
-    const paymentPostingSource = {
-      roleDebits: { [paymentRole]: newMoneyD },
-      roleCredits: { AR: newMoneyD },
-    };
-    await postEntry(tx, {
-      entryType: "PAYMENT_IN",
-      branchId: input.branchId,
-      invoiceId,
-      receiptId,
-      customerId: input.customerId ?? null,
-      amount: newMoneyD,
-      postingIntent: createPostingIntent(
-        "PAYMENT_IN_CUSTOMER",
-        "PAYMENT_IN",
-        [debitLine(paymentRole, newMoneyD), creditLine("AR", newMoneyD)],
-        paymentPostingSource,
-      ),
-      postingSourceComponents: paymentPostingSource,
-    });
+  //     في الدفعات المقسّمة (Split Payment): تُسجَّل الدفعات غير النقدية بمبالغها الدقيقة أوّلاً
+  //     من وعاء newMoneyD، ويُخصَّص المتبقي للدفعات النقدية (بحيث يذهب أيّ فائضٍ نقديّ كباقي للزبون
+  //     دون أن يدخل الدرج أو يمسّ مبلغ البطاقة/التحويل).
+  const createdReceiptIds: number[] = [];
+  if (newMoneyD.gt(0) && rawPaymentLegs.length > 0) {
+    let remainingNonCashBudget = newMoneyD.lt(nonCashTenderedD)
+      ? newMoneyD
+      : nonCashTenderedD;
+    const rawCashBudget = round2(newMoneyD.minus(remainingNonCashBudget));
+    let remainingCashBudget = rawCashBudget.gt(0) ? rawCashBudget : money(0);
+    for (const leg of rawPaymentLegs) {
+      const legTenderedD = round2(money(leg.amount));
+      if (legTenderedD.lte(0)) continue;
+      let legRecordedD: ReturnType<typeof money>;
+      if (leg.method === "CASH") {
+        legRecordedD = legTenderedD.lt(remainingCashBudget)
+          ? legTenderedD
+          : remainingCashBudget;
+        remainingCashBudget = round2(remainingCashBudget.minus(legRecordedD));
+      } else {
+        legRecordedD = legTenderedD.lt(remainingNonCashBudget)
+          ? legTenderedD
+          : remainingNonCashBudget;
+        remainingNonCashBudget = round2(
+          remainingNonCashBudget.minus(legRecordedD),
+        );
+      }
+      if (legRecordedD.lte(0)) continue;
+      const rRes = await tx.insert(receipts).values({
+        invoiceId,
+        branchId: input.branchId,
+        shiftId: input.shiftId ?? null,
+        // cashBucket=DRAWER للنقد (يدخل تسوية Z-report)، NULL لغير النقد (لا يَمسّ صندوقاً).
+        // مرآة لنمط voucherService — يَحرس مستقبلاً صيَغ reconcile/cashOrphans التي تَفلتر بـcashBucket.
+        cashBucket: leg.method === "CASH" ? "DRAWER" : null,
+        direction: "IN",
+        amount: toDbMoney(legRecordedD),
+        paymentMethod: leg.method,
+        referenceNumber: leg.reference?.trim() || null,
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+        createdBy: actor.userId,
+      });
+      const receiptId = extractInsertId(rRes);
+      createdReceiptIds.push(receiptId);
+      const paymentRole = paymentAssetRole(
+        leg.method,
+        leg.method === "CASH" ? "DRAWER" : null,
+        "IN",
+      );
+      const paymentPostingSource = {
+        roleDebits: { [paymentRole]: legRecordedD },
+        roleCredits: { AR: legRecordedD },
+      };
+      await postEntry(tx, {
+        entryType: "PAYMENT_IN",
+        branchId: input.branchId,
+        invoiceId,
+        receiptId,
+        customerId: input.customerId ?? null,
+        amount: legRecordedD,
+        postingIntent: createPostingIntent(
+          "PAYMENT_IN_CUSTOMER",
+          "PAYMENT_IN",
+          [debitLine(paymentRole, legRecordedD), creditLine("AR", legRecordedD)],
+          paymentPostingSource,
+        ),
+        postingSourceComponents: paymentPostingSource,
+      });
+    }
   }
   // إيصالات المقبوض سلفاً المُمرَّرة صراحةً تُختم بالفاتورة فقط (append-only — نمط deliver.ts).
   for (const preReceiptId of input.preCollected?.receiptIds ?? []) {
@@ -2352,6 +2432,8 @@ export async function createSaleInTx(
     shiftId: input.shiftId ?? null,
     total: toDbMoney(effectiveTotalD),
     status,
+    createdReceiptId: createdReceiptIds[0] ?? null,
+    createdReceiptIds,
     priceOverride: belowCost || manualDiscountGateTriggered,
     // هدايا الفاتورة: تكلفة ما أُهدي (للأثر التدقيقيّ في الراوتر — مَن أهدى وبكم).
     ...(giftCostD.gt(0) ? { giftCost: giftCostD.toFixed(2) } : {}),

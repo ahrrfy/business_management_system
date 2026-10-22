@@ -89,21 +89,15 @@ export const printPosRouter = router({
         isReservation: z.boolean().optional(),
         priceTier: tier.optional(),
         lines: z.array(lineSchema).min(1),
-        payment: z.object({
-          amount: nonNegMoneyString,
-          method,
-          externalPaymentAttemptId: z.number().int().positive().optional(),
-        }).optional(),
+        payment: z.object({ amount: nonNegMoneyString, method, externalPaymentAttemptId: z.number().int().positive().optional() }).optional(),
+        payments: z.array(z.object({ amount: positiveMoneyString, method, externalPaymentAttemptId: z.number().int().positive().optional() })).min(1).max(10).optional(),
         deviceId: z.string().trim().min(1).max(64).optional(),
         dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)").optional(),
         cashRoundIQD: z.boolean().optional(),
         clientRequestId: z.string().optional(),
         notes: z.string().optional(),
-        // موافقة مدير لتجاوز حدّ الائتمان (شارة باركود / PIN / بريد وكلمة مرور).
         managerApproval: managerApprovalSchema.optional(),
       }).superRefine((input, ctx) => {
-        // الإثبات = محاولة دفع خارجية مؤكَّدة خادمياً، لا نصٌّ يكتبه الكاشير. (الإقفال الشامل
-        // للطرق غير النقدية أُلغي في ١٦/٨/٢٦ — كان يعطّل بيع البطاقة كلّياً بلا مقابل نزاهةٍ إضافيّ.)
         const payAmt = Number(input.payment?.amount || 0);
         if (input.payment && payAmt > 0 && input.payment.method !== "CASH" && !input.payment.externalPaymentAttemptId) {
           ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["payment", "externalPaymentAttemptId"], message: "أكّد الدفع الخارجي قبل إتمام البيع" });
@@ -111,17 +105,23 @@ export const printPosRouter = router({
         if (input.payment?.method === "CASH" && input.payment.externalPaymentAttemptId != null) {
           ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["payment", "externalPaymentAttemptId"], message: "الدفع النقدي لا يحمل محاولة دفع خارجية" });
         }
+        const legs = input.payments ?? [];
+        for (let idx = 0; idx < legs.length; idx++) {
+          const leg = legs[idx]!;
+          if (leg.method !== "CASH" && !leg.externalPaymentAttemptId) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["payments", idx, "externalPaymentAttemptId"], message: "أكّد الدفع الخارجي قبل إتمام البيع" });
+          if (leg.method === "CASH" && leg.externalPaymentAttemptId != null) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["payments", idx, "externalPaymentAttemptId"], message: "الدفع النقدي لا يحمل محاولة دفع خارجية" });
+        }
       })
     )
     .mutation(async ({ input, ctx }) => {
-      // عزل الفرع: غير المدير يُجبَر على فرعه (لا يُصدَّق branchId القادم من العميل — منع IDOR).
-      // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران؛ المدير يبيع بفرعه المُسنَد فقط.
       const elevated = ctx.user.role === "admin";
       if (!elevated && ctx.user.branchId == null) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا الكاشير" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "لا فرع مُسنَد لهذا الكاشير",
+        });
       }
       const effectiveBranchId = elevated ? input.branchId : Number(ctx.user.branchId);
-      // role إلزامي: createPrintSale تفحص ملكية الوردية (SHIFT-OWN) وتُعفي admin/manager.
       const actor = { userId: ctx.user.id, branchId: effectiveBranchId, role: ctx.user.role };
       let approvedBy: number | null = null;
       const { managerApproval, ...saleInput } = input;
@@ -328,7 +328,7 @@ export const printPosRouter = router({
     .input(z.object({
       invoiceId: z.number().int().positive(),
       reason: z.string().trim().min(3, "اكتب سبب الإلغاء").max(500),
-      refundPaymentMethod: z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]).default("CASH"),
+      refundPaymentMethod: z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "MIXED"]).default("CASH"),
       reference: z.string().trim().min(1).max(100).optional(),
       clientRequestId: z.string().optional(),
     }))
@@ -407,7 +407,10 @@ export const printPosRouter = router({
 
       const res = await cancelSale({
         invoiceId: input.invoiceId,
-        refundPaymentMethod: input.refundPaymentMethod,
+        refundPaymentMethod:
+          inv.paymentMethod === "MIXED" && input.refundPaymentMethod === "CASH"
+            ? "MIXED"
+            : input.refundPaymentMethod,
         reference: input.reference ?? null,
         reason: input.reason,
         clientRequestId: input.clientRequestId,

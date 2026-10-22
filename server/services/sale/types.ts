@@ -17,6 +17,12 @@ export type PaymentMethod =
   | "WALLET"
   | "TELECOM";
 
+export interface PaymentLegInput {
+  amount: string;
+  method: PaymentMethod;
+  reference?: string | null;
+}
+
 export interface SaleLineInput {
   variantId: number;
   productUnitId: number;
@@ -100,11 +106,9 @@ export interface CreateSaleInput {
    */
   deliveryWaivedAmount?: string | null;
   taxRatePercent?: string | null;
-  payment?: {
-    amount: string;
-    method: PaymentMethod;
-    reference?: string | null;
-  } | null;
+  payment?: PaymentLegInput | null;
+  /** دفعات مقسّمة (Split / Mixed Payment): عند تمريرها تُنشئ كل رجلٍ إيصالاً وقيد PAYMENT_IN خاصّاً بها، وتُختم الفاتورة بـMIXED عند اختلاف طرق الدفع. */
+  payments?: PaymentLegInput[] | null;
   /** ش٤ (§٧.٢) — مالٌ قُبض **سلفاً** على هذه السلة (عرابين مسوّدة عبر orderPayments):
    *  يدخل paidAmount والذمّة، و**لا يُنشأ له إيصالٌ ثانٍ أبداً** (الإيصال الجديد للجزء
    *  المُسلَّم الآن وحده — I5). receiptIds إيصالاتٌ قائمة تُختم invoiceId فقط إن مُرّرت
@@ -280,6 +284,10 @@ export interface CreateSaleResult {
   /** م١ (PR-1): الإرسالية المُنشأة في معاملة البيع حين وُجد `input.delivery` (تعود أيضاً في replay). */
   consignmentId?: number;
   consignmentNumber?: string;
+  /** معرّف أول إيصال قبض أُنشئ في هذه المعاملة (للتوافق مع المستهلكين الأحاديين). */
+  createdReceiptId?: number | null;
+  /** معرّفات جميع إيصالات القبض المُنشأة في هذه المعاملة بترتيب أرجل الدفع. */
+  createdReceiptIds?: number[];
   /** كوبون العودة التلقائي (Bounce-Back Coupon) الصادر مع الفاتورة للزيارة القادمة */
   bounceBackCoupon?: {
     code: string;

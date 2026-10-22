@@ -15,6 +15,17 @@ export function invoiceDetailPrintData(data: NonNullable<RouterOutputs['sales'][
       String(data.taxAmount ?? "0"),
       afterDisc,
     );
+    const inPayments = (data.payments ?? []).filter(
+      (p) => p.direction === "IN" && p.status === "COMPLETED" && D(p.amount ?? "0").gt(0),
+    );
+    const paymentLegs =
+      inPayments.length > 1 || (data.paymentMethod === "MIXED" && inPayments.length > 0)
+        ? inPayments.map((p) => ({
+            method: paymentMethodLabel(p.paymentMethod),
+            amount: p.amount,
+            reference: p.referenceNumber ?? null,
+          }))
+        : null;
     return {
       invoiceNumber: data.invoiceNumber,
       invoiceDate: data.invoiceDate,
@@ -25,6 +36,7 @@ export function invoiceDetailPrintData(data: NonNullable<RouterOutputs['sales'][
       salespersonName: data.salespersonName,
       companyTaxId: companyTaxId,
       paymentMethod: paymentMethodLabel(data.paymentMethod),
+      paymentLegs,
       paymentMode: data.paymentMode,
       subtotal: data.subtotal,
       discountAmount: data.discountAmount,
