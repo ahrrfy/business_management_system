@@ -22,6 +22,8 @@ const {
   recoverPendingWebActivation,
   rollbackWebArtifact,
   snapshotWebArtifact,
+  assertRemoteCiGreenForDeploy,
+  evaluateDeployCiCheckRuns,
   verifyRollbackWebArtifactCompatibility,
 } = await import("./deploy.mjs");
 const {
@@ -914,6 +916,80 @@ try {
   }
 } finally {
   fs.rmSync(candidateRoot, { recursive: true, force: true });
+}
+
+{
+  const greenRuns = [
+    { name: "audit", status: "completed", conclusion: "success", event: "push", head_branch: "main" },
+    { name: "check-test-build", status: "completed", conclusion: "success", event: "push", head_branch: "main" },
+  ];
+  assert.deepEqual(evaluateDeployCiCheckRuns(greenRuns), {
+    ok: true,
+    code: "OK",
+    source: "head",
+  });
+  assert.deepEqual(
+    evaluateDeployCiCheckRuns([
+      ...greenRuns,
+      { name: "diagnose", status: "in_progress", conclusion: "", event: "push", head_branch: "main" },
+    ]),
+    {
+      ok: true,
+      code: "OK",
+      source: "head",
+    },
+  );
+  assert.equal(
+    evaluateDeployCiCheckRuns([
+      { name: "audit", status: "completed", conclusion: "success", event: "pull_request", head_branch: "fix/a" },
+      { name: "check-test-build", status: "completed", conclusion: "success", event: "pull_request", head_branch: "fix/a" },
+    ]).code,
+    "DEPLOY_CI_NOT_GREEN",
+  );
+  assert.equal(
+    evaluateDeployCiCheckRuns([
+      ...greenRuns,
+      { name: "test-shard-1-of-8", status: "in_progress", conclusion: "" },
+    ]).code,
+    "DEPLOY_CI_NOT_GREEN",
+  );
+  assert.equal(
+    evaluateDeployCiCheckRuns([
+      { name: "audit", status: "completed", conclusion: "success" },
+      { name: "test-shard-2-of-8", status: "completed", conclusion: "failure" },
+    ]).code,
+    "DEPLOY_CI_FAILED_ON_HEAD",
+  );
+  assert.equal(
+    evaluateDeployCiCheckRuns([
+      ...greenRuns,
+      { name: "authz-guard", status: "completed", conclusion: "startup_failure" },
+    ]).code,
+    "DEPLOY_CI_FAILED_ON_HEAD",
+  );
+  assert.equal(
+    evaluateDeployCiCheckRuns([
+      ...greenRuns,
+      { name: "authz-guard", status: "completed", conclusion: "stale" },
+    ]).code,
+    "DEPLOY_CI_FAILED_ON_HEAD",
+  );
+  assert.equal(
+    evaluateDeployCiCheckRuns([
+      { name: "audit", status: "completed", conclusion: "success" },
+    ]).code,
+    "DEPLOY_CI_NOT_GREEN",
+  );
+  await assert.rejects(
+    () =>
+      assertRemoteCiGreenForDeploy("deadbeef", {
+        env: {},
+        fetchRuns: async () => [
+          { name: "audit", status: "completed", conclusion: "success" },
+        ],
+      }),
+    (err) => err?.code === "DEPLOY_CI_NOT_GREEN",
+  );
 }
 
 console.log("deployment storefront-readiness contract test: OK");

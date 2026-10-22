@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# بوّابة الدفع الآمن (Safe Push Protocol)
+# تمنع الدفع المباشر إلى main، وتشغّل اختبارات الوحدة المتأثرة قبل مغادرة الجهاز.
+node scripts/safe-push-guard.mjs "$@"
