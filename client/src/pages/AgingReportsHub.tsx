@@ -4,7 +4,7 @@
 
 import { lazy, Suspense, useState } from "react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { PageHeader } from "@/components/PageHeader";
+import { PageHeader, EmbeddedPageHeaderProvider } from "@/components/PageHeader";
 import { ACTION_LABELS } from "@shared/actionLabels";
 
 const ARAging = lazy(() => import("./ARAging"));
@@ -40,26 +40,28 @@ export default function AgingReportsHub() {
         }
       />
 
-      {view === "summary" ? (
-        <Tabs defaultValue="ar" className="w-full">
-          <TabsList>
-            <TabsTrigger value="ar">مدينة (عملاء)</TabsTrigger>
-            <TabsTrigger value="ap">دائنة (موردون)</TabsTrigger>
-          </TabsList>
-          <TabsContent value="ar" className="mt-2">
-            <Suspense fallback={<TabFallback />}><ARAging /></Suspense>
-          </TabsContent>
-          <TabsContent value="ap" className="mt-2">
-            <Suspense fallback={<TabFallback />}><APAging /></Suspense>
-          </TabsContent>
-        </Tabs>
-      ) : (
-        // التفصيل المتداخل (AR+AP في صفحة واحدة بنداً-بنداً) — يستعمل ArApAgingDetail
-        // الذي لديه فلتر دور (مدينة/دائنة) داخلياً.
-        <div className="mt-2">
-          <Suspense fallback={<TabFallback />}><ArApAgingDetail /></Suspense>
-        </div>
-      )}
+      <EmbeddedPageHeaderProvider>
+        {view === "summary" ? (
+          <Tabs defaultValue="ar" className="w-full">
+            <TabsList>
+              <TabsTrigger value="ar">مدينة (عملاء)</TabsTrigger>
+              <TabsTrigger value="ap">دائنة (موردون)</TabsTrigger>
+            </TabsList>
+            <TabsContent value="ar" className="mt-2">
+              <Suspense fallback={<TabFallback />}><ARAging /></Suspense>
+            </TabsContent>
+            <TabsContent value="ap" className="mt-2">
+              <Suspense fallback={<TabFallback />}><APAging /></Suspense>
+            </TabsContent>
+          </Tabs>
+        ) : (
+          // التفصيل المتداخل (AR+AP في صفحة واحدة بنداً-بنداً) — يستعمل ArApAgingDetail
+          // الذي لديه فلتر دور (مدينة/دائنة) داخلياً.
+          <div className="mt-2">
+            <Suspense fallback={<TabFallback />}><ArApAgingDetail /></Suspense>
+          </div>
+        )}
+      </EmbeddedPageHeaderProvider>
     </div>
   );
 }

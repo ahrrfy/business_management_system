@@ -252,7 +252,7 @@ export default function APReminders() {
   }
 
   return (
-    <div className="space-y-4 p-4">
+    <div className="space-y-2.5">
       <PageHeader
         title="متابعة الذمم الدائنة"
         description="قائمة داخلية للموردين الذين ندين لهم منذ ≥٧ أيام. سجّل «تمّت المتابعة» أو حدّد موعد سداد — بلا مراسلة للمورد."
@@ -296,27 +296,23 @@ export default function APReminders() {
         </div>
       )}
 
-      {/* شريط الملخّص */}
+      {/* شريط الملخّص المدمج */}
       {tab === "queue" && queue.data && queue.data.length > 0 && (
-        <div className="grid gap-3 sm:grid-cols-3">
-          <Card>
-            <CardContent className="flex items-center justify-between p-4">
-              <span className="text-sm text-muted-foreground">موردون بحاجة متابعة</span>
-              <span className="text-xl font-bold tabular-nums">{queue.data.length}</span>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="flex items-center justify-between p-4">
-              <span className="text-sm text-muted-foreground">إجمالي المستحقّات علينا</span>
-              <span className="text-xl font-bold tabular-nums text-money-negative" dir="ltr">{fmtAmount(totalUnpaidSum)} د.ع</span>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="flex items-center justify-between p-4">
-              <span className="text-sm text-muted-foreground">أقدم تأخّر</span>
-              <span className="text-xl font-bold tabular-nums">{queue.data[0]?.daysOverdue ?? 0} يوماً</span>
-            </CardContent>
-          </Card>
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-xl border bg-muted/20 px-3.5 py-2 text-xs">
+          <div className="flex items-center gap-1.5">
+            <span className="text-muted-foreground">موردون بحاجة متابعة:</span>
+            <span className="font-extrabold tabular-nums">{queue.data.length}</span>
+          </div>
+          <span className="text-border">|</span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-muted-foreground">إجمالي المستحقّات علينا:</span>
+            <span className="font-extrabold tabular-nums text-money-negative" dir="ltr">{fmtAmount(totalUnpaidSum)} د.ع</span>
+          </div>
+          <span className="text-border">|</span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-muted-foreground">أقدم تأخّر:</span>
+            <span className="font-extrabold tabular-nums">{queue.data[0]?.daysOverdue ?? 0} يوماً</span>
+          </div>
         </div>
       )}
 

@@ -50,6 +50,8 @@ import {
   ShortcutsBar,
   SupplierInvoiceMatch,
   TermsAndNotes,
+  composeDocumentNotes,
+  splitDocumentNotes,
   TotalsPanel,
   calcLineTotal,
   calcTotals,
@@ -137,6 +139,7 @@ function stateFromOrder(
     };
   });
   const taxRate = String(order.taxRatePercent ?? "0");
+  const parsedNotes = splitDocumentNotes(order.notes);
   return {
     ...base,
     // رقم الأمر الحقيقيّ بدل رقمٍ مولَّد — الحقل للقراءة فقط في الرأس.
@@ -156,7 +159,9 @@ function stateFromOrder(
       return stored != null && Number(stored) > 0 ? String(stored) : "";
     })(),
     globalDiscountType: "amount",
-    notes: order.notes ?? "",
+    notes: parsedNotes.notes,
+    terms: parsedNotes.terms,
+    poReference: parsedNotes.poReference,
     taxEnabled: Number(taxRate) > 0,
     taxRatePercent: taxRate,
     items,
@@ -179,6 +184,8 @@ function editorFingerprint(
     globalDiscount: state.globalDiscount,
     globalDiscountType: state.globalDiscountType,
     notes: state.notes,
+    terms: state.terms,
+    poReference: state.poReference,
     taxEnabled: state.taxEnabled,
     taxRatePercent: state.taxRatePercent,
     shippingCost,
@@ -470,7 +477,11 @@ export default function PurchaseEdit() {
       taxRatePercent: state.taxEnabled
         ? round2(D(state.taxRatePercent || "0")).toFixed(2)
         : "0",
-      notes: state.notes.trim() || undefined,
+      notes: composeDocumentNotes({
+        notes: state.notes,
+        terms: state.terms,
+        poReference: state.poReference,
+      }),
       agreedCurrency: state.currency,
       // نظير createOrder: لا نُرسل usdTotal — الخادم يشتقّه من البنود بترتيب تقريبٍ محدَّد،
       // وإرسالُ إجماليٍّ مشتقٍّ من أسعارٍ كاملة الدقّة يُفشل حارسَ المطابقة بفرق تقريبٍ بحت.
@@ -535,6 +546,7 @@ export default function PurchaseEdit() {
       customsCost,
       notes: state.notes,
       terms: state.terms,
+      poReference: state.poReference,
       supplierName: data.supplierName ?? "—",
       items: state.items,
       docTotals: {

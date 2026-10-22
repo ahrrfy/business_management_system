@@ -32,7 +32,7 @@ import {
   Check,
   ArrowRightLeft,
 } from "lucide-react";
-import { PageHeader } from "@/components/PageHeader";
+import { PageHeader, EmbeddedPageHeaderProvider } from "@/components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/data-table/DataTable";
@@ -545,20 +545,22 @@ export default function UnifiedCommissionsHub() {
         </button>
       </div>
 
-      {/* قسم (1): تشغيل واحتساب العمولات */}
-      <div className={activeView === "runs" ? "block space-y-3" : "hidden"}>
-        <CommissionRuns />
-      </div>
+      <EmbeddedPageHeaderProvider>
+        {/* قسم (1): تشغيل واحتساب العمولات */}
+        <div className={activeView === "runs" ? "block space-y-3" : "hidden"}>
+          <CommissionRuns />
+        </div>
 
-      {/* قسم (2): الأهداف الشهرية */}
-      <div className={activeView === "targets" ? "block space-y-3" : "hidden"}>
-        <CommissionTargets />
-      </div>
+        {/* قسم (2): الأهداف الشهرية */}
+        <div className={activeView === "targets" ? "block space-y-3" : "hidden"}>
+          <CommissionTargets />
+        </div>
 
-      {/* قسم (3): خطط العمولات */}
-      <div className={activeView === "plans" ? "block space-y-3" : "hidden"}>
-        <CommissionPlans />
-      </div>
+        {/* قسم (3): خطط العمولات */}
+        <div className={activeView === "plans" ? "block space-y-3" : "hidden"}>
+          <CommissionPlans />
+        </div>
+      </EmbeddedPageHeaderProvider>
 
       {/* قسم (4): إسناد صالة العرض والمبيعات */}
       <div

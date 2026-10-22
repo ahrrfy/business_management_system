@@ -66,6 +66,8 @@ import {
   TotalsPanel,
   ActionButtons,
   TermsAndNotes,
+  composeDocumentNotes,
+  splitDocumentNotes,
   ShortcutsBar,
   invoiceReducer,
   createInitialState,
@@ -194,7 +196,11 @@ export default function SalesInvoice() {
       dispatch({ type: "SET_FIELD", field: "shipping", value: String(d.deliveryFee),
       });
     }
-    if (d.notes) dispatch({ type: "SET_FIELD", field: "notes", value: d.notes });
+    if (d.notes) {
+      const parsedNotes = splitDocumentNotes(d.notes);
+      dispatch({ type: "SET_FIELD", field: "notes", value: parsedNotes.notes });
+      if (parsedNotes.terms) dispatch({ type: "SET_FIELD", field: "terms", value: parsedNotes.terms });
+    }
     const dueYmd = toYmdUtc(d.dueDate);
     if (dueYmd) dispatch({ type: "SET_FIELD", field: "dueDate", value: dueYmd });
     // نفس تحويل duplicateInvoice: بنود الفاتورة → InvoiceLine حرفياً (الكمية كاملةً — مصدر التصحيح).
@@ -645,7 +651,7 @@ export default function SalesInvoice() {
           ? state.dueDate
           : undefined,
       clientRequestId,
-      notes: state.notes.trim() || undefined,
+      notes: composeDocumentNotes({ notes: state.notes, terms: state.terms }),
       ...(approval ? { managerApproval: approval } : {}),
     };
   }
@@ -772,7 +778,7 @@ export default function SalesInvoice() {
       externalPaymentAttemptId: settlement.paymentMethod === "CARD" ? externalAttempt?.attemptId ?? undefined : undefined,
       externalPaymentDeviceId: settlement.paymentMethod === "CARD" ? externalAttempt?.deviceId ?? undefined : undefined,
       cartFingerprint: clientRequestId, customerId: state.entityId ?? undefined, priceTier: state.tier,
-      dueDate: state.paymentTerms === "CREDIT" && state.dueDate ? state.dueDate : undefined, notes: state.notes.trim() || undefined, sourceType: "INVOICE",
+      dueDate: state.paymentTerms === "CREDIT" && state.dueDate ? state.dueDate : undefined, notes: composeDocumentNotes({ notes: state.notes, terms: state.terms }), sourceType: "INVOICE",
       sourcePayload, regularLines: regular.map(toDigitalPrepareRegularLine), lines: digitalLines.map((c) => toDigitalPrepareLine(c.digital!)), ...(managerApproval ? { managerApproval } : {}),
     });
   }
@@ -956,8 +962,8 @@ export default function SalesInvoice() {
   // لاعتبار الفاتورة "قيد الإدخال" — يعترض تحديث/إغلاق التبويب فقط (beforeunload)، أما Esc/F12
   // الداخليان فيُحرَسان أدناه بتأكيدٍ صريح (وليس هذا الهوك، الذي لا يعترض تنقّل SPA الداخلي).
   const isDirty = useMemo(
-    () => state.items.length > 0 || state.entityId != null || state.notes.trim() !== "",
-    [state.items, state.entityId, state.notes],
+    () => state.items.length > 0 || state.entityId != null || state.notes.trim() !== "" || Boolean(state.terms?.trim()),
+    [state.items, state.entityId, state.notes, state.terms],
   );
   useUnsavedGuard(isDirty);
 
@@ -1084,7 +1090,7 @@ export default function SalesInvoice() {
       // قد يُحفَظ تصحيحٌ ظنّاً أنّه فاتورة جديدة (يُلغي الأصل!). حلقةٌ عنبريّة حول الجذر
       // تجعل الوضع لا يُخطئ للحظة.
       className={cn(
-        "flex h-full flex-col gap-2",
+        "flex flex-col gap-2",
         isCorrection && "rounded-lg ring-2 ring-[var(--sem-warn)]/40",
       )}
     >
@@ -1133,9 +1139,9 @@ export default function SalesInvoice() {
         </div>
       )}
 
-      {/* البنية الأساسية: جدول البنود + لوحة الإجماليات والإجراءات */}
-      <div className="flex min-h-0 flex-1 flex-col gap-2.5 xl:flex-row">
-        <div className="flex min-w-0 flex-1 flex-col gap-2">
+      {/* البنية الأساسية: جدول البنود + لوحة الإجماليات والإجراءات — تدفّق طبيعي بلا حبس ارتفاع */}
+      <div className="flex flex-col gap-2.5 xl:flex-row xl:items-start">
+        <div className="flex min-w-0 flex-1 flex-col gap-2 h-[62vh] min-h-[380px] print:h-auto print:min-h-fit">
           <ProductTable
             items={state.items}
             dispatch={dispatch}

@@ -76,18 +76,18 @@ export function TotalsPanel({
     }
   }, [cashOnlyPayment, dispatch, state.paymentMethod]);
 
-  const rowCls = "flex items-center justify-between py-1.5";
-  const labelCls = "text-sm font-semibold text-muted-foreground";
+  const rowCls = "flex items-center justify-between py-1";
+  const labelCls = "text-xs font-semibold text-muted-foreground";
   const valueCls = "text-sm font-bold";
 
   return (
-    <section className="overflow-hidden rounded-xl border bg-card">
-      <header className="flex items-center gap-2 border-b bg-muted px-4 py-2.5">
-        <Calculator aria-hidden className="size-5" />
-        <span className="text-sm font-extrabold">ملخص المبالغ</span>
+    <section className="shrink-0 overflow-hidden rounded-xl border bg-card">
+      <header className="flex items-center gap-2 border-b bg-muted px-3.5 py-2">
+        <Calculator aria-hidden className="size-4" />
+        <span className="text-xs font-extrabold">ملخص المبالغ</span>
       </header>
 
-      <div className="px-4 py-2.5">
+      <div className="px-3.5 py-2">
         {/* Subtotal */}
         <div className={rowCls}>
           <span className={labelCls}>المجموع الفرعي</span>
@@ -251,29 +251,29 @@ export function TotalsPanel({
         )}
 
         {/* Grand total */}
-        <div className="mt-1 flex items-center justify-between py-3">
-          <span className="text-base font-extrabold">الإجمالي النهائي</span>
+        <div className="mt-1 flex items-center justify-between py-2">
+          <span className="text-sm font-extrabold">الإجمالي النهائي</span>
           <div className="flex items-baseline gap-1.5">
-            <span className="text-3xl font-extrabold leading-none tracking-tight text-primary" dir="ltr">
+            <span className="text-2xl font-extrabold leading-none tracking-tight text-primary" dir="ltr">
               {fmtNum(effectiveGrandTotal)}
             </span>
-            <span className="text-sm font-semibold text-muted-foreground">{currSym}</span>
+            <span className="text-xs font-semibold text-muted-foreground">{currSym}</span>
           </div>
         </div>
       </div>
 
       {/* Payment section — يُخفى في شاشات تحفظ الدفع في مكان آخر (استلام الشراء) أو عبر مفتاح مخصّص (تسوية المرتجع) */}
       {showPayment && (
-      <div className="border-t-2 px-4 py-3">
-        <div className="mb-2 flex items-center gap-1.5 text-xs font-extrabold">
-          <CreditCard aria-hidden className="size-4" /> الدفع
+      <div className="border-t-2 px-3.5 py-2.5">
+        <div className="mb-1.5 flex items-center gap-1.5 text-xs font-extrabold">
+          <CreditCard aria-hidden className="size-3.5" /> الدفع
         </div>
 
         {state.paymentTerms === "CREDIT" ? (
-          <div className="flex items-center gap-2 rounded-lg border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-3.5 py-3 text-[var(--sem-warn)]">
-            <Lock aria-hidden className="size-5" />
+          <div className="flex items-center gap-2 rounded-lg border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-3 py-2 text-[var(--sem-warn)]">
+            <Lock aria-hidden className="size-4 shrink-0" />
             <div>
-              <div className="text-sm font-extrabold">دفع آجل (ذمة)</div>
+              <div className="text-xs font-extrabold">دفع آجل (ذمة)</div>
               <div className="mt-0.5 text-[11px] text-muted-foreground">
                 المبلغ الكامل سيُسجَّل كذمة على {state.entityId ? "الحساب المحدد" : "العميل/المورد"}
               </div>
@@ -281,8 +281,8 @@ export function TotalsPanel({
           </div>
         ) : (
           <>
-            {/* Payment method buttons */}
-            <div className="mb-2.5 flex flex-wrap gap-1.5">
+            {/* Payment method buttons — 4-column grid so all 4 options stay on one row without clipping */}
+            <div className="mb-2 grid grid-cols-2 sm:grid-cols-4 gap-1">
               {PAYMENT_METHODS.map((m) => {
                 const active = state.paymentMethod === m.value;
                 const enabled = !cashOnlyPayment || isPosPaymentMethodEnabled(m.value);
@@ -298,7 +298,7 @@ export function TotalsPanel({
                     aria-describedby={!enabled ? "invoice-external-payment-disabled" : undefined}
                     title={enabled ? m.label : POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
                     className={cn(
-                      "flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-bold transition",
+                      "flex items-center justify-center gap-1 rounded-lg border px-1.5 py-1.5 text-[11px] font-bold transition",
                       "outline-none focus-visible:ring-2 focus-visible:ring-ring",
                       active
                         ? "border-primary bg-primary/10 text-primary"
@@ -307,33 +307,33 @@ export function TotalsPanel({
                           : "cursor-not-allowed border-input bg-muted/40 text-muted-foreground/45",
                     )}
                   >
-                    {(() => { const MIcon = m.icon; return <MIcon aria-hidden className="size-4" />; })()}
-                    {m.label}
+                    {(() => { const MIcon = m.icon; return <MIcon aria-hidden className="size-3.5 shrink-0" />; })()}
+                    <span className="truncate">{m.label}</span>
                   </button>
                 );
               })}
             </div>
             {cashOnlyPayment && (
-              <p id="invoice-external-payment-disabled" className="mb-2 text-[10px] leading-relaxed text-muted-foreground">
+              <p id="invoice-external-payment-disabled" className="mb-1.5 text-[10px] leading-relaxed text-muted-foreground">
                 {POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
               </p>
             )}
 
             {/* Paid amount */}
-            <div className="mb-2 flex flex-wrap items-center gap-2">
+            <div className="mb-1 flex items-center gap-2">
               <span className="shrink-0 text-xs font-semibold text-muted-foreground">المدفوع:</span>
               <div className="flex min-w-0 flex-1 items-center gap-1.5">
                 <MoneyInput
                   value={state.paidAmount || ""}
                   placeholder={String(effectiveGrandTotal)}
                   onChange={(value) => dispatch({ type: "SET_FIELD", field: "paidAmount", value })}
-                  className="h-9 min-w-0 flex-1 text-center text-sm font-extrabold"
+                  className="h-8 min-w-0 flex-1 text-center text-sm font-extrabold"
                 />
                 <Button
                   type="button"
                   size="sm"
                   variant="outline"
-                  className="h-9 shrink-0 border-primary bg-primary/10 text-primary"
+                  className="h-8 shrink-0 border-primary bg-primary/10 px-2.5 text-xs font-bold text-primary"
                   onClick={() => dispatch({ type: "SET_FIELD", field: "paidAmount", value: effectiveGrandTotal })}
                 >
                   الكل

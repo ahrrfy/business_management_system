@@ -243,17 +243,16 @@ export default function StocktakeRemaining() {
         }
       />
 
-      <div className="grid gap-3 sm:grid-cols-3">
-        <Card className="gap-1 p-4">
-          <p className="text-xs font-semibold text-muted-foreground">المتبقي وفق الفلتر</p>
-          <p className="text-3xl font-bold text-primary tabular-nums" dir="ltr">{fmtInt(total)}</p>
-        </Card>
-        <Card className="gap-1 p-4 sm:col-span-2">
-          <p className="text-sm font-bold">كشف توجيه جاهز للعمال</p>
-          <p className="text-xs text-muted-foreground">
-            ابحث بالاسم أو SKU أو الباركود، أو اختر العامل/المنطقة، ثم اطبع الكشف أو صدّره. لا يظهر فيه أي رصيد دفتري.
-          </p>
-        </Card>
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-xl border bg-muted/20 px-3.5 py-2 text-xs">
+        <div className="flex items-center gap-1.5">
+          <span className="text-muted-foreground">المتبقي وفق الفلتر:</span>
+          <span className="font-extrabold text-primary tabular-nums" dir="ltr">{fmtInt(total)}</span>
+        </div>
+        <span className="text-border">|</span>
+        <div className="flex items-center gap-1.5 text-muted-foreground">
+          <span className="font-semibold text-foreground">كشف توجيه جاهز للعمال:</span>
+          <span>ابحث بالاسم أو SKU أو الباركود، أو اختر العامل/المنطقة، ثم اطبع الكشف أو صدّره (لا يظهر فيه أي رصيد دفتري).</span>
+        </div>
       </div>
 
       <Card className="gap-0 py-0">

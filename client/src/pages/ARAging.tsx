@@ -325,7 +325,7 @@ export default function ARAging() {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         title="أعمار الذمم المدينة — لنا على العملاء"
         description={
@@ -430,7 +430,7 @@ export default function ARAging() {
       />
 
       <Card>
-        <CardContent className="flex flex-wrap items-end gap-3 pt-6">
+        <CardContent className="flex flex-wrap items-end gap-2.5 p-2.5">
           {canCrossBranches && (
             <FilterField label="الفرع" className="w-44">
               <AppSelect value={f.branch} onValueChange={(v) => setF({ branch: v })}>
@@ -470,7 +470,7 @@ export default function ARAging() {
       </Card>
 
       <Card>
-        <CardContent className="pt-6 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3 text-sm">
+        <CardContent className="p-2.5 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-2 text-xs">
           <Bucket label="0–30 يوم" value={totals.d0_30} color="bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" />
           <Bucket label="31–60 يوم" value={totals.d31_60} color="bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" />
           <Bucket label="61–90 يوم" value={totals.d61_90} color="bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" />
