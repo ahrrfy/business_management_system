@@ -269,6 +269,7 @@ export default function CommissionPlans() {
 
   return (
     <div className="space-y-2.5">
+      <CommissionGuide />
       <Card>
         <CardHeader>
           <ListToolbar
@@ -276,7 +277,7 @@ export default function CommissionPlans() {
             pageTitle
             actions={
               <div className="flex flex-wrap items-center gap-1.5">
-                <CommissionGuide />
+                {/* CommissionGuide rendered full-width above Card */}
                 {canManageAssignments && (
                   <Button size="sm" variant="outline" onClick={() => setAssignOpen(true)} disabled={!commissionAccess.can("commissions.plans.assignmentBoard")}>
                     <Users className="size-4" /> ربط موظفي النطاق بالخطط

@@ -22,6 +22,8 @@ const {
   recoverPendingWebActivation,
   rollbackWebArtifact,
   snapshotWebArtifact,
+  assertRemoteCiGreenForDeploy,
+  evaluateDeployCiCheckRuns,
   verifyRollbackWebArtifactCompatibility,
 } = await import("./deploy.mjs");
 const {
@@ -914,6 +916,53 @@ try {
   }
 } finally {
   fs.rmSync(candidateRoot, { recursive: true, force: true });
+}
+
+{
+  const greenRuns = [
+    { name: "audit", status: "completed", conclusion: "success" },
+    { name: "check-test-build", status: "completed", conclusion: "success" },
+  ];
+  assert.deepEqual(evaluateDeployCiCheckRuns(greenRuns), {
+    ok: true,
+    code: "OK",
+    source: "head",
+  });
+  assert.deepEqual(
+    evaluateDeployCiCheckRuns(
+      [{ name: "test-shard-1-of-8", status: "in_progress", conclusion: "" }],
+      greenRuns,
+    ),
+    {
+      ok: true,
+      code: "OK",
+      source: "merged_pr_head",
+    },
+  );
+  assert.equal(
+    evaluateDeployCiCheckRuns([
+      { name: "audit", status: "completed", conclusion: "success" },
+      { name: "test-shard-2-of-8", status: "completed", conclusion: "failure" },
+    ]).code,
+    "DEPLOY_CI_FAILED_ON_HEAD",
+  );
+  assert.equal(
+    evaluateDeployCiCheckRuns([
+      { name: "audit", status: "completed", conclusion: "success" },
+    ]).code,
+    "DEPLOY_CI_NOT_GREEN",
+  );
+  await assert.rejects(
+    () =>
+      assertRemoteCiGreenForDeploy("deadbeef", {
+        env: {},
+        fetchRuns: async () => [
+          { name: "audit", status: "completed", conclusion: "success" },
+        ],
+        getSecondParent: () => null,
+      }),
+    (err) => err?.code === "DEPLOY_CI_NOT_GREEN",
+  );
 }
 
 console.log("deployment storefront-readiness contract test: OK");

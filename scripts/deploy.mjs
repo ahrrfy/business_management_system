@@ -1995,6 +1995,118 @@ function makeActivationOperations(
   };
 }
 
+export function evaluateDeployCiCheckRuns(headCheckRuns, parent2CheckRuns = null) {
+  const normalize = (runs) =>
+    Array.isArray(runs)
+      ? runs.map((r) => ({
+          name: String(r?.name ?? "").trim(),
+          status: String(r?.status ?? "").toLowerCase(),
+          conclusion: String(r?.conclusion ?? "").toLowerCase(),
+        }))
+      : [];
+
+  const head = normalize(headCheckRuns);
+  const failedOnHead = head.filter(
+    (r) =>
+      r.name !== "CI Failure Diagnostics" &&
+      r.status === "completed" &&
+      ["failure", "timed_out", "action_required", "cancelled"].includes(r.conclusion),
+  );
+  if (failedOnHead.length > 0) {
+    return {
+      ok: false,
+      code: "DEPLOY_CI_FAILED_ON_HEAD",
+      failedChecks: failedOnHead.map((r) => r.name),
+    };
+  }
+
+  const hasRequiredGreen = (runs) => {
+    const byName = new Map(runs.map((r) => [r.name, r]));
+    const gate = byName.get("check-test-build");
+    const audit = byName.get("audit");
+    const anyFailed = runs.some(
+      (r) =>
+        r.name !== "CI Failure Diagnostics" &&
+        r.status === "completed" &&
+        ["failure", "timed_out", "action_required"].includes(r.conclusion),
+    );
+    return (
+      !anyFailed &&
+      gate?.status === "completed" &&
+      gate?.conclusion === "success" &&
+      audit?.status === "completed" &&
+      audit?.conclusion === "success"
+    );
+  };
+
+  if (hasRequiredGreen(head)) {
+    return { ok: true, code: "OK", source: "head" };
+  }
+
+  if (parent2CheckRuns != null) {
+    const parent2 = normalize(parent2CheckRuns);
+    if (hasRequiredGreen(parent2)) {
+      return { ok: true, code: "OK", source: "merged_pr_head" };
+    }
+  }
+
+  return {
+    ok: false,
+    code: "DEPLOY_CI_NOT_GREEN",
+  };
+}
+
+async function fetchCommitCheckRuns(sha) {
+  const response = await fetch(
+    `https://api.github.com/repos/ahrrfy/business_management_system/commits/${encodeURIComponent(sha)}/check-runs?per_page=100`,
+    {
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": "alroya-erp-safe-deploy-gate",
+      },
+      signal: AbortSignal.timeout(15_000),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`DEPLOY_CI_STATUS_FETCH_FAILED:${response.status}`);
+  }
+  const payload = await response.json();
+  return Array.isArray(payload?.check_runs) ? payload.check_runs : [];
+}
+
+function resolveMergeSecondParent(sha) {
+  const res = spawnSync("git", ["rev-parse", "--verify", "--quiet", `${sha}^2`], {
+    cwd: PROJECT_ROOT,
+    encoding: "utf8",
+  });
+  return res.status === 0 ? res.stdout.trim() : null;
+}
+
+export async function assertRemoteCiGreenForDeploy(
+  expectedHead,
+  {
+    env = process.env,
+    fetchRuns = fetchCommitCheckRuns,
+    getSecondParent = resolveMergeSecondParent,
+  } = {},
+) {
+  if (env?.SKIP_DEPLOY_CI_GATE === "1") {
+    console.warn("⚠️ تم تجاوز بوابة فحص CI عن بُعد بطلب صريح (SKIP_DEPLOY_CI_GATE=1).");
+    return { ok: true, code: "SKIPPED" };
+  }
+  const headRuns = await fetchRuns(expectedHead);
+  const secondParent = getSecondParent(expectedHead);
+  const parent2Runs = secondParent ? await fetchRuns(secondParent) : null;
+  const verdict = evaluateDeployCiCheckRuns(headRuns, parent2Runs);
+  if (!verdict.ok) {
+    throw codedError(verdict.code, new Error(verdict.code));
+  }
+  console.log(
+    `   بوابة CI خضراء (${verdict.source === "merged_pr_head" ? `رأس PR المدموج ${secondParent.slice(0, 9)}` : expectedHead.slice(0, 9)}).`,
+  );
+  return verdict;
+}
+
 function step(label, action) {
   console.log(`\n▶ ${label}…`);
   return action();
@@ -2053,6 +2165,9 @@ async function deploy(expectedHead) {
       throw codedError("NGINX_LIVE_CONTRACT_DRIFT", error);
     }
   });
+  await step("0.5/12 التحقق من اخضرار بوابة CI والأمان على GitHub", () =>
+    assertRemoteCiGreenForDeploy(expectedHead),
+  );
   const releaseLock = releaseTools.acquireDeploymentLock(PROJECT_ROOT);
   try {
     const initialState = releaseTools.readState(PROJECT_ROOT);
@@ -2386,6 +2501,30 @@ async function dispatch() {
     runControlEnvironmentSelftest();
     return;
   }
+  if (mode === "--selftest-ci-gate") {
+    const green = [
+      { name: "audit", status: "completed", conclusion: "success" },
+      { name: "check-test-build", status: "completed", conclusion: "success" },
+    ];
+    if (
+      !evaluateDeployCiCheckRuns(green).ok ||
+      !evaluateDeployCiCheckRuns(
+        [{ name: "test-shard-1-of-8", status: "in_progress", conclusion: "" }],
+        green,
+      ).ok ||
+      evaluateDeployCiCheckRuns([
+        { name: "audit", status: "completed", conclusion: "success" },
+        { name: "test-shard-2-of-8", status: "completed", conclusion: "failure" },
+      ]).code !== "DEPLOY_CI_FAILED_ON_HEAD" ||
+      evaluateDeployCiCheckRuns([
+        { name: "audit", status: "completed", conclusion: "success" },
+      ]).code !== "DEPLOY_CI_NOT_GREEN"
+    ) {
+      throw new Error("DEPLOY_CI_GATE_SELFTEST_FAILED");
+    }
+    console.log("deploy ci-gate selftest: OK");
+    return;
+  }
   if (mode === "--selftest-prepull-guard") {
     if (directory || rest.length > 0) {
       throw new Error("HR_BRIDGE_PREPULL_GUARD_SELFTEST_ARGUMENTS_INVALID");
@@ -2509,6 +2648,11 @@ function reportDeploymentFailure(error) {
   if (code === "DEPLOY_IDENTITY_INVALID") {
     console.error(
       "   نفّذ: sudo -iu deploy bash -lc 'cd /home/deploy/erp && pnpm prod:deploy'",
+    );
+  }
+  if (code === "DEPLOY_CI_NOT_GREEN" || code === "DEPLOY_CI_FAILED_ON_HEAD") {
+    console.error(
+      "   أُوقف النشر لأن الالتزام على origin/main لم يجتز بوابتي check-test-build وaudit باللون الأخضر بعد.",
     );
   }
   if (code === "NGINX_LIVE_CONTRACT_DRIFT") {

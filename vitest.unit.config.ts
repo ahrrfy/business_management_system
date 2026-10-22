@@ -557,6 +557,9 @@ export default defineConfig({
       "server/services/__tests__/triggersAndStateMachinesRegression.test.ts",
       "server/services/__tests__/omnichannelCouponEngine.unit.test.ts",
       "client/src/components/promotions/__tests__/promotionBuilder.unit.test.ts",
+      "client/src/components/pos/DigitalFulfillmentDialog.test.tsx",
+      "client/src/pages/__tests__/posPaymentFailClosed.test.ts",
+      "scripts/__tests__/safeDeliveryProtocols.test.ts",
     ],
   },
 });

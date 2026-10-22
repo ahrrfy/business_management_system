@@ -105,6 +105,8 @@
     "audit:financial-actors": "node scripts/audit-financial-actor-provenance.mjs",
     "audit:grni": "node scripts/audit-grni-integrity.mjs",
     "prod:deploy": "node scripts/deploy.mjs",
+    "pr:merge": "node scripts/safe-merge.mjs",
+    "push:guard": "node scripts/safe-push-guard.mjs",
     "nginx:repair": "node scripts/install-nginx-contract.mjs",
     "test:nginx-contract": "node scripts/nginx-contract.test.mjs && node scripts/deploy.test.mjs",
     "db:reset": "node scripts/reset.mjs",
