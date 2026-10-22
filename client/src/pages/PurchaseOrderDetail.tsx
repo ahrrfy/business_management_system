@@ -317,7 +317,7 @@ export default function PurchaseOrderDetail() {
         : [
             { label: "المجموع قبل الضريبة (د.ع)", value: fmtAr(d.subtotal) },
             ...(D(d.invoiceDiscount ?? 0).gt(0)
-              ? [{ label: "خصم فاتورة المورّد (د.ع)", value: `− ${fmtAr(d.invoiceDiscount)}` }]
+              ? [{ label: "خصم فاتورة المورّد (مطبَّق)", value: `− ${fmtAr(d.invoiceDiscount)}` }]
               : []),
             ...(D(d.taxAmount ?? 0).gt(0)
               ? [{ label: "الضريبة (د.ع)", value: fmtAr(d.taxAmount) }]

@@ -22,6 +22,7 @@ import { useLocation } from "wouter";
 import { selectClsSm } from "@/lib/ui/formStyles";
 import { Printer } from "lucide-react";
 import { printReportDoc } from "@/lib/printing/reportDoc";
+import { D } from "@/lib/money";
 
 
 function initials(name?: string | null): string {
@@ -188,6 +189,13 @@ export default function AssetRegister() {
   const filtersActive = activeFilterCount > 0 || f.q.trim() !== "";
 
   function onPrintRegister() {
+    if (rows.length === 0) return;
+    const totalCost = rows.reduce((acc, r) => acc.add(D(r.purchaseValue ?? 0)), D(0));
+    const totalOpeningDep = rows.reduce((acc, r) => acc.add(D((r as any).openingDepreciation ?? 0)), D(0));
+    const totalAccumulated = rows.reduce((acc, r) => acc.add(D(r.accumulated ?? 0)), D(0));
+    const totalSystemDep = totalAccumulated.sub(totalOpeningDep);
+    const totalBookValue = rows.reduce((acc, r) => acc.add(D(r.bookValue ?? 0)), D(0));
+
     printReportDoc({
       title: "سجلّ الأصول الثابتة والإهلاك",
       orientation: "landscape",
@@ -195,6 +203,8 @@ export default function AssetRegister() {
         { label: "الفئة", value: f.category ? assetCategoryLabel(f.category as any) : "كل الفئات" },
         { label: "الفرع", value: f.branchId ? (opts.data?.branches.find((b) => String(b.id) === f.branchId)?.name ?? f.branchId) : "كل الفروع" },
         { label: "الحالة", value: f.status ? assetStatusLabel(f.status as any) : "كل الحالات" },
+        { label: "يشمل المُستبعَد", value: f.includeDisposed === "1" ? "نعم" : "لا" },
+        ...(f.q.trim() ? [{ label: "البحث", value: f.q.trim() }] : []),
       ],
       columns: [
         { key: "code", label: "الرمز" },
@@ -220,15 +230,13 @@ export default function AssetRegister() {
         bookValue: iqd(r.bookValue),
         status: assetStatusLabel(r.status),
       })),
-      summary: report.data?.kpis
-        ? [
-            { label: "إجمالي التكلفة التاريخية", value: `${iqd(report.data.kpis.totalCost)} د.ع` },
-            { label: "إهلاك ما قبل النظام", value: `${iqd(report.data.kpis.totalOpeningDepreciation)} د.ع` },
-            { label: "إهلاك النظام المرحل", value: `${iqd(report.data.kpis.totalSystemDepreciation)} د.ع` },
-            { label: "إجمالي مجمع الإهلاك", value: `${iqd(report.data.kpis.totalAccumulatedDepreciation)} د.ع` },
-            { label: "صافي القيمة الدفترية", value: `${iqd(report.data.kpis.totalNetBookValue)} د.ع`, large: true, bold: true },
-          ]
-        : undefined,
+      summary: [
+        { label: "إجمالي التكلفة التاريخية", value: `${iqd(totalCost.toFixed(2))} د.ع` },
+        { label: "إهلاك ما قبل النظام", value: `${iqd(totalOpeningDep.toFixed(2))} د.ع` },
+        { label: "إهلاك النظام المرحل", value: `${iqd(totalSystemDep.toFixed(2))} د.ع` },
+        { label: "إجمالي مجمع الإهلاك", value: `${iqd(totalAccumulated.toFixed(2))} د.ع` },
+        { label: "صافي القيمة الدفترية", value: `${iqd(totalBookValue.toFixed(2))} د.ع`, large: true, bold: true },
+      ],
     });
   }
 

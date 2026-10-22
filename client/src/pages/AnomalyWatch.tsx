@@ -358,6 +358,26 @@ export default function AnomalyWatch() {
           flaggedCount: fmtAr(aw.kpis.fundedStaleDrafts),
           detail: "لقطة حاضرة لعربون محتجز",
         },
+        {
+          detector: "تركّز التسديد على فواتير الغير",
+          flaggedCount: fmtAr(aw.kpis.flaggedOthersCollectors),
+          detail: "قبض متكرّر على فواتير أنشأها موظف آخر",
+        },
+        {
+          detector: "خفض إجمالي طلبٍ بعد قبض عربونه",
+          flaggedCount: fmtAr(aw.kpis.flaggedFundedReducers),
+          detail: "مرّات خفض إجمالي الطلب بعد قبض العربون",
+        },
+        {
+          detector: "عُهد توصيل متقادمة",
+          flaggedCount: fmtAr(aw.kpis.flaggedDeliveryCustody),
+          detail: "لقطة راهنة لعُهد مناديب/شركات توصيل متأخرة",
+        },
+        {
+          detector: "توريدات توصيل بعجز متكرّر",
+          flaggedCount: fmtAr(aw.kpis.flaggedDeliveryShortRemits),
+          detail: "جهات توصيل بتوريدات ناقصة متكرّرة",
+        },
       ],
       summary: kpis.slice(0, 6).map((k, idx, arr) => ({
         label: k.label,
@@ -377,6 +397,7 @@ export default function AnomalyWatch() {
       onExport={onExport}
       onPrint={onPrint}
       exportDisabled={!aw}
+      printDisabled={!aw || q.isLoading || q.isError}
       filters={
         <div className="flex flex-wrap items-end gap-3">
           <PeriodFilter value={period} onChange={setPeriod} />

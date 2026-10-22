@@ -263,13 +263,15 @@ export default function ReportsOverview() {
           sourceErrors={alerts.data?.sourceErrors}
         />
 
-        <div className="space-y-2">
-          <h2 className="flex items-center gap-2 text-sm font-semibold text-muted-foreground">
-            <AlertTriangle className="size-4 text-stock-low" aria-hidden />
-            ما يحتاج انتباهك الآن
-          </h2>
-          <AlertsPanel alerts={nonRadarAlerts} loading={alerts.isLoading} />
-        </div>
+        {(alerts.isLoading || nonRadarAlerts.length > 0 || (alerts.data?.alerts.length ?? 0) === 0) && (
+          <div className="space-y-2">
+            <h2 className="flex items-center gap-2 text-sm font-semibold text-muted-foreground">
+              <AlertTriangle className="size-4 text-stock-low" aria-hidden />
+              ما يحتاج انتباهك الآن
+            </h2>
+            <AlertsPanel alerts={nonRadarAlerts} loading={alerts.isLoading} />
+          </div>
+        )}
       </section>
 
       {/* ③ من المتأخر؟ — لوحتا صدارة */}

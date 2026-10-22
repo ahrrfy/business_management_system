@@ -53,7 +53,7 @@ export function StatCard({ label, value, sub, icon: Icon, tone = "default", onCl
         <div className={cn("text-sm font-bold tabular-nums leading-snug", TONE_TEXT_CLASS[tone])} dir="auto">
           {typeof value === "string" || typeof value === "number" ? <LiveValue value={value} /> : value}
         </div>
-        {sub && <div className="text-[10px] text-muted-foreground leading-tight truncate">{sub}</div>}
+        {sub && <div className="text-[10px] text-muted-foreground leading-tight">{sub}</div>}
       </CardContent>
     </Card>
   );

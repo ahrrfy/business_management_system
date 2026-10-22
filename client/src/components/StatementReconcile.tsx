@@ -45,16 +45,20 @@ export function StatementReconcile({ entityName, entityType, phone, currentBalan
             <span className="opacity-70 text-[11px] me-1">{dirLabel}:</span>
             <span className="font-bold">{fmt(Math.abs(num))}</span>
           </div>
-          <span className="text-muted-foreground hidden lg:inline">
-            أرسِل الرصيد الحالي لـ{isCustomer ? "العميل" : "المورد"} لتأكيد المطابقة، مع إرفاق كشف PDF تفصيلي.
+          <span className="text-[11px] text-muted-foreground">
+            احفظ كشف الـPDF أولاً ثم أرفِقه يدوياً بعد فتح واتساب.
           </span>
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
-          <Button variant="outline" size="sm" className="h-7 text-xs" onClick={onPdf} title="اطبع ثم اختر «حفظ كـ PDF» واحفظ الملف">
+          <Button variant="outline" size="sm" className="h-7 text-xs gap-1.5" onClick={onPdf} title="اطبع ثم اختر «حفظ كـ PDF» واحفظ الملف">
+            <span className="inline-flex size-4 items-center justify-center rounded-full bg-muted text-[10px] font-bold">١</span>
             كشف PDF للإرفاق
           </Button>
-          <WhatsAppShare phone={phone} message={msg} label="إرسال طلب المطابقة" />
+          <span className="inline-flex items-center gap-1">
+            <span className="inline-flex size-4 items-center justify-center rounded-full bg-muted text-[10px] font-bold">٢</span>
+            <WhatsAppShare phone={phone} message={msg} label="إرسال طلب المطابقة" />
+          </span>
           <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={copy}>
             نسخ نص الرسالة
           </Button>

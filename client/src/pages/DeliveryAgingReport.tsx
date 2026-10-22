@@ -117,6 +117,7 @@ export default function DeliveryAgingReport() {
   }
 
   function onPrint() {
+    if (!rows.length) return;
     printReportDoc({
       title: "أعمار الإرساليات المفتوحة",
       orientation: "landscape",
@@ -167,7 +168,8 @@ export default function DeliveryAgingReport() {
       kpis={kpis}
       onExport={onExport}
       onPrint={onPrint}
-      exportDisabled={!rows.length}
+      exportDisabled={!rows.length || q.isLoading || q.isError}
+      printDisabled={!rows.length || q.isLoading || q.isError}
       filters={
         <div className="flex flex-wrap items-end gap-4">
           <div className="flex flex-col gap-1">

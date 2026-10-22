@@ -288,14 +288,30 @@ export default function TrialBalance() {
 
   function onPrint() {
     if (!report) return;
+    const isIncomplete =
+      report.unmappedCount > 0 || report.unmappedAccountRoles.length > 0;
+    const incompleteNote = isIncomplete
+      ? `تنبيه: التقرير غير مكتمل للاعتماد — ${report.openingUnmappedCount} فجوة قبل الفترة تؤثر في موثوقية الافتتاح، و${report.periodUnmappedCount} فجوة داخل الفترة${
+          report.unmappedAccountRoles.length > 0
+            ? `، و${report.unmappedAccountRoles.length} دور محاسبي بلا حساب مربوط`
+            : ""
+        }.`
+      : undefined;
     printReportDoc({
       title: "ميزان المراجعة — الدفتر المزدوج",
       orientation: "landscape",
+      note: incompleteNote,
       headerExtra: [
         { label: "الفترة", value: `${period.from} — ${period.to}` },
         { label: "الفرع", value: branchLabel },
         { label: "وضع الدفتر", value: report.mode },
         { label: "التوازن", value: report.totals.isBalanced ? "متوازن" : `فرق ${fmtAr(report.totals.closingDifference)} د.ع` },
+        {
+          label: "حالة الاكتمال",
+          value: isIncomplete
+            ? `غير مكتمل للاعتماد (فجوات: ${report.unmappedCount})`
+            : "مكتمل",
+        },
       ],
       columns: [
         { key: "code", label: "الرمز" },
@@ -335,6 +351,7 @@ export default function TrialBalance() {
       onExport={onExport}
       onPrint={onPrint}
       exportDisabled={!report}
+      printDisabled={!report || q.isLoading || q.isError}
       filters={
         <div className="flex flex-wrap items-end gap-3">
           <PeriodFilter
