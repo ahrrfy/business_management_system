@@ -326,7 +326,8 @@ function doesTestImportSourceFile(
     }
   }
 
-  if (/\breadFile(?:Sync)?\b/.test(collapsed)) {
+  if (/\b(?:readFile|readdir)(?:Sync)?\b/.test(collapsed)) {
+    const testDir = path.posix.dirname(testRelPath.replace(/\\/g, "/"));
     const sourceBase = path.posix.basename(sourceNormalized);
     const isGenericIndex = /^index\.[^.]+$/i.test(sourceBase);
     const fileLiteralRe =
@@ -341,6 +342,47 @@ function doesTestImportSourceFile(
       if (
         !isGenericIndex &&
         (cleaned === sourceBase || sourceNormalized.endsWith(`/${cleaned}`))
+      ) {
+        return true;
+      }
+    }
+
+    const baseDirs = new Set([testDir]);
+    if (path.posix.basename(testDir) === "__tests__") {
+      baseDirs.add(path.posix.dirname(testDir));
+    }
+    const templatePrefixRe = /`((?:\.\.?\/)+[A-Za-z0-9_./-]*)\$\{/g;
+    let tm;
+    while ((tm = templatePrefixRe.exec(collapsed)) !== null) {
+      const resolvedBase = path.posix
+        .normalize(path.posix.join(testDir, tm[1]))
+        .replace(/\/+$/, "");
+      if (resolvedBase && resolvedBase !== ".") {
+        baseDirs.add(resolvedBase);
+      }
+    }
+
+    for (const baseDir of baseDirs) {
+      const prefix = baseDir ? `${baseDir}/` : "";
+      if (!prefix || !sourceNormalized.startsWith(prefix)) continue;
+      const relWithExt = sourceNormalized.slice(prefix.length);
+      const relNoExt =
+        sourceNoExt && sourceNoExt.startsWith(prefix)
+          ? sourceNoExt.slice(prefix.length)
+          : "";
+      if (
+        collapsed.includes(`"${relWithExt}"`) ||
+        collapsed.includes(`'${relWithExt}'`) ||
+        collapsed.includes(`\`${relWithExt}\``)
+      ) {
+        return true;
+      }
+      if (
+        relNoExt &&
+        path.posix.basename(relNoExt) !== "index" &&
+        (collapsed.includes(`"${relNoExt}"`) ||
+          collapsed.includes(`'${relNoExt}'`) ||
+          collapsed.includes(`\`${relNoExt}\``))
       ) {
         return true;
       }
@@ -690,17 +732,18 @@ export function runSafePushSelftest() {
       },
     ],
     unitConfigText:
-      'include: ["client/src/components/PageTabs.test.tsx", "client/src/components/reception/ReceptionDuplicateAlert.test.tsx"]',
+      'include: ["client/src/components/PageTabs.test.tsx", "client/src/components/reception/ReceptionDuplicateAlert.test.tsx", "client/src/components/ui/layering.test.ts"]',
     runDiff: () => ({
       status: 0,
       stdout:
-        "client/src/pages/DeliveryCenter.tsx\nclient/src/components/reception/ReceptionDuplicateAlert.css\n",
+        "client/src/pages/DeliveryCenter.tsx\nclient/src/components/reception/ReceptionDuplicateAlert.css\nclient/src/components/ui/select.tsx\n",
     }),
     fileExists: () => true,
   });
   assert.deepEqual(readByTest, [
     "client/src/components/PageTabs.test.tsx",
     "client/src/components/reception/ReceptionDuplicateAlert.test.tsx",
+    "client/src/components/ui/layering.test.ts",
   ]);
 
   // Verify fail-closed when origin/main comparison fails
