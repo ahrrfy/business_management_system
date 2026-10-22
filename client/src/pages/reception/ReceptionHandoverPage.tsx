@@ -34,6 +34,7 @@ import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/p
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { cn } from "@/lib/utils";
 import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
+import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 
 const PAYMENT_METHODS = [
   { v: "CASH", label: "نقدي", icon: Banknote },
@@ -491,8 +492,9 @@ export default function ReceptionHandoverPage() {
                       <span className="text-xs font-bold text-muted-foreground">
                         طريقة تحصيل المتبقي:
                       </span>
-                      <span className="text-xs font-extrabold text-foreground">
-                        {paymentMethodLabel(method)}
+                      <span className="inline-flex items-center gap-1.5 text-xs font-extrabold text-foreground">
+                        {method === "CARD" && <CardBrandLogos size="xs" />}
+                        <span>{paymentMethodLabel(method)}</span>
                       </span>
                     </div>
 
@@ -522,7 +524,11 @@ export default function ReceptionHandoverPage() {
                                   : "cursor-not-allowed bg-muted/40 text-muted-foreground/45",
                             )}
                           >
-                            <Icon aria-hidden className="size-5" />
+                            {p.v === "CARD" ? (
+                              <CardBrandLogos size="sm" />
+                            ) : (
+                              <Icon aria-hidden className="size-5" />
+                            )}
                             <span>{p.label}</span>
                           </button>
                         );
@@ -562,7 +568,11 @@ export default function ReceptionHandoverPage() {
                         </>
                       ) : (
                         <>
-                          <CreditCard aria-hidden className="me-1 inline size-3.5" />
+                          {method === "CARD" ? (
+                            <CardBrandLogos size="xs" className="me-1 align-middle" />
+                          ) : (
+                            <ArrowLeftRight aria-hidden className="me-1 inline size-3.5" />
+                          )}
                           يُسجَّل على <span className="font-bold">وردية #{shift?.id}</span> للمحاسبة والمطابقة — لا يدخل درج النقد.
                         </>
                       )}

@@ -11,6 +11,7 @@ import { exportRows } from "@/lib/export";
 import { fmtDate } from "@/lib/date";
 import { sourceTypeLabel } from "@/lib/labels";
 import { INVOICE_FILTER_METHODS, METHOD_LABEL, paymentMethodLabel, type InvoiceFilterMethod } from "@/lib/paymentMethod";
+import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 import { printSalesReportV2 } from "@/lib/printing/printTemplatesV2";
 import { D, fmtAr, formatQuantity } from "@/lib/money";
 import { canSeeCost } from "@shared/permissions";
@@ -91,7 +92,15 @@ const invoiceColumns: ColumnDef<ReportRow, unknown>[] = [
   {
     accessorKey: "paymentMethod",
     header: "طريقة الدفع",
-    cell: (c) => payMethodOf(c.getValue() as string | null),
+    cell: (c) => {
+      const m = c.getValue() as string | null;
+      return (
+        <span className="inline-flex items-center gap-1.5">
+          {m === "CARD" && <CardBrandLogos size="xs" />}
+          <span>{payMethodOf(m)}</span>
+        </span>
+      );
+    },
   },
   {
     accessorKey: "subtotal",

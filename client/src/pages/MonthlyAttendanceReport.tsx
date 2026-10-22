@@ -78,30 +78,30 @@ export default function MonthlyAttendanceReport() {
       cell: ({ row }) => <span className="text-muted-foreground">{row.original.department ?? "—"}</span>,
       meta: { kind: "text" },
     },
-    { id: "scheduledHours", header: "مقرَّر", accessorFn: (r) => Number(r.scheduledHours), cell: ({ row }) => h2(row.original.scheduledHours), meta: { kind: "number" } },
+    { id: "scheduledHours", header: "دوام الشهر (جدول)", accessorFn: (r) => Number(r.scheduledHours), cell: ({ row }) => h2(row.original.scheduledHours), meta: { kind: "number" } },
     {
-      id: "payableHours", header: "مستحقّ",
+      id: "payableHours", header: "صافي الساعات المحتسَبة",
       accessorFn: (r) => Number(r.payableHours),
       cell: ({ row }) => <span className="font-medium">{h2(row.original.payableHours)}</span>,
       footer: () => (d ? h2(d.totals.payableHours) : null),
       meta: { kind: "number" },
     },
     {
-      id: "absentDays", header: "غياب",
+      id: "absentDays", header: "أيام غياب",
       accessorFn: (r) => Number(r.absentDays),
       cell: ({ row }) => row.original.absentDays || "—",
       footer: () => (d ? (d.totals.absentDays || "—") : null),
       meta: { kind: "number" },
     },
     {
-      id: "overtimeHours", header: "إضافيّ",
+      id: "overtimeHours", header: "ساعات إضافي",
       accessorFn: (r) => Number(r.overtimeHours),
       cell: ({ row }) => Number(row.original.overtimeHours) > 0 ? h2(row.original.overtimeHours) : "—",
       footer: () => (d ? h2(d.totals.overtimeHours) : null),
       meta: { kind: "number" },
     },
     {
-      id: "restWorkedHours", header: "يوم راحة",
+      id: "restWorkedHours", header: "عمل يوم راحة",
       accessorFn: (r) => Number(r.restWorkedHours),
       cell: ({ row }) => Number(row.original.restWorkedHours) > 0 ? h2(row.original.restWorkedHours) : "—",
       footer: () => (d ? h2(d.totals.restWorkedHours) : null),
@@ -109,7 +109,7 @@ export default function MonthlyAttendanceReport() {
     },
     { id: "hourlyRate", header: "سعر الساعة", accessorFn: (r) => Number(r.hourlyRate), cell: ({ row }) => iqd(row.original.hourlyRate), meta: { kind: "money" } },
     {
-      id: "totalDue", header: "المستحقّ",
+      id: "totalDue", header: "إجمالي الأجر المستحقّ",
       accessorFn: (r) => Number(r.totalDue),
       cell: ({ row }) => (
         <div className="font-bold">
@@ -130,7 +130,7 @@ export default function MonthlyAttendanceReport() {
       meta: { kind: "money" },
     },
     {
-      id: "reviewDays", header: "تصحيح",
+      id: "reviewDays", header: "بانتظار مراجعة",
       accessorFn: (r) => Number(r.reviewDays),
       cell: ({ row }) => row.original.reviewDays > 0
         ? <span className="font-medium text-[var(--sem-warn)]">{row.original.reviewDays}</span>
@@ -144,10 +144,10 @@ export default function MonthlyAttendanceReport() {
     <div className="space-y-4">
       <PageHeader
         title="تقرير الحضور الشهريّ"
-        description="صفٌّ لكل موظف — الساعات المقرَّرة والمستحقّة والغياب والإضافيّ والمستحقّ. يُحسب بنواة مسيّر الرواتب نفسها."
+        description="ملخّص شامل لكل موظف — ساعات جدول الدوام، صافي الساعات المحتسَبة، الغياب، الإضافي، وإجمالي الأجر المستحقّ قبل توليد مسيّر الرواتب."
         actions={
           <Button asChild variant="outline" size="sm">
-            <Link href="/hr/attendance"><CalendarDays className="size-4" /> سجلّ الحضور</Link>
+            <Link href="/hr/attendance"><CalendarDays className="size-4" /> سجلّ الحضور اليومي</Link>
           </Button>
         }
       />
@@ -203,7 +203,7 @@ export default function MonthlyAttendanceReport() {
                 title: `تقرير الحضور الشهريّ — ${monthLabel(d.period)}`,
                 meta: [
                   { label: "الموظفون", value: String(d.totals.employees) },
-                  { label: "ساعات مستحقّة", value: d.totals.payableHours },
+                  { label: "صافي الساعات المحتسَبة", value: d.totals.payableHours },
                   { label: "العمل الإضافي", value: d.totals.overtimeHours },
                   { label: "أيام غياب", value: String(d.totals.absentDays) },
                 ],
@@ -212,9 +212,9 @@ export default function MonthlyAttendanceReport() {
                   { key: "position", header: "الوظيفة", map: (r: any) => r.position ?? "" },
                   { key: "department", header: "القسم", map: (r: any) => r.department ?? "" },
                   { key: "branchName", header: "الفرع", map: (r: any) => r.branchName ?? "" },
-                  { key: "scheduledHours", header: "ساعات مقرَّرة" },
-                  { key: "payableHours", header: "ساعات مستحقّة" },
-                  { key: "unpaidHours", header: "ساعات غير مستحقّة" },
+                  { key: "scheduledHours", header: "دوام الشهر (جدول)" },
+                  { key: "payableHours", header: "صافي الساعات المحتسَبة" },
+                  { key: "unpaidHours", header: "ساعات غير مدفوعة (نقص/غياب)" },
                   { key: "absentDays", header: "أيام غياب" },
                   { key: "unpaidLeaveDays", header: "إجازة بلا راتب" },
                   { key: "overtimeHours", header: "العمل الإضافي (ساعة)" },
@@ -222,7 +222,7 @@ export default function MonthlyAttendanceReport() {
                   { key: "hourlyRate", header: "سعر الساعة", money: true },
                   { key: "basePay", header: "الأجر الأساس", money: true },
                   { key: "overtimePay", header: "أجر الإضافيّ", money: true },
-                  { key: "totalDue", header: "المستحقّ", money: true },
+                  { key: "totalDue", header: "إجمالي الأجر المستحقّ", money: true },
                   // مصدرُ الرقم يرافقه في الملف: جدولٌ يخلط أرقاماً مجمَّدة بأخرى حيّة بلا
                   // تمييز يُقرأ كأنه صفٌّ واحد، وفرقُ شهرٍ مصروفٍ عن مسيّره يُقرأ خطأً.
                   {
@@ -239,7 +239,7 @@ export default function MonthlyAttendanceReport() {
                               ? "راتب ثابت"
                               : "احتساب الحضور",
                   },
-                  { key: "reviewDays", header: "أيام يحتاج تصحيح" },
+                  { key: "reviewDays", header: "أيام بانتظار مراجعة" },
                 ],
                 totalsRow: { totalDue: Number(d.totals.totalDue), overtimeHours: Number(d.totals.overtimeHours), absentDays: d.totals.absentDays },
               })}

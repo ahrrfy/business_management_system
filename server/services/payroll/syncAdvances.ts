@@ -42,21 +42,26 @@ export async function syncAllAdvancesForDraftRunTx(tx: Tx, runId: number): Promi
       money(item.socialSecurityEmployee).plus(money(item.incomeTax)),
     );
     const wageReduction = money(item.wageReduction);
+    const oldAdvance = money(item.advanceDeduction);
+    const manualExtraDeduction = Decimal.max(
+      0,
+      round2(money(item.deductions).minus(oldAdvance).minus(statutoryDeduction).minus(wageReduction)),
+    );
     const grossEarned = round2(
       money(item.gross).plus(money(item.overtime)).plus(money(item.commission)),
     );
     const absorbableWage = Decimal.max(
       0,
-      round2(grossEarned.minus(wageReduction).minus(statutoryDeduction)),
+      round2(grossEarned.minus(wageReduction).minus(statutoryDeduction).minus(manualExtraDeduction)),
     );
 
     const newAdvanceDeduction = round2(Decimal.min(suggestedAdvance, absorbableWage));
 
     // مزامنة بالزيادة فقط: التقاط السلف النشطة المضافة/غير المشمولة تلقائياً
     // وإن نقص الرصيد (إلغاء سلفة) يُترك ليرمي CONFLICT صريحاً عند الاعتماد منعاً للتعديل الصامت
-    if (newAdvanceDeduction.gt(money(item.advanceDeduction))) {
+    if (newAdvanceDeduction.gt(oldAdvance)) {
       const newDeductions = round2(
-        newAdvanceDeduction.plus(statutoryDeduction).plus(wageReduction),
+        newAdvanceDeduction.plus(statutoryDeduction).plus(wageReduction).plus(manualExtraDeduction),
       );
       const newNet = computeNet(
         money(item.gross),
@@ -100,6 +105,7 @@ export async function autoSyncEmployeeAdvanceToDraftPayrollTx(
       gross: payrollItems.gross,
       overtime: payrollItems.overtime,
       commission: payrollItems.commission,
+      deductions: payrollItems.deductions,
       wageReduction: payrollItems.wageReduction,
       advanceDeduction: payrollItems.advanceDeduction,
       socialSecurityEmployee: payrollItems.socialSecurityEmployee,
@@ -122,19 +128,24 @@ export async function autoSyncEmployeeAdvanceToDraftPayrollTx(
       money(item.socialSecurityEmployee).plus(money(item.incomeTax)),
     );
     const wageReduction = money(item.wageReduction);
+    const oldAdvance = money(item.advanceDeduction);
+    const manualExtraDeduction = Decimal.max(
+      0,
+      round2(money(item.deductions).minus(oldAdvance).minus(statutoryDeduction).minus(wageReduction)),
+    );
     const grossEarned = round2(
       money(item.gross).plus(money(item.overtime)).plus(money(item.commission)),
     );
     const absorbableWage = Decimal.max(
       0,
-      round2(grossEarned.minus(wageReduction).minus(statutoryDeduction)),
+      round2(grossEarned.minus(wageReduction).minus(statutoryDeduction).minus(manualExtraDeduction)),
     );
 
     const newAdvanceDeduction = round2(Decimal.min(suggestedAdvance, absorbableWage));
 
-    if (newAdvanceDeduction.gt(money(item.advanceDeduction))) {
+    if (newAdvanceDeduction.gt(oldAdvance)) {
       const newDeductions = round2(
-        newAdvanceDeduction.plus(statutoryDeduction).plus(wageReduction),
+        newAdvanceDeduction.plus(statutoryDeduction).plus(wageReduction).plus(manualExtraDeduction),
       );
       const newNet = computeNet(
         money(item.gross),

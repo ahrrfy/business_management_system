@@ -55,15 +55,15 @@ const h2 = (v: string | number) => Number(v).toFixed(2);
 export function printMonthlyAttendance(d: MonthlyAttendanceData): boolean {
   const header = pageHeader(
     {
-      title: "تقرير الحضور الشهريّ",
-      subtitle: "الساعات المقرَّرة والمستحقّة والغياب والإضافيّ والمستحقّ — لكل الموظفين",
+      title: "تقرير الحضور والدوام الشهريّ",
+      subtitle: "ملخّص شامل لجميع الموظفين — الساعات المطلوبة، الساعات المدفوعة، أيام الغياب والإجازات، الإضافي، وصافي المستحقّ",
       fields: [
         { label: "الشهر", value: d.period },
         { label: "عدد الموظفين", value: String(d.totals.employees) },
       ],
       badge:
         d.totals.reviewDays > 0
-          ? { label: `${d.totals.reviewDays} يوم يحتاج تصحيح`, color: "#B7791F" }
+          ? { label: `${d.totals.reviewDays} يوم يحتاج مراجعة`, color: "#B7791F" }
           : { label: "مكتمل", color: "#0D6B52" },
     },
     d.settings,
@@ -73,15 +73,15 @@ export function printMonthlyAttendance(d: MonthlyAttendanceData): boolean {
     [
       { key: "name", label: "الموظف", width: 150 },
       { key: "dept", label: "القسم", width: 88 },
-      { key: "sched", label: "مقرَّر", width: 58 },
-      { key: "payable", label: "مستحقّ", width: 62, emphasize: true },
+      { key: "sched", label: "ساعات مطلوبة", width: 62 },
+      { key: "payable", label: "ساعات مدفوعة", width: 64, emphasize: true },
       { key: "absent", label: "غياب", width: 46 },
-      { key: "leave", label: "بلا راتب", width: 56 },
-      { key: "ot", label: "إضافيّ", width: 54 },
-      { key: "rest", label: "يوم راحة", width: 58 },
+      { key: "leave", label: "إجازة بلا راتب", width: 58 },
+      { key: "ot", label: "عمل إضافي", width: 56 },
+      { key: "rest", label: "عمل يوم عطلة", width: 58 },
       { key: "rate", label: "سعر الساعة", width: 76 },
-      { key: "due", label: "المستحقّ", width: 92, emphasize: true },
-      { key: "rev", label: "تصحيح", width: 50 },
+      { key: "due", label: "صافي المستحقّ", width: 92, emphasize: true },
+      { key: "rev", label: "للمراجعة", width: 50 },
     ],
     d.rows.map((r) => ({
       name: r.employeeName,
@@ -101,10 +101,10 @@ export function printMonthlyAttendance(d: MonthlyAttendanceData): boolean {
 
   const summary = `<div style="margin-top:8px;display:flex;gap:10px;flex-wrap:wrap">
     ${[
-      ["ساعات مستحقّة", h2(d.totals.payableHours)],
-      ["أوفر تايم", h2(d.totals.overtimeHours)],
-      ["عمل أيام الراحة", h2(d.totals.restWorkedHours)],
-      ["أيام غياب", String(d.totals.absentDays)],
+      ["إجمالي الساعات المدفوعة", h2(d.totals.payableHours)],
+      ["إجمالي الساعات الإضافية (أوفر تايم)", h2(d.totals.overtimeHours)],
+      ["ساعات عمل أيام العطلة", h2(d.totals.restWorkedHours)],
+      ["إجمالي أيام الغياب", String(d.totals.absentDays)],
     ]
       .map(
         ([l, v]) => `<div style="flex:1;min-width:110px;border:1px solid #D9DDD8;border-radius:4px;padding:5px 8px">
@@ -115,12 +115,11 @@ export function printMonthlyAttendance(d: MonthlyAttendanceData): boolean {
       .join("")}
   </div>`;
 
-  const grand = grandTotalBar("إجمالي المستحقّ عن الشهر", fmt(d.totals.totalDue), { big: true });
+  const grand = grandTotalBar("إجمالي الأجور المستحقّة عن الشهر", fmt(d.totals.totalDue), { big: true });
   const tafqit = tafqitLine(formatArabicMoneyWords(d.totals.totalDue));
 
   const note = `<div style="margin-top:10px;font-size:9.75px;color:#8B8E89">
-    يُحتسب هذا التقرير بنواة مسيّر الرواتب نفسها ⇒ أرقامه مطابقة لكشف كل موظف ولما يُدفع فعلاً.
-    وهو بيانُ احتسابٍ لا سند صرف — الصرف عبر المسيّر الشهريّ باعتماده المزدوج.
+    يُحتسب هذا التقرير بنفس معادلة مسيّر الرواتب المعتمدة — فأرقامه مطابقة لكشف كل موظف ولما يُدفع فعلياً عند الصرف.
   </div>`;
 
   const body = `${pageBodyOpen()}${header}${table}${summary}${grand}${tafqit}${note}${pageBodyClose()}${pageFooter(

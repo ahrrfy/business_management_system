@@ -1,5 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, eq, getTableColumns, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { appErrorMessage } from "@shared/errors";
+import { payrollItemNeedsAttention } from "@shared/hr";
 import {
   commissionRuns,
   employeePenalties,
@@ -98,6 +100,17 @@ export async function approveRun(id: number, actor: Actor) {
       throw new TRPCError({
         code: "CONFLICT",
         message: "عدد بنود المسيّر لا يطابق رأسه — أعد توليده.",
+      });
+    }
+    const flaggedItem = items.find((item) => payrollItemNeedsAttention(item.note));
+    if (flaggedItem) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "لا يمكن اعتماد المسيّر",
+          why: `لوجود بصمات حضور مفتوحة (دخول بلا انصراف) لم تُحسم بعد للموظف #${flaggedItem.employeeId}`,
+          doThis: "صحّح أوقات الانصراف وأعد توليد المسودة قبل الاعتماد.",
+        }),
       });
     }
     const terminationCoverage = decodeTerminationWageCoverage(run.notes, run.period);

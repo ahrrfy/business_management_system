@@ -540,3 +540,20 @@ describe("الساعات غير المستحقّة تُقاس على نافذة 
     expect(r.unpaidHours).toBe("16.00");
   });
 });
+
+describe("توحيد تسعير dayRates لموظفي الساعة والجدول (قرار المالك ٢٢/١٠)", () => {
+  it("يقرأ أسعار الساعة من dayRates للموظف الساعي (payType=hourly) حتى عند salary=0", () => {
+    const att = new Map<string, ReturnType<typeof D>>([["2026-07-05", D(8)]]); // الأحد
+    const r = base({
+      salary: D(0),
+      payType: "hourly",
+      dayRates: { الأحد: 6000, الاثنين: 6000, الثلاثاء: 6000, الأربعاء: 6000, الخميس: 6000, السبت: 6000 },
+      attendedHoursByDate: att,
+    });
+    expect(r.hourlyRate).toBe("6000.00");
+    expect(r.basePay).toBe("48000.00");
+    const sun = r.days.find((d) => d.date === "2026-07-05");
+    expect(sun?.rate).toBe("6000.00");
+    expect(sun?.amount).toBe("48000.00");
+  });
+});

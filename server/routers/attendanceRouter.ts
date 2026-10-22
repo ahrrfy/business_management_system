@@ -167,10 +167,15 @@ export const attendanceRouter = router({
         hours: z.number().min(0).max(24),
         checkIn: timeStr.nullish(),
         checkOut: timeStr.nullish(),
+        checkOutDate: dateStr.nullish(),
         status: z.enum(["PRESENT", "ABSENT", "LATE", "LEAVE"]).optional(),
         // الإدخال العام يدوي حصراً؛ "fingerprint" لا يأتي إلا من تكامل الجهاز الخادمي.
         source: z.literal("manual").optional(),
         notes: z.string().trim().optional(),
+        lateMinutes: z.number().int().min(0).max(1440).nullish(),
+        lateDeductionMinutes: z.number().int().min(0).max(1440).nullish(),
+        sessions: z.array(z.object({ checkIn: timeStr.nullish(), checkOut: timeStr.nullish(), crossMidnight: z.boolean().optional() })).max(6).nullish(),
+        breakMinutes: z.number().int().min(0).max(1440).nullish(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -181,9 +186,12 @@ export const attendanceRouter = router({
         hours: input.hours,
         checkIn: input.checkIn ?? null,
         checkOut: input.checkOut ?? null,
+        checkOutDate: input.checkOutDate ?? null,
         status: input.status,
         source: "manual",
         notes: input.notes ?? null,
+        lateMinutes: input.lateMinutes ?? null, lateDeductionMinutes: input.lateDeductionMinutes ?? null,
+        sessions: input.sessions ?? undefined, breakMinutes: input.breakMinutes ?? undefined,
         // فصل مهام: الساعات تتحوّل أجراً مباشرةً ⇒ لا يسجّل أحدٌ ساعات نفسه.
         actor: { userId: ctx.user.id, role: ctx.user.role },
         // عزل الفرع على الكتابة — الخدمة ترفض موظف فرعٍ آخر (لا تصفية صامتة).
@@ -194,21 +202,13 @@ export const attendanceRouter = router({
         entityType: "attendance",
         entityId: row?.id,
         newValue: {
-          employeeId: input.employeeId,
-          branchId: row?.branchId,
-          date: input.attendanceDate,
-          hours: input.hours,
-          amount: row?.amount,
-          source: "manual",
+          employeeId: input.employeeId, branchId: row?.branchId, date: input.attendanceDate,
+          hours: row?.hours ?? input.hours, amount: row?.amount, source: "manual", lateDeductionMinutes: input.lateDeductionMinutes ?? null,
         },
       });
       return row;
     }),
-
-  /**
-   * إعادة احتساب أسعار الشهر من ملفّات الموظفين الحالية — يُصلح اللقطات التي كُتبت قبل
-   * ضبط الجداول (أو بعد تعديل راتب). كتابةٌ ماليّة ⇒ hr/FULL + تدقيق + حارس المسيّر المُقفَل.
-   */
+  /** إعادة احتساب أسعار الشهر من ملفّات الموظفين الحالية — كتابةٌ ماليّة ⇒ hr/FULL + تدقيق + حارس المسيّر المُقفَل. */
   recomputeRates: hrWrite
     .input(
       z.object({

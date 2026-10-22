@@ -33,6 +33,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 import { RefundRailPicker, type RefundRailPickerState } from "@/components/ui/RefundRailPicker";
 import { confirm } from "@/lib/confirm";
 import { D, fmt, formatQuantity, round2 } from "@/lib/money";
@@ -1186,7 +1187,8 @@ export function ReturnComposer({
                 {/* سقوف الرد */}
                 <ul className="grid gap-1 text-[11px] text-muted-foreground sm:grid-cols-2">
                   {visibleRefundOptions.map((o) => (
-                    <li key={o.method} className="rounded-md border bg-muted/30 px-2 py-1">
+                    <li key={o.method} className="inline-flex flex-wrap items-center gap-1 rounded-md border bg-muted/30 px-2 py-1">
+                      {o.method === "CARD" && <CardBrandLogos size="xs" />}
                       <span className="font-bold text-foreground">{paymentMethodLabel(o.method)}</span>
                       {o.blockedReason ? (
                         <span> — {o.blockedReason}</span>

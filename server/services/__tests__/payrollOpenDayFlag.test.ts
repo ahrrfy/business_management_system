@@ -1,28 +1,22 @@
 /**
- * اليوم المفتوح (دخولٌ بلا انصراف) في مسيّر الرواتب — قرار المالك ١٧/٨/٢٦.
+ * حارس الأيام المفتوحة (دخولٌ بلا انصراف) عند توليد واعتماد مسيّر الرواتب — قرار المالك (٢٢/١٠/٢٠٢٦: «٣- نمنع التوليد»).
  *
- * السياق: كان التوليد **يرمي** عند أوّل يومٍ مفتوح ⇒ بصمةٌ منسيّة لموظفٍ واحد تُجمّد مسيّر
- * الشركة كلّها. ثمّ بدا «استبعاد الموظف وحده» تنفيذاً حرفياً للقرار، لكنّ فحص الشيفرة أسقطه:
- * المسيّر واحدٌ لكل شهر بقيدٍ فريد، ولا واجهة لإضافة بندٍ إلى مسيّرٍ قائم ⇒ المستبعَد لا سبيل
- * لصرف أجر شهره أبداً بعد الاعتماد. فاستقرّ القرار على **البقاء موسوماً**.
- *
- * الثوابت المحروسة هنا (الاتجاهان: العطب لم يعد يقع، والسليم لم ينكسر):
- *   ي١) يومٌ مفتوح ⇒ المسيّر **يُولَّد** ولا يُرمى، وصاحبه **له بند** بساعاته المؤكَّدة.
- *   ي٢) ساعات اليوم المفتوح وحدها غير محتسَبة — لا يومَ سليمٍ يُمسّ.
- *   ي٣) الزميل السليم في المسيّر نفسه يُصرف كاملاً (لا تجميد للشركة).
- *   ي٤) `attendanceFlagged` يرافق نتيجة التوليد باسم الموظف وعدد أيامه وتواريخها كاملةً.
- *   ي٥) ملاحظة البند تحمل وسمَ الانتباه المشترك (`PAYROLL_ITEM_ATTENTION_PREFIX`) أوّلاً —
- *       فهو عقد الشاشة، وتقديمُه يُنجيه من قصّ الـ٢٥٥ محرفاً.
- *   ي٦) قائمة تواريخ طويلة ⇒ تُقصّ **بإفصاح** (`+N أخرى`) لا صامتةً، والكاملةُ في النتيجة.
- *   ي٧) بلا أيامٍ مفتوحة ⇒ لا وسم ولا قائمة (صفر انحدار).
- *   ي٨) عمولةُ الموسوم **تُصرف مع بنده** — لو استُبعد لضاعت بلا رجعة (سبب رفض الاستبعاد).
+ * الثوابت المحروسة هنا:
+ *   ي١) يومٌ مفتوح غير محسوم ⇒ يُمنع توليد المسيّر (`PRECONDITION_FAILED`) برسالة تسمّي الموظف والتواريخ المفتوحة،
+ *       ولا يُنشأ مسيّرٌ جزئيّ في القاعدة (ذرّيّة المعاملة).
+ *   ي٢) قائمة تواريخ طويلة (> ٦ أيام) ⇒ تُقصّ بإفصاح (`+N أخرى`) في رسالة المنع.
+ *   ي٣) البصمات العابرة لمنتصف الليل (مثل دخول 15:07 وانصراف 00:02 فجر اليوم التالي) تُطوى وتُغلق تلقائياً
+ *       قبل التوليد (`healAndRefoldMonthAttendance`)، فيُولَّد المسيّر كاملاً دون توقّف زائف.
+ *   ي٤) بعد تصحيح البصمة المفتوحة (أو بلا أيام مفتوحة) ⇒ يُولَّد المسيّر بنجاح بكامل الساعات والعمولات.
+ *   ي٥) حارس الاعتماد (`approveRun`): يرفض اعتماد أي مسودة تحمل بنداً موسوماً بـ`PAYROLL_ITEM_ATTENTION_PREFIX`.
  */
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { PAYROLL_ITEM_ATTENTION_PREFIX } from "@shared/hr";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { generatePayroll } from "../payrollService";
+import { recordAttendance } from "../attendanceService";
+import { approveRun, generatePayroll } from "../payrollService";
 import { truncateTables } from "./__testUtils__";
 
 function db() {
@@ -32,16 +26,11 @@ function db() {
 }
 
 const ADMIN = { userId: 1, branchId: 1, role: "admin" };
+const CHECKER = { userId: 2, branchId: 1, role: "admin", isOwner: true };
 const PERIOD = "2026-06"; // حزيران ٢٠٢٦: ٢٦ يوم دوام (الجمعة راحة) × ٨ = ٢٠٨ ساعة
-const SCHED: Record<string, { hours: number }> = {
-  الأحد: { hours: 8 }, الاثنين: { hours: 8 }, الثلاثاء: { hours: 8 },
-  الأربعاء: { hours: 8 }, الخميس: { hours: 8 }, الجمعة: { hours: 0 }, السبت: { hours: 8 },
-};
 const DAY_NAMES = ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
 
 async function enableAttendancePay() {
-  // الجدول العامّ أُلغي (0140): لكل موظف جدولُه، ومن لم يُضبط يقع على `DEFAULT_WORK_SCHEDULE`
-  // — وهو نفسه SCHED أعلاه (٨ ساعات، الجمعة راحة). فلا شيء يُضبط هنا غير التفعيل والسريان.
   await db()
     .insert(s.hrAttendanceSettings)
     .values({ id: 1, attendancePayEnabled: true, attendancePayFrom: "2026-06-01" })
@@ -57,7 +46,6 @@ async function seedJune(employeeId: number, openOn: string[] = []) {
     const open = openOn.includes(date);
     rows.push({
       employeeId, attendanceDate: date, status: "PRESENT",
-      // اليوم المفتوح = دخولٌ مسجَّل وانصرافٌ معدوم — وهو بالضبط ما يكتشفه التوليد.
       checkIn: new Date(`${date}T08:00:00Z`),
       checkOut: open ? null : new Date(`${date}T16:00:00Z`),
       hours: open ? "0.00" : "8.00", hourlyRate: "0.00", amount: "0.00", source: "fingerprint",
@@ -73,14 +61,16 @@ async function itemsOf(runId: number) {
 beforeEach(async () => {
   await truncateTables([
     "payrollItems", "payrollRuns", "commissionRunLines", "commissionRuns",
-    "commissionPlanTiers", "commissionPlans", "leaveRequests", "attendance",
-    "hrAttendanceSettings", "employees", "branches", "users",
+    "commissionPlanTiers", "commissionPlans", "leaveRequests", "hrAttendancePunches",
+    "attendance", "hrFingerprintDevices", "hrAttendanceSettings", "employees", "branches", "users",
   ]);
   const d = db();
   await d.insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
-  await d.insert(s.users).values({ id: 1, openId: "a", name: "admin", role: "admin", loginMethod: "local" });
+  await d.insert(s.users).values([
+    { id: 1, openId: "a", name: "admin", role: "admin", loginMethod: "local" },
+    { id: 2, openId: "b", name: "owner", role: "admin", loginMethod: "local", isOwner: true },
+  ]);
   await d.insert(s.employees).values([
-    // ٩٠٠٬٠٠٠ ÷ ٢٠٨ ساعة = 4326.923… د.ع/ساعة — يُبقي الأرقام أدناه قابلة للتحقّق يدوياً.
     { id: 1, firstName: "أحمد", lastName: "الجبوري", payType: "monthly", salary: "900000", allowances: "0",
       employmentStatus: "active", isActive: true, branchId: 1, hireDate: "2025-01-01" },
     { id: 2, firstName: "سارة", lastName: "العبيدي", payType: "monthly", salary: "900000", allowances: "0",
@@ -89,92 +79,53 @@ beforeEach(async () => {
   await enableAttendancePay();
 });
 
-describe("اليوم المفتوح لا يُجمّد المسيّر ولا يُستبعَد صاحبه (قرار المالك ١٧/٨)", () => {
-  it("ي١+ي٢+ي٣) يومان مفتوحان لموظف ⇒ المسيّر يُولَّد، وله بندٌ بساعاته المؤكَّدة، وزميله كاملٌ", async () => {
+describe("منع توليد واعتماد المسيّر عند وجود بصمات مفتوحة غير محسومة (قرار المالك ٢٢/١٠)", () => {
+  it("ي١) يومان مفتوحان لموظف ⇒ يمنع توليد المسيّر برسالة تسمّي الموظف والتواريخ، ولا يُنشأ مسيّر جزئي", async () => {
     await seedJune(1, ["2026-06-08", "2026-06-09"]);
     await seedJune(2);
 
-    const run = await generatePayroll(PERIOD, ADMIN as never);
-    const items = await itemsOf(Number(run.id));
-    expect(items).toHaveLength(2);
-
-    const flagged = items.find((i) => Number(i.employeeId) === 1)!;
-    const clean = items.find((i) => Number(i.employeeId) === 2)!;
-
-    // ي١) بندٌ موجودٌ فعلاً — لا استبعاد.
-    expect(flagged).toBeDefined();
-    // ي٢) يومان مفتوحان = ١٦ ساعة غير محتسَبة، وبقيّة أيامه محتسَبة كاملةً.
-    expect(Number(flagged.hours)).toBe(192); // 208 − 16
-    expect(Number(flagged.gross)).toBeCloseTo(830769, 0); // 900000 ÷ 208 × 192
-    // ي٣) الزميل السليم لم يُمسّ — لا تجميد للشركة كلّها.
-    expect(Number(clean.hours)).toBe(208);
-    expect(Number(clean.gross)).toBeCloseTo(900000, 0);
+    await expect(generatePayroll(PERIOD, ADMIN as never)).rejects.toThrow(
+      /أحمد الجبوري.*2 يوم بلا انصراف: 2026-06-08، 2026-06-09/,
+    );
+    const runs = await db().select().from(s.payrollRuns);
+    expect(runs).toHaveLength(0);
   });
 
-  it("ي٤+ي٥) نتيجة التوليد تحمل الموسومين بأسمائهم وتواريخهم، وملاحظةُ البند تبدأ بالوسم", async () => {
-    await seedJune(1, ["2026-06-08", "2026-06-09"]);
-    await seedJune(2);
-
-    const run = await generatePayroll(PERIOD, ADMIN as never);
-    // ي٤) قائمةٌ مبنيّة (لا نصٌّ يُفسَّر) — الشاشة تعدّها والتنبيه يقرأ طولها.
-    expect(run.attendanceFlagged).toHaveLength(1);
-    expect(run.attendanceFlagged[0]).toMatchObject({
-      employeeId: 1,
-      openDays: 2,
-      openDates: ["2026-06-08", "2026-06-09"],
-    });
-    expect(run.attendanceFlagged[0].employeeName).toContain("أحمد");
-
-    // ي٥) الوسم **أوّل** الملاحظة: عقدُ الشاشة `payrollItemNeedsAttention` يفحص البداية،
-    // وقصُّ الـ٢٥٥ محرفاً يقصّ من الآخِر ⇒ الوسم ينجو دائماً.
-    const items = await itemsOf(Number(run.id));
-    const note = String(items.find((i) => Number(i.employeeId) === 1)!.note);
-    expect(note.startsWith(PAYROLL_ITEM_ATTENTION_PREFIX)).toBe(true);
-    expect(note).toContain("2 يوم بلا انصراف");
-    expect(note).toContain("2026-06-08");
-    expect(note.length).toBeLessThanOrEqual(255);
-  });
-
-  it("المالك لا يعتمد تلقائيا تشغيلةً فيها أيام مفتوحة", async () => {
-    await db().update(s.users).set({ isOwner: true }).where(eq(s.users.id, ADMIN.userId));
-    await seedJune(1, ["2026-06-08"]);
-    await seedJune(2);
-
-    const run = await generatePayroll(PERIOD, ADMIN as never);
-    expect(run.attendanceFlagged).toHaveLength(1);
-    expect(run.status).toBe("draft");
-  });
-
-  it("ي٦) تواريخ كثيرة ⇒ الملاحظة تُفصح عن القصّ، والقائمة الكاملة في نتيجة التوليد", async () => {
+  it("ي٢) تواريخ مفتوحة كثيرة ⇒ رسالة المنع تُفصح عن القصّ (+N أخرى)", async () => {
     const open = ["06", "07", "08", "09", "10", "11", "13", "14", "15"].map((d) => `2026-06-${d}`);
     await seedJune(1, open);
     await seedJune(2);
 
-    const run = await generatePayroll(PERIOD, ADMIN as never);
-    // القائمة الكاملة تصل الشاشة عبر النتيجة — لا شيء يضيع لأن النصّ ضاق.
-    expect(run.attendanceFlagged[0].openDates).toEqual(open);
-    expect(run.attendanceFlagged[0].openDays).toBe(open.length);
-
-    const items = await itemsOf(Number(run.id));
-    const note = String(items.find((i) => Number(i.employeeId) === 1)!.note);
-    expect(note).toContain(`+${open.length - 6} أخرى`); // إفصاحٌ لا قصٌّ صامت
-    expect(note.length).toBeLessThanOrEqual(255);
+    await expect(generatePayroll(PERIOD, ADMIN as never)).rejects.toThrow(
+      new RegExp(`\\+${open.length - 6} أخرى`),
+    );
   });
 
-  it("ي٧) بلا أيام مفتوحة ⇒ لا وسم ولا قائمة (صفر انحدار)", async () => {
-    await seedJune(1);
+  it("ي٣) بصمة انصراف بعد منتصف الليل (00:02 فجر اليوم التالي) تُطوى تلقائياً قبل التوليد فلا تمنع المسيّر", async () => {
+    await seedJune(1, ["2026-06-08"]);
     await seedJune(2);
 
+    const d = db();
+    await d.insert(s.hrFingerprintDevices).values({
+      id: 1, name: "جهاز الرئيسي", branchId: 1, serialNumber: "SN-MAIN-1", enabled: true,
+    });
+    // بصمات خام ليوم 2026-06-08 (دخول 16:02 وانصراف 00:02 فجر 2026-06-09 = 8 ساعات + دوام 2026-06-09 من 14:00 إلى 22:00)
+    await d.insert(s.hrAttendancePunches).values([
+      { deviceId: 1, serialNumber: "SN-MAIN-1", enrollId: 1, employeeId: 1, punchAt: "2026-06-08 16:02:00", processedAt: new Date() },
+      { deviceId: 1, serialNumber: "SN-MAIN-1", enrollId: 1, employeeId: 1, punchAt: "2026-06-09 00:02:00", processedAt: new Date() },
+      { deviceId: 1, serialNumber: "SN-MAIN-1", enrollId: 1, employeeId: 1, punchAt: "2026-06-09 14:00:00", processedAt: new Date() },
+      { deviceId: 1, serialNumber: "SN-MAIN-1", enrollId: 1, employeeId: 1, punchAt: "2026-06-09 22:00:00", processedAt: new Date() },
+    ]);
+
     const run = await generatePayroll(PERIOD, ADMIN as never);
-    expect(run.attendanceFlagged).toEqual([]);
     const items = await itemsOf(Number(run.id));
-    for (const it of items) {
-      expect(String(it.note ?? "").startsWith(PAYROLL_ITEM_ATTENTION_PREFIX)).toBe(false);
-      expect(Number(it.hours)).toBe(208);
-    }
+    expect(items).toHaveLength(2);
+    const emp1 = items.find((i) => Number(i.employeeId) === 1)!;
+    expect(Number(emp1.hours)).toBe(208);
+    expect(Number(emp1.gross)).toBeCloseTo(900000, 0);
   });
 
-  it("ي٨) عمولة الموسوم تُصرف مع بنده — الاستبعاد كان سيُضيعها بلا رجعة", async () => {
+  it("ي٤) بعد تصحيح اليوم المفتوح يدوياً ⇒ يُولَّد المسيّر بنجاح بكامل الساعات والعمولات", async () => {
     await seedJune(1, ["2026-06-08"]);
     await seedJune(2);
     const d = db();
@@ -186,11 +137,37 @@ describe("اليوم المفتوح لا يُجمّد المسيّر ولا يُ
       runId: 1, employeeId: 1, userId: 1, branchId: 1, planId: 1, commissionAmount: "104000.00",
     });
 
+    // قبل التصحيح: يُمنع التوليد
+    await expect(generatePayroll(PERIOD, ADMIN as never)).rejects.toThrow(/2026-06-08/);
+
+    // تصحيح اليوم المفتوح
+    await recordAttendance({
+      employeeId: 1,
+      attendanceDate: "2026-06-08",
+      checkIn: "08:00",
+      checkOut: "16:00",
+      hours: "8",
+      source: "manual",
+    });
+
+    // بعد التصحيح: يُولَّد بنجاح
     const run = await generatePayroll(PERIOD, ADMIN as never);
-    const flagged = (await itemsOf(Number(run.id))).find((i) => Number(i.employeeId) === 1)!;
-    expect(Number(flagged.commission)).toBe(104000);
-    // الصافي يشملها: عمولةٌ لموظفٍ موسوم ما زالت تُصرف كاملةً.
-    expect(Number(flagged.net)).toBeCloseTo(Number(flagged.gross) + 104000, 0);
-    expect(run.attendanceFlagged).toHaveLength(1);
+    const emp1 = (await itemsOf(Number(run.id))).find((i) => Number(i.employeeId) === 1)!;
+    expect(Number(emp1.hours)).toBe(208);
+    expect(Number(emp1.commission)).toBe(104000);
+    expect(Number(emp1.net)).toBeCloseTo(900000 + 104000, 0);
+  });
+
+  it("ي٥) حارس الاعتماد يمنع اعتماد مسودة تحتوي على بند موسوم بـPAYROLL_ITEM_ATTENTION_PREFIX", async () => {
+    await seedJune(1);
+    await seedJune(2);
+
+    const run = await generatePayroll(PERIOD, ADMIN as never);
+    await db()
+      .update(s.payrollItems)
+      .set({ note: `${PAYROLL_ITEM_ATTENTION_PREFIX} 1 يوم بلا انصراف (2026-06-08) — غير محتسَبة` })
+      .where(eq(s.payrollItems.runId, Number(run.id)));
+
+    await expect(approveRun(Number(run.id), CHECKER as never)).rejects.toThrow(/بصمات حضور مفتوحة/);
   });
 });

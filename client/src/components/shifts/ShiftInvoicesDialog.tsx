@@ -11,6 +11,7 @@ import { DataTable } from "@/components/data-table/DataTable";
 import { fmtDateTime } from "@/lib/date";
 import { fmt, D } from "@/lib/money";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
+import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 import { invoiceStatusLabel } from "@shared/invoiceStatus";
 import { Link } from "wouter";
 import type { RouterOutputs } from "@/lib/trpc";
@@ -101,8 +102,9 @@ export function ShiftInvoicesDialog({
                   header: "طريقة الدفع",
                   accessorFn: (inv) => (inv.paymentMethod ? paymentMethodLabel(inv.paymentMethod) : "—"),
                   cell: ({ row }) => (
-                    <span className="text-xs">
-                      {row.original.paymentMethod ? paymentMethodLabel(row.original.paymentMethod) : "—"}
+                    <span className="inline-flex items-center gap-1.5 text-xs">
+                      {row.original.paymentMethod === "CARD" && <CardBrandLogos size="xs" />}
+                      <span>{row.original.paymentMethod ? paymentMethodLabel(row.original.paymentMethod) : "—"}</span>
                     </span>
                   ),
                 },

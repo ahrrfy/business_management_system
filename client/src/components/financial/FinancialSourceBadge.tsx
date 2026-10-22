@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { CardBrandIcon } from "@/components/ui/CardBrandLogos";
 import { cn } from "@/lib/utils";
 
 export type FinancialSourceKind =
@@ -60,7 +61,7 @@ const SOURCE_ICON: Record<string, LucideIcon> = {
   TREASURY: Building2,
   CASH: Banknote,
   BANK: Landmark,
-  CARD: CreditCard,
+  CARD: CardBrandIcon,
   CHECK: ReceiptText,
   TRANSFER: Landmark,
   WALLET: WalletCards,

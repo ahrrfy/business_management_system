@@ -3,7 +3,7 @@ export { startHrDeviceBridge } from "./bridge";
 export { createAifaceSession } from "./aifaceDriver";
 export { handleIclock, parseAttlog, parseOperlogUsers, formatIclockCommand } from "./iclockDriver";
 export { ingestPunches, upsertDeviceUser, mapDeviceUserToEmployee } from "./punchStore";
-export { processPendingFolds, foldSoon } from "./attendanceFold";
+export { processPendingFolds, foldSoon, refoldMonthFingerprintAttendance } from "./attendanceFold";
 export {
   enqueueCommand,
   buildAifaceCommand,

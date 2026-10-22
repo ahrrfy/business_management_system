@@ -13,6 +13,7 @@ import { fmtQty } from "@shared/quantityFormat";
 import type { ReceiptBrowserData } from "./printTemplates";
 import { buildDigitalBlocks } from "./digitalReceiptLines";
 import { qrCodeDataUrl } from "./qr";
+import { CARD_BRAND_LOGO_URL, isCardPaymentMethod } from "./cardBrandLogos";
 
 const W = 576; // 80مم @ 203dpi — عرض الطباعة الفعلي للطابعات الحرارية
 const PAD = 12;
@@ -354,11 +355,48 @@ export async function receiptToCanvas(
   solidLine(ctx, y, 2);
   y += 34;
 
-  if (d.paymentMethod) totRow("طريقة الدفع:", d.paymentMethod, true);
+  const needsCardLogo =
+    isCardPaymentMethod(d.paymentMethod) ||
+    Boolean(d.paymentLegs && d.paymentLegs.length > 1 && d.paymentLegs.some((leg) => isCardPaymentMethod(leg.method)));
+  const cardImg = needsCardLogo ? await loadImage(CARD_BRAND_LOGO_URL) : null;
+  if (d.paymentMethod) {
+    const displayMethod = d.paymentMethod.trim().toUpperCase() === "CARD" ? "بطاقة" : d.paymentMethod;
+    if (isCardPaymentMethod(d.paymentMethod)) {
+      ctx.font = "900 22px Cairo, sans-serif";
+      ctx.textAlign = "right";
+      ctx.fillText("طريقة الدفع:", W - PAD, y);
+      ctx.font = "900 22px Cairo, sans-serif";
+      ctx.textAlign = "left";
+      const logoW = 66;
+      const logoH = 22;
+      if (cardImg) {
+        ctx.drawImage(cardImg, PAD, y - 18, logoW, logoH);
+        ctx.fillText(displayMethod, PAD + logoW + 8, y);
+      } else {
+        ctx.fillText(displayMethod, PAD, y);
+      }
+      y += 30;
+    } else {
+      totRow("طريقة الدفع:", displayMethod, true);
+    }
+  }
   if (d.paymentLegs && d.paymentLegs.length > 1) {
     for (const leg of d.paymentLegs) {
       const legLabel = `  • ${leg.method}${leg.reference ? ` (${leg.reference})` : ""}:`;
-      totRow(legLabel, fmt(leg.amount));
+      if (isCardPaymentMethod(leg.method) && cardImg) {
+        const logoW = 54;
+        const logoH = 18;
+        ctx.font = "700 20px Cairo, sans-serif";
+        ctx.textAlign = "right";
+        ctx.fillText(legLabel, W - PAD - logoW - 6, y);
+        ctx.drawImage(cardImg, W - PAD - logoW, y - 16, logoW, logoH);
+        ctx.font = "800 22px Cairo, sans-serif";
+        ctx.textAlign = "left";
+        ctx.fillText(fmt(leg.amount), PAD, y);
+        y += 30;
+      } else {
+        totRow(legLabel, fmt(leg.amount));
+      }
     }
   }
   if (d.paid != null) totRow("المدفوع:", fmt(d.paid), true);

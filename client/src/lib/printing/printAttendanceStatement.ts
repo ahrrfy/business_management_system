@@ -22,6 +22,7 @@ import {
 } from "./docHtml";
 import { esc, fmt, openPrintWindow } from "./brand";
 import { formatArabicMoneyWords } from "./tafqit";
+import { formatDurationArabic, type AttendanceSession } from "@shared/attendanceHours";
 
 export interface StatementDay {
   date: string;
@@ -37,6 +38,10 @@ export interface StatementDay {
   state: "present" | "absent" | "open" | "paidLeave" | "unpaidLeave" | "beforeStart" | "restWorked";
   checkIn?: string | null;
   checkOut?: string | null;
+  checkOutNextDay?: boolean;
+  sessions?: AttendanceSession[];
+  breakMinutes?: number;
+  cleanNotes?: string;
   needsReview?: boolean;
 }
 
@@ -85,24 +90,24 @@ export interface AttendanceStatementData {
 const STATE_LABEL: Record<StatementDay["state"], string> = {
   present: "حضور",
   absent: "غياب",
-  open: "ينقص انصراف",
+  open: "بصمة انصراف ناقصة",
   paidLeave: "إجازة مدفوعة",
   unpaidLeave: "إجازة بلا راتب",
-  beforeStart: "قبل السريان",
-  restWorked: "عمل يوم راحة",
+  beforeStart: "قبل المباشرة",
+  restWorked: "عمل يوم عطلة",
 };
 
 export function printAttendanceStatement(d: AttendanceStatementData, days: StatementDay[]): boolean {
   const header = pageHeader(
     {
-      title: "كشف حضور ودوام",
-      subtitle: "تفصيل يوميّ — الساعات وسعر الساعة وأجر كل يوم",
+      title: "كشف حضور ودوام الموظف",
+      subtitle: "تفصيل يوميّ واضح — أوقات الدخول والانصراف، فترات الدوام والاستراحات، صافي الساعات، وأجر كل يوم",
       fields: [
         { label: "الشهر", value: d.period },
         { label: "الفترة", value: `${d.from} ← ${d.to}` },
       ],
       badge: d.totals.reviewDays > 0
-        ? { label: `${d.totals.reviewDays} يوم يحتاج تصحيح`, color: "#B7791F" }
+        ? { label: `${d.totals.reviewDays} يوم يحتاج مراجعة`, color: "#B7791F" }
         : { label: "مكتمل", color: "#0D6B52" },
     },
     d.settings,
@@ -110,59 +115,67 @@ export function printAttendanceStatement(d: AttendanceStatementData, days: State
 
   const cards = infoCards([
     {
-      title: "الموظف",
+      title: "بيانات الموظف",
       variant: "green",
       fields: [
         { label: "الاسم", value: d.employeeName },
-        { label: "الرقم", value: `EMP-${d.employeeId}` },
+        { label: "الرقم الوظيفي", value: `EMP-${d.employeeId}` },
         { label: "الوظيفة", value: d.position || "—" },
         { label: "القسم", value: d.department || "—" },
         { label: "الفرع", value: d.branchName || "—" },
       ],
     },
     {
-      title: "ملخّص الشهر",
+      title: "ملخّص دوام الشهر",
       variant: "gray",
       fields: [
-        { label: "ساعات مقرَّرة", value: `${fmt(d.totals.scheduledHours)} ساعة` },
-        { label: "ساعات مستحقّة", value: `${fmt(d.totals.payableHours)} ساعة` },
-        { label: "غياب", value: `${d.totals.absentDays} يوم` },
+        { label: "ساعات الدوام المطلوبة", value: `${fmt(d.totals.scheduledHours)} ساعة` },
+        { label: "الساعات المدفوعة المستحقّة", value: `${fmt(d.totals.payableHours)} ساعة` },
+        { label: "أيام الغياب", value: `${d.totals.absentDays} يوم` },
         { label: "إجازة بلا راتب", value: `${d.totals.unpaidLeaveDays} يوم` },
-        { label: "نقص ساعات", value: `${fmt(d.totals.shortHours)} ساعة` },
-        { label: "أوفر تايم", value: `${fmt(d.totals.overtimeHours)} ساعة` },
+        { label: "نقص الساعات اليومي", value: `${fmt(d.totals.shortHours)} ساعة` },
+        { label: "الساعات الإضافية (أوفر تايم)", value: `${fmt(d.totals.overtimeHours)} ساعة` },
       ],
     },
   ]);
 
   const table = docTableV2(
     [
-      { key: "date", label: "التاريخ", width: 78 },
-      { key: "day", label: "اليوم", width: 62 },
-      { key: "checkIn", label: "من", width: 52 },
-      { key: "checkOut", label: "إلى", width: 52 },
-      { key: "sched", label: "مقرَّر", width: 48 },
-      { key: "counted", label: "محتسَب", width: 52 },
-      { key: "ot", label: "إضافي", width: 48 },
-      { key: "rate", label: "سعر الساعة", width: 70 },
-      { key: "amount", label: "أجر أساس", width: 74 },
-      { key: "otAmount", label: "أجر إضافي", width: 74 },
-      { key: "total", label: "إجمالي اليوم", width: 82, emphasize: true },
-      { key: "state", label: "الحالة", width: 78 },
+      { key: "date", label: "التاريخ", width: 74 },
+      { key: "day", label: "اليوم", width: 58 },
+      { key: "checkIn", label: "الدخول", width: 50 },
+      { key: "checkOut", label: "الانصراف", width: 52 },
+      { key: "sched", label: "المطلوب", width: 46 },
+      { key: "counted", label: "صافي العمل", width: 54 },
+      { key: "ot", label: "إضافي", width: 46 },
+      { key: "rate", label: "سعر الساعة", width: 68 },
+      { key: "amount", label: "أجر الدوام", width: 72 },
+      { key: "otAmount", label: "أجر الإضافي", width: 70 },
+      { key: "total", label: "إجمالي اليوم", width: 80, emphasize: true },
+      { key: "state", label: "الحالة والفترات", width: 100 },
     ],
-    days.map((x) => ({
-      date: x.date,
-      day: x.dayName,
-      checkIn: x.checkIn ?? "—",
-      checkOut: x.checkOut ?? "—",
-      sched: fmt(x.scheduledHours),
-      counted: fmt(x.countedHours),
-      ot: Number(x.overtimeHours) > 0 ? fmt(x.overtimeHours) : "—",
-      rate: fmt(x.rate),
-      amount: fmt(x.amount),
-      otAmount: Number(x.overtimeAmount ?? 0) > 0 ? fmt(x.overtimeAmount!) : "—",
-      total: fmt(x.totalAmount ?? x.amount),
-      state: `${STATE_LABEL[x.state]}${x.needsReview ? " ⚠" : ""}`.replace("⚠", "(يحتاج تصحيح)"),
-    })),
+    days.map((x) => {
+      const multiSessions =
+        x.sessions && x.sessions.length > 1
+          ? ` (${x.sessions.map((s) => `${s.checkIn}←${s.checkOut ?? "؟"}`).join("، ")}${x.breakMinutes && x.breakMinutes > 0 ? ` · استراحة/زمنية ${formatDurationArabic(x.breakMinutes)}` : ""})`
+          : x.breakMinutes && x.breakMinutes > 0
+            ? ` (استراحة/زمنية ${formatDurationArabic(x.breakMinutes)})`
+            : "";
+      return {
+        date: x.date,
+        day: x.dayName,
+        checkIn: x.checkIn ?? "—",
+        checkOut: x.checkOut ? `${x.checkOut}${x.checkOutNextDay ? " (+1)" : ""}` : "—",
+        sched: fmt(x.scheduledHours),
+        counted: fmt(x.countedHours),
+        ot: Number(x.overtimeHours) > 0 ? fmt(x.overtimeHours) : "—",
+        rate: fmt(x.rate),
+        amount: fmt(x.amount),
+        otAmount: Number(x.overtimeAmount ?? 0) > 0 ? fmt(x.overtimeAmount!) : "—",
+        total: fmt(x.totalAmount ?? x.amount),
+        state: `${STATE_LABEL[x.state]}${multiSessions}${x.needsReview ? " (يحتاج مراجعة)" : ""}`,
+      };
+    }),
     { hideIndex: true },
   );
 
