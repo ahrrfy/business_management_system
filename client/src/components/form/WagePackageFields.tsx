@@ -90,6 +90,12 @@ export function WagePackageFields({ value, onChange, disabled = false }: WagePac
   const { payType, schedule, dayRates } = value;
   const setSchedule = (patch: (prev: Record<string, WageDayValue>) => Record<string, WageDayValue>) =>
     onChange({ schedule: patch(schedule) });
+  const stdHours = standardHours(schedule);
+  const numericSalary = Number(String(value.salary).replace(/[^\d.]/g, "")) || 0;
+  const derivedRatePreview =
+    payType === "monthly" && stdHours > 0 && numericSalary > 0
+      ? (Math.round((numericSalary / stdHours) * 100) / 100).toFixed(2)
+      : null;
 
   return (
     <div className="md:col-span-3 grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -156,36 +162,33 @@ export function WagePackageFields({ value, onChange, disabled = false }: WagePac
       {/* جدول الدوام الأسبوعيّ — كل قيمة صريحة بيد المالك (قرار ٣١/٧). */}
       <div className={`md:col-span-3 space-y-2 border-t pt-3 ${value.attendanceExempt ? "opacity-50" : ""}`}>
         <div className="flex items-center justify-between gap-2 flex-wrap">
-          <Label>جدول الدوام الأسبوعيّ — ساعات كل يوم وسعر ساعته</Label>
+          <Label>جدول الدوام الأسبوعيّ — ساعات الدوام المطلوبة لكل يوم وسعر ساعته</Label>
           <Button
             type="button"
             variant="outline"
             size="sm"
             disabled={disabled}
             onClick={() => {
-              // المقام = ساعات أول ٣٠ يوماً من الشهر الجاري وفق جدوله (مطابق للنواة
-              // الخادمية حرفياً). كان يستعمل متوسّط «٤٫٣٤٥ أسبوعاً» فينحرف حتى ٢٧ ألفاً
-              // في شباط — والمالك يشترط «الراتب بالضبط دون نقصان ديناراً واحداً».
-              const std = standardHours(schedule);
-              const sal = Number(String(value.salary).replace(/[^\d.]/g, "")) || 0;
-              if (!std || !sal) {
+              // إبقاء rate = null يجعل الخادم يشتقّ السعر شهرياً بدقّة Decimal الكاملة
+              // (الراتب ÷ ساعات أول ٣٠ يوماً من الشهر) دون تجميد تقريب المتصفّح (مثل 4519.23).
+              if (!stdHours || !numericSalary) {
                 notify.warn("أدخل الراتب وساعات الأيام أولاً ليُحسب سعر الساعة.");
                 return;
               }
-              const r = Math.round((sal / std) * 100) / 100;
               onChange({
                 schedule: Object.fromEntries(
-                  WEEK_DAYS.map((d) => [d, { hours: schedule[d]?.hours ?? 0, rate: (schedule[d]?.hours ?? 0) > 0 ? r : null }]),
+                  WEEK_DAYS.map((d) => [d, { hours: schedule[d]?.hours ?? 0, rate: null }]),
                 ),
               });
+              notify.ok(`ضُبط الاشتقاق التلقائي الدقيق من الراتب (${derivedRatePreview} د.ع/ساعة لهذا الشهر).`);
             }}
           >
-            احسب الأسعار من الراتب
+            اشتقاق سعر الساعة تلقائياً من الراتب
           </Button>
         </div>
         <div className="rounded-md border divide-y">
           <div className="grid grid-cols-3 gap-2 bg-muted/50 px-2 py-1 text-[11px] font-medium">
-            <span>اليوم</span><span className="text-center">ساعات الدوام</span><span className="text-center">سعر الساعة (د.ع)</span>
+            <span>اليوم</span><span className="text-center">ساعات الدوام المطلوبة</span><span className="text-center">سعر الساعة (د.ع — اتركه فارغاً للاشتقاق التلقائي)</span>
           </div>
           {WEEK_DAYS.map((d) => (
             <div key={d} className="grid grid-cols-3 gap-2 items-center px-2 py-1.5">
@@ -199,7 +202,7 @@ export function WagePackageFields({ value, onChange, disabled = false }: WagePac
               />
               <Input
                 type="number" min={0} step="250" dir="ltr" className="h-8 text-center"
-                placeholder="—"
+                placeholder={(schedule[d]?.hours ?? 0) > 0 && derivedRatePreview ? derivedRatePreview : "—"}
                 aria-label={`سعر ساعة ${d}`}
                 disabled={disabled || !(schedule[d]?.hours > 0)}
                 value={schedule[d]?.rate ?? ""}
@@ -208,7 +211,7 @@ export function WagePackageFields({ value, onChange, disabled = false }: WagePac
             </div>
           ))}
           <div className="grid grid-cols-3 gap-2 px-2 py-1.5 text-[11px] bg-muted/30">
-            <span className="font-medium">مجموع الأسبوع</span>
+            <span className="font-medium">مجموع ساعات الأسبوع</span>
             <span className="text-center tabular-nums font-medium" dir="ltr">
               {WEEK_DAYS.reduce((t, d) => t + (Number(schedule[d]?.hours) || 0), 0)} ساعة
             </span>
@@ -216,13 +219,11 @@ export function WagePackageFields({ value, onChange, disabled = false }: WagePac
           </div>
         </div>
         <p className="text-xs text-muted-foreground leading-relaxed">
-          <span className="font-medium">صفر ساعة = يوم راحة.</span> وأجر اليوم = ساعاته المحتسَبة × سعره،
-          والراتب المستحقّ = مجموع أيام الشهر تراكمياً. الساعات فوق المقرَّر اليوميّ تُحتسب
-          <span className="font-medium"> أوفر تايم</span> ببندٍ مستقلّ بسعر اليوم نفسه.
-          <span className="font-medium">تركُ السعر فارغاً هو الأدقّ:</span> يُحسب شهرياً من
-          (الراتب ÷ ساعات أول ٣٠ يوماً) فيطابق الراتب بالضبط دون نقصان دينار — وشهرُ ٣١ يوماً
-          يُدفع بيومه الإضافيّ، والشهر الأقصر (٢٨/٢٩) يُكمَّل إلى ٣٠. وتثبيتُ سعرٍ يدويّ
-          يجعل المجموع يتبع السعر لا الراتب.
+          <span className="font-medium">صفر ساعة = يوم راحة أسبوعية.</span> وأجر اليوم = صافي ساعات عمله المحتسَبة × سعر ساعته
+          (سواء أكان الدوام متّصلاً أم مجزّأً على فترتين تتخلّلهما استراحة/زمنية). الساعات التي تزيد على ساعات اليوم المطلوبة تُحتسب
+          <span className="font-medium"> عملاً إضافياً (أوفر تايم)</span> ببندٍ مستقلّ بسعر اليوم نفسه.
+          <span className="font-medium"> تركُ حقل سعر الساعة فارغاً هو الأدقّ:</span> يُحسب شهرياً من
+          (الراتب ÷ ساعات أول ٣٠ يوماً) فيطابق الراتب بالضبط دون نقصان دينار.
         </p>
       </div>
     </div>

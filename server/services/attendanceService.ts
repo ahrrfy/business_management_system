@@ -8,7 +8,14 @@
 import { and, desc, eq, getTableColumns, gte, inArray, like, lte, or, sql, type SQL } from "drizzle-orm";
 import Decimal from "decimal.js";
 import { WEEK_DAYS, fullEmployeeName } from "@shared/hr";
-import { attendanceHoursViolation } from "@shared/attendanceHours";
+import {
+  attendanceHoursViolation,
+  computeSessionsSummary,
+  formatAttendanceSessionsTag,
+  parseAttendanceDayDetails,
+  stripAttendanceSystemTags,
+  type AttendanceSessionInput,
+} from "@shared/attendanceHours";
 import { attendance, employees, hrAttendanceSettings, payrollRuns } from "../../drizzle/schema";
 import { escLike } from "../lib/sqlLike";
 import { requireDb, withTx } from "./tx";
@@ -16,7 +23,8 @@ import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { money, round2, toDbMoney } from "./money";
 import { assertPeriodOpen } from "./periodLockService";
-import { DEFAULT_WORK_SCHEDULE, standardMonthlyHours, type WorkSchedule } from "./hr/attendancePay";
+import { DEFAULT_WORK_SCHEDULE, isBrowserRoundedScheduleRate, standardMonthlyHours, type WorkSchedule } from "./hr/attendancePay";
+import { refoldMonthFingerprintAttendance } from "./hrDevices/attendanceFold";
 
 /** اسم اليوم العربي من تاريخ "YYYY-MM-DD" (الأحد=0). يُحسب بتقويم UTC ثابت من مكوّنات السلسلة
  *  حتى لا تنزلق التسمية (ومعها سعر الساعة) بمنطقة الخادم الزمنية — تكامل مالي مستقلّ عن TZ. */
@@ -29,6 +37,16 @@ export function arabicDayName(dateStr: string): string {
 function toDateStr(d: unknown): string {
   if (d instanceof Date) return d.toISOString().slice(0, 10);
   return String(d ?? "");
+}
+
+function toTimeHHMM(v: unknown): string | null {
+  if (!v) return null;
+  if (v instanceof Date) {
+    return Number.isNaN(v.getTime()) ? null : v.toISOString().slice(11, 16);
+  }
+  const s = String(v);
+  const m = /(\d{2}:\d{2})/.exec(s);
+  return m ? m[1] : null;
 }
 
 /** مصدر سعر الساعة المعروض — يُعرَض للمالك فلا يُظنّ رقمٌ مُشتقٌّ رقماً أدخله بنفسه. */
@@ -73,7 +91,9 @@ export function rateForDayDetailed(
   const monthStart = `${dateStr.slice(0, 7)}-01`;
   if (sched) {
     const explicit = Number((sched[day] as { rate?: number } | undefined)?.rate ?? NaN);
-    if (Number.isFinite(explicit) && explicit > 0) return { rate: explicit, basis: "schedule" };
+    if (!isBrowserRoundedScheduleRate(sched, salary) && Number.isFinite(explicit) && explicit > 0) {
+      return { rate: explicit, basis: "schedule" };
+    }
     // مُشتقّ: الراتب ÷ ساعات ٣٠ يوماً وفق جدوله (نفس مقام المسيّر ⇒ لا انحراف).
     const std = standardMonthlyHours(sched, monthStart);
     if (salary > 0 && std.gt(0)) return { rate: salary / std.toNumber(), basis: "derived" };
@@ -178,10 +198,14 @@ async function lockedPeriods(db: ReturnType<typeof requireDb>): Promise<Set<stri
 
 type RateRow = {
   attendanceDate: unknown;
+  checkIn?: unknown;
+  checkOut?: unknown;
   hours?: string | null;
   hourlyRate?: string | null;
   amount?: string | null;
   status?: string | null;
+  notes?: string | null;
+  reviewReason?: string | null;
   payType?: string | null;
   salary?: unknown;
   workSchedule?: unknown;
@@ -216,6 +240,21 @@ function deriveRow(r: RateRow, locked: Set<string>) {
   const liveAmount = paid ? round2(hours.times(money(rate))).toDecimalPlaces(0) : money(0);
   const showRate = periodLocked ? stored : liveRate;
   const showAmount = periodLocked ? storedAmount : liveAmount;
+
+  const crossMidnight =
+    r.checkIn instanceof Date &&
+    r.checkOut instanceof Date &&
+    r.checkOut.toISOString().slice(0, 10) > r.checkIn.toISOString().slice(0, 10);
+  const dayDetails = parseAttendanceDayDetails({
+    status: r.status,
+    checkIn: toTimeHHMM(r.checkIn),
+    checkOut: toTimeHHMM(r.checkOut),
+    crossMidnight,
+    storedHours: r.hours,
+    notes: r.notes,
+    reviewReason: r.reviewReason,
+  });
+
   return {
     attendanceDate: dateStr,
     dayName: dateStr ? arabicDayName(dateStr) : "",
@@ -227,6 +266,14 @@ function deriveRow(r: RateRow, locked: Set<string>) {
     /** لقطةٌ تخالف ملفّ الموظف ⇒ تحتاج إعادة احتساب. مقفولُ الشهر لا يُوسَم (لا يُصلَح). */
     rateStale: !periodLocked && (!stored.eq(liveRate) || !storedAmount.eq(liveAmount)),
     periodLocked,
+    sessions: dayDetails.sessions,
+    breaks: dayDetails.breaks,
+    breakMinutes: dayDetails.breakMinutes,
+    breakHours: dayDetails.breakHours,
+    hasMultipleSessions: dayDetails.hasMultipleSessions,
+    hasOpenSession: dayDetails.hasOpenSession,
+    openSessionCheckIn: dayDetails.openSessionCheckIn,
+    cleanNotes: dayDetails.cleanNotes,
   };
 }
 
@@ -406,6 +453,56 @@ export async function listAttendance(filters?: AttendanceFilters & { limit?: num
  *     «ارفع سعر ساعتك ثمّ أعد الاحتساب» زيادةَ أجرٍ بفاعلٍ واحد. admin مُستثنى للتصحيح.
  *  ٣) ABSENT/LEAVE تبقى بأجرٍ صفريّ مهما كان السعر.
  */
+function hasExplicitShiftStart(workSchedule: unknown, dateStr: string): boolean {
+  if (!workSchedule || typeof workSchedule !== "object") return false;
+  const dayName = arabicDayName(dateStr);
+  const daySched = (workSchedule as Record<string, any>)[dayName];
+  const s =
+    typeof daySched?.start === "string" && daySched.start.trim()
+      ? daySched.start.trim()
+      : typeof daySched?.startTime === "string" && daySched.startTime.trim()
+        ? daySched.startTime.trim()
+        : null;
+  return s != null;
+}
+
+export function isLegacyAutoLateDeduction(
+  r: {
+    attendanceDate?: unknown;
+    date?: unknown;
+    source?: string | null;
+    status?: string | null;
+    notes?: string | null;
+    reviewReason?: string | null;
+    checkIn?: Date | string | null;
+  },
+  workSchedule: unknown,
+): boolean {
+  const dateStr = toDateStr(r.attendanceDate ?? r.date);
+  const noExplicitStart = !hasExplicitShiftStart(workSchedule, dateStr);
+  const notesStr = String(r.notes ?? "").trim();
+
+  if (r.source === "fingerprint") {
+    return notesStr.includes("[تأخير:") || (r.status === "LATE" && noExplicitStart);
+  }
+
+  if (r.source === "manual" && noExplicitStart && r.reviewReason !== "manual_late_override") {
+    const m = /^\[تأخير:\s*(\d+)\s*دقيقة\s*-\s*خصم\s*(\d+)\s*دقيقة\]$/.exec(notesStr);
+    if (m && m[1] === m[2]) {
+      const dedMins = Number(m[1]);
+      if (r.checkIn instanceof Date) {
+        const inMins = r.checkIn.getUTCHours() * 60 + r.checkIn.getUTCMinutes();
+        if (inMins - 540 === dedMins) return true;
+      } else if (typeof r.checkIn === "string" && r.checkIn.length >= 16) {
+        const hh = Number(r.checkIn.slice(11, 13));
+        const mm = Number(r.checkIn.slice(14, 16));
+        if (hh * 60 + mm - 540 === dedMins) return true;
+      }
+    }
+  }
+  return false;
+}
+
 export async function recomputeMonthRates(
   input: {
     period: string;
@@ -418,6 +515,73 @@ export async function recomputeMonthRates(
   existingTx?: Tx,
 ) {
   const period = String(input.period).slice(0, 7);
+  let refoldedDays = 0;
+  let cleanedGhostDays = 0;
+  let healedSchedules = 0;
+
+  if (!existingTx && !input.skipRunLockCheck) {
+    const db = requireDb();
+    const [run] = await db
+      .select({ id: payrollRuns.id, status: payrollRuns.status })
+      .from(payrollRuns)
+      .where(eq(payrollRuns.period, period))
+      .limit(1);
+    if (run) {
+      const label = run.status === "paid" ? "مدفوع" : run.status === "approved" ? "معتمَد" : "مسودّة";
+      throw new Error(
+        run.status === "draft"
+          ? `لا يمكن إعادة الاحتساب: يوجد مسيّر رواتب (مسودّة) لشهر ${period} بُنيت بنوده على المبالغ الحالية — احذف المسودّة، أعد الاحتساب، ثمّ ولّد المسيّر من جديد`
+          : `لا يمكن إعادة الاحتساب: مسيّر رواتب شهر ${period} ${label} — ألغِ اعتماد المسيّر أولاً`,
+      );
+    }
+    await assertPeriodOpen(db as unknown as Tx, new Date(`${period}-01`));
+    if (input.actor && input.actor.role !== "admin") {
+      const preConds: SQL[] = [like(attendance.attendanceDate, `${period}%`)];
+      if (input.scopedBranchId != null) preConds.push(eq(employees.branchId, input.scopedBranchId));
+      if (input.employeeId) preConds.push(eq(attendance.employeeId, input.employeeId));
+      const preRows = await db
+        .select({ employeeUserId: employees.userId })
+        .from(attendance)
+        .leftJoin(employees, eq(attendance.employeeId, employees.id))
+        .where(and(...preConds));
+      const own = preRows.some((r) => r.employeeUserId != null && Number(r.employeeUserId) === Number(input.actor!.userId));
+      if (own) {
+        throw new Error("لا تُعِد احتساب أجر نفسك — يلزم أن يُنفّذها مستخدمٌ آخر (فصل المهام).");
+      }
+    }
+
+    try {
+      const empConds: SQL[] = [eq(employees.payType, "monthly")];
+      if (input.employeeId != null) empConds.push(eq(employees.id, input.employeeId));
+      if (input.scopedBranchId != null) empConds.push(eq(employees.branchId, input.scopedBranchId));
+      const monthlyEmps = await db
+        .select({ id: employees.id, salary: employees.salary, workSchedule: employees.workSchedule })
+        .from(employees)
+        .where(and(...empConds));
+      for (const emp of monthlyEmps) {
+        const sched = (emp.workSchedule && typeof emp.workSchedule === "object" ? emp.workSchedule : null) as WorkSchedule | null;
+        if (sched && isBrowserRoundedScheduleRate(sched, Number(emp.salary ?? 0))) {
+          const cleanedSched = Object.fromEntries(
+            Object.entries(sched).map(([k, v]) => [
+              k,
+              typeof v === "number" ? { hours: v, rate: null } : { ...v, rate: null },
+            ]),
+          );
+          await db.update(employees).set({ workSchedule: cleanedSched }).where(eq(employees.id, emp.id));
+          healedSchedules++;
+        }
+      }
+      const foldRes = await refoldMonthFingerprintAttendance(period, {
+        employeeId: input.employeeId,
+        scopedBranchId: input.scopedBranchId,
+      });
+      refoldedDays = foldRes.refoldedDays;
+      cleanedGhostDays = foldRes.cleanedGhostDays;
+    } catch {
+      // في حال عدم تهيئة جدول البصمات الخام في بيئة اختبار جزئية نتابع إعادة التسعير
+    }
+  }
+
   const runBody = async (tx: Tx) => {
     if (!input.skipRunLockCheck) {
       const [run] = await tx
@@ -437,6 +601,9 @@ export async function recomputeMonthRates(
     // حارس إقفال الفترة المالية العامّة — راجع الشرح المطابق في recordAttendance أعلاه.
     await assertPeriodOpen(tx, new Date(`${period}-01`));
 
+    const [attSettings] = await tx.select().from(hrAttendanceSettings).where(eq(hrAttendanceSettings.id, 1)).limit(1);
+    const maxDaily = Number(attSettings?.maxDailyHours ?? 12);
+
     const conds: SQL[] = [like(attendance.attendanceDate, `${period}%`)];
     // عزل الفرع: إعادة تسعير شهرٍ كامل تُعيد كتابة `hourlyRate`/`amount` لكل صفٍّ مطابق —
     // بلا هذا الحاجز كان مديرُ فرعٍ يُعيد تسعير موظفي الشركة كلِّها بضغطة (تدقيق ١٧/٨).
@@ -446,10 +613,15 @@ export async function recomputeMonthRates(
       .select({
         id: attendance.id,
         attendanceDate: attendance.attendanceDate,
+        checkIn: attendance.checkIn,
+        checkOut: attendance.checkOut,
         hours: attendance.hours,
         hourlyRate: attendance.hourlyRate,
         amount: attendance.amount,
         status: attendance.status,
+        source: attendance.source,
+        notes: attendance.notes,
+        reviewReason: attendance.reviewReason,
         employeeUserId: employees.userId,
         payType: employees.payType,
         salary: employees.salary,
@@ -471,6 +643,63 @@ export async function recomputeMonthRates(
     let updated = 0;
     for (const r of rows) {
       const dateStr = toDateStr(r.attendanceDate);
+      let nextHours = money(r.hours ?? 0);
+      let nextStatus = r.status ?? "PRESENT";
+      let nextNotes = r.notes ?? null;
+      let healedMeta = false;
+
+      // شفاء سجلات البصمة (والتصحيحات القديمة المتضررة من خصم 09:00 التلقائي الملغى) دون المساس بالتصحيحات اليدوية المقصودة أو استراحات الدوام المجزّأ
+      const noExplicitStart = !hasExplicitShiftStart(r.workSchedule, dateStr);
+      if (isLegacyAutoLateDeduction(r, r.workSchedule)) {
+        const notesStr = String(r.notes ?? "");
+        const lateTagMatch = /\[تأخير:\s*\d+\s*دقيقة\s*-\s*خصم\s*(\d+)\s*دقيقة\]/.exec(notesStr);
+        const deductedMins = lateTagMatch ? Number(lateTagMatch[1]) : 0;
+        const hasSplitOrBreakTag =
+          notesStr.includes("[فترات الدوام:") || notesStr.includes("[استراحة/زمنية:");
+
+        if (r.checkIn instanceof Date && r.checkOut instanceof Date && r.checkOut.getTime() !== r.checkIn.getTime()) {
+          const rawDiffMs = r.checkOut.getTime() - r.checkIn.getTime();
+          const diffMs = rawDiffMs > 0 ? rawDiffMs : rawDiffMs + 86_400_000;
+          const spanHrs = round2(
+            Decimal.min(maxDaily, new Decimal(diffMs).div(3_600_000)),
+          );
+          if (deductedMins > 0) {
+            const restored = round2(Decimal.min(maxDaily, nextHours.plus(new Decimal(deductedMins).div(60))));
+            const targetHrs =
+              !hasSplitOrBreakTag && spanHrs.minus(restored).abs().lte(0.05) ? spanHrs : restored;
+            if (!targetHrs.eq(nextHours)) {
+              nextHours = targetHrs;
+              healedMeta = true;
+            }
+          } else if (!hasSplitOrBreakTag && !spanHrs.eq(nextHours)) {
+            const inMins = r.checkIn.getUTCHours() * 60 + r.checkIn.getUTCMinutes();
+            const silentLateMins = inMins > 540 ? inMins - 540 : 0;
+            if (silentLateMins > 0) {
+              const restored = round2(Decimal.min(maxDaily, nextHours.plus(new Decimal(silentLateMins).div(60))));
+              if (spanHrs.minus(restored).abs().lte(0.05)) {
+                nextHours = spanHrs;
+                healedMeta = true;
+              }
+            }
+          }
+        } else if (deductedMins > 0) {
+          const restored = round2(Decimal.min(maxDaily, nextHours.plus(new Decimal(deductedMins).div(60))));
+          if (!restored.eq(nextHours)) {
+            nextHours = restored;
+            healedMeta = true;
+          }
+        }
+        const stripped = String(r.notes ?? "").replace(/\s*\[تأخير:[^\]]*\]/g, "").trim() || null;
+        if (stripped !== nextNotes) {
+          nextNotes = stripped;
+          healedMeta = true;
+        }
+        if (r.status === "LATE" && noExplicitStart) {
+          nextStatus = "PRESENT";
+          healedMeta = true;
+        }
+      }
+
       const computedRate = round2(money(rateForDay(r, dateStr)));
       const rate = computedRate.gt(0)
         ? computedRate
@@ -478,19 +707,96 @@ export async function recomputeMonthRates(
           ? money(r.hourlyRate!)
           : computedRate;
       // ABSENT/LEAVE بلا أجرٍ مهما كان السعر (نفس قاعدة recordAttendance).
-      const paid = r.status === "PRESENT" || r.status === "LATE";
-      const amount = paid ? round2(money(r.hours ?? 0).times(rate)).toDecimalPlaces(0) : money(0);
-      if (money(r.hourlyRate ?? 0).eq(rate) && money(r.amount ?? 0).eq(amount)) continue;
+      const paid = nextStatus === "PRESENT" || nextStatus === "LATE";
+      const amount = paid ? round2(nextHours.times(rate)).toDecimalPlaces(0) : money(0);
+      if (!healedMeta && money(r.hourlyRate ?? 0).eq(rate) && money(r.amount ?? 0).eq(amount)) continue;
       await tx
         .update(attendance)
-        .set({ hourlyRate: toDbMoney(rate), amount: toDbMoney(amount) })
+        .set({
+          hours: toDbMoney(nextHours),
+          status: nextStatus as "PRESENT" | "ABSENT" | "LATE" | "LEAVE",
+          notes: nextNotes,
+          hourlyRate: toDbMoney(rate),
+          amount: toDbMoney(amount),
+        })
         .where(eq(attendance.id, r.id));
       updated += 1;
     }
-    return { period, scanned: rows.length, updated };
+    return { period, scanned: rows.length, updated, refoldedDays, cleanedGhostDays, healedSchedules };
   };
 
   return existingTx ? runBody(existingTx) : withTx(runBody);
+}
+
+/**
+ * شفاء وإعادة طيّ سجلات حضور شهر كامل تلقائياً:
+ * ١) يزيل السعر المقرب آلياً من المتصفح (`4519.23`) من جداول الموظفين الشهريين ليعود الاشتقاق الدقيق.
+ * ٢) يعيد طيّ بصمات الشهر من `hr_attendance_punches` (مع إسناد بصمات الفجر للورديات العابرة لمنتصف الليل).
+ * ٣) يستردّ الساعات المقتطعة خطأً بسبب خصم التأخير المزدوج الملغى ويعيد احتساب الأجور.
+ */
+export async function healAndRefoldMonthAttendance(
+  period: string,
+  opts?: { employeeId?: number; scopedBranchId?: number | null },
+): Promise<{ period: string; refoldedDays: number; cleanedGhostDays: number; updatedRates: number; healedSchedules: number }> {
+  const p = String(period).slice(0, 7);
+  const db = requireDb();
+
+  const [lockedRun] = await db
+    .select({ id: payrollRuns.id })
+    .from(payrollRuns)
+    .where(and(eq(payrollRuns.period, p), inArray(payrollRuns.status, ["approved", "paid"])))
+    .limit(1);
+  if (lockedRun) {
+    return { period: p, refoldedDays: 0, cleanedGhostDays: 0, updatedRates: 0, healedSchedules: 0 };
+  }
+
+  // ١) تنظيف السعر المقرب آلياً من المتصفح في جدول دوام الموظفين الشهريين
+  let healedSchedules = 0;
+  const empConds: SQL[] = [eq(employees.payType, "monthly")];
+  if (opts?.employeeId != null) empConds.push(eq(employees.id, opts.employeeId));
+  if (opts?.scopedBranchId != null) empConds.push(eq(employees.branchId, opts.scopedBranchId));
+  const monthlyEmps = await db
+    .select({ id: employees.id, salary: employees.salary, workSchedule: employees.workSchedule })
+    .from(employees)
+    .where(and(...empConds));
+  for (const emp of monthlyEmps) {
+    const sched = (emp.workSchedule && typeof emp.workSchedule === "object" ? emp.workSchedule : null) as WorkSchedule | null;
+    if (sched && isBrowserRoundedScheduleRate(sched, Number(emp.salary ?? 0))) {
+      const cleanedSched = Object.fromEntries(
+        Object.entries(sched).map(([k, v]) => [
+          k,
+          typeof v === "number" ? { hours: v, rate: null } : { ...v, rate: null },
+        ]),
+      );
+      await db.update(employees).set({ workSchedule: cleanedSched }).where(eq(employees.id, emp.id));
+      healedSchedules++;
+    }
+  }
+
+  // ٢) إعادة طيّ البصمات الخام للشهر (تغلق الورديات العابرة لمنتصف الليل وتسترد الساعات)
+  const foldRes = await refoldMonthFingerprintAttendance(p, opts);
+
+  // ٣) شفاء أي سجلات متبقية وإعادة احتساب الأسعار والمبالغ
+  let updatedRates = 0;
+  try {
+    const rateRes = await recomputeMonthRates({
+      period: p,
+      employeeId: opts?.employeeId,
+      scopedBranchId: opts?.scopedBranchId,
+      skipRunLockCheck: true,
+    });
+    updatedRates = rateRes.updated;
+  } catch {
+    // في حال كانت الفترة المالية مقفلة محاسبياً نتجاوز التحديث
+  }
+
+  return {
+    period: p,
+    refoldedDays: foldRes.refoldedDays,
+    cleanedGhostDays: foldRes.cleanedGhostDays,
+    updatedRates,
+    healedSchedules,
+  };
 }
 
 /**
@@ -635,6 +941,10 @@ export interface RecordAttendanceInput {
   lateMinutes?: number | null;
   /** دقائق الاستقطاع المالي للتأخير (الافتراضي يساوي دقائق التأخير بعد فترة السماح). */
   lateDeductionMinutes?: number | null;
+  /** فترات الدوام المتعدّدة في اليوم نفسه (عند الخروج للاستراحة/الزمنية والعودة). */
+  sessions?: AttendanceSessionInput[] | null;
+  /** دقائق الاستراحة / الزمنية المستقطعة من المدى بين الدخول والانصراف. */
+  breakMinutes?: number | null;
 }
 
 /** يُحلل وقت "HH:MM" أو "HH:MM:SS" إلى دقائق منذ منتصف الليل. */
@@ -715,59 +1025,88 @@ export async function recordAttendance(input: RecordAttendanceInput) {
     if (hoursDec.isNegative()) throw new Error("الساعات لا يمكن أن تكون سالبة");
 
     let status = input.status ?? "PRESENT";
+    const isPaidInitial = status === "PRESENT" || status === "LATE";
+    const sessionsSummary =
+      input.sessions && input.sessions.length > 0 ? computeSessionsSummary(input.sessions) : null;
+    if (isPaidInitial && sessionsSummary?.violation) {
+      throw new Error(sessionsSummary.violation);
+    }
+
+    const effectiveCheckIn =
+      input.checkIn ?? (sessionsSummary?.firstCheckIn ? sessionsSummary.firstCheckIn : null);
+    const effectiveCheckOut =
+      input.checkOut ?? (sessionsSummary?.lastCheckOut ? sessionsSummary.lastCheckOut : null);
+
     let lateMins: number | null = input.lateMinutes ?? null;
+    // قرار المالك #1 (إلغاء خصم التأخير المزدوج): الساعات المستحقّة = الساعات الفعلية المؤدّاة بين الدخول والانصراف،
+    // ولا يُقتطع من الساعات الفعلية إلا عند تمرير تجاوز إداري صريح (lateDeductionMinutes).
     let lateDedMins: number | null = input.lateDeductionMinutes ?? null;
 
-    if (input.checkIn && (status === "PRESENT" || status === "LATE" || input.status === undefined)) {
-      const checkInMins = parseTimeToMinutes(input.checkIn);
+    if (effectiveCheckIn && (status === "PRESENT" || status === "LATE" || input.status === undefined)) {
+      const checkInMins = parseTimeToMinutes(effectiveCheckIn);
       if (checkInMins != null) {
         const dayName = arabicDayName(input.attendanceDate);
         const sched = (emp.workSchedule && typeof emp.workSchedule === "object" ? emp.workSchedule : null) as Record<string, any> | null;
         const daySched = sched ? sched[dayName] : null;
-        const scheduledStartStr = (typeof daySched?.start === "string" && daySched.start.trim())
+        const explicitStartStr = (typeof daySched?.start === "string" && daySched.start.trim())
           ? daySched.start.trim()
           : (typeof daySched?.startTime === "string" && daySched.startTime.trim())
             ? daySched.startTime.trim()
-            : "09:00";
-        const schedStartMins = parseTimeToMinutes(scheduledStartStr) ?? (9 * 60);
+            : null;
         const gracePeriodMins = 15;
 
-        if (checkInMins > schedStartMins + gracePeriodMins) {
-          status = "LATE";
-          if (lateMins == null) {
-            lateMins = checkInMins - schedStartMins;
+        if (explicitStartStr) {
+          const schedStartMins = parseTimeToMinutes(explicitStartStr);
+          if (schedStartMins != null && checkInMins > schedStartMins + gracePeriodMins) {
+            status = "LATE";
+            if (lateMins == null) {
+              lateMins = checkInMins - schedStartMins;
+            }
           }
-          if (lateDedMins == null) {
-            lateDedMins = input.lateDeductionMinutes ?? lateMins;
+        } else if (input.lateDeductionMinutes != null || input.lateMinutes != null) {
+          const fallbackStartMins = 9 * 60;
+          if (checkInMins > fallbackStartMins + gracePeriodMins) {
+            status = "LATE";
+            if (lateMins == null) {
+              lateMins = checkInMins - fallbackStartMins;
+            }
           }
         }
       }
-    } else if (status === "LATE" && lateDedMins == null && input.lateDeductionMinutes != null) {
-      lateDedMins = input.lateDeductionMinutes;
+    }
+    if (lateDedMins != null && lateDedMins > 0 && (status === "PRESENT" || input.status === undefined)) {
+      status = "LATE";
     }
 
     // ABSENT/LEAVE لا يولّدان أجراً مهما كانت الساعات. التصفير المزدوج (هنا + WHERE في تجميع المسيّر)
     // يحمي حتى عند تعديل صفّ موجود أو إدخال مباشر بـAPI يضع status=ABSENT مع ساعات (سهو/استيراد بصمة).
     const isPaidStatus = status === "PRESENT" || status === "LATE";
+    const [ay, am, ad] = input.attendanceDate.split("-").map(Number);
+    const nextDayStr = new Date(Date.UTC(ay, am - 1, ad + 1)).toISOString().slice(0, 10);
+    const effectiveCheckOutDate =
+      input.checkOutDate ?? (sessionsSummary?.lastCrossMidnight ? nextDayStr : null);
+    const crossMidnight = Boolean(effectiveCheckOutDate && effectiveCheckOutDate > input.attendanceDate);
+    const effectiveBreakMinutes =
+      sessionsSummary && sessionsSummary.sessions.length > 1
+        ? sessionsSummary.breakMinutes
+        : input.breakMinutes ?? null;
 
     /*
      * حارس اتّساق الساعات مع الأوقات (تدقيق ١٧/٨) — النواة النقيّة في `shared/attendanceHours.ts`
      * ليُنفّذها الخادم وتُرشد بها الواجهة بالنصّ نفسه.
-     *
-     * الطيّ التلقائي يمرّ بلا مساس: مجموع فتراته المزاوَجة ≤ المدى حتماً (فالحارس لا يفرض
-     * المساواة)، وlastPairedOut لا يُضبط إلا باكتمال زوجٍ ⇒ ساعاته > 0، وpunchTimesOf يجلب
-     * بصمات اليوم نفسه فقط ⇒ الانصراف بعد الدخول دائماً.
      */
     const hoursViolation = attendanceHoursViolation({
-      checkIn: input.checkIn,
-      checkOut: input.checkOut,
+      checkIn: effectiveCheckIn,
+      checkOut: effectiveCheckOut,
       hours: hoursDec.toNumber(),
       isPaidStatus,
+      crossMidnight,
+      breakMinutes: effectiveBreakMinutes,
     });
     if (hoursViolation) throw new Error(hoursViolation);
 
-    const checkInAt = timeToTimestamp(input.attendanceDate, input.checkIn);
-    const checkOutAt = timeToTimestamp(input.checkOutDate || input.attendanceDate, input.checkOut);
+    const checkInAt = timeToTimestamp(input.attendanceDate, effectiveCheckIn);
+    const checkOutAt = timeToTimestamp(effectiveCheckOutDate || input.attendanceDate, effectiveCheckOut);
 
     const lateHours = (isPaidStatus && lateDedMins != null && lateDedMins > 0)
       ? money(lateDedMins).div(60)
@@ -782,10 +1121,16 @@ export async function recordAttendance(input: RecordAttendanceInput) {
     const amount = round2(effectiveHours.times(rate)).toDecimalPlaces(0);
 
     let notes = input.notes?.trim() || null;
-    if (status === "LATE" && (lateMins != null || lateDedMins != null)) {
-      const displayLateMins = lateMins ?? lateDedMins ?? 0;
-      const displayDedMins = lateDedMins ?? displayLateMins;
-      const tag = `[تأخير: ${displayLateMins} دقيقة - خصم ${displayDedMins} دقيقة]`;
+    if (input.sessions !== undefined || input.breakMinutes !== undefined) {
+      const baseNotes = stripAttendanceSystemTags(notes);
+      const sessionBreakTag = isPaidStatus
+        ? formatAttendanceSessionsTag(input.sessions, input.breakMinutes)
+        : null;
+      notes = [baseNotes, sessionBreakTag].filter(Boolean).join(" ").trim() || null;
+    }
+    if (status === "LATE" && lateDedMins != null) {
+      const displayLateMins = lateMins ?? lateDedMins;
+      const tag = `[تأخير: ${displayLateMins} دقيقة - خصم ${lateDedMins} دقيقة]`;
       if (!notes) {
         notes = tag;
       } else if (!notes.includes("[تأخير:")) {
@@ -807,7 +1152,12 @@ export async function recordAttendance(input: RecordAttendanceInput) {
       source: input.source ?? "manual",
       // التصحيح اليدوي هو الحسم: مديرٌ أدخل اليوم صراحةً ⇒ لم يعد ناقصاً مهما قال الطيّ.
       needsReview: (input.source ?? "manual") === "manual" ? false : !!input.needsReview,
-      reviewReason: (input.source ?? "manual") === "manual" ? null : input.reviewReason?.slice(0, 120) ?? null,
+      reviewReason:
+        (input.source ?? "manual") === "manual"
+          ? input.lateDeductionMinutes != null
+            ? "manual_late_override"
+            : null
+          : input.reviewReason?.slice(0, 120) ?? null,
     } as const;
 
     const [existing] = await tx

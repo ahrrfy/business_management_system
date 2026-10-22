@@ -4,6 +4,7 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { appErrorMessage } from "@shared/errors";
 import { PAYROLL_ITEM_ATTENTION_PREFIX, fullEmployeeName } from "@shared/hr";
 import {
   attendance,
@@ -23,7 +24,7 @@ import { extractInsertId } from "../../lib/insertId";
 import { logger } from "../../logger";
 import { processPendingFolds } from "../hrDevices";
 import { suggestDeductionsTx } from "../advances";
-import { recomputeMonthRates } from "../attendanceService";
+import { healAndRefoldMonthAttendance, recomputeMonthRates } from "../attendanceService";
 import { computeAttendancePay, DEFAULT_WORK_SCHEDULE, type AttendancePayResult, type WorkSchedule } from "../hr/attendancePay";
 import { money, round2, toDbMoney } from "../money";
 import { computeLegalComponents, getPayrollLegalSettings } from "../payrollLegalService";
@@ -40,10 +41,13 @@ import { approveRun } from "./lifecycle";
 export async function generatePayroll(period: string, actor: Actor) {
   const p = assertPeriod(period);
 
-  // طيّ كافة البصمات المعلقة قبل توليد المسيّر:
-  // يضمن دمج جميع البصمات الحديثة في سجل الحضور حتى لحظة التوليد لمنع تصفير الساعات أو تضارب الاحتساب.
+  // طيّ كافة البصمات المعلقة وتصحيح وطيّ سجلات الشهر قبل توليد المسيّر:
+  // يضمن دمج جميع البصمات الحديثة (بما فيها البصمات العابرة لمنتصف الليل) وإزالة الخصومات التراكمية القديمة.
   await processPendingFolds().catch((err) => {
     logger.warn({ err }, "payroll: تعذّر استكمال طيّ البصمات المعلقة قبل التوليد");
+  });
+  await healAndRefoldMonthAttendance(p).catch((err) => {
+    logger.warn({ err }, "payroll: تعذّر استكمال تصحيح وطيّ سجلات الحضور قبل التوليد");
   });
 
   return withTx(async (tx) => {
@@ -112,6 +116,7 @@ export async function generatePayroll(period: string, actor: Actor) {
         hireDate: employees.hireDate,
         terminationDate: employees.terminationDate,
         workSchedule: employees.workSchedule,
+        dayRates: employees.dayRates,
         attendanceExempt: employees.attendanceExempt,
       })
       .from(employees)
@@ -206,6 +211,7 @@ export async function generatePayroll(period: string, actor: Actor) {
           hireDate: employees.hireDate,
           terminationDate: employees.terminationDate,
           workSchedule: employees.workSchedule,
+          dayRates: employees.dayRates,
           attendanceExempt: employees.attendanceExempt,
         })
         .from(employees)
@@ -282,7 +288,7 @@ export async function generatePayroll(period: string, actor: Actor) {
         const m = dailyAttendance.get(k) ?? new Map<string, Decimal>();
         m.set(ymd, money(r.hours ?? 0));
         dailyAttendance.set(k, m);
-        if (r.checkIn != null && r.checkOut == null) {
+        if (r.checkIn != null && r.checkOut == null && money(r.hours ?? 0).lte(0)) {
           const o = openAttendance.get(k) ?? new Set<string>();
           o.add(ymd);
           openAttendance.set(k, o);
@@ -462,6 +468,8 @@ export async function generatePayroll(period: string, actor: Actor) {
           employmentEnd,
           // جدول الموظف الخاصّ يتقدّم على العامّ — والجمعة قد تكون قصيرةً لا راحة.
           schedule: e.workSchedule && typeof e.workSchedule === "object" ? (e.workSchedule as WorkSchedule) : defaultSchedule,
+          dayRates: e.dayRates && typeof e.dayRates === "object" ? (e.dayRates as Record<string, number>) : null,
+          payType: e.payType,
           attendedHoursByDate: dailyAttendance.get(Number(e.id)) ?? new Map(),
           openDates: openAttendance.get(Number(e.id)) ?? new Set(),
           paidLeaveDates: expandSpans(paidLeaveSpans.get(Number(e.id)) ?? [], employmentStart, employmentEnd),
@@ -502,21 +510,9 @@ export async function generatePayroll(period: string, actor: Actor) {
           });
         }
         /*
-         * اليوم المفتوح (دخولٌ بلا انصراف) — **وسمٌ لا استبعاد ولا تجميد** (قرار المالك ١٧/٨):
-         *
-         * مرّ هذا الحارس بثلاث صيغ، وثالثتها وحدها تصمد:
-         *  ١) **قبل التدقيق**: يمرّ غياباً فيُدفع صفراً صامتاً — «دينارٌ يضيع بصمت».
-         *  ٢) **رميٌ يُجمّد الشركة كلَّها** من أجل بصمةٍ واحدة — نقضه المالك: «استبعد الموظف
-         *     وحده لا الشركة».
-         *  ٣) **استبعادُ الموظف** — بدا تنفيذاً حرفياً للقرار، لكنّ فحص الشيفرة أسقطه:
-         *     المسيّر واحدٌ لكل شهر بقيدٍ فريد، ولا واجهة لإضافة بندٍ إلى مسيّرٍ قائم ⇒
-         *     المستبعَد **لا سبيل لصرف أجر شهره أبداً** بعد الاعتماد. أي أن «بصمةً منسيّة»
-         *     كانت ستصير **ضياع أجر شهرٍ كامل** — نقيضَ المقصود.
-         *
-         * فالصيغة الصامدة: يبقى الموظف في المسيّر **بساعاته المؤكَّدة**، ولا يُحتسب اليوم
-         * المفتوح وحده، ويُوسَم البند بسببه وتُجمَع الأسماء في نتيجة التوليد. الشركة تُصرف،
-         * ولا أجر يضيع، والعمولة تُصرف مع بندها (لو استُبعد لضاعت بلا رجعة).
-         * والحسم قبل الاعتماد: تصحيح البصمة من كشف الموظف ثم حذف المسودّة وإعادة التوليد.
+         * اليوم المفتوح (دخولٌ بلا انصراف) — قرار المالك (٢٢/١٠):
+         * منع توليد المسيّر إذا وُجدت بصمة مفتوحة لم تُحسم بعد، بعد محاولة الطيّ الذكيّ للبصمات
+         * العابرة لمنتصف الليل، مع تسمية جميع الموظفين والتواريخ المفتوحة في رسالة الخطأ.
          */
         if (pay.openDays > 0) {
           attendanceFlagged.push({
@@ -535,6 +531,17 @@ export async function generatePayroll(period: string, actor: Actor) {
         gross = round2(money(e.salary ?? 0).times(employmentRatio).plus(allowances));
         hours = null;
       } else {
+        const hourlyOpen = Array.from(openAttendance.get(Number(e.id)) ?? []).filter(
+          (d) => d >= employmentStart && d <= employmentEnd,
+        );
+        if (hourlyOpen.length > 0) {
+          attendanceFlagged.push({
+            employeeId: Number(e.id),
+            employeeName: fullEmployeeName(e as never),
+            openDays: hourlyOpen.length,
+            openDates: hourlyOpen.sort(),
+          });
+        }
         const att = attMap.get(Number(e.id));
         gross = round2(money(att?.amount ?? 0));
         hours = new Decimal(att?.hours ?? 0).toFixed(2);
@@ -679,6 +686,24 @@ export async function generatePayroll(period: string, actor: Actor) {
         socialSecurityEmployer: toDbMoney(legal.socialSecurityEmployer),
         endOfServiceAccrual: toDbMoney(legal.endOfServiceAccrual),
         net: toDbMoney(net),
+      });
+    }
+
+    if (attendanceFlagged.length > 0) {
+      const details = attendanceFlagged
+        .map((f) => {
+          const shown = f.openDates.slice(0, 6);
+          const rest = f.openDates.length - shown.length;
+          return `«${f.employeeName}» (${f.openDays} يوم بلا انصراف: ${shown.join("، ")}${rest > 0 ? ` +${rest} أخرى` : ""})`;
+        })
+        .join("؛ ");
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: `لا يمكن توليد مسيّر رواتب لشهر ${p}`,
+          why: `لوجود بصمات حضور مفتوحة (دخول بلا انصراف) لم تُحسم بعد: ${details}`,
+          doThis: "صحّح أوقات الانصراف من كشف حضور الموظف أولاً ثم أعد التوليد.",
+        }),
       });
     }
 

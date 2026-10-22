@@ -1,5 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, eq, getTableColumns, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { appErrorMessage } from "@shared/errors";
+import { payrollItemNeedsAttention } from "@shared/hr";
 import {
   commissionRuns,
   employeePenalties,
@@ -18,6 +20,7 @@ import {
 import { money } from "../money";
 import { getRun } from "./queries";
 import { assertPayrollActiveOwnerChecker } from "./settlement";
+import { syncAllAdvancesForDraftRunTx } from "./syncAdvances";
 import { decodeTerminationWageCoverage } from "./terminationCoverage";
 import { assertCommissionArtifactReadyForPayrollTx } from "../commissions/payrollReadiness";
 
@@ -82,7 +85,16 @@ export async function approveRun(id: number, actor: Actor) {
         message: `تشغيلة عمولات معتمدة (#${uncaptured.id}) لشهر ${uncaptured.period} غير ملتقطة — أعد توليد المسيّر.`,
       });
     }
-    const runToApprove = run;
+    const syncedAdvances = await syncAllAdvancesForDraftRunTx(tx, id);
+    let runToApprove = run;
+    if (syncedAdvances) {
+      const [refreshedRun] = await tx
+        .select()
+        .from(payrollRuns)
+        .where(eq(payrollRuns.id, id))
+        .limit(1);
+      if (refreshedRun) runToApprove = refreshedRun;
+    }
 
     const items = await tx
       .select({
@@ -98,6 +110,17 @@ export async function approveRun(id: number, actor: Actor) {
       throw new TRPCError({
         code: "CONFLICT",
         message: "عدد بنود المسيّر لا يطابق رأسه — أعد توليده.",
+      });
+    }
+    const flaggedItem = items.find((item) => payrollItemNeedsAttention(item.note));
+    if (flaggedItem) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "لا يمكن اعتماد المسيّر",
+          why: `لوجود بصمات حضور مفتوحة (دخول بلا انصراف) لم تُحسم بعد للموظف #${flaggedItem.employeeId}`,
+          doThis: "صحّح أوقات الانصراف وأعد توليد المسودة قبل الاعتماد.",
+        }),
       });
     }
     const terminationCoverage = decodeTerminationWageCoverage(run.notes, run.period);

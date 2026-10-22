@@ -20,7 +20,7 @@ import type { CreateUserInput } from "../services/userService";
 import { getEmployeeUsage } from "../services/entityUsage";
 import { adminProcedure, protectedProcedure, requireModule, router } from "../trpc";
 import { isDupEntry, toArabicMessage } from "@shared/errorMap.ar";
-import { companyBranchScope, resolveTargetBranch } from "../services/companyBranchScope"; import { assertOperationAuthorized } from "../operationAuthorization";
+import { companyBranchScope, resolveTargetBranch } from "../services/companyBranchScope"; import { assertOperationAuthorized } from "../operationAuthorization"; import { healAndRefoldMonthAttendance } from "../services/attendanceService"; import { baghdadToday } from "../services/businessDay";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
 const hrWrite = protectedProcedure.use(requireModule("hr", "FULL"));
@@ -79,7 +79,7 @@ const employeeInput = z.object({
   dayRates: z.record(z.string(), z.number()).nullish(),
   /** جدول دوامه الأسبوعيّ: ساعات كل يوم، وصفرٌ = راحة (0139). null = الافتراضي العامّ. */
   workSchedule: z
-    .record(z.string(), z.object({ hours: z.number().min(0).max(24), rate: z.number().min(0).nullish() }))
+    .record(z.string(), z.object({ hours: z.number().min(0).max(24), rate: z.number().min(0).nullish(), start: z.string().regex(/^\d{1,2}:\d{2}$/).nullish(), startTime: z.string().regex(/^\d{1,2}:\d{2}$/).nullish() }))
     .nullish(),
   /** إعفاءٌ من الحضور — راتبٌ ثابت (0141). للمُلّاك ولمن لا جهاز بصمة له. */
   attendanceExempt: z.boolean().optional(),
@@ -274,7 +274,7 @@ export const employeeRouter = router({
             ? { name: e.fullName, wageFields: e.wageChange.fields, wage: e.wageChange.to }
             : { name: e.fullName },
         });
-        return e;
+        if (e.wageChange) await healAndRefoldMonthAttendance(baghdadToday().slice(0, 7), { employeeId: id, scopedBranchId: scope.branchId }).catch(() => undefined); return e;
       } catch (err: any) {
         // المفكّك المركزي يسمّي الحقل المتصادم فعلاً (بريد/رقم وطني/ربط حساب) بدل افتراض البريد.
         if (isDupEntry(err)) throw new TRPCError({ code: "CONFLICT", message: toArabicMessage({ cause: err }), cause: err });
