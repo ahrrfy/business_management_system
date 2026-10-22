@@ -24,6 +24,7 @@ import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/p
 import { INBOUND_TELECOM_DISABLED_MESSAGE } from "@shared/inboundPaymentPolicy";
 import { normalizeNumberInput } from "@shared/numberNormalize";
 import { PAY_METHOD_LABEL, type PayMethod } from "./cartMath";
+import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 
 /**
  * لوحة الدفع لشاشة الاستقبال — **شريطٌ أفقيٌّ ثابتٌ أسفل الصفحة** (إعادة بناء ٧/٨، طلب مالك
@@ -305,13 +306,14 @@ export function PaymentPanel({
           </span>
         )}
         <span className={cn(
-          "rounded-md border px-1.5 py-0.5 text-[10px] font-extrabold",
+          "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-extrabold",
           deferred || noCollectionNow
             ? "border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
             : method === "CASH" ? "text-muted-foreground" : "border-[var(--sem-info)]/50 bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
         )}>
           {/* صدق طريقة الدفع (١٨/٨): بلا قبضٍ الآن لا تُسمّى طريقة — كانت تُعرض «نقدي» فتُقرأ
               العملية مدفوعةً وهي آجلة، وهو نفس الكذب الذي كان يُختَم على الفاتورة. */}
+          {!deferred && !noCollectionNow && method === "CARD" && <CardBrandLogos size="xs" />}
           {deferred ? "بدون عربون" : noCollectionNow ? "بلا قبض الآن" : PAY_METHOD_LABEL[method]}
         </span>
       </div>
@@ -375,11 +377,12 @@ export function PaymentPanel({
                 disabled={!isPosPaymentMethodEnabled(p.v)}
                 onClick={() => setMethod(p.v)}
                 className={cn(
-                  "rounded-md px-2.5 py-1 text-xs font-bold transition-colors",
+                  "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-bold transition-colors",
                   method === p.v ? "bg-primary text-primary-foreground shadow-xs" : "text-muted-foreground hover:bg-muted",
                 )}
               >
-                {p.label}
+                {p.v === "CARD" && <CardBrandLogos size="xs" />}
+                <span>{p.label}</span>
               </button>
             ))}
           </div>
@@ -393,7 +396,11 @@ export function PaymentPanel({
                   : "border-primary/40",
               )}
             >
-              <CreditCard aria-hidden className="size-4 text-primary ms-1" />
+              {method === "CARD" ? (
+                <CardBrandLogos size="xs" className="ms-1" />
+              ) : (
+                <CreditCard aria-hidden className="size-4 text-primary ms-1" />
+              )}
               <span className="px-1.5 text-xs font-bold text-muted-foreground whitespace-nowrap">
                 {method === "CARD" ? "رقم العملية:" : "رقم المرجع:"}
               </span>

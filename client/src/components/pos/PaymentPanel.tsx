@@ -5,7 +5,8 @@
 
 import { useMediaQuery } from "@/hooks/useMobile";
 import { useEffect, useState } from "react";
-import { Check, X, AlertTriangle, Banknote, CreditCard, ChevronDown, ChevronUp, Send, Wallet, Calculator } from "lucide-react";
+import { Check, X, AlertTriangle, Banknote, ChevronDown, ChevronUp, Send, Wallet, Calculator } from "lucide-react";
+import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { POS_EXTERNAL_PAYMENT_PROOF_HINT } from "@shared/posPaymentPolicy";
 import { normalizeNumberInput } from "@shared/numberNormalize";
@@ -179,8 +180,8 @@ export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoic
           <button type="button" style={payMethodStyle(method === "CASH")}     onClick={() => setMethod("CASH")}>
             <Banknote aria-hidden size={16} />نقدي
           </button>
-          <button type="button" style={payMethodStyle(method === "CARD")}     onClick={() => setMethod("CARD")}>
-            <CreditCard aria-hidden size={16} />بطاقة
+          <button type="button" style={{ ...payMethodStyle(method === "CARD"), gap: 4, paddingInline: 3 }} onClick={() => setMethod("CARD")}>
+            <CardBrandLogos size="xs" /><span>بطاقة</span>
           </button>
           <button type="button" style={payMethodStyle(method === "TRANSFER")} onClick={() => setMethod("TRANSFER")}>
             <Send aria-hidden size={16} />تحويل

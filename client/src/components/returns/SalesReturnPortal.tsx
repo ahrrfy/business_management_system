@@ -54,6 +54,7 @@ import {
 } from "./printThermalReturnReceipt";
 import { ProductSearchBar } from "@/components/invoice/ProductSearchBar";
 import type { InvoiceLine } from "@/components/invoice/types";
+import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 
 export interface SalesCartItem {
   id: string;
@@ -2234,7 +2235,7 @@ export function SalesReturnPortal({
                   )}
                 >
                   <div className="flex items-center gap-2.5">
-                    <CreditCard className="size-4 text-emerald-600" />
+                    <CardBrandLogos size="sm" />
                     <div>
                       <div>استرداد بنكي / بطاقة</div>
                       <div className="text-[10px] text-muted-foreground font-normal">

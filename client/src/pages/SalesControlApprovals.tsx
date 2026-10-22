@@ -40,6 +40,8 @@ import { getDeviceCode } from "@/lib/offline/outbox";
 import { salesControlFacts, type SalesControlFactsType } from "@shared/salesControlFacts";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
+import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
+import { isCardPaymentMethod } from "@/lib/printing/cardBrandLogos";
 import {
   buildSalesCorrectionComparison,
   type CorrectionComparisonPayload,
@@ -160,7 +162,13 @@ function CorrectionBeforeAfter({ request, approvalAction }: { request: ControlRe
             <div className="flex justify-between"><span>الضريبة</span><strong>{fmt(original.data.taxAmount ?? 0)} د.ع</strong></div>
             <div className="flex justify-between"><span>التوصيل</span><strong>{original.data.deliveryFree ? `مجاني${D(original.data.deliveryWaivedAmount ?? 0).gt(0) ? ` · متنازل ${fmt(original.data.deliveryWaivedAmount)} د.ع` : ""}` : `${fmt(original.data.deliveryFee ?? 0)} د.ع`}</strong></div>
             <div className="flex justify-between"><span>المدفوع</span><strong>{fmt(comparison.beforePaid)} د.ع</strong></div>
-            <div className="flex justify-between"><span>طريقة الدفع</span><strong>{paymentMethodLabel(original.data.paymentMethod)}</strong></div>
+            <div className="flex justify-between">
+              <span>طريقة الدفع</span>
+              <strong className="inline-flex items-center gap-1.5">
+                {original.data.paymentMethod === "CARD" && <CardBrandLogos size="xs" />}
+                <span>{paymentMethodLabel(original.data.paymentMethod)}</span>
+              </strong>
+            </div>
           </div>
         </div>
 
@@ -208,7 +216,13 @@ function CorrectionBeforeAfter({ request, approvalAction }: { request: ControlRe
             <div className="flex justify-between"><span>التوصيل</span><strong>{comparison.afterDeliveryFree ? `مجاني${D(comparison.afterDeliveryWaived).gt(0) ? ` · متنازل ${fmt(comparison.afterDeliveryWaived)} د.ع` : ""}` : `${fmt(comparison.afterDelivery)} د.ع`}</strong></div>
             <div className="flex justify-between"><span>المدفوع بعد النقل/التحصيل</span><strong>{fmt(comparison.afterPaid)} د.ع</strong></div>
             <div className="flex justify-between"><span>المتبقي</span><strong>{fmt(comparison.afterDue)} د.ع</strong></div>
-            <div className="flex justify-between"><span>طريقة الدفع</span><strong>{paymentMethodLabel(comparison.paymentMethod)}</strong></div>
+            <div className="flex justify-between">
+              <span>طريقة الدفع</span>
+              <strong className="inline-flex items-center gap-1.5">
+                {comparison.paymentMethod === "CARD" && <CardBrandLogos size="xs" />}
+                <span>{paymentMethodLabel(comparison.paymentMethod)}</span>
+              </strong>
+            </div>
             {D(comparison.overpay).gt(0) && (
               <div className="flex justify-between text-[var(--sem-warn)]">
                 <span>فرق زائد</span>
@@ -829,12 +843,18 @@ export default function SalesControlApprovals() {
                 )
               ) : (
                 <div className="grid grid-cols-2 gap-2 rounded-md border border-dashed p-3">
-                  {payloadFacts(request.requestType as SalesControlType, request.payload).map((fact) => (
-                    <div key={fact.label}>
-                      <div className="text-xs text-muted-foreground">{fact.label}</div>
-                      <div className="font-medium">{fact.value}</div>
-                    </div>
-                  ))}
+                  {payloadFacts(request.requestType as SalesControlType, request.payload).map((fact) => {
+                    const showCardLogo = /طريقة|الاسترداد|الدفع/.test(fact.label) && isCardPaymentMethod(fact.value);
+                    return (
+                      <div key={fact.label}>
+                        <div className="text-xs text-muted-foreground">{fact.label}</div>
+                        <div className="inline-flex items-center gap-1.5 font-medium">
+                          {showCardLogo && <CardBrandLogos size="xs" />}
+                          <span>{fact.value}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
               {canReview && reviewerConflict && (
@@ -884,8 +904,9 @@ export default function SalesControlApprovals() {
                 && (request.payload as { refundPaymentMethod?: string } | null)?.refundPaymentMethod === "CARD"
                 && !reviewerConflict && (
                 <div className="space-y-1 rounded-md border border-dashed p-3">
-                  <Label htmlFor={`cancel-ref-${request.id}`} className="text-xs">
-                    مرجع استرداد البطاقة — نفّذه على الجهاز ثمّ أدخِله هنا قبل الاعتماد
+                  <Label htmlFor={`cancel-ref-${request.id}`} className="inline-flex items-center gap-1.5 text-xs">
+                    <CardBrandLogos size="xs" />
+                    <span>مرجع استرداد البطاقة — نفّذه على الجهاز ثمّ أدخِله هنا قبل الاعتماد</span>
                   </Label>
                   <Input
                     id={`cancel-ref-${request.id}`}

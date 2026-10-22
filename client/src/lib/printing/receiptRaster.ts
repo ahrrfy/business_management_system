@@ -13,6 +13,7 @@ import { fmtQty } from "@shared/quantityFormat";
 import type { ReceiptBrowserData } from "./printTemplates";
 import { buildDigitalBlocks } from "./digitalReceiptLines";
 import { qrCodeDataUrl } from "./qr";
+import { CARD_BRAND_LOGO_URL, isCardPaymentMethod } from "./cardBrandLogos";
 
 const W = 576; // 80مم @ 203dpi — عرض الطباعة الفعلي للطابعات الحرارية
 const PAD = 12;
@@ -354,7 +355,28 @@ export async function receiptToCanvas(
   solidLine(ctx, y, 2);
   y += 34;
 
-  if (d.paymentMethod) totRow("طريقة الدفع:", d.paymentMethod, true);
+  if (d.paymentMethod) {
+    const displayMethod = d.paymentMethod.trim().toUpperCase() === "CARD" ? "بطاقة" : d.paymentMethod;
+    if (isCardPaymentMethod(d.paymentMethod)) {
+      const cardImg = await loadImage(CARD_BRAND_LOGO_URL);
+      ctx.font = "900 22px Cairo, sans-serif";
+      ctx.textAlign = "right";
+      ctx.fillText("طريقة الدفع:", W - PAD, y);
+      ctx.font = "900 22px Cairo, sans-serif";
+      ctx.textAlign = "left";
+      const logoW = 66;
+      const logoH = 22;
+      if (cardImg) {
+        ctx.drawImage(cardImg, PAD, y - 18, logoW, logoH);
+        ctx.fillText(displayMethod, PAD + logoW + 8, y);
+      } else {
+        ctx.fillText(displayMethod, PAD, y);
+      }
+      y += 30;
+    } else {
+      totRow("طريقة الدفع:", displayMethod, true);
+    }
+  }
   if (d.paid != null) totRow("المدفوع:", fmt(d.paid), true);
   if (d.change != null) totRow("الباقي:", fmt(d.change), true);
   if (Number(d.heldDeposits ?? 0) > 0) totRow("عربون محتجز:", fmt(d.heldDeposits), true);

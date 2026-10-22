@@ -22,6 +22,7 @@ import {
   printSalesReportV2,
 } from './printTemplatesV2';
 import { formatArabicMoneyWords } from './tafqit';
+import { cardBrandLogosHtml, formatPaymentMethodPrintHtml, isCardPaymentMethod } from './cardBrandLogos';
 
 /** إعادة تصدير قوالب V2 الرَسميّة للاستخدام المباشر (فاتورة مشتريات + تقرير مبيعات جديدان بلا نظير قديم). */
 export {
@@ -1179,7 +1180,7 @@ export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
           ${formatArabicMoneyWords(d.total)}
         </td>
       </tr>
-      ${d.paymentMethod ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">طريقة الدفع</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">${esc(d.paymentMethod)}</td></tr>` : ''}
+      ${d.paymentMethod ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">طريقة الدفع</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">${formatPaymentMethodPrintHtml(d.paymentMethod, esc, { heightPx: 14 })}</td></tr>` : ''}
       ${d.paid != null ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">المبلغ المدفوع</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.paid)}</td></tr>` : ''}
       ${d.change != null ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">المبلغ المتبقي (الفكة)</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.change)}</td></tr>` : ''}
       ${Number(d.heldDeposits ?? 0) > 0 ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">عربون محتجز</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.heldDeposits)}</td></tr>` : ''}
@@ -1635,8 +1636,11 @@ export function buildShiftCloseHtml(d: ShiftCloseData): string {
     .map(p => {
       const label  = `${METHOD_AR[p.method] ?? p.method} ${p.direction === 'IN' ? 'وارد' : 'صادر'}`;
       const amtStr = p.direction === 'OUT' ? `( ${fmt(p.total)} )` : fmt(p.total);
+      const labelHtml = isCardPaymentMethod(p.method)
+        ? `<span style="display:inline-flex;align-items:center;gap:4px;vertical-align:middle;"><span>${esc(label)}</span>${cardBrandLogosHtml({ heightPx: 13 })}</span>`
+        : esc(label);
       return `<tr>
-        <td style="padding:1mm 1.5mm;font-weight:900;font-size:11px;border:1px solid #000;">${esc(label)}</td>
+        <td style="padding:1mm 1.5mm;font-weight:900;font-size:11px;border:1px solid #000;">${labelHtml}</td>
         <td style="text-align:center;padding:1mm 1.5mm;font-weight:800;font-size:11px;border:1px solid #000;">${p.count}</td>
         <td style="text-align:left;direction:ltr;font-weight:900;font-size:11.5px;font-variant-numeric:tabular-nums;white-space:nowrap;padding:1mm 1.5mm;border:1px solid #000;">${amtStr}</td>
       </tr>`;

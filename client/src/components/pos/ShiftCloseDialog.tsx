@@ -23,6 +23,7 @@ import {
 import { type ShiftData, fmt, type PosColors as C } from "./posShared";
 import { useModalFocus } from "./useModalFocus";
 import { ShiftCashReconciliationMini } from "./ShiftCashReconciliationMini";
+import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 
 export interface ShiftCloseDialogProps {
   C: C;
@@ -202,8 +203,9 @@ export function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, br
             {(report?.payments ?? []).filter((p) => Number(p.total) > 0 && p.method !== "CASH").map((p) => (
               <div key={`${p.method}-${p.direction}`} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12.5, padding: "5px 0", borderBottom: `1px dashed ${C.border}` }}>
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                  <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${paymentMethodClass(p.method)}`}>
-                    {paymentMethodLabel(p.method)}
+                  <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-semibold ${paymentMethodClass(p.method)}`}>
+                    {p.method === "CARD" && <CardBrandLogos size="xs" />}
+                    <span>{paymentMethodLabel(p.method)}</span>
                   </span>
                   <span style={{ color: C.mutedFg }}>{p.direction === "IN" ? "وارد" : "صادر"} ({p.count})</span>
                 </span>

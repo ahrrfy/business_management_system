@@ -14,6 +14,8 @@ import { type Receipt, fmt, type PosColors as C } from "./posShared";
 import { formatQuantity } from "@shared/quantityFormat";
 import { useModalFocus } from "./useModalFocus";
 import { VirtualCashDrawer } from "./VirtualCashDrawer";
+import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
+import { isCardPaymentMethod } from "@/lib/printing/cardBrandLogos";
 
 export interface GenericReceiptLine {
   name: string;
@@ -314,7 +316,10 @@ export function ReceiptOverlay({ C, receipt, onDismiss, onPrint, onPrintLabel }:
                 </span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11.5, color: "#475569" }}>
-                <span>المبلغ المدفوع ({receipt.method}):</span>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  <span>المبلغ المدفوع ({receipt.method}):</span>
+                  {isCardPaymentMethod(receipt.method) && <CardBrandLogos size="xs" pill={false} />}
+                </span>
                 <span style={{ fontWeight: 700, direction: "ltr" }}>{fmt(receipt.received)} د.ع</span>
               </div>
               {receipt.change > 0 && (

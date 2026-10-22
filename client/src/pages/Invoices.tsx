@@ -16,14 +16,14 @@ import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatTableAsTSV } from "@/lib/copy/formatters";
 import { fmtDate } from "@/lib/date";
 import { exportRows, type ExportColumn } from "@/lib/export";
-import { D, fmt } from "@/lib/money";
+import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printInvoiceA4 } from "@/lib/printing/printTemplates";
 import { printReceipt } from "@/lib/printing/print";
 import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
 import { allocateLineTax, derivePaymentTerms } from "@/components/invoice";
 import { variantDisplayName } from "@shared/variantDisplay";
-import { round2 } from "@/lib/money";
+import { CardBrandLogos, CardBrandIcon } from "@/components/ui/CardBrandLogos";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -637,13 +637,13 @@ export default function Invoices() {
               {codInTransit(r) ? (
                 <span className="inline-block rounded-full px-2 py-0.5 text-xs font-semibold badge-stock-low">عند الاستلام (COD)</span>
               ) : r.paymentMethod ? (
-                <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${paymentMethodClass(r.paymentMethod)}`}>{paymentMethodLabel(r.paymentMethod)}</span>
+                <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ${paymentMethodClass(r.paymentMethod)}`}>{r.paymentMethod === "CARD" && <CardBrandLogos size="xs" />}{paymentMethodLabel(r.paymentMethod)}</span>
               ) : (
                 <span className="text-muted-foreground text-xs">—</span>
               )}
               {depositDue && <span className="inline-block rounded-full px-1.5 py-0.5 text-[10px] font-bold badge-stock-low">عربون — متبقٍ للتحصيل</span>}
               {codInTransit(r) && D(r.paidAmount).gt(0) && r.paymentMethod && (
-                <span className="text-[10px] text-muted-foreground">عربون: {paymentMethodLabel(r.paymentMethod)}</span>
+                <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">عربون: {r.paymentMethod === "CARD" && <CardBrandLogos size="xs" />}{paymentMethodLabel(r.paymentMethod)}</span>
               )}
             </div>
           );
@@ -1131,7 +1131,7 @@ export default function Invoices() {
                   value: fmtDate(r.invoiceDate),
                   icon: Calendar,
                 },
-                { label: "الدفع", value: paymentLabel(r), icon: CreditCard },
+                { label: "الدفع", value: paymentLabel(r), icon: !codInTransit(r) && r.paymentMethod === "CARD" ? CardBrandIcon : CreditCard },
                 { label: "النوع", value: sourceTypeLabel(r.sourceType) },
                 ...(r.consignmentStatus
                   ? [

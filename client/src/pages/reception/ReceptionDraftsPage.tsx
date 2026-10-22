@@ -38,6 +38,7 @@ import { confirm } from "@/lib/confirm";
 import { useSearch } from "wouter";
 import { ReceptionDuplicateAlert } from "@/components/reception/ReceptionDuplicateAlert";
 import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
+import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 
 type DraftItem = RouterOutputs["reception"]["draftList"]["rows"][number];
 type RefundVars = RouterInputs["reception"]["refundDeposit"];
@@ -542,8 +543,9 @@ export function DraftDetailsModal({
                           <div className="space-y-0.5">
                             <div className="flex items-center gap-2">
                               <span className="font-bold font-mono text-sm">{fmtAr(p.amount)}</span>
-                              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium">
-                                {p.method === "TRANSFER" ? "تحويل" : p.method === "CARD" ? "بطاقة" : p.method === "CASH" ? "نقداً" : p.method}
+                              <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium">
+                                {p.method === "CARD" && <CardBrandLogos size="xs" />}
+                                <span>{p.method === "TRANSFER" ? "تحويل" : p.method === "CARD" ? "بطاقة" : p.method === "CASH" ? "نقداً" : p.method}</span>
                               </span>
                               <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
                                 isHeld ? "bg-destructive/10 text-destructive" : "bg-muted text-muted-foreground"

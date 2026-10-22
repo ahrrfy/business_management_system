@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { wrapA4Doc, wrapMultiA4Doc, wrapReceiptDoc, pageHeader, docHeader, docTableV2, docFooter } from "./docHtml";
+import { wrapA4Doc, wrapMultiA4Doc, wrapReceiptDoc, pageHeader, docHeader, docTableV2, docFooter, infoCards } from "./docHtml";
+import { isCardPaymentMethod } from "./cardBrandLogos";
 import {
   buildSalesInvoiceV2Html,
   buildPurchaseInvoiceV2Html,
@@ -370,4 +371,36 @@ describe("docFooter - تخصيص تذييل المستند عبر إعدادات
     expect(footerHtml).toContain("بغداد — الكرادة · هاتف الإدارة: 07700000000");
   });
 });
+
+describe("infoCards & isCardPaymentMethod — شعارا Visa و Mastercard لحقول الدفع والصرف والاسترداد", () => {
+  it("يدرج شعار البطاقة في infoCards لحقول طريقة الدفع وطريقة الصرف وطريقة الاسترداد", () => {
+    const html = infoCards([
+      {
+        title: "بيانات السند",
+        variant: "green",
+        fields: [
+          { label: "طريقة الصرف", value: "بطاقة" },
+          { label: "طريقة الاسترداد", value: "استرداد بالبطاقة" },
+        ],
+      },
+    ]);
+
+    expect(html).toContain("/visa-mastercard.png");
+    expect(html).toContain("طريقة الصرف");
+    expect(html).toContain("طريقة الاسترداد");
+    expect(html).toContain("استرداد بالبطاقة");
+  });
+
+  it("يتعرف على صيغ الدفع والاسترداد بالبطاقة ويستثني فئات المنتجات مثل بطاقة هدية", () => {
+    expect(isCardPaymentMethod("CARD")).toBe(true);
+    expect(isCardPaymentMethod("بطاقة")).toBe(true);
+    expect(isCardPaymentMethod("استرداد بالبطاقة")).toBe(true);
+    expect(isCardPaymentMethod("عند الاستلام (COD) — عربون بطاقة")).toBe(true);
+    expect(isCardPaymentMethod("بطاقة وارد")).toBe(true);
+    expect(isCardPaymentMethod("نقدي")).toBe(false);
+    expect(isCardPaymentMethod("بطاقة هدية")).toBe(false);
+    expect(isCardPaymentMethod("بطاقات رقمية")).toBe(false);
+  });
+});
+
 

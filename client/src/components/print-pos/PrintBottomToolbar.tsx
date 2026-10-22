@@ -13,6 +13,7 @@ import { ACTION_LABELS } from "@shared/actionLabels";
 import { roundCashIQD } from "@/lib/money";
 import { CopyButton } from "@/components/CopyButton";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
+import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 import type { PrintCartLine as CartLine } from "@/components/printPos/PrintCartList";
 import type { PaymentMethod, EditingInvoiceInfo } from "./PrintPosCheckout";
 
@@ -84,7 +85,7 @@ function Method({
       style={{
         display: "inline-flex",
         alignItems: "center",
-        gap: 6,
+        gap: 7,
         height: 42,
         minHeight: 0,
         padding: "0 16px",
@@ -100,7 +101,7 @@ function Method({
         transition: "all 0.15s ease",
       }}
     >
-      <Icon size={19} aria-hidden />
+      {m === "CARD" ? <CardBrandLogos size="sm" /> : <Icon size={19} aria-hidden />}
       <span>{label}</span>
     </button>
   );
