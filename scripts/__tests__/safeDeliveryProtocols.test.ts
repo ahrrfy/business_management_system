@@ -250,7 +250,12 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
         mergeable: "MERGEABLE",
         headRefOid: "7f60f09e78",
         statusCheckRollup: greenRollup,
-        comments: [{ body: "<!-- codex-review-state:v1 {corrupted} -->" }],
+        comments: [
+          {
+            author: { login: "chatgpt-codex-connector" },
+            body: "<!-- codex-review-state:v1 {corrupted} -->",
+          },
+        ],
       },
     });
     expect(blockedByMalformedCodexComment.ready).toBe(false);
@@ -260,6 +265,7 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
 
     const parsedNestedCodex = parseCodexReviewState([
       {
+        author: { login: "chatgpt-codex-connector" },
         body: '<!-- codex-review-state:v1 {"code_review":{"commit_sha":"90fb9671d55713f186742f7757481427fef726bd","has_any_findings":false,"has_unresolved_findings":false,"status":"in_progress"},"security_review":{"commit_sha":null,"has_any_findings":null,"has_unresolved_findings":null,"status":null}} -->',
       },
     ]);
@@ -279,6 +285,7 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
         statusCheckRollup: greenRollup,
         comments: [
           {
+            author: { login: "chatgpt-codex-connector" },
             body: '<!-- codex-review-state:v1 {"code_review":{"commit_sha":"90fb9671d55713f186742f7757481427fef726bd","has_any_findings":false,"has_unresolved_findings":false,"status":"in_progress"},"security_review":{"commit_sha":null,"has_any_findings":null,"has_unresolved_findings":null,"status":null}} -->',
           },
         ],
@@ -298,6 +305,7 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
         statusCheckRollup: greenRollup,
         comments: [
           {
+            author: { login: "chatgpt-codex-connector" },
             body: '<!-- codex-review-state:v1 {"code_review":{"commit_sha":"1111111110000000000000000000000000000000","has_any_findings":false,"has_unresolved_findings":false,"status":"completed"},"security_review":{"commit_sha":"90fb9671d55713f186742f7757481427fef726bd","has_any_findings":false,"has_unresolved_findings":false,"status":"failed"}} -->',
           },
         ],
@@ -391,7 +399,7 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
       fetchPrState: () => ({
         number: 1530,
         state: "OPEN",
-        isInMergeQueue: true,
+        mergeQueueEntry: { state: "QUEUED" },
         headRefOid: "0bd1c2db9",
       }),
     });
@@ -405,10 +413,17 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
       { name: "authz-guard", status: "COMPLETED", conclusion: "SUCCESS" },
       { name: "check-test-build", status: "COMPLETED", conclusion: "SUCCESS" },
     ];
+    const makeTrustedCodexComments = (sha: string) => [
+      {
+        author: { login: "chatgpt-codex-connector" },
+        body: `<!-- codex-review-state:v1 {"sha":"${sha}","state":"completed"} -->`,
+      },
+    ];
 
     const resolvedThreadsLog: Array<{ threadId: string; sha: string }> = [];
     const cycleResult = await runAtomicRemediationCycle({
       prNumber: 1530,
+      pollIntervalMs: 0,
       initialPrView: {
         number: 1530,
         state: "OPEN",
@@ -417,6 +432,7 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
         mergeStateStatus: "BLOCKED",
         headRefOid: "sha-initial",
         statusCheckRollup: greenRollup,
+        comments: makeTrustedCodexComments("sha-initial"),
       },
       initialReviewThreads: [
         {
@@ -451,6 +467,7 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
           mergeable: "MERGEABLE",
           headRefOid: "sha-atomic-fix-1",
           statusCheckRollup: greenRollup,
+          comments: makeTrustedCodexComments("sha-atomic-fix-1"),
         },
         reviewThreads: [
           {
@@ -473,6 +490,7 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
     let resolvedOnStaleRemote = false;
     const staleRemoteResult = await runAtomicRemediationCycle({
       prNumber: 1530,
+      pollIntervalMs: 0,
       initialPrView: {
         number: 1530,
         state: "OPEN",
@@ -480,6 +498,7 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
         mergeable: "MERGEABLE",
         headRefOid: "sha-unfixed-1",
         statusCheckRollup: greenRollup,
+        comments: makeTrustedCodexComments("sha-unfixed-1"),
       },
       initialReviewThreads: [
         {
@@ -514,6 +533,7 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
           mergeable: "MERGEABLE",
           headRefOid: "sha-unfixed-1",
           statusCheckRollup: greenRollup,
+          comments: makeTrustedCodexComments("sha-unfixed-1"),
         },
         reviewThreads: [{ id: "PRRT_101", isResolved: true }],
       }),
@@ -524,6 +544,7 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
 
     const missingThreadIdsResult = await runAtomicRemediationCycle({
       prNumber: 1530,
+      pollIntervalMs: 0,
       initialPrView: {
         number: 1530,
         state: "OPEN",
@@ -531,6 +552,7 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
         mergeable: "MERGEABLE",
         headRefOid: "sha-unfixed-1",
         statusCheckRollup: greenRollup,
+        comments: makeTrustedCodexComments("sha-unfixed-1"),
       },
       initialReviewThreads: [
         {
@@ -550,6 +572,7 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
           mergeable: "MERGEABLE",
           headRefOid: "sha-fixed-2",
           statusCheckRollup: greenRollup,
+          comments: makeTrustedCodexComments("sha-fixed-2"),
         },
         reviewThreads: [{ id: "PRRT_101", isResolved: false }],
       }),
@@ -560,7 +583,7 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
     );
   });
 
-  it("يرفض نتائج مراجعة Codex القديمة (Stale SHA) ويرتب إعادات الفحوصات المتداخلة حسب وقت البدء (startedAt)", () => {
+  it("يرفض نتائج مراجعة Codex القديمة (Stale SHA) أو المفقودة أو المزوّرة ويرتب إعادات الفحوصات المتداخلة حسب وقت البدء (startedAt)", () => {
     const staleCodexRes = evaluatePrMergeReadiness({
       prView: {
         number: 1532,
@@ -585,6 +608,7 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
         ],
         comments: [
           {
+            author: { login: "chatgpt-codex-connector" },
             body: '<!-- codex-review-state:v1 {"code_review":{"commit_sha":"old-head-sha-111","status":"completed"},"security_review":{"commit_sha":null,"status":null}} -->',
           },
         ],
@@ -592,6 +616,39 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
     });
     expect(staleCodexRes.ready).toBe(false);
     expect(staleCodexRes.code).toBe("PR_CODEX_REVIEW_STALE");
+
+    const missingCodexRes = evaluatePrMergeReadiness({
+      prView: {
+        number: 1532,
+        state: "OPEN",
+        baseRefName: "main",
+        mergeable: "MERGEABLE",
+        headRefOid: "new-head-sha-222",
+        statusCheckRollup: [
+          { name: "audit", status: "COMPLETED", conclusion: "SUCCESS" },
+          { name: "authz-guard", status: "COMPLETED", conclusion: "SUCCESS" },
+          { name: "quality-build", status: "COMPLETED", conclusion: "SUCCESS" },
+          {
+            name: "test-shard-1-of-8",
+            status: "COMPLETED",
+            conclusion: "SUCCESS",
+          },
+          {
+            name: "check-test-build",
+            status: "COMPLETED",
+            conclusion: "SUCCESS",
+          },
+        ],
+        comments: [
+          {
+            author: { login: "untrusted-user" },
+            body: '<!-- codex-review-state:v1 {"sha":"new-head-sha-222","state":"completed"} -->',
+          },
+        ],
+      },
+    });
+    expect(missingCodexRes.ready).toBe(false);
+    expect(missingCodexRes.code).toBe("PR_CODEX_REVIEW_MISSING");
 
     const overlappingRerunRes = evaluatePrMergeReadiness({
       prView: {

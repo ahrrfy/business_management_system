@@ -278,12 +278,25 @@ function selectPrimaryCodexEntry(codexState) {
   };
 }
 
+const TRUSTED_CODEX_BOT_LOGINS = new Set([
+  "chatgpt-codex-connector",
+  "chatgpt-codex-connector[bot]",
+]);
+
+function isTrustedCodexComment(comment) {
+  const login = String(comment?.author?.login ?? comment?.user?.login ?? "")
+    .trim()
+    .toLowerCase();
+  return TRUSTED_CODEX_BOT_LOGINS.has(login);
+}
+
 export function parseCodexReviewState(prComments = []) {
   if (!Array.isArray(prComments) || prComments.length === 0) {
     return null;
   }
   let latest = null;
   for (const comment of prComments) {
+    if (!isTrustedCodexComment(comment)) continue;
     const body = String(comment?.body ?? "");
     if (!body.includes(CODEX_STATE_MARKER)) continue;
     const match = body.match(CODEX_STATE_RE);
@@ -527,63 +540,77 @@ export function evaluatePrMergeReadiness({
   }
 
   const codexState = parseCodexReviewState(prView.comments);
-  if (codexState !== null) {
-    const selectedCodex = selectPrimaryCodexEntry(codexState);
-    const codexSha = String(selectedCodex.sha ?? "").trim();
-    const codexDisplaySha = codexSha
-      ? codexSha.slice(0, 9)
-      : headRefOid.slice(0, 9);
-    if (
-      selectedCodex.entries.length === 0 ||
-      selectedCodex.statuses.includes("invalid")
-    ) {
+  if (codexState === null) {
+    if (unresolved.length > 0) {
       return {
         ready: false,
-        code: "PR_CODEX_REVIEW_STATE_INVALID",
-        reason: `تعذّر تحليل حالة مراجعة Codex الآلية على طلب #${prView.number} (بيانات الحالة تالفة).`,
-        ...unaddressedExtras,
+        code: "PR_UNADDRESSED_REVIEW_COMMENTS",
+        reason: `توجد ${unresolved.length} خيوط مراجعة غير محلولة (unresolved) على طلب الدمج #${prView.number}. عالجها ذرّياً وأغلق الخيط (resolveReviewThread) قبل الدمج.`,
+        unaddressedComments: unresolved,
       };
     }
-    if (selectedCodex.statuses.some((s) => CODEX_RUNNING_STATUSES.has(s))) {
-      return {
-        ready: false,
-        code: "PR_CODEX_REVIEW_RUNNING",
-        reason: `مراجعة Codex الآلية لا تزال قيد التشغيل على الالتزام (${codexDisplaySha})؛ انتظر انتهاءها قبل الدمج.`,
-        ...unaddressedExtras,
-      };
-    }
-    if (selectedCodex.statuses.some((s) => CODEX_FAILED_STATUSES.has(s))) {
-      return {
-        ready: false,
-        code: "PR_CODEX_REVIEW_FAILED",
-        reason: `فشلت مراجعة Codex الآلية على الالتزام (${codexDisplaySha})؛ أعد تشغيل المراجعة أو تحقّق من سبب الفشل قبل الدمج.`,
-        ...unaddressedExtras,
-      };
-    }
-    if (
-      selectedCodex.entries.some((e) => !CODEX_COMPLETED_STATUSES.has(e.status))
-    ) {
-      return {
-        ready: false,
-        code: "PR_CODEX_REVIEW_STATE_INVALID",
-        reason: `حالة مراجعة Codex الآلية غير معروفة على طلب #${prView.number}.`,
-        ...unaddressedExtras,
-      };
-    }
-    const staleCodexEntry = selectedCodex.entries.find(
-      (e) => !doesCodexShaMatchHead(e.sha, headRefOid),
-    );
-    if (staleCodexEntry) {
-      const staleShaLabel = staleCodexEntry.sha
-        ? staleCodexEntry.sha.slice(0, 9)
-        : "غير محدد";
-      return {
-        ready: false,
-        code: "PR_CODEX_REVIEW_STALE",
-        reason: `مراجعة Codex الآلية المكتملة مرتبطة بالالتزام (${staleShaLabel}) ولا تطابق رأس الفرع الحالي (${headRefOid.slice(0, 9)})؛ يجب انتظار أو تشغيل مراجعة Codex على الالتزام الحالي قبل الدمج.`,
-        ...unaddressedExtras,
-      };
-    }
+    return {
+      ready: false,
+      code: "PR_CODEX_REVIEW_MISSING",
+      reason: `لم تُسجَّل حالة مراجعة Codex الآلية الموثوقة (chatgpt-codex-connector) على طلب #${prView.number} للالتزام (${headRefOid.slice(0, 9)}) بعد؛ انتظر بدء المراجعة واكتمالها قبل الدمج.`,
+    };
+  }
+
+  const selectedCodex = selectPrimaryCodexEntry(codexState);
+  const codexSha = String(selectedCodex.sha ?? "").trim();
+  const codexDisplaySha = codexSha
+    ? codexSha.slice(0, 9)
+    : headRefOid.slice(0, 9);
+  if (
+    selectedCodex.entries.length === 0 ||
+    selectedCodex.statuses.includes("invalid")
+  ) {
+    return {
+      ready: false,
+      code: "PR_CODEX_REVIEW_STATE_INVALID",
+      reason: `تعذّر تحليل حالة مراجعة Codex الآلية على طلب #${prView.number} (بيانات الحالة تالفة).`,
+      ...unaddressedExtras,
+    };
+  }
+  if (selectedCodex.statuses.some((s) => CODEX_RUNNING_STATUSES.has(s))) {
+    return {
+      ready: false,
+      code: "PR_CODEX_REVIEW_RUNNING",
+      reason: `مراجعة Codex الآلية لا تزال قيد التشغيل على الالتزام (${codexDisplaySha})؛ انتظر انتهاءها قبل الدمج.`,
+      ...unaddressedExtras,
+    };
+  }
+  if (selectedCodex.statuses.some((s) => CODEX_FAILED_STATUSES.has(s))) {
+    return {
+      ready: false,
+      code: "PR_CODEX_REVIEW_FAILED",
+      reason: `فشلت مراجعة Codex الآلية على الالتزام (${codexDisplaySha})؛ أعد تشغيل المراجعة أو تحقّق من سبب الفشل قبل الدمج.`,
+      ...unaddressedExtras,
+    };
+  }
+  if (
+    selectedCodex.entries.some((e) => !CODEX_COMPLETED_STATUSES.has(e.status))
+  ) {
+    return {
+      ready: false,
+      code: "PR_CODEX_REVIEW_STATE_INVALID",
+      reason: `حالة مراجعة Codex الآلية غير معروفة على طلب #${prView.number}.`,
+      ...unaddressedExtras,
+    };
+  }
+  const staleCodexEntry = selectedCodex.entries.find(
+    (e) => !doesCodexShaMatchHead(e.sha, headRefOid),
+  );
+  if (staleCodexEntry) {
+    const staleShaLabel = staleCodexEntry.sha
+      ? staleCodexEntry.sha.slice(0, 9)
+      : "غير محدد";
+    return {
+      ready: false,
+      code: "PR_CODEX_REVIEW_STALE",
+      reason: `مراجعة Codex الآلية المكتملة مرتبطة بالالتزام (${staleShaLabel}) ولا تطابق رأس الفرع الحالي (${headRefOid.slice(0, 9)})؛ يجب انتظار أو تشغيل مراجعة Codex على الالتزام الحالي قبل الدمج.`,
+      ...unaddressedExtras,
+    };
   }
 
   if (unresolved.length > 0) {
@@ -621,8 +648,21 @@ export function evaluatePrMergeReadiness({
   return { ready: true, code: "OK", headRefOid };
 }
 
+const MERGE_QUEUE_PENDING_STATES = new Set([
+  "QUEUED",
+  "AWAITING_CHECKS",
+  "LOCKED",
+  "MERGEABLE",
+]);
+
 function isMergeQueuePendingState(postMergeView) {
   if (postMergeView?.isInMergeQueue === true) return true;
+  const queueEntryState = String(postMergeView?.mergeQueueEntry?.state ?? "")
+    .trim()
+    .toUpperCase();
+  if (MERGE_QUEUE_PENDING_STATES.has(queueEntryState)) {
+    return true;
+  }
   const mergeStateStatus = String(
     postMergeView?.mergeStateStatus ?? "",
   ).toUpperCase();
@@ -770,6 +810,19 @@ function defaultVerifyLocalGates() {
   return { ok: true };
 }
 
+const PENDING_READINESS_CODES = new Set([
+  "PR_CI_PENDING",
+  "PR_CODEX_REVIEW_RUNNING",
+  "PR_CODEX_REVIEW_STALE",
+  "PR_CODEX_REVIEW_MISSING",
+  "PR_MERGEABLE_UNKNOWN",
+]);
+
+function defaultAsyncSleep(ms) {
+  if (!ms || ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * ينفّذ دورة الإصلاح الذرّي وإعادة الفحص (Atomic Remediation & Re-check Cycle):
  * إذا وجدت البوّابة ملاحظات مراجعة أو فشل فحوصات، يُصلحها العامل ذرّياً في التزام جديد
@@ -787,6 +840,9 @@ export async function runAtomicRemediationCycle({
   verifyLocalGates = defaultVerifyLocalGates,
   fetchLatestState,
   maxCycles = 5,
+  pollIntervalMs = 15_000,
+  maxPollAttempts = 40,
+  sleep = defaultAsyncSleep,
 } = {}) {
   const remediateFn = remediateAndCommit ?? remediateFinding;
   let currentPrView = initialPrView;
@@ -796,10 +852,33 @@ export async function runAtomicRemediationCycle({
   );
 
   for (let cycle = 1; cycle <= maxCycles; cycle += 1) {
-    const decision = evaluatePrMergeReadiness({
+    let decision = evaluatePrMergeReadiness({
       prView: currentPrView,
       reviewThreads: currentThreads,
     });
+
+    let pollAttempt = 0;
+    while (
+      !decision.ready &&
+      PENDING_READINESS_CODES.has(decision.code) &&
+      typeof fetchLatestState === "function" &&
+      pollAttempt < maxPollAttempts
+    ) {
+      pollAttempt += 1;
+      await sleep(pollIntervalMs);
+      const nextState = await fetchLatestState({
+        prNumber,
+        cycle,
+        pollAttempt,
+        decision,
+      });
+      currentPrView = nextState?.prView;
+      currentThreads = nextState?.reviewThreads;
+      decision = evaluatePrMergeReadiness({
+        prView: currentPrView,
+        reviewThreads: currentThreads,
+      });
+    }
 
     if (decision.ready) {
       return {
@@ -810,26 +889,14 @@ export async function runAtomicRemediationCycle({
       };
     }
 
-    const isPendingOnly =
-      decision.code === "PR_CI_PENDING" ||
-      decision.code === "PR_CODEX_REVIEW_RUNNING" ||
-      decision.code === "PR_CODEX_REVIEW_STALE" ||
-      decision.code === "PR_MERGEABLE_UNKNOWN";
-
-    if (isPendingOnly) {
-      if (typeof fetchLatestState !== "function" || cycle === maxCycles) {
-        return {
-          ready: false,
-          cycles: cycle,
-          code: decision.code,
-          reason: decision.reason,
-          decision,
-        };
-      }
-      const nextState = await fetchLatestState({ prNumber, cycle, decision });
-      currentPrView = nextState?.prView;
-      currentThreads = nextState?.reviewThreads;
-      continue;
+    if (PENDING_READINESS_CODES.has(decision.code)) {
+      return {
+        ready: false,
+        cycles: cycle,
+        code: decision.code,
+        reason: decision.reason,
+        decision,
+      };
     }
 
     const isRemediable =
@@ -1006,6 +1073,12 @@ export function runSafeMergeSelftest() {
     { name: "test-shard-1-of-8", status: "COMPLETED", conclusion: "SUCCESS" },
     { name: "check-test-build", status: "COMPLETED", conclusion: "SUCCESS" },
   ];
+  const makeTrustedCodexComments = (sha = "sha-2") => [
+    {
+      author: { login: "chatgpt-codex-connector" },
+      body: `<!-- codex-review-state:v1 {"sha":"${sha}","state":"completed"} -->`,
+    },
+  ];
 
   // 1. Pending check blocks merge
   const pendingRes = evaluatePrMergeReadiness({
@@ -1105,6 +1178,7 @@ export function runSafeMergeSelftest() {
       statusCheckRollup: baseGreenRollup,
       comments: [
         {
+          author: { login: "chatgpt-codex-connector" },
           body: '<!-- codex-review-state:v1 {"sha":"sha-2","state":"running"} -->',
         },
       ],
@@ -1122,6 +1196,7 @@ export function runSafeMergeSelftest() {
       mergeable: "MERGEABLE",
       headRefOid: "sha-2",
       statusCheckRollup: baseGreenRollup,
+      comments: makeTrustedCodexComments("sha-2"),
     },
     reviewThreads: [
       {
@@ -1165,6 +1240,7 @@ export function runSafeMergeSelftest() {
       mergeable: "MERGEABLE",
       headRefOid: "sha-2",
       statusCheckRollup: baseGreenRollup,
+      comments: makeTrustedCodexComments("sha-2"),
     },
     reviewThreads: [
       {
@@ -1250,7 +1326,7 @@ export function runSafeMergeSelftest() {
     fetchPrState: () => ({
       number: 1530,
       state: "OPEN",
-      isInMergeQueue: true,
+      mergeQueueEntry: { state: "QUEUED" },
       headRefOid: "sha-2",
     }),
   });
@@ -1259,16 +1335,16 @@ export function runSafeMergeSelftest() {
 
   let pollCount = 0;
   const eventuallyMergedRes = verifyPostMergeCompletion(1530, "sha-2", {
-    maxAttempts: 3,
+    maxAttempts: 5,
     delayMs: 0,
     sleep: () => {},
     fetchPrState: () => {
       pollCount += 1;
-      if (pollCount === 1) {
+      if (pollCount < 4) {
         return {
           number: 1530,
           state: "OPEN",
-          isInMergeQueue: true,
+          mergeQueueEntry: { state: "AWAITING_CHECKS" },
           headRefOid: "sha-2",
         };
       }
@@ -1295,6 +1371,7 @@ export function runSafeMergeSelftest() {
       mergeStateStatus: "BEHIND",
       headRefOid: "sha-2",
       statusCheckRollup: baseGreenRollup,
+      comments: makeTrustedCodexComments("sha-2"),
     },
   });
   assert.equal(behindBranchRes.ready, false);
@@ -1309,6 +1386,7 @@ export function runSafeMergeSelftest() {
       mergeStateStatus: "BLOCKED",
       headRefOid: "sha-2",
       statusCheckRollup: baseGreenRollup,
+      comments: makeTrustedCodexComments("sha-2"),
     },
   });
   assert.equal(blockedBranchRes.ready, false);
@@ -1323,6 +1401,7 @@ export function runSafeMergeSelftest() {
       mergeable: "MERGEABLE",
       headRefOid: "sha-2",
       statusCheckRollup: baseGreenRollup,
+      comments: makeTrustedCodexComments("sha-2"),
     },
     reviewThreads: {
       data: {
@@ -1364,6 +1443,7 @@ export function runSafeMergeSelftest() {
           createdAt: "2026-10-22T10:05:00Z",
         },
       ],
+      comments: makeTrustedCodexComments("sha-2"),
     },
   });
   assert.equal(supersededContextRes.ready, true);
@@ -1378,7 +1458,12 @@ export function runSafeMergeSelftest() {
       mergeable: "MERGEABLE",
       headRefOid: "sha-2",
       statusCheckRollup: baseGreenRollup,
-      comments: [{ body: "<!-- codex-review-state:v1 {broken-json} -->" }],
+      comments: [
+        {
+          author: { login: "chatgpt-codex-connector" },
+          body: "<!-- codex-review-state:v1 {broken-json} -->",
+        },
+      ],
     },
   });
   assert.equal(corruptedCodexRes.ready, false);
@@ -1395,6 +1480,7 @@ export function runSafeMergeSelftest() {
       statusCheckRollup: baseGreenRollup,
       comments: [
         {
+          author: { login: "chatgpt-codex-connector" },
           body: '<!-- codex-review-state:v1 {"code_review":{"commit_sha":"90fb9671d55713f186742f7757481427fef726bd","has_any_findings":false,"has_unresolved_findings":false,"status":"in_progress"},"security_review":{"commit_sha":null,"has_any_findings":null,"has_unresolved_findings":null,"status":null}} -->',
         },
       ],
@@ -1413,6 +1499,7 @@ export function runSafeMergeSelftest() {
       statusCheckRollup: baseGreenRollup,
       comments: [
         {
+          author: { login: "chatgpt-codex-connector" },
           body: '<!-- codex-review-state:v1 {"code_review":{"commit_sha":"90fb9671d55713f186742f7757481427fef726bd","has_any_findings":false,"has_unresolved_findings":false,"status":"completed"},"security_review":{"commit_sha":"90fb9671d55713f186742f7757481427fef726bd","has_any_findings":false,"has_unresolved_findings":false,"status":"failed"}} -->',
         },
       ],
@@ -1431,6 +1518,7 @@ export function runSafeMergeSelftest() {
       statusCheckRollup: baseGreenRollup,
       comments: [
         {
+          author: { login: "chatgpt-codex-connector" },
           body: '<!-- codex-review-state:v1 {"code_review":{"commit_sha":"90fb9671d55713f186742f7757481427fef726bd","has_any_findings":false,"has_unresolved_findings":false,"status":"completed"},"security_review":{"commit_sha":null,"has_any_findings":null,"has_unresolved_findings":null,"status":null}} -->',
         },
       ],
@@ -1441,6 +1529,7 @@ export function runSafeMergeSelftest() {
 
   const mixedNestedCodexComment = [
     {
+      author: { login: "chatgpt-codex-connector" },
       body: '<!-- codex-review-state:v1 {"code_review":{"commit_sha":"1111111110000000000000000000000000000000","has_any_findings":false,"has_unresolved_findings":false,"status":"completed"},"security_review":{"commit_sha":"2222222220000000000000000000000000000000","has_any_findings":false,"has_unresolved_findings":false,"status":"in_progress"}} -->',
     },
   ];
@@ -1547,7 +1636,7 @@ export function runSafeMergeSelftest() {
   assert.equal(
     verifyPostMergeState({
       state: "OPEN",
-      mergeStateStatus: "QUEUED",
+      mergeQueueEntry: { state: "QUEUED" },
       mergedAt: null,
     }).code,
     "PR_QUEUED_NOT_MERGED_YET",
@@ -1572,6 +1661,7 @@ export function runSafeMergeSelftest() {
       statusCheckRollup: baseGreenRollup,
       comments: [
         {
+          author: { login: "chatgpt-codex-connector" },
           body: '<!-- codex-review-state:v1 {"sha":"old-head-sha-111","state":"completed"} -->',
         },
       ],
@@ -1590,6 +1680,7 @@ export function runSafeMergeSelftest() {
       statusCheckRollup: baseGreenRollup,
       comments: [
         {
+          author: { login: "chatgpt-codex-connector" },
           body: '<!-- codex-review-state:v1 {"code_review":{"commit_sha":"old-head-sha-111","status":"completed"},"security_review":{"commit_sha":null,"status":null}} -->',
         },
       ],
@@ -1623,10 +1714,49 @@ export function runSafeMergeSelftest() {
           completedAt: "",
         },
       ],
+      comments: makeTrustedCodexComments("sha-2"),
     },
   });
   assert.equal(overlappingRerunRes.ready, false);
   assert.equal(overlappingRerunRes.code, "PR_CI_PENDING");
+
+  // 20. Missing Codex review state or untrusted author forged comment fails closed
+  const missingCodexStateRes = evaluatePrMergeReadiness({
+    prView: {
+      number: 124,
+      state: "OPEN",
+      baseRefName: "main",
+      mergeable: "MERGEABLE",
+      headRefOid: "sha-2",
+      statusCheckRollup: baseGreenRollup,
+      comments: [],
+    },
+  });
+  assert.equal(missingCodexStateRes.ready, false);
+  assert.equal(missingCodexStateRes.code, "PR_CODEX_REVIEW_MISSING");
+
+  const forgedCodexCommentRes = evaluatePrMergeReadiness({
+    prView: {
+      number: 125,
+      state: "OPEN",
+      baseRefName: "main",
+      mergeable: "MERGEABLE",
+      headRefOid: "sha-2",
+      statusCheckRollup: baseGreenRollup,
+      comments: [
+        {
+          author: { login: "chatgpt-codex-connector" },
+          body: '<!-- codex-review-state:v1 {"sha":"sha-2","state":"running"} -->',
+        },
+        {
+          author: { login: "malicious-contributor" },
+          body: '<!-- codex-review-state:v1 {"sha":"sha-2","state":"completed"} -->',
+        },
+      ],
+    },
+  });
+  assert.equal(forgedCodexCommentRes.ready, false);
+  assert.equal(forgedCodexCommentRes.code, "PR_CODEX_REVIEW_RUNNING");
 
   console.log("safe-merge selftest: OK");
 }
@@ -1639,10 +1769,17 @@ export async function runSafeMergeAsyncSelftest() {
     { name: "test-shard-1-of-8", status: "COMPLETED", conclusion: "SUCCESS" },
     { name: "check-test-build", status: "COMPLETED", conclusion: "SUCCESS" },
   ];
+  const makeTrustedCodexComments = (sha) => [
+    {
+      author: { login: "chatgpt-codex-connector" },
+      body: `<!-- codex-review-state:v1 {"sha":"${sha}","state":"completed"} -->`,
+    },
+  ];
 
   // Missing explicit resolvedThreadIds fails closed
   const missingThreadIdsRes = await runAtomicRemediationCycle({
     prNumber: 122,
+    pollIntervalMs: 0,
     initialPrView: {
       number: 122,
       state: "OPEN",
@@ -1650,6 +1787,7 @@ export async function runSafeMergeAsyncSelftest() {
       mergeable: "MERGEABLE",
       headRefOid: "sha-1",
       statusCheckRollup: baseGreenRollup,
+      comments: makeTrustedCodexComments("sha-1"),
     },
     initialReviewThreads: [{ id: "PRRT_1", isResolved: false, body: "Fix" }],
     remediateFinding: async () => [{ commitSha: "sha-2" }],
@@ -1662,6 +1800,7 @@ export async function runSafeMergeAsyncSelftest() {
         mergeable: "MERGEABLE",
         headRefOid: "sha-2",
         statusCheckRollup: baseGreenRollup,
+        comments: makeTrustedCodexComments("sha-2"),
       },
       reviewThreads: [{ id: "PRRT_1", isResolved: false, body: "Fix" }],
     }),
@@ -1676,6 +1815,7 @@ export async function runSafeMergeAsyncSelftest() {
   let resolveCalledOnMismatch = false;
   const mismatchBeforeResolveRes = await runAtomicRemediationCycle({
     prNumber: 123,
+    pollIntervalMs: 0,
     initialPrView: {
       number: 123,
       state: "OPEN",
@@ -1683,6 +1823,7 @@ export async function runSafeMergeAsyncSelftest() {
       mergeable: "MERGEABLE",
       headRefOid: "sha-1",
       statusCheckRollup: baseGreenRollup,
+      comments: makeTrustedCodexComments("sha-1"),
     },
     initialReviewThreads: [{ id: "PRRT_1", isResolved: false, body: "Fix" }],
     remediateFinding: async () => [
@@ -1700,6 +1841,7 @@ export async function runSafeMergeAsyncSelftest() {
         mergeable: "MERGEABLE",
         headRefOid: "sha-1",
         statusCheckRollup: baseGreenRollup,
+        comments: makeTrustedCodexComments("sha-1"),
       },
       reviewThreads: [{ id: "PRRT_1", isResolved: false, body: "Fix" }],
     }),
@@ -1710,6 +1852,46 @@ export async function runSafeMergeAsyncSelftest() {
     "REMEDIATION_REMOTE_HEAD_MISMATCH",
   );
   assert.equal(resolveCalledOnMismatch, false);
+
+  // Bounded polling with delay waits for pending Codex/CI before becoming ready
+  const sleepDelays = [];
+  let pendingPollCalls = 0;
+  const boundedPollRes = await runAtomicRemediationCycle({
+    prNumber: 126,
+    pollIntervalMs: 25,
+    maxPollAttempts: 3,
+    sleep: async (ms) => {
+      sleepDelays.push(ms);
+    },
+    initialPrView: {
+      number: 126,
+      state: "OPEN",
+      baseRefName: "main",
+      mergeable: "MERGEABLE",
+      headRefOid: "sha-poll-1",
+      statusCheckRollup: baseGreenRollup,
+      comments: [],
+    },
+    initialReviewThreads: [],
+    fetchLatestState: async () => {
+      pendingPollCalls += 1;
+      return {
+        prView: {
+          number: 126,
+          state: "OPEN",
+          baseRefName: "main",
+          mergeable: "MERGEABLE",
+          headRefOid: "sha-poll-1",
+          statusCheckRollup: baseGreenRollup,
+          comments:
+            pendingPollCalls >= 2 ? makeTrustedCodexComments("sha-poll-1") : [],
+        },
+        reviewThreads: [],
+      };
+    },
+  });
+  assert.equal(boundedPollRes.ready, true);
+  assert.deepEqual(sleepDelays, [25, 25]);
 }
 
 function captureJson(cmd, args) {
@@ -1771,14 +1953,41 @@ function fetchAllReviewThreads(prNumber) {
   ]);
 }
 
+const POST_MERGE_PR_STATE_QUERY = `
+query($owner: String!, $name: String!, $pr: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $pr) {
+      number
+      state
+      mergedAt
+      headRefOid
+      mergeStateStatus
+      isInMergeQueue
+      mergeQueueEntry {
+        state
+      }
+      mergeCommit {
+        oid
+      }
+    }
+  }
+}
+`.trim();
+
 function fetchPostMergePrState(prNumber) {
-  return captureJson("gh", [
-    "pr",
-    "view",
-    String(prNumber),
-    "--json",
-    "number,state,mergedAt,mergeCommit,mergeStateStatus,headRefOid",
+  const payload = captureJson("gh", [
+    "api",
+    "graphql",
+    "-F",
+    "owner=ahrrfy",
+    "-F",
+    "name=business_management_system",
+    "-F",
+    `pr=${Number(prNumber)}`,
+    "-f",
+    `query=${POST_MERGE_PR_STATE_QUERY}`,
   ]);
+  return payload?.data?.repository?.pullRequest ?? null;
 }
 
 function fetchPrStateAndThreads(prArg) {
