@@ -2,13 +2,19 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { evaluatePrePushPolicy } from "../safe-push-guard.mjs";
-import { evaluatePrMergeReadiness } from "../safe-merge.mjs";
+import {
+  collectModifiedUnitTestsForPush,
+  evaluatePrePushPolicy,
+} from "../safe-push-guard.mjs";
+import {
+  buildMergeCommandArgs,
+  evaluatePrMergeReadiness,
+} from "../safe-merge.mjs";
 
 const root = process.cwd();
 
 describe("بروتوكولات الدفع الآمن والدمج الآمن والنشر الآمن", () => {
-  it("يفعّل خطاف .husky/pre-push ويشغّل الاختبار الذاتي لحارس الدفع", () => {
+  it("يفعّل خطاف .husky/pre-push ويفحص الالتزامات المدفوعة فعلياً ويغلق آلياً عند غياب origin/main", () => {
     const prePushPath = resolve(root, ".husky/pre-push");
     expect(existsSync(prePushPath)).toBe(true);
     const prePushContent = readFileSync(prePushPath, "utf8");
@@ -32,19 +38,47 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
       code: "DIRECT_MAIN_PUSH_FORBIDDEN",
     });
 
-    expect(
-      evaluatePrePushPolicy({
-        remoteRefs: ["refs/heads/fix/safe-branch"],
-        currentBranch: "fix/safe-branch",
-        env: {},
-      }),
-    ).toMatchObject({
-      allowed: true,
-      code: "OK",
+    const diffedShas: string[] = [];
+    const matched = collectModifiedUnitTestsForPush({
+      stdinEntries: [
+        {
+          localRef: "refs/heads/fix/branch",
+          localSha: "abc1234567890",
+          remoteRef: "refs/heads/fix/branch",
+          remoteSha: "0000000000000000000000000000000000000000",
+        },
+      ],
+      unitConfigText: 'include: ["scripts/__tests__/safeDeliveryProtocols.test.ts"]',
+      runDiff: (sha: string) => {
+        diffedShas.push(sha);
+        return {
+          status: 0,
+          stdout: "scripts/__tests__/safeDeliveryProtocols.test.ts\n",
+        };
+      },
+      fileExists: () => true,
     });
+    expect(diffedShas).toEqual(["abc1234567890"]);
+    expect(matched).toEqual(["scripts/__tests__/safeDeliveryProtocols.test.ts"]);
+
+    expect(() =>
+      collectModifiedUnitTestsForPush({
+        stdinEntries: [
+          {
+            localRef: "refs/heads/fix/branch",
+            localSha: "abc1234567890",
+            remoteRef: "refs/heads/fix/branch",
+            remoteSha: "0000000000000000000000000000000000000000",
+          },
+        ],
+        unitConfigText: 'include: ["scripts/__tests__/safeDeliveryProtocols.test.ts"]',
+        runDiff: () => ({ status: 128, stderr: "unknown revision origin/main" }),
+        fileExists: () => true,
+      }),
+    ).toThrow(/origin\/main/);
   });
 
-  it("يفحص جاهزية الدمج الآمن ويمنع الدمج عند فشل CI أو وجود ملاحظات مراجعة غير معالجة", () => {
+  it("يفحص جاهزية الدمج الآمن ويثبّت --match-head-commit ويمنع الدمج عند وجود خيوط مراجعة غير محلولة", () => {
     const output = execFileSync(
       process.execPath,
       [resolve(root, "scripts/safe-merge.mjs"), "--selftest"],
@@ -54,6 +88,7 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
 
     const greenRollup = [
       { name: "audit", status: "COMPLETED", conclusion: "SUCCESS" },
+      { name: "authz-guard", status: "COMPLETED", conclusion: "SUCCESS" },
       { name: "check-test-build", status: "COMPLETED", conclusion: "SUCCESS" },
     ];
 
@@ -64,22 +99,44 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
         mergeable: "MERGEABLE",
         headRefOid: "7f60f09e78",
         statusCheckRollup: greenRollup,
-        commits: [{ committedDate: "2026-10-21T20:14:00Z" }],
       },
-      reviewComments: [
+      reviewThreads: [
         {
-          id: 4341514310,
-          commit_id: "7f60f09e78",
-          created_at: "2026-10-21T20:17:36Z",
-          path: "client/src/pages/CommissionPlans.tsx",
-          line: 279,
-          user: { login: "chatgpt-codex-connector[bot]" },
-          body: "Keep the expandable guide outside the toolbar",
+          data: {
+            repository: {
+              pullRequest: {
+                reviewThreads: {
+                  nodes: [
+                    {
+                      id: "PRRT_4341514310",
+                      isResolved: false,
+                      path: "client/src/pages/CommissionPlans.tsx",
+                      line: 279,
+                      comments: {
+                        nodes: [
+                          {
+                            databaseId: 4341514310,
+                            author: { login: "chatgpt-codex-connector" },
+                            body: "Keep the expandable guide outside the toolbar",
+                          },
+                        ],
+                      },
+                    },
+                  ],
+                },
+              },
+            },
+          },
         },
       ],
     });
     expect(blockedByReview.ready).toBe(false);
     expect(blockedByReview.code).toBe("PR_UNADDRESSED_REVIEW_COMMENTS");
+
+    const mergeArgs = buildMergeCommandArgs(1530, "0bd1c2db9733578ae5ca4de6fd8d48883e503f02");
+    expect(mergeArgs).toContain("--match-head-commit");
+    expect(mergeArgs).toContain("0bd1c2db9733578ae5ca4de6fd8d48883e503f02");
+    expect(mergeArgs).not.toContain("--admin");
   });
 
   it("يفحص خضرة بوابة CI قبل النشر الإنتاجي ويرفض الالتزامات غير المفحوصة أو الفاشلة", () => {

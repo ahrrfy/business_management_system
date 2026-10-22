@@ -2,12 +2,13 @@
  * بروتوكول الدمج الآمن (Safe Merge Protocol) — `pnpm pr:merge <رقم-الطلب>`
  *
  * يمنع الدمج إلى `main` إلا بعد إثبات الشروط الأربعة معاً:
- * 1. الطلب مفتوح وقابل للدمج بلا تعارض (`MERGEABLE`).
- * 2. البوّابتان الإلزاميتان (`check-test-build` و`audit`) حاضرتان ومكتملتان بـ`SUCCESS`
+ * 1. الطلب مفتوح وقابل للدمج بلا تعارض (`MERGEABLE`) ومعرّف رأس الفرع (`headRefOid`) محدّد.
+ * 2. البوّابات الإلزامية (`check-test-build` و`authz-guard` و`audit`) حاضرة ومكتملة بـ`SUCCESS`
  *    على رأس الفرع الحالي (`headRefOid`) — يمنع فخّ الأخضر الكاذب في `gh pr checks --watch`.
  * 3. صفر فحوصات معلّقة أو فاشلة في `statusCheckRollup`.
- * 4. صفر ملاحظات مراجعة (Codex أو بشرية) غير معالجة على آخر التزام (إمّا بردّ موثّق
- *    أو بالتزام إصلاح لاحق لتاريخ التعليق، أو بتمرير `--ack-reviews` صراحةً).
+ * 4. جميع خيوط المراجعة (`reviewThreads`) محلولة صراحةً (`isResolved === true`) عبر جميع صفحات API
+ *    (لا يُعتبر مجرّد الردّ النصي أو وجود التزام لاحق حلّاً تلقائياً للخيط).
+ * 5. تثبيت عملية الدمج على `headRefOid` المتحقَّق منه عبر `--match-head-commit` دون أي تصعيد تلقائي بـ`--admin`.
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -15,12 +16,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const REQUIRED_CHECKS = ["check-test-build", "audit"];
+const REQUIRED_CHECKS = ["check-test-build", "authz-guard", "audit"];
 const ACCEPTABLE_CONCLUSIONS = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
 
 function normalizeCheckEntry(item) {
   const name = String(item?.name ?? item?.context ?? "").trim();
-  if (item?.__typename === "StatusContext" || ("state" in (item ?? {}) && !("status" in (item ?? {})))) {
+  if (
+    item?.__typename === "StatusContext" ||
+    ("state" in (item ?? {}) && !("status" in (item ?? {})))
+  ) {
     const state = String(item?.state ?? "").toUpperCase();
     return {
       name,
@@ -35,8 +39,70 @@ function normalizeCheckEntry(item) {
   };
 }
 
+export function flattenPaginatedReviewThreads(pagesPayload) {
+  if (!Array.isArray(pagesPayload)) {
+    const singleNodes =
+      pagesPayload?.data?.repository?.pullRequest?.reviewThreads?.nodes;
+    return Array.isArray(singleNodes) ? singleNodes : [];
+  }
+  const threads = [];
+  for (const item of pagesPayload) {
+    if (Array.isArray(item)) {
+      threads.push(...item);
+      continue;
+    }
+    const nodes = item?.data?.repository?.pullRequest?.reviewThreads?.nodes;
+    if (Array.isArray(nodes)) {
+      threads.push(...nodes);
+      continue;
+    }
+    if (item && typeof item === "object" && ("isResolved" in item || "comments" in item || "body" in item)) {
+      threads.push(item);
+    }
+  }
+  return threads;
+}
+
+export function buildMergeCommandArgs(prNumber, headRefOid) {
+  const cleanPr = String(prNumber ?? "").trim();
+  const cleanSha = String(headRefOid ?? "").trim();
+  if (!cleanPr || !cleanSha) {
+    throw new Error("يلزم رقم طلب الدمج وبصمة الالتزام (headRefOid) لتنفيذ الدمج الآمن.");
+  }
+  return [
+    "pr",
+    "merge",
+    cleanPr,
+    "--merge",
+    "--delete-branch",
+    "--match-head-commit",
+    cleanSha,
+  ];
+}
+
+function normalizeReviewThreadEntry(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const firstComment = Array.isArray(entry?.comments?.nodes)
+    ? entry.comments.nodes[0]
+    : entry;
+  return {
+    id: entry.id ?? firstComment?.databaseId ?? firstComment?.id ?? "unknown",
+    isResolved: entry.isResolved === true,
+    author:
+      firstComment?.author?.login ??
+      firstComment?.user?.login ??
+      entry?.author?.login ??
+      entry?.user?.login ??
+      "unknown",
+    path: entry.path ?? firstComment?.path ?? "",
+    line: entry.line ?? entry.originalLine ?? firstComment?.line ?? firstComment?.original_line ?? null,
+    body: String(firstComment?.body ?? entry?.body ?? "").slice(0, 240),
+  };
+}
+
 export function evaluatePrMergeReadiness({
   prView,
+  reviewThreads = null,
   reviewComments = [],
   ackReviews = false,
 } = {}) {
@@ -48,6 +114,14 @@ export function evaluatePrMergeReadiness({
       ready: false,
       code: "PR_NOT_OPEN",
       reason: `طلب الدمج #${prView.number ?? "?"} ليس مفتوحاً (الحالة: ${prView.state}).`,
+    };
+  }
+  const headRefOid = String(prView.headRefOid ?? "").trim();
+  if (!headRefOid) {
+    return {
+      ready: false,
+      code: "PR_HEAD_SHA_MISSING",
+      reason: `بصمة رأس الفرع (headRefOid) غير متوفرة لطلب الدمج #${prView.number ?? "?"}.`,
     };
   }
   if (String(prView.mergeable).toUpperCase() === "CONFLICTING") {
@@ -106,59 +180,32 @@ export function evaluatePrMergeReadiness({
     }
   }
 
-  if (!ackReviews && Array.isArray(reviewComments) && reviewComments.length > 0) {
-    const replyTargetIds = new Set(
-      reviewComments
-        .filter((c) => Boolean(c?.in_reply_to_id))
-        .map((c) => Number(c.in_reply_to_id)),
-    );
+  if (!ackReviews) {
+    const rawThreads =
+      reviewThreads != null
+        ? flattenPaginatedReviewThreads(reviewThreads)
+        : flattenPaginatedReviewThreads(reviewComments);
 
-    const commits = Array.isArray(prView.commits) ? prView.commits : [];
-    const latestCommitTimeMs = commits.reduce((maxMs, item) => {
-      const committedDate = item?.committedDate ?? item?.commit?.committer?.date;
-      const parsed = committedDate ? Date.parse(committedDate) : NaN;
-      return Number.isFinite(parsed) && parsed > maxMs ? parsed : maxMs;
-    }, 0);
+    const normalizedThreads = rawThreads.map(normalizeReviewThreadEntry).filter(Boolean);
+    const unresolved = normalizedThreads.filter((t) => !t.isResolved);
 
-    const rootComments = reviewComments.filter((c) => !c?.in_reply_to_id);
-    const unaddressed = rootComments.filter((c) => {
-      if (replyTargetIds.has(Number(c.id))) return false;
-      const commentTimeMs = c?.created_at ? Date.parse(c.created_at) : NaN;
-      if (
-        Number.isFinite(commentTimeMs) &&
-        latestCommitTimeMs > 0 &&
-        latestCommitTimeMs > commentTimeMs &&
-        c?.commit_id &&
-        prView.headRefOid &&
-        c.commit_id !== prView.headRefOid
-      ) {
-        return false;
-      }
-      return true;
-    });
-
-    if (unaddressed.length > 0) {
+    if (unresolved.length > 0) {
       return {
         ready: false,
         code: "PR_UNADDRESSED_REVIEW_COMMENTS",
-        reason: `توجد ${unaddressed.length} ملاحظات مراجعة غير معالجة على طلب الدمج #${prView.number}. عالجها بالتزام جديد أو ردّ عليها قبل الدمج.`,
-        unaddressedComments: unaddressed.map((c) => ({
-          id: c.id,
-          author: c.user?.login ?? "unknown",
-          path: c.path ?? "",
-          line: c.line ?? c.original_line ?? null,
-          body: String(c.body ?? "").slice(0, 240),
-        })),
+        reason: `توجد ${unresolved.length} خيوط مراجعة غير محلولة (unresolved) على طلب الدمج #${prView.number}. عالجها وأغلق الخيط (resolveReviewThread) قبل الدمج.`,
+        unaddressedComments: unresolved,
       };
     }
   }
 
-  return { ready: true, code: "OK" };
+  return { ready: true, code: "OK", headRefOid };
 }
 
 export function runSafeMergeSelftest() {
   const baseGreenRollup = [
     { name: "audit", status: "COMPLETED", conclusion: "SUCCESS" },
+    { name: "authz-guard", status: "COMPLETED", conclusion: "SUCCESS" },
     { name: "quality-build", status: "COMPLETED", conclusion: "SUCCESS" },
     { name: "test-shard-1-of-8", status: "COMPLETED", conclusion: "SUCCESS" },
     { name: "check-test-build", status: "COMPLETED", conclusion: "SUCCESS" },
@@ -173,6 +220,7 @@ export function runSafeMergeSelftest() {
       headRefOid: "sha-1",
       statusCheckRollup: [
         { name: "audit", status: "COMPLETED", conclusion: "SUCCESS" },
+        { name: "authz-guard", status: "COMPLETED", conclusion: "SUCCESS" },
         { name: "test-shard-1-of-8", status: "IN_PROGRESS", conclusion: "" },
       ],
     },
@@ -187,7 +235,10 @@ export function runSafeMergeSelftest() {
       state: "OPEN",
       mergeable: "MERGEABLE",
       headRefOid: "sha-1",
-      statusCheckRollup: [{ name: "audit", status: "COMPLETED", conclusion: "SUCCESS" }],
+      statusCheckRollup: [
+        { name: "audit", status: "COMPLETED", conclusion: "SUCCESS" },
+        { name: "authz-guard", status: "COMPLETED", conclusion: "SUCCESS" },
+      ],
     },
   });
   assert.equal(falseGreenRes.ready, false);
@@ -201,7 +252,7 @@ export function runSafeMergeSelftest() {
       mergeable: "MERGEABLE",
       headRefOid: "sha-1",
       statusCheckRollup: [
-        ...baseGreenRollup.slice(0, 2),
+        ...baseGreenRollup.slice(0, 3),
         { name: "test-shard-2-of-8", status: "COMPLETED", conclusion: "FAILURE" },
         { name: "check-test-build", status: "COMPLETED", conclusion: "FAILURE" },
       ],
@@ -210,58 +261,129 @@ export function runSafeMergeSelftest() {
   assert.equal(failedRes.ready, false);
   assert.equal(failedRes.code, "PR_CI_FAILED");
 
-  // 4. Unaddressed Codex review comment blocks merge
-  const unaddressedRes = evaluatePrMergeReadiness({
-    prView: {
-      number: 103,
-      state: "OPEN",
-      mergeable: "MERGEABLE",
-      headRefOid: "sha-1",
-      statusCheckRollup: baseGreenRollup,
-      commits: [{ committedDate: "2026-10-21T20:00:00Z" }],
-    },
-    reviewComments: [
-      {
-        id: 501,
-        commit_id: "sha-1",
-        created_at: "2026-10-21T20:05:00Z",
-        path: "client/src/pages/CommissionPlans.tsx",
-        line: 279,
-        user: { login: "chatgpt-codex-connector[bot]" },
-        body: "Keep the expandable guide outside the toolbar",
-      },
-    ],
-  });
-  assert.equal(unaddressedRes.ready, false);
-  assert.equal(unaddressedRes.code, "PR_UNADDRESSED_REVIEW_COMMENTS");
-
-  // 5. Follow-up commit after comment resolves the gate
-  const addressedByCommitRes = evaluatePrMergeReadiness({
+  // 4. Unresolved review thread blocks merge even if it has replies or newer commits
+  const unresolvedThreadRes = evaluatePrMergeReadiness({
     prView: {
       number: 103,
       state: "OPEN",
       mergeable: "MERGEABLE",
       headRefOid: "sha-2",
       statusCheckRollup: baseGreenRollup,
-      commits: [
-        { committedDate: "2026-10-21T20:00:00Z" },
-        { committedDate: "2026-10-21T20:10:00Z" },
-      ],
     },
-    reviewComments: [
+    reviewThreads: [
       {
-        id: 501,
-        commit_id: "sha-1",
-        created_at: "2026-10-21T20:05:00Z",
-        path: "client/src/pages/CommissionPlans.tsx",
-        line: 279,
-        user: { login: "chatgpt-codex-connector[bot]" },
-        body: "Keep the expandable guide outside the toolbar",
+        data: {
+          repository: {
+            pullRequest: {
+              reviewThreads: {
+                nodes: [
+                  {
+                    id: "PRRT_1",
+                    isResolved: false,
+                    path: "client/src/pages/CommissionPlans.tsx",
+                    line: 279,
+                    comments: {
+                      nodes: [
+                        {
+                          databaseId: 501,
+                          author: { login: "chatgpt-codex-connector" },
+                          body: "Keep the expandable guide outside the toolbar",
+                        },
+                      ],
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
       },
     ],
   });
-  assert.equal(addressedByCommitRes.ready, true);
-  assert.equal(addressedByCommitRes.code, "OK");
+  assert.equal(unresolvedThreadRes.ready, false);
+  assert.equal(unresolvedThreadRes.code, "PR_UNADDRESSED_REVIEW_COMMENTS");
+
+  // 5. Multi-page reviewThreads where all threads are resolved passes
+  const resolvedMultiPageRes = evaluatePrMergeReadiness({
+    prView: {
+      number: 103,
+      state: "OPEN",
+      mergeable: "MERGEABLE",
+      headRefOid: "sha-2",
+      statusCheckRollup: baseGreenRollup,
+    },
+    reviewThreads: [
+      {
+        data: {
+          repository: {
+            pullRequest: {
+              reviewThreads: {
+                nodes: [
+                  {
+                    id: "PRRT_1",
+                    isResolved: true,
+                    path: "client/src/pages/CommissionPlans.tsx",
+                    line: 279,
+                    comments: {
+                      nodes: [
+                        {
+                          databaseId: 501,
+                          author: { login: "chatgpt-codex-connector" },
+                          body: "Keep the expandable guide outside the toolbar",
+                        },
+                      ],
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+      {
+        data: {
+          repository: {
+            pullRequest: {
+              reviewThreads: {
+                nodes: [
+                  {
+                    id: "PRRT_2",
+                    isResolved: true,
+                    path: "scripts/safe-merge.mjs",
+                    line: 324,
+                    comments: {
+                      nodes: [
+                        {
+                          databaseId: 502,
+                          author: { login: "chatgpt-codex-connector" },
+                          body: "Pin the merge to the validated head SHA",
+                        },
+                      ],
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+    ],
+  });
+  assert.equal(resolvedMultiPageRes.ready, true);
+  assert.equal(resolvedMultiPageRes.code, "OK");
+
+  // 6. Merge command args pin the validated headRefOid and never include --admin
+  const mergeArgs = buildMergeCommandArgs(1530, "0bd1c2db9733578ae5ca4de6fd8d48883e503f02");
+  assert.deepEqual(mergeArgs, [
+    "pr",
+    "merge",
+    "1530",
+    "--merge",
+    "--delete-branch",
+    "--match-head-commit",
+    "0bd1c2db9733578ae5ca4de6fd8d48883e503f02",
+  ]);
+  assert.equal(mergeArgs.includes("--admin"), false);
 
   console.log("safe-merge selftest: OK");
 }
@@ -275,6 +397,54 @@ function captureJson(cmd, args) {
     throw new Error(res.stderr?.trim() || `${cmd} ${args.join(" ")} failed`);
   }
   return JSON.parse(res.stdout);
+}
+
+const REVIEW_THREADS_QUERY = `
+query($owner: String!, $name: String!, $pr: Int!, $endCursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $pr) {
+      reviewThreads(first: 100, after: $endCursor) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          id
+          isResolved
+          isOutdated
+          path
+          line
+          comments(first: 1) {
+            nodes {
+              databaseId
+              body
+              author {
+                login
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+`.trim();
+
+function fetchAllReviewThreads(prNumber) {
+  return captureJson("gh", [
+    "api",
+    "graphql",
+    "--paginate",
+    "--slurp",
+    "-F",
+    "owner=ahrrfy",
+    "-F",
+    "name=business_management_system",
+    "-F",
+    `pr=${Number(prNumber)}`,
+    "-f",
+    `query=${REVIEW_THREADS_QUERY}`,
+  ]);
 }
 
 function main() {
@@ -291,27 +461,26 @@ function main() {
   if (prArg) viewArgs.push(prArg);
   viewArgs.push(
     "--json",
-    "number,state,headRefName,headRefOid,mergeStateStatus,mergeable,statusCheckRollup,commits",
+    "number,state,headRefName,headRefOid,mergeStateStatus,mergeable,statusCheckRollup",
   );
 
   const prView = captureJson("gh", viewArgs);
-  const reviewComments = captureJson("gh", [
-    "api",
-    `repos/ahrrfy/business_management_system/pulls/${prView.number}/comments`,
-  ]);
+  const reviewThreadsPages = fetchAllReviewThreads(prView.number);
 
   const decision = evaluatePrMergeReadiness({
     prView,
-    reviewComments,
+    reviewThreads: reviewThreadsPages,
     ackReviews,
   });
 
   if (!decision.ready) {
     console.error(`\n⛔ [${decision.code}] ${decision.reason}`);
     if (decision.unaddressedComments?.length) {
-      console.error("\nالملاحظات غير المعالجة:");
+      console.error("\nخيوط المراجعة غير المحلولة:");
       for (const c of decision.unaddressedComments) {
-        console.error(`  • [${c.author}] ${c.path}:${c.line ?? "?"} — ${c.body.replace(/\r?\n/g, " ")}`);
+        console.error(
+          `  • [${c.author}] ${c.path}:${c.line ?? "?"} (${c.id}) — ${c.body.replace(/\r?\n/g, " ")}`,
+        );
       }
     }
     process.exit(1);
@@ -321,34 +490,31 @@ function main() {
     `✓ طلب الدمج #${prView.number} (${prView.headRefOid.slice(0, 9)}) اجتاز جميع بوابات CI والمراجعة الآلية.`,
   );
 
-  const mergeArgs = ["pr", "merge", String(prView.number), "--merge", "--delete-branch"];
-  let mergeRes = spawnSync("gh", mergeArgs, {
+  const mergeArgs = buildMergeCommandArgs(prView.number, prView.headRefOid);
+  const mergeRes = spawnSync("gh", mergeArgs, {
     cwd: REPO_ROOT,
     encoding: "utf8",
   });
 
-  if (
-    mergeRes.status !== 0 &&
-    String(mergeRes.stderr).includes("base branch policy prohibits the merge")
-  ) {
-    mergeRes = spawnSync("gh", [...mergeArgs, "--admin"], {
-      cwd: REPO_ROOT,
-      encoding: "utf8",
-    });
-  }
-
   if (mergeRes.status !== 0) {
-    console.error(mergeRes.stderr || mergeRes.stdout);
+    console.error(
+      mergeRes.stderr?.trim() ||
+        mergeRes.stdout?.trim() ||
+        "⛔ فشل دمج الطلب وفق سياسة الفرع الأساسي؛ تحقق من تزامن الفرع وحل جميع خيوط المراجعة.",
+    );
     process.exit(mergeRes.status ?? 1);
   }
 
-  process.stdout.write(mergeRes.stdout);
-  console.log(`✓ دُمج الطلب #${prView.number} بأمان في main.`);
+  if (mergeRes.stdout?.trim()) {
+    console.log(mergeRes.stdout.trim());
+  }
+  console.log(`✓ تم دمج الطلب #${prView.number} بأمان في main (مثبّت على ${prView.headRefOid.slice(0, 9)}).`);
 }
 
-if (
+const isDirectRun =
   process.argv[1] &&
-  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))
-) {
+  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+
+if (isDirectRun) {
   main();
 }

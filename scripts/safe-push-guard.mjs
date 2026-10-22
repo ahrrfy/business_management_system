@@ -5,8 +5,8 @@
  * 1. منع الدفع المباشر إلى `refs/heads/main` منعاً باتاً؛ كل تغيير يمرّ عبر فرع + PR
  *    حتى تعمل فحوصات CI الكاملة (8 شوارد + الفحص الأمني) ومراجعة Codex الآلية قبل الدمج.
  *    (مخرج طوارئ المالك حصراً: `ALLOW_DIRECT_MAIN_PUSH=1`).
- * 2. تشغيل أي اختبارات وحدة (`vitest.unit.config.ts`) تأثرت في فرق الفرع مقابل `origin/main`
- *    قبل السماح بالدفع.
+ * 2. فحص الالتزامات المدفوعة فعلياً (`localSha` من عقد `pre-push` القياسي) مقابل `origin/main`،
+ *    والإغلاق الآمن (fail-closed) إذا تعذّر الوصول إلى `origin/main` أو حساب قاعدة الدمج.
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -15,6 +15,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const ZERO_OID_RE = /^0+$/;
 
 export function parsePrePushStdin(stdinText = "") {
   return String(stdinText)
@@ -26,6 +27,23 @@ export function parsePrePushStdin(stdinText = "") {
       return { localRef, localSha, remoteRef, remoteSha };
     })
     .filter((entry) => Boolean(entry.remoteRef));
+}
+
+export function resolvePushedCommitShas(stdinEntries = []) {
+  if (!Array.isArray(stdinEntries) || stdinEntries.length === 0) {
+    return ["HEAD"];
+  }
+  const shas = [];
+  const seen = new Set();
+  for (const entry of stdinEntries) {
+    const sha = String(entry?.localSha ?? "").trim();
+    if (!sha || ZERO_OID_RE.test(sha)) continue;
+    if (!seen.has(sha)) {
+      seen.add(sha);
+      shas.push(sha);
+    }
+  }
+  return shas;
 }
 
 export function evaluatePrePushPolicy({
@@ -73,6 +91,70 @@ export function evaluatePrePushPolicy({
   return { allowed: true, code: "OK" };
 }
 
+function defaultDiffRunner(sha) {
+  return spawnSync(
+    "git",
+    ["diff", "--name-only", "--diff-filter=ACMR", `origin/main...${sha}`],
+    { cwd: REPO_ROOT, encoding: "utf8" },
+  );
+}
+
+export function collectModifiedUnitTestsForPush({
+  stdinEntries = [],
+  unitConfigText = "",
+  runDiff = defaultDiffRunner,
+  fileExists = (relPath) => fs.existsSync(path.join(REPO_ROOT, relPath)),
+} = {}) {
+  const shas = resolvePushedCommitShas(stdinEntries);
+  if (shas.length === 0) {
+    return [];
+  }
+
+  if (!unitConfigText || !unitConfigText.trim()) {
+    const err = new Error("تعذّر قراءة ملف vitest.unit.config.ts للتحقق من اختبارات الوحدة قبل الدفع.");
+    err.code = "PUSH_GUARD_UNIT_CONFIG_MISSING";
+    throw err;
+  }
+
+  const changedFiles = new Set();
+  for (const sha of shas) {
+    const diffRes = runDiff(sha);
+    if (!diffRes || diffRes.status !== 0) {
+      const stderr = String(diffRes?.stderr ?? "").trim();
+      const err = new Error(
+        `تعذّر حساب الفرق مقابل origin/main للالتزام المدفوع (${sha}). نفّذ «git fetch origin main» وتأكد من توفر التاريخ الكامل قبل الدفع.${stderr ? ` (${stderr})` : ""}`,
+      );
+      err.code = "PUSH_GUARD_BASE_DIFF_FAILED";
+      throw err;
+    }
+    const lines = String(diffRes.stdout ?? "")
+      .split(/\r?\n/)
+      .map((f) => f.trim())
+      .filter(Boolean);
+    for (const file of lines) {
+      changedFiles.add(file);
+    }
+  }
+
+  const matchedTests = [];
+  for (const file of changedFiles) {
+    if (!/\.test\.tsx?$/.test(file)) continue;
+    if (!unitConfigText.includes(`"${file}"`) && !unitConfigText.includes(`'${file}'`)) {
+      continue;
+    }
+    if (!fileExists(file)) {
+      const err = new Error(
+        `الملف الاختباري المتأثر «${file}» في الالتزام المدفوع غير موجود في شجرة العمل الحالية؛ تحقّق من الفرع الحالي قبل الدفع.`,
+      );
+      err.code = "PUSH_GUARD_WORKTREE_MISMATCH";
+      throw err;
+    }
+    matchedTests.push(file);
+  }
+
+  return matchedTests;
+}
+
 export function runSafePushSelftest() {
   const blockedStdin = evaluatePrePushPolicy({
     remoteRefs: ["refs/heads/main"],
@@ -115,6 +197,52 @@ export function runSafePushSelftest() {
   assert.equal(allowedBypass.allowed, true);
   assert.equal(allowedBypass.code, "OK_BYPASS");
 
+  // Verify pushed commit SHAs are diffed instead of assuming HEAD
+  const diffedShas = [];
+  const collected = collectModifiedUnitTestsForPush({
+    stdinEntries: [
+      {
+        localRef: "refs/heads/feat/a",
+        localSha: "1111111111111111111111111111111111111111",
+        remoteRef: "refs/heads/feat/a",
+        remoteSha: "0000000000000000000000000000000000000000",
+      },
+      {
+        localRef: "(delete)",
+        localSha: "0000000000000000000000000000000000000000",
+        remoteRef: "refs/heads/feat/old",
+        remoteSha: "2222222222222222222222222222222222222222",
+      },
+    ],
+    unitConfigText: 'include: ["scripts/__tests__/safeDeliveryProtocols.test.ts"]',
+    runDiff: (sha) => {
+      diffedShas.push(sha);
+      return { status: 0, stdout: "scripts/__tests__/safeDeliveryProtocols.test.ts\n" };
+    },
+    fileExists: () => true,
+  });
+  assert.deepEqual(diffedShas, ["1111111111111111111111111111111111111111"]);
+  assert.deepEqual(collected, ["scripts/__tests__/safeDeliveryProtocols.test.ts"]);
+
+  // Verify fail-closed when origin/main comparison fails
+  assert.throws(
+    () =>
+      collectModifiedUnitTestsForPush({
+        stdinEntries: [
+          {
+            localRef: "refs/heads/feat/a",
+            localSha: "1111111111111111111111111111111111111111",
+            remoteRef: "refs/heads/feat/a",
+            remoteSha: "0000000000000000000000000000000000000000",
+          },
+        ],
+        unitConfigText: 'include: ["scripts/__tests__/safeDeliveryProtocols.test.ts"]',
+        runDiff: () => ({ status: 128, stderr: "fatal: ambiguous argument 'origin/main'" }),
+        fileExists: () => true,
+      }),
+    (err) => err?.code === "PUSH_GUARD_BASE_DIFF_FAILED",
+  );
+
   console.log("safe-push-guard selftest: OK");
 }
 
@@ -135,27 +263,6 @@ function readStdinIfPiped() {
   }
 }
 
-function getModifiedUnitTests() {
-  const unitConfigPath = path.join(REPO_ROOT, "vitest.unit.config.ts");
-  if (!fs.existsSync(unitConfigPath)) return [];
-  const unitConfigText = fs.readFileSync(unitConfigPath, "utf8");
-  const diffRes = spawnSync(
-    "git",
-    ["diff", "--name-only", "--diff-filter=ACMR", "origin/main...HEAD"],
-    { cwd: REPO_ROOT, encoding: "utf8" },
-  );
-  if (diffRes.status !== 0) return [];
-  return diffRes.stdout
-    .split(/\r?\n/)
-    .map((f) => f.trim().replace(/\\/g, "/"))
-    .filter(
-      (f) =>
-        (f.endsWith(".test.ts") || f.endsWith(".test.tsx")) &&
-        unitConfigText.includes(`"${f}"`) &&
-        fs.existsSync(path.join(REPO_ROOT, f)),
-    );
-}
-
 function main() {
   const args = process.argv.slice(2);
   if (args.includes("--selftest")) {
@@ -164,60 +271,69 @@ function main() {
   }
 
   const stdinText = readStdinIfPiped();
-  const parsedRefs = parsePrePushStdin(stdinText);
+  const stdinEntries = parsePrePushStdin(stdinText);
   const currentBranch = getCurrentBranch();
+
   const decision = evaluatePrePushPolicy({
-    remoteRefs: parsedRefs.map((r) => r.remoteRef),
+    remoteRefs: stdinEntries,
     currentBranch,
     cliArgs: args,
     env: process.env,
   });
 
   if (!decision.allowed) {
-    console.error(`\n⛔ [${decision.code}] ${decision.reason}`);
-    console.error(
-      "   المسار المعتمد: git push -u origin <فرعك> ← gh pr create ← pnpm pr:merge <رقم-الطلب>\n",
-    );
+    console.error(`\n⛔ [${decision.code}] ${decision.reason}\n`);
     process.exit(1);
   }
 
-  if (process.env.SKIP_PRE_PUSH_UNIT_TESTS !== "1") {
-    const changedUnitTests = getModifiedUnitTests();
-    if (changedUnitTests.length > 0) {
-      console.log(
-        `▶ فحص اختبارات الوحدة المتأثرة قبل الدفع (${changedUnitTests.length} ملف)...`,
+  if (process.env.SKIP_PRE_PUSH_UNIT_TESTS === "1") {
+    return;
+  }
+
+  const unitConfigPath = path.join(REPO_ROOT, "vitest.unit.config.ts");
+  const unitConfigText = fs.existsSync(unitConfigPath)
+    ? fs.readFileSync(unitConfigPath, "utf8")
+    : "";
+
+  let modifiedUnitTests = [];
+  try {
+    modifiedUnitTests = collectModifiedUnitTestsForPush({
+      stdinEntries,
+      unitConfigText,
+    });
+  } catch (error) {
+    console.error(`\n⛔ [${error?.code ?? "PUSH_GUARD_ERROR"}] ${error?.message ?? error}\n`);
+    process.exit(1);
+  }
+
+  if (modifiedUnitTests.length > 0) {
+    console.log(
+      `▶ [بروتوكول الدفع الآمن] تشغيل ${modifiedUnitTests.length} ملف اختبار وحدة متأثر قبل الدفع…`,
+    );
+    const pnpmCmd = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+    const testRes = spawnSync(
+      pnpmCmd,
+      ["exec", "vitest", "run", "--config", "vitest.unit.config.ts", ...modifiedUnitTests],
+      {
+        cwd: REPO_ROOT,
+        stdio: "inherit",
+        shell: process.platform === "win32",
+        env: { ...process.env, TZ: "UTC" },
+      },
+    );
+    if (testRes.status !== 0) {
+      console.error(
+        "\n⛔ [PRE_PUSH_UNIT_TEST_FAILED] فشل أحد اختبارات الوحدة المتأثرة؛ تم إيقاف الدفع لحماية CI.\n",
       );
-      const testRes = spawnSync(
-        "pnpm",
-        [
-          "exec",
-          "cross-env",
-          "TZ=UTC",
-          "vitest",
-          "run",
-          "--config",
-          "vitest.unit.config.ts",
-          ...changedUnitTests,
-        ],
-        {
-          cwd: REPO_ROOT,
-          stdio: "inherit",
-          shell: process.platform === "win32",
-        },
-      );
-      if (testRes.status !== 0) {
-        console.error(
-          "\n⛔ فشل أحد اختبارات الوحدة المتأثرة — أصلحه قبل الدفع.",
-        );
-        process.exit(testRes.status ?? 1);
-      }
+      process.exit(testRes.status ?? 1);
     }
   }
 }
 
-if (
+const isDirectRun =
   process.argv[1] &&
-  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))
-) {
+  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+
+if (isDirectRun) {
   main();
 }

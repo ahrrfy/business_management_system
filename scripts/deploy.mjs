@@ -1995,7 +1995,13 @@ function makeActivationOperations(
   };
 }
 
-export function evaluateDeployCiCheckRuns(headCheckRuns, parent2CheckRuns = null) {
+const ALLOWED_DEPLOY_CHECK_CONCLUSIONS = new Set([
+  "success",
+  "neutral",
+  "skipped",
+]);
+
+export function evaluateDeployCiCheckRuns(headCheckRuns) {
   const normalize = (runs) =>
     Array.isArray(runs)
       ? runs.map((r) => ({
@@ -2005,12 +2011,13 @@ export function evaluateDeployCiCheckRuns(headCheckRuns, parent2CheckRuns = null
         }))
       : [];
 
-  const head = normalize(headCheckRuns);
+  const head = normalize(headCheckRuns).filter(
+    (r) => Boolean(r.name) && r.name !== "CI Failure Diagnostics",
+  );
   const failedOnHead = head.filter(
     (r) =>
-      r.name !== "CI Failure Diagnostics" &&
       r.status === "completed" &&
-      ["failure", "timed_out", "action_required", "cancelled"].includes(r.conclusion),
+      !ALLOWED_DEPLOY_CHECK_CONCLUSIONS.has(r.conclusion),
   );
   if (failedOnHead.length > 0) {
     return {
@@ -2020,34 +2027,24 @@ export function evaluateDeployCiCheckRuns(headCheckRuns, parent2CheckRuns = null
     };
   }
 
-  const hasRequiredGreen = (runs) => {
-    const byName = new Map(runs.map((r) => [r.name, r]));
-    const gate = byName.get("check-test-build");
-    const audit = byName.get("audit");
-    const anyFailed = runs.some(
-      (r) =>
-        r.name !== "CI Failure Diagnostics" &&
-        r.status === "completed" &&
-        ["failure", "timed_out", "action_required"].includes(r.conclusion),
-    );
-    return (
-      !anyFailed &&
-      gate?.status === "completed" &&
-      gate?.conclusion === "success" &&
-      audit?.status === "completed" &&
-      audit?.conclusion === "success"
-    );
-  };
-
-  if (hasRequiredGreen(head)) {
-    return { ok: true, code: "OK", source: "head" };
+  const pendingOnHead = head.filter((r) => r.status !== "completed");
+  if (pendingOnHead.length > 0) {
+    return {
+      ok: false,
+      code: "DEPLOY_CI_NOT_GREEN",
+    };
   }
 
-  if (parent2CheckRuns != null) {
-    const parent2 = normalize(parent2CheckRuns);
-    if (hasRequiredGreen(parent2)) {
-      return { ok: true, code: "OK", source: "merged_pr_head" };
-    }
+  const byName = new Map(head.map((r) => [r.name, r]));
+  const gate = byName.get("check-test-build");
+  const audit = byName.get("audit");
+  if (
+    gate?.status === "completed" &&
+    gate?.conclusion === "success" &&
+    audit?.status === "completed" &&
+    audit?.conclusion === "success"
+  ) {
+    return { ok: true, code: "OK", source: "head" };
   }
 
   return {
@@ -2057,29 +2054,32 @@ export function evaluateDeployCiCheckRuns(headCheckRuns, parent2CheckRuns = null
 }
 
 async function fetchCommitCheckRuns(sha) {
-  const response = await fetch(
-    `https://api.github.com/repos/ahrrfy/business_management_system/commits/${encodeURIComponent(sha)}/check-runs?per_page=100`,
-    {
-      headers: {
-        Accept: "application/vnd.github+json",
-        "User-Agent": "alroya-erp-safe-deploy-gate",
+  const allRuns = [];
+  let page = 1;
+  while (page <= 10) {
+    const response = await fetch(
+      `https://api.github.com/repos/ahrrfy/business_management_system/commits/${encodeURIComponent(sha)}/check-runs?per_page=100&page=${page}`,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          "User-Agent": "alroya-erp-safe-deploy-gate",
+        },
+        signal: AbortSignal.timeout(15_000),
       },
-      signal: AbortSignal.timeout(15_000),
-    },
-  );
-  if (!response.ok) {
-    throw new Error(`DEPLOY_CI_STATUS_FETCH_FAILED:${response.status}`);
+    );
+    if (!response.ok) {
+      throw new Error(`DEPLOY_CI_STATUS_FETCH_FAILED:${response.status}`);
+    }
+    const payload = await response.json();
+    const runs = Array.isArray(payload?.check_runs) ? payload.check_runs : [];
+    allRuns.push(...runs);
+    const totalCount = Number(payload?.total_count ?? allRuns.length);
+    if (runs.length < 100 || allRuns.length >= totalCount) {
+      break;
+    }
+    page += 1;
   }
-  const payload = await response.json();
-  return Array.isArray(payload?.check_runs) ? payload.check_runs : [];
-}
-
-function resolveMergeSecondParent(sha) {
-  const res = spawnSync("git", ["rev-parse", "--verify", "--quiet", `${sha}^2`], {
-    cwd: PROJECT_ROOT,
-    encoding: "utf8",
-  });
-  return res.status === 0 ? res.stdout.trim() : null;
+  return allRuns;
 }
 
 export async function assertRemoteCiGreenForDeploy(
@@ -2087,7 +2087,6 @@ export async function assertRemoteCiGreenForDeploy(
   {
     env = process.env,
     fetchRuns = fetchCommitCheckRuns,
-    getSecondParent = resolveMergeSecondParent,
   } = {},
 ) {
   if (env?.SKIP_DEPLOY_CI_GATE === "1") {
@@ -2095,15 +2094,11 @@ export async function assertRemoteCiGreenForDeploy(
     return { ok: true, code: "SKIPPED" };
   }
   const headRuns = await fetchRuns(expectedHead);
-  const secondParent = getSecondParent(expectedHead);
-  const parent2Runs = secondParent ? await fetchRuns(secondParent) : null;
-  const verdict = evaluateDeployCiCheckRuns(headRuns, parent2Runs);
+  const verdict = evaluateDeployCiCheckRuns(headRuns);
   if (!verdict.ok) {
     throw codedError(verdict.code, new Error(verdict.code));
   }
-  console.log(
-    `   بوابة CI خضراء (${verdict.source === "merged_pr_head" ? `رأس PR المدموج ${secondParent.slice(0, 9)}` : expectedHead.slice(0, 9)}).`,
-  );
+  console.log(`   بوابة CI خضراء (${expectedHead.slice(0, 9)}).`);
   return verdict;
 }
 
@@ -2508,13 +2503,21 @@ async function dispatch() {
     ];
     if (
       !evaluateDeployCiCheckRuns(green).ok ||
-      !evaluateDeployCiCheckRuns(
-        [{ name: "test-shard-1-of-8", status: "in_progress", conclusion: "" }],
-        green,
-      ).ok ||
+      evaluateDeployCiCheckRuns([
+        ...green,
+        { name: "test-shard-1-of-8", status: "in_progress", conclusion: "" },
+      ]).code !== "DEPLOY_CI_NOT_GREEN" ||
       evaluateDeployCiCheckRuns([
         { name: "audit", status: "completed", conclusion: "success" },
         { name: "test-shard-2-of-8", status: "completed", conclusion: "failure" },
+      ]).code !== "DEPLOY_CI_FAILED_ON_HEAD" ||
+      evaluateDeployCiCheckRuns([
+        ...green,
+        { name: "authz-guard", status: "completed", conclusion: "startup_failure" },
+      ]).code !== "DEPLOY_CI_FAILED_ON_HEAD" ||
+      evaluateDeployCiCheckRuns([
+        ...green,
+        { name: "authz-guard", status: "completed", conclusion: "stale" },
       ]).code !== "DEPLOY_CI_FAILED_ON_HEAD" ||
       evaluateDeployCiCheckRuns([
         { name: "audit", status: "completed", conclusion: "success" },

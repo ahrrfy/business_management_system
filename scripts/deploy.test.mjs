@@ -928,21 +928,31 @@ try {
     code: "OK",
     source: "head",
   });
-  assert.deepEqual(
-    evaluateDeployCiCheckRuns(
-      [{ name: "test-shard-1-of-8", status: "in_progress", conclusion: "" }],
-      greenRuns,
-    ),
-    {
-      ok: true,
-      code: "OK",
-      source: "merged_pr_head",
-    },
+  assert.equal(
+    evaluateDeployCiCheckRuns([
+      ...greenRuns,
+      { name: "test-shard-1-of-8", status: "in_progress", conclusion: "" },
+    ]).code,
+    "DEPLOY_CI_NOT_GREEN",
   );
   assert.equal(
     evaluateDeployCiCheckRuns([
       { name: "audit", status: "completed", conclusion: "success" },
       { name: "test-shard-2-of-8", status: "completed", conclusion: "failure" },
+    ]).code,
+    "DEPLOY_CI_FAILED_ON_HEAD",
+  );
+  assert.equal(
+    evaluateDeployCiCheckRuns([
+      ...greenRuns,
+      { name: "authz-guard", status: "completed", conclusion: "startup_failure" },
+    ]).code,
+    "DEPLOY_CI_FAILED_ON_HEAD",
+  );
+  assert.equal(
+    evaluateDeployCiCheckRuns([
+      ...greenRuns,
+      { name: "authz-guard", status: "completed", conclusion: "stale" },
     ]).code,
     "DEPLOY_CI_FAILED_ON_HEAD",
   );
@@ -959,7 +969,6 @@ try {
         fetchRuns: async () => [
           { name: "audit", status: "completed", conclusion: "success" },
         ],
-        getSecondParent: () => null,
       }),
     (err) => err?.code === "DEPLOY_CI_NOT_GREEN",
   );
