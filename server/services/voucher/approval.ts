@@ -1,9 +1,15 @@
+import { settleCustomerReceiptTx, consumeCustomerReceiptCreditTx, reverseCustomerReceiptSettlementTx } from "../customerReceiptSettlement";
+import { prepareSupplierBookVoucherTx, applySupplierBookVoucherTx, type LiveSupplierBookVoucherPlan } from "../purchase/supplierBookSettlement";
 // اعتماد/رفض سند مُعلَّق (Maker-Checker، SOD-04: مالك نشط والمُعتمِد ≠ المُنشئ بلا استثناء).
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { logAuditTx } from "../auditService";
 import { allocateVoucherToInvoiceTx } from "./invoiceAllocation";
 import { assertNoNativeSupplierDebtForGenericPaymentTx } from "./supplierNativePaymentGuard";
+import { linkedSupplierVoucherRequest, supplierVoucherConflict } from "./supplierPaymentLink";
+import { assertBranchOwnership } from "./helpers";
+import { createSupplierVoucherSettlementTx, prepareSupplierVoucherSettlementTx, withSupplierBookVoucherTx, receiptNeedsSupplierBookGateTx, loadSupplierBookVoucherMarkerTx, recordSupplierBookVoucherMarkerTx } from "./supplierSettlement";
+import { decideSupplierPaymentInTx, SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY } from "../purchase/supplierPayments";
 import {
   autoSettleCustomerAccountTx,
   autoSettleSupplierAccountTx,
@@ -13,7 +19,6 @@ import {
   accountingEntries,
   accrualObligationEvents,
   assetMaintenance,
-  customers,
   digitalWalletTransactions,
   digitalWallets,
   employees,
@@ -53,6 +58,7 @@ import {
   type ExternalTreasuryDisbursementApproval,
 } from "../cash/cashAvailability";
 import { type Actor, withTx } from "../tx";
+import { unapplySupplierBookSettlementSourceTx } from "../purchase/supplierBookSettlement";
 import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
 import {
   voucherApprovalRetainsLegacy,
@@ -510,7 +516,7 @@ export async function approveVoucher(
   actor: Actor,
   options?: ApproveVoucherOptions,
 ): Promise<ApproveVoucherResult> {
-  return withTx((tx) => approveVoucherTx(tx, receiptId, actor, options));
+  return withSupplierBookVoucherTx(tx => receiptNeedsSupplierBookGateTx(tx, receiptId), tx => approveVoucherTx(tx, receiptId, actor, options));
 }
 
 /**
@@ -548,6 +554,48 @@ export async function approveVoucherTx(
     role: approverPreview.role,
     isOwner: true,
   };
+  let supplierBookMarker = await loadSupplierBookVoucherMarkerTx(tx, receiptId);
+  if (supplierBookMarker?.cashSource) {
+    if (options?.cashSource && (options.cashSource.mode !== supplierBookMarker.cashSource.mode || (options.cashSource.shiftId ?? null) !== (supplierBookMarker.cashSource.shiftId ?? null))) throw supplierVoucherConflict("مصدر نقد السند الدفتري لا يطابق المصدر المحفوظ");
+    options = { ...options, cashSource: supplierBookMarker.cashSource };
+  }
+  if (supplierBookMarker && options?.cashSource && (preview.paymentMethod !== "CASH" || options.cashSource.mode !== "TREASURY" || options.cashSource.shiftId != null))
+    throw supplierVoucherConflict("تسوية السند الدفترية تدعم الخزينة الإدارية فقط ولا تقبل وردية أو مصدراً نقدياً لطريقة غير نقدية");
+  let supplierBookPlan: LiveSupplierBookVoucherPlan | null = null;
+  let supplierRequest = await linkedSupplierVoucherRequest(tx, receiptId);
+  if (!supplierRequest && preview.direction === "OUT" && preview.partyType === "SUPPLIER" && preview.status === "PENDING" &&
+    ["CASH", "CARD", "TRANSFER", "WALLET"].includes(preview.paymentMethod) &&
+    preview.approvalStatus === "PENDING_APPROVAL" && !hasSystemPaymentRequestEnvelope(preview.internalNote) && !isSystemPaymentReference(preview.referenceNumber)) {
+    if (preview.paymentMethod === "CASH") await lockCashSourceForUpdate(tx, { branchId: Number(preview.branchId), cashBucket: "TREASURY", shiftId: null });
+    const [creator] = await tx.select().from(users).where(eq(users.id, preview.createdBy!)).limit(1);
+    if (!creator?.isActive) throw supplierVoucherConflict("مقدم سند الصرف غير نشط؛ أعد تقديم السند من حساب نشط");
+    const originalActor: Actor = { userId: creator.id, branchId: Number(creator.branchId ?? preview.branchId), role: creator.role };
+    const originalInput = { voucherType: "PAYMENT" as const, branchId: Number(preview.branchId), amount: preview.amount,
+      paymentMethod: preview.paymentMethod as PaymentMethod, partyType: "SUPPLIER" as const, partyId: preview.partyId,
+      description: preview.description ?? "سداد المورد", referenceNumber: preview.referenceNumber, clientRequestId: `VOUCHER-UPGRADE:${receiptId}` };
+    supplierBookPlan = await prepareSupplierBookVoucherTx(tx, { supplierId: Number(preview.partyId), branchId: Number(preview.branchId), amount: preview.amount, receiptId, voucherDate: toDateStr(preview.voucherDate ?? preview.createdAt), allocations: supplierBookMarker?.allocations }, previewApproverActor);
+    if (supplierBookPlan && !supplierBookMarker) {
+      await recordSupplierBookVoucherMarkerTx(tx, receiptId, originalInput, supplierBookPlan, originalActor);
+      supplierBookMarker = await loadSupplierBookVoucherMarkerTx(tx, receiptId);
+    }
+    if (supplierBookMarker && !supplierBookPlan) throw supplierVoucherConflict("لم يعد دليل رصيد السند الدفتري صالحاً للاعتماد");
+    const allocations = !supplierBookPlan ? await prepareSupplierVoucherSettlementTx(tx, originalInput, originalActor) : null;
+    if (allocations) {
+      await createSupplierVoucherSettlementTx(tx, preview, originalInput, allocations, originalActor);
+      supplierRequest = await linkedSupplierVoucherRequest(tx, receiptId);
+    }
+  }
+  if (supplierRequest) {
+    await assertBranchOwnership(tx, previewApproverActor, preview.branchId, "سند المورد");
+    if (preview.status === "COMPLETED" && preview.approvalStatus === "APPROVED" && supplierRequest.status === "APPROVED" && preview.signatureHash) {
+      return { receiptId, voucherNumber: preview.voucherNumber, approvalStatus: "APPROVED", signatureHash: preview.signatureHash, replayed: true };
+    }
+    const result = await decideSupplierPaymentInTx(tx, { requestId: supplierRequest.id, decisionKey: `VOUCHER-APPROVE:${receiptId}`, action: "APPROVE", reviewReason: `اعتماد وصرف سند ${preview.voucherNumber}` }, previewApproverActor, SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY);
+    if (result.status !== "APPROVED") throw supplierVoucherConflict("لم يكتمل اعتماد طلب السداد المرتبط");
+    const [completed] = await tx.select().from(receipts).where(eq(receipts.id, receiptId)).for("share").limit(1);
+    if (!completed?.signatureHash) throw supplierVoucherConflict("لم يكتمل ختم سند الصرف المرتبط");
+    return { receiptId, voucherNumber: preview.voucherNumber, approvalStatus: "APPROVED", signatureHash: completed.signatureHash, replayed: result.idempotent };
+  }
   const cashOutPreview =
     preview.direction === "OUT" && preview.paymentMethod === "CASH";
   const cashInPreview =
@@ -933,7 +981,7 @@ export async function approveVoucherTx(
     r.direction === "OUT" &&
     r.partyType === "SUPPLIER" &&
     r.partyId &&
-    !systemRequest
+    !systemRequest && !supplierBookPlan
   ) {
     await assertNoNativeSupplierDebtForGenericPaymentTx(tx, Number(r.partyId));
   }
@@ -1986,6 +2034,13 @@ export async function approveVoucherTx(
     });
   }
 
+  if (cancellationOriginal) {
+    await unapplySupplierBookSettlementSourceTx(tx, {
+      sourceReceiptId: Number(cancellationOriginal.id),
+      reversalKey: `VOUCHER_CANCELLATION:${receiptId}`,
+    }, actor);
+  }
+
   if (
     cancellationOriginal &&
     cancellationSourceRequest?.kind === "PURCHASE_SUPPLIER_USD"
@@ -2238,14 +2293,18 @@ export async function approveVoucherTx(
     // يتحرّكا معاً**: تقويمُ أحدهما وحده يصنع ABBA بينهما — محاسبٌ يعتمد سنداً معلَّقاً على
     // فاتورة، وكاشيرٌ يسجّل سنداً مباشراً على نفس الفاتورة والعميل في اللحظة ذاتها. وخطرُه
     // غيرُ متكافئ: `createVoucher` محميّ بـ`withMysqlDeadlockRetry` بينما الاعتماد بلا غلاف.
-    if (r.invoiceId != null) {
+    const reversedCustomerAllocation = cancellationOriginal
+      ? await reverseCustomerReceiptSettlementTx(tx, Number(cancellationOriginal.id), receiptId, actor)
+      : false;
+    if (!reversedCustomerAllocation && r.invoiceId != null) {
       const allocation = await allocateVoucherToInvoiceTx(tx, {
         invoiceId: Number(r.invoiceId),
         amount,
         direction,
         paymentMethod,
         voucherBranchId: Number(r.branchId),
-        gracefulSettledInvoice: true,
+        gracefulSettledInvoice: !cancellationOriginal,
+        restoreReversedRefund: cancellationOriginal?.direction === "OUT",
       });
 
       if (!allocation.allocated) {
@@ -2253,7 +2312,9 @@ export async function approveVoucherTx(
         // منعاً لتعليق السند في DEADLOCK دائم، يتم فك ربط الفاتورة من السند وقيد المبلغ
         // بالكامل على رصيد حساب العميل مع توثيق ذلك في الملاحظات الداخلية وسجل التدقيق.
         const unallocatedNote =
-          allocation.unallocatedReason === "ALREADY_SETTLED"
+          allocation.unallocatedReason === "DELIVERY_ACTIVE"
+            ? `[تنبيه اعتماد: الفاتورة #${r.invoiceId} لها إرسالية نشطة — يبقى تحصيلها في مسار التوصيل ويُوزع السند العام على الفواتير المؤهلة]`
+            : allocation.unallocatedReason === "ALREADY_SETTLED"
             ? `[تنبيه اعتماد: الفاتورة #${r.invoiceId} مسددة مسبقاً بالكامل — فُكّ ربط السند بها وقُيّد المبلغ على رصيد العميل]`
             : allocation.unallocatedReason === "DEAD_INVOICE"
               ? `[تنبيه اعتماد: الفاتورة #${r.invoiceId} ملغاة أو مرتجعة أو مستبدلة — فُكّ ربط السند بها وقُيّد المبلغ على رصيد العميل]`
@@ -2294,19 +2355,22 @@ export async function approveVoucherTx(
         );
       }
     }
+    if (!cancellationOriginal) {
+      const [currentReceipt] = await tx.select({ invoiceId: receipts.invoiceId }).from(receipts).where(eq(receipts.id, receiptId));
+      if (currentReceipt?.invoiceId == null) {
+        if (direction === "IN") await settleCustomerReceiptTx(tx, receiptId, actor);
+        else await consumeCustomerReceiptCreditTx(tx, receiptId, actor);
+      }
+    }
     await adjustCustomerBalance(
       tx,
       partyId,
       direction === "IN" ? amount.neg() : amount,
     );
-    if (direction === "IN") {
-      const [c] = await tx
-        .select({ currentBalance: customers.currentBalance })
-        .from(customers)
-        .where(eq(customers.id, partyId));
-      if (c && money(c.currentBalance).lte(0)) {
-        await autoSettleCustomerAccountTx(tx, partyId, actor);
-      }
+    if (direction === "IN" && cancellationOriginal?.direction === "OUT") {
+      // Restore the original source first, then use its proven credit FIFO. The
+      // counter receipt itself is never treated as a second source of collection.
+      await autoSettleCustomerAccountTx(tx, partyId, actor);
     }
     // ردُّ بيعٍ مؤجَّل (تحويل/صك/محفظة) صار مصروفاً باعتماد سنده: أغلِق أثرَي السجلّ اللذين
     // تركهما المحرّك مفتوحَين بقصد — `PAID_AMOUNT` (نطاق البيع) والرصيد الدائن المعلَّق — كي لا
@@ -2341,7 +2405,7 @@ export async function approveVoucherTx(
       partyId,
       direction === "OUT" ? amount.neg() : amount,
     );
-    if (direction === "OUT") {
+    if (direction === "OUT" && !supplierBookPlan) {
       const [sRec] = await tx
         .select({ currentBalance: suppliers.currentBalance })
         .from(suppliers)
@@ -2409,6 +2473,12 @@ export async function approveVoucherTx(
     );
   }
 
+  if (supplierBookPlan) {
+    const entries = await tx.select({ id: accountingEntries.id }).from(accountingEntries).where(and(eq(accountingEntries.receiptId, receiptId), eq(accountingEntries.entryType, "PAYMENT_OUT"))).for("share").limit(2);
+    if (entries.length !== 1) throw supplierVoucherConflict("قيد صرف السند الدفتري غير وحيد");
+    await applySupplierBookVoucherTx(tx, { receiptId, accountingEntryId: Number(entries[0].id), plan: supplierBookPlan }, previewApproverActor);
+  }
+
   // البَصمة بعد إكمال كل التَغييرات.
   const hash = computeSignature({
     id: receiptId,
@@ -2462,6 +2532,14 @@ export async function rejectVoucher(
         code: "FORBIDDEN",
         message: "رفض السندات محصور بحساب مالك نشط",
       });
+    }
+    const supplierRequest = await linkedSupplierVoucherRequest(tx, receiptId);
+    if (supplierRequest) {
+      const reasonText = reason.trim().slice(0, 500);
+      if (!reasonText) throw supplierVoucherConflict("سبب رفض سند المورد مطلوب");
+      await decideSupplierPaymentInTx(tx, { requestId: supplierRequest.id, decisionKey: `VOUCHER-REJECT:${receiptId}`, action: "REJECT", reviewReason: reasonText }, actor, SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY);
+      const [receipt] = await tx.select().from(receipts).where(eq(receipts.id, receiptId)).for("share").limit(1);
+      return { receiptId, voucherNumber: receipt!.voucherNumber!, approvalStatus: "REJECTED" as const };
     }
     const r = (
       await tx

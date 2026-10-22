@@ -29,6 +29,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import * as s from "../../../../drizzle/schema";
 import { getDb } from "../../../db";
 import {
@@ -931,7 +932,14 @@ describe("5. Migration Parity & Zero Schema Drift Verification", () => {
       encoding: "utf8",
     });
 
-    expect(output).toContain("Migration journal check passed through");
-    expect(output).toMatch(/03[89]\d_/);
+    const journal = JSON.parse(
+      readFileSync("drizzle/migrations/meta/_journal.json", "utf8"),
+    ) as { entries: { tag: string }[] };
+    const latestTag = journal.entries.at(-1)?.tag;
+
+    expect(latestTag).toBeTruthy();
+    expect(output).toContain(
+      `Migration journal check passed through ${latestTag}.`,
+    );
   });
 });

@@ -5,6 +5,7 @@
 //   - DISMISS: صنفٌ مجهولٌ تماماً أو غير ذي صلة ⇒ يُغلق بملاحظة (يبقى في السجل append-only).
 // الحلّ يعبُر الأساسيّ والبديل معاً (نفس منطق resolveBarcodeOwner)، ويُرفض الخدميّ/البكج.
 import { TRPCError } from "@trpc/server";
+import { assertNoActiveStocktakeOverlap, withStocktakeScopeTx } from "./overlapGuard";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import {
   branchStock,
@@ -251,7 +252,7 @@ export async function resolveUnknownScan(
   if (!barcode) throw new TRPCError({ code: "BAD_REQUEST", message: "باركود غير صالح." });
   const barcodeCandidates = barcodeIdentityCandidates(barcode);
 
-  return withTx(async (tx) => {
+  return withStocktakeScopeTx(input.sessionId, async (tx) => {
     const session = await loadSessionForManager(tx, input.sessionId, opts.restrictBranchId);
 
     const pending = await tx
@@ -319,6 +320,7 @@ export async function resolveUnknownScan(
       if (existing) {
         alreadyInScope = true;
       } else {
+        await assertNoActiveStocktakeOverlap(tx, Number(session.branchId), [hit.variantId], Number(session.id));
         // assignmentId حقلٌ تقنيّ (القائمة مشتركة) — نأخذ أوّل تكليفٍ للجلسة كما في liveScope.
         const [assignment] = await tx
           .select({ id: stocktakeAssignments.id })

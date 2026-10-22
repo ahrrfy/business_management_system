@@ -477,15 +477,15 @@ function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, canRecl
   const groups = groupQueueRows(rows);
   return (
     <section className="rounded-xl border bg-card">
-      <div className="flex items-center gap-2 border-b px-4 py-2.5">
-        <Icon aria-hidden className="size-4 text-muted-foreground" />
-        <h2 className="text-sm font-bold">{title}</h2>
+      <div className="flex items-center gap-2 border-b px-3 py-1.5">
+        <Icon aria-hidden className="size-3.5 text-muted-foreground" />
+        <h2 className="text-xs font-bold">{title}</h2>
         <Badge variant="secondary" className="ms-1">{loading || error ? "—" : rows.length}</Badge>
       </div>
       {loading ? (
-        <LoadingState message={`جارٍ تحميل ${title}…`} className="p-6" />
+        <LoadingState message={`جارٍ تحميل ${title}…`} className="p-4" />
       ) : error ? (
-        <ErrorState message={`تعذّر تحميل ${title}. لا يمكن افتراض عدم وجود طلبات.`} onRetry={onRetry} className="p-6" />
+        <ErrorState message={`تعذّر تحميل ${title}. لا يمكن افتراض عدم وجود طلبات.`} onRetry={onRetry} className="p-4" />
       ) : rows.length === 0 ? (
         <EmptyState icon={Icon} title="لا شيء هنا" description={emptyLabel} />
       ) : (
@@ -494,7 +494,7 @@ function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, canRecl
             <QueueRowItem key={group.rows[0]!.id} row={group.rows[0]!} canFulfill={canFulfill} canReclassify={canReclassify} canDispatch={canDispatch} partiesReady={partiesReady} onDispatch={onDispatch} onPickup={onPickup} onReclassify={onReclassify} />
           ) : (
             <li key={`draft-${group.draftId}`}>
-              <div className="flex flex-wrap items-center gap-2 bg-muted/30 px-4 py-2 text-xs">
+              <div className="flex flex-wrap items-center gap-2 bg-muted/30 px-3 py-1.5 text-xs">
                 <span className="font-bold">طلب {group.draftNumber ?? `#${group.draftId}`}</span>
                 <span className={cn("rounded px-1.5 py-0.5 font-bold", group.readyCount === group.totalCount ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]")}>
                   {group.readyCount}/{group.totalCount} جاهزة
@@ -574,7 +574,7 @@ function QueueRowItem({ row: r, canFulfill, canReclassify, canDispatch, partiesR
   actions.push({ key: "open", kind: "view", label: "فتح", onSelect: () => window.open(`/work-orders/${r.id}`, "_blank", "noopener") });
 
   return (
-    <li className="flex flex-wrap items-center gap-3 px-4 py-3">
+    <li className="flex flex-wrap items-center gap-2.5 px-3 py-2">
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-1.5">
           <span className={cn("rounded px-1.5 py-0.5 text-[11px] font-bold", workOrderStatusBadgeCls(r.status))}>{workOrderStatusLabel(r.status)}</span>
@@ -611,9 +611,9 @@ function QueueRowItem({ row: r, canFulfill, canReclassify, canDispatch, partiesR
               {r.consignmentStatus === "DELIVERED" ? "سُلِّمت" : r.consignmentStatus === "RETURNED" ? "أُرجعت" : "أُلغي الإسناد"}
             </span>
           ) : null}
-          <span className="font-bold">{r.orderNumber}</span>
+          <span className="font-bold text-xs">{r.orderNumber}</span>
         </div>
-        <p className="mt-0.5 truncate text-sm">{r.title}</p>
+        <p className="mt-0.5 truncate text-xs font-medium">{r.title}</p>
         <p className="mt-0.5 text-[11px] text-muted-foreground">
           {r.customerName ?? "عميل نقدي"}
           {r.customerPhone ? ` · ${r.customerPhone}` : ""}

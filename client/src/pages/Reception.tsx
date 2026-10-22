@@ -2327,23 +2327,20 @@ export default function Reception() {
         />
       )}
       {/* أربع مناطق حقيقية: تفاصيل أمر الشغل جزء من السلة، فلا نكررها كمرحلة مستقلة. */}
-      <div className={cn("flex-shrink-0 border-b bg-card px-4", compactHeader ? "space-y-1.5 py-1.5" : "space-y-2 py-2.5")}>
+      <div className={cn("flex-shrink-0 border-b bg-card px-3", compactHeader ? "space-y-1 py-1" : "space-y-1.5 py-1.5")}>
         {/* إصلاح (٧/٨): شريط التسلسل العلوي (١-٤ بأسماء مختلفة) حُذف — كان يكرّر حرفياً نفس
             ترقيم «١. العميل…» و«٢. أضف…» أدناه بتسميةٍ ثانية، بلا وظيفةٍ فريدة (الانتقال يبقى
             متاحاً بالنقر على المناطق نفسها وبـF2/F4). إزالته توفّر مساحة رأسية دائماً، لا عند
             ضيق الارتفاع فقط. */}
         <div
           ref={customerSectionRef}
-          className="grid gap-2 rounded-xl border border-border/80 bg-muted/20 p-2 xl:grid-cols-[minmax(280px,0.9fr)_minmax(390px,1.15fr)_minmax(300px,0.95fr)]"
+          className="grid gap-1.5 rounded-xl border border-border/80 bg-muted/20 p-1.5 xl:grid-cols-[minmax(260px,0.85fr)_minmax(380px,1.15fr)_minmax(280px,0.95fr)]"
         >
           {/* ١ — قناة الوصول: قرار سريع واضح، مع إبقاء هوية العميل عند تبديل القناة. */}
-          <section className="rounded-lg border bg-card p-2" aria-labelledby="reception-channel-title">
-            <div className="mb-1.5 flex items-center gap-2">
-              <span className="grid size-5 place-items-center rounded-full bg-primary text-[10px] font-black text-primary-foreground">١</span>
-              <h2 id="reception-channel-title" className="text-xs font-black">قناة وصول الطلب</h2>
-              {/* ١٩/٨ — مدخلُ المحادثة **سياقيّ** لا زرٌّ في الرأس: الوارد هنا **أداةُ سلّة**
-                  تملأ رأس الطلب (ش١)، لا وجهةً يُغادَر إليها — ووجهتُه شاشةُ `/crm?tab=inbox`.
-                  ووضعُه بجوار القناة هو موضعُه المنطقيّ: منه تُعرَف القناة ومعرّفُها. */}
+          <section className="rounded-lg border bg-card p-1.5" aria-labelledby="reception-channel-title">
+            <div className="mb-1 flex items-center gap-2">
+              <span className="grid size-4 place-items-center rounded-full bg-primary text-[9px] font-black text-primary-foreground">١</span>
+              <h2 id="reception-channel-title" className="text-2xs font-black">قناة وصول الطلب</h2>
               {canReadChannels && (
                 <button
                   type="button"
@@ -2366,7 +2363,7 @@ export default function Reception() {
                     if (value !== "INSTAGRAM" && value !== "TIKTOK") setChannelHandle("");
                   }}
                   className={cn(
-                    "flex h-12 min-w-0 flex-col items-center justify-center gap-0.5 rounded-md border text-[9px] font-extrabold transition-colors",
+                    "flex h-9 min-w-0 flex-col items-center justify-center gap-0.5 rounded-md border text-[9px] font-extrabold transition-colors",
                     channel === value
                       ? "border-primary bg-primary/10 text-primary shadow-sm"
                       : "bg-background text-muted-foreground hover:border-primary/40 hover:text-foreground",
@@ -2383,7 +2380,7 @@ export default function Reception() {
                 onChange={(event) => setChannelHandle(event.target.value)}
                 placeholder="معرّف الحساب (اختياري)"
                 aria-label="معرّف حساب القناة"
-                className="mt-1.5 h-7 text-[11px]"
+                className="mt-1 h-7 text-[11px]"
                 dir="ltr"
               />
             )}
@@ -2404,7 +2401,7 @@ export default function Reception() {
           />
         </div>
 
-        <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:gap-3">
+        <div className="flex flex-col items-stretch gap-1.5 sm:flex-row sm:items-center sm:gap-2">
         <span className="shrink-0 text-xs font-extrabold">٢. أضف ما يريده العميل</span>
         <div ref={searchWrapRef} className="relative w-full flex-1 sm:max-w-[640px] sm:min-w-72">
           <UnifiedSearchInput
@@ -2422,7 +2419,7 @@ export default function Reception() {
               if (e.key === "Escape") { e.preventDefault(); setSearch(""); setShowDrop(false); }
             }}
             placeholder="امسح الباركود أو ابحث بالاسم / SKU…  (F2)"
-            inputClassName="h-11 rounded-xl border-[1.5px] text-sm font-semibold focus:border-primary"
+            inputClassName="h-9 rounded-lg border-[1.5px] text-xs font-semibold focus:border-primary"
           />
           {showDrop && debounced.trim().length >= 2 && (
             <div className="absolute inset-x-0 top-[calc(100%+6px)] z-40 max-h-[340px] overflow-y-auto rounded-xl border bg-card p-1.5 shadow-xl">
@@ -2443,15 +2440,15 @@ export default function Reception() {
                 >
                   <div
                     className={cn(
-                      "grid size-10 flex-shrink-0 place-items-center rounded-lg",
+                      "grid size-9 flex-shrink-0 place-items-center rounded-lg",
                       r.isCustomizable ? "bg-violet-100 text-violet-700" : "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]",
                     )}
                   >
-                    {r.isCustomizable ? <Palette aria-hidden className="size-5" /> : <Package aria-hidden className="size-5" />}
+                    {r.isCustomizable ? <Palette aria-hidden className="size-4" /> : <Package aria-hidden className="size-4" />}
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
-                      <span className="truncate text-sm font-semibold">{r.productName}</span>
+                      <span className="truncate text-xs font-semibold">{r.productName}</span>
                       <span
                         className={cn(
                           "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold",
@@ -2470,7 +2467,7 @@ export default function Reception() {
                       )}
                     </div>
                   </div>
-                  <div className="shrink-0 text-sm font-bold tabular-nums" dir="ltr">
+                  <div className="shrink-0 text-xs font-bold tabular-nums" dir="ltr">
                     {r.price ? fmt(r.price) : "—"}
                   </div>
                 </button>
@@ -2482,9 +2479,9 @@ export default function Reception() {
         <button
           type="button"
           onClick={addManualService}
-          className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border-2 border-violet-500 bg-violet-50 px-4 text-xs font-extrabold text-violet-700 transition-colors hover:bg-violet-100"
+          className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border-2 border-violet-500 bg-violet-50 px-3 text-xs font-extrabold text-violet-700 transition-colors hover:bg-violet-100"
         >
-          <ClipboardList aria-hidden className="size-4" /> إضافة خدمة / أمر شغل
+          <ClipboardList aria-hidden className="size-3.5" /> إضافة خدمة / أمر شغل
         </button>
 
         <button
@@ -2493,34 +2490,17 @@ export default function Reception() {
           disabled={offline || !canAction("digitalCards.pos.listCards")}
           title={offline ? "البيع الرقمي يحتاج اتصالاً بالخادم" : "الكروت والاشتراكات (F3)"}
           className={cn(
-            "inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border-2 px-4 text-xs font-extrabold transition-colors",
+            "inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border-2 px-3 text-xs font-extrabold transition-colors",
             offline
               ? "cursor-not-allowed border-border bg-muted text-muted-foreground"
               : "border-primary/60 bg-primary/10 text-primary hover:bg-primary/20",
           )}
         >
-          <CreditCard aria-hidden className="size-4" /> الكروت والاشتراكات
+          <CreditCard aria-hidden className="size-3.5" /> الكروت والاشتراكات
         </button>
-
-        {/* التسليم والإسناد يتمّان عبر الباركود في شاشة مستقلة — لا زرّ توصيل هنا */}
 
         </div>
 
-        {/* إصلاح (٧/٨، طلب مالك): كل أزرار محطة الاستقبال العابرة للورش (فواتير/طلبات/طلبات
-            الموقع/حجوزات/رسائل/سحب نقدي/طابعة/آخر فاتورة/حالة الوردية) تُرسَل بـportal إلى
-            الشريط العلوي المشترك — بجانب موضع زرّ «الفواتير» الأصلي — بدل تكديسها هنا. تُبقي كل
-            الحالة والمنطق داخل هذا المكوّن (شرط الـportal: نفس شجرة React، موضعٌ مختلف في DOM). */}
-        {/* ١٩/٨ (طلب المالك): **اللوحاتُ الخمس خرجت من هنا** — «الفواتير» و«الطلبات» و«طلبات
-            الموقع» و«الحجوزات» و«رسائل وطلبات العملاء» صارت بطاقاتٍ في الصفحة الرئيسية
-            (`CashierHome`) تفتح المحطّة على لوحتها عبر `?workspace=`.
-
-            السبب مقيس: كان الرأس صفّاً واحداً من ثمانية أزرارٍ **متساوية الوزن** يفيض أفقياً
-            بشريط تمرير، فيختلط فيه ما يُفتَح مرّةً في اليوم (الحجوزات) بما يُضغَط كل دقيقة
-            (إنهاء الوردية). وثلاثةٌ من أسمائها كانت تصطدم بأسماء أخرى في نفس الشاشة
-            («الطلبات» مقابل «متابعة الطلبات» مقابل «تصفّح الطلبات»).
-
-            ما بقي هنا **أدواتُ الوردية وحدها**: الطابعة · آخر فاتورة · سحب نقديّ · إنهاء
-            الوردية — أي ما يخصّ الجلسة لا ما يخصّ المستندات. */}
         {headerActionsNode && createPortal(
           <>
 
@@ -2553,7 +2533,6 @@ export default function Reception() {
                 {printerReady && <Check aria-hidden className="size-3.5" strokeWidth={3} />}
               </button>
             )}
-            {/* ش١: شارة «آخر فاتورة» + نسخ الرقم — أكثر ما يُطلَب بعد إغلاق النافذة. */}
             {lastSale && lastSale.invoiceNumbers[0] && (
               <button
                 type="button"
@@ -2568,7 +2547,6 @@ export default function Reception() {
                 <Copy aria-hidden className="size-3" /> {lastSale.invoiceNumbers[0]}
               </button>
             )}
-            {/* ش١ (§٨.٦): سحبٌ نقديّ من الدرج — درج الاستقبال يتراكم فيه بيعٌ وعرابين وأجرةٌ أمانة. */}
             <button
               type="button"
               disabled={!canAction("shifts.cashDrop")}
@@ -2579,9 +2557,6 @@ export default function Reception() {
               <HandCoins aria-hidden className="size-4" />
               <span className="hidden lg:inline">سحب نقدي</span>
             </button>
-            {/* G1 (طلب المالك): شارة «الوردية #{id}» حُذفت — كانت مكرِّرةً لزرّ «إنهاء الوردية»
-                المجاور (وجوده يعني وردية مفتوحة). رقم الوردية يبقى مرئياً في نافذة الإغلاق
-                (عنوان الحوار وZ-report) وعلى الإيصال المطبوع الجديد (G3 أدناه — حقل `shiftId`). */}
             <Button size="sm" variant="outline" disabled={!canAction("shifts.close")} onClick={() => canActionRef.current("shifts.close") && setClosing(true)} title={`إنهاء وردية الاستقبال #${shift.id}`}>
               إنهاء الوردية
             </Button>
@@ -2589,8 +2564,6 @@ export default function Reception() {
           headerActionsNode,
         )}
 
-        {/* ش٢ (§٨.٢): شريط الطلبات المحفوظة — يدخل سُلَّم الاحتواء: تحت compactHeader ينكمش
-            إلى زرٍّ منسدلٍ واحد (V18) فلا يموّل نفسه من لوحة الدفع. */}
         <DraftStrip
           branchId={branchId}
           meUserId={Number(me.data?.id ?? 0)}
@@ -2605,24 +2578,15 @@ export default function Reception() {
       </div>
 
       {/* ─── الجسم: عمود السلة يملأ العرض؛ لوحة الدفع شريطٌ مستقلّ أسفله (خارج الحشوة، حافّة-لحافّة) ─── */}
-      <div className="flex min-h-0 flex-1 flex-col gap-3 p-3 pb-0">
+      <div className="flex min-h-0 flex-1 flex-col gap-2 p-2 pb-0">
         <ReceptionCartDuplicateAlert branchId={branchId} phone={receptionPhone || customer.phone || ""} customerId={customer.customerId}
           channel={channel} cart={cart} total={round2(grandTotalD).toFixed(2)} draftId={activeDraft?.id}
           disabled={hasDigitalCards || needsBranchChoice} onVerify={() => void saveDraft()} />
         {/* ─ عمود العمل: تبويبات الورش تركب رأس السلة (§٨.١ — صفر تكلفة عمودية) ─ */}
         <div ref={cartSectionRef} tabIndex={-1} className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border bg-card outline-none focus:ring-2 focus:ring-primary/30">
-          {/* إصلاح (٧/٨، طلب مالك): تبويبات الورش («الفواتير»/«الطلبات»/«طلبات الموقع») حُذفت من
-              هنا — نقاط الدخول إليها صارت في الشريط العلوي المشترك (بجانب زرّ «الفواتير» الأصلي،
-              انظر portal أدناه) بدل التكرار. هذا الصفّ الآن مؤشّر «أين أنا» فقط: اسم السلّة
-              وأدواتها حين workshop=CART، أو زرّ رجوعٍ موحَّد لأي ورشةٍ أخرى. */}
-          {/* ١٩/٨ (طلب المالك: «لكل بطاقة شاشة خاصّة بها») — **الورش الثلاث حُذفت من هنا**.
-              كانت «الفواتير» و«الطلبات» و«طلبات الموقع» تُركَّب داخل عمود السلّة، فيصير للمفهوم
-              الواحد مكانان: لوحةٌ هنا وصفحةٌ في الشريط الجانبيّ. صار لكلٍّ **شاشتُه**:
-              `/reception/invoices` · `/reception/orders` · `/store-admin?tab=orders`.
-              وهذه الشاشة صارت ما اسمُها: **سلّة بيع**. */}
-          <div className="flex h-12 flex-shrink-0 items-center gap-2 border-b bg-muted/40 px-3">
+          <div className="flex h-9 flex-shrink-0 items-center gap-2 border-b bg-muted/40 px-2.5">
             <span className="inline-flex items-center gap-1.5 text-xs font-extrabold">
-              <ShoppingCart aria-hidden className="size-4" />
+              <ShoppingCart aria-hidden className="size-3.5" />
               {cart.length > 0 ? `السلة (${cart.length})` : "السلة"}
             </span>
             {cart.length > 0 && (

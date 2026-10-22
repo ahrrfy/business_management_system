@@ -49,7 +49,26 @@ export function QuranSidebarCard() {
   } = useQuranAudio();
 
   const [reciterModalOpen, setReciterModalOpen] = useState(false);
-  const [isMinimized, setIsMinimized] = useState(false);
+  const [isMinimized, setIsMinimized] = useState(() => {
+    try {
+      const saved = localStorage.getItem("erp.quran.minimized");
+      return saved === null ? true : saved === "1";
+    } catch {
+      return true;
+    }
+  });
+
+  const toggleMinimized = () => {
+    setIsMinimized((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("erp.quran.minimized", next ? "1" : "0");
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  };
 
   const progressPercent = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
 
@@ -57,99 +76,124 @@ export function QuranSidebarCard() {
     <>
       <div
         dir="rtl"
-        className="mx-2 my-1.5 rounded-xl border border-primary/25 bg-card/80 backdrop-blur-md hover:border-primary/40 transition-all shadow-xs overflow-hidden group"
+        className="mx-2 my-1 rounded-lg border border-white/15 bg-white/10 backdrop-blur-md transition-all overflow-hidden group"
       >
-        {/* شريط العنوان وأزرار الفهرس والتصغير */}
-        <div className="flex items-center justify-between px-2.5 pt-2 pb-1 gap-1">
-          <div className="flex items-center gap-2 min-w-0">
-            <div
-              className={cn(
-                "flex size-6 shrink-0 items-center justify-center rounded-md shadow-2xs transition-colors",
-                isPlaying
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-primary/10 text-primary"
-              )}
-            >
-              <BookOpen className="size-3.5" aria-hidden />
-            </div>
-
-            <span className="text-xs font-bold text-foreground truncate">
-              إذاعة القرآن الكريم
-            </span>
-
-            {/* معادل صوتي متحرك عند البث */}
-            {isPlaying && (
-              <div className="flex items-end gap-0.5 h-3 ms-0.5" aria-hidden>
-                <span className="w-0.5 bg-emerald-500 rounded-full animate-[pulse_0.6s_ease-in-out_infinite] h-2" />
-                <span className="w-0.5 bg-emerald-500 rounded-full animate-[pulse_0.4s_ease-in-out_infinite] h-3" />
-                <span className="w-0.5 bg-emerald-500 rounded-full animate-[pulse_0.8s_ease-in-out_infinite] h-1.5" />
-              </div>
-            )}
-          </div>
-
-          <div className="flex items-center gap-0.5 shrink-0">
-            {/* زر فتح فهرس السور الكامل */}
-            <Button
-              type="button"
-              size="icon"
-              variant="ghost"
-              className="size-6 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted"
-              onClick={openDrawer}
-              title="فهرس السور (114 سورة)"
-              aria-label="فهرس السور"
-            >
-              <ListMusic className="size-3.5" aria-hidden />
-            </Button>
-
-            {/* زر طيّ/إظهار تفاصيل المشغل */}
-            <Button
-              type="button"
-              size="icon"
-              variant="ghost"
-              className="size-5 rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-muted"
-              onClick={() => setIsMinimized((prev) => !prev)}
-              title={isMinimized ? "توسيع المشغل" : "تصغير المشغل"}
-              aria-label={isMinimized ? "توسيع المشغل" : "تصغير المشغل"}
-            >
-              {isMinimized ? <ChevronDown className="size-3" /> : <ChevronUp className="size-3" />}
-            </Button>
-          </div>
-        </div>
-
-        {/* وضع التصغير الرشيق (Mini Mode) */}
+        {/* وضع التصغير الرشيق الافتراضي — سطر واحد بارتفاع 34px يوفّر مساحة القائمة الجانبية */}
         {isMinimized ? (
-          <div className="flex items-center justify-between px-2.5 py-1.5 gap-2 border-t border-border/30">
-            <button
-              type="button"
-              onClick={() => setIsMinimized(false)}
-              className="min-w-0 flex-1 text-start truncate text-[11px] text-muted-foreground hover:text-foreground"
-            >
-              <span className="font-semibold text-foreground">{currentSurah.name}</span>
-              {" · "}
-              <span>{currentReciter.name.split(" ")[0]}</span>
-            </button>
-
+          <div className="flex items-center justify-between px-2 py-1 gap-1.5 min-h-[34px]">
             <Button
               type="button"
               size="icon"
               variant="ghost"
-              className="size-7 rounded-full bg-primary/10 text-primary hover:bg-primary/20 shrink-0"
+              className="size-6 rounded-md bg-white/15 text-white hover:bg-white/25 shrink-0"
               onClick={togglePlay}
               disabled={isLoading}
-              title={isPlaying ? "إيقاف مؤقت" : "تشغيل"}
+              title={isPlaying ? "إيقاف مؤقت" : "تشغيل تلاوة القرآن"}
+              aria-label={isPlaying ? "إيقاف مؤقت" : "تشغيل تلاوة القرآن"}
             >
               {isLoading ? (
-                <Loader2 className="size-3.5 animate-spin" />
+                <Loader2 className="size-3 animate-spin" />
               ) : isPlaying ? (
-                <Pause className="size-3.5 fill-current" />
+                <Pause className="size-3 fill-current" />
               ) : (
-                <Play className="size-3.5 fill-current me-0.5" />
+                <Play className="size-3 fill-current me-0.5" />
               )}
             </Button>
+
+            <button
+              type="button"
+              onClick={toggleMinimized}
+              className="min-w-0 flex-1 flex items-center justify-between gap-1 text-start truncate text-[11px] text-white/90 hover:text-white"
+              title="اضغط لتوسيع مشغل القرآن الكريم"
+            >
+              <span className="font-bold truncate">إذاعة القرآن</span>
+              <span className="text-[10px] text-white/75 truncate">
+                {currentSurah.name} · {currentReciter.name.split(" ")[0]}
+              </span>
+            </button>
+
+            <div className="flex items-center gap-0.5 shrink-0">
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                className="size-5 rounded text-white/75 hover:text-white hover:bg-white/15"
+                onClick={openDrawer}
+                title="فهرس السور (114 سورة)"
+                aria-label="فهرس السور"
+              >
+                <ListMusic className="size-3" aria-hidden />
+              </Button>
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                className="size-5 rounded text-white/75 hover:text-white hover:bg-white/15"
+                onClick={toggleMinimized}
+                title="توسيع المشغل"
+                aria-label="توسيع المشغل"
+              >
+                <ChevronDown className="size-3" />
+              </Button>
+            </div>
           </div>
         ) : (
-          /* وضع التحكم الكامل والمطور (Full Controls Mode) */
-          <div className="px-2.5 pb-2 pt-1 space-y-2">
+          <>
+            {/* شريط العنوان وأزرار الفهرس والتصغير عند التوسيع */}
+            <div className="flex items-center justify-between px-2.5 pt-1.5 pb-1 gap-1 bg-card/90 text-foreground">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <div
+                  className={cn(
+                    "flex size-5 shrink-0 items-center justify-center rounded-md shadow-2xs transition-colors",
+                    isPlaying
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-primary/10 text-primary"
+                  )}
+                >
+                  <BookOpen className="size-3" aria-hidden />
+                </div>
+
+                <span className="text-xs font-bold text-foreground truncate">
+                  إذاعة القرآن الكريم
+                </span>
+
+                {isPlaying && (
+                  <div className="flex items-end gap-0.5 h-3 ms-0.5" aria-hidden>
+                    <span className="w-0.5 bg-emerald-500 rounded-full animate-[pulse_0.6s_ease-in-out_infinite] h-2" />
+                    <span className="w-0.5 bg-emerald-500 rounded-full animate-[pulse_0.4s_ease-in-out_infinite] h-3" />
+                    <span className="w-0.5 bg-emerald-500 rounded-full animate-[pulse_0.8s_ease-in-out_infinite] h-1.5" />
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center gap-0.5 shrink-0">
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="size-5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted"
+                  onClick={openDrawer}
+                  title="فهرس السور (114 سورة)"
+                  aria-label="فهرس السور"
+                >
+                  <ListMusic className="size-3" aria-hidden />
+                </Button>
+
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="size-5 rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-muted"
+                  onClick={toggleMinimized}
+                  title="تصغير المشغل"
+                  aria-label="تصغير المشغل"
+                >
+                  <ChevronUp className="size-3" />
+                </Button>
+              </div>
+            </div>
+          {/* وضع التحكم الكامل والمطور (Full Controls Mode) */}
+          <div className="px-2.5 pb-2 pt-1 space-y-1.5 bg-card/90 text-foreground">
             {/* معلومات السورة وزر اختيار القارئ التفاعلي */}
             <div className="flex items-center justify-between gap-1 text-xs">
               {/* اسم السورة وزر الاستئناف — ينقر لفتح درج السور */}
@@ -292,6 +336,7 @@ export function QuranSidebarCard() {
               </div>
             </div>
           </div>
+          </>
         )}
       </div>
 

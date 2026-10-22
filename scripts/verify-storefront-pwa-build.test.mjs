@@ -8,6 +8,7 @@ import {
 import {
   assertStorefrontImageRuntimePolicy,
   assertStorefrontPrecacheClosure,
+  assertStorefrontPrecacheNavigationPolicy,
 } from "./verify-storefront-pwa-build.mjs";
 
 function matches(pathname, method = "GET") {
@@ -49,15 +50,17 @@ const manifest = {
   "src/pages/Storefront.tsx": {
     file: "assets/Storefront-bbb.js",
     isDynamicEntry: true,
-    imports: ["_date.js", "_UnifiedSearchInput.js"],
+    imports: ["_date.js", "_UnifiedSearchInput.js", "_dialog.js"],
   },
   "src/pages/Admin.tsx": {
     file: "assets/Admin-ccc.js",
     isDynamicEntry: true,
   },
   "_framework.js": { file: "assets/framework-ddd.js" },
-  "_UnifiedSearchInput.js": { file: "assets/UnifiedSearchInput-search.js", imports: ["_BarcodeSearchCue.js"] },
+  "_UnifiedSearchInput.js": { file: "assets/UnifiedSearchInput-search.js", imports: ["_BarcodeSearchCue.js", "_useBarcodeInput.js"] },
   "_BarcodeSearchCue.js": { file: "assets/BarcodeSearchCue-cue.js", imports: ["_framework.js"] },
+  "_dialog.js": { file: "assets/dialog-dialoghash.js", imports: ["_framework.js"] },
+  "_useBarcodeInput.js": { file: "assets/useBarcodeInput-barcodehash.js" },
   "_date.js": {
     file: "assets/date-eee.js",
     imports: ["_number-normalize.js"],
@@ -73,7 +76,9 @@ const completeSw = `self.__WB_MANIFEST = [
   {"url":"assets/date-eee.js","revision":null},
   {"url":"assets/numberNormalize-fff.js","revision":null},
   {"url":"assets/UnifiedSearchInput-search.js","revision":null},
-  {"url":"assets/BarcodeSearchCue-cue.js","revision":null}
+  {"url":"assets/BarcodeSearchCue-cue.js","revision":null},
+  {"url":"assets/dialog-dialoghash.js","revision":null},
+  {"url":"assets/useBarcodeInput-barcodehash.js","revision":null}
 ];`;
 
 const result = assertStorefrontPrecacheClosure({ manifest, swSource: completeSw });
@@ -83,12 +88,15 @@ assert.deepEqual(result.requiredFiles, [
   "assets/UnifiedSearchInput-search.js",
   "assets/app-aaa.js",
   "assets/date-eee.js",
+  "assets/dialog-dialoghash.js",
   "assets/framework-ddd.js",
   "assets/numberNormalize-fff.js",
+  "assets/useBarcodeInput-barcodehash.js",
 ]);
 
-// The canonical allowlist must cover the storefront's real shared search-input graph
-// without admitting unrelated ERP pages. This fails when either new dependency is omitted.
+// The canonical allowlist must cover the storefront's shared search-input graph,
+// including the dialog and barcode chunks emitted after the Vite 7.3.7 patch.
+// Unrelated ERP pages must remain excluded.
 const shellChunkNames = STOREFRONT_SHELL_CHUNK_GLOB.match(/^assets\/\{([^}]+)\}-\*\.js$/)?.[1].split(",");
 assert.ok(shellChunkNames, "storefront shell glob has explicit chunk names");
 for (const file of result.requiredFiles.filter((file) => !file.startsWith("assets/app-"))) {
@@ -96,7 +104,7 @@ for (const file of result.requiredFiles.filter((file) => !file.startsWith("asset
   assert.ok(shellChunkNames.includes(chunkName), `${chunkName} must be included in storefront shell precache`);
 }
 for (const adminChunk of ["Admin", "POS", "ProductNew", "Treasury"]) assert.equal(shellChunkNames.includes(adminChunk), false, adminChunk);
-for (const missingChunk of ["UnifiedSearchInput-search", "BarcodeSearchCue-cue"]) {
+for (const missingChunk of ["UnifiedSearchInput-search", "BarcodeSearchCue-cue", "dialog-dialoghash", "useBarcodeInput-barcodehash"]) {
   assert.throws(() => assertStorefrontPrecacheClosure({
     manifest,
     swSource: completeSw.replace(`{"url":"assets/${missingChunk}.js","revision":null}`, ""),
@@ -166,6 +174,17 @@ assert.throws(
 assert.throws(
   () => assertStorefrontImageRuntimePolicy(runtimePolicy.replace("inventory-product", "product")),
   /STOREFRONT_SW_PRIVATE_IMAGE_POLICY_INVALID:inventory-product/,
+);
+
+assert.doesNotThrow(() =>
+  assertStorefrontPrecacheNavigationPolicy("precacheAndRoute(self.__WB_MANIFEST,{directoryIndex:null})"),
+);
+assert.doesNotThrow(() =>
+  assertStorefrontPrecacheNavigationPolicy('precacheAndRoute(self.__WB_MANIFEST, { "directoryIndex": null })'),
+);
+assert.throws(
+  () => assertStorefrontPrecacheNavigationPolicy("precacheAndRoute(self.__WB_MANIFEST,{})"),
+  /STOREFRONT_SW_DIRECTORY_INDEX_MUST_BE_NULL/,
 );
 
 console.log("storefront PWA build contract test: OK");

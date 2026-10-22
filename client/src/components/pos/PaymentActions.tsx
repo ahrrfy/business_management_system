@@ -3,7 +3,7 @@
 // سلوكيّ: الصفحةُ العملاقة (٣٧٨٣ سطراً) قُسِّمت مكوّنياً كي تنزل تحت خطّ أساس `check:page-size`
 // ومقياس الاحتكاك D4، وتبقى كلّ الحالة المالية عند الأب (POS.tsx) وتصل عبر props.
 
-import { Check, Zap } from "lucide-react";
+import { Check, Split, Zap } from "lucide-react";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { CopyButton } from "@/components/CopyButton";
 import { ACTION_LABELS } from "@shared/actionLabels";
@@ -27,10 +27,12 @@ export interface PaymentActionsProps {
   onPay: () => void; onQuickPay: () => void;
   /** م١ PR-B — وضع «توصيل» (COD): المتبقّي يُحصَّل عند التسليم لا آجلاً؛ يغيّر نصوص المؤشّر والزرّ فقط. */
   codMode?: boolean;
+  /** استكمال المتبقي بطريقة دفع ثانية (نقدي + بطاقة/تحويل/محفظة) عند إدخال مبلغ جزئي */
+  onEnableSplit?: () => void;
 }
 
 /** منطقة الفعل — خارج التمرير ولا تنكمش: الباقي/المتبقي + زرّا الدفع + تلميح الاختصارات. */
-export function PaymentActions({ C, dense, ultra, fluid, total, cartLen, payInput, isChange, isOwing, change, credit, showQuickPay, canPay, isPending, hasCustomer, isCreditBlocked = false, method, externalPaymentConfirmed, onPay, onQuickPay, codMode = false }: PaymentActionsProps) {
+export function PaymentActions({ C, dense, ultra, fluid, total, cartLen, payInput, isChange, isOwing, change, credit, showQuickPay, canPay, isPending, hasCustomer, isCreditBlocked = false, method, externalPaymentConfirmed, onPay, onQuickPay, codMode = false, onEnableSplit }: PaymentActionsProps) {
   const isZeroPay = payInput.trim() !== "" && Number(payInput) === 0;
 
   return (
@@ -61,6 +63,40 @@ export function PaymentActions({ C, dense, ultra, fluid, total, cartLen, payInpu
         </>
       )}
     </div>
+
+    {cartLen > 0 && !!payInput && !isZeroPay && isOwing && credit > 0 && !codMode && onEnableSplit && (
+      <div style={{ padding: "2px 11px 4px", flexShrink: 0 }}>
+        <button
+          type="button"
+          onClick={onEnableSplit}
+          data-testid="pos-complete-remaining-split"
+          style={{
+            width: "100%",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 6,
+            height: ultra ? 28 : 32,
+            padding: "0 10px",
+            borderRadius: 7,
+            border: `1.5px solid ${C.primary}`,
+            background: C.primarySoft,
+            color: C.primary,
+            fontFamily: "inherit",
+            fontSize: dense ? 11.5 : 12.5,
+            fontWeight: 800,
+            cursor: "pointer",
+          }}
+        >
+          <Split aria-hidden size={14} />
+          <span>
+            {method === "CASH"
+              ? `استكمال المتبقي (${fmt(credit)} د.ع) ببطاقة / طريقة أخرى`
+              : `استكمال المتبقي (${fmt(credit)} د.ع) نقداً / طريقة أخرى`}
+          </span>
+        </button>
+      </div>
+    )}
 
     {/* أزرار الفعل. «دفع سريع» يُخفى عند اختيار عميل أو دفعة جزئية (نيّة غير «نقدي كامل»)
         ⇒ يبقى CTA أساسي واحد فيمتنع الضغط الخاطئ الذي كان يُسجّل عميل الآجل «مدفوعاً

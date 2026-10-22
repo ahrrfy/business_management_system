@@ -191,7 +191,9 @@ export const voucherSource: DecisionSource = {
               productUnitId: purchaseOrderItems.productUnitId,
               quantity: purchaseOrderItems.quantity,
               unitPrice: purchaseOrderItems.unitPrice,
+              total: purchaseOrderItems.total,
               usdUnitPrice: purchaseOrderItems.usdUnitPrice,
+              usdTotal: purchaseOrderItems.usdTotal,
             })
             .from(purchaseOrderItems)
             .where(inArray(purchaseOrderItems.purchaseOrderId, poIds))
@@ -274,11 +276,16 @@ export const voucherSource: DecisionSource = {
         const itemsSummary: DecisionSummaryItem[] = poItems.map((i) => {
           const v = variantLabelsMap.get(Number(i.variantId));
           const u = i.productUnitId ? unitNamesMap.get(Number(i.productUnitId)) : null;
+          const variantText = v?.descriptor || v?.variantName || null;
           return {
-            label: `بضاعة مستلمة: ${itemLabel([v?.productName, v?.variantName])}`,
+            label: `بضاعة مستلمة: ${itemLabel([v?.productName, variantText])}`,
+            variant: variantText,
+            colorHex: v?.colorHex ?? null,
+            sku: v?.sku ?? null,
             qty: i.quantity,
             unit: u ?? null,
             unitPrice: po?.agreedCurrency === "USD" ? i.usdUnitPrice : i.unitPrice,
+            lineTotal: po?.agreedCurrency === "USD" ? i.usdTotal : i.total,
           };
         });
 

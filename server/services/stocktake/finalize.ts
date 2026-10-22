@@ -17,7 +17,11 @@ import { hashPassword, verifyPassword } from "../../auth/password";
 import { setStock } from "../inventoryService";
 import { lockInventoryVariants } from "../inventory/stockLock";
 import { adjustSupplierBalance, postEntry } from "../ledgerService";
-import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
+import {
+  createPostingIntent,
+  creditLine,
+  debitLine,
+} from "../accounting/postingEngine";
 import { money, toDbMoney } from "../money";
 import { withTx } from "../tx";
 import type { StkActor } from "./types";
@@ -28,6 +32,11 @@ import {
   lockSession,
 } from "./internal";
 import { loadReviewCore, willAdjust } from "./reviewCore";
+import {
+  assertNoActiveStocktakeOverlap,
+  withStocktakeScopeTx,
+} from "./overlapGuard";
+import { appErrorMessage } from "../../../shared/errors";
 import {
   assertNoCountInputAnomalies,
   findCountInputAnomalies,
@@ -59,9 +68,8 @@ export async function approveStocktake(
   sessionId: number,
   actor: StkActor,
 ): Promise<ApproveResult> {
-  return withTx(async (tx) => {
+  return withStocktakeScopeTx(sessionId, async (tx, s) => {
     // (١) قفل الجلسة. APPROVED ⇒ نجاح بلا أثر (idempotent — حماية النقر المزدوج/إعادة الشبكة).
-    const s = await lockSession(tx, sessionId);
     if (s.status === "APPROVED") {
       return {
         ok: true as const,
@@ -158,6 +166,12 @@ export async function approveStocktake(
         )
         .orderBy(asc(stocktakeItems.variantId))
     ).map((r) => Number(r.variantId));
+    await assertNoActiveStocktakeOverlap(
+      tx,
+      Number(s.branchId),
+      lockIds,
+      sessionId,
+    );
     await lockInventoryVariants(tx, lockIds);
     for (const part of chunk(lockIds)) {
       await tx
@@ -194,6 +208,18 @@ export async function approveStocktake(
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: `لا اعتماد نهائياً قبل عدّ كل منتجات النطاق — المتبقي ${notCounted.length} منتجاً`,
+      });
+    }
+    const staleCounts = rows.filter((r) => r.interveningStocktake != null);
+    if (staleCounts.length) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "حُجب اعتماد الجرد لأن بعض العدّات سبقها اعتماد جرد أحدث",
+          why: `${staleCounts.length} صنف تغيّر أساسه بجرد آخر بعد العدّ، فلا يصح جمع تسويته مع العدّ القديم`,
+          doThis:
+            "اطلب إعادة عدّ الأصناف المتأثرة من شاشة المراجعة، ثم أعد قرارها واعتمادها المرحلي والتوقيع",
+        }),
       });
     }
     const pendingRecounts = rows.filter((r) => r.recount?.status === "PENDING");
@@ -465,7 +491,10 @@ export async function approveStocktake(
         postingIntent: createPostingIntent(
           "ADJUST_INVENTORY_LOSS",
           "ADJUST",
-          [debitLine("LOSSES", ownedShortExpense), creditLine("INVENTORY", ownedShortExpense)],
+          [
+            debitLine("LOSSES", ownedShortExpense),
+            creditLine("INVENTORY", ownedShortExpense),
+          ],
           {
             roleDebits: { LOSSES: ownedShortExpense },
             roleCredits: { INVENTORY: ownedShortExpense },
@@ -491,7 +520,10 @@ export async function approveStocktake(
         postingIntent: createPostingIntent(
           "ADJUST_INVENTORY_GAIN",
           "ADJUST",
-          [debitLine("INVENTORY", overGain), creditLine("OTHER_REVENUE", overGain)],
+          [
+            debitLine("INVENTORY", overGain),
+            creditLine("OTHER_REVENUE", overGain),
+          ],
           {
             roleDebits: { INVENTORY: overGain },
             roleCredits: { OTHER_REVENUE: overGain },
@@ -527,7 +559,10 @@ export async function approveStocktake(
         postingIntent: createPostingIntent(
           "PURCHASE_CONSIGNMENT_SHORTAGE",
           "PURCHASE",
-          [debitLine("LOSSES", amount), creditLine("CONSIGNMENT_PAYABLE", amount)],
+          [
+            debitLine("LOSSES", amount),
+            creditLine("CONSIGNMENT_PAYABLE", amount),
+          ],
           {
             roleDebits: { LOSSES: amount },
             roleCredits: { CONSIGNMENT_PAYABLE: amount },

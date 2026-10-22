@@ -52,6 +52,7 @@ import {
   ShortcutsBar,
   SupplierInvoiceMatch,
   TermsAndNotes,
+  composeDocumentNotes,
   TotalsPanel,
   calcLineTotal,
   calcTotals,
@@ -469,6 +470,8 @@ export default function PurchaseNew() {
     state.entityId != null ||
     state.items.length > 0 ||
     state.notes.trim() !== "" ||
+    Boolean(state.terms?.trim()) ||
+    state.poReference.trim() !== "" ||
     state.supplierInvoiceTotal.trim() !== "" ||
     state.globalDiscount.trim() !== "" ||
     shippingCost.trim() !== "" ||
@@ -650,7 +653,11 @@ export default function PurchaseNew() {
             ];
           })
         : undefined,
-      notes: state.notes.trim() || undefined,
+      notes: composeDocumentNotes({
+        notes: state.notes,
+        terms: state.terms,
+        poReference: state.poReference,
+      }),
       // USD: أسعار البنود نفسها بالدولار، والخادم يحوّلها إلى التكلفة الدينارية بسعر التثبيت.
       agreedCurrency: state.currency,
       // ملاحظة (إصلاح رسالة «لا يطابق مجموع البنود»): لا نُرسل usdTotal. حين يوجد «سعر التثبيت»
@@ -796,6 +803,7 @@ export default function PurchaseNew() {
       customsCost,
       notes: state.notes,
       terms: state.terms,
+      poReference: state.poReference,
       supplierName: supplierRow.data?.name ?? "—",
       items: state.items,
       docTotals: {
@@ -920,7 +928,7 @@ export default function PurchaseNew() {
     // تدفّق طبيعيّ (لا حبس بارتفاع الإطار): كان `h-full` يضغط المحرّرَ داخل ٧٢٠px فيبقى للجدول
     // صفّان فقط وتُقتَطع بطاقةُ الشحن/الإجراءات أسفل الشريط الجانبي. الآن تنمو الصفحة بمحتواها
     // ويُمرِّرها `<main overflow-auto>` — فيَظهر الجدولُ كبيراً وكلُّ حقول الشريط الجانبي كاملةً.
-    <div ref={containerRef} dir="rtl" className="flex flex-col gap-3">
+    <div ref={containerRef} dir="rtl" className="flex flex-col gap-2">
       {/* رأس صفحة موحّد + الإجمالي الديناميكيّ كإجراء (بجانب الأزرار) */}
       <PageHeader
         title={`${meta.label} جديد`}
@@ -942,7 +950,7 @@ export default function PurchaseNew() {
       />
 
       {requisitionId ? (
-        <div className="rounded-md border bg-muted/30 p-3 text-sm">
+        <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs">
           {requisition.isLoading
             ? "يُحمّل طلب الشراء المصدر…"
             : requisition.error
@@ -950,22 +958,6 @@ export default function PurchaseNew() {
               : `هذا الأمر محوّل من طلب الشراء ${requisition.data?.requisitionNumber ?? `#${requisitionId}`}. راجع المورد والأسعار والكميات قبل الحفظ.`}
         </div>
       ) : null}
-
-      {!state.entityId && (
-        <div className="rounded-lg border border-[var(--sem-info)]/30 bg-[var(--sem-info-bg)]/20 p-3 text-xs text-foreground flex items-start gap-2.5 animate-in fade-in">
-          <ClipboardList className="size-4 shrink-0 text-[var(--sem-info)] mt-0.5" />
-          <div>
-            <div className="font-bold text-foreground">
-              نمط تأمين السوق العراقي (مسودة مفتوحة بدون مورد):
-            </div>
-            <p className="mt-0.5 text-muted-foreground">
-              نظراً لتقلبات الأسعار وتوفر الأصناف بين موردي الجملة (الشورجة / جميلة / السنك)، يمكنك حفظ هذه المسودة كـ
-              <strong className="text-foreground"> «طلب تأمين وإسناد للمدير» </strong>
-              ليتولى الاتصال بالموردين وتثبيت الأسعار، ثم تحويلها إلى أمر شراء نهائي بضغطة زر.
-            </p>
-          </div>
-        </div>
-      )}
 
       {/* Header card (document metadata + supplier + terms + PO reference) */}
       <InvoiceHeader
@@ -977,10 +969,10 @@ export default function PurchaseNew() {
       {/* Body: products on the right, totals/actions/terms on the left (RTL → aside on left).
           يتراصّ عمودياً على الشاشات الضيّقة ويصير صفّاً على الواسعة؛ الشريط الجانبي بارتفاعه
           الطبيعيّ (items-start) فلا تُقتَطع بطاقةُ الشحن/الكمرك ولا الإجراءات. */}
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
+      <div className="flex flex-col gap-2.5 lg:flex-row lg:items-start">
         {/* عمود المنتجات: ارتفاع سخيّ ثابت كي يعرض الجدولُ المشتركُ (بتمريره الداخليّ) صفوفاً
             كثيرة بدل صفّين — بديلاً عن الحبس السابق بارتفاع الإطار. */}
-        <div className="flex min-w-0 flex-1 flex-col gap-2 h-[60vh] min-h-[420px] print:h-auto print:min-h-fit">
+        <div className="flex min-w-0 flex-1 flex-col gap-1.5 h-[62vh] min-h-[380px] print:h-auto print:min-h-fit">
           <ProductTable
             items={state.items}
             dispatch={dispatch}
@@ -1009,7 +1001,7 @@ export default function PurchaseNew() {
           />
         </div>
 
-        <aside className="flex w-full shrink-0 flex-col gap-2 lg:w-80">
+        <aside className="flex w-full shrink-0 flex-col gap-1.5 lg:w-80">
           <PurchaseShippingCard
             shippingCost={shippingCost}
             onShippingCostChange={setShippingCost}
@@ -1023,21 +1015,6 @@ export default function PurchaseNew() {
             currency={state.currency}
             showDetailedDistribution
           />
-
-          <section className="rounded-xl border bg-card px-4 py-3 text-sm">
-            <div className="font-extrabold">سياسة تسوية المورد</div>
-            {state.paymentTerms === "CASH" ? (
-              <p className="mt-1 text-muted-foreground">
-                نقدي: وصف لطريقة السداد المتوقعة فقط. اعتماد الفاتورة لا يثبت دفع المورد؛
-                وثق السداد ومصدره من طلب سداد مستقل، ولا تحمل وردية المعتمد أي صرف.
-              </p>
-            ) : (
-              <p className="mt-1 text-muted-foreground">
-                آجل: قيمة المستلم تُثبت ذمة على المورد، ولا تُسدد إلا بدفعة
-                صريحة لاحقاً.
-              </p>
-            )}
-          </section>
 
           <TotalsPanel
             items={state.items}
@@ -1077,7 +1054,7 @@ export default function PurchaseNew() {
             canDistribute={D(totals.subtotal).gt(0)}
           />
           {state.currency === "USD" && landed.rate.gt(0) && (
-            <section className="rounded-xl border bg-card px-4 py-3 text-sm">
+            <section className="rounded-lg border bg-card px-3 py-2 text-xs">
               <div className="flex justify-between text-muted-foreground">
                 <span>إجمالي فاتورة المورد (دولار)</span>
                 <span dir="ltr" className="font-bold text-foreground">
@@ -1092,20 +1069,20 @@ export default function PurchaseNew() {
               </div>
               {/* التكلفة بالدينار = فاتورة المورد × سعر التثبيت. الشحن/الكمرك **ليسا** ضمنها
                   (مصروفُ نقلٍ مستقلٌّ لحظة الاستلام، قرار المالك ٥/٨) — لذا لا نقول «مع الشحن». */}
-              <div className="mt-1 flex justify-between border-t pt-2 font-bold">
+              <div className="mt-1 flex justify-between border-t pt-1.5 font-bold">
                 <span>التكلفة بالدينار</span>
                 <span dir="ltr">{fmtAr(landed.grand.toFixed(2))} د.ع</span>
               </div>
             </section>
           )}
           {!state.entityId && state.items.length > 0 && (
-            <section className="rounded-xl border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)]/20 p-3 flex flex-col gap-2">
+            <section className="rounded-lg border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)]/20 p-2.5 flex flex-col gap-1.5">
               <div className="text-xs font-semibold text-foreground">
                 مسودة بدون مورد محدد (سوق مفتوح):
               </div>
               <Button
                 type="button"
-                className="w-full bg-[var(--sem-warn)] hover:bg-[var(--sem-warn)]/90 text-background font-semibold text-xs h-9 shadow-sm gap-1.5"
+                className="w-full bg-[var(--sem-warn)] hover:bg-[var(--sem-warn)]/90 text-background font-semibold text-xs h-8 shadow-sm gap-1.5"
                 disabled={!canLifecycleOperation(me.data, "purchases.createRequisition", true) || createRequisition.isPending}
                 onClick={handleSaveRequisition}
               >
@@ -1114,15 +1091,17 @@ export default function PurchaseNew() {
               </Button>
             </section>
           )}
-          <ActionButtons
-            invoiceType={INVOICE_TYPE}
-            items={state.items}
-            onAction={handleAction}
-            saving={create.isPending || createRequisition.isPending}
-            pasteAvailable={pasteAvailable}
-            availableActions={canLifecycleOperation(me.data, "purchases.createOrder", true) ? NEW_ACTIONS : NEW_ACTIONS.filter((action) => action !== "save")}
-            primaryLabel="حفظ المسودة"
-          />
+          <div className="sticky bottom-0 z-10 bg-background/95 backdrop-blur pt-1.5 border-t">
+            <ActionButtons
+              invoiceType={INVOICE_TYPE}
+              items={state.items}
+              onAction={handleAction}
+              saving={create.isPending || createRequisition.isPending}
+              pasteAvailable={pasteAvailable}
+              availableActions={canLifecycleOperation(me.data, "purchases.createOrder", true) ? NEW_ACTIONS : NEW_ACTIONS.filter((action) => action !== "save")}
+              primaryLabel="حفظ المسودة"
+            />
+          </div>
           <TermsAndNotes state={state} dispatch={dispatch} />
         </aside>
       </div>

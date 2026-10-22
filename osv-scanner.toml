@@ -9,3 +9,4 @@ reason = "braces is pulled only by Tailwind, Metro, and Jest build/test tooling,
 [[IgnoredVulns]]
 id = "GHSA-hp3w-g68c-fv3c"
 reason = "sprintf-js is pulled only through js-yaml in Expo development tooling, does not evaluate untrusted format strings in the native app runtime, and has no patched release yet"
+

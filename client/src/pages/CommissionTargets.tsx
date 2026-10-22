@@ -124,7 +124,7 @@ export default function CommissionTargets() {
   }, [rows, draft]);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         title="الأهداف الشهرية"
         description="حدّد لكل موظف مبلغ المبيعات المطلوب منه هذا الشهر. تُقاس عليه مستويات الخطط التي تحتسب «حسب نسبة تحقيق الهدف» — أمّا خطط «مبلغ المبيعات» فلا تحتاج هدفاً. اترك الحقل فارغاً لإلغاء هدف الموظف."

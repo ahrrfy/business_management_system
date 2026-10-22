@@ -70,15 +70,29 @@ export function salesControlFacts(
   if (type === "SALES_CANCEL") {
     // مرجع الجهاز يخصّ CARD وحدها — عرضه لِـCASH/TRANSFER/CHECK/WALLET يوهم المُعتمِد بمرجعٍ
     // مطلوب لا تفرضه الخدمة، فتبدو موافقاتٌ سليمة ناقصةً (مراجعة Codex P2 على PR #997).
+    const refunds = Array.isArray(p.refunds) ? p.refunds : [];
+    const cardLeg = refunds.map(asRecord).find((r) => r.method === "CARD");
     const facts: SalesControlFact[] = [
       { label: "جهة الاسترداد", value: String(p.refundPaymentMethod ?? "غير محددة") },
     ];
-    if (p.refundPaymentMethod === "CARD") {
+    if (refunds.length > 0) {
+      facts.push({
+        label: "تفصيل الاسترداد",
+        value: refunds
+          .map((r) => {
+            const leg = asRecord(r);
+            return `${String(leg.method ?? "")}: ${formatMoney(String(leg.amount ?? "0"))}`;
+          })
+          .join(" + "),
+      });
+    }
+    if (p.refundPaymentMethod === "CARD" || p.refundPaymentMethod === "MIXED" || cardLeg) {
+      const ref = p.reference ?? cardLeg?.reference;
       facts.push({
         label: "مرجع جهاز الدفع",
-        value: p.reference == null || String(p.reference).trim() === ""
+        value: ref == null || String(ref).trim() === ""
           ? "لم يُدخَل بعد — يُدخله أو يؤكّده المُعتمِد"
-          : String(p.reference),
+          : String(ref),
       });
     }
     return facts;

@@ -356,7 +356,7 @@ export default function MyWork() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-[1180px] px-4 py-5">
+    <div className="mx-auto w-full max-w-[1180px] px-3 py-3">
       <PageHeader
         title="مطلوب منّي الآن"
         description="مساحة عمل واحدة تجمع قراراتك ومهامك وتحديثاتك، من دون التنقل بين شاشات متفرقة."
@@ -378,7 +378,7 @@ export default function MyWork() {
       />
 
       <div
-        className="mb-4 border-b"
+        className="mb-3 border-b"
         role="tablist"
         aria-label="أقسام مطلوب مني الآن"
       >
@@ -395,17 +395,17 @@ export default function MyWork() {
                 aria-selected={selected}
                 aria-controls={`my-work-panel-${tab.value}`}
                 onClick={() => selectTab(tab.value)}
-                className={`min-h-12 shrink-0 border-b-2 px-4 py-2 text-start transition-colors ${
+                className={`inline-flex min-h-9 shrink-0 items-center gap-2 border-b-2 px-3 py-1.5 text-start transition-colors ${
                   selected
                     ? "border-primary text-foreground"
                     : "border-transparent text-muted-foreground hover:border-border hover:text-foreground"
                 }`}
               >
-                <span className="flex items-center gap-2 text-sm font-extrabold">
-                  <Icon aria-hidden className="size-4" />
+                <span className="flex items-center gap-1.5 text-xs font-extrabold">
+                  <Icon aria-hidden className="size-3.5" />
                   {tab.label}
                 </span>
-                <span className="mt-0.5 block text-2xs font-normal">
+                <span className="hidden text-2xs font-normal text-muted-foreground sm:inline">
                   {tab.description}
                 </span>
               </button>
@@ -415,8 +415,8 @@ export default function MyWork() {
       </div>
 
       {tabState.invalidTab && (
-        <Card className="mb-4 gap-0 border-[var(--sem-warn)] py-0">
-          <CardContent className="flex items-start gap-2 py-3 text-2xs text-[var(--sem-warn)]">
+        <Card className="mb-3 gap-0 border-[var(--sem-warn)] py-0">
+          <CardContent className="flex items-start gap-2 py-2.5 text-2xs text-[var(--sem-warn)]">
             <AlertCircle aria-hidden className="mt-0.5 size-3.5 shrink-0" />
             <p>
               قيمة التبويب في الرابط غير صالحة؛ عُرض تبويب القرارات بدلاً منها
@@ -428,8 +428,8 @@ export default function MyWork() {
 
       {/* شريحة طلبات المتجر المسندة للموظف للتجهيز السريع */}
       {canViewStore && assignedOrders.length > 0 && (
-        <Card className="mb-4 border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)]/20 shadow-xs">
-          <CardContent className="p-3.5 space-y-2.5">
+        <Card className="mb-3 border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)]/20 shadow-xs">
+          <CardContent className="p-2.5 space-y-2">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <ShoppingBag aria-hidden className="size-4 text-[var(--sem-pos)]" />

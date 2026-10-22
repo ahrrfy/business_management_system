@@ -8,6 +8,7 @@
 //    (ACCRUAL/ACCRUAL_REVERSAL). **لا** تشمل صرف صافي الراتب أو تحويل الاستقطاعات؛ تلك تسوية التزام
 //    وليست مصروف فترة. كما لا تشمل سداد ذمم الموردين (PAYMENT_OUT بـsupplierId)
 //    لأنه تسويةُ التزامٍ لا مصروفُ فترة (تكلفته اعتُرف بها وقت البيع) ⇒ لا ازدواج.
+import { effectiveDeliveryLedgerEntrySql } from "./delivery/legacyLedger";
 import { sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { money, toDbMoney } from "./money";
@@ -1339,7 +1340,7 @@ export async function getFinancialPosition(
         WHEN dle.entryType IN ('COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF','SHORTFALL_SETTLED') THEN -dle.amount
         ELSE 0 END), 0) AS custodyAmount
       FROM deliveryLedgerEntries dle
-      WHERE 1 = 1
+      WHERE ${effectiveDeliveryLedgerEntrySql("dle")}
         ${bId ? sql`AND dle.branchId = ${bId}` : sql``}
         ${asOf ? sql`AND DATE(dle.occurredAt) <= ${asOf}` : sql``}
       GROUP BY dle.partyId, dle.consignmentId
@@ -1360,7 +1361,7 @@ export async function getFinancialPosition(
         ELSE 0 END), 0) AS custodyAmount
       FROM deliveryConsignments dc
         JOIN invoices i ON i.id = dc.invoiceId
-        LEFT JOIN deliveryLedgerEntries dle ON dle.consignmentId = dc.id
+        LEFT JOIN deliveryLedgerEntries dle ON dle.consignmentId = dc.id AND ${effectiveDeliveryLedgerEntrySql("dle")}
       WHERE i.customerId IS NOT NULL
         AND NOT EXISTS (
           SELECT 1 FROM accountingEntries ae
@@ -1406,6 +1407,7 @@ export async function getFinancialPosition(
       FROM deliveryLedgerEntries dle
         JOIN deliveryConsignments dc ON dc.id = dle.consignmentId
       WHERE dc.consignmentFeeCollection = 'SHOP'
+        AND ${effectiveDeliveryLedgerEntrySql("dle")}
         ${bId ? sql`AND dle.branchId = ${bId}` : sql``}
         ${asOf ? sql`AND DATE(dle.occurredAt) <= ${asOf}` : sql``}
     `),

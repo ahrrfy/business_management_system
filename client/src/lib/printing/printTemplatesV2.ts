@@ -164,6 +164,12 @@ export interface SalesInvoiceV2Data {
   customerPhone?: string | null;
 
   paymentMethod?: string | null;
+  /** تفصيل دفعات الفاتورة عند تعدّد طرق الدفع (MIXED) */
+  paymentLegs?: Array<{
+    method: string;
+    amount: string | number;
+    reference?: string | null;
+  }> | null;
   salesRep?: string | null;
   branchName?: string | null;
 
@@ -245,6 +251,12 @@ export function buildSalesInvoiceV2Html(d: SalesInvoiceV2Data): string {
       variant: 'gray',
       fields: [
         ...(d.paymentMethod ? [{ label: 'طريقة الدفع', value: d.paymentMethod }] : []),
+        ...(d.paymentLegs && d.paymentLegs.length > 1
+          ? d.paymentLegs.map((leg) => ({
+              label: `دفعة (${leg.method})`,
+              value: `${fmtIQD(leg.amount)} د.ع${leg.reference ? ` — مرجع: ${leg.reference}` : ''}`,
+            }))
+          : []),
         ...(d.salesRep ? [{ label: 'مندوب المبيعات', value: d.salesRep }] : []),
         ...(d.branchName ? [{ label: 'الفرع', value: d.branchName }] : []),
       ],

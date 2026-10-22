@@ -13,39 +13,39 @@
   --ui-space-6: 1.5rem;
   --ui-space-8: 2rem;
 
-  --ui-control-sm: 2.5rem;
-  --ui-control: 2.75rem;
-  --ui-control-lg: 3rem;
-  --ui-control-critical: 3.25rem;
-  --ui-table-head: 2.75rem;
-  --ui-table-row: 3rem;
+  --ui-control-sm: 1.875rem;
+  --ui-control: 2.125rem;
+  --ui-control-lg: 2.5rem;
+  --ui-control-critical: 2.75rem;
+  --ui-table-head: 2.125rem;
+  --ui-table-row: 2.25rem;
 
   /* مساحة العمل التشغيلية: صفّان علويان مضبوطان + شريط حالة سفلي. */
-  --workspace-command-h: 2.75rem;
-  --workspace-toolbar-h: 2.5rem;
-  --workspace-status-h: 2.5rem;
-  --workspace-control-h: 2.25rem;
-  --workspace-gap: 0.5rem;
-  --workspace-pad-x: 0.75rem;
+  --workspace-command-h: 2.5rem;
+  --workspace-toolbar-h: 2.125rem;
+  --workspace-status-h: 2rem;
+  --workspace-control-h: 2rem;
+  --workspace-gap: 0.375rem;
+  --workspace-pad-x: 0.625rem;
 
-  --ui-icon-sm: 1rem;
-  --ui-icon: 1.25rem;
-  --ui-icon-lg: 1.5rem;
+  --ui-icon-sm: 0.875rem;
+  --ui-icon: 1rem;
+  --ui-icon-lg: 1.25rem;
 
-  --ui-radius-control: 0.625rem;
-  --ui-radius-card: 0.875rem;
-  --ui-radius-dialog: 1.125rem;
+  --ui-radius-control: 0.5rem;
+  --ui-radius-card: 0.75rem;
+  --ui-radius-dialog: 1rem;
   --ui-shadow-surface: 0 1px 2px rgb(15 23 42 / 0.08);
   --ui-shadow-float: 0 12px 30px -16px rgb(15 23 42 / 0.28);
   --ui-shadow-dialog: 0 24px 64px -24px rgb(15 23 42 / 0.45);
 
   /* رموز التخطيط الدلالية — حقول التفاصيل والجداول والنماذج تستعملها بدل أرقام محلية. */
-  --ui-detail-gap-x: 1rem;
-  --ui-detail-gap-y: 0.875rem;
-  --ui-detail-min-column: 12rem;
-  --ui-form-min-column: 15rem;
-  --ui-table-cell-inline: 0.75rem;
-  --ui-reading-line: 1.7;
+  --ui-detail-gap-x: 0.75rem;
+  --ui-detail-gap-y: 0.625rem;
+  --ui-detail-min-column: 11rem;
+  --ui-form-min-column: 13.5rem;
+  --ui-table-cell-inline: 0.625rem;
+  --ui-reading-line: 1.5;
 }
 
 /* مقياس قراءة آمن: root rem فقط؛ لا CSS zoom ولا transform. الحدود 15–18px تمنع
@@ -126,10 +126,9 @@ body {
     padding: 1.25rem !important;
   }
 
-  /* ٨/٨ — في هذا المدى يعلو المحتوى رأسٌ لاصقٌ ٤rem؛ ارتفاع لوحة الكانبان (calc(100vh - 3rem))
-     كان يتجاهله فتفيض. نطرح الرأس + حشو 1.25rem×2. */
-  .wob {
-    height: calc(100vh - 4rem - 2.5rem);
+  /* ٨/٨ — في هذا المدى يعلو المحتوى رأسٌ لاصقٌ + شريط تبويبات PageTabs؛ نحسب الارتفاع المتبقي للوحة الكانبان. */
+  .wob:not(.wob--list) {
+    height: calc(100dvh - 9.75rem);
   }
 }
 

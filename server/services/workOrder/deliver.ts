@@ -18,6 +18,7 @@ import { assertSiblingsReady } from "./siblings";
 import type { PaymentMethod } from "./types";
 import { userNameSnapshot } from "../userSnapshot";
 import { paymentAssetRole } from "../sale/paymentPosting";
+import { mixedAwarePaymentMethod } from "../sale/payment";
 import { titleForChannel } from "@shared/productChannelTitles";
 import { lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
 import { appErrorMessage } from "@shared/errors";
@@ -203,9 +204,16 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
         message: "عربون أمر الشغل يحتوي قبضاً قديماً بلا إيصال قابل لإثبات التنفيذ",
       });
     }
+    let depositPaymentMethod: string | null = depositPaid.gt(0) ? (wo.paymentMethod ?? null) : null;
     if (appliedReceiptIds.length) {
       const appliedReceipts = await tx
-        .select({ id: receipts.id, direction: receipts.direction, status: receipts.status, approvalStatus: receipts.approvalStatus })
+        .select({
+          id: receipts.id,
+          direction: receipts.direction,
+          status: receipts.status,
+          approvalStatus: receipts.approvalStatus,
+          paymentMethod: receipts.paymentMethod,
+        })
         .from(receipts)
         .where(inArray(receipts.id, appliedReceiptIds))
         .for("update");
@@ -220,7 +228,16 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
           message: "لا يُحتسب عربون غير منفذ: يلزم إيصال IN بحالة COMPLETED واعتماد APPROVED",
         });
       }
+      for (const receipt of appliedReceipts) {
+        if (receipt.paymentMethod) {
+          depositPaymentMethod = mixedAwarePaymentMethod(depositPaymentMethod, receipt.paymentMethod);
+        }
+      }
     }
+    const effectiveInvoicePaymentMethod =
+      input.payment?.method != null
+        ? mixedAwarePaymentMethod(depositPaymentMethod, input.payment.method)
+        : depositPaymentMethod;
     const totalPaid = round2(depositPaid.plus(paidNow));
     if (paidNow.lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ المدفوع لا يمكن أن يكون سالباً" });
     if (totalPaid.gt(salePrice)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ المدفوع (مع العربون) يتجاوز إجمالي الأمر" });
@@ -372,7 +389,7 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
       costTotal: costTotal.toFixed(2),
       status,
       paidAmount: toDbMoney(totalPaid),
-      paymentMethod: input.payment?.method ?? null,
+      paymentMethod: effectiveInvoicePaymentMethod,
       // Codex #854 P2: نشرُ paymentMode من الأمر إلى الفاتورة عند التسليم — الأمرُ ومستنده
       // التجاريّ يجب أن يتّفقا على «كيف حُصِّل الرصيد».
       paymentMode: woPaymentMode,

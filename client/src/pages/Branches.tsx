@@ -19,7 +19,6 @@ import { ListToolbar, RowActions } from "@/components/list";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
-import { PageHeader } from "@/components/PageHeader";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -268,16 +267,12 @@ export default function Branches() {
 
   return (
     <div className="space-y-4">
-      <PageHeader
-        title="الفروع"
-        description="فروع المنشأة (رئيسي/مبيعات) — لكل فرع مخزونه ومستخدموه. لا حذف صلب، فقط تعطيل؛ يُمنع تعطيل آخر فرع نشط أو فرع لا يزال يحمل مخزوناً."
-        actions={<Button size="sm" onClick={openAdd}><Plus className="size-4" /> فرع جديد</Button>}
-      />
-
       <Card>
         <CardHeader>
           <ListToolbar
-            title="قائمة الفروع"
+            title="الفروع"
+            pageTitle
+            add={{ onClick: openAdd, label: "فرع جديد" }}
             count={visibleRows.length}
             loading={list.isLoading}
             // Codex P2 (٢٤/٨): لا `autoFocus` هنا — الصفحةُ تبويبٌ داخل AdminHub. `autoFocus` يسرق

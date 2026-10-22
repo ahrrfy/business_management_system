@@ -105,6 +105,306 @@ export const invoiceRefundExecutor: EffectExecutor = async (tx, effects, run) =>
     }
 
     // ═══ لا ردَّ الآن: المقبوضُ كلُّه يبقى رصيداً دائناً للعميل ═══
+    if (decision.method === "NONE" && (!decision.legs || decision.legs.length === 0)) {
+      await keepAsCustomerCredit(tx, run, { customerId, amount: refundable, scope: "credit", receiptId: null, method: "NONE", voucherNumber: null, branchId, invoiceNumber: inv.invoiceNumber });
+      writeRefundState(run, { materialized: new Decimal(0), deferred: null, refundReceiptId: null, pendingVoucherNumber: null });
+      outcomes.push({
+        status: "LEFT_OPEN",
+        why: `لم يُطلب ردٌّ نقديّ — ${refundable.toFixed(2)} د.ع تبقى رصيداً دائناً للعميل على الفاتورة ${inv.invoiceNumber}`,
+        payloadJson: { keptAsCredit: refundable.toFixed(2) },
+      });
+      continue;
+    }
+
+    // ═══ ردٌّ مجزّأٌ على أكثر من رافد (فاتورة مختلطة: نقد + بطاقة / تحويل …) ═══
+    if (decision.legs && decision.legs.length > 0) {
+      const requested = round2(
+        decision.legs.reduce((sum, leg) => sum.plus(round2(leg.amount)), new Decimal(0)),
+      );
+      if (
+        requested.lt(0) ||
+        requested.gt(refundable) ||
+        decision.legs.some((leg) => round2(leg.amount).lte(0))
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: `تعذّر ردّ ${requested.toFixed(2)} د.ع على الفاتورة ${inv.invoiceNumber}`,
+            why: `المبلغ المطلوب يتجاوز ما يُردّ فعلاً (${refundable.toFixed(2)} د.ع) أو يحوي جزءاً غير موجب`,
+            doThis: `أنقص مبلغ الردّ إلى ${refundable.toFixed(2)} د.ع أو أقلّ وتأكّد من أنّ كلّ جزءٍ موجب`,
+          }),
+        });
+      }
+      const remainderAsCredit = round2(refundable.minus(requested));
+      const fingerprint = decision.requestFingerprint?.slice(0, 12) ?? "LEGACY";
+      const descriptionNote = (decision.descriptionNote ?? "").trim();
+
+      let totalMaterialized = new Decimal(0);
+      let totalDeferred = new Decimal(0);
+      let firstReceiptId: number | null = null;
+      let firstPendingVoucherNumber: string | null = null;
+      let lastDeferredReceiptId: number | null = null;
+      let lastDeferredMethod = "";
+      let deferredIdx = 0;
+      const executedLegsPayload: Array<Record<string, unknown>> = [];
+
+      for (const leg of decision.legs) {
+        const legAmount = round2(leg.amount);
+        const isImmediateLeg = isSurfacedRefundMethod(leg.method);
+        let shiftId: number | null = null;
+        let cashBucket: "DRAWER" | "TREASURY" | null = null;
+        let cardReference: string | null = null;
+        let pendingRefundVoucherNumber: string | null = null;
+
+        if (leg.method === "CASH") {
+          const g = leg.cashSource ?? decision.cashSource;
+          if (!g) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message:
+                flavor === "CANCEL"
+                  ? "لم يُقفل مصدر استرداد الإلغاء النقدي"
+                  : appErrorMessage({
+                      what: "تعذّر صرف استرداد المرتجع نقداً",
+                      why: "لم يُحجَز مصدر النقد (درجٌ أو خزينة) في بداية العملية رغم أنّ الردّ نقديّ — خللٌ داخليّ في تسلسل التنفيذ لا في مدخلاتك",
+                      doThis:
+                        "لم يخرج أيّ مبلغ ولم تتغيّر الفاتورة؛ أعِد المحاولة مرّةً واحدة، وإن تكرّر فأبلِغ مسؤول النظام برقم الفاتورة ولا تُسلّم الزبون نقداً خارج النظام",
+                    }),
+            });
+          }
+          shiftId = g.shiftId;
+          cashBucket = g.cashBucket;
+          if (cashBucket === "TREASURY") {
+            if (flavor === "CANCEL") assertTreasuryOutException("SALE_CANCELLATION_COMPENSATION");
+            else assertTreasuryOutException("SALE_RETURN_COMPENSATION");
+          }
+          await assertCashOutAvailable(tx, {
+            branchId,
+            cashBucket,
+            shiftId,
+            amount: legAmount,
+            operation:
+              flavor === "CANCEL" ? "استرداد إلغاء الفاتورة" : "استرداد مرتجع البيع نقداً",
+          });
+        } else if (isImmediateLeg) {
+          cardReference = (leg.reference ?? decision.reference)?.trim() || null;
+          if (!cardReference) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: appErrorMessage({
+                what:
+                  flavor === "CANCEL"
+                    ? "تعذّر تسجيل استرداد إلغاء الفاتورة على البطاقة"
+                    : "تعذّر تسجيل استرداد المرتجع على البطاقة",
+                why:
+                  flavor === "CANCEL"
+                    ? `مرجع عملية الاسترداد من جهاز الدفع لم يصل، وهو الأثر الوحيد الذي يربط ${legAmount.toFixed(2)} د.ع خرجت من حسابنا البنكيّ بمستندها`
+                    : `مرجع العملية من جهاز الدفع لم يصل، وهو الأثر الوحيد الذي يربط ${legAmount.toFixed(2)} د.ع خرجت من حسابنا البنكيّ بمستندها`,
+                doThis:
+                  "نفّذ الاسترداد على جهاز الدفع أوّلاً، ثمّ أدخِل رقم العملية أو كود الموافقة المطبوع على قسيمة الجهاز في حقل المرجع",
+              }),
+            });
+          }
+          assertNonPhysicalOutReceipt({
+            classification: "NON_CASH_METHOD",
+            paymentMethod: leg.method,
+            cashBucket: null,
+            approvalStatus: "APPROVED",
+            operation:
+              flavor === "CANCEL"
+                ? "استرداد إلغاء فاتورة على البطاقة"
+                : "استرداد مرتجع بيع على البطاقة",
+          });
+        } else {
+          if (customerId == null) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                flavor === "CANCEL"
+                  ? "الاسترداد غير النقدي يحتاج عميلاً مرتبطاً بالفاتورة كي يمرّ بسند صرف واعتماد مالك"
+                  : appErrorMessage({
+                      what: "تعذّر تسجيل استرداد المرتجع",
+                      why: `الردّ بـ${leg.method} لا يخرج فوراً بل يمرّ بسند صرفٍ يعتمده المالك، والسند يلزمه طرفٌ يُنسَب إليه — وهذه الفاتورة بلا عميلٍ مسجَّل`,
+                      doThis:
+                        "ردّ للزبون نقداً أو على بطاقته (رافدا الردّ الفوريّان)، أو سجّله عميلاً على الفاتورة ثمّ أعِد المرتجع بهذه الطريقة",
+                    }),
+            });
+          }
+          assertNonPhysicalOutReceipt({
+            classification: "DEFERRED_APPROVAL",
+            paymentMethod: leg.method,
+            cashBucket: null,
+            approvalStatus: "PENDING_APPROVAL",
+            operation:
+              flavor === "CANCEL"
+                ? "طلب استرداد إلغاء فاتورة غير نقدي"
+                : "طلب استرداد مرتجع بيع غير نقدي",
+          });
+          pendingRefundVoucherNumber = await nextVoucherNumber(tx, "PAYMENT", branchId);
+        }
+
+        const suffix = deferredIdx > 0 ? `-${deferredIdx + 1}` : "";
+        const pendingReference =
+          flavor === "CANCEL"
+            ? `SALE-CANCEL-PENDING-${run.documentId}-${fingerprint}${suffix}`
+            : `SALE-RETURN-PENDING-${run.documentId}-${fingerprint}${suffix}`;
+        if (!isImmediateLeg) deferredIdx++;
+
+        const rRes = await tx.insert(receipts).values({
+          invoiceId: run.documentId,
+          branchId,
+          shiftId,
+          cashBucket,
+          direction: "OUT",
+          amount: toDbMoney(legAmount),
+          paymentMethod: leg.method,
+          status: isImmediateLeg ? "COMPLETED" : "PENDING",
+          description:
+            flavor === "CANCEL"
+              ? `استرداد إلغاء فاتورة ${inv.invoiceNumber}`
+              : leg.method === "CASH"
+                ? `استرداد مرتجع فاتورة ${inv.invoiceNumber}${descriptionNote ? ` — ${descriptionNote}` : ""}`
+                : isImmediateLeg
+                  ? `استرداد مرتجع فاتورة ${inv.invoiceNumber} على البطاقة — مرجع الجهاز ${cardReference}`
+                  : `طلب استرداد غير نقدي معلّق لفاتورة ${inv.invoiceNumber} — بلا أثر حتى الاعتماد والتنفيذ`,
+          approvalStatus: isImmediateLeg ? "APPROVED" : "PENDING_APPROVAL",
+          referenceNumber:
+            leg.method === "CASH"
+              ? null
+              : isImmediateLeg
+                ? cardReference
+                : pendingReference,
+          voucherNumber: pendingRefundVoucherNumber,
+          partyType: customerId != null ? "CUSTOMER" : "OTHER",
+          partyId: customerId,
+          internalNote: pendingRefundVoucherNumber
+            ? flavor === "CANCEL"
+              ? `SALE_CUSTOMER_REFUND:CANCEL:${run.documentId}`
+              : `SALE_CUSTOMER_REFUND:RETURN:${run.documentId}`
+            : null,
+          createdBy: run.actor.userId,
+        });
+        const legReceiptId = extractInsertId(rRes);
+        if (firstReceiptId == null) firstReceiptId = legReceiptId;
+
+        if (isImmediateLeg) {
+          const refundAssetRole = paymentAssetRole(leg.method, cashBucket, "OUT");
+          const refundPostingSource = {
+            roleDebits: { AR: legAmount },
+            roleCredits: { [refundAssetRole]: legAmount },
+          };
+          await postEntry(tx, {
+            entryType: "PAYMENT_OUT",
+            branchId,
+            invoiceId: run.documentId,
+            receiptId: legReceiptId,
+            customerId,
+            amount: legAmount,
+            postingIntent: createPostingIntent(
+              "PAYMENT_OUT_CUSTOMER_REFUND",
+              "PAYMENT_OUT",
+              [debitLine("AR", legAmount), creditLine(refundAssetRole, legAmount)],
+              refundPostingSource,
+            ),
+            postingSourceComponents: refundPostingSource,
+          });
+          await tx
+            .update(invoices)
+            .set({
+              paidAmount: sql`GREATEST(${invoices.paidAmount} - ${toDbMoney(legAmount)}, 0)`,
+            })
+            .where(eq(invoices.id, run.documentId));
+          totalMaterialized = round2(totalMaterialized.plus(legAmount));
+        } else {
+          await keepAsCustomerCredit(tx, run, {
+            customerId,
+            amount: legAmount,
+            scope: "refund-pending",
+            receiptId: legReceiptId,
+            method: leg.method,
+            voucherNumber: pendingRefundVoucherNumber,
+            branchId,
+            invoiceNumber: inv.invoiceNumber,
+          });
+          totalDeferred = round2(totalDeferred.plus(legAmount));
+          if (!firstPendingVoucherNumber) {
+            firstPendingVoucherNumber = pendingRefundVoucherNumber;
+          }
+          lastDeferredReceiptId = legReceiptId;
+          lastDeferredMethod = leg.method;
+        }
+
+        executedLegsPayload.push({
+          method: leg.method,
+          amount: legAmount.toFixed(2),
+          receiptId: legReceiptId,
+          cashBucket,
+          shiftId,
+          reference: cardReference,
+          voucherNumber: pendingRefundVoucherNumber,
+        });
+      }
+
+      await keepAsCustomerCredit(tx, run, {
+        customerId,
+        amount: remainderAsCredit,
+        scope: "credit",
+        receiptId: null,
+        method: decision.method,
+        voucherNumber: null,
+        branchId,
+        invoiceNumber: inv.invoiceNumber,
+      });
+
+      writeRefundState(run, {
+        materialized: totalMaterialized,
+        deferred: totalDeferred.gt(0)
+          ? {
+              amount: totalDeferred,
+              receiptId: lastDeferredReceiptId,
+              method: lastDeferredMethod,
+            }
+          : null,
+        refundReceiptId: firstReceiptId,
+        pendingVoucherNumber: firstPendingVoucherNumber,
+      });
+
+      const payload = {
+        legs: executedLegsPayload,
+        keptAsCredit: remainderAsCredit.toFixed(2),
+      };
+      if (totalMaterialized.eq(refundable)) {
+        outcomes.push({
+          status: "REVERSED",
+          signedAmount: totalMaterialized.neg(),
+          effectTable: "receipts",
+          effectRowId: firstReceiptId,
+          payloadJson: payload,
+        });
+      } else if (totalMaterialized.gt(0)) {
+        outcomes.push({
+          status: "PARTIAL",
+          why: `رُدّ فوراً ${totalMaterialized.toFixed(2)} د.ع والباقي (${refundable.minus(totalMaterialized).toFixed(2)} د.ع) سندُ صرفٍ معلَّق أو رصيدٌ دائن للعميل`,
+          signedAmount: totalMaterialized.neg(),
+          effectTable: "receipts",
+          effectRowId: firstReceiptId,
+          payloadJson: payload,
+        });
+      } else {
+        outcomes.push({
+          status: "LEFT_OPEN",
+          why: `الردّ سندُ صرفٍ معلَّق (${firstPendingVoucherNumber}) لا يخرج به مالٌ حتى يعتمده المالك — يبقى ${totalDeferred.toFixed(2)} د.ع رصيداً دائناً للعميل حتى الصرف`,
+          payloadJson: {
+            ...payload,
+            pendingReceiptId: lastDeferredReceiptId,
+            voucherNumber: firstPendingVoucherNumber,
+          },
+        });
+      }
+      continue;
+    }
+
+    // ═══ لا ردَّ الآن: المقبوضُ كلُّه يبقى رصيداً دائناً للعميل ═══
     if (decision.method === "NONE") {
       await keepAsCustomerCredit(tx, run, { customerId, amount: refundable, scope: "credit", receiptId: null, method: "NONE", voucherNumber: null, branchId, invoiceNumber: inv.invoiceNumber });
       writeRefundState(run, { materialized: new Decimal(0), deferred: null, refundReceiptId: null, pendingVoucherNumber: null });

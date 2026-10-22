@@ -74,7 +74,7 @@ export function CommissionGuide() {
       <div className="rounded-lg border bg-accent/30">
         <CollapsibleTrigger
           aria-label={open ? "إخفاء شرح العمولات والأهداف" : "عرض شرح العمولات والأهداف"}
-          className="flex w-full items-center gap-2 p-3 text-start text-sm font-medium hover:bg-accent/50 rounded-lg"
+          className="flex w-full items-center gap-2 px-2.5 py-1.5 text-start text-xs font-medium hover:bg-accent/50 rounded-lg"
         >
           <BookOpen className="size-4 shrink-0 text-primary" aria-hidden />
           <span>كيف تعمل العمولات والأهداف؟ — شرح مبسّط بمثال</span>

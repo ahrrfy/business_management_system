@@ -32,7 +32,7 @@ import {
   Check,
   ArrowRightLeft,
 } from "lucide-react";
-import { PageHeader } from "@/components/PageHeader";
+import { PageHeader, EmbeddedPageHeaderProvider } from "@/components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/data-table/DataTable";
@@ -85,6 +85,7 @@ export default function UnifiedCommissionsHub() {
   const [activeView, setActiveView] = useState<HubSubView>(() =>
     resolveViewFromUrl(search),
   );
+  const [showAttributionGuide, setShowAttributionGuide] = useState(false);
 
   // التزامن التفاعلي مع تغيير الرابط الخارجي (مثل روابط شاشة الرواتب أو الرجوع بالمتصفح)
   useEffect(() => {
@@ -304,7 +305,7 @@ export default function UnifiedCommissionsHub() {
   );
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-3">
       {/* الترويسة الرئيسية لمحطة عمل العمولات */}
       <PageHeader
         title="مركز إدارة العمولات والأهداف"
@@ -320,27 +321,27 @@ export default function UnifiedCommissionsHub() {
       />
 
       {/* لوحة المؤشرات العليا الحية (Live Interactive Executive KPI Summary Cockpit) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
         {/* بطاقة 1: إجمالي المبيعات المؤهلة (totalBaseSales) */}
         <Card
           data-testid="kpi-totalBaseSales"
           data-kpi="totalBaseSales"
           className="border-border/60 hover:border-primary/40 transition-colors"
         >
-          <CardContent className="p-4">
+          <CardContent className="p-2.5">
             <div className="flex items-center justify-between text-muted-foreground text-xs">
               <span>إجمالي المبيعات المؤهلة</span>
               <span className="text-primary">
-                <Wallet className="size-4" aria-hidden />
+                <Wallet className="size-3.5" aria-hidden />
               </span>
             </div>
             <div
-              className="mt-1.5 text-xl font-extrabold tabular-nums tracking-tight text-foreground"
+              className="mt-1 text-lg font-extrabold tabular-nums tracking-tight text-foreground"
               dir="ltr"
             >
               {iqd(kpiData.totalBaseSales)}
             </div>
-            <div className="mt-1 text-xs text-muted-foreground">
+            <div className="mt-0.5 text-[11px] text-muted-foreground">
               صافي المبيعات بعد المرتجعات
             </div>
           </CardContent>
@@ -352,20 +353,20 @@ export default function UnifiedCommissionsHub() {
           data-kpi="averageAchievementPct"
           className="border-border/60 hover:border-primary/40 transition-colors"
         >
-          <CardContent className="p-4">
+          <CardContent className="p-2.5">
             <div className="flex items-center justify-between text-muted-foreground text-xs">
               <span>المحقق من الأهداف</span>
-              <span className="text-blue-600 dark:text-blue-400">
-                <TrendingUp className="size-4" aria-hidden />
+              <span className="text-[var(--sem-info)]">
+                <TrendingUp className="size-3.5" aria-hidden />
               </span>
             </div>
             <div
-              className="mt-1.5 text-xl font-extrabold tabular-nums tracking-tight text-foreground"
+              className="mt-1 text-lg font-extrabold tabular-nums tracking-tight text-foreground"
               dir="ltr"
             >
               {kpiData.averageAchievementPct.toFixed(1)}%
             </div>
-            <div className="mt-1 flex items-center justify-between text-xs text-muted-foreground">
+            <div className="mt-0.5 flex items-center justify-between text-[11px] text-muted-foreground">
               <span>
                 {kpiData.reachedCount} من {kpiData.totalStaffCount} موظفاً
               </span>
@@ -388,20 +389,20 @@ export default function UnifiedCommissionsHub() {
           data-kpi="totalCommissionDue"
           className="border-border/60 hover:border-primary/40 transition-colors"
         >
-          <CardContent className="p-4">
+          <CardContent className="p-2.5">
             <div className="flex items-center justify-between text-muted-foreground text-xs">
               <span>العمولات المستحقة</span>
               <span className="text-money-positive">
-                <CheckCircle2 className="size-4" aria-hidden />
+                <CheckCircle2 className="size-3.5" aria-hidden />
               </span>
             </div>
             <div
-              className="mt-1.5 text-xl font-extrabold tabular-nums tracking-tight text-money-positive"
+              className="mt-1 text-lg font-extrabold tabular-nums tracking-tight text-money-positive"
               dir="ltr"
             >
               {iqd(kpiData.totalCommissionDue)}
             </div>
-            <div className="mt-1 text-xs text-muted-foreground">
+            <div className="mt-0.5 text-[11px] text-muted-foreground">
               {kpiData.payrollRunId
                 ? "مدرجة في مسيّر الرواتب"
                 : "مستحقة للكادر البيعي"}
@@ -415,7 +416,7 @@ export default function UnifiedCommissionsHub() {
           data-kpi="runStatus"
           className="border-border/60 hover:border-primary/40 transition-colors"
         >
-          <CardContent className="p-4">
+          <CardContent className="p-2.5">
             <div className="flex items-center justify-between text-muted-foreground text-xs">
               <span>حالة التشغيلة والاعتماد</span>
               <span
@@ -425,17 +426,17 @@ export default function UnifiedCommissionsHub() {
                     : "text-[var(--sem-warn)]"
                 }
               >
-                <ShieldCheck className="size-4" aria-hidden />
+                <ShieldCheck className="size-3.5" aria-hidden />
               </span>
             </div>
-            <div className="mt-1.5 text-xl font-extrabold tracking-tight">
+            <div className="mt-1 text-lg font-extrabold tracking-tight">
               {kpiData.runStatus === "approved" ? (
                 <span className="text-money-positive">معتمدة أصولياً</span>
               ) : (
                 <span className="text-[var(--sem-warn)]">مسودة</span>
               )}
             </div>
-            <div className="mt-1 text-xs text-muted-foreground">
+            <div className="mt-0.5 text-[11px] text-muted-foreground">
               {kpiData.runStatus === "approved"
                 ? "معتمدة من مراجع مستقل (SOD)"
                 : kpiData.canSelfApprove
@@ -451,20 +452,20 @@ export default function UnifiedCommissionsHub() {
           data-kpi="negativeCarryover"
           className="border-border/60 hover:border-destructive/40 transition-colors"
         >
-          <CardContent className="p-4">
+          <CardContent className="p-2.5">
             <div className="flex items-center justify-between text-muted-foreground text-xs">
               <span>الترحيل السالب</span>
               <span className="text-money-negative">
-                <Undo2 className="size-4" aria-hidden />
+                <Undo2 className="size-3.5" aria-hidden />
               </span>
             </div>
             <div
-              className="mt-1.5 text-xl font-extrabold tabular-nums tracking-tight text-money-negative"
+              className="mt-1 text-lg font-extrabold tabular-nums tracking-tight text-money-negative"
               dir="ltr"
             >
               {iqd(kpiData.negativeCarryover)}
             </div>
-            <div className="mt-1 text-xs text-muted-foreground">
+            <div className="mt-0.5 text-[11px] text-muted-foreground">
               يُخصم من عمولة الشهر القادم
             </div>
           </CardContent>
@@ -473,36 +474,31 @@ export default function UnifiedCommissionsHub() {
 
       {/* تحذير فصل المهام (SOD) لمسودات الاعتماد */}
       {!kpiData.canSelfApprove && kpiData.runStatus === "draft" && (
-        <Card className="border-[var(--sem-warn)]/40 bg-[var(--sem-warn)]/5 p-4 flex items-start gap-3">
+        <Card className="border-[var(--sem-warn)]/40 bg-[var(--sem-warn)]/5 px-3 py-2 flex items-center gap-2.5">
           <ShieldAlert
-            className="size-5 text-[var(--sem-warn)] shrink-0 mt-0.5"
+            className="size-4 text-[var(--sem-warn)] shrink-0"
             aria-hidden
           />
-          <div className="space-y-1 text-sm">
-            <div className="font-bold text-foreground">
-              تحذير فصل المهام (SOD)
-            </div>
-            <div className="text-muted-foreground text-xs leading-relaxed">
-              أنت من أنشأ هذه المسودة، ويلزم اعتمادها من مراجع/مدير آخر لضمان
-              الحوكمة المؤسسية.
-            </div>
+          <div className="text-xs text-muted-foreground">
+            <span className="font-bold text-foreground me-1">تحذير فصل المهام (SOD):</span>
+            أنت من أنشأ هذه المسودة، ويلزم اعتمادها من مراجع/مدير آخر لضمان الحوكمة المؤسسية.
           </div>
         </Card>
       )}
 
       {/* شريط التحكم المجزأ بين الأقسام (Segmented View Controls - Zero Draft Loss) */}
-      <div className="flex items-center gap-2 border-b border-border pb-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <div className="flex items-center gap-1.5 border-b border-border pb-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <button
           type="button"
           onClick={() => handleViewChange("runs")}
           className={cn(
-            "inline-flex h-10 items-center gap-2 rounded-xl px-4 text-sm font-semibold transition-all shrink-0 cursor-pointer",
+            "inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold transition-all shrink-0 cursor-pointer",
             activeView === "runs"
               ? "bg-primary text-primary-foreground shadow-sm"
               : "bg-card border border-border text-muted-foreground hover:bg-accent hover:text-foreground",
           )}
         >
-          <Calculator className="size-4" aria-hidden />
+          <Calculator className="size-3.5" aria-hidden />
           احتساب وتشغيل العمولات
         </button>
 
@@ -510,13 +506,13 @@ export default function UnifiedCommissionsHub() {
           type="button"
           onClick={() => handleViewChange("targets")}
           className={cn(
-            "inline-flex h-10 items-center gap-2 rounded-xl px-4 text-sm font-semibold transition-all shrink-0 cursor-pointer",
+            "inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold transition-all shrink-0 cursor-pointer",
             activeView === "targets"
               ? "bg-primary text-primary-foreground shadow-sm"
               : "bg-card border border-border text-muted-foreground hover:bg-accent hover:text-foreground",
           )}
         >
-          <Target className="size-4" aria-hidden />
+          <Target className="size-3.5" aria-hidden />
           الأهداف الشهرية
         </button>
 
@@ -524,13 +520,13 @@ export default function UnifiedCommissionsHub() {
           type="button"
           onClick={() => handleViewChange("plans")}
           className={cn(
-            "inline-flex h-10 items-center gap-2 rounded-xl px-4 text-sm font-semibold transition-all shrink-0 cursor-pointer",
+            "inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold transition-all shrink-0 cursor-pointer",
             activeView === "plans"
               ? "bg-primary text-primary-foreground shadow-sm"
               : "bg-card border border-border text-muted-foreground hover:bg-accent hover:text-foreground",
           )}
         >
-          <Layers className="size-4" aria-hidden />
+          <Layers className="size-3.5" aria-hidden />
           خطط العمولات
         </button>
 
@@ -538,112 +534,94 @@ export default function UnifiedCommissionsHub() {
           type="button"
           onClick={() => handleViewChange("attribution")}
           className={cn(
-            "inline-flex h-10 items-center gap-2 rounded-xl px-4 text-sm font-semibold transition-all shrink-0 cursor-pointer",
+            "inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold transition-all shrink-0 cursor-pointer",
             activeView === "attribution"
               ? "bg-primary text-primary-foreground shadow-sm"
               : "bg-card border border-border text-muted-foreground hover:bg-accent hover:text-foreground",
           )}
         >
-          <Users className="size-4" aria-hidden />
+          <Users className="size-3.5" aria-hidden />
           إسناد صالة العرض والمبيعات
         </button>
       </div>
 
-      {/* 
-        العرض المتوازي المحفوظ (Keep-Alive DOM Preservation - Zero Draft Loss):
-        تبقى المكونات حية في الـ DOM وتُخفى باستخدام صنف `hidden` عند عدم التنشيط.
-        هذا يمنع تفريغ أي مسودة أهداف أو مدخلات غير محفوظة عند التبديل الحر للمستخدم.
-      */}
+      <EmbeddedPageHeaderProvider>
+        {/* قسم (1): تشغيل واحتساب العمولات */}
+        <div className={activeView === "runs" ? "block space-y-3" : "hidden"}>
+          <CommissionRuns />
+        </div>
 
-      {/* قسم (1): تشغيل واحتساب العمولات */}
-      <div className={activeView === "runs" ? "block space-y-4" : "hidden"}>
-        <CommissionRuns />
-      </div>
+        {/* قسم (2): الأهداف الشهرية */}
+        <div className={activeView === "targets" ? "block space-y-3" : "hidden"}>
+          <CommissionTargets />
+        </div>
 
-      {/* قسم (2): الأهداف الشهرية */}
-      <div className={activeView === "targets" ? "block space-y-4" : "hidden"}>
-        <CommissionTargets />
-      </div>
-
-      {/* قسم (3): خطط العمولات */}
-      <div className={activeView === "plans" ? "block space-y-4" : "hidden"}>
-        <CommissionPlans />
-      </div>
+        {/* قسم (3): خطط العمولات */}
+        <div className={activeView === "plans" ? "block space-y-3" : "hidden"}>
+          <CommissionPlans />
+        </div>
+      </EmbeddedPageHeaderProvider>
 
       {/* قسم (4): إسناد صالة العرض والمبيعات */}
       <div
-        className={activeView === "attribution" ? "block space-y-5" : "hidden"}
+        className={activeView === "attribution" ? "block space-y-3" : "hidden"}
       >
-        {/* بطاقة توجيهية لهندسة إسناد المبيعات متعددة الأدوار */}
-        <Card className="border-primary/20 bg-primary/5">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base font-bold flex items-center gap-2 text-primary">
-              <Sparkles className="size-5" aria-hidden />
-              هندسة إسناد المبيعات وصالة العرض (Multi-Role Sales Attribution
-              Engine)
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="text-sm text-muted-foreground leading-relaxed space-y-2">
-            <p>
-              يفك النظام الارتباط الحصري بين العمولة وشخص الكاشير الصامت، مما
-              يتيح إسناد المبيعات بعدالة لموظفي صالة العرض والاستقبال عبر ٣
-              أنماط توزيع مرنة:
-            </p>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
-              <Card className="p-3 space-y-1 shadow-none">
-                <div className="font-bold text-foreground text-xs flex items-center gap-1.5">
-                  <Check className="size-3.5 text-primary" aria-hidden />
-                  إسناد مباشر (Direct - 100%)
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  تُسند المبيعات والعمولة بالكامل لموظف صالة العرض الذي باشر
-                  العميل وأقنعه بالشراء.
-                </div>
-              </Card>
-
-              <Card className="p-3 space-y-1 shadow-none">
-                <div className="font-bold text-foreground text-xs flex items-center gap-1.5">
-                  <ArrowRightLeft
-                    className="size-3.5 text-[var(--sem-info)]"
-                    aria-hidden
-                  />
-                  عمولة مقسمة (Split Ratio)
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  تقسيم النسبة بنظام عادل (مثل 70% لبائع الصالة و 30% للكاشير أو
-                  موظف الاستقبال).
-                </div>
-              </Card>
-
-              <Card className="p-3 space-y-1 shadow-none">
-                <div className="font-bold text-foreground text-xs flex items-center gap-1.5">
-                  <Store className="size-3.5 text-money-positive" aria-hidden />
-                  وعاء الصالة التشاركي (Team Pool)
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  تجميع عمولات الفرع في وعاء مشترك وتوزيعها بالتساوي أو بحسب
-                  ساعات العمل الفعلي.
-                </div>
-              </Card>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* جدول كادر صالة العرض والأدوار البيعية المسندة */}
+        {/* جدول كادر صالة العرض والأدوار البيعية المسندة + ملخص قابل للطي لهندسة الإسناد */}
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <div>
-              <CardTitle className="text-base font-bold flex items-center gap-2">
-                <Users className="size-5 text-primary" aria-hidden />
-                كادر صالة العرض وتوزيع الأدوار البيعية
-              </CardTitle>
-              <div className="text-xs text-muted-foreground mt-1">
-                سجل موظفي الصالة ومسؤولي المبيعات والاستقبال المؤهلين لاحتساب
-                العمولات في الفروع.
+          <CardHeader className="py-2.5 px-3.5 space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <CardTitle className="text-sm font-bold flex items-center gap-1.5">
+                  <Users className="size-4 text-primary" aria-hidden />
+                  كادر صالة العرض وتوزيع الأدوار البيعية
+                </CardTitle>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  سجل موظفي الصالة ومسؤولي المبيعات والاستقبال المؤهلين لاحتساب العمولات في الفروع.
+                </div>
               </div>
+              <button
+                type="button"
+                aria-expanded={showAttributionGuide}
+                onClick={() => setShowAttributionGuide((v) => !v)}
+                className="cursor-pointer select-none inline-flex items-center gap-1 rounded-md border border-primary/20 bg-primary/5 px-2.5 py-1 text-xs font-semibold text-primary hover:bg-primary/10"
+              >
+                <Sparkles className="size-3.5" aria-hidden />
+                هندسة إسناد المبيعات (٣ أنماط)
+              </button>
             </div>
+            {showAttributionGuide && (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2 rounded-lg border bg-muted/20 p-2.5 text-xs">
+                <div className="space-y-0.5">
+                  <div className="font-bold text-foreground flex items-center gap-1">
+                    <Check className="size-3 text-primary" aria-hidden />
+                    إسناد مباشر (Direct - 100%)
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">
+                    تُسند المبيعات والعمولة بالكامل لموظف صالة العرض الذي باشر العميل.
+                  </div>
+                </div>
+                <div className="space-y-0.5">
+                  <div className="font-bold text-foreground flex items-center gap-1">
+                    <ArrowRightLeft className="size-3 text-[var(--sem-info)]" aria-hidden />
+                    عمولة مقسمة (Split Ratio)
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">
+                    تقسيم النسبة بعدالة (مثل 70% لبائع الصالة و 30% للكاشير أو الاستقبال).
+                  </div>
+                </div>
+                <div className="space-y-0.5">
+                  <div className="font-bold text-foreground flex items-center gap-1">
+                    <Store className="size-3 text-money-positive" aria-hidden />
+                    وعاء الصالة التشاركي (Team Pool)
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">
+                    تجميع عمولات الفرع في وعاء مشترك وتوزيعها بالتساوي أو بحسب الساعات.
+                  </div>
+                </div>
+              </div>
+            )}
           </CardHeader>
-          <CardContent className="pt-2">
+          <CardContent className="p-3 pt-0">
             <DataTable
               data={staffRosterData}
               columns={staffRosterColumns}

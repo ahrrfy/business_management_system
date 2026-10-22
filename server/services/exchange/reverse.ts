@@ -15,7 +15,9 @@ import {
   type PostingSourceComponents,
 } from "../accounting/postingEngine";
 import { money, round2, toDbMoney, type DecimalInput } from "../money";
-import { withTx, type Actor } from "../tx";
+import { type Actor } from "../tx";
+import { withSupplierBookReversalTx } from "../purchase/supplierBookReversalTx";
+import { unapplySupplierBookSettlementSourceTx } from "../purchase/supplierBookSettlement";
 import { assertCashOutAvailable, assertNonPhysicalOutReceipt, assertTreasuryOutException, lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { lockBranchMonthCloseGate } from "../reports/monthCloseGate";
 import { lockHouse, toDbRate } from "./helpers";
@@ -271,7 +273,7 @@ export async function reverseExchangeTransaction(
   txnId: number,
   actor: Actor,
 ): Promise<{ txnId: number; txnNumber: string; status: "REVERSED" }> {
-  return withTx(async (tx) => {
+  return withSupplierBookReversalTx(async () => ({ sourceExchangeTransactionId: txnId }), async (tx) => {
     const [previewTxn] = await tx
       .select({
         receiptId: exchangeTransactions.receiptId,
@@ -393,6 +395,11 @@ export async function reverseExchangeTransaction(
       }
       await deriveForeignCashUsdPosition(tx, houseId, Number(txn.branchId), txnId);
     }
+
+    await unapplySupplierBookSettlementSourceTx(tx, {
+      sourceExchangeTransactionId: txnId,
+      reversalKey: `EXCHANGE_REVERSE:${txnId}`,
+    }, actor);
 
     // ١) علّم العملية REVERSED (recompute أدناه يعتمد الحالة النشطة فيستثنيها).
     await tx.update(exchangeTransactions).set({ status: "REVERSED" }).where(eq(exchangeTransactions.id, txnId));

@@ -208,14 +208,14 @@ export function HybridSidebarNav({
   const favoritesFull = workspace.favorites.length >= NAV_FAVORITES_LIMIT;
 
   return (
-    <nav className="sb-scroll flex-1 overflow-y-auto py-2" aria-label="التنقل الرئيسي">
+    <nav className="sb-scroll flex-1 overflow-y-auto py-1" aria-label="التنقل الرئيسي">
       {showDashboard && (
         <>
           <Link
             href="/"
             aria-current={currentPath === "/" ? "page" : undefined}
             className={cn(
-              "flex items-center gap-2 px-3 py-2 min-h-[40px] text-sm transition",
+              "flex items-center gap-2 px-2.5 py-1.5 min-h-[33px] text-[13px] transition",
               currentPath === "/" ? "sb-active font-semibold" : "sb-item rounded-md mx-2",
             )}
           >
@@ -228,7 +228,7 @@ export function HybridSidebarNav({
 
       {primaryNav.length > 0 && (
         <section aria-label="عملي" className="mb-1">
-          <div className="px-3 pb-1 pt-0.5 text-[11px] font-semibold sb-sub">عملي</div>
+          <div className="px-3 pb-0.5 pt-0.5 text-[10px] font-semibold sb-sub">عملي</div>
           {primaryNav.map((item) => {
             const module = findSidebarModule(item.href, visibleModules);
             const Icon = module?.icon ?? ClipboardCheck;
@@ -246,7 +246,7 @@ export function HybridSidebarNav({
                 title={item.label}
                 aria-current={active ? "page" : undefined}
                 className={cn(
-                  "flex min-h-[40px] items-center gap-2 px-3 py-2 text-sm transition",
+                  "flex min-h-[33px] items-center gap-2 px-2.5 py-1.5 text-[13px] transition",
                   active ? "sb-active font-semibold" : "sb-item mx-2 rounded-md",
                 )}
               >
@@ -266,7 +266,7 @@ export function HybridSidebarNav({
             href="/my-stocktake"
             aria-current={isSidebarHrefActive(currentPath, currentSearch, "/my-stocktake") ? "page" : undefined}
             className={cn(
-              "flex items-center gap-2 mb-0.5 px-3 py-2 min-h-[40px] text-sm transition",
+              "flex items-center gap-2 mb-0.5 px-2.5 py-1.5 min-h-[33px] text-[13px] transition",
               isSidebarHrefActive(currentPath, currentSearch, "/my-stocktake")
                 ? "sb-active font-semibold"
                 : "sb-item rounded-md mx-2",
@@ -286,7 +286,7 @@ export function HybridSidebarNav({
           )}
           className="mb-1"
         >
-          <CollapsibleTrigger className="group mx-2 flex min-h-[36px] w-[calc(100%-1rem)] items-center gap-2 rounded-md px-2 text-xs font-medium sb-item">
+          <CollapsibleTrigger className="group mx-2 flex min-h-[32px] w-[calc(100%-1rem)] items-center gap-2 rounded-md px-2 text-xs font-medium sb-item">
             <Star className="size-3.5 shrink-0" aria-hidden />
             <span className="flex-1 text-start">اختصاراتي</span>
             <ChevronDown className="size-3.5 transition-transform group-data-[state=open]:rotate-180" aria-hidden />
@@ -301,7 +301,7 @@ export function HybridSidebarNav({
                   title={`مفضلة: ${item.label}`}
                   aria-current={active ? "page" : undefined}
                   className={cn(
-                    "flex min-h-[36px] items-center gap-2 px-3 py-1.5 text-sm transition",
+                    "flex min-h-[32px] items-center gap-2 px-2.5 py-1 text-[13px] transition",
                     active ? "sb-active font-semibold" : "sb-item mx-2 rounded-md",
                   )}
                 >
@@ -319,7 +319,7 @@ export function HybridSidebarNav({
                   title={`حديثا: ${item.label}`}
                   aria-current={active ? "page" : undefined}
                   className={cn(
-                    "flex min-h-[36px] items-center gap-2 px-3 py-1.5 text-sm transition",
+                    "flex min-h-[32px] items-center gap-2 px-2.5 py-1 text-[13px] transition",
                     active ? "sb-active font-semibold" : "sb-item mx-2 rounded-md",
                   )}
                 >
@@ -335,16 +335,16 @@ export function HybridSidebarNav({
 
       {visibleModules.length > 0 && (
         <Collapsible open={allModulesOpen} onOpenChange={setAllModulesOpen}>
-          <CollapsibleTrigger className="group mx-2 flex min-h-[40px] w-[calc(100%-1rem)] items-center gap-2 rounded-md px-2 text-sm font-medium sb-item">
+          <CollapsibleTrigger className="group mx-2 flex min-h-[33px] w-[calc(100%-1rem)] items-center gap-2 rounded-md px-2 text-[13px] font-medium sb-item">
             <Menu className="size-4 shrink-0" aria-hidden />
             <span className="flex-1 text-start">كل الوحدات</span>
             <span className="text-[10px] tabular-nums opacity-60">{visibleModules.length}</span>
             <ChevronDown className="size-3.5 transition-transform group-data-[state=open]:rotate-180" aria-hidden />
           </CollapsibleTrigger>
-          <CollapsibleContent className="pt-1">
+          <CollapsibleContent className="pt-0.5">
             {groupedNav.map((group) => (
-              <section key={group.id} aria-label={group.label} className="pb-1">
-                <div className="px-3 pb-1 pt-1.5 text-[11px] font-medium sb-sub">{group.label}</div>
+              <section key={group.id} aria-label={group.label} className="pb-0.5">
+                <div className="px-3 pb-0.5 pt-1 text-[10px] font-medium sb-sub">{group.label}</div>
                 {group.modules.map((module) => {
                   const active = isSidebarHrefActive(currentPath, currentSearch, module.href);
                   const favorite = favoritePaths.has(module.href);

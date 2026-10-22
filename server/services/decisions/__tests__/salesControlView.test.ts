@@ -46,9 +46,13 @@ describe("salesControlAffectedAmount — ما يمسه القرار لا اجم�
 
 describe("salesControlInlineBlock — لا زر اعتماد يكذب", () => {
   const open = new Map<number, string | null>([[5, "OPEN"], [6, "CLOSED"]]);
-  it("الالغاء ببطاقة بلا مرجع جهاز محجوب؛ وبمرجع او نقدا يمر", () => {
+  it("الالغاء ببطاقة او مختلط بلا مرجع جهاز محجوب؛ وبمرجع او نقدا يمر", () => {
     expect(salesControlInlineBlock("SALES_CANCEL", { refundPaymentMethod: "CARD" }, open)).toMatch(/مرجع عملية جهاز الدفع/);
+    expect(salesControlInlineBlock("SALES_CANCEL", { refundPaymentMethod: "MIXED" }, open)).toMatch(/مرجع عملية جهاز الدفع/);
+    expect(salesControlInlineBlock("SALES_CANCEL", { refundPaymentMethod: "MIXED", refunds: [{ method: "CASH", amount: "10" }, { method: "CARD", amount: "20" }] }, open)).toMatch(/مرجع عملية جهاز الدفع/);
     expect(salesControlInlineBlock("SALES_CANCEL", { refundPaymentMethod: "CARD", reference: "TERM-1" }, open)).toBeNull();
+    expect(salesControlInlineBlock("SALES_CANCEL", { refundPaymentMethod: "MIXED", reference: "TERM-1" }, open)).toBeNull();
+    expect(salesControlInlineBlock("SALES_CANCEL", { refundPaymentMethod: "MIXED", refunds: [{ method: "CASH", amount: "10" }, { method: "CARD", amount: "20", reference: "TERM-1" }] }, open)).toBeNull();
     expect(salesControlInlineBlock("SALES_CANCEL", { refundPaymentMethod: "CASH" }, open)).toBeNull();
   });
   it("المرتجع: الرد بالبطاقة بلا مرجع محجوب، والدرج المقفل او الغائب محجوب، والمفتوح يمر، وبلا رد يمر", () => {

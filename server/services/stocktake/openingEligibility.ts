@@ -195,7 +195,9 @@ type RestorableVariant = {
   unitCost: string;
 };
 
-function parseOpeningScopeDetail(raw: string | null): OpeningScopeDetail | null {
+function parseOpeningScopeDetail(
+  raw: string | null,
+): OpeningScopeDetail | null {
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw);
@@ -212,9 +214,7 @@ function parseOpeningScopeDetail(raw: string | null): OpeningScopeDetail | null 
 function positiveIdSet(value: unknown): Set<number> {
   if (!Array.isArray(value)) return new Set<number>();
   return new Set(
-    value
-      .map(Number)
-      .filter((id) => Number.isInteger(id) && id > 0),
+    value.map(Number).filter((id) => Number.isInteger(id) && id > 0),
   );
 }
 
@@ -387,8 +387,15 @@ export async function restoreVariantsToActiveOpeningStocktakes(
         .for("update");
       for (const row of rows) existingIds.add(Number(row.variantId));
     }
+    const overlaps = await loadActiveStocktakeOverlaps(
+      tx,
+      branchId,
+      scopedCandidates.map((row) => row.variantId),
+      sessionId,
+      true,
+    );
     const missing = scopedCandidates.filter(
-      (row) => !existingIds.has(row.variantId),
+      (row) => !existingIds.has(row.variantId) && !overlaps.has(row.variantId),
     );
     if (!missing.length) continue;
 
@@ -447,3 +454,4 @@ export async function restoreVariantsToActiveOpeningStocktakes(
 
   return restored;
 }
+import { loadActiveStocktakeOverlaps } from "./overlapGuard";

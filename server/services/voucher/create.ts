@@ -1,10 +1,12 @@
+import { prepareSupplierBookVoucherTx } from "../purchase/supplierBookSettlement";
 // إنشاء سند قبض/صرف مستقلّ ذرّياً (Maker-Checker + idempotency).
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { isDeadInvoice } from "@shared/predicates";
 import { allocateVoucherToInvoiceTx } from "./invoiceAllocation";
 import { assertNoNativeSupplierDebtForGenericPaymentTx } from "./supplierNativePaymentGuard";
-import { autoSettleCustomerAccountTx } from "../reconciliation/autoSettlementService";
+import { assertSupplierVoucherReplayTx, createSupplierVoucherSettlementTx, prepareSupplierVoucherSettlementTx, withSupplierBookVoucherTx, supplierScopeNeedsBookGateTx, recordSupplierBookVoucherMarkerTx } from "./supplierSettlement";
+import { settleCustomerReceiptTx, consumeCustomerReceiptCreditTx } from "../customerReceiptSettlement";
 import { eq } from "drizzle-orm";
 import {
   customers,
@@ -653,6 +655,7 @@ export async function createVoucherTx(
               "مفتاح idempotency مرتبط بسند منتهٍ أو معكوس؛ أعد الإصدار من المسار الصريح بمفتاح جديد",
           });
         }
+        await assertSupplierVoucherReplayTx(tx, input, existingRefId);
         return {
           receiptId: existingRefId,
           voucherNumber: r.voucherNumber ?? "",
@@ -663,6 +666,14 @@ export async function createVoucherTx(
       }
     }
   }
+  const supplierBookPlan = !options?.systemRequest && input.voucherType === "PAYMENT" && input.partyType === "SUPPLIER" && input.partyId && ["CASH", "CARD", "TRANSFER", "WALLET"].includes(input.paymentMethod)
+    ? await prepareSupplierBookVoucherTx(tx, { supplierId: input.partyId, branchId: input.branchId, amount: input.amount, voucherDate: input.voucherDate ?? baghdadToday(), allocations: input.supplierAllocations }, actor) : null;
+
+  if (supplierBookPlan && input.supplierCashSource && (input.paymentMethod !== "CASH" || input.supplierCashSource.mode !== "TREASURY" || input.supplierCashSource.shiftId != null))
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذر اختيار مصدر نقد السند", why: "تسوية الذمة الدفترية تدعم الخزينة الإدارية فقط بلا وردية، والطريقة غير النقدية لا تقبل مصدراً نقدياً", doThis: "استخدم مصدر الخزينة للسند النقدي واحذف مصدر النقد عند التحويل" }) });
+  const supplierSettlement = !options?.systemRequest && !supplierBookPlan
+    ? await prepareSupplierVoucherSettlementTx(tx, input, actor)
+    : null;
   const amount = money(input.amount);
   if (amount.lte(0)) {
     throw new TRPCError({
@@ -869,7 +880,7 @@ export async function createVoucherTx(
         message: "لا يمكن إصدار سند لمورد مُعطَّل",
       });
     }
-    if (direction === "OUT" && !options?.systemRequest) {
+    if (direction === "OUT" && !options?.systemRequest && !supplierSettlement && !supplierBookPlan) {
       await assertNoNativeSupplierDebtForGenericPaymentTx(tx, input.partyId, {
         currentRead: false,
       });
@@ -1077,6 +1088,11 @@ export async function createVoucherTx(
     approvalStatus: needsApproval ? "PENDING_APPROVAL" : "APPROVED",
   });
   const receiptId = extractInsertId(rRes);
+  if (supplierBookPlan) await recordSupplierBookVoucherMarkerTx(tx, receiptId, input, supplierBookPlan, actor);
+  if (supplierSettlement) {
+    const [supplierReceipt] = await tx.select().from(receipts).where(eq(receipts.id, receiptId));
+    await createSupplierVoucherSettlementTx(tx, supplierReceipt!, input, supplierSettlement, actor);
+  }
 
   // الأثر المالي يُطبَّق فقط عند الاعتماد (PENDING_APPROVAL ⇒ صفّ معلَّق بلا أثَر).
   if (!needsApproval) {
@@ -1137,20 +1153,16 @@ export async function createVoucherTx(
     }
 
     if (input.partyType === "CUSTOMER" && input.partyId) {
+      if (input.invoiceId == null) {
+        if (direction === "IN") await settleCustomerReceiptTx(tx, receiptId, actor);
+        else await consumeCustomerReceiptCreditTx(tx, receiptId, actor);
+      }
       await adjustCustomerBalance(
         tx,
         input.partyId,
         direction === "IN" ? amount.neg() : amount,
       );
-      if (direction === "IN") {
-        const [c] = await tx
-          .select({ currentBalance: customers.currentBalance })
-          .from(customers)
-          .where(eq(customers.id, Number(input.partyId)));
-        if (c && money(c.currentBalance).lte(0)) {
-          await autoSettleCustomerAccountTx(tx, Number(input.partyId), actor);
-        }
-      }
+
     } else if (input.partyType === "SUPPLIER" && input.partyId) {
       await adjustSupplierBalance(tx, input.partyId, amount);
     } else if (input.partyType === "DELIVERY_PARTY" && input.partyId) {
@@ -1360,7 +1372,7 @@ export async function createVoucher(
     assertInboundPaymentMethodEnabled(input.paymentMethod);
   }
   return withMysqlDeadlockRetry(() =>
-    withTx(async (tx) => {
+    withSupplierBookVoucherTx(async tx => input.partyType === "CUSTOMER" || (input.voucherType === "PAYMENT" && input.partyType === "SUPPLIER" && !!input.partyId && !isSystemPaymentReference(input.referenceNumber) && await supplierScopeNeedsBookGateTx(tx, Number(input.partyId))), async (tx) => {
       const result = await createVoucherTx(tx, input, actor);
       // ن-٢-هـ (Codex ٢٩/٨): مسارُ الراوتر (`vouchers.create`) يمرّ هنا — إشعارٌ
       // مركزيٌّ يُغني عن حاجةِ الراوتر لاستدعاءِ notifier يدوياً.

@@ -76,10 +76,12 @@
     "qrcode": "^1.5.4",
     "tailwindcss": "^3.4.17",
     "typescript": "~5.9.3",
-    "vitest": "^4.1.11"
+    "vite": "7.3.7",
+    "vitest": "^4.1.12"
   },
   "pnpm": {
     "overrides": {
+      "vite@>=7.0.0 <7.3.7": "7.3.7",
       "http-cache-semantics": "4.3.0",
       "shell-quote": "^1.12.0",
       "compression": "1.8.2",

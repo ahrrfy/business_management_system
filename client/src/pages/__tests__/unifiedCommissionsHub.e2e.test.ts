@@ -84,14 +84,14 @@ describe("E2E Unified Commissions Hub & Sales Attribution UX (F5, F6)", () => {
       expect(unifiedHubSource).toContain("<CommissionRuns />");
       expect(unifiedHubSource).toContain("<CommissionTargets />");
       expect(unifiedHubSource).toContain("<CommissionPlans />");
-      expect(unifiedHubSource).toContain("هندسة إسناد المبيعات وصالة العرض");
+      expect(unifiedHubSource).toContain("هندسة إسناد المبيعات");
     });
 
     it("F6.3: UnifiedCommissionsHub.tsx implements Zero Draft Loss DOM Keep-Alive rendering", () => {
-      expect(unifiedHubSource).toContain('className={activeView === "runs" ? "block space-y-4" : "hidden"}');
-      expect(unifiedHubSource).toContain('className={activeView === "targets" ? "block space-y-4" : "hidden"}');
-      expect(unifiedHubSource).toContain('className={activeView === "plans" ? "block space-y-4" : "hidden"}');
-      expect(unifiedHubSource).toContain('className={activeView === "attribution" ? "block space-y-5" : "hidden"}');
+      expect(unifiedHubSource).toContain('className={activeView === "runs" ? "block space-y-3" : "hidden"}');
+      expect(unifiedHubSource).toContain('className={activeView === "targets" ? "block space-y-3" : "hidden"}');
+      expect(unifiedHubSource).toContain('className={activeView === "plans" ? "block space-y-3" : "hidden"}');
+      expect(unifiedHubSource).toContain('className={activeView === "attribution" ? "block space-y-3" : "hidden"}');
     });
 
     it("F6.4: UnifiedCommissionsHub.tsx eliminates raw IEEE float math on financial totals", () => {

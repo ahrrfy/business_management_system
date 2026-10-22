@@ -90,4 +90,61 @@ describe("invoiceToReceipt", () => {
     expect(receipt.credit).toBe("15000");
     expect(receipt.paymentMethod).toBe("دفع عند الاستلام (COD)");
   });
+
+  it("extracts split paymentLegs when an invoice has multiple IN receipts (MIXED)", async () => {
+    const { buildBrowserReceiptHtml } = await import("./printTemplates");
+    const { buildSalesInvoiceV2Html } = await import("./printTemplatesV2");
+
+    const receipt = invoiceToReceipt({
+      invoiceNumber: "INV-MIXED-1",
+      invoiceDate: "2026-10-21T12:00:00.000Z",
+      subtotal: "25000.00",
+      total: "25000.00",
+      paidAmount: "25000.00",
+      paymentMethod: "MIXED",
+      payments: [
+        { direction: "IN", paymentMethod: "CASH", amount: "10000.00", referenceNumber: null },
+        { direction: "IN", paymentMethod: "CARD", amount: "15000.00", referenceNumber: "POS-REF-7788" },
+      ],
+      items: [
+        {
+          productName: "حقيبة مدرسية",
+          unitName: "قطعة",
+          quantity: "1",
+          unitPrice: "25000.00",
+          total: "25000.00",
+        },
+      ],
+    });
+
+    expect(receipt.paymentMethod).toBe("مختلطة");
+    expect(receipt.paymentLegs).toEqual([
+      { method: "نقدي", amount: "10000.00", reference: null },
+      { method: "بطاقة", amount: "15000.00", reference: "POS-REF-7788" },
+    ]);
+
+    const thermalHtml = buildBrowserReceiptHtml(receipt);
+    expect(thermalHtml).toContain("مختلط");
+    expect(thermalHtml).toContain("نقدي");
+    expect(thermalHtml).toContain("بطاقة");
+    expect(thermalHtml).toContain("POS-REF-7788");
+
+    const a4Html = buildSalesInvoiceV2Html({
+      invoiceNumber: "INV-MIXED-1",
+      invoiceDate: "2026-10-21",
+      items: [{ productName: "حقيبة مدرسية", quantity: 1, unitPrice: 25000, total: 25000 }],
+      subtotal: 25000,
+      discountAmount: 0,
+      taxAmount: 0,
+      total: 25000,
+      paidAmount: 25000,
+      remainingAmount: 0,
+      status: "PAID",
+      paymentMethod: "MIXED",
+      paymentLegs: receipt.paymentLegs,
+    });
+    expect(a4Html).toContain("نقدي");
+    expect(a4Html).toContain("بطاقة");
+    expect(a4Html).toContain("POS-REF-7788");
+  });
 });

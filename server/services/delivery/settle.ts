@@ -6,6 +6,7 @@
 // وعجز إرساليةٍ بعينها يُشطَب **موجَّهاً** (consignmentId): يقفل الإرسالية WRITTEN_OFF ويقيّد
 // الفاتورة وذمّة العميل — لأنّ دلالته «المندوب حصّل من الزبون وضيّع النقد»: الزبون بريء،
 // والخسارة على المكتبة، ولا إرسالية زومبي تبقى في شاشة التوريد تقبل توريداً يقلب الرصيد سالباً.
+import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
@@ -607,7 +608,7 @@ export async function writeOffDeliveryShortfallInTx(
               ELSE 0 END), 0)`,
           })
           .from(deliveryLedgerEntries)
-          .where(eq(deliveryLedgerEntries.consignmentId, Number(cn.id)))
+          .where(and(eq(deliveryLedgerEntries.consignmentId, Number(cn.id)), effectiveDeliveryLedgerEntrySql()))
       )[0];
       const custodyHeld = round2(Decimal.max(money(custodyRow?.v ?? "0"), 0));
       const realLoss = round2(Decimal.min(amount, realPart.plus(custodyHeld)));

@@ -13,7 +13,8 @@
  * من العلَم مباشرةً، كي يبقى الانتقالُ قلبةً واحدة.
  */
 import type Decimal from "decimal.js";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
+import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
 import { deriveCashInHandFromLedger } from "@shared/partyExposure";
 import { deliveryLedgerEntries } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
@@ -47,7 +48,7 @@ export async function partyCashInHandTx(
       total: sql<string>`COALESCE(SUM(${deliveryLedgerEntries.amount}), 0)`,
     })
     .from(deliveryLedgerEntries)
-    .where(eq(deliveryLedgerEntries.partyId, Number(party.id)))
+    .where(and(eq(deliveryLedgerEntries.partyId, Number(party.id)), effectiveDeliveryLedgerEntrySql()))
     .groupBy(deliveryLedgerEntries.entryType);
   const ledger = round2(money(deriveCashInHandFromLedger(agg.map((r) => ({ entryType: r.entryType, amount: String(r.total ?? "0") })))));
   const stored = round2(money(party.currentBalance ?? "0"));

@@ -514,7 +514,7 @@ export default function VoucherCategories() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         title="فئات السندات"
         description="تصنيف سندات القبض والصرف وربط كل فئة بحساب مقابل واضح في دفتر الأستاذ."

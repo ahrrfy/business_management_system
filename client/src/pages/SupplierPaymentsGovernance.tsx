@@ -98,6 +98,7 @@ export default function SupplierPaymentsGovernance() {
         supplierPaymentId: Number(row.id),
         paymentNumber: row.paymentNumber,
         paymentVersion: Number(row.version),
+        derivesInvoiceCurrency: row.derivesInvoiceCurrency,
         supplierId: Number(row.supplierId),
         supplierLabel:
           supplierNames.get(Number(row.supplierId)) ??
@@ -195,7 +196,7 @@ export default function SupplierPaymentsGovernance() {
   });
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         title="حوكمة سداد الموردين"
         description="تخصيص دفعات المورد واستردادها بمستند ودليل واعتماد مستقل."
@@ -226,7 +227,7 @@ export default function SupplierPaymentsGovernance() {
       ) : branchId == null ? (
         <div
           role="status"
-          className="rounded-md border p-8 text-center text-sm text-muted-foreground"
+          className="rounded-md border p-4 text-center text-sm text-muted-foreground"
         >
           اختر فرعاً لعرض الفواتير والدفعات المؤهلة.
         </div>

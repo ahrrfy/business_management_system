@@ -17,13 +17,12 @@ import {
   Trash2,
   Building2,
   Calendar,
-  FileText,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { D, fmtAr, moneyInput } from "@/lib/money";
@@ -250,7 +249,7 @@ export default function JournalEntryNew() {
   });
 
   return (
-    <div className="space-y-6 max-w-7xl mx-auto p-4 md:p-6" dir="rtl">
+    <div className="space-y-2.5 max-w-7xl mx-auto p-3 md:p-4" dir="rtl">
       <PageHeader
         title="قيد يومية يدوي جديد"
         description="تسجيل قيد محاسبي مزدوج ومتوازن وترحيله مباشرة للأستاذ العام ودفاتر الذمم المساعدة"
@@ -275,309 +274,256 @@ export default function JournalEntryNew() {
       />
 
       {/* بطاقة معلومات القيد العامة */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base flex items-center gap-2">
-            <FileText className="size-4 text-primary" />
-            بيانات القيد والتاريخ
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium flex items-center gap-1.5">
-                <Calendar className="size-4 text-muted-foreground" />
-                تاريخ القيد
-                <span className="text-destructive">*</span>
-              </label>
-              <Input
-                type="date"
-                value={entryDate}
-                onChange={(e) => setEntryDate(e.target.value)}
-                className="w-full text-right"
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium flex items-center gap-1.5">
-                <Building2 className="size-4 text-muted-foreground" />
-                الفرع (اختياري)
-              </label>
-              <AppSelect
-                value={branchId}
-                onValueChange={setBranchId}
-                className="w-full text-right"
-              >
-                <option value="">جميع الفروع / المركز الرئيسي</option>
-                {branches.map((b) => (
-                  <option key={b.id} value={String(b.id)}>
-                    {b.name} ({b.code})
-                  </option>
-                ))}
-              </AppSelect>
-            </div>
-
-            <div className="sm:col-span-2 md:col-span-3 space-y-1.5">
-              <label className="text-sm font-medium">
-                البيان العام للقيد (سبب التسوية المحاسبية)
-                <span className="text-destructive">*</span>
-              </label>
-              <Textarea
-                placeholder="مثال: إثبات مصاريف ضيافة نقدية للفرع أو تسوية ذمة عميل..."
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                rows={2}
-                className="w-full text-right resize-none"
-              />
-              <span className="text-xs text-muted-foreground">
-                الحد الأدنى 5 أحرف توضح طبيعة العملية لأغراض التدقيق المالي.
-              </span>
-            </div>
+      <Card className="p-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-12 gap-2.5 items-start">
+          <div className="md:col-span-3 space-y-1">
+            <label className="text-xs font-medium flex items-center gap-1">
+              <Calendar className="size-3.5 text-muted-foreground" />
+              تاريخ القيد <span className="text-destructive">*</span>
+            </label>
+            <Input
+              type="date"
+              value={entryDate}
+              onChange={(e) => setEntryDate(e.target.value)}
+              className="h-8 w-full text-right text-xs"
+            />
           </div>
-        </CardContent>
+
+          <div className="md:col-span-3 space-y-1">
+            <label className="text-xs font-medium flex items-center gap-1">
+              <Building2 className="size-3.5 text-muted-foreground" />
+              الفرع (اختياري)
+            </label>
+            <AppSelect
+              value={branchId}
+              onValueChange={setBranchId}
+              className="h-8 w-full text-right text-xs"
+            >
+              <option value="">جميع الفروع / المركز الرئيسي</option>
+              {branches.map((b) => (
+                <option key={b.id} value={String(b.id)}>
+                  {b.name} ({b.code})
+                </option>
+              ))}
+            </AppSelect>
+          </div>
+
+          <div className="sm:col-span-2 md:col-span-6 space-y-1">
+            <label className="text-xs font-medium" title="الحد الأدنى 5 أحرف توضح طبيعة العملية لأغراض التدقيق المالي.">
+              البيان العام للقيد (سبب التسوية المحاسبية) <span className="text-destructive">*</span>
+            </label>
+            <Input
+              placeholder="مثال: إثبات مصاريف ضيافة نقدية للفرع أو تسوية ذمة عميل (5 أحرف فأكثر)..."
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              className="h-8 w-full text-right text-xs"
+            />
+          </div>
+        </div>
       </Card>
 
-      {/* بطاقة أسطر القيد المحاسبي */}
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between pb-3">
-          <CardTitle className="text-base flex items-center gap-2">
-            <Scale className="size-4 text-primary" />
-            أسطر القيد المزدوج (مدين / دائن)
-          </CardTitle>
+      {/* بطاقة أسطر القيد المحاسبي — جدول محاسبي مدمج بترويسة واحدة */}
+      <Card className="overflow-hidden">
+        <div className="flex items-center justify-between border-b px-3.5 py-2 bg-muted/20">
+          <div className="flex items-center gap-2 text-xs font-semibold">
+            <Scale className="size-3.5 text-primary" />
+            <span>أسطر القيد المزدوج ({lines.length} سطر)</span>
+          </div>
           <Button
             type="button"
             variant="outline"
             size="sm"
             onClick={addLine}
-            className="flex items-center gap-1"
+            className="h-7 gap-1 text-xs"
           >
-            <Plus className="size-4" />
+            <Plus className="size-3.5" />
             إضافة سطر
           </Button>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {lines.map((line, idx) => {
-            const selectedAcc = line.accountId ? accountsMap.get(Number(line.accountId)) : null;
-            const isAR = selectedAcc?.systemRole === "AR" || selectedAcc?.systemRole === "ACCOUNTS_RECEIVABLE";
-            const isAP = selectedAcc?.systemRole === "AP" || selectedAcc?.systemRole === "ACCOUNTS_PAYABLE";
+        </div>
+        <div className="overflow-x-auto">
+          <Table className="w-full text-xs">
+            <TableHeader className="border-b bg-muted/40 text-muted-foreground">
+              <TableRow>
+                <TableHead className="w-10 px-2.5 py-1.5 text-center font-semibold">#</TableHead>
+                <TableHead className="min-w-[240px] px-2.5 py-1.5 text-right font-semibold">
+                  الحساب المالي <span className="text-destructive">*</span>
+                </TableHead>
+                <TableHead className="min-w-[200px] px-2.5 py-1.5 text-right font-semibold">
+                  الطرف المساعد (عميل / مورد)
+                </TableHead>
+                <TableHead className="w-40 px-2.5 py-1.5 text-right font-semibold text-money-positive">
+                  مدين (Debit)
+                </TableHead>
+                <TableHead className="w-40 px-2.5 py-1.5 text-right font-semibold text-primary">
+                  دائن (Credit)
+                </TableHead>
+                <TableHead className="w-12 px-2 py-1.5 text-center font-semibold">حذف</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody className="divide-y">
+              {lines.map((line, idx) => {
+                const selectedAcc = line.accountId ? accountsMap.get(Number(line.accountId)) : null;
+                const isAR = selectedAcc?.systemRole === "AR" || selectedAcc?.systemRole === "ACCOUNTS_RECEIVABLE";
+                const isAP = selectedAcc?.systemRole === "AP" || selectedAcc?.systemRole === "ACCOUNTS_PAYABLE";
 
-            return (
-              <div
-                key={line.id}
-                className="p-3 border rounded-lg bg-card/60 space-y-3 relative group"
-              >
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-12 gap-3 items-center">
-                  {/* رقم السطر واختيار الحساب المؤهل للترحيل اليدوي */}
-                  <div className="md:col-span-5 space-y-1">
-                    <label className="text-xs font-semibold text-muted-foreground">
-                      السطر {idx + 1}: الحساب المالي
-                      <span className="text-destructive">*</span>
-                    </label>
-                    <AppSelect
-                      value={line.accountId}
-                      searchable searchPlaceholder="ابحث برمز الحساب أو اسمه..." onValueChange={(val) => updateLine(idx, { accountId: val })}
-                      className="w-full text-right"
-                    >
-                      <option value="">-- اختر الحساب من الدليل --</option>
-                      {postableAccounts.map((acc) => (
-                        <option key={acc.id} value={String(acc.id)}>
-                          {acc.code} - {acc.name} ({acc.type})
-                        </option>
-                      ))}
-                    </AppSelect>
-                  </div>
-
-                  {/* مبلغ المدين */}
-                  <div className="md:col-span-3 space-y-1">
-                    <label className="text-xs font-semibold text-money-positive">
-                      مدين (Debit)
-                    </label>
-                    <MoneyInput
-                      value={line.debit}
-                      onChange={(val) => {
-                        // تفريغ الدائن إن كان هناك مدين لسهولة وسرعة الإدخال
-                        const patch: Partial<JournalLineForm> = { debit: val };
-                        if (val && val !== "0") patch.credit = "";
-                        updateLine(idx, patch);
-                      }}
-                      placeholder="0.00"
-                      className="text-start font-mono"
-                    />
-                  </div>
-
-                  {/* مبلغ الدائن */}
-                  <div className="md:col-span-3 space-y-1">
-                    <label className="text-xs font-semibold text-blue-600 dark:text-blue-400">
-                      دائن (Credit)
-                    </label>
-                    <MoneyInput
-                      value={line.credit}
-                      onChange={(val) => {
-                        // تفريغ المدين إن كان هناك دائن لسهولة وسرعة الإدخال
-                        const patch: Partial<JournalLineForm> = { credit: val };
-                        if (val && val !== "0") patch.debit = "";
-                        updateLine(idx, patch);
-                      }}
-                      placeholder="0.00"
-                      className="text-start font-mono"
-                    />
-                  </div>
-
-                  {/* حذف السطر */}
-                  <div className="md:col-span-1 flex items-end justify-center pt-2">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => removeLine(idx)}
-                      disabled={lines.length <= 2}
-                      className="text-destructive hover:bg-destructive/10"
-                      title="حذف هذا السطر"
-                    >
-                      <Trash2 className="size-4" />
-                    </Button>
-                  </div>
-                </div>
-
-                {/* ربط الطرف المساعد الإلزامي لحسابات ذمم العملاء والموردين */}
-                {(isAR || isAP) && (
-                  <div className="pt-2 border-t grid grid-cols-1 sm:grid-cols-2 gap-3 bg-muted/20 p-2 rounded">
-                    {isAR && (
-                      <div className="space-y-1">
-                        <label className="text-xs font-medium text-destructive flex items-center gap-1">
-                          العميل المرتبط بالذمة (إلزامي لدفتر أستاذ العملاء المساعد)
-                          <span>*</span>
-                        </label>
+                return (
+                  <TableRow key={line.id} className="hover:bg-muted/20">
+                    <TableCell className="px-2.5 py-1.5 text-center font-mono text-muted-foreground">
+                      {idx + 1}
+                    </TableCell>
+                    <TableCell className="px-2.5 py-1.5">
+                      <AppSelect
+                        value={line.accountId}
+                        searchable
+                        searchPlaceholder="ابحث برمز الحساب أو اسمه..."
+                        onValueChange={(val) => updateLine(idx, { accountId: val })}
+                        className="h-8 w-full text-right text-xs"
+                      >
+                        <option value="">-- اختر الحساب من الدليل --</option>
+                        {postableAccounts.map((acc) => (
+                          <option key={acc.id} value={String(acc.id)}>
+                            {acc.code} - {acc.name} ({acc.type})
+                          </option>
+                        ))}
+                      </AppSelect>
+                    </TableCell>
+                    <TableCell className="px-2.5 py-1.5">
+                      {isAR ? (
                         <AppSelect
                           value={line.customerId}
-                          searchable searchPlaceholder="ابحث عن العميل بالاسم أو الهاتف..." onValueChange={(val) => updateLine(idx, { customerId: val })}
-                          className="w-full text-right text-xs"
+                          searchable
+                          searchPlaceholder="ابحث عن العميل..."
+                          onValueChange={(val) => updateLine(idx, { customerId: val })}
+                          className="h-8 w-full text-right text-xs border-destructive/40"
                         >
-                          <option value="">-- اختر العميل لإحكام المطابقة --</option>
+                          <option value="">-- اختر العميل (إلزامي) * --</option>
                           {customers.map((c) => (
                             <option key={c.id} value={String(c.id)}>
                               {c.name} {c.phone ? `(${c.phone})` : ""}
                             </option>
                           ))}
                         </AppSelect>
-                      </div>
-                    )}
-                    {isAP && (
-                      <div className="space-y-1">
-                        <label className="text-xs font-medium text-destructive flex items-center gap-1">
-                          المورد المرتبط بالذمة (إلزامي لدفتر أستاذ الموردين المساعد)
-                          <span>*</span>
-                        </label>
+                      ) : isAP ? (
                         <AppSelect
                           value={line.supplierId}
-                          searchable searchPlaceholder="ابحث عن المورد..." onValueChange={(val) => updateLine(idx, { supplierId: val })}
-                          className="w-full text-right text-xs"
+                          searchable
+                          searchPlaceholder="ابحث عن المورد..."
+                          onValueChange={(val) => updateLine(idx, { supplierId: val })}
+                          className="h-8 w-full text-right text-xs border-destructive/40"
                         >
-                          <option value="">-- اختر المورد لإحكام المطابقة --</option>
+                          <option value="">-- اختر المورد (إلزامي) * --</option>
                           {suppliers.map((s) => (
                             <option key={s.id} value={String(s.id)}>
                               {s.name}
                             </option>
                           ))}
                         </AppSelect>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </CardContent>
-      </Card>
+                      ) : (
+                        <span className="text-[11px] text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="px-2.5 py-1.5">
+                      <MoneyInput
+                        value={line.debit}
+                        onChange={(val) => {
+                          const patch: Partial<JournalLineForm> = { debit: val };
+                          if (val && val !== "0") patch.credit = "";
+                          updateLine(idx, patch);
+                        }}
+                        placeholder="0.00"
+                        className="h-8 text-start font-mono text-xs"
+                      />
+                    </TableCell>
+                    <TableCell className="px-2.5 py-1.5">
+                      <MoneyInput
+                        value={line.credit}
+                        onChange={(val) => {
+                          const patch: Partial<JournalLineForm> = { credit: val };
+                          if (val && val !== "0") patch.debit = "";
+                          updateLine(idx, patch);
+                        }}
+                        placeholder="0.00"
+                        className="h-8 text-start font-mono text-xs"
+                      />
+                    </TableCell>
+                    <TableCell className="px-2 py-1.5 text-center">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => removeLine(idx)}
+                        disabled={lines.length <= 2}
+                        className="size-7 text-destructive hover:bg-destructive/10"
+                        title="حذف هذا السطر"
+                      >
+                        <Trash2 className="size-3.5" />
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </div>
 
-      {/* بطاقة الرقابة والتحقق من توازن القيد (Balance Monitor) */}
-      <Card className="border-2 border-primary/20">
-        <CardContent className="p-4 md:p-6">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-center">
-            {/* إجمالي المدين */}
-            <div className="p-3 bg-muted/40 border rounded-lg text-center space-y-1">
-              <span className="text-xs font-semibold text-muted-foreground">
-                إجمالي المدين (Total Debit)
-              </span>
-              <div className="text-lg md:text-xl font-bold font-mono text-money-positive">
+        {/* شريط التوازن والإجراءات المدمج */}
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t bg-muted/30 px-3.5 py-2.5">
+          <div className="flex flex-wrap items-center gap-4 text-xs">
+            <div>
+              <span className="text-muted-foreground">إجمالي المدين: </span>
+              <span className="font-bold font-mono text-money-positive" dir="ltr">
                 {fmtAr(totals.debit.toFixed(2))} د.ع
-              </div>
-            </div>
-
-            {/* إجمالي الدائن */}
-            <div className="p-3 bg-muted/40 border rounded-lg text-center space-y-1">
-              <span className="text-xs font-semibold text-muted-foreground">
-                إجمالي الدائن (Total Credit)
               </span>
-              <div className="text-lg md:text-xl font-bold font-mono text-primary">
-                {fmtAr(totals.credit.toFixed(2))} د.ع
-              </div>
             </div>
-
-            {/* حالة التوازن والفرق */}
+            <div>
+              <span className="text-muted-foreground">إجمالي الدائن: </span>
+              <span className="font-bold font-mono text-primary" dir="ltr">
+                {fmtAr(totals.credit.toFixed(2))} د.ع
+              </span>
+            </div>
             <div
-              className={`p-3 border rounded-lg text-center space-y-1 ${
+              className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 font-semibold ${
                 totals.isBalanced
-                  ? "bg-primary/10 border-primary/40 text-primary"
-                  : "bg-destructive/10 border-destructive/40 text-destructive"
+                  ? "bg-primary/10 text-primary"
+                  : "bg-destructive/10 text-destructive"
               }`}
             >
-              <div className="flex items-center justify-center gap-1.5 text-xs font-semibold">
-                {totals.isBalanced ? (
-                  <>
-                    <CheckCircle2 className="size-4 text-primary" />
-                    <span>القيد متوازن تماماً</span>
-                  </>
-                ) : (
-                  <>
-                    <AlertCircle className="size-4" />
-                    <span>فارق عدم التوازن</span>
-                  </>
-                )}
-              </div>
-              <div className="text-lg md:text-xl font-bold font-mono">
-                {totals.isBalanced ? "0.00 د.ع" : `${fmtAr(totals.difference.toFixed(2))} د.ع`}
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-4 pt-4 border-t flex flex-col sm:flex-row items-center justify-between gap-3">
-            <div className="text-xs text-muted-foreground flex items-center gap-1.5">
               {totals.isBalanced ? (
-                <span className="text-money-positive font-medium flex items-center gap-1">
+                <>
                   <CheckCircle2 className="size-3.5" />
-                  الأطراف متكافئة محاسبياً والقيد جاهز للترحيل الدائم.
-                </span>
+                  <span>القيد متوازن (0.00 د.ع)</span>
+                </>
               ) : (
-                <span className="text-destructive font-medium flex items-center gap-1">
+                <>
                   <AlertCircle className="size-3.5" />
-                  لا يمكن ترحيل قيد غير متوازن وفق الأصول المحاسبية الصارمة.
-                </span>
+                  <span>فارق عدم التوازن: {fmtAr(totals.difference.toFixed(2))} د.ع</span>
+                </>
               )}
             </div>
-
-            <div className="flex items-center gap-3">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  setNotes("");
-                  setLines([emptyLine(), emptyLine()]);
-                }}
-              >
-                تفريغ الحقول
-              </Button>
-              <Button
-                type="button"
-                disabled={!canSubmit || createMutation.isPending}
-                onClick={handleSubmit}
-                className="min-w-36"
-              >
-                {createMutation.isPending ? ACTION_LABELS.saving : "ترحيل وحفظ القيد"}
-              </Button>
-            </div>
           </div>
-        </CardContent>
+
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setNotes("");
+                setLines([emptyLine(), emptyLine()]);
+              }}
+            >
+              تفريغ الحقول
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={!canSubmit || createMutation.isPending}
+              onClick={handleSubmit}
+            >
+              {createMutation.isPending ? ACTION_LABELS.saving : "ترحيل وحفظ القيد"}
+            </Button>
+          </div>
+        </div>
       </Card>
     </div>
   );

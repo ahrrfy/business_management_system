@@ -1,3 +1,4 @@
+import { effectiveDeliveryLedgerEntrySql } from "./delivery/legacyLedger";
 import { TRPCError } from "@trpc/server";
 import {
   canonicalOperationAllowed,
@@ -262,7 +263,7 @@ export async function remainingUnremittedDeliveryCustody(
           ELSE 0 END), 0)`,
       })
       .from(deliveryLedgerEntries)
-      .where(eq(deliveryLedgerEntries.consignmentId, consignmentId))
+      .where(and(eq(deliveryLedgerEntries.consignmentId, consignmentId), effectiveDeliveryLedgerEntrySql()))
   )[0];
   const total = round2(Decimal.max(0, money(row?.amount ?? "0")));
   return {
@@ -1296,6 +1297,12 @@ export async function returnSaleInTx(
         refundMethod,
         returnedTotalForRefund,
       );
+      if (inv.paymentMethod === "MIXED" && refundMethod !== "CASH") {
+        refundCap = Decimal.min(
+          refundCap,
+          caps.netByMethod.get(refundMethod) ?? money(0),
+        );
+      }
     }
     // ⭐ الزبون العابر: الرد يساوي فقط ما صار زائداً من المال المقبوض بعد المرتجع.
     // فاتورة COD غير المدفوعة = صفر، والإلغاء الكامل بعد عربون = العربون فقط.
@@ -3138,7 +3145,11 @@ export async function returnSaleDirect(
           refundAmountIqd: directRefund?.amount ?? "0.00",
           sourcePaidAmountIqd: sourcePaidAmount.toFixed(2),
           maxRefundAmountIqd: resolvedCaps.maxRefundAmountIqd,
-          refundMethod: directRefund?.method ?? invRow.paymentMethod ?? "CASH",
+          refundMethod:
+            directRefund?.method ??
+            (invRow.paymentMethod && invRow.paymentMethod !== "MIXED"
+              ? invRow.paymentMethod
+              : (originalPaymentMethods[0] ?? "CASH")),
           originalPaymentMethods,
           originalPaymentAmounts,
           drawerHasFunds,

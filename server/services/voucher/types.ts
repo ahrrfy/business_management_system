@@ -23,6 +23,9 @@ export interface VoucherInput {
   internalNote?: string | null;
   /** attachment-upload (٥/٧): ربط سند العميل بفاتورة بيع مُحدَّدة (تظهر في سجلّ دفعات الفاتورة). partyType=CUSTOMER فقط. */
   invoiceId?: number | null;
+  /** Frozen supplier invoice allocations; omission proposes oldest eligible invoices first. */
+  supplierAllocations?: import("@shared/supplierVoucherSettlement").SupplierVoucherAllocation[];
+  supplierCashSource?: { mode: "DRAWER" | "TREASURY"; shiftId?: number | null };
   /** Idempotency: نفس المفتاح ⇒ سند واحد (لا صرف/قبض نقدي مزدوج عند النقر المزدوج/إعادة الشبكة). */
   clientRequestId: string;
 }

@@ -33,7 +33,7 @@ export default function MyStocktakes() {
   const tasks = mine.data ?? [];
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6 p-1">
+    <div className="mx-auto max-w-6xl space-y-2.5 p-1">
       {/* العنوان والوصف انتقلا إلى الرأس الموحّد؛ يبقى الشريط أدناه لِما لا يحمله الرأس:
           قناة العمل (حاسوب/هاتف) وعدّاد المهام المفتوحة — بنصّيهما حرفياً. */}
       <PageHeader

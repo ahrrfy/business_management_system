@@ -8,6 +8,8 @@ import { cancelSale } from "../sale/cancel";
 import { recordStaffDeliveryConfirmation } from "../delivery/companyStatement";
 import { getDeliveryFinancialSummary } from "../delivery/lifecycle";
 import { recordDeliveryRemittance } from "../delivery/remittance";
+import { dispatchInvoiceToDelivery } from "../delivery/dispatchInvoice";
+import { createVoucher } from "../voucherService";
 import { openShift } from "../shiftService";
 import { money } from "../money";
 import { withTx } from "../tx";
@@ -788,6 +790,48 @@ describe("atomic invoice amendment with courier custody", () => {
     );
     expect((await party()).currentBalance).toBe("0.00");
     expect((await customer()).currentBalance).toBe("1000.00");
+  });
+
+  it("corrects again after refunding a FIFO deposit plus remitted COD without counting the refund twice", async () => {
+    await db().update(s.customers).set({ creditLimit: "20000" }).where(eq(s.customers.id, 1));
+    const shift = (await db().select().from(s.shifts))[0];
+    const other = await createSale({ branchId: 1, shiftId: Number(shift.id), sourceType: "POS", customerId: 1, lines: [line("1")], clientRequestId: "fifo-cod-other" }, actor);
+    const original = await createSale({ branchId: 1, shiftId: Number(shift.id), sourceType: "POS", customerId: 1, lines: [line("13")], clientRequestId: "fifo-cod-original" }, actor);
+    const received = await createVoucher({ voucherType: "RECEIPT", branchId: 1, amount: "5000", paymentMethod: "CASH", partyType: "CUSTOMER", partyId: 1, invoiceId: null, description: "عربون قبل إسناد التوصيل", clientRequestId: "fifo-cod-deposit" }, actor);
+    const sourceReceipt = (await db().select().from(s.receipts).where(eq(s.receipts.id, received.receiptId)))[0];
+    const header = (await db().select().from(s.customerReceiptSettlements).where(eq(s.customerReceiptSettlements.receiptId, received.receiptId)))[0];
+    const allocationsBefore = await db().select().from(s.customerReceiptAllocations).where(eq(s.customerReceiptAllocations.settlementId, header.id)).orderBy(s.customerReceiptAllocations.id);
+    const otherBefore = await invoice(other.invoiceId);
+    expect(allocationsBefore.map(row => [row.invoiceId, row.amount])).toEqual([[other.invoiceId, "1000.00"], [original.invoiceId, "4000.00"]]);
+
+    const dispatched = await dispatchInvoiceToDelivery({ invoiceId: original.invoiceId, partyId: 1, deliveryFee: "0", feeCollection: "COURIER", recipientPhone: "07701234567", externalTrackingRef: "fifo-cod-track", clientRequestId: "fifo-cod-dispatch" }, actor);
+    expect(dispatched.codAmount).toBe("9000.00");
+    await recordStaffDeliveryConfirmation({ consignmentId: dispatched.consignmentId, collectedAmount: "9000", evidence: "تحصيل الشركة بعد العربون", clientRequestId: "fifo-cod-delivered" }, actor);
+    await remit(dispatched.consignmentId, "9000");
+    const remittances = await db().select().from(s.deliveryRemittanceLines);
+
+    const first = await correctSale({ originalInvoiceId: original.invoiceId, lines: [line("11")], overpayHandling: "CASH_REFUND", clientRequestId: "fifo-cod-first" }, actor);
+    expect(first.overpay).toBe("2000.00");
+    const firstCaps = await loadRefundCaps(db(), first.correctedInvoiceId);
+    expect([firstCaps.grossIn.toFixed(2), firstCaps.grossOut.toFixed(2), firstCaps.pool.toFixed(2)]).toEqual(["13000.00", "2000.00", "11000.00"]);
+    const [refund] = await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"));
+    expect(refund.amount).toBe("2000.00");
+
+    const second = await correct(first.correctedInvoiceId, "11", "fifo-cod-second");
+    expect(await invoice(second.correctedInvoiceId)).toMatchObject({ total: "11000.00", paidAmount: "11000.00", status: "PAID" });
+    const secondCaps = await loadRefundCaps(db(), second.correctedInvoiceId);
+    expect([secondCaps.grossIn.toFixed(2), secondCaps.grossOut.toFixed(2), secondCaps.pool.toFixed(2)]).toEqual(["13000.00", "2000.00", "11000.00"]);
+    expect((await db().select().from(s.receipts).where(eq(s.receipts.id, sourceReceipt.id)))[0]).toEqual(sourceReceipt);
+    expect(sourceReceipt.invoiceId).toBeNull();
+    expect(await invoice(other.invoiceId)).toEqual(otherBefore);
+    const allocationsAfter = await db().select().from(s.customerReceiptAllocations).where(eq(s.customerReceiptAllocations.settlementId, header.id));
+    expect(allocationsAfter.find(row => row.invoiceId === other.invoiceId)).toEqual(allocationsBefore.find(row => row.invoiceId === other.invoiceId));
+    expect(allocationsAfter.find(row => row.invoiceId === second.correctedInvoiceId)).toMatchObject({ originalInvoiceId: original.invoiceId, amount: "4000.00" });
+    const refunds = await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"));
+    expect(refunds).toEqual([{ ...refund, invoiceId: second.correctedInvoiceId }]);
+    expect(await db().select().from(s.deliveryRemittanceLines)).toEqual(remittances);
+    expect((await party()).currentBalance).toBe("0.00");
+    expect((await customer()).currentBalance).toBe("0.00");
   });
 
   describe("refund source proof", () => {

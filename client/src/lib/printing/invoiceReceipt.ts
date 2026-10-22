@@ -51,6 +51,16 @@ export interface InvoiceReceiptSource {
     isGift?: boolean | null;
   }[];
   bounceBackCoupon?: ReceiptBrowserData["bounceBackCoupon"];
+  /** تفصيل دفعات الفاتورة جاهز للعرض (اختياري) */
+  paymentLegs?: ReceiptBrowserData["paymentLegs"];
+  /** سجل إيصالات الفاتورة من `sales.get` لبناء تفصيل الدفعات تلقائياً عند الطباعة */
+  payments?: Array<{
+    direction?: string | null;
+    status?: string | null;
+    amount: string | number;
+    paymentMethod?: string | null;
+    referenceNumber?: string | null;
+  }> | null;
 }
 
 /**
@@ -66,6 +76,20 @@ export function invoiceToReceipt(d: InvoiceReceiptSource): ReceiptBrowserData {
     : (isCod && credit.gt(0))
       ? "دفع عند الاستلام (COD)"
       : null;
+
+  const derivedLegs = d.paymentLegs && d.paymentLegs.length > 0
+    ? d.paymentLegs
+    : (() => {
+        const inPayments = (d.payments ?? []).filter(
+          (p) => (p.direction ?? "IN") === "IN" && (!p.status || p.status === "COMPLETED") && D(p.amount ?? 0).gt(0),
+        );
+        if (inPayments.length <= 1 && d.paymentMethod !== "MIXED") return null;
+        return inPayments.map((p) => ({
+          method: paymentMethodLabel(p.paymentMethod ?? null),
+          amount: p.amount,
+          reference: p.referenceNumber ?? null,
+        }));
+      })();
 
   return {
     receiptNumber: d.invoiceNumber,
@@ -104,6 +128,7 @@ export function invoiceToReceipt(d: InvoiceReceiptSource): ReceiptBrowserData {
     credit: credit.gt(0) ? credit.toString() : null,
     paymentMode: d.paymentMode ?? null,
     paymentMethod: paymentMethodDisplay,
+    ...(derivedLegs && derivedLegs.length > 1 ? { paymentLegs: derivedLegs } : {}),
     revision: d.correctionAudit ? {
       originalReceiptNumber: d.correctionAudit.originalInvoiceNumber,
       revisedAt: d.correctionAudit.requestedAt ? fmtDateTime(d.correctionAudit.requestedAt) : "غير موثّق",

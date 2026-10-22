@@ -17,13 +17,14 @@ import { appendDeliveryLedgerEntry } from "./lifecycle";
 import { deliveryCommissionSettlementIntent, deliveryFeeHeldPayoutIntent, deliveryFeeSettlementIntent } from "./posting";
 import { previewCommission } from "./commissionRules";
 import type { DeliveryTxActor } from "./types";
+import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
 
 /** المستحقّ الدفتري لأجرة إرسالية = Σ(FEE_EARNED − FEE_REFUNDED) − Σ(FEE_PAID + FEE_OFFSET). */
 async function ledgerFeeDue(tx: Tx, consignmentId: number): Promise<Decimal> {
   const sums = (await tx.select({
     earned: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} = 'FEE_EARNED' THEN ${deliveryLedgerEntries.amount} WHEN ${deliveryLedgerEntries.entryType} = 'FEE_REFUNDED' THEN -${deliveryLedgerEntries.amount} ELSE 0 END),0)`,
     paid: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} IN ('FEE_PAID','FEE_OFFSET') THEN ${deliveryLedgerEntries.amount} ELSE 0 END),0)`,
-  }).from(deliveryLedgerEntries).where(eq(deliveryLedgerEntries.consignmentId, consignmentId)))[0];
+  }).from(deliveryLedgerEntries).where(and(eq(deliveryLedgerEntries.consignmentId, consignmentId), effectiveDeliveryLedgerEntrySql())))[0];
   return round2(money(sums?.earned ?? "0").minus(money(sums?.paid ?? "0")));
 }
 

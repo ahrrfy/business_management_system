@@ -110,8 +110,8 @@ export function GovernanceApprovalQueue({
   return (
     <>
       <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="flex flex-wrap items-center justify-between gap-2 text-base">
+        <CardHeader className="pb-2">
+          <CardTitle className="flex flex-wrap items-center justify-between gap-2 text-sm font-bold">
             <span className="inline-flex items-center gap-2">
               <FileCheck2 aria-hidden className="size-4" />
               {title}
@@ -128,7 +128,7 @@ export function GovernanceApprovalQueue({
             </Button>
           </CardTitle>
         </CardHeader>
-        <CardContent className="space-y-3">
+        <CardContent className="space-y-2">
           <GovernanceRequestNotice />
           {loading ? <LoadingState /> : null}
           {error ? (
@@ -140,7 +140,7 @@ export function GovernanceApprovalQueue({
           {!loading && !error && rows.length === 0 ? (
             <div
               role="status"
-              className="rounded-md border bg-muted/20 p-6 text-center text-sm text-muted-foreground"
+              className="rounded-md border bg-muted/20 p-4 text-center text-sm text-muted-foreground"
             >
               لا توجد طلبات معلّقة في نطاقك.
             </div>
@@ -154,20 +154,20 @@ export function GovernanceApprovalQueue({
                 return (
                   <section
                     key={row.id}
-                    className="space-y-3 rounded-md border bg-background p-4"
+                    className="space-y-2 rounded-md border bg-background p-3"
                   >
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="min-w-0 space-y-2">
+                    <div className="flex flex-wrap items-start justify-between gap-2.5">
+                      <div className="min-w-0 space-y-1.5">
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-bold">{row.title}</span>
+                          <span className="font-bold text-sm">{row.title}</span>
                           <span className="rounded bg-muted px-2 py-0.5 text-xs">
                             طلب #{row.id}
                           </span>
-                          <bdi dir="ltr" className="font-mono text-sm">
+                          <bdi dir="ltr" className="font-mono text-xs">
                             {row.reference}
                           </bdi>
                         </div>
-                        <dl className="grid gap-2 text-sm sm:grid-cols-2 xl:grid-cols-4">
+                        <dl className="grid gap-1.5 text-xs sm:grid-cols-2 xl:grid-cols-4">
                           <div>
                             <dt className="text-xs text-muted-foreground">
                               سبب الطلب
@@ -216,7 +216,7 @@ export function GovernanceApprovalQueue({
                           ))}
                         </dl>
                       </div>
-                      <div className="flex gap-2">
+                      <div className="flex gap-1.5">
                         <Button
                           type="button"
                           size="sm"
@@ -247,7 +247,7 @@ export function GovernanceApprovalQueue({
                     {!canReview ? (
                       <div
                         role="note"
-                        className="flex items-start gap-2 rounded-md border bg-muted/30 p-3 text-sm"
+                        className="flex items-start gap-2 rounded-md border bg-muted/30 p-2 text-xs"
                       >
                         <AlertTriangle
                           aria-hidden

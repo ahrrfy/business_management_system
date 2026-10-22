@@ -160,7 +160,15 @@ export function salesControlInlineBlock(
     return `تعديل الفاتورة يلزمه عرض «كان هكذا / سيصبح هكذا» كاملاً وإدخال تسوية الفرق عند الاعتماد — ${SALES_CONTROL_FULL_SCREEN_HINT}`;
   }
   if (requestType === "SALES_CANCEL") {
-    if (p.refundPaymentMethod === "CARD" && missing(p.reference)) {
+    const refunds = Array.isArray(p.refunds) ? p.refunds : [];
+    const hasCardLegMissingRef = refunds.some(
+      (r) => asRecord(r).method === "CARD" && missing(asRecord(r).reference),
+    );
+    const involvesCard =
+      p.refundPaymentMethod === "CARD" ||
+      p.refundPaymentMethod === "MIXED" ||
+      refunds.some((r) => asRecord(r).method === "CARD");
+    if (involvesCard && missing(p.reference) && (refunds.length === 0 || hasCardLegMissingRef)) {
       return `الالغاء ببطاقة يلزمه مرجع عملية جهاز الدفع لحظة الاعتماد — ${SALES_CONTROL_FULL_SCREEN_HINT}`;
     }
     return null;

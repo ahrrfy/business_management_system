@@ -49,10 +49,11 @@ describe("voucher immediate double-entry contract", () => {
       "utf8",
     );
     expect(createSource).toContain("withMysqlDeadlockRetry(() =>");
-    // ن-٢-هـ (٢٩/٨): بعد إضافة enqueuePostCommit للإشعارات المركزية، تحوّلت الـcallback
-    // من arrow-single-expression إلى block. يبقى العقد المطلوب: retry يغلّف withTx،
-    // وwithTx يستقبل tx يمرَّر إلى createVoucherTx(tx, input, actor) داخلَه.
-    expect(createSource).toContain("withTx(async (tx) =>");
+    // Retry must wrap the complete transaction, including the BOOK gate restart.
+    // The wrapper selects withTx or withGovernanceTx before executing this callback.
+    expect(createSource).toMatch(
+      /withMysqlDeadlockRetry\(\(\) =>\s+withSupplierBookVoucherTx\([\s\S]*?async \(tx\) => \{\s+const result = await createVoucherTx\(tx, input, actor\)/,
+    );
     expect(createSource).toContain("createVoucherTx(tx, input, actor)");
   });
 

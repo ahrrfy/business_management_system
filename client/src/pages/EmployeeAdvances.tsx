@@ -14,7 +14,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { MoneyInput } from "@/components/form/MoneyInput";
-import { PageHeader } from "@/components/PageHeader";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { FilterField, ListToolbar } from "@/components/list";
@@ -259,18 +258,6 @@ export default function EmployeeAdvances() {
 
   return (
     <div className="space-y-4">
-      <PageHeader
-        title="سلف الموظفين"
-        description="تُمنح السلفة بسند صرف حقيقي من الخزينة وتُخصم تلقائياً من مسيّرات الرواتب حتى التسوية."
-        actions={
-          canGrant ? (
-            <Button onClick={() => setGrantOpen(true)}>
-              <Plus className="size-4" aria-hidden /> منح سلفة
-            </Button>
-          ) : undefined
-        }
-      />
-
       <Card>
         <CardHeader>
           <ListToolbar
@@ -280,6 +267,8 @@ export default function EmployeeAdvances() {
                 سلف الموظفين
               </span>
             }
+            pageTitle
+            add={canGrant ? { onClick: () => setGrantOpen(true), label: "منح سلفة" } : undefined}
             count={filtered.length}
             loading={listQ.isLoading}
             // ٢٤/٨ (Codex P2 على PR #760): لا `autoFocus` — الصفحةُ تبويبٌ داخل HrHub.

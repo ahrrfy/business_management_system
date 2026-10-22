@@ -69,7 +69,7 @@ async function seed() {
   ]);
   await d.insert(s.products).values([{ id: 1, name: "ورق A4" }, { id: 2, name: "حبر أسود" }]);
   await d.insert(s.productVariants).values([
-    { id: 1, productId: 1, sku: "PAP-A4", costPrice: "200.00" },
+    { id: 1, productId: 1, sku: "PAP-A4", color: "أبيض", colorHex: "#FFFFFF", size: "80g", variantKind: "VARIANT", costPrice: "200.00" },
     { id: 2, productId: 2, sku: "INK-BLK", costPrice: "9000.00" },
   ]);
   await d.insert(s.productUnits).values([
@@ -207,6 +207,10 @@ describe("الهدايا الصادرة — الاسطر جزء من القرا�
     expect(String(line!.qty)).toMatch(/^10/);
     expect(line!.unit).toContain("رزمة");
     expect(line!.unitPrice).toBe("200.00");
+    expect(line!.lineTotal).toBe("2000.00");
+    expect(line!.variant).toBe("أبيض / 80g");
+    expect(line!.colorHex).toBe("#FFFFFF");
+    expect(line!.sku).toBe("PAP-A4");
     expect(row!.summaryItems.some((i) => i.label === "تكلفة الاصناف المهداة" && i.unitPrice === "2000.00")).toBe(true);
   });
 
@@ -233,7 +237,7 @@ describe("ضبط البيع — المبلغ المتاثر وحاجز الاع�
     // 1 من 2 × 2000 = 1000 — لا 2000 (إجماليّ الفاتورة).
     expect(row!.amount).toBe("1000.00");
     expect(row!.approveBlockedReason).toBeNull();
-    expect(row!.summaryItems.some((i) => i.label.includes("ورق A4") && i.unitPrice === "1000.00")).toBe(true);
+    expect(row!.summaryItems.some((i) => i.label.includes("ورق A4") && i.unitPrice === "1000.00" && i.variant === "أبيض / 80g" && i.colorHex === "#FFFFFF")).toBe(true);
     expect(row!.summaryItems.some((i) => i.label.includes("قيمة البنود المرتجعة") && i.unitPrice === "1000.00")).toBe(true);
     expect(row!.summaryItems.some((i) => i.label.includes("اجمالي الفاتورة") && i.unitPrice === "2000.00")).toBe(true);
 
@@ -391,7 +395,13 @@ describe("decisions.inbox — الصف يعرض ما يقرر عليه", () => {
     expect(row!.href).toBe(`/purchases/${po.purchaseOrderId}`);
     expect(row!.summaryItems).toHaveLength(2);
     const paper = row!.summaryItems.find((i) => i.label.includes("ورق A4"));
-    expect(paper).toMatchObject({ unitPrice: "200.00" });
+    expect(paper).toMatchObject({
+      unitPrice: "200.00",
+      lineTotal: "2000.00",
+      variant: "أبيض / 80g",
+      colorHex: "#FFFFFF",
+      sku: "PAP-A4",
+    });
     expect(String(paper!.qty)).toMatch(/^10/);
     expect(row!.confirmations.map((c) => c.key)).toEqual(["confirmedFullReceipt"]);
     expect(row!.allowedActions).toEqual(["APPROVE", "REJECT"]);
@@ -399,6 +409,45 @@ describe("decisions.inbox — الصف يعرض ما يقرر عليه", () => {
     expect(row!.sla).toMatchObject({ hours: 48, breached: false });
     expect(row!.requestedBy).toBe(CREATOR);
     expect(inbox.kinds).toContain("purchase.order.control");
+  });
+
+  it("طلب شراء مع شحن يعرض تفصيل البضاعة والشحن والوردية باسم المنشئ في operationalContext", async () => {
+    const po = await createPurchaseOrder(
+      {
+        supplierId: 1,
+        branchId: 1,
+        shippingCost: "3000.00",
+        items: [
+          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "200.00" },
+        ],
+      },
+      { userId: CREATOR, branchId: 1, role: "admin" },
+    );
+    const submitted = await submitPurchaseOrderForApproval(
+      {
+        purchaseOrderId: po.purchaseOrderId,
+        expectedVersion: po.version,
+        reason: "طلب اعتماد أمر شراء مع شحن",
+        requestKey: `m7-submit-ship:${randomUUID()}`,
+      },
+      { userId: CREATOR, branchId: 1, role: "admin" },
+    );
+    const owner = await caller(OWNER);
+    const row = (await owner.decisions.inbox()).rows.find(
+      (r) => r.kind === "purchase.order.control" && r.id === submitted.requestId,
+    );
+    expect(row).toBeDefined();
+    expect(row!.summaryItems).toHaveLength(2);
+    expect(row!.operationalContext).toBeDefined();
+    expect(row!.operationalContext!.badgeLabel).toBe("تفصيل الفاتورة والشحن");
+    expect(row!.operationalContext!.fundingSource?.label).toContain("أدمن منشئ");
+    expect(row!.operationalContext!.facts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: "قيمة البضاعة", value: "2000.00 د.ع" }),
+        expect.objectContaining({ label: "أجور الشحن والكمرك", value: "3000.00 د.ع" }),
+        expect.objectContaining({ label: "الإجمالي مع الشحن", value: "5000.00 د.ع" }),
+      ]),
+    );
   });
 
   it("المدير المستقل يراه؛ والطالب لا يرى طلبه؛ والكاشير لا يملك بوابة المشتريات", async () => {

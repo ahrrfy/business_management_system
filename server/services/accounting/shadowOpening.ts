@@ -1,3 +1,4 @@
+import { effectiveDeliveryLedgerEntrySql } from "../delivery/legacyLedger";
 import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { and, eq, sql } from "drizzle-orm";
@@ -654,7 +655,7 @@ export async function readOperationalBalanceSnapshot(
       )
       .leftJoin(invoices, eq(invoices.id, deliveryConsignments.invoiceId))
       .where(
-        sql`${deliveryLedgerEntries.occurredAt} < ${asOfExclusiveUtc}`,
+        and(sql`${deliveryLedgerEntries.occurredAt} < ${asOfExclusiveUtc}`, effectiveDeliveryLedgerEntrySql()),
       )
       .groupBy(deliveryLedgerEntries.branchId),
     db
@@ -684,7 +685,8 @@ export async function readOperationalBalanceSnapshot(
       )
       .where(
         sql`${deliveryConsignments.feeCollection} = 'SHOP'
-              AND ${deliveryLedgerEntries.occurredAt} < ${asOfExclusiveUtc}`,
+              AND ${deliveryLedgerEntries.occurredAt} < ${asOfExclusiveUtc}
+              AND ${effectiveDeliveryLedgerEntrySql()}`,
       )
       .groupBy(deliveryLedgerEntries.branchId),
     db

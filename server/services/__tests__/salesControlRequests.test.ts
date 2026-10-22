@@ -415,6 +415,73 @@ describe("حوكمة عمليات البيع الحرجة", () => {
     expect(stored.status).toBe("PENDING"); // لم يُستهلَك — يمكن اعتماده لاحقاً بمرجعٍ صحيح، لا بالمرجع الخاطئ المخزَّن
   });
 
+  it("طلب إلغاء MIXED (نقد + بطاقة) يبقى PENDING حتى يزوّد المعتمد مرجع الجهاز وتوجيه النقد ويعيد replay كامل المسترد", async () => {
+    const created = await createSale({
+      branchId: 1,
+      shiftId: 1,
+      sourceType: "POS",
+      customerId: 1,
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "5" }],
+      payments: [
+        { amount: "2000.00", method: "CASH" },
+        { amount: "3000.00", method: "CARD", reference: "CARD-IN-MIXED-1" },
+      ],
+    }, CASHIER);
+    const [createdInv] = await db().select().from(s.invoices).where(eq(s.invoices.id, created.invoiceId));
+    expect(createdInv.paymentMethod).toBe("MIXED");
+
+    // حتى لو كان الطالب مالكاً نشطاً، لا يحسم الطلب تلقائياً بلا مرجع جهاز البطاقة
+    await db().update(s.users).set({ isOwner: true }).where(eq(s.users.id, ADMIN.userId));
+    const ownerInput = {
+      requestKey: "cancel-mixed-owner-deferred",
+      invoiceId: created.invoiceId,
+      requestType: "SALES_CANCEL" as const,
+      reason: "إلغاء فاتورة مختلطة بانتظار تمرير استرداد البطاقة",
+      payload: { refundPaymentMethod: "MIXED" as const },
+    };
+    const requested = await requestSalesControl(ownerInput, { ...ADMIN, isOwner: true });
+    expect(requested.status).toBe("PENDING");
+
+    // اعتماد بلا مرجع جهاز يُرفض بلا أثر
+    await expect(
+      approveSalesControlRequest(Number(requested.id), MANAGER, null, { shiftId: 2 }),
+    ).rejects.toThrow(/مرجع/);
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, created.invoiceId)))[0].status).toBe("PAID");
+
+    // اعتماد مع مرجع جهاز البطاقة وتوجيه النقد إلى درج المراجع المفتوح (#2)
+    const approved = await approveSalesControlRequest(
+      Number(requested.id),
+      MANAGER,
+      null,
+      { shiftId: 2, reference: "TERM-MIXED-OUT-1" },
+    );
+    expect("request" in approved && approved.request.status === "APPROVED").toBe(true);
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, created.invoiceId)))[0].status).toBe("CANCELLED");
+
+    const outs = await db()
+      .select()
+      .from(s.receipts)
+      .where(sql`${s.receipts.invoiceId}=${created.invoiceId} AND ${s.receipts.direction}='OUT'`);
+    expect(outs).toHaveLength(2);
+    const cashOut = outs.find((r) => r.paymentMethod === "CASH")!;
+    const cardOut = outs.find((r) => r.paymentMethod === "CARD")!;
+    expect(cashOut.amount).toBe("2000.00");
+    expect(cashOut.shiftId).toBe(2);
+    expect(cardOut.amount).toBe("3000.00");
+    expect(cardOut.referenceNumber).toBe("TERM-MIXED-OUT-1");
+
+    // Replay يجمع كل إيصالات OUT (2000 + 3000 = 5000.00) لا إيصالاً واحداً فقط
+    await expect(replaySalesControlRequest(ownerInput, { ...ADMIN, isOwner: true })).resolves.toMatchObject({
+      status: "APPROVED",
+      replayed: true,
+      cancellation: {
+        invoiceId: created.invoiceId,
+        refundAmount: "5000.00",
+        pendingRefundAmount: "0.00",
+      },
+    });
+  });
+
   it("تغيّر اللقطة يوسم الطلب STALE بلا تنفيذ", async () => {
     const created = await sale();
     const request = await requestSalesControl({

@@ -341,15 +341,16 @@ export default function ProductionNew() {
   }
 
   return (
-    <div className="space-y-4" dir="rtl">
+    <div className="space-y-2.5" dir="rtl">
       <PageHeader
         title="الإنتاج / تحويل المخزون"
         description="يُخصَم الورق المُدخَل ويُنتَج المنتج بكلفته الحقيقية. الورق مصدر حقيقة واحد ⇒ لا سالب."
         backHref="/production"
         actions={
           <Button
+            size="sm"
             variant="outline"
-            className="gap-2"
+            className="gap-1.5"
             onClick={() => setIsKitOpen(true)}
           >
             <Boxes aria-hidden className="size-4" />
@@ -359,16 +360,16 @@ export default function ProductionNew() {
       />
 
       {/* محدّد الوضع */}
-      <div className="inline-flex gap-1 rounded-lg bg-muted p-1">
-        <button onClick={() => setMode("recipe")} className={`px-4 py-1.5 rounded-md text-sm font-semibold ${mode === "recipe" ? "bg-background shadow text-foreground" : "text-muted-foreground"}`}>بوصفة (مُوصى)</button>
-        <button onClick={() => setMode("manual")} className={`px-4 py-1.5 rounded-md text-sm font-semibold ${mode === "manual" ? "bg-background shadow text-foreground" : "text-muted-foreground"}`}>يدوي (حرّ)</button>
+      <div className="inline-flex gap-1 rounded-lg bg-muted p-0.5">
+        <button onClick={() => setMode("recipe")} className={`px-3 py-1 rounded-md text-xs font-semibold ${mode === "recipe" ? "bg-background shadow text-foreground" : "text-muted-foreground"}`}>بوصفة (مُوصى)</button>
+        <button onClick={() => setMode("manual")} className={`px-3 py-1 rounded-md text-xs font-semibold ${mode === "manual" ? "bg-background shadow text-foreground" : "text-muted-foreground"}`}>يدوي (حرّ)</button>
       </div>
 
       <Card>
-        <CardContent className="pt-4">
-          <button type="button" className="text-sm text-[var(--sem-info)]" onClick={() => setShowHelp((s) => !s)}>؟ متى أستخدم هذه الشاشة؟</button>
+        <CardContent className="py-2.5 px-3">
+          <button type="button" className="text-xs text-[var(--sem-info)] font-medium" onClick={() => setShowHelp((s) => !s)}>؟ متى أستخدم هذه الشاشة؟</button>
           {showHelp && (
-            <div className="mt-2 text-xs text-muted-foreground space-y-1 leading-6">
+            <div className="mt-1.5 text-xs text-muted-foreground space-y-1 leading-5">
               <p>• أبيع نفس الورق بوحدة أكبر/أصغر؟ ← <b>ليس إنتاجاً</b>: أضِف وحدة قياس للورق (ورقة/ربطة/كرتون).</p>
               <p>• أحوّل الورق إلى منتج جديد (دفتر/كتاب/كيس)؟ ← <b>هذه الشاشة</b> (بوصفة أو يدوي).</p>
               <p>• أستهلك منتجاً داخلياً (رول حراري/A4/أقلام) أو تلف؟ ← من <b>«المصاريف»</b> (نثرية/تلف).</p>
@@ -378,15 +379,15 @@ export default function ProductionNew() {
       </Card>
 
       {mode === "recipe" ? (
-        <div className="grid grid-cols-1 lg:grid-cols-[1fr_330px] gap-4 items-start">
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-3 items-start">
           {/* العمود الرئيسي */}
-          <div className="space-y-4 min-w-0">
+          <div className="space-y-3 min-w-0">
             <Card>
-              <CardHeader><CardTitle className="text-base">الوصفة والفرع</CardTitle></CardHeader>
-              <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <CardHeader><CardTitle className="text-sm font-bold">الوصفة والفرع</CardTitle></CardHeader>
+              <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
                 <div className="space-y-1">
                   <Label>الوصفة *</Label>
-                  <AppSelect className="h-9" searchable searchPlaceholder="ابحث عن وصفة..." value={recipeId === "" ? "" : String(recipeId)} onValueChange={(next) => {
+                  <AppSelect className="h-8" searchable searchPlaceholder="ابحث عن وصفة..." value={recipeId === "" ? "" : String(recipeId)} onValueChange={(next) => {
                     setRecipeId(next ? Number(next) : "");
                     setRecipeSelectionError("");
                   }}>
@@ -401,33 +402,33 @@ export default function ProductionNew() {
             </Card>
 
             {needsBranchChoice ? (
-              <Card><CardContent className="p-6 text-center text-sm text-destructive">اختر الفرع أعلاه أولاً لبدء التشغيل.</CardContent></Card>
+              <Card><CardContent className="p-4 text-center text-sm text-destructive">اختر الفرع أعلاه أولاً لبدء التشغيل.</CardContent></Card>
             ) : selectedRecipe ? (
               <>
                 <Card>
                   <CardHeader>
-                    <CardTitle className="text-base">الإنتاجية</CardTitle>
+                    <CardTitle className="text-sm font-bold">الإنتاجية</CardTitle>
                     <p className="text-xs text-muted-foreground">رقم واحد يقود الاستهلاك = حجم الدفعة. الوحدة التالفة استهلكت ورقها — نتتبّعها بدل أن تختفي. السليم = الدفعة − التالف.</p>
                   </CardHeader>
-                  <CardContent className="space-y-4">
+                  <CardContent className="space-y-3">
                     <div className="grid grid-cols-[1fr_auto_1fr_auto_1fr] gap-2 items-end">
                       <div className="space-y-1">
                         <Label className="flex items-center gap-1">الدفعة <span title="العدد المطلوب تشغيله — هو وحده يقود استهلاك المواد." className="inline-grid place-items-center w-4 h-4 rounded-full bg-muted text-[10px] text-muted-foreground cursor-help">؟</span></Label>
-                        <Input dir="ltr" value={batch} onChange={(e) => setBatch(e.target.value)} />
+                        <Input dir="ltr" className="h-8" value={batch} onChange={(e) => setBatch(e.target.value)} />
                       </div>
-                      <div className="text-xl text-muted-foreground pb-2">−</div>
+                      <div className="text-lg text-muted-foreground pb-1.5">−</div>
                       <div className="space-y-1">
                         <Label>التالف (هدر)</Label>
-                        <Input dir="ltr" value={scrap} onChange={(e) => setScrap(e.target.value)} className="border-[var(--stock-low)]" />
+                        <Input dir="ltr" className="h-8 border-[var(--stock-low)]" value={scrap} onChange={(e) => setScrap(e.target.value)} />
                       </div>
-                      <div className="text-xl text-muted-foreground pb-2">=</div>
+                      <div className="text-lg text-muted-foreground pb-1.5">=</div>
                       <div className="space-y-1">
                         <Label>السليم الناتج</Label>
-                        <div className="h-9 flex items-center gap-1 font-bold badge-status-active rounded-md px-3" dir="ltr">{formatQuantity(pv?.good ?? Math.max(0, Math.trunc(Number(batch) || 0) - Math.trunc(Number(scrap) || 0)))} <span className="text-xs text-muted-foreground font-normal">{pv?.outputUnitName}</span></div>
+                        <div className="h-8 flex items-center gap-1 font-bold badge-status-active rounded-md px-3 text-sm" dir="ltr">{formatQuantity(pv?.good ?? Math.max(0, Math.trunc(Number(batch) || 0) - Math.trunc(Number(scrap) || 0)))} <span className="text-xs text-muted-foreground font-normal">{pv?.outputUnitName}</span></div>
                       </div>
                     </div>
                     {cap && (
-                      <div className="rounded-md border bg-muted/30 p-2.5 text-sm flex flex-wrap items-center gap-x-4 gap-y-2">
+                      <div className="rounded-md border bg-muted/30 p-2 text-xs flex flex-wrap items-center gap-x-3 gap-y-1.5">
                         <span className="flex items-center gap-1.5">
                           الأقصى الممكن إنتاجه الآن:
                           <b className="tabular-nums" dir="ltr">{formatQuantity(cap.maxBatch)}</b>
@@ -452,7 +453,7 @@ export default function ProductionNew() {
                       </div>
                     )}
                     {previewErrorMsg && (
-                      <div className="rounded-md border border-destructive/40 bg-destructive/5 p-2.5 text-sm text-destructive space-y-1">
+                      <div className="rounded-md border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive space-y-1">
                         <div className="font-medium">تعذّر حساب هذه الدفعة — الترحيل موقوف:</div>
                         <div>{previewErrorMsg}</div>
                       </div>
@@ -460,7 +461,7 @@ export default function ProductionNew() {
                     {pv && (
                       <div>
                         <Meter value={pv.good} max={pv.batch || 1} tone={pv.yieldPct >= 1 - Number(pv.wasteStdPct) ? "ok" : "warn"} label="الإنتاجية (Yield)" right={pct(pv.yieldPct)} />
-                        <div className="flex gap-4 flex-wrap text-xs text-muted-foreground mt-2">
+                        <div className="flex gap-4 flex-wrap text-xs text-muted-foreground mt-1.5">
                           <span>بدأ التشغيل: <b className="text-foreground" dir="ltr">{formatQuantity(pv.batch)}</b></span>
                           <span>مسموح طبيعي: <b className="text-foreground" dir="ltr">{formatQuantity(pv.normalAllow)}</b></span>
                           {pv.abnormalUnits > 0 && <span>هدر غير طبيعي: <b className="text-destructive" dir="ltr">{formatQuantity(pv.abnormalUnits)}</b></span>}
@@ -472,10 +473,10 @@ export default function ProductionNew() {
 
                 <Card>
                   <CardHeader>
-                    <CardTitle className="text-base">المدخلات المُستهلَكة</CardTitle>
+                    <CardTitle className="text-sm font-bold">المدخلات المُستهلَكة</CardTitle>
                     <p className="text-xs text-muted-foreground">محسوبة من الوصفة × ما بدأ التشغيل ({formatQuantity(pv?.batch ?? 0)}). الأشرطة تُظهر المتاح الحيّ.</p>
                   </CardHeader>
-                  <CardContent className="space-y-3">
+                  <CardContent className="space-y-2">
                     {preview.isLoading && <p className="text-xs text-muted-foreground">جارٍ الحساب…</p>}
                     {pv?.inputs.map((i) => {
                       const tone = i.short ? "bad" : i.available != null && i.consumed > i.available * 0.85 ? "warn" : "ok";
@@ -483,7 +484,7 @@ export default function ProductionNew() {
                       const currentSub = materialSubstitutions.find((s) => s.originalVariantId === origId);
                       const isSubstituted = Boolean(i.isSubstituted || currentSub);
                       return (
-                        <div key={`${origId}-${i.variantId}`} className="grid grid-cols-1 md:grid-cols-[1fr_1.4fr] gap-3 items-center border rounded-md p-3">
+                        <div key={`${origId}-${i.variantId}`} className="grid grid-cols-1 md:grid-cols-[1fr_1.4fr] gap-2.5 items-center border rounded-md p-2.5">
                           <div>
                             <div className="flex items-center gap-2">
                               <span className="font-medium text-sm">{i.productName}</span>
@@ -497,7 +498,7 @@ export default function ProductionNew() {
                           </div>
                           <div>
                             <Meter value={i.consumed} max={i.available ?? i.consumed} tone={tone} right={`${formatQuantity(i.consumed)} / ${i.available != null ? formatQuantity(i.available) : "—"}`} />
-                            <div className="flex items-center justify-between gap-2 mt-2 flex-wrap">
+                            <div className="flex items-center justify-between gap-2 mt-1.5 flex-wrap">
                               {i.short ? (
                                 <div className="text-xs font-semibold text-destructive">
                                   المتاح أقل بـ {formatQuantity(i.consumed - (i.available ?? 0))} — سيُرفض الترحيل
@@ -556,20 +557,20 @@ export default function ProductionNew() {
                 </Card>
 
                 <Card>
-                  <CardHeader><CardTitle className="text-base">عمالة وربط</CardTitle></CardHeader>
-                  <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <CardHeader><CardTitle className="text-sm font-bold">عمالة وربط</CardTitle></CardHeader>
+                  <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
                     <div className="space-y-1">
                       <Label>عمالة مقطوعة / وحدة</Label>
-                      <Input dir="ltr" value={labor} onChange={(e) => setLabor(e.target.value)} />
+                      <Input dir="ltr" className="h-8" value={labor} onChange={(e) => setLabor(e.target.value)} />
                       <p className="text-[11px] text-muted-foreground">إن سجّلت أجر العامل كمصروف رواتب منفصل اتركها صفراً (تفادي الاحتساب المزدوج).</p>
                     </div>
                     <div className="space-y-1">
                       <Label className="flex items-center gap-1">ربط بطلب شغل مفتوح (اختياري) <span title="إن كان الإنتاج لطلب شغل بعينه، اربطه فعلياً لتفادي خصم الورق مرّتين." className="inline-grid place-items-center w-4 h-4 rounded-full bg-muted text-[10px] text-muted-foreground cursor-help">؟</span></Label>
                       {selectedWO ? (
-                        <div className="flex h-9 items-center justify-between gap-2 rounded-md border bg-muted/30 px-3 text-sm">
+                        <div className="flex h-8 items-center justify-between gap-2 rounded-md border bg-muted/30 px-2.5 text-xs">
                           <span className="truncate" dir="ltr">{selectedWO.orderNumber} <span className="text-muted-foreground">— {selectedWO.title}</span></span>
                           <button type="button" onClick={() => setWorkOrderId(null)} className="shrink-0 text-muted-foreground hover:text-destructive" aria-label="إلغاء الربط">
-                            <X aria-hidden className="size-4" />
+                            <X aria-hidden className="size-3.5" />
                           </button>
                         </div>
                       ) : (
@@ -591,7 +592,7 @@ export default function ProductionNew() {
                                   key={o.id}
                                   type="button"
                                   onClick={() => { setWorkOrderId(Number(o.id)); setWoQuery(""); }}
-                                  className="w-full text-right px-3 py-1.5 hover:bg-accent text-sm border-b last:border-b-0"
+                                  className="w-full text-right px-3 py-1.5 hover:bg-accent text-xs border-b last:border-b-0"
                                 >
                                   <span className="font-mono text-xs" dir="ltr">{o.orderNumber}</span> — {o.title}
                                   <span className="block text-[11px] text-muted-foreground">{o.customerName ?? "عميل نقدي"}</span>
@@ -611,23 +612,23 @@ export default function ProductionNew() {
                   <Textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value.slice(0, 500))} placeholder="تفاصيل…" />
                 </div>
 
-                {error && <p className="text-sm text-destructive">{error}</p>}
-                {!error && previewErrorMsg && <p className="text-sm text-destructive">{previewErrorMsg}</p>}
+                {error && <p className="text-xs text-destructive">{error}</p>}
+                {!error && previewErrorMsg && <p className="text-xs text-destructive">{previewErrorMsg}</p>}
                 <div className="flex gap-2 flex-wrap">
-                  <Button onClick={submitRecipe} disabled={create.isPending || needsBranchChoice || !!previewErrorMsg || !pv || pv.anyShort || !(pv.good > 0)}>
+                  <Button size="sm" onClick={submitRecipe} disabled={create.isPending || needsBranchChoice || !!previewErrorMsg || !pv || pv.anyShort || !(pv.good > 0)}>
                     {create.isPending ? "جارٍ الترحيل…" : needsBranchChoice ? "اختر الفرع أولاً" : previewErrorMsg ? "تعذّر حساب الدفعة" : pv?.anyShort ? "المخزون لا يكفي" : "ترحيل المستند"}
                   </Button>
-                  <Button variant="outline" onClick={printOrder} disabled={!!previewErrorMsg || !pv}><Printer aria-hidden className="size-4" /> طباعة أمر تشغيل</Button>
-                  <Link href="/production"><Button variant="ghost">إلغاء</Button></Link>
+                  <Button size="sm" variant="outline" onClick={printOrder} disabled={!!previewErrorMsg || !pv}><Printer aria-hidden className="size-4" /> طباعة أمر تشغيل</Button>
+                  <Link href="/production"><Button size="sm" variant="ghost">إلغاء</Button></Link>
                 </div>
               </>
             ) : (
-              <Card><CardContent className="p-6 text-center text-muted-foreground">اختر وصفة لبدء التشغيل، أو <Link href="/production-recipes" className="text-[var(--sem-info)] underline">أنشئ وصفة جديدة</Link>.</CardContent></Card>
+              <Card><CardContent className="p-4 text-center text-sm text-muted-foreground">اختر وصفة لبدء التشغيل، أو <Link href="/production-recipes" className="text-[var(--sem-info)] underline">أنشئ وصفة جديدة</Link>.</CardContent></Card>
             )}
           </div>
 
           {/* العمود الجانبي: الكلفة + WAVG */}
-          <div className="space-y-4 lg:sticky lg:top-4">
+          <div className="space-y-3 lg:sticky lg:top-3">
             <Card className="border-[var(--sem-info)]">
               <CardHeader><CardTitle className="text-base">الكلفة وتوزيعها</CardTitle></CardHeader>
               <CardContent className="space-y-2 text-sm">

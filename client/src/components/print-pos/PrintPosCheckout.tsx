@@ -2,7 +2,7 @@ import React from "react";
 import { Pencil, Undo2 } from "lucide-react";
 import { PrintCartList, type PrintCartLine as CartLine } from "@/components/printPos/PrintCartList";
 
-export type PaymentMethod = "CASH" | "CARD" | "TRANSFER";
+export type PaymentMethod = "CASH" | "CARD" | "TRANSFER" | "WALLET";
 
 export type EditingInvoiceInfo = {
   id: number;

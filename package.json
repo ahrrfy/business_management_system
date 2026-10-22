@@ -9,6 +9,7 @@
     "build": "vite build && node scripts/verify-storefront-pwa-build.mjs && esbuild server/index.ts --platform=node --target=node20 --packages=external --bundle --format=esm --sourcemap --outfile=dist/index.js && esbuild server/hr-bridge-worker.ts --platform=node --target=node20 --packages=bundle --bundle --format=cjs --sourcemap --alias:bufferutil=./scripts/hr-bridge-optional-module-stub.cjs --alias:utf-8-validate=./scripts/hr-bridge-optional-module-stub.cjs --alias:supports-color=./scripts/hr-bridge-optional-module-stub.cjs --alias:cardinal=./scripts/hr-bridge-optional-module-stub.cjs --metafile=dist/hr-bridge-worker.meta.json --outfile=dist/hr-bridge-worker.cjs && node scripts/verify-hr-bridge-runtime.mjs --selftest && node scripts/verify-hr-bridge-artifact.mjs && node scripts/verify-hr-bridge-deployment.mjs",
     "start": "cross-env NODE_ENV=production TZ=UTC node dist/index.js",
     "check": "cross-env NODE_OPTIONS=--max-old-space-size=8192 tsc --noEmit",
+    "receipt:history": "cross-env TZ=UTC tsx scripts/customer-receipt-history.mjs",
     "check:emoji": "node scripts/check-no-emoji-ui.mjs",
     "check:tashkeel": "node scripts/check-tashkeel-in-small-text.mjs",
     "check:money-schemas": "node scripts/check-money-schemas.mjs",
@@ -104,6 +105,8 @@
     "audit:financial-actors": "node scripts/audit-financial-actor-provenance.mjs",
     "audit:grni": "node scripts/audit-grni-integrity.mjs",
     "prod:deploy": "node scripts/deploy.mjs",
+    "pr:merge": "node scripts/safe-merge.mjs",
+    "push:guard": "node scripts/safe-push-guard.mjs",
     "nginx:repair": "node scripts/install-nginx-contract.mjs",
     "test:nginx-contract": "node scripts/nginx-contract.test.mjs && node scripts/deploy.test.mjs",
     "db:reset": "node scripts/reset.mjs",
@@ -259,13 +262,14 @@
     "tw-animate-css": "^1.4.0",
     "typescript": "5.9.3",
     "typescript-eslint": "^8.69.0",
-    "vite": "^7.1.7",
+    "vite": "7.3.7",
     "vite-plugin-pwa": "^1.3.0",
-    "vitest": "^4.1.11",
+    "vitest": "^4.1.12",
     "workbox-window": "^7.4.1"
   },
   "pnpm": {
     "overrides": {
+      "vite@>=7.0.0 <7.3.7": "7.3.7",
       "tmp@<0.2.6": ">=0.2.6",
       "uuid@<11.1.1": ">=11.1.1",
       "@opentelemetry/core@<2.8.0": ">=2.8.0",

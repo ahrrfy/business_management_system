@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { extractInsertId } from "../../lib/insertId";
 import { purchaseRouter } from "../../routers/purchaseRouter";
 import { decidePurchaseOrderControl } from "../purchase/controls";
 import { loadPurchaseSettlements } from "../purchase/settlementProjection";
@@ -652,6 +653,42 @@ describe("purchase settlement evidence across list, detail and supplier statemen
         ...line,
         lineNo: 2,
         purchaseOrderRevisionItemId: Number(secondItem.id),
+      });
+    expect(await surfaces(first)).toMatchObject({
+      paidAmountIqd: "0.00",
+      returnedAmountIqd: "0.00",
+      remainingAmountIqd: "240000.00",
+      requiresReview: true,
+    });
+    const returnEntryId = extractInsertId(
+      await db()
+        .insert(s.accountingEntries)
+        .values({
+          entryType: "RETURN",
+          entryDate: new Date().toISOString().slice(0, 10),
+          branchId: 1,
+          supplierId: 1,
+          purchaseOrderId: first,
+          amount: "-10000.00",
+        }),
+    );
+    await db()
+      .insert(s.purchaseReturns)
+      .values({
+        returnNumber: `RET-SHARED-${returnEntryId}`,
+        clientRequestId: `ret-shared-${returnEntryId}`,
+        origin: "LEGACY",
+        supplierInvoiceId: null,
+        purchaseOrderId: first,
+        supplierId: 1,
+        branchId: 1,
+        accountingEntryId: returnEntryId,
+        settlement: "CREDIT",
+        netAmount: "10000.00",
+        totalAmount: "10000.00",
+        creditOffsetAmount: "10000.00",
+        createdBy: creator.userId,
+        createdByNameSnapshot: "creator",
       });
     expect(await surfaces(first)).toMatchObject({
       paidAmountIqd: "0.00",

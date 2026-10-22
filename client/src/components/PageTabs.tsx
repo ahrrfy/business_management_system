@@ -36,30 +36,33 @@ function TabFallback() {
   );
 }
 
-// ستايل زرّ التبويب: أوتلاين + تعبئة عند التنشيط + تأثيرات. ارتفاع ٤٤px (هدف اللمس).
+// ستايل زرّ التبويب: أوتلاين + تعبئة عند التنشيط + تأثيرات. ارتفاع ٣٢px مدمج لسطح المكتب.
 const tabClass = cn(
-  "inline-flex h-11 shrink-0 cursor-pointer select-none items-center gap-2 rounded-xl border px-4",
-  "text-sm font-semibold whitespace-nowrap outline-none transition-all duration-200 ease-out",
+  "inline-flex h-8 shrink-0 cursor-pointer select-none items-center gap-1.5 rounded-lg border px-3",
+  "text-xs font-bold whitespace-nowrap outline-none transition-all duration-150 ease-out",
   // الحالة الافتراضية — زرّ مُحدَّد هادئ
-  "border-border bg-card text-muted-foreground shadow-xs",
+  "border-border bg-card text-muted-foreground shadow-2xs",
   // hover — يُبرز الحدّ ويرفع التباين
   "hover:border-primary/40 hover:bg-accent hover:text-foreground",
   // تركيز لوحة المفاتيح — حلقة واضحة
-  "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+  "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
   // ضغط — انكماش طفيف
   "active:scale-[0.97]",
   // نشط — تعبئة primary بارزة + حدّ مُطابق + ظلّ
-  "data-[state=active]:border-primary data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm data-[state=active]:hover:bg-primary",
+  "data-[state=active]:border-primary data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-xs data-[state=active]:hover:bg-primary",
 );
 
 export function PageTabs({
   tabs,
   ariaLabel,
+  header,
   actions,
   tabAliases,
 }: {
   tabs: HubTab[];
   ariaLabel?: string;
+  /** عنوان أو أيقونة الوحدة في بداية شريط التبويبات الموحّد (اختياري). */
+  header?: React.ReactNode;
   /** إجراءات على مستوى الوحدة كلّها (تظهر بمحاذاة شريط التبويبات، خارج tablist حفاظاً على الإتاحة). */
   actions?: React.ReactNode;
   /** Nested tab deep links activate their visible parent without rewriting the URL. */
@@ -116,13 +119,19 @@ export function PageTabs({
   }
 
   return (
-    <TabsPrimitive.Root value={active.value} onValueChange={selectTab} dir="rtl" className="min-w-0 max-w-full space-y-4 overflow-x-hidden">
-      {/* شريط الأزرار — RTL يَبدأ يميناً؛ تمرير أفقي على الشاشات الضيّقة (٧ تبويبات) بلا كسر.
+    <TabsPrimitive.Root value={active.value} onValueChange={selectTab} dir="rtl" className="min-w-0 max-w-full space-y-2.5 overflow-x-hidden">
+      {/* شريط الأزرار — RTL يَبدأ يميناً؛ تمرير أفقي على الشاشات الضيّقة بلا كسر.
           الإجراءات (إن وُجدت) خارج tablist: role=tablist لا يَصحّ أن يَحوي غير tabs. */}
-      <div className="flex items-start gap-3">
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border/80 bg-card px-2.5 py-1.5 shadow-2xs">
+        {header && (
+          <>
+            <div className="flex shrink-0 items-center gap-2">{header}</div>
+            <div className="hidden h-5 w-px bg-border sm:block" aria-hidden />
+          </>
+        )}
         <TabsPrimitive.List
           aria-label={ariaLabel}
-          className="flex min-w-0 flex-1 flex-nowrap items-center gap-2 overflow-x-auto px-1 pb-1.5 scroll-px-1 [scrollbar-width:none] md:flex-wrap md:overflow-x-visible [&::-webkit-scrollbar]:hidden"
+          className="flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 overflow-x-auto scroll-px-1 [scrollbar-width:none] md:flex-wrap md:overflow-x-visible [&::-webkit-scrollbar]:hidden"
         >
           {visible.map((t) => (
             <TabsPrimitive.Trigger
@@ -135,7 +144,7 @@ export function PageTabs({
             </TabsPrimitive.Trigger>
           ))}
         </TabsPrimitive.List>
-        {actions && <div className="shrink-0">{actions}</div>}
+        {actions && <div className="shrink-0 ms-auto flex items-center gap-1.5">{actions}</div>}
       </div>
       {visible.map((t) => {
         const Active = t.Component;

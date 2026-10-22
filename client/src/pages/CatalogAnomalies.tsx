@@ -289,19 +289,34 @@ export default function CatalogAnomalies() {
   );
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         title="تدقيق شذوذ الكتالوج"
         description="كشف رجعيّ لأخطاء التكلفة/السعر/المعامل بست عدسات (L1-L6). الأفعال: إصلاح (deep-link)، قصديّ (تصفية/بضاعة قديمة)، تجاهل نهائيّاً."
       />
 
-      {/* بطاقات الملخّص */}
+      {/* شريط الملخّص المدمج */}
       {listQ.data && (
-        <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          <Card><CardContent className="p-3"><div className="text-xs text-muted-foreground">حاجز</div><div className="text-2xl font-bold text-[var(--sem-neg)] tabular-nums">{listQ.data.counts.blocker}</div></CardContent></Card>
-          <Card><CardContent className="p-3"><div className="text-xs text-muted-foreground">تحذير</div><div className="text-2xl font-bold text-[var(--sem-warn)] tabular-nums">{listQ.data.counts.warning}</div></CardContent></Card>
-          <Card><CardContent className="p-3"><div className="text-xs text-muted-foreground">إخبار</div><div className="text-2xl font-bold text-[var(--sem-info)] tabular-nums">{listQ.data.counts.info}</div></CardContent></Card>
-          <Card><CardContent className="p-3"><div className="text-xs text-muted-foreground">مستثنى</div><div className="text-2xl font-bold text-muted-foreground tabular-nums">{listQ.data.overriddenCount}</div></CardContent></Card>
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-xl border bg-muted/20 px-3.5 py-2 text-xs">
+          <div className="flex items-center gap-1.5">
+            <span className="text-muted-foreground">حاجز:</span>
+            <span className="font-extrabold text-[var(--sem-neg)] tabular-nums">{listQ.data.counts.blocker}</span>
+          </div>
+          <span className="text-border">|</span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-muted-foreground">تحذير:</span>
+            <span className="font-extrabold text-[var(--sem-warn)] tabular-nums">{listQ.data.counts.warning}</span>
+          </div>
+          <span className="text-border">|</span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-muted-foreground">إخبار:</span>
+            <span className="font-extrabold text-[var(--sem-info)] tabular-nums">{listQ.data.counts.info}</span>
+          </div>
+          <span className="text-border">|</span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-muted-foreground">مستثنى:</span>
+            <span className="font-extrabold text-muted-foreground tabular-nums">{listQ.data.overriddenCount}</span>
+          </div>
         </div>
       )}
 

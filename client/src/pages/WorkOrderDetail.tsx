@@ -547,7 +547,7 @@ export default function WorkOrderDetail() {
   ];
 
   return (
-    <div className="space-y-4 max-w-4xl">
+    <div className="space-y-2.5 max-w-5xl">
       <PageHeader
         title="طلب خدمة"
         backHref="/work-orders"
@@ -657,8 +657,8 @@ export default function WorkOrderDetail() {
       />
 
       <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base flex items-center justify-between gap-2">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-bold flex items-center justify-between gap-2">
             <span className="truncate">{data.title}</span>
             <span className="flex shrink-0 items-center gap-1.5">
               {/* التمييز البصريّ «مُعدَّل» (طلب المالك ١٧/٨) — من عمودٍ مخصَّص لتحرير البنود،
@@ -699,13 +699,13 @@ export default function WorkOrderDetail() {
             </span>
           </CardTitle>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-3">
           {/* مسارُ الطلب أوّلاً: أين نحن وما التالي ولِمَ توقّفنا — قبل أيّ تفصيل. */}
           <WorkOrderFlowStepper steps={flowSteps} />
-          <div className="grid gap-6 lg:grid-cols-12">
+          <div className="grid gap-4 lg:grid-cols-12">
             {/* سياق الأمر — كان فقيراً (رقم/عميل/كمية/استحقاق فقط) رغم أنّ الخادم يُعيد القناة
              *  والأولوية والمنفّذ وتاريخ الإنشاء والتوصيل بلا استهلاك في الشاشة. */}
-            <div className="lg:col-span-7 grid grid-cols-2 gap-x-6 gap-y-4 text-sm content-start">
+            <div className="lg:col-span-7 grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-2.5 text-xs content-start">
               <Field label="رقم الأمر"><CopyInline value={data.orderNumber} successMessage="تم نَسخ رَقم الأَمر" /></Field>
               <Field label="العميل">{data.customerName ?? "عميل نقدي"}</Field>
               <Field label="الكمية">{formatQuantity(data.quantity)}</Field>
@@ -772,7 +772,7 @@ export default function WorkOrderDetail() {
               {data.hasDelivery && <Field label="عنوان التوصيل">{data.deliveryAddress ?? "—"}</Field>}
             </div>
 
-            <div className="lg:col-span-5 min-w-[280px] rounded-lg border bg-muted/30 p-4 space-y-2.5 text-sm self-start">
+            <div className="lg:col-span-5 min-w-[260px] rounded-lg border bg-muted/30 p-3 space-y-2 text-xs self-start">
               <SummaryRow label="سعر البيع" value={data.salePrice} strong />
               {/*
                 تنبيه: `SummaryRow` **يُنسّق بنفسه** (`fmtAr` ⇒ `D(value)`)، فتمريرُ نصٍّ منسَّقٍ سلفاً

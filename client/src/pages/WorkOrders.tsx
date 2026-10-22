@@ -8,7 +8,8 @@ import { Input } from "@/components/ui/input";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
-import { AlertTriangle, ArrowRight, Calendar, CheckCircle2, ChevronRight, FileText, Home, LayoutGrid, Package, Pencil, Printer, Receipt, Rows3, Timer, Truck, Wrench, X, Zap } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { AlertTriangle, ArrowRight, Calendar, CheckCircle2, ChevronRight, FileText, Home, LayoutGrid, Package, Pencil, Printer, Receipt, Rows3, SlidersHorizontal, Timer, Truck, Wrench, X, Zap } from "lucide-react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
@@ -135,7 +136,17 @@ export default function WorkOrders() {
 
   // الفلاتر في querystring — تنجو من فتح التفاصيل والرجوع وتُشارَك رابطاً.
   // pri/ch/branch/tech بقيمة "all" (لا "") لأن AppSelect يعامل "" كـplaceholder غير قابل لإعادة الاختيار.
-  const [f, setF, resetF] = useUrlFilters({ q: "", pri: "all", ch: "all", branch: "all", from: "", to: "", tech: "all", scope: "branch", stale: "", gb: "stage", late: "", unassigned: "", dueToday: "", blocked: "", d: "normal", deliv: "" });
+  const defaultDensity = useMemo(() => {
+    if (typeof window === "undefined") return "normal";
+    const saved = window.localStorage.getItem("wo-density");
+    return saved === "compact" || saved === "detailed" || saved === "normal" ? saved : "normal";
+  }, []);
+  const [f, setF, resetF] = useUrlFilters({ q: "", pri: "all", ch: "all", branch: "all", from: "", to: "", tech: "all", scope: "branch", stale: "", gb: "stage", late: "", unassigned: "", dueToday: "", blocked: "", d: defaultDensity, deliv: "" });
+  useEffect(() => {
+    if (f.d === "compact" || f.d === "normal" || f.d === "detailed") {
+      window.localStorage.setItem("wo-density", f.d);
+    }
+  }, [f.d]);
   const dq = useDebouncedValue(f.q, 250);
   const [sel, setSel] = useState<number | null>(null);
   const [editTarget, setEditTarget] = useState<number | null>(null);
@@ -605,64 +616,20 @@ export default function WorkOrders() {
   }
 
   const anyFilter = f.q || f.pri !== "all" || f.ch !== "all" || f.branch !== "all" || f.from || f.to || f.tech !== "all" || f.stale === "1" || (f.scope || "branch") !== "branch" || f.late === "1" || f.unassigned === "1" || f.dueToday === "1" || f.blocked === "1" || f.deliv === "1";
+  const secondaryFilterCount =
+    (f.pri !== "all" ? 1 : 0) +
+    (f.ch !== "all" ? 1 : 0) +
+    (f.branch !== "all" ? 1 : 0) +
+    (f.tech !== "all" ? 1 : 0) +
+    (f.from ? 1 : 0) +
+    (f.to ? 1 : 0) +
+    (f.gb && f.gb !== "stage" ? 1 : 0);
   const boardEmpty = filtered.length === 0;
   const boardLoading = activeQ.isLoading || deliveredQ.isLoading;
   const boardError = activeQ.isError || deliveredQ.isError || (canReadCounts && countsQ.isError);
 
   return (
-    <div className="wob">
-      <div className="wob-topbar">
-        <div>
-          {/* ١٩/٨ (طلب المالك): مخرجا الشاشة — محطّة العمل والرئيسيّة. اللوحة تُفتَح من بطاقة
-              «لوحة الإنتاج» في الرئيسيّة ومن رأس المحطّة، وكانت بلا طريقِ عودةٍ إلى أيٍّ منهما. */}
-          <div className="mb-1 flex items-center gap-3">
-            <a href="/pos?mode=RECEPTION" className="inline-flex items-center gap-1 text-2xs font-bold text-muted-foreground hover:text-foreground hover:underline">
-              <ArrowRight aria-hidden className="size-3.5" /> محطة خدمة العملاء
-            </a>
-            <span aria-hidden className="text-muted-foreground/40">·</span>
-            <a href="/" className="inline-flex items-center gap-1 text-2xs font-bold text-muted-foreground hover:text-foreground hover:underline">
-              <Home aria-hidden className="size-3.5" /> الرئيسية
-            </a>
-          </div>
-          <div className="wob-title">أوامر الشغل</div>
-          <div className="wob-sub">من الاستلام إلى التسليم — اسحب البطاقة بين المراحل. فاتورة تلقائية عند التسليم.</div>
-        </div>
-        <div className="wob-head-actions">
-          <div role="group" aria-label="طريقة العرض" className="wob-view-toggle">
-            <button
-              type="button"
-              aria-pressed={view === "board"}
-              onClick={() => setView("board")}
-              title="لوحة الإنتاج (كانبان)"
-            ><LayoutGrid aria-hidden className="size-4" /> لوحة</button>
-            <button
-              type="button"
-              aria-pressed={view === "list"}
-              onClick={() => setView("list")}
-              title="قائمة جدولية — للمراجعة والتحكّم"
-            ><Rows3 aria-hidden className="size-4" /> قائمة</button>
-          </div>
-          <ShippingLabelSizeSelect />
-          <button className="wob-btn wob-btn-ghost" disabled={boardLoading}
-            onClick={() => exportRows<WO>(fetchAllForExport, {
-              filename: "طلبات-خدمة-العملاء",
-              columns: [
-                { key: "orderNumber", header: "رقم الأمر" },
-                { key: "title", header: "العنوان" },
-                { key: "customerName", header: "العميل", map: (r) => r.customerName ?? "" },
-                { key: "quantity", header: "الكمية", map: (r) => Number(r.quantity ?? 0) },
-                { key: "salePrice", header: "السعر", map: (r) => Number(r.salePrice ?? 0) },
-                { key: "dueDate", header: "الاستحقاق", map: (r) => (r.dueDate ? String(r.dueDate).slice(0, 10) : "") },
-                { key: "priority", header: "الأولوية", map: (r) => PRIORITIES[r.priority ?? "NORMAL"]?.label ?? "" },
-                { key: "receptionChannel", header: "القناة", map: (r) => receptionChannelLabel(r.receptionChannel) },
-                { key: "assigneeName", header: "المسؤول", map: (r) => r.assigneeName ?? "" },
-                { key: "status", header: "الحالة", map: (r) => workOrderCardLabel(r) },
-              ],
-            })}><FileText aria-hidden className="size-4 inline-block align-text-bottom me-1" /> تصدير Excel</button>
-          <Link href="/pos?mode=RECEPTION" className="wob-btn wob-btn-primary">شاشة الاستقبال الموحدة</Link>
-        </div>
-      </div>
-
+    <div className={`wob ${view === "board" ? "wob--board" : "wob--list"}`}>
       <WorkOrderRefundApprovals isOwner={isOwner} />
       <WorkOrderControlApprovals
         canReview={canReviewWorkOrderControls}
@@ -705,12 +672,6 @@ export default function WorkOrders() {
             الموظّف بأسمائها لا بالفلترة اليدويّة. كلٌّ منها URL-toggle قابلة للنسخ.
             الشارة السابقة «متأخّر» صارت فلتراً تفاعليّاً: تعرض العدّاد وتحصر عند النقر. */}
         {(() => {
-          // Codex #4 (الجولة ١) + #3 (الجولة ٢) + #5 (الجولة ٣): عدّاد الخادم `serverCounts.late`
-          // لا يقبل أيّ فلترٍ عميليّ، فحين يُفعَّل أحدها تكذب الشارة. ونضيف `late` نفسه أيضاً:
-          // `serverCounts.late` يستعمل حدّ اليوم UTC (`businessDay` — نظر CLAUDE.md)، بينما
-          // predicate الفلتر يستعمل `dueDayDelta` بأيّامٍ محلّية (لاتّساقه مع `dueInfo` على
-          // البطاقة). خلال الساعات الثلاث الأولى من يوم بغداد يختلف الحدّان بيوم ⇒ الشارة
-          // من UTC والبطاقات من local. حين يُفعَّل `late` نأخذ من `filtered` لضمان التطابق.
           const clientFilterActive =
             f.pri !== "all" || f.ch !== "all" ||
             f.late === "1" || f.dueToday === "1" || f.unassigned === "1" || f.blocked === "1";
@@ -747,88 +708,196 @@ export default function WorkOrders() {
         <button type="button" aria-pressed={f.deliv === "1"} onClick={() => setF({ deliv: f.deliv === "1" ? "" : "1" })} className={`wob-qf${f.deliv === "1" ? " wob-qf-on wob-qf-deliv" : ""}`} title="أوامرُ مسندة للتوصيل أو قيد التوصيل">
           <Truck aria-hidden className="size-3.5" /> قيد التوصيل
         </button>
-        <UnifiedSearchInput barcode={false} debounceMs={0} value={f.q} onChange={(q) => setF({ q })} placeholder="بحث (رقم / عنوان / عميل)" className="flex-1 min-w-[200px] max-w-[360px]" />
-        {/* الموجة ٢ — Group By (نمط Odoo): يبدّل تجميع الأعمدة بلا تغيير الفلاتر.
-            «حسب المرحلة» هو الافتراضُ ويُفعِّل السحب والإفلات. البقيّة للقراءة الآن. */}
+        <UnifiedSearchInput barcode={false} debounceMs={0} value={f.q} onChange={(q) => setF({ q })} placeholder="بحث (رقم / عنوان / عميل)..." className="flex-1 min-w-[180px] max-w-[300px]" />
+
         {view === "board" && (
-          <AppSelect
-            value={f.gb}
-            onValueChange={(v) => setF({ gb: v })}
-            className="w-auto min-w-36"
-            aria-label="تجميع البطاقات"
-          >
-            <option value="stage">حسب المرحلة (افتراضيّ)</option>
-            <option value="technician">حسب الفنّيّ</option>
-            <option value="channel">حسب القناة</option>
-            <option value="priority">حسب الأولويّة</option>
-          </AppSelect>
+          <>
+            <AppSelect
+              value={f.gb}
+              onValueChange={(v) => setF({ gb: v })}
+              className="hidden xl:inline-flex h-[30px] text-xs w-[150px]"
+              aria-label="تجميع البطاقات"
+            >
+              <option value="stage">حسب المرحلة (افتراضيّ)</option>
+              <option value="technician">حسب الفنّيّ</option>
+              <option value="channel">حسب القناة</option>
+              <option value="priority">حسب الأولويّة</option>
+            </AppSelect>
+            <AppSelect
+              value={f.d}
+              onValueChange={(v) => setF({ d: v })}
+              className="hidden lg:inline-flex h-[30px] text-xs w-[112px]"
+              aria-label="كثافة العرض"
+            >
+              <option value="compact">كثافة: مضغوط</option>
+              <option value="normal">كثافة: عاديّ</option>
+              <option value="detailed">كثافة: مفصَّل</option>
+            </AppSelect>
+          </>
         )}
-        {/* الموجة ٤ (٣٠/٨/٢٦) — كثافة العرض (نمط Odoo): الكاشير يفضّل «مضغوطاً» ليرى ٤٠
-            بطاقة بدل ٦؛ المدير يفضّل «مفصّلاً». يُحفَظ في URL — الفنّيّ يفتح الرابط
-            بكثافته المعتادة بلا إعادة ضبط. */}
-        {view === "board" && (
-          <AppSelect
-            value={f.d}
-            onValueChange={(v) => setF({ d: v })}
-            className="w-auto min-w-32"
-            aria-label="كثافة العرض"
-          >
-            <option value="compact">مضغوط</option>
-            <option value="normal">عاديّ</option>
-            <option value="detailed">مفصَّل</option>
-          </AppSelect>
-        )}
-        {canCrossBranches && (
-          <AppSelect
-            value={f.branch}
-            onValueChange={(v) => setF({ branch: v })}
-            className="w-auto min-w-36"
-            aria-label="فلتر الفرع"
-          >
-            <option value="all">كل الفروع</option>
-            {(branchesQ.data ?? []).map((b) => (
-              <option key={Number(b.id)} value={String(Number(b.id))}>{b.name}</option>
-            ))}
-          </AppSelect>
-        )}
-        <AppSelect value={f.pri} onValueChange={(v) => setF({ pri: v })} className="w-auto min-w-32" aria-label="فلتر الأولوية">
-          <option value="all">كل الأولويات</option>
-          {Object.entries(PRIORITIES).map(([k, p]: [string, { label: string }]) => <option key={k} value={k}>{p.label}</option>)}
-        </AppSelect>
-        <AppSelect value={f.ch} onValueChange={(v) => setF({ ch: v })} className="w-auto min-w-32" aria-label="فلتر القناة">
-          <option value="all">كل القنوات</option>
-          {receptionChannelOptions(WORK_ORDER_CHANNELS).map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
-        </AppSelect>
-        {canReadStaff && (assignableStaff.data?.length ?? 0) > 0 && (
-          <AppSelect value={f.tech} onValueChange={(v) => setF({ tech: v })} className="w-auto min-w-32" aria-label="فلتر الفنّي">
-            <option value="all">كل الفنّيين</option>
-            {(assignableStaff.data ?? []).map((s) => (
-              <option key={s.id} value={String(s.id)}>{s.name ?? "بلا اسم"}</option>
-            ))}
-          </AppSelect>
-        )}
-        {/* نطاق تاريخ الاستلام (createdAt) — شامل لليوم بحدود UTC خادمياً. */}
-        <div className="wob-date-range" aria-label="نطاق تاريخ الاستلام">
-          <span>من</span>
-          <Input
-            type="date"
-            className="wob-sel wob-date"
-            value={f.from}
-            onChange={(e) => setF({ from: e.target.value })}
-            aria-label="من تاريخ"
-            title="من تاريخ الاستلام"
-          />
-          <span>إلى</span>
-          <Input
-            type="date"
-            className="wob-sel wob-date"
-            value={f.to}
-            onChange={(e) => setF({ to: e.target.value })}
-            aria-label="إلى تاريخ"
-            title="إلى تاريخ الاستلام"
-          />
-        </div>
+
+        <Popover>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              className={`wob-qf${secondaryFilterCount > 0 ? " wob-qf-on" : ""}`}
+              title="فلاتر متقدمة وتخصيص العرض"
+            >
+              <SlidersHorizontal aria-hidden className="size-3.5" />
+              فلاتر متقدمة
+              {secondaryFilterCount > 0 && <span className="wob-qf-badge">{fmtInt(secondaryFilterCount)}</span>}
+            </button>
+          </PopoverTrigger>
+          <PopoverContent align="end" className="w-80 p-3 space-y-2.5 text-start" dir="rtl">
+            <div className="flex items-center justify-between border-b pb-1.5">
+              <span className="text-xs font-extrabold">الفلاتر وتخصيص اللوحة</span>
+              {anyFilter && (
+                <button type="button" className="text-2xs font-bold text-destructive hover:underline" onClick={resetF}>
+                  إعادة ضبط
+                </button>
+              )}
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {view === "board" && (
+                <div className="space-y-1">
+                  <Label className="text-2xs text-muted-foreground">تجميع البطاقات</Label>
+                  <AppSelect
+                    value={f.gb}
+                    onValueChange={(v) => setF({ gb: v })}
+                    className="w-full"
+                    aria-label="تجميع البطاقات"
+                  >
+                    <option value="stage">حسب المرحلة (افتراضيّ)</option>
+                    <option value="technician">حسب الفنّيّ</option>
+                    <option value="channel">حسب القناة</option>
+                    <option value="priority">حسب الأولويّة</option>
+                  </AppSelect>
+                </div>
+              )}
+              {view === "board" && (
+                <div className="space-y-1">
+                  <Label className="text-2xs text-muted-foreground">كثافة العرض</Label>
+                  <AppSelect
+                    value={f.d}
+                    onValueChange={(v) => setF({ d: v })}
+                    className="w-full"
+                    aria-label="كثافة العرض"
+                  >
+                    <option value="compact">مضغوط</option>
+                    <option value="normal">عاديّ</option>
+                    <option value="detailed">مفصَّل</option>
+                  </AppSelect>
+                </div>
+              )}
+              {canCrossBranches && (
+                <div className="space-y-1 col-span-2">
+                  <Label className="text-2xs text-muted-foreground">الفرع</Label>
+                  <AppSelect
+                    value={f.branch}
+                    onValueChange={(v) => setF({ branch: v })}
+                    className="w-full"
+                    aria-label="فلتر الفرع"
+                  >
+                    <option value="all">كل الفروع</option>
+                    {(branchesQ.data ?? []).map((b) => (
+                      <option key={Number(b.id)} value={String(Number(b.id))}>{b.name}</option>
+                    ))}
+                  </AppSelect>
+                </div>
+              )}
+              <div className="space-y-1">
+                <Label className="text-2xs text-muted-foreground">الأولوية</Label>
+                <AppSelect value={f.pri} onValueChange={(v) => setF({ pri: v })} className="w-full" aria-label="فلتر الأولوية">
+                  <option value="all">كل الأولويات</option>
+                  {Object.entries(PRIORITIES).map(([k, p]: [string, { label: string }]) => <option key={k} value={k}>{p.label}</option>)}
+                </AppSelect>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-2xs text-muted-foreground">القناة</Label>
+                <AppSelect value={f.ch} onValueChange={(v) => setF({ ch: v })} className="w-full" aria-label="فلتر القناة">
+                  <option value="all">كل القنوات</option>
+                  {receptionChannelOptions(WORK_ORDER_CHANNELS).map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+                </AppSelect>
+              </div>
+              {canReadStaff && (assignableStaff.data?.length ?? 0) > 0 && (
+                <div className="space-y-1 col-span-2">
+                  <Label className="text-2xs text-muted-foreground">الفنّي المسؤول</Label>
+                  <AppSelect value={f.tech} onValueChange={(v) => setF({ tech: v })} className="w-full" aria-label="فلتر الفنّي">
+                    <option value="all">كل الفنّيين</option>
+                    {(assignableStaff.data ?? []).map((s) => (
+                      <option key={s.id} value={String(s.id)}>{s.name ?? "بلا اسم"}</option>
+                    ))}
+                  </AppSelect>
+                </div>
+              )}
+              <div className="space-y-1">
+                <Label className="text-2xs text-muted-foreground">من تاريخ الاستلام</Label>
+                <Input
+                  type="date"
+                  className="wob-sel wob-date w-full"
+                  value={f.from}
+                  onChange={(e) => setF({ from: e.target.value })}
+                  aria-label="من تاريخ"
+                  title="من تاريخ الاستلام"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-2xs text-muted-foreground">إلى تاريخ الاستلام</Label>
+                <Input
+                  type="date"
+                  className="wob-sel wob-date w-full"
+                  value={f.to}
+                  onChange={(e) => setF({ to: e.target.value })}
+                  aria-label="إلى تاريخ"
+                  title="إلى تاريخ الاستلام"
+                />
+              </div>
+            </div>
+            <div className="border-t pt-2 flex items-center justify-between">
+              <span className="text-2xs text-muted-foreground">مقاس ملصق الشحن</span>
+              <ShippingLabelSizeSelect />
+            </div>
+          </PopoverContent>
+        </Popover>
+
         {anyFilter && <button className="wob-chip-clear" onClick={resetF}>مسح الفلاتر <X aria-hidden className="size-3.5 inline-block align-text-bottom" /></button>}
+
+        <div className="ms-auto flex items-center gap-1.5">
+          <div role="group" aria-label="طريقة العرض" className="wob-view-toggle">
+            <button
+              type="button"
+              aria-pressed={view === "board"}
+              onClick={() => setView("board")}
+              title="لوحة الإنتاج (كانبان)"
+            ><LayoutGrid aria-hidden className="size-3.5" /> لوحة</button>
+            <button
+              type="button"
+              aria-pressed={view === "list"}
+              onClick={() => setView("list")}
+              title="قائمة جدولية — للمراجعة والتحكّم"
+            ><Rows3 aria-hidden className="size-3.5" /> قائمة</button>
+          </div>
+          <button
+            className="wob-btn wob-btn-ghost"
+            disabled={boardLoading}
+            title="تصدير إلى Excel"
+            onClick={() => exportRows<WO>(fetchAllForExport, {
+              filename: "طلبات-خدمة-العملاء",
+              columns: [
+                { key: "orderNumber", header: "رقم الأمر" },
+                { key: "title", header: "العنوان" },
+                { key: "customerName", header: "العميل", map: (r) => r.customerName ?? "" },
+                { key: "quantity", header: "الكمية", map: (r) => Number(r.quantity ?? 0) },
+                { key: "salePrice", header: "السعر", map: (r) => Number(r.salePrice ?? 0) },
+                { key: "dueDate", header: "الاستحقاق", map: (r) => (r.dueDate ? String(r.dueDate).slice(0, 10) : "") },
+                { key: "priority", header: "الأولوية", map: (r) => PRIORITIES[r.priority ?? "NORMAL"]?.label ?? "" },
+                { key: "receptionChannel", header: "القناة", map: (r) => receptionChannelLabel(r.receptionChannel) },
+                { key: "assigneeName", header: "المسؤول", map: (r) => r.assigneeName ?? "" },
+                { key: "status", header: "الحالة", map: (r) => workOrderCardLabel(r) },
+              ],
+            })}
+          ><FileText aria-hidden className="size-3.5 inline-block align-text-bottom me-1" /> تصدير</button>
+        </div>
       </div>
 
       {boardLoading ? (
@@ -966,6 +1035,14 @@ export default function WorkOrders() {
                         onClaim={canClaim ? (orderId) => claim.mutate({ workOrderId: orderId }) : undefined}
                         onRelease={canReleaseOrder(o) ? (orderId) => release.mutate({ workOrderId: orderId }) : undefined}
                         claimPending={claim.isPending || release.isPending}
+                        onAdvance={
+                          (o.status === "RECEIVED" && canStart) ||
+                          (o.status === "IN_PROGRESS" && canMarkReady) ||
+                          (o.status === "READY" && canDeliver)
+                            ? attemptMove
+                            : undefined
+                        }
+                        advancePending={start.isPending || markReady.isPending || deliver.isPending}
                         onOpenCustomer={canReadCustomerContext ? setCustomerContextId : undefined}
                         // Codex #6: النقطة تفاعليّة لمن يستطيع الكتابة فقط؛ لغيرهم تُعرض قراءةً
                         // (عرضاً غير-NORMAL فقط — بلا زرّ يفشل بـFORBIDDEN).

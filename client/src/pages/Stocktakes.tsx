@@ -30,8 +30,8 @@ import { fmtDate, fmtDateTime } from "@/lib/date";
 import { fmt, fmtInt } from "@/lib/money";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { useMemo, useState } from "react";
-import { Link, useLocation } from "wouter";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useLocation, useSearch } from "wouter";
 import { Check, AlertTriangle } from "lucide-react";
 import { selectClsSm } from "@/lib/ui/formStyles";
 import { variantDescriptor } from "@shared/variantDisplay";
@@ -178,10 +178,10 @@ function Stat({ label, value, sub, tone }: { label: string; value: string; sub?:
   const toneCls = tone === "blue" ? "text-[var(--status-pending)]" : tone === "amber" ? "text-[var(--stock-low)]" : "";
   return (
     <Card>
-      <CardContent className="p-4">
-        <p className="text-xs text-muted-foreground">{label}</p>
-        <p className={`mt-1 text-xl font-bold tabular-nums ${toneCls}`}>{value}</p>
-        {sub ? <p className="mt-0.5 truncate text-xs text-muted-foreground">{sub}</p> : null}
+      <CardContent className="p-2.5">
+        <p className="text-[11px] text-muted-foreground">{label}</p>
+        <p className={`mt-0.5 text-lg font-bold tabular-nums ${toneCls}`}>{value}</p>
+        {sub ? <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{sub}</p> : null}
       </CardContent>
     </Card>
   );
@@ -193,12 +193,17 @@ function Stat({ label, value, sub, tone }: { label: string; value: string; sub?:
 type ListRow = RouterOutputs["stocktakes"]["list"][number];
 
 export default function Stocktakes() {
-  const [, navigate] = useLocation();
+  const [location, navigate] = useLocation();
+  const search = useSearch();
   const utils = trpc.useUtils();
   const [status, setStatus] = useState<"" | StStatus>("");
   const [branchId, setBranchId] = useState<number>(0);
   const [page, setPage] = useState(0);
   const [previewSessionId, setPreviewSessionId] = useState<number | null>(null);
+  useEffect(() => {
+    const focus = Number(new URLSearchParams(search).get("focus"));
+    setPreviewSessionId(Number.isSafeInteger(focus) && focus > 0 ? focus : null);
+  }, [search]);
   const limit = 50;
 
   const me = trpc.auth.me.useQuery();
@@ -413,38 +418,54 @@ export default function Stocktakes() {
     },
   ], [canReview, canReport, setPreviewSessionId, me.data]);
 
+  const previewDrawer = (
+    <StocktakeDetailDrawer
+      sessionId={previewSessionId}
+      onClose={() => {
+        setPreviewSessionId(null);
+        const params = new URLSearchParams(search);
+        if (params.has("focus")) {
+          params.delete("focus");
+          navigate(`${location}${params.size ? `?${params}` : ""}`, { replace: true });
+        }
+      }}
+      isManagerPlus={isManagerPlus}
+    />
+  );
+
   /* غير مخوَّل (كاشير/مستخدم عام): الخادم يرفض أصلاً — نعرض توجيهاً واضحاً بدل أخطاء. */
   if (me.data && !canReadList) {
     return (
-      <div className="space-y-4">
+      <div className="space-y-2.5">
         <PageHeader title="الجرد والتسوية" />
         <Card>
           <CardContent className="p-8 text-center text-sm text-muted-foreground">
             يتطلب عرض جلسات الجرد تفويض عرض قائمة الجرد.
           </CardContent>
         </Card>
+        {previewDrawer}
       </div>
     );
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       {/* الترويسة */}
       <PageHeader
         title="الجرد والتسوية"
         description="جلسات جرد مُوثّقة بخطوات واضحة: تحديد النطاق ← عدّ أعمى ← مراجعة وتدقيق ← اعتماد التسوية ← تقرير نهائي."
         actions={
-          <div className="flex flex-wrap items-center gap-2">
-            <Button asChild variant="outline">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button asChild size="sm" variant="outline">
               <Link href="/my-stocktake">فضاء عملي (العد الميداني)</Link>
             </Button>
             {isAdmin && (
-              <Button asChild variant="outline">
+              <Button asChild size="sm" variant="outline">
                 <Link href="/reconcile">مطابقة الأرصدة</Link>
               </Button>
             )}
             {canCreate ? (
-              <Button asChild size="lg">
+              <Button asChild size="sm">
                 <Link href="/stocktakes/new">+ جلسة جرد جديدة</Link>
               </Button>
             ) : null}
@@ -454,8 +475,8 @@ export default function Stocktakes() {
 
       {/* شريط خطوات الدورة */}
       <Card>
-        <CardContent className="p-4">
-          <div className="flex flex-wrap items-center gap-2 text-xs font-semibold">
+        <CardContent className="px-3 py-2">
+          <div className="flex flex-wrap items-center gap-1.5 text-xs font-semibold">
             {[
               "1 إنشاء الجلسة وتحديد النطاق",
               "2 العدّ الميداني (أعمى)",
@@ -463,9 +484,9 @@ export default function Stocktakes() {
               "4 الاعتماد والتسوية",
               "5 التقرير النهائي",
             ].map((s, i) => (
-              <span key={s} className="flex items-center gap-2">
+              <span key={s} className="flex items-center gap-1.5">
                 {i > 0 && <span className="text-border">←</span>}
-                <span className="rounded-full border border-border bg-muted px-3 py-1.5">{s}</span>
+                <span className="rounded-full border border-border bg-muted px-2.5 py-1">{s}</span>
               </span>
             ))}
             <span className="me-auto font-normal text-muted-foreground">
@@ -476,7 +497,7 @@ export default function Stocktakes() {
       </Card>
 
       {/* المؤشرات */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
         <Stat label="جلسات قيد العدّ الآن" value={!canReadStats ? "—" : statsQ.isLoading ? "…" : fmtInt(stats.counting)} tone="blue" />
         <Stat label="بانتظار المراجعة والاعتماد" value={!canReadStats ? "—" : statsQ.isLoading ? "…" : fmtInt(stats.review)} tone="amber" />
         <Stat
@@ -601,7 +622,7 @@ export default function Stocktakes() {
       </Card>
 
       {/* الجرد الدوري + الدقة + ربط التدقيق المالي */}
-      <div className="grid gap-4 xl:grid-cols-2">
+      <div className="grid gap-3 xl:grid-cols-2">
         <CyclePlanCard
           due={due}
           loading={cycleQ.isLoading}
@@ -613,7 +634,7 @@ export default function Stocktakes() {
             navigate(buildNewSessionUrl(ids, name));
           }}
         />
-        <div className="space-y-4">
+        <div className="space-y-3">
           {canReadIra && <IraCard data={(iraQData ?? null) as IraData | null} loading={iraQ.isLoading} />}
           {canReadQuality && <CounterQualityCard data={cqQData ?? null} loading={cqQ.isLoading} />}
           {isManagerPlus && (
@@ -652,11 +673,7 @@ export default function Stocktakes() {
         </CardContent>
       </Card>}
 
-      <StocktakeDetailDrawer
-        sessionId={previewSessionId}
-        onClose={() => setPreviewSessionId(null)}
-        isManagerPlus={isManagerPlus}
-      />
+      {previewDrawer}
     </div>
   );
 }

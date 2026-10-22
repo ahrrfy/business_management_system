@@ -764,7 +764,7 @@ export default function Promotions() {
   ];
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         title="الترقيات وإنهاء الخدمات"
         description="ترقيات المسمّى والراتب، وإجراءات إنهاء الخدمة مع التسوية النهائية للمستحقات."
