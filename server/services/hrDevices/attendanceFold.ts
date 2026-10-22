@@ -21,14 +21,23 @@ import {
   hrAttendancePunches,
   hrAttendanceSettings,
   hrFingerprintDevices,
+  payrollRuns,
 } from "../../../drizzle/schema";
 import { requireDb } from "../tx";
 import { logger } from "../../logger";
 import { recordAttendance } from "../attendanceService";
-import { computeDayHours, DEFAULT_MAX_DAILY_HOURS, DEFAULT_NIGHT_CUTOFF_HOUR, type NightShiftOptions } from "./dayHours";
+import { assertPeriodOpen } from "../periodLockService";
+import {
+  computeDayHours,
+  DEFAULT_MAX_DAILY_HOURS,
+  DEFAULT_NIGHT_CUTOFF_HOUR,
+  SMART_DAWN_CUTOFF_HOUR,
+  type NightShiftOptions,
+} from "./dayHours";
 import { DEFAULT_WORK_SCHEDULE, hoursForDay } from "../hr/attendancePay";
 import { createAppNotification } from "../appNotificationService";
 import { fullEmployeeName } from "@shared/hr";
+import { formatAttendanceSessionsTag } from "@shared/attendanceHours";
 import {
   buildAttendanceNotification,
   buildAttendanceSupervisorNotification,
@@ -48,6 +57,27 @@ function baghdadDate(): string {
 /** اليوم التالي لـ"YYYY-MM-DD" بتقويم UTC ثابت (توقيت حائط لا لحظة عالمية). */
 function nextYmd(date: string): string {
   return new Date(Date.parse(`${date}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+}
+
+/** اليوم السابق لـ"YYYY-MM-DD" بتقويم UTC ثابت. */
+function prevYmd(date: string): string {
+  return new Date(Date.parse(`${date}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+}
+
+function punchHourOf(punchAt: string): number {
+  const h = Number(String(punchAt).slice(11, 13));
+  return Number.isFinite(h) ? h : 0;
+}
+
+/**
+ * يحدّد ما إذا كانت بصمات اليوم قد تحتاج بصمة فجر اليوم التالي في الوضع الذكي (smartCrossMidnight):
+ * فقط عندما يكون عدد بصمات النهار/المساء فردياً (دخول مفتوح) أو توجد بصمة فجر قد تُسند لأمس.
+ * يحفظ أداء الاستعلامات ولا يجري استعلاماً إضافياً للورديات النهارية المغلقة.
+ */
+function mightNeedSmartNextDayPunches(times: string[]): boolean {
+  if (times.length === 0) return false;
+  const daytimeCount = times.filter((t) => punchHourOf(t) >= SMART_DAWN_CUTOFF_HOUR).length;
+  return daytimeCount % 2 === 1 || times.length % 2 === 1;
 }
 
 /** بصمات (موظف × يوم) مرتّبة — مصدر واحد يستعمله اليوم وجاراه في الوردية الليلية. */
@@ -99,6 +129,24 @@ async function punchWorkplaceOf(
 
 function includeAttendanceWorkplace(): boolean {
   return process.env.ATTENDANCE_PUSH_INCLUDE_WORKPLACE === "true";
+}
+
+/** يتحقّق من أنّ تاريخ الحضور غير مقفل بمسيّر معتمد/مدفوع ولا بفترة مالية مغلقة قبل حذف صفّ البصمة الفائض. */
+async function canMutateAttendanceDate(date: string): Promise<boolean> {
+  const db = requireDb();
+  const period = String(date).slice(0, 7);
+  const [lockedRun] = await db
+    .select({ id: payrollRuns.id })
+    .from(payrollRuns)
+    .where(and(eq(payrollRuns.period, period), inArray(payrollRuns.status, ["approved", "paid"])))
+    .limit(1);
+  if (lockedRun) return false;
+  try {
+    await assertPeriodOpen(db as never, new Date(date));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** إعدادات الاحتساب (صفّ مفرد) — الغياب = الافتراضي المعطَّل، فلا تفشل الوحدة قبل الهجرة/البذر. */
@@ -192,18 +240,33 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
   const { maxDailyHours, night } = await loadFoldSettings();
 
   // تجميع (موظف × يوم) — punchAt نص "YYYY-MM-DD HH:MM:SS" فاليوم = أول ١٠ خانات.
+  // إذا وصلت بصمة فجر (قبل حدّ الفجر) نُدرج اليوم السابق أيضاً ليُعاد طيّه وإغلاق ورديته المفتوحة.
+  const dawnCutoff = night.enabled ? night.cutoffHour : SMART_DAWN_CUTOFF_HOUR;
   const groups = new Map<string, { employeeId: number; date: string; ids: number[] }>();
   for (const p of pending) {
-    const date = String(p.punchAt).slice(0, 10);
-    const key = `${p.employeeId}|${date}`;
-    const g = groups.get(key) ?? { employeeId: Number(p.employeeId), date, ids: [] };
+    const punchAtStr = String(p.punchAt);
+    const date = punchAtStr.slice(0, 10);
+    const empId = Number(p.employeeId);
+    if (punchHourOf(punchAtStr) < dawnCutoff) {
+      const prevDate = prevYmd(date);
+      const prevKey = `${empId}|${prevDate}`;
+      if (!groups.has(prevKey)) {
+        groups.set(prevKey, { employeeId: empId, date: prevDate, ids: [] });
+      }
+    }
+    const key = `${empId}|${date}`;
+    const g = groups.get(key) ?? { employeeId: empId, date, ids: [] };
     g.ids.push(p.id);
     groups.set(key, g);
   }
 
+  const sortedGroups = Array.from(groups.values()).sort((a, b) =>
+    a.employeeId !== b.employeeId ? a.employeeId - b.employeeId : a.date.localeCompare(b.date),
+  );
+
   let days = 0;
   let parked = 0;
-  for (const g of Array.from(groups.values())) {
+  for (const g of sortedGroups) {
     // حارس التصحيح اليدوي: لا نطمس يوماً كتبه المدير (تصحيح/إجازة). نوسمه معالَجاً كي لا يعيد المحاولة.
     const [manual] = await db
       .select({ id: attendance.id })
@@ -217,49 +280,85 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
       )
       .limit(1);
     if (manual) {
-      await db
-        .update(hrAttendancePunches)
-        .set({ processedAt: sql`CURRENT_TIMESTAMP`, processNote: "يوجد إدخال يدوي لليوم — لم يُكتب فوقه" })
-        .where(inArray(hrAttendancePunches.id, g.ids));
+      if (g.ids.length > 0) {
+        await db
+          .update(hrAttendancePunches)
+          .set({ processedAt: sql`CURRENT_TIMESTAMP`, processNote: "يوجد إدخال يدوي لليوم — لم يُكتب فوقه" })
+          .where(inArray(hrAttendancePunches.id, g.ids));
+      }
       parked++;
       continue;
     }
 
     // كل بصمات اليوم (معالجة وغير معالجة) — إعادة حساب اليوم كاملاً عند كل وصول جديد.
-    // ومعها يوما الجوار حين تُفعَّل الوردية الليلية: الإسناد حتميّ يُستنتَج من الجيران
-    // لا من حالةٍ مخزَّنة، فيعطي النتيجة نفسها مهما تكرّر الطيّ.
+    // ومعها يوما الجوار حين تُفعَّل الوردية الليلية أو الإسناد الذكي لبصمات الفجر: الإسناد حتميّ يُستنتَج
+    // من الجيران لا من حالةٍ مخزَّنة، فيعطي النتيجة نفسها مهما تكرّر الطيّ.
     const times = await punchTimesOf(g.employeeId, g.date);
+    if (times.length === 0) {
+      continue;
+    }
     // ساعات ذلك اليوم في جدول الموظف — بدونها كان حارس «أقلّ من نصف المقرَّر» ميتاً
-      // في الإنتاج ولا يُختبَر إلا في الوحدات (Codex P2).
-      const [empRow] = await db
-        .select({
-          userId: employees.userId,
-          branchId: employees.branchId,
-          firstName: employees.firstName,
-          fatherName: employees.fatherName,
-          grandfatherName: employees.grandfatherName,
-          lastName: employees.lastName,
-          workSchedule: employees.workSchedule,
-        })
-        .from(employees)
-        .where(eq(employees.id, g.employeeId))
-        .limit(1);
-      const sched = (empRow?.workSchedule && typeof empRow.workSchedule === "object"
-        ? empRow.workSchedule
-        : DEFAULT_WORK_SCHEDULE) as Record<string, { hours?: number } | number>;
-      const schedHours = hoursForDay(sched as never, g.date).toNumber();
-      /*
-       * جوارُ اليوم حين تُفعَّل الوردية الليلية: بصماتُ فجر الغد هي التي تُغلق وردية اليوم.
-       * الإسناد يُشتقّ من الجيران لا من حالةٍ مخزَّنة ⇒ إعادةُ الطيّ تعطي النتيجة نفسها.
-       */
-      const nextPunches = night.enabled ? await punchTimesOf(g.employeeId, nextYmd(g.date)) : [];
-      const day = computeDayHours(times, maxDailyHours, schedHours, { ...night, nextDayPunches: nextPunches });
+    // في الإنتاج ولا يُختبَر إلا في الوحدات (Codex P2).
+    const [empRow] = await db
+      .select({
+        userId: employees.userId,
+        branchId: employees.branchId,
+        firstName: employees.firstName,
+        fatherName: employees.fatherName,
+        grandfatherName: employees.grandfatherName,
+        lastName: employees.lastName,
+        workSchedule: employees.workSchedule,
+      })
+      .from(employees)
+      .where(eq(employees.id, g.employeeId))
+      .limit(1);
+    const sched = (empRow?.workSchedule && typeof empRow.workSchedule === "object"
+      ? empRow.workSchedule
+      : DEFAULT_WORK_SCHEDULE) as Record<string, { hours?: number } | number>;
+    const schedHours = hoursForDay(sched as never, g.date).toNumber();
+    /*
+     * جوارُ اليوم حين تُفعَّل الوردية الليلية أو الإسناد الذكي لبصمات الفجر (00:00–06:00):
+     * بصمة الفجر تغلق دخول أمس المفتوح وتُستثنى من اليوم التالي تلقائياً.
+     */
+    const hasDawnPunch = !night.enabled && times.some((t) => punchHourOf(t) < SMART_DAWN_CUTOFF_HOUR);
+    const prevPunches = hasDawnPunch ? await punchTimesOf(g.employeeId, prevYmd(g.date)) : [];
+    const nextPunches =
+      night.enabled || mightNeedSmartNextDayPunches(times)
+        ? await punchTimesOf(g.employeeId, nextYmd(g.date))
+        : [];
+    const day = computeDayHours(times, maxDailyHours, schedHours, {
+      ...night,
+      smartCrossMidnight: !night.enabled,
+      prevDayPunches: prevPunches,
+      nextDayPunches: nextPunches,
+    });
     if (day.usedCount === 0) {
+      if (!(await canMutateAttendanceDate(g.date))) {
+        if (g.ids.length > 0) {
+          await db
+            .update(hrAttendancePunches)
+            .set({ processedAt: sql`CURRENT_TIMESTAMP`, processNote: "مسيّر رواتب الشهر معتمد أو الفترة المالية مقفلة" })
+            .where(inArray(hrAttendancePunches.id, g.ids));
+        }
+        parked++;
+        continue;
+      }
       // كل بصمات اليوم مملوكة لوردية أمس ⇒ لا يوم هنا. توسَم معالَجةً كي لا تدور أبداً.
       await db
-        .update(hrAttendancePunches)
-        .set({ processedAt: sql`CURRENT_TIMESTAMP`, processNote: "أُسندت لوردية اليوم السابق" })
-        .where(inArray(hrAttendancePunches.id, g.ids));
+        .delete(attendance)
+        .where(
+          and(
+            eq(attendance.employeeId, g.employeeId),
+            eq(attendance.attendanceDate, g.date),
+            eq(attendance.source, "fingerprint"),
+          ),
+        );
+      if (g.ids.length > 0) {
+        await db
+          .update(hrAttendancePunches)
+          .set({ processedAt: sql`CURRENT_TIMESTAMP`, processNote: "أُسندت لوردية اليوم السابق" })
+          .where(inArray(hrAttendancePunches.id, g.ids));
+      }
       parked++;
       continue;
     }
@@ -274,7 +373,7 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
         checkOutDate: day.checkOutNextDay ? nextYmd(g.date) : undefined,
         status: "PRESENT",
         source: "fingerprint",
-        notes: null,
+        notes: day.sessions.length > 1 ? formatAttendanceSessionsTag(day.sessions, day.breakMinutes) : null,
         needsReview: day.needsReview,
         reviewReason: day.reviewReason,
       });
@@ -362,10 +461,12 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
           }
         }
       }
-      await db
-        .update(hrAttendancePunches)
-        .set({ processedAt: sql`CURRENT_TIMESTAMP`, processNote: null })
-        .where(inArray(hrAttendancePunches.id, g.ids));
+      if (g.ids.length > 0) {
+        await db
+          .update(hrAttendancePunches)
+          .set({ processedAt: sql`CURRENT_TIMESTAMP`, processNote: null })
+          .where(inArray(hrAttendancePunches.id, g.ids));
+      }
       days++;
       // يومٌ طُوي بنجاح ⇒ العطب العابر زال، فيعود التأخير إلى ١٥ث ولا يبقى متضخّماً.
       foldRetryStreak = 0;
@@ -373,10 +474,12 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
       const note = e instanceof Error ? e.message.slice(0, 200) : "تعذر الطي";
       if (isTerminalFoldError(note)) {
         // نهائيّ (منتهي خدمة/غير موجود): يوسَم فلا يعيد المحاولة عبثاً.
-        await db
-          .update(hrAttendancePunches)
-          .set({ processedAt: sql`CURRENT_TIMESTAMP`, processNote: note })
-          .where(inArray(hrAttendancePunches.id, g.ids));
+        if (g.ids.length > 0) {
+          await db
+            .update(hrAttendancePunches)
+            .set({ processedAt: sql`CURRENT_TIMESTAMP`, processNote: note })
+            .where(inArray(hrAttendancePunches.id, g.ids));
+        }
         parked++;
         logger.warn(
           { errorCode: safeFoldErrorCode(e) },
@@ -503,4 +606,160 @@ export async function resetAttendanceFoldState(): Promise<void> {
   foldRequestsAccepting = true;
   rerunRequested = false;
   foldRetryStreak = 0;
+}
+
+/**
+ * إعادة طيّ بصمات شهر كامل (مع إسناد بصمات الفجر للورديات العابرة لمنتصف الليل).
+ * لا يمسّ أيّ يومٍ ذي تصحيح يدوي (`source != 'fingerprint'`).
+ */
+export async function refoldMonthFingerprintAttendance(
+  period: string,
+  opts?: { employeeId?: number; scopedBranchId?: number | null },
+): Promise<{ refoldedDays: number; cleanedGhostDays: number }> {
+  const db = requireDb();
+  const p = String(period).slice(0, 7);
+  const { maxDailyHours, night } = await loadFoldSettings();
+
+  const conds = [
+    isNotNull(hrAttendancePunches.employeeId),
+    sql`${hrAttendancePunches.punchAt} LIKE ${`${p}%`}`,
+  ];
+  if (opts?.employeeId != null) {
+    conds.push(eq(hrAttendancePunches.employeeId, opts.employeeId));
+  }
+  if (opts?.scopedBranchId != null) {
+    conds.push(eq(employees.branchId, opts.scopedBranchId));
+  }
+
+  const monthPunches = await db
+    .select({
+      id: hrAttendancePunches.id,
+      employeeId: hrAttendancePunches.employeeId,
+      punchAt: hrAttendancePunches.punchAt,
+    })
+    .from(hrAttendancePunches)
+    .innerJoin(employees, eq(hrAttendancePunches.employeeId, employees.id))
+    .where(and(...conds))
+    .orderBy(asc(hrAttendancePunches.punchAt));
+
+  if (monthPunches.length === 0) {
+    return { refoldedDays: 0, cleanedGhostDays: 0 };
+  }
+
+  const dawnCutoff = night.enabled ? night.cutoffHour : SMART_DAWN_CUTOFF_HOUR;
+  const groups = new Map<string, { employeeId: number; date: string; ids: number[] }>();
+  for (const row of monthPunches) {
+    const punchAtStr = String(row.punchAt);
+    const date = punchAtStr.slice(0, 10);
+    const empId = Number(row.employeeId);
+    if (punchHourOf(punchAtStr) < dawnCutoff) {
+      const prevDate = prevYmd(date);
+      if (prevDate.startsWith(p)) {
+        const prevKey = `${empId}|${prevDate}`;
+        if (!groups.has(prevKey)) {
+          groups.set(prevKey, { employeeId: empId, date: prevDate, ids: [] });
+        }
+      }
+    }
+    const key = `${empId}|${date}`;
+    const g = groups.get(key) ?? { employeeId: empId, date, ids: [] };
+    g.ids.push(row.id);
+    groups.set(key, g);
+  }
+
+  const sortedGroups = Array.from(groups.values()).sort((a, b) =>
+    a.employeeId !== b.employeeId ? a.employeeId - b.employeeId : a.date.localeCompare(b.date),
+  );
+
+  let refoldedDays = 0;
+  let cleanedGhostDays = 0;
+
+  for (const g of sortedGroups) {
+    const [manual] = await db
+      .select({ id: attendance.id })
+      .from(attendance)
+      .where(
+        and(
+          eq(attendance.employeeId, g.employeeId),
+          eq(attendance.attendanceDate, g.date),
+          ne(attendance.source, "fingerprint"),
+        ),
+      )
+      .limit(1);
+    if (manual) continue;
+
+    const times = await punchTimesOf(g.employeeId, g.date);
+    if (times.length === 0) continue;
+
+    const [empRow] = await db
+      .select({ workSchedule: employees.workSchedule })
+      .from(employees)
+      .where(eq(employees.id, g.employeeId))
+      .limit(1);
+    const sched = (empRow?.workSchedule && typeof empRow.workSchedule === "object"
+      ? empRow.workSchedule
+      : DEFAULT_WORK_SCHEDULE) as Record<string, { hours?: number } | number>;
+    const schedHours = hoursForDay(sched as never, g.date).toNumber();
+
+    const hasDawnPunch = !night.enabled && times.some((t) => punchHourOf(t) < SMART_DAWN_CUTOFF_HOUR);
+    const prevPunches = hasDawnPunch ? await punchTimesOf(g.employeeId, prevYmd(g.date)) : [];
+    const nextPunches =
+      night.enabled || mightNeedSmartNextDayPunches(times)
+        ? await punchTimesOf(g.employeeId, nextYmd(g.date))
+        : [];
+    const day = computeDayHours(times, maxDailyHours, schedHours, {
+      ...night,
+      smartCrossMidnight: !night.enabled,
+      prevDayPunches: prevPunches,
+      nextDayPunches: nextPunches,
+    });
+
+    if (day.usedCount === 0) {
+      if (!(await canMutateAttendanceDate(g.date))) continue;
+      await db
+        .delete(attendance)
+        .where(
+          and(
+            eq(attendance.employeeId, g.employeeId),
+            eq(attendance.attendanceDate, g.date),
+            eq(attendance.source, "fingerprint"),
+          ),
+        );
+      if (g.ids.length > 0) {
+        await db
+          .update(hrAttendancePunches)
+          .set({ processedAt: sql`CURRENT_TIMESTAMP`, processNote: "أُسندت لوردية اليوم السابق" })
+          .where(inArray(hrAttendancePunches.id, g.ids));
+      }
+      cleanedGhostDays++;
+      continue;
+    }
+
+    try {
+      await recordAttendance({
+        employeeId: g.employeeId,
+        attendanceDate: g.date,
+        hours: day.hours,
+        checkIn: day.checkIn,
+        checkOut: day.checkOut,
+        checkOutDate: day.checkOutNextDay ? nextYmd(g.date) : undefined,
+        status: "PRESENT",
+        source: "fingerprint",
+        notes: day.sessions.length > 1 ? formatAttendanceSessionsTag(day.sessions, day.breakMinutes) : null,
+        needsReview: day.needsReview,
+        reviewReason: day.reviewReason,
+      });
+      if (g.ids.length > 0) {
+        await db
+          .update(hrAttendancePunches)
+          .set({ processedAt: sql`CURRENT_TIMESTAMP`, processNote: null })
+          .where(inArray(hrAttendancePunches.id, g.ids));
+      }
+      refoldedDays++;
+    } catch {
+      // في حال قفل الشهر أو انتهاء خدمة الموظف لا نُسقط العملية
+    }
+  }
+
+  return { refoldedDays, cleanedGhostDays };
 }

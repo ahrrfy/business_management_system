@@ -10,10 +10,12 @@
 /** أيام الأسبوع بترتيب getDay (الأحد=0) — مكرّرة هنا عمداً لإبقاء الوحدة بلا اعتمادية. */
 const DAYS = ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"] as const;
 
-/** يومٌ في الجدول بعد التطبيع: ساعاته (صفر = راحة) وسعرُ ساعته الصريح (null = مُشتقّ). */
+/** يومٌ في الجدول بعد التطبيع: ساعاته (صفر = راحة) وسعرُ ساعته الصريح (null = مُشتقّ)، مع حفظ وقت بداية الوردية إن وُجد. */
 export interface WageDayShape {
   hours: number;
   rate: number | null;
+  start?: string | null;
+  startTime?: string | null;
 }
 
 /** شكلُ البصمة الأجرية كما يُنتجها `server/services/hr/wageProfile.ts`. */
@@ -51,17 +53,27 @@ export const WAGE_FIELD_LABELS: Record<keyof WageProfileShape, string> = {
 export function normalizeScheduleShape(
   raw: unknown,
   // السعر اختياريّ في المُدخَل (محرّرُ الواجهة يتركه غير مُعرَّف) ومحسومٌ في المُخرَج.
-  fallback: Record<string, { hours: number; rate?: number | null }>,
+  fallback: Record<string, { hours: number; rate?: number | null; start?: string | null; startTime?: string | null }>,
 ): Record<string, WageDayShape> {
   const src = (raw && typeof raw === "object" ? raw : fallback) as Record<string, unknown>;
   const out: Record<string, WageDayShape> = {};
   for (const d of DAYS) {
-    const v = src[d] as { hours?: unknown; rate?: unknown } | number | undefined;
+    const v = src[d] as { hours?: unknown; rate?: unknown; start?: unknown; startTime?: unknown } | number | undefined;
     const hours = Number(typeof v === "number" ? v : v?.hours);
     const rate = typeof v === "number" || v == null || v.rate == null ? Number.NaN : Number(v.rate);
+    const start =
+      typeof v === "object" && v != null && typeof v.start === "string" && /^\d{1,2}:\d{2}$/.test(v.start.trim())
+        ? v.start.trim()
+        : undefined;
+    const startTime =
+      typeof v === "object" && v != null && typeof v.startTime === "string" && /^\d{1,2}:\d{2}$/.test(v.startTime.trim())
+        ? v.startTime.trim()
+        : undefined;
     out[d] = {
       hours: Number.isFinite(hours) && hours > 0 ? hours : 0,
       rate: Number.isFinite(rate) && rate > 0 ? rate : null,
+      ...(start ? { start } : {}),
+      ...(startTime ? { startTime } : {}),
     };
   }
   return out;
