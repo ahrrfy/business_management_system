@@ -210,6 +210,17 @@ function stripConfigComments(text) {
     .join("\n");
 }
 
+function extractRegisteredUnitTests(unitConfigText) {
+  const uncommented = stripConfigComments(unitConfigText);
+  const matches = [];
+  const re = /["']([^"'\r\n]+\.test\.(?:[cm]?jsx?|[cm]?tsx?))["']/g;
+  let m;
+  while ((m = re.exec(uncommented)) !== null) {
+    matches.push(m[1].replace(/\\/g, "/"));
+  }
+  return matches;
+}
+
 function isRegisteredInUnitConfig(unitConfigText, candidateRelPath) {
   const normalized = candidateRelPath.replace(/\\/g, "/");
   const uncommented = stripConfigComments(unitConfigText);
@@ -219,7 +230,7 @@ function isRegisteredInUnitConfig(unitConfigText, candidateRelPath) {
   );
 }
 
-function deriveCandidateUnitTestsForSourceFile(relPath) {
+function deriveCandidateUnitTestsForSourceFile(relPath, registeredTests = []) {
   const normalized = relPath.replace(/\\/g, "/");
   if (
     normalized === "scripts/safe-push-guard.mjs" ||
@@ -255,7 +266,7 @@ function deriveCandidateUnitTestsForSourceFile(relPath) {
   const baseName = parsed.name;
   const dir = parsed.dir;
   if (!dir || !baseName) return [];
-  return [
+  const exactCandidates = [
     `${dir}/${baseName}.test.ts`,
     `${dir}/${baseName}.test.tsx`,
     `${dir}/${baseName}.unit.test.ts`,
@@ -265,6 +276,13 @@ function deriveCandidateUnitTestsForSourceFile(relPath) {
     `${dir}/__tests__/${baseName}.unit.test.ts`,
     `${dir}/__tests__/${baseName}.unit.test.tsx`,
   ];
+  const colocatedPrefix = `${dir}/${baseName}.`;
+  const subdirPrefix = `${dir}/__tests__/${baseName}.`;
+  const suffixedRegistered = registeredTests.filter(
+    (testPath) =>
+      testPath.startsWith(colocatedPrefix) || testPath.startsWith(subdirPrefix),
+  );
+  return Array.from(new Set([...exactCandidates, ...suffixedRegistered]));
 }
 
 export function collectModifiedUnitTestsForPush({
@@ -337,6 +355,7 @@ export function collectModifiedUnitTestsForPush({
     }
   }
 
+  const registeredTests = extractRegisteredUnitTests(unitConfigText);
   const matchedTestsSet = new Set();
   for (const file of changedFiles) {
     if (/\.test\.(?:[cm]?jsx?|[cm]?tsx?)$/.test(file)) {
@@ -345,7 +364,10 @@ export function collectModifiedUnitTestsForPush({
       }
       continue;
     }
-    for (const candidate of deriveCandidateUnitTestsForSourceFile(file)) {
+    for (const candidate of deriveCandidateUnitTestsForSourceFile(
+      file,
+      registeredTests,
+    )) {
       if (isRegisteredInUnitConfig(unitConfigText, candidate)) {
         matchedTestsSet.add(candidate);
       }
@@ -445,13 +467,13 @@ export function runSafePushSelftest() {
       },
     ],
     unitConfigText:
-      '// "client/src/lib/commentedOut.test.ts"\ninclude: ["scripts/__tests__/safeDeliveryProtocols.test.ts", "scripts/__tests__/ciCriticalPathWorkflow.test.ts", "client/src/lib/lazyWithRetry.test.ts"]',
+      '// "client/src/lib/commentedOut.test.ts"\ninclude: ["scripts/__tests__/safeDeliveryProtocols.test.ts", "scripts/__tests__/ciCriticalPathWorkflow.test.ts", "client/src/lib/lazyWithRetry.test.ts", "client/src/pages/Treasury.permissionCache.test.tsx"]',
     runDiff: (sha) => {
       diffedShas.push(sha);
       return {
         status: 0,
         stdout:
-          "scripts/__tests__/safeDeliveryProtocols.test.ts\n.github/workflows/ci.yml\nclient/src/lib/commentedOut.ts\nclient/src/lib/lazyWithRetry.ts\n",
+          "scripts/__tests__/safeDeliveryProtocols.test.ts\n.github/workflows/ci.yml\nclient/src/lib/commentedOut.ts\nclient/src/lib/lazyWithRetry.ts\nclient/src/pages/Treasury.tsx\n",
       };
     },
     fileExists: () => true,
@@ -461,6 +483,7 @@ export function runSafePushSelftest() {
     "scripts/__tests__/safeDeliveryProtocols.test.ts",
     "scripts/__tests__/ciCriticalPathWorkflow.test.ts",
     "client/src/lib/lazyWithRetry.test.ts",
+    "client/src/pages/Treasury.permissionCache.test.tsx",
   ]);
 
   // Verify fail-closed when origin/main comparison fails

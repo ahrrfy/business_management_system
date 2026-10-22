@@ -794,12 +794,20 @@ export function verifyPostMergeCompletion(
 
 export function verifyLocalCheckoutMatchesCommit(
   expectedSha,
-  { cwd = REPO_ROOT, spawn = spawnSync } = {},
+  {
+    finalHeadSha = "",
+    isFinalStep = true,
+    cwd = REPO_ROOT,
+    spawn = spawnSync,
+  } = {},
 ) {
   const targetSha = String(expectedSha ?? "")
     .trim()
     .toLowerCase();
-  if (!targetSha) {
+  const checkoutTargetSha = String(finalHeadSha || expectedSha || "")
+    .trim()
+    .toLowerCase();
+  if (!targetSha || !checkoutTargetSha) {
     return {
       ok: false,
       code: "REMEDIATION_LOCAL_HEAD_MISMATCH",
@@ -818,13 +826,31 @@ export function verifyLocalCheckoutMatchesCommit(
       : "";
   if (
     !localHeadSha ||
-    (localHeadSha !== targetSha && !localHeadSha.startsWith(targetSha))
+    (localHeadSha !== checkoutTargetSha &&
+      !localHeadSha.startsWith(checkoutTargetSha))
   ) {
     return {
       ok: false,
       code: "REMEDIATION_LOCAL_HEAD_MISMATCH",
-      reason: `رأس شجرة العمل المحلّية (${localHeadSha || "غير متوفر"}) لا يطابق التزام الإصلاح الذرّي (${targetSha})؛ يجب أن تفحص البوّابات المحلّية نفس الالتزام الذرّي.`,
+      reason: `رأس شجرة العمل المحلّية (${localHeadSha || "غير متوفر"}) لا يطابق التزام الإصلاح الذرّي (${checkoutTargetSha})؛ يجب أن تفحص البوّابات المحلّية نفس الالتزام الذرّي.`,
     };
+  }
+  if (!isFinalStep && targetSha !== checkoutTargetSha) {
+    const ancestorRes = spawn(
+      "git",
+      ["merge-base", "--is-ancestor", targetSha, "HEAD"],
+      {
+        cwd,
+        encoding: "utf8",
+      },
+    );
+    if (ancestorRes.status !== 0) {
+      return {
+        ok: false,
+        code: "REMEDIATION_LOCAL_HEAD_MISMATCH",
+        reason: `التزام الإصلاح الذرّي المرحلي (${targetSha}) ليس سلفاً لرأس شجرة العمل الحالي (${localHeadSha}).`,
+      };
+    }
   }
   const statusRes = spawn(
     "git",
@@ -847,15 +873,22 @@ export function verifyLocalCheckoutMatchesCommit(
 
 export function defaultVerifyLocalGates({
   newHeadRefOid,
+  finalHeadRefOid = "",
+  isFinalStep = true,
   cwd = REPO_ROOT,
   spawn = spawnSync,
 } = {}) {
   const checkoutCheck = verifyLocalCheckoutMatchesCommit(newHeadRefOid, {
+    finalHeadSha: finalHeadRefOid,
+    isFinalStep,
     cwd,
     spawn,
   });
   if (!checkoutCheck.ok) {
     return checkoutCheck;
+  }
+  if (!isFinalStep) {
+    return { ok: true };
   }
   const pnpmCmd = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
   for (const scriptName of ["check", "check:guards"]) {
@@ -923,7 +956,7 @@ export async function runAtomicRemediationCycle({
     [String(initialPrView?.headRefOid ?? "").trim()].filter(Boolean),
   );
 
-  for (let cycle = 1; cycle <= maxCycles; cycle += 1) {
+  for (let cycle = 1; cycle <= maxCycles + 1; cycle += 1) {
     let decision = evaluatePrMergeReadiness({
       prView: currentPrView,
       reviewThreads: currentThreads,
@@ -976,7 +1009,7 @@ export async function runAtomicRemediationCycle({
     if (PENDING_READINESS_CODES.has(decision.code)) {
       return {
         ready: false,
-        cycles: cycle,
+        cycles: Math.min(cycle, maxCycles),
         code: decision.code,
         reason: decision.reason,
         decision,
@@ -991,11 +1024,15 @@ export async function runAtomicRemediationCycle({
     if (!isRemediable || typeof remediateFn !== "function") {
       return {
         ready: false,
-        cycles: cycle,
+        cycles: Math.min(cycle, maxCycles),
         code: decision.code,
         reason: decision.reason,
         decision,
       };
+    }
+
+    if (cycle > maxCycles) {
+      break;
     }
 
     if (typeof verifyLocalGates !== "function") {
@@ -1028,9 +1065,15 @@ export async function runAtomicRemediationCycle({
         ? remediation.atomicCommits
         : [remediation];
 
+    const finalStep = atomicSteps[atomicSteps.length - 1];
+    const finalStepSha = String(
+      finalStep?.newHeadRefOid ?? finalStep?.commitSha ?? "",
+    ).trim();
+
     let latestCommitSha = "";
     const pendingResolutions = [];
-    for (const step of atomicSteps) {
+    for (let stepIdx = 0; stepIdx < atomicSteps.length; stepIdx += 1) {
+      const step = atomicSteps[stepIdx];
       const stepSha = String(
         step?.newHeadRefOid ?? step?.commitSha ?? "",
       ).trim();
@@ -1049,6 +1092,8 @@ export async function runAtomicRemediationCycle({
       const localGateRes = await verifyLocalGates({
         cycle,
         newHeadRefOid: stepSha,
+        finalHeadRefOid: finalStepSha,
+        isFinalStep: stepIdx === atomicSteps.length - 1,
         decision,
       });
       if (!localGateRes || localGateRes.ok !== true) {
@@ -2028,6 +2073,64 @@ export async function runSafeMergeAsyncSelftest() {
   });
   assert.equal(mismatchedCheckoutRes.ok, false);
   assert.equal(mismatchedCheckoutRes.code, "REMEDIATION_LOCAL_HEAD_MISMATCH");
+
+  // Multi-commit series with maxCycles: 1 succeeds after the final remediation cycle and validates intermediate ancestry
+  const multiCommitMaxOneRes = await runAtomicRemediationCycle({
+    prNumber: 128,
+    maxCycles: 1,
+    pollIntervalMs: 0,
+    initialPrView: {
+      number: 128,
+      state: "OPEN",
+      baseRefName: "main",
+      mergeable: "MERGEABLE",
+      headRefOid: "sha-base-0",
+      statusCheckRollup: baseGreenRollup,
+      comments: makeTrustedCodexComments("sha-base-0"),
+    },
+    initialReviewThreads: [
+      { id: "PRRT_A", isResolved: false, body: "Fix A" },
+      { id: "PRRT_B", isResolved: false, body: "Fix B" },
+    ],
+    remediateFinding: async () => [
+      { commitSha: "sha-step-1", resolvedThreadIds: ["PRRT_A"] },
+      { commitSha: "sha-step-2", resolvedThreadIds: ["PRRT_B"] },
+    ],
+    verifyLocalGates: ({ newHeadRefOid, finalHeadRefOid, isFinalStep }) =>
+      defaultVerifyLocalGates({
+        newHeadRefOid,
+        finalHeadRefOid,
+        isFinalStep,
+        spawn: (cmd, args) => {
+          if (cmd === "git" && args[0] === "rev-parse") {
+            return { status: 0, stdout: "sha-step-2\n" };
+          }
+          if (cmd === "git" && args[0] === "merge-base") {
+            return { status: 0, stdout: "" };
+          }
+          return { status: 0, stdout: "" };
+        },
+      }),
+    resolveThread: async () => {},
+    fetchLatestState: async () => ({
+      prView: {
+        number: 128,
+        state: "OPEN",
+        baseRefName: "main",
+        mergeable: "MERGEABLE",
+        headRefOid: "sha-step-2",
+        statusCheckRollup: baseGreenRollup,
+        comments: makeTrustedCodexComments("sha-step-2"),
+      },
+      reviewThreads: [
+        { id: "PRRT_A", isResolved: true },
+        { id: "PRRT_B", isResolved: true },
+      ],
+    }),
+  });
+  assert.equal(multiCommitMaxOneRes.ready, true);
+  assert.equal(multiCommitMaxOneRes.cycles, 1);
+  assert.equal(multiCommitMaxOneRes.headRefOid, "sha-step-2");
 }
 
 function captureJson(cmd, args) {
