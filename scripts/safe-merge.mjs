@@ -160,7 +160,6 @@ export function buildMergeCommandArgs(prNumber, headRefOid) {
     "merge",
     cleanPr,
     "--merge",
-    "--delete-branch",
     "--match-head-commit",
     cleanSha,
   ];
@@ -1531,11 +1530,11 @@ export function runSafeMergeSelftest() {
     "merge",
     "1530",
     "--merge",
-    "--delete-branch",
     "--match-head-commit",
     "0bd1c2db9733578ae5ca4de6fd8d48883e503f02",
   ]);
   assert.equal(mergeArgs.includes("--admin"), false);
+  assert.equal(mergeArgs.includes("--delete-branch"), false);
 
   // 9. Post-merge verification rejects queued/unmerged state and confirms actual MERGED state
   const queuedOnlyRes = verifyPostMergeCompletion(1530, "sha-2", {
@@ -2591,6 +2590,23 @@ async function main() {
       `\n⛔ [${postMergeVerification.code}] ${postMergeVerification.reason}\n`,
     );
     process.exit(1);
+  }
+
+  const headRefName = String(initialPrView?.headRefName ?? "").trim();
+  if (headRefName && headRefName !== "main") {
+    spawnSync(
+      "gh",
+      [
+        "api",
+        "-X",
+        "DELETE",
+        `repos/ahrrfy/business_management_system/git/refs/heads/${headRefName}`,
+      ],
+      {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+      },
+    );
   }
 
   const mergeShaInfo = postMergeVerification.mergeCommitOid

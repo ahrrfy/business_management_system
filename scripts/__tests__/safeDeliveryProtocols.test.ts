@@ -378,6 +378,7 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
     expect(mergeArgs).toContain("--match-head-commit");
     expect(mergeArgs).toContain("0bd1c2db9733578ae5ca4de6fd8d48883e503f02");
     expect(mergeArgs).not.toContain("--admin");
+    expect(mergeArgs).not.toContain("--delete-branch");
 
     const resolveArgs = buildResolveReviewThreadArgs("PRRT_4341514310");
     expect(resolveArgs).toContain("threadId=PRRT_4341514310");

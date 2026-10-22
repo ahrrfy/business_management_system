@@ -347,7 +347,76 @@ function doesTestImportSourceFile(
       }
     }
 
+    const dirVars = new Map([
+      ["__dirname", testDir],
+      ["import.meta.dirname", testDir],
+      ["process.cwd()", ""],
+    ]);
+    const resolveRepoSubpath = (baseDir, relSegment) => {
+      const normalizedJoined = path.posix
+        .normalize(
+          baseDir ? path.posix.join(baseDir, relSegment) : relSegment,
+        )
+        .replace(/^(?:\.\/)+/, "")
+        .replace(/\/+$/, "");
+      if (normalizedJoined === ".") return "";
+      if (normalizedJoined.startsWith("..")) return null;
+      return normalizedJoined;
+    };
+
+    const varAssignRe =
+      /\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:path\.)?(?:resolve|join)\s*\(\s*(__dirname|import\.meta\.dirname|process\.cwd\(\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*(?:,\s*["'`]([^"'`\r\n]+)["'`])?\s*\)/g;
+    let vm;
+    while ((vm = varAssignRe.exec(collapsed)) !== null) {
+      const varName = vm[1];
+      const baseExpr = vm[2];
+      const relArg = vm[3] ?? "";
+      if (!dirVars.has(baseExpr)) continue;
+      const resolvedDir = resolveRepoSubpath(dirVars.get(baseExpr), relArg);
+      if (resolvedDir !== null) {
+        dirVars.set(varName, resolvedDir);
+      }
+    }
+
+    if (/\breaddir(?:Sync)?\b/.test(collapsed)) {
+      const enumeratedDirs = new Set();
+      for (const [varName, resolvedDir] of dirVars.entries()) {
+        if (
+          varName !== "__dirname" &&
+          varName !== "import.meta.dirname" &&
+          varName !== "process.cwd()" &&
+          resolvedDir &&
+          !/\.[A-Za-z0-9]+$/.test(path.posix.basename(resolvedDir))
+        ) {
+          enumeratedDirs.add(resolvedDir);
+        }
+      }
+      const joinCallRe =
+        /\b(?:path\.)?(?:resolve|join)\s*\(\s*(__dirname|import\.meta\.dirname|process\.cwd\(\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*,\s*["'`]([^"'`\r\n]+)["'`]\s*\)/g;
+      let jm;
+      while ((jm = joinCallRe.exec(collapsed)) !== null) {
+        const baseExpr = jm[1];
+        const relArg = jm[2];
+        if (!dirVars.has(baseExpr)) continue;
+        const resolvedDir = resolveRepoSubpath(dirVars.get(baseExpr), relArg);
+        if (
+          resolvedDir &&
+          !/\.[A-Za-z0-9]+$/.test(path.posix.basename(resolvedDir))
+        ) {
+          enumeratedDirs.add(resolvedDir);
+        }
+      }
+      for (const enumDir of enumeratedDirs) {
+        if (sourceNormalized.startsWith(`${enumDir}/`)) {
+          return true;
+        }
+      }
+    }
+
     const baseDirs = new Set([testDir]);
+    for (const resolvedDir of dirVars.values()) {
+      if (resolvedDir) baseDirs.add(resolvedDir);
+    }
     if (path.posix.basename(testDir) === "__tests__") {
       baseDirs.add(path.posix.dirname(testDir));
     }
@@ -732,18 +801,40 @@ export function runSafePushSelftest() {
       },
     ],
     unitConfigText:
-      'include: ["client/src/components/PageTabs.test.tsx", "client/src/components/reception/ReceptionDuplicateAlert.test.tsx", "client/src/components/ui/layering.test.ts"]',
+      'include: ["client/src/components/PageTabs.test.tsx", "client/src/components/reception/ReceptionDuplicateAlert.test.tsx", "client/src/components/ui/layering.test.ts", "server/services/__tests__/permissionParity.test.ts"]',
     runDiff: () => ({
       status: 0,
       stdout:
-        "client/src/pages/DeliveryCenter.tsx\nclient/src/components/reception/ReceptionDuplicateAlert.css\nclient/src/components/ui/select.tsx\n",
+        "client/src/pages/DeliveryCenter.tsx\nclient/src/components/reception/ReceptionDuplicateAlert.css\nclient/src/components/ui/select.tsx\nserver/routers/commissionsRouter.ts\n",
     }),
     fileExists: () => true,
   });
   assert.deepEqual(readByTest, [
     "client/src/components/PageTabs.test.tsx",
+    "server/services/__tests__/permissionParity.test.ts",
     "client/src/components/reception/ReceptionDuplicateAlert.test.tsx",
     "client/src/components/ui/layering.test.ts",
+  ]);
+
+  const enumeratedByTest = collectModifiedUnitTestsForPush({
+    stdinEntries: [
+      {
+        localRef: "refs/heads/feat/commissions-router",
+        localSha: "6666666666666666666666666666666666666666",
+        remoteRef: "refs/heads/feat/commissions-router",
+        remoteSha: "0000000000000000000000000000000000000000",
+      },
+    ],
+    unitConfigText:
+      'include: ["server/services/__tests__/permissionParity.test.ts"]',
+    runDiff: () => ({
+      status: 0,
+      stdout: "server/routers/commissionsRouter.ts\n",
+    }),
+    fileExists: () => true,
+  });
+  assert.deepEqual(enumeratedByTest, [
+    "server/services/__tests__/permissionParity.test.ts",
   ]);
 
   // Verify fail-closed when origin/main comparison fails
