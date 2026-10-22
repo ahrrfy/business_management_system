@@ -252,6 +252,12 @@ function resolveTestImportSpecifier(testRelPath, rawSpecifier) {
   } else if (specifier.startsWith(".")) {
     const testDir = path.posix.dirname(testRelPath.replace(/\\/g, "/"));
     resolved = path.posix.normalize(path.posix.join(testDir, specifier));
+  } else if (
+    /^(?:client|server|shared|scripts|drizzle|\.github|\.husky)\//.test(
+      specifier,
+    )
+  ) {
+    resolved = path.posix.normalize(specifier);
   } else {
     return null;
   }
@@ -274,31 +280,73 @@ function doesTestImportSourceFile(
 ) {
   if (!testContent) return false;
   const uncommented = stripConfigComments(testContent);
+  const collapsed = uncommented.replace(
+    /\b(?:join|resolve)\s*\(([^)]+)\)/g,
+    (full) => full.replace(/["'`]\s*,\s*["'`]/g, "/"),
+  );
+
+  if (
+    collapsed.includes(`"${sourceNormalized}"`) ||
+    collapsed.includes(`'${sourceNormalized}'`) ||
+    collapsed.includes(`\`${sourceNormalized}\``) ||
+    collapsed.includes(`"./${sourceNormalized}"`) ||
+    collapsed.includes(`'./${sourceNormalized}'`) ||
+    collapsed.includes(`/${sourceNormalized}"`) ||
+    collapsed.includes(`/${sourceNormalized}'`) ||
+    collapsed.includes(`/${sourceNormalized}\``)
+  ) {
+    return true;
+  }
+
   const specifiers = new Set();
   const patterns = [
     /\bfrom\s+["']([^"'\r\n]+)["']/g,
     /\bimport\s+["']([^"'\r\n]+)["']/g,
     /\b(?:import|require|vi\.(?:do)?mock)\s*\(\s*["']([^"'\r\n]+)["']/g,
+    /["'`]((?:\.\.?\/|@\/|@shared\/|(?:client|server|shared|scripts|drizzle|\.github|\.husky)\/)[^"'`\r\n${}]+)["'`]/g,
   ];
   for (const re of patterns) {
     let m;
-    while ((m = re.exec(uncommented)) !== null) {
+    while ((m = re.exec(collapsed)) !== null) {
       specifiers.add(m[1]);
     }
   }
-  const isIndexFile = path.posix.basename(sourceNoExt) === "index";
+  const isIndexFile =
+    Boolean(sourceNoExt) && path.posix.basename(sourceNoExt) === "index";
   const indexDir = isIndexFile ? path.posix.dirname(sourceNoExt) : "";
   for (const spec of specifiers) {
     const target = resolveTestImportSpecifier(testRelPath, spec);
     if (!target) continue;
     if (
       target.resolved === sourceNormalized ||
-      target.resolvedNoExt === sourceNoExt ||
+      (Boolean(sourceNoExt) && target.resolvedNoExt === sourceNoExt) ||
       (isIndexFile && target.resolvedNoExt === indexDir)
     ) {
       return true;
     }
   }
+
+  if (/\breadFile(?:Sync)?\b/.test(collapsed)) {
+    const sourceBase = path.posix.basename(sourceNormalized);
+    const isGenericIndex = /^index\.[^.]+$/i.test(sourceBase);
+    const fileLiteralRe =
+      /["'`]([A-Za-z0-9_./-]+\.[A-Za-z0-9]+)["'`]/g;
+    let m;
+    while ((m = fileLiteralRe.exec(collapsed)) !== null) {
+      const cleaned = m[1].replace(/^(?:\.\.\/|\.\/)+/, "");
+      if (!cleaned) continue;
+      if (cleaned === sourceNormalized) {
+        return true;
+      }
+      if (
+        !isGenericIndex &&
+        (cleaned === sourceBase || sourceNormalized.endsWith(`/${cleaned}`))
+      ) {
+        return true;
+      }
+    }
+  }
+
   return false;
 }
 
@@ -308,6 +356,7 @@ function deriveCandidateUnitTestsForSourceFile(
   readTestFile = defaultReadRepoFile,
 ) {
   const normalized = relPath.replace(/\\/g, "/");
+  const explicitCandidates = [];
   if (
     normalized === "scripts/safe-push-guard.mjs" ||
     normalized === "scripts/safe-merge.mjs" ||
@@ -315,50 +364,57 @@ function deriveCandidateUnitTestsForSourceFile(
     normalized === "scripts/deploy.test.mjs" ||
     normalized === ".husky/pre-push"
   ) {
-    return ["scripts/__tests__/safeDeliveryProtocols.test.ts"];
-  }
-  if (
+    explicitCandidates.push("scripts/__tests__/safeDeliveryProtocols.test.ts");
+  } else if (
     normalized === ".github/workflows/ci.yml" ||
     normalized === "scripts/ci-policy.mjs"
   ) {
-    return [
+    explicitCandidates.push(
       "scripts/__tests__/ciCriticalPathWorkflow.test.ts",
       "scripts/__tests__/safeDeliveryProtocols.test.ts",
-    ];
-  }
-  if (
+    );
+  } else if (
     normalized === ".github/workflows/security.yml" ||
     normalized === "osv-scanner.toml"
   ) {
-    return ["scripts/__tests__/dependencySecurityWorkflow.test.ts"];
+    explicitCandidates.push(
+      "scripts/__tests__/dependencySecurityWorkflow.test.ts",
+    );
+  } else if (normalized === ".github/workflows/ci-failure-diagnostics.yml") {
+    explicitCandidates.push(
+      "scripts/__tests__/ciFailureDiagnosticsWorkflow.test.ts",
+    );
   }
-  if (normalized === ".github/workflows/ci-failure-diagnostics.yml") {
-    return ["scripts/__tests__/ciFailureDiagnosticsWorkflow.test.ts"];
-  }
-  if (!/\.(?:[cm]?jsx?|[cm]?tsx?)$/.test(normalized)) {
-    return [];
-  }
+
   const parsed = path.posix.parse(normalized);
   const baseName = parsed.name;
   const dir = parsed.dir;
-  if (!dir || !baseName) return [];
-  const sourceNoExt = `${dir}/${baseName}`;
-  const exactCandidates = [
-    `${dir}/${baseName}.test.ts`,
-    `${dir}/${baseName}.test.tsx`,
-    `${dir}/${baseName}.unit.test.ts`,
-    `${dir}/${baseName}.unit.test.tsx`,
-    `${dir}/__tests__/${baseName}.test.ts`,
-    `${dir}/__tests__/${baseName}.test.tsx`,
-    `${dir}/__tests__/${baseName}.unit.test.ts`,
-    `${dir}/__tests__/${baseName}.unit.test.tsx`,
-  ];
-  const colocatedPrefix = `${dir}/${baseName}.`;
-  const subdirPrefix = `${dir}/__tests__/${baseName}.`;
+  const isJsTs = /\.(?:[cm]?jsx?|[cm]?tsx?)$/.test(normalized);
+  const sourceNoExt = isJsTs && dir && baseName ? `${dir}/${baseName}` : "";
+
+  const exactCandidates =
+    isJsTs && dir && baseName
+      ? [
+          `${dir}/${baseName}.test.ts`,
+          `${dir}/${baseName}.test.tsx`,
+          `${dir}/${baseName}.unit.test.ts`,
+          `${dir}/${baseName}.unit.test.tsx`,
+          `${dir}/__tests__/${baseName}.test.ts`,
+          `${dir}/__tests__/${baseName}.test.tsx`,
+          `${dir}/__tests__/${baseName}.unit.test.ts`,
+          `${dir}/__tests__/${baseName}.unit.test.tsx`,
+        ]
+      : [];
+
+  const colocatedPrefix =
+    isJsTs && dir && baseName ? `${dir}/${baseName}.` : "";
+  const subdirPrefix =
+    isJsTs && dir && baseName ? `${dir}/__tests__/${baseName}.` : "";
+
   const matchedRegistered = registeredTests.filter((testPath) => {
     if (
-      testPath.startsWith(colocatedPrefix) ||
-      testPath.startsWith(subdirPrefix)
+      (colocatedPrefix && testPath.startsWith(colocatedPrefix)) ||
+      (subdirPrefix && testPath.startsWith(subdirPrefix))
     ) {
       return true;
     }
@@ -377,7 +433,14 @@ function deriveCandidateUnitTestsForSourceFile(
     }
     return false;
   });
-  return Array.from(new Set([...exactCandidates, ...matchedRegistered]));
+
+  return Array.from(
+    new Set([
+      ...explicitCandidates,
+      ...exactCandidates,
+      ...matchedRegistered,
+    ]),
+  );
 }
 
 export function collectModifiedUnitTestsForPush({
@@ -614,6 +677,30 @@ export function runSafePushSelftest() {
   });
   assert.deepEqual(importedByTest, [
     "client/src/pages/Treasury.permissionCache.test.tsx",
+  ]);
+
+  // Verify source and non-TS files read via readFileSync in registered tests are matched
+  const readByTest = collectModifiedUnitTestsForPush({
+    stdinEntries: [
+      {
+        localRef: "refs/heads/feat/delivery-center",
+        localSha: "5555555555555555555555555555555555555555",
+        remoteRef: "refs/heads/feat/delivery-center",
+        remoteSha: "0000000000000000000000000000000000000000",
+      },
+    ],
+    unitConfigText:
+      'include: ["client/src/components/PageTabs.test.tsx", "client/src/components/reception/ReceptionDuplicateAlert.test.tsx"]',
+    runDiff: () => ({
+      status: 0,
+      stdout:
+        "client/src/pages/DeliveryCenter.tsx\nclient/src/components/reception/ReceptionDuplicateAlert.css\n",
+    }),
+    fileExists: () => true,
+  });
+  assert.deepEqual(readByTest, [
+    "client/src/components/PageTabs.test.tsx",
+    "client/src/components/reception/ReceptionDuplicateAlert.test.tsx",
   ]);
 
   // Verify fail-closed when origin/main comparison fails

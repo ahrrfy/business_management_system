@@ -791,7 +791,14 @@ function defaultSleep(ms) {
 export function verifyPostMergeCompletion(
   prNumber,
   expectedHeadRefOid,
-  { fetchPrState, maxAttempts = 12, delayMs = 2500, sleep = defaultSleep } = {},
+  {
+    fetchPrState,
+    maxAttempts = 720,
+    delayMs = 15_000,
+    nonQueueMaxAttempts = 3,
+    nonQueueDelayMs = 2500,
+    sleep = defaultSleep,
+  } = {},
 ) {
   if (typeof fetchPrState !== "function") {
     throw new Error("دالة fetchPrState مطلوبة للتحقق من اكتمال الدمج.");
@@ -853,10 +860,10 @@ export function verifyPostMergeCompletion(
     }
 
     if (attempt < maxAttempts) {
-      if (!isInMergeQueue && attempt >= 3) {
+      if (!isInMergeQueue && attempt >= nonQueueMaxAttempts) {
         break;
       }
-      sleep(delayMs);
+      sleep(isInMergeQueue ? delayMs : Math.min(delayMs, nonQueueDelayMs));
     }
   }
 
@@ -1029,7 +1036,7 @@ export async function runAtomicRemediationCycle({
   fetchLatestState,
   maxCycles = 5,
   pollIntervalMs = 15_000,
-  maxPollAttempts = 40,
+  maxPollAttempts = 720,
   sleep = defaultAsyncSleep,
 } = {}) {
   const remediateFn = remediateAndCommit ?? remediateFinding;
