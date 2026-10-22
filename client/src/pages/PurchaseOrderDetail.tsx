@@ -273,7 +273,20 @@ export default function PurchaseOrderDetail() {
   const parsedNotes = splitDocumentNotes(d.notes);
 
   function printOrder() {
-    const priceSym = isUsd ? "$" : "د.ع";
+    const useUsdLines =
+      isUsd &&
+      (d.items.length === 0 ||
+        d.items.every((it) => it.usdUnitPrice != null && it.usdTotal != null));
+    const priceSym = useUsdLines ? "$" : "د.ع";
+    const usdSubtotal = useUsdLines
+      ? d.items
+          .reduce((acc, it) => acc.plus(D(it.usdTotal ?? 0)), D(0))
+          .toDecimalPlaces(2)
+      : D(0);
+    const usdTax =
+      useUsdLines && d.usdTotal != null
+        ? D(d.usdTotal).minus(usdSubtotal).toDecimalPlaces(2)
+        : D(0);
     printReportDoc({
       title: "أمر شراء",
       docNum: d.poNumber ?? `#${d.id}`,
@@ -289,6 +302,9 @@ export default function PurchaseOrderDetail() {
             { label: "رقم الأمر", value: d.poNumber ?? `#${d.id}` },
             { label: "الحالة", value: PO_STATUS[d.status] ?? d.status },
             { label: "العملة", value: isUsd ? "دولار أمريكي" : "دينار عراقي" },
+            ...(isUsd && D(d.agreedRate ?? 0).gt(0)
+              ? [{ label: "سعر الصرف المثبت", value: `${fmtAr(d.agreedRate)} د.ع/$` }]
+              : []),
             ...(d.expectedDeliveryDate
               ? [{ label: "التسليم المتوقّع", value: fmtDate(d.expectedDeliveryDate) }]
               : []),
@@ -319,15 +335,18 @@ export default function PurchaseOrderDetail() {
         unit: it.unitName ?? "قطعة",
         price: costHidden
           ? "—"
-          : isUsd
+          : useUsdLines
             ? formatQuantity(it.usdUnitPrice ?? "0", { maximumFractionDigits: 4 })
             : fmtAr(it.unitPrice ?? "0"),
         qty: formatQuantity(it.quantity),
-        total: costHidden ? "—" : fmtAr((isUsd ? it.usdTotal : it.total) ?? "0"),
+        total: costHidden ? "—" : fmtAr((useUsdLines ? it.usdTotal : it.total) ?? "0"),
       })),
       summary: costHidden
         ? []
         : [
+            ...(useUsdLines
+              ? [{ label: "المجموع قبل الضريبة ($)", value: `${fmtAr(usdSubtotal.toFixed(2))} $` }]
+              : []),
             { label: "المجموع قبل الضريبة (د.ع)", value: fmtAr(d.subtotal) },
             ...(D(d.invoiceDiscount ?? 0).gt(0)
               ? [
@@ -340,6 +359,9 @@ export default function PurchaseOrderDetail() {
                     }`,
                   },
                 ]
+              : []),
+            ...(useUsdLines && (D(d.taxAmount ?? 0).gt(0) || usdTax.gt(0))
+              ? [{ label: "الضريبة ($)", value: `${fmtAr(usdTax.toFixed(2))} $` }]
               : []),
             ...(D(d.taxAmount ?? 0).gt(0)
               ? [{ label: "الضريبة (د.ع)", value: fmtAr(d.taxAmount) }]
