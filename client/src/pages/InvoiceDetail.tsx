@@ -1,12 +1,8 @@
 import { PageHeader } from "@/components/PageHeader";
 import { ErrorState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { replaceDocumentNotes, splitDocumentNotes } from "@/components/invoice";
 import { AutoPrintOnce } from "@/components/AutoPrintOnce";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -357,7 +353,7 @@ export default function InvoiceDetail() {
     fullCorrectionEligibility.data?.canCorrect === true;
 
   function openCorrection() {
-    setCorrectionNotes(data.notes ?? "");
+    setCorrectionNotes(splitDocumentNotes(data.notes).notes);
     setCorrectionDueDate(data.dueDate ? String(data.dueDate).slice(0, 10) : "");
     setCorrectionReason("");
     setCorrectionRequestKey(crypto.randomUUID());
@@ -365,8 +361,9 @@ export default function InvoiceDetail() {
   }
 
   async function submitCorrection() {
-    const nextNotes = correctionNotes.trim() || null;
-    const currentNotes = data.notes ?? null;
+    const recomposedNotes = replaceDocumentNotes(data.notes, correctionNotes);
+    const nextNotes = recomposedNotes || null;
+    const currentNotes = (data.notes ?? "").trim() || null;
     const nextDueDate = correctionDueDate || null;
     const currentDueDate = data.dueDate ? String(data.dueDate).slice(0, 10) : null;
     const notesChanged = nextNotes !== currentNotes;
@@ -383,7 +380,7 @@ export default function InvoiceDetail() {
       if (notesChanged) {
         await correctInvoice.mutateAsync({
           invoiceId,
-          notes: correctionNotes,
+          notes: recomposedNotes,
           reason: correctionReason,
         });
         notesSaved = true;

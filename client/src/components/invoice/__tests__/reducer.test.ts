@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createInitialState, invoiceReducer } from "../reducer";
-import { composeDocumentNotes, splitDocumentNotes } from "../TermsAndNotes";
+import { composeDocumentNotes, replaceDocumentNotes, splitDocumentNotes } from "../TermsAndNotes";
 import type { InvoiceLine } from "../types";
 
 function line(productUnitId: number, price: string): InvoiceLine {
@@ -253,5 +253,19 @@ describe("composeDocumentNotes & splitDocumentNotes", () => {
   it("يعيد undefined عند خلو الحقول الثلاثة", () => {
     expect(composeDocumentNotes({ notes: "  ", terms: "", poReference: "" })).toBeUndefined();
     expect(splitDocumentNotes(null)).toEqual({ notes: "", terms: "", poReference: "" });
+  });
+
+  it("يحافظ على الشروط ومرجع PO عند تعديل نص الملاحظات عبر replaceDocumentNotes", () => {
+    const initial = composeDocumentNotes({
+      notes: "ملاحظة قديمة",
+      terms: "البضاعة لا ترد",
+      poReference: "PO-77",
+    });
+    const updated = replaceDocumentNotes(initial, "ملاحظة مصححة");
+    expect(splitDocumentNotes(updated)).toEqual({
+      notes: "ملاحظة مصححة",
+      terms: "البضاعة لا ترد",
+      poReference: "PO-77",
+    });
   });
 });

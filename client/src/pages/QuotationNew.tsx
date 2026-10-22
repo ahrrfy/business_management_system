@@ -210,11 +210,12 @@ export default function QuotationNew() {
     }
   }, [isEdit, taxSettingsQuery.data]);
 
-  // مزامنة أرصدة المخزون الحيّة للوحدات المضافة أو المحمّلة من مسودة/طلب متجر
-  const stockUnitIds = useMemo(
-    () => Array.from(new Set(state.items.map((item) => item.productUnitId))).slice(0, 500),
+  // مزامنة أرصدة المخزون الحيّة للوحدات المضافة أو المحمّلة من مسودة/طلب متجر (بما في ذلك ما يتجاوز 500 وحدة عبر دفعات)
+  const allStockUnitIds = useMemo(
+    () => Array.from(new Set(state.items.map((item) => item.productUnitId))),
     [state.items],
   );
+  const stockUnitIds = useMemo(() => allStockUnitIds.slice(0, 500), [allStockUnitIds]);
   const liveStockQ = trpc.catalog.stockByUnitIds.useQuery(
     { branchId: state.branchId, productUnitIds: stockUnitIds },
     {
@@ -234,23 +235,47 @@ export default function QuotationNew() {
       dispatch({ type: "SET_FIELD", field: "branchId", value: snapshot.branchId });
       return;
     }
-    dispatch({
-      type: "SET_STOCK_SNAPSHOTS",
-      snapshotsByUnitId: Object.fromEntries(
-        snapshot.rows.map((row) => [
-          row.productUnitId,
-          {
-            stockBase: row.stockBase,
-            stockBranchId: row.branchId,
-            reservedBase: row.reservedBase,
-            availableBase: row.availableBase,
-            isService: row.isService,
-            allowBackorder: row.allowBackorder,
-          },
-        ]),
-      ),
-    });
-  }, [liveStockQ.data, state.branchId]);
+    const baseRows = snapshot.rows;
+    let cancelled = false;
+    async function applyAllSnapshots() {
+      const allRows = [...baseRows];
+      if (allStockUnitIds.length > 500) {
+        const extraChunks: number[][] = [];
+        for (let i = 500; i < allStockUnitIds.length; i += 500) {
+          extraChunks.push(allStockUnitIds.slice(i, i + 500));
+        }
+        const extraSnapshots = await Promise.all(
+          extraChunks.map((chunk) =>
+            utils.catalog.stockByUnitIds.fetch({ branchId: state.branchId, productUnitIds: chunk }),
+          ),
+        );
+        for (const extra of extraSnapshots) {
+          allRows.push(...extra.rows);
+        }
+      }
+      if (cancelled) return;
+      dispatch({
+        type: "SET_STOCK_SNAPSHOTS",
+        snapshotsByUnitId: Object.fromEntries(
+          allRows.map((row) => [
+            row.productUnitId,
+            {
+              stockBase: row.stockBase,
+              stockBranchId: row.branchId,
+              reservedBase: row.reservedBase,
+              availableBase: row.availableBase,
+              isService: row.isService,
+              allowBackorder: row.allowBackorder,
+            },
+          ]),
+        ),
+      });
+    }
+    void applyAllSnapshots();
+    return () => {
+      cancelled = true;
+    };
+  }, [liveStockQ.data, state.branchId, allStockUnitIds, utils.catalog.stockByUnitIds]);
 
   const totals = useMemo(() => calcTotals(state.items, state), [state.items, state]);
   const taxShares = useMemo(

@@ -2,7 +2,7 @@
  * TermsAndNotes — terms & conditions textarea + document notes composition helpers.
  * Ported from `_design-bundle/project/invoice-footer.jsx#TermsAndNotes`.
  */
-import { useState, type Dispatch } from "react";
+import { useEffect, useRef, useState, type Dispatch } from "react";
 import { ChevronDown, ChevronUp, Scroll } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
@@ -64,6 +64,23 @@ export function splitDocumentNotes(raw?: string | null): {
   return { notes: working, terms, poReference };
 }
 
+/**
+ * يستبدل نصّ الملاحظات المرئيّ مع الحفاظ على الشروط والأحكام ومرجع أمر الشراء المحفوظين داخل `notes`.
+ */
+export function replaceDocumentNotes(
+  raw?: string | null,
+  nextNotes?: string | null,
+): string {
+  const existing = splitDocumentNotes(raw);
+  return (
+    composeDocumentNotes({
+      notes: nextNotes,
+      terms: existing.terms,
+      poReference: existing.poReference,
+    }) ?? ""
+  );
+}
+
 export interface TermsAndNotesProps {
   state: InvoiceState;
   dispatch: Dispatch<InvoiceAction>;
@@ -72,7 +89,16 @@ export interface TermsAndNotesProps {
 export function TermsAndNotes({ state, dispatch }: TermsAndNotesProps) {
   const hasTerms = Boolean(state.terms?.trim());
   const [expanded, setExpanded] = useState(hasTerms);
-  const isOpen = expanded || hasTerms;
+  const prevHadTermsRef = useRef(hasTerms);
+
+  useEffect(() => {
+    if (!prevHadTermsRef.current && hasTerms) {
+      setExpanded(true);
+    }
+    prevHadTermsRef.current = hasTerms;
+  }, [hasTerms]);
+
+  const isOpen = expanded;
 
   return (
     <section className="shrink-0 rounded-lg border bg-card px-2.5 py-2">

@@ -42,6 +42,7 @@ export { ActionButtons, type ActionButtonsProps, type InvoiceActionKind } from "
 export {
   TermsAndNotes,
   composeDocumentNotes,
+  replaceDocumentNotes,
   splitDocumentNotes,
   type TermsAndNotesProps,
 } from "./TermsAndNotes";
