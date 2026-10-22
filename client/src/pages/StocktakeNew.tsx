@@ -405,20 +405,20 @@ export default function StocktakeNew() {
   const steps = ["النطاق والفرع", "عمّال الجرد وتقسيم المناطق", "إعدادات التدقيق والتأكيد"];
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       {/* شريط الرجوع اليدويّ («→ جلسات الجرد / جلسة جرد جديدة») صار `backHref` داخل الرأس نفسه:
           سهمٌ موحّد بدل محرفٍ خامّ، والقطعة الأخيرة كانت تكرّر العنوان الذي تحتها حرفياً. */}
       <PageHeader title="جلسة جرد جديدة" backHref="/stocktakes" backLabel="جلسات الجرد" />
-      {!isManagerPlus && <p className="text-sm text-muted-foreground">إنشاء الجلسة مفوّض لك؛ إعدادات الحوكمة المتقدمة والجرد الافتتاحي مخصصة للإدارة.</p>}
+      {!isManagerPlus && <p className="text-xs text-muted-foreground">إنشاء الجلسة مفوّض لك؛ إعدادات الحوكمة المتقدمة والجرد الافتتاحي مخصصة للإدارة.</p>}
 
       {/* مؤشر الخطوات */}
       <div className="flex items-center gap-2">
         {steps.map((s, i) => (
           <span key={s} className={`flex items-center gap-2 ${i > 0 ? "flex-1" : ""}`}>
             {i > 0 && <span className={`h-px flex-1 ${i <= step ? "bg-primary" : "bg-border"}`} />}
-            <span className="flex items-center gap-2">
+            <span className="flex items-center gap-1.5">
               <span
-                className={`grid size-7 place-items-center rounded-full text-xs font-bold ${
+                className={`grid size-6 place-items-center rounded-full text-xs font-bold ${
                   i < step
                     ? "bg-[var(--sem-pos)] text-background"
                     : i === step
@@ -426,9 +426,9 @@ export default function StocktakeNew() {
                       : "bg-muted text-muted-foreground"
                 }`}
               >
-                {i < step ? <Check aria-hidden className="size-4" /> : nf(i + 1)}
+                {i < step ? <Check aria-hidden className="size-3.5" /> : nf(i + 1)}
               </span>
-              <span className={`text-sm font-semibold ${i === step ? "" : "text-muted-foreground"}`}>{s}</span>
+              <span className={`text-xs font-semibold ${i === step ? "" : "text-muted-foreground"}`}>{s}</span>
             </span>
           </span>
         ))}
@@ -437,7 +437,7 @@ export default function StocktakeNew() {
       {/* ───── الخطوة ١: النطاق ───── */}
       {step === 0 && (
         <Card>
-          <CardContent className="space-y-5 p-5">
+          <CardContent className="space-y-3.5 p-3.5">
             {isManagerPlus && (
               <div
                 className={`flex items-start justify-between gap-3 rounded-lg border p-3 ${
@@ -783,7 +783,7 @@ export default function StocktakeNew() {
       {/* ───── الخطوة ٢: العمّال والمناطق ───── */}
       {step === 1 && (
         <Card>
-          <CardContent className="space-y-4 p-5">
+          <CardContent className="space-y-3 p-3.5">
             <p className="text-sm text-muted-foreground">
               لا تُقسَّم المنتجات على العاملين: كل عامل يرى النطاق نفسه، وتستخدم المنطقة لتوجيهه ميدانياً.
               عامل «الرابط الخارجي» يدخل برمز PIN دون حساب — مناسب للعمّال الموسميين.
@@ -910,9 +910,9 @@ export default function StocktakeNew() {
 
       {/* ───── الخطوة ٣: الإعدادات والتأكيد ───── */}
       {step === 2 && (
-        <div className="space-y-4">
+        <div className="space-y-2.5">
           <Card>
-            <CardContent className="space-y-5 p-5">
+            <CardContent className="space-y-3.5 p-3.5">
               <div className="grid gap-4 lg:grid-cols-3 items-start">
                 {/* جرد أعمى — مُثبَّت دائماً (قرار معتمد) */}
                 <div className="flex items-start justify-between gap-4 rounded-lg border p-3">

@@ -17,7 +17,7 @@ import {
   ShoppingCart,
 } from "lucide-react";
 import { ErrorState, LoadingState } from "@/components/PageState";
-import { PageHeader } from "@/components/PageHeader";
+import { EmbeddedPageHeaderProvider, PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -341,7 +341,7 @@ export default function ReturnsHub() {
   }
 
   return (
-    <div className="space-y-3.5 pb-12">
+    <div className="space-y-2.5 pb-8">
       {/* الترويسة الرئيسية */}
       <PageHeader
         title="بوابة المرتجعات الموحدة"
@@ -350,152 +350,102 @@ export default function ReturnsHub() {
         backLabel="الرئيسية"
       />
 
-      {/* ═════════════════════════════════════════════════════════════════════ */}
-      {/* المنفذان الرئيسيان: أزرار واضحة وهوية بصرية دالة ومميزة               */}
-      {/* ═════════════════════════════════════════════════════════════════════ */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-        {canAccessSalesPortal && (
-          <button
-            type="button"
-            onClick={() => switchPortal("sales")}
-            className={cn(
-              "relative p-2.5 rounded-xl border-2 text-right transition-all flex items-center gap-3 text-start cursor-pointer shadow-xs",
-              portalMode === "sales"
-                ? "border-primary bg-primary/5 dark:bg-primary/10 shadow-xs ring-2 ring-primary/20"
-                : "border-border hover:border-primary/40 bg-card hover:bg-muted/30 opacity-80 hover:opacity-100"
-            )}
-          >
-            <div
-              className={cn(
-                "p-2 rounded-lg shrink-0 transition-colors",
-                portalMode === "sales"
-                  ? "bg-primary text-primary-foreground shadow-xs"
-                  : "bg-muted text-muted-foreground"
-              )}
-            >
-              <ShoppingCart className="size-5" aria-hidden />
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-bold text-sm text-foreground">
-                  مرتجعات المبيعات (العملاء والتجزئة)
-                </span>
-                {portalMode === "sales" && (
-                  <Badge className="bg-primary text-primary-foreground text-[10px] px-1.5 py-0">
-                    المنفذ النشط
-                  </Badge>
+      {/* شريط مدمج موحد للتبديل بين منفذَي المبيعات والمشتريات ووضع البوابة أو السجل */}
+      <Card className="py-1.5 gap-0">
+        <CardContent className="px-3 py-0 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {canAccessSalesPortal && (
+              <button
+                type="button"
+                onClick={() => switchPortal("sales")}
+                className={cn(
+                  "inline-flex items-center gap-2 rounded-md border px-2.5 py-1 text-xs font-bold transition-colors cursor-pointer",
+                  portalMode === "sales"
+                    ? "border-primary bg-primary text-primary-foreground shadow-xs"
+                    : "border-border bg-background text-muted-foreground hover:bg-muted/50 hover:text-foreground",
                 )}
-              </div>
-              <p className="text-[11px] text-muted-foreground truncate">
-                مسح الباركود، الفاتورة، العميل، فرز السليم والتالف، والاسترداد المالي
-              </p>
-            </div>
-          </button>
-        )}
-
-        {canAccessPurchasePortal && (
-          <button
-            type="button"
-            onClick={() => switchPortal("purchases")}
-            className={cn(
-              "relative p-2.5 rounded-xl border-2 text-right transition-all flex items-center gap-3 text-start cursor-pointer shadow-xs",
-              portalMode === "purchases"
-                ? "border-blue-500 bg-blue-50/50 dark:bg-blue-950/20 shadow-xs ring-2 ring-blue-500/20"
-                : "border-border hover:border-blue-300/80 bg-card hover:bg-muted/30 opacity-80 hover:opacity-100"
+              >
+                <ShoppingCart className="size-3.5" aria-hidden />
+                <span>مرتجعات المبيعات (العملاء والتجزئة)</span>
+              </button>
             )}
-          >
-            <div
-              className={cn(
-                "p-2 rounded-lg shrink-0 transition-colors",
-                portalMode === "purchases"
-                  ? "bg-blue-600 text-white shadow-xs"
-                  : "bg-muted text-muted-foreground"
-              )}
-            >
-              <Building2 className="size-5" aria-hidden />
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-bold text-sm text-foreground">
-                  مرتجعات الشراء (الموردين والشركات)
-                </span>
-                {portalMode === "purchases" && (
-                  <Badge className="bg-blue-600 text-white hover:bg-blue-700 text-[10px] px-1.5 py-0">
-                    المنفذ النشط
-                  </Badge>
+            {canAccessPurchasePortal && (
+              <button
+                type="button"
+                onClick={() => switchPortal("purchases")}
+                className={cn(
+                  "inline-flex items-center gap-2 rounded-md border px-2.5 py-1 text-xs font-bold transition-colors cursor-pointer",
+                  portalMode === "purchases"
+                    ? "border-blue-600 bg-blue-600 text-white shadow-xs"
+                    : "border-border bg-background text-muted-foreground hover:bg-muted/50 hover:text-foreground",
                 )}
-              </div>
-              <p className="text-[11px] text-muted-foreground truncate">
-                المورد وكشف الرصيد، سلة التكلفة بالباركود، ومعادلة الذمم أو النقد
-              </p>
-            </div>
-          </button>
-        )}
-      </div>
+              >
+                <Building2 className="size-3.5" aria-hidden />
+                <span>مرتجعات الشراء (الموردين والشركات)</span>
+              </button>
+            )}
+          </div>
 
-      {/* ═════════════════════════════════════════════════════════════════════ */}
-      {/* التبديل بين منفذ الإنشاء المباشر والسجل التاريخي الشامل               */}
-      {/* ═════════════════════════════════════════════════════════════════════ */}
-      <div className="flex items-center justify-between border-b pb-2 pt-1">
-        <div className="flex items-center gap-2">
-          {canCreateActivePortal && (
-            <Button
-              type="button"
-              variant={subTab === "create" ? "default" : "outline"}
-              size="sm"
-              onClick={() => switchSubTab("create")}
-              className="text-xs h-8 gap-1.5"
-            >
-              <RotateCcw className="size-3.5" />
-              <span>بوابة الإرجاع والتسوية الفورية</span>
-            </Button>
-          )}
-          {canViewActiveHistory && (
-            <Button
-              type="button"
-              variant={subTab === "history" ? "default" : "outline"}
-              size="sm"
-              onClick={() => switchSubTab("history")}
-              className="text-xs h-8 gap-1.5"
-            >
-              <History className="size-3.5" />
-              <span>
-                {portalMode === "sales"
-                  ? "سجل وأرشيف مرتجعات المبيعات"
-                  : "سجل وأرشيف مرتجعات المشتريات"}
-              </span>
-            </Button>
-          )}
-        </div>
-      </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {canCreateActivePortal && (
+              <Button
+                type="button"
+                variant={subTab === "create" ? "default" : "outline"}
+                size="sm"
+                onClick={() => switchSubTab("create")}
+                className="text-xs h-7 gap-1.5"
+              >
+                <RotateCcw className="size-3.5" />
+                <span>بوابة الإرجاع والتسوية الفورية</span>
+              </Button>
+            )}
+            {canViewActiveHistory && (
+              <Button
+                type="button"
+                variant={subTab === "history" ? "default" : "outline"}
+                size="sm"
+                onClick={() => switchSubTab("history")}
+                className="text-xs h-7 gap-1.5"
+              >
+                <History className="size-3.5" />
+                <span>
+                  {portalMode === "sales"
+                    ? "سجل وأرشيف مرتجعات المبيعات"
+                    : "سجل وأرشيف مرتجعات المشتريات"}
+                </span>
+              </Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
-      {/* ═════════════════════════════════════════════════════════════════════ */}
-      {/* عرض المنفذ النشط أو السجل التاريخي                                   */}
-      {/* ═════════════════════════════════════════════════════════════════════ */}
-      {subTab === "create" && canCreateActivePortal ? (
-        <>
-          {portalMode === "sales" ? (
-            <SalesReturnPortal
-              initialInvoiceNo={initialInvoice}
-              initialMode={initialReturnMode}
-              onReturnSuccess={handleSalesSuccess}
-            />
-          ) : (
-            <PurchaseReturnPortal
-              initialPoRef={initialPo}
-              onReturnSuccess={handlePurchaseSuccess}
-            />
-          )}
-        </>
-      ) : canViewActiveHistory ? (
-        <Suspense fallback={<LoadingState />}>
-          {portalMode === "sales" ? (
-            <SalesReturns embedded />
-          ) : (
-            <PurchaseReturns embedded />
-          )}
-        </Suspense>
-      ) : null}
+      {/* عرض المنفذ النشط أو السجل التاريخي */}
+      <EmbeddedPageHeaderProvider>
+        {subTab === "create" && canCreateActivePortal ? (
+          <>
+            {portalMode === "sales" ? (
+              <SalesReturnPortal
+                initialInvoiceNo={initialInvoice}
+                initialMode={initialReturnMode}
+                onReturnSuccess={handleSalesSuccess}
+              />
+            ) : (
+              <PurchaseReturnPortal
+                initialPoRef={initialPo}
+                onReturnSuccess={handlePurchaseSuccess}
+              />
+            )}
+          </>
+        ) : canViewActiveHistory ? (
+          <Suspense fallback={<LoadingState />}>
+            {portalMode === "sales" ? (
+              <SalesReturns embedded />
+            ) : (
+              <PurchaseReturns embedded />
+            )}
+          </Suspense>
+        ) : null}
+      </EmbeddedPageHeaderProvider>
 
       {/* ═════════════════════════════════════════════════════════════════════ */}
       {/* قسم العمليات المنجزة حديثاً وإعادة الطباعة الحرارية                   */}

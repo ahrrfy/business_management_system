@@ -213,7 +213,7 @@ export default function AssetDetail() {
     a.accrualObligationKind === "ASSET_ACQUISITION_CASH";
 
   return (
-    <div className="space-y-4 max-w-5xl">
+    <div className="space-y-2.5 max-w-5xl">
       <PageHeader
         title="بطاقة الأصل"
         backHref="/assets/register"
@@ -222,12 +222,12 @@ export default function AssetDetail() {
 
       {/* ترويسة الأصل */}
       <Card>
-        <CardContent className="p-4 flex items-start justify-between flex-wrap gap-3">
-          <div className="flex items-start gap-3">
-            {Icon && <span className="inline-flex size-12 items-center justify-center rounded-lg bg-primary/10 text-primary"><Icon className="size-6" /></span>}
+        <CardContent className="p-3 flex items-start justify-between flex-wrap gap-2.5">
+          <div className="flex items-start gap-2.5">
+            {Icon && <span className="inline-flex size-10 items-center justify-center rounded-lg bg-primary/10 text-primary"><Icon className="size-5" /></span>}
             <div>
-              <div className="text-lg font-bold leading-tight">{a.name}</div>
-              <div className="flex items-center gap-2 mt-1 text-sm text-muted-foreground flex-wrap">
+              <div className="text-base font-bold leading-tight">{a.name}</div>
+              <div className="flex items-center gap-2 mt-0.5 text-xs text-muted-foreground flex-wrap">
                 <span className="font-mono" dir="ltr">{a.code}</span>
                 <span>·</span>
                 <span>{assetCategoryLabel(a.category)}</span>
@@ -373,15 +373,15 @@ export default function AssetDetail() {
       )}
 
       {/* مؤشّرات */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <Card><CardContent className="p-4"><div className="text-muted-foreground text-xs mb-1">القيمة الدفترية</div><div className="text-lg font-bold tabular-nums" dir="ltr">{iqd(a.bookValue)}</div></CardContent></Card>
-        <Card><CardContent className="p-4"><div className="text-muted-foreground text-xs mb-1">قيمة الشراء</div><div className="text-lg font-bold tabular-nums" dir="ltr">{iqd(a.purchaseValue)}</div></CardContent></Card>
-        <Card><CardContent className="p-4"><div className="text-muted-foreground text-xs mb-1">الإهلاك المتراكم</div><div className="text-lg font-bold tabular-nums" dir="ltr">{iqd(a.accumulated)}</div></CardContent></Card>
-        <Card><CardContent className="p-4"><div className="text-muted-foreground text-xs mb-1">العمر التشغيلي</div><div className="text-lg font-bold tabular-nums" dir="ltr">{a.ageYears} سنة</div></CardContent></Card>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <Card className="py-1.5 gap-0.5"><CardContent className="px-2.5 py-0"><div className="text-muted-foreground text-[11px] font-semibold">القيمة الدفترية</div><div className="text-sm font-bold tabular-nums leading-tight" dir="ltr">{iqd(a.bookValue)}</div></CardContent></Card>
+        <Card className="py-1.5 gap-0.5"><CardContent className="px-2.5 py-0"><div className="text-muted-foreground text-[11px] font-semibold">قيمة الشراء</div><div className="text-sm font-bold tabular-nums leading-tight" dir="ltr">{iqd(a.purchaseValue)}</div></CardContent></Card>
+        <Card className="py-1.5 gap-0.5"><CardContent className="px-2.5 py-0"><div className="text-muted-foreground text-[11px] font-semibold">الإهلاك المتراكم</div><div className="text-sm font-bold tabular-nums leading-tight" dir="ltr">{iqd(a.accumulated)}</div></CardContent></Card>
+        <Card className="py-1.5 gap-0.5"><CardContent className="px-2.5 py-0"><div className="text-muted-foreground text-[11px] font-semibold">العمر التشغيلي</div><div className="text-sm font-bold tabular-nums leading-tight" dir="ltr">{a.ageYears} سنة</div></CardContent></Card>
       </div>
 
       {Number((a as any).openingDepreciation || 0) > 0 && (
-        <div className="rounded-lg border bg-muted/40 p-3 text-xs flex flex-wrap items-center justify-between gap-3">
+        <div className="rounded-lg border bg-muted/40 px-3 py-2 text-xs flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <span className="font-semibold text-foreground">تفصيل مجمع الإهلاك (IAS 16):</span>
             <span className="text-muted-foreground">أصل ذو إهلاك افتتاحي سابق لبدء النظام</span>
@@ -406,13 +406,13 @@ export default function AssetDetail() {
       )}
 
       {/* شريط استهلاك القيمة */}
-      <Card>
-        <CardContent className="p-4 space-y-1.5">
-          <div className="flex items-center justify-between text-sm">
+      <Card className="py-2 gap-1">
+        <CardContent className="px-3 py-0 space-y-1">
+          <div className="flex items-center justify-between text-xs">
             <span className="text-muted-foreground">
               {a.category === "land" ? "استهلاك القيمة (أصل دائم لا يستهلك)" : `استهلاك القيمة (${depreciationMethodLabel(a.depreciationMethod)})`}
             </span>
-            <span className="tabular-nums" dir="ltr">{a.depPct}%</span>
+            <span className="tabular-nums font-medium" dir="ltr">{a.depPct}%</span>
           </div>
           <Progress value={a.depPct} />
         </CardContent>

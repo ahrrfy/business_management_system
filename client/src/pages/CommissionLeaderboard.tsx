@@ -23,14 +23,14 @@ import { LeaderboardPodium } from "@/components/commission/LeaderboardPodium";
 
 function StatCard({ label, value, sub, accent, icon }: { label: string; value: string; sub?: string; accent?: string; icon: React.ReactNode }) {
   return (
-    <Card className="py-1.5 gap-0.5">
+    <Card className="py-1 gap-0">
       <CardContent className="px-2.5 py-0">
         <div className="flex items-center justify-between gap-1">
-          <div className="text-muted-foreground text-2xs font-semibold truncate">{label}</div>
+          <div className="text-muted-foreground text-[11px] font-semibold truncate">{label}</div>
           <span style={{ color: accent }}>{icon}</span>
         </div>
-        <div className="mt-0.5 text-base font-extrabold tabular-nums leading-tight" dir="ltr" style={{ color: accent }}>{value}</div>
-        {sub && <div className="text-muted-foreground text-[10px] mt-0.5 leading-tight">{sub}</div>}
+        <div className="text-sm font-bold tabular-nums leading-tight" dir="ltr" style={{ color: accent }}>{value}</div>
+        {sub && <div className="text-muted-foreground text-[10px] leading-tight">{sub}</div>}
       </CardContent>
     </Card>
   );
@@ -183,7 +183,7 @@ export default function CommissionLeaderboard() {
   ], []);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         title="لوحة الإنجاز"
         description="ترتيب البائعين بمبيعاتهم المحتسَبة حتى هذه اللحظة (بعد المرتجعات والمرحَّل) مقابل أهدافهم الشهرية. أرقام العمولة هنا تقديرية للمتابعة فقط — لا يُصرَف شيء إلا من كشف شهري معتمد."
@@ -197,7 +197,7 @@ export default function CommissionLeaderboard() {
         }
       />
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
         <StatCard
           label="المبيعات مقابل الأهداف"
           value={targetRatio}

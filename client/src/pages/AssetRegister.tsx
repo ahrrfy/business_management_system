@@ -20,6 +20,8 @@ import { notify } from "@/lib/notify";
 import { useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { selectClsSm } from "@/lib/ui/formStyles";
+import { Printer } from "lucide-react";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 
 
 function initials(name?: string | null): string {
@@ -185,38 +187,83 @@ export default function AssetRegister() {
   const activeFilterCount = [f.category, f.branchId, f.status, f.includeDisposed].filter(Boolean).length;
   const filtersActive = activeFilterCount > 0 || f.q.trim() !== "";
 
+  function onPrintRegister() {
+    printReportDoc({
+      title: "سجلّ الأصول الثابتة والإهلاك",
+      orientation: "landscape",
+      headerExtra: [
+        { label: "الفئة", value: f.category ? assetCategoryLabel(f.category as any) : "كل الفئات" },
+        { label: "الفرع", value: f.branchId ? (opts.data?.branches.find((b) => String(b.id) === f.branchId)?.name ?? f.branchId) : "كل الفروع" },
+        { label: "الحالة", value: f.status ? assetStatusLabel(f.status as any) : "كل الحالات" },
+      ],
+      columns: [
+        { key: "code", label: "الرمز" },
+        { key: "name", label: "الأصل" },
+        { key: "category", label: "الفئة" },
+        { key: "branchName", label: "الفرع / الموقع" },
+        { key: "custodianName", label: "العهدة" },
+        { key: "purchaseDate", label: "تاريخ الشراء" },
+        { key: "purchaseValue", label: "قيمة الشراء", align: "left" },
+        { key: "accumulated", label: "مجمع الإهلاك", align: "left" },
+        { key: "bookValue", label: "القيمة الدفترية", align: "left" },
+        { key: "status", label: "الحالة" },
+      ],
+      rows: rows.map((r) => ({
+        code: r.code,
+        name: r.name,
+        category: assetCategoryLabel(r.category),
+        branchName: [r.branchName, r.location].filter(Boolean).join(" — ") || "—",
+        custodianName: r.custodianName ?? "بلا عهدة",
+        purchaseDate: String(r.purchaseDate),
+        purchaseValue: iqd(r.purchaseValue),
+        accumulated: iqd(r.accumulated ?? 0),
+        bookValue: iqd(r.bookValue),
+        status: assetStatusLabel(r.status),
+      })),
+      summary: report.data?.kpis
+        ? [
+            { label: "إجمالي التكلفة التاريخية", value: `${iqd(report.data.kpis.totalCost)} د.ع` },
+            { label: "إهلاك ما قبل النظام", value: `${iqd(report.data.kpis.totalOpeningDepreciation)} د.ع` },
+            { label: "إهلاك النظام المرحل", value: `${iqd(report.data.kpis.totalSystemDepreciation)} د.ع` },
+            { label: "إجمالي مجمع الإهلاك", value: `${iqd(report.data.kpis.totalAccumulatedDepreciation)} د.ع` },
+            { label: "صافي القيمة الدفترية", value: `${iqd(report.data.kpis.totalNetBookValue)} د.ع`, large: true, bold: true },
+          ]
+        : undefined,
+    });
+  }
+
   return (
-    <div className="space-y-2.5">
+    <div className="space-y-2">
       {report.data?.kpis && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-1.5">
           <Card className="px-2.5 py-1.5 bg-card/60">
-            <div className="text-muted-foreground text-[11px] leading-tight mb-0.5">إجمالي التكلفة التاريخية</div>
-            <div className="text-base font-bold tabular-nums text-foreground" dir="ltr">
-              {iqd(report.data.kpis.totalCost)} <span className="text-xs font-normal text-muted-foreground">د.ع</span>
+            <div className="text-muted-foreground text-[11px] leading-tight">إجمالي التكلفة التاريخية</div>
+            <div className="text-sm font-bold tabular-nums text-foreground" dir="ltr">
+              {iqd(report.data.kpis.totalCost)} <span className="text-[11px] font-normal text-muted-foreground">د.ع</span>
             </div>
           </Card>
           <Card className="px-2.5 py-1.5 bg-card/60">
-            <div className="text-muted-foreground text-[11px] leading-tight mb-0.5">إهلاك ما قبل النظام</div>
-            <div className="text-base font-bold tabular-nums text-foreground" dir="ltr">
-              {iqd(report.data.kpis.totalOpeningDepreciation)} <span className="text-xs font-normal text-muted-foreground">د.ع</span>
+            <div className="text-muted-foreground text-[11px] leading-tight">إهلاك ما قبل النظام</div>
+            <div className="text-sm font-bold tabular-nums text-foreground" dir="ltr">
+              {iqd(report.data.kpis.totalOpeningDepreciation)} <span className="text-[11px] font-normal text-muted-foreground">د.ع</span>
             </div>
           </Card>
           <Card className="px-2.5 py-1.5 bg-card/60">
-            <div className="text-muted-foreground text-[11px] leading-tight mb-0.5">إهلاك النظام المرحل</div>
-            <div className="text-base font-bold tabular-nums text-foreground" dir="ltr">
-              {iqd(report.data.kpis.totalSystemDepreciation)} <span className="text-xs font-normal text-muted-foreground">د.ع</span>
+            <div className="text-muted-foreground text-[11px] leading-tight">إهلاك النظام المرحل</div>
+            <div className="text-sm font-bold tabular-nums text-foreground" dir="ltr">
+              {iqd(report.data.kpis.totalSystemDepreciation)} <span className="text-[11px] font-normal text-muted-foreground">د.ع</span>
             </div>
           </Card>
           <Card className="px-2.5 py-1.5 bg-card/60">
-            <div className="text-muted-foreground text-[11px] leading-tight mb-0.5">إجمالي مجمع الإهلاك</div>
-            <div className="text-base font-bold tabular-nums text-foreground" dir="ltr">
-              {iqd(report.data.kpis.totalAccumulatedDepreciation)} <span className="text-xs font-normal text-muted-foreground">د.ع</span>
+            <div className="text-muted-foreground text-[11px] leading-tight">إجمالي مجمع الإهلاك</div>
+            <div className="text-sm font-bold tabular-nums text-foreground" dir="ltr">
+              {iqd(report.data.kpis.totalAccumulatedDepreciation)} <span className="text-[11px] font-normal text-muted-foreground">د.ع</span>
             </div>
           </Card>
           <Card className="px-2.5 py-1.5 bg-card/60">
-            <div className="text-muted-foreground text-[11px] leading-tight mb-0.5">صافي القيمة الدفترية</div>
-            <div className="text-base font-bold tabular-nums text-primary" dir="ltr">
-              {iqd(report.data.kpis.totalNetBookValue)} <span className="text-xs font-normal text-muted-foreground">د.ع</span>
+            <div className="text-muted-foreground text-[11px] leading-tight">صافي القيمة الدفترية</div>
+            <div className="text-sm font-bold tabular-nums text-primary" dir="ltr">
+              {iqd(report.data.kpis.totalNetBookValue)} <span className="text-[11px] font-normal text-muted-foreground">د.ع</span>
             </div>
           </Card>
         </div>
@@ -284,6 +331,11 @@ export default function AssetRegister() {
             }}
             onImport={can("assets.import", canWrite) ? () => setImportOpen(true) : undefined}
             importLabel="استيراد أصول"
+            actions={
+              <Button variant="outline" size="sm" onClick={onPrintRegister} disabled={rows.length === 0}>
+                <Printer className="size-4 ml-1" /> طباعة السجل
+              </Button>
+            }
             add={canWrite ? { href: "/assets/new", label: "أصل جديد" } : undefined}
           />
         </CardHeader>

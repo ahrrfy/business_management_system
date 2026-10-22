@@ -172,7 +172,7 @@ export default function MyDeliveries() {
     : (data?.toDeliver ?? []);
 
   return (
-    <div className="space-y-4 p-4 md:p-6" dir="rtl">
+    <div className="space-y-2.5" dir="rtl">
       <PageHeader
         title="توصيلاتي"
         description="طلباتك المُسنَدة للتوصيل — أكّد التسليم وحصّل المبلغ."
@@ -189,7 +189,7 @@ export default function MyDeliveries() {
         />
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
             <StatCard label={ownScope ? "نقد محصل بذمتي" : "نقد محصل بذمة الجهة"} value={`${money(data!.financialSummary?.cashInCustody ?? data!.custodyBalance)} د.ع`} icon={Banknote} tone={Number(data!.custodyBalance) > 0 ? "warning" : "positive"} />
             <StatCard label="مطلوب تحصيله" value={`${money(data!.financialSummary?.codOutstanding)} د.ع`} icon={Banknote} tone="info" />
             <StatCard label="أجرة مكتسبة" value={`${money(data!.financialSummary?.feeEarned)} د.ع`} icon={Banknote} tone="positive" />

@@ -18,7 +18,7 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { getDeviceCode } from "@/lib/offline/outbox";
-import { allocateLineTax } from "@/components/invoice";
+import { allocateLineTax, splitDocumentNotes } from "@/components/invoice";
 import { cn } from "@/lib/utils";
 import { printQuotation } from "@/lib/printing/printTemplates";
 import { DataTable } from "@/components/data-table/DataTable";
@@ -339,8 +339,10 @@ export default function QuotationDetail() {
     });
   }
 
+  const parsedNotes = splitDocumentNotes(data.notes);
+
   return (
-    <div className="space-y-4 max-w-6xl">
+    <div className="space-y-2.5 max-w-6xl">
       {new URLSearchParams(search).get("print") === "1" && (
         <AutoPrintOnce onPrint={printQuote} />
       )}
@@ -351,7 +353,7 @@ export default function QuotationDetail() {
       />
 
       <Card>
-        <CardHeader className="pb-3">
+        <CardHeader className="py-2.5 px-4">
           <CardTitle className="text-base flex items-center justify-between gap-2">
             <CopyInline value={data.quoteNumber} />
             <span className={`text-xs rounded-full px-2.5 py-0.5 font-medium ${STATUS_CLS[data.status] ?? "bg-muted"}`}>
@@ -359,9 +361,9 @@ export default function QuotationDetail() {
             </span>
           </CardTitle>
         </CardHeader>
-        <CardContent>
-          <div className="grid gap-6 lg:grid-cols-12">
-            <div className="lg:col-span-7 grid grid-cols-2 gap-x-6 gap-y-4 text-sm content-start">
+        <CardContent className="px-4 pb-3.5 pt-0 space-y-3">
+          <div className="grid gap-4 lg:grid-cols-12">
+            <div className="lg:col-span-7 grid grid-cols-2 gap-x-4 gap-y-2.5 text-sm content-start">
               <Field label="العميل">{data.customerName ?? "—"}</Field>
               <Field label="فئة السعر">{TIER[data.priceTier] ?? data.priceTier}</Field>
               <Field label="التاريخ">{fmtDate(data.quoteDate)}</Field>
@@ -371,9 +373,19 @@ export default function QuotationDetail() {
                   <Link href={`/invoices/${data.convertedInvoiceId}`} className="underline">#{data.convertedInvoiceId}</Link>
                 </Field>
               )}
+              {parsedNotes.notes && (
+                <div className="col-span-2">
+                  <Field label="ملاحظات">{parsedNotes.notes}</Field>
+                </div>
+              )}
+              {parsedNotes.terms && (
+                <div className="col-span-2">
+                  <Field label="الشروط والأحكام">{parsedNotes.terms}</Field>
+                </div>
+              )}
             </div>
 
-            <div className="lg:col-span-5 min-w-[280px] rounded-lg border bg-muted/30 p-4 space-y-2.5 text-sm self-start">
+            <div className="lg:col-span-5 min-w-[260px] rounded-lg border bg-muted/30 p-3 space-y-1.5 text-sm self-start">
               <SummaryRow label="المجموع" value={data.subtotal} />
               {D(data.discountAmount ?? "0").gt(0) && (
                 <SummaryRow label="الخصم" value={data.discountAmount} />
@@ -381,7 +393,7 @@ export default function QuotationDetail() {
               {hasTax && (
                 <SummaryRow label={`الضريبة (${data.taxRatePercent ?? "0"}٪)`} value={data.taxAmount} />
               )}
-              <div className="border-t pt-2.5">
+              <div className="border-t pt-2">
                 <SummaryRow label="الإجمالي" value={data.total} strong />
               </div>
             </div>
@@ -390,7 +402,7 @@ export default function QuotationDetail() {
       </Card>
 
       <Card>
-        <CardHeader className="pb-3"><CardTitle className="text-base">البنود</CardTitle></CardHeader>
+        <CardHeader className="py-2.5 px-4"><CardTitle className="text-sm font-bold">البنود</CardTitle></CardHeader>
         <CardContent className="p-0">
           {/* بنود المستند: مُضمَّن (العنوان في رأس البطاقة) وبلا ترقيم — المستند يُقرأ كاملاً.
               صفّ «مجموع البنود» صار `footer` على الأعمدة فيقع تحت عمود الإجمالي مباشرةً. */}
@@ -408,9 +420,9 @@ export default function QuotationDetail() {
 
       {data.status === "ACCEPTED" && canManage && (
         <Card>
-          <CardHeader><CardTitle className="text-base">تحويل لفاتورة</CardTitle></CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
-            <p className="md:col-span-3 text-sm text-muted-foreground">
+          <CardHeader className="py-2.5 px-4"><CardTitle className="text-sm font-bold">تحويل لفاتورة</CardTitle></CardHeader>
+          <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-3 px-4 pb-3.5 pt-0 items-end">
+            <p className="md:col-span-3 text-xs text-muted-foreground">
               قبول العرض يثبت موافقة العميل فقط؛ لا ينشئ فاتورة ولا يحجز مخزوناً. أنشئ البيع صراحةً من هذا القسم عند الجاهزية.
             </p>
             <div className="space-y-1">

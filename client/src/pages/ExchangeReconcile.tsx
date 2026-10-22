@@ -167,7 +167,7 @@ export default function ExchangeReconcile() {
   }, [r, house]);
 
   return (
-    <div className="space-y-4" dir="rtl">
+    <div className="space-y-2.5" dir="rtl">
       <PageHeader
         icon={<ScaleIcon className="h-5 w-5 text-primary" />}
         title="مطابقة أرصدة الصيرفة"
@@ -198,44 +198,44 @@ export default function ExchangeReconcile() {
         }
       />
 
-      <Card className="p-4 space-y-3">
-        <div className="grid gap-4 sm:grid-cols-4">
-          <div>
+      <Card className="p-3">
+        <div className="flex flex-wrap items-end gap-2.5">
+          <div className="min-w-48 flex-1">
             <label className="text-xs text-muted-foreground mb-1 block">الصيرفة</label>
             <AppSelect className={`${selectCls} w-full`} value={String(houseId)} onValueChange={(value) => setHouseId(Number(value))}>
               <option value={0}>— اختر —</option>
               {houseRows.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
             </AppSelect>
           </div>
-          <div>
+          <div className="w-40">
             <label className="text-xs text-muted-foreground mb-1 block">رصيد كشفهم (دينار)</label>
             <MoneyInput value={statedIqd} onChange={setStatedIqd} allowNegative placeholder="0.00" />
           </div>
-          <div>
+          <div className="w-40">
             <label className="text-xs text-muted-foreground mb-1 block">رصيد كشفهم (دولار)</label>
             <MoneyInput value={statedUsd} onChange={setStatedUsd} allowNegative placeholder="0.00" />
           </div>
-          <div>
+          <div className="w-36">
             <label className="text-xs text-muted-foreground mb-1 block">حتى تاريخ (اختياري)</label>
             <Input type="date" value={asOf} onChange={(e) => setAsOf(e.target.value)} className="h-9" dir="ltr" />
           </div>
+          <Button onClick={run} disabled={rec.isFetching} className="gap-1.5 h-9">
+            <ScaleIcon className="h-4 w-4" />{rec.isFetching ? "جارٍ…" : "تحقّق من المطابقة"}
+          </Button>
         </div>
-        <Button onClick={run} disabled={rec.isFetching} className="gap-1.5">
-          <ScaleIcon className="h-4 w-4" />{rec.isFetching ? "جارٍ…" : "تحقّق من المطابقة"}
-        </Button>
       </Card>
 
       {r && (
         <>
-          <Card className={`p-4 ${r.matched ? "border-money-positive/40" : "border-money-negative/40"}`}>
-            <div className="text-sm font-semibold mb-3 flex items-center gap-1.5">
+          <Card className={`p-3 ${r.matched ? "border-money-positive/40" : "border-money-negative/40"}`}>
+            <div className="text-xs font-semibold mb-2 flex items-center gap-1.5">
               {r.matched ? (
                 <><CheckCircle2 className="h-4 w-4 text-money-positive" /> الأرصدة مطابقة</>
               ) : (
                 <><AlertTriangle className="h-4 w-4 text-money-negative" /> يوجد فرق — راجِع البنود المعلّقة أدناه قبل أي تسوية</>
               )}
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
               <StatCard label="رصيدنا (دينار)" value={fmtAr(r.ourBalanceIqd)} />
               <StatCard label="رصيدهم (دينار)" value={fmtAr(r.statedBalanceIqd)} />
               <StatCard label="الفرق (دينار)" value={fmtAr(r.diffIqd)} tone={D(r.diffIqd).isZero() ? "default" : "negative"} />

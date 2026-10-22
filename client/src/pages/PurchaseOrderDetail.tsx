@@ -23,6 +23,7 @@ import {
   HandCoins,
   Landmark,
   Pencil,
+  Printer,
   Receipt,
   RotateCcw,
   Truck,
@@ -30,6 +31,8 @@ import {
 import { Link, useParams } from "wouter";
 import { variantDescriptor, variantDisplayName } from "@shared/variantDisplay";
 import { PurchaseOrderGovernance } from "@/components/purchases/PurchaseOrderGovernance";
+import { printReportDoc } from "@/lib/printing/reportDoc";
+import { splitDocumentNotes } from "@/components/invoice";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { NextActionChip } from "@/components/nextAction/NextActionChip";
@@ -261,32 +264,103 @@ export default function PurchaseOrderDetail() {
     !d.items.some((it) => (it.receivedBaseQuantity ?? 0) > 0) &&
     !D(d.paidAmount ?? 0).gt(0) &&
     !D(d.paidUsd ?? 0).gt(0);
+  const parsedNotes = splitDocumentNotes(d.notes);
+
+  function printOrder() {
+    const priceSym = isUsd ? "$" : "د.ع";
+    const ok = printReportDoc({
+      title: "أمر شراء",
+      docNum: d.poNumber ?? `#${d.id}`,
+      docDate: fmtDate(d.orderDate),
+      meta: [
+        {
+          title: "معلومات المورّد",
+          fields: [{ label: "الاسم", value: d.supplierName ?? "—" }],
+        },
+        {
+          title: "تفاصيل الأمر",
+          fields: [
+            { label: "رقم الأمر", value: d.poNumber ?? `#${d.id}` },
+            { label: "الحالة", value: PO_STATUS[d.status] ?? d.status },
+            { label: "العملة", value: isUsd ? "دولار أمريكي" : "دينار عراقي" },
+            ...(parsedNotes.poReference ? [{ label: "مرجع أمر الشراء", value: parsedNotes.poReference }] : []),
+            ...(parsedNotes.notes ? [{ label: "ملاحظات", value: parsedNotes.notes }] : []),
+            ...(parsedNotes.terms ? [{ label: "الشروط والأحكام", value: parsedNotes.terms }] : []),
+          ],
+        },
+      ],
+      columns: [
+        { key: "barcode", label: "الباركود", width: "24mm", align: "center" },
+        { key: "name", label: "المنتج" },
+        { key: "unit", label: "الوحدة", width: "18mm", align: "center" },
+        { key: "price", label: `السعر (${priceSym})`, width: "22mm", align: "left" },
+        { key: "qty", label: "الكمية", width: "16mm", align: "center" },
+        { key: "total", label: `الإجمالي (${priceSym})`, width: "24mm", align: "left" },
+      ],
+      rows: d.items.map((it) => ({
+        barcode: it.barcode ?? "—",
+        name: variantDisplayName({
+          productName: it.productName ?? "",
+          variantName: it.variantName,
+          color: it.color,
+          size: it.size,
+          variantKind: it.variantKind,
+          sku: it.sku,
+        }),
+        unit: it.unitName ?? "قطعة",
+        price: costHidden ? "—" : fmtAr((isUsd ? it.usdUnitPrice : it.unitPrice) ?? "0"),
+        qty: formatQuantity(it.quantity),
+        total: costHidden ? "—" : fmtAr((isUsd ? it.usdTotal : it.total) ?? "0"),
+      })),
+      summary: costHidden
+        ? []
+        : [
+            { label: "المجموع قبل الضريبة (د.ع)", value: fmtAr(d.subtotal) },
+            ...(D(d.invoiceDiscount ?? 0).gt(0)
+              ? [{ label: "خصم فاتورة المورّد (د.ع)", value: `− ${fmtAr(d.invoiceDiscount)}` }]
+              : []),
+            ...(D(d.taxAmount ?? 0).gt(0)
+              ? [{ label: "الضريبة (د.ع)", value: fmtAr(d.taxAmount) }]
+              : []),
+            ...(isUsd && d.usdTotal
+              ? [{ label: "الإجمالي ($)", value: `${fmtAr(d.usdTotal)} $`, bold: true }]
+              : []),
+            { label: "إجمالي أمر الشراء (د.ع)", value: fmtAr(d.total), bold: true, large: true },
+          ],
+      showIndex: true,
+    });
+    if (!ok) {
+      notify.err("تعذّر فتح نافذة الطباعة — تحقّق من مانع النوافذ المنبثقة");
+    }
+  }
 
   return (
     <div className="space-y-2.5">
       <PageHeader
         title={`أمر شراء ${d.poNumber ?? `#${d.id}`}`}
         actions={
-          canEdit || canReverseReceipt ? (
-            <div className="flex items-center gap-2">
-              {canEdit && openForEditing ? (
-                <Button asChild size="sm" variant="outline">
-                  <Link href={`/purchases/${d.id}/edit`}>
-                    <Pencil aria-hidden className="size-4" />
-                    تعديل
-                  </Link>
-                </Button>
-              ) : null}
-              {canReverseReceipt && d.status === "RECEIVED" ? (
-                <Button asChild size="sm" variant="outline">
-                  <Link href="/purchases/goods-receipt-reversals">
-                    <RotateCcw aria-hidden className="size-4" />
-                    عكس استلام / تصحيح الخطأ
-                  </Link>
-                </Button>
-              ) : null}
-            </div>
-          ) : undefined
+          <div className="flex items-center gap-2">
+            <Button type="button" size="sm" variant="outline" onClick={printOrder}>
+              <Printer aria-hidden className="size-4" />
+              طباعة
+            </Button>
+            {canEdit && openForEditing ? (
+              <Button asChild size="sm" variant="outline">
+                <Link href={`/purchases/${d.id}/edit`}>
+                  <Pencil aria-hidden className="size-4" />
+                  تعديل
+                </Link>
+              </Button>
+            ) : null}
+            {canReverseReceipt && d.status === "RECEIVED" ? (
+              <Button asChild size="sm" variant="outline">
+                <Link href="/purchases/goods-receipt-reversals">
+                  <RotateCcw aria-hidden className="size-4" />
+                  عكس استلام / تصحيح الخطأ
+                </Link>
+              </Button>
+            ) : null}
+          </div>
         }
       />
 
@@ -297,7 +371,7 @@ export default function PurchaseOrderDetail() {
       />
 
       {d.status === "RECEIVED" && canReverseReceipt && (
-        <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+        <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground">
           <div className="flex items-center gap-2">
             <CheckCircle2 aria-hidden className="size-4 text-[var(--sem-pos)]" />
             <span>
@@ -311,10 +385,10 @@ export default function PurchaseOrderDetail() {
       )}
 
       <Card>
-        <CardHeader className="pb-2">
+        <CardHeader className="py-2.5 px-4">
           <CardTitle className="text-sm font-bold">بيانات الأمر</CardTitle>
         </CardHeader>
-        <CardContent className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <CardContent className="grid grid-cols-2 gap-2.5 px-4 pb-3.5 pt-0 md:grid-cols-4">
           <Field label="المورّد">
             {d.supplierId ? (
               <Link
@@ -334,9 +408,17 @@ export default function PurchaseOrderDetail() {
             </Badge>
           </Field>
           <Field label="العملة المتّفقة">{d.agreedCurrency ?? "IQD"}</Field>
-          {d.notes ? (
+          {parsedNotes.poReference ? (
+            <Field label="مرجع أمر الشراء">{parsedNotes.poReference}</Field>
+          ) : null}
+          {parsedNotes.notes ? (
             <div className="col-span-2 md:col-span-4">
-              <Field label="ملاحظات">{d.notes}</Field>
+              <Field label="ملاحظات">{parsedNotes.notes}</Field>
+            </div>
+          ) : null}
+          {parsedNotes.terms ? (
+            <div className="col-span-2 md:col-span-4">
+              <Field label="الشروط والأحكام">{parsedNotes.terms}</Field>
             </div>
           ) : null}
         </CardContent>

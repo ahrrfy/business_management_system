@@ -47,14 +47,14 @@ export function AssetStatusBadge({ status }: { status: string }) {
 export function StatCard({ label, value, icon: Icon, sub, tone }: { label: string; value: ReactNode; icon?: LucideIcon; sub?: ReactNode; tone?: "default" | "negative" | "positive" }) {
   const valueCls = tone === "negative" ? "text-money-negative" : tone === "positive" ? "text-money-positive" : "";
   return (
-    <Card className="py-1.5 gap-0.5">
+    <Card className="py-1 gap-0">
       <CardContent className="px-2.5 py-0">
-        <div className="flex items-center gap-1.5 text-muted-foreground text-2xs font-semibold">
+        <div className="flex items-center gap-1.5 text-muted-foreground text-[11px] font-semibold">
           {Icon && <Icon className="size-3.5 shrink-0" aria-hidden="true" />}
           <span className="truncate">{label}</span>
         </div>
-        <div className={cn("text-base font-extrabold tabular-nums leading-tight", valueCls)}>{value}</div>
-        {sub && <div className="text-[10px] text-muted-foreground mt-0.5 leading-tight">{sub}</div>}
+        <div className={cn("text-sm font-bold tabular-nums leading-tight", valueCls)}>{value}</div>
+        {sub && <div className="text-[10px] text-muted-foreground leading-tight">{sub}</div>}
       </CardContent>
     </Card>
   );

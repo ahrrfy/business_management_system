@@ -8,8 +8,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/PageHeader";
 import { TONE_TEXT_CLASS, type Tone } from "@/lib/tone";
-import { FileSpreadsheet, Info, MoreHorizontal, Printer } from "lucide-react";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { FileSpreadsheet, Info, Printer } from "lucide-react";
 import { WorkspaceBar, WorkspaceStatusBar } from "@/components/workspace/OperationalWorkspace";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
@@ -59,8 +58,8 @@ export function ReportShell({
   children: ReactNode;
 }) {
   return (
-    <div className="space-y-2.5" data-report-workspace>
-      {/* الرأس — عبر PageHeader المشترك (رابط رجوع + عنوان + وصف)، وأزرار التصدير/الطباعة في منطقة الإجراءات. */}
+    <div className="space-y-2" data-report-workspace>
+      {/* الرأس — عبر PageHeader المشترك (رابط رجوع + عنوان + وصف)، وأزرار التصدير/الطباعة مباشرة بنقرة واحدة. */}
       <PageHeader
         title={title}
         description={description}
@@ -83,37 +82,44 @@ export function ReportShell({
               </Popover>
             )}
             {actions}
-            {(onExportCsv || onExport || onPrint) && (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" className="h-8">
-                    <MoreHorizontal aria-hidden className="size-4" />
-                    إجراءات التقرير
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="min-w-52">
-                  <DropdownMenuLabel>التصدير والطباعة</DropdownMenuLabel>
-                  <DropdownMenuSeparator />
-                  {onExportCsv && (
-                    <DropdownMenuItem disabled={exportDisabled} onSelect={() => onExportCsv()}>
-                      <FileSpreadsheet aria-hidden className="size-4" />
-                      تصدير CSV
-                    </DropdownMenuItem>
-                  )}
-                  {onExport && (
-                    <DropdownMenuItem disabled={exportDisabled} onSelect={() => onExport()}>
-                      <FileSpreadsheet aria-hidden className="size-4" />
-                      تصدير Excel
-                    </DropdownMenuItem>
-                  )}
-                  {onPrint && (
-                    <DropdownMenuItem disabled={printDisabled} onSelect={() => onPrint()}>
-                      <Printer aria-hidden className="size-4" />
-                      طباعة / PDF
-                    </DropdownMenuItem>
-                  )}
-                </DropdownMenuContent>
-              </DropdownMenu>
+            {onExportCsv && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs"
+                disabled={exportDisabled}
+                onClick={() => onExportCsv()}
+              >
+                <FileSpreadsheet aria-hidden className="size-3.5" />
+                تصدير CSV
+              </Button>
+            )}
+            {onExport && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs"
+                disabled={exportDisabled}
+                onClick={() => onExport()}
+              >
+                <FileSpreadsheet aria-hidden className="size-3.5" />
+                تصدير Excel
+              </Button>
+            )}
+            {onPrint && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs"
+                disabled={printDisabled}
+                onClick={() => onPrint()}
+              >
+                <Printer aria-hidden className="size-3.5" />
+                طباعة / PDF
+              </Button>
             )}
           </>
         }
@@ -126,19 +132,13 @@ export function ReportShell({
         </WorkspaceBar>
       )}
 
-      {/* تنويه يظهر عند الطباعة فقط؛ على الشاشة يُعرض عبر زر Popover في الرأس */}
-      {note && <div className="hidden print:block rounded-md border border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)] px-3 py-2 text-xs text-[var(--sem-warn)]">{note}</div>}
-
-      {/* المحتوى */}
-      {children}
-
-      {/* مؤشرات التقرير شريط حالة سفلي: تبقى البيانات أولاً ولا تُزاح من أعلى الشاشة. */}
+      {/* شريط مؤشرات التقرير الملخص — فوق الجدول مباشرة لقراءة الخلاصة الفورية */}
       {kpis && kpis.length > 0 && (
         <WorkspaceStatusBar label="مؤشرات التقرير" className="gap-0 overflow-x-auto p-0">
           {kpis.map((k, i) => {
             const hint = k.hintNode ?? k.hint;
             return (
-              <div key={i} className="min-w-36 flex-1 border-e border-border/70 px-3 py-0.5 text-center last:border-e-0">
+              <div key={i} className="min-w-32 flex-1 border-e border-border/70 px-2.5 py-0.5 text-center last:border-e-0">
                 <div className="flex items-center justify-center gap-1 text-2xs text-muted-foreground">
                   {/* bidi: تسمياتٌ كثيرةٌ عبر مركز التقارير تحمل مدىً رقمياً بشرطة («0–30 يوم») —
                       بلا dir="ltr" يُعاد ترتيبها بصرياً «30-0» داخل حاويةٍ RTL (أثبتَتْه جولةٌ
@@ -147,8 +147,8 @@ export function ReportShell({
                   {hint && (
                     <Popover>
                       <PopoverTrigger asChild>
-                        <button type="button" className="grid size-5 shrink-0 place-items-center rounded hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={`تفاصيل ${k.label}`}>
-                          <Info aria-hidden className="size-3.5" />
+                        <button type="button" className="grid size-4 shrink-0 place-items-center rounded hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={`تفاصيل ${k.label}`}>
+                          <Info aria-hidden className="size-3" />
                         </button>
                       </PopoverTrigger>
                       <PopoverContent side="top" className="w-72 text-start text-xs leading-5">
@@ -157,7 +157,7 @@ export function ReportShell({
                     </Popover>
                   )}
                 </div>
-                <p className={cn("truncate text-sm font-bold tabular-nums", TONE_TEXT_CLASS[k.tone ?? "default"])} dir="ltr">
+                <p className={cn("truncate text-xs font-bold tabular-nums", TONE_TEXT_CLASS[k.tone ?? "default"])} dir="ltr">
                   {k.value}
                 </p>
               </div>
@@ -165,6 +165,12 @@ export function ReportShell({
           })}
         </WorkspaceStatusBar>
       )}
+
+      {/* تنويه يظهر عند الطباعة فقط؛ على الشاشة يُعرض عبر زر Popover في الرأس */}
+      {note && <div className="hidden print:block rounded-md border border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)] px-3 py-2 text-xs text-[var(--sem-warn)]">{note}</div>}
+
+      {/* المحتوى */}
+      {children}
     </div>
   );
 }

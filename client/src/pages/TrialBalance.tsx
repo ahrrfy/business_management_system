@@ -18,6 +18,7 @@ import { D, fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { cn } from "@/lib/utils";
 import { clampDoubleEntryReportPeriod } from "@/lib/doubleEntryReportPeriod";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 
 type Report = RouterOutputs["reports"]["trialBalance"];
 type Row = Report["rows"][number];
@@ -285,12 +286,54 @@ export default function TrialBalance() {
     });
   }
 
+  function onPrint() {
+    if (!report) return;
+    printReportDoc({
+      title: "ميزان المراجعة — الدفتر المزدوج",
+      orientation: "landscape",
+      headerExtra: [
+        { label: "الفترة", value: `${period.from} — ${period.to}` },
+        { label: "الفرع", value: branchLabel },
+        { label: "وضع الدفتر", value: report.mode },
+        { label: "التوازن", value: report.totals.isBalanced ? "متوازن" : `فرق ${fmtAr(report.totals.closingDifference)} د.ع` },
+      ],
+      columns: [
+        { key: "code", label: "الرمز" },
+        { key: "name", label: "الحساب" },
+        { key: "type", label: "النوع" },
+        { key: "openingDebit", label: "افتتاح مدين", align: "left" },
+        { key: "openingCredit", label: "افتتاح دائن", align: "left" },
+        { key: "periodDebit", label: "حركة مدين", align: "left" },
+        { key: "periodCredit", label: "حركة دائن", align: "left" },
+        { key: "closingDebit", label: "ختام مدين", align: "left" },
+        { key: "closingCredit", label: "ختام دائن", align: "left" },
+      ],
+      rows: report.rows.map((row) => ({
+        code: row.code,
+        name: row.name,
+        type: row.type ? (TYPE_LABEL[row.type] ?? row.type) : "غير مربوط",
+        openingDebit: moneyCell(row.openingDebit),
+        openingCredit: moneyCell(row.openingCredit),
+        periodDebit: moneyCell(row.periodDebit),
+        periodCredit: moneyCell(row.periodCredit),
+        closingDebit: moneyCell(row.closingDebit),
+        closingCredit: moneyCell(row.closingCredit),
+      })),
+      summary: [
+        { label: "افتتاح مدين / دائن", value: `${fmtAr(report.totals.openingDebit)} / ${fmtAr(report.totals.openingCredit)}` },
+        { label: "حركة مدين / دائن", value: `${fmtAr(report.totals.periodDebit)} / ${fmtAr(report.totals.periodCredit)}` },
+        { label: "ختام مدين / دائن", value: `${fmtAr(report.totals.closingDebit)} / ${fmtAr(report.totals.closingCredit)}`, large: true, bold: true },
+      ],
+    });
+  }
+
   return (
     <ReportShell
       title="ميزان المراجعة"
       description="أرصدة افتتاحية وحركة وختام مستخرجة مباشرةً من القيود المزدوجة، بلا حقوق ملكية مشتقّة."
       kpis={kpis}
       onExport={onExport}
+      onPrint={onPrint}
       exportDisabled={!report}
       filters={
         <div className="flex flex-wrap items-end gap-3">
