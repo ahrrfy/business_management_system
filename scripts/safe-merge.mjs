@@ -221,6 +221,9 @@ function extractCodexEntries(codexState) {
             codexState.code_review?.status ?? codexState.code_review?.state,
           sha:
             codexState.code_review?.commit_sha ?? codexState.code_review?.sha,
+          hasUnresolvedFindings:
+            codexState.code_review?.has_unresolved_findings === true ||
+            codexState.code_review?.hasUnresolvedFindings === true,
         },
         {
           status:
@@ -229,12 +232,18 @@ function extractCodexEntries(codexState) {
           sha:
             codexState.security_review?.commit_sha ??
             codexState.security_review?.sha,
+          hasUnresolvedFindings:
+            codexState.security_review?.has_unresolved_findings === true ||
+            codexState.security_review?.hasUnresolvedFindings === true,
         },
       ]
     : [
         {
           status: codexState.state ?? codexState.status,
           sha: codexState.sha ?? codexState.commit_sha,
+          hasUnresolvedFindings:
+            codexState.has_unresolved_findings === true ||
+            codexState.hasUnresolvedFindings === true,
         },
       ];
   return rawEntries
@@ -250,6 +259,7 @@ function extractCodexEntries(codexState) {
         e.sha !== null && e.sha !== undefined && String(e.sha).trim() !== ""
           ? String(e.sha).trim()
           : null,
+      hasUnresolvedFindings: e.hasUnresolvedFindings === true,
     }));
 }
 
@@ -274,6 +284,7 @@ function selectPrimaryCodexEntry(codexState) {
     statuses: entries.map((e) => e.status),
     state: primary?.status ?? null,
     sha: primary?.sha ?? fallbackSha,
+    hasUnresolvedFindings: entries.some((e) => e.hasUnresolvedFindings === true),
   };
 }
 
@@ -311,6 +322,7 @@ export function parseCodexReviewState(prComments = []) {
           ...parsed,
           ...(selected.state !== null ? { state: selected.state } : {}),
           ...(selected.sha !== null ? { sha: selected.sha } : {}),
+          has_unresolved_findings: selected.hasUnresolvedFindings,
         };
       } else {
         latest = { state: "invalid", raw: body.slice(0, 160) };
@@ -621,6 +633,15 @@ export function evaluatePrMergeReadiness({
     };
   }
 
+  if (selectedCodex.entries.some((e) => e.hasUnresolvedFindings === true)) {
+    return {
+      ready: false,
+      code: "PR_UNADDRESSED_REVIEW_COMMENTS",
+      reason: `مراجعة Codex الآلية المكتملة على الالتزام (${codexDisplaySha}) لا تزال تبلّغ عن ملاحظات غير محلولة (has_unresolved_findings: true)؛ عالج الملاحظات بالتزام ذرّي جديد وأعد فحص المراجعة قبل الدمج.`,
+      unaddressedComments: unresolved,
+    };
+  }
+
   const reviewDecision = String(prView.reviewDecision ?? "").toUpperCase();
   if (reviewDecision === "CHANGES_REQUESTED") {
     return {
@@ -667,6 +688,11 @@ export function shouldCleanupMergedHeadBranch(prView) {
   return (
     ownerLogin === "ahrrfy" && repoName === "business_management_system"
   );
+}
+
+export function buildMergedHeadRefDeleteEndpoint(headRefName) {
+  const cleanRefName = String(headRefName ?? "").trim();
+  return `repos/ahrrfy/business_management_system/git/refs/heads/${encodeURIComponent(cleanRefName)}`;
 }
 
 const MERGE_QUEUE_PENDING_STATES = new Set([
@@ -1182,6 +1208,14 @@ export async function runAtomicRemediationCycle({
       finalStep?.newHeadRefOid ?? finalStep?.commitSha ?? "",
     ).trim();
 
+    const currentPrUnresolvedThreadIds = new Set(
+      flattenPaginatedReviewThreads(currentThreads)
+        .map(normalizeReviewThreadEntry)
+        .filter((t) => t && !t.isResolved)
+        .map((t) => String(t.id ?? "").trim())
+        .filter((id) => id && id !== "unknown"),
+    );
+
     let latestCommitSha = "";
     const pendingResolutions = [];
     for (let stepIdx = 0; stepIdx < atomicSteps.length; stepIdx += 1) {
@@ -1225,12 +1259,21 @@ export async function runAtomicRemediationCycle({
             .filter(Boolean)
         : [];
       for (const threadId of resolvedIds) {
+        if (!currentPrUnresolvedThreadIds.has(threadId)) {
+          return {
+            ready: false,
+            cycles: cycle,
+            code: "REMEDIATION_INVALID_RESOLVED_THREAD_ID",
+            reason: `معرّف خيط المراجعة (${threadId}) لا ينتمي إلى خيوط المراجعة غير المحلولة الحالية على طلب الدمج #${prNumber ?? currentPrView?.number ?? "?"}.`,
+          };
+        }
         pendingResolutions.push({ threadId, stepSha });
       }
     }
 
     if (
       decision.code === "PR_UNADDRESSED_REVIEW_COMMENTS" &&
+      currentPrUnresolvedThreadIds.size > 0 &&
       pendingResolutions.length === 0
     ) {
       return {
@@ -1694,6 +1737,14 @@ export function runSafeMergeSelftest() {
     }),
     false,
   );
+  assert.equal(
+    buildMergedHeadRefDeleteEndpoint("topic#123"),
+    "repos/ahrrfy/business_management_system/git/refs/heads/topic%23123",
+  );
+  assert.equal(
+    buildMergedHeadRefDeleteEndpoint("feature/topic?a=1%2"),
+    "repos/ahrrfy/business_management_system/git/refs/heads/feature%2Ftopic%3Fa%3D1%252",
+  );
 
   // 11. Truncated reviewThreads pagination (hasNextPage: true on last page) blocks merge
   const truncatedPaginationRes = evaluatePrMergeReadiness({
@@ -1829,6 +1880,29 @@ export function runSafeMergeSelftest() {
   });
   assert.equal(nestedCodexCompletedRes.ready, true);
   assert.equal(nestedCodexCompletedRes.code, "OK");
+
+  const nestedCodexUnresolvedFindingsRes = evaluatePrMergeReadiness({
+    prView: {
+      number: 115,
+      state: "OPEN",
+      baseRefName: "main",
+      mergeable: "MERGEABLE",
+      headRefOid: "90fb9671d55713f186742f7757481427fef726bd",
+      statusCheckRollup: baseGreenRollup,
+      comments: [
+        {
+          author: { login: "chatgpt-codex-connector" },
+          body: '<!-- codex-review-state:v1 {"code_review":{"commit_sha":"90fb9671d55713f186742f7757481427fef726bd","has_any_findings":true,"has_unresolved_findings":true,"status":"completed"},"security_review":{"commit_sha":null,"has_any_findings":null,"has_unresolved_findings":null,"status":null}} -->',
+        },
+      ],
+    },
+    reviewThreads: [],
+  });
+  assert.equal(nestedCodexUnresolvedFindingsRes.ready, false);
+  assert.equal(
+    nestedCodexUnresolvedFindingsRes.code,
+    "PR_UNADDRESSED_REVIEW_COMMENTS",
+  );
 
   const mixedNestedCodexComment = [
     {
@@ -2162,6 +2236,48 @@ export async function runSafeMergeAsyncSelftest() {
     "REMEDIATION_MISSING_RESOLVED_THREADS",
   );
 
+  // Foreign or stale resolvedThreadIds not in current PR's unresolved threads fails closed
+  let foreignResolveCalled = false;
+  const foreignThreadIdRes = await runAtomicRemediationCycle({
+    prNumber: 122,
+    pollIntervalMs: 0,
+    initialPrView: {
+      number: 122,
+      state: "OPEN",
+      baseRefName: "main",
+      mergeable: "MERGEABLE",
+      headRefOid: "sha-1",
+      statusCheckRollup: baseGreenRollup,
+      comments: makeTrustedCodexComments("sha-1"),
+    },
+    initialReviewThreads: [{ id: "PRRT_1", isResolved: false, body: "Fix" }],
+    remediateFinding: async () => [
+      { commitSha: "sha-2", resolvedThreadIds: ["PRRT_OTHER_PR_999"] },
+    ],
+    verifyLocalGates: async () => ({ ok: true }),
+    resolveThread: async () => {
+      foreignResolveCalled = true;
+    },
+    fetchLatestState: async () => ({
+      prView: {
+        number: 122,
+        state: "OPEN",
+        baseRefName: "main",
+        mergeable: "MERGEABLE",
+        headRefOid: "sha-2",
+        statusCheckRollup: baseGreenRollup,
+        comments: makeTrustedCodexComments("sha-2"),
+      },
+      reviewThreads: [{ id: "PRRT_1", isResolved: false, body: "Fix" }],
+    }),
+  });
+  assert.equal(foreignThreadIdRes.ready, false);
+  assert.equal(
+    foreignThreadIdRes.code,
+    "REMEDIATION_INVALID_RESOLVED_THREAD_ID",
+  );
+  assert.equal(foreignResolveCalled, false);
+
   // Remote head mismatch aborts BEFORE resolveThread is called
   let resolveCalledOnMismatch = false;
   const mismatchBeforeResolveRes = await runAtomicRemediationCycle({
@@ -2355,15 +2471,28 @@ export async function runSafeMergeAsyncSelftest() {
   assert.equal(multiCommitMaxOneRes.headRefOid, "sha-step-2");
 }
 
-function captureJson(cmd, args) {
-  const res = spawnSync(cmd, args, {
-    cwd: REPO_ROOT,
-    encoding: "utf8",
-  });
-  if (res.status !== 0) {
-    throw new Error(res.stderr?.trim() || `${cmd} ${args.join(" ")} failed`);
+function isTransientGhNetworkError(stderr = "") {
+  return /dial tcp|connectex|TLS handshake timeout|i\/o timeout|EOF|connection reset|Bad Gateway|Service Unavailable|Gateway Timeout/i.test(
+    String(stderr ?? ""),
+  );
+}
+
+function captureJson(cmd, args, { maxAttempts = 4, retryDelayMs = 3000 } = {}) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const res = spawnSync(cmd, args, {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+    });
+    if (res.status === 0) {
+      return JSON.parse(res.stdout);
+    }
+    const errText = res.stderr?.trim() || `${cmd} ${args.join(" ")} failed`;
+    if (attempt < maxAttempts && isTransientGhNetworkError(errText)) {
+      defaultSleep(retryDelayMs);
+      continue;
+    }
+    throw new Error(errText);
   }
-  return JSON.parse(res.stdout);
 }
 
 const REVIEW_THREADS_QUERY = `
@@ -2709,7 +2838,7 @@ async function main() {
         "api",
         "-X",
         "DELETE",
-        `repos/ahrrfy/business_management_system/git/refs/heads/${headRefName}`,
+        buildMergedHeadRefDeleteEndpoint(headRefName),
       ],
       {
         cwd: REPO_ROOT,
