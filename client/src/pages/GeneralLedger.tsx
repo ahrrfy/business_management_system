@@ -431,21 +431,24 @@ export default function GeneralLedger() {
   }
 
   async function onPrint() {
-    if (!result || accountId == null || result.total === 0) return;
+    if (!result || accountId == null || q.isLoading || q.isError) return;
     if (!reservePrintWindow()) {
       notify.err("تعذّر فتح نافذة الطباعة — تحقّق من مانع النوافذ المنبثقة (Popup Blocker)");
       return;
     }
     try {
-      const allRows = await fetchAllPaged<Row>(
-        (offset, limit) =>
-          utils.reports.generalLedger.fetch({
-            ...filterInput,
-            limit,
-            offset,
-          }),
-        { pageSize: 500 },
-      );
+      const allRows =
+        result.total > 0
+          ? await fetchAllPaged<Row>(
+              (offset, limit) =>
+                utils.reports.generalLedger.fetch({
+                  ...filterInput,
+                  limit,
+                  offset,
+                }),
+              { pageSize: 500 },
+            )
+          : [];
       const hasGaps = result.unmappedCount > 0;
       const modeWarning =
         result.mode === "SHADOW"
@@ -472,6 +475,7 @@ export default function GeneralLedger() {
         title: `دفتر الأستاذ — ${result.account.code} ${result.account.name}`,
         orientation: "landscape",
         note: incompleteNote,
+        emptyText: "لا حركات لهذا الحساب ضمن الفترة.",
         headerExtra: [
           { label: "الفترة", value: `${period.from} — ${period.to}` },
           { label: "الفرع", value: branchLabel },
@@ -523,7 +527,7 @@ export default function GeneralLedger() {
       onExport={onExport}
       onPrint={() => void onPrint()}
       exportDisabled={!result || result.total === 0}
-      printDisabled={!result || result.total === 0 || q.isLoading || q.isError}
+      printDisabled={!result || accountId == null || q.isLoading || q.isError}
       filters={
         <div className="flex flex-wrap items-end gap-3">
           <label className="flex min-w-64 flex-col gap-1 text-[11px] text-muted-foreground">

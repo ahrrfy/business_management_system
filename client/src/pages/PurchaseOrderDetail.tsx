@@ -289,6 +289,9 @@ export default function PurchaseOrderDetail() {
             { label: "رقم الأمر", value: d.poNumber ?? `#${d.id}` },
             { label: "الحالة", value: PO_STATUS[d.status] ?? d.status },
             { label: "العملة", value: isUsd ? "دولار أمريكي" : "دينار عراقي" },
+            ...(d.expectedDeliveryDate
+              ? [{ label: "التسليم المتوقّع", value: fmtDate(d.expectedDeliveryDate) }]
+              : []),
             ...(parsedNotes.poReference ? [{ label: "مرجع أمر الشراء", value: parsedNotes.poReference }] : []),
             ...(parsedNotes.notes ? [{ label: "ملاحظات", value: parsedNotes.notes }] : []),
             ...(parsedNotes.terms ? [{ label: "الشروط والأحكام", value: parsedNotes.terms }] : []),
