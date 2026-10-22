@@ -446,14 +446,22 @@ export default function GeneralLedger() {
           }),
         { pageSize: 500 },
       );
+      const isIncomplete = result.unmappedCount > 0;
+      const incompleteNote = isIncomplete
+        ? `تنبيه: توجد ${result.openingUnmappedCount} فجوة قبل الفترة قد تؤثر في الرصيد الافتتاحي، و${result.periodUnmappedCount} فجوة داخل الفترة؛ الكشف غير مكتمل للاعتماد.`
+        : undefined;
       const ok = printReportDoc({
         title: `دفتر الأستاذ — ${result.account.code} ${result.account.name}`,
         orientation: "landscape",
+        note: incompleteNote,
         headerExtra: [
           { label: "الفترة", value: `${period.from} — ${period.to}` },
           { label: "الفرع", value: branchLabel },
           { label: "الوضع", value: result.mode },
           { label: "الرصيد الافتتاحي", value: `${fmtAr(result.openingBalance)} ${SIDE_LABEL[result.openingSide]}` },
+          { label: "فجوات قبل الفترة", value: String(result.openingUnmappedCount) },
+          { label: "فجوات داخل الفترة", value: String(result.periodUnmappedCount) },
+          { label: "حالة الاكتمال", value: isIncomplete ? "غير مكتمل للاعتماد" : "مكتمل" },
         ],
         columns: [
           { key: "entryDate", label: "التاريخ" },

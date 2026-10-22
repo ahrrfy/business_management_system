@@ -117,9 +117,15 @@ function poItemColumns(isUsd: boolean): ColumnDef<PoItemRow, unknown>[] {
     {
       id: "unitPrice",
       header: isUsd ? "سعر الوحدة ($)" : "سعر الوحدة",
-      accessorFn: (it) => fmtAr(isUsd ? it.usdUnitPrice : it.unitPrice),
+      accessorFn: (it) =>
+        isUsd
+          ? formatQuantity(it.usdUnitPrice, { maximumFractionDigits: 4 })
+          : fmtAr(it.unitPrice),
       meta: { kind: "money" },
-      cell: ({ row }) => fmtAr(isUsd ? row.original.usdUnitPrice : row.original.unitPrice),
+      cell: ({ row }) =>
+        isUsd
+          ? formatQuantity(row.original.usdUnitPrice, { maximumFractionDigits: 4 })
+          : fmtAr(row.original.unitPrice),
     },
     {
       id: "total",
@@ -308,7 +314,11 @@ export default function PurchaseOrderDetail() {
           sku: it.sku,
         }),
         unit: it.unitName ?? "قطعة",
-        price: costHidden ? "—" : fmtAr((isUsd ? it.usdUnitPrice : it.unitPrice) ?? "0"),
+        price: costHidden
+          ? "—"
+          : isUsd
+            ? formatQuantity(it.usdUnitPrice ?? "0", { maximumFractionDigits: 4 })
+            : fmtAr(it.unitPrice ?? "0"),
         qty: formatQuantity(it.quantity),
         total: costHidden ? "—" : fmtAr((isUsd ? it.usdTotal : it.total) ?? "0"),
       })),
@@ -317,7 +327,16 @@ export default function PurchaseOrderDetail() {
         : [
             { label: "المجموع قبل الضريبة (د.ع)", value: fmtAr(d.subtotal) },
             ...(D(d.invoiceDiscount ?? 0).gt(0)
-              ? [{ label: "خصم فاتورة المورّد (مطبَّق)", value: `− ${fmtAr(d.invoiceDiscount)}` }]
+              ? [
+                  {
+                    label: "خصم فاتورة المورّد (مطبَّق)",
+                    value: `− ${fmtAr(d.invoiceDiscount)} د.ع${
+                      isUsd && D(d.usdInvoiceDiscount ?? 0).gt(0)
+                        ? ` (${fmtAr(d.usdInvoiceDiscount)} $)`
+                        : ""
+                    }`,
+                  },
+                ]
               : []),
             ...(D(d.taxAmount ?? 0).gt(0)
               ? [{ label: "الضريبة (د.ع)", value: fmtAr(d.taxAmount) }]

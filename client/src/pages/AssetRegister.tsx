@@ -189,11 +189,14 @@ export default function AssetRegister() {
   const filtersActive = activeFilterCount > 0 || f.q.trim() !== "";
 
   function onPrintRegister() {
-    if (rows.length === 0) return;
+    if (rows.length === 0 || list.isLoading || list.isError) return;
     const totalCost = rows.reduce((acc, r) => acc.add(D(r.purchaseValue ?? 0)), D(0));
     const totalOpeningDep = rows.reduce((acc, r) => acc.add(D((r as any).openingDepreciation ?? 0)), D(0));
     const totalAccumulated = rows.reduce((acc, r) => acc.add(D(r.accumulated ?? 0)), D(0));
-    const totalSystemDep = totalAccumulated.sub(totalOpeningDep);
+    const totalSystemDep = rows.reduce((acc, r) => {
+      const diff = D(r.accumulated ?? 0).sub(D((r as any).openingDepreciation ?? 0));
+      return acc.add(diff.gt(0) ? diff : D(0));
+    }, D(0));
     const totalBookValue = rows.reduce((acc, r) => acc.add(D(r.bookValue ?? 0)), D(0));
 
     printReportDoc({
@@ -340,7 +343,7 @@ export default function AssetRegister() {
             onImport={can("assets.import", canWrite) ? () => setImportOpen(true) : undefined}
             importLabel="استيراد أصول"
             actions={
-              <Button variant="outline" size="sm" onClick={onPrintRegister} disabled={rows.length === 0}>
+              <Button variant="outline" size="sm" onClick={onPrintRegister} disabled={rows.length === 0 || list.isLoading || list.isError}>
                 <Printer className="size-4 ml-1" /> طباعة السجل
               </Button>
             }
