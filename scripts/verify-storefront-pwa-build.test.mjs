@@ -8,6 +8,7 @@ import {
 import {
   assertStorefrontImageRuntimePolicy,
   assertStorefrontPrecacheClosure,
+  assertStorefrontPrecacheNavigationPolicy,
 } from "./verify-storefront-pwa-build.mjs";
 
 function matches(pathname, method = "GET") {
@@ -173,6 +174,17 @@ assert.throws(
 assert.throws(
   () => assertStorefrontImageRuntimePolicy(runtimePolicy.replace("inventory-product", "product")),
   /STOREFRONT_SW_PRIVATE_IMAGE_POLICY_INVALID:inventory-product/,
+);
+
+assert.doesNotThrow(() =>
+  assertStorefrontPrecacheNavigationPolicy("precacheAndRoute(self.__WB_MANIFEST,{directoryIndex:null})"),
+);
+assert.doesNotThrow(() =>
+  assertStorefrontPrecacheNavigationPolicy('precacheAndRoute(self.__WB_MANIFEST, { "directoryIndex": null })'),
+);
+assert.throws(
+  () => assertStorefrontPrecacheNavigationPolicy("precacheAndRoute(self.__WB_MANIFEST,{})"),
+  /STOREFRONT_SW_DIRECTORY_INDEX_MUST_BE_NULL/,
 );
 
 console.log("storefront PWA build contract test: OK");

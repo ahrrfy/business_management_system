@@ -1,0 +1,110 @@
+{
+  "at": "2026-10-21T08:25:15.788Z",
+  "node": "20.20.2",
+  "platform": "win32",
+  "arch": "x64",
+  "sourceBase": "c7074ecbc0e8030ccb066dfc11e22d9c0dc22dde",
+  "purpose": "Falsify missing-asset error logging as a sufficient lag/503 mechanism in a bounded local fixture",
+  "safety": {
+    "loopbackOnly": true,
+    "databaseImports": false,
+    "databaseQueries": false,
+    "financialFixtures": false,
+    "productionRequests": false,
+    "forcedGc": false,
+    "busyWait": false,
+    "injectedLag": false,
+    "thresholdsChanged": false
+  },
+  "limits": [
+    "Windows single-process fixture, not the production Linux/PM2/nginx stack",
+    "Synthetic public files and constant canary; no application startup, credentials or DB",
+    "Real logger/async local file output; production pipe/disk backpressure and environment are not reproduced",
+    "One worker sees the aggregate observed missing-file rate; no throughput/P95/production acceptance claim"
+  ],
+  "trials": [
+    {
+      "sequence": 1,
+      "mode": "before",
+      "requestsPerTrial": 104,
+      "targetMissingRequestsPerSecond": 25,
+      "elapsedMs": 4135.1197,
+      "assetStatuses": {
+        "404": 104
+      },
+      "canaryStatuses": {
+        "200": 104
+      },
+      "globalErrors": 104,
+      "errorLogBytes": 45288,
+      "cpuUserMs": 437,
+      "cpuSystemMs": 141,
+      "peakSmoothedLagMs": 7.875,
+      "peakLoopDelayMs": 20.725759
+    },
+    {
+      "sequence": 2,
+      "mode": "after",
+      "requestsPerTrial": 104,
+      "targetMissingRequestsPerSecond": 25,
+      "elapsedMs": 4129.8908,
+      "assetStatuses": {
+        "404": 104
+      },
+      "canaryStatuses": {
+        "200": 104
+      },
+      "globalErrors": 0,
+      "errorLogBytes": 0,
+      "cpuUserMs": 375,
+      "cpuSystemMs": 125,
+      "peakSmoothedLagMs": 11.1875,
+      "peakLoopDelayMs": 18.055167
+    },
+    {
+      "sequence": 3,
+      "mode": "after",
+      "requestsPerTrial": 104,
+      "targetMissingRequestsPerSecond": 25,
+      "elapsedMs": 4129.2943,
+      "assetStatuses": {
+        "404": 104
+      },
+      "canaryStatuses": {
+        "200": 104
+      },
+      "globalErrors": 0,
+      "errorLogBytes": 0,
+      "cpuUserMs": 281,
+      "cpuSystemMs": 172,
+      "peakSmoothedLagMs": 11.640625,
+      "peakLoopDelayMs": 25.149439
+    },
+    {
+      "sequence": 4,
+      "mode": "before",
+      "requestsPerTrial": 104,
+      "targetMissingRequestsPerSecond": 25,
+      "elapsedMs": 4124.7215,
+      "assetStatuses": {
+        "404": 104
+      },
+      "canaryStatuses": {
+        "200": 104
+      },
+      "globalErrors": 104,
+      "errorLogBytes": 45288,
+      "cpuUserMs": 140,
+      "cpuSystemMs": 109,
+      "peakSmoothedLagMs": 9.46875,
+      "peakLoopDelayMs": 18.710527
+    }
+  ],
+  "result": {
+    "expected404EscapedBefore": 208,
+    "expected404EscapedAfter": 0,
+    "local503Reproduced": false,
+    "productionLag503RootCauseResolved": false,
+    "productionAcceptanceGranted": false
+  }
+}
