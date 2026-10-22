@@ -33,6 +33,7 @@ import {
   type DocHeaderBarcode,
 } from './docHtml';
 import { formatArabicMoneyWords } from './tafqit';
+import { formatPaymentMethodPrintHtml } from './cardBrandLogos';
 
 // ─── مساعدات مشتركة ──────────────────────────────────────────────────────────
 
@@ -624,7 +625,7 @@ export function printSalesReportV2(d: SalesReportV2Data): boolean {
     { key: 'branch', label: 'الفرع', width: 72, size: 9.25 },
     { key: 'salesperson', label: 'الكاشير / البائع', width: 88, size: 9.25 },
     { key: 'shift', label: 'الوردية', width: 44, size: 9.25 },
-    { key: 'payment', label: 'الدفع', width: 58, size: 9.25 },
+    { key: 'payment', label: 'الدفع', width: 68, size: 9.25, rawHtml: true },
     { key: 'total', label: 'الإجمالي', width: 70, size: 9.25 },
     { key: 'returned', label: 'المرتجع', width: 62, color: B.alert, size: 9.25 },
     { key: 'paid', label: 'المدفوع', width: 70, size: 9.25 },
@@ -639,7 +640,7 @@ export function printSalesReportV2(d: SalesReportV2Data): boolean {
     branch: r.branchName ?? '—',
     salesperson: r.salespersonName ?? '—',
     shift: r.shiftId == null ? '—' : String(r.shiftId),
-    payment: r.paymentMethod ?? '—',
+    payment: formatPaymentMethodPrintHtml(r.paymentMethod ?? '—', esc, { heightPx: 12 }),
     total: fmtIQD(r.total),
     returned: fmtIQD(r.returned ?? 0),
     paid: fmtIQD(r.paid),

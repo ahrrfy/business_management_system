@@ -10,6 +10,7 @@ import { paymentMethodClass, paymentMethodLabel } from "@/lib/paymentMethod";
 import { shiftTypeLabel, sourceTypeLabel } from "@/lib/labels";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { D, fmt, round2 } from "@/lib/money";
+import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 
 interface InvoiceHeaderCardProps {
   data: InvoiceDetailData;
@@ -46,10 +47,11 @@ export function InvoiceHeaderCard({
             ) : (
               data.paymentMethod && (
                 <span
-                  className={`text-xs rounded-full px-2.5 py-0.5 font-semibold ${paymentMethodClass(data.paymentMethod)}`}
+                  className={`inline-flex items-center gap-1.5 text-xs rounded-full px-2.5 py-0.5 font-semibold ${paymentMethodClass(data.paymentMethod)}`}
                   title="طريقة الدفع المسجّلة على هذه الفاتورة"
                 >
-                  {paymentMethodLabel(data.paymentMethod)}
+                  {data.paymentMethod === "CARD" && <CardBrandLogos size="xs" />}
+                  <span>{paymentMethodLabel(data.paymentMethod)}</span>
                 </span>
               )
             )}

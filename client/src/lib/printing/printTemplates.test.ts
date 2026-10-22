@@ -11,7 +11,8 @@ vi.mock("./brand", async () => {
 
 import { openPrintWindow } from "./brand";
 import { printBrowserReceipt, printShiftCloseBrowser, printInvoiceA4 } from "./printTemplates";
-import { resolveQrUrl } from "./render";
+import { printSalesReportV2 } from "./printTemplatesV2";
+import { docToHtml, resolveQrUrl } from "./render";
 import * as qrModule from "./qr";
 import { printA4Invoice } from "./a4Invoice";
 
@@ -591,5 +592,181 @@ describe("printInvoiceA4 — رصيد العميل السابق والنهائي
     expect(html).not.toContain("الرصيد النهائي");
   });
 });
+
+describe("شعارا فيزا وماستركارد في الفواتير والإيصالات عند الدفع بالبطاقة", () => {
+  beforeEach(() => {
+    vi.mocked(openPrintWindow).mockClear();
+  });
+
+  it("يدرج شعاري Visa و Mastercard في فاتورة المبيعات A4 عندما تكون طريقة الدفع بطاقة أو CARD", async () => {
+    await printInvoiceA4({
+      invoiceNumber: "INV-CARD-101",
+      invoiceDate: "2026-10-22",
+      customerName: "عميل بطاقة",
+      paymentMethod: "بطاقة",
+      subtotal: "35000",
+      total: "35000",
+      paidAmount: "35000",
+      items: [{ productName: "قرطاسية", quantity: 1, unitPrice: 35000, total: 35000 }],
+    });
+
+    const htmlAr = vi.mocked(openPrintWindow).mock.calls[0]?.[0] ?? "";
+    expect(htmlAr).toContain("/visa-mastercard.png");
+    expect(htmlAr).toContain("Visa &amp; Mastercard");
+    expect(htmlAr).toContain("بطاقة");
+
+    vi.mocked(openPrintWindow).mockClear();
+    await printInvoiceA4({
+      invoiceNumber: "INV-CARD-102",
+      invoiceDate: "2026-10-22",
+      customerName: "عميل بطاقة",
+      paymentMethod: "CARD",
+      subtotal: "35000",
+      total: "35000",
+      paidAmount: "35000",
+      items: [],
+    });
+
+    const htmlCode = vi.mocked(openPrintWindow).mock.calls[0]?.[0] ?? "";
+    expect(htmlCode).toContain("/visa-mastercard.png");
+    expect(htmlCode).toContain("بطاقة");
+  });
+
+  it("لا يدرج شعاري Visa و Mastercard في فاتورة A4 عندما تكون طريقة الدفع نقدي أو غير محددة", async () => {
+    await printInvoiceA4({
+      invoiceNumber: "INV-CASH-101",
+      invoiceDate: "2026-10-22",
+      customerName: "عميل نقدي",
+      paymentMethod: "نقدي",
+      subtotal: "20000",
+      total: "20000",
+      paidAmount: "20000",
+      items: [],
+    });
+
+    const htmlCash = vi.mocked(openPrintWindow).mock.calls[0]?.[0] ?? "";
+    expect(htmlCash).not.toContain("/visa-mastercard.png");
+  });
+
+  it("يدرج شعاري Visa و Mastercard في الإيصال الحراري (80mm) عند الدفع بالبطاقة فقط", () => {
+    printBrowserReceipt({
+      receiptNumber: "RCP-CARD-1",
+      date: "2026-10-22",
+      time: "14:00",
+      paymentMethod: "بطاقة",
+      items: [{ name: "منتج", quantity: 1, price: "10000", total: "10000" }],
+      subtotal: "10000",
+      total: "10000",
+      paid: "10000",
+    });
+
+    const cardHtml = vi.mocked(openPrintWindow).mock.calls[0]?.[0] ?? "";
+    expect(cardHtml).toContain("/visa-mastercard.png");
+    expect(cardHtml).toContain("بطاقة");
+
+    vi.mocked(openPrintWindow).mockClear();
+    printBrowserReceipt({
+      receiptNumber: "RCP-CASH-1",
+      date: "2026-10-22",
+      time: "14:05",
+      paymentMethod: "نقدي",
+      items: [{ name: "منتج", quantity: 1, price: "10000", total: "10000" }],
+      subtotal: "10000",
+      total: "10000",
+      paid: "10000",
+    });
+
+    const cashHtml = vi.mocked(openPrintWindow).mock.calls[0]?.[0] ?? "";
+    expect(cashHtml).not.toContain("/visa-mastercard.png");
+  });
+
+  it("يدرج شعاري Visa و Mastercard في تقرير إغلاق الوردية (Z-Report) لصف الدفع بالبطاقة", () => {
+    printShiftCloseBrowser({
+      shiftId: 401,
+      openedAt: "2026-10-22T08:00:00.000Z",
+      closedAt: new Date("2026-10-22T16:00:00.000Z"),
+      cashierName: "كاشير التجربة",
+      branchName: "الفرع الرئيسي",
+      openingBalance: 0,
+      invoiceCount: 2,
+      salesTotal: 50000,
+      payments: [
+        { method: "CASH", direction: "IN", count: 1, total: 20000 },
+        { method: "CARD", direction: "IN", count: 1, total: 30000 },
+      ],
+      expectedCash: 20000,
+      countedCash: 20000,
+      variance: 0,
+    });
+
+    const html = vi.mocked(openPrintWindow).mock.calls[0]?.[0] ?? "";
+    expect(html).toContain("/visa-mastercard.png");
+    expect(html).toContain("بطاقة وارد");
+  });
+
+  it("يدرج شعاري Visa و Mastercard في الإيصالات الحرارية العامة (docToHtml) لإيصالات العربون والمرتجع والسندات", async () => {
+    const depositHtml = await docToHtml({
+      kind: "receipt",
+      title: "إيصال عربون محتجز",
+      meta: [
+        "العميل: أحمد",
+        "طريقة الدفع: بطاقة",
+      ],
+      totals: [{ label: "المبلغ المقبوض", value: "25,000 د.ع" }],
+    });
+    expect(depositHtml).toContain("/visa-mastercard.png");
+    expect(depositHtml).toContain("طريقة الدفع");
+    expect(depositHtml).toContain("بطاقة");
+
+    const returnHtml = await docToHtml({
+      kind: "receipt",
+      title: "إيصال مرتجع مبيعات",
+      meta: ["رقم الفاتورة: INV-100"],
+      totals: [
+        { label: "طريقة الاسترداد", value: "استرداد بالبطاقة" },
+        { label: "صافي المستحق للعميل", value: "15,000 د.ع" },
+      ],
+    });
+    expect(returnHtml).toContain("/visa-mastercard.png");
+    expect(returnHtml).toContain("استرداد بالبطاقة");
+  });
+
+  it("يدرج شعاري Visa و Mastercard في عمود الدفع بتقرير المبيعات المطبوع A4 (printSalesReportV2)", () => {
+    printSalesReportV2({
+      invoiceCount: 2,
+      totalSum: 50000,
+      paidSum: 50000,
+      unpaidSum: 0,
+      rows: [
+        {
+          invoiceNumber: "INV-1",
+          date: "2026-10-22",
+          customerName: "عميل بطاقة",
+          paymentMethod: "بطاقة",
+          total: 30000,
+          paid: 30000,
+          remaining: 0,
+          status: "مدفوعة",
+        },
+        {
+          invoiceNumber: "INV-2",
+          date: "2026-10-22",
+          customerName: "عميل نقدي",
+          paymentMethod: "نقدي",
+          total: 20000,
+          paid: 20000,
+          remaining: 0,
+          status: "مدفوعة",
+        },
+      ],
+    });
+
+    const html = vi.mocked(openPrintWindow).mock.calls[0]?.[0] ?? "";
+    expect(html).toContain("/visa-mastercard.png");
+    expect(html).toContain("عميل بطاقة");
+  });
+});
+
+
 
 

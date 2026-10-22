@@ -9,6 +9,7 @@ import { BalanceBadge } from "@/components/BalanceBadge";
 import { PageHeader } from "@/components/PageHeader";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
+import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -774,7 +775,10 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
               />
             </div>
             <div className="space-y-1">
-              <Label>طريقة الدفع *</Label>
+              <Label className="inline-flex items-center gap-1.5">
+                <span>طريقة الدفع *</span>
+                {method === "CARD" && <CardBrandLogos size="xs" />}
+              </Label>
               <AppSelect className="h-9" value={method} onValueChange={(value) => setMethod(value as MethodValue)}>
                 {METHODS.map((m) => (
                   <option key={m.value} value={m.value} disabled={!isInboundPaymentMethodEnabled(m.value)}>{m.label}</option>
@@ -799,7 +803,10 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
             )}
             {method === "CARD" && (
               <div className="space-y-1">
-                <Label>آخر 4 من البطاقة *</Label>
+                <Label className="inline-flex items-center gap-1.5">
+                  <CardBrandLogos size="xs" />
+                  <span>آخر 4 من البطاقة *</span>
+                </Label>
                 <Input
                   value={cardLastFour}
                   onChange={(e) =>

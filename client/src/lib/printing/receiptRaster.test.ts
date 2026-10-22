@@ -162,4 +162,42 @@ describe("receiptToCanvas — سعة الإيصال", () => {
 
     setDynamicCompanyProfile(null);
   });
+
+  it("يرسم شعاري Visa و Mastercard بجانب طريقة الدفع عند الدفع بالبطاقة", async () => {
+    const loadedSrcs: string[] = [];
+    const fillTextCalls: string[] = [];
+    const context = {
+      save: vi.fn(), restore: vi.fn(), fillRect: vi.fn(), drawImage: vi.fn(),
+      fillText: vi.fn((text: string) => fillTextCalls.push(String(text))),
+      setLineDash: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(),
+      arcTo: vi.fn(), closePath: vi.fn(),
+      measureText: (s: string) => ({ width: s.length * 10 }),
+      fillStyle: "", strokeStyle: "", lineWidth: 1, textAlign: "start", font: "",
+      textBaseline: "alphabetic", direction: "rtl",
+    };
+    const canvas = { width: 0, height: 0, getContext: () => context };
+    vi.stubGlobal("document", {
+      fonts: { load: () => Promise.resolve([]) },
+      createElement: () => canvas,
+    });
+    vi.stubGlobal("Image", class {
+      onload: (() => void) | null = null;
+      set src(value: string) {
+        loadedSrcs.push(value);
+        queueMicrotask(() => this.onload?.());
+      }
+    });
+
+    await receiptToCanvas({
+      receiptNumber: "INV-CARD-RASTER-1", date: "2026-10-22", time: "12:00",
+      cashierName: "كاشير", customerName: "عميل بطاقة", shiftId: 1,
+      items: [{ name: "منتج", quantity: 1, price: "25000", total: "25000" }],
+      subtotal: "25000", total: "25000", paymentMethod: "بطاقة", paid: "25000", change: "0",
+    });
+
+    expect(loadedSrcs).toContain("/visa-mastercard.png");
+    expect(fillTextCalls).toContain("طريقة الدفع:");
+    expect(fillTextCalls).toContain("بطاقة");
+  });
 });
+

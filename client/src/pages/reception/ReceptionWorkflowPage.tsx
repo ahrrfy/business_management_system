@@ -37,6 +37,7 @@ import { invoiceStatusBadgeVariant, invoiceStatusLabel } from "@shared/invoiceSt
 import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
 import { fmtDateTime } from "@/lib/date";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
+import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 
 type Section = "dispatch" | "collect" | "edit" | "return" | "cancelAssignment";
 
@@ -739,7 +740,10 @@ export default function DeliveryWorkflowPage() {
                     <div className="border-b p-3">
                       <p className="text-xs text-muted-foreground">الفاتورة والدفع</p>
                       <p className="font-bold">{fmt(editScanned.total)} د.ع · مدفوع {fmt(editScanned.paidAmount)} د.ع</p>
-                      <p className="text-xs text-muted-foreground">{paymentMethodLabel(editScanned.paymentMethod)} · {editScanned.itemCount} صنف/خدمة</p>
+                      <p className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                        {editScanned.paymentMethod === "CARD" && <CardBrandLogos size="xs" />}
+                        <span>{paymentMethodLabel(editScanned.paymentMethod)} · {editScanned.itemCount} صنف/خدمة</span>
+                      </p>
                     </div>
                     <div className="border-b p-3 sm:border-b-0 sm:border-e">
                       <p className="text-xs text-muted-foreground">أنشأها</p>
