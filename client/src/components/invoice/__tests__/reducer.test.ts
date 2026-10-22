@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createInitialState, invoiceReducer } from "../reducer";
+import { composeDocumentNotes, splitDocumentNotes } from "../TermsAndNotes";
 import type { InvoiceLine } from "../types";
 
 function line(productUnitId: number, price: string): InvoiceLine {
@@ -230,5 +231,27 @@ describe("invoiceReducer digital-card identity", () => {
     expect(repriced.items[0].qty).toBe(1);
     expect(repriced.items[0].price).toBe("100.00");
     expect(repriced.tier).toBe("WHOLESALE");
+  });
+});
+
+describe("composeDocumentNotes & splitDocumentNotes", () => {
+  it("يدمج الملاحظات والشروط ورقم أمر الشراء المرجعي ويعيد تفكيكها بدقة", () => {
+    const composed = composeDocumentNotes({
+      notes: "توصيل صباحي",
+      terms: "كفالة سنة كاملة",
+      poReference: "PO-2026-99",
+    });
+    expect(composed).toBeDefined();
+    const parsed = splitDocumentNotes(composed);
+    expect(parsed).toEqual({
+      notes: "توصيل صباحي",
+      terms: "كفالة سنة كاملة",
+      poReference: "PO-2026-99",
+    });
+  });
+
+  it("يعيد undefined عند خلو الحقول الثلاثة", () => {
+    expect(composeDocumentNotes({ notes: "  ", terms: "", poReference: "" })).toBeUndefined();
+    expect(splitDocumentNotes(null)).toEqual({ notes: "", terms: "", poReference: "" });
   });
 });

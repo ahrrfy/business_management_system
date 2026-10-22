@@ -39,7 +39,12 @@ export { ProductTable, type ProductTableProps } from "./ProductTable";
 export { BulkPicker, type BulkPickerProps } from "./BulkPicker";
 export { TotalsPanel, type TotalsPanelProps } from "./TotalsPanel";
 export { ActionButtons, type ActionButtonsProps, type InvoiceActionKind } from "./ActionButtons";
-export { TermsAndNotes, type TermsAndNotesProps } from "./TermsAndNotes";
+export {
+  TermsAndNotes,
+  composeDocumentNotes,
+  splitDocumentNotes,
+  type TermsAndNotesProps,
+} from "./TermsAndNotes";
 export { ShortcutsBar, type ShortcutsBarProps } from "./ShortcutsBar";
 // ⚠️ اسم ملف المنطق `supplierInvoiceMatching.ts` يتعمّد الاختلاف عن مكوّن
 // `SupplierInvoiceMatch.tsx` بأكثر من حالة الأحرف: كانا `supplierInvoiceMatch.ts` و

@@ -16,7 +16,7 @@ import {
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { cn } from "@/lib/utils";
-import { useEffect, useRef, useState, type Dispatch } from "react";
+import { useRef, useState, type Dispatch } from "react";
 import {
   FileText, Hash, Calendar, Building, User, Factory, Tag,
   ClipboardList, Clock, DollarSign, UserCheck, Pin, CalendarDays, NotebookPen, Loader2,
@@ -133,22 +133,25 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
   const activePricingIntentEpoch = pricingIntentEpoch ?? localPricingIntentEpochRef.current;
   const [isRepricing, setIsRepricing] = useState(false);
 
-  // رأس تكيّفيّ (هجين): يُطوى تلقائياً حين تحمل السلة منتجات ليتمدّد جدول السلة نزولاً ويعرض
-  // صفوفاً أكثر، ويعود كاملاً عند إفراغ السلة للإعداد. زرّ الطيّ/التوسيع اليدويّ يتقدّم على
-  // التلقائيّ حتى الانتقال التالي (٠↔موجود).
-  const itemCount = state.items.length;
-  const [collapsed, setCollapsed] = useState(itemCount > 0);
-  const prevItemCountRef = useRef(itemCount);
-  useEffect(() => {
-    const prev = prevItemCountRef.current;
-    prevItemCountRef.current = itemCount;
-    if (prev === 0 && itemCount > 0) setCollapsed(true);
-    else if (itemCount === 0) setCollapsed(false);
-  }, [itemCount]);
+  // رأس تكيّفيّ: يبقى مفتوحاً افتراضياً لئلّا تختفي حقول العميل والفئة والشروط والمندوب فجأةً
+  // عند إضافة أوّل صنف، مع إتاحة الطيّ/التوسيع اليدويّ بزرّ الترويسة.
+  const [collapsed, setCollapsed] = useState(false);
 
   const entitySet = state.entityId != null;
+  const customerGet = trpc.customers.get.useQuery(
+    { customerId: state.entityId ?? 0 },
+    { enabled: isSale && state.entityId != null, staleTime: 60_000 },
+  );
+  const supplierGet = trpc.suppliers.get.useQuery(
+    { supplierId: state.entityId ?? 0 },
+    { enabled: !isSale && state.entityId != null, staleTime: 60_000 },
+  );
+  const selectedEntityName = isSale ? customerGet.data?.name : supplierGet.data?.name;
+  const branchName = (branches.data ?? []).find((b) => b.id === state.branchId)?.name;
+  const tierLabel = TIER_OPTIONS.find((t) => t.value === state.tier)?.label ?? state.tier;
   const paymentLabel = PAYMENT_TERMS.find((t) => t.value === state.paymentTerms)?.label ?? state.paymentTerms;
   const currencyLabel = CURRENCIES.find((c) => c.value === state.currency)?.label ?? state.currency;
+  const salesRepName = salesReps?.find((r) => r.id === Number(state.salesRepId))?.name;
 
   /**
    * Reprice the current cart in one server round-trip when the tier changes.
@@ -352,7 +355,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
         </div>
       </header>
 
-      {/* ملخّص مطويّ — يحلّ محلّ الشبكة حين تحمل السلة منتجات، فيربح جدول السلة ارتفاعاً */}
+      {/* ملخّص مطويّ — يعرض القيم الفعلية المختارة (اسم العميل/المورد، الفرع، فئة السعر، الشروط، المندوب) */}
       {collapsed && (
         <button
           type="button"
@@ -364,7 +367,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
             className={cn(
               "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs font-bold",
               entitySet
-                ? "text-foreground"
+                ? "bg-primary/10 text-primary"
                 : isReturn
                   ? "text-muted-foreground"
                   : "border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]",
@@ -372,32 +375,46 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
           >
             {isSale ? <User aria-hidden className="size-3" /> : <Factory aria-hidden className="size-3" />}
             {entitySet
-              ? `${isSale ? "العميل" : "المورد"} محدَّد`
+              ? `${isSale ? "العميل" : "المورد"}: ${selectedEntityName ?? `#${state.entityId}`}`
               : isReturn
                 ? `نقدي — بلا ${isSale ? "عميل" : "مورّد"}`
                 : `اختر ${isSale ? "العميل" : "المورد"}`}
           </span>
+          {branchName && (
+            <span className="inline-flex items-center gap-1 text-xs font-semibold text-foreground">
+              <Building aria-hidden className="size-3 text-muted-foreground" /> {branchName}
+            </span>
+          )}
           <span className="inline-flex items-center gap-1 text-xs text-muted-foreground" dir="ltr">
             <Calendar aria-hidden className="size-3" /> {state.date}
           </span>
-          <span className="text-xs text-muted-foreground">· {paymentLabel}</span>
-          <span className="text-xs text-muted-foreground">· {currencyLabel}</span>
+          {isSale && (
+            <span className="text-xs font-semibold text-foreground">· {tierLabel}</span>
+          )}
+          {!isQuote && (
+            <span className="text-xs text-muted-foreground">· {paymentLabel}</span>
+          )}
+          {isPurchase && (
+            <span className="text-xs text-muted-foreground">
+              · {currencyLabel}
+              {state.currency === "USD" && state.agreedRate ? ` (${state.agreedRate})` : ""}
+            </span>
+          )}
+          {salesRepName && (
+            <span className="text-xs font-semibold text-foreground">· المندوب: {salesRepName}</span>
+          )}
+          {isPurchase && state.poReference.trim() && (
+            <span className="text-xs text-muted-foreground" dir="ltr">· {state.poReference.trim()}</span>
+          )}
           <span className="ms-auto inline-flex items-center gap-1 text-xs font-semibold text-primary">
             تعديل البيانات <ChevronDown aria-hidden className="size-3.5" />
           </span>
         </button>
       )}
 
-      {/* الشبكة الكاملة — تُطوى على الشاشة حين تمتلئ السلة، لكنها تبقى في DOM وتُطبَع دائماً
-          (`hidden print:block`): بيانات الرأس — العميل/الفرع/الشروط/المراجع — جزءٌ من المستند
-          لا زينةُ شاشة، فطيُّها للتوفير البصريّ يجب ألّا يحذفها من الورقة.
-          ملحوظة: التبريرُ تغيّر ولم يتغيّر السلوك (٢/٩/٢٦): كان هذا التعليق يعزو البقاءَ إلى «طباعة
-          المسوّدة عبر `window.print`»، وقد استُبدلت في شاشتَي الشراء بـ`printReportDoc` (تبني
-          مستندها بنفسها فلا تقرأ هذا الـDOM أصلاً). لكنّ `QuotationNew` و`SalesInvoiceNew`
-          **بلا زرِّ طباعةٍ إطلاقاً** ⇒ طريقُهما الوحيد هو Ctrl+P من المتصفّح، وهو يطبع هذا
-          الـDOM حرفياً. فالقاعدة باقيةٌ بسببٍ أقوى: لا يملك المستعمل مساراً آخر هناك. */}
+      {/* الشبكة الكاملة — تُطوى على الشاشة عند الطيّ اليدوي، لكنها تبقى في DOM وتُطبَع دائماً */}
       <div className={cn("px-3 pb-2.5 pt-2", collapsed && "hidden print:block")}>
-        <HeaderSection title="تفاصيل الفاتورة" icon={FileText} columnsClass="grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+        <HeaderSection title="تفاصيل الفاتورة" icon={FileText} columnsClass="grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6">
           <FieldGroup label="رقم المستند" icon={Hash}>
             <Input value={state.invoiceNumber} readOnly className="bg-muted font-bold" />
           </FieldGroup>
@@ -460,21 +477,23 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
             </FieldGroup>
           )}
 
-          <FieldGroup label="شروط الدفع" icon={ClipboardList}>
-            <Select
-              value={state.paymentTerms}
-              onValueChange={(v) => dispatch({ type: "SET_FIELD", field: "paymentTerms", value: v as PaymentTerm })}
-            >
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {PAYMENT_TERMS.map((t) => (
-                  <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </FieldGroup>
+          {!isQuote && (
+            <FieldGroup label="شروط الدفع" icon={ClipboardList}>
+              <Select
+                value={state.paymentTerms}
+                onValueChange={(v) => dispatch({ type: "SET_FIELD", field: "paymentTerms", value: v as PaymentTerm })}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {PAYMENT_TERMS.map((t) => (
+                    <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </FieldGroup>
+          )}
 
-          {(state.paymentTerms === "CREDIT" || state.paymentTerms === "INSTALLMENT") && (
+          {!isQuote && (state.paymentTerms === "CREDIT" || state.paymentTerms === "INSTALLMENT") && (
             <FieldGroup label="تاريخ الاستحقاق" icon={Clock}>
               <Input
                 type="date"
@@ -485,19 +504,21 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
             </FieldGroup>
           )}
 
-          <FieldGroup label="العملة" icon={DollarSign}>
-            <Select
-              value={state.currency}
-              onValueChange={(v) => dispatch({ type: "SET_FIELD", field: "currency", value: v as Currency })}
-            >
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {CURRENCIES.map((c) => (
-                  <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </FieldGroup>
+          {isPurchase && (
+            <FieldGroup label="العملة" icon={DollarSign}>
+              <Select
+                value={state.currency}
+                onValueChange={(v) => dispatch({ type: "SET_FIELD", field: "currency", value: v as Currency })}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {CURRENCIES.map((c) => (
+                    <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </FieldGroup>
+          )}
 
           {/* فاتورة شراء USD: أسعار البنود نفسها بالدولار، وهذا سعر التثبيت الذي يحوّلها إلى
               تكلفة مخزون دينارية. إجمالي الدولار يُشتق من البنود ولا يُعاد إدخاله يدوياً. */}
@@ -515,11 +536,15 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
           {isSale && !isReturn && salesReps && salesReps.length > 0 && (
             <FieldGroup label="مندوب المبيعات" icon={UserCheck}>
               <Select
-                value={state.salesRepId ? String(state.salesRepId) : ""}
-                onValueChange={(v) => dispatch({ type: "SET_FIELD", field: "salesRepId", value: v ? Number(v) : "" })}
+                value={state.salesRepId ? String(state.salesRepId) : "__NONE__"}
+                onValueChange={(raw) => {
+                  const v = raw === "__NONE__" ? "" : raw;
+                  dispatch({ type: "SET_FIELD", field: "salesRepId", value: v ? Number(v) : "" });
+                }}
               >
                 <SelectTrigger><SelectValue placeholder="— اختياري —" /></SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="__NONE__">— بلا مندوب —</SelectItem>
                   {salesReps.map((r) => (
                     <SelectItem key={r.id} value={String(r.id)}>{r.name}</SelectItem>
                   ))}

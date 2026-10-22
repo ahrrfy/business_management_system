@@ -26,7 +26,7 @@ import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
-import { PageHeader } from "@/components/PageHeader";
+import { PageHeader, EmbeddedPageHeaderProvider } from "@/components/PageHeader";
 import { FeedbackModal } from "@/components/crm/FeedbackModal";
 import { CustomerDossierDrawer } from "@/components/crm/CustomerDossierDrawer";
 import { InstantGiftModal } from "@/components/crm/InstantGiftModal";
@@ -191,8 +191,9 @@ function CustomerComplaintsView() {
   }
 
   return (
-    <div className="mx-auto max-w-7xl space-y-5 pb-8">
+    <div className="mx-auto max-w-7xl space-y-2.5 pb-4">
       <PageHeader
+        embedded
         title="الشكاوى ومستوى رضا الزبائن"
         description="متابعة جودة الخدمة ورضا الزبائن ومعالجة الشكاوى التشغيلية المرتبطة بمحطات العمل والطباعة."
         actions={
@@ -212,54 +213,30 @@ function CustomerComplaintsView() {
         }
       />
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Card className="rounded-xl border border-border/80 shadow-xs">
-          <CardContent className="flex items-center gap-3 p-4">
-            <div className="flex size-11 items-center justify-center rounded-xl bg-primary/10 text-primary">
-              <Star className="size-5 fill-current" aria-hidden />
-            </div>
-            <div>
-              <div className="text-xs text-muted-foreground">متوسط التقييم العام</div>
-              <div className="text-2xl font-black">{metrics.avgRating} <span className="text-xs font-normal text-muted-foreground">/ 5</span></div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="rounded-xl border border-border/80 shadow-xs">
-          <CardContent className="flex items-center gap-3 p-4">
-            <div className="flex size-11 items-center justify-center rounded-xl bg-primary/10 text-primary">
-              <MessageSquare className="size-5" aria-hidden />
-            </div>
-            <div>
-              <div className="text-xs text-muted-foreground">إجمالي التقييمات والشكاوى</div>
-              <div className="text-2xl font-black">{metrics.total}</div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="rounded-xl border border-border/80 shadow-xs">
-          <CardContent className="flex items-center gap-3 p-4">
-            <div className="flex size-11 items-center justify-center rounded-xl bg-[var(--sem-warn)]/10 text-[var(--sem-warn)]">
-              <Clock className="size-5" aria-hidden />
-            </div>
-            <div>
-              <div className="text-xs text-muted-foreground">شكاوى قيد المتابعة</div>
-              <div className="text-2xl font-black">{metrics.openCount}</div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="rounded-xl border border-border/80 shadow-xs">
-          <CardContent className="flex items-center gap-3 p-4">
-            <div className="flex size-11 items-center justify-center rounded-xl bg-[var(--sem-pos)]/10 text-[var(--sem-pos)]">
-              <CheckCircle2 className="size-5" aria-hidden />
-            </div>
-            <div>
-              <div className="text-xs text-muted-foreground">شكاوى تم حلها بنجاح</div>
-              <div className="text-2xl font-black">{metrics.resolvedCount}</div>
-            </div>
-          </CardContent>
-        </Card>
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-xl border border-border/80 bg-muted/20 px-3.5 py-2 text-xs">
+        <div className="flex items-center gap-1.5">
+          <Star className="size-3.5 fill-current text-primary" aria-hidden />
+          <span className="text-muted-foreground">متوسط التقييم العام:</span>
+          <span className="font-extrabold tabular-nums">{metrics.avgRating} / 5</span>
+        </div>
+        <span className="text-border">|</span>
+        <div className="flex items-center gap-1.5">
+          <MessageSquare className="size-3.5 text-primary" aria-hidden />
+          <span className="text-muted-foreground">إجمالي التقييمات والشكاوى:</span>
+          <span className="font-extrabold tabular-nums">{metrics.total}</span>
+        </div>
+        <span className="text-border">|</span>
+        <div className="flex items-center gap-1.5">
+          <Clock className="size-3.5 text-[var(--sem-warn)]" aria-hidden />
+          <span className="text-muted-foreground">شكاوى قيد المتابعة:</span>
+          <span className="font-extrabold tabular-nums text-[var(--sem-warn)]">{metrics.openCount}</span>
+        </div>
+        <span className="text-border">|</span>
+        <div className="flex items-center gap-1.5">
+          <CheckCircle2 className="size-3.5 text-[var(--sem-pos)]" aria-hidden />
+          <span className="text-muted-foreground">شكاوى تم حلها بنجاح:</span>
+          <span className="font-extrabold tabular-nums text-[var(--sem-pos)]">{metrics.resolvedCount}</span>
+        </div>
       </div>
 
       {/* شريط الفلاتر: فلاتر محطات الطباعة وفلاتر حالات الشكاوى */}
@@ -761,16 +738,18 @@ function CrmWingTabs({
           ))}
         </TabsPrimitive.List>
       </div>
-      {visible.map((t) => {
-        const Active = t.Component;
-        return (
-          <TabsPrimitive.Content key={t.value} value={t.value} className="outline-none">
-            <Suspense fallback={<TabFallback />}>
-              <Active />
-            </Suspense>
-          </TabsPrimitive.Content>
-        );
-      })}
+      <EmbeddedPageHeaderProvider>
+        {visible.map((t) => {
+          const Active = t.Component;
+          return (
+            <TabsPrimitive.Content key={t.value} value={t.value} className="outline-none">
+              <Suspense fallback={<TabFallback />}>
+                <Active />
+              </Suspense>
+            </TabsPrimitive.Content>
+          );
+        })}
+      </EmbeddedPageHeaderProvider>
     </TabsPrimitive.Root>
   );
 }
@@ -870,7 +849,9 @@ export default function CrmHub() {
 
       {/* المستوى الثاني: التبويبات المتخصصة الحصرية للجناح المختار */}
       {activeWing === "overview" ? (
-        <CrmOverview />
+        <EmbeddedPageHeaderProvider>
+          <CrmOverview />
+        </EmbeddedPageHeaderProvider>
       ) : (
         <CrmWingTabs
           key={activeWing}

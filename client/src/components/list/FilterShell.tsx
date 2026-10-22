@@ -68,7 +68,7 @@ export function FilterShell({
     <>
       <div className={FILTER_GRID_CLASS[columns]}>{children}</div>
       {toggles && (
-        <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1.5 border-t pt-2">
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 border-t pt-1.5">
           {toggles}
         </div>
       )}
@@ -86,9 +86,9 @@ export function FilterShell({
   const showHeader = hasActive || Boolean(headerActions);
 
   return (
-    <Card role="search" aria-label={title} className={cn("min-w-0 py-2.5 gap-2", className)}>
+    <Card role="search" aria-label={title} className={cn("min-w-0 py-2 gap-1.5", className)}>
       {showHeader && (
-        <CardHeader className="flex-row items-center justify-between gap-2 space-y-0 px-3.5 py-0">
+        <CardHeader className="flex-row items-center justify-between gap-2 space-y-0 px-3 py-0">
           <CardTitle className="flex items-center gap-1.5 text-xs font-bold text-muted-foreground">
             {title}
             {hasActive && (
@@ -118,7 +118,7 @@ export function FilterShell({
           </div>
         </CardHeader>
       )}
-      <CardContent className="px-3.5">{body}</CardContent>
+      <CardContent className="px-3">{body}</CardContent>
     </Card>
   );
 }
