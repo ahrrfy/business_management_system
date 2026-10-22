@@ -1241,7 +1241,7 @@ export default function PrintPOS() {
         payInput={tab.payInput}
         setPayInput={setPayInput}
         method={tab.method}
-        setMethod={(m) => patch({ method: m, externalPayment: null })}
+        setMethod={(m) => patch({ method: m, externalPayment: null, splitMode: false, splitLegs: [] })}
         paymentRef={tab.paymentRef ?? ""}
         setPaymentRef={(v) => patch({ paymentRef: v, externalPayment: null })}
         externalPaymentConfirmed={externalPaymentConfirmed}
