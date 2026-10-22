@@ -17,6 +17,7 @@ import {
   runAtomicRemediationCycle,
   verifyPostMergeCompletion,
   verifyPostMergeState,
+  verifyPreMergeTargetState,
 } from "../safe-merge.mjs";
 
 const root = process.cwd();
@@ -381,16 +382,44 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
     const resolveArgs = buildResolveReviewThreadArgs("PRRT_4341514310");
     expect(resolveArgs).toContain("threadId=PRRT_4341514310");
 
-    expect(verifyPostMergeState({ state: "OPEN", mergedAt: null }).merged).toBe(
-      false,
-    );
+    expect(
+      verifyPostMergeState({
+        state: "OPEN",
+        baseRefName: "main",
+        mergedAt: null,
+      }).merged,
+    ).toBe(false);
     expect(
       verifyPostMergeState({
         state: "MERGED",
+        baseRefName: "main",
         mergedAt: "2026-10-22T10:30:00Z",
         mergeCommit: { oid: "merged-sha-1" },
       }).merged,
     ).toBe(true);
+    expect(
+      verifyPostMergeState({
+        state: "MERGED",
+        baseRefName: "develop",
+        mergedAt: "2026-10-22T10:30:00Z",
+        mergeCommit: { oid: "merged-sha-1" },
+      }).code,
+    ).toBe("PR_INVALID_BASE_BRANCH");
+    expect(
+      verifyPreMergeTargetState({
+        prNumber: 1530,
+        expectedHeadRefOid: "0bd1c2db9",
+        fetchState: () => ({
+          prView: {
+            number: 1530,
+            state: "OPEN",
+            baseRefName: "develop",
+            headRefOid: "0bd1c2db9",
+          },
+          reviewThreads: [],
+        }),
+      }).code,
+    ).toBe("PR_INVALID_BASE_BRANCH");
 
     const queuedVerdict = verifyPostMergeCompletion(1530, "0bd1c2db9", {
       maxAttempts: 2,
@@ -399,6 +428,7 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
       fetchPrState: () => ({
         number: 1530,
         state: "OPEN",
+        baseRefName: "main",
         mergeQueueEntry: { state: "QUEUED" },
         headRefOid: "0bd1c2db9",
       }),

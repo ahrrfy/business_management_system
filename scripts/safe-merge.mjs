@@ -671,14 +671,79 @@ function isMergeQueuePendingState(postMergeView) {
   );
 }
 
+export function verifyPreMergeTargetState({
+  prNumber,
+  expectedHeadRefOid,
+  fetchState,
+} = {}) {
+  if (typeof fetchState !== "function") {
+    throw new Error(
+      "دالة fetchState مطلوبة لإعادة التحقق من حالة الطلب والفرع الأساسي قبل الدمج.",
+    );
+  }
+  const latest = fetchState(prNumber);
+  const prView = latest?.prView ?? latest;
+  const reviewThreads = Array.isArray(latest?.reviewThreads)
+    ? latest.reviewThreads
+    : [];
+  const baseRefName = String(prView?.baseRefName ?? "").trim();
+  if (baseRefName !== "main") {
+    return {
+      ok: false,
+      code: "PR_INVALID_BASE_BRANCH",
+      reason: `تم تغيير الفرع الأساسي لطلب الدمج #${prNumber} إلى «${baseRefName || "غير معروف"}» قبيل الدمج؛ يُسمح بالدمج في main فقط.`,
+    };
+  }
+  const expectedSha = String(expectedHeadRefOid ?? "").trim();
+  const actualHeadRefOid = String(prView?.headRefOid ?? "").trim();
+  if (!expectedSha || actualHeadRefOid !== expectedSha) {
+    return {
+      ok: false,
+      code: "PR_HEAD_MOVED_BEFORE_MERGE",
+      reason: `تغيّر رأس طلب الدمج #${prNumber} إلى «${actualHeadRefOid || "غير معروف"}» قبيل الدمج ولا يطابق البصمة المتحقَّق منها (${expectedSha || "غير محددة"}).`,
+    };
+  }
+  const readiness = evaluatePrMergeReadiness({ prView, reviewThreads });
+  if (!readiness.ready) {
+    return {
+      ok: false,
+      code: readiness.code,
+      reason: readiness.reason,
+      decision: readiness,
+    };
+  }
+  return {
+    ok: true,
+    code: "OK",
+    baseRefName: "main",
+    headRefOid: expectedSha,
+  };
+}
+
 export function verifyPostMergeState(postMergeView, expectedHeadRefOid = "") {
   const state = String(postMergeView?.state ?? "").toUpperCase();
   const mergedAt = String(postMergeView?.mergedAt ?? "").trim();
   const mergeCommitOid = String(postMergeView?.mergeCommit?.oid ?? "").trim();
   const actualHeadRefOid = String(postMergeView?.headRefOid ?? "").trim();
+  const baseRefName = String(postMergeView?.baseRefName ?? "").trim();
   const expectedSha = String(expectedHeadRefOid ?? "").trim();
 
+  if (baseRefName && baseRefName !== "main") {
+    return {
+      merged: false,
+      code: "PR_INVALID_BASE_BRANCH",
+      reason: `الفرع الأساسي لطلب الدمج هو «${baseRefName}» وليس main؛ لا يُعتمد الدمج خارج الفرع الرئيسي.`,
+    };
+  }
+
   if (state === "MERGED" && Boolean(mergedAt || mergeCommitOid)) {
+    if (baseRefName !== "main") {
+      return {
+        merged: false,
+        code: "PR_INVALID_BASE_BRANCH",
+        reason: `لم يتم التحقق من أن الفرع الأساسي للدمج هو main (الحالي: «${baseRefName || "غير معروف"}»).`,
+      };
+    }
     if (expectedSha && actualHeadRefOid && actualHeadRefOid !== expectedSha) {
       return {
         merged: false,
@@ -689,6 +754,7 @@ export function verifyPostMergeState(postMergeView, expectedHeadRefOid = "") {
     return {
       merged: true,
       code: "OK",
+      baseRefName: "main",
       mergeCommitOid: mergeCommitOid || null,
       mergedAt: mergedAt || null,
     };
@@ -738,9 +804,25 @@ export function verifyPostMergeCompletion(
     const mergedAt = String(lastState?.mergedAt ?? "").trim();
     const mergeCommitOid = String(lastState?.mergeCommit?.oid ?? "").trim();
     const actualHeadRefOid = String(lastState?.headRefOid ?? "").trim();
+    const baseRefName = String(lastState?.baseRefName ?? "").trim();
     const isInMergeQueue = isMergeQueuePendingState(lastState);
 
+    if (baseRefName && baseRefName !== "main") {
+      return {
+        merged: false,
+        code: "PR_INVALID_BASE_BRANCH",
+        reason: `الفرع الأساسي لطلب الدمج #${prNumber} هو «${baseRefName}» وليس main؛ لا يُعتمد الدمج خارج الفرع الرئيسي.`,
+      };
+    }
+
     if (state === "MERGED" && (mergedAt || mergeCommitOid)) {
+      if (baseRefName !== "main") {
+        return {
+          merged: false,
+          code: "PR_INVALID_BASE_BRANCH",
+          reason: `لم يتم التحقق من أن الفرع الأساسي لطلب الدمج #${prNumber} هو main (الحالي: «${baseRefName || "غير معروف"}»).`,
+        };
+      }
       if (
         expectedHeadRefOid &&
         actualHeadRefOid &&
@@ -755,6 +837,7 @@ export function verifyPostMergeCompletion(
       return {
         merged: true,
         code: "MERGED",
+        baseRefName: "main",
         mergeCommitOid: mergeCommitOid || null,
         mergedAt: mergedAt || null,
         attempts: attempt,
@@ -1473,6 +1556,7 @@ export function runSafeMergeSelftest() {
         return {
           number: 1530,
           state: "OPEN",
+          baseRefName: "main",
           mergeQueueEntry: { state: "AWAITING_CHECKS" },
           headRefOid: "sha-2",
         };
@@ -1480,6 +1564,7 @@ export function runSafeMergeSelftest() {
       return {
         number: 1530,
         state: "MERGED",
+        baseRefName: "main",
         mergedAt: "2026-10-22T10:30:00Z",
         mergeCommit: { oid: "merged-sha-999" },
         headRefOid: "sha-2",
@@ -1489,6 +1574,22 @@ export function runSafeMergeSelftest() {
   assert.equal(eventuallyMergedRes.merged, true);
   assert.equal(eventuallyMergedRes.code, "MERGED");
   assert.equal(eventuallyMergedRes.mergeCommitOid, "merged-sha-999");
+
+  const retargetedPostMergeRes = verifyPostMergeCompletion(1530, "sha-2", {
+    maxAttempts: 2,
+    delayMs: 0,
+    sleep: () => {},
+    fetchPrState: () => ({
+      number: 1530,
+      state: "MERGED",
+      baseRefName: "develop",
+      mergedAt: "2026-10-22T10:30:00Z",
+      mergeCommit: { oid: "merged-sha-999" },
+      headRefOid: "sha-2",
+    }),
+  });
+  assert.equal(retargetedPostMergeRes.merged, false);
+  assert.equal(retargetedPostMergeRes.code, "PR_INVALID_BASE_BRANCH");
 
   // 10. BEHIND or BLOCKED mergeStateStatus blocks merge
   const behindBranchRes = evaluatePrMergeReadiness({
@@ -1755,16 +1856,19 @@ export function runSafeMergeSelftest() {
 
   // 17. verifyPostMergeState direct helper compatibility
   assert.equal(
-    verifyPostMergeState({ state: "OPEN", mergedAt: null }).merged,
+    verifyPostMergeState({ state: "OPEN", baseRefName: "main", mergedAt: null })
+      .merged,
     false,
   );
   assert.equal(
-    verifyPostMergeState({ state: "OPEN", mergedAt: null }).code,
+    verifyPostMergeState({ state: "OPEN", baseRefName: "main", mergedAt: null })
+      .code,
     "PR_NOT_MERGED_YET",
   );
   assert.equal(
     verifyPostMergeState({
       state: "OPEN",
+      baseRefName: "main",
       mergeQueueEntry: { state: "QUEUED" },
       mergedAt: null,
     }).code,
@@ -1773,9 +1877,54 @@ export function runSafeMergeSelftest() {
   assert.equal(
     verifyPostMergeState({
       state: "MERGED",
+      baseRefName: "main",
       mergedAt: "2026-10-22T10:30:00Z",
       mergeCommit: { oid: "merged-sha-1" },
     }).merged,
+    true,
+  );
+  assert.equal(
+    verifyPostMergeState({
+      state: "MERGED",
+      baseRefName: "develop",
+      mergedAt: "2026-10-22T10:30:00Z",
+      mergeCommit: { oid: "merged-sha-1" },
+    }).code,
+    "PR_INVALID_BASE_BRANCH",
+  );
+  assert.equal(
+    verifyPreMergeTargetState({
+      prNumber: 1530,
+      expectedHeadRefOid: "sha-2",
+      fetchState: () => ({
+        prView: {
+          number: 1530,
+          state: "OPEN",
+          baseRefName: "develop",
+          headRefOid: "sha-2",
+        },
+        reviewThreads: [],
+      }),
+    }).code,
+    "PR_INVALID_BASE_BRANCH",
+  );
+  assert.equal(
+    verifyPreMergeTargetState({
+      prNumber: 1530,
+      expectedHeadRefOid: "sha-2",
+      fetchState: () => ({
+        prView: {
+          number: 1530,
+          state: "OPEN",
+          baseRefName: "main",
+          mergeable: "MERGEABLE",
+          headRefOid: "sha-2",
+          statusCheckRollup: baseGreenRollup,
+          comments: makeTrustedCodexComments("sha-2"),
+        },
+        reviewThreads: [],
+      }),
+    }).ok,
     true,
   );
 
@@ -2199,6 +2348,7 @@ query($owner: String!, $name: String!, $pr: Int!) {
       number
       state
       mergedAt
+      baseRefName
       headRefOid
       mergeStateStatus
       isInMergeQueue
@@ -2365,6 +2515,27 @@ async function main() {
 
   const validatedHeadRefOid =
     cycleResult.headRefOid || initialPrView.headRefOid;
+
+  let preMergeVerification;
+  try {
+    preMergeVerification = verifyPreMergeTargetState({
+      prNumber: initialPrView.number,
+      expectedHeadRefOid: validatedHeadRefOid,
+      fetchState: fetchPrStateAndThreads,
+    });
+  } catch (error) {
+    console.error(
+      `\n⛔ [PR_PRE_MERGE_VERIFY_FAILED] تعذّر إعادة التحقق من حالة الطلب والفرع الأساسي قبل الدمج: ${error?.message ?? error}\n`,
+    );
+    process.exit(1);
+  }
+
+  if (!preMergeVerification.ok) {
+    console.error(
+      `\n⛔ [${preMergeVerification.code}] ${preMergeVerification.reason}\n`,
+    );
+    process.exit(1);
+  }
 
   console.log(
     `✓ طلب الدمج #${initialPrView.number} (${validatedHeadRefOid.slice(0, 9)}) اجتاز جميع بوابات CI والمراجعة الآلية.`,

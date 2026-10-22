@@ -230,7 +230,83 @@ function isRegisteredInUnitConfig(unitConfigText, candidateRelPath) {
   );
 }
 
-function deriveCandidateUnitTestsForSourceFile(relPath, registeredTests = []) {
+function defaultReadRepoFile(relPath) {
+  try {
+    return fs.readFileSync(path.join(REPO_ROOT, relPath), "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function resolveTestImportSpecifier(testRelPath, rawSpecifier) {
+  const specifier = String(rawSpecifier ?? "")
+    .trim()
+    .split(/[?#]/)[0]
+    .replace(/\\/g, "/");
+  if (!specifier) return null;
+  let resolved = "";
+  if (specifier.startsWith("@/")) {
+    resolved = `client/src/${specifier.slice(2)}`;
+  } else if (specifier.startsWith("@shared/")) {
+    resolved = `shared/${specifier.slice(8)}`;
+  } else if (specifier.startsWith(".")) {
+    const testDir = path.posix.dirname(testRelPath.replace(/\\/g, "/"));
+    resolved = path.posix.normalize(path.posix.join(testDir, specifier));
+  } else {
+    return null;
+  }
+  const normalizedResolved = resolved.replace(/\\/g, "/");
+  const resolvedNoExt = normalizedResolved.replace(
+    /\.(?:[cm]?jsx?|[cm]?tsx?)$/,
+    "",
+  );
+  return {
+    resolved: normalizedResolved,
+    resolvedNoExt,
+  };
+}
+
+function doesTestImportSourceFile(
+  testRelPath,
+  testContent,
+  sourceNormalized,
+  sourceNoExt,
+) {
+  if (!testContent) return false;
+  const uncommented = stripConfigComments(testContent);
+  const specifiers = new Set();
+  const patterns = [
+    /\bfrom\s+["']([^"'\r\n]+)["']/g,
+    /\bimport\s+["']([^"'\r\n]+)["']/g,
+    /\b(?:import|require|vi\.(?:do)?mock)\s*\(\s*["']([^"'\r\n]+)["']/g,
+  ];
+  for (const re of patterns) {
+    let m;
+    while ((m = re.exec(uncommented)) !== null) {
+      specifiers.add(m[1]);
+    }
+  }
+  const isIndexFile = path.posix.basename(sourceNoExt) === "index";
+  const indexDir = isIndexFile ? path.posix.dirname(sourceNoExt) : "";
+  for (const spec of specifiers) {
+    const target = resolveTestImportSpecifier(testRelPath, spec);
+    if (!target) continue;
+    if (
+      target.resolved === sourceNormalized ||
+      target.resolvedNoExt === sourceNoExt ||
+      (isIndexFile && target.resolvedNoExt === indexDir)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function deriveCandidateUnitTestsForSourceFile(
+  relPath,
+  registeredTests = [],
+  readTestFile = defaultReadRepoFile,
+) {
   const normalized = relPath.replace(/\\/g, "/");
   if (
     normalized === "scripts/safe-push-guard.mjs" ||
@@ -266,6 +342,7 @@ function deriveCandidateUnitTestsForSourceFile(relPath, registeredTests = []) {
   const baseName = parsed.name;
   const dir = parsed.dir;
   if (!dir || !baseName) return [];
+  const sourceNoExt = `${dir}/${baseName}`;
   const exactCandidates = [
     `${dir}/${baseName}.test.ts`,
     `${dir}/${baseName}.test.tsx`,
@@ -278,11 +355,29 @@ function deriveCandidateUnitTestsForSourceFile(relPath, registeredTests = []) {
   ];
   const colocatedPrefix = `${dir}/${baseName}.`;
   const subdirPrefix = `${dir}/__tests__/${baseName}.`;
-  const suffixedRegistered = registeredTests.filter(
-    (testPath) =>
-      testPath.startsWith(colocatedPrefix) || testPath.startsWith(subdirPrefix),
-  );
-  return Array.from(new Set([...exactCandidates, ...suffixedRegistered]));
+  const matchedRegistered = registeredTests.filter((testPath) => {
+    if (
+      testPath.startsWith(colocatedPrefix) ||
+      testPath.startsWith(subdirPrefix)
+    ) {
+      return true;
+    }
+    if (typeof readTestFile === "function") {
+      const testContent = readTestFile(testPath);
+      if (
+        doesTestImportSourceFile(
+          testPath,
+          testContent,
+          normalized,
+          sourceNoExt,
+        )
+      ) {
+        return true;
+      }
+    }
+    return false;
+  });
+  return Array.from(new Set([...exactCandidates, ...matchedRegistered]));
 }
 
 export function collectModifiedUnitTestsForPush({
@@ -290,6 +385,7 @@ export function collectModifiedUnitTestsForPush({
   unitConfigText = "",
   runDiff = defaultDiffRunner,
   fileExists = (relPath) => fs.existsSync(path.join(REPO_ROOT, relPath)),
+  readFile = defaultReadRepoFile,
   verifyCheckoutMatchesSha = null,
   headSha = undefined,
   trackedStatus = undefined,
@@ -356,6 +452,17 @@ export function collectModifiedUnitTestsForPush({
   }
 
   const registeredTests = extractRegisteredUnitTests(unitConfigText);
+  const testContentCache = new Map();
+  const cachedReadTestFile =
+    typeof readFile === "function"
+      ? (testPath) => {
+          if (!testContentCache.has(testPath)) {
+            testContentCache.set(testPath, String(readFile(testPath) ?? ""));
+          }
+          return testContentCache.get(testPath);
+        }
+      : null;
+
   const matchedTestsSet = new Set();
   for (const file of changedFiles) {
     if (/\.test\.(?:[cm]?jsx?|[cm]?tsx?)$/.test(file)) {
@@ -367,6 +474,7 @@ export function collectModifiedUnitTestsForPush({
     for (const candidate of deriveCandidateUnitTestsForSourceFile(
       file,
       registeredTests,
+      cachedReadTestFile,
     )) {
       if (isRegisteredInUnitConfig(unitConfigText, candidate)) {
         matchedTestsSet.add(candidate);
@@ -483,6 +591,28 @@ export function runSafePushSelftest() {
     "scripts/__tests__/safeDeliveryProtocols.test.ts",
     "scripts/__tests__/ciCriticalPathWorkflow.test.ts",
     "client/src/lib/lazyWithRetry.test.ts",
+    "client/src/pages/Treasury.permissionCache.test.tsx",
+  ]);
+
+  // Verify differently named source file (e.g. TreasuryHub.tsx) matches registered test importing it
+  const importedByTest = collectModifiedUnitTestsForPush({
+    stdinEntries: [
+      {
+        localRef: "refs/heads/feat/treasury-hub",
+        localSha: "4444444444444444444444444444444444444444",
+        remoteRef: "refs/heads/feat/treasury-hub",
+        remoteSha: "0000000000000000000000000000000000000000",
+      },
+    ],
+    unitConfigText:
+      'include: ["client/src/pages/Treasury.permissionCache.test.tsx"]',
+    runDiff: () => ({
+      status: 0,
+      stdout: "client/src/pages/TreasuryHub.tsx\n",
+    }),
+    fileExists: () => true,
+  });
+  assert.deepEqual(importedByTest, [
     "client/src/pages/Treasury.permissionCache.test.tsx",
   ]);
 
