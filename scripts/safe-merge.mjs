@@ -636,7 +636,10 @@ export function evaluatePrMergeReadiness({
       reason: `طلب الدمج #${prView.number} يتطلّب مراجعة معتمدة (REVIEW_REQUIRED) قبل الدمج.`,
     };
   }
-  if (mergeStateStatus === "BLOCKED") {
+  if (
+    mergeStateStatus === "BLOCKED" &&
+    prView?.isMergeQueueEnabled !== true
+  ) {
     return {
       ready: false,
       code: "PR_BLOCKED_BY_PROTECTION",
@@ -645,6 +648,25 @@ export function evaluatePrMergeReadiness({
   }
 
   return { ready: true, code: "OK", headRefOid };
+}
+
+export function shouldCleanupMergedHeadBranch(prView) {
+  const headRefName = String(prView?.headRefName ?? "").trim();
+  if (!headRefName || headRefName === "main") {
+    return false;
+  }
+  if (prView?.isCrossRepository !== false) {
+    return false;
+  }
+  const ownerLogin = String(prView?.headRepositoryOwner?.login ?? "")
+    .trim()
+    .toLowerCase();
+  const repoName = String(prView?.headRepository?.name ?? "")
+    .trim()
+    .toLowerCase();
+  return (
+    ownerLogin === "ahrrfy" && repoName === "business_management_system"
+  );
 }
 
 const MERGE_QUEUE_PENDING_STATES = new Set([
@@ -846,6 +868,7 @@ export function verifyPostMergeCompletion(
         baseRefName: "main",
         mergeCommitOid: mergeCommitOid || null,
         mergedAt: mergedAt || null,
+        prState: lastState,
         attempts: attempt,
       };
     }
@@ -1628,6 +1651,50 @@ export function runSafeMergeSelftest() {
   assert.equal(blockedBranchRes.ready, false);
   assert.equal(blockedBranchRes.code, "PR_BLOCKED_BY_PROTECTION");
 
+  const queueEnabledBlockedRes = evaluatePrMergeReadiness({
+    prView: {
+      number: 109,
+      state: "OPEN",
+      baseRefName: "main",
+      mergeable: "MERGEABLE",
+      mergeStateStatus: "BLOCKED",
+      isMergeQueueEnabled: true,
+      headRefOid: "sha-2",
+      statusCheckRollup: baseGreenRollup,
+      comments: makeTrustedCodexComments("sha-2"),
+    },
+  });
+  assert.equal(queueEnabledBlockedRes.ready, true);
+  assert.equal(queueEnabledBlockedRes.code, "OK");
+
+  assert.equal(
+    shouldCleanupMergedHeadBranch({
+      headRefName: "feature/test",
+      isCrossRepository: false,
+      headRepositoryOwner: { login: "ahrrfy" },
+      headRepository: { name: "business_management_system" },
+    }),
+    true,
+  );
+  assert.equal(
+    shouldCleanupMergedHeadBranch({
+      headRefName: "feature/test",
+      isCrossRepository: true,
+      headRepositoryOwner: { login: "external-contributor" },
+      headRepository: { name: "business_management_system" },
+    }),
+    false,
+  );
+  assert.equal(
+    shouldCleanupMergedHeadBranch({
+      headRefName: "main",
+      isCrossRepository: false,
+      headRepositoryOwner: { login: "ahrrfy" },
+      headRepository: { name: "business_management_system" },
+    }),
+    false,
+  );
+
   // 11. Truncated reviewThreads pagination (hasNextPage: true on last page) blocks merge
   const truncatedPaginationRes = evaluatePrMergeReadiness({
     prView: {
@@ -2303,6 +2370,16 @@ const REVIEW_THREADS_QUERY = `
 query($owner: String!, $name: String!, $pr: Int!, $endCursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $pr) {
+      isMergeQueueEnabled
+      isInMergeQueue
+      isCrossRepository
+      headRefName
+      headRepository {
+        name
+      }
+      headRepositoryOwner {
+        login
+      }
       reviewThreads(first: 100, after: $endCursor) {
         pageInfo {
           hasNextPage
@@ -2355,7 +2432,15 @@ query($owner: String!, $name: String!, $pr: Int!) {
       state
       mergedAt
       baseRefName
+      headRefName
       headRefOid
+      isCrossRepository
+      headRepository {
+        name
+      }
+      headRepositoryOwner {
+        login
+      }
       mergeStateStatus
       isInMergeQueue
       mergeQueueEntry {
@@ -2392,11 +2477,34 @@ function fetchPrStateAndThreads(prArg) {
   }
   viewArgs.push(
     "--json",
-    "number,state,isDraft,baseRefName,headRefName,headRefOid,mergeStateStatus,mergeable,reviewDecision,statusCheckRollup,comments",
+    "number,state,isDraft,baseRefName,headRefName,headRefOid,isCrossRepository,headRepository,headRepositoryOwner,mergeStateStatus,mergeable,reviewDecision,statusCheckRollup,comments",
   );
   const prView = captureJson("gh", viewArgs);
   prView.baseRefName = String(prView?.baseRefName ?? "");
   const reviewThreads = fetchAllReviewThreads(prView.number);
+  const prMeta = Array.isArray(reviewThreads)
+    ? reviewThreads[0]?.data?.repository?.pullRequest
+    : reviewThreads?.data?.repository?.pullRequest;
+  if (prMeta && typeof prMeta === "object") {
+    if (typeof prMeta.isMergeQueueEnabled === "boolean") {
+      prView.isMergeQueueEnabled = prMeta.isMergeQueueEnabled;
+    }
+    if (typeof prMeta.isInMergeQueue === "boolean") {
+      prView.isInMergeQueue = prMeta.isInMergeQueue;
+    }
+    if (
+      prView.isCrossRepository === undefined &&
+      typeof prMeta.isCrossRepository === "boolean"
+    ) {
+      prView.isCrossRepository = prMeta.isCrossRepository;
+    }
+    if (!prView.headRepository && prMeta.headRepository) {
+      prView.headRepository = prMeta.headRepository;
+    }
+    if (!prView.headRepositoryOwner && prMeta.headRepositoryOwner) {
+      prView.headRepositoryOwner = prMeta.headRepositoryOwner;
+    }
+  }
   return { prView, reviewThreads };
 }
 
@@ -2592,8 +2700,9 @@ async function main() {
     process.exit(1);
   }
 
-  const headRefName = String(initialPrView?.headRefName ?? "").trim();
-  if (headRefName && headRefName !== "main") {
+  const cleanupCandidate = postMergeVerification.prState ?? initialPrView;
+  if (shouldCleanupMergedHeadBranch(cleanupCandidate)) {
+    const headRefName = String(cleanupCandidate.headRefName ?? "").trim();
     spawnSync(
       "gh",
       [

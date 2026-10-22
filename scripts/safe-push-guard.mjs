@@ -102,11 +102,38 @@ export function evaluatePrePushPolicy({
 }
 
 function defaultDiffRunner(sha) {
-  return spawnSync(
-    "git",
-    ["diff", "--name-only", "--diff-filter=ACMR", `origin/main...${sha}`],
-    { cwd: REPO_ROOT, encoding: "utf8" },
-  );
+  return spawnSync("git", ["diff", "--name-status", `origin/main...${sha}`], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+  });
+}
+
+function parseDiffOutputEntries(rawLine) {
+  const trimmed = String(rawLine ?? "").trim();
+  if (!trimmed) return [];
+  if (trimmed.includes("\t")) {
+    const parts = trimmed
+      .split("\t")
+      .map((p) => p.trim().replace(/\\/g, "/"))
+      .filter(Boolean);
+    if (parts.length >= 2 && /^[ACDMRTUXB]\d*$/i.test(parts[0])) {
+      const code = parts[0].toUpperCase();
+      if (code.startsWith("R") && parts.length >= 3) {
+        return [
+          { path: parts[1], isDeleted: true },
+          { path: parts[2], isDeleted: false },
+        ];
+      }
+      if (code.startsWith("C") && parts.length >= 3) {
+        return [
+          { path: parts[1], isDeleted: false },
+          { path: parts[2], isDeleted: false },
+        ];
+      }
+      return [{ path: parts[1], isDeleted: code.startsWith("D") }];
+    }
+  }
+  return [{ path: trimmed.replace(/\\/g, "/"), isDeleted: false }];
 }
 
 function defaultGetHeadSha() {
@@ -596,6 +623,7 @@ export function collectModifiedUnitTestsForPush({
       : () => ({ ok: true }));
 
   const changedFiles = new Set();
+  const deletedFiles = new Set();
   for (const sha of shas) {
     const checkoutCheck = checkoutVerifier(sha);
     if (!checkoutCheck || checkoutCheck.ok === false) {
@@ -616,12 +644,17 @@ export function collectModifiedUnitTestsForPush({
       err.code = "PUSH_GUARD_BASE_DIFF_FAILED";
       throw err;
     }
-    const lines = String(diffRes.stdout ?? "")
-      .split(/\r?\n/)
-      .map((f) => f.trim().replace(/\\/g, "/"))
-      .filter(Boolean);
-    for (const file of lines) {
-      changedFiles.add(file);
+    const rawLines = String(diffRes.stdout ?? "").split(/\r?\n/);
+    for (const rawLine of rawLines) {
+      for (const entry of parseDiffOutputEntries(rawLine)) {
+        if (!entry.path) continue;
+        changedFiles.add(entry.path);
+        if (entry.isDeleted) {
+          deletedFiles.add(entry.path);
+        } else {
+          deletedFiles.delete(entry.path);
+        }
+      }
     }
   }
 
@@ -643,7 +676,9 @@ export function collectModifiedUnitTestsForPush({
       if (isRegisteredInUnitConfig(unitConfigText, file)) {
         matchedTestsSet.add(file);
       }
-      continue;
+      if (!deletedFiles.has(file)) {
+        continue;
+      }
     }
     for (const candidate of deriveCandidateUnitTestsForSourceFile(
       file,
@@ -835,6 +870,30 @@ export function runSafePushSelftest() {
   });
   assert.deepEqual(enumeratedByTest, [
     "server/services/__tests__/permissionParity.test.ts",
+  ]);
+
+  // Verify deleted and renamed source files (--name-status D and R100) still trigger affected tests
+  const deletedOrRenamedSource = collectModifiedUnitTestsForPush({
+    stdinEntries: [
+      {
+        localRef: "refs/heads/feat/delete-treasury-hub",
+        localSha: "7777777777777777777777777777777777777777",
+        remoteRef: "refs/heads/feat/delete-treasury-hub",
+        remoteSha: "0000000000000000000000000000000000000000",
+      },
+    ],
+    unitConfigText:
+      'include: ["client/src/pages/Treasury.permissionCache.test.tsx", "client/src/components/PageTabs.test.tsx"]',
+    runDiff: () => ({
+      status: 0,
+      stdout:
+        "D\tclient/src/pages/TreasuryHub.tsx\nR100\tclient/src/pages/DeliveryCenter.tsx\tclient/src/pages/DeliveryRenamed.tsx\n",
+    }),
+    fileExists: () => true,
+  });
+  assert.deepEqual(deletedOrRenamedSource, [
+    "client/src/pages/Treasury.permissionCache.test.tsx",
+    "client/src/components/PageTabs.test.tsx",
   ]);
 
   // Verify fail-closed when origin/main comparison fails
