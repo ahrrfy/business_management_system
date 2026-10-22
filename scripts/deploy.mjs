@@ -446,9 +446,8 @@ export function defaultWebCandidateOperations(
 ) {
   const executeFile = options.execFileSync ?? execFileSync;
   const parentEnvironment = options.parentEnvironment ?? process.env;
-  const publicViteBuildEnvironment = normalizeViteBuildEnvironment(
-    viteBuildEnvironment,
-  );
+  const publicViteBuildEnvironment =
+    normalizeViteBuildEnvironment(viteBuildEnvironment);
   const sentryBuildEnvironment = normalizeSentryBuildEnvironment(
     options.sentryBuildEnvironment ?? parentEnvironment,
   );
@@ -1751,8 +1750,7 @@ export function normalizeWebHealthEnvironment(parsed) {
     rawRequireSecret === "1" || (!rawRequireSecret && Boolean(secret))
       ? "1"
       : "0";
-  const previousSecret =
-    parsed.INTERNAL_PROXY_SECRET_PREVIOUS?.trim() ?? "";
+  const previousSecret = parsed.INTERNAL_PROXY_SECRET_PREVIOUS?.trim() ?? "";
   if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
     throw codedError("WEB_HEALTH_PORT_INVALID");
   }
@@ -1791,9 +1789,10 @@ const SENTRY_BUILD_ENV_KEYS = [
 
 export function normalizeSentryBuildEnvironment(environment) {
   return Object.fromEntries(
-    SENTRY_BUILD_ENV_KEYS
-      .filter((key) => typeof environment?.[key] === "string" && environment[key].trim())
-      .map((key) => [key, environment[key].trim()]),
+    SENTRY_BUILD_ENV_KEYS.filter(
+      (key) =>
+        typeof environment?.[key] === "string" && environment[key].trim(),
+    ).map((key) => [key, environment[key].trim()]),
   );
 }
 
@@ -2008,24 +2007,21 @@ const IGNORED_DEPLOY_DIAGNOSTIC_CHECKS = new Set([
 
 const REQUIRED_DEPLOY_CHECKS = ["check-test-build", "audit"];
 
-function parseDeployCheckRunTimestampMs(run) {
-  const raw = run?.completedAt || run?.startedAt || "";
+function parseDeployTimestampMs(raw) {
   if (!raw) return null;
-  const parsed = Date.parse(raw);
+  const parsed = Date.parse(String(raw));
   return Number.isFinite(parsed) ? parsed : null;
 }
 
 function shouldReplaceDeployCheckRun(existing, candidate) {
-  const existingTs = parseDeployCheckRunTimestampMs(existing);
-  const candidateTs = parseDeployCheckRunTimestampMs(candidate);
-  if (existingTs !== null && candidateTs !== null && existingTs !== candidateTs) {
-    return candidateTs > existingTs;
-  }
-  if (candidateTs !== null && existingTs === null) {
-    return true;
-  }
-  if (existingTs !== null && candidateTs === null) {
-    return false;
+  const existingStartedMs = parseDeployTimestampMs(existing?.startedAt);
+  const candidateStartedMs = parseDeployTimestampMs(candidate?.startedAt);
+  if (
+    existingStartedMs !== null &&
+    candidateStartedMs !== null &&
+    existingStartedMs !== candidateStartedMs
+  ) {
+    return candidateStartedMs > existingStartedMs;
   }
   if (
     existing.id !== null &&
@@ -2033,6 +2029,27 @@ function shouldReplaceDeployCheckRun(existing, candidate) {
     existing.id !== candidate.id
   ) {
     return candidate.id > existing.id;
+  }
+  if (candidateStartedMs !== null && existingStartedMs === null) {
+    return true;
+  }
+  if (existingStartedMs !== null && candidateStartedMs === null) {
+    return false;
+  }
+  const existingCompletedMs = parseDeployTimestampMs(existing?.completedAt);
+  const candidateCompletedMs = parseDeployTimestampMs(candidate?.completedAt);
+  if (
+    existingCompletedMs !== null &&
+    candidateCompletedMs !== null &&
+    existingCompletedMs !== candidateCompletedMs
+  ) {
+    return candidateCompletedMs > existingCompletedMs;
+  }
+  if (candidateCompletedMs !== null && existingCompletedMs === null) {
+    return true;
+  }
+  if (existingCompletedMs !== null && candidateCompletedMs === null) {
+    return false;
   }
   const existingPending = existing.status !== "completed";
   const candidatePending = candidate.status !== "completed";
@@ -2073,9 +2090,7 @@ export function evaluateDeployCiCheckRuns(headCheckRuns) {
             (Array.isArray(r?.pull_requests) && r.pull_requests.length > 0) ||
             (Array.isArray(r?.check_suite?.pull_requests) &&
               r.check_suite.pull_requests.length > 0),
-          completedAt: String(
-            r?.completed_at ?? r?.completedAt ?? "",
-          ).trim(),
+          completedAt: String(r?.completed_at ?? r?.completedAt ?? "").trim(),
           startedAt: String(
             r?.started_at ??
               r?.startedAt ??
@@ -2172,7 +2187,9 @@ async function fetchWorkflowSuiteProvenanceBySha(sha, headers) {
       },
     );
     if (!response.ok) {
-      throw new Error(`DEPLOY_CI_WORKFLOW_RUNS_FETCH_FAILED:${response.status}`);
+      throw new Error(
+        `DEPLOY_CI_WORKFLOW_RUNS_FETCH_FAILED:${response.status}`,
+      );
     }
     const payload = await response.json();
     const workflowRuns = Array.isArray(payload?.workflow_runs)
@@ -2252,13 +2269,12 @@ async function fetchCommitCheckRuns(sha, { env = process.env } = {}) {
 
 export async function assertRemoteCiGreenForDeploy(
   expectedHead,
-  {
-    env = process.env,
-    fetchRuns = fetchCommitCheckRuns,
-  } = {},
+  { env = process.env, fetchRuns = fetchCommitCheckRuns } = {},
 ) {
   if (env?.SKIP_DEPLOY_CI_GATE === "1") {
-    console.warn("⚠️ تم تجاوز بوابة فحص CI عن بُعد بطلب صريح (SKIP_DEPLOY_CI_GATE=1).");
+    console.warn(
+      "⚠️ تم تجاوز بوابة فحص CI عن بُعد بطلب صريح (SKIP_DEPLOY_CI_GATE=1).",
+    );
     return { ok: true, code: "SKIPPED" };
   }
   const headRuns = await fetchRuns(expectedHead, { env });
@@ -2681,11 +2697,19 @@ async function dispatch() {
       ]).code !== "DEPLOY_CI_NOT_GREEN" ||
       evaluateDeployCiCheckRuns([
         { name: "audit", status: "completed", conclusion: "success" },
-        { name: "test-shard-2-of-8", status: "completed", conclusion: "failure" },
+        {
+          name: "test-shard-2-of-8",
+          status: "completed",
+          conclusion: "failure",
+        },
       ]).code !== "DEPLOY_CI_FAILED_ON_HEAD" ||
       evaluateDeployCiCheckRuns([
         ...green,
-        { name: "authz-guard", status: "completed", conclusion: "startup_failure" },
+        {
+          name: "authz-guard",
+          status: "completed",
+          conclusion: "startup_failure",
+        },
       ]).code !== "DEPLOY_CI_FAILED_ON_HEAD" ||
       evaluateDeployCiCheckRuns([
         ...green,
@@ -2759,6 +2783,32 @@ async function dispatch() {
           status: "completed",
           conclusion: "success",
           pull_requests: [{ number: 1530 }],
+        },
+      ]).code !== "DEPLOY_CI_NOT_GREEN" ||
+      evaluateDeployCiCheckRuns([
+        {
+          id: 10,
+          name: "audit",
+          status: "completed",
+          conclusion: "success",
+          started_at: "2026-10-22T10:00:00Z",
+          completed_at: "2026-10-22T10:05:00Z",
+        },
+        {
+          id: 11,
+          name: "check-test-build",
+          status: "completed",
+          conclusion: "success",
+          started_at: "2026-10-22T10:00:00Z",
+          completed_at: "2026-10-22T10:10:00Z",
+        },
+        {
+          id: 12,
+          name: "check-test-build",
+          status: "in_progress",
+          conclusion: "",
+          started_at: "2026-10-22T10:05:00Z",
+          completed_at: "",
         },
       ]).code !== "DEPLOY_CI_NOT_GREEN"
     ) {

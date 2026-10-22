@@ -31,18 +31,31 @@ const IGNORED_DIAGNOSTIC_CHECKS = new Set([
 const CODEX_STATE_MARKER = "codex-review-state:v1";
 const CODEX_STATE_RE = /<!--\s*codex-review-state:v1\s*(\{[\s\S]*?\})\s*-->/;
 
+function parseIsoTimestampMs(raw) {
+  const str = String(raw ?? "").trim();
+  if (!str || str.startsWith("0001-01-01")) return NaN;
+  const parsed = Date.parse(str);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : NaN;
+}
+
 function normalizeCheckEntry(item) {
   const name = String(item?.name ?? item?.context ?? "").trim();
-  const timestamp = String(
-    item?.completedAt ||
-      item?.startedAt ||
+  const startedAt = String(
+    item?.startedAt ||
       item?.createdAt ||
-      item?.completed_at ||
       item?.started_at ||
+      item?.created_at ||
       "",
   ).trim();
-  const parsedTime = timestamp ? Date.parse(timestamp) : NaN;
-  const timestampMs = Number.isFinite(parsedTime) ? parsedTime : NaN;
+  const completedAt = String(
+    item?.completedAt || item?.completed_at || "",
+  ).trim();
+  const timestamp = completedAt || startedAt;
+  const startedAtMs = parseIsoTimestampMs(startedAt);
+  const completedAtMs = parseIsoTimestampMs(completedAt);
+  const timestampMs = Number.isFinite(startedAtMs)
+    ? startedAtMs
+    : completedAtMs;
   const rawId = Number(item?.id ?? item?.databaseId ?? NaN);
   const id = Number.isFinite(rawId) ? rawId : NaN;
 
@@ -60,6 +73,8 @@ function normalizeCheckEntry(item) {
           : "COMPLETED",
       conclusion: state,
       timestamp,
+      startedAtMs,
+      completedAtMs,
       timestampMs,
     };
   }
@@ -69,6 +84,8 @@ function normalizeCheckEntry(item) {
     status: String(item?.status ?? "").toUpperCase(),
     conclusion: String(item?.conclusion ?? "").toUpperCase(),
     timestamp,
+    startedAtMs,
+    completedAtMs,
     timestampMs,
   };
 }
@@ -172,26 +189,55 @@ const CODEX_RUNNING_STATUSES = new Set([
   "queued",
 ]);
 const CODEX_FAILED_STATUSES = new Set(["failed", "error"]);
+const CODEX_COMPLETED_STATUSES = new Set(["completed", "success", "passed"]);
+
+function doesCodexShaMatchHead(entrySha, headRefOid) {
+  const cleanEntry = String(entrySha ?? "")
+    .trim()
+    .toLowerCase();
+  const cleanHead = String(headRefOid ?? "")
+    .trim()
+    .toLowerCase();
+  if (!cleanEntry || !cleanHead) return false;
+  if (cleanEntry === cleanHead) return true;
+  const minLen = Math.min(cleanEntry.length, cleanHead.length);
+  if (minLen < 7) return false;
+  return cleanHead.startsWith(cleanEntry) || cleanEntry.startsWith(cleanHead);
+}
 
 function extractCodexEntries(codexState) {
   if (!codexState || typeof codexState !== "object") return [];
-  const rawEntries = [
-    {
-      status: codexState.state ?? codexState.status,
-      sha: codexState.sha ?? codexState.commit_sha,
-    },
-    {
-      status: codexState.code_review?.status ?? codexState.code_review?.state,
-      sha: codexState.code_review?.commit_sha ?? codexState.code_review?.sha,
-    },
-    {
-      status:
-        codexState.security_review?.status ?? codexState.security_review?.state,
-      sha:
-        codexState.security_review?.commit_sha ??
-        codexState.security_review?.sha,
-    },
-  ];
+  const hasNestedSubReviews = Boolean(
+    (codexState.code_review && typeof codexState.code_review === "object") ||
+    (codexState.security_review &&
+      typeof codexState.security_review === "object"),
+  );
+  const rawEntries = hasNestedSubReviews
+    ? [
+        ...(String(codexState.state ?? "").toLowerCase() === "invalid"
+          ? [{ status: "invalid", sha: codexState.sha ?? null }]
+          : []),
+        {
+          status:
+            codexState.code_review?.status ?? codexState.code_review?.state,
+          sha:
+            codexState.code_review?.commit_sha ?? codexState.code_review?.sha,
+        },
+        {
+          status:
+            codexState.security_review?.status ??
+            codexState.security_review?.state,
+          sha:
+            codexState.security_review?.commit_sha ??
+            codexState.security_review?.sha,
+        },
+      ]
+    : [
+        {
+          status: codexState.state ?? codexState.status,
+          sha: codexState.sha ?? codexState.commit_sha,
+        },
+      ];
   return rawEntries
     .filter(
       (e) =>
@@ -291,11 +337,27 @@ function normalizeReviewThreadEntry(entry) {
 
 function shouldReplaceCheckEntry(existing, candidate) {
   if (
-    Number.isFinite(candidate.timestampMs) &&
-    Number.isFinite(existing.timestampMs)
+    Number.isFinite(candidate.startedAtMs) &&
+    Number.isFinite(existing.startedAtMs) &&
+    candidate.startedAtMs !== existing.startedAtMs
   ) {
-    if (candidate.timestampMs > existing.timestampMs) return true;
-    if (candidate.timestampMs < existing.timestampMs) return false;
+    return candidate.startedAtMs > existing.startedAtMs;
+  }
+  if (
+    Number.isFinite(candidate.id) &&
+    Number.isFinite(existing.id) &&
+    candidate.id !== existing.id
+  ) {
+    return candidate.id > existing.id;
+  }
+  if (
+    !Number.isFinite(candidate.startedAtMs) &&
+    !Number.isFinite(existing.startedAtMs) &&
+    Number.isFinite(candidate.completedAtMs) &&
+    Number.isFinite(existing.completedAtMs) &&
+    candidate.completedAtMs !== existing.completedAtMs
+  ) {
+    return candidate.completedAtMs > existing.completedAtMs;
   }
   if (candidate.status !== "COMPLETED" && existing.status === "COMPLETED") {
     return true;
@@ -305,13 +367,6 @@ function shouldReplaceCheckEntry(existing, candidate) {
   }
   if (!ACCEPTABLE_CONCLUSIONS.has(candidate.conclusion)) {
     return true;
-  }
-  if (
-    Number.isFinite(candidate.id) &&
-    Number.isFinite(existing.id) &&
-    candidate.id !== existing.id
-  ) {
-    return candidate.id > existing.id;
   }
   return false;
 }
@@ -472,34 +527,63 @@ export function evaluatePrMergeReadiness({
   }
 
   const codexState = parseCodexReviewState(prView.comments);
-  const selectedCodex = selectPrimaryCodexEntry(codexState);
-  const codexSha = String(selectedCodex.sha ?? "").trim();
-  const codexDisplaySha = codexSha
-    ? codexSha.slice(0, 9)
-    : headRefOid.slice(0, 9);
-  if (selectedCodex.statuses.includes("invalid")) {
-    return {
-      ready: false,
-      code: "PR_CODEX_REVIEW_STATE_INVALID",
-      reason: `تعذّر تحليل حالة مراجعة Codex الآلية على طلب #${prView.number} (بيانات الحالة تالفة).`,
-      ...unaddressedExtras,
-    };
-  }
-  if (selectedCodex.statuses.some((s) => CODEX_RUNNING_STATUSES.has(s))) {
-    return {
-      ready: false,
-      code: "PR_CODEX_REVIEW_RUNNING",
-      reason: `مراجعة Codex الآلية لا تزال قيد التشغيل على الالتزام (${codexDisplaySha})؛ انتظر انتهاءها قبل الدمج.`,
-      ...unaddressedExtras,
-    };
-  }
-  if (selectedCodex.statuses.some((s) => CODEX_FAILED_STATUSES.has(s))) {
-    return {
-      ready: false,
-      code: "PR_CODEX_REVIEW_FAILED",
-      reason: `فشلت مراجعة Codex الآلية على الالتزام (${codexDisplaySha})؛ أعد تشغيل المراجعة أو تحقّق من سبب الفشل قبل الدمج.`,
-      ...unaddressedExtras,
-    };
+  if (codexState !== null) {
+    const selectedCodex = selectPrimaryCodexEntry(codexState);
+    const codexSha = String(selectedCodex.sha ?? "").trim();
+    const codexDisplaySha = codexSha
+      ? codexSha.slice(0, 9)
+      : headRefOid.slice(0, 9);
+    if (
+      selectedCodex.entries.length === 0 ||
+      selectedCodex.statuses.includes("invalid")
+    ) {
+      return {
+        ready: false,
+        code: "PR_CODEX_REVIEW_STATE_INVALID",
+        reason: `تعذّر تحليل حالة مراجعة Codex الآلية على طلب #${prView.number} (بيانات الحالة تالفة).`,
+        ...unaddressedExtras,
+      };
+    }
+    if (selectedCodex.statuses.some((s) => CODEX_RUNNING_STATUSES.has(s))) {
+      return {
+        ready: false,
+        code: "PR_CODEX_REVIEW_RUNNING",
+        reason: `مراجعة Codex الآلية لا تزال قيد التشغيل على الالتزام (${codexDisplaySha})؛ انتظر انتهاءها قبل الدمج.`,
+        ...unaddressedExtras,
+      };
+    }
+    if (selectedCodex.statuses.some((s) => CODEX_FAILED_STATUSES.has(s))) {
+      return {
+        ready: false,
+        code: "PR_CODEX_REVIEW_FAILED",
+        reason: `فشلت مراجعة Codex الآلية على الالتزام (${codexDisplaySha})؛ أعد تشغيل المراجعة أو تحقّق من سبب الفشل قبل الدمج.`,
+        ...unaddressedExtras,
+      };
+    }
+    if (
+      selectedCodex.entries.some((e) => !CODEX_COMPLETED_STATUSES.has(e.status))
+    ) {
+      return {
+        ready: false,
+        code: "PR_CODEX_REVIEW_STATE_INVALID",
+        reason: `حالة مراجعة Codex الآلية غير معروفة على طلب #${prView.number}.`,
+        ...unaddressedExtras,
+      };
+    }
+    const staleCodexEntry = selectedCodex.entries.find(
+      (e) => !doesCodexShaMatchHead(e.sha, headRefOid),
+    );
+    if (staleCodexEntry) {
+      const staleShaLabel = staleCodexEntry.sha
+        ? staleCodexEntry.sha.slice(0, 9)
+        : "غير محدد";
+      return {
+        ready: false,
+        code: "PR_CODEX_REVIEW_STALE",
+        reason: `مراجعة Codex الآلية المكتملة مرتبطة بالالتزام (${staleShaLabel}) ولا تطابق رأس الفرع الحالي (${headRefOid.slice(0, 9)})؛ يجب انتظار أو تشغيل مراجعة Codex على الالتزام الحالي قبل الدمج.`,
+        ...unaddressedExtras,
+      };
+    }
   }
 
   if (unresolved.length > 0) {
@@ -537,6 +621,16 @@ export function evaluatePrMergeReadiness({
   return { ready: true, code: "OK", headRefOid };
 }
 
+function isMergeQueuePendingState(postMergeView) {
+  if (postMergeView?.isInMergeQueue === true) return true;
+  const mergeStateStatus = String(
+    postMergeView?.mergeStateStatus ?? "",
+  ).toUpperCase();
+  return (
+    mergeStateStatus === "QUEUED" || mergeStateStatus === "AWAITING_CHECKS"
+  );
+}
+
 export function verifyPostMergeState(postMergeView, expectedHeadRefOid = "") {
   const state = String(postMergeView?.state ?? "").toUpperCase();
   const mergedAt = String(postMergeView?.mergedAt ?? "").trim();
@@ -559,7 +653,7 @@ export function verifyPostMergeState(postMergeView, expectedHeadRefOid = "") {
       mergedAt: mergedAt || null,
     };
   }
-  if (postMergeView?.isInMergeQueue === true) {
+  if (isMergeQueuePendingState(postMergeView)) {
     return {
       merged: false,
       code: "PR_QUEUED_NOT_MERGED_YET",
@@ -604,7 +698,7 @@ export function verifyPostMergeCompletion(
     const mergedAt = String(lastState?.mergedAt ?? "").trim();
     const mergeCommitOid = String(lastState?.mergeCommit?.oid ?? "").trim();
     const actualHeadRefOid = String(lastState?.headRefOid ?? "").trim();
-    const isInMergeQueue = lastState?.isInMergeQueue === true;
+    const isInMergeQueue = isMergeQueuePendingState(lastState);
 
     if (state === "MERGED" && (mergedAt || mergeCommitOid)) {
       if (
@@ -643,7 +737,7 @@ export function verifyPostMergeCompletion(
     }
   }
 
-  if (lastState?.isInMergeQueue === true) {
+  if (isMergeQueuePendingState(lastState)) {
     return {
       merged: false,
       code: "PR_QUEUED_NOT_MERGED_YET",
@@ -679,20 +773,22 @@ function defaultVerifyLocalGates() {
 /**
  * ينفّذ دورة الإصلاح الذرّي وإعادة الفحص (Atomic Remediation & Re-check Cycle):
  * إذا وجدت البوّابة ملاحظات مراجعة أو فشل فحوصات، يُصلحها العامل ذرّياً في التزام جديد
- * (أو سلسلة التزامات ذرّية مستقلّة لكل ملاحظة)، يتحقق من البوّابات المحلّية، يغلق الخيوط
- * التي عولجت في ذلك الالتزام، ويتأكد من تحديث رأس الفرع عن بُعد إلى الالتزام الجديد
- * ثم يعيد الفحص حتى تصبح جميع البوّابات خضراء تماماً قبل السماح بالدمج.
+ * (أو سلسلة التزامات ذرّية مستقلّة لكل ملاحظة)، يتحقق من البوّابات المحلّية، يتأكد من تحديث
+ * رأس الفرع عن بُعد إلى الالتزام الجديد، ثم يغلق الخيوط المحدّدة صراحةً ويعيد الفحص حتى تصبح
+ * جميع البوّابات خضراء تماماً قبل السماح بالدمج.
  */
 export async function runAtomicRemediationCycle({
   prNumber,
   initialPrView,
   initialReviewThreads = [],
   remediateAndCommit,
+  remediateFinding,
   resolveThread,
   verifyLocalGates = defaultVerifyLocalGates,
   fetchLatestState,
   maxCycles = 5,
 } = {}) {
+  const remediateFn = remediateAndCommit ?? remediateFinding;
   let currentPrView = initialPrView;
   let currentThreads = initialReviewThreads;
   const seenHeadOids = new Set(
@@ -717,6 +813,7 @@ export async function runAtomicRemediationCycle({
     const isPendingOnly =
       decision.code === "PR_CI_PENDING" ||
       decision.code === "PR_CODEX_REVIEW_RUNNING" ||
+      decision.code === "PR_CODEX_REVIEW_STALE" ||
       decision.code === "PR_MERGEABLE_UNKNOWN";
 
     if (isPendingOnly) {
@@ -740,7 +837,7 @@ export async function runAtomicRemediationCycle({
       decision.code === "PR_CI_FAILED" ||
       decision.code === "PR_MISSING_REQUIRED_CHECK";
 
-    if (!isRemediable || typeof remediateAndCommit !== "function") {
+    if (!isRemediable || typeof remediateFn !== "function") {
       return {
         ready: false,
         cycles: cycle,
@@ -765,7 +862,7 @@ export async function runAtomicRemediationCycle({
       seenHeadOids.add(previousHeadOid);
     }
 
-    const remediation = await remediateAndCommit({
+    const remediation = await remediateFn({
       cycle,
       prNumber,
       decision,
@@ -773,15 +870,19 @@ export async function runAtomicRemediationCycle({
       reviewThreads: currentThreads,
     });
 
-    const atomicSteps =
-      Array.isArray(remediation?.atomicCommits) &&
-      remediation.atomicCommits.length > 0
+    const atomicSteps = Array.isArray(remediation)
+      ? remediation
+      : Array.isArray(remediation?.atomicCommits) &&
+          remediation.atomicCommits.length > 0
         ? remediation.atomicCommits
         : [remediation];
 
     let latestCommitSha = "";
+    const pendingResolutions = [];
     for (const step of atomicSteps) {
-      const stepSha = String(step?.newHeadRefOid ?? "").trim();
+      const stepSha = String(
+        step?.newHeadRefOid ?? step?.commitSha ?? "",
+      ).trim();
       if (!stepSha || seenHeadOids.has(stepSha)) {
         return {
           ready: false,
@@ -812,15 +913,25 @@ export async function runAtomicRemediationCycle({
 
       const resolvedIds = Array.isArray(step?.resolvedThreadIds)
         ? step.resolvedThreadIds
-        : atomicSteps.length === 1
-          ? (decision.unaddressedComments ?? []).map((c) => c.id)
-          : [];
-
-      if (typeof resolveThread === "function" && resolvedIds.length > 0) {
-        for (const threadId of resolvedIds) {
-          await resolveThread(threadId, stepSha);
-        }
+            .map((id) => String(id ?? "").trim())
+            .filter(Boolean)
+        : [];
+      for (const threadId of resolvedIds) {
+        pendingResolutions.push({ threadId, stepSha });
       }
+    }
+
+    if (
+      decision.code === "PR_UNADDRESSED_REVIEW_COMMENTS" &&
+      pendingResolutions.length === 0
+    ) {
+      return {
+        ready: false,
+        cycles: cycle,
+        code: "REMEDIATION_MISSING_RESOLVED_THREADS",
+        reason:
+          "يجب تحديد معرّفات خيوط المراجعة المعالجة صراحةً (resolvedThreadIds) في كل خطوة إصلاح ذرّي لمنع إغلاق خيوط غير معالجة.",
+      };
     }
 
     if (typeof fetchLatestState !== "function") {
@@ -833,7 +944,7 @@ export async function runAtomicRemediationCycle({
       };
     }
 
-    const updated = await fetchLatestState({
+    let updated = await fetchLatestState({
       prNumber,
       cycle,
       newHeadRefOid: latestCommitSha,
@@ -845,8 +956,34 @@ export async function runAtomicRemediationCycle({
         ready: false,
         cycles: cycle,
         code: "REMEDIATION_REMOTE_HEAD_MISMATCH",
-        reason: `بصمة رأس الفرع على GitHub (${remoteHeadOid || "غير متوفرة"}) لا تطابق الالتزام الذرّي الجديد (${latestCommitSha})؛ يجب دفع الالتزام الجديد والتحقق من فحوصاته عن بُعد قبل الدمج.`,
+        reason: `بصمة رأس الفرع على GitHub (${remoteHeadOid || "غير متوفرة"}) لا تطابق الالتزام الذرّي الجديد (${latestCommitSha})؛ يجب دفع الالتزام الجديد والتحقق من فحوصاته عن بُعد قبل إغلاق خيوط المراجعة أو الدمج.`,
       };
+    }
+
+    if (typeof resolveThread === "function" && pendingResolutions.length > 0) {
+      for (const { threadId, stepSha } of pendingResolutions) {
+        await resolveThread(threadId, stepSha);
+      }
+      const resolvedIdSet = new Set(
+        pendingResolutions.map((item) => item.threadId),
+      );
+      const preResolveThreads = flattenPaginatedReviewThreads(
+        updated?.reviewThreads,
+      );
+      const needsPostResolveRefresh = preResolveThreads.some(
+        (t) => resolvedIdSet.has(t?.id) && t?.isResolved !== true,
+      );
+      if (needsPostResolveRefresh) {
+        const refreshed = await fetchLatestState({
+          prNumber,
+          cycle,
+          newHeadRefOid: latestCommitSha,
+          decision,
+        });
+        if (refreshed?.prView) {
+          updated = refreshed;
+        }
+      }
     }
 
     currentPrView = updated.prView;
@@ -1409,6 +1546,14 @@ export function runSafeMergeSelftest() {
   );
   assert.equal(
     verifyPostMergeState({
+      state: "OPEN",
+      mergeStateStatus: "QUEUED",
+      mergedAt: null,
+    }).code,
+    "PR_QUEUED_NOT_MERGED_YET",
+  );
+  assert.equal(
+    verifyPostMergeState({
       state: "MERGED",
       mergedAt: "2026-10-22T10:30:00Z",
       mergeCommit: { oid: "merged-sha-1" },
@@ -1416,7 +1561,155 @@ export function runSafeMergeSelftest() {
     true,
   );
 
+  // 18. Stale or missing Codex commit_sha fails closed with PR_CODEX_REVIEW_STALE
+  const staleFlatCodexRes = evaluatePrMergeReadiness({
+    prView: {
+      number: 119,
+      state: "OPEN",
+      baseRefName: "main",
+      mergeable: "MERGEABLE",
+      headRefOid: "new-head-sha-999",
+      statusCheckRollup: baseGreenRollup,
+      comments: [
+        {
+          body: '<!-- codex-review-state:v1 {"sha":"old-head-sha-111","state":"completed"} -->',
+        },
+      ],
+    },
+  });
+  assert.equal(staleFlatCodexRes.ready, false);
+  assert.equal(staleFlatCodexRes.code, "PR_CODEX_REVIEW_STALE");
+
+  const staleNestedCodexRes = evaluatePrMergeReadiness({
+    prView: {
+      number: 120,
+      state: "OPEN",
+      baseRefName: "main",
+      mergeable: "MERGEABLE",
+      headRefOid: "new-head-sha-999",
+      statusCheckRollup: baseGreenRollup,
+      comments: [
+        {
+          body: '<!-- codex-review-state:v1 {"code_review":{"commit_sha":"old-head-sha-111","status":"completed"},"security_review":{"commit_sha":null,"status":null}} -->',
+        },
+      ],
+    },
+  });
+  assert.equal(staleNestedCodexRes.ready, false);
+  assert.equal(staleNestedCodexRes.code, "PR_CODEX_REVIEW_STALE");
+
+  // 19. Overlapping rerun started after previous run started (even before previous run finished) supersedes it
+  const overlappingRerunRes = evaluatePrMergeReadiness({
+    prView: {
+      number: 121,
+      state: "OPEN",
+      baseRefName: "main",
+      mergeable: "MERGEABLE",
+      headRefOid: "sha-2",
+      statusCheckRollup: [
+        ...baseGreenRollup.slice(0, 4),
+        {
+          name: "check-test-build",
+          status: "COMPLETED",
+          conclusion: "SUCCESS",
+          startedAt: "2026-10-22T10:00:00Z",
+          completedAt: "2026-10-22T10:10:00Z",
+        },
+        {
+          name: "check-test-build",
+          status: "IN_PROGRESS",
+          conclusion: "",
+          startedAt: "2026-10-22T10:05:00Z",
+          completedAt: "",
+        },
+      ],
+    },
+  });
+  assert.equal(overlappingRerunRes.ready, false);
+  assert.equal(overlappingRerunRes.code, "PR_CI_PENDING");
+
   console.log("safe-merge selftest: OK");
+}
+
+export async function runSafeMergeAsyncSelftest() {
+  const baseGreenRollup = [
+    { name: "audit", status: "COMPLETED", conclusion: "SUCCESS" },
+    { name: "authz-guard", status: "COMPLETED", conclusion: "SUCCESS" },
+    { name: "quality-build", status: "COMPLETED", conclusion: "SUCCESS" },
+    { name: "test-shard-1-of-8", status: "COMPLETED", conclusion: "SUCCESS" },
+    { name: "check-test-build", status: "COMPLETED", conclusion: "SUCCESS" },
+  ];
+
+  // Missing explicit resolvedThreadIds fails closed
+  const missingThreadIdsRes = await runAtomicRemediationCycle({
+    prNumber: 122,
+    initialPrView: {
+      number: 122,
+      state: "OPEN",
+      baseRefName: "main",
+      mergeable: "MERGEABLE",
+      headRefOid: "sha-1",
+      statusCheckRollup: baseGreenRollup,
+    },
+    initialReviewThreads: [{ id: "PRRT_1", isResolved: false, body: "Fix" }],
+    remediateFinding: async () => [{ commitSha: "sha-2" }],
+    verifyLocalGates: async () => ({ ok: true }),
+    fetchLatestState: async () => ({
+      prView: {
+        number: 122,
+        state: "OPEN",
+        baseRefName: "main",
+        mergeable: "MERGEABLE",
+        headRefOid: "sha-2",
+        statusCheckRollup: baseGreenRollup,
+      },
+      reviewThreads: [{ id: "PRRT_1", isResolved: false, body: "Fix" }],
+    }),
+  });
+  assert.equal(missingThreadIdsRes.ready, false);
+  assert.equal(
+    missingThreadIdsRes.code,
+    "REMEDIATION_MISSING_RESOLVED_THREADS",
+  );
+
+  // Remote head mismatch aborts BEFORE resolveThread is called
+  let resolveCalledOnMismatch = false;
+  const mismatchBeforeResolveRes = await runAtomicRemediationCycle({
+    prNumber: 123,
+    initialPrView: {
+      number: 123,
+      state: "OPEN",
+      baseRefName: "main",
+      mergeable: "MERGEABLE",
+      headRefOid: "sha-1",
+      statusCheckRollup: baseGreenRollup,
+    },
+    initialReviewThreads: [{ id: "PRRT_1", isResolved: false, body: "Fix" }],
+    remediateFinding: async () => [
+      { commitSha: "sha-2-local-unpushed", resolvedThreadIds: ["PRRT_1"] },
+    ],
+    verifyLocalGates: async () => ({ ok: true }),
+    resolveThread: async () => {
+      resolveCalledOnMismatch = true;
+    },
+    fetchLatestState: async () => ({
+      prView: {
+        number: 123,
+        state: "OPEN",
+        baseRefName: "main",
+        mergeable: "MERGEABLE",
+        headRefOid: "sha-1",
+        statusCheckRollup: baseGreenRollup,
+      },
+      reviewThreads: [{ id: "PRRT_1", isResolved: false, body: "Fix" }],
+    }),
+  });
+  assert.equal(mismatchBeforeResolveRes.ready, false);
+  assert.equal(
+    mismatchBeforeResolveRes.code,
+    "REMEDIATION_REMOTE_HEAD_MISMATCH",
+  );
+  assert.equal(resolveCalledOnMismatch, false);
 }
 
 function captureJson(cmd, args) {
@@ -1484,14 +1777,46 @@ function fetchPostMergePrState(prNumber) {
     "view",
     String(prNumber),
     "--json",
-    "number,state,mergedAt,mergeCommit,isInMergeQueue,headRefOid",
+    "number,state,mergedAt,mergeCommit,mergeStateStatus,headRefOid",
   ]);
 }
 
-function main() {
+function fetchPrStateAndThreads(prArg) {
+  const viewArgs = ["pr", "view"];
+  if (prArg != null && String(prArg).trim() !== "") {
+    viewArgs.push(String(prArg));
+  }
+  viewArgs.push(
+    "--json",
+    "number,state,isDraft,baseRefName,headRefName,headRefOid,mergeStateStatus,mergeable,reviewDecision,statusCheckRollup,comments",
+  );
+  const prView = captureJson("gh", viewArgs);
+  prView.baseRefName = String(prView?.baseRefName ?? "");
+  const reviewThreads = fetchAllReviewThreads(prView.number);
+  return { prView, reviewThreads };
+}
+
+function resolveReviewThreadViaGh(threadId) {
+  return captureJson("gh", buildResolveReviewThreadArgs(threadId));
+}
+
+function extractOptionValue(args, flagName) {
+  const idx = args.indexOf(flagName);
+  if (idx !== -1 && idx + 1 < args.length) {
+    return args[idx + 1];
+  }
+  const prefixed = args.find((a) => a.startsWith(`${flagName}=`));
+  if (prefixed) {
+    return prefixed.slice(flagName.length + 1);
+  }
+  return "";
+}
+
+async function main() {
   const args = process.argv.slice(2);
   if (args.includes("--selftest")) {
     runSafeMergeSelftest();
+    await runSafeMergeAsyncSelftest();
     return;
   }
 
@@ -1502,21 +1827,25 @@ function main() {
     process.exit(1);
   }
 
-  const prArg = args.find((a) => !a.startsWith("--"));
+  const remediateCmd =
+    extractOptionValue(args, "--remediate-cmd") ||
+    String(process.env.SAFE_MERGE_REMEDIATE_CMD ?? "").trim();
 
-  const viewArgs = ["pr", "view"];
-  if (prArg) viewArgs.push(prArg);
-  viewArgs.push(
-    "--json",
-    "number,state,isDraft,baseRefName,headRefName,headRefOid,mergeStateStatus,mergeable,reviewDecision,statusCheckRollup,comments",
-  );
+  const positionalArgs = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--remediate-cmd") {
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--")) continue;
+    positionalArgs.push(arg);
+  }
+  const prArg = positionalArgs[0];
 
-  let prView;
-  let reviewThreadsPages;
+  let initialState;
   try {
-    prView = captureJson("gh", viewArgs);
-    prView.baseRefName = String(prView?.baseRefName ?? "");
-    reviewThreadsPages = fetchAllReviewThreads(prView.number);
+    initialState = fetchPrStateAndThreads(prArg);
   } catch (error) {
     console.error(
       `\n⛔ [PR_FETCH_FAILED] تعذّر جلب بيانات طلب الدمج أو خيوط المراجعة: ${error?.message ?? error}\n`,
@@ -1524,13 +1853,57 @@ function main() {
     process.exit(1);
   }
 
-  const decision = evaluatePrMergeReadiness({
-    prView,
-    reviewThreads: reviewThreadsPages,
-  });
+  const { prView: initialPrView, reviewThreads: initialReviewThreads } =
+    initialState;
 
-  if (!decision.ready) {
-    console.error(`\n⛔ [${decision.code}] ${decision.reason}`);
+  const remediateFinding = remediateCmd
+    ? async ({ prNumber, cycle, decision }) => {
+        const res = spawnSync(remediateCmd, {
+          cwd: REPO_ROOT,
+          shell: true,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            SAFE_MERGE_PR_NUMBER: String(prNumber),
+            SAFE_MERGE_CYCLE: String(cycle),
+            SAFE_MERGE_DECISION_JSON: JSON.stringify(decision),
+          },
+        });
+        if (res.status !== 0) {
+          throw new Error(
+            res.stderr?.trim() ||
+              res.stdout?.trim() ||
+              "فشل تنفيذ أمر الإصلاح الذرّي (--remediate-cmd).",
+          );
+        }
+        return JSON.parse(String(res.stdout ?? "").trim());
+      }
+    : undefined;
+
+  let cycleResult;
+  try {
+    cycleResult = await runAtomicRemediationCycle({
+      prNumber: initialPrView.number,
+      initialPrView,
+      initialReviewThreads,
+      remediateFinding,
+      verifyLocalGates: defaultVerifyLocalGates,
+      resolveThread: async (threadId) => {
+        resolveReviewThreadViaGh(threadId);
+      },
+      fetchLatestState: async ({ prNumber }) =>
+        fetchPrStateAndThreads(prNumber),
+    });
+  } catch (error) {
+    console.error(
+      `\n⛔ [PR_REMEDIATION_FAILED] فشل مسار الإصلاح الذرّي وإعادة الفحص: ${error?.message ?? error}\n`,
+    );
+    process.exit(1);
+  }
+
+  if (!cycleResult.ready) {
+    const decision = cycleResult.decision ?? cycleResult;
+    console.error(`\n⛔ [${cycleResult.code}] ${cycleResult.reason}`);
     if (decision.unaddressedComments?.length) {
       console.error("\nخيوط المراجعة غير المحلولة:");
       for (const c of decision.unaddressedComments) {
@@ -1542,11 +1915,17 @@ function main() {
     process.exit(1);
   }
 
+  const validatedHeadRefOid =
+    cycleResult.headRefOid || initialPrView.headRefOid;
+
   console.log(
-    `✓ طلب الدمج #${prView.number} (${prView.headRefOid.slice(0, 9)}) اجتاز جميع بوابات CI والمراجعة الآلية.`,
+    `✓ طلب الدمج #${initialPrView.number} (${validatedHeadRefOid.slice(0, 9)}) اجتاز جميع بوابات CI والمراجعة الآلية.`,
   );
 
-  const mergeArgs = buildMergeCommandArgs(prView.number, prView.headRefOid);
+  const mergeArgs = buildMergeCommandArgs(
+    initialPrView.number,
+    validatedHeadRefOid,
+  );
   const mergeRes = spawnSync("gh", mergeArgs, {
     cwd: REPO_ROOT,
     encoding: "utf8",
@@ -1568,8 +1947,8 @@ function main() {
   let postMergeVerification;
   try {
     postMergeVerification = verifyPostMergeCompletion(
-      prView.number,
-      prView.headRefOid,
+      initialPrView.number,
+      validatedHeadRefOid,
       {
         fetchPrState: fetchPostMergePrState,
       },
@@ -1592,7 +1971,7 @@ function main() {
     ? ` — التزام الدمج: ${postMergeVerification.mergeCommitOid.slice(0, 9)}`
     : "";
   console.log(
-    `✓ تم التأكد من دمج الطلب #${prView.number} فعلياً في main (مثبّت على ${prView.headRefOid.slice(0, 9)}${mergeShaInfo}).`,
+    `✓ تم التأكد من دمج الطلب #${initialPrView.number} فعلياً في main (مثبّت على ${validatedHeadRefOid.slice(0, 9)}${mergeShaInfo}).`,
   );
 }
 
@@ -1602,5 +1981,8 @@ const isDirectRun =
     path.resolve(fileURLToPath(import.meta.url));
 
 if (isDirectRun) {
-  main();
+  main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
 }

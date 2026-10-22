@@ -470,6 +470,7 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
       { threadId: "PRRT_100", sha: "sha-atomic-fix-1" },
     ]);
 
+    let resolvedOnStaleRemote = false;
     const staleRemoteResult = await runAtomicRemediationCycle({
       prNumber: 1530,
       initialPrView: {
@@ -502,7 +503,9 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
         resolvedThreadIds: ["PRRT_101"],
       }),
       verifyLocalGates: async () => ({ ok: true }),
-      resolveThread: async () => {},
+      resolveThread: async () => {
+        resolvedOnStaleRemote = true;
+      },
       fetchLatestState: async () => ({
         prView: {
           number: 1530,
@@ -517,6 +520,114 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
     });
     expect(staleRemoteResult.ready).toBe(false);
     expect(staleRemoteResult.code).toBe("REMEDIATION_REMOTE_HEAD_MISMATCH");
+    expect(resolvedOnStaleRemote).toBe(false);
+
+    const missingThreadIdsResult = await runAtomicRemediationCycle({
+      prNumber: 1530,
+      initialPrView: {
+        number: 1530,
+        state: "OPEN",
+        baseRefName: "main",
+        mergeable: "MERGEABLE",
+        headRefOid: "sha-unfixed-1",
+        statusCheckRollup: greenRollup,
+      },
+      initialReviewThreads: [
+        {
+          id: "PRRT_101",
+          isResolved: false,
+          path: "scripts/safe-merge.mjs",
+          line: 50,
+        },
+      ],
+      remediateFinding: async () => [{ commitSha: "sha-fixed-2" }],
+      verifyLocalGates: async () => ({ ok: true }),
+      fetchLatestState: async () => ({
+        prView: {
+          number: 1530,
+          state: "OPEN",
+          baseRefName: "main",
+          mergeable: "MERGEABLE",
+          headRefOid: "sha-fixed-2",
+          statusCheckRollup: greenRollup,
+        },
+        reviewThreads: [{ id: "PRRT_101", isResolved: false }],
+      }),
+    });
+    expect(missingThreadIdsResult.ready).toBe(false);
+    expect(missingThreadIdsResult.code).toBe(
+      "REMEDIATION_MISSING_RESOLVED_THREADS",
+    );
+  });
+
+  it("يرفض نتائج مراجعة Codex القديمة (Stale SHA) ويرتب إعادات الفحوصات المتداخلة حسب وقت البدء (startedAt)", () => {
+    const staleCodexRes = evaluatePrMergeReadiness({
+      prView: {
+        number: 1532,
+        state: "OPEN",
+        baseRefName: "main",
+        mergeable: "MERGEABLE",
+        headRefOid: "new-head-sha-222",
+        statusCheckRollup: [
+          { name: "audit", status: "COMPLETED", conclusion: "SUCCESS" },
+          { name: "authz-guard", status: "COMPLETED", conclusion: "SUCCESS" },
+          { name: "quality-build", status: "COMPLETED", conclusion: "SUCCESS" },
+          {
+            name: "test-shard-1-of-8",
+            status: "COMPLETED",
+            conclusion: "SUCCESS",
+          },
+          {
+            name: "check-test-build",
+            status: "COMPLETED",
+            conclusion: "SUCCESS",
+          },
+        ],
+        comments: [
+          {
+            body: '<!-- codex-review-state:v1 {"code_review":{"commit_sha":"old-head-sha-111","status":"completed"},"security_review":{"commit_sha":null,"status":null}} -->',
+          },
+        ],
+      },
+    });
+    expect(staleCodexRes.ready).toBe(false);
+    expect(staleCodexRes.code).toBe("PR_CODEX_REVIEW_STALE");
+
+    const overlappingRerunRes = evaluatePrMergeReadiness({
+      prView: {
+        number: 1532,
+        state: "OPEN",
+        baseRefName: "main",
+        mergeable: "MERGEABLE",
+        headRefOid: "new-head-sha-222",
+        statusCheckRollup: [
+          { name: "audit", status: "COMPLETED", conclusion: "SUCCESS" },
+          { name: "authz-guard", status: "COMPLETED", conclusion: "SUCCESS" },
+          { name: "quality-build", status: "COMPLETED", conclusion: "SUCCESS" },
+          {
+            name: "test-shard-1-of-8",
+            status: "COMPLETED",
+            conclusion: "SUCCESS",
+          },
+          {
+            name: "check-test-build",
+            status: "COMPLETED",
+            conclusion: "SUCCESS",
+            startedAt: "2026-10-22T10:00:00Z",
+            completedAt: "2026-10-22T10:10:00Z",
+          },
+          {
+            name: "check-test-build",
+            status: "IN_PROGRESS",
+            conclusion: "",
+            startedAt: "2026-10-22T10:05:00Z",
+            completedAt: "",
+          },
+        ],
+      },
+    });
+    expect(overlappingRerunRes.ready).toBe(false);
+    expect(overlappingRerunRes.code).toBe("PR_CI_PENDING");
   });
 
   it("يفحص خضرة بوابة CI قبل النشر الإنتاجي ويرفض الالتزامات غير المفحوصة على main أو الفاشلة ويتجاهل فحص diagnose التشخيصي", () => {
