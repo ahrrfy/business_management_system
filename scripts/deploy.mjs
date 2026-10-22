@@ -2001,36 +2001,128 @@ const ALLOWED_DEPLOY_CHECK_CONCLUSIONS = new Set([
   "skipped",
 ]);
 
-const IGNORED_DEPLOY_CHECK_NAMES = new Set([
-  "CI Failure Diagnostics",
+const IGNORED_DEPLOY_DIAGNOSTIC_CHECKS = new Set([
   "diagnose",
+  "CI Failure Diagnostics",
 ]);
+
+const REQUIRED_DEPLOY_CHECKS = ["check-test-build", "audit"];
+
+function parseDeployCheckRunTimestampMs(run) {
+  const raw = run?.completedAt || run?.startedAt || "";
+  if (!raw) return null;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function shouldReplaceDeployCheckRun(existing, candidate) {
+  const existingTs = parseDeployCheckRunTimestampMs(existing);
+  const candidateTs = parseDeployCheckRunTimestampMs(candidate);
+  if (existingTs !== null && candidateTs !== null && existingTs !== candidateTs) {
+    return candidateTs > existingTs;
+  }
+  if (candidateTs !== null && existingTs === null) {
+    return true;
+  }
+  if (existingTs !== null && candidateTs === null) {
+    return false;
+  }
+  if (
+    existing.id !== null &&
+    candidate.id !== null &&
+    existing.id !== candidate.id
+  ) {
+    return candidate.id > existing.id;
+  }
+  const existingPending = existing.status !== "completed";
+  const candidatePending = candidate.status !== "completed";
+  if (existingPending !== candidatePending) {
+    return candidatePending;
+  }
+  return true;
+}
 
 export function evaluateDeployCiCheckRuns(headCheckRuns) {
   const normalize = (runs) =>
     Array.isArray(runs)
       ? runs.map((r) => ({
+          id:
+            r?.id != null &&
+            String(r.id).trim() !== "" &&
+            Number.isFinite(Number(r.id))
+              ? Number(r.id)
+              : null,
           name: String(r?.name ?? "").trim(),
           status: String(r?.status ?? "").toLowerCase(),
           conclusion: String(r?.conclusion ?? "").toLowerCase(),
-          event: String(r?.event ?? r?.check_suite?.event ?? "push").toLowerCase(),
+          event: String(r?.event ?? r?.check_suite?.event ?? "")
+            .trim()
+            .toLowerCase(),
           headBranch: String(
-            r?.head_branch ?? r?.headBranch ?? r?.check_suite?.head_branch ?? "main",
+            r?.head_branch ??
+              r?.headBranch ??
+              r?.check_suite?.head_branch ??
+              "",
           ).trim(),
+          workflowName: String(
+            r?.workflow_name ?? r?.workflowName ?? "",
+          ).trim(),
+          hasCheckSuite:
+            r?.check_suite != null && typeof r.check_suite === "object",
           hasPullRequests:
-            Array.isArray(r?.pull_requests) && r.pull_requests.length > 0,
+            (Array.isArray(r?.pull_requests) && r.pull_requests.length > 0) ||
+            (Array.isArray(r?.check_suite?.pull_requests) &&
+              r.check_suite.pull_requests.length > 0),
+          completedAt: String(
+            r?.completed_at ?? r?.completedAt ?? "",
+          ).trim(),
+          startedAt: String(
+            r?.started_at ??
+              r?.startedAt ??
+              r?.created_at ??
+              r?.createdAt ??
+              "",
+          ).trim(),
         }))
       : [];
 
   const head = normalize(headCheckRuns).filter(
     (r) =>
       Boolean(r.name) &&
-      !IGNORED_DEPLOY_CHECK_NAMES.has(r.name) &&
-      !r.hasPullRequests &&
-      r.event === "push" &&
-      r.headBranch === "main",
+      !IGNORED_DEPLOY_DIAGNOSTIC_CHECKS.has(r.name) &&
+      !IGNORED_DEPLOY_DIAGNOSTIC_CHECKS.has(r.workflowName),
   );
-  const failedOnHead = head.filter(
+
+  const isMainPushRun = (r) => {
+    if (r.hasPullRequests) return false;
+    const hasProvenanceMetadata = Boolean(
+      r.hasCheckSuite || r.event || r.headBranch,
+    );
+    if (!hasProvenanceMetadata) return true;
+    const validEvent = r.event === "push";
+    const validBranch =
+      r.headBranch === "main" || r.headBranch === "refs/heads/main";
+    return validEvent && validBranch;
+  };
+
+  const eligibleRuns = head.filter(isMainPushRun);
+  if (eligibleRuns.length === 0) {
+    return {
+      ok: false,
+      code: "DEPLOY_CI_NOT_GREEN",
+    };
+  }
+
+  const dedupedByName = new Map();
+  for (const run of eligibleRuns) {
+    const existing = dedupedByName.get(run.name);
+    if (!existing || shouldReplaceDeployCheckRun(existing, run)) {
+      dedupedByName.set(run.name, run);
+    }
+  }
+  const latestRuns = [...dedupedByName.values()];
+
+  const failedOnHead = latestRuns.filter(
     (r) =>
       r.status === "completed" &&
       !ALLOWED_DEPLOY_CHECK_CONCLUSIONS.has(r.conclusion),
@@ -2043,7 +2135,7 @@ export function evaluateDeployCiCheckRuns(headCheckRuns) {
     };
   }
 
-  const pendingOnHead = head.filter((r) => r.status !== "completed");
+  const pendingOnHead = latestRuns.filter((r) => r.status !== "completed");
   if (pendingOnHead.length > 0) {
     return {
       ok: false,
@@ -2051,15 +2143,14 @@ export function evaluateDeployCiCheckRuns(headCheckRuns) {
     };
   }
 
-  const byName = new Map(head.map((r) => [r.name, r]));
-  const gate = byName.get("check-test-build");
-  const audit = byName.get("audit");
-  if (
-    gate?.status === "completed" &&
-    gate?.conclusion === "success" &&
-    audit?.status === "completed" &&
-    audit?.conclusion === "success"
-  ) {
+  const allRequiredGreen = REQUIRED_DEPLOY_CHECKS.every((reqName) => {
+    const match = dedupedByName.get(reqName);
+    return Boolean(
+      match && match.status === "completed" && match.conclusion === "success",
+    );
+  });
+
+  if (allRequiredGreen) {
     return { ok: true, code: "OK", source: "head" };
   }
 
@@ -2069,69 +2160,94 @@ export function evaluateDeployCiCheckRuns(headCheckRuns) {
   };
 }
 
-async function fetchCommitCheckRuns(sha) {
-  const workflowRunsRes = await fetch(
-    `https://api.github.com/repos/ahrrfy/business_management_system/actions/runs?head_sha=${encodeURIComponent(sha)}&event=push&branch=main&per_page=100`,
-    {
-      headers: {
-        Accept: "application/vnd.github+json",
-        "User-Agent": "alroya-erp-safe-deploy-gate",
-      },
-      signal: AbortSignal.timeout(15_000),
-    },
-  );
-  if (!workflowRunsRes.ok) {
-    throw new Error(`DEPLOY_CI_STATUS_FETCH_FAILED:${workflowRunsRes.status}`);
-  }
-  const workflowPayload = await workflowRunsRes.json();
-  const workflowRuns = Array.isArray(workflowPayload?.workflow_runs)
-    ? workflowPayload.workflow_runs
-    : [];
-  const mainPushSuiteIds = new Set(
-    workflowRuns
-      .filter(
-        (w) =>
-          String(w?.event ?? "").toLowerCase() === "push" &&
-          String(w?.head_branch ?? "").trim() === "main" &&
-          w?.check_suite_id != null,
-      )
-      .map((w) => Number(w.check_suite_id)),
-  );
-
-  const allRuns = [];
+async function fetchWorkflowSuiteProvenanceBySha(sha, headers) {
+  const suiteMap = new Map();
   let page = 1;
-  while (page <= 10) {
+  while (page <= 5) {
     const response = await fetch(
-      `https://api.github.com/repos/ahrrfy/business_management_system/commits/${encodeURIComponent(sha)}/check-runs?per_page=100&page=${page}`,
+      `https://api.github.com/repos/ahrrfy/business_management_system/actions/runs?head_sha=${encodeURIComponent(sha)}&per_page=100&page=${page}`,
       {
-        headers: {
-          Accept: "application/vnd.github+json",
-          "User-Agent": "alroya-erp-safe-deploy-gate",
-        },
+        headers,
         signal: AbortSignal.timeout(15_000),
       },
     );
     if (!response.ok) {
-      throw new Error(`DEPLOY_CI_STATUS_FETCH_FAILED:${response.status}`);
+      throw new Error(`DEPLOY_CI_WORKFLOW_RUNS_FETCH_FAILED:${response.status}`);
     }
     const payload = await response.json();
-    const runs = Array.isArray(payload?.check_runs) ? payload.check_runs : [];
-    for (const r of runs) {
-      const suiteId = Number(r?.check_suite?.id);
-      const isMainPush = mainPushSuiteIds.has(suiteId);
-      allRuns.push({
-        ...r,
-        event: isMainPush ? "push" : "other",
-        head_branch: isMainPush ? "main" : "other",
-      });
+    const workflowRuns = Array.isArray(payload?.workflow_runs)
+      ? payload.workflow_runs
+      : [];
+    for (const wfRun of workflowRuns) {
+      if (wfRun?.check_suite_id != null) {
+        suiteMap.set(Number(wfRun.check_suite_id), {
+          event: String(wfRun.event ?? "").trim(),
+          head_branch: String(wfRun.head_branch ?? "").trim(),
+          workflow_name: String(wfRun.name ?? "").trim(),
+        });
+      }
     }
-    const totalCount = Number(payload?.total_count ?? runs.length);
-    if (runs.length < 100 || page * 100 >= totalCount) {
+    const totalCount = Number(payload?.total_count ?? workflowRuns.length);
+    if (workflowRuns.length < 100 || page * 100 >= totalCount) {
       break;
     }
     page += 1;
   }
-  return allRuns;
+  return suiteMap;
+}
+
+async function fetchCommitCheckRuns(sha, { env = process.env } = {}) {
+  const token = String(env?.GITHUB_TOKEN || env?.GH_TOKEN || "").trim();
+  const headers = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "alroya-erp-safe-deploy-gate",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+  const [suiteMap, allRuns] = await Promise.all([
+    fetchWorkflowSuiteProvenanceBySha(sha, headers),
+    (async () => {
+      const collected = [];
+      let page = 1;
+      while (page <= 10) {
+        const response = await fetch(
+          `https://api.github.com/repos/ahrrfy/business_management_system/commits/${encodeURIComponent(sha)}/check-runs?per_page=100&page=${page}`,
+          {
+            headers,
+            signal: AbortSignal.timeout(15_000),
+          },
+        );
+        if (!response.ok) {
+          throw new Error(`DEPLOY_CI_STATUS_FETCH_FAILED:${response.status}`);
+        }
+        const payload = await response.json();
+        const runs = Array.isArray(payload?.check_runs)
+          ? payload.check_runs
+          : [];
+        collected.push(...runs);
+        const totalCount = Number(payload?.total_count ?? collected.length);
+        if (runs.length < 100 || collected.length >= totalCount) {
+          break;
+        }
+        page += 1;
+      }
+      return collected;
+    })(),
+  ]);
+
+  return allRuns.map((run) => {
+    const suiteId = Number(run?.check_suite?.id ?? NaN);
+    const suiteMeta = Number.isFinite(suiteId) ? suiteMap.get(suiteId) : null;
+    return {
+      ...run,
+      event: run?.event ?? run?.check_suite?.event ?? suiteMeta?.event ?? "",
+      head_branch:
+        run?.head_branch ??
+        run?.check_suite?.head_branch ??
+        suiteMeta?.head_branch ??
+        "",
+      workflow_name: run?.workflow_name ?? suiteMeta?.workflow_name ?? "",
+    };
+  });
 }
 
 export async function assertRemoteCiGreenForDeploy(
@@ -2145,7 +2261,7 @@ export async function assertRemoteCiGreenForDeploy(
     console.warn("⚠️ تم تجاوز بوابة فحص CI عن بُعد بطلب صريح (SKIP_DEPLOY_CI_GATE=1).");
     return { ok: true, code: "SKIPPED" };
   }
-  const headRuns = await fetchRuns(expectedHead);
+  const headRuns = await fetchRuns(expectedHead, { env });
   const verdict = evaluateDeployCiCheckRuns(headRuns);
   if (!verdict.ok) {
     throw codedError(verdict.code, new Error(verdict.code));
@@ -2550,19 +2666,15 @@ async function dispatch() {
   }
   if (mode === "--selftest-ci-gate") {
     const green = [
-      { name: "audit", status: "completed", conclusion: "success", event: "push", head_branch: "main" },
-      { name: "check-test-build", status: "completed", conclusion: "success", event: "push", head_branch: "main" },
+      { name: "audit", status: "completed", conclusion: "success" },
+      { name: "check-test-build", status: "completed", conclusion: "success" },
     ];
     if (
       !evaluateDeployCiCheckRuns(green).ok ||
       !evaluateDeployCiCheckRuns([
         ...green,
-        { name: "diagnose", status: "in_progress", conclusion: "", event: "push", head_branch: "main" },
+        { name: "diagnose", status: "completed", conclusion: "failure" },
       ]).ok ||
-      evaluateDeployCiCheckRuns([
-        { name: "audit", status: "completed", conclusion: "success", event: "pull_request", head_branch: "fix/a" },
-        { name: "check-test-build", status: "completed", conclusion: "success", event: "pull_request", head_branch: "fix/a" },
-      ]).code !== "DEPLOY_CI_NOT_GREEN" ||
       evaluateDeployCiCheckRuns([
         ...green,
         { name: "test-shard-1-of-8", status: "in_progress", conclusion: "" },
@@ -2581,6 +2693,73 @@ async function dispatch() {
       ]).code !== "DEPLOY_CI_FAILED_ON_HEAD" ||
       evaluateDeployCiCheckRuns([
         { name: "audit", status: "completed", conclusion: "success" },
+      ]).code !== "DEPLOY_CI_NOT_GREEN" ||
+      evaluateDeployCiCheckRuns([
+        {
+          name: "audit",
+          status: "completed",
+          conclusion: "success",
+          event: "pull_request",
+          head_branch: "fix/branch",
+        },
+        {
+          name: "check-test-build",
+          status: "completed",
+          conclusion: "success",
+          event: "pull_request",
+          head_branch: "fix/branch",
+        },
+      ]).code !== "DEPLOY_CI_NOT_GREEN" ||
+      !evaluateDeployCiCheckRuns([
+        {
+          id: 1,
+          name: "audit",
+          status: "completed",
+          conclusion: "success",
+          completed_at: "2026-10-22T10:00:00Z",
+        },
+        {
+          id: 2,
+          name: "check-test-build",
+          status: "completed",
+          conclusion: "failure",
+          completed_at: "2026-10-22T10:05:00Z",
+        },
+        {
+          id: 3,
+          name: "check-test-build",
+          status: "completed",
+          conclusion: "success",
+          completed_at: "2026-10-22T10:20:00Z",
+        },
+      ]).ok ||
+      evaluateDeployCiCheckRuns([
+        {
+          name: "audit",
+          status: "completed",
+          conclusion: "success",
+          check_suite: { id: 999 },
+        },
+        {
+          name: "check-test-build",
+          status: "completed",
+          conclusion: "success",
+          check_suite: { id: 999 },
+        },
+      ]).code !== "DEPLOY_CI_NOT_GREEN" ||
+      evaluateDeployCiCheckRuns([
+        {
+          name: "audit",
+          status: "completed",
+          conclusion: "success",
+          pull_requests: [{ number: 1530 }],
+        },
+        {
+          name: "check-test-build",
+          status: "completed",
+          conclusion: "success",
+          pull_requests: [{ number: 1530 }],
+        },
       ]).code !== "DEPLOY_CI_NOT_GREEN"
     ) {
       throw new Error("DEPLOY_CI_GATE_SELFTEST_FAILED");

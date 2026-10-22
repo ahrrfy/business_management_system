@@ -6,8 +6,9 @@
  *    حتى تعمل فحوصات CI الكاملة (8 شوارد + الفحص الأمني) ومراجعة Codex الآلية قبل الدمج.
  *    (مخرج طوارئ المالك حصراً: `ALLOW_DIRECT_MAIN_PUSH=1`).
  * 2. فحص الالتزامات المدفوعة فعلياً (`localSha` من عقد `pre-push` القياسي) مقابل `origin/main`،
- *    والإغلاق الآمن (fail-closed) إذا تعذّر الوصول إلى `origin/main` أو كانت شجرة العمل لا تطابق
- *    الالتزام المدفوع عند تشغيل الاختبارات.
+ *    والإغلاق الآمن (fail-closed) إذا تعذّر الوصول إلى `origin/main` أو حساب قاعدة الدمج.
+ * 3. التحقق من تطابق شجرة العمل الحالية (`HEAD` والملفات المتتبَّعة) مع `localSha` المدفوع،
+ *    وتشغيل اختبارات الوحدة المتأثرة المسجّلة في `vitest.unit.config.ts` قبل السماح بالدفع.
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -15,7 +16,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const REPO_ROOT = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+);
 const ZERO_OID_RE = /^0+$/;
 
 export function parsePrePushStdin(stdinText = "") {
@@ -61,24 +65,29 @@ export function evaluatePrePushPolicy({
     typeof r === "string" ? r.trim() : String(r?.remoteRef ?? "").trim(),
   );
 
+  const isMainRefName = (ref) =>
+    ref === "main" || ref === "heads/main" || ref === "refs/heads/main";
+
   const cliTargetsMain = cliArgs.some((arg) => {
-    const trimmed = String(arg ?? "").trim();
+    const raw = String(arg ?? "").trim();
+    const cleaned = raw.replace(/^\+/, "");
     return (
-      trimmed === "main" ||
-      trimmed === "refs/heads/main" ||
-      trimmed.endsWith(":main") ||
-      trimmed.endsWith(":refs/heads/main")
+      isMainRefName(cleaned) ||
+      cleaned.endsWith(":main") ||
+      cleaned.endsWith(":heads/main") ||
+      cleaned.endsWith(":refs/heads/main") ||
+      raw === "--mirror" ||
+      raw === "--all"
     );
   });
 
-  const stdinTargetsMain = normalizedRefs.some(
-    (ref) => ref === "refs/heads/main" || ref === "main",
-  );
+  const stdinTargetsMain = normalizedRefs.some(isMainRefName);
 
+  const cleanBranch = String(currentBranch).trim();
   const implicitMainPush =
     normalizedRefs.length === 0 &&
     !cliArgs.some((a) => String(a).includes(":")) &&
-    String(currentBranch).trim() === "main";
+    isMainRefName(cleanBranch);
 
   if (stdinTargetsMain || cliTargetsMain || implicitMainPush) {
     return {
@@ -101,7 +110,7 @@ function defaultDiffRunner(sha) {
 }
 
 function defaultGetHeadSha() {
-  const res = spawnSync("git", ["rev-parse", "HEAD"], {
+  const res = spawnSync("git", ["rev-parse", "--verify", "HEAD"], {
     cwd: REPO_ROOT,
     encoding: "utf8",
   });
@@ -109,10 +118,14 @@ function defaultGetHeadSha() {
 }
 
 function defaultGetTrackedStatus() {
-  const res = spawnSync("git", ["status", "--porcelain", "--untracked-files=no"], {
-    cwd: REPO_ROOT,
-    encoding: "utf8",
-  });
+  const res = spawnSync(
+    "git",
+    ["status", "--porcelain", "--untracked-files=no"],
+    {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+    },
+  );
   return res.status === 0 ? res.stdout.trim() : "DIRTY_STATUS_ERROR";
 }
 
@@ -122,9 +135,16 @@ export function assertCheckoutMatchesPushedShas({
   trackedStatus = defaultGetTrackedStatus(),
 } = {}) {
   const cleanHead = String(headSha ?? "").trim();
+  if (shas.length > 0 && !cleanHead) {
+    const err = new Error(
+      "تعذّر التحقق من بصمة HEAD الحالية في شجرة العمل قبل الدفع.",
+    );
+    err.code = "PUSH_GUARD_HEAD_MISMATCH";
+    throw err;
+  }
   for (const sha of shas) {
     if (sha === "HEAD") continue;
-    if (!cleanHead || sha !== cleanHead) {
+    if (sha !== cleanHead) {
       const err = new Error(
         `الالتزام المدفوع (${sha}) لا يطابق رأس شجرة العمل الحالية (${cleanHead || "غير معروف"})؛ انتقل إلى الالتزام المدفوع قبل الدفع حتى تعمل الاختبارات على الشجرة المدفوعة فعلياً.`,
       );
@@ -141,11 +161,118 @@ export function assertCheckoutMatchesPushedShas({
   }
 }
 
+export function defaultVerifyCheckoutMatchesSha(sha) {
+  const headSha = defaultGetHeadSha();
+  if (!headSha) {
+    return {
+      ok: false,
+      code: "PUSH_GUARD_HEAD_MISMATCH",
+      reason: "تعذّر التحقق من بصمة HEAD الحالية في شجرة العمل قبل الدفع.",
+    };
+  }
+
+  if (sha && sha !== "HEAD") {
+    const targetRes = spawnSync(
+      "git",
+      ["rev-parse", "--verify", `${sha}^{commit}`],
+      {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+      },
+    );
+    const targetSha = targetRes.status === 0 ? targetRes.stdout.trim() : "";
+    if (!targetSha || headSha !== targetSha) {
+      return {
+        ok: false,
+        code: "PUSH_GUARD_HEAD_MISMATCH",
+        reason: `الالتزام المدفوع (${sha.slice(0, 12)}) لا يطابق HEAD المفحوص حالياً في شجرة العمل (${headSha.slice(0, 12) || "unknown"}). تحقّق من الفرع المطلوب قبل الدفع لضمان تشغيل الاختبارات على نفس الكود المدفوع.`,
+      };
+    }
+  }
+
+  const trackedStatus = defaultGetTrackedStatus();
+  if (trackedStatus.length > 0) {
+    return {
+      ok: false,
+      code: "PUSH_GUARD_DIRTY_WORKTREE",
+      reason:
+        "توجد تعديلات غير ملتزمة في شجرة العمل تختلف عن الالتزام المدفوع؛ التزم بتعديلاتك أو اعزلها (git stash) قبل الدفع لضمان تطابق فحص الاختبارات مع الالتزام المدفوع.",
+    };
+  }
+  return { ok: true };
+}
+
+function stripConfigComments(text) {
+  return String(text ?? "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*\/\/.*$/, ""))
+    .join("\n");
+}
+
+function isRegisteredInUnitConfig(unitConfigText, candidateRelPath) {
+  const normalized = candidateRelPath.replace(/\\/g, "/");
+  const uncommented = stripConfigComments(unitConfigText);
+  return (
+    uncommented.includes(`"${normalized}"`) ||
+    uncommented.includes(`'${normalized}'`)
+  );
+}
+
+function deriveCandidateUnitTestsForSourceFile(relPath) {
+  const normalized = relPath.replace(/\\/g, "/");
+  if (
+    normalized === "scripts/safe-push-guard.mjs" ||
+    normalized === "scripts/safe-merge.mjs" ||
+    normalized === "scripts/deploy.mjs" ||
+    normalized === "scripts/deploy.test.mjs" ||
+    normalized === ".husky/pre-push"
+  ) {
+    return ["scripts/__tests__/safeDeliveryProtocols.test.ts"];
+  }
+  if (
+    normalized === ".github/workflows/ci.yml" ||
+    normalized === "scripts/ci-policy.mjs"
+  ) {
+    return [
+      "scripts/__tests__/ciCriticalPathWorkflow.test.ts",
+      "scripts/__tests__/safeDeliveryProtocols.test.ts",
+    ];
+  }
+  if (
+    normalized === ".github/workflows/security.yml" ||
+    normalized === "osv-scanner.toml"
+  ) {
+    return ["scripts/__tests__/dependencySecurityWorkflow.test.ts"];
+  }
+  if (normalized === ".github/workflows/ci-failure-diagnostics.yml") {
+    return ["scripts/__tests__/ciFailureDiagnosticsWorkflow.test.ts"];
+  }
+  if (!/\.(?:[cm]?jsx?|[cm]?tsx?)$/.test(normalized)) {
+    return [];
+  }
+  const parsed = path.posix.parse(normalized);
+  const baseName = parsed.name;
+  const dir = parsed.dir;
+  if (!dir || !baseName) return [];
+  return [
+    `${dir}/${baseName}.test.ts`,
+    `${dir}/${baseName}.test.tsx`,
+    `${dir}/${baseName}.unit.test.ts`,
+    `${dir}/${baseName}.unit.test.tsx`,
+    `${dir}/__tests__/${baseName}.test.ts`,
+    `${dir}/__tests__/${baseName}.test.tsx`,
+    `${dir}/__tests__/${baseName}.unit.test.ts`,
+    `${dir}/__tests__/${baseName}.unit.test.tsx`,
+  ];
+}
+
 export function collectModifiedUnitTestsForPush({
   stdinEntries = [],
   unitConfigText = "",
   runDiff = defaultDiffRunner,
   fileExists = (relPath) => fs.existsSync(path.join(REPO_ROOT, relPath)),
+  verifyCheckoutMatchesSha = null,
   headSha = undefined,
   trackedStatus = undefined,
 } = {}) {
@@ -154,20 +281,44 @@ export function collectModifiedUnitTestsForPush({
     return [];
   }
 
-  assertCheckoutMatchesPushedShas({
-    shas,
-    headSha: headSha ?? defaultGetHeadSha(),
-    trackedStatus: trackedStatus ?? defaultGetTrackedStatus(),
-  });
+  if (
+    headSha !== undefined ||
+    trackedStatus !== undefined ||
+    (!verifyCheckoutMatchesSha && runDiff === defaultDiffRunner)
+  ) {
+    assertCheckoutMatchesPushedShas({
+      shas,
+      headSha: headSha ?? defaultGetHeadSha(),
+      trackedStatus: trackedStatus ?? defaultGetTrackedStatus(),
+    });
+  }
 
   if (!unitConfigText || !unitConfigText.trim()) {
-    const err = new Error("تعذّر قراءة ملف vitest.unit.config.ts للتحقق من اختبارات الوحدة قبل الدفع.");
+    const err = new Error(
+      "تعذّر قراءة ملف vitest.unit.config.ts للتحقق من اختبارات الوحدة قبل الدفع.",
+    );
     err.code = "PUSH_GUARD_UNIT_CONFIG_MISSING";
     throw err;
   }
 
+  const checkoutVerifier =
+    verifyCheckoutMatchesSha ??
+    (runDiff === defaultDiffRunner
+      ? defaultVerifyCheckoutMatchesSha
+      : () => ({ ok: true }));
+
   const changedFiles = new Set();
   for (const sha of shas) {
+    const checkoutCheck = checkoutVerifier(sha);
+    if (!checkoutCheck || checkoutCheck.ok === false) {
+      const err = new Error(
+        checkoutCheck?.reason ||
+          `الالتزام المدفوع (${sha}) لا يطابق شجرة العمل الحالية؛ لا يمكن التحقق من اختبارات الوحدة بأمان.`,
+      );
+      err.code = checkoutCheck?.code || "PUSH_GUARD_WORKTREE_MISMATCH";
+      throw err;
+    }
+
     const diffRes = runDiff(sha);
     if (!diffRes || diffRes.status !== 0) {
       const stderr = String(diffRes?.stderr ?? "").trim();
@@ -179,27 +330,38 @@ export function collectModifiedUnitTestsForPush({
     }
     const lines = String(diffRes.stdout ?? "")
       .split(/\r?\n/)
-      .map((f) => f.trim())
+      .map((f) => f.trim().replace(/\\/g, "/"))
       .filter(Boolean);
     for (const file of lines) {
       changedFiles.add(file);
     }
   }
 
-  const matchedTests = [];
+  const matchedTestsSet = new Set();
   for (const file of changedFiles) {
-    if (!/\.test\.tsx?$/.test(file)) continue;
-    if (!unitConfigText.includes(`"${file}"`) && !unitConfigText.includes(`'${file}'`)) {
+    if (/\.test\.(?:[cm]?jsx?|[cm]?tsx?)$/.test(file)) {
+      if (isRegisteredInUnitConfig(unitConfigText, file)) {
+        matchedTestsSet.add(file);
+      }
       continue;
     }
-    if (!fileExists(file)) {
+    for (const candidate of deriveCandidateUnitTestsForSourceFile(file)) {
+      if (isRegisteredInUnitConfig(unitConfigText, candidate)) {
+        matchedTestsSet.add(candidate);
+      }
+    }
+  }
+
+  const matchedTests = [];
+  for (const testFile of matchedTestsSet) {
+    if (!fileExists(testFile)) {
       const err = new Error(
-        `الملف الاختباري المتأثر «${file}» في الالتزام المدفوع غير موجود في شجرة العمل الحالية؛ تحقّق من الفرع الحالي قبل الدفع.`,
+        `الملف الاختباري المتأثر «${testFile}» في الالتزام المدفوع غير موجود في شجرة العمل الحالية؛ تحقّق من الفرع الحالي قبل الدفع.`,
       );
       err.code = "PUSH_GUARD_WORKTREE_MISMATCH";
       throw err;
     }
-    matchedTests.push(file);
+    matchedTests.push(testFile);
   }
 
   return matchedTests;
@@ -231,6 +393,24 @@ export function runSafePushSelftest() {
   assert.equal(blockedCli.allowed, false);
   assert.equal(blockedCli.code, "DIRECT_MAIN_PUSH_FORBIDDEN");
 
+  const blockedForceCli = evaluatePrePushPolicy({
+    remoteRefs: [],
+    currentBranch: "feature/test",
+    cliArgs: ["origin", "+main"],
+    env: {},
+  });
+  assert.equal(blockedForceCli.allowed, false);
+  assert.equal(blockedForceCli.code, "DIRECT_MAIN_PUSH_FORBIDDEN");
+
+  const blockedHeadsMain = evaluatePrePushPolicy({
+    remoteRefs: [],
+    currentBranch: "feature/test",
+    cliArgs: ["origin", "HEAD:heads/main"],
+    env: {},
+  });
+  assert.equal(blockedHeadsMain.allowed, false);
+  assert.equal(blockedHeadsMain.code, "DIRECT_MAIN_PUSH_FORBIDDEN");
+
   const allowedBranch = evaluatePrePushPolicy({
     remoteRefs: ["refs/heads/fix/ui-density"],
     currentBranch: "fix/ui-density",
@@ -247,7 +427,7 @@ export function runSafePushSelftest() {
   assert.equal(allowedBypass.allowed, true);
   assert.equal(allowedBypass.code, "OK_BYPASS");
 
-  // Verify pushed commit SHAs are diffed instead of assuming HEAD
+  // Verify pushed commit SHAs are diffed instead of assuming HEAD, and commented-out config lines are ignored
   const diffedShas = [];
   const collected = collectModifiedUnitTestsForPush({
     stdinEntries: [
@@ -264,59 +444,24 @@ export function runSafePushSelftest() {
         remoteSha: "2222222222222222222222222222222222222222",
       },
     ],
-    unitConfigText: 'include: ["scripts/__tests__/safeDeliveryProtocols.test.ts"]',
+    unitConfigText:
+      '// "client/src/lib/commentedOut.test.ts"\ninclude: ["scripts/__tests__/safeDeliveryProtocols.test.ts", "scripts/__tests__/ciCriticalPathWorkflow.test.ts", "client/src/lib/lazyWithRetry.test.ts"]',
     runDiff: (sha) => {
       diffedShas.push(sha);
-      return { status: 0, stdout: "scripts/__tests__/safeDeliveryProtocols.test.ts\n" };
+      return {
+        status: 0,
+        stdout:
+          "scripts/__tests__/safeDeliveryProtocols.test.ts\n.github/workflows/ci.yml\nclient/src/lib/commentedOut.ts\nclient/src/lib/lazyWithRetry.ts\n",
+      };
     },
     fileExists: () => true,
-    headSha: "1111111111111111111111111111111111111111",
-    trackedStatus: "",
   });
   assert.deepEqual(diffedShas, ["1111111111111111111111111111111111111111"]);
-  assert.deepEqual(collected, ["scripts/__tests__/safeDeliveryProtocols.test.ts"]);
-
-  // Verify fail-closed when pushed SHA does not match current checkout HEAD
-  assert.throws(
-    () =>
-      collectModifiedUnitTestsForPush({
-        stdinEntries: [
-          {
-            localRef: "refs/heads/feat/a",
-            localSha: "1111111111111111111111111111111111111111",
-            remoteRef: "refs/heads/feat/a",
-            remoteSha: "0000000000000000000000000000000000000000",
-          },
-        ],
-        unitConfigText: 'include: ["scripts/__tests__/safeDeliveryProtocols.test.ts"]',
-        runDiff: () => ({ status: 0, stdout: "scripts/__tests__/safeDeliveryProtocols.test.ts\n" }),
-        fileExists: () => true,
-        headSha: "9999999999999999999999999999999999999999",
-        trackedStatus: "",
-      }),
-    (err) => err?.code === "PUSH_GUARD_HEAD_MISMATCH",
-  );
-
-  // Verify fail-closed when worktree has uncommitted tracked modifications
-  assert.throws(
-    () =>
-      collectModifiedUnitTestsForPush({
-        stdinEntries: [
-          {
-            localRef: "refs/heads/feat/a",
-            localSha: "1111111111111111111111111111111111111111",
-            remoteRef: "refs/heads/feat/a",
-            remoteSha: "0000000000000000000000000000000000000000",
-          },
-        ],
-        unitConfigText: 'include: ["scripts/__tests__/safeDeliveryProtocols.test.ts"]',
-        runDiff: () => ({ status: 0, stdout: "scripts/__tests__/safeDeliveryProtocols.test.ts\n" }),
-        fileExists: () => true,
-        headSha: "1111111111111111111111111111111111111111",
-        trackedStatus: " M scripts/__tests__/safeDeliveryProtocols.test.ts",
-      }),
-    (err) => err?.code === "PUSH_GUARD_DIRTY_WORKTREE",
-  );
+  assert.deepEqual(collected, [
+    "scripts/__tests__/safeDeliveryProtocols.test.ts",
+    "scripts/__tests__/ciCriticalPathWorkflow.test.ts",
+    "client/src/lib/lazyWithRetry.test.ts",
+  ]);
 
   // Verify fail-closed when origin/main comparison fails
   assert.throws(
@@ -330,13 +475,90 @@ export function runSafePushSelftest() {
             remoteSha: "0000000000000000000000000000000000000000",
           },
         ],
-        unitConfigText: 'include: ["scripts/__tests__/safeDeliveryProtocols.test.ts"]',
-        runDiff: () => ({ status: 128, stderr: "fatal: ambiguous argument 'origin/main'" }),
+        unitConfigText:
+          'include: ["scripts/__tests__/safeDeliveryProtocols.test.ts"]',
+        runDiff: () => ({
+          status: 128,
+          stderr: "fatal: ambiguous argument 'origin/main'",
+        }),
         fileExists: () => true,
-        headSha: "1111111111111111111111111111111111111111",
-        trackedStatus: "",
       }),
     (err) => err?.code === "PUSH_GUARD_BASE_DIFF_FAILED",
+  );
+
+  // Verify fail-closed when pushed localSha does not match checked-out worktree
+  assert.throws(
+    () =>
+      collectModifiedUnitTestsForPush({
+        stdinEntries: [
+          {
+            localRef: "refs/heads/feat/other",
+            localSha: "3333333333333333333333333333333333333333",
+            remoteRef: "refs/heads/feat/other",
+            remoteSha: "0000000000000000000000000000000000000000",
+          },
+        ],
+        unitConfigText:
+          'include: ["scripts/__tests__/safeDeliveryProtocols.test.ts"]',
+        runDiff: () => ({
+          status: 0,
+          stdout: "scripts/__tests__/safeDeliveryProtocols.test.ts\n",
+        }),
+        fileExists: () => true,
+        verifyCheckoutMatchesSha: () => ({
+          ok: false,
+          reason: "HEAD mismatch with pushed localSha",
+        }),
+      }),
+    (err) => err?.code === "PUSH_GUARD_WORKTREE_MISMATCH",
+  );
+
+  assert.throws(
+    () =>
+      collectModifiedUnitTestsForPush({
+        stdinEntries: [
+          {
+            localRef: "refs/heads/feat/a",
+            localSha: "1111111111111111111111111111111111111111",
+            remoteRef: "refs/heads/feat/a",
+            remoteSha: "0000000000000000000000000000000000000000",
+          },
+        ],
+        unitConfigText:
+          'include: ["scripts/__tests__/safeDeliveryProtocols.test.ts"]',
+        runDiff: () => ({
+          status: 0,
+          stdout: "scripts/__tests__/safeDeliveryProtocols.test.ts\n",
+        }),
+        fileExists: () => true,
+        headSha: "9999999999999999999999999999999999999999",
+        trackedStatus: "",
+      }),
+    (err) => err?.code === "PUSH_GUARD_HEAD_MISMATCH",
+  );
+
+  assert.throws(
+    () =>
+      collectModifiedUnitTestsForPush({
+        stdinEntries: [
+          {
+            localRef: "refs/heads/feat/a",
+            localSha: "1111111111111111111111111111111111111111",
+            remoteRef: "refs/heads/feat/a",
+            remoteSha: "0000000000000000000000000000000000000000",
+          },
+        ],
+        unitConfigText:
+          'include: ["scripts/__tests__/safeDeliveryProtocols.test.ts"]',
+        runDiff: () => ({
+          status: 0,
+          stdout: "scripts/__tests__/safeDeliveryProtocols.test.ts\n",
+        }),
+        fileExists: () => true,
+        headSha: "1111111111111111111111111111111111111111",
+        trackedStatus: " M scripts/__tests__/safeDeliveryProtocols.test.ts",
+      }),
+    (err) => err?.code === "PUSH_GUARD_DIRTY_WORKTREE",
   );
 
   console.log("safe-push-guard selftest: OK");
@@ -398,7 +620,9 @@ function main() {
       unitConfigText,
     });
   } catch (error) {
-    console.error(`\n⛔ [${error?.code ?? "PUSH_GUARD_ERROR"}] ${error?.message ?? error}\n`);
+    console.error(
+      `\n⛔ [${error?.code ?? "PUSH_GUARD_ERROR"}] ${error?.message ?? error}\n`,
+    );
     process.exit(1);
   }
 
@@ -409,7 +633,14 @@ function main() {
     const pnpmCmd = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
     const testRes = spawnSync(
       pnpmCmd,
-      ["exec", "vitest", "run", "--config", "vitest.unit.config.ts", ...modifiedUnitTests],
+      [
+        "exec",
+        "vitest",
+        "run",
+        "--config",
+        "vitest.unit.config.ts",
+        ...modifiedUnitTests,
+      ],
       {
         cwd: REPO_ROOT,
         stdio: "inherit",
@@ -428,7 +659,8 @@ function main() {
 
 const isDirectRun =
   process.argv[1] &&
-  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+  path.resolve(process.argv[1]) ===
+    path.resolve(fileURLToPath(import.meta.url));
 
 if (isDirectRun) {
   main();

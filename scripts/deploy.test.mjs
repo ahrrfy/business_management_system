@@ -920,8 +920,8 @@ try {
 
 {
   const greenRuns = [
-    { name: "audit", status: "completed", conclusion: "success", event: "push", head_branch: "main" },
-    { name: "check-test-build", status: "completed", conclusion: "success", event: "push", head_branch: "main" },
+    { name: "audit", status: "completed", conclusion: "success" },
+    { name: "check-test-build", status: "completed", conclusion: "success" },
   ];
   assert.deepEqual(evaluateDeployCiCheckRuns(greenRuns), {
     ok: true,
@@ -931,20 +931,13 @@ try {
   assert.deepEqual(
     evaluateDeployCiCheckRuns([
       ...greenRuns,
-      { name: "diagnose", status: "in_progress", conclusion: "", event: "push", head_branch: "main" },
+      { name: "diagnose", status: "completed", conclusion: "failure" },
     ]),
     {
       ok: true,
       code: "OK",
       source: "head",
     },
-  );
-  assert.equal(
-    evaluateDeployCiCheckRuns([
-      { name: "audit", status: "completed", conclusion: "success", event: "pull_request", head_branch: "fix/a" },
-      { name: "check-test-build", status: "completed", conclusion: "success", event: "pull_request", head_branch: "fix/a" },
-    ]).code,
-    "DEPLOY_CI_NOT_GREEN",
   );
   assert.equal(
     evaluateDeployCiCheckRuns([
@@ -977,6 +970,117 @@ try {
   assert.equal(
     evaluateDeployCiCheckRuns([
       { name: "audit", status: "completed", conclusion: "success" },
+    ]).code,
+    "DEPLOY_CI_NOT_GREEN",
+  );
+  // PR check runs on a feature branch must not satisfy the main deployment gate
+  assert.equal(
+    evaluateDeployCiCheckRuns([
+      {
+        name: "audit",
+        status: "completed",
+        conclusion: "success",
+        event: "pull_request",
+        head_branch: "fix/branch",
+      },
+      {
+        name: "check-test-build",
+        status: "completed",
+        conclusion: "success",
+        event: "pull_request",
+        head_branch: "fix/branch",
+      },
+    ]).code,
+    "DEPLOY_CI_NOT_GREEN",
+  );
+  // Re-run deduplication: older failed check run superseded by newer successful re-run on main passes
+  assert.deepEqual(
+    evaluateDeployCiCheckRuns([
+      {
+        id: 10,
+        name: "audit",
+        status: "completed",
+        conclusion: "success",
+        event: "push",
+        head_branch: "main",
+        completed_at: "2026-10-22T10:00:00Z",
+      },
+      {
+        id: 11,
+        name: "check-test-build",
+        status: "completed",
+        conclusion: "failure",
+        event: "push",
+        head_branch: "main",
+        completed_at: "2026-10-22T10:05:00Z",
+      },
+      {
+        id: 12,
+        name: "check-test-build",
+        status: "completed",
+        conclusion: "success",
+        event: "push",
+        head_branch: "main",
+        completed_at: "2026-10-22T10:20:00Z",
+      },
+    ]),
+    {
+      ok: true,
+      code: "OK",
+      source: "head",
+    },
+  );
+  // Unmapped check_suite without resolved push+main provenance must fail closed
+  assert.equal(
+    evaluateDeployCiCheckRuns([
+      {
+        name: "audit",
+        status: "completed",
+        conclusion: "success",
+        check_suite: { id: 999 },
+      },
+      {
+        name: "check-test-build",
+        status: "completed",
+        conclusion: "success",
+        check_suite: { id: 999 },
+      },
+    ]).code,
+    "DEPLOY_CI_NOT_GREEN",
+  );
+  // Partial provenance (event without head_branch) must fail closed
+  assert.equal(
+    evaluateDeployCiCheckRuns([
+      {
+        name: "audit",
+        status: "completed",
+        conclusion: "success",
+        event: "push",
+      },
+      {
+        name: "check-test-build",
+        status: "completed",
+        conclusion: "success",
+        event: "push",
+      },
+    ]).code,
+    "DEPLOY_CI_NOT_GREEN",
+  );
+  // Check runs attached to pull_requests must be rejected even if other provenance fields are omitted
+  assert.equal(
+    evaluateDeployCiCheckRuns([
+      {
+        name: "audit",
+        status: "completed",
+        conclusion: "success",
+        pull_requests: [{ number: 1530 }],
+      },
+      {
+        name: "check-test-build",
+        status: "completed",
+        conclusion: "success",
+        pull_requests: [{ number: 1530 }],
+      },
     ]).code,
     "DEPLOY_CI_NOT_GREEN",
   );

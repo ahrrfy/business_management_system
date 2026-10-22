@@ -232,7 +232,7 @@ jobs:
         env:
           NODE_OPTIONS: "--max-old-space-size=6144"
       - name: حارس تشخيص فشل CI الآمن
-        run: pnpm exec vitest run --config vitest.unit.config.ts scripts/__tests__/ciFailureDiagnosticsWorkflow.test.ts scripts/__tests__/dependencySecurityWorkflow.test.ts scripts/__tests__/ciCriticalPathWorkflow.test.ts
+        run: pnpm exec vitest run --config vitest.unit.config.ts scripts/__tests__/ciFailureDiagnosticsWorkflow.test.ts scripts/__tests__/dependencySecurityWorkflow.test.ts scripts/__tests__/ciCriticalPathWorkflow.test.ts scripts/__tests__/safeDeliveryProtocols.test.ts
       - name: حارس عقد إصدار تطبيق Android الأصلي
         run: pnpm check:mobile-release
       - name: حارِس الإيموجي UI
