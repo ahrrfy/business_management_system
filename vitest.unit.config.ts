@@ -188,6 +188,7 @@ export default defineConfig({
       "client/src/pages/__tests__/auditedUxContracts.test.ts",
       "client/src/pages/__tests__/filterFieldCoverage.test.ts",
       "client/src/pages/__tests__/m3ChallengerAdversarial.test.ts",
+      "client/src/pages/__tests__/posPaymentFailClosed.test.ts",
       "client/src/pages/__tests__/unifiedCommissionsHub.e2e.test.ts",
       "client/src/pages/__tests__/myWorkTabs.test.ts",
       "client/src/pages/__tests__/operationalPermissionParity.test.ts",

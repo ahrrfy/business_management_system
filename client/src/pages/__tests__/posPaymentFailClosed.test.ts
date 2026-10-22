@@ -48,8 +48,8 @@ describe("عقد الدفع غير النقدي في نقاط البيع", () =>
   it("الكاشير يُتيح البطاقة/التحويل/المحفظة ولا يفتح الإتمام قبل التأكيد الخادميّ", () => {
     const source = readRetailPos();
 
-    expect(source).toContain('setMethod("CARD")');
-    expect(source).toContain('setMethod("TRANSFER")');
+    expect(source).toContain('onClick={() => setMethod("CARD")}');
+    expect(source).toContain('onClick={() => setMethod("TRANSFER")}');
     expect(source).toContain('onClick={() => setMethod("WALLET")}');
     // البوّابة الحقيقية: المحاولة المؤكَّدة تُرسَل مع البيع، وحقل المرجع يحكم فتح الإتمام.
     expect(source).toContain("initiateExternalPayment");
@@ -63,8 +63,8 @@ describe("عقد الدفع غير النقدي في نقاط البيع", () =>
   it("شاشة المطبعة (PrintPOS) تتبع العقد نفسه", () => {
     const source = readPrintPos();
 
-    expect(source).toContain('setMethod("CARD")');
-    expect(source).toContain('setMethod("TRANSFER")');
+    expect(source).toContain('onClick={() => setMethod("CARD")}');
+    expect(source).toContain('onClick={() => setMethod("TRANSFER")}');
     expect(source).toContain("externalPaymentConfirmed");
     expect(source).toContain("PaymentReferenceField");
     // لا إقفال مبثوث: لا زرّ طريقةٍ مُعطَّلٌ بنصٍّ ثابت في الشاشة.

@@ -399,7 +399,7 @@ export function PrintBottomToolbar({
           m="CASH"
           Icon={Banknote}
           label="نقدي"
-          active={method === "CASH"}
+          active={!splitMode && method === "CASH"}
           onClick={() => setMethod("CASH")}
           activeColor="#10b981"
           activeGradient="linear-gradient(135deg, #10b981, #059669)"
@@ -412,7 +412,7 @@ export function PrintBottomToolbar({
           m="CARD"
           Icon={CreditCard}
           label="بطاقة"
-          active={method === "CARD"}
+          active={!splitMode && method === "CARD"}
           onClick={() => setMethod("CARD")}
           activeColor="#2563eb"
           activeGradient="linear-gradient(135deg, #2563eb, #1d4ed8)"
@@ -426,10 +426,7 @@ export function PrintBottomToolbar({
           Icon={RefreshCw}
           label="تحويل"
           active={!splitMode && method === "TRANSFER"}
-          onClick={() => {
-            if (splitMode && onToggleSplitMode) onToggleSplitMode();
-            setMethod("TRANSFER");
-          }}
+          onClick={() => setMethod("TRANSFER")}
           activeColor="#8b5cf6"
           activeGradient="linear-gradient(135deg, #8b5cf6, #7c3aed)"
           activeBorder="#7c3aed"
