@@ -6,7 +6,8 @@
  *    حتى تعمل فحوصات CI الكاملة (8 شوارد + الفحص الأمني) ومراجعة Codex الآلية قبل الدمج.
  *    (مخرج طوارئ المالك حصراً: `ALLOW_DIRECT_MAIN_PUSH=1`).
  * 2. فحص الالتزامات المدفوعة فعلياً (`localSha` من عقد `pre-push` القياسي) مقابل `origin/main`،
- *    والإغلاق الآمن (fail-closed) إذا تعذّر الوصول إلى `origin/main` أو حساب قاعدة الدمج.
+ *    والإغلاق الآمن (fail-closed) إذا تعذّر الوصول إلى `origin/main` أو كانت شجرة العمل لا تطابق
+ *    الالتزام المدفوع عند تشغيل الاختبارات.
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -99,16 +100,65 @@ function defaultDiffRunner(sha) {
   );
 }
 
+function defaultGetHeadSha() {
+  const res = spawnSync("git", ["rev-parse", "HEAD"], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+  });
+  return res.status === 0 ? res.stdout.trim() : "";
+}
+
+function defaultGetTrackedStatus() {
+  const res = spawnSync("git", ["status", "--porcelain", "--untracked-files=no"], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+  });
+  return res.status === 0 ? res.stdout.trim() : "DIRTY_STATUS_ERROR";
+}
+
+export function assertCheckoutMatchesPushedShas({
+  shas = [],
+  headSha = defaultGetHeadSha(),
+  trackedStatus = defaultGetTrackedStatus(),
+} = {}) {
+  const cleanHead = String(headSha ?? "").trim();
+  for (const sha of shas) {
+    if (sha === "HEAD") continue;
+    if (!cleanHead || sha !== cleanHead) {
+      const err = new Error(
+        `الالتزام المدفوع (${sha}) لا يطابق رأس شجرة العمل الحالية (${cleanHead || "غير معروف"})؛ انتقل إلى الالتزام المدفوع قبل الدفع حتى تعمل الاختبارات على الشجرة المدفوعة فعلياً.`,
+      );
+      err.code = "PUSH_GUARD_HEAD_MISMATCH";
+      throw err;
+    }
+  }
+  if (String(trackedStatus ?? "").trim().length > 0) {
+    const err = new Error(
+      "توجد تعديلات غير ملتزمة في الملفات المتتبعة أثناء الدفع؛ التزم التعديلات أو احفظها (git stash) حتى تطابق شجرة العمل الالتزام المدفوع بالضبط.",
+    );
+    err.code = "PUSH_GUARD_DIRTY_WORKTREE";
+    throw err;
+  }
+}
+
 export function collectModifiedUnitTestsForPush({
   stdinEntries = [],
   unitConfigText = "",
   runDiff = defaultDiffRunner,
   fileExists = (relPath) => fs.existsSync(path.join(REPO_ROOT, relPath)),
+  headSha = undefined,
+  trackedStatus = undefined,
 } = {}) {
   const shas = resolvePushedCommitShas(stdinEntries);
   if (shas.length === 0) {
     return [];
   }
+
+  assertCheckoutMatchesPushedShas({
+    shas,
+    headSha: headSha ?? defaultGetHeadSha(),
+    trackedStatus: trackedStatus ?? defaultGetTrackedStatus(),
+  });
 
   if (!unitConfigText || !unitConfigText.trim()) {
     const err = new Error("تعذّر قراءة ملف vitest.unit.config.ts للتحقق من اختبارات الوحدة قبل الدفع.");
@@ -220,9 +270,53 @@ export function runSafePushSelftest() {
       return { status: 0, stdout: "scripts/__tests__/safeDeliveryProtocols.test.ts\n" };
     },
     fileExists: () => true,
+    headSha: "1111111111111111111111111111111111111111",
+    trackedStatus: "",
   });
   assert.deepEqual(diffedShas, ["1111111111111111111111111111111111111111"]);
   assert.deepEqual(collected, ["scripts/__tests__/safeDeliveryProtocols.test.ts"]);
+
+  // Verify fail-closed when pushed SHA does not match current checkout HEAD
+  assert.throws(
+    () =>
+      collectModifiedUnitTestsForPush({
+        stdinEntries: [
+          {
+            localRef: "refs/heads/feat/a",
+            localSha: "1111111111111111111111111111111111111111",
+            remoteRef: "refs/heads/feat/a",
+            remoteSha: "0000000000000000000000000000000000000000",
+          },
+        ],
+        unitConfigText: 'include: ["scripts/__tests__/safeDeliveryProtocols.test.ts"]',
+        runDiff: () => ({ status: 0, stdout: "scripts/__tests__/safeDeliveryProtocols.test.ts\n" }),
+        fileExists: () => true,
+        headSha: "9999999999999999999999999999999999999999",
+        trackedStatus: "",
+      }),
+    (err) => err?.code === "PUSH_GUARD_HEAD_MISMATCH",
+  );
+
+  // Verify fail-closed when worktree has uncommitted tracked modifications
+  assert.throws(
+    () =>
+      collectModifiedUnitTestsForPush({
+        stdinEntries: [
+          {
+            localRef: "refs/heads/feat/a",
+            localSha: "1111111111111111111111111111111111111111",
+            remoteRef: "refs/heads/feat/a",
+            remoteSha: "0000000000000000000000000000000000000000",
+          },
+        ],
+        unitConfigText: 'include: ["scripts/__tests__/safeDeliveryProtocols.test.ts"]',
+        runDiff: () => ({ status: 0, stdout: "scripts/__tests__/safeDeliveryProtocols.test.ts\n" }),
+        fileExists: () => true,
+        headSha: "1111111111111111111111111111111111111111",
+        trackedStatus: " M scripts/__tests__/safeDeliveryProtocols.test.ts",
+      }),
+    (err) => err?.code === "PUSH_GUARD_DIRTY_WORKTREE",
+  );
 
   // Verify fail-closed when origin/main comparison fails
   assert.throws(
@@ -239,6 +333,8 @@ export function runSafePushSelftest() {
         unitConfigText: 'include: ["scripts/__tests__/safeDeliveryProtocols.test.ts"]',
         runDiff: () => ({ status: 128, stderr: "fatal: ambiguous argument 'origin/main'" }),
         fileExists: () => true,
+        headSha: "1111111111111111111111111111111111111111",
+        trackedStatus: "",
       }),
     (err) => err?.code === "PUSH_GUARD_BASE_DIFF_FAILED",
   );

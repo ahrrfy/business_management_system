@@ -2001,6 +2001,11 @@ const ALLOWED_DEPLOY_CHECK_CONCLUSIONS = new Set([
   "skipped",
 ]);
 
+const IGNORED_DEPLOY_CHECK_NAMES = new Set([
+  "CI Failure Diagnostics",
+  "diagnose",
+]);
+
 export function evaluateDeployCiCheckRuns(headCheckRuns) {
   const normalize = (runs) =>
     Array.isArray(runs)
@@ -2008,11 +2013,22 @@ export function evaluateDeployCiCheckRuns(headCheckRuns) {
           name: String(r?.name ?? "").trim(),
           status: String(r?.status ?? "").toLowerCase(),
           conclusion: String(r?.conclusion ?? "").toLowerCase(),
+          event: String(r?.event ?? r?.check_suite?.event ?? "push").toLowerCase(),
+          headBranch: String(
+            r?.head_branch ?? r?.headBranch ?? r?.check_suite?.head_branch ?? "main",
+          ).trim(),
+          hasPullRequests:
+            Array.isArray(r?.pull_requests) && r.pull_requests.length > 0,
         }))
       : [];
 
   const head = normalize(headCheckRuns).filter(
-    (r) => Boolean(r.name) && r.name !== "CI Failure Diagnostics",
+    (r) =>
+      Boolean(r.name) &&
+      !IGNORED_DEPLOY_CHECK_NAMES.has(r.name) &&
+      !r.hasPullRequests &&
+      r.event === "push" &&
+      r.headBranch === "main",
   );
   const failedOnHead = head.filter(
     (r) =>
@@ -2054,6 +2070,34 @@ export function evaluateDeployCiCheckRuns(headCheckRuns) {
 }
 
 async function fetchCommitCheckRuns(sha) {
+  const workflowRunsRes = await fetch(
+    `https://api.github.com/repos/ahrrfy/business_management_system/actions/runs?head_sha=${encodeURIComponent(sha)}&event=push&branch=main&per_page=100`,
+    {
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": "alroya-erp-safe-deploy-gate",
+      },
+      signal: AbortSignal.timeout(15_000),
+    },
+  );
+  if (!workflowRunsRes.ok) {
+    throw new Error(`DEPLOY_CI_STATUS_FETCH_FAILED:${workflowRunsRes.status}`);
+  }
+  const workflowPayload = await workflowRunsRes.json();
+  const workflowRuns = Array.isArray(workflowPayload?.workflow_runs)
+    ? workflowPayload.workflow_runs
+    : [];
+  const mainPushSuiteIds = new Set(
+    workflowRuns
+      .filter(
+        (w) =>
+          String(w?.event ?? "").toLowerCase() === "push" &&
+          String(w?.head_branch ?? "").trim() === "main" &&
+          w?.check_suite_id != null,
+      )
+      .map((w) => Number(w.check_suite_id)),
+  );
+
   const allRuns = [];
   let page = 1;
   while (page <= 10) {
@@ -2072,9 +2116,17 @@ async function fetchCommitCheckRuns(sha) {
     }
     const payload = await response.json();
     const runs = Array.isArray(payload?.check_runs) ? payload.check_runs : [];
-    allRuns.push(...runs);
-    const totalCount = Number(payload?.total_count ?? allRuns.length);
-    if (runs.length < 100 || allRuns.length >= totalCount) {
+    for (const r of runs) {
+      const suiteId = Number(r?.check_suite?.id);
+      const isMainPush = mainPushSuiteIds.has(suiteId);
+      allRuns.push({
+        ...r,
+        event: isMainPush ? "push" : "other",
+        head_branch: isMainPush ? "main" : "other",
+      });
+    }
+    const totalCount = Number(payload?.total_count ?? runs.length);
+    if (runs.length < 100 || page * 100 >= totalCount) {
       break;
     }
     page += 1;
@@ -2498,11 +2550,19 @@ async function dispatch() {
   }
   if (mode === "--selftest-ci-gate") {
     const green = [
-      { name: "audit", status: "completed", conclusion: "success" },
-      { name: "check-test-build", status: "completed", conclusion: "success" },
+      { name: "audit", status: "completed", conclusion: "success", event: "push", head_branch: "main" },
+      { name: "check-test-build", status: "completed", conclusion: "success", event: "push", head_branch: "main" },
     ];
     if (
       !evaluateDeployCiCheckRuns(green).ok ||
+      !evaluateDeployCiCheckRuns([
+        ...green,
+        { name: "diagnose", status: "in_progress", conclusion: "", event: "push", head_branch: "main" },
+      ]).ok ||
+      evaluateDeployCiCheckRuns([
+        { name: "audit", status: "completed", conclusion: "success", event: "pull_request", head_branch: "fix/a" },
+        { name: "check-test-build", status: "completed", conclusion: "success", event: "pull_request", head_branch: "fix/a" },
+      ]).code !== "DEPLOY_CI_NOT_GREEN" ||
       evaluateDeployCiCheckRuns([
         ...green,
         { name: "test-shard-1-of-8", status: "in_progress", conclusion: "" },

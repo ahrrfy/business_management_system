@@ -920,14 +920,32 @@ try {
 
 {
   const greenRuns = [
-    { name: "audit", status: "completed", conclusion: "success" },
-    { name: "check-test-build", status: "completed", conclusion: "success" },
+    { name: "audit", status: "completed", conclusion: "success", event: "push", head_branch: "main" },
+    { name: "check-test-build", status: "completed", conclusion: "success", event: "push", head_branch: "main" },
   ];
   assert.deepEqual(evaluateDeployCiCheckRuns(greenRuns), {
     ok: true,
     code: "OK",
     source: "head",
   });
+  assert.deepEqual(
+    evaluateDeployCiCheckRuns([
+      ...greenRuns,
+      { name: "diagnose", status: "in_progress", conclusion: "", event: "push", head_branch: "main" },
+    ]),
+    {
+      ok: true,
+      code: "OK",
+      source: "head",
+    },
+  );
+  assert.equal(
+    evaluateDeployCiCheckRuns([
+      { name: "audit", status: "completed", conclusion: "success", event: "pull_request", head_branch: "fix/a" },
+      { name: "check-test-build", status: "completed", conclusion: "success", event: "pull_request", head_branch: "fix/a" },
+    ]).code,
+    "DEPLOY_CI_NOT_GREEN",
+  );
   assert.equal(
     evaluateDeployCiCheckRuns([
       ...greenRuns,

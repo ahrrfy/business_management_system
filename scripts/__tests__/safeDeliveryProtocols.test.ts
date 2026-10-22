@@ -9,12 +9,13 @@ import {
 import {
   buildMergeCommandArgs,
   evaluatePrMergeReadiness,
+  verifyPostMergeState,
 } from "../safe-merge.mjs";
 
 const root = process.cwd();
 
 describe("بروتوكولات الدفع الآمن والدمج الآمن والنشر الآمن", () => {
-  it("يفعّل خطاف .husky/pre-push ويفحص الالتزامات المدفوعة فعلياً ويغلق آلياً عند غياب origin/main", () => {
+  it("يفعّل خطاف .husky/pre-push ويفحص الالتزامات المدفوعة فعلياً ويغلق آلياً عند غياب origin/main أو عدم تطابق الشجرة", () => {
     const prePushPath = resolve(root, ".husky/pre-push");
     expect(existsSync(prePushPath)).toBe(true);
     const prePushContent = readFileSync(prePushPath, "utf8");
@@ -57,6 +58,8 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
         };
       },
       fileExists: () => true,
+      headSha: "abc1234567890",
+      trackedStatus: "",
     });
     expect(diffedShas).toEqual(["abc1234567890"]);
     expect(matched).toEqual(["scripts/__tests__/safeDeliveryProtocols.test.ts"]);
@@ -74,11 +77,13 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
         unitConfigText: 'include: ["scripts/__tests__/safeDeliveryProtocols.test.ts"]',
         runDiff: () => ({ status: 128, stderr: "unknown revision origin/main" }),
         fileExists: () => true,
+        headSha: "abc1234567890",
+        trackedStatus: "",
       }),
     ).toThrow(/origin\/main/);
   });
 
-  it("يفحص جاهزية الدمج الآمن ويثبّت --match-head-commit ويمنع الدمج عند وجود خيوط مراجعة غير محلولة", () => {
+  it("يفحص جاهزية الدمج الآمن ويشترط baseRefName=main ويثبّت --match-head-commit ويتحقق من حالة MERGED", () => {
     const output = execFileSync(
       process.execPath,
       [resolve(root, "scripts/safe-merge.mjs"), "--selftest"],
@@ -96,6 +101,7 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
       prView: {
         number: 1526,
         state: "OPEN",
+        baseRefName: "main",
         mergeable: "MERGEABLE",
         headRefOid: "7f60f09e78",
         statusCheckRollup: greenRollup,
@@ -137,6 +143,15 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
     expect(mergeArgs).toContain("--match-head-commit");
     expect(mergeArgs).toContain("0bd1c2db9733578ae5ca4de6fd8d48883e503f02");
     expect(mergeArgs).not.toContain("--admin");
+
+    expect(verifyPostMergeState({ state: "OPEN", mergedAt: null }).merged).toBe(false);
+    expect(
+      verifyPostMergeState({
+        state: "MERGED",
+        mergedAt: "2026-10-22T10:35:00Z",
+        mergeCommit: { oid: "abc" },
+      }).merged,
+    ).toBe(true);
   });
 
   it("يفحص خضرة بوابة CI قبل النشر الإنتاجي ويرفض الالتزامات غير المفحوصة أو الفاشلة", () => {

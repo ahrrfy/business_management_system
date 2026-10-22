@@ -1,14 +1,14 @@
 /**
  * بروتوكول الدمج الآمن (Safe Merge Protocol) — `pnpm pr:merge <رقم-الطلب>`
  *
- * يمنع الدمج إلى `main` إلا بعد إثبات الشروط الأربعة معاً:
- * 1. الطلب مفتوح وقابل للدمج بلا تعارض (`MERGEABLE`) ومعرّف رأس الفرع (`headRefOid`) محدّد.
+ * يمنع الدمج إلى `main` إلا بعد إثبات الشروط الخمسة معاً:
+ * 1. الطلب مفتوح ويستهدف الفرع الأساسي `main` حصراً (`baseRefName === "main"`) وقابل للدمج بلا تعارض (`MERGEABLE`).
  * 2. البوّابات الإلزامية (`check-test-build` و`authz-guard` و`audit`) حاضرة ومكتملة بـ`SUCCESS`
  *    على رأس الفرع الحالي (`headRefOid`) — يمنع فخّ الأخضر الكاذب في `gh pr checks --watch`.
  * 3. صفر فحوصات معلّقة أو فاشلة في `statusCheckRollup`.
- * 4. جميع خيوط المراجعة (`reviewThreads`) محلولة صراحةً (`isResolved === true`) عبر جميع صفحات API
- *    (لا يُعتبر مجرّد الردّ النصي أو وجود التزام لاحق حلّاً تلقائياً للخيط).
- * 5. تثبيت عملية الدمج على `headRefOid` المتحقَّق منه عبر `--match-head-commit` دون أي تصعيد تلقائي بـ`--admin`.
+ * 4. جميع خيوط المراجعة (`reviewThreads`) محلولة صراحةً (`isResolved === true`) عبر جميع صفحات API.
+ * 5. تثبيت عملية الدمج على `headRefOid` المتحقَّق منه عبر `--match-head-commit` دون أي تصعيد بـ`--admin`،
+ *    والتحقق الفعلي بعد الأمر من وصول حالة الطلب إلى `MERGED` (وليس مجرد الإدراج في طابور دمج).
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -56,7 +56,11 @@ export function flattenPaginatedReviewThreads(pagesPayload) {
       threads.push(...nodes);
       continue;
     }
-    if (item && typeof item === "object" && ("isResolved" in item || "comments" in item || "body" in item)) {
+    if (
+      item &&
+      typeof item === "object" &&
+      ("isResolved" in item || "comments" in item || "body" in item)
+    ) {
       threads.push(item);
     }
   }
@@ -80,6 +84,24 @@ export function buildMergeCommandArgs(prNumber, headRefOid) {
   ];
 }
 
+export function verifyPostMergeState(postMergeView) {
+  const state = String(postMergeView?.state ?? "").toUpperCase();
+  const mergedAt = String(postMergeView?.mergedAt ?? "").trim();
+  const mergeCommitOid = String(postMergeView?.mergeCommit?.oid ?? "").trim();
+  if (state === "MERGED" && Boolean(mergedAt)) {
+    return {
+      merged: true,
+      code: "OK",
+      mergeCommitOid,
+    };
+  }
+  return {
+    merged: false,
+    code: "PR_NOT_MERGED_YET",
+    reason: `لم يكتمل دمج الطلب في main بعد (الحالة الحالية: ${state || "UNKNOWN"} — قد يكون في طابور الدمج). لا تنفّذ النشر الإنتاجي قبل اكتمال الدمج فعلياً.`,
+  };
+}
+
 function normalizeReviewThreadEntry(entry) {
   if (!entry || typeof entry !== "object") return null;
   const firstComment = Array.isArray(entry?.comments?.nodes)
@@ -95,7 +117,12 @@ function normalizeReviewThreadEntry(entry) {
       entry?.user?.login ??
       "unknown",
     path: entry.path ?? firstComment?.path ?? "",
-    line: entry.line ?? entry.originalLine ?? firstComment?.line ?? firstComment?.original_line ?? null,
+    line:
+      entry.line ??
+      entry.originalLine ??
+      firstComment?.line ??
+      firstComment?.original_line ??
+      null,
     body: String(firstComment?.body ?? entry?.body ?? "").slice(0, 240),
   };
 }
@@ -114,6 +141,14 @@ export function evaluatePrMergeReadiness({
       ready: false,
       code: "PR_NOT_OPEN",
       reason: `طلب الدمج #${prView.number ?? "?"} ليس مفتوحاً (الحالة: ${prView.state}).`,
+    };
+  }
+  const baseRefName = String(prView.baseRefName ?? "").trim();
+  if (baseRefName !== "main") {
+    return {
+      ready: false,
+      code: "PR_INVALID_BASE_BRANCH",
+      reason: `طلب الدمج #${prView.number ?? "?"} يستهدف الفرع «${baseRefName || "غير معروف"}»؛ يُسمح بالدمج الآمن إلى الفرع الأساسي «main» حصراً.`,
     };
   }
   const headRefOid = String(prView.headRefOid ?? "").trim();
@@ -211,11 +246,26 @@ export function runSafeMergeSelftest() {
     { name: "check-test-build", status: "COMPLETED", conclusion: "SUCCESS" },
   ];
 
-  // 1. Pending check blocks merge
+  // 1. Non-main base branch blocks merge
+  const nonMainBaseRes = evaluatePrMergeReadiness({
+    prView: {
+      number: 99,
+      state: "OPEN",
+      baseRefName: "release/v1",
+      mergeable: "MERGEABLE",
+      headRefOid: "sha-1",
+      statusCheckRollup: baseGreenRollup,
+    },
+  });
+  assert.equal(nonMainBaseRes.ready, false);
+  assert.equal(nonMainBaseRes.code, "PR_INVALID_BASE_BRANCH");
+
+  // 2. Pending check blocks merge
   const pendingRes = evaluatePrMergeReadiness({
     prView: {
       number: 100,
       state: "OPEN",
+      baseRefName: "main",
       mergeable: "MERGEABLE",
       headRefOid: "sha-1",
       statusCheckRollup: [
@@ -228,11 +278,12 @@ export function runSafeMergeSelftest() {
   assert.equal(pendingRes.ready, false);
   assert.equal(pendingRes.code, "PR_CI_PENDING");
 
-  // 2. Missing check-test-build (false green snapshot) blocks merge
+  // 3. Missing check-test-build (false green snapshot) blocks merge
   const falseGreenRes = evaluatePrMergeReadiness({
     prView: {
       number: 101,
       state: "OPEN",
+      baseRefName: "main",
       mergeable: "MERGEABLE",
       headRefOid: "sha-1",
       statusCheckRollup: [
@@ -244,11 +295,12 @@ export function runSafeMergeSelftest() {
   assert.equal(falseGreenRes.ready, false);
   assert.equal(falseGreenRes.code, "PR_MISSING_REQUIRED_CHECK");
 
-  // 3. Failed shard blocks merge
+  // 4. Failed shard blocks merge
   const failedRes = evaluatePrMergeReadiness({
     prView: {
       number: 102,
       state: "OPEN",
+      baseRefName: "main",
       mergeable: "MERGEABLE",
       headRefOid: "sha-1",
       statusCheckRollup: [
@@ -261,11 +313,12 @@ export function runSafeMergeSelftest() {
   assert.equal(failedRes.ready, false);
   assert.equal(failedRes.code, "PR_CI_FAILED");
 
-  // 4. Unresolved review thread blocks merge even if it has replies or newer commits
+  // 5. Unresolved review thread blocks merge
   const unresolvedThreadRes = evaluatePrMergeReadiness({
     prView: {
       number: 103,
       state: "OPEN",
+      baseRefName: "main",
       mergeable: "MERGEABLE",
       headRefOid: "sha-2",
       statusCheckRollup: baseGreenRollup,
@@ -303,11 +356,12 @@ export function runSafeMergeSelftest() {
   assert.equal(unresolvedThreadRes.ready, false);
   assert.equal(unresolvedThreadRes.code, "PR_UNADDRESSED_REVIEW_COMMENTS");
 
-  // 5. Multi-page reviewThreads where all threads are resolved passes
+  // 6. Multi-page reviewThreads where all threads are resolved passes
   const resolvedMultiPageRes = evaluatePrMergeReadiness({
     prView: {
       number: 103,
       state: "OPEN",
+      baseRefName: "main",
       mergeable: "MERGEABLE",
       headRefOid: "sha-2",
       statusCheckRollup: baseGreenRollup,
@@ -372,7 +426,7 @@ export function runSafeMergeSelftest() {
   assert.equal(resolvedMultiPageRes.ready, true);
   assert.equal(resolvedMultiPageRes.code, "OK");
 
-  // 6. Merge command args pin the validated headRefOid and never include --admin
+  // 7. Merge command args pin the validated headRefOid and never include --admin
   const mergeArgs = buildMergeCommandArgs(1530, "0bd1c2db9733578ae5ca4de6fd8d48883e503f02");
   assert.deepEqual(mergeArgs, [
     "pr",
@@ -384,6 +438,18 @@ export function runSafeMergeSelftest() {
     "0bd1c2db9733578ae5ca4de6fd8d48883e503f02",
   ]);
   assert.equal(mergeArgs.includes("--admin"), false);
+
+  // 8. Post-merge verification rejects queued/open PRs and accepts only MERGED state
+  assert.equal(verifyPostMergeState({ state: "OPEN", mergedAt: null }).merged, false);
+  assert.equal(verifyPostMergeState({ state: "OPEN", mergedAt: null }).code, "PR_NOT_MERGED_YET");
+  assert.equal(
+    verifyPostMergeState({
+      state: "MERGED",
+      mergedAt: "2026-10-22T10:30:00Z",
+      mergeCommit: { oid: "merged-sha-1" },
+    }).merged,
+    true,
+  );
 
   console.log("safe-merge selftest: OK");
 }
@@ -461,7 +527,7 @@ function main() {
   if (prArg) viewArgs.push(prArg);
   viewArgs.push(
     "--json",
-    "number,state,headRefName,headRefOid,mergeStateStatus,mergeable,statusCheckRollup",
+    "number,state,baseRefName,headRefName,headRefOid,mergeStateStatus,mergeable,statusCheckRollup",
   );
 
   const prView = captureJson("gh", viewArgs);
@@ -508,7 +574,23 @@ function main() {
   if (mergeRes.stdout?.trim()) {
     console.log(mergeRes.stdout.trim());
   }
-  console.log(`✓ تم دمج الطلب #${prView.number} بأمان في main (مثبّت على ${prView.headRefOid.slice(0, 9)}).`);
+
+  const postMergeView = captureJson("gh", [
+    "pr",
+    "view",
+    String(prView.number),
+    "--json",
+    "state,mergedAt,mergeCommit",
+  ]);
+  const postMergeVerdict = verifyPostMergeState(postMergeView);
+  if (!postMergeVerdict.merged) {
+    console.error(`\n⛔ [${postMergeVerdict.code}] ${postMergeVerdict.reason}\n`);
+    process.exit(1);
+  }
+
+  console.log(
+    `✓ تم دمج الطلب #${prView.number} فعلياً في main (التزام الدمج: ${postMergeVerdict.mergeCommitOid ? postMergeVerdict.mergeCommitOid.slice(0, 9) : prView.headRefOid.slice(0, 9)}).`,
+  );
 }
 
 const isDirectRun =
