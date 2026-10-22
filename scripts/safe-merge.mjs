@@ -165,6 +165,44 @@ export function buildMergeCommandArgs(prNumber, headRefOid) {
   ];
 }
 
+export function buildEnqueuePullRequestArgs(pullRequestId, headRefOid) {
+  const cleanId = String(pullRequestId ?? "").trim();
+  const cleanSha = String(headRefOid ?? "").trim();
+  if (!cleanId || !cleanSha) {
+    throw new Error(
+      "يلزم معرّف العقدة لطلب الدمج (pullRequestId) وبصمة الالتزام (headRefOid) لإدراج الطلب في طابور الدمج.",
+    );
+  }
+  const mutation =
+    "mutation($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) { enqueuePullRequest(input: { pullRequestId: $pullRequestId, expectedHeadOid: $expectedHeadOid }) { mergeQueueEntry { id state } } }";
+  return [
+    "api",
+    "graphql",
+    "-F",
+    `pullRequestId=${cleanId}`,
+    "-F",
+    `expectedHeadOid=${cleanSha}`,
+    "-f",
+    `query=${mutation}`,
+  ];
+}
+
+export function selectMergeExecutionArgs({
+  prNumber,
+  pullRequestId,
+  headRefOid,
+  isMergeQueueEnabled = false,
+  isInMergeQueue = false,
+} = {}) {
+  if (isMergeQueueEnabled === true) {
+    if (isInMergeQueue === true) {
+      return null;
+    }
+    return buildEnqueuePullRequestArgs(pullRequestId, headRefOid);
+  }
+  return buildMergeCommandArgs(prNumber, headRefOid);
+}
+
 export function buildResolveReviewThreadArgs(threadId) {
   const cleanId = String(threadId ?? "").trim();
   if (!cleanId) {
@@ -671,7 +709,10 @@ export function evaluatePrMergeReadiness({
   return { ready: true, code: "OK", headRefOid };
 }
 
-export function shouldCleanupMergedHeadBranch(prView) {
+export function shouldCleanupMergedHeadBranch(
+  prView,
+  expectedHeadRefOid = "",
+) {
   const headRefName = String(prView?.headRefName ?? "").trim();
   if (!headRefName || headRefName === "main") {
     return false;
@@ -685,14 +726,56 @@ export function shouldCleanupMergedHeadBranch(prView) {
   const repoName = String(prView?.headRepository?.name ?? "")
     .trim()
     .toLowerCase();
-  return (
-    ownerLogin === "ahrrfy" && repoName === "business_management_system"
-  );
+  if (
+    ownerLogin !== "ahrrfy" ||
+    repoName !== "business_management_system"
+  ) {
+    return false;
+  }
+  const expectedSha = String(expectedHeadRefOid ?? "").trim();
+  if (expectedSha) {
+    const candidateHeadOid = String(prView?.headRefOid ?? "").trim();
+    if (!candidateHeadOid || candidateHeadOid !== expectedSha) {
+      return false;
+    }
+    if (prView?.headRef === null) {
+      return false;
+    }
+    const liveRefOid = String(prView?.headRef?.target?.oid ?? "").trim();
+    if (liveRefOid && liveRefOid !== expectedSha) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function buildMergedHeadRefDeleteEndpoint(headRefName) {
   const cleanRefName = String(headRefName ?? "").trim();
   return `repos/ahrrfy/business_management_system/git/refs/heads/${encodeURIComponent(cleanRefName)}`;
+}
+
+export function buildMergedHeadRefCleanupGitArgs(
+  headRefName,
+  expectedHeadRefOid,
+) {
+  const cleanRefName = String(headRefName ?? "").trim();
+  const cleanSha = String(expectedHeadRefOid ?? "").trim();
+  if (!cleanRefName || cleanRefName === "main") {
+    throw new Error(
+      "لا يجوز بناء أمر حذف لفرع فارغ أو للفرع المحمي main.",
+    );
+  }
+  if (!cleanSha) {
+    throw new Error(
+      "يلزم تمرير البصمة المتحقَّق منها (expectedHeadRefOid) لحذف الفرع المدمج بأمان (--force-with-lease).",
+    );
+  }
+  return [
+    "push",
+    "origin",
+    `--force-with-lease=refs/heads/${cleanRefName}:${cleanSha}`,
+    `:refs/heads/${cleanRefName}`,
+  ];
 }
 
 const MERGE_QUEUE_PENDING_STATES = new Set([
@@ -764,6 +847,9 @@ export function verifyPreMergeTargetState({
     code: "OK",
     baseRefName: "main",
     headRefOid: expectedSha,
+    pullRequestId: String(prView?.id ?? "").trim() || null,
+    isMergeQueueEnabled: prView?.isMergeQueueEnabled === true,
+    isInMergeQueue: prView?.isInMergeQueue === true,
   };
 }
 
@@ -1745,6 +1831,63 @@ export function runSafeMergeSelftest() {
     buildMergedHeadRefDeleteEndpoint("feature/topic?a=1%2"),
     "repos/ahrrfy/business_management_system/git/refs/heads/feature%2Ftopic%3Fa%3D1%252",
   );
+  assert.equal(
+    shouldCleanupMergedHeadBranch(
+      {
+        headRefName: "feature/test",
+        headRefOid: "sha-merged-1",
+        headRef: { target: { oid: "sha-merged-1" } },
+        isCrossRepository: false,
+        headRepositoryOwner: { login: "ahrrfy" },
+        headRepository: { name: "business_management_system" },
+      },
+      "sha-merged-1",
+    ),
+    true,
+  );
+  assert.equal(
+    shouldCleanupMergedHeadBranch(
+      {
+        headRefName: "feature/test",
+        headRefOid: "sha-merged-1",
+        headRef: { target: { oid: "sha-new-unmerged-commit-2" } },
+        isCrossRepository: false,
+        headRepositoryOwner: { login: "ahrrfy" },
+        headRepository: { name: "business_management_system" },
+      },
+      "sha-merged-1",
+    ),
+    false,
+  );
+  assert.deepEqual(
+    buildMergedHeadRefCleanupGitArgs("feature/topic#123", "sha-merged-1"),
+    [
+      "push",
+      "origin",
+      "--force-with-lease=refs/heads/feature/topic#123:sha-merged-1",
+      ":refs/heads/feature/topic#123",
+    ],
+  );
+  assert.deepEqual(
+    selectMergeExecutionArgs({
+      prNumber: 1532,
+      pullRequestId: "PR_kwDO12345",
+      headRefOid: "sha-merged-1",
+      isMergeQueueEnabled: true,
+      isInMergeQueue: false,
+    }),
+    buildEnqueuePullRequestArgs("PR_kwDO12345", "sha-merged-1"),
+  );
+  assert.equal(
+    selectMergeExecutionArgs({
+      prNumber: 1532,
+      pullRequestId: "PR_kwDO12345",
+      headRefOid: "sha-merged-1",
+      isMergeQueueEnabled: true,
+      isInMergeQueue: true,
+    }),
+    null,
+  );
 
   // 11. Truncated reviewThreads pagination (hasNextPage: true on last page) blocks merge
   const truncatedPaginationRes = evaluatePrMergeReadiness({
@@ -2499,6 +2642,7 @@ const REVIEW_THREADS_QUERY = `
 query($owner: String!, $name: String!, $pr: Int!, $endCursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $pr) {
+      id
       isMergeQueueEnabled
       isInMergeQueue
       isCrossRepository
@@ -2557,12 +2701,18 @@ const POST_MERGE_PR_STATE_QUERY = `
 query($owner: String!, $name: String!, $pr: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $pr) {
+      id
       number
       state
       mergedAt
       baseRefName
       headRefName
       headRefOid
+      headRef {
+        target {
+          oid
+        }
+      }
       isCrossRepository
       headRepository {
         name
@@ -2606,7 +2756,7 @@ function fetchPrStateAndThreads(prArg) {
   }
   viewArgs.push(
     "--json",
-    "number,state,isDraft,baseRefName,headRefName,headRefOid,isCrossRepository,headRepository,headRepositoryOwner,mergeStateStatus,mergeable,reviewDecision,statusCheckRollup,comments",
+    "id,number,state,isDraft,baseRefName,headRefName,headRefOid,isCrossRepository,headRepository,headRepositoryOwner,mergeStateStatus,mergeable,reviewDecision,statusCheckRollup,comments",
   );
   const prView = captureJson("gh", viewArgs);
   prView.baseRefName = String(prView?.baseRefName ?? "");
@@ -2615,6 +2765,9 @@ function fetchPrStateAndThreads(prArg) {
     ? reviewThreads[0]?.data?.repository?.pullRequest
     : reviewThreads?.data?.repository?.pullRequest;
   if (prMeta && typeof prMeta === "object") {
+    if (!prView.id && prMeta.id) {
+      prView.id = prMeta.id;
+    }
     if (typeof prMeta.isMergeQueueEnabled === "boolean") {
       prView.isMergeQueueEnabled = prMeta.isMergeQueueEnabled;
     }
@@ -2784,26 +2937,35 @@ async function main() {
     `✓ طلب الدمج #${initialPrView.number} (${validatedHeadRefOid.slice(0, 9)}) اجتاز جميع بوابات CI والمراجعة الآلية.`,
   );
 
-  const mergeArgs = buildMergeCommandArgs(
-    initialPrView.number,
-    validatedHeadRefOid,
-  );
-  const mergeRes = spawnSync("gh", mergeArgs, {
-    cwd: REPO_ROOT,
-    encoding: "utf8",
+  const mergeArgs = selectMergeExecutionArgs({
+    prNumber: initialPrView.number,
+    pullRequestId: preMergeVerification.pullRequestId || initialPrView.id,
+    headRefOid: validatedHeadRefOid,
+    isMergeQueueEnabled:
+      preMergeVerification.isMergeQueueEnabled ||
+      initialPrView.isMergeQueueEnabled === true,
+    isInMergeQueue:
+      preMergeVerification.isInMergeQueue ||
+      initialPrView.isInMergeQueue === true,
   });
+  if (mergeArgs !== null) {
+    const mergeRes = spawnSync("gh", mergeArgs, {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+    });
 
-  if (mergeRes.status !== 0) {
-    console.error(
-      mergeRes.stderr?.trim() ||
-        mergeRes.stdout?.trim() ||
-        "⛔ فشل دمج الطلب وفق سياسة الفرع الأساسي؛ تحقق من تزامن الفرع وحل جميع خيوط المراجعة.",
-    );
-    process.exit(mergeRes.status ?? 1);
-  }
+    if (mergeRes.status !== 0) {
+      console.error(
+        mergeRes.stderr?.trim() ||
+          mergeRes.stdout?.trim() ||
+          "⛔ فشل دمج الطلب وفق سياسة الفرع الأساسي؛ تحقق من تزامن الفرع وحل جميع خيوط المراجعة.",
+      );
+      process.exit(mergeRes.status ?? 1);
+    }
 
-  if (mergeRes.stdout?.trim()) {
-    console.log(mergeRes.stdout.trim());
+    if (mergeRes.stdout?.trim()) {
+      console.log(mergeRes.stdout.trim());
+    }
   }
 
   let postMergeVerification;
@@ -2830,16 +2992,11 @@ async function main() {
   }
 
   const cleanupCandidate = postMergeVerification.prState ?? initialPrView;
-  if (shouldCleanupMergedHeadBranch(cleanupCandidate)) {
+  if (shouldCleanupMergedHeadBranch(cleanupCandidate, validatedHeadRefOid)) {
     const headRefName = String(cleanupCandidate.headRefName ?? "").trim();
     spawnSync(
-      "gh",
-      [
-        "api",
-        "-X",
-        "DELETE",
-        buildMergedHeadRefDeleteEndpoint(headRefName),
-      ],
+      "git",
+      buildMergedHeadRefCleanupGitArgs(headRefName, validatedHeadRefOid),
       {
         cwd: REPO_ROOT,
         encoding: "utf8",
