@@ -792,11 +792,75 @@ export function verifyPostMergeCompletion(
   };
 }
 
-function defaultVerifyLocalGates() {
+export function verifyLocalCheckoutMatchesCommit(
+  expectedSha,
+  { cwd = REPO_ROOT, spawn = spawnSync } = {},
+) {
+  const targetSha = String(expectedSha ?? "")
+    .trim()
+    .toLowerCase();
+  if (!targetSha) {
+    return {
+      ok: false,
+      code: "REMEDIATION_LOCAL_HEAD_MISMATCH",
+      reason: "بصمة التزام الإصلاح الذرّي (newHeadRefOid) غير محددة.",
+    };
+  }
+  const headRes = spawn("git", ["rev-parse", "HEAD"], {
+    cwd,
+    encoding: "utf8",
+  });
+  const localHeadSha =
+    headRes.status === 0
+      ? String(headRes.stdout ?? "")
+          .trim()
+          .toLowerCase()
+      : "";
+  if (
+    !localHeadSha ||
+    (localHeadSha !== targetSha && !localHeadSha.startsWith(targetSha))
+  ) {
+    return {
+      ok: false,
+      code: "REMEDIATION_LOCAL_HEAD_MISMATCH",
+      reason: `رأس شجرة العمل المحلّية (${localHeadSha || "غير متوفر"}) لا يطابق التزام الإصلاح الذرّي (${targetSha})؛ يجب أن تفحص البوّابات المحلّية نفس الالتزام الذرّي.`,
+    };
+  }
+  const statusRes = spawn(
+    "git",
+    ["status", "--porcelain", "--untracked-files=normal"],
+    {
+      cwd,
+      encoding: "utf8",
+    },
+  );
+  if (statusRes.status !== 0 || String(statusRes.stdout ?? "").trim() !== "") {
+    return {
+      ok: false,
+      code: "REMEDIATION_DIRTY_WORKTREE",
+      reason:
+        "شجرة العمل المحلّية تحتوي على تعديلات غير ملتزمة أثناء فحص التزام الإصلاح الذرّي.",
+    };
+  }
+  return { ok: true, localHeadSha };
+}
+
+export function defaultVerifyLocalGates({
+  newHeadRefOid,
+  cwd = REPO_ROOT,
+  spawn = spawnSync,
+} = {}) {
+  const checkoutCheck = verifyLocalCheckoutMatchesCommit(newHeadRefOid, {
+    cwd,
+    spawn,
+  });
+  if (!checkoutCheck.ok) {
+    return checkoutCheck;
+  }
   const pnpmCmd = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
   for (const scriptName of ["check", "check:guards"]) {
-    const res = spawnSync(pnpmCmd, [scriptName], {
-      cwd: REPO_ROOT,
+    const res = spawn(pnpmCmd, [scriptName], {
+      cwd,
       encoding: "utf8",
       shell: process.platform === "win32",
     });
@@ -811,6 +875,7 @@ function defaultVerifyLocalGates() {
 }
 
 const PENDING_READINESS_CODES = new Set([
+  "PR_CI_MISSING",
   "PR_CI_PENDING",
   "PR_CODEX_REVIEW_RUNNING",
   "PR_CODEX_REVIEW_STALE",
@@ -821,6 +886,13 @@ const PENDING_READINESS_CODES = new Set([
 function defaultAsyncSleep(ms) {
   if (!ms || ms <= 0) return Promise.resolve();
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function hasUnaddressedComments(decision) {
+  return (
+    Array.isArray(decision?.unaddressedComments) &&
+    decision.unaddressedComments.length > 0
+  );
 }
 
 /**
@@ -861,6 +933,7 @@ export async function runAtomicRemediationCycle({
     while (
       !decision.ready &&
       PENDING_READINESS_CODES.has(decision.code) &&
+      !hasUnaddressedComments(decision) &&
       typeof fetchLatestState === "function" &&
       pollAttempt < maxPollAttempts
     ) {
@@ -886,6 +959,17 @@ export async function runAtomicRemediationCycle({
         cycles: cycle - 1,
         headRefOid: decision.headRefOid,
         decision,
+      };
+    }
+
+    if (
+      PENDING_READINESS_CODES.has(decision.code) &&
+      hasUnaddressedComments(decision)
+    ) {
+      decision = {
+        ...decision,
+        code: "PR_UNADDRESSED_REVIEW_COMMENTS",
+        reason: `توجد ${decision.unaddressedComments.length} خيوط مراجعة غير محلولة (unresolved) على طلب الدمج #${prNumber ?? currentPrView?.number ?? "?"}. عالجها ذرّياً وأغلق الخيط (resolveReviewThread) قبل الدمج.`,
       };
     }
 
@@ -971,7 +1055,7 @@ export async function runAtomicRemediationCycle({
         return {
           ready: false,
           cycles: cycle,
-          code: "REMEDIATION_LOCAL_GATES_FAILED",
+          code: localGateRes?.code || "REMEDIATION_LOCAL_GATES_FAILED",
           reason:
             localGateRes?.reason ||
             "فشلت البوّابات المحلّية (pnpm check / pnpm check:guards) بعد الإصلاح الذرّي.",
@@ -1892,6 +1976,58 @@ export async function runSafeMergeAsyncSelftest() {
   });
   assert.equal(boundedPollRes.ready, true);
   assert.deepEqual(sleepDelays, [25, 25]);
+
+  // Bounded polling also polls when statusCheckRollup is empty (PR_CI_MISSING) immediately after push
+  let ciMissingPolls = 0;
+  const ciMissingPollRes = await runAtomicRemediationCycle({
+    prNumber: 127,
+    pollIntervalMs: 10,
+    maxPollAttempts: 2,
+    sleep: async () => {},
+    initialPrView: {
+      number: 127,
+      state: "OPEN",
+      baseRefName: "main",
+      mergeable: "MERGEABLE",
+      headRefOid: "sha-ci-missing-1",
+      statusCheckRollup: [],
+      comments: makeTrustedCodexComments("sha-ci-missing-1"),
+    },
+    initialReviewThreads: [],
+    fetchLatestState: async () => {
+      ciMissingPolls += 1;
+      return {
+        prView: {
+          number: 127,
+          state: "OPEN",
+          baseRefName: "main",
+          mergeable: "MERGEABLE",
+          headRefOid: "sha-ci-missing-1",
+          statusCheckRollup: baseGreenRollup,
+          comments: makeTrustedCodexComments("sha-ci-missing-1"),
+        },
+        reviewThreads: [],
+      };
+    },
+  });
+  assert.equal(ciMissingPollRes.ready, true);
+  assert.equal(ciMissingPolls, 1);
+
+  // defaultVerifyLocalGates verifies checkout HEAD matches stepSha before running local gates
+  const mismatchedCheckoutRes = defaultVerifyLocalGates({
+    newHeadRefOid: "deadbeef00000000000000000000000000000000",
+    spawn: (cmd, args) => {
+      if (cmd === "git" && args[0] === "rev-parse") {
+        return {
+          status: 0,
+          stdout: "1111111100000000000000000000000000000000\n",
+        };
+      }
+      return { status: 0, stdout: "" };
+    },
+  });
+  assert.equal(mismatchedCheckoutRes.ok, false);
+  assert.equal(mismatchedCheckoutRes.code, "REMEDIATION_LOCAL_HEAD_MISMATCH");
 }
 
 function captureJson(cmd, args) {
