@@ -558,13 +558,17 @@ export function infoCards(cards: InfoCard[]): string {
             const last = i === all.length - 1;
             const isPhone = /هاتف|رقم/.test(f.label);
             const isPaymentField = /طريقة الدفع|طريقة الصرف|طريقة الاسترداد|الطريقة/.test(f.label);
+            const isCardLegLabel = /دفعة/.test(f.label) && isCardPaymentMethod(f.label);
+            const renderedLabel = isCardLegLabel
+              ? formatPaymentMethodPrintHtml(f.label, esc, { heightPx: 14 })
+              : esc(f.label);
             const renderedValue = f.rawHtml
               ? f.value
               : isPaymentField && isCardPaymentMethod(f.value)
                 ? formatPaymentMethodPrintHtml(f.value, esc, { heightPx: 15 })
                 : esc(f.value);
             return `<div style="display:flex;justify-content:space-between;align-items:center;font-size:11.75px;${last ? "" : `border-bottom:1px dashed ${B.borderLight};padding-bottom:5px`}">
-              <span style="color:#000">${esc(f.label)}</span>
+              <span style="color:#000">${renderedLabel}</span>
               <span style="font-weight:800;color:#000;font-size:${isPhone ? "12.75px" : "11.75px"};${isPhone ? "direction:ltr;unicode-bidi:isolate;white-space:nowrap;" : ""}">${renderedValue}</span>
             </div>`;
           })

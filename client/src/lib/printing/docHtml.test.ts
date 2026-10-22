@@ -401,6 +401,25 @@ describe("infoCards & isCardPaymentMethod — شعارا Visa و Mastercard لح
     expect(isCardPaymentMethod("بطاقة هدية")).toBe(false);
     expect(isCardPaymentMethod("بطاقات رقمية")).toBe(false);
   });
+
+  it("يدرج شعاري Visa و Mastercard في فاتورة المبيعات A4 ذات الدفع المختلط عند وجود دفعة بالبطاقة", () => {
+    const html = buildSalesInvoiceV2Html({
+      invoiceNumber: "INV-MIX-1",
+      invoiceDate: "2026-10-22",
+      customerName: "عميل دفع مختلط",
+      paymentMethod: "مختلطة",
+      paymentLegs: [
+        { method: "نقدي", amount: 20000 },
+        { method: "بطاقة", amount: 30000, reference: "POS-7788" },
+      ],
+      subtotal: 50000,
+      total: 50000,
+      items: [{ productName: "قرطاسية", quantity: 1, unitPrice: 50000, total: 50000 }],
+    });
+
+    expect(html).toContain("دفعة (بطاقة)");
+    expect(html).toContain("/visa-mastercard.png");
+  });
 });
 
 

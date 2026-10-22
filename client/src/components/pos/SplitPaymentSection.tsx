@@ -97,6 +97,7 @@ export function SplitPaymentSection({
 
   const legMethodBtnStyle = (active: boolean): React.CSSProperties => ({
     flex: 1,
+    minWidth: 0,
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
@@ -208,7 +209,7 @@ export function SplitPaymentSection({
               <span style={{ fontSize: 11, fontWeight: 800, color: C.mutedFg, minWidth: 44 }}>
                 دفعة {idx + 1}
               </span>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 3, flex: 1 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 3, flex: 1 }}>
                 {methods.map(({ code, label, Icon }) => (
                   <button
                     key={code}
@@ -216,7 +217,7 @@ export function SplitPaymentSection({
                     style={legMethodBtnStyle(leg.method === code)}
                     onClick={() => onUpdateLeg(leg.id, { method: code })}
                   >
-                    {code === "CARD" ? <CardBrandLogos size="xs" /> : <Icon aria-hidden size={13} />}
+                    {code === "CARD" ? <CardBrandLogos size="xs" pill={leg.method === "CARD"} className="min-w-0 shrink px-0.5 py-0" imgClassName="h-2.5 w-auto max-w-[26px]" /> : <Icon aria-hidden size={13} />}
                     <span>{label}</span>
                   </button>
                 ))}

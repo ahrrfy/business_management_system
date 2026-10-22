@@ -36,6 +36,7 @@ export interface GenericReceipt {
   received: number;
   change: number;
   method: string;
+  paymentLegs?: Array<{ method: string; amount: string | number; reference?: string | null }> | null;
 }
 
 export interface GenericPosColors {
@@ -66,6 +67,10 @@ export function ReceiptOverlay({ C, receipt, onDismiss, onPrint, onPrintLabel }:
   const isCredit = "isCredit" in receipt ? receipt.isCredit : false;
   const credit = "credit" in receipt ? receipt.credit : 0;
   const customerName = "customerName" in receipt ? receipt.customerName : null;
+  const paymentLegs = "paymentLegs" in receipt ? receipt.paymentLegs : undefined;
+  const hasCardPayment =
+    isCardPaymentMethod(receipt.method) ||
+    Boolean(paymentLegs?.some((leg) => isCardPaymentMethod(leg.method)));
 
   // تشغيل تلقائي متزامن: فتح درج النقود وتوليد رمز QR للمتجر الإنتاجي الحقيقي
   useEffect(() => {
@@ -318,7 +323,7 @@ export function ReceiptOverlay({ C, receipt, onDismiss, onPrint, onPrintLabel }:
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11.5, color: "#475569" }}>
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                   <span>المبلغ المدفوع ({receipt.method}):</span>
-                  {isCardPaymentMethod(receipt.method) && <CardBrandLogos size="xs" pill={false} />}
+                  {hasCardPayment && <CardBrandLogos size="xs" pill={false} />}
                 </span>
                 <span style={{ fontWeight: 700, direction: "ltr" }}>{fmt(receipt.received)} د.ع</span>
               </div>

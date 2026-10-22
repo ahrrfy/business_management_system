@@ -14,6 +14,7 @@ export function isCardPaymentMethod(value: string | null | undefined): boolean {
   const upper = trimmed.toUpperCase();
   return (
     upper === "CARD" ||
+    /\bCARD\b/.test(upper) ||
     upper.includes("VISA") ||
     upper.includes("MASTERCARD") ||
     trimmed.includes("بطاقة")
