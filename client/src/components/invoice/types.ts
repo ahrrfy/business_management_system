@@ -145,7 +145,8 @@ export type InvoiceAction =
   | { type: "RESET"; invoiceType: InvoiceType };
 
 /* ─── Static option lists (Arabic) ──────────────────────────────────────────── */
-import { Upload, Download, ClipboardList, Undo2, Redo2, Banknote, CreditCard, Building2, Wallet, type LucideIcon } from "lucide-react";
+import { Upload, Download, ClipboardList, Undo2, Redo2, Banknote, Building2, Wallet, type LucideIcon } from "lucide-react";
+import { CardBrandIcon } from "@/components/ui/CardBrandLogos";
 
 export interface InvoiceTypeMeta {
   key: InvoiceType;
@@ -181,7 +182,7 @@ export const PAYMENT_TERMS: Array<{ value: PaymentTerm; label: string }> = [
 
 export const PAYMENT_METHODS: Array<{ value: PaymentMethod; label: string; icon: LucideIcon }> = [
   { value: "CASH",     label: "نقدي",   icon: Banknote },
-  { value: "CARD",     label: "بطاقة",  icon: CreditCard },
+  { value: "CARD",     label: "بطاقة",  icon: CardBrandIcon },
   { value: "TRANSFER", label: "تحويل",  icon: Building2 },
   { value: "WALLET",   label: "محفظة",  icon: Wallet },
 ];

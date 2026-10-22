@@ -37,6 +37,7 @@ import CustomerPicker from "@/components/CustomerPicker";
 import { ProductSearchBar } from "@/components/invoice/ProductSearchBar";
 import type { InvoiceLine } from "@/components/invoice/types";
 import { cn } from "@/lib/utils";
+import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
 import { printReservationTicket } from "@/lib/printing/reservationTicket";
 import {
@@ -751,7 +752,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
                         convertMethod === value ? "border-primary bg-primary text-primary-foreground" : "bg-card hover:bg-muted",
                       )}
                     >
-                      <Icon className="size-4" aria-hidden /> {label}
+                      {value === "CARD" ? <CardBrandLogos size="sm" /> : <Icon className="size-4" aria-hidden />} {label}
                     </button>
                   ))}
                 </div>

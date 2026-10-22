@@ -20,6 +20,7 @@ import {
 import { invoiceStatusBadgeVariant, invoiceStatusLabel, isDeadInvoiceStatus } from "@shared/invoiceStatus";
 import { sourceTypeLabel } from "@/lib/labels";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
+import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 import { QuickSalesPaymentDialog } from "./QuickSalesPaymentDialog";
 import { hasModuleAccess } from "@shared/permissions";
 import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
@@ -197,7 +198,10 @@ export function InvoiceDetailDrawer({
                 </div>
                 <div>
                   <div className="text-xs text-muted-foreground">طريقة الدفع</div>
-                  <div>{inv.paymentMethod ? paymentMethodLabel(inv.paymentMethod) : "—"}</div>
+                  <div className="inline-flex items-center gap-1.5 font-medium">
+                    {inv.paymentMethod === "CARD" && <CardBrandLogos size="xs" />}
+                    <span>{inv.paymentMethod ? paymentMethodLabel(inv.paymentMethod) : "—"}</span>
+                  </div>
                 </div>
               </CardContent>
             </Card>

@@ -6,6 +6,7 @@ import { CopyInline } from "@/components/CopyButton";
 import { fmtDate, fmtDateTime, toDate, type DateInput } from "@/lib/date";
 import { D, fmt, formatQuantity } from "@/lib/money";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
+import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 import { cn } from "@/lib/utils";
 import type { RouterOutputs } from "@/lib/trpc";
 import { variantDescriptor, variantDisplayName } from "@shared/variantDisplay";
@@ -61,11 +62,15 @@ export const invoiceReturnColumns: ColumnDef<InvoiceReturnRow, unknown>[] = [
     id: "method",
     header: "طريقة الاسترداد",
     accessorFn: (r) => ((r as any).method ? paymentMethodLabel((r as any).method) : "—"),
-    cell: ({ row }) => (
-      <span className="text-xs">
-        {(row.original as any).method ? paymentMethodLabel((row.original as any).method) : "—"}
-      </span>
-    ),
+    cell: ({ row }) => {
+      const m = (row.original as any).method;
+      return (
+        <span className="inline-flex items-center gap-1.5 text-xs">
+          {m === "CARD" && <CardBrandLogos size="xs" />}
+          <span>{m ? paymentMethodLabel(m) : "—"}</span>
+        </span>
+      );
+    },
   },
   {
     id: "amount",
@@ -216,7 +221,12 @@ export function invoicePaymentColumns(canOpenVouchers: boolean): ColumnDef<Invoi
       id: "paymentMethod",
       header: "الطريقة",
       accessorFn: (p) => paymentMethodLabel(p.paymentMethod),
-      cell: ({ row }) => paymentMethodLabel(row.original.paymentMethod),
+      cell: ({ row }) => (
+        <span className="inline-flex items-center gap-1.5">
+          {row.original.paymentMethod === "CARD" && <CardBrandLogos size="xs" />}
+          <span>{paymentMethodLabel(row.original.paymentMethod)}</span>
+        </span>
+      ),
     },
     {
       id: "amount",

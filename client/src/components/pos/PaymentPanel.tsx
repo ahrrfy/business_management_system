@@ -5,7 +5,8 @@
 
 import { useMediaQuery } from "@/hooks/useMobile";
 import { useEffect, useState } from "react";
-import { Check, X, AlertTriangle, Banknote, CreditCard, ChevronDown, ChevronUp, Send, Wallet, Calculator } from "lucide-react";
+import { Check, X, AlertTriangle, Banknote, ChevronDown, ChevronUp, Send, Wallet, Calculator } from "lucide-react";
+import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { POS_EXTERNAL_PAYMENT_PROOF_HINT } from "@shared/posPaymentPolicy";
 import { normalizeNumberInput } from "@shared/numberNormalize";
@@ -91,7 +92,7 @@ export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoic
   const fluid = (min: number, ratio: number, max: number) => `clamp(${min}px, ${ratio}${HU}, ${max}px)`;
 
   const payMethodStyle = (active: boolean, disabled = false): React.CSSProperties => ({
-    flex: 1, display: "flex", flexDirection: "row" as const, alignItems: "center", justifyContent: "center",
+    flex: 1, minWidth: 0, display: "flex", flexDirection: "row" as const, alignItems: "center", justifyContent: "center",
     gap: 4, height: fluid(32, 4.4, 38), fontSize: dense ? 12 : 12.5, fontWeight: 800,
     border: `2px solid ${active ? C.primary : C.border}`,
     borderRadius: 8, cursor: disabled ? "not-allowed" : "pointer", fontFamily: "inherit",
@@ -149,12 +150,12 @@ export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoic
       {/* طريقة الدفع — ٤ أزرار متساوية في صفٍّ واحد بأعلى اللوحة لسرعة الاختيار */}
       {!isSplitPayment && (
       <div style={{ padding: "4px 11px 2px", flexShrink: 0 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 5 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 5 }}>
           <button type="button" style={payMethodStyle(method === "CASH")}     onClick={() => setMethod("CASH")}>
             <Banknote aria-hidden size={16} />نقدي
           </button>
-          <button type="button" style={payMethodStyle(method === "CARD")}     onClick={() => setMethod("CARD")}>
-            <CreditCard aria-hidden size={16} />بطاقة
+          <button type="button" style={{ ...payMethodStyle(method === "CARD"), gap: 3, paddingInline: 2 }} onClick={() => setMethod("CARD")}>
+            <CardBrandLogos size="xs" pill={method === "CARD"} className="min-w-0 shrink px-0.5 py-0" imgClassName="h-3 w-auto max-w-[30px]" /><span style={{ whiteSpace: "nowrap" }}>بطاقة</span>
           </button>
           <button type="button" style={payMethodStyle(method === "TRANSFER")} onClick={() => setMethod("TRANSFER")}>
             <Send aria-hidden size={16} />تحويل

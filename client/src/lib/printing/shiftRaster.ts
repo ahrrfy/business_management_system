@@ -9,6 +9,7 @@ import { imageDataToRaster, type Raster } from "./escpos";
 import { fmtDate, fmtDateTime } from "../date";
 import { CO, RECEIPT_PHONES, fmt, logoUrl } from "./brand";
 import type { ShiftOpenData, ShiftCloseData } from "./printTemplates";
+import { CARD_BRAND_LOGO_URL, isCardPaymentMethod } from "./cardBrandLogos";
 
 const W = 576; // 80مم @ 203dpi
 const PAD = 16;
@@ -399,11 +400,23 @@ export async function shiftCloseToCanvas(
   if (payList.length === 0) {
     ctx.font = "600 22px Cairo, sans-serif"; ctx.textAlign = "center"; ctx.fillText("لا حركات", W / 2, y); y += 30;
   } else {
+    const hasCardRow = payList.some((p) => isCardPaymentMethod(p.method));
+    const cardImg = hasCardRow ? await loadImage(CARD_BRAND_LOGO_URL) : null;
     for (const p of payList) {
       const label = `${METHOD_AR[p.method] ?? p.method} ${p.direction === "IN" ? "وارد" : "صادر"}`;
       const amt = p.direction === "OUT" ? `( ${fmt(p.total)} )` : fmt(p.total);
-      fitFont(ctx, 700, 23, 18, label, PAY_METHOD_MAX_W);
-      ctx.textAlign = "right"; fillTextDirection(ctx, label, PAY_METHOD_R, y, "rtl");
+      const isCard = isCardPaymentMethod(p.method);
+      const logoW = 58;
+      const logoH = 19;
+      if (isCard && cardImg) {
+        ctx.drawImage(cardImg, PAY_METHOD_R - logoW, y - 17, logoW, logoH);
+        const textMaxW = PAY_METHOD_MAX_W - logoW - 8;
+        fitFont(ctx, 700, 23, 18, label, textMaxW);
+        ctx.textAlign = "right"; fillTextDirection(ctx, label, PAY_METHOD_R - logoW - 8, y, "rtl");
+      } else {
+        fitFont(ctx, 700, 23, 18, label, PAY_METHOD_MAX_W);
+        ctx.textAlign = "right"; fillTextDirection(ctx, label, PAY_METHOD_R, y, "rtl");
+      }
       const count = String(p.count);
       fitFont(ctx, 600, 22, 16, count, PAY_COUNT_MAX_W);
       ctx.textAlign = "center"; fillTextDirection(ctx, count, PAY_COUNT_X, y, "ltr");

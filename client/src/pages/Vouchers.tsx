@@ -34,6 +34,7 @@ import {
 } from "@/lib/printing/brand";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
+import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { usePrintAudit } from "@/hooks/usePrintAudit";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
@@ -1024,7 +1025,12 @@ export default function Vouchers() {
                 header: "الدفع",
                 accessorFn: (r) => paymentMethodLabel(r.paymentMethod),
                 meta: { align: "center" },
-                cell: ({ row }) => <span className="text-xs">{paymentMethodLabel(row.original.paymentMethod)}</span>,
+                cell: ({ row }) => (
+                  <span className="inline-flex items-center justify-center gap-1.5 text-xs">
+                    {row.original.paymentMethod === "CARD" && <CardBrandLogos size="xs" />}
+                    <span>{paymentMethodLabel(row.original.paymentMethod)}</span>
+                  </span>
+                ),
               },
 
               {
