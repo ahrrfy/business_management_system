@@ -446,10 +446,28 @@ export default function GeneralLedger() {
           }),
         { pageSize: 500 },
       );
-      const isIncomplete = result.unmappedCount > 0;
-      const incompleteNote = isIncomplete
+      const hasGaps = result.unmappedCount > 0;
+      const modeWarning =
+        result.mode === "SHADOW"
+          ? `للمطابقة فقط (وضع الظل منذ ${result.shadowStartedAt ?? "غير مسجّل"}) — الدفتر المعتمد ما زال المبسّط.`
+          : result.mode === "OFF"
+            ? "الدفتر المزدوج متوقف؛ لا تعتمد هذا الكشف كدفتر حي."
+            : null;
+      const gapWarning = hasGaps
         ? `تنبيه: توجد ${result.openingUnmappedCount} فجوة قبل الفترة قد تؤثر في الرصيد الافتتاحي، و${result.periodUnmappedCount} فجوة داخل الفترة؛ الكشف غير مكتمل للاعتماد.`
-        : undefined;
+        : null;
+      const incompleteNote =
+        [modeWarning, gapWarning].filter(Boolean).join(" ") || undefined;
+      const statusLabel =
+        result.mode === "OFF"
+          ? "غير معتمد (الدفتر متوقف)"
+          : result.mode === "SHADOW"
+            ? hasGaps
+              ? `للمطابقة فقط — وضع الظل (فجوات: ${result.unmappedCount})`
+              : "للمطابقة فقط (وضع الظل)"
+            : hasGaps
+              ? "غير مكتمل للاعتماد"
+              : "مكتمل (وضع ACTIVE)";
       const ok = printReportDoc({
         title: `دفتر الأستاذ — ${result.account.code} ${result.account.name}`,
         orientation: "landscape",
@@ -461,7 +479,7 @@ export default function GeneralLedger() {
           { label: "الرصيد الافتتاحي", value: `${fmtAr(result.openingBalance)} ${SIDE_LABEL[result.openingSide]}` },
           { label: "فجوات قبل الفترة", value: String(result.openingUnmappedCount) },
           { label: "فجوات داخل الفترة", value: String(result.periodUnmappedCount) },
-          { label: "حالة الاكتمال", value: isIncomplete ? "غير مكتمل للاعتماد" : "مكتمل" },
+          { label: "حالة الاكتمال", value: statusLabel },
         ],
         columns: [
           { key: "entryDate", label: "التاريخ" },

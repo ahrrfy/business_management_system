@@ -274,7 +274,7 @@ export default function PurchaseOrderDetail() {
 
   function printOrder() {
     const priceSym = isUsd ? "$" : "د.ع";
-    const ok = printReportDoc({
+    printReportDoc({
       title: "أمر شراء",
       docNum: d.poNumber ?? `#${d.id}`,
       docDate: fmtDate(d.orderDate),
@@ -348,9 +348,6 @@ export default function PurchaseOrderDetail() {
           ],
       showIndex: true,
     });
-    if (!ok) {
-      notify.err("تعذّر فتح نافذة الطباعة — تحقّق من مانع النوافذ المنبثقة");
-    }
   }
 
   return (

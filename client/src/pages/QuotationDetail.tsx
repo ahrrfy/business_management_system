@@ -373,6 +373,9 @@ export default function QuotationDetail() {
                   <Link href={`/invoices/${data.convertedInvoiceId}`} className="underline">#{data.convertedInvoiceId}</Link>
                 </Field>
               )}
+              {parsedNotes.poReference && (
+                <Field label="مرجع أمر الشراء">{parsedNotes.poReference}</Field>
+              )}
               {parsedNotes.notes && (
                 <div className="col-span-2">
                   <Field label="ملاحظات">{parsedNotes.notes}</Field>

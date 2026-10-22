@@ -288,15 +288,33 @@ export default function TrialBalance() {
 
   function onPrint() {
     if (!report) return;
-    const isIncomplete =
+    const hasGaps =
       report.unmappedCount > 0 || report.unmappedAccountRoles.length > 0;
-    const incompleteNote = isIncomplete
+    const modeWarning =
+      report.mode === "SHADOW"
+        ? `للمطابقة فقط (وضع الظل منذ ${report.shadowStartedAt ?? "غير مسجّل"}) — الدفتر المعتمد ما زال المبسّط.`
+        : report.mode === "OFF"
+          ? "الدفتر المزدوج متوقف؛ لا يُعتمد هذا التقرير كميزان مراجعة حي."
+          : null;
+    const gapWarning = hasGaps
       ? `تنبيه: التقرير غير مكتمل للاعتماد — ${report.openingUnmappedCount} فجوة قبل الفترة تؤثر في موثوقية الافتتاح، و${report.periodUnmappedCount} فجوة داخل الفترة${
           report.unmappedAccountRoles.length > 0
             ? `، و${report.unmappedAccountRoles.length} دور محاسبي بلا حساب مربوط`
             : ""
         }.`
-      : undefined;
+      : null;
+    const incompleteNote =
+      [modeWarning, gapWarning].filter(Boolean).join(" ") || undefined;
+    const statusLabel =
+      report.mode === "OFF"
+        ? "غير معتمد (الدفتر متوقف)"
+        : report.mode === "SHADOW"
+          ? hasGaps
+            ? `للمطابقة فقط — وضع الظل (فجوات: ${report.unmappedCount})`
+            : "للمطابقة فقط (وضع الظل)"
+          : hasGaps
+            ? `غير مكتمل للاعتماد (فجوات: ${report.unmappedCount})`
+            : "مكتمل (وضع ACTIVE)";
     printReportDoc({
       title: "ميزان المراجعة — الدفتر المزدوج",
       orientation: "landscape",
@@ -308,9 +326,7 @@ export default function TrialBalance() {
         { label: "التوازن", value: report.totals.isBalanced ? "متوازن" : `فرق ${fmtAr(report.totals.closingDifference)} د.ع` },
         {
           label: "حالة الاكتمال",
-          value: isIncomplete
-            ? `غير مكتمل للاعتماد (فجوات: ${report.unmappedCount})`
-            : "مكتمل",
+          value: statusLabel,
         },
       ],
       columns: [
