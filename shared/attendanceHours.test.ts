@@ -471,4 +471,75 @@ describe("الدوام المجزّأ والاستراحة / الزمنية (com
       }),
     ).toBeNull();
   });
+
+  it("يتحقق من مطابقة الساعات لمجموع فترات الدوام المجزّأ ويرصد الفترة الثانية المفتوحة عبر hasUnclosedAttendancePunch", async () => {
+    const { hasUnclosedAttendancePunch } = await import("./attendanceHours");
+    const { normalizeScheduleShape } = await import("./wageDiff");
+
+    expect(
+      attendanceHoursViolation({
+        checkIn: "08:00",
+        checkOut: "20:00",
+        hours: 1,
+        isPaidStatus: true,
+        breakMinutes: 240,
+        sessions: [
+          { checkIn: "08:00", checkOut: "12:00" },
+          { checkIn: "16:00", checkOut: "20:00" },
+        ],
+      }),
+    ).toMatch(/لا تطابق مجموع فترات الدوام/);
+
+    expect(
+      attendanceHoursViolation({
+        checkIn: "08:00",
+        checkOut: "20:00",
+        hours: 8,
+        isPaidStatus: true,
+        breakMinutes: 240,
+        sessions: [
+          { checkIn: "08:00", checkOut: "12:00" },
+          { checkIn: "16:00", checkOut: "20:00" },
+        ],
+      }),
+    ).toBeNull();
+
+    expect(
+      hasUnclosedAttendancePunch({
+        checkIn: new Date("2026-10-10T08:00:00Z"),
+        checkOut: null,
+        hours: "0.00",
+        needsReview: true,
+      }),
+    ).toBe(true);
+
+    expect(
+      hasUnclosedAttendancePunch({
+        checkIn: new Date("2026-10-10T08:00:00Z"),
+        checkOut: new Date("2026-10-10T12:00:00Z"),
+        hours: "4.00",
+        needsReview: true,
+        reviewReason: "عدد البصمات فرديّ — فترة دوام مفتوحة (بصمة دخول 16:00 بلا انصراف)",
+        notes: "[فترات الدوام: 08:00→12:00، 16:00→؟ | استراحة/زمنية: 240 دقيقة]",
+      }),
+    ).toBe(true);
+
+    expect(
+      hasUnclosedAttendancePunch({
+        checkIn: new Date("2026-10-10T08:00:00Z"),
+        checkOut: new Date("2026-10-10T20:00:00Z"),
+        hours: "8.00",
+        needsReview: false,
+        reviewReason: null,
+        notes: "[فترات الدوام: 08:00→12:00، 16:00→20:00 | استراحة/زمنية: 240 دقيقة]",
+      }),
+    ).toBe(false);
+
+    const sched = normalizeScheduleShape(
+      { الأحد: { hours: 8, rate: 5000, start: "14:00", startTime: "14:00" } },
+      { الأحد: { hours: 8, rate: null } },
+    );
+    expect(sched["الأحد"]).toEqual({ hours: 8, rate: 5000, start: "14:00", startTime: "14:00" });
+    expect(sched["الاثنين"]).toEqual({ hours: 0, rate: null });
+  });
 });

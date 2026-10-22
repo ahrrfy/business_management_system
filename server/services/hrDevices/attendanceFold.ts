@@ -21,10 +21,12 @@ import {
   hrAttendancePunches,
   hrAttendanceSettings,
   hrFingerprintDevices,
+  payrollRuns,
 } from "../../../drizzle/schema";
 import { requireDb } from "../tx";
 import { logger } from "../../logger";
 import { recordAttendance } from "../attendanceService";
+import { assertPeriodOpen } from "../periodLockService";
 import {
   computeDayHours,
   DEFAULT_MAX_DAILY_HOURS,
@@ -127,6 +129,24 @@ async function punchWorkplaceOf(
 
 function includeAttendanceWorkplace(): boolean {
   return process.env.ATTENDANCE_PUSH_INCLUDE_WORKPLACE === "true";
+}
+
+/** يتحقّق من أنّ تاريخ الحضور غير مقفل بمسيّر معتمد/مدفوع ولا بفترة مالية مغلقة قبل حذف صفّ البصمة الفائض. */
+async function canMutateAttendanceDate(date: string): Promise<boolean> {
+  const db = requireDb();
+  const period = String(date).slice(0, 7);
+  const [lockedRun] = await db
+    .select({ id: payrollRuns.id })
+    .from(payrollRuns)
+    .where(and(eq(payrollRuns.period, period), inArray(payrollRuns.status, ["approved", "paid"])))
+    .limit(1);
+  if (lockedRun) return false;
+  try {
+    await assertPeriodOpen(db as never, new Date(date));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** إعدادات الاحتساب (صفّ مفرد) — الغياب = الافتراضي المعطَّل، فلا تفشل الوحدة قبل الهجرة/البذر. */
@@ -313,6 +333,16 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
       nextDayPunches: nextPunches,
     });
     if (day.usedCount === 0) {
+      if (!(await canMutateAttendanceDate(g.date))) {
+        if (g.ids.length > 0) {
+          await db
+            .update(hrAttendancePunches)
+            .set({ processedAt: sql`CURRENT_TIMESTAMP`, processNote: "مسيّر رواتب الشهر معتمد أو الفترة المالية مقفلة" })
+            .where(inArray(hrAttendancePunches.id, g.ids));
+        }
+        parked++;
+        continue;
+      }
       // كل بصمات اليوم مملوكة لوردية أمس ⇒ لا يوم هنا. توسَم معالَجةً كي لا تدور أبداً.
       await db
         .delete(attendance)
@@ -685,6 +715,7 @@ export async function refoldMonthFingerprintAttendance(
     });
 
     if (day.usedCount === 0) {
+      if (!(await canMutateAttendanceDate(g.date))) continue;
       await db
         .delete(attendance)
         .where(

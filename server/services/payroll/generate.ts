@@ -5,6 +5,7 @@ import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
+import { hasUnclosedAttendancePunch } from "@shared/attendanceHours";
 import { PAYROLL_ITEM_ATTENTION_PREFIX, fullEmployeeName } from "@shared/hr";
 import {
   attendance,
@@ -28,8 +29,9 @@ import { healAndRefoldMonthAttendance, recomputeMonthRates } from "../attendance
 import { computeAttendancePay, DEFAULT_WORK_SCHEDULE, type AttendancePayResult, type WorkSchedule } from "../hr/attendancePay";
 import { money, round2, toDbMoney } from "../money";
 import { computeLegalComponents, getPayrollLegalSettings } from "../payrollLegalService";
+import { assertPeriodOpen } from "../periodLockService";
 import { applyDuePromotions } from "../promotionService";
-import { type Actor, withTx } from "../tx";
+import { type Actor, requireDb, withTx } from "../tx";
 import { baghdadToday } from "../businessDay";
 import { assertPeriod, capPenaltyDeduction, computeNet, countDaysWithin, expandSpans, recomputeRunTotals } from "./helpers";
 import { getRun } from "./queries";
@@ -40,15 +42,37 @@ import { approveRun } from "./lifecycle";
 
 export async function generatePayroll(period: string, actor: Actor) {
   const p = assertPeriod(period);
+  /*
+   * حارس الشهر المستقبليّ: `applyDuePromotions` تُطبّق الترقيات المؤجَّلة التي بلغ تاريخُها
+   * نهاية الفترة — **بأثرٍ دائم على employees.salary**. فخطأٌ مطبعيّ في الشهر (2027-08 بدل
+   * 2026-08) كان يُقدّم زياداتٍ مؤجَّلةً سنةً كاملة، وحذفُ المسودّة لا يتراجع عنها.
+   * الشهر الجاري هو أقصى ما يُولَّد؛ ما بعده لا معنى له تشغيلياً أصلاً.
+   */
+  const currentPeriod = baghdadToday().slice(0, 7);
+  if (p > currentPeriod) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `لا يُولَّد مسيّر لشهر لم يبدأ بعد (${p}). أقصى شهر متاح: ${currentPeriod}.`,
+    });
+  }
 
-  // طيّ كافة البصمات المعلقة وتصحيح وطيّ سجلات الشهر قبل توليد المسيّر:
-  // يضمن دمج جميع البصمات الحديثة (بما فيها البصمات العابرة لمنتصف الليل) وإزالة الخصومات التراكمية القديمة.
-  await processPendingFolds().catch((err) => {
-    logger.warn({ err }, "payroll: تعذّر استكمال طيّ البصمات المعلقة قبل التوليد");
-  });
-  await healAndRefoldMonthAttendance(p).catch((err) => {
-    logger.warn({ err }, "payroll: تعذّر استكمال تصحيح وطيّ سجلات الحضور قبل التوليد");
-  });
+  const db = requireDb();
+  const [preExists] = await db
+    .select({ id: payrollRuns.id })
+    .from(payrollRuns)
+    .where(eq(payrollRuns.period, p))
+    .limit(1);
+  if (!preExists) {
+    await assertPeriodOpen(db as never, new Date(`${p}-01`));
+    // طيّ كافة البصمات المعلقة وتصحيح وطيّ سجلات الشهر قبل توليد المسيّر:
+    // يضمن دمج جميع البصمات الحديثة (بما فيها البصمات العابرة لمنتصف الليل) وإزالة الخصومات التراكمية القديمة.
+    await processPendingFolds().catch((err) => {
+      logger.warn({ err }, "payroll: تعذّر استكمال طيّ البصمات المعلقة قبل التوليد");
+    });
+    await healAndRefoldMonthAttendance(p).catch((err) => {
+      logger.warn({ err }, "payroll: تعذّر استكمال تصحيح وطيّ سجلات الحضور قبل التوليد");
+    });
+  }
 
   return withTx(async (tx) => {
     // رفض التكرار: مسيّر واحد لكل شهر (القاعدة تفرض UNIQUE أيضاً، نتحقّق مبكراً برسالة عربية).
@@ -65,19 +89,6 @@ export async function generatePayroll(period: string, actor: Actor) {
     // الزيادة في شهرها. (لا أثر إن لم توجد ترقياتٌ مستحقّة.)
     const [py, pm] = p.split("-").map(Number);
     const periodEndYmd = new Date(Date.UTC(py, pm, 0)).toISOString().slice(0, 10);
-    /*
-     * حارس الشهر المستقبليّ: `applyDuePromotions` تُطبّق الترقيات المؤجَّلة التي بلغ تاريخُها
-     * نهاية الفترة — **بأثرٍ دائم على employees.salary**. فخطأٌ مطبعيّ في الشهر (2027-08 بدل
-     * 2026-08) كان يُقدّم زياداتٍ مؤجَّلةً سنةً كاملة، وحذفُ المسودّة لا يتراجع عنها.
-     * الشهر الجاري هو أقصى ما يُولَّد؛ ما بعده لا معنى له تشغيلياً أصلاً.
-     */
-    const currentPeriod = baghdadToday().slice(0, 7);
-    if (p > currentPeriod) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: `لا يُولَّد مسيّر لشهر لم يبدأ بعد (${p}). أقصى شهر متاح: ${currentPeriod}.`,
-      });
-    }
     const recognizedTerminationWages = await tx
       .select({
         terminationId: employeeTerminations.id,
@@ -267,32 +278,35 @@ export async function generatePayroll(period: string, actor: Actor) {
     // ساعات الحضور لكل (موظف × يوم) — تُستعمل في نموذج الحضور فقط.
     const dailyAttendance = new Map<number, Map<string, Decimal>>();
     /*
-     * أيامٌ **مفتوحة** (دخولٌ بلا انصراف) لكل موظف. كانت تصل المحرّك بساعاتٍ صفرٍ فيقرأها
-     * غياباً ويدفعها صفراً صامتاً — وهي ليست غياباً بل بصمةٌ ناقصة أو دوامٌ جارٍ (تدقيق ١٧/٨).
+     * أيامٌ **مفتوحة** (دخولٌ بلا انصراف أو فترة ثانية مفتوحة) لكل موظف — تُفحص لجميع الموظفين
+     * (الشهريين والساعيين) حتى حين يكون `attendancePayOn` معطّلاً للشهريّ.
      */
     const openAttendance = new Map<number, Set<string>>();
-    if (attendancePayOn) {
-      const rows = await tx
-        .select({
-          employeeId: attendance.employeeId,
-          date: attendance.attendanceDate,
-          hours: attendance.hours,
-          checkIn: attendance.checkIn,
-          checkOut: attendance.checkOut,
-        })
-        .from(attendance)
-        .where(sql`DATE_FORMAT(${attendance.attendanceDate}, '%Y-%m') = ${p} AND ${attendance.status} IN ('PRESENT', 'LATE')`);
-      for (const r of rows) {
-        const k = Number(r.employeeId);
-        const ymd = String(r.date).slice(0, 10);
+    const rows = await tx
+      .select({
+        employeeId: attendance.employeeId,
+        date: attendance.attendanceDate,
+        hours: attendance.hours,
+        checkIn: attendance.checkIn,
+        checkOut: attendance.checkOut,
+        needsReview: attendance.needsReview,
+        reviewReason: attendance.reviewReason,
+        notes: attendance.notes,
+      })
+      .from(attendance)
+      .where(sql`DATE_FORMAT(${attendance.attendanceDate}, '%Y-%m') = ${p} AND ${attendance.status} IN ('PRESENT', 'LATE')`);
+    for (const r of rows) {
+      const k = Number(r.employeeId);
+      const ymd = String(r.date).slice(0, 10);
+      if (attendancePayOn) {
         const m = dailyAttendance.get(k) ?? new Map<string, Decimal>();
         m.set(ymd, money(r.hours ?? 0));
         dailyAttendance.set(k, m);
-        if (r.checkIn != null && r.checkOut == null && money(r.hours ?? 0).lte(0)) {
-          const o = openAttendance.get(k) ?? new Set<string>();
-          o.add(ymd);
-          openAttendance.set(k, o);
-        }
+      }
+      if (hasUnclosedAttendancePunch(r)) {
+        const o = openAttendance.get(k) ?? new Set<string>();
+        o.add(ymd);
+        openAttendance.set(k, o);
       }
     }
 

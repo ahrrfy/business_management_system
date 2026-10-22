@@ -15,10 +15,12 @@ import { notify } from "@/lib/notify";
 import { WEEK_DAYS } from "@shared/hr";
 import { normalizeScheduleShape } from "@shared/wageDiff";
 
-/** يومٌ في الجدول: ساعاته (صفر = راحة) وسعرُ ساعته الصريح (فارغ = يُشتقّ من الراتب). */
+/** يومٌ في الجدول: ساعاته (صفر = راحة) وسعرُ ساعته الصريح (فارغ = يُشتقّ من الراتب)، مع حفظ بداية الوردية إن وُجدت. */
 export interface WageDayValue {
   hours: number;
   rate?: number | null;
+  start?: string | null;
+  startTime?: string | null;
 }
 
 /** القيم التي يحرّرها هذا المكوّن — مطابقةٌ حقلاً بحقلٍ للبصمة الأجرية الخادمية. */
@@ -177,7 +179,7 @@ export function WagePackageFields({ value, onChange, disabled = false }: WagePac
               }
               onChange({
                 schedule: Object.fromEntries(
-                  WEEK_DAYS.map((d) => [d, { hours: schedule[d]?.hours ?? 0, rate: null }]),
+                  WEEK_DAYS.map((d) => [d, { ...(schedule[d] ?? {}), hours: schedule[d]?.hours ?? 0, rate: null }]),
                 ),
               });
               notify.ok(`ضُبط الاشتقاق التلقائي الدقيق من الراتب (${derivedRatePreview} د.ع/ساعة لهذا الشهر).`);

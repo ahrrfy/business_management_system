@@ -19,16 +19,15 @@ import {
   payrollRuns,
 } from "../../../drizzle/schema";
 import { fullEmployeeName } from "@shared/hr";
+import { hasUnclosedAttendancePunch } from "@shared/attendanceHours";
 import { money, round2 } from "../money";
 import { requireDb } from "../tx";
 import {
   computeAttendancePay,
   daysBetween,
   DEFAULT_WORK_SCHEDULE,
-  isBrowserRoundedScheduleRate,
   type WorkSchedule,
 } from "./attendancePay";
-import { healAndRefoldMonthAttendance, isLegacyAutoLateDeduction } from "../attendanceService";
 import type { StatementDueBasis } from "./employeeStatement";
 
 /** صفّ الموظف في التقرير الشهريّ. */
@@ -193,78 +192,6 @@ export async function getMonthlyAttendanceReport(input: MonthlyAttendanceReportI
     .where(and(eq(payrollRuns.period, p), inArray(payrollRuns.status, ["approved", "paid"])))
     .limit(1);
 
-  if (!run) {
-    const schedByEmpId = new Map(eligible.map((e) => [Number(e.id), e.workSchedule]));
-    const needsAutoHeal =
-      allAttendance.some(
-        (r) =>
-          isLegacyAutoLateDeduction(r, schedByEmpId.get(Number(r.employeeId))) ||
-          (r.source === "fingerprint" &&
-            ((r.checkIn != null && r.checkOut == null) ||
-              (r.checkIn instanceof Date && r.checkIn.getUTCHours() < 6))),
-      ) ||
-      eligible.some((e) =>
-        isBrowserRoundedScheduleRate(
-          e.workSchedule && typeof e.workSchedule === "object" ? (e.workSchedule as WorkSchedule) : null,
-          e.salary ?? 0,
-        ),
-      );
-    if (needsAutoHeal) {
-      await healAndRefoldMonthAttendance(p, { scopedBranchId: input.branchId });
-      emps = await db
-        .select({
-          id: employees.id,
-          firstName: employees.firstName,
-          fatherName: employees.fatherName,
-          grandfatherName: employees.grandfatherName,
-          lastName: employees.lastName,
-          position: employees.position,
-          department: employees.department,
-          payType: employees.payType,
-          salary: employees.salary,
-          allowances: employees.allowances,
-          hireDate: employees.hireDate,
-          terminationDate: employees.terminationDate,
-          workSchedule: employees.workSchedule,
-          dayRates: employees.dayRates,
-          attendanceExempt: employees.attendanceExempt,
-          branchId: employees.branchId,
-          branchName: branches.name,
-        })
-        .from(employees)
-        .leftJoin(branches, eq(employees.branchId, branches.id))
-        .where(input.branchId != null ? eq(employees.branchId, input.branchId) : undefined)
-        .orderBy(employees.id);
-      eligible = emps.filter((e) => {
-        const hiredBeforeEnd = !e.hireDate || String(e.hireDate).slice(0, 10) <= `${p}-31`;
-        const notLeftBefore = !e.terminationDate || String(e.terminationDate).slice(0, 10) >= monthStart;
-        return hiredBeforeEnd && notLeftBefore;
-      });
-      allAttendance = await db
-        .select({
-          employeeId: attendance.employeeId,
-          date: attendance.attendanceDate,
-          hours: attendance.hours,
-          amount: attendance.amount,
-          checkIn: attendance.checkIn,
-          checkOut: attendance.checkOut,
-          status: attendance.status,
-          source: attendance.source,
-          needsReview: attendance.needsReview,
-          reviewReason: attendance.reviewReason,
-          notes: attendance.notes,
-        })
-        .from(attendance)
-        .where(
-          and(
-            inArray(attendance.employeeId, employeeIds),
-            gte(attendance.attendanceDate, monthStart),
-            lte(attendance.attendanceDate, monthEnd),
-          ),
-        );
-    }
-  }
-
   // استعلام 6: بنود المسيّر للشهر إن وجد
   const allItems = run
     ? await db
@@ -342,7 +269,7 @@ export async function getMonthlyAttendanceReport(input: MonthlyAttendanceReportI
       if (r.status === "PRESENT" || r.status === "LATE") {
         attendedHoursByDate.set(d, money(r.hours ?? 0));
         actualPaid += Number(r.amount ?? 0);
-        if (r.checkIn != null && r.checkOut == null && money(r.hours ?? 0).lte(0)) openDates.add(d);
+        if (hasUnclosedAttendancePunch(r)) openDates.add(d);
       }
     }
 

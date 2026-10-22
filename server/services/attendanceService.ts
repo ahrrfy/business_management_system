@@ -23,7 +23,7 @@ import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { money, round2, toDbMoney } from "./money";
 import { assertPeriodOpen } from "./periodLockService";
-import { DEFAULT_WORK_SCHEDULE, isBrowserRoundedScheduleRate, standardMonthlyHours, type WorkSchedule } from "./hr/attendancePay";
+import { DEFAULT_WORK_SCHEDULE, standardMonthlyHours, type WorkSchedule } from "./hr/attendancePay";
 import { refoldMonthFingerprintAttendance } from "./hrDevices/attendanceFold";
 
 /** اسم اليوم العربي من تاريخ "YYYY-MM-DD" (الأحد=0). يُحسب بتقويم UTC ثابت من مكوّنات السلسلة
@@ -91,7 +91,7 @@ export function rateForDayDetailed(
   const monthStart = `${dateStr.slice(0, 7)}-01`;
   if (sched) {
     const explicit = Number((sched[day] as { rate?: number } | undefined)?.rate ?? NaN);
-    if (!isBrowserRoundedScheduleRate(sched, salary) && Number.isFinite(explicit) && explicit > 0) {
+    if (Number.isFinite(explicit) && explicit > 0) {
       return { rate: explicit, basis: "schedule" };
     }
     // مُشتقّ: الراتب ÷ ساعات ٣٠ يوماً وفق جدوله (نفس مقام المسيّر ⇒ لا انحراف).
@@ -551,26 +551,6 @@ export async function recomputeMonthRates(
     }
 
     try {
-      const empConds: SQL[] = [eq(employees.payType, "monthly")];
-      if (input.employeeId != null) empConds.push(eq(employees.id, input.employeeId));
-      if (input.scopedBranchId != null) empConds.push(eq(employees.branchId, input.scopedBranchId));
-      const monthlyEmps = await db
-        .select({ id: employees.id, salary: employees.salary, workSchedule: employees.workSchedule })
-        .from(employees)
-        .where(and(...empConds));
-      for (const emp of monthlyEmps) {
-        const sched = (emp.workSchedule && typeof emp.workSchedule === "object" ? emp.workSchedule : null) as WorkSchedule | null;
-        if (sched && isBrowserRoundedScheduleRate(sched, Number(emp.salary ?? 0))) {
-          const cleanedSched = Object.fromEntries(
-            Object.entries(sched).map(([k, v]) => [
-              k,
-              typeof v === "number" ? { hours: v, rate: null } : { ...v, rate: null },
-            ]),
-          );
-          await db.update(employees).set({ workSchedule: cleanedSched }).where(eq(employees.id, emp.id));
-          healedSchedules++;
-        }
-      }
       const foldRes = await refoldMonthFingerprintAttendance(period, {
         employeeId: input.employeeId,
         scopedBranchId: input.scopedBranchId,
@@ -750,30 +730,9 @@ export async function healAndRefoldMonthAttendance(
     return { period: p, refoldedDays: 0, cleanedGhostDays: 0, updatedRates: 0, healedSchedules: 0 };
   }
 
-  // ١) تنظيف السعر المقرب آلياً من المتصفح في جدول دوام الموظفين الشهريين
-  let healedSchedules = 0;
-  const empConds: SQL[] = [eq(employees.payType, "monthly")];
-  if (opts?.employeeId != null) empConds.push(eq(employees.id, opts.employeeId));
-  if (opts?.scopedBranchId != null) empConds.push(eq(employees.branchId, opts.scopedBranchId));
-  const monthlyEmps = await db
-    .select({ id: employees.id, salary: employees.salary, workSchedule: employees.workSchedule })
-    .from(employees)
-    .where(and(...empConds));
-  for (const emp of monthlyEmps) {
-    const sched = (emp.workSchedule && typeof emp.workSchedule === "object" ? emp.workSchedule : null) as WorkSchedule | null;
-    if (sched && isBrowserRoundedScheduleRate(sched, Number(emp.salary ?? 0))) {
-      const cleanedSched = Object.fromEntries(
-        Object.entries(sched).map(([k, v]) => [
-          k,
-          typeof v === "number" ? { hours: v, rate: null } : { ...v, rate: null },
-        ]),
-      );
-      await db.update(employees).set({ workSchedule: cleanedSched }).where(eq(employees.id, emp.id));
-      healedSchedules++;
-    }
-  }
+  const healedSchedules = 0;
 
-  // ٢) إعادة طيّ البصمات الخام للشهر (تغلق الورديات العابرة لمنتصف الليل وتسترد الساعات)
+  // ١) إعادة طيّ البصمات الخام للشهر (تغلق الورديات العابرة لمنتصف الليل وتسترد الساعات)
   const foldRes = await refoldMonthFingerprintAttendance(p, opts);
 
   // ٣) شفاء أي سجلات متبقية وإعادة احتساب الأسعار والمبالغ
@@ -1102,6 +1061,7 @@ export async function recordAttendance(input: RecordAttendanceInput) {
       isPaidStatus,
       crossMidnight,
       breakMinutes: effectiveBreakMinutes,
+      sessions: input.sessions,
     });
     if (hoursViolation) throw new Error(hoursViolation);
 

@@ -213,7 +213,16 @@ export default function Attendance() {
   const formError =
     form.mode === "split"
       ? isPaidFormStatus
-        ? splitSummary?.violation ?? null
+        ? splitSummary?.violation ??
+          attendanceHoursViolation({
+            checkIn: splitSummary?.firstCheckIn,
+            checkOut: splitSummary?.lastCheckOut,
+            hours: Number(form.hours || 0),
+            isPaidStatus: isPaidFormStatus,
+            crossMidnight: Boolean(splitSummary?.lastCrossMidnight),
+            breakMinutes: splitSummary?.breakMinutes ?? 0,
+            sessions: form.sessions,
+          })
         : null
       : form.hours.trim() !== "" || (form.checkIn && form.checkOut)
         ? attendanceHoursViolation({
@@ -423,7 +432,6 @@ export default function Attendance() {
           : undefined,
       sessions: form.mode === "split" && isPaidFormStatus ? form.sessions : undefined,
       breakMinutes: form.mode === "split" ? splitSummary?.breakMinutes : brkMin,
-      lateMinutes: lateMin,
       lateDeductionMinutes: lateMin,
       notes: form.notes.trim() || undefined,
       source: "manual",

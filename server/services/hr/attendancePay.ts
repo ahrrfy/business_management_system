@@ -221,40 +221,14 @@ export interface AttendancePayResult {
 }
 
 /**
- * يكشف ما إذا كان السعر المخزَّن في جدول دوام الموظف الشهريّ مجرّد تقريبٍ آليّ من زرّ المتصفّح
- * `Math.round((salary / std) * 100) / 100` (مثل 4519.23 من 940000 ÷ 208) وليس سعراً صحيحاً
- * أدخله المالك يدوياً. حينئذٍ يُعتمد الاشتقاق الدقيق `salary / standardMonthlyHours` بلا تقريبٍ مسبق.
+ * لا يُتجاهل أيّ سعر ساعةٍ صريح مخزَّن في جدول الدوام بناءً على تخمينٍ رقميّ:
+ * زرّ الواجهة «اشتقاق سعر الساعة تلقائياً من الراتب» يضبط `rate: null` صراحةً،
+ * أمّا أيّ رقمٍ موجبٍ في `workSchedule[day].rate` فهو سعرٌ صريحٌ يُحترَم كما أُدخل.
  */
 export function isBrowserRoundedScheduleRate(
-  schedule: WorkSchedule | null | undefined,
-  salary: number | string | null | undefined,
+  _schedule: WorkSchedule | null | undefined,
+  _salary: number | string | null | undefined,
 ): boolean {
-  const sal = Number(salary ?? 0);
-  if (!schedule || typeof schedule !== "object" || !(sal > 0)) return false;
-  const activeDays: Array<{ hours: number; rate: number }> = [];
-  for (const d of DAY_NAMES) {
-    const v = schedule[d] as DaySchedule | number | undefined;
-    if (typeof v === "number" || !v) continue;
-    const h = Number(v.hours ?? 0);
-    const r = Number(v.rate ?? NaN);
-    if (h > 0) {
-      if (!Number.isFinite(r) || r <= 0) return false;
-      activeDays.push({ hours: h, rate: r });
-    }
-  }
-  if (activeDays.length === 0) return false;
-  const firstRate = activeDays[0].rate;
-  if (Number.isInteger(firstRate)) return false;
-  if (!activeDays.every((x) => x.rate === firstRate)) return false;
-  const dailyHours = activeDays[0].hours;
-  if (!activeDays.every((x) => x.hours === dailyHours)) return false;
-  for (const workdays of [24, 25, 26, 27, 28, 29, 30]) {
-    const candidateStd = workdays * dailyHours;
-    const rounded = Math.round((sal / candidateStd) * 100) / 100;
-    if (Math.abs(firstRate - rounded) < 0.005) {
-      return true;
-    }
-  }
   return false;
 }
 
@@ -398,6 +372,7 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
      * لبيانات الطيّ هذا لا-عمل (قُصّت سلفاً عند السقف نفسه) ⇒ صفر انحدار.
      */
     const capped = Decimal.min(attended, new Decimal(input.maxDailyHours ?? 12));
+    if (input.openDates?.has(d)) openDates.push(d);
     // الزائد عن المقرَّر أوفر تايم ببندٍ مستقلّ (قرار المالك) — لا يتضخّم به الأساس.
     const counted = Decimal.min(capped, daily);
     const ot = Decimal.max(0, capped.minus(daily));

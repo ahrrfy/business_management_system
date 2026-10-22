@@ -66,6 +66,8 @@ export interface AttendanceHoursInput {
   crossMidnight?: boolean;
   /** دقائق الاستراحة/الزمنية المطروحة في نمط الفترة الواحدة (إن وُجدت). */
   breakMinutes?: number | null;
+  /** فترات الدوام المتعدّدة عند اختيار الدوام المجزّأ. */
+  sessions?: AttendanceSessionInput[] | null;
 }
 
 /**
@@ -73,6 +75,18 @@ export interface AttendanceHoursInput {
  * بلا وقتين كاملين لا حكم: البصمة الفردية (دخولٌ بلا انصراف) حالةٌ مشروعة تُوسَم للمراجعة.
  */
 export function attendanceHoursViolation(input: AttendanceHoursInput): string | null {
+  if (input.isPaidStatus && input.sessions && input.sessions.length > 0) {
+    const summary = computeSessionsSummary(input.sessions);
+    if (summary.violation) return summary.violation;
+    if (
+      summary.sessions.length > 0 &&
+      !summary.hasOpenSession &&
+      Math.abs(input.hours - summary.totalHours) > HOURS_SPAN_TOLERANCE
+    ) {
+      return `الساعات (${input.hours.toFixed(2)}) لا تطابق مجموع فترات الدوام المسجَّلة (${summary.totalHoursStr} ساعة) — صحّح الفترات أو الساعات`;
+    }
+  }
+
   const hasBoth = minutesOf(input.checkIn) != null && minutesOf(input.checkOut) != null;
   if (!hasBoth) return null;
 
@@ -682,5 +696,34 @@ export function parseManualAttendanceEdit(input: ManualAttendanceEditSource): Pa
     notes: cleanNotes,
   };
 }
+
+/**
+ * يكشف ما إذا كان سجلّ الحضور اليوميّ يتضمّن بصمة دخولٍ مفتوحة لم تُغلق بعد:
+ * ١) دخولٌ بلا انصراف (`checkIn != null && checkOut == null && hours <= 0`)، أو
+ * ٢) دوامٌ مجزّأ أُغلقت فترتُه الأولى وبقيت فترتُه الثانية مفتوحة (`needsReview` مع بصمة دخول ثالثة/فترة مفتوحة).
+ */
+export function hasUnclosedAttendancePunch(row: {
+  checkIn?: unknown;
+  checkOut?: unknown;
+  hours?: unknown;
+  needsReview?: unknown;
+  reviewReason?: string | null;
+  notes?: string | null;
+}): boolean {
+  if (row.checkIn != null && row.checkOut == null && !(Number(row.hours ?? 0) > 0)) {
+    return true;
+  }
+  if (!row.needsReview) return false;
+  const reason = String(row.reviewReason ?? "");
+  if (reason.includes("فترة دوام مفتوحة") || OPEN_THIRD_PUNCH_RE.test(reason)) {
+    return true;
+  }
+  const details = parseAttendanceDayDetails({
+    notes: row.notes ?? null,
+    reviewReason: row.reviewReason ?? null,
+  });
+  return details.hasOpenSession;
+}
+
 
 

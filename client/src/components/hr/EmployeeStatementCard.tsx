@@ -48,7 +48,7 @@ import {
   Trash2,
   TriangleAlert,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -178,6 +178,7 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
         isPaidStatus: isPaidFixStatus,
         crossMidnight: fix.crossMidnight,
         breakMinutes: fix.shiftMode === "single" ? Number(fix.breakMinutes) || 0 : splitSummary?.breakMinutes,
+        sessions: fix.shiftMode === "split" ? fix.sessions : undefined,
       })
     : null;
 
@@ -197,22 +198,39 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
     onError: (e) => notify.err(e),
   });
 
+  const autoHealedKeyRef = useRef<string | null>(null);
+  const manualRecomputeRef = useRef(false);
   const recompute = trpc.attendance.recomputeRates.useMutation({
     onSuccess: async (res) => {
       const totalChanged = (res.updated ?? 0) + (res.refoldedDays ?? 0) + (res.cleanedGhostDays ?? 0);
-      notify.ok(
-        totalChanged > 0
-          ? `تمّت مزامنة البصمات وإعادة احتساب الشهر (${totalChanged} يوم محدَّث)`
-          : "تمّ التحقّق والمزامنة — جميع الساعات والأجور محدَّثة ومطابقة",
-      );
+      if (manualRecomputeRef.current || totalChanged > 0) {
+        notify.ok(
+          totalChanged > 0
+            ? `تمّت مزامنة البصمات وإعادة احتساب الشهر (${totalChanged} يوم محدَّث)`
+            : "تمّ التحقّق والمزامنة — جميع الساعات والأجور محدَّثة ومطابقة",
+        );
+      }
+      manualRecomputeRef.current = false;
       await Promise.all([
         utils.attendance.employeeStatement.invalidate({ employeeId, period }),
         utils.attendance.list.invalidate(),
         utils.attendance.summary.invalidate(),
       ]);
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => {
+      if (manualRecomputeRef.current) notify.err(e);
+      manualRecomputeRef.current = false;
+    },
   });
+
+  useEffect(() => {
+    const key = `${employeeId}:${period}`;
+    if (d?.needsHealing && !d?.payrollSnapshot && can("attendance.recomputeRates") && autoHealedKeyRef.current !== key) {
+      autoHealedKeyRef.current = key;
+      manualRecomputeRef.current = false;
+      recompute.mutate({ period, employeeId });
+    }
+  }, [d?.needsHealing, d?.payrollSnapshot, employeeId, period, can]);
 
   /*
    * المستحقّ من الخادم بأساسه (`amountDue`/`dueBasis`) لا من حساب الحضور دائماً: المُعفى
@@ -265,7 +283,10 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
               variant="outline"
               size="sm"
               disabled={recompute.isPending}
-              onClick={() => recompute.mutate({ period, employeeId })}
+              onClick={() => {
+                manualRecomputeRef.current = true;
+                recompute.mutate({ period, employeeId });
+              }}
               title="مزامنة البصمات الخام وإعادة احتساب الساعات والفترات والأجور تلقائياً مع الحفاظ على التعديلات اليدوية"
             >
               <RefreshCw aria-hidden className={`size-3.5 ${recompute.isPending ? "animate-spin" : ""}`} />
@@ -1031,7 +1052,6 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
                   checkIn: fix.checkIn || undefined,
                   checkOut: fix.checkOut || undefined,
                   checkOutDate: fix.crossMidnight && fix.checkOut ? nextDateStr(fix.date) : undefined,
-                  lateMinutes: lateMin,
                   lateDeductionMinutes: lateMin,
                   sessions:
                     isPaidFixStatus && fix.shiftMode === "split"

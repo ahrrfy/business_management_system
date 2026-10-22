@@ -25,19 +25,18 @@ import {
   payrollRuns,
 } from "../../../drizzle/schema";
 import { fullEmployeeName } from "@shared/hr";
-import { parseAttendanceDayDetails } from "@shared/attendanceHours";
+import { hasUnclosedAttendancePunch, parseAttendanceDayDetails } from "@shared/attendanceHours";
 import { requireDb } from "../tx";
 import type { Tx } from "../../db";
 
 /** قارئٌ موحَّد: اتصالٌ عاديّ أو معاملةٌ جارية — كلاهما يدعم نفس بنّاءات الاستعلام. */
 type Reader = Tx | ReturnType<typeof requireDb>;
 import { money, round2 } from "../money";
-import { healAndRefoldMonthAttendance, isLegacyAutoLateDeduction } from "../attendanceService";
+import { isLegacyAutoLateDeduction } from "../attendanceService";
 import {
   computeAttendancePay,
   daysBetween,
   DEFAULT_WORK_SCHEDULE,
-  isBrowserRoundedScheduleRate,
   type WorkSchedule,
 } from "./attendancePay";
 
@@ -227,36 +226,20 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
         ),
       );
 
-  let attRows = await selectAttRows();
-
-  // شفاء تلقائي لسجلات الشهر المفتوح عند اكتشاف أثر الخصم المزدوج أو بصمة عابرة لمنتصف الليل أو دوام مجزّأ غير موسوم أو سعر متصفح مقرب
-  if (!input.tx) {
-    const hasUnhealedLateOrOpen = attRows.some(
-      (r) =>
-        isLegacyAutoLateDeduction(r, emp.workSchedule) ||
-        (r.source === "fingerprint" &&
-          ((r.checkIn != null && r.checkOut == null) ||
-            (r.checkIn instanceof Date && r.checkIn.getUTCHours() < 6) ||
-            (!String(r.notes ?? "").includes("[فترات الدوام:") &&
-              ((r.needsReview && String(r.reviewReason ?? "").includes("فرديّ")) ||
-                (r.checkIn instanceof Date &&
-                  r.checkOut instanceof Date &&
-                  !String(r.reviewReason ?? "").includes("قُصّت عند سقف") &&
-                  (r.checkOut.getTime() - r.checkIn.getTime()) / 3_600_000 - Number(r.hours ?? 0) > 0.08))))),
-    );
-    const hasRoundedScheduleRate =
-      emp.payType === "monthly" &&
-      isBrowserRoundedScheduleRate(
-        (emp.workSchedule && typeof emp.workSchedule === "object" ? emp.workSchedule : null) as WorkSchedule | null,
-        Number(emp.salary ?? 0),
-      );
-    if (hasUnhealedLateOrOpen || hasRoundedScheduleRate) {
-      await healAndRefoldMonthAttendance(p, { employeeId: input.employeeId }).catch(() => undefined);
-      [emp] = await selectEmp();
-      if (!emp) return null;
-      attRows = await selectAttRows();
-    }
-  }
+  const attRows = await selectAttRows();
+  const hasUnhealedLateOrOpen = attRows.some(
+    (r) =>
+      isLegacyAutoLateDeduction(r, emp.workSchedule) ||
+      (r.source === "fingerprint" &&
+        ((r.checkIn != null && r.checkOut == null) ||
+          (r.checkIn instanceof Date && r.checkIn.getUTCHours() < 6) ||
+          (!String(r.notes ?? "").includes("[فترات الدوام:") &&
+            ((r.needsReview && String(r.reviewReason ?? "").includes("فرديّ")) ||
+              (r.checkIn instanceof Date &&
+                r.checkOut instanceof Date &&
+                !String(r.reviewReason ?? "").includes("قُصّت عند سقف") &&
+                (r.checkOut.getTime() - r.checkIn.getTime()) / 3_600_000 - Number(r.hours ?? 0) > 0.08))))),
+  );
 
   const [settings] = await db.select().from(hrAttendanceSettings).where(eq(hrAttendanceSettings.id, 1)).limit(1);
   // جدول الموظف وحده — الجدول العامّ أُلغي (0140) لأنه صار مكرّراً بعد دخوله بطاقةَ كل موظف.
@@ -286,8 +269,8 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     if (r.status === "PRESENT" || r.status === "LATE") {
       attendedHoursByDate.set(d, money(r.hours ?? 0));
       actualPaid += Number(r.amount ?? 0);
-      // دخولٌ بلا انصراف ⇒ يومٌ مفتوح لا غائب (ساعاته صفرٌ لأنها لا تُخمَّن، لا لأنه تغيّب).
-      if (r.checkIn != null && r.checkOut == null && money(r.hours ?? 0).lte(0)) openDates.add(d);
+      // دخولٌ بلا انصراف (أو فترة دوام ثانية مفتوحة) ⇒ يومٌ مفتوح لا غائب.
+      if (hasUnclosedAttendancePunch(r)) openDates.add(d);
     }
   }
 
@@ -462,6 +445,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
      */
     liveAmountDue,
     liveBasis,
+    needsHealing: !snapshot && hasUnhealedLateOrOpen,
     totals: {
       scheduledHours: pay.scheduledHours,
       standardHours: pay.standardHours,

@@ -20,7 +20,6 @@ import {
 import { money } from "../money";
 import { getRun } from "./queries";
 import { assertPayrollActiveOwnerChecker } from "./settlement";
-import { syncAllAdvancesForDraftRunTx } from "./syncAdvances";
 import { decodeTerminationWageCoverage } from "./terminationCoverage";
 import { assertCommissionArtifactReadyForPayrollTx } from "../commissions/payrollReadiness";
 
@@ -85,16 +84,7 @@ export async function approveRun(id: number, actor: Actor) {
         message: `تشغيلة عمولات معتمدة (#${uncaptured.id}) لشهر ${uncaptured.period} غير ملتقطة — أعد توليد المسيّر.`,
       });
     }
-    const syncedAdvances = await syncAllAdvancesForDraftRunTx(tx, id);
-    let runToApprove = run;
-    if (syncedAdvances) {
-      const [refreshedRun] = await tx
-        .select()
-        .from(payrollRuns)
-        .where(eq(payrollRuns.id, id))
-        .limit(1);
-      if (refreshedRun) runToApprove = refreshedRun;
-    }
+    const runToApprove = run;
 
     const items = await tx
       .select({
