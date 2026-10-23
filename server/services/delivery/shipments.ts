@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
-import { DEAD_INVOICE_STATUSES } from "@shared/invoiceStatus";
+import { DEAD_INVOICE_STATUSES, isDeadInvoiceStatus } from "@shared/invoiceStatus";
 import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 import {
   and,
@@ -13,6 +13,7 @@ import {
   notInArray,
   or,
   sql,
+  type SQLWrapper,
 } from "drizzle-orm";
 import {
   auditLogs,
@@ -117,6 +118,40 @@ export async function loadShipmentMembersTx(
   return rows.map((row) => row.cn);
 }
 
+/** Closed invoice parcels remain in immutable shipment history, never in physical actions. */
+export function operationalShipmentMembers<T extends Pick<DeliveryConsignment, "status" | "parcelStatus">>(rows: T[]): T[] {
+  return rows.filter(row => !["CANCELLED", "RETURNED", "WRITTEN_OFF"].includes(row.status)
+    && !["CANCELLED", "RETURNED"].includes(row.parcelStatus));
+}
+
+/** Historical closed parcels keep their old party; live parcels and the retained fee source share the current party. */
+export function shipmentCurrentPartyMembers<T extends Pick<DeliveryConsignment, "status" | "parcelStatus" | "deliveryFee">>(rows: T[]): T[] {
+  return rows.filter(row => operationalShipmentMembers([row]).length > 0 || money(row.deliveryFee).gt(0));
+}
+
+/** Caller holds the party lock. A fee stays on its original invoice even if that parcel exits. */
+export async function shipmentFeeDeliveryProvenTx(tx: Tx, consignmentId: number) {
+  const rows = await loadShipmentMembersTx(tx, consignmentId, { currentRead: true });
+  const source = rows.find(row => Number(row.id) === consignmentId);
+  return !!source && rows.every(row => Number(row.branchId) === Number(source.branchId))
+    && rows.some(row => row.parcelStatus === "DELIVERED" && Number(row.partyId) === Number(source.partyId));
+}
+
+/** Same eligibility for bounded party fee selection; the original fee invoice stays authoritative. */
+export function shipmentFeeDeliveryProvenExpr(source: {
+  id: SQLWrapper; partyId: SQLWrapper; branchId: SQLWrapper; parcelStatus: SQLWrapper;
+} = deliveryConsignments) {
+  return sql`(${source.parcelStatus} = 'DELIVERED' OR EXISTS (
+    SELECT 1 FROM deliveryShipmentMembers fee_source
+    INNER JOIN deliveryShipmentMembers fee_sibling ON fee_sibling.leaderConsignmentId = fee_source.leaderConsignmentId
+    INNER JOIN deliveryConsignments fee_delivered ON fee_delivered.id = fee_sibling.consignmentId
+    WHERE fee_source.consignmentId = ${source.id}
+      AND fee_delivered.partyId = ${source.partyId}
+      AND fee_delivered.branchId = ${source.branchId}
+      AND fee_delivered.parcelStatus = 'DELIVERED'
+  ))`;
+}
+
 export async function assertStandaloneConsignmentTx(
   tx: Tx,
   consignmentId: number,
@@ -173,11 +208,8 @@ async function shipmentDetailsTx(
   const leader = rows.find((row) => Number(row.id) === leaderConsignmentId);
   if (
     !leader ||
-    rows.some(
-      (row) =>
-        Number(row.branchId) !== Number(source.branchId) ||
-        Number(row.partyId) !== Number(source.partyId),
-    )
+    rows.some(row => Number(row.branchId) !== Number(source.branchId)) ||
+    shipmentCurrentPartyMembers(rows).some(row => Number(row.partyId) !== Number(leader.partyId))
   ) {
     shipmentError(
       "تعذر فتح الشحنة",
@@ -193,6 +225,7 @@ async function shipmentDetailsTx(
       total: invoices.total,
       paidAmount: invoices.paidAmount,
       returnedTotal: invoices.returnedTotal,
+      status: invoices.status,
     })
     .from(invoices)
     .where(
@@ -204,6 +237,7 @@ async function shipmentDetailsTx(
   const numbers = new Map(
     invoiceRows.map((row) => [Number(row.id), row.invoiceNumber]),
   );
+  const invoiceStatuses = new Map(invoiceRows.map(row => [Number(row.id), row.status]));
   const remaining = new Map(
     invoiceRows.map((row) => {
       const amount = round2(
@@ -221,11 +255,14 @@ async function shipmentDetailsTx(
     ...row,
     invoiceNumber: numbers.get(Number(row.invoiceId)) ?? "",
     invoiceRemaining: remaining.get(Number(row.invoiceId)) ?? "0.00",
+    operational: operationalShipmentMembers([row]).length > 0,
+    invoiceStatus: invoiceStatuses.get(Number(row.invoiceId)) ?? "PENDING",
   }));
   return {
     leaderConsignmentId,
     consignmentNumber: leader.consignmentNumber,
     memberCount: members.length,
+    operationalMemberCount: operationalShipmentMembers(members).length,
     remainingAmount: toDbMoney(
       round2(
         members.reduce(
@@ -288,7 +325,7 @@ export async function dispatchInvoiceShipment(
 ) {
   const ids = [...input.invoiceIds].sort((a, b) => a - b);
   if (
-    ids.length < 2 ||
+    ids.length < 1 ||
     ids.length > MAX_SHIPMENT_INVOICES ||
     new Set(ids).size !== ids.length ||
     ids.some((id) => !Number.isSafeInteger(id) || id <= 0) ||
@@ -429,16 +466,20 @@ export async function dispatchInvoiceShipment(
       : [];
     let leaderId: number | undefined;
     let leaderInvoiceId = ids[0];
+    let retainedLeader: DeliveryConsignment | undefined;
     if (memberships.length) {
       leaderId = Number(memberships[0].leaderConsignmentId);
-      const oldMembers = await loadShipmentMembersTx(tx, leaderId);
-      const oldInvoiceIds = oldMembers
-        .map((row) => Number(row.invoiceId))
+      const oldMembers = await loadShipmentMembersTx(tx, leaderId, { currentRead: true });
+      const oldInvoices = await tx.select().from(invoices).where(inArray(invoices.id, oldMembers.map(row => Number(row.invoiceId))))
+        .orderBy(asc(invoices.id)).for("update");
+      const oldInvoiceIds = oldInvoices.filter(row => !isDeadInvoiceStatus(row.status))
+        .map(row => Number(row.id))
         .sort((a, b) => a - b);
       if (
         memberships.length !== ids.length ||
         oldInvoiceIds.join(",") !== ids.join(",") ||
-        memberships.some((row) => Number(row.leaderConsignmentId) !== leaderId)
+        memberships.some((row) => Number(row.leaderConsignmentId) !== leaderId) ||
+        oldMembers.some(row => !["CANCELLED", "RETURNED"].includes(row.parcelStatus))
       ) {
         shipmentError(
           "تعذر تغيير فواتير الشحنة",
@@ -456,8 +497,21 @@ export async function dispatchInvoiceShipment(
           "PRECONDITION_FAILED",
         );
       leaderInvoiceId = Number(oldLeader.invoiceId);
+      if (!ids.includes(leaderInvoiceId)) {
+        retainedLeader = oldLeader;
+        if (Number(oldLeader.partyId) !== input.partyId ||
+          normalizeExternalTrackingRef(input.externalTrackingRef) !== normalizeExternalTrackingRef(oldLeader.externalTrackingRef) ||
+          (input.feeCollection ?? "COURIER") !== oldLeader.feeCollection ||
+          !round2(money(input.deliveryFee ?? oldLeader.deliveryFee)).eq(money(oldLeader.deliveryFee)))
+          shipmentError("تعذر تغيير مصدر أجرة الشحنة وبوليصتها", "فاتورة القائد أغلقت وتحتفظ بأصل الأجرة والبوليصة وتاريخهما",
+            "أعد الإسناد إلى الجهة نفسها بالبوليصة وطريقة الأجرة ومبلغها الأصلي؛ لأي تغيير آخر اطلب من الإدارة مراجعة مصدر الأجرة", "PRECONDITION_FAILED");
+      }
     }
-    const heldFees = await loadInvoiceDeliveryFeeHeldTx(tx, ids);
+    if (!memberships.length && ids.length < 2)
+      shipmentError("تعذر إنشاء شحنة مجمعة", "إنشاء الشحنة يتطلب فاتورتين على الأقل؛ الناجي الواحد مسموح لإعادة شحنة قائمة فقط", "أسند الفاتورة منفردة من نافذة التوصيل");
+    const heldFees = await loadInvoiceDeliveryFeeHeldTx(tx, retainedLeader ? [...ids, leaderInvoiceId] : ids);
+    if (retainedLeader?.feeCollection === "COUNTER" && !(heldFees.get(leaderInvoiceId) ?? money(0)).eq(money(retainedLeader.deliveryFee)))
+      shipmentError("تعذر إعادة إسناد أمانة أجرة الشحنة", "صافي أمانة الأجرة الأصلية لا يطابق أجرة الشحنة", "اطلب من الإدارة مراجعة إيصالات أمانة الأجرة", "PRECONDITION_FAILED");
     const feeOwners = lockedInvoices.filter((invoice) =>
       (heldFees.get(Number(invoice.id)) ?? money(0)).gt(0),
     );
@@ -490,7 +544,7 @@ export async function dispatchInvoiceShipment(
     }
     const dispatched: Awaited<ReturnType<typeof dispatchInvoiceInTx>>[] = [];
     for (const invoiceId of [
-      leaderInvoiceId,
+      ...(retainedLeader ? [] : [leaderInvoiceId]),
       ...ids.filter((id) => id !== leaderInvoiceId),
     ]) {
       const isLeader = invoiceId === leaderInvoiceId;
@@ -513,6 +567,7 @@ export async function dispatchInvoiceShipment(
           ? undefined
           : {
               shipmentLeaderConsignmentId: leaderId,
+              ...(retainedLeader ? { retainedShipmentLeader: true } : {}),
               ...(isLeader ? {} : { sharedTrackingLeaderId: leaderId }),
             },
       );
@@ -661,24 +716,29 @@ export async function listShipmentInvoiceCandidates(
         "اطلب من المدير مراجعة روابط الشحنة",
         "PRECONDITION_FAILED",
       );
+    const surviving = original.filter(row => !isDeadInvoiceStatus(row.invoice.status));
     const cancelled =
-      original.length >= 2 &&
-      original.every(
+      surviving.length > 0 && original.every(row => ["CANCELLED", "RETURNED"].includes(row.cn.parcelStatus)) &&
+      surviving.every(
         (row) =>
           row.cn.status === "CANCELLED" &&
           row.cn.parcelStatus === "CANCELLED" &&
           row.cn.moneyStatus === "CANCELLED",
       );
+    const originalLeader = cancelled ? (await db.select().from(deliveryConsignments)
+      .where(eq(deliveryConsignments.id, Number(membership.leaderId))).limit(1))[0] : null;
     return {
       anchor: anchorRow,
       candidates: cancelled
-        ? original
+        ? surviving
             .filter((row) => Number(row.invoice.id) !== invoiceId)
             .map((row) => row.invoice)
         : [],
       requiredInvoiceIds: cancelled
-        ? original.map((row) => Number(row.invoice.id))
+        ? surviving.map((row) => Number(row.invoice.id))
         : [],
+      retainedDispatch: originalLeader ? { partyId: Number(originalLeader.partyId), deliveryFee: originalLeader.deliveryFee,
+        feeCollection: originalLeader.feeCollection, externalTrackingRef: originalLeader.externalTrackingRef } : null,
     };
   }
   const phone = canonicalIraqiMobile(anchor.contactPhone);
@@ -730,5 +790,6 @@ export async function listShipmentInvoiceCandidates(
     anchor: anchorRow,
     candidates: rows,
     requiredInvoiceIds: [] as number[],
+    retainedDispatch: null,
   };
 }

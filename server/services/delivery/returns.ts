@@ -23,6 +23,73 @@ import type { DeliveryTxActor } from "./types";
 import type { Tx } from "../../db";
 import { assertStandaloneConsignmentTx } from "./shipments";
 
+/** Existing held-fee refund, shared when the original fee invoice has left a shipment. Caller prelocks cash source then party/CNs. */
+export async function refundHeldDeliveryFeeForReturnTx(tx: Tx, cn: typeof deliveryConsignments.$inferSelect, actor: DeliveryTxActor, prelockedReturnShift: { shiftId: number } | null) {
+    const heldRef = `DLV-FEE-INV-${Number(cn.invoiceId)}`;
+    const feeHeldRows = await tx
+      .select({ direction: receipts.direction, amount: receipts.amount, referenceNumber: receipts.referenceNumber })
+      .from(receipts)
+      .where(and(
+        eq(receipts.invoiceId, Number(cn.invoiceId)),
+        inArray(receipts.referenceNumber, [heldRef, String(cn.consignmentNumber)]),
+        inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+        eq(receipts.approvalStatus, "APPROVED"),
+      ))
+      // current read after the source mutex: a stale snapshot must never authorize a refund.
+      .for("update");
+    const feeHeldNet = round2(feeHeldRows.reduce(
+      (sum, receipt) => receipt.direction === "IN"
+        ? sum.plus(money(receipt.amount))
+        : sum.minus(money(receipt.amount)),
+      money(0),
+    ));
+    // الإفصاح: أمانةٌ قُبضت فعلاً (وارِدٌ موجب) ثم غادرت الدرج إلى المندوب ⇒ لا التزامَ باقياً
+    // نُحرّره، لكن الكاشير يجب أن يعلم (ردُّها للزبون قرارُ إدارةٍ يُسجَّل مصروفاً).
+    const feeCollected = round2(feeHeldRows.reduce(
+      (sum, receipt) => receipt.direction === "IN" && receipt.referenceNumber === heldRef
+        ? sum.plus(money(receipt.amount))
+        : sum,
+      money(0),
+    ));
+    const feeAlreadyPaidToCourier = cn.feeSettledAt != null && feeCollected.gt(0);
+    if (feeHeldNet.gt(0) && cn.feeSettledAt == null) {
+      const feeShift = prelockedReturnShift;
+      if (!feeShift) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "تغيّرت أمانة أجرة التوصيل أثناء الإرجاع؛ أعد المحاولة",
+        });
+      }
+      await assertCashOutAvailable(tx, {
+        branchId: Number(cn.branchId), cashBucket: "DRAWER", shiftId: feeShift.shiftId,
+        amount: feeHeldNet, operation: "رد أمانة أجرة التوصيل",
+      });
+      const feeOut = await tx.insert(receipts).values({
+        branchId: Number(cn.branchId), shiftId: feeShift.shiftId, invoiceId: Number(cn.invoiceId),
+        direction: "OUT", amount: toDbMoney(feeHeldNet), paymentMethod: "CASH", cashBucket: "DRAWER",
+        status: "COMPLETED", partyType: "OTHER",
+        referenceNumber: `DLV-FEE-INV-${Number(cn.invoiceId)}`,
+        description: `ردّ أمانة أجرة توصيل — إرجاع ${cn.consignmentNumber}`,
+        createdBy: actor.userId,
+      });
+      await postEntry(tx, {
+        entryType: "DELIVERY_FEE_HELD",
+        postingIntent: deliveryFeeHeldPayoutIntent(feeHeldNet.neg(), "DRAWER"),
+        postingSourceComponents: {
+          roleDebits: { COURIER_PAYABLE: feeHeldNet },
+          roleCredits: { CASH: feeHeldNet },
+        },
+        dedupeKey: `DELIVERY_FEE_HELD_REFUND:${cn.id}`,
+        branchId: Number(cn.branchId), invoiceId: Number(cn.invoiceId),
+        receiptId: extractInsertId(feeOut),
+        amount: feeHeldNet.neg(),
+        notes: `ردّ أمانة أجرة توصيل — إرجاع ${cn.consignmentNumber}`,
+      });
+    }
+
+  return { feeAlreadyPaidToCourier };
+}
+
 /** إرجاع إرسالية (البضاعة عادت): عكس SALE + إعادة مخزون + عكس العهدة + رد العربون. مقيَّد بـDISPATCHED (collected==0). */
 export async function returnConsignment(
   consignmentId: number,
@@ -554,67 +621,7 @@ export async function returnConsignment(
     //   (٢) صافي الإيصالات يشمل صرف الأجرة برقم الإرسالية أيضاً (تصفيةٌ ذاتية للحالات القديمة).
     // ما دُفع للمندوب فعلاً ثم أراد المالك ردّه للزبون = **مصروفٌ على المكتبة** بسند صرفٍ
     // صريح، لا تحريرٌ ثانٍ لنفس الأمانة. (يُعلَن للواجهة بـ`feeAlreadyPaidToCourier`.)
-    const heldRef = `DLV-FEE-INV-${Number(cn.invoiceId)}`;
-    const feeHeldRows = await tx
-      .select({ direction: receipts.direction, amount: receipts.amount, referenceNumber: receipts.referenceNumber })
-      .from(receipts)
-      .where(and(
-        eq(receipts.invoiceId, Number(cn.invoiceId)),
-        inArray(receipts.referenceNumber, [heldRef, String(cn.consignmentNumber)]),
-        inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]),
-        eq(receipts.approvalStatus, "APPROVED"),
-      ))
-      // current read after the source mutex: a stale snapshot must never authorize a refund.
-      .for("update");
-    const feeHeldNet = round2(feeHeldRows.reduce(
-      (sum, receipt) => receipt.direction === "IN"
-        ? sum.plus(money(receipt.amount))
-        : sum.minus(money(receipt.amount)),
-      money(0),
-    ));
-    // الإفصاح: أمانةٌ قُبضت فعلاً (وارِدٌ موجب) ثم غادرت الدرج إلى المندوب ⇒ لا التزامَ باقياً
-    // نُحرّره، لكن الكاشير يجب أن يعلم (ردُّها للزبون قرارُ إدارةٍ يُسجَّل مصروفاً).
-    const feeCollected = round2(feeHeldRows.reduce(
-      (sum, receipt) => receipt.direction === "IN" && receipt.referenceNumber === heldRef
-        ? sum.plus(money(receipt.amount))
-        : sum,
-      money(0),
-    ));
-    const feeAlreadyPaidToCourier = cn.feeSettledAt != null && feeCollected.gt(0);
-    if (feeHeldNet.gt(0) && cn.feeSettledAt == null) {
-      const feeShift = prelockedReturnShift;
-      if (!feeShift) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "تغيّرت أمانة أجرة التوصيل أثناء الإرجاع؛ أعد المحاولة",
-        });
-      }
-      await assertCashOutAvailable(tx, {
-        branchId: Number(cn.branchId), cashBucket: "DRAWER", shiftId: feeShift.shiftId,
-        amount: feeHeldNet, operation: "رد أمانة أجرة التوصيل",
-      });
-      const feeOut = await tx.insert(receipts).values({
-        branchId: Number(cn.branchId), shiftId: feeShift.shiftId, invoiceId: Number(cn.invoiceId),
-        direction: "OUT", amount: toDbMoney(feeHeldNet), paymentMethod: "CASH", cashBucket: "DRAWER",
-        status: "COMPLETED", partyType: "OTHER",
-        referenceNumber: `DLV-FEE-INV-${Number(cn.invoiceId)}`,
-        description: `ردّ أمانة أجرة توصيل — إرجاع ${cn.consignmentNumber}`,
-        createdBy: actor.userId,
-      });
-      await postEntry(tx, {
-        entryType: "DELIVERY_FEE_HELD",
-        postingIntent: deliveryFeeHeldPayoutIntent(feeHeldNet.neg(), "DRAWER"),
-        postingSourceComponents: {
-          roleDebits: { COURIER_PAYABLE: feeHeldNet },
-          roleCredits: { CASH: feeHeldNet },
-        },
-        dedupeKey: `DELIVERY_FEE_HELD_REFUND:${consignmentId}`,
-        branchId: Number(cn.branchId), invoiceId: Number(cn.invoiceId),
-        receiptId: extractInsertId(feeOut),
-        amount: feeHeldNet.neg(),
-        notes: `ردّ أمانة أجرة توصيل — إرجاع ${cn.consignmentNumber}`,
-      });
-    }
+    const { feeAlreadyPaidToCourier } = await refundHeldDeliveryFeeForReturnTx(tx, cn, actor, prelockedReturnShift);
 
     assertConsignmentStatusTransition(cn.status, "RETURNED");
     const returnedAt = new Date();

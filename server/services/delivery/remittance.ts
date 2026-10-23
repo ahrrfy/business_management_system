@@ -1,6 +1,5 @@
-// ترحيل (D8): توريد COD المُحصَّل كاملاً إلى الدرج. أجورُ الجهة **لا تُخصَم هنا** — تُصرف
-// بسند صرفٍ مستقلّ (payDeliveryFee / payPartyDeliveryFees في fees.ts) كي يبقى لكل دينارٍ
-// خارجٍ إيصالُه وسببُه. netRemitted = المُحصَّل − استقطاع كشف الشركة (إن وُجد).
+// توريد إجمالي COD وتسوية حسم أجرة المتجر من الالتزام الأصلي في المعاملة نفسها.
+// صافي النقد = الإجمالي − الأجور المحسومة − الاستقطاع الإضافي − العجز المصنف.
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, asc, eq, or, sql } from "drizzle-orm";
@@ -43,6 +42,8 @@ import {
   lockCashSourceForUpdate,
 } from "../cash/cashAvailability";
 import { withTx } from "../tx";
+import { createFeeWithholdingQuote, ledgerFeeDue, postFeePayment } from "./fees";
+import { assertFeeWithholdingCapacity } from "./feeWithholdingPolicy";
 import { nextRemittanceNumber } from "./numbering";
 import { partyCashInHandTx } from "./cashSource";
 import { shortfallAssignedForConsignmentTx } from "./openParcelPredicates";
@@ -78,7 +79,7 @@ export interface RemittanceInput {
    *    `confirmConsignmentDelivery` بشاهد الكشف) — فالتسليم والتحصيل والتوريد عمليةٌ واحدة.
    *  ② رقمُه **فريدٌ لكل جهة** (قيدٌ في القاعدة) ⇒ إعادةُ إدخال الكشف نفسه ترتدّ بدل أن
    *    تضاعف القيود — مفتاح عدم التكرار الأعماليّ فوق idempotency التقنيّ.
-   *  ③ استقطاعاتُه **مصروف شركةٍ مستقلّ** يُوثَّق على المستند، لا تخفيضُ ذمّة عميل.
+   *  ③ الحسم يسوّي أجرة المتجر المستحقة أولاً، والزائد وحده مصروف مستقل؛ لا يخفض تسوية العميل.
    */
   companyStatement?: {
     statementNumber: string;
@@ -425,6 +426,8 @@ export async function recordDeliveryRemittanceInTx(
 
     // المرور ١: قفل + تحقّق + حساب (بلا كتابة) — ترتيب أقفال الإرساليات تصاعدياً يمنع الجمود.
     type Work = {
+      cn: typeof deliveryConsignments.$inferSelect;
+      orderTotal: Decimal;
       id: number;
       invoiceId: number;
       collected: Decimal;
@@ -437,9 +440,7 @@ export async function recordDeliveryRemittanceInTx(
     };
     const work: Work[] = [];
     let collectedTotal = new Decimal(0);
-    // الأجور لا تُخصَم من التوريد بنيوياً (تُصرف بسند مستقل في fees.ts) — الصفر هنا ثابتٌ
-    // لا فرعَ ميّتاً: يُخزَّن في feesTotal للمخطط ويُبقي netRemitted = المُحصَّل − الاستقطاع.
-    const feesTotal = new Decimal(0);
+    let feesTotal = new Decimal(0);
     let expectedTotal = new Decimal(0);
     const sortedLines = [...input.lines].sort(
       (a, b) => a.consignmentId - b.consignmentId,
@@ -582,6 +583,8 @@ export async function recordDeliveryRemittanceInTx(
       // يصف منطقاً غير موجود): COURIER يقبضها من الزبون مباشرةً، وCOUNTER/SHOP تُصرف بسند
       // مستقل (payDeliveryFee / payPartyDeliveryFees) بإيصال OUT خاصٍّ بها.
       work.push({
+        cn,
+        orderTotal: Decimal.max(0, money(invRow!.total).minus(money(invRow!.returnedTotal ?? "0"))),
         id: Number(cn.id),
         invoiceId: Number(cn.invoiceId),
         collected,
@@ -611,26 +614,35 @@ export async function recordDeliveryRemittanceInTx(
         message: `مبلغ التوريد (${collectedTotal.toFixed(2)}) يتجاوز النقد المثبت بذمة الجهة (${custodyBalance.toFixed(2)}). شغّل المطابقة المالية قبل المتابعة.`,
       });
     }
-    /**
-     * **استقطاعُ الشركة نقدٌ لم يدخل الدرج قطّ** (تصويب مراجعة Codex، ٢٠/٨).
-     *
-     * كان يُخزَّن **بياناً وصفياً فقط**: `netRemitted` والنقدُ المعدود يُحسبان على المُحصَّل
-     * كاملاً ⇒ إدخالُ النقد المستلَم فعلاً **يفشل في التحقّق**، وإدخالُ الإجماليّ ليمرّ
-     * **يسجّل نقداً لم يدخل** ويترك الاستقطاع المُفصَح عنه خارج الدفتر — خرقٌ مزدوج لـ§٥.
-     *
-     * الآن يُطرح من الصافي، ويخرج بإيصال OUT ومصروفٍ مصنَّف `DELIVERY_EXPENSE` — مطابقةً
-     * لقرار المالك في الشحن/الكمرك: مصروفُ شركةٍ يُعترف به لحظته ولا يمسّ ذمّة عميل.
-     */
-    const deductionsTotal = round2(money(input.companyStatement?.deductionsTotal ?? "0"));
-    if (deductionsTotal.lt(0)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "استقطاع الكشف لا يصحّ أن يكون سالباً" });
+    // A declared deduction INCLUDES retained fees. Only its excess is a new expense.
+    // With no declared deduction, online SHOP fees are retained automatically from COD.
+    const declaredDeduction = round2(money(input.companyStatement?.deductionsTotal ?? "0"));
+    if (declaredDeduction.lt(0) || declaredDeduction.gt(collectedTotal)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+        what: "تعذر تسجيل استقطاع الكشف", why: declaredDeduction.gt(collectedTotal) ? `استقطاع الكشف (${declaredDeduction.toFixed(2)}) يتجاوز المُحصَّل (${collectedTotal.toFixed(2)})` : "استقطاع الكشف لا يصحّ أن يكون سالباً",
+        doThis: "راجع إجمالي الحسم في كشف جهة التوصيل ثم أعد المحاولة",
+      }) });
     }
-    if (deductionsTotal.gt(collectedTotal)) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: `استقطاع الكشف (${deductionsTotal.toFixed(2)}) يتجاوز المُحصَّل (${collectedTotal.toFixed(2)})`,
-      });
+    let feeBudget = declaredDeduction.gt(0) ? declaredDeduction : collectedTotal;
+    const offsets = new Map<number, { amount: Decimal; cash: Decimal; due: Decimal }>();
+    const quoteFee = await createFeeWithholdingQuote(tx, input.partyId, party.useCommissionForSettlement === true);
+    for (const w of work) {
+      if (w.cn.sourceType !== "ONLINE_ORDER" || w.cn.feeCollection !== "SHOP" || w.cn.parcelStatus !== "DELIVERED") continue;
+      const due = Decimal.max(0, await ledgerFeeDue(tx, w.id));
+      if (due.lte(0)) continue;
+      const quotedCash = quoteFee(due, w.orderTotal);
+      const cap = Decimal.min(w.collected, feeBudget);
+      // A commission replaces the whole fee. Defer a split quote instead of inventing a rate.
+      assertFeeWithholdingCapacity(due, quotedCash, cap);
+      const cash = Decimal.min(quotedCash, cap);
+      const amount = quotedCash.lt(due) ? due : cash;
+      if (amount.lte(0)) continue;
+      offsets.set(w.id, { amount, cash, due });
+      feeBudget = feeBudget.minus(cash);
+      feesTotal = feesTotal.plus(cash);
     }
+    const deductionsTotal = Decimal.max(0, declaredDeduction.minus(feesTotal));
+    const totalWithheld = feesTotal.plus(deductionsTotal);
     const netRemitted = round2(collectedTotal.minus(feesTotal).minus(deductionsTotal));
     const countedCash = round2(money(input.countedCash));
     if (countedCash.lt(0)) {
@@ -709,6 +721,9 @@ export async function recordDeliveryRemittanceInTx(
       courierCommissionAmount = null;
     }
 
+    if (offsets.size > 0 && party.useCommissionForSettlement === true) {
+      courierCommissionAmount = feesTotal;
+    }
     const rmRes = await tx.insert(deliveryRemittances).values({
       remittanceNumber,
       branchId: input.branchId,
@@ -736,9 +751,8 @@ export async function recordDeliveryRemittanceInTx(
     });
     const remittanceId = extractInsertId(rmRes);
 
-    // إيصال درج IN = COD المُحصَّل كاملاً (سلامة الفاتورة). لا إيصال OUT للأجور هنا —
-    // صرفُها بسنده المستقل في fees.ts. أمّا إيصال OUT للاستقطاع فيُربَط بـ`receiptOutId`
-    // كي يُظهر المستندَ صراحةً لا ضمنياً (Codex P2 #6 — ٢٢/٨: نقدٌ خرج بلا حاشيةٍ في صفّ التوريد).
+    // إجمالي IN وOUT الحسم مستندان مترابطان للتصفية؛ صافي نقدهما هو المعدود فعلاً.
+    // الأجرة تسوّي التزاماً سابقاً، والاستقطاع الإضافي وحده مصروف جديد.
     let receiptInId: number | null = null;
     let receiptOutId: number | null = null;
     if (cashIn.gt(0)) {
@@ -760,7 +774,7 @@ export async function recordDeliveryRemittanceInTx(
     }
     // استقطاعُ الشركة: نقدٌ خرج بحكم أنّه لم يصل — إيصالُ OUT مستقلٌّ كي يبقى كلُّ مبلغٍ
     // منسوباً إلى سببه في تسوية الدرج وZ-report، ومصروفٌ مصنَّف يظهر في تقريره.
-    if (deductionsTotal.gt(0)) {
+    if (totalWithheld.gt(0)) {
       if (cashBucket === "TREASURY") assertTreasuryOutException("DELIVERY_REMITTANCE_CLEARING");
       // الحارس المركزي لكل CASH OUT (عقد cashNonnegativeCore): إيصالُ IN بكامل المُحصَّل كُتب
       // للتوّ في نفس المعاملة والاستقطاع ≤ المُحصَّل ⇒ يمرّ دائماً على درجٍ سليم، ولا يمرّ
@@ -769,46 +783,48 @@ export async function recordDeliveryRemittanceInTx(
         branchId: input.branchId,
         cashBucket,
         shiftId,
-        amount: deductionsTotal,
+        amount: totalWithheld,
         operation: "استقطاع كشف شركة التوصيل من صافي التوريد",
       });
       const rDed = await tx.insert(receipts).values({
         branchId: input.branchId,
         shiftId,
         direction: "OUT",
-        amount: toDbMoney(deductionsTotal),
+        amount: toDbMoney(totalWithheld),
         paymentMethod: "CASH",
         cashBucket,
         status: "COMPLETED",
         referenceNumber: remittanceNumber,
         partyType: "OTHER",
-        description: `استقطاع شركة التوصيل — كشف ${input.companyStatement?.statementNumber?.trim() ?? remittanceNumber}`,
+        description: `حسم أجور واستقطاع شركة التوصيل — كشف ${input.companyStatement?.statementNumber?.trim() ?? remittanceNumber}`,
         createdBy: actor.userId,
       });
       const deductionReceiptId = extractInsertId(rDed);
       receiptOutId = deductionReceiptId;
-      const assetRole = paymentAccountRole("CASH", cashBucket, "OUT");
-      const src = {
-        roleDebits: { DELIVERY_EXPENSE: deductionsTotal },
-        roleCredits: { [assetRole]: deductionsTotal },
-      };
-      await postEntry(tx, {
-        entryType: "PAYMENT_OUT",
-        dedupeKey: `DLV-STMT-DEDUCTION:${remittanceId}`,
-        branchId: input.branchId,
-        receiptId: deductionReceiptId,
-        deliveryPartyId: input.partyId,
-        amount: deductionsTotal,
-        cost: deductionsTotal,
-        notes: `استقطاع كشف شركة التوصيل ${remittanceNumber}`,
-        postingIntent: createPostingIntent(
-          "PAYMENT_OUT_EXPENSE",
-          "PAYMENT_OUT",
-          [debitLine("DELIVERY_EXPENSE", deductionsTotal), creditLine(assetRole, deductionsTotal)],
-          src,
-        ),
-        postingSourceComponents: src,
-      });
+      if (deductionsTotal.gt(0)) {
+        const assetRole = paymentAccountRole("CASH", cashBucket, "OUT");
+        const src = {
+          roleDebits: { DELIVERY_EXPENSE: deductionsTotal },
+          roleCredits: { [assetRole]: deductionsTotal },
+        };
+        await postEntry(tx, {
+          entryType: "PAYMENT_OUT",
+          dedupeKey: `DLV-STMT-DEDUCTION:${remittanceId}`,
+          branchId: input.branchId,
+          receiptId: deductionReceiptId,
+          deliveryPartyId: input.partyId,
+          amount: deductionsTotal,
+          cost: deductionsTotal,
+          notes: `استقطاع كشف شركة التوصيل ${remittanceNumber}`,
+          postingIntent: createPostingIntent(
+            "PAYMENT_OUT_EXPENSE",
+            "PAYMENT_OUT",
+            [debitLine("DELIVERY_EXPENSE", deductionsTotal), creditLine(assetRole, deductionsTotal)],
+            src,
+          ),
+          postingSourceComponents: src,
+        });
+      }
     }
     await tx
       .update(deliveryRemittances)
@@ -817,10 +833,13 @@ export async function recordDeliveryRemittanceInTx(
 
     // المرور ٢: تطبيق لكل إرسالية.
     // م١ (PR-2): نقدُ كلّ سطرٍ الداخل الدرجَ فعلاً = حصّتُه من (المُحصَّل − العجز) بنسبة قيمته.
-    const remitCashByLine = allocateProportionally(cashIn, work.map((w) => w.collected));
+    const afterFees = work.map((w) => w.collected.minus(offsets.get(w.id)?.cash ?? 0));
+    const deductionByLine = allocateProportionally(deductionsTotal, afterFees);
+    const netByLine = allocateProportionally(countedCash, afterFees.map((v, i) => v.minus(deductionByLine[i] ?? 0)));
     for (let i = 0; i < work.length; i += 1) {
       const w = work[i];
-      const remitCash = remitCashByLine[i] ?? new Decimal(0);
+      const netCash = netByLine[i] ?? new Decimal(0);
+      const remitCash = netCash.plus(offsets.get(w.id)?.cash ?? 0).plus(deductionByLine[i] ?? 0);
       const newStatus = w.delivered ? "DELIVERED" : "PARTIAL";
       assertConsignmentStatusTransition(w.fromStatus, newStatus);
       await tx
@@ -838,9 +857,9 @@ export async function recordDeliveryRemittanceInTx(
         remittanceId,
         consignmentId: w.id,
         grossApplied: toDbMoney(w.collected),
-        feeOffset: "0.00",
+        feeOffset: toDbMoney(offsets.get(w.id)?.cash ?? "0"),
         // ما دخل الدرج من هذا السطر (يقلّ عن `grossApplied` بحصّته من عجز التوريد).
-        cashReceived: toDbMoney(remitCash),
+        cashReceived: toDbMoney(netCash),
         writtenOffAmount: "0.00",
       });
       await appendDeliveryLedgerEntry(tx, {
@@ -942,8 +961,11 @@ export async function recordDeliveryRemittanceInTx(
           });
         }
       }
-      // لا قيد أجرةٍ هنا: استحقاقُها يُسجَّل عند التسليم (courier.ts) وصرفُها بسند
-      // payDeliveryFee / payPartyDeliveryFees — التوريد ينقل عهدة COD وحدها.
+      const offset = offsets.get(w.id);
+      if (offset) {
+        await postFeePayment(tx, w.cn, offset.amount, offset.amount.eq(offset.due), receiptOutId,
+          `REMIT:${remittanceId}`, actor, offset.cash, { cashBucket, remittanceId });
+      }
     }
 
     // م١ (PR-2) — عجزُ التوريد: عهدةُ الجهة ترتفع بمقداره (ذمّةٌ فوريّة بسببٍ مصنَّف)، ويبقى في

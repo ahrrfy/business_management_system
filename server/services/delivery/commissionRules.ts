@@ -20,7 +20,7 @@ import {
 } from "@shared/courierCommission";
 
 /** أعِد كلّ القواعد الفعّالة لجهةٍ (خاصّتها + العامّة الافتراضية). النشاط + النفاذ الزمني يُصفّى في الحساب. */
-export async function listCommissionRulesForParty(tx: Tx, partyId: number) {
+export async function listCommissionRulesForParty(tx: Pick<Tx, "select">, partyId: number) {
   return tx
     .select()
     .from(courierCommissionRules)
@@ -84,11 +84,17 @@ export async function deleteCommissionRule(id: number) {
  * الاختيار من بين كلّ القواعد الفعّالة يُترَك للحاسب المشترك (`computeCourierCommission`).
  */
 export async function previewCommission(
-  tx: Tx,
+  tx: Pick<Tx, "select">,
   partyId: number,
   deliveryFee: number,
   orderTotal: number,
 ): Promise<CommissionQuote | null> {
+  const quote = await createCommissionPreviewer(tx, partyId);
+  return quote(deliveryFee, orderTotal);
+}
+
+/** Load active rule inputs once for a settlement/list, then quote in memory. */
+export async function createCommissionPreviewer(tx: Pick<Tx, "select">, partyId: number) {
   const rows = await listCommissionRulesForParty(tx, partyId);
   const asInput: CourierCommissionRuleInput[] = rows.map((r) => ({
     id: Number(r.id),
@@ -99,5 +105,5 @@ export async function previewCommission(
     maxCap: r.maxCap ?? null,
     isActive: !!r.isActive,
   }));
-  return computeCourierCommission(asInput, { deliveryFee, orderTotal });
+  return (deliveryFee: number, orderTotal: number) => computeCourierCommission(asInput, { deliveryFee, orderTotal });
 }

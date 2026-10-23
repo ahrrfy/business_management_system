@@ -1,3 +1,5 @@
+import { createRealtimeEvent, REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
+import { scheduleFinancialRefresh } from "../../realtime/financialRefresh";
 import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -354,7 +356,21 @@ describe("شحنة واحدة لعدة فواتير مع استقلال الأث
   });
 
   it("يربط فواتير البيع وأمر الشغل ذرياً؛ البوليصة والأجرة للقائد فقط، والنشر بعد الالتزام", async () => {
-    const publish = vi.spyOn(realtime, "publishRealtimeEvent");
+    const transaction = vi.spyOn(db(), "transaction");
+    const publishedAfterCommit: boolean[] = [];
+    const publish = vi
+      .spyOn(realtime, "publishRealtimeEvent")
+      .mockImplementation((event, payload, scope) => {
+        if (event === REALTIME_EVENT_TYPES.DELIVERY_DISPATCHED) {
+          publishedAfterCommit.push(
+            transaction.mock.settledResults.at(-1)?.type === "fulfilled",
+          );
+        }
+        return createRealtimeEvent(event, payload, scope);
+      });
+    // An independent debounced financial refresh must not count as another invoice dispatch.
+    scheduleFinancialRefresh(1);
+    await new Promise((resolve) => setTimeout(resolve, 450));
     const before = await db().select().from(s.invoices);
     const result = await dispatchInvoiceShipment(input, cashier);
     expect(result.codAmount).toBe("3000.00");
@@ -388,7 +404,21 @@ describe("شحنة واحدة لعدة فواتير مع استقلال الأث
         .from(s.auditLogs)
         .where(eq(s.auditLogs.action, "delivery.dispatchInvoiceShipment")),
     ).toHaveLength(1);
-    expect(publish).toHaveBeenCalledTimes(2);
+    const dispatched = publish.mock.calls.filter(
+      ([event]) => event === REALTIME_EVENT_TYPES.DELIVERY_DISPATCHED,
+    );
+    expect(dispatched).toHaveLength(2);
+    expect(
+      dispatched
+        .map(([, payload]) => (payload as { invoiceId: number }).invoiceId)
+        .sort(),
+    ).toEqual([1, 2]);
+    expect(publishedAfterCommit).toEqual([true, true]);
+    expect(
+      publish.mock.calls.some(
+        ([event]) => event === REALTIME_EVENT_TYPES.FINANCIAL_DATA_CHANGED,
+      ),
+    ).toBe(true);
     expect(
       await getShipmentDetails(result.members[1].id, cashier),
     ).toMatchObject({
@@ -416,7 +446,11 @@ describe("شحنة واحدة لعدة فواتير مع استقلال الأث
     expect(await db().select().from(s.deliveryConsignments)).toHaveLength(2);
     expect(await db().select().from(s.deliveryEvents)).toHaveLength(2);
     expect(await db().select().from(s.idempotencyKeys)).toHaveLength(1);
-    expect(publish).toHaveBeenCalledTimes(2);
+    expect(
+      publish.mock.calls.filter(
+        ([event]) => event === REALTIME_EVENT_TYPES.DELIVERY_DISPATCHED,
+      ),
+    ).toHaveLength(2);
     await expect(
       dispatchInvoiceShipment({ ...input, notes: "ملاحظة مختلفة" }, cashier),
     ).rejects.toMatchObject({ code: "CONFLICT" });
@@ -457,7 +491,11 @@ describe("شحنة واحدة لعدة فواتير مع استقلال الأث
     ]) {
       expect(await db().select().from(table)).toHaveLength(0);
     }
-    expect(publish).not.toHaveBeenCalled();
+    expect(
+      publish.mock.calls.filter(
+        ([event]) => event === REALTIME_EVENT_TYPES.DELIVERY_DISPATCHED,
+      ),
+    ).toHaveLength(0);
   });
 
   it("يرفض العملاء المختلفين والفروع المختلطة وتكرار الفاتورة قبل أثر مالي", async () => {

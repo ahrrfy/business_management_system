@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import React, { useRef, useState } from "react";
 import Decimal from "decimal.js";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import { fmt, moneyInput } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { InvoiceDispatchDialog } from "./InvoiceDispatchDialog";
+import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
 
 type Shipment = NonNullable<RouterOutputs["delivery"]["consignmentTimeline"]["shipment"]>;
 const ACTIONS = [
@@ -41,12 +42,14 @@ export function ShipmentDetailsPanel({ shipment }: { shipment: Shipment }) {
   const remaining = new Decimal(shipment.remainingAmount);
   const legacy = !!me.data && moduleAccessAllowed(me.data.role as RoleKey,
     (me.data.permissionsOverride ?? null) as PermissionMap | null, "store", "FULL", ["cashier", "manager"]);
-  const open = shipment.members.every((row) => row.status === "DISPATCHED"
+  const operational = shipment.members.filter((row) => row.operational);
+  const open = operational.length > 0 && operational.every((row) => row.status === "DISPATCHED"
     && !["DELIVERED", "RETURNED", "CANCELLED"].includes(row.parcelStatus));
-  const returnDeclared = shipment.members.every((row) => row.returnDeclaredAt != null);
-  const live = open && shipment.members.every((row) => row.returnDeclaredAt == null);
-  const unpaidToParty = shipment.members.every((row) => new Decimal(row.collectedAmount ?? "0").isZero());
-  const cancelled = shipment.members.every((row) => row.status === "CANCELLED");
+  const returnDeclared = operational.length > 0 && operational.every((row) => row.returnDeclaredAt != null);
+  const live = open && operational.every((row) => row.returnDeclaredAt == null);
+  const unpaidToParty = operational.every((row) => new Decimal(row.collectedAmount ?? "0").isZero());
+  const redispatchAnchor = shipment.members.find(row => !isDeadInvoiceStatus(row.invoiceStatus));
+  const cancelled = !!redispatchAnchor && shipment.members.every((row) => ["CANCELLED", "RETURNED"].includes(row.parcelStatus));
   const actions = ACTIONS.filter((item) => lifecycleActionAllowed(me.data, item.path, legacy) && (live || (open && item.value === "return"))
     && (item.value === "confirm" || item.value === "driver" || unpaidToParty));
   const partiesQ = trpc.delivery.listParties.useQuery({ activeOnly: true }, { enabled: action === "driver", staleTime: 60_000 });
@@ -75,7 +78,7 @@ export function ShipmentDetailsPanel({ shipment }: { shipment: Shipment }) {
     if (invalid) return;
     if ((action === "return" || action === "cancel" || action === "declare") && !await confirm({
       title: action === "return" ? "إرجاع جميع فواتير الشحنة؟" : action === "declare" ? "إعلان رجوع الشحنة كاملة؟" : "إلغاء إسناد الشحنة؟",
-      description: `يشمل الإجراء ${shipment.memberCount} فواتير في الشحنة ${shipment.consignmentNumber}. ${reason.trim()}`,
+      description: `يشمل الإجراء ${operational.length} فواتير متبقية في الشحنة ${shipment.consignmentNumber}. ${reason.trim()}`,
       variant: "warning", confirmText: "تأكيد على كامل الشحنة",
     })) return;
     const fingerprint = JSON.stringify({ action, reason, amount, shortfallReason, driver, shift: rail?.selection?.refundShiftId });
@@ -96,6 +99,7 @@ export function ShipmentDetailsPanel({ shipment }: { shipment: Shipment }) {
         {shipment.members.map((row) => (
           <div key={row.id} className="flex items-center justify-between gap-2 py-2">
             <a href={`/invoices/${row.invoiceId}`} className="font-mono text-primary hover:underline" dir="ltr">{row.invoiceNumber}</a>
+            {!row.operational && <span className="text-xs text-muted-foreground">{row.parcelStatus === "RETURNED" ? "مرتجعة" : "ملغاة"} · خارج إجراءات الشحنة</span>}
             <span className="tabular-nums" dir="ltr">{fmt(row.invoiceRemaining)} د.ع</span>
           </div>
         ))}
@@ -103,7 +107,7 @@ export function ShipmentDetailsPanel({ shipment }: { shipment: Shipment }) {
       <p className="text-xs leading-6 text-muted-foreground">{returnDeclared ? "قيمة الفواتير بانتظار استلام المرتجع" : "المتبقي لتحصيل الشحنة"}: <b className="text-foreground">{fmt(remaining.toFixed(2))} د.ع</b> · أجرة الشحنة مرة واحدة: {fmt(shipment.deliveryFee)} د.ع · البوليصة: <span dir="ltr">{leader.externalTrackingRef ?? "—"}</span></p>
       {returnDeclared && open && <p className="text-sm text-muted-foreground">أُعلن رجوع الشحنة وتوقف توقع تحصيلها. بعد وصولها وفحصها نفّذ «استلام وإرجاع الشحنة كاملة» لإعادة المخزون ومعالجة الفواتير.</p>}
       {cancelled && lifecycleActionAllowed(me.data, "delivery.dispatchInvoice", legacy) && <Button size="sm" variant="outline" onClick={() => setRedispatchOpen(true)}>إعادة إسناد الشحنة كاملة</Button>}
-      <InvoiceDispatchDialog invoice={redispatchOpen ? { id: Number(leader.invoiceId), invoiceNumber: leader.invoiceNumber, total: leader.codAmount, customerName: leader.recipientName, customerPhone: leader.recipientPhone, deliveryAddress: leader.deliveryAddress } : null} open={redispatchOpen} onOpenChange={setRedispatchOpen} />
+      <InvoiceDispatchDialog invoice={redispatchOpen && redispatchAnchor ? { id: Number(redispatchAnchor.invoiceId), invoiceNumber: redispatchAnchor.invoiceNumber, total: redispatchAnchor.codAmount, customerName: leader.recipientName, customerPhone: leader.recipientPhone, deliveryAddress: leader.deliveryAddress } : null} open={redispatchOpen} onOpenChange={setRedispatchOpen} />
       {actions.length > 0 && <AppSelect aria-label="إجراء على كامل الشحنة" value={action} disabled={pending} onValueChange={(value) => {
         setAction(value); setReason(""); setAmount(remaining.toFixed(2)); setShortfallReason(""); setRail(null); setDriver(leader.assignedUserId ? String(leader.assignedUserId) : "");
       }}><option value="">إجراء على كامل الشحنة…</option>{actions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</AppSelect>}

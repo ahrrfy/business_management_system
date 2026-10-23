@@ -2354,7 +2354,7 @@ export const PROFILE_POLICIES = Object.freeze({
       sourceAssertions: [
         // القيدُ متوازنٌ داخلياً — لا مصدرٌ يقود المبلغَ من قيدٍ آخر.
       ],
-      requireRoleComponents: ["COURIER_PAYABLE", ...CASH_ASSETS],
+      requireRoleComponents: ["COURIER_PAYABLE", ...CASH_ASSETS, "DELIVERY_REVENUE"],
     },
   ),
   DELIVERY_FEE_HELD_RECEIPT: profilePolicy(

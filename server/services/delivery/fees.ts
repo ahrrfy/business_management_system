@@ -1,7 +1,8 @@
-// أجور التوصيل — صرفٌ بسند مستقلّ عن التوريد (فردياً لإرسالية، أو مجمّعاً لكل مستحقّات الجهة).
+// أجور التوصيل — أثر تسوية مشترك للصرف المستقل أو الحسم الموثق من التوريد.
 // المستحقّ يُشتقّ من دفتر التوصيل حصراً (FEE_EARNED − FEE_REFUNDED − FEE_PAID − FEE_OFFSET)
 // لا من عمود deliveryFee: الدفترُ يعرف ما صُرف من أيّ مسارٍ كان، والعمود لا يعرف.
 import { TRPCError } from "@trpc/server";
+import { shipmentFeeDeliveryProvenExpr, shipmentFeeDeliveryProvenTx } from "./shipments";
 import Decimal from "decimal.js";
 import { and, eq, sql } from "drizzle-orm";
 import { accountingEntries, deliveryConsignments, deliveryLedgerEntries, deliveryParties, invoices, receipts } from "../../../drizzle/schema";
@@ -15,12 +16,22 @@ import { assertCashOutAvailable, lockCashSourceForUpdate } from "../cash/cashAva
 import { withTx } from "../tx";
 import { appendDeliveryLedgerEntry } from "./lifecycle";
 import { deliveryCommissionSettlementIntent, deliveryFeeHeldPayoutIntent, deliveryFeeSettlementIntent } from "./posting";
-import { previewCommission } from "./commissionRules";
+import { createCommissionPreviewer } from "./commissionRules";
 import type { DeliveryTxActor } from "./types";
 import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
 
+/** Indexed per-consignment fee balance; canonical ledger filter also excludes legacy duplicates. */
+export function consignmentFeeDueSql() {
+  return sql<string>`GREATEST(COALESCE((SELECT SUM(CASE
+    WHEN ${deliveryLedgerEntries.entryType} = 'FEE_EARNED' THEN ${deliveryLedgerEntries.amount}
+    WHEN ${deliveryLedgerEntries.entryType} IN ('FEE_REFUNDED','FEE_PAID','FEE_OFFSET') THEN -${deliveryLedgerEntries.amount}
+    ELSE 0 END) FROM ${deliveryLedgerEntries}
+    WHERE ${deliveryLedgerEntries.consignmentId} = ${deliveryConsignments.id}
+      AND ${effectiveDeliveryLedgerEntrySql()}),0),0)`;
+}
+
 /** المستحقّ الدفتري لأجرة إرسالية = Σ(FEE_EARNED − FEE_REFUNDED) − Σ(FEE_PAID + FEE_OFFSET). */
-async function ledgerFeeDue(tx: Tx, consignmentId: number): Promise<Decimal> {
+export async function ledgerFeeDue(tx: Tx, consignmentId: number): Promise<Decimal> {
   const sums = (await tx.select({
     earned: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} = 'FEE_EARNED' THEN ${deliveryLedgerEntries.amount} WHEN ${deliveryLedgerEntries.entryType} = 'FEE_REFUNDED' THEN -${deliveryLedgerEntries.amount} ELSE 0 END),0)`,
     paid: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} IN ('FEE_PAID','FEE_OFFSET') THEN ${deliveryLedgerEntries.amount} ELSE 0 END),0)`,
@@ -34,7 +45,7 @@ async function ledgerFeeDue(tx: Tx, consignmentId: number): Promise<Decimal> {
  * COUNTER أمانةٌ تُبرَّأ (DELIVERY_FEE_HELD بإشارة سالبة، Σ المستند = 0 ⇔ مُبرَّأة)، وغيرها
  * تسويةُ التزامٍ مستحَقٍّ سلفاً (DELIVERY_FEE بلا مصروفٍ ثانٍ — المصروف قُيّد عند التسليم).
  */
-async function postFeePayment(
+export async function postFeePayment(
   tx: Tx,
   cn: {
     id: number | string;
@@ -46,7 +57,7 @@ async function postFeePayment(
   },
   amount: Decimal,
   fullyPaid: boolean,
-  receiptId: number,
+  receiptId: number | null,
   /** لاحقة مفاتيح idempotency للقيدين — clientRequestId للفردي، BULK:{receipt} للمجمّع. */
   keySuffix: string,
   actor: DeliveryTxActor,
@@ -57,13 +68,15 @@ async function postFeePayment(
    * في المستدعي (لا نُقيّد إيراداً سالباً في هذه الدالّة).
    */
   commissionOverride?: Decimal | null,
+  withholding?: { cashBucket: "DRAWER" | "TREASURY"; remittanceId: number },
 ): Promise<void> {
   await appendDeliveryLedgerEntry(tx, {
-    eventKey: `CN:${cn.id}:FEE_PAID:${keySuffix}`,
+    eventKey: `CN:${cn.id}:${withholding ? "FEE_OFFSET" : "FEE_PAID"}:${keySuffix}`,
     partyId: Number(cn.partyId),
     consignmentId: Number(cn.id),
     branchId: Number(cn.branchId),
-    entryType: "FEE_PAID",
+    entryType: withholding ? "FEE_OFFSET" : "FEE_PAID",
+    remittanceId: withholding?.remittanceId,
     amount: toDbMoney(amount),
     actorUserId: actor.userId,
   });
@@ -75,29 +88,44 @@ async function postFeePayment(
     && commissionOverride.lt(amount);
   const cashOut = useCommission ? commissionOverride! : amount;
   const margin = useCommission ? amount.minus(commissionOverride!) : new Decimal(0);
+  const cashBucket = withholding?.cashBucket ?? "DRAWER";
+  const assetRole = cashBucket === "TREASURY" ? "TREASURY_CASH" : "CASH";
   await postEntry(tx, {
     entryType: cn.feeCollection === "COUNTER" ? "DELIVERY_FEE_HELD" : "DELIVERY_FEE",
     postingIntent: cn.feeCollection === "COUNTER"
-      ? deliveryFeeHeldPayoutIntent(amount.neg(), "DRAWER")
+      ? deliveryFeeHeldPayoutIntent(amount.neg(), cashBucket)
       : useCommission
-        ? deliveryCommissionSettlementIntent(amount, commissionOverride!, "DRAWER")
-        : deliveryFeeSettlementIntent(amount, "DRAWER"),
+        ? deliveryCommissionSettlementIntent(amount, commissionOverride!, cashBucket)
+        : deliveryFeeSettlementIntent(amount, cashBucket),
     postingSourceComponents: useCommission
-      ? { roleDebits: { COURIER_PAYABLE: amount }, roleCredits: { CASH: cashOut, DELIVERY_REVENUE: margin } }
-      : { roleDebits: { COURIER_PAYABLE: amount }, roleCredits: { CASH: amount } },
-    dedupeKey: `DELIVERY_FEE_PAID:${cn.id}:${keySuffix}`,
+      ? { roleDebits: { COURIER_PAYABLE: amount }, roleCredits: { [assetRole]: cashOut, DELIVERY_REVENUE: margin } }
+      : { roleDebits: { COURIER_PAYABLE: amount }, roleCredits: { [assetRole]: amount } },
+    dedupeKey: `DELIVERY_FEE_${withholding ? "OFFSET" : "PAID"}:${cn.id}:${keySuffix}`,
     branchId: Number(cn.branchId),
     invoiceId: Number(cn.invoiceId),
     deliveryPartyId: Number(cn.partyId),
     receiptId,
     amount: cn.feeCollection === "COUNTER" ? amount.neg() : amount,
+    revenue: margin,
+    profit: margin,
     notes: useCommission
       ? `دفع عمولة ${cn.consignmentNumber} — استُبقيَ ${margin.toFixed(2)} إيراداً`
-      : `دفع أجرة ${cn.consignmentNumber}`,
+      : `${withholding ? "حسم أجرة من التوريد" : "دفع أجرة"} ${cn.consignmentNumber}`,
   });
   if (fullyPaid) {
     await tx.update(deliveryConsignments).set({ feeSettledAt: new Date() }).where(eq(deliveryConsignments.id, Number(cn.id)));
   }
+}
+
+/** Cash to retain against an existing SHOP payable; reused by preview and posting. */
+export async function createFeeWithholdingQuote(tx: Pick<Tx, "select">, partyId: number, useCommission: boolean) {
+  const preview = useCommission ? await createCommissionPreviewer(tx, partyId) : null;
+  return (due: Decimal, orderTotal: Decimal): Decimal => {
+    if (!preview || due.lte(0)) return due;
+    const quote = preview(Number(due.toFixed(2)), Number(orderTotal.toFixed(2)));
+    const commission = quote == null ? null : round2(money(quote.commission));
+    return commission != null && commission.gte(0) && commission.lt(due) ? commission : due;
+  };
 }
 
 export async function payDeliveryFee(
@@ -151,7 +179,7 @@ export async function payDeliveryFee(
         .where(eq(invoices.id, Number(cn.invoiceId))).for("update").limit(1)
     )[0];
     if (!invoice) throw new TRPCError({ code: "CONFLICT", message: "فاتورة الإرسالية غير موجودة" });
-    if (cn.parcelStatus !== "DELIVERED") throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا تستحق الأجرة قبل نجاح التوصيل" });
+    if (!await shipmentFeeDeliveryProvenTx(tx, Number(cn.id))) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا تستحق الأجرة قبل نجاح التوصيل" });
     if (actor.role !== "admin" && actor.branchId != null && Number(cn.branchId) !== Number(actor.branchId)) {
       throw new TRPCError({ code: "FORBIDDEN", message: "الإرسالية تخص فرعاً آخر" });
     }
@@ -278,7 +306,7 @@ export async function payPartyDeliveryFees(
       .where(and(
         eq(deliveryConsignments.partyId, Number(input.partyId)),
         eq(deliveryConsignments.branchId, Number(input.branchId)),
-        eq(deliveryConsignments.parcelStatus, "DELIVERED"),
+        shipmentFeeDeliveryProvenExpr(),
       ))
       .orderBy(deliveryConsignments.id);
 
@@ -294,6 +322,7 @@ export async function payPartyDeliveryFees(
     const items: FeeItem[] = [];
     let total = round2(money("0"));
     let cashOutTotal = round2(money("0"));
+    const quoteFee = await createFeeWithholdingQuote(tx, Number(input.partyId), party.useCommissionForSettlement === true);
     for (const candidate of candidates) {
       const cn = (
         await tx.select().from(deliveryConsignments)
@@ -303,10 +332,10 @@ export async function payPartyDeliveryFees(
       if (
         Number(cn.partyId) !== Number(input.partyId)
         || Number(cn.branchId) !== Number(input.branchId)
-        || cn.parcelStatus !== "DELIVERED"
+        || !await shipmentFeeDeliveryProvenTx(tx, Number(cn.id))
       ) continue; // تغيّر بين الترشيح والقفل — يسقط من هذا السند بلا خطأ.
       const invoice = (
-        await tx.select({ id: invoices.id }).from(invoices)
+        await tx.select({ id: invoices.id, total: invoices.total, returnedTotal: invoices.returnedTotal }).from(invoices)
           .where(eq(invoices.id, Number(cn.invoiceId))).for("update").limit(1)
       )[0];
       if (!invoice) throw new TRPCError({ code: "CONFLICT", message: `فاتورة الإرسالية ${cn.consignmentNumber} غير موجودة` });
@@ -316,18 +345,9 @@ export async function payPartyDeliveryFees(
       // بمقبوضها). العمولة تُقصَر إلى due أعلى (لا هامشَ سالب). null ⇒ سلوكٌ سابق (كامل الأجرة).
       let commission: Decimal | null = null;
       if (party.useCommissionForSettlement && cn.feeCollection !== "COUNTER") {
-        const quote = await previewCommission(
-          tx,
-          Number(cn.partyId),
-          Number(due.toFixed(2)),
-          0,
-        );
-        if (quote != null) {
-          const c = round2(money(quote.commission));
-          if (c.gte(0) && c.lt(due)) {
-            commission = c;
-          }
-        }
+        const cash = quoteFee(due,
+          Decimal.max(0, money(invoice.total).minus(money(invoice.returnedTotal ?? "0"))));
+        if (cash.lt(due)) commission = cash;
       }
       items.push({
         cn: {

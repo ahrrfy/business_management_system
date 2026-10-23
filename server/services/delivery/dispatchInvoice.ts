@@ -37,11 +37,13 @@ import { publishRealtimeEvent } from "../../realtime";
 import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 
 import { appErrorMessage } from "@shared/errors";
+import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
 
 /** Service-only context; it is never part of a router input. */
 export interface ShipmentDispatchContext {
   shipmentLeaderConsignmentId?: number;
   sharedTrackingLeaderId?: number;
+  retainedShipmentLeader?: boolean;
 }
 
 /** Call after invoice locks; current reads preserve the existing held-fee owner. */
@@ -246,6 +248,10 @@ export async function dispatchInvoiceInTx(
           )
           .limit(1)
       )[0];
+      const retainedInvoice = shipment.retainedShipmentLeader && leader ? (await tx.select({ status: invoices.status }).from(invoices)
+        .where(eq(invoices.id, Number(leader.invoiceId))).for("update").limit(1))[0] : null;
+      const retainedClosedLeader = !!retainedInvoice && isDeadInvoiceStatus(retainedInvoice.status)
+        && !!leader && ["CANCELLED", "RETURNED"].includes(leader.parcelStatus);
       if (
         !leader ||
         !leaderMember ||
@@ -257,7 +263,7 @@ export async function dispatchInvoiceInTx(
         input.deliveryFee == null ||
         !round2(money(input.deliveryFee ?? "0")).isZero() ||
         feeCollection !== "COURIER" ||
-        leader.parcelStatus !== "OUT_FOR_DELIVERY"
+        (leader.parcelStatus !== "OUT_FOR_DELIVERY" && !retainedClosedLeader)
       ) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",

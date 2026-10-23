@@ -1,3 +1,4 @@
+import { consignmentFeeDueSql } from "../delivery/fees";
 import { effectiveDeliveryLedgerEntrySql } from "../delivery/legacyLedger";
 import { eq, inArray, sql } from "drizzle-orm";
 import {
@@ -59,6 +60,8 @@ export async function loadOnlineOrderLifecycles(
       collectedAmount: deliveryConsignments.collectedAmount,
       counterSettledAmount: deliveryConsignments.counterSettledAmount,
       remittanceId: deliveryConsignments.remittanceId,
+      feeDueAmount: consignmentFeeDueSql(),
+      feeCollection: deliveryConsignments.feeCollection,
       deliveryPartyName: deliveryParties.name,
       shortfallAssignedAmount: consignmentShortfallAssignedSql,
       customerCollectedAmount: sql<string>`COALESCE((SELECT SUM(CASE WHEN dl.entryType = 'COD_COLLECTED' THEN dl.amount
@@ -117,6 +120,8 @@ export async function loadOnlineOrderLifecycles(
             ["RETURNED", "CANCELLED"].includes(r.parcelStatus ?? "")));
       const facts = useParcel
         ? deriveOnlineOrderLifecycle({
+            feeDueAmount: String(r.feeDueAmount ?? "0"),
+            feeCollection: r.feeCollection,
             parcelStatus: r.parcelStatus!,
             moneyStatus: r.moneyStatus!,
             status: r.status!,

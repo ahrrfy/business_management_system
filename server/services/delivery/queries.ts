@@ -1,3 +1,6 @@
+import { consignmentFeeDueSql, createFeeWithholdingQuote } from "./fees";
+import { remittanceCashReceivedSql } from "./remittanceCash";
+import { shipmentFeeDeliveryProvenExpr } from "./shipments";
 // قراءات الشاشة: الجاهز للإرسال، الإرساليات المفتوحة/كاملة، سجل التوريدات، كشف حساب جهة.
 //
 // عزل الفرع: الجهة المشتركة مرئية للفروع، لكن سند التوريد ونقد الدرج يخصان فرعاً واحداً حتماً؛
@@ -237,18 +240,9 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
   const db = getDb();
   if (!db) return { rows: [], hasMore: false, nextCursor: null };
   const effLimit = resolvePageLimit(page.limit);
-  const feeDue = sql<string>`GREATEST(COALESCE((
-    SELECT SUM(CASE
-      WHEN ${deliveryLedgerEntries.entryType} = 'FEE_EARNED' THEN ${deliveryLedgerEntries.amount}
-      WHEN ${deliveryLedgerEntries.entryType} = 'FEE_REFUNDED' THEN -${deliveryLedgerEntries.amount}
-      WHEN ${deliveryLedgerEntries.entryType} IN ('FEE_PAID','FEE_OFFSET') THEN -${deliveryLedgerEntries.amount}
-      ELSE 0 END)
-    FROM ${deliveryLedgerEntries}
-    WHERE ${deliveryLedgerEntries.consignmentId} = ${deliveryConsignments.id}
-      AND ${effectiveDeliveryLedgerEntrySql()}
-  ),0),0)`;
+  const feeDue = consignmentFeeDueSql();
   const unpaidFee = and(
-    eq(deliveryConsignments.parcelStatus, "DELIVERED"),
+    shipmentFeeDeliveryProvenExpr(),
     sql`${feeDue} > 0`,
   );
   /**
@@ -270,6 +264,7 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
       consignmentNumber: deliveryConsignments.consignmentNumber,
       invoiceId: deliveryConsignments.invoiceId,
       invoiceNumber: invoices.invoiceNumber,
+      orderTotal: sql<string>`GREATEST(${invoices.total} - ${invoices.returnedTotal}, 0)`,
       orderNumber: workOrders.orderNumber,
       externalTrackingRef: deliveryConsignments.externalTrackingRef,
       codAmount: deliveryConsignments.codAmount,
@@ -285,6 +280,7 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
       deliveryFee: deliveryConsignments.deliveryFee,
       feeDue,
       feeCollection: deliveryConsignments.feeCollection,
+      sourceType: deliveryConsignments.sourceType,
       feeSettledAt: deliveryConsignments.feeSettledAt,
       courierDeliveredAt: deliveryConsignments.courierDeliveredAt,
       parcelStatus: deliveryConsignments.parcelStatus,
@@ -313,7 +309,15 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
     ))
     .orderBy(asc(deliveryConsignments.id))
     .limit(effLimit + 1);
-  return buildPageResult(await withShipmentSummaries(rows.map((r) => ({ ...r, id: Number(r.id) }))), effLimit);
+  const party = (await db.select({ useCommission: deliveryParties.useCommissionForSettlement }).from(deliveryParties).where(eq(deliveryParties.id, partyId)).limit(1))[0];
+  const quoteFee = await createFeeWithholdingQuote(db, partyId, party?.useCommission === true);
+  const enriched = rows.map((r) => {
+    const potentialDue = r.sourceType === "ONLINE_ORDER" && r.feeCollection === "SHOP"
+      ? money(r.parcelStatus === "DELIVERED" ? r.feeDue : r.feeSettledAt ? "0" : r.deliveryFee) : money(0);
+    const cash = quoteFee(potentialDue, money(r.orderTotal ?? "0"));
+    return { ...r, id: Number(r.id), feeWithholdingCash: cash.toFixed(2) };
+  });
+  return buildPageResult(await withShipmentSummaries(enriched), effLimit);
 }
 
 /**
@@ -626,7 +630,7 @@ export async function listPartyRemittances(partyId: number, opts?: { from?: stri
       companyStatementNumber: deliveryRemittances.companyStatementNumber,
       statementDate: deliveryRemittances.statementDate,
       statementAttachmentUrl: deliveryRemittances.statementAttachmentUrl,
-      cashReceived: sql<string>`CASE WHEN deliveryRemittances.receiptInId IS NOT NULL THEN COALESCE((SELECT r.amount FROM receipts r WHERE r.id = deliveryRemittances.receiptInId AND r.direction = 'IN' AND r.receiptStatus = 'COMPLETED' AND r.paymentMethod = 'CASH' AND (r.receiptApprovalStatus IS NULL OR r.receiptApprovalStatus = 'APPROVED')),0) ELSE COALESCE((SELECT SUM(drl.cashReceived) FROM deliveryRemittanceLines drl WHERE drl.remittanceId = deliveryRemittances.id), 0) END`,
+      cashReceived: remittanceCashReceivedSql(),
     })
     .from(deliveryRemittances)
     .leftJoin(users, eq(deliveryRemittances.receivedBy, users.id))
@@ -1047,7 +1051,7 @@ export async function listPartyObligations(branchId: number | null) {
         ), 0)), 0)
         FROM deliveryConsignments dc
         WHERE dc.partyId = ${deliveryParties.id}
-          AND dc.parcelStatus = 'DELIVERED'${cnBranch})`,
+          AND ${shipmentFeeDeliveryProvenExpr({ id: sql`dc.id`, partyId: sql`dc.partyId`, branchId: sql`dc.branchId`, parcelStatus: sql`dc.parcelStatus` })}${cnBranch})`,
       /**
        * Slice DFP1 (٣٠/٨/٢٦، P1 #2) — عمودان جديدان يفكّان codDueTotal إلى مسؤوليّتين دلالياً منفصلتين
        * (نصّ المالك المُغلَق: «٤ أعمدة منفصلة» — الأول من العمود القائم currentBalance، والثاني والثالث

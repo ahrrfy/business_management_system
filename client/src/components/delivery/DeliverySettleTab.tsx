@@ -1,3 +1,4 @@
+import Decimal from "decimal.js";
 import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearch } from "wouter";
@@ -236,6 +237,7 @@ export function DeliverySettleTab() {
           } : { outcome: "NONE" as const, collected: "0" }));
 
   const totals = useMemo(() => {
+    let fees = D(0);
     let collected = D(0), expected = D(0), leftInTransit = 0, selectedCount = 0;
     for (const c of list) {
       if (!isSettleable(c)) continue;
@@ -245,13 +247,16 @@ export function DeliverySettleTab() {
         selectedCount += 1;
         expected = expected.plus(remaining);
         collected = collected.plus(moneyInput(st.collected) );
+        fees = fees.plus(Decimal.min(moneyInput(st.collected), D(c.feeWithholdingCash ?? "0")));
       } else if (remaining .gt(0) ) leftInTransit += 1;
       }
-    const deductions = statementMode ? moneyInput(statementDeductions) : D(0) ;
-    const rawNet = collected.minus(deductions);
+    const declaredDeduction = statementMode ? moneyInput(statementDeductions) : D(0);
+    if (declaredDeduction.gt(0)) fees = Decimal.min(fees, declaredDeduction);
+    const deductions = Decimal.max(0, declaredDeduction.minus(fees));
+    const rawNet = collected.minus(fees).minus(deductions);
     const net = rawNet.isNegative() ? D(0): rawNet;
     // Existing summary/cash-counter presentation contract is numeric; calculations stay Decimal.
-    return { collected: collected.toNumber(), fees: 0, net: net.toNumber(), deductions: deductions.toNumber(), shortfall: expected .minus(collected).toNumber(), expected: expected.toNumber(), leftInTransit, selectedCount };
+    return { collected: collected.toNumber(), fees: fees.toNumber(), net: net.toNumber(), deductions: deductions.toNumber(), shortfall: expected .minus(collected).toNumber(), expected: expected.toNumber(), leftInTransit, selectedCount };
   }, [list, rows, statementMode, statementDeductions]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const submit = async () => {

@@ -1,4 +1,5 @@
 import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
+import { remittanceCashReceivedSql } from "./remittanceCash";
 import { TRPCError } from "@trpc/server";
 import { and, eq, isNull, or, sql } from "drizzle-orm";
 import {
@@ -395,14 +396,10 @@ export async function getDeliveryFinancialSummary(partyId: number, assignedUserI
       ? (
           await db
             .select({
-              cashReceived: sql<string>`COALESCE(SUM(COALESCE(${receipts.amount}, (SELECT SUM(drl.cashReceived) FROM deliveryRemittanceLines drl WHERE drl.remittanceId = deliveryRemittances.id), 0)),0)`,
+              cashReceived: sql<string>`COALESCE(SUM(${remittanceCashReceivedSql()}),0)`,
               grossSettled: sql<string>`COALESCE(SUM(${deliveryRemittances.collectedTotal}),0)`,
             })
             .from(deliveryRemittances)
-            .leftJoin(
-              receipts,
-              eq(receipts.id, deliveryRemittances.receiptInId),
-            )
             .where(
               and(
                 eq(deliveryRemittances.partyId, partyId),
@@ -437,12 +434,13 @@ export async function getDeliveryFinancialSummary(partyId: number, assignedUserI
             )
   )[0];
   const n = (v: string | null | undefined) => money(v ?? "0");
-  const actualReceipts = assignedUserId == null ? (await db.select({ amount: sql<string>`COALESCE(SUM(${receipts.amount}),0)` })
+  const actualReceipts = assignedUserId == null ? (await db.select({ amount: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE -${receipts.amount} END),0)` })
     .from(receipts).where(and(
-      eq(receipts.direction, "IN"), eq(receipts.status, "COMPLETED"), eq(receipts.paymentMethod, "CASH"),
+      eq(receipts.status, "COMPLETED"), eq(receipts.paymentMethod, "CASH"),
       or(isNull(receipts.approvalStatus), eq(receipts.approvalStatus, "APPROVED")),
       scopedBranchId == null ? undefined : eq(receipts.branchId, scopedBranchId),
-      sql`(EXISTS (SELECT 1 FROM accountingEntries ae WHERE ae.receiptId = receipts.id AND ae.deliveryPartyId = ${partyId} AND ae.entryType = 'DELIVERY_REMIT') OR EXISTS (SELECT 1 FROM deliveryRemittances dr WHERE dr.receiptInId = receipts.id AND dr.partyId = ${partyId}))`,
+      sql`((receipts.direction = 'IN' AND (EXISTS (SELECT 1 FROM accountingEntries ae WHERE ae.receiptId = receipts.id AND ae.deliveryPartyId = ${partyId} AND ae.entryType = 'DELIVERY_REMIT') OR EXISTS (SELECT 1 FROM deliveryRemittances dr WHERE dr.receiptInId = receipts.id AND dr.partyId = ${partyId})))
+        OR (receipts.direction = 'OUT' AND EXISTS (SELECT 1 FROM deliveryRemittances dr WHERE dr.receiptOutId = receipts.id AND dr.partyId = ${partyId} AND dr.branchId = receipts.branchId)))`,
     )))[0] : undefined;
   const remaining = (await db.select({ amount: sql<string>`COALESCE(SUM(GREATEST(${deliveryConsignments.codAmount} - ${deliveryConsignments.collectedAmount} - ${deliveryConsignments.counterSettledAmount} - ${consignmentShortfallAssignedSql},0)),0)` })
     .from(deliveryConsignments).where(and(
