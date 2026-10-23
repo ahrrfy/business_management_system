@@ -2542,6 +2542,13 @@
 			"when": 1788148859000,
 			"tag": "0401_delivery_shipment_members",
 			"breakpoints": true
+		},
+		{
+			"idx": 402,
+			"version": "5",
+			"when": 1788148860000,
+			"tag": "0402_delivery_opening_exclusions",
+			"breakpoints": true
 		}
 	]
 }

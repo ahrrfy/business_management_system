@@ -240,6 +240,8 @@ const EXTRA_MIGRATIONS = [
   "drizzle/migrations/0380_delivery_shortfall_settlement.sql",
   // ١٠/١٠/٢٦: إصلاح محفز انتهاء حجز طلب المتجر 0208 ومحفز اعتماد الاستثناء اليومي للمالك 0314
   "drizzle/migrations/extras/0361_fix_triggers_and_guards.sql",
+  // Evidence-backed opening exclusions retain immutable source and proof rows.
+  "drizzle/migrations/0402_delivery_opening_exclusions.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without
