@@ -278,12 +278,12 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
           {/* السعر — الحقل الإلزاميّ الوحيد بعد العنوان. */}
           <div className="grid grid-cols-1 gap-3">
             <div className="space-y-1.5">
-              <Label htmlFor="cz-price" className="text-xs">سعر التخصيص الإضافي *</Label>
+              <Label htmlFor="cz-price" className="text-xs">أجرة التخصيص للقطعة *</Label>
               <MoneyInput
                 id="cz-price"
                 value={data.unitPrice}
                 onChange={(v) => upd("unitPrice", v)}
-                ariaLabel="سعر التخصيص الإضافي"
+                ariaLabel="أجرة التخصيص للقطعة"
                 className="text-sm"
               />
               <p className="text-[11px] text-muted-foreground">
@@ -544,7 +544,7 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
               <span className="font-bold tabular-nums" dir="ltr">{fmt(unitTotal.toString())} د.ع</span>
             </div>
             <div className="flex items-center justify-between text-xs">
-              <span className="text-muted-foreground">إجمالي البند ({formatQuantity(quantity)} × سعر الوحدة):</span>
+              <span className="text-muted-foreground">قطع مخصصة: {formatQuantity(quantity)} · إجمالي البند:</span>
               <span className="font-bold tabular-nums" dir="ltr">{fmt(orderTotal.toString())} د.ع</span>
             </div>
             {data.hasDelivery && D(data.deliveryCost || 0).gt(0) && (

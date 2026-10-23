@@ -9,6 +9,7 @@ import { playReadyBeep } from "@/lib/notifyBeep";
 import {
   resolveCompanyStatementBarcode,
   statementQueueRemaining,
+  shipmentStatementCandidates,
   type CompanyStatementQueueCandidate,
 } from "./companyStatementQueue";
 
@@ -60,11 +61,13 @@ export function CompanyStatementScanQueue({
     } else if (result.kind === "DUPLICATE") {
       notify.warn("البوليصة موجودة في طابور الكشف", result.candidate.invoiceNumber ?? result.candidate.consignmentNumber);
     } else {
-      acceptedIdsRef.current.add(result.candidate.id);
-      const remaining = statementQueueRemaining(result.candidate).toFixed(2);
-      onQueue(result.candidate, remaining);
+      const shipment = shipmentStatementCandidates(candidates, result.candidate.id);
+      for (const candidate of shipment) {
+        acceptedIdsRef.current.add(candidate.id);
+        onQueue(candidate, statementQueueRemaining(candidate).toFixed(2));
+      }
       playReadyBeep();
-      notify.ok("أُضيفت الفاتورة إلى طابور الكشف", `${result.candidate.invoiceNumber ?? result.candidate.consignmentNumber} — ${fmt(remaining)} د.ع`);
+      notify.ok(shipment.length > 1 ? `أُضيفت فواتير الشحنة (${shipment.length}) إلى الكشف` : "أُضيفت الفاتورة إلى طابور الكشف", result.candidate.consignmentNumber);
     }
     setBarcode("");
     focusScanner();

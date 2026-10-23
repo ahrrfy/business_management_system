@@ -13685,6 +13685,25 @@ export type DeliveryConsignment = typeof deliveryConsignments.$inferSelect;
 export type InsertDeliveryConsignment =
   typeof deliveryConsignments.$inferInsert;
 
+/** One physical shipment, with an independent financial document for each invoice. */
+export const deliveryShipmentMembers = mysqlTable(
+  "deliveryShipmentMembers",
+  {
+    consignmentId: bigint("consignmentId", { mode: "number" })
+      .primaryKey(),
+    leaderConsignmentId: bigint("leaderConsignmentId", { mode: "number" })
+      .notNull(),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    leaderIdx: index("idx_shipment_leader").on(table.leaderConsignmentId),
+    memberFk: foreignKey({ name: "fk_shipment_member", columns: [table.consignmentId], foreignColumns: [deliveryConsignments.id] }),
+    leaderFk: foreignKey({ name: "fk_shipment_leader", columns: [table.leaderConsignmentId], foreignColumns: [deliveryConsignments.id] }),
+    creatorFk: foreignKey({ name: "fk_shipment_creator", columns: [table.createdBy], foreignColumns: [users.id] }),
+  }),
+);
+
 /** Immutable allocation of one remittance to one consignment. */
 export const deliveryRemittanceLines = mysqlTable(
   "deliveryRemittanceLines",

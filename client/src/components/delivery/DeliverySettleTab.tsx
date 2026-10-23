@@ -14,7 +14,7 @@ import { DeliveryRemittanceHistoryCard } from "@/components/delivery/DeliveryRem
 import { DeliverySettleSummaryCard } from "@/components/delivery/DeliverySettleSummaryCard";
 import { DeliveryConsignmentsTable } from "@/components/delivery/DeliveryConsignmentsTable";
 import { CompanyStatementScanQueue } from "@/components/delivery/CompanyStatementScanQueue";
-import type { CompanyStatementQueueCandidate } from "@/components/delivery/companyStatementQueue";
+import { shipmentStatementCandidates, type CompanyStatementQueueCandidate } from "@/components/delivery/companyStatementQueue";
 import { companyStatementPartyTransition } from "@/components/delivery/statementDraft";
 import { printRemittanceReceipt } from "@/components/delivery/printRemittanceReceipt";
 import { confirm } from "@/lib/confirm";
@@ -319,7 +319,9 @@ export function DeliverySettleTab() {
     });
   };
 
-  const displayedEligible = displayedStatementRows.filter(isSettleable);
+  const displayedEligible = Array.from(new Map(displayedStatementRows.filter(isSettleable)
+    .flatMap((row) => statementMode ? shipmentStatementCandidates(list.filter(isSettleable), row.id) : [row])
+    .map((row) => [row.id, row])).values());
   const selectAll = () => {
     setRows((current) =>
       mergeDisplayedSelection(current, displayedEligible, (id) =>
@@ -447,18 +449,19 @@ export function DeliverySettleTab() {
             canReturn={canReturn}
             onOutcomeToggle={(id, current) => {
               if (companyStatement.isPending || remit.isPending) return;
+              const members = statementMode ? shipmentStatementCandidates(list, id) : list.filter((row) => row.id === id);
+              const memberIds = members.map((row) => row.id);
               if (statementMode) {
                 setStatementQueueIds((ids) => current === "COLLECTED"
-                  ? ids.filter((queuedId) => queuedId !== id)
-                  : ids.includes(id) ? ids : [...ids, id]);
+                  ? ids.filter((queuedId) => !memberIds.includes(queuedId))
+                  : Array.from(new Set([...ids, ...memberIds])));
               }
               setRows((r) => ({
                 ...r,
-                [id]: {
+                ...Object.fromEntries(members.map((member) => [member.id, {
                   outcome: current === "COLLECTED" ? "NONE" : "COLLECTED",
-                  collected: current === "COLLECTED" ? "0" : remainingOf(list.find((candidate) => candidate.id === id)!,
-                        ).toFixed(2),
-                },
+                  collected: current === "COLLECTED" ? "0" : remainingOf(member).toFixed(2),
+                }] as const)),
               }));
             }}
             onCollectedChange={(id, value) => {
@@ -497,8 +500,9 @@ export function DeliverySettleTab() {
                 setRows((current) => ({ ...current, [candidate.id]: { outcome: "COLLECTED", collected } }));
               }}
               onRemove={(consignmentId) => {
-                setStatementQueueIds((ids) => ids.filter((id) => id !== consignmentId));
-                setRows((current) => ({ ...current, [consignmentId]: { outcome: "NONE", collected: "0" } }));
+                const memberIds = shipmentStatementCandidates(list, consignmentId).map((row) => row.id);
+                setStatementQueueIds((ids) => ids.filter((id) => !memberIds.includes(id)));
+                setRows((current) => ({ ...current, ...Object.fromEntries(memberIds.map((id) => [id, { outcome: "NONE" as const, collected: "0" }])) }));
               }}
               onCollectedChange={(consignmentId, collected) => {
                 setRows((current) => ({ ...current, [consignmentId]: { outcome: "COLLECTED", collected } }));
@@ -520,10 +524,13 @@ export function DeliverySettleTab() {
                 companyStatement.isPending
               }
               onApply={(lines) => {
+                const imported = new Map(lines.map((line) => [line.consignmentId, line]));
+                const expanded = Array.from(new Map(lines.flatMap((line) => shipmentStatementCandidates(list.filter(isSettleable), line.consignmentId)
+                  .map((member) => [member.id, imported.get(member.id) ?? { consignmentId: member.id, collectedAmount: "0" }] as const))).values());
                 setRows((current) => ({
                   ...current,
                   ...Object.fromEntries(
-                    lines.map((line) => [
+                    expanded.map((line) => [
                       line.consignmentId,
                       {
                         outcome: "COLLECTED" as const,
@@ -532,7 +539,7 @@ export function DeliverySettleTab() {
                     ]),
                   ),
                 }));
-                setStatementQueueIds((current) => Array.from(new Set([...current, ...lines.map((line) => line.consignmentId)])));
+                setStatementQueueIds((current) => Array.from(new Set([...current, ...expanded.map((line) => line.consignmentId)])));
 
               }}
             />

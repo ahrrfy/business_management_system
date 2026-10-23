@@ -3,7 +3,7 @@
 // خارجٍ إيصالُه وسببُه. netRemitted = المُحصَّل − استقطاع كشف الشركة (إن وُجد).
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, eq, or, sql } from "drizzle-orm";
+import { and, asc, eq, or, sql } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
 import {
   isShortfallReason,
@@ -546,26 +546,26 @@ export async function recordDeliveryRemittanceInTx(
       // يدخل الدرج والفاتورة تبقى ناقصةَ التسديد إلى الأبد — عكسُ العطب القديم تماماً.
       //
       // الميزان الصحيح: **المُحصَّل التراكمي − المقيَّد على الفاتورة سلفاً** من مسارَي هذه
-      // الإرسالية حصراً (قيدُ التسليم `PAYMENT_IN:COURIER_DELIVERY:{cn}` + قيودُ التوريدات
+      // الإرسالية حصراً (قيدُ التسليم والتحصيلات المتممة + قيودُ التوريدات
       // `PAYMENT_IN:REMIT:{cn}:{rm}`). الصفوف الموروثة بلا قيد تسليم (نموذج ما قبل المرحلة
       // الثانية — يحرسه اختبار receptionReviewFixes/F2) تبقى كما كانت: مقيَّدُها صفر فيُقيَّد
       // المحصَّلُ كلُّه؛ والمختومة كاملاً عند التسليم يبقى ائتمانُها صفراً. ولا يتجاوز الائتمان
       // متبقّي الفاتورة الحيّ أبداً (تسديدٌ كاونتريّ موازٍ يخفضه من خارج هذين المفتاحين).
-      const creditedRow = (
-        await tx
-          .select({
-            v: sql<string>`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0)`,
-          })
-          .from(accountingEntries)
+      const literalPrefix = (value: string) => `${value.replace(/[!%_]/g, "!$&")}%`;
+      const creditedRows = await tx
+          .select({ amount: accountingEntries.amount })
+          .from(accountingEntries, { forceIndex: "uq_entry_dedupe" })
           .where(and(
             eq(accountingEntries.entryType, "PAYMENT_IN"),
             or(
               eq(accountingEntries.dedupeKey, `PAYMENT_IN:COURIER_DELIVERY:${Number(cn.id)}`),
-              sql`${accountingEntries.dedupeKey} LIKE ${`PAYMENT_IN:REMIT:${Number(cn.id)}:%`}`,
+              sql`${accountingEntries.dedupeKey} LIKE ${literalPrefix(`PAYMENT_IN:COURIER_DELIVERY_SUPP:${Number(cn.id)}:`)} ESCAPE '!'`,
+              sql`${accountingEntries.dedupeKey} LIKE ${literalPrefix(`PAYMENT_IN:REMIT:${Number(cn.id)}:`)} ESCAPE '!'`,
             ),
           ))
-      )[0];
-      const alreadyCredited = round2(money(creditedRow?.v ?? "0"));
+          .orderBy(asc(accountingEntries.dedupeKey))
+          .for("share");
+      const alreadyCredited = round2(creditedRows.reduce((sum, row) => sum.plus(money(row.amount)), money(0)));
       const newCollected = round2(money(cn.collectedAmount).plus(collected));
       const uncredited = Decimal.max(round2(newCollected.minus(alreadyCredited)), 0);
       const invoiceCredit = Decimal.min(
@@ -604,7 +604,7 @@ export async function recordDeliveryRemittanceInTx(
     }
     collectedTotal = round2(collectedTotal);
     // م١ (PR-3): سقفُ التوريد يقرأ «النقد بيد الجهة» من المصدر الذي يقرّره العلَم (`cashSource.ts`).
-    const custodyBalance = (await partyCashInHandTx(tx, party)).effective;
+    const custodyBalance = (await partyCashInHandTx(tx, party, { currentRead: true })).effective;
     if (collectedTotal.gt(custodyBalance)) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",

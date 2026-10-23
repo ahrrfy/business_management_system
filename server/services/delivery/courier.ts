@@ -17,14 +17,20 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { assertNotReturnDeclared } from "./declaredReturn";
+import {
+  assertStandaloneConsignmentTx,
+  loadShipmentMembersTx,
+} from "./shipments";
+import { allocateProportionally } from "./remittance";
 import { computeOrderDeliveryOtp } from "../onlineOrderService";
 import Decimal from "decimal.js";
 import { openBalanceExpr } from "@shared/predicates/openBalance";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   customers,
   deliveryConsignments,
   deliveryParties,
+  deliveryShipmentMembers,
   invoiceItems,
   invoices,
   onlineOrders,
@@ -40,7 +46,7 @@ import {
 } from "../ledgerService";
 import { returnSale } from "../returnService";
 import { awardDeliveredOnlineOrderPoints } from "../storeAdmin/loyaltyService";
-import { withTx } from "../tx";
+import { enqueuePostCommit, withTx } from "../tx";
 import {
   checkIdempotency,
   idempotencyHash,
@@ -119,6 +125,9 @@ export interface MyDeliveryRow {
   feeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
   /** أجرة الإرسالية الحقيقية المسجلة. */
   consignmentDeliveryFee?: string | null;
+  shipmentMemberCount?: number;
+  invoiceReferences?: string[];
+  consignmentIds?: number[];
 }
 
 export interface MyDeliveriesResult {
@@ -236,9 +245,13 @@ export async function listMyDeliveries(
       collectedAmount: r.invPaid ? String(r.invPaid) : "0",
       moneyStatus: null,
       deliveryFree: isFree,
-      deliveryWaivedAmount: r.deliveryWaivedAmount ? String(r.deliveryWaivedAmount) : null,
+      deliveryWaivedAmount: r.deliveryWaivedAmount
+        ? String(r.deliveryWaivedAmount)
+        : null,
       feeCollection: isFree ? "SHOP" : "COURIER",
-      consignmentDeliveryFee: isFree ? String(r.deliveryWaivedAmount ?? "0") : String(r.shippingCost ?? "0"),
+      consignmentDeliveryFee: isFree
+        ? String(r.deliveryWaivedAmount ?? "0")
+        : String(r.shippingCost ?? "0"),
     };
     (r.status === "DELIVERED" ? delivered : toDeliver).push(row);
   }
@@ -253,6 +266,7 @@ export async function listMyDeliveries(
     status: deliveryConsignments.status,
     codAmount: deliveryConsignments.codAmount,
     collectedAmount: deliveryConsignments.collectedAmount,
+    counterSettledAmount: deliveryConsignments.counterSettledAmount,
     courierDeliveredAt: deliveryConsignments.courierDeliveredAt,
     parcelStatus: deliveryConsignments.parcelStatus,
     moneyStatus: deliveryConsignments.moneyStatus,
@@ -272,6 +286,8 @@ export async function listMyDeliveries(
     deliveryFee: deliveryConsignments.deliveryFee,
     feeCollection: deliveryConsignments.feeCollection,
     invTotal: invoices.total,
+    invPaid: invoices.paidAmount,
+    invReturned: invoices.returnedTotal,
     deliveryFree: invoices.deliveryFree,
     deliveryWaivedAmount: invoices.deliveryWaivedAmount,
     custName: customers.name,
@@ -313,15 +329,27 @@ export async function listMyDeliveries(
           sql`(${deliveryConsignments.moneyStatus} IN ('UNSETTLED', 'PARTIAL') OR (${deliveryConsignments.moneyStatus} = 'NOT_APPLICABLE' AND ${deliveryConsignments.feeSettledAt} IS NULL AND ${deliveryConsignments.feeCollection} IN ('SHOP', 'COUNTER') AND CAST(${deliveryConsignments.deliveryFee} AS DECIMAL(15,2)) > 0))`,
         ),
       )
-      .orderBy(desc(deliveryConsignments.id))
-      .limit(100),
+      .orderBy(desc(deliveryConsignments.id)),
   ]);
   const cnRows = [...openConsignmentRows, ...deliveredConsignmentRows];
 
   for (const r of cnRows) {
-    const due = Decimal.max(
-      money(r.codAmount).minus(money(r.collectedAmount ?? "0")),
+    const consignmentDue = Decimal.max(
+      money(r.codAmount)
+        .minus(money(r.collectedAmount ?? "0"))
+        .minus(money(r.counterSettledAmount ?? "0")),
       0,
+    );
+    // Delivery settles the customer's invoice before the party remits its custody.
+    // Delivered rows must retain the party's outstanding amount until remittance.
+    const due = r.parcelStatus === "DELIVERED" ? consignmentDue : Decimal.min(
+      consignmentDue,
+      Decimal.max(
+        money(r.invTotal ?? "0")
+          .minus(money(r.invReturned ?? "0"))
+          .minus(money(r.invPaid ?? "0")),
+        0,
+      ),
     );
     const isFree = r.deliveryFree === true || r.feeCollection === "SHOP";
     const row: MyDeliveryRow = {
@@ -357,16 +385,92 @@ export async function listMyDeliveries(
         }
         return r.collectedAmount ?? null;
       })(),
-      moneyStatus:
-        round2(money(r.shortfallAssigned ?? "0")).gt(0)
-          ? "PARTIAL"
-          : (r.moneyStatus ?? null),
+      moneyStatus: round2(money(r.shortfallAssigned ?? "0")).gt(0)
+        ? "PARTIAL"
+        : (r.moneyStatus ?? null),
       deliveryFree: isFree,
-      deliveryWaivedAmount: r.deliveryWaivedAmount ? String(r.deliveryWaivedAmount) : null,
-      feeCollection: (r.feeCollection ?? "COURIER") as "COURIER" | "COUNTER" | "SHOP",
+      deliveryWaivedAmount: r.deliveryWaivedAmount
+        ? String(r.deliveryWaivedAmount)
+        : null,
+      feeCollection: (r.feeCollection ?? "COURIER") as
+        | "COURIER"
+        | "COUNTER"
+        | "SHOP",
       consignmentDeliveryFee: r.deliveryFee ? String(r.deliveryFee) : null,
     };
     (r.parcelStatus === "DELIVERED" ? delivered : toDeliver).push(row);
+  }
+
+  if (cnRows.length) {
+    const mappings = await db
+      .select({
+        consignmentId: deliveryShipmentMembers.consignmentId,
+        leaderId: deliveryShipmentMembers.leaderConsignmentId,
+        invoiceNumber: invoices.invoiceNumber,
+      })
+      .from(deliveryShipmentMembers)
+      .innerJoin(
+        deliveryConsignments,
+        eq(deliveryConsignments.id, deliveryShipmentMembers.consignmentId),
+      )
+      .innerJoin(invoices, eq(invoices.id, deliveryConsignments.invoiceId))
+      .where(
+        inArray(
+          deliveryShipmentMembers.consignmentId,
+          cnRows.map((row) => Number(row.id)),
+        ),
+      );
+    const mappingById = new Map(
+      mappings.map((row) => [Number(row.consignmentId), row]),
+    );
+    for (const list of [toDeliver, delivered]) {
+      const groups = new Map<number, MyDeliveryRow[]>();
+      for (const row of list) {
+        const mapping =
+          row.kind === "consignment" ? mappingById.get(row.id) : undefined;
+        if (!mapping) continue;
+        const leaderId = Number(mapping.leaderId);
+        groups.set(leaderId, [...(groups.get(leaderId) ?? []), row]);
+      }
+      const groupedIds = new Set(
+        mappings.map((row) => Number(row.consignmentId)),
+      );
+      const standalone = list.filter(
+        (row) => row.kind !== "consignment" || !groupedIds.has(row.id),
+      );
+      for (const [leaderId, members] of Array.from(groups.entries())) {
+        const leader = members.find((row) => row.id === leaderId) ?? members[0];
+        const sum = (
+          field:
+            | "orderTotal"
+            | "codDue"
+            | "courierFee"
+            | "collectedAmount"
+            | "consignmentDeliveryFee",
+        ) =>
+          toDbMoney(
+            members.reduce(
+              (total, row) => total.plus(money(row[field] ?? "0")),
+              money(0),
+            ),
+          );
+        standalone.push({
+          ...leader,
+          id: leaderId,
+          orderTotal: sum("orderTotal"),
+          codDue: sum("codDue"),
+          courierFee: sum("courierFee"),
+          collectedAmount: sum("collectedAmount"),
+          consignmentDeliveryFee: sum("consignmentDeliveryFee"),
+          shipmentMemberCount: members.length,
+          consignmentIds: members.map((row) => row.id).sort((a, b) => a - b),
+          invoiceReferences: members.map(
+            (row) => mappingById.get(row.id)!.invoiceNumber,
+          ),
+        });
+      }
+      list.splice(0, list.length, ...standalone);
+    }
   }
 
   // دمج المصدرين بترتيب زمنيّ نازل (الأحدث أولاً) — كلا القائمتين مبنيّتان أصلاً بترتيب المعرّف
@@ -406,10 +510,12 @@ export async function confirmCourierDelivery(
       code: "FORBIDDEN",
       message: appErrorMessage({
         what: "تعذّر تأكيد التسليم والتحصيل",
-        why: membership?.memberRole === "ACCOUNTANT"
-          ? "حسابك محاسبُ جهة التوصيل: يراجع الكشف والتوريد ولا يختم تسليماً في الميدان"
-          : "حسابك غير مرتبطٍ بجهة توصيلٍ نشطة، وختمُ التسليم يرفع عهدةً نقديّة فلا يقع بلا جهةٍ تُنسَب إليها",
-        doThis: "اطلب من المدير ربط حسابك بجهة التوصيل من صفحة «جهات التوصيل»؛ وإلى أن يتمّ ذلك يُثبَّت التسليم من كاشير الاستقبال بمستندٍ قصير",
+        why:
+          membership?.memberRole === "ACCOUNTANT"
+            ? "حسابك محاسبُ جهة التوصيل: يراجع الكشف والتوريد ولا يختم تسليماً في الميدان"
+            : "حسابك غير مرتبطٍ بجهة توصيلٍ نشطة، وختمُ التسليم يرفع عهدةً نقديّة فلا يقع بلا جهةٍ تُنسَب إليها",
+        doThis:
+          "اطلب من المدير ربط حسابك بجهة التوصيل من صفحة «جهات التوصيل»؛ وإلى أن يتمّ ذلك يُثبَّت التسليم من كاشير الاستقبال بمستندٍ قصير",
       }),
     });
   }
@@ -683,6 +789,7 @@ export interface ConfirmConsignmentResult {
   consignmentNumber: string;
   deliveredAt: Date;
   alreadyDelivered?: boolean;
+  collectedAmount?: string;
 }
 
 /**
@@ -742,6 +849,7 @@ export async function confirmConsignmentDelivery(
   },
   actor: { userId: number },
   existingTx?: Tx,
+  options: { shipmentMember?: boolean } = {},
 ): Promise<ConfirmConsignmentResult> {
   const membership = input.statementWitness
     ? await resolveStatementWitnessAuthority(input.statementWitness.partyId)
@@ -789,9 +897,143 @@ export async function confirmConsignmentDelivery(
         message: appErrorMessage({
           what: "تعذّر ختم تسليم الإرسالية",
           why: `جهة التوصيل رقم ${membership.partyId} لم تعد موجودةً في السجلّ — يبدو أنّها حُذفت بعد الإسناد`,
-          doThis: "أبلِغ المدير برقم الإرسالية ليُعيد إسنادها إلى جهةٍ قائمة قبل تسجيل التحصيل",
+          doThis:
+            "أبلِغ المدير برقم الإرسالية ليُعيد إسنادها إلى جهةٍ قائمة قبل تسجيل التحصيل",
         }),
       });
+    if (!options.shipmentMember) {
+      const members = await loadShipmentMembersTx(tx, input.consignmentId, {
+        currentRead: true,
+      });
+      if (members.length > 1 && !input.statementWitness) {
+        for (const member of members)
+          assertMemberCanUseConsignment(membership, member);
+        const [mapping] = await tx
+          .select()
+          .from(deliveryShipmentMembers)
+          .where(eq(deliveryShipmentMembers.consignmentId, input.consignmentId))
+          .for("share")
+          .limit(1);
+        const leaderId = Number(mapping?.leaderConsignmentId ?? members[0].id);
+        const groupHash = idempotencyHash({
+          ...input,
+          consignmentId: leaderId,
+        });
+        const replay = await checkIdempotency(
+          tx,
+          "courier.confirmShipment",
+          clientRequestId,
+          groupHash,
+        );
+        const leader = members.find(
+          (member) => Number(member.id) === leaderId,
+        )!;
+        if (replay != null) {
+          if (!leader.courierDeliveredAt)
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: appErrorMessage({
+                what: "تعذر إعادة نتيجة تسليم الشحنة",
+                why: "سجل التسليم غير مكتمل",
+                doThis: "حدّث شاشة توصيلاتي وراجع تفاصيل الشحنة",
+              }),
+            });
+          return {
+            consignmentId: leaderId,
+            consignmentNumber: leader.consignmentNumber,
+            deliveredAt: leader.courierDeliveredAt,
+            alreadyDelivered: true,
+          };
+        }
+        const invoiceRows = await tx
+          .select()
+          .from(invoices)
+          .where(
+            inArray(
+              invoices.id,
+              members.map((member) => Number(member.invoiceId)),
+            ),
+          )
+          .orderBy(asc(invoices.id))
+          .for("update");
+        const invoiceById = new Map(
+          invoiceRows.map((invoice) => [Number(invoice.id), invoice]),
+        );
+        const weights = members.map((member) => {
+          const invoice = invoiceById.get(Number(member.invoiceId));
+          if (!invoice)
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message: appErrorMessage({
+                what: "تعذر تسليم الشحنة",
+                why: "إحدى فواتيرها غير موجودة",
+                doThis: "أبلغ الاستقبال برقم الشحنة لتصحيح الارتباط",
+              }),
+            });
+          return Decimal.min(
+            Decimal.max(
+              money(invoice.total)
+                .minus(money(invoice.returnedTotal ?? "0"))
+                .minus(money(invoice.paidAmount)),
+              0,
+            ),
+            Decimal.max(
+              money(member.codAmount)
+                .minus(money(member.collectedAmount))
+                .minus(money(member.counterSettledAmount)),
+              0,
+            ),
+          );
+        });
+        const totalDue = round2(
+          weights.reduce((sum, value) => sum.plus(value), money(0)),
+        );
+        const amount =
+          input.collectedAmount == null
+            ? totalDue
+            : round2(money(input.collectedAmount));
+        if (!amount.isFinite() || amount.lt(0) || amount.gt(totalDue))
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "تعذر تسجيل تحصيل الشحنة",
+              why: `المقبوض ${amount.toFixed(2)} خارج المبلغ المتبقي ${totalDue.toFixed(2)}`,
+              doThis: "أدخل ما قبضته فعلاً ضمن المبلغ المتبقي الظاهر",
+            }),
+          });
+        const allocated = allocateProportionally(amount, weights);
+        let leaderResult: ConfirmConsignmentResult | undefined;
+        for (let index = 0; index < members.length; index += 1) {
+          const member = members[index];
+          const result = await confirmConsignmentDelivery(
+            {
+              ...input,
+              consignmentId: Number(member.id),
+              clientRequestId: `shipment:${leaderId}:${groupHash.slice(0, 40)}:${member.id}`,
+              collectedAmount: toDbMoney(allocated[index]),
+            },
+            actor,
+            tx,
+            { shipmentMember: true },
+          );
+          if (Number(member.id) === leaderId) leaderResult = result;
+        }
+        await recordIdempotencyKey(
+          tx,
+          "courier.confirmShipment",
+          clientRequestId,
+          leaderId,
+          groupHash,
+        );
+        return { ...leaderResult!, collectedAmount: toDbMoney(amount) };
+      }
+      await assertStandaloneConsignmentTx(
+        tx,
+        input.consignmentId,
+        "تأكيد التسليم",
+        { currentRead: true },
+      );
+    }
     const cn = (
       await tx
         .select()
@@ -953,7 +1195,9 @@ export async function confirmConsignmentDelivery(
         : { source: "COURIER_PORTAL" },
     });
 
-    if (cod.gt(0)) {
+    // A classified shortfall can cover the entire COD, including zero cash collected.
+    // Company proof without a reason still leaves the unpaid amount with the customer.
+    if (!originalCodIsZero) {
       const inv = (
         await tx
           .select()
@@ -1050,45 +1294,54 @@ export async function confirmConsignmentDelivery(
         recordedShortageAmount = toDbMoney(shortage);
       }
 
-      if (cn.custodyRecognizedAt == null) {
-        // نُصعِّد عهدةَ المندوب بـ**مجموع** ما يتحمّله (نقدٌ قبضه + عجزٌ يتحمّله):
-        //   COD_COLLECTED رفعُ عهدةٍ نقديّة (قبضٌ فعليّ)،
-        //   SHORTFALL_ASSIGNED رفعُ عهدةٍ غير نقديّة (ديْنٌ نيابةً عن العميل الذي أُفرِج عنه).
-        const custodyRise = round2(cod.plus(shortfallReason ? shortage : money(0)));
-        await adjustDeliveryBalance(tx, membership.partyId, custodyRise);
-        if (cod.gt(0)) {
-          await appendDeliveryLedgerEntry(tx, {
-            eventKey: `CN:${cn.id}:COD_COLLECTED`,
-            partyId: membership.partyId,
-            consignmentId: Number(cn.id),
+      if (cod.gt(0) || (shortfallReason != null && shortage.gt(0))) {
+        if (cn.custodyRecognizedAt == null) {
+          // نُصعِّد عهدةَ المندوب بـ**مجموع** ما يتحمّله (نقدٌ قبضه + عجزٌ يتحمّله):
+          //   COD_COLLECTED رفعُ عهدةٍ نقديّة (قبضٌ فعليّ)،
+          //   SHORTFALL_ASSIGNED رفعُ عهدةٍ غير نقديّة (ديْنٌ نيابةً عن العميل الذي أُفرِج عنه).
+          const custodyRise = round2(
+            cod.plus(shortfallReason ? shortage : money(0)),
+          );
+          if (cod.isZero()) {
+            await tx
+              .update(deliveryConsignments)
+              .set({ custodyRecognizedAt: deliveredAt })
+              .where(eq(deliveryConsignments.id, Number(cn.id)));
+          }
+          await adjustDeliveryBalance(tx, membership.partyId, custodyRise);
+          if (cod.gt(0)) {
+            await appendDeliveryLedgerEntry(tx, {
+              eventKey: `CN:${cn.id}:COD_COLLECTED`,
+              partyId: membership.partyId,
+              consignmentId: Number(cn.id),
+              branchId: Number(cn.branchId),
+              entryType: "COD_COLLECTED",
+              amount: toDbMoney(cod),
+              actorUserId: actor.userId,
+            });
+          }
+          if (shortfallReason) {
+            await appendDeliveryLedgerEntry(tx, {
+              eventKey: `CN:${cn.id}:SHORTFALL_ASSIGNED`,
+              partyId: membership.partyId,
+              consignmentId: Number(cn.id),
+              branchId: Number(cn.branchId),
+              entryType: "SHORTFALL_ASSIGNED",
+              amount: toDbMoney(shortage),
+              notes: `عجزُ تحصيل — ${shortfallReason}`,
+              shortfallReason,
+              actorUserId: actor.userId,
+            });
+          }
+          await postEntry(tx, {
+            entryType: "DELIVERY_DISPATCH",
+            postingIntent: deliveryDispatchMemoIntent(),
+            dedupeKey: `DELIVERY_CUSTODY:${cn.id}`,
             branchId: Number(cn.branchId),
-            entryType: "COD_COLLECTED",
-            amount: toDbMoney(cod),
-            actorUserId: actor.userId,
-          });
-        }
-        if (shortfallReason) {
-          await appendDeliveryLedgerEntry(tx, {
-            eventKey: `CN:${cn.id}:SHORTFALL_ASSIGNED`,
-            partyId: membership.partyId,
-            consignmentId: Number(cn.id),
-            branchId: Number(cn.branchId),
-            entryType: "SHORTFALL_ASSIGNED",
-            amount: toDbMoney(shortage),
-            notes: `عجزُ تحصيل — ${shortfallReason}`,
-            shortfallReason,
-            actorUserId: actor.userId,
-          });
-        }
-        await postEntry(tx, {
-          entryType: "DELIVERY_DISPATCH",
-          postingIntent: deliveryDispatchMemoIntent(),
-          dedupeKey: `DELIVERY_CUSTODY:${cn.id}`,
-          branchId: Number(cn.branchId),
-          invoiceId: Number(cn.invoiceId),
-          deliveryPartyId: membership.partyId,
-          amount: custodyRise,
-          notes: `تحصيل بعد التسليم ${cn.consignmentNumber}${shortfallReason ? ` (نقد ${cod.toFixed(2)} + عجز ${shortage.toFixed(2)} على المندوب)` : ""}`,
+            invoiceId: Number(cn.invoiceId),
+            deliveryPartyId: membership.partyId,
+            amount: custodyRise,
+            notes: `تحصيل بعد التسليم ${cn.consignmentNumber}${shortfallReason ? ` (نقد ${cod.toFixed(2)} + عجز ${shortage.toFixed(2)} على المندوب)` : ""}`,
         });
       }
       // Customer AR moves to courier custody at the physical hand-over; no
@@ -1103,14 +1356,15 @@ export async function confirmConsignmentDelivery(
         entryType: "PAYMENT_IN",
         postingIntent: deliveryCustomerCollectionIntent(customerSettleAmount),
         dedupeKey: `PAYMENT_IN:COURIER_DELIVERY:${cn.id}`,
-        branchId: Number(cn.branchId),
-        invoiceId: Number(cn.invoiceId),
-        customerId: inv.customerId != null ? Number(inv.customerId) : null,
-        deliveryPartyId: membership.partyId,
-        amount: customerSettleAmount,
-        notes: `تحصيل العميل لدى جهة التوصيل ${cn.consignmentNumber}${shortfallReason ? ` (بضمنه عجزٌ على المندوب ${shortage.toFixed(2)})` : ""}`,
+          branchId: Number(cn.branchId),
+          invoiceId: Number(cn.invoiceId),
+          customerId: inv.customerId != null ? Number(inv.customerId) : null,
+          deliveryPartyId: membership.partyId,
+          amount: customerSettleAmount,
+          notes: `تحصيل العميل لدى جهة التوصيل ${cn.consignmentNumber}${shortfallReason ? ` (بضمنه عجزٌ على المندوب ${shortage.toFixed(2)})` : ""}`,
       });
-      const newPaid = round2(money(inv.paidAmount).plus(customerSettleAmount));
+      const newPaid = round2(money(inv.paidAmount).plus(customerSettleAmount),
+        );
       await tx
         .update(invoices)
         .set({
@@ -1122,10 +1376,41 @@ export async function confirmConsignmentDelivery(
           ),
           paymentDate: deliveredAt,
           paymentMethod: sql`COALESCE(${invoices.paymentMethod}, 'CASH')`,
-        })
-        .where(eq(invoices.id, Number(inv.id)));
-      if (inv.customerId != null) {
-        await adjustCustomerBalance(tx, Number(inv.customerId), customerSettleAmount.neg());
+          })
+          .where(eq(invoices.id, Number(inv.id)));
+        if (inv.customerId != null) {
+          await adjustCustomerBalance(
+            tx,
+            Number(inv.customerId),
+            customerSettleAmount.neg(),
+          );
+        }
+        // No customer cash remains to remit when the whole obligation moved to
+        // a classified party shortfall. Close the parcel's cash allocation so
+        // the party can repay that debt through the existing custody settlement.
+        const cashRemaining = round2(
+          money(cn.codAmount)
+            .minus(money(cn.collectedAmount ?? "0"))
+            .minus(money(cn.counterSettledAmount ?? "0"))
+            .minus(shortfallReason ? shortage : money(0)),
+        );
+        if (cod.isZero() && shortfallReason && cashRemaining.lte(0)) {
+          assertConsignmentStatusTransition(cn.status, "DELIVERED");
+          await tx.update(deliveryConsignments).set({
+            status: "DELIVERED",
+            moneyStatus: "SETTLED",
+            settledAt: deliveredAt,
+          }).where(eq(deliveryConsignments.id, Number(cn.id)));
+          await appendDeliveryEvent(tx, {
+            eventKey: `CN:${cn.id}:MONEY:SHORTFALL_ASSIGNED`,
+            consignmentId: Number(cn.id),
+            eventType: "MONEY_SETTLED",
+            fromMoneyStatus: cn.moneyStatus,
+            toMoneyStatus: "SETTLED",
+            actorUserId: actor.userId,
+            payload: { shortfallAssigned: toDbMoney(shortage), cashExpected: "0.00" },
+          });
+        }
       }
     }
 
@@ -1193,18 +1478,22 @@ export async function confirmConsignmentDelivery(
             status: onlineOrders.status,
           })
           .from(onlineOrders)
-          .where(and(
-            eq(onlineOrders.branchId, Number(cn.branchId)),
-            cn.sourceType === "ONLINE_ORDER"
-              ? eq(onlineOrders.id, Number(cn.sourceId))
-              : eq(onlineOrders.invoiceId, Number(cn.invoiceId)),
-            inArray(onlineOrders.status, ["SHIPPED", "DELIVERED"]),
-          ))
+          .where(
+            and(
+              eq(onlineOrders.branchId, Number(cn.branchId)),
+              cn.sourceType === "ONLINE_ORDER"
+                ? eq(onlineOrders.id, Number(cn.sourceId))
+                : eq(onlineOrders.invoiceId, Number(cn.invoiceId)),
+              inArray(onlineOrders.status, ["SHIPPED", "DELIVERED"]),
+            ),
+          )
           .for("update")
           .limit(1)
       )[0];
       if (prevOnline) {
-        await tx.update(onlineOrders).set({ status: "DELIVERED" })
+        await tx
+          .update(onlineOrders)
+          .set({ status: "DELIVERED" })
           .where(eq(onlineOrders.id, Number(prevOnline.id)));
       }
       if (prevOnline && prevOnline.status !== "DELIVERED") {
@@ -1219,7 +1508,9 @@ export async function confirmConsignmentDelivery(
           orderId: Number(prevOnline.id),
           orderNumber: prevOnline.orderNumber,
           customerId:
-            prevOnline.customerId == null ? null : Number(prevOnline.customerId),
+            prevOnline.customerId == null
+              ? null
+              : Number(prevOnline.customerId),
           status: "DELIVERED",
         });
       }
@@ -1233,30 +1524,32 @@ export async function confirmConsignmentDelivery(
       payloadHash,
     );
 
-    if (recordedShortfallReason && recordedShortageAmount) {
+    enqueuePostCommit(tx, () => {
+      if (recordedShortfallReason && recordedShortageAmount) {
+        publishRealtimeEvent(
+          REALTIME_EVENT_TYPES.SHORTFALL_ASSIGNED,
+          {
+            deliveryId: Number(cn.id),
+            driverId: Number(cn.assignedUserId ?? membership.partyId),
+            amount: recordedShortageAmount,
+            reason: recordedShortfallReason,
+            branchId: Number(cn.branchId),
+          },
+          { branchId: Number(cn.branchId) },
+        );
+      }
       publishRealtimeEvent(
-        REALTIME_EVENT_TYPES.SHORTFALL_ASSIGNED,
+        REALTIME_EVENT_TYPES.DELIVERY_COMPLETED,
         {
           deliveryId: Number(cn.id),
+          invoiceId: Number(cn.invoiceId),
           driverId: Number(cn.assignedUserId ?? membership.partyId),
-          amount: recordedShortageAmount,
-          reason: recordedShortfallReason,
           branchId: Number(cn.branchId),
+          collectedAmount: toDbMoney(cod),
         },
         { branchId: Number(cn.branchId) },
       );
-    }
-    publishRealtimeEvent(
-      REALTIME_EVENT_TYPES.DELIVERY_COMPLETED,
-      {
-        deliveryId: Number(cn.id),
-        invoiceId: Number(cn.invoiceId),
-        driverId: Number(cn.assignedUserId ?? membership.partyId),
-        branchId: Number(cn.branchId),
-        collectedAmount: toDbMoney(cod),
-      },
-      { branchId: Number(cn.branchId) },
-    );
+    });
 
     return {
       consignmentId: Number(cn.id),
@@ -1275,6 +1568,8 @@ export async function transitionConsignmentParcel(
     clientRequestId: string;
   },
   actor: { userId: number },
+  existingTx?: Tx,
+  options: { shipmentMember?: boolean } = {},
 ) {
   const membership = await resolveDeliveryMembership(actor.userId);
   if (!membership || membership.memberRole === "ACCOUNTANT") {
@@ -1292,7 +1587,49 @@ export async function transitionConsignmentParcel(
     });
   }
   const payloadHash = idempotencyHash(input);
-  return withTx(async (tx) => {
+  const run = async (
+    tx: Tx,
+  ): Promise<{ consignmentId: number; status?: string; replay: boolean }> => {
+    await tx
+      .select({ id: deliveryParties.id })
+      .from(deliveryParties)
+      .where(eq(deliveryParties.id, membership.partyId))
+      .for("update")
+      .limit(1);
+    if (!options.shipmentMember) {
+      const members = await loadShipmentMembersTx(tx, input.consignmentId, {
+        currentRead: true,
+      });
+      if (members.length > 1) {
+        for (const member of members)
+          assertMemberCanUseConsignment(membership, member);
+        const [mapping] = await tx
+          .select()
+          .from(deliveryShipmentMembers)
+          .where(eq(deliveryShipmentMembers.consignmentId, input.consignmentId))
+          .for("share")
+          .limit(1);
+        let replay = true;
+        for (const member of members) {
+          const result = await transitionConsignmentParcel(
+            {
+              ...input,
+              consignmentId: Number(member.id),
+              clientRequestId: `shipment:${idempotencyHash({ clientRequestId: input.clientRequestId, consignmentId: Number(member.id) })}`,
+            },
+            actor,
+            tx,
+            { shipmentMember: true },
+          );
+          replay = replay && result.replay;
+        }
+        return {
+          consignmentId: Number(mapping?.leaderConsignmentId ?? members[0].id),
+          status: input.toStatus,
+          replay,
+        };
+      }
+    }
     const cn = (
       await tx
         .select()
@@ -1374,7 +1711,8 @@ export async function transitionConsignmentParcel(
       status: input.toStatus,
       replay: false,
     };
-  });
+  };
+  return existingTx ? run(existingTx) : withTx(run);
 }
 
 export interface FailDeliveryResult {

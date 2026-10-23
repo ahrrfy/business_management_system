@@ -96,6 +96,7 @@ export function CompanyConsignmentActions({
     D(c.collectedAmount).isZero() &&
     D(c.counterSettledAmount).isZero() &&
     D(c.shortfallAssigned).isZero();
+  if (c.shipmentLeaderConsignmentId != null) return <Button size="sm" variant="outline" onClick={() => setTimelineId(c.shipmentLeaderConsignmentId!)}>الشحنة · {c.shipmentInvoiceCount} فواتير</Button>;
   return (
     <div className="flex flex-wrap items-center gap-1">
       <Button
@@ -174,7 +175,7 @@ export function CompanyConsignmentDriver({
       {c.failureReason && (
         <div className="mb-1 text-destructive">{c.failureReason}</div>
       )}
-      {lifecycleActionAllowed(me.data, "delivery.reassignConsignment", canEdit) && canReassign && (
+      {lifecycleActionAllowed(me.data, "delivery.reassignConsignment", canEdit) && canReassign && c.shipmentLeaderConsignmentId == null && (
           <AppSelect
             value={String(c.assignedUserId ?? "")}
             disabled={reassignM.isPending}

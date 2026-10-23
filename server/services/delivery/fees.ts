@@ -24,7 +24,7 @@ async function ledgerFeeDue(tx: Tx, consignmentId: number): Promise<Decimal> {
   const sums = (await tx.select({
     earned: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} = 'FEE_EARNED' THEN ${deliveryLedgerEntries.amount} WHEN ${deliveryLedgerEntries.entryType} = 'FEE_REFUNDED' THEN -${deliveryLedgerEntries.amount} ELSE 0 END),0)`,
     paid: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} IN ('FEE_PAID','FEE_OFFSET') THEN ${deliveryLedgerEntries.amount} ELSE 0 END),0)`,
-  }).from(deliveryLedgerEntries).where(and(eq(deliveryLedgerEntries.consignmentId, consignmentId), effectiveDeliveryLedgerEntrySql())))[0];
+  }).from(deliveryLedgerEntries).where(and(eq(deliveryLedgerEntries.consignmentId, consignmentId), effectiveDeliveryLedgerEntrySql())).for("share"))[0];
   return round2(money(sums?.earned ?? "0").minus(money(sums?.paid ?? "0")));
 }
 
