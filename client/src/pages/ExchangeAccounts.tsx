@@ -183,7 +183,7 @@ export default function ExchangeAccounts() {
   }, [rows, totals]);
 
   return (
-    <div className="space-y-4" dir="rtl">
+    <div className="space-y-2.5" dir="rtl">
       <PageHeader
         icon={<Building2 className="h-5 w-5 text-primary" />}
         title="الصيرفات (الصرّافون)"
@@ -218,7 +218,7 @@ export default function ExchangeAccounts() {
         }
       />
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
         <StatCard label="عدد الصيرفات" value={totals.count} icon={Building2} />
         <StatCard label="صافي أرصدتنا (دينار)" value={fmtAr(totals.iqd)} sub="موجب = لنا عندهم" tone={D(totals.iqd).isNegative() ? "negative" : "positive"} />
         <StatCard label="صافي أرصدتنا (دولار)" value={fmtAr(totals.usd)} sub="$" icon={DollarSign} tone={D(totals.usd).isNegative() ? "negative" : "positive"} />
@@ -230,7 +230,7 @@ export default function ExchangeAccounts() {
         />
       </div>
 
-      <Card className="p-4">
+      <Card className="p-3">
         <div className="overflow-x-auto">
           <DataTable
             data={rows}

@@ -409,7 +409,7 @@ export default function ExpenseNew() {
   );
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         title="مصروف جديد"
         backHref="/expenses"
@@ -417,9 +417,9 @@ export default function ExpenseNew() {
       />
 
       {/* مصدر الصرف: نقدي أو صرف من المخزون (نثرية/تلف) */}
-      <Card>
-        <CardContent className="pt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex flex-wrap gap-2">
+      <Card className="py-2 gap-1.5">
+        <CardContent className="px-3 py-0 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-wrap gap-1.5">
             {sourceTabs.map((t) => (
               <button
                 key={t.value}
@@ -431,7 +431,7 @@ export default function ExpenseNew() {
                   if (t.value === "WASTAGE") selectFirstCategoryOfBucket("OTHER");
                 }}
                 className={cn(
-                  "rounded-full px-4 py-1.5 text-sm border transition",
+                  "rounded-full px-3 py-1 text-xs font-medium border transition",
                   source === t.value
                     ? "bg-primary text-primary-foreground border-primary"
                     : "bg-transparent hover:bg-accent",
@@ -451,7 +451,7 @@ export default function ExpenseNew() {
         <CardHeader>
           <CardTitle className="text-base">بيانات المصروف</CardTitle>
         </CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 items-start">
+        <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 items-start">
           <div className="space-y-1 md:col-span-2 lg:col-span-1">
             {/* الفرعُ استنتاجٌ خادميّ لا سؤالٌ للشاشة — `<InferredBranchField>` يعرض «فرعُك
                 المُسنَد» ويكشف زرَّ «تغيير» للأدمن/المالك فقط، ولا يقع على «الفرع ١» صامتاً
@@ -779,14 +779,14 @@ export default function ExpenseNew() {
       )}
 
       {!isStock && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-2.5 items-start">
           <Card>
             <CardHeader>
               <CardTitle className="text-base">
                 جهة الصرف ومركز التكلفة
               </CardTitle>
             </CardHeader>
-            <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div className="space-y-1">
                 <Label htmlFor="payee">جهة الصرف</Label>
                 <Input

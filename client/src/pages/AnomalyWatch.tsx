@@ -18,6 +18,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { fmtAr, formatQuantity } from "@/lib/money";
 import { exportSheets, type SheetSpec } from "@/lib/export";
 import { selectCls } from "@/lib/ui/formStyles";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 
 type AW = RouterOutputs["reports"]["anomalyWatch"];
 
@@ -292,6 +293,101 @@ export default function AnomalyWatch() {
     exportSheets(`رقيب-الشذوذ-${aw.from}-${aw.to}`, sheets);
   }
 
+  function onPrint() {
+    if (!aw) return;
+    printReportDoc({
+      title: "رقيب الشذوذ — ملخص الكواشف والمؤشرات",
+      note: NOTE,
+      headerExtra: [
+        { label: "الفترة", value: `${aw.from} — ${aw.to}` },
+        { label: "الفرع", value: branchLabel },
+      ],
+      columns: [
+        { key: "detector", label: "الكاشف الرقابي" },
+        { key: "flaggedCount", label: "الحالات المرصودة", align: "left" },
+        { key: "detail", label: "التفاصيل والأثر المالي" },
+      ],
+      rows: [
+        {
+          detector: "فجوات تسلسل الترقيم",
+          flaggedCount: fmtAr(aw.kpis.sequenceGapDays),
+          detail: aw.kpis.sequenceGapDays > 0 ? "تحذير حرج — أيام بفجوات ترقيم" : "سليم (0)",
+        },
+        {
+          detector: "بيع دون الكلفة",
+          flaggedCount: fmtAr(aw.kpis.belowCostLines),
+          detail: `إجمالي الخسارة: ${fmtAr(aw.kpis.belowCostLoss)} د.ع`,
+        },
+        {
+          detector: "الخصومات اليدوية حسب الكاشير",
+          flaggedCount: fmtAr(aw.kpis.flaggedDiscountCashiers),
+          detail: `متوسط النطاق: ${fmtAr(aw.discounts.scopeAvgRatePct)}%`,
+        },
+        {
+          detector: "تركّز المرتجعات",
+          flaggedCount: fmtAr(aw.kpis.flaggedReturnSellers),
+          detail: `متوسط النطاق: ${fmtAr(aw.returns.scopeAvgRatePct)}%`,
+        },
+        {
+          detector: "عجوزات الورديات",
+          flaggedCount: fmtAr(aw.kpis.flaggedShortageCashiers),
+          detail: `عدد صفوف الكاشيرية: ${fmtAr(aw.shiftShortages.rows.length)}`,
+        },
+        {
+          detector: "السندات المعكوسة",
+          flaggedCount: fmtAr(aw.kpis.reversedVouchers),
+          detail: "سندات قبض/صرف عُكست في الفترة",
+        },
+        {
+          detector: "تركّز سحوبات بضاعة الأمانة",
+          flaggedCount: fmtAr(aw.kpis.flaggedConsignWithdrawers),
+          detail: "سندات سحب/استبدال أمانة",
+        },
+        {
+          detector: "طلبات محفوظة مموّلة أُلغيت بلا تثبيت",
+          flaggedCount: fmtAr(aw.kpis.flaggedCancelledFundedDrafters),
+          detail: "نمط قبض عربون ثم ردّ وإلغاء",
+        },
+        {
+          detector: "تركّز قبض رصيد زين",
+          flaggedCount: fmtAr(aw.kpis.flaggedTelecomCollectors),
+          detail: "نسبة تحصيل رصيد الاتصال",
+        },
+        {
+          detector: "طلبات محفوظة مموّلة معلّقة > 24 ساعة",
+          flaggedCount: fmtAr(aw.kpis.fundedStaleDrafts),
+          detail: "لقطة حاضرة لعربون محتجز",
+        },
+        {
+          detector: "تركّز التسديد على فواتير الغير",
+          flaggedCount: fmtAr(aw.kpis.flaggedOthersCollectors),
+          detail: "قبض متكرّر على فواتير أنشأها موظف آخر",
+        },
+        {
+          detector: "خفض إجمالي طلبٍ بعد قبض عربونه",
+          flaggedCount: fmtAr(aw.kpis.flaggedFundedReducers),
+          detail: "مرّات خفض إجمالي الطلب بعد قبض العربون",
+        },
+        {
+          detector: "عُهد توصيل متقادمة",
+          flaggedCount: fmtAr(aw.kpis.flaggedDeliveryCustody),
+          detail: "لقطة راهنة لعُهد مناديب/شركات توصيل متأخرة",
+        },
+        {
+          detector: "توريدات توصيل بعجز متكرّر",
+          flaggedCount: fmtAr(aw.kpis.flaggedDeliveryShortRemits),
+          detail: "جهات توصيل بتوريدات ناقصة متكرّرة",
+        },
+      ],
+      summary: kpis.slice(0, 6).map((k, idx, arr) => ({
+        label: k.label,
+        value: String(k.value),
+        large: idx === arr.length - 1,
+        bold: idx === arr.length - 1,
+      })),
+    });
+  }
+
   return (
     <ReportShell
       title="رقيب الشذوذ"
@@ -299,7 +395,9 @@ export default function AnomalyWatch() {
       note={NOTE}
       kpis={kpis}
       onExport={onExport}
+      onPrint={onPrint}
       exportDisabled={!aw}
+      printDisabled={!aw || q.isLoading || q.isError}
       filters={
         <div className="flex flex-wrap items-end gap-3">
           <PeriodFilter value={period} onChange={setPeriod} />

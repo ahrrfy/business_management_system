@@ -7,7 +7,7 @@
 //
 // التجميع قبل الإرسال: الخادم يقبل سطراً واحداً لكل متغيّر بالوحدة الأساس ⇒ نجمع أسطر الوحدات
 // المختلفة لنفس المتغيّر (درزن ١٢ + قطعة ٣ = ١٥ أساس) في بندٍ واحد.
-import { PageHeader } from "@/components/PageHeader";
+import { EmbeddedPageHeaderProvider, PageHeader } from "@/components/PageHeader";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -221,7 +221,11 @@ export default function Transfers() {
         </button>
       </div>
 
-      {tab === "log" && <TransfersLog initialFocusId={initialFocusId} />}
+      {tab === "log" && (
+        <EmbeddedPageHeaderProvider>
+          <TransfersLog initialFocusId={initialFocusId} />
+        </EmbeddedPageHeaderProvider>
+      )}
 
       {tab === "new" && (
       <>

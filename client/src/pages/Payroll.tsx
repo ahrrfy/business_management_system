@@ -54,14 +54,14 @@ function StatusBadge({ status }: { status: string }) {
 
 function StatCard({ label, value, sub, accent, icon }: { label: string; value: string; sub?: string; accent?: string; icon: React.ReactNode }) {
   return (
-    <Card className="py-1.5 gap-0.5">
+    <Card className="py-1 gap-0">
       <CardContent className="px-2.5 py-0">
         <div className="flex items-center justify-between gap-1">
-          <div className="text-muted-foreground text-2xs font-semibold truncate">{label}</div>
+          <div className="text-muted-foreground text-[11px] font-semibold truncate">{label}</div>
           <span style={{ color: accent }}>{icon}</span>
         </div>
-        <div className="mt-0.5 text-base font-extrabold tabular-nums leading-tight" dir="ltr" style={{ color: accent }}>{value}</div>
-        {sub && <div className="text-muted-foreground text-[10px] mt-0.5 leading-tight">{sub}</div>}
+        <div className="text-sm font-bold tabular-nums leading-tight" dir="ltr" style={{ color: accent }}>{value}</div>
+        {sub && <div className="text-muted-foreground text-[10px] leading-tight">{sub}</div>}
       </CardContent>
     </Card>
   );
@@ -610,7 +610,7 @@ export default function Payroll() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         title="الرواتب"
         actions={
@@ -649,7 +649,7 @@ export default function Payroll() {
       )}
 
       {/* المؤشّرات */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
         <StatCard label="الأجر الأساس والمخصصات" value={iqd(totals.gross)} sub="قبل الإضافي والعمولة" icon={<Banknote className="size-4" />} />
         <StatCard label="العمل الإضافي" value={iqd(totals.overtime)} sub="د.ع" accent="var(--status-done, #059669)" icon={<AlarmClock className="size-4" />} />
         <StatCard label="الاستقطاعات" value={iqd(totals.deductions)} sub="سلف وغياب" accent="var(--money-negative, #dc2626)" icon={<Minus className="size-4" />} />

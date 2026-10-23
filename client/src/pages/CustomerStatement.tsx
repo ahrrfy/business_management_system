@@ -551,7 +551,7 @@ export default function CustomerStatement() {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         breadcrumbs={[{ label: "العملاء", href: "/customers" }, { label: "كشف حساب" }]}
         title="كشف حساب عميل"
@@ -638,26 +638,26 @@ export default function CustomerStatement() {
       />
 
       <Card>
-        <CardContent className="pt-6 grid grid-cols-1 md:grid-cols-4 gap-4">
-          <div className="space-y-1 md:col-span-2">
-            <Label className="text-xs">العميل</Label>
+        <CardContent className="p-2.5 flex flex-wrap items-end gap-2.5">
+          <div className="space-y-1 min-w-64 flex-1">
+            <Label className="text-[11px] text-muted-foreground">العميل</Label>
             <CustomerSearchPicker
               customers={index.data ?? []}
               value={customerId}
               onChange={selectCustomer}
             />
           </div>
-          <div className="space-y-1">
-            <Label className="text-xs">من تاريخ</Label>
-            <Input type="date" dir="ltr" value={from} onChange={(e) => setFrom(e.target.value)} />
+          <div className="space-y-1 w-36">
+            <Label className="text-[11px] text-muted-foreground">من تاريخ</Label>
+            <Input type="date" dir="ltr" className="h-8 text-xs" value={from} onChange={(e) => setFrom(e.target.value)} />
           </div>
-          <div className="space-y-1">
-            <Label className="text-xs">إلى تاريخ</Label>
-            <Input type="date" dir="ltr" value={to} onChange={(e) => setTo(e.target.value)} />
+          <div className="space-y-1 w-36">
+            <Label className="text-[11px] text-muted-foreground">إلى تاريخ</Label>
+            <Input type="date" dir="ltr" className="h-8 text-xs" value={to} onChange={(e) => setTo(e.target.value)} />
           </div>
-          <div className="md:col-span-4 flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-1.5">
             {PERIOD_PRESETS.map((p) => (
-              <Button key={p.label} variant="secondary" size="sm" onClick={() => { const r = p.range(); setFrom(r.from); setTo(r.to); }}>
+              <Button key={p.label} variant="secondary" size="sm" className="h-8 px-2.5 text-xs" onClick={() => { const r = p.range(); setFrom(r.from); setTo(r.to); }}>
                 {p.label}
               </Button>
             ))}
@@ -678,11 +678,11 @@ export default function CustomerStatement() {
       {stmt.data && (
         <>
           <Card>
-            <CardContent className="pt-6">
-              <div className="flex items-start justify-between flex-wrap gap-3">
+            <CardContent className="p-3">
+              <div className="flex items-start justify-between flex-wrap gap-2.5">
                 <div>
                   <div className="flex items-center gap-2 flex-wrap">
-                    <div className="text-lg font-semibold">{stmt.data.customer.name}</div>
+                    <div className="text-base font-semibold">{stmt.data.customer.name}</div>
                     <Button
                       variant="outline"
                       size="sm"
@@ -694,7 +694,7 @@ export default function CustomerStatement() {
                     </Button>
                   </div>
                   {stmt.data.customer.phone && (
-                    <div className="flex items-center gap-2 mt-1">
+                    <div className="flex items-center gap-2 mt-0.5">
                       <a
                         href={`tel:${toIraqiIntl(stmt.data.customer.phone) || stmt.data.customer.phone}`}
                         className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
@@ -713,7 +713,7 @@ export default function CustomerStatement() {
                       : ""}
                   </div>
                 </div>
-                <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-sm">
                   <Stat label="صافي المبيعات الحالية" value={stmt.data.summary.totalSales} />
                   <Stat label="إجمالي المدفوع" value={stmt.data.summary.totalPaid} />
                   <Stat label="غير مدفوع" value={stmt.data.summary.unpaid} emphasis />
@@ -893,9 +893,9 @@ export default function CustomerStatement() {
 
 function Stat({ label, value, emphasis }: { label: string; value: string | number; emphasis?: boolean }) {
   return (
-    <div className={`rounded-md p-2 ${emphasis ? "bg-primary/5" : "bg-muted/40"}`}>
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className={`tabular-nums ${emphasis ? "text-xl font-bold" : "text-base font-semibold"}`} dir="ltr">{fmt(value)}</div>
+    <div className={`rounded-md px-2.5 py-1.5 ${emphasis ? "bg-primary/5" : "bg-muted/40"}`}>
+      <div className="text-[11px] text-muted-foreground leading-tight">{label}</div>
+      <div className={`tabular-nums ${emphasis ? "text-base font-bold" : "text-sm font-semibold"}`} dir="ltr">{fmt(value)}</div>
     </div>
   );
 }
@@ -903,12 +903,12 @@ function Stat({ label, value, emphasis }: { label: string; value: string | numbe
 function StatBalance({ label, value }: { label: string; value: string | number }) {
   const num = Number(value);
   return (
-    <div className={`rounded-md p-2 ${num > 0 ? "badge-status-active" : num < 0 ? "badge-stock-out" : "bg-muted/40"}`}>
-      <div className="text-xs opacity-80">{label}</div>
-      <div className={`tabular-nums text-xl font-bold ${num > 0 ? "text-money-positive" : num < 0 ? "text-money-negative" : ""}`} dir="ltr">
+    <div className={`rounded-md px-2.5 py-1.5 ${num > 0 ? "badge-status-active" : num < 0 ? "badge-stock-out" : "bg-muted/40"}`}>
+      <div className="text-[11px] opacity-80 leading-tight">{label}</div>
+      <div className={`tabular-nums text-base font-bold ${num > 0 ? "text-money-positive" : num < 0 ? "text-money-negative" : ""}`} dir="ltr">
         {fmt(Math.abs(num))}
       </div>
-      <div className={`text-xs font-semibold mt-0.5 ${num > 0 ? "text-money-positive" : num < 0 ? "text-money-negative" : "text-muted-foreground"}`}>
+      <div className={`text-[11px] font-semibold ${num > 0 ? "text-money-positive" : num < 0 ? "text-money-negative" : "text-muted-foreground"}`}>
         {num > 0 ? "لنا عليه" : num < 0 ? "له علينا" : "لا ذمم"}
       </div>
     </div>

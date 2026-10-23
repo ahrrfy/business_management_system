@@ -15,7 +15,7 @@ interface Props {
 }
 
 /**
- * بطاقة «طلب مطابقة الحساب» — تجمع ما طلبه المالك في خطوتين واضحتين:
+ * شريط «طلب مطابقة الحساب» — يجمع ما طلبه المالك في خطوتين واضحتين بصفٍّ تشغيلي مكثّف:
  *  ١) كشف PDF للإرفاق (طباعة ← حفظ كـPDF).
  *  ٢) إرسال رسالة طلب مطابقة عبر واتساب (الرصيد الحالي + طلب التأكيد)، ويُرفَق الـPDF يدوياً.
  * بلا رابط خارجي ولا بيانات على الإنترنت — أأمن مسار (قرار المالك: PDF فقط).
@@ -38,36 +38,30 @@ export function StatementReconcile({ entityName, entityType, phone, currentBalan
 
   return (
     <Card style={{ borderColor: "color-mix(in oklch, var(--brand-whatsapp) 40%, transparent)" }}>
-      <CardContent className="p-3 space-y-2.5">
-        <div className="flex items-start justify-between flex-wrap gap-2">
-          <div>
-            <div className="font-semibold text-sm">طلب مطابقة الحساب</div>
-            <div className="text-xs text-muted-foreground">
-              أرسِل الرصيد الحالي لـ{isCustomer ? "العميل" : "المورد"} لتأكيد المطابقة، مع إرفاق كشف PDF تفصيلي.
-            </div>
-          </div>
-          <div className={`rounded-md px-2.5 py-1 text-xs tabular-nums ${num === 0 ? "bg-muted/40" : weHaveClaim ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]"}`} dir="ltr">
-            <span className="opacity-70 text-xs me-1">{dirLabel}:</span>
+      <CardContent className="px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-semibold text-xs">طلب مطابقة الحساب</span>
+          <div className={`rounded px-2 py-0.5 text-xs tabular-nums ${num === 0 ? "bg-muted/40" : weHaveClaim ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]"}`} dir="ltr">
+            <span className="opacity-70 text-[11px] me-1">{dirLabel}:</span>
             <span className="font-bold">{fmt(Math.abs(num))}</span>
           </div>
+          <span className="text-[11px] text-muted-foreground">
+            احفظ كشف الـPDF أولاً ثم أرفِقه يدوياً بعد فتح واتساب.
+          </span>
         </div>
 
-        <ol className="space-y-1.5 text-xs">
-          <li className="flex items-center gap-2 flex-wrap">
-            <span className="inline-flex size-5 items-center justify-center rounded-full bg-muted text-xs font-bold">١</span>
-            <Button variant="outline" size="sm" onClick={onPdf}>كشف PDF للإرفاق</Button>
-            <span className="text-muted-foreground text-xs">اطبع ثم اختر «حفظ كـ PDF» واحفظ الملف.</span>
-          </li>
-          <li className="flex items-center gap-2 flex-wrap">
-            <span className="inline-flex size-5 items-center justify-center rounded-full bg-muted text-xs font-bold">٢</span>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Button variant="outline" size="sm" className="h-7 text-xs gap-1.5" onClick={onPdf} title="اطبع ثم اختر «حفظ كـ PDF» واحفظ الملف">
+            <span className="inline-flex size-4 items-center justify-center rounded-full bg-muted text-[10px] font-bold">١</span>
+            كشف PDF للإرفاق
+          </Button>
+          <span className="inline-flex items-center gap-1">
+            <span className="inline-flex size-4 items-center justify-center rounded-full bg-muted text-[10px] font-bold">٢</span>
             <WhatsAppShare phone={phone} message={msg} label="إرسال طلب المطابقة" />
-            <span className="text-muted-foreground text-xs">أرفِق ملف الـPDF بالرسالة ثم اضغط إرسال.</span>
-          </li>
-        </ol>
-
-        <div className="flex items-center justify-between gap-2 border-t pt-2">
-          <p className="text-xs text-muted-foreground">واتساب لا يُرفِق الملف تلقائياً — أرفِقه يدوياً بعد فتح المحادثة.</p>
-          <Button variant="ghost" size="sm" onClick={copy}>نسخ نص الرسالة</Button>
+          </span>
+          <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={copy}>
+            نسخ نص الرسالة
+          </Button>
         </div>
       </CardContent>
     </Card>
