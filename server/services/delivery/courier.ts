@@ -1195,7 +1195,9 @@ export async function confirmConsignmentDelivery(
         : { source: "COURIER_PORTAL" },
     });
 
-    if (cod.gt(0) || (options.shipmentMember && !originalCodIsZero)) {
+    // A classified shortfall can cover the entire COD, including zero cash collected.
+    // Company proof without a reason still leaves the unpaid amount with the customer.
+    if (!originalCodIsZero) {
       const inv = (
         await tx
           .select()
@@ -1300,7 +1302,7 @@ export async function confirmConsignmentDelivery(
           const custodyRise = round2(
             cod.plus(shortfallReason ? shortage : money(0)),
           );
-          if (options.shipmentMember && cod.isZero()) {
+          if (cod.isZero()) {
             await tx
               .update(deliveryConsignments)
               .set({ custodyRecognizedAt: deliveredAt })
@@ -1382,6 +1384,32 @@ export async function confirmConsignmentDelivery(
             Number(inv.customerId),
             customerSettleAmount.neg(),
           );
+        }
+        // No customer cash remains to remit when the whole obligation moved to
+        // a classified party shortfall. Close the parcel's cash allocation so
+        // the party can repay that debt through the existing custody settlement.
+        const cashRemaining = round2(
+          money(cn.codAmount)
+            .minus(money(cn.collectedAmount ?? "0"))
+            .minus(money(cn.counterSettledAmount ?? "0"))
+            .minus(shortfallReason ? shortage : money(0)),
+        );
+        if (cod.isZero() && shortfallReason && cashRemaining.lte(0)) {
+          assertConsignmentStatusTransition(cn.status, "DELIVERED");
+          await tx.update(deliveryConsignments).set({
+            status: "DELIVERED",
+            moneyStatus: "SETTLED",
+            settledAt: deliveredAt,
+          }).where(eq(deliveryConsignments.id, Number(cn.id)));
+          await appendDeliveryEvent(tx, {
+            eventKey: `CN:${cn.id}:MONEY:SHORTFALL_ASSIGNED`,
+            consignmentId: Number(cn.id),
+            eventType: "MONEY_SETTLED",
+            fromMoneyStatus: cn.moneyStatus,
+            toMoneyStatus: "SETTLED",
+            actorUserId: actor.userId,
+            payload: { shortfallAssigned: toDbMoney(shortage), cashExpected: "0.00" },
+          });
         }
       }
     }

@@ -30,12 +30,14 @@ import { returnConsignment } from "./returns";
 import { loadShipmentMembersTx } from "./shipments";
 import { staffMarkFailed } from "./staffTransition";
 import type { DeliveryTxActor } from "./types";
+import { declareConsignmentReturn } from "./declaredReturn";
 
 type Member = typeof deliveryConsignments.$inferSelect;
 export interface ShipmentOperationInput {
   consignmentId: number;
   clientRequestId: string;
 }
+type ShipmentRequest = Pick<ShipmentOperationInput, "consignmentId"> & { clientRequestId?: string | null };
 export interface ShipmentOperationResult {
   consignmentId: number;
   consignmentIds: number[];
@@ -48,6 +50,10 @@ export interface ConfirmShipmentDeliveryInput extends ShipmentOperationInput {
 }
 export interface ShipmentReasonInput extends ShipmentOperationInput {
   reason: string;
+}
+export interface DeclareShipmentReturnInput extends Omit<ShipmentReasonInput, "clientRequestId"> {
+  clientRequestId?: string | null;
+  statementNumber?: string | null;
 }
 export interface ReturnShipmentInput extends ShipmentReasonInput {
   refundShiftId?: number | null;
@@ -86,7 +92,7 @@ function assertScope(actor: DeliveryTxActor, rows: Member[]) {
 /** Cash source → party → every consignment → every invoice, always ascending within a set. */
 async function lockShipmentTx(
   tx: Tx,
-  input: ShipmentOperationInput,
+  input: Pick<ShipmentOperationInput, "consignmentId">,
   actor: DeliveryTxActor,
   beforeParty?: (rows: Member[]) => Promise<void>,
 ) {
@@ -143,7 +149,7 @@ async function lockShipmentTx(
   };
 }
 
-async function executeShipment<I extends ShipmentOperationInput>(
+async function executeShipment<I extends ShipmentRequest>(
   namespace: string,
   input: I,
   actor: DeliveryTxActor,
@@ -163,6 +169,7 @@ async function executeShipment<I extends ShipmentOperationInput>(
       namespace,
       input.clientRequestId,
       hash,
+      { forUpdate: true },
     );
     const result = {
       consignmentId: leaderId,
@@ -174,7 +181,7 @@ async function executeShipment<I extends ShipmentOperationInput>(
       return result;
     }
     await apply(tx, rows, partyId);
-    await recordIdempotencyKey(
+    if (input.clientRequestId) await recordIdempotencyKey(
       tx,
       namespace,
       input.clientRequestId,
@@ -185,7 +192,7 @@ async function executeShipment<I extends ShipmentOperationInput>(
   });
 }
 
-function memberKey(input: ShipmentOperationInput, id: number) {
+function memberKey(input: ShipmentRequest, id: number) {
   return `shipment:${id}:${idempotencyHash(input).slice(0, 48)}`;
 }
 
@@ -272,6 +279,21 @@ export async function confirmShipmentDelivery(
       }
     },
   );
+}
+
+/** A return notice releases expected COD, while stock, invoices and cash await physical receipt. */
+export async function declareShipmentReturn(input: DeclareShipmentReturnInput, actor: DeliveryTxActor) {
+  const normalized = { ...input, reason: input.reason.trim(), statementNumber: input.statementNumber?.trim() || null };
+  return executeShipment("delivery.declareShipmentReturn", normalized, actor, async (tx, rows) => {
+    if (rows.some((row) => row.parcelStatus === "DELIVERED" || row.courierDeliveredAt != null || money(row.counterSettledAmount ?? "0").gt(0))) {
+      reject("تضم الشحنة طرداً ثبت تسليمه أو سداداً بعد التسليم", "راجع تفاصيل الشحنة واستخدم مرتجع المبيعات للبضاعة المسلمة");
+    }
+    for (const row of rows) await declareConsignmentReturn({
+      ...normalized,
+      consignmentId: Number(row.id),
+      clientRequestId: normalized.clientRequestId ? memberKey(normalized, Number(row.id)) : null,
+    }, actor, tx, { shipmentMember: true });
+  });
 }
 
 export async function cancelShipmentAssignment(

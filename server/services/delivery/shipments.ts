@@ -35,6 +35,7 @@ import { money, round2, toDbMoney } from "../money";
 import { enqueuePostCommit, requireDb, withTx } from "../tx";
 import {
   dispatchInvoiceInTx,
+  loadInvoiceDeliveryFeeHeldTx,
   type DispatchInvoiceInput,
 } from "./dispatchInvoice";
 import { deliverySearchSql } from "./readSearch";
@@ -377,13 +378,17 @@ export async function dispatchInvoiceShipment(
       hash,
       { forUpdate: true },
     );
-    if (replay != null)
+    if (replay != null) {
+      const details = await shipmentDetailsTx(tx, replay, actor);
       return {
-        ...(await shipmentDetailsTx(tx, replay, actor)),
+        ...details,
         consignmentId: replay,
-        invoiceId: ids[0],
+        invoiceId: Number(
+          details.members.find((row) => Number(row.id) === replay)!.invoiceId,
+        ),
         idempotentReplay: true,
       };
+    }
     if (!party.isActive)
       shipmentError(
         "تعذر إسناد الشحنة",
@@ -423,6 +428,7 @@ export async function dispatchInvoiceShipment(
           .for("update")
       : [];
     let leaderId: number | undefined;
+    let leaderInvoiceId = ids[0];
     if (memberships.length) {
       leaderId = Number(memberships[0].leaderConsignmentId);
       const oldMembers = await loadShipmentMembersTx(tx, leaderId);
@@ -441,21 +447,53 @@ export async function dispatchInvoiceShipment(
           "PRECONDITION_FAILED",
         );
       }
-      if (
-        Number(
-          oldMembers.find((row) => Number(row.invoiceId) === ids[0])?.id,
-        ) !== leaderId
-      )
+      const oldLeader = oldMembers.find((row) => Number(row.id) === leaderId);
+      if (!oldLeader)
         shipmentError(
           "تعذر إسناد الشحنة",
-          "قائد الشحنة لا يطابق الفاتورة الأولى",
+          "قائد الشحنة غير موجود ضمن فواتيرها الأصلية",
           "راجع تفاصيل الشحنة مع المدير",
           "PRECONDITION_FAILED",
         );
+      leaderInvoiceId = Number(oldLeader.invoiceId);
+    }
+    const heldFees = await loadInvoiceDeliveryFeeHeldTx(tx, ids);
+    const feeOwners = lockedInvoices.filter((invoice) =>
+      (heldFees.get(Number(invoice.id)) ?? money(0)).gt(0),
+    );
+    if (feeOwners.length > 1)
+      shipmentError(
+        "تعذر تجميع أمانة أجرة على عدة فواتير",
+        `توجد أمانات أجرة مستقلة على الفواتير ${feeOwners.map((invoice) => invoice.invoiceNumber).join("، ")}`,
+        "أسند الفواتير صاحبة الأمانات بصورة مستقلة، أو اطلب من المدير تسوية أمانات أجورها قبل التجميع",
+        "PRECONDITION_FAILED",
+      );
+    if (!memberships.length && feeOwners.length === 1)
+      leaderInvoiceId = Number(feeOwners[0].id);
+    for (const invoice of lockedInvoices) {
+      const held = heldFees.get(Number(invoice.id)) ?? money(0);
+      if (held.lt(0))
+        shipmentError(
+          "تعذر تجميع أمانة أجرة غير متسقة",
+          `صافي أمانة أجرة الفاتورة ${invoice.invoiceNumber} سالب`,
+          "اطلب من المدير مراجعة سندات أجرة الفاتورة قبل التجميع",
+          "PRECONDITION_FAILED",
+        );
+      if (Number(invoice.id) !== leaderInvoiceId && held.gt(0)) {
+        shipmentError(
+          "تعذر تجميع أمانة أجرة على فاتورة تابعة",
+          `الفاتورة ${invoice.invoiceNumber} تحمل أمانة أجرة ${held.toFixed(2)} على غير قائد الشحنة الأصلي؛ إعادة الإسناد تحافظ على القائد الأصلي`,
+          "أسند الفاتورة صاحبة الأمانة بصورة مستقلة، أو اطلب من المدير تسوية أمانة أجرتها قبل التجميع",
+          "PRECONDITION_FAILED",
+        );
+      }
     }
     const dispatched: Awaited<ReturnType<typeof dispatchInvoiceInTx>>[] = [];
-    for (const invoiceId of ids) {
-      const isLeader = invoiceId === ids[0];
+    for (const invoiceId of [
+      leaderInvoiceId,
+      ...ids.filter((id) => id !== leaderInvoiceId),
+    ]) {
+      const isLeader = invoiceId === leaderInvoiceId;
       const row = await dispatchInvoiceInTx(
         tx,
         {
@@ -496,6 +534,7 @@ export async function dispatchInvoiceShipment(
       entityId: String(leaderId),
       newValue: {
         invoiceIds: ids,
+        leaderInvoiceId,
         consignmentIds: dispatched.map((row) => row.consignmentId),
         partyId: input.partyId,
         codAmount: details.codAmount,
@@ -527,7 +566,7 @@ export async function dispatchInvoiceShipment(
     return {
       ...details,
       consignmentId: leaderId!,
-      invoiceId: ids[0],
+      invoiceId: leaderInvoiceId,
       idempotentReplay: false,
     };
   });

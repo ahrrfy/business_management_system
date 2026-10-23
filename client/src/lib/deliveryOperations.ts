@@ -6,6 +6,7 @@ import {
 import { digitsArabicToLatin } from "@shared/numberNormalize";
 import { D } from "@/lib/money";
 import {
+  shipmentStatementCandidates,
   statementQueueRemaining,
   type CompanyStatementQueueCandidate,
 } from "@/components/delivery/companyStatementQueue";
@@ -195,6 +196,7 @@ export type StatementImportVerdict =
   | "AMBIGUOUS"
   | "WRONG_PARTY"
   | "IDENTIFIER_CONFLICT"
+  | "INCOMPLETE_SHIPMENT"
   | "DUPLICATE"
   | "ALREADY_SELECTED";
 export const STATEMENT_IMPORT_REASON: Record<StatementImportVerdict, string> = {
@@ -206,6 +208,7 @@ export const STATEMENT_IMPORT_REASON: Record<StatementImportVerdict, string> = {
   AMBIGUOUS: "رقم التتبع يطابق أكثر من إرسالية",
   WRONG_PARTY: "السطر يخص جهة أخرى",
   IDENTIFIER_CONFLICT: "معرّف الإرسالية ورقم التتبع لا يتطابقان",
+  INCOMPLETE_SHIPMENT: "فواتير الشحنة غير مكتملة في القائمة؛ حدّثها أو استورد بمعرّفات الفواتير",
   DUPLICATE: "إرسالية مكررة داخل الملف",
   ALREADY_SELECTED: "الإرسالية محددة مسبقاً؛ المبلغ الحالي محفوظ",
   EXCESS_AMOUNT: "المبلغ يتجاوز المتبقي على الإرسالية",
@@ -233,6 +236,12 @@ export function previewStatementImport(
           (c) => tracking && cellText(c.externalTrackingRef) === tracking,
         );
     const candidate = matches.length === 1 ? matches[0] : undefined;
+    // A carrier tracking reference identifies the physical shipment; an explicit internal ID identifies one invoice.
+    const members = candidate
+      ? (!rawId && candidate.shipmentLeaderConsignmentId != null
+          ? shipmentStatementCandidates(candidates, candidate.id)
+          : [candidate])
+      : [];
     if (
       cellText(source.partyId) &&
       cellText(source.partyId) !== String(partyId)
@@ -257,27 +266,37 @@ export function previewStatementImport(
       cellText(candidate.externalTrackingRef) !== tracking
     )
       verdict = "IDENTIFIER_CONFLICT";
-    else if (selectedIds.has(candidate.id)) verdict = "ALREADY_SELECTED";
-    else if (D(rawAmount).gt(statementQueueRemaining(candidate)))
+    else if (!rawId && (candidate.shipmentInvoiceCount ?? 1) > members.length)
+      verdict = "INCOMPLETE_SHIPMENT";
+    else if (members.some((member) => selectedIds.has(member.id))) verdict = "ALREADY_SELECTED";
+    else if (D(rawAmount).gt(members.reduce((sum, member) => sum.plus(statementQueueRemaining(member)), D(0))))
       verdict = "EXCESS_AMOUNT";
+    let unallocated = verdict === "READY" ? D(rawAmount) : D(0);
+    const allocations: Array<{ consignmentId: number; collectedAmount: string }> = verdict === "READY"
+      ? [...members].sort((a, b) => a.id - b.id).map((member) => {
+          const capacity = statementQueueRemaining(member);
+          const amount = unallocated.lte(capacity) ? unallocated : capacity;
+          unallocated = unallocated.minus(amount);
+          return { consignmentId: member.id, collectedAmount: amount.toFixed(2) };
+        })
+      : [];
     return {
       rowNumber: index + 2,
       reference: rawId || tracking,
       candidate,
       collectedAmount: verdict === "READY" ? D(rawAmount).toFixed(2) : null,
       sourceCollectedAmount: rawAmount,
+      allocations,
+      memberIds: members.map((member) => member.id),
       verdict,
     };
   });
   const counts = new Map<number, number>();
   for (const row of preview)
-    if (row.candidate)
-      counts.set(row.candidate.id, (counts.get(row.candidate.id) ?? 0) + 1);
-  return preview.map((row) =>
-    row.verdict === "READY" &&
-    row.candidate &&
-    (counts.get(row.candidate.id) ?? 0) > 1
-      ? { ...row, verdict: "DUPLICATE" as const, collectedAmount: null }
+    for (const id of row.memberIds) counts.set(id, (counts.get(id) ?? 0) + 1);
+  return preview.map(({ memberIds, ...row }) =>
+    row.verdict === "READY" && memberIds.some((id) => (counts.get(id) ?? 0) > 1)
+      ? { ...row, verdict: "DUPLICATE" as const, collectedAmount: null, allocations: [] }
       : row,
   );
 }

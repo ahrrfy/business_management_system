@@ -53,7 +53,7 @@ import {
 import { declareConsignmentReturn } from "../services/delivery/declaredReturn";
 import { cancelDeliveryAssignment } from "../services/delivery/cancellation";
 import { dispatchInvoiceShipment, listShipmentInvoiceCandidates, getShipmentDetails } from "../services/delivery/shipments";
-import { confirmShipmentDelivery, cancelShipmentAssignment, returnShipment, reassignShipmentDriver, markShipmentFailed } from "../services/delivery/shipmentOperations";
+import { confirmShipmentDelivery, cancelShipmentAssignment, returnShipment, reassignShipmentDriver, markShipmentFailed, declareShipmentReturn } from "../services/delivery/shipmentOperations";
 import { routeOperationAuthority } from "../services/authorization/operationAuthority";
 import { logAudit } from "../services/auditService";
 import { GOVERNORATE_IDS } from "@shared/governorates";
@@ -1271,25 +1271,29 @@ export const deliveryRouter = router({
   declareReturn: storeFulfillProcedure
     .input(z.object({
       consignmentId: z.number().int().positive(),
+      wholeShipment: z.boolean().optional(),
       reason: z.string().trim().min(3).max(500),
       /** رقمُ كشف الشركة الذي أُعلن فيه الرجوع — توثيقيّ. */
       statementNumber: z.string().trim().max(64).optional(),
       clientRequestId: z.string().trim().min(8).max(64).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
-      const res = await retryOnDeadlock(() => declareConsignmentReturn({
+      const declaration = {
         consignmentId: input.consignmentId,
         reason: input.reason,
         statementNumber: input.statementNumber ?? null,
         clientRequestId: input.clientRequestId ?? null,
-      }, actorOf(ctx)));
+      };
+      const res = input.wholeShipment
+        ? await retryOnDeadlock(() => declareShipmentReturn(declaration, actorOf(ctx)))
+        : await retryOnDeadlock(() => declareConsignmentReturn(declaration, actorOf(ctx)));
       await logAudit(ctx, {
         action: "delivery.declareReturn",
         entityType: "deliveryConsignment",
         entityId: input.consignmentId,
-        newValue: { reason: input.reason, statementNumber: input.statementNumber ?? null },
+        newValue: { reason: input.reason, statementNumber: input.statementNumber ?? null, wholeShipment: input.wholeShipment ?? false },
       });
-      return res;
+      return { ...res, releasedExposure: "releasedExposure" in res ? res.releasedExposure : undefined };
     }),
 
   // الجهة تدفع عجزاً نقداً — يتطلّب وردية + store=FULL.

@@ -82,6 +82,7 @@ import {
   type PayMethod,
   type PosRow,
   type Tier,
+  withReceptionLineDiscount,
 } from "@/components/reception/cartMath";
 import { CartTable } from "@/components/reception/CartTable";
 import { addPlainCustomizationPiece } from "@/components/reception/cartCustomization";
@@ -785,7 +786,7 @@ export default function Reception() {
       setCart((prev) => prev.map((c) => (c.key === editingKey ? updateRestoredReceptionCustomization(c, data) : c)));
     } else {
       const key = `c-${row.productUnitId}-${Date.now()}`;
-      setCart((prev) => [{ key, row, qty: 1, custom: data, manualService: row.variantId === 0 }, ...prev]);
+      setCart((prev) => [{ key, row, qty: 1, custom: data, customBasePrice: D(row.price).toNumber(), manualService: row.variantId === 0 }, ...prev]);
       setSelKey(key);
     }
     setShowCustomization(null);
@@ -938,15 +939,7 @@ export default function Reception() {
   /** م٤ — الخصم داخل الصفّ (Popover خلية السعر): نسبةٌ 0..100، null = إزالة الخصم. */
   function setLineDiscount(key: string, pct: number | null) {
     clearCouponIfApplied();
-    setCart((prev) =>
-      prev.map((c) => {
-        if (c.key !== key) return c;
-        if (c.digital) return c;
-        if (pct == null || pct <= 0) return { ...c, disc: undefined };
-        const base = c.origPrice ?? Number(c.row.price ?? 0);
-        return { ...c, origPrice: base, disc: Math.min(100, pct) };
-      }),
-    );
+    setCart((prev) => prev.map((c) => c.key === key ? withReceptionLineDiscount(c, pct) : c));
   }
   /** م٦: سقف الخصم الحرّ ١٠٪ — فوقه اعتمادُ مديرٍ استباقيّ (لا انتظار رفض الخادم).
    *  تُمرَّر لـCartTable — مسار الاعتماد قرارُ الصفحة (mgrCredsRef/approvalAsk ملكها). */

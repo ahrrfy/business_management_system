@@ -4,6 +4,9 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import * as realtime from "../../realtime";
 import { withTx } from "../tx";
+import { openShift } from "../shiftService";
+import { money } from "../money";
+import { recordDeliveryFeeHeldInTx } from "../delivery/feeHeld";
 import { cancelDeliveryAssignmentInTx } from "../delivery/cancellation";
 import { dispatchInvoiceToDelivery } from "../delivery/dispatchInvoice";
 import {
@@ -32,6 +35,36 @@ function db() {
   const d = getDb();
   if (!d) throw new Error("test database required");
   return d;
+}
+
+async function holdDeliveryFee(invoiceId: number, amount = "1500") {
+  const existing = (
+    await db()
+      .select()
+      .from(s.shifts)
+      .where(
+        and(eq(s.shifts.userId, actor.userId), eq(s.shifts.status, "OPEN")),
+      )
+      .limit(1)
+  )[0];
+  const shiftId = existing
+    ? Number(existing.id)
+    : (
+        await openShift(
+          { branchId: 1, openingBalance: "0", shiftType: "RECEPTION" },
+          actor,
+        )
+      ).shiftId;
+  return withTx((tx) =>
+    recordDeliveryFeeHeldInTx(tx, {
+      invoiceId,
+      branchId: 1,
+      shiftId,
+      amount: money(amount),
+      actorUserId: actor.userId,
+      description: "أمانة أجرة توصيل سابقة للتجميع",
+    }),
+  );
 }
 
 beforeEach(async () => {
@@ -165,6 +198,161 @@ beforeEach(async () => {
 });
 
 describe("شحنة واحدة لعدة فواتير مع استقلال الأثر المالي", () => {
+  it("أمانة أجرة القائد تبقى مرتبطة بإرساليته عند تطابق COUNTER والمبلغ", async () => {
+    await holdDeliveryFee(1);
+    const result = await dispatchInvoiceShipment(
+      { ...input, feeCollection: "COUNTER" },
+      cashier,
+    );
+    expect(
+      result.members.map((row) => [
+        Number(row.invoiceId),
+        row.deliveryFee,
+        row.feeCollection,
+      ]),
+    ).toEqual([
+      [1, "1500.00", "COUNTER"],
+      [2, "0.00", "COURIER"],
+    ]);
+    expect(await db().select().from(s.receipts)).toMatchObject([
+      {
+        invoiceId: 1,
+        direction: "IN",
+        amount: "1500.00",
+        referenceNumber: "DLV-FEE-INV-1",
+      },
+    ]);
+  });
+
+  it("أمانة أجرة الفاتورة الثانية تجعلها القائد دون نقل الإيصال وتحفظ القائد عند إعادة الإسناد", async () => {
+    await holdDeliveryFee(2);
+    const receiptsBefore = await db().select().from(s.receipts);
+    const entriesBefore = await db().select().from(s.accountingEntries);
+    await expect(dispatchInvoiceShipment(input, cashier)).rejects.toThrow(
+      /أمانة أجرة.*مقبوضة في الاستقبال/,
+    );
+    expect(await db().select().from(s.deliveryConsignments)).toHaveLength(0);
+    expect(await db().select().from(s.deliveryShipmentMembers)).toHaveLength(0);
+    expect(await db().select().from(s.deliveryLedgerEntries)).toHaveLength(0);
+    expect(await db().select().from(s.idempotencyKeys)).toHaveLength(0);
+    expect(await db().select().from(s.receipts)).toEqual(receiptsBefore);
+    expect(await db().select().from(s.accountingEntries)).toEqual(
+      entriesBefore,
+    );
+    const result = await dispatchInvoiceShipment(
+      { ...input, feeCollection: "COUNTER" },
+      cashier,
+    );
+    expect(result.invoiceId).toBe(2);
+    expect(
+      result.members.map((row) => [
+        Number(row.invoiceId),
+        row.deliveryFee,
+        row.feeCollection,
+        row.externalTrackingRef,
+      ]),
+    ).toEqual([
+      [2, "1500.00", "COUNTER", "00441446"],
+      [1, "0.00", "COURIER", null],
+    ]);
+    expect(await db().select().from(s.receipts)).toEqual(receiptsBefore);
+    expect(await db().select().from(s.accountingEntries)).toEqual(
+      entriesBefore,
+    );
+    const replay = await dispatchInvoiceShipment(
+      { ...input, feeCollection: "COUNTER", invoiceIds: [1, 2] },
+      cashier,
+    );
+    expect(replay.invoiceId).toBe(2);
+    expect(replay.consignmentId).toBe(result.consignmentId);
+    await withTx(async (tx) => {
+      for (const member of result.members)
+        await cancelDeliveryAssignmentInTx(
+          tx,
+          {
+            consignmentId: member.id,
+            reason: "إعادة إسناد الشحنة",
+            clientRequestId: `fee-owner-cancel-${member.id}`,
+          },
+          actor,
+          { assertAuthority: false, shipmentMember: true },
+        );
+    });
+    const reassigned = await dispatchInvoiceShipment(
+      {
+        ...input,
+        feeCollection: "COUNTER",
+        partyId: 2,
+        externalTrackingRef: "HELD-REASSIGNED",
+        clientRequestId: "held-reassign",
+      },
+      cashier,
+    );
+    expect(reassigned.invoiceId).toBe(2);
+    expect(reassigned.leaderConsignmentId).toBe(result.leaderConsignmentId);
+    expect(
+      reassigned.members.find((row) => Number(row.invoiceId) === 2),
+    ).toMatchObject({
+      feeCollection: "COUNTER",
+      deliveryFee: "1500.00",
+      externalTrackingRef: "HELD-REASSIGNED",
+    });
+    expect(await db().select().from(s.receipts)).toEqual(receiptsBefore);
+  });
+
+  it("أمانة أجرة على عدة فواتير تمنع التجميع حتى مع COUNTER صالح على القائد", async () => {
+    await holdDeliveryFee(1);
+    await holdDeliveryFee(2, "500");
+    await expect(
+      dispatchInvoiceShipment({ ...input, feeCollection: "COUNTER" }, cashier),
+    ).rejects.toThrow(/أمانة أجرة.*عدة فواتير/);
+    expect(await db().select().from(s.deliveryConsignments)).toHaveLength(0);
+    expect(await db().select().from(s.receipts)).toHaveLength(2);
+    expect(
+      (await db().select().from(s.accountingEntries)).map(
+        (row) => row.entryType,
+      ),
+    ).toEqual(["DELIVERY_FEE_HELD", "DELIVERY_FEE_HELD"]);
+  });
+
+  it.each(["COURIER", "SHOP"] as const)(
+    "أمانة أجرة القائد لا تُهمل عند اختيار %s",
+    async (feeCollection) => {
+      await holdDeliveryFee(1);
+      await expect(
+        dispatchInvoiceShipment({ ...input, feeCollection }, cashier),
+      ).rejects.toThrow(/أمانة أجرة.*مقبوضة في الاستقبال/);
+      await expect(
+        dispatchInvoiceToDelivery(
+          {
+            invoiceId: 1,
+            partyId: 1,
+            deliveryFee: "1500",
+            feeCollection,
+            externalTrackingRef: "SINGLE-HELD",
+            clientRequestId: `single-held-${feeCollection}`,
+          },
+          cashier,
+        ),
+      ).rejects.toThrow(/أمانة أجرة.*مقبوضة في الاستقبال/);
+      expect(await db().select().from(s.deliveryConsignments)).toHaveLength(0);
+    },
+  );
+
+  it("أمانة أجرة القائد ترفض مبلغ COUNTER غير المطابق وتبقي الإيصال كما هو", async () => {
+    await holdDeliveryFee(1);
+    await expect(
+      dispatchInvoiceShipment(
+        { ...input, feeCollection: "COUNTER", deliveryFee: "1000" },
+        cashier,
+      ),
+    ).rejects.toThrow(/يجب أن تساوي الأجرة/);
+    expect(await db().select().from(s.deliveryConsignments)).toHaveLength(0);
+    expect(await db().select().from(s.receipts)).toMatchObject([
+      { invoiceId: 1, amount: "1500.00" },
+    ]);
+  });
+
   it("يربط فواتير البيع وأمر الشغل ذرياً؛ البوليصة والأجرة للقائد فقط، والنشر بعد الالتزام", async () => {
     const publish = vi.spyOn(realtime, "publishRealtimeEvent");
     const before = await db().select().from(s.invoices);

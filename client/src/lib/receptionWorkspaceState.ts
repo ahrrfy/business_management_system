@@ -5,6 +5,8 @@ import type {
   Tier,
 } from "@/components/reception/cartMath";
 import type { CustomizationData } from "@/components/CustomizationDialog";
+import { customizationBasePrice } from "@/components/reception/cartMath";
+import { D } from "@/lib/money";
 import { isValidIqMobile, toLocalIqMobileDigits } from "@/components/form/PhoneDigitsInput";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { toWorkOrderChannel, type WorkOrderChannel } from "@shared/receptionChannel";
@@ -538,7 +540,7 @@ function isCart(value: unknown): value is CartLine[] {
   if (!Array.isArray(value) || value.length > 500 || containsSensitiveKey(value)) return false;
   return value.every((line) => {
     if (!isRecord(line)
-      || !hasOnlyKeys(line, ["key", "row", "qty", "origPrice", "couponPriceSnapshot", "couponBasePromotion", "disc", "custom", "manualService", "digital"])
+      || !hasOnlyKeys(line, ["key", "row", "qty", "origPrice", "customBasePrice", "couponPriceSnapshot", "couponBasePromotion", "disc", "custom", "manualService", "digital"])
       || !boundedString(line.key, 200)
       || line.key.length === 0) return false;
     if (typeof line.qty !== "number" || !Number.isSafeInteger(line.qty) || line.qty <= 0 || line.qty > MAX_LINE_QUANTITY) return false;
@@ -547,6 +549,7 @@ function isCart(value: unknown): value is CartLine[] {
     if (line.manualService !== undefined && typeof line.manualService !== "boolean") return false;
     if (!isOperationalPosRow(line.row, manualService)) return false;
     if (line.origPrice !== undefined && !finiteNumberInRange(line.origPrice, 0, 1_000_000_000_000)) return false;
+    if (line.customBasePrice != null && !finiteNumberInRange(line.customBasePrice, 0, MAX_MONEY)) return false;
     if (line.couponPriceSnapshot !== undefined && !finiteNumberInRange(line.couponPriceSnapshot, 0, 1_000_000_000_000)) return false;
     if (line.couponBasePromotion !== undefined) {
       if (!isRecord(line.couponBasePromotion) || !hasOnlyKeys(line.couponBasePromotion, ["promotionId", "promotionName", "promotionEffectivePrice"])) return false;
@@ -671,7 +674,7 @@ function pinReceptionLocalPrices(snapshot: ReceptionLocalWorkspaceSnapshot): Rec
       const storedPrice = line.origPrice ?? (line.digital
         ? Number(line.digital.sellPriceSnapshot)
         : line.custom ? Number(line.row.price ?? 0) + Number(line.custom.unitPrice ?? 0) : Number(line.row.promotionEffectivePrice ?? line.row.price));
-      return Number.isFinite(storedPrice) && storedPrice >= 0 ? { ...line, row: { ...line.row, price: line.row.price == null ? (line.custom ? "0" : String(storedPrice)) : line.row.price }, origPrice: storedPrice } : line;
+      return Number.isFinite(storedPrice) && storedPrice >= 0 ? { ...line, ...(line.custom ? { customBasePrice: customizationBasePrice(line) } : {}), row: { ...line.row, price: line.row.price == null ? (line.custom ? "0" : String(storedPrice)) : line.row.price }, origPrice: storedPrice } : line;
     }),
   };
 }
@@ -878,8 +881,9 @@ export function reconcileReceptionCartRows(
           isCustomizable: false,
         }
       : live;
-    const { origPrice: _staleOrigPrice, couponPriceSnapshot: _staleCouponPrice, couponBasePromotion: _staleCouponBase, ...rest } = line;
+    const { origPrice: _staleOrigPrice, customBasePrice: _staleCustomBase, couponPriceSnapshot: _staleCouponPrice, couponBasePromotion: _staleCouponBase, ...rest } = line;
     const next: CartLine = options.preserveStoredPrices ? { ...line, row } : { ...rest, row };
+    if (line.custom) next.customBasePrice = options.preserveStoredPrices ? customizationBasePrice(line) : D(row.price).toNumber();
     if (!options.preserveStoredPrices && (line.disc ?? 0) > 0) {
       const liveBase = line.custom
         ? Number(row.price) + Number(line.custom.unitPrice)
@@ -1018,11 +1022,13 @@ export type ReceptionDraftCartPreparation =
 
 /** يصون السعر الأساس التاريخي للمسوّدة، مع السماح بتعديل إضافة التخصيص بعد الاستئناف. */
 export function updateRestoredReceptionCustomization(line: CartLine, custom: CustomizationData): CartLine {
-  if (line.origPrice == null) return { ...line, custom };
+  const customBasePrice = customizationBasePrice(line);
+  if (line.origPrice == null) return { ...line, custom, customBasePrice };
   const previousAddon = Number(line.custom?.unitPrice ?? 0);
   const nextAddon = Number(custom.unitPrice || 0);
   if (!Number.isFinite(previousAddon) || !Number.isFinite(nextAddon)) return { ...line, custom };
-  return { ...line, custom, origPrice: Math.max(0, line.origPrice - previousAddon + nextAddon) };
+  const previousTotal = (line.disc ?? 0) > 0 && customBasePrice != null ? D(customBasePrice).plus(previousAddon).toNumber() : line.origPrice;
+  return { ...line, custom, customBasePrice, origPrice: Math.max(0, D(previousTotal).minus(previousAddon).plus(nextAddon).toNumber()) };
 }
 
 function emptyRestoredCustomization(title: string): CustomizationData {
@@ -1069,9 +1075,11 @@ export function prepareReceptionDraftCart(
         missingCount += 1; continue;
       }
       const safeImages = images as Array<{ url: string; caption?: string | null }>;
+      const { customBasePrice, ...customSpec } = spec;
+      if (customBasePrice != null && !finiteNumberInRange(customBasePrice, 0, MAX_MONEY)) { missingCount += 1; continue; }
       const customCandidate = {
         ...emptyRestoredCustomization(line.title ?? ""),
-        ...spec,
+        ...customSpec,
         designImages: safeImages.map((image, index) => ({ id: `r-${line.id}-${index}`, dataUrl: image.url, name: image.caption ?? undefined, isPrimary: index === 0 })),
         paymentReceiptImages: [],
       };
@@ -1084,6 +1092,7 @@ export function prepareReceptionDraftCart(
         isService: true, isPrintService: false, isCustomizable: true,
       } as PosRow);
       const restored: CartLine = { key: `r-${line.id}`, row, qty: quantity, custom, manualService: line.variantId == null };
+      restored.customBasePrice = typeof customBasePrice === "number" ? customBasePrice : null;
       const storedPrice = Number(line.unitPrice);
       if (Number.isFinite(storedPrice) && storedPrice >= 0) restored.origPrice = storedPrice;
       cart.push(restored);

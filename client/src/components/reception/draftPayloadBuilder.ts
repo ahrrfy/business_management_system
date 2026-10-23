@@ -1,5 +1,5 @@
 import { D, round2 } from "@/lib/money";
-import { effectivePrice, type CartLine } from "./cartMath";
+import { customizationBasePrice, effectivePrice, type CartLine } from "./cartMath";
 import { composeCustomizationText } from "@/components/CustomizationDialog";
 
 export interface DraftPayloadContext {
@@ -49,7 +49,7 @@ export function buildDraftPayload(ctx: DraftPayloadContext) {
         designImages: c.custom.designImages.length
           ? JSON.stringify(c.custom.designImages.map((img, ix) => ({ url: img.dataUrl, caption: img.name ?? null, sortOrder: ix })))
           : null,
-        printSpec: JSON.stringify({ ...c.custom, designImages: [], paymentReceiptImages: [] }),
+        printSpec: JSON.stringify({ ...c.custom, customBasePrice: customizationBasePrice(c), designImages: [], paymentReceiptImages: [] }),
         dueDate: c.custom.dueDate || null,
         assignedTo: c.custom.assignedTo ?? null,
       };

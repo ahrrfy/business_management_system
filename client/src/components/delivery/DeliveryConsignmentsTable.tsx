@@ -96,7 +96,7 @@ export function DeliveryConsignmentsTable({
             return (
               <tr key={c.id} className="border-b last:border-0">
                 <td className="p-3 font-medium">
-                  <button type="button" onClick={() => onOpenTimeline(c.id)} className="text-primary hover:underline">
+                  <button type="button" onClick={() => onOpenTimeline(c.shipmentLeaderConsignmentId ?? c.id)} className="text-primary hover:underline">
                     {c.shipmentNumber ?? c.consignmentNumber}
                   </button>
                   {c.shipmentInvoiceCount > 1 && <div className="mt-1 text-xs text-muted-foreground">شحنة تضم {c.shipmentInvoiceCount} فواتير</div>}

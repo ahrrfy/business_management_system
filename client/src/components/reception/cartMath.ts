@@ -2,6 +2,7 @@ import type { CustomizationData } from "@/components/CustomizationDialog";
 import type { DigitalCheckoutLineMeta } from "@/components/pos/digitalBasket";
 import type { ReceiptBrowserData, WorkOrderReceiptData } from "@/lib/printing/print";
 import type { RouterOutputs } from "@/lib/trpc";
+import { D, round2 } from "@/lib/money";
 
 /**
  * أنواع ودوال سلّة الاستقبال النقيّة — مصدر حقيقة مشترك بين صفحة Reception.tsx ومكوّناتها
@@ -40,6 +41,8 @@ export type CartLine = {
   row: PosRow;
   qty: number;
   origPrice?: number;
+  /** سعر المنتج وحده قبل التخصيص والخصم، مستقل عن مرجع سعر السطر. */
+  customBasePrice?: number | null;
   /** سعر الكوبون الملتقط للمسودة؛ منفصل عن السعر الأساس كي تعود إزالة الكوبون للسعر الصحيح. */
   couponPriceSnapshot?: number;
   /** العرض التلقائي الذي كان على السطر قبل أن يستبدله الكوبون. */
@@ -63,7 +66,7 @@ export function effectivePrice(line: CartLine): number {
   const base = line.couponPriceSnapshot ?? line.origPrice ?? (
     promoPrice != null ? Number(promoPrice) :
     line.custom
-      ? Number(line.row.price ?? 0) + Number(line.custom.unitPrice ?? 0)
+      ? D(line.customBasePrice ?? line.row.price).plus(D(line.custom.unitPrice)).toNumber()
       : Number(line.row.price ?? 0)
   );
   if (line.disc && line.disc > 0) return base * (1 - line.disc / 100);
@@ -71,6 +74,29 @@ export function effectivePrice(line: CartLine): number {
 }
 export function lineTotal(line: CartLine): number {
   return effectivePrice(line) * line.qty;
+}
+export function customizationBasePrice(line: CartLine): number | null {
+  try {
+    // null يعني مسودة قديمة بلا تفكيك موثوق؛ لا نستنتج أساس المنتج من صافيها بعد الخصم.
+    if (line.customBasePrice === null || (line.customBasePrice === undefined && line.row.price == null)) return null;
+    if (line.customBasePrice === undefined && line.origPrice != null) {
+      const catalog = D(line.row.price), reference = D(line.origPrice);
+      const provenReference = reference.eq(catalog.plus(D(line.custom?.unitPrice)))
+        || ((line.disc ?? 0) > 0 && reference.eq(catalog));
+      if (!provenReference) return null;
+    }
+    const price = D(line.customBasePrice ?? line.row.price);
+    return price.isFinite() && price.gte(0) ? round2(price).toNumber() : null;
+  } catch { return null; }
+}
+
+export function withReceptionLineDiscount(line: CartLine, pct: number | null): CartLine {
+  if (line.digital) return line;
+  const customBasePrice = line.custom ? customizationBasePrice(line) : null;
+  if (line.custom && customBasePrice == null) return line;
+  const normalized = line.custom ? { ...line, customBasePrice: customBasePrice!, origPrice: D(customBasePrice).plus(D(line.custom.unitPrice)).toNumber() } : line;
+  return pct == null || pct <= 0 ? { ...normalized, disc: undefined }
+    : { ...normalized, origPrice: normalized.origPrice ?? D(normalized.row.price).toNumber(), disc: Math.min(100, pct) };
 }
 export function isCustomKind(line: CartLine): boolean {
   return !!line.custom;

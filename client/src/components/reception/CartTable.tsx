@@ -300,6 +300,7 @@ export function CartTable({
                           <p className="mt-2 text-[11px] text-muted-foreground">
                             قطع مخصصة: {formatQuantity(l.qty)} · أجرة التخصيص للقطعة: {fmt(l.custom!.unitPrice)} د.ع
                           </p>
+                          {l.customBasePrice === null && !l.manualService && <p className="mt-1 text-[11px] text-muted-foreground">سعر المسودة القديمة غير مفصول؛ أضف القطعة الجاهزة من البحث</p>}
                           <div className="mt-2 flex flex-wrap items-center gap-2">
                             <Button
                               size="sm"

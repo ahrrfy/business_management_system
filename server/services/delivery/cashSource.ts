@@ -41,8 +41,9 @@ export interface PartyCashInHand {
 export async function partyCashInHandTx(
   tx: Tx,
   party: { id: number | string; currentBalance?: string | null },
+  options: { currentRead?: boolean } = {},
 ): Promise<PartyCashInHand> {
-  const agg = await tx
+  const query = tx
     .select({
       entryType: deliveryLedgerEntries.entryType,
       total: sql<string>`COALESCE(SUM(${deliveryLedgerEntries.amount}), 0)`,
@@ -50,6 +51,7 @@ export async function partyCashInHandTx(
     .from(deliveryLedgerEntries)
     .where(and(eq(deliveryLedgerEntries.partyId, Number(party.id)), effectiveDeliveryLedgerEntrySql()))
     .groupBy(deliveryLedgerEntries.entryType);
+  const agg = await (options.currentRead ? query.for("share") : query);
   const ledger = round2(money(deriveCashInHandFromLedger(agg.map((r) => ({ entryType: r.entryType, amount: String(r.total ?? "0") })))));
   const stored = round2(money(party.currentBalance ?? "0"));
   const source = deliveryCashSource();

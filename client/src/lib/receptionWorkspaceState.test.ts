@@ -33,6 +33,8 @@ import {
   writeReceptionWorkspaceSnapshot,
 } from "./receptionWorkspaceState";
 import { effectivePrice } from "@/components/reception/cartMath";
+import { emptyCustomization } from "@/components/CustomizationDialog";
+import { addPlainCustomizationPiece } from "@/components/reception/cartCustomization";
 
 const REQUEST_ID = "550e8400-e29b-41d4-a716-446655440000";
 
@@ -87,6 +89,31 @@ function localInput() {
 }
 
 describe("reception workspace persistence", () => {
+  it("preserves a custom product base independently of discounts, coupons and live catalog prices", () => {
+    const now = Date.UTC(2026, 8, 17, 9), input = localInput();
+    const source = {
+      ...input.cart[0], customBasePrice: 2000, origPrice: 2500, disc: 10,
+      custom: { ...emptyCustomization("دفتر مخصص"), unitPrice: "500" },
+    };
+    const snapshot = createReceptionLocalSnapshot({ ...input, cart: [source] }, now);
+    const parsed = parseReceptionWorkspaceSnapshot(serializeReceptionWorkspaceSnapshot(snapshot), now);
+    if (parsed?.kind !== "LOCAL") throw new Error("expected local workspace");
+    expect(parsed.cart[0].customBasePrice).toBe(2000);
+    const live = [{ ...source.row, price: "9000" }];
+    const preserved = reconcileReceptionCartRows(parsed.cart, live as never, { preserveStoredPrices: true });
+    if (!preserved.ok) throw new Error("expected preserved custom price");
+    expect(addPlainCustomizationPiece(preserved.cart, source.key, "plain")[0].origPrice).toBe(2000);
+    const refreshed = reconcileReceptionCartRows(parsed.cart, live as never);
+    if (!refreshed.ok) throw new Error("expected refreshed catalog price");
+    expect(refreshed.cart[0].customBasePrice).toBe(9000);
+    expect(effectivePrice(refreshed.cart[0])).toBe(8550);
+    const legacy = createReceptionLocalSnapshot({ ...input, cart: [{ ...source, customBasePrice: null }] }, now);
+    const restoredLegacy = parseReceptionWorkspaceSnapshot(serializeReceptionWorkspaceSnapshot(legacy), now);
+    if (restoredLegacy?.kind !== "LOCAL") throw new Error("expected intact ambiguous workspace");
+    expect(restoredLegacy.cart[0].customBasePrice).toBeNull();
+    expect(addPlainCustomizationPiece(restoredLegacy.cart, source.key, "plain")).toBe(restoredLegacy.cart);
+  });
+
   it("round-trips the local cart and preserves the idempotency key", () => {
     const now = Date.UTC(2026, 8, 17, 9);
     const snapshot = createReceptionLocalSnapshot(localInput(), now);

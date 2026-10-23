@@ -153,6 +153,33 @@ describe("company statement preview", () => {
       ]).map((r) => r.verdict),
     ).toEqual(["DUPLICATE", "DUPLICATE"]);
   });
+  it("allocates one tracking total across shipment balances without duplicating money", () => {
+    const shipment = candidates.map((row) => ({
+      ...row,
+      shipmentLeaderConsignmentId: 1,
+      shipmentInvoiceCount: 2,
+      externalTrackingRef: row.id === 1 ? "00111" : null,
+    }));
+    const result = previewStatementImport([{ externalTrackingRef: "00111", collectedAmount: "120.10" }], shipment, 7, new Set())[0];
+    expect(result).toMatchObject({ verdict: "READY", collectedAmount: "120.10", allocations: [
+      { consignmentId: 1, collectedAmount: "100.10" },
+      { consignmentId: 2, collectedAmount: "20.00" },
+    ] });
+    expect(previewStatementImport([{ externalTrackingRef: "00111", collectedAmount: "120.11" }], shipment, 7, new Set())[0].verdict).toBe("EXCESS_AMOUNT");
+    expect(previewStatementImport([{ externalTrackingRef: "00111", collectedAmount: "100.11" }], shipment, 7, new Set())[0]).toMatchObject({
+      verdict: "READY", allocations: [{ consignmentId: 1, collectedAmount: "100.10" }, { consignmentId: 2, collectedAmount: "0.01" }],
+    });
+    expect(previewStatementImport([{ externalTrackingRef: "00111", collectedAmount: "120.10" }], shipment, 7, new Set([2]))[0].verdict).toBe("ALREADY_SELECTED");
+    expect(previewStatementImport([{ externalTrackingRef: "00111", collectedAmount: "120.10" }], shipment.slice(0, 1), 7, new Set())[0].verdict).toBe("INCOMPLETE_SHIPMENT");
+    expect(previewStatementImport([
+      { externalTrackingRef: "00111", collectedAmount: "120.10" },
+      { consignmentId: 2, collectedAmount: "20.00" },
+    ], shipment, 7, new Set()).map((row) => row.verdict)).toEqual(["DUPLICATE", "DUPLICATE"]);
+  });
+  it("keeps explicit consignment amounts per invoice when a file lists shipment members separately", () => {
+    const shipment = candidates.map((row) => ({ ...row, shipmentLeaderConsignmentId: 1, shipmentInvoiceCount: 2 }));
+    expect(previewStatementImport([{ consignmentId: 1, collectedAmount: "100.10" }, { consignmentId: 2, collectedAmount: "20.00" }], shipment, 7, new Set()).map((row) => row.verdict)).toEqual(["READY", "READY"]);
+  });
   it("rejects malformed money, excess precision, unsafe IDs and oversized money without coercion", () => {
     for (const value of [
       "",

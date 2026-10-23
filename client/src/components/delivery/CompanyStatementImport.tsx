@@ -121,7 +121,7 @@ export function CompanyStatementImport({
         الأعمدة: collectedAmount (مبلغ بلا فواصل آلاف)، وconsignmentId (معرّف
         الإرسالية) أو externalTrackingRef (البوليصة كنص للحفاظ على الأصفار).
         partyId اختياري للتحقق من الجهة. تُقرأ الورقة الأولى؛ لا يتغير التحديد
-        قبل مراجعة المعاينة.
+        قبل مراجعة المعاينة. مبلغ البوليصة الواحدة يُوزّع على فواتير شحنتها حسب المتبقي.
       </p>
       {preview.length > 0 && (
         <>
@@ -138,7 +138,7 @@ export function CompanyStatementImport({
               {
                 id: "invoice",
                 header: "الفاتورة",
-                accessorFn: (row) => row.candidate?.invoiceNumber ?? "—",
+                accessorFn: (row) => `${row.candidate?.invoiceNumber ?? "—"}${row.allocations.length > 1 ? ` (+${row.allocations.length - 1})` : ""}`,
               },
               {
                 id: "amount",
@@ -160,16 +160,7 @@ export function CompanyStatementImport({
               disabled={disabled || !ready.length}
               onClick={() => {
                 onApply(
-                  ready.flatMap((row) =>
-                    row.candidate && row.collectedAmount != null
-                      ? [
-                          {
-                            consignmentId: row.candidate.id,
-                            collectedAmount: row.collectedAmount,
-                          },
-                        ]
-                      : [],
-                  ),
+                  ready.flatMap((row) => row.allocations),
                 );
                 notify.ok(
                   `أُضيف ${ready.length} سطراً إلى التحديد`,

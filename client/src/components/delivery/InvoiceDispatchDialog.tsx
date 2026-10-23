@@ -52,7 +52,7 @@ export function InvoiceDispatchDialog({
   );
   const [partyId, setPartyId] = useState("");
   const [fee, setFee] = useState("0");
-  const [feeCollection, setFeeCollection] = useState<"COURIER" | "SHOP">(
+  const [feeCollection, setFeeCollection] = useState<"COURIER" | "SHOP" | "COUNTER">(
     "COURIER",
   );
   const [name, setName] = useState("");
@@ -293,12 +293,14 @@ export function InvoiceDispatchDialog({
               <Label>من يقبض الأجرة؟</Label>
               <AppSelect
                 value={feeCollection}
-                onValueChange={(v) => setFeeCollection(v as "COURIER" | "SHOP")}
+                onValueChange={(v) => setFeeCollection(v as "COURIER" | "SHOP" | "COUNTER")}
                 aria-label="من يقبض أجرة التوصيل"
               >
                 <option value="COURIER">المندوب من الزبون</option>
                 <option value="SHOP">على المكتبة</option>
+                <option value="COUNTER">مقبوضة مسبقاً في الاستقبال</option>
               </AppSelect>
+              {feeCollection === "COUNTER" && <p className="text-xs text-muted-foreground">أدخل الأجرة المقبوضة سابقاً؛ تُطابق مع إيصالها ولا تُقبض مرة ثانية.</p>}
             </div>
           </div>
           <div className="rounded-md border bg-muted/35 p-2 text-xs leading-6 text-muted-foreground">
@@ -307,6 +309,8 @@ export function InvoiceDispatchDialog({
                 الفاتورة <strong className="text-[var(--sem-pos)]">مدفوعة مسبقاً بالكامل</strong> (متبقي البضاعة: 0 د.ع).
                 {feeCollection === "COURIER" ? (
                   <> المطلوب من الزبون عند الاستلام: <strong className="tabular-nums text-foreground" dir="ltr">{fmt(moneyInput(fee).toFixed(2))} د.ع</strong> (أجرة التوصيل فقط للمندوب).</>
+                ) : feeCollection === "COUNTER" ? (
+                  <> لا مبالغ مطلوبة عند الاستلام؛ الأجرة مقبوضة مسبقاً في الاستقبال.</>
                 ) : (
                   <> لا مبالغ مطلوبة من الزبون عند الاستلام (الأجرة لا يدفعها الزبون).</>
                 )}
