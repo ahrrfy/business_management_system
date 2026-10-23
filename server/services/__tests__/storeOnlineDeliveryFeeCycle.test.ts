@@ -1,3 +1,4 @@
+import { repairHistoricalFeeWithholding } from "../delivery/historicalFeeWithholding";
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -680,4 +681,128 @@ it("concurrent independent payout and net remittance cannot settle the fee twice
     ["FEE_PAID", "FEE_OFFSET"].includes(r.entryType),
   );
   expect(sum(fees)).toBe("1500.00");
+});
+
+it("adopts an owner-confirmed historical fee, preserves closed drawers and replays without cash or AR duplication", async () => {
+  const d = await onlineDelivery();
+  // Reproduce the old implementation: the store fee accrued, but gross COD was recorded as cash.
+  await db()
+    .update(s.deliveryConsignments)
+    .set({ sourceType: "INVOICE" })
+    .where(eq(s.deliveryConsignments.id, d.consignmentId));
+  await recordCompanyStatement(
+    {
+      partyId: 1,
+      branchId: 1,
+      statementNumber: "HISTORICAL-GROSS",
+      countedCash: "20000",
+      lines: [{ consignmentId: d.consignmentId, collectedAmount: "20000" }],
+      clientRequestId: "historical-gross",
+    },
+    CASHIER,
+  );
+  await db()
+    .update(s.deliveryConsignments)
+    .set({ sourceType: "ONLINE_ORDER" })
+    .where(eq(s.deliveryConsignments.id, d.consignmentId));
+  const rm = (await db().select().from(s.deliveryRemittances))[0];
+  await db()
+    .insert(s.receipts)
+    .values([
+      {
+        branchId: 1,
+        shiftId: d.shiftId,
+        direction: "OUT",
+        amount: "20000",
+        paymentMethod: "CASH",
+        cashBucket: "DRAWER",
+        status: "COMPLETED",
+        referenceNumber: "HISTORICAL-HANDOVER",
+        createdBy: 2,
+      },
+      {
+        branchId: 1,
+        shiftId: null,
+        direction: "IN",
+        amount: "20000",
+        paymentMethod: "CASH",
+        cashBucket: "TREASURY",
+        status: "COMPLETED",
+        referenceNumber: "HISTORICAL-HANDOVER",
+        createdBy: 1,
+      },
+    ]);
+  await db()
+    .update(s.shifts)
+    .set({ status: "CLOSED", closingBalance: "20000" })
+    .where(eq(s.shifts.id, d.shiftId));
+  const target = {
+    consignmentId: d.consignmentId,
+    remittanceId: Number(rm.id),
+    receiptInId: Number(rm.receiptInId),
+    shiftId: d.shiftId,
+    fee: "1500",
+    batchGross: "20000",
+    actualBatchNet: "18500",
+  };
+  const actor = { userId: 1, role: "admin", branchId: 1 };
+  const before = {
+    receipts: await db().select().from(s.receipts),
+    ledger: await db().select().from(s.deliveryLedgerEntries),
+    entries: await db().select().from(s.accountingEntries),
+    shift: await db().select().from(s.shifts),
+  };
+  expect(
+    (
+      await repairHistoricalFeeWithholding([target], actor, {
+        evidence: "confirmed actual net",
+      })
+    )[0].status,
+  ).toBe("PREVIEW");
+  expect(await db().select().from(s.receipts)).toEqual(before.receipts);
+  await expect(
+    repairHistoricalFeeWithholding(
+      [target, { ...target, remittanceId: 999999 }],
+      actor,
+      { apply: true, evidence: "confirmed actual net" },
+    ),
+  ).rejects.toThrow();
+  expect(await db().select().from(s.receipts)).toEqual(before.receipts);
+  expect(await db().select().from(s.deliveryLedgerEntries)).toEqual(
+    before.ledger,
+  );
+  const applied = await repairHistoricalFeeWithholding([target], actor, {
+    apply: true,
+    evidence: "confirmed actual net",
+  });
+  expect(applied[0].status).toBe("APPLIED");
+  await assertClosed(d.invoiceId, "18500.00");
+  expect(await db().select().from(s.shifts)).toEqual(before.shift);
+  const after = await db().select().from(s.receipts);
+  expect(after.filter((r) => r.cashBucket === "DRAWER")).toEqual(
+    before.receipts.filter((r) => r.cashBucket === "DRAWER"),
+  );
+  expect(
+    after
+      .filter((r) => r.cashBucket === "TREASURY")
+      .reduce(
+        (v, r) => v.plus(money(r.amount).mul(r.direction === "IN" ? 1 : -1)),
+        money(0),
+      )
+      .toFixed(2),
+  ).toBe("18500.00");
+  expect(
+    (
+      await repairHistoricalFeeWithholding([target], actor, {
+        apply: true,
+        evidence: "confirmed actual net",
+      })
+    )[0].status,
+  ).toBe("REPLAY_VERIFIED");
+  expect(await db().select().from(s.receipts)).toEqual(after);
+  expect(
+    (await db().select().from(s.accountingEntries)).filter(
+      (r) => r.entryType === "PAYMENT_IN",
+    ),
+  ).toEqual(before.entries.filter((r) => r.entryType === "PAYMENT_IN"));
 });
