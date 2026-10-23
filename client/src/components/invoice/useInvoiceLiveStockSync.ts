@@ -4,9 +4,9 @@
  * تعالج ثلاث علل بنيوية في موضعٍ واحد:
  * 1) تثبيت مفتاح الوحدات نصّياً (`allStockUnitIdsKey`) بحيث لا تؤدي تحديثات السطور (كمية/سعر/خصم
  *    أو `SET_STOCK_SNAPSHOTS` نفسه) إلى كسر مرجع المصفوفة وإشعال حلقة `useEffect` لانهائية.
- * 2) دعم السلال الكبيرة (> 500 وحدة، سقف `catalog.stockByUnitIds`) عبر دفعات لاحقة آمنة محاطة
- *    بـ `Promise.allSettled` وبلا تخزين مؤقّت قديم (`staleTime: 0`) مع إعادة المحاولة عند كل نبضة
- *    `dataUpdatedAt` دون إسقاط الشاشة أو تصفير الوحدات التي تعثّر جلب دفعتها مؤقتاً.
+ * 2) تطبيق الدفعة الأولى (أول 500 وحدة) تزامنياً وفوراً، ثم دمج كل دفعة لاحقة (> 500 وحدة)
+ *    بصورة مستقلّة فور اكتمالها عبر `Promise.allSettled` وبلا تخزين مؤقّت قديم (`staleTime: 0`)
+ *    مع إعادة المحاولة عند كل نبضة `dataUpdatedAt` دون حجب الدفعات الجاهزة أو تصفير المتعثّرة.
  * 3) عزل `trpc.useUtils()` داخل `useRef` وحراسة `branchId > 0` و`productUnitId > 0` لمطابقة عقد الخادم.
  */
 import { type Dispatch, useEffect, useMemo, useRef } from "react";
@@ -14,6 +14,32 @@ import { trpc } from "@/lib/trpc";
 import type { InvoiceAction, InvoiceLine } from "./types";
 
 const STOCK_QUERY_CHUNK_SIZE = 500;
+
+interface StockSnapshotRow {
+  productUnitId: number;
+  branchId: number;
+  stockBase: number;
+  reservedBase: number;
+  availableBase: number;
+  isService: boolean;
+  allowBackorder: boolean;
+}
+
+function toSnapshotsByUnitId(rows: readonly StockSnapshotRow[]) {
+  return Object.fromEntries(
+    rows.map((row) => [
+      row.productUnitId,
+      {
+        stockBase: row.stockBase,
+        stockBranchId: row.branchId,
+        reservedBase: row.reservedBase,
+        availableBase: row.availableBase,
+        isService: row.isService,
+        allowBackorder: row.allowBackorder,
+      },
+    ]),
+  );
+}
 
 export function useInvoiceLiveStockSync(args: {
   items: readonly InvoiceLine[];
@@ -78,81 +104,43 @@ export function useInvoiceLiveStockSync(args: {
     const effectiveBranchId = snapshot.branchId;
     const firstChunkIds = allStockUnitIds.slice(0, STOCK_QUERY_CHUNK_SIZE);
 
+    // طبّق الدفعة الأولى المتاحة فوراً كي لا تبقى معلّقة بانتظار دفعات لاحقة بطيئة أو متعثّرة.
+    dispatch({
+      type: "SET_STOCK_SNAPSHOTS",
+      queriedUnitIds: firstChunkIds,
+      effectiveBranchId,
+      snapshotsByUnitId: toSnapshotsByUnitId(baseRows),
+    });
+
     if (allStockUnitIds.length <= STOCK_QUERY_CHUNK_SIZE) {
-      dispatch({
-        type: "SET_STOCK_SNAPSHOTS",
-        queriedUnitIds: firstChunkIds,
-        effectiveBranchId,
-        snapshotsByUnitId: Object.fromEntries(
-          baseRows.map((row) => [
-            row.productUnitId,
-            {
-              stockBase: row.stockBase,
-              stockBranchId: row.branchId,
-              reservedBase: row.reservedBase,
-              availableBase: row.availableBase,
-              isService: row.isService,
-              allowBackorder: row.allowBackorder,
-            },
-          ]),
-        ),
-      });
       return;
     }
 
     let cancelled = false;
-    async function applyChunkedSnapshots() {
-      const allRows = [...baseRows];
-      const succeededUnitIds = new Set<number>(firstChunkIds);
-
-      const extraChunks: number[][] = [];
-      for (let i = STOCK_QUERY_CHUNK_SIZE; i < allStockUnitIds.length; i += STOCK_QUERY_CHUNK_SIZE) {
-        extraChunks.push(allStockUnitIds.slice(i, i + STOCK_QUERY_CHUNK_SIZE));
-      }
-
-      const settled = await Promise.allSettled(
-        extraChunks.map(async (chunk) => {
-          const extra = await utilsRef.current.catalog.stockByUnitIds.fetch(
-            {
-              branchId,
-              productUnitIds: chunk,
-            },
-            { staleTime: 0 },
-          );
-          return { chunk, branchId: extra.branchId, rows: extra.rows };
-        }),
-      );
-
-      if (cancelled) return;
-
-      for (const result of settled) {
-        if (result.status === "fulfilled" && result.value.branchId === effectiveBranchId) {
-          for (const id of result.value.chunk) succeededUnitIds.add(id);
-          allRows.push(...result.value.rows);
-        }
-      }
-
-      dispatch({
-        type: "SET_STOCK_SNAPSHOTS",
-        queriedUnitIds: succeededUnitIds,
-        effectiveBranchId,
-        snapshotsByUnitId: Object.fromEntries(
-          allRows.map((row) => [
-            row.productUnitId,
-            {
-              stockBase: row.stockBase,
-              stockBranchId: row.branchId,
-              reservedBase: row.reservedBase,
-              availableBase: row.availableBase,
-              isService: row.isService,
-              allowBackorder: row.allowBackorder,
-            },
-          ]),
-        ),
-      });
+    const extraChunks: number[][] = [];
+    for (let i = STOCK_QUERY_CHUNK_SIZE; i < allStockUnitIds.length; i += STOCK_QUERY_CHUNK_SIZE) {
+      extraChunks.push(allStockUnitIds.slice(i, i + STOCK_QUERY_CHUNK_SIZE));
     }
 
-    void applyChunkedSnapshots();
+    void Promise.allSettled(
+      extraChunks.map(async (chunk) => {
+        const extra = await utilsRef.current.catalog.stockByUnitIds.fetch(
+          {
+            branchId,
+            productUnitIds: chunk,
+          },
+          { staleTime: 0 },
+        );
+        if (cancelled || extra.branchId !== effectiveBranchId) return;
+        dispatch({
+          type: "SET_STOCK_SNAPSHOTS",
+          queriedUnitIds: chunk,
+          effectiveBranchId,
+          snapshotsByUnitId: toSnapshotsByUnitId(extra.rows),
+        });
+      }),
+    );
+
     return () => {
       cancelled = true;
     };

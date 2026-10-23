@@ -14,6 +14,7 @@ import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { buildQuotationMessage } from "@/lib/whatsapp";
 import { D, fmt, round2, formatQuantity, moneyInput } from "@/lib/money";
+import { isCompleteNonNegativeMoneyInput } from "@/lib/quotationPayload";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -476,6 +477,10 @@ export default function QuotationDetail() {
             )}
             <Button
               onClick={async () => {
+                if (!isCompleteNonNegativeMoneyInput(payAmount, { allowEmpty: true })) {
+                  notify.warn("مبلغ الدفعة غير صالح.");
+                  return;
+                }
                 const pay = moneyInput(payAmount).gt(0);
                 if (
                   !(await confirm({

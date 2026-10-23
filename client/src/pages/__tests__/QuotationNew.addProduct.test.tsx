@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockState = vi.hoisted(() => ({
   params: {} as { id?: string },
+  routeMatch: [false, null] as [boolean, { id?: string } | null],
   search: "",
   navigatedTo: null as string | null,
   me: {
@@ -69,12 +70,16 @@ const mockState = vi.hoisted(() => ({
   unstableUtils: false,
   pasteItems: null as any[] | null,
   createdPayloads: [] as any[],
+  originalInvoice: undefined as any,
+  correctionCatalogRows: undefined as any[] | undefined,
+  reissuePayloads: [] as any[],
 }));
 
 vi.mock("wouter", () => ({
   useLocation: () => ["/quotations/new", (to: string) => { mockState.navigatedTo = to; }],
   useSearch: () => mockState.search,
   useParams: () => mockState.params,
+  useRoute: () => mockState.routeMatch,
   Link: ({ children, href, ...rest }: any) => React.createElement("a", { href, ...rest }, children),
 }));
 
@@ -169,9 +174,22 @@ vi.mock("@/lib/trpc", () => ({
         useQuery: () => ({ data: null, isLoading: false }),
       },
     },
+    employees: {
+      list: {
+        useQuery: () => ({ data: { rows: [] }, isLoading: false }),
+      },
+    },
+    shifts: {
+      current: {
+        useQuery: () => ({ data: null, isLoading: false }),
+      },
+    },
     system: {
       getTaxSettings: {
         useQuery: () => ({ data: { enabledByDefault: false, defaultTaxRatePercent: "0" }, isLoading: false }),
+      },
+      getOpeningMode: {
+        useQuery: () => ({ data: { enabled: false }, isLoading: false }),
       },
     },
     catalog: {
@@ -184,6 +202,9 @@ vi.mock("@/lib/trpc", () => ({
       },
       forPurchase: {
         useQuery: () => ({ data: [], isLoading: false, isFetching: false }),
+      },
+      byUnitIds: {
+        useQuery: () => ({ data: mockState.correctionCatalogRows, isLoading: false }),
       },
       stockByUnitIds: {
         useQuery: (input: { branchId: number; productUnitIds: number[] }, opts?: { enabled?: boolean }) => {
@@ -230,6 +251,42 @@ vi.mock("@/lib/trpc", () => ({
       lineInsights: {
         useQuery: () => ({ data: null, isLoading: false, isFetching: false, isPlaceholderData: false }),
       },
+      get: {
+        useQuery: (_input: any, opts?: { enabled?: boolean }) => ({
+          data: opts?.enabled === false ? undefined : mockState.originalInvoice,
+          isLoading: false,
+          isError: false,
+        }),
+      },
+      initiateExternalPayment: {
+        useMutation: () => ({ isPending: false, mutateAsync: vi.fn() }),
+      },
+      confirmExternalPayment: {
+        useMutation: () => ({ isPending: false, mutateAsync: vi.fn() }),
+      },
+      create: {
+        useMutation: () => ({ isPending: false, mutate: vi.fn() }),
+      },
+      reissue: {
+        useMutation: () => ({
+          isPending: false,
+          mutate: (payload: any) => {
+            mockState.reissuePayloads.push(payload);
+          },
+        }),
+      },
+    },
+    salesControl: {
+      list: { invalidate: vi.fn(async () => {}) },
+      requestExchange: {
+        useMutation: () => ({ isPending: false, mutate: vi.fn() }),
+      },
+    },
+    digitalCards: {
+      sales: {
+        prepare: { useMutation: () => ({ isPending: false, mutate: vi.fn() }) },
+        finalize: { useMutation: () => ({ isPending: false, mutate: vi.fn() }) },
+      },
     },
     quotations: {
       get: {
@@ -274,8 +331,18 @@ vi.mock("@/sentry", () => ({
   captureClientException: vi.fn(),
 }));
 
+vi.mock("@/components/pos/DigitalCardsPickerDialog", () => ({
+  DigitalCardsPickerDialog: () => null,
+}));
+
+vi.mock("@/components/pos/DigitalFulfillmentDialog", () => ({
+  DigitalFulfillmentDialog: () => null,
+}));
+
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import QuotationNew from "@/pages/QuotationNew";
+import SalesInvoice from "@/pages/SalesInvoiceNew";
+import { notify } from "@/lib/notify";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, React });
 
@@ -311,6 +378,11 @@ describe("QuotationNew — إضافة منتج ومزامنة المخزون ب�
 
   beforeEach(() => {
     mockState.params = {};
+    mockState.routeMatch = [false, null];
+    mockState.originalInvoice = undefined;
+    mockState.correctionCatalogRows = undefined;
+    mockState.reissuePayloads = [];
+    vi.mocked(notify.warn).mockClear();
     mockState.search = "";
     mockState.navigatedTo = null;
     mockState.editQuotation = undefined;
@@ -808,5 +880,235 @@ describe("QuotationNew — إضافة منتج ومزامنة المخزون ب�
       },
       { staleTime: 0 },
     );
+  });
+
+  it("يطبّق لقطة المخزون لأول 500 وحدة فوراً ويدمج كل دفعة لاحقة فور اكتمالها دون انتظار دفعة ثالثة معلّقة", async () => {
+    mockState.pasteItems = Array.from({ length: 1002 }, (_, idx) => ({
+      productId: 1000 + idx,
+      variantId: 2000 + idx,
+      productUnitId: 3000 + idx,
+      name: `صنف متدرج ${idx + 1}`,
+      sku: `SKU-PROG-${idx + 1}`,
+      barcode: null,
+      unit: "قطعة",
+      qty: 1,
+      conversionFactor: "1",
+      stockBase: 0,
+      price: "1000",
+      referencePrice: "1000",
+      priceSource: "TIER" as const,
+      costBase: "500",
+      discount: "0",
+      discountType: "amount" as const,
+      note: "",
+    }));
+
+    mockState.stockRowsOverride = (unitIds, branchId) =>
+      unitIds.map((unitId) => ({
+        branchId,
+        productUnitId: unitId,
+        stockBase: unitId === 3000 ? 417 : 10,
+        reservedBase: 0,
+        availableBase: unitId === 3000 ? 417 : 10,
+        openedAt: null,
+        isService: false,
+        allowBackorder: false,
+      }));
+
+    let resolveChunk2!: (val: any) => void;
+    let resolveChunk3!: (val: any) => void;
+    mockState.extraChunkFetch.mockImplementation(
+      ({ branchId, productUnitIds }: { branchId: number; productUnitIds: number[] }) => {
+        if (productUnitIds[0] === 3500) {
+          return new Promise((res) => {
+            resolveChunk2 = res;
+          });
+        }
+        return new Promise((res) => {
+          resolveChunk3 = res;
+        });
+      },
+    );
+
+    renderPage();
+
+    const pasteButton = [...host.querySelectorAll("button")].find((btn) =>
+      btn.textContent?.includes("لصق"),
+    );
+    await act(async () => {
+      pasteButton!.click();
+    });
+
+    // 1) الدفعة الأولى (الوحدة 3000) يجب أن تظهر فوراً قبل اكتمال أي دفعة إضافية
+    expect(mockState.extraChunkFetch).toHaveBeenCalledTimes(2);
+    expect(host.textContent).toContain("متاح للبيع 417");
+    expect(host.textContent).not.toContain("متاح للبيع 829");
+
+    // 2) اكتمال الدفعة الثانية وحدها بينما الدفعة الثالثة معلّقة يحدّث الوحدة 3500 فوراً
+    await act(async () => {
+      resolveChunk2({
+        branchId: 1,
+        rows: Array.from({ length: 500 }, (_, i) => ({
+          branchId: 1,
+          productUnitId: 3500 + i,
+          stockBase: i === 0 ? 829 : 10,
+          reservedBase: 0,
+          availableBase: i === 0 ? 829 : 10,
+          openedAt: null,
+          isService: false,
+          allowBackorder: false,
+        })),
+      });
+      await Promise.resolve();
+    });
+
+    expect(host.textContent).toContain("متاح للبيع 829");
+    expect(host.textContent).not.toContain("المتاح 953 فقط");
+
+    // 3) اكتمال الدفعة الثالثة لاحقاً يدمج بقية الوحدات بسلام
+    await act(async () => {
+      resolveChunk3({
+        branchId: 1,
+        rows: [4000, 4001].map((id) => ({
+          branchId: 1,
+          productUnitId: id,
+          stockBase: id === 4000 ? 953 : 10,
+          reservedBase: 0,
+          availableBase: id === 4000 ? 953 : 10,
+          openedAt: null,
+          isService: false,
+          allowBackorder: false,
+        })),
+      });
+      await Promise.resolve();
+    });
+
+    expect(host.textContent).toContain("متاح للبيع 953");
+    expect(host.textContent).not.toContain("جارٍ التحقق من الرصيد");
+  });
+
+  it("يرفض إرسال تصحيح فاتورة عبر F4 عندما يكون حقل قبض الفرق (collectNow) على القيمة العابرة '.' أثناء التركيز", async () => {
+    mockState.routeMatch = [true, { id: "42" }];
+    mockState.me = {
+      id: 1,
+      name: "المالك",
+      role: "admin",
+      branchId: 1,
+      isOwner: true,
+    };
+    mockState.originalInvoice = {
+      id: 42,
+      invoiceNumber: "INV-0042",
+      branchId: 1,
+      customerId: 10,
+      priceTier: "RETAIL",
+      paymentMethod: "CASH",
+      total: "6000.00",
+      paidAmount: "1000.00",
+      discountAmount: "0.00",
+      taxRatePercent: "0.00",
+      taxAmount: "0.00",
+      deliveryFree: false,
+      deliveryFee: "0.00",
+      status: "PARTIAL",
+      items: [
+        {
+          productId: 101,
+          variantId: 201,
+          productUnitId: 301,
+          productName: "كتاب IELTS TO SUCCESS",
+          variantName: null,
+          color: null,
+          size: null,
+          colorHex: null,
+          variantKind: null,
+          sku: "BK-IELTS-01",
+          unitName: "قطعة",
+          quantity: "1",
+          baseQuantity: "1",
+          unitPrice: "6000.00",
+          discountAmount: "0.00",
+          isGift: false,
+        },
+      ],
+    };
+    mockState.correctionCatalogRows = [
+      {
+        productUnitId: 301,
+        branchId: 1,
+        stockBase: 15,
+        reservedBase: 0,
+        availableBase: 15,
+        isService: false,
+        costPriceBase: "4000",
+      },
+    ];
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ErrorBoundary>
+            <SalesInvoice />
+          </ErrorBoundary>
+        </QueryClientProvider>,
+      );
+    });
+
+    const reasonInput = [...host.querySelectorAll("textarea")].find((el) =>
+      el.placeholder?.includes("صُحِّحت الكمية"),
+    );
+    expect(reasonInput).toBeDefined();
+
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value",
+      )!.set!;
+      setter.call(reasonInput!, "تصحيح المبلغ بعد المراجعة");
+      reasonInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const collectInput = host.querySelector<HTMLInputElement>(
+      "input[aria-label='قبض مبلغ مع التعديل']",
+    );
+    expect(collectInput).not.toBeNull();
+
+    await act(async () => {
+      collectInput!.focus();
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value",
+      )!.set!;
+      setter.call(collectInput!, ".");
+      collectInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    // الضغط على F4 والحقل ما يزال مركّزاً بقيمة '.' يجب أن يُرفض ولا يُسقط التحصيل صامتاً
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "F4", bubbles: true }));
+    });
+
+    expect(mockState.reissuePayloads).toHaveLength(0);
+    expect(notify.warn).toHaveBeenCalledWith(expect.stringContaining("غير صالح"));
+
+    // بعد إكمال المبلغ إلى 2500 والضغط على F4 يُرسل additionalPayment بقيمة 2500.00
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value",
+      )!.set!;
+      setter.call(collectInput!, "2500");
+      collectInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "F4", bubbles: true }));
+    });
+
+    expect(mockState.reissuePayloads).toHaveLength(1);
+    expect(mockState.reissuePayloads[0].additionalPayment).toEqual({
+      amount: "2500.00",
+      method: "CASH",
+    });
   });
 });

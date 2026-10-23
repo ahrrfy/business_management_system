@@ -564,6 +564,8 @@ export default defineConfig({
       "client/src/pages/__tests__/quotationNewStoreQuoteRequest.test.tsx",
       "client/src/pages/__tests__/QuotationNew.addProduct.test.tsx",
       "client/src/pages/__tests__/reactEffectLoopGuard.test.ts",
+      "client/src/pages/__tests__/salesInvoiceDigitalIntegrity.test.ts",
+      "client/src/pages/__tests__/invoiceEditorPaymentTermsContract.test.ts",
       "scripts/__tests__/safeDeliveryProtocols.test.ts",
     ],
   },

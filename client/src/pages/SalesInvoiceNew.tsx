@@ -625,7 +625,10 @@ export default function SalesInvoice() {
   function buildCorrectionPayload(approval?: Approval) {
     const base = buildPayload(approval);
     const diff = D(totals.grandTotal).minus(receivedPrior); // موجب=نقص يُحصَّل، سالب=فائض يُردّ/يُرصَّد
-    const collect = moneyInput(collectNow);
+    if (diff.gt(0) && !isCompleteNonNegativeMoneyInput(collectNow, { allowEmpty: true })) {
+      throw new Error("INVALID_CORRECTION_COLLECTION_AMOUNT");
+    }
+    const collect = diff.gt(0) ? moneyInput(collectNow) : D(0);
     // أجرة التوصيل وإفصاح التنازل يُحمَلان كما في عقد الإنشاء؛ المجاني لا يدخل الإجمالي.
     const deliveryFee =
       !state.shippingFree && D(totals.shipping).gt(0) ? totals.shipping : null;
@@ -671,8 +674,11 @@ export default function SalesInvoice() {
   function validateCorrection(): string | null {
     if (reason.trim().length < 3) return "اكتب سبب التصحيح (٣ أحرف على الأقل).";
     const diff = D(totals.grandTotal).minus(receivedPrior);
-    const collect = moneyInput(collectNow);
     if (diff.gt(0)) {
+      if (!isCompleteNonNegativeMoneyInput(collectNow, { allowEmpty: true })) {
+        return "مبلغ القبض مع التعديل غير صالح.";
+      }
+      const collect = moneyInput(collectNow);
       if (collect.gt(diff)) return `التحصيل المقترح (${collect.toFixed(2)}) يتجاوز الفرق المستحقّ (${diff.toFixed(2)}).`;
       const outstandingError = correctionOutstandingBlockReason(diff.minus(collect).toFixed(2), state.entityId != null, pendingCodCorrection);
       if (outstandingError) return outstandingError;
@@ -688,6 +694,12 @@ export default function SalesInvoice() {
     if (!isPosPaymentMethodEnabled(state.paymentMethod)) return posPaymentRejectionMessage(state.paymentMethod);
     if (!state.branchId) return "اختر الفرع.";
     if (state.items.length === 0) return "أضف منتجاً واحداً على الأقل.";
+    if (!isCompleteNonNegativeMoneyInput(state.globalDiscount, { allowEmpty: true }))
+      return "الخصم الإجمالي غير صالح.";
+    if (!isCompleteNonNegativeMoneyInput(state.shipping, { allowEmpty: true }))
+      return "أجرة التوصيل غير صالحة.";
+    if (!isCompleteNonNegativeMoneyInput(state.paidAmount, { allowEmpty: true }))
+      return "المبلغ المدفوع غير صالح.";
     const digitalError = validateDigitalInvoiceCheckout(state.items, {
       isCorrection, hasOpenShift: !!currentShift.data,
       paymentTerms: state.paymentTerms, paymentMethod: state.paymentMethod,
@@ -729,12 +741,6 @@ export default function SalesInvoice() {
       if (remaining.lt(0) && state.paymentMethod !== "CASH")
         return "الدفع غير النقدي لا يمكن أن يتجاوز إجمالي الفاتورة.";
     }
-    if (!isCompleteNonNegativeMoneyInput(state.globalDiscount, { allowEmpty: true }))
-      return "الخصم الإجمالي غير صالح.";
-    if (!isCompleteNonNegativeMoneyInput(state.shipping, { allowEmpty: true }))
-      return "أجرة التوصيل غير صالحة.";
-    if (!isCompleteNonNegativeMoneyInput(state.paidAmount, { allowEmpty: true }))
-      return "المبلغ المدفوع غير صالح.";
     if (D(totals.grandTotal).lt(0)) return "الإجمالي النهائي لا يمكن أن يكون سالباً.";
     // سياسة #14: لا نسبة ضريبة سالبة (الخادم يرفضها أيضاً — نمنعها هنا برسالة أوضح).
     if (
@@ -950,6 +956,8 @@ export default function SalesInvoice() {
   /* ─── اختصارات لوحة المفاتيح (F2/F4/F9/F12/Esc) ───────────────────── */
   const containerRef = useRef<HTMLDivElement>(null);
   const submitPending = isCorrection ? reissue.isPending || exchange.isPending : create.isPending || prepareIntent.isPending || finalizeSale.isPending;
+  const shortcutHandlersRef = useRef({ handleSubmit, handleReset, closeApprovalPrompt });
+  shortcutHandlersRef.current = { handleSubmit, handleReset, closeApprovalPrompt };
   useEffect(() => {
     const isTypingTarget = (el: EventTarget | null) =>
       !!el && (el as HTMLElement).matches?.("input, textarea, select, [contenteditable='true']",
@@ -962,7 +970,7 @@ export default function SalesInvoice() {
     const onKey = (e: KeyboardEvent) => {
       // أثناء فتح حوار الموافقة: Esc يغلقه فقط.
       if (creditPrompt) {
-        if (e.key === "Escape") closeApprovalPrompt();
+        if (e.key === "Escape") shortcutHandlersRef.current.closeApprovalPrompt();
         return;
       }
       if (e.key === "F2") {
@@ -978,7 +986,7 @@ export default function SalesInvoice() {
           releaseReservedPrintWindow();
           printAfterSaveRef.current = false;
           shareAfterSaveRef.current = false;
-          handleSubmit();
+          shortcutHandlersRef.current.handleSubmit();
         }
         return;
       }
@@ -992,20 +1000,20 @@ export default function SalesInvoice() {
           reservePrintWindow();
           printAfterSaveRef.current = true;
           shareAfterSaveRef.current = false;
-          handleSubmit();
+          shortcutHandlersRef.current.handleSubmit();
         }
         return;
       }
       if (e.key === "F12") {
         e.preventDefault();
         if (confirmDialogOpen()) return;
-        if (!isDirty) { handleReset(); return; }
+        if (!isDirty) { shortcutHandlersRef.current.handleReset(); return; }
         void confirm({
           variant: "warning",
           title: "مسح الفاتورة الحالية",
           description: "توجد بيانات لم تُحفَظ في هذه الفاتورة (بنود/عميل/ملاحظات). المسح سيُفقدها نهائياً. متابعة؟",
           confirmText: "مسح",
-        }).then((ok) => { if (ok) handleReset(); });
+        }).then((ok) => { if (ok) shortcutHandlersRef.current.handleReset(); });
         return;
       }
       if (e.key === "Escape" && !isTypingTarget(e.target) && !bulkOpen) {
