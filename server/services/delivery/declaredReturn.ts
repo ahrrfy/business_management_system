@@ -27,6 +27,8 @@ import { adjustDeliveryBalance } from "../ledgerService";
 import { withTx } from "../tx";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
 import type { DeliveryTxActor } from "./types";
+import { assertStandaloneConsignmentTx } from "./shipments";
+import type { Tx } from "../../db";
 
 /**
  * **الرجوعُ المُعلَن يُغلق كلَّ مخرجٍ إلّا الاسترجاع** (تصويب مراجعة Codex، ٢١/٨).
@@ -75,9 +77,17 @@ function buildDeclarationNote(reason: string, statementNumber?: string | null): 
   return `${reason.slice(0, Math.max(0, 500 - suffix.length))}${suffix}`;
 }
 
-export async function declareConsignmentReturn(input: DeclareReturnInput, actor: DeliveryTxActor) {
-  return withTx(async (tx) => {
+export async function declareConsignmentReturn(
+  input: DeclareReturnInput,
+  actor: DeliveryTxActor,
+  existingTx?: Tx,
+  options: { shipmentMember?: boolean } = {},
+) {
+  const run = async (tx: Tx) => {
     const consignmentId = Number(input.consignmentId);
+    const [preview] = await tx.select({ partyId: deliveryConsignments.partyId }).from(deliveryConsignments).where(eq(deliveryConsignments.id, consignmentId)).limit(1);
+    if (preview) await tx.select({ id: deliveryParties.id }).from(deliveryParties).where(eq(deliveryParties.id, Number(preview.partyId))).for("update").limit(1);
+    if (!options.shipmentMember) await assertStandaloneConsignmentTx(tx, consignmentId, "إعلان الرجوع", { currentRead: true });
     const reason = input.reason.trim();
     if (reason.length < 3) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "سبب رجوع الطرد مطلوب (٣ أحرف على الأقل)" });
@@ -85,7 +95,7 @@ export async function declareConsignmentReturn(input: DeclareReturnInput, actor:
 
     const payloadHash = idempotencyHash({ consignmentId, reason });
     if (input.clientRequestId) {
-      const existing = await checkIdempotency(tx, "delivery.declareReturn", input.clientRequestId, payloadHash);
+      const existing = await checkIdempotency(tx, "delivery.declareReturn", input.clientRequestId, payloadHash, { forUpdate: true });
       if (existing != null) {
         if (Number(existing) !== consignmentId) {
           throw new TRPCError({ code: "CONFLICT", message: "مفتاح الإعلان مرتبط بإرسالية أخرى" });
@@ -105,7 +115,7 @@ export async function declareConsignmentReturn(input: DeclareReturnInput, actor:
     // الفحص هنا يسقط الثاني على حارس `returnDeclaredAt` بـCONFLICT — أي أنّ **تكراراً
     // عادياً لطلبٍ ناجح يُبلَّغ خطأً** بدل الإعادة الصامتة الموعودة. (نفس نمط الإلغاء.)
     if (input.clientRequestId) {
-      const afterLock = await checkIdempotency(tx, "delivery.declareReturn", input.clientRequestId, payloadHash);
+      const afterLock = await checkIdempotency(tx, "delivery.declareReturn", input.clientRequestId, payloadHash, { forUpdate: true });
       if (afterLock != null) {
         return { consignmentId, declared: true as const, idempotentReplay: true as const };
       }
@@ -220,5 +230,6 @@ export async function declareConsignmentReturn(input: DeclareReturnInput, actor:
       releasedExposure: outstanding.toFixed(2),
       idempotentReplay: false as const,
     };
-  });
+  };
+  return existingTx ? run(existingTx) : withTx(run);
 }

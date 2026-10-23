@@ -32,7 +32,7 @@
  * رقمَه — مقصود، فقد يُعاد إدخال الكشف نفسه لاحقاً كاملاً لتوريد نقده.
  */
 import { TRPCError } from "@trpc/server";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { deliveryConsignments, deliveryParties, deliveryRemittances } from "../../../drizzle/schema";
 import { getDb, type Tx } from "../../db";
 import { isDupEntry } from "@shared/errorMap.ar";
@@ -48,6 +48,8 @@ import {
 } from "./remittance";
 import type { DeliveryTxActor } from "./types";
 import { withTx } from "../tx";
+import { loadShipmentMembersTx } from "./shipments";
+import { unremittedCollectionForConsignmentTx } from "./collectionAccounting";
 
 export interface CompanyStatementLineInput {
   consignmentId: number;
@@ -160,7 +162,7 @@ async function loadStatementConsignments(input: {
   const db = existingTx ?? getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
   const ids = input.lines.map((l) => Number(l.consignmentId));
-  const rows = await db
+  const query = db
     .select({
       id: deliveryConsignments.id,
       partyId: deliveryConsignments.partyId,
@@ -173,7 +175,9 @@ async function loadStatementConsignments(input: {
       returnDeclaredAt: deliveryConsignments.returnDeclaredAt,
     })
     .from(deliveryConsignments)
-    .where(inArray(deliveryConsignments.id, ids));
+    .where(inArray(deliveryConsignments.id, ids))
+    .orderBy(asc(deliveryConsignments.id));
+  const rows = await (existingTx ? query.for("update") : query);
   const byId = new Map(rows.map((r) => [Number(r.id), r]));
 
   for (const id of ids) {
@@ -392,6 +396,18 @@ export async function recordCompanyStatement(
   // سطرُ الإثبات (declared=0) يقبله الخادم أصلاً: يختم الطردَ الصفريّ ويُغلقه، ويُبقي متبقّي
   // طرد COD>0 ذمّةً حيّة على العميل (رأس الملف — قرار المالك).
   const { ids, byId } = await loadStatementConsignments(input, tx);
+  // Physical confirmation must include every invoice in the shipment. Supplementary money remains per invoice.
+  const statementIds = new Set(ids);
+  for (const id of ids.filter((id) => byId.get(id)!.parcelStatus !== "DELIVERED")) {
+    const members = await loadShipmentMembersTx(tx, id, { currentRead: true });
+    if (members.some((member) => !statementIds.has(Number(member.id)))) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+        what: "تعذر تسجيل جزء من شحنة في كشف الشركة",
+        why: "تضم الشحنة فواتير أخرى غير موجودة في أسطر الكشف",
+        doThis: "أضف جميع فواتير الشحنة إلى الكشف أو أكد الشحنة كاملة من تفاصيل التوصيل",
+      }) });
+    }
+  }
   // فحصٌ مسبقٌ لكل شروط الرفض المُنتظَرة قبل أيّ كتابة (Codex P1 #5).
   await preValidateStatementLines(input, ids, byId);
   const needConfirm = ids
@@ -416,22 +432,26 @@ export async function recordCompanyStatement(
       },
       { userId: actor.userId },
       tx,
+      { shipmentMember: true },
     );
   }
   /**
    * **تحصيلٌ متمِّم على الطرود المختومة سلفاً** (Codex P1 #3 — ٢٢/٨): كشفٌ لاحقٌ يقول
    * «حُصِّل الباقي 8k» على طردٍ سبق ختمُه بكشفٍ سابق بـ12k. `confirmConsignmentDelivery`
    * ترتدّ `alreadyDelivered` بلا مساس ⇒ الفاتورة تبقى مدفوعةً جزئياً والعهدةُ لا ترتفع.
-   * مبلغُ السطر هو دلتا هذا الكشف وحده؛ تسجّله `recordSupplementaryStatementCollection`
-   * على الفاتورة والعهدة، ثمّ تضيفه آلةُ التوريد إلى إجمالي الإرسالية داخل المعاملة نفسها.
+   * مبلغ السطر يورد أولا ما ثبت قبضه ولم يورد بعد؛ الزيادة وحدها تحصيل جديد
+   * تسجله `recordSupplementaryStatementCollection` على الفاتورة والعهدة.
    */
   for (const id of alreadyDeliveredIds) {
     const declared = collectedByLine.get(id);
     if (declared == null) continue;
+    const proven = await unremittedCollectionForConsignmentTx(tx, id);
+    const additional = round2(money(declared).minus(proven));
+    if (additional.lte(0)) continue;
     await recordSupplementaryStatementCollection(
       {
         consignmentId: id,
-        additionalCollectedAmount: declared,
+        additionalCollectedAmount: additional.toFixed(2),
         statementNumber,
         clientRequestId: `stmt-supp:${input.partyId}:${statementNumber}:${id}`,
       },

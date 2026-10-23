@@ -8,6 +8,8 @@ export interface CompanyStatementQueueCandidate {
   id: number;
   consignmentNumber: string;
   externalTrackingRef?: string | null;
+  shipmentLeaderConsignmentId?: number | null;
+  shipmentInvoiceCount?: number;
   invoiceId?: number | null;
   invoiceNumber?: string | null;
   customerName?: string | null;
@@ -20,6 +22,13 @@ export interface CompanyStatementQueueCandidate {
   collectedAmount: string | number;
   counterSettledAmount?: string | number | null;
   shortfallAssigned?: string | number | null;
+}
+
+export function shipmentStatementCandidates<T extends CompanyStatementQueueCandidate>(candidates: readonly T[], consignmentId: number): T[] {
+  const selected = candidates.find((candidate) => candidate.id === consignmentId);
+  if (!selected) return [];
+  return selected.shipmentLeaderConsignmentId == null ? [selected]
+    : candidates.filter((candidate) => candidate.shipmentLeaderConsignmentId === selected.shipmentLeaderConsignmentId);
 }
 
 export function statementQueueRemaining(candidate: CompanyStatementQueueCandidate) {

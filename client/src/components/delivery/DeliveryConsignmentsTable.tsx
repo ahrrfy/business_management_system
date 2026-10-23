@@ -96,9 +96,10 @@ export function DeliveryConsignmentsTable({
             return (
               <tr key={c.id} className="border-b last:border-0">
                 <td className="p-3 font-medium">
-                  <button type="button" onClick={() => onOpenTimeline(c.id)} className="text-primary hover:underline">
-                    {c.consignmentNumber}
+                  <button type="button" onClick={() => onOpenTimeline(c.shipmentLeaderConsignmentId ?? c.id)} className="text-primary hover:underline">
+                    {c.shipmentNumber ?? c.consignmentNumber}
                   </button>
+                  {c.shipmentInvoiceCount > 1 && <div className="mt-1 text-xs text-muted-foreground">شحنة تضم {c.shipmentInvoiceCount} فواتير</div>}
                 </td>
                 <td className="p-3">
                   {c.invoiceId ? (
@@ -107,7 +108,7 @@ export function DeliveryConsignmentsTable({
                     </Link>
                   ) : "—"}
                 </td>
-                <td className="p-3 font-mono text-xs" dir="ltr">{c.externalTrackingRef ?? "—"}</td>
+                <td className="p-3 font-mono text-xs" dir="ltr">{c.shipmentTrackingRef ?? c.externalTrackingRef ?? "—"}</td>
                 <td className="p-3">{c.customerName ?? c.recipientName ?? "عميل نقدي"}</td>
                 <td className="p-3 text-end">
                   <span className={cn("rounded-md border px-1.5 py-0.5 text-[10px] font-black", DELIVERY_AGE_CLS[ageLevel])} dir="ltr">
@@ -131,7 +132,7 @@ export function DeliveryConsignmentsTable({
                       <button
                         type="button"
                         className="rounded bg-[var(--sem-warn-bg)] px-2 py-1 text-xs font-bold text-[var(--sem-warn)]"
-                        onClick={() => onReturn({
+                        onClick={() => c.shipmentLeaderConsignmentId != null ? onOpenTimeline(c.shipmentLeaderConsignmentId) : onReturn({
                           consignmentId: c.id,
                           label: `الإرسالية ${c.consignmentNumber}`,
                         })}

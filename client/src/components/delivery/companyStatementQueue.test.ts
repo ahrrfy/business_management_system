@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   resolveCompanyStatementBarcode,
   statementQueueRemaining,
+  shipmentStatementCandidates,
   type CompanyStatementQueueCandidate,
 } from "./companyStatementQueue";
 
@@ -18,6 +19,13 @@ const candidate = (id: number, tracking: string): CompanyStatementQueueCandidate
 });
 
 describe("طابور كشف شركة التوصيل بالباركود", () => {
+  it("selects every invoice in a shipment without including an unrelated parcel", () => {
+    const rows = [{ ...candidate(1, "PKG1"), shipmentLeaderConsignmentId: 1 },
+      { ...candidate(2, ""), shipmentLeaderConsignmentId: 1 }, candidate(3, "PKG3")];
+    expect(shipmentStatementCandidates(rows, 2).map((row) => row.id)).toEqual([1, 2]);
+    expect(shipmentStatementCandidates(rows, 3).map((row) => row.id)).toEqual([3]);
+    expect(shipmentStatementCandidates(rows, 99)).toEqual([]);
+  });
   it("يطابق رقم البوليصة ويحافظ على الصفر البادئ", () => {
     const result = resolveCompanyStatementBarcode([candidate(1, "0441446")], " 0441446\r\n", new Set());
     expect(result).toMatchObject({ kind: "ADDED", trackingRef: "0441446" });

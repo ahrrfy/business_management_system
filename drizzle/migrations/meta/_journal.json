@@ -2535,6 +2535,13 @@
 			"when": 1788148858000,
 			"tag": "0400_customer_receipt_fifo_allocations",
 			"breakpoints": true
+		},
+		{
+			"idx": 401,
+			"version": "5",
+			"when": 1788148859000,
+			"tag": "0401_delivery_shipment_members",
+			"breakpoints": true
 		}
 	]
 }

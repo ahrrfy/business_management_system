@@ -13,8 +13,8 @@
  * درجاً — التحصيل والتوريد يبقيان على مساراتهما المحروسة (كشف الشركة / التوريد / الاسترجاع).
  */
 import { TRPCError } from "@trpc/server";
-import { eq } from "drizzle-orm";
-import { deliveryConsignments } from "../../../drizzle/schema";
+import { eq, inArray } from "drizzle-orm";
+import { deliveryConsignments, deliveryParties } from "../../../drizzle/schema";
 import {
   checkIdempotency,
   idempotencyHash,
@@ -24,6 +24,8 @@ import { money, round2 } from "../money";
 import { withTx } from "../tx";
 import { appendDeliveryEvent, type ParcelStatus } from "./lifecycle";
 import type { DeliveryTxActor } from "./types";
+import type { Tx } from "../../db";
+import { assertStandaloneConsignmentTx } from "./shipments";
 
 /** تسميات عربية مختصرة لأسباب التخطّي — رسائل موقفية لا قاموسَ حالةٍ للواجهة. */
 const PARCEL_AR: Partial<Record<ParcelStatus, string>> = {
@@ -92,6 +94,10 @@ export async function staffHandoverConsignments(
   if (ids.length === 0) return { moved: 0, skipped: [] };
 
   return withTx(async (tx) => {
+    const previews = await tx.select({ partyId: deliveryConsignments.partyId }).from(deliveryConsignments).where(inArray(deliveryConsignments.id, ids));
+    const partyIds = Array.from(new Set(previews.map((row) => Number(row.partyId)))).sort((a, b) => a - b);
+    for (const partyId of partyIds) await tx.select({ id: deliveryParties.id }).from(deliveryParties).where(eq(deliveryParties.id, partyId)).for("update").limit(1);
+    for (const id of ids) await assertStandaloneConsignmentTx(tx, id, "تسجيل خروج الطرد", { currentRead: true });
     let moved = 0;
     const skipped: { consignmentId: number; reason: string }[] = [];
     const now = new Date();
@@ -201,17 +207,27 @@ export interface StaffMarkFailedResult {
 export async function staffMarkFailed(
   input: StaffMarkFailedInput,
   actor: DeliveryTxActor,
+  existingTx?: Tx,
+  options: { shipmentMember?: boolean } = {},
 ): Promise<StaffMarkFailedResult> {
   const reason = (input.reason ?? "").trim();
   if (reason.length < 2) {
     // نفس رسالة البوّابة حرفياً — شرطُ السبب واحد أياً كانت القناة.
-    throw new TRPCError({ code: "BAD_REQUEST", message: "اكتب سبب تعذر التوصيل" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "اكتب سبب تعذر التوصيل",
+    });
   }
   const payloadHash = idempotencyHash({
     consignmentId: Number(input.consignmentId),
     reason,
   });
-  return withTx(async (tx) => {
+  const run = async (tx: Tx): Promise<StaffMarkFailedResult> => {
+    if (!options.shipmentMember) {
+      const [preview] = await tx.select({ partyId: deliveryConsignments.partyId }).from(deliveryConsignments).where(eq(deliveryConsignments.id, input.consignmentId)).limit(1);
+      if (preview) await tx.select({ id: deliveryParties.id }).from(deliveryParties).where(eq(deliveryParties.id, Number(preview.partyId))).for("update").limit(1);
+      await assertStandaloneConsignmentTx(tx, input.consignmentId, "تسجيل التعذر", { currentRead: true });
+    }
     const replay = await checkIdempotency(
       tx,
       "delivery.staffMarkFailed",
@@ -230,7 +246,10 @@ export async function staffMarkFailed(
         .limit(1)
     )[0];
     if (!cn)
-      throw new TRPCError({ code: "NOT_FOUND", message: "الإرسالية غير موجودة" });
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: "الإرسالية غير موجودة",
+      });
     // إعادة الفحص بعد القفل (نمط البوّابة): طلبان متزامنان بنفس المفتاح يتسلسلان على
     // قفل الصفّ — بلا هذه الإعادة يسقط الثاني على حارس الحالة بدل الإعادة الصامتة.
     const replayAfterLock = await checkIdempotency(
@@ -240,10 +259,17 @@ export async function staffMarkFailed(
       payloadHash,
     );
     if (replayAfterLock != null)
-      return { consignmentId: replayAfterLock, status: "FAILED" as const, replay: true };
+      return {
+        consignmentId: replayAfterLock,
+        status: "FAILED" as const,
+        replay: true,
+      };
 
     if (branchMismatch(actor, Number(cn.branchId))) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "الإرسالية تخصّ فرعاً آخر" });
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "الإرسالية تخصّ فرعاً آخر",
+      });
     }
     if (cn.status !== "DISPATCHED") {
       throw new TRPCError({
@@ -314,6 +340,11 @@ export async function staffMarkFailed(
       payloadHash,
     );
 
-    return { consignmentId: Number(cn.id), status: "FAILED" as const, replay: false };
-  });
+    return {
+      consignmentId: Number(cn.id),
+      status: "FAILED" as const,
+      replay: false,
+    };
+  };
+  return existingTx ? run(existingTx) : withTx(run);
 }

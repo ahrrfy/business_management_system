@@ -3,7 +3,7 @@ import { appErrorMessage } from "@shared/errors";
 import { assertOperationAuthorityTx, hasServiceOperationAuthority } from "../authorization/operationAuthority";
 import { assertNotReturnDeclared } from "./declaredReturn";
 import { eq, sql } from "drizzle-orm";
-import { deliveryConsignments, onlineOrders } from "../../../drizzle/schema";
+import { deliveryConsignments, deliveryParties, onlineOrders } from "../../../drizzle/schema";
 import {
   checkIdempotency,
   idempotencyHash,
@@ -14,6 +14,7 @@ import { withTx } from "../tx";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry, assertConsignmentStatusTransition } from "./lifecycle";
 import type { DeliveryTxActor } from "./types";
 import type { Tx } from "../../db";
+import { assertStandaloneConsignmentTx } from "./shipments";
 
 export interface CancelDeliveryAssignmentInput {
   consignmentId: number;
@@ -59,9 +60,9 @@ export async function cancelDeliveryAssignmentInTx(
   tx: Tx,
   input: CancelDeliveryAssignmentInput,
   actor: DeliveryTxActor,
-  options: { assertAuthority?: boolean } = {},
+  options: { assertAuthority?: boolean; shipmentMember?: boolean } = {},
 ) {
-    const reason = input.reason.trim();
+  const reason = input.reason.trim();
     if (!reason || reason.length > 500)
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -89,7 +90,7 @@ export async function cancelDeliveryAssignmentInTx(
     }
     const owned = (
       await tx
-        .select({ branchId: deliveryConsignments.branchId })
+        .select({ branchId: deliveryConsignments.branchId, partyId: deliveryConsignments.partyId })
         .from(deliveryConsignments)
         .where(eq(deliveryConsignments.id, input.consignmentId))
         .limit(1)
@@ -105,6 +106,10 @@ export async function cancelDeliveryAssignmentInTx(
       });
     }
 
+    if (owned) {
+      await tx.select({ id: deliveryParties.id }).from(deliveryParties).where(eq(deliveryParties.id, Number(owned.partyId))).for("update").limit(1);
+      if (!options.shipmentMember) await assertStandaloneConsignmentTx(tx, input.consignmentId, "إلغاء الإسناد", { currentRead: true });
+    }
     const replay = await checkIdempotency(
       tx,
       "delivery.cancelAssignment",

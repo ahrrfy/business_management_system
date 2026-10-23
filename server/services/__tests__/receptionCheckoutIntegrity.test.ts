@@ -4,6 +4,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { checkoutReception } from "../receptionCheckoutService";
 import { openShift } from "../shiftService";
+import { startWorkOrder } from "../workOrderService";
 import { routeOperationAuthority, storedOperationUser } from "../authorization/operationAuthority";
 
 const TABLES = [
@@ -165,6 +166,35 @@ beforeEach(async () => {
 });
 
 describe("reception checkout — سلامة المبلغ الخادمي", () => {
+  it("sells one plain piece and customizes one of the same product without duplicating fees or stock", async () => {
+    const shift = await openReception();
+    await db().update(s.products).set({ isCustomizable: true }).where(eq(s.products.id, 1));
+    const input = {
+      branchId: 1, shiftId: shift.shiftId, paymentMethod: "CASH" as const, paidAmount: "2500.00",
+      clientRequestId: "reception-one-custom-one-plain",
+      regularSale: { lines: [{ ...REGULAR_LINE, quantity: "1" }], amount: "1000.00" },
+      workOrders: [{ baseVariantId: 1, baseProductUnitId: 1, quantity: 1, title: "دفتر مخصص", customizationText: "شكراً", salePrice: "1500.00" }],
+    };
+    const result = await checkoutReception(input, CASHIER);
+    const replay = await checkoutReception(input, CASHIER);
+    expect(replay.regularSale?.invoiceId).toBe(result.regularSale?.invoiceId);
+    expect(replay.workOrders[0].workOrderId).toBe(result.workOrders[0].workOrderId);
+    const [invoice] = await db().select().from(s.invoices);
+    const [order] = await db().select().from(s.workOrders);
+    expect(invoice.total).toBe("1000.00");
+    expect(order.quantity).toBe(1);
+    expect(order.salePrice).toBe("1500.00");
+    expect(order.deposit).toBe("1500.00");
+    const [material] = await db().select().from(s.workOrderMaterials);
+    expect(material.baseQuantity).toBe(1);
+    expect((await db().select().from(s.branchStock))[0].quantity).toBe(499);
+    const receipts = await db().select().from(s.receipts);
+    expect(receipts.reduce((sum, receipt) => sum + Number(receipt.amount), 0)).toBe(2500);
+    await startWorkOrder(result.workOrders[0].workOrderId, { userId: 1, branchId: 1, role: "manager" });
+    expect((await db().select().from(s.branchStock))[0].quantity).toBe(498);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(2);
+  });
+
   it("rechecks delivery revocation after request authorization and rolls back the whole checkout", async () => {
     const shift = await openReception();
     const granted = { version: 1 as const, grants: { "operation.delivery.dispatchInvoice": true } };

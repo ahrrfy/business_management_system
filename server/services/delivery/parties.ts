@@ -4,7 +4,8 @@ import { TRPCError } from "@trpc/server";
 import { and, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
 import { isOpenConsignmentStatus } from "@shared/deliveryOpenParcel";
-import { courierCommissionRules, deliveryConsignments, deliveryLedgerEntries, deliveryParties, deliveryPartyMembers, onlineOrders, users } from "../../../drizzle/schema";
+import { courierCommissionRules, deliveryConsignments, deliveryLedgerEntries, deliveryParties, deliveryPartyMembers,
+  deliveryShipmentMembers, onlineOrders, users } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
@@ -24,6 +25,7 @@ import {
 } from "./trackingRefPolicy";
 import { stripTrackingLeadingZeros } from "@shared/barcodeScanner";
 import type { DeliveryActor, DeliveryPartyKind } from "./types";
+import { assertStandaloneConsignmentTx } from "./shipments";
 
 /** يمنع تعطيل/فكّ ربط جهة عليها طلبات متجر «مع المندوب» (SHIPPED) — وإلا تُيتَّم من مسار التحصيل
  *  الوحيد (توصيلاتي) بلا إعادة إسناد (مراجعة عدائية ١٢/٧). العهدة=0 لطلبٍ لم يُحصَّل بعد فلا يحرسها فحص الرصيد. */
@@ -739,35 +741,62 @@ export async function removeDeliveryPartyMember(
         message: appErrorMessage({
           what: "تعذّر إزالة السائق من جهة التوصيل",
           why: `للسائق ${Number(assigned?.n ?? 0)} طرداً مفتوحاً مُسنَداً إليه؛ إزالته الآن تُيتّم هذه الطرود من مسار التسليم`,
-          doThis: "افتح تبويب «الأعضاء»، أعد إسناد طرود السائق لسائقٍ آخر من زرّ «إعادة إسناد»، ثمّ أزله",
+          doThis:
+            "افتح تبويب «الأعضاء»، أعد إسناد طرود السائق لسائقٍ آخر من زرّ «إعادة إسناد»، ثمّ أزله",
         }),
       });
     }
-    const party = (await tx.select({ userId: deliveryParties.userId }).from(deliveryParties)
-      .where(eq(deliveryParties.id, input.partyId)).for("update").limit(1))[0];
+    const party = (
+      await tx
+        .select({ userId: deliveryParties.userId })
+        .from(deliveryParties)
+        .where(eq(deliveryParties.id, input.partyId))
+        .for("update")
+        .limit(1)
+    )[0];
     if (party?.userId != null && Number(party.userId) === input.userId) {
       await assertNoOpenCourierOrders(tx, input.partyId);
-      await tx.update(deliveryParties).set({ userId: null }).where(eq(deliveryParties.id, input.partyId));
+      await tx
+        .update(deliveryParties)
+        .set({ userId: null })
+        .where(eq(deliveryParties.id, input.partyId));
     }
     // The table has a unique key on userId. Deleting a safely-detached member
     // keeps that identity reusable by another delivery party; the audit log is
     // the immutable record of the removal.
-    await tx.delete(deliveryPartyMembers).where(eq(deliveryPartyMembers.id, Number(member.id)));
+    await tx
+      .delete(deliveryPartyMembers)
+      .where(eq(deliveryPartyMembers.id, Number(member.id)));
     return { removed: true };
   });
 }
 
 export async function reassignDeliveryConsignment(
-  input: { partyId: number; consignmentId: number; assignedUserId?: number | null; clientRequestId: string },
+  input: {
+    partyId: number;
+    consignmentId: number;
+    assignedUserId?: number | null;
+    clientRequestId: string;
+  },
   actor: DeliveryActor,
+  existingTx?: Tx,
+  options: { shipmentMember?: boolean } = {},
 ) {
   const payloadHash = idempotencyHash({
     partyId: Number(input.partyId),
     consignmentId: Number(input.consignmentId),
-    assignedUserId: input.assignedUserId == null ? null : Number(input.assignedUserId),
+    assignedUserId:
+      input.assignedUserId == null ? null : Number(input.assignedUserId),
   });
-  return withTx(async (tx) => {
-    const party = (await tx.select().from(deliveryParties).where(eq(deliveryParties.id, input.partyId)).for("update").limit(1))[0];
+  const run = async (tx: Tx) => {
+    const party = (
+      await tx
+        .select()
+        .from(deliveryParties)
+        .where(eq(deliveryParties.id, input.partyId))
+        .for("update")
+        .limit(1)
+    )[0];
     if (!party?.isActive) {
       throw new TRPCError({
         code: "NOT_FOUND",
@@ -778,6 +807,7 @@ export async function reassignDeliveryConsignment(
         }),
       });
     }
+    if (!options.shipmentMember) await assertStandaloneConsignmentTx(tx, input.consignmentId, "إعادة الإسناد", { currentRead: true });
     const cn = (await tx.select().from(deliveryConsignments).where(eq(deliveryConsignments.id, input.consignmentId)).for("update").limit(1))[0];
     if (!cn) {
       throw new TRPCError({
@@ -817,21 +847,35 @@ export async function reassignDeliveryConsignment(
         message: appErrorMessage({
           what: "تعذّرت إعادة إسناد الطرد",
           why: `الإرسالية تخص جهة توصيل أخرى (${cn.partyId}) لا الجهة المُختارة (${input.partyId})`,
-          doThis: "اختر الإرسالية من قائمة جهتها الأصليّة، أو غيّر الجهة لتطابق إرساليتها",
+          doThis:
+            "اختر الإرسالية من قائمة جهتها الأصليّة، أو غيّر الجهة لتطابق إرساليتها",
         }),
       });
     }
-    const externalTrackingRef = requireExternalTrackingRef(
-      party.partyType,
-      cn.externalTrackingRef,
-    );
+    const [shipmentMembership] = options.shipmentMember
+      ? await tx
+          .select()
+          .from(deliveryShipmentMembers)
+          .where(eq(deliveryShipmentMembers.consignmentId, Number(cn.id)))
+          .limit(1)
+      : [];
+    const shipmentFollower =
+      shipmentMembership != null &&
+      Number(shipmentMembership.leaderConsignmentId) !== Number(cn.id);
+    const externalTrackingRef = shipmentFollower
+      ? null
+      : requireExternalTrackingRef(party.partyType, cn.externalTrackingRef);
     await assertExternalTrackingRefAvailable(
       tx,
       Number(party.id),
       externalTrackingRef,
       Number(cn.id),
     );
-    if (cn.parcelStatus !== "ASSIGNED" && cn.parcelStatus !== "OUT_FOR_DELIVERY" && cn.parcelStatus !== "FAILED") {
+    if (
+      cn.parcelStatus !== "ASSIGNED" &&
+      cn.parcelStatus !== "OUT_FOR_DELIVERY" &&
+      cn.parcelStatus !== "FAILED"
+    ) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: appErrorMessage({
@@ -885,9 +929,19 @@ export async function reassignDeliveryConsignment(
       fromMoneyStatus: cn.moneyStatus,
       toMoneyStatus: cn.moneyStatus,
       actorUserId: actor.userId,
-      payload: { fromUserId: cn.assignedUserId, toUserId: input.assignedUserId ?? null },
+      payload: {
+        fromUserId: cn.assignedUserId,
+        toUserId: input.assignedUserId ?? null,
+      },
     });
-    await recordIdempotencyKey(tx, "delivery.reassignConsignment", input.clientRequestId, Number(cn.id), payloadHash);
+    await recordIdempotencyKey(
+      tx,
+      "delivery.reassignConsignment",
+      input.clientRequestId,
+      Number(cn.id),
+      payloadHash,
+    );
     return { consignmentId: Number(cn.id), replay: false as const };
-  });
+  };
+  return existingTx ? run(existingTx) : withTx(run);
 }

@@ -18,7 +18,7 @@
 | --------- | ----------------------------------------------------------------------------------------------------- |
 | VPS       | Ubuntu 22.04/24.04 LTS · ٢ vCPU · ٤ GB RAM · ٤٠ GB SSD (كافٍ لمتجر؛ زِد RAM للقاعدة عند نمو البيانات) |
 | نطاق      | `erp.<نطاقك>` يشير (A record) إلى IP الخادم — لازم لـHTTPS                                            |
-| البرمجيات | Node.js 20+ · pnpm 9+ · Docker + compose · nginx · certbot · ufw                                      |
+| البرمجيات | Node.js 24.22.1 (isolated ERP runtime) · pnpm 9+ · Docker + compose · nginx · certbot · ufw                                      |
 
 > ⚠️ **خادم مشترك؟ اجرد أولاً ولا ترقِّ أعمى.** `apt -y upgrade` الشامل قد يعيد تشغيل خدمات
 > أنظمة أخرى، وسكربت get.docker.com **يرقّي** Docker إن كان مثبّتاً ⇒ إعادة تشغيل dockerd تُسقط
@@ -33,7 +33,7 @@ sudo adduser --disabled-password --gecos "" deploy
 sudo usermod -aG docker deploy        # ExecStartPre يستدعي docker inspect بهوية deploy
 
 # 2) ثبّت الناقص فقط (تخطَّ كل ما هو موجود):
-command -v node    || (curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt -y install nodejs)
+# Install the isolated, checksum-verified ERP runtime first: docs/node24-upgrade.md
 command -v pnpm    || sudo npm i -g pnpm
 sudo npm install -g pm2@7.0.3                         # ثبّت النسخة المعتمدة حتى لو وُجد إصدار آخر؛ prod:deploy يرفض غيرها
 sudo -iu deploy pm2 update                            # يحدّث daemon الموجود في الذاكرة؛ تثبيت npm وحده لا يفعل ذلك
@@ -430,7 +430,7 @@ test "$(stat -c '%U:%G:%a' /usr/local/libexec/erp/pm2-systemd-start.mjs)" = root
 test "$(stat -c '%U:%G:%a' /etc/systemd/system/pm2-deploy.service.d/20-pidfile-reconcile.conf)" = root:root:644
 
 # إن كان daemon يعمل والوحدة failed/inactive: inspect الموثوق يقرأ /proc فقط ولا ينشئ daemon.
-before="$(sudo /usr/bin/node /usr/local/libexec/erp/pm2-systemd-start.mjs --inspect)"
+before="$(sudo /opt/alroya-erp/node-v24.22.1-linux-x64/bin/node /usr/local/libexec/erp/pm2-systemd-start.mjs --inspect)"
 before_pid="${before%% *}"
 before_start="${before#* }"
 sudo systemctl start pm2-deploy.service

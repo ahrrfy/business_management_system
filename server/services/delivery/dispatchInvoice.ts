@@ -6,11 +6,12 @@
 // هنا نربط فاتورةً موجودةً بإرسالية: نفس محاسبة العهدة، بلا إنشاء فاتورةٍ ثانية وبلا لمس قيد
 // SALE الأصليّ (الإيراد اعتُرف به لحظة البيع؛ التوصيل تسليمٌ لا بيع).
 import { TRPCError } from "@trpc/server";
-import { and, eq, inArray, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, notInArray, or, sql } from "drizzle-orm";
 import {
   deliveryConsignments,
   deliveryParties,
   deliveryPartyMembers,
+  deliveryShipmentMembers,
   invoices,
   receipts,
   receptionDrafts,
@@ -34,6 +35,36 @@ import {
 } from "./trackingRefPolicy";
 import { publishRealtimeEvent } from "../../realtime";
 import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
+
+import { appErrorMessage } from "@shared/errors";
+
+/** Service-only context; it is never part of a router input. */
+export interface ShipmentDispatchContext {
+  shipmentLeaderConsignmentId?: number;
+  sharedTrackingLeaderId?: number;
+}
+
+/** Call after invoice locks; current reads preserve the existing held-fee owner. */
+export async function loadInvoiceDeliveryFeeHeldTx(
+  tx: Parameters<Parameters<typeof withTx>[0]>[0],
+  invoiceIds: number[],
+) {
+  const held = new Map<number, ReturnType<typeof money>>();
+  if (!invoiceIds.length) return held;
+  const rows = await tx.select({ invoiceId: receipts.invoiceId, direction: receipts.direction, amount: receipts.amount })
+    .from(receipts).where(and(
+      inArray(receipts.invoiceId, invoiceIds),
+      sql`${receipts.referenceNumber} = CONCAT('DLV-FEE-INV-', ${receipts.invoiceId})`,
+      eq(receipts.status, "COMPLETED"),
+    )).orderBy(asc(receipts.id)).for("share");
+  for (const row of rows) {
+    if (row.invoiceId == null) continue;
+    const id = Number(row.invoiceId);
+    const amount = money(row.amount);
+    held.set(id, round2((held.get(id) ?? money(0)).plus(row.direction === "IN" ? amount : amount.neg())));
+  }
+  return held;
+}
 
 export interface DispatchInvoiceInput {
   invoiceId: number;
@@ -96,37 +127,65 @@ export async function dispatchInvoiceInTx(
   tx: Parameters<Parameters<typeof withTx>[0]>[0],
   input: DispatchInvoiceInput,
   actor: DeliveryTxActor,
+  shipment?: ShipmentDispatchContext,
 ) {
   try {
     const normalizedTrackingRef = normalizeExternalTrackingRef(input.externalTrackingRef);
     const feeCollection = input.feeCollection ?? "COURIER";
-    // ش٦ (V15) — رُفع حظر COUNTER **مشروطاً**: يُقبل فقط إن سبق قبضُ الأمانة فعلاً (إيصال IN
-    // بمرجع DLV-FEE-INV-{الفاتورة} يكتبه checkoutReception عبر deliveryFeeHeld) وبما يغطّي
-    // الأجرة — وإلا بقي الرفض: OUT للمندوب بلا IN يقابله = عجز درجٍ يمنع إغلاق الوردية.
-    if (feeCollection === "COUNTER") {
-      const feeD = round2(money(input.deliveryFee ?? "0"));
-      const heldRow = (
-        await tx
-          .select({ v: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE -${receipts.amount} END), 0)` })
-          .from(receipts)
-          .where(and(
-            eq(receipts.invoiceId, input.invoiceId),
-            eq(receipts.referenceNumber, `DLV-FEE-INV-${input.invoiceId}`),
-            eq(receipts.status, "COMPLETED"),
-          ))
-      )[0];
-      const heldD = round2(money(heldRow?.v ?? "0"));
-      // مراجعة عدائية ٩/٨ — **مساواة** لا سقفاً أدنى: أجرةٌ أقل من الأمانة (heldD > feeD) كانت
-      // تمرّ فتُبرَّأ الأمانة جزئياً ويبقى الفرق دنانير زبونٍ عالقة في الدرج بلا مسار للأبد
-      // (Σ FEE_HELD موجبة، التوريد لا يخصمها بعد ختم feeSettledAt والإرجاع يتخطّاها).
-      if (feeD.lte(0) || !heldD.eq(feeD)) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: heldD.gt(0)
-            ? `أمانة الأجرة المقبوضة (${heldD.toFixed(2)}) يجب أن تساوي الأجرة (${feeD.toFixed(2)}) — اجعل الأجرة ${heldD.toFixed(2)} أو صحّح المقبوض`
-            : "«مقبوضة في الاستقبال» تتطلّب قبض الأجرة مع الطلب نفسه (خانة أجرة التوصيل في السلّة) — أو اختر «المندوب يقبضها من الزبون» / «على المكتبة»",
-        });
-      }
+    // Scope and membership are checked before replay, including cancelled shipments.
+    const preview = (
+      await tx
+        .select({ branchId: invoices.branchId })
+        .from(invoices)
+        .where(eq(invoices.id, input.invoiceId))
+        .limit(1)
+    )[0];
+    if (!preview)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذر إسناد الفاتورة",
+          why: "الفاتورة غير موجودة",
+          doThis: "حدّث القائمة واختر فاتورة موجودة",
+        }),
+      });
+    if (
+      actor.role !== "admin" &&
+      (actor.branchId == null ||
+        Number(preview.branchId) !== Number(actor.branchId))
+    ) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذر إسناد الفاتورة",
+          why: "الفاتورة تخص فرعاً آخر أو لا يوجد فرع مسند للموظف",
+          doThis: "افتح الفاتورة من فرعها الصحيح",
+        }),
+      });
+    }
+    const existingMember = (
+      await tx
+        .select({ leaderId: deliveryShipmentMembers.leaderConsignmentId })
+        .from(deliveryShipmentMembers)
+        .innerJoin(
+          deliveryConsignments,
+          eq(deliveryConsignments.id, deliveryShipmentMembers.consignmentId),
+        )
+        .where(eq(deliveryConsignments.invoiceId, input.invoiceId))
+        .limit(1)
+    )[0];
+    if (
+      existingMember &&
+      Number(existingMember.leaderId) !== shipment?.shipmentLeaderConsignmentId
+    ) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذر إسناد فاتورة من شحنة مجمعة منفردة",
+          why: "الفاتورة مرتبطة بشحنة تضم فواتير أخرى",
+          doThis: "افتح تفاصيل الشحنة وأعد إسناد جميع فواتيرها معاً",
+        }),
+      });
     }
     const payloadHash = idempotencyHash({
       invoiceId: Number(input.invoiceId),
@@ -153,6 +212,7 @@ export async function dispatchInvoiceInTx(
           invoiceId: Number(cn?.invoiceId ?? 0),
           codAmount: String(cn?.codAmount ?? "0"),
           deliveryFee: String(cn?.deliveryFee ?? "0"),
+          branchId: Number(preview.branchId),
           idempotentReplay: true as const,
         };
       }
@@ -161,7 +221,55 @@ export async function dispatchInvoiceInTx(
     // ترتيب أقفال موحّد مع dispatchToDelivery: الجهة ← الفاتورة (لا جمود متبادل).
     const party = (await tx.select().from(deliveryParties).where(eq(deliveryParties.id, input.partyId)).for("update").limit(1))[0];
     if (!party || !party.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "جهة التوصيل غير متاحة" });
-    const externalTrackingRef = requireExternalTrackingRef(party.partyType, normalizedTrackingRef);
+    const externalTrackingRef =
+      shipment?.sharedTrackingLeaderId == null
+        ? requireExternalTrackingRef(party.partyType, normalizedTrackingRef)
+        : null;
+    if (shipment?.sharedTrackingLeaderId != null) {
+      const leader = (
+        await tx
+          .select()
+          .from(deliveryConsignments)
+          .where(eq(deliveryConsignments.id, shipment.sharedTrackingLeaderId))
+          .for("update")
+          .limit(1)
+      )[0];
+      const leaderMember = (
+        await tx
+          .select()
+          .from(deliveryShipmentMembers)
+          .where(
+            eq(
+              deliveryShipmentMembers.consignmentId,
+              shipment.sharedTrackingLeaderId,
+            ),
+          )
+          .limit(1)
+      )[0];
+      if (
+        !leader ||
+        !leaderMember ||
+        Number(leaderMember.leaderConsignmentId) !== Number(leader.id) ||
+        Number(leader.partyId) !== input.partyId ||
+        Number(leader.branchId) !== Number(preview.branchId) ||
+        shipment.shipmentLeaderConsignmentId !== Number(leader.id) ||
+        normalizedTrackingRef != null ||
+        input.deliveryFee == null ||
+        !round2(money(input.deliveryFee ?? "0")).isZero() ||
+        feeCollection !== "COURIER" ||
+        leader.parcelStatus !== "OUT_FOR_DELIVERY"
+      ) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعذر ربط الفاتورة بالشحنة",
+            why: "قائد الشحنة أو جهتها أو فرعها أو أجرتها غير متطابق",
+            doThis: "أعد إسناد الشحنة كاملة من نافذة التوصيل",
+          }),
+        });
+      }
+      requireExternalTrackingRef(party.partyType, leader.externalTrackingRef);
+    }
     let assignedUserId = input.assignedUserId ?? null;
     if (assignedUserId == null && party.partyType === "INDIVIDUAL") {
       assignedUserId = party.userId != null ? Number(party.userId) : null;
@@ -213,6 +321,30 @@ export async function dispatchInvoiceInTx(
       .where(eq(deliveryConsignments.invoiceId, input.invoiceId))
       .for("update")
       .limit(1))[0];
+    if (already) {
+      const member = (
+        await tx
+          .select()
+          .from(deliveryShipmentMembers)
+          .where(eq(deliveryShipmentMembers.consignmentId, Number(already.id)))
+          .for("update")
+          .limit(1)
+      )[0];
+      if (
+        member &&
+        Number(member.leaderConsignmentId) !==
+          shipment?.shipmentLeaderConsignmentId
+      ) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعذر إسناد فاتورة من شحنة مجمعة منفردة",
+            why: "الفاتورة مرتبطة بشحنة تضم فواتير أخرى",
+            doThis: "افتح تفاصيل الشحنة وأعد إسناد جميع فواتيرها معاً",
+          }),
+        });
+      }
+    }
     if (already && (
       already.status !== "CANCELLED"
       || already.parcelStatus !== "CANCELLED"
@@ -225,6 +357,31 @@ export async function dispatchInvoiceInTx(
         code: "PRECONDITION_FAILED",
         message: "الإرسالية الملغاة تحمل تحصيلاً أو توريداً؛ لا يمكن إعادة تنشيطها",
       });
+    }
+    // Check the current receipts after invoice locks, including when an earlier preview established a snapshot.
+    const held = (await loadInvoiceDeliveryFeeHeldTx(tx, [input.invoiceId])).get(input.invoiceId) ?? money(0);
+    if (feeCollection === "COUNTER") {
+      const feeD = round2(money(input.deliveryFee ?? "0"));
+      if (feeD.lte(0) || !held.eq(feeD)) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: held.gt(0)
+            ? `أمانة الأجرة المقبوضة (${held.toFixed(2)}) يجب أن تساوي الأجرة (${feeD.toFixed(2)}) — اجعل الأجرة ${held.toFixed(2)} أو صحّح المقبوض`
+            : "«مقبوضة في الاستقبال» تتطلّب قبض الأجرة مع الطلب نفسه (خانة أجرة التوصيل في السلّة) — أو اختر «المندوب يقبضها من الزبون» / «على المكتبة»",
+        });
+      }
+    } else {
+      if (!held.isZero()) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+          what: "تعذر إسناد الفاتورة مع أمانة أجرة سابقة",
+          why: held.gt(0)
+            ? `توجد أمانة أجرة ${held.toFixed(2)} مقبوضة في الاستقبال على هذه الفاتورة ولا يمكن تحويلها إلى أجرة يقبضها المندوب أو تتحملها المكتبة`
+            : "صافي أمانة أجرة الفاتورة سالب ويحتاج مراجعة سندات الأجرة",
+          doThis: held.gt(0)
+            ? `اختر «مقبوضة في الاستقبال» بأجرة ${held.toFixed(2)}، أو اطلب من المدير تسوية أمانة الأجرة قبل الإسناد`
+            : "اطلب من المدير مراجعة سندات قبض وصرف أجرة هذه الفاتورة قبل الإسناد",
+        }) });
+      }
     }
     await assertExternalTrackingRefAvailable(
       tx,

@@ -21,6 +21,8 @@ vi.mock("./operationPermissionCatalog.generated", () => {
     GENERATED_OPERATION_PERMISSIONS: [
       { ...metadata, key: "operation.sales.create", path: "sales.create" },
       { ...metadata, key: "operation.printPos.createSale", path: "printPos.createSale", module: "pos" },
+      { ...metadata, key: "operation.delivery.dispatchInvoice", path: "delivery.dispatchInvoice", module: "store" },
+      { ...metadata, key: "operation.delivery.invoiceCandidates", path: "delivery.invoiceCandidates", module: "store", kind: "query", level: "READ" },
       { ...metadata, key: "operation.workOrders.receptionCheckout", path: "workOrders.receptionCheckout", module: "workorders" },
       { ...metadata, key: "operation.purchases.pay", path: "purchases.pay", delegable: false, reservedKind: "RETIRED" },
       { ...metadata, key: "operation.purchaseReturns.create", path: "purchaseReturns.create", delegable: false, reservedKind: "RETIRED" },
@@ -671,6 +673,16 @@ describe("legacy compatibility and migration", () => {
 });
 
 describe("operation decision", () => {
+  it("allows shipment candidates only with dispatch authority and preserves explicit revocations", () => {
+    const rolePolicy = policy({ "operation.delivery.dispatchInvoice": true });
+    expect(operationDecision({ role: "cashier", roleOperationPolicy: rolePolicy }, "delivery.invoiceCandidates").allowed).toBe(true);
+    for (const grants of [
+      { "operation.delivery.invoiceCandidates": false },
+      { "operation.delivery.dispatchInvoice": false, "operation.delivery.invoiceCandidates": true },
+    ]) {
+      expect(operationDecision({ role: "cashier", roleOperationPolicy: rolePolicy, operationPolicy: policy(grants) }, "delivery.invoiceCandidates").allowed).toBe(false);
+    }
+  });
   it("grants own-request withdrawal as a return companion while preserving explicit denials", () => {
     const rolePolicy = policy({ "operation.returns.create": true });
     expect(operationDecision({ role: "cashier", roleOperationPolicy: rolePolicy }, "returns.withdrawRequest").allowed).toBe(true);

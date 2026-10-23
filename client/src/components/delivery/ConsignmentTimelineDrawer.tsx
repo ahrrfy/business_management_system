@@ -27,6 +27,7 @@ import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/p
 // (تقريرٌ أو كشفُ جهة) بلا اختراع تسميةٍ موازية.
 import { deliveryEventLabel, deliveryEventSourceLabel } from "@shared/deliveryEventType";
 import { deliveryLedgerEntryLabel, deliveryLedgerEntrySign } from "@shared/deliveryLedgerEntryType";
+import { ShipmentDetailsPanel } from "./ShipmentDetailsPanel";
 
 /** لون النقطة الزمنية بحسب نوع الحدث — يقود العين للأخطر. */
 function eventDot(eventType: string): string {
@@ -133,6 +134,7 @@ export function ConsignmentTimelineDrawer({ consignmentId, onClose }: Consignmen
           </div>
         ) : (
           <div className="space-y-6 px-4 pb-6">
+            {q.data.shipment && q.data.shipment.memberCount > 1 && <ShipmentDetailsPanel key={q.data.shipment.leaderConsignmentId} shipment={q.data.shipment} />}
             {/* بيانات المستلم والعنوان */}
             <section>
               <h3 className="mb-2 text-xs font-black text-muted-foreground">المستلم والعنوان</h3>
