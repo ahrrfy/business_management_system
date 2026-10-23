@@ -1,3 +1,4 @@
+import { EXCHANGE_TRANSACTION_LABEL as TYPE_AR } from "@shared/exchangeTerms";
 // تبويب «مطابقة الأرصدة» — مقارنة رصيدنا الدفتري (حتى تاريخ قطع) برصيد كشف الصيرفة + البنود المعلّقة.
 // قراءة فقط: أي فرق حقيقي يُسوّى لاحقاً بقيد تصحيح يدوي صريح (لا تسوية صامتة).
 import { useCallback, useState } from "react";
@@ -20,9 +21,7 @@ import { exportSheets, type SheetSpec } from "@/lib/export";
 import { printExchangeReconcileDoc } from "@/lib/printing/printExchangeStatement";
 import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
 
-const TYPE_AR: Record<string, string> = {
-  DEPOSIT: "إيداع", WITHDRAW: "سحب", FX_BUY: "شراء دولار", SETTLE: "تسديد مورد", OPENING: "رصيد افتتاحي",
-};
+
 
 type Params = { exchangeHouseId: number; statedBalanceIqd: string; statedBalanceUsd: string; asOfDate?: string };
 

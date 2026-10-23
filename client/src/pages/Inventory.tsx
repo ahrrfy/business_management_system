@@ -1,3 +1,4 @@
+import { INVENTORY_MOVEMENT_LABEL as MTYPE } from "@shared/inventoryTerms";
 import { RowActions } from "@/components/list";
 import { FilterField, FilterShell, SearchField } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
@@ -43,14 +44,7 @@ import { InventoryModals } from "@/components/inventory/InventoryModals";
 import { LowStockReorderBanner } from "@/components/inventory/LowStockReorderBanner";
 import { MovementSource, movementSourceText } from "@/components/inventory/MovementSource";
 
-const MTYPE: Record<string, string> = {
-  IN: "وارد",
-  OUT: "صادر",
-  ADJUST: "تسوية",
-  RETURN: "مرتجع",
-  TRANSFER_IN: "تحويل وارد",
-  TRANSFER_OUT: "تحويل صادر",
-};
+
 
 /** حجم صفحة الأرصدة — onHand يعيد مصفوفة صرفة؛ صفحة مكتملة = «هناك المزيد» (نفس تقريب paginateKeyset). */
 const PAGE_SIZE = 50;

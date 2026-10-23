@@ -166,7 +166,7 @@ describe("voucher owner-disbursement UI policy", () => {
       "الخزينة الإدارية",
     );
     expect(expectedVoucherSourceLabel({ paymentMethod: "TRANSFER" })).toBe(
-      "تحويل مصرفي",
+      "تحويلٌ مصرفيّ",
     );
   });
 
@@ -222,5 +222,16 @@ describe("voucher owner-disbursement UI policy", () => {
       receiptId: 41,
       reissueReason: "سبب مثبت",
     })).toMatchObject({ attachmentUrl: null, note: null });
+  });
+});
+
+
+describe("voucher method vocabulary fallbacks", () => {
+  it("keeps missing, empty and unknown values distinct", () => {
+    expect(expectedVoucherSourceLabel({})).toBe("غير محدد");
+    expect(expectedVoucherSourceLabel({paymentMethod: null})).toBe("غير محدد");
+    expect(expectedVoucherSourceLabel({paymentMethod: ""})).toBe("");
+    expect(expectedVoucherSourceLabel({paymentMethod: "LEGACY_CODE"})).toBe("LEGACY_CODE");
+    expect(expectedVoucherSourceLabel({paymentMethod: "CARD"})).toBe("بطاقةٌ مصرفيّة");
   });
 });

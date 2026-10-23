@@ -174,6 +174,8 @@ export const expenseRouter = router({
       z
         .object({
           branchId: z.number().int().positive().optional(),
+          auditFocus: z.enum(["DESCRIPTION", "PAYEE", "SOURCE", "DRAWER"]).optional(),
+          auditOnly: z.boolean().optional(),
           category: category.optional(),
           expenseCategoryId: z.number().int().positive().optional(),
           status: status.optional(),

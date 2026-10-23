@@ -578,9 +578,10 @@ describe("getStorefrontSearchSuggestions", () => {
 
 describe("storefront remote search and cart wiring", () => {
   it("uses full-catalog suggestions and immediate success-aware cart actions", () => {
-    const source = readFileSync(new URL("./Storefront.tsx", import.meta.url), "utf8");
-    expect(source).toContain("<StorefrontSearch value={rawSearch}");
-    expect(source).toContain("<StorefrontSearchAlternatives query={search}");
+    const source = ["./Storefront.tsx", "../components/storefront/StorefrontHeader.tsx", "../components/storefront/StorefrontCatalogSurface.tsx"]
+      .map((file) => readFileSync(new URL(file, import.meta.url), "utf8")).join("\n");
+    expect(source).toMatch(/<StorefrontSearch\s+value=\{rawSearch\}/);
+    expect(source).toMatch(/<StorefrontSearchAlternatives\s+query=\{search\}/);
     expect(source).not.toContain("getStorefrontSearchSuggestions(filteredItems");
     expect(source).not.toContain("triggerCartFlight");
     expect(source).not.toContain("setCartFlight");
@@ -666,8 +667,9 @@ describe("storefront guest tracking ownership", () => {
 
 describe("storefront wholesale guidance", () => {
   it("shows a cart action and explains that colours and units are accumulated", () => {
-    const source = readFileSync(new URL("./Storefront.tsx", import.meta.url), "utf8");
-    expect(source).toContain("quoteQ.data?.wholesaleProgress");
+    const source = ["./Storefront.tsx", "../components/storefront/StorefrontCheckoutBenefits.tsx"]
+      .map((file) => readFileSync(new URL(file, import.meta.url), "utf8")).join("\n").replace(/\s+/g, " ");
+    expect(source).toContain("quoteData?.wholesaleProgress");
     expect(source).toContain("تُحسب الألوان والوحدات لهذا المنتج معاً");
     expect(source).toContain('setPanel("cart")');
   });
@@ -759,7 +761,8 @@ describe("storefront category strip and categories navigation", () => {
   });
 
   it("verifies navbar contains anchor link to #store-categories", () => {
-    const source = readFileSync(new URL("./Storefront.tsx", import.meta.url), "utf8");
+    const source = ["../components/storefront/StorefrontHeader.tsx", "../components/storefront/StorefrontCatalogSurface.tsx"]
+      .map((file) => readFileSync(new URL(file, import.meta.url), "utf8")).join("\n");
     expect(source).toContain('href="#store-categories"');
     expect(source).toContain('id="store-categories"');
     expect(source).toContain('id="store-categories-strip"');

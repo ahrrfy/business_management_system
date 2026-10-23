@@ -14,6 +14,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { CardBrandIcon } from "@/components/ui/CardBrandLogos";
 import { cn } from "@/lib/utils";
+import { paymentMethodTerm } from "@shared/terms";
 
 export type FinancialSourceKind =
   | "DRAWER"
@@ -45,13 +46,7 @@ export interface FinancialSourceBadgeProps extends Omit<
 const SOURCE_LABEL: Record<string, string> = {
   DRAWER: "درج كاشير",
   TREASURY: "خزينة إدارية",
-  CASH: "نقدي",
   BANK: "حساب بنكي",
-  CARD: "بطاقة",
-  CHECK: "صك",
-  TRANSFER: "تحويل",
-  WALLET: "محفظة",
-  EXCHANGE: "صيرفة",
   STOCK: "مخزون",
   OTHER: "مصدر آخر",
 };
@@ -72,6 +67,10 @@ const SOURCE_ICON: Record<string, LucideIcon> = {
 
 function normalized(value?: string | null) {
   return value?.trim().toUpperCase() || "";
+}
+
+function sourceLabel(code: string, original?: string | null) {
+  return paymentMethodTerm(code)?.compact ?? SOURCE_LABEL[code] ?? original;
 }
 
 function sourceTone(source: string) {
@@ -102,11 +101,11 @@ export function FinancialSourceBadge({
   const Icon = SOURCE_ICON[semanticSource] ?? SOURCE_ICON[method] ?? CircleHelp;
 
   const parts: ReactNode[] = [];
-  if (showMethod && method) parts.push(SOURCE_LABEL[method] ?? paymentMethod);
+  if (showMethod && method) parts.push(sourceLabel(method, paymentMethod));
   if (showBucket && bucket && bucket !== method)
-    parts.push(SOURCE_LABEL[bucket] ?? cashBucket);
+    parts.push(sourceLabel(bucket, cashBucket));
   if (!parts.length && normalizedSource)
-    parts.push(SOURCE_LABEL[normalizedSource] ?? source);
+    parts.push(sourceLabel(normalizedSource, source));
 
   const content =
     label ??

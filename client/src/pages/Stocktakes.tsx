@@ -1,3 +1,4 @@
+import { STOCKTAKE_SCOPE_LABEL as SCOPE_TYPE_LABEL } from "@shared/inventoryTerms";
 import { hasOperationPolicy, canViewOperationData } from "@shared/operationPermissions";
 import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 /**
@@ -48,12 +49,7 @@ const STATUS_BADGE: Record<StStatus, { label: string; cls: string }> = {
   CANCELLED: { label: "ملغاة", cls: "badge-stock-out" },
 };
 
-const SCOPE_TYPE_LABEL: Record<StScope, string> = {
-  FULL: "جرد شامل للفرع",
-  MOVING: "المنتجات المتحركة",
-  CATEGORY: "حسب الفئة",
-  MANUAL: "منتجات مختارة",
-};
+
 
 
 /* مقارنة زمنية فقط (للترتيب/اختيار الأحدث) — التنسيق عبر @/lib/date. */

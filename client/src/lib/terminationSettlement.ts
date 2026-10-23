@@ -1,4 +1,5 @@
 import { D, round2 } from "@/lib/money";
+import { paymentMethodProse } from "@shared/terms";
 
 export type TerminationSettlementBreakdown = {
   earnedGrossWages: string;
@@ -92,9 +93,12 @@ export function terminationEarnedNet(
   ).toFixed(2);
 }
 
-export const TERMINATION_PAYMENT_METHOD_LABEL: Record<string, string> = {
-  CASH: "نقداً من الخزينة",
-  CARD: "بطاقة / حساب مصرفي",
-  TRANSFER: "تحويل مصرفي",
-  WALLET: "محفظة دفع",
-};
+export const TERMINATION_PAYMENT_METHODS = ["CASH", "CARD", "TRANSFER", "WALLET"] as const;
+export function terminationPaymentMethodLabel(method: string, direction: "IN" | "OUT" = "OUT"): string {
+  return method === "CASH"
+    ? `${paymentMethodProse(method)} ${direction === "IN" ? "إلى" : "من"} الخزينة`
+    : method === "" ? "" : paymentMethodProse(method);
+}
+export const TERMINATION_PAYMENT_METHOD_LABEL: Record<string, string> = Object.fromEntries(
+  TERMINATION_PAYMENT_METHODS.map((method) => [method, terminationPaymentMethodLabel(method)]),
+);

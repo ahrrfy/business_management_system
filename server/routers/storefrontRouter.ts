@@ -209,6 +209,9 @@ export const storefrontRouter = router({
         cursor: z.number().int().positive().nullish(),
         // متوافق للخلف: غياب الحقل يبقي السلوك القديم (المتوفر فقط).
         availability: z.enum(["IN_STOCK", "ALL"]).default("IN_STOCK"),
+        brand: z.string().max(120).optional(),
+        priceFilter: z.enum(["ALL", "UNDER_5000", "FROM_5000_TO_15000", "OVER_15000"]).default("ALL"),
+        sort: z.enum(["RECOMMENDED", "PRICE_ASC", "PRICE_DESC", "BEST_SELLERS"]).default("RECOMMENDED"),
         // بذرة عشوائية لتنويع ظهور المنتجات عند كل دخول أو تحديث للصفحة
         seed: z.string().max(64).nullish(),
       })
@@ -221,6 +224,9 @@ export const storefrontRouter = router({
         limit: input.limit,
         cursor: input.cursor ?? null,
         availability: input.availability,
+        brand: input.brand,
+        priceFilter: input.priceFilter,
+        sort: input.sort,
         seed: input.seed,
       })
     ),
