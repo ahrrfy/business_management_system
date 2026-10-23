@@ -1,4 +1,4 @@
-import { money } from "./money";
+import { matchesStorefrontRefinements as matchesRefinements } from "./storefrontCatalogRefinements";
 import {
   storefrontCatalog,
   resolveStorefrontBranchId,
@@ -59,23 +59,6 @@ function publicSuggestion(
     inStock: p.inStock,
   };
 }
-function matchesRefinements(
-  p: Pick<StorefrontProduct, "brand" | "price" | "salePrice">,
-  input: StorefrontSearchSuggestionInput,
-): boolean {
-  if (input.brand && p.brand !== input.brand) return false;
-  const price = money(p.salePrice ?? p.price ?? "0");
-  switch (input.priceFilter) {
-    case "UNDER_5000":
-      return price.lt(5000);
-    case "FROM_5000_TO_15000":
-      return price.gte(5000) && price.lte(15000);
-    case "OVER_15000":
-      return price.gt(15000);
-    default:
-      return true;
-  }
-}
 export async function storefrontSearchSuggestions(
   input: StorefrontSearchSuggestionInput,
 ): Promise<StorefrontSearchSuggestions> {
@@ -123,7 +106,7 @@ export async function storefrontSearchSuggestions(
     }
     const matched = (
       await loadStorefrontSearchMatches(query, input, true)
-    ).filter((row) => !input.brand || row.brand === input.brand);
+    ).filter((row) => !input.brand?.trim() || row.brand?.trim() === input.brand.trim());
     const availability = await loadVariantAvailability(
       db,
       branchId,

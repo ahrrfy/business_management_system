@@ -9,6 +9,8 @@ import {
 
 const readReception = () =>
   readFileSync(new URL("../../pages/Reception.tsx", import.meta.url), "utf8");
+const readReceptionHeader = () =>
+  readFileSync(new URL("./ReceptionWorkspaceHeader.tsx", import.meta.url), "utf8");
 const readCustomerSection = () =>
   readFileSync(new URL("./ReceptionCustomerSection.tsx", import.meta.url), "utf8");
 const readCustomerByPhone = () =>
@@ -19,21 +21,26 @@ const readSelectionDialog = () =>
 describe("تكامل اختيار العميل في كاشير الاستقبال (Reception Customer Selection)", () => {
   it("شاشة الاستقبال تستورد وتستخدم ReceptionCustomerSection لربط واختيار العميل", () => {
     const reception = readReception();
+    const header = readReceptionHeader();
 
-    // تأكيد استيراد المكون الموحد
-    expect(reception).toContain("import { ReceptionCustomerSection } from \"@/components/reception/ReceptionCustomerSection\";");
-    // تأكيد تمرير الخطافات والدوال المطلوبة للمكون
-    expect(reception).toContain("<ReceptionCustomerSection");
-    expect(reception).toContain("phoneCustomer={phoneCustomer}");
-    expect(reception).toContain("canCreateCustomer={canCreateCustomer}");
-    expect(reception).toContain("canReadCustomerContext={canReadCustomerContext}");
-    expect(reception).toContain("effectiveTier={effectiveTier}");
-    expect(reception).toContain("tierOverride={tierOverride}");
-    expect(reception).toContain("setTierOverride={setTierOverride}");
-    expect(reception).toContain("setHydratedAutomaticTier={setHydratedAutomaticTier}");
-    expect(reception).toContain("setDeferred={setDeferred}");
-    expect(reception).toContain("clearCouponIfApplied={clearCouponIfApplied}");
-    expect(reception).toContain("setCustomerContextId={setCustomerContextId}");
+    // الشاشة تمرّر عقد العميل إلى الرأس المستخرج الذي يعرض المكون الموحد.
+    expect(reception).toContain("import { ReceptionWorkspaceHeader } from \"@/components/reception/ReceptionWorkspaceHeader\";");
+    expect(reception).toContain("<ReceptionWorkspaceHeader");
+    expect(header).toContain("import { ReceptionCustomerSection } from \"@/components/reception/ReceptionCustomerSection\";");
+    expect(header).toContain("<ReceptionCustomerSection");
+    // تأكيد تمرير الخطافات والدوال نفسها في الوصلتين، لا في مكون غير موصول بالشاشة.
+    for (const source of [reception, header]) {
+      expect(source).toContain("phoneCustomer={phoneCustomer}");
+      expect(source).toContain("canCreateCustomer={canCreateCustomer}");
+      expect(source).toContain("canReadCustomerContext={canReadCustomerContext}");
+      expect(source).toContain("effectiveTier={effectiveTier}");
+      expect(source).toContain("tierOverride={tierOverride}");
+      expect(source).toContain("setTierOverride={setTierOverride}");
+      expect(source).toContain("setHydratedAutomaticTier={setHydratedAutomaticTier}");
+      expect(source).toContain("setDeferred={setDeferred}");
+      expect(source).toContain("clearCouponIfApplied={clearCouponIfApplied}");
+      expect(source).toContain("setCustomerContextId={setCustomerContextId}");
+    }
   });
 
   it("قسم عميل الاستقبال يحتوي على زر فتح منتقي العملاء ونافذة الاختيار", () => {

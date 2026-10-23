@@ -1,3 +1,4 @@
+import { STOCKTAKE_SCOPE_LABEL as SCOPE_TYPE_LABEL } from "@shared/inventoryTerms";
 import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import { hasOperationPolicy } from "@shared/operationPermissions";
 import { Badge } from "@/components/ui/badge";
@@ -35,12 +36,7 @@ const STATUS_BADGE: Record<string, { label: string; cls: string }> = {
   CANCELLED: { label: "ملغاة", cls: "badge-stock-out" },
 };
 
-const SCOPE_TYPE_LABEL: Record<string, string> = {
-  FULL: "جرد شامل للفرع",
-  MOVING: "المنتجات المتحركة",
-  CATEGORY: "حسب الفئة",
-  MANUAL: "منتجات مختارة",
-};
+
 
 export function StocktakeDetailDrawer({
   sessionId,

@@ -1,4 +1,5 @@
 import { normalizeSearchText } from "@shared/searchNormalize";
+import { channelSearchText } from "@shared/terms";
 
 export type IntegrationConnectionStatus = "PENDING" | "ACTIVE" | "FAILED" | "DISABLED";
 export type IntegrationConnectionChannel = "WHATSAPP" | "INSTAGRAM" | "STORE";
@@ -29,11 +30,6 @@ export interface IntegrationCenterSummary {
 }
 
 const ATTENTION_STATUSES: ReadonlySet<IntegrationConnectionStatus> = new Set<IntegrationConnectionStatus>(["PENDING", "FAILED"]);
-const CHANNEL_SEARCH_ALIASES: Record<IntegrationConnectionChannel, string> = {
-  WHATSAPP: "واتساب واتس اب",
-  INSTAGRAM: "انستغرام انستجرام",
-  STORE: "متجر webhook",
-};
 
 export function isAttentionStatus(status: IntegrationConnectionStatus): boolean {
   return ATTENTION_STATUSES.has(status);
@@ -70,7 +66,7 @@ export function filterIntegrations<T extends IntegrationCenterItem>(
     if (filters.status === "ATTENTION" && !isAttentionStatus(item.status)) return false;
 
     if (!query) return true;
-    return [item.displayName, item.branchName, item.channel, CHANNEL_SEARCH_ALIASES[item.channel], String(item.branchId)]
+    return [item.displayName, item.branchName, item.channel, channelSearchText(item.channel), String(item.branchId)]
       .some((value) => normalizedText(value).includes(query));
   });
 }

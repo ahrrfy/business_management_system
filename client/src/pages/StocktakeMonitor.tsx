@@ -1,3 +1,4 @@
+import { STOCKTAKE_SCOPE_LABEL as SCOPE_LABEL } from "@shared/inventoryTerms";
 import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 /**
  * متابعة جلسة الجرد الحية — /stocktakes/:id
@@ -65,12 +66,7 @@ const STATUS_META: Record<string, { label: string; cls: string }> = {
   APPROVED: { label: "معتمدة ومُسوّاة", cls: "badge-status-active" },
   CANCELLED: { label: "ملغاة", cls: "badge-stock-out" },
 };
-const SCOPE_LABEL: Record<string, string> = {
-  FULL: "جرد شامل للفرع",
-  MOVING: "المنتجات المتحركة",
-  CATEGORY: "حسب الفئة",
-  MANUAL: "منتجات مختارة",
-};
+
 const KIND_META: Record<string, { label: string; cls: string }> = {
   FIRST: { label: "عدّ أول", cls: "bg-muted text-muted-foreground border-border" },
   RECOUNT: { label: "إعادة عدّ", cls: "badge-status-done" },

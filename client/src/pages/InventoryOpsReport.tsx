@@ -1,3 +1,4 @@
+import { INVENTORY_STOCK_STATUS_LABEL as STATUS_LABEL } from "@shared/inventoryTerms";
 // تقارير المخزون التشغيلية — قرارات لا كميات.
 // عروض: إعادة الطلب · راكد عالي القيمة · خطر النفاد · فروقات الجرد. + رابط الكاردكس (بطاقة المنتج).
 // يُركّب endpoints (stockStatus/deadStockValue/reorderRisk/stocktakeVariance). عرض + Excel + طباعة A4.
@@ -38,7 +39,7 @@ const VIEW_DESC: Record<View, string> = {
   negatives:
     "أرصدة تحت الصفر أياً كان سببها — صنفٌ لم يُفتتَح بعد، أو يُباع بالطلب عمداً، أو جردٌ تجاوزه بيعٌ لاحق. غير المفتتَح هو بوصلة أولوية الجرد الافتتاحي: اجرده أولاً.",
 };
-const STATUS_LABEL: Record<string, string> = { out: "نفد", low: "منخفض", ok: "طبيعي" };
+
 const STATUS_CLS: Record<string, string> = { out: "badge-stock-out", low: "badge-stock-low", ok: "bg-muted text-muted-foreground" };
 
 const pad = (n: number) => String(n).padStart(2, "0");

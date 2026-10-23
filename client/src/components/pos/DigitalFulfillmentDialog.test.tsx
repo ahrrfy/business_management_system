@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 const dialog = readFileSync(new URL("./DigitalFulfillmentDialog.tsx", import.meta.url), "utf8");
 const pos = readFileSync(new URL("../../pages/POS.tsx", import.meta.url), "utf8");
 const reception = readFileSync(new URL("../../pages/Reception.tsx", import.meta.url), "utf8");
+const receptionCartEditing = readFileSync(new URL("../reception/useReceptionCartEditing.tsx", import.meta.url), "utf8");
 const advancedInvoice = readFileSync(new URL("../../pages/SalesInvoiceNew.tsx", import.meta.url), "utf8");
 const digitalBasket = readFileSync(new URL("./digitalBasket.ts", import.meta.url), "utf8");
 const trpc = readFileSync(new URL("../../../../server/trpc.ts", import.meta.url), "utf8");
@@ -53,7 +54,19 @@ describe("تكامل بيع الكروت — الاستقبال والفاتور
   it("يحفظ الاستقبال بيانات الكرت ويجهّز نيّة RECEPTION قبل التثبيت", () => {
     expect(reception).toContain('sourceType: "RECEPTION"');
     expect(reception).toContain("toDigitalPrepareLine");
-    expect(reception).toContain("captureDigitalReceptionCartLines(basket, branchId)");
+    expect(receptionCartEditing).toMatch(
+      /captureDigitalReceptionCartLines\(\s*basket,\s*branchId,?\s*\)/,
+    );
+    expect(reception).toContain(
+      'from "@/components/reception/useReceptionCartEditing"',
+    );
+    expect(reception).toMatch(
+      /const \{[^}]*\baddDigitalBasket\b[^}]*\} = useReceptionCartEditing\(\{/,
+    );
+    expect(receptionCartEditing).toMatch(
+      /return\s*\{[^}]*\baddDigitalBasket\b/,
+    );
+    expect(reception).toContain("onPickBasket={addDigitalBasket}");
     expect(digitalBasket).toContain("digital,");
   });
 });

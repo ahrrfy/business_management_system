@@ -244,10 +244,26 @@ describe("operational UI permission parity", () => {
     expect(governance).toContain("canChooseBranch ? (");
 
     const returnComposer = readComponent("returns/ReturnComposer.tsx");
-    expect(returnComposer).toContain('useOperationPermission("returns.create")');
-    expect(returnComposer).toContain('useOperationPermission("refundRails.preflight")');
-    expect(returnComposer).toContain("directExecution: executesImmediately");
-    expect(returnComposer).toContain("refundRailPermission.allowed");
+    const returnModel = readComponent("returns/useReturnComposer.ts");
+    const returnState = readComponent("returns/useReturnComposerState.ts");
+    const returnGuard = readComponent("returns/useReturnComposerGuard.ts");
+    const returnSubmission = readComponent("returns/useReturnComposerSubmission.ts");
+    const returnRefundPanel = readComponent("returns/ReturnComposerRefundPanel.tsx");
+    expect(returnState).toContain('useOperationPermission("returns.create")');
+    expect(returnState).toContain('useOperationPermission("refundRails.preflight")');
+    expect(returnSubmission).toContain("directExecution: executesImmediately");
+    expect(returnRefundPanel).toContain("refundRailPermission.allowed");
+    expect(returnGuard).toContain("!refundRailPermission.allowed");
+    expect(returnComposer).toContain('import { useReturnComposer } from "./useReturnComposer";');
+    expect(returnComposer).toContain("const model = useReturnComposer(props)");
+    expect(returnModel).toContain("const state = useReturnComposerState(props)");
+    expect(returnModel).toContain("const settlement = useReturnComposerSettlement({ ...state })");
+    expect(returnModel).toContain("const submission = useReturnComposerSubmission({");
+    expect(returnModel).toMatch(/useReturnComposerSubmission\(\{\s*\.\.\.state,\s*\.\.\.settlement,/);
+    expect(returnModel).toMatch(/useReturnComposerGuard\(\{\s*\.\.\.state,\s*\.\.\.settlement,/);
+    expect(returnModel).toContain("return { ...state, ...settlement, ...mutations, ...quantity, ...guard, ...submission }");
+    expect(returnComposer).toMatch(/refundRailPermission,[\s\S]*executesImmediately,[\s\S]*\} = model;/);
+    expect(returnComposer).toMatch(/<ReturnComposerRefundPanel\s+\{\.\.\.\{\s*refundRailPermission,/);
   });
 
   it("hides stock-expense tabs without the inventory adjustment operation", () => {

@@ -2432,6 +2432,8 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
 }
 
 export interface ListExpensesInput {
+  auditFocus?: "DESCRIPTION" | "PAYEE" | "SOURCE" | "DRAWER";
+  auditOnly?: boolean;
   branchId?: number;
   /** الدلو المحاسبيّ (فلترة خشنة، تشمل كل الفئات التابعة له). */
   category?: ExpenseCategory;
@@ -2747,6 +2749,23 @@ const missingPayeeSql = sql`(
   )
 )`;
 
+// The audit filter and the visible trace must inspect the same latest evidence event.
+const accrualRecognitionEntrySql = sql<number | null>`(
+  SELECT aoe.accountingEntryId FROM accrualObligationEvents aoe
+  WHERE aoe.obligationId = ${accrualObligations.id} AND aoe.eventType = 'RECOGNIZED'
+  ORDER BY aoe.id DESC LIMIT 1
+)`;
+const accrualSettlementEntrySql = sql<number | null>`(
+  SELECT aoe.accountingEntryId FROM accrualObligationEvents aoe
+  WHERE aoe.obligationId = ${accrualObligations.id} AND aoe.eventType IN ('PAYMENT_SETTLED', 'SETTLEMENT_REVERSED')
+  ORDER BY aoe.id DESC LIMIT 1
+)`;
+const accrualSettlementReceiptSql = sql<number | null>`(
+  SELECT aoe.receiptId FROM accrualObligationEvents aoe
+  WHERE aoe.obligationId = ${accrualObligations.id} AND aoe.eventType IN ('PAYMENT_SETTLED', 'SETTLEMENT_REVERSED')
+  ORDER BY aoe.id DESC LIMIT 1
+)`;
+
 function expenseDetailedSelect(db: NonNullable<ReturnType<typeof getDb>>) {
   return db
     .select({
@@ -2821,24 +2840,9 @@ function expenseDetailedSelect(db: NonNullable<ReturnType<typeof getDb>>) {
       accrualPurchaseOrderId: accrualObligations.purchaseOrderId,
       accrualAssetId: accrualObligations.assetId,
       accrualMaintenanceId: accrualObligations.maintenanceId,
-      recognitionAccountingEntryId: sql<number | null>`(
-        SELECT aoe.accountingEntryId FROM accrualObligationEvents aoe
-        WHERE aoe.obligationId = ${accrualObligations.id}
-          AND aoe.eventType = 'RECOGNIZED'
-        ORDER BY aoe.id DESC LIMIT 1
-      )`,
-      settlementAccountingEntryId: sql<number | null>`(
-        SELECT aoe.accountingEntryId FROM accrualObligationEvents aoe
-        WHERE aoe.obligationId = ${accrualObligations.id}
-          AND aoe.eventType IN ('PAYMENT_SETTLED', 'SETTLEMENT_REVERSED')
-        ORDER BY aoe.id DESC LIMIT 1
-      )`,
-      settlementReceiptId: sql<number | null>`(
-        SELECT aoe.receiptId FROM accrualObligationEvents aoe
-        WHERE aoe.obligationId = ${accrualObligations.id}
-          AND aoe.eventType IN ('PAYMENT_SETTLED', 'SETTLEMENT_REVERSED')
-        ORDER BY aoe.id DESC LIMIT 1
-      )`,
+      recognitionAccountingEntryId: accrualRecognitionEntrySql,
+      settlementAccountingEntryId: accrualSettlementEntrySql,
+      settlementReceiptId: accrualSettlementReceiptSql,
       recognizedUnsettledCancellation: sql<number>`CASE WHEN ${recognizedUnsettledCancellationSql} THEN 1 ELSE 0 END`,
       recognizedRefundedCancellation: sql<number>`CASE WHEN ${recognizedRefundedCancellationSql} THEN 1 ELSE 0 END`,
     })
@@ -3037,6 +3041,11 @@ function enrichExpenseRow<T extends Record<string, any>>(row: T) {
 
 function buildExpenseConditions(input: ListExpensesInput) {
   const conds = [] as any[];
+  if (input.auditFocus === "DESCRIPTION") conds.push(sql`TRIM(COALESCE(${expenses.description}, '')) = ''`);
+  else if (input.auditFocus === "PAYEE") conds.push(missingPayeeSql);
+  else if (input.auditFocus === "SOURCE") conds.push(financialIntegritySql);
+  else if (input.auditFocus === "DRAWER") conds.push(sql`${expenses.cashBucket} = 'DRAWER' AND (${expenses.shiftId} IS NULL OR ${expenses.receiptId} IS NULL)`);
+  else if (input.auditOnly) conds.push(needsAuditSql);
   if (input.branchId) conds.push(eq(expenses.branchId, input.branchId));
   if (input.createdBy != null)
     conds.push(eq(expenses.createdBy, input.createdBy));
@@ -3106,26 +3115,12 @@ const financialIntegritySql = sql`(
       OR ${expenses.receiptId} IS NOT NULL
       OR ${expenses.shiftId} IS NOT NULL
       OR ${expenses.cashBucket} IS NOT NULL
-      OR NOT EXISTS (
-        SELECT 1 FROM accrualObligations AS integrityObligation
-        WHERE integrityObligation.expenseId = ${expenses.id}
-          AND EXISTS (
-            SELECT 1 FROM accrualObligationEvents AS integrityRecognition
-            WHERE integrityRecognition.obligationId = integrityObligation.id
-              AND integrityRecognition.eventType = 'RECOGNIZED'
-              AND integrityRecognition.accountingEntryId IS NOT NULL
-          )
-          AND (
-            (integrityObligation.status = 'PAID' AND EXISTS (
-              SELECT 1 FROM accrualObligationEvents AS integritySettlement
-              WHERE integritySettlement.obligationId = integrityObligation.id
-                AND integritySettlement.eventType = 'PAYMENT_SETTLED'
-                AND integritySettlement.receiptId IS NOT NULL
-                AND integritySettlement.accountingEntryId IS NOT NULL
-            ))
-            OR integrityObligation.status <> 'PAID'
-          )
-      )
+      OR ${accrualObligations.id} IS NULL
+      OR ${accrualRecognitionEntrySql} IS NULL
+      OR (${accrualObligations.status} IN ('PAID', 'REFUND_PENDING', 'REFUNDED')
+        AND (${accrualSettlementReceiptSql} IS NULL OR ${accrualSettlementEntrySql} IS NULL))
+      OR (${accrualObligations.status} IN ('ACCRUED_UNPAID', 'PAYMENT_PENDING', 'PAYABLE_UNSETTLED', 'CORRECTION_PENDING')
+        AND (${accrualSettlementReceiptSql} IS NOT NULL OR ${accrualSettlementEntrySql} IS NOT NULL))
     ))
     OR
     (${expenses.source} = 'STOCK' AND (${expenses.receiptId} IS NOT NULL OR ${expenses.shiftId} IS NOT NULL OR ${expenses.cashBucket} IS NOT NULL))
@@ -3156,13 +3151,13 @@ const financialIntegritySql = sql`(
     OR (${expenses.status} = 'ACTIVE' AND (
       ${receipts.status} <> 'COMPLETED'
       OR ${receipts.approvalStatus} <> 'APPROVED'
-      OR (${expenses.paymentMethod} = 'CASH' AND ${expenses.cashBucket} IS NULL)
     ))
     OR (${expenses.status} = 'CANCELLED' AND (
       (${receipts.status} <> 'REVERSED' AND NOT ${recognizedRefundedCancellationSql})
       OR ${receipts.approvalStatus} <> 'APPROVED'
     ))
     OR (${expenses.cashBucket} = 'DRAWER' AND ${expenses.shiftId} IS NULL)
+    OR (${expenses.status} NOT IN ('PENDING_APPROVAL', 'REJECTED') AND ${expenses.paymentMethod} = 'CASH' AND ${expenses.cashBucket} IS NULL)
     OR (${expenses.cashBucket} = 'TREASURY' AND ${expenses.shiftId} IS NOT NULL)
     OR (${expenses.paymentMethod} <> 'CASH' AND ${expenses.cashBucket} IS NOT NULL)
     ))

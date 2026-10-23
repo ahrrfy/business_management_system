@@ -1,3 +1,4 @@
+import { paymentMethodLabels } from "@shared/terms";
 // ش٤ — حوار قبض عربون على طلبٍ محفوظ (م٢: أيّ طريقة، والربح يبقى عند التسليم).
 // المرآة الشاشيّة لخدمة reception.collectDeposit: وردية استقبالٍ مُلزَمة («سيدخل درجك أنت»
 // للنقد وحده — I15: غير النقد يُسجَّل على الوردية للمحاسبة ولا يدخل الدرج)،
@@ -22,13 +23,7 @@ const D = (v: string | number) => new Decimal(v || 0);
 const round2 = (v: Decimal) => v.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
 const fmt = (n: number | string) => Number(n).toLocaleString("en-US", { maximumFractionDigits: 0 });
 
-const METHOD_LABEL: Record<"CASH" | "CARD" | "TRANSFER" | "WALLET" | "TELECOM", string> = {
-  CASH: "نقدي",
-  CARD: "بطاقة",
-  TRANSFER: "تحويل",
-  WALLET: "محفظة",
-  TELECOM: "رصيد زين",
-};
+const METHOD_LABEL: Record<"CASH" | "CARD" | "TRANSFER" | "WALLET" | "TELECOM", string> = paymentMethodLabels(["CASH", "CARD", "TRANSFER", "WALLET", "TELECOM"] as const);
 
 export default function DepositDialog({
   draftId,

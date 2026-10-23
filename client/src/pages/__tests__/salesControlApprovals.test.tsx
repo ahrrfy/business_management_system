@@ -9,6 +9,8 @@ describe("واجهة حوكمة عمليات البيع الحرجة", () => {
     const invoice = page("InvoiceDetail.tsx");
     const reissue = page("SalesInvoiceNew.tsx");
     const returns = readFileSync(new URL(`../../components/returns/ReturnComposer.tsx`, import.meta.url), "utf8");
+    const returnModel = readFileSync(new URL("../../components/returns/useReturnComposer.ts", import.meta.url), "utf8");
+    const returnMutations = readFileSync(new URL("../../components/returns/useReturnComposerMutations.ts", import.meta.url), "utf8");
     expect(invoice).toContain("أُرسل طلب الإلغاء");
     expect(invoice).toContain("لم يتغير المخزون أو المال بعد");
     expect(invoice).toContain("فسينفذ النظام الإلغاء فور التأكيد");
@@ -20,7 +22,11 @@ describe("واجهة حوكمة عمليات البيع الحرجة", () => {
     expect(reissue).toContain("أُرسل طلب الاستبدال");
     expect(reissue).toContain("لم تتغيّر الفاتورة أو المخزون أو المال بعد");
     expect(returns).toContain("إرسال طلب المرتجع");
-    expect(returns).toContain("invalidateFinancialQueries(queryClient, inv?.branchId)");
+    expect(returnMutations).toContain("invalidateFinancialQueries(queryClient, inv?.branchId)");
+    expect(returns).toContain('import { useReturnComposer } from "./useReturnComposer";');
+    expect(returns).toContain("const model = useReturnComposer(props)");
+    expect(returnModel).toContain("const mutations = useReturnComposerMutations({ ...state, ...settlement })");
+    expect(returnModel).toContain("return { ...state, ...settlement, ...mutations, ...quantity, ...guard, ...submission }");
   });
 
   it("طابور الاعتماد يبرز السبب والبصمة وفصل المهام", () => {

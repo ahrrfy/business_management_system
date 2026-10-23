@@ -717,19 +717,101 @@ describe("reception draft transition races", () => {
   });
 
   it("keeps promotion attachment before dialog open and primes customer id before restored tier effects", () => {
-    const source = readFileSync(new URL("../pages/Reception.tsx", import.meta.url), "utf8");
-    expect(source).toMatch(/result\.promoted[\s\S]*activeDraftRef\.current = result\.draft;[\s\S]*setActiveDraft\(result\.draft\);[\s\S]*setDepositOpen\(true\)/);
-    expect(source).toMatch(/prevCustomerIdRef\.current = restoredCustomerId;[\s\S]*setCustomer\(/);
-    expect(source).toContain("prepareReceptionDraftSwitch");
-    expect(source).toMatch(/if \(r\.idempotentReplay\)[\s\S]*attachResolvedPromotion\(r\)/);
-    expect(source).toMatch(/const draftAtSubmit =[\s\S]*const result = draftAtSubmit/);
-    expect(source).toMatch(/handleSubmit[\s\S]*draftTransitionPending \|\| draftPromotionFlightRef\.current/);
-    expect(source).toMatch(/openDepositCollect[\s\S]*markDraftPromotionPending\(shift\.id\)[\s\S]*promoteM\.mutateAsync/);
-    expect(source).toMatch(/draftPromotionPending[\s\S]*resolvePromotionM\.mutateAsync/);
-    expect(source).toContain("D(effectivePrice(line)).lte(0)");
-    expect(source).toContain("draftAtSubmit && couponCode");
-    expect(source).toContain("enabled: !showCustomization && !submitting && !draftTransitionPending");
-    expect(source).toMatch(/function onKey[\s\S]*if \(draftTransitionPending\) \{ e\.preventDefault\(\); return; \}/);
+    const source = readFileSync(
+      new URL("../pages/Reception.tsx", import.meta.url),
+      "utf8",
+    );
+    const resume = readFileSync(
+      new URL(
+        "../components/reception/ReceptionResumeDraft.tsx",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const submission = readFileSync(
+      new URL(
+        "../components/reception/ReceptionSubmission.tsx",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const scanner = readFileSync(
+      new URL(
+        "../components/reception/useReceptionScanner.tsx",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const shortcuts = readFileSync(
+      new URL("../components/reception/ReceptionShortcuts.ts", import.meta.url),
+      "utf8",
+    );
+    expect(source).toMatch(
+      /result\.promoted[\s\S]*activeDraftRef\.current = result\.draft;[\s\S]*setActiveDraft\(result\.draft\);[\s\S]*setDepositOpen\(true\)/,
+    );
+    expect(source).toContain(
+      'from "@/components/reception/ReceptionResumeDraft"',
+    );
+    expect(source).toMatch(
+      /async function resumeDraft[\s\S]*return ReceptionResumeDraft\(\{[^}]*prevCustomerIdRef[^}]*setCustomer/,
+    );
+    expect(resume).toMatch(
+      /prevCustomerIdRef\.current = restoredCustomerId;[\s\S]*setCustomer\(/,
+    );
+    expect(resume).toContain("prepareReceptionDraftSwitch");
+    expect(source).toMatch(
+      /if \(r\.idempotentReplay\)[\s\S]*attachResolvedPromotion\(r\)/,
+    );
+    expect(submission).toContain(
+      "const draftAtSubmit = activeDraftRef.current ?? activeDraft",
+    );
+    expect(source).toContain(
+      'from "@/components/reception/ReceptionSubmission"',
+    );
+    expect(source).toMatch(
+      /const preparation = await prepareReceptionSubmission\(\{/,
+    );
+    expect(source).toMatch(
+      /const \{[^}]*\bdraftAtSubmit\b[^}]*\} = preparation/,
+    );
+    expect(source).toContain("const result = draftAtSubmit");
+    expect(source).toMatch(
+      /handleSubmit[\s\S]*draftTransitionPending \|\| draftPromotionFlightRef\.current/,
+    );
+    expect(source).toMatch(
+      /openDepositCollect[\s\S]*markDraftPromotionPending\(shift\.id\)[\s\S]*promoteM\.mutateAsync/,
+    );
+    expect(source).toMatch(
+      /draftPromotionPending[\s\S]*resolvePromotionM\.mutateAsync/,
+    );
+    expect(submission).toContain("D(effectivePrice(line)).lte(0)");
+    expect(submission).toContain("draftAtSubmit && couponCode");
+    expect(source).toContain(
+      'from "@/components/reception/useReceptionScanner"',
+    );
+    const scannerInput =
+      source.match(/useReceptionScanner\(\{([\s\S]*?)\}\)/)?.[1] ?? "";
+    for (const field of [
+      "showCustomization",
+      "submitting",
+      "draftTransitionPending",
+    ])
+      expect(scannerInput).toContain(field);
+    expect(scanner).toMatch(
+      /receptionDialogBlocksInput\(\[[\s\S]*showCustomization[\s\S]*\]\)/,
+    );
+    expect(scanner).toMatch(
+      /enabled:\s*!blockingDialogOpen\s*&&\s*!showReceiptOverlay\s*&&\s*!submitting\s*&&\s*!draftTransitionPending/,
+    );
+    expect(source).toContain(
+      'from "@/components/reception/ReceptionShortcuts"',
+    );
+    expect(source).toMatch(
+      /useReceptionShortcuts\(\{\s*draftTransitionPending,/,
+    );
+    expect(shortcuts).toMatch(
+      /function onKey[\s\S]*if \(draftTransitionPending\) \{\s*e\.preventDefault\(\);\s*return;\s*\}/,
+    );
   });
 
   it("classifies only definitive pre-commit promotion rejections as editable", () => {

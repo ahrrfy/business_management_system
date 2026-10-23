@@ -1,3 +1,4 @@
+import { paymentMethodTerm } from "@shared/terms";
 /* ============================================================================
  * شاشة الرواتب — وحدة الموارد البشرية (client/src/pages/Payroll.tsx)
  * مسيّر شهري بثلاث حالات (مسوّدة → معتمد → مدفوع). مُركَّب على trpc.payroll.
@@ -75,9 +76,7 @@ const thisMonth = () => {
   return `${year}-${month}`;
 };
 
-const PAYMENT_METHOD_AR: Record<string, string> = {
-  CASH: "نقداً", CARD: "بطاقة/حساب مصرفي", TRANSFER: "تحويل مصرفي", WALLET: "محفظة دفع",
-};
+
 
 function paymentYmd(value: Date | string | null | undefined): string | null {
   if (!value) return null;
@@ -382,7 +381,7 @@ export default function Payroll() {
       note: item.note,
       paidAt: item.id === slip?.id ? paymentYmd(slipPayment?.paymentDate) : paymentYmd(payment?.paymentDate),
       paidAmount: payment?.amount ?? null,
-      paymentMethod: payment ? (PAYMENT_METHOD_AR[payment.paymentMethod] ?? payment.paymentMethod) : null,
+      paymentMethod: payment ? (paymentMethodTerm(payment.paymentMethod)?.prose ?? payment.paymentMethod) : null,
       paymentReference: payment?.referenceNumber ?? null,
       receiptId: payment?.receiptId ?? null,
     };

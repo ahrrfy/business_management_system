@@ -103,6 +103,7 @@ describe("treasury exact operation display authority", () => {
       "../components/cash/MissedDailyCountExceptionPanel.tsx", "../components/expenses/ExpenseCorrectionDialog.tsx",
       "../components/expenses/ExpenseTracePanel.tsx", "../components/expenses/ExpenseMobileCard.tsx",
       "../components/vouchers/VoucherFormShared.tsx",
+      "../components/vouchers/useVoucherFormState.ts",
     ]) {
       const source = readFileSync(new URL(file, import.meta.url), "utf8");
       const paths = [...source.matchAll(/treasuryOperationAllowed\([^,]+,\s*"([^"]+)"/g)].map((match) => match[1]!);
@@ -111,5 +112,14 @@ describe("treasury exact operation display authority", () => {
       }
       for (const path of paths) expect(getOperationPermission(path), `${file}: ${path}`).toBeDefined();
     }
+    const voucherForm = readFileSync(new URL("../components/vouchers/VoucherFormShared.tsx", import.meta.url), "utf8");
+    const voucherModel = readFileSync(new URL("../components/vouchers/useVoucherForm.ts", import.meta.url), "utf8");
+    const voucherState = readFileSync(new URL("../components/vouchers/useVoucherFormState.ts", import.meta.url), "utf8");
+    expect(voucherForm).toContain('import { useVoucherForm } from "./useVoucherForm";');
+    expect(voucherForm).toContain("const model = useVoucherForm(props)");
+    expect(voucherModel).toContain("const state = useVoucherFormState(props)");
+    expect(voucherModel).toContain("return { ...state, ...queries, ...submission, ...ledger }");
+    expect(voucherState).toContain('treasuryOperationAllowed(me.data, "vouchers.create", true)');
+    expect(voucherForm).toContain("!canCreate || create.isPending || hardBlock");
   });
 });
