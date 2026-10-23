@@ -90,8 +90,6 @@ import { type GuestTrackingOrder,loadGuestTrackingOrders,rememberGuestTrackingOr
 
 export { CategoryChipStrip };
 
-// Contract: disabled={!storefrontProductCanBeOrdered(p)}
-
 /** بنر إعلانيّ ديناميكيّ: كاروسيل يتبدّل تلقائياً كل ٥ث (crossfade آمنٌ لـRTL) + نقاط تنقّل +
  *  ارتفاعٌ متجاوب (auto-scale). يُشتقّ من بنرات لوحة hPanel؛ بنرٌ واحد ⇒ يُعرَض ثابتاً بلا نقاط. */
 

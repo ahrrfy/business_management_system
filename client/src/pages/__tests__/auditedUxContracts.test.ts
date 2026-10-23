@@ -36,11 +36,17 @@ describe("audited public UX contracts", () => {
 
   it("distinguishes an empty catalog from an empty filtered result", () => {
     const source = readPage("Storefront.tsx");
+    const catalogSurface = readComponent("storefront/StorefrontCatalogSurface.tsx");
 
     expect(source).toContain("const isEmptyCatalog =");
-    expect(source).toContain("لا توجد منتجات معروضة حالياً");
-    expect(source).toContain("لا توجد نتائج مطابقة للبحث أو الفلاتر");
-    expect(source).toContain("مسح البحث والفلاتر");
+    expect(source).toContain('import { StorefrontCatalogSurface } from "@/components/storefront/StorefrontCatalogSurface";');
+    expect(source).toContain("<StorefrontCatalogSurface");
+    expect(source).toContain("isEmptyCatalog={isEmptyCatalog}");
+    expect(source).toContain("clearCatalogFilters={clearCatalogFilters}");
+    expect(catalogSurface).toContain("لا توجد منتجات معروضة حالياً");
+    expect(catalogSurface).toContain("لا توجد نتائج مطابقة للبحث أو الفلاتر");
+    expect(catalogSurface).toContain("مسح البحث والفلاتر");
+    expect(catalogSurface).toContain("onClick={clearCatalogFilters}");
   });
 
   it("does not advertise an unsupported purchase-return draft", () => {

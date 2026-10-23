@@ -142,6 +142,12 @@ describe("٥. تدقيق ربط الأدراج النقدية والمطابقة
   const routerSrc = readServer("routers/returnRouter.ts");
   const returnServiceSrc = readServer("services/returnService.ts");
   const salesPortalSrc = readClient("components/returns/SalesReturnPortal.tsx");
+  const salesModelSrc = readClient("components/returns/useSalesReturnPortal.ts");
+  const salesStateSrc = readClient("components/returns/useSalesReturnState.ts");
+  const salesSubmissionSrc = readClient("components/returns/useSalesReturnSubmission.ts");
+  const salesSettlementSrc = readClient("components/returns/SalesReturnSettlementPanel.tsx");
+  const salesMethodsSrc = readClient("components/returns/SalesReturnSettlementMethods.tsx");
+  const salesDrawersSrc = readClient("components/returns/SalesReturnCashDrawers.tsx");
   const purchasePortalSrc = readClient(
     "components/returns/PurchaseReturnPortal.tsx",
   );
@@ -183,11 +189,20 @@ describe("٥. تدقيق ربط الأدراج النقدية والمطابقة
   });
 
   it("بوابات المرتجعات SalesReturnPortal وPurchaseReturnPortal تعرض منتقي الأدراج عند اختيار الاسترداد النقدي", () => {
-    expect(salesPortalSrc).toContain(
+    expect(salesStateSrc).toContain(
       "openDrawersQ = trpc.returns.getOpenRefundDrawers.useQuery",
     );
-    expect(salesPortalSrc).toContain("اختيار درج النقدية للصرف (الوردية)");
-    expect(salesPortalSrc).toMatch(/shiftId:\s*settlementMethod === "CASH" && effectiveCashOrCardRefund > 0/);
+    expect(salesDrawersSrc).toContain("اختيار درج النقدية للصرف (الوردية)");
+    expect(salesSubmissionSrc).toMatch(/shiftId:\s*settlementMethod === "CASH" && effectiveCashOrCardRefund > 0/);
+    expect(salesPortalSrc).toContain('import { useSalesReturnPortal } from "./useSalesReturnPortal";');
+    expect(salesPortalSrc).toContain("const model = useSalesReturnPortal(props)");
+    expect(salesModelSrc).toContain("const state = useSalesReturnState(props)");
+    expect(salesModelSrc).toMatch(/useSalesReturnSubmission\(\{\s*\.\.\.state,\s*\.\.\.settlement,/);
+    expect(salesModelSrc).toContain("return { ...state, ...settlement, ...lookup, ...cart, ...scan, ...submission }");
+    expect(salesPortalSrc).toMatch(/<SalesReturnSettlementPanel\s+\{\.\.\.\{[\s\S]*?openDrawersQ,[\s\S]*?selectedShiftId,/);
+    expect(salesSettlementSrc).toMatch(/<SalesReturnSettlementMethods\s+\{\.\.\.\{[\s\S]*?openDrawersQ,[\s\S]*?selectedShiftId,/);
+    expect(salesMethodsSrc).toMatch(/salesRefundMethod === "CASH" && \(\s*<SalesReturnCashDrawers/);
+    expect(salesMethodsSrc).toMatch(/<SalesReturnCashDrawers\s+\{\.\.\.\{\s*openDrawersQ,\s*openDrawers,\s*selectedShiftId,/);
 
     expect(purchasePortalSrc).toContain(
       "openDrawersQ = trpc.returns.getOpenRefundDrawers.useQuery",

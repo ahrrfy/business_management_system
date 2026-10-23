@@ -7,6 +7,11 @@ const read = (relative: string) =>
 
 const returnsHub = read("../ReturnsHub.tsx");
 const composer = read("../../components/returns/ReturnComposer.tsx");
+const composerModel = read("../../components/returns/useReturnComposer.ts");
+const composerState = read("../../components/returns/useReturnComposerState.ts");
+const composerGuard = read("../../components/returns/useReturnComposerGuard.ts");
+const composerMutations = read("../../components/returns/useReturnComposerMutations.ts");
+const composerDocumentation = read("../../components/returns/ReturnComposerDocumentation.tsx");
 const decisionRow = read("../../components/decision/DecisionRow.tsx");
 const salesSource = read("../../../../server/services/decisions/sources/sales.ts");
 const legacySource = salesSource.slice(
@@ -34,9 +39,16 @@ describe("مسار اعتماد طلبات مرتجع البيع القديمة"
   });
 
   it("سبب الطلب محفوظ ومقفل أثناء الاعتماد", () => {
-    expect(composer).toContain("setReason(requestDetail.data.reason)");
-    expect(composer).toContain("disabled={isLocked || qtyLocked}");
-    expect(composer).toContain("requestDetail.data.invoiceId !== invoiceId");
+    expect(composerState).toContain("setReason(requestDetail.data.reason)");
+    expect(composerDocumentation).toContain("disabled={isLocked || qtyLocked}");
+    expect(composerGuard).toContain("requestDetail.data.invoiceId !== invoiceId");
+    expect(composer).toContain('import { useReturnComposer } from "./useReturnComposer";');
+    expect(composer).toContain("const model = useReturnComposer(props)");
+    expect(composerModel).toContain("const state = useReturnComposerState(props)");
+    expect(composerModel).toMatch(/useReturnComposerGuard\(\{\s*\.\.\.state,\s*\.\.\.settlement,/);
+    expect(composerModel).toContain("return { ...state, ...settlement, ...mutations, ...quantity, ...guard, ...submission }");
+    expect(composer).toContain('import { ReturnComposerDocumentation } from "./ReturnComposerDocumentation";');
+    expect(composer).toMatch(/<ReturnComposerDocumentation\s+\{\.\.\.\{[\s\S]*?reason,\s*setReason,[\s\S]*?qtyLocked,\s*isLocked,/);
   });
 
   it("بطاقة القرار لا تعيد إجمالي الفاتورة ولا بنداً مجهولاً ولا خروج مال ثابتاً", () => {
@@ -51,7 +63,9 @@ describe("مسار اعتماد طلبات مرتجع البيع القديمة"
   });
 
   it("ينعش صندوق القرارات قبل الرجوع إليه بعد الاعتماد", () => {
-    expect(composer).toContain("await invalidateFinancialQueries(queryClient, inv?.branchId)");
+    expect(composerMutations).toContain("await invalidateFinancialQueries(queryClient, inv?.branchId)");
+    expect(composerModel).toContain("const mutations = useReturnComposerMutations({ ...state, ...settlement })");
+    expect(composerMutations).toMatch(/approveRequest\.useMutation\(\{\s*onSuccess:[\s\S]*?await invalidateFinancialQueries\(queryClient, inv\?\.branchId\);\s*onDone\?\./);
   });
 
   it("يعرض وقت إنشاء الفاتورة بصيغة محلية لا كنص تقني", () => {

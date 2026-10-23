@@ -58,6 +58,7 @@ import {
 } from "./Storefront";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { StorefrontCategories } from "@/components/storefront/StorefrontCategories";
+import { StorefrontProductCard } from "@/components/storefront/StorefrontProductCard";
 import { DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH, storefrontVisibleCustomizationFieldKeys } from "./store/storefrontCustomization";
 
 describe("storefront related product actions", () => {
@@ -123,11 +124,33 @@ describe("storefront customization", () => {
     expect(Array.from(restored.values())[0]?.qty).toBe(2);
     expect(addStorefrontCartLine(base, { productUnitId: 21, productId: 9, productName: "دعوة", imageUrl: null, unitName: "قطعة", isCustomizable: true }, "2500").size).toBe(0);
     const source = readFileSync(new URL("./Storefront.tsx", import.meta.url), "utf8");
-    expect(source).not.toContain("detailQ.data.isCustomizable ? (");
-    expect(source).not.toContain("disabled={detailQ.data.isCustomizable ||");
-    expect(source).not.toContain("!detailQ.data.isCustomizable && (detailQ.data.variants?.length ?? 0)");
-    expect(source).toContain("disabled={!storefrontProductCanBeOrdered(p)}");
-    expect(source).not.toContain("cartHasUnsupportedCustomization");
+    const catalog = readFileSync(new URL("../components/storefront/StorefrontCatalogSurface.tsx", import.meta.url), "utf8");
+    const grid = readFileSync(new URL("../components/storefront/StorefrontProductGrid.tsx", import.meta.url), "utf8");
+    const dialog = readFileSync(new URL("../components/storefront/StorefrontProductDialog.tsx", import.meta.url), "utf8");
+    for (const view of [source, catalog, grid, dialog]) {
+      expect(view).not.toContain("detailQ.data.isCustomizable ? (");
+      expect(view).not.toContain("disabled={detailQ.data.isCustomizable ||");
+      expect(view).not.toContain("!detailQ.data.isCustomizable && (detailQ.data.variants?.length ?? 0)");
+      expect(view).not.toContain("cartHasUnsupportedCustomization");
+    }
+    expect(source).toContain("<StorefrontCatalogSurface");
+    expect(catalog).toContain("<StorefrontProductGrid");
+    expect(grid).toContain("<StorefrontProductCard");
+    expect(grid).toContain("canBeOrdered={storefrontProductCanBeOrdered}");
+    const renderOrderButton = (inStock: boolean) => {
+      const markup = renderToStaticMarkup(createElement(StorefrontProductCard, {
+        product: { productId: 9, productName: "دعوة", price: "2500", isCustomizable: true, inStock },
+        isWishlisted: false,
+        onOpen: () => {}, onAdd: () => false, onToggleWishlist: () => {}, onShare: () => {},
+        canBeOrdered: storefrontProductCanBeOrdered,
+        actionLabel: "اختر تفاصيل التخصيص",
+      }));
+      const button = markup.match(/<button\b[^>]*class="animated-cart-btn[^>]*>/)?.[0];
+      expect(button).toBeDefined();
+      return button!;
+    };
+    expect(renderOrderButton(true)).not.toContain('disabled=""');
+    expect(renderOrderButton(false)).toContain('disabled=""');
     expect(DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH).toBe(2_000);
     expect(source).toContain("field.maxLength ?? DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH");
   });
