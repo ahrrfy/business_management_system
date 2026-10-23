@@ -1,4 +1,4 @@
-import { Link } from "wouter";
+import { DeliverySourceLink } from "./DeliverySourceLink";
 import { Check, RotateCcw } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -102,11 +102,7 @@ export function DeliveryConsignmentsTable({
                   {c.shipmentInvoiceCount > 1 && <div className="mt-1 text-xs text-muted-foreground">شحنة تضم {c.shipmentInvoiceCount} فواتير</div>}
                 </td>
                 <td className="p-3">
-                  {c.invoiceId ? (
-                    <Link className="font-mono text-xs text-primary hover:underline" dir="ltr" href={`/invoices/${c.invoiceId}`}>
-                      {c.invoiceNumber ?? `#${c.invoiceId}`}
-                    </Link>
-                  ) : "—"}
+                  <DeliverySourceLink source={c} />
                 </td>
                 <td className="p-3 font-mono text-xs" dir="ltr">{c.shipmentTrackingRef ?? c.externalTrackingRef ?? "—"}</td>
                 <td className="p-3">{c.customerName ?? c.recipientName ?? "عميل نقدي"}</td>

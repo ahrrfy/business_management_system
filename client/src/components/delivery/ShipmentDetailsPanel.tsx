@@ -48,7 +48,7 @@ export function ShipmentDetailsPanel({ shipment }: { shipment: Shipment }) {
   const returnDeclared = operational.length > 0 && operational.every((row) => row.returnDeclaredAt != null);
   const live = open && operational.every((row) => row.returnDeclaredAt == null);
   const unpaidToParty = operational.every((row) => new Decimal(row.collectedAmount ?? "0").isZero());
-  const redispatchAnchor = shipment.members.find(row => !isDeadInvoiceStatus(row.invoiceStatus));
+  const redispatchAnchor = shipment.members.find(row => row.invoiceId != null && row.invoiceStatus != null && !isDeadInvoiceStatus(row.invoiceStatus));
   const cancelled = !!redispatchAnchor && shipment.members.every((row) => ["CANCELLED", "RETURNED"].includes(row.parcelStatus));
   const actions = ACTIONS.filter((item) => lifecycleActionAllowed(me.data, item.path, legacy) && (live || (open && item.value === "return"))
     && (item.value === "confirm" || item.value === "driver" || unpaidToParty));

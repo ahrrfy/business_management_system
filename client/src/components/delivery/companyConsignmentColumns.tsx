@@ -1,3 +1,5 @@
+import { deliverySourceView } from "@shared/deliverySource";
+import { DeliverySourceLink } from "./DeliverySourceLink";
 import React from "react";
 import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 import { Ban, Wallet } from "lucide-react";
@@ -243,22 +245,10 @@ export function companyConsignmentColumns(
     },
     {
       id: "invoice",
-      header: "الفاتورة",
-      accessorFn: (c) =>
-        c.invoiceId ? (c.invoiceNumber ?? "#" + c.invoiceId) : "—",
+      header: "المستند المصدر",
+      accessorFn: (c) => deliverySourceView(c).reference,
       meta: { kind: "code" },
-      cell: ({ row }) =>
-        row.original.invoiceId ? (
-          <a
-            className="text-xs text-primary hover:underline"
-            dir="ltr"
-            href={"/invoices/" + row.original.invoiceId}
-          >
-            {row.original.invoiceNumber ?? "#" + row.original.invoiceId}
-          </a>
-        ) : (
-          "—"
-        ),
+      cell: ({ row }) => <DeliverySourceLink source={row.original} />,
     },
     {
       id: "customer",

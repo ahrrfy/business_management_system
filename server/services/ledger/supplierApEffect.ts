@@ -25,6 +25,14 @@ export interface ApEntryCols {
   dedupeKey: ApOp;
 }
 
+/** A classified contractor cost accrues trade AP once; its payment uses PAYMENT_OUT. */
+function isFulfillmentSupplierCostSql(
+  cols: Pick<ApEntryCols, "entryType" | "dedupeKey">,
+): SQL {
+  return sql`COALESCE((${cols.entryType} = 'ADJUST'
+    AND REGEXP_LIKE(${cols.dedupeKey}, ${"^FULFILLMENT_CHARGE_COST:[1-9][0-9]*$"}, 'c')), FALSE)`;
+}
+
 /** Reserved company-expense payments retain recipient identity outside supplier AP. */
 function isCompanyPurchaseChargePaymentSql(
   cols: Pick<ApEntryCols, "entryType" | "dedupeKey">,
@@ -48,6 +56,7 @@ export function supplierApEffectSql(
   return sql`CASE
     WHEN ${isCompanyPurchaseChargePaymentSql(cols)} THEN 0
     WHEN ${cols.liabilityAccount} = 'CASH_CLEARING' THEN 0
+    WHEN ${isFulfillmentSupplierCostSql(cols)} THEN ${amt}
     WHEN ${cols.entryType} = 'PURCHASE'        THEN ${amt}
     WHEN ${cols.entryType} = 'PAYMENT_OUT'     THEN -${amt}
     WHEN ${cols.entryType} = 'PAYMENT_IN'      THEN ${amt}
@@ -66,6 +75,7 @@ export function isSupplierApRecognitionSql(
   return sql`(
     (${cols.entryType} = 'PURCHASE' AND (${cols.liabilityAccount} IS NULL OR ${cols.liabilityAccount} <> 'CASH_CLEARING'))
     OR (${cols.entryType} = 'ADJUST' AND ${cols.dedupeKey} REGEXP ${GRNI_SUPPLIER_INVOICE_FORWARD_REGEXP})
+    OR ${isFulfillmentSupplierCostSql(cols)}
   )`;
 }
 
@@ -79,6 +89,7 @@ export function isSupplierApLedgerEntrySql(
     : sql`${cols.entryType} IN ('PURCHASE','RETURN','PAYMENT_IN','PAYMENT_OUT','EXCHANGE_SETTLE')`;
   return sql`(NOT ${isCompanyPurchaseChargePaymentSql(cols)} AND (
     ${legacyTypes}
+    OR ${isFulfillmentSupplierCostSql(cols)}
     OR (${cols.entryType} = 'ADJUST' AND ${cols.dedupeKey} REGEXP ${GRNI_SUPPLIER_INVOICE_FORWARD_REGEXP})
     OR (${cols.entryType} = 'ADJUST' AND ${cols.dedupeKey} REGEXP ${GRNI_SUPPLIER_INVOICE_REVERSAL_REGEXP})
   ))`;

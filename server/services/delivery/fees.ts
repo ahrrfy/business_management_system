@@ -1,10 +1,11 @@
+import { appErrorMessage } from "@shared/errors";
 // أجور التوصيل — أثر تسوية مشترك للصرف المستقل أو الحسم الموثق من التوريد.
 // المستحقّ يُشتقّ من دفتر التوصيل حصراً (FEE_EARNED − FEE_REFUNDED − FEE_PAID − FEE_OFFSET)
 // لا من عمود deliveryFee: الدفترُ يعرف ما صُرف من أيّ مسارٍ كان، والعمود لا يعرف.
 import { TRPCError } from "@trpc/server";
 import { shipmentFeeDeliveryProvenExpr, shipmentFeeDeliveryProvenTx } from "./shipments";
 import Decimal from "decimal.js";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, or, sql } from "drizzle-orm";
 import { accountingEntries, deliveryConsignments, deliveryLedgerEntries, deliveryParties, invoices, receipts } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
@@ -19,6 +20,7 @@ import { deliveryCommissionSettlementIntent, deliveryFeeHeldPayoutIntent, delive
 import { createCommissionPreviewer } from "./commissionRules";
 import type { DeliveryTxActor } from "./types";
 import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
+import { syncAftercareFeePaymentTx } from "../fulfillment/aftercareDelivery";
 
 /** Indexed per-consignment fee balance; canonical ledger filter also excludes legacy duplicates. */
 export function consignmentFeeDueSql() {
@@ -51,7 +53,10 @@ export async function postFeePayment(
     id: number | string;
     branchId: number | string;
     partyId: number | string;
-    invoiceId: number | string;
+    invoiceId: number | string | null;
+    sourceType?: string;
+    aftercareExecutionId?: number | null;
+    fulfillmentRequestId?: number | null;
     consignmentNumber: string;
     feeCollection: string | null;
   },
@@ -70,6 +75,9 @@ export async function postFeePayment(
   commissionOverride?: Decimal | null,
   withholding?: { cashBucket: "DRAWER" | "TREASURY"; remittanceId: number },
 ): Promise<void> {
+  if ((cn.sourceType === "AFTERCARE_EXECUTION" && cn.feeCollection !== "SHOP") || ((cn.sourceType === "AFTERCARE_EXECUTION" || cn.sourceType === "FULFILLMENT_REQUEST") && withholding)) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({ what: "تعذر صرف أجرة التوصيل", why: "أجرة معالجة النقص على المكتبة وتُصرف من مصدر نقد معتمد", doThis: "راجع مصدر الإرسالية ثم اصرف الأجرة من مسار الأجور المعتمد" }) });
+  }
   await appendDeliveryLedgerEntry(tx, {
     eventKey: `CN:${cn.id}:${withholding ? "FEE_OFFSET" : "FEE_PAID"}:${keySuffix}`,
     partyId: Number(cn.partyId),
@@ -82,7 +90,9 @@ export async function postFeePayment(
   });
   // H2: للجهة قاعدةُ عمولة فعّالة + العلَم مُشغَّل ⇒ استبدلِ الأجرة بالعمولة (لا يمسّ COUNTER).
   const useCommission =
-    cn.feeCollection !== "COUNTER"
+    cn.sourceType !== "AFTERCARE_EXECUTION"
+    && cn.sourceType !== "FULFILLMENT_REQUEST"
+    && cn.feeCollection !== "COUNTER"
     && commissionOverride != null
     && commissionOverride.gte(0)
     && commissionOverride.lt(amount);
@@ -102,7 +112,7 @@ export async function postFeePayment(
       : { roleDebits: { COURIER_PAYABLE: amount }, roleCredits: { [assetRole]: amount } },
     dedupeKey: `DELIVERY_FEE_${withholding ? "OFFSET" : "PAID"}:${cn.id}:${keySuffix}`,
     branchId: Number(cn.branchId),
-    invoiceId: Number(cn.invoiceId),
+    invoiceId: cn.invoiceId == null ? null : Number(cn.invoiceId),
     deliveryPartyId: Number(cn.partyId),
     receiptId,
     amount: cn.feeCollection === "COUNTER" ? amount.neg() : amount,
@@ -115,6 +125,27 @@ export async function postFeePayment(
   if (fullyPaid) {
     await tx.update(deliveryConsignments).set({ feeSettledAt: new Date() }).where(eq(deliveryConsignments.id, Number(cn.id)));
   }
+  if (cn.sourceType === "AFTERCARE_EXECUTION") {
+    if (receiptId == null) throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({ what: "تعذر صرف أجرة المعالجة", why: "سند الصرف الفعلي مفقود", doThis: "اصرف الأجرة بسند معتمد من مسار أجور التوصيل" }) });
+    await syncAftercareFeePaymentTx(tx, { consignmentId: Number(cn.id), receiptId, actorId: actor.userId });
+  }
+}
+
+
+/** Invoice-less fees keep their operational owner; historical sales are never fee carriers. */
+async function lockFeeSourceTx(tx: Tx, cn: { sourceType: string; invoiceId: number | null; aftercareExecutionId: number | null; fulfillmentRequestId: number | null; feeCollection: string | null }) {
+  if (cn.sourceType === "AFTERCARE_EXECUTION" || cn.sourceType === "FULFILLMENT_REQUEST") {
+    const sourceId = cn.sourceType === "AFTERCARE_EXECUTION" ? cn.aftercareExecutionId : cn.fulfillmentRequestId;
+    if (sourceId == null || cn.invoiceId != null || (cn.sourceType === "AFTERCARE_EXECUTION" && cn.feeCollection !== "SHOP")) {
+      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: "تعذر صرف أجرة التوصيل", why: "روابط مصدر أجرة التوصيل غير متسقة؛ راجع مستند التجهيز أو المعالجة", doThis: "راجع مصدر الإرسالية ثم اصرف الأجرة من مسار الأجور المعتمد" }) });
+    }
+    return null;
+  }
+  if (cn.invoiceId == null) throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: "تعذر صرف أجرة التوصيل", why: "فاتورة الإرسالية غير موجودة", doThis: "راجع روابط مصدر الإرسالية قبل صرف الأجرة" }) });
+  const invoice = (await tx.select({ id: invoices.id, total: invoices.total, returnedTotal: invoices.returnedTotal }).from(invoices)
+    .where(eq(invoices.id, cn.invoiceId)).for("update").limit(1))[0];
+  if (!invoice) throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: "تعذر صرف أجرة التوصيل", why: "فاتورة الإرسالية غير موجودة", doThis: "راجع روابط مصدر الإرسالية قبل صرف الأجرة" }) });
+  return invoice;
 }
 
 /** Cash to retain against an existing SHOP payable; reused by preview and posting. */
@@ -139,8 +170,6 @@ export async function payDeliveryFee(
 ) {
   const hash = idempotencyHash(input);
   return withTx(async (tx) => {
-    const replay = await checkIdempotency(tx, "delivery.payFee", input.clientRequestId, hash);
-    if (replay != null) return { receiptId: replay, replay: true };
     const cnPreview = (
       await tx
         .select({
@@ -153,9 +182,11 @@ export async function payDeliveryFee(
         .limit(1)
     )[0];
     if (!cnPreview) throw new TRPCError({ code: "NOT_FOUND", message: "الإرسالية غير موجودة" });
-    if (actor.role !== "admin" && actor.branchId != null && Number(cnPreview.branchId) !== Number(actor.branchId)) {
+    if (actor.role !== "admin" && (actor.branchId == null || Number(cnPreview.branchId) !== Number(actor.branchId))) {
       throw new TRPCError({ code: "FORBIDDEN", message: "الإرسالية تخص فرعاً آخر" });
     }
+    const replay = await checkIdempotency(tx, "delivery.payFee", input.clientRequestId, hash);
+    if (replay != null) return { receiptId: replay, replay: true };
     const resolved = await resolveBranchCashShiftTx(tx, Number(cnPreview.branchId), input.shiftId);
     await lockCashSourceForUpdate(tx, {
       branchId: Number(cnPreview.branchId), cashBucket: "DRAWER", shiftId: resolved.shiftId,
@@ -170,17 +201,13 @@ export async function payDeliveryFee(
     if (
       Number(cn.branchId) !== Number(cnPreview.branchId) ||
       Number(cn.partyId) !== Number(cnPreview.partyId) ||
-      Number(cn.invoiceId) !== Number(cnPreview.invoiceId)
+      cn.invoiceId !== cnPreview.invoiceId
     ) {
       throw new TRPCError({ code: "CONFLICT", message: "تغيّرت أطراف الإرسالية أثناء دفع الأجرة؛ أعد المحاولة" });
     }
-    const invoice = (
-      await tx.select({ id: invoices.id }).from(invoices)
-        .where(eq(invoices.id, Number(cn.invoiceId))).for("update").limit(1)
-    )[0];
-    if (!invoice) throw new TRPCError({ code: "CONFLICT", message: "فاتورة الإرسالية غير موجودة" });
-    if (!await shipmentFeeDeliveryProvenTx(tx, Number(cn.id))) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا تستحق الأجرة قبل نجاح التوصيل" });
-    if (actor.role !== "admin" && actor.branchId != null && Number(cn.branchId) !== Number(actor.branchId)) {
+    await lockFeeSourceTx(tx, cn);
+    if (!(cn.sourceType === "AFTERCARE_EXECUTION" ? (await ledgerFeeDue(tx, Number(cn.id))).gt(0) : await shipmentFeeDeliveryProvenTx(tx, Number(cn.id)))) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا تستحق الأجرة قبل نجاح التوصيل" });
+    if (actor.role !== "admin" && (actor.branchId == null || Number(cn.branchId) !== Number(actor.branchId))) {
       throw new TRPCError({ code: "FORBIDDEN", message: "الإرسالية تخص فرعاً آخر" });
     }
     const due = await ledgerFeeDue(tx, input.consignmentId);
@@ -194,7 +221,7 @@ export async function payDeliveryFee(
     const inserted = await tx.insert(receipts).values({
       branchId: Number(cn.branchId),
       shiftId: resolved.shiftId,
-      invoiceId: Number(cn.invoiceId),
+      invoiceId: cn.invoiceId == null ? null : Number(cn.invoiceId),
       direction: "OUT",
       amount: toDbMoney(amount),
       paymentMethod: "CASH",
@@ -266,16 +293,17 @@ export async function payPartyDeliveryFees(
         replay: true,
       };
     };
-    const replay = await checkIdempotency(tx, "delivery.payPartyFees", input.clientRequestId, hash);
-    if (replay != null) return replayResult(replay);
 
     // نفس حارس الفرع الصفري في settle.ts: سندٌ على فرعٍ وهميّ يسقط من كل التقارير.
     if (!Number.isInteger(Number(input.branchId)) || Number(input.branchId) <= 0) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا فرع مسند لصرف الأجور — اختر الفرع صراحةً" });
     }
-    if (actor.role !== "admin" && actor.branchId != null && Number(input.branchId) !== Number(actor.branchId)) {
+    if (actor.role !== "admin" && (actor.branchId == null || Number(input.branchId) !== Number(actor.branchId))) {
       throw new TRPCError({ code: "FORBIDDEN", message: "صرف أجور فرعٍ آخر غير مسموح" });
     }
+
+    const replay = await checkIdempotency(tx, "delivery.payPartyFees", input.clientRequestId, hash);
+    if (replay != null) return replayResult(replay);
 
     // ترتيب الأقفال مرآةُ payDeliveryFee والتوريد حرفياً: مصدر النقد ← الجهة ← الإرساليات
     // تصاعدياً بمعرّفها (وفاتورةُ كلٍّ معها) — نفس الترتيب في كل مسار ⇒ لا جمود متقاطع.
@@ -306,13 +334,14 @@ export async function payPartyDeliveryFees(
       .where(and(
         eq(deliveryConsignments.partyId, Number(input.partyId)),
         eq(deliveryConsignments.branchId, Number(input.branchId)),
-        shipmentFeeDeliveryProvenExpr(),
+        or(shipmentFeeDeliveryProvenExpr(), and(eq(deliveryConsignments.sourceType, "AFTERCARE_EXECUTION"), sql`${consignmentFeeDueSql()} > 0`)),
       ))
       .orderBy(deliveryConsignments.id);
 
     type FeeItem = {
       cn: {
-        id: number; branchId: number; partyId: number; invoiceId: number;
+        id: number; branchId: number; partyId: number; invoiceId: number | null;
+        sourceType: string; aftercareExecutionId: number | null; fulfillmentRequestId: number | null;
         consignmentNumber: string; feeCollection: string | null;
       };
       due: Decimal;
@@ -332,19 +361,15 @@ export async function payPartyDeliveryFees(
       if (
         Number(cn.partyId) !== Number(input.partyId)
         || Number(cn.branchId) !== Number(input.branchId)
-        || !await shipmentFeeDeliveryProvenTx(tx, Number(cn.id))
+        || !(cn.sourceType === "AFTERCARE_EXECUTION" ? (await ledgerFeeDue(tx, Number(cn.id))).gt(0) : await shipmentFeeDeliveryProvenTx(tx, Number(cn.id)))
       ) continue; // تغيّر بين الترشيح والقفل — يسقط من هذا السند بلا خطأ.
-      const invoice = (
-        await tx.select({ id: invoices.id, total: invoices.total, returnedTotal: invoices.returnedTotal }).from(invoices)
-          .where(eq(invoices.id, Number(cn.invoiceId))).for("update").limit(1)
-      )[0];
-      if (!invoice) throw new TRPCError({ code: "CONFLICT", message: `فاتورة الإرسالية ${cn.consignmentNumber} غير موجودة` });
+      const invoice = await lockFeeSourceTx(tx, cn);
       const due = await ledgerFeeDue(tx, Number(cn.id));
       if (due.lte(0)) continue;
       // H2 (٢٩/٨/٢٦): إن كان العلَم مفعّلاً + قاعدةٌ فعّالة + الأجرة NOT COUNTER (الأمانة تُبرَّأ حرفياً
       // بمقبوضها). العمولة تُقصَر إلى due أعلى (لا هامشَ سالب). null ⇒ سلوكٌ سابق (كامل الأجرة).
       let commission: Decimal | null = null;
-      if (party.useCommissionForSettlement && cn.feeCollection !== "COUNTER") {
+      if (invoice && party.useCommissionForSettlement && cn.feeCollection !== "COUNTER") {
         const cash = quoteFee(due,
           Decimal.max(0, money(invoice.total).minus(money(invoice.returnedTotal ?? "0"))));
         if (cash.lt(due)) commission = cash;
@@ -354,7 +379,10 @@ export async function payPartyDeliveryFees(
           id: Number(cn.id),
           branchId: Number(cn.branchId),
           partyId: Number(cn.partyId),
-          invoiceId: Number(cn.invoiceId),
+          invoiceId: cn.invoiceId == null ? null : Number(cn.invoiceId),
+          sourceType: cn.sourceType,
+          aftercareExecutionId: cn.aftercareExecutionId,
+          fulfillmentRequestId: cn.fulfillmentRequestId,
           consignmentNumber: cn.consignmentNumber,
           feeCollection: cn.feeCollection,
         },

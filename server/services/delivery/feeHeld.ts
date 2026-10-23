@@ -1,25 +1,11 @@
-/**
- * أمانةُ أجرة التوصيل المقبوضة لحظة البيع (`feeCollection = COUNTER`) — م١ (PR-1).
- *
- * الكاتبُ المشترك لإيصال الأمانة وقيدها، يستدعيه البيعُ المباشر (`sale/create.ts`) بنفس
- * الثابت الذي يكتبه الاستقبال (`receptionCheckoutService.ts`، ش٦/V15):
- *
- *   · إيصال IN **نقديّ في الدرج حتماً** بمرجع `DLV-FEE-INV-{invoiceId}` — مهما كانت طريقة
- *     دفع السلّة؛ فهي تُصرف للمندوب نقداً من الدرج نفسه عند توريده، وقبضُها بغير النقد يترك
- *     OUT بلا IN يقابله (عجزُ درجٍ يمنع إغلاق الوردية).
- *   · قيد `DELIVERY_FEE_HELD` (CASH ← COURIER_PAYABLE): أمانةٌ لا إيراد. تُبرَّأ عند صرفها
- *     للمندوب في `fees.ts` بإشارةٍ سالبة ⇒ `Σ DELIVERY_FEE_HELD` للمستند = 0 ⇔ مُبرَّأة (§٥).
- *
- * وبهذا المرجع وحده يقبل `dispatchInvoiceInTx` طريقةَ COUNTER (يشترط مساواة الأمانة والأجرة)،
- * لذلك يُكتب الإيصال **قبل** الإسناد داخل المعاملة نفسها.
- */
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import type Decimal from "decimal.js";
 import { receipts } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
-import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
+import { deliveryFeeHeldReceiptIntent } from "./posting";
+import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import { lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
 import { postEntry } from "../ledgerService";
 import { money, round2 } from "../money";
@@ -66,10 +52,23 @@ export function assertDeliveryFeeHeldConsistent(
   }
 }
 
+export const RECEPTION_FEE_ALLOCATION = Symbol("RECEPTION_FEE_ALLOCATION");
+
+/** Omission preserves legacy CASH; combined index allocates one provider payment once. */
+export interface DeliveryFeeTender {
+  method: "CASH" | "CARD" | "TRANSFER" | "WALLET";
+  reference?: string | null;
+  externalPaymentAttemptId?: number | null;
+  externalPaymentDeviceId?: string | null;
+  combinedWithPaymentIndex?: number | null;
+}
+
 export interface RecordDeliveryFeeHeldInput {
   branchId: number;
   shiftId: number | null;
-  invoiceId: number;
+  invoiceId?: number | null;
+  workOrderId?: number | null;
+  tender?: DeliveryFeeTender | null;
   amount: Decimal;
   actorUserId: number;
   /** وصفُ الإيصال — يُسمّي القناة (استقبال/كاشير) كي يُقرأ في تسوية الدرج. */
@@ -90,48 +89,78 @@ export async function recordDeliveryFeeHeldInTx(
   input: RecordDeliveryFeeHeldInput,
 ): Promise<{ receiptId: number }> {
   const amount = round2(input.amount);
-  await lockMaterializedCashReceiptSourceForWrite(tx, {
-    branchId: input.branchId,
-    shiftId: input.shiftId,
-    cashBucket: "DRAWER",
-    paymentMethod: "CASH",
-    status: "COMPLETED",
-    approvalStatus: "APPROVED",
-  });
+  const method = input.tender?.method ?? "CASH";
+  assertPosPaymentMethodEnabled(method);
+  const reference = input.tender?.reference?.trim();
+  if (method !== "CASH" && !reference) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر قبض أجرة التوصيل",
+        why: "مرجع القبض غير النقدي للأجرة غير مثبت",
+        doThis:
+          "أكّد نجاح الدفع لدى المزوّد ثم أعد الحفظ دون تمرير البطاقة مرة ثانية",
+      }),
+    });
+  }
+  if (
+    (input.invoiceId == null) === (input.workOrderId == null) ||
+    !amount.gt(0)
+  ) {
+    throw new Error(
+      "Held delivery fee requires one source and a positive amount",
+    );
+  }
+  const cashBucket = method === "CASH" ? ("DRAWER" as const) : null;
+  if (method === "CASH")
+    await lockMaterializedCashReceiptSourceForWrite(tx, {
+      branchId: input.branchId,
+      shiftId: input.shiftId,
+      cashBucket: "DRAWER",
+      paymentMethod: "CASH",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+    });
   const feeRes = await tx.insert(receipts).values({
     branchId: input.branchId,
     shiftId: input.shiftId,
-    invoiceId: input.invoiceId,
+    invoiceId: input.invoiceId ?? null,
+    workOrderId: input.workOrderId ?? null,
     direction: "IN",
     amount: amount.toFixed(2),
-    paymentMethod: "CASH",
-    cashBucket: "DRAWER",
+    paymentMethod: method,
+    cashBucket,
     status: "COMPLETED",
     partyType: "OTHER",
-    referenceNumber: `DLV-FEE-INV-${input.invoiceId}`,
+    referenceNumber:
+      input.invoiceId != null
+        ? `DLV-FEE-INV-${input.invoiceId}`
+        : `DLV-FEE-WO-${input.workOrderId}`,
+    internalNote: reference
+      ? JSON.stringify({
+          externalPaymentReference: reference,
+          externalPaymentAttemptId:
+            input.tender?.externalPaymentAttemptId ?? null,
+        })
+      : null,
     description: input.description,
     createdBy: input.actorUserId,
   });
   const receiptId = extractInsertId(feeRes);
-  const components = {
-    roleDebits: { CASH: amount },
-    roleCredits: { COURIER_PAYABLE: amount },
-  };
+  const intent = deliveryFeeHeldReceiptIntent(amount, method, cashBucket);
   await postEntry(tx, {
     entryType: "DELIVERY_FEE_HELD",
-    dedupeKey: `DELIVERY_FEE_HELD:INV:${input.invoiceId}`,
+    dedupeKey:
+      input.invoiceId != null
+        ? `DELIVERY_FEE_HELD:INV:${input.invoiceId}`
+        : `DELIVERY_FEE_HELD:WO:${input.workOrderId}`,
     branchId: input.branchId,
     invoiceId: input.invoiceId,
     receiptId,
     amount,
     notes: "أمانة أجرة توصيل — مقبوضة مع البيع",
-    postingSourceComponents: components,
-    postingIntent: createPostingIntent(
-      "DELIVERY_FEE_HELD_RECEIPT",
-      "DELIVERY_FEE_HELD",
-      [debitLine("CASH", amount), creditLine("COURIER_PAYABLE", amount)],
-      components,
-    ),
+    postingSourceComponents: intent.sourceComponents,
+    postingIntent: intent,
   });
   return { receiptId };
 }

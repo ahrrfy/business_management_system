@@ -56,14 +56,31 @@ const EXPENSE_CATEGORY_AR: Record<string, string> = {
 };
 
 const JOURNAL_REVENUE_ROLES = new Set([
-  "SALES_STATIONERY", "SALES_PRINT", "SALES_FLEX", "DELIVERY_REVENUE",
-  "OTHER_REVENUE", "EXCHANGE_COMMISSION", "FX_GAIN", "ASSET_DISPOSAL_GAIN",
+  "SALES_STATIONERY",
+  "SALES_PRINT",
+  "SALES_FLEX",
+  "DELIVERY_REVENUE",
+  "OTHER_REVENUE",
+  "EXCHANGE_COMMISSION",
+  "FX_GAIN",
+  "ASSET_DISPOSAL_GAIN",
 ]);
 const JOURNAL_EXPENSE_ROLES = new Set([
-  "SALARIES", "SOCIAL_SECURITY_EXPENSE", "EOS_EXPENSE", "RENT", "UTILITIES",
-  "OPERATING_EXPENSE", "DELIVERY_EXPENSE", "GIFTS_PROMO", "DEPRECIATION_EXPENSE",
-  "FX_LOSS", "ROUNDING_DIFF", "ASSET_DISPOSAL_LOSS", "PURCHASE_PRICE_VARIANCE",
-  "LOSSES", "OTHER_EXPENSE",
+  "SALARIES",
+  "SOCIAL_SECURITY_EXPENSE",
+  "EOS_EXPENSE",
+  "RENT",
+  "UTILITIES",
+  "OPERATING_EXPENSE",
+  "DELIVERY_EXPENSE",
+  "GIFTS_PROMO",
+  "DEPRECIATION_EXPENSE",
+  "FX_LOSS",
+  "ROUNDING_DIFF",
+  "ASSET_DISPOSAL_LOSS",
+  "PURCHASE_PRICE_VARIANCE",
+  "LOSSES",
+  "OTHER_EXPENSE",
 ]);
 const JOURNAL_ROLE_AR: Record<string, string> = {
   SALARIES: "الأجور والرواتب المستحقّة",
@@ -109,7 +126,8 @@ async function activeJournalPlSnapshot(
   branchId?: number,
 ): Promise<PLSnapshot> {
   const branch = branchId ? sql`AND je.branchId = ${branchId}` : sql``;
-  const rows = rowsOf(await db.execute(sql`
+  const rows = rowsOf(
+    await db.execute(sql`
     SELECT
       jl.role AS role,
       CAST(COALESCE(SUM(jl.debit), 0) AS CHAR) AS debit,
@@ -122,7 +140,8 @@ async function activeJournalPlSnapshot(
       AND je.entryDate >= ${from} AND je.entryDate <= ${to}
       ${branch}
     GROUP BY jl.role
-  `)) as Array<{ role: string; debit: string; credit: string }>;
+  `),
+  ) as Array<{ role: string; debit: string; credit: string }>;
 
   let revenue = money(0);
   let cogs = money(0);
@@ -132,12 +151,17 @@ async function activeJournalPlSnapshot(
     const role = String(row.role);
     const debit = money(row.debit ?? 0);
     const credit = money(row.credit ?? 0);
-    if (JOURNAL_REVENUE_ROLES.has(role)) revenue = revenue.add(credit.sub(debit));
+    if (JOURNAL_REVENUE_ROLES.has(role))
+      revenue = revenue.add(credit.sub(debit));
     if (role === "COGS") cogs = cogs.add(debit.sub(credit));
     if (JOURNAL_EXPENSE_ROLES.has(role)) {
       const amount = debit.sub(credit);
       if (!amount.isZero()) {
-        expenseLines.push({ key: role, label: JOURNAL_ROLE_AR[role] ?? role, amount: toDbMoney(amount) });
+        expenseLines.push({
+          key: role,
+          label: JOURNAL_ROLE_AR[role] ?? role,
+          amount: toDbMoney(amount),
+        });
       }
       totalExpenses = totalExpenses.add(amount);
     }
@@ -187,9 +211,11 @@ export async function plSnapshot(
 
   // بعد تفعيل الدفتر يصبح journalEntries/journalLines المصدر المحاسبي الوحيد. في OFF/SHADOW
   // نبقي التقرير المشتق القديم صراحةً كي لا تختلط قيود الظل مع أرقام التشغيل قبل الاعتماد.
-  const modeRow = rowsOf(await db.execute(sql`
+  const modeRow = rowsOf(
+    await db.execute(sql`
     SELECT mode, shadowCycleId AS cycleId FROM doubleEntrySettings WHERE id = 1 LIMIT 1
-  `))[0] as { mode?: string; cycleId?: string | null } | undefined;
+  `),
+  )[0] as { mode?: string; cycleId?: string | null } | undefined;
   if (modeRow?.mode === "ACTIVE" && modeRow.cycleId) {
     return activeJournalPlSnapshot(db, modeRow.cycleId, from, to, branchId);
   }
@@ -204,7 +230,9 @@ export async function plSnapshot(
         CAST(COALESCE(SUM(ae.revenue), 0) AS CHAR) AS revenue,
         CAST(COALESCE(SUM(ae.cost), 0) AS CHAR) AS cogs
       FROM accountingEntries ae
-      WHERE ae.entryType IN ('SALE','RETURN')
+      WHERE (ae.entryType IN ('SALE','RETURN') OR
+        (ae.entryType = 'ADJUST' AND
+          (ae.dedupeKey LIKE 'FULFILLMENT_CHARGE_ACCRUAL:%' OR ae.dedupeKey LIKE 'FULFILLMENT_CHARGE_CREDIT:%')))
         -- PURCHASE-RETURN (تدقيق ٢/٧): مرتجع الشراء يُقيَّد أيضاً بنوع RETURN لكن بـsupplierId (لا
         -- invoiceId/customerId)، وقيمته على cost سالبة ⇒ كان يُخفِّض COGS ويَنفخ الربح بلا أي بيع.
         -- COGS = تكلفة المُباع فقط ⇒ نستثني مرتجعات الشراء (supplierId NOT NULL) ونُبقي مرتجعات البيع.
@@ -239,6 +267,7 @@ export async function plSnapshot(
       INNER JOIN receipts r ON r.id = ae.receiptId
       LEFT JOIN voucherCategories vc ON vc.id = r.voucherCategoryId
       WHERE ae.entryType = 'PAYMENT_OUT'
+        AND (ae.dedupeKey IS NULL OR ae.dedupeKey NOT LIKE 'FULFILLMENT_CHARGE_%')
         AND (
           ae.postingProfile IN ('PAYMENT_OUT_OTHER', 'PAYMENT_OUT_CATEGORY', 'PAYMENT_OUT_EXPENSE')
           OR r.voucherPartyType = 'OTHER'
@@ -433,6 +462,21 @@ export async function plSnapshot(
     `),
   )[0] ?? { amount: "0" };
 
+  // Recognise quality/outsource costs at issue/accrual, never again at payment.
+  const fulfillmentCostRows = rowsOf(
+    await db.execute(sql`
+    SELECT CASE WHEN ae.dedupeKey LIKE 'AFTERCARE_ISSUE:%'
+      THEN 'AFTERCARE_QUALITY' ELSE 'FULFILLMENT_EXTERNAL_COST' END AS category,
+      CAST(COALESCE(SUM(ae.cost), 0) AS CHAR) AS amount
+    FROM accountingEntries ae
+    WHERE ae.entryType = 'ADJUST'
+      AND (ae.dedupeKey LIKE 'AFTERCARE_ISSUE:%' OR ae.dedupeKey LIKE 'FULFILLMENT_CHARGE_COST:%')
+      AND ae.entryDate >= ${from} AND ae.entryDate <= ${to}
+      ${branchAe}
+    GROUP BY category
+  `),
+  );
+
   const revenue = money(rc.revenue ?? 0);
   const cogs = money(rc.cogs ?? 0);
   const grossProfit = revenue.sub(cogs);
@@ -446,6 +490,20 @@ export async function plSnapshot(
     (acc, r) => acc.add(money(r.amount ?? 0)),
     money(0),
   );
+
+  for (const row of fulfillmentCostRows) {
+    const amount = money(row.amount ?? 0);
+    if (amount.isZero()) continue;
+    const quality = row.category === "AFTERCARE_QUALITY";
+    expenseLines.push({
+      key: String(row.category),
+      label: quality
+        ? "تكلفة معالجة النقص والجودة"
+        : "تكلفة التجهيز والتعهيد الخارجي",
+      amount: toDbMoney(amount),
+    });
+    totalExpenses = totalExpenses.plus(amount);
+  }
 
   for (const vr of voucherExpenseRows) {
     const amt = money(vr.amount ?? 0);
@@ -961,6 +1019,12 @@ export interface FinancialPosition {
   deliveryFeeHeldLiability: string;
   /** أجور توصيل مكتسبة لجهات التوصيل ولم تُدفع بعد (SHOP؛ COUNTER ضمن الأمانات أعلاه). */
   deliveryFeeDueLiability: string;
+  /** Classified pass-through claims still owed to their identified beneficiaries. */
+  fulfillmentPassThroughLiability: string;
+  /** Accrued contractor costs outside supplier trade AP (supplier AP is already included). */
+  fulfillmentPayeeLiability: string;
+  /** Actual customer overcollections held separately from customer trade AR. */
+  fulfillmentCustomerCredit: string;
   /** صافي دائن أجر الموظفين المستحق من الدفتر المزدوج (الدائن − المدين). */
   accruedSalaryLiability: string;
   /** صافي دائن ضريبة الرواتب المطلوب تحويلها. */
@@ -1023,6 +1087,9 @@ export async function getFinancialPosition(
     deliveryFloatCustomerBacked: zero,
     deliveryFeeHeldLiability: zero,
     deliveryFeeDueLiability: zero,
+    fulfillmentPassThroughLiability: zero,
+    fulfillmentPayeeLiability: zero,
+    fulfillmentCustomerCredit: zero,
     accruedSalaryLiability: zero,
     payrollTaxPayable: zero,
     socialSecurityPayable: zero,
@@ -1078,6 +1145,14 @@ export async function getFinancialPosition(
         CAST(COALESCE(SUM(CASE WHEN t.net < 0 THEN -t.net ELSE 0 END), 0) AS CHAR) AS c
       FROM (
         SELECT ae.customerId AS customerId, SUM(CASE
+          WHEN ae.dedupeKey LIKE 'FULFILLMENT_CHARGE_ACCRUAL:%'
+            OR ae.dedupeKey LIKE 'FULFILLMENT_CHARGE_CREDIT:%' THEN CAST(ae.amount AS DECIMAL(15,2))
+          WHEN ae.dedupeKey LIKE 'FULFILLMENT_CHARGE_COLLECTION:R:%' THEN -COALESCE((
+            SELECT SUM(fcp.amount) FROM fulfillmentChargePayments fcp
+            WHERE fcp.receiptId = ae.receiptId AND fcp.kind = 'COLLECTION'
+          ), 0)
+          WHEN ae.dedupeKey LIKE 'FULFILLMENT_CHARGE_EXCESS_REFUND:%'
+            OR ae.dedupeKey LIKE 'FULFILLMENT_COURIER_EXCESS:%' THEN 0
           WHEN ae.entryType = 'SALE' THEN CAST(ae.amount AS DECIMAL(15,2))
           WHEN ae.entryType = 'RETURN' AND ae.supplierId IS NULL THEN CAST(ae.amount AS DECIMAL(15,2))
           WHEN ae.entryType = 'ADJUST' AND ae.dedupeKey LIKE 'ADJUST:IQD:%' THEN CAST(ae.amount AS DECIMAL(15,2))
@@ -1351,11 +1426,43 @@ export async function getFinancialPosition(
   // `arDebit` (البيع الآجل رفع `customers.currentBalance` بنفس المبلغ، والتوريد يخفض الاثنين
   // معاً). المتبقّي على الإرساليات الحيّة (DISPATCHED/PARTIAL) لفواتيرَ ذاتِ عميلٍ مسجَّل
   // يُستبعَد من الأصل هنا فلا يُحتسب ديناران لدينارٍ واحد بالطريق.
+  // Charge allocations and actual excess are already outside invoice AR. The
+  // charge remittance rows identify their share of released custody; only the
+  // remainder reduces the excess pool, capped by the original excess. A shop
+  // refund clears the customer liability, never the cash still with the courier.
   const dfDupRow = rowsOf(
     await db.execute(sql`
-    SELECT CAST(COALESCE(SUM(GREATEST(0, x.custodyAmount)), 0) AS CHAR) AS v
+    SELECT CAST(COALESCE(SUM(GREATEST(0,
+      x.custodyAmount - x.fulfillmentCustody
+      - GREATEST(0, x.excessCollected - GREATEST(0, x.custodyReleased - x.fulfillmentRemitted))
+    )), 0) AS CHAR) AS v
     FROM (
-      SELECT dc.id, COALESCE(SUM(CASE
+      SELECT dc.id,
+        COALESCE((SELECT SUM(ae.amount)
+          FROM accountingEntries ae
+          WHERE ae.entryType = 'PAYMENT_IN'
+            AND ae.branchId = dc.branchId AND ae.deliveryPartyId = dc.partyId
+            AND LEFT(ae.dedupeKey, CHAR_LENGTH(CONCAT('FULFILLMENT_COURIER_EXCESS:', dc.id, ':')))
+              = CONCAT('FULFILLMENT_COURIER_EXCESS:', dc.id, ':')
+            ${asOf ? sql`AND ae.entryDate <= ${asOf}` : sql``}
+        ), 0) AS excessCollected,
+        COALESCE((SELECT SUM(fcp.amount)
+          FROM fulfillmentChargePayments fcp
+          WHERE fcp.consignmentId = dc.id AND fcp.branchId = dc.branchId
+            AND fcp.kind = 'COURIER_REMITTANCE'
+            ${asOf ? sql`AND DATE(fcp.createdAt) <= ${asOf}` : sql``}
+        ), 0) AS fulfillmentRemitted,
+        COALESCE((SELECT SUM(CASE
+          WHEN fcp.kind = 'COURIER_COLLECTION' THEN fcp.amount
+          WHEN fcp.kind = 'COURIER_REMITTANCE' THEN -fcp.amount ELSE 0 END)
+          FROM fulfillmentChargePayments fcp
+          WHERE fcp.consignmentId = dc.id AND fcp.branchId = dc.branchId
+            ${asOf ? sql`AND DATE(fcp.createdAt) <= ${asOf}` : sql``}
+        ), 0) AS fulfillmentCustody,
+        COALESCE(SUM(CASE
+          WHEN dle.entryType IN ('COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF','SHORTFALL_SETTLED') THEN dle.amount
+          ELSE 0 END), 0) AS custodyReleased,
+        COALESCE(SUM(CASE
         WHEN dle.entryType IN ('COD_COLLECTED','SHORTFALL_ASSIGNED') THEN dle.amount
         WHEN dle.entryType IN ('COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF','SHORTFALL_SETTLED') THEN -dle.amount
         ELSE 0 END), 0) AS custodyAmount
@@ -1366,6 +1473,7 @@ export async function getFinancialPosition(
         AND NOT EXISTS (
           SELECT 1 FROM accountingEntries ae
           WHERE ae.dedupeKey = CONCAT('PAYMENT_IN:COURIER_DELIVERY:', dc.id)
+            ${asOf ? sql`AND ae.entryDate <= ${asOf}` : sql``}
         )
         ${bId ? sql`AND dle.branchId = ${bId}` : sql``}
         ${asOf ? sql`AND DATE(dle.occurredAt) <= ${asOf}` : sql``}
@@ -1415,15 +1523,79 @@ export async function getFinancialPosition(
   const feeDueNet = money(feeDueRow.v ?? 0);
   const deliveryFeeDueLiability = feeDueNet.gt(0) ? feeDueNet : money(0);
 
+  // OFF has no persisted journal roles. Reconstruct only the explicit new writer
+  // events, never today's charge balances for a historical date. Supplier AP is
+  // already in apCredit; only other identified payees belong in the extra row.
+  const fulfillmentLiabilityRows = rowsOf(
+    await db.execute(sql`
+    SELECT fulfillment_event.kind, CAST(COALESCE(SUM(fulfillment_event.delta), 0) AS CHAR) AS balance
+    FROM (
+      SELECT ae.branchId, ae.entryDate, 'PASS_THROUGH' AS kind, ae.amount AS delta
+      FROM accountingEntries ae
+      JOIN fulfillmentCharges fc ON ae.dedupeKey = CONCAT('FULFILLMENT_CHARGE_ACCRUAL:', fc.id)
+      WHERE fc.category = 'PASS_THROUGH' AND ae.entryType = 'ADJUST'
+      UNION ALL
+      SELECT ae.branchId, ae.entryDate, 'PAYEE', ae.cost
+      FROM accountingEntries ae
+      JOIN fulfillmentCharges fc ON ae.dedupeKey = CONCAT('FULFILLMENT_CHARGE_COST:', fc.id)
+      WHERE fc.category <> 'PASS_THROUGH' AND fc.payeeSupplierId IS NULL AND ae.entryType = 'ADJUST'
+      UNION ALL
+      SELECT ae.branchId, ae.entryDate, 'PASS_THROUGH', ae.amount
+      FROM accountingEntries ae
+      JOIN fulfillmentChargePayments fcp ON ae.dedupeKey = CONCAT('FULFILLMENT_CHARGE_CREDIT:R:', fcp.receiptId) AND fcp.kind = 'REFUND'
+      JOIN fulfillmentCharges fc ON fc.id = fcp.chargeId
+      WHERE fc.category = 'PASS_THROUGH' AND ae.dedupeKey = CONCAT('FULFILLMENT_CHARGE_CREDIT:R:', fcp.receiptId)
+      UNION ALL
+      SELECT ae.branchId, ae.entryDate,
+        CASE WHEN fc.category = 'PASS_THROUGH' THEN 'PASS_THROUGH' ELSE 'PAYEE' END,
+        -fcp.amount
+      FROM accountingEntries ae
+      JOIN fulfillmentChargePayments fcp ON fcp.receiptId = ae.receiptId AND fcp.kind = 'PAYEE_PAYMENT'
+      JOIN fulfillmentCharges fc ON fc.id = fcp.chargeId
+      WHERE ae.dedupeKey = CONCAT('FULFILLMENT_CHARGE_PAYEE:R:', fcp.receiptId)
+        AND (fc.category = 'PASS_THROUGH' OR fc.payeeSupplierId IS NULL)
+      UNION ALL
+      SELECT ae.branchId, ae.entryDate, 'CUSTOMER_CREDIT',
+        ae.amount - COALESCE((SELECT SUM(fcp.amount) FROM fulfillmentChargePayments fcp
+          WHERE fcp.receiptId = ae.receiptId AND fcp.kind = 'COLLECTION'), 0)
+      FROM accountingEntries ae WHERE ae.dedupeKey LIKE 'FULFILLMENT_CHARGE_COLLECTION:R:%'
+      UNION ALL
+      SELECT ae.branchId, ae.entryDate, 'CUSTOMER_CREDIT', -ae.amount
+      FROM accountingEntries ae WHERE ae.dedupeKey LIKE 'FULFILLMENT_CHARGE_EXCESS_REFUND:R:%'
+      UNION ALL
+      SELECT ae.branchId, ae.entryDate, 'CUSTOMER_CREDIT', ae.amount
+      FROM accountingEntries ae WHERE ae.dedupeKey LIKE 'FULFILLMENT_COURIER_EXCESS:%'
+    ) fulfillment_event
+    WHERE 1 = 1
+      ${bId ? sql`AND fulfillment_event.branchId = ${bId}` : sql``}
+      ${asOf ? sql`AND fulfillment_event.entryDate <= ${asOf}` : sql``}
+    GROUP BY fulfillment_event.kind
+  `),
+  ) as Array<{ kind: string; balance: string }>;
+  const fulfillmentLiabilityByKind = new Map(
+    fulfillmentLiabilityRows.map((row) => [row.kind, money(row.balance)]),
+  );
+  const fulfillmentPassThroughLiability =
+    fulfillmentLiabilityByKind.get("PASS_THROUGH") ?? money(0);
+  const fulfillmentPayeeLiability =
+    fulfillmentLiabilityByKind.get("PAYEE") ?? money(0);
+  const fulfillmentCustomerCredit =
+    fulfillmentLiabilityByKind.get("CUSTOMER_CREDIT") ?? money(0);
+
   // خصوم الرواتب: من أدوار دورة اليومية في ACTIVE/SHADOW (الرصيد الطبيعي = الدائن − المدين)،
   // ومن remainingAmount في دفتر الالتزامات التشغيلي عند OFF حيث لا توجد يومية أصلاً.
   // اعتماد المسيّر يدائن الأدوار، والدفع/التحويل يدينها، وإعادة الدفع تدائنها مجدداً؛ لذلك تعكس
   // اللقطة التسديد الجزئي والعكس بلا استنتاج من حالة المسيّر. ربط الدورة الحالية يمنع خلط دورات SHADOW.
-  const payrollMode = rowsOf(await db.execute(sql`
+  const payrollMode = rowsOf(
+    await db.execute(sql`
     SELECT mode, shadowCycleId AS cycleId FROM doubleEntrySettings WHERE id = 1 LIMIT 1
-  `))[0] as { mode?: string; cycleId?: string | null } | undefined;
-  const payrollLiabilityRows = payrollMode?.cycleId && (payrollMode.mode === "ACTIVE" || payrollMode.mode === "SHADOW")
-    ? rowsOf(await db.execute(sql`
+  `),
+  )[0] as { mode?: string; cycleId?: string | null } | undefined;
+  const payrollLiabilityRows =
+    payrollMode?.cycleId &&
+    (payrollMode.mode === "ACTIVE" || payrollMode.mode === "SHADOW")
+      ? (rowsOf(
+          await db.execute(sql`
         SELECT
           jl.role AS role,
           CAST(COALESCE(SUM(jl.credit - jl.debit), 0) AS CHAR) AS balance
@@ -1438,9 +1610,11 @@ export async function getFinancialPosition(
           ${bId ? sql`AND je.branchId = ${bId}` : sql``}
           ${asOf ? sql`AND je.entryDate <= ${asOf}` : sql``}
         GROUP BY jl.role
-      `)) as Array<{ role: string; balance: string }>
-    : asOf
-      ? rowsOf(await db.execute(sql`
+      `),
+        ) as Array<{ role: string; balance: string }>)
+      : asOf
+        ? (rowsOf(
+            await db.execute(sql`
           SELECT historical.role, CAST(COALESCE(SUM(historical.balance), 0) AS CHAR) AS balance
           FROM (
             SELECT
@@ -1476,8 +1650,10 @@ export async function getFinancialPosition(
           ) historical
           WHERE historical.balance <> 0
           GROUP BY historical.role
-        `)) as Array<{ role: string; balance: string }>
-      : rowsOf(await db.execute(sql`
+        `),
+          ) as Array<{ role: string; balance: string }>)
+        : (rowsOf(
+            await db.execute(sql`
           SELECT
             CASE payrollObligationKind
               WHEN 'SALARY_NET' THEN 'ACCRUED_SALARY'
@@ -1490,16 +1666,26 @@ export async function getFinancialPosition(
           WHERE payrollObligationStatus IN ('OPEN', 'PARTIAL')
             ${bId ? sql`AND branchIdSnapshot = ${bId}` : sql``}
           GROUP BY payrollObligationKind
-        `)) as Array<{ role: string; balance: string }>;
+        `),
+          ) as Array<{ role: string; balance: string }>);
   const payrollLiabilityByRole = new Map(
-    payrollLiabilityRows.map((row) => [String(row.role), money(row.balance ?? 0)]),
+    payrollLiabilityRows.map((row) => [
+      String(row.role),
+      money(row.balance ?? 0),
+    ]),
   );
-  const accruedSalaryLiability = payrollLiabilityByRole.get("ACCRUED_SALARY") ?? money(0);
-  const payrollTaxPayable = payrollLiabilityByRole.get("PAYROLL_TAX_PAYABLE") ?? money(0);
-  const socialSecurityPayable = payrollLiabilityByRole.get("SOCIAL_SECURITY_PAYABLE") ?? money(0);
+  const accruedSalaryLiability =
+    payrollLiabilityByRole.get("ACCRUED_SALARY") ?? money(0);
+  const payrollTaxPayable =
+    payrollLiabilityByRole.get("PAYROLL_TAX_PAYABLE") ?? money(0);
+  const socialSecurityPayable =
+    payrollLiabilityByRole.get("SOCIAL_SECURITY_PAYABLE") ?? money(0);
   const eosProvision = payrollLiabilityByRole.get("EOS_PROVISION") ?? money(0);
-  const employeeAdvanceRow = payrollMode?.cycleId && (payrollMode.mode === "ACTIVE" || payrollMode.mode === "SHADOW")
-    ? rowsOf(await db.execute(sql`
+  const employeeAdvanceRow =
+    payrollMode?.cycleId &&
+    (payrollMode.mode === "ACTIVE" || payrollMode.mode === "SHADOW")
+      ? (rowsOf(
+          await db.execute(sql`
         SELECT CAST(COALESCE(SUM(jl.debit - jl.credit), 0) AS CHAR) AS balance
         FROM journalLines jl
         INNER JOIN journalEntries je ON je.id = jl.journalId
@@ -1508,9 +1694,11 @@ export async function getFinancialPosition(
           AND jl.role = 'EMPLOYEE_ADVANCES'
           ${bId ? sql`AND je.branchId = ${bId}` : sql``}
           ${asOf ? sql`AND je.entryDate <= ${asOf}` : sql``}
-      `))[0] as { balance?: string } | undefined
-    : asOf
-      ? rowsOf(await db.execute(sql`
+      `),
+        )[0] as { balance?: string } | undefined)
+      : asOf
+        ? (rowsOf(
+            await db.execute(sql`
           SELECT CAST(COALESCE(SUM(
             CASE
               WHEN ea.advanceStatus = 'CANCELLED' AND DATE(ea.updatedAt) <= ${asOf} THEN 0
@@ -1538,16 +1726,22 @@ export async function getFinancialPosition(
           FROM employeeAdvances ea
           WHERE DATE(ea.grantedAt) <= ${asOf}
             ${bId ? sql`AND ea.branchId = ${bId}` : sql``}
-        `))[0] as { balance?: string } | undefined
-      : rowsOf(await db.execute(sql`
+        `),
+          )[0] as { balance?: string } | undefined)
+        : (rowsOf(
+            await db.execute(sql`
           SELECT CAST(COALESCE(SUM(remaining), 0) AS CHAR) AS balance
           FROM employeeAdvances
           WHERE advanceStatus = 'ACTIVE'
             ${bId ? sql`AND branchId = ${bId}` : sql``}
-        `))[0] as { balance?: string } | undefined;
+        `),
+          )[0] as { balance?: string } | undefined);
   const employeeAdvanceReceivable = money(employeeAdvanceRow?.balance ?? 0);
-  const interbranchRow = payrollMode?.cycleId && (payrollMode.mode === "ACTIVE" || payrollMode.mode === "SHADOW")
-    ? rowsOf(await db.execute(sql`
+  const interbranchRow =
+    payrollMode?.cycleId &&
+    (payrollMode.mode === "ACTIVE" || payrollMode.mode === "SHADOW")
+      ? (rowsOf(
+          await db.execute(sql`
         SELECT CAST(COALESCE(SUM(jl.debit - jl.credit), 0) AS CHAR) AS balance
         FROM journalLines jl
         INNER JOIN journalEntries je ON je.id = jl.journalId
@@ -1556,8 +1750,9 @@ export async function getFinancialPosition(
           AND jl.role = 'INTERBRANCH_CLEARING'
           ${bId ? sql`AND je.branchId = ${bId}` : sql``}
           ${asOf ? sql`AND je.entryDate <= ${asOf}` : sql``}
-      `))[0] as { balance?: string } | undefined
-    : undefined;
+      `),
+        )[0] as { balance?: string } | undefined)
+      : undefined;
   const interbranchNet = money(interbranchRow?.balance ?? 0);
   const dueFromBranches = interbranchNet.gt(0) ? interbranchNet : money(0);
   const dueToBranches = interbranchNet.lt(0) ? interbranchNet.abs() : money(0);
@@ -1589,6 +1784,9 @@ export async function getFinancialPosition(
     .add(exchangeCredit)
     .add(deliveryFeeHeldLiability)
     .add(deliveryFeeDueLiability)
+    .add(fulfillmentPassThroughLiability)
+    .add(fulfillmentPayeeLiability)
+    .add(fulfillmentCustomerCredit)
     .add(accruedSalaryLiability)
     .add(payrollTaxPayable)
     .add(socialSecurityPayable)
@@ -1609,11 +1807,12 @@ export async function getFinancialPosition(
   }
 
   const historicalNote = isHistorical
-    ? `النقد ورصيد زين والذمم وعهدة التوصيل وأجورها مبنيّة من دفاتر مؤرخة حتى هذا التاريخ. المخزون والأصول الثابتة وعرابين أوامر الشغل والطلبات المحفوظة ورصيد الصيرفة تبقى بقيمتها الحالية لغياب سجل تاريخ تكلفة كامل.${payrollMode?.cycleId ? " خصوم الرواتب وسلف الموظفين مبنيّة من اليومية حتى تاريخ اللقطة." : " وفي وضع OFF تُعاد خصوم الرواتب وسلف الموظفين تاريخياً من أصل دفاترها وتخصيصات السداد/الاسترداد وعكوسها المؤرخة حتى اللقطة."}`
+    ? `النقد ورصيد زين والذمم وعهدة التوصيل وأجورها والتزامات الأجور المصنفة وفائض قبض العميل مبنيّة من دفاتر مؤرخة حتى هذا التاريخ. المخزون والأصول الثابتة وعرابين أوامر الشغل والطلبات المحفوظة ورصيد الصيرفة تبقى بقيمتها الحالية لغياب سجل تاريخ تكلفة كامل.${payrollMode?.cycleId ? " خصوم الرواتب وسلف الموظفين مبنيّة من اليومية حتى تاريخ اللقطة." : " وفي وضع OFF تُعاد خصوم الرواتب وسلف الموظفين تاريخياً من أصل دفاترها وتخصيصات السداد/الاسترداد وعكوسها المؤرخة حتى اللقطة."}`
     : null;
-  const interbranchNote = bId && !payrollMode?.cycleId
-    ? "مقاصة الفروع لا تُقاس في وضع OFF لغياب يومية مزدوجة؛ فعّل SHADOW/ACTIVE قبل الاعتماد على مركز الفرع، بينما تظل قائمة الشركة المجمعة غير متأثرة بالمقاصة الداخلية."
-    : null;
+  const interbranchNote =
+    bId && !payrollMode?.cycleId
+      ? "مقاصة الفروع لا تُقاس في وضع OFF لغياب يومية مزدوجة؛ فعّل SHADOW/ACTIVE قبل الاعتماد على مركز الفرع، بينما تظل قائمة الشركة المجمعة غير متأثرة بالمقاصة الداخلية."
+      : null;
 
   return {
     cash: toDbMoney(cash),
@@ -1639,6 +1838,9 @@ export async function getFinancialPosition(
     deliveryFloatCustomerBacked: toDbMoney(deliveryFloatCustomerBacked),
     deliveryFeeHeldLiability: toDbMoney(deliveryFeeHeldLiability),
     deliveryFeeDueLiability: toDbMoney(deliveryFeeDueLiability),
+    fulfillmentPassThroughLiability: toDbMoney(fulfillmentPassThroughLiability),
+    fulfillmentPayeeLiability: toDbMoney(fulfillmentPayeeLiability),
+    fulfillmentCustomerCredit: toDbMoney(fulfillmentCustomerCredit),
     accruedSalaryLiability: toDbMoney(accruedSalaryLiability),
     payrollTaxPayable: toDbMoney(payrollTaxPayable),
     socialSecurityPayable: toDbMoney(socialSecurityPayable),

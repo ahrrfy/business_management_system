@@ -1745,6 +1745,10 @@ function procedureUsesOwnerScope(name, info, visited = new Set()) {
 
 Object.assign(WORDS, {
   auth: "الدخول",
+  aftercare: "معالجة ما بعد البيع",
+  fulfillment: "التجهيز",
+  excess: "الفائض",
+  payee: "المستفيد",
   key: "المفتاح",
   label: "التسمية",
   system: "النظام",

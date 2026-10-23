@@ -29,6 +29,7 @@ export interface SplitPaymentSectionProps {
   onConfirmLegExternalPayment: (legId: string) => void;
   confirmingLegId: string | null;
   splitNonCashOverpay?: boolean;
+  deliveryFeeHeld?: number;
 }
 
 export function SplitPaymentSection({
@@ -44,6 +45,7 @@ export function SplitPaymentSection({
   onConfirmLegExternalPayment,
   confirmingLegId,
   splitNonCashOverpay = false,
+  deliveryFeeHeld = 0,
 }: SplitPaymentSectionProps) {
   if (paymentLegs.length === 0) {
     return (
@@ -189,7 +191,7 @@ export function SplitPaymentSection({
       </div>
 
       {paymentLegs.map((leg, idx) => {
-        const confirmed = isSplitLegExternalConfirmed(leg);
+        const confirmed = isSplitLegExternalConfirmed(leg, D(idx === 0 ? deliveryFeeHeld : 0));
         const confirming = confirmingLegId === leg.id;
         return (
           <div

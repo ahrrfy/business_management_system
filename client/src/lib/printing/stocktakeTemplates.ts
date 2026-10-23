@@ -17,6 +17,7 @@ import { fmtDate, fmtDateTime } from "../date";
 import { wrapA4Doc, docHeader, docMeta, docTable, docFooter } from "./docHtml";
 import { code128Svg } from "./barcode";
 import { fmtQty } from "@shared/quantityFormat";
+import { stocktakePrintState } from "./stocktakePrintState";
 import { variantDisplayName, variantDescriptor } from "@shared/variantDisplay";
 
 // ─── تسميات مشتركة (تُستورد أيضاً في شاشات الجرد) ────────────────────────────
@@ -112,6 +113,7 @@ export interface StocktakeReasonRow {
 }
 
 export interface StocktakeReportPrintData {
+  status: string;
   sessionType?: "NORMAL" | "OPENING";
   code: string;
   name: string;
@@ -163,8 +165,10 @@ export interface StocktakeReportPrintData {
 
 export function printStocktakeReport(d: StocktakeReportPrintData): void {
   const isOpening = d.sessionType === "OPENING";
+  const printState = stocktakePrintState(d);
   // ── بيانات الجلسة (docMeta) ──
   const sessionFields = [
+    { label: "الحالة", value: STOCKTAKE_STATUS_LABEL[d.status] ?? d.status },
     { label: "الجلسة", value: d.name },
     { label: "الفرع", value: d.branchName },
     { label: "النطاق", value: d.scopeLabel },
@@ -346,7 +350,7 @@ export function printStocktakeReport(d: StocktakeReportPrintData): void {
     Number(d.ledger.shortExpense ?? 0) > 0 ||
     Number(d.ledger.overGain ?? 0) > 0;
   const ledgerBox = `<div style="flex:1.4;background:${B.bg};border:1px solid ${B.border};border-radius:4px;padding:3mm;">
-    <div style="font-size:9.5px;font-weight:800;margin-bottom:2mm;">القيد المحاسبي الآلي
+    <div style="font-size:9.5px;font-weight:800;margin-bottom:2mm;">${esc(printState.ledgerTitle)}
       (مرجع <span dir="ltr" style="font-family:monospace;">${esc(d.code)}</span>)</div>
     ${
       hasLedger
@@ -379,19 +383,13 @@ export function printStocktakeReport(d: StocktakeReportPrintData): void {
   const ledgerIraRow = isOpening
     ? `<div style="background:${B.greenMist};border:1px solid ${B.greenLight};border-radius:4px;padding:3mm;margin-bottom:4mm;">
         <div style="font-size:10px;font-weight:800;color:${B.greenDark};">الأثر المحاسبي والنقدي: صفر</div>
-        <div style="font-size:8.5px;color:${B.textMuted};margin-top:1mm;">ثُبتت الكميات بحركات OPENING فقط؛ لا قيد عجز/زيادة، ولا قبض أو صرف أو أثر صندوق أو مصرف أو ذمم. مؤشر IRA والانكماش غير مطبقين على التأسيس الافتتاحي.</div>
+        <div style="font-size:8.5px;color:${B.textMuted};margin-top:1mm;">${esc(printState.openingEffect)}</div>
       </div>`
     : `<div style="display:flex;gap:3mm;margin-bottom:4mm;">${ledgerBox}${iraBox}</div>`;
 
-  // ── ملاحظة التنفيذ ──
-  const footnote = `<p style="background:${B.bg};border:1px solid ${B.border};border-radius:4px;padding:3mm;
-    margin-bottom:5mm;font-size:8.5px;line-height:1.8;color:${B.textMuted};">
-    ${
-      isOpening
-        ? `ثُبتت الأرصدة الافتتاحية بحركات OPENING ذرّية بمرجع <span dir="ltr" style="font-family:monospace;">${esc(d.code)}</span>، بلا قيد عجز/زيادة أو أثر على الأرباح أو النقد.`
-        : `نُفّذت التسوية بحركات ADJUST ذرّية بمرجع <span dir="ltr" style="font-family:monospace;">${esc(d.code)}</span> في سجلّ حركات المخزون، وحُدِّثت الأرصدة لحظة الاعتماد. الحدّ المعتمد للتسوية المباشرة: ${esc(fmt(d.thresholdPct))}٪ أو ${esc(fmtC(d.thresholdValue))}.`
-    }
-  </p>`;
+  const draftNotice = printState.notice
+    ? `<p style="border:2px solid ${B.orange};padding:3mm;margin-bottom:4mm;font-size:11px;font-weight:800;break-inside:avoid">${esc(printState.notice)}</p>` : "";
+  const footnote = `<p style="background:${B.bg};border:1px solid ${B.border};padding:3mm;margin-bottom:5mm;font-size:8.5px;line-height:1.8">${esc(printState.execution)}</p>`;
 
   // ── ثلاث خانات توقيع ──
   const sigBox = (
@@ -417,13 +415,14 @@ export function printStocktakeReport(d: StocktakeReportPrintData): void {
       dOnly(d.approvedAt ?? d.createdAt),
       [{ label: "الفرع", value: d.branchName }],
     ),
+    draftNotice,
     docMeta([
       { title: "بيانات الجلسة", fields: sessionFields },
       { title: "التواريخ والحدود", fields: datesFields },
     ]),
     statsRow,
     secTitle(
-      `أولاً — ${isOpening ? "التغييرات الافتتاحية المثبتة" : "الفروقات المُسوّاة"} (${fmt(d.adjusted.length)})`,
+      `أولاً — ${printState.adjustedTitle} (${fmt(d.adjusted.length)})`,
     ),
     adjustedSection,
     keptSection,

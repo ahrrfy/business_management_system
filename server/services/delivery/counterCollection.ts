@@ -12,12 +12,29 @@
 // COD_RELEASED (تحرير تعرّضٍ متوقَّع، نفس اصطلاح الإلغاء والرجوع المُعلَن).
 import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
 import Decimal from "decimal.js";
-import { and, eq, inArray, sql } from "drizzle-orm";
-import { deliveryConsignments, deliveryEvents, deliveryLedgerEntries } from "../../../drizzle/schema";
+import { and, eq, inArray, sql, or, isNotNull } from "drizzle-orm";
+import {
+  deliveryConsignments,
+  deliveryEvents,
+  deliveryLedgerEntries,
+  receipts,
+  invoices,
+  deliveryShipmentMembers,
+} from "../../../drizzle/schema";
+import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import type { Tx } from "../../db";
 import { money, round2, toDbMoney } from "../money";
 import { assertNotReturnDeclared } from "./declaredReturn";
-import { appendDeliveryEvent, appendDeliveryLedgerEntry, assertConsignmentStatusTransition } from "./lifecycle";
+import {
+  appendDeliveryEvent,
+  appendDeliveryLedgerEntry,
+  assertConsignmentStatusTransition,
+} from "./lifecycle";
+import {
+  assertCounterCollectionPrelocked,
+  hasFulfillmentCounterContractTx,
+} from "./guards";
 
 export interface CounterCollectionInput {
   invoiceId: number;
@@ -29,6 +46,8 @@ export interface CounterCollectionInput {
    * `eventKey` فريد (`CN:{id}:COUNTER:{refKey}`) فلا يُدوَّن نفس القبض مرّتين عند الإعادة.
    */
   refKey: string;
+  receiptId?: number;
+  receiptIds?: number[];
 }
 
 export interface CounterCollectionResult {
@@ -39,6 +58,8 @@ export interface CounterCollectionResult {
   liveRemaining: string;
   /** أُغلقت الإرسالية نهائياً (لا شيء يُورَّد). */
   closed: boolean;
+  claimVersion?: number;
+  notice?: string;
 }
 
 /**
@@ -50,10 +71,9 @@ export interface CounterCollectionResult {
  * بحالةٍ تعنيها الدفعة — والقبض على الفاتورة مشروعٌ في الحالتين (حارس «بالطريق» في
  * guards.ts هو من يرفض ما يجب رفضه قبل الوصول هنا).
  *
- * ⚠️ ترتيب الأقفال: معاملة القبض تحمل قفل الفاتورة أولاً ثم تقفل الإرسالية هنا — عكس
- * مسارات التوصيل (جهة←إرسالية←فاتورة). لتضييق النافذة نقرأ بلا قفلٍ أولاً ولا نقفل إلا
- * صفاً مؤهّلاً فعلاً (طردٌ مُسلَّم = المؤكِّد التزم وحرّر أقفاله)؛ وتصادمٌ متبقٍّ مع توريدٍ
- * متزامن يحسمه كاشف deadlock بإعادة محاولةٍ أعلى (retryOnDeadlock في مسار الاستقبال).
+ * processPayment يسبق قفل الفاتورة بقفل الجهة والإرسالية، ويستدعي هذا الكاتب بعد
+ * الإيصالات الفعلية. المسار القديم يبقى للطرد المسلم فقط؛ طلب التجهيز الموثق يسمح
+ * أيضاً بالقبض أثناء الطريق مع تخفيض التعرض ورفع نسخة مطالبة الناقل، دون ختم تسليم وهمي.
  */
 export async function registerCounterCollectionTx(
   tx: Tx,
@@ -69,7 +89,19 @@ export async function registerCounterCollectionTx(
         and(
           eq(deliveryConsignments.invoiceId, input.invoiceId),
           inArray(deliveryConsignments.status, ["DISPATCHED", "PARTIAL"]),
-          eq(deliveryConsignments.parcelStatus, "DELIVERED"),
+          or(
+            eq(deliveryConsignments.parcelStatus, "DELIVERED"),
+            and(
+              isNotNull(deliveryConsignments.fulfillmentRequestId),
+              inArray(deliveryConsignments.parcelStatus, [
+                "ASSIGNED",
+                "ACCEPTED",
+                "PICKED_UP",
+                "OUT_FOR_DELIVERY",
+                "FAILED",
+              ]),
+            ),
+          ),
         ),
       )
       .limit(1)
@@ -90,9 +122,66 @@ export async function registerCounterCollectionTx(
   if (
     !cn ||
     (cn.status !== "DISPATCHED" && cn.status !== "PARTIAL") ||
-    cn.parcelStatus !== "DELIVERED"
+    ![
+      "DELIVERED",
+      "ASSIGNED",
+      "ACCEPTED",
+      "PICKED_UP",
+      "OUT_FOR_DELIVERY",
+      "FAILED",
+    ].includes(cn.parcelStatus)
   ) {
     return null;
+  }
+  const fulfillment = await hasFulfillmentCounterContractTx(tx, cn);
+  if (fulfillment) {
+    const [invoice] = await tx
+      .select({ paymentMode: invoices.paymentMode })
+      .from(invoices)
+      .where(eq(invoices.id, input.invoiceId))
+      .limit(1);
+    // Approved credit debt was never courier goods COD; paying it cannot release a charge claim.
+    if (invoice?.paymentMode === "CREDIT") return null;
+  }
+  if (fulfillment) {
+    const ids =
+      input.receiptIds ?? (input.receiptId != null ? [input.receiptId] : []);
+    const evidence = ids.length
+      ? await tx
+          .select()
+          .from(receipts)
+          .where(inArray(receipts.id, ids))
+          .for("share")
+      : [];
+    if (
+      !ids.length ||
+      new Set(ids).size !== ids.length ||
+      evidence.length !== ids.length ||
+      evidence.some(
+        (r) =>
+          r.invoiceId !== input.invoiceId ||
+          r.branchId !== cn.branchId ||
+          r.direction !== "IN" ||
+          r.status !== "COMPLETED" ||
+          r.createdBy !== input.actorUserId,
+      ) ||
+      !evidence
+        .reduce((sum, r) => sum.plus(r.amount), money(0))
+        .eq(input.amount)
+    )
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذر تخفيض مطالبة الناقل",
+          why: "إيصالات التحصيل الفعلية لا تطابق الفاتورة والمبلغ والفرع",
+          doThis:
+            "أعد المحاولة من شاشة تحصيل الفاتورة بإثبات الدفع الأصلي؛ لا تسجل قبضاً أو تحرير عهدة يدوياً",
+        }),
+      });
+  }
+  if (cn.parcelStatus !== "DELIVERED") {
+    if (!fulfillment) return null;
+    assertCounterCollectionPrelocked(tx, input.invoiceId, cn);
   }
 
   // رجوعٌ مُعلَن = تعرّضُ الإرسالية حُرِّر سلفاً (COD_RELEASED:DECLARED_RETURN) — تدوينُ
@@ -119,10 +208,15 @@ export async function registerCounterCollectionTx(
   );
   // مقصوصٌ عند الصفر من الجهتين: انحرافٌ تاريخيّ قد يجعل المتبقّي سالباً، ودفعةٌ قد تفوقه
   // (جزءٌ منها يسدّد ما ليس على الإرسالية — مشروعٌ على الفاتورة، لا شأن للإرسالية به).
-  const applied = Decimal.min(round2(money(input.amount)), Decimal.max(liveRemainingBefore, 0));
+  const applied = Decimal.min(
+    round2(money(input.amount)),
+    Decimal.max(liveRemainingBefore, 0),
+  );
   if (applied.lte(0)) return null;
 
-  const newCounterSettled = round2(money(cn.counterSettledAmount ?? "0").plus(applied));
+  const newCounterSettled = round2(
+    money(cn.counterSettledAmount ?? "0").plus(applied),
+  );
   const liveRemaining = round2(liveRemainingBefore.minus(applied));
 
   /**
@@ -144,17 +238,33 @@ export async function registerCounterCollectionTx(
           ELSE 0 END), 0)`,
       })
       .from(deliveryLedgerEntries)
-      .where(and(eq(deliveryLedgerEntries.consignmentId, Number(cn.id)), effectiveDeliveryLedgerEntrySql()))
+      .where(
+        and(
+          eq(deliveryLedgerEntries.consignmentId, Number(cn.id)),
+          effectiveDeliveryLedgerEntrySql(),
+        ),
+      )
   )[0];
   const pendingCustody = round2(money(custodyRow?.pending ?? "0"));
   const noPendingCustody = pendingCustody.lte(0);
-  const close = liveRemaining.isZero() && noPendingCustody;
+  const close =
+    cn.parcelStatus === "DELIVERED" &&
+    liveRemaining.isZero() &&
+    noPendingCustody;
   if (close) assertConsignmentStatusTransition(cn.status, "DELIVERED");
 
   await tx
     .update(deliveryConsignments)
     .set({
       counterSettledAmount: toDbMoney(newCounterSettled),
+      ...(fulfillment
+        ? {
+            codClaimVersion: cn.codClaimVersion + 1,
+            ...(!close && liveRemaining.isZero() && noPendingCustody
+              ? { moneyStatus: "NOT_APPLICABLE" as const }
+              : {}),
+          }
+        : {}),
       ...(close
         ? {
             status: "DELIVERED" as const,
@@ -176,7 +286,7 @@ export async function registerCounterCollectionTx(
     entryType: "COD_RELEASED",
     amount: toDbMoney(applied),
     actorUserId: input.actorUserId,
-    notes: `سداد كاونتري بعد ثبوت التسليم ${cn.consignmentNumber}`,
+    notes: `سداد كاونتري ${cn.parcelStatus === "DELIVERED" ? "بعد ثبوت التسليم" : "أثناء الطريق بطلب تجهيز موثق"} ${cn.consignmentNumber}`,
   });
   await appendDeliveryEvent(tx, {
     eventKey,
@@ -185,17 +295,82 @@ export async function registerCounterCollectionTx(
     fromParcelStatus: cn.parcelStatus,
     toParcelStatus: cn.parcelStatus,
     fromMoneyStatus: cn.moneyStatus,
-    toMoneyStatus: close ? "SETTLED" : cn.moneyStatus,
+    toMoneyStatus: close
+      ? "SETTLED"
+      : fulfillment && liveRemaining.isZero() && noPendingCustody
+        ? "NOT_APPLICABLE"
+        : cn.moneyStatus,
     actorUserId: input.actorUserId,
     // مصدر السلطة يُدوَّن دائماً (نمط COMPANY_STATEMENT/COURIER_PORTAL): هذا المال دخل
     // من الكاونتر بإيصال درجٍ في نفس المعاملة — refKey يصله بمفتاح قبضه.
-    payload: { source: "COUNTER", amount: toDbMoney(applied), refKey: input.refKey },
+    payload: {
+      source: "COUNTER",
+      amount: toDbMoney(applied),
+      refKey: input.refKey,
+    },
   });
+  let acknowledgementCnId = cn.id;
+  let acknowledgementVersion = cn.codClaimVersion + 1;
+  if (fulfillment) {
+    const [membership] = await tx
+      .select({ leaderId: deliveryShipmentMembers.leaderConsignmentId })
+      .from(deliveryShipmentMembers)
+      .where(eq(deliveryShipmentMembers.consignmentId, cn.id))
+      .limit(1);
+    if (membership && membership.leaderId !== cn.id) {
+      const [leader] = await tx
+        .select()
+        .from(deliveryConsignments)
+        .where(eq(deliveryConsignments.id, membership.leaderId))
+        .for("update")
+        .limit(1);
+      if (
+        !leader ||
+        leader.partyId !== cn.partyId ||
+        leader.branchId !== cn.branchId ||
+        leader.fulfillmentRequestId !== cn.fulfillmentRequestId
+      )
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذر تحديث مطالبة الشحنة",
+            why: "قائد الشحنة لا يطابق مستند التجهيز والجهة والفرع",
+            doThis:
+              "حدّث الشحنة وراجع روابط أعضائها مع المسؤول قبل إعادة التحصيل",
+          }),
+        });
+      acknowledgementCnId = leader.id;
+      acknowledgementVersion = leader.codClaimVersion + 1;
+      await tx
+        .update(deliveryConsignments)
+        .set({ codClaimVersion: acknowledgementVersion })
+        .where(eq(deliveryConsignments.id, leader.id));
+    }
+    await appendDeliveryEvent(tx, {
+      eventKey: `${eventKey}:CLAIM_CHANGED`,
+      consignmentId: acknowledgementCnId,
+      eventType: "COD_CLAIM_CHANGED",
+      actorUserId: input.actorUserId,
+      payload: {
+        invoiceId: input.invoiceId,
+        receiptId: input.receiptId,
+        claimVersion: acknowledgementVersion,
+        ackRequired: true,
+      },
+    });
+  }
 
   return {
     consignmentId: Number(cn.id),
     applied: toDbMoney(applied),
     liveRemaining: toDbMoney(liveRemaining),
     closed: close,
+    ...(fulfillment
+      ? {
+          claimVersion: acknowledgementVersion,
+          notice:
+            "ثبت القبض في المكتبة وتغير مبلغ مطالبة الناقل؛ على الناقل الإقرار بالنسخة الجديدة قبل التحصيل.",
+        }
+      : {}),
   };
 }

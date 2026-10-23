@@ -172,6 +172,9 @@ async function loadStatementConsignments(input: {
       codAmount: deliveryConsignments.codAmount,
       collectedAmount: deliveryConsignments.collectedAmount,
       invoiceId: deliveryConsignments.invoiceId,
+      sourceType: deliveryConsignments.sourceType,
+      fulfillmentRequestId: deliveryConsignments.fulfillmentRequestId,
+      aftercareExecutionId: deliveryConsignments.aftercareExecutionId,
       returnDeclaredAt: deliveryConsignments.returnDeclaredAt,
     })
     .from(deliveryConsignments)
@@ -202,6 +205,7 @@ async function preValidateStatementLines(
   ids: number[],
   byId: Map<number, {
     codAmount: string; collectedAmount: string; invoiceId: number | null;
+    sourceType?: string; fulfillmentRequestId?: number | null;
     parcelStatus: string; returnDeclaredAt: unknown;
   }>,
 ) {
@@ -216,10 +220,13 @@ async function preValidateStatementLines(
       });
     }
     const declared = round2(money(l.collectedAmount));
+    if (cn.sourceType === "AFTERCARE_EXECUTION" && !declared.isZero()) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذر تحصيل مبلغ على معالجة مجانية", why: "إرسالية المعالجة لا تحمل مطالبة مالية على العميل", doThis: "سجّل إثبات التسليم بمبلغ صفر دون تغيير الفاتورة الأصلية" }) });
+    }
     const codAmount = round2(money(cn.codAmount));
     const currentCollected = round2(money(cn.collectedAmount ?? "0"));
     const available = round2(codAmount.minus(currentCollected));
-    if (declared.gt(available)) {
+    if (declared.gt(available) && cn.sourceType !== "FULFILLMENT_REQUEST" && cn.fulfillmentRequestId == null) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: `الإرسالية ${l.consignmentId}: مبلغ هذا الكشف ${declared.toFixed(2)} أكثر من المتبقّي ${available.isNegative() ? "0.00" : available.toFixed(2)} (COD ${codAmount.toFixed(2)} ناقص المحصّل سابقاً ${currentCollected.toFixed(2)})`,

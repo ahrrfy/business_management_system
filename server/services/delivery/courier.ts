@@ -21,10 +21,19 @@ import {
   assertStandaloneConsignmentTx,
   loadShipmentMembersTx,
   operationalShipmentMembers,
+  shipmentCurrentPartyMembers,
 } from "./shipments";
 import { allocateProportionally } from "./remittance";
 import { computeOrderDeliveryOtp } from "../onlineOrderService";
 import Decimal from "decimal.js";
+import {
+  loadAssignedChargeClaimsTx,
+  collectAssignedConsignmentClaimsTx,
+} from "../fulfillment/chargeDelivery";
+import { fulfillmentError } from "../fulfillment/core";
+import { routeAftercareDeliveryResultTx } from "../fulfillment/aftercareDelivery";
+import { assertAftercareCourierTx } from "../fulfillment/aftercare";
+import { loadOperationUserTx } from "../authorization/operationAuthority";
 import { openBalanceExpr } from "@shared/predicates/openBalance";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import {
@@ -130,6 +139,12 @@ export interface MyDeliveryRow {
   shipmentMemberCount?: number;
   invoiceReferences?: string[];
   consignmentIds?: number[];
+  sourceType?: string;
+  sourceId?: number;
+  fulfillmentRequestId?: number | null;
+  aftercareExecutionId?: number | null;
+  codClaimVersion?: number;
+  courierAckClaimVersion?: number;
 }
 
 export interface MyDeliveriesResult {
@@ -265,6 +280,12 @@ export async function listMyDeliveries(
   const consignmentSelection = {
     id: deliveryConsignments.id,
     consignmentNumber: deliveryConsignments.consignmentNumber,
+    sourceType: deliveryConsignments.sourceType,
+    sourceId: deliveryConsignments.sourceId,
+    fulfillmentRequestId: deliveryConsignments.fulfillmentRequestId,
+    aftercareExecutionId: deliveryConsignments.aftercareExecutionId,
+    codClaimVersion: deliveryConsignments.codClaimVersion,
+    courierAckClaimVersion: deliveryConsignments.courierAckClaimVersion,
     status: deliveryConsignments.status,
     codAmount: deliveryConsignments.codAmount,
     collectedAmount: deliveryConsignments.collectedAmount,
@@ -344,19 +365,28 @@ export async function listMyDeliveries(
     );
     // Delivery settles the customer's invoice before the party remits its custody.
     // Delivered rows must retain the party's outstanding amount until remittance.
-    const due = r.parcelStatus === "DELIVERED" ? consignmentDue : Decimal.min(
-      consignmentDue,
-      Decimal.max(
-        money(r.invTotal ?? "0")
-          .minus(money(r.invReturned ?? "0"))
-          .minus(money(r.invPaid ?? "0")),
-        0,
-      ),
-    );
+    const due =
+      r.parcelStatus === "DELIVERED" || r.fulfillmentRequestId != null
+        ? consignmentDue
+        : Decimal.min(
+            consignmentDue,
+            Decimal.max(
+              money(r.invTotal ?? "0")
+                .minus(money(r.invReturned ?? "0"))
+                .minus(money(r.invPaid ?? "0")),
+              0,
+            ),
+          );
     const isFree = r.deliveryFree === true || r.feeCollection === "SHOP";
     const row: MyDeliveryRow = {
       id: Number(r.id),
       kind: "consignment",
+      sourceType: r.sourceType,
+      sourceId: r.sourceId,
+      fulfillmentRequestId: r.fulfillmentRequestId,
+      aftercareExecutionId: r.aftercareExecutionId,
+      codClaimVersion: r.codClaimVersion,
+      courierAckClaimVersion: r.courierAckClaimVersion,
       orderNumber: r.consignmentNumber,
       status: r.parcelStatus,
       customerName: r.recipientName ?? r.custName ?? null,
@@ -425,10 +455,21 @@ export async function listMyDeliveries(
     const mappingById = new Map(
       mappings.map((row) => [Number(row.consignmentId), row]),
     );
-    const leaderIds = Array.from(new Set(mappings.map(row => Number(row.leaderId))));
-    const leaders = leaderIds.length ? await db.select().from(deliveryConsignments)
-      .where(and(inArray(deliveryConsignments.id, leaderIds), eq(deliveryConsignments.partyId, membership.partyId))) : [];
-    const leaderById = new Map(leaders.map(row => [Number(row.id), row]));
+    const leaderIds = Array.from(
+      new Set(mappings.map((row) => Number(row.leaderId))),
+    );
+    const leaders = leaderIds.length
+      ? await db
+          .select()
+          .from(deliveryConsignments)
+          .where(
+            and(
+              inArray(deliveryConsignments.id, leaderIds),
+              eq(deliveryConsignments.partyId, membership.partyId),
+            ),
+          )
+      : [];
+    const leaderById = new Map(leaders.map((row) => [Number(row.id), row]));
     for (const list of [toDeliver, delivered]) {
       const groups = new Map<number, MyDeliveryRow[]>();
       for (const row of list) {
@@ -465,12 +506,20 @@ export async function listMyDeliveries(
           ...leader,
           id: leaderId,
           orderNumber: source?.consignmentNumber ?? leader.orderNumber,
-          externalTrackingRef: source?.externalTrackingRef ?? leader.externalTrackingRef,
+          externalTrackingRef:
+            source?.externalTrackingRef ?? leader.externalTrackingRef,
           orderTotal: sum("orderTotal"),
           codDue: sum("codDue"),
-          courierFee: source ? toDbMoney(source.feeCollection === "COURIER" ? money(source.deliveryFee) : money(0)) : sum("courierFee"),
+          courierFee: source
+            ? toDbMoney(
+                source.feeCollection === "COURIER"
+                  ? money(source.deliveryFee)
+                  : money(0),
+              )
+            : sum("courierFee"),
           collectedAmount: sum("collectedAmount"),
-          consignmentDeliveryFee: source?.deliveryFee ?? sum("consignmentDeliveryFee"),
+          consignmentDeliveryFee:
+            source?.deliveryFee ?? sum("consignmentDeliveryFee"),
           feeCollection: source?.feeCollection ?? leader.feeCollection,
           deliveryFree: source?.feeCollection === "SHOP" || leader.deliveryFree,
           shipmentMemberCount: members.length,
@@ -550,7 +599,8 @@ export async function confirmCourierDelivery(
         message: appErrorMessage({
           what: "تعذّر تأكيد التسليم والتحصيل",
           why: `جهة التوصيل المرتبطة بحسابك (رقم ${partyId}) لم تعد موجودةً في السجلّ — يبدو أنّها حُذفت`,
-          doThis: "اطلب من المدير إعادة ربط حسابك بجهةٍ قائمة من صفحة «جهات التوصيل»، ولا تسلّم البضاعة قبل ذلك",
+          doThis:
+            "اطلب من المدير إعادة ربط حسابك بجهةٍ قائمة من صفحة «جهات التوصيل»، ولا تسلّم البضاعة قبل ذلك",
         }),
       });
     // إعادة فحص التفعيل تحت القفل (سباق تعطيل متزامن — مراجعة عدائية ١٢/٧): جهة عُطّلت لا تقبض عهدة جديدة.
@@ -560,7 +610,8 @@ export async function confirmCourierDelivery(
         message: appErrorMessage({
           what: "تعذّر تأكيد التسليم والتحصيل",
           why: "جهة التوصيل المرتبطة بحسابك مُعطَّلة الآن، والمعطَّلةُ لا تُحمَّل عهدةً نقديّة جديدة",
-          doThis: "اطلب من المدير إعادة تفعيل الجهة من صفحة «جهات التوصيل» ثمّ أعِد الختم؛ وسلِّم النقد المقبوض للمتجر في كلّ الأحوال",
+          doThis:
+            "اطلب من المدير إعادة تفعيل الجهة من صفحة «جهات التوصيل» ثمّ أعِد الختم؛ وسلِّم النقد المقبوض للمتجر في كلّ الأحوال",
         }),
       });
 
@@ -573,11 +624,15 @@ export async function confirmCourierDelivery(
         .limit(1)
     )[0];
     if (!order)
-      throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({
-        what: "تعذّر تأكيد التسليم والتحصيل",
-        why: `لا طلبَ متجرٍ بالرقم ${input.onlineOrderId} في السجلّ — يبدو أنّ قائمتك قديمة`,
-        doThis: "اسحب قائمة «توصيلاتي» للتحديث ثمّ أعِد الختم من بطاقة الطلب الصحيحة",
-      }) });
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر تأكيد التسليم والتحصيل",
+          why: `لا طلبَ متجرٍ بالرقم ${input.onlineOrderId} في السجلّ — يبدو أنّ قائمتك قديمة`,
+          doThis:
+            "اسحب قائمة «توصيلاتي» للتحديث ثمّ أعِد الختم من بطاقة الطلب الصحيحة",
+        }),
+      });
     // IDOR: المندوب لا يؤكّد إلا طلباته المُسنَدة إليه.
     if (Number(order.deliveryPartyId) !== partyId) {
       throw new TRPCError({
@@ -587,21 +642,26 @@ export async function confirmCourierDelivery(
           why: "الطلب مُسنَدٌ إلى جهة توصيلٍ أخرى، والختمُ يرفع عهدةً نقديّة على الجهة المُسنَد إليها لا على من سلّم",
           // إعادةُ الإسناد بوّابتها **مدير** (`deliveryManagerProcedure`)، أمّا إثباتُ التسليم
           // بمستندٍ فبوّابتُه كاشير الاستقبال (`deliveryCashierProcedure`) — لا تخلط الجهتين.
-          doThis: "اطلب من المدير نقلَ إسناد الطلب إليك قبل الختم؛ وإن كنتَ سلّمتَ فعلاً فسلّم النقد لكاشير الاستقبال ليُثبِت التسليم بمستند",
+          doThis:
+            "اطلب من المدير نقلَ إسناد الطلب إليك قبل الختم؛ وإن كنتَ سلّمتَ فعلاً فسلّم النقد لكاشير الاستقبال ليُثبِت التسليم بمستند",
         }),
       });
     }
 
     // التحقق من رمز التسليم السري للعميل (Delivery Handshake OTP)
     if (input.handshakeOtp != null && input.handshakeOtp.trim() !== "") {
-      const expectedOtp = computeOrderDeliveryOtp(order.orderNumber, order.createdAt);
+      const expectedOtp = computeOrderDeliveryOtp(
+        order.orderNumber,
+        order.createdAt,
+      );
       if (input.handshakeOtp.trim() !== expectedOtp) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: appErrorMessage({
             what: `تعذّر إتمام تسليم الطلب ${order.orderNumber}`,
             why: "رمز تسليم العميل (Handshake OTP) غير متطابق مع الرمز الصادر للطلب",
-            doThis: "تأكد من إدخال رمز التحقق المكون من 4 أرقام من العميل يداً بيد",
+            doThis:
+              "تأكد من إدخال رمز التحقق المكون من 4 أرقام من العميل يداً بيد",
           }),
         });
       }
@@ -613,7 +673,8 @@ export async function confirmCourierDelivery(
         message: appErrorMessage({
           what: `تعذّر تأكيد تسليم الطلب ${order.orderNumber}`,
           why: `حالة الطلب ${order.status} لا «مُرسَل» — لم يُجهَّز للخروج بعد أو أُلغي`,
-          doThis: "اطلب من كاشير الاستقبال إخراج الطلب للتوصيل، ثمّ أعِد الختم بعد تحديث قائمة «توصيلاتي»",
+          doThis:
+            "اطلب من كاشير الاستقبال إخراج الطلب للتوصيل، ثمّ أعِد الختم بعد تحديث قائمة «توصيلاتي»",
         }),
       });
     }
@@ -623,7 +684,8 @@ export async function confirmCourierDelivery(
         message: appErrorMessage({
           what: `تعذّر تحصيل الطلب ${order.orderNumber}`,
           why: "لا فاتورة على الطلب، والتحصيلُ يُقاس على متبقّي فاتورةٍ قائمة لا على قيمة الطلب",
-          doThis: "سلّم البضاعة إن كانت جاهزة ولا تقبض شيئاً، وأبلِغ كاشير الاستقبال ليُصدِر فاتورة الطلب ثمّ يُثبِت التحصيل",
+          doThis:
+            "سلّم البضاعة إن كانت جاهزة ولا تقبض شيئاً، وأبلِغ كاشير الاستقبال ليُصدِر فاتورة الطلب ثمّ يُثبِت التحصيل",
         }),
       });
 
@@ -641,7 +703,8 @@ export async function confirmCourierDelivery(
         message: appErrorMessage({
           what: `تعذّر تحصيل الطلب ${order.orderNumber}`,
           why: `فاتورة الطلب (رقم ${Number(order.invoiceId)}) مفقودةٌ من السجلّ، ولا يُقيَّد قبضٌ بلا فاتورةٍ يُنسَب إليها`,
-          doThis: "لا تقبض شيئاً، وأبلِغ كاشير الاستقبال برقم الطلب ليُصلِح ارتباط الفاتورة قبل التسليم",
+          doThis:
+            "لا تقبض شيئاً، وأبلِغ كاشير الاستقبال برقم الطلب ليُصلِح ارتباط الفاتورة قبل التسليم",
         }),
       });
     if (inv.status === "CANCELLED" || inv.status === "RETURNED") {
@@ -650,7 +713,8 @@ export async function confirmCourierDelivery(
         message: appErrorMessage({
           what: `تعذّر تحصيل الطلب ${order.orderNumber}`,
           why: `فاتورة الطلب حالتها ${inv.status === "CANCELLED" ? "ملغاة" : "مرتجعة"}، فلا ذمّةَ على الزبون تُحصَّل`,
-          doThis: "لا تقبض من الزبون شيئاً، وأرجِع البضاعة إلى المتجر، وأبلِغ كاشير الاستقبال برقم الطلب ليُعيد إصداره إن كان الإلغاء خطأً",
+          doThis:
+            "لا تقبض من الزبون شيئاً، وأرجِع البضاعة إلى المتجر، وأبلِغ كاشير الاستقبال برقم الطلب ليُعيد إصداره إن كان الإلغاء خطأً",
         }),
       });
     }
@@ -795,6 +859,100 @@ export async function confirmCourierDelivery(
   });
 }
 
+export async function acknowledgeConsignmentClaim(
+  input: {
+    consignmentId: number;
+    expectedClaimVersion: number;
+    clientRequestId: string;
+  },
+  actor: { userId: number },
+) {
+  const membership = await resolveDeliveryMembership(actor.userId);
+  if (!membership || membership.memberRole === "ACCOUNTANT")
+    throw fulfillmentError(
+      "إقرار مطالبة التحصيل متاح للمندوب أو مدير جهته فقط",
+      "FORBIDDEN",
+    );
+  return withTx(async (tx) => {
+    await tx
+      .select({ id: deliveryParties.id })
+      .from(deliveryParties)
+      .where(eq(deliveryParties.id, membership.partyId))
+      .for("update")
+      .limit(1);
+    const [cn] = await tx
+      .select()
+      .from(deliveryConsignments)
+      .where(eq(deliveryConsignments.id, input.consignmentId))
+      .for("update")
+      .limit(1);
+    if (!cn) throw fulfillmentError("الإرسالية غير موجودة", "NOT_FOUND");
+    await loadOperationUserTx(tx, actor.userId);
+    await assertAftercareCourierTx(tx, cn, actor.userId);
+    assertMemberCanUseConsignment(membership, cn);
+    const hash = idempotencyHash({ ...input, actorId: actor.userId });
+    const replay = await checkIdempotency(
+      tx,
+      "courier.ackClaim",
+      input.clientRequestId,
+      hash,
+      { requireStoredHash: true, forUpdate: true },
+    );
+    if (replay != null)
+      return {
+        consignmentId: cn.id,
+        claimVersion: cn.courierAckClaimVersion,
+        acknowledgedAt: cn.courierAckAt,
+      };
+    if (input.expectedClaimVersion !== cn.codClaimVersion)
+      throw fulfillmentError(
+        "تغيرت المطالبة قبل الإقرار؛ حدّث تفاصيل الإرسالية ثم أقر النسخة الحالية",
+        "CONFLICT",
+      );
+    if (cn.courierAckClaimVersion === cn.codClaimVersion) {
+      await recordIdempotencyKey(
+        tx,
+        "courier.ackClaim",
+        input.clientRequestId,
+        cn.id,
+        hash,
+      );
+      return {
+        consignmentId: cn.id,
+        claimVersion: cn.codClaimVersion,
+        acknowledgedAt: cn.courierAckAt,
+      };
+    }
+    const acknowledgedAt = new Date();
+    await tx
+      .update(deliveryConsignments)
+      .set({
+        courierAckClaimVersion: cn.codClaimVersion,
+        courierAckAt: acknowledgedAt,
+      })
+      .where(eq(deliveryConsignments.id, cn.id));
+    await appendDeliveryEvent(tx, {
+      eventKey: `CN:${cn.id}:CLAIM_ACK:${cn.codClaimVersion}:${actor.userId}`,
+      consignmentId: cn.id,
+      eventType: "COD_CLAIM_ACKNOWLEDGED",
+      actorUserId: actor.userId,
+      payload: { claimVersion: cn.codClaimVersion },
+    });
+    await recordIdempotencyKey(
+      tx,
+      "courier.ackClaim",
+      input.clientRequestId,
+      cn.id,
+      hash,
+    );
+    return {
+      consignmentId: cn.id,
+      claimVersion: cn.codClaimVersion,
+      acknowledgedAt,
+    };
+  });
+}
+
 export interface ConfirmConsignmentResult {
   consignmentId: number;
   consignmentNumber: string;
@@ -804,16 +962,40 @@ export interface ConfirmConsignmentResult {
 }
 
 /** Recognize one physical shipment fee on its original invoice and receipt source. */
-async function recognizeDeliveredShipmentFeeTx(tx: Tx, consignmentId: number, actor: { userId: number }, deliveredAt: Date) {
-  const members = await loadShipmentMembersTx(tx, consignmentId, { currentRead: true });
-  const delivered = members.find(row => Number(row.id) === consignmentId)!;
-  if (members.some(row => Number(row.partyId) !== Number(delivered.partyId) || Number(row.branchId) !== Number(delivered.branchId))) {
-    throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
-      what: "تعذر إثبات أجرة الشحنة", why: "روابط الشحنة تتضمن جهة أو فرعاً مختلفاً", doThis: "أبلغ المدير لمراجعة روابط الشحنة" }) });
+async function recognizeDeliveredShipmentFeeTx(
+  tx: Tx,
+  consignmentId: number,
+  actor: { userId: number },
+  deliveredAt: Date,
+) {
+  const members = await loadShipmentMembersTx(tx, consignmentId, {
+    currentRead: true,
+  });
+  const delivered = members.find((row) => Number(row.id) === consignmentId)!;
+  if (
+    members.some(
+      (row) => Number(row.branchId) !== Number(delivered.branchId),
+    ) ||
+    shipmentCurrentPartyMembers(members).some(
+      (row) => Number(row.partyId) !== Number(delivered.partyId),
+    )
+  ) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "تعذر إثبات أجرة الشحنة",
+        why: "روابط الشحنة تتضمن جهة أو فرعاً مختلفاً",
+        doThis: "أبلغ المدير لمراجعة روابط الشحنة",
+      }),
+    });
   }
-  for (const cn of members.filter(row => money(row.deliveryFee).gt(0))) {
-    const [earned] = await tx.select({ id: deliveryLedgerEntries.id }).from(deliveryLedgerEntries)
-      .where(eq(deliveryLedgerEntries.eventKey, `CN:${cn.id}:FEE_EARNED`)).for("share").limit(1);
+  for (const cn of members.filter((row) => money(row.deliveryFee).gt(0))) {
+    const [earned] = await tx
+      .select({ id: deliveryLedgerEntries.id })
+      .from(deliveryLedgerEntries)
+      .where(eq(deliveryLedgerEntries.eventKey, `CN:${cn.id}:FEE_EARNED`))
+      .for("share")
+      .limit(1);
     if (earned) continue;
     const fee = round2(money(cn.deliveryFee));
     if (fee.gt(0)) {
@@ -832,7 +1014,7 @@ async function recognizeDeliveredShipmentFeeTx(tx: Tx, consignmentId: number, ac
           postingIntent: deliveryFeeAccrualIntent(fee),
           dedupeKey: `DELIVERY_FEE_ACCRUAL:${cn.id}`,
           branchId: Number(cn.branchId),
-          invoiceId: Number(cn.invoiceId),
+          invoiceId: cn.invoiceId == null ? null : Number(cn.invoiceId),
           deliveryPartyId: Number(cn.partyId),
           amount: fee,
           cost: fee,
@@ -871,6 +1053,7 @@ async function recognizeDeliveredShipmentFeeTx(tx: Tx, consignmentId: number, ac
 export async function confirmConsignmentDelivery(
   input: {
     consignmentId: number;
+    collectionEvidence?: string;
     clientRequestId?: string;
     /**
      * **إثباتُ كشف شركة التوصيل** (١٩/٨) — تفويضٌ داخليّ تضبطه `recordCompanyStatement`
@@ -930,7 +1113,8 @@ export async function confirmConsignmentDelivery(
         why: input.statementWitness
           ? `الجهة رقم ${input.statementWitness.partyId} غير موجودةٍ أو غير نشطة، وكشفُها لا يُثبِت تسليماً على جهةٍ معطَّلة`
           : "حسابك غير مرتبطٍ بجهة توصيلٍ نشطة، وختمُ التسليم يرفع عهدةً نقديّة فلا يقع بلا جهةٍ تُنسَب إليها",
-        doThis: "اطلب من المدير ربط حسابك بجهة توصيلٍ نشطة من صفحة «جهات التوصيل»؛ وإلى أن يتمّ ذلك يُثبِت كاشير الاستقبال التسليم بمستندٍ قصير",
+        doThis:
+          "اطلب من المدير ربط حسابك بجهة توصيلٍ نشطة من صفحة «جهات التوصيل»؛ وإلى أن يتمّ ذلك يُثبِت كاشير الاستقبال التسليم بمستندٍ قصير",
       }),
     });
   }
@@ -940,14 +1124,15 @@ export async function confirmConsignmentDelivery(
       message: appErrorMessage({
         what: "تعذّر ختم تسليم الإرسالية بحسابك",
         why: "دورك في الجهة «محاسب»: تراجع الكشف والتوريد ولا تختم تسليماً ميدانياً",
-        doThis: "اطلب من المندوب أو مدير الجهة ختمَ التسليم؛ ولك بعدها تسجيل التحصيل المتمِّم من كشف الشركة",
+        doThis:
+          "اطلب من المندوب أو مدير الجهة ختمَ التسليم؛ ولك بعدها تسجيل التحصيل المتمِّم من كشف الشركة",
       }),
     });
   }
 
   const clientRequestId =
     input.clientRequestId ?? `confirm-consignment-${input.consignmentId}`;
-  const payloadHash = idempotencyHash({ consignmentId: input.consignmentId });
+  const payloadHash = idempotencyHash({ ...input, actorId: actor.userId });
   const run = async (tx: Tx): Promise<ConfirmConsignmentResult> => {
     // Every money-bearing delivery flow locks party → consignment → invoice.
     // Keeping one order prevents confirm/remittance deadlocks under load.
@@ -975,8 +1160,15 @@ export async function confirmConsignmentDelivery(
       });
       if (allMembers.length > 1 && !input.statementWitness) {
         const members = operationalShipmentMembers(allMembers);
-        if (!members.length) throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
-          what: "تعذر تسليم الشحنة", why: "كل فواتير الشحنة أغلقت أو أرجعت", doThis: "راجع سجل الفواتير والشحنة" }) });
+        if (!members.length)
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: appErrorMessage({
+              what: "تعذر تسليم الشحنة",
+              why: "كل فواتير الشحنة أغلقت أو أرجعت",
+              doThis: "راجع سجل الفواتير والشحنة",
+            }),
+          });
         for (const member of members)
           assertMemberCanUseConsignment(membership, member);
         const [mapping] = await tx
@@ -1000,7 +1192,9 @@ export async function confirmConsignmentDelivery(
           (member) => Number(member.id) === leaderId,
         )!;
         if (replay != null) {
-          const deliveredAt = members.find(member => member.courierDeliveredAt != null)?.courierDeliveredAt;
+          const deliveredAt = members.find(
+            (member) => member.courierDeliveredAt != null,
+          )?.courierDeliveredAt;
           if (!deliveredAt)
             throw new TRPCError({
               code: "CONFLICT",
@@ -1031,6 +1225,12 @@ export async function confirmConsignmentDelivery(
         const invoiceById = new Map(
           invoiceRows.map((invoice) => [Number(invoice.id), invoice]),
         );
+        const chargeRemainingByCn = new Map<number, Decimal>();
+        for (const member of members)
+          chargeRemainingByCn.set(
+            Number(member.id),
+            (await loadAssignedChargeClaimsTx(tx, Number(member.id))).remaining,
+          );
         const weights = members.map((member) => {
           const invoice = invoiceById.get(Number(member.invoiceId));
           if (!invoice)
@@ -1046,7 +1246,8 @@ export async function confirmConsignmentDelivery(
             Decimal.max(
               money(invoice.total)
                 .minus(money(invoice.returnedTotal ?? "0"))
-                .minus(money(invoice.paidAmount)),
+                .minus(money(invoice.paidAmount))
+                .plus(chargeRemainingByCn.get(Number(member.id)) ?? 0),
               0,
             ),
             Decimal.max(
@@ -1064,7 +1265,20 @@ export async function confirmConsignmentDelivery(
           input.collectedAmount == null
             ? totalDue
             : round2(money(input.collectedAmount));
-        if (!amount.isFinite() || amount.lt(0) || amount.gt(totalDue))
+        if (
+          input.collectedAmount == null &&
+          leader.codClaimVersion > 1 &&
+          leader.courierAckClaimVersion !== leader.codClaimVersion
+        )
+          throw fulfillmentError(
+            "أقر نسخة مطالبة الشحنة الحالية قبل التسليم العادي",
+            "CONFLICT",
+          );
+        if (
+          !amount.isFinite() ||
+          amount.lt(0) ||
+          (amount.gt(totalDue) && leader.fulfillmentRequestId == null)
+        )
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: appErrorMessage({
@@ -1073,7 +1287,16 @@ export async function confirmConsignmentDelivery(
               doThis: "أدخل ما قبضته فعلاً ضمن المبلغ المتبقي الظاهر",
             }),
           });
-        const allocated = allocateProportionally(amount, weights);
+        const allocated = allocateProportionally(
+          Decimal.min(amount, totalDue),
+          weights,
+        );
+        if (amount.gt(totalDue)) {
+          const index = members.findIndex((m) => Number(m.id) === leaderId);
+          allocated[index < 0 ? 0 : index] = allocated[
+            index < 0 ? 0 : index
+          ].plus(amount.minus(totalDue));
+        }
         let leaderResult: ConfirmConsignmentResult | undefined;
         for (let index = 0; index < members.length; index += 1) {
           const member = members[index];
@@ -1097,7 +1320,12 @@ export async function confirmConsignmentDelivery(
           leaderId,
           groupHash,
         );
-        return { ...leaderResult!, consignmentId: leaderId, consignmentNumber: leader.consignmentNumber, collectedAmount: toDbMoney(amount) };
+        return {
+          ...leaderResult!,
+          consignmentId: leaderId,
+          consignmentNumber: leader.consignmentNumber,
+          collectedAmount: toDbMoney(amount),
+        };
       }
       await assertStandaloneConsignmentTx(
         tx,
@@ -1120,10 +1348,53 @@ export async function confirmConsignmentDelivery(
         message: appErrorMessage({
           what: "تعذّر ختم التسليم",
           why: `لا إرساليةَ بالرقم ${input.consignmentId} في السجلّ — يبدو أنّ قائمتك قديمة أو أنّ الإرسالية حُذفت`,
-          doThis: "اسحب قائمة «توصيلاتي» للتحديث ثمّ اختم من بطاقة الإرسالية الصحيحة",
+          doThis:
+            "اسحب قائمة «توصيلاتي» للتحديث ثمّ اختم من بطاقة الإرسالية الصحيحة",
         }),
       });
     assertMemberCanUseConsignment(membership, cn);
+    if (cn.sourceType === "AFTERCARE_EXECUTION") {
+      const operationPath =
+        input.statementWitness?.kind === "MANUAL_PROOF"
+          ? "delivery.manualProof"
+          : input.statementWitness?.kind === "STAFF_CONFIRMED"
+            ? "delivery.staffConfirm"
+            : "delivery.recordCompanyStatement";
+      const aftercare = await routeAftercareDeliveryResultTx(
+        tx,
+        {
+          consignmentId: cn.id,
+          result: "DELIVERED",
+          proof:
+            input.collectionEvidence ??
+            input.statementWitness?.statementNumber ??
+            "تأكيد التسليم من بوابة المندوب",
+          clientRequestId,
+          customerCollectedAmount:
+            input.statementWitness?.collectedAmount ??
+            input.collectedAmount ??
+            "0",
+          authorization: input.statementWitness
+            ? { kind: "STAFF", operationPath }
+            : { kind: "COURIER" },
+        },
+        { userId: actor.userId, branchId: cn.branchId },
+      );
+      if (aftercare.handled) {
+        const [completed] = await tx
+          .select({ deliveredAt: deliveryConsignments.courierDeliveredAt })
+          .from(deliveryConsignments)
+          .where(eq(deliveryConsignments.id, cn.id))
+          .limit(1);
+        return {
+          consignmentId: cn.id,
+          consignmentNumber: cn.consignmentNumber,
+          deliveredAt: completed?.deliveredAt ?? new Date(),
+          alreadyDelivered: aftercare.replay,
+          collectedAmount: "0.00",
+        };
+      }
+    }
     const replayAfterLock = await checkIdempotency(
       tx,
       "courier.confirmConsignment",
@@ -1137,7 +1408,8 @@ export async function confirmConsignmentDelivery(
           message: appErrorMessage({
             what: `تعذّر ختم تسليم الإرسالية ${cn.consignmentNumber}`,
             why: `مفتاح هذه العملية مسجَّلٌ على إرساليةٍ أخرى (رقم ${Number(replayAfterLock)}) أو على تسليمٍ لم يكتمل`,
-            doThis: "اسحب قائمة «توصيلاتي» للتحديث ثمّ اختم من بطاقة الإرسالية من جديد — مفتاحٌ واحد لا يخدم طردين",
+            doThis:
+              "اسحب قائمة «توصيلاتي» للتحديث ثمّ اختم من بطاقة الإرسالية من جديد — مفتاحٌ واحد لا يخدم طردين",
           }),
         });
       }
@@ -1165,22 +1437,72 @@ export async function confirmConsignmentDelivery(
     // كشف الشركة) يُسجّل تحصيلاً عليه ⇒ متبقٍّ سالب، ويصير استرجاعُه الفعليّ متعذّراً لأنّ
     // مالاً قُبض. يشمل هذا الحارسُ **مسار الكشف** أيضاً (`statementWitness`) عمداً.
     assertNotReturnDeclared(cn, "deliver");
-    const parcelOut = cn.parcelStatus === "ASSIGNED"
-      || cn.parcelStatus === "ACCEPTED"
-      || cn.parcelStatus === "PICKED_UP"
-      || cn.parcelStatus === "OUT_FOR_DELIVERY";
+    const parcelOut =
+      cn.parcelStatus === "ASSIGNED" ||
+      cn.parcelStatus === "ACCEPTED" ||
+      cn.parcelStatus === "PICKED_UP" ||
+      cn.parcelStatus === "OUT_FOR_DELIVERY";
     if (!parcelOut) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: appErrorMessage({
           what: `تعذّر ختم تسليم الإرسالية ${cn.consignmentNumber}`,
           why: `الطرد بلغ حالةً نهائية (${cn.parcelStatus}) فخرج من دورة التوصيل — ولا يُختم تسليمُ طردٍ أُغلق ملفُّه`,
-          doThis: "افتح بطاقة الطرد في صفحة الإرساليات وراجع سجلّه: إن كان أُغلق خطأً فأعِد إسناده من جديد؛ وإن كان قد سُلّم فعلاً فلا حاجة إلى ختمٍ ثانٍ",
+          doThis:
+            "افتح بطاقة الطرد في صفحة الإرساليات وراجع سجلّه: إن كان أُغلق خطأً فأعِد إسناده من جديد؛ وإن كان قد سُلّم فعلاً فلا حاجة إلى ختمٍ ثانٍ",
         }),
       });
     }
 
     const deliveredAt = new Date();
+    const classifiedClaims = await loadAssignedChargeClaimsTx(
+      tx,
+      Number(cn.id),
+    );
+    const classified = cn.fulfillmentRequestId != null;
+    const [classifiedInvoice] =
+      classified && cn.invoiceId != null
+        ? await tx
+            .select({
+              total: invoices.total,
+              paidAmount: invoices.paidAmount,
+              returnedTotal: invoices.returnedTotal,
+            })
+            .from(invoices)
+            .where(eq(invoices.id, cn.invoiceId))
+            .for("update")
+            .limit(1)
+        : [];
+    const classifiedDue = classifiedClaims.remaining.plus(
+      classifiedInvoice
+        ? Decimal.max(
+            0,
+            money(classifiedInvoice.total)
+              .minus(classifiedInvoice.returnedTotal)
+              .minus(classifiedInvoice.paidAmount),
+          )
+        : 0,
+    );
+    if (
+      classified &&
+      input.collectedAmount != null &&
+      money(input.collectedAmount).gt(classifiedDue) &&
+      !input.statementWitness &&
+      (input.collectionEvidence?.trim().length ?? 0) < 5
+    )
+      throw fulfillmentError(
+        "القبض الفعلي يتجاوز المطالبة الحالية؛ أرفق بيان إثبات القبض القديم كي يسجل الفائض أمانة قابلة للرد",
+      );
+    if (
+      !input.statementWitness &&
+      input.collectedAmount == null &&
+      cn.codClaimVersion > 1 &&
+      cn.courierAckClaimVersion !== cn.codClaimVersion
+    )
+      throw fulfillmentError(
+        "تغيرت مطالبة التحصيل؛ افتح تفاصيل الإرسالية وأقر النسخة الحالية قبل التسليم العادي. إن قبضت فعلياً فسجل المبلغ المقبوض بدليله",
+        "CONFLICT",
+      );
     let recordedShortfallReason: string | null = null;
     let recordedShortageAmount: string | null = null;
     const codRemaining = round2(
@@ -1192,7 +1514,8 @@ export async function confirmConsignmentDelivery(
         message: appErrorMessage({
           what: `تعذّر ختم تسليم الإرسالية ${cn.consignmentNumber}`,
           why: `المُحصَّل المسجَّل عليها ${round2(money(cn.collectedAmount ?? "0")).toFixed(2)} يتجاوز مبلغ التحصيل الأصليّ ${round2(money(cn.codAmount)).toFixed(2)} بفارق ${codRemaining.abs().toFixed(2)}`,
-          doThis: "لا تقبض من الزبون شيئاً، وأبلِغ كاشير الاستقبال برقم الإرسالية ليُصحّح التحصيل المسجَّل قبل الختم",
+          doThis:
+            "لا تقبض من الزبون شيئاً، وأبلِغ كاشير الاستقبال برقم الإرسالية ليُصحّح التحصيل المسجَّل قبل الختم",
         }),
       });
     /**
@@ -1203,14 +1526,18 @@ export async function confirmConsignmentDelivery(
      * (قرار المالك: «التحصيل الجزئي يُترك متبقّيه على العميل»).
      */
     // م١ (PR-4): البوّابةُ تُعلن المقبوض اختيارياً؛ إعلانُه يحوّل حارس الفاتورة من تطابقٍ إلى سقف.
-    const portalDeclared = !input.statementWitness && input.collectedAmount != null;
+    const portalDeclared =
+      !input.statementWitness && input.collectedAmount != null;
     const declared = input.statementWitness
       ? input.statementWitness.collectedAmount
       : input.collectedAmount;
-    const cod = declared != null
-      ? round2(money(declared))
-      : codRemaining;
-    if (cod.gt(codRemaining)) {
+    const cod =
+      declared != null
+        ? round2(money(declared))
+        : classified
+          ? classifiedDue
+          : codRemaining;
+    if (cod.gt(codRemaining) && !classified) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
@@ -1222,11 +1549,15 @@ export async function confirmConsignmentDelivery(
       });
     }
     if (cod.lt(0)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
-        what: `تعذّر تسجيل تحصيل الإرسالية ${cn.consignmentNumber}`,
-        why: `المبلغ المُعلَن على الكشف ${cod.toFixed(2)} سالب، والتحصيلُ لا يكون سالباً`,
-        doThis: "أدخِل ما حصّلته الشركة فعلاً (صفراً إن لم تُحصّل شيئاً)؛ ولردّ مبلغٍ للزبون استعمل مسار المرتجع لا الكشف",
-      }) });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: `تعذّر تسجيل تحصيل الإرسالية ${cn.consignmentNumber}`,
+          why: `المبلغ المُعلَن على الكشف ${cod.toFixed(2)} سالب، والتحصيلُ لا يكون سالباً`,
+          doThis:
+            "أدخِل ما حصّلته الشركة فعلاً (صفراً إن لم تُحصّل شيئاً)؛ ولردّ مبلغٍ للزبون استعمل مسار المرتجع لا الكشف",
+        }),
+      });
     }
     // **إغلاق `status`** (Codex P1 #4 — ٢٢/٨): كان `cod.isZero()` يُغلق الطرد لكلا الحالتَين
     // متسويةً بين «مدفوعٌ سلفاً» (codAmount=0 ⇒ لا ذمّة أصلاً) و«إثباتٌ بلا تحصيل» (COD>0
@@ -1234,7 +1565,8 @@ export async function confirmConsignmentDelivery(
     // لاحقاً — والذي يشترط `status ∈ {DISPATCHED, PARTIAL}` (guards)، فإغلاقُه هنا كان يجعل
     // الذمّة غيرَ قابلةٍ للاستيفاء صامتاً.
     const originalCodIsZero = round2(money(cn.codAmount)).isZero();
-    if (originalCodIsZero) assertConsignmentStatusTransition(cn.status, "DELIVERED");
+    if (originalCodIsZero)
+      assertConsignmentStatusTransition(cn.status, "DELIVERED");
     await tx
       .update(deliveryConsignments)
       .set({
@@ -1264,12 +1596,57 @@ export async function confirmConsignmentDelivery(
             source: input.statementWitness.kind ?? "COMPANY_STATEMENT",
             statementNumber: input.statementWitness.statementNumber,
           }
-        : { source: "COURIER_PORTAL" },
+        : {
+            source: "COURIER_PORTAL",
+            collectionEvidence: input.collectionEvidence ?? null,
+          },
     });
 
     // A classified shortfall can cover the entire COD, including zero cash collected.
     // Company proof without a reason still leaves the unpaid amount with the customer.
-    if (!originalCodIsZero) {
+    if (classified) {
+      const reason =
+        input.statementWitness?.shortfallReason ?? input.shortfallReason;
+      if (reason && !isShortfallReason(reason))
+        throw fulfillmentError("سبب عجز التحصيل ليس من القائمة المعتمدة");
+      const result = await collectAssignedConsignmentClaimsTx(
+        tx,
+        {
+          consignmentId: Number(cn.id),
+          actualAmount: toDbMoney(cod),
+          eventKey: clientRequestId,
+          shortfallReason: reason,
+          leaveRemainderOnCustomer:
+            input.statementWitness != null &&
+            (input.statementWitness.kind ?? "COMPANY_STATEMENT") ===
+              "COMPANY_STATEMENT" &&
+            !reason,
+        },
+        { userId: actor.userId, branchId: Number(cn.branchId) },
+      );
+      if (result && money(result.shortfallAmount).gt(0)) {
+        recordedShortfallReason = reason ?? null;
+        recordedShortageAmount = result.shortfallAmount;
+      }
+      if (
+        cod.isZero() &&
+        money(cn.codAmount)
+          .minus(cn.collectedAmount)
+          .minus(cn.counterSettledAmount)
+          .minus(result?.shortfallAmount ?? "0")
+          .lte(0)
+      ) {
+        assertConsignmentStatusTransition(cn.status, "DELIVERED");
+        await tx
+          .update(deliveryConsignments)
+          .set({
+            status: "DELIVERED",
+            moneyStatus: "SETTLED",
+            settledAt: deliveredAt,
+          })
+          .where(eq(deliveryConsignments.id, cn.id));
+      }
+    } else if (!originalCodIsZero) {
       const inv = (
         await tx
           .select()
@@ -1284,7 +1661,8 @@ export async function confirmConsignmentDelivery(
           message: appErrorMessage({
             what: `تعذّر تسجيل تحصيل الإرسالية ${cn.consignmentNumber}`,
             why: `فاتورة الإرسالية (رقم ${Number(cn.invoiceId)}) مفقودةٌ من السجلّ، ولا يُقيَّد قبضٌ بلا فاتورةٍ يُنسَب إليها`,
-            doThis: "لا تقبض من الزبون شيئاً، وأبلِغ كاشير الاستقبال برقم الإرسالية ليُصلِح ارتباط الفاتورة قبل التسليم",
+            doThis:
+              "لا تقبض من الزبون شيئاً، وأبلِغ كاشير الاستقبال برقم الإرسالية ليُصلِح ارتباط الفاتورة قبل التسليم",
           }),
         });
       const invoiceRemaining = round2(
@@ -1294,9 +1672,10 @@ export async function confirmConsignmentDelivery(
       );
       // بوّابة المندوب: الختمُ يعني قبض المتبقّي **كاملاً** ⇒ تطابقٌ تامّ يمسك أيّ انحراف.
       // كشفُ الشركة: قد يُعلن تحصيلاً **جزئياً** — سقفٌ لا تطابق. لا يجوز بحال تجاوزُ متبقّي الفاتورة.
-      const collectionMismatch = input.statementWitness || portalDeclared
-        ? cod.gt(invoiceRemaining)
-        : !invoiceRemaining.eq(cod);
+      const collectionMismatch =
+        input.statementWitness || portalDeclared
+          ? cod.gt(invoiceRemaining)
+          : !invoiceRemaining.eq(cod);
       if (collectionMismatch) {
         const gap = cod.minus(invoiceRemaining);
         throw new TRPCError({
@@ -1310,7 +1689,8 @@ export async function confirmConsignmentDelivery(
             : appErrorMessage({
                 what: `تعذّر ختم تسليم الإرسالية ${cn.consignmentNumber}`,
                 why: `متبقّي الفاتورة ${invoiceRemaining.toFixed(2)} والمطلوب على الطرد ${cod.toFixed(2)} — الفرق ${gap.abs().toFixed(2)} ${gap.gt(0) ? "زيادةً على الفاتورة" : "نقصاً عنها"}؛ غالباً لأنّ دفعةً أو مرتجعاً سُجِّل على الفاتورة بعد إخراج الطرد`,
-                doThis: "لا تقبض من الزبون غير ما على الفاتورة، واطلب من كاشير الاستقبال تصحيح دفعات الفاتورة أو مبلغ الطرد ثمّ أعِد الختم",
+                doThis:
+                  "لا تقبض من الزبون غير ما على الفاتورة، واطلب من كاشير الاستقبال تصحيح دفعات الفاتورة أو مبلغ الطرد ثمّ أعِد الختم",
               }),
         });
       }
@@ -1343,13 +1723,16 @@ export async function confirmConsignmentDelivery(
         ? input.statementWitness.shortfallReason
         : input.shortfallReason;
       const shortfallOptional = witnessKind === "COMPANY_STATEMENT";
-      const booksShortfall = shortage.gt(0) && (!shortfallOptional || declaredReason != null);
+      const booksShortfall =
+        shortage.gt(0) && (!shortfallOptional || declaredReason != null);
       if (booksShortfall) {
         const reason = declaredReason;
         if (!reason || !isShortfallReason(reason)) {
           // ⚠️ «سبب مصنَّف» يبقى في النصّ: يُطابقه `deliveryProof` بالتعبير النمطيّ.
           // والقائمة تُشتقّ من `@shared/shortfallReason` لا تُكتب هنا — فلا تنجرف عن المُنتقي.
-          const choices = SHORTFALL_REASONS.map((r) => SHORTFALL_REASON_LABEL_AR[r]).join(" · ");
+          const choices = SHORTFALL_REASONS.map(
+            (r) => SHORTFALL_REASON_LABEL_AR[r],
+          ).join(" · ");
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: appErrorMessage({
@@ -1414,40 +1797,41 @@ export async function confirmConsignmentDelivery(
             deliveryPartyId: membership.partyId,
             amount: custodyRise,
             notes: `تحصيل بعد التسليم ${cn.consignmentNumber}${shortfallReason ? ` (نقد ${cod.toFixed(2)} + عجز ${shortage.toFixed(2)} على المندوب)` : ""}`,
-        });
-      }
-      // Customer AR moves to courier custody at the physical hand-over; no
-      // drawer receipt exists yet.  The later remittance only moves custody to
-      // cash and must not settle the customer a second time.
-      // Slice DFP1: `customerSettleAmount` = مجموع ما يُفرَج عنه من ذمّة العميل — يشمل العجز
-      // المُقيَّد على المندوب (لأنّ المندوب صار «المدين البديل» عن العميل بمقداره).
-      const customerSettleAmount = shortfallReason
-        ? round2(cod.plus(shortage))
-        : cod;
-      await postEntry(tx, {
-        entryType: "PAYMENT_IN",
-        postingIntent: deliveryCustomerCollectionIntent(customerSettleAmount),
-        dedupeKey: `PAYMENT_IN:COURIER_DELIVERY:${cn.id}`,
+          });
+        }
+        // Customer AR moves to courier custody at the physical hand-over; no
+        // drawer receipt exists yet.  The later remittance only moves custody to
+        // cash and must not settle the customer a second time.
+        // Slice DFP1: `customerSettleAmount` = مجموع ما يُفرَج عنه من ذمّة العميل — يشمل العجز
+        // المُقيَّد على المندوب (لأنّ المندوب صار «المدين البديل» عن العميل بمقداره).
+        const customerSettleAmount = shortfallReason
+          ? round2(cod.plus(shortage))
+          : cod;
+        await postEntry(tx, {
+          entryType: "PAYMENT_IN",
+          postingIntent: deliveryCustomerCollectionIntent(customerSettleAmount),
+          dedupeKey: `PAYMENT_IN:COURIER_DELIVERY:${cn.id}`,
           branchId: Number(cn.branchId),
           invoiceId: Number(cn.invoiceId),
           customerId: inv.customerId != null ? Number(inv.customerId) : null,
           deliveryPartyId: membership.partyId,
           amount: customerSettleAmount,
           notes: `تحصيل العميل لدى جهة التوصيل ${cn.consignmentNumber}${shortfallReason ? ` (بضمنه عجزٌ على المندوب ${shortage.toFixed(2)})` : ""}`,
-      });
-      const newPaid = round2(money(inv.paidAmount).plus(customerSettleAmount),
+        });
+        const newPaid = round2(
+          money(inv.paidAmount).plus(customerSettleAmount),
         );
-      await tx
-        .update(invoices)
-        .set({
-          paidAmount: toDbMoney(newPaid),
-          status: computeInvoiceStatus(
-            String(inv.total),
-            toDbMoney(newPaid),
-            String(inv.returnedTotal ?? "0"),
-          ),
-          paymentDate: deliveredAt,
-          paymentMethod: sql`COALESCE(${invoices.paymentMethod}, 'CASH')`,
+        await tx
+          .update(invoices)
+          .set({
+            paidAmount: toDbMoney(newPaid),
+            status: computeInvoiceStatus(
+              String(inv.total),
+              toDbMoney(newPaid),
+              String(inv.returnedTotal ?? "0"),
+            ),
+            paymentDate: deliveredAt,
+            paymentMethod: sql`COALESCE(${invoices.paymentMethod}, 'CASH')`,
           })
           .where(eq(invoices.id, Number(inv.id)));
         if (inv.customerId != null) {
@@ -1468,11 +1852,14 @@ export async function confirmConsignmentDelivery(
         );
         if (cod.isZero() && shortfallReason && cashRemaining.lte(0)) {
           assertConsignmentStatusTransition(cn.status, "DELIVERED");
-          await tx.update(deliveryConsignments).set({
-            status: "DELIVERED",
-            moneyStatus: "SETTLED",
-            settledAt: deliveredAt,
-          }).where(eq(deliveryConsignments.id, Number(cn.id)));
+          await tx
+            .update(deliveryConsignments)
+            .set({
+              status: "DELIVERED",
+              moneyStatus: "SETTLED",
+              settledAt: deliveredAt,
+            })
+            .where(eq(deliveryConsignments.id, Number(cn.id)));
           await appendDeliveryEvent(tx, {
             eventKey: `CN:${cn.id}:MONEY:SHORTFALL_ASSIGNED`,
             consignmentId: Number(cn.id),
@@ -1480,13 +1867,21 @@ export async function confirmConsignmentDelivery(
             fromMoneyStatus: cn.moneyStatus,
             toMoneyStatus: "SETTLED",
             actorUserId: actor.userId,
-            payload: { shortfallAssigned: toDbMoney(shortage), cashExpected: "0.00" },
+            payload: {
+              shortfallAssigned: toDbMoney(shortage),
+              cashExpected: "0.00",
+            },
           });
         }
       }
     }
 
-    await recognizeDeliveredShipmentFeeTx(tx, Number(cn.id), actor, deliveredAt);
+    await recognizeDeliveredShipmentFeeTx(
+      tx,
+      Number(cn.id),
+      actor,
+      deliveredAt,
+    );
 
     if (cn.workOrderId != null) {
       await tx
@@ -1573,7 +1968,7 @@ export async function confirmConsignmentDelivery(
         REALTIME_EVENT_TYPES.DELIVERY_COMPLETED,
         {
           deliveryId: Number(cn.id),
-          invoiceId: Number(cn.invoiceId),
+          invoiceId: cn.invoiceId == null ? null : Number(cn.invoiceId),
           driverId: Number(cn.assignedUserId ?? membership.partyId),
           branchId: Number(cn.branchId),
           collectedAmount: toDbMoney(cod),
@@ -1633,8 +2028,15 @@ export async function transitionConsignmentParcel(
       });
       if (allMembers.length > 1) {
         const members = operationalShipmentMembers(allMembers);
-        if (!members.length) throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
-          what: "تعذر تحديث الشحنة", why: "كل فواتير الشحنة أغلقت أو أرجعت", doThis: "راجع سجل الفواتير والشحنة" }) });
+        if (!members.length)
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: appErrorMessage({
+              what: "تعذر تحديث الشحنة",
+              why: "كل فواتير الشحنة أغلقت أو أرجعت",
+              doThis: "راجع سجل الفواتير والشحنة",
+            }),
+          });
         for (const member of members)
           assertMemberCanUseConsignment(membership, member);
         const [mapping] = await tx
@@ -1678,7 +2080,8 @@ export async function transitionConsignmentParcel(
         message: appErrorMessage({
           what: "تعذّر تحديث حالة الطرد",
           why: `لا إرساليةَ بالرقم ${input.consignmentId} في السجلّ — يبدو أنّ قائمتك قديمة`,
-          doThis: "اسحب قائمة «توصيلاتي» للتحديث ثمّ أعِد الحركة من بطاقة الطرد الصحيحة",
+          doThis:
+            "اسحب قائمة «توصيلاتي» للتحديث ثمّ أعِد الحركة من بطاقة الطرد الصحيحة",
         }),
       });
     assertMemberCanUseConsignment(membership, cn);
@@ -1699,9 +2102,40 @@ export async function transitionConsignmentParcel(
         message: appErrorMessage({
           what: `تعذّر وسم الطرد ${cn.consignmentNumber} بأنّ توصيله تعذّر`,
           why: "سببُ التعذّر فارغٌ أو أقصر من حرفين، وهو ما يقرؤه المتجر ليقرّر إعادة المحاولة أو إرجاع البضاعة",
-          doThis: "اكتب سبباً قصيراً وواضحاً (رفض العميل الاستلام · العميل غير متوفّر · عنوان خاطئ · تعذّر التواصل) ثمّ احفظ",
+          doThis:
+            "اكتب سبباً قصيراً وواضحاً (رفض العميل الاستلام · العميل غير متوفّر · عنوان خاطئ · تعذّر التواصل) ثمّ احفظ",
         }),
       });
+    }
+    if (
+      cn.sourceType === "AFTERCARE_EXECUTION" &&
+      input.toStatus === "FAILED"
+    ) {
+      const handled = await routeAftercareDeliveryResultTx(
+        tx,
+        {
+          consignmentId: cn.id,
+          result: "FAILED",
+          proof: reason ?? "تعذر إتمام التسليم",
+          clientRequestId: input.clientRequestId,
+          authorization: { kind: "COURIER" },
+        },
+        { userId: actor.userId, branchId: cn.branchId },
+      );
+      if (handled.handled) {
+        await recordIdempotencyKey(
+          tx,
+          "courier.parcelTransition",
+          input.clientRequestId,
+          cn.id,
+          payloadHash,
+        );
+        return {
+          consignmentId: cn.id,
+          status: input.toStatus,
+          replay: handled.replay,
+        };
+      }
     }
     const statusTimestamps: Record<string, object> = {
       ACCEPTED: { acceptedAt: now },
@@ -1774,12 +2208,14 @@ export async function failCourierDelivery(
       code: "FORBIDDEN",
       message: appErrorMessage({
         what: "تعذّر تسجيل «تعذّر التسليم»",
-        why: partyId == null
-          ? "حسابك غير مرتبطٍ بجهة توصيلٍ نشطة، وهذه الحركة تعكس البيع وتُعيد البضاعة للمخزون فلا تقع بلا جهةٍ تُنسَب إليها"
-          : "دورك في الجهة «محاسب»: تراجع الكشف والتوريد ولا تُحرّك الطرود في الميدان",
-        doThis: partyId == null
-          ? "اطلب من المدير ربط حسابك بجهة التوصيل من صفحة «جهات التوصيل»، وأعِد البضاعة إلى المتجر بكلّ حال"
-          : "اطلب من المندوب أو مدير الجهة تسجيل تعذّر التسليم من شاشة «توصيلاتي»",
+        why:
+          partyId == null
+            ? "حسابك غير مرتبطٍ بجهة توصيلٍ نشطة، وهذه الحركة تعكس البيع وتُعيد البضاعة للمخزون فلا تقع بلا جهةٍ تُنسَب إليها"
+            : "دورك في الجهة «محاسب»: تراجع الكشف والتوريد ولا تُحرّك الطرود في الميدان",
+        doThis:
+          partyId == null
+            ? "اطلب من المدير ربط حسابك بجهة التوصيل من صفحة «جهات التوصيل»، وأعِد البضاعة إلى المتجر بكلّ حال"
+            : "اطلب من المندوب أو مدير الجهة تسجيل تعذّر التسليم من شاشة «توصيلاتي»",
       }),
     });
   const reason = (input.reason ?? "").trim();
@@ -1789,7 +2225,8 @@ export async function failCourierDelivery(
       message: appErrorMessage({
         what: "تعذّر تسجيل «تعذّر التسليم»",
         why: "السبب فارغٌ أو أقصر من حرفين، وهذه الحركة تعكس البيع وتُعيد البضاعة للمخزون فلا تُسجَّل بلا سببٍ موثَّق",
-        doThis: "اكتب سبباً قصيراً وواضحاً (رفض العميل الاستلام · العميل غير متوفّر · عنوان خاطئ · تعذّر التواصل) ثمّ احفظ",
+        doThis:
+          "اكتب سبباً قصيراً وواضحاً (رفض العميل الاستلام · العميل غير متوفّر · عنوان خاطئ · تعذّر التواصل) ثمّ احفظ",
       }),
     });
   const db = getDb();
@@ -1799,7 +2236,8 @@ export async function failCourierDelivery(
       message: appErrorMessage({
         what: "تعذّر تسجيل «تعذّر التسليم»",
         why: "الاتصال بقاعدة البيانات منقطعٌ الآن، فلا يمكن عكس البيع ولا إعادة البضاعة للمخزون",
-        doThis: "أعِد البضاعة إلى المتجر وأبلِغ كاشير الاستقبال برقم الطلب، وأعِد التسجيل بعد عودة الاتصال",
+        doThis:
+          "أعِد البضاعة إلى المتجر وأبلِغ كاشير الاستقبال برقم الطلب، وأعِد التسجيل بعد عودة الاتصال",
       }),
     });
 
@@ -1817,26 +2255,35 @@ export async function failCourierDelivery(
         .limit(1)
     )[0];
     if (!order)
-      throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({
-        what: "تعذّر تسجيل «تعذّر التسليم»",
-        why: `لا طلبَ متجرٍ بالرقم ${input.onlineOrderId} في السجلّ — يبدو أنّ قائمتك قديمة`,
-        doThis: "اسحب قائمة «توصيلاتي» للتحديث ثمّ أعِد التسجيل من بطاقة الطلب الصحيحة",
-      }) });
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل «تعذّر التسليم»",
+          why: `لا طلبَ متجرٍ بالرقم ${input.onlineOrderId} في السجلّ — يبدو أنّ قائمتك قديمة`,
+          doThis:
+            "اسحب قائمة «توصيلاتي» للتحديث ثمّ أعِد التسجيل من بطاقة الطلب الصحيحة",
+        }),
+      });
     if (Number(order.deliveryPartyId) !== partyId)
       throw new TRPCError({
         code: "FORBIDDEN",
         message: appErrorMessage({
           what: `تعذّر تسجيل «تعذّر التسليم» للطلب ${order.orderNumber}`,
           why: "الطلب مُسنَدٌ إلى جهة توصيلٍ أخرى، وعكسُ بيعه يخصّ الجهة المُسنَد إليها",
-          doThis: "أعِد البضاعة إلى المتجر وأبلِغ كاشير الاستقبال برقم الطلب ليُسجّل التعذّر بنفسه، أو المدير إن لزم نقلُ الإسناد",
+          doThis:
+            "أعِد البضاعة إلى المتجر وأبلِغ كاشير الاستقبال برقم الطلب ليُسجّل التعذّر بنفسه، أو المدير إن لزم نقلُ الإسناد",
         }),
       });
     if (!order.invoiceId)
-      throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
-        what: `تعذّر تسجيل «تعذّر التسليم» للطلب ${order.orderNumber}`,
-        why: "لا فاتورة على الطلب، وهذه الحركة تعكس فاتورةً وتُعيد بنودها للمخزون",
-        doThis: "أعِد البضاعة إلى المتجر وأبلِغ كاشير الاستقبال برقم الطلب ليُغلقه من صفحة الطلبات",
-      }) });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: `تعذّر تسجيل «تعذّر التسليم» للطلب ${order.orderNumber}`,
+          why: "لا فاتورة على الطلب، وهذه الحركة تعكس فاتورةً وتُعيد بنودها للمخزون",
+          doThis:
+            "أعِد البضاعة إلى المتجر وأبلِغ كاشير الاستقبال برقم الطلب ليُغلقه من صفحة الطلبات",
+        }),
+      });
     const inv = (
       await tx
         .select({
@@ -1855,7 +2302,8 @@ export async function failCourierDelivery(
         message: appErrorMessage({
           what: `تعذّر تسجيل «تعذّر التسليم» للطلب ${order.orderNumber}`,
           why: `فاتورة الطلب (رقم ${Number(order.invoiceId)}) مفقودةٌ من السجلّ، ولا يُعكَس بيعٌ بلا فاتورةٍ تُعكَس`,
-          doThis: "أعِد البضاعة إلى المتجر وأبلِغ كاشير الاستقبال برقم الطلب ليُصلِح ارتباط الفاتورة",
+          doThis:
+            "أعِد البضاعة إلى المتجر وأبلِغ كاشير الاستقبال برقم الطلب ليُصلِح ارتباط الفاتورة",
         }),
       });
     if (order.status === "CANCELLED") {
@@ -1881,7 +2329,8 @@ export async function failCourierDelivery(
         message: appErrorMessage({
           what: `تعذّر تسجيل «تعذّر التسليم» للطلب ${order.orderNumber}`,
           why: `حالة الطلب ${order.status} لا «مُرسَل» — و«تعذّر التسليم» لا يقع إلّا على طردٍ خرج ولم يُسلَّم`,
-          doThis: "اسحب قائمة «توصيلاتي» للتحديث؛ فإن كان الطلب مُسلَّماً فالإرجاع بعد التسليم يُنفّذه المدير من صفحة المرتجعات",
+          doThis:
+            "اسحب قائمة «توصيلاتي» للتحديث؛ فإن كان الطلب مُسلَّماً فالإرجاع بعد التسليم يُنفّذه المدير من صفحة المرتجعات",
         }),
       });
     if (money(inv.paidAmount ?? "0").gt(0)) {
@@ -1890,7 +2339,8 @@ export async function failCourierDelivery(
         message: appErrorMessage({
           what: `تعذّر تسجيل «تعذّر التسليم» للطلب ${order.orderNumber}`,
           why: `الفاتورة قُبض عليها ${money(inv.paidAmount ?? "0").toFixed(2)} سلفاً — وما قُبض يلزمه ردٌّ موثَّق لا عكسٌ صامت من الميدان`,
-          doThis: "أعِد البضاعة إلى المتجر، وأبلِغ المدير برقم الطلب ليُنفّذ إرجاعاً بعد التسليم مع ردّ المبلغ للزبون",
+          doThis:
+            "أعِد البضاعة إلى المتجر، وأبلِغ المدير برقم الطلب ليُنفّذ إرجاعاً بعد التسليم مع ردّ المبلغ للزبون",
         }),
       });
     }
@@ -1999,17 +2449,31 @@ export async function recordSupplementaryStatementCollection(
 ): Promise<SupplementaryCollectionResult> {
   const clientRequestId = input.clientRequestId;
   if (!clientRequestId || clientRequestId.length < 8) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
-      what: "تعذّر تسجيل التحصيل المتمِّم",
-      why: `الطلب وصل بمعرّف عمليةٍ غير صالحٍ لمنع التكرار (طوله ${clientRequestId?.length ?? 0} والحدّ الأدنى 8) — وهو ما يمنع تسجيل التحصيل نفسه مرّتين`,
-      doThis: "أعِد تحميل شاشة كشف الشركة ثمّ أعِد الحفظ؛ فإن تكرّر الرفض فأبلِغ مسؤول النظام برقم الكشف",
-    }) });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل التحصيل المتمِّم",
+        why: `الطلب وصل بمعرّف عمليةٍ غير صالحٍ لمنع التكرار (طوله ${clientRequestId?.length ?? 0} والحدّ الأدنى 8) — وهو ما يمنع تسجيل التحصيل نفسه مرّتين`,
+        doThis:
+          "أعِد تحميل شاشة كشف الشركة ثمّ أعِد الحفظ؛ فإن تكرّر الرفض فأبلِغ مسؤول النظام برقم الكشف",
+      }),
+    });
   }
   const payloadHash = idempotencyHash(input);
   const run = async (tx: Tx): Promise<SupplementaryCollectionResult> => {
-    const replay = await checkIdempotency(tx, "courier.supplementaryCollection", clientRequestId, payloadHash);
+    const replay = await checkIdempotency(
+      tx,
+      "courier.supplementaryCollection",
+      clientRequestId,
+      payloadHash,
+    );
     if (replay != null) {
-      return { consignmentId: replay, delta: "0.00", noChange: true, alreadyDelivered: true };
+      return {
+        consignmentId: replay,
+        delta: "0.00",
+        noChange: true,
+        alreadyDelivered: true,
+      };
     }
     const preview = (
       await tx
@@ -2018,11 +2482,15 @@ export async function recordSupplementaryStatementCollection(
         .where(eq(deliveryConsignments.id, Number(input.consignmentId)))
         .limit(1)
     )[0];
-    if (!preview) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({
-      what: "تعذّر تسجيل التحصيل المتمِّم",
-      why: `لا إرساليةَ بالرقم ${input.consignmentId} في السجلّ`,
-      doThis: `راجع رقم الطرد في كشف الشركة ${input.statementNumber} وأعِد إدخاله من صفحة الإرساليات`,
-    }) });
+    if (!preview)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل التحصيل المتمِّم",
+          why: `لا إرساليةَ بالرقم ${input.consignmentId} في السجلّ`,
+          doThis: `راجع رقم الطرد في كشف الشركة ${input.statementNumber} وأعِد إدخاله من صفحة الإرساليات`,
+        }),
+      });
     // ترتيب الأقفال الموحّد: الجهة أولاً، ثم الإرسالية، ثم الفاتورة.
     const party = (
       await tx
@@ -2032,11 +2500,16 @@ export async function recordSupplementaryStatementCollection(
         .for("update")
         .limit(1)
     )[0];
-    if (!party) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({
-      what: "تعذّر تسجيل التحصيل المتمِّم",
-      why: `جهة التوصيل رقم ${Number(preview.partyId)} لم تعد موجودةً في السجلّ، ولا تُرفَع عهدةٌ لجهةٍ محذوفة`,
-      doThis: "أبلِغ المدير برقم الإرسالية ليُعيد إنشاء الجهة أو يُصحّح إسناد الطرد قبل تسجيل الكشف",
-    }) });
+    if (!party)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل التحصيل المتمِّم",
+          why: `جهة التوصيل رقم ${Number(preview.partyId)} لم تعد موجودةً في السجلّ، ولا تُرفَع عهدةٌ لجهةٍ محذوفة`,
+          doThis:
+            "أبلِغ المدير برقم الإرسالية ليُعيد إنشاء الجهة أو يُصحّح إسناد الطرد قبل تسجيل الكشف",
+        }),
+      });
     const cn = (
       await tx
         .select()
@@ -2045,18 +2518,23 @@ export async function recordSupplementaryStatementCollection(
         .for("update")
         .limit(1)
     )[0];
-    if (!cn) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({
-      what: "تعذّر تسجيل التحصيل المتمِّم",
-      why: `لا إرساليةَ بالرقم ${input.consignmentId} في السجلّ`,
-      doThis: `راجع رقم الطرد في كشف الشركة ${input.statementNumber} وأعِد إدخاله من صفحة الإرساليات`,
-    }) });
+    if (!cn)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل التحصيل المتمِّم",
+          why: `لا إرساليةَ بالرقم ${input.consignmentId} في السجلّ`,
+          doThis: `راجع رقم الطرد في كشف الشركة ${input.statementNumber} وأعِد إدخاله من صفحة الإرساليات`,
+        }),
+      });
     if (Number(cn.partyId) !== Number(party.id)) {
       throw new TRPCError({
         code: "CONFLICT",
         message: appErrorMessage({
           what: `تعذّر تسجيل التحصيل المتمِّم على الإرسالية ${cn.consignmentNumber}`,
           why: "تغيّرت جهة التوصيل المرتبطة بالإرسالية أثناء تسجيل الكشف",
-          doThis: "حدّث شاشة الكشف ثم أعد مسح بوليصة الإرسالية على الشركة الحالية",
+          doThis:
+            "حدّث شاشة الكشف ثم أعد مسح بوليصة الإرسالية على الشركة الحالية",
         }),
       });
     }
@@ -2066,7 +2544,8 @@ export async function recordSupplementaryStatementCollection(
         message: appErrorMessage({
           what: `تعذّر تسجيل التحصيل المتمِّم على الإرسالية ${cn.consignmentNumber}`,
           why: `حالة الطرد ${cn.parcelStatus} لا «مُسلَّم» — والتحصيلُ المتمِّم يُدوَّن على طردٍ ثبت تسليمه سلفاً في كشفٍ سابق`,
-          doThis: "سجّل التسليم أوّلاً من مسار تسليم الإرسالية بالكشف، ثمّ سجّل ما تبقّى تحصيلاً متمِّماً",
+          doThis:
+            "سجّل التسليم أوّلاً من مسار تسليم الإرسالية بالكشف، ثمّ سجّل ما تبقّى تحصيلاً متمِّماً",
         }),
       });
     }
@@ -2080,13 +2559,69 @@ export async function recordSupplementaryStatementCollection(
         message: appErrorMessage({
           what: `تعذّر تسجيل التحصيل المتمِّم على الإرسالية ${cn.consignmentNumber}`,
           why: `مبلغ الكشف ${input.statementNumber} الإضافي سالب (${delta.toFixed(2)})، والتحصيل السابق لا يُلغى بكشفٍ لاحق`,
-          doThis: "صحّح مبلغ سطر الكشف إلى ما قبضته الشركة في هذا الكشف فقط، أو استخدم مسار التصحيح المالي الموثّق",
+          doThis:
+            "صحّح مبلغ سطر الكشف إلى ما قبضته الشركة في هذا الكشف فقط، أو استخدم مسار التصحيح المالي الموثّق",
         }),
       });
     }
     if (delta.isZero()) {
-      await recordIdempotencyKey(tx, "courier.supplementaryCollection", clientRequestId, Number(cn.id), payloadHash);
-      return { consignmentId: Number(cn.id), delta: "0.00", noChange: true, alreadyDelivered: true };
+      await recordIdempotencyKey(
+        tx,
+        "courier.supplementaryCollection",
+        clientRequestId,
+        Number(cn.id),
+        payloadHash,
+      );
+      return {
+        consignmentId: Number(cn.id),
+        delta: "0.00",
+        noChange: true,
+        alreadyDelivered: true,
+      };
+    }
+    if (cn.sourceType === "AFTERCARE_EXECUTION")
+      throw fulfillmentError(
+        "إرسالية المعالجة لا تحمل مطالبة على العميل؛ لا تقبل تحصيلاً متمماً",
+      );
+    const assigned = await loadAssignedChargeClaimsTx(tx, Number(cn.id));
+    if (cn.fulfillmentRequestId != null) {
+      const replay = await checkIdempotency(
+        tx,
+        "courier.supplementaryCollection",
+        clientRequestId,
+        payloadHash,
+        { requireStoredHash: true, forUpdate: true },
+      );
+      if (replay != null)
+        return {
+          consignmentId: cn.id,
+          delta: "0.00",
+          noChange: true,
+          alreadyDelivered: true,
+        };
+      await collectAssignedConsignmentClaimsTx(
+        tx,
+        {
+          consignmentId: cn.id,
+          actualAmount: toDbMoney(delta),
+          eventKey: clientRequestId,
+          leaveRemainderOnCustomer: true,
+          supplementary: true,
+        },
+        { userId: actor.userId, branchId: cn.branchId },
+      );
+      await recordIdempotencyKey(
+        tx,
+        "courier.supplementaryCollection",
+        clientRequestId,
+        cn.id,
+        payloadHash,
+      );
+      return {
+        consignmentId: cn.id,
+        delta: toDbMoney(delta),
+        alreadyDelivered: true,
+      };
     }
     const newTotal = round2(currentCollected.plus(delta));
     if (newTotal.gt(codAmount)) {
@@ -2108,13 +2643,20 @@ export async function recordSupplementaryStatementCollection(
         .for("update")
         .limit(1)
     )[0];
-    if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({
-      what: `تعذّر تسجيل التحصيل المتمِّم على الإرسالية ${cn.consignmentNumber}`,
-      why: `فاتورة الإرسالية (رقم ${Number(cn.invoiceId)}) مفقودةٌ من السجلّ، ولا يُقيَّد قبضٌ بلا فاتورةٍ يُنسَب إليها`,
-      doThis: "أبلِغ كاشير الاستقبال برقم الإرسالية ليُصلِح ارتباط الفاتورة، ثمّ أعِد تسجيل الكشف",
-    }) });
+    if (!inv)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: `تعذّر تسجيل التحصيل المتمِّم على الإرسالية ${cn.consignmentNumber}`,
+          why: `فاتورة الإرسالية (رقم ${Number(cn.invoiceId)}) مفقودةٌ من السجلّ، ولا يُقيَّد قبضٌ بلا فاتورةٍ يُنسَب إليها`,
+          doThis:
+            "أبلِغ كاشير الاستقبال برقم الإرسالية ليُصلِح ارتباط الفاتورة، ثمّ أعِد تسجيل الكشف",
+        }),
+      });
     const invoiceRemaining = round2(
-      money(inv.total).minus(money(inv.returnedTotal ?? "0")).minus(money(inv.paidAmount)),
+      money(inv.total)
+        .minus(money(inv.returnedTotal ?? "0"))
+        .minus(money(inv.paidAmount)),
     );
     if (delta.gt(invoiceRemaining)) {
       throw new TRPCError({
@@ -2164,7 +2706,11 @@ export async function recordSupplementaryStatementCollection(
       .update(invoices)
       .set({
         paidAmount: toDbMoney(newPaid),
-        status: computeInvoiceStatus(String(inv.total), toDbMoney(newPaid), String(inv.returnedTotal ?? "0")),
+        status: computeInvoiceStatus(
+          String(inv.total),
+          toDbMoney(newPaid),
+          String(inv.returnedTotal ?? "0"),
+        ),
       })
       .where(eq(invoices.id, Number(inv.id)));
     if (inv.customerId != null) {
@@ -2184,9 +2730,18 @@ export async function recordSupplementaryStatementCollection(
         newCollectedTotal: newTotal.toFixed(2),
       },
     });
-    await recordIdempotencyKey(tx, "courier.supplementaryCollection", clientRequestId, Number(cn.id), payloadHash);
-    return { consignmentId: Number(cn.id), delta: delta.toFixed(2), alreadyDelivered: true };
+    await recordIdempotencyKey(
+      tx,
+      "courier.supplementaryCollection",
+      clientRequestId,
+      Number(cn.id),
+      payloadHash,
+    );
+    return {
+      consignmentId: Number(cn.id),
+      delta: delta.toFixed(2),
+      alreadyDelivered: true,
+    };
   };
   return existingTx ? run(existingTx) : withTx(run);
 }
-

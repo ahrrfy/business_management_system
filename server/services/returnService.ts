@@ -1,5 +1,6 @@
 import { effectiveDeliveryLedgerEntrySql } from "./delivery/legacyLedger";
 import { TRPCError } from "@trpc/server";
+import { assertNoActiveAftercareForInvoiceTx } from "./fulfillment/aftercareSources";
 import {
   canonicalOperationAllowed,
   storedCanonicalOperationAllowed,
@@ -888,6 +889,7 @@ export async function returnSaleInTx(
     .for("update")
     .limit(1);
   const inv = invRows[0];
+  if (inv) await assertNoActiveAftercareForInvoiceTx(tx, inv.id);
   if (!inv) {
     throw new TRPCError({
       code: "NOT_FOUND",

@@ -90,6 +90,21 @@ describe("تفكيك ER_DUP_ENTRY (قيمة مكرّرة تشخيصية)", () =>
     const m = msgOf(dbErr("ER_DUP_ENTRY", "Duplicate entry 'a@b.c' for key 'users_email_unique'"));
     expect(m).toContain("البريد الإلكتروني");
   });
+
+  it.each([
+    ["uq_fri_active_invoice", "طلب توصيل نشط آخر", "طلبها الحالي"],
+    ["uq_fcp_allocation", "حصة هذا الإيصال", "تخصيصات الإيصال"],
+    ["uq_ael_reused_from", "القطعة العائدة", "سجل عودتها وعهدتها"],
+    ["uq_ae_key", "بهذا المعرّف مسجّلة مسبقاً", "ولا تكرر صرف"],
+    ["uq_fr_number", "رقم طلب التوصيل", "المُعرّف نفسه"],
+  ])("يميّز سبب تعارض التوصيل %s ويعرض إجراءً يمنع تكرار الأثر", (constraint, context, action) => {
+    const message = msgOf(dbErr("ER_DUP_ENTRY", `Duplicate entry '42' for key 'fulfillment.${constraint}'`));
+    expect(message).toContain(context);
+    expect(message).toContain(action);
+    expect(message).not.toContain(constraint);
+    expect(message).not.toContain("Duplicate entry");
+    expect(message).not.toContain("Failed query");
+  });
 });
 
 describe("تسمية الحقل/الجدول في أخطاء NULL والمفاتيح الأجنبية", () => {

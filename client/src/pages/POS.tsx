@@ -1,3 +1,4 @@
+import { deliveryFeeTenderForGoods } from "@/components/pos/feeTenderUi";
 /**
  * نقطة البيع — الرؤية العربية
  * تصميم Odoo 19-style مع multi-tab، حاسبة ذكية، مسح باركود آني، وإدارة وردية كاملة.
@@ -268,7 +269,7 @@ export default function POS() {
     isSplitPayment,
     splitInvalidLeg,
     splitNonCashOverpay,
-    externalPaymentAmount,
+    externalPaymentAmount, deliveryFeeHeldD,
     externalPaymentFingerprint,
     externalPaymentConfirmed,
   } = computePOSTotals({ cart, activeTab });
@@ -677,8 +678,9 @@ export default function POS() {
       notify.err("مبلغ الدفع يجب أن يكون موجباً قبل تأكيد العملية الخارجية.");
       return;
     }
-    const amountStr = leg ? parsePosLegAmountD(leg.amount).toFixed(2) : externalPaymentAmount;
-    const fingerprint = leg ? computeSplitLegFingerprint(leg) : externalPaymentFingerprint;
+    const feeForLeg = leg && activeTab.paymentLegs?.[0]?.id === leg.id ? deliveryFeeHeldD : D(0);
+    const amountStr = leg ? parsePosLegAmountD(leg.amount).plus(feeForLeg).toFixed(2) : externalPaymentAmount;
+    const fingerprint = leg ? computeSplitLegFingerprint(leg, feeForLeg) : externalPaymentFingerprint;
     const curExt = leg ? leg.externalPayment : activeTab.externalPayment;
     const prior = curExt?.fingerprint === fingerprint ? curExt : null;
     const requestId = prior?.requestId ?? newClientRequestId();
@@ -962,7 +964,7 @@ export default function POS() {
               },
             }),
       // م١ PR-B: الطرد يُسند داخل معاملة البيع نفسها؛ أجرة COUNTER تُقبض الآن أمانةً وتساوي الأجرة بالضبط.
-      ...(deliveryPayload ? { delivery: deliveryPayload, ...(deliveryPayload.feeCollection === "COUNTER" ? { deliveryFeeHeld: deliveryPayload.fee } : {}) } : {}),
+      ...(deliveryPayload ? { delivery: deliveryPayload, ...(deliveryPayload.feeCollection === "COUNTER" ? { deliveryFeeHeld: deliveryPayload.fee, deliveryFeeTender: deliveryFeeTenderForGoods(isSplitPayment ? splitLegs[0].method : activeTab.method) } : {}) } : {}),
       // تاريخ الاستحقاق للآجل فقط — يُحفظ invoices.dueDate ويصحّح أعمار الذمم والتذكيرات.
       ...(isCredit && activeTab.dueDate ? { dueDate: activeTab.dueDate } : {}),
       ...(activeTab.couponCode ? { couponCode: activeTab.couponCode } : {}),
@@ -1112,6 +1114,7 @@ export default function POS() {
         cardsDisabled={offline}
         cardsDisabledReason={offline ? "البيع الرقمي يحتاج اتصالاً بالخادم" : undefined}
         branchName={activeBranchName}
+        branchId={branchId}
         offline={offline}
       />
 
@@ -1203,7 +1206,7 @@ export default function POS() {
           stacked={stacked}
           codMode={codMode}
           isCreditBlocked={isCashOnlyCustomer}
-          total={total}
+          total={total} deliveryFeeHeld={deliveryFeeHeldD.toNumber()} feeMethod={isSplitPayment ? activeTab.paymentLegs?.[0]?.method : activeTab.method}
           subtotal={subtotal}
           invoiceDiscountAmount={invoiceDiscountAmount}
           invoiceDiscountPct={activeTab.invoiceDiscountPct ?? ""}
@@ -1243,7 +1246,7 @@ export default function POS() {
           onApplyCoupon={applyCoupon}
           onClearCoupon={clearAppliedCoupon}
           couponPending={couponPreview.isPending || cartHasDigital}
-          splitPayment={!cartHasDigital && !codMode ? {
+          splitPayment={!cartHasDigital ? {
             paymentLegs: activeTab.paymentLegs ?? [], onEnableSplit: () => enableSplitPayment(total), onDisableSplit: disableSplitPayment,
             onAddLeg: () => addPaymentLeg(credit), onUpdateLeg: (legId, patch) => updatePaymentLeg(legId, patch, total), onRemoveLeg: removePaymentLeg,
             onConfirmLegExternalPayment: (legId) => { void confirmCurrentExternalPayment(legId); }, confirmingLegId, splitNonCashOverpay,

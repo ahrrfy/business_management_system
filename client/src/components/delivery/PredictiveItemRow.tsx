@@ -1,3 +1,4 @@
+import { deliverySourceView } from "@shared/deliverySource";
 import * as React from "react";
 import {
   Building2,
@@ -68,10 +69,10 @@ export const PredictiveItemRow = React.memo(function PredictiveItemRow({
             </span>
           )}
 
-          {item.invoiceNumber && (
+          {(item.invoiceNumber || item.sourceType === "AFTERCARE_EXECUTION" || item.sourceType === "FULFILLMENT_REQUEST" || item.fulfillmentRequestId != null) && (
             <span className="text-xs text-muted-foreground font-mono flex items-center gap-1">
               <FileText aria-hidden="true" className="size-3" />
-              فاتورة #{item.invoiceNumber}
+              {deliverySourceView(item).reference}
             </span>
           )}
 

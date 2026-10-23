@@ -3,6 +3,7 @@
 // سلوكيّ: الصفحةُ العملاقة (٣٧٨٣ سطراً) قُسِّمت مكوّنياً كي تنزل تحت خطّ أساس `check:page-size`
 // ومقياس الاحتكاك D4، وتبقى كلّ الحالة المالية عند الأب (POS.tsx) وتصل عبر props.
 
+import { FulfillmentShortcuts } from "@/components/fulfillment/FulfillmentShortcuts";
 import type { RouterOutputs } from "@/lib/trpc";
 import { useEffect, useRef } from "react";
 import { Store, Search, X, CreditCard, WifiOff } from "lucide-react";
@@ -28,10 +29,11 @@ export interface POSHeaderProps {
   cardsDisabled: boolean;
   cardsDisabledReason?: string;
   branchName: string;
+  branchId?: number | null;
   offline?: boolean;
 }
 
-export function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searching, searchSettled, addToCart, searchRef, handleScanKeyDown, lastInv, onOpenCards, cardsDisabled, cardsDisabledReason, branchName, offline }: POSHeaderProps) {
+export function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searching, searchSettled, addToCart, searchRef, handleScanKeyDown, lastInv, onOpenCards, cardsDisabled, cardsDisabledReason, branchName, branchId, offline }: POSHeaderProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     function h(e: MouseEvent) {
@@ -96,6 +98,8 @@ export function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results
       >
         <CreditCard aria-hidden size={18} /> الكروت والاشتراكات
       </button>
+
+      <FulfillmentShortcuts branchId={branchId} offline={offline} />
 
       {/* Search with smart scan */}
       <div ref={wrapRef} style={{ flex: "1 1 460px", minWidth: 240, position: "relative" }}>

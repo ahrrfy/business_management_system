@@ -1,3 +1,4 @@
+import { deliverySourceView, type DeliverySourceReference } from "@shared/deliverySource";
 // أوراق تسليم/توصيل مشتركة — مُستخرَجة من DeliveryHub.tsx (مراجعة عدائية ٤/٨): كانت مُصدَّرة من
 // ملف صفحة (DeliveryHub.tsx) فيَجرّ استيرادها من ReceptionOrderQueue.tsx حزمة DeliveryHub كاملةً
 // (~8ك مضغوطة) لشاشة استقبال عالية التردّد رغم استعمالها دالتين فقط. هنا: مكتبة طباعة صرفة، بلا React.
@@ -41,8 +42,10 @@ export interface LabelPrintableOrder {
 export function printDeliverySlip(
   order: LabelPrintableOrder,
   party: { name: string } | undefined,
-  r: { consignmentNumber: string; invoiceNumber: string; codAmount: string; deliveryFee: string; externalTrackingRef?: string | null },
+  r: DeliverySourceReference & { consignmentNumber: string; invoiceNumber?: string | null; codAmount: string; deliveryFee: string; feeCollection?: string | null; externalTrackingRef?: string | null },
 ) {
+  const source = deliverySourceView(r);
+  if (source.customerCollectionForbidden && (Number(r.codAmount) !== 0 || r.feeCollection !== "SHOP")) throw new Error("بوليصة المعالجة تتطلب تحصيلاً صفرياً وأجرة على المكتبة");
   const rows: [string, string, string][] = order.items && order.items.length > 0
     ? order.items.map((it) => [
         it.title || it.productName || it.name || "بند الطلب",
@@ -53,7 +56,7 @@ export function printDeliverySlip(
 
   void printDoc({
     kind: "receipt",
-    title: "بوليصة توصيل",
+    title: source.customerCollectionForbidden ? "استكمال نقص / معالجة — لا تحصيل من العميل" : "بوليصة توصيل",
     subtitle: r.consignmentNumber,
     meta: [
       `الطلب: ${order.orderNumber}`,
@@ -61,7 +64,7 @@ export function printDeliverySlip(
       r.externalTrackingRef ? `مرجع الشركة: ${r.externalTrackingRef}` : "",
       `المستلم: ${order.customerName ?? "—"}`,
       order.deliveryAddress ? `العنوان: ${order.deliveryAddress}` : "",
-      `الفاتورة: ${r.invoiceNumber}`,
+      r.sourceType ? source.reference : r.invoiceNumber ? `الفاتورة: ${r.invoiceNumber}` : "",
     ].filter(Boolean),
     columns: ["البند", "الكمية", "المبلغ"],
     rows,
@@ -69,7 +72,7 @@ export function printDeliverySlip(
       { label: "مبلغ التحصيل (COD)", value: `${fmt(r.codAmount)} د.ع` },
       { label: "أجرة التوصيل", value: `${fmt(r.deliveryFee)} د.ع` },
     ],
-    footer: "يُسلَّم المبلغ للمكتبة عند التوريد",
+    footer: source.customerCollectionForbidden ? "لا يطالب العميل بأي مبلغ — أجرة الإعادة على المكتبة" : "يُسلَّم المبلغ للمكتبة عند التوريد",
     barcodeSet: { barcode128: r.consignmentNumber, qrPayload: r.consignmentNumber, displayLabel: r.consignmentNumber },
   });
 }

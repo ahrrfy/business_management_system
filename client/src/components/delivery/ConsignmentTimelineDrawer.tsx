@@ -1,3 +1,5 @@
+import { deliverySourceView } from "@shared/deliverySource";
+import { DeliverySourceLink } from "./DeliverySourceLink";
 import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 /**
  * **درج تفصيل الإرسالية** (٢٢/٨) — الشاشة التي كانت مفقودة: «ماذا حدث لهذا الطرد؟».
@@ -168,8 +170,9 @@ export function ConsignmentTimelineDrawer({ consignmentId, onClose }: Consignmen
               <h3 className="mb-2 text-xs font-black text-muted-foreground">المستند المصدر</h3>
               <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-card/50 p-3 text-sm">
                 <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-bold text-muted-foreground">
-                  {cn_.sourceType === "WORK_ORDER" ? "أمر شغل" : cn_.sourceType === "ONLINE_ORDER" ? "طلب متجر" : "فاتورة"}
+                  {deliverySourceView(cn_).label}
                 </span>
+                <DeliverySourceLink source={cn_} />
                 {cn_.orderNumber && <span className="font-mono text-xs" dir="ltr">{cn_.orderNumber}</span>}
                 {cn_.invoiceId && (
                   <a href={`/invoices/${cn_.invoiceId}`} className="ms-auto inline-flex items-center gap-1 text-primary hover:underline">

@@ -17,6 +17,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { fmt } from "@/lib/money";
 import { cn } from "@/lib/utils";
@@ -77,6 +78,7 @@ export interface PaymentPanelProps {
   applyCoupon: () => void; clearCoupon: () => void; couponPending: boolean;
   submitting: boolean; cartEmpty: boolean; hasShift: boolean; submitAllowed?: boolean;
   onSubmit: (opts: { quickFullPay: boolean; isReservation?: boolean }) => void;
+  deliveryFeePayment?: {capturedAmount:string;confirmed:boolean;pending:boolean;error:string|null;confirm:()=>void};
 }
 
 const POS_METHODS: Array<{ v: PayMethod; label: string }> = [
@@ -103,9 +105,10 @@ export function PaymentPanel({
   couponInput, setCouponInput,
   couponOpen, setCouponOpen,
   applyCoupon, clearCoupon, couponPending,
-  submitting, cartEmpty, hasShift, submitAllowed = true,
-  onSubmit,
+  submitting, cartEmpty, hasShift, submitAllowed: suppliedSubmitAllowed = true,
+  onSubmit, deliveryFeePayment,
 }: PaymentPanelProps) {
+  const submitAllowed = suppliedSubmitAllowed && (deliveryFeePayment?.confirmed ?? true);
   // ٢٣/٨ (Codex P1 v2): حقلُ المبلغ يفصل «العرض» عن «القيمة الملتزمة». هذا يحلّ ثلاث حالات:
   // (١) الكاشير يكتب `1,` كخطوةٍ في الطريق إلى `1,5` أو `1,234` — نُبقي الحرفَ ظاهراً في الحقل
   //     لكن لا نلتزم قيمةً غير قابلةٍ للحلّ.
@@ -156,7 +159,7 @@ export function PaymentPanel({
         )}
         {heldDelivery > 0 && (
           <span className="inline-flex items-center gap-1 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-2 py-0.5 text-[11px] font-bold text-[var(--sem-warn)]">
-            <Truck aria-hidden className="size-3" /> أجرة توصيل أمانةً: <span dir="ltr">{fmt(heldDelivery)}</span> — المُستلَم نقداً الآن: <span dir="ltr">{fmt(cashDueNow)}</span>
+            <Truck aria-hidden className="size-3" /> أجرة توصيل أمانةً: <span dir="ltr">{fmt(heldDelivery)}</span> — المقبوض الآن: <span dir="ltr">{fmt(cashDueNow)}</span>
           </span>
         )}
         {/* ٨/٨ — شفافية أجرة التوصيل غير المقبوضة في الكاونتر (COURIER/SHOP): كانت تختفي كلياً
@@ -334,6 +337,11 @@ export function PaymentPanel({
         </div>
       )}
 
+      {deliveryFeePayment && heldDelivery > 0 && method !== "CASH" && <div className="flex flex-wrap items-center gap-2 border-y px-3 py-2 text-xs">
+        <span>البضاعة والأجرة في عملية واحدة: <strong dir="ltr">{deliveryFeePayment.capturedAmount} د.ع</strong> — بلا حركة نقد درج</span>
+        <Button type="button" size="sm" variant="outline" disabled={deliveryFeePayment.pending||deliveryFeePayment.confirmed} onClick={deliveryFeePayment.confirm}>{deliveryFeePayment.confirmed?"الدفع مؤكد":"تأكيد نجاح الدفع لدى المزوّد"}</Button>
+        {deliveryFeePayment.error&&<p role="alert" className="text-destructive">{deliveryFeePayment.error}</p>}
+      </div>}
       {/* صفّ الإجراءات: مبلغ مدفوع + رقائق سريعة | طريقة الدفع | عربون/كوبون | زرّا الإتمام.
           pe-28 يحجز حافّة الشريط اليسرى فارغةً — شارة مزامنة الأوفلاين (fixed bottom-3 left-3
           مشتركة بكل شاشات الكاشير) تطفو فوق تلك الزاوية بالضبط في أي شاشةٍ بشريطٍ سفليّ حافّة-لحافّة. */}

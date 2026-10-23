@@ -1,3 +1,4 @@
+import type { DeliveryFeeTender } from "../delivery/feeHeld";
 // عقد البيع (POS/عبر القنوات) المشترك.
 import type { PriceTier } from "../pricing";
 import type { VERIFIED_DIGITAL_CREDIT_PREFLIGHT } from "./create";
@@ -224,6 +225,7 @@ export interface CreateSaleInput {
    * (`delivery/feeHeld.ts`، مرآة الاستقبال). يجب أن تساوي `delivery.fee` بالضبط.
    */
   deliveryFeeHeld?: string | null;
+  deliveryFeeTender?: DeliveryFeeTender | null;
   /** الاستقبال (٨/٨): تأكيد الموظّف أن الصنف **متوفّر فيزيائياً** رغم أنه غير مجرود (رصيد سالب)
    *  في وضع الافتتاح — يفتح البيع بالسالب لطلب توصيل COD (unpaid>0) الذي يحمله المندوب بيده.
    *  بدونه يبقى الحاصر: بيعُ COD لبضاعةٍ غير موجودة فعلاً بلا مالٍ مقبوض. مشروطٌ بوضع الافتتاح

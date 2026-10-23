@@ -80,6 +80,15 @@ export default function BalanceSheet() {
       // ١٠/٨ — أجرة توصيل قُبضت في الدرج أمانةً للمندوب ولم تُصرف له بعد (نقدها ضمن «النقد»).
       { label: "أمانات أجور توصيل معلّقة", v: p.deliveryFeeHeldLiability },
       { label: "أجور توصيل مكتسبة غير مدفوعة", v: p.deliveryFeeDueLiability },
+      {
+        label: "التزامات مبالغ بالنيابة عن الغير",
+        v: p.fulfillmentPassThroughLiability,
+      },
+      {
+        label: "مستحقات متعهدين خارج ذمم الموردين",
+        v: p.fulfillmentPayeeLiability,
+      },
+      { label: "فائض قبض مستحق للعملاء", v: p.fulfillmentCustomerCredit },
       { label: "صافي رواتب مستحق للموظفين", v: p.accruedSalaryLiability },
       { label: "ضريبة رواتب مستحقة التحويل", v: p.payrollTaxPayable },
       { label: "ضمان اجتماعي مستحق التحويل", v: p.socialSecurityPayable },
@@ -99,7 +108,18 @@ export default function BalanceSheet() {
         D(p.draftAdvances).gt(0)
           ? `ومن «سُلف العملاء» ${fmtAr(p.draftAdvances)} عرابينُ طلباتٍ محفوظةٍ ما زالت مفتوحة.`
           : "",
-      ].filter(Boolean).join(" ")
+        !D(p.fulfillmentPassThroughLiability).isZero()
+          ? "المبالغ بالنيابة التزام للمستفيد وليست إيراداً للمكتبة؛ سدادها يبرئ الالتزام دون مصروف جديد."
+          : "",
+        !D(p.fulfillmentCustomerCredit).isZero()
+          ? "فائض القبض مال مستحق للعميل خارج الذمة التجارية، ولا يرفع إيراد الخدمة."
+          : "",
+        !D(p.fulfillmentPayeeLiability).isZero()
+          ? "مستحقات المتعهدين هنا تستبعد الموردين؛ مستحقات المورد تظهر ضمن الذمم الدائنة مرة واحدة."
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" ")
     : "";
   // عند تفعيل الدفتر المزدوج: هذه لقطةٌ تشغيليّة بحقوقٍ موازَنةٍ بالإجبار؛ الميزانية المُدقّقة
   // المشتقّة من الدفتر (حقوقٌ حقيقيّة لا مُجبَرة) في شاشة «الدليل المحاسبي النظاميّ».
@@ -107,26 +127,50 @@ export default function BalanceSheet() {
     p?.accountingMode === "ACTIVE"
       ? "الدفتر المزدوج مُفعَّل: حقوق الملكية هنا موازنةُ إجبار (أصول − خصوم)؛ الميزانية المُدقّقة المشتقّة من الدفتر في شاشة «الدليل المحاسبي النظاميّ»."
       : "";
-  const fullNote = [NOTE, disclosure, activeLedgerNote, p?.historicalNote ?? "", p?.interbranchNote ?? ""].filter(Boolean).join(" ");
+  const fullNote = [
+    NOTE,
+    disclosure,
+    activeLedgerNote,
+    p?.historicalNote ?? "",
+    p?.interbranchNote ?? "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   const kpis: KpiItem[] = p
     ? [
         { label: "إجمالي الأصول", value: fmtAr(p.totalAssets), tone: "info" },
-        { label: "إجمالي الخصوم", value: fmtAr(p.totalLiabilities), tone: "warning" },
-        { label: "حقوق الملكية", value: fmtAr(p.equity), tone: D(p.equity).gte(0) ? "positive" : "negative" },
+        {
+          label: "إجمالي الخصوم",
+          value: fmtAr(p.totalLiabilities),
+          tone: "warning",
+        },
+        {
+          label: "حقوق الملكية",
+          value: fmtAr(p.equity),
+          tone: D(p.equity).gte(0) ? "positive" : "negative",
+        },
       ]
     : [];
 
-  const branchLabel = branchId ? (branches.data?.find((b) => b.id === branchId)?.name ?? String(branchId)) : "الكل (الشركة)";
+  const branchLabel = branchId
+    ? (branches.data?.find((b) => b.id === branchId)?.name ?? String(branchId))
+    : "الكل (الشركة)";
 
   function flatRows() {
     if (!p || !sections) return [] as { label: string; amount: string }[];
     return [
       { label: "الأصول", amount: "" },
-      ...sections.assets.map((r) => ({ label: `— ${r.label}`, amount: p ? r.v : "" })),
+      ...sections.assets.map((r) => ({
+        label: `— ${r.label}`,
+        amount: p ? r.v : "",
+      })),
       { label: "إجمالي الأصول", amount: p.totalAssets },
       { label: "الخصوم", amount: "" },
-      ...sections.liabilities.map((r) => ({ label: `— ${r.label}`, amount: r.v })),
+      ...sections.liabilities.map((r) => ({
+        label: `— ${r.label}`,
+        amount: r.v,
+      })),
       { label: "إجمالي الخصوم", amount: p.totalLiabilities },
       {
         // عند تفعيل الدفتر: يحمل التصدير والطباعة تصريحَ أنّ الحقوق موازنةُ إجبار لا اشتقاقٌ من
@@ -145,7 +189,11 @@ export default function BalanceSheet() {
       filename: "الميزانية-العمومية",
       columns: [
         { key: "label", header: "البند" },
-        { key: "amount", header: "القيمة", map: (r) => (r.amount === "" ? "" : toExcelMoney(r.amount)) },
+        {
+          key: "amount",
+          header: "القيمة",
+          map: (r) => (r.amount === "" ? "" : toExcelMoney(r.amount)),
+        },
       ],
     });
   }
@@ -155,7 +203,12 @@ export default function BalanceSheet() {
     printReportDoc({
       title: "الميزانية العمومية",
       headerExtra: [
-        { label: "كما في", value: p.asOf ? fmtDate(new Date(`${p.asOf}T00:00:00`)) : fmtDate(new Date()) },
+        {
+          label: "كما في",
+          value: p.asOf
+            ? fmtDate(new Date(`${p.asOf}T00:00:00`))
+            : fmtDate(new Date()),
+        },
         { label: "الفرع", value: branchLabel },
       ],
       note: fullNote,
@@ -163,12 +216,20 @@ export default function BalanceSheet() {
         { key: "label", label: "البند" },
         { key: "amount", label: "القيمة", align: "left" },
       ],
-      rows: flatRows().map((r) => ({ label: r.label, amount: r.amount === "" ? "" : fmtAr(r.amount) })),
+      rows: flatRows().map((r) => ({
+        label: r.label,
+        amount: r.amount === "" ? "" : fmtAr(r.amount),
+      })),
       showIndex: false,
       summary: [
         { label: "إجمالي الأصول", value: fmtAr(p.totalAssets) },
         { label: "إجمالي الخصوم", value: fmtAr(p.totalLiabilities) },
-        { label: "حقوق الملكية", value: fmtAr(p.equity), large: true, bold: true },
+        {
+          label: "حقوق الملكية",
+          value: fmtAr(p.equity),
+          large: true,
+          bold: true,
+        },
       ],
     });
   }
@@ -187,14 +248,31 @@ export default function BalanceSheet() {
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <AppSelect className="h-9" value={String(branchId)} onValueChange={(next) => setBranchId(next ? Number(next) : "")}>
+            <AppSelect
+              className="h-9"
+              value={String(branchId)}
+              onValueChange={(next) => setBranchId(next ? Number(next) : "")}
+            >
               <option value="">الكل (الشركة)</option>
-              {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
+              {branches.data?.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
             </AppSelect>
           </div>
           <div className="flex flex-col gap-1">
-            <label className="text-[11px] text-muted-foreground">كما في تاريخ</label>
-            <Input type="date" dir="ltr" value={asOf} max={todayYmd()} onChange={(e) => setAsOf(e.target.value)} className="h-9 w-40" />
+            <label className="text-[11px] text-muted-foreground">
+              كما في تاريخ
+            </label>
+            <Input
+              type="date"
+              dir="ltr"
+              value={asOf}
+              max={todayYmd()}
+              onChange={(e) => setAsOf(e.target.value)}
+              className="h-9 w-40"
+            />
             {asOf && valuationSource.data && (
               <span
                 className={`text-[10px] rounded-md px-1.5 py-0.5 font-semibold ${
@@ -208,7 +286,10 @@ export default function BalanceSheet() {
                     : "لا لقطةَ رسمية لهذا التاريخ — المخزون مقروءٌ حيّاً من مخزون اليوم، فالرقم قد يتغيّر بأيّ حركةٍ لاحقة."
                 }
               >
-                المخزون: {valuationSource.data.source === "SNAPSHOT" ? "لقطة رسمية" : "تقديريّ (بلا لقطة)"}
+                المخزون:{" "}
+                {valuationSource.data.source === "SNAPSHOT"
+                  ? "لقطة رسمية"
+                  : "تقديريّ (بلا لقطة)"}
               </span>
             )}
           </div>
@@ -218,7 +299,10 @@ export default function BalanceSheet() {
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm">
         <div className="flex items-center gap-2">
           <FileCheck2 className="size-4 text-primary" aria-hidden />
-          <span>تتوفر الميزانية العمومية الرسمية وميزان المراجعة وفق النظام المحاسبي الموحد العراقي.</span>
+          <span>
+            تتوفر الميزانية العمومية الرسمية وميزان المراجعة وفق النظام المحاسبي
+            الموحد العراقي.
+          </span>
         </div>
         <Link href="/statutory-accounting">
           <span className="font-semibold text-primary underline underline-offset-4 hover:opacity-80">
@@ -228,16 +312,48 @@ export default function BalanceSheet() {
       </div>
 
       {q.isLoading || q.isError || !p || !sections ? (
-        <Card><CardContent className="p-0">{q.isLoading ? <LoadingState /> : q.isError ? <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} /> : <div className="p-8 text-center text-sm text-muted-foreground">لا بيانات.</div>}</CardContent></Card>
+        <Card>
+          <CardContent className="p-0">
+            {q.isLoading ? (
+              <LoadingState />
+            ) : q.isError ? (
+              <ErrorState
+                message="تعذّر تحميل التقرير."
+                onRetry={() => void q.refetch()}
+              />
+            ) : (
+              <div className="p-8 text-center text-sm text-muted-foreground">
+                لا بيانات.
+              </div>
+            )}
+          </CardContent>
+        </Card>
       ) : (
         <div className="grid gap-4 lg:grid-cols-2">
-          <SectionCard title="الأصول" rows={sections.assets} total={p.totalAssets} totalLabel="إجمالي الأصول" tone="pos" />
+          <SectionCard
+            title="الأصول"
+            rows={sections.assets}
+            total={p.totalAssets}
+            totalLabel="إجمالي الأصول"
+            tone="pos"
+          />
           <div className="space-y-4">
-            <SectionCard title="الخصوم" rows={sections.liabilities} total={p.totalLiabilities} totalLabel="إجمالي الخصوم" tone="warn" />
+            <SectionCard
+              title="الخصوم"
+              rows={sections.liabilities}
+              total={p.totalLiabilities}
+              totalLabel="إجمالي الخصوم"
+              tone="warn"
+            />
             <Card>
               <CardContent className="flex items-center justify-between p-4">
                 <span className="font-bold">حقوق الملكية (مشتقّة)</span>
-                <span className={`text-xl font-bold tabular-nums ${D(p.equity).gte(0) ? "text-money-positive" : "text-money-negative"}`} dir="ltr">{fmtAr(p.equity)}</span>
+                <span
+                  className={`text-xl font-bold tabular-nums ${D(p.equity).gte(0) ? "text-money-positive" : "text-money-negative"}`}
+                  dir="ltr"
+                >
+                  {fmtAr(p.equity)}
+                </span>
               </CardContent>
             </Card>
           </div>
@@ -250,10 +366,20 @@ export default function BalanceSheet() {
 /** سطرُ قسمٍ في الميزانية (أصل أو خصم) — تسمية البند وقيمته نصّاً. */
 type SectionRow = { label: string; v: string };
 
-function SectionCard({ title, rows, total, totalLabel, tone }: {
+function SectionCard({
+  title,
+  rows,
+  total,
+  totalLabel,
+  tone,
+}: {
   // اسمُ النغمة دلاليّ لا لونيّ («pos/warn» لا «emerald/amber») — الاسمُ اللونيّ يُغري بإعادة
   // إدخال صنفٍ خامّ عند أوّل تعديل، بينما الرسم فعلياً يخرج من توكنَي --sem-pos/--sem-warn.
-  title: string; rows: SectionRow[]; total: string; totalLabel: string; tone: "pos" | "warn";
+  title: string;
+  rows: SectionRow[];
+  total: string;
+  totalLabel: string;
+  tone: "pos" | "warn";
 }) {
   // الإجمالي في `<tfoot>` عبر `footer` على الأعمدة — يبقى محاذياً لعموده (لا سطرَ ملخّصٍ حرّ).
   const columns = useMemo<ColumnDef<SectionRow, unknown>[]>(
@@ -281,7 +407,11 @@ function SectionCard({ title, rows, total, totalLabel, tone }: {
   return (
     <Card>
       <CardContent className="p-0">
-        <div className={`px-4 py-2.5 font-semibold border-b ${tone === "pos" ? "text-[var(--sem-pos)]" : "text-[var(--sem-warn)]"}`}>{title}</div>
+        <div
+          className={`px-4 py-2.5 font-semibold border-b ${tone === "pos" ? "text-[var(--sem-pos)]" : "text-[var(--sem-warn)]"}`}
+        >
+          {title}
+        </div>
         {/* قسمٌ مُضمَّن في بطاقةٍ تحمل عنوانه ⇒ بلا شريط حالةٍ ولا بحثٍ ولا ترقيم. */}
         <DataTable<SectionRow>
           embedded
@@ -297,7 +427,9 @@ function SectionCard({ title, rows, total, totalLabel, tone }: {
         {rows.length === 0 && (
           <div className="flex items-center justify-between gap-3 border-t-2 border-border bg-muted/40 px-[var(--ui-table-cell-inline)] py-2.5 text-sm font-bold">
             <span>{totalLabel}</span>
-            <span className="tabular-nums" dir="ltr">{fmtAr(total)}</span>
+            <span className="tabular-nums" dir="ltr">
+              {fmtAr(total)}
+            </span>
           </div>
         )}
       </CardContent>

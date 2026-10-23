@@ -1,0 +1,761 @@
+import { and, eq, inArray } from "drizzle-orm";
+import {
+  fulfillmentRequestItems,
+  fulfillmentCharges,
+  fulfillmentRequests,
+} from "../../../drizzle/fulfillmentSchema";
+import type {
+  FulfillmentMutationIdentity,
+  FulfillmentSource,
+} from "../../../shared/fulfillment";
+import { extractInsertId } from "../../lib/insertId";
+import { canonicalIraqiMobile } from "../../lib/phone";
+import { retryOnDup } from "../../lib/retryDup";
+import { logAuditTx } from "../auditService";
+import { money, toDbMoney } from "../money";
+import { withTx, type Actor } from "../tx";
+import {
+  assertFulfillmentBranch,
+  assertFulfillmentVersion,
+  fulfillmentError,
+  fulfillmentFingerprint,
+  fulfillmentMutationContext,
+  findFulfillmentReplayTx,
+  loadFulfillmentRequestTx,
+  recordFulfillmentMutationTx,
+} from "./core";
+import {
+  assertRequestOperationTx,
+  loadRequestSourcesTx,
+  normalizeRequestSources,
+  validateRequestPartyTx,
+  dispatchChargeOnlyRequestTx,
+} from "./requestSources";
+import { dispatchInvoiceShipmentInTx } from "../delivery/shipments";
+import { prepareWorkOrderDeliveryInvoiceInTx } from "../delivery/dispatch";
+import {
+  attachFulfillmentRequestClaimsTx,
+  restoreFulfillmentRequestClaimsTx,
+} from "./chargeDelivery";
+import { deliveryConsignments } from "../../../drizzle/schema";
+import { loadShipmentMembersTx } from "../delivery/shipments";
+
+export type FulfillmentRequestFields = {
+  branchId: number;
+  customerId?: number | null;
+  recipientName: string;
+  recipientPhone: string;
+  deliveryAddress: string;
+  partyId?: number | null;
+  deliveryFee: string;
+  feeCollection: "COURIER" | "COUNTER" | "SHOP";
+  partialReleaseAllowed?: boolean;
+  futureFeeDecision?: string | null;
+  notes?: string | null;
+  sources: FulfillmentSource[];
+};
+export type RequestTransition = FulfillmentMutationIdentity & { id: number };
+
+function fields(input: FulfillmentRequestFields) {
+  const phone = canonicalIraqiMobile(input.recipientPhone);
+  if (
+    !phone ||
+    input.recipientName.trim().length < 2 ||
+    input.deliveryAddress.trim().length < 3
+  )
+    throw fulfillmentError("اسم المستلم وهاتفه العراقي وعنوانه الكامل مطلوبة");
+  if (
+    !/^\d+(\.\d{1,2})?$/.test(input.deliveryFee) ||
+    money(input.deliveryFee).isNegative()
+  )
+    throw fulfillmentError("أجرة التوصيل غير صالحة");
+  if (input.partialReleaseAllowed && !input.futureFeeDecision?.trim())
+    throw fulfillmentError(
+      "اكتب قرار أجرة الإرسال القادم قبل السماح بالإرسال الجزئي",
+    );
+  return {
+    branchId: input.branchId,
+    customerId: input.customerId ?? null,
+    recipientName: input.recipientName.trim(),
+    recipientPhone: phone,
+    deliveryAddress: input.deliveryAddress.trim(),
+    partyId: input.partyId ?? null,
+    deliveryFee: toDbMoney(money(input.deliveryFee)),
+    feeCollection: input.feeCollection,
+    partialReleaseAllowed: input.partialReleaseAllowed ?? false,
+    futureFeeDecision: input.futureFeeDecision?.trim() || null,
+    notes: input.notes?.trim() || null,
+  };
+}
+function assertEditable(request: { status: string }) {
+  if (!["DRAFT", "PREPARING", "READY"].includes(request.status))
+    throw fulfillmentError(
+      "لا يمكن تعديل أو إلغاء طلب بعد بدء إرساله؛ راجع الشحنة والبنود المتبقية",
+    );
+}
+
+export async function createFulfillmentRequest(
+  input: FulfillmentRequestFields & { clientRequestId: string },
+  actor: Actor,
+) {
+  const header = fields(input);
+  assertFulfillmentBranch(actor, header.branchId);
+  const sources = normalizeRequestSources(input.sources);
+  const sourceHash = fulfillmentFingerprint({
+    ...header,
+    sources,
+    actorId: actor.userId,
+  });
+  return retryOnDup(() =>
+    withTx(async (tx) => {
+      await assertRequestOperationTx(tx, actor, "create");
+      await validateRequestPartyTx(tx, header.partyId, header.branchId);
+      const findReplay = async () => {
+        const [existing] = await tx
+          .select()
+          .from(fulfillmentRequests)
+          .where(
+            and(
+              eq(fulfillmentRequests.branchId, header.branchId),
+              eq(fulfillmentRequests.clientRequestId, input.clientRequestId),
+            ),
+          )
+          .for("update")
+          .limit(1);
+        if (existing && existing.sourceHash !== sourceHash)
+          throw fulfillmentError(
+            "استُخدم معرف المحاولة مع بيانات مختلفة",
+            "CONFLICT",
+          );
+        return existing;
+      };
+      const replay = await findReplay();
+      if (replay) return replay;
+      // Locks serialize competing requests; retry after unique-key races observes the committed key.
+      const rows = await loadRequestSourcesTx(tx, sources, actor, {
+        ...header,
+        lock: true,
+      });
+      const afterLocks = await findReplay();
+      if (afterLocks) return afterLocks;
+      const identity = fulfillmentMutationContext(
+        "requests.create",
+        input,
+        { header, sources },
+        actor,
+        header.branchId,
+      );
+      const requestNumber = `FR-${header.branchId}-${fulfillmentFingerprint({ sourceHash, key: input.clientRequestId }).slice(0, 20)}`;
+      const id = extractInsertId(
+        await tx.insert(fulfillmentRequests).values({
+          ...header,
+          createdBy: actor.userId,
+          clientRequestId: identity.clientRequestId,
+          sourceHash,
+          requestNumber,
+          status: "DRAFT",
+        }),
+      );
+      if (rows.length)
+        await tx.insert(fulfillmentRequestItems).values(
+          rows.map((r) => ({
+            requestId: id,
+            invoiceId: r.invoiceId,
+            workOrderId: r.workOrderId,
+            status: r.ready ? ("READY" as const) : ("WAITING" as const),
+          })),
+        );
+      await logAuditTx(tx, actor, {
+        action: "fulfillment.request.create",
+        entityType: "fulfillmentRequest",
+        entityId: id,
+        newValue: { ...header, sources },
+      });
+      return loadFulfillmentRequestTx(tx, id, actor);
+    }),
+  );
+}
+
+export async function updateFulfillmentRequest(
+  input: FulfillmentRequestFields & RequestTransition,
+  actor: Actor,
+) {
+  const header = fields(input);
+  const sources = normalizeRequestSources(input.sources);
+  return withTx(async (tx) => {
+    await assertRequestOperationTx(tx, actor, "update");
+    const request = await loadFulfillmentRequestTx(tx, input.id, actor, {
+      lock: true,
+    });
+    const context = fulfillmentMutationContext(
+      "requests.update",
+      input,
+      input,
+      actor,
+      request.branchId,
+    );
+    if (await findFulfillmentReplayTx(tx, context))
+      return loadFulfillmentRequestTx(tx, input.id, actor);
+    assertFulfillmentVersion(request, input.expectedVersion);
+    assertEditable(request);
+    if (header.branchId !== request.branchId)
+      throw fulfillmentError("لا يمكن نقل الطلب بين الفروع");
+    await validateRequestPartyTx(tx, header.partyId, header.branchId);
+    const rows = await loadRequestSourcesTx(tx, sources, actor, {
+      ...header,
+      requestId: input.id,
+      lock: true,
+    });
+    // Draft ownership changes are deliberate; no financial/shipping document is deleted.
+    await tx
+      .delete(fulfillmentRequestItems)
+      .where(eq(fulfillmentRequestItems.requestId, input.id));
+    if (rows.length)
+      await tx.insert(fulfillmentRequestItems).values(
+        rows.map((r) => ({
+          requestId: input.id,
+          invoiceId: r.invoiceId,
+          workOrderId: r.workOrderId,
+          status: r.ready ? ("READY" as const) : ("WAITING" as const),
+        })),
+      );
+    await tx
+      .update(fulfillmentRequests)
+      .set({ ...header, status: "DRAFT", version: request.version + 1 })
+      .where(eq(fulfillmentRequests.id, input.id));
+    await recordFulfillmentMutationTx(tx, context, input.id);
+    await logAuditTx(tx, actor, {
+      action: "fulfillment.request.update",
+      entityType: "fulfillmentRequest",
+      entityId: input.id,
+      oldValue: request,
+      newValue: { ...header, sources },
+    });
+    return loadFulfillmentRequestTx(tx, input.id, actor);
+  });
+}
+
+export async function readyFulfillmentRequest(
+  input: RequestTransition,
+  actor: Actor,
+) {
+  return withTx(async (tx) => {
+    await assertRequestOperationTx(tx, actor, "ready");
+    const request = await loadFulfillmentRequestTx(tx, input.id, actor, {
+      lock: true,
+    });
+    const context = fulfillmentMutationContext(
+      "requests.ready",
+      input,
+      input,
+      actor,
+      request.branchId,
+    );
+    if (await findFulfillmentReplayTx(tx, context))
+      return loadFulfillmentRequestTx(tx, input.id, actor);
+    assertFulfillmentVersion(request, input.expectedVersion);
+    assertEditable(request);
+    const items = await tx
+      .select()
+      .from(fulfillmentRequestItems)
+      .where(
+        and(
+          eq(fulfillmentRequestItems.requestId, input.id),
+          eq(fulfillmentRequestItems.isActive, true),
+        ),
+      );
+    const sources = items.map((r) =>
+      r.invoiceId != null
+        ? { invoiceId: r.invoiceId }
+        : { workOrderId: r.workOrderId! },
+    );
+    const rows = await loadRequestSourcesTx(tx, sources, actor, {
+      ...request,
+      requestId: request.id,
+      lock: true,
+    });
+    for (const row of rows)
+      await tx
+        .update(fulfillmentRequestItems)
+        .set({
+          status: row.ready ? "READY" : "WAITING",
+          checkedAt: row.ready ? new Date() : null,
+          checkedBy: row.ready ? actor.userId : null,
+        })
+        .where(
+          and(
+            eq(fulfillmentRequestItems.requestId, input.id),
+            row.invoiceId != null
+              ? eq(fulfillmentRequestItems.invoiceId, row.invoiceId)
+              : eq(fulfillmentRequestItems.workOrderId, row.workOrderId!),
+          ),
+        );
+    await tx
+      .update(fulfillmentRequests)
+      .set({
+        status: rows.every((r) => r.ready) ? "READY" : "PREPARING",
+        version: request.version + 1,
+      })
+      .where(eq(fulfillmentRequests.id, input.id));
+    await recordFulfillmentMutationTx(tx, context, input.id);
+    await logAuditTx(tx, actor, {
+      action: "fulfillment.request.ready",
+      entityType: "fulfillmentRequest",
+      entityId: input.id,
+      newValue: {
+        readiness: rows.map((r) => ({ number: r.number, ready: r.ready })),
+      },
+    });
+    return loadFulfillmentRequestTx(tx, input.id, actor);
+  });
+}
+
+export async function cancelFulfillmentRequest(
+  input: RequestTransition & { reason: string },
+  actor: Actor,
+) {
+  return withTx(async (tx) => {
+    await assertRequestOperationTx(tx, actor, "cancel");
+    const request = await loadFulfillmentRequestTx(tx, input.id, actor, {
+      lock: true,
+    });
+    const context = fulfillmentMutationContext(
+      "requests.cancel",
+      input,
+      input,
+      actor,
+      request.branchId,
+    );
+    if (await findFulfillmentReplayTx(tx, context))
+      return loadFulfillmentRequestTx(tx, input.id, actor);
+    assertFulfillmentVersion(request, input.expectedVersion);
+    const partial = request.status === "PARTIALLY_RELEASED";
+    if (!partial) assertEditable(request);
+    if (input.reason.trim().length < 3)
+      throw fulfillmentError("سبب الإلغاء مطلوب");
+    await tx
+      .update(fulfillmentRequestItems)
+      .set({ status: "CANCELLED", isActive: false })
+      .where(
+        and(
+          eq(fulfillmentRequestItems.requestId, input.id),
+          inArray(fulfillmentRequestItems.status, ["WAITING", "READY"]),
+        ),
+      );
+    await tx
+      .update(fulfillmentRequests)
+      .set({
+        status: partial ? "PARTIALLY_RELEASED" : "CANCELLED",
+        cancellationReason: input.reason.trim(),
+        cancelledBy: actor.userId,
+        cancelledAt: new Date(),
+        version: request.version + 1,
+      })
+      .where(eq(fulfillmentRequests.id, input.id));
+    await recordFulfillmentMutationTx(tx, context, input.id);
+    await logAuditTx(tx, actor, {
+      action: "fulfillment.request.cancel",
+      entityType: "fulfillmentRequest",
+      entityId: input.id,
+      newValue: { reason: input.reason },
+    });
+    return loadFulfillmentRequestTx(tx, input.id, actor);
+  });
+}
+
+export async function releaseFulfillmentRequest(
+  input: RequestTransition & {
+    itemIds?: number[];
+    partialReleaseConfirmed?: boolean;
+    futureFeeDecision?: string;
+    subsequentDeliveryFee?: string;
+    subsequentFeeCollection?: "COURIER" | "COUNTER" | "SHOP";
+    externalTrackingRef?: string;
+    assignedUserId?: number;
+  },
+  actor: Actor,
+) {
+  return withTx(async (tx) => {
+    await assertRequestOperationTx(tx, actor, "release");
+    const request = await loadFulfillmentRequestTx(tx, input.id, actor, {
+      lock: true,
+    });
+    const context = fulfillmentMutationContext(
+      "requests.release",
+      input,
+      input,
+      actor,
+      request.branchId,
+    );
+    const replay = await findFulfillmentReplayTx(tx, context);
+    if (replay)
+      return {
+        request: await loadFulfillmentRequestTx(tx, input.id, actor),
+        consignmentId: replay,
+        idempotentReplay: true,
+      };
+    assertFulfillmentVersion(request, input.expectedVersion);
+    if (
+      !["DRAFT", "PREPARING", "READY", "PARTIALLY_RELEASED"].includes(
+        request.status,
+      )
+    )
+      throw fulfillmentError("الطلب ملغى أو مرسل بالكامل");
+    if (request.partyId == null)
+      throw fulfillmentError("اختر جهة التوصيل قبل الإرسال");
+    await validateRequestPartyTx(tx, request.partyId, request.branchId);
+    const items = await tx
+      .select()
+      .from(fulfillmentRequestItems)
+      .where(
+        and(
+          eq(fulfillmentRequestItems.requestId, input.id),
+          eq(fulfillmentRequestItems.isActive, true),
+        ),
+      )
+      .for("update");
+    const pending = items.filter((r) => r.status !== "RELEASED");
+    const chargeOnly = items.length === 0;
+    const selected =
+      input.itemIds == null
+        ? pending
+        : pending.filter((r) => input.itemIds!.includes(r.id));
+    if (
+      (!selected.length && !chargeOnly) ||
+      (input.itemIds != null &&
+        (new Set(input.itemIds).size !== input.itemIds.length ||
+          selected.length !== input.itemIds.length))
+    )
+      throw fulfillmentError("اختر بنوداً متبقية صالحة للإرسال");
+    const partial = selected.length !== pending.length;
+    const decision = input.futureFeeDecision?.trim();
+    if (
+      partial &&
+      (!request.partialReleaseAllowed ||
+        input.partialReleaseConfirmed !== true ||
+        !decision)
+    )
+      throw fulfillmentError(
+        "الإرسال الجزئي يحتاج سماحاً محفوظاً وتأكيداً صريحاً وقرار أجرة البنود المتبقية",
+      );
+    // Subsequent release has its own fee contract: never silently charge the first fee again.
+    const subsequent = request.status === "PARTIALLY_RELEASED";
+    if (
+      subsequent &&
+      (input.subsequentDeliveryFee == null ||
+        input.subsequentFeeCollection == null ||
+        !/^\d+(\.\d{1,2})?$/.test(input.subsequentDeliveryFee))
+    )
+      throw fulfillmentError(
+        "حدد أجرة الدفعة اللاحقة وطريقة تحملها صراحةً؛ أجرة الدفعة الأولى لا تتكرر تلقائياً",
+      );
+    const sources = selected.map((r) =>
+      r.invoiceId != null
+        ? { invoiceId: r.invoiceId }
+        : { workOrderId: r.workOrderId! },
+    );
+    const rows = await loadRequestSourcesTx(tx, sources, actor, {
+      ...request,
+      requestId: request.id,
+      lock: true,
+    });
+    if (rows.some((r) => !r.ready))
+      throw fulfillmentError(
+        "بعض أوامر الشغل لم تجهز؛ انتظر جاهزيتها أو اختر إرسالاً جزئياً صريحاً",
+      );
+    const invoiceIds: number[] = [];
+    for (const item of selected) {
+      let invoiceId = item.invoiceId;
+      if (invoiceId == null) {
+        const materialized = await prepareWorkOrderDeliveryInvoiceInTx(
+          tx,
+          {
+            workOrderId: item.workOrderId!,
+            partyId: request.partyId,
+            requestId: request.id,
+            partialDispatchConfirmed: partial,
+          },
+          actor,
+        );
+        invoiceId = materialized.invoiceId;
+        await tx
+          .update(fulfillmentRequestItems)
+          .set({ materializedInvoiceId: invoiceId })
+          .where(eq(fulfillmentRequestItems.id, item.id));
+      }
+      invoiceIds.push(invoiceId);
+    }
+    if (chargeOnly) {
+      const charges = await tx
+        .select()
+        .from(fulfillmentCharges)
+        .where(
+          and(
+            eq(fulfillmentCharges.requestId, request.id),
+            eq(fulfillmentCharges.status, "APPROVED"),
+          ),
+        )
+        .for("update");
+      if (!charges.some((c) => money(c.amount).minus(c.paidAmount).gt(0)))
+        throw fulfillmentError(
+          "الطلب بلا مستندات بيع؛ اعتمد أجوراً حقيقية مستحقة قبل إسناد التحصيل",
+        );
+    }
+    const shipment = chargeOnly
+      ? await dispatchChargeOnlyRequestTx(tx, request, input, actor)
+      : await dispatchInvoiceShipmentInTx(
+          tx,
+          {
+            invoiceId: invoiceIds[0]!,
+            invoiceIds,
+            fulfillmentRequestId: request.id,
+            partyId: request.partyId,
+            deliveryFee: subsequent
+              ? input.subsequentDeliveryFee!
+              : request.deliveryFee,
+            feeCollection: subsequent
+              ? input.subsequentFeeCollection!
+              : request.feeCollection,
+            recipientName: request.recipientName,
+            recipientPhone: request.recipientPhone,
+            deliveryAddress: request.deliveryAddress,
+            clientRequestId: input.clientRequestId,
+            partialDispatchConfirmed: partial,
+            externalTrackingRef: input.externalTrackingRef,
+            assignedUserId: input.assignedUserId,
+            notes: request.notes,
+          },
+          actor,
+        );
+    await attachFulfillmentRequestClaimsTx(
+      tx,
+      {
+        requestId: request.id,
+        consignmentId: shipment.consignmentId,
+        partyId: request.partyId,
+        branchId: request.branchId,
+        clientRequestId: input.clientRequestId,
+      },
+      actor,
+    );
+    if (selected.length)
+      await tx
+        .update(fulfillmentRequestItems)
+        .set({
+          status: "RELEASED",
+          consignmentId: shipment.consignmentId,
+          checkedAt: new Date(),
+          checkedBy: actor.userId,
+        })
+        .where(
+          inArray(
+            fulfillmentRequestItems.id,
+            selected.map((r) => r.id),
+          ),
+        );
+    // Unreleased items retain preparation ownership and remain visible for the next explicit batch.
+    const remaining = pending.filter((r) => !selected.includes(r));
+    await tx
+      .update(fulfillmentRequests)
+      .set({
+        status: partial ? "PARTIALLY_RELEASED" : "RELEASED",
+        releasedBy: actor.userId,
+        releasedAt: new Date(),
+        futureFeeDecision: partial ? decision : request.futureFeeDecision,
+        version: request.version + 1,
+      })
+      .where(eq(fulfillmentRequests.id, input.id));
+    await recordFulfillmentMutationTx(tx, context, shipment.consignmentId);
+    await logAuditTx(tx, actor, {
+      action: "fulfillment.request.release",
+      entityType: "fulfillmentRequest",
+      entityId: input.id,
+      newValue: {
+        consignmentId: shipment.consignmentId,
+        invoiceIds,
+        remainingItemIds: remaining.map((r) => r.id),
+        futureFeeDecision: decision ?? null,
+      },
+    });
+    return {
+      request: await loadFulfillmentRequestTx(tx, input.id, actor),
+      consignmentId: shipment.consignmentId,
+      idempotentReplay: false,
+    };
+  });
+}
+
+/** Reactivates the original cancelled batch; never sells or materializes a source again. */
+export async function reassignFulfillmentRequest(
+  input: RequestTransition & {
+    consignmentId: number;
+    partyId?: number;
+    externalTrackingRef?: string;
+    assignedUserId?: number;
+  },
+  actor: Actor,
+) {
+  return withTx(async (tx) => {
+    await assertRequestOperationTx(tx, actor, "reassign");
+    const request = await loadFulfillmentRequestTx(tx, input.id, actor, {
+      lock: true,
+    });
+    const context = fulfillmentMutationContext(
+      "requests.reassign",
+      input,
+      input,
+      actor,
+      request.branchId,
+    );
+    const replay = await findFulfillmentReplayTx(tx, context);
+    if (replay)
+      return {
+        request: await loadFulfillmentRequestTx(tx, request.id, actor),
+        consignmentId: replay,
+        idempotentReplay: true,
+      };
+    assertFulfillmentVersion(request, input.expectedVersion);
+    if (!["RELEASED", "PARTIALLY_RELEASED"].includes(request.status))
+      throw fulfillmentError(
+        "إعادة الإسناد متاحة لدفعة سبق إرسالها وألغي إسنادها دون تحصيل فقط",
+      );
+    const [leader] = await tx
+      .select()
+      .from(deliveryConsignments)
+      .where(eq(deliveryConsignments.id, input.consignmentId))
+      .limit(1);
+    if (
+      !leader ||
+      leader.fulfillmentRequestId !== request.id ||
+      leader.branchId !== request.branchId
+    )
+      throw fulfillmentError("الإرسالية لا تنتمي إلى طلب التجهيز", "FORBIDDEN");
+    const partyId = input.partyId ?? leader.partyId;
+    await validateRequestPartyTx(tx, partyId, request.branchId);
+    const members = await loadShipmentMembersTx(tx, leader.id, {
+      currentRead: true,
+    });
+    if (
+      !members.length ||
+      members.some(
+        (c) =>
+          c.fulfillmentRequestId !== request.id ||
+          !(
+            c.status === "CANCELLED" ||
+            (c.sourceType === "FULFILLMENT_REQUEST" && c.status === "RETURNED")
+          ) ||
+          !(
+            c.parcelStatus === "CANCELLED" ||
+            (c.sourceType === "FULFILLMENT_REQUEST" &&
+              c.parcelStatus === "RETURNED")
+          ) ||
+          c.moneyStatus !== "CANCELLED" ||
+          c.remittanceId != null ||
+          !money(c.collectedAmount).isZero(),
+      )
+    )
+      throw fulfillmentError(
+        "يجب إلغاء إسناد الدفعة كاملةً دون أي تحصيل أو توريد قبل إعادة إسنادها",
+      );
+    const invoiceIds = members.flatMap((c) =>
+      c.invoiceId != null ? [c.invoiceId] : [],
+    );
+    if (invoiceIds.length) {
+      const linkedItems = await tx
+        .select()
+        .from(fulfillmentRequestItems)
+        .where(
+          and(
+            eq(fulfillmentRequestItems.requestId, request.id),
+            eq(fulfillmentRequestItems.consignmentId, leader.id),
+          ),
+        )
+        .for("update");
+      if (linkedItems.length !== invoiceIds.length)
+        throw fulfillmentError("اختر قائد الشحنة الأصلي بجميع مستنداتها");
+      const rows = await loadRequestSourcesTx(
+        tx,
+        invoiceIds.map((invoiceId) => ({ invoiceId })),
+        actor,
+        { ...request, requestId: request.id, lock: true },
+      );
+      if (rows.some((r) => !r.ready))
+        throw fulfillmentError("أحد مستندات الدفعة ليس جاهزاً لإعادة الإسناد");
+    }
+    const shipment = invoiceIds.length
+      ? await dispatchInvoiceShipmentInTx(
+          tx,
+          {
+            invoiceId: leader.invoiceId!,
+            invoiceIds,
+            fulfillmentRequestId: request.id,
+            partyId,
+            deliveryFee: leader.deliveryFee,
+            feeCollection: leader.feeCollection,
+            recipientName: request.recipientName,
+            recipientPhone: request.recipientPhone,
+            deliveryAddress: request.deliveryAddress,
+            externalTrackingRef:
+              input.externalTrackingRef ??
+              leader.externalTrackingRef ??
+              undefined,
+            assignedUserId: input.assignedUserId,
+            clientRequestId: input.clientRequestId,
+            partialDispatchConfirmed: request.status === "PARTIALLY_RELEASED",
+            notes: request.notes,
+          },
+          actor,
+        )
+      : await dispatchChargeOnlyRequestTx(
+          tx,
+          {
+            ...request,
+            partyId,
+            deliveryFee: leader.deliveryFee,
+            feeCollection: leader.feeCollection,
+          },
+          {
+            ...input,
+            externalTrackingRef:
+              input.externalTrackingRef ??
+              leader.externalTrackingRef ??
+              undefined,
+            reassignConsignmentId: leader.id,
+          },
+          actor,
+        );
+    await restoreFulfillmentRequestClaimsTx(
+      tx,
+      {
+        requestId: request.id,
+        consignmentId: shipment.consignmentId,
+        partyId,
+        branchId: request.branchId,
+        clientRequestId: input.clientRequestId,
+      },
+      actor,
+    );
+    await tx
+      .update(fulfillmentRequests)
+      .set({ version: request.version + 1 })
+      .where(eq(fulfillmentRequests.id, request.id));
+    await recordFulfillmentMutationTx(tx, context, shipment.consignmentId);
+    await logAuditTx(tx, actor, {
+      action: "fulfillment.request.reassign",
+      entityType: "fulfillmentRequest",
+      entityId: request.id,
+      newValue: {
+        consignmentId: shipment.consignmentId,
+        invoiceIds,
+        partyId,
+        deliveryFee: leader.deliveryFee,
+        feeCollection: leader.feeCollection,
+      },
+    });
+    return {
+      request: await loadFulfillmentRequestTx(tx, request.id, actor),
+      consignmentId: shipment.consignmentId,
+      idempotentReplay: false,
+    };
+  });
+}

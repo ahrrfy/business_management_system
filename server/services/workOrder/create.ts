@@ -1,3 +1,11 @@
+import {
+  RECEPTION_FEE_ALLOCATION,
+  recordDeliveryFeeHeldInTx,
+} from "../delivery/feeHeld";
+import {
+  lockConfirmedExternalPaymentAttempt,
+  bindExternalPaymentAttempt,
+} from "../posExternalPayment";
 // إنشاء أمر شغل (RECEIVED) — لا يُستهلَك المخزون بعد؛ عربون مقبوض عند الإنشاء إن وُجد.
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
@@ -200,6 +208,7 @@ export async function createWorkOrderInTx(
   tx: Tx,
   input: CreateWorkOrderInput,
   actor: Actor,
+  feeAllocationCapability?: typeof RECEPTION_FEE_ALLOCATION,
 ) {
   const requestFingerprint = input.clientRequestId
     ? idempotencyHash(input)
@@ -756,63 +765,74 @@ export async function createWorkOrderInTx(
     (input.deliveryFeeCollection ?? "COURIER") === "COUNTER" &&
     heldFeeD.gt(0)
   ) {
-    // تدقيق ٦/٨ (ث٩): الأجرة أمانةٌ **نقديّة** تُصرَف للمندوب نقداً من الدرج — فاشتقاق
-    // طريقتها من طريقة دفع السلّة كان يقبضها بطاقةً/تحويلاً (خارج الدرج، cashBucket=NULL)
-    // ثم يصرفها نقداً ⇒ نقدٌ يخرج بلا نظيرٍ داخل. تُثبَّت نقداً حتماً، مرآةَ مسار الفاتورة
-    // (receptionCheckoutService) الذي يفعل ذلك أصلاً. وبهذا يسقط فحص TELECOM من جذره.
-    const feeMethod = "CASH" as const;
-    // ش٠ (V4): نفس درج السلة المُتحقَّق منه — لا ينشطر نقد سلةٍ واحدة على درجين.
-    const feeShiftId = await requireLockedReceptionShift(
-      tx,
-      actor,
-      input.branchId,
-      basketShiftId,
-      "قبض أجرة توصيل نقداً",
-    );
-    await lockMaterializedCashReceiptSourceForWrite(tx, {
-      branchId: input.branchId,
-      shiftId: feeShiftId,
-      cashBucket: "DRAWER",
-      paymentMethod: "CASH",
-      status: "COMPLETED",
-      approvalStatus: "APPROVED",
-    });
-    const feeRes = await tx.insert(receipts).values({
+    const feeTender = input.deliveryFeeTender;
+    if (
+      feeTender?.combinedWithPaymentIndex != null &&
+      feeAllocationCapability !== RECEPTION_FEE_ALLOCATION
+    )
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر تخصيص أجرة أمر الشغل",
+          why: "دمج إثبات العربون والأجرة يتم على رأس سلة الاستقبال",
+          doThis:
+            "استخدم سلة الاستقبال للقبض الموحد، أو أكّد إثباتاً مستقلاً لأجرة هذا الأمر",
+        }),
+      });
+    const feeMethod = feeTender?.method ?? "CASH";
+    const feeShiftId =
+      feeMethod === "CASH"
+        ? await requireLockedReceptionShift(
+            tx,
+            actor,
+            input.branchId,
+            basketShiftId,
+            "قبض أجرة توصيل نقداً",
+          )
+        : basketShiftId;
+    const attempt =
+      feeMethod !== "CASH" &&
+      feeAllocationCapability !== RECEPTION_FEE_ALLOCATION
+        ? await lockConfirmedExternalPaymentAttempt(
+            tx,
+            {
+              branchId: input.branchId,
+              channel: "PRINT_POS",
+              method: feeMethod,
+              amount: heldFeeD.toFixed(2),
+              attemptId: feeTender?.externalPaymentAttemptId,
+              deviceId: feeTender?.externalPaymentDeviceId,
+            },
+            actor,
+          )
+        : null;
+    if (feeMethod === "CASH" && feeTender?.externalPaymentAttemptId != null)
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر قبض الأجرة نقداً",
+          why: "الطلب النقدي يحمل إثبات دفع خارجي",
+          doThis: "اختر الوسيلة الفعلية للقبض واحذف الإثبات من الدفعة النقدية",
+        }),
+      });
+    const feeReceipt = await recordDeliveryFeeHeldInTx(tx, {
       branchId: input.branchId,
       shiftId: feeShiftId,
       workOrderId,
-      direction: "IN",
-      amount: toDbMoney(heldFeeD),
-      paymentMethod: feeMethod,
-      referenceNumber: `DLV-FEE-WO-${workOrderId}`,
-      cashBucket: feeMethod === "CASH" ? "DRAWER" : null,
-      status: "COMPLETED",
-      approvalStatus: "APPROVED",
-      partyType: "OTHER",
-      description: `أجرة توصيل مقبوضة أمانةً للمندوب — طلب ${orderNumber}`,
-      createdBy: actor.userId,
-    });
-    await postEntry(tx, {
-      entryType: "DELIVERY_FEE_HELD",
-      dedupeKey: `DELIVERY_FEE_HELD:WO:${workOrderId}`,
-      branchId: input.branchId,
-      receiptId: extractInsertId(feeRes),
       amount: heldFeeD,
-      notes: `أمانة أجرة توصيل — طلب ${orderNumber}`,
-      postingSourceComponents: {
-        roleDebits: { CASH: heldFeeD },
-        roleCredits: { COURIER_PAYABLE: heldFeeD },
-      },
-      postingIntent: createPostingIntent(
-        "DELIVERY_FEE_HELD_RECEIPT",
-        "DELIVERY_FEE_HELD",
-        [debitLine("CASH", heldFeeD), creditLine("COURIER_PAYABLE", heldFeeD)],
-        {
-          roleDebits: { CASH: heldFeeD },
-          roleCredits: { COURIER_PAYABLE: heldFeeD },
-        },
-      ),
+      actorUserId: actor.userId,
+      tender: attempt
+        ? { ...feeTender!, reference: attempt.externalReference }
+        : feeTender,
+      description: `أجرة توصيل مقبوضة أمانةً للمندوب — طلب ${orderNumber}`,
     });
+    if (attempt)
+      await bindExternalPaymentAttempt(
+        tx,
+        Number(attempt.id),
+        null,
+        feeReceipt.receiptId,
+      );
   }
 
   for (const m of materials) {
@@ -840,13 +860,16 @@ export async function createWorkOrderInTx(
   );
   if (imgs.length > 0) {
     await tx.insert(workOrderImages).values(
-      imgs.map((img) => ({
-        workOrderId,
-        url: img.url,
-        caption: img.caption,
-        sortOrder: img.sortOrder,
-        revision: 1,
-      } as any)),
+      imgs.map(
+        (img) =>
+          ({
+            workOrderId,
+            url: img.url,
+            caption: img.caption,
+            sortOrder: img.sortOrder,
+            revision: 1,
+          }) as any,
+      ),
     );
   }
 

@@ -1,3 +1,4 @@
+import { deliverySourceView } from "@shared/deliverySource";
 /**
  * barcodeDispatchService — خدمة الإسناد السريع بالباركود لجهات التوصيل.
  *
@@ -620,6 +621,10 @@ export async function dispatchByBarcode(
   const [existingCn] = await db
     .select({
       consignmentNumber: deliveryConsignments.consignmentNumber,
+      sourceType: deliveryConsignments.sourceType,
+      sourceId: deliveryConsignments.sourceId,
+      fulfillmentRequestId: deliveryConsignments.fulfillmentRequestId,
+      aftercareExecutionId: deliveryConsignments.aftercareExecutionId,
       status: deliveryConsignments.status,
       partyId: deliveryConsignments.partyId,
     })
@@ -640,7 +645,9 @@ export async function dispatchByBarcode(
       message: appErrorMessage({
         what: "الرمز الممسوح يخص إرسالية قائمة بالفعل",
         why: `الإرسالية ${existingCn.consignmentNumber} قائمة وحالتها «${existingCn.status}»`,
-        doThis: "إذا كنت تريد استلام مرتجع، استخدم شاشة استلام المرتجعات بالباركود",
+        doThis: existingCn.sourceType === "AFTERCARE_EXECUTION" || existingCn.sourceType === "FULFILLMENT_REQUEST"
+          ? `افتح ${deliverySourceView(existingCn).reference} من التجهيز ومعالجة النقص لمتابعة التسليم أو رجوع العهدة`
+          : "إذا كنت تريد استلام مرتجع، استخدم شاشة استلام المرتجعات بالباركود",
       }),
     });
   }

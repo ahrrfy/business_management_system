@@ -37,6 +37,7 @@ import { notify } from "@/lib/notify";
 import { AccountLedgerDrilldownDialog, type DrilldownTarget } from "@/components/financial/AccountLedgerDrilldownDialog";
 import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
 import { usePrintAudit } from "@/hooks/usePrintAudit";
+import { customerStatementLedger, statementClosingBalance } from "@/lib/statementPeriodLedger";
 
 /** تاريخ محلي YYYY-MM-DD — لا toISOString: بغداد UTC+3 فينزاح اليوم قرب منتصف الليل. */
 const ymd = (d: Date) =>
@@ -132,6 +133,7 @@ const STATEMENT_ROW_KIND_LABEL: Record<string, string> = {
   RETURN: "مرتجع",
   OPENING_ADJ: "تصحيح افتتاحي",
   INVOICE_ADJUSTMENT: "تسوية ذمة الفاتورة",
+  CHARGE_ADJUSTMENT: "مطالبة أو عكس أجر إضافي",
 };
 function statementMethodLabel(v: string | null | undefined): string {
   if (v && STATEMENT_ROW_KIND_LABEL[v]) return STATEMENT_ROW_KIND_LABEL[v];
@@ -269,6 +271,12 @@ function getStmtPaymentColumns(onDrilldown: (target: DrilldownTarget) => void): 
       meta: { kind: "code" },
       cell: ({ row }) => {
         const p = row.original;
+        if (p.id < 0 && !(p.invoiceId != null && p.invoiceId > 0)) {
+          if (p.paymentMethod === "CHARGE_ADJUSTMENT" || p.paymentMethod === "COD") {
+            return <Link className="underline text-primary" href="/delivery?tab=fulfillment&kind=charges">{p.description ?? "حركة ذمة أجور موثقة"}</Link>;
+          }
+          return <span className="text-xs">{p.description ?? statementMethodLabel(p.paymentMethod)}</span>;
+        }
         if (p.isStandalone) {
           return (
             <button
@@ -290,7 +298,7 @@ function getStmtPaymentColumns(onDrilldown: (target: DrilldownTarget) => void): 
             <button
               type="button"
               onClick={() => {
-                if (p.invoiceId) onDrilldown({ type: "INVOICE", invoiceId: p.invoiceId });
+                if (p.invoiceId != null && p.invoiceId > 0) onDrilldown({ type: "INVOICE", invoiceId: p.invoiceId });
                 else onDrilldown({ type: "VOUCHER", receiptId: p.id });
               }}
               className="font-mono text-primary underline text-xs"
@@ -438,46 +446,28 @@ export default function CustomerStatement() {
   // دفتر الحركات (مدين/دائن/رصيد جارٍ) — يُبنى مرّة ويُشارَك بين الطباعة وتصدير Excel.
   const ledger = useMemo(() => {
     if (!stmt.data) return null;
-    const d = stmt.data;
-    const invTxs = d.invoices.filter((i) => i.status !== "CANCELLED").map((i) => ({
-      t: new Date(i.invoiceDate).getTime(),
-      date: fmtDate(i.invoiceDate),
-      ref: i.invoiceNumber, description: "فاتورة مبيعات",
-      actor: i.createdByName ?? (i.createdBy ? `مستخدم #${i.createdBy}` : "غير موثق"),
-      debit: i.total as string | null, credit: null as string | null,
-    }));
-    const payTxs = d.payments.map((p) => ({
-      t: new Date(p.createdAt).getTime(),
-      date: fmtDate(p.createdAt),
-      ref: p.voucherNumber ?? "دفعة",
-      description:
-        // ب-١: قيد تصحيح الرصيد الافتتاحيّ يظهر حركةً داخل فترته (isStandalone صحيح لكنه ليس
-        // سنداً) — بلا هذا الفرع يُعرَض «سند صرف مستقل» فيبحث المحاسب عن سندٍ لا وجود له.
-        p.paymentMethod === "INVOICE_ADJUSTMENT"
-        ? "تسوية ذمة الفاتورة دون حركة نقدية"
-        : p.paymentMethod === "OPENING_ADJ"
-        ? "تصحيح رصيد افتتاحي"
-        : p.isStandalone
-        ? (p.direction === "IN" ? "سند قبض مستقل" : "سند صرف مستقل")
-        : (p.direction === "IN" ? "دفعة وارد" : "استرداد"),
-      actor: p.createdByName ?? (p.createdBy ? `مستخدم #${p.createdBy}` : "غير موثق"),
-      // الاتجاه المحاسبي: IN ينقص ذمة العميل (دائن)، OUT (استرداد/صرف له) يزيدها (مدين).
-      debit: p.direction === "OUT" ? (p.amount as string | null) : null,
-      credit: p.direction === "IN" ? (p.amount as string | null) : null,
-    }));
-    // الفرز على طابع زمني خام — فرز نصّي على dd/mm/yyyy يخلط الشهور.
-    const merged = [...invTxs, ...payTxs].sort((a, b) => a.t - b.t);
-    // §٥: الرصيد الجاري بـDecimal، يبدأ من الرصيد المُرحَّل عند تقييد الفترة.
-    let bal = from ? D(d.summary.openingBalance) : D(0);
-    let totDebit = D(0), totCredit = D(0);
-    const txs = merged.map(({ t: _t, ...x }) => {
-      bal = bal.plus(D(x.debit)).minus(D(x.credit));
-      totDebit = totDebit.plus(D(x.debit));
-      totCredit = totCredit.plus(D(x.credit));
-      return { ...x, balance: bal.toFixed(2) };
+    // Keep the shared opening/period arithmetic. Temporary row references carry
+    // only presentation metadata through its stable sort; no amount is changed.
+    const chargeRows = new Map<string, StmtPaymentRow>();
+    const payments = stmt.data.payments.map((payment) => {
+      if (payment.paymentMethod !== "CHARGE_ADJUSTMENT") return payment;
+      const ref = `\u0000charge:${payment.id}`;
+      chargeRows.set(ref, payment);
+      return { ...payment, voucherNumber: ref };
     });
-    return { txs, totDebit: totDebit.toFixed(2), totCredit: totCredit.toFixed(2), closingBalance: bal.toFixed(2) };
-  }, [stmt.data, from]);
+    const result = customerStatementLedger({ ...stmt.data, payments });
+    return {
+      ...result,
+      txs: result.txs.map((row) => {
+        const charge = chargeRows.get(row.ref);
+        return charge ? {
+          ...row,
+          ref: charge.voucherNumber ?? "أجر إضافي",
+          description: charge.description ?? "مطالبة أو عكس أجر إضافي",
+        } : row;
+      }),
+    };
+  }, [stmt.data]);
 
   // حُمولة نَسخ الكَشف بِثَلاث صِيَغ (نَصّ مُلَخَّص / واتساب مُفَصَّل / TSV لِلَصق في Excel).
   // تُبنى مَرّة واحِدة على دَفتَر الحَرَكات المُجمَّع لِضَمان اتِّساق المَجاميع مَع الطِباعة والتَصدير.
@@ -502,7 +492,7 @@ export default function CustomerStatement() {
         credit: r.credit,
         balance: r.balance,
       })),
-      closingBalance: from ? ledger.closingBalance : d.summary.currentBalance,
+      closingBalance: statementClosingBalance(from, to, ledger.closingBalance, d.summary.currentBalance),
       asOfDate: to || undefined,
     });
     const tsv = formatTableAsTSV(
@@ -537,9 +527,9 @@ export default function CustomerStatement() {
           toDate: fmtDate(to ? new Date(`${to}T00:00:00`) : new Date()),
           transactions: txs,
           totalDebit: totDebit, totalCredit: totCredit,
-          openingBalance: from ? d.summary.openingBalance : undefined,
+          openingBalance: d.summary.openingBalance,
           currentBalance: d.summary.currentBalance,
-          closingBalance: from ? closingBalance : d.summary.currentBalance,
+          closingBalance: statementClosingBalance(from, to, closingBalance, d.summary.currentBalance),
           printedByName: audit.actorName,
           printRequestedAt: fmtDateTime(audit.requestedAt),
         }),
@@ -810,6 +800,20 @@ export default function CustomerStatement() {
             </CardContent>
           </Card>
 
+          {(stmt.data.fulfillmentCharges?.length > 0 || D(stmt.data.fulfillmentHeldExcess ?? "0").gt(0)) && <Card>
+            <CardContent className="p-3 space-y-2">
+              <div className="text-sm font-medium">الأجور الإضافية وأمانات فائض القبض</div>
+              <p className="text-sm">أمانة فائض القبض القابلة للرد: {fmt(stmt.data.fulfillmentHeldExcess ?? "0")} د.ع — منفصلة عن الذمم</p>
+              <DataTable data={stmt.data.fulfillmentCharges ?? []} searchable={false} columns={[
+                {accessorKey:"id",header:"مستند الأجر"}, {accessorKey:"description",header:"البيان"},
+                {accessorKey:"amount",header:"أجر العميل",cell:({row})=>fmt(row.original.amount)},
+                {accessorKey:"paidAmount",header:"المقبوض",cell:({row})=>fmt(row.original.paidAmount)},
+                {accessorKey:"refundedAmount",header:"المردود",cell:({row})=>fmt(row.original.refundedAmount)},
+                {accessorKey:"remainingAmount",header:"المتبقي",cell:({row})=>fmt(row.original.remainingAmount)},
+                {id:"source",header:"المصدر",cell:()=> <Link className="underline" href="/delivery?tab=fulfillment&kind=charges">تفاصيل الأجور وإيصالاتها</Link>},
+              ]}/>
+            </CardContent>
+          </Card>}
           <Card>
             <CardContent className="p-0">
               {/* stmt.data.payments مُقيَّدة بالفترة (from/to) خادمياً فعلاً — getCustomerStatement

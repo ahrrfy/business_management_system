@@ -14,9 +14,10 @@
 // النِّت = Σ(IN − OUT) لإيصالات المرجع DLV-FEE-WO-{id} — فهو نفسه حارس idempotency الأساس: بعد
 // الردّ الأوّل يصير صفراً فلا يُردّ ثانيةً؛ ومفتاح القيد الفريد (DELIVERY_FEE_HELD_REFUND) حزامٌ
 // ثانٍ ضدّ التزامن (نداءان متزامنان ⇒ ER_DUP على الثاني فيتراجع، يمتصّه retryOnDup في الراوتر).
+import { appErrorMessage } from "@shared/errors";
 import { TRPCError } from "@trpc/server";
 import { and, asc, eq, sql } from "drizzle-orm";
-import { receipts, shifts } from "../../../drizzle/schema";
+import { receipts, shifts, workOrders } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { postEntry } from "../ledgerService";
@@ -52,6 +53,83 @@ export async function workOrderFeeHeldNet(tx: Tx, workOrderId: number): Promise<
   return round2(money(row?.v ?? "0"));
 }
 
+/** Noncash refunds remain liabilities until the existing owner approval confirms real execution. */
+export async function requestNoncashWorkOrderFeeRefundTx(
+  tx: Tx,
+  opts: RefundWorkOrderFeeHeldOpts,
+): Promise<{ receiptId: number; amount: string }> {
+  const sources = await tx
+    .select()
+    .from(receipts)
+    .where(
+      and(
+        eq(receipts.workOrderId, opts.workOrderId),
+        eq(receipts.referenceNumber, `DLV-FEE-WO-${opts.workOrderId}`),
+        eq(receipts.direction, "IN"),
+        eq(receipts.status, "COMPLETED"),
+        eq(receipts.approvalStatus, "APPROVED"),
+      ),
+    )
+    .for("update");
+  if (sources.length !== 1 || sources[0].paymentMethod === "CASH")
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر رد أمانة الأجرة",
+        why: "مصدر القبض غير النقدي غير محدد",
+        doThis: "راجع إيصال قبض الأجرة الأصلي قبل طلب الرد",
+      }),
+    });
+  const source = sources[0];
+  const note = `WORK_ORDER_CUSTOMER_REFUND:FEE:${opts.workOrderId}:${Number(source.id)}`;
+  const pending = (
+    await tx
+      .select()
+      .from(receipts)
+      .where(
+        and(eq(receipts.internalNote, note), eq(receipts.status, "PENDING")),
+      )
+      .for("update")
+      .limit(1)
+  )[0];
+  if (pending) return { receiptId: Number(pending.id), amount: pending.amount };
+  const amount = await workOrderFeeHeldNet(tx, opts.workOrderId);
+  if (!amount.gt(0))
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر طلب رد الأجرة",
+        why: "أمانة أجرة التوصيل مسددة بالكامل",
+        doThis: "راجع إيصالات الرد أو سداد الناقل السابقة",
+      }),
+    });
+  const order = (
+    await tx
+      .select({ customerId: workOrders.customerId })
+      .from(workOrders)
+      .where(eq(workOrders.id, opts.workOrderId))
+      .limit(1)
+  )[0];
+  const inserted = await tx.insert(receipts).values({
+    branchId: opts.branchId,
+    workOrderId: opts.workOrderId,
+    shiftId: null,
+    direction: "OUT",
+    amount: toDbMoney(amount),
+    paymentMethod: source.paymentMethod,
+    cashBucket: null,
+    status: "PENDING",
+    approvalStatus: "PENDING_APPROVAL",
+    partyType: order?.customerId ? "CUSTOMER" : "OTHER",
+    partyId: order?.customerId ?? null,
+    referenceNumber: `DLV-FEE-WO-${opts.workOrderId}`,
+    internalNote: note,
+    description: `طلب رد أمانة توصيل غير نقدية — ${opts.reason}`,
+    createdBy: opts.actor.userId,
+  });
+  return { receiptId: extractInsertId(inserted), amount: toDbMoney(amount) };
+}
+
 /**
  * يردّ أمانة أجرة التوصيل غير المصروفة لأمر الشغل **نقداً** من الدرج، بحوكمة refundDeposit.
  * يعيد المبلغ المردود ({ refunded }) — "0.00" إن لا أمانة. **يجب** أن يُستدعى تحت قفل صفّ أمر
@@ -68,10 +146,14 @@ export async function refundWorkOrderDeliveryFeeHeld(
   // ذاتيٌّ فقط ضمن وردية القبض نفسها وهي مفتوحة بيد القابض؛ غير ذلك ⇒ مدير ثانٍ
   // محدد الهوية. الصلاحية توسّع الرؤية ولا تلغي maker-checker.
   const collReceipt = (
-      await tx
-        .select({ shiftId: receipts.shiftId })
-        .from(receipts)
-        .where(and(
+    await tx
+      .select({
+        shiftId: receipts.shiftId,
+        paymentMethod: receipts.paymentMethod,
+      })
+      .from(receipts)
+      .where(
+        and(
           eq(receipts.workOrderId, opts.workOrderId),
           eq(receipts.referenceNumber, `DLV-FEE-WO-${opts.workOrderId}`),
           eq(receipts.direction, "IN"),
@@ -80,12 +162,28 @@ export async function refundWorkOrderDeliveryFeeHeld(
         .orderBy(asc(receipts.id))
         .limit(1)
   )[0];
-  const collShiftId = collReceipt?.shiftId != null ? Number(collReceipt.shiftId) : null;
-  const collShift = collShiftId != null
-    ? (await tx.select({ status: shifts.status, userId: shifts.userId }).from(shifts).where(eq(shifts.id, collShiftId)).limit(1))[0]
-    : undefined;
-  const sameOpenShift = collShift != null && collShift.status === "OPEN" && Number(collShift.userId) === opts.actor.userId;
-  const approvedByManagerId = opts.approvedByManagerId == null ? null : Number(opts.approvedByManagerId);
+  if (collReceipt && collReceipt.paymentMethod !== "CASH") {
+    await requestNoncashWorkOrderFeeRefundTx(tx, opts);
+    return { refunded: "0.00" };
+  }
+  const collShiftId =
+    collReceipt?.shiftId != null ? Number(collReceipt.shiftId) : null;
+  const collShift =
+    collShiftId != null
+      ? (
+          await tx
+            .select({ status: shifts.status, userId: shifts.userId })
+            .from(shifts)
+            .where(eq(shifts.id, collShiftId))
+            .limit(1)
+        )[0]
+      : undefined;
+  const sameOpenShift =
+    collShift != null &&
+    collShift.status === "OPEN" &&
+    Number(collShift.userId) === opts.actor.userId;
+  const approvedByManagerId =
+    opts.approvedByManagerId == null ? null : Number(opts.approvedByManagerId);
   if (!sameOpenShift) {
     if (!Number.isInteger(approvedByManagerId) || approvedByManagerId! <= 0 || approvedByManagerId === opts.actor.userId) {
       throw new TRPCError({

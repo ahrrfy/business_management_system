@@ -449,7 +449,7 @@ function CollectPaymentDialog({
     onSuccess: (r) => {
       notify.ok(
         `سُدِّدت دفعة على ${row.invoiceNumber}`,
-        method === "CASH" && r.collectedIntoShiftId
+        "notice" in r && r.notice ? r.notice : method === "CASH" && r.collectedIntoShiftId
           ? `دخل المبلغ درج ورديتك #${r.collectedIntoShiftId}`
           : r.collectedIntoShiftId
             ? `سُجِّلت على ورديتك #${r.collectedIntoShiftId} — لا تدخل درج النقد`

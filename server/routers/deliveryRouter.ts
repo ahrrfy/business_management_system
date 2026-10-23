@@ -1,4 +1,6 @@
 import { TRPCError } from "@trpc/server";
+import { fulfillmentRouter } from "./fulfillmentRouter";
+import { deliveryFeeRefundRouter } from "./deliveryFeeRefundRouter";
 import { and, desc, eq, sql as dsql } from "drizzle-orm";
 import { z } from "zod";
 import { type ShortfallReason, SHORTFALL_REASONS } from "@shared/shortfallReason";
@@ -150,6 +152,8 @@ function settlementBranchOf(
 
 
 export const deliveryRouter = router({
+  fulfillment: fulfillmentRouter,
+  paymentRefunds: deliveryFeeRefundRouter,
   // قائمة جهات التوصيل + عهدتها (branch-scoped: غير المرتفعين يَرون فرعهم فقط).
   listParties: deliveryReadProcedure
     .input(z.object({ activeOnly: z.boolean().optional(), search: z.string().optional() }).optional())

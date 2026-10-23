@@ -18,6 +18,7 @@ import { getDb } from "../../db";
 import { money, sumMoney, toDbMoney } from "../money";
 import { isPreInvoiceHoldReceiptCond } from "../reception/holdReceipts";
 import { nextDayStr, type StatementPeriod } from "./shared";
+import { fulfillmentCharges, fulfillmentChargePayments } from "../../../drizzle/fulfillmentSchema";
 import type {
   FinancialCellProvenancePayload,
   ProvenanceDocumentRef,
@@ -34,8 +35,17 @@ function invoiceCorrectionArMovement(
 ) {
   const reclass = "INVOICE_CORRECTION_CUSTOMER_RECLASS:";
   const custody = "INVOICE_AMEND_CUSTODY:";
+  const charge = "FULFILLMENT_CHARGE_ACCRUAL:";
+  const chargeCredit = "FULFILLMENT_CHARGE_CREDIT:";
   return sql`((${entryType} = 'ADJUST' AND LEFT(${dedupeKey}, ${reclass.length}) = ${reclass})
+    OR (${entryType} = 'ADJUST' AND (LEFT(${dedupeKey}, ${charge.length}) = ${charge} OR LEFT(${dedupeKey}, ${chargeCredit.length}) = ${chargeCredit}))
     OR (${entryType} = 'DELIVERY_REMIT' AND LEFT(${dedupeKey}, ${custody.length}) = ${custody}))`;
+}
+
+/** Real tender can include a customer liability; only claim allocations change AR. */
+function customerReceiptArAmount() {
+  return sql<string>`COALESCE((SELECT SUM(fcp.amount) FROM fulfillmentChargePayments fcp
+    WHERE fcp.receiptId = ${receipts.id} AND fcp.kind IN ('COLLECTION','REFUND')), ${receipts.amount})`;
 }
 
 export interface ARAgingRow {
@@ -80,7 +90,10 @@ export async function getARAging(opts: { branchId?: number; limit?: number } = {
         SELECT ae.customerId,
           SUM(CASE
             WHEN ae.entryType IN ('SALE','RETURN','OPENING') THEN ae.amount
-            WHEN ae.entryType = 'PAYMENT_IN' THEN -ae.amount
+            WHEN ae.entryType = 'PAYMENT_IN' AND ae.dedupeKey LIKE 'FULFILLMENT_COURIER_EXCESS:%' THEN 0
+            WHEN ae.entryType = 'PAYMENT_IN' THEN -CASE WHEN ae.dedupeKey LIKE 'FULFILLMENT_CHARGE_COLLECTION:%'
+              THEN COALESCE((SELECT SUM(fcp.amount) FROM fulfillmentChargePayments fcp WHERE fcp.receiptId=ae.receiptId AND fcp.kind='COLLECTION'),0) ELSE ae.amount END
+            WHEN ae.entryType = 'PAYMENT_OUT' AND ae.dedupeKey LIKE 'FULFILLMENT_CHARGE_EXCESS_REFUND:%' THEN 0
             WHEN ae.entryType = 'PAYMENT_OUT' THEN ae.amount
             WHEN ${invoiceCorrectionArMovement(sql`ae.entryType`, sql`ae.dedupeKey`)} THEN ae.amount
             ELSE 0 END) AS balance
@@ -122,7 +135,12 @@ export async function getARAging(opts: { branchId?: number; limit?: number } = {
       CAST(COALESCE(SUM(${openBalance}), 0) AS CHAR) AS unpaidTotal,
       DATE_FORMAT(MIN(CASE WHEN i.invoiceStatus IN ('PENDING','PARTIALLY_PAID') THEN DATE(COALESCE(i.dueDate, i.invoiceDate)) END), '%Y-%m-%d') AS oldestInvoiceDate
     FROM customers c
-    LEFT JOIN invoices i
+    LEFT JOIN (
+      SELECT customerId,branchId,total,paidAmount,returnedTotal,invoiceStatus,dueDate,invoiceDate FROM invoices
+      UNION ALL
+      SELECT customerId,branchId,amount,paidAmount,0,'PENDING',NULL,approvedAt FROM fulfillmentCharges
+        WHERE status='APPROVED' AND amount > paidAmount
+    ) i
       ON i.customerId = c.id
       AND i.invoiceStatus IN ('PENDING', 'PARTIALLY_PAID')
       ${branchFilter}
@@ -271,6 +289,8 @@ export interface CustomerStatementResult {
   customer: Pick<typeof customers.$inferSelect, "id" | "name" | "phone" | "customerType" | "creditLimit" | "defaultPriceTier" | "currentBalance">;
   invoices: CustomerStatementInvoice[];
   payments: CustomerStatementPayment[];
+  fulfillmentCharges: Array<{id:number;description:string;category:string;amount:string;paidAmount:string;refundedAmount:string;remainingAmount:string;createdAt:Date}>;
+  fulfillmentHeldExcess: string;
   summary: {
     totalSales: string;
     totalPaid: string;
@@ -317,12 +337,14 @@ function customerPaymentLink(customerId: number) {
  *               approvalStatus=APPROVED و status ∈ {COMPLETED، REVERSED} — انظر payRow/F5).
  * كل الجمع بدقّة decimal (§٥).
  */
-async function customerOpeningBalance(customerId: number, from?: string) {
+async function customerOpeningBalance(customerId: number, from?: string, to?: string) {
   const db = getDb()!;
   // ب-١ (١٦/٨): تصحيح الرصيد الافتتاحيّ صار **قيد فرقٍ مؤرَّخاً** لا تعديلاً للأصل. لذا
   // «الافتتاحيّ كما في تاريخ س» = مجموع قيود OPENING **حتى س** لا مجموعها كلّها: تصحيحٌ وقع
   // اليوم لا يجوز أن يدخل رصيد كشفٍ بدأ الشهر الماضي — وإلّا تغيّر كشفٌ ماضٍ بلا حركةٍ تفسّره.
   const fromTs = from ? `${from} 00:00:00` : null;
+  // مع to وحده تُحمَل قيود الافتتاح حتى نهايته فقط، لا التصحيحات اللاحقة للفترة.
+  const openingBeforeTs = fromTs ?? (to ? `${nextDayStr(to)} 00:00:00` : null);
   const openRow = await db
     .select({ v: sql<string>`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0)` })
     .from(accountingEntries)
@@ -330,7 +352,7 @@ async function customerOpeningBalance(customerId: number, from?: string) {
       and(
         eq(accountingEntries.entryType, "OPENING"),
         eq(accountingEntries.customerId, customerId),
-        fromTs ? sql`${accountingEntries.entryDate} < ${fromTs}` : undefined,
+        openingBeforeTs ? sql`${accountingEntries.entryDate} < ${openingBeforeTs}` : undefined,
       ),
     );
   let opening = money(openRow[0]?.v ?? 0);
@@ -347,7 +369,7 @@ async function customerOpeningBalance(customerId: number, from?: string) {
     );
   const payRow = await db
     .select({
-      v: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN CAST(${receipts.amount} AS DECIMAL(15,2)) ELSE -CAST(${receipts.amount} AS DECIMAL(15,2)) END), 0)`,
+      v: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${customerReceiptArAmount()} ELSE -${customerReceiptArAmount()} END), 0)`,
     })
     .from(receipts)
     .leftJoin(invoices, eq(receipts.invoiceId, invoices.id))
@@ -395,7 +417,7 @@ async function customerOpeningBalance(customerId: number, from?: string) {
       and(
         eq(accountingEntries.entryType, "PAYMENT_IN"),
         eq(accountingEntries.customerId, customerId),
-        sql`${accountingEntries.invoiceId} IS NOT NULL`,
+        sql`(${accountingEntries.invoiceId} IS NOT NULL OR ${accountingEntries.dedupeKey} LIKE 'FULFILLMENT_CHARGE_CUSTODY:%')`,
         sql`${codReceipts.invoiceId} IS NULL`,
         sql`${accountingEntries.entryDate} < ${fromTs}`
       )
@@ -478,7 +500,7 @@ export async function getCustomerStatement(
       invoiceId: receipts.invoiceId,
       invoiceNumber: invoices.invoiceNumber,
       direction: receipts.direction,
-      amount: receipts.amount,
+      amount: customerReceiptArAmount(),
       paymentMethod: receipts.paymentMethod,
       status: receipts.status,
       createdAt: receipts.createdAt,
@@ -501,7 +523,7 @@ export async function getCustomerStatement(
   const codPayConds = [
     eq(accountingEntries.entryType, "PAYMENT_IN"),
     eq(accountingEntries.customerId, customerId),
-    sql`${accountingEntries.invoiceId} IS NOT NULL`,
+    sql`(${accountingEntries.invoiceId} IS NOT NULL OR ${accountingEntries.dedupeKey} LIKE 'FULFILLMENT_CHARGE_CUSTODY:%')`,
     sql`${codStmtReceipts.invoiceId} IS NULL`,
   ];
   if (from) codPayConds.push(sql`${accountingEntries.entryDate} >= ${`${from} 00:00:00`}`);
@@ -554,6 +576,7 @@ export async function getCustomerStatement(
   const correctionMovements = await db
     .select({
       id: accountingEntries.id,
+      dedupeKey: accountingEntries.dedupeKey,
       invoiceId: accountingEntries.invoiceId,
       invoiceNumber: invoices.invoiceNumber,
       amount: accountingEntries.amount,
@@ -590,7 +613,18 @@ export async function getCustomerStatement(
         .where(and(...openingMoveConds))
     : [];
 
-  const openingBalance = await customerOpeningBalance(customerId, from);
+  const openingBalance = await customerOpeningBalance(customerId, from, to);
+  const chargeConds=[eq(fulfillmentCharges.customerId,customerId),eq(fulfillmentCharges.status,"APPROVED")];
+  if(branchId)chargeConds.push(eq(fulfillmentCharges.branchId,branchId));
+  if(from)chargeConds.push(sql`${fulfillmentCharges.approvedAt} >= ${`${from} 00:00:00`}`);
+  if(to)chargeConds.push(sql`${fulfillmentCharges.approvedAt} < ${`${nextDayStr(to)} 00:00:00`}`);
+  const chargeRows=await db.select().from(fulfillmentCharges).where(and(...chargeConds));
+  const excessRows=await db.select({amount:sql<string>`COALESCE(SUM(CASE
+    WHEN ${accountingEntries.dedupeKey} LIKE 'FULFILLMENT_CHARGE_COLLECTION:%' THEN ${accountingEntries.amount} - COALESCE((SELECT SUM(fcp.amount) FROM fulfillmentChargePayments fcp WHERE fcp.receiptId=${accountingEntries.receiptId} AND fcp.kind='COLLECTION'),0)
+    WHEN ${accountingEntries.dedupeKey} LIKE 'FULFILLMENT_COURIER_EXCESS:%' THEN ${accountingEntries.amount}
+    WHEN ${accountingEntries.dedupeKey} LIKE 'FULFILLMENT_CHARGE_EXCESS_REFUND:%' THEN -${accountingEntries.amount} ELSE 0 END),0)`})
+    .from(accountingEntries).where(and(eq(accountingEntries.customerId,customerId),branchId?eq(accountingEntries.branchId,branchId):undefined,
+      to?sql`${accountingEntries.entryDate} < ${`${nextDayStr(to)} 00:00:00`}`:undefined));
 
   // ش٤ (I11): عرابين المسوّدات المحتجزة للعميل — **سطر إفصاحٍ منفصل** لا حركة كشف: المال
   // مقبوضٌ فعلاً (إيصال + قيد) لكنه لم يُطبَّق على فاتورةٍ ولم يمسّ الرصيد الجاري. بدونه
@@ -634,7 +668,7 @@ export async function getCustomerStatement(
     invs
       .filter((i) => i.status === "PENDING" || i.status === "PARTIALLY_PAID")
       .map((i) => openBalanceOf(i, "COLLECTIBLE"))
-  );
+  ).plus(sumMoney(chargeRows.map(r=>money(r.amount).minus(r.paidAmount))));
 
   const invoiceIds = invs.map((i) => Number(i.id)).filter((id) => id > 0);
   const invoiceItemMap = new Map<number, ProvenanceSubItem[]>();
@@ -687,7 +721,7 @@ export async function getCustomerStatement(
     const isRet = p.paymentMethod === "RETURN";
     const isCod = p.paymentMethod === "COD";
     const isOpening = p.paymentMethod === "OPENING_ADJ";
-    const isInvoiceAdjustment = p.paymentMethod === "INVOICE_ADJUSTMENT";
+    const isInvoiceAdjustment = p.paymentMethod === "INVOICE_ADJUSTMENT" || p.paymentMethod === "CHARGE_ADJUSTMENT";
 
     let movementType: ProvenanceMovementType = "collection";
     if (isInvoiceAdjustment) {
@@ -761,6 +795,8 @@ export async function getCustomerStatement(
 
   return {
     customer: c,
+    fulfillmentCharges:chargeRows.map(r=>({id:r.id,description:r.description,category:r.category,amount:r.amount,paidAmount:r.paidAmount,refundedAmount:r.refundedAmount,remainingAmount:toDbMoney(money(r.amount).minus(r.paidAmount)),createdAt:r.approvedAt??r.createdAt})),
+    fulfillmentHeldExcess:toDbMoney(money(excessRows[0]?.amount??"0")),
     invoices: invs.map((i) => {
       const invTotal = toDbMoney(money(i.total ?? 0));
       const rawItems = invoiceItemMap.get(Number(i.id)) ?? [];
@@ -879,7 +915,7 @@ export async function getCustomerStatement(
           invoiceNumber: e.invoiceNumber ? String(e.invoiceNumber) : null,
           direction: (money(e.amount).isNegative() ? "IN" : "OUT") as "IN" | "OUT",
           amount: money(e.amount).abs().toFixed(2),
-          paymentMethod: "INVOICE_ADJUSTMENT",
+          paymentMethod: e.dedupeKey?.startsWith("FULFILLMENT_CHARGE_") ? "CHARGE_ADJUSTMENT" : "INVOICE_ADJUSTMENT",
           status: "COMPLETED",
           createdAt: e.createdAt,
           isStandalone: false,

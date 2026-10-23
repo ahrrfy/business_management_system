@@ -19,7 +19,8 @@ import {
   receptionDrafts,
   workOrders as workOrdersTable,
 } from "../../../drizzle/schema";
-import { findIdempotentRefId } from "../idempotency";
+import { findIdempotentRefId, checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
+import { appErrorMessage } from "@shared/errors";
 import { money, round2, roundCashIQD, toDbMoney } from "../money";
 import {
   checkoutReceptionInTx,
@@ -72,7 +73,7 @@ export interface CommitDraftInput {
   expectedTotal: string;
   shiftId: number;
   /** المقبوض الآن (طريقة واحدة للسلة — F7). غيابه جائز لسلّة تخصيصٍ خالصة (م٥: لا شرط عربون). */
-  collectNow?: { amount: string; method: "CASH" | "CARD" | "TRANSFER" | "WALLET" | "TELECOM"; reference?: string | null } | null;
+  collectNow?: { amount: string; method: "CASH" | "CARD" | "TRANSFER" | "WALLET" | "TELECOM"; reference?: string | null;externalPaymentAttemptId?:number|null;externalPaymentDeviceId?:string|null } | null;
   cashRoundIQD?: boolean;
   priceOverrideApproved?: boolean;
   /** الاستقبال (٨/٨): تأكيد الموظّف توفّر الأصناف غير المجرودة فيزيائياً (بيع بالسالب لطلب COD في الافتتاح). */
@@ -82,6 +83,7 @@ export interface CommitDraftInput {
   /** ش٦ (V15): أجرة توصيل الطلب المقبوضة الآن أمانةً للمندوب (نقداً في الدرج) — تُكتب مع
    *  الفاتورة الحاملة إيصالاً وقيد DELIVERY_FEE_HELD، وبها يُسنَد الطلب COUNTER بعد التثبيت. */
   deliveryFeeHeld?: string | null;
+  deliveryFeeTender?: ReceptionCheckoutInput["deliveryFeeTender"];
   /** ش٧ (قرار المالك ٦/٨): إسناد الطلب لمندوبٍ **داخل معاملة التثبيت** — المتبقّي عهدةٌ عليه
    *  لا نقدٌ في الدرج ولا ذمّةٌ على زبونٍ عابر. */
   delivery?: ReceptionCheckoutInput["delivery"];
@@ -285,6 +287,7 @@ export function materialize(
     // نقداً وهي آجلة، وتسقط من فلتر «آجل» (paymentMethod IS NULL) — بلاغ المالك.
     paymentMethod: input.collectNow?.method ?? null,
     paymentReference: input.collectNow?.reference ?? null,
+    ...(input.collectNow?.externalPaymentAttemptId != null ? {paymentExternalPaymentAttemptId:input.collectNow.externalPaymentAttemptId,paymentExternalPaymentDeviceId:input.collectNow.externalPaymentDeviceId} : {}),
     paidAmount: input.collectNow ? money(input.collectNow.amount).toFixed(2) : null,
     // ش٤: صافي المحتجز على المسوّدة يدخل التوزيع أولاً — الإيصالات قائمة منذ القبض (I5).
     preCollected: heldNet.gt(0) ? { total: heldNet.toFixed(2) } : null,
@@ -296,6 +299,7 @@ export function materialize(
     cashRoundIQD: roundActive,
     cashRoundingOverride: mixedRoundTarget,
     deliveryFeeHeld: input.deliveryFeeHeld ?? null,
+    ...(input.deliveryFeeTender != null ? {deliveryFeeTender:input.deliveryFeeTender} : {}),
     delivery: input.delivery ?? null,
     openingSellUnavailableConfirmed: input.openingSellUnavailableConfirmed === true,
     priceApprovedBy: input.priceApprovedBy ?? null,
@@ -386,8 +390,15 @@ export async function commitDraft(input: CommitDraftInput, actor: Actor & { role
       .where(eq(receptionDraftLines.draftId, input.draftId))
       .orderBy(asc(receptionDraftLines.sortOrder), asc(receptionDraftLines.id));
 
+    const tenderFingerprint = idempotencyHash({
+      fee:input.deliveryFeeHeld ?? null,tender:input.deliveryFeeTender ?? null,collectNow:input.collectNow ?? null,
+    });
+    const tenderRecorded = await checkIdempotency(tx,"reception.draftFeeTender",draft.commitRequestId,tenderFingerprint,{requireStoredHash:true});
     if (draft.status !== "OPEN") {
       if (draft.status === "COMMITTED") {
+        if (input.deliveryFeeTender != null && tenderRecorded == null) throw new TRPCError({code:"CONFLICT",message:appErrorMessage({
+          what:"تعذّر تبديل وسيلة أجرة طلب مثبت",why:"التثبيت الأصلي لا يملك تخصيص قبض موثقاً بهذه الحمولة",doThis:"راجع إيصال الأجرة الأصلي ولا تؤكد عملية بطاقة جديدة لإعادة طلب قديم",
+        })});
         return rebuildResult(tx, draft, lines.filter((l) => l.lineKind === "CUSTOM").length);
       }
       throw new TRPCError({
@@ -466,6 +477,7 @@ export async function commitDraft(input: CommitDraftInput, actor: Actor & { role
       try {
         const spec = JSON.parse(l.printSpec) as { hasDelivery?: boolean; deliveryFeeCollection?: string; deliveryCost?: string };
         if (spec.hasDelivery && spec.deliveryFeeCollection === "COUNTER" && money(spec.deliveryCost ?? "0").gt(0)) {
+          if(input.deliveryFeeTender!=null && money(input.deliveryFeeHeld??"0").gt(0))continue;
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: `بند «${l.title ?? "تخصيص"}»: أجرة التوصيل «مقبوضة في الاستقبال» غير مدعومة على الطلب المحفوظ بعد — اختر «المندوب يقبضها من الزبون» أو «على المكتبة»، أو أتمّ الطلب من السلة مباشرةً`,
@@ -480,6 +492,9 @@ export async function commitDraft(input: CommitDraftInput, actor: Actor & { role
     const lineMeta = await loadDraftLineMeta(tx, lines);
     const checkoutInput = materialize(draft, lines, input, heldNet, lineMeta);
     const result = await checkoutReceptionInTx(tx, checkoutInput, actor);
+    if (input.deliveryFeeTender != null && tenderRecorded == null) {
+      await recordIdempotencyKey(tx,"reception.draftFeeTender",draft.commitRequestId,Number(draft.id),tenderFingerprint);
+    }
 
     // ش٤ (§٧.٣ خطوة ٦): تخصيص المحتجز على المستندات بنفس حصص الجشع الخادميّ (preSplit) —
     // صفوف APPLICATION + COLLECTION⇒APPLIED + ختم الإيصال أحاديّ الهدف بفاتورته.

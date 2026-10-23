@@ -1,6 +1,9 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
-import { DEAD_INVOICE_STATUSES, isDeadInvoiceStatus } from "@shared/invoiceStatus";
+import {
+  DEAD_INVOICE_STATUSES,
+  isDeadInvoiceStatus,
+} from "@shared/invoiceStatus";
 import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 import {
   and,
@@ -22,6 +25,7 @@ import {
   deliveryParties,
   deliveryShipmentMembers,
   invoices,
+  workOrders,
   type DeliveryConsignment,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
@@ -119,24 +123,59 @@ export async function loadShipmentMembersTx(
 }
 
 /** Closed invoice parcels remain in immutable shipment history, never in physical actions. */
-export function operationalShipmentMembers<T extends Pick<DeliveryConsignment, "status" | "parcelStatus">>(rows: T[]): T[] {
-  return rows.filter(row => !["CANCELLED", "RETURNED", "WRITTEN_OFF"].includes(row.status)
-    && !["CANCELLED", "RETURNED"].includes(row.parcelStatus));
+export function operationalShipmentMembers<
+  T extends Pick<DeliveryConsignment, "status" | "parcelStatus">,
+>(rows: T[]): T[] {
+  return rows.filter(
+    (row) =>
+      !["CANCELLED", "RETURNED", "WRITTEN_OFF"].includes(row.status) &&
+      !["CANCELLED", "RETURNED"].includes(row.parcelStatus),
+  );
+}
+
+/** Historical closed parcels keep their old party; live parcels and the retained fee source share the current party. */
+export function shipmentCurrentPartyMembers<
+  T extends Pick<
+    DeliveryConsignment,
+    "status" | "parcelStatus" | "deliveryFee"
+  >,
+>(rows: T[]): T[] {
+  return rows.filter(
+    (row) =>
+      operationalShipmentMembers([row]).length > 0 ||
+      money(row.deliveryFee).gt(0),
+  );
 }
 
 /** Caller holds the party lock. A fee stays on its original invoice even if that parcel exits. */
-export async function shipmentFeeDeliveryProvenTx(tx: Tx, consignmentId: number) {
-  const rows = await loadShipmentMembersTx(tx, consignmentId, { currentRead: true });
-  const source = rows.find(row => Number(row.id) === consignmentId);
-  return !!source && rows.every(row => Number(row.partyId) === Number(source.partyId)
-    && Number(row.branchId) === Number(source.branchId))
-    && rows.some(row => row.parcelStatus === "DELIVERED");
+export async function shipmentFeeDeliveryProvenTx(
+  tx: Tx,
+  consignmentId: number,
+) {
+  const rows = await loadShipmentMembersTx(tx, consignmentId, {
+    currentRead: true,
+  });
+  const source = rows.find((row) => Number(row.id) === consignmentId);
+  return (
+    !!source &&
+    rows.every((row) => Number(row.branchId) === Number(source.branchId)) &&
+    rows.some(
+      (row) =>
+        row.parcelStatus === "DELIVERED" &&
+        Number(row.partyId) === Number(source.partyId),
+    )
+  );
 }
 
 /** Same eligibility for bounded party fee selection; the original fee invoice stays authoritative. */
-export function shipmentFeeDeliveryProvenExpr(source: {
-  id: SQLWrapper; partyId: SQLWrapper; branchId: SQLWrapper; parcelStatus: SQLWrapper;
-} = deliveryConsignments) {
+export function shipmentFeeDeliveryProvenExpr(
+  source: {
+    id: SQLWrapper;
+    partyId: SQLWrapper;
+    branchId: SQLWrapper;
+    parcelStatus: SQLWrapper;
+  } = deliveryConsignments,
+) {
   return sql`(${source.parcelStatus} = 'DELIVERED' OR EXISTS (
     SELECT 1 FROM deliveryShipmentMembers fee_source
     INNER JOIN deliveryShipmentMembers fee_sibling ON fee_sibling.leaderConsignmentId = fee_source.leaderConsignmentId
@@ -204,10 +243,9 @@ async function shipmentDetailsTx(
   const leader = rows.find((row) => Number(row.id) === leaderConsignmentId);
   if (
     !leader ||
-    rows.some(
-      (row) =>
-        Number(row.branchId) !== Number(source.branchId) ||
-        Number(row.partyId) !== Number(source.partyId),
+    rows.some((row) => Number(row.branchId) !== Number(source.branchId)) ||
+    shipmentCurrentPartyMembers(rows).some(
+      (row) => Number(row.partyId) !== Number(leader.partyId),
     )
   ) {
     shipmentError(
@@ -236,7 +274,9 @@ async function shipmentDetailsTx(
   const numbers = new Map(
     invoiceRows.map((row) => [Number(row.id), row.invoiceNumber]),
   );
-  const invoiceStatuses = new Map(invoiceRows.map(row => [Number(row.id), row.status]));
+  const invoiceStatuses = new Map(
+    invoiceRows.map((row) => [Number(row.id), row.status]),
+  );
   const remaining = new Map(
     invoiceRows.map((row) => {
       const amount = round2(
@@ -322,6 +362,15 @@ export async function dispatchInvoiceShipment(
   input: DispatchInvoiceShipmentInput,
   actor: DeliveryTxActor,
 ) {
+  return withTx((tx) => dispatchInvoiceShipmentInTx(tx, input, actor));
+}
+
+/** Same shipment writer inside the caller's transaction; no nested commit. */
+export async function dispatchInvoiceShipmentInTx(
+  tx: Tx,
+  input: DispatchInvoiceShipmentInput,
+  actor: DeliveryTxActor,
+) {
   const ids = [...input.invoiceIds].sort((a, b) => a - b);
   if (
     ids.length < 1 ||
@@ -369,261 +418,312 @@ export async function dispatchInvoiceShipment(
     ),
     notes: input.notes ?? null,
     partialDispatchConfirmed: input.partialDispatchConfirmed === true,
+    ...(input.fulfillmentRequestId != null
+      ? { fulfillmentRequestId: input.fulfillmentRequestId }
+      : {}),
   });
-  return withTx(async (tx) => {
-    const party = (
-      await tx
-        .select()
-        .from(deliveryParties)
-        .where(eq(deliveryParties.id, input.partyId))
-        .for("update")
-        .limit(1)
-    )[0];
-    if (!party)
-      shipmentError(
-        "تعذر إسناد الشحنة",
-        "جهة التوصيل غير موجودة أو معطلة",
-        "اختر جهة توصيل نشطة",
-      );
-    // Current reads after the party lock avoid stale replay snapshots under InnoDB REPEATABLE READ.
-    // Scope is still enforced before revealing a previously committed shipment.
-    const lockedInvoices = await tx
+  const party = (
+    await tx
       .select()
-      .from(invoices)
-      .where(inArray(invoices.id, ids))
-      .orderBy(asc(invoices.id))
-      .for("update");
-    for (const row of lockedInvoices) assertBranch(Number(row.branchId), actor);
-    if (lockedInvoices.length !== ids.length)
-      shipmentError(
-        "تعذر إسناد الشحنة",
-        "إحدى الفواتير غير موجودة",
-        "حدّث القائمة وأعد اختيار الفواتير",
-        "NOT_FOUND",
-      );
-    if (new Set(lockedInvoices.map((row) => Number(row.branchId))).size !== 1)
-      shipmentError(
-        "تعذر إسناد الشحنة",
-        "الفواتير تخص أكثر من فرع",
-        "اجمع فواتير الفرع الواحد في شحنة مستقلة",
-      );
-    const replay = await checkIdempotency(
-      tx,
-      SHIPMENT_OPERATION,
-      input.clientRequestId,
-      hash,
-      { forUpdate: true },
+      .from(deliveryParties)
+      .where(eq(deliveryParties.id, input.partyId))
+      .for("update")
+      .limit(1)
+  )[0];
+  if (!party)
+    shipmentError(
+      "تعذر إسناد الشحنة",
+      "جهة التوصيل غير موجودة أو معطلة",
+      "اختر جهة توصيل نشطة",
     );
-    if (replay != null) {
-      const details = await shipmentDetailsTx(tx, replay, actor);
-      return {
-        ...details,
-        consignmentId: replay,
-        invoiceId: Number(
-          details.members.find((row) => Number(row.id) === replay)!.invoiceId,
-        ),
-        idempotentReplay: true,
-      };
-    }
-    if (!party.isActive)
-      shipmentError(
-        "تعذر إسناد الشحنة",
-        "جهة التوصيل معطلة",
-        "اختر جهة توصيل نشطة",
-      );
-    const anchor = lockedInvoices[0];
-    for (const invoice of lockedInvoices) {
-      assertBranch(Number(invoice.branchId), actor);
-      if (
-        Number(invoice.branchId) !== Number(anchor.branchId) ||
-        !sameRecipient(anchor, invoice)
-      ) {
-        shipmentError(
-          "تعذر إسناد الشحنة",
-          "الفواتير لا تخص العميل نفسه والفرع نفسه، أو لا يوجد هاتف موحد للزبون العابر",
-          "اختر فواتير عميل واحد أو صحّح هاتف المستلم على الفواتير",
-        );
-      }
-    }
-    const existing = await tx
-      .select()
-      .from(deliveryConsignments)
-      .where(inArray(deliveryConsignments.invoiceId, ids))
-      .orderBy(asc(deliveryConsignments.id))
-      .for("update");
-    const memberships = existing.length
-      ? await tx
-          .select()
-          .from(deliveryShipmentMembers)
-          .where(
-            inArray(
-              deliveryShipmentMembers.consignmentId,
-              existing.map((row) => Number(row.id)),
-            ),
-          )
-          .for("update")
-      : [];
-    let leaderId: number | undefined;
-    let leaderInvoiceId = ids[0];
-    let retainedLeader: DeliveryConsignment | undefined;
-    if (memberships.length) {
-      leaderId = Number(memberships[0].leaderConsignmentId);
-      const oldMembers = await loadShipmentMembersTx(tx, leaderId, { currentRead: true });
-      const oldInvoices = await tx.select().from(invoices).where(inArray(invoices.id, oldMembers.map(row => Number(row.invoiceId))))
-        .orderBy(asc(invoices.id)).for("update");
-      const oldInvoiceIds = oldInvoices.filter(row => !isDeadInvoiceStatus(row.status))
-        .map(row => Number(row.id))
-        .sort((a, b) => a - b);
-      if (
-        memberships.length !== ids.length ||
-        oldInvoiceIds.join(",") !== ids.join(",") ||
-        memberships.some((row) => Number(row.leaderConsignmentId) !== leaderId) ||
-        oldMembers.some(row => !["CANCELLED", "RETURNED"].includes(row.parcelStatus))
-      ) {
-        shipmentError(
-          "تعذر تغيير فواتير الشحنة",
-          "بعض الفواتير مرتبطة بشحنة قائمة ذات أعضاء مختلفين",
-          "أعد إسناد الشحنة الأصلية بجميع فواتيرها",
-          "PRECONDITION_FAILED",
-        );
-      }
-      const oldLeader = oldMembers.find((row) => Number(row.id) === leaderId);
-      if (!oldLeader)
-        shipmentError(
-          "تعذر إسناد الشحنة",
-          "قائد الشحنة غير موجود ضمن فواتيرها الأصلية",
-          "راجع تفاصيل الشحنة مع المدير",
-          "PRECONDITION_FAILED",
-        );
-      leaderInvoiceId = Number(oldLeader.invoiceId);
-      if (!ids.includes(leaderInvoiceId)) {
-        retainedLeader = oldLeader;
-        if (Number(oldLeader.partyId) !== input.partyId ||
-          normalizeExternalTrackingRef(input.externalTrackingRef) !== normalizeExternalTrackingRef(oldLeader.externalTrackingRef) ||
-          (input.feeCollection ?? "COURIER") !== oldLeader.feeCollection ||
-          !round2(money(input.deliveryFee ?? oldLeader.deliveryFee)).eq(money(oldLeader.deliveryFee)))
-          shipmentError("تعذر تغيير مصدر أجرة الشحنة وبوليصتها", "فاتورة القائد أغلقت وتحتفظ بأصل الأجرة والبوليصة وتاريخهما",
-            "أعد الإسناد إلى الجهة نفسها بالبوليصة وطريقة الأجرة ومبلغها الأصلي؛ لأي تغيير آخر اطلب من الإدارة مراجعة مصدر الأجرة", "PRECONDITION_FAILED");
-      }
-    }
-    if (!memberships.length && ids.length < 2)
-      shipmentError("تعذر إنشاء شحنة مجمعة", "إنشاء الشحنة يتطلب فاتورتين على الأقل؛ الناجي الواحد مسموح لإعادة شحنة قائمة فقط", "أسند الفاتورة منفردة من نافذة التوصيل");
-    const heldFees = await loadInvoiceDeliveryFeeHeldTx(tx, retainedLeader ? [...ids, leaderInvoiceId] : ids);
-    if (retainedLeader?.feeCollection === "COUNTER" && !(heldFees.get(leaderInvoiceId) ?? money(0)).eq(money(retainedLeader.deliveryFee)))
-      shipmentError("تعذر إعادة إسناد أمانة أجرة الشحنة", "صافي أمانة الأجرة الأصلية لا يطابق أجرة الشحنة", "اطلب من الإدارة مراجعة إيصالات أمانة الأجرة", "PRECONDITION_FAILED");
-    const feeOwners = lockedInvoices.filter((invoice) =>
-      (heldFees.get(Number(invoice.id)) ?? money(0)).gt(0),
+  // Current reads after the party lock avoid stale replay snapshots under InnoDB REPEATABLE READ.
+  // Scope is still enforced before revealing a previously committed shipment.
+  await tx
+    .select({ id: workOrders.id })
+    .from(workOrders)
+    .where(inArray(workOrders.invoiceId, ids))
+    .orderBy(asc(workOrders.id))
+    .for("update");
+  const lockedInvoices = await tx
+    .select()
+    .from(invoices)
+    .where(inArray(invoices.id, ids))
+    .orderBy(asc(invoices.id))
+    .for("update");
+  for (const row of lockedInvoices) assertBranch(Number(row.branchId), actor);
+  if (lockedInvoices.length !== ids.length)
+    shipmentError(
+      "تعذر إسناد الشحنة",
+      "إحدى الفواتير غير موجودة",
+      "حدّث القائمة وأعد اختيار الفواتير",
+      "NOT_FOUND",
     );
-    if (feeOwners.length > 1)
-      shipmentError(
-        "تعذر تجميع أمانة أجرة على عدة فواتير",
-        `توجد أمانات أجرة مستقلة على الفواتير ${feeOwners.map((invoice) => invoice.invoiceNumber).join("، ")}`,
-        "أسند الفواتير صاحبة الأمانات بصورة مستقلة، أو اطلب من المدير تسوية أمانات أجورها قبل التجميع",
-        "PRECONDITION_FAILED",
-      );
-    if (!memberships.length && feeOwners.length === 1)
-      leaderInvoiceId = Number(feeOwners[0].id);
-    for (const invoice of lockedInvoices) {
-      const held = heldFees.get(Number(invoice.id)) ?? money(0);
-      if (held.lt(0))
-        shipmentError(
-          "تعذر تجميع أمانة أجرة غير متسقة",
-          `صافي أمانة أجرة الفاتورة ${invoice.invoiceNumber} سالب`,
-          "اطلب من المدير مراجعة سندات أجرة الفاتورة قبل التجميع",
-          "PRECONDITION_FAILED",
-        );
-      if (Number(invoice.id) !== leaderInvoiceId && held.gt(0)) {
-        shipmentError(
-          "تعذر تجميع أمانة أجرة على فاتورة تابعة",
-          `الفاتورة ${invoice.invoiceNumber} تحمل أمانة أجرة ${held.toFixed(2)} على غير قائد الشحنة الأصلي؛ إعادة الإسناد تحافظ على القائد الأصلي`,
-          "أسند الفاتورة صاحبة الأمانة بصورة مستقلة، أو اطلب من المدير تسوية أمانة أجرتها قبل التجميع",
-          "PRECONDITION_FAILED",
-        );
-      }
-    }
-    const dispatched: Awaited<ReturnType<typeof dispatchInvoiceInTx>>[] = [];
-    for (const invoiceId of [
-      ...(retainedLeader ? [] : [leaderInvoiceId]),
-      ...ids.filter((id) => id !== leaderInvoiceId),
-    ]) {
-      const isLeader = invoiceId === leaderInvoiceId;
-      const row = await dispatchInvoiceInTx(
-        tx,
-        {
-          ...input,
-          invoiceId,
-          clientRequestId: null,
-          ...(isLeader
-            ? {}
-            : {
-                deliveryFee: "0.00",
-                feeCollection: "COURIER" as const,
-                externalTrackingRef: null,
-              }),
-        },
-        actor,
-        leaderId == null
-          ? undefined
-          : {
-              shipmentLeaderConsignmentId: leaderId,
-              ...(retainedLeader ? { retainedShipmentLeader: true } : {}),
-              ...(isLeader ? {} : { sharedTrackingLeaderId: leaderId }),
-            },
-      );
-      leaderId ??= row.consignmentId;
-      if (!memberships.length)
-        await tx.insert(deliveryShipmentMembers).values({
-          consignmentId: row.consignmentId,
-          leaderConsignmentId: leaderId,
-          createdBy: actor.userId,
-        });
-      dispatched.push(row);
-    }
-    const details = await shipmentDetailsTx(tx, leaderId!, actor);
-    await tx.insert(auditLogs).values({
-      userId: actor.userId,
-      branchId: Number(anchor.branchId),
-      action: "delivery.dispatchInvoiceShipment",
-      entityType: "deliveryShipment",
-      entityId: String(leaderId),
-      newValue: {
-        invoiceIds: ids,
-        leaderInvoiceId,
-        consignmentIds: dispatched.map((row) => row.consignmentId),
-        partyId: input.partyId,
-        codAmount: details.codAmount,
-        deliveryFee: details.deliveryFee,
-        notes: input.notes ?? null,
-      },
-    });
-    await recordIdempotencyKey(
-      tx,
-      SHIPMENT_OPERATION,
-      input.clientRequestId!,
-      leaderId!,
-      hash,
+  if (new Set(lockedInvoices.map((row) => Number(row.branchId))).size !== 1)
+    shipmentError(
+      "تعذر إسناد الشحنة",
+      "الفواتير تخص أكثر من فرع",
+      "اجمع فواتير الفرع الواحد في شحنة مستقلة",
     );
-    for (const row of dispatched)
-      enqueuePostCommit(tx, () => {
-        publishRealtimeEvent(
-          REALTIME_EVENT_TYPES.DELIVERY_DISPATCHED,
-          {
-            deliveryId: row.consignmentId,
-            invoiceId: row.invoiceId,
-            trackingNumber: row.consignmentNumber,
-            driverId: input.assignedUserId ?? input.partyId,
-            branchId: Number(anchor.branchId),
-          },
-          { branchId: Number(anchor.branchId) },
-        );
-      });
+  const replay = await checkIdempotency(
+    tx,
+    SHIPMENT_OPERATION,
+    input.clientRequestId,
+    hash,
+    { forUpdate: true },
+  );
+  if (replay != null) {
+    const details = await shipmentDetailsTx(tx, replay, actor);
     return {
       ...details,
-      consignmentId: leaderId!,
-      invoiceId: leaderInvoiceId,
-      idempotentReplay: false,
+      consignmentId: replay,
+      invoiceId: Number(
+        details.members.find((row) => Number(row.id) === replay)!.invoiceId,
+      ),
+      idempotentReplay: true,
     };
+  }
+  if (!party.isActive)
+    shipmentError(
+      "تعذر إسناد الشحنة",
+      "جهة التوصيل معطلة",
+      "اختر جهة توصيل نشطة",
+    );
+  const anchor = lockedInvoices[0];
+  for (const invoice of lockedInvoices) {
+    assertBranch(Number(invoice.branchId), actor);
+    if (
+      Number(invoice.branchId) !== Number(anchor.branchId) ||
+      !sameRecipient(anchor, invoice)
+    ) {
+      shipmentError(
+        "تعذر إسناد الشحنة",
+        "الفواتير لا تخص العميل نفسه والفرع نفسه، أو لا يوجد هاتف موحد للزبون العابر",
+        "اختر فواتير عميل واحد أو صحّح هاتف المستلم على الفواتير",
+      );
+    }
+  }
+  const existing = await tx
+    .select()
+    .from(deliveryConsignments)
+    .where(inArray(deliveryConsignments.invoiceId, ids))
+    .orderBy(asc(deliveryConsignments.id))
+    .for("update");
+  const memberships = existing.length
+    ? await tx
+        .select()
+        .from(deliveryShipmentMembers)
+        .where(
+          inArray(
+            deliveryShipmentMembers.consignmentId,
+            existing.map((row) => Number(row.id)),
+          ),
+        )
+        .for("update")
+    : [];
+  let leaderId: number | undefined;
+  let leaderInvoiceId = ids[0];
+  let retainedLeader: DeliveryConsignment | undefined;
+  if (memberships.length) {
+    leaderId = Number(memberships[0].leaderConsignmentId);
+    const oldMembers = await loadShipmentMembersTx(tx, leaderId, {
+      currentRead: true,
+    });
+    const oldInvoices = await tx
+      .select()
+      .from(invoices)
+      .where(
+        inArray(
+          invoices.id,
+          oldMembers.map((row) => Number(row.invoiceId)),
+        ),
+      )
+      .orderBy(asc(invoices.id))
+      .for("update");
+    const oldInvoiceIds = oldInvoices
+      .filter((row) => !isDeadInvoiceStatus(row.status))
+      .map((row) => Number(row.id))
+      .sort((a, b) => a - b);
+    if (
+      memberships.length !== ids.length ||
+      oldInvoiceIds.join(",") !== ids.join(",") ||
+      memberships.some((row) => Number(row.leaderConsignmentId) !== leaderId) ||
+      oldMembers.some(
+        (row) => !["CANCELLED", "RETURNED"].includes(row.parcelStatus),
+      )
+    ) {
+      shipmentError(
+        "تعذر تغيير فواتير الشحنة",
+        "بعض الفواتير مرتبطة بشحنة قائمة ذات أعضاء مختلفين",
+        "أعد إسناد الشحنة الأصلية بجميع فواتيرها",
+        "PRECONDITION_FAILED",
+      );
+    }
+    const oldLeader = oldMembers.find((row) => Number(row.id) === leaderId);
+    if (!oldLeader)
+      shipmentError(
+        "تعذر إسناد الشحنة",
+        "قائد الشحنة غير موجود ضمن فواتيرها الأصلية",
+        "راجع تفاصيل الشحنة مع المدير",
+        "PRECONDITION_FAILED",
+      );
+    leaderInvoiceId = Number(oldLeader.invoiceId);
+    if (!ids.includes(leaderInvoiceId)) {
+      retainedLeader = oldLeader;
+      if (
+        Number(oldLeader.partyId) !== input.partyId ||
+        normalizeExternalTrackingRef(input.externalTrackingRef) !==
+          normalizeExternalTrackingRef(oldLeader.externalTrackingRef) ||
+        (input.feeCollection ?? "COURIER") !== oldLeader.feeCollection ||
+        !round2(money(input.deliveryFee ?? oldLeader.deliveryFee)).eq(
+          money(oldLeader.deliveryFee),
+        )
+      )
+        shipmentError(
+          "تعذر تغيير مصدر أجرة الشحنة وبوليصتها",
+          "فاتورة القائد أغلقت وتحتفظ بأصل الأجرة والبوليصة وتاريخهما",
+          "أعد الإسناد إلى الجهة نفسها بالبوليصة وطريقة الأجرة ومبلغها الأصلي؛ لأي تغيير آخر اطلب من الإدارة مراجعة مصدر الأجرة",
+          "PRECONDITION_FAILED",
+        );
+    }
+  }
+  if (
+    !memberships.length &&
+    ids.length < 2 &&
+    input.fulfillmentRequestId == null
+  )
+    shipmentError(
+      "تعذر إنشاء شحنة مجمعة",
+      "إنشاء الشحنة يتطلب فاتورتين على الأقل؛ الناجي الواحد مسموح لإعادة شحنة قائمة فقط",
+      "أسند الفاتورة منفردة من نافذة التوصيل",
+    );
+  const heldFees = await loadInvoiceDeliveryFeeHeldTx(
+    tx,
+    retainedLeader ? [...ids, leaderInvoiceId] : ids,
+  );
+  if (
+    retainedLeader?.feeCollection === "COUNTER" &&
+    !(heldFees.get(leaderInvoiceId) ?? money(0)).eq(
+      money(retainedLeader.deliveryFee),
+    )
+  )
+    shipmentError(
+      "تعذر إعادة إسناد أمانة أجرة الشحنة",
+      "صافي أمانة الأجرة الأصلية لا يطابق أجرة الشحنة",
+      "اطلب من الإدارة مراجعة إيصالات أمانة الأجرة",
+      "PRECONDITION_FAILED",
+    );
+  const feeOwners = lockedInvoices.filter((invoice) =>
+    (heldFees.get(Number(invoice.id)) ?? money(0)).gt(0),
+  );
+  if (feeOwners.length > 1)
+    shipmentError(
+      "تعذر تجميع أمانة أجرة على عدة فواتير",
+      `توجد أمانات أجرة مستقلة على الفواتير ${feeOwners.map((invoice) => invoice.invoiceNumber).join("، ")}`,
+      "أسند الفواتير صاحبة الأمانات بصورة مستقلة، أو اطلب من المدير تسوية أمانات أجورها قبل التجميع",
+      "PRECONDITION_FAILED",
+    );
+  if (!memberships.length && feeOwners.length === 1)
+    leaderInvoiceId = Number(feeOwners[0].id);
+  for (const invoice of lockedInvoices) {
+    const held = heldFees.get(Number(invoice.id)) ?? money(0);
+    if (held.lt(0))
+      shipmentError(
+        "تعذر تجميع أمانة أجرة غير متسقة",
+        `صافي أمانة أجرة الفاتورة ${invoice.invoiceNumber} سالب`,
+        "اطلب من المدير مراجعة سندات أجرة الفاتورة قبل التجميع",
+        "PRECONDITION_FAILED",
+      );
+    if (Number(invoice.id) !== leaderInvoiceId && held.gt(0)) {
+      shipmentError(
+        "تعذر تجميع أمانة أجرة على فاتورة تابعة",
+        `الفاتورة ${invoice.invoiceNumber} تحمل أمانة أجرة ${held.toFixed(2)} على غير قائد الشحنة الأصلي؛ إعادة الإسناد تحافظ على القائد الأصلي`,
+        "أسند الفاتورة صاحبة الأمانة بصورة مستقلة، أو اطلب من المدير تسوية أمانة أجرتها قبل التجميع",
+        "PRECONDITION_FAILED",
+      );
+    }
+  }
+  const dispatched: Awaited<ReturnType<typeof dispatchInvoiceInTx>>[] = [];
+  for (const invoiceId of [
+    ...(retainedLeader ? [] : [leaderInvoiceId]),
+    ...ids.filter((id) => id !== leaderInvoiceId),
+  ]) {
+    const isLeader = invoiceId === leaderInvoiceId;
+    const row = await dispatchInvoiceInTx(
+      tx,
+      {
+        ...input,
+        invoiceId,
+        clientRequestId: null,
+        ...(isLeader
+          ? {}
+          : {
+              deliveryFee: "0.00",
+              feeCollection: "COURIER" as const,
+              externalTrackingRef: null,
+            }),
+      },
+      actor,
+      leaderId == null
+        ? undefined
+        : {
+            shipmentLeaderConsignmentId: leaderId,
+            ...(retainedLeader ? { retainedShipmentLeader: true } : {}),
+            ...(isLeader ? {} : { sharedTrackingLeaderId: leaderId }),
+          },
+    );
+    leaderId ??= row.consignmentId;
+    if (!memberships.length && ids.length > 1)
+      await tx.insert(deliveryShipmentMembers).values({
+        consignmentId: row.consignmentId,
+        leaderConsignmentId: leaderId,
+        createdBy: actor.userId,
+      });
+    dispatched.push(row);
+  }
+  const details = await shipmentDetailsTx(tx, leaderId!, actor);
+  await tx.insert(auditLogs).values({
+    userId: actor.userId,
+    branchId: Number(anchor.branchId),
+    action: "delivery.dispatchInvoiceShipment",
+    entityType: "deliveryShipment",
+    entityId: String(leaderId),
+    newValue: {
+      invoiceIds: ids,
+      leaderInvoiceId,
+      consignmentIds: dispatched.map((row) => row.consignmentId),
+      partyId: input.partyId,
+      codAmount: details.codAmount,
+      deliveryFee: details.deliveryFee,
+      notes: input.notes ?? null,
+    },
   });
+  await recordIdempotencyKey(
+    tx,
+    SHIPMENT_OPERATION,
+    input.clientRequestId!,
+    leaderId!,
+    hash,
+  );
+  for (const row of dispatched)
+    enqueuePostCommit(tx, () => {
+      publishRealtimeEvent(
+        REALTIME_EVENT_TYPES.DELIVERY_DISPATCHED,
+        {
+          deliveryId: row.consignmentId,
+          invoiceId: row.invoiceId,
+          trackingNumber: row.consignmentNumber,
+          driverId: input.assignedUserId ?? input.partyId,
+          branchId: Number(anchor.branchId),
+        },
+        { branchId: Number(anchor.branchId) },
+      );
+    });
+  return {
+    ...details,
+    consignmentId: leaderId!,
+    invoiceId: leaderInvoiceId,
+    idempotentReplay: false,
+  };
 }
 
 export async function listShipmentInvoiceCandidates(
@@ -715,17 +815,29 @@ export async function listShipmentInvoiceCandidates(
         "اطلب من المدير مراجعة روابط الشحنة",
         "PRECONDITION_FAILED",
       );
-    const surviving = original.filter(row => !isDeadInvoiceStatus(row.invoice.status));
+    const surviving = original.filter(
+      (row) => !isDeadInvoiceStatus(row.invoice.status),
+    );
     const cancelled =
-      surviving.length > 0 && original.every(row => ["CANCELLED", "RETURNED"].includes(row.cn.parcelStatus)) &&
+      surviving.length > 0 &&
+      original.every((row) =>
+        ["CANCELLED", "RETURNED"].includes(row.cn.parcelStatus),
+      ) &&
       surviving.every(
         (row) =>
           row.cn.status === "CANCELLED" &&
           row.cn.parcelStatus === "CANCELLED" &&
           row.cn.moneyStatus === "CANCELLED",
       );
-    const originalLeader = cancelled ? (await db.select().from(deliveryConsignments)
-      .where(eq(deliveryConsignments.id, Number(membership.leaderId))).limit(1))[0] : null;
+    const originalLeader = cancelled
+      ? (
+          await db
+            .select()
+            .from(deliveryConsignments)
+            .where(eq(deliveryConsignments.id, Number(membership.leaderId)))
+            .limit(1)
+        )[0]
+      : null;
     return {
       anchor: anchorRow,
       candidates: cancelled
@@ -736,8 +848,14 @@ export async function listShipmentInvoiceCandidates(
       requiredInvoiceIds: cancelled
         ? surviving.map((row) => Number(row.invoice.id))
         : [],
-      retainedDispatch: originalLeader ? { partyId: Number(originalLeader.partyId), deliveryFee: originalLeader.deliveryFee,
-        feeCollection: originalLeader.feeCollection, externalTrackingRef: originalLeader.externalTrackingRef } : null,
+      retainedDispatch: originalLeader
+        ? {
+            partyId: Number(originalLeader.partyId),
+            deliveryFee: originalLeader.deliveryFee,
+            feeCollection: originalLeader.feeCollection,
+            externalTrackingRef: originalLeader.externalTrackingRef,
+          }
+        : null,
     };
   }
   const phone = canonicalIraqiMobile(anchor.contactPhone);

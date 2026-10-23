@@ -7,8 +7,9 @@ import {
   recordCompanyStatement,
   recordStaffDeliveryConfirmation,
 } from "../delivery/companyStatement";
-import { listOpenConsignments } from "../delivery/queries";
-import { payDeliveryFee } from "../delivery/fees";
+import { listOpenConsignments, listPartyRemittances } from "../delivery/queries";
+import { getDeliveryFinancialSummary } from "../delivery/lifecycle";
+import { payDeliveryFee, payPartyDeliveryFees } from "../delivery/fees";
 import { recordDeliveryRemittance } from "../delivery/remittance";
 import {
   previewDailySettlementTx,
@@ -268,6 +269,62 @@ describe("online delivery fee withholding", () => {
     );
     await assertClosed(d.invoiceId, "18500.00");
   });
+});
+
+it("cash reports subtract only the linked materialized withholding without hiding a deficit", async () => {
+  const d = await onlineDelivery();
+  await db().update(s.deliveryConsignments).set({ assignedUserId: 3 }).where(eq(s.deliveryConsignments.id, d.consignmentId));
+  await recordCompanyStatement({
+    partyId: 1, branchId: 1, statementNumber: "READER-NET", countedCash: "18500",
+    lines: [{ consignmentId: d.consignmentId, collectedAmount: "20000" }],
+    clientRequestId: "reader-net",
+  }, CASHIER);
+  const rm = (await db().select().from(s.deliveryRemittances))[0];
+  const expectCash = async (cash: string) => {
+    expect((await listPartyRemittances(1, { scopedBranchId: 1 }))[0])
+      .toMatchObject({ cashReceived: cash, collectedTotal: "20000.00" });
+    expect(await getDeliveryFinancialSummary(1, undefined, 1))
+      .toMatchObject({ cashReceived: cash, grossSettled: "20000.00" });
+    expect(await getDeliveryFinancialSummary(1)).toMatchObject({ cashReceived: cash });
+  };
+  await expectCash("18500.00");
+  expect(await getDeliveryFinancialSummary(1, 3, 1)).toMatchObject({ cashReceived: "18500.00" });
+  await db().update(s.receipts).set({ status: "REVERSED" }).where(eq(s.receipts.id, rm.receiptOutId!));
+  await expectCash("20000.00");
+  await db().update(s.receipts).set({ status: "COMPLETED", approvalStatus: "REJECTED" }).where(eq(s.receipts.id, rm.receiptOutId!));
+  await expectCash("20000.00");
+  await db().insert(s.branches).values({ id: 2, name: "الثاني", code: "SECOND", type: "SALES" });
+  await db().update(s.receipts).set({ approvalStatus: "APPROVED", branchId: 2 }).where(eq(s.receipts.id, rm.receiptOutId!));
+  await expectCash("20000.00");
+  await db().update(s.receipts).set({ branchId: 1, amount: "21000" }).where(eq(s.receipts.id, rm.receiptOutId!));
+  await expectCash("-1000.00");
+});
+
+it("daily preview and posting both require independent settlement of an indivisible commission", async () => {
+  const d = await onlineDelivery(true, "1000");
+  await db().update(s.deliveryParties).set({ useCommissionForSettlement: true }).where(eq(s.deliveryParties.id, 1));
+  await db().insert(s.courierCommissionRules).values({
+    partyId: 1, ruleType: "FLAT_PER_DELIVERY", flatAmount: "1000", isActive: true,
+  });
+  await recordStaffDeliveryConfirmation({
+    consignmentId: d.consignmentId, collectedAmount: "500", shortfallReason: "OTHER",
+    evidence: "تأكيد تحصيل جزئي وعجز مصنف", clientRequestId: "proof-small-commission",
+  }, CASHIER);
+  const before = (await db().select().from(s.accountingEntries)).length;
+  await expect(withTx((tx) => previewDailySettlementTx(tx, { partyId: 1, branchId: 1 }, CASHIER)))
+    .rejects.toThrow(/سوّ الأجرة بسندها المستقل قبل التوريد/);
+  await expect(withTx((tx) => settleDailyTx(tx, {
+    partyId: 1, branchId: 1, countedCash: "0", clientRequestId: "small-commission-daily",
+  }, CASHIER))).rejects.toThrow(/سوّ الأجرة بسندها المستقل قبل التوريد/);
+  expect(await db().select().from(s.deliveryRemittances)).toHaveLength(0);
+  expect((await db().select().from(s.accountingEntries)).length).toBe(before);
+  await payPartyDeliveryFees({ partyId: 1, branchId: 1, shiftId: d.shiftId, clientRequestId: "small-commission-fee" }, CASHIER);
+  const preview = await withTx((tx) => previewDailySettlementTx(tx, { partyId: 1, branchId: 1 }, CASHIER));
+  expect(preview).toMatchObject({ expectedCash: "500.00", deductions: "0.00", net: "500.00" });
+  await withTx((tx) => settleDailyTx(tx, {
+    partyId: 1, branchId: 1, countedCash: preview.net, clientRequestId: "small-commission-after-fee",
+  }, CASHIER));
+  expect((await db().select().from(s.deliveryRemittances))[0]).toMatchObject({ feesTotal: "0.00", netRemitted: "500.00" });
 });
 
 it("retains a fee once across partial remittances and previews the same net", async () => {

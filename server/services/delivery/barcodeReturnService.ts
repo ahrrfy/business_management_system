@@ -6,6 +6,8 @@
  * ليتم استلام المرتجع وعكس المبيعات والمخزون وتحرير عهدة المندوب فورياً.
  */
 import { TRPCError } from "@trpc/server";
+import { routeAftercareDeliveryResultTx } from "../fulfillment/aftercareDelivery";
+import { withTx } from "../tx";
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import {
   deliveryConsignments,
@@ -219,6 +221,7 @@ export async function returnByBarcode(
       partyId: deliveryConsignments.partyId,
       partyName: deliveryParties.name,
       invoiceId: deliveryConsignments.invoiceId,
+      sourceType: deliveryConsignments.sourceType,
       workOrderId: deliveryConsignments.workOrderId,
       recipientName: deliveryConsignments.recipientName,
       recipientPhone: deliveryConsignments.recipientPhone,
@@ -243,6 +246,12 @@ export async function returnByBarcode(
         doThis: "تأكد من صحة رقم الطرد أو ابحث بالرقم المرجعي لشركة التوصيل",
       }),
     });
+  }
+
+  if (matchedCn.sourceType === "AFTERCARE_EXECUTION") {
+    const proof = input.returnReason?.trim() || "استلام وفحص عهدة المعالجة العائدة بالباركود";
+    await withTx((tx) => routeAftercareDeliveryResultTx(tx, { consignmentId: Number(matchedCn.id), result: "RETURNED", proof, clientRequestId: input.clientRequestId ?? `barcode-aftercare-return:${matchedCn.id}`, authorization: { kind: "STAFF", operationPath: "delivery.returnByBarcode", operationAuthority: actor.operationAuthority } }, actor));
+    return { consignmentId: Number(matchedCn.id), consignmentNumber: matchedCn.consignmentNumber, invoiceId: null, reversed: false, partyName: matchedCn.partyName, recipientName: matchedCn.recipientName, codAmount: "0.00", returnReason: proof };
   }
 
   if (matchedCn.status === "RETURNED" || matchedCn.parcelStatus === "RETURNED") {

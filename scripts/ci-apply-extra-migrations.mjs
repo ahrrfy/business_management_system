@@ -242,6 +242,9 @@ const EXTRA_MIGRATIONS = [
   "drizzle/migrations/extras/0361_fix_triggers_and_guards.sql",
   // Evidence-backed opening exclusions retain immutable source and proof rows.
   "drizzle/migrations/0402_delivery_opening_exclusions.sql",
+  // Typed no-invoice sources, generated active-source keys and receipt-only proofs.
+  // Runs after 0307 so the old consumption CHECK cannot overwrite this contract.
+  "drizzle/migrations/0403_fulfillment_requests_aftercare.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without

@@ -1,3 +1,4 @@
+import { D } from "@/lib/money";
 import { describe, expect, it } from "vitest";
 import {
   computePOSTotals,
@@ -372,3 +373,27 @@ describe("computePOSTotals & helpers — split / mixed payment legs", () => {
 });
 
 
+
+
+describe("held delivery fee and external payment binding",()=>{
+  function delivery(fee="5000"):NonNullable<POSTab["delivery"]>{return {governorate:"baghdad",address:"Baghdad",partyId:1,partyType:"INDIVIDUAL",partyName:"Courier",externalTrackingRef:"",fee,feeManual:true,feeCollection:"COUNTER",recipientName:"Buyer",recipientPhone:"+9647700000000",customerPhone:"07700000000"};}
+  it("confirms 55,000 while goods allocation stays 50,000",()=>{
+    const tab=makeTab({method:"CARD",payInput:"50000",paymentRef:"FEE-PROOF",delivery:delivery()});
+    const totals=computePOSTotals({cart:[makeItem(50000)],activeTab:tab});
+    expect(totals.total).toBe(50000);expect(totals.paid).toBe(50000);expect(totals.externalPaymentAmount).toBe("55000.00");
+    tab.externalPayment={attemptId:1,requestId:"one",fingerprint:totals.externalPaymentFingerprint,state:"CONFIRMED",deviceId:"DEVICE"};
+    expect(computePOSTotals({cart:[makeItem(50000)],activeTab:tab}).externalPaymentConfirmed).toBe(true);
+    tab.delivery!.fee="6000";
+    expect(computePOSTotals({cart:[makeItem(50000)],activeTab:tab}).externalPaymentConfirmed).toBe(false);
+  });
+  it("split tender adds the fee to the first rail proof only",()=>{
+    const first=makeConfirmedLeg("one","CARD","30000","REF1");
+    first.externalPayment!.fingerprint=computeSplitLegFingerprint(first,D(5000));
+    const tab=makeTab({delivery:delivery(),paymentLegs:[first,makeConfirmedLeg("two","CASH","20000")]});
+    const totals=computePOSTotals({cart:[makeItem(50000)],activeTab:tab});
+    expect(totals.paid).toBe(50000);expect(totals.externalPaymentConfirmed).toBe(true);
+    expect(computeSplitLegFingerprint(first,D(5000))).toContain("35000.00");
+    tab.delivery!.fee="6000";
+    expect(computePOSTotals({cart:[makeItem(50000)],activeTab:tab}).externalPaymentConfirmed).toBe(false);
+  });
+});

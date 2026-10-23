@@ -38,6 +38,74 @@ describe("wrapLines — لفّ أسماء الأصناف", () => {
 
 afterEach(() => vi.unstubAllGlobals());
 
+describe("compact 80mm receipt", () => {
+  function canvasFixture() {
+    const text: Array<{ value: string; y: number; font: string }> = [];
+    const images: Array<{ width: number; height: number; smooth: boolean }> = [];
+    const context = {
+      save: vi.fn(), restore: vi.fn(), fillRect: vi.fn(),
+      drawImage: vi.fn((_image: unknown, _x: number, _y: number, width: number, height: number) => images.push({ width, height, smooth: context.imageSmoothingEnabled })),
+      fillText: vi.fn((value: string, _x: number, y: number) => text.push({ value, y, font: context.font })),
+      setLineDash: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(),
+      arcTo: vi.fn(), closePath: vi.fn(), measureText: (s: string) => ({ width: s.length * 10 }),
+      font: "", imageSmoothingEnabled: true,
+    };
+    const canvas = { width: 0, height: 0, getContext: () => context };
+    vi.stubGlobal("document", { fonts: { load: () => Promise.resolve([]) }, createElement: () => canvas });
+    vi.stubGlobal("Image", class {
+      onload: (() => void) | null = null;
+      set src(_value: string) { queueMicrotask(() => this.onload?.()); }
+    });
+    return { canvas, context, text, images };
+  }
+  const sale = { receiptNumber: "12345", date: "23/10/2026", time: "10:00", cashierName: "كاشير",
+    items: [{ name: "دفتر", quantity: 1, price: "1000", total: "1000" }], subtotal: "1000", total: "1000", paid: "1000", paymentMethod: "نقدي" };
+
+  it("prints a sharp physical QR around32mm while shortening the one-item receipt", async () => {
+    const fixture = canvasFixture();
+    const result = await receiptToCanvas(sale);
+    expect(result!.height).toBeLessThanOrEqual(1120);
+    expect(fixture.images.some((image) => image.width >= 250 && image.width === image.height && !image.smooth)).toBe(true);
+    expect(fixture.text.find((entry) => entry.value === "دفتر")!.font).toContain("22px");
+    const { RECEIPT_PHONES } = await import("./brand");
+    for (const contact of RECEIPT_PHONES) {
+      expect(fixture.text.map((entry) => entry.value)).toContain(contact.n);
+      expect(fixture.text.map((entry) => entry.value)).toContain(contact.l);
+    }
+  });
+  it("retains an issued coupon code and every redemption condition in silent printing", async () => {
+    const fixture = canvasFixture();
+    await receiptToCanvas({ ...sale, bounceBackCoupon: { code: "NEXT-AUDIT01", headline: "هدية الزيارة القادمة", discountText: "5%", minSpendText: "الحد الأدنى10000", validToText: "حتى31/10/2026" } });
+    const content = fixture.text.map((entry) => entry.value).join(" ");
+    for (const value of ["NEXT-AUDIT01", "5%", "الحد الأدنى10000", "حتى31/10/2026"]) expect(content).toContain(value);
+  });
+  it("collects only the current merchandise debt plus courier fee after a partial return", async () => {
+    const fixture = canvasFixture();
+    await receiptToCanvas({ ...sale, total: "100000", subtotal: "100000", paid: "10000", credit: "50000", returnedTotal: "40000", currentTotal: "60000", remainingAmount: "50000",
+      delivery: { partyName: "مندوب", fee: "5000", feeCollection: "COURIER" } });
+    const content = fixture.text.map((entry) => entry.value).join(" ");
+    expect(content).toContain("55,000 د.ع"); expect(content).not.toContain("95,000");
+    expect(content).toContain("المرتجع:"); expect(content).toContain("40,000"); expect(content).toContain("60,000");
+  });
+  it.each(["CANCELLED", "RETURNED", "SUPERSEDED"])("keeps historical fees without collecting or claiming prepayment on %s", async (status) => {
+    const fixture = canvasFixture();
+    await receiptToCanvas({ ...sale, total: "100000", subtotal: "100000", paid: "10000", credit: "90000", status,
+      delivery: { partyName: "مندوب", fee: "5000", feeCollection: "COURIER" } });
+    const content = fixture.text.map((entry) => entry.value).join(" ");
+    expect(content).toContain("5,000"); expect(content).toContain("الحالة:");
+    expect(content).not.toContain("يدفع الزبون"); expect(content).not.toContain("المطلوب من الزبون"); expect(content).not.toContain("مدفوع بالكامل"); expect(content).not.toContain("مدفوعة مسبقاً"); expect(content).not.toContain("متبقٍّ (آجل):");
+  });
+  it("prints all product-name words and grows the actual canvas for long items", async () => {
+    const fixture = canvasFixture();
+    const name = Array.from({ length: 60 }, (_, index) => `صنف${index}`).join(" ");
+    const result = await receiptToCanvas({ ...sale, items: Array.from({ length: 6 }, () => ({ ...sale.items[0], name })) });
+    const content = fixture.text.map((entry) => entry.value).join(" ");
+    for (let index = 0; index < 60; index++) expect(content).toContain(`صنف${index}`);
+    expect(result!.height).toBeLessThan(fixture.canvas.height);
+    expect(Math.max(...fixture.text.map((entry) => entry.y))).toBeLessThan(result!.height);
+  });
+});
+
 describe("receiptToCanvas — سعة الإيصال", () => {
   it("لا يقصّ تذييل إيصال قصير يجمع الوردية والعربون والآجل والتوصيل", async () => {
     const context = {
@@ -115,7 +183,9 @@ describe("receiptToCanvas — سعة الإيصال", () => {
   });
 
   it("يطبع اسم المنشأة والشهرة وعنوانها ديناميكياً ويتجاوز قسم الهواتف عند تفريغها", async () => {
-    const { setDynamicCompanyProfile } = await import("./brand");
+    const { setDynamicCompanyProfile, RECEIPT_PHONES } = await import("./brand");
+    const defaultContacts = [...RECEIPT_PHONES];
+    expect(defaultContacts.length).toBeGreaterThan(0);
     setDynamicCompanyProfile({
       name: "شركة سومر للحلول الطباعية",
       short: "سومر برنت",
@@ -157,8 +227,11 @@ describe("receiptToCanvas — سعة الإيصال", () => {
     expect(fillTextCalls).toContain("شركة سومر للحلول الطباعية");
     expect(fillTextCalls).toContain("المنصور — تقاطع الرواد");
 
-    // يجب ألا يحوي الإيصال ترويسة «القسم» أو «رقم التواصل» المعلقة عند غياب الهواتف
-    expect(fillTextCalls).not.toContain("رقم التواصل");
+    // لا تتسرّب بيانات الهواتف الافتراضية بعد تفريغها من هوية المنشأة.
+    for (const contact of defaultContacts) {
+      expect(fillTextCalls).not.toContain(contact.n);
+      expect(fillTextCalls).not.toContain(contact.l);
+    }
 
     setDynamicCompanyProfile(null);
   });

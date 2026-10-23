@@ -1,3 +1,4 @@
+import { deliverySourceView } from "@shared/deliverySource";
 // الكنّاس الدوريّ للطرود الجامدة — القناة الرابعة للحقيقة حين تصمت الثلاث.
 //
 // السياق (٢٢/٨): ٧٩/٨٤ طرداً «مُسنَداً» بلا أيّ حدثٍ ٩-١٣ يوماً، لأنّ تقدّم `parcelStatus`
@@ -101,6 +102,10 @@ export async function autoFailStaleParcels(
   const candidates = await db
     .select({
       id: deliveryConsignments.id,
+      sourceType: deliveryConsignments.sourceType,
+      sourceId: deliveryConsignments.sourceId,
+      fulfillmentRequestId: deliveryConsignments.fulfillmentRequestId,
+      aftercareExecutionId: deliveryConsignments.aftercareExecutionId,
       consignmentNumber: deliveryConsignments.consignmentNumber,
       branchId: deliveryConsignments.branchId,
       invoiceId: deliveryConsignments.invoiceId,
@@ -168,6 +173,9 @@ export async function autoFailStaleParcels(
           actorUserId: null,
           payload: {
             authority: "SYSTEM_SLA_SWEEP",
+            sourceType: cn.sourceType,
+            sourceId: cn.sourceId,
+            sourceRoute: deliverySourceView(cn).href,
             thresholdDays: Number(cn.thresholdDays),
             ageDays: Number(cn.ageDays),
             partyId: Number(cn.partyId),
@@ -225,6 +233,10 @@ export async function sweepStaleConsignments(
   const candidates = await db
     .select({
       id: deliveryConsignments.id,
+      sourceType: deliveryConsignments.sourceType,
+      sourceId: deliveryConsignments.sourceId,
+      fulfillmentRequestId: deliveryConsignments.fulfillmentRequestId,
+      aftercareExecutionId: deliveryConsignments.aftercareExecutionId,
       parcelStatus: deliveryConsignments.parcelStatus,
       moneyStatus: deliveryConsignments.moneyStatus,
       dispatchedAt: deliveryConsignments.dispatchedAt,
@@ -261,6 +273,9 @@ export async function sweepStaleConsignments(
           payload: {
             // مصدر السلطة: ماسحُ النظام الدوريّ لا فعلُ مستخدم — يُقرأ في سجلّ الأحداث والتدقيق.
             authority: "SYSTEM_STALE_SWEEP",
+            sourceType: cn.sourceType,
+            sourceId: cn.sourceId,
+            sourceRoute: deliverySourceView(cn).href,
             thresholdHours: escalateHours,
             dispatchedAt: cn.dispatchedAt instanceof Date ? cn.dispatchedAt.toISOString() : String(cn.dispatchedAt),
             parcelStatus: cn.parcelStatus,
