@@ -29,7 +29,7 @@ describe("dependency security coverage", () => {
     };
     const rootOverrides = rootPackageJson.pnpm?.overrides ?? {};
     expect(rootOverrides["brace-expansion@<5.0.12"]).toBe("5.0.12");
-    expect(rootOverrides["fast-uri@<3.1.8"]).toBe("3.1.8");
+    expect(rootOverrides["fast-uri@<3.1.9"]).toBe("3.1.9");
     expect(rootOverrides["ip-address@<10.7.4"]).toBe("10.7.4");
     expect(rootOverrides["dompurify@<3.4.17"]).toBe("3.4.17");
     expect(rootOverrides["serialize-javascript@<7.1.2"]).toBe("7.1.2");
@@ -48,7 +48,7 @@ describe("dependency security coverage", () => {
     };
     const overrides = packageJson.pnpm?.overrides ?? {};
 
-    expect(overrides["fast-uri"]).toBe("3.1.8");
+    expect(overrides["fast-uri"]).toBe("3.1.9");
     expect(overrides["undici"]).toBe("6.29.0");
     expect(overrides["@grpc/grpc-js"]).toBe("1.13.6");
     expect(overrides["brace-expansion@1.1.18"]).toBe("1.1.21");
@@ -68,7 +68,7 @@ describe("dependency security coverage", () => {
       };
     };
     const superappOverrides = superappPackageJson.pnpm?.overrides ?? {};
-    expect(superappOverrides["fast-uri"]).toBe("3.1.8");
+    expect(superappOverrides["fast-uri"]).toBe("3.1.9");
     expect(superappOverrides["brace-expansion@1.1.18"]).toBe("1.1.21");
     expect(superappOverrides["brace-expansion@2.1.4"]).toBe("2.1.7");
     expect(superappOverrides["brace-expansion@5.0.9"]).toBe("5.0.12");
