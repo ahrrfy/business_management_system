@@ -41,6 +41,13 @@ export function OrderLifecycleStatus({
           )}
         </div>
       )}
+      {lifecycle?.feeLabel && (
+        <div
+          className={`text-[11px] ${lifecycle.financialComplete ? "text-muted-foreground" : "text-[var(--sem-warn)]"}`}
+        >
+          {lifecycle.feeLabel}
+        </div>
+      )}
       {latest && (
         <div className="max-w-56 text-[11px] text-muted-foreground">
           <div>آخر حركة: {latest.label}</div>

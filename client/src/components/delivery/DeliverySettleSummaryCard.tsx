@@ -60,6 +60,18 @@ export function DeliverySettleSummaryCard({
           <span className="text-muted-foreground">إجمالي التحصيل (COD)</span>
           <span dir="ltr" className="font-bold tabular-nums">{fmt(String(totals.collected))} د.ع</span>
         </div>
+        {totals.fees > 0 && (
+          <div className="flex justify-between border-b py-1.5">
+            <span>أجور الجهة المحسومة من التوريد</span>
+            <span dir="ltr" className="tabular-nums">{fmt(String(totals.fees))} د.ع</span>
+          </div>
+        )}
+        {totals.deductions > 0 && (
+          <div className="flex justify-between border-b py-1.5">
+            <span>استقطاع إضافي في الكشف</span>
+            <span dir="ltr" className="tabular-nums">{fmt(String(totals.deductions))} د.ع</span>
+          </div>
+        )}
         <div className="flex justify-between border-b py-1.5">
           <span className="font-bold">النقد المتوقَّع توريده</span>
           <span dir="ltr" className="font-extrabold tabular-nums text-primary">{fmt(String(totals.net))} د.ع</span>
