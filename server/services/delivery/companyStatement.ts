@@ -48,7 +48,7 @@ import {
 } from "./remittance";
 import type { DeliveryTxActor } from "./types";
 import { withTx } from "../tx";
-import { loadShipmentMembersTx } from "./shipments";
+import { loadShipmentMembersTx, operationalShipmentMembers } from "./shipments";
 import { unremittedCollectionForConsignmentTx } from "./collectionAccounting";
 
 export interface CompanyStatementLineInput {
@@ -399,7 +399,7 @@ export async function recordCompanyStatement(
   // Physical confirmation must include every invoice in the shipment. Supplementary money remains per invoice.
   const statementIds = new Set(ids);
   for (const id of ids.filter((id) => byId.get(id)!.parcelStatus !== "DELIVERED")) {
-    const members = await loadShipmentMembersTx(tx, id, { currentRead: true });
+    const members = operationalShipmentMembers(await loadShipmentMembersTx(tx, id, { currentRead: true }));
     if (members.some((member) => !statementIds.has(Number(member.id)))) {
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
         what: "تعذر تسجيل جزء من شحنة في كشف الشركة",

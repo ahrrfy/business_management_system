@@ -1,4 +1,5 @@
 import { consignmentFeeDueSql, createFeeWithholdingQuote } from "./fees";
+import { shipmentFeeDeliveryProvenExpr } from "./shipments";
 // قراءات الشاشة: الجاهز للإرسال، الإرساليات المفتوحة/كاملة، سجل التوريدات، كشف حساب جهة.
 //
 // عزل الفرع: الجهة المشتركة مرئية للفروع، لكن سند التوريد ونقد الدرج يخصان فرعاً واحداً حتماً؛
@@ -240,7 +241,7 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
   const effLimit = resolvePageLimit(page.limit);
   const feeDue = consignmentFeeDueSql();
   const unpaidFee = and(
-    eq(deliveryConsignments.parcelStatus, "DELIVERED"),
+    shipmentFeeDeliveryProvenExpr(),
     sql`${feeDue} > 0`,
   );
   /**
@@ -1049,7 +1050,7 @@ export async function listPartyObligations(branchId: number | null) {
         ), 0)), 0)
         FROM deliveryConsignments dc
         WHERE dc.partyId = ${deliveryParties.id}
-          AND dc.parcelStatus = 'DELIVERED'${cnBranch})`,
+          AND ${shipmentFeeDeliveryProvenExpr({ id: sql`dc.id`, partyId: sql`dc.partyId`, branchId: sql`dc.branchId`, parcelStatus: sql`dc.parcelStatus` })}${cnBranch})`,
       /**
        * Slice DFP1 (٣٠/٨/٢٦، P1 #2) — عمودان جديدان يفكّان codDueTotal إلى مسؤوليّتين دلالياً منفصلتين
        * (نصّ المالك المُغلَق: «٤ أعمدة منفصلة» — الأول من العمود القائم currentBalance، والثاني والثالث

@@ -2,6 +2,7 @@
 // المستحقّ يُشتقّ من دفتر التوصيل حصراً (FEE_EARNED − FEE_REFUNDED − FEE_PAID − FEE_OFFSET)
 // لا من عمود deliveryFee: الدفترُ يعرف ما صُرف من أيّ مسارٍ كان، والعمود لا يعرف.
 import { TRPCError } from "@trpc/server";
+import { shipmentFeeDeliveryProvenExpr, shipmentFeeDeliveryProvenTx } from "./shipments";
 import Decimal from "decimal.js";
 import { and, eq, sql } from "drizzle-orm";
 import { accountingEntries, deliveryConsignments, deliveryLedgerEntries, deliveryParties, invoices, receipts } from "../../../drizzle/schema";
@@ -178,7 +179,7 @@ export async function payDeliveryFee(
         .where(eq(invoices.id, Number(cn.invoiceId))).for("update").limit(1)
     )[0];
     if (!invoice) throw new TRPCError({ code: "CONFLICT", message: "فاتورة الإرسالية غير موجودة" });
-    if (cn.parcelStatus !== "DELIVERED") throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا تستحق الأجرة قبل نجاح التوصيل" });
+    if (!await shipmentFeeDeliveryProvenTx(tx, Number(cn.id))) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا تستحق الأجرة قبل نجاح التوصيل" });
     if (actor.role !== "admin" && actor.branchId != null && Number(cn.branchId) !== Number(actor.branchId)) {
       throw new TRPCError({ code: "FORBIDDEN", message: "الإرسالية تخص فرعاً آخر" });
     }
@@ -305,7 +306,7 @@ export async function payPartyDeliveryFees(
       .where(and(
         eq(deliveryConsignments.partyId, Number(input.partyId)),
         eq(deliveryConsignments.branchId, Number(input.branchId)),
-        eq(deliveryConsignments.parcelStatus, "DELIVERED"),
+        shipmentFeeDeliveryProvenExpr(),
       ))
       .orderBy(deliveryConsignments.id);
 
@@ -331,7 +332,7 @@ export async function payPartyDeliveryFees(
       if (
         Number(cn.partyId) !== Number(input.partyId)
         || Number(cn.branchId) !== Number(input.branchId)
-        || cn.parcelStatus !== "DELIVERED"
+        || !await shipmentFeeDeliveryProvenTx(tx, Number(cn.id))
       ) continue; // تغيّر بين الترشيح والقفل — يسقط من هذا السند بلا خطأ.
       const invoice = (
         await tx.select({ id: invoices.id, total: invoices.total, returnedTotal: invoices.returnedTotal }).from(invoices)

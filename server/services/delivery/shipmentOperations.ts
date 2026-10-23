@@ -26,8 +26,8 @@ import { cancelDeliveryAssignmentInTx } from "./cancellation";
 import { confirmConsignmentDelivery } from "./courier";
 import { reassignDeliveryConsignment } from "./parties";
 import { allocateProportionally } from "./remittance";
-import { returnConsignment } from "./returns";
-import { loadShipmentMembersTx } from "./shipments";
+import { refundHeldDeliveryFeeForReturnTx, returnConsignment } from "./returns";
+import { loadShipmentMembersTx, operationalShipmentMembers } from "./shipments";
 import { staffMarkFailed } from "./staffTransition";
 import type { DeliveryTxActor } from "./types";
 import { declareConsignmentReturn } from "./declaredReturn";
@@ -180,7 +180,9 @@ async function executeShipment<I extends ShipmentRequest>(
       if (Number(replay) !== leaderId) reject("مفتاح العملية مرتبط بشحنة أخرى");
       return result;
     }
-    await apply(tx, rows, partyId);
+    const operational = operationalShipmentMembers(rows);
+    if (!operational.length) reject("لا توجد فواتير متبقية ضمن دورة توصيل الشحنة");
+    await apply(tx, operational, partyId);
     if (input.clientRequestId) await recordIdempotencyKey(
       tx,
       namespace,
@@ -326,11 +328,17 @@ export async function returnShipment(
 ) {
   if (input.reason.trim().length < 2)
     reject("سبب رجوع الشحنة مطلوب", "اكتب سبب الرجوع بعد استلام الشحنة وفحصها");
+  let refundShiftId: number | null = null;
   return executeShipment(
     "delivery.returnShipment",
     input,
     actor,
     async (tx, rows) => {
+      const original = await loadShipmentMembersTx(tx, input.consignmentId, { currentRead: true });
+      const invoiceRows = await tx.select({ returnedTotal: invoices.returnedTotal }).from(invoices)
+        .where(inArray(invoices.id, rows.map(row => Number(row.invoiceId)))).for("update");
+      if (invoiceRows.some(invoice => money(invoice.returnedTotal ?? "0").gt(0)))
+        reject("إحدى الفواتير المتبقية سبق إرجاع جزء منها", "استكمل مرتجع كل فاتورة من صفحة الفاتورة لحفظ الكميات والمبالغ المتبقية");
       for (const row of rows)
         await returnConsignment(
           Number(row.id),
@@ -343,6 +351,8 @@ export async function returnShipment(
           tx,
           { shipmentMember: true },
         );
+      for (const source of original.filter(row => money(row.deliveryFee).gt(0)))
+        await refundHeldDeliveryFeeForReturnTx(tx, source, actor, refundShiftId == null ? null : { shiftId: refundShiftId });
     },
     async (tx, rows) => {
       const invoiceIds = rows.map((row) => Number(row.invoiceId));
@@ -382,6 +392,7 @@ export async function returnShipment(
           Number(rows[0].branchId),
           input.refundShiftId ?? null,
         );
+        refundShiftId = cash.shiftId;
         await lockCashSourceForUpdate(tx, {
           branchId: Number(rows[0].branchId),
           cashBucket: "DRAWER",

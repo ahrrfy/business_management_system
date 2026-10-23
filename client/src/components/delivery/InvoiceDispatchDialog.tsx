@@ -73,7 +73,14 @@ export function InvoiceDispatchDialog({
     return Array.from(new Map([data.anchor, ...data.candidates].map((row) => [row.id, row])).values());
   }, [candidatesQ.data, invoice]);
   useEffect(() => {
-    if (open && candidatesQ.data?.requiredInvoiceIds.length) setInvoiceIds(candidatesQ.data.requiredInvoiceIds);
+    if (open && candidatesQ.data?.requiredInvoiceIds.length) {
+      setInvoiceIds(candidatesQ.data.requiredInvoiceIds);
+      const source = candidatesQ.data.retainedDispatch;
+      if (source) {
+        setPartyId(String(source.partyId)); setFee(source.deliveryFee);
+        setFeeCollection(source.feeCollection ?? "COURIER"); setExternalTrackingRef(source.externalTrackingRef ?? "");
+      }
+    }
   }, [open, candidatesQ.data]);
 
   const parties = partiesQ.data ?? [];
@@ -124,7 +131,7 @@ export function InvoiceDispatchDialog({
     }
     const payload = {
       invoiceId: invoice.id,
-      ...(invoiceIds.length > 1 ? { invoiceIds } : {}),
+      ...(invoiceIds.length > 1 || candidatesQ.data?.requiredInvoiceIds.length ? { invoiceIds } : {}),
       partyId: Number(partyId),
       deliveryFee: new Decimal(fee || 0).toDecimalPlaces(2).toFixed(2),
       feeCollection,
@@ -143,15 +150,16 @@ export function InvoiceDispatchDialog({
   useEffect(() => {
     if (!open || !invoice) return;
     setPartialNotice(null);
-    setPartyId("");
-    setFee("0");
-    setFeeCollection("COURIER");
+    const source = candidatesQ.data?.retainedDispatch;
+    setPartyId(source ? String(source.partyId) : "");
+    setFee(source?.deliveryFee ?? "0");
+    setFeeCollection(source?.feeCollection ?? "COURIER");
     setName(invoice.customerName ?? "");
     setPhone(invoice.customerPhone ?? "");
     setAddress(invoice.deliveryAddress ?? "");
     setAssignedUserId("");
-    setExternalTrackingRef("");
-    setInvoiceIds([invoice.id]);
+    setExternalTrackingRef(source?.externalTrackingRef ?? "");
+    setInvoiceIds(candidatesQ.data?.requiredInvoiceIds.length ? candidatesQ.data.requiredInvoiceIds : [invoice.id]);
     request.current = { fingerprint: "", key: crypto.randomUUID() };
   }, [invoice?.id, open]);
 

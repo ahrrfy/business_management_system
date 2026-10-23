@@ -654,7 +654,7 @@ export const deliveryRouter = router({
     .input(
       z.object({
         invoiceId: z.number().int().positive(),
-        invoiceIds: z.array(z.number().int().positive()).min(2).max(30).optional(),
+        invoiceIds: z.array(z.number().int().positive()).min(1).max(30).optional(),
         partyId: z.number().int().positive(),
         deliveryFee: moneyStr.nullish(),
         feeCollection: z.enum(["COURIER", "COUNTER", "SHOP"]).nullish(),

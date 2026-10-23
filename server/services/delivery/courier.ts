@@ -20,6 +20,7 @@ import { assertNotReturnDeclared } from "./declaredReturn";
 import {
   assertStandaloneConsignmentTx,
   loadShipmentMembersTx,
+  operationalShipmentMembers,
 } from "./shipments";
 import { allocateProportionally } from "./remittance";
 import { computeOrderDeliveryOtp } from "../onlineOrderService";
@@ -30,6 +31,7 @@ import {
   customers,
   deliveryConsignments,
   deliveryParties,
+  deliveryLedgerEntries,
   deliveryShipmentMembers,
   invoiceItems,
   invoices,
@@ -423,6 +425,10 @@ export async function listMyDeliveries(
     const mappingById = new Map(
       mappings.map((row) => [Number(row.consignmentId), row]),
     );
+    const leaderIds = Array.from(new Set(mappings.map(row => Number(row.leaderId))));
+    const leaders = leaderIds.length ? await db.select().from(deliveryConsignments)
+      .where(and(inArray(deliveryConsignments.id, leaderIds), eq(deliveryConsignments.partyId, membership.partyId))) : [];
+    const leaderById = new Map(leaders.map(row => [Number(row.id), row]));
     for (const list of [toDeliver, delivered]) {
       const groups = new Map<number, MyDeliveryRow[]>();
       for (const row of list) {
@@ -440,6 +446,7 @@ export async function listMyDeliveries(
       );
       for (const [leaderId, members] of Array.from(groups.entries())) {
         const leader = members.find((row) => row.id === leaderId) ?? members[0];
+        const source = leaderById.get(leaderId);
         const sum = (
           field:
             | "orderTotal"
@@ -457,11 +464,15 @@ export async function listMyDeliveries(
         standalone.push({
           ...leader,
           id: leaderId,
+          orderNumber: source?.consignmentNumber ?? leader.orderNumber,
+          externalTrackingRef: source?.externalTrackingRef ?? leader.externalTrackingRef,
           orderTotal: sum("orderTotal"),
           codDue: sum("codDue"),
-          courierFee: sum("courierFee"),
+          courierFee: source ? toDbMoney(source.feeCollection === "COURIER" ? money(source.deliveryFee) : money(0)) : sum("courierFee"),
           collectedAmount: sum("collectedAmount"),
-          consignmentDeliveryFee: sum("consignmentDeliveryFee"),
+          consignmentDeliveryFee: source?.deliveryFee ?? sum("consignmentDeliveryFee"),
+          feeCollection: source?.feeCollection ?? leader.feeCollection,
+          deliveryFree: source?.feeCollection === "SHOP" || leader.deliveryFree,
           shipmentMemberCount: members.length,
           consignmentIds: members.map((row) => row.id).sort((a, b) => a - b),
           invoiceReferences: members.map(
@@ -792,6 +803,63 @@ export interface ConfirmConsignmentResult {
   collectedAmount?: string;
 }
 
+/** Recognize one physical shipment fee on its original invoice and receipt source. */
+async function recognizeDeliveredShipmentFeeTx(tx: Tx, consignmentId: number, actor: { userId: number }, deliveredAt: Date) {
+  const members = await loadShipmentMembersTx(tx, consignmentId, { currentRead: true });
+  const delivered = members.find(row => Number(row.id) === consignmentId)!;
+  if (members.some(row => Number(row.partyId) !== Number(delivered.partyId) || Number(row.branchId) !== Number(delivered.branchId))) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+      what: "تعذر إثبات أجرة الشحنة", why: "روابط الشحنة تتضمن جهة أو فرعاً مختلفاً", doThis: "أبلغ المدير لمراجعة روابط الشحنة" }) });
+  }
+  for (const cn of members.filter(row => money(row.deliveryFee).gt(0))) {
+    const [earned] = await tx.select({ id: deliveryLedgerEntries.id }).from(deliveryLedgerEntries)
+      .where(eq(deliveryLedgerEntries.eventKey, `CN:${cn.id}:FEE_EARNED`)).for("share").limit(1);
+    if (earned) continue;
+    const fee = round2(money(cn.deliveryFee));
+    if (fee.gt(0)) {
+      await appendDeliveryLedgerEntry(tx, {
+        eventKey: `CN:${cn.id}:FEE_EARNED`,
+        partyId: Number(cn.partyId),
+        consignmentId: Number(cn.id),
+        branchId: Number(cn.branchId),
+        entryType: "FEE_EARNED",
+        amount: toDbMoney(fee),
+        actorUserId: actor.userId,
+      });
+      if (cn.feeCollection === "SHOP") {
+        await postEntry(tx, {
+          entryType: "DELIVERY_FEE",
+          postingIntent: deliveryFeeAccrualIntent(fee),
+          dedupeKey: `DELIVERY_FEE_ACCRUAL:${cn.id}`,
+          branchId: Number(cn.branchId),
+          invoiceId: Number(cn.invoiceId),
+          deliveryPartyId: Number(cn.partyId),
+          amount: fee,
+          cost: fee,
+          profit: fee.neg(),
+          notes: `استحقاق أجرة توصيل ${cn.consignmentNumber}`,
+        });
+      }
+      if (cn.feeCollection === "COURIER") {
+        await appendDeliveryLedgerEntry(tx, {
+          eventKey: `CN:${cn.id}:FEE_PAID_DIRECT`,
+          partyId: Number(cn.partyId),
+          consignmentId: Number(cn.id),
+          branchId: Number(cn.branchId),
+          entryType: "FEE_PAID",
+          amount: toDbMoney(fee),
+          notes: "Paid directly by end customer",
+          actorUserId: actor.userId,
+        });
+        await tx
+          .update(deliveryConsignments)
+          .set({ feeSettledAt: deliveredAt })
+          .where(eq(deliveryConsignments.id, Number(cn.id)));
+      }
+    }
+  }
+}
+
 /**
  * تأكيد المندوب تسليمَ إرسالية موحّدة من شاشة «توصيلاتي».
  *
@@ -902,10 +970,13 @@ export async function confirmConsignmentDelivery(
         }),
       });
     if (!options.shipmentMember) {
-      const members = await loadShipmentMembersTx(tx, input.consignmentId, {
+      const allMembers = await loadShipmentMembersTx(tx, input.consignmentId, {
         currentRead: true,
       });
-      if (members.length > 1 && !input.statementWitness) {
+      if (allMembers.length > 1 && !input.statementWitness) {
+        const members = operationalShipmentMembers(allMembers);
+        if (!members.length) throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+          what: "تعذر تسليم الشحنة", why: "كل فواتير الشحنة أغلقت أو أرجعت", doThis: "راجع سجل الفواتير والشحنة" }) });
         for (const member of members)
           assertMemberCanUseConsignment(membership, member);
         const [mapping] = await tx
@@ -925,11 +996,12 @@ export async function confirmConsignmentDelivery(
           clientRequestId,
           groupHash,
         );
-        const leader = members.find(
+        const leader = allMembers.find(
           (member) => Number(member.id) === leaderId,
         )!;
         if (replay != null) {
-          if (!leader.courierDeliveredAt)
+          const deliveredAt = members.find(member => member.courierDeliveredAt != null)?.courierDeliveredAt;
+          if (!deliveredAt)
             throw new TRPCError({
               code: "CONFLICT",
               message: appErrorMessage({
@@ -941,7 +1013,7 @@ export async function confirmConsignmentDelivery(
           return {
             consignmentId: leaderId,
             consignmentNumber: leader.consignmentNumber,
-            deliveredAt: leader.courierDeliveredAt,
+            deliveredAt,
             alreadyDelivered: true,
           };
         }
@@ -1016,7 +1088,7 @@ export async function confirmConsignmentDelivery(
             tx,
             { shipmentMember: true },
           );
-          if (Number(member.id) === leaderId) leaderResult = result;
+          leaderResult ??= result;
         }
         await recordIdempotencyKey(
           tx,
@@ -1025,7 +1097,7 @@ export async function confirmConsignmentDelivery(
           leaderId,
           groupHash,
         );
-        return { ...leaderResult!, collectedAmount: toDbMoney(amount) };
+        return { ...leaderResult!, consignmentId: leaderId, consignmentNumber: leader.consignmentNumber, collectedAmount: toDbMoney(amount) };
       }
       await assertStandaloneConsignmentTx(
         tx,
@@ -1414,48 +1486,7 @@ export async function confirmConsignmentDelivery(
       }
     }
 
-    const fee = round2(money(cn.deliveryFee));
-    if (fee.gt(0)) {
-      await appendDeliveryLedgerEntry(tx, {
-        eventKey: `CN:${cn.id}:FEE_EARNED`,
-        partyId: membership.partyId,
-        consignmentId: Number(cn.id),
-        branchId: Number(cn.branchId),
-        entryType: "FEE_EARNED",
-        amount: toDbMoney(fee),
-        actorUserId: actor.userId,
-      });
-      if (cn.feeCollection === "SHOP") {
-        await postEntry(tx, {
-          entryType: "DELIVERY_FEE",
-          postingIntent: deliveryFeeAccrualIntent(fee),
-          dedupeKey: `DELIVERY_FEE_ACCRUAL:${cn.id}`,
-          branchId: Number(cn.branchId),
-          invoiceId: Number(cn.invoiceId),
-          deliveryPartyId: membership.partyId,
-          amount: fee,
-          cost: fee,
-          profit: fee.neg(),
-          notes: `استحقاق أجرة توصيل ${cn.consignmentNumber}`,
-        });
-      }
-      if (cn.feeCollection === "COURIER") {
-        await appendDeliveryLedgerEntry(tx, {
-          eventKey: `CN:${cn.id}:FEE_PAID_DIRECT`,
-          partyId: membership.partyId,
-          consignmentId: Number(cn.id),
-          branchId: Number(cn.branchId),
-          entryType: "FEE_PAID",
-          amount: toDbMoney(fee),
-          notes: "Paid directly by end customer",
-          actorUserId: actor.userId,
-        });
-        await tx
-          .update(deliveryConsignments)
-          .set({ feeSettledAt: deliveredAt })
-          .where(eq(deliveryConsignments.id, Number(cn.id)));
-      }
-    }
+    await recognizeDeliveredShipmentFeeTx(tx, Number(cn.id), actor, deliveredAt);
 
     if (cn.workOrderId != null) {
       await tx
@@ -1597,10 +1628,13 @@ export async function transitionConsignmentParcel(
       .for("update")
       .limit(1);
     if (!options.shipmentMember) {
-      const members = await loadShipmentMembersTx(tx, input.consignmentId, {
+      const allMembers = await loadShipmentMembersTx(tx, input.consignmentId, {
         currentRead: true,
       });
-      if (members.length > 1) {
+      if (allMembers.length > 1) {
+        const members = operationalShipmentMembers(allMembers);
+        if (!members.length) throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+          what: "تعذر تحديث الشحنة", why: "كل فواتير الشحنة أغلقت أو أرجعت", doThis: "راجع سجل الفواتير والشحنة" }) });
         for (const member of members)
           assertMemberCanUseConsignment(membership, member);
         const [mapping] = await tx
