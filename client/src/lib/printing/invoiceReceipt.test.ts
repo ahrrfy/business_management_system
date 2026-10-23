@@ -2,6 +2,37 @@ import { describe, expect, it } from "vitest";
 import { invoiceToReceipt } from "./invoiceReceipt";
 
 describe("invoiceToReceipt", () => {
+  const returnedInvoice = {
+    invoiceNumber: "INV-PARTIAL-RETURN", invoiceDate: "2026-10-23T12:00:00Z",
+    subtotal: "100000.00", total: "100000.00", returnedTotal: "40000.00", paidAmount: "10000.00",
+    paymentMode: "COD", courierName: "شركة البراق", courierFee: "5000.00", consignmentStatus: "DISPATCHED",
+    items: [{ productName: "دفتر", quantity: "2", unitPrice: "50000.00", total: "100000.00" }],
+  };
+
+  it("forwards current invoice facts for delivery collection while retaining original line amounts", () => {
+    const receipt = invoiceToReceipt(returnedInvoice);
+    expect(receipt).toMatchObject({
+      subtotal: "100000.00", total: "100000.00", paid: "10000",
+      returnedTotal: "40000.00", currentTotal: "60000.00", remainingAmount: "50000.00", credit: "50000",
+      items: [{ quantity: 2, price: "50000.00", total: "100000.00" }],
+      delivery: { fee: "5000.00" },
+    });
+  });
+
+  it.each(["CANCELLED", "RETURNED", "SUPERSEDED"])("forwards %s without a current debt while preserving original amounts and the historical delivery fee", (status) => {
+    const receipt = invoiceToReceipt({ ...returnedInvoice, status, returnedTotal: "0.00" });
+    expect(receipt).toMatchObject({
+      status, total: "100000.00", returnedTotal: "0.00", currentTotal: "0.00", remainingAmount: "0.00", credit: null,
+      delivery: { fee: "5000.00" },
+    });
+    expect(receipt.paymentMethod).toBeNull();
+  });
+
+  it("clamps current credit after an overpayment without rounding drift", () => {
+    const receipt = invoiceToReceipt({ ...returnedInvoice, total: "100.10", returnedTotal: "40.20", paidAmount: "59.91" });
+    expect(receipt).toMatchObject({ currentTotal: "59.90", remainingAmount: "0.00", credit: null });
+  });
+
   it("rebuilds an accurate thermal receipt from a saved invoice", () => {
     const receipt = invoiceToReceipt({
       invoiceNumber: "INV-42",

@@ -165,7 +165,7 @@ export default function ExchangeAccounts() {
         { key: "legacyCode", header: "الرمز القديم", map: (r) => r.legacyCode || "—" },
         { key: "balanceIqd", header: "رصيد الدينار (د.ع)", money: true, map: (r) => Number(r.balanceIqd) },
         { key: "dirIqd", header: "اتجاه الدينار", map: (r) => (D(r.balanceIqd).isNegative() ? "علينا" : "لنا") },
-        { key: "balanceUsd", header: "رصيد الدولار ($)", money: true, map: (r) => Number(r.balanceUsd) },
+        { key: "balanceUsd", header: "رصيد الدولار ($)", money: true, moneyPrecision: 2, map: (r) => Number(r.balanceUsd) },
         { key: "dirUsd", header: "اتجاه الدولار", map: (r) => (D(r.balanceUsd).isNegative() ? "علينا" : "لنا") },
         { key: "usdCostRate", header: "متوسط كلفة الدولار", map: (r) => (D(r.usdCostRate).isZero() ? "—" : Number(r.usdCostRate)) },
         { key: "netExposure", header: "صافي التعرّض (د.ع)", money: true, map: (r) => Number(netExposureIqd(r)) },

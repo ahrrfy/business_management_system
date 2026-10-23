@@ -1,3 +1,4 @@
+import { salesInvoiceTotals } from "./receiptLayoutInvoiceTotals";
 /**
  * قوالب طباعة الرَسميّة — «مطبوعات مكتبة العربية» (تسليم ٥/٧/٢٦، عالية الدقة).
  *
@@ -211,6 +212,9 @@ export interface SalesInvoiceV2Data {
   total: string | number;
   paidAmount?: string | number | null;
   remainingAmount?: string | number | null;
+  currentTotal?: string | number | null;
+  returnedTotal?: string | number | null;
+  status?: string | null;
 
   /** رصيد العميل قبل وبعد هذه الفاتورة (من دفتر الأستاذ الفعلي). */
   customerBalanceBefore?: string | number | null;
@@ -301,64 +305,7 @@ export function buildSalesInvoiceV2Html(d: SalesInvoiceV2Data): string {
   }));
   const table = docTableV2(cols, rows);
 
-  const remainingNum = Number(d.remainingAmount ?? (Number(d.total) - Number(d.paidAmount ?? 0)));
-  const balBefore = d.customerBalanceBefore != null ? Number(d.customerBalanceBefore) : null;
-  const balAfter = d.customerBalanceAfter != null ? Number(d.customerBalanceAfter) : null;
-
-  const totals = totalsBox({
-    lines: [
-      { label: 'المجموع الفرعي', value: fmtIQD(d.subtotal) },
-      ...(Number(d.discountAmount ?? 0) > 0 ? [{ label: 'الخصم', value: fmtIQD(d.discountAmount), color: B.orange, sign: '−' as const }] : []),
-      ...(Number(d.taxAmount ?? 0) > 0 ? [{ label: taxLabel(d.taxAmount, d.taxRate, d.subtotal, d.discountAmount), value: fmtIQD(d.taxAmount), sign: '+' as const }] : []),
-      // إفصاح التوصيل (0152) — ثلاث حالات: أجرةٌ مقبوضة، أو توصيلٌ مُهدىً (بقيمته إن عُرِفت)،
-      // أو لا سطر إطلاقاً حين لا توصيل. الصفر الصامت كان يخلط الحالتين الأخيرتين.
-      ...(Number(d.deliveryFee ?? 0) > 0
-        ? [{ label: 'أجرة التوصيل', value: fmtIQD(d.deliveryFee), sign: '+' as const }]
-        : d.deliveryFree
-          ? [{
-              label: 'التوصيل',
-              value: Number(d.deliveryWaivedAmount ?? 0) > 0
-                ? `مجاناً (قيمته ${fmtIQD(d.deliveryWaivedAmount)})`
-                : 'مجاناً',
-              color: B.orange,
-            }]
-          : []),
-      // ٨/٨ — توصيل الاستقبال (COURIER/COD): الأجرة على الإرسالية (تمريرٌ لا إيراد) ⇒ لا تدخل
-      // «الإجمالي المستحق»، لكن تظهر أجرةً + «المجموع النهائي الذي يدفعه الزبون شاملاً التوصيل».
-      ...(d.courierDelivery && Number(d.courierDelivery.fee ?? 0) > 0 && Number(d.deliveryFee ?? 0) === 0
-        ? [
-            {
-              label: `أجرة التوصيل (${
-                d.courierDelivery.feeCollection === 'COUNTER' ? 'مقبوضة في الاستقبال'
-                : d.courierDelivery.feeCollection === 'SHOP' ? 'على المكتبة'
-                : `يقبضها ${d.courierDelivery.partyName} من الزبون`
-              })`,
-              value: fmtIQD(d.courierDelivery.fee),
-              sign: '+' as const,
-              color: B.orange,
-            },
-            ...(d.courierDelivery.feeCollection === 'COURIER'
-              ? (remainingNum === 0
-                  ? [{ label: 'المطلوب من الزبون (أجرة التوصيل فقط — البضاعة مدفوعة مسبقاً)', value: fmtIQD(d.courierDelivery.fee) }]
-                  : [{ label: 'المجموع النهائي (يدفعه الزبون شاملاً التوصيل)', value: fmtIQD(remainingNum + Number(d.courierDelivery.fee)) }])
-              : (remainingNum > 0
-                  ? [{ label: 'المطلوب من الزبون (متبقي الفاتورة)', value: fmtIQD(remainingNum) }]
-                  : [{ label: 'المطلوب من الزبون', value: '0 د.ع (مدفوع بالكامل)' }])),
-          ]
-        : []),
-    ],
-    grandTotal: { label: 'الإجمالي المستحق', value: fmtIQD(d.total) },
-    paid: d.paidAmount != null ? { label: 'المدفوع', value: fmtIQD(d.paidAmount) } : null,
-    remaining: remainingNum > 0 ? { label: 'المتبقّي', value: fmtIQD(remainingNum) } : null,
-    balance: balAfter != null ? {
-      beforeLabel: 'الرصيد السابق',
-      before: fmtIQD(balBefore ?? 0),
-      afterLabel: 'الرصيد النهائي (الحساب الكلي)',
-      after: fmtIQD(Math.abs(balAfter)),
-      direction: balanceDirCustomer(balAfter),
-      directionColor: B.alert,
-    } : null,
-  });
+  const totals = salesInvoiceTotals(d, fmtIQD, taxLabel);
 
   const tafqit = tafqitLine(formatArabicMoneyWords(d.total));
 

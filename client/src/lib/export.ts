@@ -31,6 +31,8 @@ export type ExportColumn<T> = {
   map?: (row: T) => string | number | null | undefined;
   /** عمود مالي ⇒ يُنسَّق رقمياً (#,##0) ومحاذاة يسار في Excel. */
   money?: boolean;
+  /** منازل عرض المال: الدينار افتراضياً 0، والدولار 2؛ لا يغيّر القيمة الرقمية. */
+  moneyPrecision?: 0 | 2;
   /** عمود رمز/معرّف نصي؛ يحافظ Excel على الأصفار البادئة عند الإدخال اللاحق في القالب. */
   text?: boolean;
 };
@@ -52,6 +54,8 @@ export type SheetSpec<T = Record<string, unknown>> = {
 type ExportOptions<T> = Omit<SheetSpec<T>, "rows"> & {
   filename: string;
   format?: "xlsx" | "csv";
+  /** تقرير CSV بشريّ: يضمّ العنوان والفلاتر والمجاميع؛ القوالب الآلية تبقى بلا ترويسة إضافية. */
+  csvReport?: boolean;
 };
 
 // ── لوحة ألوان الهوية للتصدير ──
@@ -81,15 +85,21 @@ function cellValue<T>(row: T, col: ExportColumn<T>): string | number {
 /* ============================ CSV (مبسّط، بلا تنسيق) ============================ */
 
 function csvCell(v: string | number): string {
-  const s = typeof v === "number" ? String(v) : v;
+  // CSV quoting alone does not stop spreadsheet formulas. Preserve numeric negatives as numbers.
+  const s = typeof v === "number" ? String(v) : /^[\s\u0000-\u001f]*[=+\-@]/.test(v) ? `'${v}` : v;
   if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
   return s;
 }
 
-function toCsv<T>(rows: T[], columns: ExportColumn<T>[]): string {
+function toCsv<T>(rows: T[], columns: ExportColumn<T>[], report?: SheetSpec<T>): string {
   const header = columns.map((c) => c.header);
   const body = rows.map((row) => columns.map((c) => cellValue(row, c)));
-  return [header, ...body].map((row) => row.map(csvCell).join(",")).join("\r\n");
+  const intro = report ? [
+    ...(report.title ? [[report.title]] : []),
+    ...(report.meta ?? []).map((meta) => [meta.label, meta.value]), [],
+  ] : [];
+  const totals = report?.totalsRow ? [columns.map((col) => report.totalsRow![col.key as string] ?? "")] : [];
+  return [...intro, header, ...body, ...totals].map((row) => row.map(csvCell).join(",")).join("\r\n");
 }
 
 /* ============================ Excel (احترافي) ============================ */
@@ -141,7 +151,7 @@ function buildSheet<T>(wb: ExcelJS.Workbook, spec: SheetSpec<T>): void {
       cell.font = { name: BASE_FONT, size: BODY_SIZE };
       cell.border = cellBorder;
       cell.alignment = { vertical: "middle", horizontal: c.money ? "left" : "right", wrapText: true };
-      if (c.money) cell.numFmt = MONEY_FMT;
+      if (c.money) cell.numFmt = c.moneyPrecision === 2 ? "#,##0.00" : MONEY_FMT;
     });
     xr.height = 20;
     r++;
@@ -156,7 +166,7 @@ function buildSheet<T>(wb: ExcelJS.Workbook, spec: SheetSpec<T>): void {
       cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: TOTALS_FILL } };
       cell.border = cellBorder;
       cell.alignment = { vertical: "middle", horizontal: cols[i - 1]?.money ? "left" : "right" };
-      if (cols[i - 1]?.money) cell.numFmt = MONEY_FMT;
+      if (cols[i - 1]?.money) cell.numFmt = cols[i - 1]?.moneyPrecision === 2 ? "#,##0.00" : MONEY_FMT;
     });
     tr.height = 22;
     r++;
@@ -258,7 +268,7 @@ export function exportRows<T>(rowsOrFetch: T[] | (() => Promise<T[]>), opts: Exp
         return;
       }
       if (format === "csv") {
-        const csv = "﻿" + toCsv(rows, opts.columns); // BOM لقراءة العربية في Excel
+        const csv = "﻿" + toCsv(rows, opts.columns, opts.csvReport ? { ...opts, rows } : undefined); // BOM لقراءة العربية في Excel
         await writeToSink(sink, new Blob([csv], { type: "text/csv;charset=utf-8" }), filename);
         return;
       }

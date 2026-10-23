@@ -10,11 +10,105 @@ vi.mock("./brand", async () => {
 });
 
 import { openPrintWindow } from "./brand";
-import { printBrowserReceipt, printShiftCloseBrowser, printInvoiceA4 } from "./printTemplates";
+import { buildBrandedReceipt } from "@/components/pos/posShared";
+import { printBrowserReceipt, printShiftCloseBrowser, printInvoiceA4, printARAging, printAPAging } from "./printTemplates";
 import { printSalesReportV2 } from "./printTemplatesV2";
 import { docToHtml, resolveQrUrl } from "./render";
 import * as qrModule from "./qr";
 import { printA4Invoice } from "./a4Invoice";
+
+describe("POS receipt builder browser parity", () => {
+  it.each([
+    { kind: "COD", received: 0, credit: 0, isCredit: false, delivery: true },
+    { kind: "CREDIT", received: 4000, credit: 6000, isCredit: true, delivery: false },
+    { kind: "CASH", received: 10000, credit: 0, isCredit: false, delivery: false },
+  ])("preserves $kind semantics through the actual builder and browser rendering", ({ kind, received, credit, isCredit, delivery }) => {
+    vi.mocked(openPrintWindow).mockClear();
+    const receipt = buildBrandedReceipt({ invoiceNumber: "POS-MODE", invoiceId: 1, date: "24/10/2026", lines: [{ name: "دفتر", unit: "قطعة", qty: 1, price: 10000, total: 10000 }], total: 10000,
+      received, change: 0, credit, isCredit, method: "نقدي", delivery: delivery ? { partyName: "مندوب", fee: "2000", feeCollection: "COURIER" } : null });
+    printBrowserReceipt(receipt);
+    const text = new JSDOM(vi.mocked(openPrintWindow).mock.calls[0]?.[0] ?? "").window.document.body.textContent ?? "";
+    if (kind === "COD") {
+      expect(receipt.paymentMode).toBe("COD"); expect(text).toContain("المطلوب عند الاستلام (COD)"); expect(text).not.toContain("آجل"); expect(text).toContain("12,000 د.ع");
+    } else if (kind === "CREDIT") {
+      expect(text).toContain("متبقٍّ (حساب آجل)"); expect(text).toContain("6,000 د.ع"); expect(text).not.toContain("COD");
+    } else {
+      expect(text).not.toContain("آجل"); expect(text).not.toContain("COD");
+    }
+  });
+});
+
+describe("80mm physical receipt parity", () => {
+  it("uses the shared32mm QR with its real quiet zone in a compact footer", () => {
+    vi.mocked(openPrintWindow).mockClear();
+    printBrowserReceipt({ receiptNumber: "12345", date: "23/10/2026", items: [], subtotal: "0", total: "0" });
+    const html = vi.mocked(openPrintWindow).mock.calls[0]?.[0] ?? "";
+    const { window } = new JSDOM(html);
+    const doc = window.document;
+    const qr = doc.querySelector(".receipt-storefront-qr");
+    expect(qr).not.toBeNull();
+    expect(Number.parseFloat(window.getComputedStyle(qr!).width)).toBeGreaterThanOrEqual(32);
+    expect(Number.parseFloat(window.getComputedStyle(qr!).width)).toBeLessThan(33);
+    expect(qr!.querySelector("svg")!.getAttribute("viewBox")).toBe("0 0 37 37");
+    expect(decodeQrSyncSvg(qr!.innerHTML)).toBe("https://alarabiya.online/store");
+    expect(doc.querySelector(".receipt-contacts")).not.toBeNull();
+  });
+});
+
+describe("thermal current delivery obligation", () => {
+  it("collects55k after a40k return instead of the historical95k", () => {
+    vi.mocked(openPrintWindow).mockClear();
+    printBrowserReceipt({ receiptNumber: "RETURN-DUE", date: "23/10/2026", items: [], total: "100000", subtotal: "100000", paid: "10000", credit: "50000", returnedTotal: "40000", currentTotal: "60000", remainingAmount: "50000",
+      delivery: { partyName: "مندوب", fee: "5000", feeCollection: "COURIER" } });
+    const text = new JSDOM(vi.mocked(openPrintWindow).mock.calls[0]?.[0] ?? "").window.document.body.textContent ?? "";
+    expect(text).toContain("55,000 د.ع"); expect(text).not.toContain("95,000"); expect(text).toContain("المرتجع"); expect(text).toContain("40,000"); expect(text).toContain("60,000");
+  });
+  it.each(["CANCELLED", "RETURNED", "SUPERSEDED"])("retains fee records without a collection demand or paid claim for %s", async (status) => {
+    vi.mocked(openPrintWindow).mockClear();
+    printBrowserReceipt({ receiptNumber: "DEAD-DUE", date: "23/10/2026", items: [], total: "100000", subtotal: "100000", paid: "10000", credit: "90000", status,
+      delivery: { partyName: "مندوب", fee: "5000", feeCollection: "COURIER" } });
+    let text = new JSDOM(vi.mocked(openPrintWindow).mock.calls[0]?.[0] ?? "").window.document.body.textContent ?? "";
+    expect(text).toContain("5,000"); expect(text).toContain("الحالة"); expect(text).not.toContain("يدفع الزبون"); expect(text).not.toContain("مدفوع بالكامل"); expect(text).not.toContain("مدفوعة مسبقاً");
+    vi.mocked(openPrintWindow).mockClear();
+    await printInvoiceA4({ invoiceNumber: "DEAD-DUE", items: [], total: "100000", subtotal: "100000", paidAmount: "10000", status,
+      courierDelivery: { partyName: "مندوب", fee: "5000", feeCollection: "COURIER" } });
+    text = new JSDOM(vi.mocked(openPrintWindow).mock.calls[0]?.[0] ?? "").window.document.body.textContent ?? "";
+    expect(text).toContain("5,000"); expect(text).not.toContain("المطلوب من الزبون"); expect(text).not.toContain("يدفعه الزبون"); expect(text).not.toContain("مدفوعة مسبقاً");
+  });
+});
+
+describe("aging print scope", () => {
+  it.each([printARAging, printAPAging])("prints the effective filters as escaped report metadata", (print) => {
+    vi.mocked(openPrintWindow).mockClear();
+    print({ date: "23/10/2026", filters: 'الفرع: بغداد — البحث: <script>alert(1)</script>', rows: [],
+      totals: { d0_30: 0, d31_60: 0, d61_90: 0, d91p: 0, unpaidTotal: 0, currentBalance: 0 } });
+    const html = vi.mocked(openPrintWindow).mock.calls[0]?.[0] ?? "";
+    const doc = new JSDOM(html).window.document;
+    expect(doc.body.textContent).toContain('الفرع: بغداد — البحث: <script>alert(1)</script>');
+    expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    expect([...doc.querySelectorAll("script")].some((script) => script.textContent === "alert(1)")).toBe(false);
+  });
+});
+
+describe("A4 current obligation", () => {
+  it("keeps historical invoice totals but prints return and remaining facts without inventing an old customer balance", async () => {
+    vi.mocked(openPrintWindow).mockClear();
+    await printInvoiceA4({ invoiceNumber: "RETURN-PRINT", subtotal: "100000", total: "100000", paidAmount: "10000",
+      returnedTotal: "40000", currentTotal: "60000", remainingAmount: "50000", customerBalance: "50000", status: "PARTIALLY_RETURNED", items: [] });
+    const text = new JSDOM(vi.mocked(openPrintWindow).mock.calls[0]?.[0] ?? "").window.document.body.textContent ?? "";
+    expect(text).toContain("100,000");
+    expect(text).toContain("المرتجع"); expect(text).toContain("40,000");
+    expect(text).toContain("القيمة الحالية للفاتورة"); expect(text).toContain("60,000");
+    expect(text).toContain("50,000"); expect(text).not.toContain("−40,000"); expect(text).not.toContain("-40,000");
+  });
+  it.each(["CANCELLED", "SUPERSEDED", "RETURNED"])("prints the actual %s status rather than claiming a dead invoice was paid", async (status) => {
+    vi.mocked(openPrintWindow).mockClear();
+    await printInvoiceA4({ invoiceNumber: "DEAD-PRINT", subtotal: "100000", total: "100000", paidAmount: "10000",
+      returnedTotal: "40000", currentTotal: "0", remainingAmount: "0", status, items: [] });
+    const text = new JSDOM(vi.mocked(openPrintWindow).mock.calls[0]?.[0] ?? "").window.document.body.textContent ?? "";
+    expect(text).not.toContain("آجلة"); expect(text).not.toContain("مدفوعة جزئياً"); expect(text).not.toContain("مدفوعة");
+  });
+});
 
 it.each([false, true])("propagates A4 preview opening: %s", async (opened) => {
   vi.mocked(openPrintWindow).mockReturnValueOnce(opened);
