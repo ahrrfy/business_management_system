@@ -5,12 +5,26 @@ import { sql, type SQL } from "drizzle-orm";
  * native event. Suppress exact older counterparts, or a cumulative remittance
  * proven by its original lines at the snapshot cutoff. Partial collection
  * snapshots also require native collection covering the proven remittance.
- * Keep unknown partial snapshots, later native movements and party openings.
+ * Keep unknown partial snapshots, later native movements and unreviewed openings.
+ * A reviewed opening is excluded only by its immutable, matching evidence row.
  * The alias is a trusted SQL table alias supplied only by server code.
  */
-export function effectiveDeliveryLedgerEntrySql(alias = "deliveryLedgerEntries"): SQL {
+export function effectiveDeliveryLedgerEntrySql(
+  alias = "deliveryLedgerEntries",
+): SQL {
   const entry = sql.identifier(alias);
   return sql`NOT (
+    ${entry}.consignmentId IS NULL
+    AND ${entry}.entryType = 'COD_COLLECTED'
+    AND ${entry}.eventKey = CONCAT('BACKFILL:PARTY:', ${entry}.partyId, ':CASH_CUSTODY')
+    AND EXISTS (
+      SELECT 1 FROM deliveryOpeningExclusions openingExclusion
+      WHERE openingExclusion.ledgerEntryId = ${entry}.id
+        AND openingExclusion.partyId = ${entry}.partyId
+        AND openingExclusion.branchId <=> ${entry}.branchId
+        AND openingExclusion.openingAmount = ${entry}.amount
+    )
+  ) AND NOT (
     ${entry}.eventKey = CONCAT('BACKFILL:CN:', ${entry}.consignmentId, ':', ${entry}.entryType)
     AND (EXISTS (
       SELECT 1 FROM deliveryLedgerEntries legacyNative
