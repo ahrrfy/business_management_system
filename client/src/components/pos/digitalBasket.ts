@@ -212,7 +212,15 @@ export function validateDigitalInvoiceCheckout(
   if (D(input.globalDiscount).gt(0)) return "لا يُطبّق الخصم الإجمالي على فاتورة تحتوي كروتاً رقمية.";
   if (input.shippingFree || D(input.shipping).gt(0)) return "افصل أجرة التوصيل في فاتورة أخرى عند بيع الكروت الرقمية.";
   if (input.taxEnabled && D(input.totalTax).gt(0)) return "افصل الفاتورة الضريبية عن بيع الكروت الرقمية.";
-  const changed = digitalLines.find((line) => line.qty !== 1 || line.isGift === true || D(line.discount).gt(0) || !D(line.price).eq(line.digital!.sellPriceSnapshot));
+  const changed = digitalLines.find(
+    (line) =>
+      line.qty !== 1 ||
+      line.isGift === true ||
+      !isCompleteNonNegativeMoneyInput(line.discount, { allowEmpty: true }) ||
+      moneyInput(line.discount).gt(0) ||
+      !isCompleteNonNegativeMoneyInput(line.price, { allowEmpty: false }) ||
+      !moneyInput(line.price).eq(line.digital!.sellPriceSnapshot),
+  );
   return changed ? `بيانات «${changed.name}» الرقمية تغيّرت؛ احذفها وأعد إضافتها من سلة المزوّد.` : null;
 }
 
@@ -236,4 +244,5 @@ export function toDigitalPrepareRegularLine(line: {
     isGift: line.isGift === true,
   };
 }
-import { D, round2 } from "@/lib/money";
+import { D, moneyInput, round2 } from "@/lib/money";
+import { isCompleteNonNegativeMoneyInput } from "@/lib/quotationPayload";

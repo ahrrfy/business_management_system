@@ -102,6 +102,35 @@ describe("عقد شروط الدفع في محرّر الفواتير", () => {
     const panel = readInvoiceModule("SalesCorrectionPanel.tsx");
     expect(panel).toMatch(/PAYMENT_METHODS\.filter\(\s*\(m\) => isPosPaymentMethodEnabled\(m\.value\),?\s*\)/);
   });
+
+  it("يرفض قيمة التحصيل الجزئية العابرة (مثل '.') في تصحيح الفاتورة وتحويل عرض السعر قبل تحويلها لصفر", () => {
+    const page = readPage("SalesInvoiceNew.tsx");
+    const validateCorr = page.slice(
+      page.indexOf("function validateCorrection()"),
+      page.indexOf("function validate()"),
+    );
+    expect(validateCorr).toContain(
+      "isCompleteNonNegativeMoneyInput(collectNow, { allowEmpty: true })",
+    );
+    expect(
+      validateCorr.indexOf("isCompleteNonNegativeMoneyInput(collectNow, { allowEmpty: true })"),
+    ).toBeLessThan(validateCorr.indexOf("moneyInput(collectNow)"));
+
+    const buildCorr = page.slice(
+      page.indexOf("function buildCorrectionPayload"),
+      page.indexOf("function validateCorrection()"),
+    );
+    expect(buildCorr).toContain(
+      "isCompleteNonNegativeMoneyInput(collectNow, { allowEmpty: true })",
+    );
+
+    const quotationDetail = readPage("QuotationDetail.tsx");
+    const convertIdx = quotationDetail.indexOf("convert.mutate({");
+    const beforeConvert = quotationDetail.slice(Math.max(0, convertIdx - 1600), convertIdx);
+    expect(beforeConvert).toContain(
+      "isCompleteNonNegativeMoneyInput(payAmount, { allowEmpty: true })",
+    );
+  });
 });
 
 /**

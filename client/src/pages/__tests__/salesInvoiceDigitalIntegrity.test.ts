@@ -58,6 +58,6 @@ describe("SalesInvoiceNew digital invoice contract", () => {
   it("يبقي خصم السطر الرقمي في لقطة الفاتورة", () => {
     expect(source).toContain("discountPercent:");
     expect(source).toContain("discountAmount:");
-    expect(source).toContain("unitPriceOverride: round2(D(l.price)).toFixed(2)");
+    expect(source).toContain("unitPriceOverride: round2(moneyInput(l.price)).toFixed(2)");
   });
 });

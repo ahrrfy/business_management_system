@@ -6,7 +6,7 @@
  * «استُلم فعلاً / لم يُستلم» لتصحيح الاستنتاج حين يخطئ. لا منطق ماليّ — الخادم هو الحكم.
  */
 import { FileWarning } from "lucide-react";
-import { D, fmt } from "@/lib/money";
+import { D, fmt, moneyInput } from "@/lib/money";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -75,7 +75,7 @@ export function SalesCorrectionPanel(p: SalesCorrectionPanelProps) {
   const diff = D(p.grandTotal).minus(p.receivedPrior); // موجب=نقص يُحصَّل، سالب=فائض يُردّ/يُرصَّد
   const isShort = diff.gt(0);
   const isOver = diff.lt(0);
-  const collect = D(p.collectNow || "0");
+  const collect = moneyInput(p.collectNow);
   const remainingCredit = isShort ? diff.minus(collect) : D("0");
   const notReceived = p.recordedPaid.minus(p.receivedPrior);
   const hasPrior = p.recordedPaid.gt(0);

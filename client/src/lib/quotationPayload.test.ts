@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { buildQuotationLinePayload } from "./quotationPayload";
+import {
+  buildQuotationLinePayload,
+  isCompleteNonNegativeMoneyInput,
+} from "./quotationPayload";
 
 const line = (
   price: string,
@@ -42,5 +45,27 @@ describe("buildQuotationLinePayload", () => {
     expect(buildQuotationLinePayload(line("75", "75.00", null))).toMatchObject({
       unitPriceOverride: "75.00",
     });
+  });
+
+  it("يرفض تمرير سعر ممسوح فارغ '' أو فاصلة عشرية معلّقة '.' كصفر مجاني صامت", () => {
+    expect(() => buildQuotationLinePayload(line("", "6000", "MANUAL"))).toThrow();
+    expect(() => buildQuotationLinePayload(line(".", "6000", "MANUAL"))).toThrow();
+    expect(() => buildQuotationLinePayload(line("-", "6000", "MANUAL"))).toThrow();
+  });
+
+  it("يميّز الصفر الصريح '0' عن الحقل الفارغ أو الجزئي في isCompleteNonNegativeMoneyInput", () => {
+    expect(isCompleteNonNegativeMoneyInput("0", { allowEmpty: false })).toBe(true);
+    expect(isCompleteNonNegativeMoneyInput("6000.50", { allowEmpty: false })).toBe(true);
+    expect(isCompleteNonNegativeMoneyInput(".5", { allowEmpty: false })).toBe(true);
+    expect(isCompleteNonNegativeMoneyInput("", { allowEmpty: false })).toBe(false);
+    expect(isCompleteNonNegativeMoneyInput("   ", { allowEmpty: false })).toBe(false);
+    expect(isCompleteNonNegativeMoneyInput(".", { allowEmpty: false })).toBe(false);
+    expect(isCompleteNonNegativeMoneyInput("-", { allowEmpty: false })).toBe(false);
+    expect(isCompleteNonNegativeMoneyInput("-5", { allowEmpty: false })).toBe(false);
+
+    expect(isCompleteNonNegativeMoneyInput("", { allowEmpty: true })).toBe(true);
+    expect(isCompleteNonNegativeMoneyInput(".", { allowEmpty: true })).toBe(false);
+    expect(isCompleteNonNegativeMoneyInput("-", { allowEmpty: true })).toBe(false);
+    expect(isCompleteNonNegativeMoneyInput("-1", { allowEmpty: true })).toBe(false);
   });
 });

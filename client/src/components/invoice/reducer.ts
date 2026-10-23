@@ -55,6 +55,9 @@ export function invoiceReducer(state: InvoiceState, action: InvoiceAction): Invo
       return action.state;
 
     case "SET_FIELD":
+      if (Object.is(state[action.field], action.value)) {
+        return state;
+      }
       if (action.field === "branchId" && action.value !== state.branchId) {
         return {
           ...state,
@@ -97,18 +100,62 @@ export function invoiceReducer(state: InvoiceState, action: InvoiceAction): Invo
         }),
       };
 
-    case "SET_STOCK_SNAPSHOTS":
-      return {
-        ...state,
-        items: state.items.map((item) => {
-          const snapshot = action.snapshotsByUnitId[item.productUnitId];
-          return snapshot
-            ? { ...item, ...snapshot }
-            : { ...item, stockBase: 0, stockBranchId: undefined, reservedBase: 0, availableBase: 0, isService: false, allowBackorder: false };
-        }),
-      };
+    case "SET_STOCK_SNAPSHOTS": {
+      if (state.items.length === 0) return state;
+      const queriedSet =
+        action.queriedUnitIds == null
+          ? null
+          : action.queriedUnitIds instanceof Set
+            ? action.queriedUnitIds
+            : new Set(action.queriedUnitIds);
+      let anyChanged = false;
+      const nextItems = state.items.map((item) => {
+        if (queriedSet && !queriedSet.has(item.productUnitId)) {
+          return item;
+        }
+        const snapshot = action.snapshotsByUnitId[item.productUnitId];
+        const nextStockBase = snapshot ? snapshot.stockBase : 0;
+        const nextStockBranchId = snapshot
+          ? snapshot.stockBranchId
+          : (action.effectiveBranchId ?? state.branchId);
+        const nextReservedBase = snapshot ? snapshot.reservedBase : 0;
+        const nextAvailableBase = snapshot ? snapshot.availableBase : 0;
+        const nextIsService = snapshot ? snapshot.isService : Boolean(item.isService);
+        const nextAllowBackorder = snapshot ? snapshot.allowBackorder : Boolean(item.allowBackorder);
 
-    case "MARK_STOCK_STALE":
+        if (
+          item.stockBase === nextStockBase &&
+          item.stockBranchId === nextStockBranchId &&
+          item.reservedBase === nextReservedBase &&
+          item.availableBase === nextAvailableBase &&
+          item.isService === nextIsService &&
+          item.allowBackorder === nextAllowBackorder
+        ) {
+          return item;
+        }
+        anyChanged = true;
+        return {
+          ...item,
+          stockBase: nextStockBase,
+          stockBranchId: nextStockBranchId,
+          reservedBase: nextReservedBase,
+          availableBase: nextAvailableBase,
+          isService: nextIsService,
+          allowBackorder: nextAllowBackorder,
+        };
+      });
+      return anyChanged ? { ...state, items: nextItems } : state;
+    }
+
+    case "MARK_STOCK_STALE": {
+      if (state.items.length === 0) return state;
+      const hasFreshFields = state.items.some(
+        (item) =>
+          item.availableBase !== undefined ||
+          item.reservedBase !== undefined ||
+          item.stockBranchId !== undefined,
+      );
+      if (!hasFreshFields) return state;
       return {
         ...state,
         items: state.items.map(({
@@ -118,6 +165,7 @@ export function invoiceReducer(state: InvoiceState, action: InvoiceAction): Invo
           ...item
         }) => item),
       };
+    }
 
     case "SET_ENTITY":
       return {
