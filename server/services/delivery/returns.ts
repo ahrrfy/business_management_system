@@ -20,6 +20,8 @@ import { withTx } from "../tx";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry, assertConsignmentStatusTransition } from "./lifecycle";
 import { deliveryCustomerRefundIntent, deliveryFeeHeldPayoutIntent, deliveryReturnSaleIntent, type DeliveryReturnSaleKind } from "./posting";
 import type { DeliveryTxActor } from "./types";
+import type { Tx } from "../../db";
+import { assertStandaloneConsignmentTx } from "./shipments";
 
 /** إرجاع إرسالية (البضاعة عادت): عكس SALE + إعادة مخزون + عكس العهدة + رد العربون. مقيَّد بـDISPATCHED (collected==0). */
 export async function returnConsignment(
@@ -34,8 +36,10 @@ export async function returnConsignment(
      */
     returnReason?: string | null;
   },
+  existingTx?: Tx,
+  options: { shipmentMember?: boolean } = {},
 ) {
-  return withTx(async (tx) => {
+  const run = async (tx: Tx) => {
     const payloadHash = idempotencyHash({ consignmentId, refundShiftId: actor.refundShiftId ?? null });
     // مراجعة PR #495 (عزل الفرع) — الإرجاع صار `cashierProcedure` بقرار المالك ٦/٨، وبخلاف
     // remit/settle لا يمرّ بـassertPartyInScope في الراوتر (الجهة تُعرَف من الإرسالية لا من
@@ -108,6 +112,7 @@ export async function returnConsignment(
         .for("update").limit(1)
     )[0];
     if (!party) throw new TRPCError({ code: "CONFLICT", message: "جهة توصيل الإرسالية غير موجودة" });
+    if (!options.shipmentMember) await assertStandaloneConsignmentTx(tx, consignmentId, "استلام المرتجع", { currentRead: true });
     const cn = (await tx.select().from(deliveryConsignments).where(eq(deliveryConsignments.id, consignmentId)).for("update").limit(1))[0];
     if (!cn) throw new TRPCError({ code: "NOT_FOUND", message: "الإرسالية غير موجودة" });
     if (
@@ -642,7 +647,14 @@ export async function returnConsignment(
       actorUserId: actor.userId,
       payload: { invoiceId: Number(cn.invoiceId) },
     });
-    if (actor.clientRequestId) await recordIdempotencyKey(tx, "delivery.return", actor.clientRequestId, consignmentId, payloadHash);
+    if (actor.clientRequestId)
+      await recordIdempotencyKey(
+        tx,
+        "delivery.return",
+        actor.clientRequestId,
+        consignmentId,
+        payloadHash,
+      );
     void party;
     return {
       consignmentId,
@@ -652,5 +664,6 @@ export async function returnConsignment(
       feeAlreadyPaidToCourier,
       deliveryFee: String(cn.deliveryFee ?? "0"),
     };
-  });
+  };
+  return existingTx ? run(existingTx) : withTx(run);
 }

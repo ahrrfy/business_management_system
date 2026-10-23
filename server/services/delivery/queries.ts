@@ -5,7 +5,7 @@
 // للجهة فيبقى عابراً للفروع لمن يملك صلاحية رؤيتها، وتبقى كل حركة موسومة بفرعها.
 import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
-import { accountingEntries, customers, deliveryConsignments, deliveryEvents, deliveryLedgerEntries, deliveryParties, deliveryRemittanceLines, deliveryRemittances, invoices, onlineOrders, users, workOrders } from "../../../drizzle/schema";
+import { accountingEntries, customers, deliveryConsignments, deliveryEvents, deliveryLedgerEntries, deliveryParties, deliveryRemittanceLines, deliveryRemittances, deliveryShipmentMembers, invoices, onlineOrders, users, workOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money, round2 } from "../money";
 import { openBalanceExpr } from "@shared/predicates/openBalance";
@@ -50,6 +50,29 @@ export interface DeliveryPagedResult<T> { rows: T[]; hasMore: boolean; nextCurso
 
 const DEFAULT_DELIVERY_LIST_LIMIT = 200;
 const MAX_DELIVERY_LIST_LIMIT = 500;
+const shipmentReferencesSql = sql<string>`(SELECT GROUP_CONCAT(CONCAT_WS(' ', si.invoiceNumber, si.id, leader.consignmentNumber, leader.externalTrackingRef) SEPARATOR ' ')
+  FROM deliveryShipmentMembers sm JOIN deliveryConsignments member ON member.id = sm.consignmentId
+  JOIN invoices si ON si.id = member.invoiceId JOIN deliveryConsignments leader ON leader.id = sm.leaderConsignmentId
+  WHERE sm.leaderConsignmentId = (SELECT own.leaderConsignmentId FROM deliveryShipmentMembers own WHERE own.consignmentId = ${deliveryConsignments.id}))`;
+
+/** Batch enrichment keeps financial rows distinct while identifying their physical shipment. */
+async function withShipmentSummaries<T extends { id: number }>(rows: T[]) {
+  const db = getDb();
+  const membership = db && rows.length ? await db.select().from(deliveryShipmentMembers)
+    .where(inArray(deliveryShipmentMembers.consignmentId, rows.map((row) => row.id))) : [];
+  const leaderIds = Array.from(new Set(membership.map((row) => Number(row.leaderConsignmentId))));
+  const leaders = db && leaderIds.length ? await db.select({ id: deliveryConsignments.id, number: deliveryConsignments.consignmentNumber, tracking: deliveryConsignments.externalTrackingRef })
+    .from(deliveryConsignments).where(inArray(deliveryConsignments.id, leaderIds)) : [];
+  const counts = db && leaderIds.length ? await db.select({ leaderId: deliveryShipmentMembers.leaderConsignmentId, count: sql<number>`COUNT(*)` })
+    .from(deliveryShipmentMembers).where(inArray(deliveryShipmentMembers.leaderConsignmentId, leaderIds)).groupBy(deliveryShipmentMembers.leaderConsignmentId) : [];
+  const byId = new Map(membership.map((member) => [Number(member.consignmentId), Number(member.leaderConsignmentId)]));
+  const summaries = new Map(leaders.map((leader) => [Number(leader.id), { ...leader, count: Number(counts.find((row) => Number(row.leaderId) === Number(leader.id))?.count ?? 1) }]));
+  return rows.map((row) => {
+    const summary = summaries.get(byId.get(row.id) ?? 0);
+    return { ...row, shipmentLeaderConsignmentId: summary?.id ?? null, shipmentInvoiceCount: summary?.count ?? 1,
+      shipmentNumber: summary?.number ?? null, shipmentTrackingRef: summary?.tracking ?? null };
+  });
+}
 
 function resolvePageLimit(limit?: number): number {
   const eff = limit ?? DEFAULT_DELIVERY_LIST_LIMIT;
@@ -290,7 +313,7 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
     ))
     .orderBy(asc(deliveryConsignments.id))
     .limit(effLimit + 1);
-  return buildPageResult(rows.map((r) => ({ ...r, id: Number(r.id) })), effLimit);
+  return buildPageResult(await withShipmentSummaries(rows.map((r) => ({ ...r, id: Number(r.id) }))), effLimit);
 }
 
 /**
@@ -402,7 +425,7 @@ export async function listInTransitConsignments(branchId: number | null, partyId
     .where(and(...conds))
     .orderBy(asc(deliveryConsignments.id))
     .limit(effLimit + 1);
-  return buildPageResult(rows.map((r) => ({ ...r, id: Number(r.id) })), effLimit);
+  return buildPageResult(await withShipmentSummaries(rows.map((r) => ({ ...r, id: Number(r.id) }))), effLimit);
 }
 
 /** كل إرساليات جهة (تبويب «إرساليات الجهة» في شاشة التفاصيل) — بأرقام فواتيرها وتوريداتها. */
@@ -490,6 +513,7 @@ export async function listConsignmentsForParty(partyId: number, openOnly = false
     ],
     addresses: [deliveryConsignments.deliveryAddress, customers.address],
     references: [
+      shipmentReferencesSql,
       deliveryConsignments.id,
       deliveryConsignments.consignmentNumber,
       deliveryConsignments.externalTrackingRef,
@@ -562,7 +586,7 @@ export async function listConsignmentsForParty(partyId: number, openOnly = false
     count: Number(totalsRow?.count ?? 0),
   };
   return {
-    ...buildPageResult(rows.map((r) => ({ ...r, id: Number(r.id) })), effLimit),
+    ...buildPageResult(await withShipmentSummaries(rows.map((r) => ({ ...r, id: Number(r.id) }))), effLimit),
     totals,
     scopedBranchId: scopedBranchId ?? null,
   };
@@ -1288,6 +1312,7 @@ export async function predictiveSearchConsignments(
       customers.address,
     ],
     references: [
+      shipmentReferencesSql,
       deliveryConsignments.id,
       deliveryConsignments.consignmentNumber,
       deliveryConsignments.externalTrackingRef,

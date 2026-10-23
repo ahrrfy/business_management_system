@@ -4,6 +4,7 @@ import {
   Image as ImageIcon,
   Layers,
   Minus,
+  Package,
   Pencil,
   Percent,
   Plus,
@@ -18,6 +19,7 @@ import { fmt, formatQuantity } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import { variantDisplayName } from "@shared/variantDisplay";
+import { canAddPlainCustomizationPiece } from "./cartCustomization";
 import {
   buildStockState,
   customLineGrand,
@@ -44,6 +46,7 @@ export interface CartTableProps {
   setQty: (key: string, qty: number) => void;
   removeRow: (key: string) => void;
   onEditCustomization: (row: PosRow, editingKey: string) => void;
+  onAddPlainCustomizationPiece: (lineKey: string) => void;
   grandTotal: number; cartCount: number;
   /** ٢٣/٨ (Codex P2) — عدّادُ إضافةٍ صريحٌ من الأب يزيد فقط عند `addRow` (لا عند حذف/تعديل كمّية
    *  ولا عند تحميل مسوّدة). يشغّل التمريرَ إلى السطر المُدرَج/المزاد، بلا اعتماد على تغيّر الطول. */
@@ -112,6 +115,7 @@ export function CartTable({
   onApplyDiscount,
   changeQty, setQty, removeRow,
   onEditCustomization,
+  onAddPlainCustomizationPiece,
   grandTotal, cartCount,
   addTick,
   effectiveTier = "RETAIL",
@@ -293,7 +297,10 @@ export function CartTable({
                               <span>{l.custom!.customizationText}</span>
                             </div>
                           )}
-                          <div className="mt-2 flex items-center gap-2">
+                          <p className="mt-2 text-[11px] text-muted-foreground">
+                            قطع مخصصة: {formatQuantity(l.qty)} · أجرة التخصيص للقطعة: {fmt(l.custom!.unitPrice)} د.ع
+                          </p>
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
                             <Button
                               size="sm"
                               variant="outline"
@@ -305,6 +312,14 @@ export function CartTable({
                             >
                               <Pencil aria-hidden className="size-3" /> تعديل التخصيص
                             </Button>
+                            {canAddPlainCustomizationPiece(l) && (
+                              <Button type="button" size="sm" variant="outline" className="h-7 text-[11px] inline-flex items-center gap-1"
+                                onClick={(e) => { e.stopPropagation(); onAddPlainCustomizationPiece(l.key); }}
+                                title={l.qty > 1 ? "نقل قطعة واحدة إلى صف جاهز وإلغاء أجرة تخصيصها" : "إضافة قطعة أخرى من المنتج نفسه بسعره دون أجرة تخصيص"}
+                              >
+                                <Package aria-hidden className="size-3" /> {l.qty > 1 ? "فصل قطعة بلا تخصيص" : "إضافة قطعة جاهزة"}
+                              </Button>
+                            )}
                             <span className="inline-flex items-center gap-1 rounded-md border bg-card px-2 py-1 text-[11px] font-bold text-muted-foreground">
                               <ImageIcon aria-hidden className="size-3" /> صور: {l.custom!.designImages.length}
                             </span>

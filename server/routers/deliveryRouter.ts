@@ -2,7 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { and, desc, eq, sql as dsql } from "drizzle-orm";
 import { z } from "zod";
 import { type ShortfallReason, SHORTFALL_REASONS } from "@shared/shortfallReason";
-import { deliveryConsignments, deliveryOutbox, deliveryParties } from "../../drizzle/schema";
+import { deliveryConsignments, deliveryOutbox, deliveryParties, deliveryShipmentMembers } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { deliveryAdminProcedure, deliveryCashierProcedure, deliveryManagerProcedure, deliveryReadProcedure, reportViewerProcedure, router, storeFulfillProcedure, storeManagerProcedure } from "../trpc";
 import { retryOnDup } from "../lib/retryDup";
@@ -52,6 +52,8 @@ import {
 } from "../services/delivery/writeoffRequests";
 import { declareConsignmentReturn } from "../services/delivery/declaredReturn";
 import { cancelDeliveryAssignment } from "../services/delivery/cancellation";
+import { dispatchInvoiceShipment, listShipmentInvoiceCandidates, getShipmentDetails } from "../services/delivery/shipments";
+import { confirmShipmentDelivery, cancelShipmentAssignment, returnShipment, reassignShipmentDriver, markShipmentFailed } from "../services/delivery/shipmentOperations";
 import { routeOperationAuthority } from "../services/authorization/operationAuthority";
 import { logAudit } from "../services/auditService";
 import { GOVERNORATE_IDS } from "@shared/governorates";
@@ -218,6 +220,7 @@ export const deliveryRouter = router({
 
   reassignConsignment: deliveryCashierProcedure
     .input(z.object({
+      wholeShipment: z.boolean().optional(),
       partyId: z.number().int().positive(),
       consignmentId: z.number().int().positive(),
       assignedUserId: z.number().int().positive().nullish(),
@@ -225,22 +228,28 @@ export const deliveryRouter = router({
     }))
     .mutation(async ({ input, ctx }) => {
       await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
-      const res = await retryOnDeadlock(() => reassignDeliveryConsignment(input, actorOf(ctx)));
+      const res = await retryOnDeadlock(async () => input.wholeShipment
+        ? reassignShipmentDriver({ ...input, assignedUserId: input.assignedUserId ?? null }, actorOf(ctx))
+        : reassignDeliveryConsignment(input, actorOf(ctx)));
       await logAudit(ctx, { action: "delivery.consignment.reassign", entityType: "deliveryConsignment", entityId: input.consignmentId, newValue: { partyId: input.partyId, assignedUserId: input.assignedUserId ?? null } });
       return res;
     }),
 
   cancelAssignment: deliveryCashierProcedure
     .input(z.object({
+      wholeShipment: z.boolean().optional(),
       consignmentId: z.number().int().positive(),
       reason: z.string().trim().min(3).max(500),
       clientRequestId: z.string().trim().min(8).max(100),
     }))
     .mutation(async ({ input, ctx }) => {
-      const res = await retryOnDeadlock(() => cancelDeliveryAssignment(input, {
+      const cancelActor = {
         ...actorOf(ctx),
         operationAuthority: routeOperationAuthority(ctx.user, "delivery.cancelAssignment"),
-      }));
+      };
+      const res = await retryOnDeadlock(async () => input.wholeShipment
+        ? cancelShipmentAssignment(input, cancelActor)
+        : cancelDeliveryAssignment(input, cancelActor));
       await logAudit(ctx, {
         action: "delivery.assignment.cancel",
         entityType: "deliveryConsignment",
@@ -444,7 +453,7 @@ export const deliveryRouter = router({
       if (ctx.scopedBranchId != null && Number(res.consignment.branchId) !== ctx.scopedBranchId) {
         throw new TRPCError({ code: "FORBIDDEN", message: "الإرسالية تخصّ فرعاً آخر" });
       }
-      return res;
+      return { ...res, shipment: await getShipmentDetails(input.consignmentId, actorOf(ctx)) };
     }),
 
   /**
@@ -637,10 +646,15 @@ export const deliveryRouter = router({
 
   // 5/8: isnad fatura qa'ima lil-tawseel (bay' mubashir bila amr shughl).
   // بوابة كاشير الاستقبال والإدارة (deliveryCashierProcedure) لإسناد الفواتير لجهات التوصيل.
+  invoiceCandidates: deliveryReadProcedure
+    .input(z.object({ invoiceId: z.number().int().positive() }))
+    .query(({ input, ctx }) => listShipmentInvoiceCandidates(input.invoiceId, actorOf(ctx))),
+
   dispatchInvoice: deliveryCashierProcedure
     .input(
       z.object({
         invoiceId: z.number().int().positive(),
+        invoiceIds: z.array(z.number().int().positive()).min(2).max(30).optional(),
         partyId: z.number().int().positive(),
         deliveryFee: moneyStr.nullish(),
         feeCollection: z.enum(["COURIER", "COUNTER", "SHOP"]).nullish(),
@@ -659,7 +673,9 @@ export const deliveryRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
-      const res = await retryOnDup(() => dispatchInvoiceToDelivery(input, actorOf(ctx)));
+      const res = await retryOnDup(async () => input.invoiceIds
+        ? dispatchInvoiceShipment({ ...input, invoiceIds: input.invoiceIds }, actorOf(ctx))
+        : dispatchInvoiceToDelivery(input, actorOf(ctx)));
       await logAudit(ctx, {
         action: "delivery.dispatchInvoice",
         entityType: "deliveryConsignment",
@@ -737,13 +753,16 @@ export const deliveryRouter = router({
     .mutation(async ({ input, ctx }) => {
       const scopedBranchId = scopedBranchOf(ctx);
       const result = await withTx(async (tx) => {
+        const member = (await tx.select({ leaderConsignmentId: deliveryShipmentMembers.leaderConsignmentId })
+          .from(deliveryShipmentMembers).where(eq(deliveryShipmentMembers.consignmentId, input.consignmentId)).limit(1))[0];
+        const consignmentId = Number(member?.leaderConsignmentId ?? input.consignmentId);
         // نقرأ معرّف الجهة أولاً ثم نقفل الجهة قبل الإرسالية، وهو ترتيب الأقفال الموحّد
         // في مسارات التوصيل. وبعد القفل نعيد التحقق من ثبات العلاقة قبل أي كتابة.
         const preview = (
           await tx
             .select({ partyId: deliveryConsignments.partyId })
             .from(deliveryConsignments)
-            .where(eq(deliveryConsignments.id, input.consignmentId))
+            .where(eq(deliveryConsignments.id, consignmentId))
             .limit(1)
         )[0];
         if (!preview) {
@@ -804,7 +823,7 @@ export const deliveryRouter = router({
               partyId: deliveryConsignments.partyId,
             })
             .from(deliveryConsignments)
-            .where(eq(deliveryConsignments.id, input.consignmentId))
+            .where(eq(deliveryConsignments.id, consignmentId))
             .for("update")
             .limit(1)
         )[0];
@@ -855,7 +874,7 @@ export const deliveryRouter = router({
           await tx
             .update(deliveryConsignments)
             .set({ externalTrackingRef })
-            .where(eq(deliveryConsignments.id, input.consignmentId));
+            .where(eq(deliveryConsignments.id, consignmentId));
         } catch (error) {
           rethrowExternalTrackingRefDuplicate(error, externalTrackingRef ?? "");
         }
@@ -1046,17 +1065,20 @@ export const deliveryRouter = router({
    */
   staffMarkFailed: deliveryCashierProcedure
     .input(z.object({
+      wholeShipment: z.boolean().optional(),
       consignmentId: z.number().int().positive(),
       reason: z.string().trim().min(2).max(500),
       clientRequestId: z.string().trim().min(8).max(100),
     }))
     .mutation(async ({ input, ctx }) => {
-      const res = await retryOnDeadlock(() => staffMarkFailed(input, actorOf(ctx)));
+      const res = await retryOnDeadlock(async () => input.wholeShipment
+        ? markShipmentFailed(input, actorOf(ctx))
+        : staffMarkFailed(input, actorOf(ctx)));
       await logAudit(ctx, {
         action: "delivery.staffMarkFailed",
         entityType: "deliveryConsignment",
         entityId: input.consignmentId,
-        newValue: { reason: input.reason, replay: res.replay },
+        newValue: { reason: input.reason },
       });
       return res;
     }),
@@ -1080,6 +1102,7 @@ export const deliveryRouter = router({
    */
   staffConfirm: deliveryCashierProcedure
     .input(z.object({
+      wholeShipment: z.boolean().optional(),
       consignmentId: z.number().int().positive(),
       collectedAmount: moneyStr,
       evidence: z.string().trim().min(3).max(255),
@@ -1092,7 +1115,9 @@ export const deliveryRouter = router({
         shortfallReason: z.enum(SHORTFALL_REASONS as readonly [string, ...string[]]).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
-      const res = await retryOnDeadlock(() => recordStaffDeliveryConfirmation(input, actorOf(ctx)));
+      const res = await retryOnDeadlock(async () => input.wholeShipment
+        ? confirmShipmentDelivery(input, actorOf(ctx))
+        : recordStaffDeliveryConfirmation(input, actorOf(ctx)));
       await logAudit(ctx, {
         action: "delivery.staffConfirm",
         entityType: "deliveryConsignment",
@@ -1176,6 +1201,7 @@ export const deliveryRouter = router({
   // (نفسُ `consignmentReturnPreflight` + بوّابةُ وحدةٍ لكلّ نوع) — حُذف الإجراءُ المكرَّر هنا (م٢ ق١٠ب).
   returnConsignment: storeFulfillProcedure
     .input(z.object({
+      wholeShipment: z.boolean().optional(),
       consignmentId: z.number().int().positive(),
       clientRequestId: z.string().trim().min(8).max(64),
       // اختياري: يُلزَم فقط حين يتعدّد الدرج المفتوح بالفرع (resolveBranchCashShiftTx يرمي طالباً
@@ -1188,7 +1214,9 @@ export const deliveryRouter = router({
     .mutation(async ({ input, ctx }) => {
       // ٩/٨: ترتيب أقفال الإرجاع (إرسالية←جهة) يعاكس التوريد/الشطب (جهة←إرسالية) — تنافسٌ
       // لحظي بينهما قد يُفصَل بـdeadlock من MySQL؛ إعادة المحاولة تمتصّه (نمط collect.ts).
-      const res = await retryOnDeadlock(() => returnConsignment(input.consignmentId, {
+      const res = await retryOnDeadlock(async () => input.wholeShipment
+        ? returnShipment({ ...input, reason: input.returnReason ?? "" }, actorOf(ctx))
+        : returnConsignment(input.consignmentId, {
         ...actorOf(ctx),
         clientRequestId: input.clientRequestId,
         refundShiftId: input.refundShiftId ?? null,

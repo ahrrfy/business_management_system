@@ -81,6 +81,34 @@ beforeEach(async () => {
 });
 
 describe("ش٣ — تثبيت المسوّدة", () => {
+  it("keeps one plain and one customized piece of the same product separate through commit and replay", async () => {
+    const shift = await openReception();
+    await db().update(s.products).set({ isCustomizable: true }).where(eq(s.products.id, 1));
+    const promoted = await promoteDraft({ branchId: 1, header: { customerId: 1 }, lines: [
+      { ...MIXED_LINES[0], quantity: "1" },
+      { ...MIXED_LINES[1], variantId: 1, productUnitId: 1, unitPrice: "1500.00", title: "دفتر مخصص", customizationText: "شكراً" },
+    ] }, CASHIER);
+    const input = {
+      draftId: promoted.draftId, version: 0, expectedTotal: "2500.00", shiftId: shift.shiftId,
+      collectNow: { amount: "2500.00", method: "CASH" as const },
+    };
+    const result = await commitDraft(input, CASHIER);
+    const replay = await commitDraft(input, CASHIER);
+    expect(replay.idempotentReplay).toBe(true);
+    expect(replay.workOrders).toEqual(result.workOrders);
+    expect(replay.regularSale?.invoiceId).toBe(result.regularSale?.invoiceId);
+    const [invoice] = await db().select().from(s.invoices);
+    const [order] = await db().select().from(s.workOrders);
+    expect(invoice.total).toBe("1000.00");
+    expect(order.quantity).toBe(1);
+    expect(order.salePrice).toBe("1500.00");
+    expect(order.deposit).toBe("1500.00");
+    expect((await db().select().from(s.workOrderMaterials))[0].baseQuantity).toBe(1);
+    expect((await db().select().from(s.branchStock))[0].quantity).toBe(99);
+    const receipts = await db().select().from(s.receipts);
+    expect(receipts.reduce((sum, receipt) => sum + Number(receipt.amount), 0)).toBe(2500);
+  });
+
   it("T1 + I8: تثبيتٌ مختلط ⇒ فاتورة + أمر شغل + خصم مخزون + COMMITTED؛ والإعادة تعيد نفس الأرقام", async () => {
     const shift = await openReception();
     const p = await promoteDraft({ branchId: 1, header: { customerId: 1 }, lines: MIXED_LINES }, CASHIER);

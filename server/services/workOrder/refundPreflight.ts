@@ -9,13 +9,15 @@
  * تلقائياً. تكرارُ المنطق نسخاً كان سيُنتج تمهيداً يشيخ بصمتٍ ويكذب على الشاشة.
  */
 import { and, eq, inArray, isNull, notLike, or, sql } from "drizzle-orm";
-import { deliveryConsignments, invoices, receipts, shifts, users, workOrders } from "../../../drizzle/schema";
+import {
+  invoices, receipts, shifts, users, workOrders } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { money, round2, toDbMoney } from "../money";
 import { MATERIALIZED_RECEIPT_STATUSES, computeDrawerCashBalance, computeTreasuryCashBalance } from "../cash/cashAvailability";
 import { appliedCollectionsForWorkOrder } from "../deposits";
 import { workOrderFeeHeldNet } from "./deliveryFeeRefund";
 import type { RefundDrawerCandidate, RefundPreflight, WorkOrderRefundOperation } from "@shared/refundPreflight";
+import { loadShipmentMembersTx } from "../delivery/shipments";
 
 /** طرقُ القبض التي يخرج ردُّها نقداً — TELECOM بلا سكّة ردّ فيُردّ نقداً (نفسُ قاعدة الخدمات). */
 function exitsCashDrawer(method: string | null | undefined): boolean {
@@ -232,55 +234,53 @@ export async function consignmentReturnPreflight(
   consignmentId: number,
   opts: { exposeCash: boolean },
 ): Promise<RefundPreflight | null> {
-  const cn = (
-    await tx
-      .select({
-        branchId: deliveryConsignments.branchId,
-        invoiceId: deliveryConsignments.invoiceId,
-        consignmentNumber: deliveryConsignments.consignmentNumber,
-        feeSettledAt: deliveryConsignments.feeSettledAt,
-      })
-      .from(deliveryConsignments)
-      .where(eq(deliveryConsignments.id, consignmentId))
-      .limit(1)
-  )[0];
-  if (!cn) return null;
+  const members = await loadShipmentMembersTx(tx, consignmentId);
+  if (!members.length) return null;
 
-  const branchId = Number(cn.branchId);
+  const branchId = Number(members[0].branchId);
   let paid = money(0);
-  if (cn.invoiceId != null) {
+  let feeNet = money(0);
+  for (const cn of members) {
+    if (cn.invoiceId != null) {
     const inv = (
       await tx.select({ paidAmount: invoices.paidAmount }).from(invoices)
         .where(eq(invoices.id, Number(cn.invoiceId))).limit(1)
     )[0];
-    paid = money(inv?.paidAmount ?? "0");
+    paid = paid.plus(money(inv?.paidAmount ?? "0"));
   }
-  /**
-   * ⚠️ **مراجعُ الأجرة ليست `DLV-FEE-CN-…`** (مراجعة Codex P1، الجولة الثانية): ذلك نمطٌ
-   * اخترعتُه قياساً على `DLV-FEE-WO-` ولا وجودَ له في المستودع. الاستقبالُ يكتب
-   * `DLV-FEE-INV-{invoiceId}` وصفوفُ صرف المندوب تحمل **اسم الإرسالية** — وهما ما يفحصه
-   * [`returns.ts`](../delivery/returns.ts)، مع شرطٍ ثالث: `feeSettledAt == null` (المُسوّاة
-   * لا تُردّ). فبمرجعٍ لا يطابق شيئاً كان الصافي صفراً دائماً ⇒ طردٌ بأجرةٍ محتجزةٍ وحدها
-   * يُبلَّغ «لا نقد» ⇒ لا منتقيَ ⇒ الخادمُ يرفض بلا مخرج: **الحائطُ الأصليّ يعود**.
-   */
-  let feeNet = money(0);
-  if (cn.feeSettledAt == null) {
-    const feeRefs = [`DLV-FEE-INV-${Number(cn.invoiceId)}`, String(cn.consignmentNumber ?? "")]
-      .filter((r) => r && !r.endsWith("null"));
-    if (feeRefs.length) {
-      const feeRow = (
-        await tx
-          .select({ v: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE -${receipts.amount} END), 0)` })
-          .from(receipts)
-          .where(and(
-            inArray(receipts.referenceNumber, feeRefs),
-            // نفسُ مجموعة الحالات التي يستعملها التنفيذ (`returns.ts`): REVERSED حدثٌ نقديّ
-            // تاريخيّ يرافقه تعويضيٌّ معاكس، فإسقاطُه يترك OUT بلا IN ⇒ صافٍ سالبٌ يُخفي المنتقي.
-            inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]),
-            eq(receipts.approvalStatus, "APPROVED"),
-          ))
-      )[0];
-      feeNet = money(feeRow?.v ?? "0");
+    /**
+     * ⚠️ **مراجعُ الأجرة ليست `DLV-FEE-CN-…`** (مراجعة Codex P1، الجولة الثانية): ذلك نمطٌ
+     * اخترعتُه قياساً على `DLV-FEE-WO-` ولا وجودَ له في المستودع. الاستقبالُ يكتب
+     * `DLV-FEE-INV-{invoiceId}` وصفوفُ صرف المندوب تحمل **اسم الإرسالية** — وهما ما يفحصه
+     * [`returns.ts`](../delivery/returns.ts)، مع شرطٍ ثالث: `feeSettledAt == null` (المُسوّاة
+     * لا تُردّ). فبمرجعٍ لا يطابق شيئاً كان الصافي صفراً دائماً ⇒ طردٌ بأجرةٍ محتجزةٍ وحدها
+     * يُبلَّغ «لا نقد» ⇒ لا منتقيَ ⇒ الخادمُ يرفض بلا مخرج: **الحائطُ الأصليّ يعود**.
+     */
+    if (cn.feeSettledAt == null) {
+    const feeRefs = [`DLV-FEE-INV-${Number(cn.invoiceId)}`,
+        String(cn.consignmentNumber ?? ""),
+      ].filter((r) => r && !r.endsWith("null"));
+      if (feeRefs.length) {
+        const feeRow = (
+          await tx
+            .select({
+              v: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE -${receipts.amount} END), 0)`,
+            })
+            .from(receipts)
+            .where(
+              and(
+                inArray(receipts.referenceNumber, feeRefs),
+                eq(receipts.invoiceId, Number(cn.invoiceId)),
+                // نفسُ مجموعة الحالات التي يستعملها التنفيذ (`returns.ts`): REVERSED حدثٌ نقديّ
+                // تاريخيّ يرافقه تعويضيٌّ معاكس، فإسقاطُه يترك OUT بلا IN ⇒ صافٍ سالبٌ يُخفي المنتقي.
+                inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+                eq(receipts.approvalStatus, "APPROVED"),
+              ),
+            )
+        )[0];
+        const memberFee = money(feeRow?.v ?? "0");
+        if (memberFee.gt(0)) feeNet = feeNet.plus(memberFee);
+      }
     }
   }
   const cashOut = round2(paid.plus(feeNet));

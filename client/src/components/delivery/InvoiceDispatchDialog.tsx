@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Decimal from "decimal.js";
 import { AlertTriangle, Truck } from "lucide-react";
 import { trpc } from "@/lib/trpc";
@@ -20,7 +20,8 @@ import { Label } from "@/components/ui/label";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { MoneyInput } from "@/components/form/MoneyInput";
-import { fmt } from "@/lib/money";
+import { fmt, moneyInput } from "@/lib/money";
+import { Checkbox } from "@/components/ui/checkbox";
 
 export interface DispatchableInvoice {
   id: number;
@@ -59,18 +60,30 @@ export function InvoiceDispatchDialog({
   const [address, setAddress] = useState("");
   const [assignedUserId, setAssignedUserId] = useState("");
   const [externalTrackingRef, setExternalTrackingRef] = useState("");
+  const feeValid = /^(?:\d+|\d*\.\d{1,2})$/.test(fee);
+  const [invoiceIds, setInvoiceIds] = useState<number[]>([]);
+  const request = useRef({ fingerprint: "", key: crypto.randomUUID() });
+  const candidatesQ = trpc.delivery.invoiceCandidates.useQuery(
+    { invoiceId: invoice?.id ?? 0 },
+    { enabled: open && invoice != null, staleTime: 0, retry: false },
+  );
+  const availableInvoices = useMemo(() => {
+    const data = candidatesQ.data;
+    if (!data) return invoice ? [invoice] : [];
+    return Array.from(new Map([data.anchor, ...data.candidates].map((row) => [row.id, row])).values());
+  }, [candidatesQ.data, invoice]);
+  useEffect(() => {
+    if (open && candidatesQ.data?.requiredInvoiceIds.length) setInvoiceIds(candidatesQ.data.requiredInvoiceIds);
+  }, [open, candidatesQ.data]);
 
   const parties = partiesQ.data ?? [];
   const party = parties.find((p) => String(p.id) === partyId);
   const remaining = useMemo(() => {
-    if (!invoice) return new Decimal(0);
-    return Decimal.max(
-      0,
-      new Decimal(invoice.total || 0)
-        .minus(invoice.paidAmount || 0)
-        .minus(invoice.returnedTotal || 0),
+    return availableInvoices.filter((row) => invoiceIds.includes(row.id)).reduce(
+      (sum, row) => sum.plus(Decimal.max(0, new Decimal(row.total || 0).minus(row.paidAmount || 0).minus(row.returnedTotal || 0))),
+      new Decimal(0),
     );
-  }, [invoice]);
+  }, [availableInvoices, invoiceIds]);
 
   /**
    * ش٥: الخادم يرفض إرسالَ فاتورةٍ لطلبٍ إخوتُه لم يجهزوا. لا نُظهر خانةَ إقرارٍ **مسبقاً**
@@ -83,7 +96,7 @@ export function InvoiceDispatchDialog({
     onSuccess: async (result) => {
       setPartialNotice(null);
       notify.ok(
-        "تم إسناد الفاتورة للتوصيل",
+        invoiceIds.length > 1 ? "تم إسناد الفواتير في شحنة واحدة" : "تم إسناد الفاتورة للتوصيل",
         `الإرسالية ${result.consignmentNumber}`,
       );
       await Promise.all([
@@ -104,13 +117,14 @@ export function InvoiceDispatchDialog({
   });
 
   const submit = (partialDispatchConfirmed?: boolean) => {
-    if (!invoice) return;
+    if (!invoice || !feeValid) return;
     if (party?.partyType === "COMPANY" && !externalTrackingRef.trim()) {
       notify.err("رقم بوليصة شركة التوصيل مطلوب", "امسح الباركود المطبوع على البوليصة قبل الإسناد.");
       return;
     }
-    dispatch.mutate({
+    const payload = {
       invoiceId: invoice.id,
+      ...(invoiceIds.length > 1 ? { invoiceIds } : {}),
       partyId: Number(partyId),
       deliveryFee: new Decimal(fee || 0).toDecimalPlaces(2).toFixed(2),
       feeCollection,
@@ -119,9 +133,11 @@ export function InvoiceDispatchDialog({
       deliveryAddress: address.trim(),
       assignedUserId: assignedUserId ? Number(assignedUserId) : undefined,
       externalTrackingRef: externalTrackingRef.trim() || undefined,
-      clientRequestId: crypto.randomUUID(),
       ...(partialDispatchConfirmed ? { partialDispatchConfirmed: true } : {}),
-    });
+    };
+    const fingerprint = JSON.stringify(payload);
+    if (request.current.fingerprint !== fingerprint) request.current = { fingerprint, key: crypto.randomUUID() };
+    dispatch.mutate({ ...payload, clientRequestId: request.current.key });
   };
 
   useEffect(() => {
@@ -135,7 +151,9 @@ export function InvoiceDispatchDialog({
     setAddress(invoice.deliveryAddress ?? "");
     setAssignedUserId("");
     setExternalTrackingRef("");
-  }, [invoice, open]);
+    setInvoiceIds([invoice.id]);
+    request.current = { fingerprint: "", key: crypto.randomUUID() };
+  }, [invoice?.id, open]);
 
   function resetFromInvoice(nextOpen: boolean) {
     onOpenChange(nextOpen);
@@ -150,12 +168,34 @@ export function InvoiceDispatchDialog({
             {invoice?.invoiceNumber ?? ""} للتوصيل
           </DialogTitle>
           <DialogDescription>
-            ينشئ النظام إرسالية مرتبطة بالفاتورة، ويثبت المتبقي عهدةً على جهة
-            التوصيل. لا يتغير المخزون أو مبلغ الفاتورة.
+            اختر فواتير الزبون التي ستصل معاً. شحنة واحدة وبوليصة واحدة وأجرة واحدة، مع حفظ حساب كل فاتورة.
           </DialogDescription>
         </DialogHeader>
 
         <div className="grid gap-3 py-1">
+          {availableInvoices.length > 1 && (
+            <fieldset className="space-y-2 rounded-md border p-3">
+              <legend className="px-1 text-sm font-bold">فواتير الزبون في الشحنة ({invoiceIds.length})</legend>
+              <div className="max-h-40 space-y-2 overflow-y-auto">
+                {availableInvoices.map((row) => (
+                  <label key={row.id} className="flex cursor-pointer items-center gap-2 text-sm">
+                    <Checkbox
+                      checked={invoiceIds.includes(row.id)}
+                      disabled={row.id === invoice?.id || candidatesQ.data?.requiredInvoiceIds.includes(row.id) || dispatch.isPending}
+                      onCheckedChange={(checked) => {
+                        setPartialNotice(null);
+                        setInvoiceIds((ids) => checked === true ? [...ids, row.id] : ids.filter((id) => id !== row.id));
+                      }}
+                    />
+                    <span className="font-mono" dir="ltr">{row.invoiceNumber}</span>
+                    <span className="ms-auto tabular-nums" dir="ltr">{fmt(Decimal.max(0, new Decimal(row.total || 0).minus(row.paidAmount || 0).minus(row.returnedTotal || 0)).toFixed(2))} د.ع</span>
+                  </label>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">المبالغ الظاهرة هي المتبقي للتحصيل. الأجرة أدناه تخص الشحنة كلها.</p>
+            </fieldset>
+          )}
+          {candidatesQ.isError && <p className="text-xs text-destructive">تعذر تحميل فواتير الزبون. <Button variant="link" size="sm" onClick={() => void candidatesQ.refetch()}>إعادة المحاولة</Button></p>}
           <div className="space-y-1">
             <Label>جهة التوصيل</Label>
             <AppSelect
@@ -266,7 +306,7 @@ export function InvoiceDispatchDialog({
               <>
                 الفاتورة <strong className="text-[var(--sem-pos)]">مدفوعة مسبقاً بالكامل</strong> (متبقي البضاعة: 0 د.ع).
                 {feeCollection === "COURIER" ? (
-                  <> المطلوب من الزبون عند الاستلام: <strong className="tabular-nums text-foreground" dir="ltr">{fmt(new Decimal(fee || 0).toFixed(2))} د.ع</strong> (أجرة التوصيل فقط للمندوب).</>
+                  <> المطلوب من الزبون عند الاستلام: <strong className="tabular-nums text-foreground" dir="ltr">{fmt(moneyInput(fee).toFixed(2))} د.ع</strong> (أجرة التوصيل فقط للمندوب).</>
                 ) : (
                   <> لا مبالغ مطلوبة من الزبون عند الاستلام (الأجرة لا يدفعها الزبون).</>
                 )}
@@ -278,8 +318,8 @@ export function InvoiceDispatchDialog({
                   {fmt(remaining.toFixed(2))} د.ع
                 </strong>
                 . أجرة التوصيل مستقلة ولا تُضاف إلى إيراد الفاتورة.
-                {feeCollection === "COURIER" && Number(fee || 0) > 0 && (
-                  <> إجمالي ما يدفعه الزبون للمندوب: <strong className="tabular-nums text-foreground" dir="ltr">{fmt(remaining.plus(new Decimal(fee || 0)).toFixed(2))} د.ع</strong> شامل التوصيل.</>
+                {feeCollection === "COURIER" && moneyInput(fee).gt(0) && (
+                  <> إجمالي ما يدفعه الزبون للمندوب: <strong className="tabular-nums text-foreground" dir="ltr">{fmt(remaining.plus(moneyInput(fee)).toFixed(2))} د.ع</strong> شامل التوصيل.</>
                 )}
               </>
             )}
@@ -334,6 +374,7 @@ export function InvoiceDispatchDialog({
           <AnimatedDeliveryButton
             disabled={
               !invoice ||
+              !feeValid ||
               !partyId ||
               !name.trim() ||
               !phone.trim() ||
@@ -342,7 +383,7 @@ export function InvoiceDispatchDialog({
               dispatch.isPending
             }
             isDispatching={dispatch.isPending}
-            label="تأكيد التسليم للمندوب"
+            label={invoiceIds.length > 1 ? `إسناد ${invoiceIds.length} فواتير بشحنة واحدة` : "تأكيد التسليم للمندوب"}
             onClick={() => submit()}
           />
         </DialogFooter>

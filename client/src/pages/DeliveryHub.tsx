@@ -928,9 +928,9 @@ function InTransitTab() {
         enableSorting: false,
         meta: { kind: "actions", align: "start", width: "wide", wrap: true },
         cell: ({ row }) => {
-          const r = row.original;
-          const rowId = Number(r.id);
+          const r = row.original, rowId = Number(r.id);
           const phone = (r.recipientPhone ?? "").trim();
+          if (r.shipmentLeaderConsignmentId != null) return <Button size="sm" variant="outline" onClick={() => setDrawerId(r.shipmentLeaderConsignmentId!)}>الشحنة · {r.shipmentInvoiceCount} فواتير</Button>;
           return (
             <div className="flex flex-wrap items-center gap-1">
               {/* الإجراء التالي حسب الحالة */}

@@ -8,9 +8,8 @@
 //
 // محاسبياً: الإسناد لا يُنشئ فاتورةً ثانية ولا يمسّ قيد SALE؛ والتسديد يمرّ بـprocessPayment
 // نفسها بحصرٍ بنيويّ (وردية إنشاء الفاتورة RECEPTION) — §٩.٢.
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import {
-  AlertTriangle,
   Banknote,
   FileText,
   HandCoins,
@@ -26,14 +25,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Label } from "@/components/ui/label";
-import { AppSelect } from "@/components/ui/AppSelect";
 import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
-import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/PageState";
 import type { DispatchParty } from "@/components/delivery/DispatchDialog";
+import { InvoiceDispatchDialog } from "@/components/delivery/InvoiceDispatchDialog";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -45,7 +43,6 @@ import { hasPendingFirstInvoicePrint } from "@/lib/printing/invoicePrintAttempt"
 import { invoiceDetailPrintData } from "@/lib/printing/invoiceDetailPrintData";
 import { printInvoiceA4 } from "@/lib/printing/printTemplates";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { isPartialDispatchRejection } from "@shared/partialDispatch";
 import { cn } from "@/lib/utils";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage,
@@ -65,7 +62,6 @@ export function ReceptionInvoiceQueue({
   branchId,
   currentShiftId,
   branchName,
-  parties,
   defaultPayChip,
 }: {
   branchId: number;
@@ -136,35 +132,6 @@ export function ReceptionInvoiceQueue({
   const [returnTarget, setReturnTarget] = useState<Row | null>(null);
   const [printingId, setPrintingId] = useState<number | null>(null);
   const taxSettings = trpc.system.getTaxSettings.useQuery(undefined, { staleTime: 300_000,
-  });
-
-  /** ش٥: رفضُ الإرسال الجزئيّ يُعرَض بأرقام الإخوة، ويُقرّ صراحةً — لا خانةَ سبقٍ تُنقَر بلا قراءة. */
-  const [partialNotice, setPartialNotice] = useState<string | null>(null);
-  const lastDispatchArgs = useRef<{
-    invoiceId: number; partyId: number; deliveryFee: string;
-    feeCollection: "COURIER" | "COUNTER" | "SHOP";
-    recipientName?: string; recipientPhone?: string; deliveryAddress?: string;
-    assignedUserId?: number; clientRequestId: string;
-  } | null>(null);
-
-  const dispatchInvoice = trpc.delivery.dispatchInvoice.useMutation({
-    onSuccess: (r) => {
-      notify.ok("أُسنِدت للتوصيل", `إرسالية ${r.consignmentNumber} — تحصيل ${fmt(r.codAmount)} د.ع`,
-      );
-      setPartialNotice(null);
-      lastDispatchArgs.current = null;
-      setDispatchTarget(null);
-      resetPaging();
-      void utils.reception.invoiceQueue.invalidate();
-      void utils.workOrders.list.invalidate();
-    },
-    onError: (e) => {
-      if (isPartialDispatchRejection(e)) {
-        setPartialNotice(e.message);
-        return;
-      }
-      notify.err(e);
-    },
   });
 
   /** إعادة الطباعة تتبع نطاق قراءة الفرع لا الملكية (§٨.٥): قراءةٌ محضة من لقطة الفاتورة. */
@@ -415,35 +382,20 @@ export function ReceptionInvoiceQueue({
 
       {dispatchTarget && actions.canDispatch && (
         <InvoiceDispatchDialog
-          row={dispatchTarget}
-          parties={parties}
-          pending={dispatchInvoice.isPending}
-          partialNotice={partialNotice}
-          onClose={() => { setPartialNotice(null); setDispatchTarget(null); }}
-          onConfirmPartial={() => {
-            if (!actions.canDispatch) return;
-            const prev = lastDispatchArgs.current;
-            if (prev) dispatchInvoice.mutate({ ...prev, partialDispatchConfirmed: true,
-              });
+          open
+          invoice={{
+            id: Number(dispatchTarget.id), invoiceNumber: dispatchTarget.invoiceNumber,
+            total: dispatchTarget.total, paidAmount: dispatchTarget.paidAmount,
+            returnedTotal: dispatchTarget.returnedTotal,
+            customerName: dispatchTarget.customerName ?? dispatchTarget.contactName,
+            customerPhone: dispatchTarget.customerPhone ?? dispatchTarget.contactPhone ?? dispatchTarget.deliveryPhone,
+            deliveryAddress: dispatchTarget.deliveryAddress,
           }}
-          onConfirm={(args) => {
-            if (!actions.canDispatch) return;
-            const payload = {
-              invoiceId: Number(dispatchTarget.id),
-              partyId: args.partyId,
-              deliveryFee: args.deliveryFee,
-              feeCollection: args.feeCollection,
-              recipientName: args.recipientName,
-              recipientPhone: args.recipientPhone,
-              deliveryAddress: args.deliveryAddress,
-              assignedUserId: args.assignedUserId,
-              externalTrackingRef: args.externalTrackingRef,
-              // معرّفٌ ثابتٌ للمحاولة: إعادةُ الإرسال بالإقرار هي **نفس** العملية لا ثانيةً،
-              // فلو نجحت الأولى على الشبكة ثمّ أُعيدت لم تُنشئ إرساليةً مكرّرة.
-              clientRequestId: `dispinv-${dispatchTarget.id}-${Date.now()}`,
-            };
-            lastDispatchArgs.current = payload;
-            dispatchInvoice.mutate(payload);
+          onOpenChange={(open) => { if (!open) setDispatchTarget(null); }}
+          onCompleted={() => {
+            resetPaging();
+            void utils.reception.invoiceQueue.invalidate();
+            void utils.workOrders.list.invalidate();
           }}
         />
       )}
@@ -892,208 +844,5 @@ function ReturnRequestDialog({ row, canCreateReturn, onClose,
   );
 }
 
-function InvoiceDispatchDialog({
-  row,
-  parties,
-  pending,
-  partialNotice,
-  onClose,
-  onConfirm,
-  onConfirmPartial,
-}: {
-  row: Row;
-  parties: DispatchParty[];
-  pending: boolean;
-  /** رسالةُ الخادم بأرقام الإخوة غير الجاهزين (ش٥) — تُقرأ قبل الإقرار لا بعده. */
-  partialNotice: string | null;
-  onClose: () => void;
-  onConfirmPartial: () => void;
-  onConfirm: (args: {
-    partyId: number;
-    deliveryFee: string;
-    feeCollection: "COURIER" | "COUNTER" | "SHOP";
-    recipientName?: string;
-    recipientPhone?: string;
-    deliveryAddress?: string;
-    assignedUserId?: number;
-    externalTrackingRef?: string;
-  }) => void;
-}) {
-  const [partyId, setPartyId] = useState("");
-  const [fee, setFee] = useState("0");
-  // ش٠ (V15): COUNTER خارج مسار الفاتورة حتى ش٦ — النوع مُضيَّق عمداً ليمسك TypeScript أيّ إرجاعٍ سهويّ.
-  const [feeCollection, setFeeCollection] = useState<"COURIER" | "SHOP">("COURIER",
-  );
-  const [name, setName] = useState(row.customerName ?? row.contactName ?? "");
-  const [phone, setPhone] = useState(row.customerPhone ?? row.contactPhone ?? row.deliveryPhone ?? "",
-  );
-  const [address, setAddress] = useState(row.deliveryAddress ?? "");
-  const [assignedUserId, setAssignedUserId] = useState("");
-  const [externalTrackingRef, setExternalTrackingRef] = useState("");
-  const remaining = useMemo(
-    () => round2(D(row.total).minus(D(row.paidAmount ?? 0)).minus(D(row.returnedTotal ?? 0)),
-      ).toNumber(),
-    [row],
-  );
-  const party = parties.find((p) => String(p.id) === partyId);
-
-  return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" dir="rtl">
-      <div className="w-full max-w-md space-y-3 rounded-2xl bg-card p-4 shadow-2xl">
-        <h3 className="text-sm font-extrabold">إسناد الفاتورة {row.invoiceNumber} للتوصيل</h3>
-
-        <div className="space-y-1">
-          <Label className="text-[11px]">جهة التوصيل</Label>
-          <AppSelect
-            value={partyId}
-            onValueChange={(v) => {
-              setPartyId(v);
-              setAssignedUserId("");
-              setExternalTrackingRef("");
-              const p = parties.find((x) => String(x.id) === v);
-              if (p) setFee(p.defaultFee ?? "0");
-            }}
-            aria-label="جهة التوصيل"
-            placeholder="اختر مندوباً أو شركة"
-          >
-            <option value="">اختر مندوباً أو شركة</option>
-            {parties.map((p) => (
-              <option key={p.id} value={String(p.id)}>{p.name}</option>
-            ))}
-          </AppSelect>
-        </div>
-
-        {party?.partyType === "COMPANY" && (party.drivers?.length ?? 0) > 0 && (
-          <div className="space-y-1">
-            <Label className="text-[11px]">السائق داخل الشركة</Label>
-            <AppSelect value={assignedUserId} onValueChange={setAssignedUserId} aria-label="السائق داخل الشركة">
-              <option value="">طابور الشركة — يطالب به أول سائق</option>
-              {party.drivers?.map((driver) => (
-                <option key={driver.userId} value={driver.userId}>{driver.name}</option>
-              ))}
-            </AppSelect>
-          </div>
-        )}
-
-        {party?.partyType === "COMPANY" && (
-          <div className="space-y-1">
-            <Label htmlFor="reception-invoice-tracking" className="text-[11px]">
-              رقم تتبّع / بوليصة الشركة <span className="text-destructive">*</span>
-            </Label>
-            <Input
-              id="reception-invoice-tracking"
-              value={externalTrackingRef}
-              onChange={(event) => setExternalTrackingRef(event.target.value)}
-              placeholder="امسح باركود بوليصة الشركة أو أدخل الرقم"
-              maxLength={100}
-              className="h-8 font-mono text-xs"
-              dir="ltr"
-            />
-          </div>
-        )}
-
-        <div className="grid grid-cols-2 gap-2">
-          <div className="space-y-1">
-            <Label className="text-[11px]">اسم المستلم</Label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} className="h-8 text-xs" />
-          </div>
-          <div className="space-y-1">
-            <Label className="text-[11px]">هاتف المستلم</Label>
-            <IntlPhoneInput value={phone} onChange={setPhone} ariaLabel="هاتف المستلم" className="text-xs" />
-          </div>
-        </div>
-
-        <div className="space-y-1">
-          <Label className="text-[11px]">عنوان التوصيل</Label>
-          <Input value={address} onChange={(e) => setAddress(e.target.value)} className="h-8 text-xs" />
-        </div>
-
-        <div className="grid grid-cols-2 gap-2">
-          <div className="space-y-1">
-            <Label className="text-[11px]">أجرة التوصيل</Label>
-            <MoneyInput value={fee} onChange={setFee} ariaLabel="أجرة التوصيل" className="text-xs" />
-          </div>
-          <div className="space-y-1">
-            <Label className="text-[11px]">مَن يقبضها؟</Label>
-            {/* ش٠ (V15): «مقبوضة في الكاشير» أُزيلت من مسار الفاتورة — لا قبضَ وارد يسبق الإرسال
-                هنا (بخلاف أمر الشغل الذي يقبضها لحظة الإنشاء)، فقبولها يُنتج صرفاً للمندوب بلا
-                قبضٍ يقابله ⇒ عجزٌ يمنع إغلاق الوردية. الخادم يحظرها أيضاً؛ تعود في ش٦ مع القبض. */}
-            <AppSelect
-              value={feeCollection}
-              onValueChange={(v) => setFeeCollection(v as "COURIER" | "SHOP")}
-              aria-label="من يقبض أجرة التوصيل"
-            >
-              <option value="COURIER">المندوب من الزبون</option>
-              <option value="SHOP">على المكتبة</option>
-            </AppSelect>
-          </div>
-        </div>
-
-        {/* شفافية محاسبية صريحة: الأجرة ليست جزءاً ممّا يحصّله المندوب لنا. */}
-        <p className="rounded-md border bg-muted/40 p-2 text-[11px] text-muted-foreground">
-          {remaining === 0 ? (
-            <>
-              الفاتورة <strong className="text-[var(--sem-pos)]">مدفوعة مسبقاً بالكامل</strong> (متبقي البضاعة: 0 د.ع).
-              {feeCollection === "COURIER" ? (
-                <> المطلوب من الزبون عند الاستلام: <strong className="font-bold tabular-nums text-foreground" dir="ltr">{fmt(round2(D(fee || 0)).toFixed(2))} د.ع</strong> (أجرة التوصيل فقط للمندوب).</>
-              ) : (
-                <> لا مبالغ مطلوبة من الزبون عند الاستلام.</>
-              )}
-            </>
-          ) : (
-            <>
-              يحصّل المندوب{" "}
-              <span className="font-bold tabular-nums" dir="ltr">{fmt(remaining.toFixed(2))}</span>{" "}
-              د.ع
-              لصالح المكتبة (المتبقّي على الفاتورة). أجرة التوصيل مبلغٌ مستقلّ لا يدخل الفاتورة ولا الإيراد
-              {feeCollection === "SHOP" && " — وتتحمّلها المكتبة كمصروف"}.
-              {feeCollection === "COURIER" && Number(fee || 0) > 0 && (
-                <> إجمالي ما يدفعه الزبون للمندوب: <strong className="font-bold tabular-nums text-foreground" dir="ltr">{fmt(round2(D(remaining).plus(D(fee || 0))).toFixed(2))} د.ع</strong> شامل التوصيل.</>
-              )}
-            </>
-          )}
-        </p>
-
-        {partialNotice && (
-          <div className="rounded-md border border-[var(--sem-warn)] bg-[var(--sem-warn-bg)] p-2.5">
-            <p className="flex items-start gap-1.5 text-[11px] font-bold leading-relaxed text-[var(--sem-warn)]">
-              <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0" />
-              {partialNotice}
-            </p>
-            <Button size="sm" variant="outline" className="mt-2 w-full" disabled={pending} onClick={onConfirmPartial}>
-              أقرّ الإرسال الجزئيّ وأرسل الآن
-            </Button>
-          </div>
-        )}
-
-        <div className="flex gap-2">
-          <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>
-          <Button
-            className="flex-1"
-            disabled={!partyId || pending || (party?.partyType === "COMPANY" && !externalTrackingRef.trim())}
-            onClick={() => {
-              if (!party) {
-                notify.err("اختر جهة التوصيل");
-                return;
-              }
-              onConfirm({
-                partyId: Number(partyId),
-                deliveryFee: round2(D(fee || 0)).toFixed(2),
-                feeCollection,
-                recipientName: name.trim() || undefined,
-                recipientPhone: phone.trim() || undefined,
-                deliveryAddress: address.trim() || undefined,
-                assignedUserId: assignedUserId ? Number(assignedUserId) : undefined,
-                externalTrackingRef: externalTrackingRef.trim() || undefined,
-              });
-            }}
-          >
-            {pending ? "جارٍ الإسناد…" : "إسناد وطباعة أوراق التوصيل"}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 export default ReceptionInvoiceQueue;

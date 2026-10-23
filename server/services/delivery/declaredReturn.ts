@@ -27,6 +27,7 @@ import { adjustDeliveryBalance } from "../ledgerService";
 import { withTx } from "../tx";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
 import type { DeliveryTxActor } from "./types";
+import { assertStandaloneConsignmentTx } from "./shipments";
 
 /**
  * **الرجوعُ المُعلَن يُغلق كلَّ مخرجٍ إلّا الاسترجاع** (تصويب مراجعة Codex، ٢١/٨).
@@ -78,6 +79,9 @@ function buildDeclarationNote(reason: string, statementNumber?: string | null): 
 export async function declareConsignmentReturn(input: DeclareReturnInput, actor: DeliveryTxActor) {
   return withTx(async (tx) => {
     const consignmentId = Number(input.consignmentId);
+    const [preview] = await tx.select({ partyId: deliveryConsignments.partyId }).from(deliveryConsignments).where(eq(deliveryConsignments.id, consignmentId)).limit(1);
+    if (preview) await tx.select({ id: deliveryParties.id }).from(deliveryParties).where(eq(deliveryParties.id, Number(preview.partyId))).for("update").limit(1);
+    await assertStandaloneConsignmentTx(tx, consignmentId, "إعلان الرجوع", { currentRead: true });
     const reason = input.reason.trim();
     if (reason.length < 3) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "سبب رجوع الطرد مطلوب (٣ أحرف على الأقل)" });

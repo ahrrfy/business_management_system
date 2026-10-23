@@ -424,6 +424,7 @@ function DeliveryCard({ row, busy, onConfirm, onPartial, onFail, readOnly }: { r
             )}
           </div>
           <div className="truncate text-sm text-muted-foreground">{row.customerName ?? "عميل"}</div>
+          {(row.shipmentMemberCount ?? 1) > 1 && <div className="mt-1 text-xs text-muted-foreground">شحنة واحدة · {row.shipmentMemberCount} فواتير: {row.invoiceReferences?.join("، ")}</div>}
         </div>
         <div className="shrink-0 text-left">
           <div className="text-[11px] text-muted-foreground">المطلوب تحصيله</div>

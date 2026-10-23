@@ -11,6 +11,7 @@ import {
   deliveryConsignments,
   deliveryParties,
   deliveryPartyMembers,
+  deliveryShipmentMembers,
   invoices,
   receipts,
   receptionDrafts,
@@ -34,6 +35,14 @@ import {
 } from "./trackingRefPolicy";
 import { publishRealtimeEvent } from "../../realtime";
 import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
+
+import { appErrorMessage } from "@shared/errors";
+
+/** Service-only context; it is never part of a router input. */
+export interface ShipmentDispatchContext {
+  shipmentLeaderConsignmentId?: number;
+  sharedTrackingLeaderId?: number;
+}
 
 export interface DispatchInvoiceInput {
   invoiceId: number;
@@ -96,10 +105,66 @@ export async function dispatchInvoiceInTx(
   tx: Parameters<Parameters<typeof withTx>[0]>[0],
   input: DispatchInvoiceInput,
   actor: DeliveryTxActor,
+  shipment?: ShipmentDispatchContext,
 ) {
   try {
     const normalizedTrackingRef = normalizeExternalTrackingRef(input.externalTrackingRef);
     const feeCollection = input.feeCollection ?? "COURIER";
+    // Scope and membership are checked before replay, including cancelled shipments.
+    const preview = (
+      await tx
+        .select({ branchId: invoices.branchId })
+        .from(invoices)
+        .where(eq(invoices.id, input.invoiceId))
+        .limit(1)
+    )[0];
+    if (!preview)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذر إسناد الفاتورة",
+          why: "الفاتورة غير موجودة",
+          doThis: "حدّث القائمة واختر فاتورة موجودة",
+        }),
+      });
+    if (
+      actor.role !== "admin" &&
+      (actor.branchId == null ||
+        Number(preview.branchId) !== Number(actor.branchId))
+    ) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذر إسناد الفاتورة",
+          why: "الفاتورة تخص فرعاً آخر أو لا يوجد فرع مسند للموظف",
+          doThis: "افتح الفاتورة من فرعها الصحيح",
+        }),
+      });
+    }
+    const existingMember = (
+      await tx
+        .select({ leaderId: deliveryShipmentMembers.leaderConsignmentId })
+        .from(deliveryShipmentMembers)
+        .innerJoin(
+          deliveryConsignments,
+          eq(deliveryConsignments.id, deliveryShipmentMembers.consignmentId),
+        )
+        .where(eq(deliveryConsignments.invoiceId, input.invoiceId))
+        .limit(1)
+    )[0];
+    if (
+      existingMember &&
+      Number(existingMember.leaderId) !== shipment?.shipmentLeaderConsignmentId
+    ) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذر إسناد فاتورة من شحنة مجمعة منفردة",
+          why: "الفاتورة مرتبطة بشحنة تضم فواتير أخرى",
+          doThis: "افتح تفاصيل الشحنة وأعد إسناد جميع فواتيرها معاً",
+        }),
+      });
+    }
     // ش٦ (V15) — رُفع حظر COUNTER **مشروطاً**: يُقبل فقط إن سبق قبضُ الأمانة فعلاً (إيصال IN
     // بمرجع DLV-FEE-INV-{الفاتورة} يكتبه checkoutReception عبر deliveryFeeHeld) وبما يغطّي
     // الأجرة — وإلا بقي الرفض: OUT للمندوب بلا IN يقابله = عجز درجٍ يمنع إغلاق الوردية.
@@ -153,6 +218,7 @@ export async function dispatchInvoiceInTx(
           invoiceId: Number(cn?.invoiceId ?? 0),
           codAmount: String(cn?.codAmount ?? "0"),
           deliveryFee: String(cn?.deliveryFee ?? "0"),
+          branchId: Number(preview.branchId),
           idempotentReplay: true as const,
         };
       }
@@ -161,7 +227,55 @@ export async function dispatchInvoiceInTx(
     // ترتيب أقفال موحّد مع dispatchToDelivery: الجهة ← الفاتورة (لا جمود متبادل).
     const party = (await tx.select().from(deliveryParties).where(eq(deliveryParties.id, input.partyId)).for("update").limit(1))[0];
     if (!party || !party.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "جهة التوصيل غير متاحة" });
-    const externalTrackingRef = requireExternalTrackingRef(party.partyType, normalizedTrackingRef);
+    const externalTrackingRef =
+      shipment?.sharedTrackingLeaderId == null
+        ? requireExternalTrackingRef(party.partyType, normalizedTrackingRef)
+        : null;
+    if (shipment?.sharedTrackingLeaderId != null) {
+      const leader = (
+        await tx
+          .select()
+          .from(deliveryConsignments)
+          .where(eq(deliveryConsignments.id, shipment.sharedTrackingLeaderId))
+          .for("update")
+          .limit(1)
+      )[0];
+      const leaderMember = (
+        await tx
+          .select()
+          .from(deliveryShipmentMembers)
+          .where(
+            eq(
+              deliveryShipmentMembers.consignmentId,
+              shipment.sharedTrackingLeaderId,
+            ),
+          )
+          .limit(1)
+      )[0];
+      if (
+        !leader ||
+        !leaderMember ||
+        Number(leaderMember.leaderConsignmentId) !== Number(leader.id) ||
+        Number(leader.partyId) !== input.partyId ||
+        Number(leader.branchId) !== Number(preview.branchId) ||
+        shipment.shipmentLeaderConsignmentId !== Number(leader.id) ||
+        normalizedTrackingRef != null ||
+        input.deliveryFee == null ||
+        !round2(money(input.deliveryFee ?? "0")).isZero() ||
+        feeCollection !== "COURIER" ||
+        leader.parcelStatus !== "OUT_FOR_DELIVERY"
+      ) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعذر ربط الفاتورة بالشحنة",
+            why: "قائد الشحنة أو جهتها أو فرعها أو أجرتها غير متطابق",
+            doThis: "أعد إسناد الشحنة كاملة من نافذة التوصيل",
+          }),
+        });
+      }
+      requireExternalTrackingRef(party.partyType, leader.externalTrackingRef);
+    }
     let assignedUserId = input.assignedUserId ?? null;
     if (assignedUserId == null && party.partyType === "INDIVIDUAL") {
       assignedUserId = party.userId != null ? Number(party.userId) : null;
@@ -213,6 +327,30 @@ export async function dispatchInvoiceInTx(
       .where(eq(deliveryConsignments.invoiceId, input.invoiceId))
       .for("update")
       .limit(1))[0];
+    if (already) {
+      const member = (
+        await tx
+          .select()
+          .from(deliveryShipmentMembers)
+          .where(eq(deliveryShipmentMembers.consignmentId, Number(already.id)))
+          .for("update")
+          .limit(1)
+      )[0];
+      if (
+        member &&
+        Number(member.leaderConsignmentId) !==
+          shipment?.shipmentLeaderConsignmentId
+      ) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعذر إسناد فاتورة من شحنة مجمعة منفردة",
+            why: "الفاتورة مرتبطة بشحنة تضم فواتير أخرى",
+            doThis: "افتح تفاصيل الشحنة وأعد إسناد جميع فواتيرها معاً",
+          }),
+        });
+      }
+    }
     if (already && (
       already.status !== "CANCELLED"
       || already.parcelStatus !== "CANCELLED"

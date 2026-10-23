@@ -48,6 +48,7 @@ import {
 } from "./remittance";
 import type { DeliveryTxActor } from "./types";
 import { withTx } from "../tx";
+import { loadShipmentMembersTx } from "./shipments";
 
 export interface CompanyStatementLineInput {
   consignmentId: number;
@@ -392,6 +393,18 @@ export async function recordCompanyStatement(
   // سطرُ الإثبات (declared=0) يقبله الخادم أصلاً: يختم الطردَ الصفريّ ويُغلقه، ويُبقي متبقّي
   // طرد COD>0 ذمّةً حيّة على العميل (رأس الملف — قرار المالك).
   const { ids, byId } = await loadStatementConsignments(input, tx);
+  // Physical confirmation must include every invoice in the shipment. Supplementary money remains per invoice.
+  const statementIds = new Set(ids);
+  for (const id of ids.filter((id) => byId.get(id)!.parcelStatus !== "DELIVERED")) {
+    const members = await loadShipmentMembersTx(tx, id, { currentRead: true });
+    if (members.some((member) => !statementIds.has(Number(member.id)))) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+        what: "تعذر تسجيل جزء من شحنة في كشف الشركة",
+        why: "تضم الشحنة فواتير أخرى غير موجودة في أسطر الكشف",
+        doThis: "أضف جميع فواتير الشحنة إلى الكشف أو أكد الشحنة كاملة من تفاصيل التوصيل",
+      }) });
+    }
+  }
   // فحصٌ مسبقٌ لكل شروط الرفض المُنتظَرة قبل أيّ كتابة (Codex P1 #5).
   await preValidateStatementLines(input, ids, byId);
   const needConfirm = ids
@@ -416,6 +429,7 @@ export async function recordCompanyStatement(
       },
       { userId: actor.userId },
       tx,
+      { shipmentMember: true },
     );
   }
   /**

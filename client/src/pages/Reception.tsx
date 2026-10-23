@@ -84,6 +84,7 @@ import {
   type Tier,
 } from "@/components/reception/cartMath";
 import { CartTable } from "@/components/reception/CartTable";
+import { addPlainCustomizationPiece } from "@/components/reception/cartCustomization";
 import { PaymentPanel } from "@/components/reception/PaymentPanel";
 import { ReceiptOverlay } from "@/components/reception/ReceiptOverlay";
 import { triggerReceptionShippingLabel } from "@/components/reception/receptionShippingLabel";
@@ -757,14 +758,6 @@ export default function Reception() {
     searchRef.current?.focus();
   }, [addDirectLine, effectiveTier]);
 
-  /** العميل يريد هذه القطعة تحديداً بلا تخصيص (بسعرها العادي) رغم أنّ صنفها قابلٌ للتخصيص — يسمح
-   *  بمزج قطعةٍ مخصّصة وأخرى جاهزة من نفس المنتج في طلبٍ واحد. */
-  function addPlain(row: PosRow) {
-    addDirectLine(row);
-    setShowCustomization(null);
-    searchRef.current?.focus();
-  }
-
   /** خدمة حرة كانت تُنشأ من صفحة «طلب خدمة جديد». أصبحت الآن سطراً داخل السلة نفسها. */
   function addManualService() {
     const row = {
@@ -824,6 +817,13 @@ export default function Reception() {
     setCart((prev) =>
       prev.map((c) => (c.key === key && !c.digital ? { ...c, qty: Math.max(1, c.qty + delta) } : c)),
     );
+  }
+  function addPlainFromCustomization(key: string) {
+    clearCouponIfApplied();
+    const plainKey = `d-${crypto.randomUUID()}`;
+    setCart((prev) => addPlainCustomizationPiece(prev, key, plainKey));
+    setSelKey(plainKey);
+    setAddTick((tick) => tick + 1);
   }
   function removeRow(key: string) {
     clearCouponIfApplied();
@@ -2629,6 +2629,7 @@ export default function Reception() {
               setQty={setQty}
               removeRow={removeRow}
               onEditCustomization={(row, editingKey) => setShowCustomization({ row, editingKey })}
+              onAddPlainCustomizationPiece={addPlainFromCustomization}
               grandTotal={grandTotal}
               cartCount={cartCount}
               addTick={addTick}
@@ -2709,7 +2710,7 @@ export default function Reception() {
       {depositOpen && activeDraft && <DepositDialog draftId={activeDraft.id} draftNumber={draftInfo?.draftNumber ?? `طلب #${activeDraft.id}`} contactName={customer.name?.trim() || null} orderTotal={round2(grandTotalD).toFixed(2)} heldTotal={draftHeld} suggestedAmount={paidD.gt(0) ? round2(paidD).toFixed(2) : round2(sumCustomD.times(0.25)).toFixed(0)} currentShiftId={shift?.id ?? null} branchName={branchName} cashierName={me.data?.name ?? null} onClose={() => setDepositOpen(false)} onCollected={(total) => { setDraftHeld(total); setPayInput(""); void utils.reception.draftList.invalidate(); }} />}
 
       {/* ─── نافذة التخصيص ─── */}
-      {showCustomization && <CustomizationDialog open productName={showCustomization.row.productName} price={showCustomization.row.price ?? "0"} quantity={showCustomization.editingKey ? cart.find((c) => c.key === showCustomization.editingKey)?.qty ?? 1 : 1} initial={showCustomization.editingKey ? cart.find((c) => c.key === showCustomization.editingKey)?.custom : emptyCustomization(showCustomization.row.productName)} staff={(staffQ.data ?? []).map((member) => ({ id: Number(member.id), name: member.name ?? null, role: member.role ?? null }))} canEditInternalCost={isElevatedRole} onAddPlain={!showCustomization.editingKey && showCustomization.row.variantId !== 0 ? () => addPlain(showCustomization.row) : undefined} onCancel={() => setShowCustomization(null)} onSave={saveCustomization} />}
+      {showCustomization && <CustomizationDialog open productName={showCustomization.row.productName} price={showCustomization.row.price ?? "0"} quantity={showCustomization.editingKey ? cart.find((c) => c.key === showCustomization.editingKey)?.qty ?? 1 : 1} initial={showCustomization.editingKey ? cart.find((c) => c.key === showCustomization.editingKey)?.custom : emptyCustomization(showCustomization.row.productName)} staff={(staffQ.data ?? []).map((member) => ({ id: Number(member.id), name: member.name ?? null, role: member.role ?? null }))} canEditInternalCost={isElevatedRole} onAddPlain={!showCustomization.editingKey && showCustomization.row.variantId !== 0 ? () => { addDirectLine(showCustomization.row); setShowCustomization(null); searchRef.current?.focus(); } : undefined} onCancel={() => setShowCustomization(null)} onSave={saveCustomization} />}
 
       {customerContextId != null && <Contact360Panel kind="customer" id={customerContextId} onClose={() => setCustomerContextId(null)} onOpenContact={(kind, id) => { if (kind === "customer") setCustomerContextId(id); }} />}
 

@@ -10,6 +10,7 @@ import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import {
   deliveryConsignments,
   deliveryParties,
+  deliveryShipmentMembers,
   invoices,
   onlineOrders,
   workOrders,
@@ -23,6 +24,7 @@ import {
   resolveUniqueDeliveryBarcodeTarget,
 } from "./barcodeLookupPolicy";
 import { returnConsignment } from "./returns";
+import { returnShipment } from "./shipmentOperations";
 import type { DeliveryTxActor } from "./types";
 
 export interface BarcodeReturnInput {
@@ -260,12 +262,40 @@ export async function returnByBarcode(
       message: appErrorMessage({
         what: "تعذر إرجاع الإرسالية عبر مسار التوصيل",
         why: `الإرسالية ${matchedCn.consignmentNumber} مُسلَّمة ومُسوّاة مالياً بالكامل`,
-        doThis: "إذا كان العميل يريد إرجاع البضاعة بعد الاستلام، استخدم شاشة مرتجع المبيعات",
+        doThis:
+          "إذا كان العميل يريد إرجاع البضاعة بعد الاستلام، استخدم شاشة مرتجع المبيعات",
       }),
     });
   }
 
   const defaultReason = input.returnReason?.trim() || "مرتجع طرد بالباركود";
+
+  const [shipmentMembership] = await db
+    .select()
+    .from(deliveryShipmentMembers)
+    .where(eq(deliveryShipmentMembers.consignmentId, Number(matchedCn.id)))
+    .limit(1);
+  if (shipmentMembership) {
+    await returnShipment(
+      {
+        consignmentId: Number(matchedCn.id),
+        reason: defaultReason,
+        refundShiftId: input.refundShiftId,
+        clientRequestId:
+          input.clientRequestId ?? `barcode-shipment-return:${matchedCn.id}`,
+      },
+      actor,
+    );
+    return {
+      consignmentId: Number(shipmentMembership.leaderConsignmentId),
+      consignmentNumber: matchedCn.consignmentNumber,
+      reversed: true,
+      partyName: matchedCn.partyName,
+      recipientName: matchedCn.recipientName,
+      codAmount: String(matchedCn.codAmount),
+      returnReason: defaultReason,
+    };
+  }
 
   const res = await returnConsignment(Number(matchedCn.id), {
     ...actor,

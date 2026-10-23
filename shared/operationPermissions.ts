@@ -361,6 +361,12 @@ export function resolveOperationPolicy(
     }
   }
   const withdrawal = getOperationPermission("returns.withdrawRequest");
+  const shipmentCandidates = getOperationPermission("delivery.invoiceCandidates");
+  if (shipmentCandidates?.delegable) {
+    const explicitlyDenied = userPolicy?.grants[shipmentCandidates.key] === false ||
+      (userPolicy?.grants[shipmentCandidates.key] !== true && rolePolicy?.grants[shipmentCandidates.key] === false);
+    grants[shipmentCandidates.key] = grants["operation.delivery.dispatchInvoice"] === true && !explicitlyDenied;
+  }
   if (withdrawal?.delegable) {
     const explicitlyDenied = userPolicy?.grants[withdrawal.key] === false ||
       (userPolicy?.grants[withdrawal.key] !== true && rolePolicy?.grants[withdrawal.key] === false);
