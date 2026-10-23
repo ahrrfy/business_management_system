@@ -836,6 +836,43 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
       ready: true,
       code: "OK",
     });
+    expect(
+      evaluatePrMergeReadiness({
+        prView: {
+          number: 1532,
+          state: "OPEN",
+          baseRefName: "main",
+          mergeable: "MERGEABLE",
+          mergeStateStatus: "BEHIND",
+          isMergeQueueEnabled: false,
+          headRefOid: "head-sha-222",
+          statusCheckRollup: greenRollup,
+          comments: completePages,
+        },
+      }),
+    ).toMatchObject({
+      ready: false,
+      code: "PR_BEHIND_BASE_BRANCH",
+    });
+
+    expect(
+      evaluatePrMergeReadiness({
+        prView: {
+          number: 1532,
+          state: "OPEN",
+          baseRefName: "main",
+          mergeable: "MERGEABLE",
+          mergeStateStatus: "BEHIND",
+          isMergeQueueEnabled: true,
+          headRefOid: "head-sha-222",
+          statusCheckRollup: greenRollup,
+          comments: completePages,
+        },
+      }),
+    ).toMatchObject({
+      ready: true,
+      code: "OK",
+    });
   });
 
   it("يبقي CommissionGuide خارج شريط أدوات ListToolbar في CommissionPlans لمنع التمدد الأفقي (Codex P2)", () => {

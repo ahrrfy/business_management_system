@@ -563,7 +563,10 @@ export function evaluatePrMergeReadiness({
       reason: `طلب الدمج #${prView.number} يحتوي على تعارضات دمج مع main.`,
     };
   }
-  if (mergeStateStatus === "BEHIND") {
+  if (
+    mergeStateStatus === "BEHIND" &&
+    prView?.isMergeQueueEnabled !== true
+  ) {
     return {
       ready: false,
       code: "PR_BEHIND_BASE_BRANCH",
@@ -1855,6 +1858,22 @@ export function runSafeMergeSelftest() {
   });
   assert.equal(behindBranchRes.ready, false);
   assert.equal(behindBranchRes.code, "PR_BEHIND_BASE_BRANCH");
+
+  const queueEnabledBehindRes = evaluatePrMergeReadiness({
+    prView: {
+      number: 108,
+      state: "OPEN",
+      baseRefName: "main",
+      mergeable: "MERGEABLE",
+      mergeStateStatus: "BEHIND",
+      isMergeQueueEnabled: true,
+      headRefOid: "sha-2",
+      statusCheckRollup: baseGreenRollup,
+      comments: makeTrustedCodexComments("sha-2"),
+    },
+  });
+  assert.equal(queueEnabledBehindRes.ready, true);
+  assert.equal(queueEnabledBehindRes.code, "OK");
 
   const blockedBranchRes = evaluatePrMergeReadiness({
     prView: {
