@@ -61,7 +61,7 @@ Shared `FulfillmentMutationIdentity = { clientRequestId: string; expectedVersion
 - [x] Lock request and source documents in stable order; verify customer/normalized phone, branch, source eligibility and current remaining amounts. Track active source ownership and reject another active request.
 - [x] Materialize a ready work-order invoice through its existing service once, preserve deposits and original attribution, then call existing shipment dispatch in the same transaction. Do not call a wrapper which opens a second independent transaction.
 - [x] Support explicit partial release with exact remaining items and a visible future-fee decision; cancellation releases only active preparation links and reverses only real shipping effects.
-- [ ] Run focused request, existing multi-invoice and shipment operation tests once integrated.
+- [x] Run focused request, existing multi-invoice and shipment operation tests once integrated.
 
 ## Task 4: Classified charges, claims, collections and outsourcing costs
 
@@ -100,8 +100,8 @@ Shared `FulfillmentMutationIdentity = { clientRequestId: string; expectedVersion
 
 ## Task 7: Whole-path verification and release
 
-- [ ] Run `pnpm check` and `pnpm check:guards` with the pinned runtime; repair failures in the owned slice. Do not lower baselines.
-- [ ] Reinitialize only the uniquely named session test database on 3310 after new schema; never use production mirror 3306. Run focused suites sequentially, followed by full `pnpm test` with TZ=UTC once for the integrated financial change.
+- [x] Run `pnpm check` and `pnpm check:guards` with the pinned runtime; repair failures in the owned slice. Do not lower baselines.
+- [ ] Reinitialize only the uniquely named session test database on 3310 after new schema; never use production mirror 3306. Run focused suites sequentially, then require the complete financial-change suite through the eight disjoint CI shards with TZ=UTC.
 - [ ] Obtain a fresh whole-diff review, resolve financial/source/concurrency findings, and record actual test results and remaining limits in the approved spec's implementation section.
 - [ ] Fetch main, coordinate shared-file handoff/integration, rerun required gates only for new changes, create concise conventional commit(s), push and open/attach PR, monitor exact-head CI. Merge/deploy only under the existing authorized project protocol and outside another session's deployment window.
 - [ ] Verify exact deployed SHA/artifact/health and read-only new routes; no financial test transactions on production. Release owned claims only after preserving work and evidence.
@@ -121,9 +121,9 @@ Shared `FulfillmentMutationIdentity = { clientRequestId: string; expectedVersion
 - Real isolated app and actual MySQL clone, no mocked financial transport: branch-scoped candidates load; SERVICE charge draft created and approved; printed-reference missing-source error is actionable; refund and excess screens load.
 - Desktop 1366x900 and mobile 390x844 exercised. Document/body widths match viewport; light and dark display use existing theme. Screenshots are local review artifacts under output/playwright/.
 - A cashier shortcut opens the real fulfillment request URL with branchId=3 in a new tab; the reception tab remains at its original URL. The same bounded component is wired into the retail header.
-- Backend integration proves foreign-branch denial, requester/checker separation and inactive/ACCOUNTANT courier membership rejection. Browser exercise used the isolated owner account; no unperformed multi-role UI exercise is claimed.
+- Backend integration proves foreign-branch denial, requester/checker separation and inactive/ACCOUNTANT courier membership rejection. Browser exercise used both the isolated owner and cashier accounts; the full role matrix is covered by the current-authority integration tests rather than claimed as a browser exercise.
 - Production build passed, including PWA and HR bridge artifact/runtime/deployment smokes. Shared typecheck passed after the strict approvedBy correction. All 46 individual guard commands passed after generated source-line synchronization and date-locale corrections; the normal commit gate will run again on the final files.
-- Full pnpm test (TZ=UTC) is running; its final result, exact-head CI and deployment are still pending.
+- The early local full-suite run was stopped after the source/model changed during execution; no full local pass is claimed. The final complete suite must pass through the existing eight disjoint CI shards (TZ=UTC), with no coverage reduction. Deployment remains pending.
 
 ## Final authority and baseline synchronization
 
@@ -135,7 +135,11 @@ Shared `FulfillmentMutationIdentity = { clientRequestId: string; expectedVersion
 
 ## Acceptance gap closure and final model verification
 
-- Added a complete pre-consolidation excess held-fee refund path: exact printed source preview, actual original receipt/rail, active invoice or READY work-order source, source locks shared with individual/group dispatch, pending-provider guard and original WO fee continuity after invoicing. Nine real-DB cases are prepared; their run remains pending the broad-suite completion.
-- Pure service work orders intentionally have no invoice items. REPRINT now uses the real work-order output quantity and FK, shares source caps through either the invoice or work-order entry, and permits a null product only for a service OUTPUT. MATERIAL still requires a real variant. The thirteenth aftercare integration case exercises the actual create/start/ready/deliver path and reverse-delivery denial; its run remains pending.
+- Added a complete pre-consolidation excess held-fee refund path: exact printed source preview, actual original receipt/rail, active invoice or READY work-order source, source locks shared with individual/group dispatch, pending-provider guard and original WO fee continuity after invoicing. All nine real-DB cases passed.
+- Pure service work orders intentionally have no invoice items. REPRINT now uses the real work-order output quantity and FK, shares source caps through either the invoice or work-order entry, and permits a null product only for a service OUTPUT. MATERIAL still requires a real variant. All thirteen aftercare integration cases passed, including actual create/start/ready/deliver, service reprint and reverse-delivery denial.
 - Regenerated unpublished migration 0403 from the updated schema. Both passes of 542 chunks succeeded on a separate baseline clone; between passes the three new CHECKs were removed deliberately and correctly restored. Actual constraints: 70 FK and 27 CHECK across the eight new tables plus consignments, with all three generated identity keys present.
 - A real cashier browser session verified current cost redaction in the actual HTTP response (externalCost/payeePaidAmount/payeeRemaining=null, costVisible=false) and disabled cost approval with an explanation. The new refund preview shows an actionable missing printed-number error; narrow 390px layout has no horizontal overflow. Screenshots remain under output/playwright/.
+- The actual cashier UI created a case for a delivered two-output service work order without a product or invoice item. Opening its invoice deep link resolves the real WO printed number and selects REPRINT without offering an old inventory movement.
+- A fresh final test schema on local 3310 passed physical verification and all 72 targeted charge/report/aftercare/visibility/refund/cash-day/statement tests. The request/counter/tender/continuity suites passed 48 further cases. The legacy multi-invoice fixture was corrected to retain its real WO backlink and all 18 cases passed, including disconnected-source rejection. Total: 138 distinct targeted tests across 13 files; runtime source guards were preserved.
+- The actual aftercare dispatch document renderer was exercised against a real isolated consignment (AFTERCARE_EXECUTION, invoiceId=null, COD=0, SHOP). Its sandboxed preview showed the real CN, recipient, zero collection, shop fee, QR and barcode; no physical print was invoked. Screenshot: output/playwright/aftercare-dispatch-slip-preview-final.png.
+- Final release source inherits main d781d430096c84aeb384b602b9d1146062e575b9 (security PR #1550); its seven-file dependency/security-test delta contains no business changes. The root frozen install completed without dependency resolution or downloads. Final exact-head CI/review/deployment evidence will be recorded in the release PR to avoid a documentation-only rerun of the full suite.

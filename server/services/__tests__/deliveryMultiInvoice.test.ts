@@ -126,6 +126,7 @@ beforeEach(async () => {
         id: 2,
         invoiceNumber: "SHIP-INV-2",
         sourceType: "WORKORDER",
+        sourceId: "WO-2:R1",
         customerId: 1,
         branchId: 1,
         subtotal: "2500",
@@ -197,6 +198,21 @@ beforeEach(async () => {
         createdBy: 1,
       },
     ]);
+  // The real WORKORDER invoice writers retain a linked READY order and a revision source ID.
+  await db().insert(s.workOrders).values({
+    id: 2,
+    orderNumber: "SHIP-WO-2",
+    branchId: 1,
+    customerId: 1,
+    invoiceId: 2,
+    status: "READY",
+    version: 1,
+    title: "خدمة ضمن الشحنة المجمعة",
+    salePrice: "2500",
+    deposit: "400",
+    hasDelivery: true,
+    createdBy: 1,
+  });
 });
 
 describe("شحنة واحدة لعدة فواتير مع استقلال الأثر المالي", () => {
@@ -206,6 +222,11 @@ describe("شحنة واحدة لعدة فواتير مع استقلال الأث
       { ...input, feeCollection: "COUNTER" },
       cashier,
     );
+    expect(result.members.find((row) => Number(row.invoiceId) === 2)).toMatchObject({
+      workOrderId: 2,
+      sourceType: "WORK_ORDER",
+      sourceId: 2,
+    });
     expect(
       result.members.map((row) => [
         Number(row.invoiceId),
@@ -224,6 +245,35 @@ describe("شحنة واحدة لعدة فواتير مع استقلال الأث
         referenceNumber: "DLV-FEE-INV-1",
       },
     ]);
+  });
+
+  it("يرفض فاتورة أمر شغل ذات مصدر منقطع دون إنشاء أثر مالي أو مخزني", async () => {
+    await db().insert(s.invoices).values({
+      id: 9,
+      invoiceNumber: "SHIP-ORPHAN-WO",
+      sourceType: "WORKORDER",
+      sourceId: "WO-999999:R1",
+      customerId: 1,
+      branchId: 1,
+      subtotal: "2500",
+      total: "2500",
+      paidAmount: "400",
+      returnedTotal: "100",
+      createdBy: 1,
+    });
+    const invoicesBefore = await db().select().from(s.invoices);
+    await expect(dispatchInvoiceToDelivery({
+      invoiceId: 9,
+      partyId: 1,
+      deliveryFee: "1500",
+      externalTrackingRef: "ORPHAN-WO-TRACK",
+      clientRequestId: "shipment-orphan-workorder",
+    }, cashier)).rejects.toThrow(/لا ترتبط بأمر شغل واحد موثوق/);
+    expect(await db().select().from(s.invoices)).toEqual(invoicesBefore);
+    expect(await db().select().from(s.deliveryConsignments)).toHaveLength(0);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
   });
 
   it("أمانة أجرة الفاتورة الثانية تجعلها القائد دون نقل الإيصال وتحفظ القائد عند إعادة الإسناد", async () => {
