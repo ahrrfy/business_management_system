@@ -147,6 +147,74 @@ export function flattenPaginatedReviewThreads(pagesPayload) {
   return threads;
 }
 
+export function hasIncompleteIssueCommentsPagination(pagesPayload) {
+  if (!pagesPayload) return false;
+  if (!Array.isArray(pagesPayload)) {
+    return (
+      pagesPayload?.data?.repository?.pullRequest?.comments?.pageInfo
+        ?.hasNextPage === true ||
+      pagesPayload?.pageInfo?.hasNextPage === true
+    );
+  }
+  const pageObjects = [];
+  const collectPageObjects = (items) => {
+    for (const item of items) {
+      if (Array.isArray(item)) {
+        collectPageObjects(item);
+      } else if (
+        item &&
+        typeof item === "object" &&
+        item?.data?.repository?.pullRequest?.comments
+      ) {
+        pageObjects.push(item.data.repository.pullRequest.comments);
+      } else if (
+        item &&
+        typeof item === "object" &&
+        item?.pageInfo &&
+        Array.isArray(item?.nodes)
+      ) {
+        pageObjects.push(item);
+      }
+    }
+  };
+  collectPageObjects(pagesPayload);
+  if (pageObjects.length === 0) return false;
+  const lastPage = pageObjects[pageObjects.length - 1];
+  return lastPage?.pageInfo?.hasNextPage === true;
+}
+
+export function flattenPaginatedIssueComments(pagesPayload) {
+  if (!pagesPayload) return [];
+  if (!Array.isArray(pagesPayload)) {
+    const singleNodes =
+      pagesPayload?.data?.repository?.pullRequest?.comments?.nodes ??
+      pagesPayload?.nodes;
+    return Array.isArray(singleNodes) ? singleNodes : [];
+  }
+  const comments = [];
+  for (const item of pagesPayload) {
+    if (Array.isArray(item)) {
+      comments.push(...flattenPaginatedIssueComments(item));
+      continue;
+    }
+    const nodes =
+      item?.data?.repository?.pullRequest?.comments?.nodes ??
+      (Array.isArray(item?.nodes) ? item.nodes : null);
+    if (Array.isArray(nodes)) {
+      comments.push(...nodes);
+      continue;
+    }
+    if (
+      item &&
+      typeof item === "object" &&
+      ("body" in item || "author" in item || "user" in item)
+    ) {
+      comments.push(item);
+    }
+  }
+  return comments;
+}
+
 export function buildMergeCommandArgs(prNumber, headRefOid) {
   const cleanPr = String(prNumber ?? "").trim();
   const cleanSha = String(headRefOid ?? "").trim();
@@ -339,11 +407,15 @@ function isTrustedCodexComment(comment) {
 }
 
 export function parseCodexReviewState(prComments = []) {
-  if (!Array.isArray(prComments) || prComments.length === 0) {
+  if (hasIncompleteIssueCommentsPagination(prComments)) {
+    return { state: "invalid", paginationIncomplete: true };
+  }
+  const flatComments = flattenPaginatedIssueComments(prComments);
+  if (flatComments.length === 0) {
     return null;
   }
   let latest = null;
-  for (const comment of prComments) {
+  for (const comment of flatComments) {
     if (!isTrustedCodexComment(comment)) continue;
     const body = String(comment?.body ?? "");
     if (!body.includes(CODEX_STATE_MARKER)) continue;
@@ -437,6 +509,7 @@ export function evaluatePrMergeReadiness({
   prView,
   reviewThreads = null,
   reviewComments = [],
+  issueComments = null,
 } = {}) {
   if (!prView || typeof prView !== "object") {
     return {
@@ -514,6 +587,19 @@ export function evaluatePrMergeReadiness({
     };
   }
 
+  const commentsPayload =
+    issueComments != null ? issueComments : prView.comments;
+  if (
+    hasIncompleteIssueCommentsPagination(commentsPayload) ||
+    prView?.commentsPageInfo?.hasNextPage === true
+  ) {
+    return {
+      ready: false,
+      code: "PR_ISSUE_COMMENTS_PAGINATION_INCOMPLETE",
+      reason: `بيانات تعليقات طلب الدمج #${prView.number} غير مكتملة (hasNextPage=true)؛ يجب جلب جميع صفحات التعليقات قبل الاعتماد على حالة مراجعة Codex الآلية.`,
+    };
+  }
+
   const rawThreads = flattenPaginatedReviewThreads(threadsPayload);
   const normalizedThreads = rawThreads
     .map(normalizeReviewThreadEntry)
@@ -588,7 +674,7 @@ export function evaluatePrMergeReadiness({
     }
   }
 
-  const codexState = parseCodexReviewState(prView.comments);
+  const codexState = parseCodexReviewState(commentsPayload);
   if (codexState === null) {
     if (unresolved.length > 0) {
       return {
@@ -813,9 +899,10 @@ export function verifyPreMergeTargetState({
   }
   const latest = fetchState(prNumber);
   const prView = latest?.prView ?? latest;
-  const reviewThreads = Array.isArray(latest?.reviewThreads)
-    ? latest.reviewThreads
-    : [];
+  const reviewThreads =
+    latest?.reviewThreads !== undefined ? latest.reviewThreads : [];
+  const issueComments =
+    latest?.issueComments !== undefined ? latest.issueComments : null;
   const baseRefName = String(prView?.baseRefName ?? "").trim();
   if (baseRefName !== "main") {
     return {
@@ -833,7 +920,11 @@ export function verifyPreMergeTargetState({
       reason: `تغيّر رأس طلب الدمج #${prNumber} إلى «${actualHeadRefOid || "غير معروف"}» قبيل الدمج ولا يطابق البصمة المتحقَّق منها (${expectedSha || "غير محددة"}).`,
     };
   }
-  const readiness = evaluatePrMergeReadiness({ prView, reviewThreads });
+  const readiness = evaluatePrMergeReadiness({
+    prView,
+    reviewThreads,
+    issueComments,
+  });
   if (!readiness.ready) {
     return {
       ok: false,
@@ -2326,6 +2417,128 @@ export function runSafeMergeSelftest() {
   assert.equal(forgedCodexCommentRes.ready, false);
   assert.equal(forgedCodexCommentRes.code, "PR_CODEX_REVIEW_RUNNING");
 
+  // 21. Incomplete issue comments pagination (hasNextPage=true) fails closed before trusting older Codex markers
+  const incompleteIssueCommentsPage = [
+    {
+      data: {
+        repository: {
+          pullRequest: {
+            comments: {
+              pageInfo: { hasNextPage: true, endCursor: "cursor-100" },
+              nodes: makeTrustedCodexComments("sha-2"),
+            },
+          },
+        },
+      },
+    },
+  ];
+  assert.equal(
+    hasIncompleteIssueCommentsPagination(incompleteIssueCommentsPage),
+    true,
+  );
+  const incompleteCommentsRes = evaluatePrMergeReadiness({
+    prView: {
+      number: 126,
+      state: "OPEN",
+      baseRefName: "main",
+      mergeable: "MERGEABLE",
+      headRefOid: "sha-2",
+      statusCheckRollup: baseGreenRollup,
+      comments: incompleteIssueCommentsPage,
+    },
+  });
+  assert.equal(incompleteCommentsRes.ready, false);
+  assert.equal(
+    incompleteCommentsRes.code,
+    "PR_ISSUE_COMMENTS_PAGINATION_INCOMPLETE",
+  );
+
+  // 22. Multi-page issue comments (>100 comments across slurped GraphQL pages) inspect the latest Codex marker on later pages
+  const fillerComments = Array.from({ length: 100 }, (_, idx) => ({
+    id: `IC_${idx + 1}`,
+    author: { login: "contributor" },
+    body: `Discussion comment #${idx + 1}`,
+  }));
+  fillerComments[0] = {
+    id: "IC_OLD_CODEX",
+    author: { login: "chatgpt-codex-connector" },
+    body: '<!-- codex-review-state:v1 {"sha":"sha-old","state":"completed"} -->',
+  };
+  const multiPageCommentsRunning = [
+    {
+      data: {
+        repository: {
+          pullRequest: {
+            comments: {
+              pageInfo: { hasNextPage: true, endCursor: "cursor-100" },
+              nodes: fillerComments,
+            },
+          },
+        },
+      },
+    },
+    {
+      data: {
+        repository: {
+          pullRequest: {
+            comments: {
+              pageInfo: { hasNextPage: false, endCursor: "cursor-105" },
+              nodes: [
+                {
+                  id: "IC_101",
+                  author: { login: "chatgpt-codex-connector" },
+                  body: '<!-- codex-review-state:v1 {"sha":"sha-2","state":"running"} -->',
+                },
+              ],
+            },
+          },
+        },
+      },
+    },
+  ];
+  const multiPageRunningRes = evaluatePrMergeReadiness({
+    prView: {
+      number: 127,
+      state: "OPEN",
+      baseRefName: "main",
+      mergeable: "MERGEABLE",
+      headRefOid: "sha-2",
+      statusCheckRollup: baseGreenRollup,
+      comments: multiPageCommentsRunning,
+    },
+  });
+  assert.equal(multiPageRunningRes.ready, false);
+  assert.equal(multiPageRunningRes.code, "PR_CODEX_REVIEW_RUNNING");
+
+  const multiPageCommentsCompleted = [
+    multiPageCommentsRunning[0],
+    {
+      data: {
+        repository: {
+          pullRequest: {
+            comments: {
+              pageInfo: { hasNextPage: false, endCursor: "cursor-106" },
+              nodes: makeTrustedCodexComments("sha-2"),
+            },
+          },
+        },
+      },
+    },
+  ];
+  const multiPageCompletedRes = evaluatePrMergeReadiness({
+    prView: {
+      number: 127,
+      state: "OPEN",
+      baseRefName: "main",
+      mergeable: "MERGEABLE",
+      headRefOid: "sha-2",
+      statusCheckRollup: baseGreenRollup,
+      comments: multiPageCommentsCompleted,
+    },
+  });
+  assert.equal(multiPageCompletedRes.ready, true);
+  assert.equal(multiPageCompletedRes.code, "OK");
+
   console.log("safe-merge selftest: OK");
 }
 
@@ -2697,6 +2910,47 @@ function fetchAllReviewThreads(prNumber) {
   ]);
 }
 
+const ISSUE_COMMENTS_QUERY = `
+query($owner: String!, $name: String!, $pr: Int!, $endCursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $pr) {
+      comments(first: 100, after: $endCursor) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          id
+          databaseId
+          body
+          createdAt
+          author {
+            login
+          }
+        }
+      }
+    }
+  }
+}
+`.trim();
+
+function fetchAllIssueComments(prNumber) {
+  return captureJson("gh", [
+    "api",
+    "graphql",
+    "--paginate",
+    "--slurp",
+    "-F",
+    "owner=ahrrfy",
+    "-F",
+    "name=business_management_system",
+    "-F",
+    `pr=${Number(prNumber)}`,
+    "-f",
+    `query=${ISSUE_COMMENTS_QUERY}`,
+  ]);
+}
+
 const POST_MERGE_PR_STATE_QUERY = `
 query($owner: String!, $name: String!, $pr: Int!) {
   repository(owner: $owner, name: $name) {
@@ -2756,10 +3010,11 @@ function fetchPrStateAndThreads(prArg) {
   }
   viewArgs.push(
     "--json",
-    "id,number,state,isDraft,baseRefName,headRefName,headRefOid,isCrossRepository,headRepository,headRepositoryOwner,mergeStateStatus,mergeable,reviewDecision,statusCheckRollup,comments",
+    "id,number,state,isDraft,baseRefName,headRefName,headRefOid,isCrossRepository,headRepository,headRepositoryOwner,mergeStateStatus,mergeable,reviewDecision,statusCheckRollup",
   );
   const prView = captureJson("gh", viewArgs);
   prView.baseRefName = String(prView?.baseRefName ?? "");
+  prView.comments = fetchAllIssueComments(prView.number);
   const reviewThreads = fetchAllReviewThreads(prView.number);
   const prMeta = Array.isArray(reviewThreads)
     ? reviewThreads[0]?.data?.repository?.pullRequest

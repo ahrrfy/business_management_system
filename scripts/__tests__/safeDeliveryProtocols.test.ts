@@ -12,7 +12,9 @@ import {
   buildMergeCommandArgs,
   buildResolveReviewThreadArgs,
   evaluatePrMergeReadiness,
+  flattenPaginatedIssueComments,
   flattenPaginatedReviewThreads,
+  hasIncompleteIssueCommentsPagination,
   parseCodexReviewState,
   runAtomicRemediationCycle,
   verifyPostMergeCompletion,
@@ -734,6 +736,106 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
     expect(deployContractOutput).toContain(
       "deployment storefront-readiness contract test: OK",
     );
+  });
+
+  it("يجلب ويتحقق من جميع صفحات تعليقات PR (>100 تعليق) ويغلق آلياً عند نقص الترقيم قبل الوثوق بعلامة Codex", () => {
+    const safeMergeSource = readFileSync(
+      resolve(root, "scripts/safe-merge.mjs"),
+      "utf8",
+    );
+    expect(safeMergeSource).toContain("ISSUE_COMMENTS_QUERY");
+    expect(safeMergeSource).not.toContain("statusCheckRollup,comments");
+
+    const greenRollup = [
+      { name: "audit", status: "COMPLETED", conclusion: "SUCCESS" },
+      { name: "authz-guard", status: "COMPLETED", conclusion: "SUCCESS" },
+      { name: "check-test-build", status: "COMPLETED", conclusion: "SUCCESS" },
+    ];
+
+    const pageOneNodes = Array.from({ length: 100 }, (_, i) => ({
+      id: `IC_${i + 1}`,
+      author: { login: i === 0 ? "chatgpt-codex-connector" : "reviewer" },
+      body:
+        i === 0
+          ? '<!-- codex-review-state:v1 {"sha":"old-sha-000","state":"completed"} -->'
+          : `Comment #${i + 1}`,
+    }));
+
+    const incompletePages = [
+      {
+        data: {
+          repository: {
+            pullRequest: {
+              comments: {
+                pageInfo: { hasNextPage: true, endCursor: "cursor-100" },
+                nodes: pageOneNodes,
+              },
+            },
+          },
+        },
+      },
+    ];
+    expect(hasIncompleteIssueCommentsPagination(incompletePages)).toBe(true);
+    expect(parseCodexReviewState(incompletePages)).toMatchObject({
+      state: "invalid",
+      paginationIncomplete: true,
+    });
+    expect(
+      evaluatePrMergeReadiness({
+        prView: {
+          number: 1532,
+          state: "OPEN",
+          baseRefName: "main",
+          mergeable: "MERGEABLE",
+          headRefOid: "head-sha-222",
+          statusCheckRollup: greenRollup,
+          comments: incompletePages,
+        },
+      }),
+    ).toMatchObject({
+      ready: false,
+      code: "PR_ISSUE_COMMENTS_PAGINATION_INCOMPLETE",
+    });
+
+    const completePages = [
+      incompletePages[0],
+      {
+        data: {
+          repository: {
+            pullRequest: {
+              comments: {
+                pageInfo: { hasNextPage: false, endCursor: "cursor-102" },
+                nodes: [
+                  {
+                    id: "IC_101",
+                    author: { login: "chatgpt-codex-connector" },
+                    body: '<!-- codex-review-state:v1 {"sha":"head-sha-222","state":"completed"} -->',
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+    ];
+    expect(hasIncompleteIssueCommentsPagination(completePages)).toBe(false);
+    expect(flattenPaginatedIssueComments(completePages)).toHaveLength(101);
+    expect(
+      evaluatePrMergeReadiness({
+        prView: {
+          number: 1532,
+          state: "OPEN",
+          baseRefName: "main",
+          mergeable: "MERGEABLE",
+          headRefOid: "head-sha-222",
+          statusCheckRollup: greenRollup,
+          comments: completePages,
+        },
+      }),
+    ).toMatchObject({
+      ready: true,
+      code: "OK",
+    });
   });
 
   it("يبقي CommissionGuide خارج شريط أدوات ListToolbar في CommissionPlans لمنع التمدد الأفقي (Codex P2)", () => {
