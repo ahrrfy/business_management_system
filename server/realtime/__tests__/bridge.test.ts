@@ -10,6 +10,19 @@ import {
 import { createRealtimeEvent, REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 import net from "node:net";
 
+async function getFreeLoopbackPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.unref();
+    probe.once("error", reject);
+    probe.listen(0, "127.0.0.1", () => {
+      const address = probe.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      probe.close((err) => (err ? reject(err) : resolve(port)));
+    });
+  });
+}
+
 describe("realtimeBridge — ناقل الحلقات الداخلي بين عمال PM2 والذاكرة", () => {
   afterEach(async () => {
     await stopRealtimeBridge();
@@ -44,8 +57,8 @@ describe("realtimeBridge — ناقل الحلقات الداخلي بين عم�
   });
 
   it("يشغّل خادم Hub محلي فائق الخفة على 127.0.0.1 عندما يكون العامل 0 متعدد العمال", async () => {
-    // منفذ اختبار عشوائي معزول
-    const testPort = 3109 + Math.floor(Math.random() * 200);
+    // منفذ اختبار معزول مخصص من نواة النظام لتفادي التصادم مع منافذ الخدمات الثابتة مثل MySQL 3306
+    const testPort = await getFreeLoopbackPort();
 
     const mode = await initRealtimeBridge({
       port: testPort,
@@ -123,9 +136,9 @@ describe("realtimeBridge — ناقل الحلقات الداخلي بين عم�
 
   it("يسقط تلقائياً إلى in_memory بسلاسة عند تعذر فتح المنفذ دون إسقاط الخادم", async () => {
     // حجز المنفذ مسبقاً بمقبس خارجي
-    const testPort = 3450 + Math.floor(Math.random() * 100);
     const blocker = net.createServer();
-    await new Promise<void>((resolve) => blocker.listen(testPort, "127.0.0.1", () => resolve()));
+    await new Promise<void>((resolve) => blocker.listen(0, "127.0.0.1", () => resolve()));
+    const testPort = (blocker.address() as net.AddressInfo).port;
 
     try {
       const mode = await initRealtimeBridge({
@@ -144,7 +157,7 @@ describe("realtimeBridge — ناقل الحلقات الداخلي بين عم�
   });
 
   it("ينقل الأحداث بين عاملي PM2 (Hub وعامل Client) بالاتجاهين مع عزل معرّف العامل", async () => {
-    const testPort = 3600 + Math.floor(Math.random() * 200);
+    const testPort = await getFreeLoopbackPort();
     const hub = new RealtimeBridgeManager();
     const worker1 = new RealtimeBridgeManager();
 
@@ -207,7 +220,7 @@ describe("realtimeBridge — ناقل الحلقات الداخلي بين عم�
   });
 
   it("requests one snapshot repair after hub recovery while the browser SSE can remain open", async () => {
-    const port = 4200 + Math.floor(Math.random() * 200);
+    const port = await getFreeLoopbackPort();
     const hub = new RealtimeBridgeManager();
     const worker = new RealtimeBridgeManager();
     const received: any[] = [];
@@ -233,7 +246,7 @@ describe("realtimeBridge — ناقل الحلقات الداخلي بين عم�
   });
 
   it("يخزن الأحداث مؤقتاً في طابور عند نشرها وعامل الـ Client غير متصل بالـ Hub، ثم يفرغها فور الاتصال", async () => {
-    const testPort = 3800 + Math.floor(Math.random() * 200);
+    const testPort = await getFreeLoopbackPort();
     const workerClient = new RealtimeBridgeManager();
 
     // تشغيل العامل في وضع client قبل إطلاق الـ Hub
@@ -301,7 +314,7 @@ describe("PWA release confirmation barrier", () => {
   };
   const cluster = async () => {
     const managers = [makeManager(), makeManager(), makeManager()];
-    const port = 46000 + Math.floor(Math.random() * 1000);
+    const port = await getFreeLoopbackPort();
     await managers[0].init({
       port,
       isHub: true,
@@ -339,7 +352,7 @@ describe("PWA release confirmation barrier", () => {
     const handler = vi.fn(() => true);
     hub.setReleaseHandler(handler);
     source.setReleaseHandler(handler);
-    const port = 49000 + Math.floor(Math.random() * 500);
+    const port = await getFreeLoopbackPort();
     try {
       await hub.init({
         port,
@@ -367,7 +380,7 @@ describe("PWA release confirmation barrier", () => {
     const hub = makeManager();
     const handler = vi.fn(() => true);
     hub.setReleaseHandler(handler);
-    const port = 49500 + Math.floor(Math.random() * 500);
+    const port = await getFreeLoopbackPort();
     let socket: net.Socket | undefined;
     try {
       await hub.init({
@@ -440,11 +453,11 @@ describe("PWA release confirmation barrier", () => {
   });
 
   it("recovers hub mode automatically after EADDRINUSE when the old PM2 worker releases the port", async () => {
-    const port = 48500 + Math.floor(Math.random() * 400);
     const blocker = net.createServer();
     await new Promise<void>((resolve) =>
-      blocker.listen(port, "127.0.0.1", () => resolve()),
+      blocker.listen(0, "127.0.0.1", () => resolve()),
     );
+    const port = (blocker.address() as net.AddressInfo).port;
     const hub = makeManager();
     const peer = makeManager();
     try {
@@ -516,7 +529,7 @@ describe("PWA release confirmation barrier", () => {
   it("rejects absent members and a disconnected source without queuing or replaying releases", async () => {
     const hub = makeManager();
     const source = makeManager();
-    const port = 47000 + Math.floor(Math.random() * 1000);
+    const port = await getFreeLoopbackPort();
     const handler = vi.fn(() => true);
     source.setReleaseHandler(handler);
     try {
@@ -571,7 +584,7 @@ describe("PWA release confirmation barrier", () => {
     hub.setReleaseHandler(handler);
     peerA.setReleaseHandler(handler);
     peerB.setReleaseHandler(handler);
-    const port = 49100 + Math.floor(Math.random() * 300);
+    const port = await getFreeLoopbackPort();
     try {
       await hub.init({
         port,
