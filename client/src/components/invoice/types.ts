@@ -134,6 +134,10 @@ export type InvoiceAction =
   | {
       type: "SET_STOCK_SNAPSHOTS";
       snapshotsByUnitId: Record<number, { stockBase: number; stockBranchId: number; reservedBase: number; availableBase: number; isService: boolean; allowBackorder: boolean }>;
+      /** الوحدات التي استُعلم عنها فعلياً في هذه الدفعة — البنود خارجها لا تُصفَّر. */
+      queriedUnitIds?: ReadonlySet<number> | readonly number[];
+      /** الفرع الفعلي للقطة الخادمية عند غياب صفّ مخزني لوحدة مستعلَم عنها. */
+      effectiveBranchId?: number;
     }
   | { type: "MARK_STOCK_STALE" }
   | { type: "SET_ENTITY"; id: number | null; tier?: PriceTier }

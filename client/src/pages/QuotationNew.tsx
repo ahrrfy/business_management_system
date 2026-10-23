@@ -15,13 +15,17 @@ import { AlertTriangle } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
-import { D, formatQuantity } from "@/lib/money";
+import { D, formatQuantity, moneyInput } from "@/lib/money";
+import { salesOperationAllowed } from "@/lib/salesOperationAccess";
 import { PageHeader } from "@/components/PageHeader";
 import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/invoiceTransfer";
 import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
-import { buildQuotationLinePayload } from "@/lib/quotationPayload";
+import {
+  buildQuotationLinePayload,
+  isCompleteNonNegativeMoneyInput,
+} from "@/lib/quotationPayload";
 import { variantDisplayName } from "@shared/variantDisplay";
 
 import {
@@ -35,6 +39,7 @@ import {
   splitDocumentNotes,
   ShortcutsBar,
   invoiceReducer,
+  useInvoiceLiveStockSync,
   createInitialState,
   calcTotals,
   calcLineTotal,
@@ -211,71 +216,12 @@ export default function QuotationNew() {
   }, [isEdit, taxSettingsQuery.data]);
 
   // مزامنة أرصدة المخزون الحيّة للوحدات المضافة أو المحمّلة من مسودة/طلب متجر (بما في ذلك ما يتجاوز 500 وحدة عبر دفعات)
-  const allStockUnitIds = useMemo(
-    () => Array.from(new Set(state.items.map((item) => item.productUnitId))),
-    [state.items],
-  );
-  const stockUnitIds = useMemo(() => allStockUnitIds.slice(0, 500), [allStockUnitIds]);
-  const liveStockQ = trpc.catalog.stockByUnitIds.useQuery(
-    { branchId: state.branchId, productUnitIds: stockUnitIds },
-    {
-      enabled: stockUnitIds.length > 0,
-      staleTime: 0,
-      refetchInterval: stockUnitIds.length > 0 ? 15_000 : false,
-      refetchOnWindowFocus: true,
-    },
-  );
-  useEffect(() => {
-    dispatch({ type: "MARK_STOCK_STALE" });
-  }, [state.branchId]);
-  useEffect(() => {
-    const snapshot = liveStockQ.data;
-    if (!snapshot) return;
-    if (snapshot.branchId !== state.branchId) {
-      dispatch({ type: "SET_FIELD", field: "branchId", value: snapshot.branchId });
-      return;
-    }
-    const baseRows = snapshot.rows;
-    let cancelled = false;
-    async function applyAllSnapshots() {
-      const allRows = [...baseRows];
-      if (allStockUnitIds.length > 500) {
-        const extraChunks: number[][] = [];
-        for (let i = 500; i < allStockUnitIds.length; i += 500) {
-          extraChunks.push(allStockUnitIds.slice(i, i + 500));
-        }
-        const extraSnapshots = await Promise.all(
-          extraChunks.map((chunk) =>
-            utils.catalog.stockByUnitIds.fetch({ branchId: state.branchId, productUnitIds: chunk }),
-          ),
-        );
-        for (const extra of extraSnapshots) {
-          allRows.push(...extra.rows);
-        }
-      }
-      if (cancelled) return;
-      dispatch({
-        type: "SET_STOCK_SNAPSHOTS",
-        snapshotsByUnitId: Object.fromEntries(
-          allRows.map((row) => [
-            row.productUnitId,
-            {
-              stockBase: row.stockBase,
-              stockBranchId: row.branchId,
-              reservedBase: row.reservedBase,
-              availableBase: row.availableBase,
-              isService: row.isService,
-              allowBackorder: row.allowBackorder,
-            },
-          ]),
-        ),
-      });
-    }
-    void applyAllSnapshots();
-    return () => {
-      cancelled = true;
-    };
-  }, [liveStockQ.data, state.branchId, allStockUnitIds, utils.catalog.stockByUnitIds]);
+  useInvoiceLiveStockSync({
+    items: state.items,
+    branchId: state.branchId,
+    enabled: salesOperationAllowed(me.data, "catalog.stockByUnitIds", true),
+    dispatch,
+  });
 
   const totals = useMemo(() => calcTotals(state.items, state), [state.items, state]);
   const taxShares = useMemo(
@@ -375,7 +321,7 @@ export default function QuotationNew() {
       storefrontQuoteRequestId: sourceQuoteRequestId ?? undefined,
       clientRequestId,
       invoiceDiscount: D(totals.globalDiscAmt).gt(0) ? totals.globalDiscAmt : undefined,
-      taxRatePercent: state.taxEnabled ? D(state.taxRatePercent || "0").toFixed(2) : undefined,
+      taxRatePercent: state.taxEnabled ? moneyInput(state.taxRatePercent).toFixed(2) : undefined,
       lines: state.items.map(buildQuotationLinePayload),
     };
   }
@@ -385,9 +331,19 @@ export default function QuotationNew() {
     if (!state.entityId) return "اختر العميل أولاً.";
     if (state.items.length === 0) return "أضف منتجاً واحداً على الأقل.";
     for (const l of state.items) {
-      if (!D(l.qty).gt(0)) return `الكمية في «${l.name}» يجب أن تكون موجبة.`;
-      if (D(l.price).lt(0)) return `السعر في «${l.name}» غير صالح.`;
+      if (!moneyInput(l.qty).gt(0)) return `الكمية في «${l.name}» يجب أن تكون موجبة.`;
+      if (!isCompleteNonNegativeMoneyInput(l.price, { allowEmpty: false }))
+        return `السعر في «${l.name}» غير صالح.`;
+      if (!isCompleteNonNegativeMoneyInput(l.discount, { allowEmpty: true }))
+        return `الخصم في «${l.name}» غير صالح.`;
     }
+    if (!isCompleteNonNegativeMoneyInput(state.globalDiscount, { allowEmpty: true }))
+      return "الخصم الإجمالي غير صالح.";
+    if (
+      state.taxEnabled &&
+      !isCompleteNonNegativeMoneyInput(state.taxRatePercent, { allowEmpty: true })
+    )
+      return "نسبة الضريبة غير صالحة.";
     const totals = calcTotals(state.items, state);
     if (D(totals.grandTotal).lt(0)) return "الإجمالي النهائي لا يمكن أن يكون سالباً.";
     return null;
@@ -491,6 +447,7 @@ export default function QuotationNew() {
           break;
         }
         dispatch({ type: "ADD_ITEMS", items });
+        dispatch({ type: "MARK_STOCK_STALE" });
         setPasteAvailable(false);
         notify.ok("تم لصق محتويات الفاتورة.");
         break;
@@ -556,7 +513,10 @@ export default function QuotationNew() {
 
   // مؤشّر اختياري: إن لم يكن هناك سعر صالح في أي بند، نبيّن للمستخدم.
   const hasZeroPriceLine = useMemo(
-    () => state.items.some((l) => D(l.price).lte(0)),
+    () =>
+      state.items.some(
+        (l) => !isCompleteNonNegativeMoneyInput(l.price, { allowEmpty: false }) || moneyInput(l.price).lte(0),
+      ),
     [state.items]
   );
 

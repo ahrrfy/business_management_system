@@ -26,7 +26,7 @@ import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
-import { D, round2, toBase, fmt, formatQuantity } from "@/lib/money";
+import { D, round2, toBase, fmt, formatQuantity, moneyInput } from "@/lib/money";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Card } from "@/components/ui/card";
@@ -37,7 +37,11 @@ import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage,
 } from "@shared/posPaymentPolicy";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
-import { getDeviceCode } from "@/lib/offline/outbox"; import { shouldSendUnitPriceOverride } from "@/lib/quotationPayload";
+import { getDeviceCode } from "@/lib/offline/outbox";
+import {
+  isCompleteNonNegativeMoneyInput,
+  shouldSendUnitPriceOverride,
+} from "@/lib/quotationPayload";
 import { variantDisplayName } from "@shared/variantDisplay";
 
 import { Button } from "@/components/ui/button";
@@ -70,6 +74,7 @@ import {
   splitDocumentNotes,
   ShortcutsBar,
   invoiceReducer,
+  useInvoiceLiveStockSync,
   createInitialState,
   calcTotals,
   calcLineTotal,
@@ -283,52 +288,12 @@ export default function SalesInvoice() {
 
   // لقطة السطر المخزنية ليست مصدراً للحقيقة: النسخ/اللصق/تغيير الفرع ومسودة قديمة كلها قد تحمل
   // رقماً قديماً. نعيد قراءة الوحدات الموجودة فقط من الفرع الذي طبّقه الخادم، دورياً وعند التركيز.
-  const stockUnitIds = useMemo(
-    () => Array.from(new Set(state.items.map((item) => item.productUnitId))).slice(0, 500,
-      ),
-    [state.items],
-  );
-  const liveStockQ = trpc.catalog.stockByUnitIds.useQuery(
-    { branchId: state.branchId, productUnitIds: stockUnitIds },
-    {
-      enabled: stockUnitIds.length > 0 && salesOperationAllowed(me.data, "catalog.stockByUnitIds", true),
-      staleTime: 0,
-      refetchInterval: stockUnitIds.length > 0 ? 15_000 : false,
-      refetchOnWindowFocus: true,
-    },
-  );
-
-  useEffect(() => {
-    dispatch({ type: "MARK_STOCK_STALE" });
-  }, [state.branchId]);
-
-  useEffect(() => {
-    const snapshot = liveStockQ.data;
-    if (!snapshot) return;
-    // غير الأدمن قد يطلب فرعاً آخر من واجهة/مسودة قديمة، لكن الخادم يجبره على فرع حسابه.
-    // نعكس الفرع الفعلي في الرأس بدلاً من إبقاء اسمٍ مضلّل فوق أرقام فرع آخر.
-    if (snapshot.branchId !== state.branchId) {
-      dispatch({ type: "SET_FIELD", field: "branchId", value: snapshot.branchId,
-      });
-      return;
-    }
-    dispatch({
-      type: "SET_STOCK_SNAPSHOTS",
-      snapshotsByUnitId: Object.fromEntries(
-        snapshot.rows.map((row) => [
-          row.productUnitId,
-          {
-            stockBase: row.stockBase,
-            stockBranchId: row.branchId,
-            reservedBase: row.reservedBase,
-            availableBase: row.availableBase,
-            isService: row.isService,
-            allowBackorder: row.allowBackorder,
-          },
-        ]),
-      ),
-    });
-  }, [liveStockQ.data, state.branchId]);
+  useInvoiceLiveStockSync({
+    items: state.items,
+    branchId: state.branchId,
+    enabled: salesOperationAllowed(me.data, "catalog.stockByUnitIds", true),
+    dispatch,
+  });
 
   // تهيئة تفعيل/نسبة الضريبة من إعدادات النظام (مرّة واحدة فقط، فاتورة جديدة) — يبقى المستخدم
   // حرّاً بتبديلها يدوياً بعدها (لا نُعيد التهيئة عند كل جلب/إعادة رسم). المرجع مُعرَّف أعلاه.
@@ -581,7 +546,7 @@ export default function SalesInvoice() {
   function computePaidStr(): string {
     if (state.paymentTerms === "CREDIT") return "0";
     const entered = state.paidAmount.trim();
-    if (entered) return round2(D(entered)).toFixed(2);
+    if (entered) return round2(moneyInput(entered)).toFixed(2);
     return state.paymentTerms === "INSTALLMENT" ? "0" : totals.grandTotal;
   }
 
@@ -600,16 +565,16 @@ export default function SalesInvoice() {
       lines: state.items.map((l) => ({
         variantId: l.variantId,
         productUnitId: l.productUnitId,
-        quantity: D(l.qty).toString(),
+        quantity: moneyInput(l.qty).toString(),
         ...(l.digital ? { internalLineToken: l.digital.lineKey } : {}),
         // الهدية: نُعلن النيّة فقط ولا نُرسل سعراً/خصماً — الخادم يُصفّرهما بنفسه ويُرحّل التكلفة
         // قيدَ GIFT_OUT. إرسال سعرٍ هنا يفتح باب «هديةٍ بسعر» لو انحرفت الشاشة يوماً.
         ...(l.isGift
           ? { isGift: true as const }
           : {
-              ...(shouldSendUnitPriceOverride(l) ? { unitPriceOverride: round2(D(l.price)).toFixed(2) } : {}),
-              discountPercent: l.discountType === "percent" ? round2(D(l.discount || "0")).toFixed(2) : undefined,
-              discountAmount: l.discountType === "amount" ? round2(D(l.discount || "0")).toFixed(2) : undefined,
+              ...(shouldSendUnitPriceOverride(l) ? { unitPriceOverride: round2(moneyInput(l.price)).toFixed(2) } : {}),
+              discountPercent: l.discountType === "percent" ? round2(moneyInput(l.discount || "0")).toFixed(2) : undefined,
+              discountAmount: l.discountType === "amount" ? round2(moneyInput(l.discount || "0")).toFixed(2) : undefined,
             }),
       })),
       // أجرة التوصيل (0152) — ثلاث حالات صريحة لا اثنتان:
@@ -619,8 +584,8 @@ export default function SalesInvoice() {
       ...(state.shippingFree
         ? {
             deliveryFree: true as const,
-            ...(D(state.shipping || "0").gt(0)
-              ? { deliveryWaivedAmount: round2(D(state.shipping)).toFixed(2) }
+            ...(moneyInput(state.shipping).gt(0)
+              ? { deliveryWaivedAmount: round2(moneyInput(state.shipping)).toFixed(2) }
               : {}),
           }
         : D(totals.shipping).gt(0)
@@ -630,7 +595,7 @@ export default function SalesInvoice() {
       invoiceDiscount: D(totals.globalDiscAmt).gt(0) ? totals.globalDiscAmt : undefined,
       // العراق VAT=0% افتراضياً — الضريبة اختيارية على مستوى الفاتورة، تُطبَّق فقط عند تفعيلها
       // صراحةً من «تطبيق ضريبة» في ملخّص المبالغ (لعملاء/دوائر تتطلّب فاتورة ضريبية).
-      taxRatePercent: state.taxEnabled ? round2(D(state.taxRatePercent || "0")).toFixed(2) : "0",
+      taxRatePercent: state.taxEnabled ? round2(moneyInput(state.taxRatePercent)).toFixed(2) : "0",
       payment: hasPayment
         ? {
             amount: paidStr,
@@ -660,7 +625,7 @@ export default function SalesInvoice() {
   function buildCorrectionPayload(approval?: Approval) {
     const base = buildPayload(approval);
     const diff = D(totals.grandTotal).minus(receivedPrior); // موجب=نقص يُحصَّل، سالب=فائض يُردّ/يُرصَّد
-    const collect = D(collectNow.trim() || "0");
+    const collect = moneyInput(collectNow);
     // أجرة التوصيل وإفصاح التنازل يُحمَلان كما في عقد الإنشاء؛ المجاني لا يدخل الإجمالي.
     const deliveryFee =
       !state.shippingFree && D(totals.shipping).gt(0) ? totals.shipping : null;
@@ -675,8 +640,8 @@ export default function SalesInvoice() {
       invoiceDiscount: base.invoiceDiscount ?? null,
       deliveryFee,
       deliveryFree: state.shippingFree,
-      deliveryWaivedAmount: state.shippingFree && D(state.shipping || "0").gt(0)
-        ? round2(D(state.shipping)).toFixed(2)
+      deliveryWaivedAmount: state.shippingFree && moneyInput(state.shipping).gt(0)
+        ? round2(moneyInput(state.shipping)).toFixed(2)
         : null,
       taxRatePercent: base.taxRatePercent,
       dueDate: state.dueDate || null,
@@ -706,7 +671,7 @@ export default function SalesInvoice() {
   function validateCorrection(): string | null {
     if (reason.trim().length < 3) return "اكتب سبب التصحيح (٣ أحرف على الأقل).";
     const diff = D(totals.grandTotal).minus(receivedPrior);
-    const collect = D(collectNow.trim() || "0");
+    const collect = moneyInput(collectNow);
     if (diff.gt(0)) {
       if (collect.gt(diff)) return `التحصيل المقترح (${collect.toFixed(2)}) يتجاوز الفرق المستحقّ (${diff.toFixed(2)}).`;
       const outstandingError = correctionOutstandingBlockReason(diff.minus(collect).toFixed(2), state.entityId != null, pendingCodCorrection);
@@ -733,13 +698,18 @@ export default function SalesInvoice() {
     if (digitalError) return digitalError;
     // قرار المالك (٦/٨/٢٦): «مجاني» يلزمه مقدار الأجرة — يُطبَع للزبون ويُحصى في التقارير.
     // الخادم يمنعه أيضاً؛ هذا الحارس ليوفّر على الموظّف رحلةَ ذهابٍ وإياب.
-    if (state.shippingFree && !D(state.shipping || "0").gt(0)) {
+    if (state.shippingFree && !moneyInput(state.shipping).gt(0)) {
       return "أدخِل قيمة أجرة التوصيل قبل جعله مجّانياً — تُطبَع للزبون وتُحصى في التقارير.";
     }
     for (const l of state.items) {
-      if (!D(l.qty).gt(0)) return `الكمية في «${l.name}» يجب أن تكون موجبة.`;
-      if (l.digital && !D(l.qty).eq(1)) return `كل كرت رقمي في «${l.name}» يجب أن يبقى سطراً مستقلاً بكمية واحدة.`;
-      if (D(l.price).lt(0)) return `السعر في «${l.name}» غير صالح.`;
+      if (!moneyInput(l.qty).gt(0)) return `الكمية في «${l.name}» يجب أن تكون موجبة.`;
+      if (l.digital && !moneyInput(l.qty).eq(1)) return `كل كرت رقمي في «${l.name}» يجب أن يبقى سطراً مستقلاً بكمية واحدة.`;
+      if (!l.isGift) {
+        if (!isCompleteNonNegativeMoneyInput(l.price, { allowEmpty: false }))
+          return `السعر في «${l.name}» غير صالح.`;
+        if (!isCompleteNonNegativeMoneyInput(l.discount, { allowEmpty: true }))
+          return `الخصم في «${l.name}» غير صالح.`;
+      }
       const base = toBase(l.qty, l.conversionFactor);
       if (!base.isInteger())
         return `الكمية في «${l.name}» تنتج كسراً بالوحدة الأساس (${formatQuantity(l.qty)} × ${l.conversionFactor}).`;
@@ -759,9 +729,19 @@ export default function SalesInvoice() {
       if (remaining.lt(0) && state.paymentMethod !== "CASH")
         return "الدفع غير النقدي لا يمكن أن يتجاوز إجمالي الفاتورة.";
     }
+    if (!isCompleteNonNegativeMoneyInput(state.globalDiscount, { allowEmpty: true }))
+      return "الخصم الإجمالي غير صالح.";
+    if (!isCompleteNonNegativeMoneyInput(state.shipping, { allowEmpty: true }))
+      return "أجرة التوصيل غير صالحة.";
+    if (!isCompleteNonNegativeMoneyInput(state.paidAmount, { allowEmpty: true }))
+      return "المبلغ المدفوع غير صالح.";
     if (D(totals.grandTotal).lt(0)) return "الإجمالي النهائي لا يمكن أن يكون سالباً.";
     // سياسة #14: لا نسبة ضريبة سالبة (الخادم يرفضها أيضاً — نمنعها هنا برسالة أوضح).
-    if (state.taxEnabled && D(state.taxRatePercent || "0").lt(0))
+    if (
+      state.taxEnabled &&
+      (!isCompleteNonNegativeMoneyInput(state.taxRatePercent, { allowEmpty: true }) ||
+        moneyInput(state.taxRatePercent).lt(0))
+    )
       return "نسبة الضريبة لا يصحّ أن تكون سالبة.";
     return null;
   }
@@ -1055,7 +1035,12 @@ export default function SalesInvoice() {
   // بندٌ بسعر صفر **غير** موسومٍ هديةً = خطأ إدخال (سعر ناقص) يستحقّ التنبيه. أمّا الهدية فمجّانيّتها
   // مقصودة ومصنَّفة (تُرحَّل تكلفتها مصروفَ هدايا) ⇒ لا تُنذَر.
   const hasZeroPriceLine = useMemo(
-    () => state.items.some((l) => !l.isGift && D(l.price).lte(0)),
+    () =>
+      state.items.some(
+        (l) =>
+          !l.isGift &&
+          (!isCompleteNonNegativeMoneyInput(l.price, { allowEmpty: false }) || moneyInput(l.price).lte(0)),
+      ),
     [state.items],
   );
 

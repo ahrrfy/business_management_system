@@ -13,7 +13,7 @@ import { formatQuotationAsWhatsApp } from "@/lib/copy/formatters";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { buildQuotationMessage } from "@/lib/whatsapp";
-import { D, fmt, round2, formatQuantity } from "@/lib/money";
+import { D, fmt, round2, formatQuantity, moneyInput } from "@/lib/money";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -238,8 +238,8 @@ export default function QuotationDetail() {
   const data = q.data;
   const isOpen = data.status === "DRAFT" || data.status === "SENT" || data.status === "ACCEPTED";
   const hasTax = D(data.taxAmount ?? "0").gt(0);
-  const normalizedPayAmount = round2(D(payAmount || "0")).toFixed(2);
-  const externalNeeded = D(payAmount).gt(0) && payMethod !== "CASH";
+  const normalizedPayAmount = round2(moneyInput(payAmount)).toFixed(2);
+  const externalNeeded = moneyInput(payAmount).gt(0) && payMethod !== "CASH";
   const externalFingerprint = `SALES_COLLECTION|${data.branchId}|${payMethod}|${normalizedPayAmount}|${payReference.trim()}`;
   const externalConfirmed =
     !externalNeeded ||
@@ -249,7 +249,7 @@ export default function QuotationDetail() {
   async function confirmQuotationExternalPayment() {
     const reference = payReference.trim();
     if (!reference) return notify.err("أدخل مرجع العملية أولاً.");
-    if (!D(payAmount).gt(0))
+    if (!moneyInput(payAmount).gt(0))
       return notify.err("أدخل مبلغ الدفعة قبل تأكيد العملية الخارجية.");
     try {
       const prior =
@@ -476,7 +476,7 @@ export default function QuotationDetail() {
             )}
             <Button
               onClick={async () => {
-                const pay = D(payAmount).gt(0);
+                const pay = moneyInput(payAmount).gt(0);
                 if (
                   !(await confirm({
                     variant: "danger",
@@ -505,7 +505,7 @@ export default function QuotationDetail() {
                   quotationId,
                   payment: pay
                     ? {
-                        amount: round2(D(payAmount)).toFixed(2),
+                        amount: round2(moneyInput(payAmount)).toFixed(2),
                         method: payMethod,
                         reference: payMethod === "CASH" ? undefined : payReference.trim(),
                         ...(payMethod === "CASH"

@@ -132,3 +132,83 @@ describe("getLineStockState — يُباع بالطلب", () => {
     expect(state.allowBackorder).toBe(false);
   });
 });
+
+describe("invoiceReducer — حصانة مزامنة أرصدة المخزون من الحلقات وإفساد البنود", () => {
+  it("يحفظ نفس مرجع state وitems عند تطابق لقطة المخزون مع القيم الحالية (Idempotency)", () => {
+    const initial = invoiceReducer(createInitialState("QUOTATION", 1), {
+      type: "ADD_ITEM",
+      item: line({
+        productUnitId: 301,
+        stockBase: 15,
+        stockBranchId: 1,
+        reservedBase: 2,
+        availableBase: 13,
+        isService: false,
+        allowBackorder: false,
+      }),
+    });
+
+    const next = invoiceReducer(initial, {
+      type: "SET_STOCK_SNAPSHOTS",
+      snapshotsByUnitId: {
+        301: {
+          stockBase: 15,
+          stockBranchId: 1,
+          reservedBase: 2,
+          availableBase: 13,
+          isService: false,
+          allowBackorder: false,
+        },
+      },
+    });
+
+    expect(next).toBe(initial);
+    expect(next.items).toBe(initial.items);
+  });
+
+  it("يحفظ نفس مرجع state عند استدعاء MARK_STOCK_STALE لسلة فارغة أو موسومة مسبقاً", () => {
+    const empty = createInitialState("QUOTATION", 1);
+    expect(invoiceReducer(empty, { type: "MARK_STOCK_STALE" })).toBe(empty);
+
+    const withStaleItem = invoiceReducer(empty, {
+      type: "ADD_ITEM",
+      item: line({
+        productUnitId: 301,
+        stockBase: 0,
+        stockBranchId: undefined,
+        reservedBase: undefined,
+        availableBase: undefined,
+      }),
+    });
+    expect(invoiceReducer(withStaleItem, { type: "MARK_STOCK_STALE" })).toBe(withStaleItem);
+  });
+
+  it("لا يمسّ البنود خارج queriedUnitIds ويحفظ isService وallowBackorder عند غياب صفّ خادمي لوحدة مستعلَم عنها", () => {
+    const initial = invoiceReducer(createInitialState("QUOTATION", 1), {
+      type: "ADD_ITEMS",
+      items: [
+        line({ productUnitId: 10, stockBase: 5, isService: true, allowBackorder: false }),
+        line({ productUnitId: 20, stockBase: 9, stockBranchId: 1, reservedBase: 1, availableBase: 8, isService: false, allowBackorder: true }),
+      ],
+    });
+
+    // استُعلم عن الوحدة 10 فقط ولم يُرجع الخادم صفّاً لها، بينما الوحدة 20 لم تُستعلم بعد في هذه الدفعة
+    const next = invoiceReducer(initial, {
+      type: "SET_STOCK_SNAPSHOTS",
+      snapshotsByUnitId: {},
+      queriedUnitIds: [10],
+      effectiveBranchId: 1,
+    });
+
+    expect(next.items[0]).toMatchObject({
+      productUnitId: 10,
+      stockBase: 0,
+      stockBranchId: 1,
+      reservedBase: 0,
+      availableBase: 0,
+      isService: true,
+      allowBackorder: false,
+    });
+    expect(next.items[1]).toBe(initial.items[1]);
+  });
+});

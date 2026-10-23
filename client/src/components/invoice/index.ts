@@ -28,6 +28,7 @@ export {
 } from "./types";
 
 export { invoiceReducer, createInitialState } from "./reducer";
+export { useInvoiceLiveStockSync } from "./useInvoiceLiveStockSync";
 export { derivePaymentTerms } from "./paymentTerms";
 export { calcTotals, calcLineTotal, calcMargin, allocateLineTax, fmtMoney, fmtNum, type InvoiceTotals } from "./totals";
 
