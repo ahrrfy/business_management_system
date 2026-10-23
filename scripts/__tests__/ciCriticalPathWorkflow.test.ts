@@ -85,4 +85,21 @@ describe("CI critical-path policy", () => {
     expect(gate).not.toContain("pnpm install");
     expect(gate).not.toContain("pnpm build");
   });
+
+  it("يشغّل البوابات الإلزامية (check-test-build وauthz-guard وaudit) على التزامات merge_group في طابور الدمج", () => {
+    const securityWorkflow = readFileSync(
+      resolve(process.cwd(), ".github/workflows/security.yml"),
+      "utf8",
+    );
+    const scope = jobBlock("scope");
+    const authzGuard = jobBlock("authz-guard");
+
+    expect(workflow).toMatch(/merge_group:\r?\n\s+branches:\s*\[main\]/);
+    expect(securityWorkflow).toMatch(
+      /merge_group:\r?\n\s+branches:\s*\[main\]/,
+    );
+    expect(scope).toContain("github.event.merge_group.base_sha");
+    expect(scope).toContain("github.event.merge_group.head_sha");
+    expect(authzGuard).toContain("github.event.merge_group.base_sha");
+  });
 });

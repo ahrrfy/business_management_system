@@ -920,8 +920,8 @@ try {
 
 {
   const greenRuns = [
-    { name: "audit", status: "completed", conclusion: "success", event: "push", head_branch: "main" },
-    { name: "check-test-build", status: "completed", conclusion: "success", event: "push", head_branch: "main" },
+    { name: "audit", status: "completed", conclusion: "success" },
+    { name: "check-test-build", status: "completed", conclusion: "success" },
   ];
   assert.deepEqual(evaluateDeployCiCheckRuns(greenRuns), {
     ok: true,
@@ -931,20 +931,13 @@ try {
   assert.deepEqual(
     evaluateDeployCiCheckRuns([
       ...greenRuns,
-      { name: "diagnose", status: "in_progress", conclusion: "", event: "push", head_branch: "main" },
+      { name: "diagnose", status: "completed", conclusion: "failure" },
     ]),
     {
       ok: true,
       code: "OK",
       source: "head",
     },
-  );
-  assert.equal(
-    evaluateDeployCiCheckRuns([
-      { name: "audit", status: "completed", conclusion: "success", event: "pull_request", head_branch: "fix/a" },
-      { name: "check-test-build", status: "completed", conclusion: "success", event: "pull_request", head_branch: "fix/a" },
-    ]).code,
-    "DEPLOY_CI_NOT_GREEN",
   );
   assert.equal(
     evaluateDeployCiCheckRuns([
@@ -979,6 +972,227 @@ try {
       { name: "audit", status: "completed", conclusion: "success" },
     ]).code,
     "DEPLOY_CI_NOT_GREEN",
+  );
+  // PR check runs on a feature branch must not satisfy the main deployment gate
+  assert.equal(
+    evaluateDeployCiCheckRuns([
+      {
+        name: "audit",
+        status: "completed",
+        conclusion: "success",
+        event: "pull_request",
+        head_branch: "fix/branch",
+      },
+      {
+        name: "check-test-build",
+        status: "completed",
+        conclusion: "success",
+        event: "pull_request",
+        head_branch: "fix/branch",
+      },
+    ]).code,
+    "DEPLOY_CI_NOT_GREEN",
+  );
+  // Re-run deduplication: older failed check run superseded by newer successful re-run on main passes
+  assert.deepEqual(
+    evaluateDeployCiCheckRuns([
+      {
+        id: 10,
+        name: "audit",
+        status: "completed",
+        conclusion: "success",
+        event: "push",
+        head_branch: "main",
+        completed_at: "2026-10-22T10:00:00Z",
+      },
+      {
+        id: 11,
+        name: "check-test-build",
+        status: "completed",
+        conclusion: "failure",
+        event: "push",
+        head_branch: "main",
+        completed_at: "2026-10-22T10:05:00Z",
+      },
+      {
+        id: 12,
+        name: "check-test-build",
+        status: "completed",
+        conclusion: "success",
+        event: "push",
+        head_branch: "main",
+        completed_at: "2026-10-22T10:20:00Z",
+      },
+    ]),
+    {
+      ok: true,
+      code: "OK",
+      source: "head",
+    },
+  );
+  // Unmapped check_suite without resolved push+main provenance must fail closed
+  assert.equal(
+    evaluateDeployCiCheckRuns([
+      {
+        name: "audit",
+        status: "completed",
+        conclusion: "success",
+        check_suite: { id: 999 },
+      },
+      {
+        name: "check-test-build",
+        status: "completed",
+        conclusion: "success",
+        check_suite: { id: 999 },
+      },
+    ]).code,
+    "DEPLOY_CI_NOT_GREEN",
+  );
+  // Partial provenance (event without head_branch) must fail closed
+  assert.equal(
+    evaluateDeployCiCheckRuns([
+      {
+        name: "audit",
+        status: "completed",
+        conclusion: "success",
+        event: "push",
+      },
+      {
+        name: "check-test-build",
+        status: "completed",
+        conclusion: "success",
+        event: "push",
+      },
+    ]).code,
+    "DEPLOY_CI_NOT_GREEN",
+  );
+  // Check runs attached to pull_requests must be rejected even if other provenance fields are omitted
+  assert.equal(
+    evaluateDeployCiCheckRuns([
+      {
+        name: "audit",
+        status: "completed",
+        conclusion: "success",
+        pull_requests: [{ number: 1530 }],
+      },
+      {
+        name: "check-test-build",
+        status: "completed",
+        conclusion: "success",
+        pull_requests: [{ number: 1530 }],
+      },
+    ]).code,
+    "DEPLOY_CI_NOT_GREEN",
+  );
+  // Third-party GitHub App check runs (check_suite without Actions provenance) must block when failed or pending
+  assert.deepEqual(
+    evaluateDeployCiCheckRuns([
+      {
+        name: "audit",
+        status: "completed",
+        conclusion: "success",
+        event: "push",
+        head_branch: "main",
+      },
+      {
+        name: "check-test-build",
+        status: "completed",
+        conclusion: "success",
+        event: "push",
+        head_branch: "main",
+      },
+      {
+        id: 201,
+        name: "GitGuardian Security Checks",
+        app: { slug: "gitguardian" },
+        status: "completed",
+        conclusion: "failure",
+        check_suite: { id: 888 },
+      },
+    ]),
+    {
+      ok: false,
+      code: "DEPLOY_CI_FAILED_ON_HEAD",
+      failedChecks: ["GitGuardian Security Checks"],
+    },
+  );
+  assert.equal(
+    evaluateDeployCiCheckRuns([
+      {
+        name: "audit",
+        status: "completed",
+        conclusion: "success",
+        event: "push",
+        head_branch: "main",
+      },
+      {
+        name: "check-test-build",
+        status: "completed",
+        conclusion: "success",
+        event: "push",
+        head_branch: "main",
+      },
+      {
+        id: 202,
+        name: "GitGuardian Security Checks",
+        app: { slug: "gitguardian" },
+        status: "in_progress",
+        conclusion: "",
+        check_suite: { id: 888 },
+      },
+    ]).code,
+    "DEPLOY_CI_NOT_GREEN",
+  );
+  // Re-run of third-party check suite supersedes older failure; PR-bound third-party failure does not contaminate main
+  assert.deepEqual(
+    evaluateDeployCiCheckRuns([
+      {
+        name: "audit",
+        status: "completed",
+        conclusion: "success",
+        event: "push",
+        head_branch: "main",
+      },
+      {
+        name: "check-test-build",
+        status: "completed",
+        conclusion: "success",
+        event: "push",
+        head_branch: "main",
+      },
+      {
+        id: 203,
+        name: "GitGuardian Security Checks",
+        app: { slug: "gitguardian" },
+        status: "completed",
+        conclusion: "failure",
+        check_suite: { id: 888 },
+        completed_at: "2026-10-22T10:01:00Z",
+      },
+      {
+        id: 204,
+        name: "GitGuardian Security Checks",
+        app: { slug: "gitguardian" },
+        status: "completed",
+        conclusion: "success",
+        check_suite: { id: 888 },
+        completed_at: "2026-10-22T10:06:00Z",
+      },
+      {
+        id: 205,
+        name: "GitGuardian Security Checks",
+        app: { slug: "gitguardian" },
+        status: "completed",
+        conclusion: "failure",
+        check_suite: { id: 889 },
+        pull_requests: [{ number: 1532 }],
+      },
+    ]),
+    {
+      ok: true,
+      code: "OK",
+      source: "head",
+    },
   );
   await assert.rejects(
     () =>

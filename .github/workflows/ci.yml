@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  merge_group:
+    branches: [main]
 
 # استقرار المشغّلات (٧/٨/٢٦) — تشخيصٌ بالأدلّة: المستودع فيه عشرات الفروع النشطة، وكلّ دفعةٍ
 # كانت تُطلق تشغيلاً جديداً **بلا إلغاء سابقه**، فيتراكم الطابور حتى تجلس الوظائف ١٦ دقيقةً
@@ -35,8 +37,8 @@ jobs:
         name: تصنيف نطاق التغيير (docs/** فقط = مسار سريع)
         env:
           EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         # السكربت يستخدم diff -z (أسماء ملفات آمنة) و--no-renames (النقل = حذف+إضافة)،
         # ويعود للحزمة الكاملة عند push أو SHA/فرق مفقود أو ملف خارج القائمة البيضاء.
         run: node scripts/ci-policy.mjs scope
@@ -232,7 +234,7 @@ jobs:
         env:
           NODE_OPTIONS: "--max-old-space-size=6144"
       - name: حارس تشخيص فشل CI الآمن
-        run: pnpm exec vitest run --config vitest.unit.config.ts scripts/__tests__/ciFailureDiagnosticsWorkflow.test.ts scripts/__tests__/dependencySecurityWorkflow.test.ts scripts/__tests__/ciCriticalPathWorkflow.test.ts
+        run: pnpm exec vitest run --config vitest.unit.config.ts scripts/__tests__/ciFailureDiagnosticsWorkflow.test.ts scripts/__tests__/dependencySecurityWorkflow.test.ts scripts/__tests__/ciCriticalPathWorkflow.test.ts scripts/__tests__/safeDeliveryProtocols.test.ts
       - name: حارس عقد إصدار تطبيق Android الأصلي
         run: pnpm check:mobile-release
       - name: حارِس الإيموجي UI
@@ -405,4 +407,4 @@ jobs:
       - name: حارِس الصلاحيات (فرق قاعدة الدمج — raw-role/بلا بوّابة/admin-كتابة مستجدّ)
         run: node scripts/authz-guard-diff.mjs
         env:
-          BASE_REF: origin/${{ github.base_ref || 'main' }}
+          BASE_REF: ${{ github.event.merge_group.base_sha || format('origin/{0}', github.base_ref || 'main') }}
