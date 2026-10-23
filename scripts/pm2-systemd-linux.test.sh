@@ -31,6 +31,11 @@ created_user=0
 created_docker_group=0
 
 cleanup() {
+  local result=$?
+  if [[ "${result}" -ne 0 ]]; then
+    systemctl status "${UNIT}" --no-pager || true
+    journalctl -u "${UNIT}" -n 60 --no-pager || true
+  fi
   systemctl stop "${UNIT}" >/dev/null 2>&1 || true
   systemctl stop "${SEED_UNIT}" >/dev/null 2>&1 || true
   if [[ "${created_user}" -eq 1 ]]; then
