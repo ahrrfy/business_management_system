@@ -265,7 +265,18 @@ function defaultReadRepoFile(relPath) {
   }
 }
 
-function resolveTestImportSpecifier(testRelPath, rawSpecifier) {
+const MODULE_SOURCE_EXTENSIONS = [
+  ".ts",
+  ".tsx",
+  ".mts",
+  ".cts",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+];
+
+function resolveModuleImportSpecifier(importerRelPath, rawSpecifier) {
   const specifier = String(rawSpecifier ?? "")
     .trim()
     .split(/[?#]/)[0]
@@ -277,8 +288,12 @@ function resolveTestImportSpecifier(testRelPath, rawSpecifier) {
   } else if (specifier.startsWith("@shared/")) {
     resolved = `shared/${specifier.slice(8)}`;
   } else if (specifier.startsWith(".")) {
-    const testDir = path.posix.dirname(testRelPath.replace(/\\/g, "/"));
-    resolved = path.posix.normalize(path.posix.join(testDir, specifier));
+    const importerDir = path.posix.dirname(importerRelPath.replace(/\\/g, "/"));
+    resolved = path.posix.normalize(
+      importerDir === "."
+        ? specifier
+        : path.posix.join(importerDir, specifier),
+    );
   } else if (
     /^(?:client|server|shared|scripts|drizzle|\.github|\.husky)\//.test(
       specifier,
@@ -288,7 +303,12 @@ function resolveTestImportSpecifier(testRelPath, rawSpecifier) {
   } else {
     return null;
   }
-  const normalizedResolved = resolved.replace(/\\/g, "/");
+  const normalizedResolved = resolved
+    .replace(/\\/g, "/")
+    .replace(/^(?:\.\/)+/, "");
+  if (!normalizedResolved || normalizedResolved.startsWith("..")) {
+    return null;
+  }
   const resolvedNoExt = normalizedResolved.replace(
     /\.(?:[cm]?jsx?|[cm]?tsx?)$/,
     "",
@@ -299,37 +319,24 @@ function resolveTestImportSpecifier(testRelPath, rawSpecifier) {
   };
 }
 
-function doesTestImportSourceFile(
-  testRelPath,
-  testContent,
-  sourceNormalized,
-  sourceNoExt,
-) {
-  if (!testContent) return false;
-  const uncommented = stripConfigComments(testContent);
+const NON_JS_ASSET_EXT_RE =
+  /\.(?:css|scss|sass|less|svg|png|jpe?g|gif|webp|ico|woff2?|ttf|eot|mp[34]|wav|pdf|sql|md|ya?ml|toml|html|json)$/i;
+const JS_TS_MODULE_EXT_RE = /\.(?:[cm]?jsx?|[cm]?tsx?)$/;
+
+function parseModuleDependencies(moduleRelPath, rawContent) {
+  if (!rawContent) return null;
+  const normalizedModulePath = moduleRelPath.replace(/\\/g, "/");
+  const uncommented = stripConfigComments(rawContent);
   const collapsed = uncommented.replace(
     /\b(?:join|resolve)\s*\(([^)]+)\)/g,
     (full) => full.replace(/["'`]\s*,\s*["'`]/g, "/"),
   );
 
-  if (
-    collapsed.includes(`"${sourceNormalized}"`) ||
-    collapsed.includes(`'${sourceNormalized}'`) ||
-    collapsed.includes(`\`${sourceNormalized}\``) ||
-    collapsed.includes(`"./${sourceNormalized}"`) ||
-    collapsed.includes(`'./${sourceNormalized}'`) ||
-    collapsed.includes(`/${sourceNormalized}"`) ||
-    collapsed.includes(`/${sourceNormalized}'`) ||
-    collapsed.includes(`/${sourceNormalized}\``)
-  ) {
-    return true;
-  }
-
   const specifiers = new Set();
   const patterns = [
     /\bfrom\s+["']([^"'\r\n]+)["']/g,
     /\bimport\s+["']([^"'\r\n]+)["']/g,
-    /\b(?:import|require|vi\.(?:do)?mock)\s*\(\s*["']([^"'\r\n]+)["']/g,
+    /\b(?:import|require|vi\.(?:doM|m)ock|vi\.importActual)\s*\(\s*["']([^"'\r\n]+)["']/g,
     /["'`]((?:\.\.?\/|@\/|@shared\/|(?:client|server|shared|scripts|drizzle|\.github|\.husky)\/)[^"'`\r\n${}]+)["'`]/g,
   ];
   for (const re of patterns) {
@@ -338,45 +345,59 @@ function doesTestImportSourceFile(
       specifiers.add(m[1]);
     }
   }
-  const isIndexFile =
-    Boolean(sourceNoExt) && path.posix.basename(sourceNoExt) === "index";
-  const indexDir = isIndexFile ? path.posix.dirname(sourceNoExt) : "";
+
+  const targets = [];
+  const seenResolved = new Set();
   for (const spec of specifiers) {
-    const target = resolveTestImportSpecifier(testRelPath, spec);
-    if (!target) continue;
-    if (
-      target.resolved === sourceNormalized ||
-      (Boolean(sourceNoExt) && target.resolvedNoExt === sourceNoExt) ||
-      (isIndexFile && target.resolvedNoExt === indexDir)
-    ) {
-      return true;
+    const target = resolveModuleImportSpecifier(normalizedModulePath, spec);
+    if (!target || seenResolved.has(target.resolved)) continue;
+    seenResolved.add(target.resolved);
+    targets.push(target);
+  }
+
+  const runtimeCollapsed = collapsed
+    .replace(
+      /\b(?:import|export)\s+type\s+(?:\*(?:\s+as\s+[A-Za-z_$][A-Za-z0-9_$]*)?|\{[^{};]*\}|[A-Za-z_$][A-Za-z0-9_$]*)\s+from\s+["'][^"'\r\n]+["']/g,
+      "",
+    )
+    .replace(/\btypeof\s+import\s*\(\s*["'][^"'\r\n]+["']\s*\)/g, "");
+  const runtimeSpecifiers = new Set();
+  const runtimePatterns = [
+    /\bfrom\s+["']([^"'\r\n]+)["']/g,
+    /\bimport\s+["']([^"'\r\n]+)["']/g,
+    /\b(?:import|require|vi\.(?:doM|m)ock|vi\.importActual)\s*\(\s*["']([^"'\r\n]+)["']/g,
+  ];
+  for (const re of runtimePatterns) {
+    let m;
+    while ((m = re.exec(runtimeCollapsed)) !== null) {
+      runtimeSpecifiers.add(m[1]);
     }
   }
 
+  const runtimeTargets = [];
+  const seenRuntimeResolved = new Set();
+  for (const spec of runtimeSpecifiers) {
+    const target = resolveModuleImportSpecifier(normalizedModulePath, spec);
+    if (!target || seenRuntimeResolved.has(target.resolved)) continue;
+    seenRuntimeResolved.add(target.resolved);
+    runtimeTargets.push(target);
+  }
+
+  let fsMeta = null;
   if (/\b(?:readFile|readdir)(?:Sync)?\b/.test(collapsed)) {
-    const testDir = path.posix.dirname(testRelPath.replace(/\\/g, "/"));
-    const sourceBase = path.posix.basename(sourceNormalized);
-    const isGenericIndex = /^index\.[^.]+$/i.test(sourceBase);
-    const fileLiteralRe =
-      /["'`]([A-Za-z0-9_./-]+\.[A-Za-z0-9]+)["'`]/g;
+    const rawDir = path.posix.dirname(normalizedModulePath);
+    const moduleDir = rawDir === "." ? "" : rawDir;
+    const fileLiterals = new Set();
+    const fileLiteralRe = /["'`]([A-Za-z0-9_./-]+\.[A-Za-z0-9]+)["'`]/g;
     let m;
     while ((m = fileLiteralRe.exec(collapsed)) !== null) {
       const cleaned = m[1].replace(/^(?:\.\.\/|\.\/)+/, "");
-      if (!cleaned) continue;
-      if (cleaned === sourceNormalized) {
-        return true;
-      }
-      if (
-        !isGenericIndex &&
-        (cleaned === sourceBase || sourceNormalized.endsWith(`/${cleaned}`))
-      ) {
-        return true;
-      }
+      if (cleaned) fileLiterals.add(cleaned);
     }
 
     const dirVars = new Map([
-      ["__dirname", testDir],
-      ["import.meta.dirname", testDir],
+      ["__dirname", moduleDir],
+      ["import.meta.dirname", moduleDir],
       ["process.cwd()", ""],
     ]);
     const resolveRepoSubpath = (baseDir, relSegment) => {
@@ -405,8 +426,8 @@ function doesTestImportSourceFile(
       }
     }
 
+    const enumeratedDirs = new Set();
     if (/\breaddir(?:Sync)?\b/.test(collapsed)) {
-      const enumeratedDirs = new Set();
       for (const [varName, resolvedDir] of dirVars.entries()) {
         if (
           varName !== "__dirname" &&
@@ -433,32 +454,107 @@ function doesTestImportSourceFile(
           enumeratedDirs.add(resolvedDir);
         }
       }
-      for (const enumDir of enumeratedDirs) {
-        if (sourceNormalized.startsWith(`${enumDir}/`)) {
-          return true;
-        }
-      }
     }
 
-    const baseDirs = new Set([testDir]);
+    const baseDirs = new Set([moduleDir]);
     for (const resolvedDir of dirVars.values()) {
       if (resolvedDir) baseDirs.add(resolvedDir);
     }
-    if (path.posix.basename(testDir) === "__tests__") {
-      baseDirs.add(path.posix.dirname(testDir));
+    if (path.posix.basename(moduleDir) === "__tests__") {
+      const parentDir = path.posix.dirname(moduleDir);
+      baseDirs.add(parentDir === "." ? "" : parentDir);
     }
     const templatePrefixRe = /`((?:\.\.?\/)+[A-Za-z0-9_./-]*)\$\{/g;
     let tm;
     while ((tm = templatePrefixRe.exec(collapsed)) !== null) {
       const resolvedBase = path.posix
-        .normalize(path.posix.join(testDir, tm[1]))
+        .normalize(
+          moduleDir ? path.posix.join(moduleDir, tm[1]) : tm[1],
+        )
         .replace(/\/+$/, "");
-      if (resolvedBase && resolvedBase !== ".") {
+      if (
+        resolvedBase &&
+        resolvedBase !== "." &&
+        !resolvedBase.startsWith("..")
+      ) {
         baseDirs.add(resolvedBase);
       }
     }
 
-    for (const baseDir of baseDirs) {
+    fsMeta = {
+      fileLiterals,
+      enumeratedDirs,
+      baseDirs,
+    };
+  }
+
+  return {
+    moduleRelPath: normalizedModulePath,
+    collapsed,
+    targets,
+    runtimeTargets,
+    fsMeta,
+    resolvedDeps: null,
+  };
+}
+
+function doesParsedModuleReferenceSource(
+  parsedMod,
+  sourceNormalized,
+  sourceNoExt,
+) {
+  if (!parsedMod) return false;
+  const { collapsed, targets, fsMeta } = parsedMod;
+
+  if (
+    collapsed.includes(`"${sourceNormalized}"`) ||
+    collapsed.includes(`'${sourceNormalized}'`) ||
+    collapsed.includes(`\`${sourceNormalized}\``) ||
+    collapsed.includes(`"./${sourceNormalized}"`) ||
+    collapsed.includes(`'./${sourceNormalized}'`) ||
+    collapsed.includes(`/${sourceNormalized}"`) ||
+    collapsed.includes(`/${sourceNormalized}'`) ||
+    collapsed.includes(`/${sourceNormalized}\``)
+  ) {
+    return true;
+  }
+
+  const isIndexFile =
+    Boolean(sourceNoExt) && path.posix.basename(sourceNoExt) === "index";
+  const rawIndexDir = isIndexFile ? path.posix.dirname(sourceNoExt) : "";
+  const indexDir = rawIndexDir === "." ? "" : rawIndexDir;
+  for (const target of targets) {
+    if (
+      target.resolved === sourceNormalized ||
+      (Boolean(sourceNoExt) && target.resolvedNoExt === sourceNoExt) ||
+      (isIndexFile && Boolean(indexDir) && target.resolvedNoExt === indexDir)
+    ) {
+      return true;
+    }
+  }
+
+  if (fsMeta) {
+    const sourceBase = path.posix.basename(sourceNormalized);
+    const isGenericIndex = /^index\.[^.]+$/i.test(sourceBase);
+    for (const cleaned of fsMeta.fileLiterals) {
+      if (cleaned === sourceNormalized) {
+        return true;
+      }
+      if (
+        !isGenericIndex &&
+        (cleaned === sourceBase || sourceNormalized.endsWith(`/${cleaned}`))
+      ) {
+        return true;
+      }
+    }
+
+    for (const enumDir of fsMeta.enumeratedDirs) {
+      if (sourceNormalized.startsWith(`${enumDir}/`)) {
+        return true;
+      }
+    }
+
+    for (const baseDir of fsMeta.baseDirs) {
       const prefix = baseDir ? `${baseDir}/` : "";
       if (!prefix || !sourceNormalized.startsWith(prefix)) continue;
       const relWithExt = sourceNormalized.slice(prefix.length);
@@ -488,10 +584,166 @@ function doesTestImportSourceFile(
   return false;
 }
 
+let cachedDefaultRepoModuleGraph = null;
+
+function buildTransitiveModuleGraph(readFile, useDiskStat = false) {
+  const fileContentCache = new Map();
+  const diskExistsCache = new Map();
+  const parsedModuleCache = new Map();
+  const resolvedTargetCache = new Map();
+  const closureCache = new Map();
+
+  const readCached = (relPath) => {
+    const normalized = String(relPath ?? "").replace(/\\/g, "/");
+    if (!normalized) return "";
+    if (!fileContentCache.has(normalized)) {
+      fileContentCache.set(normalized, String(readFile(normalized) ?? ""));
+    }
+    return fileContentCache.get(normalized);
+  };
+
+  const moduleFileExists = (relPath) => {
+    const normalized = String(relPath ?? "").replace(/\\/g, "/");
+    if (!normalized) return false;
+    if (!useDiskStat) {
+      return Boolean(readCached(normalized));
+    }
+    if (!diskExistsCache.has(normalized)) {
+      const stat = fs.statSync(path.join(REPO_ROOT, normalized), {
+        throwIfNoEntry: false,
+      });
+      diskExistsCache.set(normalized, stat?.isFile() === true);
+    }
+    return diskExistsCache.get(normalized);
+  };
+
+  const resolveTargetToExistingModule = (target) => {
+    const cacheKey = target.resolved;
+    if (resolvedTargetCache.has(cacheKey)) {
+      return resolvedTargetCache.get(cacheKey);
+    }
+    if (NON_JS_ASSET_EXT_RE.test(target.resolved)) {
+      resolvedTargetCache.set(cacheKey, null);
+      return null;
+    }
+    let found = null;
+    if (
+      JS_TS_MODULE_EXT_RE.test(target.resolved) &&
+      moduleFileExists(target.resolved)
+    ) {
+      found = target.resolved;
+    } else if (target.resolvedNoExt) {
+      for (const ext of MODULE_SOURCE_EXTENSIONS) {
+        const candidate = `${target.resolvedNoExt}${ext}`;
+        if (moduleFileExists(candidate)) {
+          found = candidate;
+          break;
+        }
+      }
+      if (!found) {
+        for (const ext of MODULE_SOURCE_EXTENSIONS) {
+          const indexCandidate = `${target.resolvedNoExt}/index${ext}`;
+          if (moduleFileExists(indexCandidate)) {
+            found = indexCandidate;
+            break;
+          }
+        }
+      }
+    }
+    resolvedTargetCache.set(cacheKey, found);
+    return found;
+  };
+
+  const getParsedModule = (relPath) => {
+    const normalized = String(relPath ?? "").replace(/\\/g, "/");
+    if (!normalized) return null;
+    if (!parsedModuleCache.has(normalized)) {
+      parsedModuleCache.set(
+        normalized,
+        parseModuleDependencies(normalized, readCached(normalized)),
+      );
+    }
+    const parsed = parsedModuleCache.get(normalized);
+    if (parsed && parsed.resolvedDeps === null) {
+      const deps = [];
+      for (const target of parsed.runtimeTargets) {
+        const depPath = resolveTargetToExistingModule(target);
+        if (depPath && depPath !== normalized) {
+          deps.push(depPath);
+        }
+      }
+      parsed.resolvedDeps = deps;
+    }
+    return parsed;
+  };
+
+  const getReachableClosure = (entryTestPath) => {
+    const normalizedEntry = String(entryTestPath ?? "").replace(/\\/g, "/");
+    if (closureCache.has(normalizedEntry)) {
+      return closureCache.get(normalizedEntry);
+    }
+    const visitedPaths = new Set([normalizedEntry]);
+    const queue = [normalizedEntry];
+    const reachableParsed = [];
+    while (queue.length > 0) {
+      const current = queue.shift();
+      const parsed = getParsedModule(current);
+      if (!parsed) continue;
+      reachableParsed.push(parsed);
+      for (const depPath of parsed.resolvedDeps) {
+        if (!visitedPaths.has(depPath)) {
+          visitedPaths.add(depPath);
+          queue.push(depPath);
+        }
+      }
+    }
+    const closure = { visitedPaths, reachableParsed };
+    closureCache.set(normalizedEntry, closure);
+    return closure;
+  };
+
+  return {
+    doesTestReferenceSource(testPath, sourceNormalized, sourceNoExt) {
+      const { visitedPaths, reachableParsed } = getReachableClosure(testPath);
+      if (visitedPaths.has(sourceNormalized)) {
+        return true;
+      }
+      for (const parsedMod of reachableParsed) {
+        if (
+          doesParsedModuleReferenceSource(
+            parsedMod,
+            sourceNormalized,
+            sourceNoExt,
+          )
+        ) {
+          return true;
+        }
+      }
+      return false;
+    },
+  };
+}
+
+function createTransitiveModuleGraph(readFile) {
+  if (typeof readFile !== "function") {
+    return null;
+  }
+  if (readFile === defaultReadRepoFile) {
+    if (!cachedDefaultRepoModuleGraph) {
+      cachedDefaultRepoModuleGraph = buildTransitiveModuleGraph(
+        defaultReadRepoFile,
+        true,
+      );
+    }
+    return cachedDefaultRepoModuleGraph;
+  }
+  return buildTransitiveModuleGraph(readFile, false);
+}
+
 function deriveCandidateUnitTestsForSourceFile(
   relPath,
   registeredTests = [],
-  readTestFile = defaultReadRepoFile,
+  readTestFileOrGraph = defaultReadRepoFile,
 ) {
   const normalized = relPath.replace(/\\/g, "/");
   const explicitCandidates = [];
@@ -528,26 +780,49 @@ function deriveCandidateUnitTestsForSourceFile(
   const baseName = parsed.name;
   const dir = parsed.dir;
   const isJsTs = /\.(?:[cm]?jsx?|[cm]?tsx?)$/.test(normalized);
-  const sourceNoExt = isJsTs && dir && baseName ? `${dir}/${baseName}` : "";
+  const sourceNoExt =
+    isJsTs && baseName ? (dir ? `${dir}/${baseName}` : baseName) : "";
 
   const exactCandidates =
-    isJsTs && dir && baseName
-      ? [
-          `${dir}/${baseName}.test.ts`,
-          `${dir}/${baseName}.test.tsx`,
-          `${dir}/${baseName}.unit.test.ts`,
-          `${dir}/${baseName}.unit.test.tsx`,
-          `${dir}/__tests__/${baseName}.test.ts`,
-          `${dir}/__tests__/${baseName}.test.tsx`,
-          `${dir}/__tests__/${baseName}.unit.test.ts`,
-          `${dir}/__tests__/${baseName}.unit.test.tsx`,
-        ]
+    isJsTs && baseName
+      ? dir
+        ? [
+            `${dir}/${baseName}.test.ts`,
+            `${dir}/${baseName}.test.tsx`,
+            `${dir}/${baseName}.unit.test.ts`,
+            `${dir}/${baseName}.unit.test.tsx`,
+            `${dir}/__tests__/${baseName}.test.ts`,
+            `${dir}/__tests__/${baseName}.test.tsx`,
+            `${dir}/__tests__/${baseName}.unit.test.ts`,
+            `${dir}/__tests__/${baseName}.unit.test.tsx`,
+          ]
+        : [
+            `${baseName}.test.ts`,
+            `${baseName}.test.tsx`,
+            `${baseName}.unit.test.ts`,
+            `${baseName}.unit.test.tsx`,
+            `__tests__/${baseName}.test.ts`,
+            `__tests__/${baseName}.test.tsx`,
+            `__tests__/${baseName}.unit.test.ts`,
+            `__tests__/${baseName}.unit.test.tsx`,
+          ]
       : [];
 
   const colocatedPrefix =
-    isJsTs && dir && baseName ? `${dir}/${baseName}.` : "";
+    isJsTs && baseName ? (dir ? `${dir}/${baseName}.` : `${baseName}.`) : "";
   const subdirPrefix =
-    isJsTs && dir && baseName ? `${dir}/__tests__/${baseName}.` : "";
+    isJsTs && baseName
+      ? dir
+        ? `${dir}/__tests__/${baseName}.`
+        : `__tests__/${baseName}.`
+      : "";
+
+  const moduleGraph =
+    readTestFileOrGraph &&
+    typeof readTestFileOrGraph === "object" &&
+    typeof readTestFileOrGraph.doesTestReferenceSource === "function"
+      ? readTestFileOrGraph
+      : createTransitiveModuleGraph(readTestFileOrGraph);
 
   const matchedRegistered = registeredTests.filter((testPath) => {
     if (
@@ -556,18 +831,11 @@ function deriveCandidateUnitTestsForSourceFile(
     ) {
       return true;
     }
-    if (typeof readTestFile === "function") {
-      const testContent = readTestFile(testPath);
-      if (
-        doesTestImportSourceFile(
-          testPath,
-          testContent,
-          normalized,
-          sourceNoExt,
-        )
-      ) {
-        return true;
-      }
+    if (
+      moduleGraph &&
+      moduleGraph.doesTestReferenceSource(testPath, normalized, sourceNoExt)
+    ) {
+      return true;
     }
     return false;
   });
@@ -659,16 +927,7 @@ export function collectModifiedUnitTestsForPush({
   }
 
   const registeredTests = extractRegisteredUnitTests(unitConfigText);
-  const testContentCache = new Map();
-  const cachedReadTestFile =
-    typeof readFile === "function"
-      ? (testPath) => {
-          if (!testContentCache.has(testPath)) {
-            testContentCache.set(testPath, String(readFile(testPath) ?? ""));
-          }
-          return testContentCache.get(testPath);
-        }
-      : null;
+  const moduleGraph = createTransitiveModuleGraph(readFile);
 
   const matchedTestsSet = new Set();
   for (const file of changedFiles) {
@@ -683,7 +942,7 @@ export function collectModifiedUnitTestsForPush({
     for (const candidate of deriveCandidateUnitTestsForSourceFile(
       file,
       registeredTests,
-      cachedReadTestFile,
+      moduleGraph,
     )) {
       if (isRegisteredInUnitConfig(unitConfigText, candidate)) {
         matchedTestsSet.add(candidate);
@@ -894,6 +1153,70 @@ export function runSafePushSelftest() {
   assert.deepEqual(deletedOrRenamedSource, [
     "client/src/pages/Treasury.permissionCache.test.tsx",
     "client/src/components/PageTabs.test.tsx",
+  ]);
+
+  // Verify transitive multi-hop source imports (e.g. invoiceReceipt.test.ts -> invoiceReceipt.ts -> paymentMethod.ts -> inboundPaymentPolicy.ts)
+  const transitiveRealRepoMatch = collectModifiedUnitTestsForPush({
+    stdinEntries: [
+      {
+        localRef: "refs/heads/feat/payment-method",
+        localSha: "8888888888888888888888888888888888888888",
+        remoteRef: "refs/heads/feat/payment-method",
+        remoteSha: "0000000000000000000000000000000000000000",
+      },
+    ],
+    unitConfigText:
+      'include: ["client/src/lib/printing/invoiceReceipt.test.ts", "client/src/lib/lazyWithRetry.test.ts"]',
+    runDiff: () => ({
+      status: 0,
+      stdout: "client/src/lib/paymentMethod.ts\n",
+    }),
+    fileExists: () => true,
+  });
+  assert.deepEqual(transitiveRealRepoMatch, [
+    "client/src/lib/printing/invoiceReceipt.test.ts",
+  ]);
+
+  // Verify cycle-safe multi-hop + barrel index + deleted leaf detection via custom readFile graph
+  const syntheticFiles = new Map([
+    [
+      "client/src/features/alpha.test.ts",
+      'import { runAlpha } from "./alphaService";\n',
+    ],
+    [
+      "client/src/features/alphaService.ts",
+      'import { betaHelper } from "./betaHelper";\nexport const runAlpha = () => betaHelper();\n',
+    ],
+    [
+      "client/src/features/betaHelper.ts",
+      'import { runAlpha } from "./alphaService";\nimport { barrelFn } from "@/lib/barrel";\nexport const betaHelper = () => barrelFn ?? runAlpha;\n',
+    ],
+    [
+      "client/src/lib/barrel/index.ts",
+      'export { deepLeaf } from "./deepLeaf";\nexport { removedHelper } from "./removedHelper";\n',
+    ],
+    ["client/src/lib/barrel/deepLeaf.ts", "export const deepLeaf = 42;\n"],
+  ]);
+  const cyclicTransitiveMatch = collectModifiedUnitTestsForPush({
+    stdinEntries: [
+      {
+        localRef: "refs/heads/feat/deep-leaf",
+        localSha: "9999999999999999999999999999999999999991",
+        remoteRef: "refs/heads/feat/deep-leaf",
+        remoteSha: "0000000000000000000000000000000000000000",
+      },
+    ],
+    unitConfigText:
+      'include: ["client/src/features/alpha.test.ts", "client/src/features/unrelated.test.ts"]',
+    runDiff: () => ({
+      status: 0,
+      stdout: "D\tclient/src/lib/barrel/removedHelper.ts\n",
+    }),
+    readFile: (relPath) => syntheticFiles.get(relPath) ?? "",
+    fileExists: () => true,
+  });
+  assert.deepEqual(cyclicTransitiveMatch, [
+    "client/src/features/alpha.test.ts",
   ]);
 
   // Verify fail-closed when origin/main comparison fails

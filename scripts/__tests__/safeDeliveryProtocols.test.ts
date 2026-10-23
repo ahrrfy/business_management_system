@@ -875,6 +875,109 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
     });
   });
 
+  it("يتتبع شجرة استيراد المصادر متعددة القفزات (Transitive Imports) بأمان ضد الحلقات لاختيار اختبارات الوحدة المتأثرة", () => {
+    const pushedStdin = parsePrePushStdin(
+      "refs/heads/fix/transitive abc9999999999 refs/heads/fix/transitive 0000000000000000000000000000000000000000\n",
+    );
+
+    // 1. Real repository transitive chain: invoiceReceipt.test.ts -> invoiceReceipt.ts -> @/lib/paymentMethod -> @shared/inboundPaymentPolicy
+    const realTwoHop = collectModifiedUnitTestsForPush({
+      stdinEntries: pushedStdin,
+      unitConfigText:
+        'include: ["client/src/lib/printing/invoiceReceipt.test.ts", "client/src/lib/lazyWithRetry.test.ts"]',
+      runDiff: () => ({
+        status: 0,
+        stdout: "client/src/lib/paymentMethod.ts\n",
+      }),
+      fileExists: () => true,
+      verifyCheckoutMatchesSha: () => ({ ok: true }),
+    });
+    expect(realTwoHop).toEqual([
+      "client/src/lib/printing/invoiceReceipt.test.ts",
+    ]);
+
+    const realThreeHop = collectModifiedUnitTestsForPush({
+      stdinEntries: pushedStdin,
+      unitConfigText:
+        'include: ["client/src/lib/printing/invoiceReceipt.test.ts", "client/src/lib/lazyWithRetry.test.ts"]',
+      runDiff: () => ({
+        status: 0,
+        stdout: "shared/inboundPaymentPolicy.ts\n",
+      }),
+      fileExists: () => true,
+      verifyCheckoutMatchesSha: () => ({ ok: true }),
+    });
+    expect(realThreeHop).toEqual([
+      "client/src/lib/printing/invoiceReceipt.test.ts",
+    ]);
+
+    // 2. Cyclic imports + barrel index.ts + deleted leaf + local export type + ESM .js->.ts + type-only boundary
+    const virtualFs = new Map<string, string>([
+      ["client/src/mod/entry.test.ts", 'import { a } from "./a";\n'],
+      [
+        "client/src/mod/a.ts",
+        'type LocalT = string;\nexport type { LocalT };\nimport type { HugeRouter } from "./hugeRouter";\nimport { b } from "./b.service.js";\nexport const a = b;\n',
+      ],
+      [
+        "client/src/mod/hugeRouter.ts",
+        'import { unrelated } from "./unrelatedLeaf";\nexport type HugeRouter = typeof unrelated;\n',
+      ],
+      ["client/src/mod/unrelatedLeaf.ts", "export const unrelated = 42;\n"],
+      [
+        "client/src/mod/b.service.ts",
+        'import { a } from "./a";\nimport { util } from "@/lib/pkg";\nexport const b = () => util || a;\n',
+      ],
+      [
+        "client/src/lib/pkg/index.ts",
+        'export { leaf } from "./leaf";\nexport { deletedLeaf } from "./deletedLeaf";\n',
+      ],
+      ["client/src/lib/pkg/leaf.ts", "export const leaf = 1;\n"],
+    ]);
+
+    expect(
+      collectModifiedUnitTestsForPush({
+        stdinEntries: pushedStdin,
+        unitConfigText: 'include: ["client/src/mod/entry.test.ts"]',
+        runDiff: () => ({
+          status: 0,
+          stdout: "client/src/lib/pkg/leaf.ts\n",
+        }),
+        readFile: (p: string) => virtualFs.get(p) ?? "",
+        fileExists: () => true,
+        verifyCheckoutMatchesSha: () => ({ ok: true }),
+      }),
+    ).toEqual(["client/src/mod/entry.test.ts"]);
+
+    expect(
+      collectModifiedUnitTestsForPush({
+        stdinEntries: pushedStdin,
+        unitConfigText: 'include: ["client/src/mod/entry.test.ts"]',
+        runDiff: () => ({
+          status: 0,
+          stdout: "D\tclient/src/lib/pkg/deletedLeaf.ts\n",
+        }),
+        readFile: (p: string) => virtualFs.get(p) ?? "",
+        fileExists: () => true,
+        verifyCheckoutMatchesSha: () => ({ ok: true }),
+      }),
+    ).toEqual(["client/src/mod/entry.test.ts"]);
+
+    // Type-only import (import type { HugeRouter }) on intermediate module does not pull unrelatedLeaf.ts into runtime closure
+    expect(
+      collectModifiedUnitTestsForPush({
+        stdinEntries: pushedStdin,
+        unitConfigText: 'include: ["client/src/mod/entry.test.ts"]',
+        runDiff: () => ({
+          status: 0,
+          stdout: "client/src/mod/unrelatedLeaf.ts\n",
+        }),
+        readFile: (p: string) => virtualFs.get(p) ?? "",
+        fileExists: () => true,
+        verifyCheckoutMatchesSha: () => ({ ok: true }),
+      }),
+    ).toEqual([]);
+  });
+
   it("يبقي CommissionGuide خارج شريط أدوات ListToolbar في CommissionPlans لمنع التمدد الأفقي (Codex P2)", () => {
     const source = readFileSync(
       resolve(root, "client/src/pages/CommissionPlans.tsx"),
