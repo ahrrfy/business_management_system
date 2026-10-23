@@ -317,12 +317,14 @@ function customerPaymentLink(customerId: number) {
  *               approvalStatus=APPROVED و status ∈ {COMPLETED، REVERSED} — انظر payRow/F5).
  * كل الجمع بدقّة decimal (§٥).
  */
-async function customerOpeningBalance(customerId: number, from?: string) {
+async function customerOpeningBalance(customerId: number, from?: string, to?: string) {
   const db = getDb()!;
   // ب-١ (١٦/٨): تصحيح الرصيد الافتتاحيّ صار **قيد فرقٍ مؤرَّخاً** لا تعديلاً للأصل. لذا
   // «الافتتاحيّ كما في تاريخ س» = مجموع قيود OPENING **حتى س** لا مجموعها كلّها: تصحيحٌ وقع
   // اليوم لا يجوز أن يدخل رصيد كشفٍ بدأ الشهر الماضي — وإلّا تغيّر كشفٌ ماضٍ بلا حركةٍ تفسّره.
   const fromTs = from ? `${from} 00:00:00` : null;
+  // مع to وحده تُحمَل قيود الافتتاح حتى نهايته فقط، لا التصحيحات اللاحقة للفترة.
+  const openingBeforeTs = fromTs ?? (to ? `${nextDayStr(to)} 00:00:00` : null);
   const openRow = await db
     .select({ v: sql<string>`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0)` })
     .from(accountingEntries)
@@ -330,7 +332,7 @@ async function customerOpeningBalance(customerId: number, from?: string) {
       and(
         eq(accountingEntries.entryType, "OPENING"),
         eq(accountingEntries.customerId, customerId),
-        fromTs ? sql`${accountingEntries.entryDate} < ${fromTs}` : undefined,
+        openingBeforeTs ? sql`${accountingEntries.entryDate} < ${openingBeforeTs}` : undefined,
       ),
     );
   let opening = money(openRow[0]?.v ?? 0);
@@ -590,7 +592,7 @@ export async function getCustomerStatement(
         .where(and(...openingMoveConds))
     : [];
 
-  const openingBalance = await customerOpeningBalance(customerId, from);
+  const openingBalance = await customerOpeningBalance(customerId, from, to);
 
   // ش٤ (I11): عرابين المسوّدات المحتجزة للعميل — **سطر إفصاحٍ منفصل** لا حركة كشف: المال
   // مقبوضٌ فعلاً (إيصال + قيد) لكنه لم يُطبَّق على فاتورةٍ ولم يمسّ الرصيد الجاري. بدونه

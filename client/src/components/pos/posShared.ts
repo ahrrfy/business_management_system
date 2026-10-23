@@ -410,6 +410,7 @@ export function buildBrandedReceipt(r: Receipt): ReceiptBrowserData {
     // (بلا إدخال مبلغ) باقيه ٠ ⇒ لا سطر، بدل طباعة «الباقي: ‑الإجمالي» (باقٍ سالب لا معنى له).
     change: r.isCredit || r.change <= 0 ? null : r.change,
     credit: r.isCredit ? r.credit : null,
+    paymentMode: r.delivery ? "COD" : null,
     paymentMethod: r.method,
     paymentLegs: r.paymentLegs ?? null,
     // ش١٠: تفاصيل الكروت تأتي من الخادم بعد التثبيت (§١٢.٣) — لا من حالة React قبل الحفظ.

@@ -18,7 +18,7 @@ import {
 } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money, sumMoney, toDbMoney } from "../money";
-import type { StatementPeriod } from "./shared";
+import { nextDayStr, type StatementPeriod } from "./shared";
 import {
   GRNI_SUPPLIER_INVOICE_FORWARD_REGEXP,
   GRNI_SUPPLIER_INVOICE_REVERSAL_REGEXP,
@@ -376,6 +376,7 @@ async function supplierOpeningBalance(
   supplierId: number,
   from?: string,
   branchId?: number,
+  to?: string,
 ) {
   const db = getDb()!;
   const branchCond = branchId
@@ -383,7 +384,8 @@ async function supplierOpeningBalance(
     : undefined;
   // ب-١ (١٦/٨): نظير العميل — «الافتتاحيّ كما في تاريخ س» = مجموع قيود OPENING **حتى س**،
   // لأنّ التصحيح صار قيد فرقٍ مؤرَّخاً لا تعديلاً للأصل.
-  const openFromTs = from ? `${from} 00:00:00` : null;
+  // مع to وحده يبقى الافتتاح بذرةً واحدة، مقصورةً على نهاية اليوم المطلوب.
+  const openBeforeTs = from ? `${from} 00:00:00` : to ? `${nextDayStr(to)} 00:00:00` : null;
   const openRow = await db
     .select({
       v: sql<string>`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0)`,
@@ -394,8 +396,8 @@ async function supplierOpeningBalance(
         eq(accountingEntries.entryType, "OPENING"),
         eq(accountingEntries.supplierId, supplierId),
         branchCond,
-        openFromTs
-          ? sql`${accountingEntries.entryDate} < ${openFromTs}`
+        openBeforeTs
+          ? sql`${accountingEntries.entryDate} < ${openBeforeTs}`
           : undefined,
       ),
     );
@@ -639,6 +641,7 @@ export async function getSupplierStatement(
     supplierId,
     from,
     branchId,
+    to,
   );
 
   // أموال بدقّة decimal.js (§٥).
