@@ -35,6 +35,7 @@ module.exports = function createHrBridgePm2App(options) {
   return {
     name: "erp-hr-bridge",
     script,
+    interpreter: process.execPath,
     cwd: projectRoot,
     instances: 1,
     exec_mode: "fork",

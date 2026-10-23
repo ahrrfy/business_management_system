@@ -33,7 +33,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version-file: .node-version
 
       - name: Verify Firebase config stays out of source control
         run: node ../../scripts/check-firebase-config-security.mjs
@@ -89,7 +89,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version-file: .node-version
 
       - name: Install pnpm
         uses: pnpm/action-setup@v6
