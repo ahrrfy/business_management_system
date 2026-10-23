@@ -10,8 +10,3 @@ reason = "braces is pulled only by Tailwind, Metro, and Jest build/test tooling,
 id = "GHSA-hp3w-g68c-fv3c"
 reason = "sprintf-js is pulled only through js-yaml in Expo development tooling, does not evaluate untrusted format strings in the native app runtime, and has no patched release yet"
 
-[[IgnoredVulns]]
-id = "GHSA-mrhx-c7xc-m3w5"
-ignoreUntil = 2026-11-06
-reason = "Direct web/server/mobile Zod is patched to 4.6.6. The security workflow first enforces that the only older dependency is IMG.LY's 3.25.76. IMG.LY embeds its own v3 implementation and validates only our reviewed fixed browser configuration, without variable-length collections; uploaded image bytes never enter Zod. See docs/zod-security-boundary-2026-10-23.md."
-
