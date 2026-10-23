@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 const DEPLOY_HOME = "/home/deploy";
 const PM2_HOME = "/home/deploy/.pm2";
 const PM2_BIN = "/usr/lib/node_modules/pm2/bin/pm2";
-const NODE_BIN = "/usr/bin/node";
+const NODE_BIN = "/opt/alroya-erp/node-v24.22.1-linux-x64/bin/node";
 const SETPRIV_BIN = "/usr/bin/setpriv";
 const PASSWD_FILE = "/etc/passwd";
 const PID_DIRECTORY = "/run/erp-pm2";
@@ -18,7 +18,7 @@ const PID_FILE = "/run/erp-pm2/pm2-deploy.pid";
 const INSTALLED_HELPER = "/usr/local/libexec/erp/pm2-systemd-start.mjs";
 const EXPECTED_PM2_VERSION = "7.0.3";
 const DEPLOY_PATH =
-  "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+  "/opt/alroya-erp/node-v24.22.1-linux-x64/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 function codedError(code, cause) {
   const error = new Error(code, cause ? { cause } : undefined);
@@ -322,6 +322,9 @@ async function main() {
     expectedVersion: EXPECTED_PM2_VERSION,
     runResurrect: () => runResurrectAsDeploy(account),
   });
+  if (fs.realpathSync(`/proc/${daemon.pid}/exe`) !== fs.realpathSync(NODE_BIN)) {
+    throw codedError("PM2_SYSTEMD_NODE_RUNTIME_MISMATCH");
+  }
   assertDeployDirectory(PM2_HOME, account);
   const pidStat = fs.lstatSync(PID_FILE);
   if (

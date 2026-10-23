@@ -140,6 +140,7 @@ module.exports = {
       // immutable release. A build never writes into the artifact served by
       // running workers, and rolling reloads can safely overlap two releases.
       script: ".runtime/web-current/index.js",
+      interpreter: process.execPath,
       cwd: __dirname,
       // ── توزيع الأحمال داخل الخادم (cluster) ────────────────────────────────────────────
       // عدّة عمّال يتقاسمون الطلبات على نوى المعالج ⇒ طاقةٌ أعلى تحت الذروة (٧ كاشيرات + كل
@@ -159,7 +160,9 @@ module.exports = {
       // فالعامل قد يُعاد تحميله قبل أن يجمع V8 التخصيصات العابرة. نضبط old-space عند 512MiB
       // كي يبدأ الجمع ضمن ميزانية العامل، مع هامش للـyoung-space وBuffer والمكتبات الأصلية.
       // يبقى حارس RSS كما هو؛ حد heap لا يحد الذاكرة الأصلية ولا يغني عن مراقبة الاحتفاظ.
-      node_args: ["--max-old-space-size=512"],
+      // Node 24's larger default young generation raises the total heap to 704MiB.
+      // Pin it to 32MiB: total heap <=608MiB, preserving >=384MiB RSS headroom.
+      node_args: ["--max-old-space-size=512", "--max-semi-space-size=32"],
       max_memory_restart: "1024M",
       // أعِد التشغيل تلقائياً عند الانهيار (مع تأخير متزايد).
       restart_delay: 3000,
@@ -216,6 +219,7 @@ module.exports = {
     {
       name: "erp-provision-worker",
       script: "scripts/company-provision-worker.mjs",
+      interpreter: process.execPath,
       cwd: __dirname,
       instances: 1,
       exec_mode: "fork",

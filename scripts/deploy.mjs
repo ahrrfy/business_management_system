@@ -2680,9 +2680,33 @@ async function recoverPendingWebActivationBeforePull() {
   });
 }
 
+function assertDeploymentNodeRuntime() {
+  const requiredNodeVersion = fs
+    .readFileSync(path.join(PROJECT_ROOT, ".node-version"), "utf8")
+    .trim();
+  if (process.versions.node !== requiredNodeVersion) {
+    throw codedError(
+      `DEPLOY_NODE_VERSION_MISMATCH:expected=${requiredNodeVersion}:actual=${process.versions.node}`,
+    );
+  }
+  // Pin all child tools (pnpm, PM2 and build workers) to this ERP runtime.
+  process.env.PATH = `${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH || ""}`;
+  const daemonPid = fs
+    .readFileSync(path.join(process.env.HOME, ".pm2", "pm2.pid"), "utf8")
+    .trim();
+  if (
+    !/^\d+$/.test(daemonPid) ||
+    fs.realpathSync(`/proc/${daemonPid}/exe`) !==
+      fs.realpathSync(process.execPath)
+  ) {
+    throw codedError("DEPLOY_PM2_NODE_RUNTIME_MISMATCH");
+  }
+}
+
 async function main() {
   assertDeploymentIdentity();
   process.chdir(PROJECT_ROOT);
+  assertDeploymentNodeRuntime();
   const releaseSyncLock = acquirePrePullLock();
   try {
     await recoverPendingWebActivationBeforePull();
@@ -2691,6 +2715,7 @@ async function main() {
       await recoverBeforePull();
     }
     const expectedHead = synchronizeAndMaybeReexec(releaseSyncLock);
+    assertDeploymentNodeRuntime();
     console.log("🚀 نشر إنتاجي هندسي — بداية");
     const startedAt = Date.now();
     await deploy(expectedHead);
