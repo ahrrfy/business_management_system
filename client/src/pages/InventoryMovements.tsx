@@ -1,3 +1,4 @@
+import { INVENTORY_MOVEMENT_LABEL as MTYPE_LABEL } from "@shared/inventoryTerms";
 import { CopyInline } from "@/components/CopyButton";
 import { FilterField, FilterShell, SearchField } from "@/components/list";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -25,14 +26,7 @@ import { MovementSource, movementSourceText } from "@/components/inventory/Movem
 
 type MovementType = "IN" | "OUT" | "ADJUST" | "RETURN" | "TRANSFER_IN" | "TRANSFER_OUT";
 
-const MTYPE_LABEL: Record<MovementType, string> = {
-  IN: "وارد",
-  OUT: "صادر",
-  ADJUST: "تسوية",
-  RETURN: "مرتجع",
-  TRANSFER_IN: "تحويل وارد",
-  TRANSFER_OUT: "تحويل صادر",
-};
+
 
 
 // تعريب referenceType (نصّ خام في DB يُكتَب من عشرات نقاط الخدمة) — القيم غير المدرَجة تُعرَض

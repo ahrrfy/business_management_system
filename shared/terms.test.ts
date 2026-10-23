@@ -18,8 +18,12 @@ import {
   paymentMethodTerm,
   paymentMethodTermOptions,
   paymentMethodTooltip,
+  paymentMethodLabels,
+  channelSearchText,
   type Term,
 } from "./terms";
+import { EXCHANGE_TRANSACTION_LABEL } from "./exchangeTerms";
+import { INVENTORY_MOVEMENT_LABEL, INVENTORY_STOCK_STATUS_LABEL, STOCKTAKE_SCOPE_LABEL } from "./inventoryTerms";
 import { RECEPTION_CHANNELS, WORK_ORDER_CHANNELS } from "./receptionChannel";
 import { INVOICE_CHANNELS } from "./invoiceChannel";
 import { SALES_LEAD_SOURCES } from "./salesPipeline";
@@ -198,5 +202,31 @@ describe("دوالُّ الوصول — طريقة الدفع", () => {
     const opts = paymentMethodTermOptions(PAYMENT_METHOD_SOURCE_ENUMS.woPaymentMethod);
     expect(opts.map((o) => o.value)).toEqual(["CASH", "CARD", "TRANSFER", "WALLET", "TELECOM"]);
     expect(paymentMethodTermOptions().map((o) => o.value)).toEqual([...UNIFIED_PAYMENT_METHODS]);
+  });
+});
+
+
+describe("typed consumer vocabulary", () => {
+  it("derives only explicitly allowed methods in their original order", () => {
+    expect(paymentMethodLabels(["CASH", "CARD", "TRANSFER", "WALLET", "TELECOM"] as const)).toEqual({
+      CASH: "نقدي", CARD: "بطاقة", TRANSFER: "تحويل", WALLET: "محفظة", TELECOM: "رصيد زين",
+    });
+    expect(Object.keys(paymentMethodLabels(["CASH", "CARD", "TRANSFER", "WALLET"] as const))).toEqual(["CASH", "CARD", "TRANSFER", "WALLET"]);
+  });
+  it("keeps domain maps complete and unknown lookups available to caller fallbacks", () => {
+    expect(INVENTORY_STOCK_STATUS_LABEL).toEqual({out: "نفد", low: "منخفض", ok: "طبيعي"});
+    expect(INVENTORY_MOVEMENT_LABEL).toEqual({IN: "وارد", OUT: "صادر", RETURN: "مرتجع", ADJUST: "تسوية", TRANSFER_IN: "تحويل وارد", TRANSFER_OUT: "تحويل صادر"});
+    expect(STOCKTAKE_SCOPE_LABEL).toEqual({FULL: "جرد شامل للفرع", MOVING: "المنتجات المتحركة", MANUAL: "منتجات مختارة", CATEGORY: "حسب الفئة"});
+    expect(EXCHANGE_TRANSACTION_LABEL).toEqual({DEPOSIT: "إيداع", WITHDRAW: "سحب", FX_BUY: "شراء دولار", SETTLE: "تسديد مورد", OPENING: "رصيد افتتاحي"});
+    for (const labels of [INVENTORY_STOCK_STATUS_LABEL, INVENTORY_MOVEMENT_LABEL, STOCKTAKE_SCOPE_LABEL, EXCHANGE_TRANSACTION_LABEL]) {
+      expect(labels["LEGACY_CODE"]).toBeUndefined();
+      expect(labels[""]).toBeUndefined();
+    }
+    expect(STOCKTAKE_SCOPE_LABEL.UNKNOWN).toBeUndefined();
+  });
+  it("keeps search spellings alongside canonical channel labels", () => {
+    expect(channelSearchText("WHATSAPP")).toBe("واتساب واتس اب");
+    expect(channelSearchText("INSTAGRAM")).toBe("إنستغرام انستغرام انستجرام");
+    expect(channelSearchText("STORE")).toBe("المتجر متجر webhook");
   });
 });

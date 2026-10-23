@@ -1,3 +1,4 @@
+import { EXCHANGE_TRANSACTION_LABEL as TYPE_AR } from "@shared/exchangeTerms";
 // تبويب «كشف الحساب» — حركات الصيرفة بعملتيها + رصيد جارٍ (لقطة بعد كل عملية) + ملخّص.
 import { useCallback, useMemo, useState } from "react";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -22,13 +23,7 @@ import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/b
 import { usePrintAudit } from "@/hooks/usePrintAudit";
 import { exportSheets, type SheetSpec } from "@/lib/export";
 
-const TYPE_AR: Record<string, string> = {
-  DEPOSIT: "إيداع",
-  WITHDRAW: "سحب",
-  FX_BUY: "شراء دولار",
-  SETTLE: "تسديد مورد",
-  OPENING: "رصيد افتتاحي",
-};
+
 
 type TxnRow = {
   id: number;

@@ -1,3 +1,4 @@
+import { INVENTORY_MOVEMENT_LABEL as MTYPE } from "@shared/inventoryTerms";
 import { Button } from "@/components/ui/button";
 import {
   AlertTriangle,
@@ -17,14 +18,7 @@ import {
 } from "./NegativeSettlementUi";
 import { StocktakeOverlapRow } from "./StocktakeOverlapNotice";
 import { ReviewDecisionCell } from "./ReviewDecisionCell";
-const MTYPE: Record<string, string> = {
-  IN: "وارد",
-  OUT: "صادر",
-  RETURN: "مرتجع",
-  ADJUST: "تسوية",
-  TRANSFER_IN: "تحويل وارد",
-  TRANSFER_OUT: "تحويل صادر",
-};
+
 export function ReviewItemRow({
   r,
   actions,

@@ -21,13 +21,22 @@ describe("سياسة القبض خارج نقاط البيع", () => {
   });
 
   it("سند القبض يعرض الطرق المدعومة كلّها بلا قائمة موازية مُقفلة", () => {
-    const source = readFileSync(
-      new URL("../../components/vouchers/VoucherFormShared.tsx", import.meta.url),
-      "utf8",
-    );
+    const readVoucher = (name: string) => readFileSync(new URL(`../../components/vouchers/${name}`, import.meta.url), "utf8");
+    const form = readVoucher("VoucherFormShared.tsx");
+    const model = readVoucher("useVoucherForm.ts");
+    const source = [form, model, ...[
+      "VoucherPaymentFields.tsx", "VoucherPartyAllocationFields.tsx", "useVoucherFormState.ts",
+      "useVoucherFormQueries.ts", "useVoucherFormSubmission.ts",
+    ].map(readVoucher)].join("\n");
     expect(source).toContain("disabled={!isInboundPaymentMethodEnabled(m.value)}");
     expect(source).not.toContain("CASH_METHODS");
     expect(source).not.toContain('if (isReceipt && method !== "CASH")');
+    expect(form).toContain('import { useVoucherForm } from "./useVoucherForm";');
+    expect(form).toContain("const model = useVoucherForm(props)");
+    expect(model).toContain("const state = useVoucherFormState(props)");
+    expect(model).toContain("return { ...state, ...queries, ...submission, ...ledger }");
+    expect(form).toContain('import { VoucherPaymentFields } from "./VoucherPaymentFields";');
+    expect(form).toMatch(/<VoucherPaymentFields\s+\{\.\.\.\{[\s\S]*?method,\s*setMethod,/);
   });
 
   it("تحصيل القسط يفصل المنشئ عن المؤكد ويعرض طابور الاعتماد بكل حالاته", () => {

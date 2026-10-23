@@ -32,6 +32,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
+import ts from "typescript";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -88,7 +89,13 @@ export function importSpecifiers(source) {
  * ⛔ ولا يُوسَّع الفحص إلى المستودع كلّه: عبارةٌ في شاشةٍ لا يستوردها الاختبار كانت
  * ستُخفي انجرافاً حقيقياً (جرّبناه: «الطلبات النشطة» موجودةٌ في `ReceptionOrderQueue.tsx`).
  */
-export function satisfiedByAnotherImport(text, consumerPath, source, changedFile, readFile) {
+export function satisfiedByAnotherImport(
+  text,
+  consumerPath,
+  source,
+  changedFile,
+  readFile,
+) {
   let re = null;
   try {
     re = new RegExp(text);
@@ -96,21 +103,79 @@ export function satisfiedByAnotherImport(text, consumerPath, source, changedFile
     re = null;
   }
   const hit = (body) => (re ? re.test(body) : body.includes(text));
-  const dir = path.dirname(consumerPath);
-  for (const spec of importSpecifiers(source)) {
-    if (!spec.startsWith(".") && !spec.startsWith("@/") && !spec.startsWith("@shared/")) continue;
-    const base = spec.startsWith("@/")
-      ? path.join("client/src", spec.slice(2))
-      : spec.startsWith("@shared/")
-        ? path.join("shared", spec.slice(8))
-        : path.posix.normalize(path.posix.join(dir, spec));
-    for (const cand of [base + ".ts", base + ".tsx", base + "/index.ts", base]) {
-      if (cand === changedFile) continue; // الملفُّ المتغيّر نفسه — هو محلّ السؤال لا جوابه.
-      const body = readFile(cand);
-      if (body !== null && hit(stripComments(body))) return true;
+  const pending = [{ file: consumerPath.replace(/\\/g, "/"), body: source }];
+  const visited = new Set(pending.map((entry) => entry.file));
+  while (pending.length) {
+    const entry = pending.shift();
+    const dir = path.posix.dirname(entry.file);
+    for (const spec of runtimeImportSpecifiers(entry.body)) {
+      if (
+        !spec.startsWith(".") &&
+        !spec.startsWith("@/") &&
+        !spec.startsWith("@shared/")
+      )
+        continue;
+      const base = spec.startsWith("@/")
+        ? path.posix.join("client/src", spec.slice(2))
+        : spec.startsWith("@shared/")
+          ? path.posix.join("shared", spec.slice(8))
+          : path.posix.normalize(path.posix.join(dir, spec));
+      if (base.startsWith("../")) continue;
+      for (const cand of [
+        base + ".ts",
+        base + ".tsx",
+        base + "/index.ts",
+        base + "/index.tsx",
+        base,
+      ]) {
+        const body = readFile(cand);
+        if (body === null) continue;
+        // A cycle back to the consumer must not count its own assertion as a producer.
+        if (visited.has(cand)) break;
+        visited.add(cand);
+        if (cand !== changedFile && hit(stripComments(body))) return true;
+        // A decomposed component still produces its imported hook/view's message.
+        pending.push({ file: cand, body });
+        break;
+      }
     }
   }
   return false;
+}
+
+const runtimeImportCache = new Map();
+function runtimeImportSpecifiers(source) {
+  if (runtimeImportCache.has(source)) return runtimeImportCache.get(source);
+  const file = ts.createSourceFile(
+    "module.tsx",
+    source,
+    ts.ScriptTarget.Latest,
+    false,
+    ts.ScriptKind.TSX,
+  );
+  const out = [];
+  for (const node of file.statements) {
+    if (!ts.isImportDeclaration(node) && !ts.isExportDeclaration(node))
+      continue;
+    if (!node.moduleSpecifier || !ts.isStringLiteral(node.moduleSpecifier))
+      continue;
+    const clause = ts.isImportDeclaration(node) ? node.importClause : node;
+    if (clause?.isTypeOnly) continue;
+    const bindings = ts.isImportDeclaration(node)
+      ? clause?.namedBindings
+      : node.exportClause;
+    if (
+      !clause?.name &&
+      bindings &&
+      "elements" in bindings &&
+      bindings.elements.length &&
+      bindings.elements.every((item) => item.isTypeOnly)
+    )
+      continue;
+    out.push(node.moduleSpecifier.text);
+  }
+  runtimeImportCache.set(source, out);
+  return out;
 }
 
 /**
@@ -190,25 +255,59 @@ function runSelfTest({ quiet }) {
   const fails = [];
   const eq = (name, got, want) => {
     if (JSON.stringify(got) !== JSON.stringify(want)) {
-      fails.push(`${name}: توقّعنا ${JSON.stringify(want)} فجاء ${JSON.stringify(got)}`);
+      fails.push(
+        `${name}: توقّعنا ${JSON.stringify(want)} فجاء ${JSON.stringify(got)}`,
+      );
     }
   };
 
-  eq("يلتقط تأكيد toThrow العربيّ", extractContractTexts('rejects.toThrowError(/إرسالية مفتوحة/);'), [
-    "إرسالية مفتوحة",
-  ]);
-  eq("ويلتقط فحص includes بين خدمتين", extractContractTexts('e.message.includes("المخزون غير كافٍ")'), [
-    "المخزون غير كافٍ",
-  ]);
-  eq("ولا يلتقط نمطاً لاتينياً — ليس رسالةَ مستخدم", extractContractTexts("toThrow(/ER_DUP_ENTRY/)"), []);
+  eq(
+    "يلتقط تأكيد toThrow العربيّ",
+    extractContractTexts("rejects.toThrowError(/إرسالية مفتوحة/);"),
+    ["إرسالية مفتوحة"],
+  );
+  eq(
+    "ويلتقط فحص includes بين خدمتين",
+    extractContractTexts('e.message.includes("المخزون غير كافٍ")'),
+    ["المخزون غير كافٍ"],
+  );
+  eq(
+    "ولا يلتقط نمطاً لاتينياً — ليس رسالةَ مستخدم",
+    extractContractTexts("toThrow(/ER_DUP_ENTRY/)"),
+    [],
+  );
 
-  eq("قيدُ الصلة يقبل الاستيراد الفعليّ", referencesModule('from "../returnService"', "returnService"), true);
-  eq("ويرفض اسماً عابراً في نصّ", referencesModule("// returnService مذكورٌ تعليقاً", "returnService"), false);
+  eq(
+    "قيدُ الصلة يقبل الاستيراد الفعليّ",
+    referencesModule('from "../returnService"', "returnService"),
+    true,
+  );
+  eq(
+    "ويرفض اسماً عابراً في نصّ",
+    referencesModule("// returnService مذكورٌ تعليقاً", "returnService"),
+    false,
+  );
 
-  eq("الكسرُ يُكتشف", contractBroken("إرسالية مفتوحة", "x إرسالية مفتوحة y", "x إرسالية التوصيل y"), true);
-  eq("والباقي لا يُنذَر عليه", contractBroken("إرسالية", "x إرسالية y", "x إرسالية التوصيل y"), false);
+  eq(
+    "الكسرُ يُكتشف",
+    contractBroken(
+      "إرسالية مفتوحة",
+      "x إرسالية مفتوحة y",
+      "x إرسالية التوصيل y",
+    ),
+    true,
+  );
+  eq(
+    "والباقي لا يُنذَر عليه",
+    contractBroken("إرسالية", "x إرسالية y", "x إرسالية التوصيل y"),
+    false,
+  );
   // البديلُ يبقى محقَّقاً ما دام أحدُ شقّيه باقياً — وإلّا أنذر الحارس على صياغةٍ سليمة.
-  eq("والبديل يُقاس كنمطٍ لا كنصّ", contractBroken("أ|ب", "فيه أ", "فيه ب"), false);
+  eq(
+    "والبديل يُقاس كنمطٍ لا كنصّ",
+    contractBroken("أ|ب", "فيه أ", "فيه ب"),
+    false,
+  );
 
   // ⭐ الحالةُ التي أسقطت CI فعلاً (٣/٩/٢٦): العبارةُ تُحذف من الرسالة وتبقى في **تعليق**
   // بالملفّ نفسه. بلا تجريد التعليقات كان الحارس يُعلن السلامة — وهذا أخطر من غيابه،
@@ -224,7 +323,11 @@ function runSelfTest({ quiet }) {
   );
   eq(
     "والتعليقُ الكتليّ كذلك",
-    contractBroken("إرسالية مفتوحة", 'x = "إرسالية مفتوحة";', '/* إرسالية مفتوحة */ x = "إرسالية التوصيل";'),
+    contractBroken(
+      "إرسالية مفتوحة",
+      'x = "إرسالية مفتوحة";',
+      '/* إرسالية مفتوحة */ x = "إرسالية التوصيل";',
+    ),
     true,
   );
   // ⛔ والعكسُ محروسٌ أيضاً: التجريد لا يقصّ داخل السلاسل عند `//` — وإلّا حُذف نصُّ
@@ -243,7 +346,8 @@ function runSelfTest({ quiet }) {
   // ⭐ الإنذارُ الكاذب الذي أنتجه الحارسُ فعلاً: النصُّ انتقل إلى وحدةٍ أخرى **يستوردها
   // المستهلِك نفسه** ⇒ التأكيدُ ما زال يُصيب ⇒ لا انجراف.
   {
-    const consumerSrc = 'import { returnSale } from "../returnService";\nimport { cancelSale } from "../sale/cancel";\ntoThrow(/لا تخصّ فرعك/)';
+    const consumerSrc =
+      'import { returnSale } from "../returnService";\nimport { cancelSale } from "../sale/cancel";\ntoThrow(/لا تخصّ فرعك/)';
     const files = {
       "server/services/sale/cancel.ts": 'message: "الفاتورة لا تخصّ فرعك"',
       "server/services/returnService.ts": "// «الفاتورة لا تخصّ فرعك» كانت هنا",
@@ -266,7 +370,10 @@ function runSelfTest({ quiet }) {
         "server/services/__tests__/x.test.ts",
         'import { returnSale } from "../returnService";\ntoThrow(/لا تخصّ فرعك/)',
         "server/services/returnService.ts",
-        (f) => (f === "server/services/sale/cancel.ts" ? 'message: "الفاتورة لا تخصّ فرعك"' : null),
+        (f) =>
+          f === "server/services/sale/cancel.ts"
+            ? 'message: "الفاتورة لا تخصّ فرعك"'
+            : null,
       ),
       false,
     );
@@ -277,7 +384,103 @@ function runSelfTest({ quiet }) {
         "server/services/__tests__/y.test.ts",
         'import { cancelSale } from "../sale/cancel";\ntoThrow(/لا تخصّ فرعك/)',
         "server/services/returnService.ts",
-        (f) => (f === "server/services/sale/cancel.ts" ? "// لا تخصّ فرعك — أُزيلت" : null),
+        (f) =>
+          f === "server/services/sale/cancel.ts"
+            ? "// لا تخصّ فرعك — أُزيلت"
+            : null,
+      ),
+      false,
+    );
+  }
+
+  {
+    const files = {
+      "client/src/Portal.tsx":
+        'import { usePortal } from "./usePortal"; export const Portal = usePortal;',
+      "client/src/usePortal.ts":
+        'import { message } from "@/messages"; import { Portal } from "./Portal"; export { message };',
+      "client/src/messages.ts":
+        'export const message = "تغيّرت بنود الفاتورة";',
+      "client/src/unrelated.ts": 'export const message = "نص غير مستورد";',
+    };
+    const read = (file) => files[file] ?? null;
+    const consumer = 'import { Portal } from "../Portal";';
+    eq(
+      "رسالة باقية في اعتماد حي مستخرج مع دورة استيراد",
+      satisfiedByAnotherImport(
+        "تغيّرت بنود الفاتورة",
+        "client/src/__tests__/portal.test.tsx",
+        consumer,
+        "client/src/Portal.tsx",
+        read,
+      ),
+      true,
+    );
+    eq(
+      "لا يبحث خارج اعتمادات المستهلك",
+      satisfiedByAnotherImport(
+        "نص غير مستورد",
+        "client/src/__tests__/portal.test.tsx",
+        consumer,
+        "client/src/Portal.tsx",
+        read,
+      ),
+      false,
+    );
+    eq(
+      "استيراد النوع ليس منتجاً لرسالة تشغيلية",
+      satisfiedByAnotherImport(
+        "تغيّرت بنود الفاتورة",
+        "client/src/__tests__/portal.test.tsx",
+        'import type { Portal } from "../Portal";',
+        "client/src/Portal.tsx",
+        read,
+      ),
+      false,
+    );
+    eq(
+      "ولا الاستيراد المسمى لنوع فقط",
+      satisfiedByAnotherImport(
+        "تغيّرت بنود الفاتورة",
+        "client/src/__tests__/portal.test.tsx",
+        'import { type Portal } from "../Portal";',
+        "client/src/Portal.tsx",
+        read,
+      ),
+      false,
+    );
+    eq(
+      "النص في تعليق اعتماد لا يخفي حذف الرسالة",
+      satisfiedByAnotherImport(
+        "تغيّرت بنود الفاتورة",
+        "client/src/__tests__/portal.test.tsx",
+        consumer,
+        "client/src/Portal.tsx",
+        (file) =>
+          file === "client/src/messages.ts"
+            ? "// تغيّرت بنود الفاتورة"
+            : read(file),
+      ),
+      false,
+    );
+  }
+
+  {
+    const consumer =
+      'import { Portal } from "../Portal"; expect(message).toContain("تغيّرت بنود الفاتورة");';
+    const files = {
+      "client/src/Portal.tsx":
+        'import "./__tests__/portal.test"; export const message = "رسالة أخرى";',
+      "client/src/__tests__/portal.test.tsx": consumer,
+    };
+    eq(
+      "دورة إلى المستهلك لا تجعل نص تأكيده منتجاً للرسالة المحذوفة",
+      satisfiedByAnotherImport(
+        "تغيّرت بنود الفاتورة",
+        "client/src/__tests__/portal.test.tsx",
+        consumer,
+        "client/src/Portal.tsx",
+        (file) => files[file] ?? null,
       ),
       false,
     );
@@ -288,7 +491,8 @@ function runSelfTest({ quiet }) {
     for (const f of fails) console.error("  - " + f);
     process.exit(1);
   }
-  if (!quiet) console.log("✓ الاختبار الذاتيّ لحارس انجراف الرسائل: كلّ الكواشف سليمة.");
+  if (!quiet)
+    console.log("✓ الاختبار الذاتيّ لحارس انجراف الرسائل: كلّ الكواشف سليمة.");
 }
 
 runSelfTest({ quiet: !SELFTEST_ONLY });
@@ -296,7 +500,10 @@ if (SELFTEST_ONLY) process.exit(0);
 
 let changed;
 try {
-  changed = execSync(`git diff --name-only ${BASE}`, { cwd: REPO_ROOT, stdio: ["ignore", "pipe", "ignore"] })
+  changed = execSync(`git diff --name-only ${BASE}`, {
+    cwd: REPO_ROOT,
+    stdio: ["ignore", "pipe", "ignore"],
+  })
     .toString()
     .split("\n")
     .filter((f) => /[.](ts|tsx)$/.test(f) && !f.includes(".test."));
@@ -311,8 +518,13 @@ try {
 // ومُضلِّلةٌ عملياً، بنيتُ عليها ثقةً فسقطت الحزمةُ على CI بانجرافٍ حقيقيّ. الفرقُ بين
 // «فحصتُ فلم أجد» و«لم أفحص شيئاً» يجب أن يكون **مقروءاً في المخرَج**.
 if (changed.length === 0) {
-  console.log(`ℹ️ حارسُ انجراف الرسائل **خامل**: صفرُ ملفّاتٍ متغيّرة مقابل «${BASE}».`);
-  if (BASE === "HEAD") console.log("   (بعد الالتزام يكون فرقُ HEAD فارغاً — للفحص عبر الفرع: --base origin/main)");
+  console.log(
+    `ℹ️ حارسُ انجراف الرسائل **خامل**: صفرُ ملفّاتٍ متغيّرة مقابل «${BASE}».`,
+  );
+  if (BASE === "HEAD")
+    console.log(
+      "   (بعد الالتزام يكون فرقُ HEAD فارغاً — للفحص عبر الفرع: --base origin/main)",
+    );
   process.exit(0);
 }
 
@@ -328,7 +540,8 @@ function readRepoFile(rel) {
   let body = null;
   try {
     const p = path.join(REPO_ROOT, rel);
-    if (fs.existsSync(p) && fs.statSync(p).isFile()) body = fs.readFileSync(p, "utf8");
+    if (fs.existsSync(p) && fs.statSync(p).isFile())
+      body = fs.readFileSync(p, "utf8");
   } catch {
     body = null;
   }
@@ -341,7 +554,11 @@ for (const file of changed) {
   const stem = path.basename(file).replace(/[.]tsx?$/, "");
   let before;
   try {
-    before = execSync(`git show ${BASE}:${file}`, { cwd: REPO_ROOT, maxBuffer: 1e8, stdio: ["ignore", "pipe", "ignore"] }).toString();
+    before = execSync(`git show ${BASE}:${file}`, {
+      cwd: REPO_ROOT,
+      maxBuffer: 1e8,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).toString();
   } catch {
     continue; // ملفٌّ جديد — لا تعاقدَ سابقاً يُكسر.
   }
@@ -359,7 +576,8 @@ for (const file of changed) {
     if (!referencesModule(src, stem)) continue;
     for (const text of extractContractTexts(src)) {
       if (!contractBroken(text, before, after)) continue;
-      if (satisfiedByAnotherImport(text, consumer, src, file, readRepoFile)) continue;
+      if (satisfiedByAnotherImport(text, consumer, src, file, readRepoFile))
+        continue;
       findings.push({ consumer, text, file });
     }
   }
@@ -370,12 +588,18 @@ if (findings.length === 0) {
   process.exit(0);
 }
 
-console.error(`✗ انجرافُ رسائل: ${findings.length} تعاقداً نصّياً كُسر مقابل ${BASE}.`);
+console.error(
+  `✗ انجرافُ رسائل: ${findings.length} تعاقداً نصّياً كُسر مقابل ${BASE}.`,
+);
 for (const f of findings) {
   console.error(`  - ${f.consumer}`);
   console.error(`      «${f.text}» لم تعد تطابق ${f.file}`);
 }
 console.error("");
-console.error("  القاعدة: نصُّ رسالةٍ يفحصه مستهلِكٌ **جزءٌ من العقد**. إمّا تُبقيه حرفياً،");
-console.error("  وإمّا تُضيّق نمطَ المستهلِك على الجزء الثابت من المعنى — ولا تُضعِفه ولا تحذفه.");
+console.error(
+  "  القاعدة: نصُّ رسالةٍ يفحصه مستهلِكٌ **جزءٌ من العقد**. إمّا تُبقيه حرفياً،",
+);
+console.error(
+  "  وإمّا تُضيّق نمطَ المستهلِك على الجزء الثابت من المعنى — ولا تُضعِفه ولا تحذفه.",
+);
 process.exit(1);

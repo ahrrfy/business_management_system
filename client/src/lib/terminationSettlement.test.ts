@@ -3,6 +3,9 @@ import {
   EMPTY_TERMINATION_SETTLEMENT,
   terminationSettlementTotal,
   validateTerminationSettlement,
+  TERMINATION_PAYMENT_METHOD_LABEL,
+  TERMINATION_PAYMENT_METHODS,
+  terminationPaymentMethodLabel,
 } from "./terminationSettlement";
 
 describe("termination settlement breakdown", () => {
@@ -54,5 +57,18 @@ describe("termination settlement breakdown", () => {
       }),
     ).toContain("صافي");
     expect(validateTerminationSettlement(EMPTY_TERMINATION_SETTLEMENT)).toBeNull();
+  });
+});
+
+
+describe("termination payment vocabulary", () => {
+  it("retains four permitted methods and describes treasury direction accurately", () => {
+    expect(TERMINATION_PAYMENT_METHODS).toEqual(["CASH", "CARD", "TRANSFER", "WALLET"]);
+    expect(Object.keys(TERMINATION_PAYMENT_METHOD_LABEL)).toEqual([...TERMINATION_PAYMENT_METHODS]);
+    expect(TERMINATION_PAYMENT_METHOD_LABEL.CASH).toBe("نقداً من الخزينة");
+    expect(terminationPaymentMethodLabel("CASH", "IN")).toBe("نقداً إلى الخزينة");
+    expect(terminationPaymentMethodLabel("TRANSFER")).toBe("تحويلٌ مصرفيّ");
+    expect(terminationPaymentMethodLabel("LEGACY_CODE")).toBe("LEGACY_CODE");
+    expect(terminationPaymentMethodLabel("")).toBe("");
   });
 });

@@ -27,6 +27,7 @@ import {
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { loadStorefrontSearchMatches } from "./storefrontSearchIndex";
+import { matchesStorefrontRefinements, refineStorefrontProductIds, type StorefrontCatalogRefinements } from "./storefrontCatalogRefinements";
 import { createTtlCache } from "../lib/ttlCache";
 import { getCurrentCompanyId } from "../tenancy/context";
 import { normalizeArabicSearch } from "../../shared/storefrontSearchNormalize";
@@ -264,6 +265,8 @@ export interface StorefrontCatalogPage {
   items: StorefrontProduct[];
   hasMore: boolean;
   nextCursor: number | null;
+  /** Public brand facets for the complete matching catalog, before brand/price refinements. */
+  brands?: string[];
 }
 
 /** SELECT موحّد بالحقول الآمنة + كمية الفرع (داخلياً لحساب inStock فقط، لا تُصدَّر). */
@@ -307,7 +310,10 @@ function availabilityCandidateSelect(db: NonNullable<ReturnType<typeof getDb>>) 
   return db
     .select({
       productId: products.id,
+      productUnitId: productUnits.id,
       variantId: productVariants.id,
+      categoryId: products.categoryId,
+      price: productPrices.price,
       conversionFactor: productUnits.conversionFactor,
       isFeatured: products.isFeatured,
       productName: products.name,
@@ -354,11 +360,12 @@ const STOREFRONT_SOLD_COUNTS_TTL_MS = 5 * 60_000;
 // أمّا **البحث** فنصٌّ حرّ يُدخله الجمهور (≤٦٤ محرفاً) ⇒ فضاءٌ غير محدود. خلطُهما في كاشٍ
 // واحد يجعل زاحفاً ببضع مئات مصطلحاتٍ يطرد مفاتيحَ التصفّح الساخنة باستمرار، فينهار المكسب
 // كلّه إلى المسح الكامل. الفصل يحصر أثر أيّ إغراقٍ بالبحث داخل حصّته وحدها (مراجعة ٣١/٨).
-const candidateOrderCache = createTtlCache<string, number[]>({
+interface CatalogRanking { ids: readonly number[]; brands: string[] }
+const candidateOrderCache = createTtlCache<string, CatalogRanking>({
   ttlMs: STOREFRONT_CANDIDATES_TTL_MS,
   maxEntries: 60,
 });
-const candidateSearchCache = createTtlCache<string, number[]>({
+const candidateSearchCache = createTtlCache<string, CatalogRanking>({
   ttlMs: STOREFRONT_CANDIDATES_TTL_MS,
   maxEntries: 40,
 });
@@ -398,18 +405,27 @@ async function loadRankedStorefrontProductIds(
   db: NonNullable<ReturnType<typeof getDb>>,
   branchId: number,
   conds: SQL<unknown>[],
-  input: {
+  input: StorefrontCatalogRefinements & {
     availability: StorefrontAvailability;
     categoryIds?: readonly number[] | null;
     search?: string | null;
     seed?: string | null;
   },
   cacheResult = true,
+  onBrands?: (brands: string[]) => void,
 ): Promise<readonly number[]> {
   const load = async () => {
     const candidateRows = await availabilityCandidateSelect(db).where(and(...conds));
     const hydratedCandidates = await attachAvailability(db, branchId, candidateRows);
-    return chooseCandidateProductIdsAsync(hydratedCandidates, candidateRows.length, input.availability, input.search, input.seed);
+    onBrands?.(Array.from(new Set(hydratedCandidates
+      .filter((row) => input.availability === "ALL" || row.availableQty >= Number(row.conversionFactor))
+      .map((row) => row.brand?.trim()).filter((brand): brand is string => Boolean(brand))))
+      .sort((a, b) => a.localeCompare(b, "ar")));
+    const ids = await chooseCandidateProductIdsAsync(hydratedCandidates, candidateRows.length, input.availability, input.search, input.seed);
+    if (!input.brand?.trim() && (!input.priceFilter || input.priceFilter === "ALL") && (!input.sort || input.sort === "RECOMMENDED")) return ids;
+    return refineStorefrontProductIds(hydratedCandidates, ids, input,
+      (previews) => applyStorefrontPromotions(previews, branchId),
+      (previews) => attachSoldCounts(db, previews));
   };
   if (!cacheResult || storefrontCacheDisabled()) return load();
   const key = `${companyScope()}:${buildStorefrontRankingCacheKey({ branchId, ...input })}`;
@@ -653,9 +669,9 @@ async function attachStorefrontListMedia(
 }
 
 /** الدليل الاجتماعي: يُرفق عدد مرّات بيع كل منتج (COUNT فواتير مميّزة) — استعلام مجمَّع واحد. */
-async function attachSoldCounts(
+async function attachSoldCounts<T extends { productId: number; soldCount: number }>(
   db: NonNullable<ReturnType<typeof getDb>>,
-  items: StorefrontProduct[]
+  items: T[]
 ): Promise<void> {
   if (!items.length) return;
   const productIds = items.map((i) => i.productId);
@@ -834,7 +850,7 @@ export async function applyStorefrontPromotions(list: Array<Pick<StorefrontProdu
 }
 
 /** كتالوج المتجر: منتجات قابلة للاقتناء (بطاقة لكل منتج) + توفّر + سعر عرض. المتوفّر أولاً. */
-export async function storefrontCatalog(opts: {
+export async function storefrontCatalog(opts: StorefrontCatalogRefinements & {
   branchId?: number;
   categoryId?: number | null;
   productIds?: number[] | null;
@@ -891,7 +907,9 @@ export async function storefrontCatalog(opts: {
   // وزوّارٌ متزامنون على نفس المرشّحات يدفعونه كلٌّ على حدة. المفتاح يحمل **كلّ** ما يغيّر
   // النتيجة (الشركة/الفرع/الفئة/البحث/مرشّح التوفّر) ولا شيء سواه.
   const seedKey = (opts.seed ?? "").trim();
-  const loadOrderedIds = (): Promise<readonly number[]> => loadRankedStorefrontProductIds(
+  const loadOrderedIds = async (): Promise<CatalogRanking> => {
+    let brands: string[] = [];
+    const ids = await loadRankedStorefrontProductIds(
     db,
     branchId,
     conds,
@@ -900,18 +918,25 @@ export async function storefrontCatalog(opts: {
       categoryIds: opts.categoryId == null ? null : [opts.categoryId],
       search: s,
       seed: opts.seed,
+      brand: opts.brand,
+      priceFilter: opts.priceFilter,
+      sort: opts.sort,
     },
     false,
+    (value) => { brands = value; },
   );
+    return { ids, brands };
+  };
   // النصّ يُطبَّع بالتطبيع المشترك كي تتقاسم الصيغ المتكافئة نفس الكاش
   const searchKey = resolvedBarcodeUnitId == null ? normalizeArabicSearch(s) : `barcode-unit:${resolvedBarcodeUnitId}`;
   const productIdsKey = opts.productIds?.length ? [...opts.productIds].sort((a, b) => a - b).join(",") : "";
-  const orderedIds = storefrontCacheDisabled()
+  const ranking = storefrontCacheDisabled()
     ? await loadOrderedIds()
-    : await (searchKey || productIdsKey || seedKey ? candidateSearchCache : candidateOrderCache).get(
-      `${companyScope()}:${branchId}:${opts.categoryId ?? ""}:${availabilityFilter}:${searchKey}:${productIdsKey}:${seedKey}`,
-        async () => Array.from(await loadOrderedIds()),
+    : await (searchKey || productIdsKey || seedKey || opts.brand?.trim() ? candidateSearchCache : candidateOrderCache).get(
+      JSON.stringify([companyScope(), branchId, opts.categoryId ?? "", availabilityFilter, searchKey, productIdsKey, seedKey, opts.brand?.trim() ?? "", opts.priceFilter ?? "ALL", opts.sort ?? "RECOMMENDED"]),
+        loadOrderedIds,
       );
+  const orderedIds = ranking.ids;
   const cursor = opts.cursor ?? null;
   const cursorIndex = cursor == null ? -1 : orderedIds.indexOf(cursor);
   // مؤشر قديم بعد إخفاء المنتج/نفاده لا يعود إلى أول القائمة فيكرر ما رآه الزائر؛ ينتهي بأمان
@@ -923,7 +948,7 @@ export async function storefrontCatalog(opts: {
       : [];
   const hasMore = remainingIds.length > cap;
   const selectedIds = remainingIds.slice(0, cap);
-  if (!selectedIds.length) return { items: [], hasMore: false, nextCursor: null };
+  if (!selectedIds.length) return { items: [], hasMore: false, nextCursor: null, ...(ranking.brands.length ? { brands: ranking.brands } : {}) };
   const selectedOrder = new Map(selectedIds.map((id, index) => [id, index]));
   const rawRows = await safeSelect(db).where(and(...conds, inArray(products.id, selectedIds)));
   const rows = (await attachAvailability(db, branchId, rawRows))
@@ -963,7 +988,8 @@ export async function storefrontCatalog(opts: {
   // تصفّحه وتظهر صفحةٌ أقصر فحسب. (العلّة قائمةٌ قبل الكاش بنافذةٍ أضيق — والإصلاح يغطّيهما.)
   const lastSelectedId = selectedIds[selectedIds.length - 1];
   return {
-    items,
+    items: items.filter((item) => matchesStorefrontRefinements(item, opts)),
+    brands: ranking.brands,
     hasMore,
     nextCursor: hasMore ? (lastSelectedId ?? null) : null,
   };

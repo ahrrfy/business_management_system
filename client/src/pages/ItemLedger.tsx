@@ -1,3 +1,4 @@
+import { INVENTORY_MOVEMENT_LABEL as MTYPE_LABEL } from "@shared/inventoryTerms";
 // بطاقة المنتج (Kardex) — حركات متغيّر واحد زمنياً مع رصيد متحرّك.
 // منتقي المتغيّر يعيد استعمال trpc.catalog.posList (نفس بحث الكاشير/حركات المخزون) + فلتر فرع + فترة اختيارية.
 // عرض: ترويسة المتغيّر + مؤشّرات (رصيد افتتاحي/ختامي) + جدول (تاريخ/نوع/كمية بإشارة/رصيد/مرجع) + تصدير/طباعة.
@@ -24,14 +25,7 @@ import { variantDisplayName } from "@shared/variantDisplay";
 type PosRow = RouterOutputs["catalog"]["posList"][number];
 type LedgerRow = RouterOutputs["reports"]["itemLedger"]["rows"][number];
 
-const MTYPE_LABEL: Record<string, string> = {
-  IN: "وارد",
-  OUT: "صادر",
-  ADJUST: "تسوية",
-  RETURN: "مرتجع",
-  TRANSFER_IN: "تحويل وارد",
-  TRANSFER_OUT: "تحويل صادر",
-};
+
 const POSITIVE = new Set(["IN", "RETURN", "TRANSFER_IN"]);
 const NEGATIVE = new Set(["OUT", "TRANSFER_OUT"]);
 

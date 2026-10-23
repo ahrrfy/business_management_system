@@ -415,3 +415,20 @@ export function paymentMethodTermOptions(
 ): { value: UnifiedPaymentMethod; compact: string; prose: string; tooltip: string }[] {
   return (only ?? UNIFIED_PAYMENT_METHODS).map((value) => ({ value, ...PAYMENT_METHOD_TERMS[value] }));
 }
+
+/** Derive labels without widening a consumer's permitted methods or changing their order. */
+export function paymentMethodLabels<T extends readonly UnifiedPaymentMethod[]>(
+  methods: T,
+): Record<T[number], string> {
+  return Object.fromEntries(methods.map((method) => [method, paymentMethodCompact(method)])) as Record<T[number], string>;
+}
+
+/** Search spellings are aliases, not alternative display names. */
+const CHANNEL_SEARCH_ALIASES: Partial<Record<UnifiedChannel, readonly string[]>> = {
+  WHATSAPP: ["واتس اب"],
+  INSTAGRAM: ["انستغرام", "انستجرام"],
+  STORE: ["متجر webhook"],
+};
+export function channelSearchText(value: UnifiedChannel): string {
+  return [channelCompact(value), ...(CHANNEL_SEARCH_ALIASES[value] ?? [])].join(" ");
+}

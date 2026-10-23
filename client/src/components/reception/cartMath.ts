@@ -1,3 +1,4 @@
+import { paymentMethodLabels } from "@shared/terms";
 import type { CustomizationData } from "@/components/CustomizationDialog";
 import type { DigitalCheckoutLineMeta } from "@/components/pos/digitalBasket";
 import type { ReceiptBrowserData, WorkOrderReceiptData } from "@/lib/printing/print";
@@ -26,13 +27,7 @@ export type LastSaleSummary = {
   workOrders: WorkOrderReceiptData[];
   printFailures: number;
 };
-export const PAY_METHOD_LABEL: Record<PayMethod, string> = {
-  CASH: "نقدي",
-  CARD: "بطاقة",
-  TRANSFER: "تحويل",
-  WALLET: "محفظة",
-  TELECOM: "رصيد زين", // ش٥ — أكواد كروت شحن زين (لا يلمس الدرج)
-};
+export const PAY_METHOD_LABEL: Record<PayMethod, string> = paymentMethodLabels(["CASH", "CARD", "TRANSFER", "WALLET", "TELECOM"] as const);
 export type Tier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
 export const TIER_LABEL: Record<Tier, string> = { RETAIL: "مفرد", WHOLESALE: "جملة", GOVERNMENT: "حكومي" };
 

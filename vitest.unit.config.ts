@@ -12,6 +12,17 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "client/src/pages/__tests__/densityWave27Receipt.test.ts",
+      "client/src/pages/__tests__/densityWave27ReceptionShortcuts.test.tsx",
+      "client/src/pages/__tests__/densityWave27ReceptionBranch.test.tsx",
+      "client/src/pages/__tests__/densityWave27Expenses.test.ts",
+      "client/src/pages/__tests__/densityWave27CatalogScope.test.ts",
+      "client/src/components/product/__tests__/recipeClipboard.validation.test.ts",
+      "client/src/components/product/__tests__/recipeQueryState.test.tsx",
+      "client/src/components/product/__tests__/recipeOperationAccess.test.tsx",
+      "client/src/components/vouchers/__tests__/voucherFormBehavior.test.tsx",
+      "server/services/__tests__/densityWave27Catalog.test.ts",
+      "server/services/__tests__/densityWave27ExpenseFilters.test.ts",
       "server/__tests__/staticAssets.test.ts",
       "client/src/lib/lazyWithRetry.test.ts",
       "shared/supplierVoucherSettlement.test.ts",

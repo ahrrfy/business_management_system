@@ -1,3 +1,4 @@
+import { INVENTORY_STOCK_STATUS_LABEL as STATUS_LABEL } from "@shared/inventoryTerms";
 // حالة المخزون / إعادة الطلب — رصيد كل (متغيّر × فرع) مقابل حدّ إعادة الطلب minStock (للقراءة فقط).
 // عرض + تصدير Excel + طباعة A4 (ReportShell + printReportDoc). فلتر فرع + مفتاح «التنبيهات فقط».
 // الجدول عبر DataTable المشترك (فرز بنقرة + بحث + هيكل تحميل) — البيانات محلّية فالفرز كامل لا صفحيّ.
@@ -20,7 +21,7 @@ import { fmtDate } from "@/lib/date";
 type Row = RouterOutputs["reports"]["stockStatus"]["rows"][number];
 type StatusTab = "all" | "out" | "low" | "ok";
 
-const STATUS_LABEL: Record<string, string> = { out: "نفد", low: "منخفض", ok: "طبيعي" };
+
 const STATUS_CLS: Record<string, string> = {
   out: "badge-stock-out",
   low: "badge-stock-low",
