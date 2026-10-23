@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { StackedEntityCell } from "@/components/data-table/StackedEntityCell";
 import { compareNumericDisplay, numericFromDisplay } from "@/components/data-table/columnContract";
+import { buildAgingOutput } from "@/lib/agingOutput";
 
 const read = (rel: string) =>
   readFileSync(new URL(rel, import.meta.url), "utf8").replace(/\r\n?/gu, "\n");
@@ -158,10 +159,15 @@ describe("تعميم نمط الخلايا المكدسة StackedEntityCell وت
     });
 
     it("يحافظ على فصل الأعمدة في تصدير الإكسل", () => {
-      expect(apAgingSrc).toContain('{ key: "supplierName", header: "المورد" }');
-      expect(apAgingSrc).toContain('{ key: "phone", header: "الهاتف" }');
-      expect(apAgingSrc).toContain('{ key: "unbilled", header: "غير مفوتر/افتتاحي"');
-      expect(apAgingSrc).toContain('{ key: "currentBalance", header: "الرصيد الحالي"');
+      const output = buildAgingOutput([], { kind: "AP", branchName: "فرع الاختبار", query: "", bucket: "" });
+      const columns = output.sheet.columns.map(({ key, header }) => [key, header]);
+      expect(columns).toContainEqual(["supplierName", "المورد"]);
+      expect(columns).toContainEqual(["phone", "الهاتف"]);
+      expect(columns).toContainEqual(["unbilled", "غير مفوتر/افتتاحي"]);
+      expect(columns).toContainEqual(["currentBalance", "الرصيد الحالي"]);
+      expect(apAgingSrc).toContain('from "@/lib/agingOutput"');
+      expect(apAgingSrc).toMatch(/buildAgingOutput\(filtered,\s*\{\s*kind: "AP"/);
+      expect(apAgingSrc).toContain('exportRows(output.rows, { filename: "ذمم-دائنة", ...output.sheet })');
     });
   });
 
@@ -179,10 +185,15 @@ describe("تعميم نمط الخلايا المكدسة StackedEntityCell وت
     });
 
     it("يحافظ على فصل الأعمدة في تصدير الإكسل", () => {
-      expect(arAgingSrc).toContain('{ key: "customerName", header: "العميل" }');
-      expect(arAgingSrc).toContain('{ key: "phone", header: "الهاتف" }');
-      expect(arAgingSrc).toContain('{ key: "unbilled", header: "غير مفوتر/افتتاحي"');
-      expect(arAgingSrc).toContain('{ key: "currentBalance", header: "الرصيد الحالي"');
+      const output = buildAgingOutput([], { kind: "AR", branchName: "فرع الاختبار", query: "", bucket: "" });
+      const columns = output.sheet.columns.map(({ key, header }) => [key, header]);
+      expect(columns).toContainEqual(["customerName", "العميل"]);
+      expect(columns).toContainEqual(["phone", "الهاتف"]);
+      expect(columns).toContainEqual(["unbilled", "غير مفوتر/افتتاحي"]);
+      expect(columns).toContainEqual(["currentBalance", "الرصيد الحالي"]);
+      expect(arAgingSrc).toContain('from "@/lib/agingOutput"');
+      expect(arAgingSrc).toMatch(/buildAgingOutput\(filtered,\s*\{\s*kind: "AR"/);
+      expect(arAgingSrc).toContain('exportRows(output.rows, { filename: "ذمم-مدينة", ...output.sheet })');
     });
   });
 

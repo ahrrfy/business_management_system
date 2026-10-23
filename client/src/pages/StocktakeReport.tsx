@@ -21,6 +21,7 @@ import {
   STOCKTAKE_STATUS_LABEL,
 } from "@/lib/printing/stocktakeTemplates";
 import { trpc } from "@/lib/trpc";
+import { stocktakePrintState } from "@/lib/printing/stocktakePrintState";
 import { variantDisplayName, variantDescriptor } from "@shared/variantDisplay";
 import { useMemo } from "react";
 import { Link, useParams } from "wouter";
@@ -455,11 +456,13 @@ export default function StocktakeReport() {
     s.scopeType ??
     "—";
   const statusLabel = STOCKTAKE_STATUS_LABEL[s.status] ?? s.status;
+  const printState = stocktakePrintState(s);
   const workerNames = (data.assignments ?? []).map((a) => a.name);
 
   function doPrint() {
     if (!data || !calc) return;
     printStocktakeReport({
+      status: s.status,
       sessionType: s.sessionType ?? "NORMAL",
       code: s.code,
       name: s.name,
@@ -712,7 +715,7 @@ export default function StocktakeReport() {
         {/* أولاً — الفروقات المُسوّاة */}
         <h3 className="mb-2 mt-6 text-sm font-bold">
           أولاً —{" "}
-          {isOpening ? "التغييرات الافتتاحية المثبتة" : "الفروقات المُسوّاة"} (
+          {printState.adjustedTitle} (
           {fmtInt(calc.adjusted.length)})
         </h3>
         {/*
@@ -800,16 +803,14 @@ export default function StocktakeReport() {
           <div className="mt-5 rounded-lg border border-money-positive/40 bg-money-positive/10 p-4 text-money-positive">
             <p className="font-bold">الأثر المحاسبي والنقدي: صفر</p>
             <p className="mt-1 text-xs">
-              ثُبتت الكميات بحركات OPENING فقط؛ لم يُنشأ قيد عجز/زيادة أو قبض أو
-              صرف أو أثر صندوق أو مصرف أو ذمم. مؤشر IRA وتحليل الانكماش غير
-              مطبقين على تأسيس الرصيد الافتتاحي.
+              {printState.openingEffect}
             </p>
           </div>
         ) : (
           <div className="mt-5 grid gap-3 sm:grid-cols-[1.5fr_1fr]">
             <div className="rounded-lg border bg-muted/40 p-3.5">
               <p className="mb-1.5 text-sm font-bold">
-                القيد المحاسبي الآلي (مرجع{" "}
+                {printState.ledgerTitle} (مرجع{" "}
                 <span className="font-mono" dir="ltr">
                   {s.code}
                 </span>
@@ -866,25 +867,7 @@ export default function StocktakeReport() {
         )}
 
         <p className="mt-5 rounded-lg bg-muted/50 p-3 text-xs leading-relaxed text-muted-foreground">
-          {isOpening ? (
-            <>
-              ثُبتت الأرصدة الافتتاحية بحركات OPENING ذرّية بمرجع{" "}
-              <span className="font-mono" dir="ltr">
-                {s.code}
-              </span>
-              ، بلا قيد عجز/زيادة أو أثر على الأرباح أو النقد.
-            </>
-          ) : (
-            <>
-              نُفّذت التسوية بحركات ADJUST ذرّية بمرجع{" "}
-              <span className="font-mono" dir="ltr">
-                {s.code}
-              </span>{" "}
-              في سجلّ حركات المخزون، وحُدِّثت الأرصدة لحظة الاعتماد. الحدّ
-              المعتمد للتسوية المباشرة: {fmtInt(Number(s.thresholdPct ?? 0))}٪
-              أو {fmt(s.thresholdValue ?? 0)} د.ع.
-            </>
-          )}
+          {printState.execution}
         </p>
 
         {/* تواقيع */}

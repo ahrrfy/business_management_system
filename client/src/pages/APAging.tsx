@@ -11,6 +11,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { FilterField } from "@/components/list";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { exportRows } from "@/lib/export";
+import { buildAgingOutput, AGING_OUTPUT_BUCKETS as BUCKETS } from "@/lib/agingOutput";
 import { printAPAging } from "@/lib/printing/printTemplates";
 import { D, fmt as fmtMoney, fmtAr } from "@/lib/money";
 import { sanitizeForWhatsApp } from "@/lib/whatsapp";
@@ -26,12 +27,6 @@ import { RowActions } from "@/components/list";
 type Row = RouterOutputs["reports"]["apAging"][number];
 
 /** الشرائح العمرية كما يعيدها الخادم — مفاتيح الفلترة والفرز معاً. */
-const BUCKETS = [
-  { key: "d0_30", label: "0–30 يوم" },
-  { key: "d31_60", label: "31–60 يوم" },
-  { key: "d61_90", label: "61–90 يوم" },
-  { key: "d91p", label: "أكثر من 90" },
-] as const;
 type MoneyKey = (typeof BUCKETS)[number]["key"] | "unpaidTotal" | "currentBalance";
 
 const PAGE = 50;
@@ -126,6 +121,11 @@ export default function APAging() {
    *     مخرجٍ ظاهر من الفلتر الذي أفرغها.
    * ⇒ الفرع يُحصى مع أخويه في عدّادٍ واحد، ويشتقّ منه المستهلكان معاً فلا ينحرفان ثانيةً.
    */
+  const output = useMemo(() => buildAgingOutput(filtered, {
+    kind: "AP", branchName: branches.data?.find((b) => String(b.id) === f.branch)?.name ?? (f.branch || "نطاق الفروع المصرح به"),
+    query: f.q, bucket: f.bucket,
+  }), [filtered, branches.data, f.branch, f.q, f.bucket]);
+
   const activeCount = [f.q.trim(), f.bucket, f.branch].filter(Boolean).length;
 
   // الصفوف المحدَّدة فقط — للتصدير الجزئي ولنسخ ملخّص واتساب (التحديد يعبر الصفحات).
@@ -231,21 +231,7 @@ export default function APAging() {
 
   const onExportSelected = () => {
     if (selectedRows.length === 0) return;
-    exportRows(selectedRows, {
-      filename: "ذمم-دائنة-محددة",
-      columns: [
-        { key: "supplierName", header: "المورد" },
-        { key: "phone", header: "الهاتف" },
-        { key: "d0_30", header: "0–30", map: (r) => Number(r.d0_30) },
-        { key: "d31_60", header: "31–60", map: (r) => Number(r.d31_60) },
-        { key: "d61_90", header: "61–90", map: (r) => Number(r.d61_90) },
-        { key: "d91p", header: "+90", map: (r) => Number(r.d91p) },
-        { key: "unpaidTotal", header: "إجمالي غير المدفوع", map: (r) => Number(r.unpaidTotal) },
-        { key: "unbilled", header: "غير مفوتر/افتتاحي", map: (r) => unbilledOf(r).toNumber() },
-        { key: "currentBalance", header: "الرصيد الحالي", map: (r) => Number(r.currentBalance) },
-        { key: "oldestPoDate", header: "أقدم أمر شراء" },
-      ],
-    });
+    exportRows(selectedRows, { filename: "ذمم-دائنة-محددة", ...buildAgingOutput(selectedRows, { kind: "AP", branchName: output.sheet.meta[0].value, query: f.q, bucket: f.bucket, selected: true }).sheet });
   };
 
   return (
@@ -258,41 +244,14 @@ export default function APAging() {
             <Button
               variant="outline"
               size="sm"
-              disabled={!aging.data?.length}
+              disabled={!filtered.length}
               onClick={() =>
-                exportRows(aging.data ?? [], {
-                  filename: "ذمم-دائنة",
-                  columns: [
-                    { key: "supplierName", header: "المورد" },
-                    { key: "phone", header: "الهاتف" },
-                    { key: "d0_30", header: "0–30", map: (r) => Number(r.d0_30) },
-                    { key: "d31_60", header: "31–60", map: (r) => Number(r.d31_60) },
-                    { key: "d61_90", header: "61–90", map: (r) => Number(r.d61_90) },
-                    { key: "d91p", header: "+90", map: (r) => Number(r.d91p) },
-                    { key: "unpaidTotal", header: "إجمالي غير المدفوع", map: (r) => Number(r.unpaidTotal) },
-                    { key: "unbilled", header: "غير مفوتر/افتتاحي", map: (r) => unbilledOf(r).toNumber() },
-                    { key: "currentBalance", header: "الرصيد الحالي", map: (r) => Number(r.currentBalance) },
-                    { key: "oldestPoDate", header: "أقدم أمر شراء" },
-                  ],
-                })
+                exportRows(output.rows, { filename: "ذمم-دائنة", ...output.sheet })
               }
             >
               تصدير Excel
             </Button>
-            <Button variant="outline" size="sm" disabled={!aging.data?.length} onClick={() => printAPAging({
-              date: fmtDate(new Date()),
-              rows: (aging.data ?? []).map(r => ({
-                name: r.supplierName,
-                d0_30: D(r.d0_30||0).toNumber(), d31_60: D(r.d31_60||0).toNumber(),
-                d61_90: D(r.d61_90||0).toNumber(), d91p: D(r.d91p||0).toNumber(),
-                unpaidTotal: D(r.unpaidTotal||0).toNumber(), currentBalance: D(r.currentBalance||0).toNumber(),
-              })),
-              totals: {
-                d0_30: D(totals.d0_30).toNumber(), d31_60: D(totals.d31_60).toNumber(),
-                d61_90: D(totals.d61_90).toNumber(), d91p: D(totals.d91p).toNumber(),
-                unpaidTotal: D(totals.unpaidTotal).toNumber(), currentBalance: D(totals.currentBalance).toNumber(),
-              },
-            })}>طباعة PDF</Button>
+            <Button variant="outline" size="sm" disabled={!filtered.length} onClick={() => printAPAging({ date: fmtDate(new Date()), ...output.print })}>طباعة PDF</Button>
             <Link href="/suppliers-statement"><Button variant="outline">كشف حساب مورد</Button></Link>
           </div>
         }

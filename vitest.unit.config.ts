@@ -12,6 +12,11 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "client/src/lib/export.test.ts",
+      "client/src/lib/printing/qr.test.ts",
+      "client/src/lib/printing/__tests__/wave31StocktakePrint.test.ts",
+      "client/src/pages/__tests__/wave31StatementPeriod.test.ts",
+      "client/src/pages/__tests__/wave31ExportAging.test.ts",
       "client/src/pages/__tests__/densityWave27Receipt.test.ts",
       "client/src/pages/__tests__/densityWave27ReceptionShortcuts.test.tsx",
       "client/src/pages/__tests__/densityWave27ReceptionBranch.test.tsx",

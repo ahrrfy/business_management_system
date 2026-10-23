@@ -1,8 +1,9 @@
 import { fmtDate, fmtDateTime, fmtTime, type DateInput } from "@/lib/date";
-import { D, round2 } from "@/lib/money";
+import { D } from "@/lib/money";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import type { ReceiptBrowserData } from "./print";
 import { variantDescriptor } from "@shared/variantDisplay";
+import { invoicePrintAmounts } from "./receiptLayoutInvoiceAmounts";
 
 export interface InvoiceReceiptSource {
   id?: number;
@@ -19,6 +20,7 @@ export interface InvoiceReceiptSource {
   total: string | number;
   paidAmount?: string | number | null;
   returnedTotal?: string | number | null;
+  status?: string | null;
   paymentMethod?: string | null;
   paymentMode?: string | null;
   correctionAudit?: {
@@ -69,7 +71,8 @@ export interface InvoiceReceiptSource {
  */
 export function invoiceToReceipt(d: InvoiceReceiptSource): ReceiptBrowserData {
   const paid = D(d.paidAmount ?? 0);
-  const credit = round2(D(d.total).minus(D(d.returnedTotal ?? 0)).minus(paid));
+  const amounts = invoicePrintAmounts(d);
+  const credit = D(amounts.remainingAmount);
   const isCod = d.paymentMode === "COD";
   const paymentMethodDisplay = d.paymentMethod
     ? paymentMethodLabel(d.paymentMethod)
@@ -124,6 +127,10 @@ export function invoiceToReceipt(d: InvoiceReceiptSource): ReceiptBrowserData {
     discount: d.discountAmount ?? null,
     tax: d.taxAmount ?? null,
     total: d.total,
+    status: d.status ?? null,
+    returnedTotal: amounts.returnedTotal,
+    currentTotal: amounts.currentTotal,
+    remainingAmount: amounts.remainingAmount,
     paid: paid.toString(),
     credit: credit.gt(0) ? credit.toString() : null,
     paymentMode: d.paymentMode ?? null,

@@ -143,7 +143,7 @@ export default function ExchangeOperations() {
       columns: [
         { key: "txnNumber", header: "رقم الحركة" },
         { key: "houseName", header: "الصيرفة", map: (p) => p.houseName ?? "—" },
-        { key: "usdAmount", header: "المبلغ ($)", money: true, map: (p) => Number(p.usdAmount) },
+        { key: "usdAmount", header: "المبلغ ($)", money: true, moneyPrecision: 2, map: (p) => Number(p.usdAmount) },
         { key: "exchangeRate", header: "سعر الصرف المرجعي", map: (p) => Number(p.exchangeRate) },
         { key: "notes", header: "ملاحظات", map: (p) => p.notes || "—" },
       ],

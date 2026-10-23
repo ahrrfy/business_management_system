@@ -15,7 +15,7 @@ import QRCode from "qrcode";
 export interface QROptions {
   /** حجم الصورة بالبكسل (افتراضي: 200) */
   size?: number;
-  /** هامش هادئ quiet zone بوحدات المودول (افتراضي: 1) */
+  /** هامش هادئ quiet zone بوحدات المودول (افتراضي: 4) */
   margin?: number;
   /** لون القضبان (افتراضي: #000000) */
   dark?: string;
@@ -29,12 +29,15 @@ export interface QROptions {
  * يُولِّد SVG string — للتضمين المباشر في HTML (طباعة المتصفح).
  * async لأن مكتبة qrcode تعمل بـ Promise.
  */
-export async function qrCodeSvg(data: string, opts: QROptions = {}): Promise<string> {
+export async function qrCodeSvg(
+  data: string,
+  opts: QROptions = {},
+): Promise<string> {
   if (!data) throw new Error("QR: البيانات فارغة");
   return QRCode.toString(data, {
     type: "svg",
     width: opts.size ?? 200,
-    margin: opts.margin ?? 1,
+    margin: opts.margin ?? 4,
     color: {
       dark: opts.dark ?? "#000000",
       light: opts.light ?? "#ffffff",
@@ -54,7 +57,7 @@ export function qrCodeSvgSync(data: string, opts: QROptions = {}): string {
       errorCorrectionLevel: opts.errorCorrectionLevel ?? "M",
     });
     const modSize = qr.modules.size;
-    const margin = opts.margin ?? 1;
+    const margin = opts.margin ?? 4;
     const total = modSize + margin * 2;
     const displaySize = opts.size ?? 120;
     const dark = opts.dark ?? "#000000";
@@ -66,7 +69,7 @@ export function qrCodeSvgSync(data: string, opts: QROptions = {}): string {
         }
       }
     }
-    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} ${total}" width="${displaySize}" height="${displaySize}" style="display:inline-block;shape-rendering:crispEdges;"><path fill="${dark}" d="${path}"/></svg>`;
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} ${total}" width="${displaySize}" height="${displaySize}" style="display:inline-block;shape-rendering:crispEdges;"><rect width="${total}" height="${total}" fill="${opts.light ?? "#ffffff"}"/><path fill="${dark}" d="${path}"/></svg>`;
   } catch {
     return "";
   }
@@ -76,12 +79,15 @@ export function qrCodeSvgSync(data: string, opts: QROptions = {}): string {
  * يُولِّد PNG data URL — لرسمه على Canvas بـ ctx.drawImage (طباعة حرارية).
  * async لأن مكتبة qrcode تعمل بـ Promise.
  */
-export async function qrCodeDataUrl(data: string, opts: QROptions = {}): Promise<string> {
+export async function qrCodeDataUrl(
+  data: string,
+  opts: QROptions = {},
+): Promise<string> {
   if (!data) throw new Error("QR: البيانات فارغة");
   return QRCode.toDataURL(data, {
     type: "image/png",
     width: opts.size ?? 200,
-    margin: opts.margin ?? 1,
+    margin: opts.margin ?? 4,
     color: {
       dark: opts.dark ?? "#000000",
       light: opts.light ?? "#ffffff",
@@ -94,22 +100,23 @@ export async function qrCodeDataUrl(data: string, opts: QROptions = {}): Promise
  * يُولِّد SVG string متزامناً بالكامل للتضمين في قوالب الطباعة المتزامنة.
  */
 export function qrSvgSync(data: string, size = 100): string {
-  if (!data) return "";
-  try {
-    const code = QRCode.create(data, { errorCorrectionLevel: "M" });
-    const count = code.modules.size;
-    const modSize = (size / count).toFixed(2);
-    let paths = "";
-    for (let r = 0; r < count; r++) {
-      for (let c = 0; c < count; c++) {
-        if (code.modules.get(r, c)) {
-          paths += `M${(c * Number(modSize)).toFixed(1)},${(r * Number(modSize)).toFixed(1)}h${modSize}v${modSize}h-${modSize}z `;
-        }
-      }
-    }
-    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}"><rect width="${size}" height="${size}" fill="#ffffff"/><path d="${paths}" fill="#000000"/></svg>`;
-  } catch {
-    return "";
-  }
+  return qrCodeSvgSync(data, { size, margin: 4 });
 }
 
+/** Pixel dimensions are whole multiples of the matrix, including its quiet zone. */
+export function qrPixelLayout(
+  data: string,
+  minimumDots = 256,
+  quietModules = 4,
+) {
+  const moduleCount = QRCode.create(data, { errorCorrectionLevel: "M" }).modules
+    .size;
+  const matrixSize = moduleCount + quietModules * 2;
+  const moduleDots = Math.max(1, Math.ceil(minimumDots / matrixSize));
+  return {
+    moduleCount,
+    quietModules,
+    moduleDots,
+    sizeDots: matrixSize * moduleDots,
+  };
+}

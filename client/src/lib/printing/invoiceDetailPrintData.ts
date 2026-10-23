@@ -1,11 +1,25 @@
-import { allocateLineTax } from '@/components/invoice';
+import { allocateLineTax } from '@/components/invoice/totals';
 import { D, round2 } from '@/lib/money';
 import { paymentMethodLabel } from '@/lib/paymentMethod';
 import { variantDisplayName } from '@shared/variantDisplay';
 import type { RouterOutputs } from '@/lib/trpc';
 import type { InvoicePrintData } from './printTemplates';
+import { invoiceRemaining, isDeadInvoice } from '@shared/predicates';
 
-export function invoiceDetailPrintData(data: NonNullable<RouterOutputs['sales']['get']>, companyTaxId: string | null): InvoicePrintData {
+type SavedInvoice = NonNullable<RouterOutputs['sales']['get']>;
+type SavedItem = SavedInvoice['items'][number];
+type PrintSource = Pick<SavedInvoice, 'invoiceNumber' | 'subtotal' | 'total' | 'status'> &
+  Partial<Pick<SavedInvoice, 'invoiceDate' | 'customerName' | 'customerPhone' | 'customerAddress' |
+    'customerId' | 'customerBalance' | 'salespersonName' | 'paymentMethod' | 'paymentMode' |
+    'payments' | 'discountAmount' | 'taxAmount' | 'taxRatePercent' | 'paidAmount' | 'returnedTotal' |
+    'qrPayload' | 'deliveryFee' | 'deliveryFree' | 'deliveryWaivedAmount' | 'courierName' |
+    'courierFee' | 'courierFeeCollection' | 'consignmentStatus'>> & {
+      items: (Pick<SavedItem, 'quantity' | 'unitPrice' | 'total'> &
+        Partial<Pick<SavedItem, 'productName' | 'variantName' | 'color' | 'size' | 'variantKind' |
+          'sku' | 'unitName' | 'isGift' | 'barcode'>>)[];
+    };
+
+export function invoiceDetailPrintData(data: PrintSource, companyTaxId: string | null): InvoicePrintData {
     // توزيع ضريبة الفاتورة على السطور لعمود «الضريبة» في القالب الرسمي.
     const afterDisc = round2(
       D(data.subtotal).minus(D(data.discountAmount ?? "0")),
@@ -44,6 +58,10 @@ export function invoiceDetailPrintData(data: NonNullable<RouterOutputs['sales'][
       taxRate: Number(data.taxRatePercent ?? 0),
       total: data.total,
       paidAmount: data.paidAmount,
+      status: data.status,
+      returnedTotal: data.returnedTotal ?? '0',
+      currentTotal: isDeadInvoice(data.status) ? '0.00' : round2(D(data.total).minus(D(data.returnedTotal))).clamp(0, Infinity).toFixed(2),
+      remainingAmount: isDeadInvoice(data.status) ? '0.00' : round2(invoiceRemaining({ total: data.total, returnedTotal: data.returnedTotal, paidAmount: data.paidAmount })).clamp(0, Infinity).toFixed(2),
       qrPayload: data.qrPayload ?? null,
       items: data.items.map((it, i) => ({
         productName: variantDisplayName({
