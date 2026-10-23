@@ -383,8 +383,14 @@ function parseModuleDependencies(moduleRelPath, rawContent) {
     runtimeTargets.push(target);
   }
 
+  const isTestOrHelperModule =
+    /\.(?:test|spec)\.[^/]+$/i.test(normalizedModulePath) ||
+    /(?:^|\/)(?:__tests__|tests?|test-utils)\//i.test(normalizedModulePath);
   let fsMeta = null;
-  if (/\b(?:readFile|readdir)(?:Sync)?\b/.test(collapsed)) {
+  if (
+    isTestOrHelperModule &&
+    /\b(?:readFile|readdir)(?:Sync)?\b/.test(collapsed)
+  ) {
     const rawDir = path.posix.dirname(normalizedModulePath);
     const moduleDir = rawDir === "." ? "" : rawDir;
     const fileLiterals = new Set();
@@ -934,9 +940,9 @@ export function collectModifiedUnitTestsForPush({
     if (/\.test\.(?:[cm]?jsx?|[cm]?tsx?)$/.test(file)) {
       if (isRegisteredInUnitConfig(unitConfigText, file)) {
         matchedTestsSet.add(file);
-      }
-      if (!deletedFiles.has(file)) {
-        continue;
+        if (!deletedFiles.has(file)) {
+          continue;
+        }
       }
     }
     for (const candidate of deriveCandidateUnitTestsForSourceFile(

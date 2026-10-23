@@ -976,6 +976,21 @@ describe("بروتوكولات الدفع الآمن والدمج الآمن و�
         verifyCheckoutMatchesSha: () => ({ ok: true }),
       }),
     ).toEqual([]);
+
+    // Unregistered node:test file (scripts/deploy.test.mjs) still selects its wrapper Vitest suite
+    expect(
+      collectModifiedUnitTestsForPush({
+        stdinEntries: pushedStdin,
+        unitConfigText:
+          'include: ["scripts/__tests__/safeDeliveryProtocols.test.ts"]',
+        runDiff: () => ({
+          status: 0,
+          stdout: "M\tscripts/deploy.test.mjs\n",
+        }),
+        fileExists: () => true,
+        verifyCheckoutMatchesSha: () => ({ ok: true }),
+      }),
+    ).toEqual(["scripts/__tests__/safeDeliveryProtocols.test.ts"]);
   });
 
   it("يبقي CommissionGuide خارج شريط أدوات ListToolbar في CommissionPlans لمنع التمدد الأفقي (Codex P2)", () => {
