@@ -1,5 +1,6 @@
 import Decimal from "decimal.js";
 import { consignmentFeeDueSql, createFeeWithholdingQuote } from "./fees";
+import { assertFeeWithholdingCapacity } from "./feeWithholdingPolicy";
 /**
  * **التسويةُ اليوميّة لجهة التوصيل — «المتوقَّع محسوبٌ سلفاً، والتأكيدُ واحد»** (م١، PR-2).
  *
@@ -105,6 +106,13 @@ async function loadSettlementLines(tx: Tx, scope: DailySettlementScope, useCommi
       cod.minus(collected).minus(money(r.counterSettledAmount ?? "0")).minus(money(r.shortfallAssigned ?? "0")),
     );
     if (remaining.lte(0)) continue;
+    let feeWithholding = money(0);
+    if (r.sourceType === "ONLINE_ORDER" && r.feeCollection === "SHOP") {
+      const due = money(r.feeDue);
+      const quotedCash = quoteFee(due, money(r.orderTotal));
+      assertFeeWithholdingCapacity(due, quotedCash, remaining);
+      feeWithholding = Decimal.min(remaining, quotedCash);
+    }
     lines.push({
       consignmentId: Number(r.id),
       consignmentNumber: r.consignmentNumber,
@@ -114,8 +122,7 @@ async function loadSettlementLines(tx: Tx, scope: DailySettlementScope, useCommi
       collectedAmount: collected.toFixed(2),
       remaining: remaining.toFixed(2),
       parcelStatus: r.parcelStatus,
-      feeWithholding: r.sourceType === "ONLINE_ORDER" && r.feeCollection === "SHOP"
-        ? Decimal.min(remaining, quoteFee(money(r.feeDue), money(r.orderTotal))).toFixed(2) : "0.00",
+      feeWithholding: feeWithholding.toFixed(2),
     });
   }
   return lines;
