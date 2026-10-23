@@ -1,8 +1,9 @@
-import { useMemo, useState } from "react";
+import { poItemColumns, type PoItemRow } from "./purchaseDetailColumns";
+import { useEffect, useMemo, useState } from "react";
 import { purchaseShippingAdjustmentLabel } from "./purchaseGovernanceUiPolicy";
 import { PurchaseShippingRefund } from "./PurchaseShippingRefund";
 import { getPurchaseSettlement } from "@shared/purchaseSettlement";
-import { variantDescriptor, variantDisplayName } from "@shared/variantDisplay";
+
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { SubmitButton } from "@/components/ui/SubmitButton";
@@ -22,7 +23,7 @@ import { Label } from "@/components/ui/label";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { EmptyState } from "@/components/EmptyState";
 import { fmtDate } from "@/lib/date";
-import { D, fmt, fmtAr, formatQuantity } from "@/lib/money";
+import { D, fmt, fmtAr } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import {
@@ -43,106 +44,13 @@ import {
 } from "lucide-react";
 import { Link } from "wouter";
 import { DataTable } from "@/components/data-table/DataTable";
-import type { ColumnDef } from "@tanstack/react-table";
+
 import { NextActionChip } from "@/components/nextAction/NextActionChip";
 import { hasModuleAccess } from "@shared/permissions";
 import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import { PurchaseOrderGovernance } from "./PurchaseOrderGovernance";
 import { QuickSupplierPaymentDialog } from "./QuickSupplierPaymentDialog";
 
-type PoItemRow = NonNullable<RouterOutputs["purchases"]["get"]>["items"][number];
-
-function poItemColumns(isUsd: boolean): ColumnDef<PoItemRow, unknown>[] {
-  return [
-    {
-      id: "product",
-      header: "الصنف",
-      accessorFn: (it) =>
-        variantDisplayName({
-          productName: it.productName ?? "—",
-          variantName: it.variantName,
-          color: it.color,
-          size: it.size,
-          variantKind: it.variantKind,
-          sku: it.sku,
-        }),
-      meta: { width: "wide" },
-      cell: ({ row }) => {
-        const it = row.original;
-        const desc = variantDescriptor({
-          productName: it.productName ?? "—",
-          variantName: it.variantName,
-          color: it.color,
-          size: it.size,
-          variantKind: it.variantKind,
-          sku: it.sku,
-        });
-        return (
-          <div className="flex flex-col gap-0.5">
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="font-medium text-foreground">{it.productName ?? "—"}</span>
-              {desc ? (
-                <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-                  {it.colorHex && /^#[0-9a-fA-F]{6}$/.test(it.colorHex) ? (
-                    <span
-                      aria-hidden="true"
-                      className="inline-block size-2.5 shrink-0 rounded-full border border-border/60"
-                      style={{ backgroundColor: it.colorHex }}
-                    />
-                  ) : null}
-                  <span>{desc}</span>
-                </span>
-              ) : null}
-            </div>
-            {it.sku ? (
-              <span className="text-[11px] text-muted-foreground font-mono" dir="ltr">
-                {it.sku}
-              </span>
-            ) : null}
-          </div>
-        );
-      },
-    },
-    {
-      id: "unit",
-      header: "الوحدة",
-      accessorFn: (it) => it.unitName ?? "—",
-      cell: ({ row }) => row.original.unitName ?? "—",
-    },
-    {
-      id: "quantity",
-      header: "الكمية",
-      accessorFn: (it) => formatQuantity(it.quantity),
-      meta: { kind: "number" },
-      cell: ({ row }) => formatQuantity(row.original.quantity),
-    },
-    {
-      id: "received",
-      header: "المستلَم / المطلوب",
-      accessorFn: (it) => formatQuantity(it.receivedBaseQuantity) + " / " + formatQuantity(it.baseQuantity),
-      meta: { kind: "number" },
-      cell: ({ row }) => (
-        <span className="tabular-nums font-mono text-xs">
-          {formatQuantity(row.original.receivedBaseQuantity)} / {formatQuantity(row.original.baseQuantity)}
-        </span>
-      ),
-    },
-    {
-      id: "unitPrice",
-      header: isUsd ? "السعر ($)" : "السعر",
-      accessorFn: (it) => fmtAr(isUsd ? it.usdUnitPrice : it.unitPrice),
-      meta: { kind: "money" },
-      cell: ({ row }) => fmtAr(isUsd ? row.original.usdUnitPrice : row.original.unitPrice),
-    },
-    {
-      id: "total",
-      header: isUsd ? "الإجمالي ($)" : "الإجمالي",
-      accessorFn: (it) => fmtAr(isUsd ? it.usdTotal : it.total),
-      meta: { kind: "money" },
-      cell: ({ row }) => fmtAr(isUsd ? row.original.usdTotal : row.original.total),
-    },
-  ];
-}
 
 const PO_STATUS: Record<string, string> = {
   DRAFT: "مسوّدة",
@@ -204,32 +112,42 @@ export function PurchaseDetailDrawer({
   ].every((path) => canLifecycleOperation(me.data, path, legacyEdit));
   const canSettleShipping = canLifecycleOperation(me.data, "purchases.settleShippingFromShift", legacyEdit);
 
-  const pendingControls = trpc.purchases.pendingControls.useQuery(
+  const pendingControls = trpc.purchases.pendingControls.useInfiniteQuery(
     { limit: 200 },
-    { enabled: isOpen && canLifecycleOperation(me.data, "purchases.pendingControls", legacyEdit) },
+    { enabled: isOpen && canLifecycleOperation(me.data, "purchases.pendingControls", legacyEdit),
+      getNextPageParam: (page) => page.hasMore ? page.nextCursor ?? undefined : undefined,
+    },
   );
 
+  const pendingControlRows = useMemo(() => pendingControls.data?.pages.flatMap((page) => page.rows) ?? [], [pendingControls.data]);
   const activeControlRequest = useMemo(() => {
-    return (pendingControls.data?.rows ?? []).find(
+    return (pendingControlRows).find(
       (
         row,
       ): row is Extract<
-        NonNullable<typeof pendingControls.data>["rows"][number],
+        RouterOutputs["purchases"]["pendingControls"]["rows"][number],
         { documentType: "PURCHASE_ORDER" }
       > =>
         row.documentType === "PURCHASE_ORDER" &&
         Number(row.purchaseOrderId) === purchaseOrderId &&
         row.kind === "APPROVE_REVISION",
     );
-  }, [pendingControls.data?.rows, purchaseOrderId]);
+  }, [pendingControlRows, purchaseOrderId]);
 
   const hasPendingOrderControl = useMemo(() => {
-    return (pendingControls.data?.rows ?? []).some(
+    return (pendingControlRows).some(
       (row) =>
         row.documentType === "PURCHASE_ORDER" &&
         Number(row.purchaseOrderId) === purchaseOrderId,
     );
-  }, [pendingControls.data?.rows, purchaseOrderId]);
+  }, [pendingControlRows, purchaseOrderId]);
+
+  // Follow the existing cursor contract until this document is found or the queue is exhausted.
+  useEffect(() => {
+    if (isOpen && po.data?.status === "SENT" && !hasPendingOrderControl && pendingControls.hasNextPage && !pendingControls.isFetching && !pendingControls.isError) {
+      void pendingControls.fetchNextPage();
+    }
+  }, [isOpen, po.data?.status, hasPendingOrderControl, pendingControls.hasNextPage, pendingControls.isFetching, pendingControls.isError, pendingControls.fetchNextPage]);
 
   const orderDecisionMut = trpc.purchases.decideControl.useMutation({
     onSuccess: async (res) => {
@@ -414,6 +332,12 @@ export function PurchaseDetailDrawer({
                     دليل السداد يحتاج مراجعة. طلب السداد متوقف حتى مطابقة المستندات.
                   </p>
                 ) : null}
+                {pendingControls.isError && <ErrorState message={pendingControls.error.message} onRetry={() => void pendingControls.refetch()} />}
+                {!costHidden && <dl className="grid grid-cols-1 gap-2 rounded-md border p-2 text-xs sm:grid-cols-3">
+                  <div><dt className="text-muted-foreground">المجموع قبل الضريبة (د.ع)</dt><dd className="font-semibold">{fmtAr(d.subtotal)}</dd></div>
+                  <div><dt className="text-muted-foreground">خصم المورد المطبق (د.ع)</dt><dd className="font-semibold">{fmtAr(d.invoiceDiscount ?? 0)}{isUsd ? ` (${fmtAr(d.usdInvoiceDiscount ?? 0)} $)` : ""}</dd></div>
+                  <div><dt className="text-muted-foreground">الضريبة (د.ع)</dt><dd className="font-semibold">{fmtAr(d.taxAmount)}</dd></div>
+                </dl>}
                 {/* الأرقام المالية السريعة */}
                 {!costHidden ? (
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
@@ -576,6 +500,8 @@ export function PurchaseDetailDrawer({
                     </div>
 
                     <PurchaseShippingRefund refund={d.shippingPayment?.refund} />
+                    {d.shippingPayment?.payee && <p className="text-xs text-muted-foreground">الجهة المستفيدة / الناقل: <span className="font-semibold text-foreground">{d.shippingPayment.payee}</span></p>}
+                    {d.shippingFundingSource === "DRAWER" && d.shippingPayment?.obligationStatus === "PAYMENT_PENDING" && <p className="border-t pt-2 text-xs text-muted-foreground">تصريح الدفع من درج المنشئ ينتظر اعتماد سند الشحن المرتبط أعلاه، مستقلاً عن اعتماد الفاتورة. لا تغلق الوردية قبل توثيقه.</p>}
                     {canSettleShipping && d.shippingFundingSource !== "DRAWER" && !d.shippingPayment?.hasRecordedPayment && d.shippingPayment?.obligationStatus !== "PAID" && d.status === "RECEIVED" ? (
                       <div className="pt-2 border-t flex items-center justify-between gap-2 flex-wrap">
                         <span className="text-[11px] text-muted-foreground">صرف نقدي من الدرج المفتوح للوردية</span>

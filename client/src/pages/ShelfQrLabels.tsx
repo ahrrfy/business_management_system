@@ -24,23 +24,10 @@ import {
   type ShelfQrPrintOptions,
   type ShelfQrTemplateType,
 } from "@/lib/printing/shelfQrPrint";
-import {
-  Printer,
-  Download,
-  Copy,
-  Check,
-  ExternalLink,
-  QrCode,
-  Store,
-  Layers,
-  Sparkles,
-  Smartphone,
-  Eye,
-  Info,
-  Users,
-  BarChart3,
-} from "lucide-react";
+import { Printer, Download, Copy, Check, ExternalLink, QrCode, Store, Layers, Sparkles, Smartphone, Eye, Info, BarChart3 } from "lucide-react";
 import { ShelfBeneficiariesAnalytics } from "@/components/shelf-qr/ShelfBeneficiariesAnalytics";
+import { ErrorState } from "@/components/PageState";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 const TEMPLATES: { id: ShelfQrTemplateType; label: string; desc: string; sizeHint: string }[] = [
   {
@@ -98,10 +85,14 @@ export default function ShelfQrLabels() {
 
   // توليد صورة الـ QR بدقة فائقة
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [qrError, setQrError] = useState(false);
+  const [qrRetry, setQrRetry] = useState(0);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     let alive = true;
+    setQrDataUrl(null);
+    setQrError(false);
     QRCode.toDataURL(targetUrl, {
       margin: 1,
       width: 600,
@@ -112,12 +103,12 @@ export default function ShelfQrLabels() {
         if (alive) setQrDataUrl(url);
       })
       .catch(() => {
-        if (alive) setQrDataUrl(null);
+        if (alive) { setQrDataUrl(null); setQrError(true); }
       });
     return () => {
       alive = false;
     };
-  }, [targetUrl]);
+  }, [targetUrl, qrRetry]);
 
   // نسخ الرابط
   const handleCopyLink = useCallback(() => {
@@ -180,7 +171,7 @@ export default function ShelfQrLabels() {
   }, [targetUrl, branchName]);
 
   return (
-    <div className="space-y-5 pb-10">
+    <div className="min-w-0 space-y-3">
       <PageHeader
         title="ملصقات QR للرفوف (للهواتف)"
         description="توليد وطباعة ملصقات وبوسترات رمز الاستجابة السريعة (QR) للأرفف والمعارض لتمكين الزبائن من مسح الباركود بهواتفهم ومعرفة الأسعار والعروض فوراً."
@@ -188,12 +179,12 @@ export default function ShelfQrLabels() {
 
       {/* شريط التبديل بين إحصائيات المستفيدين ومولّد الملصقات */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b pb-3">
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <Button
             variant={activeSubTab === "analytics" ? "default" : "outline"}
             size="sm"
             onClick={() => setActiveSubTab("analytics")}
-            className="gap-2 font-bold"
+            className="h-auto min-h-9 whitespace-normal gap-2 font-bold"
           >
             <BarChart3 aria-hidden className="size-4" />
             <span>إحصائيات واستخدام الخدمة (المستفيدون)</span>
@@ -202,7 +193,7 @@ export default function ShelfQrLabels() {
             variant={activeSubTab === "labels" ? "default" : "outline"}
             size="sm"
             onClick={() => setActiveSubTab("labels")}
-            className="gap-2 font-bold"
+            className="h-auto min-h-9 whitespace-normal gap-2 font-bold"
           >
             <Printer aria-hidden className="size-4" />
             <span>تصميم وطباعة ملصقات الرفوف</span>
@@ -235,9 +226,9 @@ export default function ShelfQrLabels() {
       {activeSubTab === "analytics" ? (
         <ShelfBeneficiariesAnalytics branches={branches} defaultBranchId={selectedBranchId} />
       ) : (
-        <div className="grid gap-6 lg:grid-cols-12 items-start">
+        <div className="grid min-w-0 gap-3 lg:grid-cols-12 items-start">
         {/* عمود خيارات التوليد والإعدادات (5 أعمدة) */}
-        <div className="space-y-4 lg:col-span-5">
+        <div className="min-w-0 space-y-3 lg:col-span-5">
           {/* نطاق الفرع والرابط */}
           <Card>
             <CardHeader className="pb-3">
@@ -331,7 +322,7 @@ export default function ShelfQrLabels() {
                       onChange={() => setTemplate(t.id)}
                     />
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
                         <span className="font-semibold text-sm">{t.label}</span>
                         <span className="text-xs px-2 py-0.5 rounded-full bg-muted font-medium text-muted-foreground shrink-0">
                           {t.sizeHint}
@@ -408,13 +399,14 @@ export default function ShelfQrLabels() {
             <Button
               size="lg"
               className="w-full inline-flex items-center justify-center gap-2 font-bold shadow-sm"
+              disabled={!qrDataUrl}
               onClick={handlePrint}
             >
               <Printer aria-hidden className="size-5" />
               <span>طباعة المستند الآن</span>
             </Button>
 
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <Button
                 variant="outline"
                 className="inline-flex items-center justify-center gap-1.5"
@@ -440,7 +432,7 @@ export default function ShelfQrLabels() {
         </div>
 
         {/* عمود المعاينة الحية والتجربة الفورية (7 أعمدة) */}
-        <div className="space-y-4 lg:col-span-7">
+        <div className="min-w-0 space-y-3 lg:col-span-7">
           <Card className="border-primary/30 shadow-xs">
             <CardHeader className="flex flex-row items-center justify-between pb-3">
               <div>
@@ -458,7 +450,7 @@ export default function ShelfQrLabels() {
             </CardHeader>
 
             <CardContent className="flex flex-col items-center justify-center p-6 bg-muted/20 min-h-[460px] border-t">
-              {qrDataUrl ? (
+              {qrError ? <ErrorState message="تعذّر تجهيز رمز الرف. أعد المحاولة." onRetry={() => setQrRetry(value => value + 1)} /> : qrDataUrl ? (
                 <div className="w-full max-w-md transition-all duration-200">
                   {/* معاينة شريط الرف */}
                   {template === "shelf-strip" && (
@@ -583,7 +575,7 @@ export default function ShelfQrLabels() {
               ) : (
                 <div className="flex flex-col items-center gap-2 text-muted-foreground">
                   <QrCode aria-hidden className="size-10 animate-pulse text-primary/40" />
-                  <span className="text-xs">جاري تجهيز رمز الاستجابة السريعة...</span>
+                  <span className="text-xs">{ACTION_LABELS.loading}</span>
                 </div>
               )}
 

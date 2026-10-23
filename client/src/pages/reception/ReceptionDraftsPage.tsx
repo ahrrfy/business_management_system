@@ -1,3 +1,5 @@
+import { ErrorState } from "@/components/PageState";
+import { ACTION_LABELS } from "@shared/actionLabels";
 /**
  * **شاشة «الطلبات المحفوظة والمسودات»** — شاشةٌ قائمةٌ بذاتها في مركز عمليات الاستقبال.
  *
@@ -8,21 +10,7 @@
  * - معاينة بنود الطلب وإيصالات العرابين ورد العربون أو إلغاء المسودة.
  */
 import { useMemo, useState } from "react";
-import {
-  AlertTriangle,
-  Archive,
-  Banknote,
-  Calendar,
-  Clock,
-  ExternalLink,
-  Eye,
-  Phone,
-  RefreshCw,
-  Search,
-  Trash2,
-  User,
-  X,
-} from "lucide-react";
+import { AlertTriangle, Archive, Banknote, Calendar, Clock, ExternalLink, Eye, Phone, RefreshCw, Trash2, User, X } from "lucide-react";
 import { trpc, type RouterInputs, type RouterOutputs } from "@/lib/trpc";
 import StationPageHeader from "@/components/StationPageHeader";
 import { Button } from "@/components/ui/button";
@@ -58,7 +46,7 @@ export default function ReceptionDraftsPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedDraftId, setSelectedDraftId] = useState<number | null>(initialDraftId);
 
-  const draftsQ = trpc.reception.draftList.useQuery(
+  const draftsQ = trpc.reception.draftList.useInfiniteQuery(
     {
       branchId: branchId ?? 0,
       status: statusFilter,
@@ -68,10 +56,12 @@ export default function ReceptionDraftsPage() {
       q: searchQuery.trim() || undefined,
       limit: 50,
     },
-    { enabled: branchId != null, staleTime: 10_000, refetchInterval: 30_000 },
+    { enabled: branchId != null, staleTime: 10_000, refetchInterval: 30_000,
+      getNextPageParam: (last) => last.hasMore ? last.nextCursor ?? undefined : undefined,
+    },
   );
 
-  const drafts = draftsQ.data?.rows ?? [];
+  const drafts = draftsQ.data?.pages.flatMap((page) => page.rows) ?? [];
 
   return (
     <div className="mx-auto w-full max-w-[1180px] px-4 py-5 space-y-4">
@@ -90,7 +80,7 @@ export default function ReceptionDraftsPage() {
           {/* شريط أدوات الفرز والبحث */}
           <Card className="flex flex-row flex-wrap items-center justify-between gap-3 p-3 shadow-xs">
             <div className="flex flex-wrap items-center gap-2">
-              <div className="inline-flex rounded-lg border bg-muted/50 p-0.5 text-xs font-medium">
+              <div className="inline-flex flex-wrap rounded-lg border bg-muted/50 p-0.5 text-xs font-medium">
                 <button
                   type="button"
                   onClick={() => setFilterTab("FUNDED")}
@@ -151,7 +141,7 @@ export default function ReceptionDraftsPage() {
             </div>
 
             {/* حقل البحث وزر التحديث */}
-            <div className="flex items-center gap-2">
+            <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto">
               <UnifiedSearchInput
                 value={searchQuery}
                 onChange={setSearchQuery}
@@ -159,7 +149,7 @@ export default function ReceptionDraftsPage() {
                 debounceMs={200}
                 barcode={true}
                 size="compact"
-                className="w-72"
+                className="min-w-0 flex-1 sm:w-72"
               />
 
               <Button
@@ -178,7 +168,9 @@ export default function ReceptionDraftsPage() {
           {/* جدول الطلبات */}
           <Card className="shadow-xs overflow-hidden py-0 gap-0">
             {draftsQ.isLoading ? (
-              <div className="p-12 text-center text-sm text-muted-foreground">جاري تحميل الطلبات المحفوظة...</div>
+              <div className="p-12 text-center text-sm text-muted-foreground">{ACTION_LABELS.loading}</div>
+            ) : draftsQ.isError && drafts.length === 0 ? (
+              <ErrorState message={draftsQ.error.message} onRetry={() => void draftsQ.refetch()} />
             ) : drafts.length === 0 ? (
               <div className="p-12 text-center text-sm text-muted-foreground">لا توجد طلبات تطابق الفلاتر المحددة.</div>
             ) : (
@@ -313,6 +305,13 @@ export default function ReceptionDraftsPage() {
               </div>
             )}
           </Card>
+          {drafts.length > 0 && draftsQ.isError && <ErrorState message={draftsQ.error.message} onRetry={() => void draftsQ.refetch()} />}
+          {draftsQ.hasNextPage && (
+            <Button variant="outline" className="w-full" disabled={draftsQ.isFetchingNextPage}
+              onClick={() => void draftsQ.fetchNextPage()}>
+              {draftsQ.isFetchingNextPage ? ACTION_LABELS.loading : "عرض المزيد من المسودات"}
+            </Button>
+          )}
         </>
       )}
 
@@ -454,6 +453,8 @@ export function DraftDetailsModal({
 
         {/* محتوى النافذة */}
         <div className="flex-1 overflow-y-auto p-5 space-y-4 text-xs">
+          {draftQ.isError && <ErrorState message={draftQ.error.message} onRetry={() => void draftQ.refetch()} />}
+          {paymentsQ.isError && <ErrorState message={paymentsQ.error.message} onRetry={() => void paymentsQ.refetch()} />}
           {draftQ.isLoading ? (
             <div className="p-8 text-center text-muted-foreground">جاري تحميل بيانات الطلب...</div>
           ) : !draft ? (
@@ -564,11 +565,11 @@ export function DraftDetailsModal({
                             <div>
                               {refundPaymentId === p.id ? (
                                 <div className="space-y-2 p-2 rounded-lg border bg-background">
-                                  <div className="flex items-center gap-2">
+                                  <div className="flex flex-wrap items-center gap-2">
                                     <MoneyInput
                                       value={refundAmount}
                                       onChange={setRefundAmount}
-                                      className="h-8 w-28 text-xs font-mono"
+                                      className="h-8 w-full sm:w-28 text-xs font-mono"
                                       placeholder="مبلغ الرد"
                                       ariaLabel="مبلغ الرد"
                                     />
@@ -577,7 +578,7 @@ export function DraftDetailsModal({
                                       placeholder="سبب الرد (إلزامي)..."
                                       value={refundReason}
                                       onChange={(e) => setRefundReason(e.target.value)}
-                                      className="h-8 w-44 text-xs"
+                                      className="h-8 w-full sm:min-w-44 sm:flex-1 text-xs"
                                     />
                                     <Button
                                       size="sm"
@@ -626,15 +627,15 @@ export function DraftDetailsModal({
 
         {/* تذييل الإجراءات */}
         {draft && (
-          <div className="flex items-center justify-between border-t px-5 py-3 bg-muted/20">
-            <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t px-5 py-3 bg-muted/20">
+            <div className="flex flex-wrap items-center gap-2">
               {draft.status === "OPEN" && (
                 <Button
                   variant="destructive"
                   size="sm"
                   className="gap-1 text-xs"
                   onClick={handleCancel}
-                  disabled={cancelM.isPending}
+                  disabled={cancelM.isPending || paymentsQ.isLoading || paymentsQ.isError}
                 >
                   <Trash2 className="size-3.5" />
                   إلغاء المسودة

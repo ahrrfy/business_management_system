@@ -1,3 +1,7 @@
+import { CASHIER_THEME as T, TileGroup, type Tile } from "./CashierHomeTiles";
+export type { Tile } from "./CashierHomeTiles";
+import { ACTION_LABELS } from "@shared/actionLabels";
+import { ErrorState } from "@/components/PageState";
 import type React from "react";
 import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
@@ -33,133 +37,6 @@ import {
 } from "lucide-react";
 
 /* ═══════════ THEME — CSS variables in tokens.css ═══════════ */
-const T = {
-  bg:          "var(--dash-bg)",
-  cardBg:      "var(--dash-card-bg)",
-  cardBord:    "var(--dash-card-bord)",
-  secLine:     "var(--dash-sec-line)",
-  secLabel:    "var(--dash-sec-label)",
-  text:        "var(--dash-text)",
-  sub:         "var(--dash-sub)",
-  muted:       "var(--dash-muted)",
-  featuredBg:  "var(--dash-featured-bg)",
-  featuredBd:  "var(--dash-featured-bd)",
-} as const;
-
-export interface Tile {
-  href: string;
-  name: string;
-  desc: string;
-  /** عدّادٌ يستحقّ نظرةً قبل فتح البطاقة (صفرٌ ⇒ لا يُعرَض — لا ضوضاءَ بلا خبر). */
-  badge?: number;
-  badgeHint?: string;
-  badgeVariant?: "warn" | "success" | "info";
-  icon?: React.ComponentType<{ className?: string; style?: React.CSSProperties }>;
-}
-
-/** مجموعةُ بطاقاتٍ بعنوانٍ — الفاصلُ بينها هو ما يُنهي «صفَّ أزرارٍ متساوية الوزن». */
-function TileGroup({
-  label,
-  hint,
-  tiles,
-}: {
-  label: string;
-  hint?: string;
-  tiles: Tile[];
-}) {
-  if (tiles.length === 0) return null;
-  return (
-    <section style={{ display: "flex", flexDirection: "column", gap: 10 }} aria-label={label}>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-        <h2 style={{ fontSize: "0.75rem", fontWeight: 800, color: T.secLabel, margin: 0, letterSpacing: "0.04em" }}>
-          {label}
-        </h2>
-        {hint && <span style={{ fontSize: "0.6875rem", color: T.muted }}>{hint}</span>}
-        <div style={{ flex: 1, height: 1, background: T.secLine }} aria-hidden />
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10 }}>
-        {tiles.map((t) => {
-          const Icon = t.icon;
-          const badgeBg =
-            t.badgeVariant === "success"
-              ? "var(--sem-pos-bg)"
-              : t.badgeVariant === "info"
-                ? "var(--sem-info-bg)"
-                : "var(--sem-warn-bg)";
-          const badgeColor =
-            t.badgeVariant === "success"
-              ? "var(--sem-pos)"
-              : t.badgeVariant === "info"
-                ? "var(--sem-info)"
-                : "var(--sem-warn)";
-
-          return (
-            <Link
-              key={t.href}
-              href={t.href}
-              style={{
-                position: "relative",
-                background: T.cardBg,
-                border: `1px solid ${T.cardBord}`,
-                borderRadius: 12,
-                padding: "12px 14px",
-                textDecoration: "none",
-                display: "flex",
-                flexDirection: "column",
-                gap: 5,
-                minHeight: 72,
-                transition: "transform 0.1s ease, border-color 0.15s ease",
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  {Icon && (
-                    <span
-                      aria-hidden
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        width: 28,
-                        height: 28,
-                        borderRadius: 8,
-                        background: "var(--muted)",
-                        color: "var(--foreground)",
-                        flexShrink: 0,
-                      }}
-                    >
-                      <Icon style={{ width: 15, height: 15 }} />
-                    </span>
-                  )}
-                  <span style={{ fontSize: "0.875rem", fontWeight: 700, color: T.text }}>{t.name}</span>
-                </div>
-                {Boolean(t.badge && t.badge > 0) && (
-                  <span
-                    title={t.badgeHint}
-                    style={{
-                      minWidth: 22,
-                      padding: "1px 7px",
-                      borderRadius: 999,
-                      background: badgeBg,
-                      color: badgeColor,
-                      fontSize: "0.6875rem",
-                      fontWeight: 800,
-                      textAlign: "center",
-                    }}
-                  >
-                    {t.badge && t.badge > 99 ? "99+" : t.badge}
-                  </span>
-                )}
-              </div>
-              <div style={{ fontSize: "0.75rem", color: T.muted, lineHeight: 1.45 }}>{t.desc}</div>
-            </Link>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
 function cashierActionIcon(icon: CashierActionIcon): Tile["icon"] {
   switch (icon) {
     case "station": return Store;
@@ -353,11 +230,11 @@ export function CashierHome({
     return (
       <div
         style={{
-          minHeight: "100vh",
+          minHeight: "auto",
           background: T.bg,
           direction: "rtl",
           fontFamily: "'Cairo', sans-serif",
-          margin: "-24px",
+          margin: "0",
           padding: "clamp(24px, 4vw, 44px) clamp(20px, 4vw, 48px) 56px",
         }}
       >
@@ -408,7 +285,7 @@ export function CashierHome({
         direction: "rtl",
         fontFamily: "'Cairo', sans-serif",
         margin: "-24px",
-        padding: "clamp(16px, 2.5vw, 28px) clamp(16px, 3vw, 32px) 36px",
+        padding: "0 0 16px",
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
@@ -429,7 +306,7 @@ export function CashierHome({
 
           {/* مؤشر الوردية المباشر في الرأس */}
           {canViewShift && <div>
-            {shift ? (
+            {shiftQ.isLoading ? <span>{ACTION_LABELS.loading}</span> : shiftQ.isError && !shift ? <ErrorState message={shiftQ.error.message} onRetry={() => void shiftQ.refetch()} /> : shift ? (
               <FinancialCellProvenanceHover data={(shift as any).provenance}>
                 <div
                   className="cursor-pointer hover:opacity-90 transition-opacity"

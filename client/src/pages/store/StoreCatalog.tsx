@@ -35,7 +35,7 @@ export default function StoreCatalog() {
   const [q, setQ] = useState("");
   const [categoryId, setCategoryId] = useState<number | "">("");
   const [filter, setFilter] = useState<Filter>("all");
-  const [limit, setLimit] = useState(PAGE);
+  const [offset, setOffset] = useState(0);
   const [stockFor, setStockFor] = useState<{ variantId: number; name: string; stockBase: number } | null>(null);
   const [imageFor, setImageFor] = useState<{ productId: number; name: string; imageUrl: string | null } | null>(null);
 
@@ -49,7 +49,8 @@ export default function StoreCatalog() {
     featuredOnly: filter === "featured" || undefined,
     hiddenOnly: filter === "hidden" || undefined,
     missingImageOnly: filter === "noImage" || undefined,
-    limit,
+    limit: PAGE,
+    offset,
   });
 
   const invalidate = () => void utils.storeAdmin.catalog.list.invalidate();
@@ -86,8 +87,8 @@ export default function StoreCatalog() {
       {/* شريط الفلترة */}
       <div className="space-y-2 rounded-2xl border border-border bg-card p-3">
         <div className="flex flex-col gap-2 sm:flex-row">
-          <UnifiedSearchInput barcode={false} debounceMs={0} value={q} onChange={(v) => { setQ(v); setLimit(PAGE); }} placeholder="ابحث عن منتج بالاسم…" className="flex-1" />
-          <AppSelect value={String(categoryId)} onValueChange={(value) => { setCategoryId(value === "" ? "" : Number(value)); setLimit(PAGE); }} className="sm:w-52">
+          <UnifiedSearchInput barcode={false} debounceMs={0} value={q} onChange={(v) => { setQ(v); setOffset(0); }} placeholder="ابحث عن منتج بالاسم…" className="flex-1" />
+          <AppSelect value={String(categoryId)} onValueChange={(value) => { setCategoryId(value === "" ? "" : Number(value)); setOffset(0); }} className="sm:w-52">
             <option value="">كل الأقسام</option>
             <option value="0">بلا قسم</option>
             {cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
@@ -95,7 +96,7 @@ export default function StoreCatalog() {
         </div>
         <div className="flex flex-wrap gap-1.5">
           {chips.map((ch) => (
-            <button key={ch.key} onClick={() => { setFilter(ch.key); setLimit(PAGE); }} className={`rounded-full px-3 py-1 text-xs font-bold transition ${filter === ch.key ? "bg-primary text-primary-foreground" : "border border-border text-muted-foreground hover:bg-accent"}`}>
+            <button key={ch.key} onClick={() => { setFilter(ch.key); setOffset(0); }} className={`rounded-full px-3 py-1 text-xs font-bold transition ${filter === ch.key ? "bg-primary text-primary-foreground" : "border border-border text-muted-foreground hover:bg-accent"}`}>
               {ch.label}
             </button>
           ))}
@@ -129,7 +130,7 @@ export default function StoreCatalog() {
                   {/* تفاصيل */}
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-1.5">
-                      <p className="truncate text-sm font-bold">{p.name}</p>
+                      <p className="break-words text-sm font-bold">{p.name}</p>
                       {/* نجمة «مميّز» كهرمانيّةٌ هويّةً لا تحذيراً؛ توكنها في هذا المستودع `--sem-warn`
                           (سابقة ReportsCenter وContact360Panel) فلا يبقى لون نجمةٍ خامّاً ينجرف وحده. */}
                       {p.isFeatured && <span className="flex items-center gap-0.5 rounded-full bg-[var(--sem-warn-bg)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--sem-warn)]"><Star aria-hidden className="size-2.5" /> مميّز</span>}
@@ -197,13 +198,16 @@ export default function StoreCatalog() {
             );
           })}
 
-          {rows.length < total && (
-            <button onClick={() => setLimit((n) => n + PAGE)} disabled={listQ.isFetching} className="flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-card py-3 text-sm font-bold text-muted-foreground transition hover:bg-accent disabled:opacity-50">
-              {listQ.isFetching ? <Loader2 aria-hidden className="size-4 animate-spin" /> : null} عرض المزيد ({total - rows.length} متبقٍّ)
-            </button>
-          )}
+
         </div>
       )}
+
+          {offset > 0 && <button type="button" onClick={() => setOffset((n) => Math.max(0, n - PAGE))} disabled={listQ.isFetching} className="rounded-md border px-3 py-2 text-sm">الصفحة السابقة</button>}
+      {(offset + rows.length < total) && (
+            <button onClick={() => setOffset((n) => n + PAGE)} disabled={listQ.isFetching || offset + rows.length >= total} className="flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-card py-3 text-sm font-bold text-muted-foreground transition hover:bg-accent disabled:opacity-50">
+              {listQ.isFetching ? <Loader2 aria-hidden className="size-4 animate-spin" /> : null} الصفحة التالية ({Math.max(0, total - offset - rows.length)} متبقٍّ)
+            </button>
+          )}
 
       {stockFor && <StockDialog target={stockFor} onClose={() => setStockFor(null)} onDone={invalidate} />}
       {isAdmin && imageFor && <ImageDialog target={imageFor} onClose={() => setImageFor(null)} onDone={invalidate} />}

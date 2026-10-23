@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
-import { Badge } from "@/components/ui/badge";
+import { SUPPLIER_INVOICE_STATUS_LABEL } from "@shared/supplierInvoiceStatus";
+import { useState } from "react";
+
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -17,18 +18,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { fmtDate } from "@/lib/date";
 import { fmt } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import {
-  Building2,
-  Calendar,
-  CheckCircle2,
-  Clock,
-  ExternalLink,
-  FileText,
-  RotateCcw,
-  ShieldCheck,
-  User,
-  UserCheck,
-} from "lucide-react";
+import { Building2, ExternalLink, FileText, RotateCcw, ShieldCheck, User, UserCheck } from "lucide-react";
 import { Link } from "wouter";
 import { CopyInline } from "@/components/CopyButton";
 import { cn } from "@/lib/utils";
@@ -37,13 +27,7 @@ import { getPurchaseSettlementIntentLabel } from "@shared/purchaseSettlement";
 type SupplierInvoiceDetailOutput = NonNullable<RouterOutputs["supplierInvoiceApproval"]["get"]>;
 type InvoiceLine = SupplierInvoiceDetailOutput["lines"][number];
 
-const STATUS_LABEL: Record<string, string> = {
-  DRAFT: "مسودة",
-  ON_HOLD: "محجوزة",
-  MATCHED: "مطابقة — بانتظار الترحيل",
-  POSTED: "مرحلة",
-  REVERSED: "معكوسة",
-};
+
 
 const STATUS_CLASS: Record<string, string> = {
   DRAFT: "badge-status-pending",
@@ -114,7 +98,7 @@ export function SupplierInvoiceDetailDrawer({
             </div>
             {inv?.status && (
               <span className={cn("px-2.5 py-1 text-xs rounded-md font-semibold w-fit", STATUS_CLASS[inv.status] ?? "bg-muted")}>
-                {STATUS_LABEL[inv.status] ?? inv.status}
+                {SUPPLIER_INVOICE_STATUS_LABEL[inv.status] ?? inv.status}
               </span>
             )}
           </div>

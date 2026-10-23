@@ -1,3 +1,4 @@
+import { ErrorState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,7 +9,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { DataTable } from "@/components/data-table/DataTable";
 
 import { confirm } from "@/lib/confirm";
-import { fmtAr as fmt, formatQuantity } from "@/lib/money";
+import { D, fmtAr as fmt, formatQuantity } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { esc } from "@/lib/printing/brand";
@@ -46,9 +47,9 @@ export default function ConsignmentSettlements() {
   const [pickedBranch, setPickedBranch] = useState<number | null>(null);
   const isElevatedRole = me.data?.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط
   const noAssignedBranch = me.data != null && me.data.branchId == null;
-  const needsBranchChoice = noAssignedBranch && isElevatedRole && pickedBranch == null;
-  const branchId = Number(me.data?.branchId ?? pickedBranch ?? 1);
-  const branchName = (branches.data ?? []).find((b) => Number(b.id) === branchId)?.name ?? `فرع #${branchId}`;
+  const branchId = me.data?.branchId != null ? Number(me.data.branchId) : pickedBranch;
+  const needsBranchChoice = branchId == null || !Number.isSafeInteger(branchId) || branchId <= 0;
+  const branchName = (branches.data ?? []).find((b) => Number(b.id) === branchId)?.name ?? (needsBranchChoice ? "لم يحدد فرع" : `فرع #${branchId}`);
 
   // طريقة دفع التسوية — الخادم يقبل بطاقة/تحويل أيضاً وكانت الشاشة تُرسل نقدياً دائماً بصمت.
   const [settlementMethod, setSettlementMethod] = useState<"CASH" | "CARD" | "TRANSFER">("CASH");
@@ -79,7 +80,7 @@ export default function ConsignmentSettlements() {
   });
 
   async function doSettle(consignorId: number, name: string, owed: string) {
-    if (Number(owed) <= 0 || needsBranchChoice) return;
+    if (D(owed).lte(0) || branchId == null || needsBranchChoice) return;
     const ok = await confirm({
       title: "تسوية مودِع",
       description: `إنشاء سند صرف ${paymentMethodLabel(settlementMethod)} بمبلغ ${fmt(owed)} د.ع للمودِع «${name}» من فرع «${branchName}». يُنشأ معلَّقاً ويعتمده مدير آخر. متابعة؟`,
@@ -101,7 +102,7 @@ export default function ConsignmentSettlements() {
     const s = statement.data;
     if (!s) return;
     const w = window.open("", "_blank", "width=900,height=1000");
-    if (!w) return;
+    if (!w) { notify.err("حجب المتصفح نافذة الطباعة. اسمح بالنوافذ المنبثقة ثم أعد المحاولة."); return; }
     const lineRows = s.lines
       .map(
         (l) => `<tr><td>${esc(l.productName)} <span class="muted">${esc(l.sku)}</span></td><td class="num">${esc(formatQuantity(l.soldQty))}</td><td class="num">${esc(fmt(l.soldValue))}</td><td class="num">${esc(fmt(l.share))}</td><td class="num">${esc(fmt(l.margin))}</td></tr>`,
@@ -149,13 +150,13 @@ export default function ConsignmentSettlements() {
 
       <Card>
         <CardContent className="pt-4 flex flex-wrap items-end gap-4">
-          {needsBranchChoice ? (
+          {noAssignedBranch && isElevatedRole ? (
             <div className="space-y-1">
               <Label htmlFor="cs-branch">الفرع <span className="text-destructive">*</span></Label>
               <AppSelect
                 id="cs-branch"
                 className="h-9 w-56 border-input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                value={pickedBranch ?? ""}
+                value={String(pickedBranch ?? "")}
                 onValueChange={(next) => setPickedBranch(next ? Number(next) : null)}
               >
                 <option value="">— اختر الفرع —</option>
@@ -186,6 +187,7 @@ export default function ConsignmentSettlements() {
           <DataTable
             {...PANEL_TABLE}
             data={rows}
+            errorState={{ isError: balances.isError, message: balances.error?.message, onRetry: () => void balances.refetch() }}
             loading={balances.isLoading}
             emptyText="لا مودِعين بعد."
             columns={[
@@ -223,7 +225,7 @@ export default function ConsignmentSettlements() {
                 meta: { kind: "actions" },
                 cell: ({ row }) => {
                   const r = row.original;
-                  const owed = Number(r.owed);
+                  const owed = D(r.owed);
                   return (
                     <RowActions
                       mode="menu"
@@ -231,11 +233,11 @@ export default function ConsignmentSettlements() {
                         {
                           key: "settle",
                           kind: "pay",
-                          label: owed > 0 ? "تسوية" : "لا مستحق",
-                          disabled: owed <= 0 || settle.isPending || needsBranchChoice,
+                          label: owed.gt(0) ? "تسوية" : "لا مستحق",
+                          disabled: owed.lte(0) || settle.isPending || needsBranchChoice,
                           disabledReason: needsBranchChoice
                             ? "اختر الفرع أولاً من أعلى الصفحة"
-                            : owed <= 0 ? "لا يوجد مبلغ مستحق للتسوية" : "توجد عملية تسوية قيد التنفيذ",
+                            : owed.lte(0) ? "لا يوجد مبلغ مستحق للتسوية" : "توجد عملية تسوية قيد التنفيذ",
                           onSelect: () => void doSettle(r.consignorId, r.consignorName, r.owed),
                           gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
                         },
@@ -282,6 +284,7 @@ export default function ConsignmentSettlements() {
           <DataTable
             {...PANEL_TABLE}
             data={marginRows}
+            errorState={{ isError: margins.isError, message: margins.error?.message, onRetry: () => void margins.refetch() }}
             loading={margins.isLoading}
             emptyText="لا مبيعات أمانة في هذه الفترة."
             columns={[
@@ -342,6 +345,7 @@ export default function ConsignmentSettlements() {
           <DialogHeader>
             <DialogTitle>كشف تسوية مودِع{statement.data ? ` — ${statement.data.consignorName}` : ""}</DialogTitle>
           </DialogHeader>
+          {statement.isError && <ErrorState message={statement.error.message} onRetry={() => void statement.refetch()} />}
           {statement.isLoading && <p className="text-sm text-muted-foreground py-6 text-center">{ACTION_LABELS.loading}</p>}
           {statement.data && (
             <div className="space-y-4">
@@ -383,7 +387,7 @@ export default function ConsignmentSettlements() {
                   ]}
                 />
               </div>
-              <div className="flex items-center gap-6 text-sm border-t pt-3">
+              <div className="flex flex-wrap items-center gap-3 text-sm border-t pt-3">
                 <span>البضاعة المتبقية لدى المكتبة: <b className="tabular-nums">{formatQuantity(statement.data.remaining.qty)}</b> قطعة</span>
                 <span className="text-muted-foreground">قيمتها بالحصّة: <span className="tabular-nums" dir="ltr">{fmt(statement.data.remaining.valueByShare)}</span></span>
               </div>

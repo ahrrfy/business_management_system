@@ -154,7 +154,7 @@ export default function StocktakeReport() {
   const canOperation = (path: string) => canLifecycleOperation(me.data, path, true);
   const q = trpc.stocktakes.report.useQuery(
     { sessionId },
-    { enabled: (Number.isFinite(sessionId)) && canOperation("stocktakes.report") },
+    { enabled: Number.isSafeInteger(sessionId) && sessionId > 0 && canOperation("stocktakes.report") },
   );
   const qData = canOperation("stocktakes.report") ? q.data : undefined;
   const data = qData as unknown as ReportData | undefined;
@@ -424,7 +424,7 @@ export default function StocktakeReport() {
     [],
   );
 
-  if (!Number.isFinite(sessionId))
+  if (!Number.isSafeInteger(sessionId) || sessionId <= 0)
     return (
       <div className="p-10 text-center text-muted-foreground">
         جلسة غير صالحة.

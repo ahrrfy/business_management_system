@@ -1,3 +1,5 @@
+import { confirm } from "@/lib/confirm";
+import { ErrorState } from "@/components/PageState";
 import { Building2, FileText, Phone, Send } from "lucide-react";
 import { useState } from "react";
 import { Link } from "wouter";
@@ -28,6 +30,7 @@ const TYPE_LABEL: Record<string, string> = {
 };
 const NEXT_STATUS: Partial<Record<Status, ManualStatus>> = {
   PENDING: "CONTACTED",
+  CONTACTED: "CLOSED",
   QUOTED: "CLOSED",
 };
 
@@ -65,6 +68,7 @@ export default function StoreQuoteRequests() {
         </CardHeader>
         <CardContent className="space-y-3">
           {requests.isLoading && <div className="py-10 text-center text-sm text-muted-foreground">جار تحميل الطلبات…</div>}
+          {requests.isError && <ErrorState message={requests.error.message} onRetry={() => void requests.refetch()} />}
           {(requests.data ?? []).map((request) => {
             const next = NEXT_STATUS[request.status as Status];
             return (
@@ -103,13 +107,18 @@ export default function StoreQuoteRequests() {
                       </Link>
                     </Button>
                   )}
+                  {["PENDING", "CONTACTED", "QUOTED"].includes(request.status) && <Button size="sm"
+                    variant="outline" disabled={update.isPending} onClick={async () => {
+                    if (await confirm({ title: "إلغاء طلب عرض السعر", description: request.requestNumber, variant: "danger", confirmText: "تأكيد الإلغاء" }))
+                      update.mutate({ requestId: request.id, status: "CANCELLED" });
+                  }}>إلغاء الطلب</Button>}
                   {next && <Button disabled={update.isPending} onClick={() => update.mutate({ requestId: request.id, status: next })} size="sm"><Send className="size-4" />{next === "CONTACTED" ? "تسجيل التواصل" : "إغلاق الطلب"}</Button>}
                 </div>
                 </CardContent>
               </Card>
             );
           })}
-          {!requests.isLoading && !requests.data?.length && <div className="py-12 text-center text-sm text-muted-foreground"><FileText className="mx-auto mb-2 size-6" />لا توجد طلبات في هذه الحالة حالياً.</div>}
+          {!requests.isLoading && !requests.isError && !requests.data?.length && <div className="py-12 text-center text-sm text-muted-foreground"><FileText className="mx-auto mb-2 size-6" />لا توجد طلبات في هذه الحالة حالياً.</div>}
         </CardContent>
       </Card>
     </div>

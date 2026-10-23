@@ -1,3 +1,4 @@
+import { SUPPLIER_INVOICE_STATUS_LABEL } from "@shared/supplierInvoiceStatus";
 import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import type { OperationUser } from "@shared/operationPermissions";
 import { getPurchaseSettlementIntentLabel } from "@shared/purchaseSettlement";
@@ -57,13 +58,7 @@ export type SupplierInvoiceListRow = {
   invoiceDate: string | Date;
 };
 
-const STATUS_LABEL: Record<SupplierInvoiceListRow["status"], string> = {
-  DRAFT: "مسودة",
-  ON_HOLD: "محجوزة",
-  MATCHED: "مطابقة — بانتظار الترحيل",
-  POSTED: "مرحلة",
-  REVERSED: "معكوسة",
-};
+
 
 const STATUS_CLASS: Record<SupplierInvoiceListRow["status"], string> = {
   DRAFT: "badge-status-pending",
@@ -284,7 +279,7 @@ export function SupplierInvoiceApprovalGovernanceWorkspace({
               STATUS_CLASS[row.original.status] ?? "bg-muted",
             )}
           >
-            {STATUS_LABEL[row.original.status] ?? row.original.status}
+            {SUPPLIER_INVOICE_STATUS_LABEL[row.original.status] ?? row.original.status}
           </span>
         ),
       },

@@ -1,3 +1,4 @@
+import { paymentMethodCompact } from "@shared/terms";
 /**
  * ثوابت طرق الدفع الموحّدة للواجهة — تسمية + شارة ملوّنة + قائمة الاختيار.
  * تُستخدم في POS (أزرار الدفع)، Invoices (عمود «طريقة الدفع»)، InvoiceDetail (سجل الدفعات)،
@@ -14,23 +15,11 @@ import {
 
 export type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" | "TELECOM" | "EXCHANGE" | "MIXED";
 
-export const METHOD_LABEL: Record<PaymentMethod, string> = {
-  CASH: "نقدي",
-  CARD: "بطاقة",
-  CHECK: "صك",
-  TRANSFER: "تحويل",
-  WALLET: "محفظة",
-  // ش٥ — رصيد اتصال زين (أكواد كروت شحن): «زين حصراً» بنيوياً — لا مزوّد آخر يُمثَّل.
-  TELECOM: "رصيد زين",
-  // EXCHANGE — سند صرفٍ عبر الصيرفة (تسديد مورّد؛ يكتبه `exchange/settleSupplier.ts`)؛ لا يمسّ
-  // الخزينة ولا الدرج. كان ناقصاً هنا ⇒ `paymentMethodLabel` تُرجع الرمز الإنجليزيّ خاماً على
-  // شاشة الخزينة/السندات. القيمة موجودة في enum العمود منذ البداية.
-  EXCHANGE: "صيرفة",
-  // MIXED — فاتورةٌ سُدّدت بأكثر من طريقة (نقد + تحويل مثلاً). قيمةُ عرضٍ وفلترةٍ فقط تكتبها
-  // `sale/payment.ts` عند اختلاف الدفعة الجديدة عن المخزَّن، بدل «آخر دفعة تفوز» التي كانت
-  // تُسقِط الفاتورة من فلتر رافدها الأكبر وتكسر مطابقة يوم البطاقات.
-  MIXED: "مختلطة",
-};
+// TELECOM = رصيد زين؛ مفردات العرض تأتي من القاموس المشترك، وقائمة طرق القبض تبقى محكومة بسياستها.
+export const METHOD_LABEL: Record<PaymentMethod, string> = Object.fromEntries(
+  (["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM", "EXCHANGE", "MIXED"] as const)
+    .map((method) => [method, paymentMethodCompact(method)]),
+) as Record<PaymentMethod, string>;
 
 /**
  * **طريقة فاتورةٍ ≠ طريقة إيصال.** الاتحاد `PaymentMethod` أعلاه يخدم **التعريب/العرض** ويغطّي

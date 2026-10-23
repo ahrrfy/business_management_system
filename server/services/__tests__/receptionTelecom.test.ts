@@ -17,6 +17,7 @@
  *  T8 (D9) — كاشف تركّز زين: موظفٌ نصف وارده زين وفوق الأرضية ⇒ مُعلَّم.
  */
 import { and, eq, sql } from "drizzle-orm";
+import { paymentMethodCompact } from "../../../shared/terms";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // TELECOM remains readable/reconcilable for historical receipts. Dedicated
@@ -161,6 +162,7 @@ describe("T3 — I24: كل قيمة طريقة دفعٍ لها ترجمة عرب
       if (v === "EXCHANGE") continue; // داخليّ (سند صيرفة) — خارج خرائط البيع عمداً
       expect(PAY_METHOD_AR[v], `treasury/helpers بلا ${v}`).toBeTruthy();
       expect((METHOD_LABEL as Record<string, string>)[v], `client paymentMethod بلا ${v}`).toBeTruthy();
+      expect((METHOD_LABEL as Record<string, string>)[v]).toBe(paymentMethodCompact(v));
     }
     for (const v of ["CASH", "CARD", "TRANSFER", "WALLET", "TELECOM"]) {
       expect((PAY_METHOD_LABEL as Record<string, string>)[v], `reception cartMath بلا ${v}`).toBeTruthy();

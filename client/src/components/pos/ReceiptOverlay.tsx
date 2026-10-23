@@ -120,7 +120,7 @@ export function ReceiptOverlay({ C, receipt, onDismiss, onPrint, onPrintLabel }:
           aria-label={codOutstanding ? "تم تسجيل طلب التوصيل" : "تم الدفع بنجاح"}
           style={{
             display: "flex", flexDirection: "column", alignItems: "center",
-            width: "100%", maxWidth: 440, cursor: "default", direction: "rtl",
+            width: "100%", maxWidth: 440, maxHeight: "calc(100dvh - 2rem)", overflowY: "auto", cursor: "default", direction: "rtl",
           }}
         >
           {/* رأس الطابعة الحرارية المعدني (Printer Head Slot) */}
