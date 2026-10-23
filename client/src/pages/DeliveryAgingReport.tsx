@@ -11,6 +11,7 @@ import { ErrorState } from "@/components/PageState";
 import { exportRows } from "@/lib/export";
 import { fmtAr, formatIqd } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 
 type Row = RouterOutputs["reports"]["consignmentAging"]["rows"][number];
 
@@ -115,6 +116,50 @@ export default function DeliveryAgingReport() {
     });
   }
 
+  function onPrint() {
+    if (!rows.length) return;
+    printReportDoc({
+      title: "أعمار الإرساليات المفتوحة",
+      orientation: "landscape",
+      note: NOTE,
+      headerExtra: [
+        { label: "الفرع", value: branchLabel },
+        { label: "كما في", value: fmtDate(new Date()) },
+      ],
+      columns: [
+        { key: "partyName", label: "الجهة" },
+        { key: "partyType", label: "النوع" },
+        { key: "openCount", label: "مفتوحة", align: "left" },
+        { key: "d0_7", label: "0-7 أيام", align: "left" },
+        { key: "d8_14", label: "8-14 يوماً", align: "left" },
+        { key: "d15_30", label: "15-30 يوماً", align: "left" },
+        { key: "d31p", label: "+31 يوماً", align: "left" },
+        { key: "totalOutstanding", label: "الإجمالي", align: "left" },
+        { key: "oldestDays", label: "أقدم (يوم)", align: "left" },
+      ],
+      rows: rows.map((r) => ({
+        partyName: r.partyName,
+        partyType: PARTY_TYPE_LABEL[r.partyType] ?? r.partyType,
+        openCount: fmtAr(r.openCount),
+        d0_7: Number(r.d0_7) > 0 ? fmtAr(r.d0_7) : "—",
+        d8_14: Number(r.d8_14) > 0 ? fmtAr(r.d8_14) : "—",
+        d15_30: Number(r.d15_30) > 0 ? fmtAr(r.d15_30) : "—",
+        d31p: Number(r.d31p) > 0 ? fmtAr(r.d31p) : "—",
+        totalOutstanding: fmtAr(r.totalOutstanding),
+        oldestDays: fmtAr(r.oldestDays),
+      })),
+      summary: totals
+        ? [
+            { label: "إرساليات مفتوحة", value: fmtAr(totals.openCount) },
+            { label: "0-7 أيام", value: formatIqd(totals.d0_7) },
+            { label: "8-14 يوماً", value: formatIqd(totals.d8_14) },
+            { label: "+15 يوماً", value: formatIqd(String(Number(totals.d15_30) + Number(totals.d31p))) },
+            { label: "إجمالي المتبقّي", value: formatIqd(totals.totalOutstanding), large: true, bold: true },
+          ]
+        : undefined,
+    });
+  }
+
   return (
     <ReportShell
       title="أعمار الإرساليات المفتوحة"
@@ -122,7 +167,9 @@ export default function DeliveryAgingReport() {
       note={NOTE}
       kpis={kpis}
       onExport={onExport}
-      exportDisabled={!rows.length}
+      onPrint={onPrint}
+      exportDisabled={!rows.length || q.isLoading || q.isError}
+      printDisabled={!rows.length || q.isLoading || q.isError}
       filters={
         <div className="flex flex-wrap items-end gap-4">
           <div className="flex flex-col gap-1">

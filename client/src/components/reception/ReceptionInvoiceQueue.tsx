@@ -27,6 +27,7 @@ import { Input } from "@/components/ui/input";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Label } from "@/components/ui/label";
 import { AppSelect } from "@/components/ui/AppSelect";
+import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
@@ -231,7 +232,8 @@ export function ReceptionInvoiceQueue({
           غير مسدّدة
         </button>
         <button type="button" className={chip(payChip === "CARD")} onClick={() => { setPayChip((p) => (p === "CARD" ? "ALL" : "CARD")); resetPaging(); }}>
-          بالبطاقة
+          <CardBrandLogos size="xs" />
+          <span>بالبطاقة</span>
         </button>
         <UnifiedSearchInput
           barcode={false}
@@ -612,7 +614,7 @@ function CollectPaymentDialog({
               aria-describedby={!isPosPaymentMethodEnabled(p.v) ? "reception-collection-external-disabled" : undefined}
               title={isPosPaymentMethodEnabled(p.v) ? p.label : posPaymentRejectionMessage(p.v)}
               className={cn(
-                "min-h-[40px] rounded-lg border-2 text-xs font-extrabold",
+                "min-h-[40px] inline-flex items-center justify-center gap-1.5 rounded-lg border-2 px-2 text-xs font-extrabold",
                 method === p.v
                   ? "border-primary bg-primary text-primary-foreground"
                   : isPosPaymentMethodEnabled(p.v)
@@ -620,7 +622,8 @@ function CollectPaymentDialog({
                     : "cursor-not-allowed bg-muted/40 text-muted-foreground/45",
               )}
             >
-              {p.label}
+              {p.v === "CARD" && <CardBrandLogos size="xs" />}
+              <span>{p.label}</span>
             </button>
           ))}
         </div>

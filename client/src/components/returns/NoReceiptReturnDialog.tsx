@@ -37,6 +37,7 @@ import {
   CreditCard,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 
 const NO_RECEIPT_REASONS = [
   "فاتورة مفقودة - هدية من قريب",
@@ -868,12 +869,12 @@ export function NoReceiptReturnDialog({
                           type="button"
                           onClick={() => setPaymentMethod("CARD")}
                           className={cn(
-                            "flex items-center gap-1 px-2 py-1 rounded text-xs font-semibold",
+                            "flex items-center gap-1.5 px-2 py-1 rounded text-xs font-semibold",
                             paymentMethod === "CARD" ? "bg-background text-foreground shadow-xs" : "text-muted-foreground"
                           )}
                         >
-                          <CreditCard className="size-3.5" aria-hidden />
-                          بطاقة / دفع إلكتروني
+                          <CardBrandLogos size="xs" />
+                          <span>بطاقة / دفع إلكتروني</span>
                         </button>
                       </div>
                     </div>

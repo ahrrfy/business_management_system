@@ -19,6 +19,7 @@ import {
   payrollRuns,
 } from "../../../drizzle/schema";
 import { fullEmployeeName } from "@shared/hr";
+import { hasUnclosedAttendancePunch } from "@shared/attendanceHours";
 import { money, round2 } from "../money";
 import { requireDb } from "../tx";
 import {
@@ -85,7 +86,7 @@ export async function getMonthlyAttendanceReport(input: MonthlyAttendanceReportI
   const daysInMonth = Number(monthEnd.slice(8, 10));
 
   // استعلام 1: جلب الموظفين مع اسم الفرع بفلترة الفرع الممرر
-  const emps = await db
+  let emps = await db
     .select({
       id: employees.id,
       firstName: employees.firstName,
@@ -100,6 +101,7 @@ export async function getMonthlyAttendanceReport(input: MonthlyAttendanceReportI
       hireDate: employees.hireDate,
       terminationDate: employees.terminationDate,
       workSchedule: employees.workSchedule,
+      dayRates: employees.dayRates,
       attendanceExempt: employees.attendanceExempt,
       branchId: employees.branchId,
       branchName: branches.name,
@@ -109,7 +111,7 @@ export async function getMonthlyAttendanceReport(input: MonthlyAttendanceReportI
     .where(input.branchId != null ? eq(employees.branchId, input.branchId) : undefined)
     .orderBy(employees.id);
 
-  const eligible = emps.filter((e) => {
+  let eligible = emps.filter((e) => {
     const hiredBeforeEnd = !e.hireDate || String(e.hireDate).slice(0, 10) <= `${p}-31`;
     const notLeftBefore = !e.terminationDate || String(e.terminationDate).slice(0, 10) >= monthStart;
     return hiredBeforeEnd && notLeftBefore;
@@ -139,7 +141,7 @@ export async function getMonthlyAttendanceReport(input: MonthlyAttendanceReportI
   const [settings] = await db.select().from(hrAttendanceSettings).where(eq(hrAttendanceSettings.id, 1)).limit(1);
 
   // استعلام 3: سجلات الحضور الشهرية لجميع الموظفين المؤهلين دفعة واحدة
-  const allAttendance = await db
+  let allAttendance = await db
     .select({
       employeeId: attendance.employeeId,
       date: attendance.attendanceDate,
@@ -151,6 +153,7 @@ export async function getMonthlyAttendanceReport(input: MonthlyAttendanceReportI
       source: attendance.source,
       needsReview: attendance.needsReview,
       reviewReason: attendance.reviewReason,
+      notes: attendance.notes,
     })
     .from(attendance)
     .where(
@@ -266,18 +269,25 @@ export async function getMonthlyAttendanceReport(input: MonthlyAttendanceReportI
       if (r.status === "PRESENT" || r.status === "LATE") {
         attendedHoursByDate.set(d, money(r.hours ?? 0));
         actualPaid += Number(r.amount ?? 0);
-        if (r.checkIn != null && r.checkOut == null) openDates.add(d);
+        if (hasUnclosedAttendancePunch(r)) openDates.add(d);
       }
     }
 
     const paidSpans = empLeaves.filter((l) => l.paid).map((l) => ({ from: String(l.fromDate), to: String(l.toDate) }));
     const unpaidSpans = empLeaves.filter((l) => !l.paid).map((l) => ({ from: String(l.fromDate), to: String(l.toDate) }));
 
+    const dayRates =
+      emp.dayRates && typeof emp.dayRates === "object"
+        ? (emp.dayRates as Record<string, number>)
+        : null;
+
     const pay = computeAttendancePay({
       salary: money(emp.salary ?? 0),
       employmentStart,
       employmentEnd,
       schedule,
+      dayRates,
+      payType: emp.payType,
       attendedHoursByDate,
       openDates,
       paidLeaveDates: expand(paidSpans, employmentStart, employmentEnd),

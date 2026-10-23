@@ -24,6 +24,7 @@ import { Link } from "wouter";
 import { AlertTriangle, ArrowRightLeft, ExternalLink, Loader2, Wallet } from "lucide-react";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
+import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { fmtAr } from "@/lib/money";
@@ -496,13 +497,17 @@ export function RefundRailPickerView({
                     onClick={() => setRail(r)}
                     disabled={submitting}
                     aria-pressed={rail === r}
-                    className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-2xs font-bold transition-colors ${
+                    className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-2xs font-bold transition-colors ${
                       rail === r
                         ? "border-transparent bg-primary text-primary-foreground"
                         : "hover:bg-muted"
                     }`}
                   >
-                    <ArrowRightLeft aria-hidden className="size-3" />
+                    {r === "CARD" ? (
+                      <CardBrandLogos size="xs" />
+                    ) : (
+                      <ArrowRightLeft aria-hidden className="size-3" />
+                    )}
                     {REFUND_RAIL_LABEL[r]}
                     {fits === false ? " — قد لا يكفي" : ""}
                   </button>

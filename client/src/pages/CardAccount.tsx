@@ -36,6 +36,7 @@ import {
   CheckCircle2,
 } from "lucide-react";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 
 
 const SOURCE_AR: Record<string, string> = {
@@ -245,7 +246,7 @@ export default function CardAccount() {
             ? "رصيد اتصال زين المتراكم (أكواد كروت الشحن المقبوضة − التسويات) — لا يلمس الدرج، ويُسوّى دورياً."
             : "رصيد أموال البطاقة (مقبوضات البطاقة − مدفوعات المورّدين بالبطاقة) — منفصلٌ عن درج النقد والخزينة."
         }
-        icon={accountKind === "TELECOM" ? <Smartphone aria-hidden className="size-5" /> : <CreditCard aria-hidden className="size-5" />}
+        icon={accountKind === "TELECOM" ? <Smartphone aria-hidden className="size-5" /> : <CardBrandLogos size="sm" />}
         actions={
           canPickBranch ? (
             <AppSelect
@@ -278,11 +279,12 @@ export default function CardAccount() {
             onClick={() => { setAccountKind(v); setPage(0); }}
             className={
               accountKind === v
-                ? "rounded-lg border-2 border-primary bg-primary px-4 py-1.5 text-xs font-extrabold text-primary-foreground"
-                : "rounded-lg border-2 bg-card px-4 py-1.5 text-xs font-extrabold hover:bg-muted"
+                ? "inline-flex items-center gap-1.5 rounded-lg border-2 border-primary bg-primary px-4 py-1.5 text-xs font-extrabold text-primary-foreground"
+                : "inline-flex items-center gap-1.5 rounded-lg border-2 bg-card px-4 py-1.5 text-xs font-extrabold hover:bg-muted"
             }
           >
-            {label}
+            {v === "CARD" && <CardBrandLogos size="xs" />}
+            <span>{label}</span>
           </button>
         ))}
       </div>

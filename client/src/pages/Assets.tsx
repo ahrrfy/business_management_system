@@ -108,17 +108,15 @@ export default function Assets() {
   }
 
   const depreciationPanel = canDepreciate ? (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base flex items-center gap-1.5">
-              <CalendarClock aria-hidden className="size-4" />
-              ترحيل الإهلاك الشهري
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex flex-col md:flex-row gap-3 md:items-end">
-              <div className="space-y-1">
-                <Label htmlFor="dep-period">الشهر</Label>
+        <Card className="py-2 gap-1.5">
+          <CardContent className="px-3 py-0">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <div className="flex items-center gap-1.5 text-sm font-semibold">
+                <CalendarClock aria-hidden className="size-4 text-muted-foreground" />
+                <span>ترحيل الإهلاك الشهري:</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <Label htmlFor="dep-period" className="text-xs text-muted-foreground">الشهر</Label>
                 <Input
                   id="dep-period"
                   type="month"
@@ -127,14 +125,14 @@ export default function Assets() {
                   min="2000-01"
                   max="2200-12"
                   onChange={(e) => setDepPeriod(e.target.value)}
-                  className="w-40"
+                  className="h-8 w-36 text-xs"
                 />
               </div>
-              <Button onClick={runDepreciation} disabled={!can("assets.postDepreciation") || (postDep.isPending)}>
+              <Button size="sm" onClick={runDepreciation} disabled={!can("assets.postDepreciation") || (postDep.isPending)}>
                 {postDep.isPending ? "جارٍ الترحيل…" : "ترحيل إهلاك الشهر"}
               </Button>
-              <p className="text-xs text-muted-foreground md:me-auto max-w-lg">
-                يُرحَّل مصروف الإهلاك لكل الأصول النشطة (القسط الثابت/المتناقص) على أساس التاريخ المطلوب. آمن للتكرار — لن يُنشئ قيداً مضاعفاً لشهر مُرحَّل.
+              <p className="text-xs text-muted-foreground md:me-auto">
+                يُرحَّل مصروف الإهلاك لكل الأصول النشطة (آمن للتكرار).
               </p>
             </div>
           </CardContent>
@@ -142,7 +140,7 @@ export default function Assets() {
   ) : null;
   if (me.isLoading || dash.isLoading) return <LoadingState />;
   if (!can("assets.dashboard")) return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader title="عمليات الأصول الثابتة" />
       <div className="flex gap-2">
         {canCreate && <Button size="sm" onClick={() => navigate("/assets/new")}>أصل جديد</Button>}
@@ -157,7 +155,7 @@ export default function Assets() {
   const maxCat = Math.max(1, ...d.byCategory.map((c) => c.value));
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         title="لوحة الأصول الثابتة"
         actions={
@@ -176,7 +174,7 @@ export default function Assets() {
       />
 
       {/* المؤشّرات */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
         <StatCard label="إجمالي الأصول" value={iqd(d.kpis.totalAssets)} icon={Package} />
         <StatCard label="القيمة الدفترية" value={iqd(d.kpis.bookValue)} icon={Banknote} sub="د.ع" />
         <StatCard label="قيمة الشراء" value={iqd(d.kpis.purchaseValue)} icon={Coins} sub="د.ع" />
@@ -185,7 +183,7 @@ export default function Assets() {
         <StatCard label="عهد لدى الموظفين" value={iqd(d.kpis.inCustody)} icon={Users} />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-2.5">
         {/* القيمة حسب الفئة */}
         <Card className="lg:col-span-2">
           <CardHeader><CardTitle className="text-base">القيمة الدفترية حسب الفئة</CardTitle></CardHeader>

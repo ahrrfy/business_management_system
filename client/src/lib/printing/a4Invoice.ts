@@ -3,6 +3,7 @@ import { fmtQty } from "@shared/quantityFormat";
 import { fmtDate } from "../date";
 import { qrCodeSvgSync } from "./qr";
 import { resolveQrUrl } from "./render";
+import { formatPaymentMethodPrintHtml } from "./cardBrandLogos";
 
 export type A4InvoiceItem = {
   productName: string;
@@ -15,6 +16,7 @@ export type A4Invoice = {
   invoiceNumber: string;
   invoiceDate?: string | Date | null;
   customerName?: string | null;
+  paymentMethod?: string | null;
   subtotal: string | number;
   discountAmount?: string | number | null;
   taxAmount?: string | number | null;
@@ -89,7 +91,7 @@ ${CAIRO_FONT}
       </div>
     </div>
   </div>
-  <div class="cust">العميل: <b>${esc(inv.customerName ?? "عميل نقدي")}</b></div>
+  <div class="cust">العميل: <b>${esc(inv.customerName ?? "عميل نقدي")}</b>${inv.paymentMethod ? ` &nbsp;·&nbsp; طريقة الدفع: <b>${formatPaymentMethodPrintHtml(inv.paymentMethod, esc, { heightPx: 15 })}</b>` : ""}</div>
   <table>
     <thead><tr><th class="c">#</th><th>المنتج</th><th class="c">الكمية</th><th class="l">السعر</th><th class="l">الإجمالي</th></tr></thead>
     <tbody>${rows}</tbody>

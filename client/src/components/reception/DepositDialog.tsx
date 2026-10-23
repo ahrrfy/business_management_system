@@ -16,6 +16,7 @@ import { notify } from "@/lib/notify";
 import { printDepositReceipt } from "@/lib/printing/draftTicket";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
 import { INBOUND_TELECOM_DISABLED_MESSAGE } from "@shared/inboundPaymentPolicy";
+import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 
 const D = (v: string | number) => new Decimal(v || 0);
 const round2 = (v: Decimal) => v.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
@@ -140,7 +141,7 @@ export default function DepositDialog({
               aria-describedby={!isPosPaymentMethodEnabled(v) ? "reception-deposit-external-disabled" : undefined}
               title={isPosPaymentMethodEnabled(v) ? METHOD_LABEL[v] : posPaymentRejectionMessage(v)}
               className={cn(
-                "min-h-[40px] flex-1 rounded-lg border-2 text-xs font-extrabold",
+                "inline-flex min-h-[40px] flex-1 items-center justify-center gap-1 rounded-lg border-2 px-1.5 text-xs font-extrabold",
                 method === v
                   ? "border-primary bg-primary text-primary-foreground"
                   : isPosPaymentMethodEnabled(v)
@@ -148,7 +149,8 @@ export default function DepositDialog({
                     : "cursor-not-allowed bg-muted/40 text-muted-foreground/45",
               )}
             >
-              {METHOD_LABEL[v]}
+              {v === "CARD" && <CardBrandLogos size="xs" />}
+              <span>{METHOD_LABEL[v]}</span>
             </button>
           ))}
         </div>

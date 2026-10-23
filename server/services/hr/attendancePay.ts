@@ -163,6 +163,10 @@ export interface AttendancePayInput {
    */
   monthStart?: string;
   monthEnd?: string;
+  /** أسعار ساعات الأيام لموظفي الأجر بالساعة (أو كبديل عند غياب السعر في الجدول). */
+  dayRates?: Record<string, number> | null;
+  /** نوع الأجر لتوحيد أولوية التسعير مع attendanceService.rateForDayDetailed. */
+  payType?: "monthly" | "hourly" | string | null;
 }
 
 export interface AttendancePayResult {
@@ -217,6 +221,18 @@ export interface AttendancePayResult {
 }
 
 /**
+ * لا يُتجاهل أيّ سعر ساعةٍ صريح مخزَّن في جدول الدوام بناءً على تخمينٍ رقميّ:
+ * زرّ الواجهة «اشتقاق سعر الساعة تلقائياً من الراتب» يضبط `rate: null` صراحةً،
+ * أمّا أيّ رقمٍ موجبٍ في `workSchedule[day].rate` فهو سعرٌ صريحٌ يُحترَم كما أُدخل.
+ */
+export function isBrowserRoundedScheduleRate(
+  _schedule: WorkSchedule | null | undefined,
+  _salary: number | string | null | undefined,
+): boolean {
+  return false;
+}
+
+/**
  * يحسب أجر الشهريّ على أساس الحضور بالساعات.
  *
  * حدُّ يوم العمل: الساعات المحتسَبة في اليوم **لا تتجاوز** الساعات القياسية — الزيادة
@@ -236,6 +252,8 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
   // مقام السعر **ثابتٌ على ٣٠ يوماً** لا على طول الشهر (قرار المالك) ⇒ اليوم ٣١ إضافيّ.
   const stdHours = standardMonthlyHours(input.schedule, input.monthStart ?? input.employmentStart);
   const derivedRate = stdHours.gt(0) ? input.salary.div(stdHours) : new Decimal(0);
+  const ignoreBrowserRoundedScheduleRate =
+    input.payType !== "hourly" && isBrowserRoundedScheduleRate(input.schedule, input.salary.toNumber());
 
   let payable = new Decimal(0);
   let basePay = new Decimal(0);
@@ -249,20 +267,37 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
   const days: AttendancePayResult["days"] = [];
 
   /*
-   * سعر ساعة اليوم: الصريح في جدول الموظف أوّلاً (هو الأصل بقرار المالك ٣١/٧)، وإلا المُشتقّ
-   * من الراتب. استُخرج دالّةً لأنه كان مكرّراً في مسار يوم الدوام وحده — بينما مسارا **عمل
-   * يوم الراحة** و**تعويض الشهر القصير** يستعملان المُشتقّ خامّاً، فيُدفع الموظف بسعرٍ لم
-   * يُتّفق عليه رغم أنه ضبط سعراً صريحاً لذلك اليوم (تدقيق ١٧/٨).
+   * سعر ساعة اليوم: موحّد مع `attendanceService.rateForDayDetailed` — للموظف الساعيّ يتقدّم
+   * `dayRates[يوم]`، وللشهريّ يتقدّم السعر الصريح في `workSchedule` ثم المُشتقّ من الراتب ثم `dayRates`.
    */
-  const rateOf = (day: DaySchedule): Decimal =>
-    day.rate != null && Number.isFinite(day.rate) && Number(day.rate) > 0
-      ? new Decimal(Number(day.rate))
-      : derivedRate;
+  const rateOf = (day: DaySchedule, ymd: string): Decimal => {
+    const dName = dayNameOf(ymd);
+    const fromDayRates = input.dayRates?.[dName];
+    if (input.payType === "hourly") {
+      if (typeof fromDayRates === "number" && Number.isFinite(fromDayRates) && fromDayRates > 0) {
+        return new Decimal(fromDayRates);
+      }
+      if (day.rate != null && Number.isFinite(day.rate) && Number(day.rate) > 0) {
+        return new Decimal(Number(day.rate));
+      }
+      return derivedRate;
+    }
+    if (!ignoreBrowserRoundedScheduleRate && day.rate != null && Number.isFinite(day.rate) && Number(day.rate) > 0) {
+      return new Decimal(Number(day.rate));
+    }
+    if (derivedRate.gt(0)) {
+      return derivedRate;
+    }
+    if (typeof fromDayRates === "number" && Number.isFinite(fromDayRates) && fromDayRates > 0) {
+      return new Decimal(fromDayRates);
+    }
+    return derivedRate;
+  };
 
   for (const d of workDays) {
     const day = dayOf(input.schedule, d);
     const daily = new Decimal(day.hours);
-    const rate = rateOf(day);
+    const rate = rateOf(day, d);
 
     const push = (
       state: AttendancePayResult["days"][number]["state"],
@@ -337,6 +372,7 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
      * لبيانات الطيّ هذا لا-عمل (قُصّت سلفاً عند السقف نفسه) ⇒ صفر انحدار.
      */
     const capped = Decimal.min(attended, new Decimal(input.maxDailyHours ?? 12));
+    if (input.openDates?.has(d)) openDates.push(d);
     // الزائد عن المقرَّر أوفر تايم ببندٍ مستقلّ (قرار المالك) — لا يتضخّم به الأساس.
     const counted = Decimal.min(capped, daily);
     const ot = Decimal.max(0, capped.minus(daily));
@@ -375,8 +411,9 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
   const shortMonth =
     wholeMonth && payable.gt(0) ? Decimal.max(0, stdHours.minus(scheduled)) : new Decimal(0);
   const paidHours = payable.plus(shortMonth);
+  const repDate = input.monthStart ?? input.employmentStart;
   // التعويض بسعرٍ صريحٍ إن وُجد: يُقاس بيوم الشهر الأوّل بوصفه ممثّلاً لجدوله.
-  basePay = basePay.plus(rateOf(dayOf(input.schedule, input.monthStart ?? input.employmentStart)).times(shortMonth));
+  basePay = basePay.plus(rateOf(dayOf(input.schedule, repDate), repDate).times(shortMonth));
 
   /*
    * العمل في يوم الراحة (قرار المالك ٣١/٧: «سعر عادي»). كان اليوم صفرُ الساعات يُستبعَد
@@ -391,7 +428,7 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
     if (att == null || att.lte(0)) continue;
     const counted = Decimal.min(att, new Decimal(input.maxDailyHours ?? 12));
     // السعر الصريح لهذا اليوم إن ضبطه المالك — لا المُشتقّ خامّاً (تدقيق ١٧/٨).
-    const restRate = rateOf(dayOf(input.schedule, d));
+    const restRate = rateOf(dayOf(input.schedule, d), d);
     restWorked = restWorked.plus(counted);
     basePay = basePay.plus(restRate.times(counted));
     days.push({
@@ -411,6 +448,12 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
   }
   days.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 
+  const displayHourlyRate = derivedRate.gt(0)
+    ? derivedRate
+    : workDays.length > 0
+      ? rateOf(dayOf(input.schedule, workDays[0]), workDays[0])
+      : derivedRate;
+
   return {
     scheduledHours: scheduled.toFixed(2),
     restWorkedHours: restWorked.toFixed(2),
@@ -424,7 +467,7 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
      * و`max(0, …)` يمنع سالباً بلا معنى (شهرٌ فيه عملُ يوم راحةٍ يتجاوز المقرَّر).
      */
     unpaidHours: Decimal.max(0, scheduled.minus(payable)).toFixed(2),
-    hourlyRate: round2(derivedRate).toFixed(2),
+    hourlyRate: round2(displayHourlyRate).toFixed(2),
     basePay: round2(basePay).toFixed(2),
     overtimeHours: otHours.toFixed(2),
     overtimePay: round2(otPay).toFixed(2),

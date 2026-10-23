@@ -18,6 +18,16 @@ import { D, fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { clampDoubleEntryReportPeriod } from "@/lib/doubleEntryReportPeriod";
+import { printReportDoc } from "@/lib/printing/reportDoc";
+import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
+import { notify } from "@/lib/notify";
+import { splitDocumentNotes } from "@/components/invoice/TermsAndNotes";
+
+function cleanLedgerNotes(raw: string | null | undefined): string {
+  if (!raw) return "";
+  const parsed = splitDocumentNotes(raw);
+  return parsed.notes || (parsed.poReference ? `مرجع: ${parsed.poReference}` : "") || raw;
+}
 
 type Result = RouterOutputs["reports"]["generalLedger"];
 type Row = Result["rows"][number];
@@ -208,11 +218,11 @@ export default function GeneralLedger() {
         id: "description",
         header: "البيان / الطرف",
         accessorFn: (row) =>
-          row.notes ?? row.customerName ?? row.supplierName ?? "",
+          cleanLedgerNotes(row.notes) || row.customerName || row.supplierName || "",
         cell: ({ row }) => (
           <div className="max-w-80 whitespace-normal">
             <p>
-              {row.original.notes ||
+              {cleanLedgerNotes(row.original.notes) ||
                 ENTRY_LABEL[row.original.entryType] ||
                 row.original.entryType}
             </p>
@@ -369,7 +379,7 @@ export default function GeneralLedger() {
             header: "المستند المصدر",
             map: (row) => sourceView(row).label,
           },
-          { key: "notes", header: "البيان", map: (row) => row.notes ?? "" },
+          { key: "notes", header: "البيان", map: (row) => cleanLedgerNotes(row.notes) },
           {
             key: "party",
             header: "الطرف",
@@ -420,13 +430,104 @@ export default function GeneralLedger() {
     );
   }
 
+  async function onPrint() {
+    if (!result || accountId == null || q.isLoading || q.isError) return;
+    if (!reservePrintWindow()) {
+      notify.err("تعذّر فتح نافذة الطباعة — تحقّق من مانع النوافذ المنبثقة (Popup Blocker)");
+      return;
+    }
+    try {
+      const allRows =
+        result.total > 0
+          ? await fetchAllPaged<Row>(
+              (offset, limit) =>
+                utils.reports.generalLedger.fetch({
+                  ...filterInput,
+                  limit,
+                  offset,
+                }),
+              { pageSize: 500 },
+            )
+          : [];
+      const hasGaps = result.unmappedCount > 0;
+      const modeWarning =
+        result.mode === "SHADOW"
+          ? `للمطابقة فقط (وضع الظل منذ ${result.shadowStartedAt ?? "غير مسجّل"}) — الدفتر المعتمد ما زال المبسّط.`
+          : result.mode === "OFF"
+            ? "الدفتر المزدوج متوقف؛ لا تعتمد هذا الكشف كدفتر حي."
+            : null;
+      const gapWarning = hasGaps
+        ? `تنبيه: توجد ${result.openingUnmappedCount} فجوة قبل الفترة قد تؤثر في الرصيد الافتتاحي، و${result.periodUnmappedCount} فجوة داخل الفترة؛ الكشف غير مكتمل للاعتماد.`
+        : null;
+      const incompleteNote =
+        [modeWarning, gapWarning].filter(Boolean).join(" ") || undefined;
+      const statusLabel =
+        result.mode === "OFF"
+          ? "غير معتمد (الدفتر متوقف)"
+          : result.mode === "SHADOW"
+            ? hasGaps
+              ? `للمطابقة فقط — وضع الظل (فجوات: ${result.unmappedCount})`
+              : "للمطابقة فقط (وضع الظل)"
+            : hasGaps
+              ? "غير مكتمل للاعتماد"
+              : "مكتمل (وضع ACTIVE)";
+      const ok = printReportDoc({
+        title: `دفتر الأستاذ — ${result.account.code} ${result.account.name}`,
+        orientation: "landscape",
+        note: incompleteNote,
+        emptyText: "لا حركات لهذا الحساب ضمن الفترة.",
+        headerExtra: [
+          { label: "الفترة", value: `${period.from} — ${period.to}` },
+          { label: "الفرع", value: branchLabel },
+          { label: "الوضع", value: result.mode },
+          { label: "الرصيد الافتتاحي", value: `${fmtAr(result.openingBalance)} ${SIDE_LABEL[result.openingSide]}` },
+          { label: "فجوات قبل الفترة", value: String(result.openingUnmappedCount) },
+          { label: "فجوات داخل الفترة", value: String(result.periodUnmappedCount) },
+          { label: "حالة الاكتمال", value: statusLabel },
+        ],
+        columns: [
+          { key: "entryDate", label: "التاريخ" },
+          { key: "entry", label: "القيد" },
+          { key: "source", label: "المستند المصدر" },
+          { key: "description", label: "البيان / الطرف" },
+          { key: "debit", label: "مدين", align: "left" },
+          { key: "credit", label: "دائن", align: "left" },
+          { key: "balance", label: "الرصيد الجاري", align: "left" },
+          { key: "branchName", label: "الفرع" },
+        ],
+        rows: allRows.map((row) => ({
+          entryDate: row.entryDate,
+          entry: `${row.entryId == null ? `يومية #${row.journalId}` : `#${row.entryId}`} (${ENTRY_LABEL[row.entryType] ?? row.entryType})`,
+          source: sourceView(row).label,
+          description: [cleanLedgerNotes(row.notes) || ENTRY_LABEL[row.entryType] || row.entryType, row.customerName ?? row.supplierName].filter(Boolean).join(" — "),
+          debit: D(row.debit).isZero() ? "—" : fmtAr(row.debit),
+          credit: D(row.credit).isZero() ? "—" : fmtAr(row.credit),
+          balance: `${fmtAr(row.runningBalance)} ${SIDE_LABEL[row.runningSide]}`,
+          branchName: row.branchName ?? "عام",
+        })),
+        summary: [
+          { label: "الرصيد الافتتاحي", value: `${fmtAr(result.openingBalance)} ${SIDE_LABEL[result.openingSide]}` },
+          { label: "مدين الفترة", value: fmtAr(result.totals.debit) },
+          { label: "دائن الفترة", value: fmtAr(result.totals.credit) },
+          { label: "الرصيد الختامي", value: `${fmtAr(result.totals.closingBalance)} ${SIDE_LABEL[result.totals.closingSide]}`, large: true, bold: true },
+        ],
+      });
+      if (!ok) releaseReservedPrintWindow();
+    } catch {
+      releaseReservedPrintWindow();
+      notify.err("تعذّر تجهيز بيانات دفتر الأستاذ للطباعة");
+    }
+  }
+
   return (
     <ReportShell
       title="دفتر الأستاذ العام"
       description="حركات حساب واحد من القيود المزدوجة، مرتبة زمنياً وبرصيد جارٍ مرتبط بمستند المصدر."
       kpis={kpis}
       onExport={onExport}
+      onPrint={() => void onPrint()}
       exportDisabled={!result || result.total === 0}
+      printDisabled={!result || accountId == null || q.isLoading || q.isError}
       filters={
         <div className="flex flex-wrap items-end gap-3">
           <label className="flex min-w-64 flex-col gap-1 text-[11px] text-muted-foreground">

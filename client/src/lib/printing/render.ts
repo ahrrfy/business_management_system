@@ -3,6 +3,7 @@ import { code128Svg } from "./barcode";
 import { qrCodeSvg, qrCodeDataUrl } from "./qr";
 import type { BarcodeSet } from "@shared/barcodeTypes";
 import { CAIRO_FONT, CO, logoUrl, openPrintWindow } from "./brand";
+import { formatPaymentMethodPrintHtml, isCardPaymentMethod } from "./cardBrandLogos";
 
 /** بندٌ مركّب لإيصال 80مم: الاسم مستقل عن سطر الكمية/السعر والإجمالي. */
 export interface PrintItemBlock {
@@ -169,10 +170,15 @@ export async function docToHtml(doc: PrintDoc): Promise<string> {
               if (colonIdx !== -1) {
                 const label = m.slice(0, colonIdx).trim();
                 const val = m.slice(colonIdx + 1).trim();
-                const isPhone = label.includes("هاتف") || /^[0-9+\s-]+$/.test(val);
+                const isPayment = /طريقة الدفع|طريقة الصرف|طريقة الاسترداد|الطريقة/.test(label);
+                const isCardVal = isPayment && isCardPaymentMethod(val);
+                const isPhone = !isCardVal && (label.includes("هاتف") || /^[0-9+\s-]+$/.test(val));
+                const renderedVal = isCardVal
+                  ? formatPaymentMethodPrintHtml(val, esc, { heightPx: 14 })
+                  : htmlLines(val);
                 return `<tr>
                   <td style="width:36%;font-weight:900;padding:2px 3px;border:1px solid #000">${esc(label)}</td>
-                  <td style="font-weight:900;padding:2px 3px;border:1px solid #000;text-align:${isPhone ? "left" : "right"};direction:${isPhone ? "ltr" : "rtl"};unicode-bidi:isolate">${htmlLines(val)}</td>
+                  <td style="font-weight:900;padding:2px 3px;border:1px solid #000;text-align:${isPhone ? "left" : "right"};direction:${isPhone ? "ltr" : "rtl"};unicode-bidi:isolate">${renderedVal}</td>
                 </tr>`;
               }
               return `<tr><td colspan="2" style="font-weight:900;padding:2px 3px;border:1px solid #000">${htmlLines(m)}</td></tr>`;
@@ -238,9 +244,14 @@ export async function docToHtml(doc: PrintDoc): Promise<string> {
                 <td colspan="2" style="text-align:center;font-weight:900;font-size:10.5px;padding:3px;border:1px solid #000">${esc(t.value)}</td>
               </tr>`;
             }
+            const isPayment = /طريقة الدفع|طريقة الصرف|طريقة الاسترداد|الطريقة/.test(t.label);
+            const isCardVal = isPayment && isCardPaymentMethod(t.value);
+            const renderedVal = isCardVal
+              ? formatPaymentMethodPrintHtml(t.value, esc, { heightPx: 14 })
+              : esc(t.value);
             return `<tr style="${isLast ? "background:#000;color:#fff;font-weight:900" : ""}">
               <td style="width:55%;padding:3px;font-weight:900;border:1px solid #000">${esc(t.label)}</td>
-              <td style="width:45%;text-align:left;direction:ltr;font-variant-numeric:tabular-nums;font-weight:900;padding:3px;white-space:nowrap;border:1px solid #000;font-size:${isLast ? "13.5px" : "11.5px"}">${esc(t.value)}</td>
+              <td style="width:45%;text-align:left;direction:${isCardVal ? "rtl" : "ltr"};font-variant-numeric:tabular-nums;font-weight:900;padding:3px;white-space:nowrap;border:1px solid #000;font-size:${isLast ? "13.5px" : "11.5px"}">${renderedVal}</td>
             </tr>`;
           }).join("")}
         </tbody>

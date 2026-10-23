@@ -1,26 +1,21 @@
 /**
- * اختبارات استقطاع دقائق التأخير الصباحي (GAP-21).
+ * اختبارات إلغاء خصم التأخير التلقائي المزدوج من الساعات (قرار المالك ٢٢/١٠: «١- نعم الغاء خصم التاخير»).
  *
  * يتحقق هذا الاختبار من:
- * 1. تسجيل حضور متأخر (09:45 مع وردية 09:00 وفترة سماح 15 دقيقة):
- *    - تحول الحالة إلى LATE
- *    - استقطاع دقائق التأخير (45 دقيقة = 0.75 ساعة) من الساعات الفعلية والأجر
- *    - توثيق تفاصيل التأخير والخصم في الملاحظات notes
- * 2. تسجيل حضور في الوقت المحدد (08:55):
- *    - بقاء الحالة PRESENT
- *    - أجر كامل دون أي استقطاع
- * 3. فترة السماح (09:10 مع وردية 09:00):
- *    - عدم احتساب تأخير وبقاء الحالة PRESENT
- * 4. وردية مخصصة في جدول الدوام workSchedule (مثلاً 10:00):
- *    - مطابقة التأخير مع موعد الوردية المخصص
- * 5. تمرير lateDeductionMinutes مخصص اختيارياً للتجاوز الإداري.
+ * 1. عدم افتراض وردية 09:00 وهمية لموظف بلا start/startTime في جدوله (حماية موظفي الشفت المسائي):
+ *    - بقاء الحالة PRESENT والساعات كاملة (checkOut - checkIn) دون أي اقتطاع.
+ * 2. عند تحديد موعد بدء الوردية صراحةً في جدول الدوام (مثلاً start: "09:00" أو "10:00"):
+ *    - رصد الحالة LATE واحتساب lateMinutes بعد فترة السماح (15 دقيقة)
+ *    - عدم خصم دقائق التأخير تلقائياً من الساعات المدفوعة (منع الخصم المزدوج: الساعات = الساعات الفعلية المؤداة)
+ * 3. تمرير lateDeductionMinutes صراحةً للتجاوز الإداري المقصود:
+ *    - تطبيق الخصم المحدد إدارياً وتوثيقه في الملاحظات.
  */
 import { sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createEmployee } from "../employeeService";
-import { recordAttendance } from "../attendanceService";
+import { healAndRefoldMonthAttendance, recomputeMonthRates, recordAttendance } from "../attendanceService";
 import { ensureFinancialPostingGate } from "../reports/monthCloseGate";
 
 const TABLES = [
@@ -77,39 +72,30 @@ beforeEach(async () => {
   await seedBase();
 });
 
-describe.sequential("GAP-21: احتساب دقائق التأخير وخصمها من أجر الحضور", () => {
-  it("يحسب التأخير ويخصم الساعات والأجر عند تسجيل حضور متأخر (09:45 مع وردية 09:00)", async () => {
+describe.sequential("قرار المالك (٢٢/١٠): إلغاء خصم التأخير التلقائي المزدوج من ساعات الحضور", () => {
+  it("لا يفترض وردية 09:00 ولا يخصم من الساعات لموظف بلا وقت بدء وردية مخصص (حماية الشفت المسائي)", async () => {
     const emp = await createTestEmployee({ salary: "900000" });
 
-    // دوام 8 ساعات، الدخول 09:45 والانصراف 18:00 (الفترة تغطي 8.25 ساعة)
+    // حضور الساعة 14:15 وانصراف 22:15 (8 ساعات فعلية كاملة) دون تحديد start في الجدول
     const res = await recordAttendance({
       employeeId: emp.id,
-      attendanceDate: "2026-08-03", // يوم اثنين (يوم عمل اعتيادي)
+      attendanceDate: "2026-08-03", // يوم اثنين
       hours: "8",
-      checkIn: "09:45",
-      checkOut: "18:00",
-      status: "PRESENT", // لم تُحدد LATE مسبقاً، يجب أن تُكتشف تلقائياً
+      checkIn: "14:15",
+      checkOut: "22:15",
+      status: "PRESENT",
     });
 
-    // 1. تحول الحالة إلى LATE
-    expect(res.status).toBe("LATE");
+    expect(res.status).toBe("PRESENT");
+    expect(res.lateMinutes).toBeNull();
+    expect(res.lateDeductionMinutes).toBeNull();
+    expect(Number(res.hours)).toBe(8);
+    expect(res.effectiveHours).toBe(8);
 
-    // 2. احتساب دقائق التأخير: 45 دقيقة (09:45 - 09:00)
-    expect(res.lateMinutes).toBe(45);
-    expect(res.lateDeductionMinutes).toBe(45);
-
-    // 3. الساعات الفعلية بعد الخصم: 8 - (45 / 60) = 7.25 ساعة
-    expect(Number(res.hours)).toBe(7.25);
-    expect(res.effectiveHours).toBe(7.25);
-
-    // 4. احتساب الأجر: السعر اليومي المشتق من الراتب ضرب الساعات الفعلية 7.25
     const hourlyRate = Number(res.hourlyRate);
     expect(hourlyRate).toBeGreaterThan(0);
-    const expectedAmount = Math.round(7.25 * hourlyRate);
-    expect(Number(res.amount)).toBe(expectedAmount);
-
-    // 5. توثيق الملاحظات بالعلامة النصية
-    expect(res.notes).toContain("[تأخير: 45 دقيقة - خصم 45 دقيقة]");
+    expect(Number(res.amount)).toBe(Math.round(8 * hourlyRate));
+    expect(res.notes).toBeNull();
   });
 
   it("يمنح الأجر كاملاً دون أي خصم عند تسجيل الحضور في الموعد (08:55)", async () => {
@@ -124,24 +110,22 @@ describe.sequential("GAP-21: احتساب دقائق التأخير وخصمها
       status: "PRESENT",
     });
 
-    // الحالة تبقى PRESENT
     expect(res.status).toBe("PRESENT");
     expect(res.lateMinutes).toBeNull();
     expect(res.lateDeductionMinutes).toBeNull();
-
-    // الساعات كاملة 8 دون أي اقتطاع
     expect(Number(res.hours)).toBe(8);
     expect(res.effectiveHours).toBe(8);
 
     const hourlyRate = Number(res.hourlyRate);
     expect(Number(res.amount)).toBe(Math.round(8 * hourlyRate));
-
-    // لا يوجد أي وسم تأخير في الملاحظات
     expect(res.notes).toBeNull();
   });
 
   it("لا يحتسب تأخيراً إذا كان الحضور ضمن فترة السماح (09:10 مع وردية 09:00 وفترة سماح 15 دقيقة)", async () => {
-    const emp = await createTestEmployee({ salary: "900000" });
+    const emp = await createTestEmployee({
+      salary: "900000",
+      workSchedule: { الاثنين: { hours: 8, start: "09:00" } },
+    });
 
     const res = await recordAttendance({
       employeeId: emp.id,
@@ -158,8 +142,7 @@ describe.sequential("GAP-21: احتساب دقائق التأخير وخصمها
     expect(res.notes).toBeNull();
   });
 
-  it("يعتمد موعد الوردية المخصص من جدول دوام الموظف (workSchedule)", async () => {
-    // موظف ورديته تبدأ في الساعة 10:00 صباحاً
+  it("يرصد حالة التأخير مع وردية مخصصة في جدول الدوام (start: 10:00) دون خصم تلقائي مزدوج من الساعات", async () => {
     const customSchedule = {
       الاثنين: { hours: 8, start: "10:00" },
     };
@@ -176,7 +159,8 @@ describe.sequential("GAP-21: احتساب دقائق التأخير وخصمها
     expect(onTimeRes.status).toBe("PRESENT");
     expect(Number(onTimeRes.hours)).toBe(8);
 
-    // حضور الساعة 10:40 (متأخر 40 دقيقة عن 10:00) -> متأخر ويُخصم 40 دقيقة
+    // حضور الساعة 10:40 وانصراف 18:45 (تأخر 40 دقيقة عن 10:00 لكنه أتمّ 8 ساعات عمل فعلية)
+    // -> يُرصد LATE دون اقتطاع تلقائي من ساعاته الفعلية المؤداة
     const lateRes = await recordAttendance({
       employeeId: emp.id,
       attendanceDate: "2026-08-10", // الاثنين التالي
@@ -186,16 +170,19 @@ describe.sequential("GAP-21: احتساب دقائق التأخير وخصمها
     });
     expect(lateRes.status).toBe("LATE");
     expect(lateRes.lateMinutes).toBe(40);
-    expect(lateRes.lateDeductionMinutes).toBe(40);
-    // 8 - (40 / 60) = 8 - 0.6666... = 7.33
-    expect(Number(lateRes.hours)).toBeCloseTo(7.33, 2);
-    expect(lateRes.notes).toContain("[تأخير: 40 دقيقة - خصم 40 دقيقة]");
+    expect(lateRes.lateDeductionMinutes).toBeNull();
+    expect(Number(lateRes.hours)).toBe(8);
+    expect(lateRes.effectiveHours).toBe(8);
+    expect(lateRes.notes).toBeNull();
   });
 
-  it("يدعم التجاوز الإداري لدقائق الاستقطاع عبر lateDeductionMinutes", async () => {
-    const emp = await createTestEmployee({ salary: "900000" });
+  it("يدعم التجاوز الإداري الصريح لدقائق الاستقطاع عبر lateDeductionMinutes عند طلبه", async () => {
+    const emp = await createTestEmployee({
+      salary: "900000",
+      workSchedule: { الاثنين: { hours: 8, start: "09:00" } },
+    });
 
-    // الموظف تأخر 60 دقيقة (حضر 10:00 بدلاً من 09:00)، لكن الإدارة قررت خصم 20 دقيقة فقط
+    // الموظف تأخر 60 دقيقة (حضر 10:00 بدلاً من 09:00)، والإدارة مرّرت خصماً صريحاً 20 دقيقة
     const res = await recordAttendance({
       employeeId: emp.id,
       attendanceDate: "2026-08-03",
@@ -213,4 +200,188 @@ describe.sequential("GAP-21: احتساب دقائق التأخير وخصمها
     expect(Number(res.hours)).toBeCloseTo(7.67, 2);
     expect(res.notes).toContain("[تأخير: 60 دقيقة - خصم 20 دقيقة]");
   });
+
+  it("يُصلح السجلات القديمة المتضررة من خصم التأخير المزدوج تلقائياً عبر healAndRefoldMonthAttendance", async () => {
+    const emp = await createTestEmployee({ salary: "940000" });
+    const d = db();
+    await d.insert(s.attendance).values([
+      {
+        employeeId: emp.id,
+        branchId: 1,
+        attendanceDate: "2026-10-01",
+        status: "LATE",
+        checkIn: new Date("2026-10-01T14:15:00Z"),
+        checkOut: new Date("2026-10-01T22:12:00Z"),
+        hours: "2.70", // كانت مقصوصة خطأً بسبب خصم التأخير المزدوج (7.95 - 5.25 = 2.70)
+        hourlyRate: "4519.23",
+        amount: "12201.92",
+        source: "fingerprint",
+        notes: "[تأخير: 315 دقيقة - خصم 315 دقيقة]",
+      },
+      {
+        employeeId: emp.id,
+        branchId: 1,
+        attendanceDate: "2026-10-05",
+        status: "LATE",
+        checkIn: new Date("2026-10-05T15:07:00Z"),
+        checkOut: new Date("2026-10-05T23:07:00Z"),
+        hours: "1.88", // تصحيح يدوي قديم خُرِّب بخصم التأخير المزدوج (8.00 - 6.12 = 1.88)
+        hourlyRate: "4519.23",
+        amount: "8496.00",
+        source: "manual",
+        notes: "[تأخير: 367 دقيقة - خصم 367 دقيقة]",
+      },
+    ]);
+
+    await healAndRefoldMonthAttendance("2026-10");
+
+    const healedRows = await d.select().from(s.attendance);
+    const oct1 = healedRows.find((r) => String(r.attendanceDate) === "2026-10-01")!;
+    expect(oct1.status).toBe("PRESENT");
+    expect(Number(oct1.hours)).toBeCloseTo(7.95, 2); // استعادة الساعات الفعلية الكاملة (14:15 -> 22:12)
+    expect(oct1.notes).toBeNull();
+
+    const oct5 = healedRows.find((r) => String(r.attendanceDate) === "2026-10-05")!;
+    expect(oct5.status).toBe("PRESENT");
+    expect(Number(oct5.hours)).toBeCloseTo(8.0, 2); // استعادة الساعات المصحّحة يدوياً (15:07 -> 23:07)
+    expect(oct5.notes).toBeNull();
+  });
+
+  it("يحفظ التعديلات اليدوية المقصودة للمدير (ساعات مخصّصة أو خصم تأخير يدوي) ولا يطمسها عند إعادة الاحتساب والطيّ", async () => {
+    const emp = await createTestEmployee({
+      salary: "940000",
+      workSchedule: { الاثنين: { hours: 8, start: "09:00" }, الثلاثاء: { hours: 8 } },
+    });
+    const d = db();
+
+    // ١) يوم بتصحيح يدوي لساعات مخصّصة (طرح استراحة ساعة يدوياً: 14:00 -> 22:00 = 8 ساعات، والمدير ثبّتها 7 ساعات)
+    await recordAttendance({
+      employeeId: emp.id,
+      attendanceDate: "2026-10-06", // الثلاثاء
+      hours: "7",
+      checkIn: "14:00",
+      checkOut: "22:00",
+      status: "PRESENT",
+      source: "manual",
+      notes: "طرح ساعة استراحة خارجية",
+    });
+
+    // ٢) يوم بخصم تأخير يدوي مقصود (حضر 10:00 بدلاً من 09:00، والمدير طبّق خصم 30 دقيقة صراحةً)
+    await recordAttendance({
+      employeeId: emp.id,
+      attendanceDate: "2026-10-05", // الاثنين
+      hours: "8",
+      checkIn: "10:00",
+      checkOut: "18:00",
+      lateDeductionMinutes: 30,
+      source: "manual",
+      notes: "خصم تأخير إداري معتمد",
+    });
+
+    // نشغّل كلاً من الشفاء التلقائي وزرّ إعادة الاحتساب والطيّ اليدوي
+    await healAndRefoldMonthAttendance("2026-10", { employeeId: emp.id });
+    await recomputeMonthRates({ period: "2026-10", employeeId: emp.id });
+
+    const rows = await d.select().from(s.attendance);
+    const oct6 = rows.find((r) => String(r.attendanceDate) === "2026-10-06")!;
+    expect(oct6.source).toBe("manual");
+    expect(Number(oct6.hours)).toBeCloseTo(7.0, 2); // لم تُستبدل بـ 8.00
+    expect(oct6.notes).toBe("طرح ساعة استراحة خارجية");
+
+    const oct5 = rows.find((r) => String(r.attendanceDate) === "2026-10-05")!;
+    expect(oct5.source).toBe("manual");
+    expect(oct5.status).toBe("LATE");
+    expect(Number(oct5.hours)).toBeCloseTo(7.5, 2); // 8 - 0.5 = 7.5 ساعة محفوظة دون طمس
+    expect(oct5.reviewReason).toBe("manual_late_override");
+    expect(oct5.notes).toContain("خصم 30 دقيقة");
+    expect(oct5.notes).toContain("خصم تأخير إداري معتمد");
+  });
+
+  it("يدعم تسجيل الدوام المجزّأ (فترتين أو أكثر) والاستراحة/الزمنية ويعرض تفاصيلها في الكشف الفردي وسجل الحضور", async () => {
+    const { listAttendance } = await import("../attendanceService");
+    const { getEmployeeStatement } = await import("../hr/employeeStatement");
+    const emp = await createTestEmployee({ salary: "900000" });
+
+    // ١) دوام مجزّأ: 08:00→12:00 (4 ساعات) + استراحة/زمنية 4 ساعات + 16:00→20:00 (4 ساعات) = 8 ساعات صافية
+    await recordAttendance({
+      employeeId: emp.id,
+      attendanceDate: "2026-10-07",
+      hours: 8,
+      sessions: [
+        { checkIn: "08:00", checkOut: "12:00" },
+        { checkIn: "16:00", checkOut: "20:00" },
+      ],
+      notes: "دوام صباحي ومسائي",
+      source: "manual",
+    });
+
+    // ٢) فترة واحدة مع استراحة/زمنية (08:00→17:00 مع استراحة 60 دقيقة = 8 ساعات صافية)
+    await recordAttendance({
+      employeeId: emp.id,
+      attendanceDate: "2026-10-08",
+      hours: 8,
+      checkIn: "08:00",
+      checkOut: "17:00",
+      breakMinutes: 60,
+      notes: "زمنية ساعة واحدة ظهراً",
+      source: "manual",
+    });
+
+    const listRes = await listAttendance({ employeeId: emp.id, period: "2026-10" });
+    const rowSplit = listRes.rows.find((r) => r.attendanceDate === "2026-10-07")!;
+    expect(Number(rowSplit.hours)).toBe(8);
+    expect(rowSplit.hasMultipleSessions).toBe(true);
+    expect(rowSplit.sessions).toHaveLength(2);
+    expect(rowSplit.breakMinutes).toBe(240);
+    expect(rowSplit.breakHours).toBe("4.00");
+    expect(rowSplit.cleanNotes).toBe("دوام صباحي ومسائي");
+
+    const rowBreak = listRes.rows.find((r) => r.attendanceDate === "2026-10-08")!;
+    expect(Number(rowBreak.hours)).toBe(8);
+    expect(rowBreak.hasMultipleSessions).toBe(false);
+    expect(rowBreak.breakMinutes).toBe(60);
+    expect(rowBreak.breakHours).toBe("1.00");
+    expect(rowBreak.cleanNotes).toBe("زمنية ساعة واحدة ظهراً");
+
+    const stmt = await getEmployeeStatement({ employeeId: emp.id, period: "2026-10" });
+    const stmtSplit = stmt.days.find((d) => d.date === "2026-10-07")!;
+    expect(stmtSplit.hasMultipleSessions).toBe(true);
+    expect(stmtSplit.sessions).toEqual([
+      { checkIn: "08:00", checkOut: "12:00", hours: "4.00" },
+      { checkIn: "16:00", checkOut: "20:00", hours: "4.00" },
+    ]);
+    expect(stmtSplit.breakMinutes).toBe(240);
+    expect(stmtSplit.cleanNotes).toBe("دوام صباحي ومسائي");
+  });
+
+  it("لا يطمس استراحة الدوام المجزّأ عند شفاء خصم التأخير التلقائي القديم (يستعيد 8 ساعات لا 12 ساعة)", async () => {
+    const emp = await createTestEmployee({ salary: "900000" });
+    const d = db();
+    // موظف دوامه المجزّأ 08:00→12:00 و 16:00→20:00 (صافي 8 ساعات، والمدى الكلي 12 ساعة)
+    // خُصم منه سابقاً 60 دقيقة تأخير تلقائي فخُزِّنت ساعاته 7.00
+    await d.insert(s.attendance).values([
+      {
+        employeeId: emp.id,
+        branchId: 1,
+        attendanceDate: "2026-10-10",
+        status: "LATE",
+        checkIn: new Date("2026-10-10T10:00:00Z"),
+        checkOut: new Date("2026-10-10T22:00:00Z"), // مدى 12 ساعة، لكن صافي العمل قبل الخصم كان 8 ساعات (4 ساعات استراحة)
+        hours: "7.00",
+        hourlyRate: "3750.00",
+        amount: "26250.00",
+        source: "fingerprint",
+        notes: "[فترات الدوام: 10:00→14:00، 18:00→22:00 | استراحة/زمنية: 240 دقيقة] [تأخير: 60 دقيقة - خصم 60 دقيقة]",
+      },
+    ]);
+
+    await recomputeMonthRates({ period: "2026-10", employeeId: emp.id });
+    const [healed] = await d.select().from(s.attendance);
+    expect(healed.status).toBe("PRESENT");
+    // يجب أن يستعيد 7.00 + (60/60) = 8.00 ساعات، وليس المدى الكلي 12.00 ساعة!
+    expect(Number(healed.hours)).toBeCloseTo(8.0, 2);
+    expect(healed.notes).toContain("[فترات الدوام: 10:00→14:00، 18:00→22:00 | استراحة/زمنية: 240 دقيقة]");
+    expect(healed.notes).not.toContain("[تأخير:");
+  });
 });
+

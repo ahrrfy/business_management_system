@@ -25,10 +25,17 @@ import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { classifyGrniApEntry } from "@shared/grniDedupe";
 import { getPurchaseSettlement } from "@shared/purchaseSettlement";
-import { AlertCircle, ExternalLink, Info, RefreshCw } from "lucide-react";
+import { AlertCircle, ExternalLink, FileText, Info, RefreshCw } from "lucide-react";
 import { AccountLedgerDrilldownDialog, type DrilldownTarget } from "@/components/financial/AccountLedgerDrilldownDialog";
 import { FinancialCellProvenanceHover } from "@/components/financial";
 import type { FinancialCellProvenancePayload } from "@shared/financialProvenance";
+import { splitDocumentNotes } from "@/components/invoice/TermsAndNotes";
+
+function cleanStmtNotes(raw: string | null | undefined): string {
+  if (!raw) return "";
+  const parsed = splitDocumentNotes(raw);
+  return parsed.notes || (parsed.poReference ? `مرجع: ${parsed.poReference}` : "") || raw;
+}
 
 
 /** تاريخ محلي YYYY-MM-DD — لا toISOString: بغداد UTC+3 فينزاح اليوم قرب منتصف الليل. */
@@ -398,7 +405,7 @@ export default function SupplierStatement() {
         p.entryType === "EXCHANGE_SETTLE" && p.exchangeHouseName
           ? `عبر ${p.exchangeHouseName}${p.referenceNumber ? ` — مرجع ${p.referenceNumber}` : ""}`
           : undefined,
-        p.notes || undefined,
+        cleanStmtNotes(p.notes) || undefined,
       ].filter(Boolean).join(" · ") || undefined;
       // §الفلترة: PAYMENT_OUT وحدها تُصنَّف مخصَّصة/غير مخصَّصة (بحسب purchaseOrderId)؛ كل
       // الأنواع الأخرى (مرتجع/استرداد/صيرفة/شراء يتيم/تصحيح افتتاحي) تقع في «أخرى».
@@ -553,11 +560,13 @@ export default function SupplierStatement() {
     }
   };
 
-  // يصدّر دفتر الحركات نفسه (تاريخ/مرجع/بيان/مدين/دائن/رصيد) إلى Excel.
-  const exportStatement = () => {
+  // يصدّر دفتر الحركات نفسه (تاريخ/مرجع/بيان/مدين/دائن/رصيد) إلى Excel أو CSV.
+  const exportStatement = (format?: "csv") => {
     if (!stmt.data || !ledger) return;
     exportRows(ledger.rows, {
       filename: `كشف-حساب-مورد-${stmt.data.supplier.name}`,
+      format,
+      title: `كشف حساب مورد — ${stmt.data.supplier.name}`,
       columns: [
         { key: "date", header: "التاريخ" },
         { key: "ref", header: "المرجع" },
@@ -576,7 +585,7 @@ export default function SupplierStatement() {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         breadcrumbs={[{ label: "الموردون", href: "/suppliers" }, { label: "كشف حساب" }]}
         title="كشف حساب مورد"
@@ -591,9 +600,20 @@ export default function SupplierStatement() {
                 variant="outline"
                 size="sm"
                 disabled={!ledger?.rows.length}
-                onClick={exportStatement}
+                onClick={() => exportStatement()}
               >
                 تصدير Excel
+              </Button>
+            )}
+            {stmt.data && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!ledger?.rows.length}
+                onClick={() => exportStatement("csv")}
+              >
+                <FileText className="size-3.5 ms-1" />
+                تصدير CSV
               </Button>
             )}
             {stmt.data && (
@@ -624,8 +644,8 @@ export default function SupplierStatement() {
       />
 
       <Card>
-        <CardContent className="pt-6 grid grid-cols-1 md:grid-cols-4 gap-4">
-          <div className="space-y-1 md:col-span-2">
+        <CardContent className="p-2.5 flex flex-wrap items-end gap-2.5">
+          <div className="space-y-1 min-w-64 flex-1">
             <SupplierPicker
               label="المورد"
               source="reports"
@@ -633,17 +653,17 @@ export default function SupplierStatement() {
               onSupplierChange={(id) => selectSupplier(id ?? 0)}
             />
           </div>
-          <div className="space-y-1">
-            <Label className="text-xs">من تاريخ</Label>
-            <Input type="date" dir="ltr" value={from} onChange={(e) => setFrom(e.target.value)} />
+          <div className="space-y-1 w-36">
+            <Label className="text-[11px] text-muted-foreground">من تاريخ</Label>
+            <Input type="date" dir="ltr" className="h-8 text-xs" value={from} onChange={(e) => setFrom(e.target.value)} />
           </div>
-          <div className="space-y-1">
-            <Label className="text-xs">إلى تاريخ</Label>
-            <Input type="date" dir="ltr" value={to} onChange={(e) => setTo(e.target.value)} />
+          <div className="space-y-1 w-36">
+            <Label className="text-[11px] text-muted-foreground">إلى تاريخ</Label>
+            <Input type="date" dir="ltr" className="h-8 text-xs" value={to} onChange={(e) => setTo(e.target.value)} />
           </div>
-          <div className="md:col-span-4 flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-1.5">
             {PERIOD_PRESETS.map((p) => (
-              <Button key={p.label} variant="secondary" size="sm" onClick={() => { const r = p.range(); setFrom(r.from); setTo(r.to); }}>
+              <Button key={p.label} variant="secondary" size="sm" className="h-8 px-2.5 text-xs" onClick={() => { const r = p.range(); setFrom(r.from); setTo(r.to); }}>
                 {p.label}
               </Button>
             ))}
@@ -664,10 +684,10 @@ export default function SupplierStatement() {
       {stmt.data && (
         <>
           <Card>
-            <CardContent className="pt-6 space-y-4">
-              <div className="flex items-start justify-between flex-wrap gap-3">
-                <div>
-                  <div className="text-lg font-semibold">{stmt.data.supplier.name}</div>
+            <CardContent className="p-3 space-y-2.5">
+              <div className="flex items-start justify-between flex-wrap gap-2">
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="text-base font-semibold">{stmt.data.supplier.name}</div>
                   <div className="text-xs"><CopyInline value={stmt.data.supplier.phone} /></div>
                   <div className="text-xs text-muted-foreground">
                     {stmt.data.supplier.city ?? "—"}
@@ -679,7 +699,7 @@ export default function SupplierStatement() {
               {/* صفّ مؤشراتٍ واحد (نمط عالمي: Odoo Partner Ledger / ERPNext AP Summary / GnuCash
                   Owner Report) — رصيدٌ رئيسيٌّ واحد بالدينار (والدولار مرجعٌ ثانويّ تحته، لا بطاقةٌ
                   منافسة)، رصيدٌ افتتاحي يُثبِّت عمود الرصيد الجاري، ثمّ حركة الفترة، ثمّ الأعمار. */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
                 <StatBalance
                   label="الرصيد المستحق"
                   value={stmt.data.summary.currentBalance}
@@ -776,7 +796,7 @@ export default function SupplierStatement() {
                             )}
                           </div>
                           {r.notes && (
-                            <p className="text-[11px] text-muted-foreground">{r.notes}</p>
+                            <p className="text-[11px] text-muted-foreground">{cleanStmtNotes(r.notes)}</p>
                           )}
                         </div>
                         <div className="flex items-center gap-3">
@@ -855,9 +875,9 @@ export default function SupplierStatement() {
 
 function Stat({ label, value, emphasis }: { label: string; value: string | number; emphasis?: boolean }) {
   return (
-    <div className={`rounded-md p-2 ${emphasis ? "bg-primary/5" : "bg-muted/40"}`}>
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className={`tabular-nums ${emphasis ? "text-xl font-bold" : "text-base font-semibold"}`} dir="ltr">{fmt(value)}</div>
+    <div className={`rounded-md px-2.5 py-1.5 ${emphasis ? "bg-primary/5" : "bg-muted/40"}`}>
+      <div className="text-[11px] text-muted-foreground leading-tight">{label}</div>
+      <div className={`tabular-nums ${emphasis ? "text-base font-bold" : "text-sm font-semibold"}`} dir="ltr">{fmt(value)}</div>
     </div>
   );
 }
@@ -884,12 +904,12 @@ function StatBalance({
   const hasUsd = usdNum !== 0;
   const weHaveClaimUsd = dirOf(usdNum);
   return (
-    <div className={`rounded-md p-2 ${hasIqd ? (weHaveClaimIqd ? "badge-status-active" : "badge-stock-out") : hasUsd ? (weHaveClaimUsd ? "badge-status-active" : "badge-stock-out") : "bg-muted/40"}`}>
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className={`tabular-nums text-xl font-bold ${hasIqd ? (weHaveClaimIqd ? "text-money-positive" : "text-money-negative") : ""}`} dir="ltr">
+    <div className={`rounded-md px-2.5 py-1.5 ${hasIqd ? (weHaveClaimIqd ? "badge-status-active" : "badge-stock-out") : hasUsd ? (weHaveClaimUsd ? "badge-status-active" : "badge-stock-out") : "bg-muted/40"}`}>
+      <div className="text-[11px] text-muted-foreground leading-tight">{label}</div>
+      <div className={`tabular-nums text-base font-bold ${hasIqd ? (weHaveClaimIqd ? "text-money-positive" : "text-money-negative") : ""}`} dir="ltr">
         {fmt(Math.abs(num))}
       </div>
-      <div className={`text-xs font-semibold mt-0.5 ${hasIqd ? (weHaveClaimIqd ? "text-money-positive" : "text-money-negative") : "text-muted-foreground"}`}>
+      <div className={`text-[11px] font-semibold ${hasIqd ? (weHaveClaimIqd ? "text-money-positive" : "text-money-negative") : "text-muted-foreground"}`}>
         {!hasIqd ? (hasUsd ? "لا ذمّة بالدينار" : "لا ذمم") : weHaveClaimIqd ? "لنا عليه" : "له علينا"}
       </div>
       {hasUsd && (

@@ -18,12 +18,23 @@ import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { WEEK_DAYS } from "@shared/hr";
 import { ACTION_LABELS } from "@shared/actionLabels";
-import { Clock, Fingerprint, Moon, PenLine, RefreshCw, TriangleAlert, Wallet } from "lucide-react";
+import {
+  attendanceHoursViolation,
+  buildDefaultSplitSessions,
+  computeSessionsSummary,
+  formatDurationArabic,
+  parseManualAttendanceEdit,
+  spanHours,
+  suggestNextSplitSession,
+  type AttendanceSessionInput,
+} from "@shared/attendanceHours";
+import { Clock, Coffee, Fingerprint, PenLine, Plus, RefreshCw, Split, Trash2, TriangleAlert, Wallet } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { selectClsSm } from "@/lib/ui/formStyles";
 
 type AttendanceRow = RouterOutputs["attendance"]["list"]["rows"][number];
+type DayStatus = "PRESENT" | "LATE" | "ABSENT" | "LEAVE";
 
 /** حجم صفحة السجلّ — الخادم يُرقّم (سقفه ٥٠٠). */
 const PAGE_SIZE = 50;
@@ -32,6 +43,13 @@ const PAGE_SIZE = 50;
 /** الشهر الحالي بصيغة "YYYY-MM". */
 const currentMonth = () => new Date().toISOString().slice(0, 7);
 const today = () => new Date().toISOString().slice(0, 10);
+
+/** اليوم التالي بصيغة YYYY-MM-DD (لأوقات الانصراف بعد منتصف الليل). */
+function nextDateStr(ymd: string): string {
+  const d = new Date(`${ymd}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
 
 /** اسم الشهر بالعربية للعرض (من "YYYY-MM"). */
 const MONTH_NAMES = ["كانون الثاني", "شباط", "آذار", "نيسان", "أيار", "حزيران", "تموز", "آب", "أيلول", "تشرين الأول", "تشرين الثاني", "كانون الأول"];
@@ -66,7 +84,24 @@ function StatCard({ label, value, sub, icon, accent }: { label: string; value: s
   );
 }
 
-const emptyForm = () => ({ employeeId: "", attendanceDate: today(), hours: "", checkIn: "", checkOut: "" });
+const emptyForm = () => ({
+  employeeId: "",
+  attendanceDate: today(),
+  mode: "single" as "single" | "split",
+  hours: "",
+  checkIn: "",
+  checkOut: "",
+  crossMidnight: false,
+  breakMinutes: "",
+  sessions: [
+    { checkIn: "08:00", checkOut: "12:00" },
+    { checkIn: "14:00", checkOut: "18:00" },
+  ] as AttendanceSessionInput[],
+  status: "PRESENT" as DayStatus,
+  lateDeductionMinutes: "",
+  notes: "",
+  isEditing: false,
+});
 
 /**
  * نطاق السجلّ — **يفتح على اليوم** بقرار المالك (١/٨): «سجلّ الحضور يجب أن يكون الافتراضيّ
@@ -123,6 +158,82 @@ export default function Attendance() {
 
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(emptyForm());
+
+  const setFormTime = (patch: { checkIn?: string; checkOut?: string; crossMidnight?: boolean }) =>
+    setForm((cur) => {
+      const next = { ...cur, ...patch };
+      const inferredCross =
+        patch.crossMidnight !== undefined
+          ? patch.crossMidnight
+          : Boolean(next.checkIn && next.checkOut && next.checkOut <= next.checkIn);
+      next.crossMidnight = inferredCross;
+      if (next.status === "ABSENT" || next.status === "LEAVE") {
+        return { ...next, hours: "0" };
+      }
+      const auto = spanHours(next.checkIn, next.checkOut, { crossMidnight: inferredCross });
+      if (auto == null) return next;
+      const brk = Math.max(0, Number(next.breakMinutes) || 0);
+      const net = Math.max(0, Math.round((auto - brk / 60) * 100) / 100);
+      return { ...next, hours: net.toFixed(2) };
+    });
+
+  const applyBreakMinutes = (val: string) =>
+    setForm((cur) => {
+      const next = { ...cur, breakMinutes: val };
+      if (next.mode !== "single" || next.status === "ABSENT" || next.status === "LEAVE") return next;
+      const auto = spanHours(next.checkIn, next.checkOut, { crossMidnight: next.crossMidnight });
+      if (auto == null) return next;
+      const brk = Math.max(0, Number(val) || 0);
+      const net = Math.max(0, Math.round((auto - brk / 60) * 100) / 100);
+      return { ...next, hours: net.toFixed(2) };
+    });
+
+  const applySplitSessions = (nextSessions: AttendanceSessionInput[]) =>
+    setForm((cur) => {
+      const res = computeSessionsSummary(nextSessions);
+      return {
+        ...cur,
+        sessions: nextSessions,
+        hours:
+          cur.status === "ABSENT" || cur.status === "LEAVE"
+            ? "0"
+            : res.violation
+              ? cur.hours
+              : res.totalHours.toFixed(2),
+        checkIn: res.firstCheckIn || cur.checkIn,
+        checkOut: res.lastCheckOut || cur.checkOut,
+        breakMinutes: res.breakMinutes > 0 ? String(res.breakMinutes) : "",
+        crossMidnight: res.lastCrossMidnight,
+      };
+    });
+
+  const formSpan = spanHours(form.checkIn, form.checkOut, { crossMidnight: form.crossMidnight });
+  const splitSummary = form.mode === "split" ? computeSessionsSummary(form.sessions) : null;
+  const isPaidFormStatus = form.status === "PRESENT" || form.status === "LATE";
+  const formError =
+    form.mode === "split"
+      ? isPaidFormStatus
+        ? splitSummary?.violation ??
+          attendanceHoursViolation({
+            checkIn: splitSummary?.firstCheckIn,
+            checkOut: splitSummary?.lastCheckOut,
+            hours: Number(form.hours || 0),
+            isPaidStatus: isPaidFormStatus,
+            crossMidnight: Boolean(splitSummary?.lastCrossMidnight),
+            breakMinutes: splitSummary?.breakMinutes ?? 0,
+            sessions: form.sessions,
+          })
+        : null
+      : form.hours.trim() !== "" || (form.checkIn && form.checkOut)
+        ? attendanceHoursViolation({
+            checkIn: form.checkIn,
+            checkOut: form.checkOut,
+            hours: Number(form.hours || 0),
+            isPaidStatus: isPaidFormStatus,
+            crossMidnight: form.crossMidnight,
+            breakMinutes: Number(form.breakMinutes) || 0,
+          })
+        : null;
 
   const utils = trpc.useUtils();
   const opts = trpc.attendance.formOptions.useQuery();
@@ -201,18 +312,32 @@ export default function Attendance() {
   const recompute = trpc.attendance.recomputeRates.useMutation({ onError: (e) => notify.err(e) });
   const [fixing, setFixing] = useState(false);
 
-  /** يُصلح **كلّ** شهرٍ فيه لقطاتٌ قديمة — لا شهرَ نهاية المدى وحده. */
-  async function fixStalePeriods() {
-    if (!stalePeriods.length || fixing) return;
+  /** يُعيد طيّ البصمات ويُصحّح الساعات والأسعار للأشهر المطلوبة مع الحفاظ التامّ على التعديلات اليدوية. */
+  async function runSmartRecompute(targetPeriods?: string[]) {
+    if (fixing) return;
+    const periods = targetPeriods?.length
+      ? Array.from(new Set(targetPeriods))
+      : stalePeriods.length
+        ? Array.from(new Set([...stalePeriods, activePeriod]))
+        : [activePeriod];
+    if (!periods.length) return;
     setFixing(true);
     try {
-      let updated = 0;
-      for (const p of stalePeriods) {
+      let totalChanged = 0;
+      for (const p of periods) {
         const r = await recompute.mutateAsync({ period: p, employeeId: f.employeeId ? Number(f.employeeId) : undefined });
-        updated += r.updated;
+        totalChanged += (r.updated ?? 0) + (r.refoldedDays ?? 0) + (r.cleanedGhostDays ?? 0);
       }
-      notify.ok(updated > 0 ? `أُعيد احتساب ${updated} صفّاً في ${stalePeriods.length} شهراً` : "كل الأسعار مطابقة لملفّات الموظفين");
-      await Promise.all([utils.attendance.list.invalidate(), utils.attendance.summary.invalidate()]);
+      notify.ok(
+        totalChanged > 0
+          ? `تم تحديث البصمات وإعادة احتساب ${totalChanged} يوم في ${periods.length > 1 ? `${periods.length} أشهر` : monthLabel(periods[0])}`
+          : "تمّ التحقّق من البصمات — كل الساعات والأسعار مطابقة لملفّات الموظفين",
+      );
+      await Promise.all([
+        utils.attendance.list.invalidate(),
+        utils.attendance.summary.invalidate(),
+        utils.attendance.employeeStatement.invalidate(),
+      ]);
     } catch {
       // notify.err عُرِضت في onError — نُبطّل الكاش كي يظهر ما نجح إصلاحُه قبل الفشل.
       await Promise.all([utils.attendance.list.invalidate(), utils.attendance.summary.invalidate()]);
@@ -223,25 +348,92 @@ export default function Attendance() {
 
   const record = trpc.attendance.record.useMutation({
     onSuccess: async () => {
-      notify.ok("تم تسجيل الحضور");
+      notify.ok(form.isEditing ? "تم حفظ تصحيح الدوام" : "تم تسجيل الحضور");
       setOpen(false);
       setForm(emptyForm());
       // البطاقات صارت خادمية ⇒ تُبطَّل مع القائمة وإلا بقيت مجاميعها قديمة بعد الإدخال.
-      await Promise.all([utils.attendance.list.invalidate(), utils.attendance.summary.invalidate()]);
+      await Promise.all([
+        utils.attendance.list.invalidate(),
+        utils.attendance.summary.invalidate(),
+        utils.attendance.employeeStatement.invalidate(),
+      ]);
     },
     onError: (e) => notify.err(e),
   });
 
+  function openRowCorrection(r: AttendanceRow) {
+    const dateStr = String(r.attendanceDate ?? "").slice(0, 10) || today();
+    const inHm = r.checkIn ? new Date(r.checkIn).toISOString().slice(11, 16) : "";
+    const outHm = r.checkOut ? new Date(r.checkOut).toISOString().slice(11, 16) : "";
+    const outDate = r.checkOut ? new Date(r.checkOut).toISOString().slice(0, 10) : dateStr;
+    const crossMidnight = Boolean(inHm && outHm && (outDate > dateStr || outHm <= inHm));
+    const parsed = parseManualAttendanceEdit({
+      status: r.status,
+      checkIn: inHm,
+      checkOut: outHm,
+      crossMidnight,
+      storedHours: r.hours,
+      notes: r.notes,
+      reviewReason: r.reviewReason,
+    });
+    const isSplit = Boolean(r.hasMultipleSessions && r.sessions && r.sessions.length >= 2);
+    const defaultSplitSessions: AttendanceSessionInput[] = isSplit
+      ? r.sessions.map((s) => ({ checkIn: s.checkIn, checkOut: s.checkOut ?? "", crossMidnight: Boolean(s.crossMidnight) }))
+      : buildDefaultSplitSessions(inHm, outHm, { crossMidnight });
+    setForm({
+      employeeId: String(r.employeeId),
+      attendanceDate: dateStr,
+      mode: isSplit ? "split" : "single",
+      hours: parsed.hours,
+      checkIn: inHm,
+      checkOut: outHm,
+      crossMidnight,
+      breakMinutes: (r.breakMinutes ?? 0) > 0 ? String(r.breakMinutes) : "",
+      sessions: defaultSplitSessions,
+      status: parsed.status,
+      lateDeductionMinutes: parsed.lateDeductionMinutes,
+      notes: parsed.notes,
+      isEditing: true,
+    });
+    setOpen(true);
+  }
+
   function submit() {
     if (!form.employeeId) return notify.warn("اختر الموظف");
-    const hours = Number(form.hours);
+    const hours = isPaidFormStatus ? Number(form.hours) : 0;
     if (!Number.isFinite(hours) || hours < 0 || hours > 24) return notify.warn("أدخل عدد ساعات صحيح (٠–٢٤)");
+    if (formError) return notify.warn(formError);
+    const parsedLate = Number(form.lateDeductionMinutes);
+    const lateMin =
+      isPaidFormStatus && form.lateDeductionMinutes.trim() !== "" && Number.isFinite(parsedLate) && parsedLate > 0
+        ? Math.round(parsedLate)
+        : undefined;
+    const parsedBrk = Number(form.breakMinutes);
+    const brkMin =
+      isPaidFormStatus && form.breakMinutes.trim() !== "" && Number.isFinite(parsedBrk) && parsedBrk > 0
+        ? Math.round(parsedBrk)
+        : undefined;
     record.mutate({
       employeeId: Number(form.employeeId),
       attendanceDate: form.attendanceDate,
       hours,
-      checkIn: form.checkIn.trim() || undefined,
-      checkOut: form.checkOut.trim() || undefined,
+      status: lateMin && lateMin > 0 && form.status === "PRESENT" ? "LATE" : form.status,
+      checkIn:
+        form.mode === "split"
+          ? splitSummary?.firstCheckIn || undefined
+          : form.checkIn.trim() || undefined,
+      checkOut:
+        form.mode === "split"
+          ? splitSummary?.lastCheckOut || undefined
+          : form.checkOut.trim() || undefined,
+      checkOutDate:
+        (form.mode === "single" ? form.crossMidnight && Boolean(form.checkOut.trim()) : Boolean(splitSummary?.lastCrossMidnight))
+          ? nextDateStr(form.attendanceDate)
+          : undefined,
+      sessions: form.mode === "split" && isPaidFormStatus ? form.sessions : undefined,
+      breakMinutes: form.mode === "split" ? splitSummary?.breakMinutes : brkMin,
+      lateDeductionMinutes: lateMin,
+      notes: form.notes.trim() || undefined,
       source: "manual",
     });
   }
@@ -265,6 +457,9 @@ export default function Attendance() {
               <EmpAvatar name={r.employeeName} color={r.colorTag} photoUrl={r.photoUrl} sizePx={28} />
               <span className="text-[13px] font-medium">{r.employeeName}</span>
             </button>
+            {r.cleanNotes && (
+              <div className="mt-0.5 text-[11px] text-muted-foreground">{r.cleanNotes}</div>
+            )}
             {/* يومٌ ينقصه إغلاق: لا يُخمَّن أجره — يُصحَّح يدوياً قبل إغلاق الشهر. */}
             {r.needsReview && (
               <div
@@ -272,7 +467,7 @@ export default function Attendance() {
                 title={r.reviewReason ?? "ينقص تسجيل خروج"}
               >
                 <TriangleAlert aria-hidden className="size-3" />
-                يحتاج تصحيح
+                {r.reviewReason ?? "يحتاج تصحيح"}
               </div>
             )}
           </div>
@@ -283,25 +478,66 @@ export default function Attendance() {
     { id: "attendanceDate", header: "التاريخ", accessorFn: (r) => String(r.attendanceDate ?? ""), meta: { kind: "date" }, cell: ({ row }) => <span className="text-xs">{row.original.attendanceDate}</span> },
     {
       id: "checkIn",
-      header: "دخول",
+      header: "أول دخول",
       accessorFn: (r) => (r.checkIn ? new Date(r.checkIn).toISOString().slice(11, 16) : "—"),
       meta: { kind: "number", align: "center" },
       cell: ({ row }) => (row.original.checkIn ? new Date(row.original.checkIn).toISOString().slice(11, 16) : "—"),
     },
     {
       id: "checkOut",
-      header: "خروج",
+      header: "آخر خروج",
       accessorFn: (r) => (r.checkOut ? new Date(r.checkOut).toISOString().slice(11, 16) : "—"),
       meta: { kind: "number", align: "center" },
-      cell: ({ row }) => (row.original.checkOut ? new Date(row.original.checkOut).toISOString().slice(11, 16) : "—"),
+      cell: ({ row }) => {
+        const r = row.original;
+        if (!r.checkOut) return "—";
+        const outHm = new Date(r.checkOut).toISOString().slice(11, 16);
+        const nextDay = new Date(r.checkOut).toISOString().slice(0, 10) > String(r.attendanceDate ?? "").slice(0, 10);
+        return (
+          <span>
+            {outHm}
+            {nextDay ? <span className="ms-1 text-[10px] text-muted-foreground">(+1)</span> : null}
+          </span>
+        );
+      },
     },
     {
       id: "hours",
-      header: "ساعات",
+      header: "صافي الساعات",
       accessorFn: (r) => Number(r.hours ?? 0),
-      meta: { kind: "number", align: "center" },
+      meta: { kind: "number", align: "center", wrap: true },
       footer: approx(visHours.toNumber().toLocaleString("en-US")),
-      cell: ({ row }) => Number(row.original.hours ?? 0),
+      cell: ({ row }) => {
+        const r = row.original;
+        const hrs = Number(r.hours ?? 0);
+        return (
+          <div className="space-y-0.5">
+            <div className="font-medium tabular-nums" dir="ltr">{hrs}</div>
+            {r.hasMultipleSessions && r.sessions && (
+              <div
+                className="inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary"
+                title={`دوام مجزّأ (${r.sessions.length} فترات)`}
+              >
+                <Split aria-hidden className="size-2.5" />
+                <span dir="ltr" className="tabular-nums">
+                  {r.sessions.map((s) => `${s.checkIn}→${s.checkOut ?? "؟"}${s.crossMidnight ? "(+1)" : ""}`).join(" · ")}
+                </span>
+              </div>
+            )}
+            {(r.breakMinutes ?? 0) > 0 && (
+              <div className="block text-[10px] text-muted-foreground">
+                <Coffee aria-hidden className="inline size-2.5 me-0.5" />
+                استراحة/زمنية: {formatDurationArabic(r.breakMinutes)}
+              </div>
+            )}
+            {r.hasMultipleSessions && r.hasOpenSession && r.openSessionCheckIn && (
+              <div className="block text-[10px] text-[var(--sem-warn)]">
+                فترة ثانية مفتوحة ({r.openSessionCheckIn}←؟)
+              </div>
+            )}
+          </div>
+        );
+      },
     },
     {
       id: "hourlyRate",
@@ -356,6 +592,25 @@ export default function Attendance() {
           <span className="text-[11px] text-[var(--stock-low)] inline-flex items-center gap-1"><PenLine className="size-3.5" /> يدوي</span>
         ),
     },
+    {
+      id: "actions",
+      header: "",
+      cell: ({ row }) => {
+        const r = row.original;
+        if (r.periodLocked) {
+          return <span className="text-[11px] text-muted-foreground">مقفل</span>;
+        }
+        return (
+          <button
+            type="button"
+            className="text-xs text-primary hover:underline inline-flex items-center gap-1"
+            onClick={() => openRowCorrection(r)}
+          >
+            <PenLine aria-hidden className="size-3" /> تصحيح
+          </button>
+        );
+      },
+    },
   ], [navigate, partialTotals, visHours, visAmount]);
 
   return (
@@ -363,9 +618,20 @@ export default function Attendance() {
       {/* الترويسة */}
       <PageHeader
         title="الحضور والانصراف"
+        description="نظام احتساب بالساعة — أجر اليوم = صافي ساعات العمل × سعر ساعة ذلك اليوم. يدعم الدوام المتصل، الاستراحة/الزمنية، والدوام المجزّأ على فترتين أو أكثر."
         actions={
           <div className="flex items-center gap-2 flex-wrap">
             <AttendanceSettingsCard />
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={fixing}
+              onClick={() => void runSmartRecompute()}
+              title="مزامنة وتحديث بصمات الشهر وإعادة احتساب الساعات والأسعار تلقائياً مع الحفاظ على التعديلات اليدوية"
+            >
+              <RefreshCw aria-hidden className={`size-4 ${fixing ? "animate-spin" : ""}`} />
+              {fixing ? ACTION_LABELS.processing : `تحديث البصمات وإعادة الاحتساب (${monthLabel(activePeriod)})`}
+            </Button>
             <Button asChild variant="outline" size="sm">
               <Link href="/reports/attendance-monthly"><Clock className="size-4" /> التقرير الشهريّ</Link>
             </Button>
@@ -380,7 +646,7 @@ export default function Attendance() {
       <div className="flex flex-wrap items-center gap-1.5 rounded-lg border bg-card/80 px-2.5 py-1.5 text-xs">
         <div className="inline-flex items-center gap-1.5 rounded-md border bg-background px-2.5 py-1">
           <Clock className="size-3.5 text-muted-foreground" />
-          <span className="text-muted-foreground">إجمالي ساعات {rangeLabel}:</span>
+          <span className="text-muted-foreground">صافي ساعات {rangeLabel}:</span>
           <strong className="font-semibold tabular-nums">{approx(totalHours.toNumber().toLocaleString("en-US"))}</strong>
         </div>
         <div className="inline-flex items-center gap-1.5 rounded-md border border-[var(--status-active,#16a34a)]/40 bg-background px-2.5 py-1">
@@ -438,10 +704,10 @@ export default function Attendance() {
               أشهرُ المسيّرات المُقفَلة مستثناة — لقطتُها هي ما صُرف فعلاً فتبقى كما هي.
             </span>
           </div>
-          <Button size="sm" variant="outline" disabled={fixing} onClick={() => void fixStalePeriods()}>
+          <Button size="sm" variant="outline" disabled={fixing} onClick={() => void runSmartRecompute(stalePeriods)}>
             <RefreshCw aria-hidden className="size-3.5" />
             {fixing
-              ? "جارٍ…"
+              ? ACTION_LABELS.processing
               : `إعادة احتساب ${stalePeriods.length > 1 ? `${stalePeriods.length} أشهر` : monthLabel(stalePeriods[0] ?? activePeriod)}`}
           </Button>
         </div>
@@ -526,13 +792,13 @@ export default function Attendance() {
                 { key: "employeeName", header: "الموظف", map: (r) => r.employeeName ?? "" },
                 { key: "dayName", header: "اليوم", map: (r) => r.dayName ?? "" },
                 { key: "attendanceDate", header: "التاريخ", map: (r) => String(r.attendanceDate ?? "") },
-                { key: "hours", header: "ساعات", map: (r) => String(r.hours ?? "") },
+                { key: "hours", header: "صافي الساعات", map: (r) => String(r.hours ?? "") },
                 { key: "hourlyRate", header: "سعر الساعة", map: (r) => String(r.hourlyRate ?? "") },
                 { key: "amount", header: "أجر اليوم", map: (r) => String(r.amount ?? "") },
                 { key: "source", header: "المصدر", map: (r) => (r.source === "fingerprint" ? "بصمة" : "يدوي") },
               ],
             }}
-            add={{ label: "إدخال يدوي", onClick: () => { setForm(emptyForm()); setOpen(true); } }}
+            add={{ label: "إدخال / تصحيح يدوي", onClick: () => { setForm(emptyForm()); setOpen(true); } }}
           />
         </CardHeader>
         <CardContent className="p-0">
@@ -558,15 +824,17 @@ export default function Attendance() {
         </CardContent>
       </Card>
 
-      {/* نافذة الإدخال اليدوي */}
+      {/* نافذة الإدخال والتصحيح اليدوي */}
       <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) setForm(emptyForm()); }}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>إدخال حضور يدوي</DialogTitle></DialogHeader>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{form.isEditing ? `تصحيح دوام يوم ${form.attendanceDate}` : "إدخال أو تصحيح حضور يدوي"}</DialogTitle>
+          </DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1">
               <Label htmlFor="att-emp">الموظف</Label>
               <AppSelect id="att-emp" className="h-9 border-input px-2 text-sm" value={form.employeeId} onValueChange={(next) => setForm({ ...form, employeeId: next })}>
-                <option value="">— اختر موظفاً بالساعة —</option>
+                <option value="">— اختر الموظف —</option>
                 {(opts.data ?? []).map((e) => <option key={e.id} value={String(e.id)}>{e.name}</option>)}
               </AppSelect>
             </div>
@@ -576,32 +844,223 @@ export default function Attendance() {
                 <Input id="att-date" type="date" dir="ltr" value={form.attendanceDate} onChange={(e) => setForm({ ...form, attendanceDate: e.target.value })} />
               </div>
               <div className="space-y-1">
-                <Label htmlFor="att-hours">عدد الساعات</Label>
-                <Input id="att-hours" type="number" min={0} max={24} step="0.25" dir="ltr" inputMode="decimal" value={form.hours} onChange={(e) => setForm({ ...form, hours: e.target.value })} placeholder="8" />
+                <Label>حالة اليوم</Label>
+                <AppSelect
+                  className="h-9 border-input px-2 text-sm"
+                  value={form.status}
+                  onValueChange={(v) => {
+                    const nextStatus = v as DayStatus;
+                    if (nextStatus === "ABSENT" || nextStatus === "LEAVE") {
+                      setForm({ ...form, status: nextStatus, hours: "0", lateDeductionMinutes: "", breakMinutes: "" });
+                    } else if (form.mode === "split") {
+                      const res = computeSessionsSummary(form.sessions);
+                      setForm({ ...form, status: nextStatus, hours: !res.violation ? res.totalHours.toFixed(2) : !(Number(form.hours) > 0) ? "8" : form.hours });
+                    } else {
+                      const auto = spanHours(form.checkIn, form.checkOut, { crossMidnight: form.crossMidnight });
+                      const brk = Math.max(0, Number(form.breakMinutes) || 0);
+                      const net = auto != null ? Math.max(0, Math.round((auto - brk / 60) * 100) / 100) : null;
+                      setForm({ ...form, status: nextStatus, hours: net != null ? net.toFixed(2) : !(Number(form.hours) > 0) ? "8" : form.hours });
+                    }
+                  }}
+                >
+                  <option value="PRESENT">حضور</option>
+                  <option value="LATE">تأخير</option>
+                  <option value="ABSENT">غياب (٠ ساعة)</option>
+                  <option value="LEAVE">إجازة مدفوعة</option>
+                </AppSelect>
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+
+            {isPaidFormStatus && (
               <div className="space-y-1">
-                <Label htmlFor="att-in">وقت الدخول</Label>
-                <Input id="att-in" type="time" dir="ltr" value={form.checkIn} onChange={(e) => setForm({ ...form, checkIn: e.target.value })} />
+                <Label>نمط دوام اليوم</Label>
+                <div className="grid grid-cols-2 gap-1.5 rounded-md border bg-muted/30 p-1">
+                  <button
+                    type="button"
+                    className={`rounded px-2 py-1.5 text-xs font-medium transition-colors ${form.mode === "single" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                    onClick={() => {
+                      const auto = spanHours(form.checkIn, form.checkOut, { crossMidnight: form.crossMidnight });
+                      const rawBrk = Math.max(0, Number(form.breakMinutes) || 0);
+                      const brk = auto != null && rawBrk / 60 >= auto ? 0 : rawBrk;
+                      const net = auto != null ? Math.max(0, Math.round((auto - brk / 60) * 100) / 100) : null;
+                      setForm((cur) => ({ ...cur, mode: "single", breakMinutes: brk > 0 ? String(brk) : "", hours: net != null ? net.toFixed(2) : cur.hours }));
+                    }}
+                  >
+                    فترة واحدة (مع خيار استراحة/زمنية)
+                  </button>
+                  <button
+                    type="button"
+                    className={`rounded px-2 py-1.5 text-xs font-medium transition-colors ${form.mode === "split" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                    onClick={() => {
+                      setForm((cur) => {
+                        const existing = computeSessionsSummary(cur.sessions);
+                        const keep = cur.sessions.length >= 2 && existing.firstCheckIn === cur.checkIn && (existing.lastCheckOut ?? "") === cur.checkOut && (!existing.violation || existing.hasOpenSession);
+                        const nextSessions = keep ? cur.sessions : buildDefaultSplitSessions(cur.checkIn, cur.checkOut, { crossMidnight: cur.crossMidnight });
+                        const res = computeSessionsSummary(nextSessions);
+                        return {
+                          ...cur, mode: "split", sessions: nextSessions,
+                          hours: !res.violation ? res.totalHours.toFixed(2) : cur.hours,
+                          checkIn: res.firstCheckIn || cur.checkIn, checkOut: res.lastCheckOut || cur.checkOut,
+                          breakMinutes: res.breakMinutes > 0 ? String(res.breakMinutes) : "", crossMidnight: res.lastCrossMidnight,
+                        };
+                      });
+                    }}
+                  >
+                    دوام مجزّأ (فترتان أو أكثر — استراحة والعودة)
+                  </button>
+                </div>
               </div>
-              <div className="space-y-1">
-                <Label htmlFor="att-out">وقت الخروج</Label>
-                <Input id="att-out" type="time" dir="ltr" value={form.checkOut} onChange={(e) => setForm({ ...form, checkOut: e.target.value })} />
+            )}
+
+            {form.mode === "single" ? (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <Label htmlFor="att-in">وقت الدخول</Label>
+                    <Input id="att-in" type="time" dir="ltr" value={form.checkIn} onChange={(e) => setFormTime({ checkIn: e.target.value })} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="att-out">وقت الخروج</Label>
+                    <Input id="att-out" type="time" dir="ltr" value={form.checkOut} onChange={(e) => setFormTime({ checkOut: e.target.value })} />
+                  </div>
+                </div>
+                <label className="flex items-center gap-2 text-xs">
+                  <input type="checkbox" className="size-3.5" checked={form.crossMidnight} onChange={(e) => setFormTime({ crossMidnight: e.target.checked })} />
+                  <span>انصراف بعد منتصف الليل (اليوم التالي +1)</span>
+                </label>
+
+                {isPaidFormStatus && (
+                  <div className="space-y-1 rounded-md border bg-muted/20 p-2.5">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <Label htmlFor="att-break" className="text-xs">استراحة / زمنية مستقطعة خلال الدوام (دقائق — اختياري)</Label>
+                      <div className="flex items-center gap-1">
+                        {[{ label: "بلا", val: "" }, { label: "٣٠ د", val: "30" }, { label: "١ س", val: "60" }, { label: "٢ س", val: "120" }].map((preset) => (
+                          <button
+                            key={preset.label} type="button"
+                            className={`rounded border px-1.5 py-0.5 text-[11px] ${form.breakMinutes === preset.val ? "border-primary bg-primary/10 text-primary font-medium" : "text-muted-foreground hover:text-foreground"}`}
+                            onClick={() => applyBreakMinutes(preset.val)}
+                          >
+                            {preset.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <Input
+                      id="att-break" type="number" min={0} max={720} step="15" dir="ltr"
+                      placeholder="0 (مثلاً 60 لاستراحة أو زمنية ساعة واحدة)"
+                      value={form.breakMinutes} onChange={(e) => applyBreakMinutes(e.target.value)}
+                    />
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="space-y-2 rounded-md border bg-muted/20 p-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium">فترات الدوام في نفس اليوم (دخول وخروج لكل فترة)</span>
+                  {form.sessions.length < 4 && (
+                    <Button type="button" size="sm" variant="outline" className="h-7 text-xs px-2" onClick={() => applySplitSessions([...form.sessions, suggestNextSplitSession(form.sessions)])}>
+                      <Plus aria-hidden className="size-3" /> إضافة فترة
+                    </Button>
+                  )}
+                </div>
+                <div className="space-y-2">
+                  {form.sessions.map((s, idx) => (
+                    <div key={idx} className="grid grid-cols-[auto_1fr_1fr_auto] items-center gap-2">
+                      <span className="text-xs text-muted-foreground">فترة {idx + 1}:</span>
+                      <div className="flex items-center gap-1">
+                        <span className="text-[11px] text-muted-foreground">من</span>
+                        <Input type="time" dir="ltr" className="h-8 text-xs" value={s.checkIn ?? ""} onChange={(e) => applySplitSessions(form.sessions.map((item, i) => (i === idx ? { ...item, checkIn: e.target.value } : item)))} />
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <span className="text-[11px] text-muted-foreground">إلى</span>
+                        <Input type="time" dir="ltr" className="h-8 text-xs" value={s.checkOut ?? ""} onChange={(e) => { const val = e.target.value; applySplitSessions(form.sessions.map((item, i) => (i === idx ? { ...item, checkOut: val, crossMidnight: Boolean(item.checkIn && val && val <= item.checkIn) } : item))); }} />
+                      </div>
+                      {form.sessions.length > 2 ? (
+                        <button type="button" className="text-muted-foreground hover:text-[var(--sem-neg)] p-1" onClick={() => applySplitSessions(form.sessions.filter((_, i) => i !== idx))} title="حذف الفترة">
+                          <Trash2 aria-hidden className="size-3.5" />
+                        </button>
+                      ) : <span className="w-5" />}
+                    </div>
+                  ))}
+                </div>
+                {splitSummary && !splitSummary.violation && (
+                  <div className="rounded bg-background p-2 text-xs flex items-center justify-between flex-wrap gap-2 border">
+                    <span>مجموع العمل الصافي: <strong dir="ltr" className="tabular-nums">{splitSummary.totalHours}</strong> ساعة</span>
+                    <span className="text-muted-foreground">الاستراحة / الفاصل بين الفترات: <strong>{formatDurationArabic(splitSummary.breakMinutes)}</strong></span>
+                  </div>
+                )}
               </div>
-            </div>
+            )}
+
             <div className="space-y-1">
-              <Label>المصدر</Label>
-              <div className="flex h-9 items-center rounded-md border border-input px-3 text-sm text-muted-foreground">
-                يدوي — سجلات البصمة تأتي من مزامنة الجهاز فقط
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="att-hours">صافي الساعات المحتسَبة (قبل خصم التأخير)</Label>
+                {form.mode === "single" && formSpan != null && isPaidFormStatus && (() => {
+                  const brk = Math.max(0, Number(form.breakMinutes) || 0);
+                  const expectedNet = Math.max(0, Math.round((formSpan - brk / 60) * 100) / 100);
+                  return Math.abs(Number(form.hours || 0) - expectedNet) > 0.01 ? (
+                    <button type="button" className="text-xs text-primary hover:underline" onClick={() => setForm({ ...form, hours: expectedNet.toFixed(2) })}>
+                      حساب تلقائي ({expectedNet.toFixed(2)} س)
+                    </button>
+                  ) : null;
+                })()}
               </div>
+              <Input
+                id="att-hours" type="number" min={0} max={24} step="0.25" dir="ltr" inputMode="decimal"
+                disabled={!isPaidFormStatus || form.mode === "split"} value={form.hours}
+                onChange={(e) => setForm({ ...form, hours: e.target.value })} placeholder="8"
+              />
+              {formError ? (
+                <p className="text-xs leading-relaxed text-[var(--sem-neg)]">{formError}</p>
+              ) : (
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  {!isPaidFormStatus
+                    ? "الغياب والإجازة يُسجَّلان بصفر ساعات عمل فعلية (والإجازة المدفوعة تُعوَّض في كشف الراتب)."
+                    : form.mode === "split"
+                      ? "تُحسب الساعات تلقائياً بجمع فترات الدوام واستبعاد فترة الاستراحة/الزمنية بينها."
+                      : formSpan != null
+                        ? "تُحسب تلقائياً من وقت الدخول والخروج مطروحاً منها الاستراحة/الزمنية — أو عدّلها يدوياً لتثبيت ساعات مخصّصة."
+                        : "أدخِل وقتَي الدخول والخروج للحساب التلقائي، أو أدخِل الساعات يدوياً مباشرةً."}
+                </p>
+              )}
             </div>
-            <p className="text-xs text-muted-foreground">أجر اليوم يُحتسب آلياً من ساعات الحضور وسعر ساعة ذلك اليوم في ملف الموظف.</p>
+            {isPaidFormStatus && (
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label htmlFor="att-late">خصم تأخير يدوي (دقائق — اختياري)</Label>
+                  <Input
+                    id="att-late" type="number" min={0} max={720} step="5" dir="ltr" placeholder="0"
+                    value={form.lateDeductionMinutes}
+                    onChange={(e) => {
+                      const nextVal = e.target.value;
+                      const hadDeduction = Number(form.lateDeductionMinutes) > 0;
+                      const hasDeduction = Number(nextVal) > 0;
+                      setForm({ ...form, lateDeductionMinutes: nextVal, status: hadDeduction && !hasDeduction && form.status === "LATE" ? "PRESENT" : form.status });
+                    }}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="att-notes">ملاحظة</Label>
+                  <Input id="att-notes" value={form.notes} placeholder="سبب الإدخال أو التعديل اليدوي…" onChange={(e) => setForm({ ...form, notes: e.target.value })} />
+                </div>
+              </div>
+            )}
+            {isPaidFormStatus && Number(form.lateDeductionMinutes) > 0 && (
+              <p className="text-xs text-[var(--sem-warn)]">
+                سيُخصم {Number(form.lateDeductionMinutes)} دقيقة ({(Number(form.lateDeductionMinutes) / 60).toFixed(2)} ساعة) من الساعات المسجَّلة ليصبح الصافي{" "}
+                {Math.max(0, (Number(form.hours) || 0) - Number(form.lateDeductionMinutes) / 60).toFixed(2)} ساعة.
+              </p>
+            )}
+            <p className="text-xs text-muted-foreground">
+              الإدخال أو التصحيح اليدوي يُثبّت اليوم ويرفع وسم المراجعة، ولا يطمسه تحديث البصمات التلقائي لاحقاً.
+            </p>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>إلغاء</Button>
             {/* نصّ الانتظار المجرّد هنا كان يخصّ فعلَ حفظ الحضور ⇒ مفتاح الحفظ الموحّد. */}
-            <Button disabled={record.isPending} onClick={submit}>{record.isPending ? ACTION_LABELS.saving : "حفظ الحضور"}</Button>
+            <Button disabled={record.isPending || !!formError} onClick={submit}>
+              {record.isPending ? ACTION_LABELS.saving : form.isEditing ? "حفظ التصحيح" : "حفظ الحضور"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -674,8 +1133,8 @@ function AttendanceSettingsCard() {
                 <span>
                   <span className="font-medium">الأجر بالحضور (للموظفين الشهريّين)</span>
                   <span className="block text-xs text-muted-foreground mt-0.5 leading-relaxed">
-                    أجر اليوم = ساعاته المحتسَبة × سعر ساعته، والمستحقّ = مجموع أيام الشهر. الغياب بلا أجر،
-                    والإجازة المدفوعة يوم دوامٍ كامل، والساعات فوق المقرَّر أوفر تايم.
+                    أجر اليوم = صافي ساعات العمل × سعر ساعة اليوم، والمستحقّ = مجموع أيام الشهر. الغياب بلا أجر،
+                    والإجازة المدفوعة يوم دوامٍ كامل، والساعات التي تزيد على ساعات جدول الموظف اليومية تُحسب عملًا إضافياً (أوفر تايم).
                   </span>
                 </span>
               </label>
@@ -690,12 +1149,12 @@ function AttendanceSettingsCard() {
             </div>
 
             <div className="rounded-md border p-3 space-y-1">
-              <Label htmlFor="max-daily">حارس الساعات — سقف اليوم الواحد</Label>
+              <Label htmlFor="max-daily">حارس الساعات — السقف الأعلى لليوم الواحد</Label>
               <Input id="max-daily" type="number" min={1} max={24} step="0.5" dir="ltr" value={maxDaily} onChange={(e) => setMaxDaily(Number(e.target.value))} />
               <p className="text-xs text-muted-foreground leading-relaxed">
-                يومٌ تتجاوز بصماتُه هذا السقف يُقصّ عنده ويُوسَم «يحتاج تصحيح». ومعه تعمل حرّاسٌ أخرى:
-                خروجٌ قبل دخول · بصمة مكرّرة بأقلّ من ٥ دقائق · يومٌ أقلّ من نصف المقرَّر · بصمة خروجٍ ناقصة.
-                كلُّها وسمٌ لا منع — القيمة تبقى وتظهر في طابور التصحيح.
+                يومٌ تتجاوز بصماتُه هذا السقف يُقصّ عنده ويُوسَم «يحتاج تصحيح». ومعه تعمل تنبيهاتٌ أخرى:
+                خروجٌ قبل دخول · بصمة مكرّرة بأقلّ من ٥ دقائق · يومٌ أقلّ من نصف دوام اليوم · بصمة خروجٍ ناقصة.
+                كلُّها تنبيهٌ للمراجعة لا منع — القيمة تبقى وتظهر في قائمة «يحتاج تصحيح».
               </p>
             </div>
 
@@ -711,7 +1170,7 @@ function AttendanceSettingsCard() {
                 </span>
               </label>
               <div className="space-y-1">
-                <Label htmlFor="night-cutoff">ساعة الفصل</Label>
+                <Label htmlFor="night-cutoff">ساعة الفصل الصباحية</Label>
                 <Input
                   id="night-cutoff" type="number" min={0} max={23} step="1" dir="ltr"
                   value={nightCutoff} disabled={!nightOn}

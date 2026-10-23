@@ -189,9 +189,13 @@ export default function ReportsOverview() {
     : null;
   const topAr = (ar.data ?? []).filter((x) => Number(x.unpaidTotal) > 0).slice(0, 5);
   const topAp = (ap.data ?? []).filter((x) => Number(x.unpaidTotal) > 0).slice(0, 5);
+  const nonRadarAlerts = useMemo(
+    () => (alerts.data?.alerts ?? []).filter((a) => !a.key.startsWith("radar-") && a.key !== "anomaly-watch"),
+    [alerts.data?.alerts],
+  );
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-3">
       <PageHeader
         title="مركز التقارير والكشوفات"
         description="نظرة واحدة تجيب: أين الخطر؟ أين الربح؟ أين النقد؟ من المتأخر؟"
@@ -209,7 +213,7 @@ export default function ReportsOverview() {
       />
 
       {/* ① النبض المالي — أين الربح؟ أين النقد؟ */}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-6">
         <StatCard
           label={`الإيراد · ${PERIOD_AR[period]}`}
           value={cur ? formatIqd(cur.revenue) : (pl.isLoading ? "…" : "—")}
@@ -259,13 +263,15 @@ export default function ReportsOverview() {
           sourceErrors={alerts.data?.sourceErrors}
         />
 
-        <div className="space-y-2">
-          <h2 className="flex items-center gap-2 text-sm font-semibold text-muted-foreground">
-            <AlertTriangle className="size-4 text-stock-low" aria-hidden />
-            ما يحتاج انتباهك الآن
-          </h2>
-          <AlertsPanel alerts={alerts.data?.alerts ?? []} loading={alerts.isLoading} />
-        </div>
+        {(alerts.isLoading || nonRadarAlerts.length > 0 || (alerts.data?.alerts.length ?? 0) === 0) && (
+          <div className="space-y-2">
+            <h2 className="flex items-center gap-2 text-sm font-semibold text-muted-foreground">
+              <AlertTriangle className="size-4 text-stock-low" aria-hidden />
+              ما يحتاج انتباهك الآن
+            </h2>
+            <AlertsPanel alerts={nonRadarAlerts} loading={alerts.isLoading} />
+          </div>
+        )}
       </section>
 
       {/* ③ من المتأخر؟ — لوحتا صدارة */}

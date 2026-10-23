@@ -12,11 +12,11 @@ import {
   X,
   AlertCircle,
   Banknote,
-  CreditCard,
   ArrowLeftRight,
   ExternalLink,
   MessageSquare,
 } from "lucide-react";
+import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 import { trpc } from "@/lib/trpc";
 import { useRealtimeEvent, broadcastRealtimeEvent } from "@/lib/realtime";
 import { REALTIME_EVENT_TYPES, type HeldOrderUpdatedPayload } from "@shared/realtimeEvents";
@@ -543,7 +543,7 @@ export function HeldOrdersDrawer({
                       : "border-border bg-card text-foreground"
                   }`}
                 >
-                  <CreditCard className="size-4" />
+                  <CardBrandLogos size="sm" />
                   بطاقة
                 </button>
                 <button
@@ -682,7 +682,7 @@ export function HeldOrdersDrawer({
                           : "border-border bg-card text-foreground"
                       }`}
                     >
-                      <CreditCard className="size-4" />
+                      <CardBrandLogos size="sm" />
                       بطاقة
                     </button>
                     <button

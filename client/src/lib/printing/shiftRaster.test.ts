@@ -161,4 +161,59 @@ describe("shiftCloseToCanvas — عقد تخطيط الورق الحراري", (
     expect(new Set(handoverDraws.map((draw) => draw.y)).size).toBe(handoverDraws.length);
     expect(Math.max(...harness.draws.map((draw) => draw.y))).toBeLessThanOrEqual(drawn!.height);
   });
+
+  it("يرسم شعار فيزا وماستركارد في صف تفصيل الدفع بالبطاقة مع الحفاظ على فصل الأعمدة", async () => {
+    const harness = makeCanvasHarness();
+    const loadedSrcs: string[] = [];
+    vi.stubGlobal("document", {
+      fonts: { load: () => Promise.resolve([]) },
+      createElement: () => harness.canvas,
+    });
+    vi.stubGlobal("Image", class {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(value: string) {
+        loadedSrcs.push(value);
+        queueMicrotask(() => this.onload?.());
+      }
+    });
+
+    const drawn = await shiftCloseToCanvas({
+      shiftId: 400,
+      openedAt: "2026-08-31T09:58:00.000Z",
+      closedAt: new Date("2026-08-31T10:05:00.000Z"),
+      cashierName: "كاشير",
+      branchName: "الفرع الرئيسي",
+      openingBalance: 0,
+      invoiceCount: 2,
+      salesTotal: 50_000,
+      payments: [
+        { method: "CASH", direction: "IN", count: 1, total: 20_000 },
+        { method: "CARD", direction: "IN", count: 1, total: 30_000 },
+      ],
+      expectedCash: 20_000,
+      countedCash: 20_000,
+      variance: 0,
+    });
+
+    expect(drawn).not.toBeNull();
+    expect(loadedSrcs).toContain("/visa-mastercard.png");
+    expect(harness.context.drawImage).toHaveBeenCalled();
+
+    const cardMethod = harness.draws.find((draw) => draw.text === "بطاقة وارد");
+    const cardAmount = harness.draws.find((draw) => draw.text === "30,000" && draw.y === cardMethod?.y);
+    const cardCount = harness.draws.find((draw) => draw.text === "1" && draw.y === cardMethod?.y);
+    expect(cardMethod).toBeDefined();
+    expect(cardAmount).toBeDefined();
+    expect(cardCount).toBeDefined();
+
+    const [amountLeft, amountRight] = horizontalBounds(cardAmount!);
+    const [countLeft, countRight] = horizontalBounds(cardCount!);
+    const [methodLeft, methodRight] = horizontalBounds(cardMethod!);
+    expect(amountLeft).toBeGreaterThanOrEqual(16);
+    expect(amountRight).toBeLessThan(countLeft);
+    expect(countRight).toBeLessThan(methodLeft);
+    expect(methodRight).toBeLessThanOrEqual(560);
+  });
 });
+

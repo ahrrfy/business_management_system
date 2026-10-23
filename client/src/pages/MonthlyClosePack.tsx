@@ -469,7 +469,7 @@ export default function MonthlyClosePack() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         title="الإقفال الشهري"
         description="صورة الشهر المالية الموحّدة: مبيعات وربح إجمالي وصافي ومشتريات ومصاريف وخزينة وذمم — للمراجعة والطباعة."
@@ -496,8 +496,8 @@ export default function MonthlyClosePack() {
         }
       />
 
-      <div className="flex flex-wrap items-end gap-3">
-        <div className="flex flex-col gap-1">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-1.5">
           <span className="text-[11px] text-muted-foreground">الشهر</span>
           <MonthPicker
             value={month}
@@ -507,10 +507,10 @@ export default function MonthlyClosePack() {
           />
         </div>
         {isAdmin && (
-          <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-1.5">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
             <AppSelect
-              className="h-9"
+              className="h-8"
               value={String(branchId)}
               onValueChange={(next) =>
                 setBranchId(next ? Number(next) : "")
@@ -718,7 +718,7 @@ export default function MonthlyClosePack() {
         <ErrorState message={q.error.message} onRetry={() => q.refetch()} />
       ) : d ? (
         <>
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-5">
             <StatCard
               label="صافي المبيعات بعد المرتجعات"
               value={fmtAr(d.sales.netAfterReturns)}

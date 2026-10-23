@@ -25,13 +25,20 @@ import {
   payrollRuns,
 } from "../../../drizzle/schema";
 import { fullEmployeeName } from "@shared/hr";
+import { hasUnclosedAttendancePunch, parseAttendanceDayDetails } from "@shared/attendanceHours";
 import { requireDb } from "../tx";
 import type { Tx } from "../../db";
 
 /** قارئٌ موحَّد: اتصالٌ عاديّ أو معاملةٌ جارية — كلاهما يدعم نفس بنّاءات الاستعلام. */
 type Reader = Tx | ReturnType<typeof requireDb>;
 import { money, round2 } from "../money";
-import { computeAttendancePay, daysBetween, DEFAULT_WORK_SCHEDULE, type WorkSchedule } from "./attendancePay";
+import { isLegacyAutoLateDeduction } from "../attendanceService";
+import {
+  computeAttendancePay,
+  daysBetween,
+  DEFAULT_WORK_SCHEDULE,
+  type WorkSchedule,
+} from "./attendancePay";
 
 export interface EmployeeStatementInput {
   employeeId: number;
@@ -66,6 +73,13 @@ function hhmm(v: unknown): string | null {
   if (v instanceof Date) return v.toISOString().slice(11, 16);
   const s = String(v);
   return s.length >= 16 ? s.slice(11, 16) : s;
+}
+
+function dateYmdOfTimestamp(v: unknown): string | null {
+  if (!v) return null;
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  const s = String(v);
+  return s.length >= 10 ? s.slice(0, 10) : null;
 }
 
 /** أساس رقم المستحقّ المعروض. `payrollSnapshot` يعني: الشهر صُرف والرقم مجمَّد. */
@@ -153,29 +167,33 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
   const [py, pm] = p.split("-").map(Number);
   const monthEnd = new Date(Date.UTC(py, pm, 0)).toISOString().slice(0, 10);
 
-  const [emp] = await db
-    .select({
-      id: employees.id,
-      firstName: employees.firstName,
-      fatherName: employees.fatherName,
-      grandfatherName: employees.grandfatherName,
-      lastName: employees.lastName,
-      position: employees.position,
-      department: employees.department,
-      payType: employees.payType,
-      salary: employees.salary,
-      allowances: employees.allowances,
-      hireDate: employees.hireDate,
-      terminationDate: employees.terminationDate,
-      workSchedule: employees.workSchedule,
-      attendanceExempt: employees.attendanceExempt,
-      branchId: employees.branchId,
-      branchName: branches.name,
-    })
-    .from(employees)
-    .leftJoin(branches, eq(employees.branchId, branches.id))
-    .where(eq(employees.id, input.employeeId))
-    .limit(1);
+  const selectEmp = () =>
+    db
+      .select({
+        id: employees.id,
+        firstName: employees.firstName,
+        fatherName: employees.fatherName,
+        grandfatherName: employees.grandfatherName,
+        lastName: employees.lastName,
+        position: employees.position,
+        department: employees.department,
+        payType: employees.payType,
+        salary: employees.salary,
+        allowances: employees.allowances,
+        hireDate: employees.hireDate,
+        terminationDate: employees.terminationDate,
+        workSchedule: employees.workSchedule,
+        dayRates: employees.dayRates,
+        attendanceExempt: employees.attendanceExempt,
+        branchId: employees.branchId,
+        branchName: branches.name,
+      })
+      .from(employees)
+      .leftJoin(branches, eq(employees.branchId, branches.id))
+      .where(eq(employees.id, input.employeeId))
+      .limit(1);
+
+  let [emp] = await selectEmp();
   if (!emp) return null;
   /*
    * عزل الفرع: **رفضٌ صريح** لا تصفيةٌ صامتة — الطلب يحمل معرّفاً بعينه، فإعادة `null`
@@ -184,6 +202,44 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
   if (input.scopedBranchId != null && Number(emp.branchId) !== Number(input.scopedBranchId)) {
     throw new Error("هذا الموظف من فرعٍ آخر — لا صلاحية لك على كشف حضوره");
   }
+
+  const selectAttRows = () =>
+    db
+      .select({
+        date: attendance.attendanceDate,
+        hours: attendance.hours,
+        amount: attendance.amount,
+        checkIn: attendance.checkIn,
+        checkOut: attendance.checkOut,
+        status: attendance.status,
+        source: attendance.source,
+        notes: attendance.notes,
+        needsReview: attendance.needsReview,
+        reviewReason: attendance.reviewReason,
+      })
+      .from(attendance)
+      .where(
+        and(
+          eq(attendance.employeeId, input.employeeId),
+          gte(attendance.attendanceDate, monthStart),
+          lte(attendance.attendanceDate, monthEnd),
+        ),
+      );
+
+  const attRows = await selectAttRows();
+  const hasUnhealedLateOrOpen = attRows.some(
+    (r) =>
+      isLegacyAutoLateDeduction(r, emp.workSchedule) ||
+      (r.source === "fingerprint" &&
+        ((r.checkIn != null && r.checkOut == null) ||
+          (r.checkIn instanceof Date && r.checkIn.getUTCHours() < 6) ||
+          (!String(r.notes ?? "").includes("[فترات الدوام:") &&
+            ((r.needsReview && String(r.reviewReason ?? "").includes("فرديّ")) ||
+              (r.checkIn instanceof Date &&
+                r.checkOut instanceof Date &&
+                !String(r.reviewReason ?? "").includes("قُصّت عند سقف") &&
+                (r.checkOut.getTime() - r.checkIn.getTime()) / 3_600_000 - Number(r.hours ?? 0) > 0.08))))),
+  );
 
   const [settings] = await db.select().from(hrAttendanceSettings).where(eq(hrAttendanceSettings.id, 1)).limit(1);
   // جدول الموظف وحده — الجدول العامّ أُلغي (0140) لأنه صار مكرّراً بعد دخوله بطاقةَ كل موظف.
@@ -202,27 +258,6 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     .reduce((a, b) => (b < a ? b : a));
   const employmentEnd = hardEnd;
 
-  const attRows = await db
-    .select({
-      date: attendance.attendanceDate,
-      hours: attendance.hours,
-      amount: attendance.amount,
-      checkIn: attendance.checkIn,
-      checkOut: attendance.checkOut,
-      status: attendance.status,
-      source: attendance.source,
-      needsReview: attendance.needsReview,
-      reviewReason: attendance.reviewReason,
-    })
-    .from(attendance)
-    .where(
-      and(
-        eq(attendance.employeeId, input.employeeId),
-        gte(attendance.attendanceDate, monthStart),
-        lte(attendance.attendanceDate, monthEnd),
-      ),
-    );
-
   // مجموع ما سُجّل فعلياً في الحضور — أساس أجر الموظف الساعيّ في المسيّر.
   let actualPaid = 0;
   const attendedHoursByDate = new Map<string, ReturnType<typeof money>>();
@@ -234,8 +269,8 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     if (r.status === "PRESENT" || r.status === "LATE") {
       attendedHoursByDate.set(d, money(r.hours ?? 0));
       actualPaid += Number(r.amount ?? 0);
-      // دخولٌ بلا انصراف ⇒ يومٌ مفتوح لا غائب (ساعاته صفرٌ لأنها لا تُخمَّن، لا لأنه تغيّب).
-      if (r.checkIn != null && r.checkOut == null) openDates.add(d);
+      // دخولٌ بلا انصراف (أو فترة دوام ثانية مفتوحة) ⇒ يومٌ مفتوح لا غائب.
+      if (hasUnclosedAttendancePunch(r)) openDates.add(d);
     }
   }
 
@@ -257,6 +292,8 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     employmentStart,
     employmentEnd,
     schedule,
+    dayRates: (emp.dayRates && typeof emp.dayRates === "object" ? emp.dayRates : null) as Record<string, number> | null,
+    payType: emp.payType,
     attendedHoursByDate,
     openDates,
     paidLeaveDates: expand(paidSpans, employmentStart, employmentEnd),
@@ -268,16 +305,43 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     maxDailyHours: Number(settings?.maxDailyHours ?? 12),
   });
 
-  // نُثري كل يوم بأوقات البصم الفعلية ووسم المراجعة — وهو ما يريده المالك: «من ساعة إلى ساعة».
+  // نُثري كل يوم بأوقات البصم الفعلية، فترات الدوام والاستراحة/الزمنية، ووسم المراجعة.
   const days = pay.days.map((d) => {
     const m = meta.get(d.date);
+    const inDate = dateYmdOfTimestamp(m?.checkIn) ?? d.date;
+    const outDate = dateYmdOfTimestamp(m?.checkOut);
+    const checkIn = hhmm(m?.checkIn);
+    const checkOut = hhmm(m?.checkOut);
+    const checkOutNextDay = Boolean(outDate && outDate > inDate);
+    const dayDetails = parseAttendanceDayDetails({
+      status: m?.status ?? null,
+      state: d.state,
+      checkIn,
+      checkOut,
+      crossMidnight: checkOutNextDay,
+      storedHours: m?.hours ?? null,
+      fallbackHours: d.countedHours,
+      notes: m?.notes ?? null,
+      reviewReason: m?.reviewReason ?? null,
+    });
     return {
       ...d,
-      checkIn: hhmm(m?.checkIn),
-      checkOut: hhmm(m?.checkOut),
+      checkIn,
+      checkOut,
+      checkOutNextDay,
+      status: m?.status ?? null,
+      notes: m?.notes ?? null,
+      cleanNotes: dayDetails.cleanNotes,
+      sessions: dayDetails.sessions,
+      breaks: dayDetails.breaks,
+      breakMinutes: dayDetails.breakMinutes,
+      breakHours: dayDetails.breakHours,
+      hasMultipleSessions: dayDetails.hasMultipleSessions,
+      hasOpenSession: dayDetails.hasOpenSession,
+      openSessionCheckIn: dayDetails.openSessionCheckIn,
       source: m?.source ?? null,
       needsReview: !!m?.needsReview,
-      reviewReason: m?.reviewReason ?? null,
+      reviewReason: m?.needsReview || m?.reviewReason === "manual_late_override" ? (m?.reviewReason ?? null) : null,
     };
   });
 
@@ -381,6 +445,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
      */
     liveAmountDue,
     liveBasis,
+    needsHealing: !snapshot && hasUnhealedLateOrOpen,
     totals: {
       scheduledHours: pay.scheduledHours,
       standardHours: pay.standardHours,
