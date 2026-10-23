@@ -9,14 +9,14 @@
 ## ١. التشخيص الجنائي للأسباب الجذرية (Root Causes)
 
 ### ١-أ. السبب الجذري الأول (المباشر للانهيار الفوري عند `items.length: 0 → 1`)
-في `client/src/pages/QuotationNew.tsx` (ومثيله في `SalesInvoiceNew.tsx`) مقترناً بـ `client/src/components/invoice/reducer.ts`:
+في `client/src/pages/QuotationNew.tsx` مقترناً بـ `client/src/components/invoice/reducer.ts`:
 1. كان `allStockUnitIds` يُحسَب داخل `useMemo(..., [state.items])` فيُخصّص مصفوفة جديدة (`Array.from(...)`) عند كل تغيّر مرجعي في `state.items`، مع استعلام المخزون الحي عبر `trpc.catalog.stockByUnitIds.useQuery`.
 2. كانت مصفوفة `allStockUnitIds` غير المستقرة مرجعياً مُمرَّرة ضمن اعتماديات `useEffect` الذي يُطلق `dispatch({ type: "SET_STOCK_SNAPSHOTS", ... })`.
-3. فور إضافة أول منتج (أو فتح مسودة للتعديل أو تحويل طلب تسعير متجر)، ينتقل `allStockUnitIds.length` من `0` إلى `1`، فيُطلَق `SET_STOCK_SNAPSHOTS` الذي كان في `reducer.ts` يُعيد `state.items.map(...)` بمرجع مصفوفة جديد دائماً بلا فحص تكافؤ القيم (`no-op bailout`)، مما يُعيد حساب `allStockUnitIds` بمرجعٍ جديد ويُشعل حلقة `useMemo(state.items) → allStockUnitIds → useEffect(dispatch)` اللانهائية حتى انهيار `ErrorBoundary` بخطأ **React `#185` (`Maximum update depth exceeded`)**.
+3. فور إضافة أول منتج (أو فتح مسودة للتعديل أو تحويل طلب تسعير متجر)، ينتقل `allStockUnitIds.length` من `0` إلى `1`، فيُطلَق `SET_STOCK_SNAPSHOTS` الذي كان في `reducer.ts` يُعيد `state.items.map(...)` بمرجع مصفوفة جديد دائماً بلا فحص تكافؤ القيم (`no-op bailout`)، مما يُعيد حساب `allStockUnitIds` بمرجعٍ جديد ويُشعل حلقة `useMemo(state.items) → allStockUnitIds → useEffect(dispatch)` اللانهائية حتى انهيار `ErrorBoundary` بخطأ **React `#185` (`Maximum update depth exceeded`)**. (أمّا `SalesInvoiceNew.tsx` فكان يحفظ `stockUnitIds` دون تمريرها لاعتماديات `useEffect`، ثمّ جرى توحيده لاحقاً على نفس الخطّاف المشترك `useInvoiceLiveStockSync` لتوحيد السلوك وتحصين سلال `> 500` وحدة).
 
 ### ١-ب. السبب الجذري الثاني (انهيار الإدخال العابر في `MoneyInput` وإغلاق اختصار الحفظ)
-مكوّن `MoneyInput` يسمح مرحلياً بالقيم العابرة أثناء الكتابة مثل `"."` أو `"-"` قبل استكمال الرقم، كما يتحول `"."` عند فقدان التركيز (`blur`) إلى `""`:
-1. استدعاء `new Decimal(v || "0")` مباشرةً في حسابات العرض أو الحفظ على `QuotationNew.tsx`، `SalesInvoiceNew.tsx` (`discountValue`، `paidAmount`، `collectNow`)، `SalesCorrectionPanel.tsx`، `QuotationDetail.tsx` (`payAmount`)، `digitalBasket.ts`، و`quotationPayload.ts` كان يرمي استثناءً غير مُلتقَط `DecimalError: [DecimalError] Invalid argument: .` يُسقط الشاشة، أو يحوّل السعر الممسوح إلى `0.00` صامتة.
+مكوّن `MoneyInput` يسمح مرحلياً بالقيمة العابرة `"."` أثناء الكتابة قبل استكمال الرقم، كما تتحول `"."` عند فقدان التركيز (`blur`) إلى `""`:
+1. استدعاء `new Decimal(v || "0")` مباشرةً في حسابات العرض أو الحفظ على `QuotationNew.tsx`، `SalesInvoiceNew.tsx` (`l.discount`، `state.globalDiscount`، `state.shipping`، `state.paidAmount`، `collectNow`)، `SalesCorrectionPanel.tsx`، `QuotationDetail.tsx` (`payAmount`)، `digitalBasket.ts`، و`quotationPayload.ts` كان يرمي استثناءً غير مُلتقَط `DecimalError: [DecimalError] Invalid argument: .` يُسقط الشاشة، أو يحوّل سعر البند الممسوح (`l.price === ""`) إلى `0.00` صامتة.
 2. في `SalesInvoiceNew.tsx` كان اختصار لوحة المفاتيح `F4` (الحفظ أو إرسال التصحيح بدون طباعة، بينما `F9` هو الحفظ والطباعة) يلتقط إغلاقاً قديماً (`stale closure`) لدالة `handleSubmit` عند إبقاء التركيز داخل حقل `collectNow` على القيمة العابرة `"."`.
 
 ---
