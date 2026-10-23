@@ -231,7 +231,7 @@
     "web-push": "^3.6.7",
     "wouter": "^3.3.5",
     "ws": "^8.18.0",
-    "zod": "^4.1.12"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@eslint/js": "^9",

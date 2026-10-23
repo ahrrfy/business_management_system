@@ -13813,6 +13813,26 @@ export const deliveryLedgerEntries = mysqlTable(
 );
 export type DeliveryLedgerEntry = typeof deliveryLedgerEntries.$inferSelect;
 
+/** Evidence-backed exclusion of a duplicated opening; never a cash movement. */
+export const deliveryOpeningExclusions = mysqlTable(
+  "deliveryOpeningExclusions",
+  {
+    ledgerEntryId: bigint("ledgerEntryId", { mode: "number" }).primaryKey(),
+    partyId: bigint("partyId", { mode: "number" }).notNull().references(() => deliveryParties.id),
+    branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
+    openingAmount: decimal("openingAmount", { precision: 15, scale: 2 }).notNull(),
+    reason: mysqlEnum("reason", ["NATIVE_CUSTODY_OVERLAP", "LEGACY_CUSTODY_REPRESENTED"]).notNull(),
+    evidenceHash: varchar("evidenceHash", { length: 64 }).notNull(),
+    evidence: json("evidence").notNull(),
+    createdBy: int("createdBy").notNull().references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    positiveAmount: check("chk_delivery_opening_exclusion_amount", sql`${table.openingAmount} > 0`),
+    sourceFk: foreignKey({ name: "fk_delivery_opening_source", columns: [table.ledgerEntryId], foreignColumns: [deliveryLedgerEntries.id] }),
+  }),
+);
+
 /** Mandatory transition history for chain-of-custody reconstruction. */
 export const deliveryEvents = mysqlTable(
   "deliveryEvents",

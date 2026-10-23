@@ -344,16 +344,7 @@ FROM `deliveryConsignments` dc WHERE CAST(dc.collectedAmount AS DECIMAL(15,2)) >
   );
 --> statement-breakpoint
 
--- Preserve any outstanding legacy/online-order cash custody that existed only
--- in the mutable party balance.  Shared parties remain deliberately
--- unattributed (branchId NULL) instead of being duplicated into every branch.
-INSERT IGNORE INTO `deliveryLedgerEntries`
-  (`eventKey`,`partyId`,`branchId`,`entryType`,`amount`,`notes`,`occurredAt`)
-SELECT CONCAT('BACKFILL:PARTY:',dp.id,':CASH_CUSTODY'), dp.id, dp.branchId,
-       'COD_COLLECTED', dp.currentBalance, 'Phase 2 opening custody balance', NOW()
-FROM `deliveryParties` dp
-WHERE CAST(dp.currentBalance AS DECIMAL(15,2)) > 0;
---> statement-breakpoint
+
 
 INSERT IGNORE INTO `deliveryLedgerEntries`
   (`eventKey`,`partyId`,`consignmentId`,`remittanceId`,`branchId`,`entryType`,`amount`,`notes`,`occurredAt`)
@@ -426,6 +417,100 @@ WHERE CAST(dc.deliveryFee AS DECIMAL(15,2)) > 0
       AND nativeLedger.eventKey NOT LIKE 'BACKFILL:%'
       AND nativeLedger.createdAt <= CURRENT_TIMESTAMP
   );
+--> statement-breakpoint
+
+-- Run after all consignment snapshots. Only import custody not already represented.
+-- Party totals span all branches; a shared legacy residual retains branchId NULL.
+-- Negative or excess canonical custody is an unresolved mismatch, never a balancing opening.
+-- Predicate mirrors delivery/legacyLedger.ts; opening exclusions cannot affect new-party
+-- candidates because their original opening key does not exist yet.
+INSERT IGNORE INTO deliveryLedgerEntries
+  (eventKey,partyId,branchId,entryType,amount,notes,occurredAt)
+WITH custody AS (
+  SELECT dle.partyId,
+    SUM(CASE WHEN dle.entryType IN ('COD_COLLECTED','SHORTFALL_ASSIGNED') THEN dle.amount
+      WHEN dle.entryType IN ('COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF','SHORTFALL_SETTLED') THEN -dle.amount
+      ELSE 0 END) AS amount
+  FROM deliveryLedgerEntries dle
+  WHERE dle.eventKey <> CONCAT('BACKFILL:PARTY:',dle.partyId,':CASH_CUSTODY')
+    AND NOT (
+    `dle`.eventKey = CONCAT('BACKFILL:CN:', `dle`.consignmentId, ':', `dle`.entryType)
+    AND (EXISTS (
+      SELECT 1 FROM deliveryLedgerEntries legacyNative
+      WHERE legacyNative.consignmentId = `dle`.consignmentId
+        AND legacyNative.partyId = `dle`.partyId
+        AND legacyNative.branchId <=> `dle`.branchId
+        AND legacyNative.entryType = `dle`.entryType
+        AND legacyNative.amount = `dle`.amount
+        AND legacyNative.createdAt <= `dle`.createdAt
+        AND legacyNative.eventKey NOT LIKE 'BACKFILL:%'
+        AND (
+          `dle`.entryType <> 'COD_REMITTED'
+          OR (
+            `dle`.remittanceId IS NOT NULL
+            AND legacyNative.remittanceId = `dle`.remittanceId
+            AND legacyNative.eventKey = CONCAT('CN:', `dle`.consignmentId, ':REMIT:', `dle`.remittanceId)
+            AND EXISTS (
+              SELECT 1 FROM deliveryRemittanceLines legacyLine
+              JOIN deliveryRemittances legacyRemittance ON legacyRemittance.id = legacyLine.remittanceId
+              WHERE legacyLine.consignmentId = `dle`.consignmentId
+                AND legacyLine.remittanceId = `dle`.remittanceId
+                AND legacyLine.legacySnapshot = FALSE
+                AND legacyLine.grossApplied = legacyNative.amount
+                AND legacyRemittance.partyId = `dle`.partyId
+                AND legacyRemittance.branchId <=> `dle`.branchId
+            )
+          )
+        )
+    ) OR (
+      `dle`.entryType IN ('COD_COLLECTED', 'COD_REMITTED')
+      AND `dle`.remittanceId IS NOT NULL
+      AND EXISTS (
+        SELECT 1 FROM deliveryLedgerEntries legacyRemitted
+        WHERE legacyRemitted.consignmentId = `dle`.consignmentId
+          AND legacyRemitted.partyId = `dle`.partyId
+          AND legacyRemitted.branchId <=> `dle`.branchId
+          AND legacyRemitted.entryType = 'COD_REMITTED'
+          AND legacyRemitted.createdAt <= `dle`.createdAt
+          AND legacyRemitted.eventKey = CONCAT('CN:', legacyRemitted.consignmentId, ':REMIT:', legacyRemitted.remittanceId)
+          AND EXISTS (
+            SELECT 1 FROM deliveryRemittanceLines legacyPart
+            JOIN deliveryRemittances legacyHeader ON legacyHeader.id = legacyPart.remittanceId
+            WHERE legacyPart.consignmentId = legacyRemitted.consignmentId
+              AND legacyPart.remittanceId = legacyRemitted.remittanceId
+              AND legacyPart.legacySnapshot = FALSE
+              AND legacyPart.grossApplied = legacyRemitted.amount
+              AND legacyHeader.partyId = `dle`.partyId
+              AND legacyHeader.branchId <=> `dle`.branchId
+          )
+        GROUP BY legacyRemitted.consignmentId
+        HAVING SUM(legacyRemitted.amount) = `dle`.amount
+          AND SUM(CASE WHEN legacyRemitted.remittanceId = `dle`.remittanceId THEN 1 ELSE 0 END) > 0
+      )
+      AND (
+        `dle`.entryType = 'COD_REMITTED'
+        OR (SELECT COALESCE(SUM(legacyCollected.amount), 0)
+          FROM deliveryLedgerEntries legacyCollected
+          WHERE legacyCollected.consignmentId = `dle`.consignmentId
+            AND legacyCollected.partyId = `dle`.partyId
+            AND legacyCollected.branchId <=> `dle`.branchId
+            AND legacyCollected.entryType = 'COD_COLLECTED'
+            AND legacyCollected.createdAt <= `dle`.createdAt
+            AND (legacyCollected.eventKey = CONCAT('CN:', `dle`.consignmentId, ':COD_COLLECTED')
+              OR LOCATE(CONCAT('CN:', `dle`.consignmentId, ':COD_COLLECTED_SUPP:'), legacyCollected.eventKey) = 1)
+        ) >= `dle`.amount
+      )
+    ))
+  )
+  GROUP BY dle.partyId
+)
+SELECT CONCAT('BACKFILL:PARTY:',dp.id,':CASH_CUSTODY'),dp.id,dp.branchId,
+  'COD_COLLECTED',dp.currentBalance-COALESCE(c.amount,0),'Phase 2 unrepresented opening custody',NOW()
+FROM deliveryParties dp LEFT JOIN custody c ON c.partyId=dp.id
+WHERE dp.currentBalance>0 AND COALESCE(c.amount,0)>=0
+  AND COALESCE(c.amount,0)<dp.currentBalance
+  AND NOT EXISTS (SELECT 1 FROM deliveryLedgerEntries priorOpening
+    WHERE priorOpening.eventKey=CONCAT('BACKFILL:PARTY:',dp.id,':CASH_CUSTODY'));
 --> statement-breakpoint
 
 CREATE TABLE IF NOT EXISTS `deliveryEvents` (
