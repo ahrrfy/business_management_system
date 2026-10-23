@@ -176,3 +176,21 @@ describe("order lifecycle display", () => {
     expect(host.textContent).toContain("خط زمن الإرسالية 71");
   });
 });
+
+it("shows the fee obligation after customer collection and shop remittance", () => {
+  act(() =>
+    root.render(
+      <OrderLifecycleStatus
+        status="DELIVERED"
+        lifecycle={{
+          ...delivered,
+          remittanceLabel: "تم التوريد",
+          feeLabel: "أجرة الجهة متبقية: 1500 د.ع",
+          financialComplete: false,
+        }}
+      />,
+    ),
+  );
+  expect(host.textContent).toContain("تم التوريد");
+  expect(host.textContent).toContain("أجرة الجهة متبقية: 1500 د.ع");
+});

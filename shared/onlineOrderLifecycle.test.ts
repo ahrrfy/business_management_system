@@ -157,3 +157,27 @@ describe("online order delivery facts", () => {
     });
   });
 });
+
+it("customer completion does not hide an unpaid SHOP fee", () => {
+  const settled = {
+    ...delivered,
+    moneyStatus: "SETTLED",
+    collectedAmount: "10000",
+    remittanceId: 7,
+    feeCollection: "SHOP",
+  };
+  expect(
+    deriveOnlineOrderLifecycle({ ...settled, feeDueAmount: "1500" }),
+  ).toMatchObject({
+    trackingComplete: true,
+    financialComplete: false,
+    feeDueAmount: "1500.00",
+    feeLabel: "أجرة الجهة متبقية: 1500 د.ع",
+  });
+  expect(
+    deriveOnlineOrderLifecycle({ ...settled, feeDueAmount: "0" }),
+  ).toMatchObject({
+    financialComplete: true,
+    feeLabel: "تمت تسوية أجرة الجهة",
+  });
+});

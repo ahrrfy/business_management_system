@@ -6,6 +6,9 @@ export interface OnlineOrderLifecycle {
   tone?: "info" | "positive" | "warning" | "negative" | "muted";
   collectionLabel: string | null;
   remittanceLabel: string | null;
+  feeLabel?: string | null;
+  feeDueAmount?: string;
+  financialComplete?: boolean;
   /** Customer delivery/collection is complete; shop remittance remains an internal workflow. */
   trackingComplete?: boolean;
   /** Safe customer guidance; no staff identities or internal financial data. */
@@ -21,6 +24,8 @@ export interface OnlineOrderLifecycle {
 }
 
 export interface OnlineOrderDeliveryFacts {
+  feeDueAmount?: string;
+  feeCollection?: string | null;
   parcelStatus: string;
   moneyStatus: string;
   status: string;
@@ -46,6 +51,9 @@ export function deriveOnlineOrderLifecycle(
   | "remittanceLabel"
   | "trackingComplete"
   | "customerPhase"
+  | "feeLabel"
+  | "feeDueAmount"
+  | "financialComplete"
 > {
   const physicalLabels: Record<string, string> = {
     ASSIGNED: "مسند لجهة التوصيل",
@@ -94,12 +102,27 @@ export function deriveOnlineOrderLifecycle(
       trackingComplete: facts.parcelStatus === "RETURNED",
     };
 
+  const feeDue = Decimal.max(0, facts.feeDueAmount ?? "0");
+  const feeFacts = {
+    feeDueAmount: feeDue.toFixed(2),
+    feeLabel:
+      facts.feeCollection === "SHOP"
+        ? feeDue.gt(0)
+          ? `أجرة الجهة متبقية: ${feeDue.toFixed(0)} د.ع`
+          : "تمت تسوية أجرة الجهة"
+        : null,
+    financialComplete:
+      !returnPending &&
+      feeDue.isZero() &&
+      ["SETTLED", "NOT_APPLICABLE"].includes(facts.moneyStatus),
+  };
   const cod = new Decimal(facts.codAmount);
   if (cod.lte(0))
     return {
       label,
       customerPhase,
       tone,
+      ...feeFacts,
       collectionLabel: "مدفوع مسبقا",
       remittanceLabel: null,
       trackingComplete: !returnPending,
@@ -135,8 +158,10 @@ export function deriveOnlineOrderLifecycle(
     label,
     customerPhase,
     tone,
+    ...feeFacts,
     collectionLabel,
     remittanceLabel,
+    financialComplete: feeFacts.financialComplete && fullCollection,
     trackingComplete: fullCollection && !returnPending,
   };
 }

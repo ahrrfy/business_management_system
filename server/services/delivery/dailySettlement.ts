@@ -1,3 +1,5 @@
+import Decimal from "decimal.js";
+import { consignmentFeeDueSql, createFeeWithholdingQuote } from "./fees";
 /**
  * **التسويةُ اليوميّة لجهة التوصيل — «المتوقَّع محسوبٌ سلفاً، والتأكيدُ واحد»** (م١، PR-2).
  *
@@ -39,7 +41,7 @@ export interface DailySettlementScope {
 async function loadPartyOrThrow(tx: Tx, partyId: number, what: string) {
   const party = (
     await tx
-      .select({ id: deliveryParties.id, name: deliveryParties.name, branchId: deliveryParties.branchId })
+      .select({ id: deliveryParties.id, name: deliveryParties.name, branchId: deliveryParties.branchId, useCommission: deliveryParties.useCommissionForSettlement })
       .from(deliveryParties)
       .where(eq(deliveryParties.id, partyId))
       .limit(1)
@@ -62,12 +64,16 @@ async function loadPartyOrThrow(tx: Tx, partyId: number, what: string) {
  * (`codAmount − collectedAmount − counterSettledAmount` > 0) — نفس تعريف سطر التوريد في
  * `recordDeliveryRemittanceInTx` حرفياً، مستثنىً منها المُعلَنُ رجوعُه.
  */
-async function loadSettlementLines(tx: Tx, scope: DailySettlementScope): Promise<SettlementPreviewLine[]> {
+async function loadSettlementLines(tx: Tx, scope: DailySettlementScope, useCommission = false): Promise<SettlementPreviewLine[]> {
   const rows = await tx
     .select({
       id: deliveryConsignments.id,
       consignmentNumber: deliveryConsignments.consignmentNumber,
       codAmount: deliveryConsignments.codAmount,
+      sourceType: deliveryConsignments.sourceType,
+      feeCollection: deliveryConsignments.feeCollection,
+      feeDue: consignmentFeeDueSql(),
+      orderTotal: sql<string>`GREATEST(${invoices.total} - ${invoices.returnedTotal}, 0)`,
       collectedAmount: deliveryConsignments.collectedAmount,
       counterSettledAmount: deliveryConsignments.counterSettledAmount,
       // عجزُ التسليم المُقيَّد على الطرد — نقدٌ لم تقبضه الجهة (انظر `openParcelPredicates.ts`).
@@ -90,6 +96,7 @@ async function loadSettlementLines(tx: Tx, scope: DailySettlementScope): Promise
       isNull(deliveryConsignments.returnDeclaredAt),
     ))
     .orderBy(deliveryConsignments.id);
+  const quoteFee = await createFeeWithholdingQuote(tx, scope.partyId, useCommission);
   const lines: SettlementPreviewLine[] = [];
   for (const r of rows) {
     const cod = round2(money(r.codAmount));
@@ -107,6 +114,8 @@ async function loadSettlementLines(tx: Tx, scope: DailySettlementScope): Promise
       collectedAmount: collected.toFixed(2),
       remaining: remaining.toFixed(2),
       parcelStatus: r.parcelStatus,
+      feeWithholding: r.sourceType === "ONLINE_ORDER" && r.feeCollection === "SHOP"
+        ? Decimal.min(remaining, quoteFee(money(r.feeDue), money(r.orderTotal))).toFixed(2) : "0.00",
     });
   }
   return lines;
@@ -131,8 +140,8 @@ export async function previewDailySettlementTx(
   scope: DailySettlementScope,
   _actor: DeliveryTxActor,
 ): Promise<SettlementPreview> {
-  await loadPartyOrThrow(tx, scope.partyId, "تعذّر حساب تسوية الجهة");
-  const lines = await loadSettlementLines(tx, scope);
+  const party = await loadPartyOrThrow(tx, scope.partyId, "تعذّر حساب تسوية الجهة");
+  const lines = await loadSettlementLines(tx, scope, party.useCommission === true);
   const expectedCash = round2(lines.reduce((s, l) => s.plus(money(l.remaining)), money(0)));
   const returnsAwaiting = (
     await tx
@@ -145,8 +154,8 @@ export async function previewDailySettlementTx(
         isNotNull(deliveryConsignments.returnDeclaredAt),
       ))
   )[0];
-  // الاستقطاعات تُعرَف لحظة التوريد من كشف الشركة (إن وُجد) — المعاينة اليوميّة بلا كشف: صفر.
-  const deductions = money(0);
+  // المعاينة اليومية تحسم أجور المتجر المستحقة؛ الاستقطاع الإضافي يصرح به كشف الشركة.
+  const deductions = lines.reduce((v, l) => v.plus(money(l.feeWithholding ?? "0")), money(0));
   return {
     partyId: scope.partyId,
     branchId: scope.branchId,
@@ -240,7 +249,7 @@ export async function settleDailyTx(
       }
     }
   }
-  const lines = await loadSettlementLines(tx, input);
+  const lines = await loadSettlementLines(tx, input, party.useCommission === true);
   if (!lines.length) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
@@ -251,7 +260,7 @@ export async function settleDailyTx(
       }),
     });
   }
-  const expected = round2(lines.reduce((s, l) => s.plus(money(l.remaining)), money(0)));
+  const expected = round2(lines.reduce((s, l) => s.plus(money(l.remaining)).minus(money(l.feeWithholding ?? "0")), money(0)));
   const counted = round2(money(input.countedCash));
   if (counted.lt(0)) {
     throw new TRPCError({

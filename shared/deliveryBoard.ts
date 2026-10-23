@@ -46,6 +46,7 @@ export type PartyBoardRow = {
 };
 
 export type SettlementPreviewLine = {
+  feeWithholding?: string;
   consignmentId: number;
   consignmentNumber: string;
   invoiceNumber: string;
