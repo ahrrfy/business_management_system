@@ -27,6 +27,7 @@ import { allocateProportionally } from "./remittance";
 import { computeOrderDeliveryOtp } from "../onlineOrderService";
 import Decimal from "decimal.js";
 import {
+  assignedGoodsCodDue,
   loadAssignedChargeClaimsTx,
   collectAssignedConsignmentClaimsTx,
 } from "../fulfillment/chargeDelivery";
@@ -1464,6 +1465,7 @@ export async function confirmConsignmentDelivery(
       classified && cn.invoiceId != null
         ? await tx
             .select({
+              paymentMode: invoices.paymentMode,
               total: invoices.total,
               paidAmount: invoices.paidAmount,
               returnedTotal: invoices.returnedTotal,
@@ -1474,14 +1476,7 @@ export async function confirmConsignmentDelivery(
             .limit(1)
         : [];
     const classifiedDue = classifiedClaims.remaining.plus(
-      classifiedInvoice
-        ? Decimal.max(
-            0,
-            money(classifiedInvoice.total)
-              .minus(classifiedInvoice.returnedTotal)
-              .minus(classifiedInvoice.paidAmount),
-          )
-        : 0,
+      assignedGoodsCodDue(classifiedInvoice),
     );
     if (
       classified &&

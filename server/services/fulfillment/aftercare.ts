@@ -30,6 +30,8 @@ import { applyMovement } from "../inventoryService";
 import { lockInventoryVariants } from "../inventory/stockLock";
 import {
   assertCashOutAvailable,
+  authorizeExternalTreasuryDisbursement,
+  assertApprovedTreasuryOutAvailable,
   lockCashSourceForUpdate,
   lockMaterializedCashReceiptSourceForWrite,
 } from "../cash/cashAvailability";
@@ -1059,13 +1061,27 @@ export async function payAftercareDeliveryFee(
         "صرف الأجرة يحتاج موظفاً آخر غير طالب المعالجة",
         "FORBIDDEN",
       );
-    await assertCashOutAvailable(tx, {
-      branchId: row.branchId,
-      cashBucket: input.cashBucket,
-      shiftId: cashSource.shiftId,
-      amount,
-      operation: "صرف أجرة المعالجة",
-    });
+    if (input.cashBucket === "TREASURY") {
+      const approval = await authorizeExternalTreasuryDisbursement(tx, {
+        actor,
+        makerUserIds: [row.createdBy],
+        branchIds: [row.branchId],
+        operation: "صرف أجرة المعالجة",
+      });
+      await assertApprovedTreasuryOutAvailable(
+        tx,
+        { branchId: row.branchId, amount, operation: "صرف أجرة المعالجة" },
+        approval,
+      );
+    } else {
+      await assertCashOutAvailable(tx, {
+        branchId: row.branchId,
+        cashBucket: input.cashBucket,
+        shiftId: cashSource.shiftId,
+        amount,
+        operation: "صرف أجرة المعالجة",
+      });
+    }
     await lockMaterializedCashReceiptSourceForWrite(tx, {
       branchId: row.branchId,
       cashBucket: input.cashBucket,

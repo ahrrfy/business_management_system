@@ -56,6 +56,26 @@ function chargeIds(payload: unknown): number[] {
       typeof id === "number" && Number.isSafeInteger(id) && id > 0,
   );
 }
+
+/** Match dispatch: CREDIT goods remain customer debt, outside courier COD. */
+export function assignedGoodsCodDue(
+  invoice:
+    | Pick<
+        typeof invoices.$inferSelect,
+        "paymentMode" | "total" | "returnedTotal" | "paidAmount"
+      >
+    | undefined,
+) {
+  return invoice && invoice.paymentMode !== "CREDIT"
+    ? Decimal.max(
+        0,
+        money(invoice.total)
+          .minus(invoice.returnedTotal)
+          .minus(invoice.paidAmount),
+      )
+    : money(0);
+}
+
 export async function loadAssignedChargeClaimsTx(
   tx: Tx,
   consignmentId: number,
@@ -263,7 +283,7 @@ export async function collectAssignedConsignmentClaimsTx(
     { lock: true },
   );
   if (
-    !request.customerId ||
+    (assigned.rows.length > 0 && request.customerId == null) ||
     request.branchId !== cn.branchId ||
     (cn.endCustomerId != null && cn.endCustomerId !== request.customerId)
   )
@@ -289,14 +309,7 @@ export async function collectAssignedConsignmentClaimsTx(
       invoice.branchId !== cn.branchId)
   )
     throw fulfillmentError("الفاتورة الأصلية غير قابلة للتحصيل");
-  const goods = invoice
-    ? Decimal.max(
-        0,
-        money(invoice.total)
-          .minus(invoice.returnedTotal)
-          .minus(invoice.paidAmount),
-      )
-    : money(0);
+  const goods = assignedGoodsCodDue(invoice);
   const actual = money(input.actualAmount),
     due = goods.plus(assigned.remaining);
   if (!actual.isFinite() || actual.lt(0))

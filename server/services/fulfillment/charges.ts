@@ -30,6 +30,7 @@ import { assertCreditLimit } from "../../lib/credit";
 import { withTx, type Actor } from "../tx";
 import { money, toDbMoney } from "../money";
 import { logAuditTx } from "../auditService";
+import { reserveExternalRefundConfirmationTx } from "../externalRefundConfirmation";
 import { assertOperationAuthorityTx } from "../authorization/operationAuthority";
 import {
   adjustCustomerBalance,
@@ -609,6 +610,24 @@ async function writeReceiptTx(
   });
   return { receiptId: extractInsertId(result), bucket };
 }
+/** Reserve the actual OUT receipt globally before any refund ledger/allocation effect. */
+async function reserveChargeRefundConfirmationTx(
+  tx: Tx,
+  receiptId: number,
+  tender: ChargeTender,
+) {
+  if (tender.method === "CASH") return;
+  const reference = tender.reference?.trim();
+  if (!reference)
+    throw fulfillmentError(
+      "سجل مرجع رد المزوّد المنفذ على وسيلة القبض الأصلية",
+    );
+  await reserveExternalRefundConfirmationTx(tx, {
+    receiptId,
+    method: tender.method,
+    reference,
+  });
+}
 async function lockAllocationsTx(
   tx: Tx,
   allocations: ChargeAllocation[],
@@ -905,6 +924,7 @@ export function refundFulfillmentCharge(
         "OUT",
         `رد أجر ${row.id} من تخصيص ${original.id} / إيصال ${receipt.id}: ${input.reason}`,
       );
+      await reserveChargeRefundConfirmationTx(tx, receiptId, tender);
       const debit =
         row.category === "PASS_THROUGH" ? "OTHER_LIABILITY" : "OTHER_REVENUE";
       const credit = chargeCreditIntent(row.category, amount),
@@ -1077,6 +1097,7 @@ export function refundFulfillmentChargeExcess(
         `رد فائض إيصال ${source.id}: ${input.reason}`,
         false,
       );
+      await reserveChargeRefundConfirmationTx(tx, receiptId, tender);
       await tx
         .update(receipts)
         .set({

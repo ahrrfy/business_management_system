@@ -159,8 +159,8 @@ export async function createPendingDeliveryRefundTx(
     cashBucket: null,
     status: "PENDING",
     approvalStatus: "PENDING_APPROVAL",
-    partyType: input.customerId == null ? "OTHER" : "CUSTOMER",
-    partyId: input.customerId,
+    partyType: input.kind === "FEE" || input.customerId == null ? "OTHER" : "CUSTOMER",
+    partyId: input.kind === "FEE" ? null : input.customerId,
     referenceNumber:
       input.kind === "FEE"
         ? `DLV-FEE-INV-${Number(invoiceId)}`
@@ -600,6 +600,7 @@ export async function approveDeliveryPaymentRefund(
         approvedAt: new Date(),
         executedBy: actor.userId,
         executedAt: new Date(),
+        ...(note.kind === "FEE" ? { partyType: "OTHER" as const, partyId: null } : {}),
         internalNote: JSON.stringify({
           deliveryRefund: { ...note, providerReference: reference },
         }),

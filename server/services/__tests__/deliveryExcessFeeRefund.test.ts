@@ -21,6 +21,7 @@ import { prepareWorkOrderDeliveryInvoiceInTx } from "../delivery/dispatch";
 import { createFulfillmentRequest } from "../fulfillment/requests";
 import { withTx } from "../tx";
 import { money } from "../money";
+import { getCustomerStatement } from "../reportsService";
 import { truncateTables } from "./__testUtils__";
 
 const actor = { userId: 1, branchId: 1, role: "cashier" } as const,
@@ -340,6 +341,8 @@ describe("excess original held fee before consolidation", () => {
         amount: "5000.00",
         status: "PENDING",
         approvalStatus: "PENDING_APPROVAL",
+        partyType: "OTHER",
+        partyId: null,
       });
       expect(await financialSnapshot()).toEqual(before);
       expect(await cashNet()).toBe("0.00");
@@ -368,6 +371,12 @@ describe("excess original held fee before consolidation", () => {
       expect(await approveDeliveryPaymentRefund(approval, owner)).toMatchObject(
         { replayed: true },
       );
+      const statement = (await getCustomerStatement(1, { branchId: 1 }))!;
+      expect(statement.summary.currentBalance).toBe("0.00");
+      expect(statement.payments.some((r) => r.id === result.receiptId)).toBe(false);
+      const nextDay = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+      const carried = (await getCustomerStatement(1, { branchId: 1, from: nextDay }))!;
+      expect(carried.summary.openingBalance).toBe("0.00");
       expect(
         await dispatchInvoiceShipment(groupInput(a, b), actor),
       ).toMatchObject({ leaderConsignmentId: a.cn.id });
@@ -549,6 +558,9 @@ describe("excess original held fee before consolidation", () => {
       `WO-${current.orderNumber.replace(/^WO[-|]/i, "")}`,
     );
     const before = await financialSnapshot();
+    const statementBefore = (await getCustomerStatement(1, { branchId: 1 }))!;
+    const nextDay = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+    const openingBefore = (await getCustomerStatement(1, { branchId: 1, from: nextDay }))!;
     const result = await requestExcessFeeRefund(input, actor);
     await expect(
       dispatchInvoiceToDelivery(
@@ -580,7 +592,14 @@ describe("excess original held fee before consolidation", () => {
       workOrderId: order.workOrderId,
       status: "COMPLETED",
       paymentMethod: "CARD",
+      partyType: "OTHER",
+      partyId: 1,
     });
+    const statementAfter = (await getCustomerStatement(1, { branchId: 1 }))!;
+    expect(statementAfter.summary.currentBalance).toBe(statementBefore.summary.currentBalance);
+    expect(statementAfter.payments.some((r) => r.id === result.receiptId)).toBe(false);
+    const openingAfter = (await getCustomerStatement(1, { branchId: 1, from: nextDay }))!;
+    expect(openingAfter.summary.openingBalance).toBe(openingBefore.summary.openingBalance);
     expect(await financialSnapshot()).toEqual(before);
     expect(await cashNet()).toBe("0.00");
   });

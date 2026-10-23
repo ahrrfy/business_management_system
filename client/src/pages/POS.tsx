@@ -938,6 +938,7 @@ export default function POS() {
       !isCredit &&
       !codMode;
     const payAmount = isCredit ? money(paid) : (cashFull ? money(cashRoundedTotal) : money(total));
+    const sendsGoodsPayment = isSplitPayment || !((codMode && !deliverySendsPayment(activeTab.method, paidD)) || (isCredit && paidD.eq(0)));
     sale.mutate({
       branchId, shiftId: shift.id, sourceType: "POS", clientRequestId: activeTab.clientRequestId,
       ...(activeTab.salesRepId ? { salesRepId: activeTab.salesRepId, attribution: { repId: activeTab.salesRepId, mode: "DIRECT" as const } } : {}),
@@ -954,7 +955,7 @@ export default function POS() {
               ...(l.method !== "CASH" ? { reference: l.paymentRef.trim(), externalPaymentAttemptId: l.externalPayment!.attemptId! } : {}),
             })),
           }
-        : (codMode && !deliverySendsPayment(activeTab.method, paidD)) || (isCredit && paidD.eq(0))
+        : !sendsGoodsPayment
           ? {}
           : {
               payment: {
@@ -964,7 +965,7 @@ export default function POS() {
               },
             }),
       // م١ PR-B: الطرد يُسند داخل معاملة البيع نفسها؛ أجرة COUNTER تُقبض الآن أمانةً وتساوي الأجرة بالضبط.
-      ...(deliveryPayload ? { delivery: deliveryPayload, ...(deliveryPayload.feeCollection === "COUNTER" ? { deliveryFeeHeld: deliveryPayload.fee, deliveryFeeTender: deliveryFeeTenderForGoods(isSplitPayment ? splitLegs[0].method : activeTab.method) } : {}) } : {}),
+      ...(deliveryPayload ? { delivery: deliveryPayload, ...(deliveryPayload.feeCollection === "COUNTER" ? { deliveryFeeHeld: deliveryPayload.fee, deliveryFeeTender: deliveryFeeTenderForGoods(isSplitPayment ? splitLegs[0].method : activeTab.method, sendsGoodsPayment) } : {}) } : {}),
       // تاريخ الاستحقاق للآجل فقط — يُحفظ invoices.dueDate ويصحّح أعمار الذمم والتذكيرات.
       ...(isCredit && activeTab.dueDate ? { dueDate: activeTab.dueDate } : {}),
       ...(activeTab.couponCode ? { couponCode: activeTab.couponCode } : {}),

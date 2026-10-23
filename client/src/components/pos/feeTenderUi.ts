@@ -1,6 +1,6 @@
 import type { PaymentMethod } from "./posShared";
-/** Goods amount remains unchanged; the first payment leg also funds the separate fee allocation. */
-export function deliveryFeeTenderForGoods(method: PaymentMethod) {
+/** Link the fee to the first goods leg only when that leg is actually submitted. */
+export function deliveryFeeTenderForGoods(method: PaymentMethod, hasGoodsPayment = true) {
   if (method === "CHECK") throw new Error("الصك غير متاح لقبض أجرة التوصيل");
-  return { method, combinedWithPaymentIndex: 0 };
+  return { method, ...(hasGoodsPayment ? { combinedWithPaymentIndex: 0 } : {}) };
 }

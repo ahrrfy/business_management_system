@@ -121,7 +121,7 @@ export async function requestNoncashWorkOrderFeeRefundTx(
     cashBucket: null,
     status: "PENDING",
     approvalStatus: "PENDING_APPROVAL",
-    partyType: order?.customerId ? "CUSTOMER" : "OTHER",
+    partyType: "OTHER",
     partyId: order?.customerId ?? null,
     referenceNumber: `DLV-FEE-WO-${opts.workOrderId}`,
     internalNote: note,

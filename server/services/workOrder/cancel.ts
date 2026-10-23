@@ -1370,7 +1370,7 @@ export async function approveWorkOrderCancellationRefund(
       approvedBy: actor.userId,
       approvedAt: new Date(),
       referenceNumber: feeRefund ? `DLV-FEE-WO-${workOrderId}` : confirmedReference,
-      ...(feeRefund ? {internalNote:`WORK_ORDER_CUSTOMER_REFUND:FEE:${workOrderId}:${sourceReceiptId}:${encodeURIComponent(confirmedReference)}`} : {}),
+      ...(feeRefund ? {partyType: "OTHER" as const, internalNote:`WORK_ORDER_CUSTOMER_REFUND:FEE:${workOrderId}:${sourceReceiptId}:${encodeURIComponent(confirmedReference)}`} : {}),
     }).where(eq(receipts.id, receiptId));
     await postEntry(tx, {
       entryType: feeRefund ? "DELIVERY_FEE_HELD" : "PAYMENT_OUT",

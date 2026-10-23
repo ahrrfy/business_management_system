@@ -1288,7 +1288,164 @@ describe("aftercare real document, stock, custody and fee integration", () => {
     expect(current.lines[0].executedBaseQuantity).toBe(1);
   });
 
+  it("requires the current active owner for TREASURY aftercare fee payout and replays one receipt without another expense", async () => {
+    const manager = { userId: 4, branchId: 1, role: "manager" };
+    const owner = { userId: 5, branchId: 1, role: "admin", isOwner: true };
+    await db()
+      .insert(s.users)
+      .values([
+        {
+          id: manager.userId,
+          openId: "ac-fee-manager",
+          name: "مدير تسوية مخول",
+          role: "manager",
+          branchId: 1,
+          isOwner: false,
+          operationPolicy: {
+            version: 1,
+            grants: { "operation.delivery.fulfillment.aftercare.payFee": true },
+          },
+        },
+        {
+          id: owner.userId,
+          openId: "ac-fee-owner",
+          name: "مالك صرف مستقل",
+          role: "admin",
+          branchId: 1,
+          isOwner: true,
+        },
+      ]);
+    const data = await approved();
+    const execution = await prepareAftercareExecution(
+      preparation(data),
+      CHECKER,
+    );
+    const sent = await dispatchAftercareExecution(
+      {
+        id: execution.id,
+        expectedVersion: 1,
+        clientRequestId: key(),
+        partyId: 1,
+      },
+      CHECKER,
+    );
+    await confirmAftercareDelivery(
+      {
+        id: execution.id,
+        expectedVersion: 2,
+        clientRequestId: key(),
+        result: "DELIVERED",
+        proof: "تسليم مثبت قبل سداد أجرة الناقل",
+      },
+      CHECKER,
+    );
+    await db()
+      .insert(s.receipts)
+      .values({
+        branchId: 1,
+        direction: "IN",
+        amount: "1000.00",
+        paymentMethod: "CASH",
+        cashBucket: "TREASURY",
+        status: "COMPLETED",
+        createdBy: owner.userId,
+      });
+    const payment = {
+      id: execution.id,
+      expectedVersion: 3,
+      clientRequestId: key(),
+      cashBucket: "TREASURY" as const,
+      amount: "500.00",
+    };
+    const before = {
+      receipts: await db().select().from(s.receipts),
+      ledger: await db().select().from(s.deliveryLedgerEntries),
+      accounting: await db().select().from(s.accountingEntries),
+      execution: await db()
+        .select()
+        .from(aftercareExecutions)
+        .where(eq(aftercareExecutions.id, execution.id)),
+    };
+    await expect(
+      payAftercareDeliveryFee(payment, manager),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: expect.stringContaining("محصور بحساب مالك نشط"),
+    });
+    // A stale/spoofed owner flag must not override the current persisted identity.
+    await expect(
+      payAftercareDeliveryFee(payment, { ...manager, isOwner: true }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(await db().select().from(s.receipts)).toEqual(before.receipts);
+    expect(await db().select().from(s.deliveryLedgerEntries)).toEqual(
+      before.ledger,
+    );
+    expect(await db().select().from(s.accountingEntries)).toEqual(
+      before.accounting,
+    );
+    expect(
+      await db()
+        .select()
+        .from(aftercareExecutions)
+        .where(eq(aftercareExecutions.id, execution.id)),
+    ).toEqual(before.execution);
+    const paid = await payAftercareDeliveryFee(payment, owner);
+    expect(await payAftercareDeliveryFee(payment, owner)).toEqual({
+      id: execution.id,
+      receiptId: paid.receiptId,
+      replay: true,
+    });
+    const [receipt] = await db()
+      .select()
+      .from(s.receipts)
+      .where(eq(s.receipts.id, paid.receiptId));
+    expect(receipt).toMatchObject({
+      createdBy: owner.userId,
+      cashBucket: "TREASURY",
+      direction: "OUT",
+      amount: "500.00",
+      invoiceId: null,
+    });
+    expect(await db().select().from(s.receipts)).toHaveLength(
+      before.receipts.length + 1,
+    );
+    const ledger = await db()
+      .select()
+      .from(s.deliveryLedgerEntries)
+      .where(
+        and(
+          eq(s.deliveryLedgerEntries.consignmentId, sent.consignmentId!),
+          eq(s.deliveryLedgerEntries.entryType, "FEE_PAID"),
+        ),
+      );
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0].amount).toBe("500.00");
+    expect(
+      await db()
+        .select()
+        .from(s.accountingEntries)
+        .where(
+          eq(
+            s.accountingEntries.dedupeKey,
+            `AFTERCARE_FEE_PAYMENT:${paid.receiptId}`,
+          ),
+        ),
+    ).toHaveLength(1);
+    const [totals] = await db()
+      .select({ cost: sql<string>`SUM(${s.accountingEntries.cost})` })
+      .from(s.accountingEntries)
+      .where(eq(s.accountingEntries.entryType, "DELIVERY_FEE"));
+    expect(Number(totals.cost)).toBe(500);
+    expect(
+      (await getAftercareCase(data.case.id, owner)).executions[0].feeLedger.due,
+    ).toBe("0.00");
+  });
+
   it("pays an accrued SHOP fee with a real guarded receipt, rejects the closed day and never expenses it twice", async () => {
+    await db()
+      .update(s.users)
+      .set({ isOwner: true })
+      .where(eq(s.users.id, CHECKER.userId));
     const data = await approved();
     const execution = await prepareAftercareExecution(
       preparation(data),
