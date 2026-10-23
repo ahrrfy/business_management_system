@@ -18,6 +18,7 @@ import { dispatchInvoiceShipment } from "../delivery/shipments";
 import { money } from "../money";
 import { createSale } from "../sale/create";
 import { openShift } from "../shiftService";
+import * as shiftService from "../shiftService";
 
 const CASHIER = { userId: 2, branchId: 1, role: "cashier" };
 const MANAGER = { userId: 1, branchId: 1, role: "manager" };
@@ -394,6 +395,42 @@ async function invoiceShipment(key: string) {
 }
 
 describe("delivery collection, remittance and fee integrity", () => {
+  it("does not pay the same earned fee twice with distinct concurrent request keys", async () => {
+    const delivery = await sale("fee-concurrent", "SHOP", "1500");
+    await staffProof(delivery, "fee-concurrent-proof");
+    await recordDeliveryRemittance({
+      branchId: 1, partyId: 1,
+      lines: [{ consignmentId: delivery.consignmentId, collectedAmount: "20000" }],
+      countedCash: "20000", clientRequestId: "fee-concurrent-remit",
+    }, CASHIER);
+    let release!: () => void, reached!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const arrived = new Promise<void>((resolve) => { reached = resolve; });
+    const original = shiftService.resolveBranchCashShiftTx;
+    let paused = false;
+    const spy = vi.spyOn(shiftService, "resolveBranchCashShiftTx").mockImplementation(async (...args) => {
+      if (!paused) { paused = true; reached(); await gate; }
+      return original(...args);
+    });
+    const input = { consignmentId: delivery.consignmentId, shiftId: delivery.shiftId };
+    const first = payDeliveryFee({ ...input, clientRequestId: "fee-concurrent-first" }, CASHIER);
+    const outcome = first.then((value) => ({ value, error: null }), (error) => ({ value: null, error }));
+    try {
+      await arrived;
+      await payDeliveryFee({ ...input, clientRequestId: "fee-concurrent-second" }, CASHIER);
+      release();
+      const firstResult = await outcome;
+      expect(await financialState(delivery)).toMatchObject({
+        feeEarned: "1500.00", feePaid: "1500.00", payable: "0.00",
+        cash: "18500.00", journalCash: "18500.00", customer: "0.00", custody: "0.00",
+      });
+      expect(firstResult.error).not.toBeNull();
+    } finally {
+      release();
+      await outcome;
+      spy.mockRestore();
+    }
+  });
   it.each(["OFF", "ON"] as const)("reads a collection committed after the statement snapshot without crediting the customer twice (%s)", async (ledgerMode) => {
     vi.stubEnv("ROLLOUT_COURIER_LEDGER_DERIVED", ledgerMode);
     const delivery = await sale("concurrent-proof");
