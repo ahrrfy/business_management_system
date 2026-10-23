@@ -1,7 +1,8 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import type Decimal from "decimal.js";
-import { receipts } from "../../../drizzle/schema";
+import { and, eq, inArray, or } from "drizzle-orm";
+import { receipts, workOrders } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { deliveryFeeHeldReceiptIntent } from "./posting";
@@ -9,6 +10,63 @@ import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import { lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
 import { postEntry } from "../ledgerService";
 import { money, round2 } from "../money";
+
+/** Call after source row locks. Include original WO fees after invoice linkage. */
+export async function assertNoPendingHeldFeeRefundTx(
+  tx: Tx,
+  source: { invoiceId?: number; workOrderId?: number },
+) {
+  const linked =
+    source.invoiceId == null
+      ? []
+      : await tx
+          .select({ id: workOrders.id })
+          .from(workOrders)
+          .where(eq(workOrders.invoiceId, source.invoiceId))
+          .for("share");
+  const woIds = Array.from(
+    new Set([
+      ...(source.workOrderId == null ? [] : [source.workOrderId]),
+      ...linked.map((r) => Number(r.id)),
+    ]),
+  );
+  const refs = [
+    ...(source.invoiceId == null ? [] : [`DLV-FEE-INV-${source.invoiceId}`]),
+    ...woIds.map((id) => `DLV-FEE-WO-${id}`),
+  ];
+  if (!refs.length) return;
+  const pending = await tx
+    .select({ id: receipts.id })
+    .from(receipts)
+    .where(
+      and(
+        inArray(receipts.referenceNumber, refs),
+        eq(receipts.direction, "OUT"),
+        eq(receipts.status, "PENDING"),
+        eq(receipts.approvalStatus, "PENDING_APPROVAL"),
+        or(
+          ...[
+            ...(source.invoiceId == null
+              ? []
+              : [eq(receipts.invoiceId, source.invoiceId)]),
+            ...(woIds.length ? [inArray(receipts.workOrderId, woIds)] : []),
+          ],
+        ),
+      ),
+    )
+    .for("update")
+    .limit(1);
+  if (pending.length)
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "تعذّر إسناد مصدر له رد أجرة معلق",
+        why: "أمانة الأجرة محجوزة لرد خارجي ولم يثبت تنفيذ الاسترداد بعد",
+        doThis:
+          "أكمل الاسترداد في تبويب رد المقبوضات وثبّت مرجع المزوّد أولاً، ثم أعد التجميع على الأمانة الباقية",
+      }),
+    });
+}
 
 /** ما يحتاجه الحارس من حمولة التوصيل — لا يعتمد على نوع الراوتر. */
 export interface DeliveryFeeHeldCounterpart {
@@ -35,7 +93,8 @@ export function assertDeliveryFeeHeldConsistent(
       message: appErrorMessage({
         what: "أمانة الأجرة لا تناسب طريقة التوصيل",
         why: `أرسلت مبلغ أمانة أجرة (${feeHeld.toFixed(2)}) مع توصيل أجرته على المندوب (COURIER) — المندوب سيقبضها من الزبون فيصير قبضاً مزدوجاً وأمانتك تعلق بلا تبرئة`,
-        doThis: "غيّر «التحصيل» إلى «مقبوضة في الاستقبال» (COUNTER)، أو احذف مبلغ الأمانة",
+        doThis:
+          "غيّر «التحصيل» إلى «مقبوضة في الاستقبال» (COUNTER)، أو احذف مبلغ الأمانة",
       }),
     });
   }

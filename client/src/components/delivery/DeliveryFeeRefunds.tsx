@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { paymentMethodCompact } from "@shared/terms";
+import { ExcessFeeRefundPanel } from "./ExcessFeeRefundPanel";
 
 type Row =
   RouterOutputs["delivery"]["paymentRefunds"]["list"]["pending"][number];
@@ -17,6 +18,8 @@ export function DeliveryPaymentRefunds({ branchId }: { branchId: number }) {
     q = trpc.delivery.paymentRefunds.list.useQuery({ branchId });
   const request = trpc.delivery.paymentRefunds.request.useMutation(),
     approve = trpc.delivery.paymentRefunds.approve.useMutation();
+  const approveWorkOrder =
+    trpc.workOrders.approveCancellationRefund.useMutation();
   const [selected, setSelected] = useState(""),
     [reason, setReason] = useState(""),
     [requestId, setRequestId] = useState(() => crypto.randomUUID());
@@ -43,12 +46,18 @@ export function DeliveryPaymentRefunds({ branchId }: { branchId: number }) {
   async function execute(row: Row) {
     setError(null);
     try {
-      await approve.mutateAsync({
-        branchId,
-        receiptId: row.id,
-        providerReference: references[row.id] ?? "",
-        clientRequestId: `refund-${row.id}`,
-      });
+      if (row.workOrderId != null)
+        await approveWorkOrder.mutateAsync({
+          receiptId: row.id,
+          confirmationReference: references[row.id] ?? "",
+        });
+      else
+        await approve.mutateAsync({
+          branchId,
+          receiptId: row.id,
+          providerReference: references[row.id] ?? "",
+          clientRequestId: `refund-${row.id}`,
+        });
       await q.refetch();
       notify.ok("ثُبت تنفيذ الاسترداد الخارجي");
     } catch (e) {
@@ -109,6 +118,7 @@ export function DeliveryPaymentRefunds({ branchId }: { branchId: number }) {
                 size="sm"
                 disabled={
                   approve.isPending ||
+                  approveWorkOrder.isPending ||
                   (references[row.original.id] ?? "").trim().length < 3
                 }
                 onClick={() => void execute(row.original)}
@@ -121,7 +131,7 @@ export function DeliveryPaymentRefunds({ branchId }: { branchId: number }) {
           ),
       },
     ],
-    [owner, references, approve.isPending],
+    [owner, references, approve.isPending, approveWorkOrder.isPending],
   );
   return (
     <section className="space-y-3" dir="rtl">
@@ -132,6 +142,11 @@ export function DeliveryPaymentRefunds({ branchId }: { branchId: number }) {
           نجاح الاسترداد لدى المزوّد؛ لا يخرج نقد من الدرج.
         </p>
       </div>
+      <ExcessFeeRefundPanel
+        key={branchId}
+        branchId={branchId}
+        onChanged={() => q.refetch()}
+      />
       <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
         <AppSelect
           aria-label="إرسالية رد أجرة التوصيل"

@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS `aftercareExecutionLines` (
 	`id` bigint AUTO_INCREMENT NOT NULL,
 	`executionId` bigint NOT NULL,
 	`aftercareLineId` bigint NOT NULL,
-	`variantId` bigint NOT NULL,
+	`variantId` bigint,
 	`kind` enum('OUTPUT','MATERIAL') NOT NULL DEFAULT 'OUTPUT',
 	`outputLineId` bigint GENERATED ALWAYS AS ((CASE WHEN kind = 'OUTPUT' THEN aftercareLineId ELSE NULL END)) STORED,
 	`baseQuantity` int NOT NULL,
@@ -55,6 +55,8 @@ CREATE TABLE IF NOT EXISTS `aftercareExecutionLines` (
 	CONSTRAINT `uq_ael_output` UNIQUE(`executionId`,`outputLineId`),
 	CONSTRAINT `chk_ael_qty` CHECK(`aftercareExecutionLines`.`baseQuantity` > 0 AND `aftercareExecutionLines`.`fulfilledBaseQuantity` >= 0 AND `aftercareExecutionLines`.`custodyBaseQuantity` >= 0 AND `aftercareExecutionLines`.`deliveredBaseQuantity` >= 0 AND `aftercareExecutionLines`.`returnedBaseQuantity` >= 0 AND `aftercareExecutionLines`.`custodyBaseQuantity` + `aftercareExecutionLines`.`deliveredBaseQuantity` + `aftercareExecutionLines`.`returnedBaseQuantity` <= `aftercareExecutionLines`.`fulfilledBaseQuantity`),
 	CONSTRAINT `chk_ael_kind` CHECK((`aftercareExecutionLines`.`kind` = 'OUTPUT' AND `aftercareExecutionLines`.`fulfilledBaseQuantity` = `aftercareExecutionLines`.`baseQuantity`) OR (`aftercareExecutionLines`.`kind` = 'MATERIAL' AND `aftercareExecutionLines`.`fulfilledBaseQuantity` = 0 AND `aftercareExecutionLines`.`custodyBaseQuantity` = 0 AND `aftercareExecutionLines`.`deliveredBaseQuantity` = 0 AND `aftercareExecutionLines`.`returnedBaseQuantity` = 0 AND `aftercareExecutionLines`.`movementId` IS NOT NULL)),
+	CONSTRAINT `chk_ael_variant` CHECK(`aftercareExecutionLines`.`variantId` IS NOT NULL OR (`aftercareExecutionLines`.`kind` = 'OUTPUT'
+        AND `aftercareExecutionLines`.`movementId` IS NULL AND `aftercareExecutionLines`.`unitCost` = 0 AND `aftercareExecutionLines`.`lineCost` = 0)),
 	CONSTRAINT `chk_ael_cost` CHECK(`aftercareExecutionLines`.`unitCost` >= 0 AND `aftercareExecutionLines`.`lineCost` >= 0),
 	CONSTRAINT `chk_ael_reuse` CHECK(`aftercareExecutionLines`.`reusedFromLineId` IS NULL OR (`aftercareExecutionLines`.`kind` = 'OUTPUT' AND `aftercareExecutionLines`.`movementId` IS NULL AND `aftercareExecutionLines`.`unitCost` = 0 AND `aftercareExecutionLines`.`lineCost` = 0))
 );
@@ -102,8 +104,9 @@ CREATE TABLE IF NOT EXISTS `aftercareLines` (
 	`id` bigint AUTO_INCREMENT NOT NULL,
 	`caseId` bigint NOT NULL,
 	`originalInvoiceItemId` bigint,
+	`sourceWorkOrderId` bigint,
 	`originalBundleComponentId` bigint,
-	`componentVariantId` bigint NOT NULL,
+	`componentVariantId` bigint,
 	`disposition` enum('MISSING_HELD','REPLACEMENT','REPRINT') NOT NULL,
 	`baseQuantity` int NOT NULL,
 	`executedBaseQuantity` int NOT NULL DEFAULT 0,
@@ -115,6 +118,11 @@ CREATE TABLE IF NOT EXISTS `aftercareLines` (
 	`notes` text,
 	CONSTRAINT `aftercareLines_id` PRIMARY KEY(`id`),
 	CONSTRAINT `chk_acl_qty` CHECK(`aftercareLines`.`baseQuantity` > 0 AND `aftercareLines`.`executedBaseQuantity` >= 0 AND `aftercareLines`.`executedBaseQuantity` <= `aftercareLines`.`baseQuantity` AND `aftercareLines`.`deliveredBaseQuantity` >= 0 AND `aftercareLines`.`deliveredBaseQuantity` <= `aftercareLines`.`executedBaseQuantity`),
+	CONSTRAINT `chk_acl_source` CHECK((`aftercareLines`.`originalInvoiceItemId` IS NOT NULL) + (`aftercareLines`.`sourceWorkOrderId` IS NOT NULL) = 1),
+	CONSTRAINT `chk_acl_service` CHECK((`aftercareLines`.`sourceWorkOrderId` IS NULL AND `aftercareLines`.`componentVariantId` IS NOT NULL)
+        OR (`aftercareLines`.`sourceWorkOrderId` IS NOT NULL AND `aftercareLines`.`disposition` = 'REPRINT'
+          AND `aftercareLines`.`componentVariantId` IS NULL AND `aftercareLines`.`originalBundleComponentId` IS NULL
+          AND `aftercareLines`.`originalMovementId` IS NULL AND `aftercareLines`.`heldConfirmedBy` IS NULL AND `aftercareLines`.`heldConfirmedAt` IS NULL)),
 	CONSTRAINT `chk_acl_held` CHECK(`aftercareLines`.`disposition` <> 'MISSING_HELD' OR (`aftercareLines`.`originalMovementId` IS NOT NULL AND `aftercareLines`.`heldConfirmedBy` IS NOT NULL AND `aftercareLines`.`heldConfirmedAt` IS NOT NULL))
 );
 --> statement-breakpoint
@@ -479,6 +487,14 @@ EXECUTE fulfillment_stmt;
 --> statement-breakpoint
 DEALLOCATE PREPARE fulfillment_stmt;
 --> statement-breakpoint
+SET @fulfillment_ddl = IF((SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME='aftercareLines' AND CONSTRAINT_NAME='fk_acl_source_wo'), 'SELECT 1', 'ALTER TABLE `aftercareLines` ADD CONSTRAINT `fk_acl_source_wo` FOREIGN KEY (`sourceWorkOrderId`) REFERENCES `workOrders`(`id`) ON DELETE no action ON UPDATE no action');
+--> statement-breakpoint
+PREPARE fulfillment_stmt FROM @fulfillment_ddl;
+--> statement-breakpoint
+EXECUTE fulfillment_stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE fulfillment_stmt;
+--> statement-breakpoint
 SET @fulfillment_ddl = IF((SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME='aftercareLines' AND CONSTRAINT_NAME='fk_acl_snapshot'), 'SELECT 1', 'ALTER TABLE `aftercareLines` ADD CONSTRAINT `fk_acl_snapshot` FOREIGN KEY (`originalBundleComponentId`) REFERENCES `invoiceItemBundleComponents`(`id`) ON DELETE no action ON UPDATE no action');
 --> statement-breakpoint
 PREPARE fulfillment_stmt FROM @fulfillment_ddl;
@@ -815,6 +831,14 @@ EXECUTE fulfillment_stmt;
 --> statement-breakpoint
 DEALLOCATE PREPARE fulfillment_stmt;
 --> statement-breakpoint
+SET @fulfillment_ddl = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='aftercareLines' AND INDEX_NAME='idx_acl_source_wo'), 'SELECT 1', 'CREATE INDEX `idx_acl_source_wo` ON `aftercareLines` (`sourceWorkOrderId`)');
+--> statement-breakpoint
+PREPARE fulfillment_stmt FROM @fulfillment_ddl;
+--> statement-breakpoint
+EXECUTE fulfillment_stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE fulfillment_stmt;
+--> statement-breakpoint
 SET @fulfillment_ddl = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='fulfillmentChargePayments' AND INDEX_NAME='idx_fcp_charge'), 'SELECT 1', 'CREATE INDEX `idx_fcp_charge` ON `fulfillmentChargePayments` (`chargeId`)');
 --> statement-breakpoint
 PREPARE fulfillment_stmt FROM @fulfillment_ddl;
@@ -959,6 +983,15 @@ EXECUTE fulfillment_stmt;
 --> statement-breakpoint
 DEALLOCATE PREPARE fulfillment_stmt;
 --> statement-breakpoint
+SET @fulfillment_ddl = IF((SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME='aftercareExecutionLines' AND CONSTRAINT_NAME='chk_ael_variant'), 'SELECT 1', 'ALTER TABLE `aftercareExecutionLines` ADD CONSTRAINT `chk_ael_variant` CHECK(`aftercareExecutionLines`.`variantId` IS NOT NULL OR (`aftercareExecutionLines`.`kind` = ''OUTPUT''
+        AND `aftercareExecutionLines`.`movementId` IS NULL AND `aftercareExecutionLines`.`unitCost` = 0 AND `aftercareExecutionLines`.`lineCost` = 0))');
+--> statement-breakpoint
+PREPARE fulfillment_stmt FROM @fulfillment_ddl;
+--> statement-breakpoint
+EXECUTE fulfillment_stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE fulfillment_stmt;
+--> statement-breakpoint
 SET @fulfillment_ddl = IF((SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME='aftercareExecutionLines' AND CONSTRAINT_NAME='chk_ael_cost'), 'SELECT 1', 'ALTER TABLE `aftercareExecutionLines` ADD CONSTRAINT `chk_ael_cost` CHECK(`aftercareExecutionLines`.`unitCost` >= 0 AND `aftercareExecutionLines`.`lineCost` >= 0)');
 --> statement-breakpoint
 PREPARE fulfillment_stmt FROM @fulfillment_ddl;
@@ -1008,6 +1041,25 @@ EXECUTE fulfillment_stmt;
 DEALLOCATE PREPARE fulfillment_stmt;
 --> statement-breakpoint
 SET @fulfillment_ddl = IF((SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME='aftercareLines' AND CONSTRAINT_NAME='chk_acl_qty'), 'SELECT 1', 'ALTER TABLE `aftercareLines` ADD CONSTRAINT `chk_acl_qty` CHECK(`aftercareLines`.`baseQuantity` > 0 AND `aftercareLines`.`executedBaseQuantity` >= 0 AND `aftercareLines`.`executedBaseQuantity` <= `aftercareLines`.`baseQuantity` AND `aftercareLines`.`deliveredBaseQuantity` >= 0 AND `aftercareLines`.`deliveredBaseQuantity` <= `aftercareLines`.`executedBaseQuantity`)');
+--> statement-breakpoint
+PREPARE fulfillment_stmt FROM @fulfillment_ddl;
+--> statement-breakpoint
+EXECUTE fulfillment_stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE fulfillment_stmt;
+--> statement-breakpoint
+SET @fulfillment_ddl = IF((SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME='aftercareLines' AND CONSTRAINT_NAME='chk_acl_source'), 'SELECT 1', 'ALTER TABLE `aftercareLines` ADD CONSTRAINT `chk_acl_source` CHECK((`aftercareLines`.`originalInvoiceItemId` IS NOT NULL) + (`aftercareLines`.`sourceWorkOrderId` IS NOT NULL) = 1)');
+--> statement-breakpoint
+PREPARE fulfillment_stmt FROM @fulfillment_ddl;
+--> statement-breakpoint
+EXECUTE fulfillment_stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE fulfillment_stmt;
+--> statement-breakpoint
+SET @fulfillment_ddl = IF((SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME='aftercareLines' AND CONSTRAINT_NAME='chk_acl_service'), 'SELECT 1', 'ALTER TABLE `aftercareLines` ADD CONSTRAINT `chk_acl_service` CHECK((`aftercareLines`.`sourceWorkOrderId` IS NULL AND `aftercareLines`.`componentVariantId` IS NOT NULL)
+        OR (`aftercareLines`.`sourceWorkOrderId` IS NOT NULL AND `aftercareLines`.`disposition` = ''REPRINT''
+          AND `aftercareLines`.`componentVariantId` IS NULL AND `aftercareLines`.`originalBundleComponentId` IS NULL
+          AND `aftercareLines`.`originalMovementId` IS NULL AND `aftercareLines`.`heldConfirmedBy` IS NULL AND `aftercareLines`.`heldConfirmedAt` IS NULL))');
 --> statement-breakpoint
 PREPARE fulfillment_stmt FROM @fulfillment_ddl;
 --> statement-breakpoint

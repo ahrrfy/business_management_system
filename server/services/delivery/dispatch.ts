@@ -2,6 +2,7 @@
 //
 // READY → DELIVERED + إرسالية: فاتورة عميل + SALE + عهدة COD على الجهة (D3).
 import { TRPCError } from "@trpc/server";
+import { assertNoPendingHeldFeeRefundTx } from "./feeHeld";
 import { appErrorMessage } from "@shared/errors";
 import { and, desc, eq, isNull, notLike, or, sql } from "drizzle-orm";
 import {
@@ -279,6 +280,7 @@ async function runWorkOrderDispatchTx(
       code: "BAD_REQUEST",
       message: "الأمر ليس جاهزاً للإرسال",
     });
+  await assertNoPendingHeldFeeRefundTx(tx,{workOrderId:Number(wo.id),...(wo.invoiceId==null?{}:{invoiceId:Number(wo.invoiceId)})});
   // حارس خادمي مقابل طابور الواجهة: لا يتحول الاستلام المباشر إلى شحنة بسبب
   // رابط قديم أو طلب API يدوي. يحدد موظف خدمة العملاء طريقة التسليم أولاً.
   if (!prepareOnly && !wo.hasDelivery) {

@@ -28,18 +28,68 @@ import type { Tx } from "../../db";
 import { assertStandaloneConsignmentTx } from "./shipments";
 
 /** Existing held-fee refund, shared when the original fee invoice has left a shipment. Caller prelocks cash source then party/CNs. */
-export async function refundHeldDeliveryFeeForReturnTx(tx: Tx, cn: typeof deliveryConsignments.$inferSelect, actor: DeliveryTxActor, prelockedReturnShift: { shiftId: number } | null) {
-    if(cn.invoiceId==null)throw deliveryRefundError("مصدر الإرسالية لا يحمل فاتورة؛ استخدم مسار رد مصدر المعالجة المخصص");
-    const heldRef = `DLV-FEE-INV-${Number(cn.invoiceId)}`;
+export async function refundHeldDeliveryFeeForReturnTx(
+  tx: Tx,
+  cn: typeof deliveryConsignments.$inferSelect,
+  actor: DeliveryTxActor,
+  prelockedReturnShift: { shiftId: number } | null,
+) {
+  if (cn.invoiceId==null)
+    throw deliveryRefundError(
+      "مصدر الإرسالية لا يحمل فاتورة؛ استخدم مسار المصدر المخصص",
+    );
+  return refundHeldInvoiceFeeTx(
+    tx,
+    {
+      invoiceId: Number(cn.invoiceId),
+      branchId: Number(cn.branchId),
+      consignmentId: Number(cn.id),
+      consignmentNumber: cn.consignmentNumber,
+      feeSettledAt: cn.feeSettledAt,
+      consignment: cn,
+    },
+    actor,
+    prelockedReturnShift,
+  );
+}
+
+/** Actual invoice-fee writer shared by a return and an explicit pre-dispatch excess refund. */
+export async function refundHeldInvoiceFeeTx(
+  tx: Tx,
+  source: {
+    invoiceId: number;
+    branchId: number;
+    consignmentId?: number;
+    consignmentNumber?: string;
+    feeSettledAt?: Date | null;
+    sourceNumber?: string;
+    reason?: string;
+    purpose?: "CONSOLIDATION";
+    approvedByManagerId?: number | null;
+    consignment?: typeof deliveryConsignments.$inferSelect;
+  },
+  actor: DeliveryTxActor,
+  prelockedReturnShift: { shiftId: number } | null,
+) {
+  if (source.invoiceId == null)
+    throw deliveryRefundError("مصدر الإرسالية لا يحمل فاتورة؛ استخدم مسار رد مصدر المعالجة المخصص");
+  const heldRef = `DLV-FEE-INV-${Number(source.invoiceId)}`;
     const feeHeldRows = await tx
       .select({ id:receipts.id,direction: receipts.direction, amount: receipts.amount, referenceNumber: receipts.referenceNumber,paymentMethod:receipts.paymentMethod })
       .from(receipts)
-      .where(and(
-        eq(receipts.invoiceId, Number(cn.invoiceId)),
-        inArray(receipts.referenceNumber, [heldRef, String(cn.consignmentNumber)]),
+      .where(
+      and(
+        eq(receipts.invoiceId, Number(source.invoiceId)),
+        inArray(
+          receipts.referenceNumber,
+          source.consignmentNumber == null
+            ? [heldRef]
+            : [heldRef, source.consignmentNumber],
+        ),
         inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]),
         eq(receipts.approvalStatus, "APPROVED"),
-      ))
+      ),
+    )
       // current read after the source mutex: a stale snapshot must never authorize a refund.
       .for("update");
     const feeHeldNet = round2(feeHeldRows.reduce(
@@ -56,17 +106,46 @@ export async function refundHeldDeliveryFeeForReturnTx(tx: Tx, cn: typeof delive
         : sum,
       money(0),
     ));
-    const feeAlreadyPaidToCourier = cn.feeSettledAt != null && feeCollected.gt(0);
+  const feeAlreadyPaidToCourier =
+    source.feeSettledAt != null && feeCollected.gt(0);
     let pendingFeeRefundReceiptId:number|null=null;
-    if (feeHeldNet.gt(0) && cn.feeSettledAt == null) {
+  if (feeHeldNet.gt(0) && source.feeSettledAt == null) {
       const sources=feeHeldRows.filter(r=>r.direction==="IN"&&r.referenceNumber===heldRef);
       if(sources.length!==1)throw deliveryRefundError("إيصال أمانة الأجرة الأصلي غير محدد؛ راجع مصادر القبض قبل الرد");
-      const source=sources[0];
-      if(source.paymentMethod!=="CASH"){
-        if(!["CARD","TRANSFER","WALLET","CHECK"].includes(source.paymentMethod))throw deliveryRefundError("وسيلة قبض الأجرة القديمة تحتاج مسار تسوية متخصص");
-        const invoice=(await tx.select({customerId:invoices.customerId}).from(invoices).where(eq(invoices.id,Number(cn.invoiceId))).limit(1))[0];
-        pendingFeeRefundReceiptId=await createPendingDeliveryRefundTx(tx,{cn,kind:"FEE",method:source.paymentMethod as "CARD"|"TRANSFER"|"WALLET"|"CHECK",amount:toDbMoney(feeHeldNet),sourceReceiptIds:[Number(source.id)],customerId:invoice?.customerId??null},actor);
-      }else{
+    const original = sources[0];
+    if (original.paymentMethod !== "CASH") {
+      if (
+        !["CARD","TRANSFER","WALLET","CHECK"].includes(
+          original.paymentMethod,
+        )
+      )
+        throw deliveryRefundError("وسيلة قبض الأجرة القديمة تحتاج مسار تسوية متخصص");
+      const invoice = (
+        await tx.select({customerId:invoices.customerId}).from(invoices).where(eq(invoices.id, Number(source.invoiceId)))
+          .limit(1)
+      )[0];
+      pendingFeeRefundReceiptId = await createPendingDeliveryRefundTx(
+        tx,
+        {
+          ...(source.consignmentId == null
+            ? {
+                invoiceSource: {
+                  invoiceId: source.invoiceId,
+                  branchId: source.branchId,
+                  sourceNumber: source.sourceNumber ?? String(source.invoiceId),
+                },
+              }
+            : { cn: source.consignment! }),
+          kind: "FEE",
+          method: original.paymentMethod as
+            "CARD"|"TRANSFER"|"WALLET"|"CHECK",
+          amount: toDbMoney(feeHeldNet),
+          sourceReceiptIds: [Number(original.id)],
+          customerId:invoice?.customerId??null,
+        },
+        actor,
+      );
+    } else {
       const feeShift = prelockedReturnShift;
       if (!feeShift) {
         throw new TRPCError({
@@ -75,16 +154,30 @@ export async function refundHeldDeliveryFeeForReturnTx(tx: Tx, cn: typeof delive
         });
       }
       await assertCashOutAvailable(tx, {
-        branchId: Number(cn.branchId), cashBucket: "DRAWER", shiftId: feeShift.shiftId,
-        amount: feeHeldNet, operation: "رد أمانة أجرة التوصيل",
+        branchId: Number(source.branchId),
+        cashBucket: "DRAWER",
+        shiftId: feeShift.shiftId,
+        amount: feeHeldNet,
+        operation: "رد أمانة أجرة التوصيل",
       });
       const feeOut = await tx.insert(receipts).values({
-        branchId: Number(cn.branchId), shiftId: feeShift.shiftId, invoiceId: Number(cn.invoiceId),
-        direction: "OUT", amount: toDbMoney(feeHeldNet), paymentMethod: "CASH", cashBucket: "DRAWER",
-        status: "COMPLETED", partyType: "OTHER",
-        referenceNumber: `DLV-FEE-INV-${Number(cn.invoiceId)}`,
-        description: `ردّ أمانة أجرة توصيل — إرجاع ${cn.consignmentNumber}`,
+        branchId: Number(source.branchId),
+        shiftId: feeShift.shiftId,
+        invoiceId: Number(source.invoiceId),
+        direction: "OUT",
+        amount: toDbMoney(feeHeldNet),
+        paymentMethod: "CASH",
+        cashBucket: "DRAWER",
+        status: "COMPLETED",
+        partyType: "OTHER",
+        referenceNumber: `DLV-FEE-INV-${Number(source.invoiceId)}`,
+        description:
+          source.reason ??
+          `ردّ أمانة أجرة توصيل — إرجاع ${source.consignmentNumber}`,
         createdBy: actor.userId,
+        ...(source.approvedByManagerId == null
+          ? {}
+          : { approvedBy: source.approvedByManagerId, approvedAt: new Date() }),
       });
       await postEntry(tx, {
         entryType: "DELIVERY_FEE_HELD",
@@ -93,14 +186,19 @@ export async function refundHeldDeliveryFeeForReturnTx(tx: Tx, cn: typeof delive
           roleDebits: { COURIER_PAYABLE: feeHeldNet },
           roleCredits: { CASH: feeHeldNet },
         },
-        dedupeKey: `DELIVERY_FEE_HELD_REFUND:${cn.id}`,
-        branchId: Number(cn.branchId), invoiceId: Number(cn.invoiceId),
+        dedupeKey:
+          source.consignmentId == null
+            ? `DELIVERY_FEE_HELD_REFUND:INV:${source.invoiceId}`
+            : `DELIVERY_FEE_HELD_REFUND:${source.consignmentId}`,
+        branchId: Number(source.branchId),
+        invoiceId: Number(source.invoiceId),
         receiptId: extractInsertId(feeOut),
         amount: feeHeldNet.neg(),
-        notes: `ردّ أمانة أجرة توصيل — إرجاع ${cn.consignmentNumber}`,
+        notes:
+          source.reason ??
+          `ردّ أمانة أجرة توصيل — إرجاع ${source.consignmentNumber}`,
       });
     }
-
   }
   return { feeAlreadyPaidToCourier,pendingFeeRefundReceiptId };
 }

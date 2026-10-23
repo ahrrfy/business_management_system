@@ -16,6 +16,17 @@ import { openShift } from "../shiftService";
 import { payPartyDeliveryFees } from "../delivery/fees";
 import { todayUtcDate } from "../businessDay";
 import {
+  createWorkOrder,
+  startWorkOrder,
+  markWorkOrderReady,
+  deliverWorkOrder,
+} from "../workOrderService";
+import { getWorkOrderReverseDeliveryPreflight } from "../workOrder/reverseDelivery";
+import {
+  requestWorkOrderControl,
+  approveWorkOrderControlRequest,
+} from "../workOrder/controlRequests";
+import {
   approveAftercareCase,
   confirmAftercareDelivery,
   createAftercareCase,
@@ -829,6 +840,339 @@ describe("aftercare real document, stock, custody and fee integration", () => {
     });
     expect(await stock()).toBe(93);
     expect(await stock(2)).toBe(98);
+    expect(await originalState()).toEqual(original);
+  });
+
+  it("reprints actual delivered pure-service WO outputs without inventing an item, stock or another sale, sharing caps with its invoice", async () => {
+    const shift = await openShift(
+      { branchId: 1, openingBalance: "0.00", shiftType: "RECEPTION" },
+      MAKER,
+    );
+    const order = await createWorkOrder(
+      {
+        branchId: 1,
+        customerId: 1,
+        title: "تصميم خدمي بمخرجين",
+        quantity: 2,
+        salePrice: "10000.00",
+        baseVariantId: null,
+        materials: [],
+        deposit: "0.00",
+        clientRequestId: key(),
+      },
+      MAKER,
+    );
+    await startWorkOrder(order.workOrderId, CHECKER);
+    await markWorkOrderReady(order.workOrderId, CHECKER);
+    const delivered = await deliverWorkOrder(
+      {
+        workOrderId: order.workOrderId,
+        payment: { amount: "10000.00", method: "CASH" },
+        clientRequestId: key(),
+      },
+      MAKER,
+    );
+    expect(
+      await db()
+        .select()
+        .from(s.invoiceItems)
+        .where(eq(s.invoiceItems.invoiceId, delivered.invoiceId)),
+    ).toHaveLength(0);
+    const sourceState = async () => ({
+      workOrder: await db()
+        .select()
+        .from(s.workOrders)
+        .where(eq(s.workOrders.id, order.workOrderId)),
+      invoice: await db()
+        .select()
+        .from(s.invoices)
+        .where(eq(s.invoices.id, delivered.invoiceId)),
+      receipts: await db()
+        .select()
+        .from(s.receipts)
+        .where(eq(s.receipts.invoiceId, delivered.invoiceId)),
+      accounting: await db()
+        .select()
+        .from(s.accountingEntries)
+        .where(eq(s.accountingEntries.invoiceId, delivered.invoiceId)),
+      customer: await db()
+        .select()
+        .from(s.customers)
+        .where(eq(s.customers.id, 1)),
+    });
+    const before = await sourceState();
+    const original = await originalState();
+    const invoicesBefore = await db().select().from(s.invoices);
+    const receiptsBefore = await db().select().from(s.receipts);
+    const salesBefore = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(eq(s.accountingEntries.entryType, "SALE"));
+    const productsBefore = await db().select().from(s.products);
+    const variantsBefore = await db().select().from(s.productVariants);
+    const preflight = await getWorkOrderReverseDeliveryPreflight(
+      order.workOrderId,
+      CHECKER,
+    );
+    expect(preflight.eligible).toBe(true);
+    const reverse = await requestWorkOrderControl(
+      {
+        requestType: "REVERSE_DELIVERY",
+        requestKey: key(),
+        workOrderId: order.workOrderId,
+        baseVersion: preflight.version,
+        reason: "طلب عكس قبل فتح المعالجة",
+        payload: {
+          expectedVersion: preflight.version,
+          reopen: false,
+          refundShiftId: shift.shiftId,
+          refundSources: preflight.refundSources,
+        },
+      },
+      CHECKER,
+    );
+    const preview = await previewAftercareSource(
+      { workOrderId: order.workOrderId },
+      MAKER,
+    );
+    expect(preview.choices).toMatchObject([
+      {
+        originalInvoiceItemId: null,
+        sourceWorkOrderId: order.workOrderId,
+        variantId: null,
+        originalQuantity: 2,
+        availableForAftercare: 2,
+        label: { name: "تصميم خدمي بمخرجين" },
+        movements: [],
+      },
+    ]);
+    expect(
+      (await previewAftercareSource({ invoiceId: delivered.invoiceId }, MAKER))
+        .choices,
+    ).toEqual(preview.choices);
+    await expect(
+      previewAftercareSource({ workOrderId: order.workOrderId }, FOREIGN),
+    ).rejects.toThrow();
+    const input = {
+      workOrderId: order.workOrderId,
+      branchId: 1,
+      clientRequestId: key(),
+      reason: "إعادة مخرجات الخدمة المتفق عليها",
+      evidence: "طلب عميل مرتبط بالأمر المسلم",
+      lines: [
+        {
+          sourceWorkOrderId: order.workOrderId,
+          baseQuantity: 2,
+          disposition: "REPRINT" as const,
+          evidence: "إعادة مخرجين من أصل مخرجين",
+        },
+      ],
+    };
+    for (const disposition of ["REPLACEMENT", "MISSING_HELD"] as const) {
+      await expect(
+        createAftercareCase(
+          {
+            ...input,
+            clientRequestId: key(),
+            lines: [{ ...input.lines[0], disposition }],
+          },
+          MAKER,
+        ),
+      ).rejects.toThrow(/الخدمة الخالصة/);
+    }
+    await expect(
+      createAftercareCase(
+        {
+          ...input,
+          clientRequestId: key(),
+          lines: [{ ...input.lines[0], componentVariantId: 1 }],
+        },
+        MAKER,
+      ),
+    ).rejects.toThrow(/الخدمة الخالصة/);
+    const created = await createAftercareCase(input, MAKER);
+    expect(await createAftercareCase(input, MAKER)).toEqual({
+      id: created.id,
+      replay: true,
+    });
+    await expect(
+      createAftercareCase(
+        {
+          ...input,
+          workOrderId: undefined,
+          invoiceId: delivered.invoiceId,
+          clientRequestId: key(),
+          lines: [{ ...input.lines[0], baseQuantity: 1 }],
+        },
+        MAKER,
+      ),
+    ).rejects.toThrow(/تتجاوز مخرجات/);
+    expect(
+      (await previewAftercareSource({ invoiceId: delivered.invoiceId }, MAKER))
+        .choices[0].availableForAftercare,
+    ).toBe(0);
+    const reverseReviewer = { userId: 4, branchId: 1, role: "admin" };
+    await db().insert(s.users).values({
+      id: 4,
+      openId: "ac-wo-reverse-reviewer",
+      name: "مراجع عكس مستقل",
+      role: "admin",
+      branchId: 1,
+    });
+    await expect(
+      approveWorkOrderControlRequest(
+        reverse.id,
+        reverseReviewer,
+        "فحص العكس أثناء معالجة قائمة",
+      ),
+    ).rejects.toThrow(/معالجة أو عهدة مبيع فعالة/);
+    expect(
+      (
+        await db()
+          .select()
+          .from(s.workOrderControlRequests)
+          .where(eq(s.workOrderControlRequests.id, reverse.id))
+      )[0].status,
+    ).toBe("PENDING");
+    await approveAftercareCase(
+      { id: created.id, expectedVersion: 1, clientRequestId: key() },
+      CHECKER,
+    );
+    const data = await getAftercareCase(created.id, CHECKER);
+    expect(data.lines[0]).toMatchObject({
+      originalInvoiceItemId: null,
+      sourceWorkOrderId: order.workOrderId,
+      componentVariantId: null,
+      productName: "تصميم خدمي بمخرجين",
+    });
+    const prep = {
+      ...preparation(data, 2),
+      deliveryFee: "0.00",
+      lines: [
+        {
+          aftercareLineId: data.lines[0].id,
+          baseQuantity: 2,
+          materials: [{ variantId: 2, baseQuantity: 3 }],
+        },
+      ],
+    };
+    const execution = await prepareAftercareExecution(prep, CHECKER);
+    expect(await prepareAftercareExecution(prep, CHECKER)).toEqual({
+      id: execution.id,
+      replay: true,
+    });
+    await expect(
+      prepareAftercareExecution(
+        { ...prep, expectedVersion: 3, clientRequestId: key() },
+        CHECKER,
+      ),
+    ).rejects.toThrow(/حق الصرف المتبقي/);
+    const rows = await db()
+      .select()
+      .from(aftercareExecutionLines)
+      .where(eq(aftercareExecutionLines.executionId, execution.id));
+    expect(rows.filter((row) => row.kind === "OUTPUT")).toMatchObject([
+      {
+        variantId: null,
+        movementId: null,
+        lineCost: "0.00",
+        fulfilledBaseQuantity: 2,
+        custodyBaseQuantity: 2,
+      },
+    ]);
+    expect(rows.filter((row) => row.kind === "MATERIAL")).toMatchObject([
+      {
+        variantId: 2,
+        baseQuantity: 3,
+        fulfilledBaseQuantity: 0,
+        lineCost: "75.00",
+      },
+    ]);
+    const executionDetail = (await getAftercareCase(created.id, CHECKER))
+      .executions[0];
+    expect(executionDetail.lines).toHaveLength(2);
+    expect(
+      executionDetail.lines.find((line) => line.kind === "OUTPUT"),
+    ).toMatchObject({ variantId: null, productName: "تصميم خدمي بمخرجين" });
+    const sent = await dispatchAftercareExecution(
+      {
+        id: execution.id,
+        expectedVersion: 1,
+        clientRequestId: key(),
+        partyId: 1,
+      },
+      CHECKER,
+    );
+    expect(
+      (
+        await db()
+          .select()
+          .from(s.deliveryConsignments)
+          .where(eq(s.deliveryConsignments.id, sent.consignmentId!))
+      )[0],
+    ).toMatchObject({
+      invoiceId: null,
+      aftercareExecutionId: execution.id,
+      sourceType: "AFTERCARE_EXECUTION",
+      codAmount: "0.00",
+      feeCollection: "SHOP",
+    });
+    const delivery = {
+      id: execution.id,
+      expectedVersion: 2,
+      clientRequestId: key(),
+      result: "DELIVERED" as const,
+      proof: "استلم العميل المخرجين المعاد تنفيذهما",
+    };
+    await confirmAftercareDelivery(delivery, CHECKER);
+    await confirmAftercareDelivery(delivery, CHECKER);
+    const completed = await getAftercareCase(created.id, CHECKER);
+    await resolveAftercareCase(
+      {
+        id: created.id,
+        expectedVersion: completed.case.version,
+        clientRequestId: key(),
+        resolution: "تم تسليم مخرجات الخدمة كاملة دون تحصيل جديد",
+      },
+      CHECKER,
+    );
+    expect(await stock()).toBe(94);
+    expect(await stock(2)).toBe(97);
+    expect(
+      await db()
+        .select()
+        .from(s.inventoryMovements)
+        .where(eq(s.inventoryMovements.referenceType, "AFTERCARE")),
+    ).toHaveLength(1);
+    expect(
+      (
+        await db()
+          .select()
+          .from(s.accountingEntries)
+          .where(
+            eq(
+              s.accountingEntries.dedupeKey,
+              `AFTERCARE_ISSUE:${execution.id}`,
+            ),
+          )
+      )[0],
+    ).toMatchObject({
+      invoiceId: null,
+      cost: "75.00",
+      amount: "75.00",
+      revenue: "0.00",
+    });
+    expect(await db().select().from(s.invoices)).toEqual(invoicesBefore);
+    expect(await db().select().from(s.receipts)).toEqual(receiptsBefore);
+    expect(
+      await db()
+        .select()
+        .from(s.accountingEntries)
+        .where(eq(s.accountingEntries.entryType, "SALE")),
+    ).toEqual(salesBefore);
+    expect(await db().select().from(s.products)).toEqual(productsBefore);
+    expect(await db().select().from(s.productVariants)).toEqual(variantsBefore);
+    expect(await sourceState()).toEqual(before);
     expect(await originalState()).toEqual(original);
   });
 

@@ -47,6 +47,7 @@ import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 import { appErrorMessage } from "@shared/errors";
 import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
 import { fulfillmentRequests } from "../../../drizzle/fulfillmentSchema";
+import { assertNoPendingHeldFeeRefundTx } from "./feeHeld";
 
 /** Service-only context; it is never part of a router input. */
 export interface ShipmentDispatchContext {
@@ -422,6 +423,7 @@ export async function dispatchInvoiceInTx(
       inv.sourceType === "WORKORDER" && linkedOrders.length === 1
         ? linkedOrders[0]
         : undefined;
+    await assertNoPendingHeldFeeRefundTx(tx,{invoiceId:Number(inv.id)});
     if (
       inv.sourceType === "WORKORDER" &&
       (!linkedOrder ||

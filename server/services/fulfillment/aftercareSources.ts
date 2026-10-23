@@ -30,39 +30,50 @@ export async function lockAftercareSourceTx(
   if (Boolean(input.invoiceId) === Boolean(input.workOrderId))
     throw fulfillmentError("اختر فاتورة أصلية أو أمر شغل واحداً");
   let invoiceId = input.invoiceId;
-  let orderSource:
-    | {
-        branchId: number;
-        customerId: number | null;
-        status: string;
-        orderNumber: string;
-      }
-    | undefined;
-  if (input.workOrderId) {
+  let sourceWorkOrderId = input.workOrderId;
+  if (!sourceWorkOrderId && invoiceId) {
+    const linkedOrders = await tx
+      .select({ id: workOrders.id })
+      .from(workOrders)
+      .where(eq(workOrders.invoiceId, invoiceId))
+      .limit(2);
+    if (linkedOrders.length > 1)
+      throw fulfillmentError(
+        "الفاتورة مرتبطة بأكثر من أمر شغل؛ افتح أمر الشغل المقصود من تفاصيله",
+        "CONFLICT",
+      );
+    sourceWorkOrderId = linkedOrders[0]?.id;
+  }
+  let orderSource: typeof workOrders.$inferSelect | undefined;
+  if (sourceWorkOrderId) {
     const [order] = await tx
       .select()
       .from(workOrders)
-      .where(eq(workOrders.id, input.workOrderId))
+      .where(eq(workOrders.id, sourceWorkOrderId))
       .for("update")
       .limit(1);
     if (!order) throw fulfillmentError("أمر الشغل غير موجود", "NOT_FOUND");
-    assertFulfillmentBranch(actor, Number(order.branchId));
-    orderSource = {
-      branchId: Number(order.branchId),
-      customerId: order.customerId,
-      status: order.status,
-      orderNumber: order.orderNumber,
-    };
-    const [item] = await tx
-      .select({ invoiceId: invoiceItems.invoiceId })
-      .from(invoiceItems)
-      .where(eq(invoiceItems.workOrderId, order.id))
-      .limit(1);
-    if (!item)
+    assertFulfillmentBranch(actor, order.branchId);
+    orderSource = order;
+    if (order.invoiceId != null) invoiceId = order.invoiceId;
+    else {
+      const [item] = await tx
+        .select({ invoiceId: invoiceItems.invoiceId })
+        .from(invoiceItems)
+        .where(eq(invoiceItems.workOrderId, order.id))
+        .limit(1)
+        .for("share");
+      if (!item)
+        throw fulfillmentError(
+          "أمر الشغل لا يملك فاتورة تسليم أصلية موثقة؛ راجع مستند التسليم",
+        );
+      invoiceId = item.invoiceId;
+    }
+    if (input.invoiceId != null && invoiceId !== input.invoiceId)
       throw fulfillmentError(
-        "أمر الشغل لا يملك سطر فاتورة أصلياً موثقاً؛ اطلب مراجعة مستند التسليم",
+        "رابط فاتورة أمر الشغل تغيّر؛ أعد معاينة الأصل",
+        "CONFLICT",
       );
-    invoiceId = item.invoiceId;
   }
   if (!invoiceId) throw fulfillmentError("الفاتورة الأصلية غير محددة");
   const [invoice] = await tx
@@ -74,7 +85,7 @@ export async function lockAftercareSourceTx(
   if (!invoice)
     throw fulfillmentError("الفاتورة الأصلية غير موجودة", "NOT_FOUND");
   assertFulfillmentBranch(actor, Number(invoice.branchId));
-  if (input.workOrderId && invoice.sourceType !== "WORKORDER")
+  if (orderSource && invoice.sourceType !== "WORKORDER")
     throw fulfillmentError("فاتورة أمر الشغل لا تطابق مصدر التسليم");
   if (
     orderSource &&
@@ -88,9 +99,42 @@ export async function lockAftercareSourceTx(
     .where(eq(invoiceItems.invoiceId, invoice.id))
     .orderBy(invoiceItems.id)
     .for("update");
-  if (!items.length)
+  // Recheck the true backlink after obtaining the source mutex; the discovery read
+  // above must not take a shared WO lock before upgrading it to FOR UPDATE.
+  if (orderSource) {
+    const linkedOrders = await tx
+      .select({ id: workOrders.id })
+      .from(workOrders)
+      .where(eq(workOrders.invoiceId, invoice.id))
+      .limit(2)
+      .for("share");
+    if (
+      (input.invoiceId != null || !items.length) &&
+      (linkedOrders.length !== 1 || linkedOrders[0].id !== orderSource.id)
+    )
+      throw fulfillmentError(
+        "رابط فاتورة أمر الشغل غير منفرد؛ افتح الأصل الصحيح وحقق في علاقة التسليم",
+        "CONFLICT",
+      );
+  }
+  const pureWorkOrder =
+    !items.length &&
+    orderSource?.baseVariantId == null &&
+    orderSource?.invoiceId === invoice.id &&
+    invoice.sourceType === "WORKORDER"
+      ? orderSource
+      : null;
+  if (!items.length && !pureWorkOrder)
     throw fulfillmentError(
-      "لا توجد أسطر أصلية موثقة؛ راجع أمر الشغل ومستند تسليمه",
+      "لا توجد أسطر أصلية أو علاقة أمر خدمة خالص موثقة؛ راجع مستند التسليم",
+    );
+  if (
+    pureWorkOrder &&
+    (!Number.isSafeInteger(pureWorkOrder.quantity) ||
+      pureWorkOrder.quantity <= 0)
+  )
+    throw fulfillmentError(
+      "كمية مخرجات أمر الشغل الأصلية غير موثقة؛ راجع الأصل قبل اعتماد إعادة التنفيذ",
     );
   const components = items.length
     ? await tx
@@ -105,7 +149,7 @@ export async function lockAftercareSourceTx(
         .orderBy(invoiceItemBundleComponents.id)
         .for("update")
     : [];
-  return { invoice, items, components, orderSource };
+  return { invoice, items, components, orderSource, pureWorkOrder };
 }
 
 export type SourceSnapshot = Awaited<ReturnType<typeof lockAftercareSourceTx>>;
@@ -120,9 +164,10 @@ export function assertEligibleAftercareSource(source: SourceSnapshot) {
     );
 }
 export type AftercareSourceLine = {
-  originalInvoiceItemId: number;
+  originalInvoiceItemId?: number | null;
+  sourceWorkOrderId?: number | null;
   originalBundleComponentId?: number | null;
-  componentVariantId: number;
+  componentVariantId?: number | null;
   baseQuantity: number;
   disposition: "MISSING_HELD" | "REPLACEMENT" | "REPRINT";
   originalMovementId?: number | null;
@@ -137,9 +182,58 @@ export async function assertAftercareCapsTx(
   assertEligibleAftercareSource(source);
   const own = new Map<string, number>();
   const heldByMovement = new Map<number, number>();
+  let ownWorkOrderQuantity = 0;
   for (const line of lines) {
     if (!Number.isSafeInteger(line.baseQuantity) || line.baseQuantity <= 0)
       throw fulfillmentError("الكمية الأساس يجب أن تكون عدداً صحيحاً موجباً");
+    if (source.pureWorkOrder) {
+      const order = source.pureWorkOrder;
+      if (
+        line.sourceWorkOrderId !== order.id ||
+        line.originalInvoiceItemId != null ||
+        line.componentVariantId != null ||
+        line.originalBundleComponentId != null ||
+        line.originalMovementId != null ||
+        line.disposition !== "REPRINT"
+      )
+        throw fulfillmentError(
+          "الخدمة الخالصة تقبل إعادة تنفيذ مرتبطة بأمر الشغل نفسه فقط، دون صنف أو سطر فاتورة مختلق",
+        );
+      ownWorkOrderQuantity += line.baseQuantity;
+      const [allocated] = await tx
+        .select({
+          quantity: sql<number>`COALESCE(SUM(${aftercareLines.baseQuantity}),0)`,
+        })
+        .from(aftercareLines)
+        .innerJoin(aftercareCases, eq(aftercareCases.id, aftercareLines.caseId))
+        .where(
+          and(
+            eq(aftercareLines.sourceWorkOrderId, order.id),
+            ne(aftercareCases.status, "CANCELLED"),
+            excludingCaseId
+              ? ne(aftercareCases.id, excludingCaseId)
+              : undefined,
+          ),
+        )
+        .for("share");
+      if (
+        Number(allocated?.quantity ?? 0) + ownWorkOrderQuantity >
+        order.quantity
+      )
+        throw fulfillmentError(
+          "كمية إعادة التنفيذ تتجاوز مخرجات أمر الشغل الأصلي بعد المعالجات السابقة",
+          "CONFLICT",
+        );
+      continue;
+    }
+    if (
+      line.sourceWorkOrderId != null ||
+      line.originalInvoiceItemId == null ||
+      line.componentVariantId == null
+    )
+      throw fulfillmentError(
+        "حدد سطر الفاتورة ومكوّنه الحقيقي؛ المصدر ليس أمر خدمة خالصاً",
+      );
     const item = source.items.find(
       (item) => item.id === line.originalInvoiceItemId,
     );
@@ -289,9 +383,10 @@ export async function assertNoActiveAftercareForInvoiceTx(
       invoiceItems,
       eq(invoiceItems.workOrderId, aftercareCases.workOrderId),
     )
+    .leftJoin(workOrders, eq(workOrders.id, aftercareCases.workOrderId))
     .where(
       and(
-        sql`(${aftercareCases.invoiceId} = ${invoiceId} OR ${invoiceItems.invoiceId} = ${invoiceId})`,
+        sql`(${aftercareCases.invoiceId} = ${invoiceId} OR ${invoiceItems.invoiceId} = ${invoiceId} OR ${workOrders.invoiceId} = ${invoiceId})`,
         inArray(aftercareCases.status, ["DRAFT", "APPROVED", "IN_PROGRESS"]),
       ),
     )

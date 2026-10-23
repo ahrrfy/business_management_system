@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, like, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, like, ne, or, sql } from "drizzle-orm";
 import {
   aftercareCases,
   aftercareLines,
@@ -110,13 +110,18 @@ export async function getAftercareCase(id: number, actor: Actor) {
           productName: products.name,
           variantName: productVariants.variantName,
           sku: productVariants.sku,
+          workOrderTitle: workOrders.title,
         })
         .from(aftercareLines)
-        .innerJoin(
+        .leftJoin(
           productVariants,
           eq(productVariants.id, aftercareLines.componentVariantId),
         )
-        .innerJoin(products, eq(products.id, productVariants.productId))
+        .leftJoin(products, eq(products.id, productVariants.productId))
+        .leftJoin(
+          workOrders,
+          eq(workOrders.id, aftercareLines.sourceWorkOrderId),
+        )
         .where(eq(aftercareLines.caseId, id))
         .orderBy(aftercareLines.id);
       const executions = await tx
@@ -144,13 +149,22 @@ export async function getAftercareCase(id: number, actor: Actor) {
               line: aftercareExecutionLines,
               productName: products.name,
               variantName: productVariants.variantName,
+              workOrderTitle: workOrders.title,
             })
             .from(aftercareExecutionLines)
             .innerJoin(
+              aftercareLines,
+              eq(aftercareLines.id, aftercareExecutionLines.aftercareLineId),
+            )
+            .leftJoin(
+              workOrders,
+              eq(workOrders.id, aftercareLines.sourceWorkOrderId),
+            )
+            .leftJoin(
               productVariants,
               eq(productVariants.id, aftercareExecutionLines.variantId),
             )
-            .innerJoin(products, eq(products.id, productVariants.productId))
+            .leftJoin(products, eq(products.id, productVariants.productId))
             .where(inArray(aftercareExecutionLines.executionId, executionIds))
             .orderBy(aftercareExecutionLines.id)
         : [];
@@ -220,7 +234,11 @@ export async function getAftercareCase(id: number, actor: Actor) {
         : [];
       return {
         case: row,
-        lines: lines.map(({ line, ...label }) => ({ ...line, ...label })),
+        lines: lines.map(({ line, workOrderTitle, ...label }) => ({
+          ...line,
+          ...label,
+          productName: label.productName ?? workOrderTitle ?? "مخرج أمر شغل",
+        })),
         executions: executions.map(
           ({
             execution,
@@ -238,9 +256,11 @@ export async function getAftercareCase(id: number, actor: Actor) {
             ) ?? { earned: "0.00", paid: "0.00", due: "0.00" },
             lines: executionLines
               .filter(({ line }) => line.executionId === execution.id)
-              .map(({ line, ...label }) => ({
+              .map(({ line, workOrderTitle, ...label }) => ({
                 ...line,
                 ...label,
+                productName:
+                  label.productName ?? workOrderTitle ?? "مخرج أمر شغل",
                 unitCost: costVisible ? line.unitCost : null,
                 lineCost: costVisible ? line.lineCost : null,
               })),
@@ -418,28 +438,33 @@ export async function previewAftercareSource(
           eq(inventoryMovements.movementType, "OUT"),
         ),
       );
-    const allocated = await tx
-      .select({
-        itemId: aftercareLines.originalInvoiceItemId,
-        variantId: aftercareLines.componentVariantId,
-        quantity: sql<number>`SUM(${aftercareLines.baseQuantity})`,
-      })
-      .from(aftercareLines)
-      .innerJoin(aftercareCases, eq(aftercareCases.id, aftercareLines.caseId))
-      .where(
-        and(
-          sql`${aftercareLines.originalInvoiceItemId} IN (${sql.join(
-            source.items.map((item) => sql`${item.id}`),
-            sql`,`,
-          )})`,
-          sql`${aftercareCases.status} <> 'CANCELLED'`,
-        ),
-      )
-      .groupBy(
-        aftercareLines.originalInvoiceItemId,
-        aftercareLines.componentVariantId,
-      );
-    const choices = source.items.flatMap((item) => {
+    const allocated = source.items.length
+      ? await tx
+          .select({
+            itemId: aftercareLines.originalInvoiceItemId,
+            variantId: aftercareLines.componentVariantId,
+            quantity: sql<number>`SUM(${aftercareLines.baseQuantity})`,
+          })
+          .from(aftercareLines)
+          .innerJoin(
+            aftercareCases,
+            eq(aftercareCases.id, aftercareLines.caseId),
+          )
+          .where(
+            and(
+              sql`${aftercareLines.originalInvoiceItemId} IN (${sql.join(
+                source.items.map((item) => sql`${item.id}`),
+                sql`,`,
+              )})`,
+              sql`${aftercareCases.status} <> 'CANCELLED'`,
+            ),
+          )
+          .groupBy(
+            aftercareLines.originalInvoiceItemId,
+            aftercareLines.componentVariantId,
+          )
+      : [];
+    const itemChoices = source.items.flatMap((item) => {
       const parts = source.components.filter(
         (part) => part.invoiceItemId === item.id,
       );
@@ -465,6 +490,7 @@ export async function previewAftercareSource(
       ).map((choice) => ({
         ...choice,
         originalInvoiceItemId: item.id,
+        sourceWorkOrderId: null,
         label: variants.find((variant) => variant.id === choice.variantId),
         availableForAftercare: Math.max(
           0,
@@ -481,12 +507,52 @@ export async function previewAftercareSource(
         ),
       }));
     });
+    const pure = source.pureWorkOrder;
+    const [allocatedWorkOrder] = pure
+      ? await tx
+          .select({
+            quantity: sql<number>`COALESCE(SUM(${aftercareLines.baseQuantity}),0)`,
+          })
+          .from(aftercareLines)
+          .innerJoin(
+            aftercareCases,
+            eq(aftercareCases.id, aftercareLines.caseId),
+          )
+          .where(
+            and(
+              eq(aftercareLines.sourceWorkOrderId, pure.id),
+              ne(aftercareCases.status, "CANCELLED"),
+            ),
+          )
+          .for("share")
+      : [];
+    const choices = pure
+      ? [
+          {
+            originalInvoiceItemId: null,
+            sourceWorkOrderId: pure.id,
+            originalBundleComponentId: undefined,
+            variantId: null,
+            originalQuantity: pure.quantity,
+            remainingQuantity: pure.quantity,
+            availableForAftercare: Math.max(
+              0,
+              pure.quantity - Number(allocatedWorkOrder?.quantity ?? 0),
+            ),
+            label: { id: null, name: pure.title, variantName: null, sku: "" },
+            movements: [],
+          },
+        ]
+      : itemChoices;
     return {
       invoiceId: source.invoice.id,
-      workOrderId: actualSource.workOrderId ?? null,
+      workOrderId: actualSource.workOrderId ?? pure?.id ?? null,
       invoiceNumber: source.invoice.invoiceNumber,
       sourceNumber:
-        source.orderSource?.orderNumber ?? source.invoice.invoiceNumber,
+        actualSource.workOrderId || pure
+          ? (source.orderSource?.orderNumber ?? source.invoice.invoiceNumber)
+          : source.invoice.invoiceNumber,
+      entitlementUnit: pure ? "مخرج أمر شغل" : "وحدة أساس",
       branchId: source.invoice.branchId,
       customerId: source.invoice.customerId,
       choices,

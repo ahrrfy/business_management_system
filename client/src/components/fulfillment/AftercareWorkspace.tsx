@@ -218,11 +218,24 @@ function NewAftercare({ onCreated }: { onCreated: () => Promise<void> }) {
     { enabled: !!previewInput },
   );
   useEffect(() => {
-    if (preview.data) setSourceReference(preview.data.sourceNumber);
+    if (preview.data) {
+      setSourceReference(preview.data.sourceNumber);
+      setSourceKind(preview.data.workOrderId ? "WORK_ORDER" : "INVOICE");
+      if (
+        preview.data.choices.length === 1 &&
+        preview.data.choices[0].sourceWorkOrderId != null
+      ) {
+        setChoiceIndex("0");
+        setDisposition("REPRINT");
+        setMovement("");
+        setHeld(false);
+      }
+    }
   }, [preview.data]);
   const create = trpc.delivery.fulfillment.aftercare.create.useMutation();
   const action = useAftercareActions(onCreated);
-  const choice = preview.data?.choices[Number(choiceIndex)];
+  const choice =
+    choiceIndex === "" ? undefined : preview.data?.choices[Number(choiceIndex)];
   return (
     <div className="space-y-3 rounded border p-3">
       <p className="font-medium">فتح حالة من المستند الأصلي</p>
@@ -272,7 +285,7 @@ function NewAftercare({ onCreated }: { onCreated: () => Promise<void> }) {
             setChoiceIndex("");
           }}
         >
-          معاينة المكونات التاريخية
+          معاينة الأصل والمخرجات
         </Button>
       </div>
       {preview.error && (
@@ -288,18 +301,24 @@ function NewAftercare({ onCreated }: { onCreated: () => Promise<void> }) {
           </p>
           <div className="grid gap-3 sm:grid-cols-2">
             <Label>
-              المكوّن وقت البيع
+              المكوّن أو مخرج أمر الشغل الأصلي
               <AppSelect
                 value={choiceIndex}
                 onValueChange={(value) => {
                   setChoiceIndex(value);
                   setMovement("");
+                  setHeld(false);
+                  if (
+                    preview.data?.choices[Number(value)]?.sourceWorkOrderId !=
+                    null
+                  )
+                    setDisposition("REPRINT");
                 }}
               >
                 <option value="">اختر سطر الأصل</option>
                 {preview.data.choices.map((item, index) => (
                   <option
-                    key={`${item.originalInvoiceItemId}:${item.variantId}`}
+                    key={`${item.sourceWorkOrderId}:${item.originalInvoiceItemId}:${item.variantId}`}
                     value={String(index)}
                   >
                     {item.label?.name} {item.label?.variantName} — متاح للمعالجة{" "}
@@ -316,7 +335,10 @@ function NewAftercare({ onCreated }: { onCreated: () => Promise<void> }) {
                   setDisposition(value as AftercareDisposition)
                 }
               >
-                {AFTERCARE_DISPOSITIONS.map((value) => (
+                {AFTERCARE_DISPOSITIONS.filter(
+                  (value) =>
+                    choice?.sourceWorkOrderId == null || value === "REPRINT",
+                ).map((value) => (
                   <option key={value} value={value}>
                     {aftercareDispositionLabel[value]}
                   </option>
@@ -326,7 +348,9 @@ function NewAftercare({ onCreated }: { onCreated: () => Promise<void> }) {
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <Label>
-              الكمية بالوحدة الأساس
+              {choice?.sourceWorkOrderId != null
+                ? "عدد مخرجات أمر الشغل"
+                : "الكمية بالوحدة الأساس"}
               <MoneyInput
                 decimals={0}
                 value={quantity}
@@ -385,6 +409,7 @@ function NewAftercare({ onCreated }: { onCreated: () => Promise<void> }) {
                   ...lines,
                   {
                     originalInvoiceItemId: choice.originalInvoiceItemId,
+                    sourceWorkOrderId: choice.sourceWorkOrderId,
                     originalBundleComponentId: choice.originalBundleComponentId,
                     componentVariantId: choice.variantId,
                     disposition,
@@ -412,7 +437,8 @@ function NewAftercare({ onCreated }: { onCreated: () => Promise<void> }) {
                     (item) =>
                       item.originalInvoiceItemId ===
                         line.originalInvoiceItemId &&
-                      item.variantId === line.componentVariantId,
+                      item.variantId === line.componentVariantId &&
+                      item.sourceWorkOrderId === line.sourceWorkOrderId,
                   )?.label?.name
                 }{" "}
                 — {aftercareDispositionLabel[line.disposition]} —{" "}

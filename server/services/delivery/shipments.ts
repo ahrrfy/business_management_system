@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { assertNoPendingHeldFeeRefundTx } from "./feeHeld";
 import { appErrorMessage } from "@shared/errors";
 import {
   DEAD_INVOICE_STATUSES,
@@ -521,6 +522,7 @@ export async function dispatchInvoiceShipmentInTx(
         .for("update")
     : [];
   let leaderId: number | undefined;
+  for(const invoice of lockedInvoices)await assertNoPendingHeldFeeRefundTx(tx,{invoiceId:Number(invoice.id)});
   let leaderInvoiceId = ids[0];
   let retainedLeader: DeliveryConsignment | undefined;
   if (memberships.length) {

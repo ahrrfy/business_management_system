@@ -27,6 +27,7 @@ import { adjustCustomerBalance, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { closeDeferredSaleRefundEffectsTx } from "../reversal/deferredRefund";
 import { loadRefundCaps } from "../returns/refundCaps";
+import { loadExcessFeeSourceTx } from "./excessFeeRefund";
 import { reserveExternalRefundConfirmationTx } from "../externalRefundConfirmation";
 import { resolveBranchCashShiftTx } from "../shiftService";
 import {
@@ -42,8 +43,9 @@ import type { DeliveryTxActor } from "./types";
 type NonCashRail = "CARD" | "TRANSFER" | "WALLET" | "CHECK";
 type RefundNote = {
   kind: "FEE" | "GOODS";
-  consignmentId: number;
+  consignmentId: number | null;
   invoiceId: number;
+  purpose?: "CONSOLIDATION";
   sourceReceiptIds: number[];
   providerReference?: string;
 };
@@ -65,7 +67,10 @@ function parseNote(raw: string | null): RefundNote | null {
       const n = v.deliveryRefund as RefundNote;
       return n &&
         (n.kind === "FEE" || n.kind === "GOODS") &&
-        Number.isInteger(n.consignmentId) &&
+        (Number.isInteger(n.consignmentId) ||
+          (n.consignmentId === null &&
+            n.purpose === "CONSOLIDATION" &&
+            n.kind === "FEE")) &&
         Number.isInteger(n.invoiceId) &&
         Array.isArray(n.sourceReceiptIds)
         ? n
@@ -83,7 +88,12 @@ function scope(actor: DeliveryTxActor, branchId: number) {
 export async function createPendingDeliveryRefundTx(
   tx: Tx,
   input: {
-    cn: typeof deliveryConsignments.$inferSelect;
+    cn?: typeof deliveryConsignments.$inferSelect;
+    invoiceSource?: {
+      invoiceId: number;
+      branchId: number;
+      sourceNumber: string;
+    };
     kind: "FEE" | "GOODS";
     method: NonCashRail;
     amount: string;
@@ -92,7 +102,10 @@ export async function createPendingDeliveryRefundTx(
   },
   actor: DeliveryTxActor,
 ) {
-  if (input.cn.invoiceId == null)
+  const invoiceId = input.cn?.invoiceId ?? input.invoiceSource?.invoiceId;
+  const branchId = input.cn?.branchId ?? input.invoiceSource?.branchId;
+  const consignmentId = input.cn == null ? null : Number(input.cn.id);
+  if (invoiceId == null || branchId == null)
     throw deliveryRefundError(
       "مصدر الإرسالية لا يحمل فاتورة؛ استخدم مسار مصدر المعالجة المخصص",
     );
@@ -101,7 +114,7 @@ export async function createPendingDeliveryRefundTx(
     .from(receipts)
     .where(
       and(
-        eq(receipts.invoiceId, Number(input.cn.invoiceId)),
+        eq(receipts.invoiceId, Number(invoiceId)),
         eq(receipts.direction, "OUT"),
         inArray(receipts.status, ["PENDING", "COMPLETED"]),
       ),
@@ -110,7 +123,7 @@ export async function createPendingDeliveryRefundTx(
   const matching = rows.find((r) => {
     const n = parseNote(r.internalNote);
     return (
-      n?.consignmentId === Number(input.cn.id) &&
+      n?.consignmentId === consignmentId &&
       n.kind === input.kind &&
       r.paymentMethod === input.method
     );
@@ -124,8 +137,9 @@ export async function createPendingDeliveryRefundTx(
   }
   const note: RefundNote = {
     kind: input.kind,
-    consignmentId: Number(input.cn.id),
-    invoiceId: Number(input.cn.invoiceId),
+    consignmentId,
+    ...(consignmentId == null ? { purpose: "CONSOLIDATION" as const } : {}),
+    invoiceId: Number(invoiceId),
     sourceReceiptIds: input.sourceReceiptIds,
   };
   assertNonPhysicalOutReceipt({
@@ -136,8 +150,8 @@ export async function createPendingDeliveryRefundTx(
     operation: "طلب رد مقبوضات توصيل غير نقدي",
   });
   const inserted = await tx.insert(receipts).values({
-    branchId: Number(input.cn.branchId),
-    invoiceId: Number(input.cn.invoiceId),
+    branchId: Number(branchId),
+    invoiceId: Number(invoiceId),
     shiftId: null,
     direction: "OUT",
     amount: input.amount,
@@ -149,10 +163,10 @@ export async function createPendingDeliveryRefundTx(
     partyId: input.customerId,
     referenceNumber:
       input.kind === "FEE"
-        ? `DLV-FEE-INV-${Number(input.cn.invoiceId)}`
-        : `DLV-GOODS-REFUND-${Number(input.cn.id)}`,
+        ? `DLV-FEE-INV-${Number(invoiceId)}`
+        : `DLV-GOODS-REFUND-${consignmentId}`,
     internalNote: JSON.stringify({ deliveryRefund: note }),
-    description: `طلب استرداد ${input.kind === "FEE" ? "أمانة الأجرة" : "البضاعة"} — ${input.cn.consignmentNumber} — بانتظار اعتماد التنفيذ الخارجي`,
+    description: `طلب استرداد ${input.kind === "FEE" ? "أمانة الأجرة" : "البضاعة"} — ${input.cn?.consignmentNumber ?? input.invoiceSource?.sourceNumber} — بانتظار اعتماد التنفيذ الخارجي`,
     createdBy: actor.userId,
   });
   return extractInsertId(inserted);
@@ -182,7 +196,9 @@ async function assertReturnEligibleTx(
         .from(deliveryShipmentMembers)
         .where(eq(deliveryShipmentMembers.leaderConsignmentId, leader))
     : [];
-  const ids = Array.from(new Set([leader, Number(cn.id), ...members.map((m) => Number(m.id))])).sort((a, b) => a - b);
+  const ids = Array.from(
+    new Set([leader, Number(cn.id), ...members.map((m) => Number(m.id))]),
+  ).sort((a, b) => a - b);
   const rows = await tx
     .select()
     .from(deliveryConsignments)
@@ -415,42 +431,59 @@ export async function approveDeliveryPaymentRefund(
       throw deliveryRefundError(
         "حالة طلب الرد أو وسيلته لا تسمح بتنفيذ استرداد غير نقدي",
       );
-    let cn = (
-      await tx
-        .select()
-        .from(deliveryConsignments)
-        .where(eq(deliveryConsignments.id, note.consignmentId))
-        .limit(1)
-    )[0];
-    if (
-      !cn ||
-      Number(cn.invoiceId) !== note.invoiceId ||
-      Number(cn.branchId) !== Number(refund.branchId) ||
-      Number(refund.invoiceId) !== note.invoiceId
-    )
-      throw deliveryRefundError(
-        "مصدر طلب الرد لم يعد يطابق الإرسالية والفاتورة",
+    let cn: typeof deliveryConsignments.$inferSelect | undefined;
+    if (note.purpose === "CONSOLIDATION") {
+      const source = await loadExcessFeeSourceTx(
+        tx,
+        { sourceKind: "INVOICE", sourceId: note.invoiceId },
+        actor,
+        { lock: true, allowedPendingReceiptId: input.receiptId },
       );
-    await tx
-      .select({ id: deliveryParties.id })
-      .from(deliveryParties)
-      .where(eq(deliveryParties.id, Number(cn.partyId)))
-      .for("update");
-    await assertReturnEligibleTx(tx, cn, note.kind === "FEE");
-    cn = (
+      if (
+        source.receipt.id !== note.sourceReceiptIds[0] ||
+        !money(source.amount).eq(money(refund.amount))
+      )
+        throw deliveryRefundError(
+          "تغير مصدر الأجرة الزائدة منذ تقديم طلب الرد",
+        );
+    } else {
+      cn = (
+        await tx
+          .select()
+          .from(deliveryConsignments)
+          .where(eq(deliveryConsignments.id, note.consignmentId!))
+          .limit(1)
+      )[0];
+      if (
+        !cn ||
+        Number(cn.invoiceId) !== note.invoiceId ||
+        Number(cn.branchId) !== Number(refund.branchId) ||
+        Number(refund.invoiceId) !== note.invoiceId
+      )
+        throw deliveryRefundError(
+          "مصدر طلب الرد لم يعد يطابق الإرسالية والفاتورة",
+        );
       await tx
-        .select()
-        .from(deliveryConsignments)
-        .where(eq(deliveryConsignments.id, note.consignmentId))
-        .for("update")
-        .limit(1)
-    )[0];
-    if (
-      !cn ||
-      Number(cn.invoiceId) !== note.invoiceId ||
-      Number(cn.branchId) !== Number(refund.branchId)
-    )
-      throw deliveryRefundError("تغيّر مصدر الإرسالية أثناء اعتماد الرد");
+        .select({ id: deliveryParties.id })
+        .from(deliveryParties)
+        .where(eq(deliveryParties.id, Number(cn.partyId)))
+        .for("update");
+      await assertReturnEligibleTx(tx, cn, note.kind === "FEE");
+      cn = (
+        await tx
+          .select()
+          .from(deliveryConsignments)
+          .where(eq(deliveryConsignments.id, note.consignmentId!))
+          .for("update")
+          .limit(1)
+      )[0];
+      if (
+        !cn ||
+        Number(cn.invoiceId) !== note.invoiceId ||
+        Number(cn.branchId) !== Number(refund.branchId)
+      )
+        throw deliveryRefundError("تغيّر مصدر الإرسالية أثناء اعتماد الرد");
+    }
     const currentRefund = (
       await tx
         .select()
@@ -490,7 +523,7 @@ export async function approveDeliveryPaymentRefund(
     )[0]!;
     const amount = round2(money(refund.amount));
     if (note.kind === "FEE") {
-      if (cn.feeSettledAt != null)
+      if (cn?.feeSettledAt != null)
         throw deliveryRefundError(
           "أجرة الناقل سددت فعلياً؛ ردها للعميل يحتاج قرار مصروف مستقل",
         );
@@ -515,7 +548,7 @@ export async function approveDeliveryPaymentRefund(
             eq(receipts.invoiceId, note.invoiceId),
             inArray(receipts.referenceNumber, [
               `DLV-FEE-INV-${note.invoiceId}`,
-              String(cn.consignmentNumber),
+              ...(cn == null ? [] : [String(cn.consignmentNumber)]),
             ]),
             eq(receipts.direction, "OUT"),
             eq(receipts.status, "COMPLETED"),
@@ -588,7 +621,7 @@ export async function approveDeliveryPaymentRefund(
       amount: note.kind === "FEE" ? amount.neg() : amount,
       paymentMethod: refund.paymentMethod,
       dedupeKey: `DELIVERY_PAYMENT_REFUND:${input.receiptId}`,
-      notes: `استرداد ${note.kind} ${cn.consignmentNumber} — مرجع المزوّد ${reference}`,
+      notes: `استرداد ${note.kind} ${cn?.consignmentNumber ?? `INV-${note.invoiceId}`} — مرجع المزوّد ${reference}`,
       postingIntent: createPostingIntent(
         note.kind === "FEE"
           ? "DELIVERY_FEE_HELD_PAYOUT"
@@ -658,6 +691,7 @@ export async function listDeliveryPaymentRefunds(
       .select({
         id: receipts.id,
         invoiceId: receipts.invoiceId,
+        workOrderId: receipts.workOrderId,
         amount: receipts.amount,
         method: receipts.paymentMethod,
         status: receipts.status,
@@ -669,7 +703,10 @@ export async function listDeliveryPaymentRefunds(
       .from(receipts)
       .where(
         and(
-          like(receipts.internalNote, '{"deliveryRefund":%'),
+          or(
+            like(receipts.internalNote, '{"deliveryRefund":%'),
+            like(receipts.internalNote, "WORK_ORDER_CUSTOMER_REFUND:FEE:%"),
+          ),
           ...(branch == null ? [] : [eq(receipts.branchId, branch)]),
         ),
       )
@@ -703,8 +740,16 @@ export async function listDeliveryPaymentRefunds(
       pending: pending.map((r) => ({
         ...r,
         consignmentId: parseNote(r.note)?.consignmentId ?? null,
-        kind: parseNote(r.note)?.kind ?? null,
-        providerReference: parseNote(r.note)?.providerReference ?? null,
+        kind:
+          parseNote(r.note)?.kind ??
+          (r.note?.startsWith("WORK_ORDER_CUSTOMER_REFUND:FEE:")
+            ? "FEE"
+            : null),
+        providerReference:
+          parseNote(r.note)?.providerReference ??
+          (r.note?.startsWith("WORK_ORDER_CUSTOMER_REFUND:FEE:")
+            ? decodeURIComponent(r.note.split(":")[4] ?? "")
+            : null),
       })),
       candidates: candidates.filter(
         (r) => money(r.fee).gt(0) && r.feeSettledAt == null,

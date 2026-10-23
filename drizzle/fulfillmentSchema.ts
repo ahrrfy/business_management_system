@@ -474,8 +474,9 @@ export const aftercareLines = mysqlTable(
     id: id("id").autoincrement().primaryKey(),
     caseId: id("caseId").notNull(),
     originalInvoiceItemId: id("originalInvoiceItemId"),
+    sourceWorkOrderId: id("sourceWorkOrderId"),
     originalBundleComponentId: id("originalBundleComponentId"),
-    componentVariantId: id("componentVariantId").notNull(),
+    componentVariantId: id("componentVariantId"),
     disposition: mysqlEnum("disposition", AFTERCARE_DISPOSITIONS).notNull(),
     baseQuantity: int("baseQuantity").notNull(),
     executedBaseQuantity: int("executedBaseQuantity").default(0).notNull(),
@@ -492,6 +493,7 @@ export const aftercareLines = mysqlTable(
       t.originalInvoiceItemId,
       t.componentVariantId,
     ),
+    sourceOrderIdx: index("idx_acl_source_wo").on(t.sourceWorkOrderId),
     caseFk: foreignKey({
       name: "fk_acl_case",
       columns: [t.caseId],
@@ -501,6 +503,11 @@ export const aftercareLines = mysqlTable(
       name: "fk_acl_item",
       columns: [t.originalInvoiceItemId],
       foreignColumns: [invoiceItems.id],
+    }),
+    sourceOrderFk: foreignKey({
+      name: "fk_acl_source_wo",
+      columns: [t.sourceWorkOrderId],
+      foreignColumns: [workOrders.id],
     }),
     snapshotFk: foreignKey({
       name: "fk_acl_snapshot",
@@ -525,6 +532,17 @@ export const aftercareLines = mysqlTable(
     qtyCheck: check(
       "chk_acl_qty",
       sql`${t.baseQuantity} > 0 AND ${t.executedBaseQuantity} >= 0 AND ${t.executedBaseQuantity} <= ${t.baseQuantity} AND ${t.deliveredBaseQuantity} >= 0 AND ${t.deliveredBaseQuantity} <= ${t.executedBaseQuantity}`,
+    ),
+    sourceCheck: check(
+      "chk_acl_source",
+      sql`(${t.originalInvoiceItemId} IS NOT NULL) + (${t.sourceWorkOrderId} IS NOT NULL) = 1`,
+    ),
+    serviceCheck: check(
+      "chk_acl_service",
+      sql`(${t.sourceWorkOrderId} IS NULL AND ${t.componentVariantId} IS NOT NULL)
+        OR (${t.sourceWorkOrderId} IS NOT NULL AND ${t.disposition} = 'REPRINT'
+          AND ${t.componentVariantId} IS NULL AND ${t.originalBundleComponentId} IS NULL
+          AND ${t.originalMovementId} IS NULL AND ${t.heldConfirmedBy} IS NULL AND ${t.heldConfirmedAt} IS NULL)`,
     ),
     heldCheck: check(
       "chk_acl_held",
@@ -634,7 +652,7 @@ export const aftercareExecutionLines = mysqlTable(
     id: id("id").autoincrement().primaryKey(),
     executionId: id("executionId").notNull(),
     aftercareLineId: id("aftercareLineId").notNull(),
-    variantId: id("variantId").notNull(),
+    variantId: id("variantId"),
     kind: mysqlEnum("kind", ["OUTPUT", "MATERIAL"]).default("OUTPUT").notNull(),
     outputLineId: id("outputLineId").generatedAlwaysAs(
       sql`(CASE WHEN kind = 'OUTPUT' THEN aftercareLineId ELSE NULL END)`,
@@ -656,7 +674,11 @@ export const aftercareExecutionLines = mysqlTable(
     sourceIdx: index("idx_ael_source").on(t.aftercareLineId),
     movementUq: unique("uq_ael_movement").on(t.movementId),
     reuseUq: unique("uq_ael_reused_from").on(t.reusedFromLineId),
-    reuseFk: foreignKey({ name: "fk_ael_reused_from", columns: [t.reusedFromLineId], foreignColumns: [t.id] }),
+    reuseFk: foreignKey({
+      name: "fk_ael_reused_from",
+      columns: [t.reusedFromLineId],
+      foreignColumns: [t.id],
+    }),
     outputUq: unique("uq_ael_output").on(t.executionId, t.outputLineId),
     executionFk: foreignKey({
       name: "fk_ael_execution",
@@ -685,6 +707,11 @@ export const aftercareExecutionLines = mysqlTable(
     kindCheck: check(
       "chk_ael_kind",
       sql`(${t.kind} = 'OUTPUT' AND ${t.fulfilledBaseQuantity} = ${t.baseQuantity}) OR (${t.kind} = 'MATERIAL' AND ${t.fulfilledBaseQuantity} = 0 AND ${t.custodyBaseQuantity} = 0 AND ${t.deliveredBaseQuantity} = 0 AND ${t.returnedBaseQuantity} = 0 AND ${t.movementId} IS NOT NULL)`,
+    ),
+    variantCheck: check(
+      "chk_ael_variant",
+      sql`${t.variantId} IS NOT NULL OR (${t.kind} = 'OUTPUT'
+        AND ${t.movementId} IS NULL AND ${t.unitCost} = 0 AND ${t.lineCost} = 0)`,
     ),
     costCheck: check(
       "chk_ael_cost",

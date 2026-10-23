@@ -79,9 +79,10 @@ export type CreateAftercareCaseInput = AftercareSourceInput & {
   evidence: string;
   originalConsignmentId?: number;
   lines: {
-    originalInvoiceItemId: number;
+    originalInvoiceItemId?: number | null;
+    sourceWorkOrderId?: number | null;
     originalBundleComponentId?: number;
-    componentVariantId: number;
+    componentVariantId?: number | null;
     baseQuantity: number;
     disposition: AftercareDisposition;
     originalMovementId?: number;
@@ -250,6 +251,7 @@ export async function createAftercareCase(
       input.lines.map((line) => ({
         caseId: id,
         originalInvoiceItemId: line.originalInvoiceItemId,
+        sourceWorkOrderId: line.sourceWorkOrderId,
         originalBundleComponentId: line.originalBundleComponentId,
         componentVariantId: line.componentVariantId,
         disposition: line.disposition,
@@ -289,15 +291,7 @@ export async function approveAftercareCase(input: Identity, actor: Actor) {
         "يلزم اعتماد موظف آخر بعد مراجعة الدليل والعهدة",
         "FORBIDDEN",
       );
-    await assertAftercareCapsTx(
-      tx,
-      source,
-      lines.map((line) => ({
-        ...line,
-        originalInvoiceItemId: line.originalInvoiceItemId ?? 0,
-      })),
-      row.id,
-    );
+    await assertAftercareCapsTx(tx, source, lines, row.id);
     await tx
       .update(aftercareCases)
       .set({
@@ -337,15 +331,7 @@ export async function prepareAftercareExecution(
     assertFulfillmentVersion(row, input.expectedVersion);
     if (!["APPROVED", "IN_PROGRESS"].includes(row.status) || !row.approvedBy)
       throw fulfillmentError("يلزم اعتماد الحالة أولاً");
-    await assertAftercareCapsTx(
-      tx,
-      source,
-      lines.map((line) => ({
-        ...line,
-        originalInvoiceItemId: line.originalInvoiceItemId ?? 0,
-      })),
-      row.id,
-    );
+    await assertAftercareCapsTx(tx, source, lines, row.id);
     if (
       !input.lines.length ||
       new Set(input.lines.map((line) => line.aftercareLineId)).size !==
@@ -452,8 +438,13 @@ export async function prepareAftercareExecution(
         } else {
           if (selected.materials?.length)
             throw fulfillmentError("الخامات الإضافية تخص إعادة التصنيع فقط");
-          if (line.disposition === "REPLACEMENT")
+          if (line.disposition === "REPLACEMENT") {
+            if (line.componentVariantId == null)
+              throw fulfillmentError(
+                "البديل الإضافي يحتاج صنف مخزون أصلياً؛ الخدمة الخالصة تعالج بإعادة التنفيذ فقط",
+              );
             variantIds.push(line.componentVariantId);
+          }
         }
       }
     }
@@ -487,6 +478,8 @@ export async function prepareAftercareExecution(
         (output) => output.aftercareLineId === line.id,
       );
       if (!previous && line.disposition === "REPLACEMENT") {
+        if (line.componentVariantId == null)
+          throw fulfillmentError("صنف البديل غير محدد");
         const variant = await loadAftercareProductTx(
           tx,
           line.componentVariantId,

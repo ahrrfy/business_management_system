@@ -24,7 +24,7 @@ import { postEntry } from "../ledgerService";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, round2, toDbMoney } from "../money";
 import { resolveBranchCashShiftTx } from "../shiftService";
-import { assertCashOutAvailable } from "../cash/cashAvailability";
+import { assertCashOutAvailable, assertNonPhysicalOutReceipt } from "../cash/cashAvailability";
 import type { Actor } from "../tx";
 
 export interface RefundWorkOrderFeeHeldOpts {
@@ -110,6 +110,7 @@ export async function requestNoncashWorkOrderFeeRefundTx(
       .where(eq(workOrders.id, opts.workOrderId))
       .limit(1)
   )[0];
+  assertNonPhysicalOutReceipt({classification:"NON_CASH_METHOD",paymentMethod:source.paymentMethod,cashBucket:null,approvalStatus:"PENDING_APPROVAL",operation:"طلب رد أمانة توصيل أمر شغل غير نقدي"});
   const inserted = await tx.insert(receipts).values({
     branchId: opts.branchId,
     workOrderId: opts.workOrderId,

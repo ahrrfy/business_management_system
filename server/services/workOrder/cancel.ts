@@ -20,6 +20,7 @@ import { logAuditTx } from "../auditService";
 import type { TrpcContext } from "../../context";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { reserveExternalRefundConfirmationTx } from "../externalRefundConfirmation";
+import { loadExcessFeeSourceTx } from "../delivery/excessFeeRefund";
 import { appErrorMessage } from "@shared/errors";
 import { refundRailIsImmediate, refundRailNeedsReference, refundRailReceiptShape, type RefundRail } from "@shared/refundRail";
 // ⛔ التسمية العربية للحالة من قاموسها الوحيد — لا تُعاد كتابتها هنا (§٨ قواميس حاكمة).
@@ -1036,6 +1037,25 @@ export async function approveWorkOrderCancellationRefund(
         }),
       });
     }
+    const refundPreview = (
+      await tx
+        .select({
+          workOrderId: receipts.workOrderId,
+          note: receipts.internalNote,
+        })
+        .from(receipts)
+        .where(eq(receipts.id, receiptId))
+        .limit(1)
+    )[0];
+    if (
+      refundPreview?.workOrderId != null &&
+      refundPreview.note?.startsWith("WORK_ORDER_CUSTOMER_REFUND:FEE:")
+    )
+      await tx
+        .select({ id: workOrders.id })
+        .from(workOrders)
+        .where(eq(workOrders.id, Number(refundPreview.workOrderId)))
+        .for("update");
     const refund = (
       await tx.select().from(receipts).where(eq(receipts.id, receiptId)).for("update").limit(1)
     )[0];
@@ -1122,6 +1142,13 @@ export async function approveWorkOrderCancellationRefund(
     }
 
     const noteParts = refund.internalNote.split(":");
+    if (feeRefund && wo.status === "READY")
+      await loadExcessFeeSourceTx(
+        tx,
+        { sourceKind: "WORK_ORDER", sourceId: workOrderId },
+        { ...actor, branchId: Number(refund.branchId) },
+        { lock: true, allowedPendingReceiptId: receiptId },
+      );
     const refundKind = noteParts[1];
     const noteWorkOrderId = Number(noteParts[2] ?? 0);
     /**

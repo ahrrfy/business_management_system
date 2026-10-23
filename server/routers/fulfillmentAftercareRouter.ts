@@ -103,16 +103,27 @@ export const fulfillmentAftercareRouter = router({
         originalConsignmentId: id.optional(),
         lines: z
           .array(
-            z.object({
-              originalInvoiceItemId: id,
-              originalBundleComponentId: id.optional(),
-              componentVariantId: id,
-              disposition: z.enum(AFTERCARE_DISPOSITIONS),
-              baseQuantity: id,
-              originalMovementId: id.optional(),
-              physicalHeldConfirmed: z.boolean().optional(),
-              evidence: text,
-            }),
+            z
+              .object({
+                originalInvoiceItemId: id.nullish(),
+                sourceWorkOrderId: id.nullish(),
+                originalBundleComponentId: id.optional(),
+                componentVariantId: id.nullish(),
+                disposition: z.enum(AFTERCARE_DISPOSITIONS),
+                baseQuantity: id,
+                originalMovementId: id.optional(),
+                physicalHeldConfirmed: z.boolean().optional(),
+                evidence: text,
+              })
+              .refine(
+                (line) =>
+                  (line.originalInvoiceItemId != null) !==
+                  (line.sourceWorkOrderId != null),
+                {
+                  message: "حدد سطر الفاتورة أو أمر الخدمة الخالص، لا كليهما",
+                  path: ["sourceWorkOrderId"],
+                },
+              ),
           )
           .min(1)
           .max(100),
