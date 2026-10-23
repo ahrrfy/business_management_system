@@ -4,6 +4,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import {
   createFulfillmentRequest,
+  reassignFulfillmentRequest,
   releaseFulfillmentRequest,
 } from "../fulfillment/requests";
 import { processPayment } from "../sale/payment";
@@ -11,8 +12,14 @@ import {
   initiateExternalPaymentAttempt,
   confirmExternalPaymentAttempt,
 } from "../posExternalPayment";
-import { confirmConsignmentDelivery } from "../delivery/courier";
+import {
+  acknowledgeConsignmentClaim,
+  confirmConsignmentDelivery,
+} from "../delivery/courier";
 import { dispatchInvoiceToDelivery } from "../delivery/dispatchInvoice";
+import { cancelShipmentAssignment } from "../delivery/shipmentOperations";
+import { recordDeliveryRemittance } from "../delivery/remittance";
+import { openShift } from "../shiftService";
 
 const admin = { userId: 1, branchId: 1, role: "admin" };
 const cashier = { userId: 2, branchId: 1, role: "cashier" };
@@ -75,7 +82,20 @@ beforeEach(async () => {
       createdBy: 2,
     });
 });
-async function dispatchRequest() {
+async function dispatchRequest(grouped = false) {
+  if (grouped)
+    await db().insert(s.invoices).values({
+      id: 2,
+      invoiceNumber: "FC-PAID-MEMBER",
+      branchId: 1,
+      customerId: 1,
+      total: "2000",
+      subtotal: "2000",
+      paidAmount: "2000",
+      status: "PAID",
+      paymentMode: "COD",
+      createdBy: 2,
+    });
   const request = await createFulfillmentRequest(
     {
       branchId: 1,
@@ -86,7 +106,9 @@ async function dispatchRequest() {
       partyId: 1,
       deliveryFee: "1000",
       feeCollection: "COURIER",
-      sources: [{ invoiceId: 1 }],
+      sources: grouped
+        ? [{ invoiceId: 1 }, { invoiceId: 2 }]
+        : [{ invoiceId: 1 }],
       clientRequestId: "fc-request-create",
     },
     admin,
@@ -136,6 +158,230 @@ async function payCard(amount = "4000", key = "fc-card-pay") {
 }
 
 describe("request goods collection while courier is in transit", () => {
+  it.each([false, true])(
+    "rebases the replacement claim after a real counter payment (grouped=%s), then collects and remits the full remaining 6000 exactly once",
+    async (grouped) => {
+      const sent = await dispatchRequest(grouped);
+      await payCard();
+      const [oldClaim] = await db()
+        .select()
+        .from(s.deliveryConsignments)
+        .where(eq(s.deliveryConsignments.id, sent.consignmentId));
+      await acknowledgeConsignmentClaim(
+        {
+          consignmentId: sent.consignmentId,
+          expectedClaimVersion: oldClaim.codClaimVersion,
+          clientRequestId: "fc-before-reassign-ack",
+        },
+        { userId: 3 },
+      );
+      const originalReceipts = await db().select().from(s.receipts);
+      const originalEvents = await db().select().from(s.deliveryEvents);
+      const originalLedger = await db().select().from(s.deliveryLedgerEntries);
+      const stockBefore = await db().select().from(s.inventoryMovements);
+      const salesBefore = (
+        await db().select().from(s.accountingEntries)
+      ).filter((r) => r.entryType === "SALE");
+      await cancelShipmentAssignment(
+        {
+          consignmentId: sent.consignmentId,
+          reason: "تأجيل التوصيل بعد قبض الكاونتر",
+          clientRequestId: "fc-reassign-cancel",
+        },
+        admin,
+      );
+      const released = (
+        await db().select().from(s.deliveryLedgerEntries)
+      ).filter((r) => r.entryType === "COD_RELEASED");
+      expect(released.map((r) => r.amount).sort()).toEqual([
+        "4000.00",
+        "6000.00",
+      ]);
+      const reassign = {
+        id: sent.request.id,
+        expectedVersion: sent.request.version,
+        consignmentId: sent.consignmentId,
+        clientRequestId: "fc-reassign",
+      };
+      await reassignFulfillmentRequest(reassign, admin);
+      const claims = await db().select().from(s.deliveryConsignments);
+      const replacement = claims.find((r) => r.id === sent.consignmentId)!;
+      expect(replacement).toMatchObject({
+        codAmount: "6000.00",
+        counterSettledAmount: "0.00",
+        codClaimVersion: oldClaim.codClaimVersion + 1,
+      });
+      expect(claims.every((r) => r.counterSettledAmount === "0.00")).toBe(true);
+      expect(replacement.courierAckClaimVersion).not.toBe(
+        replacement.codClaimVersion,
+      );
+      const replacementEvents = await db().select().from(s.deliveryEvents);
+      const replacementLedger = await db()
+        .select()
+        .from(s.deliveryLedgerEntries);
+      await reassignFulfillmentRequest(reassign, admin);
+      expect(await db().select().from(s.deliveryEvents)).toEqual(
+        replacementEvents,
+      );
+      expect(await db().select().from(s.deliveryLedgerEntries)).toEqual(
+        replacementLedger,
+      );
+      expect(await db().select().from(s.receipts)).toEqual(originalReceipts);
+      expect(
+        replacementEvents.filter((r) =>
+          originalEvents.some((old) => old.id === r.id),
+        ),
+      ).toEqual(originalEvents);
+      expect(
+        replacementLedger.filter((r) =>
+          originalLedger.some((old) => old.id === r.id),
+        ),
+      ).toEqual(originalLedger);
+      expect(
+        replacementEvents.find(
+          (r) =>
+            r.eventType === "COD_CLAIM_CHANGED" &&
+            r.consignmentId === replacement.id &&
+            (r.payload as { claimVersion?: number } | null)?.claimVersion ===
+              replacement.codClaimVersion,
+        )?.payload,
+      ).toMatchObject({
+        invoiceId: 1,
+        claimVersion: replacement.codClaimVersion,
+        ackRequired: true,
+      });
+      await expect(
+        acknowledgeConsignmentClaim(
+          {
+            consignmentId: sent.consignmentId,
+            expectedClaimVersion: oldClaim.codClaimVersion,
+            clientRequestId: "fc-stale-reassign-ack",
+          },
+          { userId: 3 },
+        ),
+      ).rejects.toThrow(/تغيرت المطالبة/);
+      await acknowledgeConsignmentClaim(
+        {
+          consignmentId: sent.consignmentId,
+          expectedClaimVersion: replacement.codClaimVersion,
+          clientRequestId: "fc-reassign-ack",
+        },
+        { userId: 3 },
+      );
+      const collect = {
+        consignmentId: sent.consignmentId,
+        collectedAmount: "6000",
+        clientRequestId: "fc-reassign-collect",
+      };
+      await confirmConsignmentDelivery(collect, { userId: 3 });
+      await confirmConsignmentDelivery(collect, { userId: 3 });
+      await openShift(
+        { branchId: 1, openingBalance: "0", shiftType: "RECEPTION" },
+        admin,
+      );
+      const remit = {
+        branchId: 1,
+        partyId: 1,
+        lines: [{ consignmentId: sent.consignmentId, collectedAmount: "6000" }],
+        countedCash: "6000",
+        shiftType: "RECEPTION" as const,
+        clientRequestId: "fc-reassign-remit",
+      };
+      await recordDeliveryRemittance(remit, admin);
+      await recordDeliveryRemittance(remit, admin);
+      const invoices = await db().select().from(s.invoices);
+      expect(invoices.find((r) => r.id === 1)?.paidAmount).toBe("10000.00");
+      expect(invoices).toHaveLength(grouped ? 2 : 1);
+      expect((await db().select().from(s.customers))[0].currentBalance).toBe(
+        "0.00",
+      );
+      expect(
+        (await db().select().from(s.deliveryParties))[0].currentBalance,
+      ).toBe("0.00");
+      expect(
+        (await db().select().from(s.deliveryConsignments)).find(
+          (r) => r.id === sent.consignmentId,
+        ),
+      ).toMatchObject({
+        codAmount: "6000.00",
+        counterSettledAmount: "0.00",
+        collectedAmount: "6000.00",
+        moneyStatus: "SETTLED",
+      });
+      const receipts = await db().select().from(s.receipts);
+      expect(receipts.filter((r) => r.paymentMethod === "CARD")).toEqual(
+        originalReceipts,
+      );
+      expect(receipts.filter((r) => r.paymentMethod === "CASH")).toHaveLength(
+        1,
+      );
+      expect(receipts.find((r) => r.paymentMethod === "CASH")?.amount).toBe(
+        "6000.00",
+      );
+      expect(await db().select().from(s.inventoryMovements)).toEqual(
+        stockBefore,
+      );
+      expect(
+        (await db().select().from(s.accountingEntries)).filter(
+          (r) => r.entryType === "SALE",
+        ),
+      ).toEqual(salesBefore);
+      const finalLedger = await db().select().from(s.deliveryLedgerEntries);
+      const total = (type: string) =>
+        finalLedger
+          .filter((r) => r.entryType === type)
+          .reduce((sum, r) => sum + Number(r.amount), 0);
+      expect(total("COD_ASSIGNED")).toBe(16000);
+      expect(total("COD_RELEASED")).toBe(10000);
+      expect(total("COD_REMITTED")).toBe(6000);
+    },
+  );
+
+  it("keeps a legacy reassignment without counter settlement at its original COD and replays the replacement claim once", async () => {
+    const first = await dispatchInvoiceToDelivery(
+      {
+        invoiceId: 1,
+        partyId: 1,
+        deliveryFee: "0",
+        clientRequestId: "fc-legacy-first",
+      },
+      admin,
+    );
+    await cancelShipmentAssignment(
+      {
+        consignmentId: first.consignmentId,
+        reason: "إعادة جدولة",
+        clientRequestId: "fc-legacy-cancel",
+      },
+      admin,
+    );
+    const input = {
+      invoiceId: 1,
+      partyId: 1,
+      deliveryFee: "0",
+      clientRequestId: "fc-legacy-reassign",
+    };
+    await dispatchInvoiceToDelivery(input, admin);
+    const [claim] = await db().select().from(s.deliveryConsignments);
+    const events = await db().select().from(s.deliveryEvents);
+    await dispatchInvoiceToDelivery(input, admin);
+    expect((await db().select().from(s.deliveryConsignments))[0]).toEqual(
+      claim,
+    );
+    expect(claim).toMatchObject({
+      id: first.consignmentId,
+      codAmount: "10000.00",
+      counterSettledAmount: "0.00",
+      codClaimVersion: 2,
+    });
+    expect(await db().select().from(s.deliveryEvents)).toEqual(events);
+    expect(
+      events.filter((r) => r.eventType === "COD_CLAIM_CHANGED"),
+    ).toHaveLength(1);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect((await db().select().from(s.invoices))[0].paidAmount).toBe("0.00");
+  });
+
   it("posts the actual CARD receipt once, releases exposure atomically, and requires a new courier claim ACK", async () => {
     const sent = await dispatchRequest();
     const [before] = await db().select().from(s.deliveryConsignments);

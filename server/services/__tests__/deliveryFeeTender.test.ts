@@ -9,6 +9,7 @@ import { createWorkOrder } from "../workOrderService";
 import { approveWorkOrderCancellationRefund } from "../workOrder/cancel";
 import { refundWorkOrderDeliveryFeeHeld } from "../workOrder/deliveryFeeRefund";
 import { withTx } from "../tx";
+import { money } from "../money";
 import { truncateTables } from "./__testUtils__";
 
 const actor = {userId:1, branchId:1, role:"cashier"} as const;
@@ -94,6 +95,37 @@ describe("actual tender allocation for held delivery fee",()=>{
   const sale=await createConfirmedPosSale(saleInput,actor);const snap=await snapshot(sale.invoiceId);
   expect(snap.inv.paidAmount).toBe("50000.00");expect(snap.cash).toBe("20000.00");expect(snap.rows).toHaveLength(3);
   expect((await createConfirmedPosSale(saleInput,actor)).invoiceId).toBe(sale.invoiceId);
+ });
+ it.each(["CARD","CASH","LEGACY_CASH"] as const)("split cash change retains only goods cash with %s fee funding and replays once",async(feeFunding)=>{
+  const combinedCard=feeFunding==="CARD",attemptId=await proof(combinedCard?"15000":"10000");
+  const card={method:"CARD" as const,amount:"10000",externalPaymentAttemptId:attemptId};
+  const cash={method:"CASH" as const,amount:"50000"};
+  const saleInput=input();saleInput.payment=null;
+  saleInput.payments=feeFunding==="CASH"?[cash,card]:[card,cash];
+  if(feeFunding!=="LEGACY_CASH")saleInput.deliveryFeeTender={method:feeFunding,combinedWithPaymentIndex:0};
+  const sale=await createConfirmedPosSale(saleInput,actor),snap=await snapshot(sale.invoiceId);
+  const cashGoods=snap.rows.find(r=>r.paymentMethod==="CASH"&&r.id!==snap.fee.id)!;
+  expect(snap.inv.paidAmount).toBe("50000.00");expect(snap.rows).toHaveLength(3);
+  expect(cashGoods.amount).toBe("40000.00");
+  expect(money(cash.amount).minus(money(cashGoods.amount)).toFixed(2)).toBe("10000.00");
+  expect(snap.fee).toMatchObject({paymentMethod:combinedCard?"CARD":"CASH",amount:"5000.00",cashBucket:combinedCard?null:"DRAWER"});
+  expect(snap.cash).toBe(combinedCard?"40000.00":"45000.00");
+  expect(snap.rows.every(r=>r.direction==="IN")).toBe(true);
+  const attempt=(await db().select().from(s.externalPaymentAttempts).where(eq(s.externalPaymentAttempts.id,attemptId)))[0];
+  expect(attempt.amount).toBe(combinedCard?"15000.00":"10000.00");expect(attempt.consumedAt).not.toBeNull();
+  expect((await createConfirmedPosSale(saleInput,actor)).invoiceId).toBe(sale.invoiceId);
+  const replay=await snapshot(sale.invoiceId);expect(replay.rows).toHaveLength(3);expect(replay.cash).toBe(snap.cash);
+ });
+ it("split cash returned entirely as change creates no goods cash receipt and keeps only the cash fee",async()=>{
+  const attemptId=await proof("50000"),saleInput=input();saleInput.payment=null;
+  saleInput.payments=[{method:"CASH",amount:"10000"},{method:"CARD",amount:"50000",externalPaymentAttemptId:attemptId}];
+  saleInput.deliveryFeeTender={method:"CASH",combinedWithPaymentIndex:0};
+  const sale=await createConfirmedPosSale(saleInput,actor),snap=await snapshot(sale.invoiceId);
+  expect(snap.inv.paidAmount).toBe("50000.00");expect(snap.rows).toHaveLength(2);expect(snap.cash).toBe("5000.00");
+  expect(snap.rows.filter(r=>r.paymentMethod==="CASH")).toEqual([snap.fee]);
+  expect(snap.rows.find(r=>r.paymentMethod==="CARD")?.amount).toBe("50000.00");
+  expect((await createConfirmedPosSale(saleInput,actor)).invoiceId).toBe(sale.invoiceId);
+  expect((await snapshot(sale.invoiceId)).rows).toHaveLength(2);
  });
  it("noncash fee without confirmed proof cannot create business effects",async()=>{
   const saleInput=input();saleInput.deliveryFeeTender={method:"CARD",reference:"UNVERIFIED"};

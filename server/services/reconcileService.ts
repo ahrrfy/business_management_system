@@ -9,6 +9,7 @@ import {
   deliveryConsignments,
   deliveryParties,
   doubleEntrySettings,
+  fulfillmentChargePayments,
   inventoryMovements,
   invoices,
   journalEntries,
@@ -551,6 +552,7 @@ export async function reconcileDoubleEntryShadowWindow(
  *            + Σ RETURN.amount على فواتير العميل  (مخزَّن سالباً ⇒ يطرح المرتجع)
  *            + Σ PAYMENT_OUT.amount على فواتير العميل (مرتجع نقدي مَردّه يَزيد paidAmount عبر returnSale)
  *            + Σ OPENING.amount للعميل (قيد ترسيخ الرصيد الافتتاحي المستورد — import-integration)
+ *            + صافي استحقاقات الأجور المستقلة وإشعارات تخفيضها، مع خصم تخصيص القبض وحده دون العهدة الزائدة.
  *
  * (returnSale ينقص paidAmount بـcashRefund، فـ(total − paidAmount) يَكبر بـcashRefund؛
  *  PAYMENT_OUT.amount = cashRefund موجباً ⇒ نضيفه فيُلغى هذا الكِبَر، وتبقى RETURN.amount السالبة
@@ -579,6 +581,18 @@ export async function reconcileCustomerBalances(): Promise<ReconcileResult[]> {
     .groupBy(accountingEntries.customerId);
   const openingMap = new Map(openingSum.map((r) => [Number(r.customerId), String(r.opening ?? "0")]));
 
+  // Independent charge claims and their credits affect AR without creating sale invoices.
+  const chargeSum = await db.select({
+    customerId: accountingEntries.customerId,
+    net: sql<string>`COALESCE(SUM(${accountingEntries.amount}), 0)`,
+  }).from(accountingEntries).where(and(
+    sql`${accountingEntries.customerId} IS NOT NULL`,
+    eq(accountingEntries.entryType, "ADJUST"),
+    sql`(${accountingEntries.dedupeKey} LIKE 'FULFILLMENT_CHARGE_ACCRUAL:%'
+      OR ${accountingEntries.dedupeKey} LIKE 'FULFILLMENT_CHARGE_CREDIT:%')`,
+  )).groupBy(accountingEntries.customerId);
+  const chargeMap = new Map(chargeSum.map((r) => [Number(r.customerId), String(r.net ?? "0")]));
+
   // سندات العميل المستقلّة (B1): PAYMENT_IN/PAYMENT_OUT مع customerId وبلا invoiceId.
   // - voucher RECEIPT (PAYMENT_IN) ⇒ adjustCustomerBalance(-amount) ⇒ AR ينقص ⇒ نطرحها من المُتوقَّع.
   // - voucher PAYMENT (PAYMENT_OUT) ⇒ adjustCustomerBalance(+amount) ⇒ AR يزيد ⇒ نضيفها.
@@ -598,6 +612,13 @@ export async function reconcileCustomerBalances(): Promise<ReconcileResult[]> {
     .select({
       customerId: accountingEntries.customerId,
       net: sql<string>`COALESCE(SUM(CASE
+        WHEN ${accountingEntries.dedupeKey} LIKE 'FULFILLMENT_COURIER_EXCESS:%'
+          OR ${accountingEntries.dedupeKey} LIKE 'FULFILLMENT_CHARGE_EXCESS_REFUND:%' THEN 0
+        WHEN ${accountingEntries.entryType} = 'PAYMENT_IN'
+          AND ${accountingEntries.dedupeKey} LIKE 'FULFILLMENT_CHARGE_COLLECTION:R:%' THEN -COALESCE((
+            SELECT SUM(fcp.amount) FROM ${fulfillmentChargePayments} fcp
+            WHERE fcp.receiptId = ${accountingEntries.receiptId} AND fcp.kind = 'COLLECTION'
+          ), 0)
         WHEN ${accountingEntries.entryType} = 'PAYMENT_IN'  THEN -CAST(${accountingEntries.amount} AS DECIMAL(15,2))
         WHEN ${accountingEntries.entryType} = 'PAYMENT_OUT' THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
         ELSE 0 END), 0)`,
@@ -652,12 +673,14 @@ export async function reconcileCustomerBalances(): Promise<ReconcileResult[]> {
   for (const row of invSum) seen.add(Number(row.customerId));
   for (const row of openingSum) seen.add(Number(row.customerId));
   for (const row of voucherSum) seen.add(Number(row.customerId));
+  for (const row of chargeSum) seen.add(Number(row.customerId));
   for (const c of actuals) if (money(c.balance ?? "0").abs().gt(0)) seen.add(Number(c.id));
 
   const issues: ReconcileResult[] = [];
   for (const customerId of Array.from(seen)) {
     const expected = money(invMap.get(customerId) ?? "0")
       .plus(money(openingMap.get(customerId) ?? "0"))
+      .plus(money(chargeMap.get(customerId) ?? "0"))
       .plus(money(voucherMap.get(customerId) ?? "0"));
     const actual = money(actualMap.get(customerId) ?? "0");
     const drift = expected.minus(actual).abs();

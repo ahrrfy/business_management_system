@@ -691,24 +691,22 @@ describe("classified fulfillment charge lifecycle", () => {
       // The reservation belongs to a real persisted OUT receipt, never an invented invoice/id.
       await withTx(async (tx) => {
         const receiptId = extractInsertId(
-          await tx
-            .insert(s.receipts)
-            .values({
-              branchId: 1,
-              direction: "OUT",
-              amount: "100",
-              paymentMethod: method,
-              cashBucket: null,
-              status: "COMPLETED",
-              approvalStatus: "APPROVED",
-              partyType: "OTHER",
-              counterpartyName: "مستفيد رد خارجي مستقل",
-              referenceNumber: reference,
-              description: "إيصال مسار رد مستقل لا يخص مطالبة الأجر",
-              createdBy: manager.userId,
-              executedBy: manager.userId,
-              executedAt: new Date(),
-            }),
+          await tx.insert(s.receipts).values({
+            branchId: 1,
+            direction: "OUT",
+            amount: "100",
+            paymentMethod: method,
+            cashBucket: null,
+            status: "COMPLETED",
+            approvalStatus: "APPROVED",
+            partyType: "OTHER",
+            counterpartyName: "مستفيد رد خارجي مستقل",
+            referenceNumber: reference,
+            description: "إيصال مسار رد مستقل لا يخص مطالبة الأجر",
+            createdBy: manager.userId,
+            executedBy: manager.userId,
+            executedAt: new Date(),
+          }),
         );
         await reserveExternalRefundConfirmationTx(tx, {
           receiptId,
@@ -1185,6 +1183,224 @@ describe("classified fulfillment charge lifecycle", () => {
         collectedAmount: "500.00",
       },
     );
+  });
+  it("lists, refunds and remits proven anonymous courier excess without inventing customer AR", async () => {
+    const customersBefore = await db()
+      .select()
+      .from(s.customers)
+      .orderBy(s.customers.id);
+    await db()
+      .insert(s.fulfillmentRequests)
+      .values({
+        id: 1,
+        branchId: 1,
+        customerId: null,
+        requestNumber: "FC-ANON-REQUEST",
+        recipientName: "مستلم نقدي بلا حساب",
+        recipientPhone: "+9647707654321",
+        deliveryAddress: "بغداد",
+        createdBy: cashier.userId,
+        clientRequestId: key(),
+        sourceHash: "a".repeat(64),
+      });
+    await db()
+      .insert(s.invoices)
+      .values({
+        id: 1,
+        branchId: 1,
+        customerId: null,
+        invoiceNumber: "FC-ANON-PAID",
+        sourceType: "POS",
+        sourceId: key(),
+        subtotal: "2000",
+        total: "2000",
+        paidAmount: "2000",
+        status: "PAID",
+        createdBy: cashier.userId,
+      });
+    await db()
+      .insert(s.deliveryParties)
+      .values({ id: 1, name: "ناقل المستلم النقدي", branchId: 1 });
+    await db()
+      .insert(s.deliveryConsignments)
+      .values({
+        id: 1,
+        consignmentNumber: "FC-ANON-CN",
+        branchId: 1,
+        partyId: 1,
+        sourceType: "INVOICE",
+        sourceId: 1,
+        invoiceId: 1,
+        fulfillmentRequestId: 1,
+        codAmount: "0",
+        feeCollection: "SHOP",
+        deliveryFee: "0",
+        endCustomerId: null,
+        recipientName: "مستلم نقدي بلا حساب",
+        recipientPhone: "+9647707654321",
+        dispatchedBy: cashier.userId,
+      });
+    await withTx(async (tx) => {
+      await attachFulfillmentRequestClaimsTx(
+        tx,
+        {
+          requestId: 1,
+          consignmentId: 1,
+          partyId: 1,
+          branchId: 1,
+          clientRequestId: key(),
+        },
+        manager,
+      );
+      expect(
+        await collectAssignedConsignmentClaimsTx(
+          tx,
+          { consignmentId: 1, actualAmount: "500", eventKey: key() },
+          manager,
+        ),
+      ).toMatchObject({
+        invoiceAmount: "0.00",
+        chargeAmount: "0.00",
+        excessAmount: "500.00",
+      });
+      await tx
+        .update(s.deliveryConsignments)
+        .set({ parcelStatus: "DELIVERED", courierDeliveredAt: new Date() })
+        .where(eq(s.deliveryConsignments.id, 1));
+    });
+    const list = await listFulfillmentCourierExcess({ branchId: 1 }, manager),
+      source = list.rows[0];
+    expect(list.total).toBe(1);
+    expect(source).toMatchObject({
+      fulfillmentRequestId: 1,
+      customerId: null,
+      customerName: "مستلم نقدي بلا حساب",
+      customerPhone: "+9647707654321",
+      originalAmount: "500.00",
+      remainingAmount: "500.00",
+    });
+    expect(
+      (
+        await listFulfillmentCourierExcess(
+          { branchId: 1, search: "0770765" },
+          manager,
+        )
+      ).rows.map((r) => r.originalExcessEntryId),
+    ).toEqual([source.originalExcessEntryId]);
+    expect(
+      (
+        await listFulfillmentCourierExcess(
+          { branchId: 2 },
+          { userId: 3, branchId: 2, role: "cashier" },
+        )
+      ).rows,
+    ).toHaveLength(0);
+    const refund = {
+      fulfillmentRequestId: 1,
+      expectedVersion: source.requestVersion,
+      consignmentId: 1,
+      originalExcessEntryId: source.originalExcessEntryId,
+      amount: "500",
+      reason: "رد قبض مثبت للمستلم النقدي الحقيقي",
+      clientRequestId: key(),
+      tender: {
+        method: "CASH" as const,
+        cashBucket: "DRAWER" as const,
+        shiftId: 2,
+      },
+    };
+    const before = await financialSnapshot();
+    await expect(
+      refundFulfillmentCourierExcess(refund, cashier),
+    ).rejects.toThrow();
+    await expect(
+      refundFulfillmentCourierExcess(
+        { ...refund, amount: "501", clientRequestId: key() },
+        manager,
+      ),
+    ).rejects.toThrow(/يتجاوز/);
+    expect(await financialSnapshot()).toEqual(before);
+    const result = await refundFulfillmentCourierExcess(refund, manager),
+      afterRefund = await financialSnapshot();
+    expect(await refundFulfillmentCourierExcess(refund, manager)).toEqual(
+      result,
+    );
+    expect(await financialSnapshot()).toEqual(afterRefund);
+    const [receipt] = await db()
+      .select()
+      .from(s.receipts)
+      .where(eq(s.receipts.id, result.receiptId));
+    expect(receipt).toMatchObject({
+      direction: "OUT",
+      amount: "500.00",
+      partyType: "OTHER",
+      partyId: null,
+      counterpartyName: "مستلم نقدي بلا حساب",
+      paymentMethod: "CASH",
+      cashBucket: "DRAWER",
+      shiftId: 2,
+    });
+    expect(JSON.parse(receipt.internalNote!)).toMatchObject({
+      fulfillmentRequestId: 1,
+      consignmentId: 1,
+      originalExcessEntryId: source.originalExcessEntryId,
+    });
+    expect(
+      (await listFulfillmentCourierExcess({ branchId: 1 }, manager)).rows[0]
+        .remainingAmount,
+    ).toBe("0.00");
+    expect(
+      (await db().select().from(s.deliveryParties))[0].currentBalance,
+    ).toBe("500.00");
+    expect(
+      await getFinancialPosition({ branchId: 1, verify: false }),
+    ).toMatchObject({
+      arDebit: "0.00",
+      arCredit: "0.00",
+      deliveryFloat: "500.00",
+    });
+    const remit = {
+      branchId: 1,
+      partyId: 1,
+      lines: [{ consignmentId: 1, collectedAmount: "500" }],
+      countedCash: "500",
+      targetShiftId: 1,
+      clientRequestId: key(),
+    };
+    const remitted = await recordDeliveryRemittance(remit, cashier),
+      afterRemit = await financialSnapshot();
+    expect((await recordDeliveryRemittance(remit, cashier)).remittanceId).toBe(
+      remitted.remittanceId,
+    );
+    expect(await financialSnapshot()).toEqual(afterRemit);
+    expect(
+      await getFinancialPosition({ branchId: 1, verify: false }),
+    ).toMatchObject({
+      arDebit: "0.00",
+      arCredit: "0.00",
+      deliveryFloat: "0.00",
+      cash: "0.00",
+    });
+    expect(
+      (await db().select().from(s.deliveryParties))[0].currentBalance,
+    ).toBe("0.00");
+    expect(
+      await db().select().from(s.customers).orderBy(s.customers.id),
+    ).toEqual(customersBefore);
+    expect((await db().select().from(s.invoices))[0]).toMatchObject({
+      customerId: null,
+      paidAmount: "2000.00",
+    });
+    expect(await db().select().from(fulfillmentCharges)).toHaveLength(0);
+    expect(await db().select().from(fulfillmentChargePayments)).toHaveLength(0);
+    expect(
+      (await db().select().from(s.accountingEntries)).every(
+        (e) => e.customerId === null,
+      ),
+    ).toBe(true);
+    expect(
+      (await db().select().from(s.journalLines)).filter((l) => l.role === "AR"),
+    ).toHaveLength(0);
   });
   it("independent charge AR appears in aging and statement without multiplying source invoices", async () => {
     const row = await approved();

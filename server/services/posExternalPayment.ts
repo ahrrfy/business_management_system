@@ -26,7 +26,7 @@ import { appErrorMessage } from "@shared/errors";
 import { paymentMethodCompact } from "@shared/terms";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { logger } from "../logger";
-import { money, toDbMoney } from "./money";
+import { money, round2, toDbMoney } from "./money";
 import { assertPosPaymentMethodEnabled } from "./posPaymentPolicy";
 import { createSaleInTx, DIGITAL_SALE_CAPABILITY, notifySaleCustomerAfterCommit,
 } from "./sale/create";
@@ -1352,9 +1352,23 @@ async function createConfirmedFeeTenderSaleInTx(
     (r) => !r.referenceNumber?.startsWith("DLV-FEE-"),
   );
   if (!feeRow) throw feeTenderError("إيصال أمانة الأجرة غير موجود");
+  // The sale keeps noncash in full and returns excess cash as change. Fee money
+  // is separate from this goods-only budget, including on idempotent replay.
+  const nonCashGoods = legs.reduce((sum, leg) => leg.method === "CASH" ? sum : sum.plus(round2(money(leg.amount))), money(0));
+  const cashGoodsBudget = round2(money(sale.total).minus(round2(money(input.preCollected?.amount ?? "0"))).minus(nonCashGoods));
+  let cashGoodsRemaining = cashGoodsBudget.gt(0) ? cashGoodsBudget : money(0);
+  let goodsReceiptIndex = 0;
   for (const group of groups) {
+    let goodsAmount = group.idx >= 0 ? round2(money(group.leg.amount)) : money(0);
+    if (group.idx >= 0 && group.leg.method === "CASH") {
+      goodsAmount = goodsAmount.lt(cashGoodsRemaining) ? goodsAmount : cashGoodsRemaining;
+      cashGoodsRemaining = round2(cashGoodsRemaining.minus(goodsAmount));
+    }
+    const expectedAmount = group.leg.method === "CASH"
+      ? goodsAmount.plus(group.fee ? fee : money(0))
+      : group.amount;
     const allocation = [
-      ...(group.idx >= 0 ? [goodsRows[group.idx]] : []),
+      ...(goodsAmount.gt(0) ? [goodsRows[goodsReceiptIndex++]] : []),
       ...(group.fee ? [feeRow] : []),
     ];
     if (
@@ -1366,7 +1380,7 @@ async function createConfirmedFeeTenderSaleInTx(
       ) ||
       !allocation
         .reduce((sum, r) => sum.plus(money(r.amount)), money("0"))
-        .eq(group.amount)
+        .eq(expectedAmount)
     ) {
       throw feeTenderError(
         "مجموع الإيصالات المخصصة لا يطابق مبلغ القبض المؤكد أو وسيلته",
@@ -1407,6 +1421,7 @@ async function createConfirmedFeeTenderSaleInTx(
       }
     }
   }
+  if (goodsReceiptIndex !== goodsRows.length) throw feeTenderError("عدد إيصالات البضاعة لا يطابق تخصيصات القبض المحتفظ بها");
   return sale;
 }
 

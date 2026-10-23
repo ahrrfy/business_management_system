@@ -669,6 +669,10 @@ export async function dispatchInvoiceInTx(
           endCustomerId: inv.customerId ?? null,
           codAmount: toDbMoney(codAmount),
           collectedAmount: "0",
+          // The replacement claim already excludes all historical counter receipts.
+          // Preserve their events, but do not subtract the old claim's offset again.
+          counterSettledAmount: "0",
+          codClaimVersion: already.codClaimVersion + 1,
           deliveryFee: toDbMoney(fee),
           feeCollection,
           feeSettledAt: null,
@@ -772,6 +776,20 @@ export async function dispatchInvoiceInTx(
         entryType: "COD_ASSIGNED",
         amount: toDbMoney(codAmount),
         actorUserId: actor.userId,
+      });
+    }
+
+    if (already) {
+      await appendDeliveryEvent(tx, {
+        eventKey: `CN:${consignmentId}:CLAIM_REACTIVATED:${input.clientRequestId ?? dispatchedAt.getTime()}`,
+        consignmentId,
+        eventType: "COD_CLAIM_CHANGED",
+        actorUserId: actor.userId,
+        payload: {
+          invoiceId: Number(inv.id),
+          claimVersion: already.codClaimVersion + 1,
+          ackRequired: true,
+        },
       });
     }
 

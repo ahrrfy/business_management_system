@@ -149,14 +149,25 @@ export function ChargeExcessRefundWorkspace() {
   }
   const columns = useMemo<ColumnDef<Row>[]>(
     () => [
-      { accessorKey: "customerName", header: "العميل" },
+      {
+        accessorKey: "customerName",
+        header: "العميل / المستلم",
+        cell: ({ row }) => (
+          <span>
+            {row.original.customerName}
+            {row.original.customerId == null ? " — بلا حساب عميل" : ""}
+          </span>
+        ),
+      },
       { accessorKey: "requestNumber", header: "الطلب" },
       { accessorKey: "consignmentNumber", header: "الإرسالية" },
       {
         id: "date",
         header: "تاريخ القبض الأصلي",
         cell: ({ row }) =>
-          new Date(row.original.collectedAt).toLocaleDateString("ar-IQ-u-nu-latn"),
+          new Date(row.original.collectedAt).toLocaleDateString(
+            "ar-IQ-u-nu-latn",
+          ),
       },
       {
         id: "amount",
@@ -276,9 +287,10 @@ export function ChargeExcessRefundWorkspace() {
           }}
         >
           <p className="text-sm">
-            {source.customerName} — {source.requestNumber} —{" "}
-            {source.consignmentNumber} — المتبقي {fmt(source.remainingAmount)}{" "}
-            د.ع
+            {source.customerName}
+            {source.customerId == null ? " — مستلم بلا حساب عميل" : ""} —{" "}
+            {source.requestNumber} — {source.consignmentNumber} — المتبقي{" "}
+            {fmt(source.remainingAmount)} د.ع
           </p>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <label className="grid gap-1 text-sm">

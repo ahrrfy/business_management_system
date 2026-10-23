@@ -34,6 +34,7 @@ import {
 } from "../fulfillment/chargeDelivery";
 import { truncateTables } from "./__testUtils__";
 import { recordDeliveryRemittance } from "../delivery/remittance";
+import { reconcileCustomerBalances } from "../reconcileService";
 
 const maker = { userId: 1, branchId: 1, role: "cashier" };
 const checker = { userId: 2, branchId: 1, role: "manager" };
@@ -44,8 +45,10 @@ function db() {
   if (!value) throw new Error("test database required");
   return value;
 }
-const position = (asOf?: string, branchId = 1) =>
-  getFinancialPosition({ branchId, asOf, verify: false });
+const position = async (asOf?: string, branchId = 1) => {
+  expect(await reconcileCustomerBalances()).toEqual([]);
+  return getFinancialPosition({ branchId, asOf, verify: false });
+};
 const pnl = async () =>
   (
     await getProfitAndLoss({
@@ -200,6 +203,14 @@ async function payee(id: number, amount: string) {
 }
 
 describe.sequential("classified fulfillment financial report effects", () => {
+  it("reconciles an independent unpaid charge and still reports a real customer balance drift", async () => {
+    await approved();
+    expect(await reconcileCustomerBalances()).toEqual([]);
+    await db().update(s.customers).set({ currentBalance: "2017" }).where(eq(s.customers.id, 1));
+    expect(await reconcileCustomerBalances()).toEqual([{
+      entity: "customer", id: 1, expected: "2000.00", actual: "2017.00", drift: "17.00",
+    }]);
+  });
   it("recognizes outsourced gross revenue and cost once, then moves AR/AP into real cash", async () => {
     const row = await approved({
       category: "OUTSOURCED",

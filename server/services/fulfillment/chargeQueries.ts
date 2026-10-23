@@ -418,7 +418,7 @@ export async function listFulfillmentCourierExcess(
         eq(fulfillmentRequests.branchId, input.branchId),
         eq(accountingEntries.branchId, input.branchId),
         eq(accountingEntries.entryType, "PAYMENT_IN"),
-        eq(accountingEntries.customerId, fulfillmentRequests.customerId),
+        sql`${accountingEntries.customerId} <=> ${fulfillmentRequests.customerId}`,
         sql`${accountingEntries.amount}>0`,
         input.search
           ? or(
@@ -426,6 +426,9 @@ export async function listFulfillmentCourierExcess(
               like(fulfillmentRequests.requestNumber, pattern),
               like(customers.name, pattern),
               like(customers.phone, pattern),
+              like(fulfillmentRequests.recipientName, pattern),
+              like(fulfillmentRequests.recipientPhone, pattern),
+              sql`REPLACE(${fulfillmentRequests.recipientPhone},'+964','0') LIKE ${pattern}`,
               sql`REPLACE(${customers.phone},'+964','0') LIKE ${pattern}`,
             )
           : undefined,
@@ -440,8 +443,8 @@ export async function listFulfillmentCourierExcess(
             requestNumber: fulfillmentRequests.requestNumber,
             requestVersion: fulfillmentRequests.version,
             customerId: fulfillmentRequests.customerId,
-            customerName: customers.name,
-            customerPhone: customers.phone,
+            customerName: sql<string>`COALESCE(${customers.name},${fulfillmentRequests.recipientName})`,
+            customerPhone: sql<string>`COALESCE(${customers.phone},${fulfillmentRequests.recipientPhone})`,
             branchId: fulfillmentRequests.branchId,
             originalAmount: accountingEntries.amount,
             collectedAt: accountingEntries.entryDate,
@@ -456,10 +459,7 @@ export async function listFulfillmentCourierExcess(
               deliveryConsignments.fulfillmentRequestId,
             ),
           )
-          .innerJoin(
-            customers,
-            eq(customers.id, fulfillmentRequests.customerId),
-          )
+          .leftJoin(customers, eq(customers.id, fulfillmentRequests.customerId))
           .where(where);
       const rows = await base()
         .orderBy(desc(accountingEntries.id))
@@ -473,7 +473,7 @@ export async function listFulfillmentCourierExcess(
           fulfillmentRequests,
           eq(fulfillmentRequests.id, deliveryConsignments.fulfillmentRequestId),
         )
-        .innerJoin(customers, eq(customers.id, fulfillmentRequests.customerId))
+        .leftJoin(customers, eq(customers.id, fulfillmentRequests.customerId))
         .where(where);
       return {
         rows: rows.map((r) => ({

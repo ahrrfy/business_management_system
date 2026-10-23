@@ -1186,8 +1186,8 @@ export function refundFulfillmentCourierExcess(
       const source = charge ?? request;
       if (!source) throw fulfillmentError("مصدر رد الأمانة غير موجود");
       const requestId = charge?.requestId ?? request?.id;
-      if (!requestId || !source.customerId)
-        throw fulfillmentError("رد الأمانة يتطلب طلباً وعميلاً حقيقيين");
+      if (!requestId)
+        throw fulfillmentError("رد الأمانة يتطلب طلب توصيل حقيقياً");
       const row = {
         id: source.id,
         branchId: source.branchId,
@@ -1220,6 +1220,7 @@ export function refundFulfillmentCourierExcess(
         !cn ||
         cn.branchId !== row.branchId ||
         cn.fulfillmentRequestId !== requestId ||
+        (cn.endCustomerId != null && cn.endCustomerId !== row.customerId) ||
         !evidence ||
         evidence.entryType !== "PAYMENT_IN" ||
         evidence.branchId !== row.branchId ||
@@ -1259,16 +1260,21 @@ export function refundFulfillmentCourierExcess(
         actor,
         "OUT",
         `رد أمانة قبض زائد / إرسالية ${cn.consignmentNumber} / قيد ${evidence.id}: ${input.reason}`,
+        false,
       );
       await tx
         .update(receipts)
         .set({
           partyType: "OTHER",
           partyId: null,
-          counterpartyName: `عميل ${row.customerId}`,
+          counterpartyName:
+            request?.recipientName ??
+            cn.recipientName ??
+            `مستلم ${cn.consignmentNumber}`,
           referenceNumber: ref,
           internalNote: JSON.stringify({
             originalExcessEntryId: evidence.id,
+            fulfillmentRequestId: requestId,
             consignmentId: cn.id,
             originalPaymentMethod: "CASH",
             reason: input.reason,
