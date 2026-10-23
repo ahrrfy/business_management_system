@@ -1,7 +1,7 @@
 /**
  * حارسٌ نصّيّ: **لا مطابقةَ برسالةٍ حرفيّة** لرفض الإرسال الجزئيّ (٢٠/٨).
  *
- * الشاشتان تتعرّفان على هذا الرفض بعينه لتعرضا زرَّ الإقرار. وحين كان التعرّف بنصٍّ حرفيٍّ
+ * نافذة الإسناد المشتركة تتعرّف على هذا الرفض لتعرض زرَّ الإقرار. وحين كان التعرّف بنصٍّ حرفيٍّ
  * مكرَّرٍ في ثلاثة ملفّات، كان تعديلُ كلمةٍ في رسالة الخادم يُخفي الزرَّ **صامتاً**: الموظّف
  * يقف أمام خطأٍ بلا مخرج، ولا اختبارَ يسقط. يقرأ الحارسُ الملفّات **الحيّة** لا قائمةً
  * مكتوبةً بيد (نمط `shared/workOrderStatus.test.ts`).
@@ -28,7 +28,6 @@ const read = (p: string) => readFileSync(join(ROOT, p), "utf8");
 const CONSUMERS = [
   "server/services/workOrder/siblings.ts",
   "client/src/components/delivery/InvoiceDispatchDialog.tsx",
-  "client/src/components/reception/ReceptionInvoiceQueue.tsx",
 ];
 
 describe("علامة رفض الإرسال الجزئيّ", () => {
