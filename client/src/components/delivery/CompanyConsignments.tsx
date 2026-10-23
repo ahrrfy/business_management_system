@@ -10,6 +10,7 @@ import { CancelDeliveryAssignmentDialog } from "./CancelDeliveryAssignmentDialog
 import { ConsignmentTimelineDrawer } from "./ConsignmentTimelineDrawer";
 import { ReturnConsignmentDialog } from "./ReturnConsignmentDialog";
 import { DeliveryWorkspaceExport } from "./CompanyWorkspace";
+import { CompanyConsignmentFinancials } from "./CompanyConsignmentFinancials";
 import {
   companyConsignmentColumns,
   CompanyConsignmentActions,
@@ -286,7 +287,8 @@ export function ConsignmentsTab({
         التسوية: {fmt(q.data?.totals.remainingDue)} د.ع
       </p>
       <p className="text-xs text-muted-foreground">
-        فلترة تاريخ الإرسال حسب يوم العمل (UTC). تواريخ العرض والتصدير بتوقيت جهازك.
+        فلترة تاريخ الإرسال حسب يوم العمل (UTC). تواريخ العرض والتصدير بتوقيت
+        جهازك.
       </p>
       <DataTable<ConsignmentRow, number>
         columns={columns}
@@ -330,12 +332,12 @@ export function ConsignmentsTab({
           <article className="space-y-2 rounded-md border bg-card p-3">
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0">
-                <div className="font-bold">
+                <div className="break-words font-bold">
                   {row.customerName ?? row.recipientName ?? "عميل نقدي"}
                 </div>
                 <Button
                   variant="link"
-                  className="h-auto p-0 text-xs"
+                  className="h-auto max-w-full whitespace-normal break-all p-0 text-start text-xs"
                   onClick={() => setTimelineId(row.id)}
                 >
                   {row.consignmentNumber}
@@ -347,12 +349,12 @@ export function ConsignmentsTab({
                 aria-label={`تحديد ${row.consignmentNumber}`}
               />
             </div>
-            <div className="flex items-center justify-between gap-2 text-sm">
-              <span>
+            <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+              <span className="min-w-0">
                 {PARCEL_STATUS[row.parcelStatus] ?? row.parcelStatus} ·{" "}
                 {CN_STATUS[row.moneyStatus]?.label ?? row.moneyStatus}
               </span>
-              <b className="shrink-0 tabular-nums">
+              <b className="min-w-0 break-words tabular-nums">
                 المتبقي: {fmt(row.remainingDue)} د.ع
               </b>
             </div>
@@ -369,6 +371,7 @@ export function ConsignmentsTab({
                 </span>
               )}
             </div>
+            <CompanyConsignmentFinancials row={row} />
             <CompanyConsignmentActions {...actionOptions} c={row} />
             <details className="text-xs">
               <summary className="cursor-pointer text-muted-foreground">
