@@ -30,6 +30,11 @@ describe("voucher category accounting UI contract", () => {
       new URL("../components/vouchers/VoucherFormShared.tsx", import.meta.url),
       "utf8",
     );
+    const readVoucher = (name: string) => readFileSync(new URL(`../components/vouchers/${name}`, import.meta.url), "utf8");
+    const voucherModel = readVoucher("useVoucherForm.ts");
+    const voucherState = readVoucher("useVoucherFormState.ts");
+    const voucherSubmission = readVoucher("useVoucherFormSubmission.ts");
+    const voucherPayment = readVoucher("VoucherPaymentFields.tsx");
     expect(categoriesPage).toContain("الحساب المحاسبي المقابل *");
     expect(categoriesPage).toContain("تحتاج مساراً تخصصياً");
     expect(categoriesPage).toContain("معالجة سندات OTHER التاريخية غير المصنفة");
@@ -37,12 +42,21 @@ describe("voucher category accounting UI contract", () => {
     expect(categoriesPage).toContain("voucherCategoryRoleOptionsFor(direction)");
     expect(categoriesPage).toContain("مزامنة فئات المصروفات");
     expect(categoriesPage).toContain("قاعدة الفئات ثنائية الاتجاه (قبض وصرف)");
-    expect(voucherForm).toContain("فئة محاسبية معيّنة إلزامية لسندات «أخرى»");
-    expect(voucherForm).toMatch(
+    expect(voucherSubmission).toContain("فئة محاسبية معيّنة إلزامية لسندات «أخرى»");
+    expect(voucherPayment).toMatch(
       /disabled=\{\s*!isVoucherCategoryRoleCompatible\(/,
     );
-    expect(voucherForm).toContain("تحدد الحساب المقابل الذي سيظهر في دفتر الأستاذ");
-    expect(voucherForm).toContain("توجيه محاسبي للطرف (أخرى)");
+    expect(voucherPayment).toContain("تحدد الحساب المقابل الذي سيظهر في دفتر الأستاذ");
+    expect(voucherPayment).toContain("توجيه محاسبي للطرف (أخرى)");
+    expect(voucherForm).toContain('import { useVoucherForm } from "./useVoucherForm";');
+    expect(voucherForm).toContain("const model = useVoucherForm(props)");
+    expect(voucherModel).toContain("const state = useVoucherFormState(props)");
+    expect(voucherModel).toContain("const submission = useVoucherFormSubmission({ ...state, ...queries })");
+    expect(voucherModel).toContain("return { ...state, ...queries, ...submission, ...ledger }");
+    expect(voucherState).toContain("isVoucherCategoryRoleCompatible(direction, selectedCategory.postingRole)");
+    expect(voucherSubmission).toContain('partyType === "OTHER" && !selectedCategoryReady');
+    expect(voucherForm).toContain('import { VoucherPaymentFields } from "./VoucherPaymentFields";');
+    expect(voucherForm).toMatch(/<VoucherPaymentFields\s+\{\.\.\.\{[\s\S]*?direction,[\s\S]*?selectedCategoryReady,/);
   });
 
   it("شرح التوجيه المحاسبي يميّز فئات الاستثمار بدقة عن الفئات العامة المتشابهة في الدور", () => {

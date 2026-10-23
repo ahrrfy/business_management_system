@@ -1,81 +1,30 @@
-import { RowActions } from "@/components/list";
+import { printExpenseRows } from "@/lib/expenseListPrint";
+import { ExpenseDesktopTable } from "@/components/expenses/ExpenseDesktopTable";
+import { ExpenseFilters } from "@/components/expenses/ExpenseFilters";
+import { ErrorState, LoadingState } from "@/components/PageState";
 import { useFocusHighlight } from "@/components/search/useFocusHighlight";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { TablePager } from "@/components/table/TablePager";
-import { Input } from "@/components/ui/input";
-import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
-import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
-import { TableEmptyRow } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { exportRows, type ExportColumn } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { notify } from "@/lib/notify";
-import { D, fmt } from "@/lib/money";
-import { printReportDoc } from "@/lib/printing/reportDoc";
-import { trpc } from "@/lib/trpc";
+import { fmt } from "@/lib/money";
+import { trpc, type RouterInputs } from "@/lib/trpc";
 import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
 import { expenseOperationAccess } from "@/lib/expenseOperationAccess";
 import type { RoleKey } from "@shared/permissions";
-import {
-  AlertTriangle,
-  Ban,
-  Building2,
-  ChevronDown,
-  ChevronUp,
-  CircleCheck,
-  CircleDollarSign,
-  Landmark,
-  Layers3,
-  Loader2,
-  Printer,
-  ShieldAlert,
-  SlidersHorizontal,
-  UserRound,
-  WalletCards,
-  X,
-} from "lucide-react";
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { AlertTriangle, Ban, CircleCheck, CircleDollarSign, Landmark, Layers3, Loader2, Printer, ShieldAlert, WalletCards } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
-import {
-  expenseStatusFromSearch,
-  isExpenseFinanciallyPrintable,
-} from "@/lib/expenseUiPolicy";
-import { selectClsFull } from "@/lib/ui/formStyles";
-
-
-// المساعدات والأنواع والمكوّنات مستخرَجة إلى components/expenses/ (ترشيق الصفحة).
-import { ExpenseTracePanel } from "@/components/expenses/ExpenseTracePanel";
+import { expenseStatusFromSearch, isExpenseFinanciallyPrintable } from "@/lib/expenseUiPolicy";
 import { ExpenseMobileCard } from "@/components/expenses/ExpenseMobileCard";
-import { FinancialCellProvenanceHover } from "@/components/financial";
 import { printExpenseReceipt } from "@/components/expenses/printExpenseReceipt";
-import {
-  APPROVAL_LABEL,
-  CATEGORY_LABEL,
-  expenseCategoryText,
-  fundingDetail,
-  fundingKindOf,
-  FUNDING_META,
-  FUNDING_ORDER,
-  isApprovedAwaitingExecution,
-  METHOD_LABEL,
-  metric,
-  PAGE_SIZE,
-  SHIFT_STATUS_LABEL,
-  SHIFT_TYPE_LABEL,
-  sourceLabel,
-  STATUS_CLS,
-  STATUS_LABEL,
-  warningsOf,
-  type AuditFocus,
-  type ExpenseRow,
-  type ExpenseTotals,
-} from "@/components/expenses/expenseView";
+import { APPROVAL_LABEL, CATEGORY_LABEL, expenseCategoryText, fundingDetail, fundingKindOf, FUNDING_META, FUNDING_ORDER, isApprovedAwaitingExecution, METHOD_LABEL, metric, PAGE_SIZE, SHIFT_STATUS_LABEL, SHIFT_TYPE_LABEL, STATUS_LABEL, warningsOf, type AuditFocus, type ExpenseRow, type ExpenseTotals } from "@/components/expenses/expenseView";
 import { ExpenseRejectDialog } from "@/components/expenses/ExpenseRejectDialog";
 import { ExpenseCorrectionDialog } from "@/components/expenses/ExpenseCorrectionDialog";
 
@@ -123,16 +72,19 @@ export default function Expenses() {
 
   // البحث خادمي الآن (q ممهَّل): البيان/المرجع/المستفيد عبر كل النتائج لا المُحمَّل فقط.
   const dq = useDebouncedValue(query, 250);
-  const listInput = {
+  type ExpenseListInput = Extract<RouterInputs["expenses"]["list"], object>;
+  const listInput: ExpenseListInput = {
     branchId: branchId ? Number(branchId) : undefined,
-    category: (category || undefined) as any,
+    category: (category || undefined) as ExpenseListInput["category"],
     expenseCategoryId: expenseCategoryId ? Number(expenseCategoryId) : undefined,
-    status: (status || undefined) as any,
+    status: (status || undefined) as ExpenseListInput["status"],
     from: from || undefined,
     to: to || undefined,
-    paymentMethod: (paymentMethod || undefined) as any,
-    source: (source || undefined) as any,
+    paymentMethod: (paymentMethod || undefined) as ExpenseListInput["paymentMethod"],
+    source: (source || undefined) as ExpenseListInput["source"],
     q: dq.trim() || undefined,
+    auditFocus: auditFocus ?? undefined,
+    auditOnly: auditOnly || undefined,
   };
   function resetFilters() {
     setBranchId("");
@@ -173,7 +125,7 @@ export default function Expenses() {
       DESCRIPTION: rowsWithWarnings.filter(
         ({ row }) => !row.description?.trim(),
       ).length,
-      PAYEE: rowsWithWarnings.filter(({ row }) => !row.payee?.trim()).length,
+      PAYEE: rowsWithWarnings.filter(({ row }) => row.integrityWarnings?.includes("PAYEE_MISSING")).length,
       SOURCE: rowsWithWarnings.filter(({ row }) =>
         (row.integrityWarnings ?? []).some(
           (warning) =>
@@ -188,23 +140,8 @@ export default function Expenses() {
     }),
     [rowsWithWarnings],
   );
-  const visibleEntries = auditFocus
-    ? rowsWithWarnings.filter(({ row, funding }) => {
-        if (auditFocus === "DESCRIPTION") return !row.description?.trim();
-        if (auditFocus === "PAYEE") return !row.payee?.trim();
-        if (auditFocus === "DRAWER")
-          return (
-            funding === "DRAWER" &&
-            (row.shiftId == null || row.receiptId == null)
-          );
-        return (row.integrityWarnings ?? []).some(
-          (warning) =>
-            warning !== "DESCRIPTION_MISSING" && warning !== "PAYEE_MISSING",
-        );
-      })
-    : auditOnly
-      ? rowsWithWarnings.filter((entry) => entry.warnings.length > 0)
-      : rowsWithWarnings;
+  // The server applies audit predicates before pagination, shared by export and print.
+  const visibleEntries = rowsWithWarnings;
   const groupedRows = useMemo(
     () =>
       FUNDING_ORDER.map((kind) => ({
@@ -291,7 +228,7 @@ export default function Expenses() {
     auditOnly
       ? {
           key: "audit",
-          label: "يحتاج تدقيقاً — الصفحة الحالية",
+          label: "يحتاج تدقيقاً",
           clear: () => setAuditOnly(false),
         }
       : null,
@@ -533,53 +470,11 @@ export default function Expenses() {
         source ? `المصدر: ${source === "STOCK" ? "مخزون" : "نقدي"}` : null,
         from || to ? `الفترة: ${from || "البداية"} — ${to || "اليوم"}` : null,
         query.trim() ? `بحث: ${query.trim()}` : null,
+        auditFocus ? `استثناء: ${auditFocus === "DESCRIPTION" ? "بلا شرح" : auditFocus === "PAYEE" ? "بلا مستفيد" : auditFocus === "SOURCE" ? "مصدر أو إيصال غير متطابق" : "درج أو وردية ناقصة"}` : auditOnly ? "يحتاج تدقيقاً" : null,
       ]
         .filter(Boolean)
         .join(" · ");
-      const printTotal = printable.reduce(
-        (sum, row) => sum.plus(D(row.amount)),
-        D(0),
-      );
-      const opened = printReportDoc({
-        title: "المصروفات اليومية",
-        headerExtra: filterLabels
-          ? [{ label: "الفلاتر", value: filterLabels }]
-          : [],
-        columns: [
-          { key: "identity", label: "المصروف / السند" },
-          { key: "date", label: "التاريخ / التسجيل" },
-          { key: "branch", label: "الفرع" },
-          { key: "category", label: "الفئة / المركز" },
-          { key: "description", label: "البيان / المستفيد" },
-          { key: "funding", label: "التمويل / الدفع" },
-          { key: "shift", label: "الدرج / الوردية" },
-          { key: "actors", label: "المنشئ / المعتمد" },
-          { key: "amount", label: "المبلغ", align: "left" },
-          { key: "status", label: "الحالة" },
-          { key: "audit", label: "ملاحظات التدقيق" },
-        ],
-        rows: printable.map((r) => ({
-          identity: `#${Number(r.id)}${r.receiptVoucherNumber ? ` / ${r.receiptVoucherNumber}` : r.receiptId ? ` / R#${r.receiptId}` : ""}`,
-          date: `${fmtDate(r.expenseDate as unknown as string)} / ${fmtDateTime(r.createdAt as unknown as string)}`,
-          branch: r.branchName ?? "—",
-          category: `${expenseCategoryText(r)}${r.costCenter?.trim() ? ` / ${r.costCenter.trim()}` : ""}`,
-          description: `${r.description ?? "لا يوجد شرح"}${r.payee ? ` / المستفيد: ${r.payee}` : ""}${r.referenceNumber ? ` / مرجع: ${r.referenceNumber}` : ""}`,
-          funding: `${FUNDING_META[fundingKindOf(r)].short} / ${sourceLabel(r)}`,
-          shift: fundingDetail(r),
-          actors: `${r.createdByName ?? (r.createdBy != null ? `#${r.createdBy}` : "—")}${r.approvedByName ? ` / اعتماد: ${r.approvedByName}` : ""}`,
-          amount: fmt(r.amount),
-          status: STATUS_LABEL[r.status] ?? r.status,
-          audit: warningsOf(r).join("؛ ") || "سليم",
-        })),
-        summary: [
-          {
-            label: "إجمالي المصروفات النافذة فقط",
-            value: `${fmt(printTotal.toString())} د.ع`,
-            large: true,
-            bold: true,
-          },
-        ],
-      });
+      const opened = printExpenseRows(printable, filterLabels, { auditFocus, auditOnly });
       if (!opened)
         notify.err(
           "حجب المتصفح نافذة الطباعة. اسمح بالنوافذ المنبثقة ثم أعد المحاولة.",
@@ -934,229 +829,19 @@ export default function Expenses() {
         </Card>
       </section>
 
-      <Card className="gap-0 py-0">
-        <CardContent className="space-y-2 p-2.5">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <SlidersHorizontal
-                aria-hidden
-                className="size-3.5 text-muted-foreground"
-              />
-              <h2 className="text-xs font-semibold">بحث وفلاتر المصروفات</h2>
-              {activeChips.length > 0 && (
-                <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary">
-                  {activeChips.length}
-                </span>
-              )}
-            </div>
-            <div className="flex items-center gap-1">
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-7 text-xs"
-                onClick={() => setAdvancedOpen((open) => !open)}
-              >
-                فلاتر متقدمة
-                {advancedOpen ? (
-                  <ChevronUp aria-hidden className="size-3.5" />
-                ) : (
-                  <ChevronDown aria-hidden className="size-3.5" />
-                )}
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-7 text-xs text-muted-foreground"
-                disabled={activeChips.length === 0}
-                onClick={resetFilters}
-              >
-                <X aria-hidden className="size-3" /> إعادة ضبط
-              </Button>
-            </div>
-          </div>
-
-          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-6">
-            <div className="space-y-1 md:col-span-2 xl:col-span-3">
-              <Label htmlFor="expense-search" className="text-xs">
-                بحث شامل
-              </Label>
-              <UnifiedSearchInput
-                barcode={false}
-                debounceMs={0}
-                id="expense-search"
-                value={query}
-                onChange={setQuery}
-                placeholder="البيان، المستفيد، المرجع، رقم المصروف أو السند…"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="expense-branch" className="text-xs">
-                الفرع
-              </Label>
-              <AppSelect
-                id="expense-branch"
-                className="h-9"
-                value={String(branchId)}
-                onValueChange={(value) =>
-                  setBranchId(
-                    value ? Number(value) : "",
-                  )
-                }
-              >
-                <option value="">كل الفروع</option>
-                {(branches.data ?? []).map((branch) => (
-                  <option key={branch.id} value={branch.id}>
-                    {branch.name}
-                  </option>
-                ))}
-              </AppSelect>
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="expense-status" className="text-xs">
-                الحالة
-              </Label>
-              <AppSelect
-                id="expense-status"
-                className="h-9"
-                value={status}
-                onValueChange={(value) => setStatus(value)}
-              >
-                <option value="">كل الحالات</option>
-                <option value="PENDING_APPROVAL">بانتظار اعتماد المالك</option>
-                <option value="ACTIVE">نافذ</option>
-                <option value="REJECTED">مرفوض بلا صرف</option>
-                <option value="CANCELLED">ملغى</option>
-              </AppSelect>
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="expense-from" className="text-xs">
-                من تاريخ
-              </Label>
-              <Input
-                id="expense-from"
-                type="date"
-                dir="ltr"
-                value={from}
-                onChange={(event) => setFrom(event.target.value)}
-              />
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="expense-to" className="text-xs">
-                إلى تاريخ
-              </Label>
-              <Input
-                id="expense-to"
-                type="date"
-                dir="ltr"
-                value={to}
-                onChange={(event) => setTo(event.target.value)}
-              />
-            </div>
-          </div>
-
-          {advancedOpen && (
-            <div className="grid gap-2 border-t pt-2 sm:grid-cols-2 lg:grid-cols-3">
-              <div className="space-y-1">
-                <Label htmlFor="expense-category" className="text-xs">
-                  الدلو المحاسبي
-                </Label>
-                <AppSelect
-                  id="expense-category"
-                  className="h-9"
-                  value={category}
-                  onValueChange={(value) => {
-                    setCategory(value);
-                    // الفلتران متداخلان: تغيير الدلو يُبطل فئةً دقيقةً قد لا تنتمي إليه،
-                    // وإلّا خرجت النتيجة فارغةً بلا سببٍ ظاهر للمستخدم.
-                    setExpenseCategoryId("");
-                  }}
-                >
-                  <option value="">كل الدلاء</option>
-                  {Object.entries(CATEGORY_LABEL).map(([key, label]) => (
-                    <option key={key} value={key}>
-                      {label}
-                    </option>
-                  ))}
-                </AppSelect>
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="expense-managed-category" className="text-xs">
-                  الفئة التفصيلية
-                </Label>
-                <AppSelect
-                  id="expense-managed-category"
-                  className="h-9"
-                  value={expenseCategoryId}
-                  onValueChange={(value) => setExpenseCategoryId(value)}
-                >
-                  <option value="">كل الفئات</option>
-                  {(expenseCategoryOptions.data ?? [])
-                    .filter((c) => !category || c.bucket === category)
-                    .map((c) => (
-                      <option key={c.id} value={String(c.id)}>
-                        {c.name}
-                      </option>
-                    ))}
-                </AppSelect>
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="exp-f-method" className="text-xs">
-                  طريقة الدفع
-                </Label>
-                <AppSelect
-                  id="exp-f-method"
-                  value={paymentMethod}
-                  onValueChange={setPaymentMethod}
-                  placeholder="كل طرق الدفع"
-                >
-                  <option value="">كل طرق الدفع</option>
-                  {Object.entries(METHOD_LABEL).map(([key, label]) => (
-                    <option key={key} value={key}>
-                      {label}
-                    </option>
-                  ))}
-                </AppSelect>
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="exp-f-source" className="text-xs">
-                  نوع المصروف
-                </Label>
-                <AppSelect
-                  id="exp-f-source"
-                  value={source}
-                  onValueChange={setSource}
-                  placeholder="كل الأنواع"
-                >
-                  <option value="">كل الأنواع</option>
-                  <option value="CASH">مالي</option>
-                  <option value="STOCK">مخزون (نثرية/تلف)</option>
-                </AppSelect>
-              </div>
-            </div>
-          )}
-
-          {activeChips.length > 0 && (
-            <div
-              className="flex flex-wrap gap-1.5 border-t pt-2"
-              aria-label="الفلاتر الفعالة"
-            >
-              {activeChips.map((chip) => (
-                <button
-                  key={chip.key}
-                  type="button"
-                  onClick={chip.clear}
-                  className="inline-flex min-h-8 items-center gap-1 rounded-full border bg-muted/40 px-3 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  {chip.label}
-                  <X aria-hidden className="size-3" />
-                </button>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      <ExpenseFilters values={{ branchId, category, expenseCategoryId, status, from, to, paymentMethod, source, query }}
+        onChange={(patch) => {
+          if (patch.branchId !== undefined) setBranchId(patch.branchId);
+          if (patch.category !== undefined) setCategory(patch.category);
+          if (patch.expenseCategoryId !== undefined) setExpenseCategoryId(patch.expenseCategoryId);
+          if (patch.status !== undefined) setStatus(patch.status);
+          if (patch.from !== undefined) setFrom(patch.from);
+          if (patch.to !== undefined) setTo(patch.to);
+          if (patch.paymentMethod !== undefined) setPaymentMethod(patch.paymentMethod);
+          if (patch.source !== undefined) setSource(patch.source);
+          if (patch.query !== undefined) setQuery(patch.query);
+        }} advancedOpen={advancedOpen} setAdvancedOpen={setAdvancedOpen} activeChips={activeChips}
+        resetFilters={resetFilters} branches={branches.data ?? []} categories={expenseCategoryOptions.data ?? []} />
 
       {(Number(totals.needsAudit ?? pageNeedsAudit) > 0 || auditOnly) && (
         <div
@@ -1184,7 +869,7 @@ export default function Expenses() {
               setAuditOnly((value) => !value);
             }}
           >
-            {auditOnly ? "عرض كل الصفحة" : "عرض حالات الصفحة فقط"}
+            {auditOnly ? "عرض كل النتائج" : "عرض حالات التدقيق"}
           </Button>
         </div>
       )}
@@ -1266,6 +951,7 @@ export default function Expenses() {
           </div>
         </div>
         <CardContent className="p-0">
+          {list.isLoading ? <LoadingState /> : list.isError ? <ErrorState message={list.error.message} onRetry={() => void list.refetch()} /> : <>
           <div className="space-y-3 p-3 md:hidden">
             {groupedRows.map((group) => (
               <section
@@ -1308,338 +994,12 @@ export default function Expenses() {
             )}
           </div>
 
-          <div className="hidden md:block">
-            <ScrollTableShell
-              bordered={false}
-              maxHeightClass="max-h-[calc(100dvh-13rem)]"
-            >
-              <table className="w-full min-w-[1500px] text-sm">
-                <caption className="sr-only">
-                  سجل المصروفات التفصيلي مجمّع حسب مصدر التمويل
-                </caption>
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th scope="col" className="p-2 text-start">
-                      المصروف / السند
-                    </th>
-                    <th scope="col" className="p-2 text-start">
-                      التاريخ والتوقيت
-                    </th>
-                    <th scope="col" className="p-2 text-start">
-                      البيان / المستفيد
-                    </th>
-                    <th scope="col" className="p-2 text-start">
-                      الفرع / التصنيف
-                    </th>
-                    <th scope="col" className="p-2 text-start">
-                      مصدر التمويل
-                    </th>
-                    <th scope="col" className="p-2 text-start">
-                      الدرج / الوردية
-                    </th>
-                    <th scope="col" className="p-2 text-start">
-                      المسؤولية والاعتماد
-                    </th>
-                    <th scope="col" className="p-2 text-start">
-                      المبلغ
-                    </th>
-                    <th scope="col" className="p-2 text-start">
-                      الحالة
-                    </th>
-                    <th scope="col" className="p-2 text-start">
-                      التدقيق
-                    </th>
-                    <th scope="col" className="p-2 text-center">
-                      إجراء
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {groupedRows.map((group) => (
-                    <Fragment key={group.kind}>
-                      <tr className="border-y bg-muted/70">
-                        <td colSpan={11} className="px-3 py-2">
-                          <div className="flex items-center justify-between gap-3">
-                            <span className="font-semibold">
-                              {FUNDING_META[group.kind].label}
-                            </span>
-                            <span className="text-xs text-muted-foreground">
-                              {group.entries.length} عملية · إجمالي الصفحة{" "}
-                              <span
-                                className="font-semibold text-foreground tabular-nums"
-                                dir="ltr"
-                              >
-                                {fmt(
-                                  group.entries.reduce(
-                                    (sum, entry) =>
-                                      sum + Number(entry.row.amount),
-                                    0,
-                                  ),
-                                )}
-                              </span>
-                            </span>
-                          </div>
-                        </td>
-                      </tr>
-                      {group.entries.map(({ row: r, warnings, funding }) => {
-                        const fr = rowProps(r.id);
-                        const expanded = expandedDescriptions.has(Number(r.id));
-                        const traceExpanded = expandedTraces.has(Number(r.id));
-                        return (
-                          <Fragment key={Number(r.id)}>
-                            <tr
-                              ref={fr.ref}
-                              className={`border-t align-top ${fr.className} ${r.status === "CANCELLED" ? "opacity-70" : ""}`}
-                            >
-                              <td className="p-2">
-                                <div className="font-mono text-xs" dir="ltr">
-                                  EXP#{Number(r.id)}
-                                </div>
-                                <div
-                                  className="mt-1 font-mono text-[11px] text-muted-foreground"
-                                  dir="ltr"
-                                >
-                                  {r.receiptVoucherNumber ??
-                                    (r.receiptId
-                                      ? `R#${r.receiptId}`
-                                      : "بلا سند")}
-                                </div>
-                                {r.referenceNumber && (
-                                  <div
-                                    className="mt-1 max-w-36 truncate text-[11px] text-muted-foreground"
-                                    title={r.referenceNumber}
-                                  >
-                                    مرجع: {r.referenceNumber}
-                                  </div>
-                                )}
-                              </td>
-                              <td className="p-2 text-xs">
-                                <div dir="ltr">
-                                  {fmtDate(r.expenseDate as unknown as string)}
-                                </div>
-                                <div
-                                  className="mt-1 text-[11px] text-muted-foreground"
-                                  dir="ltr"
-                                >
-                                  أُدخل:{" "}
-                                  {fmtDateTime(
-                                    r.createdAt as unknown as string,
-                                  )}
-                                </div>
-                                {r.updatedAt && (
-                                  <div
-                                    className="text-[11px] text-muted-foreground"
-                                    dir="ltr"
-                                  >
-                                    حُدّث: {fmtDateTime(r.updatedAt)}
-                                  </div>
-                                )}
-                              </td>
-                              <td className="max-w-[25rem] p-2">
-                                <p
-                                  className={`leading-6 ${expanded ? "whitespace-pre-wrap" : "line-clamp-2"}`}
-                                >
-                                  {r.description?.trim() || (
-                                    <span className="font-medium text-destructive">
-                                      لا يوجد شرح للعملية
-                                    </span>
-                                  )}
-                                </p>
-                                {(r.description?.length ?? 0) > 80 && (
-                                  <button
-                                    type="button"
-                                    className="mt-1 text-xs text-primary underline-offset-4 hover:underline"
-                                    onClick={() =>
-                                      toggleDescription(Number(r.id))
-                                    }
-                                  >
-                                    {expanded ? "طي" : "عرض كامل"}
-                                  </button>
-                                )}
-                                <div className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
-                                  <UserRound aria-hidden className="size-3.5" />{" "}
-                                  المستفيد:{" "}
-                                  <span className="text-foreground">
-                                    {r.payee ?? "—"}
-                                  </span>
-                                </div>
-                              </td>
-                              <td className="p-2 text-xs">
-                                <div>{r.branchName ?? "—"}</div>
-                                <div className="mt-1 text-muted-foreground">
-                                  {expenseCategoryText(r)}
-                                </div>
-                                {r.costCenter?.trim() && (
-                                  <div className="text-[11px] text-muted-foreground">
-                                    مركز: {r.costCenter.trim()}
-                                  </div>
-                                )}
-                              </td>
-                              <td className="p-2 text-xs">
-                                <span
-                                  className={`inline-flex rounded-full px-2 py-0.5 text-xs ${FUNDING_META[funding].badge}`}
-                                  title={funding === "PENDING" ? "الوضع الراهن: طلب معلّق بلا أثر مالي حتى الآن" : undefined}
-                                >
-                                  {FUNDING_META[funding].short}
-                                </span>
-                                <div className="mt-1 text-muted-foreground">
-                                  {sourceLabel(r)}
-                                </div>
-                              </td>
-                              <td className="p-2 text-xs">
-                                {funding === "DRAWER" ? (
-                                  <>
-                                    <div className="font-medium">
-                                      {r.shiftOwnerName ??
-                                        "صاحب الدرج غير ظاهر"}
-                                    </div>
-                                    <div
-                                      className="mt-1 text-muted-foreground"
-                                      dir="ltr"
-                                    >
-                                      وردية #{r.shiftId ?? "—"}
-                                    </div>
-                                    <div className="text-[11px] text-muted-foreground">
-                                      {r.shiftType
-                                        ? (SHIFT_TYPE_LABEL[r.shiftType] ??
-                                          r.shiftType)
-                                        : "—"}{" "}
-                                      ·{" "}
-                                      {r.shiftStatus
-                                        ? (SHIFT_STATUS_LABEL[r.shiftStatus] ??
-                                          r.shiftStatus)
-                                        : "—"}
-                                    </div>
-                                  </>
-                                ) : funding === "TREASURY" ? (
-                                  <div className="inline-flex items-center gap-1">
-                                    <Building2 aria-hidden className="size-4" />{" "}
-                                    الخزينة الإدارية
-                                  </div>
-                                ) : (
-                                  <div>{fundingDetail(r)}</div>
-                                )}
-                              </td>
-                              <td className="p-2 text-xs">
-                                <div>
-                                  أنشأ:{" "}
-                                  <span className="font-medium">
-                                    {r.createdByName ??
-                                      (r.createdBy != null
-                                        ? `#${r.createdBy}`
-                                        : "—")}
-                                  </span>
-                                </div>
-                                <div className="mt-1 text-muted-foreground">
-                                  اعتمد: {r.approvedByName ?? "—"}
-                                </div>
-                                <div className="text-[11px] text-muted-foreground">
-                                  نفّذ: {r.executedByName ?? "لم يُنفذ بعد"}
-                                </div>
-                                <div className="text-[11px] text-muted-foreground">
-                                  {r.approvalStatus
-                                    ? (APPROVAL_LABEL[r.approvalStatus] ??
-                                      r.approvalStatus)
-                                    : "—"}
-                                  {r.receiptStatus
-                                    ? ` · إيصال ${r.receiptStatus}`
-                                    : ""}
-                                </div>
-                              </td>
-                              <td
-                                className="p-2 text-start text-base font-bold tabular-nums"
-                                dir="ltr"
-                              >
-                                <FinancialCellProvenanceHover data={(r as any).provenance}>
-                                  <span className="cursor-pointer hover:underline text-end block w-full">
-                                    {fmt(r.amount)}
-                                  </span>
-                                </FinancialCellProvenanceHover>
-                              </td>
-                              <td className="p-2">
-                                <span
-                                  className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[r.status] ?? "bg-muted"}`}
-                                  title={r.status === "PENDING_APPROVAL" ? "الوضع الراهن: بلا أثر مالي حتى التنفيذ الفعلي" : undefined}
-                                >
-                                  {isApprovedAwaitingExecution(r)
-                                    ? "معتمد — بانتظار التنفيذ"
-                                    : (STATUS_LABEL[r.status] ?? r.status)}
-                                </span>
-                              </td>
-                              <td className="max-w-52 p-2">
-                                {warnings.length ? (
-                                  <div className="flex flex-wrap gap-1">
-                                    {warnings.map((warning) => (
-                                      <span
-                                        key={warning}
-                                        className="rounded-full badge-status-cancelled px-2 py-0.5 text-[11px]"
-                                      >
-                                        {warning}
-                                      </span>
-                                    ))}
-                                  </div>
-                                ) : (
-                                  <span className="text-xs text-muted-foreground">
-                                    لا ملاحظات
-                                  </span>
-                                )}
-                              </td>
-                              <td className="p-2 text-center">
-                                <div className="flex items-center justify-center gap-1">
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    size="sm"
-                                    aria-label={`مسار تتبع المصروف ${Number(r.id)}`}
-                                    aria-expanded={traceExpanded}
-                                    disabled={!treasuryOperationAllowed(me.data, "expenses.trace", true)}
-                                    onClick={() => toggleTrace(Number(r.id))}
-                                  >
-                                    {traceExpanded ? (
-                                      <ChevronUp
-                                        aria-hidden
-                                        className="size-4"
-                                      />
-                                    ) : (
-                                      <ChevronDown
-                                        aria-hidden
-                                        className="size-4"
-                                      />
-                                    )}
-                                    تفاصيل
-                                  </Button>
-                                  <RowActions actions={actionsFor(r)} />
-                                </div>
-                              </td>
-                            </tr>
-                            {traceExpanded && (
-                              <tr className="border-t bg-muted/20">
-                                <td colSpan={11} className="p-3">
-                                  <ExpenseTracePanel expenseId={Number(r.id)} />
-                                </td>
-                              </tr>
-                            )}
-                          </Fragment>
-                        );
-                      })}
-                    </Fragment>
-                  ))}
-                  {list.data && visibleEntries.length === 0 && (
-                    <TableEmptyRow
-                      colSpan={11}
-                      message={
-                        auditOnly
-                          ? "لا توجد حالات تدقيق في هذه الصفحة."
-                          : query
-                            ? "لا مصروفات مطابقة للبحث."
-                            : "لا مصروفات لهذا الفلتر."
-                      }
-                    />
-                  )}
-                </tbody>
-              </table>
-            </ScrollTableShell>
-          </div>
+          <ExpenseDesktopTable groupedRows={groupedRows} rowProps={rowProps}
+            expandedDescriptions={expandedDescriptions} expandedTraces={expandedTraces}
+            toggleDescription={toggleDescription} toggleTrace={toggleTrace} actionsFor={actionsFor}
+            canTrace={treasuryOperationAllowed(me.data, "expenses.trace", true)} loaded={!!list.data}
+            visibleCount={visibleEntries.length} auditOnly={auditOnly} query={query} />
+          </>}
         </CardContent>
         <TablePager
           page={page}

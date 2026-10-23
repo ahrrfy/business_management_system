@@ -1,711 +1,96 @@
-import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
-// نَموذج مُوحَّد لإنشاء سند قبض/صرف (vouchers-pro ٣٠/٦/٢٦).
-// يَشمل: تَصنيف + اسم طَرف للسندات «أخرى» + Maker-Checker + مُرفق + بَصمة + تَحذير الازدواج
-// + معاينة قَيد دفتر + اختصارات لوحة المفاتيح + حفظ+طباعة + استخدام CustomerPicker/SupplierPicker.
-import CustomerPicker from "@/components/CustomerPicker";
-import SupplierPicker from "@/components/voucher/SupplierPicker";
-import DeliveryPartyPicker from "@/components/voucher/DeliveryPartyPicker";
 import { BalanceBadge } from "@/components/BalanceBadge";
 import { PageHeader } from "@/components/PageHeader";
-import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
-import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { MoneyInput } from "@/components/form/MoneyInput";
 import { FormError } from "@/components/form/FormError";
-import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
-import { InferredBranchField } from "@/components/form/InferredField";
-import { useSessionContext } from "@/hooks/useSessionContext";
-import { confirm } from "@/lib/confirm";
-import { D, fmt } from "@/lib/money";
-import { notify } from "@/lib/notify";
-import {
-  printVoucherReceipt,
-  printVoucherA4,
-} from "@/lib/printing/voucherPrint";
-import {
-  releaseReservedPrintWindow,
-  reservePrintWindow,
-} from "@/lib/printing/brand";
-import { trpc } from "@/lib/trpc";
-import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
-import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
-import { usePrintAudit } from "@/hooks/usePrintAudit";
-import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
-import { cn } from "@/lib/utils";
+import { ImageUploader } from "@/components/form/ImageUploader";
 import { DataTable } from "@/components/data-table/DataTable";
-import type { ColumnDef } from "@tanstack/react-table";
-import {
-  INBOUND_ENABLED_PAYMENT_METHODS,
-  isInboundPaymentMethodEnabled,
-  type InboundEnabledPaymentMethod,
-} from "@shared/inboundPaymentPolicy";
-import { paymentMethodCompact } from "@shared/terms";
-import type { PrintOpenResult } from "@shared/printAudit";
-import { AlertTriangle, Building2, Hourglass, Info, Plus, Printer, ShieldCheck, ShieldQuestion } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useLocation, useSearch } from "wouter";
-import {
-  voucherCashUiPolicy,
-  voucherCreateActionLabel,
-  voucherCreateSuccessMessage,
-} from "@/components/vouchers/voucherUiPolicy";
-import {
-  isVoucherCategoryRoleCompatible,
-  UNRESOLVED_DEFAULT_VOUCHER_CATEGORIES,
-  voucherCategoryAccountingGuidance,
-  voucherCategoryRoleLabel,
-} from "@shared/voucherCategoryAccounting";
-import {
-  moduleAccessAllowed,
-  type PermissionMap,
-  type RoleKey,
-} from "@shared/permissions";
+import { AlertTriangle, Building2, Printer, ShieldCheck } from "lucide-react";
+import { Link } from "wouter";
+import { voucherCreateActionLabel } from "@/components/vouchers/voucherUiPolicy";
 import { VoucherCategoryQuickCreate } from "@/components/vouchers/VoucherCategoryQuickCreate";
+import { useVoucherForm } from "./useVoucherForm";
+import type { VoucherFormProps } from "./voucherFormTypes";
+export type { VoucherFormProps } from "./voucherFormTypes";
+import { LedgerPreviewRow } from "./voucherFormTypes";
+import { ledgerPreviewColumns } from "./voucherFormTypes";
+import { VoucherPaymentFields } from "./VoucherPaymentFields";
+import { VoucherPartyAllocationFields } from "./VoucherPartyAllocationFields";
 
-/** صفُّ معاينة قَيد الدفتر (مَدين/دائن + الحساب + المبلغ) — معاينةٌ ساكنة، بلا فرز. */
-type LedgerPreviewRow = { side: string; account: string; amount: string };
-
-const ledgerPreviewColumns: ColumnDef<LedgerPreviewRow, unknown>[] = [
-  { id: "side", header: "المُحَدِّد", accessorFn: (r) => r.side, enableSorting: false, meta: { width: "status" }, cell: ({ row }) => <span className="font-bold">{row.original.side}</span> },
-  { id: "account", header: "الحساب", accessorFn: (r) => r.account, enableSorting: false, meta: { width: "wide", wrap: true }, cell: ({ row }) => row.original.account },
-  { id: "amount", header: "المبلغ", accessorFn: (r) => r.amount, enableSorting: false, meta: { kind: "money" }, cell: ({ row }) => row.original.amount },
-];
-
-// طرقُ الإنشاء = سياسةُ القبض الحاكمة (لا CHECK: قرار المالك ٢٢/٧) والتسميةُ من shared/terms — لا قاموسَ محلّياً.
-type MethodValue = InboundEnabledPaymentMethod;
-const METHODS = INBOUND_ENABLED_PAYMENT_METHODS.map((value) => ({ value, label: paymentMethodCompact(value) }));
-
-export interface VoucherFormProps {
-  voucherType: "RECEIPT" | "PAYMENT";
-}
-
-function todayYmd(): string {
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
-export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
-  const [, navigate] = useLocation();
-  const search = useSearch();
-  const utils = trpc.useUtils();
-  const printAudit = usePrintAudit();
-  const isReceipt = voucherType === "RECEIPT";
-  const direction: "IN" | "OUT" = isReceipt ? "IN" : "OUT";
-
-  const me = trpc.auth.me.useQuery();
-  const canCreate = treasuryOperationAllowed(me.data, "vouchers.create", true);
-  const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
-
-  // الفرع: استنتاجٌ خادميّ عبر `<InferredBranchField>` (م٤ ق١) — تبدأ `null` عمداً: كان
-  // `useState<number>(1)` «الفرع ١ مكتوباً بيد» (بابُ IDOR الذي يحرسه `check:branch`).
-  const [branchId, setBranchId] = useState<number | null>(null);
-  const session = useSessionContext();
-  const businessDay = session.context?.businessDay ?? null;
-
-  const [amount, setAmount] = useState("");
-  const [method, setMethod] = useState<MethodValue>("CASH");
-  useEffect(() => {
-    // fail-closed على المجهول فقط: أيّ طريقةٍ خارج سياسة القبض تعود نقداً.
-    if (!isInboundPaymentMethodEnabled(method)) {
-      setMethod("CASH");
-      setReferenceNumber("");
-      setCardLastFour("");
-    }
-  }, [method]);
-  const seededCustomerId = isReceipt ? Number(new URLSearchParams(search).get("customerId")) || null : null;
-  const [partyType, setPartyType] = useState<"CUSTOMER" | "SUPPLIER" | "DELIVERY_PARTY" | "OTHER">(seededCustomerId ? "CUSTOMER" : "OTHER");
-  const [customerId, setCustomerId] = useState<number | null>(seededCustomerId);
-  const [supplierId, setSupplierId] = useState<number | null>(null);
-  const [deliveryPartyId, setDeliveryPartyId] = useState<number | null>(null);
-  const [description, setDescription] = useState("");
-  const [referenceNumber, setReferenceNumber] = useState("");
-  const [cardLastFour, setCardLastFour] = useState("");
-  // vouchers-pro:
-  const [voucherCategoryId, setVoucherCategoryId] = useState<number | "">("");
-  const [counterpartyName, setCounterpartyName] = useState("");
-  // تاريخُ السند: يُقترَح من اليوم التشغيليّ الخادميّ (لا ساعة الجهاز) ويبقى قابلاً للتعديل.
-  const [voucherDate, setVoucherDate] = useState<string>("");
-  const [voucherDateTouched, setVoucherDateTouched] = useState(false);
-  useEffect(() => {
-    if (!voucherDateTouched && businessDay) setVoucherDate(businessDay);
-  }, [businessDay, voucherDateTouched]);
-  const [attachmentImages, setAttachmentImages] = useState<ImageItem[]>([]);
-  const attachmentUrl = attachmentImages[0]?.dataUrl ?? "";
-  const [internalNote, setInternalNote] = useState("");
-  // attachment-upload (٥/٧): ربط سند العميل بفاتورة بيع مُحدَّدة (اختياري).
-  const [invoiceId, setInvoiceId] = useState<number | null>(null);
-  const [err, setErr] = useState("");
-
-  const branches = trpc.branches.list.useQuery();
-  // فئات السندات بحَسب اتجاه السند الحالي (IN/OUT) — تَستثني المُعطَّلة.
-  const categories = trpc.voucherCategories.list.useQuery({
-    includeInactive: false,
-  });
-  const categoryOptions = useMemo(() => {
-    const list = categories.data ?? [];
-    return list.filter(
-      (c) => c.direction === "BOTH" || c.direction === direction,
-    );
-  }, [categories.data, direction]);
-  const selectedCategory = categoryOptions.find(
-    (category) => Number(category.id) === Number(voucherCategoryId),
-  );
-  const selectedCategoryReady =
-    selectedCategory != null &&
-    isVoucherCategoryRoleCompatible(
-      direction,
-      selectedCategory.postingRole,
-    );
-  /** فئات صالحة فعلاً لهذا الاتجاه (نشِطة + حساب مقابل متوافق) — صفرٌ يعني طريقاً مسدوداً. */
-  const readyCategoryCount = useMemo(
-    () =>
-      categoryOptions.filter((c) =>
-        isVoucherCategoryRoleCompatible(direction, c.postingRole),
-      ).length,
-    [categoryOptions, direction],
-  );
-  // مرآة بوّابة الخادم لفئات السندات (treasuryGlobalProcedure) — إخفاء بصريّ فقط، والإنفاذ خادميّ.
-  const legacyManageCategories =
-    !!me.data?.role &&
-    moduleAccessAllowed(
-      me.data.role as RoleKey,
-      (me.data.permissionsOverride ?? null) as PermissionMap | null,
-      "treasury",
-      "FULL",
-      ["manager", "accountant"],
-    );
-  const canManageCategories = treasuryOperationAllowed(me.data, "voucherCategories.create", legacyManageCategories);
-  const canRestoreCategories = treasuryOperationAllowed(me.data, "voucherCategories.restoreDefaults", legacyManageCategories);
-  const [showCategoryDialog, setShowCategoryDialog] = useState(false);
-  const restoreDefaults = trpc.voucherCategories.restoreDefaults.useMutation({
-    onSuccess: async (res) => {
-      await utils.voucherCategories.list.invalidate();
-      notify.ok(
-        res.inserted.length || res.mapped.length
-          ? `استُعيدت الفئات: +${res.inserted.length} جديدة، ${res.mapped.length} عُيّن حسابها`
-          : "الفئات الافتراضية مكتملة أصلاً",
-      );
-    },
-    onError: (e) => notify.err(e),
-  });
-
-  // عميل/مورّد المُختار (لمعاينة الرَصيد).
-  const customerData = trpc.customers.get.useQuery(
-    { customerId: customerId ?? 0 },
-    {
-      enabled: customerId != null && partyType === "CUSTOMER",
-      staleTime: 60_000,
-    },
-  );
-  const supplierData = trpc.suppliers.get.useQuery(
-    { supplierId: supplierId ?? 0 },
-    {
-      enabled: supplierId != null && partyType === "SUPPLIER",
-      staleTime: 60_000,
-    },
-  );
-
-  // attachment-upload (٥/٧): فواتير العميل المُختار — لربط سند القبض/الصرف بفاتورة مُحدَّدة (اختياري).
-  // fail-soft: خطأ الاستعلام (مَثلاً دورٌ مخصّص بلا صلاحية sales) لا يُعطّل حفظ السند — فقط يُخفي المُنتقي.
-  // البحث خادميّ (q + balanceState=OUTSTANDING أي المتبقّي > 0 وغير الملغاة/المرتجعة) — كان «آخر ٥٠»
-  // فقط فلا تُوجَد فاتورة أقدم وهي مستحقّة.
-  const [invoiceQ, setInvoiceQ] = useState("");
-  const debouncedInvoiceQ = useDebouncedValue(invoiceQ.trim(), 250);
-  const customerInvoices = trpc.sales.list.useQuery(
-    {
-      customerId: customerId ?? undefined,
-      q: debouncedInvoiceQ || undefined,
-      balanceState: isReceipt ? "OUTSTANDING" : undefined,
-      limit: 50,
-    },
-    {
-      enabled: partyType === "CUSTOMER" && customerId != null,
-      staleTime: 30_000,
-      retry: false,
-    },
-  );
-  const outstandingInvoiceOptions = (customerInvoices.data ?? []).filter(inv =>
-    isReceipt || (!isDeadInvoiceStatus(inv.status) && D(inv.paidAmount ?? "0").gt(0)),
-  );
-  // تثبيت الفاتورة المُختارة إن ضيّق البحث القائمة بعد اختيارها — كي لا يفرغ المُنتقي صامتاً.
-  const [selectedInvoiceLabel, setSelectedInvoiceLabel] = useState("");
-  const selectedInList =
-    invoiceId != null &&
-    outstandingInvoiceOptions.some((inv) => Number(inv.id) === invoiceId);
-  /** المتبقّي = الإجمالي − المدفوع − المُرتجَع (درس PR #286 — تجاهل المُرتجَع يُظهر متبقّياً وهمياً). */
-  function invoiceRemaining(inv: {
-    total: string | null;
-    paidAmount: string | null;
-    returnedTotal: string | null;
-  }): string {
-    return D(inv.total ?? 0)
-      .minus(D(inv.paidAmount ?? 0))
-      .minus(D(inv.returnedTotal ?? 0))
-      .toFixed(2);
-  }
-
-  // وردية النقد + شارة الخزينة الإدارية.
-  // OUT لا يمس درج المُنشئ أصلاً؛ مصدر التنفيذ النقدي الثابت هو خزينة المالك.
-  const openShift = trpc.shifts.current.useQuery(
-    { branchId: branchId ?? undefined },
-    { enabled: isReceipt && branchId != null },
-  );
-  const { hardBlock, treasuryNotice } = voucherCashUiPolicy({
+export default function VoucherFormShared(props: VoucherFormProps) {
+  const model = useVoucherForm(props);
+  const {
+    isReceipt,
     direction,
-    paymentMethod: method,
-    hasOpenShift: openShift.data != null,
-    shiftLoading: openShift.isLoading,
-    isElevated,
-  });
-
-  // كل OUT طلبٌ بلا أثر حتى ينفّذ مالكٌ آخر «اعتماد وصرف» خادمياً؛ IN يبقى فورياً.
-  const amountNum = useMemo(() => {
-    const v = Number(amount);
-    return Number.isFinite(v) ? v : 0;
-  }, [amount]);
-  const awaitsOwnerDisbursement = direction === "OUT" && amountNum > 0;
-  // لا عَتبة مُرفق: المُرفق اختياريّ دائماً (٣١/٧، قرار المالك).
-
-  // السندات الأخيرة لنفس الطَرف (تَحذير الازدواج).
-  const partyKeyForRecent = useMemo(() => {
-    if (partyType === "CUSTOMER" && customerId)
-      return { partyId: customerId, name: null };
-    if (partyType === "SUPPLIER" && supplierId)
-      return { partyId: supplierId, name: null };
-    if (partyType === "DELIVERY_PARTY" && deliveryPartyId)
-      return { partyId: deliveryPartyId, name: null };
-    if (partyType === "OTHER" && counterpartyName.trim().length >= 3)
-      return { partyId: null, name: counterpartyName.trim() };
-    return null;
-  }, [partyType, customerId, supplierId, deliveryPartyId, counterpartyName]);
-
-  const recent = trpc.vouchers.recentForParty.useQuery(
-    {
-      partyType,
-      partyId: partyKeyForRecent?.partyId ?? null,
-      counterpartyName: partyKeyForRecent?.name ?? null,
-      windowDays: 7,
-      limit: 5,
-    },
-    { enabled: !!partyKeyForRecent, staleTime: 30_000 },
-  );
-
-  // تَحذير «المبلغ يَتجاوز الرصيد» (P1-7). الاتجاهات وفق BalanceBadge:
-  //   عميل: موجب = «لنا عليه» (AR)، سالب = «له علينا» (دفع/دُفع له زيادة).
-  //   مورّد: موجب = «له علينا» (AP)، سالب = «لنا عليه» (دفعنا له زيادة).
-  const balanceWarn = useMemo(() => {
-    if (amountNum <= 0) return null;
-    if (partyType === "CUSTOMER" && customerData.data) {
-      const b = Number(customerData.data.currentBalance ?? 0);
-      if (direction === "IN" && amountNum > b) {
-        return `يَتجاوز رصيد العميل المُتبقّي (${fmt(b)}) — سيُصبح للعميل رصيدٌ دائن (له علينا).`;
-      }
-    }
-    if (partyType === "SUPPLIER" && supplierData.data) {
-      const b = Number(supplierData.data.currentBalance ?? 0);
-      if (direction === "OUT" && amountNum > b) {
-        return `يَتجاوز رَصيد المورّد المُستحق (له علينا ${fmt(b)}) — سيُصبح المورّد مديناً (لنا عليه: دفعنا زيادة).`;
-      }
-    }
-    return null;
-  }, [amountNum, partyType, customerData.data, supplierData.data, direction]);
-
-  // idempotency: مفتاح ثابت لكل سند (الصفحة تنتقل بعد النجاح فيتجدّد) ⇒ نقرة مزدوجة لا تُنشئ سندين.
-  const [clientRequestId] = useState(() => crypto.randomUUID());
-  const create = trpc.vouchers.create.useMutation({
-    onSuccess: async (res) => {
-      notify.ok(
-        voucherCreateSuccessMessage({
-          direction,
-          voucherNumber: res.voucherNumber,
-          approvalStatus: res.approvalStatus,
-        }),
-      );
-      await Promise.all([
-        utils.vouchers.list.invalidate(),
-        utils.vouchers.aggregate.invalidate(),
-        ...(direction === "OUT" && partyType === "SUPPLIER" ? [
-          utils.suppliers.invalidate(),
-          utils.purchases.invalidate(),
-          utils.supplierPayments.invalidate(),
-          utils.reports.supplierStatement.invalidate(),
-        ] : []),
-      ]);
-      // OUT لا يطبع وثيقة رسمية عند إنشاء الطلب. IN يطبع بعد نجاحه الفوري فقط.
-      if (isReceipt && pendingPrintRef && res.approvalStatus === "APPROVED") {
-        await tryPrintAfterCreate(res.receiptId);
-      } else if (pendingPrintRef && res.approvalStatus !== "APPROVED") {
-        if (pendingPrintRef === "a4") releaseReservedPrintWindow();
-        notify.err(
-          "حُفظ الطلب بلا أثر مالي؛ تتاح الطباعة الرسمية بعد الاعتماد والتنفيذ.",
-        );
-      }
-      bypassUnsavedGuard();
-      navigate("/vouchers");
-    },
-    onError: (e) => {
-      if (pendingPrintRef === "a4") releaseReservedPrintWindow();
-      setPendingPrintRef(null);
-      setErr(e.message);
-    },
-  });
-
-  // الحَفظ + الطَباعة الفورية — نَحفظ مرجع طلب الطباعة.
-  const [pendingPrintRef, setPendingPrintRef] = useState<
-    "thermal" | "a4" | null
-  >(null);
-  async function tryPrintAfterCreate(receiptId: number) {
-    const printMode = pendingPrintRef;
-    try {
-      if (!printMode) return;
-      const v = await utils.vouchers.get.fetch({ receiptId });
-      if (!v) throw new Error("PRINT_FAILED");
-      const branchName = (branches.data ?? []).find(
-        (b) => Number(b.id) === Number(v.branchId),
-      )?.name;
-      const partyName =
-        v.partyName ??
-        (v.partyType === "OTHER" ? (v.counterpartyName ?? "—") : "—");
-      const payload = {
-        voucherNumber: v.voucherNumber ?? "",
-        direction: v.direction as "IN" | "OUT",
-        voucherDate: String(v.voucherDate ?? todayYmd()).slice(0, 10),
-        createdAt: String(v.createdAt),
-        branchName: branchName ?? null,
-        amount: fmt(v.amount),
-        paymentMethod: v.paymentMethod,
-        paymentMethodLabel:
-          paymentMethodCompact(v.paymentMethod),
-        referenceNumber: v.referenceNumber,
-        checkNumber: v.checkNumber,
-        cardLastFour: v.cardLastFour,
-        partyTypeLabel:
-          v.partyType === "CUSTOMER"
-            ? "عميل"
-            : v.partyType === "SUPPLIER"
-              ? "مورّد"
-              : (v.partyType as string) === "DELIVERY_PARTY" || (v.partyType === "OTHER" && v.internalNote?.startsWith("DELIVERY_PARTY:"))
-                ? "جهة توصيل"
-                : "أخرى",
-        partyName,
-        partyBalance: null,
-        categoryName: v.categoryName,
-        description: v.description ?? "",
-        counterpartyName: v.counterpartyName,
-        approvalStatus: v.approvalStatus as
-          | "APPROVED"
-          | "PENDING_APPROVAL"
-          | "REJECTED",
-        approvedByName: v.approvedByName,
-        approvedAt: v.approvedAt ? String(v.approvedAt) : null,
-        createdByName: v.createdByName,
-        cashBucket: v.cashBucket as "DRAWER" | "TREASURY" | null,
-        signatureHash: v.signatureHash,
-        attachmentUrl: v.attachmentUrl,
-        relatedInvoiceNumber: v.invoiceNumber ?? null,
-      };
-      const result = await printAudit.run({
-        documentType: "VOUCHER",
-        documentId: receiptId,
-        branchId: Number(v.branchId ?? branchId),
-        channel: printMode === "a4" ? "BROWSER" : "THERMAL",
-        open: (audit): Promise<PrintOpenResult> => {
-          const auditedPayload = {
-            ...payload,
-            printedByName: audit.actorName,
-            printRequestedAt: String(audit.requestedAt),
-          };
-          return printMode === "a4"
-            ? printVoucherA4(auditedPayload)
-            : printVoucherReceipt(auditedPayload);
-        },
-      });
-      if (typeof result === "boolean" && !result) {
-        notify.err(
-          "تَمّ الحفظ، لكن نافذة الطباعة حُجبت. أعِد الطباعة من قائمة السندات.",
-        );
-      }
-    } catch (e) {
-      if (printMode === "a4") releaseReservedPrintWindow();
-      console.warn("[voucher] فشلت الطباعة الفورية:", e);
-      notify.err(
-        "تَمّ الحفظ، لكن الطباعة فشلت. أعِد الطباعة من قائمة السندات.",
-      );
-    } finally {
-      setPendingPrintRef(null);
-    }
-  }
-
-  const submitColor = isReceipt
-    ? "bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos-hover)]"
-    : "bg-[var(--sem-neg)] text-background hover:bg-[var(--sem-neg-hover)]";
-
-  function validate(): string {
-    if (branchId == null) return "الفرع غير محدَّد — اختر الفرع من القائمة قبل الحفظ (لا فرعَ افتراضيّ).";
-    if (!voucherDate) return "تاريخ السند مطلوب.";
-    if (
-      !amount.trim() ||
-      !/^\d+(\.\d{1,2})?$/.test(amount.trim()) ||
-      Number(amount) <= 0
-    ) {
-      return "المبلغ مطلوب (موجب، منزلتان عشريتان).";
-    }
-    if (!description.trim()) return "وصف السند مطلوب.";
-    if (partyType === "CUSTOMER" && !customerId)
-      return "اختر العميل المرتبط بالسند.";
-    if (partyType === "SUPPLIER" && !supplierId)
-      return "اختر المورّد المرتبط بالسند.";
-    if (partyType === "DELIVERY_PARTY" && !deliveryPartyId)
-      return "اختر جهة التوصيل المرتبطة بالسند.";
-    if (partyType === "OTHER" && voucherCategoryId === "") {
-      return "فئة محاسبية معيّنة إلزامية لسندات «أخرى».";
-    }
-    if (partyType === "OTHER" && !selectedCategoryReady) {
-      return "الفئة المختارة بلا حساب مقابل صالح؛ عيّن الحساب من إدارة الفئات أولاً.";
-    }
-    if (method === "TRANSFER" && !referenceNumber.trim()) {
-      return "الرقم المرجعي إلزامي لطريقة الدفع «تحويل».";
-    }
-    if (method === "CARD" && !/^\d{4}$/.test(cardLastFour.trim())) {
-      return "آخر 4 من البطاقة إلزامي لطريقة الدفع «بطاقة» (4 أرقام).";
-    }
-    return "";
-  }
-
-  function buildPayload() {
-    const partyId =
-      partyType === "CUSTOMER"
-        ? customerId
-        : partyType === "SUPPLIER"
-          ? supplierId
-          : partyType === "DELIVERY_PARTY"
-            ? deliveryPartyId
-            : null;
-    return {
-      voucherType,
-      // `validate()` يرفض الحفظَ بلا فرع؛ الشاشةُ تُرسل ما عرضته حرفياً — لا انزلاق بين المعروض والمُرسَل.
-      branchId: branchId ?? undefined,
-      amount: amount.trim(),
-      paymentMethod: method,
-      partyType,
-      partyId,
-      description: description.trim(),
-      referenceNumber: referenceNumber.trim() || null,
-      // لا صكوك في الإنشاء (قرار المالك) — الحقل يبقى بالعقد للسجلات التاريخية فقط.
-      checkNumber: null,
-      cardLastFour: method === "CARD" ? cardLastFour.trim() || null : null,
-      voucherCategoryId:
-        voucherCategoryId === "" ? null : Number(voucherCategoryId),
-      counterpartyName: counterpartyName.trim() || null,
-      voucherDate,
-      attachmentUrl: attachmentUrl.trim() || null,
-      internalNote: internalNote.trim() || null,
-      invoiceId: partyType === "CUSTOMER" ? invoiceId : null,
-      clientRequestId,
-    };
-  }
-
-  const partyDisplayName = useMemo(() => {
-    if (partyType === "CUSTOMER") return customerData.data?.name || "العميل";
-    if (partyType === "SUPPLIER") return supplierData.data?.name || "المورّد";
-    if (partyType === "DELIVERY_PARTY") return "شركة التوصيل";
-    return counterpartyName.trim() || "الطرف المحدد";
-  }, [partyType, customerData.data?.name, supplierData.data?.name, counterpartyName]);
-
-  async function submit(printAfter: "thermal" | "a4" | null = null) {
-    if (!canCreate) return;
-    setErr("");
-    const v = validate();
-    if (v) {
-      setErr(v);
-      return;
-    }
-    if (
-      isReceipt &&
-      printAfter === "a4" &&
-      !reservePrintWindow()
-    ) {
-      notify.err(
-        "تعذّر فتح نافذة الطباعة — تحقّق من مانع النوافذ المنبثقة",
-      );
-      return;
-    }
-
-    const formattedAmount = fmt(amount.trim());
-    const methodLabel = paymentMethodCompact(method);
-    const isOut = direction === "OUT";
-
-    const title = isOut ? "تأكيد سند الصرف" : "تأكيد سند القبض";
-    const description = isOut
-      ? `سيُسجَّل سند صرف بمبلغ ${formattedAmount} د.ع لصالح «${partyDisplayName}» بطريقة «${methodLabel}» ويُحال للاعتماد والتنفيذ المالي. هل تؤكد العملية؟`
-      : `سيُسجَّل سند قبض بمبلغ ${formattedAmount} د.ع من «${partyDisplayName}» بطريقة «${methodLabel}» وتُثبَّت الحركة المالية في الدفتر. هل تؤكد العملية؟`;
-    const confirmText = isOut ? "تأكيد الصرف" : "تأكيد القبض";
-
-    const ok = await confirm({
-      variant: isOut ? "warning" : "info",
-      title,
-      description,
-      confirmText,
-      cancelText: "تراجع",
-    });
-    if (!ok) {
-      if (isReceipt && printAfter === "a4") releaseReservedPrintWindow();
-      return;
-    }
-
-    // حارس تجربة مستخدم فقط: سند الصرف المعلّق لا يطلب طباعة رسمية.
-    setPendingPrintRef(isReceipt ? printAfter : null);
-    create.mutate(buildPayload());
-  }
-
-  // حارس فقدان البيانات (نمط ExpenseNew): dirty عند إدخال فعليّ فقط — العميل المُمرَّر من URL
-  // (seededCustomerId) لا يُحسب إدخالاً كي لا يظهر تحذير كاذب فور فتح الشاشة.
-  const isDirty =
-    amount.trim() !== "" ||
-    description.trim() !== "" ||
-    counterpartyName.trim() !== "" ||
-    internalNote.trim() !== "" ||
-    referenceNumber.trim() !== "" ||
-    attachmentImages.length > 0 ||
-    supplierId != null ||
-    (customerId != null && customerId !== seededCustomerId);
-  useUnsavedGuard(isDirty);
-
-  // Esc/زر الإلغاء: تأكيد قبل مغادرة نموذج غير محفوظ (كان Esc يُغادر فوراً فيمسح المُدخلات).
-  const leaveBusyRef = useRef(false);
-  async function requestCancel() {
-    if (create.isPending) return;
-    if (!isDirty) {
-      navigate("/vouchers");
-      return;
-    }
-    // Esc داخل حوار التأكيد نفسه يصل لهذا المعالج أيضاً — الحارس يمنع فتح حوارٍ ثانٍ.
-    if (leaveBusyRef.current) return;
-    leaveBusyRef.current = true;
-    try {
-      const ok = await confirm({
-        variant: "warning",
-        title: "مغادرة السند",
-        description:
-          "توجد بيانات غير محفوظة في النموذج — ستُفقد عند المغادرة. هل تتابع؟",
-        confirmText: "مغادرة",
-        cancelText: "بقاء",
-      });
-      if (ok) {
-        bypassUnsavedGuard();
-        navigate("/vouchers");
-      }
-    } finally {
-      leaveBusyRef.current = false;
-    }
-  }
-
-  // اختصارات لوحة المفاتيح (P2-13): Ctrl+S = حفظ، Ctrl+Enter = حفظ+طباعة، Esc = إلغاء (بتأكيد).
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        void requestCancel();
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-        e.preventDefault();
-        submit(isReceipt ? "thermal" : null);
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
-        e.preventDefault();
-        submit(null);
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
+    canCreate,
+    branchId,
+    setBranchId,
+    businessDay,
     amount,
+    setAmount,
     method,
+    setMethod,
     partyType,
+    setPartyType,
     customerId,
+    setCustomerId,
     supplierId,
-    branchId,
-    voucherCategoryId,
-    attachmentUrl,
-    invoiceId,
-    voucherDate,
-    isDirty,
+    setSupplierId,
+    deliveryPartyId,
+    setDeliveryPartyId,
     description,
-    counterpartyName,
-    internalNote,
+    setDescription,
     referenceNumber,
+    setReferenceNumber,
+    cardLastFour,
+    setCardLastFour,
+    voucherCategoryId,
+    setVoucherCategoryId,
+    counterpartyName,
+    setCounterpartyName,
+    voucherDate,
+    setVoucherDate,
+    setVoucherDateTouched,
     attachmentImages,
-  ]);
-
-  // مَعاينة قَيد الدفتر (P1-10) — صفّان بسيطان مَدين/دائن.
-  const ledgerPreview = useMemo(() => {
-    if (amountNum <= 0) return null;
-    const a = fmt(amountNum);
-    const branchName =
-      (branches.data ?? []).find((b) => Number(b.id) === Number(branchId))
-        ?.name ?? "—";
-    const cashBucketLabel =
-      method === "CASH"
-        ? treasuryNotice
-          ? "خزينة إدارية"
-          : "درج كاشير"
-        : "بنك/محفظة";
-    if (direction === "IN") {
-      const credit =
-        partyType === "CUSTOMER"
-          ? "ذمة عميل (تَنقص)"
-          : partyType === "SUPPLIER"
-            ? "ذمة مورّد (تَزيد)"
-            : partyType === "DELIVERY_PARTY"
-              ? "عهدة جهة توصيل (تَنقص)"
-              : selectedCategoryReady
-                ? voucherCategoryRoleLabel(selectedCategory?.postingRole)
-                : "اختر فئة محاسبية مهيأة";
-      return [
-        {
-          side: "مَدين",
-          account: `صندوق ${branchName} — ${cashBucketLabel}`,
-          amount: a,
-        },
-        { side: "دائن", account: credit, amount: a },
-      ];
-    }
-    const debit =
-      partyType === "CUSTOMER"
-        ? "ذمة عميل (تَزيد)"
-        : partyType === "SUPPLIER"
-          ? "ذمة مورّد (تَنقص)"
-          : partyType === "DELIVERY_PARTY"
-            ? "مستحق جهة توصيل (تَنقص)"
-            : selectedCategoryReady
-              ? voucherCategoryRoleLabel(selectedCategory?.postingRole)
-              : "اختر فئة محاسبية مهيأة";
-    return [
-      { side: "مَدين", account: debit, amount: a },
-      {
-        side: "دائن",
-        account: `صندوق ${branchName} — ${cashBucketLabel}`,
-        amount: a,
-      },
-    ];
-  }, [
-    amountNum,
-    branches.data,
-    branchId,
-    method,
-    treasuryNotice,
-    direction,
-    partyType,
+    setAttachmentImages,
+    internalNote,
+    setInternalNote,
+    invoiceId,
+    setInvoiceId,
+    err,
+    categories,
+    categoryOptions,
     selectedCategory,
     selectedCategoryReady,
-  ]);
-
+    readyCategoryCount,
+    canManageCategories,
+    canRestoreCategories,
+    showCategoryDialog,
+    setShowCategoryDialog,
+    restoreDefaults,
+    customerData,
+    supplierData,
+    invoiceQ,
+    setInvoiceQ,
+    outstandingInvoiceOptions,
+    selectedInvoiceLabel,
+    setSelectedInvoiceLabel,
+    selectedInList,
+    invoiceRemaining,
+    hardBlock,
+    treasuryNotice,
+    awaitsOwnerDisbursement,
+    recent,
+    balanceWarn,
+    create,
+    submitColor,
+    submit,
+    requestCancel,
+    ledgerPreview,
+  } = model;
   return (
     <div className="space-y-2.5">
       <PageHeader
@@ -728,407 +113,73 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
 
       <div className="grid gap-3 lg:grid-cols-2 items-start">
         {/* البَيانات الرئيسية */}
-        <Card>
-          <CardHeader className="py-2.5 px-3.5">
-            <CardTitle className="text-sm">البيانات الرئيسية</CardTitle>
-          </CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-2.5 px-3.5 pb-3.5 pt-0">
-            <InferredBranchField
-              label="الفرع *"
-              value={branchId}
-              onChange={setBranchId}
-              disabled={create.isPending}
-            />
-            <div className="space-y-1">
-              <Label>المبلغ * (IQD)</Label>
-              <MoneyInput
-                value={amount}
-                onChange={setAmount}
-                placeholder="50000"
-                ariaLabel="مبلغ السند بالدينار"
-                className="text-right"
-              />
-              {awaitsOwnerDisbursement && (
-                <p className="text-[11px] text-[var(--sem-warn)] flex items-center gap-1 mt-0.5">
-                  <ShieldQuestion aria-hidden className="size-3" />
-                  سيبقى طلباً بلا أثر حتى يعتمد ويصرفه حساب مالك آخر.
-                </p>
-              )}
-            </div>
-
-            <div className="space-y-1">
-              <Label
-                className="flex items-center gap-1"
-                title={`${businessDay ? `افتراضه اليوم التشغيلي بتوقيت بغداد (${businessDay}). ` : ""}التاريخ الفعلي للمُعاملة (قد يَختلف عن تاريخ الإدخال).`}
-              >
-                تاريخ السند *
-                <Info aria-hidden className="size-3 text-muted-foreground" />
-              </Label>
-              <Input
-                type="date"
-                dir="ltr"
-                value={voucherDate}
-                onChange={(e) => {
-                  setVoucherDateTouched(true);
-                  setVoucherDate(e.target.value);
-                }}
-              />
-            </div>
-            <div className="space-y-1">
-              <Label className="inline-flex items-center gap-1.5">
-                <span>طريقة الدفع *</span>
-                {method === "CARD" && <CardBrandLogos size="xs" />}
-              </Label>
-              <AppSelect className="h-9" value={method} onValueChange={(value) => setMethod(value as MethodValue)}>
-                {METHODS.map((m) => (
-                  <option key={m.value} value={m.value} disabled={!isInboundPaymentMethodEnabled(m.value)}>{m.label}</option>
-                ))}
-              </AppSelect>
-            </div>
-
-            {(method === "TRANSFER" ||
-              method === "CARD" ||
-              method === "WALLET") && (
-              <div className="space-y-1">
-                <Label>
-                  الرقم المرجعي {method === "TRANSFER" ? "*" : "(اختياري)"}
-                </Label>
-                <Input
-                  value={referenceNumber}
-                  onChange={(e) => setReferenceNumber(e.target.value)}
-                  placeholder="رقم العملية/التحويل"
-                  dir="ltr"
-                />
-              </div>
-            )}
-            {method === "CARD" && (
-              <div className="space-y-1">
-                <Label className="inline-flex items-center gap-1.5">
-                  <CardBrandLogos size="xs" />
-                  <span>آخر 4 من البطاقة *</span>
-                </Label>
-                <Input
-                  value={cardLastFour}
-                  onChange={(e) =>
-                    setCardLastFour(
-                      e.target.value.replace(/\D/g, "").slice(0, 4),
-                    )
-                  }
-                  placeholder="1234"
-                  maxLength={4}
-                  dir="ltr"
-                  className="tabular-nums text-center"
-                />
-              </div>
-            )}
-            <div className="space-y-1 md:col-span-2">
-              <div className="flex items-center justify-between gap-2">
-                <Label
-                  className="flex items-center gap-1"
-                  title={
-                    partyType === "OTHER"
-                      ? `توجيه محاسبي للطرف (أخرى) — تحدد الحساب المقابل الذي سيظهر في دفتر الأستاذ. ${
-                          isReceipt
-                            ? "سند القبض يثبت المقبوضات النقدية والبنكية والإيرادات التشغيلية والخدمية والتمويلية المباشرة. لمبيعات الأصناف ذات الخصم المخزني الآلي يُنصح باستخدام فواتير المبيعات أو نقاط البيع."
-                            : "سند الصرف يثبت المصروفات التشغيلية المباشرة والمسحوبات وسداد الالتزامات. لسداد فواتير الموردين المعتمدة يُفضل اختيار الطرف (مورد)."
-                        }`
-                      : "تحدد الحساب المقابل الذي سيظهر في دفتر الأستاذ"
-                  }
-                >
-                  فئة السند {direction === "OUT" ? "(مصروف)" : "(إيراد)"}
-                  {partyType === "OTHER" ? " *" : ""}
-                  {partyType === "OTHER" && <Info aria-hidden className="size-3 text-muted-foreground" />}
-                </Label>
-                <div className="flex items-center gap-2">
-                  <Link href="/voucher-categories" className="text-[11px] text-muted-foreground underline">
-                    إدارة الفئات
-                  </Link>
-                  {canManageCategories && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="h-6 px-2 text-[11px]"
-                      onClick={() => setShowCategoryDialog(true)}
-                    >
-                      <Plus aria-hidden className="size-3 ms-1" /> فئة جديدة
-                    </Button>
-                  )}
-                </div>
-              </div>
-              <AppSelect
-                className="h-9"
-                value={
-                  voucherCategoryId === "" ? "" : String(voucherCategoryId)
-                }
-                onValueChange={(value) =>
-                  setVoucherCategoryId(
-                    value === "" ? "" : Number(value),
-                  )
-                }
-              >
-                <option value="">— اختر الفئة المحاسبية —</option>
-                {categoryOptions.map((c) => (
-                  <option
-                    key={Number(c.id)}
-                    value={Number(c.id)}
-                    disabled={
-                      !isVoucherCategoryRoleCompatible(
-                        direction,
-                        c.postingRole,
-                      )
-                    }
-                  >
-                    {c.name}
-                    {!isVoucherCategoryRoleCompatible(
-                      direction,
-                      c.postingRole,
-                    )
-                      ? (
-                          UNRESOLVED_DEFAULT_VOUCHER_CATEGORIES as readonly string[]
-                        ).includes(c.name)
-                        ? " — تحتاج مساراً تخصصياً"
-                        : " — غير مهيأة محاسبياً"
-                      : ` — ${voucherCategoryRoleLabel(c.postingRole)}`}
-                  </option>
-                ))}
-              </AppSelect>
-              {selectedCategory && (
-                <div className="rounded-md border border-border/70 bg-muted/40 px-2.5 py-1.5 text-xs flex flex-wrap items-center justify-between gap-2">
-                  <span className="font-semibold text-foreground flex items-center gap-1.5" title={selectedCategory.description ?? undefined}>
-                    <Info aria-hidden className="size-3.5 text-primary shrink-0" />
-                    {selectedCategory.name}
-                    {selectedCategoryReady && (
-                      <span className="font-normal text-[11px] text-muted-foreground">
-                        ({voucherCategoryAccountingGuidance(direction, selectedCategory)})
-                      </span>
-                    )}
-                  </span>
-                  <span
-                    className={cn(
-                      "text-[11px] font-medium px-2 py-0.5 rounded",
-                      selectedCategoryReady
-                        ? "text-primary bg-primary/10"
-                        : "text-[var(--sem-warn)] bg-[var(--sem-warn-bg)] border border-[var(--sem-warn)]/30",
-                    )}
-                  >
-                    {selectedCategoryReady
-                      ? `مهيأة: ${voucherCategoryRoleLabel(selectedCategory.postingRole)}`
-                      : "غير مهيأة محاسبياً"}
-                  </span>
-                </div>
-              )}
-              {partyType === "OTHER" && readyCategoryCount === 0 && !categories.isLoading && (
-                <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2 text-[11px] text-[var(--sem-warn)] space-y-1.5">
-                  <p className="flex items-start gap-1.5 font-medium">
-                    <AlertTriangle aria-hidden className="size-3.5 mt-px shrink-0" />
-                    لا توجد فئة {isReceipt ? "قبض" : "صرف"} مهيأة محاسبياً — سند «أخرى» لا
-                    يُحفظ بدونها.
-                  </p>
-                  {canRestoreCategories && (
-                    <div className="flex flex-wrap gap-2">
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        className="h-7 px-2 text-xs"
-                        onClick={() => setShowCategoryDialog(true)}
-                      >
-                        إنشاء فئة الآن
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        className="h-7 px-2 text-xs"
-                        disabled={restoreDefaults.isPending}
-                        onClick={() => restoreDefaults.mutate()}
-                      >
-                        {restoreDefaults.isPending
-                          ? "جارٍ الاستعادة…"
-                          : "استعادة الفئات الافتراضية"}
-                      </Button>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+        <VoucherPaymentFields
+          {...{
+            isReceipt,
+            direction,
+            branchId,
+            setBranchId,
+            businessDay,
+            amount,
+            setAmount,
+            method,
+            setMethod,
+            partyType,
+            description,
+            referenceNumber,
+            setReferenceNumber,
+            cardLastFour,
+            setCardLastFour,
+            voucherCategoryId,
+            setVoucherCategoryId,
+            voucherDate,
+            setVoucherDate,
+            setVoucherDateTouched,
+            categories,
+            categoryOptions,
+            selectedCategory,
+            selectedCategoryReady,
+            readyCategoryCount,
+            canManageCategories,
+            canRestoreCategories,
+            setShowCategoryDialog,
+            restoreDefaults,
+            awaitsOwnerDisbursement,
+            create,
+          }}
+        />
 
         {/* الطرف المُقابل */}
-        <Card>
-          <CardHeader className="py-2.5 px-3.5">
-            <CardTitle className="text-sm">الطرف المقابل</CardTitle>
-          </CardHeader>
-          <CardContent className="grid grid-cols-1 gap-2.5 px-3.5 pb-3.5 pt-0">
-            <div className="space-y-1">
-              <div className="flex items-center justify-between gap-2">
-                <Label>نوع الطرف *</Label>
-                <span className="text-[11px] text-muted-foreground">
-                  {partyType === "OTHER" && "تأثير على الصندوق/الدفتر فقط"}
-                  {partyType === "CUSTOMER" && (isReceipt ? "AR ينقص بقيمة السند" : "AR يَزيد (استرداد)")}
-                  {partyType === "SUPPLIER" && (isReceipt ? "AP يَزيد (استلام نقد)" : "AP يَنقص (دفعة للمورّد)")}
-                  {partyType === "DELIVERY_PARTY" && (isReceipt ? "تحصيل عهدة COD" : "صرف مستحقات توصيل")}
-                </span>
-              </div>
-              <AppSelect
-                className="h-9"
-                value={partyType}
-                onValueChange={(value) => {
-                  const v = value as typeof partyType;
-                  setPartyType(v);
-                  setCustomerId(null);
-                  setSupplierId(null);
-                  setDeliveryPartyId(null);
-                  setInvoiceId(null);
-                }}
-              >
-                <option value="OTHER">
-                  أخرى (راتب/إيجار/إيرادات متفرّقة…)
-                </option>
-                <option value="CUSTOMER">عميل</option>
-                <option value="SUPPLIER">مورّد</option>
-                <option value="DELIVERY_PARTY">جهة توصيل (COD / مستحقات)</option>
-              </AppSelect>
-            </div>
-
-            {partyType === "CUSTOMER" && (
-              <>
-                <CustomerPicker
-                  customerId={customerId}
-                  onCustomerChange={(id) => {
-                    setCustomerId(id);
-                    setInvoiceId(null);
-                    setInvoiceQ("");
-                    setSelectedInvoiceLabel("");
-                  }}
-                  balance={customerData.data?.currentBalance}
-                />
-                {customerId != null && (
-                  <div className="space-y-1">
-                    <Label
-                      className="flex items-center gap-1"
-                      title={
-                        !isReceipt
-                          ? "هذا سند رد مبلغ للعميل: يسجل صرفاً فعلياً ويحدّث رصيده عند التنفيذ. اختيار فاتورة يخصم المبلغ من مدفوعها، وترك الاختيار فارغاً يرد المبلغ على حساب العميل."
-                          : "اترك الاختيار فارغاً ليوزع النظام القبض تلقائياً من أقدم فواتير العميل المؤهلة في هذا الفرع. اختيار فاتورة يخصص القبض لها وحدها."
-                      }
-                    >
-                      {isReceipt ? "تخصيص فاتورة محددة (اختياري)" : "ربط الرد بفاتورة (اختياري)"}
-                      <Info aria-hidden className="size-3 text-muted-foreground" />
-                    </Label>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      <UnifiedSearchInput
-                        value={invoiceQ}
-                        onChange={setInvoiceQ}
-                        placeholder="ابحث برقم الفاتورة… (F2)"
-                        barcode={true}
-                        debounceMs={200}
-                        size="default"
-                      />
-                      <AppSelect
-                        value={invoiceId != null ? String(invoiceId) : "0"}
-                        onValueChange={(v) => {
-                          const id = v === "0" ? null : Number(v);
-                          setInvoiceId(id);
-                          if (id != null) {
-                            const inv = outstandingInvoiceOptions.find(
-                              (o) => Number(o.id) === id,
-                            );
-                            if (inv) {
-                              setSelectedInvoiceLabel(
-                                `فاتورة #${inv.invoiceNumber} — ${isReceipt ? "متبقٍّ" : "مدفوع"} ${fmt(isReceipt ? invoiceRemaining(inv) : inv.paidAmount)} د.ع`,
-                              );
-                            }
-                          } else {
-                            setSelectedInvoiceLabel("");
-                          }
-                        }}
-                        aria-label="ربط السند بفاتورة"
-                      >
-                        <option value="0">— بلا ربط (توزيع تلقائي) —</option>
-                        {invoiceId != null && !selectedInList && (
-                          <option value={String(invoiceId)}>
-                            {selectedInvoiceLabel ||
-                              `فاتورة مُختارة #${invoiceId}`}
-                          </option>
-                        )}
-                        {outstandingInvoiceOptions.map((inv) => (
-                          <option key={Number(inv.id)} value={String(inv.id)}>
-                            فاتورة #{inv.invoiceNumber} — {isReceipt ? "متبقٍّ" : "مدفوع"}{" "}
-                            {fmt(isReceipt ? invoiceRemaining(inv) : inv.paidAmount)} د.ع
-                          </option>
-                        ))}
-                      </AppSelect>
-                    </div>
-                  </div>
-                )}
-              </>
-            )}
-            {partyType === "SUPPLIER" && (
-              <SupplierPicker
-                supplierId={supplierId}
-                onSupplierChange={setSupplierId}
-              />
-            )}
-            {partyType === "DELIVERY_PARTY" && (
-              <DeliveryPartyPicker
-                partyId={deliveryPartyId}
-                onPartyChange={setDeliveryPartyId}
-                branchId={branchId}
-              />
-            )}
-            {partyType === "OTHER" && (
-              <div className="space-y-1">
-                <Label title="مَوصى به — يُمكّن تَقرير «كل ما دُفع/قُبض من فلان» (مفيد للرواتب والإيجارات المُكرَّرة).">
-                  اسم المُستفيد / الدافع
-                </Label>
-                <Input
-                  value={counterpartyName}
-                  onChange={(e) => setCounterpartyName(e.target.value)}
-                  placeholder={
-                    isReceipt
-                      ? "مَثلاً: المستثمر / شركة الإعلان — تَحصيل"
-                      : "مَثلاً: المستثمر (مثل: سلمى أحمد) / الموظف أحمد محمد"
-                  }
-                />
-              </div>
-            )}
-
-            {balanceWarn && (
-              <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] text-xs p-2 flex items-start gap-2">
-                <AlertTriangle aria-hidden className="size-4 shrink-0 mt-0.5" />
-                <span>{balanceWarn}</span>
-              </div>
-            )}
-
-            {(recent.data ?? []).length > 0 && (
-              <div className="rounded-md border bg-muted/30 p-2 text-[12px] space-y-1">
-                <div className="font-bold text-foreground flex items-center gap-1">
-                  <Info aria-hidden className="size-3.5" />
-                  آخر سندات لنفس الطَرف (7 أيام):
-                </div>
-                {(recent.data ?? []).map((r) => (
-                  <div
-                    key={Number(r.id)}
-                    className="flex items-center justify-between gap-2 text-muted-foreground"
-                  >
-                    <span className="truncate">
-                      {r.voucherNumber} — {r.direction === "IN" ? "قبض" : "صرف"}
-                      {r.approvalStatus === "PENDING_APPROVAL" ? (
-                        <Hourglass aria-hidden className="inline size-3 ms-1" />
-                      ) : null}
-                    </span>
-                    <span className="tabular-nums shrink-0" dir="ltr">
-                      {fmt(r.amount)}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+        <VoucherPartyAllocationFields
+          {...{
+            isReceipt,
+            direction,
+            branchId,
+            amount,
+            partyType,
+            setPartyType,
+            customerId,
+            setCustomerId,
+            supplierId,
+            setSupplierId,
+            deliveryPartyId,
+            setDeliveryPartyId,
+            counterpartyName,
+            setCounterpartyName,
+            invoiceId,
+            setInvoiceId,
+            customerData,
+            invoiceQ,
+            setInvoiceQ,
+            outstandingInvoiceOptions,
+            selectedInvoiceLabel,
+            setSelectedInvoiceLabel,
+            selectedInList,
+            invoiceRemaining,
+            recent,
+            balanceWarn,
+          }}
+        />
 
         {/* الوَصف + مَعاينة القَيد + المرفقات في بطاقة مدمجة واحدة */}
         <Card className="lg:col-span-2">
@@ -1145,7 +196,9 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                 }
                 rows={2}
               />
-              <Label className="pt-1 block text-xs">مُلاحظة داخلية (لا تُطبع)</Label>
+              <Label className="pt-1 block text-xs">
+                مُلاحظة داخلية (لا تُطبع)
+              </Label>
               <Input
                 value={internalNote}
                 onChange={(e) => setInternalNote(e.target.value)}

@@ -5,12 +5,31 @@ const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf
 
 describe("إغلاق الوردية المبسّط", () => {
   it("لا يطلب مستلم عهدة في أي شاشة ويب", () => {
-    for (const page of ["../POS.tsx", "../PrintPOS.tsx", "../Reception.tsx", "../Shifts.tsx"]) {
+    for (const page of [
+      "../POS.tsx",
+      "../PrintPOS.tsx",
+      "../Reception.tsx",
+      "../Shifts.tsx",
+      "../../components/reception/ReceptionShiftCloseDialog.tsx",
+    ]) {
       const source = read(page);
       expect(source).not.toContain("ShiftHandoverSection");
       expect(source).not.toContain("handoverToUserId");
       expect(source).not.toContain("اختر مستلم عهدة الإغلاق");
     }
+    const reception = read("../Reception.tsx");
+    expect(reception).toContain(
+      'from "@/components/reception/ReceptionShiftCloseDialog"',
+    );
+    expect(reception).toMatch(
+      /closing && shift && \(\s*<ReceptionShiftCloseDialog/,
+    );
+    expect(reception).toMatch(
+      /<ReceptionShiftCloseDialog[\s\S]*?shift=\{shift\}/,
+    );
+    expect(
+      read("../../components/reception/ReceptionShiftCloseDialog.tsx"),
+    ).toContain("trpc.shifts.close.useMutation");
   });
 
   it("يغلق الخادم مباشرة إلى الخزينة بلا عقد مستلم أو نقد في الطريق", () => {

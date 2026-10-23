@@ -28,6 +28,8 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import {
   EMPTY_TERMINATION_SETTLEMENT,
   TERMINATION_PAYMENT_METHOD_LABEL,
+  TERMINATION_PAYMENT_METHODS,
+  terminationPaymentMethodLabel,
   terminationEarnedNet,
   terminationSettlementTotal,
   validateTerminationSettlement,
@@ -1164,7 +1166,7 @@ export default function Promotions() {
                 <div className="space-y-1">
                   <Label htmlFor="termination-reversal-method">طريقة إعادة المبلغ</Label>
                   <AppSelect id="termination-reversal-method" className="h-9" value={reverseMethod} onValueChange={(next) => setReverseMethod(next as typeof reverseMethod)}>
-                    {Object.entries(TERMINATION_PAYMENT_METHOD_LABEL).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                    {TERMINATION_PAYMENT_METHODS.map((value) => <option key={value} value={value}>{terminationPaymentMethodLabel(value, "IN")}</option>)}
                   </AppSelect>
                 </div>
                 <div className="space-y-1">

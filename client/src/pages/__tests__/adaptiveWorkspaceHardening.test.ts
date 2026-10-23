@@ -16,7 +16,7 @@ describe("عقود تقوية مساحة العمل التشغيلية", () => {
       readPage("InvoiceDetail.tsx"),
       readPage("POS.tsx"),
       readPage("PrintPOS.tsx"),
-      readPage("Reception.tsx"),
+      readComponent("reception/ReceptionOfflineCapture.tsx"),
       readComponent("reception/ReceptionInvoiceQueue.tsx"),
     ];
 
@@ -24,6 +24,21 @@ describe("عقود تقوية مساحة العمل التشغيلية", () => {
       expect(source).toMatch(/!\w+\.ok/u);
       expect(source).toContain("حجب المتصفح نافذة الطباعة");
     }
+    const reception = readPage("Reception.tsx");
+    expect(reception).toContain(
+      'from "@/components/reception/ReceptionOfflineCapture"',
+    );
+    expect(reception).toMatch(/return ReceptionOfflineCapture\(\{/u);
+    expect(reception).toContain(
+      'from "@/components/reception/presentReceptionCheckout"',
+    );
+    expect(reception).toMatch(/await presentReceptionCheckout\(\{/u);
+    const checkout = readComponent("reception/presentReceptionCheckout.tsx");
+    expect(checkout).toMatch(/if \(!result\.ok\) printFailures \+= 1/u);
+    expect(checkout).toMatch(
+      /printFailures > 0[\s\S]*تم الحفظ، لكن تعذّرت طباعة/u,
+    );
+    expect(checkout).toMatch(/setLastSale\(\{[\s\S]*printFailures,/u);
   });
 
   it("يبقي عنوان الصفحة دلالياً وفلاتر الفترة قابلة للوصول على الهاتف", () => {

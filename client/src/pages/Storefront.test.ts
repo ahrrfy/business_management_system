@@ -58,6 +58,7 @@ import {
 } from "./Storefront";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { StorefrontCategories } from "@/components/storefront/StorefrontCategories";
+import { StorefrontProductCard } from "@/components/storefront/StorefrontProductCard";
 import { DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH, storefrontVisibleCustomizationFieldKeys } from "./store/storefrontCustomization";
 
 describe("storefront related product actions", () => {
@@ -123,11 +124,33 @@ describe("storefront customization", () => {
     expect(Array.from(restored.values())[0]?.qty).toBe(2);
     expect(addStorefrontCartLine(base, { productUnitId: 21, productId: 9, productName: "دعوة", imageUrl: null, unitName: "قطعة", isCustomizable: true }, "2500").size).toBe(0);
     const source = readFileSync(new URL("./Storefront.tsx", import.meta.url), "utf8");
-    expect(source).not.toContain("detailQ.data.isCustomizable ? (");
-    expect(source).not.toContain("disabled={detailQ.data.isCustomizable ||");
-    expect(source).not.toContain("!detailQ.data.isCustomizable && (detailQ.data.variants?.length ?? 0)");
-    expect(source).toContain("disabled={!storefrontProductCanBeOrdered(p)}");
-    expect(source).not.toContain("cartHasUnsupportedCustomization");
+    const catalog = readFileSync(new URL("../components/storefront/StorefrontCatalogSurface.tsx", import.meta.url), "utf8");
+    const grid = readFileSync(new URL("../components/storefront/StorefrontProductGrid.tsx", import.meta.url), "utf8");
+    const dialog = readFileSync(new URL("../components/storefront/StorefrontProductDialog.tsx", import.meta.url), "utf8");
+    for (const view of [source, catalog, grid, dialog]) {
+      expect(view).not.toContain("detailQ.data.isCustomizable ? (");
+      expect(view).not.toContain("disabled={detailQ.data.isCustomizable ||");
+      expect(view).not.toContain("!detailQ.data.isCustomizable && (detailQ.data.variants?.length ?? 0)");
+      expect(view).not.toContain("cartHasUnsupportedCustomization");
+    }
+    expect(source).toContain("<StorefrontCatalogSurface");
+    expect(catalog).toContain("<StorefrontProductGrid");
+    expect(grid).toContain("<StorefrontProductCard");
+    expect(grid).toContain("canBeOrdered={storefrontProductCanBeOrdered}");
+    const renderOrderButton = (inStock: boolean) => {
+      const markup = renderToStaticMarkup(createElement(StorefrontProductCard, {
+        product: { productId: 9, productName: "دعوة", price: "2500", isCustomizable: true, inStock },
+        isWishlisted: false,
+        onOpen: () => {}, onAdd: () => false, onToggleWishlist: () => {}, onShare: () => {},
+        canBeOrdered: storefrontProductCanBeOrdered,
+        actionLabel: "اختر تفاصيل التخصيص",
+      }));
+      const button = markup.match(/<button\b[^>]*class="animated-cart-btn[^>]*>/)?.[0];
+      expect(button).toBeDefined();
+      return button!;
+    };
+    expect(renderOrderButton(true)).not.toContain('disabled=""');
+    expect(renderOrderButton(false)).toContain('disabled=""');
     expect(DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH).toBe(2_000);
     expect(source).toContain("field.maxLength ?? DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH");
   });
@@ -578,9 +601,10 @@ describe("getStorefrontSearchSuggestions", () => {
 
 describe("storefront remote search and cart wiring", () => {
   it("uses full-catalog suggestions and immediate success-aware cart actions", () => {
-    const source = readFileSync(new URL("./Storefront.tsx", import.meta.url), "utf8");
-    expect(source).toContain("<StorefrontSearch value={rawSearch}");
-    expect(source).toContain("<StorefrontSearchAlternatives query={search}");
+    const source = ["./Storefront.tsx", "../components/storefront/StorefrontHeader.tsx", "../components/storefront/StorefrontCatalogSurface.tsx"]
+      .map((file) => readFileSync(new URL(file, import.meta.url), "utf8")).join("\n");
+    expect(source).toMatch(/<StorefrontSearch\s+value=\{rawSearch\}/);
+    expect(source).toMatch(/<StorefrontSearchAlternatives\s+query=\{search\}/);
     expect(source).not.toContain("getStorefrontSearchSuggestions(filteredItems");
     expect(source).not.toContain("triggerCartFlight");
     expect(source).not.toContain("setCartFlight");
@@ -666,8 +690,9 @@ describe("storefront guest tracking ownership", () => {
 
 describe("storefront wholesale guidance", () => {
   it("shows a cart action and explains that colours and units are accumulated", () => {
-    const source = readFileSync(new URL("./Storefront.tsx", import.meta.url), "utf8");
-    expect(source).toContain("quoteQ.data?.wholesaleProgress");
+    const source = ["./Storefront.tsx", "../components/storefront/StorefrontCheckoutBenefits.tsx"]
+      .map((file) => readFileSync(new URL(file, import.meta.url), "utf8")).join("\n").replace(/\s+/g, " ");
+    expect(source).toContain("quoteData?.wholesaleProgress");
     expect(source).toContain("تُحسب الألوان والوحدات لهذا المنتج معاً");
     expect(source).toContain('setPanel("cart")');
   });
@@ -759,7 +784,8 @@ describe("storefront category strip and categories navigation", () => {
   });
 
   it("verifies navbar contains anchor link to #store-categories", () => {
-    const source = readFileSync(new URL("./Storefront.tsx", import.meta.url), "utf8");
+    const source = ["../components/storefront/StorefrontHeader.tsx", "../components/storefront/StorefrontCatalogSurface.tsx"]
+      .map((file) => readFileSync(new URL(file, import.meta.url), "utf8")).join("\n");
     expect(source).toContain('href="#store-categories"');
     expect(source).toContain('id="store-categories"');
     expect(source).toContain('id="store-categories-strip"');

@@ -108,3 +108,13 @@ describe("integrationCenter", () => {
     expect(ITEMS).toEqual(snapshot);
   });
 });
+
+
+describe("integration channel vocabulary", () => {
+  it("preserves spelling aliases and also searches canonical labels", () => {
+    const filters = {status: "ALL", channel: "ALL", branchId: null} as const;
+    for (const query of ["واتس اب", "واتساب", "whatsapp"]) expect(filterIntegrations(ITEMS, {...filters, query}).map((item) => item.channel)).toEqual(["WHATSAPP", "WHATSAPP"]);
+    for (const query of ["انستجرام", "انستغرام", "إنستغرام"]) expect(filterIntegrations(ITEMS, {...filters, query})).toEqual([ITEMS[1]]);
+    for (const query of ["webhook", "متجر", "المتجر"]) expect(filterIntegrations(ITEMS, {...filters, query})).toEqual([ITEMS[2]]);
+  });
+});

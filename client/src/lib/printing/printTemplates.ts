@@ -1,3 +1,4 @@
+import { paymentMethodTerm } from "@shared/terms";
 /**
  * قوالب طباعة مكتبة العربية.
  * الثمانية الرَسميّة (فاتورتان، تقرير مبيعات، عرض سعر، طلب خدمة، كشف حساب، سندَا قبض/دفع) تُنفَّذ
@@ -1410,9 +1411,7 @@ function calcDuration(openedAt: Date | string | null, closedAt: Date): string {
 }
 
 // ترجمة طرق الدفع
-const METHOD_AR: Record<string, string> = {
-  CASH: 'نقدي', CARD: 'بطاقة', CHECK: 'صك', TRANSFER: 'تحويل', WALLET: 'محفظة', TELECOM: 'رصيد زين',
-};
+
 
 /**
  * غلاف خاص بإيصالات الوردية على Epson 80mm.
@@ -1648,7 +1647,7 @@ export function buildShiftCloseHtml(d: ShiftCloseData): string {
   const payRows = d.payments
     .filter(p => Number(p.total) !== 0)
     .map(p => {
-      const label  = `${METHOD_AR[p.method] ?? p.method} ${p.direction === 'IN' ? 'وارد' : 'صادر'}`;
+      const label  = `${paymentMethodTerm(p.method)?.compact ?? p.method} ${p.direction === 'IN' ? 'وارد' : 'صادر'}`;
       const amtStr = p.direction === 'OUT' ? `( ${fmt(p.total)} )` : fmt(p.total);
       const labelHtml = isCardPaymentMethod(p.method)
         ? `<span style="display:inline-flex;align-items:center;gap:4px;vertical-align:middle;"><span>${esc(label)}</span>${cardBrandLogosHtml({ heightPx: 13 })}</span>`

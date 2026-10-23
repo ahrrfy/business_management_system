@@ -1,3 +1,4 @@
+import { STOCKTAKE_SCOPE_LABEL as SCOPE_TYPE_LABEL } from "@shared/inventoryTerms";
 import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 /**
  * StocktakeNew — معالج إنشاء جلسة جرد جديدة (/stocktakes/new).
@@ -52,12 +53,7 @@ type StScope = "FULL" | "MOVING" | "CATEGORY" | "MANUAL";
 type Method = "PIN" | "USER";
 type DupPolicy = "VERIFY" | "BLOCK";
 
-const SCOPE_TYPE_LABEL: Record<StScope, string> = {
-  FULL: "جرد شامل للفرع",
-  MOVING: "المنتجات المتحركة",
-  CATEGORY: "حسب الفئة",
-  MANUAL: "منتجات مختارة",
-};
+
 
 /** تسمية دور الحساب في منتقي تكليف USER (مخرج assignableUsers: {id,name,role}). */
 const USER_ROLE_LABEL: Record<string, string> = {

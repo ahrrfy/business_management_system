@@ -1,3 +1,4 @@
+import { paymentMethodTerm } from "@shared/terms";
 // الراسم الحراري المُعلَّم لإيصالَي الوردية (فتح + إغلاق/Z) — يرسم التصميم المعتمد
 // (شعار + شارات معكوسة + كتل بارزة + تسوية صندوق + توقيعات) على Canvas 576px ثم يحوّله
 // نقطية ESC/POS. هذا هو نظير receiptRaster.ts/workOrderRaster.ts لإيصالات الوردية، كي
@@ -15,9 +16,7 @@ const W = 576; // 80مم @ 203dpi
 const PAD = 16;
 const THRESHOLD = 160;
 
-const METHOD_AR: Record<string, string> = {
-  CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة", TELECOM: "رصيد زين",
-};
+
 
 function loadImage(src: string): Promise<HTMLImageElement | null> {
   return new Promise((resolve) => {
@@ -403,7 +402,7 @@ export async function shiftCloseToCanvas(
     const hasCardRow = payList.some((p) => isCardPaymentMethod(p.method));
     const cardImg = hasCardRow ? await loadImage(CARD_BRAND_LOGO_URL) : null;
     for (const p of payList) {
-      const label = `${METHOD_AR[p.method] ?? p.method} ${p.direction === "IN" ? "وارد" : "صادر"}`;
+      const label = `${paymentMethodTerm(p.method)?.compact ?? p.method} ${p.direction === "IN" ? "وارد" : "صادر"}`;
       const amt = p.direction === "OUT" ? `( ${fmt(p.total)} )` : fmt(p.total);
       const isCard = isCardPaymentMethod(p.method);
       const logoW = 58;

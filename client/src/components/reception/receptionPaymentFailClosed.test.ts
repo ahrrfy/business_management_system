@@ -13,15 +13,36 @@ describe("اشتقاق طرق القبض من السياسة في كل شاشا�
   it("لوحة الدفع تُعيد الطريقة غير المدعومة إلى النقد ولا تُقفل المدعومة", () => {
     const source = readComponent("PaymentPanel.tsx");
     const reception = readClient("../../pages/Reception.tsx");
+    const submission = readComponent("ReceptionSubmission.tsx");
 
     expect(source).toContain("isPosPaymentMethodEnabled(method)");
     expect(source).toContain('setMethod("CASH")');
     expect(source).toContain("disabled={!isPosPaymentMethodEnabled(p.v)}");
-    expect(reception).toContain("if (!isPosPaymentMethodEnabled(String(method)))",
+    expect(submission).toContain(
+      "if (!isPosPaymentMethodEnabled(String(method)))",
     );
-    expect(reception.indexOf("if (!isPosPaymentMethodEnabled(String(method)))"),
-    ).toBeLessThan(
-      reception.indexOf("customerId = await ensureCustomerId()"));
+    expect(submission).toMatch(
+      /if \(!isPosPaymentMethodEnabled\(String\(method\)\)\) \{\s*notify\.err\(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE\);\s*return;\s*\}/,
+    );
+    expect(reception).toContain(
+      'from "@/components/reception/ReceptionSubmission"',
+    );
+    expect(reception).toContain(
+      "const preparation = await prepareReceptionSubmission({",
+    );
+    expect(reception).toMatch(/prepareReceptionSubmission\(\{[^}]*\bmethod\b/);
+    expect(reception).toContain("if (!preparation || !shift) return;");
+    expect(
+      reception.indexOf(
+        "const preparation = await prepareReceptionSubmission({",
+      ),
+    ).toBeLessThan(reception.indexOf("if (!preparation || !shift) return;"));
+    expect(
+      reception.indexOf("if (!preparation || !shift) return;"),
+    ).toBeLessThan(reception.indexOf("customerId = await ensureCustomerId()"));
+    expect(
+      submission.indexOf("if (!isPosPaymentMethodEnabled(String(method)))"),
+    ).toBeLessThan(submission.lastIndexOf("return {"));
     // البطاقة مدعومة ⇒ الزرّ مفتوح فعلياً لا مُعطَّلاً.
     expect(isPosPaymentMethodEnabled("CARD")).toBe(true);
   });

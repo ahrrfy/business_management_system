@@ -1,3 +1,5 @@
+import { paymentMethodProse } from "@shared/terms";
+
 export type VoucherUiRecord = {
   direction?: string | null;
   approvalStatus?: string | null;
@@ -68,16 +70,6 @@ export function accrualPaymentAttemptLabel(input: {
   return `المحاولة A${input.attempt} · الأصل #${input.rootReceiptId} · السابقة #${input.priorReceiptId}`;
 }
 
-const METHOD_LABEL: Record<string, string> = {
-  CASH: "نقدي",
-  CARD: "بطاقة",
-  CHECK: "صكّ",
-  TRANSFER: "تحويل مصرفي",
-  WALLET: "محفظة",
-  EXCHANGE: "صيرفة",
-  TELECOM: "رصيد زين",
-};
-
 /** تسميات دورة الصرف الجديدة مع إبقاء سندات القبض كما هي. */
 export function voucherApprovalLabel(row: VoucherUiRecord): string {
   if (row.approvalStatus === "PENDING_APPROVAL") {
@@ -144,7 +136,7 @@ export function voucherCashUiPolicy(input: {
 export function expectedVoucherSourceLabel(row: VoucherUiRecord): string {
   if (row.paymentMethod !== "CASH") {
     return (
-      METHOD_LABEL[row.paymentMethod ?? ""] ?? row.paymentMethod ?? "غير محدد"
+      row.paymentMethod == null ? "غير محدد" : row.paymentMethod === "" ? "" : paymentMethodProse(row.paymentMethod)
     );
   }
   // عقد الصرف النقدي النهائي: المالك يصرف من الخزينة الإدارية فقط، بلا درج وردية.

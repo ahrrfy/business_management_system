@@ -1,91 +1,50 @@
+import { useReceptionCartEditing } from "@/components/reception/useReceptionCartEditing";
+import { useReceptionScanner } from "@/components/reception/useReceptionScanner";
+import { useReceptionPrinter } from "@/components/reception/useReceptionPrinter";
+import { presentReceptionCheckout } from "@/components/reception/presentReceptionCheckout";
+import { ReceptionWorkspaceHeader } from "@/components/reception/ReceptionWorkspaceHeader";
+import { ReceptionOpenShift } from "@/components/reception/ReceptionOpenShift";
+import { ReceptionResumeDraft } from "@/components/reception/ReceptionResumeDraft";
+import { ReceptionRestoreWorkspace } from "@/components/reception/ReceptionRestoreWorkspace";
+import { ReceptionDraftTicket } from "@/components/reception/ReceptionDraftTicket";
+import { buildReceptionCheckoutReceipts } from "@/components/reception/ReceptionCheckoutReceipts";
+import { ReceptionOfflineCapture } from "@/components/reception/ReceptionOfflineCapture";
+import { ReceptionBranchGate } from "@/components/reception/ReceptionBranchGate";
+import { buildReceptionCheckoutPayload } from "@/components/reception/ReceptionCheckoutPayload";
+import { useReceptionShortcuts } from "@/components/reception/ReceptionShortcuts";
+import { prepareReceptionSubmission } from "@/components/reception/ReceptionSubmission";
+import type { OrderDeliveryValue } from "@/components/reception/ReceptionTypes";
+import { useReceptionAmounts } from "@/components/reception/ReceptionAmounts";
 import type { StartOrderFromConversation } from "@/pages/Inbox";
-import { toWorkOrderChannel, WORK_ORDER_CHANNELS, type WorkOrderChannel, receptionChannelOptions } from "@shared/receptionChannel";
-import { ChannelMark } from "@/components/ChannelBadge";
+import { type WorkOrderChannel } from "@shared/receptionChannel";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { Link, useLocation, useSearch } from "wouter";
-import {
-  CalendarClock,
-  Check,
-  CheckCircle2,
-  ClipboardList,
-  Copy,
-  CreditCard,
-  FilePenLine,
-  Globe,
-  HandCoins,
-  Instagram,
-  MessageCircle,
-  Music2,
-  Package,
-  Palette,
-  Phone,
-  Printer,
-  Receipt as ReceiptIcon,
-  ShoppingCart,
-  Store,
-  Truck,
-} from "lucide-react";
-import { Badge } from "@/components/ui/badge";
+import { useLocation, useSearch } from "wouter";
+import { CheckCircle2, FilePenLine, ShoppingCart, Truck } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { isValidIqMobile, toLocalIqMobileDigits } from "@/components/form/PhoneDigitsInput";
-import { ReceptionCustomerSection } from "@/components/reception/ReceptionCustomerSection";
+import { isValidIqMobile } from "@/components/form/PhoneDigitsInput";
 import { useCustomerByPhone } from "@/components/customer/useCustomerByPhone";
-import { CustomizationDialog, type CustomizationData, composeCustomizationText, emptyCustomization } from "@/components/CustomizationDialog";
-import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
+import { CustomizationDialog, emptyCustomization } from "@/components/CustomizationDialog";
 import { useInvoiceReceiptPrinter } from "@/hooks/useInvoiceReceiptPrinter";
 import { receptionOperationAllowed, receptionCheckoutPaths, receptionDeliveryAuthorityRequired } from "@/lib/receptionOperationAccess";
-import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMediaQuery } from "@/hooks/useMobile";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
-import { offlineFindByBarcode, offlineSearchCatalog, useOfflineCatalogSync } from "@/lib/offline/catalogSync";
-import {
-  allocateOfflineReceiptNumber,
-  assertCanCapture,
-  enqueueOfflineItem,
-  isOfflineSaleEnabled,
-  type OfflineReceptionPayload,
-} from "@/lib/offline/outbox";
+import { offlineSearchCatalog, useOfflineCatalogSync } from "@/lib/offline/catalogSync";
 import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
 import { confirm } from "@/lib/confirm";
-import { D, fmt, formatIqd, round2, roundCashIQD } from "@/lib/money";
+import { fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
-import { parseScan } from "@/lib/scanRouter";
 import { buildDraftPayload } from "@/components/reception/draftPayloadBuilder";
-import { DigitalCardsPickerDialog, type DigitalBasketCapture } from "@/components/pos/DigitalCardsPickerDialog";
+import { DigitalCardsPickerDialog } from "@/components/pos/DigitalCardsPickerDialog";
 import { DigitalFulfillmentDialog } from "@/components/pos/DigitalFulfillmentDialog";
-import { captureDigitalReceptionCartLines, toDigitalPrepareLine } from "@/components/pos/digitalBasket";
-import { fmtDate, fmtTime } from "@/lib/date";
+import { toDigitalPrepareLine } from "@/components/pos/digitalBasket";
 import { trpc } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
-import { cn } from "@/lib/utils";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
-import { MoneyInput } from "@/components/form/MoneyInput";
 import { Contact360Panel } from "@/components/contacts/Contact360Panel";
-import { DraftStrip } from "@/components/reception/DraftStrip";
 import { ReceptionCartDuplicateAlert } from "@/components/reception/ReceptionCartDuplicateAlert";
-import { printDraftTicket } from "@/lib/printing/draftTicket";
-import { receptionCheckoutReceiptMeta } from "@/lib/printing/receptionReceiptMeta";
-import { applyReceptionCouponPreview, clearReceptionCouponPricing, createReceptionDraftPointer, createReceptionDraftSyncQueue, isDefinitiveReceptionPromotionRejection, prepareReceptionConversationStart, prepareReceptionDepositDraft, prepareReceptionDraftCart, prepareReceptionDraftSwitch, prepareReceptionLocalWorkspaceRestore, resolveReceptionRestoredPricingContext, type ReceptionDraftSyncOutcome as DraftSyncOutcome, type ReceptionDraftSyncQueue, type ReceptionLocalWorkspaceSnapshot, type ReceptionServerDraftPointer, updateRestoredReceptionCustomization, useReceptionWorkspacePersistence } from "@/lib/receptionWorkspaceState";
-import {
-  customLineGrand,
-  effectivePrice,
-  isCustomKind,
-  lineCounterHeldFee,
-  lineTotal,
-  PAY_METHOD_LABEL,
-  TIER_LABEL,
-  type CartLine,
-  type LastSaleSummary,
-  type PayMethod,
-  type PosRow,
-  type Tier,
-  withReceptionLineDiscount,
-} from "@/components/reception/cartMath";
+import { applyReceptionCouponPreview, clearReceptionCouponPricing, createReceptionDraftSyncQueue, isDefinitiveReceptionPromotionRejection, prepareReceptionConversationStart, prepareReceptionDepositDraft, type ReceptionDraftSyncOutcome as DraftSyncOutcome, type ReceptionDraftSyncQueue, type ReceptionLocalWorkspaceSnapshot, type ReceptionServerDraftPointer, useReceptionWorkspacePersistence } from "@/lib/receptionWorkspaceState";
+import { isCustomKind, type CartLine, type LastSaleSummary, type PayMethod, type PosRow, type Tier, withReceptionLineDiscount } from "@/components/reception/cartMath";
 import { CartTable } from "@/components/reception/CartTable";
-import { addPlainCustomizationPiece } from "@/components/reception/cartCustomization";
 import { PaymentPanel } from "@/components/reception/PaymentPanel";
 import { ReceiptOverlay } from "@/components/reception/ReceiptOverlay";
 import { triggerReceptionShippingLabel } from "@/components/reception/receptionShippingLabel";
@@ -94,22 +53,8 @@ import { buildReceptionDepartureData } from "@/components/reception/receptionDep
 import { ManagerApprovalDialog, type ManagerApprovalInput } from "@/components/reception/ManagerApprovalDialog";
 import { ReceptionShiftCloseDialog } from "@/components/reception/ReceptionShiftCloseDialog";
 import DepositDialog from "@/components/reception/DepositDialog";
-import { AppSelect } from "@/components/ui/AppSelect";
 import { CashDropDialog, type PosTokens } from "@/components/pos/CashDropDialog";
-import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
-import {
-  getServerBridgeStatus,
-  isPaired,
-  isWebUsbSupported,
-  pairPrinter,
-  printShiftClose,
-  printShiftOpen,
-  printWorkOrderReceipt,
-  serverPrintTest,
-  tryReconnectPrinter,
-  type ReceiptBrowserData,
-  type WorkOrderReceiptData,
-} from "@/lib/printing/print";
+import { isPaired, printShiftOpen, printWorkOrderReceipt } from "@/lib/printing/print";
 
 /**
  * شاشة الاستقبال — نقطة بيع هجينة لخدمة العملاء.
@@ -139,6 +84,10 @@ const STORE_READ_ROLES = ["admin", "manager", "cashier", "sales_rep", "accountan
 const CRM_READ_ROLES = ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor"] as const;
 
 export default function Reception() {
+  return <ReceptionBranchGate>{(branchId) => <ReceptionWorkspace key={branchId} branchId={branchId} />}</ReceptionBranchGate>;
+}
+
+function ReceptionWorkspace({ branchId }: { branchId: number }) {
   const [, navigate] = useLocation();
   const pageSearch = useSearch();
   const me = trpc.auth.me.useQuery();
@@ -158,28 +107,19 @@ export default function Reception() {
   const canReadChannels = canAction("conversations.list");
   const canReadCustomerContext = canAction("customers.get");
   const canCreateCustomer = canAction("customers.receptionResolveByPhone");
-  // الأدمن/المدير بلا فرع مُسنَد: يختار الفرع صراحةً قبل فتح وردية الخدمة بدل الإسناد الصامت للفرع ١
-  // (نمط POS/PrintPOS، #274 — الوردية تحمل الفرع والطلبات تتبعها). لا يمسّ مستخدماً له فرع (يبقى فرعه).
-  const [pickedBranch, setPickedBranch] = useState<number | null>(null);
-  const branchId = useMemo(
-    () => Number(me.data?.branchId ?? pickedBranch ?? 1),
-    [me.data?.branchId, pickedBranch],
-  );
   const isElevatedRole = me.data?.role === "admin" || me.data?.role === "manager";
-  const noAssignedBranch = me.data != null && me.data.branchId == null;
-  const needsBranchChoice = noAssignedBranch && isElevatedRole && pickedBranch == null;
 
   // طبقة أوفلاين للقراءة فقط (نمط POS.tsx ش٢): أثناء انقطاع الاتصال يُخدَم البحث/الباركود من
   // النموذج المحلي (Dexie)، والكتابة (checkoutReception) تبقى أونلاين حصراً — قرار الخطة الأصلية
   // (لا عربون/تسليم أوفلاين للاستقبال، خلافاً للكاشير الذي يلتقط بيعاً نقدياً كاملاً أوفلاين).
   const connState = useConnectivity();
   const offline = isDisconnected(connState);
-  useOfflineCatalogSync(me.data ? branchId : null);
+  useOfflineCatalogSync(me.data && branchId > 0 ? branchId : null);
   const utils = trpc.useUtils();
   // وردية خدمة العملاء (RECEPTION): درج/رصيد افتتاحي/عرابين مستقلّة عن كاشير التجزئة (RETAIL).
   const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: canAction("branches.list") });
-  const staffQ = trpc.workOrders.assignableStaff.useQuery({ branchId }, { enabled: canAction("workOrders.assignableStaff") });
-  const shiftQ = trpc.shifts.current.useQuery({ branchId, shiftType: "RECEPTION" }, { enabled: canAction("shifts.current") });
+  const staffQ = trpc.workOrders.assignableStaff.useQuery({ branchId }, { enabled: branchId > 0 && canAction("workOrders.assignableStaff") });
+  const shiftQ = trpc.shifts.current.useQuery({ branchId, shiftType: "RECEPTION" }, { enabled: branchId > 0 && canAction("shifts.current") });
   // اِستقبال (تكامل التوصيل، ٤/٨): عدّاد «جاهز» على زرّ طابور الطلبات — مؤشّر سريع بلا فتح الطابور.
   const shift = shiftQ.data ?? null;
   const [opening, setOpening] = useState("0"), [closing, setClosing] = useState(false);
@@ -270,11 +210,6 @@ export default function Reception() {
   const [paymentsOpen, setPaymentsOpen] = useState(false);
   // ش٦ — التوصيل والإسناد انتقلا لشاشة مستقلة /reception/workflow
   // نُبقي orderDelivery بنوعه الأصلي (ثابت null) لتجنّب كسر منطق handleSubmit
-  type OrderDeliveryValue = {
-    partyId: number; partyName: string | null; fee: string; feeCollection: "COUNTER" | "COURIER" | "SHOP";
-    recipientPhone: string | null; recipientName: string | null; address: string | null;
-    externalTrackingRef: string | null;
-  };
   const [orderDelivery] = useState<OrderDeliveryValue | null>(null);
   const setOrderDelivery = (_v: OrderDeliveryValue | null) => {};
   const deliveryDialogOpen = false;
@@ -400,38 +335,12 @@ export default function Reception() {
   const restoreCouponPreviewM = trpc.crm.coupons.preview.useMutation();
   const restoreCustomerM = trpc.customers.receptionResolveByPhone.useMutation();
   const resolvePromotionM = trpc.reception.draftResolvePromotion.useMutation();
-  async function restoreLocalWorkspace(snapshot: ReceptionLocalWorkspaceSnapshot, isCurrent: () => boolean, preserveStoredPrices = false): Promise<boolean> {
-    try {
-      if (snapshot.draftPromotionPending) {
-        setDraftPromotionPending(true); setDraftPromotionShiftId(snapshot.draftPromotionShiftId); const payload = buildDraftPayload({ customer: snapshot.customer, effectiveTier: snapshot.effectiveTier, channel: snapshot.channel.kind, channelHandle: snapshot.channel.handle, linkedConversationId: snapshot.channel.linkedConversationId, cart: snapshot.cart });
-        const resolved = await resolvePromotionM.mutateAsync({ branchId, shiftId: snapshot.draftPromotionShiftId, clientRequestId: snapshot.clientRequestId, ...payload });
-        if (!isCurrent()) return false; if (resolved?.payloadMatches) return attachResolvedPromotion(resolved); if (resolved) { setDraftPromotionPending(false); setDraftRestoreRecovery({ snapshot: createReceptionDraftPointer({ activeDraftId: resolved.draftId, draftVersion: resolved.version, pendingLocal: { ...snapshot, draftPromotionPending: false, detachedRecoveryPending: true } }), serverAvailable: true }); return false; }
-      }
-      const restored = await prepareReceptionLocalWorkspaceRestore(snapshot, { isCurrent,
-        resolveAutomaticPricingContext: (input) => resolveReceptionRestoredPricingContext(input, (phone) => restoreCustomerM.mutateAsync({ phone }), (customerId) => utils.customers.receptionResolveById.fetch({ customerId }, { staleTime: 0 })),
-        loadCatalog: async ({ productUnitIds, tier, customerId }) => utils.catalog.byUnitIds.fetch({ branchId, tier, productUnitIds, customerId: customerId ?? undefined }) as Promise<PosRow[]>, previewCoupon: async ({ code, tier, customerId, lines }) => restoreCouponPreviewM.mutateAsync({ code, branchId, customerId: customerId ?? undefined, customerTier: tier, lines }), preserveStoredPrices: preserveStoredPrices || snapshot.draftPromotionPending });
-      if (!isCurrent()) return false;
-      if (!restored.ok) {
-        if (restored.reason === "MISSING_CATALOG") notify.warn("تعذّر استعادة السلة بأمان", `وحدة أو صنف لم يعد متاحاً (${restored.missingUnitIds?.join("، ")})؛ لم نستخدم أسعاراً أو معاملات قديمة.`);
-        else if (restored.reason === "NO_COUPON_LINES") notify.warn("تعذّر استعادة الكوبون بأمان", "لم تعد في السلة بنود صالحة للكوبون؛ فرّغ الحالة وابدأ طلباً جديداً.");
-        return false;
-      }
-      const droppedPrivilegedDiscount = !isElevatedRole && (restored.cart.some((line) => (line.disc ?? 0) > 10) || Number(snapshot.invoiceDiscountPct || 0) > 15);
-      const restoredCart = droppedPrivilegedDiscount ? restored.cart.map((line) => (line.disc ?? 0) > 10 ? { ...line, disc: undefined } : line) : restored.cart;
-      if (droppedPrivilegedDiscount) notify.warn("أُزيل خصم يحتاج اعتماداً جديداً", "بيانات اعتماد المدير لا تُخزّن؛ أعد تطبيق الخصم ليُطلب الاعتماد بأمان.");
-      prevCustomerIdRef.current = restored.customer.customerId; pendingDeferredRestoreRef.current = snapshot.payment.deferred; suppressHydratedPhoneResetRef.current = snapshot.phoneInput !== receptionPhone;
-      setCart(restoredCart); setSelKey(null); setReceptionPhone(snapshot.phoneInput); setCustomer(restored.customer); setCustomerCreditLimit(snapshot.customerCreditLimit);
-      setTierOverride(snapshot.tierOverride); setHydratedAutomaticTier(snapshot.tierOverride == null ? restored.tier : null); setInvoiceDiscountPct(droppedPrivilegedDiscount && Number(snapshot.invoiceDiscountPct || 0) > 15 ? "" : snapshot.invoiceDiscountPct); setPayInput(snapshot.payment.amount);
-      setMethod(snapshot.payment.method); setPaymentReference(""); setDeferred(false); setCouponInput(snapshot.coupon.input); setCouponCode(restored.couponCode); setCouponLabel(restored.couponLabel);
-      setChannel(snapshot.channel.kind); setChannelHandle(snapshot.channel.handle); setLinkedConversationId(snapshot.channel.linkedConversationId); setDraftPromotionPending(snapshot.draftPromotionPending); setDraftPromotionShiftId(snapshot.draftPromotionShiftId); setDetachedRecoveryPending(snapshot.detachedRecoveryPending); activeDraftRef.current = null; setActiveDraft(null); setDraftHeld("0.00"); setDraftInfo(null); mgrCredsRef.current = null;
-      return true;
-    } catch (error) { if (isCurrent()) notify.warn("تعذّر التحقق من السلة المحفوظة", error instanceof Error ? error.message : "تحقّق من الاتصال ثم أعد تحميل الصفحة"); return false; }
-  }
+  async function restoreLocalWorkspace(snapshot: ReceptionLocalWorkspaceSnapshot, isCurrent: () => boolean, preserveStoredPrices = false): Promise<boolean> { return ReceptionRestoreWorkspace({ branchId, setDraftPromotionPending, setDraftPromotionShiftId, resolvePromotionM, attachResolvedPromotion, setDraftRestoreRecovery, restoreCustomerM, utils, restoreCouponPreviewM, isElevatedRole, prevCustomerIdRef, pendingDeferredRestoreRef, suppressHydratedPhoneResetRef, receptionPhone, setCart, setSelKey, setReceptionPhone, setCustomer, setCustomerCreditLimit, setTierOverride, setHydratedAutomaticTier, setInvoiceDiscountPct, setPayInput, setMethod, setPaymentReference, setDeferred, setCouponInput, setCouponCode, setCouponLabel, setChannel, setChannelHandle, setLinkedConversationId, setDetachedRecoveryPending, activeDraftRef, setActiveDraft, setDraftHeld, setDraftInfo, mgrCredsRef }, snapshot, isCurrent, preserveStoredPrices); }
 
   const { clearPersistedWorkspace, markDraftPromotionPending, workspaceState, workspaceDirty, persistenceDegraded } = useReceptionWorkspacePersistence({
     companyId: me.data === undefined ? undefined : (me.data?.companyId ?? null),
     userId: me.data?.id != null ? Number(me.data.id) : null,
-    branchId: me.data?.branchId != null ? Number(me.data.branchId) : pickedBranch,
+    branchId,
     activeDraftId: activeDraft?.id ?? null, activeDraftVersion: activeDraft?.version ?? null, clientRequestIdRef: reqIdRef,
     local: {
       cart,
@@ -445,218 +354,16 @@ export default function Reception() {
     onStorageError: () => notify.warn("تعذّر حفظ سلة الاستقبال مؤقتاً", "قد تكون مساحة المتصفح ممتلئة؛ أبقِ الشاشة مفتوحة أو احفظ الطلب كمسوّدة خادمية."),
   });
   function resetAfterCommittedWorkspace(): boolean { if (!clearPersistedWorkspace()) { setWorkspaceSafetyBlocked(true); notify.warn("تمت العملية، لكن تعذّر تنظيف حالتها المحلية", "لا تعِد الإرسال. أعد تحميل الصفحة أو فرّغ الحالة المحفوظة قبل عملية جديدة."); return false; } reqIdRef.current = crypto.randomUUID(); resetScreen(); return true; }
-  const connectPrinter = async () => {
-    try {
-      await pairPrinter();
-      setPrinterReady(true);
-      notify.ok("تم ربط طابعة الإيصالات");
-    } catch (e: unknown) {
-      notify.err(e, "تعذّر ربط الطابعة");
-    }
-  };
-
-  const testServerPrint = async () => {
-    try {
-      const result = await serverPrintTest();
-      if (result.ok) notify.ok("أُرسلت تذكرة اختبار للطابعة عبر الخادم");
-      else notify.err(result.error ?? "تعذّر اختبار الطابعة");
-    } catch (e: unknown) {
-      notify.err(e, "تعذّر اختبار جسر الطباعة");
-    }
-  };
-
-  // نفس تكامل الطابعة في كاشير التجزئة وكاشير الطباعة: حالة جسر الخادم،
-  // وإعادة ربط WebUSB الصامتة عند فتح الشاشة أو إعادة توصيل الطابعة.
-  useEffect(() => {
-    getServerBridgeStatus().then(setBridge).catch(() => { /* الجسر اختياري */ });
-  }, []);
-
-  useEffect(() => {
-    if (!isWebUsbSupported()) return;
-    tryReconnectPrinter()
-      .then((ok) => setPrinterReady(ok))
-      .catch(() => setPrinterReady(false));
-
-    const usb = (navigator as unknown as { usb?: EventTarget }).usb;
-    if (!usb) return;
-    const onConnect = () => {
-      tryReconnectPrinter()
-        .then((ok) => setPrinterReady(ok))
-        .catch(() => setPrinterReady(false));
-    };
-    const onDisconnect = () => setPrinterReady(false);
-    usb.addEventListener("connect", onConnect);
-    usb.addEventListener("disconnect", onDisconnect);
-    return () => {
-      usb.removeEventListener("connect", onConnect);
-      usb.removeEventListener("disconnect", onDisconnect);
-    };
-  }, []);
-
+  const { connectPrinter, testServerPrint } = useReceptionPrinter({ setPrinterReady, setBridge });
   // ───── حسابات هجينة ───────────────────────────────────────────────────────
-  const cartCount = cart.reduce((s, c) => s + c.qty, 0);
-  const hasDigitalCards = cart.some((line) => line.digital);
+  const { expectedNow, sumDirectNetD, sumCustomD, hasCustom, heldD, hasDigitalCards, rawInvoiceDiscountPctD, paidD, expectedNowD, mixedRoundEligible, effectiveGrandD, mixedDeltaD, cashRoundActive, regularSumRawD, invoiceDiscountAmountD, mixedCarrier, orderFeeHeldD, grandTotalD, heldDelivery, sumDirectD, cartCount, grandTotal, deferredAvailable, deferredDisabledReason, needPaymentRef, cashRoundingDelta, sumDirect, sumCustom, cashDueNow, deliveryDisclosure, paid, invoiceDiscountAmount, invoiceDiscountAllowed, CASHIER_INVOICE_DISCOUNT_MAX_PCT, change, remaining, isChange, isOwing } = useReceptionAmounts({ cart, orderDelivery, activeDraft, offline, invoiceDiscountPct, draftHeld, method, payInput, customer, phoneResolution, deferred, setDeferred });
   const assignsDelivery = receptionDeliveryAuthorityRequired(me.data, orderDelivery != null && cart.some((line) => !isCustomKind(line) && !line.digital));
   const submitAllowed = receptionCheckoutPaths(hasDigitalCards, !!activeDraft, offline, assignsDelivery).every(canAction);
-  const sumDirectD = cart.filter((c) => !isCustomKind(c)).reduce((s, c) => s.plus(D(lineTotal(c))), D(0));
-  // ٢٣/٨ — البيع الخالص (لا طباعة ولا تخصيص) هو وحده وعاء خصم رأس الفاتورة: عقد الخادم
-  // (workOrderRouter.receptionCheckout.regularSale.invoiceDiscount) يمرّره لـcreateSaleInTx
-  // الذي يحسبه على فاتورة البيع فقط. `printSale` فاتورةٌ مستقلّة و«التخصيص» أمرُ شغلٍ (workOrder).
-  const regularSumRawD = cart.filter((c) => !isCustomKind(c) && !c.row.isPrintService && !c.digital).reduce((s, c) => s.plus(D(lineTotal(c))), D(0));
-  const sumCustomD = cart.filter((c) => isCustomKind(c)).reduce((s, c) => s.plus(D(customLineGrand(c))), D(0));
-  // ٢٣/٨ — خصمُ رأس الفاتورة (سلطة الكاشير ٠–١٥٪ كما في POS): يُطبَّق **قبل** حساب grandTotal
-  // ⇒ التقريب النقديّ والعربون المحتجَز والمقبوض النقديّ كلّها تُقاس على الصافي بعد الخصم بلا مسّ
-  // أيّ حاسوبٍ خلفيّ. `regularSale.invoiceDiscount` يُبعث للخادم مبلغاً مطلقاً لينفّذ الحماية نفسها
-  // على invoice.discountAmount (invoiceDiscountExceedsThreshold على الإجماليّ).
-  //
-  // **السقف الفعّال المتبقّي** (مرآة POS.tsx حرفياً): بوّابة الخادم تقيس (refGross − invoiceNet)/refGross
-  // مقابل ١٥٪، وترى انحراف السطر (عرض/كوبون/خصم يدويّ) والرأس معاً. لولا هذا: سلّةٌ عليها عرضٌ ١٠٪
-  // + خصمُ رأسٍ ١٠٪ = انحراف ١٩٪ ⇒ رفضٌ خادميّ يُفاجأ به الكاشير (بلاغ Codex P1).
-  // الكروت الرقمية ثابتة السعر ولا تدخل وعاء خصم رأس الفاتورة.
-  const CASHIER_INVOICE_DISCOUNT_MAX_PCT = 15;
-  const regularReferenceGrossD = cart
-    .filter((c) => !isCustomKind(c) && !c.row.isPrintService && !c.digital)
-    .reduce((s, c) => {
-      // بلا خصمٍ يدويّ = سعرُ القائمة (السعرُ الأصل قبل الخصم) × الكمية. `origPrice` يُضبَط من
-      // Popover خصم السطر ⇒ نستعمله مرجعاً كي يحسب الانحراف السطريّ المسبق.
-      const refUnit = D(c.origPrice ?? c.row.price ?? 0);
-      return s.plus(refUnit.times(c.qty));
-    }, D(0));
-  const priorLineDeviationRatioD = regularReferenceGrossD.gt(0)
-    ? regularReferenceGrossD.minus(regularSumRawD).div(regularReferenceGrossD)
-    : D(0);
-  const remainingHeaderAuthorityFractionD = D(0.15).minus(priorLineDeviationRatioD);
-  const remainingHeaderPctOnSubtotalD = (regularSumRawD.gt(0) && regularReferenceGrossD.gt(0))
-    ? remainingHeaderAuthorityFractionD.times(regularReferenceGrossD).div(regularSumRawD).times(100)
-    : D(CASHIER_INVOICE_DISCOUNT_MAX_PCT);
-  const effectiveHeaderCapPctD = (remainingHeaderPctOnSubtotalD.lt(0)
-    ? D(0)
-    : remainingHeaderPctOnSubtotalD.gt(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
-      ? D(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
-      : remainingHeaderPctOnSubtotalD).toDecimalPlaces(2, 1 /* ROUND_DOWN */);
-  const effectiveHeaderCapPct = effectiveHeaderCapPctD.toNumber();
-  // فخّ decimal.js (Codex P1): `D(".") throws`. لا نمرّر إلى `D()` إلّا سلسلةً قابلةً للتحليل.
-  // الشاشة تحرس الإدخال أيضاً، لكنّ هذا الفحص هنا الحدّ الأخير قبل عمليات الرياضيات.
-  const rawInvoiceDiscountPctD = (() => {
-    if (!invoiceDiscountPct) return D(0);
-    const num = Number(invoiceDiscountPct);
-    if (!Number.isFinite(num) || num < 0) return D(0);
-    try { return D(invoiceDiscountPct); } catch { return D(0); }
-  })();
-  const clampedInvoiceDiscountPctD = rawInvoiceDiscountPctD.gt(effectiveHeaderCapPctD)
-    ? effectiveHeaderCapPctD
-    : rawInvoiceDiscountPctD;
-  // ٢٣/٨ — Codex P1: خصمُ رأس الفاتورة لا يعبر المسوّدة حالياً — `buildDraftPayload` ليس لديه
-  // حقلٌ يحمله، وعقدُ `commitDraft` يعيد بناء الإجمالي من الأسطر الخام فيرفض التثبيت لأنّ الصافي
-  // لا يطابق. إخفاءُ الحقل عند وجود مسوّدة يمنع تسرّبَه لعقدٍ لا يفهمه — الشريحة الأوسع (توسيع
-  // عقد المسوّدة) شغلٌ منفصل بمهاجرةٍ وحقولٍ خادميّة إضافيّة.
-  const invoiceDiscountAllowed = regularSumRawD.gt(0) && !activeDraft && !hasDigitalCards;
-  const invoiceDiscountAmountD = invoiceDiscountAllowed
-    ? round2(regularSumRawD.times(clampedInvoiceDiscountPctD).div(100))
-    : D(0);
-  const invoiceDiscountAmount = invoiceDiscountAmountD.toNumber();
-  const regularSumNetD = regularSumRawD.minus(invoiceDiscountAmountD);
-  const sumDirectNetD = sumDirectD.minus(invoiceDiscountAmountD);
-  const grandTotalD = sumDirectNetD.plus(sumCustomD);
-  const grandTotal = round2(grandTotalD).toNumber();
-  const sumDirect = round2(sumDirectD).toNumber();
-  const sumCustom = round2(sumCustomD).toNumber();
-  // ٥/٨ — أجرة توصيلٍ تُقبض الآن أمانةً للمندوب: نقدٌ يدخل الدرج **خارج** الفاتورة (ليست بيعاً).
-  // تُعرَض منفصلةً كي يعرف الموظّف كم يستلم فعلاً، ولا تُخلَط بإجمالي الفاتورة ولا بالمبلغ المُطبَّق.
-  // ش٦: أجرة توصيل **الطلب** (COUNTER) تنضمّ لنفس العرض — نفس أمانة الدرج بالضبط.
-  const orderFeeHeldD = orderDelivery?.feeCollection === "COUNTER" ? round2(D(orderDelivery.fee || 0)) : D(0);
-  const heldDeliveryD = round2(cart.reduce((s, c) => s.plus(D(lineCounterHeldFee(c))), D(0)).plus(orderFeeHeldD));
-  const heldDelivery = heldDeliveryD.toNumber();
-  const cashDueNow = round2(grandTotalD.plus(heldDeliveryD)).toNumber();
-  // ٨/٨ — شفافية أجرة التوصيل في الشريط السفليّ لكلّ المسارات: من «توصيل هذا الطلب» إن وُجِد،
-  // وإلّا من كتل التخصيص التي فُعِّل فيها التوصيل (COURIER/SHOP كانت تختفي كلياً على مسار التخصيص).
-  // COUNTER يُعرَض عبر heldDelivery أعلاه (لا يُكرَّر هنا). الأجرة عرضٌ فقط — لا تدخل إيراداً أبداً.
-  const customDeliveryLinesD = cart.filter((c) => isCustomKind(c) && c.custom?.hasDelivery && D(c.custom.deliveryCost || 0).gt(0));
-  const deliveryDisclosure = orderDelivery
-    ? { fee: round2(D(orderDelivery.fee || 0)).toNumber(), feeCollection: orderDelivery.feeCollection, partyName: orderDelivery.partyName ?? "" }
-    : customDeliveryLinesD.length > 0
-      ? {
-          fee: round2(customDeliveryLinesD.reduce((s, c) => s.plus(D(c.custom!.deliveryCost || 0)), D(0))).toNumber(),
-          feeCollection: customDeliveryLinesD[0].custom!.deliveryFeeCollection,
-          partyName: "التوصيل",
-        }
-      : null;
-
-  // ش٠ (٥/٨، V1) — تقريب نقدي IQD لأقرب ٢٥٠ (نمط POS حرفياً): للبيع المباشر **الخالص** النقديّ
-  // فقط (لا تخصيص ولا خدمات طباعة — السلة المختلطة بلا تقريبٍ حتى ش٦)، وأونلاين فقط: مسار
-  // الالتقاط الأوفلايني يلتقط المبالغ غير المقرَّبة، فتفعيل التقريب معه يفصل ما رآه الزبون عمّا
-  // سيُرحَّل (فرقٌ في الدرج يمنع الإغلاق). roundCashIQD نفس دالة الخادم ⇒ اتفاقٌ حتميّ على الفرق
-  // الذي يقيّده الخادم قيدَ ADJUST.
-  const hasPrintInCart = cart.some((c) => !isCustomKind(c) && c.row.isPrintService);
-  // مراجعة ش٤: مرآة شرط الخادم — لو أنزل التقريبُ الإجماليَّ إلى/تحت العربون المقبوض سلفاً
-  // لَسُدَّ الطريق النقديّ (المتوقّع 0 والخادم يطالب بالفارق الخام) ⇒ يسقط التقريب حينها.
-  const draftHeldEarlyD = D(draftHeld || 0);
-  const roundedWouldTrapHeld = draftHeldEarlyD.gt(0) && roundCashIQD(grandTotalD.toFixed(2)).lte(draftHeldEarlyD);
-  const cashRoundActive = method === "CASH" && cart.length > 0 && !hasDigitalCards && !cart.some(isCustomKind) && !hasPrintInCart && !offline && !roundedWouldTrapHeld;
-  // ش٦ — تقريب السلّة المختلطة (مرآة materialize/checkout حرفياً): فرق تقريب السلّة كلّها
-  // يُحمَّل على الفاتورة الحاملة (بضاعة ثم طباعة). يسري **فقط** حين يُدفع المقرَّب كاملاً نقداً
-  // الآن (يُحسم عند الإرسال) — هنا نحسب أهليّته ونعرض المقرَّب لأن المسار الاعتيادي دفعٌ كامل.
-  const sumGoodsRawD = cart.filter((c) => !isCustomKind(c) && !c.row.isPrintService).reduce((s, c) => s.plus(D(lineTotal(c))), D(0));
-  const sumPrintRawD = cart.filter((c) => !isCustomKind(c) && c.row.isPrintService).reduce((s, c) => s.plus(D(lineTotal(c))), D(0));
-  const mixedCarrier: "SALE" | "PRINT" | null = sumGoodsRawD.gt(0) ? "SALE" : sumPrintRawD.gt(0) ? "PRINT" : null;
-  const mixedDeltaD = round2(roundCashIQD(grandTotalD.toFixed(2)).minus(grandTotalD));
-  const mixedRoundEligible =
-    method === "CASH" && cart.length > 0 && !hasDigitalCards && !cashRoundActive && !offline && !roundedWouldTrapHeld
-    && (cart.some(isCustomKind) || hasPrintInCart) && mixedCarrier != null && !mixedDeltaD.isZero()
-    && (mixedCarrier === "SALE" ? sumGoodsRawD : sumPrintRawD).plus(mixedDeltaD).gt(0);
-  const roundingDisplayActive = cashRoundActive || mixedRoundEligible;
-  const effectiveGrandD = roundingDisplayActive ? roundCashIQD(grandTotalD.toFixed(2)) : grandTotalD;
-  const cashRoundingDelta = roundingDisplayActive ? round2(effectiveGrandD.minus(grandTotalD)).toNumber() : 0;
-
-  // ش٤: العربون المقبوض سلفاً على الطلب المحفوظ يقلّص «المتوقّع الآن» — الزبون دفعه فعلاً
-  // وإيصاله قائم؛ collectNow عند التثبيت هو الجزء الجديد وحده (I5).
-  const heldD = draftHeldEarlyD;
-  // الدفع موحّد على كامل السلة. البيع المباشر هو الحد الأدنى؛ وما زاد يصبح عربوناً لأوامر الطباعة.
-  const dueNowRawD = effectiveGrandD.minus(heldD);
-  const expectedNowD = dueNowRawD.lt(0) ? D(0) : dueNowRawD;
-  const expectedNow = round2(expectedNowD).toNumber();
-
-  // ما أدخله الكاشير في لوحة الأرقام (مع تكيّف Quick Pay).
-  const paidD = D(payInput || 0);
-  const paid = round2(paidD).toNumber();
-  const changeD = paidD.minus(expectedNowD);
-  const change = round2(changeD).toNumber();
-  const remainingD = expectedNowD.minus(paidD);
-  const remaining = round2(remainingD).toNumber();
-  const isChange = method === "CASH" && paidD.gt(0) && paidD.gte(expectedNowD);
-  const isOwing = paidD.gt(0) && paidD.lt(expectedNowD);
-
-  const hasCustom = cart.some(isCustomKind);
-  // البيع متاح لكل عميل مرتبط بلا قيود حد ائتمان — التحصيل والنقود لها شاشات مستقلة
-  const deferredAvailable = customer.customerId != null
-    && phoneResolution === "RESOLVED"
-    && !activeDraft
-    && !orderDelivery
-    && sumDirect > 0;
-  // سبب تعطيل زرّ «بدون عربون» عند عدم توفّره.
-  const deferredDisabledReason: string | null = deferredAvailable
-    ? null
-    : sumDirect === 0 && sumCustom > 0
-      ? "لا حاجة لعربون — طلبٌ مخصّص، اضغط «إتمام الطلب» مباشرةً"
-      : activeDraft
-        ? "الآجل غير متاح لطلبٍ محفوظ — ثبّته مباشرةً بلا حفظ مسوّدة"
-        : orderDelivery
-          ? "طلب التوصيل يُحصَّل عند الاستلام — لا حاجة لوضع «آجل»"
-          : customer.customerId == null || phoneResolution !== "RESOLVED"
-            ? "اربط عميلاً بهاتفٍ عراقيٍّ أوّلاً"
-            : "غير متاح الآن";
-  useEffect(() => {
-    if (deferred && !deferredAvailable) setDeferred(false);
-  }, [deferred, deferredAvailable]);
-  // مراجعة عدائية ٦/٨: الحقل يظهر فور اختيار طريقةٍ غير نقدية وسلّةٍ غير فارغة — كان مشروطاً
-  // بمبلغٍ مُدخَل، فالمسار السريع (تحصيل المطلوب الآن) يطلب المرجع/الكود وحقله مخفيّ.
-  const needPaymentRef = method !== "CASH" && (paidD.gt(0) || expectedNowD.gt(0));
-
   // ───── البحث ──────────────────────────────────────────────────────────────
   const debounced = useDebouncedValue(search, 180);
   const searchResults = trpc.catalog.posList.useQuery(
     { branchId, tier: effectiveTier, query: debounced, limit: 15, includeReceptionServices: true, customerId: customer.customerId ?? undefined },
-    { enabled: canAction("catalog.posList") && !offline && debounced.trim().length >= 2, staleTime: 15_000 },
+    { enabled: branchId > 0 && canAction("catalog.posList") && !offline && debounced.trim().length >= 2, staleTime: 15_000 },
   );
   // أوفلاين: البحث يُخدَم من النموذج المحلي بنفس شكل PosRow — بقية الشاشة (addRow/السلة/الأسعار)
   // لا تعرف الفرق. خدمات الطباعة مشمولة (includePrintServices) مطابقةً لـincludeReceptionServices
@@ -696,141 +403,7 @@ export default function Reception() {
   }, []);
 
   /** يضيف صنفاً جاهزاً (بلا تخصيص) بسعره العادي — يدمج مع سطرٍ مطابق ويصعّده لأول السلة ليبقى ظاهراً للكاشير. */
-  const addDirectLine = useCallback((row: PosRow) => {
-    clearCouponIfApplied();
-    setCart((prev) => {
-      // دمج كميّات الصنف الجاهز المُكرَّر وتصعيده لقمة السلة ليبقى في متناول يد ونظر الكاشير
-      const i = prev.findIndex((c) => !c.digital && !isCustomKind(c) && c.row.productUnitId === row.productUnitId);
-      if (i >= 0) {
-        const next = [...prev];
-        const updated = { ...next[i], qty: next[i].qty + 1 };
-        next.splice(i, 1);
-        next.unshift(updated);
-        setSelKey(updated.key);
-        return next;
-      }
-      const key = `d-${row.productUnitId}-${Date.now()}`;
-      setSelKey(key);
-      return [{ key, row, qty: 1 }, ...prev];
-    });
-    // ٢٣/٨ (Codex P2): أشِر إلى الجدول أنّ إضافةً حدثت — يشمل رفع الكمّية على السطر الأصل.
-    setAddTick((t) => t + 1);
-  }, [clearCouponIfApplied]);
-
-  function addDigitalBasket(basket: DigitalBasketCapture) {
-    if (!receptionCheckoutPaths(true, false, false).every(canActionRef.current)) return notify.err("تفويضات البيع الرقمي غير مكتملة");
-    if (offline) return notify.err("البيع الرقمي يحتاج اتصالاً بالخادم.");
-    if (activeDraft) return notify.err("لا تُضاف الكروت إلى طلب محفوظ؛ ثبّت الطلب أو افتح سلة جديدة.");
-    try {
-      const captured = captureDigitalReceptionCartLines(basket, branchId) as CartLine[];
-      clearCouponIfApplied();
-      setInvoiceDiscountPct("");
-      setCart((previous) => [
-        ...captured,
-        ...previous,
-      ]);
-      setSelKey(captured[0]?.digital?.lineKey ?? null);
-      setAddTick((tick) => tick + 1);
-      setCardsOpen(false);
-    } catch (error) {
-      notify.err(error);
-    }
-  }
-
-  const addRow = useCallback((row: PosRow) => {
-    // إصلاح P2 (٢٣/٦/٢٦): حارس السعر **قبل** فتح نافذة التخصيص — كان يَسمح لمخصَّصٍ بلا سعرٍ
-    // بالدخول للسلّة ثم يَفشل عند الإرسال (createWorkOrder يَرفض salePrice<=0) بَعد ما اَلتزَمت
-    // فاتورة البيع — رحلةٌ بِنصف نتيجة. الحارس موحَّد للنوعين.
-    if (row.price == null || Number(row.price) <= 0) {
-      notify.err(`لا سعر ${TIER_LABEL[effectiveTier]} لـ ${row.productName} (${row.unitName}) — حدّد سعراً من /products أوّلاً`);
-      return;
-    }
-    // المنتج المخصّص (products.isCustomizable=true) ⇒ افتح نافذة التخصيص (وفيها خيار «بلا تخصيص»
-    // لعميلٍ يريد القطعة كما هي — انظر onAddPlain أدناه، إصلاح ٣/٨).
-    if (row.isCustomizable) {
-      setShowCustomization({ row });
-      setSearch("");
-      setShowDrop(false);
-      return;
-    }
-    addDirectLine(row);
-    setSearch("");
-    setShowDrop(false);
-    searchRef.current?.focus();
-  }, [addDirectLine, effectiveTier]);
-
-  /** خدمة حرة كانت تُنشأ من صفحة «طلب خدمة جديد». أصبحت الآن سطراً داخل السلة نفسها. */
-  function addManualService() {
-    const row = {
-      variantId: 0,
-      productUnitId: 0,
-      productName: "خدمة / أمر شغل",
-      sku: "SERVICE",
-      unitName: "خدمة",
-      conversionFactor: "1",
-      price: "0",
-      stockBase: 0,
-      isService: true,
-      isPrintService: false,
-      isCustomizable: true,
-    } as PosRow;
-    setShowCustomization({ row });
-    setSearch("");
-    setShowDrop(false);
-  }
-
-  function saveCustomization(data: CustomizationData) {
-    if (!showCustomization) return;
-    const { row, editingKey } = showCustomization;
-    if (editingKey) {
-      setCart((prev) => prev.map((c) => (c.key === editingKey ? updateRestoredReceptionCustomization(c, data) : c)));
-    } else {
-      const key = `c-${row.productUnitId}-${Date.now()}`;
-      setCart((prev) => [{ key, row, qty: 1, custom: data, customBasePrice: D(row.price).toNumber(), manualService: row.variantId === 0 }, ...prev]);
-      setSelKey(key);
-    }
-    setShowCustomization(null);
-    requestAnimationFrame(() => cartSectionRef.current?.focus());
-  }
-
-  /** تبديل وحدة الصنف مع الرفع التلقائي للسعر والمعامل ومطابقة المخزون. */
-  const changeLineUnit = useCallback((lineKey: string, newRow: PosRow) => {
-    clearCouponIfApplied();
-    setCart((prev) =>
-      prev.map((c) => {
-        if (c.key !== lineKey) return c;
-        if (c.digital) return c;
-        const { origPrice: _oldUnitPrice, ...rest } = c;
-        return {
-          ...rest,
-          row: {
-            ...newRow,
-            isCustomizable: c.row.isCustomizable,
-          },
-          disc: undefined,
-        };
-      }),
-    );
-  }, [clearCouponIfApplied]);
-
-  function changeQty(key: string, delta: number) {
-    clearCouponIfApplied();
-    setCart((prev) =>
-      prev.map((c) => (c.key === key && !c.digital ? { ...c, qty: Math.max(1, c.qty + delta) } : c)),
-    );
-  }
-  function addPlainFromCustomization(key: string) {
-    clearCouponIfApplied();
-    const plainKey = `d-${crypto.randomUUID()}`;
-    setCart((prev) => addPlainCustomizationPiece(prev, key, plainKey));
-    setSelKey(plainKey);
-    setAddTick((tick) => tick + 1);
-  }
-  function removeRow(key: string) {
-    clearCouponIfApplied();
-    setCart((prev) => prev.filter((c) => c.key !== key));
-    if (selKey === key) setSelKey(null);
-  }
+  const { addRow, addManualService, changeQty, removeRow, addPlainFromCustomization, changeLineUnit, addDirectLine, saveCustomization, addDigitalBasket } = useReceptionCartEditing({ clearCouponIfApplied, setCart, setSelKey, setAddTick, canActionRef, offline, activeDraft, branchId, setInvoiceDiscountPct, setCardsOpen, effectiveTier, setShowCustomization, setSearch, setShowDrop, searchRef, showCustomization, cartSectionRef, selKey });
   async function clearCart() {
     if (draftTransitionPending || draftPromotionFlightRef.current || cart.length === 0) return;
     if (draftPromotionPending) { notify.warn("لا تفرّغ محاولة حفظ غير محسومة", "اضغط حفظ الطلب مرة أخرى للتحقق من نتيجتها أولاً؛ التفريغ الآن قد يتيح إنشاء طلب مكرر."); return; }
@@ -854,68 +427,7 @@ export default function Reception() {
   }
 
   // ───── الباركود ───────────────────────────────────────────────────────────
-  const lookupBarcode = useCallback(
-    async (code: string) => {
-      const lookupEpoch = draftResumeEpochRef.current, pricingContext = barcodePricingContextRef.current;
-      try {
-        requireAction("catalog.byBarcode");
-        // أوفلاين: المطابقة من النموذج المحلي (الباركود الأساسي + البدائل)، نمط POS.tsx.
-        const row = offline
-          ? await offlineFindByBarcode(code, effectiveTier, branchId)
-          : await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier, customerId: customer.customerId ?? undefined });
-        if (lookupEpoch !== draftResumeEpochRef.current || pricingContext !== barcodePricingContextRef.current) return;
-        if (!row) notify.err(`باركود غير معروف: ${code}`);
-        else addRow(row as PosRow);
-      } catch (e: unknown) {
-        if (lookupEpoch === draftResumeEpochRef.current && pricingContext === barcodePricingContextRef.current) notify.err(e, "خطأ في المسح");
-      }
-    },
-    [branchId, addRow, utils, effectiveTier, offline, customer.customerId],
-  );
-
-  const handleWorkOrderScan = useCallback(
-    async (orderNumber: string) => {
-      // التسليم والإسناد انتقلا إلى /reception/handover و /reception/workflow
-      notify.info(`مسح أمر شغل ${orderNumber} — استخدم شاشة التسليم المباشر`);
-    },
-    [],
-  );
-
-  const handleHidScan = useCallback(
-    async (raw: string) => {
-      if (draftPromotionFlightRef.current || draftTransitionPending) return;
-      const r = parseScan(raw);
-      if (r.type === "workOrder") {
-        await handleWorkOrderScan(r.number);
-        setSearch("");
-      } else if (r.type === "product") {
-        await lookupBarcode(r.barcode);
-        setSearch("");
-      } else if (r.type === "customer") {
-        setCustomer({ customerId: r.id, name: `عميل #${r.id}`, phone: null, isNew: false });
-        notify.ok(`تم تحديد العميل #${r.id}`);
-      }
-    },
-    [lookupBarcode, handleWorkOrderScan, draftTransitionPending],
-  );
-  useBarcodeScanner(handleHidScan, { enabled: !showCustomization && !submitting && !draftTransitionPending });
-  // مطابقة الماسح داخل حقل البحث المركَّز عبر hook مخصّص (PR #501): توقيتُ الحرف نفسه + تطبيع
-  // مسح لوحة المفاتيح العربية (normalizeBarcodeScannerInput) — يحلّ خطأ «الباركود لا يُضاف
-  // تلقائياً» بلا الاعتماد على استقرار البحث المؤجَّل، ويصحّح المسح حين تكون اللوحة عربيةً.
-  const handleSearchScan = useCallback(
-    (code: string) => {
-      setSearch("");
-      setShowDrop(false);
-      const r = parseScan(code);
-      if (r.type === "workOrder") {
-        void handleWorkOrderScan(r.number);
-      } else {
-        void lookupBarcode(code);
-      }
-    },
-    [handleWorkOrderScan, lookupBarcode],
-  );
-
+  const { blockingDialogOpen, handleSearchScan } = useReceptionScanner({ draftResumeEpochRef, barcodePricingContextRef, requireAction, offline, effectiveTier, branchId, utils, customer, addRow, draftPromotionFlightRef, draftTransitionPending, setSearch, setCustomer, depositOpen, cardsOpen, fulfillIntentId, closing, deliveryDialogOpen, customerContextId, showInbox, showCustomization, cashDropping, approvalAsk, showReceiptOverlay, submitting, setShowDrop });
   // إصلاح (٧/٨، طلب مالك): أزرار الفواتير/الطلبات/الحجوزات/الوردية… تنتقل إلى الشريط العلوي
   // المشترك بين الأوضاع الثلاثة (بجانب زرّ «الفواتير» الأصلي، الذي تستبدله محطة الاستقبال بنسخةٍ
   // أغنى) — عبر portal إلى المُقبس `#pos-header-actions` الذي يرسمه PointOfSale.tsx. الـportal
@@ -1164,298 +676,20 @@ export default function Reception() {
   }, [cart, customer.customerId, customer.name, customer.phone, effectiveTier, channel, channelHandle, linkedConversationId, activeDraft?.id, offline, draftTransitionPending]);
 
   /** استئناف مسوّدة (من هذا الجهاز أو جهاز زميل): صفوفٌ حيّة عبر catalog.byUnitIds + مواصفة CUSTOM من printSpec. */
-  async function resumeDraft(draftId: number, isHydrationCurrent: () => boolean = () => true, forceReload = false, shadow?: ReceptionServerDraftPointer): Promise<boolean> {
-    if (!forceReload && !shadow && activeDraftRef.current?.id === draftId) return true;
-    if (!forceReload && (phoneResolution === "CHECKING" || phoneCustomer.isPending || couponPreview.isPending)) { notify.warn("لم يُفتح الطلب الآخر", "انتظر اكتمال التحقق من العميل أو الكوبون أولاً."); return false; }
-    const resumeEpoch = ++draftResumeEpochRef.current; setDraftTransitionPending(true);
-    const isCurrent = () => resumeEpoch === draftResumeEpochRef.current && isHydrationCurrent();
-    try {
-      if (forceReload) { if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current); draftSyncTimer.current = null; await draftSyncQueueRef.current?.supersedeAndDrain(); if (!isCurrent()) return false; }
-      // staleTime:0 إلزاميّ (مراجعة ش٤): الافتراض العام ٦٠ث كان يعيد نسخة الكاش بعد CONFLICT/
-      // حارس I3 — heldTotal وversion وبنوداً متقادمة دقيقةً كاملة ⇒ حلقة CONFLICT وتحصيلٌ زائد.
-      const switched = await prepareReceptionDraftSwitch({ active: activeDraftRef.current, targetDraftId: draftId, forceReload, localDirty: shadow == null && workspaceDirty, offline, isCurrent,
-        flush: () => flushActiveDraft(undefined, false), load: () => utils.reception.draftGet.fetch({ draftId }, { staleTime: 0 }) });
-      if (!switched.ok) {
-        if (switched.reason === "OFFLINE") notify.warn("لم يُفتح الطلب الآخر", "الطلب الحالي يحمل تعديلات؛ أعد الاتصال ليُحفظ أولاً.");
-        else if (switched.reason === "LOCAL_DIRTY") notify.warn("السلة الحالية لم تُحفظ", "احفظها كطلب محفوظ أو فرّغها صراحةً قبل فتح طلب آخر.");
-        else if (switched.reason === "SYNC") { const failed = switched.syncOutcome!; const code = (failed.error as { data?: { code?: string } })?.data?.code; if (code === "PRECONDITION_FAILED" || code === "CONFLICT") handleDraftSyncFailure(failed); notify.warn("لم يُفتح الطلب الآخر", "تعذّر حفظ تعديلات الطلب الحالي؛ بقي مفتوحاً ولم تُستبدل سلته."); }
-        return false; }
-      if (switched.kind === "NOOP") return true;
-      const d = switched.draft;
-      if (d.status !== "OPEN") {
-        const closedMessage = d.status === "COMMITTED" ? "ثُبّت الطلب من جهاز آخر؛ افتح الفواتير أو أوامر الشغل لمراجعة النتيجة." : "أُلغي الطلب أو انتهت صلاحيته؛ اختر طلباً مفتوحاً من الشريط.";
-        if (activeDraftRef.current?.id === draftId) { activeDraftRef.current = null; setActiveDraft(null); }
-        if (shadow) setDraftRestoreRecovery({ snapshot: shadow, serverAvailable: false });
-        notify.warn("الطلب المحفوظ لم يعد مفتوحاً", closedMessage); return false;
-      }
-      if (shadow) { if (Number(d.version) !== shadow.draftVersion) { setDraftRestoreRecovery({ snapshot: shadow, serverAvailable: true }); notify.warn("توجد نسخة أحدث للطلب المحفوظ", "احتفظنا بالنسخة المحلية؛ اختر تحميل الخادم أو استعادتها منفصلةً للمراجعة."); return false; } if (!(await restoreLocalWorkspace(shadow.pendingLocal, isCurrent, true)) || !isCurrent()) return false;
-        const restoredDraft = { id: draftId, version: Number(d.version) }; activeDraftRef.current = restoredDraft; setActiveDraft(restoredDraft); setDraftHeld(String((d as { heldTotal?: string }).heldTotal ?? "0.00")); setDraftInfo({ draftNumber: d.draftNumber });
-        setDraftRestoreRecovery(null); setDetachedRecoveryPending(false); notify.ok(`استُعيدت تعديلات ${d.draftNumber}`, "ستُزامَن تلقائياً مع نسخة الخادم الحالية"); return true;
-      }
-      const unitIds = Array.from(new Set(d.lines.map((l) => Number(l.productUnitId)).filter((n) => n > 0)));
-      const live = unitIds.length
-        ? await utils.catalog.byUnitIds.fetch({ branchId, tier: (d.priceTier as Tier) ?? "RETAIL", productUnitIds: unitIds, customerId: d.customerId != null ? Number(d.customerId) : undefined })
-        : []; if (!isCurrent()) return false;
-      const prepared = prepareReceptionDraftCart(d.lines, live as PosRow[]);
-      if (!prepared.ok) { if (activeDraftRef.current?.id === draftId) { activeDraftRef.current = null; setActiveDraft(null); } notify.warn("تعذّر فتح الطلب المحفوظ بأمان", `${prepared.missingCount} بند غير متاح في الكتالوج؛ لم نغيّر المسوّدة كي لا تُحذف بنودها.`); return false; }
-      clearCouponIfApplied(); setCart(prepared.cart); setReceptionPhone(toLocalIqMobileDigits(d.contactPhone ?? ""));
-      const restoredCustomerId = d.customerId != null ? Number(d.customerId) : null;
-      prevCustomerIdRef.current = restoredCustomerId; setCustomer({ customerId: restoredCustomerId, name: d.contactName ?? "", phone: d.contactPhone ?? null, isNew: false });
-      setTierOverride((d.priceTier as Tier) ?? null);
-      setChannel(toWorkOrderChannel(d.channel)); setChannelHandle(d.channelHandle ?? "");
-      setLinkedConversationId(d.conversationId != null ? Number(d.conversationId) : null);
-      setPayInput(""); setMethod("CASH"); setPaymentReference(""); setDeferred(false); setCustomerCreditLimit("");
-      setInvoiceDiscountPct(""); setCouponInput("");
-      const restoredDraft = { id: draftId, version: Number(d.version) }; activeDraftRef.current = restoredDraft; setActiveDraft(restoredDraft);
-      // ش٤: صافي المقبوض سلفاً يرافق الاستئناف — «المتوقّع الآن» يهبط به فوراً.
-      setDraftHeld(String((d as { heldTotal?: string }).heldTotal ?? "0.00"));
-      setDraftInfo({ draftNumber: d.draftNumber }); setDraftRestoreRecovery(null); setDetachedRecoveryPending(false);
-      const heldNote = Number((d as { heldTotal?: string }).heldTotal ?? 0) > 0
-        ? ` — عليها عربون مقبوض ${fmt(Number((d as { heldTotal?: string }).heldTotal))} د.ع`
-        : "";
-      notify.ok(
-        `فُتحت المسوّدة ${d.draftNumber}${heldNote}`,
-        "تعديلاتك تُزامَن وتُسجَّل باسمك",
-      );
-      return true;
-    } catch (e) { if (!isCurrent()) return false; if (shadow) setDraftRestoreRecovery({ snapshot: shadow, serverAvailable: true }); notify.err(e, "تعذّر فتح المسوّدة"); return false; }
-    finally { if (isCurrent()) setDraftTransitionPending(false); }
-  }
+  async function resumeDraft(draftId: number, isHydrationCurrent: () => boolean = () => true, forceReload = false, shadow?: ReceptionServerDraftPointer): Promise<boolean> { return ReceptionResumeDraft({ branchId, offline, activeDraftRef, phoneResolution, phoneCustomer, couponPreview, draftResumeEpochRef, setDraftTransitionPending, draftSyncTimer, draftSyncQueueRef, workspaceDirty, flushActiveDraft, utils, handleDraftSyncFailure, setActiveDraft, setDraftRestoreRecovery, restoreLocalWorkspace, setDraftHeld, setDraftInfo, setDetachedRecoveryPending, clearCouponIfApplied, setCart, setReceptionPhone, prevCustomerIdRef, setCustomer, setTierOverride, setChannel, setChannelHandle, setLinkedConversationId, setPayInput, setMethod, setPaymentReference, setDeferred, setCustomerCreditLimit, setInvoiceDiscountPct, setCouponInput }, draftId, isHydrationCurrent, forceReload, shadow); }
 
   async function recoverDraftFromServer() { const recovery = draftRestoreRecovery; if (!recovery?.serverAvailable || !(await resumeDraft(recovery.snapshot.activeDraftId, () => true, true))) return; if (!clearPersistedWorkspace(true)) { setWorkspaceSafetyBlocked(true); return; } setDraftRestoreRecovery(null); setDetachedRecoveryPending(false); notify.ok("حُمّلت نسخة الخادم", "أُهملت النسخة المحلية بعد اختيارك ولم تعد قابلة للتثبيت المكرر."); }
   async function recoverDraftAsLocalCopy() { const recovery = draftRestoreRecovery; if (!recovery || !(await restoreLocalWorkspace(recovery.snapshot.pendingLocal, () => true, true))) return; reqIdRef.current = crypto.randomUUID(); if (!clearPersistedWorkspace(true)) { setWorkspaceSafetyBlocked(true); return; } setDraftRestoreRecovery(null); setDetachedRecoveryPending(true); notify.warn("استُعيدت نسخة محلية منفصلة", "راجعها واحفظها كطلب جديد قبل قبض مبلغ أو التثبيت؛ قد تكون بعض تعديلات النسخة القديمة وصلت إلى الخادم."); }
 
-  async function printDraftTicketById(draftId: number) {
-    try {
-      const d = await utils.reception.draftGet.fetch({ draftId }, { staleTime: 0 });
-      await printDraftTicket({
-        draftNumber: d.draftNumber,
-        date: fmtDate(new Date(d.createdAt as unknown as string)),
-        contactName: d.contactName,
-        contactPhone: d.contactPhone,
-        items: d.lines.map((l) => ({ name: l.title ?? "بند", quantity: Number(l.quantity), total: String(l.lineTotal) })),
-        total: String(d.total),
-        notes: d.notes,
-      });
-    } catch (e) {
-      notify.err(e, "تعذّرت طباعة تذكرة المسوّدة");
-    }
-  }
+  async function printDraftTicketById(draftId: number) { return ReceptionDraftTicket({ utils }, draftId); }
 
   async function handleSubmit(opts: { quickFullPay: boolean; openingConfirmed?: boolean; isReservation?: boolean }) {
+    if (blockingDialogOpen) return;
     if (!receptionCheckoutPaths(hasDigitalCards, !!activeDraftRef.current, offline, assignsDelivery).every(canActionRef.current)) return notify.err("تفويضات تنفيذ هذه العملية غير مكتملة");
     if (draftTransitionPending || draftPromotionFlightRef.current) return; if (draftPromotionPending) { notify.warn("نتيجة حفظ الطلب غير محسومة", "أعد الضغط على حفظ الطلب للتحقق قبل أي تثبيت."); return; } if (detachedRecoveryPending) { notify.warn("لا تثبّت نسخة الاسترداد مباشرةً", "راجعها ثم احفظها كطلب محفوظ جديد؛ هذا يمنع تكرار طلب ربما وصلت بعض تعديلاته إلى الخادم."); return; }
-    const draftAtSubmit = activeDraftRef.current ?? activeDraft;
-    if (draftAtSubmit && couponCode) { notify.warn("لا تثبّت طلباً محفوظاً مع كوبون", "أزل الكوبون؛ الطلب المحفوظ لا يملك عقد استهلاك كوبون ذرياً."); return; }
-    const hadActiveDraftAtSubmit = draftAtSubmit != null;
-    if (phoneResolution === "CHECKING" || phoneCustomer.isPending || couponPreview.isPending) { notify.warn("انتظر اكتمال التحقق", "جارٍ حسم العميل أو الكوبون قبل التثبيت."); return; }
-    // Fail before customer creation/offline capture: a stale external method must not
-    // leave an orphan customer when the checkout service rejects the payment.
-    if (!isPosPaymentMethodEnabled(String(method))) {
-      notify.err(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
-      return;
-    }
-    if (cart.length === 0) return;
-    if (!shift) {
-      notify.err("ابدأ الوردية أولاً قبل إتمام طلب العميل");
-      return;
-    }
-    const invalidCustom = cart.find((line) => line.custom && (!line.custom.title.trim() || D(effectivePrice(line)).lte(0)));
-    if (invalidCustom) {
-      setSelKey(invalidCustom.key);
-      notify.err("راجع تفاصيل أمر الشغل: العنوان وسعر البيع مطلوبان");
-      return;
-    }
-    const directLines = cart.filter((c) => !isCustomKind(c));
-    const digitalLines = directLines.filter((c) => c.digital);
-    // فصل خدمات الطباعة (تُباع عبر createPrintSale) عن البيع العادي (sales.create).
-    const regularLines = directLines.filter((c) => !c.digital && !c.row.isPrintService);
-    const printLines = directLines.filter((c) => !c.digital && c.row.isPrintService);
-    const customItems = cart.filter(isCustomKind);
-
-    if (digitalLines.length > 0) {
-      if (offline || isDisconnected(connState)) {
-        notify.err("الكروت والاشتراكات تحتاج اتصالاً فعّالاً بالخادم.");
-        return;
-      }
-      if (draftAtSubmit) {
-        notify.err("لا تُنفّذ الكروت ضمن طلب محفوظ؛ ثبّت الطلب أولاً أو افتح سلة جديدة.");
-        return;
-      }
-      if (customItems.length > 0 || printLines.length > 0 || orderDelivery) {
-        notify.err("افصل الكروت الرقمية عن أوامر الشغل والطباعة والتوصيل في عملية مستقلة.");
-        return;
-      }
-      if (method !== "CASH") {
-        notify.err("بيع الكروت من كاشير الاستقبال متاح نقداً فقط حالياً؛ الدفع بالبطاقة يحتاج إثبات جهاز دفع مرتبطاً بالعملية.");
-        return;
-      }
-      if (deferred) {
-        notify.err("الكروت والاشتراكات لا تقبل البيع الآجل أو الدفع الجزئي.");
-        return;
-      }
-      if (couponCode || rawInvoiceDiscountPctD.gt(0) || regularLines.some((line) => (line.disc ?? 0) > 0 || line.row.promotionId != null)) {
-        notify.err("لا تُطبّق الكوبونات أو الخصومات على عملية تحتوي كروتاً رقمية؛ افصلها في فاتورة أخرى.");
-        return;
-      }
-      const changedDigital = digitalLines.find((line) =>
-        line.qty !== 1 || !line.digital || !D(effectivePrice(line)).eq(line.digital.sellPriceSnapshot));
-      if (changedDigital) {
-        notify.err(`بيانات «${changedDigital.row.productName}» تغيّرت؛ احذفها وأعد إضافتها من سلة المزوّد.`);
-        return;
-      }
-    }
-
-    // ٨/٨ (طلب المالك: التوصيل «غير موجود» لأمر شغلٍ خالص) — «توصيل هذا الطلب» كان يُبنى إسناداً
-    // على الفاتورة الحاملة (dispatchInvoice)، وأمرُ الشغل الخالص بلا فاتورةٍ عند التثبيت ⇒ الخادم
-    // يرفض والتوصيل يسقط بتحذيرٍ يُبتلَع. الحلّ: نوجّه التوصيل إلى **حقول أمر الشغل نفسه** —
-    // فيحمله الأمر (hasDelivery + عنوان + هاتف + أجرة + مَن يقبض)، ويُطبَع، ويظهر في الطابور،
-    // ويُسنَد للمندوب من طابور الطلبات عند الجاهزية (delivery.dispatch يشترط hasDelivery=true).
-    const hasCarrierInvoice = regularLines.length > 0 || printLines.length > 0;
-    const routeDeliveryToWO = orderDelivery != null && !hasCarrierInvoice;
-    // القبض الآن (COUNTER) على أمر شغلٍ **محفوظٍ** (مسوّدة) غير مدعومٍ خادمياً (collectNow لا
-    // يغطّيه بنيوياً — reception/commit.ts) ⇒ نمنعه برسالةٍ واضحة بدل خطأ خادميّ غامض.
-    if (routeDeliveryToWO && draftAtSubmit && orderDelivery?.feeCollection === "COUNTER") {
-      notify.err(
-        "قبض أجرة التوصيل الآن غير متاح لطلبٍ محفوظ",
-        "اجعل المندوب يقبضها من الزبون، أو المكتبة تتحمّلها — أو أتمّ الطلب مباشرةً (بلا حفظ المسوّدة) لقبضها الآن.",
-      );
-      return;
-    }
-    // توصيلٌ فعّالٌ لكلّ أمر: من «توصيل هذا الطلب» إن وُجِّه للأوامر (طلب خالص)، وإلّا من كتلة
-    // التخصيص. الأجرة على **أوّل أمرٍ فقط** عند التوجيه (طلبٌ واحدٌ = توصيلٌ واحد) كيلا تتضاعف
-    // الأمانة/المصروف عبر عدّة أوامر. تُستعمل في حمولة الحفظ وفي طباعة التذكرة معاً (مصدرٌ واحد).
-    const effectiveWoDelivery = (custom: CustomizationData, idx: number) =>
-      routeDeliveryToWO && orderDelivery
-        ? {
-            has: true,
-            address: orderDelivery.address || custom.deliveryAddress || null,
-            phone: orderDelivery.recipientPhone || custom.deliveryPhone || null,
-            cost: idx === 0 ? round2(D(orderDelivery.fee || 0)).toFixed(2) : "0.00",
-            feeColl: orderDelivery.feeCollection,
-            partyName: orderDelivery.partyName as string | null,
-          }
-        : {
-            has: custom.hasDelivery,
-            address: custom.deliveryAddress || null,
-            phone: custom.hasDelivery ? custom.deliveryPhone || null : null,
-            cost: custom.hasDelivery ? round2(D(custom.deliveryCost || 0)).toFixed(2) : "0.00",
-            feeColl: (custom.hasDelivery ? custom.deliveryFeeCollection : "COURIER") as "COURIER" | "COUNTER" | "SHOP",
-            partyName: null as string | null,
-          };
-
-    // سعر كل أمر فقط؛ العربون لم يعد حقلاً على السطر، بل يوزّعه الخادم من دفعة الطلب الكلية.
-    const customWithDeposits = customItems.map((c) => {
-      const full = D(customLineGrand(c));
-      return { c, depositStr: "0.00", salePriceStr: full.toFixed(2) };
-    });
-
-    const isReserve = !!opts.isReservation;
-    if (isReserve && digitalLines.length > 0) {
-      notify.err("لا يمكن حجز الكروت الرقمية؛ يجب إصدارها وتثبيتها فوراً.");
-      return;
-    }
-
-    // ش٠ (V1): كل المقارنات على الإجمالي **الفعليّ** (المقرَّب عند سريان التقريب) — إرسال مبالغ
-    // غير مقرَّبة مع علم التقريب كان يجعل الخادم يرى نقصاً (رفضٌ للزبون العابر) أو ذمّةً صامتة.
-    // ش٤: المستحقّ الآن = الإجمالي − العربون المقبوض سلفاً (heldD) — الدفع الجديد يقاس عليه.
-    // إذا لم يُدخل الكاشير مبلغاً مخصصاً في حقل المدفوع، نعتبر البيع المباشر مدفوعاً بالكامل نقداً
-    const inputPaidD = isReserve
-      ? (paidD.gt(0) ? paidD : D(0))
-      : (opts.quickFullPay || (!payInput && !deferred && sumDirectNetD.gt(0))) ? expectedNowD : paidD;
-    const appliedPaidD = method === "CASH" && inputPaidD.gt(expectedNowD) ? expectedNowD : inputPaidD;
-    if (digitalLines.length > 0 && !round2(appliedPaidD).eq(round2(expectedNowD))) {
-      notify.err(`الكروت الرقمية تتطلب تسديد كامل العملية: ${fmt(expectedNowD.toFixed(2))} د.ع.`);
-      return;
-    }
-
-    // غير النقد كلّه صالح كعربون، لكن بلا فكّة وبمرجع تتبّع إلزامي (كود الكارت لرصيد زين).
-    if (method !== "CASH" && inputPaidD.gt(0) && !paymentReference.trim()) {
-      notify.err(
-        method === "CARD" ? "رقم عملية البطاقة مطلوب"
-        : method === "WALLET" ? "رقم عملية المحفظة مطلوب"
-        : method === "TELECOM" ? "أرقام كارت شحن زين (الكود) مطلوبة"
-        : "رقم مرجع التحويل مطلوب",
-      );
-      return;
-    }
-    if (method !== "CASH" && inputPaidD.gt(expectedNowD)) {
-      notify.err(`لا يمكن أن يتجاوز مبلغ ${PAY_METHOD_LABEL[method] ?? "الدفع"} المستحقّ الآن (${fmt(expectedNowD.toFixed(2))} د.ع)`);
-      return;
-    }
-    // ش٦ — التقريب المختلط يُحسم هنا: يسري فقط حين يُدفع المقرَّب **كاملاً** الآن (المرآة
-    // الحرفية لشرط materialize خادمياً) — دفعةٌ جزئية تُرسَل بمبالغ خام بلا تقريب.
-    const mixedRoundApplied = mixedRoundEligible
-      && round2(appliedPaidD.plus(heldD)).eq(round2(effectiveGrandD));
-    const mixedDeltaAppliedD = mixedRoundApplied ? mixedDeltaD : D(0);
-    // ٢٣/٨ — أرضيّة النقد الجزئيّ (Codex P1): تُقاس على `sumDirectNetD` (بعد خصم رأس الفاتورة)
-    // لا على `sumDirectD` الخام. لولا التصحيح: خصمٌ ١٠٪ على سلّةٍ نقديّةٍ غير مقرَّبة أو بطاقةٍ/تحويلٍ
-    // كان يعرض «الصافي» ٩٠٠٠ لكنّه يطالب بـ١٠٠٠٠ نقداً على الأرضيّة ⇒ تفشل عملية Quick Pay بلا سبب.
-    const directFloorD = cashRoundActive
-      ? effectiveGrandD
-      : round2(sumDirectNetD.plus(mixedDeltaAppliedD));
-    // مراجعة PR #495 — مرآة حارس الخادم حرفياً (`!input.delivery && applied.lt(directTotal)`):
-    // طلبٌ يُسنَد لمندوبٍ **الدفعُ فيه عند الاستلام**، فاشتراط تغطية البضاعة نقداً الآن كان
-    // يستحيل معه بيعُ COD أصلاً (وإدخالُ المبلغ لإسكات الحارس يسجّله نقداً في الدرج ⇒ عهدةُ
-    // المندوب صفر ونقدٌ لم يُقبَض). المتبقّي يصير عهدةً عليه داخل نفس معاملة التثبيت.
-    // بيع مباشر آجل (قرار المالك ١٠/٨): المتبقّي على البضاعة الجاهزة يصير ذمّةً على العميل المسجَّل.
-    // مسار مباشر حصراً (لا مسوّدة — توزيعها يفترض دفعاً كاملاً، ولا توصيل — يُحصَّل عند الاستلام)،
-    // ويلزمه عميلٌ مسجَّل (لا ذمّة بلا صاحب — createSaleInTx يرفض الآجل بلا customerId).
-    if (deferred && !isReserve) {
-        if (draftAtSubmit) { notify.err("البيع الآجل غير متاح للطلب المحفوظ — ثبّته مباشرةً بلا حفظ مسوّدة"); return; }
-      if (orderDelivery) { notify.err("طلب التوصيل يُحصَّل عند الاستلام — لا حاجة لوضع «آجل»"); return; }
-    }
-    const hasCustomLines = customWithDeposits.length > 0;
-    // طلب الدفع عند الاستلام يتطلب معرفة المستلم (اسمه وهاتفه)
-    if (isReserve) {
-      if (!customer.customerId && (!isValidIqMobile(receptionPhone) || customer.name.trim().length < 2)) {
-        notify.err("للدفع عند الاستلام يرجى إدخال اسم العميل ورقم هاتفه العراقي (١١ رقماً تبدأ بـ07)");
-        customerSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-        return;
-      }
-    }
-    // رقم الهاتف إلزامي فقط لأوامر التخصيص/الطباعة — أما البيع المباشر النقدي فالعميل اختياري بالكامل!
-    if (hasCustomLines) {
-      if (!isValidIqMobile(receptionPhone)) {
-        notify.err("رقم هاتف العميل إلزامي لأوامر الشغل والتخصيص — أكمل ١١ رقماً عراقياً تبدأ بـ07");
-        customerSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-        return;
-      }
-      if (!canCreateCustomer) {
-        notify.err("دورك لا يملك بوابة ربط عميل الاستقبال — راجع إعداد صلاحية أوامر الشغل");
-        return;
-      }
-    } else if (receptionPhone && receptionPhone.trim().length > 0 && !isValidIqMobile(receptionPhone)) {
-      notify.err("رقم الهاتف غير مكتمل — أكمل ١١ رقماً تبدأ بـ07 أو أفرغ الحقل للبيع النقدي العابر");
-      customerSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      return;
-    }
-    // الافتراضي يقبل الفواتير بدون ائتمان: وجود عميل مسجّل يحوّل أي نقص نقدي إلى آجل (ذمّة) تلقائياً.
-    const directShortfallD = round2(directFloorD.minus(appliedPaidD).minus(heldD));
-    const hasDirectShortfall = directShortfallD.gt(0);
-    const grandShortfallD = round2(effectiveGrandD.minus(appliedPaidD).minus(heldD));
-    const hasGrandShortfall = grandShortfallD.gt(0);
-
-    const canAuthorizeShortfall = deferred || isReserve || (customer.customerId != null && phoneResolution === "RESOLVED" && !orderDelivery && !draftAtSubmit);
-    if (!orderDelivery && !canAuthorizeShortfall && hasDirectShortfall) {
-      notify.errBig(
-        `البضاعة الجاهزة تحتاج ${fmt(directFloorD.toFixed(2))} د.ع (ناقصٌ ${fmt(directShortfallD.toFixed(2))})`,
-        "اربط عميلاً لتسجيل الفاتورة على حسابه (آجل)، أو أَضِف توصيلاً، أو أَكمل المبلغ الآن.",
-      );
-      customerSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      return;
-    }
-
-    // ش٥ (§٩.٤): رصيد زين بلا مُثبِتٍ خارجيّ — تأكيدٌ ثانٍ صريح قبل التسجيل (الزبون حاضر).
-    if (method === "TELECOM" && appliedPaidD.gt(0)) {
-      if (!(await confirm({
-        variant: "warning",
-        title: "تأكيد قبض رصيد زين",
-        description: `تحقّقتَ أن رصيد ${fmt(round2(appliedPaidD).toNumber())} د.ع وصل فعلاً (كارت شحن ${paymentReference.trim() || "—"})؟ الكود يُقبل مرّةً واحدة ولا يدخل درج النقد.`,
-        confirmText: "وصل الرصيد — سجّل",
-      }))) return;
-    }
-
+    const preparation = await prepareReceptionSubmission({ activeDraftRef, activeDraft, couponCode, phoneResolution, phoneCustomer, couponPreview, method, cart, shift, setSelKey, offline, connState, orderDelivery, deferred, rawInvoiceDiscountPctD, opts, paidD, payInput, sumDirectNetD, expectedNowD, paymentReference, mixedRoundEligible, heldD, effectiveGrandD, mixedDeltaD, cashRoundActive, customer, receptionPhone, customerSectionRef, canCreateCustomer });
+    if (!preparation || !shift) return;
+    const { hadActiveDraftAtSubmit, hasCustomLines, isReserve, mixedRoundApplied, mixedDeltaAppliedD, printLines, customWithDeposits, effectiveWoDelivery, regularLines, hasGrandShortfall, hasDirectShortfall, appliedPaidD, routeDeliveryToWO, digitalLines, draftAtSubmit, inputPaidD } = preparation;
     // تَفعيل قَفل الإرسال **قبل** ensureCustomerId لمنع سباق نَقر مَزدوج يُنشئ عميلاً مكرَّراً
     // (ensureCustomerId يَحتوي عميلية confirm() غير متزامنة).
     if (submitting) return;
@@ -1479,10 +713,10 @@ export default function Reception() {
     if (customerId == null && isValidIqMobile(receptionPhone)) {
       try {
         customerId = await ensureCustomerId();
-      } catch (e: any) {
+      } catch (e: unknown) {
         if (hasCustomLines || deferred || isReserve) {
           setSubmitting(false);
-          notify.err(e?.message || "تعذّر حفظ العميل");
+          notify.err(e instanceof Error ? e.message : "تعذّر حفظ العميل");
           return;
         }
       }
@@ -1490,8 +724,6 @@ export default function Reception() {
 
     let checkoutCommitted = false;
     try {
-      const receiptsToPrint: ReceiptBrowserData[] = [];
-      const workOrdersToPrint: WorkOrderReceiptData[] = [];
       const printedAt = new Date();
       const receiptPhone = receptionPhone;
       const rawCustomerName = customer.name.trim();
@@ -1505,152 +737,7 @@ export default function Reception() {
       // ٢٣/٨: مبلغُ البيع = صافي أسطر البيع بعد خصم رأس الفاتورة (regularSumRawD − invoiceDiscountAmountD)
       // + فرق التقريب إن وُجد. الخادم يستقبل الخصمَ مطلقاً في `regularSale.invoiceDiscount` ويعيد
       // computeInvoiceTotals، فينتج نفس الرقم بالضبط ⇒ توزيعُ المدفوع لا يُخطئ التخصيص.
-      const saleAmount = cashRoundActive
-        ? round2(effectiveGrandD).toFixed(2)
-        : round2(
-            regularSumRawD.minus(invoiceDiscountAmountD)
-              .plus(mixedRoundApplied && mixedCarrier === "SALE" ? mixedDeltaAppliedD : D(0)),
-          ).toFixed(2);
-      const printAmount = round2(
-        printLines.reduce((s, c) => s.plus(D(lineTotal(c))), D(0))
-          .plus(mixedRoundApplied && mixedCarrier === "PRINT" ? mixedDeltaAppliedD : D(0)),
-      ).toFixed(2);
-      const workOrderPayloads = customWithDeposits.map((x, woIndex) => {
-        const c = x.c;
-        const custom = c.custom!;
-        const finalText = composeCustomizationText(custom);
-        const eff = effectiveWoDelivery(custom, woIndex);
-        // إصلاح P1 (٢٣/٦/٢٦): المنتجات المخصّصة ذات المخزون كانت تَخرج بلا materials ⇒ المخزون
-        // لا يَنخفض و COGS صفر، وعند التسليم الفاتورة تُنشَأ بسطر للمنتج الأساس بدون خصم سابق
-        // ⇒ بيعٌ بلا تكلفة، أرباح مُبالَغة، رصيدٌ مُبالَغ في المخزون.
-        // الحل: لو المنتج Service (بلا مخزون) ⇒ لا مواد. غير ذلك ⇒ المنتج الأساس يَستهلك
-        // baseQuantity = qty * conversionFactor (يُقرَّب لعدد صحيح لمطابقة فحص createWorkOrder).
-        const materials: { variantId: number; baseQuantity: number }[] = [];
-        if (!c.row.isService) {
-          const factor = Number(c.row.conversionFactor) || 1;
-          const baseQty = Math.max(1, Math.round(c.qty * factor));
-          materials.push({ variantId: c.row.variantId, baseQuantity: baseQty });
-        }
-        return {
-          baseVariantId: c.manualService ? null : c.row.variantId,
-          baseProductUnitId: c.manualService ? null : c.row.productUnitId,
-          title: custom.title.trim() || c.row.productName,
-          customizationText: finalText || null,
-          quantity: c.qty,
-          materials,
-          laborCost: D(custom.laborCost || 0).toFixed(2),
-          // ٥/٨ — salePrice = بضاعة/خدمة فقط؛ أجرة التوصيل في عمودها المستقلّ (تمريرٌ لا إيراد).
-          salePrice: x.salePriceStr,
-          dueDate: custom.dueDate || null,
-          priority: custom.priority,
-          assignedTo: custom.assignedTo ?? undefined,
-          deposit: x.depositStr,
-          paymentMethod: D(x.depositStr).gt(0) ? method : null,
-          paymentReference: D(x.depositStr).gt(0) && method !== "CASH" ? paymentReference.trim() : null,
-          paymentReceiptUrl: custom.paymentReceiptImages[0]?.dataUrl || null,
-          receptionChannel: channel,
-          channelHandle: (channel === "INSTAGRAM" || channel === "TIKTOK" ? channelHandle : receptionPhone) || null,
-          // ٨/٨ — التوصيل الفعّال (من «توصيل هذا الطلب» المُوجَّه للأمر، أو من كتلة التخصيص).
-          hasDelivery: eff.has,
-          deliveryAddress: eff.address,
-          // ٥/٨ — الأجرة في عمودها وحدها: تمريرٌ للمندوب خارج salePrice/الفاتورة/الإيراد.
-          deliveryCost: eff.has ? eff.cost : "0",
-          deliveryFeeCollection: eff.has ? eff.feeColl : "COURIER",
-          // اِستقبال (تكامل التوصيل، ٤/٨): هاتف المستلم كعمود مستقلّ قابل للاستعلام — كان
-          // مُضمَّناً كنصٍّ حرٍّ داخل customizationText فقط (composeCustomizationText أدناه ما زال
-          // يُضيفه للنصّ أيضاً — تكرارٌ مقصود: عرضٌ للفنّي في النص + مصدر حقيقة للتوصيل في العمود).
-          deliveryPhone: eff.has ? eff.phone : null,
-          designImages: custom.designImages.map((img, idx) => ({
-            url: img.dataUrl,
-            caption: img.name ?? null,
-            sortOrder: idx,
-          })),
-        };
-      });
-
-      // ش٧ + مراجعة PR #495 — **الإسناد داخل معاملة التثبيت**: كانت الواجهة تُتمّ الطلب ثم
-      // تنادي `delivery.dispatchInvoice` في معاملةٍ تالية، فتُنتج نافذةً تكون فيها الفاتورة بلا
-      // دافعٍ ولا حاملِ عهدة (وفشلُ الإسناد يتركها يتيمةً بلا مندوب). الخادم يدعم `delivery`
-      // على المسارين (receptionCheckout/draftCommit) منذ ش٧ — نمرّرها الآن فيصيران ذرّةً واحدة:
-      // إمّا (فاتورة + عهدة مندوب) معاً وإمّا لا شيء. أوامر الشغل وحدها بلا فاتورةٍ حاملة
-      // تبقى استثناءً مُعلَناً (تحذيرٌ بعد التثبيت) — الخادم يرفض `delivery` بلا فاتورة.
-      const hasCarrierInvoice = regularLines.length > 0 || printLines.length > 0;
-      const deliveryPayload = orderDelivery && hasCarrierInvoice
-        ? {
-            partyId: orderDelivery.partyId,
-            fee: orderDelivery.fee?.trim() ? orderDelivery.fee : "0",
-            feeCollection: orderDelivery.feeCollection,
-            recipientName: orderDelivery.recipientName || undefined,
-            recipientPhone: orderDelivery.recipientPhone || undefined,
-            address: orderDelivery.address || undefined,
-            externalTrackingRef: orderDelivery.externalTrackingRef?.trim() || undefined,
-          }
-        : undefined;
-
-      const checkoutPaymentMode: "PREPAID" | "COD" | "CREDIT" = !hasGrandShortfall
-        ? "PREPAID"
-        : (isReserve || orderDelivery)
-          ? "COD"
-          : "CREDIT";
-
-      const sendDeferredDirect = hasDirectShortfall && (deferred || isReserve || (customer.customerId != null && !orderDelivery));
-
-      const directCheckoutPayload = {
-        branchId,
-        shiftId: shift.id,
-        customerId: customerId ?? undefined,
-        contactName: customerId == null ? (customerName ?? undefined) : undefined,
-        contactPhone: customerId == null ? (receiptPhone ?? undefined) : undefined,
-        paymentMethod: appliedPaidD.gt(0) ? method : undefined,
-        paymentReference: appliedPaidD.gt(0) && method !== "CASH" ? paymentReference.trim() : undefined,
-        paidAmount: round2(appliedPaidD).toFixed(2),
-        paymentMode: checkoutPaymentMode,
-        cashRoundIQD: cashRoundActive,
-        cashRoundingOverride: mixedRoundApplied ? mixedCarrier ?? undefined : undefined,
-        deliveryFeeHeld: orderFeeHeldD.gt(0) && !routeDeliveryToWO ? orderFeeHeldD.toFixed(2) : undefined,
-        delivery: deliveryPayload,
-        openingSellUnavailableConfirmed: opts.openingConfirmed === true,
-        deferredDirect: sendDeferredDirect,
-        managerApproval: mgrCredsRef.current ?? undefined,
-        clientRequestId: reqIdRef.current,
-        priceTier: effectiveTier,
-        couponCode: couponCode ?? undefined,
-        regularSale: regularLines.length > 0 ? {
-          amount: saleAmount,
-          ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
-          lines: regularLines.map((c) => {
-            if (c.row.promotionEffectivePrice != null) {
-              const listWhole = D(c.row.price ?? 0).toDecimalPlaces(0, 4);
-              const discAmt = listWhole.minus(D(c.row.promotionEffectivePrice)).times(c.qty);
-              return {
-                variantId: c.row.variantId,
-                productUnitId: c.row.productUnitId,
-                quantity: String(c.qty),
-                unitPriceOverride: listWhole.toFixed(2),
-                ...(discAmt.gt(0) ? { discountAmount: discAmt.toFixed(2) } : {}),
-                ...(c.row.promotionId != null ? { promotionId: c.row.promotionId } : {}),
-              };
-            }
-            return {
-              variantId: c.row.variantId,
-              productUnitId: c.row.productUnitId,
-              quantity: String(c.qty),
-              ...(c.disc != null && c.disc > 0 ? { discountPercent: String(c.disc) } : {}),
-            };
-          }),
-        } : null,
-        printSale: printLines.length > 0 ? {
-          amount: printAmount,
-          lines: printLines.map((c) => ({
-            variantId: c.row.variantId,
-            productUnitId: c.row.productUnitId,
-            quantity: String(c.qty),
-            unitPriceOverride: round2(D(effectivePrice(c))).toFixed(2),
-          })),
-        } : null,
-        workOrders: workOrderPayloads,
-      };
-
+      const { directCheckoutPayload, deliveryPayload, saleAmount, printAmount, checkoutPaymentMode, hasCarrierInvoice } = buildReceptionCheckoutPayload({ branchId, cashRoundActive, effectiveGrandD, regularSumRawD, invoiceDiscountAmountD, mixedRoundApplied, mixedCarrier, mixedDeltaAppliedD, printLines, customWithDeposits, effectiveWoDelivery, method, paymentReference, channel, channelHandle, receptionPhone, regularLines, orderDelivery, hasGrandShortfall, isReserve, hasDirectShortfall, deferred, customer, shift, customerId, customerName, receiptPhone, appliedPaidD, orderFeeHeldD, routeDeliveryToWO, opts, mgrCredsRef, reqIdRef, effectiveTier, couponCode });
       if (digitalLines.length > 0) {
         const prepared = await prepareIntent.mutateAsync({
           branchId,
@@ -1769,172 +856,10 @@ export default function Reception() {
       // بلا خصمٍ ولا هاتفٍ ولا آجل) فيخرج ناقص المعلومات مقارنةً بإيصال التجزئة الذي يمرّ بمُحوّلٍ
       // موحّد. صار يُبنى بمُحوّلٍ واحد هنا يحمل الحقيقة كاملةً: الخصم على السطر، هاتف الزبون،
       // الفكّة الحقيقية على أول إيصال، والمتبقّي آجلاً إن وُجد.
-      const receiptCustomerName = customerName && receiptPhone
-        ? `${customerName} — ${receiptPhone}`
-        : customerName ?? (receiptPhone ? `عميل ${receiptPhone}` : null);
-      // ش٤: الفكّة والمتبقّي يقاسان على المستحقّ الآن (بعد خصم العربون السابق heldD).
-      const changeD2 = round2(appliedPaidD.minus(expectedNowD));
-      const printedChange = method === "CASH" && changeD2.gt(0) ? changeD2.toFixed(2) : null;
-      const creditD = round2(expectedNowD.minus(appliedPaidD));
-      const printedCredit = creditD.gt(0) ? creditD.toFixed(2) : null;
-      const receiptLine = (c: CartLine) => ({
-        name: `${c.row.productName} (${c.row.unitName})${c.disc ? ` −${c.disc}%` : ""}`,
-        quantity: c.qty,
-        price: round2(D(effectivePrice(c))).toFixed(2),
-        total: round2(D(lineTotal(c))).toFixed(2),
-      });
-      // G3 (١١/٨) — إصلاح Codex P2:
-      // (١) heldDeposits من ردّ الخادم لا الحالة المحلّية: `customWithDeposits[i].depositStr` مسوّدة
-      //     "0.00" دائماً — الخادم يوزّع العرابين الحقيقيّة ويعيدها في `result.workOrders[i].deposit`
-      //     (نفس النمط المستعمل أدناه لتذكرة أمر الشغل السطر ١٥٨٤).
-      // (٢) shiftId من الفاتورة المُثبَّتة لا من scope الحيّ: عند idempotent replay بعد إغلاق الوردية
-      //     الأصليّة وفتح جديدة، `result.regularSale.shiftId` يحمل رقم الوردية الحقيقيّة للفاتورة.
-      //     الرجوع لـ`shift?.id` احتياطاً لمسار الأمر الشغل الخالص (لا فاتورة).
-      const receiptServerMeta = receptionCheckoutReceiptMeta(result, shift?.id);
-      const isCodSaleCarrier = Boolean(orderDelivery && printLines.length > 0 && regularLines.length > 0);
-      const regularPaidD = isCodSaleCarrier
-        ? round2(D(Math.min(Number(saleAmount), Math.max(0, appliedPaidD.minus(Number(printAmount)).toNumber()))))
-        : round2(D(Math.min(Number(saleAmount), Math.max(0, appliedPaidD.toNumber()))));
-      const regularCreditD = round2(D(saleAmount).minus(regularPaidD));
-      const printPaidD = isCodSaleCarrier
-        ? round2(D(Math.min(Number(printAmount), Math.max(0, appliedPaidD.toNumber()))))
-        : round2(D(Math.min(Number(printAmount), Math.max(0, appliedPaidD.minus(regularPaidD).toNumber()))));
-      const printCreditD = round2(D(printAmount).minus(printPaidD));
-      const resolveMethodLabel = (paidD: typeof regularPaidD) => paidD.gt(0) ? PAY_METHOD_LABEL[method] : (checkoutPaymentMode === "COD" ? "دفع عند الاستلام (COD)" : (checkoutPaymentMode === "CREDIT" ? "آجل (حساب آجل)" : null));
-      const receiptHead = {
-        date: fmtDate(printedAt), time: fmtTime(printedAt), cashierName: me.data?.name ?? "موظف الخدمة",
-        customerName: receiptCustomerName, shiftId: receiptServerMeta.shiftId, heldDeposits: receiptServerMeta.heldDeposits,
-      };
-      // ٨/٨ — إفصاح التوصيل على إيصال البيع المباشر: كان لا يُطبَع إطلاقاً («لم تظهر بالطباعة»).
-      // يُوضَع على الفاتورة الحاملة للإرسالية (البضاعة إن وُجِدت وإلّا الطباعة). الأجرة تمريرٌ لا
-      // إيراد ⇒ خارج الإجمالي؛ الإيصال يعرض «يدفع الزبون شاملاً التوصيل» شفافيةً.
-      const receiptDelivery = orderDelivery && hasCarrierInvoice ? {
-        partyName: orderDelivery.partyName ?? "", fee: round2(D(orderDelivery.fee || 0)).toFixed(2),
-        feeCollection: orderDelivery.feeCollection, address: orderDelivery.address ?? null,
-      } : null;
-      if (result.regularSale) {
-        // ٢٣/٨ — Codex P1: خصمُ رأس الفاتورة يُطبع صراحةً على الإيصال. لولا هذا يظهر subtotal
-        // = total (الصافي) بينما الأسطر تُظهر أسعارها الخام ⇒ الإيصال لا يُطابق حسابياً والزبون يسأل
-        // عن الفارق. `subtotal` صار الخام (`regularSumRawD`)، `discount` يعلن الخصم، والصافي `total`.
-        const regularGrossD = regularLines.reduce((s, c) => s.plus(D(lineTotal(c))), D(0));
-        receiptsToPrint.push({
-          ...receiptHead, receiptNumber: result.regularSale.invoiceNumber, invoiceId: result.regularSale.invoiceId, items: regularLines.map(receiptLine),
-          subtotal: round2(regularGrossD).toFixed(2), discount: invoiceDiscountAmountD.gt(0) ? invoiceDiscountAmountD.toFixed(2) : null,
-          total: saleAmount, paid: regularPaidD.toFixed(2), change: printedChange, credit: regularCreditD.gt(0) ? regularCreditD.toFixed(2) : null,
-          paymentMode: checkoutPaymentMode, paymentMethod: resolveMethodLabel(regularPaidD), delivery: receiptDelivery,
-        });
-      }
-      if (result.printSale) {
-        receiptsToPrint.push({
-          ...receiptHead, receiptNumber: result.printSale.invoiceNumber, invoiceId: result.printSale.invoiceId, items: printLines.map(receiptLine),
-          subtotal: printAmount, total: printAmount, paid: printPaidD.toFixed(2),
-          change: result.regularSale ? null : printedChange, credit: printCreditD.gt(0) ? printCreditD.toFixed(2) : null,
-          paymentMode: checkoutPaymentMode, paymentMethod: resolveMethodLabel(printPaidD), delivery: result.regularSale ? null : receiptDelivery,
-        });
-      }
-
-      customWithDeposits.forEach((x, index) => {
-        const c = x.c;
-        const custom = c.custom!;
-        const finalText = composeCustomizationText(custom);
-        const eff = effectiveWoDelivery(custom, index);
-        // ش٤ (§١٠): العربون الموزَّع على الأمر من ردّ الخادم (الجشع الخادميّ هو الحقيقة) —
-        // التذكرة تحمل «مدفوع مقدماً/المتبقّي عند الاستلام» فلا يخرج الزبون بورقةٍ لا تُثبت عربونه.
-        const woDeposit = (result.workOrders[index] as { deposit?: string } | undefined)?.deposit ?? "0.00";
-        const woBalance = round2(D(x.salePriceStr).minus(D(woDeposit)));
-        workOrdersToPrint.push({
-          orderNumber: result.workOrders[index]?.orderNumber ?? "",
-          orderDate: fmtDate(printedAt),
-          dueDate: custom.dueDate || null,
-          status: "RECEIVED",
-          customerName,
-          customerPhone: receiptPhone,
-          jobTitle: custom.title.trim() || c.row.productName,
-          quantity: c.qty,
-          specs: finalText || null,
-          total: x.salePriceStr,
-          paidUpfront: Number(woDeposit) > 0 ? woDeposit : null,
-          balanceDue: Number(woDeposit) > 0 ? woBalance.toFixed(2) : null,
-          // ٥/٨ + ٨/٨ — أجرة التوصيل تُطبع صراحةً على التذكرة **خارج الإجمالي**، مع الجهة ومَن
-          // يقبضها: يمنع سوءَ الفهم الذي كان يجعل الموظّف والزبون يظنّانها جزءاً من قيمة الطلب،
-          // ويُظهر التوصيل حتى حين جاء من زرّ «توصيل هذا الطلب» (كان لا يُطبَع إطلاقاً قبل الإصلاح).
-          notes: eff.has
-            ? [
-                `توصيل إلى: ${eff.address || "العنوان غير محدد"}`,
-                eff.phone ? `هاتف المستلم: ${eff.phone}` : null,
-                eff.partyName ? `جهة التوصيل: ${eff.partyName}` : null,
-                D(eff.cost || 0).gt(0)
-                  ? `أجرة التوصيل ${fmt(eff.cost)} د.ع (${
-                      eff.feeColl === "COUNTER" ? "مقبوضة في الاستقبال أمانةً"
-                      : eff.feeColl === "SHOP" ? "على المكتبة — مجاناً للزبون"
-                      : "يقبضها المندوب من الزبون عند الاستلام"
-                    }) — خارج قيمة الطلب`
-                  : "توصيل — بلا أجرة",
-              ].filter(Boolean).join(" · ")
-            : null,
-        });
-      });
-
+      const { printedChange, printedCredit, receiptsToPrint, workOrdersToPrint } = buildReceptionCheckoutReceipts({ customerName, receiptPhone, method, inputPaidD, expectedNowD, appliedPaidD, result, shift, orderDelivery, printLines, regularLines, saleAmount, printAmount, checkoutPaymentMode, printedAt, me, hasCarrierInvoice, invoiceDiscountAmountD, customWithDeposits, effectiveWoDelivery });
       // نجاح الحفظ لا يُلغى إذا تعذّرت الطابعة. نحاول المسارات بالترتيب الموحّد:
       // جسر الخادم ← WebUSB ← نافذة طباعة المتصفح، ثم نُفرغ السلة دائماً.
-      let browserFallbacks = 0;
-      let printFailures = 0;
-      for (const receipt of receiptsToPrint) {
-        try {
-          const result = await printAuthorizedReceiptData(receipt);
-          if (!result.ok) printFailures += 1;
-          else if (result.via === "browser") browserFallbacks += 1;
-        } catch {
-          printFailures += 1;
-        }
-      }
-      for (const workOrder of workOrdersToPrint) {
-        try {
-          const result = await printWorkOrderReceipt(workOrder);
-          if (result.via === "browser") browserFallbacks += 1;
-        } catch {
-          printFailures += 1;
-        }
-      }
-
-      // إفراغ + إشعار + تجديد idempotency key (نَجاح كامل فقط).
-      const summary = [
-        invoiceId ? `فاتورة #${invoiceId}` : null,
-        createdWoIds.length > 0 ? `${createdWoIds.length} أمر شغل` : null,
-      ]
-        .filter(Boolean)
-        .join(" + ");
-      const printDescription = printFailures > 0
-        ? `تم الحفظ، لكن تعذّرت طباعة ${printFailures} مستند`
-        : browserFallbacks > 0
-          ? "فُتحت نافذة الطباعة لأن الطابعة المباشرة غير متصلة"
-          : "أُرسلت المستندات إلى الطابعة مباشرة";
-      if (isReserve) {
-        notify.ok(
-          `تم تأكيد فاتورة الدفع عند الاستلام #${result.regularSale?.invoiceNumber ?? ""}`,
-          "جاهزة للتسليم المباشر (/reception/handover) أو الإسناد للتوصيل (/reception/workflow)",
-        );
-      } else {
-        notify.ok(`تمّ ${summary}`, printDescription);
-      }
-      // ش١ (§٨.٦): نافذة الإيصال — الفكّة بخطٍّ ضخم + أرقام المستندات + إعادة الطباعة (F9)،
-      // ولافتةٌ تسمّي ما لم يُطبَع (كان يُبتلَع في toast عابرٍ بلا أيّ سبيلٍ لإعادة الطباعة).
-      setLastSale({
-        invoiceNumbers: [result.regularSale?.invoiceNumber, result.printSale?.invoiceNumber].filter(Boolean) as string[],
-        workOrderNumbers: result.workOrders.map((o) => o.orderNumber).filter(Boolean),
-        totalStr: round2(effectiveGrandD).toFixed(2),
-        changeStr: printedChange,
-        creditStr: printedCredit,
-        paymentMode: checkoutPaymentMode,
-        receipts: receiptsToPrint,
-        workOrders: workOrdersToPrint,
-        printFailures,
-      });
-      setShowReceiptOverlay(true);
-      resetAfterCommittedWorkspace();
-      // تحديث القوائم.
-      utils.workOrders.list.invalidate().catch(() => {});
-      utils.shifts.current.invalidate().catch(() => {});
+      await presentReceptionCheckout({ receiptsToPrint, printAuthorizedReceiptData, workOrdersToPrint, invoiceId, createdWoIds, isReserve, result, setLastSale, effectiveGrandD, printedChange, printedCredit, checkoutPaymentMode, setShowReceiptOverlay, resetAfterCommittedWorkspace, utils });
     } catch (e: unknown) {
       // الاستقبال (٨/٨): حاصر البيع بالسالب في وضع الافتتاح — الصنف غير مجرود (رصيد سالب) وطلبٌ
       // بتوصيل COD. أثناء الافتتاح السالب يعني «لم يُعدّ» لا «نافد»، والمندوب يحمل الصنف الموجود
@@ -1992,165 +917,8 @@ export default function Reception() {
    * النقد المقبوض يُطبَع عليه إيصالٌ مؤقّت OFF-… ويُرحَّل تلقائياً عبر offline.replayReception
    * بنفس clientRequestId ⇒ لا ازدواج حتى لو كان الالتزام قد وصل الخادم قبل انقطاع الردّ.
    */
-  async function captureOfflineReception(hadActiveDraft = false): Promise<boolean> {
-    if (!canActionRef.current("offline.replayReception")) { notify.err("التقاط طلب استقبال دون اتصال غير مفوض لحسابك"); return false; }
-    if (!shift || cart.length === 0) return false;
-    if (cart.some((line) => line.digital)) {
-      notify.errBig(
-        "الكروت الرقمية تحتاج اتصالاً",
-        "لا يمكن إصدار الكرت أو حجز رصيد المزوّد دون اتصال. أعد الاتصال ثم أتمم العملية من السلة نفسها.",
-      );
-      return false;
-    }
-    const capturedByUserId = me.data?.id;
-    if (!Number.isInteger(capturedByUserId) || Number(capturedByUserId) <= 0) {
-      notify.errBig("تعذّر تثبيت هوية الموظف — أعد تسجيل الدخول قبل قبض نقد دون اتصال");
-      return false;
-    }
-    // مراجعة عدائية (٥/٨) — **حاصرة**: طلبٌ محفوظ (مسوّدة) لا يُلتقَط أوفلاينياً أبداً.
-    // التثبيت يلتزم خادمياً بمفتاح المسوّدة (commitRequestId) بينما الالتقاط كان سيرحّل
-    // بمفتاح الواجهة (reqIdRef) المختلف ⇒ uq_invoice_source عاجزٌ عن صدّ فاتورةٍ ثانية
-    // إذا كان الالتزام وصل قبل انقطاع الردّ. المسوّدة الخادمية **هي** الأثر الناجي.
-    if (hadActiveDraft || activeDraftRef.current) {
-      notify.errBig(
-        "طلبك محفوظٌ على الخادم — لا يُلتقَط دون اتصال",
-        "عند عودة الاتصال افتح الطلب من «طلبات محفوظة» واضغط التثبيت — لن يتكرّر ولن يضيع.",
-      );
-      return false;
-    }
-    const directLines = cart.filter((c) => !isCustomKind(c));
-    const regularLines = directLines.filter((c) => !c.digital && !c.row.isPrintService);
-    const printLines = directLines.filter((c) => !c.digital && c.row.isPrintService);
-    const customItems = cart.filter(isCustomKind);
-    if (customItems.length > 0) {
-      notify.errBig(
-        "أوامر الشغل تحتاج اتصالاً",
-        "ترقيم أمر الشغل وإسناده ورفع صوره تتمّ على الخادم. أزل بنود التخصيص من السلّة لإتمام البيع نقداً الآن، أو انتظر عودة الاتصال.",
-      );
-      return false;
-    }
-    if (!(await isOfflineSaleEnabled())) {
-      notify.errBig(
-        "البيع دون اتصال مُعطَّل على هذا الجهاز",
-        "عُطِّل يدوياً من «إعدادات الجهاز» في شارة المزامنة أسفل الشاشة — الافتراضي مفعَّل، فأعِد تفعيله ليقبل النقد أثناء الانقطاع.",
-      );
-      return false;
-    }
-    if (method !== "CASH") {
-      notify.errBig("أثناء انقطاع الاتصال: النقد فقط — البطاقة والتحويل يتطلبان الخادم للتحقّق من المرجع.");
-      return false;
-    }
-    if (couponCode) {
-      notify.errBig("الكوبونات غير متاحة دون اتصال — أزل الكوبون أولاً.");
-      return false;
-    }
-    if (heldDelivery > 0) {
-      notify.errBig("أجرة التوصيل أمانةً تحتاج اتصالاً", "إسناد المندوب وصرف الأجرة عمليّتان خادميّتان — أتمّ الطلب بلا توصيل الآن.");
-      return false;
-    }
-    // مراجعة PR #495: بعد أن صار الإسناد **داخل** معاملة التثبيت، التقاطٌ أوفلاينيّ لطلبٍ مُسنَدٍ
-    // لمندوب كان سيُرحّل فاتورةً بلا إرسالية — إسنادٌ يسقط صامتاً (والحارس القديم يمسك أجرة
-    // COUNTER وحدها). الرفض صريحٌ الآن: الترقيم والعهدة والأقفال كلّها خادميّة.
-    if (orderDelivery) {
-      notify.errBig(
-        "إسناد التوصيل يحتاج اتصالاً",
-        "ترقيم الإرسالية وعهدة المندوب يُكتبان مع الفاتورة في معاملةٍ واحدة على الخادم — أزل التوصيل لإتمام البيع نقداً الآن، أو انتظر عودة الاتصال.",
-      );
-      return false;
-    }
-    // الدفع الكامل شرطٌ: الأوفلاين لا يُقيّم ذمّة عميل ولا سقف ائتمانه من نسخةٍ محليّة.
-    const paidNowD = round2(D(payInput || 0));
-    const fullyPaid = paidNowD.gte(grandTotalD);
-    if (!fullyPaid) {
-      notify.errBig("دون اتصال: الدفع الكامل فقط", `المطلوب ${fmt(grandTotalD.toFixed(2))} د.ع — الآجل والعربون الجزئيّ يتطلبان اتصالاً.`);
-      return false;
-    }
-    const gate = await assertCanCapture(grandTotalD.toNumber());
-    if (!gate.ok) {
-      notify.errBig(gate.reason);
-      return false;
-    }
-
-    const receiptNumber = await allocateOfflineReceiptNumber(branchId);
-    const payload: OfflineReceptionPayload = {
-      branchId,
-      shiftId: shift.id,
-      ...(customer.customerId ? { customerId: customer.customerId } : {}),
-      ...(customer.name.trim() ? { contactName: customer.name.trim() } : {}),
-      ...(customer.phone?.trim() ? { contactPhone: customer.phone.trim() } : {}),
-      priceTier: effectiveTier,
-      paymentMethod: "CASH",
-      paidAmount: round2(grandTotalD).toFixed(2),
-      regularSale: regularLines.length > 0 ? {
-        // السعر الملتقَط إلزاميّ: النقد قُبض بالسعر المطبوع — لا إعادة تسعيرٍ صامتة عند الترحيل.
-        lines: regularLines.map((c) => ({
-          variantId: c.row.variantId,
-          productUnitId: c.row.productUnitId,
-          quantity: String(c.qty),
-          unitPriceOverride: round2(D(effectivePrice(c))).toFixed(2),
-        })),
-        // ٢٣/٨ — الصافي = الأسطر الخام − خصمُ رأس الفاتورة الملتقَط. الخادم يعيد الحساب بنفس المدخلات
-        // عند الترحيل (replayOfflineReception → checkoutReception → createSaleInTx) فينتج نفس الرقم.
-        amount: round2(regularLines.reduce((sum, c) => sum.plus(D(lineTotal(c))), D(0)).minus(invoiceDiscountAmountD)).toFixed(2),
-        ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
-      } : null,
-      printSale: printLines.length > 0 ? {
-        lines: printLines.map((c) => ({
-          variantId: c.row.variantId,
-          productUnitId: c.row.productUnitId,
-          quantity: String(c.qty),
-          unitPriceOverride: round2(D(effectivePrice(c))).toFixed(2),
-        })),
-        amount: round2(printLines.reduce((sum, c) => sum.plus(D(lineTotal(c))), D(0))).toFixed(2),
-      } : null,
-      clientRequestId: reqIdRef.current,
-    };
-    const stored = await enqueueOfflineItem({
-      kind: "RECEPTION",
-      payload,
-      offlineReceiptNumber: receiptNumber,
-      total: round2(grandTotalD).toFixed(2),
-      capturedByUserId: Number(capturedByUserId),
-    });
-    if (!stored) {
-      notify.errBig("تعذّر حفظ العملية محلياً (مساحة المتصفح؟) — لا تُسلّم البضاعة قبل عودة الاتصال.");
-      return false;
-    }
-
-    // إيصالٌ مؤقّت بنفس تصميم الإيصال الرسميّ — الزبون يخرج بورقةٍ قابلة للبحث برقمها.
-    const now = new Date();
-    const cashierName = me.data?.name ?? "موظف الخدمة";
-    const contact = customer.name.trim() || (customer.phone?.trim() ?? "");
-    void printAuthorizedReceiptData({
-      receiptNumber,
-      date: fmtDate(now),
-      time: fmtTime(now),
-      cashierName,
-      customerName: contact || null,
-      items: [...regularLines, ...printLines].map((c) => ({
-        name: `${c.row.productName} (${c.row.unitName})${c.disc ? ` −${c.disc}%` : ""}`,
-        quantity: c.qty,
-        price: round2(D(effectivePrice(c))).toFixed(2),
-        total: round2(D(lineTotal(c))).toFixed(2),
-      })),
-      // ٢٣/٨ — Codex P1: subtotal يعرض الخام (`sumDirect + sumCustom`) وdiscount يعلن الخصم
-      // صراحةً على الإيصال المؤقّت — لولا هذا يظهر إجماليٌّ أقلّ من مجموع الأسطر بلا سبب.
-      subtotal: round2(sumDirectD.plus(sumCustomD)).toFixed(2),
-      discount: invoiceDiscountAmountD.gt(0) ? invoiceDiscountAmountD.toFixed(2) : null,
-      total: round2(grandTotalD).toFixed(2),
-      paid: round2(paidNowD).toFixed(2),
-      change: paidNowD.gt(grandTotalD) ? round2(paidNowD.minus(grandTotalD)).toFixed(2) : null,
-      paymentMethod: PAY_METHOD_LABEL.CASH,
-    }).then((printed) => {
-      if (!printed.ok) notify.err("تعذّرت طباعة الإيصال المؤقت", "حجب المتصفح نافذة الطباعة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
-    }).catch(() => { /* فشل الطابعة لا يُلغي التقاطاً التزم محلياً */ });
-
-    notify.ok(
-      `بيع دون اتصال — إيصال مؤقّت ${receiptNumber}`,
-      "الرقم الرسميّ يصدر تلقائياً عند عودة الاتصال (شارة المزامنة أسفل الشاشة)",
-    );
-    resetAfterCommittedWorkspace();
-    return true;
+    async function captureOfflineReception(hadActiveDraft = false): Promise<boolean> {
+    return ReceptionOfflineCapture({ canActionRef, shift, cart, me, activeDraftRef, method, couponCode, heldDelivery, orderDelivery, payInput, grandTotalD, branchId, customer, effectiveTier, invoiceDiscountAmountD, reqIdRef, printAuthorizedReceiptData, sumDirectD, sumCustomD, resetAfterCommittedWorkspace }, hadActiveDraft);
   }
 
   // إصلاح P2 (٢٣/٦/٢٦): F4 كان يُمسك إغلاقاً بياناتيّاً قديماً (payInput/method/customer/shift)
@@ -2186,45 +954,14 @@ export default function Reception() {
     };
   });
 
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (draftTransitionPending) { e.preventDefault(); return; }
-      if (showCustomization) return;
-      if (showReceiptOverlay) {
-        if (e.key === "Escape") { e.preventDefault(); setShowReceiptOverlay(false); }
-        if (e.key === "F9") { e.preventDefault(); reprintLastRef.current?.(); }
-        return;
-      }
-      if (cashDropping || approvalAsk) {
-        if (e.key === "Escape") { e.preventDefault(); setCashDropping(false); setApprovalAsk(null); }
-        return;
-      }
-      if (e.key === "F2") {
-        e.preventDefault();
-        searchRef.current?.focus();
-      } else if (e.key === "F3") {
-        e.preventDefault();
-        if (!offline && canActionRef.current("digitalCards.pos.listCards")) setCardsOpen(true);
-      } else if (e.key === "F4") {
-        e.preventDefault();
-        submitRef.current?.({ quickFullPay: false });
-      } else if (e.key === "F9") {
-        e.preventDefault();
-        reprintLastRef.current?.();
-      } else if (e.key === "F12") {
-        e.preventDefault();
-        void clearCartRef.current?.();
-      } else if (e.key === "Escape") {
-        if (showInbox) setShowInbox(false);
-        else if (depositMenuOpen) setDepositMenuOpen(false);
-        else if (discountFor) setDiscountFor(null);
-        else if (showDrop) setShowDrop(false);
-        else if (cardsOpen) setCardsOpen(false);
-      }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [showInbox, showDrop, showCustomization, showReceiptOverlay, cashDropping, approvalAsk, depositMenuOpen, discountFor, cardsOpen, offline, draftTransitionPending]);
+  useReceptionShortcuts({ draftTransitionPending, blockingDialogOpen, showCustomization: !!showCustomization,
+    showReceiptOverlay, cashDropping, approvalOpen: !!approvalAsk, showInbox, depositMenuOpen,
+    discountOpen: !!discountFor, showDrop, cardsOpen, offline, depositOpen,
+    canOpenCards: canAction("digitalCards.pos.listCards"), onReprint: () => reprintLastRef.current?.(),
+    onFocusSearch: () => searchRef.current?.focus(), onSubmit: () => submitRef.current?.({ quickFullPay: false }),
+    onClear: () => { void clearCartRef.current?.(); }, onCloseApproval: () => setApprovalAsk(null),
+    onCloseDiscount: () => setDiscountFor(null), setShowReceiptOverlay, setCashDropping, setCardsOpen,
+    setDepositOpen, setShowInbox, setDepositMenuOpen, setShowDrop });
 
   /** F12 — تفريغ بتأكيد (clearCart تُعرَّف بعد هذا الأثر ⇒ ref يحمل أحدث نسخة). */
   const clearCartRef = useRef<() => Promise<void>>(async () => {});
@@ -2240,68 +977,7 @@ export default function Reception() {
   // بوّابة وردية خدمة العملاء: لا عمل بلا وردية RECEPTION مفتوحة (درج/رصيد افتتاحي مستقلّ).
   if (!shift) {
     return (
-      <div className="flex h-full items-center justify-center bg-background p-4" dir="rtl">
-        <div className="w-full max-w-md rounded-2xl border bg-card p-7 shadow-lg">
-          <div className="mb-1 flex items-center gap-2">
-            <span className="grid size-9 place-items-center rounded-lg bg-violet-100 text-violet-700">
-              <Palette aria-hidden className="size-5" />
-            </span>
-            <h2 className="text-xl font-extrabold">ابدأ الوردية</h2>
-          </div>
-          <p className="mb-5 text-sm text-muted-foreground">
-            أدخل المبلغ الموجود في درج النقدية، ثم ابدأ استقبال العملاء والطلبات.
-          </p>
-          {/* الأدمن/المدير بلا فرع مُسنَد يختار الفرع صراحةً (#274) — بدل إسناد الطلبات صامتاً للفرع ١. */}
-          {needsBranchChoice && (
-            <div className="mb-3">
-              <label htmlFor="rec-branch" className="mb-1.5 block text-sm font-bold">الفرع <span className="text-destructive">*</span></label>
-              <AppSelect
-                id="rec-branch"
-                className="h-12 border-input px-3 text-base focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                value={pickedBranch ?? ""}
-                onValueChange={(value) => setPickedBranch(value ? Number(value) : null)}
-              >
-                <option value="">— اختر الفرع —</option>
-                {(branchesQ.data ?? []).map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-              </AppSelect>
-            </div>
-          )}
-          <label className="mb-1.5 block text-sm font-bold">المبلغ الموجود في الدرج الآن (د.ع)</label>
-          <Input
-            dir="ltr"
-            inputMode="decimal"
-            value={opening}
-            onChange={(e) => setOpening(e.target.value)}
-            className="mb-3 h-12 text-end text-lg font-extrabold tabular-nums"
-          />
-          {/* اربط الطابعة الحرارية هنا **قبل** فتح الوردية كي يُطبَع إيصال الافتتاح صامتاً فوراً
-              بدل نافذة طباعة المتصفّح (كانت لا تظهر إلا بعد فتح الوردية داخل رأس الشاشة الرئيسية). */}
-          {isWebUsbSupported() && !bridge.enabled && (
-            <button
-              type="button"
-              onClick={() => void connectPrinter()}
-              title={printerReady ? "الطابعة الحرارية مربوطة — اضغط لتبديلها" : "اربط طابعة حرارية كي يُطبع إيصال فتح الوردية عليها مباشرة"}
-              className={cn(
-                "mb-3 flex h-10 w-full items-center justify-center gap-1.5 rounded-lg border text-xs font-bold transition-colors hover:bg-muted/60",
-                printerReady ? "border-[var(--money-positive)] text-money-positive" : "text-muted-foreground",
-              )}
-            >
-              <Printer aria-hidden className="size-3.5" />
-              {printerReady
-                ? <>الطابعة الحرارية مربوطة <Check aria-hidden className="size-3.5" strokeWidth={3} /></>
-                : "اربط الطابعة الحرارية لطباعة إيصال الوردية"}
-            </button>
-          )}
-          <Button
-            className="h-12 w-full text-base font-bold"
-            disabled={!canAction("shifts.open") || openShiftM.isPending || needsBranchChoice}
-            onClick={() => canActionRef.current("shifts.open") && openShiftM.mutate({ branchId, openingBalance: opening || "0", shiftType: "RECEPTION" })}
-          >
-            {openShiftM.isPending ? "جارٍ البدء…" : needsBranchChoice ? "اختر الفرع أولاً" : "بدء الوردية"}
-          </Button>
-          <Link href="/" className="mt-3 block text-center text-sm text-muted-foreground">← الرئيسية</Link>
-        </div>
-      </div>
+      <ReceptionOpenShift branchId={branchId} opening={opening} setOpening={setOpening} bridge={bridge} connectPrinter={connectPrinter} printerReady={printerReady} canAction={canAction} openShiftM={openShiftM} canActionRef={canActionRef} />
     );
   }
 
@@ -2320,261 +996,13 @@ export default function Reception() {
         />
       )}
       {/* أربع مناطق حقيقية: تفاصيل أمر الشغل جزء من السلة، فلا نكررها كمرحلة مستقلة. */}
-      <div className={cn("flex-shrink-0 border-b bg-card px-3", compactHeader ? "space-y-1 py-1" : "space-y-1.5 py-1.5")}>
-        {/* إصلاح (٧/٨): شريط التسلسل العلوي (١-٤ بأسماء مختلفة) حُذف — كان يكرّر حرفياً نفس
-            ترقيم «١. العميل…» و«٢. أضف…» أدناه بتسميةٍ ثانية، بلا وظيفةٍ فريدة (الانتقال يبقى
-            متاحاً بالنقر على المناطق نفسها وبـF2/F4). إزالته توفّر مساحة رأسية دائماً، لا عند
-            ضيق الارتفاع فقط. */}
-        <div
-          ref={customerSectionRef}
-          className="grid gap-1.5 rounded-xl border border-border/80 bg-muted/20 p-1.5 xl:grid-cols-[minmax(260px,0.85fr)_minmax(380px,1.15fr)_minmax(280px,0.95fr)]"
-        >
-          {/* ١ — قناة الوصول: قرار سريع واضح، مع إبقاء هوية العميل عند تبديل القناة. */}
-          <section className="rounded-lg border bg-card p-1.5" aria-labelledby="reception-channel-title">
-            <div className="mb-1 flex items-center gap-2">
-              <span className="grid size-4 place-items-center rounded-full bg-primary text-[9px] font-black text-primary-foreground">١</span>
-              <h2 id="reception-channel-title" className="text-2xs font-black">قناة وصول الطلب</h2>
-              {canReadChannels && (
-                <button
-                  type="button"
-                  onClick={() => setShowInbox(true)}
-                  className="ms-auto inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-extrabold text-muted-foreground hover:bg-muted hover:text-foreground"
-                  title="افتح طلباً من رسالة زبون"
-                >
-                  <MessageCircle aria-hidden className="size-3" /> من محادثة
-                </button>
-              )}
-            </div>
-            <div className="grid grid-cols-3 sm:grid-cols-5 gap-1">
-              {receptionChannelOptions(WORK_ORDER_CHANNELS).map(({ value, label }) => (
-                <button
-                  key={value}
-                  type="button"
-                  aria-pressed={channel === value}
-                  onClick={() => {
-                    setChannel(value);
-                    if (value !== "INSTAGRAM" && value !== "TIKTOK") setChannelHandle("");
-                  }}
-                  className={cn(
-                    "flex h-9 min-w-0 flex-col items-center justify-center gap-0.5 rounded-md border text-[9px] font-extrabold transition-colors",
-                    channel === value
-                      ? "border-primary bg-primary/10 text-primary shadow-sm"
-                      : "bg-background text-muted-foreground hover:border-primary/40 hover:text-foreground",
-                  )}
-                >
-                  <ChannelMark channel={value} />
-                  <span className="truncate">{label}</span>
-                </button>
-              ))}
-            </div>
-            {(channel === "INSTAGRAM" || channel === "TIKTOK") && (
-              <Input
-                value={channelHandle}
-                onChange={(event) => setChannelHandle(event.target.value)}
-                placeholder="معرّف الحساب (اختياري)"
-                aria-label="معرّف حساب القناة"
-                className="mt-1 h-7 text-[11px]"
-                dir="ltr"
-              />
-            )}
-          </section>
-
-          {/* ٢+٣ — الهاتف مفتاح الهوية + هوية العميل ومنتقي العملاء الموحد. */}
-          <ReceptionCustomerSection
-            phoneCustomer={phoneCustomer}
-            canCreateCustomer={canCreateCustomer}
-            canReadCustomerContext={canReadCustomerContext}
-            effectiveTier={effectiveTier}
-            tierOverride={tierOverride}
-            setTierOverride={setTierOverride}
-            setHydratedAutomaticTier={setHydratedAutomaticTier}
-            setDeferred={setDeferred}
-            clearCouponIfApplied={clearCouponIfApplied}
-            setCustomerContextId={setCustomerContextId}
-          />
-        </div>
-
-        <div className="flex flex-col items-stretch gap-1.5 sm:flex-row sm:items-center sm:gap-2">
-        <span className="shrink-0 text-xs font-extrabold">٢. أضف ما يريده العميل</span>
-        <div ref={searchWrapRef} className="relative w-full flex-1 sm:max-w-[640px] sm:min-w-72">
-          <UnifiedSearchInput
-            ref={searchRef}
-            autoFocus
-            id="reception-search"
-            value={search}
-            debounceMs={0}
-            onChange={(v) => { setSearch(v); setShowDrop(true); }}
-            onScan={handleSearchScan}
-            onFocus={() => { if (search) setShowDrop(true); }}
-            onKeyDown={(e) => {
-              if (e.defaultPrevented) return;
-              if (e.key === "Enter" && searchSettled && results[0]) { e.preventDefault(); addRow(results[0]); }
-              if (e.key === "Escape") { e.preventDefault(); setSearch(""); setShowDrop(false); }
-            }}
-            placeholder="امسح الباركود أو ابحث بالاسم / SKU…  (F2)"
-            inputClassName="h-9 rounded-lg border-[1.5px] text-xs font-semibold focus:border-primary"
-          />
-          {showDrop && debounced.trim().length >= 2 && (
-            <div className="absolute inset-x-0 top-[calc(100%+6px)] z-40 max-h-[340px] overflow-y-auto rounded-xl border bg-card p-1.5 shadow-xl">
-              {resultsEmpty && (
-                <div className="p-5 text-center text-xs text-muted-foreground">
-                  لا نتائج — جرّب اسماً آخر أو SKU
-                </div>
-              )}
-              {results.map((r) => (
-                <button
-                  key={r.productUnitId}
-                  type="button"
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    addRow(r);
-                  }}
-                  className="flex w-full items-center gap-3 rounded-lg p-2 text-right hover:bg-muted/60"
-                >
-                  <div
-                    className={cn(
-                      "grid size-9 flex-shrink-0 place-items-center rounded-lg",
-                      r.isCustomizable ? "bg-violet-100 text-violet-700" : "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]",
-                    )}
-                  >
-                    {r.isCustomizable ? <Palette aria-hidden className="size-4" /> : <Package aria-hidden className="size-4" />}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="truncate text-xs font-semibold">{r.productName}</span>
-                      <span
-                        className={cn(
-                          "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold",
-                          r.isCustomizable ? "bg-violet-100 text-violet-700" : "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]",
-                        )}
-                      >
-                        {r.isCustomizable ? "تخصيص" : "جاهز"}
-                      </span>
-                    </div>
-                    <div className="mt-0.5 text-[11px] text-muted-foreground" dir="ltr">
-                      <span className="text-right">{r.sku} · {r.unitName}</span>
-                      {!r.isService && (
-                        <span className="ms-2">
-                          · فعلي: {r.stockBase ?? 0} · محجوز: {r.reservedBase ?? 0} · متاح: {r.availableBase ?? r.stockBase ?? 0}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  <div className="shrink-0 text-xs font-bold tabular-nums" dir="ltr">
-                    {r.price ? fmt(r.price) : "—"}
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <button
-          type="button"
-          onClick={addManualService}
-          className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border-2 border-violet-500 bg-violet-50 px-3 text-xs font-extrabold text-violet-700 transition-colors hover:bg-violet-100"
-        >
-          <ClipboardList aria-hidden className="size-3.5" /> إضافة خدمة / أمر شغل
-        </button>
-
-        <button
-          type="button"
-          onClick={() => canActionRef.current("digitalCards.pos.listCards") && setCardsOpen(true)}
-          disabled={offline || !canAction("digitalCards.pos.listCards")}
-          title={offline ? "البيع الرقمي يحتاج اتصالاً بالخادم" : "الكروت والاشتراكات (F3)"}
-          className={cn(
-            "inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border-2 px-3 text-xs font-extrabold transition-colors",
-            offline
-              ? "cursor-not-allowed border-border bg-muted text-muted-foreground"
-              : "border-primary/60 bg-primary/10 text-primary hover:bg-primary/20",
-          )}
-        >
-          <CreditCard aria-hidden className="size-3.5" /> الكروت والاشتراكات
-        </button>
-
-        </div>
-
-        {headerActionsNode && createPortal(
-          <>
-
-            {bridge.enabled && (
-              <button
-                type="button"
-                onClick={() => void testServerPrint()}
-                title={`جسر طباعة صامت: ${bridge.description} — اضغط لطباعة تذكرة اختبار`}
-                aria-label="جسر طباعة على الخادم — تذكرة اختبار"
-                className="inline-flex h-[var(--ui-control)] items-center gap-1 rounded-lg border border-[var(--sem-pos)] bg-card px-2.5 text-[var(--sem-pos)] hover:bg-[var(--sem-pos-bg)]"
-              >
-                <Printer aria-hidden className="size-4" />
-                <Globe aria-hidden className="size-3.5" />
-              </button>
-            )}
-            {isWebUsbSupported() && (
-              <button
-                type="button"
-                onClick={() => void connectPrinter()}
-                title={printerReady
-                  ? "الطابعة الافتراضية مربوطة تلقائياً — اضغط لتبديلها"
-                  : "اربط طابعة حرارية — ستُربط تلقائياً في المرات القادمة"}
-                aria-label={printerReady ? "الطابعة الافتراضية مربوطة" : "ربط طابعة حرارية"}
-                className={cn(
-                  "inline-flex h-[var(--ui-control)] items-center gap-1 rounded-lg border bg-card px-2.5 hover:bg-muted/60",
-                  printerReady ? "border-[var(--sem-pos)] text-[var(--sem-pos)]" : "border-border text-muted-foreground",
-                )}
-              >
-                <Printer aria-hidden className="size-4" />
-                {printerReady && <Check aria-hidden className="size-3.5" strokeWidth={3} />}
-              </button>
-            )}
-            {lastSale && lastSale.invoiceNumbers[0] && (
-              <button
-                type="button"
-                onClick={() => {
-                  void navigator.clipboard?.writeText(lastSale.invoiceNumbers[0]);
-                  notify.ok("نُسخ رقم الفاتورة", lastSale.invoiceNumbers[0]);
-                }}
-                title="آخر فاتورة — اضغط لنسخ الرقم (F9 لإعادة الطباعة)"
-                className="inline-flex h-[var(--ui-control)] items-center gap-1 rounded-lg border bg-card px-2.5 text-xs font-bold text-muted-foreground hover:bg-muted/60"
-                dir="ltr"
-              >
-                <Copy aria-hidden className="size-3" /> {lastSale.invoiceNumbers[0]}
-              </button>
-            )}
-            <button
-              type="button"
-              disabled={!canAction("shifts.cashDrop")}
-              onClick={() => canActionRef.current("shifts.cashDrop") && setCashDropping(true)}
-              title="سحب نقدي من الدرج إلى الخزينة"
-              className="inline-flex h-[var(--ui-control)] items-center gap-1 rounded-lg border bg-muted/40 px-2.5 text-sm font-bold hover:bg-muted"
-            >
-              <HandCoins aria-hidden className="size-4" />
-              <span className="hidden lg:inline">سحب نقدي</span>
-            </button>
-            <Button size="sm" variant="outline" disabled={!canAction("shifts.close")} onClick={() => canActionRef.current("shifts.close") && setClosing(true)} title={`إنهاء وردية الاستقبال #${shift.id}`}>
-              إنهاء الوردية
-            </Button>
-          </>,
-          headerActionsNode,
-        )}
-
-        <DraftStrip
-          branchId={branchId}
-          meUserId={Number(me.data?.id ?? 0)}
-          activeDraftId={activeDraft?.id ?? null}
-          offline={offline}
-          compact={compactHeader}
-          canSave={cart.length > 0 && !hasDigitalCards && (draftPromotionPending ? canAction("reception.draftResolvePromotion") : canAction("reception.draftPromote"))}
-          onSave={saveDraft}
-          onResume={(id) => void resumeDraft(id)}
-          onPrintTicket={(id) => void printDraftTicketById(id)}
-        />
-      </div>
+      <ReceptionWorkspaceHeader compactHeader={compactHeader} customerSectionRef={customerSectionRef} canReadChannels={canReadChannels} setShowInbox={setShowInbox} channel={channel} setChannel={setChannel} setChannelHandle={setChannelHandle} channelHandle={channelHandle} phoneCustomer={phoneCustomer} canCreateCustomer={canCreateCustomer} canReadCustomerContext={canReadCustomerContext} effectiveTier={effectiveTier} tierOverride={tierOverride} setTierOverride={setTierOverride} setHydratedAutomaticTier={setHydratedAutomaticTier} setDeferred={setDeferred} clearCouponIfApplied={clearCouponIfApplied} setCustomerContextId={setCustomerContextId} searchWrapRef={searchWrapRef} searchRef={searchRef} search={search} setSearch={setSearch} setShowDrop={setShowDrop} handleSearchScan={handleSearchScan} searchSettled={searchSettled} results={results} addRow={addRow} showDrop={showDrop} debounced={debounced} resultsEmpty={resultsEmpty} addManualService={addManualService} canActionRef={canActionRef} setCardsOpen={setCardsOpen} offline={offline} canAction={canAction} headerActionsNode={headerActionsNode} bridge={bridge} testServerPrint={testServerPrint} connectPrinter={connectPrinter} printerReady={printerReady} lastSale={lastSale} setCashDropping={setCashDropping} setClosing={setClosing} shift={shift} branchId={branchId} me={me} activeDraft={activeDraft} cart={cart} hasDigitalCards={hasDigitalCards} draftPromotionPending={draftPromotionPending} saveDraft={saveDraft} resumeDraft={resumeDraft} printDraftTicketById={printDraftTicketById} />
 
       {/* ─── الجسم: عمود السلة يملأ العرض؛ لوحة الدفع شريطٌ مستقلّ أسفله (خارج الحشوة، حافّة-لحافّة) ─── */}
       <div className="flex min-h-0 flex-1 flex-col gap-2 p-2 pb-0">
         <ReceptionCartDuplicateAlert branchId={branchId} phone={receptionPhone || customer.phone || ""} customerId={customer.customerId}
           channel={channel} cart={cart} total={round2(grandTotalD).toFixed(2)} draftId={activeDraft?.id}
-          disabled={hasDigitalCards || needsBranchChoice} onVerify={() => void saveDraft()} />
+          disabled={hasDigitalCards} onVerify={() => void saveDraft()} />
         {/* ─ عمود العمل: تبويبات الورش تركب رأس السلة (§٨.١ — صفر تكلفة عمودية) ─ */}
         <div ref={cartSectionRef} tabIndex={-1} className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border bg-card outline-none focus:ring-2 focus:ring-primary/30">
           <div className="flex h-9 flex-shrink-0 items-center gap-2 border-b bg-muted/40 px-2.5">
