@@ -11,3 +11,5 @@ The compatibility adapter preserves v3 default processing through `prefault`, in
 Unbounded collections still need application-level input limits; the upstream fix is not a universal resource bound.
 
 Rollback uses the previous immutable web artifact and the backed-up package/lock/dependency tree. This change has no database migration and must never restore a production database automatically. Host package updates are separate from this application release.
+
+The deployment audit also gained [GHSA-27r3-jxmh-p828](https://github.com/advisories/GHSA-27r3-jxmh-p828) during validation. The Express dependency is narrowly overridden to body-parser 1.20.9, without changing its other resolved dependencies. The pre-build HTTP probe exercises normal compressed JSON and malformed trailing bytes against an isolated loopback server, then verifies that the process still answers requests. No malformed requests are sent to production.
