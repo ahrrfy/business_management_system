@@ -160,7 +160,9 @@ module.exports = {
       // فالعامل قد يُعاد تحميله قبل أن يجمع V8 التخصيصات العابرة. نضبط old-space عند 512MiB
       // كي يبدأ الجمع ضمن ميزانية العامل، مع هامش للـyoung-space وBuffer والمكتبات الأصلية.
       // يبقى حارس RSS كما هو؛ حد heap لا يحد الذاكرة الأصلية ولا يغني عن مراقبة الاحتفاظ.
-      node_args: ["--max-old-space-size=512"],
+      // Node 24's larger default young generation raises the total heap to 704MiB.
+      // Pin it to 32MiB: total heap <=608MiB, preserving >=384MiB RSS headroom.
+      node_args: ["--max-old-space-size=512", "--max-semi-space-size=32"],
       max_memory_restart: "1024M",
       // أعِد التشغيل تلقائياً عند الانهيار (مع تأخير متزايد).
       restart_delay: 3000,
