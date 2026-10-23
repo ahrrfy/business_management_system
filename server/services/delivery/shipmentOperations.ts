@@ -27,7 +27,7 @@ import { confirmConsignmentDelivery } from "./courier";
 import { reassignDeliveryConsignment } from "./parties";
 import { allocateProportionally } from "./remittance";
 import { refundHeldDeliveryFeeForReturnTx, returnConsignment } from "./returns";
-import { loadShipmentMembersTx, operationalShipmentMembers } from "./shipments";
+import { loadShipmentMembersTx, operationalShipmentMembers, shipmentCurrentPartyMembers } from "./shipments";
 import { staffMarkFailed } from "./staffTransition";
 import type { DeliveryTxActor } from "./types";
 import { declareConsignmentReturn } from "./declaredReturn";
@@ -100,7 +100,15 @@ async function lockShipmentTx(
   if (!preview.length) reject("الشحنة غير موجودة");
   assertScope(actor, preview);
   await beforeParty?.(preview);
-  const partyId = Number(preview[0].partyId);
+  const [membership] = await tx
+    .select()
+    .from(deliveryShipmentMembers)
+    .where(eq(deliveryShipmentMembers.consignmentId, input.consignmentId))
+    .limit(1);
+  const leaderId = Number(membership?.leaderConsignmentId ?? preview[0].id);
+  const previewLeader = preview.find(row => Number(row.id) === leaderId);
+  if (!previewLeader) reject("قائد الشحنة غير موجود ضمن فواتيرها");
+  const partyId = Number(previewLeader.partyId);
   const [party] = await tx
     .select({ id: deliveryParties.id })
     .from(deliveryParties)
@@ -128,24 +136,18 @@ async function lockShipmentTx(
     .orderBy(asc(deliveryConsignments.id))
     .for("update");
   assertScope(actor, rows);
+  const leader = rows.find(row => Number(row.id) === leaderId);
   if (
     rows.length !== preview.length ||
-    rows.some(
-      (row) =>
-        Number(row.partyId) !== partyId ||
-        Number(row.branchId) !== Number(preview[0].branchId),
-    )
+    !leader || Number(leader.partyId) !== partyId ||
+    rows.some(row => Number(row.branchId) !== Number(previewLeader.branchId)) ||
+    shipmentCurrentPartyMembers(rows).some(row => Number(row.partyId) !== partyId)
   )
     reject("أطراف الشحنة غير متسقة");
-  const [membership] = await tx
-    .select()
-    .from(deliveryShipmentMembers)
-    .where(eq(deliveryShipmentMembers.consignmentId, input.consignmentId))
-    .limit(1);
   return {
     rows,
     partyId,
-    leaderId: Number(membership?.leaderConsignmentId ?? rows[0].id),
+    leaderId,
   };
 }
 

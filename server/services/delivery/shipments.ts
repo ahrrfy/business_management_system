@@ -124,13 +124,17 @@ export function operationalShipmentMembers<T extends Pick<DeliveryConsignment, "
     && !["CANCELLED", "RETURNED"].includes(row.parcelStatus));
 }
 
+/** Historical closed parcels keep their old party; live parcels and the retained fee source share the current party. */
+export function shipmentCurrentPartyMembers<T extends Pick<DeliveryConsignment, "status" | "parcelStatus" | "deliveryFee">>(rows: T[]): T[] {
+  return rows.filter(row => operationalShipmentMembers([row]).length > 0 || money(row.deliveryFee).gt(0));
+}
+
 /** Caller holds the party lock. A fee stays on its original invoice even if that parcel exits. */
 export async function shipmentFeeDeliveryProvenTx(tx: Tx, consignmentId: number) {
   const rows = await loadShipmentMembersTx(tx, consignmentId, { currentRead: true });
   const source = rows.find(row => Number(row.id) === consignmentId);
-  return !!source && rows.every(row => Number(row.partyId) === Number(source.partyId)
-    && Number(row.branchId) === Number(source.branchId))
-    && rows.some(row => row.parcelStatus === "DELIVERED");
+  return !!source && rows.every(row => Number(row.branchId) === Number(source.branchId))
+    && rows.some(row => row.parcelStatus === "DELIVERED" && Number(row.partyId) === Number(source.partyId));
 }
 
 /** Same eligibility for bounded party fee selection; the original fee invoice stays authoritative. */
@@ -204,11 +208,8 @@ async function shipmentDetailsTx(
   const leader = rows.find((row) => Number(row.id) === leaderConsignmentId);
   if (
     !leader ||
-    rows.some(
-      (row) =>
-        Number(row.branchId) !== Number(source.branchId) ||
-        Number(row.partyId) !== Number(source.partyId),
-    )
+    rows.some(row => Number(row.branchId) !== Number(source.branchId)) ||
+    shipmentCurrentPartyMembers(rows).some(row => Number(row.partyId) !== Number(leader.partyId))
   ) {
     shipmentError(
       "تعذر فتح الشحنة",

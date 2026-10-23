@@ -21,6 +21,7 @@ import {
   assertStandaloneConsignmentTx,
   loadShipmentMembersTx,
   operationalShipmentMembers,
+  shipmentCurrentPartyMembers,
 } from "./shipments";
 import { allocateProportionally } from "./remittance";
 import { computeOrderDeliveryOtp } from "../onlineOrderService";
@@ -807,7 +808,8 @@ export interface ConfirmConsignmentResult {
 async function recognizeDeliveredShipmentFeeTx(tx: Tx, consignmentId: number, actor: { userId: number }, deliveredAt: Date) {
   const members = await loadShipmentMembersTx(tx, consignmentId, { currentRead: true });
   const delivered = members.find(row => Number(row.id) === consignmentId)!;
-  if (members.some(row => Number(row.partyId) !== Number(delivered.partyId) || Number(row.branchId) !== Number(delivered.branchId))) {
+  if (members.some(row => Number(row.branchId) !== Number(delivered.branchId)) ||
+    shipmentCurrentPartyMembers(members).some(row => Number(row.partyId) !== Number(delivered.partyId))) {
     throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
       what: "تعذر إثبات أجرة الشحنة", why: "روابط الشحنة تتضمن جهة أو فرعاً مختلفاً", doThis: "أبلغ المدير لمراجعة روابط الشحنة" }) });
   }

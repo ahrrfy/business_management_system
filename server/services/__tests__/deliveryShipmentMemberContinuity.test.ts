@@ -185,6 +185,45 @@ describe("shipment continuity after independent invoice changes", () => {
     expect(await db().select().from(s.deliveryShipmentMembers)).toHaveLength(2);
   });
 
+  it("redispatches a live leader to a new party without changing its closed follower or historical party ledger", async () => {
+    const group = await shipment("SHOP");
+    const leader = group.members[0];
+    const closed = group.members[1];
+    await cancel(Number(closed.invoiceId));
+    await cancelShipmentAssignment({ consignmentId: group.leaderConsignmentId, reason: "تغيير جهة التوصيل", clientRequestId: "new-party-cancel" }, actor);
+    const [closedBefore] = await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, closed.id));
+    const oldLedger = await db().select().from(s.deliveryLedgerEntries).where(eq(s.deliveryLedgerEntries.partyId, 1));
+    await db().insert(s.deliveryParties).values({ id: 2, name: "شركة جديدة", partyType: "COMPANY", branchId: 1, currentBalance: "0", defaultFee: "0" });
+    const dispatch = { invoiceId: Number(leader.invoiceId), invoiceIds: [Number(leader.invoiceId)], partyId: 2,
+      deliveryFee: "1500", feeCollection: "SHOP" as const, externalTrackingRef: "NEW-PARTY-TRACK", clientRequestId: "new-party-dispatch" };
+    expect(await dispatchInvoiceShipment(dispatch, actor)).toMatchObject({ leaderConsignmentId: group.leaderConsignmentId });
+    expect(await dispatchInvoiceShipment(dispatch, actor)).toMatchObject({ idempotentReplay: true });
+    const details = await getShipmentDetails(Number(closed.id), actor);
+    expect(await getShipmentDetails(group.leaderConsignmentId, actor)).toEqual(details);
+    expect(details!.members.map(row => [Number(row.partyId), row.operational])).toEqual([[2, true], [1, false]]);
+    expect(await withTx(tx => shipmentFeeDeliveryProvenTx(tx, group.leaderConsignmentId))).toBe(false);
+    const confirm = { consignmentId: Number(closed.id), collectedAmount: "10000", evidence: "اتصال الشركة الجديدة", clientRequestId: "new-party-confirm" };
+    await confirmShipmentDelivery(confirm, actor);
+    expect(await confirmShipmentDelivery(confirm, actor)).toMatchObject({ idempotentReplay: true });
+    expect(await withTx(tx => shipmentFeeDeliveryProvenTx(tx, group.leaderConsignmentId))).toBe(true);
+    expect(await withTx(tx => shipmentFeeDeliveryProvenTx(tx, Number(closed.id)))).toBe(false);
+    const fees = (await db().select().from(s.deliveryLedgerEntries)).filter(row => row.entryType === "FEE_EARNED");
+    expect(fees).toMatchObject([{ partyId: 2, consignmentId: group.leaderConsignmentId, amount: "1500.00" }]);
+    expect(await withTx(tx => ledgerFeeDue(tx, group.leaderConsignmentId))).toEqual(money(1500));
+    const remit = { branchId: 1, partyId: 2, lines: [{ consignmentId: group.leaderConsignmentId, collectedAmount: "10000" }],
+      countedCash: "10000", shiftType: "RECEPTION" as const, clientRequestId: "new-party-remit" };
+    await recordDeliveryRemittance(remit, actor);
+    expect(await recordDeliveryRemittance(remit, actor)).toMatchObject({ idempotentReplay: true });
+    const [shift] = await db().select().from(s.shifts);
+    await payPartyDeliveryFees({ branchId: 1, partyId: 2, shiftId: shift.id, clientRequestId: "new-party-fee" }, actor);
+    expect(await withTx(tx => ledgerFeeDue(tx, group.leaderConsignmentId))).toEqual(money(0));
+    expect((await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, closed.id)))[0]).toEqual(closedBefore);
+    expect(await db().select().from(s.deliveryLedgerEntries).where(eq(s.deliveryLedgerEntries.partyId, 1))).toEqual(oldLedger);
+    expect((await db().select().from(s.deliveryParties)).map(row => row.currentBalance)).toEqual(["0.00", "0.00"]);
+    expect((await db().select().from(s.customers))[0].currentBalance).toBe("0.00");
+    expect((await db().select().from(s.branchStock))[0].quantity).toBe(90);
+  });
+
   it("courier keeps the original tracking and fee after the leader exits, then confirms the survivor", async () => {
     const group = await shipment("COURIER");
     await db().insert(s.users).values({ id: 2, openId: "continuity-driver", role: "courier", branchId: 1 });
