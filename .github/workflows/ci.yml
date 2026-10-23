@@ -114,7 +114,7 @@ jobs:
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version-file: .node-version
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: توليد سر JWT مؤقت لتشغيل الاختبارات
@@ -188,7 +188,7 @@ jobs:
       - uses: pnpm/action-setup@v6 # نسخة pnpm من packageManager في package.json
       - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version-file: .node-version
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: نشر بصمات العقود الجذرية للإصدار
@@ -213,7 +213,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
       - name: عقد PM2/systemd الحقيقي (daemon قائم + إقلاع نظيف)
         run: |
-          sudo /usr/bin/install -o root -g root -m 0755 "$(command -v node)" /usr/bin/node
+          sudo /usr/bin/install -d -o root -g root -m 0755 /opt/alroya-erp/node-v24.22.1-linux-x64/bin
+          sudo /usr/bin/install -o root -g root -m 0755 "$(command -v node)" /opt/alroya-erp/node-v24.22.1-linux-x64/bin/node
           sudo "$(command -v npm)" install --global --prefix /usr pm2@7.0.3
           sudo /usr/bin/bash scripts/pm2-systemd-linux.test.sh
       # Dependency vulnerability audit lives in its own workflow now (security.yml, via
@@ -403,7 +404,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version-file: .node-version
       - name: حارِس الصلاحيات (فرق قاعدة الدمج — raw-role/بلا بوّابة/admin-كتابة مستجدّ)
         run: node scripts/authz-guard-diff.mjs
         env:

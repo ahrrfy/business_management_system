@@ -140,6 +140,7 @@ module.exports = {
       // immutable release. A build never writes into the artifact served by
       // running workers, and rolling reloads can safely overlap two releases.
       script: ".runtime/web-current/index.js",
+      interpreter: process.execPath,
       cwd: __dirname,
       // ── توزيع الأحمال داخل الخادم (cluster) ────────────────────────────────────────────
       // عدّة عمّال يتقاسمون الطلبات على نوى المعالج ⇒ طاقةٌ أعلى تحت الذروة (٧ كاشيرات + كل
@@ -216,6 +217,7 @@ module.exports = {
     {
       name: "erp-provision-worker",
       script: "scripts/company-provision-worker.mjs",
+      interpreter: process.execPath,
       cwd: __dirname,
       instances: 1,
       exec_mode: "fork",
