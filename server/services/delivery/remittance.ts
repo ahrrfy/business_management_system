@@ -43,6 +43,7 @@ import {
 } from "../cash/cashAvailability";
 import { withTx } from "../tx";
 import { createFeeWithholdingQuote, ledgerFeeDue, postFeePayment } from "./fees";
+import { assertFeeWithholdingCapacity } from "./feeWithholdingPolicy";
 import { nextRemittanceNumber } from "./numbering";
 import { partyCashInHandTx } from "./cashSource";
 import { shortfallAssignedForConsignmentTx } from "./openParcelPredicates";
@@ -632,12 +633,7 @@ export async function recordDeliveryRemittanceInTx(
       const quotedCash = quoteFee(due, w.orderTotal);
       const cap = Decimal.min(w.collected, feeBudget);
       // A commission replaces the whole fee. Defer a split quote instead of inventing a rate.
-      if (quotedCash.lt(due) && quotedCash.gt(cap)) {
-        throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
-          what: "تعذر حسم عمولة التوصيل", why: "المبلغ المورد لا يغطي عمولة الإرسالية كاملة",
-          doThis: "ورّد مبلغاً يغطي العمولة أو سوّ الأجرة بسندها المستقل قبل التوريد",
-        }) });
-      }
+      assertFeeWithholdingCapacity(due, quotedCash, cap);
       const cash = Decimal.min(quotedCash, cap);
       const amount = quotedCash.lt(due) ? due : cash;
       if (amount.lte(0)) continue;

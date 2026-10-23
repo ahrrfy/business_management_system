@@ -1,4 +1,5 @@
 import { consignmentFeeDueSql, createFeeWithholdingQuote } from "./fees";
+import { remittanceCashReceivedSql } from "./remittanceCash";
 import { shipmentFeeDeliveryProvenExpr } from "./shipments";
 // قراءات الشاشة: الجاهز للإرسال، الإرساليات المفتوحة/كاملة، سجل التوريدات، كشف حساب جهة.
 //
@@ -629,7 +630,7 @@ export async function listPartyRemittances(partyId: number, opts?: { from?: stri
       companyStatementNumber: deliveryRemittances.companyStatementNumber,
       statementDate: deliveryRemittances.statementDate,
       statementAttachmentUrl: deliveryRemittances.statementAttachmentUrl,
-      cashReceived: sql<string>`CASE WHEN deliveryRemittances.receiptInId IS NOT NULL THEN COALESCE((SELECT r.amount FROM receipts r WHERE r.id = deliveryRemittances.receiptInId AND r.direction = 'IN' AND r.receiptStatus = 'COMPLETED' AND r.paymentMethod = 'CASH' AND (r.receiptApprovalStatus IS NULL OR r.receiptApprovalStatus = 'APPROVED')),0) ELSE COALESCE((SELECT SUM(drl.cashReceived) FROM deliveryRemittanceLines drl WHERE drl.remittanceId = deliveryRemittances.id), 0) END`,
+      cashReceived: remittanceCashReceivedSql(),
     })
     .from(deliveryRemittances)
     .leftJoin(users, eq(deliveryRemittances.receivedBy, users.id))
