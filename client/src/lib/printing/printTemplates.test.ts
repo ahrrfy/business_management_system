@@ -10,11 +10,33 @@ vi.mock("./brand", async () => {
 });
 
 import { openPrintWindow } from "./brand";
+import { buildBrandedReceipt } from "@/components/pos/posShared";
 import { printBrowserReceipt, printShiftCloseBrowser, printInvoiceA4, printARAging, printAPAging } from "./printTemplates";
 import { printSalesReportV2 } from "./printTemplatesV2";
 import { docToHtml, resolveQrUrl } from "./render";
 import * as qrModule from "./qr";
 import { printA4Invoice } from "./a4Invoice";
+
+describe("POS receipt builder browser parity", () => {
+  it.each([
+    { kind: "COD", received: 0, credit: 0, isCredit: false, delivery: true },
+    { kind: "CREDIT", received: 4000, credit: 6000, isCredit: true, delivery: false },
+    { kind: "CASH", received: 10000, credit: 0, isCredit: false, delivery: false },
+  ])("preserves $kind semantics through the actual builder and browser rendering", ({ kind, received, credit, isCredit, delivery }) => {
+    vi.mocked(openPrintWindow).mockClear();
+    const receipt = buildBrandedReceipt({ invoiceNumber: "POS-MODE", invoiceId: 1, date: "24/10/2026", lines: [{ name: "دفتر", unit: "قطعة", qty: 1, price: 10000, total: 10000 }], total: 10000,
+      received, change: 0, credit, isCredit, method: "نقدي", delivery: delivery ? { partyName: "مندوب", fee: "2000", feeCollection: "COURIER" } : null });
+    printBrowserReceipt(receipt);
+    const text = new JSDOM(vi.mocked(openPrintWindow).mock.calls[0]?.[0] ?? "").window.document.body.textContent ?? "";
+    if (kind === "COD") {
+      expect(receipt.paymentMode).toBe("COD"); expect(text).toContain("المطلوب عند الاستلام (COD)"); expect(text).not.toContain("آجل"); expect(text).toContain("12,000 د.ع");
+    } else if (kind === "CREDIT") {
+      expect(text).toContain("متبقٍّ (حساب آجل)"); expect(text).toContain("6,000 د.ع"); expect(text).not.toContain("COD");
+    } else {
+      expect(text).not.toContain("آجل"); expect(text).not.toContain("COD");
+    }
+  });
+});
 
 describe("80mm physical receipt parity", () => {
   it("uses the shared32mm QR with its real quiet zone in a compact footer", () => {

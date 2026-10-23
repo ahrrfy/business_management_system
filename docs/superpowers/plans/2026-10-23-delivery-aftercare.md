@@ -124,3 +124,11 @@ Shared `FulfillmentMutationIdentity = { clientRequestId: string; expectedVersion
 - Backend integration proves foreign-branch denial, requester/checker separation and inactive/ACCOUNTANT courier membership rejection. Browser exercise used the isolated owner account; no unperformed multi-role UI exercise is claimed.
 - Production build passed, including PWA and HR bridge artifact/runtime/deployment smokes. Shared typecheck passed after the strict approvedBy correction. All 46 individual guard commands passed after generated source-line synchronization and date-locale corrections; the normal commit gate will run again on the final files.
 - Full pnpm test (TZ=UTC) is running; its final result, exact-head CI and deployment are still pending.
+
+## Final authority and baseline synchronization
+
+- Main 177fd8202517306b4c69df5ec29fd7f25720921c integrated, retaining independent charge obligations and the end-only statement opening fix. Shared deployment remains owned by the other active release; no concurrent deployment.
+- Cost visibility is enforced from current persisted authority for charge/request/aftercare queries, current create/replay responses, and charge approval/payee execution. Concealed costs are null, not fabricated zero; payee payment receipts and nested material costs are omitted/redacted. A nine-case pure regression passed; four real-DB visibility cases are added for the final focused run. Original financial effects and actual stored values remain unchanged.
+- The aftercare reference field resolves an exact printed number/barcode only. Explicit invoiceId/workOrderId links remain compatible; an unmatched number never silently selects another internal ID.
+- Aftercare mutation results already contain IDs rather than cost; the audit cost was not a response leak. A delegated prepare/replay assertion preserves that existing contract and checks actual cost through privileged reads. No extra response field was added.
+- Reception, retail and printing shortcuts were exercised in the real isolated app, including a real new-tab navigation that preserves the original cashier URL. Printing was visually corrected and rechecked after a missing prop binding was found.

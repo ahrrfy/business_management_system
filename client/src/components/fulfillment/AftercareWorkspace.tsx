@@ -949,8 +949,10 @@ function AftercareExecution({
         {execution.deliveryAddress}
       </p>
       <p className="text-sm">
-        تكلفة البديل / الخامات: {fmt(execution.totalCost)} — الأجرة:{" "}
-        {fmt(execution.deliveryFee)} — مستحق ناقل:{" "}
+        {execution.totalCost != null && (
+          <>تكلفة البديل / الخامات: {fmt(execution.totalCost)} — </>
+        )}
+        الأجرة: {fmt(execution.deliveryFee)} — مستحق ناقل:{" "}
         {fmt(execution.feeLedger.due)} — COD: 0
       </p>
       {execution.consignmentId && (
@@ -1009,11 +1011,22 @@ function AftercareExecution({
           { accessorKey: "custodyBaseQuantity", header: "العهدة" },
           { accessorKey: "deliveredBaseQuantity", header: "المسلّم" },
           { accessorKey: "returnedBaseQuantity", header: "العائد فعلياً" },
-          {
-            accessorKey: "lineCost",
-            header: "التكلفة",
-            cell: ({ row }) => fmt(row.original.lineCost),
-          },
+          ...(execution.totalCost != null
+            ? [
+                {
+                  accessorKey: "lineCost",
+                  header: "التكلفة",
+                  cell: ({
+                    row,
+                  }: {
+                    row: { original: Execution["lines"][number] };
+                  }) =>
+                    row.original.lineCost == null
+                      ? "—"
+                      : fmt(row.original.lineCost),
+                },
+              ]
+            : []),
         ]}
       />
       {execution.status === "PREPARED" && canDispatch && (

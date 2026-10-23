@@ -264,7 +264,7 @@ async function originalState() {
 }
 
 describe("aftercare real document, stock, custody and fee integration", () => {
-  it("resolves the exact printed invoice reference or scanner barcode before an internal ID, within branch scope", async () => {
+  it("resolves only the printed reference or scanner barcode while preserving explicit internal-ID links, within branch scope", async () => {
     await db()
       .update(s.invoices)
       .set({ invoiceNumber: "240001" })
@@ -286,14 +286,12 @@ describe("aftercare real document, stock, custody and fee integration", () => {
         )
       ).invoiceId,
     ).toBe(1);
-    expect(
-      (
-        await previewAftercareSource(
-          { sourceKind: "INVOICE", sourceReference: "1" },
-          MAKER,
-        )
-      ).invoiceId,
-    ).toBe(1);
+    await expect(
+      previewAftercareSource(
+        { sourceKind: "INVOICE", sourceReference: "1" },
+        MAKER,
+      ),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
     expect(
       (await previewAftercareSource({ invoiceId: 1 }, MAKER)).invoiceId,
     ).toBe(1);
@@ -560,15 +558,13 @@ describe("aftercare real document, stock, custody and fee integration", () => {
         ),
       ),
     ).rejects.toThrow(/قيمة التحصيل صفر/);
-    await db()
-      .insert(s.deliveryPartyMembers)
-      .values({
-        partyId: 1,
-        userId: 4,
-        memberRole: "ACCOUNTANT",
-        isActive: true,
-        createdBy: CHECKER.userId,
-      });
+    await db().insert(s.deliveryPartyMembers).values({
+      partyId: 1,
+      userId: 4,
+      memberRole: "ACCOUNTANT",
+      isActive: true,
+      createdBy: CHECKER.userId,
+    });
     await expect(
       withTx((tx) => routeAftercareDeliveryResultTx(tx, input, { userId: 4 })),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
@@ -759,22 +755,40 @@ describe("aftercare real document, stock, custody and fee integration", () => {
     const original = await originalState();
     const data = await approved("REPRINT");
     const prep = preparation(data);
-    const execution = await prepareAftercareExecution(
-      {
-        ...prep,
-        lines: [
-          {
-            aftercareLineId: data.lines[0].id,
-            baseQuantity: 1,
-            materials: [
-              { variantId: 2, baseQuantity: 2 },
-              { variantId: 1, baseQuantity: 1 },
-            ],
-          },
-        ],
-      },
-      CHECKER,
-    );
+    const delegated = { userId: 4, branchId: 1, role: "cashier" };
+    await db()
+      .insert(s.users)
+      .values({
+        id: delegated.userId,
+        openId: "ac-delegated-prepare",
+        name: "منفذ مخول بلا رؤية تكلفة",
+        role: "cashier",
+        branchId: 1,
+        operationPolicy: {
+          version: 1,
+          grants: { "operation.delivery.fulfillment.aftercare.prepare": true },
+          dataVisibility: { purchaseCost: false, profitMargin: false },
+        },
+      });
+    const input = {
+      ...prep,
+      lines: [
+        {
+          aftercareLineId: data.lines[0].id,
+          baseQuantity: 1,
+          materials: [
+            { variantId: 2, baseQuantity: 2 },
+            { variantId: 1, baseQuantity: 1 },
+          ],
+        },
+      ],
+    };
+    const execution = await prepareAftercareExecution(input, delegated);
+    const replay = await prepareAftercareExecution(input, delegated);
+    expect(execution).not.toHaveProperty("totalCost");
+    expect(replay).not.toHaveProperty("totalCost");
+    expect(execution).toEqual({ id: execution.id, replay: false });
+    expect(replay).toEqual({ id: execution.id, replay: true });
     const rows = await db()
       .select()
       .from(aftercareExecutionLines)
@@ -795,6 +809,24 @@ describe("aftercare real document, stock, custody and fee integration", () => {
           .where(eq(aftercareExecutions.id, execution.id))
       )[0].totalCost,
     ).toBe("150.00");
+    expect(
+      (await getAftercareCase(data.case.id, CHECKER)).executions[0].totalCost,
+    ).toBe("150.00");
+    const [posted] = await db()
+      .select({
+        cost: s.accountingEntries.cost,
+        amount: s.accountingEntries.amount,
+        profit: s.accountingEntries.profit,
+      })
+      .from(s.accountingEntries)
+      .where(
+        eq(s.accountingEntries.dedupeKey, `AFTERCARE_ISSUE:${execution.id}`),
+      );
+    expect(posted).toMatchObject({
+      cost: "150.00",
+      amount: "150.00",
+      profit: "-150.00",
+    });
     expect(await stock()).toBe(93);
     expect(await stock(2)).toBe(98);
     expect(await originalState()).toEqual(original);

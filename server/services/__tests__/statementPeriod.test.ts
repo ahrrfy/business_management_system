@@ -151,6 +151,36 @@ async function creditSale(customerId: number, dozens: string) {
 }
 
 describe("كشف حساب العميل بفترة + رصيد مُرحَّل", () => {
+  it.each(["50.00", "-50.00"])("كشف العميل بنهاية فقط يقص تصحيح الافتتاح اللاحق (%s) ويحفظ حدود اليوم وfrom والكشف الكامل", async (futureAdjustment) => {
+    const liveOpening = money("125.00").plus(money(futureAdjustment));
+    await db().insert(s.customers).values({ id: 1, name: "عميل حدود الافتتاح", defaultPriceTier: "RETAIL", creditLimit: "1000000.00", currentBalance: liveOpening.toFixed(2) });
+    await db().insert(s.accountingEntries).values([
+      { entryType: "OPENING", branchId: 1, customerId: 1, amount: "100.00", entryDate: new Date("2020-09-29T00:00:00Z"), dedupeKey: "OPENING:CUSTOMER:1:BEFORE" },
+      { entryType: "OPENING", branchId: 1, customerId: 1, amount: "25.00", entryDate: new Date("2020-09-30T00:00:00Z"), dedupeKey: "OPENING:CUSTOMER:1:END" },
+      { entryType: "OPENING", branchId: 1, customerId: 1, amount: futureAdjustment, entryDate: new Date("2020-10-01T00:00:00Z"), dedupeKey: "OPENING:CUSTOMER:1:NEXT" },
+    ]);
+    const sale = await creditSale(1, "1");
+    await backdateInvoice(sale.invoiceId, "2020-09-30");
+
+    const endOnly = (await getCustomerStatement(1, { to: "2020-09-30" }))!;
+    expect(endOnly.summary.openingBalance).toBe("125.00");
+    expect(endOnly.invoices.map((row) => row.id)).toEqual([sale.invoiceId]);
+    expect(endOnly.payments).toHaveLength(0); // OPENING is seeded once, never duplicated as movement without from.
+    expect(money(endOnly.summary.openingBalance).plus(money(endOnly.summary.totalSales)).toFixed(2)).toBe("245.00");
+    expect(endOnly.summary.currentBalance).toBe(liveOpening.plus(money("120.00")).toFixed(2));
+
+    const prior = (await getCustomerStatement(1, { to: "2020-09-29" }))!;
+    expect(prior.summary.openingBalance).toBe("100.00");
+    expect(prior.invoices).toHaveLength(0);
+    const bounded = (await getCustomerStatement(1, { from: "2020-09-30", to: "2020-09-30" }))!;
+    expect(bounded.summary.openingBalance).toBe("100.00");
+    expect(bounded.payments.filter((row) => row.paymentMethod === "OPENING_ADJ")).toMatchObject([{ direction: "OUT", amount: "25.00" }]);
+    const all = (await getCustomerStatement(1))!;
+    expect(all.summary.openingBalance).toBe(liveOpening.toFixed(2));
+    expect(all.summary.currentBalance).toBe(endOnly.summary.currentBalance);
+    expect(all.payments).toHaveLength(0);
+  });
+
   it("الرصيد المُرحَّل = قيد OPENING + فواتير سابقة − دفعات سابقة، والفترة تعرض فواتيرها فقط", async () => {
     await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
     // قيد OPENING مستورد (import-integration): 1000 لصالحنا.
@@ -272,6 +302,38 @@ describe("كشف حساب العميل بفترة + رصيد مُرحَّل", ()
 });
 
 describe("كشف حساب المورد بفترة + رصيد مُرحَّل", () => {
+  it.each(["50.00", "-50.00"])("كشف المورد بنهاية فقط يقص تصحيح الافتتاح اللاحق (%s) ويحفظ حدود اليوم وfrom والكشف الكامل", async (futureAdjustment) => {
+    const liveOpening = money("125.00").plus(money(futureAdjustment));
+    const liveBalance = liveOpening.plus(money("120.00")).toFixed(2);
+    await db().insert(s.suppliers).values({ id: 1, name: "مورد حدود الافتتاح", currentBalance: liveBalance });
+    await db().insert(s.accountingEntries).values([
+      { entryType: "OPENING", branchId: 1, supplierId: 1, amount: "100.00", entryDate: new Date("2020-09-29T00:00:00Z"), dedupeKey: "OPENING:SUPPLIER:1:BEFORE" },
+      { entryType: "OPENING", branchId: 1, supplierId: 1, amount: "25.00", entryDate: new Date("2020-09-30T00:00:00Z"), dedupeKey: "OPENING:SUPPLIER:1:END" },
+      { entryType: "OPENING", branchId: 1, supplierId: 1, amount: futureAdjustment, entryDate: new Date("2020-10-01T00:00:00Z"), dedupeKey: "OPENING:SUPPLIER:1:NEXT" },
+      { entryType: "PURCHASE", branchId: 1, supplierId: 1, amount: "120.00", entryDate: new Date("2020-09-30T00:00:00Z"), dedupeKey: "STATEMENT:SUPPLIER:1:ORPHAN-PURCHASE" },
+    ]);
+
+    const endOnly = (await getSupplierStatement(1, { to: "2020-09-30" }))!;
+    expect(endOnly.summary.openingBalance).toBe("125.00");
+    expect(endOnly.payments).toMatchObject([{ entryType: "PURCHASE", amount: "120.00" }]);
+    expect(endOnly.summary.unpaid).toBe("245.00");
+    expect(endOnly.summary.currentBalance).toBe(liveBalance);
+    const scoped = (await getSupplierStatement(1, { to: "2020-09-30", branchId: 1 }))!;
+    expect(scoped.summary.openingBalance).toBe("125.00");
+    expect(scoped.summary.currentBalance).toBe("245.00");
+
+    const prior = (await getSupplierStatement(1, { to: "2020-09-29" }))!;
+    expect(prior.summary.openingBalance).toBe("100.00");
+    expect(prior.payments).toHaveLength(0);
+    const bounded = (await getSupplierStatement(1, { from: "2020-09-30", to: "2020-09-30" }))!;
+    expect(bounded.summary.openingBalance).toBe("100.00");
+    expect(bounded.payments.filter((row) => row.entryType === "OPENING")).toMatchObject([{ amount: "25.00" }]);
+    const all = (await getSupplierStatement(1))!;
+    expect(all.summary.openingBalance).toBe(liveOpening.toFixed(2));
+    expect(all.summary.currentBalance).toBe(liveBalance);
+    expect(all.payments).toHaveLength(1);
+  });
+
   async function approvePurchaseOrder(po: Awaited<ReturnType<typeof createPurchaseOrder>>) {
     const submitted = await submitPurchaseOrderForApproval({
       purchaseOrderId: po.purchaseOrderId,

@@ -176,6 +176,18 @@ async function cashCollect(
     cashier,
   );
 }
+async function allowCashierCost() {
+  await db()
+    .update(s.users)
+    .set({
+      operationPolicy: {
+        version: 1,
+        grants: {},
+        dataVisibility: { purchaseCost: true, profitMargin: true },
+      },
+    })
+    .where(eq(s.users.id, cashier.userId));
+}
 async function balance() {
   return (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0]
     .currentBalance;
@@ -206,6 +218,7 @@ describe("classified fulfillment charge lifecycle", () => {
     expect((await db().select().from(s.receipts))[0].invoiceId).toBeNull();
   });
   it("OUTSOURCED 5000/3000 posts gross service and independent AP cost", async () => {
+    await allowCashierCost();
     const row = await approved({
       category: "OUTSOURCED",
       amount: "5000",
@@ -242,6 +255,7 @@ describe("classified fulfillment charge lifecycle", () => {
     ).toHaveLength(1);
   });
   it("PASS_THROUGH 3000 is liability with zero revenue and no duplicate expense", async () => {
+    await allowCashierCost();
     const row = await approved({
       category: "PASS_THROUGH",
       amount: "3000",
@@ -377,6 +391,7 @@ describe("classified fulfillment charge lifecycle", () => {
     ).toBe("2000.00");
   });
   it("cash availability guard rejects unfunded actual payout after card collection", async () => {
+    await allowCashierCost();
     const row = await approved({
       category: "OUTSOURCED",
       externalCost: "3000",

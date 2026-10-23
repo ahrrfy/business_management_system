@@ -75,6 +75,10 @@ import {
   chargePayableRole,
   chargeCustodyIntent,
 } from "./chargePosting";
+import {
+  fulfillmentCostVisibleTx,
+  projectFulfillmentChargeCost,
+} from "./visibility";
 
 export type ChargeTender = {
   method: "CASH" | "CARD" | "TRANSFER" | "WALLET";
@@ -316,7 +320,11 @@ export function createFulfillmentCharge(
       )
         throw fulfillmentError("العميل غير موجود");
       const replay = await findFulfillmentReplayTx(tx, ctx);
-      if (replay) return loadFulfillmentChargeTx(tx, replay, actor);
+      if (replay)
+        return projectFulfillmentChargeCost(
+          await loadFulfillmentChargeTx(tx, replay, actor),
+          await fulfillmentCostVisibleTx(tx, actor),
+        );
       await checkPayeeTx(tx, input, actor);
       const result = await tx.insert(fulfillmentCharges).values({
         ...input,
@@ -339,7 +347,10 @@ export function createFulfillmentCharge(
         amount: row.amount,
         externalCost: row.externalCost,
       });
-      return row;
+      return projectFulfillmentChargeCost(
+        row,
+        await fulfillmentCostVisibleTx(tx, actor),
+      );
     }),
   );
 }
@@ -347,6 +358,11 @@ export function approveFulfillmentCharge(input: Transition, actor: Actor) {
   return retryOnDup(() =>
     withTx(async (tx) => {
       await assertChargeOperationTx(tx, actor, "approve", true);
+      if (!(await fulfillmentCostVisibleTx(tx, actor)))
+        throw fulfillmentError(
+          "اعتماد الأجر يتطلب صلاحية عرض التكلفة والربح الحالية",
+          "FORBIDDEN",
+        );
       const row = await loadFulfillmentChargeTx(tx, input.id, actor, {
         lock: true,
       });
@@ -1302,6 +1318,11 @@ export function settleFulfillmentChargePayee(
   return retryOnDup(() =>
     withTx(async (tx) => {
       await assertChargeOperationTx(tx, actor, "settlePayee");
+      if (!(await fulfillmentCostVisibleTx(tx, actor)))
+        throw fulfillmentError(
+          "سداد المستفيد يتطلب صلاحية عرض التكلفة والربح الحالية",
+          "FORBIDDEN",
+        );
       const row = await loadFulfillmentChargeTx(tx, input.id, actor, {
           lock: true,
         }),

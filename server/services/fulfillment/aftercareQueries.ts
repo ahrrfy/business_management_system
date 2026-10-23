@@ -26,6 +26,7 @@ import type { Tx } from "../../db";
 import { prepareDeliveryBarcodeLookup } from "../delivery/barcodeLookupPolicy";
 import { withTx, type Actor } from "../tx";
 import { loadVariantAvailability } from "../catalog/variantAvailability";
+import { fulfillmentCostVisibleTx } from "./visibility";
 import {
   assertFulfillmentBranch,
   fulfillmentError,
@@ -102,6 +103,7 @@ export async function getAftercareCase(id: number, actor: Actor) {
   return withTx(
     async (tx) => {
       const row = await loadAftercareCaseTx(tx, id, actor);
+      const costVisible = await fulfillmentCostVisibleTx(tx, actor);
       const lines = await tx
         .select({
           line: aftercareLines,
@@ -227,6 +229,7 @@ export async function getAftercareCase(id: number, actor: Actor) {
             externalTrackingRef,
           }) => ({
             ...execution,
+            totalCost: costVisible ? execution.totalCost : null,
             partyName,
             consignmentNumber,
             externalTrackingRef,
@@ -235,7 +238,12 @@ export async function getAftercareCase(id: number, actor: Actor) {
             ) ?? { earned: "0.00", paid: "0.00", due: "0.00" },
             lines: executionLines
               .filter(({ line }) => line.executionId === execution.id)
-              .map(({ line, ...label }) => ({ ...line, ...label })),
+              .map(({ line, ...label }) => ({
+                ...line,
+                ...label,
+                unitCost: costVisible ? line.unitCost : null,
+                lineCost: costVisible ? line.lineCost : null,
+              })),
           }),
         ),
         receipts: receiptRows,
@@ -330,20 +338,6 @@ async function resolveAftercareReferenceTx(
         "CONFLICT",
       );
     if (matches[0]) return { invoiceId: matches[0].id };
-    if (lookup.namespace === "NUMERIC" && lookup.numericId) {
-      const [byId] = await tx
-        .select({ id: invoices.id })
-        .from(invoices)
-        .where(
-          and(
-            eq(invoices.id, lookup.numericId),
-            scope !== undefined ? eq(invoices.branchId, scope) : undefined,
-          ),
-        )
-        .limit(1)
-        .for("share");
-      if (byId) return { invoiceId: byId.id };
-    }
   } else {
     const matches = await tx
       .select({ id: workOrders.id })
@@ -362,20 +356,6 @@ async function resolveAftercareReferenceTx(
         "CONFLICT",
       );
     if (matches[0]) return { workOrderId: matches[0].id };
-    if (lookup.namespace === "NUMERIC" && lookup.numericId) {
-      const [byId] = await tx
-        .select({ id: workOrders.id })
-        .from(workOrders)
-        .where(
-          and(
-            eq(workOrders.id, lookup.numericId),
-            scope !== undefined ? eq(workOrders.branchId, scope) : undefined,
-          ),
-        )
-        .limit(1)
-        .for("share");
-      if (byId) return { workOrderId: byId.id };
-    }
   }
   throw missing();
 }
@@ -521,6 +501,7 @@ export async function aftercareAvailableProducts(
   assertFulfillmentBranch(actor, input.branchId);
   return withTx(
     async (tx) => {
+      const costVisible = await fulfillmentCostVisibleTx(tx, actor);
       const search = input.search?.trim();
       const rows = await tx
         .select({
@@ -566,6 +547,7 @@ export async function aftercareAvailableProducts(
       return rows
         .map((row) => ({
           ...row,
+          unitCost: costVisible ? row.unitCost : null,
           quantity: availability.get(row.id)?.availableBase ?? 0,
         }))
         .filter((row) => row.quantity > 0);

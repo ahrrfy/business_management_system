@@ -96,7 +96,17 @@ beforeEach(async () => {
   await db()
     .insert(s.users)
     .values([
-      { id: 1, openId: "fcr-maker", role: "cashier", branchId: 1 },
+      {
+        id: 1,
+        openId: "fcr-maker",
+        role: "cashier",
+        branchId: 1,
+        operationPolicy: {
+          version: 1,
+          grants: {},
+          dataVisibility: { purchaseCost: true, profitMargin: true },
+        },
+      },
       { id: 2, openId: "fcr-checker", role: "manager", branchId: 1 },
     ]);
   await db().insert(s.customers).values({
@@ -473,41 +483,37 @@ describe.sequential("classified fulfillment financial report effects", () => {
         clientRequestId: key(),
         sourceHash: "a".repeat(64),
       });
-    await db()
-      .insert(s.invoices)
-      .values({
-        id: 1,
-        branchId: 1,
-        customerId: 1,
-        invoiceNumber: "FCR-PAID",
-        sourceType: "POS",
-        sourceId: key(),
-        subtotal: "2000",
-        total: "2000",
-        paidAmount: "2000",
-        status: "PAID",
-        createdBy: 1,
-      });
+    await db().insert(s.invoices).values({
+      id: 1,
+      branchId: 1,
+      customerId: 1,
+      invoiceNumber: "FCR-PAID",
+      sourceType: "POS",
+      sourceId: key(),
+      subtotal: "2000",
+      total: "2000",
+      paidAmount: "2000",
+      status: "PAID",
+      createdBy: 1,
+    });
     await db()
       .insert(s.deliveryParties)
       .values({ id: 1, name: "ناقل الفائض", branchId: 1 });
-    await db()
-      .insert(s.deliveryConsignments)
-      .values({
-        id: 1,
-        consignmentNumber: "FCR-EXCESS-CN",
-        branchId: 1,
-        partyId: 1,
-        sourceType: "INVOICE",
-        sourceId: 1,
-        invoiceId: 1,
-        fulfillmentRequestId: 1,
-        codAmount: "0",
-        feeCollection: "SHOP",
-        deliveryFee: "0",
-        endCustomerId: 1,
-        dispatchedBy: 1,
-      });
+    await db().insert(s.deliveryConsignments).values({
+      id: 1,
+      consignmentNumber: "FCR-EXCESS-CN",
+      branchId: 1,
+      partyId: 1,
+      sourceType: "INVOICE",
+      sourceId: 1,
+      invoiceId: 1,
+      fulfillmentRequestId: 1,
+      codAmount: "0",
+      feeCollection: "SHOP",
+      deliveryFee: "0",
+      endCustomerId: 1,
+      dispatchedBy: 1,
+    });
     await withTx(async (tx) => {
       await attachFulfillmentRequestClaimsTx(
         tx,

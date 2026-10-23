@@ -19,6 +19,10 @@ import type { FulfillmentChargeCategory } from "../../../shared/fulfillment";
 import { requireDb, withTx, type Actor } from "../tx";
 import { assertFulfillmentBranch, loadFulfillmentChargeTx } from "./core";
 import { assertChargeOperationTx, chargeRemaining } from "./charges";
+import {
+  fulfillmentCostVisibleTx,
+  projectFulfillmentChargeCost,
+} from "./visibility";
 import { money, toDbMoney } from "../money";
 
 export type ListFulfillmentChargesInput = {
@@ -35,71 +39,84 @@ export async function listFulfillmentCharges(
   actor: Actor,
 ) {
   assertFulfillmentBranch(actor, input.branchId);
-  const db = requireDb(),
-    pattern = `%${(input.search ?? "").replace(/[\\%_]/g, "\\$&")}%`;
-  const where = and(
-    eq(fulfillmentCharges.branchId, input.branchId),
-    input.requestId
-      ? eq(fulfillmentCharges.requestId, input.requestId)
-      : undefined,
-    input.customerId
-      ? eq(fulfillmentCharges.customerId, input.customerId)
-      : undefined,
-    input.category
-      ? eq(fulfillmentCharges.category, input.category)
-      : undefined,
-    input.search
-      ? or(
-          like(fulfillmentCharges.description, pattern),
-          like(customers.name, pattern),
-          like(customers.phone, pattern),
-          sql`CAST(${fulfillmentCharges.id} AS CHAR) LIKE ${pattern}`,
-        )
-      : undefined,
+  return withTx(
+    async (tx) => {
+      await assertChargeOperationTx(tx, actor, "list", false, true);
+      const costVisible = await fulfillmentCostVisibleTx(tx, actor);
+      const db = tx,
+        pattern = `%${(input.search ?? "").replace(/[\\%_]/g, "\\$&")}%`;
+      const where = and(
+        eq(fulfillmentCharges.branchId, input.branchId),
+        input.requestId
+          ? eq(fulfillmentCharges.requestId, input.requestId)
+          : undefined,
+        input.customerId
+          ? eq(fulfillmentCharges.customerId, input.customerId)
+          : undefined,
+        input.category
+          ? eq(fulfillmentCharges.category, input.category)
+          : undefined,
+        input.search
+          ? or(
+              like(fulfillmentCharges.description, pattern),
+              like(customers.name, pattern),
+              like(customers.phone, pattern),
+              sql`CAST(${fulfillmentCharges.id} AS CHAR) LIKE ${pattern}`,
+            )
+          : undefined,
+      );
+      const [rows, count] = await Promise.all([
+        db
+          .select({
+            charge: fulfillmentCharges,
+            customerName: customers.name,
+            requestNumber: fulfillmentRequests.requestNumber,
+          })
+          .from(fulfillmentCharges)
+          .leftJoin(customers, eq(customers.id, fulfillmentCharges.customerId))
+          .leftJoin(
+            fulfillmentRequests,
+            eq(fulfillmentRequests.id, fulfillmentCharges.requestId),
+          )
+          .where(where)
+          .orderBy(desc(fulfillmentCharges.id))
+          .limit(Math.min(Math.max(input.limit ?? 25, 1), 100))
+          .offset(Math.max(input.offset ?? 0, 0)),
+        db
+          .select({ total: sql<number>`COUNT(*)` })
+          .from(fulfillmentCharges)
+          .leftJoin(customers, eq(customers.id, fulfillmentCharges.customerId))
+          .where(where),
+      ]);
+      return {
+        rows: rows.map(({ charge, ...rest }) => ({
+          ...projectFulfillmentChargeCost(charge, costVisible),
+          ...rest,
+          remainingAmount: chargeRemaining(charge),
+          payeeRemaining: costVisible
+            ? toDbMoney(
+                money(charge.externalCost)
+                  .minus(charge.payeePaidAmount)
+                  .minus(
+                    charge.category === "PASS_THROUGH"
+                      ? charge.refundedAmount
+                      : "0",
+                  ),
+              )
+            : null,
+        })),
+        costVisible,
+        total: Number(count[0]?.total ?? 0),
+      };
+    },
+    { gate: "NONE" },
   );
-  const [rows, count] = await Promise.all([
-    db
-      .select({
-        charge: fulfillmentCharges,
-        customerName: customers.name,
-        requestNumber: fulfillmentRequests.requestNumber,
-      })
-      .from(fulfillmentCharges)
-      .leftJoin(customers, eq(customers.id, fulfillmentCharges.customerId))
-      .leftJoin(
-        fulfillmentRequests,
-        eq(fulfillmentRequests.id, fulfillmentCharges.requestId),
-      )
-      .where(where)
-      .orderBy(desc(fulfillmentCharges.id))
-      .limit(Math.min(Math.max(input.limit ?? 25, 1), 100))
-      .offset(Math.max(input.offset ?? 0, 0)),
-    db
-      .select({ total: sql<number>`COUNT(*)` })
-      .from(fulfillmentCharges)
-      .leftJoin(customers, eq(customers.id, fulfillmentCharges.customerId))
-      .where(where),
-  ]);
-  return {
-    rows: rows.map(({ charge, ...rest }) => ({
-      ...charge,
-      ...rest,
-      remainingAmount: chargeRemaining(charge),
-      payeeRemaining: toDbMoney(
-        money(charge.externalCost)
-          .minus(charge.payeePaidAmount)
-          .minus(
-            charge.category === "PASS_THROUGH" ? charge.refundedAmount : "0",
-          ),
-      ),
-    })),
-    total: Number(count[0]?.total ?? 0),
-  };
 }
 export function getFulfillmentCharge(id: number, actor: Actor) {
   return withTx(
     async (tx) => {
       await assertChargeOperationTx(tx, actor, "get", false, true);
+      const costVisible = await fulfillmentCostVisibleTx(tx, actor);
       const charge = await loadFulfillmentChargeTx(tx, id, actor);
       const payments = await tx
         .select({ payment: fulfillmentChargePayments, receipt: receipts })
@@ -108,7 +125,14 @@ export function getFulfillmentCharge(id: number, actor: Actor) {
           receipts,
           eq(receipts.id, fulfillmentChargePayments.receiptId),
         )
-        .where(eq(fulfillmentChargePayments.chargeId, id))
+        .where(
+          and(
+            eq(fulfillmentChargePayments.chargeId, id),
+            costVisible
+              ? undefined
+              : sql`${fulfillmentChargePayments.kind} <> 'PAYEE_PAYMENT'`,
+          ),
+        )
         .orderBy(desc(fulfillmentChargePayments.id));
       const request = charge.requestId
         ? (
@@ -198,16 +222,23 @@ export function getFulfillmentCharge(id: number, actor: Actor) {
             .limit(1)
         : [];
       return {
-        charge,
+        charge: projectFulfillmentChargeCost(charge, costVisible),
+        costVisible,
         remainingAmount: chargeRemaining(charge),
-        payeeRemaining: toDbMoney(
-          money(charge.externalCost)
-            .minus(charge.payeePaidAmount)
-            .minus(
-              charge.category === "PASS_THROUGH" ? charge.refundedAmount : "0",
-            ),
-        ),
-        payments,
+        payeeRemaining: costVisible
+          ? toDbMoney(
+              money(charge.externalCost)
+                .minus(charge.payeePaidAmount)
+                .minus(
+                  charge.category === "PASS_THROUGH"
+                    ? charge.refundedAmount
+                    : "0",
+                ),
+            )
+          : null,
+        payments: costVisible
+          ? payments
+          : payments.filter((p) => p.payment.kind !== "PAYEE_PAYMENT"),
         request: request ?? null,
         customer: customer ?? null,
         excessCollections: excessEntries.map((e) => ({

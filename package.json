@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "node scripts/db-verify-schema.mjs && cross-env NODE_ENV=development TZ=UTC node --watch-path=./server --watch-path=./shared --watch-path=./drizzle --import tsx server/index.ts",
-    "build": "node scripts/verify-node-runtime.mjs && vite build && node scripts/verify-storefront-pwa-build.mjs && esbuild server/index.ts --platform=node --target=node24 --packages=external --bundle --format=esm --sourcemap --outfile=dist/index.js && esbuild server/hr-bridge-worker.ts --platform=node --target=node24 --packages=bundle --bundle --format=cjs --sourcemap --alias:bufferutil=./scripts/hr-bridge-optional-module-stub.cjs --alias:utf-8-validate=./scripts/hr-bridge-optional-module-stub.cjs --alias:supports-color=./scripts/hr-bridge-optional-module-stub.cjs --alias:cardinal=./scripts/hr-bridge-optional-module-stub.cjs --metafile=dist/hr-bridge-worker.meta.json --outfile=dist/hr-bridge-worker.cjs && node scripts/verify-hr-bridge-runtime.mjs --selftest && node scripts/verify-hr-bridge-artifact.mjs && node scripts/verify-hr-bridge-deployment.mjs",
+    "build": "node scripts/verify-zod-security.mjs && node scripts/verify-http-parser-security.mjs && node scripts/verify-node-runtime.mjs && vite build && node scripts/verify-storefront-pwa-build.mjs && esbuild server/index.ts --platform=node --target=node24 --packages=external --bundle --format=esm --sourcemap --outfile=dist/index.js && esbuild server/hr-bridge-worker.ts --platform=node --target=node24 --packages=bundle --bundle --format=cjs --sourcemap --alias:bufferutil=./scripts/hr-bridge-optional-module-stub.cjs --alias:utf-8-validate=./scripts/hr-bridge-optional-module-stub.cjs --alias:supports-color=./scripts/hr-bridge-optional-module-stub.cjs --alias:cardinal=./scripts/hr-bridge-optional-module-stub.cjs --metafile=dist/hr-bridge-worker.meta.json --outfile=dist/hr-bridge-worker.cjs && node scripts/verify-hr-bridge-runtime.mjs --selftest && node scripts/verify-hr-bridge-artifact.mjs && node scripts/verify-hr-bridge-deployment.mjs",
     "start": "cross-env NODE_ENV=production TZ=UTC node dist/index.js",
     "runtime:verify": "node scripts/verify-node-runtime.mjs",
     "check": "node scripts/verify-node-runtime.mjs && cross-env NODE_OPTIONS=--max-old-space-size=8192 tsc --noEmit",
@@ -280,7 +280,6 @@
       "esbuild@<0.25.0": "0.25.12",
       "esbuild@>=0.26.0 <0.28.1": "0.28.1",
       "brace-expansion@<5.0.12": "5.0.12",
-      "body-parser@1.20.5": "1.20.6",
       "fast-uri@<3.1.8": "3.1.8",
       "qs@<6.16.0": "6.16.0",
       "ip-address@<10.7.4": "10.7.4",
@@ -296,7 +295,12 @@
       "postcss-selector-parser@<7.1.6": "7.1.6",
       "proxy-addr@<2.0.8": "2.0.8",
       "source-map-js@<1.2.2": "1.2.2",
-      "@eslint/config-array>minimatch": "^10.2.6"
+      "@eslint/config-array>minimatch": "^10.2.6",
+      "@imgly/background-removal>zod": "4.6.6",
+      "body-parser@<1.20.9": "1.20.9"
+    },
+    "patchedDependencies": {
+      "@imgly/background-removal@1.7.0": "patches/@imgly__background-removal@1.7.0.patch"
     }
   }
 }

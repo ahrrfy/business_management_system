@@ -12,6 +12,7 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "server/services/__tests__/fulfillmentChargesVisibility.unit.test.ts",
       "server/services/__tests__/fulfillmentPosting.test.ts",
       "server/services/__tests__/fulfillmentChargesPolicy.unit.test.ts",
       "shared/deliverySource.test.ts",

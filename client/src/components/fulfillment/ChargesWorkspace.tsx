@@ -462,8 +462,8 @@ export function ChargesWorkspace() {
       setError(e instanceof Error ? e.message : "تعذر تأكيد الدفع");
     }
   }
-  const columns = useMemo<ColumnDef<Row>[]>(
-    () => [
+  const columns = useMemo<ColumnDef<Row>[]>(() => {
+    const result: ColumnDef<Row>[] = [
       { accessorKey: "id", header: "الرقم" },
       { accessorKey: "description", header: "البيان" },
       { accessorKey: "customerName", header: "العميل" },
@@ -489,9 +489,13 @@ export function ChargesWorkspace() {
         cell: ({ row }) => fmt(row.original.remainingAmount),
       },
       {
+        id: "payeeRemaining",
         accessorKey: "payeeRemaining",
         header: "مستحق الجهة",
-        cell: ({ row }) => fmt(row.original.payeeRemaining),
+        cell: ({ row }) =>
+          row.original.payeeRemaining == null
+            ? ""
+            : fmt(row.original.payeeRemaining),
       },
       {
         id: "open",
@@ -514,9 +518,11 @@ export function ChargesWorkspace() {
           </Button>
         ),
       },
-    ],
-    [],
-  );
+    ];
+    return list.data?.costVisible
+      ? result
+      : result.filter((c) => c.id !== "payeeRemaining");
+  }, [list.data?.costVisible]);
   const paymentColumns: ColumnDef<
     NonNullable<typeof detail.data>["payments"][number]
   >[] = [
@@ -851,10 +857,13 @@ export function ChargesWorkspace() {
               {fmt(row.refundedAmount)}
             </p>
             <p>المتبقي: {fmt(detail.data?.remainingAmount ?? "0")}</p>
-            <p>
-              تكلفة الجهة: {fmt(row.externalCost)} / المستحق:{" "}
-              {fmt(detail.data?.payeeRemaining ?? "0")}
-            </p>
+            {row.externalCost != null &&
+              detail.data?.payeeRemaining != null && (
+                <p>
+                  تكلفة الجهة: {fmt(row.externalCost)} / المستحق:{" "}
+                  {fmt(detail.data.payeeRemaining)}
+                </p>
+              )}
           </div>
           <p className="text-xs text-muted-foreground">
             العميل: {detail.data?.customer?.name ?? "مصروف المكتبة"} / الطلب:{" "}
@@ -910,7 +919,11 @@ export function ChargesWorkspace() {
                       <option value="refundCourierExcess">
                         رد أمانة قبض زائد لدى الناقل
                       </option>
-                      <option value="settlePayee">سداد الجهة المستفيدة</option>
+                      {detail.data?.costVisible && (
+                        <option value="settlePayee">
+                          سداد الجهة المستفيدة
+                        </option>
+                      )}
                       <option value="recordCourierCollection">
                         إثبات قبض بعهدة الناقل
                       </option>
@@ -994,8 +1007,11 @@ export function ChargesWorkspace() {
                     {detail.data?.excessCollections.map((p) => (
                       <option key={p.id} value={String(p.id)}>
                         إرسالية {p.consignmentId} —{" "}
-                        {new Date(p.createdAt).toLocaleDateString("ar-IQ-u-nu-latn")} —
-                        المتاح للرد {fmt(p.remainingAmount)} من {fmt(p.amount)}
+                        {new Date(p.createdAt).toLocaleDateString(
+                          "ar-IQ-u-nu-latn",
+                        )}{" "}
+                        — المتاح للرد {fmt(p.remainingAmount)} من{" "}
+                        {fmt(p.amount)}
                       </option>
                     ))}
                   </AppSelect>
@@ -1162,11 +1178,20 @@ export function ChargesWorkspace() {
               الأصليين. التوريد يبرئ عهدة الناقل فقط. سداد الجهة لا ينشئ مصروفاً
               ثانياً.
             </p>
+            {["approve", "settlePayee"].includes(action) &&
+              !detail.data?.costVisible && (
+                <p className="text-sm text-muted-foreground">
+                  اعتماد الكلفة وسداد المستفيد يحتاجان صلاحية عرض التكلفة
+                  والربح.
+                </p>
+              )}
             <SubmitButton
               pending={busy}
               disabled={
                 disabled ||
                 !can(action) ||
+                (["approve", "settlePayee"].includes(action) &&
+                  !detail.data?.costVisible) ||
                 (action === "collect" &&
                   method !== "CASH" &&
                   !externalProofValid)

@@ -1,3 +1,4 @@
+import { FulfillmentShortcuts } from "@/components/fulfillment/FulfillmentShortcuts";
 import React, { useState } from "react";
 import {
   Printer,
@@ -107,6 +108,8 @@ export function PrintPosHeaderActions({
 }
 
 export interface PrintPosHeaderProps {
+  branchId?: number | null;
+  offline?: boolean;
   C: Record<string, string>;
   dark: boolean;
   toggleDark: () => void;
@@ -128,6 +131,8 @@ export interface PrintPosHeaderProps {
 }
 
 export function PrintPosHeader({
+  branchId,
+  offline,
   tabId,
   C,
   dark,
@@ -197,6 +202,8 @@ export function PrintPosHeader({
 
       {/* فاصل */}
       <div style={{ width: 1, height: 26, background: C.border, flexShrink: 0 }} />
+
+      <FulfillmentShortcuts branchId={branchId} offline={offline} />
 
       {/* ── حقل البحث الموحد لكاشير الطباعة (طراز POS الموحد) ── */}
       <UnifiedSearchInput

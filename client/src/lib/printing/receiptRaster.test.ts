@@ -1,6 +1,7 @@
 // اختبارات لفّ نص أسماء الأصناف في الراسم الحراري المُعلَّم (الجزء النقي — بلا Canvas حقيقي)
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { receiptToCanvas, wrapLines } from "./receiptRaster";
+import { buildBrandedReceipt } from "@/components/pos/posShared";
 
 /** قياس زائف: عرض كل محرف = 10px ⇒ maxW=100 يستوعب 10 محارف */
 const ctx = { measureText: (s: string) => ({ width: s.length * 10 }) };
@@ -60,6 +61,25 @@ describe("compact 80mm receipt", () => {
   }
   const sale = { receiptNumber: "12345", date: "23/10/2026", time: "10:00", cashierName: "كاشير",
     items: [{ name: "دفتر", quantity: 1, price: "1000", total: "1000" }], subtotal: "1000", total: "1000", paid: "1000", paymentMethod: "نقدي" };
+
+  it.each([
+    { kind: "COD", received: 0, credit: 0, isCredit: false, delivery: true },
+    { kind: "CREDIT", received: 4000, credit: 6000, isCredit: true, delivery: false },
+    { kind: "CASH", received: 10000, credit: 0, isCredit: false, delivery: false },
+  ])("preserves $kind semantics from the real POS receipt builder through silent rendering", async ({ kind, received, credit, isCredit, delivery }) => {
+    const fixture = canvasFixture();
+    const receipt = buildBrandedReceipt({ invoiceNumber: "POS-MODE", invoiceId: 1, date: "24/10/2026", lines: [{ name: "دفتر", unit: "قطعة", qty: 1, price: 10000, total: 10000 }], total: 10000,
+      received, change: 0, credit, isCredit, method: "نقدي", delivery: delivery ? { partyName: "مندوب", fee: "2000", feeCollection: "COURIER" } : null });
+    await receiptToCanvas(receipt);
+    const content = fixture.text.map((entry) => entry.value).join(" ");
+    if (kind === "COD") {
+      expect(receipt.paymentMode).toBe("COD"); expect(content).toContain("المطلوب عند الاستلام (COD)"); expect(content).not.toContain("آجل"); expect(content).toContain("12,000 د.ع");
+    } else if (kind === "CREDIT") {
+      expect(content).toContain("متبقٍّ (آجل)"); expect(content).toContain("6,000 د.ع"); expect(content).not.toContain("COD");
+    } else {
+      expect(content).not.toContain("آجل"); expect(content).not.toContain("COD");
+    }
+  });
 
   it("prints a sharp physical QR around32mm while shortening the one-item receipt", async () => {
     const fixture = canvasFixture();

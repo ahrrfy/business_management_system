@@ -1112,6 +1112,7 @@ export default function PrintPOS() {
   return (
     <div className="print-pos-surface" style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: C.bg, direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif", color: C.fg }}>
       <PrintPosHeader
+        branchId={branchId} offline={offline}
         tabId={activeId}
         C={C}
         dark={dark}

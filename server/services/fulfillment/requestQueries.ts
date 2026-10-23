@@ -29,6 +29,10 @@ import { requireDb, withTx, type Actor } from "../tx";
 import { money, round2, toDbMoney } from "../money";
 import { assertFulfillmentBranch, loadFulfillmentRequestTx } from "./core";
 import { deliverySearchSql } from "../delivery/readSearch";
+import {
+  fulfillmentCostVisibleTx,
+  projectFulfillmentChargeCost,
+} from "./visibility";
 
 export async function listFulfillmentRequests(
   input: {
@@ -78,6 +82,7 @@ export async function getFulfillmentRequest(id: number, actor: Actor) {
   return withTx(
     async (tx) => {
       const request = await loadFulfillmentRequestTx(tx, id, actor);
+      const costVisible = await fulfillmentCostVisibleTx(tx, actor);
       const rawItems = await tx
         .select()
         .from(fulfillmentRequestItems)
@@ -212,7 +217,7 @@ export async function getFulfillmentRequest(id: number, actor: Actor) {
         request,
         items,
         charges: charges.map((r) => ({
-          ...r,
+          ...projectFulfillmentChargeCost(r, costVisible),
           remainingAmount:
             r.status === "APPROVED"
               ? toDbMoney(money(r.amount).minus(r.paidAmount))
