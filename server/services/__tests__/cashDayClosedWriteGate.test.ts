@@ -34,6 +34,7 @@ const RECEIPT_INSERT_INVENTORY: Readonly<Record<string, number>> = {
   "cashVarianceService.ts": 1,
   "delivery/feeHeld.ts": 1,
   "delivery/fees.ts": 2,
+  "delivery/historicalFeeWithholding.ts": 1,
   "delivery/remittance.ts": 2,
   "delivery/returns.ts": 2,
   "delivery/settle.ts": 2,
