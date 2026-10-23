@@ -1,3 +1,4 @@
+import { notify } from "@/lib/notify";
 import { useState, useMemo, useEffect } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -5,42 +6,11 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ACTION_LABELS as L } from "@shared/actionLabels";
-import {
-  Printer,
-  Eye,
-  RotateCcw,
-  ZoomIn,
-  ZoomOut,
-  FileText,
-  Package,
-  Layers,
-  CheckCircle2,
-  AlertTriangle,
-  MapPin,
-  Barcode,
-  Building2,
-  DollarSign,
-  Receipt,
-  FileCheck,
-} from "lucide-react";
+import { Printer, Eye, RotateCcw, ZoomIn, ZoomOut, FileText, Package, Layers, CheckCircle2, Barcode, DollarSign, Receipt } from "lucide-react";
 import { buildOnlineOrderThermalDoc } from "@/lib/printing/onlineOrder";
 import { docToHtml } from "@/lib/printing/render";
-import {
-  shippingLabelHtml,
-  printShippingLabel,
-  type ShippingLabelData,
-} from "@/lib/printing/shippingLabel";
-import {
-  buildShiftOpenHtml,
-  printShiftOpenBrowser,
-  buildShiftCloseHtml,
-  printShiftCloseBrowser,
-  buildBrowserReceiptHtml,
-  printBrowserReceipt,
-  type ShiftOpenData,
-  type ShiftCloseData,
-  type ReceiptBrowserData,
-} from "@/lib/printing/printTemplates";
+import { shippingLabelHtml, type ShippingLabelData } from "@/lib/printing/shippingLabel";
+import { buildShiftOpenHtml, buildShiftCloseHtml, buildBrowserReceiptHtml, type ShiftOpenData, type ShiftCloseData, type ReceiptBrowserData } from "@/lib/printing/printTemplates";
 import { useSearch } from "wouter";
 import { openPrintWindow } from "@/lib/printing/brand";
 
@@ -51,7 +21,9 @@ export default function PrintStudio() {
   const searchDoc = useMemo(() => {
     try {
       const params = new URLSearchParams(searchStr);
-      return (params.get("doc") as DocType) || null;
+      const doc = params.get("doc");
+      return (["online_order", "shipping_label", "shift_open", "shift_close", "pos_receipt"] as const)
+        .includes(doc as DocType) ? doc as DocType : null;
     } catch {
       return null;
     }
@@ -272,6 +244,7 @@ export default function PrintStudio() {
   useEffect(() => {
     let active = true;
     setIsBuilding(true);
+    setGeneratedHtml("");
 
     const generate = async () => {
       try {
@@ -301,6 +274,8 @@ export default function PrintStudio() {
         }
       } catch (err) {
         if (active) {
+          setGeneratedHtml("");
+          notify.err("تعذّر إنشاء معاينة الطباعة");
           setIsBuilding(false);
         }
       }
@@ -321,35 +296,20 @@ export default function PrintStudio() {
   ]);
 
   // دالة الطباعة التجريبية
-  const handlePrint = async () => {
-    if (activeDoc === "online_order") {
-      const doc = buildOnlineOrderThermalDoc(sampleOnlineOrder);
-      const html = await docToHtml(doc);
-      openPrintWindow(html, "width=420,height=750");
-    } else if (activeDoc === "shipping_label") {
-      const size =
-        shippingSize === "80x120"
-          ? { widthMm: 80, heightMm: 120 }
-          : shippingSize === "120x80"
-            ? { widthMm: 120, heightMm: 80 }
-            : { widthMm: 80, heightMm: 50 };
-      await printShippingLabel(sampleShippingLabel, { size });
-    } else if (activeDoc === "shift_open") {
-      printShiftOpenBrowser(sampleShiftOpen);
-    } else if (activeDoc === "shift_close") {
-      printShiftCloseBrowser(sampleShiftClose);
-    } else if (activeDoc === "pos_receipt") {
-      printBrowserReceipt(samplePosReceipt);
+  const handlePrint = () => {
+    if (isBuilding || !generatedHtml) return;
+    if (!openPrintWindow(generatedHtml, "width=900,height=1100")) {
+      notify.err("حجب المتصفح نافذة الطباعة. اسمح بالنوافذ المنبثقة ثم أعد المحاولة.");
     }
   };
 
   return (
-    <div className="flex-1 space-y-4 p-4 md:p-8 pt-6">
+    <div className="min-w-0 space-y-3 p-3 sm:p-4">
       <PageHeader
         title="استوديو المطبوعات والهوية البصرية"
         description="معاينة وفحص كافة مطبوعات النظام (حرارية 80مم، بوالص شحن 80×120مم، تقارير الورديات) بدقة 100% بتصميم أحادي اللون أسود وأبيض عالي التباين، جداول كاملة الحدود، باركود وكيو آر وتفقيط مالي."
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             {/* تحكم الزوم */}
             <div className="flex items-center border rounded-lg p-1 bg-background shadow-xs">
               <Button
@@ -384,7 +344,7 @@ export default function PrintStudio() {
               </Button>
             </div>
 
-            <Button onClick={handlePrint} className="gap-2 font-bold shadow-md">
+            <Button disabled={isBuilding || !generatedHtml} onClick={handlePrint} className="gap-2 font-bold shadow-md">
               <Printer className="size-4" />
               طباعة تجريبية الآن
             </Button>
@@ -438,7 +398,7 @@ export default function PrintStudio() {
             </CardHeader>
             <CardContent className="space-y-3 pt-0 text-xs">
               {/* تبديل حالة الأصل / إعادة الطباعة */}
-              <div className="flex items-center justify-between p-2.5 rounded-lg border bg-muted/30">
+              <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-lg border bg-muted/30">
                 <div>
                   <div className="font-semibold text-foreground">حالة المستند (Audit)</div>
                   <div className="text-[11px] text-muted-foreground">
@@ -456,7 +416,7 @@ export default function PrintStudio() {
               </div>
 
               {/* طريقة الدفع: نقدي COD مقابل مدفوع مسبقاً */}
-              <div className="flex items-center justify-between p-2.5 rounded-lg border bg-muted/30">
+              <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-lg border bg-muted/30">
                 <div>
                   <div className="font-semibold text-foreground">طريقة الدفع</div>
                   <div className="text-[11px] text-muted-foreground">
@@ -473,9 +433,13 @@ export default function PrintStudio() {
                 </Button>
               </div>
 
+              {activeDoc !== "shift_open" && activeDoc !== "shift_close" && <div className="flex flex-wrap items-center gap-2 rounded-md border p-2">
+                <Button size="sm" variant={hasLongNotes ? "secondary" : "outline"} aria-pressed={hasLongNotes} onClick={() => setHasLongNotes(value => !value)}>نصوص وأسماء طويلة</Button>
+                {activeDoc === "shipping_label" && <Button size="sm" variant={hasLocationCoords ? "secondary" : "outline"} aria-pressed={hasLocationCoords} onClick={() => setHasLocationCoords(value => !value)}>إحداثيات الموقع</Button>}
+              </div>}
               {/* قياس ورقة ملصق الشحن */}
               {activeDoc === "shipping_label" && (
-                <div className="flex items-center justify-between p-2.5 rounded-lg border bg-muted/30">
+                <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-lg border bg-muted/30">
                   <div>
                     <div className="font-semibold text-foreground">مقاس ورقة الملصق</div>
                     <div className="text-[11px] text-muted-foreground">
@@ -518,13 +482,8 @@ export default function PrintStudio() {
           </Card>
 
           {/* بطاقة المواصفات القياسية والمعايير المطبقة */}
-          <Card className="border-border/60">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-xs font-bold flex items-center gap-1.5 text-muted-foreground">
-                <CheckCircle2 className="size-3.5 text-primary" />
-                المعايير المعتمدة في المطبوعات
-              </CardTitle>
-            </CardHeader>
+          <details className="rounded-md border border-border/60">
+            <summary className="cursor-pointer p-3 text-xs font-semibold text-muted-foreground">المعايير المعتمدة في المطبوعات</summary>
             <CardContent className="space-y-2 text-xs text-muted-foreground pt-0">
               <div className="flex items-start gap-2">
                 <div className="size-1.5 rounded-full bg-primary mt-1.5 shrink-0" />
@@ -557,12 +516,12 @@ export default function PrintStudio() {
                 </div>
               </div>
             </CardContent>
-          </Card>
+          </details>
         </div>
 
         {/* مساحة المعاينة الحية */}
-        <div className="lg:col-span-8 flex flex-col items-center">
-          <div className="w-full mb-3 flex items-center justify-between text-xs text-muted-foreground px-2">
+        <div className="min-w-0 lg:col-span-8 flex flex-col items-center">
+          <div className="w-full mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground px-2">
             <span className="flex items-center gap-1.5 font-medium">
               <Eye className="size-4 text-primary" />
               معاينة مطابقة تماماً للمخرجات الفعلية (Scale: {zoomLevel}%)

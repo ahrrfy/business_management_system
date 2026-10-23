@@ -80,7 +80,7 @@ export function StudentDetailsDialog({
       onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onCancel(); } }}
       style={{ position: "fixed", inset: 0, background: C.overlay, zIndex: 62, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
     >
-      <div style={{ width: "min(520px, 100%)", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 14, overflow: "hidden" }}>
+      <div style={{ width: "min(520px, 100%)", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 14, maxHeight: "calc(100dvh - 2rem)", overflowY: "auto" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "12px 16px", borderBottom: `1px solid ${C.border}`, background: C.card }}>
           <GraduationCap aria-hidden size={20} color={C.primary} />
           <div style={{ minWidth: 0 }}>

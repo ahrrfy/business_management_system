@@ -233,7 +233,8 @@ export function CreditApprovalDialog({
           background: C.card,
           borderRadius: 16,
           padding: "24px 28px",
-          width: 400,
+          width: "min(400px, calc(100vw - 2rem))",
+          maxHeight: "calc(100dvh - 2rem)", overflowY: "auto",
           boxShadow: "0 20px 56px rgb(0 0 0/.3)",
           animation: "popIn .2s ease",
         }}

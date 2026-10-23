@@ -1,3 +1,4 @@
+import { OrderDispatchDialog, type DispatchOrder } from "@/components/store/OrderDispatchDialog";
 /**
  * OrderFulfillment — الجهة الإدارية لطلبات المتجر الإلكترونية (لوحة تنفيذ بنمط Kanban خفيف).
  *
@@ -8,30 +9,7 @@
  */
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import { useSearch } from "wouter";
-import {
-  AlertTriangle,
-  Bell,
-  Check,
-  CheckCircle2,
-  ClipboardList,
-  Eye,
-  FileText,
-  Loader2,
-  MapPin,
-  Package,
-  PackageCheck,
-  Pencil,
-  Printer,
-  ReceiptText,
-  RefreshCw,
-  Store,
-  Trophy,
-  Truck,
-  UserCheck,
-  Volume2,
-  VolumeX,
-  X,
-} from "lucide-react";
+import { AlertTriangle, Check, CheckCircle2, ClipboardList, Eye, FileText, Loader2, MapPin, Package, PackageCheck, Pencil, Printer, ReceiptText, RefreshCw, Store, Trophy, Truck, UserCheck, Volume2, VolumeX, X } from "lucide-react";
 import { ReceptionCommandAlert } from "@/components/reception/ReceptionCommandAlert";
 import { ReceptionDuplicateAlertView } from "@/components/reception/ReceptionDuplicateAlert";
 import { canCheckReceptionDuplicates, type ReceptionDuplicateResult } from "@shared/receptionDuplicateOrders";
@@ -106,14 +84,7 @@ function normalizeOrderStatus(status: string): OnlineOrderStatus {
   return (ONLINE_ORDER_STATUSES as readonly string[]).includes(status) ? (status as OnlineOrderStatus) : "PENDING";
 }
 
-type OrderRow = {
-  id: number;
-  orderNumber: string;
-  total: string;
-  customerName: string | null;
-  deliveryFree?: boolean;
-  deliveryWaivedAmount?: string;
-};
+
 type Row = RouterOutputs["storeAdmin"]["orders"]["list"][number];
 
 // حجم صفحة الطلبات — نفس الافتراضي التاريخي (كان سقفاً صامتاً)، الآن صفحة أولى من ترقيم حقيقي.
@@ -127,7 +98,7 @@ export default function OrderFulfillment() {
   // مدى تاريخ الطلب (إنشاء الطلب) — محفوظ في querystring (يعيش مع الرجوع من التفاصيل، يُشارَك رابطاً).
   const [f, setF, resetF] = useUrlFilters({ from: "", to: "" });
   const [printingId, setPrintingId] = useState<number | null>(null);
-  const [dispatchTarget, setDispatchTarget] = useState<OrderRow | null>(null);
+  const [dispatchTarget, setDispatchTarget] = useState<DispatchOrder | null>(null);
   const [cancelTarget, setCancelTarget] = useState<{
     id: number;
     orderNumber: string;
@@ -1060,7 +1031,7 @@ export default function OrderFulfillment() {
       />
 
       {dispatchTarget && (
-        <DispatchModal
+        <OrderDispatchDialog
           order={dispatchTarget}
           pending={dispatchM.isPending}
           onCancel={() => !dispatchM.isPending && setDispatchTarget(null)}
@@ -1115,141 +1086,6 @@ export default function OrderFulfillment() {
         open={leaderboardOpen}
         onOpenChange={setLeaderboardOpen}
       />
-    </div>
-  );
-}
-
-/** منتقي المندوب عند الإرسال — يُنشئ الفاتورة (COD) + يُسند الطلب. z-[100] (فوق Radix، تحت confirm). */
-function DispatchModal({
-  order,
-  pending,
-  onCancel,
-  onConfirm,
-}: {
-  order: OrderRow;
-  pending: boolean;
-  onCancel: () => void;
-  onConfirm: (input: { partyId: number; externalTrackingRef?: string }) => void;
-}) {
-  const [partyId, setPartyId] = useState<number | null>(null);
-  const [externalTrackingRef, setExternalTrackingRef] = useState("");
-  const partiesQ = trpc.storeAdmin.orders.parties.useQuery();
-  // الشركات الخارجية بلا حساب أصبحت تُغلق بكشف الشركة الممسوح؛ لذلك تظهر هنا مع المناديب،
-  // ويُفرض عليها رقم البوليصة أدناه بدل حجبها وإبقاء الطلب بلا مسار إرسال.
-  const parties = partiesQ.data ?? [];
-  const selectedParty = parties.find((p) => p.id === partyId);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !pending) onCancel();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [pending, onCancel]);
-
-  return (
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-label="إرسال الطلب لمندوب"
-      onClick={onCancel}
-    >
-      <div className="w-full max-w-md rounded-2xl bg-card p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
-        <div className="mb-1 flex items-center gap-2 text-base font-bold">
-          <Truck aria-hidden className="size-5 text-teal-600" />
-          إرسال الطلب <span dir="ltr" className="tracking-wider">{order.orderNumber}</span>
-        </div>
-        {order.deliveryFree ? (
-          <div className="mb-3 space-y-1 rounded-xl border border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)] p-3 text-xs leading-relaxed text-foreground">
-            <div className="flex items-center gap-1.5 font-bold text-[var(--sem-pos)]">
-              <Truck aria-hidden className="size-4 shrink-0" />
-              <span>توصيل مجاني — تتحمل المكتبة أجرته ({money(order.deliveryWaivedAmount)} د.ع)</span>
-            </div>
-            <p className="text-muted-foreground">
-              يُحصّل المندوب <b className="text-foreground">{money(order.total)} د.ع</b> فقط عند التسليم (COD) من{" "}
-              {order.customerName ? <b className="text-foreground">{order.customerName}</b> : "العميل"} (قيمة البضاعة كاملةً). لا يدفع الزبون أي أجرة توصيل؛ وتُستحق أجرة التوصيل للمندوب على عاتق المكتبة وتُسوّى دفترياً.
-            </p>
-          </div>
-        ) : (
-          <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
-            {/* ١٠/٨ تمرير كامل: order.total (بضاعة+شحن) = ما يُحصّله المندوب عند الباب، لا «قيمة
-                الفاتورة/الذمّة» — الفاتورة وذمّة العميل تُنشآن بقيمة البضاعة فقط، وأجرة التوصيل
-                يقبضها المندوب من الزبون ويحتفظ بها (خارج الفاتورة). لا تُلصِق الرقم بـ«فاتورة». */}
-            يُحصّل المندوب <b className="text-foreground">{money(order.total)} د.ع</b> عند التسليم (COD) من{" "}
-            {order.customerName ? <b className="text-foreground">{order.customerName}</b> : "العميل"}: قيمة البضاعة
-            تُنشأ فاتورةً على ذمّته ويورّدها للمكتبة، وأجرة التوصيل يحتفظ بها المندوب. يُخصم المخزون ثم يُسند
-            الطلب للمندوب المُختار.
-          </p>
-        )}
-
-        {partiesQ.isLoading ? (
-          <div className="py-8 text-center text-muted-foreground">
-            <Loader2 aria-hidden className="mx-auto size-6 animate-spin" />
-          </div>
-        ) : parties.length === 0 ? (
-          <div className="rounded-lg bg-muted p-4 text-center text-sm text-muted-foreground">
-            لا توجد جهة توصيل نشطة. أضف مندوباً أو شركةً من إدارة التوصيل ثم أعد المحاولة.
-          </div>
-        ) : (
-          <div className="max-h-64 space-y-2 overflow-y-auto">
-            {parties.map((p) => (
-              <label
-                key={p.id}
-                className={`flex cursor-pointer items-center gap-3 rounded-xl border p-3 transition ${
-                  partyId === p.id ? "border-teal-500 bg-teal-50 dark:bg-teal-500/10" : "border-border hover:bg-accent"
-                }`}
-              >
-                <input
-                  type="radio"
-                  name="dispatch-party"
-                  className="size-4 accent-teal-600"
-                  checked={partyId === p.id}
-                  onChange={() => {
-                    setPartyId(p.id);
-                    setExternalTrackingRef("");
-                  }}
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 text-sm font-bold">
-                    {p.name}
-                    <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
-                      {p.partyType === "COMPANY" ? "شركة توصيل" : "مندوب"}
-                    </span>
-                  </div>
-                  <div className="mt-0.5 flex items-center gap-3 text-xs text-muted-foreground">
-                    {p.phone && <span dir="ltr">{p.phone}</span>}
-                    {p.openConsignments > 0 && <span>قيد التوصيل: {p.openConsignments}</span>}
-                  </div>
-                </div>
-              </label>
-            ))}
-          </div>
-        )}
-
-        {selectedParty?.partyType === "COMPANY" && (
-          <div className="mt-3 space-y-1">
-            <label htmlFor="store-dispatch-tracking" className="text-xs font-bold">
-              رقم تتبّع / بوليصة الشركة <span className="text-destructive">*</span>
-            </label>
-            <Input id="store-dispatch-tracking" value={externalTrackingRef} onChange={(event) => setExternalTrackingRef(event.target.value)} placeholder="امسح باركود بوليصة الشركة أو أدخل الرقم" maxLength={100} dir="ltr" className="font-mono" />
-          </div>
-        )}
-
-        <div className="mt-4 flex items-center justify-end gap-2">
-          <button onClick={onCancel} disabled={pending} className="rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition hover:bg-accent disabled:opacity-50">
-            إلغاء
-          </button>
-          <button
-            onClick={() => partyId != null && onConfirm({ partyId, externalTrackingRef: externalTrackingRef.trim() || undefined })}
-            disabled={pending || partyId == null || parties.length === 0 || (selectedParty?.partyType === "COMPANY" && !externalTrackingRef.trim())}
-            className="flex items-center gap-1.5 rounded-lg bg-teal-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-teal-700 disabled:opacity-50"
-          >
-            {pending ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Check aria-hidden className="size-4" />}
-            تأكيد الإرسال
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

@@ -353,6 +353,7 @@ const escLike = (s: string) => s.replace(/[!%_]/g, "!$&");
 
 /** فلاتر القائمة/العدّادات المشتركة — تُبنى شروطاً واحدة كي لا تنحرف البطاقات عن الجدول. */
 const woListFilters = {
+  customerId: z.number().int().positive().optional(),
   q: z.string().trim().max(120).optional(),
   /** نطاق تاريخ الإنشاء YYYY-MM-DD (شامل لليوم بحدود UTC — إطار businessDay). */
   from: z.string().optional(),
@@ -373,9 +374,8 @@ const woListFilters = {
    */
   awaitingPickupDays: z.number().int().min(1).max(365).optional(),
 };
-
 /** يحوّل فلاتر q/from/to/deliveredFrom/deliveredTo/assignedTo إلى شروط SQL — q على رقم الأمر/العنوان/اسم العميل (join العملاء قائم). */
-function buildWoFilterConds(input: { q?: string; from?: string; to?: string; deliveredFrom?: string; deliveredTo?: string; assignedTo?: number; awaitingPickupDays?: number } | undefined): SQL[] {
+export function buildWoFilterConds(input: { customerId?: number; q?: string; from?: string; to?: string; deliveredFrom?: string; deliveredTo?: string; assignedTo?: number; awaitingPickupDays?: number } | undefined): SQL[] {
   const conds: SQL[] = [];
   const search = input?.q?.trim();
   if (search) {
@@ -428,6 +428,7 @@ function buildWoFilterConds(input: { q?: string; from?: string; to?: string; del
     }
   }
   if (input?.assignedTo != null) conds.push(eq(workOrders.assignedTo, input.assignedTo));
+  if (input?.customerId != null) conds.push(eq(workOrders.customerId, input.customerId));
   if (input?.awaitingPickupDays != null) {
     // الأمرُ جاهزٌ فعلاً، ولحظةُ جاهزيّته أقدمُ من العتبة. `workSeconds IS NULL` تُستبعَد صراحةً:
     // جاهزيّةٌ بلا مؤقّت (بياناتٌ قديمة) لا يُعرف عمرُها ⇒ ادّعاؤها «متأخّرة» كذبٌ، وادّعاؤها
@@ -440,7 +441,6 @@ function buildWoFilterConds(input: { q?: string; from?: string; to?: string; del
   }
   return conds;
 }
-
 /**
  * اِستقبال (تكامل التوصيل، ٤/٨): رؤية حالة الإرسالية/الجهة داخل قوائم أوامر الشغل — **نفس بوّابة**
  * `deliveryReadProcedure` بالضبط (`requireModule("store","READ")`) كي لا ينحرف من يرى DeliveryHub

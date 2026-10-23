@@ -1,3 +1,4 @@
+import { ErrorState } from "@/components/PageState";
 // مركز التقارير الموحّد — المدخل الواحد لكل تقارير النظام (شامل الأنماط).
 // يعرض مؤشّرات حيّة + بطاقات مصنّفة محجوبة بالأدوار + بحث + مفضّلة (localStorage).
 // البطاقات الجاهزة تربط الصفحة الفعلية؛ بطاقات «قريباً» تُظهر الرؤية الشاملة وتُفعَّل مرحلةً بمرحلة.
@@ -321,13 +322,14 @@ export default function ReportsCenter() {
         })}
       </div>
 
+      {metrics.isError && <ErrorState message={metrics.error.message} onRetry={() => void metrics.refetch()} />}
       {/* مؤشّرات حيّة */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
         <Card>
           <CardContent className="pt-4 pb-3 text-center">
             <p className="text-xs text-muted-foreground">المخزون المنخفض</p>
             <p className="text-2xl font-bold tabular-nums text-[var(--stock-low)]" dir="ltr">
-              {metrics.isLoading ? "…" : (metrics.data?.lowStockCount ?? 0)}
+              {metrics.isLoading ? "…" : metrics.isError ? "—" : (metrics.data?.lowStockCount ?? 0)}
             </p>
             <p className="mt-0.5 text-[10px] text-muted-foreground">منتجات تحت حدّ الطلب</p>
           </CardContent>
@@ -336,7 +338,7 @@ export default function ReportsCenter() {
           <CardContent className="pt-4 pb-3 text-center">
             <p className="text-xs text-muted-foreground">الذمم المتأخّرة (+30 يوم)</p>
             <p className="text-xl font-bold tabular-nums text-money-negative" dir="ltr">
-              {metrics.isLoading ? "…" : formatIqd(metrics.data?.overdueAR.total ?? 0)}
+              {metrics.isLoading ? "…" : metrics.isError ? "—" : formatIqd(metrics.data?.overdueAR.total ?? 0)}
             </p>
             <p className="mt-0.5 text-[10px] text-muted-foreground">{metrics.data?.overdueAR.count ?? 0} فاتورة</p>
           </CardContent>

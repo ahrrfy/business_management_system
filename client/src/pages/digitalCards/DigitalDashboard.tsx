@@ -7,14 +7,14 @@ import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { Button } from "@/components/ui/button";
+
 import { Input } from "@/components/ui/input";
 import { fmtAr } from "@/lib/money";
 import { RowActions } from "@/components/list/RowActions";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { digitalSaleIntentStatusLabel } from "@shared/digitalSaleIntentStatus";
 import { AlertTriangle, CreditCard, TrendingUp, Wallet } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useLocation } from "wouter";
 
 const selectCls = "flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm";
@@ -80,37 +80,32 @@ export default function DigitalDashboard() {
   // التالي عند البناء كي يطابق الفترة نصف المفتوحة [from, to) في كل نقاط هذا الداشبورد.
   const [customFrom, setCustomFrom] = useState(() => dayOffset(-6));
   const [customTo, setCustomTo] = useState(() => dayOffset(0));
-  const [branchId, setBranchId] = useState<number | "">("");
+  const [branchId, setBranchId] = useState<number | "" | null>(null);
 
   // مدير الفرع يرى فرعه فوراً؛ لا نعرض له «كل الفروع» بينما الخادم يفرض فرعه في الخلفية.
-  useEffect(() => {
-    if (branchId === "" && me.data?.branchId != null) {
-      setBranchId(Number(me.data.branchId));
-    }
-  }, [branchId, me.data?.branchId]);
 
+
+  const validRange = range !== "custom" || (!!customFrom && !!customTo && customFrom <= customTo);
   const period = useMemo(() => {
     if (range === "today") return { from: dayOffset(0), to: dayOffset(1) };
     if (range === "week") return { from: dayOffset(-6), to: dayOffset(1) };
     if (range === "month") return { from: dayOffset(-29), to: dayOffset(1) };
-    return { from: customFrom, to: nextDayUtc(customTo) };
-  }, [range, customFrom, customTo]);
+    return validRange ? { from: customFrom, to: nextDayUtc(customTo) } : { from: dayOffset(0), to: dayOffset(1) };
+  }, [range, customFrom, customTo, validRange]);
 
-  const branchArg = branchId
-    ? Number(branchId)
-    : me.data?.branchId != null
-      ? Number(me.data.branchId)
-      : undefined;
+  const selectedBranch = branchId ?? (me.data?.branchId != null ? Number(me.data.branchId) : "");
+  const branchArg = canPickBranch ? (selectedBranch === "" ? undefined : selectedBranch)
+    : me.data?.branchId != null ? Number(me.data.branchId) : undefined;
 
-  const summary = digitalAccess.query("digitalCards.dashboard.summary", trpc.digitalCards.dashboard.summary.useQuery({ ...period, branchId: branchArg }, { enabled: digitalAccess.can("digitalCards.dashboard.summary") }));
+  const summary = digitalAccess.query("digitalCards.dashboard.summary", trpc.digitalCards.dashboard.summary.useQuery({ ...period, branchId: branchArg }, { enabled: validRange && digitalAccess.can("digitalCards.dashboard.summary") }));
   const balances = digitalAccess.query("digitalCards.dashboard.providerBalances", trpc.digitalCards.dashboard.providerBalances.useQuery({ branchId: branchArg }, { enabled: digitalAccess.can("digitalCards.dashboard.providerBalances") }));
   const dues = digitalAccess.query("digitalCards.dashboard.postpaidDues", trpc.digitalCards.dashboard.postpaidDues.useQuery(undefined, { enabled: digitalAccess.can("digitalCards.dashboard.postpaidDues") }));
   const health = digitalAccess.query("digitalCards.dashboard.priceHealth", trpc.digitalCards.dashboard.priceHealth.useQuery({ branchId: branchArg }, { enabled: digitalAccess.can("digitalCards.dashboard.priceHealth") }));
   const pending = digitalAccess.query("digitalCards.dashboard.pendingExecutions", trpc.digitalCards.dashboard.pendingExecutions.useQuery({ branchId: branchArg }, { enabled: digitalAccess.can("digitalCards.dashboard.pendingExecutions") }));
-  const top = digitalAccess.query("digitalCards.dashboard.topOfferings", trpc.digitalCards.dashboard.topOfferings.useQuery({ ...period, branchId: branchArg, limit: 8 }, { enabled: digitalAccess.can("digitalCards.dashboard.topOfferings") }));
-  const recon = digitalAccess.query("digitalCards.dashboard.reconciliationStatus", trpc.digitalCards.dashboard.reconciliationStatus.useQuery({ ...period, branchId: branchArg }, { enabled: digitalAccess.can("digitalCards.dashboard.reconciliationStatus") }));
+  const top = digitalAccess.query("digitalCards.dashboard.topOfferings", trpc.digitalCards.dashboard.topOfferings.useQuery({ ...period, branchId: branchArg, limit: 8 }, { enabled: validRange && digitalAccess.can("digitalCards.dashboard.topOfferings") }));
+  const recon = digitalAccess.query("digitalCards.dashboard.reconciliationStatus", trpc.digitalCards.dashboard.reconciliationStatus.useQuery({ ...period, branchId: branchArg }, { enabled: validRange && digitalAccess.can("digitalCards.dashboard.reconciliationStatus") }));
 
-  const s = summary.data;
+  const s = validRange ? summary.data : undefined;
   const showCost = digitalAccess.costVisible(s?.profit != null) && s?.profit != null;
 
   return (
@@ -122,7 +117,7 @@ export default function DigitalDashboard() {
           <div className="flex flex-wrap items-end gap-2">
             {canPickBranch && (
               <AppSelect
-                value={String(branchId)}
+                value={String(selectedBranch)}
                 onValueChange={(v) => setBranchId(v ? Number(v) : "")}
                 aria-label="الفرع"
                 className="w-40"
@@ -163,6 +158,7 @@ export default function DigitalDashboard() {
         }
       />
 
+      {!validRange && <p role="alert" className="text-sm text-destructive">أدخل تاريخ بداية ونهاية صالحين، على أن تكون النهاية بعد البداية أو مساوية لها.</p>}
       {/* بطاقات الملخّص */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard label="كروت مُباعة" value={String(s?.cards ?? 0)} sub={`${s?.invoices ?? 0} فاتورة`} icon={CreditCard} />
@@ -195,9 +191,9 @@ export default function DigitalDashboard() {
                 {health.data?.needsAttention.length} بطاقة غير جاهزة للبيع — افتح جدول الجاهزية لمعرفة السبب والإجراء
               </span>
             )}
-            {(recon.data?.open ?? 0) > 0 && (
+            {((validRange ? recon.data : undefined)?.open ?? 0) > 0 && (
               <span className="rounded-md border px-3 py-1.5">
-                {recon.data?.open} اختلاف في رصيد جهاز يحتاج معالجة ({fmtAr(recon.data?.openVarianceTotal ?? "0")})
+                {(validRange ? recon.data : undefined)?.open} اختلاف في رصيد جهاز يحتاج معالجة ({fmtAr((validRange ? recon.data : undefined)?.openVarianceTotal ?? "0")})
               </span>
             )}
           </CardContent>
@@ -258,7 +254,7 @@ export default function DigitalDashboard() {
         <CardContent className="p-0">
           <DataTable
             {...PANEL_TABLE}
-            data={top.data ?? []}
+            data={validRange ? top.data ?? [] : []}
             loading={top.isLoading}
             emptyText="لا مبيعات في هذه الفترة."
             columns={[

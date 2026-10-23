@@ -1,3 +1,4 @@
+import { paymentMethodCompact, paymentMethodProse } from "@shared/terms";
 import React, { useState } from "react";
 import { AlertTriangle, CheckCircle2, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -17,13 +18,7 @@ import {
 
 export type PendingWorkOrderRefund = RouterOutputs["workOrders"]["pendingCancellationRefunds"][number];
 
-const PAYMENT_METHOD_LABEL: Record<string, string> = {
-  CARD: "بطاقة مصرفية",
-  CHECK: "شيك",
-  TRANSFER: "تحويل مصرفي",
-  WALLET: "محفظة إلكترونية",
-  EXCHANGE: "حساب صرافة",
-};
+
 
 export type WorkOrderRefundApprovalPayload = {
   receiptId: number;
@@ -123,7 +118,7 @@ export function WorkOrderRefundApprovalsView({
     const approved = await confirm({
       variant: "danger",
       title: "تأكيد تنفيذ رد العربون خارج النظام",
-      description: `هل نُفّذ فعلياً رد ${fmtAr(row.amount)} د.ع بطريقة ${PAYMENT_METHOD_LABEL[row.paymentMethod ?? ""] ?? row.paymentMethod ?? "غير محددة"} إلى ${row.customerName ?? `العميل #${row.customerId ?? "—"}`}؟ الاعتماد يثبت إيصال الصرف وقيد PAYMENT_OUT ولا يعني مجرد الموافقة الإدارية.`,
+      description: `هل نُفّذ فعلياً رد ${fmtAr(row.amount)} د.ع بطريقة ${row.paymentMethod ? paymentMethodProse(row.paymentMethod) : "غير محددة"} إلى ${row.customerName ?? `العميل #${row.customerId ?? "—"}`}؟ الاعتماد يثبت إيصال الصرف وقيد PAYMENT_OUT ولا يعني مجرد الموافقة الإدارية.`,
       confirmText: "نعم، نُفّذ الرد واعتمده",
       cancelText: "تراجع",
       requireText: "نُفّذ",
@@ -215,7 +210,7 @@ export function WorkOrderRefundApprovalRow({
           </div>
           <dl className="grid grid-cols-2 gap-x-5 gap-y-2 sm:grid-cols-3">
             <div><dt className="text-xs text-muted-foreground">المبلغ</dt><dd dir="ltr" className="font-bold tabular-nums text-end">{fmtAr(row.amount)} د.ع</dd></div>
-            <div><dt className="text-xs text-muted-foreground">طريقة الرد</dt><dd className="font-medium">{PAYMENT_METHOD_LABEL[row.paymentMethod ?? ""] ?? row.paymentMethod ?? "—"}</dd></div>
+            <div><dt className="text-xs text-muted-foreground">طريقة الرد</dt><dd className="font-medium">{paymentMethodCompact(row.paymentMethod)}</dd></div>
             <div><dt className="text-xs text-muted-foreground">الطرف</dt><dd className="font-medium">{row.customerName ?? `عميل #${row.customerId ?? "—"}`}</dd></div>
             <div><dt className="text-xs text-muted-foreground">أنشأ الطلب</dt><dd>{row.creatorName ?? `مستخدم #${row.createdBy ?? "—"}`}</dd></div>
             <div><dt className="text-xs text-muted-foreground">وقت الطلب</dt><dd dir="ltr" className="text-end">{fmtDateTime(row.createdAt)}</dd></div>

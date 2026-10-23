@@ -1,44 +1,44 @@
-import { type WorkOrderStatus, WO_NEXT_STATUS, WO_STAGE_INDEX, workOrderStatusHue, workOrderStatusLabel, workOrderTimelineLabel } from "@shared/workOrderStatus";
-import { isKanbanStateApplicable, isWorkOrderKanbanState, nextKanbanStateInCycle, workOrderKanbanDotCls, workOrderKanbanStateLabel, type WorkOrderKanbanState } from "@shared/workOrderKanban";
+import { type WorkOrderStatus, WO_NEXT_STATUS } from "@shared/workOrderStatus";
+import { nextKanbanStateInCycle, type WorkOrderKanbanState } from "@shared/workOrderKanban";
 import "./WorkOrders.board.css";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useLocation } from "wouter";
+import { useLocation } from "wouter";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Input } from "@/components/ui/input";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { AlertTriangle, ArrowRight, Calendar, CheckCircle2, ChevronRight, FileText, Home, LayoutGrid, Package, Pencil, Printer, Receipt, Rows3, SlidersHorizontal, Timer, Truck, Wrench, X, Zap } from "lucide-react";
-import type { ColumnDef } from "@tanstack/react-table";
-import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { AlertTriangle, Calendar, FileText, LayoutGrid, Rows3, SlidersHorizontal, Timer, Truck, Wrench, X, Zap } from "lucide-react";
+
+import { trpc } from "@/lib/trpc";
 import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { exportRows } from "@/lib/export";
-import { fmtAr, fmtInt, D, positiveDiff, round2, toAccessibleMoney } from "@/lib/money";
-import { MoneyInput } from "@/components/form/MoneyInput";
-import { fmtDate, fmtDateTime, toDate } from "@/lib/date";
-import { printWorkOrder } from "@/lib/printing/printTemplates";
-import { printWorkOrderReceipt } from "@/lib/printing/print";
-import { printShippingLabel, type ShippingLabelData } from "@/lib/printing/shippingLabel";
+import { fmtAr, fmtInt, D, toAccessibleMoney } from "@/lib/money";
+
+
+
+
+
 import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
-import { RowActions, type RowAction } from "@/components/list";
-import { DataTable } from "@/components/data-table/DataTable";
-import { MobileDataCard } from "@/components/ui/MobileDataCard";
-import { WhatsAppIcon, WhatsAppShare } from "@/components/WhatsAppShare";
-import { ChannelBadge, ChannelMark } from "@/components/ChannelBadge";
+
+
+
+
+
 import { WORK_ORDER_CHANNELS, receptionChannelLabel, receptionChannelOptions } from "@shared/receptionChannel";
-import { CopyInline } from "@/components/CopyButton";
-import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
-import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
-import { buildWorkOrderStatusMessage } from "@/lib/whatsapp";
+
+
+
+
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+
 import CustomerPicker from "@/components/CustomerPicker";
-import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
+
 import { Contact360Panel } from "@/components/contacts/Contact360Panel";
-import { isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+
 import { deriveWoDeliveryState, woDeliveryStateLabel } from "@shared/workOrderDeliveryState";
 import { WorkOrderRefundApprovals } from "@/components/workOrders/WorkOrderRefundApprovals";
 import { WorkOrderControlApprovals } from "@/components/workOrders/WorkOrderControlApprovals";
@@ -47,22 +47,10 @@ import { canCancelWorkOrder } from "@/lib/workOrderRefundPolicy";
 import { EditWorkOrderDialog } from "@/components/workOrders/EditWorkOrderDialog";
 import { mayRequestWorkOrderControl } from "@shared/workOrderControlAuthority";
 import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
-import { ACTION_LABELS } from "@shared/actionLabels";
+
 import { ErrorState, LoadingState } from "@/components/PageState";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import {
-  type WO,
-  type Detail,
-  type Status,
-  type DeliverTarget,
-  type ColKey,
-  STATUSES,
-  COLUMNS,
-  PRIORITIES,
-  colVars,
-  dueDayDelta,
-  workOrderCardLabel,
-} from "@/components/workOrders/workOrderTypes";
+
+import { type WO, type Detail, type Status, type DeliverTarget, COLUMNS, PRIORITIES, colVars, dueDayDelta, workOrderCardLabel } from "@/components/workOrders/workOrderTypes";
 import { WorkOrderKanbanCard } from "@/components/workOrders/WorkOrderKanbanCard";
 import { WorkOrderPreviewDrawer } from "@/components/workOrders/WorkOrderPreviewDrawer";
 import { WorkOrdersTable } from "@/components/workOrders/WorkOrdersTable";
@@ -141,7 +129,7 @@ export default function WorkOrders() {
     const saved = window.localStorage.getItem("wo-density");
     return saved === "compact" || saved === "detailed" || saved === "normal" ? saved : "normal";
   }, []);
-  const [f, setF, resetF] = useUrlFilters({ q: "", pri: "all", ch: "all", branch: "all", from: "", to: "", tech: "all", scope: "branch", stale: "", gb: "stage", late: "", unassigned: "", dueToday: "", blocked: "", d: defaultDensity, deliv: "" });
+  const [f, setF, resetF] = useUrlFilters({ customerId: "", q: "", pri: "all", ch: "all", branch: "all", from: "", to: "", tech: "all", scope: "branch", stale: "", gb: "stage", late: "", unassigned: "", dueToday: "", blocked: "", d: defaultDensity, deliv: "" });
   useEffect(() => {
     if (f.d === "compact" || f.d === "normal" || f.d === "detailed") {
       window.localStorage.setItem("wo-density", f.d);
@@ -167,7 +155,9 @@ export default function WorkOrders() {
   const dragRef = useRef<{ order: WO; startX: number; startY: number; ox: number; oy: number; moved: boolean } | null>(null);
 
   // فلاتر خادمية مشتركة بين القائمتين والعدّادات والتصدير — بناء واحد فلا تنحرف الأرقام عن الجدول.
+  const customerFilterId = Number(f.customerId);
   const serverFilters = {
+    customerId: Number.isSafeInteger(customerFilterId) && customerFilterId > 0 ? customerFilterId : undefined,
     q: dq.trim() || undefined,
     from: f.from || undefined,
     to: f.to || undefined,
@@ -615,7 +605,7 @@ export default function WorkOrders() {
     navigate(`/work-orders/${d.id}?cancel=1`);
   }
 
-  const anyFilter = f.q || f.pri !== "all" || f.ch !== "all" || f.branch !== "all" || f.from || f.to || f.tech !== "all" || f.stale === "1" || (f.scope || "branch") !== "branch" || f.late === "1" || f.unassigned === "1" || f.dueToday === "1" || f.blocked === "1" || f.deliv === "1";
+  const anyFilter = f.customerId || f.q || f.pri !== "all" || f.ch !== "all" || f.branch !== "all" || f.from || f.to || f.tech !== "all" || f.stale === "1" || (f.scope || "branch") !== "branch" || f.late === "1" || f.unassigned === "1" || f.dueToday === "1" || f.blocked === "1" || f.deliv === "1";
   const secondaryFilterCount =
     (f.pri !== "all" ? 1 : 0) +
     (f.ch !== "all" ? 1 : 0) +
@@ -860,6 +850,7 @@ export default function WorkOrders() {
           </PopoverContent>
         </Popover>
 
+        {serverFilters.customerId && <button type="button" className="wob-chip" onClick={() => setF({ customerId: "" })}>عميل #{serverFilters.customerId} <X aria-hidden className="size-3 inline-block" /></button>}
         {anyFilter && <button className="wob-chip-clear" onClick={resetF}>مسح الفلاتر <X aria-hidden className="size-3.5 inline-block align-text-bottom" /></button>}
 
         <div className="ms-auto flex items-center gap-1.5">

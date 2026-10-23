@@ -7,23 +7,7 @@
  */
 
 import React, { useState } from "react";
-import {
-  Sparkles,
-  RefreshCw,
-  Sliders,
-  CheckCircle2,
-  Layers,
-  Eye,
-  Save,
-  Loader2,
-  Briefcase,
-  GraduationCap,
-  PenTool,
-  Tag,
-  LayoutGrid,
-  Palette,
-  ChevronLeft,
-} from "lucide-react";
+import { Sparkles, RefreshCw, Sliders, CheckCircle2, Eye, Loader2, Briefcase, GraduationCap, PenTool, Tag, LayoutGrid, Palette } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -59,8 +43,9 @@ export default function StoreThematicCollectionsPanel() {
   const [isRecalculating, setIsRecalculating] = useState(false);
 
   const config = query.data?.config;
-  const cards = query.data?.algorithmicCards ?? [];
   const currentMode = config?.mode ?? "AUTO";
+  const customCards = (config?.customCards ?? []).filter((card) => (card.itemCount ?? 0) > 0);
+  const cards = currentMode === "CUSTOM" && customCards.length > 0 ? customCards : query.data?.algorithmicCards ?? [];
 
   async function handleRecalculate() {
     setIsRecalculating(true);
