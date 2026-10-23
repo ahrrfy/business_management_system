@@ -2070,6 +2070,9 @@ export function evaluateDeployCiCheckRuns(headCheckRuns) {
               ? Number(r.id)
               : null,
           name: String(r?.name ?? "").trim(),
+          appSlug: String(r?.app?.slug ?? r?.appSlug ?? "")
+            .trim()
+            .toLowerCase(),
           status: String(r?.status ?? "").toLowerCase(),
           conclusion: String(r?.conclusion ?? "").toLowerCase(),
           event: String(r?.event ?? r?.check_suite?.event ?? "")
@@ -2120,24 +2123,55 @@ export function evaluateDeployCiCheckRuns(headCheckRuns) {
     return validEvent && validBranch;
   };
 
-  const eligibleRuns = head.filter(isMainPushRun);
-  if (eligibleRuns.length === 0) {
-    return {
-      ok: false,
-      code: "DEPLOY_CI_NOT_GREEN",
-    };
-  }
+  const NON_MAIN_DEPLOY_EVENTS = new Set([
+    "pull_request",
+    "pull_request_target",
+    "merge_group",
+  ]);
+  const isExplicitNonMainOrPrRun = (r) => {
+    if (r.hasPullRequests) return true;
+    if (NON_MAIN_DEPLOY_EVENTS.has(r.event)) return true;
+    if (
+      r.headBranch &&
+      r.headBranch !== "main" &&
+      r.headBranch !== "refs/heads/main"
+    ) {
+      return true;
+    }
+    return false;
+  };
 
-  const dedupedByName = new Map();
-  for (const run of eligibleRuns) {
-    const existing = dedupedByName.get(run.name);
+  // فحوص main المؤكّدة وحدها تُشبِع الفحوص المطلوبة (audit و check-test-build)،
+  // بينما الفحوص الخارجية غير المربوطة بـ Actions (مثل GitGuardian عبر check_suite بلا
+  // provenance من /actions/runs) لا تُشبِع الفحوص المطلوبة لكنها تحجب النشر إن فشلت أو عُلِّقت.
+  const eligibleMainPushRuns = head.filter(isMainPushRun);
+  const extraBlockingRuns = head.filter(
+    (r) => !isMainPushRun(r) && !isExplicitNonMainOrPrRun(r),
+  );
+
+  const dedupedMainPushByName = new Map();
+  for (const run of eligibleMainPushRuns) {
+    const existing = dedupedMainPushByName.get(run.name);
     if (!existing || shouldReplaceDeployCheckRun(existing, run)) {
-      dedupedByName.set(run.name, run);
+      dedupedMainPushByName.set(run.name, run);
     }
   }
-  const latestRuns = [...dedupedByName.values()];
 
-  const failedOnHead = latestRuns.filter(
+  const dedupedExtraBlockingByKey = new Map();
+  for (const run of extraBlockingRuns) {
+    const key = `${run.appSlug}::${run.name}`;
+    const existing = dedupedExtraBlockingByKey.get(key);
+    if (!existing || shouldReplaceDeployCheckRun(existing, run)) {
+      dedupedExtraBlockingByKey.set(key, run);
+    }
+  }
+
+  const latestBlockingRuns = [
+    ...dedupedMainPushByName.values(),
+    ...dedupedExtraBlockingByKey.values(),
+  ];
+
+  const failedOnHead = latestBlockingRuns.filter(
     (r) =>
       r.status === "completed" &&
       !ALLOWED_DEPLOY_CHECK_CONCLUSIONS.has(r.conclusion),
@@ -2146,11 +2180,13 @@ export function evaluateDeployCiCheckRuns(headCheckRuns) {
     return {
       ok: false,
       code: "DEPLOY_CI_FAILED_ON_HEAD",
-      failedChecks: failedOnHead.map((r) => r.name),
+      failedChecks: [...new Set(failedOnHead.map((r) => r.name))],
     };
   }
 
-  const pendingOnHead = latestRuns.filter((r) => r.status !== "completed");
+  const pendingOnHead = latestBlockingRuns.filter(
+    (r) => r.status !== "completed",
+  );
   if (pendingOnHead.length > 0) {
     return {
       ok: false,
@@ -2158,8 +2194,15 @@ export function evaluateDeployCiCheckRuns(headCheckRuns) {
     };
   }
 
+  if (eligibleMainPushRuns.length === 0) {
+    return {
+      ok: false,
+      code: "DEPLOY_CI_NOT_GREEN",
+    };
+  }
+
   const allRequiredGreen = REQUIRED_DEPLOY_CHECKS.every((reqName) => {
-    const match = dedupedByName.get(reqName);
+    const match = dedupedMainPushByName.get(reqName);
     return Boolean(
       match && match.status === "completed" && match.conclusion === "success",
     );
@@ -2810,7 +2853,40 @@ async function dispatch() {
           started_at: "2026-10-22T10:05:00Z",
           completed_at: "",
         },
-      ]).code !== "DEPLOY_CI_NOT_GREEN"
+      ]).code !== "DEPLOY_CI_NOT_GREEN" ||
+      evaluateDeployCiCheckRuns([
+        ...green,
+        {
+          id: 20,
+          name: "GitGuardian Security Checks",
+          app: { slug: "gitguardian" },
+          status: "completed",
+          conclusion: "failure",
+          check_suite: { id: 888 },
+        },
+      ]).code !== "DEPLOY_CI_FAILED_ON_HEAD" ||
+      evaluateDeployCiCheckRuns([
+        ...green,
+        {
+          id: 21,
+          name: "GitGuardian Security Checks",
+          app: { slug: "gitguardian" },
+          status: "in_progress",
+          conclusion: "",
+          check_suite: { id: 888 },
+        },
+      ]).code !== "DEPLOY_CI_NOT_GREEN" ||
+      !evaluateDeployCiCheckRuns([
+        ...green,
+        {
+          id: 22,
+          name: "GitGuardian Security Checks",
+          app: { slug: "gitguardian" },
+          status: "completed",
+          conclusion: "success",
+          check_suite: { id: 888 },
+        },
+      ]).ok
     ) {
       throw new Error("DEPLOY_CI_GATE_SELFTEST_FAILED");
     }

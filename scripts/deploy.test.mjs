@@ -1084,6 +1084,116 @@ try {
     ]).code,
     "DEPLOY_CI_NOT_GREEN",
   );
+  // Third-party GitHub App check runs (check_suite without Actions provenance) must block when failed or pending
+  assert.deepEqual(
+    evaluateDeployCiCheckRuns([
+      {
+        name: "audit",
+        status: "completed",
+        conclusion: "success",
+        event: "push",
+        head_branch: "main",
+      },
+      {
+        name: "check-test-build",
+        status: "completed",
+        conclusion: "success",
+        event: "push",
+        head_branch: "main",
+      },
+      {
+        id: 201,
+        name: "GitGuardian Security Checks",
+        app: { slug: "gitguardian" },
+        status: "completed",
+        conclusion: "failure",
+        check_suite: { id: 888 },
+      },
+    ]),
+    {
+      ok: false,
+      code: "DEPLOY_CI_FAILED_ON_HEAD",
+      failedChecks: ["GitGuardian Security Checks"],
+    },
+  );
+  assert.equal(
+    evaluateDeployCiCheckRuns([
+      {
+        name: "audit",
+        status: "completed",
+        conclusion: "success",
+        event: "push",
+        head_branch: "main",
+      },
+      {
+        name: "check-test-build",
+        status: "completed",
+        conclusion: "success",
+        event: "push",
+        head_branch: "main",
+      },
+      {
+        id: 202,
+        name: "GitGuardian Security Checks",
+        app: { slug: "gitguardian" },
+        status: "in_progress",
+        conclusion: "",
+        check_suite: { id: 888 },
+      },
+    ]).code,
+    "DEPLOY_CI_NOT_GREEN",
+  );
+  // Re-run of third-party check suite supersedes older failure; PR-bound third-party failure does not contaminate main
+  assert.deepEqual(
+    evaluateDeployCiCheckRuns([
+      {
+        name: "audit",
+        status: "completed",
+        conclusion: "success",
+        event: "push",
+        head_branch: "main",
+      },
+      {
+        name: "check-test-build",
+        status: "completed",
+        conclusion: "success",
+        event: "push",
+        head_branch: "main",
+      },
+      {
+        id: 203,
+        name: "GitGuardian Security Checks",
+        app: { slug: "gitguardian" },
+        status: "completed",
+        conclusion: "failure",
+        check_suite: { id: 888 },
+        completed_at: "2026-10-22T10:01:00Z",
+      },
+      {
+        id: 204,
+        name: "GitGuardian Security Checks",
+        app: { slug: "gitguardian" },
+        status: "completed",
+        conclusion: "success",
+        check_suite: { id: 888 },
+        completed_at: "2026-10-22T10:06:00Z",
+      },
+      {
+        id: 205,
+        name: "GitGuardian Security Checks",
+        app: { slug: "gitguardian" },
+        status: "completed",
+        conclusion: "failure",
+        check_suite: { id: 889 },
+        pull_requests: [{ number: 1532 }],
+      },
+    ]),
+    {
+      ok: true,
+      code: "OK",
+      source: "head",
+    },
+  );
   await assert.rejects(
     () =>
       assertRemoteCiGreenForDeploy("deadbeef", {
