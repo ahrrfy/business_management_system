@@ -146,6 +146,25 @@ export async function repairHistoricalFeeWithholding(
       const fee = money(target.fee);
       const oldGross = money(target.batchGross);
       const net = money(target.actualBatchNet);
+      const accrual = (
+        await tx
+          .select()
+          .from(accountingEntries)
+          .where(
+            eq(accountingEntries.dedupeKey, `DELIVERY_FEE_ACCRUAL:${cn.id}`),
+          )
+          .for("share")
+          .limit(1)
+      )[0];
+      if (
+        !accrual ||
+        Number(accrual.invoiceId) !== Number(cn.invoiceId) ||
+        Number(accrual.deliveryPartyId) !== Number(cn.partyId) ||
+        !money(accrual.amount).eq(fee) ||
+        !money(accrual.cost).eq(fee)
+      ) {
+        fail("قيد استحقاق الأجرة الأصلي لا يطابق التصحيح");
+      }
       if (
         fee.lte(0) ||
         !oldGross.minus(fee).eq(net) ||
@@ -228,6 +247,10 @@ export async function repairHistoricalFeeWithholding(
           out.referenceNumber !== key ||
           out.direction !== "OUT" ||
           out.cashBucket !== "TREASURY" ||
+          out.status !== "COMPLETED" ||
+          out.approvalStatus !== "APPROVED" ||
+          Number(out.branchId) !== branchId ||
+          out.paymentMethod !== "CASH" ||
           out.shiftId != null ||
           !money(out.amount).eq(fee) ||
           !money(rm.feesTotal).eq(fee) ||
@@ -278,22 +301,20 @@ export async function repairHistoricalFeeWithholding(
         amount: fee,
         operation: "تصحيح نقد توريد سابق زيد بأجرة محسومة",
       });
-      const inserted = await tx
-        .insert(receipts)
-        .values({
-          branchId,
-          shiftId: null,
-          direction: "OUT",
-          cashBucket: "TREASURY",
-          paymentMethod: "CASH",
-          status: "COMPLETED",
-          approvalStatus: "APPROVED",
-          amount: toDbMoney(fee),
-          partyType: "OTHER",
-          referenceNumber: key,
-          description: `تصحيح نقد دفتري: أجرة حسمت سابقاً من ${rm.remittanceNumber}؛ لا صرف فعلي جديد`,
-          createdBy: actor.userId,
-        });
+      const inserted = await tx.insert(receipts).values({
+        branchId,
+        shiftId: null,
+        direction: "OUT",
+        cashBucket: "TREASURY",
+        paymentMethod: "CASH",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+        amount: toDbMoney(fee),
+        partyType: "OTHER",
+        referenceNumber: key,
+        description: `تصحيح نقد دفتري: أجرة حسمت سابقاً من ${rm.remittanceNumber}؛ لا صرف فعلي جديد`,
+        createdBy: actor.userId,
+      });
       const receiptOutId = extractInsertId(inserted);
       await postFeePayment(tx, cn, fee, true, receiptOutId, key, actor, null, {
         cashBucket: "TREASURY",
@@ -317,31 +338,30 @@ export async function repairHistoricalFeeWithholding(
           cashReceived: toDbMoney(money(line.grossApplied).minus(fee)),
         })
         .where(eq(deliveryRemittanceLines.id, Number(line.id)));
-      await tx
-        .insert(auditLogs)
-        .values({
-          userId: actor.userId,
-          action: "delivery.historicalFeeWithholding",
-          entityType: "deliveryRemittance",
-          entityId: String(rm.id),
-          oldValue: {
-            feesTotal: rm.feesTotal,
-            netRemitted: rm.netRemitted,
-            receiptOutId: rm.receiptOutId,
-            cashReceived: line.cashReceived,
-          },
-          newValue: {
-            key,
-            consignmentId: Number(cn.id),
-            fee: toDbMoney(fee),
-            net: toDbMoney(net),
-            receiptOutId,
-            evidence: options.evidence.trim(),
-            newCustomerCollection: "0.00",
-            newDeliveryExpense: "0.00",
-            physicalCashDisbursement: "0.00",
-          },
-        });
+      await tx.insert(auditLogs).values({
+        userId: actor.userId,
+        action: "delivery.historicalFeeWithholding",
+        entityType: "deliveryRemittance",
+        entityId: String(rm.id),
+        oldValue: {
+          feesTotal: rm.feesTotal,
+          netRemitted: rm.netRemitted,
+          receiptOutId: rm.receiptOutId,
+          cashReceived: line.cashReceived,
+        },
+        newValue: {
+          key,
+          consignmentId: Number(cn.id),
+          fee: toDbMoney(fee),
+          net: toDbMoney(net),
+          receiptOutId,
+          evidence: options.evidence.trim(),
+          newCustomerCollection: "0.00",
+          newDeliveryExpense: "0.00",
+          physicalCashDisbursement: "0.00",
+          originalAccrualEntryId: Number(accrual.id),
+        },
+      });
       result.push({
         consignmentId: Number(cn.id),
         remittanceId: Number(rm.id),

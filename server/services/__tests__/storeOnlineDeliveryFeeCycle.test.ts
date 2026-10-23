@@ -800,6 +800,17 @@ it("adopts an owner-confirmed historical fee, preserves closed drawers and repla
     )[0].status,
   ).toBe("REPLAY_VERIFIED");
   expect(await db().select().from(s.receipts)).toEqual(after);
+  await db()
+    .update(s.receipts)
+    .set({ status: "REVERSED" })
+    .where(eq(s.receipts.id, applied[0].receiptOutId!));
+  await expect(
+    repairHistoricalFeeWithholding([target], actor, {
+      apply: true,
+      evidence: "confirmed actual net",
+    }),
+  ).rejects.toThrow(/غير متطابق/);
+
   expect(
     (await db().select().from(s.accountingEntries)).filter(
       (r) => r.entryType === "PAYMENT_IN",
