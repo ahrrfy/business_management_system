@@ -1,3 +1,5 @@
+import { invoicePrintAmounts } from "./receiptLayoutInvoiceAmounts";
+import { buildBrowserReceiptHtml } from "./receiptLayoutHtml";
 import { paymentMethodTerm } from "@shared/terms";
 /**
  * قوالب طباعة مكتبة العربية.
@@ -121,6 +123,11 @@ export interface InvoicePrintData {
   taxRate?: number | null;
   total: string | number;
   paidAmount?: string | number | null;
+  /** Current server facts; historical total and items stay unchanged. */
+  remainingAmount?: string | number | null;
+  currentTotal?: string | number | null;
+  returnedTotal?: string | number | null;
+  status?: string | null;
   /** رصيد العميل الحالي في دفتر الأستاذ (يُشتق منه الرصيد النهائي بعد الفاتورة والكان قبلها). */
   customerBalance?: string | number | null;
   /** رصيد العميل قبل هذه الفاتورة بصورة صريحة إن عُرف. */
@@ -157,22 +164,8 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<boolean> {
       : (origin ? `${origin}/verify?ref=${encodeURIComponent(d.invoiceNumber)}` : `/verify?ref=${encodeURIComponent(d.invoiceNumber)}`));
   const qrSvg = await qrCodeSvg(qrTarget, { size: 88, margin: 1 }).catch(() => '');
 
-  const remainingNum = Math.max(Number(d.total) - Number(d.paidAmount ?? 0), 0);
-  const isCod = d.paymentMode === 'COD';
-  const statusLabel = remainingNum <= 0.001
-    ? 'مدفوعة'
-    : (isCod ? 'دفع عند الاستلام (COD)' : (Number(d.paidAmount ?? 0) > 0 ? 'مدفوعة جزئياً' : 'آجلة'));
-  const statusColor = remainingNum <= 0.001 ? '#0D6B52' : (isCod ? '#0284C7' : (Number(d.paidAmount ?? 0) > 0 ? '#92400E' : '#8A1F11'));
-
-  // حساب الرصيد السابق والرصيد النهائي (الذمة الكلية) من دفتر الأستاذ الفعلي
-  let balAfter = d.customerBalanceAfter != null ? Number(d.customerBalanceAfter) : null;
-  let balBefore = d.customerBalanceBefore != null ? Number(d.customerBalanceBefore) : null;
-  if (balAfter == null && d.customerBalance != null && d.customerBalance !== '') {
-    balAfter = Number(d.customerBalance);
-    if (balBefore == null) {
-      balBefore = balAfter - remainingNum;
-    }
-  }
+  const facts = invoicePrintAmounts(d);
+  const { statusLabel, statusColor } = facts;
 
   return printSalesInvoiceV2({
     invoiceNumber: d.invoiceNumber,
@@ -188,8 +181,8 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<boolean> {
     paymentMethod: d.paymentMethod,
     paymentLegs: d.paymentLegs ?? null,
     salesRep: d.salespersonName,
-    customerBalanceBefore: balBefore,
-    customerBalanceAfter: balAfter,
+    customerBalanceBefore: facts.balanceBefore,
+    customerBalanceAfter: facts.balanceAfter,
     items: d.items.map((it) => ({
       productName: it.productName,
       unitName: it.unitName,
@@ -210,6 +203,10 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<boolean> {
     taxAmount: d.taxAmount ?? null,
     taxRate: d.taxRate ?? null,
     total: d.total,
+    currentTotal: facts.currentTotal,
+    returnedTotal: facts.returnedTotal,
+    remainingAmount: facts.remainingAmount,
+    status: d.status,
     paidAmount: d.paidAmount ?? null,
     qrSvg: qrSvg || null,
     settings: {
@@ -669,6 +666,7 @@ export function printSupplierStmt(d: SupplierStmtPrintData): boolean {
 
 export interface ARAgingPrintData {
   date: string;
+  filters?: string;
   rows: { name: string; d0_30: number; d31_60: number; d61_90: number; d91p: number; unpaidTotal: number; unbucketed?: number; currentBalance: number; }[];
   totals: { d0_30: number; d31_60: number; d61_90: number; d91p: number; unpaidTotal: number; unbucketed?: number; currentBalance: number; };
 }
@@ -717,7 +715,7 @@ export function printARAging(d: ARAgingPrintData): void {
   </div>`;
 
   const body = [
-    docHeader('تقرير أعمار الذمم المدينة', undefined, d.date),
+    docHeader('تقرير أعمار الذمم المدينة', undefined, d.date, d.filters ? [{ label: 'الفلاتر', value: d.filters }] : undefined),
     agingSummaryBars(pcts, t.unpaidTotal),
     docTable(cols, rows, false),
     totalsRow,
@@ -733,6 +731,7 @@ export function printARAging(d: ARAgingPrintData): void {
 
 export interface APAgingPrintData {
   date: string;
+  filters?: string;
   rows: { name: string; d0_30: number; d31_60: number; d61_90: number; d91p: number; unpaidTotal: number; unbucketed?: number; currentBalance: number; }[];
   totals: { d0_30: number; d31_60: number; d61_90: number; d91p: number; unpaidTotal: number; unbucketed?: number; currentBalance: number; };
 }
@@ -781,7 +780,7 @@ export function printAPAging(d: APAgingPrintData): void {
   </div>`;
 
   const body = [
-    docHeader('تقرير أعمار الذمم الدائنة', undefined, d.date),
+    docHeader('تقرير أعمار الذمم الدائنة', undefined, d.date, d.filters ? [{ label: 'الفلاتر', value: d.filters }] : undefined),
     agingSummaryBars(pcts, t.unpaidTotal),
     docTable(cols, rows, false),
     totalsRow,
@@ -987,6 +986,11 @@ export interface ReceiptBrowserData {
   change?: string | number | null;
   /** مبلغ الآجل/الذمة في البيع الآجل (يظهر صفّاً بارزاً بعد المدفوع) */
   credit?: string | number | null;
+  /** Authoritative current invoice facts; original totals/items remain historical. */
+  returnedTotal?: string | number | null;
+  currentTotal?: string | number | null;
+  remainingAmount?: string | number | null;
+  status?: string | null;
   /** نمط الدفع (PREPAID/COD/CREDIT) — للتمييز بين المتبقي الآجل والمطلوب عند الاستلام (COD) */
   paymentMode?: string | null;
   /** طريقة الدفع كنصّ جاهز للعرض (نقدي/بطاقة/تحويل/محفظة/صك/مختلطة) — تظهر في كتلة الإجماليات */
@@ -1025,232 +1029,7 @@ export interface ReceiptBrowserData {
   } | null;
 }
 
-export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
-  const logo = logoUrl();
-
-  let barSvg = '';
-  try {
-    const bc = code128Svg(d.receiptNumber, { moduleWidth: 0.8, height: 35, showText: true });
-    barSvg = bc.svg;
-  } catch { /* ignore */ }
-
-  const storeQr = qrSvgSync(STOREFRONT_URL, 72);
-
-  const metaRows = [
-    ['رقم الإيصال', `#${esc(d.receiptNumber)}`],
-    ['التاريخ والوقت', `${esc(d.date)}${d.time ? ` · ${esc(d.time)}` : ''}`],
-    ...(d.cashierName ? [['الكاشير', esc(d.cashierName)]] : []),
-    ...(d.shiftId != null ? [['الوردية', `#${d.shiftId}`]] : []),
-    ...(d.customerName ? [['العميل', esc(d.customerName)]] : []),
-  ].map(([l, v]) => `
-    <tr>
-      <td style="width:36%;font-weight:900;border:1px solid #000;padding:1mm 1.5mm;font-size:11px;">${l}</td>
-      <td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;font-size:11px;">${v}</td>
-    </tr>
-  `).join('');
-
-  const itemRows = d.items.map(it => `
-    <tr>
-      <td style="padding:1.5mm 1mm;font-weight:900;font-size:11.5px;color:#000;line-height:1.25;border:1px solid #000;">${esc(it.name)}</td>
-      <td style="text-align:center;padding:1.5mm 1mm;font-weight:900;font-size:12px;color:#000;white-space:nowrap;font-variant-numeric:tabular-nums;border:1px solid #000;direction:ltr;">${fmtQty(it.quantity)}</td>
-      <td style="text-align:left;padding:1.5mm 1mm;font-weight:800;font-size:11.5px;color:#000;direction:ltr;white-space:nowrap;font-variant-numeric:tabular-nums;border:1px solid #000;">${fmt(it.price)}</td>
-      <td style="text-align:left;padding:1.5mm 1mm;font-weight:900;font-size:12px;color:#000;direction:ltr;white-space:nowrap;font-variant-numeric:tabular-nums;border:1px solid #000;">${fmt(it.total)}</td>
-    </tr>
-  `).join('');
-
-  const contactRows = RECEIPT_PHONES.map(p => `
-    <tr>
-      <td style="padding:1mm 1.5mm;font-weight:900;font-size:10.5px;color:#000;border:1px solid #000;">${esc(p.l)}</td>
-      <td style="padding:1mm 1.5mm;text-align:left;direction:ltr;font-weight:900;font-size:11px;letter-spacing:0.3px;color:#000;border:1px solid #000;">${esc(p.n)}</td>
-    </tr>
-  `).join('');
-
-  // البطاقات الرقمية
-  const digitalBlocks = buildDigitalBlocks(d.digitalDetails, { maskPhones: d.maskPhones });
-  const digitalHtml = digitalBlocks.length
-    ? `<table style="width:100%;font-size:10.5px;border-collapse:collapse;border:1.5px solid #000;margin:2mm 0;color:#000;">
-        <thead><tr style="background:#000;color:#fff;"><th colspan="2" style="padding:1mm;font-weight:900;border:1px solid #000;text-align:right;">بيانات الشحن الرقمي</th></tr></thead>
-        <tbody>` +
-      digitalBlocks.map(b => `
-        <tr><td colspan="2" style="font-weight:900;padding:1mm 1.5mm;background:#000;color:#fff;border:1px solid #000;">${esc(b.lineName)}</td></tr>
-        ${b.rows.map(r => `<tr>
-          <td style="width:38%;font-weight:800;padding:1mm 1.5mm;border:1px solid #000;">${esc(r.label)}</td>
-          <td style="font-weight:900;padding:1mm 1.5mm;direction:${/هاتف|رقم|ID/.test(r.label) ? 'ltr' : 'rtl'};text-align:${/هاتف|رقم|ID/.test(r.label) ? 'left' : 'right'};border:1px solid #000;">${esc(r.value)}</td>
-        </tr>`).join('')}
-      `).join('') + `</tbody></table>`
-    : '';
-
-  // كتلة التوصيل
-  const deliveryHtml = d.delivery ? (() => {
-    const dl = d.delivery!;
-    const fee = Number(dl.fee || 0);
-    const shop = dl.feeCollection === "SHOP";
-    const who = dl.feeCollection === "COUNTER" ? "مقبوضة في الاستقبال" : shop ? "على المكتبة — مجاناً للزبون" : "يقبضها المندوب من الزبون";
-    const remainingMerchandise = Math.max(0, Number(d.total || 0) - Number(d.paid || 0));
-    const courierFee = dl.feeCollection === "COURIER" ? fee : 0;
-    const totalToCollect = remainingMerchandise + courierFee;
-
-    let customerDueRow = "";
-    if (totalToCollect === 0) {
-      customerDueRow = `
-        <tr style="background:#000;color:#fff;font-weight:900;">
-          <td style="border:1px solid #000;padding:1.2mm 1.5mm;">المطلوب من الزبون</td>
-          <td style="border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">0 د.ع (مدفوع بالكامل)</td>
-        </tr>`;
-    } else if (remainingMerchandise === 0 && courierFee > 0) {
-      customerDueRow = `
-        <tr style="background:#000;color:#fff;font-weight:900;">
-          <td style="border:1px solid #000;padding:1.2mm 1.5mm;">يدفع الزبون (أجرة التوصيل فقط)</td>
-          <td style="border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(courierFee)} د.ع</td>
-        </tr>
-        <tr>
-          <td colspan="2" style="border:1px solid #000;padding:1mm 1.5mm;text-align:center;font-weight:800;font-size:10px;background:#f5f5f5;">
-            البضاعة مدفوعة مسبقاً بالكامل
-          </td>
-        </tr>`;
-    } else if (courierFee > 0) {
-      customerDueRow = `
-        <tr style="background:#000;color:#fff;font-weight:900;">
-          <td style="border:1px solid #000;padding:1.2mm 1.5mm;">يدفع الزبون شاملاً التوصيل</td>
-          <td style="border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(totalToCollect)} د.ع</td>
-        </tr>
-        <tr>
-          <td colspan="2" style="border:1px solid #000;padding:0.8mm 1.5mm;text-align:center;font-weight:700;font-size:9.5px;color:#333;">
-            (متبقي البضاعة: ${fmt(remainingMerchandise)} + أجرة التوصيل: ${fmt(courierFee)})
-          </td>
-        </tr>`;
-    } else {
-      customerDueRow = `
-        <tr style="background:#000;color:#fff;font-weight:900;">
-          <td style="border:1px solid #000;padding:1.2mm 1.5mm;">يدفع الزبون (متبقي البضاعة)</td>
-          <td style="border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(remainingMerchandise)} د.ع</td>
-        </tr>`;
-    }
-
-    return `
-    <table style="width:100%;font-size:11px;border-collapse:collapse;border:1.5px solid #000;margin:2mm 0;color:#000;">
-      <thead><tr style="background:#000;color:#fff;"><th colspan="2" style="padding:1.2mm;font-weight:900;border:1px solid #000;">بيانات التوصيل</th></tr></thead>
-      <tbody>
-        <tr><td style="width:35%;font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">الجهة</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">${esc(dl.partyName)}</td></tr>
-        ${dl.address ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">العنوان</td><td style="font-weight:800;border:1px solid #000;padding:1mm 1.5mm;">${esc(dl.address)}</td></tr>` : ''}
-        <tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">أجرة التوصيل</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">${shop ? "مجاناً" : fmt(fee)} (${who})</td></tr>
-        ${customerDueRow}
-      </tbody>
-    </table>`;
-  })() : '';
-
-  const body = `
-  <div style="text-align:center;margin-bottom:2mm;">
-    <img src="${logo}" style="width:18mm;height:18mm;object-fit:contain;filter:grayscale(100%) contrast(1000%);" alt="" onerror="this.style.display='none'">
-    <div style="font-size:18px;font-weight:900;margin-top:1mm;color:#000;">${esc(CO.short || CO.sub)}</div>
-    <div style="font-size:12.5px;font-weight:900;margin-top:0.3mm;color:#000;">${esc(CO.subtitle)}</div>
-    <div style="font-size:9.5px;font-weight:800;color:#000;margin-top:0.3mm;">${esc(CO.name)}</div>
-  </div>
-
-  <div style="border-top:2px solid #000;border-bottom:2px solid #000;text-align:center;padding:1.2mm 0;margin:2mm 0;">
-    <div style="font-size:14px;font-weight:900;letter-spacing:0.5px;">إيصال مبيعات التجزئة</div>
-  </div>
-
-  <div style="margin:2mm 0;text-align:center;">${barSvg}</div>
-
-  <table style="width:100%;border-collapse:collapse;border:1.5px solid #000;margin:2mm 0;color:#000;">
-    <tbody>${metaRows}</tbody>
-  </table>
-
-  ${d.revision ? `
-  <table style="width:100%;border-collapse:collapse;border:2px solid #000;margin:2mm 0;font-size:10.5px;color:#000;">
-    <thead><tr style="background:#000;color:#fff;"><th colspan="2" style="padding:1mm;font-weight:900;">فاتورة معدلة — بديلة عن: ${esc(d.revision.originalReceiptNumber)}</th></tr></thead>
-    <tbody>
-      <tr><td style="width:35%;font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">طلب التعديل</td><td style="font-weight:800;border:1px solid #000;padding:1mm 1.5mm;">${esc(d.revision.revisedByName)} — ${esc(d.revision.revisedAt)}</td></tr>
-      ${d.revision.approvedByName ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">الاعتماد</td><td style="font-weight:800;border:1px solid #000;padding:1mm 1.5mm;">${esc(d.revision.approvedByName)}${d.revision.approvedAt ? ` — ${esc(d.revision.approvedAt)}` : ''}</td></tr>` : ''}
-    </tbody>
-  </table>` : ''}
-
-  <table style="width:100%;font-size:11px;border-collapse:collapse;color:#000;table-layout:fixed;border:1.5px solid #000;margin:2mm 0;">
-    <thead><tr style="background:#000;color:#fff;">
-      <th style="text-align:right;padding:1.5mm 1mm;font-weight:900;font-size:11.5px;border:1px solid #000;">المنتج</th>
-      <th style="text-align:center;padding:1.5mm 1mm;font-weight:900;font-size:11.5px;border:1px solid #000;width:9mm;">عدد</th>
-      <th style="text-align:left;padding:1.5mm 1mm;font-weight:900;font-size:11.5px;border:1px solid #000;width:16mm;">السعر</th>
-      <th style="text-align:left;padding:1.5mm 1mm;font-weight:900;font-size:11.5px;border:1px solid #000;width:18mm;">المبلغ</th>
-    </tr></thead>
-    <tbody>${itemRows}</tbody>
-  </table>
-
-  ${digitalHtml}
-
-  <!-- جدول الإجماليات والتفقيط -->
-  <table style="width:100%;font-size:11px;border-collapse:collapse;border:1.5px solid #000;margin:2mm 0;color:#000;">
-    <tbody>
-      <tr><td style="width:55%;font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">المجموع</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.subtotal)}</td></tr>
-      ${Number(d.discount ?? 0) > 0 ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">الخصم</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">-${fmt(d.discount)}</td></tr>` : ''}
-      ${Number(d.tax ?? 0) > 0 ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">الضريبة</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.tax)}</td></tr>` : ''}
-      ${d.cashRounding != null && Number(d.cashRounding) !== 0 ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">تقريب نقدي</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${Number(d.cashRounding) > 0 ? '+' : ''}${fmt(d.cashRounding)}</td></tr>` : ''}
-      <tr style="background:#000;color:#fff;font-weight:900;">
-        <td style="border:1px solid #000;padding:1.5mm;font-size:13px;">الإجمالي النهائي</td>
-        <td style="border:1px solid #000;padding:1.5mm;direction:ltr;text-align:left;font-size:15px;font-variant-numeric:tabular-nums;white-space:nowrap;">${fmt(d.total)} د.ع</td>
-      </tr>
-      <tr>
-        <td colspan="2" style="text-align:center;font-weight:900;font-size:10px;padding:1.2mm;border:1px solid #000;">
-          ${formatArabicMoneyWords(d.total)}
-        </td>
-      </tr>
-      ${d.paymentMethod ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">طريقة الدفع</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">${formatPaymentMethodPrintHtml(d.paymentMethod, esc, { heightPx: 14 })}</td></tr>` : ''}
-      ${(d.paymentLegs && d.paymentLegs.length > 1) ? d.paymentLegs.map((leg) => `<tr><td style="font-weight:800;border:1px solid #000;padding:0.8mm 1.5mm;font-size:10.5px;">• ${formatPaymentMethodPrintHtml(`${leg.method}${leg.reference ? ` (${leg.reference})` : ''}`, esc, { heightPx: 12 })}</td><td style="font-weight:900;border:1px solid #000;padding:0.8mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;font-size:10.5px;">${fmt(leg.amount)}</td></tr>`).join('') : ''}
-      ${d.paid != null ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">المبلغ المدفوع</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.paid)}</td></tr>` : ''}
-      ${d.change != null ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">المبلغ المتبقي (الفكة)</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.change)}</td></tr>` : ''}
-      ${Number(d.heldDeposits ?? 0) > 0 ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">عربون محتجز</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.heldDeposits)}</td></tr>` : ''}
-      ${Number(d.credit ?? 0) > 0 ? `<tr style="border:2px solid #000;"><td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;">${d.paymentMode === "COD" ? "المطلوب عند الاستلام (COD)" : "متبقٍّ (حساب آجل)"}</td><td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.credit)} د.ع</td></tr>` : ''}
-    </tbody>
-  </table>
-
-  ${deliveryHtml}
-
-  <div style="text-align:center;margin:2.5mm 0;padding:2mm;border:1.5px solid #000;background:#fff;color:#000;">
-    <div style="font-size:12px;font-weight:900;margin-bottom:0.5mm;color:#000;">متجرنا الإلكتروني — تسوق وتوصيل مباشر</div>
-    <div style="margin:1.5mm auto;display:flex;justify-content:center;">${storeQr}</div>
-    <div style="font-size:10.5px;font-weight:900;direction:ltr;letter-spacing:0.3px;color:#000;">alarabiya.online/store</div>
-    <div style="font-size:9pt;font-weight:800;margin-top:1mm;color:#000;">امسح الرمز للتسوق السريع</div>
-  </div>
-
-  <table style="width:100%;font-size:10px;border-collapse:collapse;margin:2mm 0;color:#000;border:1.5px solid #000;">
-    <thead><tr style="background:#000;color:#fff;">
-      <th style="text-align:right;padding:1mm 1.5mm;font-weight:900;border:1px solid #000;">القسم</th>
-      <th style="text-align:left;padding:1mm 1.5mm;font-weight:900;border:1px solid #000;">رقم التواصل</th>
-    </tr></thead>
-    <tbody>${contactRows}</tbody>
-  </table>
-
-  <div style="text-align:center;font-size:10px;font-weight:900;margin:1.5mm 0;color:#000;">
-    بغداد — العامرية / شارع العمل الشعبي
-  </div>
-
-  <div style="text-align:center;margin:2mm 0;padding:2mm;border:1.5px solid #000;font-size:10px;font-weight:900;line-height:1.5;color:#000;">
-    نعتذر عن قبول الاسترجاع — والاستبدال متاح<br>
-    خلال 48 ساعة بشرط سلامة المنتج بـ100%
-  </div>
-  ${d.bounceBackCoupon ? `
-  <div style="margin-top:3.5mm;padding-top:2.5mm;border-top:1.5px dashed #000;text-align:center;color:#000;">
-    <div style="font-size:9.5px;font-weight:900;letter-spacing:1px;margin-bottom:1.5mm;">[ --- قسيمة هديتك للزيارة القادمة --- ]</div>
-    <div style="border:1.5px solid #000;padding:2mm;background:#f9f9f9;border-radius:1.5mm;">
-      <div style="font-size:12px;font-weight:900;margin-bottom:1mm;color:#000;">${esc(d.bounceBackCoupon.headline)}</div>
-      <div style="font-size:16px;font-weight:900;margin:1.5mm 0;padding:1.2mm;background:#000;color:#fff;border-radius:1mm;letter-spacing:1px;">
-        خصم ${esc(d.bounceBackCoupon.discountText)}
-      </div>
-      <div style="font-size:12px;font-weight:900;margin:1.5mm 0;letter-spacing:1.5px;direction:ltr;background:#fff;padding:1mm;border:1px dashed #000;">
-        ${esc(d.bounceBackCoupon.code)}
-      </div>
-      ${d.bounceBackCoupon.minSpendText ? `<div style="font-size:9.5px;font-weight:800;color:#222;margin-top:0.8mm;">${esc(d.bounceBackCoupon.minSpendText)}</div>` : ''}
-      <div style="font-size:9px;font-weight:800;color:#333;margin-top:0.8mm;">
-        ${esc(d.bounceBackCoupon.validToText)}
-      </div>
-      <div style="font-size:8.5px;font-weight:900;margin-top:1.2mm;color:#000;">
-        احتفظ بهذه القسيمة وقدّمها للكاشير في زيارتك القادمة
-      </div>
-    </div>
-  </div>` : ''}`;
-
-  return wrapReceiptDoc(`إيصال ${d.receiptNumber}`, body);
-}
+export { buildBrowserReceiptHtml } from "./receiptLayoutHtml";
 
 export function printBrowserReceipt(d: ReceiptBrowserData): boolean {
   return openPrintWindow(buildBrowserReceiptHtml(d), 'width=380,height=700');

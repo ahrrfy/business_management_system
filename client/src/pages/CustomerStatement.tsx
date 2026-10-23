@@ -37,6 +37,7 @@ import { notify } from "@/lib/notify";
 import { AccountLedgerDrilldownDialog, type DrilldownTarget } from "@/components/financial/AccountLedgerDrilldownDialog";
 import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
 import { usePrintAudit } from "@/hooks/usePrintAudit";
+import { customerStatementLedger, statementClosingBalance } from "@/lib/statementPeriodLedger";
 
 /** تاريخ محلي YYYY-MM-DD — لا toISOString: بغداد UTC+3 فينزاح اليوم قرب منتصف الليل. */
 const ymd = (d: Date) =>
@@ -436,48 +437,7 @@ export default function CustomerStatement() {
   }), [stmt.data?.invoices, invoiceFilter]);
 
   // دفتر الحركات (مدين/دائن/رصيد جارٍ) — يُبنى مرّة ويُشارَك بين الطباعة وتصدير Excel.
-  const ledger = useMemo(() => {
-    if (!stmt.data) return null;
-    const d = stmt.data;
-    const invTxs = d.invoices.filter((i) => i.status !== "CANCELLED").map((i) => ({
-      t: new Date(i.invoiceDate).getTime(),
-      date: fmtDate(i.invoiceDate),
-      ref: i.invoiceNumber, description: "فاتورة مبيعات",
-      actor: i.createdByName ?? (i.createdBy ? `مستخدم #${i.createdBy}` : "غير موثق"),
-      debit: i.total as string | null, credit: null as string | null,
-    }));
-    const payTxs = d.payments.map((p) => ({
-      t: new Date(p.createdAt).getTime(),
-      date: fmtDate(p.createdAt),
-      ref: p.voucherNumber ?? "دفعة",
-      description:
-        // ب-١: قيد تصحيح الرصيد الافتتاحيّ يظهر حركةً داخل فترته (isStandalone صحيح لكنه ليس
-        // سنداً) — بلا هذا الفرع يُعرَض «سند صرف مستقل» فيبحث المحاسب عن سندٍ لا وجود له.
-        p.paymentMethod === "INVOICE_ADJUSTMENT"
-        ? "تسوية ذمة الفاتورة دون حركة نقدية"
-        : p.paymentMethod === "OPENING_ADJ"
-        ? "تصحيح رصيد افتتاحي"
-        : p.isStandalone
-        ? (p.direction === "IN" ? "سند قبض مستقل" : "سند صرف مستقل")
-        : (p.direction === "IN" ? "دفعة وارد" : "استرداد"),
-      actor: p.createdByName ?? (p.createdBy ? `مستخدم #${p.createdBy}` : "غير موثق"),
-      // الاتجاه المحاسبي: IN ينقص ذمة العميل (دائن)، OUT (استرداد/صرف له) يزيدها (مدين).
-      debit: p.direction === "OUT" ? (p.amount as string | null) : null,
-      credit: p.direction === "IN" ? (p.amount as string | null) : null,
-    }));
-    // الفرز على طابع زمني خام — فرز نصّي على dd/mm/yyyy يخلط الشهور.
-    const merged = [...invTxs, ...payTxs].sort((a, b) => a.t - b.t);
-    // §٥: الرصيد الجاري بـDecimal، يبدأ من الرصيد المُرحَّل عند تقييد الفترة.
-    let bal = from ? D(d.summary.openingBalance) : D(0);
-    let totDebit = D(0), totCredit = D(0);
-    const txs = merged.map(({ t: _t, ...x }) => {
-      bal = bal.plus(D(x.debit)).minus(D(x.credit));
-      totDebit = totDebit.plus(D(x.debit));
-      totCredit = totCredit.plus(D(x.credit));
-      return { ...x, balance: bal.toFixed(2) };
-    });
-    return { txs, totDebit: totDebit.toFixed(2), totCredit: totCredit.toFixed(2), closingBalance: bal.toFixed(2) };
-  }, [stmt.data, from]);
+  const ledger = useMemo(() => stmt.data ? customerStatementLedger(stmt.data) : null, [stmt.data]);
 
   // حُمولة نَسخ الكَشف بِثَلاث صِيَغ (نَصّ مُلَخَّص / واتساب مُفَصَّل / TSV لِلَصق في Excel).
   // تُبنى مَرّة واحِدة على دَفتَر الحَرَكات المُجمَّع لِضَمان اتِّساق المَجاميع مَع الطِباعة والتَصدير.
@@ -502,7 +462,7 @@ export default function CustomerStatement() {
         credit: r.credit,
         balance: r.balance,
       })),
-      closingBalance: from ? ledger.closingBalance : d.summary.currentBalance,
+      closingBalance: statementClosingBalance(from, to, ledger.closingBalance, d.summary.currentBalance),
       asOfDate: to || undefined,
     });
     const tsv = formatTableAsTSV(
@@ -537,9 +497,9 @@ export default function CustomerStatement() {
           toDate: fmtDate(to ? new Date(`${to}T00:00:00`) : new Date()),
           transactions: txs,
           totalDebit: totDebit, totalCredit: totCredit,
-          openingBalance: from ? d.summary.openingBalance : undefined,
+          openingBalance: d.summary.openingBalance,
           currentBalance: d.summary.currentBalance,
-          closingBalance: from ? closingBalance : d.summary.currentBalance,
+          closingBalance: statementClosingBalance(from, to, closingBalance, d.summary.currentBalance),
           printedByName: audit.actorName,
           printRequestedAt: fmtDateTime(audit.requestedAt),
         }),

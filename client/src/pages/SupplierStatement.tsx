@@ -30,6 +30,7 @@ import { AccountLedgerDrilldownDialog, type DrilldownTarget } from "@/components
 import { FinancialCellProvenanceHover } from "@/components/financial";
 import type { FinancialCellProvenancePayload } from "@shared/financialProvenance";
 import { splitDocumentNotes } from "@/components/invoice/TermsAndNotes";
+import { balanceStatementRows, statementClosingBalance } from "@/lib/statementPeriodLedger";
 
 function cleanStmtNotes(raw: string | null | undefined): string {
   if (!raw) return "";
@@ -428,21 +429,9 @@ export default function SupplierStatement() {
         provenance: (p as any).provenance,
       };
     });
-    // الفرز على طابع زمني خام — فرز نصّي على dd/mm/yyyy يخلط الشهور.
-    const merged = [...poTxs, ...payTxs].sort((a, b) => a.t - b.t);
-    // §٥: AP بـDecimal (دائن − مدين). مراجعة Codex #966: كان العمود يبدأ من صفرٍ بلا فترة رغم أنّ
-    // `openingBalance` بلا `from` هو أيضاً مجموع قيود OPENING المستورَدة فعلياً — فمورّدٍ افتُتح
-    // بـ1,000 ثمّ اشترى بـ200 كان يُعرَض بعمودٍ ينتهي بـ200 بدل 1,200 رغم أنّ بطاقة الملخّص تعرض
-    // 1,200 الصحيح. البذرة الآن دائماً openingBalance (لا شرط from).
     const openingBal = D(d.summary.openingBalance);
-    let bal = openingBal;
-    let totDebit = D(0), totCredit = D(0);
-    const activityRows = merged.map(({ t: _t, ...x }) => {
-      bal = bal.plus(D(x.credit)).minus(D(x.debit));
-      totDebit = totDebit.plus(D(x.debit));
-      totCredit = totCredit.plus(D(x.credit));
-      return { ...x, balance: bal.toFixed(2) };
-    });
+    const balanced = balanceStatementRows([...poTxs, ...payTxs], d.summary.openingBalance, "supplier");
+    const activityRows = balanced.rows;
     // صفّ «رصيد افتتاحي» أوّل السجل — يُثبِّت عمود الرصيد الجاري (نمط Odoo «Initial Balance» /
     // بداية سجلّ GnuCash). يظهر كلّما وُجد رصيدٌ افتتاحيّ فعليّ (مستورَد)، بفترةٍ أو بلا فترة —
     // لا يُغيّر مجموع مدين/دائن الفترة (خانتاه فارغتان)، رصيده وحده هو المُرحَّل.
@@ -470,13 +459,13 @@ export default function SupplierStatement() {
       : activityRows;
     return {
       rows,
-      totalDebit: totDebit.toFixed(2),
-      totalCredit: totCredit.toFixed(2),
+      totalDebit: balanced.totalDebit,
+      totalCredit: balanced.totalCredit,
       // مع فترة: الختامي = المُرحَّل + حركة الفترة؛ بلا فترة: الرصيد الجاري (رصيد المورّد الحقيقيّ
       // — مصدر حقيقةٍ خادميّ منفصل عن الحساب المحليّ، يبقى الحكم الفصل عند أيّ انحرافٍ نادر).
-      closingBalance: from ? bal.toFixed(2) : d.summary.currentBalance,
+      closingBalance: statementClosingBalance(from, to, balanced.closingBalance, d.summary.currentBalance),
     };
-  }, [stmt.data, from]);
+  }, [stmt.data, from, to]);
 
   // فلترة نوع الحركة على دفتر الحركات المبنيّ أعلاه — بحثٌ حرّ عن طريق `DataTable` نفسه
   // (searchable افتراضيّاً)؛ هذه رقاقاتٌ إضافية تُقصر النوع (شراء/دفعة مخصَّصة/غير مخصَّصة/أخرى).
@@ -547,7 +536,7 @@ export default function SupplierStatement() {
           toDate: fmtDate(to ? new Date(`${to}T00:00:00`) : new Date()),
           transactions: ledger.rows,
           totalDebit: ledger.totalDebit, totalCredit: ledger.totalCredit,
-          openingBalance: from ? d.summary.openingBalance : undefined,
+          openingBalance: d.summary.openingBalance,
           currentBalance: d.summary.currentBalance,
           closingBalance: ledger.closingBalance,
           printedByName: audit.actorName,
