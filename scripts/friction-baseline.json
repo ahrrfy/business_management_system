@@ -101,7 +101,6 @@
   "D6::client/src/components/offline/OfflineSyncChip.tsx": 1,
   "D6::client/src/components/pos/DigitalFulfillmentDialog.tsx": 1,
   "D6::client/src/components/product/AiProductContentAssistant.tsx": 1,
-  "D6::client/src/components/product/ProductRelatedProductsEditor.tsx": 1,
   "D6::client/src/components/purchases/PurchaseApprovalQueue.tsx": 1,
   "D6::client/src/components/purchases/PurchaseChargesGovernanceWorkspace.tsx": 1,
   "D6::client/src/components/purchases/purchaseGovernanceUiPolicy.ts": 1,
