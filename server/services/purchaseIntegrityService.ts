@@ -27,6 +27,7 @@ const MAX_AGE_THRESHOLD_DAYS = 3_650;
 const DAY_MS = 86_400_000;
 
 export const PURCHASE_INTEGRITY_CODES = [
+  "CASH_RECEIVED_PAYMENT_COVERAGE_GAP",
   "PAID_AMOUNT_GL_DRIFT",
   "NEGATIVE_PO_LEDGER_BALANCE",
   "PO_PAYMENT_OVER_ALLOCATION",
@@ -199,6 +200,7 @@ type OrderAmounts = {
   approvedPaymentOut: Decimal;
   approvedPaymentIn: Decimal;
   paymentCancellationIn: Decimal;
+  governedRefundIn: Decimal;
   bookBalance: Decimal;
   validPending: Decimal;
 };
@@ -500,6 +502,7 @@ function emptyAmounts(): OrderAmounts {
     approvedPaymentOut: money(0),
     approvedPaymentIn: money(0),
     paymentCancellationIn: money(0),
+    governedRefundIn: money(0),
     bookBalance: money(0),
     validPending: money(0),
   };
@@ -940,7 +943,8 @@ export async function getPurchaseIntegrityReport(
             amounts.bookBalance = amounts.bookBalance.minus(amount);
 
           const receiptApproved =
-            entry.receiptStatus === "COMPLETED" &&
+            (entry.receiptStatus === "COMPLETED" ||
+              entry.receiptStatus === "REVERSED") &&
             entry.receiptApprovalStatus === "APPROVED" &&
             entry.receiptBranchId === Number(order.branchId) &&
             entry.receiptPartyType === "SUPPLIER" &&
@@ -984,7 +988,11 @@ export async function getPurchaseIntegrityReport(
           if (
             entry.entryType === "PAYMENT_IN" &&
             supplierScoped &&
-            receiptApproved &&
+            entry.receiptStatus === "COMPLETED" &&
+            entry.receiptApprovalStatus === "APPROVED" &&
+            entry.receiptBranchId === Number(order.branchId) &&
+            entry.receiptPartyType === "SUPPLIER" &&
+            entry.receiptPartyId === Number(order.supplierId) &&
             entry.receiptDirection === "IN" &&
             safeMoney(entry.receiptAmount)?.eq(entry.sourceAmount ?? amount)
           ) {
@@ -999,10 +1007,14 @@ export async function getPurchaseIntegrityReport(
               const originalRequest = parseSystemPaymentRequest(
                 original?.receiptInternalNote,
               );
+              const matchesOrderCancellation =
+                !originalRequest ||
+                (originalRequest.kind === "PURCHASE_SUPPLIER" &&
+                  originalRequest.purchaseOrderId === poId);
               if (
-                originalRequest?.kind === "PURCHASE_SUPPLIER" &&
-                originalRequest.purchaseOrderId === poId &&
-                original?.receiptStatus === "COMPLETED" &&
+                matchesOrderCancellation &&
+                (original?.receiptStatus === "COMPLETED" ||
+                  original?.receiptStatus === "REVERSED") &&
                 original.receiptApprovalStatus === "APPROVED" &&
                 original.receiptDirection === "OUT" &&
                 safeMoney(original.receiptAmount)?.eq(amount)
@@ -1015,8 +1027,13 @@ export async function getPurchaseIntegrityReport(
             ) {
               amounts.paymentCancellationIn =
                 amounts.paymentCancellationIn.plus(amount);
+              amounts.governedRefundIn = amounts.governedRefundIn.plus(amount);
             }
           }
+        }
+        for (const entry of poEntries) {
+          const supplierScoped =
+            Number(entry.supplierId ?? 0) === Number(order.supplierId);
           if (
             entry.branchId !== Number(order.branchId) ||
             (entry.supplierId != null && !supplierScoped)
@@ -1181,13 +1198,42 @@ export async function getPurchaseIntegrityReport(
           .minus(amounts.approvedPaymentIn)
           .plus(amounts.validPending);
         const coverageDifference = netCovered.minus(amounts.recognizedPurchase);
+        const cashNetCovered = amounts.approvedPaymentOut
+          .minus(amounts.approvedPaymentIn.minus(amounts.governedRefundIn))
+          .plus(amounts.validPending);
+        const cashCoverageDifference = cashNetCovered.minus(
+          amounts.recognizedPurchase,
+        );
         const storedPaid = money(order.paidAmount);
         const paidDifference = storedPaid.minus(linkedPaidAmount);
         const orderAge = ageDays(order.createdAt, asOf);
 
-        // CASH يصف طريقة السداد المقصودة، لا وقوع السداد عند اعتماد الأمر. لذلك لا
-        // تُعدّ الفاتورة المفتوحة غير المدفوعة فجوة نزاهة. تبقى زيادة التخصيص وانحراف
-        // paidAmount محروستين أدناه بالقيود الفعلية، بصرف النظر عن طريقة التسوية.
+        if (
+          order.settlementType === "CASH" &&
+          amounts.recognizedPurchase.gt(0) &&
+          !cashCoverageDifference.isZero()
+        ) {
+          addFinding(order, {
+            severity: cashCoverageDifference.lt(0) ? "CRITICAL" : "HIGH",
+            code: "CASH_RECEIVED_PAYMENT_COVERAGE_GAP",
+            subjectType: "PURCHASE_ORDER",
+            subjectId: poId,
+            ageDays: orderAge,
+            summaryAr: cashCoverageDifference.lt(0)
+              ? "شراء CASH معترف به في GL بلا تغطية مساوية من الصرف المعتمد والطلبات المعلقة الصالحة."
+              : "تغطية شراء CASH تتجاوز الاعتراف الدفتري المرتبط؛ يلزم منع صرف مكرر قبل أي اعتماد جديد.",
+            evidence: {
+              recognizedPurchaseGl: toDbMoney(amounts.recognizedPurchase),
+              approvedPaymentOutGl: toDbMoney(amounts.approvedPaymentOut),
+              approvedPaymentInGl: toDbMoney(amounts.approvedPaymentIn),
+              validPendingPoPay: toDbMoney(amounts.validPending),
+              netCoveredAmount: toDbMoney(cashNetCovered),
+              difference: toDbMoney(cashCoverageDifference),
+              formula:
+                "PAYMENT_OUT approved - PAYMENT_IN approved + valid pending PO-PAY - (PURCHASE + RETURN)",
+            },
+          });
+        }
         if (!paidDifference.isZero()) {
           addFinding(order, {
             severity: "HIGH",

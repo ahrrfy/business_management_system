@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { HandCoins } from "lucide-react";
 import {
   Dialog,
@@ -98,11 +98,17 @@ export function QuickSupplierPaymentDialog({
     { branchId },
     { enabled: open && method === "CASH" && branchId > 0 },
   );
+  const cashModeAutoSelectedRef = useRef(false);
   useEffect(() => {
-    const drawers = cashSourcesQuery.data?.drawers ?? [];
-    if (!cashShiftId && drawers.length === 1)
+    if (!cashSourcesQuery.data || cashModeAutoSelectedRef.current) return;
+    cashModeAutoSelectedRef.current = true;
+    const drawers = cashSourcesQuery.data.drawers ?? [];
+    if (drawers.length === 1) {
       setCashShiftId(String(drawers[0].id));
-  }, [cashSourcesQuery.data, cashShiftId]);
+    } else if (drawers.length === 0 && cashSourcesQuery.data.canUseTreasury === true) {
+      setCashMode("TREASURY");
+    }
+  }, [cashSourcesQuery.data]);
 
   const matchedInvoice = useMemo(() => {
     const rows = paymentSourcesQuery.data?.rows ?? [];
@@ -120,6 +126,7 @@ export function QuickSupplierPaymentDialog({
 
   useEffect(() => {
     if (open) {
+      cashModeAutoSelectedRef.current = false;
       setRequestKey(`pay-po-${purchaseOrderId}-${crypto.randomUUID()}`);
       const maxPayable = matchedInvoice
         ? currency === "USD"
@@ -145,12 +152,18 @@ export function QuickSupplierPaymentDialog({
   ]);
 
   const requestPaymentMut = trpc.supplierPayments.requestPayment.useMutation({
-    onSuccess: async () => {
-      notify.ok(`تم تسجيل طلب سداد المورد ${supplierName} بنجاح`);
+    onSuccess: async (res) => {
+      notify.ok(
+        res.status === "APPROVED"
+          ? `تم سداد فاتورة المورد ${supplierName} وتسوية ذمتها بالكامل`
+          : `تم تسجيل طلب سداد المورد ${supplierName} وإرساله للاعتماد`,
+      );
       await Promise.all([
         utils.purchases.list.invalidate(),
         utils.purchases.get.invalidate({ purchaseOrderId }),
+        utils.purchases.integrityReport.invalidate(),
         utils.supplierPayments.paymentSources.invalidate(),
+        utils.suppliers.list.invalidate(),
       ]);
       onSuccess?.();
       onClose();

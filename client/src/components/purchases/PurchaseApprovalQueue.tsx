@@ -10,6 +10,10 @@ import {
   XCircle,
 } from "lucide-react";
 import { ErrorState, LoadingState } from "@/components/PageState";
+import {
+  PurchaseCashSourceField,
+  usePurchaseCashSourceState,
+} from "@/components/purchases/PurchaseCashSourceField";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -23,6 +27,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { fmtDateTime } from "@/lib/date";
+import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 
@@ -67,11 +72,6 @@ export function PurchaseApprovalQueue({
 }: {
   operationUser?: OperationUser | null;
   currentUserId: number | null | undefined;
-  /**
-   * ⭐ قرار المالك (٣/٩/٢٦، وسّعه PR #998 على طلب الشراء الداخليّ): لا اعتماد ثانٍ بعد
-   * المالك. مقصورٌ هنا على REQUISITION عمداً — أمر الشراء (`purchase/controls.ts`)
-   * لم يُوسَّع بعد (مراجعة Codex على #998).
-   */
   isOwner?: boolean;
 }) {
   const canDecide = (row: PendingControl) =>
@@ -92,24 +92,55 @@ export function PurchaseApprovalQueue({
   const [decision, setDecision] = useState<Decision>(null);
   const [reason, setReason] = useState("");
   const [confirmedFullReceipt, setConfirmedFullReceipt] = useState(false);
+
+  const isApprovePoRevision =
+    decision?.approve === true &&
+    decision.row.documentType === "PURCHASE_ORDER" &&
+    decision.row.kind === "APPROVE_REVISION";
+  const targetPoId =
+    isApprovePoRevision && decision?.row.documentType === "PURCHASE_ORDER"
+      ? Number(decision.row.purchaseOrderId)
+      : 0;
+  const poDetailQuery = trpc.purchases.get.useQuery(
+    { purchaseOrderId: targetPoId },
+    { enabled: targetPoId > 0 },
+  );
+  const isCashIqdPo =
+    isApprovePoRevision &&
+    poDetailQuery.data?.settlementType === "CASH" &&
+    poDetailQuery.data?.agreedCurrency !== "USD";
+  const cashSourceState = usePurchaseCashSourceState({
+    branchId: poDetailQuery.data?.branchId,
+    enabled: isCashIqdPo,
+    context: "approval",
+    isCreator:
+      poDetailQuery.data != null &&
+      currentUserId != null &&
+      Number(poDetailQuery.data.createdBy) === Number(currentUserId),
+  });
+
   const invalidate = async () => {
     await Promise.all([
       utils.purchases.pendingControls.invalidate(),
       utils.purchases.list.invalidate(),
       utils.purchases.requisitions.invalidate(),
+      utils.purchases.integrityReport.invalidate(),
     ]);
   };
   const close = () => {
     setDecision(null);
     setReason("");
     setConfirmedFullReceipt(false);
+    cashSourceState.reset();
   };
   const success = async (status: string) => {
     notify.ok(
       status === "STALE"
         ? "أُغلق الطلب كمنتهي الصلاحية لأن المستند تغيّر"
         : status === "APPROVED"
-          ? "تم اعتماد الطلب وتطبيقه"
+          ? isCashIqdPo
+            ? "تم اعتماد الفاتورة النقدية واستلام البضاعة وسداد المورد بالكامل"
+            : "تم اعتماد الطلب وتطبيقه"
           : "تم رفض الطلب وتسجيل السبب",
     );
     close();
@@ -128,21 +159,24 @@ export function PurchaseApprovalQueue({
   function submit() {
     if (!decision || !canDecide(decision.row) || reason.trim().length < 3)
       return;
-    const input = {
+    const baseInput = {
       requestId: Number(decision.row.id),
       decisionKey: decision.decisionKey,
       approve: decision.approve,
       reason: reason.trim(),
-      confirmedFullReceipt:
-        decision.row.documentType === "PURCHASE_ORDER" &&
-        decision.row.kind === "APPROVE_REVISION" &&
-        decision.approve
-          ? confirmedFullReceipt
-          : undefined,
     };
-    if (decision.row.documentType === "PURCHASE_ORDER")
-      orderDecision.mutate(input);
-    else requisitionDecision.mutate(input);
+    if (decision.row.documentType === "PURCHASE_ORDER") {
+      orderDecision.mutate({
+        ...baseInput,
+        confirmedFullReceipt:
+          decision.row.kind === "APPROVE_REVISION" && decision.approve
+            ? confirmedFullReceipt
+            : undefined,
+        cashSource: isCashIqdPo ? cashSourceState.payload : undefined,
+      });
+    } else {
+      requisitionDecision.mutate(baseInput);
+    }
   }
 
   return (
@@ -189,8 +223,7 @@ export function PurchaseApprovalQueue({
           ) : null}
           {queueRows.map((row) => {
             const identityUnavailable = currentUserId == null;
-            const ownerExempt =
-              isOwner === true && row.documentType === "REQUISITION";
+            const ownerExempt = isOwner === true;
             const own =
               !ownerExempt &&
               (identityUnavailable || violatesVisibleSod(row, currentUserId));
@@ -353,6 +386,18 @@ export function PurchaseApprovalQueue({
               onChange={(event) => setReason(event.target.value)}
             />
             <p className="text-xs text-muted-foreground">مطلوب: 3–500 محرف.</p>
+            {isCashIqdPo ? (
+              <div className="space-y-2 rounded-md border bg-muted/30 p-3 text-sm">
+                <p className="font-medium">
+                  فاتورة شراء نقدية ({fmt(poDetailQuery.data?.total ?? 0)} د.ع): الاعتماد يسدد كامل القيمة للمورد فورا وتصبح الذمة المتبقية 0.00.
+                </p>
+                <PurchaseCashSourceField
+                  idPrefix="approval-queue"
+                  context="approval"
+                  state={cashSourceState}
+                />
+              </div>
+            ) : null}
             {decision?.approve &&
             decision.row.documentType === "PURCHASE_ORDER" &&
             decision.row.kind === "APPROVE_REVISION" ? (
@@ -384,7 +429,9 @@ export function PurchaseApprovalQueue({
                 (decision?.approve === true &&
                   decision.row.documentType === "PURCHASE_ORDER" &&
                   decision.row.kind === "APPROVE_REVISION" &&
-                  !confirmedFullReceipt)
+                  !confirmedFullReceipt) ||
+                (isCashIqdPo &&
+                  (poDetailQuery.isLoading || cashSourceState.isActionBlocked))
               }
               onClick={submit}
             >
@@ -393,7 +440,9 @@ export function PurchaseApprovalQueue({
                 : decision?.approve
                   ? decision.row.documentType === "PURCHASE_ORDER" &&
                     decision.row.kind === "APPROVE_REVISION"
-                    ? "اعتماد وترحيل المخزون"
+                    ? isCashIqdPo
+                      ? "اعتماد وترحيل وسداد نقدي فوري"
+                      : "اعتماد وترحيل المخزون"
                     : "اعتماد وتطبيق"
                   : "تأكيد الرفض"}
             </Button>

@@ -8,6 +8,7 @@ import { and, asc, desc, eq, gt, inArray, or, sql } from "drizzle-orm";
 import {
   accountingEntries,
   goodsReceiptItems,
+  purchaseOrderEvents,
   purchaseOrderItems,
   purchaseOrderRevisionItems,
   purchaseOrderRevisions,
@@ -335,7 +336,7 @@ export function sortedUniquePurchaseOrderIds(ids: number[]): number[] {
   ).sort((a, b) => a - b);
 }
 
-async function resolveInvoicePurchaseOrderIds(
+export async function resolveInvoicePurchaseOrderIds(
   tx: Tx,
   invoiceIds: number[],
 ): Promise<number[]> {
@@ -390,7 +391,7 @@ async function resolveInvoicePurchaseOrderIds(
 }
 
 /** Canonical financial aggregate lock order: PO ids asc -> supplier -> invoices asc. */
-async function lockPaymentAggregate(
+export async function lockPaymentAggregate(
   tx: Tx,
   supplierId: number,
   invoiceIds: number[],
@@ -422,7 +423,7 @@ async function lockPaymentAggregate(
   return { supplier, invoices, orders };
 }
 
-async function assertNativePurchaseSettlementEvidence(
+export async function assertNativePurchaseSettlementEvidence(
   tx: Tx,
   aggregate: Awaited<ReturnType<typeof lockPaymentAggregate>>,
 ): Promise<void> {
@@ -839,8 +840,19 @@ export async function requestSupplierPaymentInTx(
   tx: Tx,
   input: RequestSupplierPaymentInput,
   actor: Actor,
-  voucherCapability?: typeof SUPPLIER_VOUCHER_REQUEST_CAPABILITY,
+  voucherCapabilityOrOptions?:
+    | typeof SUPPLIER_VOUCHER_REQUEST_CAPABILITY
+    | { pendingGuardOverride?: string },
 ) {
+  const voucherCapability =
+    voucherCapabilityOrOptions === SUPPLIER_VOUCHER_REQUEST_CAPABILITY
+      ? voucherCapabilityOrOptions
+      : undefined;
+  const options =
+    voucherCapabilityOrOptions &&
+    typeof voucherCapabilityOrOptions === "object"
+      ? voucherCapabilityOrOptions
+      : undefined;
   const requestKey = required(input.requestKey, "مفتاح الطلب", 120);
   const voucherReceiptId = supplierVoucherReceiptId(requestKey);
   const deferredVoucher = voucherReceiptId != null && voucherCapability === SUPPLIER_VOUCHER_REQUEST_CAPABILITY;
@@ -1097,7 +1109,9 @@ export async function requestSupplierPaymentInTx(
     evidenceReference,
     evidenceHash,
     reason,
-    pendingGuard: `SUPPLIER-PAY:${input.supplierId}:${input.branchId}:${input.currency}`,
+    pendingGuard:
+      options?.pendingGuardOverride ??
+      `SUPPLIER-PAY:${input.supplierId}:${input.branchId}:${input.currency}`,
     requestedBy: actor.userId,
   });
   const requestId = extractInsertId(inserted);
@@ -2796,4 +2810,485 @@ export async function listSupplierPaymentRefundSources(
     },
     { gate: "NONE" },
   );
+}
+
+export interface DeclaredPurchaseCashSource {
+  mode: "DRAWER" | "TREASURY";
+  shiftId: number | null;
+  payerUserId: number;
+  explicit: boolean;
+}
+
+export async function readDeclaredPurchaseCashSourceTx(
+  tx: Tx,
+  purchaseOrderId: number,
+  revisionId: number | null,
+): Promise<DeclaredPurchaseCashSource | null> {
+  const conds = [
+    eq(purchaseOrderEvents.purchaseOrderId, purchaseOrderId),
+    inArray(purchaseOrderEvents.eventType, [
+      "ORDER_CREATED",
+      "REVISION_CREATED",
+    ]),
+  ];
+  if (revisionId != null) {
+    conds.push(eq(purchaseOrderEvents.revisionId, revisionId));
+  }
+  const events = await tx
+    .select({ payloadCanonical: purchaseOrderEvents.payloadCanonical })
+    .from(purchaseOrderEvents)
+    .where(and(...conds))
+    .orderBy(desc(purchaseOrderEvents.id))
+    .limit(5);
+  for (const ev of events) {
+    if (!ev.payloadCanonical) continue;
+    try {
+      const parsed = JSON.parse(ev.payloadCanonical) as {
+        cashSource?: {
+          mode?: unknown;
+          shiftId?: unknown;
+          payerUserId?: unknown;
+          explicit?: unknown;
+        } | null;
+        payload?: {
+          cashSource?: {
+            mode?: unknown;
+            shiftId?: unknown;
+            payerUserId?: unknown;
+            explicit?: unknown;
+          } | null;
+        } | null;
+      };
+      const rawCashSource =
+        parsed.payload !== undefined && parsed.payload !== null
+          ? parsed.payload.cashSource
+          : parsed.cashSource;
+      if (rawCashSource === null) return null;
+      if (
+        rawCashSource &&
+        (rawCashSource.mode === "DRAWER" ||
+          rawCashSource.mode === "TREASURY")
+      ) {
+        const mode = rawCashSource.mode;
+        const shiftId =
+          mode === "DRAWER" &&
+          Number.isSafeInteger(Number(rawCashSource.shiftId)) &&
+          Number(rawCashSource.shiftId) > 0
+            ? Number(rawCashSource.shiftId)
+            : null;
+        const payerUserId = Number(rawCashSource.payerUserId ?? 0);
+        if (
+          Number.isSafeInteger(payerUserId) &&
+          payerUserId > 0 &&
+          (mode === "TREASURY" || shiftId != null)
+        ) {
+          return {
+            mode,
+            shiftId,
+            payerUserId,
+            explicit: Boolean(rawCashSource.explicit),
+          };
+        }
+      }
+    } catch {
+      // Ignore unrelated malformed payloads on historical rows.
+    }
+  }
+  return null;
+}
+
+export async function resolveCashPurchaseSettlementPlanTx(
+  tx: Tx,
+  input: {
+    purchaseOrder: Pick<
+      typeof purchaseOrders.$inferSelect,
+      "id" | "branchId" | "createdBy" | "currentRevisionId"
+    >;
+    reviewer: Actor;
+    explicitCashSource?: CashSourceInput | null;
+  },
+): Promise<{ mode: "DRAWER" | "TREASURY"; shiftId: number | null; payerUserId: number }> {
+  const branchId = Number(input.purchaseOrder.branchId);
+  const creatorUserId =
+    input.purchaseOrder.createdBy != null
+      ? Number(input.purchaseOrder.createdBy)
+      : null;
+  const reviewerApproval = await resolveApprovalActor(tx, input.reviewer);
+
+  if (input.explicitCashSource != null) {
+    if (input.explicitCashSource.mode === "TREASURY") {
+      if (input.explicitCashSource.shiftId != null) {
+        throw cashSourceError("مصدر الخزينة لا يقبل رقم وردية", "BAD_REQUEST");
+      }
+      if (!reviewerApproval.isOwner) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذر ترحيل وتسوية الفاتورة النقدية من الخزينة",
+            why: "التنفيذ النقدي من الخزينة الرئيسية محصور بحساب مالك نشط",
+            doThis: "ليعتمد المالك النشط الفاتورة النقدية، أو اختر وردية منشئ الفاتورة المفتوحة",
+          }),
+        });
+      }
+      return {
+        mode: "TREASURY",
+        shiftId: null,
+        payerUserId: input.reviewer.userId,
+      };
+    }
+    if (input.explicitCashSource.mode !== "DRAWER") {
+      throw cashSourceError("نوع مصدر النقد غير صالح", "BAD_REQUEST");
+    }
+    let resolvedShiftId: number | null =
+      input.explicitCashSource.shiftId != null
+        ? Number(input.explicitCashSource.shiftId)
+        : null;
+    if (resolvedShiftId == null) {
+      if (reviewerApproval.isOwner) {
+        resolvedShiftId =
+          (await openShiftIdTx(tx, input.reviewer.userId, branchId)) ??
+          (creatorUserId != null
+            ? await openShiftIdTx(tx, creatorUserId, branchId)
+            : null);
+      } else if (creatorUserId != null) {
+        resolvedShiftId = await openShiftIdTx(tx, creatorUserId, branchId);
+      }
+    }
+    if (!resolvedShiftId || resolvedShiftId <= 0) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذر ترحيل وتسوية الفاتورة النقدية من الدرج",
+          why: "لا توجد وردية مفتوحة صالحة للصرف النقدي في هذا الفرع",
+          doThis: "افتح وردية صالحة أولاً، أو اعتمد الفاتورة من الخزينة الرئيسية بحساب المالك النشط",
+        }),
+      });
+    }
+    const [shift] = await tx
+      .select({
+        id: shifts.id,
+        branchId: shifts.branchId,
+        userId: shifts.userId,
+        status: shifts.status,
+      })
+      .from(shifts)
+      .where(eq(shifts.id, resolvedShiftId))
+      .limit(1);
+    if (!shift || shift.status !== "OPEN" || Number(shift.branchId) !== branchId) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذر ترحيل وتسوية الفاتورة النقدية من الدرج",
+          why: "الوردية المحددة غير مفتوحة أو لا تتبع فرع الفاتورة",
+          doThis: "اختر وردية مفتوحة في نفس الفرع أو الخزينة الرئيسية",
+        }),
+      });
+    }
+    const shiftOwnerId = Number(shift.userId);
+    const allowedOwner =
+      (creatorUserId != null && shiftOwnerId === creatorUserId) ||
+      (reviewerApproval.isOwner && shiftOwnerId === input.reviewer.userId);
+    if (!allowedOwner) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذر خصم سداد الفاتورة النقدية من هذا الدرج",
+          why: "لا يُخصم سداد الفاتورة النقدية من درج معتمد مستقل لا يخص منشئ الفاتورة",
+          doThis: "استخدم درج منشئ الفاتورة المفتوح أو اعتمد الصرف من الخزينة الرئيسية بحساب المالك النشط",
+        }),
+      });
+    }
+    return {
+      mode: "DRAWER",
+      shiftId: Number(shift.id),
+      payerUserId: shiftOwnerId,
+    };
+  }
+
+  const declared = await readDeclaredPurchaseCashSourceTx(
+    tx,
+    Number(input.purchaseOrder.id),
+    input.purchaseOrder.currentRevisionId == null
+      ? null
+      : Number(input.purchaseOrder.currentRevisionId),
+  );
+  if (declared?.mode === "TREASURY") {
+    if (!reviewerApproval.isOwner) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذر ترحيل وتسوية الفاتورة النقدية من الخزينة",
+          why: "الفاتورة النقدية موجهة للصرف من الخزينة الرئيسية، والتنفيذ النقدي من الخزينة محصور بحساب مالك نشط",
+          doThis: "ليعتمد المالك النشط هذه الفاتورة النقدية من الخزينة",
+        }),
+      });
+    }
+    return {
+      mode: "TREASURY",
+      shiftId: null,
+      payerUserId: input.reviewer.userId,
+    };
+  }
+  if (declared?.mode === "DRAWER" && declared.shiftId != null) {
+    const [shift] = await tx
+      .select({
+        id: shifts.id,
+        branchId: shifts.branchId,
+        userId: shifts.userId,
+        status: shifts.status,
+      })
+      .from(shifts)
+      .where(eq(shifts.id, declared.shiftId))
+      .limit(1);
+    const isDeclaredShiftValid =
+      Boolean(shift) &&
+      shift!.status === "OPEN" &&
+      Number(shift!.branchId) === branchId &&
+      Number(shift!.userId) === declared.payerUserId;
+    if (isDeclaredShiftValid) {
+      return {
+        mode: "DRAWER",
+        shiftId: Number(shift!.id),
+        payerUserId: Number(shift!.userId),
+      };
+    }
+    if (declared.explicit) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذر ترحيل وتسوية الفاتورة النقدية",
+          why: "وردية منشئ الفاتورة النقدية المحددة صراحةً أُغلقت أو لم تعد صالحة للصرف",
+          doThis: "حدد مصدر الصرف صراحةً عند الاعتماد (الخزينة الرئيسية للمالك النشط، أو وردية مفتوحة صالحة)",
+        }),
+      });
+    }
+  }
+
+  if (creatorUserId != null) {
+    const creatorOpenShiftId = await openShiftIdTx(tx, creatorUserId, branchId);
+    if (creatorOpenShiftId != null) {
+      return {
+        mode: "DRAWER",
+        shiftId: creatorOpenShiftId,
+        payerUserId: creatorUserId,
+      };
+    }
+  }
+  if (reviewerApproval.isOwner) {
+    return {
+      mode: "TREASURY",
+      shiftId: null,
+      payerUserId: input.reviewer.userId,
+    };
+  }
+  throw new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message: appErrorMessage({
+      what: "تعذر ترحيل وتسوية الفاتورة النقدية",
+      why: "لا توجد وردية مفتوحة لمنشئ الفاتورة النقدية، والصرف من الخزينة الرئيسية محصور بحساب مالك نشط",
+      doThis: "ليعتمد المالك النشط الفاتورة من الخزينة الرئيسية، أو ليرسلها المنشئ من ورديته المفتوحة",
+    }),
+  });
+}
+
+export async function prelockCashPurchaseSettlementInTx(
+  tx: Tx,
+  input: {
+    purchaseOrder: Pick<
+      typeof purchaseOrders.$inferSelect,
+      "id" | "branchId" | "createdBy" | "currentRevisionId"
+    >;
+    reviewer: Actor;
+    explicitCashSource?: CashSourceInput | null;
+  },
+) {
+  const plan = await resolveCashPurchaseSettlementPlanTx(tx, input);
+  await lockCashSourceForUpdate(tx, {
+    branchId: Number(input.purchaseOrder.branchId),
+    cashBucket: plan.mode,
+    shiftId: plan.shiftId,
+  });
+  return plan;
+}
+
+/**
+ * يسوي فاتورة شراء نقدية (CASH) ذرياً داخل نفس معاملة الترحيل بحيث تصبح ذمة الفاتورة صفراً
+ * فور استلامها وترحيلها، مع توثيق كامل عبر supplierPaymentRequests وsupplierPayments وreceipts وPAYMENT_OUT.
+ */
+export async function settlePostedCashPurchaseInvoiceInTx(
+  tx: Tx,
+  input: {
+    purchaseOrder: Pick<
+      typeof purchaseOrders.$inferSelect,
+      "id" | "poNumber" | "branchId" | "createdBy" | "currentRevisionId"
+    >;
+    invoice: typeof supplierInvoices.$inferSelect;
+    actor: Actor;
+    deterministicKey: string;
+    cashSource?: CashSourceInput | null;
+  },
+) {
+  if (input.invoice.currency !== "IQD") {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذر التسوية النقدية الفورية لفاتورة دولارية",
+        why: "الفاتورة الدولارية تُسدَّد عبر مسار الصيرفة بالدولار لا بصرف نقدي ديناري مباشر",
+        doThis: "استخدم التسوية الآجلة للفواتير الدولارية وسدّدها من مسار دفع المورد بالدولار",
+      }),
+    });
+  }
+  const requestKey = `auto-cash-po:${input.deterministicKey}`;
+  const decisionKey = `auto-cash-po-ok:${input.deterministicKey}`;
+  const reason = `تسوية نقدية فورية لفاتورة الشراء النقدية ${input.purchaseOrder.poNumber}`;
+  const evidenceReference = `AUTO-CASH-PO:${input.deterministicKey}`;
+  const totalAmount = toDbMoney(input.invoice.totalAmount);
+
+  const [existingRequest] = await tx
+    .select()
+    .from(supplierPaymentRequests)
+    .where(eq(supplierPaymentRequests.requestKey, requestKey))
+    .for("update")
+    .limit(1);
+  if (existingRequest) {
+    if (
+      Number(existingRequest.supplierId) !== Number(input.invoice.supplierId) ||
+      Number(existingRequest.branchId) !== Number(input.invoice.branchId) ||
+      !money(existingRequest.requestedAmount).eq(money(totalAmount))
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذر إعادة تشغيل التسوية النقدية التلقائية",
+          why: "مفتاح التسوية النقدية التلقائية مرتبط بفاتورة شراء مختلفة",
+          doThis: "أرسل مفتاح طلب جديد مستقل لاعتماد أمر الشراء النقدي",
+        }),
+      });
+    }
+    if (existingRequest.status === "APPROVED") {
+      const [existingPayment] = await tx
+        .select({ id: supplierPayments.id })
+        .from(supplierPayments)
+        .where(eq(supplierPayments.requestId, Number(existingRequest.id)))
+        .limit(1);
+      return {
+        requestId: Number(existingRequest.id),
+        supplierPaymentId: existingPayment ? Number(existingPayment.id) : null,
+        idempotent: true as const,
+      };
+    }
+    if (existingRequest.status === "PENDING") {
+      const decided = await decideSupplierPaymentInTx(
+        tx,
+        {
+          requestId: Number(existingRequest.id),
+          decisionKey,
+          action: "APPROVE",
+          reviewReason: reason,
+        },
+        input.actor,
+        SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY,
+      );
+      return {
+        requestId: Number(existingRequest.id),
+        supplierPaymentId: decided.supplierPaymentId,
+        idempotent: Boolean(decided.idempotent),
+      };
+    }
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذر إعادة تشغيل التسوية النقدية التلقائية",
+        why: `طلب السداد التلقائي المرتبط بهذه الفاتورة في حالة (${existingRequest.status}) غير قابلة للاعتماد`,
+        doThis: "راجع طلبات سداد المورد المرتبطة بهذه الفاتورة من شاشة دفعات الموردين",
+      }),
+    });
+  }
+
+  const plan = await resolveCashPurchaseSettlementPlanTx(tx, {
+    purchaseOrder: input.purchaseOrder,
+    reviewer: input.actor,
+    explicitCashSource: input.cashSource,
+  });
+
+  const [payerUser] = await tx
+    .select({
+      id: users.id,
+      role: users.role,
+      isOwner: users.isOwner,
+    })
+    .from(users)
+    .where(eq(users.id, plan.payerUserId))
+    .limit(1);
+  const payerActor: Actor = payerUser
+    ? {
+        userId: Number(payerUser.id),
+        branchId: Number(input.invoice.branchId),
+        role: payerUser.role,
+        isOwner: Boolean(payerUser.isOwner),
+      }
+    : {
+        userId: plan.payerUserId,
+        branchId: Number(input.invoice.branchId),
+        role: input.actor.role,
+        isOwner:
+          plan.payerUserId === input.actor.userId
+            ? Boolean(input.actor.isOwner)
+            : false,
+      };
+
+  const createdRequest = await requestSupplierPaymentInTx(
+    tx,
+    {
+      supplierId: Number(input.invoice.supplierId),
+      branchId: Number(input.invoice.branchId),
+      requestKey,
+      currency: "IQD",
+      exchangeRate: null,
+      amount: totalAmount,
+      currencyAmount: totalAmount,
+      paymentMethod: "CASH",
+      cashSource: { mode: plan.mode, shiftId: plan.shiftId },
+      evidenceType: "CASH_ACKNOWLEDGEMENT",
+      evidenceReference,
+      reason,
+      allocations: [
+        {
+          supplierInvoiceId: Number(input.invoice.id),
+          invoiceVersion: Number(input.invoice.version),
+          amount: totalAmount,
+          currencyAmount: totalAmount,
+        },
+      ],
+    },
+    payerActor,
+    { pendingGuardOverride: `SUPPLIER-PAY-AUTO-CASH:${input.invoice.id}` },
+  );
+
+  const decided = await decideSupplierPaymentInTx(
+    tx,
+    {
+      requestId: createdRequest.requestId,
+      decisionKey,
+      action: "APPROVE",
+      reviewReason: reason,
+    },
+    input.actor,
+    SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY,
+  );
+  if (decided.status !== "APPROVED" || decided.supplierPaymentId == null) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذر إتمام التسوية النقدية الذرية لفاتورة الشراء النقدية",
+        why: `قرار سداد الفاتورة النقدية لم يكتمل بحالة معتمدة (${decided.status})`,
+        doThis: "أعد محاولة اعتماد أمر الشراء النقدي وتأكد من كفاية النقد في مصدر الصرف المختار",
+      }),
+    });
+  }
+  return {
+    requestId: createdRequest.requestId,
+    supplierPaymentId: decided.supplierPaymentId,
+    idempotent: false as const,
+  };
 }

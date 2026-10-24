@@ -16,7 +16,7 @@ import {
 import type { Tx } from "../../db";
 import { withTx, type Actor } from "../tx";
 import { assertPurchaseBranch } from "./internal";
-import type { ConfirmPurchaseOrderInput, CreatePurchaseOrderInput, PurchaseDocumentInput, UpdatePurchaseOrderInput } from "./types";
+import type { ConfirmPurchaseOrderInput, CreatePurchaseOrderInput, PurchaseCashSourceInput, PurchaseDocumentInput, PurchaseSettlementType, UpdatePurchaseOrderInput } from "./types";
 import { submitPurchaseOrderForApproval } from "./controls";
 import { replacePurchaseOrderRevisionAllocationsTx } from "./requisitions";
 import { appendPurchaseOrderEventTx, createPurchaseOrderRevisionTx } from "./revisions";
@@ -25,6 +25,111 @@ import { PETTY_CASH_LIMIT_IQD } from "../expenseService";
 import { nextCounterValue } from "../numbering";
 import { recordedPurchaseShippingPaymentTx } from "./shippingPayment";
 import { recognizeShippingAndCustomsInTx } from "./automaticInvoicePosting";
+import { readDeclaredPurchaseCashSourceTx, type DeclaredPurchaseCashSource } from "./supplierPayments";
+
+async function captureOrderCashSourceTx(
+  tx: Tx,
+  settlementType: PurchaseSettlementType,
+  cashSourceInput: PurchaseCashSourceInput | null | undefined,
+  actor: Actor,
+  branchId: number,
+  previous?: typeof purchaseOrders.$inferSelect,
+): Promise<DeclaredPurchaseCashSource | null> {
+  if (settlementType !== "CASH") {
+    if (cashSourceInput != null) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذر حفظ مصدر الصرف النقدي",
+          why: "فاتورة الشراء الآجلة تسجّل ذمة على الحساب ولا تقبل مصدر صرف نقدي فوري",
+          doThis: "احذف مصدر النقد للفاتورة الآجلة، أو حوّل نوع التسوية إلى نقدي",
+        }),
+      });
+    }
+    return null;
+  }
+  const creatorId = Number(previous?.createdBy ?? actor.userId);
+  if (cashSourceInput == null) {
+    if (previous && previous.settlementType === "CASH") {
+      const prevDeclared = await readDeclaredPurchaseCashSourceTx(
+        tx,
+        Number(previous.id),
+        previous.currentRevisionId == null ? null : Number(previous.currentRevisionId),
+      );
+      if (prevDeclared?.mode === "TREASURY") {
+        return prevDeclared;
+      }
+      if (prevDeclared?.mode === "DRAWER" && prevDeclared.shiftId != null) {
+        const [prevShift] = await tx
+          .select({
+            id: shifts.id,
+            branchId: shifts.branchId,
+            userId: shifts.userId,
+            status: shifts.status,
+          })
+          .from(shifts)
+          .where(eq(shifts.id, prevDeclared.shiftId))
+          .limit(1);
+        if (
+          prevShift &&
+          prevShift.status === "OPEN" &&
+          Number(prevShift.branchId) === branchId &&
+          Number(prevShift.userId) === creatorId
+        ) {
+          return prevDeclared;
+        }
+      }
+    }
+    const openShiftId = await openShiftIdTx(tx, creatorId, branchId);
+    return openShiftId != null
+      ? { mode: "DRAWER", shiftId: openShiftId, payerUserId: creatorId, explicit: false }
+      : null;
+  }
+  if (cashSourceInput.mode === "TREASURY") {
+    if (cashSourceInput.shiftId != null) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذر حفظ مصدر الصرف من الخزينة",
+          why: "الخزينة الرئيسية لا تقبل رقم وردية",
+          doThis: "اختر الخزينة الرئيسية دون رقم وردية، أو اختر درج الوردية المفتوحة",
+        }),
+      });
+    }
+    return { mode: "TREASURY", shiftId: null, payerUserId: creatorId, explicit: true };
+  }
+  if (cashSourceInput.mode !== "DRAWER") {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذر حفظ مصدر الصرف النقدي",
+        why: "مصدر الصرف المرسل غير مدعوم لفاتورة الشراء النقدية",
+        doThis: "اختر درج الوردية المفتوحة أو الخزينة الرئيسية كمصدر للصرف النقدي",
+      }),
+    });
+  }
+  const shiftId = cashSourceInput.shiftId ?? (await openShiftIdTx(tx, creatorId, branchId));
+  const [shift] =
+    shiftId == null
+      ? []
+      : await tx.select().from(shifts).where(eq(shifts.id, shiftId)).limit(1);
+  if (
+    !shift ||
+    shift.status !== "OPEN" ||
+    Number(shift.branchId) !== branchId ||
+    Number(shift.userId) !== creatorId
+  ) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "تعذر حفظ مصدر صرف الفاتورة النقدية من الدرج",
+        why: "لا توجد وردية مفتوحة تخص منشئ الفاتورة في هذا الفرع",
+        doThis: "افتح وردية صالحة أولاً، أو اختر الخزينة الرئيسية ليعتمدها المالك النشط",
+      }),
+    });
+  }
+  return { mode: "DRAWER", shiftId: Number(shift.id), payerUserId: creatorId, explicit: true };
+}
 
 async function captureShippingSourceTx(
   tx: Tx, input: PurchaseDocumentInput, actor: Actor, branchId: number,
@@ -397,6 +502,16 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
       supplierId: input.supplierId,
       branchId: input.branchId,
       settlementType: input.settlementType ?? "CREDIT",
+      ...(input.cashSource !== undefined
+        ? {
+            cashSource: input.cashSource
+              ? {
+                  mode: input.cashSource.mode,
+                  shiftId: input.cashSource.shiftId ?? null,
+                }
+              : null,
+          }
+        : {}),
       status: "DRAFT",
       taxRatePercent: input.taxRatePercent ?? null,
       agreedCurrency: input.agreedCurrency ?? null,
@@ -428,6 +543,13 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
 
     // Cash source precedes branch/PO locks, matching payment and close lock order.
     const shippingSource = await captureShippingSourceTx(tx, input, actor, input.branchId);
+    const declaredCashSource = await captureOrderCashSourceTx(
+      tx,
+      input.settlementType ?? "CREDIT",
+      input.cashSource,
+      actor,
+      input.branchId,
+    );
     // نفس قفل الفرع الذي تبدأ به جلسة الجرد: يمنع سباق «التقاط نطاق OPENING ↔ إنشاء قائمة شراء».
     // إن سبق الجردُ، ينظف أمر الشراء العنصر الموجود أدناه؛ وإن سبق الشراءُ، يراه فلتر الجرد بعد القفل.
     const [branch] = await tx
@@ -531,7 +653,12 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
       eventType: "ORDER_CREATED",
       reason: input.revisionReason?.trim() || "إنشاء أمر الشراء",
       actorUserId: actor.userId,
-      payload: { poNumber, version: governed.version, revisionNo: revision.revisionNo },
+      payload: {
+        poNumber,
+        version: governed.version,
+        revisionNo: revision.revisionNo,
+        ...(declaredCashSource ? { cashSource: declaredCashSource } : {}),
+      },
     });
     if (shippingSource.shippingFundingSource === "DRAWER") {
       await recognizeShippingAndCustomsInTx(tx, {
@@ -604,7 +731,16 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
     )[0];
     if (!poPreview) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
     assertPurchaseBranch(poPreview, actor);
+    const nextSettlementType = input.settlementType ?? poPreview.settlementType;
     const shippingSource = await captureShippingSourceTx(tx, input, actor, Number(poPreview.branchId), poPreview);
+    const declaredCashSource = await captureOrderCashSourceTx(
+      tx,
+      nextSettlementType,
+      input.cashSource,
+      actor,
+      Number(poPreview.branchId),
+      poPreview,
+    );
 
     // نفس قفل الفرع الذي يبدأ به الإنشاء والجرد: يحفظ ترتيب الأقفال (فرع ← أمر) ويمنع سباق
     // «التقاط نطاق OPENING ↔ تعديل قائمة الشراء».
@@ -661,10 +797,8 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
 
     const { rows, subtotal, tax, taxRate, shippingCost, customsCost, total, agreedCurrency, usdTotalVal, agreedRateVal, invoiceDiscountIqd, usdInvoiceDiscountVal } =
       await computePurchaseDocument(tx, input);
-    // Codex (P1، ٦/٩/٢٦): التعديل لا يغيّر settlementType، لكنه كان يقبل agreedCurrency=USD
-    // بلا مطابقة الحارس نفسه في الإنشاء (order.ts:421) — مسوّدة CASH/IQD تُعدَّل إلى USD ثم
-    // يفشل اعتمادها لاحقاً بلا رجوع (automaticInvoicePosting.ts يسدّد نقداً بالدينار حصراً).
-    if (agreedCurrency === "USD" && po.settlementType === "CASH") {
+    const effectiveSettlementType = input.settlementType ?? po.settlementType;
+    if (agreedCurrency === "USD" && effectiveSettlementType === "CASH") {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
@@ -678,6 +812,7 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
     const previousRevisionId = po.currentRevisionId == null ? null : Number(po.currentRevisionId);
     await tx.update(purchaseOrders).set({
       supplierId: input.supplierId,
+      settlementType: effectiveSettlementType,
       subtotal: subtotal.toFixed(2),
       taxAmount: tax.toFixed(2),
       taxRatePercent: taxRate.toFixed(2),
@@ -750,6 +885,7 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
         revisionNo: revision.revisionNo,
         previousVersion: input.expectedVersion,
         version: governed.version,
+        ...(declaredCashSource ? { cashSource: declaredCashSource } : {}),
       },
     });
 

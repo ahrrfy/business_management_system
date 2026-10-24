@@ -49,6 +49,10 @@ import { NextActionChip } from "@/components/nextAction/NextActionChip";
 import { hasModuleAccess } from "@shared/permissions";
 import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import { PurchaseOrderGovernance } from "./PurchaseOrderGovernance";
+import {
+  PurchaseCashSourceField,
+  usePurchaseCashSourceState,
+} from "./PurchaseCashSourceField";
 import { QuickSupplierPaymentDialog } from "./QuickSupplierPaymentDialog";
 
 
@@ -151,9 +155,12 @@ export function PurchaseDetailDrawer({
 
   const orderDecisionMut = trpc.purchases.decideControl.useMutation({
     onSuccess: async (res) => {
+      const wasCash = po.data?.settlementType === "CASH";
       notify.ok(
         res.status === "APPROVED"
-          ? "تم اعتماد أمر الشراء واستلام البضاعة بالكامل وترحيل الفاتورة بنجاح"
+          ? wasCash
+            ? "تم اعتماد الفاتورة النقدية واستلام البضاعة وسداد المورد بالكامل — الذمة المتبقية 0.00"
+            : "تم اعتماد أمر الشراء واستلام البضاعة بالكامل وترحيل الفاتورة بنجاح"
           : "تم تحديث حالة طلب الاعتماد",
       );
       setIsApprovalOpen(false);
@@ -161,6 +168,7 @@ export function PurchaseDetailDrawer({
         utils.purchases.get.invalidate({ purchaseOrderId: purchaseOrderId ?? 0 }),
         utils.purchases.list.invalidate(),
         utils.purchases.pendingControls.invalidate(),
+        utils.purchases.integrityReport.invalidate(),
       ]);
     },
     onError: (err) => notify.err(err),
@@ -212,6 +220,21 @@ export function PurchaseDetailDrawer({
 
   const currentUserId = me.data?.id;
   const isOwner = me.data?.isOwner === true;
+  const isCashIqdApproval =
+    d?.status === "SENT" &&
+    d.settlementType === "CASH" &&
+    !isUsd &&
+    isApprovalOpen;
+  const cashSourceState = usePurchaseCashSourceState({
+    branchId: d?.branchId,
+    enabled: Boolean(isCashIqdApproval),
+    context: "approval",
+    isCreator:
+      d != null &&
+      currentUserId != null &&
+      Number(d.createdBy) === Number(currentUserId),
+  });
+
   const violatesSod =
     !isOwner &&
     (currentUserId == null ||
@@ -239,6 +262,10 @@ export function PurchaseDetailDrawer({
         approve: true,
         reason: approvalReason.trim() || "اعتماد واستلام البضاعة كاملة",
         confirmedFullReceipt: true,
+        cashSource:
+          d.settlementType === "CASH" && !isUsd
+            ? cashSourceState.payload
+            : undefined,
       });
     } else if (d.status === "DRAFT") {
       confirmMut.mutate({
@@ -331,6 +358,17 @@ export function PurchaseDetailDrawer({
                   <p role="alert" className="border border-money-negative p-2 text-xs text-money-negative">
                     دليل السداد يحتاج مراجعة. طلب السداد متوقف حتى مطابقة المستندات.
                   </p>
+                ) : d.status === "RECEIVED" &&
+                  d.settlementType === "CASH" &&
+                  remaining != null &&
+                  remaining.gt(0) &&
+                  !costHidden ? (
+                  <p
+                    role="alert"
+                    className="rounded-md border border-[var(--sem-danger)]/40 bg-[var(--sem-danger-bg)] p-2.5 text-xs text-[var(--sem-danger)]"
+                  >
+                    تنبيه حرج: هذه فاتورة شراء نقدية مستلمة تاريخيا ولم تسو ذمتها بعد (المتبقي {fmt(remaining.toFixed(2))} {isUsd ? "$" : "د.ع"}). سددها فورا او طابق سنداتها من كشف المورد لمنع الصرف المزدوج.
+                  </p>
                 ) : null}
                 {pendingControls.isError && <ErrorState message={pendingControls.error.message} onRetry={() => void pendingControls.refetch()} />}
                 {!costHidden && <dl className="grid grid-cols-1 gap-2 rounded-md border p-2 text-xs sm:grid-cols-3">
@@ -379,7 +417,11 @@ export function PurchaseDetailDrawer({
                       className="bg-primary text-primary-foreground font-semibold"
                     >
                       <CheckCircle2 aria-hidden className="size-4" />
-                      {d.status === "SENT" ? "اعتماد واستلام فوري" : "إرسال للاعتماد"}
+                      {d.status === "SENT"
+                        ? d.settlementType === "CASH" && !isUsd
+                          ? "اعتماد واستلام وسداد نقدي"
+                          : "اعتماد واستلام فوري"
+                        : "إرسال للاعتماد"}
                     </Button>
                   ) : null}
 
@@ -392,7 +434,7 @@ export function PurchaseDetailDrawer({
                       className="font-semibold text-primary border-primary/40 hover:bg-primary/5"
                     >
                       <HandCoins aria-hidden className="size-4" />
-                      سداد فوري للمورد
+                      {d.settlementType === "CASH" ? "سداد الفاتورة النقدية الان" : "سداد فوري للمورد"}
                     </Button>
                   ) : null}
 
@@ -561,7 +603,13 @@ export function PurchaseDetailDrawer({
             </Tabs>
 
             {/* نافذة تأكيد الاعتماد والاستلام الفوري */}
-            <Dialog open={isApprovalOpen} onOpenChange={setIsApprovalOpen}>
+            <Dialog
+              open={isApprovalOpen}
+              onOpenChange={(open) => {
+                setIsApprovalOpen(open);
+                if (!open) cashSourceState.reset();
+              }}
+            >
               <DialogContent className="sm:max-w-md" dir="rtl">
                 <DialogHeader>
                   <DialogTitle className="flex items-center gap-2 text-base">
@@ -591,12 +639,27 @@ export function PurchaseDetailDrawer({
                       placeholder={d.status === "DRAFT" ? "إرسال للمراجعة والاعتماد" : "اعتماد واستلام البضاعة كاملة"}
                     />
                   </div>
+                  {d.status === "SENT" && d.settlementType === "CASH" && !isUsd ? (
+                    <div className="space-y-2 rounded-md border bg-muted/30 p-3 text-xs">
+                      <p className="font-medium">
+                        هذه فاتورة شراء نقدية ({fmt(d.total)} د.ع): اعتمادها يسدد كامل القيمة للمورد فورا وتصبح الذمة المتبقية 0.00.
+                      </p>
+                      <PurchaseCashSourceField
+                        idPrefix="drawer-approve"
+                        context="approval"
+                        state={cashSourceState}
+                      />
+                    </div>
+                  ) : null}
                 </div>
                 <DialogFooter className="gap-2 sm:gap-0">
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => setIsApprovalOpen(false)}
+                    onClick={() => {
+                      setIsApprovalOpen(false);
+                      cashSourceState.reset();
+                    }}
                     disabled={isApproving}
                   >
                     إلغاء
@@ -605,9 +668,19 @@ export function PurchaseDetailDrawer({
                     size="sm"
                     pending={isApproving}
                     onClick={handleApproveAndReceive}
-                    disabled={approvalReason.trim().length < 3}
+                    disabled={
+                      approvalReason.trim().length < 3 ||
+                      (d.status === "SENT" &&
+                        d.settlementType === "CASH" &&
+                        !isUsd &&
+                        cashSourceState.isActionBlocked)
+                    }
                   >
-                    {d.status === "DRAFT" ? "تأكيد الإرسال للاعتماد" : "تأكيد الاعتماد والاستلام"}
+                    {d.status === "DRAFT"
+                      ? "تأكيد الإرسال للاعتماد"
+                      : d.settlementType === "CASH" && !isUsd
+                        ? "اعتماد واستلام وسداد نقدي فوري"
+                        : "تأكيد الاعتماد والاستلام"}
                   </SubmitButton>
                 </DialogFooter>
               </DialogContent>

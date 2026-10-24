@@ -207,10 +207,33 @@ export default function PurchaseOrderDetail() {
   const canEdit = canLifecycleOperation(me.data, "purchases.updateOrder", legacyEdit);
   const canSettleShipping = canLifecycleOperation(me.data, "purchases.settleShippingFromShift", legacyEdit);
   const canRequestPayment = canLifecycleOperation(me.data, "supplierPayments.requestPayment", legacyEdit);
+  const canAutoSettle = canLifecycleOperation(me.data, "suppliers.autoSettle", legacyEdit);
   const canReverseReceipt = canLifecycleOperation(me.data, "goodsReceiptReversal.requestReversal", legacyEdit);
 
   const [isSettleShippingOpen, setIsSettleShippingOpen] = useState(false);
   const utils = trpc.useUtils();
+  const autoSettleSupplierMut = trpc.suppliers.autoSettle.useMutation({
+    onSuccess: async (res) => {
+      await Promise.all([
+        utils.purchases.get.invalidate({ purchaseOrderId }),
+        utils.purchases.list.invalidate(),
+        utils.purchases.integrityReport.invalidate(),
+        utils.suppliers.list.invalidate(),
+      ]);
+      if (res.settledOrdersCount > 0 || res.partiallySettledOrdersCount > 0) {
+        notify.ok(
+          `تمت مطابقة سندات الصرف السابقة للمورد (${res.supplierName}) وتسوية ${fmtAr(res.totalSettledAmount)} د.ع دون صرف مكرر`,
+        );
+      } else {
+        notify.info(
+          "لا توجد سندات صرف سابقة غير مخصصة لهذا المورد؛ استخدم (سداد الفاتورة النقدية الان) لتوثيق الصرف الفعلي",
+        );
+      }
+    },
+    onError: (err) => {
+      notify.err(err);
+    },
+  });
   const settleShippingMut = trpc.purchases.settleShippingFromShift.useMutation({
     onSuccess: async (res) => {
       notify.ok(
@@ -471,27 +494,86 @@ export default function PurchaseOrderDetail() {
           دليل السداد يحتاج مراجعة. طلب السداد متوقف حتى مطابقة المستندات.
         </p>
       ) : null}
-      {canRequestPayment &&
-      d.status !== "CANCELLED" &&
+      {d.status !== "RECEIVED" && d.status !== "CANCELLED" ? (
+        <Card>
+          <CardContent className="p-3 text-xs leading-relaxed text-muted-foreground">
+            {d.settlementType === "CASH"
+              ? "هذه فاتورة شراء نقدية: عند اعتمادها واستلام البضاعة، سيصرف النظام قيمتها نقدا في نفس العملية وتصبح الذمة المتبقية 0.00 تلقائيا."
+              : "هذه فاتورة شراء بالاجل: لا يطلب سدادها قبل الاستلام؛ عند اعتمادها واستلام البضاعة تسجل ذمة اجلة على المورد وتتاح للتسديد."}
+          </CardContent>
+        </Card>
+      ) : null}
+      {d.status === "RECEIVED" &&
       !settlement.requiresReview &&
       remaining != null &&
       remaining.gt(0) ? (
-        <Card>
+        <Card
+          className={
+            d.settlementType === "CASH"
+              ? "border-destructive/50 bg-destructive/5"
+              : undefined
+          }
+        >
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-bold">تسديد للمورّد</CardTitle>
+            <CardTitle className="flex items-center gap-2 text-sm font-bold">
+              {d.settlementType === "CASH" ? (
+                <>
+                  <AlertTriangle aria-hidden className="size-4 text-destructive" />
+                  <span className="text-destructive">
+                    تنبيه: فاتورة شراء نقدية مستلمة لم يوثق سدادها ({fmtAr(remaining.toFixed(2))} {isUsd ? "$" : "د.ع"})
+                  </span>
+                </>
+              ) : (
+                <span>تسديد ذمة المورد</span>
+              )}
+            </CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
             <p className="text-xs leading-relaxed text-muted-foreground">
-              يظهر في الأمر رصيد مرجعي قدره {fmtAr(remaining.toFixed(2))}{" "}
-              {isUsd ? "$" : "د.ع"}. السداد الجديد يبدأ من فاتورة المورد
-              المرحلة ويُخصَّص إليها، ولا يكتب أثراً مباشراً على الأمر.
+              {d.settlementType === "CASH"
+                ? "هذه الفاتورة مسجلة نقدية لكن رصيدها ما زال مفتوحا (فاتورة تاريخية قبل الترحيل الذري). ان كان قد صدر لها سند صرف عام سابقا فطابق سندات المورد هنا دون صرف مكرر، وان لم يصرف النقد بعد فسددها الان."
+                : `الرصيد المفتوح على هذه الفاتورة قدره ${fmtAr(remaining.toFixed(2))} ${isUsd ? "$" : "د.ع"}. اعتماد سند صرف للمورد او دفعة مورد يخفض ذمة المورد ويسوي الفاتورة المفتوحة تلقائيا.`}
             </p>
-            <Button asChild size="sm">
-              <Link href={`/purchases/supplier-payments?supplierId=${d.supplierId}`}>
-                <Banknote aria-hidden className="size-4" />
-                فتح تسديدات فواتير المورد
-              </Link>
-            </Button>
+            {(canRequestPayment || canAutoSettle) && d.supplierId != null ? (
+              <div className="flex flex-wrap gap-2">
+                {canRequestPayment ? (
+                  <>
+                    <Button asChild size="sm">
+                      <Link href={`/purchases/supplier-payments?supplierId=${d.supplierId}`}>
+                        <Banknote aria-hidden className="size-4" />
+                        {d.settlementType === "CASH"
+                          ? "سداد الفاتورة النقدية الان"
+                          : "فتح تسديدات فواتير المورد"}
+                      </Link>
+                    </Button>
+                    {!isUsd ? (
+                      <Button asChild size="sm" variant="outline">
+                        <Link href={`/vouchers/payment/new?partyType=SUPPLIER&partyId=${d.supplierId}`}>
+                          <Receipt aria-hidden className="size-4" />
+                          اصدار سند صرف للمورد
+                        </Link>
+                      </Button>
+                    ) : null}
+                  </>
+                ) : null}
+                {canAutoSettle && d.settlementType === "CASH" && !isUsd ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    disabled={autoSettleSupplierMut.isPending}
+                    onClick={() =>
+                      autoSettleSupplierMut.mutate({
+                        supplierId: Number(d.supplierId),
+                      })
+                    }
+                  >
+                    <HandCoins aria-hidden className="size-4" />
+                    مطابقة سند صرف سابق دون صرف مكرر
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
           </CardContent>
         </Card>
       ) : null}
