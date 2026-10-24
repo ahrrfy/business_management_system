@@ -1,437 +1,243 @@
-import { useState, useMemo, useEffect } from "react";
-import { trpc } from "@/lib/trpc";
-import { useOperationPermission } from "@/hooks/useOperationPermission";
-import { notify } from "@/lib/notify";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";
-import { Check, CheckCircle2, ChevronRight, Loader2, Sparkles, Users, Zap } from "lucide-react";
+import { Check, Loader2, Zap } from "lucide-react";
+import { useInstantCampaign } from "./discovery/useInstantCampaign";
+import type {
+  InstantCampaignProps,
+  InstantCampaignScope,
+} from "./discovery/instantCampaign";
 
-type Health = "HIGH_VALUE_NO_IMAGE" | "CONSIGNMENT_NO_IMAGE" | "HAS_IMAGE_NO_BARCODE" | "CORRUPTED_OR_UNPROCESSED_IMAGE" | "REDUNDANT_VARIANT_IMAGE" | "NO_IMAGES" | "BUNDLE_NO_IMAGE" | "SINGLE_IMAGE" | "PARENT_ONLY_HAS_VARIANTS" | "VARIANTS_INCOMPLETE" | "HEALTHY";
-
-interface StudioInstantCampaignLauncherProps {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  defaultScope?: "HIGH_VALUE" | "CURRENT_FILTER" | "SELECTED_ROWS";
-  selectedRowIds?: number[];
-  activeFilterStates: Health[];
-  counts?: Record<Health, number>;
-  onSuccess?: (campaignId: number) => void;
-}
-
-export function StudioInstantCampaignLauncher({
-  open,
-  onOpenChange,
-  defaultScope = "HIGH_VALUE",
-  selectedRowIds = [],
-  activeFilterStates,
-  counts,
-  onSuccess,
-}: StudioInstantCampaignLauncherProps) {
-  const canReadAssignees = useOperationPermission("productStudio.assignees").allowed;
-  const canReadGapIds = useOperationPermission("productStudio.gapProductIds").allowed;
-  const canCreateCampaign = useOperationPermission("productStudio.createCampaign").allowed;
-  const canDrainBacklog = useOperationPermission("productStudio.drainCampaignBacklog").allowed;
-  const canDistribute = useOperationPermission("productStudio.distributeCampaignTasks").allowed;
-  const utils = trpc.useUtils();
-  const assigneesQuery = trpc.productStudio.assignees.useQuery(undefined, { enabled: open && canReadAssignees });
-
-  const [scopeType, setScopeType] = useState<"HIGH_VALUE" | "CURRENT_FILTER" | "SELECTED_ROWS">(defaultScope);
-  const [campaignName, setCampaignName] = useState("");
-  const [selectedAssigneeIds, setSelectedAssigneeIds] = useState<number[]>([]);
-  const [requiredImages, setRequiredImages] = useState("1");
-  const [isLaunching, setIsLaunching] = useState(false);
-  const [launchStep, setLaunchStep] = useState<"IDLE" | "FETCHING_IDS" | "CREATING" | "DRAINING" | "COMPLETED">("IDLE");
-  const [progressPercent, setProgressPercent] = useState(0);
-  const [progressText, setProgressText] = useState("");
-  const [createdCampaignId, setCreatedCampaignId] = useState<number | null>(null);
-
-  // تحديث الاسم الافتراضي عند فتح النافذة
-  useEffect(() => {
-    if (open) {
-      const today = new Intl.DateTimeFormat("en-CA").format(new Date());
-      if (scopeType === "HIGH_VALUE") {
-        setCampaignName(`حملة تصوير الفجوة ذات الأولوية - ${today}`);
-      } else if (scopeType === "SELECTED_ROWS") {
-        setCampaignName(`حملة تصوير المنتجات المختارة (${selectedRowIds.length}) - ${today}`);
-      } else {
-        setCampaignName(`حملة تصوير فجوات الاستوديو - ${today}`);
-      }
-      setLaunchStep("IDLE");
-      setProgressPercent(0);
-      setProgressText("");
-      setCreatedCampaignId(null);
-    }
-  }, [open, scopeType, selectedRowIds.length]);
-
-  // تحديد كل المصورين تلقائياً إذا لم يتم تحديد أحد
-  useEffect(() => {
-    if (open && assigneesQuery.data && selectedAssigneeIds.length === 0) {
-      const available = assigneesQuery.data.filter((u) => u.canStudio).map((u) => u.id);
-      if (available.length > 0) {
-        setSelectedAssigneeIds(available);
-      }
-    }
-  }, [open, assigneesQuery.data, selectedAssigneeIds.length]);
-
-  const targetCount = useMemo(() => {
-    if (scopeType === "SELECTED_ROWS") return selectedRowIds.length;
-    if (scopeType === "HIGH_VALUE") return counts?.HIGH_VALUE_NO_IMAGE ?? 0;
-    if (activeFilterStates.length > 0 && counts) {
-      return activeFilterStates.reduce((acc, st) => acc + (counts[st] ?? 0), 0);
-    }
-    return counts?.NO_IMAGES ?? 0;
-  }, [scopeType, selectedRowIds.length, counts, activeFilterStates]);
-
-  const perPhotographerEstimate = useMemo(() => {
-    if (selectedAssigneeIds.length === 0 || targetCount === 0) return 0;
-    return Math.ceil(targetCount / selectedAssigneeIds.length);
-  }, [targetCount, selectedAssigneeIds.length]);
-
-  const createCampaign = trpc.productStudio.createCampaign.useMutation();
-  const drainBacklog = trpc.productStudio.drainCampaignBacklog.useMutation();
-
-  const handleLaunch = async () => {
-    if (!canCreateCampaign || !canDrainBacklog || !canDistribute || !canReadAssignees || (scopeType !== "SELECTED_ROWS" && !canReadGapIds)) return;
-    if (!campaignName.trim() || selectedAssigneeIds.length === 0 || targetCount === 0) {
-      notify.err("يرجى التأكد من اسم الحملة واختيار مصور واحد على الأقل.");
-      return;
-    }
-
-    setIsLaunching(true);
-    try {
-      let productIdsToInclude: number[] = [];
-
-      if (scopeType === "SELECTED_ROWS") {
-        productIdsToInclude = selectedRowIds;
-      } else {
-        setLaunchStep("FETCHING_IDS");
-        setProgressText("جارٍ حصر معرفات كافة المنتجات المطابقة...");
-        setProgressPercent(10);
-
-        const statesToFetch = scopeType === "HIGH_VALUE" ? (["HIGH_VALUE_NO_IMAGE"] as Health[]) : activeFilterStates;
-        const fetchedIds = await utils.client.productStudio.gapProductIds.query({
-          states: statesToFetch,
-        });
-
-        productIdsToInclude = fetchedIds;
-      }
-
-      if (productIdsToInclude.length === 0) {
-        notify.err("لم يتم العثور على منتجات مطابقة لهذا النطاق.");
-        setIsLaunching(false);
-        setLaunchStep("IDLE");
-        return;
-      }
-
-      // إنشاء الحملة
-      setLaunchStep("CREATING");
-      setProgressText(`جارٍ إنشاء الحملة لنطاق ${productIdsToInclude.length} منتج...`);
-      setProgressPercent(25);
-
-      const campaignResult = await createCampaign.mutateAsync({
-        name: campaignName.trim(),
-        status: "ACTIVE",
-        scopeKind: "PRODUCTS",
-        scopeProductIds: productIdsToInclude,
-        requiredImages: Math.max(1, Math.min(10, Number(requiredImages) || 1)),
-        assigneeIds: selectedAssigneeIds,
-      });
-
-      const campaignId = Number(campaignResult.campaignId);
-      setCreatedCampaignId(campaignId);
-
-      // استنزاف وتوليد كامل طابور الحملة وتوزيعه بالتساوي
-      setLaunchStep("DRAINING");
-      setProgressText("جارٍ توليد وتوزيع كامل طابور المهام بالتساوي على المصورين...");
-      setProgressPercent(60);
-
-      const drainResult = await drainBacklog.mutateAsync({
-        campaignId,
-        autoDistribute: true,
-      });
-
-      setProgressPercent(100);
-      setLaunchStep("COMPLETED");
-      setProgressText(`اكتمل التوليد بنجاح! تم إنشاء وتوزيع ${drainResult.totalCreated} مهمة بالتساوي.`);
-
-      await Promise.all([
-        utils.productStudio.campaigns.invalidate(),
-        utils.productStudio.tasks.invalidate(),
-        utils.productStudio.imageHealthCounts.invalidate(),
-        utils.productStudio.discoverImageGaps.invalidate(),
-        utils.productStudio.dashboard.invalidate(),
-      ]);
-
-      notify.ok(`تم إطلاق الحملة وتوزيع ${drainResult.totalCreated} مهمة بالتساوي بنجاح!`);
-      onSuccess?.(campaignId);
-    } catch (err: any) {
-      notify.err(err);
-      setLaunchStep("IDLE");
-    } finally {
-      setIsLaunching(false);
-    }
-  };
-
-  const photographers = assigneesQuery.data ?? [];
-
+export function StudioInstantCampaignLauncher(props: InstantCampaignProps) {
+  const model = useInstantCampaign(props);
+  const scopes: { value: InstantCampaignScope; title: string; hint: string }[] =
+    [
+      {
+        value: "HIGH_VALUE",
+        title: "منتجات الأولوية بلا صور",
+        hint: "جميع المنتجات المصنفة ضمن فجوة الأولوية",
+      },
+      {
+        value: "NO_IMAGES",
+        title: "جميع المنتجات بلا صور",
+        hint: "جميع المنتجات المصنفة بلا أي صور",
+      },
+      {
+        value: "CURRENT_FILTER",
+        title: "التصفية الحالية",
+        hint: "الحالات والبحث والبكج والترتيب الظاهرة في اللوحة",
+      },
+      {
+        value: "SELECTED_ROWS",
+        title: "الصفوف المحددة",
+        hint: `${props.selectedRowIds?.length ?? 0} منتج محدد يدوياً`,
+      },
+    ];
   return (
-    <Dialog open={open} onOpenChange={(val) => !isLaunching && onOpenChange(val)}>
-      <DialogContent className="sm:max-w-2xl">
+    <Dialog open={props.open} onOpenChange={model.onOpenChange}>
+      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 text-lg">
-            <Zap className="size-5 text-primary" />
-            إطلاق حملة تصوير فورية لكامل الفجوة
+          <DialogTitle className="flex items-center gap-2">
+            <Zap aria-hidden className="size-5" /> إطلاق حملة تصوير
           </DialogTitle>
           <DialogDescription>
-            بروتوكول التدخل السريع: تحويل منتجات الفجوة إلى حملة نشطة وتوزيعها بالتساوي على المصورين بضغطة زر واحدة.
+            راجع نطاق المنتجات والمصورين قبل إنشاء الحملة وتجهيز المهام.
           </DialogDescription>
         </DialogHeader>
-
-        <div className="space-y-4 py-2">
-          {/* اختيار النطاق */}
-          <div className="space-y-2">
-            <Label className="text-sm font-semibold">نطاق الاستهداف الفوري</Label>
-            <div className="grid gap-2 sm:grid-cols-3">
-              <button
-                type="button"
-                disabled={isLaunching || (counts?.HIGH_VALUE_NO_IMAGE ?? 0) === 0}
-                onClick={() => setScopeType("HIGH_VALUE")}
-                className={`flex flex-col items-start justify-between rounded-md border p-3 text-start transition-colors ${
-                  scopeType === "HIGH_VALUE"
-                    ? "border-primary bg-primary/10 ring-2 ring-primary"
-                    : "hover:bg-muted/50 border-border"
-                } ${isLaunching ? "opacity-60 cursor-not-allowed" : ""}`}
-              >
-                <div className="flex w-full items-center justify-between">
-                  <span className="text-xs font-bold">فجوة الأولوية الكاملة</span>
-                  <Badge variant="danger" className="text-[10px]">
-                    {counts?.HIGH_VALUE_NO_IMAGE ?? 0}
-                  </Badge>
-                </div>
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  كافة المنتجات المطلوبة التي تفتقر للصور
-                </p>
-              </button>
-
-              <button
-                type="button"
-                disabled={isLaunching || activeFilterStates.length === 0}
-                onClick={() => setScopeType("CURRENT_FILTER")}
-                className={`flex flex-col items-start justify-between rounded-md border p-3 text-start transition-colors ${
-                  scopeType === "CURRENT_FILTER"
-                    ? "border-primary bg-primary/10 ring-2 ring-primary"
-                    : "hover:bg-muted/50 border-border"
-                } ${isLaunching ? "opacity-60 cursor-not-allowed" : ""}`}
-              >
-                <div className="flex w-full items-center justify-between">
-                  <span className="text-xs font-bold">الفلاتر المحددة حالياً</span>
-                  <Badge variant="outline" className="text-[10px]">
-                    {targetCount}
-                  </Badge>
-                </div>
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  بحسب حالات الفلتر المختارة في اللوحة
-                </p>
-              </button>
-
-              <button
-                type="button"
-                disabled={isLaunching || selectedRowIds.length === 0}
-                onClick={() => setScopeType("SELECTED_ROWS")}
-                className={`flex flex-col items-start justify-between rounded-md border p-3 text-start transition-colors ${
-                  scopeType === "SELECTED_ROWS"
-                    ? "border-primary bg-primary/10 ring-2 ring-primary"
-                    : "hover:bg-muted/50 border-border"
-                } ${isLaunching || selectedRowIds.length === 0 ? "opacity-60 cursor-not-allowed" : ""}`}
-              >
-                <div className="flex w-full items-center justify-between">
-                  <span className="text-xs font-bold">المحددة في الجدول</span>
-                  <Badge variant="secondary" className="text-[10px]">
-                    {selectedRowIds.length}
-                  </Badge>
-                </div>
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  الصفوف التي تم تحديدها يدوياً
-                </p>
-              </button>
+        <div className="space-y-4">
+          <fieldset disabled={model.locked} className="min-w-0 space-y-2">
+            <legend className="mb-2 text-sm font-semibold">نطاق الحملة</legend>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {scopes.map((scope) => (
+                <button
+                  key={scope.value}
+                  type="button"
+                  aria-pressed={model.scope === scope.value}
+                  disabled={
+                    model.locked ||
+                    (scope.value === "SELECTED_ROWS" &&
+                      !props.selectedRowIds?.length)
+                  }
+                  onClick={() => model.setScope(scope.value)}
+                  className={`min-w-0 rounded-md border p-3 text-start ${model.scope === scope.value ? "border-primary bg-primary/5" : "border-border"}`}
+                >
+                  <span className="block text-sm font-semibold">
+                    {scope.title}
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {scope.hint}
+                  </span>
+                </button>
+              ))}
             </div>
-          </div>
-
-          {/* اسم الحملة وعدد الصور */}
-          <div className="grid gap-3 sm:grid-cols-3">
-            <div className="space-y-1.5 sm:col-span-2">
-              <Label htmlFor="instant-campaign-name">اسم الحملة</Label>
-              <Input
-                id="instant-campaign-name"
-                disabled={isLaunching}
-                value={campaignName}
-                onChange={(e) => setCampaignName(e.target.value)}
-                placeholder="اسم الحملة"
-                maxLength={180}
-              />
+          </fieldset>
+          {!model.previewReady &&
+            !model.preview.isError &&
+            model.campaignId === null && (
+              <p role="status" className="text-sm">
+                جارٍ معاينة النطاق…
+              </p>
+            )}
+          {model.preview.isError &&
+            model.scope !== "SELECTED_ROWS" &&
+            model.campaignId === null && (
+              <div role="alert" className="text-sm text-destructive">
+                تعذرت معاينة النطاق.{" "}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => model.preview.refetch()}
+                >
+                  إعادة المحاولة
+                </Button>
+              </div>
+            )}
+          <p role="status" className="text-sm">
+            عدد المنتجات المطابقة:{" "}
+            <strong>
+              {model.previewReady || model.campaignId !== null
+                ? model.targetCount
+                : "…"}
+            </strong>
+          </p>
+          {model.targetCount > 5000 && (
+            <p role="alert" className="text-sm text-destructive">
+              النطاق يتجاوز حد الحملة (5000 منتج). ضيّق التصفية قبل الإطلاق.
+            </p>
+          )}
+          <fieldset disabled={model.locked} className="min-w-0 space-y-4">
+            <legend className="sr-only">بيانات الحملة والمصورون</legend>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="space-y-1 sm:col-span-2">
+                <Label htmlFor="instant-campaign-name">اسم الحملة</Label>
+                <Input
+                  id="instant-campaign-name"
+                  value={model.name}
+                  onChange={(event) => model.setName(event.target.value)}
+                  maxLength={180}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="instant-campaign-required">
+                  الصور المطلوبة لكل منتج
+                </Label>
+                <Input
+                  id="instant-campaign-required"
+                  type="number"
+                  min={1}
+                  max={10}
+                  step={1}
+                  value={model.requiredImages}
+                  onChange={(event) =>
+                    model.setRequiredImages(event.target.value)
+                  }
+                />
+              </div>
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="instant-campaign-required">الصور المطلوبة</Label>
-              <Input
-                id="instant-campaign-required"
-                type="number"
-                min={1}
-                max={10}
-                disabled={isLaunching}
-                value={requiredImages}
-                onChange={(e) => setRequiredImages(e.target.value)}
-              />
-            </div>
-          </div>
-
-          {/* اختيار المصورين والتوزيع العادل */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label className="flex items-center gap-1.5 text-sm font-semibold">
-                <Users className="size-4 text-muted-foreground" />
-                توزيع المهام على المصورين بالتساوي
-              </Label>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-sm font-semibold">المصورون</span>
               <Button
                 type="button"
                 variant="ghost"
                 size="sm"
-                className="h-7 text-xs"
-                disabled={isLaunching}
-                onClick={() => {
-                  const allIds = photographers.filter((p) => p.canStudio).map((p) => p.id);
-                  if (selectedAssigneeIds.length === allIds.length) {
-                    setSelectedAssigneeIds([]);
-                  } else {
-                    setSelectedAssigneeIds(allIds);
-                  }
-                }}
+                disabled={model.locked}
+                onClick={() =>
+                  model.setAssigneeIds(
+                    model.assigneeIds.length === model.photographers.length
+                      ? []
+                      : model.photographers.map((user) => user.id),
+                  )
+                }
               >
-                {selectedAssigneeIds.length === photographers.filter((p) => p.canStudio).length
+                {model.assigneeIds.length === model.photographers.length
                   ? "إلغاء تحديد الكل"
-                  : "تحديد كافة المصورين"}
+                  : "تحديد الكل"}
               </Button>
             </div>
-
-            <div className="grid gap-2 sm:grid-cols-2">
-              {photographers.map((user) => {
-                const isSelected = selectedAssigneeIds.includes(user.id);
-                return (
-                  <button
-                    key={user.id}
-                    type="button"
-                    disabled={isLaunching || !user.canStudio}
-                    onClick={() => {
-                      if (!user.canStudio) return;
-                      setSelectedAssigneeIds((curr) =>
-                        isSelected ? curr.filter((id) => id !== user.id) : [...curr, user.id]
-                      );
-                    }}
-                    className={`flex items-center justify-between rounded-md border p-2.5 text-start transition-colors ${
-                      isSelected
-                        ? "border-primary bg-primary/10 text-primary font-medium"
-                        : "hover:bg-muted/40 border-border"
-                    } ${!user.canStudio ? "opacity-50 cursor-not-allowed" : ""}`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <div
-                        className={`flex size-4 items-center justify-center rounded border ${
-                          isSelected ? "border-primary bg-primary text-primary-foreground" : "border-muted-foreground/40"
-                        }`}
-                      >
-                        {isSelected && <Check className="size-3" />}
-                      </div>
-                      <span className="text-sm">{user.name}</span>
-                    </div>
-                    {isSelected && perPhotographerEstimate > 0 && (
-                      <Badge variant="outline" className="text-[11px]">
-                        ~{perPhotographerEstimate} مهمة
-                      </Badge>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-
-            {selectedAssigneeIds.length > 0 && targetCount > 0 && (
-              <div className="rounded-md bg-muted/40 p-2.5 text-xs text-muted-foreground">
-                سيتم إسناد <strong>{targetCount}</strong> منتجاً بالتساوي على{" "}
-                <strong>{selectedAssigneeIds.length}</strong> مصورين (~
-                <strong>{perPhotographerEstimate}</strong> منتج لكل مصور).
-              </div>
+            {model.assignees.isError && (
+              <p role="alert" className="text-sm text-destructive">
+                تعذر تحميل المصورين.{" "}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => model.assignees.refetch()}
+                >
+                  إعادة المحاولة
+                </Button>
+              </p>
             )}
-          </div>
-
-          {/* شريط التقدم أثناء الإطلاق */}
-          {launchStep !== "IDLE" && (
-            <div className="space-y-2 rounded-md border border-primary/30 bg-primary/5 p-3">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-semibold text-primary">{progressText}</span>
-                <span className="font-bold">{progressPercent}%</span>
-              </div>
-              <Progress value={progressPercent} className="h-2" />
+            <div className="grid gap-2 sm:grid-cols-2">
+              {model.photographers.map((user) => (
+                <button
+                  type="button"
+                  key={user.id}
+                  disabled={model.locked}
+                  aria-pressed={model.assigneeIds.includes(user.id)}
+                  onClick={() =>
+                    model.setAssigneeIds((current) =>
+                      current.includes(user.id)
+                        ? current.filter((id) => id !== user.id)
+                        : [...current, user.id],
+                    )
+                  }
+                  className="flex min-w-0 items-center gap-2 rounded-md border p-2 text-start text-sm"
+                >
+                  <span className="flex size-4 shrink-0 items-center justify-center rounded-sm border">
+                    {model.assigneeIds.includes(user.id) && (
+                      <Check aria-hidden className="size-3" />
+                    )}
+                  </span>
+                  <span className="break-words">{user.name}</span>
+                </button>
+              ))}
             </div>
+            {model.assigneeIds.length === 0 && (
+              <p className="text-sm text-muted-foreground">
+                اختر مصوراً واحداً على الأقل.
+              </p>
+            )}
+          </fieldset>
+          {model.message && (
+            <p role="status" className="rounded-md border p-3 text-sm">
+              {model.message}
+            </p>
           )}
-
-          {launchStep === "COMPLETED" && (
-            <div className="flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-800 dark:text-emerald-300">
-              <CheckCircle2 className="size-5 shrink-0 text-emerald-600" />
-              <span>
-                اكتمل الإطلاق بنجاح! تم توزيع كافة المهام بالتساوي، وبإمكان المصورين البدء فوراً.
-              </span>
-            </div>
+          {model.error && (
+            <p role="alert" className="text-sm text-destructive">
+              {model.error}
+            </p>
           )}
         </div>
-
-        <DialogFooter className="flex flex-wrap items-center justify-between gap-2 border-t pt-3 sm:justify-between">
+        <DialogFooter className="flex-wrap gap-2 border-t pt-3">
           <Button
             type="button"
             variant="outline"
-            disabled={isLaunching}
-            onClick={() => onOpenChange(false)}
+            disabled={model.busy}
+            onClick={() => model.onOpenChange(false)}
           >
-            {launchStep === "COMPLETED" ? "إغلاق" : "إلغاء"}
+            إغلاق
           </Button>
-
-          {launchStep !== "COMPLETED" ? (
+          {!model.complete && (
             <Button
               type="button"
-              className="gap-2"
-              disabled={
-                !canCreateCampaign || !canDrainBacklog || !canDistribute || !canReadAssignees || (scopeType !== "SELECTED_ROWS" && !canReadGapIds) ||
-                isLaunching ||
-                targetCount === 0 ||
-                selectedAssigneeIds.length === 0 ||
-                campaignName.trim().length < 3
-              }
-              onClick={handleLaunch}
+              className="h-auto min-h-10 whitespace-normal"
+              disabled={!model.canLaunch}
+              onClick={model.launch}
             >
-              {isLaunching ? (
-                <>
-                  <Loader2 className="size-4 animate-spin" />
-                  جارٍ الإطلاق والتوليد...
-                </>
-              ) : (
-                <>
-                  <Zap className="size-4" />
-                  إطلاق الحملة وتوليد {targetCount} مهمة فوراً
-                </>
+              {model.busy && (
+                <Loader2 aria-hidden className="size-4 animate-spin" />
               )}
-            </Button>
-          ) : (
-            <Button
-              type="button"
-              onClick={() => {
-                onOpenChange(false);
-                if (createdCampaignId) {
-                  onSuccess?.(createdCampaignId);
-                }
-              }}
-            >
-              عرض الحملة في لوحة الإدارة
+              {model.campaignId !== null
+                ? "استكمال الحملة المحفوظة"
+                : `إطلاق حملة لـ ${model.previewReady ? model.targetCount : "…"} منتج`}
             </Button>
           )}
         </DialogFooter>
