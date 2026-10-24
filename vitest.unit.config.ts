@@ -12,6 +12,8 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "client/src/components/product/__tests__/AiProductContentAssistant.test.tsx",
+      "client/src/components/contacts/__tests__/Contact360Panel.test.tsx",
       "shared/__tests__/checkoutCharges.test.ts",
       "client/src/components/delivery/driverOptions.test.ts",
       "client/src/components/delivery/DispatchDialogs.test.tsx",
