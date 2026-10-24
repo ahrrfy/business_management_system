@@ -16,6 +16,7 @@ export default defineConfig({
       "server/services/__tests__/workOrderSplitRefundPreflight.test.ts",
       "client/src/components/payments/splitTender.test.ts",
       "client/src/components/payments/useSplitTender.test.tsx",
+      "client/src/components/payments/useInvoicePaymentSession.test.tsx",
       "client/src/components/payments/receptionReceiptPayments.test.ts",
       "client/src/components/reception/__tests__/wave35PaymentPanel.test.tsx",
       "client/src/components/reception/__tests__/wave35Amounts.test.tsx",

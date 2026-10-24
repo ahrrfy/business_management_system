@@ -1,3 +1,4 @@
+import { useInvoicePaymentSession } from "@/components/payments/useInvoicePaymentSession";
 import { fmtAr } from "@/lib/money";
 import { useSplitTender } from "@/components/payments/useSplitTender";
 import { SplitTenderButton } from "@/components/payments/SplitTenderButton";
@@ -323,8 +324,7 @@ export default function SalesInvoice() {
   );
 
   // idempotency: مفتاح ثابت لكل محاولة إنشاء (يُجدَّد بعد كل حفظ ناجح / RESET).
-  const [clientRequestId, setClientRequestId] = useState<string>(() => crypto.randomUUID(),
-  );
+  const [clientRequestId, setClientRequestId] = useInvoicePaymentSession(me.data?.id);
   const printAfterSaveRef = useRef(false);
   const shareAfterSaveRef = useRef(false);
 
@@ -375,7 +375,7 @@ export default function SalesInvoice() {
   >(null);
   /** إثبات الدفع الخارجي هنا للبيع الجديد فقط؛ فرق التصحيح يُنفّذه المراجع عند الاعتماد. */
   const hasDigitalItems = state.items.some((line) => line.digital != null);
-  const splitTender = useSplitTender({ branchId: state.branchId, ownerId: me.data?.id, sessionKey: `${isCorrection ? `correction-${correctInvoiceId}` : "new"}:${clientRequestId}`, channel: "POS", canConfirm: salesExternalPaymentAllowed(me.data, false) && salesExternalPaymentAllowed(me.data, true), disabled: isCorrection || hasDigitalItems });
+  const splitTender = useSplitTender({ branchId: state.branchId, ownerId: me.data?.id, sessionKey: `${isCorrection ? `correction-${correctInvoiceId}` : "new"}:${clientRequestId}`, channel: "POS", canConfirm: salesExternalPaymentAllowed(me.data, false) && salesExternalPaymentAllowed(me.data, true), disabled: !clientRequestId || isCorrection || hasDigitalItems });
   const externalAmountD = D(computePaidStr()); const externalAmount = round2(externalAmountD).toFixed(2);
   // لا نبدأ قبضاً خارجياً لفاتورة رقمية قبل وجود نيّة وحجز ذريين؛ الخادم يفرض
   // السياسة نفسها. الفواتير العادية غير النقدية تبقى على مسار الإثبات الحالي.
@@ -697,6 +697,7 @@ export default function SalesInvoice() {
 
   /** تحقّق أعمالي قبل الإرسال. يُرجع رسالة عربية أو null إن صالح. */
   function validate(): string | null {
+    if (!clientRequestId) return ACTION_LABELS.loading;
     if (!availableActions.includes("save")) return "حفظ هذه العملية غير مفوّض لحسابك.";
     if (splitTender.active) {
       if (isCorrection || hasDigitalItems || state.paymentTerms === "CREDIT") return "تقسيم الدفع متاح لفاتورة بيع جديدة غير رقمية؛ الآجل الكامل لا يتضمن قبضاً الآن.";
