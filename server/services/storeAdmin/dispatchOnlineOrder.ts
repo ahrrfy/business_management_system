@@ -33,6 +33,7 @@ export interface DispatchOnlineOrderInput {
   externalTrackingRef?: string | null;
   deliveryAddress?: string | null;
   notes?: string | null;
+  assignedUserId?: number | null;
 }
 
 export interface DispatchOnlineOrderResult {
@@ -286,6 +287,7 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
     const dispatchRes = await dispatchInvoiceInTx(tx, {
       invoiceId,
       partyId: input.partyId,
+      assignedUserId: input.assignedUserId,
       // الشحن المجاني = الزبون يدفع صفراً، لكن المندوب يستحق الأجرة الفعلية على المكتبة.
       // غير المجاني يبقى تمريراً مباشراً: الزبون يدفعها للمندوب ولا تدخل invoice.total.
       deliveryFee: cur.deliveryFree === true

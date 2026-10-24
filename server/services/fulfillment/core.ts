@@ -10,6 +10,9 @@ import {
 import { canCrossBranches } from "../../lib/branchAuthority";
 import type { Tx } from "../../db";
 import type { Actor } from "../tx";
+import { enqueuePostCommit } from "../tx";
+import { publishRealtimeEvent } from "../../realtime";
+import { REALTIME_EVENT_TYPES } from "../../../shared/realtimeEvents";
 import {
   checkIdempotency,
   idempotencyHash,
@@ -136,7 +139,7 @@ export function fulfillmentMutationContext(
   branchId: number,
 ) {
   assertFulfillmentBranch(actor, branchId);
-  if (!/^[a-z][a-zA-Z0-9.:-]{0,55}$/.test(operation))
+  if (!/^[a-z][a-zA-Z0-9_.:-]*$/.test(operation) || `fulfillment.${operation}`.length > 40)
     throw fulfillmentError("اسم الإجراء غير صالح");
   if (
     identity.clientRequestId.trim().length < 8 ||
@@ -147,6 +150,7 @@ export function fulfillmentMutationContext(
     );
   return {
     operation: `fulfillment.${operation}`,
+    branchId,
     clientRequestId: identity.clientRequestId,
     sourceHash: fulfillmentFingerprint({
       operation,
@@ -175,17 +179,28 @@ export function findFulfillmentReplayTx(
 }
 
 /** Same transaction as all domain effects; refId points to the original result. */
-export function recordFulfillmentMutationTx(
+export async function recordFulfillmentMutationTx(
   tx: Tx,
   context: FulfillmentMutationContext,
   refId: number,
 ): Promise<void> {
   assertId(refId);
-  return recordIdempotencyKey(
+  await recordIdempotencyKey(
     tx,
     context.operation,
     context.clientRequestId,
     refId,
     context.sourceHash,
   );
+  if (/^fulfillment\.(aftercare|charges?)\./.test(context.operation)) {
+    enqueuePostCommit(tx, () => {
+      publishRealtimeEvent(
+        /\.(create|settlementRequest)$/.test(context.operation)
+          ? REALTIME_EVENT_TYPES.PENDING_APPROVAL_CREATED
+          : REALTIME_EVENT_TYPES.APPROVAL_RESOLVED,
+        { entityType: context.operation, entityId: refId, branchId: context.branchId, action: context.operation },
+        { branchId: context.branchId },
+      );
+    });
+  }
 }

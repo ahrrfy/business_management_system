@@ -69,6 +69,11 @@ export function lineIdOf(c: CartItem): number {
 }
 
 export type POSTab = {
+  extraCharges?: import("@shared/checkoutCharges").CheckoutChargesInput;
+  lastCheckout?: {
+    result: import("@shared/checkoutCharges").CheckoutChargesResult;
+    recoveryToken: string;
+  };
   id: number;
   label: string;
   cart: CartItem[];

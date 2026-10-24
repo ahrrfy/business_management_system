@@ -26,22 +26,22 @@ describe("split tender confirmation and recovery", () => {
   let draft: ReturnType<typeof useSplitTender>;
   function Harness({
     branch = 2,
-    session = "invoice-a",
+    session = "invoice-a",extra="0",
   }: {
     branch?: number;
-    session?: string;
+    session?: string;extra?:string;
   }) {
     draft = useSplitTender({
       branchId: branch,
       ownerId: 7,
       sessionKey: session,
       channel: "RECEPTION",
-      canConfirm: true,
+      canConfirm: true,additionalFirstPaymentAmount:extra,
     });
     return <span>{draft.tendered}</span>;
   }
-  function render(branch = 2, session = "invoice-a") {
-    act(() => root.render(<Harness branch={branch} session={session} />));
+  function render(branch = 2, session = "invoice-a",extra="0") {
+    act(() => root.render(<Harness branch={branch} session={session} extra={extra} />));
   }
   function prepare() {
     act(() => draft.enable("100"));
@@ -192,4 +192,13 @@ describe("split tender confirmation and recovery", () => {
     expect(draft.parts[1].proof).toBeNull();
     expect(draft.problem("100")).toContain("أكّد");
   });
+  it("first goods leg confirms goods plus services, and changing services invalidates proof without changing goods",async()=>{
+    render(2,"invoice-a","3");act(()=>draft.enable("100"));const [first,second]=draft.parts;
+    act(()=>{draft.update(first.id,{method:"CARD",amount:"40",reference:"bank"});draft.update(second.id,{method:"CASH",amount:"60"});});
+    await act(async()=>draft.confirm(first.id));expect(state.start).toHaveBeenCalledWith(expect.objectContaining({amount:"43.00"}));
+    expect(draft.payments("100")?.[0].amount).toBe("40.00");expect(draft.parts[0].proof?.confirmed).toBe(true);
+    render(2,"invoice-a","4");expect(draft.parts[0].proof).toBeNull();expect(draft.problem("100")).toContain("أكّد");
+    await act(async()=>draft.confirm(first.id));expect(state.start).toHaveBeenLastCalledWith(expect.objectContaining({amount:"44.00"}));
+  });
+
 });

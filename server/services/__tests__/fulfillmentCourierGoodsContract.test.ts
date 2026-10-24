@@ -150,11 +150,12 @@ async function dispatchGoods(
   }
   const sent = await releaseFulfillmentRequest(
     {
+      assignedUserId: 3,
       id: request.id,
       expectedVersion: request.version,
       clientRequestId: key(),
       ...(options.company
-        ? { externalTrackingRef: key(), assignedUserId: 3 }
+        ? { externalTrackingRef: key() }
         : {}),
     },
     admin,
@@ -457,7 +458,8 @@ describe("fulfillment courier goods COD contract", () => {
       createdBy: 2,
     });
     const sent = await dispatchInvoiceToDelivery(
-      { invoiceId: 1, partyId: 1, deliveryFee: "0", clientRequestId: key() },
+      {
+      assignedUserId: 3, invoiceId: 1, partyId: 1, deliveryFee: "0", clientRequestId: key() },
       admin,
     );
     const deliveredAt = new Date();

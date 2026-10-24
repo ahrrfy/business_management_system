@@ -40,6 +40,8 @@ import { POSHeader } from "@/components/pos/POSHeader";
 import { TabBar } from "@/components/pos/TabBar";
 import { CartPanel } from "@/components/pos/CartPanel";
 import { PaymentPanel } from "@/components/pos/PaymentPanel";
+import { useCashierExtraCharges, savedCheckout } from "@/components/pos/useCashierExtraCharges";
+import {checkoutExtraTotal,checkoutExtraPayload} from "@/components/pos/checkoutExtraAmounts";
 import { POSOverlays } from "@/components/pos/POSOverlays";
 import { RetailPosHeaderActions } from "@/components/pos/RetailPosHeaderActions";
 import type { ManagerApprovalInput } from "@shared/managerApproval";
@@ -577,10 +579,12 @@ export default function POS() {
   } | null>(null);
 
   const sale = trpc.sales.create.useMutation({
-    onSuccess: async (r) => {
+    onSuccess: async (r, submitted) => {
       const ctx = saleCtxRef.current;
       saleCtxRef.current = null;
       if (!ctx) return; // أمان — لا لقطة (لا يُفترض حدوثه)
+      const completedCheckout=savedCheckout(r,submitted.clientRequestId??" ");
+      if(completedCheckout)patchTab(ctx.tabId,{lastCheckout:completedCheckout});
       const now = new Date();
       const rec: Receipt = {
         invoiceNumber: r.invoiceNumber,
@@ -614,10 +618,10 @@ export default function POS() {
       setLastInv({ num: r.invoiceNumber, total: serverTotal });
       const saleMsg = r.consignmentNumber
         ? `أُسند الطرد ${r.consignmentNumber} للتوصيل`
-        : (alignedRec.bounceBackCoupon ? `قسيمة هدية صادرة: ${alignedRec.bounceBackCoupon.code} (خصم ${alignedRec.bounceBackCoupon.discountText})` : "افتح من شريط «آخر فاتورة» أعلاه");
+        : alignedRec.bounceBackCoupon ? `قسيمة هدية صادرة: ${alignedRec.bounceBackCoupon.code} (خصم ${alignedRec.bounceBackCoupon.discountText})` : "افتح من شريط «آخر فاتورة» أعلاه";
       notify.ok(`تم البيع — فاتورة ${r.invoiceNumber}`, saleMsg);
       // فرّغ التبويب المُباع تحديداً (لا التبويب النشط الحالي) وجدّد مفتاحه للبيع التالي.
-      patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId(), paymentRef: "", externalPayment: null, paymentLegs: [], dueDate: "", invoiceDiscountPct: "", delivery: null });
+      patchTab(ctx.tabId, { extraCharges: undefined, cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId(), paymentRef: "", externalPayment: null, paymentLegs: [], dueDate: "", invoiceDiscountPct: "", delivery: null });
 
       try {
       const printed = await printAuthorizedReceipt(alignedRec);
@@ -643,7 +647,8 @@ export default function POS() {
     },
     onError: (e) => {
       releaseReservedPrintWindow();
-      const errData = e.data as unknown as { code?: string; httpStatus?: number } | null | undefined;
+      const errData = e.data as unknown as
+        | { code?: string; httpStatus?: number } | null | undefined;
       const code = errData?.code;
       const offlineCapturable = !!shift &&
         cart.length > 0 &&
@@ -664,21 +669,32 @@ export default function POS() {
   });
 
   const initiateExternalPayment = trpc.sales.initiateExternalPayment.useMutation();
+  const extraCheckout=useCashierExtraCharges({
+    channel:"POS",branchId,shiftId:shift?.id,token:activeTab.clientRequestId,tab:activeTab,splitLegs:isSplitPayment?activeTab.paymentLegs:undefined,
+    enabled:canSubmitSale,connected:!offline,confirmed:externalPaymentConfirmed,cartLength:cart.length,
+    goodsTender:(isSplitPayment?activeTab.paymentLegs?.[0]?.amount:activeTab.payInput||String(total))??"0",busy:sale.isPending,
+    onChange:extraCharges=>patchActive({extraCharges,externalPayment:null,paymentLegs:(activeTab.paymentLegs??[]).map(leg=>({...leg,externalPayment:null}))}),
+    onCommitted:(id,lastCheckout)=>patchTab(id,{extraCharges:undefined,payInput:"",externalPayment:null,paymentRef:"",clientRequestId:newClientRequestId(),lastCheckout}),
+    refresh:()=>void shiftQ.refetch(),
+  });
+  const {submitChargesOnly}=extraCheckout;
   const confirmExternalPaymentMutation = trpc.sales.confirmExternalPayment.useMutation();
 
   async function confirmCurrentExternalPayment(legId?: string) {
     const leg = legId ? (activeTab.paymentLegs ?? []).find((l) => l.id === legId) : null;
     const method = leg ? leg.method : activeTab.method;
-    if (!shift || !cart.length || (legId && !leg) || method === "CASH") return;
+    if (!shift ||
+      (!cart.length && !checkoutExtraTotal(activeTab.extraCharges).gt(0)) || (legId && !leg) || method === "CASH") return;
     if (cartHasDigital && method !== "CARD") { notify.err("البيع الرقمي نقداً أو ببطاقة فقط."); return; }
     const tabId = activeTab.id;
     const reference = (leg ? leg.paymentRef : (activeTab.paymentRef ?? "")).trim();
     if (!reference) { notify.err("أدخل مرجع الدفع الخارجي أولاً."); return; }
-    if (leg ? parsePosLegAmountD(leg.amount).lte(0) : (activeTab.payInput.trim() !== "" && D(activeTab.payInput).lte(0))) {
+    if (leg ? parsePosLegAmountD(leg.amount).lte(0) : activeTab.payInput.trim() !== "" && D(activeTab.payInput).lte(0)) {
       notify.err("مبلغ الدفع يجب أن يكون موجباً قبل تأكيد العملية الخارجية.");
       return;
     }
-    const feeForLeg = leg && activeTab.paymentLegs?.[0]?.id === leg.id ? deliveryFeeHeldD : D(0);
+    const feeForLeg = leg && cart.length>0 && activeTab.paymentLegs?.[0]?.id === leg.id ? deliveryFeeHeldD.plus(checkoutExtraTotal(activeTab.extraCharges))
+        : D(0);
     const amountStr = leg ? parsePosLegAmountD(leg.amount).plus(feeForLeg).toFixed(2) : externalPaymentAmount;
     const fingerprint = leg ? computeSplitLegFingerprint(leg, feeForLeg) : externalPaymentFingerprint;
     const curExt = leg ? leg.externalPayment : activeTab.externalPayment;
@@ -803,6 +819,9 @@ export default function POS() {
   // سيستعمله أونلاين، يُطبع إيصال مؤقّت OFF-... بنفس التصميم، ويُرحَّل تلقائياً عند عودة
   // الاتصال عبر offline.replaySale (idempotent — لا ازدواج حتى مع بيعٍ نصف-ناجح قبل القطع).
   async function captureOfflineSale() {
+    if (checkoutExtraTotal(activeTab.extraCharges).gt(0)) {
+      notify.err("قبض الأجور يتطلب اتصالاً بالخادم؛ احتُفظ بالمسودة وإثبات الدفع لإعادة المحاولة بنفس المرجع"); return;
+    }
     if (!shift || !cart.length) return;
     // م١ PR-B (سلامة ماليّة): الدفاعُ الأخير لكلّ مسارات الالتقاط (٥٠٣ · submitSale · quickPay) —
     // سلّةُ توصيلٍ لا تُلتقَط نقداً صرفاً دون إسنادِ جهةٍ ولا تحصيلِ COD (الخادم يرفضها من الطابور).
@@ -879,7 +898,9 @@ export default function POS() {
     setReceipt(rec);
     setLastInv({ num: receiptNumber, total: ctx.total });
     notify.ok(`بيع دون اتصال — إيصال مؤقّت ${receiptNumber}`, "الرقم الرسمي يصدر تلقائياً عند عودة الاتصال (شارة المزامنة أسفل الشاشة)");
-    patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId(), paymentRef: "", externalPayment: null, dueDate: "", invoiceDiscountPct: "", delivery: null });
+    patchTab(ctx.tabId, {
+      extraCharges: undefined,
+      cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId(), paymentRef: "", externalPayment: null, dueDate: "", invoiceDiscountPct: "", delivery: null });
     try {
     const printed = await printAuthorizedReceipt(rec);
     if (!printed.ok) {
@@ -895,7 +916,14 @@ export default function POS() {
   async function submitSale(approval?: ManagerApprovalInput) {
     if (!canSubmitSale) { notify.err("صلاحية تنفيذ البيع غير ممنوحة لحسابك"); return; }
     setSaleError(null);
-    if (!shift || !cart.length) return;
+    if (!shift) return;
+    if (!cart.length) { await submitChargesOnly(); return; }
+    if (checkoutExtraTotal(activeTab.extraCharges).gt(0) && cartHasDigital) {
+      notify.err(
+        "أكمل عملية الكروت الرقمية قبل إضافة أجر الخدمة إلى عملية مستقلة",
+      );
+      return;
+    }
     const validationErr = validatePosSaleBeforeSubmit({
       activeTab, cart, codMode, isSplitPayment, splitInvalidLeg, splitNonCashOverpay, externalPaymentConfirmed, isCredit,
     });
@@ -928,8 +956,8 @@ export default function POS() {
     reservePrintWindow();
     const splitLegs = activeTab.paymentLegs ?? [];
     const deviceId = isSplitPayment
-      ? (splitLegs.find((l) => l.method !== "CASH")?.externalPayment?.deviceId ?? await getDeviceCode().catch(() => undefined))
-      : (activeTab.method === "CASH" ? await getDeviceCode().catch(() => undefined) : activeTab.externalPayment?.deviceId);
+      ? (splitLegs.find((l) => l.method !== "CASH")?.externalPayment?.deviceId ?? (await getDeviceCode().catch(() => undefined)))
+      : activeTab.method === "CASH" ? await getDeviceCode().catch(() => undefined) : activeTab.externalPayment?.deviceId;
     const cashFull =
       ((!isSplitPayment && activeTab.method === "CASH") ||
         (isSplitPayment &&
@@ -937,9 +965,17 @@ export default function POS() {
           splitLegs.every((l) => l.method === "CASH"))) &&
       !isCredit &&
       !codMode;
-    const payAmount = isCredit ? money(paid) : (cashFull ? money(cashRoundedTotal) : money(total));
-    const sendsGoodsPayment = isSplitPayment || !((codMode && !deliverySendsPayment(activeTab.method, paidD)) || (isCredit && paidD.eq(0)));
+    const payAmount =
+      checkoutExtraTotal(activeTab.extraCharges).gt(0) &&
+      activeTab.method === "CASH" &&
+      paidD.gt(0)
+        ? paidD.toFixed(2)
+        : isCredit ? money(paid) : cashFull ? money(cashRoundedTotal) : money(total);
+    const sendsGoodsPayment =
+      checkoutExtraTotal(activeTab.extraCharges).gt(0) ||
+      isSplitPayment || !((codMode && !deliverySendsPayment(activeTab.method, paidD)) || (isCredit && paidD.eq(0)));
     sale.mutate({
+      ...checkoutExtraPayload(activeTab.extraCharges),
       branchId, shiftId: shift.id, sourceType: "POS", clientRequestId: activeTab.clientRequestId,
       ...(activeTab.salesRepId ? { salesRepId: activeTab.salesRepId, attribution: { repId: activeTab.salesRepId, mode: "DIRECT" as const } } : {}),
       deviceId,
@@ -975,6 +1011,10 @@ export default function POS() {
   }
 
   async function quickPay() {
+    if (checkoutExtraTotal(activeTab.extraCharges).gt(0)) {
+      await submitSale();
+      return;
+    }
     if (!canSubmitSale) { notify.err("صلاحية تنفيذ البيع غير ممنوحة لحسابك"); return; }
     setSaleError(null);
     if (!shift || !cart.length) return;
@@ -1097,14 +1137,16 @@ export default function POS() {
 
   return (
     <div className="retail-pos-surface" style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: C.bg, direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif", color: C.fg }}>
-      {prepareIntent.isPending && <div role="status" aria-live="polite" style={{ position: "fixed", inset: 0, zIndex: 63, background: C.overlay, display: "grid", placeItems: "center" }}><div style={{ background: C.card, border: `1px solid ${C.border}`, padding: 24 }}>{ACTION_LABELS.verifying} تثبيت بنود الفاتورة قبل تأكيد عمليات المزوّد.</div></div>}
+      {prepareIntent.isPending && (
+        <div role="status" aria-live="polite" style={{ position: "fixed", inset: 0, zIndex: 63, background: C.overlay, display: "grid", placeItems: "center" }}><div style={{ background: C.card, border: `1px solid ${C.border}`, padding: 24 }}>{ACTION_LABELS.verifying} تثبيت بنود الفاتورة قبل تأكيد عمليات المزوّد.</div></div>
+      )}
 
       {/* Header */}
       <POSHeader
         C={C}
         search={search} setSearch={setSearch}
         showDrop={showDrop} setShowDrop={setShowDrop}
-        results={search.trim().length >= 2 ? (offline ? offlineResults : (searchResults.data ?? [])) : []}
+        results={search.trim().length >= 2 ? offline ? offlineResults : (searchResults.data ?? []) : []}
         searching={offline ? offlineSearching : searchResults.isFetching}
         searchSettled={(offline ? !offlineSearching : !searchResults.isFetching) && debouncedSearch.trim() === search.trim() && search.trim().length >= 2}
         addToCart={addRow}
@@ -1203,6 +1245,7 @@ export default function POS() {
 
         {/* Payment Panel (right in RTL) */}
         <PaymentPanel
+          extraChargesSlot={extraCheckout.slot} chargeOnlyDue={!cart.length?checkoutExtraTotal(activeTab.extraCharges).toNumber():undefined}
           C={C}
           stacked={stacked}
           codMode={codMode}
@@ -1214,7 +1257,8 @@ export default function POS() {
           setInvoiceDiscountPct={(v) => patchActive({ invoiceDiscountPct: v, invoiceDiscountValue: v, invoiceDiscountType: "percent" })}
           invoiceDiscountType={activeTab.invoiceDiscountType ?? "percent"}
           invoiceDiscountValue={activeTab.invoiceDiscountValue ?? (activeTab.invoiceDiscountPct || "")}
-          onInvoiceDiscountChange={(val, typ) => patchActive({ invoiceDiscountValue: val, invoiceDiscountType: typ, invoiceDiscountPct: typ === "percent" ? val : (discountCalc.discountPct > 0 ? String(discountCalc.discountPct) : "") })}
+          onInvoiceDiscountChange={(val, typ) => patchActive({ invoiceDiscountValue: val, invoiceDiscountType: typ, invoiceDiscountPct: typ === "percent" ? val : discountCalc.discountPct > 0 ? String(discountCalc.discountPct) : "",
+            })}
           maxDiscountAmount={maxDiscountAmount}
           invoiceDiscountAllowed={invoiceDiscountAllowed}
           effectiveHeaderCapPct={effectiveHeaderCapPctD.toNumber()}
@@ -1248,7 +1292,7 @@ export default function POS() {
           onClearCoupon={clearAppliedCoupon}
           couponPending={couponPreview.isPending || cartHasDigital}
           splitPayment={!cartHasDigital ? {
-            paymentLegs: activeTab.paymentLegs ?? [], onEnableSplit: () => enableSplitPayment(total), onDisableSplit: disableSplitPayment,
+            paymentLegs: activeTab.paymentLegs ?? [], onEnableSplit: () => enableSplitPayment(cart.length?total:checkoutExtraTotal(activeTab.extraCharges).toNumber()), onDisableSplit: disableSplitPayment,
             onAddLeg: () => addPaymentLeg(credit), onUpdateLeg: (legId, patch) => updatePaymentLeg(legId, patch, total), onRemoveLeg: removePaymentLeg,
             onConfirmLegExternalPayment: (legId) => { void confirmCurrentExternalPayment(legId); }, confirmingLegId, splitNonCashOverpay,
           } : undefined}

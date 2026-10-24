@@ -9,6 +9,8 @@
 //  I22 — التدقيق يحمل قبل/بعد ولا يحمل designImages/printSpec أبداً.
 //  ق٤  — الفارغة تنقضي بعد ٢٤ ساعة (تتجدّد بكل نشاط)؛ المموّلة لا تُطوى أبداً.
 import type { WorkOrderChannel } from "@shared/receptionChannel";
+import type {CheckoutChargesInput} from "../../../shared/checkoutCharges";
+import {normalizeCheckoutChargesIntent} from "../checkoutCharges";
 import { appErrorMessage } from "@shared/errors";
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, inArray, like, lt, or, sql, type SQL } from "drizzle-orm";
@@ -50,6 +52,7 @@ export interface DraftLineInput {
 }
 
 export interface DraftHeaderInput {
+  checkoutCharges?:Pick<CheckoutChargesInput,"serviceCharges"|"approvedChargeAllocations">|null;
   customerId?: number | null;
   contactName?: string | null;
   contactPhone?: string | null;
@@ -136,6 +139,7 @@ export async function promoteDraft(
         contactPhone: input.header.contactPhone?.trim() || null, priceTier: input.header.priceTier ?? "RETAIL",
         channel: input.header.channel ?? null, channelHandle: input.header.channelHandle?.trim() || null,
         conversationId: input.header.conversationId ?? null, notes: input.header.notes ?? null,
+        checkoutCharges:normalizeCheckoutChargesIntent(input.header.checkoutCharges),
         dueDate: input.header.dueDate ? new Date(input.header.dueDate) : null,
         subtotal: toDbMoney(totals.subtotal), discountTotal: toDbMoney(totals.discountTotal),
         total: toDbMoney(totals.total), expiresAt: new Date(Date.now() + DRAFT_TTL_MS), createdBy: actor.userId,
@@ -291,6 +295,7 @@ export async function syncDraft(
         channelHandle: input.header.channelHandle?.trim() || row.channelHandle,
         conversationId: input.header.conversationId ?? row.conversationId,
         notes: input.header.notes ?? row.notes,
+        checkoutCharges:input.header.checkoutCharges===undefined?row.checkoutCharges:normalizeCheckoutChargesIntent(input.header.checkoutCharges),
         dueDate: input.header.dueDate ? new Date(input.header.dueDate) : row.dueDate,
         subtotal: toDbMoney(totals.subtotal),
         discountTotal: toDbMoney(totals.discountTotal),

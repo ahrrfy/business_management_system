@@ -1,20 +1,20 @@
-/**
- * CancelDeliveryAssignmentSection - قسم إلغاء الإسناد والتوصيل بالباركود
- * يتيح مسح باركود الطلب أو الإرسالية (أو إدخال الرقم يدوياً)
- * وعرض تفاصيل الإسناد الحالية، ثم إلغاء الإسناد ذرياً أو تحويله لمندوب آخر مباشرة
- */
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ScanLine } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { Checkbox } from "@/components/ui/checkbox";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
-import { resolveOrderLookupBarcode } from "@/lib/scanRouter";
-import { storefrontUrl } from "@/lib/siteHosts";
+import { docBarcode } from "@shared/documentNumber";
+import type { WorkflowScanPreview } from "@shared/deliveryWorkflow";
 import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { trpc } from "@/lib/trpc";
 import { ACTION_LABELS as L } from "@shared/actionLabels";
-import { CancelAssignmentOrderCard } from "./CancelAssignmentOrderCard";
 
 export interface ScannedOrderForCancellation {
   id: number;
@@ -52,7 +52,17 @@ export interface CancelDeliveryAssignmentSectionProps {
   scannedBarcode?: string | null;
   onBarcodeConsumed?: () => void;
   onNavigateToDispatch?: (order: ScannedOrderForCancellation) => void;
-  onAssignmentCancelled?: (orderNumber: string, consignmentNumber: string) => void;
+  onNavigateToDispatchBarcode?: (raw: string) => void;
+  onNavigateToAftercare?: (context: {
+    caseId?: number;
+    executionId?: number;
+    raw?: string;
+  }) => void;
+  onOpenCharge?: (chargeId: number) => void;
+  onAssignmentCancelled?: (
+    orderNumber: string,
+    consignmentNumber: string,
+  ) => void;
 }
 
 export function CancelDeliveryAssignmentSection({
@@ -60,260 +70,433 @@ export function CancelDeliveryAssignmentSection({
   scannedBarcode,
   onBarcodeConsumed,
   onNavigateToDispatch,
+  onNavigateToDispatchBarcode,
+  onNavigateToAftercare,
+  onOpenCharge,
   onAssignmentCancelled,
 }: CancelDeliveryAssignmentSectionProps) {
-  const [barcodeInput, setBarcodeInput] = useState("");
-  const [scannedOrder, setScannedOrder] = useState<ScannedOrderForCancellation | null>(null);
-  const [reason, setReason] = useState("");
-  const [isSearching, setIsSearching] = useState(false);
-  const searchInputRef = useRef<HTMLInputElement>(null);
-  const pendingCancelRef = useRef<{ consignmentNumber: string; orderNumber: string } | null>(null);
-  const pendingReassignRef = useRef<{ consignmentNumber: string; partyName: string } | null>(null);
-
   const utils = trpc.useUtils();
-  const partiesQ = trpc.delivery.listParties.useQuery({ activeOnly: true }, { staleTime: 60_000 });
-  const allParties = partiesQ.data ?? [];
-
-  const cancelAssignmentMut = trpc.delivery.cancelAssignment.useMutation({
-    onSuccess: async () => {
-      const { consignmentNumber = "", orderNumber = "" } = pendingCancelRef.current ?? {};
-      notify.ok(
-        `تم إلغاء إسناد الإرسالية ${consignmentNumber} (طلب #${orderNumber}) بنجاح`,
-        "حُررت عهدة المندوب المالية في دفتر التوصيل وعاد الطلب متاحاً للإسناد الجديد.",
-      );
-      if (orderNumber && consignmentNumber) {
-        onAssignmentCancelled?.(orderNumber, consignmentNumber);
-      }
-      pendingCancelRef.current = null;
-      await Promise.all([
-        utils.delivery.invalidate(),
-        utils.workOrders.invalidate(),
-        utils.sales.invalidate(),
-        utils.storeAdmin.orders.invalidate(),
-      ]);
-      setScannedOrder(null);
-      setBarcodeInput("");
-      setReason("");
-    },
-    onError: (e) => {
-      pendingCancelRef.current = null;
-      notify.err(e, "تعذّر إلغاء إسناد الإرسالية");
-    },
+  const [barcodeInput, setBarcodeInput] = useState("");
+  const [preview, setPreview] = useState<WorkflowScanPreview | null>(null);
+  const [sourceRaw, setSourceRaw] = useState("");
+  const [reason, setReason] = useState("");
+  const [mode, setMode] = useState<
+    "cancelAssignment" | "declareReturn" | "reassign"
+  >("cancelAssignment");
+  const [partyId, setPartyId] = useState("");
+  const [assignedUserId, setAssignedUserId] = useState("");
+  const [externalTrackingRef, setExternalTrackingRef] = useState("");
+  const [physicalHeld, setPhysicalHeld] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
+  const sequence = useRef(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const retryIdentity = useRef<{ signature: string; key: string } | null>(null);
+  const parties = trpc.delivery.listParties.useQuery(
+    { activeOnly: true },
+    { staleTime: 60_000 },
+  );
+  const members = trpc.delivery.partyMembers.useQuery(
+    { partyId: Number(partyId) },
+    { enabled: !!partyId, staleTime: 30_000 },
+  );
+  const target = parties.data?.find((p) => String(p.id) === partyId);
+  const drivers = (members.data ?? []).filter(
+    (m) => m.isActive && m.memberRole === "DRIVER",
+  );
+  const internalDriverRequired =
+    target?.partyType === "INDIVIDUAL" &&
+    (target.userId != null || drivers.length > 0);
+  const busyRef = useRef(false);
+  const mutation = trpc.delivery.workflow.assignment.useMutation({
+    onError: (error) =>
+      notify.err(error, "تعذر الإجراء؛ بقيت بياناته لإعادة المحاولة"),
   });
-
-  const reassignMut = trpc.delivery.reassignConsignment.useMutation({
-    onSuccess: async () => {
-      const { consignmentNumber = "", partyName = "" } = pendingReassignRef.current ?? {};
-      notify.ok(
-        `تم تحويل الإرسالية ${consignmentNumber} إلى ${partyName} بنجاح`,
-        "تم تحديث دفتر التوصيل وعُهدة المندوب الجديد أصولياً.",
-      );
-      pendingReassignRef.current = null;
-      await Promise.all([
-        utils.delivery.invalidate(),
-        utils.workOrders.invalidate(),
-        utils.sales.invalidate(),
-      ]);
-      setScannedOrder(null);
-      setBarcodeInput("");
-      setReason("");
-    },
-    onError: (e) => {
-      pendingReassignRef.current = null;
-      notify.err(e, "تعذّر تحويل الإرسالية للمندوب الجديد");
-    },
-  });
-
-  const lookupOrder = useCallback(
+  busyRef.current = mutation.isPending;
+  useEffect(() => {
+    sequence.current++;
+    setPreview(null);
+    setSourceRaw("");
+    setReason("");
+    retryIdentity.current = null;
+    return () => {
+      sequence.current++;
+    };
+  }, [branchId]);
+  const lookup = useCallback(
     async (raw: string) => {
-      if (cancelAssignmentMut.isPending || reassignMut.isPending) return;
-      const orderNumber = resolveOrderLookupBarcode(raw);
-      if (!orderNumber) return;
-
+      if (busyRef.current || !raw.trim()) return;
+      const generation = ++sequence.current;
       setIsSearching(true);
       try {
-        const wo = await utils.workOrders.getByNumber.fetch({ orderNumber });
-        if (!wo) {
-          notify.err(`طلب أو إرسالية غير موجودة: ${orderNumber}`);
-          return;
-        }
-
-        const activeCn = (
-          wo as {
-            activeConsignment?: ScannedOrderForCancellation["activeConsignment"];
-          }
-        ).activeConsignment;
-
-        const qrUrl =
-          wo.kind === "onlineOrder"
-            ? `${storefrontUrl()}?order=${encodeURIComponent(wo.orderNumber)}&token=${encodeURIComponent(wo.labelToken)}`
-            : `${window.location.origin}/verify?payload=${encodeURIComponent(wo.qrPayload)}`;
-
-        const order: ScannedOrderForCancellation = {
-          id: wo.id,
-          kind: wo.kind ?? "workOrder",
-          orderNumber: wo.orderNumber,
-          title: wo.title,
-          status: wo.status ?? null,
-          branchId: wo.branchId ? Number(wo.branchId) : null,
-          customerName: wo.customerName,
-          customerPhone: wo.customerPhone,
-          salePrice: wo.salePrice,
-          deposit: wo.deposit,
-          deliveryAddress: wo.deliveryAddress,
-          deliveryPhone: wo.deliveryPhone,
-          deliveryCost: wo.deliveryCost,
-          notes: (wo as { notes?: string | null }).notes ?? null,
-          version: (wo as { version?: number }).version ?? 1,
-          qrUrl,
-          invoiceId: (wo as { invoiceId?: number | null }).invoiceId ?? null,
-          activeConsignment: activeCn ?? null,
-        };
-
-        setScannedOrder(order);
-        setBarcodeInput("");
+        const next = await utils.delivery.workflow.preview.fetch({
+          raw,
+          station: "cancelAssignment",
+          branchId: branchId ?? undefined,
+        });
+        if (generation !== sequence.current || busyRef.current) return;
+        setPreview(next);
+        setSourceRaw(raw);
         setReason("");
-
-        if (!activeCn) {
-          notify.info(
-            `الطلب #${order.orderNumber} غير مسند حالياً`,
-            "لا توجد إرسالية توصيل نشطة مسندة لهذا الطلب.",
-          );
-        } else {
-          notify.ok(
-            `تم العثور على الإرسالية ${activeCn.consignmentNumber}`,
-            `مسندة لـ ${activeCn.partyName ?? "جهة التوصيل"}`,
-          );
-        }
-      } catch (e) {
-        notify.err(e, "تعذّر جلب بيانات الطلب أو الإرسالية");
+        setPartyId("");
+        setAssignedUserId("");
+        setExternalTrackingRef("");
+        setPhysicalHeld(false);
+        retryIdentity.current = null;
+        setMode(
+          next.actions.some((a) => a.action === "cancelAssignment" && a.allowed)
+            ? "cancelAssignment"
+            : next.actions.some(
+                  (a) => a.action === "declareReturn" && a.allowed,
+                )
+              ? "declareReturn"
+              : "reassign",
+        );
+        setBarcodeInput("");
+        onBarcodeConsumed?.();
+      } catch (error) {
+        if (generation === sequence.current)
+          notify.err(error, "تعذر قراءة المصدر الحالي");
       } finally {
-        setIsSearching(false);
+        if (generation === sequence.current) setIsSearching(false);
       }
     },
-    [cancelAssignmentMut.isPending, reassignMut.isPending, utils],
+    [utils, branchId, onBarcodeConsumed],
   );
-
-  // استهلاك الباركود الخارجي الممرر من شاشة سير العمل
+  const externalRaw = useRef<string | null>(null);
   useEffect(() => {
-    if (scannedBarcode && !cancelAssignmentMut.isPending && !reassignMut.isPending) {
-      void lookupOrder(scannedBarcode);
-      onBarcodeConsumed?.();
-    }
-  }, [scannedBarcode, cancelAssignmentMut.isPending, reassignMut.isPending, lookupOrder, onBarcodeConsumed]);
-
-  // التركيز التلقائي على حقل البحث عند تفريغ النتيجة
-  useEffect(() => {
-    if (!scannedOrder) {
-      searchInputRef.current?.focus();
-    }
-  }, [scannedOrder]);
-
-  async function handleConfirmCancel() {
-    if (!scannedOrder?.activeConsignment || cancelAssignmentMut.isPending || reassignMut.isPending) return;
-    if (reason.trim().length < 3) {
-      notify.err("يرجى كتابة سبب الإلغاء (٣ أحرف على الأقل)");
+    if (!scannedBarcode) {
+      externalRaw.current = null;
       return;
     }
-
-    const cn = scannedOrder.activeConsignment;
-    const orderNumber = scannedOrder.orderNumber;
-    const ok = await confirm({
-      variant: "danger",
-      title: "تأكيد إلغاء إسناد التوصيل",
-      description: `سيتم إلغاء الإرسالية #${cn.consignmentNumber} وتحرير ذمة ${cn.partyName ?? "المندوب"} البالغة ${fmt(cn.codAmount)} د.ع.\n\nالسبب: ${reason.trim()}`,
-      confirmText: "تأكيد إلغاء الإسناد",
+    if (externalRaw.current === scannedBarcode || busyRef.current) return;
+    externalRaw.current = scannedBarcode;
+    void lookup(scannedBarcode);
+  }, [scannedBarcode, lookup]);
+  const action = preview?.actions.find((a) => a.action === mode);
+  const isAftercare = preview?.relations.aftercareExecutionId != null;
+  const openAftercare = () =>
+    preview &&
+    onNavigateToAftercare?.({
+      caseId: preview.relations.aftercareCaseId,
+      executionId: preview.relations.aftercareExecutionId,
+      raw: sourceRaw,
     });
-    if (!ok) return;
-
-    pendingCancelRef.current = { consignmentNumber: cn.consignmentNumber, orderNumber };
-    cancelAssignmentMut.mutate({
-      consignmentId: cn.id,
+  const goDispatch = async () => {
+    if (!preview) return;
+    if (onNavigateToDispatchBarcode) {
+      onNavigateToDispatchBarcode(sourceRaw);
+      return;
+    }
+    if (
+      onNavigateToDispatch &&
+      ["invoice", "workOrder", "onlineOrder"].includes(preview.source.kind)
+    ) {
+      const prefix =
+        preview.source.kind === "invoice"
+          ? "INV"
+          : preview.source.kind === "workOrder"
+            ? "WO"
+            : "ORD";
+      const original = await utils.workOrders.getByNumber.fetch({
+        orderNumber: docBarcode(prefix, preview.source.number),
+      });
+      if (original)
+        onNavigateToDispatch({
+          ...original,
+          version:
+            "version" in original && typeof original.version === "number"
+              ? original.version
+              : 1,
+        });
+    }
+  };
+  async function execute() {
+    if (
+      !preview ||
+      mutation.isPending ||
+      !action?.allowed ||
+      reason.trim().length < 3
+    )
+      return;
+    if (
+      mode === "reassign" &&
+      (!partyId || (internalDriverRequired && !assignedUserId))
+    ) {
+      notify.err("اختر جهة التوصيل والمندوب الموظف المرتبط بها صراحةً");
+      return;
+    }
+    if (mode === "cancelAssignment" && isAftercare && !physicalHeld) {
+      openAftercare();
+      return;
+    }
+    const label =
+      mode === "cancelAssignment"
+        ? "إلغاء الإسناد"
+        : mode === "declareReturn"
+          ? "إعلان رجوع الطرد"
+          : "إعادة الإسناد";
+    if (
+      !(await confirm({
+        title: label,
+        description: `${preview.printSource.number} — ${preview.recipient.name ?? "المستلم"}\n${reason.trim()}\nإلغاء الإسناد وإعلان الرجوع لا يثبتان استلام البضاعة أو رد المال.`,
+        confirmText: label,
+        variant: mode === "reassign" ? "info" : "warning",
+      }))
+    )
+      return;
+    const payload = {
+      source: {
+        kind: preview.source.kind,
+        id: preview.source.id,
+        expectedVersion: preview.source.version,
+      },
+      branchId: preview.source.branchId,
+      action: mode,
       reason: reason.trim(),
-      clientRequestId: crypto.randomUUID(),
-    });
-  }
-
-  async function handleConfirmReassign(targetPartyId: number) {
-    if (!scannedOrder?.activeConsignment || cancelAssignmentMut.isPending || reassignMut.isPending) return;
-    const cn = scannedOrder.activeConsignment;
-    const targetParty = allParties.find((p) => p.id === targetPartyId);
-    if (!targetParty) {
-      notify.err("المندوب المختار غير صالح");
-      return;
+      partyId: mode === "reassign" ? Number(partyId) : undefined,
+      assignedUserId: assignedUserId ? Number(assignedUserId) : undefined,
+      externalTrackingRef: externalTrackingRef.trim() || undefined,
+      physicalHeldConfirmed: physicalHeld,
+    };
+    const signature = JSON.stringify(payload);
+    if (retryIdentity.current?.signature !== signature)
+      retryIdentity.current = { signature, key: crypto.randomUUID() };
+    try {
+      await mutation.mutateAsync({
+        ...payload,
+        clientRequestId: retryIdentity.current.key,
+      });
+      retryIdentity.current = null;
+      notify.ok(`تم ${label}`);
+      if (mode === "cancelAssignment")
+        onAssignmentCancelled?.(
+          preview.source.number,
+          preview.group?.consignmentNumber ?? "",
+        );
+      setPreview(null);
+      await Promise.all([
+        utils.delivery.workflow.invalidate(),
+        utils.delivery.openConsignments.invalidate(),
+        utils.delivery.obligations.invalidate(),
+      ]);
+      const fresh = await utils.delivery.workflow.previewBySource.fetch({
+        source: { kind: preview.source.kind, id: preview.source.id },
+        station: "cancelAssignment",
+        branchId: preview.source.branchId,
+      });
+      setPreview(fresh);
+      if (fresh.actions.some((a) => a.action === "reassign" && a.allowed))
+        setMode("reassign");
+      setReason("");
+      setPhysicalHeld(false);
+    } catch {
+      /* Mutation error preserves the same retry identity and draft. */
     }
-
-    const ok = await confirm({
-      title: "تأكيد تحويل الإرسالية",
-      description: `سيتم تحويل الإرسالية #${cn.consignmentNumber} من ${cn.partyName ?? "المندوب السابق"} إلى ${targetParty.name}.\nالمبلغ المطلوب (COD): ${fmt(cn.codAmount)} د.ع`,
-      confirmText: "تأكيد التحويل",
-    });
-    if (!ok) return;
-
-    pendingReassignRef.current = { consignmentNumber: cn.consignmentNumber, partyName: targetParty.name };
-    reassignMut.mutate({
-      consignmentId: cn.id,
-      partyId: targetPartyId,
-      clientRequestId: crypto.randomUUID(),
-    });
   }
-
-  function handleReset() {
-    if (cancelAssignmentMut.isPending || reassignMut.isPending) return;
-    setScannedOrder(null);
-    setBarcodeInput("");
-    setReason("");
-  }
-
   return (
     <div className="mx-auto max-w-2xl space-y-4" dir="rtl">
-      {!scannedOrder && (
-        <div className="rounded-2xl border-2 border-dashed border-destructive/40 bg-destructive/5 p-6 text-center">
-          <ScanLine aria-hidden className="mx-auto size-10 text-destructive/60" />
-          <p className="mt-2 text-base font-extrabold text-destructive">
-            امسح باركود الطلب أو الإرسالية لإلغاء الإسناد
-          </p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            أو أدخل رقم الطلب، الفاتورة، أو الإرسالية (CN-...) يدوياً
-          </p>
-          <div className="mt-4 flex gap-2">
-            <UnifiedSearchInput
-              ref={searchInputRef}
-              value={barcodeInput}
-              onChange={setBarcodeInput}
-              onScan={(code: string) => void lookupOrder(code)}
-              onSubmit={(val: string) => {
-                if (val.trim()) void lookupOrder(val.trim());
-              }}
-              placeholder="رقم الطلب أو الإرسالية (Enter)"
-              className="flex-1 text-center font-bold"
-              dir="ltr"
-              barcode={true}
-            />
+      <div className="rounded-xl border border-dashed p-4 space-y-3">
+        <p className="flex items-center gap-2 font-bold">
+          <ScanLine aria-hidden className="size-5" /> مسح مصدر التوصيل لإلغاء
+          الإسناد أو إعلان الرجوع
+        </p>
+        <UnifiedSearchInput
+          ref={inputRef}
+          value={barcodeInput}
+          onChange={setBarcodeInput}
+          onScan={(raw) => void lookup(raw)}
+          onSubmit={(raw) => void lookup(raw)}
+          placeholder="باركود الفاتورة أو الطلب أو CN أو AE"
+          barcode
+          dir="ltr"
+          disabled={mutation.isPending}
+        />
+        {isSearching && (
+          <p className="text-sm text-muted-foreground">{L.loading}</p>
+        )}
+      </div>
+      {preview && (
+        <Card className="p-4 space-y-4">
+          <div className="flex items-center justify-between gap-2">
+            <strong dir="ltr">{preview.printSource.number}</strong>
             <Button
-              variant="outline"
-              onClick={() => void lookupOrder(barcodeInput.trim())}
-              disabled={!barcodeInput.trim() || isSearching}
+              variant="ghost"
+              size="sm"
+              disabled={mutation.isPending}
+              onClick={() => {
+                sequence.current++;
+                setPreview(null);
+                retryIdentity.current = null;
+                inputRef.current?.focus();
+              }}
             >
-              {isSearching ? L.loading : "بحث"}
+              مسح آخر
             </Button>
           </div>
-        </div>
-      )}
-
-      {scannedOrder && (
-        <CancelAssignmentOrderCard
-          scannedOrder={scannedOrder}
-          branchId={branchId}
-          allParties={allParties}
-          reason={reason}
-          onReasonChange={setReason}
-          onConfirmCancel={() => void handleConfirmCancel()}
-          onConfirmReassign={(targetId) => void handleConfirmReassign(targetId)}
-          onReset={handleReset}
-          onNavigateToDispatch={onNavigateToDispatch}
-          isPending={cancelAssignmentMut.isPending || reassignMut.isPending}
-        />
+          <p className="text-sm">
+            {preview.recipient.name ?? "مستلم عابر"} —{" "}
+            {preview.recipient.phone ?? "حدد هوية المستلم في طلبه"}
+          </p>
+          <p className="text-sm text-muted-foreground">
+            المطلوب الحالي {fmt(preview.money.codAmount)} د.ع ·{" "}
+            {preview.group?.consignmentIds.length ?? 0} مستند توصيل مرتبط
+          </p>
+          {preview.relations.chargeId != null && (
+            <Button
+              variant="outline"
+              onClick={() => onOpenCharge?.(preview.relations.chargeId!)}
+            >
+              فتح مستند الأجور
+            </Button>
+          )}
+          {isAftercare && (
+            <Button variant="outline" onClick={openAftercare}>
+              فتح المعالجة وإثبات العهدة أو تجهيز إعادة الإصدار
+            </Button>
+          )}
+          {preview.relations.consignmentId == null ? (
+            <div className="space-y-2">
+              <p className="text-sm">
+                لا توجد إرسالية قائمة؛ افتح المصدر في محطة الإرسال.
+              </p>
+              <Button onClick={() => void goDispatch()}>
+                فتح الإرسال بنفس المصدر
+              </Button>
+            </div>
+          ) : (
+            <>
+              <AppSelect
+                value={mode}
+                onValueChange={(value) => setMode(value as typeof mode)}
+                disabled={mutation.isPending}
+              >
+                <option value="cancelAssignment">
+                  إلغاء الإسناد قبل استلام الناقل
+                </option>
+                <option value="declareReturn">
+                  إعلان الرجوع — دون إثبات استلام
+                </option>
+                <option value="reassign">إعادة الإسناد للمندوب</option>
+              </AppSelect>
+              {!action?.allowed && (
+                <p className="text-sm text-muted-foreground">
+                  {action?.reason}
+                </p>
+              )}
+              <Label htmlFor="workflow-cancel-reason">سبب الإجراء</Label>
+              <Textarea
+                id="workflow-cancel-reason"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                maxLength={500}
+                disabled={mutation.isPending}
+              />
+              {mode === "cancelAssignment" && isAftercare && (
+                <label className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    checked={physicalHeld}
+                    onCheckedChange={(checked) =>
+                      setPhysicalHeld(checked === true)
+                    }
+                    disabled={mutation.isPending}
+                  />{" "}
+                  تحققت فعلياً أن كامل الدفعة بعهدة المكتبة ولم يستلمها الناقل
+                </label>
+              )}
+              {mode === "reassign" && !isAftercare && (
+                <div className="space-y-2">
+                  <AppSelect
+                    value={partyId}
+                    onValueChange={(value) => {
+                      setPartyId(value);
+                      setAssignedUserId("");
+                    }}
+                    disabled={mutation.isPending}
+                  >
+                    <option value="">اختر جهة التوصيل</option>
+                    {(parties.data ?? [])
+                      .filter(
+                        (p) =>
+                          p.branchId == null ||
+                          p.branchId === preview.source.branchId,
+                      )
+                      .map((p) => (
+                        <option key={p.id} value={String(p.id)}>
+                          {p.name}
+                        </option>
+                      ))}
+                  </AppSelect>
+                  {target?.partyType === "COMPANY" && (
+                    <div className="space-y-1">
+                      <Label htmlFor="workflow-reassign-tracking">
+                        رقم بوليصة الشركة
+                      </Label>
+                      <Input
+                        id="workflow-reassign-tracking"
+                        value={externalTrackingRef}
+                        onChange={(event) =>
+                          setExternalTrackingRef(event.target.value)
+                        }
+                        dir="ltr"
+                        disabled={mutation.isPending}
+                        maxLength={100}
+                      />
+                    </div>
+                  )}
+                  {(drivers.length > 0 || target?.userId != null) && (
+                    <AppSelect
+                      value={assignedUserId}
+                      onValueChange={setAssignedUserId}
+                      disabled={mutation.isPending || members.isLoading}
+                    >
+                      <option value="">اختر المندوب الموظف صراحةً</option>
+                      {target?.userId != null &&
+                        !drivers.some((d) => d.userId === target.userId) && (
+                          <option value={String(target.userId)}>
+                            {target.name}
+                          </option>
+                        )}
+                      {drivers.map((d) => (
+                        <option key={d.userId} value={String(d.userId)}>
+                          {d.name ?? d.username ?? `موظف ${d.userId}`}
+                        </option>
+                      ))}
+                    </AppSelect>
+                  )}
+                </div>
+              )}
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  disabled={
+                    !action?.allowed ||
+                    reason.trim().length < 3 ||
+                    mutation.isPending ||
+                    (mode === "reassign" &&
+                      (!partyId || (internalDriverRequired && !assignedUserId)))
+                  }
+                  onClick={() => void execute()}
+                >
+                  {mutation.isPending
+                    ? L.saving
+                    : mode === "cancelAssignment"
+                      ? "إلغاء الإسناد"
+                      : mode === "declareReturn"
+                        ? "تسجيل إعلان الرجوع"
+                        : "تأكيد إعادة الإسناد"}
+                </Button>
+                {onNavigateToDispatchBarcode && (
+                  <Button
+                    variant="outline"
+                    onClick={() => void goDispatch()}
+                    disabled={mutation.isPending}
+                  >
+                    فتح الإرسال بنفس المصدر
+                  </Button>
+                )}
+              </div>
+            </>
+          )}
+        </Card>
       )}
     </div>
   );

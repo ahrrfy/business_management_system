@@ -30,6 +30,9 @@ import { readRefundState } from "./executors/refundState";
 import { INVOICE_SALE_SCOPE, materializeInvoiceEffects } from "./materialize/invoice";
 import type { ExecutorRegistry, RefundDecision, ReversalRun } from "./types";
 import { money } from "../money";
+import { eq } from "drizzle-orm";
+import { componentRightsAdjustments } from "../../../drizzle/fulfillmentRightsSchema";
+import { fulfillmentError } from "../fulfillment/core";
 
 /** منفّذو فاتورة البيع — يعلون على السجلّ العامّ حيث يختلف القيدُ بحسب المستند. */
 export const INVOICE_EXECUTORS: ExecutorRegistry = {
@@ -79,6 +82,16 @@ export async function reverseInvoiceSaleInTx(
   input: ReverseInvoiceSaleInput,
   actor: Actor,
 ): Promise<ReverseInvoiceSaleSummary> {
+  const [componentRight] = await tx
+    .select({ id: componentRightsAdjustments.id })
+    .from(componentRightsAdjustments)
+    .where(eq(componentRightsAdjustments.invoiceId, input.invoiceId))
+    .limit(1);
+  if (componentRight)
+    throw fulfillmentError(
+      "سُوّيت مكونات من البيع الأصلي؛ استخدم مرتجع المبيعات للأجزاء المتبقية ثم أنشئ الفاتورة الصحيحة للبضاعة الفعلية فقط",
+      "CONFLICT",
+    );
   const state = new Map<string, unknown>();
   const decisions = {
     flavor: input.flavor,

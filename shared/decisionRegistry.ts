@@ -1652,6 +1652,13 @@ const CONTENT: Record<string, DecisionSpec> = {
  *
  * التقسيمُ إلى ثوابتَ وسيطة تنظيمٌ للقراءة لا أكثر؛ المستهلِكُ يرى خريطةً واحدة.
  */
+const FULFILLMENT_WORK: Record<string, DecisionSpec> = {
+  "delivery.fulfillment.aftercare.approve": spec({ kind: "delivery.fulfillment.aftercare.approve", title: "مراجعة نقص أو تعويض", why: "اعتماد كميات ومصدر معالجة قبل صرف البديل أو الخامات يمنع تكرار التعويض وصرف بضاعة بلا حق مثبت.", decidesOn: ["أصل البيع", "الكمية والدليل", "نوع المعالجة", "من سجل الحالة"], approver: "INDEPENDENT_REVIEWER", withdrawable: false, procedure: { router: "delivery", name: "fulfillment.aftercare.approve" }, href: id => `/reception/workflow?section=aftercare&caseId=${id}` }),
+  "delivery.fulfillment.aftercare.followup": spec({ kind: "delivery.fulfillment.aftercare.followup", title: "استكمال معالجة معتمدة", why: "تجهيز المعالجة وإرسالها ثم تسوية العهدة والأجرة أعمال فعلية يجب ألا تختفي بعد الاعتماد.", decidesOn: ["حالة القضية", "التجهيز والتوصيل", "العهدة والأجرة", "الخطوة المسموحة"], approver: "MANAGER", withdrawable: false, procedure: { router: "delivery", name: "fulfillment.aftercare.get" }, href: id => `/reception/workflow?section=aftercare&caseId=${id}` }),
+  "delivery.fulfillment.aftercare.settlementApprove": spec({ kind: "delivery.fulfillment.aftercare.settlementApprove", title: "مراجعة تسوية معالجة", why: "التسوية قد تعيد مخزوناً بقيمة صرفه الأصلية وتحسم حق العميل؛ تحتاج مراجعة مستقلة للدليل قبل الترحيل.", decidesOn: ["مصير الكميات والخامات", "الأصل التاريخي", "حق العميل", "العهدة واستحقاق الناقل"], approver: "INDEPENDENT_REVIEWER", withdrawable: false, procedure: { router: "delivery", name: "fulfillment.aftercare.settlementApprove" }, href: id => `/reception/workflow?section=aftercare&caseId=${id}` }),
+  "delivery.fulfillment.charges.approve": spec({ kind: "delivery.fulfillment.charges.approve", title: "مراجعة أجر أو استحقاق", why: "الأجر المتجاوز للسقف أو استحقاق الطرف الخارجي يجب أن يراجع قبل إنشاء المطالبة والتكلفة أو قبضها.", decidesOn: ["العميل والمبلغ", "نوع الأجر", "التكلفة والمستفيد عند التفويض", "سبب الاستحقاق"], approver: "INDEPENDENT_REVIEWER", withdrawable: false, procedure: { router: "delivery", name: "fulfillment.charges.approve" }, href: id => `/reception/workflow?section=collect&action=charges&chargeId=${id}` }),
+};
+
 export const DECISION_REGISTRY: Record<DecisionKind, DecisionSpec> = {
   ...PURCHASING,
   ...INVENTORY,
@@ -1662,6 +1669,7 @@ export const DECISION_REGISTRY: Record<DecisionKind, DecisionSpec> = {
   ...CLOSING,
   ...DIGITAL_CARDS,
   ...CONTENT,
+  ...FULFILLMENT_WORK,
 };
 
 /** يُرجع مواصفةَ القرار، أو `undefined` لمفتاحٍ غير مُسجَّل. */

@@ -600,6 +600,7 @@ export function CartPanel({
       {delivery && (
         <CartDeliveryPanel
           C={C}
+          branchId={branchId}
           tabId={tabId}
           draft={delivery}
           onChange={onDeliveryChange}

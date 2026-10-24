@@ -207,6 +207,7 @@ async function dispatch(
 ) {
   return dispatchInvoiceToDelivery(
     {
+      assignedUserId: partyId === 2 ? 4 : 3,
       invoiceId,
       partyId,
       recipientName: "المستلم الأول",
@@ -247,7 +248,7 @@ describe("cancelDeliveryAssignment — عقد الإلغاء التشغيلي", 
       id: 6, role: "cashier", branchId: 1, permissionsOverride: { store: "NONE" }, operationPolicyEnabled: true, resolvedOperationPolicy: operationPolicy,
     } } as never);
     const result = await api.sales.create({ branchId: 1, customerId: 1, lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
-      delivery: { partyId: 1, fee: "0", recipientPhone: "07701234567" }, clientRequestId: "canonical-sale-dispatch-store-none" });
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", recipientPhone: "07701234567" }, clientRequestId: "canonical-sale-dispatch-store-none" });
     const invoice = (await db().select().from(s.invoices).where(eq(s.invoices.id, result.invoiceId)))[0];
     expect(invoice?.status).toBe("PENDING");
     expect(invoice?.paymentMode).toBe("COD");
@@ -258,7 +259,7 @@ describe("cancelDeliveryAssignment — عقد الإلغاء التشغيلي", 
     expect(Number((await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1)))[0]?.quantity)).toBe(24);
     delete operationPolicy.grants["operation.delivery.dispatchInvoice"];
     await expect(api.sales.create({ branchId: 1, lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
-      delivery: { partyId: 1, fee: "0" }, clientRequestId: "canonical-sale-dispatch-denied" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0" }, clientRequestId: "canonical-sale-dispatch-denied" })).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect((await db().select().from(s.invoices)).length).toBe(1);
   });
   it.each(["OUT_FOR_DELIVERY", "FAILED"] as const)(
@@ -533,6 +534,7 @@ describe("dispatchInvoiceToDelivery — إعادة تنشيط السجل الم�
     );
 
     const reactivateInput = {
+      assignedUserId: 4,
       invoiceId: 100,
       partyId: 2,
       deliveryFee: "1750",
@@ -634,6 +636,7 @@ describe("dispatchInvoiceToDelivery — إعادة تنشيط السجل الم�
 
     // 2. كاشير (cashier) مسموح
     const cashierAllowed = await caller("cashier", null, 6).delivery.dispatchInvoice({
+      assignedUserId: 3,
       invoiceId: 102,
       partyId: 1,
       clientRequestId: "router-cashier-dispatch-102",
@@ -652,6 +655,7 @@ describe("dispatchInvoiceToDelivery — إعادة تنشيط السجل الم�
 
     // 4. مدير (manager) مسموح
     const managerAllowed = await caller("manager", null, 1).delivery.dispatchInvoice({
+      assignedUserId: 3,
       invoiceId: 103,
       partyId: 1,
       clientRequestId: "router-manager-dispatch-103",
@@ -672,6 +676,7 @@ describe("dispatchInvoiceToDelivery — إعادة تنشيط السجل الم�
 
     // cashier مسموح
     const cashierBarcode = await caller("cashier", null, 6).delivery.dispatchByBarcode({
+      assignedUserId: 3,
       barcode: "INV-CANCEL-104",
       partyId: 1,
       clientRequestId: "router-cashier-barcode-104",
@@ -899,6 +904,7 @@ describe("ذرية إسناد وإلغاء التوصيل في استعلاما�
     // 4. إعادة الإسناد لجهة أخرى: يتم التنشيط الذري وتعود البيانات بالجهة الجديدة
     await dispatchInvoiceToDelivery(
       {
+        assignedUserId: 4,
         invoiceId: 100,
         partyId: 2,
         deliveryFee: "3000",

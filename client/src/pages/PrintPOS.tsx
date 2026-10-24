@@ -59,7 +59,11 @@ import { PrintServiceGrid } from "@/components/printPos/PrintServiceGrid";
 import { type OrderChannel } from "@/components/print-pos/PrintChannelCustomerBar";
 import { HeldOrdersDrawer, type HeldSaleOrder } from "@/components/print-pos/HeldOrdersDrawer";
 import { PrintPosHeader, PrintPosHeaderActions } from "@/components/print-pos/PrintPosHeader";
+import {buildPrintPosReceipt,type PrintReceiptSnapshot} from "@/components/print-pos/printPosReceipt";
 import { CheckoutColumn, type PaymentMethod, type EditingInvoiceInfo } from "@/components/print-pos/PrintPosCheckout";
+import { useCashierExtraCharges, savedCheckout } from "@/components/pos/useCashierExtraCharges";
+import {checkoutExtraTotal,checkoutExtraPayload} from "@/components/pos/checkoutExtraAmounts";
+import type {CheckoutChargesInput,CheckoutChargesResult} from "@shared/checkoutCharges";
 import { PrintBottomToolbar } from "@/components/print-pos/PrintBottomToolbar";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useInvoiceReceiptPrinter } from "@/hooks/useInvoiceReceiptPrinter";
@@ -78,6 +82,9 @@ type ExternalPaymentDraft = {
 };
 
 type Tab = {
+  extraCharges?: CheckoutChargesInput;
+  checkoutRequestId?:string;
+  lastCheckout?: { result: CheckoutChargesResult; recoveryToken: string };
   id: number;
   label: string;
   cart: CartLine[];
@@ -197,7 +204,7 @@ export default function PrintPOS() {
     return () => { cancelled = true; };
   }, [offline]);
   const services = useMemo(
-    () => (offline ? cachedServices ?? [] : servicesQ.data ?? []),
+    () => (offline ? (cachedServices ?? []) : (servicesQ.data ?? [])),
     [offline, cachedServices, servicesQ.data],
   );
 
@@ -238,13 +245,15 @@ export default function PrintPOS() {
     splitLegs: tab.splitLegs,
     editingInvoice: tab.editingInvoice,
     total,
+    extraAmount: checkoutExtraTotal(tab.extraCharges).toFixed(2),chargeOnly:cart.length===0,
   });
   const [confirmingLegId, setConfirmingLegId] = useState<string | null>(null);
   const paymentInputAmount = Number(tab.payInput || 0);
   const paymentIsCredit = paymentInputAmount > 0 && paymentInputAmount < total;
-  const externalPaymentAmount = (paymentIsCredit ? paymentInputAmount : total).toFixed(2);
+  const extraChargeD = checkoutExtraTotal(tab.extraCharges);
+  const externalPaymentAmount = D(paymentIsCredit ? paymentInputAmount : total).plus(extraChargeD).toFixed(2);
   const externalPaymentFingerprint = `${tab.method}|${externalPaymentAmount}|${(tab.paymentRef ?? "").trim().toUpperCase()}`;
-  const externalFullPaymentFingerprint = `${tab.method}|${total.toFixed(2)}|${(tab.paymentRef ?? "").trim().toUpperCase()}`;
+  const externalFullPaymentFingerprint = `${tab.method}|${D(total).plus(extraChargeD).toFixed(2)}|${(tab.paymentRef ?? "").trim().toUpperCase()}`;
   const externalPaymentConfirmed = tab.method === "CASH"
     || (tab.externalPayment?.state === "CONFIRMED" && tab.externalPayment.fingerprint === externalPaymentFingerprint && tab.externalPayment.attemptId != null);
   const externalFullPaymentConfirmed = tab.method === "CASH"
@@ -260,10 +269,12 @@ export default function PrintPOS() {
   const [creditPrompt, setCreditPrompt] = useState<string | null>(null);
   const [mgrEmail, setMgrEmail] = useState("");
   const [mgrPwd, setMgrPwd] = useState("");
-  const [message, setMessage] = useState<{ kind: "ok" | "warn" | "err"; text: string } | null>(null);
+  const [message, setMessage] = useState<{ kind: "ok" | "warn" | "err"; text: string;
+  } | null>(null);
   const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
   const [printerReady, setPrinterReady] = useState(isPaired());
-  const [bridge, setBridge] = useState<{ enabled: boolean; description: string }>({ enabled: false, description: "" });
+  const [bridge, setBridge] = useState<{ enabled: boolean; description: string;
+  }>({ enabled: false, description: "" });
   const [headerActionsNode, setHeaderActionsNode] = useState<HTMLElement | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -279,11 +290,7 @@ export default function PrintPOS() {
   }, []);
   // لقطة الإيصال تُلتقط لحظة الإرسال بقيم متّسقة مع ما يسجّله الخادم (نقد مقرّب) ⇒ لا إعادة حساب
   // من حالة لاحقة/سلة مُفرَّغة، ولا «باقي/آجل» وهميّ من فرق التقريب.
-  const pendingRef = useRef<{
-    lines: Receipt["lines"]; customerName?: string; method: PaymentMethod | "MIXED";
-    paymentLegs?: Receipt["paymentLegs"];
-    cashTotal: number; rawTotal: number; cashRounding: number; received: number; change: number; credit: number; isCredit: boolean;
-  } | null>(null);
+  const pendingRef=useRef<PrintReceiptSnapshot|null>(null);
 
   const effectiveCatId = catId ?? cats[0]?.id ?? null;
   // اسم العميل للإيصال — بـid مباشرةً لا بحثاً في قائمةٍ مقصوصة عند ٥٠٠: العميل ٥٠١ كان يُطبَع
@@ -293,7 +300,7 @@ export default function PrintPOS() {
     { customerId: tab.customerId ?? 0 },
     { enabled: tab.customerId != null, staleTime: 60_000 },
   );
-  const selectedCustomer = tab.customerId == null ? null : selectedCustomerQ.data ?? null;
+  const selectedCustomer = tab.customerId == null ? null : (selectedCustomerQ.data ?? null);
 
   // ── مسوّدة التبويبات (localStorage) — نفس نمط كاشير التجزئة (cartDraft) بنطاق فرع+مستخدم+وردية ──
   // وردية الطباعة PRINT_SERVICES صفٌّ مستقلّ في جدول الورديات (id فريد عبر الأنواع) ⇒ لا تصادم
@@ -327,11 +334,11 @@ export default function PrintPOS() {
       setTabs(saved.tabs.map((t) => ({
         ...t,
         // لا نُعيد إحياء طريقة/محاولة خارجية قديمة من localStorage بعد إغلاق السطح.
-        method: "CASH" as PaymentMethod,
-        paymentRef: "",
-        externalPayment: null,
-        splitMode: false,
-        splitLegs: [],
+        method: t.extraCharges ? t.method : ("CASH" as PaymentMethod),
+          paymentRef: t.extraCharges ? t.paymentRef: "",
+        externalPayment: t.extraCharges ? t.externalPayment : null,
+        splitMode: t.extraCharges ? t.splitMode : false,
+          splitLegs: t.extraCharges ? t.splitLegs: [],
       })));
       setActiveId(saved.tabs.some((t) => t.id === saved.activeId) ? saved.activeId : saved.tabs[0].id);
     } else {
@@ -382,7 +389,7 @@ export default function PrintPOS() {
       });
       return;
     }
-    patch({ splitMode: true, splitLegs: buildInitialPrintSplitLegs({ payInput: tab.payInput, total, method: tab.method, paymentRef: tab.paymentRef }) });
+    patch({ splitMode: true, splitLegs: buildInitialPrintSplitLegs({ payInput: tab.payInput, total:cart.length?total:checkoutExtraTotal(tab.extraCharges).toNumber(), method: tab.method, paymentRef: tab.paymentRef }) });
   }
   const addSplitLeg = () => patch({ splitLegs: appendPrintSplitLeg(tab.splitLegs ?? [], total, splitTotalPaidD.toNumber()) });
   const updateSplitLeg = (legId: string, legPatch: Partial<Pick<PosPaymentLegDraft, "method" | "amount" | "paymentRef">>) =>
@@ -477,36 +484,15 @@ export default function PrintPOS() {
   const numPress = (k: string) => setPayInput((prev) => (k === "⌫" ? prev.slice(0, -1) : prev + k));
 
   const sale = trpc.printPos.createSale.useMutation({
-    onSuccess: async (r) => {
+    onSuccess: async (r, submitted) => {
       // الإيصال من اللقطة الملتقطة لحظة الإرسال (متّسقة مع الخادم) لا من إعادة حساب على حالة لاحقة.
       const p = pendingRef.current;
-      const now = new Date();
-      const rec: Receipt = {
-        invoiceId: r.invoiceId,
-        invoiceNumber: r.invoiceNumber,
-        num: r.invoiceNumber,
-        date: fmtDateTime(now),
-        printDate: fmtDate(now),
-        printTime: fmtTime(now),
-        cashierName: me.data?.name ?? undefined,
-        customerName: p?.customerName,
-        // Codex P2: تفضيل shiftId من الفاتورة المُثبَّتة (idempotent replay بعد إغلاق وردية).
-        shiftId: (r as { shiftId?: number | null }).shiftId ?? shift?.id ?? null,
-        lines: (p?.lines ?? []).map((l) => ({ ...l, disc: undefined })),
-        subtotal: p?.rawTotal ?? p?.cashTotal ?? 0,
-        cashRounding: p?.cashRounding,
-        total: p?.cashTotal ?? 0,
-        received: p?.received ?? 0,
-        change: p?.change ?? 0,
-        credit: p?.credit ?? 0,
-        method: METHOD_LABEL[p?.method ?? "CASH"],
-        methodCode: p?.method,
-        paymentLegs: p?.paymentLegs,
-        isCredit: p?.isCredit ?? false,
-      };
+      const completedCheckout=savedCheckout(r,submitted.clientRequestId??" ");
+      if(completedCheckout)patchTab(p?.tabId??tab.id,{lastCheckout:completedCheckout});
+      const rec=buildPrintPosReceipt(r,p,me.data?.name??undefined,shift?.id??null);
       setReceipt(rec);
       setLastInv({ num: r.invoiceNumber, total: p?.cashTotal ?? 0 });
-      setCart([]); setPayInput(""); patch({ selUid: null, paymentRef: "", externalPayment: null, splitMode: false, splitLegs: [] });
+      patchTab(p?.tabId??tab.id,{cart:[],payInput:"",extraCharges:undefined,checkoutRequestId:undefined,selUid:null,paymentRef:"",externalPayment:null,splitMode:false,splitLegs:[]});
       setClientRequestId(crypto.randomUUID());
       const printed = await printAuthorizedReceipt(rec).catch((error) => { notify.err(error); return { ok: false as const, via: "browser" as const }; });
       setMessage({
@@ -542,10 +528,19 @@ export default function PrintPOS() {
   });
 
   const initiateExternalPayment = trpc.printPos.initiateExternalPayment.useMutation();
+  const extraCheckout=useCashierExtraCharges({
+    channel:"PRINT_POS",branchId,shiftId:shift?.id,token:tab.checkoutRequestId??clientRequestId,tab,splitLegs:isSplitPayment?splitLegs:undefined,
+    onSplitChargeOnly:toggleSplitMode,enabled:tab.editingInvoice==null,connected:!offline,confirmed:externalPaymentConfirmed,cartLength:cart.length,
+    goodsTender:(isSplitPayment?tab.splitLegs?.[0]?.amount:tab.payInput||String(total))??"0",busy:sale.isPending,
+    onChange:extraCharges=>patch({extraCharges,checkoutRequestId:tab.checkoutRequestId??crypto.randomUUID(),externalPayment:null,splitLegs:(tab.splitLegs??[]).map(leg=>({...leg,externalPayment:null}))}),
+    onCommitted:(id,lastCheckout)=>{patchTab(id,{extraCharges:undefined,checkoutRequestId:undefined,payInput:"",externalPayment:null,paymentRef:"",lastCheckout});setClientRequestId(crypto.randomUUID());},
+    refresh:()=>void shiftQ.refetch(),
+  });
+  const {submitChargesOnly}=extraCheckout;
   const confirmExternalPaymentMutation = trpc.printPos.confirmExternalPayment.useMutation();
 
   async function confirmCurrentExternalPayment(legId?: string) {
-    if (!shift || !cart.length) return;
+    if (!shift || (!cart.length && !extraChargeD.gt(0))) return;
     const tabId = tab.id;
     const leg = legId ? (tab.splitLegs ?? []).find((l) => l.id === legId) : null;
     if (legId && !leg) return;
@@ -557,13 +552,16 @@ export default function PrintPOS() {
       return;
     }
     const legAmtD = leg ? parsePosLegAmountD(leg.amount) : null;
-    if (leg ? legAmtD!.lte(0) : (tab.payInput.trim() !== "" && Number(tab.payInput) <= 0)) {
+    if (leg ? legAmtD!.lte(0) : tab.payInput.trim() !== "" && Number(tab.payInput) <= 0
+    ) {
       setMessage({ kind: "err", text: "مبلغ الدفع يجب أن يكون موجباً قبل تأكيد العملية الخارجية." });
       return;
     }
 
-    const amountStr = leg ? legAmtD!.toFixed(2) : externalPaymentAmount;
-    const fingerprint = leg ? computeSplitLegFingerprint(leg) : externalPaymentFingerprint;
+    const extra =
+      leg && cart.length>0 && tab.splitLegs?.[0]?.id === leg.id ? extraChargeD : D(0);
+    const amountStr = leg ? legAmtD!.plus(extra).toFixed(2) : externalPaymentAmount;
+    const fingerprint = leg ? computeSplitLegFingerprint(leg, extra) : externalPaymentFingerprint;
     const priorExt = leg ? leg.externalPayment : tab.externalPayment;
     const prior = priorExt?.fingerprint === fingerprint ? priorExt : null;
     const requestId = prior?.requestId ?? crypto.randomUUID();
@@ -630,7 +628,8 @@ export default function PrintPOS() {
         credit: Math.max(0, Number(r.total) - (Number(tab.editingInvoice?.preCollected || 0) + Number(tab.payInput || 0))),
         method: METHOD_LABEL[tab.method],
         methodCode: tab.method,
-        isCredit: Number(r.total) > (Number(tab.editingInvoice?.preCollected || 0) + Number(tab.payInput || 0)),
+        isCredit: Number(r.total) >
+          Number(tab.editingInvoice?.preCollected || 0) + Number(tab.payInput || 0),
       };
       setReceipt(rec);
       setLastInv({ num: r.correctedInvoiceNumber, total: Number(r.total) });
@@ -750,6 +749,13 @@ export default function PrintPOS() {
    * يخصمها بـallowNegative أصلاً، فالاستهلاك يبقى متعقَّباً حتى لو نفدت المادة دفترياً.
    */
   async function captureOfflinePrintSale(forceFullPayment: boolean): Promise<boolean> {
+    if (checkoutExtraTotal(tab.extraCharges).gt(0)) {
+      setMessage({
+        kind: "err",
+        text: "قبض الأجور يتطلب اتصالاً؛ احتُفظ بالمسودة وإثبات القبض لإعادة المحاولة بنفس المرجع",
+      });
+      return false;
+    }
     if (!shift || !cart.length) return false;
     if (!(await isOfflineSaleEnabled())) {
       setMessage({
@@ -841,6 +847,10 @@ export default function PrintPOS() {
   }
 
   function submit(forceFullPayment: boolean, approval?: ManagerApprovalInput, isReservation?: boolean) {
+    if (!cart.length && extraChargeD.gt(0)) {
+      void submitChargesOnly();
+      return;
+    }
     if (!shift || !cart.length || sale.isPending || correctSaleMut.isPending) return;
     setMessage(null);
 
@@ -898,9 +908,10 @@ export default function PrintPOS() {
       if (!isReservation && splitSub.isCredit && tab.customerId == null) {
         setMessage({ kind: "err", text: "البيع الآجل يتطلّب اختيار عميل مسجّل ذو ذمة وحساب." }); return;
       }
-      pendingRef.current = splitSub.pendingSnapshot;
+      pendingRef.current = {...splitSub.pendingSnapshot,tabId:tab.id};
       sale.mutate({
-        branchId, shiftId: shift.id, clientRequestId,
+        ...checkoutExtraPayload(tab.extraCharges),
+        branchId, shiftId: shift.id, clientRequestId:extraChargeD.gt(0)?tab.checkoutRequestId??clientRequestId:clientRequestId,
         ...(splitSub.splitDeviceId ? { deviceId: splitSub.splitDeviceId } : {}),
         customerId: tab.customerId ?? undefined, contactName: tab.contactName.trim() || undefined, contactPhone: tab.contactPhone.trim() || undefined,
         channel: tab.channel, isReservation: isReservation ? true : undefined, priceTier: "RETAIL",
@@ -934,11 +945,13 @@ export default function PrintPOS() {
     }
 
     const cashFull = method === "CASH" && !isCredit && !isReservation;
-    const amount = isReservation ? (paid > 0 ? paid.toFixed(2) : "0.00") : (isCredit ? paid.toFixed(2) : total.toFixed(2));
+    const amount = isReservation ? paid > 0 ? paid.toFixed(2) : "0.00"
+      : isCredit ? paid.toFixed(2) : total.toFixed(2);
     // النقد المُسلَّم فعلاً: للدفع الكامل بلا إدخال = الإجمالي المقرّب (لا باقي)؛ ومع إدخالٍ صريح = المُدخَل.
-    const tendered = forceFullPayment ? cashTotal : (tab.payInput === "" ? cashTotal : paid);
+    const tendered = forceFullPayment ? cashTotal : tab.payInput === "" ? cashTotal : paid;
     const finalTotal = cashFull ? cashTotal : total;
     pendingRef.current = {
+      tabId:tab.id,
       lines: cart.map((c) => ({ name: c.svc.productName, unit: c.svc.unitName, qty: c.qty, price: c.price, total: c.price * c.qty })),
       customerName: selectedCustomer?.name ?? (tab.contactName || undefined),
       method,
@@ -951,7 +964,8 @@ export default function PrintPOS() {
       isCredit: Boolean(isCredit || isReservation),
     };
     sale.mutate({
-      branchId, shiftId: shift.id, clientRequestId,
+      ...checkoutExtraPayload(tab.extraCharges),
+      branchId, shiftId: shift.id, clientRequestId:extraChargeD.gt(0)?tab.checkoutRequestId??clientRequestId:clientRequestId,
       ...(method !== "CASH" && tab.externalPayment?.deviceId ? { deviceId: tab.externalPayment.deviceId } : {}),
       customerId: tab.customerId ?? undefined,
       contactName: tab.contactName.trim() || undefined,
@@ -964,7 +978,10 @@ export default function PrintPOS() {
         quantity: String(c.qty), unitPriceOverride: c.price.toFixed(2),
       })),
       payment: {
-        amount,
+        amount:
+          extraChargeD.gt(0) && method === "CASH" && !isReservation && !isCredit
+            ? tendered.toFixed(2)
+            : amount,
         method,
         ...(method !== "CASH" && tab.externalPayment?.attemptId ? { externalPaymentAttemptId: tab.externalPayment.attemptId } : {}),
       },
@@ -1056,7 +1073,9 @@ export default function PrintPOS() {
 
   // ── شاشة فتح الوردية ──
   if (shiftQ.isLoading) {
-    return <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.bg, color: C.mutedFg, fontFamily: "'Cairo', system-ui, sans-serif", direction: "rtl" }}>{ACTION_LABELS.loading}</div>;
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.bg, color: C.mutedFg, fontFamily: "'Cairo', system-ui, sans-serif", direction: "rtl" }}>{ACTION_LABELS.loading}</div>
+    );
   }
   if (!shift) {
     return (
@@ -1076,14 +1095,18 @@ export default function PrintPOS() {
                 style={{ width: "100%", height: 48, border: `1.5px solid ${pickedBranch == null ? C.danger : C.border}`, borderRadius: 10, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 15, fontWeight: 700, padding: "0 12px", outline: "none", boxSizing: "border-box", marginBottom: 16 }}
               >
                 <option value="">— اختر الفرع —</option>
-                {(branches.data ?? []).map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+                {(branches.data ?? []).map((b) => (
+                  <option key={b.id} value={b.id}>{b.name}</option>
+                ))}
               </AppSelect>
             </div>
           )}
           <label style={{ fontSize: 13.5, fontWeight: 700, display: "block", marginBottom: 6, color: C.fg }}>الرصيد الافتتاحي للصندوق (د.ع)</label>
           <input dir="ltr" value={opening} onChange={(e) => setOpening(e.target.value.replace(/[^0-9]/g, ""))}
             style={{ width: "100%", height: 48, border: `1.5px solid ${C.border}`, borderRadius: 10, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 18, fontWeight: 800, padding: "0 14px", outline: "none", textAlign: "right", boxSizing: "border-box", marginBottom: 16 }} />
-          {message && <div style={{ fontSize: 13, color: message.kind === "ok" ? C.success : message.kind === "warn" ? C.amber : C.danger, marginBottom: 12 }}>{message.text}</div>}
+          {message && (
+            <div style={{ fontSize: 13, color: message.kind === "ok" ? C.success : message.kind === "warn" ? C.amber : C.danger, marginBottom: 12 }}>{message.text}</div>
+          )}
           {/* اربط الطابعة الحرارية هنا **قبل** فتح الوردية كي يُطبَع إيصال الافتتاح صامتاً فوراً
               بدل نافذة طباعة المتصفّح (كانت لا تظهر إلا بعد فتح الوردية داخل رأس الشاشة الرئيسية). */}
           {isWebUsbSupported() && !bridge.enabled && (
@@ -1094,8 +1117,12 @@ export default function PrintPOS() {
             >
               <Printer size={14} aria-hidden />
               {printerReady
-                ? <>الطابعة الحرارية مربوطة <Check size={13} aria-hidden strokeWidth={3} /></>
-                : "اربط الطابعة الحرارية لطباعة إيصال الوردية"}
+                ? (
+                <>الطابعة الحرارية مربوطة{" "}
+                  <Check size={13} aria-hidden strokeWidth={3} /></>
+              ) : (
+                "اربط الطابعة الحرارية لطباعة إيصال الوردية"
+              )}
             </button>
           )}
           <button disabled={openShift.isPending || needsBranchChoice} onClick={() => openShift.mutate({ branchId, openingBalance: opening || "0", shiftType: "PRINT_SERVICES" })}
@@ -1157,9 +1184,15 @@ export default function PrintPOS() {
           return (
             <div key={t.id} onClick={() => setActiveId(t.id)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", borderRadius: 9, background: active ? C.primary : C.card, color: active ? C.primaryFg : C.fg, border: `${active ? 2 : 1.5}px solid ${active ? C.primary : C.border}`, cursor: "pointer", flexShrink: 0, whiteSpace: "nowrap", fontSize: 13, fontWeight: 700 }}>
               <span>{t.label}</span>
-              {tt > 0 && <span style={{ fontSize: 12, fontWeight: 800, direction: "ltr", opacity: active ? 1 : 0.75 }}>{fmt(tt)} د.ع</span>}
-              {items > 0 && <span style={{ background: active ? "rgba(255,255,255,.25)" : C.muted, color: active ? "#fff" : C.mutedFg, borderRadius: 10, padding: "1px 7px", fontSize: 11, fontWeight: 700 }}>{items}</span>}
-              {tabs.length > 1 && <button onClick={(e) => { e.stopPropagation(); closeTab(t.id); }} aria-label="إغلاق التبويب" style={{ background: "none", border: "none", cursor: "pointer", padding: "0 2px", color: active ? "rgba(255,255,255,.7)" : C.mutedFg, lineHeight: 1, display: "inline-flex" }}><X aria-hidden size={13} /></button>}
+              {tt > 0 && (
+                <span style={{ fontSize: 12, fontWeight: 800, direction: "ltr", opacity: active ? 1 : 0.75 }}>{fmt(tt)} د.ع</span>
+              )}
+              {items > 0 && (
+                <span style={{ background: active ? "rgba(255,255,255,.25)" : C.muted, color: active ? "#fff" : C.mutedFg, borderRadius: 10, padding: "1px 7px", fontSize: 11, fontWeight: 700 }}>{items}</span>
+              )}
+              {tabs.length > 1 && (
+                <button onClick={(e) => { e.stopPropagation(); closeTab(t.id); }} aria-label="إغلاق التبويب" style={{ background: "none", border: "none", cursor: "pointer", padding: "0 2px", color: active ? "rgba(255,255,255,.7)" : C.mutedFg, lineHeight: 1, display: "inline-flex" }}><X aria-hidden size={13} /></button>
+              )}
             </div>
           );
         })}
@@ -1196,7 +1229,9 @@ export default function PrintPOS() {
       {message && (
         <div style={{ padding: "4px 16px", background: message.kind === "ok" ? "var(--sem-pos-bg)" : message.kind === "warn" ? "var(--sem-warn-bg)" : "var(--sem-neg-bg)", color: message.kind === "ok" ? C.success : message.kind === "warn" ? C.amber : C.danger, fontSize: 13, display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
           <span>{message.text}</span>
-          {message.kind !== "err" && receipt && <Link href={`/invoices/${receipt.invoiceId}`} style={{ color: C.primary, textDecoration: "underline", fontSize: 12 }}>فتح الفاتورة</Link>}
+          {message.kind !== "err" && receipt && (
+            <Link href={`/invoices/${receipt.invoiceId}`} style={{ color: C.primary, textDecoration: "underline", fontSize: 12 }}>فتح الفاتورة</Link>
+          )}
           <button onClick={() => setMessage(null)} aria-label="إغلاق التنبيه" style={{ marginRight: "auto", background: "none", border: "none", cursor: "pointer", color: C.mutedFg, display: "inline-flex" }}><X aria-hidden size={14} /></button>
         </div>
       )}
@@ -1204,6 +1239,7 @@ export default function PrintPOS() {
       {/* الجسم: عمود الطلب/الدفع (يمين) ← الخدمات (يسار) */}
       <div style={{ flex: 1, display: "flex", overflow: "hidden", padding: 8, gap: 8, minHeight: 0 }}>
         <CheckoutColumn
+          extraChargesSlot={extraCheckout.slot}
           C={C} cart={cart} total={total}
           selUid={tab.selUid} setSelUid={(id) => patch({ selUid: id })}
           changeQty={changeQty} removeRow={removeRow} onClear={clearCart}
@@ -1219,8 +1255,8 @@ export default function PrintPOS() {
         <div style={{ borderTop: `1px solid ${C.border}`, background: C.card, padding: "4px 12px", maxHeight: 240, overflowY: "auto", flexShrink: 0 }}>
           <SplitPaymentSection
             C={POS_COLORS}
-            total={total}
-            cartLen={cart.length}
+            total={cart.length?total:extraChargeD.toNumber()}
+            cartLen={cart.length||(extraChargeD.gt(0)?1:0)}
             paymentLegs={splitLegs}
             onEnableSplit={toggleSplitMode}
             onDisableSplit={toggleSplitMode}
@@ -1293,10 +1329,10 @@ export default function PrintPOS() {
               subtotal: receipt.subtotal != null ? String(receipt.subtotal) : String(receipt.total),
               shippingFee: deliveryFee && Number(deliveryFee) > 0 ? deliveryFee : null,
               qrUrl: orderRef && origin ? `${origin}/verify?ref=${encodeURIComponent(orderRef)}` : null,
-              items: receipt.lines.map(line => ({ productName: line.name, unitName: line.unit, quantity: String(line.qty) })),
+              items: receipt.lines.map((line) => ({ productName: line.name, unitName: line.unit, quantity: String(line.qty) })),
               });
               return result.ok ? { ok: true, via: "browser" } : { ok: false, via: "browser", reason: "popup-blocked" };
-            }).then(r => { if (!r.ok) setMessage({ kind: "err", text: "فشل طباعة الليبل" }); }).catch((error) => notify.err(error));
+            }).then((r) => { if (!r.ok) setMessage({ kind: "err", text: "فشل طباعة الليبل" }); }).catch((error) => notify.err(error));
           }}
         />
       )}

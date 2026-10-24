@@ -10,7 +10,7 @@ describe("مسار تعديل الفاتورة من الاستقبال", () => {
     const workflow = readClient("pages/reception/ReceptionWorkflowPage.tsx");
     expect(reception).toContain('/reception/workflow?section=edit');
     expect(reception).toContain("تعديل فاتورة");
-    expect(workflow).toContain('type Section = "dispatch" | "collect" | "edit" | "return"');
+    for (const station of ["dispatch", "collect", "edit", "return", "cancelAssignment", "aftercare"]) expect(workflow).toContain(`"${station}"`);
     expect(workflow).toContain("lookupForCorrection.fetch");
     expect(workflow).toContain("امسح باركود الفاتورة للتعديل");
     expect(workflow).toContain("تعديل الفاتورة");
@@ -30,15 +30,18 @@ describe("مسار تعديل الفاتورة من الاستقبال", () => {
 
   it("يراقب معاينة التعديل برقم المسح ومعاينة المرتجع بمعرفه دون إعادة ضبط مسودة المرتجع", () => {
     const workflow = readClient("pages/reception/ReceptionWorkflowPage.tsx");
+    const returns = readClient("components/delivery/workflow/WorkflowLegacyReturnStation.tsx");
     expect(workflow).toContain("trpc.sales.lookupForCorrection.useQuery");
     expect(workflow).toContain("invoiceNumber: editInvoiceNumber");
     expect(workflow).toContain("setEditInvoiceNumber(invoiceNumber)");
     expect(workflow).toContain("const editScanned = editPreview.data");
-    expect(workflow).toContain("trpc.returns.getInvoice.useQuery");
-    expect(workflow).toContain("invoiceId: returnScanned?.kind === \"invoice\" ? returnScanned.id : 0");
-    expect(workflow).toContain("invoiceStatusLabel(returnInvoice.status)");
-    expect(workflow).toContain("فاتورة بيع #{returnInvoice?.invoiceNumber}");
-    expect(workflow).toContain("invoiceId={returnScanned.id}");
+    expect(returns).toContain("trpc.returns.getInvoice.useQuery");
+    expect(returns).toContain('source?.kind === "invoice" ? source.id : 0');
+    expect(returns).toContain("invoiceStatusLabel(invoice.data.status)");
+    expect(returns).toContain("فاتورة بيع #{invoice.data.invoiceNumber}");
+    expect(returns).toContain("invoiceId={source.id}");
+    expect(workflow).not.toContain("delivery.returnByBarcode");
+    expect(returns).not.toContain("delivery.returnByBarcode");
     expect(workflow).not.toContain("setEditScanned(invoice)");
     expect(workflow).not.toContain("invoiceStatusLabel(returnScanned.status)");
   });

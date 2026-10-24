@@ -66,6 +66,7 @@ export interface SaleLineInput {
  */
 export interface SaleDeliveryInput {
   partyId: number;
+  assignedUserId?: number | null;
   /** أجرة التوصيل (تمريرٌ للمندوب لا إيراد). `null` ⇒ الأجرة الافتراضية للجهة (`deliveryParties.defaultFee`). */
   fee?: string | null;
   /** مَن يقبض الأجرة: COURIER (افتراضاً) من الزبون · COUNTER قُبضت الآن أمانةً (يلزمها `deliveryFeeHeld` مساوياً) · SHOP على المكتبة. */
@@ -265,6 +266,9 @@ export interface CreateSaleInput {
 }
 
 export interface CreateSaleResult {
+  checkoutReceipts?: import("../../../shared/checkoutCharges").CheckoutChargesResult["checkoutReceipts"];
+  checkoutPaymentSummary?: import("../../../shared/checkoutCharges").CheckoutChargesResult["checkoutPaymentSummary"];
+  chargeAllocations?: import("../../../shared/checkoutCharges").CheckoutChargesResult["chargeAllocations"];
   invoiceId: number;
   invoiceNumber: string;
   /** G3 (١١/٨): shiftId المُثبَّت على الفاتورة الفعليّة — سواء أُنشئت الآن أو أُعيدت من idempotent

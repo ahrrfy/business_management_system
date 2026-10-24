@@ -2,6 +2,7 @@
 // (الاسم DeliveryCenter لتفادي التضارب مع DeliveryHub القائمة = شاشة الإرسال/التسوية المُضمَّنة.)
 import { lazyWithRetry as lazy } from "@/lib/lazyWithRetry";
 import { PageTabs, type HubTab } from "@/components/PageTabs";
+import { useSearch } from "wouter";
 
 const DeliveryHub = lazy(() => import("@/pages/DeliveryHub"));
 const FulfillmentHub = lazy(() => import("@/pages/FulfillmentHub"));
@@ -20,7 +21,6 @@ const TABS: HubTab[] = [
     Component: ReceptionWorkflowPage,
   },
   { value: "dispatch", label: "إدارة التوصيل والمتابعة", gate: { roles: ["admin", "manager", "accountant", "cashier", "auditor"], module: "store" }, Component: DeliveryHub },
-  { value: "fulfillment", label: "التجهيز والأجور ومعالجة النقص", gate: { roles: ["admin", "manager", "accountant", "cashier", "auditor"], module: "store" }, Component: FulfillmentHub },
   { value: "parties", label: "جهات التوصيل", gate: { roles: ["admin", "manager", "accountant", "cashier", "auditor"], module: "store" }, Component: DeliveryParties },
   // Slice I (٢٩/٨/٢٦): إدارة مناطق التسعير — للمدير فقط (deliveryManagerProcedure على الخادم).
   {
@@ -43,5 +43,7 @@ const TABS: HubTab[] = [
 ];
 
 export default function DeliveryCenter() {
+  const search = useSearch();
+  if (new URLSearchParams(search).get("tab") === "fulfillment") return <FulfillmentHub />;
   return <PageTabs tabs={TABS} ariaLabel="أقسام التوصيل" tabAliases={{ settle: "dispatch", transit: "dispatch", board: "dispatch" }} />;
 }

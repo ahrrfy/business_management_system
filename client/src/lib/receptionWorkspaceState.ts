@@ -140,6 +140,7 @@ export type ReceptionLocalWorkspaceSnapshot = {
   expiresAt: number;
   clientRequestId: string;
   cart: CartLine[];
+  checkoutCharges?: Pick<import("@shared/checkoutCharges").CheckoutChargesInput,"serviceCharges"|"approvedChargeAllocations">;
   customer: ReceptionWorkspaceCustomer;
   phoneInput: string;
   customerCreditLimit: string;
@@ -194,6 +195,7 @@ export type ReceptionWorkspaceSnapshot =
 export type ReceptionLocalWorkspaceInput = {
   clientRequestId: string;
   cart: CartLine[];
+  checkoutCharges?: Pick<import("@shared/checkoutCharges").CheckoutChargesInput,"serviceCharges"|"approvedChargeAllocations">;
   customer: ReceptionWorkspaceCustomer;
   phoneInput: string;
   customerCreditLimit: string;
@@ -215,6 +217,7 @@ export type ReceptionLocalWorkspaceInput = {
 };
 
 export type ReceptionWorkspaceDirtyInput = {
+  checkoutCharges?: import("@shared/checkoutCharges").CheckoutChargesInput;
   cartLength: number;
   customerId: number | null;
   customerName: string;
@@ -631,6 +634,7 @@ export function createReceptionLocalSnapshot(
     expiresAt: now + RECEPTION_WORKSPACE_TTL_MS,
     clientRequestId: input.clientRequestId,
     cart: (Array.isArray(safeCart) ? safeCart : []) as unknown as CartLine[],
+    ...(input.checkoutCharges?{checkoutCharges:{serviceCharges:input.checkoutCharges.serviceCharges??[],approvedChargeAllocations:input.checkoutCharges.approvedChargeAllocations??[]}}:{}),
     customer: { ...input.customer },
     phoneInput: input.phoneInput,
     customerCreditLimit: input.customerCreditLimit,
@@ -1140,6 +1144,7 @@ export function parseReceptionWorkspaceSnapshot(
     "expiresAt",
     "clientRequestId",
     "cart",
+    "checkoutCharges",
     "customer",
     "phoneInput",
     "customerCreditLimit",
@@ -1154,6 +1159,7 @@ export function parseReceptionWorkspaceSnapshot(
     "channel",
   ])) return null;
   if (!isCart(value.cart) || !validCustomer(value.customer)) return null;
+  if(value.checkoutCharges!==undefined&&!validCheckoutChargesIntent(value.checkoutCharges))return null;
   if (!phoneInputText(value.phoneInput)) return null;
   if (!optionalDecimalText(value.customerCreditLimit)) return null;
   if (value.tierOverride !== null && !TIERS.has(value.tierOverride as Tier)) return null;
@@ -1190,6 +1196,13 @@ export function receptionWorkspaceFingerprint(snapshot: ReceptionWorkspaceSnapsh
   return JSON.stringify(content);
 }
 
+function validCheckoutChargesIntent(value:unknown):boolean {
+  if(!isRecord(value)||!hasOnlyKeys(value,["serviceCharges","approvedChargeAllocations"]))return false;
+  const services=value.serviceCharges,approved=value.approvedChargeAllocations;
+  return Array.isArray(services)&&services.length<=50&&services.every(row=>isRecord(row)&&hasOnlyKeys(row,["description","amount"])&&boundedString(row.description,2000)&&optionalDecimalText(row.amount))
+    &&Array.isArray(approved)&&approved.length<=50&&approved.every(row=>isRecord(row)&&hasOnlyKeys(row,["chargeId","expectedVersion","amount"])&&positiveInt(row.chargeId)&&positiveInt(row.expectedVersion)&&decimalText(row.amount));
+}
+
 function nonZeroText(value: string): boolean {
   const trimmed = value.trim();
   if (!trimmed) return false;
@@ -1198,7 +1211,7 @@ function nonZeroText(value: string): boolean {
 }
 
 export function isReceptionWorkspaceDirty(input: ReceptionWorkspaceDirtyInput): boolean {
-  return input.cartLength > 0
+  return (input.checkoutCharges?.serviceCharges?.length??0)>0 || (input.checkoutCharges?.approvedChargeAllocations?.length??0)>0 || input.cartLength > 0
     || input.customerId != null
     || input.customerName.trim().length > 0
     || (input.customerPhone?.trim().length ?? 0) > 0
@@ -1258,6 +1271,7 @@ export function useReceptionWorkspacePersistence(
   const effectiveDraftVersion = options.activeDraftVersion ?? retainedDraftVersionRef.current;
   const workspaceDirty = isReceptionWorkspaceDirty({
     cartLength: options.local.cart.length,
+    checkoutCharges: options.local.checkoutCharges,
     customerId: options.local.customer.customerId,
     customerName: options.local.customer.name,
     customerPhone: options.local.customer.phone,
@@ -1531,6 +1545,7 @@ export function useReceptionWorkspacePersistence(
     const currentLocal = createReceptionLocalSnapshot({
       clientRequestId,
       cart: options.local.cart,
+      checkoutCharges: options.local.checkoutCharges,
       customer: {
         customerId: options.local.customer.customerId,
         name: options.local.customer.name,
@@ -1568,6 +1583,7 @@ export function useReceptionWorkspacePersistence(
     effectiveDraftId,
     effectiveDraftVersion,
     options.local.cart,
+    options.local.checkoutCharges,
     options.local.channel,
     options.local.channelHandle,
     options.local.couponCode,

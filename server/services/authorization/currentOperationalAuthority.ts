@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import {
   resolveOperationalCaps,
+  operationalCapsSchema,
   type OperationalCaps,
 } from "@shared/atomicPermissions";
 import {
@@ -82,18 +83,21 @@ export async function loadCurrentOperationalAuthorityTx(
   if (
     !user ||
     !user.isActive ||
-    (user.accessExpiresAt != null && user.accessExpiresAt.getTime() <= Date.now())
+    (user.accessExpiresAt != null &&
+      user.accessExpiresAt.getTime() <= Date.now())
   ) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: appErrorMessage({
         what: "تعذر تثبيت تفويض العملية",
         why: user
-          ? user.accessExpiresAt != null && user.accessExpiresAt.getTime() <= Date.now()
+          ? user.accessExpiresAt != null &&
+            user.accessExpiresAt.getTime() <= Date.now()
             ? "انتهت صلاحية الوصول الزمنية لحساب منفذ العملية"
             : "حساب منفذ العملية معطل حالياً"
           : "حساب منفذ العملية غير موجود في سجل المستخدمين",
-        doThis: "تحقق من تفعيل الحساب وإسناد دوره لدى مسؤول النظام ثم أعد المحاولة",
+        doThis:
+          "تحقق من تفعيل الحساب وإسناد دوره لدى مسؤول النظام ثم أعد المحاولة",
       }),
     });
   }
@@ -110,9 +114,18 @@ export async function loadCurrentOperationalAuthorityTx(
 
   const isOwner = Boolean(user.isOwner);
   if (isOwner) {
+    const ownerCaps = operationalCapsSchema.safeParse(user.operationalCaps);
     return {
       branchId: user.branchId == null ? null : Number(user.branchId),
-      caps: resolveOperationalCaps("admin"),
+      caps: {
+        ...resolveOperationalCaps("admin"),
+        // SERVICE remains an explicit opt-in cap, including the owner; other owner limits retain their existing rules.
+        maxServiceChargeAmountIqd: resolveOperationalCaps(
+          "admin",
+          null,
+          ownerCaps.success ? ownerCaps.data : undefined,
+        ).maxServiceChargeAmountIqd,
+      },
       isOwner: true,
       role: "admin",
     };

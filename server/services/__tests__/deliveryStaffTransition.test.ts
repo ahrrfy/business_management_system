@@ -109,6 +109,7 @@ async function readyWorkOrder(): Promise<number> {
 async function dispatchCn(partyId: number, externalTrackingRef?: string): Promise<number> {
   const woId = await readyWorkOrder();
   const disp = await dispatchToDelivery({
+    assignedUserId: partyId === 1 ? 3 : undefined,
     workOrderId: woId,
     partyId,
     ...(externalTrackingRef ? { externalTrackingRef } : {}),

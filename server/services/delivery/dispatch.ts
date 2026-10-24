@@ -5,6 +5,7 @@ import { appliedCollectionsForWorkOrder, linkSoleTargetCollectionsToInvoice } fr
 //
 // READY → DELIVERED + إرسالية: فاتورة عميل + SALE + عهدة COD على الجهة (D3).
 import { TRPCError } from "@trpc/server";
+import { validateDeliveryDriverTx } from "./driverValidation";
 import { assertNoPendingHeldFeeRefundTx } from "./feeHeld";
 import { appErrorMessage } from "@shared/errors";
 import { and, desc, eq, isNull, notLike, or, sql } from "drizzle-orm";
@@ -12,7 +13,6 @@ import {
   customers,
   deliveryConsignments,
   deliveryParties,
-  deliveryPartyMembers,
   invoiceItems,
   invoices,
   productVariants,
@@ -310,48 +310,9 @@ async function runWorkOrderDispatchTx(
   const externalTrackingRef = prepareOnly
     ? null
     : requireExternalTrackingRef(party.partyType, normalizedTrackingRef);
-  let assignedUserId = input.assignedUserId ?? null;
-  if (assignedUserId == null && party.partyType === "INDIVIDUAL") {
-    assignedUserId = party.userId != null ? Number(party.userId) : null;
-    if (assignedUserId == null) {
-      const driver = (
-        await tx
-          .select({ userId: deliveryPartyMembers.userId })
-          .from(deliveryPartyMembers)
-          .where(
-            and(
-              eq(deliveryPartyMembers.partyId, input.partyId),
-              eq(deliveryPartyMembers.memberRole, "DRIVER"),
-              eq(deliveryPartyMembers.isActive, true),
-            ),
-          )
-          .limit(1)
-      )[0];
-      assignedUserId = driver?.userId != null ? Number(driver.userId) : null;
-    }
-  }
-  if (assignedUserId != null) {
-    const driver = (
-      await tx
-        .select({ id: deliveryPartyMembers.id })
-        .from(deliveryPartyMembers)
-        .where(
-          and(
-            eq(deliveryPartyMembers.partyId, input.partyId),
-            eq(deliveryPartyMembers.userId, assignedUserId),
-            eq(deliveryPartyMembers.memberRole, "DRIVER"),
-            eq(deliveryPartyMembers.isActive, true),
-          ),
-        )
-        .limit(1)
-    )[0];
-    if (!driver && Number(party.userId) !== assignedUserId) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: "السائق المختار ليس عضواً نشطاً في جهة التوصيل",
-      });
-    }
-  }
+  if (!prepareOnly) await validateDeliveryDriverTx(tx, input, Number(wo.branchId));
+  const assignedUserId = input.assignedUserId ?? null;
+
   if (
     party.branchId != null &&
     Number(party.branchId) !== Number(wo.branchId)

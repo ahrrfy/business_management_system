@@ -1,3 +1,6 @@
+import {useReceptionCheckoutCharges} from "@/components/reception/useReceptionCheckoutCharges";
+import {checkoutExtraPayload,checkoutExtraTotal} from "@/components/pos/checkoutExtraAmounts";
+import type {CheckoutChargesInput} from "@shared/checkoutCharges";
 import { useSplitTender } from "@/components/payments/useSplitTender";
 import { FulfillmentShortcuts } from "@/components/fulfillment/FulfillmentShortcuts";
 import { useReceptionCartEditing } from "@/components/reception/useReceptionCartEditing";
@@ -113,18 +116,13 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
   const canCreateCustomer = canAction("customers.receptionResolveByPhone");
   const isElevatedRole = me.data?.role === "admin" || me.data?.role === "manager";
 
-  // طبقة أوفلاين للقراءة فقط (نمط POS.tsx ش٢): أثناء انقطاع الاتصال يُخدَم البحث/الباركود من
-  // النموذج المحلي (Dexie)، والكتابة (checkoutReception) تبقى أونلاين حصراً — قرار الخطة الأصلية
-  // (لا عربون/تسليم أوفلاين للاستقبال، خلافاً للكاشير الذي يلتقط بيعاً نقدياً كاملاً أوفلاين).
   const connState = useConnectivity();
   const offline = isDisconnected(connState);
   useOfflineCatalogSync(me.data && branchId > 0 ? branchId : null);
   const utils = trpc.useUtils();
-  // وردية خدمة العملاء (RECEPTION): درج/رصيد افتتاحي/عرابين مستقلّة عن كاشير التجزئة (RETAIL).
   const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: canAction("branches.list") });
   const staffQ = trpc.workOrders.assignableStaff.useQuery({ branchId }, { enabled: branchId > 0 && canAction("workOrders.assignableStaff") });
   const shiftQ = trpc.shifts.current.useQuery({ branchId, shiftType: "RECEPTION" }, { enabled: branchId > 0 && canAction("shifts.current") });
-  // اِستقبال (تكامل التوصيل، ٤/٨): عدّاد «جاهز» على زرّ طابور الطلبات — مؤشّر سريع بلا فتح الطابور.
   const shift = shiftQ.data ?? null;
   const [opening, setOpening] = useState("0"), [closing, setClosing] = useState(false);
   const branchName = useMemo(
@@ -135,7 +133,6 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
   const openShiftM = trpc.shifts.open.useMutation({
     onSuccess: async (res) => {
       await shiftQ.refetch();
-      // العهدة الوسيطة: تحذيرٌ لينٌ عند عجز الخزينة (الضابط التعويضي لقرار «الفتح مسموح مع تحذير»).
       if (res.treasuryWarning) {
         notify.warn(
           "تنبيه: عجز الخزينة",
@@ -156,27 +153,15 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
   });
 
 
-  // ترويسة الصفحة تُقاس بالنافذة عمداً (لا باللوحة): تقليصها يُطيل اللوحة، فقياسها باللوحة
-  // يصنع حلقة «يُخفى ⇒ تتّسع ⇒ يظهر ⇒ تضيق». النافذة مقياسٌ مستقلّ عن هذا التغذّي الراجع.
   const compactHeader = useMediaQuery("(max-height: 900px)");
 
-  // ───── الحالة ─────────────────────────────────────────────────────────────
-  const [cart, setCart] = useState<CartLine[]>([]);
-  // ٢٣/٨ (Codex P2) — عدّاد إضافةٍ صريح: يزيد فقط عند فعل الإضافة (`addDirectLine`) ولو أدّى
-  // إلى رفع كمّية سطرٍ قائم — إعادة مسح نفس السطر تُشغّل التمرير أيضاً. لا يزيد عند حذف/تعديل
-  // كمّية/تحميل مسوّدة ⇒ لا يقفز الجدول من دون فعل الكاشير.
+  const [cart, setCart] = useState<CartLine[]>([]); const [checkoutCharges,setCheckoutCharges]=useState<CheckoutChargesInput>({}); const extraChargeAmount=checkoutExtraTotal(checkoutCharges);
   const [addTick, setAddTick] = useState(0), [selKey, setSelKey] = useState<string | null>(null), [search, setSearch] = useState(""), [showDrop, setShowDrop] = useState(false);
-  // م٤: لوحة الأرقام صارت لوحة **مبلغٍ** خالصة — أوضاع الكمية/الخصم حُذفت (الكمية داخل الصفّ،
-  // والخصم Popover في خلية السعر). لا وضعيّة خفيّة بعد اليوم: اللوحة تعني المبلغ دائماً.
   const [payInput, setPayInput] = useState("");
-  // بيع مباشر آجل (قرار المالك ١٠/٨): المقبوض أقلّ من إجمالي البضاعة الجاهزة ⇒ المتبقّي ذمّة على
-  // العميل المسجَّل. يتطلّب عميلاً مسجَّلاً، ومسارٌ مباشر (لا مسوّدة/توصيل). حدّ الائتمان يُفرَض خادمياً.
   const [deferred, setDeferred] = useState(false);
   const [method, setMethod] = useState<PayMethod>("CASH");
   const [paymentReference, setPaymentReference] = useState(""); // P2 fix: مرجع البطاقة للعرابين
   const [showInbox, setShowInbox] = useState(false);
-  // ش١ (§٨.١): ورش عمود العمل — الفواتير/الطلبات/طلبات الموقع تُركَّب داخل عمود السلة
-  // (لوحة الدفع لا تُغطّى أبداً). الحجوزات/الرسائل تبقيان طبقتين (قرار §١٤.٦).
   /**
    * تطبيقُ اللوحة المطلوبة من الرابط **مرّةً واحدة لكل قيمة** — لا في كل رسم، وإلّا لم
    * يستطع الموظّف الرجوع إلى السلّة ما دام الرابط يحمل اللوحة. والرابط يُنظَّف بعد التطبيق
@@ -194,39 +179,30 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
     if (canReadChannels) setShowInbox(true);
     navigate("/pos?mode=RECEPTION", { replace: true });
   }, [requestedWorkspace, navigate, canReadChannels]);
-  // ش١: نافذة الإيصال بعد الإتمام + سحب نقدي + خصم داخل الصفّ + اعتماد مدير للخصم >١٠٪.
   const [lastSale, setLastSale] = useState<LastSaleSummary | null>(null), [showReceiptOverlay, setShowReceiptOverlay] = useState(false), [deliveryDeparture, setDeliveryDeparture] = useState<DeliveryDepartureData | null>(null), [cashDropping, setCashDropping] = useState(false);
   const [depositMenuOpen, setDepositMenuOpen] = useState(false);
   const [discountFor, setDiscountFor] = useState<string | null>(null);
   const [approvalAsk, setApprovalAsk] = useState<{ lineKey: string; pct: number } | null>(null);
   /** اعتماد المدير للخصم >١٠٪ — يُحمل حتى الإرسال (يتحقّق خادمياً عند الالتزام). */
   const mgrCredsRef = useRef<ManagerApprovalInput | null>(null);
-  // ش٢ (§٨.٢): المسوّدة المُرقّاة — السلّة محليّةٌ بالافتراض، وتترقّى بحفظٍ صريح؛ بعدها تُزامَن
-  // بالجملة بdebounce ~٨٠٠مث وversion تفاؤليّ (تعارضُ زميلٍ ⇒ إعادة تحميلٍ لا طمس).
   const [activeDraft, setActiveDraft] = useState<{ id: number; version: number } | null>(null);
   const activeDraftRef = useRef(activeDraft); useEffect(() => { activeDraftRef.current = activeDraft; }, [activeDraft]);
   const draftSyncTimer = useRef<ReturnType<typeof setTimeout> | null>(null), draftResumeEpochRef = useRef(0); const draftSyncQueueRef = useRef<ReceptionDraftSyncQueue<ReturnType<typeof buildDraftPayload>> | null>(null), draftPromotionFlightRef = useRef(false), draftRecoveryPromptRef = useRef(false);
   const [draftTransitionPending, setDraftTransitionPending] = useState(false), [draftPromotionPending, setDraftPromotionPending] = useState(false), [draftPromotionShiftId, setDraftPromotionShiftId] = useState<number | null>(null), [workspaceSafetyBlocked, setWorkspaceSafetyBlocked] = useState(false), [detachedRecoveryPending, setDetachedRecoveryPending] = useState(false), [draftRestoreRecovery, setDraftRestoreRecovery] = useState<{ snapshot: ReceptionServerDraftPointer; serverAvailable: boolean } | null>(null); useEffect(() => () => { draftResumeEpochRef.current += 1; activeDraftRef.current = null; draftSyncQueueRef.current?.reset(); }, []);
-  // ش٤: صافي العربون المقبوض على الطلب المحفوظ النشط — يقلّص «المتوقّع الآن» ويظهر في اللوحة.
   const [draftHeld, setDraftHeld] = useState("0.00");
   const [draftInfo, setDraftInfo] = useState<{ draftNumber: string } | null>(null);
   const [depositOpen, setDepositOpen] = useState(false);
   const [paymentsOpen, setPaymentsOpen] = useState(false);
-  // ش٦ — التوصيل والإسناد انتقلا لشاشة مستقلة /reception/workflow
-  // نُبقي orderDelivery بنوعه الأصلي (ثابت null) لتجنّب كسر منطق handleSubmit
   const [orderDelivery] = useState<OrderDeliveryValue | null>(null);
   const setOrderDelivery = (_v: OrderDeliveryValue | null) => {};
   const deliveryDialogOpen = false;
   const setDeliveryDialogOpen = (_v: boolean) => {};
-  // ش١: جهات التوصيل لورشة الفواتير (الإسناد من الصفّ) — تُجلب عند فتح الورشة فقط.
   const partiesQ = trpc.delivery.listParties.useQuery(
     { activeOnly: true },
     { enabled: canAction("delivery.listParties") && (deliveryDialogOpen || orderDelivery != null), staleTime: 60_000 },
   );
   const [customerContextId, setCustomerContextId] = useState<number | null>(null);
   const [showCustomization, setShowCustomization] = useState<{ row: PosRow; editingKey?: string } | null>(null);
-  // م١ PR-B: آلة «العميل بالهاتف» صارت مشتركة مع كاشير التجزئة (`useCustomerByPhone`) — كانت مضمَّنة هنا.
-  // تغيّر الهاتف يُسقط «آجل» (تعلّق بعميلٍ آخر) كما كان؛ الفئة والأهليّة تُسقطهما الآلة نفسها.
   const pendingDeferredRestoreRef = useRef(false), suppressHydratedPhoneResetRef = useRef(false);
   const phoneCustomer = useCustomerByPhone({ onPhoneChange: () => {
     if (suppressHydratedPhoneResetRef.current) { suppressHydratedPhoneResetRef.current = false; return; }
@@ -238,21 +214,14 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
     tier: resolvedCustomerTier, resolve: resolveReceptionCustomer, creditLimit: customerCreditLimit, setCreditLimit: setCustomerCreditLimit, deferredEligible: phoneDeferredEligible,
   } = phoneCustomer;
   useEffect(() => { if (pendingDeferredRestoreRef.current && phoneResolution === "RESOLVED") { pendingDeferredRestoreRef.current = false; setDeferred(phoneDeferredEligible); if (!phoneDeferredEligible) notify.warn("لم تُستعد طريقة الآجل", "العميل لم يعد مؤهلاً للبيع الآجل؛ اختر طريقة دفع أخرى."); } }, [phoneDeferredEligible, phoneResolution]);
-  // فئة السعر: تلقائية من فئة العميل الافتراضية، وقابلة للتجاوز يدوياً (نمط POS.tsx effectiveTier).
   const [tierOverride, setTierOverride] = useState<Tier | null>(null);
   const [hydratedAutomaticTier, setHydratedAutomaticTier] = useState<Tier | null>(null);
   const [couponInput, setCouponInput] = useState("");
-  // الكوبون مطويّ افتراضياً في الدرجات الضيّقة؛ هذه الراية تفتحه بطلب الموظّف.
   const [couponOpen, setCouponOpen] = useState(false);
-  // ٢٣/٨ — خصمُ رأس الفاتورة على البيع المباشر: يقبل الكاشير ٠–١٥٪ (سلطته الافتراضية بقرار المالك،
-  // مرآةً لـPOS)، وفوقه اعتمادُ مدير خادميّ عبر invoiceDiscountExceedsThreshold. سلسلةٌ فارغة = لا خصم.
   const [invoiceDiscountPct, setInvoiceDiscountPct] = useState("");
   const [couponCode, setCouponCode] = useState<string | null>(null);
   const [couponLabel, setCouponLabel] = useState<string | null>(null);
-  // النوعُ من القاموس المشترك لا اتّحاداً مكتوباً بيد: كان يُسقِط `OTHER` فتُصبّ عليه
-  // قناةُ المتجر/غيرِها قسراً إلى `WALK_IN` (تصويب مراجعة Codex ٢٠/٨).
   const [channel, setChannel] = useState<WorkOrderChannel>("WALK_IN");
-  // معرّف القناة مستقل عن الهاتف: رقم الهاتف هو هوية العميل الإلزامية في جميع القنوات.
   const [channelHandle, setChannelHandle] = useState("");
   /** المحادثة التي وُلد منها الطلب (ش١) — تُرسَل مع الرأس فيُربَط أمرُ الشغل بها ذرّيّاً. */
   const [linkedConversationId, setLinkedConversationId] = useState<number | null>(null);
@@ -266,7 +235,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
     draftSyncQueueRef.current?.reset(); setDraftTransitionPending(false); setDraftPromotionPending(false); setDraftPromotionShiftId(null); setWorkspaceSafetyBlocked(false); setDraftRestoreRecovery(null); setDetachedRecoveryPending(false);
     mgrCredsRef.current = null; pendingDeferredRestoreRef.current = false; suppressHydratedPhoneResetRef.current = false;
     setDiscountFor(null); setApprovalAsk(null);
-    setCart([]); setAddTick(0); setSelKey(null); setSearch("");
+    setCheckoutCharges({}); setCart([]); setAddTick(0); setSelKey(null); setSearch("");
     setPayInput(""); setDeferred(false); setMethod("CASH"); setPaymentReference("");
     activeDraftRef.current = null; setActiveDraft(null); setDraftHeld("0.00"); setDraftInfo(null);
     setOrderDelivery(null); setCustomerContextId(null);
@@ -296,7 +265,6 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
     description: "",
   });
 
-  // idempotency: مفتاح واحد لكل دورة إرسال — يتجدّد بعد النجاح.
   const reqIdRef = useRef<string>(crypto.randomUUID());
   const searchRef = useRef<HTMLInputElement>(null);
   const searchWrapRef = useRef<HTMLDivElement>(null);
@@ -308,8 +276,6 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
     return () => document.removeEventListener("mousedown", h);
   }, []);
 
-  // فئة العميل الافتراضية: دور الاستقبال قد لا يملك CRM READ، لذلك تأتي الفئة من endpoint الهوية
-  // الضيّق. الاستعلام العام يبقى فقط لمن يملك صلاحية قراءة سياق العميل.
   const fetchedCustomer = trpc.customers.get.useQuery(
     { customerId: customer.customerId ?? 0 },
     { enabled: !!customer.customerId && canReadCustomerContext, staleTime: 60_000 },
@@ -319,8 +285,6 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
   const barcodePricingContextRef = useRef("");
   barcodePricingContextRef.current = `${branchId}:${customer.customerId ?? "walk-in"}:${effectiveTier}`;
   useEffect(() => { if (hydratedAutomaticTier && phoneResolution === "RESOLVED" && resolvedCustomerTier) setHydratedAutomaticTier(null); }, [hydratedAutomaticTier, phoneResolution, resolvedCustomerTier]);
-  // تبديل العميل يُسقط أيّ تجاوز فئة يدوي سابق (تعلّق بعميلٍ آخر) وأيّ كوبون مُطبَّق (أسعاره
-  // قد تختلف بفئة العميل الجديد — يلزم إعادة تطبيق).
   const prevCustomerIdRef = useRef<number | null>(customer.customerId);
   useEffect(() => {
     if (prevCustomerIdRef.current === customer.customerId) return;
@@ -339,7 +303,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
   const restoreCouponPreviewM = trpc.crm.coupons.preview.useMutation();
   const restoreCustomerM = trpc.customers.receptionResolveByPhone.useMutation();
   const resolvePromotionM = trpc.reception.draftResolvePromotion.useMutation();
-  async function restoreLocalWorkspace(snapshot: ReceptionLocalWorkspaceSnapshot, isCurrent: () => boolean, preserveStoredPrices = false): Promise<boolean> { return ReceptionRestoreWorkspace({ branchId, setDraftPromotionPending, setDraftPromotionShiftId, resolvePromotionM, attachResolvedPromotion, setDraftRestoreRecovery, restoreCustomerM, utils, restoreCouponPreviewM, isElevatedRole, prevCustomerIdRef, pendingDeferredRestoreRef, suppressHydratedPhoneResetRef, receptionPhone, setCart, setSelKey, setReceptionPhone, setCustomer, setCustomerCreditLimit, setTierOverride, setHydratedAutomaticTier, setInvoiceDiscountPct, setPayInput, setMethod, setPaymentReference, setDeferred, setCouponInput, setCouponCode, setCouponLabel, setChannel, setChannelHandle, setLinkedConversationId, setDetachedRecoveryPending, activeDraftRef, setActiveDraft, setDraftHeld, setDraftInfo, mgrCredsRef }, snapshot, isCurrent, preserveStoredPrices); }
+  async function restoreLocalWorkspace(snapshot: ReceptionLocalWorkspaceSnapshot, isCurrent: () => boolean, preserveStoredPrices = false): Promise<boolean> { return ReceptionRestoreWorkspace({ branchId, setDraftPromotionPending, setDraftPromotionShiftId, resolvePromotionM, attachResolvedPromotion, setDraftRestoreRecovery, restoreCustomerM, utils, restoreCouponPreviewM, isElevatedRole, prevCustomerIdRef, pendingDeferredRestoreRef, suppressHydratedPhoneResetRef, receptionPhone, setCheckoutCharges, setCart, setSelKey, setReceptionPhone, setCustomer, setCustomerCreditLimit, setTierOverride, setHydratedAutomaticTier, setInvoiceDiscountPct, setPayInput, setMethod, setPaymentReference, setDeferred, setCouponInput, setCouponCode, setCouponLabel, setChannel, setChannelHandle, setLinkedConversationId, setDetachedRecoveryPending, activeDraftRef, setActiveDraft, setDraftHeld, setDraftInfo, mgrCredsRef }, snapshot, isCurrent, preserveStoredPrices); }
 
   const { clearPersistedWorkspace, markDraftPromotionPending, workspaceState, workspaceDirty, persistenceDegraded } = useReceptionWorkspacePersistence({
     companyId: me.data === undefined ? undefined : (me.data?.companyId ?? null),
@@ -347,7 +311,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
     branchId,
     activeDraftId: activeDraft?.id ?? null, activeDraftVersion: activeDraft?.version ?? null, clientRequestIdRef: reqIdRef,
     local: {
-      cart,
+      cart, checkoutCharges,
       customer: { customerId: customer.customerId ?? null, name: customer.name, phone: customer.phone ?? null, isNew: customer.isNew },
       phoneInput: receptionPhone, customerCreditLimit, tierOverride, effectiveTier, draftPromotionPending, draftPromotionShiftId, detachedRecoveryPending, payInput, method, deferred,
       invoiceDiscountPct, couponInput, couponCode, couponLabel,
@@ -359,13 +323,14 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
   });
   function resetAfterCommittedWorkspace(): boolean { if (!clearPersistedWorkspace()) { setWorkspaceSafetyBlocked(true); notify.warn("تمت العملية، لكن تعذّر تنظيف حالتها المحلية", "لا تعِد الإرسال. أعد تحميل الصفحة أو فرّغ الحالة المحفوظة قبل عملية جديدة."); return false; } feePayment.reset(); splitTender.reset(true); reqIdRef.current = crypto.randomUUID(); resetScreen(); return true; }
   const { connectPrinter, testServerPrint } = useReceptionPrinter({ setPrinterReady, setBridge });
-  // ───── حسابات هجينة ───────────────────────────────────────────────────────
-  const splitTender = useSplitTender({ branchId, ownerId: me.data?.id, sessionKey: reqIdRef.current, channel: "RECEPTION", canConfirm: canAction("reception.initiateExternalPayment") && canAction("reception.confirmExternalPayment"), disabled: offline || submitting || cart.some(line => line.digital) });
+  const splitTender = useSplitTender({ branchId, ownerId: me.data?.id, sessionKey: reqIdRef.current, channel: "RECEPTION", additionalFirstPaymentAmount:cart.length?extraChargeAmount.toFixed(2):"0", canConfirm: canAction("reception.initiateExternalPayment") && canAction("reception.confirmExternalPayment"), disabled: offline || submitting || cart.some(line => line.digital) });
   const splitPayInput = splitTender.active ? splitTender.tendered : payInput;
   const { expectedNow, sumDirectNetD, sumCustomD, hasCustom, heldD, hasDigitalCards, rawInvoiceDiscountPctD, paidD, expectedNowD, mixedRoundEligible, effectiveGrandD, mixedDeltaD, cashRoundActive, regularSumRawD, invoiceDiscountAmountD, mixedCarrier, orderFeeHeldD, grandTotalD, heldDelivery, sumDirectD, cartCount, grandTotal, deferredAvailable, deferredDisabledReason, needPaymentRef, cashRoundingDelta, sumDirect, sumCustom, cashDueNow, deliveryDisclosure, paid, invoiceDiscountAmount, invoiceDiscountAllowed, CASHIER_INVOICE_DISCOUNT_MAX_PCT, change, remaining, isChange, isOwing } = useReceptionAmounts({ cart, orderDelivery, activeDraft, offline, invoiceDiscountPct, draftHeld, method, payInput: splitPayInput, splitPayment: splitTender.active ? { hasCash: splitTender.hasCash, hasNonCash: splitTender.hasNonCash } : undefined, customer, phoneResolution, deferred, setDeferred });
   const paymentPreview = receptionPaymentAmounts({ paid: paidD.toFixed(2), expectedNow: expectedNowD.toFixed(2), hasExplicitAmount: Boolean(splitPayInput), directNet: sumDirectNetD.toFixed(2), deferred, quickFullPay: false, isReservation: false, method: splitTender.active ? "CASH" : method });
-  const feePayment = useDeliveryFeeTender({ branchId, method, goodsAmount: splitTender.active ? "0.00" : paymentPreview.appliedPaidD.toFixed(2), feeHeld: D(heldDelivery).toFixed(2), reference: paymentReference, clientRequestId: reqIdRef.current });
+  const feePayment = useDeliveryFeeTender({ branchId,ownerId:me.data?.id, method, goodsAmount: splitTender.active ? "0.00" : paymentPreview.appliedPaidD.toFixed(2), feeHeld: D(heldDelivery).plus(!splitTender.active?extraChargeAmount:0).toFixed(2), reference: paymentReference, clientRequestId: reqIdRef.current });
 
+  useEffect(()=>{if(feePayment.restoredReference&&!paymentReference)setPaymentReference(feePayment.restoredReference);},[feePayment.restoredReference,paymentReference]);
+  const extraCheckout=useReceptionCheckoutCharges({branchId,shiftId:shift?.id,customerId:customer.customerId??null,token:reqIdRef.current,value:checkoutCharges,setValue:setCheckoutCharges,disabled:offline||submitting||hasDigitalCards||!canAction("workOrders.receptionCheckout")||draftTransitionPending||draftPromotionPending||detachedRecoveryPending,goodsTender:paymentPreview.appliedPaidD.toFixed(2),cartLength:cart.length,onSubmit:()=>void handleSubmit({quickFullPay:true}),onSplit:()=>{if(!splitTender.active)splitTender.enable(extraChargeAmount.toFixed(2));splitTender.setEditorOpen(true);},resetCommitted:resetAfterCommittedWorkspace});
   const assignsDelivery = receptionDeliveryAuthorityRequired(me.data, orderDelivery != null && cart.some((line) => !isCustomKind(line) && !line.digital));
   const submitAllowed = receptionCheckoutPaths(hasDigitalCards, !!activeDraft, offline, assignsDelivery).every(canAction);
   // ───── البحث ──────────────────────────────────────────────────────────────
@@ -429,7 +394,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
     // يفكّ الارتباط قبل مسح السلة حتى لا تمسح مزامنة مؤجلة المسودة البعيدة.
     if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
     activeDraftRef.current = null; setActiveDraft(null); setDraftHeld("0.00"); setDraftInfo(null);
-    setCart([]); setSelKey(null); setPayInput(""); setDeferred(false);
+    setCheckoutCharges({}); setCart([]); setSelKey(null); setPayInput(""); setDeferred(false);
     setMethod("CASH"); setPaymentReference("");
     // ٢٣/٨ — تفريغ خصم رأس الفاتورة مع تفريغ السلّة كي لا يُطبَّق سهواً على سلّةٍ جديدةٍ لعميلٍ آخر.
     setInvoiceDiscountPct("");
@@ -603,7 +568,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
     setCustomer(prepared.customer); setShowInbox(false);
     notify.ok(`فُتح طلبٌ من محادثة ${v.displayName ?? v.channelHandle} — أضف ما يطلبه الزبون`);
   }
-  const getDraftPayload = (customerIdOverride?: number | null) => buildDraftPayload({ customer, effectiveTier, channel, channelHandle, linkedConversationId, cart, customerIdOverride });
+  const getDraftPayload = (customerIdOverride?: number | null) => buildDraftPayload({ customer, effectiveTier, channel, channelHandle, linkedConversationId, cart, checkoutCharges, customerIdOverride });
   const promoteM = trpc.reception.draftPromote.useMutation(), syncM = trpc.reception.draftSync.useMutation();
   async function attachResolvedPromotion(result: { draftId: number; version: number; draftNumber: string }): Promise<boolean> { const draft = { id: result.draftId, version: result.version }; setDraftPromotionPending(false); setDraftPromotionShiftId(null); activeDraftRef.current = draft; setActiveDraft(draft);
     if (!(await resumeDraft(result.draftId, () => true, true))) { setWorkspaceSafetyBlocked(true); notify.warn("تعذّر التحقق من الطلب المحفوظ", "حُجبت السلة لمنع قبض أو تثبيت مكرر. أعد التحميل ثم تحقق من الطلب المحفوظ."); return false; }
@@ -682,10 +647,10 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
     draftSyncTimer.current = setTimeout(() => { void flushActiveDraft(); }, 800);
     return () => { if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cart, customer.customerId, customer.name, customer.phone, effectiveTier, channel, channelHandle, linkedConversationId, activeDraft?.id, offline, draftTransitionPending]);
+  }, [cart, checkoutCharges, customer.customerId, customer.name, customer.phone, effectiveTier, channel, channelHandle, linkedConversationId, activeDraft?.id, offline, draftTransitionPending]);
 
   /** استئناف مسوّدة (من هذا الجهاز أو جهاز زميل): صفوفٌ حيّة عبر catalog.byUnitIds + مواصفة CUSTOM من printSpec. */
-  async function resumeDraft(draftId: number, isHydrationCurrent: () => boolean = () => true, forceReload = false, shadow?: ReceptionServerDraftPointer): Promise<boolean> { return ReceptionResumeDraft({ onPaymentScopeChanged: workspaceState !== "HYDRATING" ? () => { splitTender.reset(); reqIdRef.current = crypto.randomUUID(); } : undefined, branchId, offline, activeDraftRef, phoneResolution, phoneCustomer, couponPreview, draftResumeEpochRef, setDraftTransitionPending, draftSyncTimer, draftSyncQueueRef, workspaceDirty, flushActiveDraft, utils, handleDraftSyncFailure, setActiveDraft, setDraftRestoreRecovery, restoreLocalWorkspace, setDraftHeld, setDraftInfo, setDetachedRecoveryPending, clearCouponIfApplied, setCart, setReceptionPhone, prevCustomerIdRef, setCustomer, setTierOverride, setChannel, setChannelHandle, setLinkedConversationId, setPayInput, setMethod, setPaymentReference, setDeferred, setCustomerCreditLimit, setInvoiceDiscountPct, setCouponInput }, draftId, isHydrationCurrent, forceReload, shadow); }
+  async function resumeDraft(draftId: number, isHydrationCurrent: () => boolean = () => true, forceReload = false, shadow?: ReceptionServerDraftPointer): Promise<boolean> { return ReceptionResumeDraft({ onCommittedRecovery:(id)=>extraCheckout.recoverDraft(id), branchId, offline, activeDraftRef, phoneResolution, phoneCustomer, couponPreview, draftResumeEpochRef, setDraftTransitionPending, draftSyncTimer, draftSyncQueueRef, workspaceDirty, flushActiveDraft, utils, handleDraftSyncFailure, setActiveDraft, setDraftRestoreRecovery, restoreLocalWorkspace, setDraftHeld, setDraftInfo, setDetachedRecoveryPending, clearCouponIfApplied, setCheckoutCharges, setCart, setReceptionPhone, prevCustomerIdRef, setCustomer, setTierOverride, setChannel, setChannelHandle, setLinkedConversationId, setPayInput, setMethod, setPaymentReference, setDeferred, setCustomerCreditLimit, setInvoiceDiscountPct, setCouponInput, onPaymentScopeChanged: workspaceState !== "HYDRATING" ? () => { splitTender.reset(); reqIdRef.current = crypto.randomUUID(); } : undefined }, draftId, isHydrationCurrent, forceReload, shadow); }
 
   async function recoverDraftFromServer() { const recovery = draftRestoreRecovery; if (!recovery?.serverAvailable || !(await resumeDraft(recovery.snapshot.activeDraftId, () => true, true))) return; if (!clearPersistedWorkspace(true)) { setWorkspaceSafetyBlocked(true); return; } setDraftRestoreRecovery(null); setDetachedRecoveryPending(false); notify.ok("حُمّلت نسخة الخادم", "أُهملت النسخة المحلية بعد اختيارك ولم تعد قابلة للتثبيت المكرر."); }
   async function recoverDraftAsLocalCopy() { const recovery = draftRestoreRecovery; if (!recovery || !(await restoreLocalWorkspace(recovery.snapshot.pendingLocal, () => true, true))) return; reqIdRef.current = crypto.randomUUID(); if (!clearPersistedWorkspace(true)) { setWorkspaceSafetyBlocked(true); return; } setDraftRestoreRecovery(null); setDetachedRecoveryPending(true); notify.warn("استُعيدت نسخة محلية منفصلة", "راجعها واحفظها كطلب جديد قبل قبض مبلغ أو التثبيت؛ قد تكون بعض تعديلات النسخة القديمة وصلت إلى الخادم."); }
@@ -694,16 +659,18 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
 
   async function handleSubmit(opts: { quickFullPay: boolean; openingConfirmed?: boolean; isReservation?: boolean }) {
     if (blockingDialogOpen) return;
+    if(extraChargeAmount.gt(0)&&(offline||hasDigitalCards))return notify.err("الأجور الإضافية تحتاج اتصالاً بالخادم ولا تشمل الكروت الرقمية");
     if (!receptionCheckoutPaths(hasDigitalCards, !!activeDraftRef.current, offline, assignsDelivery).every(canActionRef.current)) return notify.err("تفويضات تنفيذ هذه العملية غير مكتملة");
     if (draftTransitionPending || draftPromotionFlightRef.current) return; if (draftPromotionPending) { notify.warn("نتيجة حفظ الطلب غير محسومة", "أعد الضغط على حفظ الطلب للتحقق قبل أي تثبيت."); return; } if (detachedRecoveryPending) { notify.warn("لا تثبّت نسخة الاسترداد مباشرةً", "راجعها ثم احفظها كطلب محفوظ جديد؛ هذا يمنع تكرار طلب ربما وصلت بعض تعديلاته إلى الخادم."); return; }
     if (splitTender.active && (offline || hasDigitalCards)) return notify.err("تقسيم الدفع يحتاج اتصالاً بالخادم ولا يشمل الكروت الرقمية.");
-    const splitPayments = splitTender.active ? splitTender.payments(expectedNowD.toFixed(2)) : undefined;
-    if (splitTender.active && !splitPayments) return notify.err(splitTender.problem(expectedNowD.toFixed(2)) ?? "راجع الدفعات المقسّمة.");
+    const splitPayments = splitTender.active ? splitTender.payments((cart.length?expectedNowD:extraChargeAmount).toFixed(2)) : undefined;
+    if (splitTender.active && !splitPayments) return notify.err(splitTender.problem((cart.length?expectedNowD:extraChargeAmount).toFixed(2)) ?? "راجع الدفعات المقسّمة.");
+    if(!cart.length&&extraChargeAmount.gt(0)){if(phoneResolution==="CHECKING"||phoneCustomer.isPending)return notify.warn("انتظر اكتمال حسم العميل قبل القبض");if(activeDraftRef.current)return notify.err("أكمل بنود الطلب المحفوظ أو فرغه قبل قبض أجور منفصلة");await extraCheckout.submitOnly({payments:splitPayments??undefined,method,payInput,proof:feePayment.tender,confirmed:splitTender.active||feePayment.confirmed});return;}
     const preparation = await prepareReceptionSubmission({ activeDraftRef, activeDraft, couponCode, phoneResolution, phoneCustomer, couponPreview, method: splitTender.active ? "CASH" : method, cart, shift, setSelKey, offline, connState, orderDelivery, deferred, rawInvoiceDiscountPctD, opts: splitTender.active ? { ...opts, quickFullPay: false } : opts, paidD, payInput: splitPayInput, sumDirectNetD, expectedNowD, paymentReference, mixedRoundEligible, heldD, effectiveGrandD, mixedDeltaD, cashRoundActive, customer, receptionPhone, customerSectionRef, canCreateCustomer });
     if (!preparation || !shift) return;
     const { hadActiveDraftAtSubmit, hasCustomLines, isReserve, mixedRoundApplied, mixedDeltaAppliedD, printLines, customWithDeposits, effectiveWoDelivery, regularLines, hasGrandShortfall, hasDirectShortfall, appliedPaidD, routeDeliveryToWO, digitalLines, draftAtSubmit, inputPaidD } = preparation;
     // تَفعيل قَفل الإرسال **قبل** ensureCustomerId لمنع سباق نَقر مَزدوج يُنشئ عميلاً مكرَّراً
-    if (heldDelivery > 0 && (!feePayment.confirmed || (!splitTender.active && method !== "CASH" && !D(feePayment.goodsAmount).eq(appliedPaidD)))) {
+    if ((heldDelivery > 0 || extraChargeAmount.gt(0)) && (!feePayment.confirmed || (!splitTender.active && method !== "CASH" && !D(feePayment.goodsAmount).eq(appliedPaidD)))) {
       setPayInput(appliedPaidD.toFixed(2));
       notify.warn("أكّد مبلغ القبض قبل التثبيت", "راجع مبلغ البضاعة وأجرة التوصيل، ثم أكّد عملية الدفع الظاهرة وأعد التثبيت.");
       return;
@@ -754,7 +721,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
       // ٢٣/٨: مبلغُ البيع = صافي أسطر البيع بعد خصم رأس الفاتورة (regularSumRawD − invoiceDiscountAmountD)
       // + فرق التقريب إن وُجد. الخادم يستقبل الخصمَ مطلقاً في `regularSale.invoiceDiscount` ويعيد
       // computeInvoiceTotals، فينتج نفس الرقم بالضبط ⇒ توزيعُ المدفوع لا يُخطئ التخصيص.
-      const { directCheckoutPayload, deliveryPayload, saleAmount, printAmount, checkoutPaymentMode, hasCarrierInvoice } = buildReceptionCheckoutPayload({ payments: splitPayments ?? undefined, heldDelivery: D(heldDelivery).toFixed(2), deliveryFeeTender: feePayment.tender, branchId, cashRoundActive, effectiveGrandD, regularSumRawD, invoiceDiscountAmountD, mixedRoundApplied, mixedCarrier, mixedDeltaAppliedD, printLines, customWithDeposits, effectiveWoDelivery, method, paymentReference, channel, channelHandle, receptionPhone, regularLines, orderDelivery, hasGrandShortfall, isReserve, hasDirectShortfall, deferred, customer, shift, customerId, customerName, receiptPhone, appliedPaidD, orderFeeHeldD, routeDeliveryToWO, opts, mgrCredsRef, reqIdRef, effectiveTier, couponCode });
+      const { directCheckoutPayload, deliveryPayload, saleAmount, printAmount, checkoutPaymentMode, hasCarrierInvoice } = buildReceptionCheckoutPayload({ payments: splitPayments ?? (extraChargeAmount.gt(0)?[{amount:inputPaidD.toFixed(2),method:method as "CASH"|"CARD"|"TRANSFER"|"WALLET",externalPaymentAttemptId:feePayment.tender?.externalPaymentAttemptId,externalPaymentDeviceId:feePayment.tender?.externalPaymentDeviceId}]:undefined), checkoutCharges, heldDelivery: D(heldDelivery).toFixed(2), deliveryFeeTender:heldDelivery>0?feePayment.tender:null, branchId, cashRoundActive, effectiveGrandD, regularSumRawD, invoiceDiscountAmountD, mixedRoundApplied, mixedCarrier, mixedDeltaAppliedD, printLines, customWithDeposits, effectiveWoDelivery, method, paymentReference, channel, channelHandle, receptionPhone, regularLines, orderDelivery, hasGrandShortfall, isReserve, hasDirectShortfall, deferred, customer, shift, customerId, customerName, receiptPhone, appliedPaidD, orderFeeHeldD, routeDeliveryToWO, opts, mgrCredsRef, reqIdRef, effectiveTier, couponCode });
       if (digitalLines.length > 0) {
         const prepared = await prepareIntent.mutateAsync({
           branchId,
@@ -811,15 +778,16 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
               version: commitVersion,
               expectedTotal: round2(grandTotalD).toFixed(2),
               shiftId: shift.id,
-              payments: splitPayments ?? undefined,
-              collectNow: !splitPayments && appliedPaidD.gt(0)
+              ...checkoutExtraPayload(checkoutCharges),
+              payments: directCheckoutPayload.payments,
+              collectNow: !directCheckoutPayload.payments && appliedPaidD.gt(0)
                 ? { amount: round2(appliedPaidD).toFixed(2), method, reference: method === "CASH" ? undefined : paymentReference.trim() }
                 : null,
               // ش٦: العلم يشمل المختلط — materialize خادمياً يعيد اشتقاق الهدف والفرق من الأسطر.
               cashRoundIQD: cashRoundActive || mixedRoundApplied,
               // ش٦ (V15): أجرة توصيل الطلب المقبوضة الآن — إيصال أمانةٍ نقديّ مع الفاتورة.
               deliveryFeeHeld: heldDelivery > 0 ? D(heldDelivery).toFixed(2) : undefined,
-              deliveryFeeTender: feePayment.tender ?? undefined,
+              deliveryFeeTender: heldDelivery>0?(feePayment.tender??undefined):undefined,
               // مراجعة PR #495: الإسناد داخل نفس معاملة التثبيت (لا نداءً لاحقاً).
               delivery: deliveryPayload,
               // الاستقبال (٨/٨): تأكيد توفّر الأصناف غير المجرودة فيزيائياً (بيع بالسالب لطلب COD في الافتتاح).
@@ -833,7 +801,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
             return committed;
           })()
         : await checkoutM.mutateAsync(directCheckoutPayload);
-      checkoutCommitted = true;
+      checkoutCommitted = true; extraCheckout.committed(result,reqIdRef.current);
 
       const invoiceId = result.regularSale?.invoiceId ?? result.printSale?.invoiceId ?? null;
       const createdWoIds = result.workOrders.map((order) => order.workOrderId);
@@ -903,7 +871,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
       // شرطٌ حاسم: **لم يلتزم شيء** (checkoutCommitted=false) — وإلا لَازدوجت العملية.
       const isTransportFailure = !checkoutCommitted && !hadActiveDraftAtSubmit
         && (e as { data?: { code?: string } } | null)?.data?.code == null;
-      if (isTransportFailure && (await captureOfflineReception())) {
+      if (isTransportFailure && !extraChargeAmount.gt(0) && (await captureOfflineReception())) {
         return;
       }
       // لا توجد حالة التزام جزئي. عند غياب رد الشبكة قد تكون المعاملة كلها التزمت أو كلها
@@ -1083,8 +1051,8 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
       {/* ─ لوحة الدفع — شريطٌ ثابتٌ حافّة-لحافّة أسفل الصفحة (خارج حشوة عمود السلة) ─
           آخر عنصرٍ في عمود الصفحة الجذر (flex-col)؛ منطقة السلة أعلاه وحدها flex-1/تُمرَّر،
           فزرّا الدفع لا يُدفَعان خارج الشاشة أبداً مهما ضاق الارتفاع أو تغيّر تكبير المتصفّح. */}
-      <PaymentPanel
-        deliveryFeePayment={heldDelivery > 0 ? feePayment : undefined}
+      <PaymentPanel chargesOnly={!cart.length&&extraChargeAmount.gt(0)} extraChargesSlot={extraCheckout.slot} extraChargeAmount={extraChargeAmount.toNumber()}
+        deliveryFeePayment={heldDelivery > 0 || (!splitTender.active&&extraChargeAmount.gt(0)) ? feePayment : undefined}
         payInput={splitPayInput}
         setPayInput={setPayInput}
         deferred={deferred}
@@ -1100,7 +1068,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
         splitTender={splitTender}
         splitDisabledReason={offline ? "تقسيم الدفع يحتاج اتصالاً بالخادم." : hasDigitalCards ? "الكروت الرقمية تتبع مسار تسديد مستقل." : null}
         grandTotal={grandTotal}
-        expectedNow={expectedNow}
+        expectedNow={cart.length?expectedNow:extraChargeAmount.toNumber()}
         cashRoundingDelta={cashRoundingDelta}
         sumDirect={sumDirect}
         sumCustom={sumCustom}
@@ -1122,7 +1090,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
         depositMenuOpen={depositMenuOpen}
         setDepositMenuOpen={setDepositMenuOpen}
         depositOptions={depositOptions}
-        payAll={payAll}
+        payAll={cart.length?payAll:()=>setPayInput(extraChargeAmount.toFixed(2))}
         couponCode={couponCode}
         couponLabel={couponLabel}
         couponInput={couponInput}
@@ -1132,8 +1100,8 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
         applyCoupon={applyCoupon}
         clearCoupon={clearCoupon}
         couponPending={couponPreview.isPending}
-        submitting={submitting} submitAllowed={submitAllowed}
-        cartEmpty={cart.length === 0}
+        submitting={submitting||extraCheckout.pending} submitAllowed={submitAllowed}
+        cartEmpty={cart.length === 0&&!extraChargeAmount.gt(0)}
         hasShift={!!shift}
         onSubmit={(opts) => void handleSubmit(opts)}
       />

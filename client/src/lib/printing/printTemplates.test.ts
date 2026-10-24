@@ -16,6 +16,19 @@ import { printSalesReportV2 } from "./printTemplatesV2";
 import { docToHtml, resolveQrUrl } from "./render";
 import * as qrModule from "./qr";
 import { printA4Invoice } from "./a4Invoice";
+import { buildDeliveryDispatchSlipDoc } from "./printDeliveryDispatchSlip";
+
+describe("prepaid dispatch collection label", () => {
+  it("keeps the fee-only COD label visible and preserves real amount-in-words rows", async () => {
+    const doc = buildDeliveryDispatchSlipDoc({consignmentNumber:"100001",orderNumber:"100001",orderKind:"invoice",partyName:"ناقل",recipientName:"عميل",recipientPhone:"07700000000",deliveryAddress:"بغداد",salePrice:"50000",deposit:"50000",codAmount:"0",deliveryFee:"5000",feeCollection:"COURIER"});
+    const html = await docToHtml(doc);
+    expect(html).toContain("المطلوب تحصيله عند الاستلام (أجرة التوصيل فقط)");
+    expect(html).toContain("5,000 د.ع");
+    const words = await docToHtml({...doc,totals:[{label:"المبلغ كتابةً",value:"خمسة آلاف دينار"}]});
+    expect(words).toContain('colspan="2"');
+    expect(words).toContain("خمسة آلاف دينار");
+  });
+});
 
 describe("POS receipt builder browser parity", () => {
   it.each([

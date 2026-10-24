@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { fulfillmentRouter } from "./fulfillmentRouter";
 import { deliveryFeeRefundRouter } from "./deliveryFeeRefundRouter";
+import { deliveryWorkflowRouter } from "./deliveryWorkflowRouter";
 import { and, desc, eq, sql as dsql } from "drizzle-orm";
 import { z } from "zod";
 import { type ShortfallReason, SHORTFALL_REASONS } from "@shared/shortfallReason";
@@ -153,6 +154,7 @@ function settlementBranchOf(
 
 export const deliveryRouter = router({
   fulfillment: fulfillmentRouter,
+  workflow: deliveryWorkflowRouter,
   paymentRefunds: deliveryFeeRefundRouter,
   // قائمة جهات التوصيل + عهدتها (branch-scoped: غير المرتفعين يَرون فرعهم فقط).
   listParties: deliveryReadProcedure
@@ -361,12 +363,13 @@ export const deliveryRouter = router({
   openConsignments: deliveryReadProcedure
     .input(z.object({
       partyId: z.number().int().positive(),
+      branchId: z.number().int().positive().optional(),
       limit: z.number().int().positive().max(500).optional(),
       cursor: z.number().int().positive().optional(),
     }))
     .query(async ({ input, ctx }) => {
       await assertPartyInScope(input.partyId, ctx.scopedBranchId);
-      return listOpenConsignments(input.partyId, ctx.user.role === "admin" ? null : ctx.user.branchId, { limit: input.limit, cursor: input.cursor });
+      return listOpenConsignments(input.partyId, ctx.user.role === "admin" ? input.branchId ?? null : ctx.user.branchId, { limit: input.limit, cursor: input.cursor });
     }),
 
   predictiveSearch: deliveryReadProcedure
@@ -465,7 +468,7 @@ export const deliveryRouter = router({
    * حيّ (عهدة، أو طرود مفتوحة، أو أجور غير مدفوعة) في صفٍّ واحد بأقدم التزامٍ أولاً.
    * قبله: على المسوّي أن يختار جهة قبل أن يرى شيئاً.
    */
-  obligations: deliveryReadProcedure.query(({ ctx }) => listPartyObligations(ctx.scopedBranchId)),
+  obligations: deliveryReadProcedure.input(z.object({ branchId: z.number().int().positive().optional() }).optional()).query(({ input, ctx }) => listPartyObligations(ctx.user.role === "admin" ? input?.branchId ?? ctx.scopedBranchId : ctx.scopedBranchId)),
 
   /**
    * Slice DFP1 (٣٠/٨/٢٦) — قائمة الجهات المتأخّرة (SLA على عمر الطرود المفتوحة). قسم اطّلاعيّ

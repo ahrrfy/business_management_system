@@ -1,3 +1,4 @@
+import {checkoutExtraPayload} from "@/components/pos/checkoutExtraAmounts";
 import type { TenderPayment } from "@/components/payments/splitTender";
 import type { ManagerApprovalInput } from "@/components/reception/ManagerApprovalDialog";
 import type { RouterOutputs } from "@/lib/trpc";
@@ -17,6 +18,7 @@ import {
 } from "@/components/reception/cartMath";
 
 export interface ReceptionCheckoutPayloadInput {
+  checkoutCharges?:import("@shared/checkoutCharges").CheckoutChargesInput;
   payments?: TenderPayment[];
   heldDelivery: string;
   deliveryFeeTender: ReceptionDeliveryFeeTender | null;
@@ -77,7 +79,7 @@ export interface ReceptionCheckoutPayloadInput {
   couponCode: string | null;
 }
 export function buildReceptionCheckoutPayload({
-  payments,
+  payments, checkoutCharges,
   heldDelivery,
   deliveryFeeTender,
   branchId,
@@ -227,6 +229,7 @@ export function buildReceptionCheckoutPayload({
     (deferred || isReserve || (customer.customerId != null && !orderDelivery));
 
   const directCheckoutPayload = {
+    ...checkoutExtraPayload(checkoutCharges),
     branchId,
     shiftId: shift.id,
     customerId: customerId ?? undefined,

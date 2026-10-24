@@ -13,9 +13,11 @@ import {
 import {
   approveAftercareCase,
   cancelAftercareCase,
+  cancelAftercareExecution,
   confirmAftercareDelivery,
   createAftercareCase,
   dispatchAftercareExecution,
+  declareAftercareExecutionReturn,
   payAftercareDeliveryFee,
   prepareAftercareExecution,
   resolveAftercareCase,
@@ -26,40 +28,87 @@ import {
   listAftercareCases,
   previewAftercareSource,
   resolveAftercareExecution,
+  resolveAftercareActor,
 } from "../services/fulfillment/aftercareQueries";
-
-import { fulfillmentError } from "../services/fulfillment/core";
+import {
+  approveAftercareSettlement,
+  postAftercareSettlement,
+  previewAftercareSettlement,
+  requestAftercareSettlement,
+  withdrawAftercareSettlement,
+} from "../services/fulfillment/aftercareSettlement";
+import {
+  getComponentRightsSettlement,
+  postComponentRights,
+  confirmComponentRightsRefund,
+} from "../services/fulfillment/componentRights";
 
 const id = z.number().int().positive();
 const key = z.string().trim().min(8).max(80);
 const text = z.string().trim().min(3).max(2000);
-const identity = z.object({ id, expectedVersion: id, clientRequestId: key });
+const identity = z.object({
+  id,
+  expectedVersion: id,
+  clientRequestId: key,
+  branchId: id.optional(),
+});
 const source = z.object({
+  branchId: id.optional(),
   invoiceId: id.optional(),
   workOrderId: id.optional(),
 });
-function actor(user: { id: number; branchId?: number | null; role?: string }) {
-  if (
-    user.branchId == null ||
-    !Number.isSafeInteger(user.branchId) ||
-    user.branchId <= 0
-  )
-    throw fulfillmentError(
-      "لا يوجد فرع مسند للحساب؛ اختر فرع العمل من الإدارة قبل فتح المعالجة",
-      "FORBIDDEN",
-    );
-  return {
-    userId: user.id,
-    branchId: Number(user.branchId),
-    role: user.role,
-  };
-}
+const rightsRefund = z.object({
+  amount: positiveMoneyString,
+  method: z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]),
+  shiftId: id.nullish(),
+  reference: z.string().trim().max(255).nullish(),
+  pendingExternal: z.boolean().optional(),
+});
+const settlementInput = z.object({
+  branchId: id.optional(),
+  id,
+  expectedVersion: id,
+  reason: text,
+  evidence: text,
+  physicalHeldConfirmed: z.boolean(),
+  decisions: z
+    .array(
+      z.object({
+        executionLineId: id,
+        usableBaseQuantity: z.number().int().nonnegative(),
+        consumedBaseQuantity: z.number().int().nonnegative(),
+        damagedBaseQuantity: z.number().int().nonnegative(),
+        evidence: text,
+      }),
+    )
+    .max(1000),
+  sourceRights: z
+    .array(
+      z.object({
+        invoiceItemId: id,
+        originalBundleComponentId: id.nullable(),
+        componentVariantId: id,
+        baseQuantity: id,
+        originalMovementId: id,
+        usableBaseQuantity: z.number().int().nonnegative(),
+        damagedBaseQuantity: z.number().int().nonnegative(),
+        commercialAmount: nonNegMoneyString,
+        originalIssueValue: nonNegMoneyString,
+        costEvidence: text,
+        costEvidenceReference: z.string().trim().min(3).max(2000),
+      }),
+    )
+    .max(100),
+});
 
 export const fulfillmentAftercareRouter = router({
   resolveExecution: deliveryReadProcedure
-    .input(z.object({ executionId: id }))
-    .query(({ input, ctx }) =>
-      resolveAftercareExecution(input.executionId, actor(ctx.user)),
+    .input(z.object({ executionId: id, branchId: id.optional() }))
+    .query(async ({ input, ctx }) =>
+      resolveAftercareExecution(
+        input.executionId,
+        await resolveAftercareActor(ctx.user, input),
+      ),
     ),
   list: deliveryReadProcedure
     .input(
@@ -71,15 +120,23 @@ export const fulfillmentAftercareRouter = router({
         pageSize: id.max(100).optional(),
       }),
     )
-    .query(({ input, ctx }) =>
+    .query(async ({ input, ctx }) =>
       listAftercareCases(
         { ...input, branchId: ctx.scopedBranchId ?? input.branchId },
-        actor(ctx.user),
+        await resolveAftercareActor(ctx.user, input),
       ),
     ),
   get: deliveryReadProcedure
-    .input(z.object({ id }))
-    .query(({ input, ctx }) => getAftercareCase(input.id, actor(ctx.user))),
+    .input(z.object({ id, branchId: id.optional() }))
+    .query(async ({ input, ctx }) =>
+      getAftercareCase(
+        input.id,
+        await resolveAftercareActor(ctx.user, {
+          branchId: input.branchId,
+          caseId: input.id,
+        }),
+      ),
+    ),
   preview: deliveryReadProcedure
     .input(
       source.extend({
@@ -87,11 +144,19 @@ export const fulfillmentAftercareRouter = router({
         sourceReference: z.string().trim().min(1).max(255).optional(),
       }),
     )
-    .query(({ input, ctx }) => previewAftercareSource(input, actor(ctx.user))),
+    .query(async ({ input, ctx }) =>
+      previewAftercareSource(
+        input,
+        await resolveAftercareActor(ctx.user, input),
+      ),
+    ),
   products: deliveryReadProcedure
     .input(z.object({ branchId: id, search: z.string().max(100).optional() }))
-    .query(({ input, ctx }) =>
-      aftercareAvailableProducts(input, actor(ctx.user)),
+    .query(async ({ input, ctx }) =>
+      aftercareAvailableProducts(
+        input,
+        await resolveAftercareActor(ctx.user, input),
+      ),
     ),
   create: deliveryCashierProcedure
     .input(
@@ -129,10 +194,20 @@ export const fulfillmentAftercareRouter = router({
           .max(100),
       }),
     )
-    .mutation(({ input, ctx }) => createAftercareCase(input, actor(ctx.user))),
+    .mutation(async ({ input, ctx }) =>
+      createAftercareCase(input, await resolveAftercareActor(ctx.user, input)),
+    ),
   approve: deliveryManagerProcedure
     .input(identity)
-    .mutation(({ input, ctx }) => approveAftercareCase(input, actor(ctx.user))),
+    .mutation(async ({ input, ctx }) =>
+      approveAftercareCase(
+        input,
+        await resolveAftercareActor(ctx.user, {
+          branchId: input.branchId,
+          caseId: input.id,
+        }),
+      ),
+    ),
   prepare: deliveryManagerProcedure
     .input(
       identity.extend({
@@ -156,18 +231,31 @@ export const fulfillmentAftercareRouter = router({
           .max(100),
       }),
     )
-    .mutation(({ input, ctx }) =>
-      prepareAftercareExecution(input, actor(ctx.user)),
+    .mutation(async ({ input, ctx }) =>
+      prepareAftercareExecution(
+        input,
+        await resolveAftercareActor(ctx.user, {
+          branchId: input.branchId,
+          caseId: input.id,
+        }),
+      ),
     ),
   dispatch: deliveryManagerProcedure
     .input(
       identity.extend({
         partyId: id,
+        assignedUserId: id.optional(),
         externalTrackingRef: z.string().trim().max(100).optional(),
       }),
     )
-    .mutation(({ input, ctx }) =>
-      dispatchAftercareExecution(input, actor(ctx.user)),
+    .mutation(async ({ input, ctx }) =>
+      dispatchAftercareExecution(
+        input,
+        await resolveAftercareActor(ctx.user, {
+          branchId: input.branchId,
+          executionId: input.id,
+        }),
+      ),
     ),
   confirm: deliveryManagerProcedure
     .input(
@@ -177,8 +265,14 @@ export const fulfillmentAftercareRouter = router({
         feeEarned: z.boolean().optional(),
       }),
     )
-    .mutation(({ input, ctx }) =>
-      confirmAftercareDelivery(input, actor(ctx.user)),
+    .mutation(async ({ input, ctx }) =>
+      confirmAftercareDelivery(
+        input,
+        await resolveAftercareActor(ctx.user, {
+          branchId: input.branchId,
+          executionId: input.id,
+        }),
+      ),
     ),
   payFee: deliveryManagerProcedure
     .input(
@@ -188,13 +282,156 @@ export const fulfillmentAftercareRouter = router({
         shiftId: id.optional(),
       }),
     )
-    .mutation(({ input, ctx }) =>
-      payAftercareDeliveryFee(input, actor(ctx.user)),
+    .mutation(async ({ input, ctx }) =>
+      payAftercareDeliveryFee(
+        input,
+        await resolveAftercareActor(ctx.user, {
+          branchId: input.branchId,
+          executionId: input.id,
+        }),
+      ),
     ),
   cancel: deliveryManagerProcedure
     .input(identity.extend({ reason: text }))
-    .mutation(({ input, ctx }) => cancelAftercareCase(input, actor(ctx.user))),
+    .mutation(async ({ input, ctx }) =>
+      cancelAftercareCase(
+        input,
+        await resolveAftercareActor(ctx.user, {
+          branchId: input.branchId,
+          caseId: input.id,
+        }),
+      ),
+    ),
+  cancelExecution: deliveryManagerProcedure
+    .input(
+      identity.extend({ reason: text, physicalHeldConfirmed: z.boolean() }),
+    )
+    .mutation(async ({ input, ctx }) =>
+      cancelAftercareExecution(
+        input,
+        await resolveAftercareActor(ctx.user, {
+          branchId: input.branchId,
+          executionId: input.id,
+        }),
+      ),
+    ),
+  declareReturn: deliveryManagerProcedure
+    .input(identity.extend({ reason: text }))
+    .mutation(async ({ input, ctx }) =>
+      declareAftercareExecutionReturn(
+        input,
+        await resolveAftercareActor(ctx.user, {
+          branchId: input.branchId,
+          executionId: input.id,
+        }),
+      ),
+    ),
+  settlementPreview: deliveryManagerProcedure
+    .input(settlementInput)
+    .query(async ({ input, ctx }) =>
+      previewAftercareSettlement(
+        input,
+        await resolveAftercareActor(ctx.user, {
+          branchId: input.branchId,
+          caseId: input.id,
+        }),
+      ),
+    ),
+  settlementRequest: deliveryManagerProcedure
+    .input(
+      settlementInput.extend({
+        previewHash: z.string().length(64),
+        clientRequestId: key,
+      }),
+    )
+    .mutation(async ({ input, ctx }) =>
+      requestAftercareSettlement(
+        input,
+        await resolveAftercareActor(ctx.user, {
+          branchId: input.branchId,
+          caseId: input.id,
+        }),
+      ),
+    ),
+  settlementApprove: deliveryManagerProcedure
+    .input(identity)
+    .mutation(async ({ input, ctx }) =>
+      approveAftercareSettlement(
+        input,
+        await resolveAftercareActor(ctx.user, {
+          branchId: input.branchId,
+          settlementId: input.id,
+        }),
+      ),
+    ),
+  settlementPost: deliveryManagerProcedure
+    .input(identity)
+    .mutation(async ({ input, ctx }) =>
+      postAftercareSettlement(
+        input,
+        await resolveAftercareActor(ctx.user, {
+          branchId: input.branchId,
+          settlementId: input.id,
+        }),
+      ),
+    ),
+  settlementWithdraw: deliveryManagerProcedure
+    .input(identity.extend({ reason: text }))
+    .mutation(async ({ input, ctx }) =>
+      withdrawAftercareSettlement(
+        input,
+        await resolveAftercareActor(ctx.user, {
+          branchId: input.branchId,
+          settlementId: input.id,
+        }),
+      ),
+    ),
+  rightsPreview: deliveryReadProcedure
+    .input(z.object({ settlementId: id, branchId: id.optional() }))
+    .query(async ({ input, ctx }) =>
+      getComponentRightsSettlement(
+        input,
+        await resolveAftercareActor(ctx.user, input),
+      ),
+    ),
+  rightsPost: deliveryManagerProcedure
+    .input(
+      z.object({
+        branchId: id.optional(),
+        settlementId: id,
+        rightIndex: z.number().int().nonnegative(),
+        clientRequestId: key,
+        refund: rightsRefund.optional(),
+        refunds: z.array(rightsRefund).min(1).max(10).optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) =>
+      postComponentRights(input, await resolveAftercareActor(ctx.user, input)),
+    ),
+  rightsConfirmRefund: deliveryManagerProcedure
+    .input(
+      z.object({
+        receiptId: id,
+        branchId: id.optional(),
+        reference: z.string().trim().min(3).max(255),
+        clientRequestId: key,
+      }),
+    )
+    .mutation(async ({ input, ctx }) =>
+      confirmComponentRightsRefund(
+        input,
+        await resolveAftercareActor(ctx.user, input),
+      ),
+    ),
   resolve: deliveryManagerProcedure
     .input(identity.extend({ resolution: text }))
-    .mutation(({ input, ctx }) => resolveAftercareCase(input, actor(ctx.user))),
+    .mutation(async ({ input, ctx }) =>
+      resolveAftercareCase(
+        input,
+        await resolveAftercareActor(ctx.user, {
+          branchId: input.branchId,
+          caseId: input.id,
+        }),
+      ),
+    ),
 });

@@ -67,6 +67,7 @@ describe("reception payment controls", () => {
       { id: "one", method: "CASH", amount: "100", reference: "", proof: null },
     ],
     tendered: "100.00",
+    proofAmount: (part: { amount: string }) => part.amount + ".00",
     problem: () => null,
     totals: (due: string) =>
       tenderTotals(
@@ -142,7 +143,7 @@ describe("reception payment controls", () => {
       },
     });
     expect(host.textContent).toContain("أجرة التوصيل في عملية مستقلة");
-    expect(host.textContent).not.toContain("البضاعة والأجرة في عملية واحدة");
+    expect(host.textContent).not.toContain("البضاعة والأجور والأمانة في عملية واحدة");
     const proof = [...host.querySelectorAll("button")].find((b) =>
       b.textContent?.includes("تأكيد نجاح الدفع لدى المزوّد"),
     );
@@ -154,4 +155,17 @@ describe("reception payment controls", () => {
     expect(save?.disabled).toBe(true);
     expect(submit).not.toHaveBeenCalled();
   });
+  it("charge-only collection shows its actual rail and one clearly named command",()=>{
+    render({chargesOnly:true,extraChargeAmount:3000,payInput:"",paid:0,grandTotal:0,expectedNow:3000,cashDueNow:3000});
+    expect(host.textContent).not.toContain("بلا قبض الآن");expect(host.textContent).toContain("إجمالي الأجور");
+    expect(host.textContent).not.toContain("إتمام البيع المباشر");expect(host.textContent).not.toContain("تحصيل الإجمالي وطباعة");
+    const buttons=[...host.querySelectorAll("button")].filter(b=>b.textContent==="قبض الأجور وطباعة");expect(buttons).toHaveLength(1);
+    act(()=>buttons[0].click());expect(submit).toHaveBeenCalledExactlyOnceWith({quickFullPay:false});
+  });
+  it("charge-only CARD command stays blocked until its actual service payment is confirmed",()=>{
+    render({chargesOnly:true,extraChargeAmount:3000,payInput:"",paid:0,expectedNow:3000,method:"CARD",deliveryFeePayment:{capturedAmount:"3000.00",confirmed:false,pending:false,error:null,confirm:confirmFee}});
+    expect(host.textContent).not.toContain("بلا قبض الآن");
+    const pay=[...host.querySelectorAll("button")].find(b=>b.textContent==="قبض الأجور وطباعة");expect(pay?.disabled).toBe(true);expect(submit).not.toHaveBeenCalled();
+  });
+
 });

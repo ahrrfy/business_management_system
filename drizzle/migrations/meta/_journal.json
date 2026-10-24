@@ -2556,6 +2556,13 @@
 			"when": 1788148861000,
 			"tag": "0403_fulfillment_requests_aftercare",
 			"breakpoints": true
+		},
+		{
+			"idx": 404,
+			"version": "5",
+			"when": 1788148862000,
+			"tag": "0404_barcode_workflow_settlements",
+			"breakpoints": true
 		}
 	]
 }

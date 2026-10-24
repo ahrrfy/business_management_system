@@ -11,6 +11,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Checkbox } from "@/components/ui/checkbox";
+import { ACTION_LABELS as L } from "@shared/actionLabels";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 
@@ -19,14 +21,38 @@ export function CancelDeliveryAssignmentDialog({
   open,
   onOpenChange,
   onCompleted,
+  branchId,
+  onNavigateToAftercare,
 }: {
   consignment: { id: number; number: string } | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCompleted?: () => void;
+  branchId?: number;
+  onNavigateToAftercare?: (context: {
+    caseId?: number;
+    executionId?: number;
+    raw?: string;
+  }) => void;
 }) {
   const utils = trpc.useUtils();
   const [reason, setReason] = useState("");
+  const [physicalHeld, setPhysicalHeld] = useState(false);
+  const preview = trpc.delivery.workflow.previewBySource.useQuery(
+    {
+      source: { kind: "consignment", id: consignment?.id ?? 0 },
+      station: "cancelAssignment",
+      branchId,
+    },
+    { enabled: open && consignment != null, retry: false },
+  );
+  const canCancel = preview.data?.actions.find(
+    (a) => a.action === "cancelAssignment",
+  );
+  const canDeclare = preview.data?.actions.find(
+    (a) => a.action === "declareReturn",
+  );
+  const isAftercare = preview.data?.relations.aftercareExecutionId != null;
   const [clientRequestId, setClientRequestId] = useState(() =>
     crypto.randomUUID(),
   );
@@ -34,14 +60,17 @@ export function CancelDeliveryAssignmentDialog({
   useEffect(() => {
     if (!open) return;
     setReason("");
+    setPhysicalHeld(false);
     setClientRequestId(crypto.randomUUID());
   }, [open, consignment?.id]);
 
-  const cancel = trpc.delivery.cancelAssignment.useMutation({
-    onSuccess: async () => {
+  const cancel = trpc.delivery.workflow.assignment.useMutation({
+    onSuccess: async (_result, input) => {
       notify.ok(
-        "أُلغي إسناد التوصيل",
-        "حُررت عهدة المندوب وبقيت الفاتورة والمخزون والمقبوضات كما هي.",
+        input.action === "declareReturn"
+          ? "سُجل إعلان رجوع الطرد"
+          : "أُلغي إسناد التوصيل",
+        "لم يثبت بهذا الإجراء استلام بضاعة أو رد مال؛ تابع الاستلام والفحص من محطته عند الرجوع.",
       );
       await Promise.all([
         utils.delivery.invalidate(),
@@ -57,7 +86,12 @@ export function CancelDeliveryAssignmentDialog({
   });
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!cancel.isPending) onOpenChange(next);
+      }}
+    >
       <DialogContent dir="rtl" className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-destructive">
@@ -65,8 +99,9 @@ export function CancelDeliveryAssignmentDialog({
             {consignment?.number ?? ""}
           </DialogTitle>
           <DialogDescription className="text-start leading-6">
-            هذا الإجراء يلغي التوصيل فقط قبل قبول المندوب للطرد. لا يلغي
-            الفاتورة، ولا يعيد البضاعة للمخزون، ولا يصرف أو يقبض نقداً.
+            إلغاء الإسناد متاح قبل استلام الناقل الفعلي للطرد. بعد الاستلام أعلن
+            الرجوع ثم أثبت الاستلام والفحص من محطة المرتجعات؛ إعلان الرجوع لا
+            يعيد مخزوناً ولا يرد مالاً.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-1.5">
@@ -80,6 +115,39 @@ export function CancelDeliveryAssignmentDialog({
             placeholder="مثال: العميل سيستلم من الفرع"
           />
         </div>
+        {preview.isError && (
+          <p role="alert" className="text-sm text-destructive">
+            {preview.error.message}
+          </p>
+        )}
+        {canCancel && !canCancel.allowed && (
+          <p className="text-sm text-muted-foreground">{canCancel.reason}</p>
+        )}
+        {isAftercare && (
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={physicalHeld}
+                onCheckedChange={(checked) => setPhysicalHeld(checked === true)}
+                disabled={cancel.isPending}
+              />{" "}
+              تحققت فعلياً من كامل عهدة المكتبة قبل استلام الناقل
+            </label>
+            {onNavigateToAftercare && (
+              <Button
+                variant="outline"
+                onClick={() =>
+                  onNavigateToAftercare({
+                    caseId: preview.data?.relations.aftercareCaseId,
+                    executionId: preview.data?.relations.aftercareExecutionId,
+                  })
+                }
+              >
+                فتح محضر المعالجة والعهدة
+              </Button>
+            )}
+          </div>
+        )}
         <DialogFooter className="gap-2 sm:justify-start">
           <Button
             variant="outline"
@@ -88,21 +156,54 @@ export function CancelDeliveryAssignmentDialog({
           >
             رجوع
           </Button>
+          {!canCancel?.allowed && canDeclare?.allowed && (
+            <Button
+              variant="outline"
+              disabled={reason.trim().length < 3 || cancel.isPending}
+              onClick={() =>
+                preview.data &&
+                cancel.mutate({
+                  source: {
+                    kind: preview.data.source.kind,
+                    id: preview.data.source.id,
+                    expectedVersion: preview.data.source.version,
+                  },
+                  branchId: preview.data.source.branchId,
+                  action: "declareReturn",
+                  reason: reason.trim(),
+                  clientRequestId: `${clientRequestId}:declare`,
+                })
+              }
+            >
+              إعلان الرجوع دون إثبات استلام
+            </Button>
+          )}
           <Button
             variant="destructive"
             disabled={
-              !consignment || reason.trim().length < 3 || cancel.isPending
+              !preview.data ||
+              !canCancel?.allowed ||
+              reason.trim().length < 3 ||
+              cancel.isPending ||
+              (isAftercare && !physicalHeld)
             }
             onClick={() =>
-              consignment &&
+              preview.data &&
               cancel.mutate({
-                consignmentId: consignment.id,
+                source: {
+                  kind: preview.data.source.kind,
+                  id: preview.data.source.id,
+                  expectedVersion: preview.data.source.version,
+                },
+                branchId: preview.data.source.branchId,
+                action: "cancelAssignment",
                 reason: reason.trim(),
                 clientRequestId,
+                physicalHeldConfirmed: physicalHeld,
               })
             }
           >
-            {cancel.isPending ? "جارٍ الإلغاء…" : "إلغاء إسناد التوصيل"}
+            {cancel.isPending ? L.cancelling : "إلغاء إسناد التوصيل"}
           </Button>
         </DialogFooter>
       </DialogContent>
