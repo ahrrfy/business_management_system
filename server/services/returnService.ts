@@ -622,11 +622,15 @@ export async function returnSaleInTx(
         });
       }
       // رافدا الردّ الفوريّ (نقد/بطاقة) لا يُنشئان سنداً معلَّقاً ⇒ لا مرجعَ معلَّقاً يُبحَث عنه.
-      const pendingReference =
+      // العقد العام يملك رافد رد واحداً (فهرسه صفر)؛ العكس الكامل والصفوف القديمة بلا فهرس.
+      const pendingReferences =
         refund && !isSurfacedRefundMethod(refund.method)
-          ? `SALE-RETURN-PENDING-${input.invoiceId}-${requestFingerprint?.slice(0, 12)}`
-          : null;
-      const replayRefund = pendingReference
+          ? [
+              `SALE-RETURN-PENDING-${input.invoiceId}-0-${requestFingerprint?.slice(0, 12)}`,
+              `SALE-RETURN-PENDING-${input.invoiceId}-${requestFingerprint?.slice(0, 12)}`,
+            ]
+          : [];
+      const replayRefund = pendingReferences.length
         ? (
             await tx
               .select({
@@ -639,7 +643,7 @@ export async function returnSaleInTx(
               .where(
                 and(
                   eq(receipts.invoiceId, input.invoiceId),
-                  eq(receipts.referenceNumber, pendingReference),
+                  inArray(receipts.referenceNumber, pendingReferences),
                   eq(receipts.direction, "OUT"),
                 ),
               )

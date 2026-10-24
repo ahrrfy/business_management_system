@@ -62,7 +62,7 @@ import { PrintPosHeader, PrintPosHeaderActions } from "@/components/print-pos/Pr
 import {buildPrintPosReceipt,type PrintReceiptSnapshot} from "@/components/print-pos/printPosReceipt";
 import { CheckoutColumn, type PaymentMethod, type EditingInvoiceInfo } from "@/components/print-pos/PrintPosCheckout";
 import { useCashierExtraCharges, savedCheckout } from "@/components/pos/useCashierExtraCharges";
-import {checkoutExtraTotal,checkoutExtraPayload} from "@/components/pos/checkoutExtraAmounts";
+import {checkoutExtraTotal,checkoutExtraPayload,clearedChargeOnlyTender} from "@/components/pos/checkoutExtraAmounts";
 import type {CheckoutChargesInput,CheckoutChargesResult} from "@shared/checkoutCharges";
 import { PrintBottomToolbar } from "@/components/print-pos/PrintBottomToolbar";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
@@ -533,7 +533,7 @@ export default function PrintPOS() {
     onSplitChargeOnly:toggleSplitMode,enabled:tab.editingInvoice==null,connected:!offline,confirmed:externalPaymentConfirmed,cartLength:cart.length,
     goodsTender:(isSplitPayment?tab.splitLegs?.[0]?.amount:tab.payInput||String(total))??"0",busy:sale.isPending,
     onChange:extraCharges=>patch({extraCharges,checkoutRequestId:tab.checkoutRequestId??crypto.randomUUID(),externalPayment:null,splitLegs:(tab.splitLegs??[]).map(leg=>({...leg,externalPayment:null}))}),
-    onCommitted:(id,lastCheckout)=>{patchTab(id,{extraCharges:undefined,checkoutRequestId:undefined,payInput:"",externalPayment:null,paymentRef:"",lastCheckout});setClientRequestId(crypto.randomUUID());},
+    onCommitted:(id,lastCheckout)=>{patchTab(id,{extraCharges:undefined,checkoutRequestId:undefined,...clearedChargeOnlyTender("PRINT_POS"),lastCheckout});setClientRequestId(crypto.randomUUID());},
     refresh:()=>void shiftQ.refetch(),
   });
   const {submitChargesOnly}=extraCheckout;

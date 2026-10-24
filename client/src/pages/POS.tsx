@@ -41,7 +41,7 @@ import { TabBar } from "@/components/pos/TabBar";
 import { CartPanel } from "@/components/pos/CartPanel";
 import { PaymentPanel } from "@/components/pos/PaymentPanel";
 import { useCashierExtraCharges, savedCheckout } from "@/components/pos/useCashierExtraCharges";
-import {checkoutExtraTotal,checkoutExtraPayload} from "@/components/pos/checkoutExtraAmounts";
+import {checkoutExtraTotal,checkoutExtraPayload,clearedChargeOnlyTender,checkoutGoodsTenderAmount} from "@/components/pos/checkoutExtraAmounts";
 import { POSOverlays } from "@/components/pos/POSOverlays";
 import { RetailPosHeaderActions } from "@/components/pos/RetailPosHeaderActions";
 import type { ManagerApprovalInput } from "@shared/managerApproval";
@@ -672,9 +672,9 @@ export default function POS() {
   const extraCheckout=useCashierExtraCharges({
     channel:"POS",branchId,shiftId:shift?.id,token:activeTab.clientRequestId,tab:activeTab,splitLegs:isSplitPayment?activeTab.paymentLegs:undefined,
     enabled:canSubmitSale,connected:!offline,confirmed:externalPaymentConfirmed,cartLength:cart.length,
-    goodsTender:(isSplitPayment?activeTab.paymentLegs?.[0]?.amount:activeTab.payInput||String(total))??"0",busy:sale.isPending,
+    goodsTender:(isSplitPayment?activeTab.paymentLegs?.[0]?.amount:checkoutGoodsTenderAmount({extraCharges:activeTab.extraCharges,method:activeTab.method,paidAmount:paidD.toFixed(2),codMode,fallbackAmount:activeTab.payInput||String(total)}))??"0",busy:sale.isPending,
     onChange:extraCharges=>patchActive({extraCharges,externalPayment:null,paymentLegs:(activeTab.paymentLegs??[]).map(leg=>({...leg,externalPayment:null}))}),
-    onCommitted:(id,lastCheckout)=>patchTab(id,{extraCharges:undefined,payInput:"",externalPayment:null,paymentRef:"",clientRequestId:newClientRequestId(),lastCheckout}),
+    onCommitted:(id,lastCheckout)=>patchTab(id,{extraCharges:undefined,...clearedChargeOnlyTender("POS"),clientRequestId:newClientRequestId(),lastCheckout}),
     refresh:()=>void shiftQ.refetch(),
   });
   const {submitChargesOnly}=extraCheckout;
@@ -965,12 +965,8 @@ export default function POS() {
           splitLegs.every((l) => l.method === "CASH"))) &&
       !isCredit &&
       !codMode;
-    const payAmount =
-      checkoutExtraTotal(activeTab.extraCharges).gt(0) &&
-      activeTab.method === "CASH" &&
-      paidD.gt(0)
-        ? paidD.toFixed(2)
-        : isCredit ? money(paid) : cashFull ? money(cashRoundedTotal) : money(total);
+    const payAmount = checkoutGoodsTenderAmount({extraCharges:activeTab.extraCharges,method:activeTab.method,paidAmount:paidD.toFixed(2),codMode,
+      fallbackAmount:isCredit ? money(paid) : cashFull ? money(cashRoundedTotal) : money(total)});
     const sendsGoodsPayment =
       checkoutExtraTotal(activeTab.extraCharges).gt(0) ||
       isSplitPayment || !((codMode && !deliverySendsPayment(activeTab.method, paidD)) || (isCredit && paidD.eq(0)));

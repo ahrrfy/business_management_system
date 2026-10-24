@@ -1,5 +1,21 @@
 import { D } from "@/lib/money";
 import type { CheckoutChargesInput } from "@shared/checkoutCharges";
+import type {PosPaymentLegDraft} from "./posShared";
+
+/** Confirmed charge-only tenders are consumed and cannot remain on the next checkout. */
+export function clearedChargeOnlyTender(channel:"POS"):{payInput:string;paymentRef:string;externalPayment:null;paymentLegs:PosPaymentLegDraft[]};
+export function clearedChargeOnlyTender(channel:"PRINT_POS"):{payInput:string;paymentRef:string;externalPayment:null;splitMode:false;splitLegs:PosPaymentLegDraft[]};
+export function clearedChargeOnlyTender(channel:"POS"|"PRINT_POS"):object{
+  const common={payInput:"",paymentRef:"",externalPayment:null};
+  return channel==="POS"?{...common,paymentLegs:[]}:{...common,splitMode:false as const,splitLegs:[]};
+}
+
+/** Extras require a real goods leg even when all COD goods are payable later. */
+export function checkoutGoodsTenderAmount(input:{extraCharges?:CheckoutChargesInput;method:string;paidAmount:string;codMode:boolean;fallbackAmount:string}){
+  const paid=D(input.paidAmount);
+  return checkoutExtraTotal(input.extraCharges).gt(0)&&input.method==="CASH"&&(input.codMode||paid.gt(0))
+    ?paid.toFixed(2):input.fallbackAmount;
+}
 export function checkoutExtraTotal(input?: CheckoutChargesInput) {
   return [
     ...(input?.serviceCharges ?? []),
