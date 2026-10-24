@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useSearch } from "wouter";
 import type { ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterInputs, type RouterOutputs } from "@/lib/trpc";
@@ -68,24 +68,61 @@ const paymentKindLabel: Record<string, string> = {
   COURIER_REMITTANCE: "توريد عهدة الناقل",
 };
 
-export function ChargesWorkspace() {
+export type ChargesWorkspaceProps = {
+  embedded?: boolean;
+  branchId?: number;
+  initialChargeId?: number;
+};
+
+export function ChargesWorkspace({
+  embedded = false,
+  branchId: selectedBranchId,
+  initialChargeId,
+}: ChargesWorkspaceProps = {}) {
+  const me = trpc.auth.me.useQuery();
   const urlSearch = useSearch();
-  const urlParams = useMemo(() => new URLSearchParams(urlSearch), [urlSearch]);
-  const linkedRequestId = Number(urlParams.get("requestId") || 0);
-  const me = trpc.auth.me.useQuery(),
-    branches = trpc.branches.list.useQuery(),
-    utils = trpc.useUtils();
   const [chosenBranch, setChosenBranch] = useState(
-    () => urlParams.get("branchId") || "",
+    () => new URLSearchParams(urlSearch).get("branchId") || "",
   );
   const branchValue = chosenBranch || me.data?.branchId;
-  const branchId = branchValue ? Number(branchValue) : undefined;
+  const branchId = embedded
+    ? selectedBranchId
+    : branchValue
+      ? Number(branchValue)
+      : undefined;
+  return (
+    <ChargesWorkspaceContent
+      key={`${me.data?.id ?? "anonymous"}:${branchId ?? "unselected"}:${embedded}`}
+      embedded={embedded}
+      branchId={branchId}
+      initialChargeId={initialChargeId}
+      onBranchChange={setChosenBranch}
+    />
+  );
+}
+
+function ChargesWorkspaceContent({
+  embedded,
+  branchId,
+  initialChargeId,
+  onBranchChange,
+}: ChargesWorkspaceProps & { onBranchChange: (value: string) => void }) {
+  const urlSearch = useSearch();
+  const urlParams = useMemo(() => new URLSearchParams(urlSearch), [urlSearch]);
+  const linkedRequestId = embedded
+    ? 0
+    : Number(urlParams.get("requestId") || 0);
+  const me = trpc.auth.me.useQuery(),
+    branches = trpc.branches.list.useQuery(undefined, { enabled: !embedded }),
+    utils = trpc.useUtils();
   const [search, setSearch] = useState(""),
     [searchDebounced, setSearchDebounced] = useState(""),
     [page, setPage] = useState(0);
   const [lookupSearch, setLookupSearch] = useState(""),
     [lookupDebounced, setLookupDebounced] = useState("");
-  const [selected, setSelected] = useState<number | null>(null),
+  const [selected, setSelected] = useState<number | null>(
+      initialChargeId ?? null,
+    ),
     [showCreate, setShowCreate] = useState(linkedRequestId > 0);
   const [category, setCategory] =
       useState<FulfillmentChargeCategory>("SERVICE"),
@@ -120,9 +157,18 @@ export function ChargesWorkspace() {
   } | null>(null);
   const [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
-    [busy, setBusy] = useState(false),
-    [pending, setPending] = useState<Command | null>(null);
+    [busy, setBusy] = useState(false);
   const scope = `fulfillment-charge:${me.data?.id ?? 0}:${branchId}`;
+  const [pending, setPending] = useState<Command | null>(() => {
+    try {
+      const saved = localStorage.getItem(`${scope}:pending`);
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+  const openedInitial = useRef<number | undefined>(undefined);
+  const initialActionFor = useRef<number | undefined>(undefined);
   useEffect(() => {
     const timer = setTimeout(() => {
       setSearchDebounced(search);
@@ -135,7 +181,7 @@ export function ChargesWorkspace() {
     return () => clearTimeout(timer);
   }, [lookupSearch]);
   useEffect(() => {
-    setSelected(null);
+    setSelected(initialChargeId ?? null);
     setProof(null);
     setError("");
     try {
@@ -145,6 +191,18 @@ export function ChargesWorkspace() {
       setPending(null);
     }
   }, [scope]);
+  useEffect(() => {
+    if (!pending || pending.action === "create") return;
+    const target =
+      "id" in pending.input
+        ? pending.input.id
+        : "allocations" in pending.input
+          ? pending.input.allocations[0]?.chargeId
+          : undefined;
+    if (target) setSelected(target);
+    setAction(pending.action);
+    setShowCreate(false);
+  }, [pending]);
   const list = trpc.delivery.fulfillment.charges.list.useQuery(
     {
       branchId: branchId!,
@@ -189,6 +247,67 @@ export function ChargesWorkspace() {
       trpc.delivery.fulfillment.charges.initiateExternalPayment.useMutation(),
     confirmProof =
       trpc.delivery.fulfillment.charges.confirmExternalPayment.useMutation();
+  useEffect(() => {
+    if (
+      !initialChargeId ||
+      !Number.isSafeInteger(initialChargeId) ||
+      initialChargeId <= 0 ||
+      openedInitial.current === initialChargeId ||
+      busy ||
+      pending ||
+      proof ||
+      initiate.isPending ||
+      confirmProof.isPending ||
+      localStorage.getItem(`${scope}:pending`)
+    )
+      return;
+    openedInitial.current = initialChargeId;
+    setSelected(initialChargeId);
+    setAction("collect");
+    setShowCreate(false);
+    setPaymentAmount("");
+    setReference("");
+    setOriginalPayment("");
+    setParty("");
+    setConsignment("");
+    setError("");
+    setNotice("");
+  }, [
+    initialChargeId,
+    busy,
+    pending,
+    proof,
+    initiate.isPending,
+    confirmProof.isPending,
+    scope,
+  ]);
+  useEffect(() => {
+    if (
+      !row ||
+      row.id !== initialChargeId ||
+      initialActionFor.current === row.id ||
+      pending ||
+      busy ||
+      proof
+    )
+      return;
+    initialActionFor.current = row.id;
+    setAction(
+      row.status === "DRAFT"
+        ? "approve"
+        : row.category === "SHOP_EXPENSE"
+          ? "settlePayee"
+          : "collect",
+    );
+  }, [
+    row?.id,
+    row?.status,
+    row?.category,
+    initialChargeId,
+    pending,
+    busy,
+    proof,
+  ]);
   const can = (op: Action) =>
     lifecycleActionAllowed(
       me.data,
@@ -569,23 +688,24 @@ export function ChargesWorkspace() {
   return (
     <section dir="rtl" className="space-y-3">
       <div className="flex flex-wrap items-end gap-2">
-        <Field label="الفرع">
-          <AppSelect
-            value={String(branchId ?? "")}
-            onValueChange={(value) => {
-              setChosenBranch(value);
-              setPage(0);
-            }}
-            disabled={busy}
-          >
-            <option value="">اختر الفرع</option>
-            {(branches.data ?? []).map((b) => (
-              <option key={b.id} value={String(b.id)}>
-                {b.name}
-              </option>
-            ))}
-          </AppSelect>
-        </Field>
+        {!embedded && (
+          <Field label="الفرع">
+            <AppSelect
+              value={String(branchId ?? "")}
+              onValueChange={(value) => {
+                onBranchChange(value);
+              }}
+              disabled={busy}
+            >
+              <option value="">اختر الفرع</option>
+              {(branches.data ?? []).map((b) => (
+                <option key={b.id} value={String(b.id)}>
+                  {b.name}
+                </option>
+              ))}
+            </AppSelect>
+          </Field>
+        )}
         <Button
           variant="outline"
           disabled={!branchId || disabled || !can("create")}
@@ -958,12 +1078,19 @@ export function ChargesWorkspace() {
                         action === "refund"
                           ? ["COLLECTION", "COURIER_REMITTANCE"].includes(
                               p.payment.kind,
-                            )
+                            ) &&
+                            p.receipt?.status === "COMPLETED" &&
+                            p.receipt.approvalStatus === "APPROVED" &&
+                            p.receipt.direction === "IN" &&
+                            p.receipt.branchId === row.branchId
                           : p.payment.kind === "COURIER_COLLECTION",
                       )
                       .map((p) => (
                         <option key={p.payment.id} value={String(p.payment.id)}>
-                          حركة {p.payment.id} — {fmt(p.payment.amount)} —{" "}
+                          {paymentKindLabel[p.payment.kind] ?? "حركة"}{" "}
+                          {p.payment.id}
+                          {p.receipt ? ` — إيصال ${p.receipt.id}` : ""} —{" "}
+                          {fmt(p.payment.amount)} —{" "}
                           {p.receipt
                             ? paymentMethodCompact(p.receipt.paymentMethod)
                             : "بعهدة الناقل"}

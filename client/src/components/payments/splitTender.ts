@@ -35,8 +35,9 @@ export function tenderFingerprint(
   branchId: number,
   channel: "POS" | "RECEPTION",
   part: Pick<TenderPart, "method" | "amount" | "reference">,
+  additionalAmount = "0",
 ) {
-  return `${channel}|${branchId}|${part.method}|${tenderAmount(part.amount).toFixed(2)}|${part.reference.trim().toUpperCase()}`;
+  return `${channel}|${branchId}|${part.method}|${tenderAmount(part.amount).plus(tenderAmount(additionalAmount)).toFixed(2)}|${part.reference.trim().toUpperCase()}`;
 }
 export function tenderTotals(parts: TenderPart[], due: string) {
   const tendered = parts.reduce(
@@ -71,6 +72,7 @@ export function tenderProblem(
   due: string,
   branchId: number,
   channel: "POS" | "RECEPTION",
+  additionalFirstPaymentAmount = "0",
 ): string | null {
   if (!parts.length) return null;
   if (parts.length > 10) return "الحد الأقصى عشر دفعات للفاتورة.";
@@ -86,7 +88,7 @@ export function tenderProblem(
         !part.proof?.confirmed ||
         !Number.isInteger(part.proof.attemptId) ||
         (part.proof.attemptId ?? 0) <= 0 ||
-        part.proof.fingerprint !== tenderFingerprint(branchId, channel, part))
+        part.proof.fingerprint !== tenderFingerprint(branchId, channel, part,index===0?additionalFirstPaymentAmount:"0"))
     )
       return `أكّد نجاح الدفعة ${index + 1} بالمرجع والمبلغ الحاليين.`;
   }

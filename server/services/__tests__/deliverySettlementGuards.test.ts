@@ -90,7 +90,7 @@ async function dispatchedCreditInvoice(shiftId: number, reqId: string) {
     paymentMethod: "CASH", paidAmount: "0",
     clientRequestId: reqId,
     regularSale: { lines: [LINE], amount: "10000.00" },
-    delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+    delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
   }, CASHIER);
   const invoiceId = r.regularSale!.invoiceId;
   const cn = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.invoiceId, invoiceId)))[0];
@@ -372,7 +372,7 @@ describe("G7 — لا ازدواج عهدة بين قناة المتجر وقن�
       status: "PENDING", paidAmount: "0.00", createdBy: 1,
     });
     await expect(
-      dispatchInvoiceToDelivery({ invoiceId: 501, partyId: 1, clientRequestId: "g7-a" }, MANAGER),
+      dispatchInvoiceToDelivery({ invoiceId: 501, partyId: 1, assignedUserId: 3, clientRequestId: "g7-a" }, MANAGER),
     ).rejects.toThrow(/طلب متجر/);
   });
 
@@ -416,7 +416,7 @@ describe("G8 — أمانة COUNTER لأمر شغل تُقاس بإيصالات 
       deliveryAddress: "بغداد", createdBy: 2,
     });
     await expect(
-      dispatchToDelivery({ workOrderId: 900, partyId: 1, deliveryFee: "5000.00", clientRequestId: "g8" }, CASHIER),
+      dispatchToDelivery({ workOrderId: 900, partyId: 1, assignedUserId: 3, deliveryFee: "5000.00", clientRequestId: "g8" }, CASHIER),
     ).rejects.toThrow(/بلا إيصال قبض أمانة/);
   });
 });
@@ -432,7 +432,7 @@ describe("G9 — التقاط أمانة الأجرة محروس خادمياً"
         deliveryFeeHeld: "5000.00",
         clientRequestId: "g9-a",
         regularSale: { lines: [LINE], amount: "10000.00" },
-        delivery: { partyId: 1, fee: "5000.00", feeCollection: "COURIER" },
+        delivery: { partyId: 1, assignedUserId: 3, fee: "5000.00", feeCollection: "COURIER" },
       }, CASHIER),
     ).rejects.toThrow(/مقبوضة في الاستقبال/);
 
@@ -444,7 +444,7 @@ describe("G9 — التقاط أمانة الأجرة محروس خادمياً"
         deliveryFeeHeld: "5000.00",
         clientRequestId: "g9-b",
         regularSale: { lines: [LINE], amount: "10000.00" },
-        delivery: { partyId: 1, fee: "3000.00", feeCollection: "COUNTER" },
+        delivery: { partyId: 1, assignedUserId: 3, fee: "3000.00", feeCollection: "COUNTER" },
       }, CASHIER),
     ).rejects.toThrow(/يجب أن تساوي/);
 
@@ -520,7 +520,7 @@ describe("G13 — codAmount عند إسناد فاتورة يطرح المرتج
       priceTier: "RETAIL", subtotal: "10000.00", total: "10000.00", costTotal: "5000.00",
       status: "PENDING", paidAmount: "0.00", returnedTotal: "3000.00", createdBy: 1,
     });
-    const d = await dispatchInvoiceToDelivery({ invoiceId: 601, partyId: 1, clientRequestId: "g13-d" }, MANAGER);
+    const d = await dispatchInvoiceToDelivery({ assignedUserId: 3, invoiceId: 601, partyId: 1, clientRequestId: "g13-d" }, MANAGER);
     expect(d.codAmount).toBe("7000.00");
     expect(await partyBalance()).toBe("0.00");
   });

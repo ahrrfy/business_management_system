@@ -20,6 +20,7 @@ export function useSplitTender(input: {
   channel: "POS" | "RECEPTION";
   canConfirm: boolean;
   disabled?: boolean;
+  additionalFirstPaymentAmount?: string;
 }) {
   const [editorOpen, setEditorOpen] = useState(false);
   const [parts, setParts] = useState<TenderPart[]>([]);
@@ -33,7 +34,7 @@ export function useSplitTender(input: {
   const scope = `${input.ownerId ?? 0}:${input.branchId}:${input.channel}:${input.sessionKey}`;
   const draftKey = `split-tender-draft:${scope}`;
   const [readyScope, setReadyScope] = useState("");
-  const currentParts = readyScope === scope ? parts : [];
+  const currentParts = readyScope === scope ? parts.map((part,index)=>({...part,proof:part.proof?.fingerprint===tenderFingerprint(input.branchId,input.channel,part,index===0?input.additionalFirstPaymentAmount:"0")?part.proof:null})) : [];
   const cacheKey = (fingerprint: string) =>
     `split-tender-proof:${scope}:${fingerprint}`;
   const restore = (fingerprint: string): TenderProof | null => {
@@ -68,6 +69,7 @@ export function useSplitTender(input: {
   useEffect(() => {
     if (readyScope === scope) storeTender(draftKey, parts);
   }, [parts, scope, readyScope]);
+  const fingerprintFor=(part:TenderPart,index:number)=>tenderFingerprint(input.branchId,input.channel,part,index===0?input.additionalFirstPaymentAmount:"0");
   const router = input.channel === "POS" ? trpc.sales : trpc.reception;
   const start = router.initiateExternalPayment.useMutation();
   const finish = router.confirmExternalPayment.useMutation();
@@ -78,14 +80,10 @@ export function useSplitTender(input: {
     if (readyScope !== scope) return;
     setError(null);
     setParts((previous) =>
-      previous.map((part) => {
+      previous.map((part,index) => {
         if (part.id !== id) return part;
         const next = { ...part, ...patch };
-        const fingerprint = tenderFingerprint(
-          input.branchId,
-          input.channel,
-          next,
-        );
+        const fingerprint = fingerprintFor(next,index);
         return {
           ...next,
           proof:
@@ -116,7 +114,7 @@ export function useSplitTender(input: {
       !tenderAmount(part.amount).gt(0)
     )
       return setError("حدّد الفرع ومبلغ الدفعة ومرجع العملية أولاً.");
-    const fingerprint = tenderFingerprint(input.branchId, input.channel, part);
+    const fingerprint = fingerprintFor(part,parts.indexOf(part));
     const epoch = requestEpoch.current;
     const stillCurrent = () =>
       epoch === requestEpoch.current &&
@@ -124,6 +122,7 @@ export function useSplitTender(input: {
       currentInput.current.ownerId === input.ownerId &&
       currentInput.current.channel === input.channel &&
       currentInput.current.sessionKey === input.sessionKey &&
+      currentInput.current.additionalFirstPaymentAmount === input.additionalFirstPaymentAmount &&
       currentInput.current.canConfirm &&
       !currentInput.current.disabled;
     busy.current = true;
@@ -149,7 +148,7 @@ export function useSplitTender(input: {
         const args = {
           branchId: input.branchId,
           method: part.method,
-          amount: tenderAmount(part.amount).toFixed(2),
+          amount: tenderAmount(part.amount).plus(parts.indexOf(part)===0?tenderAmount(input.additionalFirstPaymentAmount??"0"):0).toFixed(2),
           reference: part.reference.trim(),
           requestId,
           deviceId,
@@ -184,9 +183,9 @@ export function useSplitTender(input: {
       if (!stillCurrent()) return;
       const confirmed = proof;
       setParts((previous) =>
-        previous.map((p) =>
+        previous.map((p,index) =>
           p.id === id &&
-          tenderFingerprint(input.branchId, input.channel, p) === fingerprint
+          fingerprintFor(p,index) === fingerprint
             ? { ...p, proof: confirmed }
             : p,
         ),
@@ -204,12 +203,8 @@ export function useSplitTender(input: {
   }
   function reset(committed = false) {
     if (committed)
-      for (const part of parts) {
-        const fingerprint = tenderFingerprint(
-          input.branchId,
-          input.channel,
-          part,
-        );
+      for (const [index,part] of Array.from(parts.entries())) {
+        const fingerprint = fingerprintFor(part,index);
         proofCache.current.delete(fingerprint);
         storeTender(cacheKey(fingerprint), null);
       }
@@ -222,6 +217,7 @@ export function useSplitTender(input: {
     setError(null);
   }
   return {
+    proofAmount:(part:TenderPart,index:number)=>tenderAmount(part.amount).plus(index===0?tenderAmount(input.additionalFirstPaymentAmount??"0"):0).toFixed(2),
     ready: readyScope === scope,
     editorOpen: readyScope === scope && editorOpen,
     setEditorOpen,
@@ -273,13 +269,14 @@ export function useSplitTender(input: {
     reset,
     totals: (due: string) => tenderTotals(currentParts, due),
     problem: (due: string) =>
-      tenderProblem(currentParts, due, input.branchId, input.channel),
+      tenderProblem(currentParts, due, input.branchId, input.channel,input.additionalFirstPaymentAmount),
     payments: (due: string) => {
       const problem = tenderProblem(
         currentParts,
         due,
         input.branchId,
         input.channel,
+        input.additionalFirstPaymentAmount,
       );
       if (problem) {
         setError(problem);

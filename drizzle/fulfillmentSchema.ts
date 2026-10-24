@@ -8,6 +8,7 @@ import {
   foreignKey,
   index,
   int,
+  json,
   mysqlEnum,
   mysqlTable,
   text,
@@ -39,6 +40,10 @@ import {
   FULFILLMENT_CHARGE_CATEGORIES,
   FULFILLMENT_CHARGE_STATUSES,
   FULFILLMENT_REQUEST_STATUSES,
+} from "../shared/fulfillment";
+import type {
+  AftercareSettlementDecision,
+  AftercareSettlementSourceRight,
 } from "../shared/fulfillment";
 
 const id = (name: string) => bigint(name, { mode: "number" });
@@ -296,7 +301,7 @@ export const fulfillmentCharges = mysqlTable(
     ),
     customerCheck: check(
       "chk_fc_customer",
-      sql`${t.amount} = 0 OR ${t.customerId} IS NOT NULL`,
+      sql`${t.amount} = 0 OR ${t.customerId} IS NOT NULL OR (${t.category} = 'SERVICE' AND ${t.status} = 'APPROVED' AND ${t.externalCost} = 0 AND ${t.paidAmount} = ${t.amount} AND ${t.payeeSupplierId} IS NULL AND ${t.payeePartyId} IS NULL AND ${t.payeeUserId} IS NULL AND ${t.payeeName} IS NULL)`,
     ),
     payeeCheck: check(
       "chk_fc_payee",
@@ -481,6 +486,7 @@ export const aftercareLines = mysqlTable(
     baseQuantity: int("baseQuantity").notNull(),
     executedBaseQuantity: int("executedBaseQuantity").default(0).notNull(),
     deliveredBaseQuantity: int("deliveredBaseQuantity").default(0).notNull(),
+    settledBaseQuantity: int("settledBaseQuantity").default(0).notNull(),
     originalMovementId: id("originalMovementId"),
     heldConfirmedBy: int("heldConfirmedBy"),
     heldConfirmedAt: timestamp("heldConfirmedAt"),
@@ -531,7 +537,7 @@ export const aftercareLines = mysqlTable(
     }),
     qtyCheck: check(
       "chk_acl_qty",
-      sql`${t.baseQuantity} > 0 AND ${t.executedBaseQuantity} >= 0 AND ${t.executedBaseQuantity} <= ${t.baseQuantity} AND ${t.deliveredBaseQuantity} >= 0 AND ${t.deliveredBaseQuantity} <= ${t.executedBaseQuantity}`,
+      sql`${t.baseQuantity} > 0 AND ${t.executedBaseQuantity} >= 0 AND ${t.executedBaseQuantity} <= ${t.baseQuantity} AND ${t.deliveredBaseQuantity} >= 0 AND ${t.deliveredBaseQuantity} <= ${t.executedBaseQuantity} AND ${t.settledBaseQuantity} >= 0 AND ${t.deliveredBaseQuantity} + ${t.settledBaseQuantity} <= ${t.baseQuantity}`,
     ),
     sourceCheck: check(
       "chk_acl_source",
@@ -663,6 +669,7 @@ export const aftercareExecutionLines = mysqlTable(
     custodyBaseQuantity: int("custodyBaseQuantity").default(0).notNull(),
     deliveredBaseQuantity: int("deliveredBaseQuantity").default(0).notNull(),
     returnedBaseQuantity: int("returnedBaseQuantity").default(0).notNull(),
+    settledBaseQuantity: int("settledBaseQuantity").default(0).notNull(),
     movementId: id("movementId"),
     reusedFromLineId: id("reusedFromLineId"),
     unitCost: amount("unitCost").default("0").notNull(),
@@ -702,7 +709,7 @@ export const aftercareExecutionLines = mysqlTable(
     }),
     qtyCheck: check(
       "chk_ael_qty",
-      sql`${t.baseQuantity} > 0 AND ${t.fulfilledBaseQuantity} >= 0 AND ${t.custodyBaseQuantity} >= 0 AND ${t.deliveredBaseQuantity} >= 0 AND ${t.returnedBaseQuantity} >= 0 AND ${t.custodyBaseQuantity} + ${t.deliveredBaseQuantity} + ${t.returnedBaseQuantity} <= ${t.fulfilledBaseQuantity}`,
+      sql`${t.baseQuantity} > 0 AND ${t.fulfilledBaseQuantity} >= 0 AND ${t.custodyBaseQuantity} >= 0 AND ${t.deliveredBaseQuantity} >= 0 AND ${t.returnedBaseQuantity} >= 0 AND ${t.settledBaseQuantity} >= 0 AND ${t.settledBaseQuantity} + ${t.deliveredBaseQuantity} <= ${t.baseQuantity} AND ${t.custodyBaseQuantity} + ${t.deliveredBaseQuantity} + ${t.returnedBaseQuantity} <= ${t.fulfilledBaseQuantity}`,
     ),
     kindCheck: check(
       "chk_ael_kind",
@@ -720,6 +727,143 @@ export const aftercareExecutionLines = mysqlTable(
     reuseCheck: check(
       "chk_ael_reuse",
       sql`${t.reusedFromLineId} IS NULL OR (${t.kind} = 'OUTPUT' AND ${t.movementId} IS NULL AND ${t.unitCost} = 0 AND ${t.lineCost} = 0)`,
+    ),
+  }),
+);
+
+/** One final controlled stop per case; source rights remain open until real sale return/refund. */
+export const aftercareSettlements = mysqlTable(
+  "aftercareSettlements",
+  {
+    id: id("id").autoincrement().primaryKey(),
+    caseId: id("caseId").notNull(),
+    branchId: id("branchId").notNull(),
+    status: mysqlEnum("status", [
+      "REQUESTED",
+      "APPROVED",
+      "POSTED",
+      "WITHDRAWN",
+    ])
+      .default("REQUESTED")
+      .notNull(),
+    activeCaseId: id("activeCaseId").generatedAlwaysAs(
+      sql`(CASE WHEN status <> 'WITHDRAWN' THEN caseId ELSE NULL END)`,
+      { mode: "stored" },
+    ),
+    caseVersion: int("caseVersion").notNull(),
+    previewHash: char("previewHash", { length: 64 }).notNull(),
+    reason: text("reason").notNull(),
+    evidence: text("evidence").notNull(),
+    decisions: json("decisions")
+      .$type<AftercareSettlementDecision[]>()
+      .notNull(),
+    sourceRights: json("sourceRights")
+      .$type<AftercareSettlementSourceRight[]>()
+      .notNull(),
+    restoredValue: amount("restoredValue").default("0").notNull(),
+    createdBy: int("createdBy").notNull(),
+    approvedBy: int("approvedBy"),
+    approvedAt: timestamp("approvedAt"),
+    postedBy: int("postedBy"),
+    postedAt: timestamp("postedAt"),
+    ...identity(),
+    ...dates(),
+  },
+  (t): MySqlTableExtraConfig => ({
+    caseUq: unique("uq_acs_case").on(t.activeCaseId),
+    caseIdx: index("idx_acs_case").on(t.caseId),
+    keyUq: unique("uq_acs_key").on(t.branchId, t.clientRequestId),
+    scopeIdx: index("idx_acs_scope").on(t.branchId, t.status),
+    caseFk: foreignKey({
+      name: "fk_acs_case",
+      columns: [t.caseId],
+      foreignColumns: [aftercareCases.id],
+    }),
+    branchFk: foreignKey({
+      name: "fk_acs_branch",
+      columns: [t.branchId],
+      foreignColumns: [branches.id],
+    }),
+    makerFk: foreignKey({
+      name: "fk_acs_maker",
+      columns: [t.createdBy],
+      foreignColumns: [users.id],
+    }),
+    checkerFk: foreignKey({
+      name: "fk_acs_checker",
+      columns: [t.approvedBy],
+      foreignColumns: [users.id],
+    }),
+    posterFk: foreignKey({
+      name: "fk_acs_poster",
+      columns: [t.postedBy],
+      foreignColumns: [users.id],
+    }),
+    valueCheck: check(
+      "chk_acs_value",
+      sql`${t.restoredValue} >= 0 AND ${t.version} > 0 AND ${t.caseVersion} > 0`,
+    ),
+    sodCheck: check(
+      "chk_acs_sod",
+      sql`${t.approvedBy} IS NULL OR ${t.approvedBy} <> ${t.createdBy}`,
+    ),
+    stateCheck: check(
+      "chk_acs_state",
+      sql`(${t.status} = 'WITHDRAWN' AND ${t.postedBy} IS NULL) OR (${t.status} = 'REQUESTED' AND ${t.approvedBy} IS NULL AND ${t.postedBy} IS NULL) OR (${t.status} = 'APPROVED' AND ${t.approvedBy} IS NOT NULL AND ${t.approvedAt} IS NOT NULL AND ${t.postedBy} IS NULL) OR (${t.status} = 'POSTED' AND ${t.approvedBy} IS NOT NULL AND ${t.postedBy} IS NOT NULL AND ${t.postedAt} IS NOT NULL)`,
+    ),
+  }),
+);
+
+export const aftercareSettlementLines = mysqlTable(
+  "aftercareSettlementLines",
+  {
+    id: id("id").autoincrement().primaryKey(),
+    settlementId: id("settlementId").notNull(),
+    executionLineId: id("executionLineId").notNull(),
+    originalIssueLineId: id("originalIssueLineId"),
+    originalMovementId: id("originalMovementId"),
+    returnMovementId: id("returnMovementId"),
+    usableBaseQuantity: int("usableBaseQuantity").notNull(),
+    consumedBaseQuantity: int("consumedBaseQuantity").notNull(),
+    damagedBaseQuantity: int("damagedBaseQuantity").notNull(),
+    restoredValue: amount("restoredValue").default("0").notNull(),
+    evidence: text("evidence").notNull(),
+  },
+  (t): MySqlTableExtraConfig => ({
+    lineUq: unique("uq_acsl_line").on(t.executionLineId),
+    movementUq: unique("uq_acsl_movement").on(t.returnMovementId),
+    settlementFk: foreignKey({
+      name: "fk_acsl_settlement",
+      columns: [t.settlementId],
+      foreignColumns: [aftercareSettlements.id],
+    }),
+    lineFk: foreignKey({
+      name: "fk_acsl_line",
+      columns: [t.executionLineId],
+      foreignColumns: [aftercareExecutionLines.id],
+    }),
+    issueFk: foreignKey({
+      name: "fk_acsl_issue",
+      columns: [t.originalIssueLineId],
+      foreignColumns: [aftercareExecutionLines.id],
+    }),
+    originalFk: foreignKey({
+      name: "fk_acsl_original",
+      columns: [t.originalMovementId],
+      foreignColumns: [inventoryMovements.id],
+    }),
+    returnFk: foreignKey({
+      name: "fk_acsl_return",
+      columns: [t.returnMovementId],
+      foreignColumns: [inventoryMovements.id],
+    }),
+    qtyCheck: check(
+      "chk_acsl_qty",
+      sql`${t.usableBaseQuantity} >= 0 AND ${t.consumedBaseQuantity} >= 0 AND ${t.damagedBaseQuantity} >= 0 AND ${t.usableBaseQuantity} + ${t.consumedBaseQuantity} + ${t.damagedBaseQuantity} > 0 AND ${t.restoredValue} >= 0`,
+    ),
+    returnCheck: check(
+      "chk_acsl_return",
+      sql`${t.returnMovementId} IS NULL OR (${t.usableBaseQuantity} > 0 AND ${t.originalMovementId} IS NOT NULL AND ${t.originalIssueLineId} IS NOT NULL)`,
     ),
   }),
 );

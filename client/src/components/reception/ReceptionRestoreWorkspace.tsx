@@ -52,6 +52,7 @@ export interface ReceptionRestoreWorkspaceInput {
   pendingDeferredRestoreRef: React.RefObject<boolean>;
   suppressHydratedPhoneResetRef: React.RefObject<boolean>;
   receptionPhone: string;
+  setCheckoutCharges: React.Dispatch<React.SetStateAction<import("@shared/checkoutCharges").CheckoutChargesInput>>;
   setCart: React.Dispatch<
     React.SetStateAction<import("@/components/reception/cartMath").CartLine[]>
   >;
@@ -111,6 +112,7 @@ export async function ReceptionRestoreWorkspace(
     pendingDeferredRestoreRef,
     suppressHydratedPhoneResetRef,
     receptionPhone,
+    setCheckoutCharges,
     setCart,
     setSelKey,
     setReceptionPhone,
@@ -151,6 +153,7 @@ export async function ReceptionRestoreWorkspace(
         channelHandle: snapshot.channel.handle,
         linkedConversationId: snapshot.channel.linkedConversationId,
         cart: snapshot.cart,
+        checkoutCharges:snapshot.checkoutCharges,
       });
       const resolved = await resolvePromotionM.mutateAsync({
         branchId,
@@ -240,6 +243,7 @@ export async function ReceptionRestoreWorkspace(
     suppressHydratedPhoneResetRef.current =
       snapshot.phoneInput !== receptionPhone;
     setCart(restoredCart);
+    setCheckoutCharges(snapshot.checkoutCharges??{});
     setSelKey(null);
     setReceptionPhone(snapshot.phoneInput);
     setCustomer(restored.customer);

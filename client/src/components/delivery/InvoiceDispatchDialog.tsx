@@ -23,10 +23,12 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { fmt, moneyInput } from "@/lib/money";
 import { Checkbox } from "@/components/ui/checkbox";
 import { FulfillmentSourceActions } from "@/components/fulfillment/FulfillmentSourceActions";
+import { deliveryDriverOptions, requiresDeliveryDriver } from "./driverOptions";
 
 export interface DispatchableInvoice {
   id: number;
   invoiceNumber: string;
+  branchId?: number | null;
   total: string | number;
   paidAmount?: string | number | null;
   returnedTotal?: string | number | null;
@@ -86,6 +88,10 @@ export function InvoiceDispatchDialog({
 
   const parties = partiesQ.data ?? [];
   const party = parties.find((p) => String(p.id) === partyId);
+  const driverBranchId = candidatesQ.data?.anchor.branchId ?? invoice?.branchId;
+  const driverChoices = driverBranchId == null ? [] : deliveryDriverOptions(party, driverBranchId);
+  const requiresDriver = requiresDeliveryDriver(party);
+  const invalidDriver = assignedUserId !== "" && !driverChoices.some(driver=>driver.userId===Number(assignedUserId));
   const remaining = useMemo(() => {
     return availableInvoices.filter((row) => invoiceIds.includes(row.id)).reduce(
       (sum, row) => sum.plus(Decimal.max(0, new Decimal(row.total || 0).minus(row.paidAmount || 0).minus(row.returnedTotal || 0))),
@@ -125,7 +131,7 @@ export function InvoiceDispatchDialog({
   });
 
   const submit = (partialDispatchConfirmed?: boolean) => {
-    if (!invoice || !feeValid) return;
+    if (!invoice || !feeValid || (requiresDriver && !assignedUserId) || invalidDriver) return;
     if (party?.partyType === "COMPANY" && !externalTrackingRef.trim()) {
       notify.err("رقم بوليصة شركة التوصيل مطلوب", "امسح الباركود المطبوع على البوليصة قبل الإسناد.");
       return;
@@ -232,22 +238,22 @@ export function InvoiceDispatchDialog({
             </AppSelect>
           </div>
 
-          {party?.partyType === "COMPANY" &&
-            (party.drivers?.length ?? 0) > 0 && (
+          {(requiresDriver || (party?.partyType === "COMPANY" && driverChoices.length > 0)) && (
               <div className="space-y-1">
-                <Label>السائق داخل الشركة</Label>
+                <Label>{requiresDriver ? "المندوب الموظف المحدد" : "السائق داخل الشركة"}</Label>
                 <AppSelect
                   value={assignedUserId}
                   onValueChange={setAssignedUserId}
-                  aria-label="السائق داخل الشركة"
+                  aria-label={requiresDriver ? "المندوب الموظف المحدد" : "السائق داخل الشركة"}
                 >
-                  <option value="">طابور الشركة — يطالب به أول سائق</option>
-                  {party.drivers?.map((driver) => (
+                  <option value="">{requiresDriver ? "اختر موظفاً نشطاً من الفرع صراحة" : "طابور الشركة — دون موظف محدد"}</option>
+                  {driverChoices.map((driver) => (
                     <option key={driver.userId} value={String(driver.userId)}>
                       {driver.name}
                     </option>
                   ))}
                 </AppSelect>
+                {requiresDriver && driverChoices.length === 0 && <p className="text-xs text-destructive">لا يوجد حساب مندوب نشط مؤهل في فرع الفاتورة؛ راجع ربط جهة التوصيل قبل الإسناد.</p>}
               </div>
             )}
 
@@ -394,6 +400,7 @@ export function InvoiceDispatchDialog({
               !phone.trim() ||
               !address.trim() ||
               (party?.partyType === "COMPANY" && !externalTrackingRef.trim()) ||
+              (requiresDriver && !assignedUserId) || invalidDriver ||
               dispatch.isPending
             }
             isDispatching={dispatch.isPending}

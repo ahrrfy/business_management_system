@@ -10,7 +10,6 @@ import { and, asc, eq, inArray, notInArray, or, sql } from "drizzle-orm";
 import {
   deliveryConsignments,
   deliveryParties,
-  deliveryPartyMembers,
   deliveryShipmentMembers,
   invoices,
   receipts,
@@ -48,9 +47,13 @@ import { appErrorMessage } from "@shared/errors";
 import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
 import { fulfillmentRequests } from "../../../drizzle/fulfillmentSchema";
 import { assertNoPendingHeldFeeRefundTx } from "./feeHeld";
+import { validateDeliveryDriverTx } from "./driverValidation";
+import { heldCustomerParcelReissueTx } from "./workflow/returnReceipt";
 
 /** Service-only context; it is never part of a router input. */
 export interface ShipmentDispatchContext {
+  /** Trusted composition only; the writer rechecks actual inspected custody and carrier rights. */
+  heldReturnReissue?: boolean;
   shipmentLeaderConsignmentId?: number;
   sharedTrackingLeaderId?: number;
   retainedShipmentLeader?: boolean;
@@ -357,48 +360,8 @@ export async function dispatchInvoiceInTx(
       }
       requireExternalTrackingRef(party.partyType, leader.externalTrackingRef);
     }
-    let assignedUserId = input.assignedUserId ?? null;
-    if (assignedUserId == null && party.partyType === "INDIVIDUAL") {
-      assignedUserId = party.userId != null ? Number(party.userId) : null;
-      if (assignedUserId == null) {
-        const driver = (
-          await tx
-            .select({ userId: deliveryPartyMembers.userId })
-            .from(deliveryPartyMembers)
-            .where(
-              and(
-                eq(deliveryPartyMembers.partyId, input.partyId),
-                eq(deliveryPartyMembers.memberRole, "DRIVER"),
-                eq(deliveryPartyMembers.isActive, true),
-              ),
-            )
-            .limit(1)
-        )[0];
-        assignedUserId = driver?.userId != null ? Number(driver.userId) : null;
-      }
-    }
-    if (assignedUserId != null) {
-      const driver = (
-        await tx
-          .select({ id: deliveryPartyMembers.id })
-          .from(deliveryPartyMembers)
-          .where(
-            and(
-              eq(deliveryPartyMembers.partyId, input.partyId),
-              eq(deliveryPartyMembers.userId, assignedUserId),
-              eq(deliveryPartyMembers.memberRole, "DRIVER"),
-              eq(deliveryPartyMembers.isActive, true),
-            ),
-          )
-          .limit(1)
-      )[0];
-      if (!driver && Number(party.userId) !== assignedUserId) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "السائق المختار ليس عضواً نشطاً في جهة التوصيل",
-        });
-      }
-    }
+    await validateDeliveryDriverTx(tx, input, Number(preview.branchId));
+    const assignedUserId = input.assignedUserId ?? null;
 
     const linkedOrders = await tx
       .select()
@@ -514,8 +477,10 @@ export async function dispatchInvoiceInTx(
         });
       }
     }
+    const heldReturnReissue = already != null && shipment?.heldReturnReissue === true && await heldCustomerParcelReissueTx(tx, already);
+    if (shipment?.heldReturnReissue && !heldReturnReissue) throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({ what: "تعذرت إعادة إرسال العهدة المستلمة", why: "لا يوجد استلام فعلي صالح أو بقي نقد/تاريخ أجرة مرتبط بالناقل الأصلي", doThis: "سوّ حقوق الناقل من محطة التحصيل، أو افتح معالجة نقص MISSING_HELD مرتبطة بالمصدر لإعادة إرسال نفس العهدة بلا صرف مخزون جديد" }) });
     if (
-      already &&
+      already && !heldReturnReissue &&
       (already.status !== "CANCELLED" ||
         already.parcelStatus !== "CANCELLED" ||
         already.moneyStatus !== "CANCELLED")
@@ -702,6 +667,7 @@ export async function dispatchInvoiceInTx(
           cancellationReason: null,
           cancelledBy: null,
           returnedAt: null,
+          ...(heldReturnReissue ? { returnDeclaredAt: null, returnDeclaredBy: null, returnDeclaredReason: null } : {}),
         })
         .where(eq(deliveryConsignments.id, consignmentId));
     } else {

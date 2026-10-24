@@ -1169,6 +1169,7 @@ export default function WorkOrderDetail() {
       <DispatchDialog
         order={dispatchOpen ? {
           id: workOrderId,
+          branchId: data.branchId,
           orderNumber: data.orderNumber,
           title: data.title,
           customerName: data.customerName,

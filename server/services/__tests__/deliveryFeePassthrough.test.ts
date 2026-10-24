@@ -161,7 +161,7 @@ describe("٥/٨ — أجرة التوصيل تمريرٌ لا إيراد", () =>
     // الدرج بعد الاستقبال = العربون وحده (الأجرة لم تُقبض هنا).
     expect(await drawerNet(shift.shiftId)).toBe(2000);
 
-    const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+    const disp = await dispatchToDelivery({ assignedUserId: 3, workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
     // COD = ما تبقّى على البضاعة فقط: 10000 − 2000. الأجرة ليست جزءاً منه.
     expect(disp.codAmount).toBe("8000.00");
 
@@ -201,7 +201,7 @@ describe("٥/٨ — أجرة التوصيل تمريرٌ لا إيراد", () =>
     expect(await courierPayableNet()).toBe(1500);
     expect(Number(held[0].cost ?? 0)).toBe(0); // تمرير: لا مصروف ولا ربح
 
-    const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+    const disp = await dispatchToDelivery({ assignedUserId: 3, workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
     expect(disp.codAmount).toBe("8000.00");
     // لا تُدفع الأجرة قبل نجاح التوصيل.
     expect(await drawerNet(shift.shiftId)).toBe(3500);
@@ -234,7 +234,7 @@ describe("٥/٨ — أجرة التوصيل تمريرٌ لا إيراد", () =>
     const woId = await makeOrder({ deposit: "10000", fee: "1500", feeCollection: "COUNTER" });
     expect(await drawerNet(shift.shiftId)).toBe(11500); // 10000 + أجرة أمانةً
 
-    const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+    const disp = await dispatchToDelivery({ assignedUserId: 3, workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
     expect(disp.codAmount).toBe("0.00");
     expect(await drawerNet(shift.shiftId)).toBe(11500);
     expect((await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, disp.consignmentId)).limit(1))[0].feeSettledAt).toBeNull();
@@ -256,7 +256,7 @@ describe("٥/٨ — أجرة التوصيل تمريرٌ لا إيراد", () =>
     const { partyId } = await seed();
     const shift = await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
     const woId = await makeOrder({ deposit: "2000", fee: "1500", feeCollection: "SHOP" });
-    const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+    const disp = await dispatchToDelivery({ assignedUserId: 3, workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
 
     expect(await courierPayableNet()).toBe(0);
     await deliver(disp.consignmentId);
@@ -307,7 +307,7 @@ describe("٥/٨ — أجرة التوصيل تمريرٌ لا إيراد", () =>
     });
     expect(await roleNetDebit("WORK_IN_PROGRESS")).toBe(4500);
 
-    const dispatched = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "0" }, CASHIER);
+    const dispatched = await dispatchToDelivery({ assignedUserId: 3, workOrderId: woId, partyId, deliveryFee: "0" }, CASHIER);
     expect(await roleNetDebit("WORK_IN_PROGRESS")).toBe(0);
     expect(await roleNetDebit("COGS")).toBe(4500);
 

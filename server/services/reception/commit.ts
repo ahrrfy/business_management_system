@@ -1,4 +1,6 @@
 import type { ReceptionPaymentLeg, ReceptionPaymentMetadata } from "@shared/receptionPayments";
+import type {CheckoutChargesInput,CheckoutChargesResult} from "../../../shared/checkoutCharges";
+import {normalizeCheckoutChargesIntent,readCheckoutChargesMetadataTx} from "../checkoutCharges";
 import { readReceptionSplitMetadata, splitPaymentError } from "./splitPayments";
 // ش٣ — تثبيت المسوّدة: تصير فاتورةً (+أوامر شغل) بذرّيةٍ كاملة وidempotency ثلاثيّ الطبقات.
 // docs/reception-cashier-system-design-2026-08-05.md §٧.٣:
@@ -73,7 +75,7 @@ async function stampDerivedPaymentMethods(
   }
 }
 
-export interface CommitDraftInput {
+export interface CommitDraftInput extends CheckoutChargesInput {
   payments?: ReceptionPaymentLeg[];
   draftId: number;
   version: number;
@@ -98,7 +100,7 @@ export interface CommitDraftInput {
   delivery?: ReceptionCheckoutInput["delivery"];
 }
 
-export interface CommitDraftResult extends ReceptionPaymentMetadata {
+export interface CommitDraftResult extends ReceptionPaymentMetadata,Partial<CheckoutChargesResult> {
   draftId: number;
   draftNumber: string;
   idempotentReplay: boolean;
@@ -292,6 +294,7 @@ export function materialize(
 
   return {
     branchId: Number(draft.branchId),
+    ...(normalizeCheckoutChargesIntent(draft.checkoutCharges)??{}),chargePayments:input.chargePayments,
     trackingNumber: /^\d+$/.test(draft.draftNumber.trim()) ? draft.draftNumber : null,
     shiftId: input.shiftId,
     customerId: draft.customerId != null ? Number(draft.customerId) : null,
@@ -407,8 +410,12 @@ export async function commitDraft(input: CommitDraftInput, actor: Actor & { role
       .where(eq(receptionDraftLines.draftId, input.draftId))
       .orderBy(asc(receptionDraftLines.sortOrder), asc(receptionDraftLines.id));
 
+    const savedCharges=normalizeCheckoutChargesIntent(draft.checkoutCharges);
+    if((input.serviceCharges!==undefined||input.approvedChargeAllocations!==undefined)&&idempotencyHash(normalizeCheckoutChargesIntent({serviceCharges:input.serviceCharges,approvedChargeAllocations:input.approvedChargeAllocations}))!==idempotencyHash(savedCharges))
+      throw new TRPCError({code:"CONFLICT",message:appErrorMessage({what:"تغيرت أجور الطلب المحفوظ",why:"الأجور المرسلة لا تطابق نية الأجر المحفوظة تحت نسخة المسودة الحالية",doThis:"احفظ تعديل الأجور وحدّث نسخة الطلب ثم أعد التثبيت بنفس مفتاح القبض"})});
     const tenderFingerprint = idempotencyHash({
       fee:input.deliveryFeeHeld ?? null,tender:input.deliveryFeeTender ?? null,collectNow:input.collectNow ?? null,...(input.payments === undefined ? {} : {payments:input.payments}),
+      ...(savedCharges?{checkoutCharges:savedCharges,chargePayments:input.chargePayments??null}:{}),
     });
     const tenderRecorded = await checkIdempotency(tx,"reception.draftFeeTender",draft.commitRequestId,tenderFingerprint,{requireStoredHash:true});
     if (draft.status !== "OPEN") {
@@ -420,9 +427,9 @@ export async function commitDraft(input: CommitDraftInput, actor: Actor & { role
         if (input.payments !== undefined) {
           const metadata = await readReceptionSplitMetadata(tx, draft.commitRequestId);
           if (!metadata) splitPaymentError("التثبيت الأصلي لا يملك دفعات مقسّمة موثقة");
-          return { ...rebuilt, ...metadata };
+          return { ...rebuilt, ...metadata,...(savedCharges?await readCheckoutChargesMetadataTx(tx,{branchId:Number(draft.branchId),clientRequestId:draft.commitRequestId},actor,"reception.draftCommit"):{}) };
         }
-        return rebuilt;
+        return {...rebuilt,...(savedCharges?await readCheckoutChargesMetadataTx(tx,{branchId:Number(draft.branchId),clientRequestId:draft.commitRequestId},actor,"reception.draftCommit"):{})};
       }
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
@@ -514,8 +521,8 @@ export async function commitDraft(input: CommitDraftInput, actor: Actor & { role
 
     const lineMeta = await loadDraftLineMeta(tx, lines);
     const checkoutInput = materialize(draft, lines, input, heldNet, lineMeta);
-    const result = await checkoutReceptionInTx(tx, checkoutInput, actor);
-    if ((input.deliveryFeeTender != null || input.payments !== undefined) && tenderRecorded == null) {
+    const result = await checkoutReceptionInTx(tx, checkoutInput, actor,"reception.draftCommit");
+    if ((input.deliveryFeeTender != null || input.payments !== undefined||savedCharges!=null) && tenderRecorded == null) {
       await recordIdempotencyKey(tx,"reception.draftFeeTender",draft.commitRequestId,Number(draft.id),tenderFingerprint);
     }
 
@@ -566,6 +573,7 @@ export async function commitDraft(input: CommitDraftInput, actor: Actor & { role
       .where(eq(receptionDrafts.id, input.draftId));
 
     return {
+      ...(result.checkoutPaymentSummary?{checkoutPaymentSummary:result.checkoutPaymentSummary,checkoutReceipts:result.checkoutReceipts,chargeAllocations:result.chargeAllocations}:{}),
       ...(result.paymentSummary ? { paymentSummary: result.paymentSummary, paymentAllocations: result.paymentAllocations } : {}),
       draftId: Number(draft.id),
       draftNumber: draft.draftNumber,

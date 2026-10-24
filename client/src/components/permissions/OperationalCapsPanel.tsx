@@ -63,6 +63,29 @@ export const OperationalCapsPanel = memo(function OperationalCapsPanel({
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="space-y-1.5">
+          <Label htmlFor="cap-service-charge" className="text-xs">
+            سقف أجور خدمات المكتبة (د.ع)
+          </Label>
+          <MoneyInput
+            id="cap-service-charge"
+            disabled={disabled}
+            value={current.maxServiceChargeAmountIqd ?? ""}
+            onChange={(value) =>
+              handleUpdate("maxServiceChargeAmountIqd", value || null)
+            }
+            placeholder={
+              inheritOnClear
+                ? `يرث: ${inheritedCaps?.maxServiceChargeAmountIqd ?? "0.00"}`
+                : "0 = اعتماد مستقل"
+            }
+            className="h-8 text-xs font-mono"
+          />
+          <p className="text-[10px] text-muted-foreground">
+            مجموع أجور الخدمة للعملية الواحدة، بلا تكلفة خارجية أو مستفيد. الصفر
+            أو غير المحدد يحتاج اعتماداً مستقلاً.
+          </p>
+        </div>
         {/* سقف نسبة الخصم */}
         <div className="space-y-1.5">
           <Label htmlFor="cap-discount-percent" className="text-xs flex items-center gap-1.5">

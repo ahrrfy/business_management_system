@@ -25,6 +25,9 @@ export const DOC_PREFIXES = [
   "RET",
   "PAY",
   "REC",
+  "FR",
+  "AE",
+  "CHG",
 ] as const;
 export type DocPrefix = (typeof DOC_PREFIXES)[number];
 

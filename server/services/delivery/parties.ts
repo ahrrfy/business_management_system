@@ -1,7 +1,7 @@
 // CRUD جهات التوصيل.
 import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
 import { isOpenConsignmentStatus } from "@shared/deliveryOpenParcel";
 import { courierCommissionRules, deliveryConsignments, deliveryLedgerEntries, deliveryParties, deliveryPartyMembers,
@@ -552,26 +552,23 @@ export async function listDeliveryParties(opts: ListPartiesOpts) {
   const cashSource = deliveryCashSource();
 
   const driverRows = await db.select({
-    partyId: deliveryPartyMembers.partyId,
-    userId: deliveryPartyMembers.userId,
-    memberRole: deliveryPartyMembers.memberRole,
-    name: users.name,
-    username: users.username,
-  }).from(deliveryPartyMembers)
-    .innerJoin(users, eq(users.id, deliveryPartyMembers.userId))
-    .where(and(
-      eq(deliveryPartyMembers.isActive, true),
-      eq(users.isActive, true),
-    ));
-  const driversByParty = new Map<number, Array<{ userId: number; name: string }>>();
+    partyId: deliveryPartyMembers.partyId, userId: deliveryPartyMembers.userId,
+    memberRole: deliveryPartyMembers.memberRole, memberActive: deliveryPartyMembers.isActive,
+    name: users.name, username: users.username, userActive: users.isActive,
+    branchId: users.branchId, expiresAt: users.accessExpiresAt,
+  }).from(deliveryPartyMembers).innerJoin(users,eq(users.id,deliveryPartyMembers.userId)).where(inArray(deliveryPartyMembers.partyId,parties.map(party=>party.id)));
+  const linkedIds = parties.flatMap(party=>party.userId==null?[]:[party.userId]);
+  const linkedUsers = linkedIds.length ? await db.select({id:users.id,name:users.name,username:users.username,active:users.isActive,branchId:users.branchId,expiresAt:users.accessExpiresAt}).from(users).where(inArray(users.id,linkedIds)) : [];
+  const driversByParty = new Map<number, Array<{ userId: number; name: string; branchId: number | null }>>();
   const portalPartyIds = new Set<number>();
   for (const driver of driverRows) {
+    if (!driver.memberActive || !driver.userActive || (driver.expiresAt != null && driver.expiresAt.getTime() <= Date.now())) continue;
     const partyId = Number(driver.partyId);
     portalPartyIds.add(partyId);
     if (driver.memberRole !== "DRIVER") continue;
     const list = driversByParty.get(partyId) ?? [];
-    list.push({ userId: Number(driver.userId), name: driver.name ?? driver.username ?? `#${driver.userId}` });
-    driversByParty.set(partyId, list);
+    list.push({userId:Number(driver.userId),name:driver.name??driver.username??`#${driver.userId}`,branchId:driver.branchId});
+    driversByParty.set(partyId,list);
   }
 
   return parties.map((p) => {
@@ -591,8 +588,16 @@ export async function listDeliveryParties(opts: ListPartiesOpts) {
     const shortfallOwed = exposure.shortfallOwed;
     const cashInHandLedger = round2(money(custodyLedger).minus(money(shortfallOwed))).toFixed(2);
     const cashInHandStored = round2(money(custodyStored).minus(money(shortfallOwed))).toFixed(2);
+    const linked = linkedUsers.find(user=>user.id===p.userId);
+    const linkedMember = driverRows.find(member=>member.partyId===p.id && member.userId===p.userId);
+    const linkedActive = linked?.active === true && (linked.expiresAt == null || linked.expiresAt.getTime() > Date.now());
     return {
       ...p,
+      hasActiveDriverMembership: driverRows.some(member=>member.partyId===p.id && member.memberActive && member.memberRole==="DRIVER"),
+      linkedUserActive: linkedActive,
+      linkedUserBranchId: linked?.branchId ?? null,
+      linkedUserName: linked?.name ?? linked?.username ?? null,
+      linkedUserDriverEligible: linkedActive && (!linkedMember || (linkedMember.memberActive && linkedMember.memberRole === "DRIVER")),
       currentBalance: custodyStored,
       drivers: driversByParty.get(Number(p.id)) ?? [],
       hasPortalAccess: p.userId != null || portalPartyIds.has(Number(p.id)),

@@ -97,6 +97,27 @@ export type FulfillmentMutationIdentity = {
   clientRequestId: string;
   expectedVersion: number;
 };
+
+export type AftercareSettlementDecision = {
+  executionLineId: number;
+  usableBaseQuantity: number;
+  consumedBaseQuantity: number;
+  damagedBaseQuantity: number;
+  evidence: string;
+};
+export type AftercareSettlementSourceRight = {
+  invoiceItemId: number;
+  originalBundleComponentId: number | null;
+  componentVariantId: number;
+  baseQuantity: number;
+  originalMovementId: number;
+  usableBaseQuantity: number;
+  damagedBaseQuantity: number;
+  commercialAmount: string;
+  originalIssueValue: string;
+  costEvidence: string;
+  costEvidenceReference: string;
+};
 export type FulfillmentSource =
   | { invoiceId: number; workOrderId?: never }
   | { workOrderId: number; invoiceId?: never };

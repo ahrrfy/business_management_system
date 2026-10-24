@@ -38,6 +38,7 @@ import {
 import { staffMarkFailed } from "./staffTransition";
 import type { DeliveryTxActor } from "./types";
 import { declareConsignmentReturn } from "./declaredReturn";
+import { physicalReturnReceiptTx } from "./workflow/returnReceipt";
 
 type Member = typeof deliveryConsignments.$inferSelect;
 export interface ShipmentOperationInput {
@@ -203,6 +204,41 @@ async function executeShipment<I extends ShipmentRequest>(
       return result;
     }
     const operational = operationalShipmentMembers(rows);
+    if (namespace === "delivery.returnShipment") {
+      const inspected = new Set<number>();
+      for (const row of rows)
+        if (await physicalReturnReceiptTx(tx, row)) inspected.add(row.id);
+      if (inspected.size > 0) {
+        const invoiceIds = rows.flatMap((row) =>
+          row.invoiceId == null ? [] : [row.invoiceId],
+        );
+        const currentInvoices = invoiceIds.length
+          ? await tx
+              .select({ id: invoices.id, status: invoices.status })
+              .from(invoices)
+              .where(inArray(invoices.id, invoiceIds))
+              .for("update")
+          : [];
+        const pending = rows.filter(
+          (row) =>
+            row.invoiceId != null &&
+            currentInvoices.some(
+              (invoice) =>
+                invoice.id === row.invoiceId &&
+                !["CANCELLED", "RETURNED", "SUPERSEDED"].includes(
+                  invoice.status,
+                ),
+            ),
+        );
+        if (pending.some((row) => !inspected.has(row.id)))
+          reject(
+            "استلم وافحص كل طرد تجاري متبق قبل إرجاع المجموعة كاملة؛ الاستلام الجزئي لا يجيز عكس بيع أو مخزون طرود لم تصل",
+          );
+      }
+      for (const row of rows)
+        if (row.status === "DISPATCHED" && inspected.has(row.id))
+          operational.push(row);
+    }
     if (!operational.length)
       reject("لا توجد فواتير متبقية ضمن دورة توصيل الشحنة");
     await apply(tx, operational, partyId);

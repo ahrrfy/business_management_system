@@ -61,7 +61,7 @@ async function seed(opts: { floatLimit?: string } = {}) {
   await d.insert(s.users).values([
     { id: 1, openId: "mgr", name: "مدير", email: "m@t.test", role: "manager", loginMethod: "local", branchId: 1 },
     { id: 2, openId: "rc", name: "موظف خدمة", email: "r@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
-    { id: 3, openId: "cr", name: "مندوب", email: "d@t.test", role: "courier", loginMethod: "local", branchId: 1 },
+    { id: 3, openId: "cr", name: "مندوب", email: "d@t.test", role: "courier", loginMethod: "local", branchId: 1, isActive: true },
   ]);
   await d.insert(s.customers).values([{ id: 1, name: "عميل", currentBalance: "0.00", creditLimit: "1000000.00" }]);
   await d.insert(s.products).values([{ id: 1, name: "دفتر" }]);
@@ -73,6 +73,9 @@ async function seed(opts: { floatLimit?: string } = {}) {
     id: 1, name: "مندوب", partyType: "INDIVIDUAL", defaultFee: "5000.00",
     currentBalance: "0.00", userId: 3, ...(opts.floatLimit ? { floatLimit: opts.floatLimit } : {}),
   }]);
+  await d.insert(s.deliveryPartyMembers).values({
+    partyId: 1, userId: 3, memberRole: "DRIVER", isActive: true, createdBy: MANAGER.userId,
+  });
 }
 async function openReception(userId = 2) {
   return openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId, branchId: 1 });
@@ -141,7 +144,7 @@ describe("M1 — فاتورة التوصيل COD: الدرج بالمقبوض ن
       paymentMethod: "CASH", paidAmount: "0",
       clientRequestId: "m1-cod",
       regularSale: { lines: [LINE], amount: "10000.00" },
-      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
     }, CASHIER);
 
     const invoiceId = r.regularSale!.invoiceId;
@@ -169,7 +172,7 @@ describe("M1 — فاتورة التوصيل COD: الدرج بالمقبوض ن
       paymentMethod: "CASH", paidAmount: "3000.00",
       clientRequestId: "m1-partial",
       regularSale: { lines: [LINE], amount: "10000.00" },
-      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
     }, CASHIER);
     const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, r.regularSale!.invoiceId)))[0];
     expect(inv.paidAmount).toBe("3000.00");
@@ -189,7 +192,7 @@ describe("M2 — أمانة أجرة التوصيل تُبرَّأ بالكام�
       deliveryFeeHeld: "5000.00",
       clientRequestId: "m2-fee",
       regularSale: { lines: [LINE], amount: "10000.00" },
-      delivery: { partyId: 1, fee: "5000.00", feeCollection: "COUNTER" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "5000.00", feeCollection: "COUNTER" },
     }, CASHIER);
     const invoiceId = r.regularSale!.invoiceId;
 
@@ -224,7 +227,7 @@ describe("M3 — الأمانة ليست دفعةً من العميل", () => {
       deliveryFeeHeld: "5000.00",
       clientRequestId: "m3-fee",
       regularSale: { lines: [LINE], amount: "10000.00" },
-      delivery: { partyId: 1, fee: "5000.00", feeCollection: "COUNTER" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "5000.00", feeCollection: "COUNTER" },
     }, CASHIER);
     const invoiceId = r.regularSale!.invoiceId;
 
@@ -272,7 +275,7 @@ describe("M4/M5 — إرجاع الإرسالية يعكس من الطرفين،
       paymentMethod: "CASH", paidAmount: "0",
       clientRequestId: "m4-ret",
       regularSale: { lines: [LINE], amount: "10000.00" },
-      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
     }, CASHIER);
     const invoiceId = r.regularSale!.invoiceId;
     const cn = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.invoiceId, invoiceId)))[0];
@@ -299,7 +302,7 @@ describe("M4/M5 — إرجاع الإرسالية يعكس من الطرفين،
       paymentMethod: "CASH", paidAmount: "0",
       clientRequestId: "m4-legacy-ret",
       regularSale: { lines: [LINE], amount: "10000.00" },
-      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
     }, CASHIER);
     const cn = await consignmentForInvoice(r.regularSale!.invoiceId);
 
@@ -344,7 +347,7 @@ describe("M4/M5 — إرجاع الإرسالية يعكس من الطرفين،
       paymentMethod: "CASH", paidAmount: "0",
       clientRequestId: "m5-dbl",
       regularSale: { lines: [LINE], amount: "10000.00" },
-      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
     }, CASHIER);
     const invoiceId = r.regularSale!.invoiceId;
     const cn = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.invoiceId, invoiceId)))[0];
@@ -373,7 +376,7 @@ describe("M8 — قرار المالك: مرتجعُ فاتورةٍ بيد ال�
       paymentMethod: "CASH", paidAmount: "0",
       clientRequestId: "m8-relief",
       regularSale: { lines: [LINE], amount: "10000.00" },
-      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
     }, CASHIER);
     const invoiceId = r.regularSale!.invoiceId;
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, invoiceId)))[0];
@@ -419,7 +422,7 @@ describe("M9 — قرار المالك: ما ورّده المندوب يدخل 
       paymentMethod: "CASH", paidAmount: "0",
       clientRequestId: "m9-cod-refund",
       regularSale: { lines: [LINE], amount: "10000.00" },
-      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
     }, CASHIER);
     const invoiceId = r.regularSale!.invoiceId;
     const cn = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.invoiceId, invoiceId)))[0];
@@ -467,7 +470,7 @@ describe("M6/M7 — عهدة المناديب أصلٌ ظاهر، وسقفها �
       paymentMethod: "CASH", paidAmount: "0",
       clientRequestId: "m6-pos",
       regularSale: { lines: [LINE], amount: "10000.00" },
-      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
     }, CASHIER);
     const cn = await consignmentForInvoice(checkout.regularSale!.invoiceId);
     await deliverConsignment(Number(cn.id));
@@ -486,7 +489,7 @@ describe("M6/M7 — عهدة المناديب أصلٌ ظاهر، وسقفها �
       paymentMethod: "CASH", paidAmount: "0",
       clientRequestId: "m6b-dup",
       regularSale: { lines: [LINE], amount: "10000.00" },
-      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
     }, CASHIER);
     const beforeDelivery = await getFinancialPosition({ verify: false });
     expect(Number(beforeDelivery.arDebit)).toBe(10000);
@@ -510,7 +513,7 @@ describe("M6/M7 — عهدة المناديب أصلٌ ظاهر، وسقفها �
       paymentMethod: "CASH", paidAmount: "0",
       clientRequestId: "m6c-remittance-shortfall",
       regularSale: { lines: [LINE], amount: "10000.00" },
-      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
     }, CASHIER);
     const cn = await consignmentForInvoice(checkout.regularSale!.invoiceId);
     await deliverConsignment(Number(cn.id));
@@ -539,7 +542,7 @@ describe("M6/M7 — عهدة المناديب أصلٌ ظاهر، وسقفها �
       paymentMethod: "CASH", paidAmount: "0",
       clientRequestId: "m7-limit",
       regularSale: { lines: [LINE], amount: "10000.00" },
-      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
     }, CASHIER)).rejects.toThrowError(/يتجاوز السقف/);
   });
 });
@@ -553,7 +556,7 @@ describe("M10 — حماية صندوق الكاشير عند إرجاع طلب 
       paymentMethod: "CASH", paidAmount: "0",
       clientRequestId: "m10-unremitted-loophole",
       regularSale: { lines: [LINE], amount: "10000.00" },
-      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
     }, CASHIER);
     const invoiceId = r.regularSale!.invoiceId;
     const cn = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.invoiceId, invoiceId)))[0];
@@ -623,7 +626,7 @@ describe("M10 — حماية صندوق الكاشير عند إرجاع طلب 
       paymentMethod: "CASH", paidAmount: "0",
       clientRequestId: "m10-unpaid-first",
       regularSale: { lines: [LINE], amount: "10000.00" },
-      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
     }, CASHIER);
     const invoiceId = checkout.regularSale!.invoiceId;
     const cn = await consignmentForInvoice(invoiceId);
@@ -675,7 +678,7 @@ describe("M10 — حماية صندوق الكاشير عند إرجاع طلب 
       paymentMethod: "CASH", paidAmount: "0",
       clientRequestId: "m10-counter-split",
       regularSale: { lines: [LINE], amount: "10000.00" },
-      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
     }, CASHIER);
     const invoiceId = checkout.regularSale!.invoiceId;
     const cn = await consignmentForInvoice(invoiceId);
@@ -725,7 +728,7 @@ describe("M10 — حماية صندوق الكاشير عند إرجاع طلب 
       paymentMethod: "CASH", paidAmount: "0",
       clientRequestId: "m10-shortfall-return",
       regularSale: { lines: [LINE], amount: "10000.00" },
-      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
     }, CASHIER);
     const invoiceId = checkout.regularSale!.invoiceId;
     const cn = await consignmentForInvoice(invoiceId);
@@ -768,7 +771,7 @@ describe("M10 — حماية صندوق الكاشير عند إرجاع طلب 
       paymentMethod: "CASH", paidAmount: "0",
       clientRequestId: "m10-partial-remittance",
       regularSale: { lines: [LINE], amount: "10000.00" },
-      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
     }, CASHIER);
     const invoiceId = checkout.regularSale!.invoiceId;
     const cn = await consignmentForInvoice(invoiceId);
@@ -819,7 +822,7 @@ describe("M10 — حماية صندوق الكاشير عند إرجاع طلب 
       paymentMethod: "CASH", paidAmount: "3000.00",
       clientRequestId: "m10-store-deposit",
       regularSale: { lines: [LINE], amount: "10000.00" },
-      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
     }, CASHIER);
     const invoiceId = checkout.regularSale!.invoiceId;
     const cn = await consignmentForInvoice(invoiceId);
@@ -874,7 +877,7 @@ describe("M10 — حماية صندوق الكاشير عند إرجاع طلب 
       paymentMethod: "CASH", paidAmount: "3000.00",
       clientRequestId: "m10-registered-deposit",
       regularSale: { lines: [LINE], amount: "10000.00" },
-      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
     }, CASHIER);
     const invoiceId = checkout.regularSale!.invoiceId;
     const cn = await consignmentForInvoice(invoiceId);
@@ -912,7 +915,7 @@ describe("M10 — حماية صندوق الكاشير عند إرجاع طلب 
       paymentMethod: "CASH", paidAmount: "3000.00",
       clientRequestId: "m10-registered-credit",
       regularSale: { lines: [LINE], amount: "10000.00" },
-      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
     }, CASHIER);
     const invoiceId = checkout.regularSale!.invoiceId;
     const cn = await consignmentForInvoice(invoiceId);
@@ -948,7 +951,7 @@ describe("M10 — حماية صندوق الكاشير عند إرجاع طلب 
       paymentMethod: "CASH", paidAmount: "3000.00",
       clientRequestId: "m10-exhausted-custody",
       regularSale: { lines: [LINE], amount: "10000.00" },
-      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
     }, CASHIER);
     const invoiceId = checkout.regularSale!.invoiceId;
     const cn = await consignmentForInvoice(invoiceId);
@@ -998,7 +1001,7 @@ describe("M10 — حماية صندوق الكاشير عند إرجاع طلب 
       paymentMethod: "CASH", paidAmount: "0",
       clientRequestId: "m10-partial-custody",
       regularSale: { lines: [LINE], amount: "10000.00" },
-      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
     }, CASHIER);
     const invoiceId = checkout.regularSale!.invoiceId;
     const cn = await consignmentForInvoice(invoiceId);

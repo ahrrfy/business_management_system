@@ -115,6 +115,7 @@ async function dispatchRequest(grouped = false) {
   );
   return releaseFulfillmentRequest(
     {
+      assignedUserId: 3,
       id: request.id,
       expectedVersion: request.version,
       clientRequestId: "fc-request-release",
@@ -198,6 +199,7 @@ describe("request goods collection while courier is in transit", () => {
         "6000.00",
       ]);
       const reassign = {
+        assignedUserId: 3,
         id: sent.request.id,
         expectedVersion: sent.request.version,
         consignmentId: sent.consignmentId,
@@ -340,6 +342,7 @@ describe("request goods collection while courier is in transit", () => {
   it("keeps a legacy reassignment without counter settlement at its original COD and replays the replacement claim once", async () => {
     const first = await dispatchInvoiceToDelivery(
       {
+        assignedUserId: 3,
         invoiceId: 1,
         partyId: 1,
         deliveryFee: "0",
@@ -356,6 +359,7 @@ describe("request goods collection while courier is in transit", () => {
       admin,
     );
     const input = {
+      assignedUserId: 3,
       invoiceId: 1,
       partyId: 1,
       deliveryFee: "0",
@@ -463,6 +467,7 @@ describe("request goods collection while courier is in transit", () => {
   it("keeps legacy in-transit invoices blocked and leaves a confirmed CARD proof recoverable", async () => {
     await dispatchInvoiceToDelivery(
       {
+        assignedUserId: 3,
         invoiceId: 1,
         partyId: 1,
         deliveryFee: "0",

@@ -1,4 +1,5 @@
-import { receptionPaymentsSchema } from "../services/reception/splitPayments";
+import { receptionComposedPaymentsSchema } from "../services/reception/splitPayments";
+import {checkoutChargesFields,hasCheckoutCharges} from "../services/checkoutCharges";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { hasOperationPolicy, operationRecordScope, summarizeOperationModules, type OperationUser } from "@shared/operationPermissions";
@@ -195,7 +196,8 @@ const receptionWorkOrderSchema = z.object({
 });
 
 const receptionCheckoutSchema = z.object({
-  payments: receptionPaymentsSchema.optional(),
+  ...checkoutChargesFields,
+  payments: receptionComposedPaymentsSchema.optional(),
   branchId: z.number().int().positive(),
   shiftId: z.number().int().positive(),
   customerId: z.number().int().positive().nullish(),
@@ -229,6 +231,7 @@ const receptionCheckoutSchema = z.object({
   // ش٧: إسناد الطلب لمندوبٍ داخل نفس المعاملة — المتبقّي عهدةٌ عليه لا نقدٌ في الدرج.
   delivery: z.object({
     partyId: z.number().int().positive(),
+    assignedUserId: z.number().int().positive().nullish(),
     fee: nonNegMoneyString.nullish(),
     feeCollection: z.enum(["COURIER", "COUNTER", "SHOP"]).nullish(),
     recipientName: z.string().trim().max(255).nullish(),
@@ -281,6 +284,7 @@ const receptionCheckoutSchema = z.object({
   }).nullish(),
   workOrders: z.array(receptionWorkOrderSchema).max(50).default([]),
 }).superRefine((input, ctx) => {
+  if(!hasCheckoutCharges(input)&&input.payments?.some(leg=>!money(leg.amount).gt(0)))ctx.addIssue({code:z.ZodIssueCode.custom,path:["payments"],message:"مبلغ دفعة البضاعة يجب أن يكون موجباً"});
   if (!input.regularSale && !input.printSale && input.workOrders.length === 0) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "السلة فارغة" });
   }

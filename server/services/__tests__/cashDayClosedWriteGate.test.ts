@@ -267,6 +267,7 @@ describe("closed cash-day writer inventory", () => {
       "delivery/paymentRefunds.ts",
       "exchange/reverse.ts",
       "expenseService.ts",
+      "fulfillment/componentRights.ts",
       "purchase/pay.ts",
       "purchase/supplierPayments.ts",
       "shiftFundingService.ts",
@@ -283,6 +284,21 @@ describe("closed cash-day writer inventory", () => {
       if (relative === "workOrder/cancel.ts") {
         // هذا انتقال تنفيذ CARD/TRANSFER/WALLET فقط؛ CASH يُنفّذ فوراً عند إنشاء الرد.
         expect(source).toMatch(/refund\.paymentMethod === "CASH"/);
+        continue;
+      }
+      if (relative === "fulfillment/componentRights.ts") {
+        // Source-right confirmation completes only an actual external refund; CASH executes at creation.
+        const confirmation = source.slice(
+          source.indexOf("export async function confirmComponentRightsRefund("),
+        );
+        const beforeCompletion = confirmation.slice(
+          0,
+          confirmation.indexOf(".update(receipts)"),
+        );
+        expect(beforeCompletion).toMatch(/receipt\.direction !== "OUT"/);
+        expect(beforeCompletion).toMatch(
+          /!\[\s*"CARD",\s*"CHECK",\s*"TRANSFER",\s*"WALLET"\s*\]\.includes\(receipt\.paymentMethod\)/,
+        );
         continue;
       }
       expect(

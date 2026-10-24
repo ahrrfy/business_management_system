@@ -159,7 +159,7 @@ describe("delivery COD — money path", () => {
     const woId = await readyWorkOrder(true);
 
     // الإرسال: cod = 10000 − 2000 = 8000، الأجرة 1500.
-    const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+    const disp = await dispatchToDelivery({ assignedUserId: 3, workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
     expect(disp.codAmount).toBe("8000.00");
     const inv = await invoice(disp.invoiceId);
     expect(inv.customerId).toBe(1);
@@ -197,7 +197,7 @@ describe("delivery COD — money path", () => {
     const { partyId } = await seed();
     await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
     const woId = await readyWorkOrder(true);
-    const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+    const disp = await dispatchToDelivery({ assignedUserId: 3, workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
     await deliver(disp.consignmentId);
 
     // توريد جزئي 5000 من 8000 ⇒ 3000 تبقى عهدة.
@@ -231,7 +231,7 @@ describe("delivery COD — money path", () => {
     const { partyId } = await seed();
     await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
     const woId = await readyWorkOrder(true);
-    const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+    const disp = await dispatchToDelivery({ assignedUserId: 3, workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
     await deliver(disp.consignmentId);
     const beforeInvoice = await invoice(disp.invoiceId);
     const beforeReceipts = await db().select().from(s.receipts);
@@ -256,7 +256,7 @@ describe("delivery COD — money path", () => {
     const { partyId } = await seed();
     await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
     const woId = await readyWorkOrder(true);
-    const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "0" }, CASHIER);
+    const disp = await dispatchToDelivery({ assignedUserId: 3, workOrderId: woId, partyId, deliveryFee: "0" }, CASHIER);
     await deliver(disp.consignmentId);
     // حوكمة ٩/٨: عهدةُ إرساليةٍ مفتوحة لا تُسوَّى بمبلغٍ حرّ (تُورَّد بالإرسالية كي تُقيَّد فاتورتها).
     await recordDeliveryRemittance({ branchId: 1, partyId, countedCash: "5000", lines: [{ consignmentId: disp.consignmentId, collectedAmount: "5000" }] }, CASHIER);
@@ -291,7 +291,7 @@ describe("delivery COD — money path", () => {
     const { partyId } = await seed();
     await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
     const woId = await readyWorkOrder(false); // بلا عربون لتبسيط الرد
-    const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+    const disp = await dispatchToDelivery({ assignedUserId: 3, workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
     expect(await partyBalance(partyId)).toBe("0.00");
     const stockBefore = (await db().select({ q: s.branchStock.quantity }).from(s.branchStock).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1))).limit(1))[0];
 
@@ -313,7 +313,7 @@ describe("delivery COD — money path", () => {
     const { partyId } = await seed();
     await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
     const woId = await readyWorkOrder(false);
-    const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+    const disp = await dispatchToDelivery({ assignedUserId: 3, workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
 
     const results = await Promise.allSettled([
       returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "race-delivery-return", returnReason: "رفض العميل" }),
@@ -336,7 +336,7 @@ describe("delivery COD — money path", () => {
     const { partyId } = await seed();
     const shift = await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
     const woId = await readyWorkOrder(true);
-    const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+    const disp = await dispatchToDelivery({ assignedUserId: 3, workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, disp.invoiceId)).limit(1))[0];
 
     const results = await Promise.allSettled([
@@ -370,8 +370,8 @@ describe("delivery COD — money path", () => {
     const { partyId } = await seed();
     await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
     const woId = await readyWorkOrder(true);
-    const a = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500", clientRequestId: "disp-1" }, CASHIER);
-    const b = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500", clientRequestId: "disp-1" }, CASHIER);
+    const a = await dispatchToDelivery({ assignedUserId: 3, workOrderId: woId, partyId, deliveryFee: "1500", clientRequestId: "disp-1" }, CASHIER);
+    const b = await dispatchToDelivery({ assignedUserId: 3, workOrderId: woId, partyId, deliveryFee: "1500", clientRequestId: "disp-1" }, CASHIER);
     expect(b.consignmentId).toBe(a.consignmentId);
     expect(await entryCount("SALE")).toBe(1);
     expect(await entryCount("DELIVERY_DISPATCH", partyId)).toBe(0);
@@ -384,7 +384,7 @@ describe("delivery COD — money path", () => {
       const { partyId } = await seed();
       const shift = await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
       const woId = await readyWorkOrder(true); // عربون ٢٠٠٠ نقداً
-      const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+      const disp = await dispatchToDelivery({ assignedUserId: 3, workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
 
       // قبل الإصلاح: shiftIdForCashTx(actor=المديرة بلا وردية) ⇒ TREASURY (لا يظهر في Z-report الكاشير).
       await returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "ret-attr-1", returnReason: "رفض العميل" });
@@ -404,7 +404,7 @@ describe("delivery COD — money path", () => {
       const cashierShift = await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
       await openShift({ branchId: 1, openingBalance: "0", shiftType: "RETAIL" }, { userId: 1, branchId: 1 });
       const woId = await readyWorkOrder(true);
-      const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+      const disp = await dispatchToDelivery({ assignedUserId: 3, workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
 
       await expect(
         returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "ret-attr-2", returnReason: "رفض العميل" }),
@@ -418,7 +418,7 @@ describe("delivery COD — money path", () => {
       const cashierShift = await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
       const mgrShift = await openShift({ branchId: 1, openingBalance: "0", shiftType: "RETAIL" }, { userId: 1, branchId: 1 });
       const woId = await readyWorkOrder(true);
-      const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+      const disp = await dispatchToDelivery({ assignedUserId: 3, workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
 
       await returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "ret-attr-3", refundShiftId: cashierShift.shiftId, returnReason: "رفض العميل" });
 
@@ -430,7 +430,7 @@ describe("delivery COD — money path", () => {
       const { partyId } = await seed();
       const shift = await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
       const woId = await readyWorkOrder(true); // عربون ٢٠٠٠
-      const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+      const disp = await dispatchToDelivery({ assignedUserId: 3, workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
       // مصروفٌ نقديّ يستنزف الدرج (المتاح بعد العربون = ٢٠٠٠) إلى ٥٠٠ فقط.
       await db().insert(s.receipts).values({
         branchId: 1, shiftId: shift.shiftId, direction: "OUT", amount: "1500.00",

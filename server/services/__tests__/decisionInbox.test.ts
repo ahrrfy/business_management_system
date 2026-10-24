@@ -21,7 +21,7 @@ import { ensureFinancialPostingGate } from "../reports/monthCloseGate";
 import { RETURN_EXECUTED_AUDIT_ACTION } from "../returns/auditActions";
 import { requestSalesControl } from "../sale/controlRequests";
 import { createSale } from "../saleService";
-import { DECISION_ACTIONS, allDecisions } from "@shared/decisionRegistry";
+import { DECISION_ACTIONS, allDecisions, decisionSpec } from "@shared/decisionRegistry";
 
 function db() {
   const d = getDb();
@@ -163,10 +163,13 @@ describe("التغطية مقابل السجل", () => {
     expect(new Set(wired).size).toBe(wired.length);
   });
 
-  // Codex على #1004 (P1): كلُّ مصدرٍ يعلن أفعالَه — لا مصدرَ بلا إعلان، ولا فعلَ خارج القاموس.
-  it("كل مصدر يعلن افعاله المدعومة صراحة من قاموس الافعال", () => {
+  // Empty actions are valid only for sources explicitly registered as station-only links.
+  it("كل مصدر يطابق افعاله المعلنة مع وضع السجل ولا يخترع فعلا لصف فتح الاصل", () => {
     for (const source of DECISION_SOURCES) {
-      expect(source.supportedActions.length, source.key).toBeGreaterThan(0);
+      expect(source.kinds.length, source.key).toBeGreaterThan(0);
+      const openOnly = source.kinds.every(kind => decisionSpec(kind)?.mode === "OPEN_ONLY");
+      if (openOnly) expect(source.supportedActions, source.key).toEqual([]);
+      else expect(source.supportedActions.length, source.key).toBeGreaterThan(0);
       for (const a of source.supportedActions) expect(DECISION_ACTIONS, `${source.key}:${a}`).toContain(a);
     }
   });

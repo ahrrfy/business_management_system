@@ -3,6 +3,7 @@ import { customizationBasePrice, effectivePrice, type CartLine } from "./cartMat
 import { composeCustomizationText } from "@/components/CustomizationDialog";
 
 export interface DraftPayloadContext {
+  checkoutCharges?: import("@shared/checkoutCharges").CheckoutChargesInput;
   customer: { customerId?: number | null; name?: string | null; phone?: string | null };
   effectiveTier: "RETAIL" | "WHOLESALE" | "GOVERNMENT" | null;
   channel: "OTHER" | "WALK_IN" | "WHATSAPP" | "INSTAGRAM" | "TIKTOK" | "PHONE" | null;
@@ -32,6 +33,7 @@ export function buildDraftPayload(ctx: DraftPayloadContext) {
     channel,
     channelHandle: channelHandle.trim() || null,
     conversationId: linkedConversationId,
+    ...(ctx.checkoutCharges===undefined?{}:{checkoutCharges:(ctx.checkoutCharges.serviceCharges?.length||ctx.checkoutCharges.approvedChargeAllocations?.length)?{serviceCharges:ctx.checkoutCharges.serviceCharges??[],approvedChargeAllocations:ctx.checkoutCharges.approvedChargeAllocations??[]}:null}),
   };
 
   const lines = cart.map((c, i) => {

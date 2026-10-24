@@ -137,8 +137,9 @@ async function readyReception(deposit = "0"): Promise<number> {
 /** ينشئ أمراً جاهزاً عبر الفني ثم يرسله للجهة. codAmount = salePrice (بلا عربون). */
 async function dispatchReception(partyId: number): Promise<{ consignmentId: number; invoiceId: number; codAmount: string }> {
   const woId = await readyReception();
+  const [selectedParty] = await db().select().from(s.deliveryParties).where(eq(s.deliveryParties.id, partyId));
   const disp = await dispatchToDelivery(
-    { workOrderId: woId, partyId, deliveryFee: "0", recipientName: "زبون", recipientPhone: "07700000000", deliveryAddress: "بغداد" },
+    { workOrderId: woId, partyId, assignedUserId: selectedParty.userId ?? undefined, deliveryFee: "0", recipientName: "زبون", recipientPhone: "07700000000", deliveryAddress: "بغداد" },
     CASHIER,
   );
   return { consignmentId: disp.consignmentId, invoiceId: disp.invoiceId, codAmount: disp.codAmount };
@@ -267,7 +268,7 @@ describe("courier «توصيلاتي» — تسليم إرسالية وتحوي�
     const woId = await readyReception();
     expect((await listReadyForDispatch(1)).some((r) => Number(r.id) === woId)).toBe(true);
 
-    const disp = await dispatchToDelivery({ workOrderId: woId, partyId: partyA, deliveryFee: "0" }, CASHIER);
+    const disp = await dispatchToDelivery({ workOrderId: woId, partyId: partyA, assignedUserId: 3, deliveryFee: "0" }, CASHIER);
     expect((await listReadyForDispatch(1)).some((r) => Number(r.id) === woId)).toBe(false);
     const mineA = await listMyDeliveries(3);
     const mineB = await listMyDeliveries(4);
@@ -325,7 +326,7 @@ describe("courier «توصيلاتي» — تسليم إرسالية وتحوي�
     const { partyA } = await seedParties();
     await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
     const woId = await readyReception("10000.00");
-    const disp = await dispatchToDelivery({ workOrderId: woId, partyId: partyA, deliveryFee: "0" }, CASHIER);
+    const disp = await dispatchToDelivery({ workOrderId: woId, partyId: partyA, assignedUserId: 3, deliveryFee: "0" }, CASHIER);
     expect(disp.codAmount).toBe("0.00");
     const deposits = await db().select().from(s.receipts).where(eq(s.receipts.workOrderId, woId));
     expect(deposits).toEqual([expect.objectContaining({ direction: "IN", amount: "10000.00", paymentMethod: "CASH", invoiceId: disp.invoiceId })]);

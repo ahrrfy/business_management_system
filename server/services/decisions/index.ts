@@ -23,6 +23,7 @@ import { appErrorMessage } from "@shared/errors";
 import { assertGate, gatePasses } from "./gate";
 import { assertActionSupported, decided, defaultMessage } from "./rows";
 import { OTHER_SOURCES } from "./sources/others";
+import { FULFILLMENT_SOURCES } from "./sources/fulfillment";
 import { PURCHASING_SOURCES } from "./sources/purchasing";
 import { SALES_SOURCES } from "./sources/sales";
 import { TREASURY_SOURCES } from "./sources/treasury";
@@ -42,6 +43,7 @@ export const DECISION_SOURCES: readonly DecisionSource[] = [
   ...TREASURY_SOURCES,
   ...SALES_SOURCES,
   ...OTHER_SOURCES,
+  ...FULFILLMENT_SOURCES,
 ];
 
 const SOURCE_BY_KIND: ReadonlyMap<DecisionKind, DecisionSource> = new Map(

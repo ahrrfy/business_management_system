@@ -409,6 +409,7 @@ const ordersRouter = router({
     .input(z.object({
       id: z.number().int().positive(),
       partyId: z.number().int().positive(),
+      assignedUserId: z.number().int().positive().nullish(),
       externalTrackingRef: z.string().trim().max(100).nullish(),
     }))
     .mutation(async ({ input, ctx }) => {
@@ -416,6 +417,7 @@ const ordersRouter = router({
       const args = {
         onlineOrderId: input.id,
         partyId: input.partyId,
+        assignedUserId: input.assignedUserId ?? null,
         externalTrackingRef: input.externalTrackingRef ?? null,
       };
       let res;
@@ -430,7 +432,7 @@ const ordersRouter = router({
         action: "store.order.dispatch",
         entityType: "onlineOrder",
         entityId: input.id,
-        newValue: { invoiceId: res.invoiceId, partyId: input.partyId, total: res.total, externalTrackingRef: input.externalTrackingRef ?? null },
+        newValue: { invoiceId: res.invoiceId, partyId: input.partyId, assignedUserId: input.assignedUserId ?? null, total: res.total, externalTrackingRef: input.externalTrackingRef ?? null },
       });
       return res;
     }),

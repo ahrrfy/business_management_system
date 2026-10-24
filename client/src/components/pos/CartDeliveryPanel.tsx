@@ -9,6 +9,7 @@ import type { PosColors as C } from "./posShared";
 
 export interface CartDeliveryPanelProps {
   C: C;
+  branchId: number;
   /** مفتاح التبويب — يعيد تركيب قسم العميل لكلّ تبويب (حالة بحثٍ مستقلّة). */
   tabId: number;
   draft: DeliveryDraft;
@@ -19,7 +20,7 @@ export interface CartDeliveryPanelProps {
   disabledReason: string | null;
 }
 
-export function CartDeliveryPanel({ C, tabId, draft, onChange, onIdentityChange, customerBalance, suggestedPartyId = null, disabledReason }: CartDeliveryPanelProps) {
+export function CartDeliveryPanel({ C, branchId, tabId, draft, onChange, onIdentityChange, customerBalance, suggestedPartyId = null, disabledReason }: CartDeliveryPanelProps) {
   return (
     <div
       data-testid="pos-delivery-mode"
@@ -34,7 +35,7 @@ export function CartDeliveryPanel({ C, tabId, draft, onChange, onIdentityChange,
             onIdentityChange={onIdentityChange}
           />
         </div>
-        <DeliveryModeFields draft={draft} onChange={onChange} suggestedPartyId={suggestedPartyId} disabledReason={disabledReason} />
+        <DeliveryModeFields branchId={branchId} draft={draft} onChange={onChange} suggestedPartyId={suggestedPartyId} disabledReason={disabledReason} />
       </div>
     </div>
   );

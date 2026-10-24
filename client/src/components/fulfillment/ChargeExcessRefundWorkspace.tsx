@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterInputs, type RouterOutputs } from "@/lib/trpc";
 import { DataTable } from "@/components/data-table/DataTable";
@@ -19,13 +19,43 @@ type Row =
 type Refund = Api["refundCourierExcess"];
 
 /** Real CN excess sources; also usable when a request has no charge document. */
-export function ChargeExcessRefundWorkspace() {
-  const me = trpc.auth.me.useQuery(),
-    branches = trpc.branches.list.useQuery(),
-    utils = trpc.useUtils();
+export type ChargeExcessRefundWorkspaceProps = {
+  embedded?: boolean;
+  branchId?: number;
+};
+
+export function ChargeExcessRefundWorkspace({
+  embedded = false,
+  branchId: selectedBranchId,
+}: ChargeExcessRefundWorkspaceProps = {}) {
+  const me = trpc.auth.me.useQuery();
   const [chosenBranch, setChosenBranch] = useState("");
   const branchValue = chosenBranch || me.data?.branchId;
-  const branchId = branchValue ? Number(branchValue) : undefined;
+  const branchId = embedded
+    ? selectedBranchId
+    : branchValue
+      ? Number(branchValue)
+      : undefined;
+  return (
+    <ChargeExcessRefundWorkspaceContent
+      key={`${me.data?.id ?? "anonymous"}:${branchId ?? "unselected"}:${embedded}`}
+      embedded={embedded}
+      branchId={branchId}
+      onBranchChange={setChosenBranch}
+    />
+  );
+}
+
+function ChargeExcessRefundWorkspaceContent({
+  embedded,
+  branchId,
+  onBranchChange,
+}: ChargeExcessRefundWorkspaceProps & {
+  onBranchChange: (value: string) => void;
+}) {
+  const me = trpc.auth.me.useQuery(),
+    branches = trpc.branches.list.useQuery(undefined, { enabled: !embedded }),
+    utils = trpc.useUtils();
   const [search, setSearch] = useState(""),
     [debounced, setDebounced] = useState(""),
     [page, setPage] = useState(0);
@@ -35,9 +65,16 @@ export function ChargeExcessRefundWorkspace() {
   const [bucket, setBucket] = useState<"DRAWER" | "TREASURY">("DRAWER"),
     [shift, setShift] = useState("");
   const [error, setError] = useState(""),
-    [receiptId, setReceiptId] = useState<number | null>(null),
-    [pending, setPending] = useState<Refund | null>(null);
+    [receiptId, setReceiptId] = useState<number | null>(null);
   const scope = `fulfillment-excess-refund:${me.data?.id ?? "anonymous"}:${branchId ?? "unselected"}`;
+  const [pending, setPending] = useState<Refund | null>(() => {
+    try {
+      const saved = localStorage.getItem(scope);
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
   useEffect(() => {
     const timer = setTimeout(() => {
       setDebounced(search);
@@ -214,24 +251,25 @@ export function ChargeExcessRefundWorkspace() {
         الناقل حتى يورّد النقد كاملاً.
       </p>
       <div className="flex flex-wrap items-end gap-2">
-        <label className="grid gap-1 text-sm">
-          <span>الفرع</span>
-          <AppSelect
-            value={String(branchId ?? "")}
-            onValueChange={(v) => {
-              setChosenBranch(v);
-              setPage(0);
-            }}
-            disabled={refund.isPending}
-          >
-            <option value="">اختر الفرع</option>
-            {branches.data?.map((b) => (
-              <option key={b.id} value={String(b.id)}>
-                {b.name}
-              </option>
-            ))}
-          </AppSelect>
-        </label>
+        {!embedded && (
+          <label className="grid gap-1 text-sm">
+            <span>الفرع</span>
+            <AppSelect
+              value={String(branchId ?? "")}
+              onValueChange={(v) => {
+                onBranchChange(v);
+              }}
+              disabled={refund.isPending}
+            >
+              <option value="">اختر الفرع</option>
+              {branches.data?.map((b) => (
+                <option key={b.id} value={String(b.id)}>
+                  {b.name}
+                </option>
+              ))}
+            </AppSelect>
+          </label>
+        )}
         <UnifiedSearchInput
           value={search}
           onChange={setSearch}

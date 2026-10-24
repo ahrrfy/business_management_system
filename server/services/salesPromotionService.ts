@@ -823,16 +823,30 @@ export async function loadPromotionPerformance(
     WHEN ${invoiceItems.baseQuantity} <= 0 THEN 0
     ELSE GREATEST(${invoiceItems.baseQuantity} - ${invoiceItems.returnedBaseQuantity}, 0) / ${invoiceItems.baseQuantity}
   END`;
-  const netSalesExpr = sql`${invoiceItems.total} * (${remainingSaleRatio})`;
+  const { componentRightsNetCostSql, componentRightsNetRevenueSql } =
+    await import("./fulfillment/componentRightsReportSql");
+  const netSalesExpr = componentRightsNetRevenueSql({
+    itemId: sql`${invoiceItems.id}`,
+    baseQuantity: sql`${invoiceItems.baseQuantity}`,
+    returnedQuantity: sql`${invoiceItems.returnedBaseQuantity}`,
+    invoiceSubtotal: sql`${invoices.subtotal}`,
+    invoiceDiscount: sql`${invoices.discountAmount}`,
+    invoiceTax: sql`${invoices.taxAmount}`,
+    ordinary: sql`${invoiceItems.total} * (${remainingSaleRatio})`,
+  });
   const discountExpr = sql`${invoiceItems.promotionDiscount} * (${remainingSaleRatio})`;
-  const costExpr = sql`CASE
+  const costExpr = componentRightsNetCostSql({
+    itemId: sql`${invoiceItems.id}`,
+    originalCost: sql`${invoiceItems.lineCost}`,
+    ordinary: sql`CASE
     WHEN ${invoiceItems.baseQuantity} <= 0 THEN ${invoiceItems.lineCost}
     WHEN ${invoiceItems.returnedRestockedBaseQuantity} >= ${invoiceItems.baseQuantity} THEN 0
     ELSE ${invoiceItems.lineCost} - ROUND(
       ${invoiceItems.lineCost} * ${invoiceItems.returnedRestockedBaseQuantity} / ${invoiceItems.baseQuantity},
       2
     )
-  END`;
+  END`,
+  });
 
   const raw = await tx
     .select({

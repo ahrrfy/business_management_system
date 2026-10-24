@@ -163,13 +163,27 @@ describe("سجل القرارات — decidesOn هو ما يغير القرار"
 });
 
 describe("سجل القرارات — الاجراء المنفذ والرابط", () => {
+  it.each([
+    ["delivery.fulfillment.aftercare.approve", "delivery.fulfillment.aftercare", "approve", "/reception/workflow?section=aftercare&caseId=7"],
+    ["delivery.fulfillment.aftercare.followup", "delivery.fulfillment.aftercare", "get", "/reception/workflow?section=aftercare&caseId=7"],
+    ["delivery.fulfillment.aftercare.approveSettlement", "delivery.fulfillment.aftercare", "approveSettlement", "/reception/workflow?section=aftercare&caseId=7"],
+    ["delivery.fulfillment.charges.approve", "delivery.fulfillment.charges", "approve", "/reception/workflow?section=collect&action=charges&chargeId=7"],
+  ])("%s opens its evidence station while preserving the real decision endpoint", (kind, router, name, href) => {
+    const registered = decisionSpec(kind);
+    expect(registered).toMatchObject({ mode: "OPEN_ONLY", procedure: { router, name } });
+    expect(registered?.href(7)).toBe(href);
+  });
   /**
    * ⭐ العقدُ مع حارس الاحتكاك. اسمٌ خارج هذه الصيغة يجعل المدخل غيرَ مرئيٍّ للحارس، فيبقى
    * الموضعُ محسوباً في D3 بينما يظنّ كاتبُه أنّه عالجه.
    */
   it("اسم كل اجراء بالصيغة التي يلتقطها حارس D3", () => {
     for (const s of allDecisions()) {
-      expect(s.procedure.name, s.kind).toMatch(GUARD_PROCEDURE_SHAPE);
+      if (s.mode === "OPEN_ONLY") {
+        expect(s.procedure.name, s.kind).toMatch(/^\w+$/);
+      } else {
+        expect(s.procedure.name, s.kind).toMatch(GUARD_PROCEDURE_SHAPE);
+      }
       expect(s.procedure.router.trim().length, s.kind).toBeGreaterThan(2);
     }
   });

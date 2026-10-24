@@ -11,7 +11,7 @@ export function FulfillmentSourceActions({ invoiceId, workOrderId, branchId, pre
   const source = new URLSearchParams(invoiceId ? { invoiceId: String(invoiceId) } : { workOrderId: String(workOrderId) });
   if (branchId) source.set("branchId", String(branchId));
   return <>
-    {prepare && operationDecision(me.data, "delivery.fulfillment.requests.create").allowed && <Button asChild variant="outline" size="sm"><Link href={`/delivery?tab=fulfillment&kind=requests&${source}`}>ضم إلى طلب توصيل</Link></Button>}
-    {aftercare && operationDecision(me.data, "delivery.fulfillment.aftercare.create").allowed && <Button asChild variant="outline" size="sm"><Link href={`/delivery?tab=fulfillment&kind=aftercare&${source}`}>معالجة نقص أو تعويض</Link></Button>}
+    {prepare && operationDecision(me.data, "delivery.fulfillment.requests.create").allowed && <Button asChild variant="outline" size="sm"><Link href={`/reception/workflow?section=dispatch&${source}`}>ضم إلى الإسناد بالباركود</Link></Button>}
+    {aftercare && operationDecision(me.data, "delivery.fulfillment.aftercare.create").allowed && <Button asChild variant="outline" size="sm"><Link href={`/reception/workflow?section=aftercare&${source}`}>معالجة نقص أو تعويض</Link></Button>}
   </>;
 }
