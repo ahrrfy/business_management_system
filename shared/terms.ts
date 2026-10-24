@@ -446,3 +446,28 @@ export function priceTierLabel(value: string | null | undefined): string {
   if (!value) return "—";
   return PRICE_TIER_LABELS[value as PriceTier] ?? value;
 }
+
+/** Product image health and discovery ordering, shared by studio views. */
+export const STUDIO_IMAGE_HEALTH_LABELS = {
+  HIGH_VALUE_NO_IMAGE: "منتجات ذات أولوية بلا صور",
+  CONSIGNMENT_NO_IMAGE: "بضائع أمانة بلا صور",
+  HAS_IMAGE_NO_BARCODE: "صور بلا باركود للوحدات",
+  CORRUPTED_OR_UNPROCESSED_IMAGE: "صور غير معالجة أو تالفة",
+  REDUNDANT_VARIANT_IMAGE: "صور بدائل مكررة",
+  NO_IMAGES: "منتجات بلا أي صور",
+  BUNDLE_NO_IMAGE: "حزم وبكجات بلا صور",
+  SINGLE_IMAGE: "صورة واحدة للأصل",
+  PARENT_ONLY_HAS_VARIANTS: "صورة للأصل، وبدائل ناقصة",
+  VARIANTS_INCOMPLETE: "بدائل ناقصة صوراً",
+  HEALTHY: "مكتمل وسليم",
+} as const;
+
+export type StudioImageHealth = keyof typeof STUDIO_IMAGE_HEALTH_LABELS;
+export const STUDIO_DISCOVERY_SORT_LABELS = {
+  MISSING_MOST: "الأحوج (بدائل ناقصة أولاً)",
+  APPROVED_ASC: "الأقلّ صوراً معتمَدة",
+  NAME_ASC: "الاسم أ ↔ ي",
+  VARIANTS_MISSING_MOST: "الأكثر بدائلَ بلا صور",
+} as const;
+
+export type StudioDiscoverySort = keyof typeof STUDIO_DISCOVERY_SORT_LABELS;
