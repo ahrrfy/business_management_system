@@ -1,619 +1,112 @@
-import { PRICE_TIER_LABELS as TIER_LABEL } from "@shared/terms";
-// بطاقة ٣٦٠° لطرف واحد (عميل/مورّد) — مكوّن مساعد لتبويب «جهات الاتصال» في CrmHub.tsx (S3، T3.3).
-// يستهلك contacts.contact360 + contacts.persons.{list,create,update,setInactive} +
-// contacts.waConsent.set + contacts.findDuplicates (server/routers/contactsRouter.ts).
-//
-// بلا شاشة مستقلة/route جديد — يُفتح كلوحة جانبية (Sheet) من ContactsBank.tsx. الحجب المالي
-// (رصيد/حدّ ائتمان) يُطبَّق خادمياً (maskCustomerSensitive/maskSupplierSensitive) — نعرض القيمة
-// كما وصلت بلا افتراض وجود حقول إضافية.
-import { receptionChannelLabel } from "@shared/receptionChannel";
-import { useState } from "react";
-import { Link } from "wouter";
+import { trpc } from "@/lib/trpc";
+import { errMsg } from "@/lib/notify";
 import {
-  Ban,
-  ClipboardList,
-  MapPin,
-  MessageSquare,
-  Pencil,
-  Phone,
-  Plus,
-  Receipt,
-  Search as SearchIcon,
-  Star,
-  TriangleAlert,
-  Users,
-  Wallet,
-} from "lucide-react";
-import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { notify, errMsg } from "@/lib/notify";
-import { confirm } from "@/lib/confirm";
-import { fmt } from "@/lib/money";
-import { fmtDate, fmtDateTime } from "@/lib/date";
-import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
-import { invoiceStatusLabel } from "@shared/invoiceStatus";
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
-import { Textarea } from "@/components/ui/textarea";
-import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from "@/components/ui/sheet";
 import { LoadingState, ErrorState } from "@/components/PageState";
+import { ContactHeaderCard } from "./contact360/ContactHeaderCard";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { WhatsAppShare } from "@/components/WhatsAppShare";
-import { buildOperationalContactMessage } from "@/lib/whatsapp";
-
-type PartyKind = "customer" | "supplier";
-type WaConsentValue = "UNKNOWN" | "OPTED_IN" | "OPTED_OUT";
-type Contact360Data = RouterOutputs["contacts"]["contact360"];
-type PersonRow = RouterOutputs["contacts"]["persons"]["list"][number];
-
-// مرآة CRM_WRITE_ROLES/SUPPLIER_WRITE_ROLES في server/routers/contactsRouter.ts (crmWriteProcedure/
-// suppliersManagerProcedure في server/trpc.ts) — للإخفاء البصري فقط، الإنفاذ الحقيقي خادمي.
-const CRM_WRITE_ROLES = ["cashier", "manager", "sales_rep"] as const;
-const SUPPLIER_WRITE_ROLES = ["manager", "warehouse", "purchasing"] as const;
-
-// تعريب حالة الفاتورة من `@shared/invoiceStatus` — كان قاموساً محلّياً بلا `SUPERSEDED` ⇒
-// فاتورةُ العميل المُصحَّحة تظهر في بطاقته شارةً إنجليزية خاماً.
-const WA_CONSENT_META: Record<WaConsentValue, { label: string; variant: "neutral" | "success" | "danger" }> = {
-  UNKNOWN: { label: "غير معروف", variant: "neutral" },
-  OPTED_IN: { label: "موافِق", variant: "success" },
-  OPTED_OUT: { label: "ملغى", variant: "danger" },
-};
-
-function InfoRow({
-  icon: Icon,
-  label,
-  value,
-}: {
-  icon?: React.ComponentType<{ className?: string; "aria-hidden"?: boolean }>;
-  label: string;
-  value: React.ReactNode;
-}) {
-  return (
-    <div className="flex items-center gap-1.5 min-w-0">
-      {Icon && <Icon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />}
-      <span className="shrink-0 text-muted-foreground">{label}:</span>
-      <span className="text-foreground truncate">{value}</span>
-    </div>
-  );
+  InvoicesCard,
+  ConversationsCard,
+} from "./contact360/ContactActivityCards";
+import { ContactPersonsCard } from "./contact360/ContactPersonsCard";
+import { DuplicatesCard } from "./contact360/ContactDuplicatesCard";
+import { WaConsentCard } from "./contact360/WaConsentCard";
+import { useContactAccess } from "./contact360/useContactAccess";
+import type { ContactPanelProps } from "./contact360/types";
+export function Contact360Panel(props: ContactPanelProps) {
+  return <ContactSession key={`${props.kind}:${props.id}`} {...props} />;
 }
-
-function SectionCard({
-  icon: Icon,
-  title,
-  action,
-  children,
-}: {
-  icon: React.ComponentType<{ className?: string; "aria-hidden"?: boolean }>;
-  title: string;
-  action?: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <Card>
-      <CardHeader className="pb-2">
-        <div className="flex items-center justify-between gap-2">
-          <CardTitle className="text-sm flex items-center gap-1.5">
-            <Icon aria-hidden className="size-4" /> {title}
-          </CardTitle>
-          {action}
-        </div>
-      </CardHeader>
-      <CardContent className="pt-0 space-y-2">{children}</CardContent>
-    </Card>
-  );
-}
-
-/* ═══════════ الرأس ═══════════ */
-
-function HeaderCard({ data }: { data: Contact360Data }) {
-  if (data.kind === "customer") {
-    const c = data.customer;
-    return (
-      <Card>
-        <CardContent className="pt-4 space-y-3">
-          <div className="flex items-center justify-between gap-2 flex-wrap">
-            <div className="flex items-center gap-2 min-w-0">
-              <Badge variant="info">عميل</Badge>
-              <span className="font-bold text-lg truncate">{c.name}</span>
-            </div>
-            <WhatsAppShare
-              whatsapp={c.whatsapp}
-              phone={c.phone}
-              alternativePhones={[c.phone2, c.phone3]}
-              label={`واتساب ${c.name}`}
-              message={buildOperationalContactMessage({
-                entityLabel: "حساب عميل",
-                reference: String(c.id),
-                partyName: c.name,
-                title: "متابعة خدمة العملاء والحساب",
-              })}
-            />
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
-            <InfoRow icon={Phone} label="الهاتف" value={c.phone ? <span dir="ltr">{c.phone}</span> : "—"} />
-            <InfoRow icon={MapPin} label="المدينة" value={c.city || "—"} />
-            <InfoRow icon={Users} label="نوع العميل" value={c.customerType || "—"} />
-            <InfoRow label="فئة السعر" value={TIER_LABEL[c.defaultPriceTier as keyof typeof TIER_LABEL] ?? c.defaultPriceTier} />
-            <InfoRow
-              icon={Wallet}
-              label="الرصيد الحالي"
-              value={<span className="tabular-nums" dir="ltr">{fmt(c.currentBalance)}</span>}
-            />
-            <InfoRow
-              label="حدّ الائتمان"
-              value={c.creditLimit == null ? "بلا حدّ / محجوب" : <span className="tabular-nums" dir="ltr">{fmt(c.creditLimit)}</span>}
-            />
-          </div>
-        </CardContent>
-      </Card>
-    );
-  }
-  const s = data.supplier;
-  return (
-    <Card>
-      <CardContent className="pt-4 space-y-3">
-        <div className="flex items-center justify-between gap-2 flex-wrap">
-          <div className="flex items-center gap-2 min-w-0">
-            <Badge variant="warning">مورّد</Badge>
-            <span className="font-bold text-lg truncate">{s.name}</span>
-          </div>
-          <WhatsAppShare
-            whatsapp={s.whatsapp}
-            phone={s.phone}
-            alternativePhones={[s.phone2, s.phone3]}
-            label={`واتساب ${s.name}`}
-            message={buildOperationalContactMessage({
-              entityLabel: "حساب مورّد",
-              reference: String(s.id),
-              partyName: s.name,
-              title: "متابعة التوريد والحساب",
-            })}
-          />
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
-          <InfoRow icon={Phone} label="الهاتف" value={s.phone ? <span dir="ltr">{s.phone}</span> : "—"} />
-          <InfoRow icon={MapPin} label="المدينة" value={s.city || "—"} />
-          <InfoRow label="التصنيف" value={s.supplierCategory || "—"} />
-          <InfoRow label="شروط الدفع" value={s.paymentTerms || "—"} />
-          <InfoRow
-            icon={Wallet}
-            label="الرصيد الحالي"
-            value={<span className="tabular-nums" dir="ltr">{fmt(s.currentBalance)}</span>}
-          />
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-/* ═══════════ الموافقة التسويقية (عميل فقط) ═══════════ */
-
-function WaConsentCard({
-  customerId,
-  consent,
-  canWrite,
-  onChanged,
-}: {
-  customerId: number;
-  consent: string;
-  canWrite: boolean;
-  onChanged: () => void;
-}) {
-  const setConsent = trpc.contacts.waConsent.set.useMutation({
-    onSuccess: () => {
-      notify.ok("تم تحديث حالة الموافقة التسويقية");
-      onChanged();
-    },
-    onError: (e) => notify.err(e),
-  });
-  const current = (WA_CONSENT_META[consent as WaConsentValue] ? consent : "UNKNOWN") as WaConsentValue;
-
-  return (
-    <SectionCard icon={MessageSquare} title="الموافقة التسويقية (واتساب)">
-      <div className="flex items-center gap-2 flex-wrap">
-        <Badge variant={WA_CONSENT_META[current].variant}>{WA_CONSENT_META[current].label}</Badge>
-        {canWrite && (
-          <div className="flex gap-1 flex-wrap">
-            {(Object.keys(WA_CONSENT_META) as WaConsentValue[]).map((v) => (
-              <Button
-                key={v}
-                type="button"
-                size="sm"
-                variant={v === current ? "default" : "outline"}
-                disabled={setConsent.isPending || v === current}
-                onClick={() => setConsent.mutate({ customerId, consent: v })}
-              >
-                {WA_CONSENT_META[v].label}
-              </Button>
-            ))}
-          </div>
-        )}
-      </div>
-    </SectionCard>
-  );
-}
-
-/* ═══════════ آخر الفواتير (عميل فقط) ═══════════ */
-
-function InvoicesCard({ invoices }: { invoices: Extract<Contact360Data, { kind: "customer" }>["invoices"] }) {
-  return (
-    <SectionCard icon={Receipt} title="آخر الفواتير">
-      {invoices.length === 0 ? (
-        <p className="text-xs text-muted-foreground">لا فواتير.</p>
-      ) : (
-        <ul className="space-y-1">
-          {invoices.map((inv) => (
-            <li key={inv.id}>
-              <Link
-                href={`/invoices/${inv.id}`}
-                className="flex items-center justify-between gap-2 rounded-md border px-3 py-1.5 text-sm hover:bg-accent"
-              >
-                <span className="font-mono text-xs shrink-0" dir="ltr">{inv.invoiceNumber}</span>
-                <span className="text-xs text-muted-foreground shrink-0">{fmtDate(inv.invoiceDate)}</span>
-                <span className="tabular-nums shrink-0" dir="ltr">{fmt(inv.total)}</span>
-                <Badge variant="neutral" className="shrink-0">{invoiceStatusLabel(inv.status)}</Badge>
-              </Link>
-            </li>
-          ))}
-        </ul>
-      )}
-    </SectionCard>
-  );
-}
-
-
-/* ═══════════ المحادثات ═══════════ */
-
-
-function ConversationsCard({ conversations }: { conversations: Contact360Data["conversations"] }) {
-  return (
-    <SectionCard icon={MessageSquare} title="المحادثات">
-      {conversations.length === 0 ? (
-        <p className="text-xs text-muted-foreground">لا محادثات.</p>
-      ) : (
-        <ul className="space-y-1">
-          {conversations.map((c) => (
-            <li key={c.id}>
-              <Link
-                href="/crm?tab=inbox"
-                className="flex items-center justify-between gap-2 rounded-md border px-3 py-1.5 text-sm hover:bg-accent"
-              >
-                <span className="shrink-0">{receptionChannelLabel(c.channel)}</span>
-                <span className="truncate flex-1 text-xs text-muted-foreground">{c.lastMessagePreview ?? "—"}</span>
-                <span className="text-xs text-muted-foreground shrink-0" dir="ltr">{fmtDateTime(c.lastMessageAt)}</span>
-                {c.unreadCount > 0 && (
-                  <Badge variant="destructive" className="shrink-0">{c.unreadCount}</Badge>
-                )}
-              </Link>
-            </li>
-          ))}
-        </ul>
-      )}
-    </SectionCard>
-  );
-}
-
-/* ═══════════ أشخاص الاتصال (B2B) ═══════════ */
-
-function PersonFormDialog({
-  partyKind,
-  partyId,
-  person,
-  onClose,
-  onSaved,
-}: {
-  partyKind: PartyKind;
-  partyId: number;
-  person: PersonRow | null;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const [name, setName] = useState(person?.name ?? "");
-  const [phone, setPhone] = useState(person?.phone ?? "");
-  const [role, setRole] = useState(person?.role ?? "");
-  const [isPrimary, setIsPrimary] = useState(person?.isPrimary ?? false);
-  const [notes, setNotes] = useState(person?.notes ?? "");
-
-  const create = trpc.contacts.persons.create.useMutation({
-    onSuccess: () => { notify.ok("أُضيف شخص الاتصال"); onSaved(); },
-    onError: (e) => notify.err(e),
-  });
-  const update = trpc.contacts.persons.update.useMutation({
-    onSuccess: () => { notify.ok("تم حفظ التعديل"); onSaved(); },
-    onError: (e) => notify.err(e),
-  });
-  const pending = create.isPending || update.isPending;
-
-  function submit() {
-    const trimmedName = name.trim();
-    if (!trimmedName) { notify.err("اسم شخص الاتصال مطلوب"); return; }
-    if (person) {
-      update.mutate({
-        id: person.id,
-        name: trimmedName,
-        phone: phone.trim() || null,
-        role: role.trim() || null,
-        isPrimary,
-        notes: notes.trim() || null,
-      });
-    } else {
-      create.mutate({
-        customerId: partyKind === "customer" ? partyId : undefined,
-        supplierId: partyKind === "supplier" ? partyId : undefined,
-        name: trimmedName,
-        phone: phone.trim() || undefined,
-        role: role.trim() || undefined,
-        isPrimary,
-        notes: notes.trim() || undefined,
-      });
-    }
-  }
-
-  return (
-    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{person ? "تعديل شخص اتصال" : "شخص اتصال جديد"}</DialogTitle>
-          <DialogDescription>
-            {partyKind === "customer" ? "جهة اتصال إضافية لدى هذا العميل." : "جهة اتصال إضافية لدى هذا المورّد."}
-          </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-3">
-          <div className="space-y-1">
-            <Label htmlFor="cp-name" className="text-xs text-muted-foreground">
-              الاسم<span className="text-destructive"> *</span>
-            </Label>
-            <Input id="cp-name" value={name} onChange={(e) => setName(e.target.value)} maxLength={160} autoFocus />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <Label htmlFor="cp-phone" className="text-xs text-muted-foreground">الهاتف</Label>
-              <IntlPhoneInput id="cp-phone" value={phone ?? ""} onChange={setPhone} />
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="cp-role" className="text-xs text-muted-foreground">الصفة</Label>
-              <Input id="cp-role" value={role ?? ""} onChange={(e) => setRole(e.target.value)} maxLength={60} placeholder="مثلاً: مدير مشتريات" />
-            </div>
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="cp-notes" className="text-xs text-muted-foreground">ملاحظات</Label>
-            <Textarea id="cp-notes" value={notes ?? ""} onChange={(e) => setNotes(e.target.value)} rows={2} maxLength={255} />
-          </div>
-          <label className="inline-flex items-center gap-2 text-sm">
-            <Checkbox checked={isPrimary} onCheckedChange={(v) => setIsPrimary(v === true)} />
-            جهة الاتصال الأساسية
-          </label>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>إلغاء</Button>
-          <Button onClick={submit} disabled={pending || !name.trim()}>
-            {pending ? "جارٍ الحفظ…" : "حفظ"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function ContactPersonsCard({
-  partyKind,
-  partyId,
-  canWrite,
-}: {
-  partyKind: PartyKind;
-  partyId: number;
-  canWrite: boolean;
-}) {
-  const utils = trpc.useUtils();
-  const input = partyKind === "customer" ? { customerId: partyId } : { supplierId: partyId };
-  const list = trpc.contacts.persons.list.useQuery(input);
-  const [dialogPerson, setDialogPerson] = useState<PersonRow | "new" | null>(null);
-
-  const setInactive = trpc.contacts.persons.setInactive.useMutation({
-    onSuccess: () => {
-      notify.ok("تم تعطيل شخص الاتصال");
-      utils.contacts.persons.list.invalidate(input);
-    },
-    onError: (e) => notify.err(e),
-  });
-
-  async function deactivate(p: PersonRow) {
-    const ok = await confirm({
-      variant: "warning",
-      title: "تعطيل شخص الاتصال",
-      description: `تعطيل «${p.name}»؟ يبقى في السجلّ التاريخي (بلا حذف نهائي).`,
-      confirmText: "تعطيل",
-    });
-    if (!ok) return;
-    setInactive.mutate({ id: p.id });
-  }
-
-  const rows = list.data ?? [];
-
-  return (
-    <SectionCard
-      icon={Users}
-      title="أشخاص الاتصال"
-      action={
-        canWrite && (
-          <Button type="button" size="sm" variant="outline" onClick={() => setDialogPerson("new")}>
-            <Plus aria-hidden className="size-3.5" /> إضافة
-          </Button>
-        )
-      }
-    >
-      {list.isLoading && <LoadingState className="p-4" />}
-      {list.isError && <ErrorState message="تعذّر تحميل أشخاص الاتصال." onRetry={() => list.refetch()} className="p-4" />}
-      {!list.isLoading && !list.isError && rows.length === 0 && (
-        <p className="text-xs text-muted-foreground">لا أشخاص اتصال مسجَّلون.</p>
-      )}
-      {rows.length > 0 && (
-        <div className="space-y-1.5">
-          {rows.map((p) => (
-            <div
-              key={p.id}
-              className={`flex items-center justify-between gap-2 rounded-md border px-3 py-1.5 text-sm ${p.isActive ? "" : "opacity-60"}`}
-            >
-              <div className="min-w-0">
-                <div className="flex items-center gap-1.5">
-                  <span className="font-medium truncate">{p.name}</span>
-                  {p.isPrimary && <Star aria-hidden className="size-3.5 text-[var(--sem-warn)] fill-[var(--sem-warn)] shrink-0" />}
-                  {!p.isActive && <Badge variant="neutral" className="text-[10px] shrink-0">معطَّل</Badge>}
-                </div>
-                <div className="text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
-                  {p.role && <span>{p.role}</span>}
-                  {p.phone && <span dir="ltr">{p.phone}</span>}
-                </div>
-              </div>
-              {canWrite && (
-                <div className="flex items-center gap-1 shrink-0">
-                  <Button type="button" size="icon-sm" variant="ghost" aria-label="تعديل شخص الاتصال" onClick={() => setDialogPerson(p)}>
-                    <Pencil aria-hidden className="size-3.5" />
-                  </Button>
-                  {p.isActive && (
-                    <Button
-                      type="button"
-                      size="icon-sm"
-                      variant="ghost"
-                      aria-label="تعطيل شخص الاتصال"
-                      onClick={() => deactivate(p)}
-                      disabled={setInactive.isPending}
-                    >
-                      <Ban aria-hidden className="size-3.5" />
-                    </Button>
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-      {dialogPerson != null && (
-        <PersonFormDialog
-          partyKind={partyKind}
-          partyId={partyId}
-          person={dialogPerson === "new" ? null : dialogPerson}
-          onClose={() => setDialogPerson(null)}
-          onSaved={() => { setDialogPerson(null); utils.contacts.persons.list.invalidate(input); }}
-        />
-      )}
-    </SectionCard>
-  );
-}
-
-/* ═══════════ كشف الازدواج (v1 — قراءة فقط، بلا دمج) ═══════════ */
-
-function DuplicatesCard({
-  kind,
-  id,
-  onOpenContact,
-}: {
-  kind: PartyKind;
-  id: number;
-  onOpenContact: (kind: PartyKind, id: number) => void;
-}) {
-  const [checked, setChecked] = useState(false);
-  const dup = trpc.contacts.findDuplicates.useQuery({ kind, id }, { enabled: false });
-  const rows = dup.data ?? [];
-
-  return (
-    <SectionCard
-      icon={SearchIcon}
-      title="كشف الازدواج"
-      action={
-        <Button type="button" size="sm" variant="outline" onClick={() => { setChecked(true); dup.refetch(); }} disabled={dup.isFetching}>
-          {dup.isFetching ? "جارٍ البحث…" : "بحث عن مكرر"}
-        </Button>
-      }
-    >
-      {dup.isError && <p className="text-xs text-destructive">{errMsg(dup.error)}</p>}
-      {checked && !dup.isFetching && !dup.isError && rows.length === 0 && (
-        <p className="text-xs text-muted-foreground">لا نظائر مشابهة.</p>
-      )}
-      {rows.length > 0 && (
-        <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 space-y-1.5">
-          <p className="flex items-center gap-1.5 text-xs font-bold text-[var(--sem-warn)]">
-            <TriangleAlert aria-hidden className="size-3.5" /> نظائر مرشّحة — للمراجعة اليدوية فقط (بلا دمج تلقائي)
-          </p>
-          {rows.map((m) => (
-            <div key={m.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
-              <span className="font-medium">{m.name}</span>
-              {m.phone && <span dir="ltr" className="text-xs text-muted-foreground">{m.phone}</span>}
-              <Badge variant="neutral" className="text-[10px]">
-                {m.matchedOn === "phone" ? "تطابق هاتف" : m.matchedOn === "both" ? "تطابق اسم وهاتف" : "تشابه اسم"}
-              </Badge>
-              {!m.isActive && <Badge variant="neutral" className="text-[10px]">معطَّل</Badge>}
-              <button type="button" className="text-xs text-primary underline" onClick={() => onOpenContact(kind, Number(m.id))}>
-                فتح البطاقة
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-    </SectionCard>
-  );
-}
-
-/* ═══════════ اللوحة الجانبية الكاملة ═══════════ */
-
-export function Contact360Panel({
+function ContactSession({
   kind,
   id,
   onClose,
   onOpenContact,
-}: {
-  kind: PartyKind;
-  id: number;
-  onClose: () => void;
-  onOpenContact: (kind: PartyKind, id: number) => void;
-}) {
-  const me = trpc.auth.me.useQuery();
-  const role = (me.data?.role ?? "") as RoleKey;
-  const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
-  const canWriteCrm = !!role && moduleAccessAllowed(role, override, "crm", "FULL", CRM_WRITE_ROLES);
-  const canWriteSuppliers = !!role && moduleAccessAllowed(role, override, "suppliers", "FULL", SUPPLIER_WRITE_ROLES);
-  const canWritePersons = kind === "customer" ? canWriteCrm : canWriteCrm && canWriteSuppliers;
-
-  const q = trpc.contacts.contact360.useQuery({ kind, id });
-
+}: ContactPanelProps) {
+  const access = useContactAccess(kind);
+  const canRead = access.canRead("contacts.contact360");
+  const query = trpc.contacts.contact360.useQuery(
+    { kind, id },
+    { enabled: canRead },
+  );
+  const data =
+    canRead &&
+    !query.isError &&
+    query.data?.kind === kind &&
+    (query.data.kind === "customer"
+      ? query.data.customer.id
+      : query.data.supplier.id) === id
+      ? query.data
+      : undefined;
+  const name =
+    data?.kind === "customer"
+      ? data.customer.name
+      : data?.kind === "supplier"
+        ? data.supplier.name
+        : "بطاقة 360°";
   return (
-    <Sheet open onOpenChange={(o) => { if (!o) onClose(); }}>
-      <SheetContent side="right" dir="rtl" className="w-full sm:max-w-xl overflow-y-auto">
-        <SheetHeader>
-          <SheetTitle>
-            {q.data?.kind === "customer" ? q.data.customer.name : q.data?.kind === "supplier" ? q.data.supplier.name : "بطاقة ٣٦٠°"}
-          </SheetTitle>
-          <SheetDescription>{kind === "customer" ? "بطاقة عميل موحّدة" : "بطاقة مورّد موحّدة"}</SheetDescription>
+    <Sheet
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+    >
+      <SheetContent
+        side="right"
+        dir="rtl"
+        className="w-full min-w-0 overflow-hidden sm:max-w-xl"
+      >
+        <SheetHeader className="min-w-0 shrink-0 pe-12">
+          <SheetTitle className="break-words">{name}</SheetTitle>
+          <SheetDescription>
+            {kind === "customer" ? "بطاقة عميل موحّدة" : "بطاقة مورّد موحّدة"}
+          </SheetDescription>
         </SheetHeader>
-        <div className="px-4 pb-6 space-y-4">
-          {q.isLoading && <LoadingState />}
-          {q.isError && <ErrorState message={errMsg(q.error)} onRetry={() => q.refetch()} />}
-          {q.data && (
+        <div className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto px-4 pb-6">
+          {access.loading || (canRead && query.isLoading) ? (
+            <LoadingState />
+          ) : !canRead ? (
+            <p role="alert" className="text-sm text-muted-foreground">
+              لا تملك صلاحية عرض بطاقة جهة الاتصال.
+            </p>
+          ) : query.isError ? (
+            <ErrorState
+              message={errMsg(query.error)}
+              onRetry={() => query.refetch()}
+            />
+          ) : null}
+          {data && (
             <>
-              <HeaderCard data={q.data} />
-              {q.data.kind === "customer" && (
+              <ContactHeaderCard
+                data={data}
+                canViewMoney={access.canViewMoney}
+              />
+              {data.kind === "customer" && (
                 <WaConsentCard
                   customerId={id}
-                  consent={q.data.customer.waConsent}
-                  canWrite={canWriteCrm}
-                  onChanged={() => q.refetch()}
+                  consent={data.customer.waConsent}
+                  canWrite={access.canWrite("contacts.waConsent.set")}
                 />
               )}
-              {q.data.kind === "customer" && <InvoicesCard invoices={q.data.invoices} />}
-              <ConversationsCard conversations={q.data.conversations} />
-              <ContactPersonsCard partyKind={kind} partyId={id} canWrite={canWritePersons} />
-              <DuplicatesCard kind={kind} id={id} onOpenContact={onOpenContact} />
+              {data.kind === "customer" && (
+                <InvoicesCard invoices={data.invoices} />
+              )}
+              <ConversationsCard conversations={data.conversations} />
+              <ContactPersonsCard
+                partyKind={kind}
+                partyId={id}
+                access={access}
+              />
+              <DuplicatesCard
+                kind={kind}
+                id={id}
+                canRead={access.canRead("contacts.findDuplicates")}
+                onOpenContact={onOpenContact}
+              />
             </>
           )}
         </div>
