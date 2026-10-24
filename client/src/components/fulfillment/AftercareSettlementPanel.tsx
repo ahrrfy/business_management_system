@@ -29,7 +29,7 @@ export function AftercareSettlementPanel({
     "delivery.fulfillment.aftercare.settlementRequest",
   ).allowed;
   const canApprove = useOperationPermission(
-    "delivery.fulfillment.aftercare.settlementApprove",
+    "delivery.fulfillment.aftercare.approveSettlement",
   ).allowed;
   const canPost = useOperationPermission(
     "delivery.fulfillment.aftercare.settlementPost",
@@ -51,7 +51,7 @@ export function AftercareSettlementPanel({
   const request =
     trpc.delivery.fulfillment.aftercare.settlementRequest.useMutation();
   const approve =
-    trpc.delivery.fulfillment.aftercare.settlementApprove.useMutation();
+    trpc.delivery.fulfillment.aftercare.approveSettlement.useMutation();
   const post = trpc.delivery.fulfillment.aftercare.settlementPost.useMutation();
   const withdraw =
     trpc.delivery.fulfillment.aftercare.settlementWithdraw.useMutation();
@@ -204,7 +204,7 @@ export function AftercareSettlementPanel({
                   pending={pending}
                   onClick={() =>
                     void execute(
-                      "settlementApprove",
+                      "approveSettlement",
                       {
                         id: settlement.id,
                         expectedVersion: settlement.version,

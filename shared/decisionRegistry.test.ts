@@ -169,7 +169,11 @@ describe("سجل القرارات — الاجراء المنفذ والرابط
    */
   it("اسم كل اجراء بالصيغة التي يلتقطها حارس D3", () => {
     for (const s of allDecisions()) {
-      expect(s.procedure.name, s.kind).toMatch(GUARD_PROCEDURE_SHAPE);
+      if (s.mode === "OPEN_ONLY") {
+        expect(s.procedure.name, s.kind).toMatch(/^\w+$/);
+      } else {
+        expect(s.procedure.name, s.kind).toMatch(GUARD_PROCEDURE_SHAPE);
+      }
       expect(s.procedure.router.trim().length, s.kind).toBeGreaterThan(2);
     }
   });

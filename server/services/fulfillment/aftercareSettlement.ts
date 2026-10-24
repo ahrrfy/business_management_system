@@ -516,10 +516,10 @@ export async function approveAftercareSettlement(
   actor: Actor,
 ) {
   return withTx(async (tx) => {
-    await aftercarePermissionTx(tx, actor, "settlementApprove");
+    await aftercarePermissionTx(tx, actor, "approveSettlement");
     const row = await settlementTx(tx, input.id, actor);
     const context = fulfillmentMutationContext(
-      "aftercare.settlementApprove",
+      "aftercare.approveSettlement",
       input,
       input,
       actor,
@@ -552,7 +552,7 @@ export async function approveAftercareSettlement(
       .where(eq(aftercareSettlements.id, row.id));
     await recordFulfillmentMutationTx(tx, context, row.id);
     await logAuditTx(tx, actor, {
-      action: "delivery.fulfillment.aftercare.settlementApprove",
+      action: "delivery.fulfillment.aftercare.approveSettlement",
       entityType: "aftercareSettlement",
       entityId: row.id,
       newValue: { previewHash: row.previewHash },

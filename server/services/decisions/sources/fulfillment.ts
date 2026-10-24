@@ -21,7 +21,7 @@ type Mode = "review" | "followup" | "settlement" | "charge";
 const kinds = {
   review: "delivery.fulfillment.aftercare.approve",
   followup: "delivery.fulfillment.aftercare.followup",
-  settlement: "delivery.fulfillment.aftercare.settlementApprove",
+  settlement: "delivery.fulfillment.aftercare.approveSettlement",
   charge: "delivery.fulfillment.charges.approve",
 } as const;
 function source(mode: Mode): DecisionSource {
@@ -111,7 +111,7 @@ function source(mode: Mode): DecisionSource {
           );
       }
       if (mode === "settlement") {
-        if (!can("delivery.fulfillment.aftercare.settlementApprove")) return [];
+        if (!can("delivery.fulfillment.aftercare.approveSettlement")) return [];
         const rows = await db
           .select({
             settlement: aftercareSettlements,

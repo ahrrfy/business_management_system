@@ -30,6 +30,7 @@ import {
   approveAftercareCase,
   confirmAftercareDelivery,
   createAftercareCase,
+  declareAftercareExecutionReturn,
   dispatchAftercareExecution,
   payAftercareDeliveryFee,
   prepareAftercareExecution,
@@ -535,6 +536,7 @@ describe("aftercare real document, stock, custody and fee integration", () => {
         expectedVersion: 1,
         clientRequestId: key(),
         partyId: 1,
+        assignedUserId: 4,
       },
       CHECKER,
     );
@@ -1242,6 +1244,15 @@ describe("aftercare real document, stock, custody and fee integration", () => {
         CHECKER,
       ),
     ).rejects.toThrow(/حق الصرف/);
+    await declareAftercareExecutionReturn(
+      {
+        id: execution.id,
+        expectedVersion: 3,
+        clientRequestId: key(),
+        reason: "أعلن الناقل رجوع التعويض بعد تعذر التسليم",
+      },
+      CHECKER,
+    );
     await confirmAftercareDelivery(
       {
         id: execution.id,

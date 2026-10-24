@@ -353,7 +353,7 @@ export const fulfillmentAftercareRouter = router({
         }),
       ),
     ),
-  settlementApprove: deliveryManagerProcedure
+  approveSettlement: deliveryManagerProcedure
     .input(identity)
     .mutation(async ({ input, ctx }) =>
       approveAftercareSettlement(
