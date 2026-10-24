@@ -33,7 +33,10 @@ import {
 import {
   appendDeliveryEvent,
   appendDeliveryLedgerEntry,
+  assertConsignmentStatusTransition,
 } from "../delivery/lifecycle";
+import { effectiveDeliveryLedgerEntrySql } from "../delivery/legacyLedger";
+import { shortfallAssignedForConsignmentTx } from "../delivery/openParcelPredicates";
 import {
   assertFulfillmentBranch,
   fulfillmentError,
@@ -714,13 +717,42 @@ export async function settleAssignedChargeAtCounterTx(
     .limit(1);
   if (!cn || !["DISPATCHED", "PARTIAL"].includes(cn.status)) return;
   assertFulfillmentBranch(actor, cn.branchId);
+  const newCounterSettled = money(cn.counterSettledAmount).plus(input.amount);
+  const liveRemaining = money(cn.codAmount)
+    .minus(cn.collectedAmount)
+    .minus(newCounterSettled)
+    .minus(await shortfallAssignedForConsignmentTx(tx, cn.id));
+  const [custody] = await tx
+    .select({
+      pending: sql<string>`COALESCE(SUM(CASE
+    WHEN ${deliveryLedgerEntries.entryType}='COD_COLLECTED' THEN ${deliveryLedgerEntries.amount}
+    WHEN ${deliveryLedgerEntries.entryType} IN ('COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF') THEN -${deliveryLedgerEntries.amount}
+    ELSE 0 END),0)`,
+    })
+    .from(deliveryLedgerEntries)
+    .where(
+      and(
+        eq(deliveryLedgerEntries.consignmentId, cn.id),
+        effectiveDeliveryLedgerEntrySql(),
+      ),
+    );
+  const close =
+    cn.parcelStatus === "DELIVERED" &&
+    liveRemaining.lte(0) &&
+    money(custody?.pending ?? "0").lte(0);
+  if (close) assertConsignmentStatusTransition(cn.status, "DELIVERED");
   await tx
     .update(deliveryConsignments)
     .set({
-      counterSettledAmount: toDbMoney(
-        money(cn.counterSettledAmount).plus(input.amount),
-      ),
+      counterSettledAmount: toDbMoney(newCounterSettled),
       codClaimVersion: cn.codClaimVersion + 1,
+      ...(close
+        ? {
+            status: "DELIVERED" as const,
+            moneyStatus: "SETTLED" as const,
+            settledAt: new Date(),
+          }
+        : {}),
     })
     .where(eq(deliveryConsignments.id, cn.id));
   await appendDeliveryLedgerEntry(tx, {
@@ -736,6 +768,10 @@ export async function settleAssignedChargeAtCounterTx(
     eventKey: `CN:${cn.id}:CHARGE_COUNTER:${input.receiptId}:${input.chargeId}`,
     consignmentId: cn.id,
     eventType: "COD_CLAIM_CHANGED",
+    fromParcelStatus: cn.parcelStatus,
+    toParcelStatus: cn.parcelStatus,
+    fromMoneyStatus: cn.moneyStatus,
+    toMoneyStatus: close ? "SETTLED" : cn.moneyStatus,
     actorUserId: actor.userId,
     payload: {
       chargeId: input.chargeId,

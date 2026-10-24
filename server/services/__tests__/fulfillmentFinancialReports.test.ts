@@ -637,6 +637,46 @@ describe.sequential("classified fulfillment financial report effects", () => {
     expect(await db().select().from(fulfillmentChargePayments)).toHaveLength(0);
   });
 
+  it.each(["0", "500"])("keeps assigned charge shortfall outside customer-backed exposure with %s actual cash", async (actualAmount) => {
+    await db().insert(s.invoices).values({
+      id: 1, invoiceNumber: "FCR-PREPAID", sourceType: "POS", branchId: 1,
+      customerId: 1, paymentMode: "PREPAID", total: "10000", subtotal: "10000",
+      paidAmount: "10000", createdBy: maker.userId,
+    });
+    await db().insert(s.fulfillmentRequests).values({
+      id: 1, branchId: 1, customerId: 1, requestNumber: "FCR-SHORTFALL",
+      recipientName: "عميل", recipientPhone: "+9647701234567", deliveryAddress: "بغداد",
+      createdBy: maker.userId, clientRequestId: key(), sourceHash: "a".repeat(64),
+    });
+    const charge = await approved({ requestId: 1 });
+    await db().insert(s.deliveryParties).values({ id: 1, name: "ناقل", branchId: 1 });
+    await db().insert(s.deliveryConsignments).values({
+      id: 1, consignmentNumber: "FCR-SHORTFALL-CN", branchId: 1, partyId: 1,
+      invoiceId: 1, sourceType: "INVOICE", sourceId: 1, fulfillmentRequestId: 1,
+      codAmount: "0", feeCollection: "SHOP", deliveryFee: "0", endCustomerId: 1,
+      dispatchedBy: maker.userId,
+    });
+    await withTx(async (tx) => {
+      await attachFulfillmentRequestClaimsTx(tx, {
+        requestId: 1, consignmentId: 1, partyId: 1, branchId: 1, clientRequestId: key(),
+      }, checker);
+      await collectAssignedConsignmentClaimsTx(tx, {
+        consignmentId: 1, actualAmount, eventKey: key(),
+        shortfallReason: "عجز مثبت بذمة الناقل مع بضاعة مدفوعة بالكامل",
+      }, checker);
+    });
+    expect((await current(charge.id)).paidAmount).toBe("2000.00");
+    const day = new Date().toISOString().slice(0, 10);
+    for (const asOf of [undefined, day]) expect(await position(asOf)).toMatchObject({
+      arDebit: "0.00", arCredit: "0.00",
+      deliveryFloatCustomerBacked: "0.00", deliveryFloat: "2000.00",
+    });
+    expect(await position(undefined, 2)).toMatchObject({ deliveryFloat: "0.00" });
+    expect(await position("2000-01-01")).toMatchObject({ deliveryFloat: "0.00" });
+    expect((await db().select().from(s.invoices))[0].paidAmount).toBe("10000.00");
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+  });
+
   it("recognizes actual aftercare issue cost once without a second sale or a cash expense", async () => {
     await withTx((tx) =>
       postAftercareIssueTx(tx, {

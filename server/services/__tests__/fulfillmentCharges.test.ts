@@ -34,6 +34,12 @@ import {
   collectAssignedConsignmentClaimsTx,
 } from "../fulfillment/chargeDelivery";
 import { recordDeliveryRemittance } from "../delivery/remittance";
+import { confirmConsignmentDelivery } from "../delivery/courier";
+import { listOpenConsignments } from "../delivery/queries";
+import {
+  createFulfillmentRequest,
+  releaseFulfillmentRequest,
+} from "../fulfillment/requests";
 import { truncateTables } from "./__testUtils__";
 
 const cashier = { userId: 1, branchId: 1, role: "cashier" },
@@ -1203,43 +1209,39 @@ describe("classified fulfillment charge lifecycle", () => {
         clientRequestId: key(),
         sourceHash: "a".repeat(64),
       });
-    await db()
-      .insert(s.invoices)
-      .values({
-        id: 1,
-        branchId: 1,
-        customerId: null,
-        invoiceNumber: "FC-ANON-PAID",
-        sourceType: "POS",
-        sourceId: key(),
-        subtotal: "2000",
-        total: "2000",
-        paidAmount: "2000",
-        status: "PAID",
-        createdBy: cashier.userId,
-      });
+    await db().insert(s.invoices).values({
+      id: 1,
+      branchId: 1,
+      customerId: null,
+      invoiceNumber: "FC-ANON-PAID",
+      sourceType: "POS",
+      sourceId: key(),
+      subtotal: "2000",
+      total: "2000",
+      paidAmount: "2000",
+      status: "PAID",
+      createdBy: cashier.userId,
+    });
     await db()
       .insert(s.deliveryParties)
       .values({ id: 1, name: "ناقل المستلم النقدي", branchId: 1 });
-    await db()
-      .insert(s.deliveryConsignments)
-      .values({
-        id: 1,
-        consignmentNumber: "FC-ANON-CN",
-        branchId: 1,
-        partyId: 1,
-        sourceType: "INVOICE",
-        sourceId: 1,
-        invoiceId: 1,
-        fulfillmentRequestId: 1,
-        codAmount: "0",
-        feeCollection: "SHOP",
-        deliveryFee: "0",
-        endCustomerId: null,
-        recipientName: "مستلم نقدي بلا حساب",
-        recipientPhone: "+9647707654321",
-        dispatchedBy: cashier.userId,
-      });
+    await db().insert(s.deliveryConsignments).values({
+      id: 1,
+      consignmentNumber: "FC-ANON-CN",
+      branchId: 1,
+      partyId: 1,
+      sourceType: "INVOICE",
+      sourceId: 1,
+      invoiceId: 1,
+      fulfillmentRequestId: 1,
+      codAmount: "0",
+      feeCollection: "SHOP",
+      deliveryFee: "0",
+      endCustomerId: null,
+      recipientName: "مستلم نقدي بلا حساب",
+      recipientPhone: "+9647707654321",
+      dispatchedBy: cashier.userId,
+    });
     await withTx(async (tx) => {
       await attachFulfillmentRequestClaimsTx(
         tx,
@@ -1402,6 +1404,199 @@ describe("classified fulfillment charge lifecycle", () => {
       (await db().select().from(s.journalLines)).filter((l) => l.role === "AR"),
     ).toHaveLength(0);
   });
+  it.each([
+    {
+      scenario: "full counter payment with no custody",
+      courierActual: "0",
+      counterAmount: "2000",
+      closed: true,
+      ar: "0.00",
+    },
+    {
+      scenario: "partial counter payment leaves an open claim",
+      courierActual: "0",
+      counterAmount: "500",
+      closed: false,
+      ar: "1500.00",
+    },
+    {
+      scenario:
+        "actual courier custody stays open after the claim is fully paid",
+      courierActual: "500",
+      counterAmount: "1500",
+      closed: false,
+      ar: "0.00",
+    },
+  ])(
+    "charge-only COMPANY counter collection: $scenario",
+    async ({ courierActual, counterAmount, closed, ar }) => {
+      await db().insert(s.deliveryParties).values({
+        id: 1,
+        name: "شركة التوصيل",
+        partyType: "COMPANY",
+        branchId: 1,
+        currentBalance: "0",
+        isActive: true,
+      });
+      const request = await createFulfillmentRequest(
+        {
+          branchId: 1,
+          customerId: 1,
+          recipientName: "مستلم أجر الطلب",
+          recipientPhone: "07701234567",
+          deliveryAddress: "بغداد",
+          partyId: 1,
+          deliveryFee: "0",
+          feeCollection: "SHOP",
+          sources: [],
+          clientRequestId: key(),
+        },
+        cashier,
+      );
+      const row = await approved({ requestId: request.id });
+      const sent = await releaseFulfillmentRequest(
+        {
+          id: request.id,
+          expectedVersion: request.version,
+          clientRequestId: key(),
+          externalTrackingRef: key(),
+        },
+        manager,
+      );
+      await confirmConsignmentDelivery(
+        {
+          consignmentId: sent.consignmentId,
+          clientRequestId: key(),
+          statementWitness: {
+            partyId: 1,
+            statementNumber: key(),
+            kind: "COMPANY_STATEMENT",
+            collectedAmount: courierActual,
+          },
+        },
+        { userId: manager.userId },
+      );
+      const [before] = await db()
+        .select()
+        .from(s.deliveryConsignments)
+        .where(eq(s.deliveryConsignments.id, sent.consignmentId));
+      expect(before).toMatchObject({
+        invoiceId: null,
+        parcelStatus: "DELIVERED",
+        status: "DISPATCHED",
+        moneyStatus: "UNSETTLED",
+        settledAt: null,
+      });
+      expect(
+        (await listOpenConsignments(1, 1)).rows.map((c) => c.id),
+      ).toContain(sent.consignmentId);
+      const charge = (
+          await db()
+            .select()
+            .from(fulfillmentCharges)
+            .where(eq(fulfillmentCharges.id, row.id))
+        )[0],
+        paymentKey = key(),
+        started = Date.now();
+      const collected = await cashCollect(
+        row.id,
+        charge.version,
+        counterAmount,
+        counterAmount,
+        paymentKey,
+      );
+      const [after] = await db()
+        .select()
+        .from(s.deliveryConsignments)
+        .where(eq(s.deliveryConsignments.id, sent.consignmentId));
+      expect(after.parcelStatus).toBe("DELIVERED");
+      expect(after.courierDeliveredAt).toEqual(before.courierDeliveredAt);
+      expect(after.counterSettledAmount).toBe(`${counterAmount}.00`);
+      expect(after.codClaimVersion).toBe(before.codClaimVersion + 1);
+      expect(after.courierAckClaimVersion).toBe(before.courierAckClaimVersion);
+      expect(after.status).toBe(closed ? "DELIVERED" : "DISPATCHED");
+      expect(after.moneyStatus).toBe(closed ? "SETTLED" : "UNSETTLED");
+      if (closed) {
+        expect(after.settledAt).toBeInstanceOf(Date);
+        expect(after.settledAt!.getTime()).toBeGreaterThanOrEqual(
+          started - 1000,
+        );
+      } else expect(after.settledAt).toBeNull();
+      expect(
+        (await listOpenConsignments(1, 1)).rows.some(
+          (c) => c.id === sent.consignmentId,
+        ),
+      ).toBe(!closed);
+      expect(await balance()).toBe(ar);
+      expect(
+        (await db().select().from(s.deliveryParties))[0].currentBalance,
+      ).toBe(`${courierActual}.00`);
+      const ledger = await db()
+        .select()
+        .from(s.deliveryLedgerEntries)
+        .orderBy(s.deliveryLedgerEntries.id);
+      expect(
+        ledger
+          .filter((e) => e.entryType === "COD_RELEASED")
+          .map((e) => e.amount),
+      ).toEqual([`${counterAmount}.00`]);
+      expect(
+        ledger
+          .filter((e) => e.entryType === "COD_COLLECTED")
+          .map((e) => e.amount),
+      ).toEqual(courierActual === "0" ? [] : ["500.00"]);
+      expect(ledger.filter((e) => e.entryType === "COD_REMITTED")).toHaveLength(
+        0,
+      );
+      const events = await db()
+          .select()
+          .from(s.deliveryEvents)
+          .orderBy(s.deliveryEvents.id),
+        changed = events.filter((e) => e.eventType === "COD_CLAIM_CHANGED");
+      expect(changed).toHaveLength(1);
+      expect(changed[0]).toMatchObject({
+        fromParcelStatus: "DELIVERED",
+        toParcelStatus: "DELIVERED",
+        fromMoneyStatus: before.moneyStatus,
+        toMoneyStatus: after.moneyStatus,
+      });
+      expect(changed[0].payload).toMatchObject({
+        chargeId: row.id,
+        receiptId: collected.receiptId,
+        claimVersion: after.codClaimVersion,
+        ackRequired: true,
+      });
+      const snapshot = await financialSnapshot();
+      expect(
+        (
+          await cashCollect(
+            row.id,
+            charge.version,
+            counterAmount,
+            counterAmount,
+            paymentKey,
+          )
+        ).receiptId,
+      ).toBe(collected.receiptId);
+      expect(await financialSnapshot()).toEqual(snapshot);
+      expect(
+        await db()
+          .select()
+          .from(s.deliveryConsignments)
+          .where(eq(s.deliveryConsignments.id, sent.consignmentId)),
+      ).toEqual([after]);
+      expect(
+        await db().select().from(s.deliveryEvents).orderBy(s.deliveryEvents.id),
+      ).toEqual(events);
+      expect(
+        await db()
+          .select()
+          .from(s.deliveryLedgerEntries)
+          .orderBy(s.deliveryLedgerEntries.id),
+      ).toEqual(ledger);
+      expect(await db().select().from(s.invoices)).toHaveLength(0);
+    },
+  );
   it("independent charge AR appears in aging and statement without multiplying source invoices", async () => {
     const row = await approved();
     const statement = await getCustomerStatement(1),

@@ -61,6 +61,7 @@ import { assertFeeWithholdingCapacity } from "./feeWithholdingPolicy";
 import { nextRemittanceNumber } from "./numbering";
 import { partyCashInHandTx } from "./cashSource";
 import { shortfallAssignedForConsignmentTx } from "./openParcelPredicates";
+import { unremittedCollectionForConsignmentTx } from "./collectionAccounting";
 import {
   deliveryCustomerCollectionIntent,
   deliveryRemitIntent,
@@ -550,6 +551,18 @@ export async function recordDeliveryRemittanceInTx(
         code: "BAD_REQUEST",
         message: `أكثر من المتبقّي للإرسالية ${cn.consignmentNumber}`,
       });
+    if (cn.fulfillmentRequestId != null) {
+      const proven = await unremittedCollectionForConsignmentTx(tx, Number(cn.id));
+      if (collected.gt(proven))
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعذّر توريد نقد طلب لم يثبت تحصيله",
+            why: `توريد ${collected.toFixed(2)} يتجاوز المقبوض المثبت غير المورد لهذه الإرسالية (${proven.toFixed(2)})؛ رصيد الجهة الإجمالي لا يثبت قبض هذا الطلب`,
+            doThis: "ثبّت قبض الطلب من بوابة المندوب أو كشف الشركة أولاً، ثم ورّد النقد المثبت على الإرسالية نفسها",
+          }),
+        });
+    }
     // مراجعة عدائية (٥/٨) — حزامٌ ثانٍ: السقف على متبقّي **الفاتورة** الحيّ لا الإرسالية وحدها.
     // codAmount لُقط لحظة الإرسال؛ تسديدٌ كاونتريّ لاحق (قبل حارس collectOnInvoice أو من مسارٍ
     // آخر) يخفض متبقّي الفاتورة دون علم الإرسالية ⇒ بلا هذا السقف يصير paidAmount > total
@@ -620,8 +633,10 @@ export async function recordDeliveryRemittanceInTx(
       round2(newCollected.minus(alreadyCredited)),
       0,
     );
+    // Request-owned goods were allocated at actual collection. Its remitted cash
+    // also includes charges/excess, which must never pay the invoice again.
     const invoiceCredit =
-      cn.invoiceId == null
+      cn.invoiceId == null || cn.fulfillmentRequestId != null
         ? money(0)
         : Decimal.min(collected, Decimal.max(invRemaining, 0), uncredited);
     // الإغلاق المالي يقيس المتبقّي **الحيّ**: ما غطّاه الكاونتر ليس مطلوباً من الجهة، فتوريدُ

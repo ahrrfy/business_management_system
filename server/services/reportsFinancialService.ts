@@ -1426,6 +1426,8 @@ export async function getFinancialPosition(
   // `arDebit` (البيع الآجل رفع `customers.currentBalance` بنفس المبلغ، والتوريد يخفض الاثنين
   // معاً). المتبقّي على الإرساليات الحيّة (DISPATCHED/PARTIAL) لفواتيرَ ذاتِ عميلٍ مسجَّل
   // يُستبعَد من الأصل هنا فلا يُحتسب ديناران لدينارٍ واحد بالطريق.
+  // Fulfillment collections and assigned shortfalls clear customer AR at their
+  // actual collection writer; remittance is evidence-capped and never credits it again.
   // Charge allocations and actual excess are already outside invoice AR. The
   // charge remittance rows identify their share of released custody; only the
   // remainder reduces the excess pool, capped by the original excess. A shop
@@ -1470,6 +1472,7 @@ export async function getFinancialPosition(
         JOIN invoices i ON i.id = dc.invoiceId
         LEFT JOIN deliveryLedgerEntries dle ON dle.consignmentId = dc.id AND ${effectiveDeliveryLedgerEntrySql("dle")}
       WHERE i.customerId IS NOT NULL
+        AND dc.fulfillmentRequestId IS NULL
         AND NOT EXISTS (
           SELECT 1 FROM accountingEntries ae
           WHERE ae.dedupeKey = CONCAT('PAYMENT_IN:COURIER_DELIVERY:', dc.id)
