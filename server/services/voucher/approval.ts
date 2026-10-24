@@ -537,6 +537,17 @@ export async function approveVoucherTx(
   if (!preview || preview.voucherNumber == null) {
     throw new TRPCError({ code: "NOT_FOUND", message: "السند غير موجود" });
   }
+  if (preview.internalNote?.startsWith("COMPONENT_REFUND_PENDING:")) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "بانتظار تأكيد الرد الخارجي الفعلي",
+        why: "هذا السند مرتبط بحق مكوّن أصلي ولم يصل إثبات تنفيذ مزود الدفع بعد",
+        doThis:
+          "افتح حالة النقص والتعويض وأدخل مرجع الرد الحقيقي لتأكيد السند نفسه دون إنشاء رد جديد",
+      }),
+    });
+  }
   const [approverPreview] = await tx
     .select()
     .from(users)
@@ -2537,9 +2548,24 @@ export async function rejectVoucher(
     if (supplierRequest) {
       const reasonText = reason.trim().slice(0, 500);
       if (!reasonText) throw supplierVoucherConflict("سبب رفض سند المورد مطلوب");
-      await decideSupplierPaymentInTx(tx, { requestId: supplierRequest.id, decisionKey: `VOUCHER-REJECT:${receiptId}`, action: "REJECT", reviewReason: reasonText }, actor, SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY);
-      const [receipt] = await tx.select().from(receipts).where(eq(receipts.id, receiptId)).for("share").limit(1);
-      return { receiptId, voucherNumber: receipt!.voucherNumber!, approvalStatus: "REJECTED" as const };
+      await decideSupplierPaymentInTx(tx, { requestId: supplierRequest.id, decisionKey: `VOUCHER-REJECT:${receiptId}`,
+          action: "REJECT",
+          reviewReason: reasonText,
+        },
+        actor,
+        SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY,
+      );
+      const [receipt] = await tx
+        .select()
+        .from(receipts)
+        .where(eq(receipts.id, receiptId))
+        .for("share")
+        .limit(1);
+      return {
+        receiptId,
+        voucherNumber: receipt!.voucherNumber!,
+        approvalStatus: "REJECTED" as const,
+      };
     }
     const r = (
       await tx
@@ -2552,6 +2578,16 @@ export async function rejectVoucher(
     if (!r || r.voucherNumber == null) {
       throw new TRPCError({ code: "NOT_FOUND", message: "السند غير موجود" });
     }
+    if (r.internalNote?.startsWith("COMPONENT_REFUND_PENDING:"))
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "حق رد مصدر معتمد ينتظر التنفيذ",
+          why: "رفض السند وحده لا يسقط حق العميل أو يعكس تسوية المكوّن",
+          doThis:
+            "راجع حالة النقص والتعويض وأكمل إثبات الرد الأصلي؛ صحّح خطة الرد من نفس الحالة قبل أي محاولة أخرى",
+        }),
+      });
     if (r.approvalStatus !== "PENDING_APPROVAL") {
       throw new TRPCError({
         code: "BAD_REQUEST",

@@ -305,6 +305,20 @@ const STAGES = [
   ],
 ];
 const EXACT_LABELS = {
+  "sales.checkoutCharges": "قبض أجور إضافية في كاشير التجزئة",
+  "sales.checkoutChargeOptions": "عرض الأجور المعتمدة القابلة للقبض في التجزئة",
+  "printPos.checkoutCharges": "قبض أجور إضافية في كاشير الطباعة",
+  "printPos.checkoutChargeOptions": "عرض الأجور المعتمدة القابلة للقبض في الطباعة",
+  "reception.checkoutCharges": "قبض أجور مستقلة في الاستقبال",
+  "reception.checkoutChargeOptions": "عرض الأجور المعتمدة القابلة للقبض في الاستقبال",
+  "reception.checkoutRecovery": "استعادة إيصالات قبض مسودة الاستقبال المثبتة",
+  "delivery.workflow.preview": "معاينة المستند الممسوح والإجراء المسموح",
+  "delivery.workflow.previewBySource": "فتح المصدر الحالي في محطة سير العمل",
+  "delivery.workflow.previewBatch": "معاينة إسناد المستندات والأجرة الموحدة",
+  "delivery.workflow.dispatchBatch": "إسناد المستندات بإرسالية واحدة",
+  "delivery.workflow.assignment": "إجراء الإسناد المسموح حسب حالة العهدة",
+  "delivery.workflow.confirmDelivery": "تأكيد تسليم الإرسالية وتحصيلها",
+  "delivery.workflow.receiveReturn": "إثبات استلام وفحص الطرد الراجع فعلياً",
   "sales.create": "إصدار فاتورة مبيعات",
   "sales.correct": "تصحيح فاتورة مبيعات",
   "sales.cancel": "إلغاء فاتورة مبيعات وعكس أثرها",
@@ -1745,6 +1759,8 @@ function procedureUsesOwnerScope(name, info, visited = new Set()) {
 
 Object.assign(WORDS, {
   auth: "الدخول",
+  workflow: "سير العمل",
+  rights: "حقوق العميل",
   aftercare: "معالجة ما بعد البيع",
   fulfillment: "التجهيز",
   excess: "الفائض",
@@ -1778,6 +1794,8 @@ function aliasesOf(ep, meta, knownKeys, procedureAliases) {
   ].map((m) => m[1]);
   const byPath = {
     "sales.create": ["pos.invoice.create"],
+    "sales.checkoutCharges": ["pos.invoice.create"],
+    "sales.checkoutChargeOptions": ["pos.invoice.create"],
     "sales.correct": ["pos.invoice.edit"],
     "sales.cancel": ["pos.invoice.void"],
     "returns.create": ["pos.return.create"],

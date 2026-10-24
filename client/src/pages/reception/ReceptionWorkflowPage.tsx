@@ -1,11 +1,50 @@
 /**
  * DeliveryWorkflowPage - شاشة الإسناد والتوصيل /reception/workflow
- * أربعة أقسام: الإسناد، التحصيل والذمم، تعديل الفاتورة، الإلغاء والمرتجع
+ * محطات المسح والإسناد والتحصيل والتصحيح والمعالجة في الصفحة المعتادة.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useIsMutating } from "@tanstack/react-query";
+import { useSessionBranchInference } from "@/hooks/useSessionContext";
+import { WorkflowDispatchStation } from "@/components/delivery/workflow/WorkflowDispatchStation";
+import { WorkflowCollectStation } from "@/components/delivery/workflow/WorkflowCollectStation";
+import { WorkflowReturnSourceCard } from "@/components/delivery/workflow/WorkflowReturnSourceCard";
+import {
+  WorkflowLegacyReturnStation,
+  type WorkflowLegacyReturnSource as ScannedOrder,
+} from "@/components/delivery/workflow/WorkflowLegacyReturnStation";
+import { lazyWithRetry } from "@/lib/lazyWithRetry";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  positiveWorkflowParam,
+  workflowSection,
+  workflowSourceContext,
+  workflowSourceBarcode,
+} from "@/components/delivery/workflow/navigation";
+import type { WorkflowScanPreview } from "@shared/deliveryWorkflow";
+const AftercareStation = lazyWithRetry(() => import("@/components/fulfillment/AftercareStation").then(module => ({default:module.AftercareStation})));
 import { Link, useLocation, useSearch } from "wouter";
 
-import { AlertTriangle, BadgeDollarSign, Ban, BarChart3, Building2, CheckCircle2, CheckSquare, Clock, FilePenLine, FileText, Info, Package, Printer, RefreshCcw, ScanLine, Square, Truck, User, Wallet } from "lucide-react";
+import {
+  AlertTriangle,
+  BadgeDollarSign,
+  Ban,
+  BarChart3,
+  Building2,
+  CheckCircle2,
+  CheckSquare,
+  Clock,
+  FilePenLine,
+  FileText,
+  Info,
+  Package,
+  Printer,
+  RefreshCcw,
+  ScanLine,
+  Square,
+  Truck,
+  User,
+  Wallet,
+} from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card } from "@/components/ui/card";
 import { ACTION_LABELS as L } from "@shared/actionLabels";
@@ -15,9 +54,8 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { Badge } from "@/components/ui/badge";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { MoneyInput } from "@/components/form/MoneyInput";
-import { ReturnComposer } from "@/components/returns/ReturnComposer";
 import { cn } from "@/lib/utils";
-import { D, fmt, round2 } from "@/lib/money";
+import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { confirm } from "@/lib/confirm";
@@ -25,7 +63,10 @@ import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { parseScan, resolveOrderLookupBarcode } from "@/lib/scanRouter";
 import { docBarcode } from "@shared/documentNumber";
-import { printDeliveryDispatchSlip, type DispatchSlipData } from "@/lib/printing/printDeliveryDispatchSlip";
+import {
+  printDeliveryDispatchSlip,
+  type DispatchSlipData,
+} from "@/lib/printing/printDeliveryDispatchSlip";
 import { printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
 import { storefrontUrl } from "@/lib/siteHosts";
 import { ReceptionCollectSection } from "@/components/reception/ReceptionCollectSection";
@@ -33,456 +74,429 @@ import { DispatchPreviewCard } from "@/components/delivery/DispatchPreviewCard";
 import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeliveryAssignmentDialog";
 import { CancelDeliveryAssignmentSection } from "@/components/delivery/CancelDeliveryAssignmentSection";
 import { DeliveryOperationalIntelligenceBar } from "@/components/delivery/DeliveryOperationalIntelligenceBar";
-import { invoiceStatusBadgeVariant, invoiceStatusLabel } from "@shared/invoiceStatus";
-import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
+import {
+  invoiceStatusBadgeVariant,
+  invoiceStatusLabel,
+} from "@shared/invoiceStatus";
+import {
+  workOrderStatusBadgeCls,
+  workOrderStatusLabel,
+} from "@shared/workOrderStatus";
 import { fmtDateTime } from "@/lib/date";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 
-type Section = "dispatch" | "collect" | "edit" | "return" | "cancelAssignment";
-
-interface ScannedOrder {
-  id: number;
-  kind?: "workOrder" | "invoice" | "onlineOrder";
-  orderNumber: string;
-  title: string | null;
-  status?: string | null;
-  branchId?: number | null;
-  customerName: string | null;
-  customerPhone: string | null;
-  salePrice: string;
-  deposit: string | null;
-  deliveryAddress: string | null;
-  deliveryPhone: string | null;
-  deliveryCost: string | null;
-  version: number;
-  invoiceId?: number | null;
-  qrUrl?: string | null;
-  activeConsignment?: { id: number; consignmentNumber: string; partyId: number; partyName: string | null; partyType: "INDIVIDUAL" | "COMPANY" | null; parcelStatus: string; moneyStatus: string; codAmount: string; collectedAmount: string; } | null;
-}
+type Section =
+  | "dispatch"
+  | "collect"
+  | "edit"
+  | "return"
+  | "cancelAssignment"
+  | "aftercare";
 
 export default function DeliveryWorkflowPage() {
   const pageSearch = useSearch();
   const [location, navigate] = useLocation();
   const isDeliveryModule = location.startsWith("/delivery");
-  const [activeSection, setActiveSection] = useState<Section>(() => {
-    const requested = new URLSearchParams(pageSearch).get("section");
-    return requested === "collect" || requested === "edit" || requested === "return" || requested === "cancelAssignment" || requested === "cancel_assignment" || requested === "cancel-assignment"
-      ? (requested === "cancel_assignment" || requested === "cancel-assignment" ? "cancelAssignment" : requested as Section)
-      : "dispatch";
-  });
-  const [cancelScannedCode, setCancelScannedCode] = useState<string | null>(null);
-  const [selectedPartyId, setSelectedPartyId] = useState<number | null>(null);
-  const [lastDispatchedSlip, setLastDispatchedSlip] = useState<DispatchSlipData | null>(null);
-  const [dispatchScanned, setDispatchScanned] = useState<ScannedOrder | null>(null);
-  const [dispatchBarcodeInput, setDispatchBarcodeInput] = useState("");
-  const [dispatchFee, setDispatchFee] = useState("");
-  const [recipientPhone, setRecipientPhone] = useState("");
-  const [recipientName, setRecipientName] = useState("");
-  const [deliveryAddress, setDeliveryAddress] = useState("");
-  const [deliveryNotes, setDeliveryNotes] = useState("");
-  const [externalTrackingRef, setExternalTrackingRef] = useState("");
-  const [collectScannedCode, setCollectScannedCode] = useState<string | null>(null);
-  const [editInvoiceNumber, setEditInvoiceNumber] = useState<string | null>(null);
+  const [activeSection, setActiveSection] = useState<Section>(() =>
+    workflowSection(pageSearch),
+  );
+  const pendingMutations = useIsMutating();
+  const pageParams = new URLSearchParams(pageSearch);
+  const [cancelScannedCode, setCancelScannedCode] = useState<string | null>(
+    null,
+  );
+  const [dispatchScannedCode, setDispatchScannedCode] = useState<string | null>(
+    null,
+  );
+  const [aftercareScannedCode, setAftercareScannedCode] = useState<
+    string | null
+  >(null);
+  const [returnWorkflow, setReturnWorkflow] =
+    useState<WorkflowScanPreview | null>(null);
+  const [refundCodes, setRefundCodes] = useState<string[]>([]);
+  const [collectScannedCode, setCollectScannedCode] = useState<string | null>(
+    null,
+  );
+  const [editInvoiceNumber, setEditInvoiceNumber] = useState<string | null>(
+    null,
+  );
+  const [editScanContext, setEditScanContext] =
+    useState<WorkflowScanPreview | null>(null);
   const [editBarcodeInput, setEditBarcodeInput] = useState("");
   const [returnScanned, setReturnScanned] = useState<ScannedOrder | null>(null);
   const [returnBarcodeInput, setReturnBarcodeInput] = useState("");
   const [returnType, setReturnType] = useState<"FULL" | "PARTIAL">("FULL");
-  const [returnReason, setReturnReason] = useState("");
-  const [cancellingConsignment, setCancellingConsignment] = useState<{ id: number; number: string } | null>(null);
-  const dispatchRef = useRef<HTMLInputElement>(null);
+  const [cancellingConsignment, setCancellingConsignment] = useState<{
+    id: number;
+    number: string;
+  } | null>(null);
   const editRef = useRef<HTMLInputElement>(null);
   const returnRef = useRef<HTMLInputElement>(null);
   const utils = trpc.useUtils();
   // Keep the scanned key, not a copy of the result: financial events refresh these observers.
   const editPreview = trpc.sales.lookupForCorrection.useQuery(
-    { invoiceNumber: editInvoiceNumber ?? "" }, { enabled: editInvoiceNumber != null },
+    { invoiceNumber: editInvoiceNumber ?? "" },
+    { enabled: editInvoiceNumber != null },
   );
   const editScanned = editPreview.data;
-  const returnPreview = trpc.returns.getInvoice.useQuery(
-    { invoiceId: returnScanned?.kind === "invoice" ? returnScanned.id : 0 },
-    { enabled: returnScanned?.kind === "invoice" },
-  );
-  const returnInvoice = returnPreview.data;
   const me = trpc.auth.me.useQuery();
-  const branchId = me.data?.branchId;
+  const branchContext = useSessionBranchInference();
+  const [chosenBranch, setChosenBranch] = useState(() =>
+    positiveWorkflowParam(new URLSearchParams(pageSearch), "branchId"),
+  );
+  const invalidBranch =
+    pageParams.has("branchId") &&
+    !positiveWorkflowParam(pageParams, "branchId");
+  const branchId = invalidBranch
+    ? undefined
+    : chosenBranch
+      ? branchContext.canOverride
+        ? branchContext.branches.some((branch) => branch.id === chosenBranch)
+          ? chosenBranch
+          : undefined
+        : chosenBranch === branchContext.branchId
+          ? chosenBranch
+          : undefined
+      : (branchContext.branchId ?? undefined);
+  const lookupContext = useRef({ branchId, section: activeSection });
+  lookupContext.current = { branchId, section: activeSection };
+  useEffect(() => {
+    const explicit = positiveWorkflowParam(
+      new URLSearchParams(pageSearch),
+      "branchId",
+    );
+    if (explicit) setChosenBranch(explicit);
+  }, [pageSearch, branchContext.canOverride]);
+  useEffect(() => {
+    setReturnScanned(null);
+    setReturnWorkflow(null);
+    setEditInvoiceNumber(null);
+    setEditScanContext(null);
+    setDispatchScannedCode(null);
+    setCancelScannedCode(null);
+    setCollectScannedCode(null);
+    setAftercareScannedCode(null);
+  }, [branchId]);
+  const editWorkflow = trpc.delivery.workflow.previewBySource.useQuery(
+    {
+      source: { kind: "invoice", id: editScanned?.id ?? 0 },
+      station: "edit",
+      branchId,
+    },
+    { enabled: editScanned != null && branchId != null },
+  );
+  const currentEditContext = editWorkflow.data ?? editScanContext;
+  const workflowEditAction = currentEditContext?.actions.find(
+    (action) => action.action === "edit",
+  );
+  const editBlockReason =
+    editScanned?.blockReason ??
+    (workflowEditAction?.allowed === false ? workflowEditAction.reason : null);
+  function chooseSection(section: Section, extra?: Record<string, string>) {
+    setActiveSection(section);
+    const params = new URLSearchParams(pageSearch);
+    for (const key of [
+      "caseId",
+      "executionId",
+      "requestId",
+      "chargeId",
+      "invoiceId",
+      "workOrderId",
+      "consignmentId",
+      "onlineOrderId",
+      "invoice",
+      "action",
+    ])
+      params.delete(key);
+    params.set("section", section);
+    if (location.startsWith("/delivery")) params.set("tab", "workflow");
+    if (extra)
+      for (const [key, value] of Object.entries(extra)) params.set(key, value);
+    navigate(location + "?" + params.toString(), { replace: true });
+  }
+  function openAftercare(context: {
+    raw?: string;
+    caseId?: number;
+    executionId?: number;
+  }) {
+    if (context.raw) setAftercareScannedCode(context.raw);
+    const extra: Record<string, string> = {};
+    if (context.caseId) extra.caseId = String(context.caseId);
+    if (context.executionId) extra.executionId = String(context.executionId);
+    chooseSection("aftercare", extra);
+  }
+  useEffect(() => {
+    setActiveSection(workflowSection(pageSearch));
+  }, [pageSearch]);
   // enabled: !!branchId يمنع الاستعلام حتى يصل me.data — لا سقوط صامت على فرع افتراضي (§ G3)
   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-  const shiftQ = trpc.shifts.current.useQuery({ branchId: branchId!, shiftType: "RECEPTION" }, { enabled: !!branchId });
+  const shiftQ = trpc.shifts.current.useQuery(
+    { branchId: branchId!, shiftType: "RECEPTION" },
+    { enabled: !!branchId },
+  );
   const shift = shiftQ.data ?? null;
-  const partiesQ = trpc.delivery.listParties.useQuery({ activeOnly: true }, { staleTime: 60_000 });
-  const allParties = partiesQ.data ?? [];
-  const individualCouriers = allParties.filter((p) => p.partyType === "INDIVIDUAL");
-  const companyCouriers = allParties.filter((p) => p.partyType === "COMPANY");
-  const selectedPartyInfo = allParties.find((p) => p.id === selectedPartyId);
-
-  // اختيار أول جهة توصيل افتراضياً لتفادي تعطيل الماسح أو تعليق النموذج
-  useEffect(() => {
-    if (!selectedPartyId && allParties.length > 0) {
-      setSelectedPartyId(allParties[0]?.id ?? null);
-    }
-  }, [allParties, selectedPartyId]);
-
-  const lookupWorkOrder = useCallback(async (raw: string, target: "dispatch" | "return") => {
-    const orderNumber = resolveOrderLookupBarcode(raw);
-    if (!orderNumber) return;
-    try {
-      const wo = await utils.workOrders.getByNumber.fetch({ orderNumber });
-      if (!wo) { notify.err(`طلب أو فاتورة غير موجودة: ${orderNumber}`); return; }
-      if (target === "dispatch") {
-        if (wo.kind === "workOrder") {
-          if (wo.status === "DELIVERED") { notify.info(`الطلب ${wo.orderNumber} مُسلَّم`); return; }
-          if (wo.status !== "READY") { notify.warn(`الطلب غير جاهز (حالته: ${wo.status})`); return; }
-        } else if (wo.kind === "invoice" && (wo.status === "CANCELLED" || wo.status === "RETURNED" || wo.status === "SUPERSEDED")) {
-          notify.warn(wo.status === "SUPERSEDED" ? "الفاتورة تم استبدالها بتصحيح" : "الفاتورة ملغاة أو مرتجعة"); return;
-        } else if (wo.kind === "onlineOrder") {
-          if (wo.status === "CANCELLED") { notify.warn(`طلب المتجر ${wo.orderNumber} ملغى مسبقاً`); return; }
-          if (wo.status === "DELIVERED") { notify.info(`طلب المتجر ${wo.orderNumber} تم تسليمه للعميل مسبقاً`); return; }
+  const partiesQ = trpc.delivery.listParties.useQuery(
+    { activeOnly: true },
+    { staleTime: 60_000 },
+  );
+  const allParties = (partiesQ.data ?? []).filter(
+    (p) => p.branchId == null || p.branchId === branchId,
+  );
+  const lookupWorkOrder = useCallback(
+    async (raw: string) => {
+      const orderNumber = resolveOrderLookupBarcode(raw);
+      if (!orderNumber || !branchId) return;
+      try {
+        const preview = await utils.delivery.workflow.preview.fetch({
+          raw: orderNumber,
+          station: "return",
+          branchId,
+        });
+        if (
+          lookupContext.current.branchId !== branchId ||
+          lookupContext.current.section !== "return"
+        )
+          return;
+        if (
+          preview.source.kind === "consignment" ||
+          preview.source.kind === "aftercareExecution" ||
+          preview.source.kind === "fulfillmentRequest" ||
+          preview.source.kind === "charge" ||
+          preview.relations.consignmentId != null ||
+          preview.relations.fulfillmentRequestId != null ||
+          preview.relations.aftercareExecutionId != null
+        ) {
+          setReturnWorkflow(preview);
+          setReturnScanned(null);
+          setReturnBarcodeInput("");
+          return;
         }
+        const wo = await utils.workOrders.getByNumber.fetch({ orderNumber });
+        if (
+          lookupContext.current.branchId !== branchId ||
+          lookupContext.current.section !== "return"
+        )
+          return;
+        if (!wo) {
+          notify.err("المستند غير موجود في فرع العمل");
+          return;
+        }
+        const activeCn = (
+          wo as { activeConsignment?: ScannedOrder["activeConsignment"] }
+        ).activeConsignment;
+        setReturnScanned({
+          id: wo.id,
+          kind: wo.kind ?? "workOrder",
+          orderNumber: wo.orderNumber,
+          title: wo.title,
+          status: wo.status ?? null,
+          branchId: wo.branchId ? Number(wo.branchId) : null,
+          customerName: wo.customerName,
+          customerPhone: wo.customerPhone,
+          salePrice: wo.salePrice,
+          deposit: wo.deposit,
+          deliveryAddress: wo.deliveryAddress,
+          deliveryPhone: wo.deliveryPhone,
+          deliveryCost: wo.deliveryCost,
+          version: (wo as { version?: number }).version ?? 1,
+          invoiceId: (wo as { invoiceId?: number | null }).invoiceId ?? null,
+          activeConsignment: activeCn ?? null,
+        });
+        setReturnWorkflow(null);
+        setReturnBarcodeInput("");
+      } catch (error) {
+        notify.err(error, "تعذر قراءة مصدر المرتجع");
       }
-      const activeCn = (wo as { activeConsignment?: ScannedOrder["activeConsignment"] }).activeConsignment;
-      const qrUrl = wo.kind === "onlineOrder"
-        ? `${storefrontUrl()}?order=${encodeURIComponent(wo.orderNumber)}&token=${encodeURIComponent(wo.labelToken)}`
-        : `${window.location.origin}/verify?payload=${encodeURIComponent(wo.qrPayload)}`;
-      const order: ScannedOrder = {
-        id: wo.id, kind: wo.kind ?? "workOrder", orderNumber: wo.orderNumber, title: wo.title,
-        status: wo.status ?? null, branchId: wo.branchId ? Number(wo.branchId) : null,
-        customerName: wo.customerName, customerPhone: wo.customerPhone,
-        salePrice: wo.salePrice, deposit: wo.deposit,
-        deliveryAddress: wo.deliveryAddress, deliveryPhone: wo.deliveryPhone, deliveryCost: wo.deliveryCost,
-        version: (wo as { version?: number }).version ?? 1,
-        qrUrl,
-        invoiceId: (wo as { invoiceId?: number | null }).invoiceId ?? null,
-        activeConsignment: activeCn ?? null,
-      };
-      if (target === "dispatch") {
-        if (activeCn) notify.warn(`الطلب مسند حالياً لـ ${activeCn.partyName ?? "جهة أخرى"} بالإرسالية ${activeCn.consignmentNumber}`);
-        setDispatchScanned(order); setDispatchBarcodeInput("");
-        setRecipientPhone(wo.deliveryPhone ?? wo.customerPhone ?? "");
-        setRecipientName(wo.customerName ?? ""); setDispatchFee(wo.deliveryCost ?? "");
-        setDeliveryAddress(wo.deliveryAddress ?? "");
-        setDeliveryNotes((wo as { notes?: string | null }).notes ?? "");
-        setExternalTrackingRef("");
-      } else {
-        if (order.status === "RETURNED") notify.warn(`الفاتورة #${order.orderNumber} مسترجعة بالكامل مسبقاً`);
-        else if (order.status === "CANCELLED") notify.warn(`الطلب / الفاتورة #${order.orderNumber} ملغاة مسبقاً`);
-        else if (order.status === "SUPERSEDED") notify.warn(`الفاتورة #${order.orderNumber} تم استبدالها بتصحيح`);
-        setReturnScanned(order); setReturnBarcodeInput(""); setReturnReason("");
-      }
-    } catch (e) { notify.err(e, "تعذّر جلب الطلب"); }
-  }, [utils]);
-
-  const lookupInvoiceForEdit = useCallback(async (raw: string) => {
-    const scanned = parseScan(raw);
-    if (["workOrder", "purchaseOrder", "quotation", "customer", "employee", "user"].includes(scanned.type)) {
-      notify.warn("امسح باركود فاتورة بيع (INV) أو أدخل رقم الفاتورة");
-      return;
-    }
-    const invoiceNumber =
-      scanned.type === "invoice"
-        ? scanned.number
-        : scanned.type === "product"
-          ? scanned.barcode
-          : raw.trim();
-    if (!invoiceNumber) return;
-    try {
-      const invoice = await utils.sales.lookupForCorrection.fetch({ invoiceNumber });
-      if (!invoice) {
-        notify.err(`لم توجد فاتورة بهذا الرقم في فرعك: ${invoiceNumber}`);
-        return;
-      }
-      setEditInvoiceNumber(invoiceNumber);
-      setEditBarcodeInput("");
-    } catch (error) {
-      notify.err(error, "تعذّر جلب الفاتورة");
-    }
-  }, [utils]);
-
-  const directInvoiceLookupRef = useRef(false);
-  useEffect(() => {
-    const invoiceNumber = new URLSearchParams(pageSearch).get("invoice")?.trim();
-    if (activeSection !== "edit" || !invoiceNumber || directInvoiceLookupRef.current) return;
-    directInvoiceLookupRef.current = true;
-    void lookupInvoiceForEdit(invoiceNumber);
-  }, [activeSection, lookupInvoiceForEdit, pageSearch]);
-
-  const dispatchEnabled = activeSection === "dispatch" && !dispatchScanned;
-  const cancelAssignmentEnabled = activeSection === "cancelAssignment";
-  const returnEnabled = activeSection === "return" && !returnScanned;
-  const collectEnabled = activeSection === "collect";
-  const editEnabled = activeSection === "edit" && !editInvoiceNumber;
-
-  useBarcodeScanner(
-    useCallback(async (raw: string) => {
-      if (dispatchEnabled) await lookupWorkOrder(raw, "dispatch");
-      else if (cancelAssignmentEnabled) setCancelScannedCode(raw.trim());
-      else if (returnEnabled) await lookupWorkOrder(raw, "return");
-      else if (collectEnabled) setCollectScannedCode(raw.trim());
-      else if (editEnabled) await lookupInvoiceForEdit(raw);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [dispatchEnabled, cancelAssignmentEnabled, returnEnabled, collectEnabled, editEnabled, lookupWorkOrder, lookupInvoiceForEdit]),
-    { enabled: dispatchEnabled || cancelAssignmentEnabled || returnEnabled || collectEnabled || editEnabled },
+    },
+    [branchId, utils],
   );
 
+  const lookupInvoiceForEdit = useCallback(
+    async (raw: string) => {
+      if (!raw.trim() || !branchId) return;
+      try {
+        const preview = await utils.delivery.workflow.preview.fetch({
+          raw,
+          station: "edit",
+          branchId,
+        });
+        if (
+          lookupContext.current.branchId !== branchId ||
+          lookupContext.current.section !== "edit"
+        )
+          return;
+        setEditScanContext(preview);
+        const invoiceId =
+          preview.source.kind === "invoice"
+            ? preview.source.id
+            : preview.relations.invoiceId;
+        if (!invoiceId) {
+          notify.warn(
+            preview.actions.find((action) => action.action === "edit")
+              ?.reason ??
+              "هذا المستند لا يحمل فاتورة قابلة للتصحيح؛ راجع محطته المرتبطة",
+          );
+          return;
+        }
+        const invoiceSource =
+          preview.source.kind === "invoice"
+            ? preview
+            : await utils.delivery.workflow.previewBySource.fetch({
+                source: { kind: "invoice", id: invoiceId },
+                station: "edit",
+                branchId,
+              });
+        const invoiceNumber = invoiceSource.source.number;
+        const invoice = await utils.sales.lookupForCorrection.fetch({
+          invoiceNumber,
+        });
+        if (
+          lookupContext.current.branchId !== branchId ||
+          lookupContext.current.section !== "edit"
+        )
+          return;
+        if (!invoice) {
+          notify.err(`لم توجد فاتورة بهذا الرقم في فرعك: ${invoiceNumber}`);
+          return;
+        }
+        setEditInvoiceNumber(invoiceNumber);
+        setEditBarcodeInput("");
+      } catch (error) {
+        notify.err(error, "تعذّر جلب الفاتورة");
+      }
+    },
+    [branchId, utils],
+  );
 
-
+  const directInvoiceLookupRef = useRef<string | null>(null);
   useEffect(() => {
-    if (dispatchEnabled) dispatchRef.current?.focus();
-    else if (returnEnabled) returnRef.current?.focus();
+    const invoiceNumber = new URLSearchParams(pageSearch)
+      .get("invoice")
+      ?.trim();
+    const key = `${branchId}:${invoiceNumber}`;
+    if (
+      activeSection !== "edit" ||
+      !invoiceNumber ||
+      directInvoiceLookupRef.current === key
+    )
+      return;
+    directInvoiceLookupRef.current = key;
+    void lookupInvoiceForEdit(invoiceNumber);
+  }, [activeSection, branchId, lookupInvoiceForEdit, pageSearch]);
+
+  const cancelAssignmentEnabled = activeSection === "cancelAssignment";
+  const returnEnabled =
+    activeSection === "return" && !returnScanned && !returnWorkflow;
+  const collectEnabled =
+    activeSection === "collect" && !pageParams.get("action");
+  const editEnabled = activeSection === "edit" && !editInvoiceNumber;
+  const aftercareEnabled = activeSection === "aftercare";
+  useBarcodeScanner(
+    useCallback(
+      async (raw: string) => {
+        if (cancelAssignmentEnabled) setCancelScannedCode(raw.trim());
+        else if (returnEnabled) await lookupWorkOrder(raw);
+        else if (collectEnabled) setCollectScannedCode(raw.trim());
+        else if (editEnabled) await lookupInvoiceForEdit(raw);
+        else if (aftercareEnabled) setAftercareScannedCode(raw.trim());
+      },
+      [
+        cancelAssignmentEnabled,
+        returnEnabled,
+        collectEnabled,
+        editEnabled,
+        aftercareEnabled,
+        lookupWorkOrder,
+        lookupInvoiceForEdit,
+      ],
+    ),
+    {
+      enabled:
+        pendingMutations === 0 &&
+        (cancelAssignmentEnabled ||
+          returnEnabled ||
+          collectEnabled ||
+          editEnabled ||
+          aftercareEnabled),
+    },
+  );
+  useEffect(() => {
+    if (returnEnabled) returnRef.current?.focus();
     else if (editEnabled) editRef.current?.focus();
-  }, [dispatchEnabled, returnEnabled, editEnabled]);
-
-  function onDispatchSuccess(data: { consignmentNumber: string }, kind: "workOrder" | "invoice" | "onlineOrder") {
-    notify.ok((kind === "invoice" ? "أُسندت الفاتورة #" : kind === "onlineOrder" ? "أُسند طلب المتجر #" : "أُسند #") + (dispatchScanned?.orderNumber ?? ""), "إرسالية " + data.consignmentNumber);
-    const chosenParty = (partiesQ.data ?? []).find((p) => p.id === selectedPartyId);
-    const cod = round2(D(dispatchScanned?.salePrice ?? "0").minus(D(dispatchScanned?.deposit ?? "0"))).toFixed(2);
-    const finalAddress = deliveryAddress.trim() || dispatchScanned?.deliveryAddress || "غير محدد";
-    const slip: DispatchSlipData = {
-      consignmentNumber: data.consignmentNumber,
-      orderNumber: dispatchScanned?.orderNumber ?? "",
-      orderKind: kind,
-      partyName: chosenParty?.name ?? "المندوب",
-      recipientName: recipientName || dispatchScanned?.customerName || "",
-      recipientPhone: recipientPhone || dispatchScanned?.deliveryPhone || dispatchScanned?.customerPhone || "",
-      deliveryAddress: finalAddress,
-      salePrice: dispatchScanned?.salePrice ?? "0",
-      deposit: dispatchScanned?.deposit ?? "0",
-      codAmount: cod,
-      deliveryFee: dispatchFee || "0",
-      feeCollection: "COURIER",
-      title: dispatchScanned?.title,
-      dispatchedAt: new Date(),
-      qrUrl: dispatchScanned?.qrUrl ?? null,
+  }, [returnEnabled, editEnabled]);
+  const sourceContextKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (!branchId || activeSection === "aftercare")
+      return;
+    const source = workflowSourceContext(pageSearch);
+    if (!source) return;
+    const key =
+      branchId + ":" + activeSection + ":" + source.kind + ":" + source.id;
+    if (sourceContextKey.current === key) return;
+    let current = true;
+    void utils.delivery.workflow.previewBySource
+      .fetch({ source, station: activeSection, branchId })
+      .then((preview) => {
+        if (!current) return;
+        sourceContextKey.current = key;
+        const raw = workflowSourceBarcode(preview.source);
+        if (activeSection === "dispatch") setDispatchScannedCode(raw);
+        else if (activeSection === "cancelAssignment") setCancelScannedCode(raw);
+        else if (activeSection === "collect") setCollectScannedCode(raw);
+        else if (activeSection === "return") void lookupWorkOrder(raw);
+        else void lookupInvoiceForEdit(raw);
+      })
+      .catch((error) => {
+        if (current) {
+          sourceContextKey.current = null;
+          notify.err(error, "تعذر فتح المستند المرتبط");
+        }
+      });
+    return () => {
+      current = false;
     };
-    setLastDispatchedSlip(slip);
-    printDeliveryDispatchSlip(slip);
-    setDispatchScanned(null); setDispatchBarcodeInput("");
-    setRecipientPhone(""); setRecipientName(""); setDispatchFee("");
-    setDeliveryAddress(""); setDeliveryNotes(""); setExternalTrackingRef("");
-    void utils.workOrders.invalidate(); void utils.delivery.invalidate();
-  }
-
-  function printAssignedShippingLabel(slip: DispatchSlipData) {
-    void printReadyOrderLabel({
-      orderNumber: slip.orderNumber,
-      title: slip.title ?? `طلب #${slip.orderNumber}`,
-      quantity: 1,
-      salePrice: slip.salePrice,
-      deposit: slip.deposit ?? "0",
-      customerName: slip.recipientName,
-      customerPhone: slip.recipientPhone,
-      deliveryAddress: slip.deliveryAddress,
-      deliveryCost: slip.deliveryFee ?? "0",
-      deliveryFeeCollection: slip.feeCollection ?? "COURIER",
-      qrUrl: slip.qrUrl ?? null,
-    }, {
-      partyName: slip.partyName,
-      trackingNumber: slip.consignmentNumber,
-      cod: slip.codAmount,
-    });
-  }
-
-  const dispatchMut = trpc.delivery.dispatch.useMutation({
-    onSuccess: (data) => onDispatchSuccess(data, dispatchScanned?.kind ?? "workOrder"),
-    onError: (e) => notify.err(e, "تعذّر الإسناد"),
-  });
-
-  const dispatchInvoiceMut = trpc.delivery.dispatchInvoice.useMutation({
-    onSuccess: (data) => onDispatchSuccess(data, "invoice"),
-    onError: (e) => notify.err(e, "تعذّر إسناد الفاتورة للتوصيل"),
-  });
-
-  const dispatchBarcodeMut = trpc.delivery.dispatchByBarcode.useMutation({
-    onSuccess: (data) => onDispatchSuccess(data, "onlineOrder"),
-    onError: (e) => notify.err(e, "تعذّر إسناد طلب المتجر للتوصيل"),
-  });
-
-  const cancelMut = trpc.workOrders.cancel.useMutation({
-    onSuccess: () => {
-      notify.ok("أُلغي الطلب " + (returnScanned?.orderNumber ?? ""));
-      setReturnScanned(null); setReturnBarcodeInput(""); setReturnReason("");
-      void utils.workOrders.invalidate();
-    },
-    onError: (e) => notify.err(e, "تعذّر الإلغاء"),
-  });
-
-  const cancelOnlineOrderMut = trpc.storeAdmin.orders.setStatus.useMutation({
-    onSuccess: () => {
-      notify.ok("أُلغي طلب المتجر #" + (returnScanned?.orderNumber ?? ""));
-      setReturnScanned(null); setReturnBarcodeInput(""); setReturnReason("");
-      void utils.workOrders.invalidate(); void utils.storeAdmin.orders.invalidate();
-    },
-    onError: (e: unknown) => notify.err(e, "تعذّر إلغاء طلب المتجر"),
-  });
-
-  const returnBarcodeMut = trpc.delivery.returnByBarcode.useMutation({
-    onSuccess: (res) => {
-      notify.ok("تم استلام مرتجع الإرسالية " + res.consignmentNumber, res.reversed ? "تم عكس الفاتورة والمخزون ذرياً" : "تم تحديث حالة الإرسالية");
-      setReturnScanned(null); setReturnBarcodeInput(""); setReturnReason("");
-      void utils.delivery.invalidate(); void utils.workOrders.invalidate();
-    },
-    onError: (e) => notify.err(e, "تعذّر استلام المرتجع"),
-  });
-
-  async function handleDispatch() {
-    if (!dispatchScanned) return;
-    if (!selectedPartyId) {
-      notify.err("يرجى اختيار جهة التوصيل أولاً");
-      return;
-    }
-    if (selectedPartyInfo?.partyType === "COMPANY" && !externalTrackingRef.trim()) {
-      notify.err("رقم بوليصة شركة التوصيل مطلوب", "امسح الباركود المطبوع في كشف/بوليصة الشركة قبل الإسناد.");
-      return;
-    }
-    if (dispatchScanned.activeConsignment) {
-      notify.err(
-        `لا يمكن إسناد الطلب — مسند حالياً لـ ${dispatchScanned.activeConsignment.partyName ?? "جهة أخرى"} بالإرسالية ${dispatchScanned.activeConsignment.consignmentNumber}`,
-        "ألغِ الإرسالية السابقة أولاً لتجنّب تداخل الذمم والطرود.",
-      );
-      return;
-    }
-    const fee = D(dispatchFee || "0");
-    const docLabel = dispatchScanned.kind === "onlineOrder" ? "طلب المتجر" : dispatchScanned.kind === "invoice" ? "الفاتورة" : "الطلب";
-    const finalAddress = deliveryAddress.trim() || dispatchScanned.deliveryAddress || "غير محدد";
-    const ok = await confirm({
-      title: "تأكيد الإسناد",
-      description: `${docLabel}: #${dispatchScanned.orderNumber} — ${dispatchScanned.title ?? ""}\nالعميل: ${dispatchScanned.customerName ?? ""} ${dispatchScanned.customerPhone ?? ""}\nالعنوان: ${finalAddress}\n` +
-        (fee.gt(0) ? `أجرة التوصيل: ${fmt(fee.toFixed(2))} د.ع (على الجهة)` : "بدون أجرة") +
-        (deliveryNotes.trim() ? `\nالملاحظات: ${deliveryNotes.trim()}` : "") +
-        (externalTrackingRef.trim() ? `\nرقم التتبع: ${externalTrackingRef.trim()}` : ""),
-      confirmText: "أسند للمندوب",
-    });
-    if (!ok) return;
-
-    if (dispatchScanned.kind === "onlineOrder") {
-      dispatchBarcodeMut.mutate({
-        barcode: dispatchScanned.orderNumber,
-        partyId: selectedPartyId,
-        deliveryFee: fee.gt(0) ? fee.toFixed(2) : undefined,
-        deliveryAddress: deliveryAddress.trim() || undefined,
-        notes: deliveryNotes.trim() || undefined,
-        externalTrackingRef: externalTrackingRef.trim() || undefined,
-        clientRequestId: crypto.randomUUID(),
-      });
-    } else if (dispatchScanned.kind === "invoice") {
-      dispatchInvoiceMut.mutate({
-        invoiceId: dispatchScanned.id,
-        partyId: selectedPartyId,
-        deliveryFee: fee.gt(0) ? fee.toFixed(2) : undefined,
-        recipientName: recipientName.trim() || undefined,
-        recipientPhone: recipientPhone.trim() || undefined,
-        deliveryAddress: deliveryAddress.trim() || undefined,
-        notes: deliveryNotes.trim() || undefined,
-        externalTrackingRef: externalTrackingRef.trim() || undefined,
-        clientRequestId: crypto.randomUUID(),
-      });
-    } else {
-      dispatchMut.mutate({
-        workOrderId: dispatchScanned.id,
-        partyId: selectedPartyId,
-        deliveryFee: fee.toFixed(2),
-        recipientName: recipientName.trim() || undefined,
-        recipientPhone: recipientPhone.trim() || undefined,
-        deliveryAddress: deliveryAddress.trim() || undefined,
-        notes: deliveryNotes.trim() || undefined,
-        externalTrackingRef: externalTrackingRef.trim() || undefined,
-        clientRequestId: crypto.randomUUID(),
-      });
-    }
-  }
-
-  async function handleFullReturn() {
-    if (!returnScanned || returnReason.trim().length < 3) {
-      notify.err("أدخل سبب الإلغاء (٣ أحرف على الأقل)"); return;
-    }
-    const isOnline = returnScanned.kind === "onlineOrder";
-    const docLabel = isOnline ? "طلب متجر" : returnScanned.kind === "invoice" ? "فاتورة" : "أمر شغل";
-    const needsCash = D(returnScanned.deposit ?? "0").gt(0);
-    if (needsCash && !shift) {
-      notify.err("يلزم فتح وردية نقدية نشطة أولاً لرد العربون / المبالغ المالية من الدرج");
-      return;
-    }
-    const ok = await confirm({
-      variant: "warning", title: `إلغاء / استرجاع ${docLabel}`,
-      description: `#${returnScanned.orderNumber} — ${returnScanned.customerName ?? ""}\n` +
-        (returnScanned.activeConsignment ? `الإرسالية الحالية: ${returnScanned.activeConsignment.consignmentNumber}\nسيتم تسجيل مرتجع الإرسالية وعكس بيعها ومخزونها ذرياً.` :
-        (needsCash ? `سيُردّ عربون ${fmt(returnScanned.deposit!)} د.ع من الدرج` : "لا عربون — إلغاء مباشر")),
-      confirmText: "تأكيد الإلغاء / الاسترجاع",
-    });
-    if (!ok) return;
-
-    if (isOnline) {
-      if (returnScanned.activeConsignment) {
-        returnBarcodeMut.mutate({
-          barcode: docBarcode("CN", returnScanned.activeConsignment.consignmentNumber),
-          returnReason: returnReason.trim(),
-          refundShiftId: shift?.id,
-          clientRequestId: crypto.randomUUID(),
-        });
-      } else {
-        cancelOnlineOrderMut.mutate({
-          id: returnScanned.id,
-          status: "CANCELLED",
-          cancelReason: returnReason.trim(),
-        });
-      }
-      return;
-    }
-
-    if (returnScanned.kind === "invoice") {
-      if (returnScanned.activeConsignment) {
-        returnBarcodeMut.mutate({
-          barcode: docBarcode("CN", returnScanned.activeConsignment.consignmentNumber),
-          returnReason: returnReason.trim(),
-          refundShiftId: shift?.id,
-          clientRequestId: crypto.randomUUID(),
-        });
-      } else {
-        notify.info("مرتجع بنود الفاتورة يتم عبر منتقي البنود وقنوات الاسترداد في نموذج المرتجع أدناه");
-      }
-      return;
-    }
-
-    if (returnScanned.activeConsignment) {
-      returnBarcodeMut.mutate({
-        barcode: docBarcode("CN", returnScanned.activeConsignment.consignmentNumber),
-        returnReason: returnReason.trim(),
-        refundShiftId: shift?.id,
-        clientRequestId: crypto.randomUUID(),
-      });
-      return;
-    }
-
-    cancelMut.mutate({
-      workOrderId: returnScanned.id,
-      expectedVersion: returnScanned.version,
-      reason: returnReason.trim(),
-      refundShiftId: shift?.id,
-      clientRequestId: crypto.randomUUID(),
-    });
-  }
+  }, [activeSection, branchId, pageSearch, utils, lookupInvoiceForEdit, lookupWorkOrder]);
 
   return (
-    <div className="flex h-full flex-col overflow-hidden bg-background" dir="rtl">
+    <div
+      className="flex h-full min-h-0 flex-col overflow-hidden bg-background"
+      dir="rtl"
+    >
       <div className="shrink-0 border-b bg-card px-4 py-3">
         <PageHeader
-          title={isDeliveryModule ? "سير العمل بالباركود (إسناد وتحصيل)" : "التوصيل والإسناد"}
-          description={isDeliveryModule ? "إسناد الطرود للمناديب والشركات، تحصيل الذمم، تعديل الفواتير، واستلام المرتجعات بالماسح الضوئي." : undefined}
+          title={
+            isDeliveryModule
+              ? "سير العمل بالباركود (إسناد وتحصيل)"
+              : "التوصيل والإسناد"
+          }
+          description={
+            isDeliveryModule
+              ? "إسناد الطرود للمناديب والشركات، تحصيل الذمم، تعديل الفواتير، واستلام المرتجعات بالماسح الضوئي."
+              : undefined
+          }
           icon={<Truck aria-hidden className="size-5 text-primary" />}
           backHref={isDeliveryModule ? undefined : "/pos?mode=RECEPTION"}
           backLabel={isDeliveryModule ? undefined : "الاستقبال"}
           actions={
             <div className="flex items-center gap-2">
               {shift ? (
-                <span className="rounded-full bg-green-100 px-3 py-1 text-xs font-bold text-green-700">وردية #{shift.id}</span>
+                <span className="rounded-full bg-green-100 px-3 py-1 text-xs font-bold text-green-700">
+                  وردية #{shift.id}
+                </span>
               ) : (
-                <span className="rounded-full bg-destructive/10 px-3 py-1 text-xs font-bold text-destructive">لا وردية</span>
+                <span className="rounded-full bg-destructive/10 px-3 py-1 text-xs font-bold text-destructive">
+                  لا وردية
+                </span>
               )}
               {isDeliveryModule && (
-                <Button variant="outline" size="sm" asChild className="gap-1.5 font-bold text-xs">
-                  <Link href="/delivery?tab=dispatch">
-                    لوحة وجداول التوصيل
-                  </Link>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  asChild
+                  className="gap-1.5 font-bold text-xs"
+                >
+                  <Link href="/delivery?tab=dispatch">لوحة وجداول التوصيل</Link>
                 </Button>
               )}
             </div>
@@ -490,199 +504,224 @@ export default function DeliveryWorkflowPage() {
         />
       </div>
 
-      <div className="grid shrink-0 grid-cols-2 border-b bg-card sm:grid-cols-3 lg:grid-cols-5" role="tablist" aria-label="أقسام التوصيل والفواتير">
-        {([
-          { key: "dispatch" as const, icon: <Truck aria-hidden className="size-4" />, label: "إسناد للمندوب" },
-          { key: "cancelAssignment" as const, icon: <Ban aria-hidden className="size-4" />, label: "إلغاء الإسناد والتوصيل" },
-          { key: "collect" as const, icon: <Wallet aria-hidden className="size-4" />, label: "تحصيل وذمم" },
-          { key: "edit" as const, icon: <FilePenLine aria-hidden className="size-4" />, label: "تعديل فاتورة" },
-          { key: "return" as const, icon: <RefreshCcw aria-hidden className="size-4" />, label: "إلغاء / مرتجع" },
-        ]).map(({ key, icon, label }) => (
-          <button key={key} id={`workflow-tab-${key}`} type="button" role="tab"
-            aria-selected={activeSection === key} aria-controls="workflow-active-panel"
-            onClick={() => setActiveSection(key)}
-            className={cn("flex min-h-11 items-center justify-center gap-2 px-2 py-2.5 text-sm font-bold transition-colors",
-              activeSection === key ? "border-b-2 border-primary text-primary" : "text-muted-foreground hover:bg-muted/40")}>
+      <div className="flex flex-wrap items-center gap-2 border-b bg-card px-3 py-2 text-sm">
+        <span>فرع العمل:</span>
+        {branchContext.canOverride ? (
+          <AppSelect
+            aria-label="فرع محطات سير العمل"
+            value={branchId ? String(branchId) : ""}
+            className="w-56"
+            disabled={pendingMutations > 0}
+            onValueChange={async (value) => {
+              if (!value || Number(value) === branchId) return;
+              const ok = await confirm({
+                title: "تغيير فرع العمل",
+                description:
+                  "ستفتح محطات الفرع المختار؛ مسودة الإسناد محفوظة لكل فرع. أكمل أو احفظ أي نموذج آخر قبل الانتقال.",
+                confirmText: "تغيير الفرع",
+              });
+              if (!ok) return;
+              setChosenBranch(Number(value));
+              setReturnScanned(null);
+              setReturnWorkflow(null);
+              setEditInvoiceNumber(null);
+              const params = new URLSearchParams(pageSearch);
+              params.set("branchId", value);
+              for (const key of [
+                "invoiceId",
+                "workOrderId",
+                "consignmentId",
+                "onlineOrderId",
+                "requestId",
+                "caseId",
+                "executionId",
+                "chargeId",
+                "invoice",
+              ])
+                params.delete(key);
+              navigate(location + "?" + params.toString(), { replace: true });
+            }}
+          >
+            <option value="">اختر الفرع</option>
+            {branchContext.branches.map((branch) => (
+              <option key={branch.id} value={branch.id}>
+                {branch.name}
+              </option>
+            ))}
+          </AppSelect>
+        ) : (
+          <strong>{branchContext.branchName ?? "لم يحدد فرع العمل"}</strong>
+        )}
+        {branchContext.message && (
+          <span className="text-destructive">
+            {branchContext.message}
+            <Button
+              type="button"
+              variant="link"
+              size="sm"
+              onClick={branchContext.retry}
+            >
+              إعادة المحاولة
+            </Button>
+          </span>
+        )}
+        {!branchId && !branchContext.message && (
+          <span className="text-destructive">
+            اختر فرعاً مصرحاً به قبل تنفيذ أي إجراء؛ الفرع المطلوب غير متاح لهذه
+            الجلسة.
+          </span>
+        )}
+      </div>
+
+      <div
+        className="grid shrink-0 grid-cols-2 border-b bg-card sm:grid-cols-3 lg:grid-cols-6"
+        role="tablist"
+        aria-label="أقسام التوصيل والفواتير"
+      >
+        {[
+          {
+            key: "dispatch" as const,
+            icon: <Truck aria-hidden className="size-4" />,
+            label: "إسناد للمندوب",
+          },
+          {
+            key: "cancelAssignment" as const,
+            icon: <Ban aria-hidden className="size-4" />,
+            label: "إلغاء الإسناد والتوصيل",
+          },
+          {
+            key: "collect" as const,
+            icon: <Wallet aria-hidden className="size-4" />,
+            label: "تحصيل وذمم",
+          },
+          {
+            key: "edit" as const,
+            icon: <FilePenLine aria-hidden className="size-4" />,
+            label: "تعديل فاتورة",
+          },
+          {
+            key: "return" as const,
+            icon: <RefreshCcw aria-hidden className="size-4" />,
+            label: "إلغاء / مرتجع",
+          },
+          {
+            key: "aftercare" as const,
+            icon: <Package aria-hidden className="size-4" />,
+            label: "النقص والتعويض",
+          },
+        ].map(({ key, icon, label }) => (
+          <button
+            key={key}
+            id={`workflow-tab-${key}`}
+            type="button"
+            role="tab"
+            aria-selected={activeSection === key}
+            aria-controls="workflow-active-panel"
+            disabled={pendingMutations > 0}
+            onClick={() => chooseSection(key)}
+            className={cn(
+              "flex min-h-11 items-center justify-center gap-2 px-2 py-2.5 text-sm font-bold transition-colors",
+              activeSection === key
+                ? "border-b-2 border-primary text-primary"
+                : "text-muted-foreground hover:bg-muted/40",
+            )}
+          >
             {icon} {label}
           </button>
         ))}
       </div>
 
-      <div id="workflow-active-panel" role="tabpanel" aria-labelledby={`workflow-tab-${activeSection}`} className="flex-1 overflow-auto p-4">
+      <div
+        id="workflow-active-panel"
+        role="tabpanel"
+        aria-labelledby={`workflow-tab-${activeSection}`}
+        className="min-h-0 flex-1 overflow-y-auto p-3 md:p-4"
+      >
         {allParties.length > 0 && (
           <div className="mx-auto max-w-4xl mb-4">
             <DeliveryOperationalIntelligenceBar parties={allParties} />
           </div>
         )}
-        {activeSection === "dispatch" && (
-          <div className="mx-auto max-w-2xl space-y-4">
-            {lastDispatchedSlip && (
-              <div className="grid gap-3 rounded-2xl border-2 border-[var(--sem-pos)] bg-[var(--sem-pos-bg)]/20 p-4 sm:grid-cols-[1fr_auto] sm:items-center">
-                <div className="flex items-center gap-2 text-sm">
-                  <CheckCircle2 className="size-5 text-[var(--sem-pos)] shrink-0" />
-                  <div>
-                    <span className="font-extrabold text-foreground">تم إسناد الطلب #{lastDispatchedSlip.orderNumber} بنجاح</span>
-                    <p className="text-xs text-muted-foreground">إرسالية: {lastDispatchedSlip.consignmentNumber} · المندوب: {lastDispatchedSlip.partyName}</p>
-                  </div>
-                </div>
-                <div className="grid gap-2 sm:min-w-64">
-                  <Button
-                    size="lg"
-                    onClick={() => printAssignedShippingLabel(lastDispatchedSlip)}
-                    className="h-12 gap-2 text-base font-extrabold"
-                  >
-                    <Printer className="size-5" />
-                    طباعة ملصق الشحن الكبير الآن
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => printDeliveryDispatchSlip(lastDispatchedSlip)} className="h-9 gap-1.5 bg-background text-xs font-bold">
-                    <Printer className="size-3.5 text-primary" /> إعادة طباعة البوليصة
-                  </Button>
-                </div>
-              </div>
-            )}
-
-            <Card className="gap-0 p-4">
-              <div className="mb-3 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="grid size-6 place-items-center rounded-full bg-primary text-[11px] font-black text-primary-foreground">١</span>
-                  <h2 className="font-extrabold">اختر جهة التوصيل</h2>
-                </div>
-                {selectedPartyInfo && (
-                  <Badge variant="outline" className={selectedPartyInfo.partyType === "COMPANY" ? "border-blue-500 text-blue-700 font-bold" : "border-[var(--sem-pos)] text-[var(--sem-pos)] font-bold"}>
-                    {selectedPartyInfo.partyType === "COMPANY" ? "شركة توصيل خارجية" : "مندوب داخلي"}
-                  </Badge>
-                )}
-              </div>
-              <AppSelect
-                value={selectedPartyId ? String(selectedPartyId) : ""}
-                onValueChange={(v) => {
-                  setSelectedPartyId(v ? Number(v) : null);
-                  setDispatchScanned(null);
-                  setDispatchBarcodeInput("");
-                  setExternalTrackingRef("");
-                }}
-                className="h-12 w-full text-base font-bold"
-              >
-                <option value="">— اختر المندوب أو شركة التوصيل —</option>
-                {individualCouriers.length > 0 && (
-                  <optgroup label="── المناديب الداخليين (سائقون بعُهدة نقدية) ──">
-                    {individualCouriers.map((p) => (
-                      <option key={p.id} value={String(p.id)}>
-                        {p.name} (مندوب)
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
-                {companyCouriers.length > 0 && (
-                  <optgroup label="── شركات ومكاتب التوصيل (مطابقة كشوفات دورية) ──">
-                    {companyCouriers.map((p) => (
-                      <option key={p.id} value={String(p.id)}>
-                        {p.name} (شركة)
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
-              </AppSelect>
-            </Card>
-
-            {selectedPartyId && !dispatchScanned && (
-              <div className="rounded-2xl border-2 border-dashed border-primary/40 bg-primary/5 p-6 text-center">
-                <ScanLine aria-hidden className="mx-auto size-10 text-primary/60" />
-                <p className="mt-2 text-base font-extrabold text-primary">امسح باركود الطلب للإسناد</p>
-                <p className="mt-1 text-sm text-muted-foreground">أو أدخل رقم الطلب يدوياً</p>
-                <div className="mt-4 flex gap-2">
-                  <UnifiedSearchInput
-                    ref={dispatchRef}
-                    value={dispatchBarcodeInput}
-                    onChange={setDispatchBarcodeInput}
-                    onScan={(code: string) => void lookupWorkOrder(code, "dispatch")}
-                    onSubmit={(val: string) => {
-                      if (val.trim()) void lookupWorkOrder(val.trim(), "dispatch");
-                    }}
-                    placeholder="رقم الطلب (Enter)"
-                    className="flex-1 text-center font-bold"
-                    dir="ltr"
-                    barcode={true}
-                  />
-                  <Button variant="outline" onClick={() => void lookupWorkOrder(dispatchBarcodeInput.trim(), "dispatch")} disabled={!dispatchBarcodeInput.trim()}>بحث</Button>
-                </div>
-              </div>
-            )}
-
-            {dispatchScanned && (
-              <DispatchPreviewCard
-                order={dispatchScanned}
-                isCompanyParty={selectedPartyInfo?.partyType === "COMPANY"}
-                recipientPhone={recipientPhone}
-                onRecipientPhoneChange={setRecipientPhone}
-                recipientName={recipientName}
-                onRecipientNameChange={setRecipientName}
-                dispatchFee={dispatchFee}
-                onDispatchFeeChange={setDispatchFee}
-                deliveryAddress={deliveryAddress}
-                onDeliveryAddressChange={setDeliveryAddress}
-                deliveryNotes={deliveryNotes}
-                onDeliveryNotesChange={setDeliveryNotes}
-                externalTrackingRef={externalTrackingRef}
-                onExternalTrackingRefChange={setExternalTrackingRef}
-                onConfirmDispatch={() => void handleDispatch()}
-                onCancel={() => {
-                  setDispatchScanned(null);
-                  setDispatchBarcodeInput("");
-                }}
-                onCancelAssignment={setCancellingConsignment}
-                isPending={dispatchMut.isPending || dispatchInvoiceMut.isPending || dispatchBarcodeMut.isPending}
-              />
-            )}
-          </div>
+        {activeSection === "dispatch" && branchId && me.data && (
+          <WorkflowDispatchStation
+            key={me.data.id + ":" + branchId}
+            branchId={branchId}
+            userId={me.data.id}
+            parties={allParties}
+            scannedBarcode={dispatchScannedCode}
+            onBarcodeConsumed={() => setDispatchScannedCode(null)}
+            onAftercare={(raw) => openAftercare({ raw })}
+            onRefunds={(codes) => {
+              setRefundCodes(codes);
+              chooseSection("collect", { action: "refunds" });
+            }}
+          />
         )}
 
-        {activeSection === "cancelAssignment" && (
+        {activeSection === "cancelAssignment" && branchId && (
           <CancelDeliveryAssignmentSection
             branchId={branchId}
             scannedBarcode={cancelScannedCode}
             onBarcodeConsumed={() => setCancelScannedCode(null)}
-            onAssignmentCancelled={(orderNumber, consignmentNumber) => {
-              if (
-                lastDispatchedSlip?.consignmentNumber === consignmentNumber ||
-                lastDispatchedSlip?.orderNumber === orderNumber
-              ) {
-                setLastDispatchedSlip(null);
-              }
-              if (dispatchScanned?.orderNumber === orderNumber) {
-                setDispatchScanned(null);
-              }
+            onAssignmentCancelled={() => {
+              void utils.delivery.invalidate();
             }}
-            onNavigateToDispatch={(order) => {
-              setActiveSection("dispatch");
-              setDispatchScanned(order);
-              setDispatchBarcodeInput("");
-              setRecipientPhone(order.deliveryPhone ?? order.customerPhone ?? "");
-              setRecipientName(order.customerName ?? "");
-              setDispatchFee(order.deliveryCost ?? "");
-              setDeliveryAddress(order.deliveryAddress ?? "");
-              setDeliveryNotes(order.notes ?? "");
-              setExternalTrackingRef("");
+            onNavigateToDispatchBarcode={(raw) => {
+              setDispatchScannedCode(raw);
+              chooseSection("dispatch");
             }}
+            onNavigateToAftercare={openAftercare}
           />
         )}
-
-        {activeSection === "collect" && !!branchId && (
-          <ReceptionCollectSection
+        {activeSection === "collect" && branchId && (
+          <WorkflowCollectStation
             branchId={branchId}
             shift={shift}
             scannedBarcode={collectScannedCode}
             onBarcodeConsumed={() => setCollectScannedCode(null)}
+            action={pageParams.get("action")}
+            chargeId={positiveWorkflowParam(pageParams, "chargeId")}
+            refundCodes={refundCodes}
+            onNavigateToAftercare={openAftercare}
+            onAction={(action, chargeId) => {
+              const params = new URLSearchParams(pageSearch);
+              params.set("section", "collect");
+              if (action) params.set("action", action);
+              else params.delete("action");
+              if (chargeId) params.set("chargeId", String(chargeId));
+              else params.delete("chargeId");
+              if (branchId) params.set("branchId", String(branchId));
+              navigate(location + "?" + params.toString(), { replace: true });
+            }}
           />
+        )}
+        {activeSection === "aftercare" && branchId && (
+          <React.Suspense fallback={<div role="status" aria-label="تحميل محطة المعالجة"><Skeleton className="mx-auto h-28 max-w-4xl" /></div>}>
+          <AftercareStation
+            key={String(branchId)}
+            branchId={branchId}
+            caseId={positiveWorkflowParam(pageParams, "caseId")}
+            executionId={positiveWorkflowParam(pageParams, "executionId")}
+            scannedBarcode={aftercareScannedCode}
+            onBarcodeConsumed={() => setAftercareScannedCode(null)}
+          />
+          </React.Suspense>
         )}
 
         {activeSection === "edit" && (
           <div className="mx-auto max-w-2xl space-y-4">
             {!editInvoiceNumber && (
               <div className="rounded-2xl border-2 border-dashed border-primary/40 bg-primary/5 p-6 text-center">
-                <ScanLine aria-hidden className="mx-auto size-10 text-primary/60" />
-                <p className="mt-2 text-base font-extrabold text-primary">امسح باركود الفاتورة للتعديل</p>
-                <p className="mt-1 text-sm text-muted-foreground">أو أدخل رقم الفاتورة يدوياً</p>
+                <ScanLine
+                  aria-hidden
+                  className="mx-auto size-10 text-primary/60"
+                />
+                <p className="mt-2 text-base font-extrabold text-primary">
+                  امسح باركود الفاتورة للتعديل
+                </p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  أو أدخل رقم الفاتورة يدوياً
+                </p>
                 <div className="mt-4 flex gap-2">
                   <UnifiedSearchInput
                     ref={editRef}
@@ -697,7 +736,13 @@ export default function DeliveryWorkflowPage() {
                     dir="ltr"
                     barcode={true}
                   />
-                  <Button variant="outline" onClick={() => void lookupInvoiceForEdit(editBarcodeInput.trim())} disabled={!editBarcodeInput.trim()}>
+                  <Button
+                    variant="outline"
+                    onClick={() =>
+                      void lookupInvoiceForEdit(editBarcodeInput.trim())
+                    }
+                    disabled={!editBarcodeInput.trim()}
+                  >
                     بحث
                   </Button>
                 </div>
@@ -706,8 +751,21 @@ export default function DeliveryWorkflowPage() {
 
             {editInvoiceNumber && (!editScanned || editPreview.error) && (
               <Card className="space-y-3 p-4" role="status">
-                <p className="text-sm">{editPreview.error?.message ?? (editPreview.isFetching ? "جارٍ تحميل الفاتورة الحالية…" : "الفاتورة غير متاحة حالياً. أعد مسحها للتحقق من حالتها.")}</p>
-                <Button variant="outline" onClick={() => { setEditInvoiceNumber(null); setEditBarcodeInput(""); }}>مسح فاتورة أخرى</Button>
+                <p className="text-sm">
+                  {editPreview.error?.message ??
+                    (editPreview.isFetching
+                      ? "جارٍ تحميل الفاتورة الحالية…"
+                      : "الفاتورة غير متاحة حالياً. أعد مسحها للتحقق من حالتها.")}
+                </p>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setEditInvoiceNumber(null);
+                    setEditBarcodeInput("");
+                  }}
+                >
+                  مسح فاتورة أخرى
+                </Button>
               </Card>
             )}
 
@@ -717,16 +775,29 @@ export default function DeliveryWorkflowPage() {
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
                       <FileText aria-hidden className="size-5 text-primary" />
-                      <span className="text-lg font-extrabold">فاتورة #{editScanned.invoiceNumber}</span>
-                      <Badge variant={invoiceStatusBadgeVariant(editScanned.status)} className="font-bold">
+                      <span className="text-lg font-extrabold">
+                        فاتورة #{editScanned.invoiceNumber}
+                      </span>
+                      <Badge
+                        variant={invoiceStatusBadgeVariant(editScanned.status)}
+                        className="font-bold"
+                      >
                         {invoiceStatusLabel(editScanned.status)}
                       </Badge>
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      أُنشئت {fmtDateTime(editScanned.invoiceDate)} · آخر تحديث {fmtDateTime(editScanned.updatedAt)}
+                      أُنشئت {fmtDateTime(editScanned.invoiceDate)} · آخر تحديث{" "}
+                      {fmtDateTime(editScanned.updatedAt)}
                     </p>
                   </div>
-                  <Button variant="ghost" size="sm" onClick={() => { setEditInvoiceNumber(null); setEditBarcodeInput(""); }}>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setEditInvoiceNumber(null);
+                      setEditBarcodeInput("");
+                    }}
+                  >
                     مسح فاتورة أخرى
                   </Button>
                 </div>
@@ -734,49 +805,126 @@ export default function DeliveryWorkflowPage() {
                   <div className="grid overflow-hidden rounded-md border bg-background sm:grid-cols-2">
                     <div className="border-b p-3 sm:border-e">
                       <p className="text-xs text-muted-foreground">العميل</p>
-                      <p className="font-bold">{editScanned.customerName ?? "زبون نقدي"}</p>
-                      {editScanned.customerPhone && <p className="text-xs text-muted-foreground" dir="ltr">{editScanned.customerPhone}</p>}
+                      <p className="font-bold">
+                        {editScanned.customerName ?? "زبون نقدي"}
+                      </p>
+                      {editScanned.customerPhone && (
+                        <p className="text-xs text-muted-foreground" dir="ltr">
+                          {editScanned.customerPhone}
+                        </p>
+                      )}
                     </div>
                     <div className="border-b p-3">
-                      <p className="text-xs text-muted-foreground">الفاتورة والدفع</p>
-                      <p className="font-bold">{fmt(editScanned.total)} د.ع · مدفوع {fmt(editScanned.paidAmount)} د.ع</p>
+                      <p className="text-xs text-muted-foreground">
+                        الفاتورة والدفع
+                      </p>
+                      <p className="font-bold">
+                        {fmt(editScanned.total)} د.ع · مدفوع{" "}
+                        {fmt(editScanned.paidAmount)} د.ع
+                      </p>
                       <p className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-                        {editScanned.paymentMethod === "CARD" && <CardBrandLogos size="xs" />}
-                        <span>{paymentMethodLabel(editScanned.paymentMethod)} · {editScanned.itemCount} صنف/خدمة</span>
+                        {editScanned.paymentMethod === "CARD" && (
+                          <CardBrandLogos size="xs" />
+                        )}
+                        <span>
+                          {paymentMethodLabel(editScanned.paymentMethod)} ·{" "}
+                          {editScanned.itemCount} صنف/خدمة
+                        </span>
                       </p>
                     </div>
                     <div className="border-b p-3 sm:border-b-0 sm:border-e">
                       <p className="text-xs text-muted-foreground">أنشأها</p>
-                      <p className="font-bold">{editScanned.salespersonName ?? "غير موثّق"}</p>
-                      <p className="text-xs text-muted-foreground">{editScanned.shiftType === "RECEPTION" ? "نقطة الاستقبال" : "نقطة البيع"}</p>
+                      <p className="font-bold">
+                        {editScanned.salespersonName ?? "غير موثّق"}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {editScanned.shiftType === "RECEPTION"
+                          ? "نقطة الاستقبال"
+                          : "نقطة البيع"}
+                      </p>
                     </div>
                     <div className="p-3">
                       <p className="text-xs text-muted-foreground">التوصيل</p>
-                      <p className="font-bold">{editScanned.consignmentNumber ?? "غير مسندة"}</p>
-                      <p className="text-xs text-muted-foreground">{editScanned.consignmentStatus ?? "لا توجد عهدة توصيل"}</p>
+                      <p className="font-bold">
+                        {editScanned.consignmentNumber ?? "غير مسندة"}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {editScanned.consignmentStatus ?? "لا توجد عهدة توصيل"}
+                      </p>
                     </div>
                   </div>
 
-                  {editScanned.blockReason && (
+                  {editBlockReason && (
                     <div className="flex items-start gap-2 rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-sm">
-                      <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-destructive" />
+                      <AlertTriangle
+                        aria-hidden
+                        className="mt-0.5 size-4 shrink-0 text-destructive"
+                      />
                       <div>
-                        <p className="font-extrabold text-destructive">لا يمكن بدء التعديل الآن</p>
-                        <p className="text-muted-foreground">{editScanned.blockReason}</p>
+                        <p className="font-extrabold text-destructive">
+                          لا يمكن بدء التعديل الآن
+                        </p>
+                        <p className="text-muted-foreground">
+                          {editBlockReason}
+                        </p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {currentEditContext?.relations.consignmentId && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                setCancelScannedCode(
+                                  currentEditContext.source.number,
+                                );
+                                chooseSection("cancelAssignment");
+                              }}
+                            >
+                              مراجعة الإسناد والعهدة
+                            </Button>
+                          )}
+                          {currentEditContext?.relations.aftercareCaseId && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() =>
+                                openAftercare({
+                                  caseId:
+                                    currentEditContext.relations
+                                      .aftercareCaseId,
+                                })
+                              }
+                            >
+                              فتح المعالجة المرتبطة
+                            </Button>
+                          )}
+                        </div>
                       </div>
                     </div>
                   )}
 
                   <Button
                     className="w-full py-6 text-base font-extrabold"
-                    disabled={!editScanned.canCorrect || editPreview.isFetching}
-                    onClick={() => navigate(`/invoices/${editScanned.id}/correct?from=reception-edit`)}
+                    disabled={
+                      !editScanned.canCorrect ||
+                      !!editBlockReason ||
+                      editPreview.isFetching ||
+                      editWorkflow.isFetching ||
+                      !!editWorkflow.error
+                    }
+                    onClick={() =>
+                      navigate(
+                        `/invoices/${editScanned.id}/correct?from=reception-edit`,
+                      )
+                    }
                   >
                     <FilePenLine aria-hidden className="size-5" />
                     تعديل الفاتورة
                   </Button>
                   <p className="text-center text-xs text-muted-foreground">
-                    يُفتح محرر الفاتورة الحالية. عند عدم وجود مبلغ مقبوض لا يوجد استرداد مالي؛ يحدّد الخادم مسار الحفظ حسب حالة الفاتورة.
+                    يُفتح محرر الفاتورة الحالية. عند عدم وجود مبلغ مقبوض لا يوجد
+                    استرداد مالي؛ يحدّد الخادم مسار الحفظ حسب حالة الفاتورة.
                   </p>
                 </div>
               </Card>
@@ -784,189 +932,37 @@ export default function DeliveryWorkflowPage() {
           </div>
         )}
 
-        {activeSection === "return" && (
-          <div className="mx-auto max-w-2xl space-y-4">
-            <Card className="gap-0 p-4">
-              <h2 className="mb-3 font-extrabold">نوع الإجراء</h2>
-              <div className="grid grid-cols-2 gap-2">
-                {(["FULL", "PARTIAL"] as const).map((t) => (
-                  <button key={t} type="button" onClick={() => setReturnType(t)}
-                    className={cn("flex items-center justify-center gap-2 rounded-xl border-2 py-3 text-sm font-extrabold transition-colors",
-                      returnType === t ? "border-destructive bg-destructive/10 text-destructive" : "text-muted-foreground hover:bg-muted/40")}>
-                    {t === "FULL" ? <><Ban className="size-4" /> إلغاء / مرتجع كامل</> : <><RefreshCcw className="size-4" /> مرتجع جزئي</>}
-                  </button>
-                ))}
-              </div>
-            </Card>
-
-            {!returnScanned && (
-              <div className="rounded-2xl border-2 border-dashed border-destructive/40 bg-destructive/5 p-6 text-center">
-                <ScanLine aria-hidden className="mx-auto size-10 text-destructive/60" />
-                <p className="mt-2 text-base font-extrabold text-destructive">امسح باركود الطلب أو الفاتورة</p>
-                <div className="mt-4 flex gap-2">
-                  <UnifiedSearchInput
-                    ref={returnRef}
-                    value={returnBarcodeInput}
-                    onChange={setReturnBarcodeInput}
-                    onScan={(code: string) => void lookupWorkOrder(code, "return")}
-                    onSubmit={(val: string) => {
-                      if (val.trim()) void lookupWorkOrder(val.trim(), "return");
-                    }}
-                    placeholder="رقم الطلب أو الفاتورة (Enter)"
-                    className="flex-1 text-center font-bold"
-                    dir="ltr"
-                    barcode={true}
-                  />
-                  <Button variant="outline" onClick={() => void lookupWorkOrder(returnBarcodeInput.trim(), "return")} disabled={!returnBarcodeInput.trim()}>بحث</Button>
-                </div>
-              </div>
-            )}
-
-            {returnScanned && returnScanned.kind === "invoice" && (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between rounded-xl border bg-muted/40 p-3">
-                  <div className="flex items-center gap-2">
-                    <Package aria-hidden className="size-5 text-primary" />
-                    <div>
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-extrabold text-base">فاتورة بيع #{returnInvoice?.invoiceNumber}</span>
-                        {returnInvoice?.status && (
-                          <Badge variant={invoiceStatusBadgeVariant(returnInvoice.status)} className="font-bold">
-                            {invoiceStatusLabel(returnInvoice.status)}
-                          </Badge>
-                        )}
-                        {returnInvoice?.branchId && branchId && returnInvoice.branchId !== branchId && (
-                          <Badge variant="outline" className="border-primary text-primary font-bold">فرع #{returnInvoice.branchId}</Badge>
-                        )}
-                      </div>
-                      {returnInvoice && <p className="text-xs text-muted-foreground">العميل: {returnInvoice.customerName || "زبون نقدي"}</p>}
-                    </div>
-                  </div>
-                  <Button variant="ghost" size="sm" onClick={() => { setReturnScanned(null); setReturnBarcodeInput(""); }}>مسح فاتورة أخرى</Button>
-                </div>
-                {(!returnInvoice || returnPreview.error) && <p role="status" className="text-sm">{returnPreview.error?.message ?? (returnPreview.isFetching ? "جارٍ تحميل الفاتورة الحالية…" : "الفاتورة غير متاحة حالياً. أعد مسحها للتحقق من حالتها.")}</p>}
-                {returnInvoice?.status === "RETURNED" && (
-                  <div className="rounded-xl border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)]/30 p-3 flex items-start gap-2.5">
-                    <AlertTriangle aria-hidden className="size-4 shrink-0 text-[var(--sem-warn)] mt-0.5" />
-                    <div>
-                      <p className="text-xs font-bold text-[var(--sem-warn)]">هذه الفاتورة تم استرجاعها بالكامل مسبقاً</p>
-                      <p className="text-[11px] text-muted-foreground mt-0.5">تم استرجاع جميع بنود ومبالغ هذه الفاتورة في سجل المرتجعات ولا يمكن تكرار استرجاعها.</p>
-                    </div>
-                  </div>
-                )}
-                {returnInvoice?.status === "CANCELLED" && (
-                  <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-3 flex items-start gap-2.5">
-                    <Ban aria-hidden className="size-4 shrink-0 text-destructive mt-0.5" />
-                    <div>
-                      <p className="text-xs font-bold text-destructive">هذه الفاتورة ملغاة مسبقاً</p>
-                      <p className="text-[11px] text-muted-foreground mt-0.5">تم إلغاء هذه الفاتورة مسبقاً ولا يمكن تسجيل مرتجع عليها.</p>
-                    </div>
-                  </div>
-                )}
-                {returnInvoice?.branchId && branchId && returnInvoice.branchId !== branchId && (
-                  <div className="rounded-xl border border-[var(--sem-info)]/40 bg-[var(--sem-info-bg)]/20 p-3 flex items-start gap-2.5">
-                    <Info aria-hidden className="size-4 shrink-0 text-[var(--sem-info)] mt-0.5" />
-                    <div>
-                      <p className="text-xs font-bold text-[var(--sem-info)]">الفاتورة تنتمي لفرع آخر (فرع #{returnInvoice.branchId})</p>
-                      <p className="text-[11px] text-muted-foreground mt-0.5">أنت تعمل حالياً في فرع #{branchId}. يتطلب إرجاعها التواجد في فرعها الأصلي أو صلاحيات إدارية.</p>
-                    </div>
-                  </div>
-                )}
-                <ReturnComposer
-                  invoiceId={returnScanned.id}
-                  initialMode={returnType}
-                  onDone={() => {
-                    notify.ok("تم تسجيل المرتجع بنجاح");
-                    setReturnScanned(null);
-                    setReturnBarcodeInput("");
-                    void utils.workOrders.invalidate();
-                    void utils.delivery.invalidate();
-                  }}
-                />
-              </div>
-            )}
-
-            {returnScanned && returnScanned.kind !== "invoice" && returnType === "FULL" && (
-              <Card className="overflow-hidden gap-0 py-0 shadow-sm">
-                <div className="flex items-start justify-between border-b bg-destructive/10 p-4">
-                  <div>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <Package aria-hidden className="size-5 text-destructive" />
-                      <span className="text-lg font-extrabold">#{returnScanned.orderNumber}</span>
-                      {returnScanned.status && (
-                        <span className={cn("inline-flex items-center rounded-md px-2 py-0.5 text-xs font-bold", workOrderStatusBadgeCls(returnScanned.status))}>
-                          {workOrderStatusLabel(returnScanned.status)}
-                        </span>
-                      )}
-                    </div>
-                    <p className="mt-0.5 text-sm font-bold">{returnScanned.customerName}</p>
-                  </div>
-                  <Button variant="ghost" size="sm" onClick={() => { setReturnScanned(null); setReturnBarcodeInput(""); }}>مسح طلب آخر</Button>
-                </div>
-                <div className="space-y-3 p-4">
-                  {returnScanned.status === "CANCELLED" && (
-                    <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-3 flex items-start gap-2.5">
-                      <Ban aria-hidden className="size-4 shrink-0 text-destructive mt-0.5" />
-                      <div>
-                        <p className="text-xs font-bold text-destructive">هذا الطلب ملغي مسبقاً</p>
-                        <p className="text-[11px] text-muted-foreground mt-0.5">تم إلغاء هذا الطلب مسبقاً ولا يمكن تكرار إلغائه.</p>
-                      </div>
-                    </div>
-                  )}
-                  <div className="rounded-xl border bg-background p-3 space-y-1">
-                    <div className="flex justify-between text-sm">
-                      <span className="text-muted-foreground">قيمة الطلب</span>
-                      <span className="font-bold">{fmt(returnScanned.salePrice)} د.ع</span>
-                    </div>
-                    {D(returnScanned.deposit ?? "0").gt(0) && <>
-                      <div className="flex justify-between text-sm">
-                        <span className="text-muted-foreground">عربون مدفوع</span>
-                        <span className="font-bold text-green-600">{fmt(returnScanned.deposit!)} د.ع</span>
-                      </div>
-                      <div className="flex justify-between text-sm border-t pt-1">
-                        <span className="font-bold">يُردّ للزبون من الدرج</span>
-                        <span className="font-bold text-destructive">{fmt(returnScanned.deposit!)} د.ع</span>
-                      </div>
-                    </>}
-                  </div>
-                  <div>
-                    <label className="mb-1.5 block text-sm font-bold">سبب الإلغاء <span className="text-destructive">*</span></label>
-                    <Input value={returnReason} onChange={(e) => setReturnReason(e.target.value)} placeholder="مثال: طلب العميل الإلغاء، تأخر التسليم…" className="h-10" />
-                  </div>
-                  <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-sm">
-                    <p className="font-bold text-destructive">تنبيه — سيتمّ عند التأكيد:</p>
-                    <ul className="mt-1 space-y-1 list-disc list-inside text-muted-foreground">
-                      <li>إلغاء أمر الشغل نهائياً</li>
-                      {D(returnScanned.deposit ?? "0").gt(0) && <li>ردّ {fmt(returnScanned.deposit!)} د.ع من درج الوردية #{shift?.id ?? ""}</li>}
-                      <li>إعادة المواد والمخزون للرصيد</li>
-                    </ul>
-                  </div>
-                  <Button variant="destructive" className="w-full py-6 text-base font-extrabold"
-                    onClick={() => void handleFullReturn()} disabled={cancelMut.isPending || returnScanned.status === "CANCELLED" || returnReason.trim().length < 3}>
-                    {cancelMut.isPending ? L.cancelling : returnScanned.status === "CANCELLED" ? "الطلب ملغي مسبقاً" : "إلغاء الطلب بالكامل"}
-                  </Button>
-                </div>
-              </Card>
-            )}
-
-            {returnScanned && returnScanned.kind !== "invoice" && returnType === "PARTIAL" && (
-              <div className="rounded-2xl border border-blue-200 bg-blue-50/60 p-6 text-center space-y-3">
-                <RefreshCcw aria-hidden className="mx-auto size-10 text-primary" />
-                <p className="text-base font-extrabold text-foreground">أمر شغل مخصص #{returnScanned.orderNumber}</p>
-                <p className="text-sm text-muted-foreground max-w-md mx-auto">
-                  أمر الشغل وحدة تصنيع متكاملة يُلغى بالكامل ويردّ عربونه من درج الوردية. إذا كان الطلب مسجلاً كفاتورة مبيعات، يرجى مسح رقم الفاتورة لإجراء المرتجع الجزئي للبنود والكميات.
-                </p>
-                <div className="flex justify-center gap-2 pt-2">
-                  <Button variant="outline" className="font-bold" onClick={() => setReturnType("FULL")}>
-                    التحويل إلى إلغاء كامل
-                  </Button>
-                  <Button variant="ghost" onClick={() => { setReturnScanned(null); setReturnBarcodeInput(""); }}>
-                    مسح طلب أو فاتورة أخرى
-                  </Button>
-                </div>
-              </div>
-            )}
-          </div>
+        {activeSection === "return" && returnWorkflow && branchId && (
+          <WorkflowReturnSourceCard
+            key={`${branchId}:${returnWorkflow.source.canonicalKey}`}
+            branchId={branchId}
+            shiftId={shift?.id}
+            preview={returnWorkflow}
+            onClear={() => setReturnWorkflow(null)}
+            onAftercare={openAftercare}
+            onChanged={(value) => setReturnWorkflow(value)}
+            onCollect={(raw) => {
+              setCollectScannedCode(raw);
+              chooseSection("collect");
+            }}
+          />
+        )}
+        {activeSection === "return" && !returnWorkflow && (
+          <WorkflowLegacyReturnStation
+            source={returnScanned}
+            branchId={branchId}
+            actorId={me.data?.id}
+            barcode={returnBarcodeInput}
+            inputRef={returnRef}
+            mode={returnType}
+            onModeChange={setReturnType}
+            onBarcodeChange={setReturnBarcodeInput}
+            onLookup={lookupWorkOrder}
+            onClear={() => {
+              setReturnScanned(null);
+              setReturnBarcodeInput("");
+            }}
+          />
         )}
       </div>
 
@@ -978,7 +974,6 @@ export default function DeliveryWorkflowPage() {
         }}
         onCompleted={() => {
           setCancellingConsignment(null);
-          setDispatchScanned(null);
           void utils.delivery.invalidate();
           void utils.workOrders.invalidate();
         }}

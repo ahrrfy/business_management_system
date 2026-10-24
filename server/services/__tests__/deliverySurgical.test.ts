@@ -214,7 +214,7 @@ describe("delivery surgical fixes — settle/remittance/queries/fees", () => {
     const { partyId } = await seed();
     await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
     const woId = await readyWorkOrder();
-    const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "0" }, CASHIER);
+    const disp = await dispatchToDelivery({ assignedUserId: 3, workOrderId: woId, partyId, deliveryFee: "0" }, CASHIER);
     // صفٌّ موروث: مُسلَّم بعهدةٍ معترفٍ بها **بلا تسوية فاتورة ولا دليل تحصيلٍ في دفتر
     // التوصيل** (لا COD_COLLECTED) — فالخسارة الحقيقية عند الشطب = الذمّة الحيّة المُبرَّأة
     // وحدها (realPart)، وما فوقها انحرافُ codAmount لا مالٌ خُسر. (الشطبُ بعد تسليمٍ مثبتِ
@@ -278,7 +278,7 @@ describe("delivery surgical fixes — settle/remittance/queries/fees", () => {
     const { partyId } = await seed();
     const shift = await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
     const woId = await readyWorkOrder();
-    const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "0" }, CASHIER);
+    const disp = await dispatchToDelivery({ assignedUserId: 3, workOrderId: woId, partyId, deliveryFee: "0" }, CASHIER);
 
     // كشف الشركة يثبت تسليماً بتحصيلٍ جزئي 5000 من 8000 — يكتب قيد COURIER_DELIVERY الجزئي.
     await confirmConsignmentDelivery(
@@ -330,7 +330,7 @@ describe("delivery surgical fixes — settle/remittance/queries/fees", () => {
     const { partyId } = await seed();
     await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
     const woId = await readyWorkOrder();
-    const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "0" }, CASHIER);
+    const disp = await dispatchToDelivery({ assignedUserId: 3, workOrderId: woId, partyId, deliveryFee: "0" }, CASHIER);
     // زبونٌ سدّد 3000 بالكاونتر (كاتب العمود شريحة أخرى — يُحاكى هنا).
     await simulateCounterPayment(disp.invoiceId, 1, "3000.00");
     await db().update(s.deliveryConsignments)
@@ -413,8 +413,8 @@ describe("delivery surgical fixes — settle/remittance/queries/fees", () => {
     const shift = await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
     const wo1 = await readyWorkOrder("SHOP");
     const wo2 = await readyWorkOrder("SHOP");
-    const d1 = await dispatchToDelivery({ workOrderId: wo1, partyId, deliveryFee: "1500" }, CASHIER);
-    const d2 = await dispatchToDelivery({ workOrderId: wo2, partyId, deliveryFee: "2000" }, CASHIER);
+    const d1 = await dispatchToDelivery({ assignedUserId: 3, workOrderId: wo1, partyId, deliveryFee: "1500" }, CASHIER);
+    const d2 = await dispatchToDelivery({ assignedUserId: 3, workOrderId: wo2, partyId, deliveryFee: "2000" }, CASHIER);
     await deliverViaPortal(d1.consignmentId);
     await deliverViaPortal(d2.consignmentId);
     await recordDeliveryRemittance({
@@ -475,8 +475,8 @@ describe("delivery surgical fixes — settle/remittance/queries/fees", () => {
     await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
     const wo1 = await readyWorkOrder();
     const wo2 = await readyWorkOrder();
-    const d1 = await dispatchToDelivery({ workOrderId: wo1, partyId, deliveryFee: "0" }, CASHIER);
-    const d2 = await dispatchToDelivery({ workOrderId: wo2, partyId, deliveryFee: "0" }, CASHIER);
+    const d1 = await dispatchToDelivery({ assignedUserId: 3, workOrderId: wo1, partyId, deliveryFee: "0" }, CASHIER);
+    const d2 = await dispatchToDelivery({ assignedUserId: 3, workOrderId: wo2, partyId, deliveryFee: "0" }, CASHIER);
     // الثانية أُعلن رجوعُها ⇒ تخرج من codDueTotal وتبقى في openCount حتى تُستلَم.
     await db().update(s.deliveryConsignments)
       .set({ returnDeclaredAt: new Date(), returnDeclaredReason: "رفض العميل" })

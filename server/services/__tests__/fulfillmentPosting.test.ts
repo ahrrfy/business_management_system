@@ -1,14 +1,27 @@
 import { describe, expect, it } from "vitest";
 import { money } from "../money";
-import { chargeAccrualIntent, chargeCollectionIntent, chargeCostIntent, chargeCreditIntent, chargePayeeIntent } from "../fulfillment/chargePosting";
+import { chargeAccrualIntent, chargeCollectionIntent, chargeCostIntent, chargeCreditIntent, chargePayeeIntent, immediateServiceIntent } from "../fulfillment/chargePosting";
 import { deliveryFeeHeldReceiptIntent } from "../delivery/posting";
-import { validatePostingIntentAgainstSource, type PostingIntent, type PostingSourceAmounts } from "../accounting/postingEngine";
+import { createPostingIntent, creditLine, debitLine, validatePostingIntentAgainstSource, type PostingIntent, type PostingSourceAmounts } from "../accounting/postingEngine";
 
 function validate(intent: PostingIntent, source: PostingSourceAmounts) {
   return validatePostingIntentAgainstSource(intent, source);
 }
 
 describe("fulfillment financial classification and source facts", () => {
+  it("posts a paid guest service directly and refunds its original card asset without customer AR", () => {
+    const paid = immediateServiceIntent(money(3000), "CARD", null);
+    expect(() => validate(paid, { amount: money(3000), revenue: money(3000), roleDebits: { CARD_BANK: money(3000) }, roleCredits: { OTHER_REVENUE: money(3000) } })).not.toThrow();
+    const refund = immediateServiceIntent(money(1000), "CARD", null, true);
+    expect(() => validate(refund, { amount: money(1000), revenue: money(-1000), roleDebits: { OTHER_REVENUE: money(1000) }, roleCredits: { CARD_BANK: money(1000) } })).not.toThrow();
+    expect(paid.lines.some(line => line.role === "AR" || line.role === "INVENTORY")).toBe(false);
+    expect(() => validate(refund, { amount: money(1000), revenue: money(-1000), roleDebits: { OTHER_REVENUE: money(1000) }, roleCredits: { CASH: money(1000) } })).toThrow();
+  });
+  it("reverses only the original quality issue cost actually restored to stock", () => {
+    const intent = createPostingIntent("AFTERCARE_ISSUE_RETURN", "ADJUST", [debitLine("INVENTORY", money(200)), creditLine("LOSSES", money(200))], { roleDebits: { INVENTORY: money(200) }, roleCredits: { LOSSES: money(200) } });
+    expect(() => validate(intent, { amount: money(-200), cost: money(-200), profit: money(200), roleDebits: { INVENTORY: money(200) }, roleCredits: { LOSSES: money(200) } })).not.toThrow();
+    expect(() => validate(intent, { amount: money(-900), cost: money(-900), roleDebits: { INVENTORY: money(900) }, roleCredits: { LOSSES: money(900) } })).toThrow();
+  });
   it("recognises an outsourced customer fee and the contractor cost as separate gross events", () => {
     const sale = chargeAccrualIntent("OUTSOURCED", money(5000));
     const cost = chargeCostIntent(money(3000), "AP");

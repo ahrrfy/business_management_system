@@ -41,7 +41,7 @@ async function proof(amount:string,channel:"POS"|"PRINT_POS"="POS",method:"CARD"
   await confirmExternalPaymentAttempt({attemptId:p.attemptId,branchId:1,channel,deviceId:device},actor);
   return p.attemptId;
 }
-function input():ConfirmedPosSaleInput{return {branchId:1,shiftId:1,deviceId:device,sourceType:"POS",clientRequestId:key(),lines:[{variantId:1,productUnitId:1,quantity:"1"}],payment:{method:"CASH",amount:"50000"},deliveryFeeHeld:"5000",delivery:{partyId,fee:"5000",feeCollection:"COUNTER",recipientName:"Buyer",recipientPhone:"07700000000",address:"Baghdad"}};}
+function input():ConfirmedPosSaleInput{return {branchId:1,shiftId:1,deviceId:device,sourceType:"POS",clientRequestId:key(),lines:[{variantId:1,productUnitId:1,quantity:"1"}],payment:{method:"CASH",amount:"50000"},deliveryFeeHeld:"5000",delivery:{partyId,assignedUserId:3,fee:"5000",feeCollection:"COUNTER",recipientName:"Buyer",recipientPhone:"07700000000",address:"Baghdad"}};}
 async function snapshot(invoiceId:number){
  const inv=(await db().select().from(s.invoices).where(eq(s.invoices.id,invoiceId)))[0];
  const rows=await db().select().from(s.receipts).where(eq(s.receipts.invoiceId,invoiceId));

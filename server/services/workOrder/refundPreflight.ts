@@ -19,6 +19,7 @@ import { workOrderFeeHeldNet } from "./deliveryFeeRefund";
 import type { RefundDrawerCandidate, RefundPreflight, WorkOrderRefundOperation } from "@shared/refundPreflight";
 import { loadShipmentMembersTx } from "../delivery/shipments";
 import { loadWorkOrderDepositReceiptSet } from "./depositReceiptSet";
+import { loadRefundCaps } from "../returns/refundCaps";
 
 /** طرقُ القبض التي يخرج ردُّها نقداً — TELECOM بلا سكّة ردّ فيُردّ نقداً (نفسُ قاعدة الخدمات). */
 function exitsCashDrawer(method: string | null | undefined): boolean {
@@ -239,7 +240,10 @@ export async function consignmentReturnPreflight(
       await tx.select({ paidAmount: invoices.paidAmount }).from(invoices)
         .where(eq(invoices.id, Number(cn.invoiceId))).limit(1)
     )[0];
-    paid = paid.plus(money(inv?.paidAmount ?? "0"));
+    const caps = await loadRefundCaps(tx, Number(cn.invoiceId));
+    const cashNet = money(caps.netByMethod.get("CASH") ?? "0");
+    const paidAmount = money(inv?.paidAmount ?? "0");
+    if (cashNet.gt(0) && paidAmount.gt(0)) paid = paid.plus(cashNet.lt(paidAmount) ? cashNet : paidAmount);
   }
     /**
      * ⚠️ **مراجعُ الأجرة ليست `DLV-FEE-CN-…`** (مراجعة Codex P1، الجولة الثانية): ذلك نمطٌ
@@ -264,6 +268,7 @@ export async function consignmentReturnPreflight(
               and(
                 inArray(receipts.referenceNumber, feeRefs),
                 eq(receipts.invoiceId, Number(cn.invoiceId)),
+                eq(receipts.paymentMethod, "CASH"),
                 // نفسُ مجموعة الحالات التي يستعملها التنفيذ (`returns.ts`): REVERSED حدثٌ نقديّ
                 // تاريخيّ يرافقه تعويضيٌّ معاكس، فإسقاطُه يترك OUT بلا IN ⇒ صافٍ سالبٌ يُخفي المنتقي.
                 inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]),

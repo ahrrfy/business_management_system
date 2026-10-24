@@ -493,6 +493,12 @@ describe("one physical shipment with independent invoice accounting", () => {
       .update(s.invoices)
       .set({ paidAmount: "30.00" })
       .where(eq(s.invoices.id, 2));
+    // Historical documented goods CASH is separate from this shift's opening cash.
+    // Invoice scalar paidAmount alone must never authorize a cash refund.
+    await db().insert(s.receipts).values([
+      { receiptNumber: "SHIPMENT-GOODS-IN-1", direction: "IN", branchId: 1, invoiceId: 1, customerId: 1, partyType: "CUSTOMER", amount: "10.00", paymentMethod: "CASH", cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED", createdBy: 1 },
+      { receiptNumber: "SHIPMENT-GOODS-IN-2", direction: "IN", branchId: 1, invoiceId: 2, customerId: 1, partyType: "CUSTOMER", amount: "30.00", paymentMethod: "CASH", cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED", createdBy: 1 },
+    ]);
     await db()
       .insert(s.receipts)
       .values({

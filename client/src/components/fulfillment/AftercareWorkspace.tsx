@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import { deliveryDriverOptions, requiresDeliveryDriver } from "@/components/delivery/driverOptions";
 import { useSearch } from "wouter";
 import {
   Plus,
@@ -23,6 +24,9 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { confirm } from "@/lib/confirm";
 import { printDeliveryDispatchSlip } from "@/lib/printing/printDeliveryDispatchSlip";
+import { printLabel } from "@/lib/printing/print";
+import { AftercareSettlementPanel } from "./AftercareSettlementPanel";
+import type { AftercareStationProps } from "./AftercareStation";
 import { D, fmt } from "@/lib/money";
 import { useOperationPermission } from "@/hooks/useOperationPermission";
 import {
@@ -71,18 +75,57 @@ function useAftercareActions(refresh: () => Promise<unknown>) {
   return { run, pending, error };
 }
 
-export default function AftercareWorkspace() {
+export default function AftercareWorkspace({
+  scannedBarcode,
+  onBarcodeConsumed,
+  branchId,
+  caseId,
+  executionId,
+}: AftercareStationProps = {}) {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<number>();
   const [creating, setCreating] = useState(false);
-  const urlSearch = useSearch();
-  const linkedExecutionId = Number(
-    new URLSearchParams(urlSearch).get("executionId"),
+  const canCreate = useOperationPermission(
+    "delivery.fulfillment.aftercare.create",
+  ).allowed;
+  const [scannedSource, setScannedSource] = useState<ApiInput["preview"]>();
+  const consumed = useRef<string | null>(null);
+  const scan = trpc.delivery.workflow.preview.useQuery(
+    { raw: scannedBarcode ?? "", station: "aftercare", branchId },
+    { enabled: !!scannedBarcode, retry: false },
   );
+  useEffect(() => {
+    if (!scannedBarcode || !scan.data || consumed.current === scannedBarcode)
+      return;
+    const relations = scan.data.relations;
+    if (relations.aftercareCaseId) {
+      setSelected(relations.aftercareCaseId);
+      setCreating(false);
+    } else if ((relations.workOrderId || relations.invoiceId) && canCreate) {
+      setScannedSource(
+        relations.workOrderId
+          ? { workOrderId: relations.workOrderId }
+          : { invoiceId: relations.invoiceId! },
+      );
+      setSelected(undefined);
+      setCreating(true);
+    } else return;
+    consumed.current = scannedBarcode;
+    onBarcodeConsumed?.();
+  }, [scan.data, scannedBarcode, onBarcodeConsumed, canCreate]);
+  useEffect(() => {
+    if (!scannedBarcode) consumed.current = null;
+  }, [scannedBarcode]);
+  useEffect(() => {
+    if (caseId) setSelected(caseId);
+  }, [caseId]);
+  const urlSearch = useSearch();
+  const linkedExecutionId =
+    executionId ?? Number(new URLSearchParams(urlSearch).get("executionId"));
   const linkedExecution =
     trpc.delivery.fulfillment.aftercare.resolveExecution.useQuery(
-      { executionId: linkedExecutionId },
+      { executionId: linkedExecutionId, branchId },
       {
         enabled:
           Number.isSafeInteger(linkedExecutionId) && linkedExecutionId > 0,
@@ -91,9 +134,6 @@ export default function AftercareWorkspace() {
   useEffect(() => {
     if (linkedExecution.data) setSelected(linkedExecution.data.caseId);
   }, [linkedExecution.data]);
-  const canCreate = useOperationPermission(
-    "delivery.fulfillment.aftercare.create",
-  ).allowed;
   useEffect(() => {
     const params = new URLSearchParams(urlSearch);
     const sourceId = Number(
@@ -103,12 +143,28 @@ export default function AftercareWorkspace() {
       setCreating(true);
   }, [urlSearch, canCreate]);
   const list = trpc.delivery.fulfillment.aftercare.list.useQuery({
+    branchId,
     search,
     page: page + 1,
     pageSize: 20,
   });
   return (
     <section dir="rtl" className="space-y-4">
+      {scan.error && (
+        <p role="alert" className="text-sm text-destructive">
+          {scan.error.message}
+        </p>
+      )}
+      {scan.data && !canCreate && !scan.data.relations.aftercareCaseId && (
+        <p className="text-sm text-muted-foreground">
+          إنشاء المعالجة يحتاج موظفاً مخولاً. يمكنك متابعة حالات فرعك القائمة من
+          القائمة أدناه.
+        </p>
+      )}
+      <p className="text-sm text-muted-foreground">
+        امسح الأصل، وثّق النقص، ثم تابع الاعتماد والتجهيز والإرسال والحقوق من
+        هذه المحطة.
+      </p>
       {linkedExecution.error && (
         <p role="alert" className="text-sm text-destructive">
           {linkedExecution.error.message}
@@ -128,8 +184,11 @@ export default function AftercareWorkspace() {
       </div>
       {creating && (
         <NewAftercare
-          onCreated={async () => {
+          sourceInput={scannedSource}
+          branchId={branchId}
+          onCreated={async (id) => {
             setCreating(false);
+            if (id) setSelected(id);
             await list.refetch();
           }}
         />
@@ -172,6 +231,7 @@ export default function AftercareWorkspace() {
       {selected && (
         <AftercareDetail
           id={selected}
+          branchId={branchId}
           onChange={async () => {
             await list.refetch();
           }}
@@ -181,7 +241,15 @@ export default function AftercareWorkspace() {
   );
 }
 
-function NewAftercare({ onCreated }: { onCreated: () => Promise<void> }) {
+function NewAftercare({
+  onCreated,
+  sourceInput,
+  branchId,
+}: {
+  onCreated: (id?: number) => Promise<void>;
+  sourceInput?: ApiInput["preview"];
+  branchId?: number;
+}) {
   const urlSearch = useSearch();
   const [sourceKind, setSourceKind] = useState<"INVOICE" | "WORK_ORDER">(
     "INVOICE",
@@ -198,6 +266,16 @@ function NewAftercare({ onCreated }: { onCreated: () => Promise<void> }) {
   const [held, setHeld] = useState(false);
   const [lines, setLines] = useState<CreateLine[]>([]);
   useEffect(() => {
+    if (!sourceInput) return;
+    setPreviewInput(sourceInput);
+    setSourceKind(sourceInput.workOrderId ? "WORK_ORDER" : "INVOICE");
+    setSourceReference(
+      String(sourceInput.workOrderId ?? sourceInput.invoiceId ?? ""),
+    );
+    setLines([]);
+  }, [sourceInput]);
+  useEffect(() => {
+    if (sourceInput) return;
     const params = new URLSearchParams(urlSearch);
     const invoiceId = Number(params.get("invoiceId"));
     const workOrderId = Number(params.get("workOrderId"));
@@ -212,9 +290,9 @@ function NewAftercare({ onCreated }: { onCreated: () => Promise<void> }) {
       setPreviewInput({ workOrderId });
       setLines([]);
     }
-  }, [urlSearch]);
+  }, [urlSearch, sourceInput]);
   const preview = trpc.delivery.fulfillment.aftercare.preview.useQuery(
-    previewInput ?? {},
+    { ...previewInput, branchId },
     { enabled: !!previewInput },
   );
   useEffect(() => {
@@ -232,8 +310,13 @@ function NewAftercare({ onCreated }: { onCreated: () => Promise<void> }) {
       }
     }
   }, [preview.data]);
-  const create = trpc.delivery.fulfillment.aftercare.create.useMutation();
-  const action = useAftercareActions(onCreated);
+  const createdId = useRef<number | undefined>(undefined);
+  const create = trpc.delivery.fulfillment.aftercare.create.useMutation({
+    onSuccess: (result) => {
+      createdId.current = result.id;
+    },
+  });
+  const action = useAftercareActions(() => onCreated(createdId.current));
   const choice =
     choiceIndex === "" ? undefined : preview.data?.choices[Number(choiceIndex)];
   return (
@@ -490,12 +573,17 @@ function NewAftercare({ onCreated }: { onCreated: () => Promise<void> }) {
 
 function AftercareDetail({
   id,
+  branchId,
   onChange,
 }: {
   id: number;
+  branchId?: number;
   onChange: () => Promise<void>;
 }) {
-  const detail = trpc.delivery.fulfillment.aftercare.get.useQuery({ id });
+  const detail = trpc.delivery.fulfillment.aftercare.get.useQuery({
+    id,
+    branchId,
+  });
   const approve = trpc.delivery.fulfillment.aftercare.approve.useMutation();
   const cancel = trpc.delivery.fulfillment.aftercare.cancel.useMutation();
   const resolve = trpc.delivery.fulfillment.aftercare.resolve.useMutation();
@@ -560,6 +648,7 @@ function AftercareDetail({
           { accessorKey: "baseQuantity", header: "معتمد" },
           { accessorKey: "executedBaseQuantity", header: "صُرف / عُهد" },
           { accessorKey: "deliveredBaseQuantity", header: "سُلّم" },
+          { accessorKey: "settledBaseQuantity", header: "سُوّي بمستند" },
           { accessorKey: "evidence", header: "الدليل" },
         ]}
       />
@@ -594,6 +683,10 @@ function AftercareDetail({
           </Label>
           <div className="flex flex-wrap gap-2">
             {canCancel &&
+              (row.status === "DRAFT" ||
+                !data.lines.some(
+                  (line) => line.disposition === "MISSING_HELD",
+                )) &&
               data.lines.every((line) => line.executedBaseQuantity === 0) && (
                 <SubmitButton
                   type="button"
@@ -633,20 +726,22 @@ function AftercareDetail({
                 }
               >
                 <CheckCheck className="size-4" />
-                إقفال بعد التسليم وتسديد الالتزامات
+                إقفال بعد حسم الكميات والحقوق والالتزامات
               </SubmitButton>
             )}
           </div>
         </>
       )}
-      {canPrepare && ["APPROVED", "IN_PROGRESS"].includes(row.status) && (
-        <PrepareAftercare
-          data={data}
-          onChange={async () => {
-            await detail.refetch();
-          }}
-        />
-      )}
+      {canPrepare &&
+        !data.settlement &&
+        ["APPROVED", "IN_PROGRESS"].includes(row.status) && (
+          <PrepareAftercare
+            data={data}
+            onChange={async () => {
+              await detail.refetch();
+            }}
+          />
+        )}
       {data.executions.map((execution) => (
         <AftercareExecution
           key={execution.id}
@@ -656,6 +751,15 @@ function AftercareDetail({
           }}
         />
       ))}
+      {["APPROVED", "IN_PROGRESS"].includes(row.status) && (
+        <AftercareSettlementPanel
+          data={data}
+          onChange={async () => {
+            await detail.refetch();
+            await onChange();
+          }}
+        />
+      )}
       {data.receipts.length > 0 && (
         <DataTable
           data={data.receipts}
@@ -710,7 +814,10 @@ function PrepareAftercare({
   const action = useAftercareActions(onChange);
   const returned = data.executions.filter(
     (execution) =>
-      execution.status === "RETURNED" &&
+      ["RETURNED", "CANCELLED"].includes(execution.status) &&
+      execution.lines.some(
+        (line) => line.kind === "OUTPUT" && line.settledBaseQuantity === 0,
+      ) &&
       !data.executions.some((other) =>
         other.lines.some(
           (line) =>
@@ -940,6 +1047,7 @@ function AftercareExecution({
 }) {
   const parties = trpc.delivery.listParties.useQuery({ activeOnly: true });
   const [partyId, setPartyId] = useState("");
+  const [assignedUserId, setAssignedUserId] = useState("");
   const [tracking, setTracking] = useState("");
   const [proof, setProof] = useState("");
   const [result, setResult] = useState<"DELIVERED" | "FAILED" | "RETURNED">(
@@ -949,6 +1057,12 @@ function AftercareExecution({
   const [cashBucket, setBucket] = useState<"DRAWER" | "TREASURY">("DRAWER");
   const [shiftId, setShift] = useState("");
   const [payAmount, setPayAmount] = useState("");
+  const [shopHeld, setShopHeld] = useState(false);
+  const [printError, setPrintError] = useState("");
+  const cancelExecution =
+    trpc.delivery.fulfillment.aftercare.cancelExecution.useMutation();
+  const declareReturn =
+    trpc.delivery.fulfillment.aftercare.declareReturn.useMutation();
   const dispatch = trpc.delivery.fulfillment.aftercare.dispatch.useMutation();
   const confirmDelivery =
     trpc.delivery.fulfillment.aftercare.confirm.useMutation();
@@ -962,14 +1076,64 @@ function AftercareExecution({
   const canPay = useOperationPermission(
     "delivery.fulfillment.aftercare.payFee",
   ).allowed;
+  const canCancelExecution = useOperationPermission(
+    "delivery.fulfillment.aftercare.cancelExecution",
+  ).allowed;
+  const canDeclareReturn = useOperationPermission(
+    "delivery.fulfillment.aftercare.declareReturn",
+  ).allowed;
   const action = useAftercareActions(onChange);
   const identity = { id: execution.id, expectedVersion: execution.version };
+  const selectedParty = parties.data?.find(
+    (party) => String(party.id) === partyId,
+  );
+  const requiresDriver = requiresDeliveryDriver(selectedParty);
+  const drivers = deliveryDriverOptions(selectedParty, execution.branchId);
   return (
     <div className="space-y-3 border-t pt-3">
       <p className="font-medium">
         دفعة {execution.id} — {aftercareExecutionStatusLabel[execution.status]}{" "}
         — {execution.partyName ?? "لم تسند"}
       </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <code dir="ltr">{execution.barcode}</code>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={async () => {
+            setPrintError("");
+            try {
+              const result = await printLabel(
+                [
+                  {
+                    name: `معالجة ${execution.caseNumber} — دفعة ${execution.id}`,
+                    sku: `${execution.originalSource.kind === "INVOICE" ? "فاتورة" : "أمر شغل"} ${execution.originalSource.id} — ${execution.recipientName}`,
+                    barcode: execution.barcode,
+                  },
+                ],
+                { showName: true, showPrice: false },
+              );
+              if (!result.ok)
+                setPrintError(
+                  "حُجبت نافذة الطباعة؛ اسمح بها ثم أعد طباعة باركود الدفعة نفسها.",
+                );
+            } catch {
+              setPrintError(
+                "تعذرت طباعة الملصق؛ الدفعة محفوظة. أعد طباعة الباركود نفسه.",
+              );
+            }
+          }}
+        >
+          <Printer className="size-4" />
+          باركود الدفعة للإرسال العادي
+        </Button>
+        {printError && (
+          <p role="alert" className="text-sm text-destructive">
+            {printError}
+          </p>
+        )}
+      </div>
       <p className="text-sm">
         المستلم: {execution.recipientName} — {execution.recipientPhone} —{" "}
         {execution.deliveryAddress}
@@ -1037,6 +1201,7 @@ function AftercareExecution({
           { accessorKey: "custodyBaseQuantity", header: "العهدة" },
           { accessorKey: "deliveredBaseQuantity", header: "المسلّم" },
           { accessorKey: "returnedBaseQuantity", header: "العائد فعلياً" },
+          { accessorKey: "settledBaseQuantity", header: "سُوّي بمستند" },
           ...(execution.totalCost != null
             ? [
                 {
@@ -1060,15 +1225,39 @@ function AftercareExecution({
           <AppSelect
             aria-label="جهة التوصيل"
             value={partyId}
-            onValueChange={setPartyId}
+            onValueChange={(value) => {
+              setPartyId(value);
+              setAssignedUserId("");
+            }}
           >
             <option value="">اختر الناقل</option>
-            {parties.data?.map((party) => (
+            {parties.data?.filter(party => party.branchId == null || party.branchId === execution.branchId).map((party) => (
               <option key={party.id} value={String(party.id)}>
                 {party.name}
               </option>
             ))}
           </AppSelect>
+          <AppSelect
+            aria-label="موظف التوصيل"
+            value={assignedUserId}
+            onValueChange={setAssignedUserId}
+          >
+            <option value="">اختر موظف التوصيل</option>
+            {drivers.map((driver) => (
+              <option key={driver.userId} value={String(driver.userId)}>
+                {driver.name}
+              </option>
+            ))}
+          </AppSelect>
+          {partyId &&
+            !parties.isLoading &&
+            !drivers.length &&
+            requiresDriver && (
+              <p className="text-sm text-destructive">
+                لا يوجد موظف توصيل فعال مرتبط بهذه الجهة. اربط حساب المندوب من
+                إعدادات جهات التوصيل، ثم حدّث قائمة الموظفين قبل الإسناد.
+              </p>
+            )}
           <Input
             aria-label="رقم تتبع الشركة"
             placeholder="رقم تتبع الشركة"
@@ -1078,13 +1267,20 @@ function AftercareExecution({
           <SubmitButton
             type="button"
             pending={action.pending}
-            disabled={!partyId}
+            disabled={
+              !partyId ||
+              (requiresDriver && !assignedUserId) ||
+              parties.isLoading
+            }
             onClick={() =>
               void action.run(
                 "dispatch",
                 {
                   ...identity,
                   partyId: Number(partyId),
+                  assignedUserId: assignedUserId
+                    ? Number(assignedUserId)
+                    : undefined,
                   externalTrackingRef: tracking || undefined,
                 },
                 dispatch.mutateAsync,
@@ -1096,6 +1292,48 @@ function AftercareExecution({
           </SubmitButton>
         </div>
       )}
+      {["PREPARED", "DISPATCHED"].includes(execution.status) &&
+        canCancelExecution && (
+          <div className="space-y-2 border-t pt-3">
+            <Label>
+              محضر التحقق قبل استلام الناقل
+              <Textarea
+                value={proof}
+                onChange={(event) => setProof(event.target.value)}
+              />
+            </Label>
+            <Label className="flex items-center gap-2">
+              <Checkbox
+                checked={shopHeld}
+                onCheckedChange={(value) => setShopHeld(value === true)}
+              />
+              تحققت من وجود كامل الدفعة فعلياً في المكتبة وأن الناقل لم يستلمها
+            </Label>
+            <SubmitButton
+              type="button"
+              variant="outline"
+              pending={action.pending}
+              disabled={!shopHeld || proof.trim().length < 3}
+              onClick={() =>
+                void action.run(
+                  "cancelExecution",
+                  {
+                    ...identity,
+                    reason: proof,
+                    physicalHeldConfirmed: shopHeld,
+                  },
+                  cancelExecution.mutateAsync,
+                )
+              }
+            >
+              إلغاء قبل الاستلام مع حفظ العهدة والتاريخ
+            </SubmitButton>
+            <p className="text-xs text-muted-foreground">
+              بعد استلام الناقل تُعلن العودة ثم يُثبت الاستلام والفحص. الإلغاء
+              لا يعيد مخزوناً ولا يصرف بديلاً ثانياً.
+            </p>
+          </div>
+        )}
       {execution.status === "DISPATCHED" && canConfirm && (
         <>
           <AppSelect
@@ -1114,6 +1352,29 @@ function AftercareExecution({
               onChange={(event) => setProof(event.target.value)}
             />
           </Label>
+          {canDeclareReturn && !execution.returnDeclaredAt && (
+            <SubmitButton
+              type="button"
+              variant="outline"
+              pending={action.pending}
+              disabled={proof.trim().length < 3}
+              onClick={() =>
+                void action.run(
+                  "declareReturn",
+                  { ...identity, reason: proof },
+                  declareReturn.mutateAsync,
+                )
+              }
+            >
+              إعلان رجوع العهدة دون إثبات استلامها
+            </SubmitButton>
+          )}
+          {execution.returnDeclaredAt && (
+            <p className="text-sm text-muted-foreground">
+              الرجوع معلن. الخطوة التالية استلام العهدة وفحصها فعلياً؛ لا يتغير
+              حق العميل أو المخزون بالإعلان.
+            </p>
+          )}
           {result !== "DELIVERED" && (
             <Label className="flex items-center gap-2">
               <Checkbox

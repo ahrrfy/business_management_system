@@ -56,10 +56,10 @@ export function usePOSTabsDraft({
         ...t,
         cart: t.cart.filter((c) => !c.digital || (!!c.digital.providerReference && !!c.digital.providerId)),
         clientRequestId: t.clientRequestId ?? newClientRequestId(),
-        method: "CASH" as PaymentMethod,
-        paymentRef: "",
-        externalPayment: null,
-        paymentLegs: [],
+        method: t.extraCharges ? t.method : ("CASH" as PaymentMethod),
+            paymentRef: t.extraCharges ? t.paymentRef: "",
+        externalPayment: t.extraCharges ? t.externalPayment : null,
+            paymentLegs: t.extraCharges ? t.paymentLegs: [],
         dueDate: t.dueDate ?? "",
         // مسوّداتٌ محفوظة قبل إضافة بوليصة الشركة لا تحمل الحقول الجديدة؛ نطبّعها كي
         // تبقى المدخلات controlled ويُستكمل partyType من قائمة الجهات عند تحميلها.

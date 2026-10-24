@@ -72,6 +72,7 @@ const ALLOWED_TRANSITIONS: Record<OnlineOrderStatus, OnlineOrderStatus[]> = {
 
 export interface OnlineOrderRow {
   id: number;
+  branchId: number;
   orderNumber: string;
   status: string;
   lifecycle?: OnlineOrderLifecycle | null;
@@ -147,6 +148,7 @@ export async function listOnlineOrders(opts: {
   const rows = await db
     .select({
       id: onlineOrders.id,
+      branchId: onlineOrders.branchId,
       orderNumber: onlineOrders.orderNumber,
       status: currentOnlineOrderStatus,
       customerName: customers.name,
@@ -186,6 +188,7 @@ export async function listOnlineOrders(opts: {
   const lifecycles = await loadOnlineOrderLifecycles(db, rows.map((r) => Number(r.id)));
   return rows.map((r) => ({
     id: Number(r.id),
+    branchId: Number(r.branchId),
     orderNumber: r.orderNumber,
     status: r.status,
     lifecycle: lifecycles.get(Number(r.id)) ?? null,

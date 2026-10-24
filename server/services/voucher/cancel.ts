@@ -1,5 +1,7 @@
 // إلغاء سند قبض/صرف مستقلّ — المرآة الدقيقة لـcreateVoucher (إيصال تعويضي + قيد معاكس + عكس رصيد).
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
+import { componentRightsRefunds } from "../../../drizzle/fulfillmentRightsSchema";
 import { withdrawSupplierVoucherSettlementTx } from "./supplierSettlement";
 import { asc, eq, inArray } from "drizzle-orm";
 import {
@@ -65,7 +67,19 @@ export async function cancelVoucher(
     if (!preview) {
       throw new TRPCError({ code: "NOT_FOUND", message: "السند غير موجود" });
     }
-    // Serialize a legacy pending voucher with the native upgrade before reading its link.
+    const [componentRefund] = await tx.select({ id: componentRightsRefunds.id }).from(componentRightsRefunds).where(eq(componentRightsRefunds.receiptId, receiptId)).limit(1);
+    if (componentRefund) throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: "تعذّر عكس رد مصدر مرتبط", why: "هذا الإيصال يسند حق عميل أصلي وعكسه العام لا يثبت أن مزود الدفع أعاد المال فعلياً", doThis: "راجع تسوية النقص والتعويض وإثبات الدفع الأصلي مع المسؤول؛ صحّح أي حركة مالية فعلية بمستندها دون محو حق العميل" }) });
+      if (preview.internalNote?.startsWith("COMPONENT_REFUND_PENDING:"))
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "حق رد مصدر معتمد ينتظر التنفيذ",
+            why: "إلغاء السند وحده يترك حق العميل الأصلي بلا رافد رد",
+            doThis:
+              "افتح حالة النقص والتعويض وأكمل إثبات الرد الأصلي؛ راجع خطة الرد من نفس الحالة قبل أي محاولة أخرى",
+          }),
+        });
+      // Serialize a legacy pending voucher with the native upgrade before reading its link.
     // Withdrawal takes no PO/cash locks; upgrade follows supplier -> request -> receipt.
     if (preview.direction === "OUT" && preview.partyType === "SUPPLIER" && preview.partyId && preview.status === "PENDING" &&
       !hasSystemPaymentRequestEnvelope(preview.internalNote) && !isSystemPaymentReference(preview.referenceNumber)) {

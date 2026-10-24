@@ -6,6 +6,7 @@ import {
   aftercareLines,
   aftercareExecutions,
   aftercareExecutionLines,
+  aftercareSettlements,
 } from "../../../drizzle/fulfillmentSchema";
 import {
   deliveryConsignments,
@@ -39,6 +40,7 @@ import { postEntry } from "../ledgerService";
 import { checkIdempotency } from "../idempotency";
 import { money, toDbMoney } from "../money";
 import { nextConsignmentNumber } from "../delivery/numbering";
+import { validateDeliveryDriverTx } from "../delivery/driverValidation";
 import {
   appendDeliveryEvent,
   appendDeliveryLedgerEntry,
@@ -106,7 +108,11 @@ export type PrepareAftercareExecutionInput = Identity & {
 };
 
 const path = (action: string) => `delivery.fulfillment.aftercare.${action}`;
-async function permission(tx: Tx, actor: Actor, action: string) {
+export async function aftercarePermissionTx(
+  tx: Tx,
+  actor: Actor,
+  action: string,
+) {
   await assertOperationAuthorityTx(
     tx,
     actor,
@@ -117,6 +123,7 @@ async function permission(tx: Tx, actor: Actor, action: string) {
       (action === "create" && current.role === "cashier"),
   );
 }
+const permission = aftercarePermissionTx;
 function nonempty(value: string, label: string, max = 2000) {
   if (!value?.trim() || value.length > max)
     throw fulfillmentError(`${label} مطلوب وبطول لا يتجاوز ${max} محرف`);
@@ -157,7 +164,7 @@ async function audit(
 }
 
 /** Lock source before case. This agrees with the invoice return/correction mutex. */
-async function lockedCase(tx: Tx, id: number, actor: Actor) {
+export async function lockedCase(tx: Tx, id: number, actor: Actor) {
   const preview = await loadAftercareCaseTx(tx, id, actor);
   const source = await lockAftercareSourceTx(tx, caseSource(preview), actor);
   const row = await loadAftercareCaseTx(tx, id, actor, { lock: true });
@@ -333,6 +340,17 @@ export async function prepareAftercareExecution(
     assertFulfillmentVersion(row, input.expectedVersion);
     if (!["APPROVED", "IN_PROGRESS"].includes(row.status) || !row.approvedBy)
       throw fulfillmentError("يلزم اعتماد الحالة أولاً");
+    const [settlement] = await tx
+      .select({ id: aftercareSettlements.id })
+      .from(aftercareSettlements)
+      .where(eq(aftercareSettlements.activeCaseId, row.id))
+      .for("share")
+      .limit(1);
+    if (settlement)
+      throw fulfillmentError(
+        "توجد تسوية إيقاف موثقة؛ أكمل مراجعتها وتسوية حقوق الأصل قبل أي صرف جديد",
+        "CONFLICT",
+      );
     await assertAftercareCapsTx(tx, source, lines, row.id);
     if (
       !input.lines.length ||
@@ -368,7 +386,8 @@ export async function prepareAftercareExecution(
       : [];
     if (
       input.reuseExecutionId &&
-      (reuse[0]?.status !== "RETURNED" || !reuse[0].returnEvidence)
+      (!["RETURNED", "CANCELLED"].includes(reuse[0]?.status ?? "") ||
+        !reuse[0]?.returnEvidence)
     )
       throw fulfillmentError("إعادة الإرسال تتطلب دفعة عائدة مثبتة الاستلام");
     const previousOutputs = input.reuseExecutionId
@@ -402,6 +421,7 @@ export async function prepareAftercareExecution(
         if (
           !previous ||
           previous.returnedBaseQuantity !== previous.fulfilledBaseQuantity ||
+          previous.settledBaseQuantity > 0 ||
           selected.baseQuantity !== previous.fulfilledBaseQuantity ||
           selected.materials?.length
         )
@@ -588,98 +608,124 @@ export async function prepareAftercareExecution(
 }
 
 export async function dispatchAftercareExecution(
-  input: Identity & { partyId: number; externalTrackingRef?: string },
+  input: Identity & {
+    partyId: number;
+    externalTrackingRef?: string;
+    assignedUserId?: number;
+  },
   actor: Actor,
 ) {
-  return withTx(async (tx) => {
-    await permission(tx, actor, "dispatch");
-    const { row, execution } = await lockedExecution(tx, input.id, actor);
-    const context = fulfillmentMutationContext(
-      "aftercare.dispatch",
-      input,
-      input,
+  return withTx((tx) => dispatchAftercareExecutionTx(tx, input, actor));
+}
+
+export async function dispatchAftercareExecutionTx(
+  tx: Tx,
+  input: Identity & {
+    partyId: number;
+    externalTrackingRef?: string;
+    assignedUserId?: number;
+  },
+  actor: Actor,
+  authorization?: { operationPath: "delivery.dispatchByBarcode" },
+) {
+  if (authorization)
+    await assertOperationAuthorityTx(
+      tx,
       actor,
-      row.branchId,
+      authorization.operationPath,
+      (current) =>
+        current.isOwner === true ||
+        current.resolvedPermissions?.store === "FULL",
     );
-    if (await findFulfillmentReplayTx(tx, context))
-      return {
-        id: execution.id,
-        consignmentId: execution.consignmentId,
-        replay: true,
-      };
-    assertFulfillmentVersion(execution, input.expectedVersion);
-    if (execution.status !== "PREPARED" || execution.consignmentId)
-      throw fulfillmentError("هذه الدفعة ليست جاهزة لإسناد جديد");
-    const [party] = await tx
-      .select()
-      .from(deliveryParties)
-      .where(eq(deliveryParties.id, input.partyId))
-      .for("update")
-      .limit(1);
-    if (
-      !party?.isActive ||
-      (party.branchId != null && party.branchId !== row.branchId)
-    )
-      throw fulfillmentError("جهة التوصيل غير فعالة أو تخص فرعاً آخر");
-    const tracking = requireExternalTrackingRef(
-      party.partyType,
-      input.externalTrackingRef,
+  else await permission(tx, actor, "dispatch");
+  const { row, execution } = await lockedExecution(tx, input.id, actor);
+  const context = fulfillmentMutationContext(
+    "aftercare.dispatch",
+    input,
+    input,
+    actor,
+    row.branchId,
+  );
+  if (await findFulfillmentReplayTx(tx, context))
+    return {
+      id: execution.id,
+      consignmentId: execution.consignmentId,
+      replay: true,
+    };
+  assertFulfillmentVersion(execution, input.expectedVersion);
+  if (execution.status !== "PREPARED" || execution.consignmentId)
+    throw fulfillmentError("هذه الدفعة ليست جاهزة لإسناد جديد");
+  const [settlement] = await tx
+    .select({ id: aftercareSettlements.id })
+    .from(aftercareSettlements)
+    .where(eq(aftercareSettlements.activeCaseId, row.id))
+    .for("share")
+    .limit(1);
+  if (settlement)
+    throw fulfillmentError(
+      "هذه الحالة تحت تسوية إيقاف؛ لا ترسل عهدتها",
+      "CONFLICT",
     );
-    if (tracking)
-      await assertExternalTrackingRefAvailable(tx, party.id, tracking);
-    const number = await nextConsignmentNumber(tx, row.branchId);
-    const consignmentId = extractInsertId(
-      await tx.insert(deliveryConsignments).values({
-        consignmentNumber: number,
-        branchId: row.branchId,
-        partyId: party.id,
-        invoiceId: null,
-        sourceType: "AFTERCARE_EXECUTION",
-        sourceId: execution.id,
-        aftercareExecutionId: execution.id,
-        codAmount: "0.00",
-        feeCollection: "SHOP",
-        deliveryFee: execution.deliveryFee,
-        parcelStatus: "ASSIGNED",
-        moneyStatus: "NOT_APPLICABLE",
-        status: "DISPATCHED",
-        recipientName: execution.recipientName,
-        recipientPhone: execution.recipientPhone,
-        deliveryAddress: execution.deliveryAddress,
-        endCustomerId: row.customerId,
-        externalTrackingRef: tracking,
-        dispatchedBy: actor.userId,
-        notes: "معالجة بعد البيع — لا يطالب العميل بأي مبلغ",
-      }),
-    );
-    await tx
-      .update(aftercareExecutions)
-      .set({
-        partyId: party.id,
-        consignmentId,
-        status: "DISPATCHED",
-        dispatchedBy: actor.userId,
-        dispatchedAt: new Date(),
-        version: execution.version + 1,
-      })
-      .where(eq(aftercareExecutions.id, execution.id));
-    await appendDeliveryEvent(tx, {
-      eventKey: `AC:${execution.id}:DISPATCH`,
+  const party = await validateDeliveryDriverTx(tx,input,row.branchId);
+  const tracking = requireExternalTrackingRef(
+    party.partyType,
+    input.externalTrackingRef,
+  );
+  if (tracking)
+    await assertExternalTrackingRefAvailable(tx, party.id, tracking);
+  const number = await nextConsignmentNumber(tx, row.branchId);
+  const consignmentId = extractInsertId(
+    await tx.insert(deliveryConsignments).values({
+      consignmentNumber: number,
+      branchId: row.branchId,
+      partyId: party.id,
+      invoiceId: null,
+      sourceType: "AFTERCARE_EXECUTION",
+      sourceId: execution.id,
+      aftercareExecutionId: execution.id,
+      codAmount: "0.00",
+      feeCollection: "SHOP",
+      deliveryFee: execution.deliveryFee,
+      parcelStatus: "ASSIGNED",
+      moneyStatus: "NOT_APPLICABLE",
+      status: "DISPATCHED",
+      recipientName: execution.recipientName,
+      recipientPhone: execution.recipientPhone,
+      deliveryAddress: execution.deliveryAddress,
+      endCustomerId: row.customerId,
+      externalTrackingRef: tracking,
+      assignedUserId: input.assignedUserId,
+      dispatchedBy: actor.userId,
+      notes: "معالجة بعد البيع — لا يطالب العميل بأي مبلغ",
+    }),
+  );
+  await tx
+    .update(aftercareExecutions)
+    .set({
+      partyId: party.id,
       consignmentId,
-      eventType: "AFTERCARE_DISPATCHED",
-      toParcelStatus: "ASSIGNED",
-      toMoneyStatus: "NOT_APPLICABLE",
-      actorUserId: actor.userId,
-      payload: {
-        aftercareExecutionId: execution.id,
-        caseId: row.id,
-        codAmount: "0.00",
-      },
-    });
-    await recordFulfillmentMutationTx(tx, context, execution.id);
-    await audit(tx, actor, "dispatch", row.id, { ...input, consignmentId });
-    return { id: execution.id, consignmentId, replay: false };
+      status: "DISPATCHED",
+      dispatchedBy: actor.userId,
+      dispatchedAt: new Date(),
+      version: execution.version + 1,
+    })
+    .where(eq(aftercareExecutions.id, execution.id));
+  await appendDeliveryEvent(tx, {
+    eventKey: `AC:${execution.id}:DISPATCH`,
+    consignmentId,
+    eventType: "AFTERCARE_DISPATCHED",
+    toParcelStatus: "ASSIGNED",
+    toMoneyStatus: "NOT_APPLICABLE",
+    actorUserId: actor.userId,
+    payload: {
+      aftercareExecutionId: execution.id,
+      caseId: row.id,
+      codAmount: "0.00",
+    },
   });
+  await recordFulfillmentMutationTx(tx, context, execution.id);
+  await audit(tx, actor, "dispatch", row.id, { ...input, consignmentId });
+  return { id: execution.id, consignmentId, replay: false };
 }
 
 export type DeliveryResult = Identity & {
@@ -687,6 +733,160 @@ export type DeliveryResult = Identity & {
   result: "DELIVERED" | "FAILED" | "RETURNED";
   feeEarned?: boolean;
 };
+
+export async function declareAftercareExecutionReturn(
+  input: Identity & { reason: string },
+  actor: Actor,
+) {
+  return withTx(async (tx) => {
+    await permission(tx, actor, "declareReturn");
+    const { row, execution } = await lockedExecution(tx, input.id, actor);
+    const context = fulfillmentMutationContext(
+      "aftercare.execReturn",
+      input,
+      input,
+      actor,
+      row.branchId,
+    );
+    if (await findFulfillmentReplayTx(tx, context))
+      return { id: execution.id, replay: true };
+    assertFulfillmentVersion(execution, input.expectedVersion);
+    if (execution.status !== "DISPATCHED" || !execution.consignmentId)
+      throw fulfillmentError("أعلن رجوع دفعة بعهدة الناقل فقط");
+    const { declareAftercareReturnTx } = await import("./aftercareDelivery");
+    await declareAftercareReturnTx(
+      tx,
+      {
+        consignmentId: execution.consignmentId,
+        reason: input.reason,
+        clientRequestId: input.clientRequestId,
+      },
+      actor,
+    );
+    await recordFulfillmentMutationTx(tx, context, execution.id);
+    return { id: execution.id, replay: false };
+  });
+}
+
+/** Cancellation proves shop custody only before pickup; it never restores owned stock. */
+export async function cancelAftercareExecution(
+  input: Identity & { reason: string; physicalHeldConfirmed: boolean },
+  actor: Actor,
+) {
+  return withTx((tx) => cancelAftercareExecutionTx(tx, input, actor));
+}
+export async function cancelAftercareExecutionTx(
+  tx: Tx,
+  input: Identity & { reason: string; physicalHeldConfirmed: boolean },
+  actor: Actor,
+) {
+  nonempty(input.reason, "محضر تحقق العهدة قبل الاستلام");
+  await permission(tx, actor, "cancelExecution");
+  const { row, execution, executionLines } = await lockedExecution(
+    tx,
+    input.id,
+    actor,
+  );
+  const context = fulfillmentMutationContext(
+    "aftercare.cancelExecution",
+    input,
+    input,
+    actor,
+    row.branchId,
+  );
+  if (await findFulfillmentReplayTx(tx, context))
+    return { id: execution.id, replay: true };
+  assertFulfillmentVersion(execution, input.expectedVersion);
+  if (
+    !input.physicalHeldConfirmed ||
+    !["PREPARED", "DISPATCHED"].includes(execution.status)
+  )
+    throw fulfillmentError(
+      "يلزم تحقق فعلي من كامل عهدة دفعة لم يستلمها الناقل؛ بعد الاستلام أعلن الرجوع ثم ثبّت الاستلام والفحص",
+    );
+  if (
+    executionLines
+      .filter((line) => line.kind === "OUTPUT")
+      .some(
+        (line) =>
+          line.custodyBaseQuantity !== line.fulfilledBaseQuantity ||
+          line.deliveredBaseQuantity ||
+          line.returnedBaseQuantity ||
+          line.settledBaseQuantity,
+      )
+  )
+    throw fulfillmentError(
+      "كمية عهدة الدفعة تغيّرت؛ لا يمكن إثبات إلغاء قبل الاستلام",
+      "CONFLICT",
+    );
+  if (execution.consignmentId) {
+    const { deliveryLedgerEntries } = await import("../../../drizzle/schema");
+    const [cn] = await tx
+      .select()
+      .from(deliveryConsignments)
+      .where(eq(deliveryConsignments.id, execution.consignmentId))
+      .for("update")
+      .limit(1);
+    const [ledger] = await tx
+      .select({ id: deliveryLedgerEntries.id })
+      .from(deliveryLedgerEntries)
+      .where(eq(deliveryLedgerEntries.consignmentId, execution.consignmentId))
+      .for("share")
+      .limit(1);
+    if (
+      !cn ||
+      cn.sourceType !== "AFTERCARE_EXECUTION" ||
+      cn.aftercareExecutionId !== execution.id ||
+      cn.parcelStatus !== "ASSIGNED" ||
+      cn.pickedUpAt ||
+      cn.returnDeclaredAt ||
+      !money(cn.collectedAmount).isZero() ||
+      !money(cn.counterSettledAmount).isZero() ||
+      ledger ||
+      !money(execution.feePaidAmount).isZero()
+    )
+      throw fulfillmentError(
+        "يوجد استلام أو تحصيل أو أثر أجرة؛ أعلن الرجوع وثبّت الاستلام الفعلي وسوّ الالتزامات قبل إعادة الإرسال",
+      );
+    await tx
+      .update(deliveryConsignments)
+      .set({ parcelStatus: "CANCELLED", status: "CANCELLED" })
+      .where(eq(deliveryConsignments.id, cn.id));
+    await appendDeliveryEvent(tx, {
+      eventKey: `AC:${execution.id}:PRE_PICKUP_CANCEL`,
+      consignmentId: cn.id,
+      eventType: "AFTERCARE_PRE_PICKUP_CANCELLED",
+      fromParcelStatus: cn.parcelStatus,
+      toParcelStatus: "CANCELLED",
+      actorUserId: actor.userId,
+      payload: { proof: input.reason, physicalHeldConfirmed: true },
+    });
+  }
+  for (const line of executionLines.filter((line) => line.kind === "OUTPUT"))
+    await tx
+      .update(aftercareExecutionLines)
+      .set({
+        custodyBaseQuantity: 0,
+        returnedBaseQuantity: line.fulfilledBaseQuantity,
+      })
+      .where(eq(aftercareExecutionLines.id, line.id));
+  await tx
+    .update(aftercareExecutions)
+    .set({
+      status: "CANCELLED",
+      returnEvidence: input.reason.trim(),
+      returnedAt: new Date(),
+      version: execution.version + 1,
+    })
+    .where(eq(aftercareExecutions.id, execution.id));
+  await tx
+    .update(aftercareCases)
+    .set({ version: row.version + 1 })
+    .where(eq(aftercareCases.id, row.id));
+  await recordFulfillmentMutationTx(tx, context, execution.id);
+  await audit(tx, actor, "cancelExecution", row.id, input);
+  return { id: execution.id, replay: false };
+}
 export async function assertAftercareCourierTx(
   tx: Tx,
   cn: typeof deliveryConsignments.$inferSelect,
@@ -860,6 +1060,15 @@ export async function confirmAftercareDeliveryTx(
   await assertPeriodOpen(tx, new Date());
   const delivered = input.result === "DELIVERED";
   const returned = input.result === "RETURNED";
+  if (
+    returned &&
+    (cn.pickedUpAt ||
+      ["PICKED_UP", "OUT_FOR_DELIVERY", "FAILED"].includes(cn.parcelStatus)) &&
+    !cn.returnDeclaredAt
+  )
+    throw fulfillmentError(
+      "العهدة مستلمة من الناقل؛ أعلن الرجوع أولاً ثم ثبّت الاستلام والفحص الفعلي",
+    );
   for (const output of executionLines.filter(
     (line) => line.kind === "OUTPUT",
   )) {
@@ -1169,6 +1378,13 @@ export async function cancelAftercareCase(
       return { id: row.id, replay: true };
     assertFulfillmentVersion(row, input.expectedVersion);
     if (
+      row.status !== "DRAFT" &&
+      lines.some((line) => line.disposition === "MISSING_HELD")
+    )
+      throw fulfillmentError(
+        "المبيع الموجود بعهدتنا حق للعميل؛ سلّمه فعلياً أو استخدم تسوية الحق المرتبطة بالأصل، ولا تسقطه بإلغاء إداري",
+      );
+    if (
       row.status === "CANCELLED" ||
       row.status === "RESOLVED" ||
       lines.some((line) => line.executedBaseQuantity > 0)
@@ -1212,9 +1428,18 @@ export async function resolveAftercareCase(
     assertFulfillmentVersion(row, input.expectedVersion);
     if (
       row.status !== "IN_PROGRESS" ||
-      lines.some((line) => line.deliveredBaseQuantity !== line.baseQuantity)
+      lines.some(
+        (line) =>
+          line.deliveredBaseQuantity + line.settledBaseQuantity !==
+          line.baseQuantity,
+      )
     )
-      throw fulfillmentError("لا تغلق الحالة قبل تسليم كامل الكميات المعتمدة");
+      throw fulfillmentError(
+        "لا تغلق الحالة قبل تسليم أو تسوية كامل الكميات المعتمدة بمستند فعلي",
+      );
+    const { assertAftercareSettlementRightsClosedTx } =
+      await import("./aftercareSettlement");
+    await assertAftercareSettlementRightsClosedTx(tx, row.id);
     const executions = await tx
       .select()
       .from(aftercareExecutions)
@@ -1227,21 +1452,43 @@ export async function resolveAftercareCase(
       )
     )
       throw fulfillmentError("توجد عهدة مفتوحة؛ سوّها أولاً");
+    if (executions.length) {
+      const [custody] = await tx
+        .select({ id: aftercareExecutionLines.id })
+        .from(aftercareExecutionLines)
+        .where(
+          and(
+            inArray(
+              aftercareExecutionLines.executionId,
+              executions.map((execution) => execution.id),
+            ),
+            sql`${aftercareExecutionLines.custodyBaseQuantity} > 0`,
+          ),
+        )
+        .for("share")
+        .limit(1);
+      if (custody)
+        throw fulfillmentError(
+          "تبقى كمية فعلية في عهدة دفعة؛ لا يكفي تغيير حالتها لإقفال المعالجة",
+        );
+    }
     const { deliveryLedgerEntries } = await import("../../../drizzle/schema");
     if (executions.length) {
       const ids = executions.flatMap((execution) =>
         execution.consignmentId ? [execution.consignmentId] : [],
       );
-      const [balance] = ids.length
+      const balances = ids.length
         ? await tx
             .select({
+              consignmentId: deliveryLedgerEntries.consignmentId,
               due: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType}='FEE_EARNED' THEN ${deliveryLedgerEntries.amount} WHEN ${deliveryLedgerEntries.entryType} IN ('FEE_PAID','FEE_OFFSET','FEE_REFUNDED') THEN -${deliveryLedgerEntries.amount} ELSE 0 END),0)`,
             })
             .from(deliveryLedgerEntries)
             .where(inArray(deliveryLedgerEntries.consignmentId, ids))
+            .groupBy(deliveryLedgerEntries.consignmentId)
             .for("share")
         : [];
-      if (money(balance?.due ?? "0").gt(0))
+      if (balances.some((balance) => !money(balance.due).isZero()))
         throw fulfillmentError("يوجد استحقاق ناقل مفتوح على محاولة سابقة");
     }
     await tx

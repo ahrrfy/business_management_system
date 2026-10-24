@@ -10,11 +10,14 @@ import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
+import type { RouterOutputs } from "@/lib/trpc";
+import { deliveryDriverOptions, requiresDeliveryDriver } from "./driverOptions";
 
 /** الحقول التي يحتاجها الحوار فقط — DeliveryHub (delivery.readyForDispatch) وطابور الاستقبال
  *  (workOrders.list) كلاهما يُطابق هذا الشكل بنيوياً بلا تحويل. */
 export interface DispatchableOrder {
   id: number;
+  branchId: number | null;
   orderNumber: string;
   title: string;
   customerName?: string | null;
@@ -29,15 +32,7 @@ export interface DispatchableOrder {
   notes?: string | null;
 }
 
-export interface DispatchParty {
-  id: number;
-  name: string;
-  partyType: "INDIVIDUAL" | "COMPANY";
-  defaultFee: string;
-  userId?: number | null;
-  hasPortalAccess?: boolean;
-  drivers?: Array<{ userId: number; name: string }>;
-}
+export type DispatchParty = RouterOutputs["delivery"]["listParties"][number];
 
 export interface DispatchConfirmArgs {
   partyId: number;
@@ -77,6 +72,9 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
   const [assignedUserId, setAssignedUserId] = useState("");
   const [externalTrackingRef, setExternalTrackingRef] = useState("");
   const selectedParty = parties.find((p) => String(p.id) === partyId);
+  const driverChoices = order?.branchId != null ? deliveryDriverOptions(selectedParty, order.branchId) : [];
+  const requiresDriver = requiresDeliveryDriver(selectedParty);
+  const invalidDriver = assignedUserId !== "" && !driverChoices.some(driver => driver.userId === Number(assignedUserId));
 
   useMemo(() => {
     if (order) {
@@ -121,6 +119,7 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
   // ثانياً فوقها (نمط DeliveryHub الأصلي — راجع تعليقه التاريخي هناك).
   const submit = () => {
     if (!partyId) { notify.err("اختر جهة التوصيل"); return; }
+    if ((requiresDriver && !assignedUserId) || invalidDriver) { notify.err("اختر مندوباً موظفاً نشطاً من فرع الطلب صراحةً"); return; }
     if (selectedParty?.partyType === "COMPANY" && !externalTrackingRef.trim()) {
       notify.err("رقم بوليصة شركة التوصيل مطلوب", "امسح باركود البوليصة أو أدخل الرقم المطبوع أسفله.");
       return;
@@ -233,20 +232,21 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
             <span dir="ltr" className="tabular-nums">{fmt(String(customerPaysCourier))} د.ع</span>
           </div>
         </div>
-        {selectedParty?.partyType === "COMPANY" && (selectedParty.drivers?.length ?? 0) > 0 && (
+        {(requiresDriver || (selectedParty?.partyType === "COMPANY" && driverChoices.length > 0)) && (
           <div className="mb-3">
-            <label className="mb-1.5 block text-sm font-bold">السائق داخل الشركة</label>
+            <label className="mb-1.5 block text-sm font-bold">{requiresDriver ? "المندوب الموظف المحدد" : "السائق داخل الشركة"}</label>
             <AppSelect
               value={assignedUserId}
               onValueChange={setAssignedUserId}
-              placeholder="طابور الشركة — يطالب به أول سائق"
+              aria-label={requiresDriver ? "المندوب الموظف المحدد" : "السائق داخل الشركة"}
               className="h-11"
             >
-              <option value="">طابور الشركة — يطالب به أول سائق</option>
-              {selectedParty.drivers?.map((driver) => (
+              <option value="">{requiresDriver ? "اختر موظفاً نشطاً من الفرع صراحة" : "طابور الشركة — يطالب به أول سائق"}</option>
+              {driverChoices.map((driver) => (
                 <option key={driver.userId} value={driver.userId}>{driver.name}</option>
               ))}
             </AppSelect>
+            {requiresDriver && driverChoices.length === 0 && <p className="text-xs text-destructive">لا يوجد حساب مندوب نشط مؤهل في فرع الطلب؛ راجع ربط جهة التوصيل قبل الإسناد.</p>}
           </div>
         )}
         {selectedParty?.partyType === "COMPANY" && (
@@ -297,7 +297,7 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
             variant="destructive"
             className="flex-1"
             onClick={submit}
-            disabled={pending || !partyId || (selectedParty?.partyType === "COMPANY" && !externalTrackingRef.trim())}
+            disabled={pending || !partyId || (requiresDriver && !assignedUserId) || invalidDriver || (selectedParty?.partyType === "COMPANY" && !externalTrackingRef.trim())}
             isDispatching={pending}
             label="تأكيد التسليم للمندوب"
           />

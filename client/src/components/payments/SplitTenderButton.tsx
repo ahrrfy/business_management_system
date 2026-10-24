@@ -16,7 +16,7 @@ import { fmtAr } from "@/lib/money";
 import { INBOUND_ENABLED_PAYMENT_METHODS } from "@shared/inboundPaymentPolicy";
 import { paymentMethodCompact } from "@shared/terms";
 import type { SplitTenderDraft } from "./useSplitTender";
-import { remainingTenderPart, type TenderMethod } from "./splitTender";
+import { remainingTenderPart, tenderAmount, type TenderMethod } from "./splitTender";
 
 export function SplitTenderButton({
   draft,
@@ -86,6 +86,7 @@ export function SplitTenderButton({
                     <Trash2 aria-hidden className="size-4" />
                   </Button>
                 </div>
+                {draft.proofAmount(part,index)!==tenderAmount(part.amount).toFixed(2)&&<p className="mb-2 text-xs">القبض الفعلي مع الأجور: <strong dir="ltr">{fmtAr(draft.proofAmount(part,index))}</strong> د.ع</p>}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <div className="space-y-1">
                     <Label>طريقة الدفع</Label>

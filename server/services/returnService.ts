@@ -1,6 +1,11 @@
 import { effectiveDeliveryLedgerEntrySql } from "./delivery/legacyLedger";
 import { TRPCError } from "@trpc/server";
 import { assertNoActiveAftercareForInvoiceTx } from "./fulfillment/aftercareSources";
+import { componentRightsAdjustments } from "../../drizzle/fulfillmentRightsSchema";
+import {
+  rightsAbsorbedAmount,
+  rightsAdjustedComponentQuantity,
+} from "./fulfillment/componentRightsPolicy";
 import {
   canonicalOperationAllowed,
   storedCanonicalOperationAllowed,
@@ -129,6 +134,20 @@ import {
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
 export type ReturnDisposition = "RESTOCK" | "DAMAGED";
+/** Internal adapter only: populated from an independently approved, source-locked settlement. */
+export type ComponentRightsReturn = {
+  invoiceItemId: number;
+  componentVariantId: number;
+  baseQuantity: number;
+  usableBaseQuantity: number;
+  commercialAmount: string;
+  originalIssueValue: string;
+  restoredValue: string;
+  wholeItem?: boolean;
+};
+export type ComponentRightsRefundLeg = NonNullable<
+  ReturnSaleInput["refund"]
+> & { pendingExternal?: boolean };
 const RETURN_AMOUNT_IDEMPOTENCY_OPERATION = "sale.return.amount";
 
 /** يخزن (القيمة، هل اكتمل المرتجع) بلا إشارة؛ 2×الفلس + 1 للكامل، و+0 للجزئي. */
@@ -428,7 +447,12 @@ export async function returnSaleInTx(
   tx: Tx,
   input: ReturnSaleInput,
   actor: Actor,
-  options: { requireUnpaidSource?: boolean } = {},
+  options: {
+    requireUnpaidSource?: boolean;
+    componentRights?: ComponentRightsReturn;
+    componentRefunds?: ComponentRightsRefundLeg[];
+    validateComponentRightsTx?: () => Promise<void>;
+  } = {},
 ) {
   // `refund` يبقى عقد العملاء المسجّلين كما هو. أمّا العابر فـresolution هو مصدر الحقيقة
   // ويُحوَّل داخلياً إلى نفس مسار الإيصال/القيد، فلا ننشئ سكّة مالية ثانية.
@@ -440,6 +464,16 @@ export async function returnSaleInTx(
         reference: input.resolution.reference ?? null,
       }
     : input.refund;
+  const refundLegs: ComponentRightsRefundLeg[] =
+    options.componentRefunds ?? (refund ? [refund] : []);
+  if (
+    options.componentRefunds &&
+    (!options.componentRights || !options.validateComponentRightsTx)
+  )
+    throw new Error("Component refund plan requires locked source validation");
+  const cashRefund = refundLegs.find(
+    (leg) => leg.method === "CASH" && money(leg.amount).gt(0),
+  );
   const resolutionReason =
     typeof input.resolution?.reason === "string"
       ? input.resolution.reason.trim().replace(/\s+/g, " ")
@@ -450,7 +484,15 @@ export async function returnSaleInTx(
         : null;
   const resolutionDisposition = input.resolution?.disposition ?? null;
   const requestFingerprint = input.clientRequestId
-    ? idempotencyHash(input)
+    ? idempotencyHash(
+        options.componentRights
+          ? {
+              input,
+              componentRights: options.componentRights,
+              componentRefunds: options.componentRefunds,
+            }
+          : input,
+      )
     : null;
   // Idempotency: تكرار الطلب نفسه يُعاد تشغيله بنتيجة المرتجع الأول بلا استرداد مكرّر.
   // قبل أي replay نتحقّق أنّ المفتاح يخصّ نفس الفاتورة والفرع وبنفس بصمة المرتجع
@@ -580,11 +622,15 @@ export async function returnSaleInTx(
         });
       }
       // رافدا الردّ الفوريّ (نقد/بطاقة) لا يُنشئان سنداً معلَّقاً ⇒ لا مرجعَ معلَّقاً يُبحَث عنه.
-      const pendingReference =
+      // العقد العام يملك رافد رد واحداً (فهرسه صفر)؛ العكس الكامل والصفوف القديمة بلا فهرس.
+      const pendingReferences =
         refund && !isSurfacedRefundMethod(refund.method)
-          ? `SALE-RETURN-PENDING-${input.invoiceId}-${requestFingerprint?.slice(0, 12)}`
-          : null;
-      const replayRefund = pendingReference
+          ? [
+              `SALE-RETURN-PENDING-${input.invoiceId}-0-${requestFingerprint?.slice(0, 12)}`,
+              `SALE-RETURN-PENDING-${input.invoiceId}-${requestFingerprint?.slice(0, 12)}`,
+            ]
+          : [];
+      const replayRefund = pendingReferences.length
         ? (
             await tx
               .select({
@@ -597,7 +643,7 @@ export async function returnSaleInTx(
               .where(
                 and(
                   eq(receipts.invoiceId, input.invoiceId),
-                  eq(receipts.referenceNumber, pendingReference),
+                  inArray(receipts.referenceNumber, pendingReferences),
                   eq(receipts.direction, "OUT"),
                 ),
               )
@@ -709,11 +755,11 @@ export async function returnSaleInTx(
     shiftId: number | null;
     cashBucket: "DRAWER" | "TREASURY";
   } | null = null;
-  if (refund?.method === "CASH" && money(refund.amount).gt(0)) {
+  if (cashRefund) {
     const branchForRefund = Number(invPreview.branchId);
     const isNonManagerCashier =
       actor.role !== "admin" && actor.role !== "manager";
-    let explicitShiftId = refund.shiftId ?? null;
+    let explicitShiftId = cashRefund.shiftId ?? null;
     if (explicitShiftId == null && isNonManagerCashier) {
       const callerOpenShifts = await tx
         .select({ id: shifts.id })
@@ -862,19 +908,38 @@ export async function returnSaleInTx(
       .for("update");
   }
 
-  const liveDeliveryCustody = deliveryPreview == null
-    ? money(0)
-    : (await remainingUnremittedDeliveryCustody(tx, Number(deliveryPreview.id))).total;
-  const hasPriorDeliveryCustodyReturn = deliveryPreview == null
-    ? false
-    : Boolean((await tx
-        .select({ id: deliveryLedgerEntries.id })
-        .from(deliveryLedgerEntries)
-        .where(and(
-          eq(deliveryLedgerEntries.consignmentId, Number(deliveryPreview.id)),
-          inArray(deliveryLedgerEntries.entryType, ["COD_RETURNED", "SHORTFALL_SETTLED"]),
-        ))
-        .limit(1))[0]);
+  const liveDeliveryCustody =
+    deliveryPreview == null
+      ? money(0)
+      : (
+          await remainingUnremittedDeliveryCustody(
+            tx,
+            Number(deliveryPreview.id),
+          )
+        ).total;
+  const hasPriorDeliveryCustodyReturn =
+    deliveryPreview == null
+      ? false
+      : Boolean(
+          (
+            await tx
+              .select({ id: deliveryLedgerEntries.id })
+              .from(deliveryLedgerEntries)
+              .where(
+                and(
+                  eq(
+                    deliveryLedgerEntries.consignmentId,
+                    Number(deliveryPreview.id),
+                  ),
+                  inArray(deliveryLedgerEntries.entryType, [
+                    "COD_RETURNED",
+                    "SHORTFALL_SETTLED",
+                  ]),
+                ),
+              )
+              .limit(1)
+          )[0],
+        );
   const isUnremittedDelivery =
     !input.internalCorrectionReversal &&
     deliveryPreview != null &&
@@ -889,7 +954,12 @@ export async function returnSaleInTx(
     .for("update")
     .limit(1);
   const inv = invRows[0];
-  if (inv) await assertNoActiveAftercareForInvoiceTx(tx, inv.id);
+  if (options.componentRights && !options.validateComponentRightsTx)
+    throw new Error("Component rights requires locked validation");
+  if (options.validateComponentRightsTx)
+    await options.validateComponentRightsTx();
+  if (inv && !options.validateComponentRightsTx)
+    await assertNoActiveAftercareForInvoiceTx(tx, inv.id);
   if (!inv) {
     throw new TRPCError({
       code: "NOT_FOUND",
@@ -1194,8 +1264,25 @@ export async function returnSaleInTx(
   const items = await tx
     .select()
     .from(invoiceItems)
-    .where(eq(invoiceItems.invoiceId, input.invoiceId));
+    .where(eq(invoiceItems.invoiceId, input.invoiceId))
+    .for("update");
   const itemById = new Map(items.map((i) => [Number(i.id), i]));
+  const rights = await tx
+    .select()
+    .from(componentRightsAdjustments)
+    .where(eq(componentRightsAdjustments.invoiceId, input.invoiceId))
+    .for("share");
+  if (input.internalCorrectionReversal && rights.length) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر إعادة إصدار بكج سُوّيت بعض مكوّناته",
+        why: "إعادة إصدار الكمية الأصلية تعيد بيع المكوّن المسترد مرة ثانية",
+        doThis:
+          "أكمل مرتجع الأجزاء المتبقية ثم أنشئ فاتورة جديدة للبضاعة الفعلية فقط",
+      }),
+    });
+  }
 
   // البطاقات الرقمية ش١٢: **حظر المرتجع العام** على أي بندٍ رقميّ. الكرت صدر من جهاز المزوّد
   // وقد يكون استُهلك؛ إعادته ليست إعادةَ بضاعة إلى الرفّ بل عكسٌ ماليّ يحتاج تأكيد المزوّد
@@ -1274,7 +1361,10 @@ export async function returnSaleInTx(
   async function validateRefundAgainstCaps(
     returnedTotalForRefund: Decimal,
   ): Promise<{ refundCap: Decimal; refundRequest: Decimal }> {
-    const requestedRefund = money(refund?.amount ?? "0");
+    const requestedRefund = refundLegs.reduce(
+      (sum, leg) => sum.plus(leg.amount),
+      money(0),
+    );
     if (requestedRefund.lt(0)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -1299,7 +1389,13 @@ export async function returnSaleInTx(
         refundMethod,
         returnedTotalForRefund,
       );
-      if (inv.paymentMethod === "MIXED" && refundMethod !== "CASH") {
+      if (options.componentRefunds)
+        refundCap = Decimal.min(caps.pool, returnedTotalForRefund);
+      if (
+        !options.componentRefunds &&
+        inv.paymentMethod === "MIXED" &&
+        refundMethod !== "CASH"
+      ) {
         refundCap = Decimal.min(
           refundCap,
           caps.netByMethod.get(refundMethod) ?? money(0),
@@ -1308,9 +1404,10 @@ export async function returnSaleInTx(
     }
     // ⭐ الزبون العابر: الرد يساوي فقط ما صار زائداً من المال المقبوض بعد المرتجع.
     // فاتورة COD غير المدفوعة = صفر، والإلغاء الكامل بعد عربون = العربون فقط.
-    const requiredWalkInRefund = refundDueAfterReturn({
-      total: inv.total,
-      // عند التوصيل غير المورّد يشمل `invoice.paidAmount` عهدةً في يد المندوب؛
+    const requiredWalkInRefund = refundDueAfterReturn(
+      {
+        total: inv.total,
+        // عند التوصيل غير المورّد يشمل `invoice.paidAmount` عهدةً في يد المندوب؛
       // الردّ من المتجر يُحسب من الوعاء الذي دخل المتجر فعلاً فقط.
       paidAmount: isUnremittedDelivery
         ? refundableStorePool.toString()
@@ -1371,13 +1468,15 @@ export async function returnSaleInTx(
    * ⛔ عكسُ التصحيح الداخليّ (`internalCorrectionReversal`) يبقى على المسار اليدويّ: `correctSale`
    * يُكمل حسابَ الذمّة ونقلَ الإيصالات بيده ولا يقرأ سجلَّ الأثر بعد — توصيلُه شريحةُ التصحيح.
    */
-  const fullyReturnedNow = items.every((item) => {
-    const requested =
-      work.find((w) => Number(w.item.id) === Number(item.id))?.line
-        .baseQuantity ?? 0;
-    return (item.returnedBaseQuantity ?? 0) + requested >= item.baseQuantity;
-  });
-  if (fullyReturnedNow && !input.internalCorrectionReversal) {
+  const fullyReturnedNow =
+    !options.componentRights &&
+    items.every((item) => {
+      const requested =
+        work.find((w) => Number(w.item.id) === Number(item.id))?.line
+          .baseQuantity ?? 0;
+      return (item.returnedBaseQuantity ?? 0) + requested >= item.baseQuantity;
+    });
+  if (fullyReturnedNow && !input.internalCorrectionReversal && !rights.length) {
     const priorFull = (
       await tx
         .select({
@@ -1515,6 +1614,7 @@ export async function returnSaleInTx(
       invoiceId: input.invoiceId,
       returnedTotal: returnedTotalFull.toFixed(2),
       fullyReturned: true,
+      refundReceiptId: summary.refundReceiptId,
       pendingRefundAmount: summary.pendingRefundAmount.toFixed(2),
       pendingRefundVoucherNumber: summary.pendingRefundVoucherNumber,
     };
@@ -1531,6 +1631,7 @@ export async function returnSaleInTx(
   const taxRate = taxable.gt(0) ? taxAmount.dividedBy(taxable) : new Decimal(0);
 
   let returnedGrossNet = new Decimal(0);
+  const absorbedComponentRevenueByItem = new Map<number, Decimal>();
   let returnedCost = new Decimal(0);
   // هدايا الفاتورة (0149): تكلفة البنود المُهداة المُرجَعة تُجمَع **منفصلةً**. تكلفتها لم تدخل قيد
   // SALE أصلاً (دخلت قيد GIFT_OUT)، فعكسُها داخل قيد RETURN يُلغي تكلفةً لم تُسجَّل هناك قطّ ⇒
@@ -1555,24 +1656,35 @@ export async function returnSaleInTx(
     .map((w) => Number(w.item.id));
   const snapshotByItem = new Map<
     number,
-    Array<{ componentVariantId: number; componentBaseQuantity: number }>
+    Array<{
+      id: number;
+      componentVariantId: number;
+      componentBaseQuantity: number;
+      issueUnitCost: string | null;
+    }>
   >();
+  const rightsComponentVariants = new Map<number, number>();
   if (bundleItemIds.length) {
     const rows = await tx
       .select({
+        id: invoiceItemBundleComponents.id,
         invoiceItemId: invoiceItemBundleComponents.invoiceItemId,
         componentVariantId: invoiceItemBundleComponents.componentVariantId,
+        issueUnitCost: invoiceItemBundleComponents.issueUnitCost,
         componentBaseQuantity:
           invoiceItemBundleComponents.componentBaseQuantity,
       })
       .from(invoiceItemBundleComponents)
       .where(inArray(invoiceItemBundleComponents.invoiceItemId, bundleItemIds));
     for (const r of rows) {
+      rightsComponentVariants.set(r.id, r.componentVariantId);
       const iid = Number(r.invoiceItemId);
       const list = snapshotByItem.get(iid) ?? [];
       list.push({
+        id: r.id,
         componentVariantId: Number(r.componentVariantId),
         componentBaseQuantity: Number(r.componentBaseQuantity),
+        issueUnitCost: r.issueUnitCost,
       });
       snapshotByItem.set(iid, list);
     }
@@ -1653,7 +1765,8 @@ export async function returnSaleInTx(
             message: appErrorMessage({
               what: "تعذّر توزيع مادة الخدمة على كمية التصحيح",
               why: `لقطة المادة #${Number(snapshot.materialVariantId)} تنتج كمية كسرية ${quantity.toString()}`,
-              doThis: "صحّح كامل السطر دفعة واحدة أو نفّذ تسوية مخزون يدوية موثقة",
+              doThis:
+                "صحّح كامل السطر دفعة واحدة أو نفّذ تسوية مخزون يدوية موثقة",
             }),
           });
         }
@@ -1675,18 +1788,135 @@ export async function returnSaleInTx(
   }
 
   for (const { line, item } of work) {
+    if (options.componentRights) {
+      const right = options.componentRights;
+      if (Number(item.id) !== right.invoiceItemId || work.length !== 1)
+        throw new Error("Component rights source mismatch");
+      returnedGrossNet = money(right.commercialAmount)
+        .div(new Decimal(1).plus(taxRate))
+        .div(new Decimal(1).minus(discountRatio));
+      returnedCost = money(right.restoredValue);
+      if (right.usableBaseQuantity > 0)
+        stockOps.push({
+          variantId: right.componentVariantId,
+          baseQuantity: right.usableBaseQuantity,
+          historicalValue: money(right.restoredValue),
+        });
+      if (right.wholeItem)
+        await tx
+          .update(invoiceItems)
+          .set({
+            returnedBaseQuantity:
+              (item.returnedBaseQuantity ?? 0) + right.baseQuantity,
+            returnedRestockedBaseQuantity:
+              (item.returnedRestockedBaseQuantity ?? 0) +
+              right.usableBaseQuantity,
+          })
+          .where(eq(invoiceItems.id, item.id));
+      continue;
+    }
     const portion = new Decimal(line.baseQuantity).dividedBy(item.baseQuantity);
-    returnedGrossNet = returnedGrossNet.plus(money(item.total).times(portion));
+    const itemRights = rights.filter(
+      (right) =>
+        right.invoiceItemId === Number(item.id) &&
+        right.originalBundleComponentId != null,
+    );
+    const absorbedCommercial = itemRights.reduce(
+      (sum, right) =>
+        sum.plus(
+          rightsAbsorbedAmount(
+            right.commercialAmount,
+            item.baseQuantity,
+            right.normalReturnedBaseQuantity,
+            item.returnedBaseQuantity ?? 0,
+            line.baseQuantity,
+          ),
+        ),
+      money(0),
+    );
+    const netPriceRatio = new Decimal(1).minus(discountRatio);
+    const absorbedGross =
+      absorbedCommercial.isZero() || netPriceRatio.isZero()
+        ? money(0)
+        : absorbedCommercial
+            .div(new Decimal(1).plus(taxRate))
+            .div(netPriceRatio);
+    // Keep the prior component credit on its source item's sector, excluding tax.
+    absorbedComponentRevenueByItem.set(
+      Number(item.id),
+      absorbedCommercial.div(new Decimal(1).plus(taxRate)),
+    );
+    returnedGrossNet = returnedGrossNet.plus(
+      Decimal.max(0, money(item.total).times(portion).minus(absorbedGross)),
+    );
     // سطر الهدية: `item.total` صفر ⇒ لا إيراد يُعكَس (لا استرداد نقديّ — لم يُدفع شيء)، وتكلفته
     // تذهب لوعاء الهدايا لا لوعاء COGS.
-    const lineCost = allocateLineCost(
+    const originalLineCost = allocateLineCost(
       item.lineCost,
       Number(item.baseQuantity),
       Number(item.returnedBaseQuantity ?? 0),
       line.baseQuantity,
     );
+    const rightsCost = itemRights.reduce(
+      (sum, right) =>
+        sum.plus(
+          rightsAbsorbedAmount(
+            right.originalIssueValue,
+            item.baseQuantity,
+            right.normalReturnedBaseQuantity,
+            item.returnedBaseQuantity ?? 0,
+            line.baseQuantity,
+          ),
+        ),
+      money(0),
+    );
+    let lineCost = Decimal.max(0, originalLineCost.minus(rightsCost));
+    if (
+      itemRights.length &&
+      restock &&
+      kindByVariant.get(Number(item.variantId)) === "BUNDLE"
+    ) {
+      lineCost = money(0);
+      for (const component of snapshotByItem.get(Number(item.id)) ?? []) {
+        const quantity = rightsAdjustedComponentQuantity(
+          component.componentBaseQuantity,
+          item.baseQuantity,
+          item.returnedBaseQuantity ?? 0,
+          line.baseQuantity,
+          itemRights
+            .filter((right) => right.originalBundleComponentId === component.id)
+            .reduce((sum, right) => sum + right.baseQuantity, 0),
+        );
+        if (quantity > 0 && component.issueUnitCost == null)
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: appErrorMessage({
+              what: "بانتظار دليل تكلفة المكونات المتبقية",
+              why: "لا تحمل لقطة البيع التاريخية تكلفة صرف كل مكوّن، فلا يمكن تقييم المرتجع المتبقي بسعر اليوم",
+              doThis:
+                "سوّ المكونات المتبقية من محطة النقص والتعويض بمستند التكلفة التاريخي واعتماد مستقل ثم أكمل المرتجع",
+            }),
+          });
+        if (quantity > 0)
+          lineCost = lineCost.plus(
+            money(component.issueUnitCost!).times(quantity),
+          );
+      }
+    }
     if (item.isGift) returnedGiftCost = returnedGiftCost.plus(lineCost);
     else returnedCost = returnedCost.plus(lineCost);
+    const projection = rights
+      .filter((right) => right.invoiceItemId === Number(item.id))
+      .sort((a, b) => a.id - b.id)[0];
+    if (projection && restock)
+      await tx
+        .update(componentRightsAdjustments)
+        .set({
+          subsequentRestoredValue: toDbMoney(
+            money(projection.subsequentRestoredValue).plus(lineCost),
+          ),
+        })
+        .where(eq(componentRightsAdjustments.id, projection.id));
 
     const itemVariantId = Number(item.variantId);
     const kind = kindByVariant.get(itemVariantId) ?? "STOCKED";
@@ -1706,9 +1936,36 @@ export async function returnSaleInTx(
           });
         }
         for (const c of def) {
+          const settledQuantity = itemRights
+            .filter((right) => right.originalBundleComponentId != null)
+            .filter((right) => right.originalMovementId != null)
+            .filter((right) => {
+              // Each component snapshot is unique per item/variant in the original bundle recipe.
+              return (
+                rightsComponentVariants.get(
+                  right.originalBundleComponentId!,
+                ) === c.componentVariantId
+              );
+            })
+            .reduce((sum, right) => sum + right.baseQuantity, 0);
+          const returnQuantity = rightsAdjustedComponentQuantity(
+            c.componentBaseQuantity,
+            item.baseQuantity,
+            item.returnedBaseQuantity ?? 0,
+            line.baseQuantity,
+            settledQuantity,
+          );
+          if (!returnQuantity) continue;
           stockOps.push({
             variantId: c.componentVariantId,
-            baseQuantity: c.componentBaseQuantity * line.baseQuantity,
+            baseQuantity: returnQuantity,
+            ...(itemRights.length
+              ? {
+                  historicalValue: round2(
+                    money(c.issueUnitCost!).times(returnQuantity),
+                  ),
+                }
+              : {}),
           });
         }
       } else if (kind === "SERVICE") {
@@ -1742,11 +1999,14 @@ export async function returnSaleInTx(
 
   // تجميع + تطبيق بترتيب variantId التصاعدي — نفس نمط sale/create.ts (خطوة 10).
   if (restock) {
-    const aggregated = new Map<number, {
-      plainQuantity: number;
-      valuedQuantity: number;
-      historicalValue: Decimal;
-    }>();
+    const aggregated = new Map<
+      number,
+      {
+        plainQuantity: number;
+        valuedQuantity: number;
+        historicalValue: Decimal;
+      }
+    >();
     for (const op of stockOps) {
       const current = aggregated.get(op.variantId) ?? {
         plainQuantity: 0,
@@ -1757,7 +2017,9 @@ export async function returnSaleInTx(
         current.plainQuantity += op.baseQuantity;
       } else {
         current.valuedQuantity += op.baseQuantity;
-        current.historicalValue = current.historicalValue.plus(op.historicalValue);
+        current.historicalValue = current.historicalValue.plus(
+          op.historicalValue,
+        );
       }
       aggregated.set(op.variantId, current);
     }
@@ -1803,17 +2065,18 @@ export async function returnSaleInTx(
       returnedBaseQuantity: invoiceItems.returnedBaseQuantity,
     })
     .from(invoiceItems)
-    .where(eq(invoiceItems.invoiceId, input.invoiceId));
-  const fullyReturned = refreshed.every(
-    (r) => (r.returnedBaseQuantity ?? 0) >= r.baseQuantity,
-  );
+    .where(eq(invoiceItems.invoiceId, input.invoiceId))
+    .for("share");
+  const fullyReturned =
+    (!options.componentRights || options.componentRights.wholeItem === true) &&
+    refreshed.every((r) => (r.returnedBaseQuantity ?? 0) >= r.baseQuantity);
 
   // Prior RETURN entries (stored negative) → positive cumulative totals.
   const priorRows = await tx
     .select({
-      rev: sql<string>`COALESCE(SUM(${accountingEntries.revenue}), 0)`,
-      tax: sql<string>`COALESCE(SUM(${accountingEntries.taxAmount}), 0)`,
-      amt: sql<string>`COALESCE(SUM(${accountingEntries.amount}), 0)`,
+      rev: accountingEntries.revenue,
+      tax: accountingEntries.taxAmount,
+      amt: accountingEntries.amount,
     })
     .from(accountingEntries)
     .where(
@@ -1821,10 +2084,10 @@ export async function returnSaleInTx(
         eq(accountingEntries.invoiceId, input.invoiceId),
         eq(accountingEntries.entryType, "RETURN"),
       ),
-    );
-  const priorRevenue = money(priorRows[0]?.rev ?? "0").neg();
-  const priorTax = money(priorRows[0]?.tax ?? "0").neg();
-  const priorTotal = money(priorRows[0]?.amt ?? "0").neg();
+    ).for("share");
+  const priorRevenue = priorRows.reduce((sum, row) => sum.plus(row.rev ?? "0"), money(0)).neg();
+  const priorTax = priorRows.reduce((sum, row) => sum.plus(row.tax ?? "0"), money(0)).neg();
+  const priorTotal = priorRows.reduce((sum, row) => sum.plus(row.amt ?? "0"), money(0)).neg();
 
   let returnedRevenue: Decimal;
   let returnedTax: Decimal;
@@ -1847,6 +2110,13 @@ export async function returnSaleInTx(
     );
     returnedTax = round2(returnedRevenue.times(taxRate));
     returnedTotal = round2(returnedRevenue.plus(returnedTax));
+  }
+  if (options.componentRights) {
+    returnedTotal = money(options.componentRights.commercialAmount);
+    if (!(options.componentRights.wholeItem && fullyReturned)) {
+      returnedRevenue = round2(returnedTotal.div(new Decimal(1).plus(taxRate)));
+      returnedTax = returnedTotal.minus(returnedRevenue);
+    }
   }
   returnedCost = round2(returnedCost);
   // عند restock=false (تالف/أمر شغل) البضاعة لا تعود للمخزون ⇒ تكلفتها خسارة فعلية،
@@ -2028,7 +2298,12 @@ export async function returnSaleInTx(
         ? lineRevenue
         : round2(lineRevenue.times(quantity).div(item.baseQuantity));
     const currentRevenue = round2(
-      cumulativeRevenue(afterQuantity).minus(cumulativeRevenue(beforeQuantity)),
+      Decimal.max(
+        0,
+        cumulativeRevenue(afterQuantity)
+          .minus(cumulativeRevenue(beforeQuantity))
+          .minus(absorbedComponentRevenueByItem.get(Number(item.id)) ?? money(0)),
+      ),
     );
     allocatedReturnRevenue = allocatedReturnRevenue.plus(currentRevenue);
     returnRevenueByRole.set(
@@ -2280,13 +2555,30 @@ export async function returnSaleInTx(
   // الزبون استلم مالَه والدفتر يقول إنّ سنداً ينتظر الاعتماد. وهو مرآةٌ للسياسة الواردة —
   // «البوّابة إثباتٌ لا إقفال» ([[inbound-payment-policy-2026-08-16]]): مرجع الجهاز إلزاميّ.
   // الطرق الأخرى (تحويل/صك/محفظة) غير معروضةٍ في الشاشة وتبقى على مسار السند المعلَّق.
-  const isImmediateRefundRail =
-    refundMethod != null && isSurfacedRefundMethod(refundMethod);
-  const refundReference = refund?.reference?.trim() || null;
-  const materializedRefund = isImmediateRefundRail ? refundRequest : money(0);
-  let pendingRefundVoucherNumber: string | null = null;
-
-  if (refundRequest.gt(0)) {
+  const isImmediateRefundRail = refundLegs.every(
+    (leg) => isSurfacedRefundMethod(leg.method) && leg.pendingExternal !== true,
+  );
+  const materializedRefund = refundLegs.reduce(
+    (sum, leg) =>
+      sum.plus(
+        isSurfacedRefundMethod(leg.method) && leg.pendingExternal !== true
+          ? leg.amount
+          : "0",
+      ),
+    money(0),
+  );
+  let firstPendingRefundVoucherNumber: string | null = null;
+  let createdRefundReceiptId: number | null = null;
+  const createdRefundReceiptIds: number[] = [];
+  for (const [refundIndex, refund] of Array.from(refundLegs.entries())) {
+    let pendingRefundVoucherNumber: string | null = null;
+    const refundRequest = money(refund.amount);
+    if (!refundRequest.gt(0)) continue;
+    const isImmediateRefundRail =
+      isSurfacedRefundMethod(refund.method) && refund.pendingExternal !== true;
+    const refundReference = refund.reference?.trim() || null;
+    const materializedRefund = isImmediateRefundRail ? refundRequest : money(0);
+    const requestedRefund = refundRequest;
     // انسب الاسترداد إلى وردية الدرج الذي خرج منه النقد فعلياً — لا وردية الفاعل بالضرورة.
     // المرتجعات salesManagerProcedure ⇒ مُنفِّذ الاسترداد غالباً مديرٌ قد يختلف عن الكاشير الذي
     // يُشغّل الدرج الحقيقيّ؛ ربطه بوردية الفاعل (لو خلَت، G9 ١٩/٦/٢٦) كان يُخفي الاسترداد عن
@@ -2351,7 +2643,14 @@ export async function returnSaleInTx(
         operation: "استرداد مرتجع بيع على البطاقة",
       });
     } else {
-      if (inv.customerId == null) {
+      if (
+        inv.customerId == null &&
+        !(
+          options.componentRights &&
+          refund.pendingExternal === true &&
+          refund.method === "CARD"
+        )
+      ) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
           message: appErrorMessage({
@@ -2392,7 +2691,7 @@ export async function returnSaleInTx(
           ? null
           : isImmediateRefundRail
             ? refundReference
-            : `SALE-RETURN-PENDING-${input.invoiceId}-${requestFingerprint?.slice(0, 12) ?? "LEGACY"}`,
+            : `SALE-RETURN-PENDING-${input.invoiceId}-${refundIndex}-${requestFingerprint?.slice(0, 12) ?? "LEGACY"}`,
       description:
         refund!.method === "CASH"
           ? `استرداد مرتجع فاتورة ${inv.invoiceNumber}${input.resolution ? ` — ${input.resolution.reason.trim()}` : ""}`
@@ -2402,12 +2701,18 @@ export async function returnSaleInTx(
       voucherNumber: pendingRefundVoucherNumber,
       partyType: inv.customerId ? "CUSTOMER" : "OTHER",
       partyId: inv.customerId ?? null,
-      internalNote: pendingRefundVoucherNumber
-        ? `SALE_CUSTOMER_REFUND:RETURN:${input.invoiceId}`
-        : null,
+      internalNote:
+        options.componentRights && !isImmediateRefundRail
+          ? `COMPONENT_REFUND_PENDING:${input.invoiceId}`
+          : pendingRefundVoucherNumber
+            ? `SALE_CUSTOMER_REFUND:RETURN:${input.invoiceId}`
+            : null,
       createdBy: actor.userId,
     });
     const receiptId = extractInsertId(rRes);
+    createdRefundReceiptId ??= receiptId;
+    createdRefundReceiptIds.push(receiptId);
+    firstPendingRefundVoucherNumber ??= pendingRefundVoucherNumber;
     if (materializedRefund.gt(0)) {
       // الدلو يُمرَّر بحسب الرافد فعلاً: النقد من الدرج (CASH)، والبطاقة من الحساب البنكيّ
       // (CARD_BANK) — تمرير "DRAWER" ثابتاً كان يُرحّل ردّ البطاقة على حساب النقد.
@@ -2555,11 +2860,13 @@ export async function returnSaleInTx(
     invoiceId: input.invoiceId,
     returnedTotal: returnedTotal.toFixed(2),
     fullyReturned,
+    refundReceiptId: createdRefundReceiptId,
+    refundReceiptIds: createdRefundReceiptIds,
     // «معلَّق» = ما لم يخرج فعلاً بعد. رافدا الردّ الفوريّ (نقد/بطاقة) خرجا حقيقةً ⇒ صفر معلَّق.
     pendingRefundAmount: isImmediateRefundRail
       ? "0.00"
-      : refundRequest.toFixed(2),
-    pendingRefundVoucherNumber,
+      : refundRequest.minus(materializedRefund).toFixed(2),
+    pendingRefundVoucherNumber: firstPendingRefundVoucherNumber,
   };
 }
 

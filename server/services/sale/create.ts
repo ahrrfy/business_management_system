@@ -870,6 +870,15 @@ export async function createSaleInTx(
     bundleVariantIds,
     bundleDefs,
   );
+  const componentIssueCosts = new Map<number, string>();
+  if (bundleComponentIds.size) {
+    const rows = await tx
+      .select({ id: productVariants.id, cost: productVariants.costPrice })
+      .from(productVariants)
+      .where(inArray(productVariants.id, Array.from(bundleComponentIds)))
+      .for("share");
+    for (const row of rows) componentIssueCosts.set(row.id, row.cost);
+  }
   if (serviceMaterialIds.size) {
     const matRows = await tx
       .select({ id: productVariants.id, cost: productVariants.costPrice })
@@ -1727,6 +1736,12 @@ export async function createSaleInTx(
           invoiceItemId,
           componentVariantId: bc.componentVariantId,
           componentBaseQuantity: bc.componentBaseQuantity,
+          issueUnitCost: componentIssueCosts.get(bc.componentVariantId)!,
+          issueLineCost: toDbMoney(
+            money(componentIssueCosts.get(bc.componentVariantId)!)
+              .times(bc.componentBaseQuantity)
+              .times(c.baseQuantity),
+          ),
         });
       }
     } else if (c.kind === "SERVICE") {
@@ -2390,6 +2405,7 @@ export async function createSaleInTx(
       {
         invoiceId,
         partyId: input.delivery.partyId,
+        assignedUserId: input.delivery.assignedUserId ?? null,
         // م١: الأجرة المحلولة (الافتراضية إن غابت `delivery.fee`) — تقرأها بوّابةُ COUNTER وسطرُ
         // الأجرة معاً، فلا تختلف قيمةُ الفحص عن قيمة الإسناد (Codex #1006/#1012 P2).
         deliveryFee: resolvedDeliveryFee,

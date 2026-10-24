@@ -22,8 +22,8 @@ import { GOVERNORATES } from "@shared/governorates";
 import { D } from "@/lib/money";
 
 const parties = [
-  { id: 3, name: "مندوب الكرادة", partyType: "INDIVIDUAL" as const, defaultFee: "4000.00" },
-  { id: 9, name: "شركة النقل السريع", partyType: "COMPANY" as const, defaultFee: "7500.00" },
+  { id: 3, name: "مندوب الكرادة", partyType: "INDIVIDUAL" as const, defaultFee: "4000.00", driverRequired: true, driverUserIds: [3] },
+  { id: 9, name: "شركة النقل السريع", partyType: "COMPANY" as const, defaultFee: "7500.00", driverRequired: false, driverUserIds: [] },
 ];
 
 const filled = (over: Partial<DeliveryDraft> = {}): DeliveryDraft => ({
@@ -33,6 +33,8 @@ const filled = (over: Partial<DeliveryDraft> = {}): DeliveryDraft => ({
   partyId: 3,
   partyType: "INDIVIDUAL",
   partyName: "مندوب الكرادة",
+  driverRequired: true,
+  assignedUserId: 3,
   fee: "4000",
   recipientName: "سارة",
   recipientPhone: "07701234567",
@@ -68,6 +70,7 @@ describe("وضع «توصيل» في الكاشير — المنطق النقي�
   it("الحمولة الخادميّة تُبنى من مسوّدةٍ مكتملة بأجرةٍ مطبَّعة ومحافظةٍ ومستلم", () => {
     expect(buildDeliveryPayload(filled())).toEqual({
       partyId: 3,
+      assignedUserId: 3,
       fee: "4000.00",
       feeCollection: "COURIER",
       recipientName: "سارة",
@@ -124,12 +127,17 @@ describe("وضع «توصيل» في الكاشير — المنطق النقي�
     expect(first.partyId).toBe(3);
     expect(first.partyType).toBe("INDIVIDUAL");
     expect(first.partyName).toBe("مندوب الكرادة");
+    expect(first.driverRequired).toBe(true);
+    expect(first.assignedUserId).toBeNull();
+    expect(validateDeliveryDraft({ ...first, address: "الكرادة" })).toContain("NO_DRIVER");
+    expect(buildDeliveryPayload({ ...first, address: "الكرادة", assignedUserId: 3 })).toMatchObject({ assignedUserId: 3 });
     expect(first.fee).toBe("4000.00");
     // أجرةٌ تلقائيّة (feeManual=false) تُستبدَل بافتراض الجهة الجديدة عند التبديل — لا تعلَق على القديمة.
     const swapped = applyPartySelection(first, parties[1]);
     expect(swapped.partyId).toBe(9);
     expect(swapped.partyType).toBe("COMPANY");
     expect(swapped.externalTrackingRef).toBe("");
+    expect(swapped.assignedUserId).toBeNull();
     expect(swapped.fee).toBe("7500.00");
     // أجرةٌ كتبها الكاشير بيده (feeManual=true) لا تُطمَس عند تبديل الجهة.
     const kept = applyPartySelection(filled({ fee: "2500", feeManual: true }), parties[1]);
@@ -142,6 +150,8 @@ describe("وضع «توصيل» في الكاشير — المنطق النقي�
     expect(cleared.partyId).toBeNull();
     expect(cleared.partyType).toBeNull();
     expect(cleared.partyName).toBe("");
+    expect(cleared.driverRequired).toBe(false);
+    expect(cleared.assignedUserId).toBeNull();
     expect(cleared.externalTrackingRef).toBe("");
   });
 

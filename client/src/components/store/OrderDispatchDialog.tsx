@@ -10,8 +10,11 @@ import { ErrorState } from "@/components/PageState";
 import { Input } from "@/components/ui/input";
 import { trpc } from "@/lib/trpc";
 import { fmtInt } from "@/lib/money";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { deliveryDriverOptions, requiresDeliveryDriver } from "@/components/delivery/driverOptions";
 export type DispatchOrder = {
   id: number;
+  branchId: number;
   orderNumber: string;
   total: string;
   customerName: string | null;
@@ -29,15 +32,19 @@ export function OrderDispatchDialog({
   order: DispatchOrder;
   pending: boolean;
   onCancel: () => void;
-  onConfirm: (input: { partyId: number; externalTrackingRef?: string }) => void;
+  onConfirm: (input: { partyId: number; assignedUserId?: number; externalTrackingRef?: string }) => void;
 }) {
   const [partyId, setPartyId] = useState<number | null>(null);
   const [externalTrackingRef, setExternalTrackingRef] = useState("");
+  const [assignedUserId, setAssignedUserId] = useState("");
   const partiesQ = trpc.storeAdmin.orders.parties.useQuery();
   // الشركات الخارجية بلا حساب أصبحت تُغلق بكشف الشركة الممسوح؛ لذلك تظهر هنا مع المناديب،
   // ويُفرض عليها رقم البوليصة أدناه بدل حجبها وإبقاء الطلب بلا مسار إرسال.
   const parties = partiesQ.data ?? [];
   const selectedParty = parties.find((p) => p.id === partyId);
+  const driverChoices = deliveryDriverOptions(selectedParty, order.branchId);
+  const requiresDriver = requiresDeliveryDriver(selectedParty);
+  const invalidDriver = assignedUserId !== "" && !driverChoices.some(driver => driver.userId === Number(assignedUserId));
 
   return (
     <Dialog
@@ -139,6 +146,7 @@ export function OrderDispatchDialog({
                   checked={partyId === p.id}
                   onChange={() => {
                     setPartyId(p.id);
+                    setAssignedUserId("");
                     setExternalTrackingRef("");
                   }}
                 />
@@ -161,6 +169,16 @@ export function OrderDispatchDialog({
           </div>
         )}
 
+        {(requiresDriver || (selectedParty?.partyType === "COMPANY" && driverChoices.length > 0)) && (
+          <div className="mt-3 space-y-1">
+            <label className="text-xs font-bold">{requiresDriver ? "المندوب الموظف المحدد" : "السائق داخل الشركة"}</label>
+            <AppSelect value={assignedUserId} onValueChange={setAssignedUserId} aria-label={requiresDriver ? "المندوب الموظف المحدد" : "السائق داخل الشركة"}>
+              <option value="">{requiresDriver ? "اختر موظفاً نشطاً من الفرع صراحة" : "طابور الشركة — دون موظف محدد"}</option>
+              {driverChoices.map(driver => <option key={driver.userId} value={driver.userId}>{driver.name}</option>)}
+            </AppSelect>
+            {requiresDriver && driverChoices.length === 0 && <p className="text-xs text-destructive">لا يوجد حساب مندوب نشط مؤهل في فرع الطلب؛ راجع ربط جهة التوصيل قبل الإسناد.</p>}
+          </div>
+        )}
         {selectedParty?.partyType === "COMPANY" && (
           <div className="mt-3 space-y-1">
             <label
@@ -193,8 +211,10 @@ export function OrderDispatchDialog({
           <button
             onClick={() =>
               partyId != null &&
+              !(requiresDriver && !assignedUserId) && !invalidDriver &&
               onConfirm({
                 partyId,
+                assignedUserId: assignedUserId ? Number(assignedUserId) : undefined,
                 externalTrackingRef: externalTrackingRef.trim() || undefined,
               })
             }
@@ -203,6 +223,7 @@ export function OrderDispatchDialog({
               partiesQ.isError ||
               !selectedParty ||
               parties.length === 0 ||
+              (requiresDriver && !assignedUserId) || invalidDriver ||
               (selectedParty?.partyType === "COMPANY" &&
                 !externalTrackingRef.trim())
             }

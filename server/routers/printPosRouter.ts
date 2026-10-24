@@ -1,4 +1,11 @@
 import { TRPCError } from "@trpc/server";
+import {
+  checkoutChargesFields,
+  chargeOnlyCheckoutSchema,
+  createChargeOnlyCheckout,
+  checkoutChargeOptionsSchema,
+  listCheckoutChargeOptions,
+} from "../services/checkoutCharges";
 import { appErrorMessage } from "@shared/errors";
 import { z } from "zod";
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
@@ -35,6 +42,45 @@ const lineSchema = z.object({
 });
 
 export const printPosRouter = router({
+  checkoutChargeOptions: posCashierProcedure
+    .input(checkoutChargeOptionsSchema)
+    .query(({ input, ctx }) =>
+      listCheckoutChargeOptions(
+        input,
+        {
+          userId: ctx.user.id,
+          branchId: ctx.user.branchId ?? input.branchId,
+          role: ctx.user.role,
+          isOwner: ctx.user.isOwner,
+        },
+        "printPos.createSale",
+      ),
+    ),
+  checkoutCharges: posCashierProcedure
+    .input(chargeOnlyCheckoutSchema)
+    .mutation(({ input, ctx }) => {
+      const branchId =
+        ctx.user.role === "admin" ? input.branchId : ctx.user.branchId;
+      if (branchId == null)
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذر قبض الأجور",
+            why: "لا فرع مسند للحساب",
+            doThis: "اطلب إسناد الفرع من الإدارة",
+          }),
+        });
+      return createChargeOnlyCheckout(
+        { ...input, branchId },
+        {
+          userId: ctx.user.id,
+          branchId,
+          role: ctx.user.role,
+          isOwner: ctx.user.isOwner,
+        },
+        "PRINT_POS",
+      );
+    }),
   /** بلاطات الخدمات (مبوّبة بالفئة) — للكاشير فأعلى، بلا كلفة/مواد. */
   services: posCashierProcedure
     .input(z.object({ tier: tier.default("RETAIL") }).optional())
@@ -80,7 +126,8 @@ export const printPosRouter = router({
   createSale: posCashierProcedure
     .input(
       z.object({
-        branchId: z.number().int().positive(),
+          ...checkoutChargesFields,
+          branchId: z.number().int().positive(),
         shiftId: z.number().int().positive().optional(),
         customerId: z.number().int().positive().optional(),
         contactName: z.string().trim().max(255).optional(),
@@ -259,7 +306,7 @@ export const printPosRouter = router({
       const db = getDb();
       if (!db) return null;
       const elevated = ctx.user.role === "admin";
-      const branchId = elevated ? null : (ctx.user.branchId != null ? Number(ctx.user.branchId) : null);
+      const branchId = elevated ? null : ctx.user.branchId != null ? Number(ctx.user.branchId) : null;
       const raw = input.orderNumber.trim();
       const stripped = raw.replace(/^INV-/i, "");
       const isNumeric = /^\d+$/.test(raw);

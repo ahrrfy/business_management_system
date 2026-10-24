@@ -46,6 +46,9 @@ import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
  * غالبية العمل اليدوي. كل الحالة المالية تصل عبر props (بصفر تغيير في العقد أو منطق الحفظ).
  */
 export interface PaymentPanelProps {
+  chargesOnly?: boolean;
+  extraChargesSlot?: React.ReactNode;
+  extraChargeAmount?: number;
   splitTender?: SplitTenderDraft;
   splitDisabledReason?: string | null;
   payInput: string;
@@ -218,21 +221,24 @@ export function PaymentPanel(props: PaymentPanelProps) {
    * لا تُرسَل طريقةٌ للخادم فتُختَم الفاتورة `paymentMethod = NULL` = «آجل» بالاشتقاق، ولا
    * تُعرَض طريقةٌ في الواجهة كي لا تُقرأ العملية مدفوعةً وهي ليست كذلك (بلاغ المالك).
    */
-  const noCollectionNow = !deferred && !(paid > 0);
+  const noCollectionNow = !deferred && !(paid > 0) && !((props.extraChargeAmount??0)>0) && !(heldDelivery>0);
 
   return (
     <div
       tabIndex={-1}
       className="flex flex-shrink-0 flex-col gap-1.5 border-t-2 bg-card px-4 py-2 outline-none focus:ring-2 focus:ring-primary/30"
     >
+      {props.extraChargesSlot}
       {/* صفّ المعلومات: تنبيهات (تقريب/عربون سابق/أمانة توصيل) + الإجمالي + الفكّة أو المتبقّي. */}
       <ReceptionPaymentSummary
         {...props}
+        deferred={props.chargesOnly?false:deferred}
+        cartEmpty={props.chargesOnly?true:cartEmpty}
         submitAllowed={submitAllowed}
         noCollectionNow={noCollectionNow}
       />
 
-      {deferred && (
+      {deferred && !props.chargesOnly && (
         <div className="grid grid-cols-[auto_auto_1fr] items-center gap-x-4 rounded-lg border border-[var(--sem-warn)]/45 bg-[var(--sem-warn-bg)] px-3 py-1.5 text-[var(--sem-warn)]">
           <div>
             <div className="text-[9px] font-bold opacity-80">المدفوع الآن</div>
@@ -253,12 +259,12 @@ export function PaymentPanel(props: PaymentPanelProps) {
         </div>
       )}
 
-      {deliveryFeePayment && heldDelivery > 0 && method !== "CASH" && (
+      {deliveryFeePayment && (heldDelivery > 0 || (props.extraChargeAmount??0)>0) && method !== "CASH" && (
         <div className="flex flex-wrap items-center gap-2 border-y px-3 py-2 text-xs">
           <span>
             {splitTender?.active
               ? "أجرة التوصيل في عملية مستقلة:"
-              : "البضاعة والأجرة في عملية واحدة:"}{" "}
+              : "البضاعة والأجور والأمانة في عملية واحدة:"}{" "}
             <strong dir="ltr">{deliveryFeePayment.capturedAmount} د.ع</strong> —
             بلا حركة نقد درج
           </span>
@@ -303,11 +309,11 @@ export function PaymentPanel(props: PaymentPanelProps) {
           setDisplayPay={setDisplayPay}
         />
 
-        <ReceptionPaymentActions
+        {props.chargesOnly?<Button type="button" size="lg" disabled={!submitAllowed||submitting||!hasShift} onClick={()=>onSubmit({quickFullPay:false})}>{submitting?"جارٍ الإرسال…":"قبض الأجور وطباعة"}</Button>:<ReceptionPaymentActions
           {...props}
           submitAllowed={submitAllowed}
           noCollectionNow={noCollectionNow}
-        />
+        />}
       </div>
     </div>
   );

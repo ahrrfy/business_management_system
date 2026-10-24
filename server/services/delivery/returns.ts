@@ -26,6 +26,7 @@ import { deliveryCustomerRefundIntent, deliveryFeeHeldPayoutIntent, deliveryRetu
 import type { DeliveryTxActor } from "./types";
 import type { Tx } from "../../db";
 import { assertStandaloneConsignmentTx } from "./shipments";
+import { physicalReturnReceiptTx } from "./workflow/returnReceipt";
 
 /** Existing held-fee refund, shared when the original fee invoice has left a shipment. Caller prelocks cash source then party/CNs. */
 export async function refundHeldDeliveryFeeForReturnTx(
@@ -319,7 +320,8 @@ export async function returnConsignment(
     if (cn.status !== "DISPATCHED" || cn.moneyStatus === "PARTIAL" || cn.moneyStatus === "SETTLED") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "يُرجَع فقط طرد لم يُحصَّل منه شيء؛ بعد التحصيل استعمل مرتجعات البيع" });
     }
-    if (cn.parcelStatus === "DELIVERED" || cn.parcelStatus === "RETURNED") {
+    const physicalReceipt = await physicalReturnReceiptTx(tx, cn);
+    if (cn.parcelStatus === "DELIVERED" || (cn.parcelStatus === "RETURNED" && !physicalReceipt)) {
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الطرد مسلّم للعميل؛ نفّذ مرتجع بيع موثقاً بدل إرجاع الشحنة" });
     }
     // ١٨/٨ (بلاغ المالك: «المندوب يرجع الفاتورة والطلب إلى المكتبة» — حدثٌ يوميّ):
@@ -353,7 +355,7 @@ export async function returnConsignment(
         payload: { reason, source: "STAFF_RETURN" },
       });
       cn.parcelStatus = "FAILED";
-    } else if (cn.parcelStatus !== "ASSIGNED" && cn.parcelStatus !== "FAILED") {
+    } else if (cn.parcelStatus !== "ASSIGNED" && cn.parcelStatus !== "FAILED" && !physicalReceipt) {
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "حالة الطرد لا تسمح بالإرجاع من هنا" });
     }
     const inv = (await tx.select().from(invoices).where(eq(invoices.id, Number(cn.invoiceId))).for("update").limit(1))[0];

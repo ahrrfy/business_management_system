@@ -10,14 +10,19 @@
 import { sql } from "drizzle-orm";
 import { getDb } from "../../db";
 import { money, toDbMoney } from "../money";
+import {
+  componentRightsRawRevenueSql,
+  componentRightsRawCostSql,
+} from "../fulfillment/componentRightsReportSql";
 
 // مصدر واحد لصيغ Top Products وProfit by Category كي لا تنجرف التقارير عن بعضها:
 // - الإيراد يتبع ما بقي مع العميل، سواء كانت الفاتورة جزئية المرتجع أم RETURNED بالكامل.
 // - COGS يُعكس فقط للوحدات التي عادت فعلاً للمخزون؛ المرتجع التالف لا يعكس تكلفته.
 // GREATEST يحمي التقرير من عدّاد تاريخي منجرف من إنتاج قيمة سالبة، ولا يغيّر أي قيد دفتر.
 const netBaseQuantitySql = sql`GREATEST(ii.baseQuantity - COALESCE(ii.returnedBaseQuantity, 0), 0)`;
-const netLineRevenueSql = sql`CASE WHEN ii.baseQuantity > 0
-  THEN ii.total * ${netBaseQuantitySql} / ii.baseQuantity ELSE ii.total END`;
+const netLineRevenueSql =
+  componentRightsRawRevenueSql(sql`CASE WHEN ii.baseQuantity > 0
+  THEN ii.total * ${netBaseQuantitySql} / ii.baseQuantity ELSE ii.total END`);
 
 // صمام أمان ذاتي (Self-Healing Line Cost):
 // إن كان lineCost مشوهاً أو متضخماً بأكثر من 1.5 ضعف حاصل ضرب (unitCost * baseQuantity)
@@ -30,14 +35,14 @@ const effectiveLineCostSql = sql`CASE
   ELSE COALESCE(ii.lineCost, 0)
 END`;
 
-const netLineCostSql = sql`CASE
+const netLineCostSql = componentRightsRawCostSql(sql`CASE
   WHEN ii.baseQuantity <= 0 THEN ${effectiveLineCostSql}
   WHEN COALESCE(ii.returnedRestockedBaseQuantity, 0) >= ii.baseQuantity THEN 0
   ELSE ${effectiveLineCostSql} - ROUND(
     ${effectiveLineCostSql} * COALESCE(ii.returnedRestockedBaseQuantity, 0) / ii.baseQuantity,
     2
   )
-END`;
+END`);
 
 export interface SalesAnalyticsFilters {
   from?: string; // YYYY-MM-DD
@@ -67,7 +72,7 @@ export async function getTopProducts(
     limit?: number;
     by?: "revenue" | "qty" | "profit" | "margin";
     orderDir?: "asc" | "desc";
-  } = {}
+  } = {},
 ): Promise<TopProductRow[]> {
   const db = getDb();
   if (!db) return [];
@@ -77,7 +82,8 @@ export async function getTopProducts(
   // ملاحظة: نرتّب على التعبير الرقمي مباشرة لا على الاسم المستعار — لأن
   // العمود في SELECT مُحوَّل CAST AS CHAR ⇒ الترتيب عليه يصبح أبجدياً («50»>«240»).
   const isAsc = opts.orderDir === "asc";
-  let orderSql = isAsc ? sql`SUM(${netLineRevenueSql}) ASC` : sql`SUM(${netLineRevenueSql}) DESC`;
+  let orderSql = isAsc
+    ? sql`SUM(${netLineRevenueSql}) ASC` : sql`SUM(${netLineRevenueSql}) DESC`;
   if (opts.by === "qty") {
     orderSql = isAsc ? sql`SUM(${netBaseQuantitySql}) ASC` : sql`SUM(${netBaseQuantitySql}) DESC`;
   } else if (opts.by === "profit") {

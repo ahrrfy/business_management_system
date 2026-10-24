@@ -620,6 +620,7 @@ export default function OrderFulfillment() {
                 disabledReason: "هناك عملية جارية على الطلب",
                 onSelect: () => setDispatchTarget({
                   id: o.id,
+                  branchId: o.branchId,
                   orderNumber: o.orderNumber,
                   total: o.total,
                   customerName: o.customerName,
@@ -1035,9 +1036,10 @@ export default function OrderFulfillment() {
           order={dispatchTarget}
           pending={dispatchM.isPending}
           onCancel={() => !dispatchM.isPending && setDispatchTarget(null)}
-          onConfirm={({ partyId, externalTrackingRef }) => dispatchM.mutate({
+          onConfirm={({ partyId, assignedUserId, externalTrackingRef }) => dispatchM.mutate({
             id: dispatchTarget.id,
             partyId,
+            assignedUserId,
             externalTrackingRef: externalTrackingRef || undefined,
           })}
         />

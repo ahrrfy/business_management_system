@@ -10,28 +10,49 @@
  * لا تُخفى: «إرجاعُ الإرسالية يقبل درجاً مفتوحاً فقط» — **المفتاحُ الناقص** في سياسة الخزينة
  * يُفتح حين يقبل فعلُ التوصيل رافدَ الخزينة (خارج هذه الشريحة: `server/services/delivery/**`).
  */
-import { useState } from "react";
+import React, { useState } from "react";
 import { AlertTriangle, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { RefundRailPicker, type RefundRailPickerState } from "@/components/ui/RefundRailPicker";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  RefundRailPicker,
+  type RefundRailPickerState,
+} from "@/components/ui/RefundRailPicker";
 
 export interface ReturnConsignmentTarget {
   consignmentId: number;
   label: string;
 }
+type ReturnConsignmentCopy = {
+  heading?: string;
+  disclosure?: React.ReactNode;
+  confirmText?: string;
+};
 
 export function ReturnConsignmentDialog({
   target,
   pending,
   onClose,
   onConfirm,
+  heading,
+  disclosure,
+  confirmText,
 }: {
   target: ReturnConsignmentTarget | null;
   pending?: boolean;
   onClose: () => void;
-  onConfirm: (args: { consignmentId: number; refundShiftId: number | undefined }) => void;
-}) {
+  onConfirm: (args: {
+    consignmentId: number;
+    refundShiftId: number | undefined;
+  }) => void;
+} & ReturnConsignmentCopy) {
   if (!target) return null;
   return (
     <ReturnConsignmentDialogBody
@@ -40,6 +61,9 @@ export function ReturnConsignmentDialog({
       pending={pending}
       onClose={onClose}
       onConfirm={onConfirm}
+      heading={heading}
+      disclosure={disclosure}
+      confirmText={confirmText}
     />
   );
 }
@@ -50,12 +74,18 @@ function ReturnConsignmentDialogBody({
   pending,
   onClose,
   onConfirm,
+  heading,
+  disclosure,
+  confirmText,
 }: {
   target: ReturnConsignmentTarget;
   pending?: boolean;
   onClose: () => void;
-  onConfirm: (args: { consignmentId: number; refundShiftId: number | undefined }) => void;
-}) {
+  onConfirm: (args: {
+    consignmentId: number;
+    refundShiftId: number | undefined;
+  }) => void;
+} & ReturnConsignmentCopy) {
   /**
    * **التمهيدُ الخادميّ الموحَّد** — يقول إن كان الطردُ يُخرج نقداً أصلاً (طردٌ غيرُ محصَّلٍ خارج
    * الوردية لا يُعطَّل — Codex P1)، والأدراجُ مُصفّاةٌ بفرع الإرسالية (Codex P2)، والروافدُ غيرُ
@@ -66,11 +96,17 @@ function ReturnConsignmentDialogBody({
   const notReady = rail == null || rail.loading || rail.error != null;
 
   return (
-    <Dialog open onOpenChange={(v) => { if (!v && !pending) onClose(); }}>
+    <Dialog
+      open
+      onOpenChange={(v) => {
+        if (!v && !pending) onClose();
+      }}
+    >
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <RotateCcw aria-hidden className="size-4" /> إرجاع الإرسالية
+            <RotateCcw aria-hidden className="size-4" />{" "}
+            {heading ?? "إرجاع الإرسالية"}
           </DialogTitle>
           <DialogDescription>{target.label}</DialogDescription>
         </DialogHeader>
@@ -79,13 +115,21 @@ function ReturnConsignmentDialogBody({
           <p className="flex items-start gap-2 rounded-md bg-[var(--sem-warn-bg)] px-2.5 py-2 text-xs font-bold text-[var(--sem-warn)]">
             <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0" />
             <span>
-              يُعكَس البيع كاملاً: تعود البضاعة للمخزون، وتصير الفاتورة مرتجعة، وتسقط ذمّة
-              العميل، ويُردّ ما قُبض. لا تُنفّذ إلّا بعد استلام الطرد في الفرع فعلياً.
+              {disclosure ?? (
+                <>
+                  يُعكَس البيع كاملاً: تعود البضاعة للمخزون، وتصير الفاتورة
+                  مرتجعة، وتسقط ذمّة العميل، ويُردّ ما قُبض. لا تُنفّذ إلّا بعد
+                  استلام الطرد في الفرع فعلياً.
+                </>
+              )}
             </span>
           </p>
 
           <RefundRailPicker
-            context={{ sourceDocType: "CONSIGNMENT_RETURN", sourceDocId: target.consignmentId }}
+            context={{
+              sourceDocType: "CONSIGNMENT_RETURN",
+              sourceDocId: target.consignmentId,
+            }}
             mode="embedded"
             onStateChange={setRail}
             drawerHint="قُبض على هذا الطرد نقدٌ — من هذا الدرج يخرج ردُّه."
@@ -96,16 +140,25 @@ function ReturnConsignmentDialogBody({
         <DialogFooter>
           <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
             {blockReason && (
-              <span className="text-2xs font-bold text-[var(--sem-warn)] sm:me-auto">{blockReason}</span>
+              <span className="text-2xs font-bold text-[var(--sem-warn)] sm:me-auto">
+                {blockReason}
+              </span>
             )}
             <div className="flex items-center justify-end gap-2">
-              <Button variant="ghost" onClick={onClose} disabled={pending}>تراجع</Button>
+              <Button variant="ghost" onClick={onClose} disabled={pending}>
+                تراجع
+              </Button>
               <Button
                 variant="destructive"
                 disabled={pending || notReady || blockReason != null}
-                onClick={() => onConfirm({ consignmentId: target.consignmentId, refundShiftId: rail?.selection?.refundShiftId })}
+                onClick={() =>
+                  onConfirm({
+                    consignmentId: target.consignmentId,
+                    refundShiftId: rail?.selection?.refundShiftId,
+                  })
+                }
               >
-                {pending ? "جارٍ…" : "استلمتُ الطرد — أرجِع"}
+                {pending ? "جارٍ…" : (confirmText ?? "استلمتُ الطرد — أرجِع")}
               </Button>
             </div>
           </div>

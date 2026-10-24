@@ -83,6 +83,9 @@ export interface JournalLine {
 
 /** The persisted operational meaning that selected the journal map. */
 export type PostingProfile =
+  | "FULFILLMENT_SERVICE_IMMEDIATE"
+  | "FULFILLMENT_SERVICE_REFUND"
+  | "AFTERCARE_ISSUE_RETURN"
   | "FULFILLMENT_CHARGE_ACCRUAL"
   | "FULFILLMENT_CHARGE_COST"
   | "FULFILLMENT_CHARGE_CREDIT"
@@ -275,6 +278,7 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
     "PURCHASE_CONSIGNMENT_SHORTAGE",
   ],
   PAYMENT_IN: [
+    "FULFILLMENT_SERVICE_IMMEDIATE",
     "FULFILLMENT_CHARGE_COLLECTION",
     "FULFILLMENT_CHARGE_CUSTODY",
     "FULFILLMENT_COURIER_EXCESS",
@@ -293,6 +297,7 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
     "PAYMENT_IN_EMPLOYEE_ADVANCE_REPAYMENT",
   ],
   PAYMENT_OUT: [
+    "FULFILLMENT_SERVICE_REFUND",
     "FULFILLMENT_CHARGE_EXCESS_REFUND",
     "FULFILLMENT_CHARGE_PAYEE",
     "PAYMENT_OUT_SUPPLIER",
@@ -330,6 +335,7 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
     "RETURN_PURCHASE_CONSIGNMENT",
   ],
   ADJUST: [
+    "AFTERCARE_ISSUE_RETURN",
     "FULFILLMENT_CHARGE_ACCRUAL",
     "FULFILLMENT_CHARGE_COST",
     "FULFILLMENT_CHARGE_CREDIT",
@@ -711,6 +717,30 @@ const PNL_ROLES = [
  * compile error until its allowed/required roles and source assertions exist.
  */
 export const PROFILE_POLICIES = Object.freeze({
+  FULFILLMENT_SERVICE_IMMEDIATE: profilePolicy("PAYMENT_IN", CASH_ASSETS, ["OTHER_REVENUE"], {
+    reversible: false,
+    sourceAssertions: [
+      sourceAssertion("amount", "DEBIT_MINUS_CREDIT", CASH_ASSETS),
+      sourceAssertion("revenue", "CREDIT_MINUS_DEBIT", ["OTHER_REVENUE"]),
+    ],
+    requireRoleComponents: [...CASH_ASSETS, "OTHER_REVENUE"],
+  }),
+  FULFILLMENT_SERVICE_REFUND: profilePolicy("PAYMENT_OUT", ["OTHER_REVENUE"], CASH_ASSETS, {
+    reversible: false,
+    sourceAssertions: [
+      sourceAssertion("amount", "CREDIT_MINUS_DEBIT", CASH_ASSETS),
+      sourceAssertion("revenue", "CREDIT_MINUS_DEBIT", ["OTHER_REVENUE"]),
+    ],
+    requireRoleComponents: ["OTHER_REVENUE", ...CASH_ASSETS],
+  }),
+  AFTERCARE_ISSUE_RETURN: profilePolicy("ADJUST", ["INVENTORY"], ["LOSSES"], {
+    reversible: false,
+    sourceAssertions: [
+      sourceAssertion("amount", "CREDIT_MINUS_DEBIT", ["INVENTORY"]),
+      sourceAssertion("cost", "DEBIT_MINUS_CREDIT", ["LOSSES"]),
+    ],
+    requireRoleComponents: ["INVENTORY", "LOSSES"],
+  }),
   FULFILLMENT_CHARGE_ACCRUAL: profilePolicy("ADJUST", ["AR"], ["OTHER_REVENUE", "OTHER_LIABILITY"], {
     reversible: false,
     sourceAssertions: [sourceAssertion("revenue", "CREDIT_MINUS_DEBIT", ["OTHER_REVENUE"])],

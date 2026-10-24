@@ -10,6 +10,8 @@ export function computePrintPosSplitMetrics(params: {
   splitLegs?: PosPaymentLegDraft[];
   editingInvoice: unknown;
   total: number;
+  extraAmount?: string;
+  chargeOnly?:boolean;
 }) {
   const splitLegs = params.splitLegs ?? [];
   const isSplitPayment = Boolean(params.splitMode && splitLegs.length > 0 && !params.editingInvoice);
@@ -17,17 +19,20 @@ export function computePrintPosSplitMetrics(params: {
     ? splitLegs.reduce((sum, l) => sum.plus(parsePosLegAmountD(l.amount)), D(0))
     : D(0);
   const splitNonCashPaidD = isSplitPayment
-    ? splitLegs.reduce((sum, l) => (l.method === "CASH" ? sum : sum.plus(parsePosLegAmountD(l.amount))), D(0))
+    ? splitLegs.reduce((sum, l) =>
+          l.method === "CASH" ? sum : sum.plus(parsePosLegAmountD(l.amount)), D(0))
     : D(0);
   const splitHasCash = isSplitPayment && splitLegs.some((l) => l.method === "CASH");
   const splitNonCashOverpay =
     isSplitPayment &&
-    (splitNonCashPaidD.gt(D(params.total)) || (!splitHasCash && splitTotalPaidD.gt(D(params.total))));
+    (splitNonCashPaidD.gt(D(params.chargeOnly?params.extraAmount??0:params.total)) || (!splitHasCash && splitTotalPaidD.gt(D(params.chargeOnly?params.extraAmount??0:params.total))));
   const splitLegsValid =
     isSplitPayment &&
     splitLegs.length >= 2 &&
     !splitNonCashOverpay &&
-    splitLegs.every((l) => parsePosLegAmountD(l.amount).gt(0) && isSplitLegExternalConfirmed(l));
+    splitLegs.every((l, index) => parsePosLegAmountD(l.amount).gt(0) && isSplitLegExternalConfirmed(l,
+          index === 0&&!params.chargeOnly ? D(params.extraAmount ?? 0) : D(0),
+        ));
   return {
     splitLegs,
     isSplitPayment,
@@ -150,7 +155,8 @@ export function buildPrintSplitSubmitPayload(params: {
   const { cart, splitLegs, total, isReservation, customerName } = params;
   const splitTotalPaidD = splitLegs.reduce((sum, l) => sum.plus(parsePosLegAmountD(l.amount)), D(0));
   const splitNonCashPaidD = splitLegs.reduce(
-    (sum, l) => (l.method === "CASH" ? sum : sum.plus(parsePosLegAmountD(l.amount))),
+    (sum, l) =>
+      l.method === "CASH" ? sum : sum.plus(parsePosLegAmountD(l.amount)),
     D(0),
   );
   const paid = splitTotalPaidD.toNumber();

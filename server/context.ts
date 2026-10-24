@@ -1,7 +1,14 @@
 import type { CreateExpressContextOptions } from "@trpc/server/adapters/express";
-import { applyPermissionOverrides, diffFromTemplate, resolvePermissions, type PermissionMap, type RoleKey } from "@shared/permissions";
+import {
+  applyPermissionOverrides,
+  diffFromTemplate,
+  resolvePermissions,
+  type PermissionMap,
+  type RoleKey,
+} from "@shared/permissions";
 import {
   resolveAtomicPermissions,
+  operationalCapsSchema,
   resolveOperationalCaps,
   resolveSensitiveDataMasking,
   type AtomicPermissionsMap,
@@ -74,6 +81,13 @@ export function normalizeOwnerAuthority(user: AuthUser): AuthUser {
   user.roleLockedByInactiveCustomRole = false;
   user.resolvedAtomicPermissions = resolveAtomicPermissions("admin");
   user.resolvedOperationalCaps = resolveOperationalCaps("admin");
+  const ownerCaps = operationalCapsSchema.safeParse(user.operationalCaps);
+  user.resolvedOperationalCaps.maxServiceChargeAmountIqd =
+    resolveOperationalCaps(
+      "admin",
+      null,
+      ownerCaps.success ? ownerCaps.data : undefined,
+    ).maxServiceChargeAmountIqd;
   user.resolvedSensitiveDataMasking = resolveSensitiveDataMasking("admin");
   user.operationPolicyEnabled = false;
   user.roleOperationPolicy = null;
@@ -138,7 +152,10 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
       null,
       null,
     );
-    const individualPolicy = user.operationPolicy == null ? null : storedOperationPolicySchema.parse(user.operationPolicy);
+    const individualPolicy =
+      user.operationPolicy == null
+        ? null
+        : storedOperationPolicySchema.parse(user.operationPolicy);
     user.courierShellOnly = baseRole === "courier" && individualPolicy == null;
     const inherited = hasRoleOperationPreset(baseRole)
       ? buildDefaultRoleOperationPolicy(
@@ -156,8 +173,11 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
       user.atomicPermissions as AtomicPermissionsMap | null,
       user.permissionsOverride as PermissionMap | null,
     );
-    user.operationPolicyEnabled = individualPolicy != null || hasRoleOperationPreset(baseRole);
-    user.roleOperationPolicy = hasRoleOperationPreset(baseRole) ? inherited : null;
+    user.operationPolicyEnabled =
+      individualPolicy != null || hasRoleOperationPreset(baseRole);
+    user.roleOperationPolicy = hasRoleOperationPreset(baseRole)
+      ? inherited
+      : null;
     user.inheritedOperationPolicy = inherited;
     user.inheritedOperationPolicyRevision = 0;
     user.resolvedOperationPolicy = user.operationPolicyEnabled
@@ -176,7 +196,8 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
     // القالب التشغيلي الافتراضي يفعّل التفويض الدقيق، لكنه لا يعيد كتابة
     // إعدادات الوحدات المحفوظة لحساب قديم. لا نشتقّ خريطة توافق جديدة إلا
     // عندما حفظت الإدارة سياسة فردية صريحة للمستخدم نفسه.
-    user.persistedPermissionsOverride = (user.permissionsOverride ?? null) as PermissionMap | null;
+    user.persistedPermissionsOverride = (user.permissionsOverride ??
+      null) as PermissionMap | null;
     if (individualPolicy != null)
       user.permissionsOverride = diffFromTemplate(
         baseRole,
@@ -217,13 +238,17 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
   const baseRole = role.baseRole as RoleKey;
   // الدور المخصّص هو الأساس، وعمود المستخدم يحمل فقط الفروق الفردية عنه. نعيد تحويل
   // النتيجة إلى فرق عن قالب baseRole كي تبقى كل بوابات النظام الحالية كما هي.
-  const customPermissions = resolvePermissions(baseRole, diffFromTemplate(baseRole, role.permissions as PermissionMap));
+  const customPermissions = resolvePermissions(
+    baseRole,
+    diffFromTemplate(baseRole, role.permissions as PermissionMap),
+  );
   const effectivePermissions = applyPermissionOverrides(
     customPermissions,
     user.permissionsOverride as PermissionMap | null,
   );
   user.permissionsOverride = diffFromTemplate(baseRole, effectivePermissions);
-  user.persistedPermissionsOverride = user.permissionsOverride as PermissionMap | null;
+  user.persistedPermissionsOverride =
+    user.permissionsOverride as PermissionMap | null;
   user.customRoleLabel = role.label;
   user.customRoleKey = role.key;
   const effectiveCustomAtomicRole: RoleKey =
@@ -250,12 +275,16 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
     null,
     null,
   );
-  const rolePolicy = role.operationPolicy == null
-    ? (hasRoleOperationPreset(role.key)
+  const rolePolicy =
+    role.operationPolicy == null
+      ? hasRoleOperationPreset(role.key)
         ? buildDefaultRoleOperationPolicy(role.key, baseRole, customPermissions)
-        : null)
-    : storedOperationPolicySchema.parse(role.operationPolicy);
-  const individualPolicy = user.operationPolicy == null ? null : storedOperationPolicySchema.parse(user.operationPolicy);
+        : null
+      : storedOperationPolicySchema.parse(role.operationPolicy);
+  const individualPolicy =
+    user.operationPolicy == null
+      ? null
+      : storedOperationPolicySchema.parse(user.operationPolicy);
   user.courierShellOnly =
     baseRole === "courier" &&
     role.operationPolicy == null &&
@@ -289,8 +318,8 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
         baseRole,
         effectivePermissions,
         {
-          ...role.atomicPermissions as AtomicPermissionsMap | null,
-          ...user.atomicPermissions as AtomicPermissionsMap | null,
+          ...(role.atomicPermissions as AtomicPermissionsMap | null),
+          ...(user.atomicPermissions as AtomicPermissionsMap | null),
         },
         user.permissionsOverride as PermissionMap | null,
       );
@@ -302,7 +331,7 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
 }
 
 export async function createContext(
-  opts: Pick<CreateExpressContextOptions, "req" | "res">
+  opts: Pick<CreateExpressContextOptions, "req" | "res">,
 ): Promise<TrpcContext> {
   let user: AuthUser | null = null;
   let sessionId: number | null = null;

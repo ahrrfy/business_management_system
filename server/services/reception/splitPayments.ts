@@ -4,7 +4,8 @@ import { z } from "zod";
 import { auditLogs, externalPaymentAttempts, receipts, productVariants, products } from "../../../drizzle/schema";
 import { appErrorMessage } from "@shared/errors";
 import type { ReceptionPaymentAllocation, ReceptionPaymentLeg, ReceptionPaymentMetadata, ReceptionPaymentSummary } from "@shared/receptionPayments";
-import { positiveMoneyString } from "../../lib/schemas";
+import { positiveMoneyString,nonNegMoneyString } from "../../lib/schemas";
+import {checkoutAllocationReferences,type CheckoutAllocationProof} from "../checkoutCharges";
 import type { Tx } from "../../db";
 import type { Actor } from "../tx";
 import { money, round2 } from "../money";
@@ -17,6 +18,7 @@ export const receptionPaymentsSchema = z.array(z.object({
   externalPaymentAttemptId: z.number().int().positive().nullish(),
   externalPaymentDeviceId: z.string().trim().min(1).max(64).nullish(),
 })).min(1).max(10);
+export const receptionComposedPaymentsSchema=z.array(receptionPaymentsSchema.element.extend({amount:nonNegMoneyString})).min(1).max(10);
 
 export function splitPaymentError(why: string): never {
   throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
@@ -37,8 +39,8 @@ export interface ReceptionSplitPlan {
   roundingEligible: boolean;
 }
 
-export function normalizeReceptionPayments(input: ReceptionCheckoutInput): ReceptionSplitPlan {
-  const parsed = receptionPaymentsSchema.safeParse(input.payments);
+export function normalizeReceptionPayments(input: ReceptionCheckoutInput,composed=false): ReceptionSplitPlan {
+  const parsed = (composed?receptionComposedPaymentsSchema:receptionPaymentsSchema).safeParse(input.payments);
   if (!parsed.success) splitPaymentError("أرسل من دفعة واحدة إلى 10 دفعات موجبة بوسائل قبض مدعومة");
   if (input.paymentMethod != null || input.paymentReference != null || input.paymentExternalPaymentAttemptId != null || input.paymentExternalPaymentDeviceId != null)
     splitPaymentError("لا تجمع مصفوفة الدفعات مع حقول طريقة القبض المفردة");
@@ -102,7 +104,7 @@ export function normalizeReceptionPayments(input: ReceptionCheckoutInput): Recep
     bindings: new Map(), references: new Map(), feeBinding: null };
 }
 
-export async function lockReceptionSplitProofs(tx: Tx, input: ReceptionCheckoutInput, plan: ReceptionSplitPlan, actor: Actor, replay = false) {
+export async function lockReceptionSplitProofs(tx: Tx, input: ReceptionCheckoutInput, plan: ReceptionSplitPlan, actor: Actor, replay = false,allocationProof?:CheckoutAllocationProof) {
   if (!replay) {
     const variantIds = Array.from(new Set([
       ...(input.regularSale?.lines ?? []).map(l => l.variantId),
@@ -135,6 +137,12 @@ export async function lockReceptionSplitProofs(tx: Tx, input: ReceptionCheckoutI
     plan.feeBinding = { branchId: input.branchId, channel: "PRINT_POS", method: tender.method, amount: fee.toFixed(2), attemptId: tender.externalPaymentAttemptId, deviceId: tender.externalPaymentDeviceId };
   }
   const bindings = [...Array.from(plan.bindings.entries()), ...(plan.feeBinding ? [[-1, plan.feeBinding] as const] : [])].sort((a,b) => Number(a[1].attemptId) - Number(b[1].attemptId));
+  if(allocationProof){
+    const refs=checkoutAllocationReferences(tx,actor,input,allocationProof);
+    for(const [index] of bindings){const reference=refs.get(index);if(!reference)splitPaymentError("مرجع تخصيص القبض الموحد مفقود");plan.references.set(index,reference);}
+    for(const portions of Array.from(plan.targets.values()))for(const portion of portions)portion.reference=plan.references.get(portion.paymentIndex)??null;
+    return;
+  }
   for (const [index, binding] of bindings) {
     const attempt = replay
       ? (await tx.select().from(externalPaymentAttempts).where(eq(externalPaymentAttempts.id, binding.attemptId!)).for("update").limit(1))[0]
@@ -161,7 +169,7 @@ export async function readReceptionSplitMetadata(tx: Tx, requestId: string): Pro
   return metadata;
 }
 
-export async function finishReceptionSplit(tx: Tx, input: ReceptionCheckoutInput, plan: ReceptionSplitPlan, targets: { regularSale?: { invoiceId: number } | null; printSale?: { invoiceId: number } | null; workOrders: Array<{ workOrderId: number }> }, actor: Actor, replay = false): Promise<ReceptionPaymentMetadata> {
+export async function finishReceptionSplit(tx: Tx, input: ReceptionCheckoutInput, plan: ReceptionSplitPlan, targets: { regularSale?: { invoiceId: number } | null; printSale?: { invoiceId: number } | null; workOrders: Array<{ workOrderId: number }> }, actor: Actor, replay = false,allocationProof?:CheckoutAllocationProof): Promise<ReceptionPaymentMetadata> {
   if (replay) {
     const metadata = await readReceptionSplitMetadata(tx, input.clientRequestId);
     if (!metadata) splitPaymentError("العملية الأصلية لا تملك تخصيص دفعات مقسّمة موثقاً");
@@ -186,12 +194,13 @@ export async function finishReceptionSplit(tx: Tx, input: ReceptionCheckoutInput
   }
   const feeRows = rows.filter(r => r.referenceNumber?.startsWith("DLV-FEE-"));
   if (!allocations.reduce((sum, row) => sum.plus(money(row.amount)), money(0)).eq(plan.summary.appliedAmount)) splitPaymentError("إجمالي إيصالات التخصيص لا يطابق المقبوض المطبّق");
+  if(allocationProof)checkoutAllocationReferences(tx,actor,input,allocationProof);
   for (const [index, binding] of Array.from(plan.bindings)) {
     const ids = allocations.filter(a => a.paymentIndex === index).map(a => a.receiptId);
     if (input.deliveryFeeTender?.combinedWithPaymentIndex === index) ids.push(...feeRows.map(r => Number(r.id)));
-    await consumeExternalReceiptAllocationsTx(tx, binding, ids, actor);
+    if(!allocationProof)await consumeExternalReceiptAllocationsTx(tx, binding, ids, actor);
   }
-  if (plan.feeBinding) await consumeExternalReceiptAllocationsTx(tx, plan.feeBinding, feeRows.map(r => Number(r.id)), actor);
+  if (plan.feeBinding&&!allocationProof) await consumeExternalReceiptAllocationsTx(tx, plan.feeBinding, feeRows.map(r => Number(r.id)), actor);
   const metadata = { paymentSummary: plan.summary, paymentAllocations: allocations };
   await tx.insert(auditLogs).values({ branchId: input.branchId, userId: actor.userId, action: ACTION, entityType: "receptionCheckout", entityId: input.clientRequestId, newValue: JSON.stringify(metadata) });
   return metadata;

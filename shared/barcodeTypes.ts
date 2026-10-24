@@ -17,7 +17,16 @@ export interface BarcodeSet {
 }
 
 /** أنواع المستندات المدعومة في النظام */
-export type DocType = "INV" | "WO" | "PO" | "QUO" | "CUST" | "ORD";
+export type DocType =
+  | "INV"
+  | "WO"
+  | "PO"
+  | "QUO"
+  | "CUST"
+  | "ORD"
+  | "FR"
+  | "AE"
+  | "CHG";
 
 /** القاموس المركزي للتسميات العربية لأنواع المستندات المرمزة */
 export const DOC_TYPE_AR: Record<DocType, string> = {
@@ -27,6 +36,9 @@ export const DOC_TYPE_AR: Record<DocType, string> = {
   QUO: "عرض سعر",
   CUST: "ملف عميل",
   ORD: "طلب متجر إلكتروني",
+  FR: "طلب تجهيز وتوصيل",
+  AE: "دفعة معالجة فعلية",
+  CHG: "مستند أجور",
 };
 
 export function docTypeLabel(type: string | null | undefined): string {
@@ -34,28 +46,31 @@ export function docTypeLabel(type: string | null | undefined): string {
   return (DOC_TYPE_AR as Record<string, string>)[type] ?? type;
 }
 
-
 /**
  * نتيجة تحليل أي مدخل ماسح — discriminated union لتوجيه الإجراء.
  * Strategy Pattern: كل نوع يُعالَج بطريقة مستقلة في scanRouter.
  */
 export type ScanResult =
-  | { type: "invoice";       number: string }
-  | { type: "workOrder";     number: string }
-  | { type: "consignment";   number: string }
+  | { type: "invoice"; number: string }
+  | { type: "workOrder"; number: string }
+  | { type: "consignment"; number: string }
+  | { type: "onlineOrder"; number: string }
+  | { type: "fulfillmentRequest"; number: string }
+  | { type: "aftercareExecution"; id: number }
+  | { type: "charge"; id: number }
   | { type: "purchaseOrder"; number: string }
-  | { type: "quotation";     number: string }
-  | { type: "customer";      id: number }
-  | { type: "employee";      id: number }
-  | { type: "user";          id: number }
-  | { type: "product";       barcode: string }
-  | { type: "unknown";       raw: string };
+  | { type: "quotation"; number: string }
+  | { type: "customer"; id: number }
+  | { type: "employee"; id: number }
+  | { type: "user"; id: number }
+  | { type: "product"; barcode: string }
+  | { type: "unknown"; raw: string };
 
 /** البيانات الدنيا لبناء payload الفاتورة */
 export interface InvoicePayloadFields {
   invoiceNumber: string;
-  invoiceDate: string;  // ISO date string YYYY-MM-DD
-  total: string;        // نص عشري (من decimal.js)
+  invoiceDate: string; // ISO date string YYYY-MM-DD
+  total: string; // نص عشري (من decimal.js)
   branchId: number;
 }
 
@@ -98,4 +113,3 @@ export interface VerifyResult {
   status?: string;
   customerName?: string;
 }
-

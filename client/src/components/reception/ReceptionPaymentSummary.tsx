@@ -207,7 +207,7 @@ export function ReceptionPaymentSummary(
 
       <div className="ms-auto flex items-baseline gap-1.5">
         <span className="text-xs font-semibold text-muted-foreground">
-          إجمالي الفاتورة
+          {props.chargesOnly?"إجمالي الأجور":"إجمالي الفاتورة"}
         </span>
         <span
           className="text-2xl font-black leading-none tabular-nums tracking-tight"

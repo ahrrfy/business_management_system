@@ -21,6 +21,9 @@ export interface DeliveryDraft {
   partyType: "INDIVIDUAL" | "COMPANY" | null;
   /** اسم الجهة المختارة — للإيصال والتوست (يُملأ مع `partyId`). */
   partyName: string;
+  /** الجهة الداخلية تحتاج اختيار موظف فعلي؛ لا نختار أول عضوٍ صامتاً. */
+  driverRequired: boolean;
+  assignedUserId: number | null;
   /** رقم البوليصة الخارجي كنصّ كي تبقى الأصفار البادئة كما مسحها القارئ. */
   externalTrackingRef: string;
   /** نصّ مالٍ (MoneyInput) — يُطبَّع عند البناء. */
@@ -38,6 +41,7 @@ export interface DeliveryDraft {
 /** عقد `sales.create` ⇒ `input.delivery` (PR-1 م١-خادم): يُسنِد داخل نفس المعاملة. */
 export interface DeliveryPayload {
   partyId: number;
+  assignedUserId?: number;
   fee: string;
   feeCollection: DeliveryFeeCollection;
   recipientName?: string;
@@ -52,12 +56,15 @@ export interface DeliveryPartyOption {
   name: string;
   partyType: "INDIVIDUAL" | "COMPANY";
   defaultFee: string;
+  driverRequired?: boolean;
+  driverUserIds?: number[];
 }
 
-export type DeliveryDraftIssue = "NO_PARTY" | "NO_ADDRESS" | "NO_COMPANY_TRACKING" | "COUNTER_FEE_REQUIRED" | "BAD_FEE";
+export type DeliveryDraftIssue = "NO_PARTY" | "NO_DRIVER" | "NO_ADDRESS" | "NO_COMPANY_TRACKING" | "COUNTER_FEE_REQUIRED" | "BAD_FEE";
 
 export const DELIVERY_ISSUE_AR: Readonly<Record<DeliveryDraftIssue, string>> = Object.freeze({
   NO_PARTY: "اختر جهة التوصيل",
+  NO_DRIVER: "اختر المندوب الموظف الذي سيستلم الإرسالية",
   NO_ADDRESS: "اكتب عنوان التوصيل — المندوب لا يصل بلا عنوان",
   NO_COMPANY_TRACKING: "امسح باركود بوليصة شركة التوصيل أو اكتب رقمها",
   COUNTER_FEE_REQUIRED: "«مقبوضة في الاستقبال» تتطلّب مبلغ أجرةٍ أكبر من صفر",
@@ -94,6 +101,8 @@ export function emptyDeliveryDraft(): DeliveryDraft {
     partyId: null,
     partyType: null,
     partyName: "",
+    driverRequired: false,
+    assignedUserId: null,
     externalTrackingRef: "",
     fee: "",
     feeManual: false,
@@ -119,6 +128,7 @@ export function normalizeFee(raw: string): string | null {
 export function validateDeliveryDraft(d: DeliveryDraft): DeliveryDraftIssue[] {
   const issues: DeliveryDraftIssue[] = [];
   if (d.partyId == null || d.partyId <= 0) issues.push("NO_PARTY");
+  if (d.driverRequired && (d.assignedUserId == null || !Number.isSafeInteger(d.assignedUserId) || d.assignedUserId <= 0)) issues.push("NO_DRIVER");
   if (!d.address.trim()) issues.push("NO_ADDRESS");
   if (d.partyType === "COMPANY" && !d.externalTrackingRef.trim()) issues.push("NO_COMPANY_TRACKING");
   const fee = normalizeFee(d.fee);
@@ -133,6 +143,7 @@ export function buildDeliveryPayload(d: DeliveryDraft): DeliveryPayload | null {
   const fee = normalizeFee(d.fee)!;
   return {
     partyId: d.partyId!,
+    ...(d.assignedUserId != null ? { assignedUserId: d.assignedUserId } : {}),
     fee,
     feeCollection: d.feeCollection,
     ...(d.recipientName.trim() ? { recipientName: d.recipientName.trim() } : {}),
@@ -201,15 +212,18 @@ export function saleReceiptAmounts(args: {
  */
 export function applyPartySelection(d: DeliveryDraft, party: DeliveryPartyOption | null): DeliveryDraft {
   if (!party) {
-    return { ...d, partyId: null, partyType: null, partyName: "", externalTrackingRef: "" };
+    return { ...d, partyId: null, partyType: null, partyName: "", driverRequired: false, assignedUserId: null, externalTrackingRef: "" };
   }
   const fee = d.feeManual ? d.fee : party.defaultFee ?? "0";
   const keepTrackingRef = d.partyId === party.id && party.partyType === "COMPANY";
+  const keepAssignedDriver = d.partyId === party.id && d.assignedUserId != null && (party.driverUserIds ?? []).includes(d.assignedUserId);
   return {
     ...d,
     partyId: party.id,
     partyType: party.partyType,
     partyName: party.name,
+    driverRequired: party.driverRequired === true,
+    assignedUserId: keepAssignedDriver ? d.assignedUserId : null,
     externalTrackingRef: keepTrackingRef ? d.externalTrackingRef : "",
     fee,
   };

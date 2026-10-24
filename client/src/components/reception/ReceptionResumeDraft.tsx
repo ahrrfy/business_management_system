@@ -18,6 +18,7 @@ import {
   type Tier,
 } from "@/components/reception/cartMath";
 export interface ReceptionResumeDraftInput {
+  onCommittedRecovery?:(draftId:number)=>Promise<boolean>;
   onPaymentScopeChanged?: () => void;
   branchId: number;
   offline: boolean;
@@ -28,57 +29,7 @@ export interface ReceptionResumeDraftInput {
   draftResumeEpochRef: React.RefObject<number>;
   setDraftTransitionPending: React.Dispatch<React.SetStateAction<boolean>>;
   draftSyncTimer: React.RefObject<NodeJS.Timeout | null>;
-  draftSyncQueueRef: React.RefObject<
-    | import("@/lib/receptionWorkspaceState").ReceptionDraftSyncQueue<{
-        header: {
-          customerId: number | null;
-          contactName: string | null;
-          contactPhone: string | null;
-          priceTier: "RETAIL" | "WHOLESALE" | "GOVERNMENT" | null;
-          channel:
-            | "OTHER"
-            | "WALK_IN"
-            | "WHATSAPP"
-            | "INSTAGRAM"
-            | "TIKTOK"
-            | "PHONE"
-            | null;
-          channelHandle: string | null;
-          conversationId: number | null;
-        };
-        lines: (
-          | {
-              lineKind: "CUSTOM";
-              sortOrder: number;
-              variantId: number | null;
-              productUnitId: number | null;
-              quantity: string;
-              unitPrice: string;
-              title: string;
-              customizationText: string | null;
-              designImages: string | null;
-              printSpec: string;
-              dueDate: string | null;
-              assignedTo: number | null;
-            }
-          | {
-              lineKind: "PRINT" | "GOODS";
-              sortOrder: number;
-              variantId: number;
-              productUnitId: number;
-              quantity: string;
-              unitPrice: string;
-              title: string;
-              customizationText?: undefined;
-              designImages?: undefined;
-              printSpec?: undefined;
-              dueDate?: undefined;
-              assignedTo?: undefined;
-            }
-        )[];
-      }>
-    | null
-  >;
+  draftSyncQueueRef: React.RefObject<ReceptionDraftSyncQueue<ReturnType<typeof import("./draftPayloadBuilder").buildDraftPayload>>|null>;
   workspaceDirty: boolean;
   flushActiveDraft: (
     customerIdOverride?: number | null | undefined,
@@ -113,6 +64,7 @@ export interface ReceptionResumeDraftInput {
   >;
   setDetachedRecoveryPending: React.Dispatch<React.SetStateAction<boolean>>;
   clearCouponIfApplied: () => void;
+  setCheckoutCharges: React.Dispatch<React.SetStateAction<import("@shared/checkoutCharges").CheckoutChargesInput>>;
   setCart: React.Dispatch<
     React.SetStateAction<import("@/components/reception/cartMath").CartLine[]>
   >;
@@ -164,6 +116,7 @@ export async function ReceptionResumeDraft(
     setDraftInfo,
     setDetachedRecoveryPending,
     clearCouponIfApplied,
+    setCheckoutCharges,
     setCart,
     setReceptionPhone,
     prevCustomerIdRef,
@@ -179,7 +132,7 @@ export async function ReceptionResumeDraft(
     setCustomerCreditLimit,
     setInvoiceDiscountPct,
     setCouponInput,
-    onPaymentScopeChanged,
+    onPaymentScopeChanged,onCommittedRecovery,
   }: ReceptionResumeDraftInput,
   draftId: number,
   isHydrationCurrent: () => boolean = () => true,
@@ -248,6 +201,7 @@ export async function ReceptionResumeDraft(
     }
     if (switched.kind === "NOOP") return true;
     const d = switched.draft;
+    if(d.status==="COMMITTED"&&shadow&&d.checkoutCharges&&onCommittedRecovery)return await onCommittedRecovery(draftId);
     if (d.status !== "OPEN") {
       const closedMessage =
         d.status === "COMMITTED"
@@ -316,6 +270,7 @@ export async function ReceptionResumeDraft(
     if (!shadow && activeDraftRef.current?.id !== draftId && (!forceReload || activeDraftRef.current != null)) onPaymentScopeChanged?.();
     clearCouponIfApplied();
     setCart(prepared.cart);
+    setCheckoutCharges(d.checkoutCharges??{});
     setReceptionPhone(toLocalIqMobileDigits(d.contactPhone ?? ""));
     const restoredCustomerId =
       d.customerId != null ? Number(d.customerId) : null;

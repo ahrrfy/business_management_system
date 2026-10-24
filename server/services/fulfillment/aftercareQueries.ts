@@ -4,6 +4,8 @@ import {
   aftercareLines,
   aftercareExecutions,
   aftercareExecutionLines,
+  aftercareSettlements,
+  aftercareSettlementLines,
 } from "../../../drizzle/fulfillmentSchema";
 import {
   accountingEntries,
@@ -21,7 +23,10 @@ import {
   workOrders,
 } from "../../../drizzle/schema";
 import type { AftercareCaseStatus } from "../../../shared/fulfillment";
-import { canCrossBranches } from "../../lib/branchAuthority";
+import {
+  canCrossBranches,
+  resolveActorBranchId,
+} from "../../lib/branchAuthority";
 import type { Tx } from "../../db";
 import { prepareDeliveryBarcodeLookup } from "../delivery/barcodeLookupPolicy";
 import { withTx, type Actor } from "../tx";
@@ -32,6 +37,97 @@ import {
   fulfillmentError,
   loadAftercareCaseTx,
 } from "./core";
+
+/** Unassigned owners use an explicit selected branch or the named real source's branch. */
+export async function resolveAftercareActor(
+  user: {
+    id: number;
+    branchId?: number | null;
+    role?: string;
+    isOwner?: boolean;
+  },
+  source: {
+    branchId?: number;
+    caseId?: number;
+    executionId?: number;
+    settlementId?: number;
+    invoiceId?: number;
+    workOrderId?: number;
+    receiptId?: number;
+  },
+): Promise<Actor> {
+  let sourceBranchId = source.branchId;
+  if (
+    sourceBranchId == null &&
+    user.branchId == null &&
+    canCrossBranches(user)
+  ) {
+    sourceBranchId = await withTx(
+      async (tx) => {
+        if (source.caseId)
+          return (
+            await tx
+              .select({ branchId: aftercareCases.branchId })
+              .from(aftercareCases)
+              .where(eq(aftercareCases.id, source.caseId))
+              .limit(1)
+          )[0]?.branchId;
+        if (source.executionId)
+          return (
+            await tx
+              .select({ branchId: aftercareExecutions.branchId })
+              .from(aftercareExecutions)
+              .where(eq(aftercareExecutions.id, source.executionId))
+              .limit(1)
+          )[0]?.branchId;
+        if (source.settlementId)
+          return (
+            await tx
+              .select({ branchId: aftercareSettlements.branchId })
+              .from(aftercareSettlements)
+              .where(eq(aftercareSettlements.id, source.settlementId))
+              .limit(1)
+          )[0]?.branchId;
+        if (source.invoiceId)
+          return (
+            (
+              await tx
+                .select({ branchId: invoices.branchId })
+                .from(invoices)
+                .where(eq(invoices.id, source.invoiceId))
+                .limit(1)
+            )[0]?.branchId ?? undefined
+          );
+        if (source.workOrderId)
+          return (
+            await tx
+              .select({ branchId: workOrders.branchId })
+              .from(workOrders)
+              .where(eq(workOrders.id, source.workOrderId))
+              .limit(1)
+          )[0]?.branchId;
+        if (source.receiptId)
+          return (
+            (
+              await tx
+                .select({ branchId: receipts.branchId })
+                .from(receipts)
+                .where(eq(receipts.id, source.receiptId))
+                .limit(1)
+            )[0]?.branchId ?? undefined
+          );
+        return undefined;
+      },
+      { gate: "NONE" },
+    );
+  }
+  return {
+    userId: user.id,
+    branchId: resolveActorBranchId({ user }, sourceBranchId),
+    role: user.role,
+    isOwner: user.isOwner === true,
+  };
+}
 import {
   assertEligibleAftercareSource,
   lockAftercareSourceTx,
@@ -130,6 +226,9 @@ export async function getAftercareCase(id: number, actor: Actor) {
           partyName: deliveryParties.name,
           consignmentNumber: deliveryConsignments.consignmentNumber,
           externalTrackingRef: deliveryConsignments.externalTrackingRef,
+          returnDeclaredAt: deliveryConsignments.returnDeclaredAt,
+          pickedUpAt: deliveryConsignments.pickedUpAt,
+          parcelStatus: deliveryConsignments.parcelStatus,
         })
         .from(aftercareExecutions)
         .leftJoin(
@@ -232,8 +331,36 @@ export async function getAftercareCase(id: number, actor: Actor) {
             .from(users)
             .where(inArray(users.id, actorIds))
         : [];
+      const [settlement] = await tx
+        .select()
+        .from(aftercareSettlements)
+        .where(eq(aftercareSettlements.activeCaseId, id))
+        .limit(1);
+      const settlementLines = settlement
+        ? await tx
+            .select()
+            .from(aftercareSettlementLines)
+            .where(eq(aftercareSettlementLines.settlementId, settlement.id))
+            .orderBy(aftercareSettlementLines.id)
+        : [];
       return {
         case: row,
+        settlement: settlement
+          ? {
+              ...settlement,
+              restoredValue: costVisible ? settlement.restoredValue : null,
+              sourceRights: settlement.sourceRights.map((right) => ({
+                ...right,
+                originalIssueValue: costVisible
+                  ? right.originalIssueValue
+                  : null,
+              })),
+              lines: settlementLines.map((line) => ({
+                ...line,
+                restoredValue: costVisible ? line.restoredValue : null,
+              })),
+            }
+          : null,
         lines: lines.map(({ line, workOrderTitle, ...label }) => ({
           ...line,
           ...label,
@@ -245,12 +372,23 @@ export async function getAftercareCase(id: number, actor: Actor) {
             partyName,
             consignmentNumber,
             externalTrackingRef,
+            returnDeclaredAt,
+            pickedUpAt,
+            parcelStatus,
           }) => ({
             ...execution,
+            barcode: `AE-${execution.id}`,
+            caseNumber: row.caseNumber,
+            originalSource: row.invoiceId
+              ? { kind: "INVOICE" as const, id: row.invoiceId }
+              : { kind: "WORK_ORDER" as const, id: row.workOrderId! },
             totalCost: costVisible ? execution.totalCost : null,
             partyName,
             consignmentNumber,
             externalTrackingRef,
+            returnDeclaredAt,
+            pickedUpAt,
+            parcelStatus,
             feeLedger: fees.find(
               (fee) => fee.consignmentId === execution.consignmentId,
             ) ?? { earned: "0.00", paid: "0.00", due: "0.00" },
@@ -293,7 +431,12 @@ export async function resolveAftercareExecution(
         throw fulfillmentError("دفعة المعالجة غير موجودة", "NOT_FOUND");
       assertFulfillmentBranch(actor, execution.branchId);
       await loadAftercareCaseTx(tx, execution.caseId, actor);
-      return { executionId: execution.id, caseId: execution.caseId };
+      return {
+        executionId: execution.id,
+        caseId: execution.caseId,
+        branchId: execution.branchId,
+        barcode: `AE-${execution.id}`,
+      };
     },
     { gate: "NONE" },
   );
