@@ -471,3 +471,11 @@ export const STUDIO_DISCOVERY_SORT_LABELS = {
 } as const;
 
 export type StudioDiscoverySort = keyof typeof STUDIO_DISCOVERY_SORT_LABELS;
+/** Product recommendation relations shared by catalog editors and storefront consumers. */
+export const PRODUCT_RELATION_LABELS = {
+  COMPLETE_KIT: "أكمل التجهيز",
+  COMPATIBLE: "مستلزم متوافق",
+  SAME_THEME: "نفس المناسبة",
+  UPSELL: "اختيار أعلى",
+} as const;
+export type ProductRelationType = keyof typeof PRODUCT_RELATION_LABELS;
