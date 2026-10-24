@@ -10,7 +10,7 @@ import {
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { formatDocumentNumber, stripDocPrefix } from "@shared/documentNumber";
-import { and, asc, desc, eq, inArray, like, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, like, or, sql } from "drizzle-orm";
 import {
   productionRecipeLines,
   productionRecipes,
@@ -667,12 +667,18 @@ export async function createWorkOrderInTx(
       message: "المقبوض سلفاً يتجاوز عربون الأمر — خلل توزيع",
     });
   }
-  const newDepositD = round2(depositD.minus(depositPreD));
+  const totalNewDepositD = round2(depositD.minus(depositPreD));
+  const depositLegs = input.depositPayments ?? [{ amount: totalNewDepositD.toFixed(2), method: input.paymentMethod ?? "CASH", reference: input.paymentReference }];
+  if (input.depositPayments && (!depositLegs.reduce((sum, leg) => sum.plus(money(leg.amount)), money(0)).eq(totalNewDepositD) || depositLegs.some(leg => money(leg.amount).lte(0)))) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر تثبيت عربون أمر الشغل", why: "تخصيص الدفعات لا يساوي العربون الجديد", doThis: "راجع توزيع الدفعات وأعد التثبيت" }) });
+  }
   // ش٠ (V4): وردية السلة المُتحقَّق منها (من checkoutReception) تُلزِم درجاً واحداً لكل نقد
   // السلة؛ الإنشاء المفرد (بلا shiftId) يبقى على الحلّ الذاتي — يفاضل RECEPTION لو فُتحت وردِيتان.
   const basketShiftId = input.shiftId ?? null;
-  if (newDepositD.gt(0)) {
-    const depositMethod = input.paymentMethod ?? "CASH";
+  for (const depositLeg of depositLegs) {
+    const newDepositD = round2(money(depositLeg.amount));
+    if (newDepositD.lte(0)) continue;
+    const depositMethod = depositLeg.method;
     // ش٥ (§٩.٤): عربون زين على الإنشاء المفرد المباشر (بلا shiftId من سلة الاستقبال) يمرّ
     // بضوابطه هنا — مسار السلة/المسوّدة أُسقط عنه (checkoutReceptionInTx فحص مبلغ القبض كله
     // سلفاً؛ إعادة الفحص لكل أمرٍ كانت سترفض سلّةً بأمرين على كودٍ واحدٍ مشروع).
@@ -681,7 +687,7 @@ export async function createWorkOrderInTx(
         userId: actor.userId,
         branchId: input.branchId,
         amount: newDepositD.toFixed(2),
-        reference: input.paymentReference,
+        reference: depositLeg.reference,
       });
     }
     const shiftId =
@@ -709,7 +715,7 @@ export async function createWorkOrderInTx(
       direction: "IN",
       amount: toDbMoney(newDepositD),
       paymentMethod: depositMethod,
-      referenceNumber: input.paymentReference?.trim() || null,
+      referenceNumber: depositLeg.reference?.trim() || null,
       // cashBucket='DRAWER' للعربون النقدي ⇒ يَدخل تسوية الدرج/Z-report (مرآة دفعة التسليم/البيع).
       // كان NULL ⇒ يُستثنى من computeExpectedCash (cashBucket='DRAWER') ⇒ فائضٌ زائف عند إقفال وردية الاستقبال.
       cashBucket: depositMethod === "CASH" ? "DRAWER" : null,
@@ -724,7 +730,7 @@ export async function createWorkOrderInTx(
     await tx
       .update(workOrders)
       .set({ depositReceiptId })
-      .where(eq(workOrders.id, workOrderId));
+      .where(and(eq(workOrders.id, workOrderId), sql`${workOrders.depositReceiptId} IS NULL`));
     const depositAssetRole = paymentAssetRole(
       depositMethod,
       depositMethod === "CASH" ? "DRAWER" : null,

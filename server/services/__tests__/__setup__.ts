@@ -110,6 +110,27 @@ async function discoverDeleteTriggeredTables(
   return cachedDeleteTriggeredTables;
 }
 
+/** Empty immutable tables need no DDL; populated ones still require the guarded TRUNCATE path. */
+export async function populatedTestTables(conn: mysql.Connection, tables: string[]) {
+  if (!tables.length) return [];
+  const [rows] = await conn.query<mysql.RowDataPacket[]>(tables.map(table =>
+    `SELECT ${conn.escape(table)} AS name WHERE EXISTS (SELECT 1 FROM \`${table.replace(/`/g, "``")}\` LIMIT 1)`,
+  ).join(" UNION ALL "));
+  const known = new Set(tables);
+  if (rows.some(row => !known.has(row.name))) throw new Error("Unknown table in test cleanup snapshot");
+  return rows.map(row => row.name as string);
+}
+
+export async function clearTestTable(conn: mysql.Connection, table: string, deleteProtected: boolean) {
+  if (deleteProtected) {
+    const [existing] = await conn.query<mysql.RowDataPacket[]>(`SELECT 1 FROM \`${table}\` LIMIT 1`);
+    if (existing.length === 0) return;
+    await conn.query(`TRUNCATE TABLE \`${table}\``);
+  } else {
+    await conn.query(`DELETE FROM \`${table}\``);
+  }
+}
+
 afterEach(async () => {
   if (!TEST_DB_URL) return;
   // اتصال مُكرَّس طازج بالرابط الملتقَط — مُستقلّ عن تجمّع Drizzle (تُغلقه الاختبارات) وعن أيّ
@@ -119,16 +140,13 @@ afterEach(async () => {
     const tables = await discoverTables(conn);
     const deleteTriggeredTables = await discoverDeleteTriggeredTables(conn);
     await conn.query("SET FOREIGN_KEY_CHECKS = 0");
-    for (const t of tables) {
+    // One exact existence snapshot avoids hundreds of empty DELETE round trips per pure unit test.
+    for (const t of await populatedTestTables(conn, tables)) {
       // جداول الأثر غير القابل للمحو تحرس DELETE بتريغر مقصود في الإنتاج. تنظيف الاختبار وحده
       // يستعمل TRUNCATE عليها (مع تعطيل FK) كي لا نضع منفذ bypass داخل التريغر الإنتاجي.
       // بقية الجداول تبقى على DELETE للأسباب الموثقة أعلى الملف.
       try {
-        if (deleteTriggeredTables.has(t)) {
-          await conn.query(`TRUNCATE TABLE \`${t}\``);
-        } else {
-          await conn.query(`DELETE FROM \`${t}\``);
-        }
+        await clearTestTable(conn, t, deleteTriggeredTables.has(t));
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         const operation = deleteTriggeredTables.has(t) ? "TRUNCATE TABLE" : "DELETE FROM";

@@ -1,3 +1,4 @@
+import { receptionPaymentsSchema } from "../services/reception/splitPayments";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { hasOperationPolicy, operationRecordScope, summarizeOperationModules, type OperationUser } from "@shared/operationPermissions";
@@ -194,6 +195,7 @@ const receptionWorkOrderSchema = z.object({
 });
 
 const receptionCheckoutSchema = z.object({
+  payments: receptionPaymentsSchema.optional(),
   branchId: z.number().int().positive(),
   shiftId: z.number().int().positive(),
   customerId: z.number().int().positive().nullish(),
@@ -291,7 +293,7 @@ const receptionCheckoutSchema = z.object({
   }
   // صدق طريقة الدفع: قبضٌ موجب بلا طريقة = إدخالٌ ناقص (والعكس — طريقةٌ بلا قبض — تُهمَل
   // في الخدمة بدل أن تُختَم كذباً على الفاتورة).
-  if (money(input.paidAmount ?? "0").gt(0) && !input.paymentMethod) {
+  if (!input.payments && money(input.paidAmount ?? "0").gt(0) && !input.paymentMethod) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["paymentMethod"],
@@ -300,7 +302,7 @@ const receptionCheckoutSchema = z.object({
   }
   for (let index = 0; index < input.workOrders.length; index += 1) {
     const order = input.workOrders[index];
-    if (money(order.deposit ?? "0").gt(0) && (order.paymentMethod ?? null) !== (input.paymentMethod ?? null)) {
+    if (!input.payments && money(order.deposit ?? "0").gt(0) && (order.paymentMethod ?? null) !== (input.paymentMethod ?? null)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["workOrders", index, "paymentMethod"], message: "طريقة دفع العربون لا تطابق طريقة دفع العملية" });
     }
   }

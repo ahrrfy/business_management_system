@@ -1,3 +1,5 @@
+import type { ReceptionPaymentLeg, ReceptionPaymentMetadata } from "@shared/receptionPayments";
+import { readReceptionSplitMetadata, splitPaymentError } from "./splitPayments";
 // ش٣ — تثبيت المسوّدة: تصير فاتورةً (+أوامر شغل) بذرّيةٍ كاملة وidempotency ثلاثيّ الطبقات.
 // docs/reception-cashier-system-design-2026-08-05.md §٧.٣:
 //   (أ) version تفاؤليّ للتحرير · (ب) FOR UPDATE تشاؤميّ للتثبيت · (ج) commitRequestId
@@ -42,6 +44,7 @@ import { allocateAtCommit, heldNetOfDraft, type AllocationTarget } from "../depo
 async function stampDerivedPaymentMethods(
   tx: Tx,
   appliedPayments: Array<{ paymentId: number; appliedKind: "INVOICE" | "WORKORDER"; appliedId: number }>,
+  includeNewReceipts = false,
 ) {
   const invoiceTargets = appliedPayments.filter((p) => p.appliedKind === "INVOICE");
   if (!invoiceTargets.length) return;
@@ -58,6 +61,11 @@ async function stampDerivedPaymentMethods(
     foldedByInvoice.set(p.appliedId, mixedAwarePaymentMethod(foldedByInvoice.get(p.appliedId), method));
   }
   for (const [invoiceId, method] of Array.from(foldedByInvoice.entries())) {
+    if (includeNewReceipts) {
+      const [current] = await tx.select({ method: invoices.paymentMethod }).from(invoices).where(eq(invoices.id, invoiceId));
+      await tx.update(invoices).set({ paymentMethod: mixedAwarePaymentMethod(current?.method, method) }).where(eq(invoices.id, invoiceId));
+      continue;
+    }
     await tx
       .update(invoices)
       .set({ paymentMethod: method as never })
@@ -66,6 +74,7 @@ async function stampDerivedPaymentMethods(
 }
 
 export interface CommitDraftInput {
+  payments?: ReceptionPaymentLeg[];
   draftId: number;
   version: number;
   /** إجمالي ما رآه الموظّف (خام قبل تقريب IQD) — الخادم يعيد الحساب من الأسطر ويرفض الاختلاف:
@@ -89,7 +98,7 @@ export interface CommitDraftInput {
   delivery?: ReceptionCheckoutInput["delivery"];
 }
 
-export interface CommitDraftResult {
+export interface CommitDraftResult extends ReceptionPaymentMetadata {
   draftId: number;
   draftNumber: string;
   idempotentReplay: boolean;
@@ -170,9 +179,13 @@ export function materialize(
   // بنفس الدالة فيتطابقان ويقيّد الفرق ADJUST.
   // ش٤: لو أنزل التقريبُ الإجماليَّ تحت المقبوض سلفاً (عربونٌ = الإجمالي الخام بالضبط + تقريبٌ
   // لأسفل) لَما وُجد للفارق مخرجٌ (ردٌّ قسريّ لـ<=125 ديناراً) — نتخطّى التقريب حينها.
+  const roundingTender = input.payments
+    ? { method: input.payments.every(l => l.method === "CASH") ? "CASH" : "CARD", amount: input.payments.reduce((sum, leg) => sum.plus(money(leg.amount)), money(0)).toFixed(2) }
+    : input.collectNow;
   const rawRound =
     input.cashRoundIQD === true &&
-    input.collectNow?.method === "CASH" &&
+    roundingTender?.method === "CASH" &&
+    (input.payments === undefined || money(roundingTender!.amount).plus(heldNet).gte(roundCashIQD(sum(goods)))) &&
     goods.length > 0 && prints.length === 0 && customs.length === 0;
   // `.lte` لا `.lt` (مراجعة ش٤): عند تساوي المحتجز مع المقرَّب بالضبط (عربون 5,000 على 5,100
   // تُقرَّب 5,000) كان التقريب يبقى فيصير applied=5,100 > 5,000 ⇒ طريقٌ نقديّ مسدود بلا مخرج.
@@ -187,7 +200,7 @@ export function materialize(
   let mixedRoundTarget: "SALE" | "PRINT" | null = null;
   if (
     input.cashRoundIQD === true &&
-    input.collectNow?.method === "CASH" &&
+    roundingTender?.method === "CASH" &&
     !rawRound &&
     (goods.length > 0 || prints.length > 0)
   ) {
@@ -196,7 +209,9 @@ export function materialize(
     const delta = roundedAll.minus(grandAll);
     const carrier = goods.length > 0 ? "SALE" as const : "PRINT" as const;
     const carrierRaw = carrier === "SALE" ? sum(goods) : sum(prints);
-    const fullCashNow = round2(money(input.collectNow.amount).plus(heldNet)).eq(roundedAll);
+    const availableCash = round2(money(roundingTender!.amount).plus(heldNet));
+    // Split legs carry raw tender, including change; legacy collectNow is already capped.
+    const fullCashNow = input.payments ? availableCash.gte(roundedAll) : availableCash.eq(roundedAll);
     if (!delta.isZero() && fullCashNow && !roundedAll.lte(heldNet) && carrierRaw.plus(delta).gt(0)) {
       mixedRoundTarget = carrier;
       if (carrier === "SALE") goodsAmount = round2(carrierRaw.plus(delta));
@@ -285,6 +300,7 @@ export function materialize(
     // صدق طريقة الدفع (١٨/٨): بلا قبضٍ الآن ⇒ **لا طريقة**. كان `?? "CASH"` يختلق «نقدي»
     // لتثبيتٍ صفريّ القبض (سلّة تخصيصٍ خالصة بلا عربون مسموحةٌ صراحةً) فتُقرأ الفاتورة مدفوعةً
     // نقداً وهي آجلة، وتسقط من فلتر «آجل» (paymentMethod IS NULL) — بلاغ المالك.
+    ...(input.payments === undefined ? {} : { payments: input.payments }),
     paymentMethod: input.collectNow?.method ?? null,
     paymentReference: input.collectNow?.reference ?? null,
     ...(input.collectNow?.externalPaymentAttemptId != null ? {paymentExternalPaymentAttemptId:input.collectNow.externalPaymentAttemptId,paymentExternalPaymentDeviceId:input.collectNow.externalPaymentDeviceId} : {}),
@@ -372,6 +388,7 @@ async function rebuildResult(
 
 export async function commitDraft(input: CommitDraftInput, actor: Actor & { role?: string }) {
   return withTx(async (tx) => {
+    if (input.payments !== undefined && input.collectNow != null) splitPaymentError("لا تجمع payments مع collectNow");
     // (ب) قفلٌ تشاؤميّ: تثبيتان متزامنان من جهازين ⇒ الثاني ينتظر ثم يجد COMMITTED فيُعيد
     // **نفس** النتيجة (I8) — لا مصفوفةً فارغة ولا مستندات مزدوجة.
     const draft = (
@@ -391,7 +408,7 @@ export async function commitDraft(input: CommitDraftInput, actor: Actor & { role
       .orderBy(asc(receptionDraftLines.sortOrder), asc(receptionDraftLines.id));
 
     const tenderFingerprint = idempotencyHash({
-      fee:input.deliveryFeeHeld ?? null,tender:input.deliveryFeeTender ?? null,collectNow:input.collectNow ?? null,
+      fee:input.deliveryFeeHeld ?? null,tender:input.deliveryFeeTender ?? null,collectNow:input.collectNow ?? null,...(input.payments === undefined ? {} : {payments:input.payments}),
     });
     const tenderRecorded = await checkIdempotency(tx,"reception.draftFeeTender",draft.commitRequestId,tenderFingerprint,{requireStoredHash:true});
     if (draft.status !== "OPEN") {
@@ -399,7 +416,13 @@ export async function commitDraft(input: CommitDraftInput, actor: Actor & { role
         if (input.deliveryFeeTender != null && tenderRecorded == null) throw new TRPCError({code:"CONFLICT",message:appErrorMessage({
           what:"تعذّر تبديل وسيلة أجرة طلب مثبت",why:"التثبيت الأصلي لا يملك تخصيص قبض موثقاً بهذه الحمولة",doThis:"راجع إيصال الأجرة الأصلي ولا تؤكد عملية بطاقة جديدة لإعادة طلب قديم",
         })});
-        return rebuildResult(tx, draft, lines.filter((l) => l.lineKind === "CUSTOM").length);
+        const rebuilt = await rebuildResult(tx, draft, lines.filter((l) => l.lineKind === "CUSTOM").length);
+        if (input.payments !== undefined) {
+          const metadata = await readReceptionSplitMetadata(tx, draft.commitRequestId);
+          if (!metadata) splitPaymentError("التثبيت الأصلي لا يملك دفعات مقسّمة موثقة");
+          return { ...rebuilt, ...metadata };
+        }
+        return rebuilt;
       }
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
@@ -460,7 +483,7 @@ export async function commitDraft(input: CommitDraftInput, actor: Actor & { role
     );
     // ش٧ (قرار المالك ٦/٨): طلبٌ يُسنَد لمندوبٍ **مُستثنى** — الزبون يدفع عند الاستلام، فلا
     // يُجبَر الكاشير على «قبض» مالٍ لم يستلمه (فائضُ درجٍ يُحاسَب عليه). المتبقّي عهدةُ مندوب.
-    if (!input.delivery && hasDirect && !input.collectNow && heldNet.lt(directTotal)) {
+    if (!input.delivery && hasDirect && !input.collectNow && input.payments === undefined && heldNet.lt(directTotal)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: heldNet.gt(0)
@@ -492,7 +515,7 @@ export async function commitDraft(input: CommitDraftInput, actor: Actor & { role
     const lineMeta = await loadDraftLineMeta(tx, lines);
     const checkoutInput = materialize(draft, lines, input, heldNet, lineMeta);
     const result = await checkoutReceptionInTx(tx, checkoutInput, actor);
-    if (input.deliveryFeeTender != null && tenderRecorded == null) {
+    if ((input.deliveryFeeTender != null || input.payments !== undefined) && tenderRecorded == null) {
       await recordIdempotencyKey(tx,"reception.draftFeeTender",draft.commitRequestId,Number(draft.id),tenderFingerprint);
     }
 
@@ -517,7 +540,7 @@ export async function commitDraft(input: CommitDraftInput, actor: Actor & { role
     // يبني لها دفعةً (المال قُبض سابقاً وله إيصاله — I5) فتُختَم NULL. لكنّها **ليست آجلة**:
     // قُبضت فعلاً بطريقة العربون. نشتقّها الآن من طرق القبضات المطبَّقة عليها — بعد
     // allocateAtCommit حيث تُعرف الحصص — بنفس طيّ `mixedAwarePaymentMethod` (تعدّد ⇒ MIXED).
-    await stampDerivedPaymentMethods(tx, appliedPayments);
+    await stampDerivedPaymentMethods(tx, appliedPayments, input.payments !== undefined);
 
     // ربط المحادثة بأمر الشغل **داخل معاملة التثبيت** (١٩/٨): إمّا (أمر شغل +
     // محادثةٌ مربوطة) وإمّا لا شيء — لا ظنٌّ لاحق يسقط إن انقطعت الشبكة.
@@ -543,6 +566,7 @@ export async function commitDraft(input: CommitDraftInput, actor: Actor & { role
       .where(eq(receptionDrafts.id, input.draftId));
 
     return {
+      ...(result.paymentSummary ? { paymentSummary: result.paymentSummary, paymentAllocations: result.paymentAllocations } : {}),
       draftId: Number(draft.id),
       draftNumber: draft.draftNumber,
       idempotentReplay: false,

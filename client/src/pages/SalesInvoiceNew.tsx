@@ -1,3 +1,7 @@
+import { useInvoicePaymentSession } from "@/components/payments/useInvoicePaymentSession";
+import { fmtAr } from "@/lib/money";
+import { useSplitTender } from "@/components/payments/useSplitTender";
+import { SplitTenderButton } from "@/components/payments/SplitTenderButton";
 /**
  * SalesInvoiceNew — صفحة فاتورة بيع متقدّمة (شريحة SALE) بواجهة محرّر الفواتير الموحّدة.
  *
@@ -320,8 +324,7 @@ export default function SalesInvoice() {
   );
 
   // idempotency: مفتاح ثابت لكل محاولة إنشاء (يُجدَّد بعد كل حفظ ناجح / RESET).
-  const [clientRequestId, setClientRequestId] = useState<string>(() => crypto.randomUUID(),
-  );
+  const [clientRequestId, setClientRequestId] = useInvoicePaymentSession(me.data?.id);
   const printAfterSaveRef = useRef(false);
   const shareAfterSaveRef = useRef(false);
 
@@ -371,11 +374,12 @@ export default function SalesInvoice() {
     } | null
   >(null);
   /** إثبات الدفع الخارجي هنا للبيع الجديد فقط؛ فرق التصحيح يُنفّذه المراجع عند الاعتماد. */
-  const externalAmountD = D(computePaidStr()); const externalAmount = round2(externalAmountD).toFixed(2);
   const hasDigitalItems = state.items.some((line) => line.digital != null);
+  const splitTender = useSplitTender({ branchId: state.branchId, ownerId: me.data?.id, sessionKey: `${isCorrection ? `correction-${correctInvoiceId}` : "new"}:${clientRequestId}`, channel: "POS", canConfirm: salesExternalPaymentAllowed(me.data, false) && salesExternalPaymentAllowed(me.data, true), disabled: !clientRequestId || isCorrection || hasDigitalItems });
+  const externalAmountD = D(computePaidStr()); const externalAmount = round2(externalAmountD).toFixed(2);
   // لا نبدأ قبضاً خارجياً لفاتورة رقمية قبل وجود نيّة وحجز ذريين؛ الخادم يفرض
   // السياسة نفسها. الفواتير العادية غير النقدية تبقى على مسار الإثبات الحالي.
-  const externalNeeded = !isCorrection && !hasDigitalItems && state.paymentMethod !== "CASH" && externalAmountD.gt(0);
+  const externalNeeded = !splitTender.active && !isCorrection && !hasDigitalItems && state.paymentMethod !== "CASH" && externalAmountD.gt(0);
   const externalChannel = "POS" as const;
   const externalFingerprint = `${externalChannel}|${state.branchId}|${state.paymentMethod}|${externalAmount}|${paymentRef.trim()}`;
   const externalConfirmed =
@@ -462,6 +466,7 @@ export default function SalesInvoice() {
     onSuccess: (r) => {
       utils.sales.list.invalidate();
       const id = (r as { invoiceId: number }).invoiceId;
+      splitTender.reset(true);
       notify.ok("تم حفظ فاتورة البيع واعتمادها");
       // أعِد توليد المفتاح للفاتورة التالية + أغلق حوار الموافقة إن كان مفتوحاً.
       setClientRequestId(crypto.randomUUID()); setCreditPrompt(null); setMgrEmail(""); setMgrPwd("");
@@ -544,6 +549,7 @@ export default function SalesInvoice() {
    *    لا يُفترَض الدفع الكامل ضمناً (الخادم لا يدعم جدول أقساط؛ نعامله كآجل بدفعة مقدّمة اختيارية).
    */
   function computePaidStr(): string {
+    if (splitTender.active) return splitTender.tendered;
     if (state.paymentTerms === "CREDIT") return "0";
     const entered = state.paidAmount.trim();
     if (entered) return round2(moneyInput(entered)).toFixed(2);
@@ -596,7 +602,8 @@ export default function SalesInvoice() {
       // العراق VAT=0% افتراضياً — الضريبة اختيارية على مستوى الفاتورة، تُطبَّق فقط عند تفعيلها
       // صراحةً من «تطبيق ضريبة» في ملخّص المبالغ (لعملاء/دوائر تتطلّب فاتورة ضريبية).
       taxRatePercent: state.taxEnabled ? round2(moneyInput(state.taxRatePercent)).toFixed(2) : "0",
-      payment: hasPayment
+      payments: splitTender.active ? splitTender.parts.map(part => ({ amount: part.amount, method: part.method, ...(part.method !== "CASH" ? { externalPaymentAttemptId: part.proof?.attemptId ?? undefined } : {}) })) : undefined,
+      payment: !splitTender.active && hasPayment
         ? {
             amount: paidStr,
             method: state.paymentMethod,
@@ -605,8 +612,9 @@ export default function SalesInvoice() {
               : { externalPaymentAttemptId: externalAttempt?.attemptId ?? undefined }),
           }
         : undefined,
+      ...(splitTender.active ? { deviceId: splitTender.parts.find(part => part.method !== "CASH")?.proof?.deviceId } : {}),
       // يجب أن يطابق جهاز المحاولة المؤكَّدة، وإلا رُفض استهلاكها.
-      ...(hasPayment && state.paymentMethod !== "CASH" && externalAttempt?.deviceId
+      ...(!splitTender.active && hasPayment && state.paymentMethod !== "CASH" && externalAttempt?.deviceId
         ? { deviceId: externalAttempt.deviceId }
         : {}),
       // تاريخ الاستحقاق للبيع الآجل/الأقساط فقط (يُحفظ على invoices.dueDate ⇒ أعمار الذمم
@@ -689,7 +697,12 @@ export default function SalesInvoice() {
 
   /** تحقّق أعمالي قبل الإرسال. يُرجع رسالة عربية أو null إن صالح. */
   function validate(): string | null {
+    if (!clientRequestId) return ACTION_LABELS.loading;
     if (!availableActions.includes("save")) return "حفظ هذه العملية غير مفوّض لحسابك.";
+    if (splitTender.active) {
+      if (isCorrection || hasDigitalItems || state.paymentTerms === "CREDIT") return "تقسيم الدفع متاح لفاتورة بيع جديدة غير رقمية؛ الآجل الكامل لا يتضمن قبضاً الآن.";
+      const problem = splitTender.problem(totals.grandTotal); if (problem) return problem;
+    }
     if (hasDigitalItems && !canUseDigital) return "دورة بيع الكروت الرقمية غير مفوّضة بالكامل لحسابك.";
     if (!isPosPaymentMethodEnabled(state.paymentMethod)) return posPaymentRejectionMessage(state.paymentMethod);
     if (!state.branchId) return "اختر الفرع.";
@@ -698,7 +711,7 @@ export default function SalesInvoice() {
       return "الخصم الإجمالي غير صالح.";
     if (!isCompleteNonNegativeMoneyInput(state.shipping, { allowEmpty: true }))
       return "أجرة التوصيل غير صالحة.";
-    if (!isCompleteNonNegativeMoneyInput(state.paidAmount, { allowEmpty: true }))
+    if (!splitTender.active && !isCompleteNonNegativeMoneyInput(state.paidAmount, { allowEmpty: true }))
       return "المبلغ المدفوع غير صالح.";
     const digitalError = validateDigitalInvoiceCheckout(state.items, {
       isCorrection, hasOpenShift: !!currentShift.data,
@@ -738,7 +751,7 @@ export default function SalesInvoice() {
       const remaining = D(totals.grandTotal).minus(paid);
       if (remaining.gt(0) && !state.entityId)
         return "هناك مبلغ آجل (ذمة) — اختر عميلاً لتسجيل الذمة عليه.";
-      if (remaining.lt(0) && state.paymentMethod !== "CASH")
+      if (!splitTender.active && remaining.lt(0) && state.paymentMethod !== "CASH")
         return "الدفع غير النقدي لا يمكن أن يتجاوز إجمالي الفاتورة.";
     }
     if (D(totals.grandTotal).lt(0)) return "الإجمالي النهائي لا يمكن أن يكون سالباً.";
@@ -845,6 +858,7 @@ export default function SalesInvoice() {
   }
 
   function handleReset() {
+    splitTender.reset();
     dispatch({ type: "RESET", invoiceType: INVOICE_TYPE });
     setClientRequestId(crypto.randomUUID());
     // RESET يُعيد taxEnabled/taxRatePercent للافتراضي المُدرَج في createInitialState (false/"0") —
@@ -968,6 +982,7 @@ export default function SalesInvoice() {
       typeof document !== "undefined" && !!document.querySelector('[role="alertdialog"][data-state="open"]');
 
     const onKey = (e: KeyboardEvent) => {
+      if (document.querySelector('[data-split-tender-editor][data-state="open"]')) return;
       // أثناء فتح حوار الموافقة: Esc يغلقه فقط.
       if (creditPrompt) {
         if (e.key === "Escape") shortcutHandlersRef.current.closeApprovalPrompt();
@@ -1189,8 +1204,9 @@ export default function SalesInvoice() {
             showShipping
             showOtherExpenses={false}
             showTaxToggle
-            showPayment={!isCorrection}
+            showPayment={!isCorrection && !splitTender.active}
           />
+          {!isCorrection && <div className="space-y-2 rounded-md border p-3"><SplitTenderButton draft={splitTender} due={totals.grandTotal} disabled={!splitTender.active && (hasDigitalItems || state.paymentTerms === "CREDIT" || state.items.length === 0)} reason={hasDigitalItems ? "الكروت الرقمية تتبع مسار تسديد مستقل." : state.paymentTerms === "CREDIT" ? "الآجل الكامل بلا دفعة الآن." : null}/>{splitTender.active && <p className="text-sm">المقبوض: {fmtAr(splitTender.tendered)} د.ع · المتبقي: {fmtAr(splitTender.totals(totals.grandTotal).remaining.toFixed(2))} د.ع{splitTender.totals(totals.grandTotal).change.gt(0) && ` · الفكة: ${fmtAr(splitTender.totals(totals.grandTotal).change.toFixed(2))} د.ع`}</p>}</div>}
           {/* بوّابة الإثبات: مرجعٌ + تأكيدٌ خادميّ قبل فتح الحفظ — مطابقة لكل قبض مبيعات. */}
           {externalNeeded && (
             <Card className="p-3">

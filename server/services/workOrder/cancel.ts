@@ -1,3 +1,4 @@
+import { loadWorkOrderDepositReceiptSet } from "./depositReceiptSet";
 // إلغاء أمر شغل: يعيد المواد المُستهلَكة للمخزون ويسترد العربون المقبوض (إن وُجد).
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, isNull, like, notLike, or, sql } from "drizzle-orm";
@@ -547,45 +548,10 @@ export async function cancelWorkOrderInTx(
       // ش٠ (V3): الردّ من إيصال العربون **بهويّته** (depositReceiptId) لا بالتقاطٍ ظنّي — كان
       // `.limit(1)` قد يلتقط إيصال أجرة COUNTER (نفس البصمة) فيُردّ للزبون مبلغ الأجرة بدل
       // عربونه. البديل الاحتياطي (ما قبل 0151) يستثني إيصالات الأجرة صراحةً.
-      const depRcpt = wo.depositReceiptId != null
-        ? (
-            await tx
-              .select({
-                id: receipts.id,
-                amount: receipts.amount,
-                paymentMethod: receipts.paymentMethod,
-                direction: receipts.direction,
-                status: receipts.status,
-                approvalStatus: receipts.approvalStatus,
-              })
-              .from(receipts)
-              .where(eq(receipts.id, Number(wo.depositReceiptId)))
-              .for("update")
-              .limit(1)
-          )[0]
-        : (
-            await tx
-              .select({
-                id: receipts.id,
-                amount: receipts.amount,
-                paymentMethod: receipts.paymentMethod,
-                direction: receipts.direction,
-                status: receipts.status,
-                approvalStatus: receipts.approvalStatus,
-              })
-              .from(receipts)
-              .where(and(
-                eq(receipts.workOrderId, workOrderId),
-                eq(receipts.direction, "IN"),
-                eq(receipts.status, "COMPLETED"),
-                eq(receipts.approvalStatus, "APPROVED"),
-                or(isNull(receipts.invoiceId), eq(receipts.invoiceId, Number(wo.invoiceId))),
-                or(isNull(receipts.referenceNumber), notLike(receipts.referenceNumber, "DLV-FEE-%")),
-              ))
-              .for("update")
-              .limit(1)
-          )[0];
-      if (depRcpt) {
+      const directExpected = refundD.minus(appliedDepositsBeforeCancel.reduce((sum, part) => sum.plus(money(part.amount)), money(0)));
+      const depositReceipts = await loadWorkOrderDepositReceiptSet(tx, wo, directExpected.toFixed(2));
+      for (const depRcpt of depositReceipts) {
+
         if (depRcpt.direction !== "IN" || depRcpt.status !== "COMPLETED" || depRcpt.approvalStatus !== "APPROVED") {
           throw new TRPCError({
             code: "PRECONDITION_FAILED",

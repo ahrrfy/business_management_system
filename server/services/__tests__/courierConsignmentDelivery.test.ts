@@ -95,7 +95,7 @@ async function seedBase(): Promise<{ partyA: number; partyB: number }> {
 }
 
 /** يمرّر الأمر في دورة الفني الحقيقية: RECEIVED → IN_PROGRESS → READY. */
-async function readyReception(): Promise<number> {
+async function readyReception(deposit = "0"): Promise<number> {
   const wo = await createWorkOrder(
     {
       branchId: 1,
@@ -104,7 +104,7 @@ async function readyReception(): Promise<number> {
       title: "طباعة",
       salePrice: "10000",
       quantity: 1,
-      deposit: "0",
+      deposit,
       paymentMethod: "CASH",
       hasDelivery: true,
       deliveryAddress: "بغداد - الكرادة",
@@ -323,9 +323,12 @@ describe("courier «توصيلاتي» — تسليم إرسالية وتحوي�
 
   it("COD=0 يبقى ظاهراً حتى ختم التسليم ثم يُغلق تشغيلياً", async () => {
     const { partyA } = await seedParties();
-    const woId = await readyReception();
-    await db().update(s.workOrders).set({ deposit: "10000.00" }).where(eq(s.workOrders.id, woId));
+    await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
+    const woId = await readyReception("10000.00");
     const disp = await dispatchToDelivery({ workOrderId: woId, partyId: partyA, deliveryFee: "0" }, CASHIER);
+    expect(disp.codAmount).toBe("0.00");
+    const deposits = await db().select().from(s.receipts).where(eq(s.receipts.workOrderId, woId));
+    expect(deposits).toEqual([expect.objectContaining({ direction: "IN", amount: "10000.00", paymentMethod: "CASH", invoiceId: disp.invoiceId })]);
     const before = await consignment(disp.consignmentId);
     expect(before.status).toBe("DISPATCHED");
     expect(before.settledAt).not.toBeNull();

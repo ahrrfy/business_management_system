@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import {
   RECEPTION_WORKSPACE_SCHEMA_VERSION,
@@ -752,9 +753,17 @@ describe("reception draft transition races", () => {
     expect(source).toContain(
       'from "@/components/reception/ReceptionResumeDraft"',
     );
-    expect(source).toMatch(
-      /async function resumeDraft[\s\S]*return ReceptionResumeDraft\(\{[^}]*prevCustomerIdRef[^}]*setCustomer/,
-    );
+    const ast = ts.createSourceFile("Reception.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    let resumeCall: ts.CallExpression | undefined;
+    function visit(node: ts.Node) {
+      if (ts.isCallExpression(node) && node.expression.getText(ast) === "ReceptionResumeDraft") resumeCall = node;
+      ts.forEachChild(node, visit);
+    }
+    visit(ast);
+    const argument = resumeCall?.arguments[0];
+    expect(argument && ts.isObjectLiteralExpression(argument)).toBe(true);
+    const fields = argument && ts.isObjectLiteralExpression(argument) ? argument.properties.map(p => p.name?.getText(ast)) : [];
+    expect(fields).toEqual(expect.arrayContaining(["prevCustomerIdRef", "setCustomer"]));
     expect(resume).toMatch(
       /prevCustomerIdRef\.current = restoredCustomerId;[\s\S]*setCustomer\(/,
     );

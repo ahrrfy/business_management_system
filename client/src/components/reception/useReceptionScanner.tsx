@@ -22,6 +22,7 @@ export interface useReceptionScannerInput {
   setCustomer: (
     customer: import("@/components/customer/customerByPhoneMachine").PhoneCustomer,
   ) => void;
+  paymentEditorOpen?: boolean;
   depositOpen: boolean;
   cardsOpen: boolean;
   fulfillIntentId: number | null;
@@ -53,6 +54,7 @@ export function useReceptionScanner({
   draftTransitionPending,
   setSearch,
   setCustomer,
+  paymentEditorOpen,
   depositOpen,
   cardsOpen,
   fulfillIntentId,
@@ -128,7 +130,8 @@ export function useReceptionScanner({
     [lookupBarcode, handleWorkOrderScan, draftTransitionPending],
   );
   const blockingDialogOpen = receptionDialogBlocksInput([
-    depositOpen,
+    paymentEditorOpen,
+  depositOpen,
     cardsOpen,
     fulfillIntentId,
     closing,

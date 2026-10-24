@@ -1,3 +1,4 @@
+import type { TenderPayment } from "@/components/payments/splitTender";
 import type { ManagerApprovalInput } from "@/components/reception/ManagerApprovalDialog";
 import type { RouterOutputs } from "@/lib/trpc";
 import type { ReceptionDeliveryFeeTender } from "./useDeliveryFeeTender";
@@ -16,6 +17,7 @@ import {
 } from "@/components/reception/cartMath";
 
 export interface ReceptionCheckoutPayloadInput {
+  payments?: TenderPayment[];
   heldDelivery: string;
   deliveryFeeTender: ReceptionDeliveryFeeTender | null;
   branchId: number;
@@ -75,6 +77,7 @@ export interface ReceptionCheckoutPayloadInput {
   couponCode: string | null;
 }
 export function buildReceptionCheckoutPayload({
+  payments,
   heldDelivery,
   deliveryFeeTender,
   branchId,
@@ -229,9 +232,10 @@ export function buildReceptionCheckoutPayload({
     customerId: customerId ?? undefined,
     contactName: customerId == null ? (customerName ?? undefined) : undefined,
     contactPhone: customerId == null ? (receiptPhone ?? undefined) : undefined,
-    paymentMethod: appliedPaidD.gt(0) ? method : undefined,
+    payments,
+    paymentMethod: !payments && appliedPaidD.gt(0) ? method : undefined,
     paymentReference:
-      appliedPaidD.gt(0) && method !== "CASH"
+      !payments && appliedPaidD.gt(0) && method !== "CASH"
         ? paymentReference.trim()
         : undefined,
     paidAmount: round2(appliedPaidD).toFixed(2),

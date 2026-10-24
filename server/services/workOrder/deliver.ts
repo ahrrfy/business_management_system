@@ -1,3 +1,4 @@
+import { loadWorkOrderDepositReceiptSet } from "./depositReceiptSet";
 // READY → DELIVERED: إنشاء فاتورة (sourceType=WORKORDER) + دفعة اختيارية + قيد SALE + تسوية الذمم.
 import { TRPCError } from "@trpc/server";
 import { and, eq, inArray, isNull, notLike, or, sql } from "drizzle-orm";
@@ -204,7 +205,9 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
         message: "عربون أمر الشغل يحتوي قبضاً قديماً بلا إيصال قابل لإثبات التنفيذ",
       });
     }
+    const directDepositReceipts = await loadWorkOrderDepositReceiptSet(tx, wo, directDepositExpected.toFixed(2));
     let depositPaymentMethod: string | null = depositPaid.gt(0) ? (wo.paymentMethod ?? null) : null;
+    for (const receipt of directDepositReceipts) depositPaymentMethod = mixedAwarePaymentMethod(depositPaymentMethod, receipt.paymentMethod);
     if (appliedReceiptIds.length) {
       const appliedReceipts = await tx
         .select({
@@ -458,37 +461,8 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
       // (workOrderId, invoiceId NULL) كان يتصادم مع إيصال أجرة COUNTER (نفس البصمة) فقد يربط
       // إيصال الأجرة بالفاتورة بدل العربون. البديل الاحتياطي (أوامر قديمة قبل 0151 لم يلتقطها
       // backfill) يستثني إيصالات الأجرة صراحةً.
-      const depRcpt = directDepositExpected.gt(0)
-        ? wo.depositReceiptId != null
-          ? (await tx
-              .select({ id: receipts.id, amount: receipts.amount, direction: receipts.direction, status: receipts.status, approvalStatus: receipts.approvalStatus })
-              .from(receipts)
-              .where(eq(receipts.id, Number(wo.depositReceiptId)))
-              .for("update")
-              .limit(1))[0]
-          : (await tx.select({ id: receipts.id, amount: receipts.amount, direction: receipts.direction, status: receipts.status, approvalStatus: receipts.approvalStatus }).from(receipts)
-            .where(and(
-              eq(receipts.workOrderId, Number(wo.id)),
-              eq(receipts.direction, "IN"),
-              eq(receipts.status, "COMPLETED"),
-              eq(receipts.approvalStatus, "APPROVED"),
-              isNull(receipts.invoiceId),
-              or(isNull(receipts.referenceNumber), notLike(receipts.referenceNumber, "DLV-FEE-%")),
-            )).for("update").limit(1))[0]
-        : undefined;
-      if (
-        directDepositExpected.gt(0) &&
-        (!depRcpt || depRcpt.direction !== "IN" || depRcpt.status !== "COMPLETED" || depRcpt.approvalStatus !== "APPROVED" || !money(depRcpt.amount).eq(directDepositExpected))
-      ) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: "العربون المباشر لا يطابق إيصال IN منفذاً ومعتمداً؛ أوقف التسليم وراجع القبض",
-        });
-      }
-      if (depRcpt != null) {
-        await tx.update(receipts).set({ invoiceId }).where(eq(receipts.id, Number(depRcpt.id)));
-        // ⛔ كان هنا UPDATE accountingEntries.invoiceId — أُزيل ضمن A1: انتهاك append-only
-        //     على دفتر الأستاذ. الـUPDATE لم يكن load-bearing لأي حساب.
+      for (const receipt of directDepositReceipts) {
+        await tx.update(receipts).set({ invoiceId }).where(eq(receipts.id, Number(receipt.id)));
       }
       // ش٤: حصص العربون المقبوضة **سلفاً** (مسوّدة ⇒ orderPayments APPLICATION على هذا الأمر) —
       // إيصال القبض أحاديّ الهدف يُختم بفاتورة التسليم (نفس نمط append-only أعلاه)؛ المُشظّى

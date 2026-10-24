@@ -18,6 +18,7 @@ import { appliedCollectionsForWorkOrder } from "../deposits";
 import { workOrderFeeHeldNet } from "./deliveryFeeRefund";
 import type { RefundDrawerCandidate, RefundPreflight, WorkOrderRefundOperation } from "@shared/refundPreflight";
 import { loadShipmentMembersTx } from "../delivery/shipments";
+import { loadWorkOrderDepositReceiptSet } from "./depositReceiptSet";
 
 /** طرقُ القبض التي يخرج ردُّها نقداً — TELECOM بلا سكّة ردّ فيُردّ نقداً (نفسُ قاعدة الخدمات). */
 function exitsCashDrawer(method: string | null | undefined): boolean {
@@ -81,36 +82,28 @@ async function eligibleDrawers(
  * القاعدةُ الحاكمة: **يُحسَب بنفس شرط التنفيذ حرفاً بحرف** — أيّ انحرافٍ يُنتج حائطاً أو تقديراً
  * كاذباً. أُثبت هذا التلازمُ باختبار تكاملٍ ([`refundPreflightAppliedGap.test.ts`](../__tests__/refundPreflightAppliedGap.test.ts)).
  */
-async function cancelCashOut(tx: Tx, workOrderId: number, deposit: string | null): Promise<{ total: ReturnType<typeof money>; hasCashOnlyPortion: boolean }> {
+async function cancelCashOut(tx: Tx, order: { id: number; branchId: number; deposit: string | null; depositReceiptId: number | null }): Promise<{ total: ReturnType<typeof money>; hasCashOnlyPortion: boolean }> {
+  const workOrderId = Number(order.id);
   let total = money(0);
   // **الجزءُ النقديُّ الذي لا يقبل البطاقة** — حصصٌ مطبَّقة أو أمانةُ أجرة: كلاهما يُردّ نقداً
   // حتماً (مراجعة Codex P2). وجودُه يمنع رافدَ CARD كي لا يُنشأ طلبُ تحكّمٍ يستحيل اعتمادُه.
   let hasCashOnlyPortion = false;
-  const refundD = round2(money(deposit ?? "0"));
+  const refundD = round2(money(order.deposit ?? "0"));
+  const applied = await appliedCollectionsForWorkOrder(tx, workOrderId);
 
   // ① العربونُ المباشر — محكومٌ بـ`deposit > 0` كما في `cancel.ts` (إيصالُه يحمل قيمةَ العمود).
   if (refundD.gt(0)) {
-    const dep = (
-      await tx
-        .select({ amount: receipts.amount, paymentMethod: receipts.paymentMethod })
-        .from(receipts)
-        .where(and(
-          eq(receipts.workOrderId, workOrderId),
-          eq(receipts.direction, "IN"),
-          eq(receipts.status, "COMPLETED"),
-          eq(receipts.approvalStatus, "APPROVED"),
-          isNull(receipts.invoiceId),
-          or(isNull(receipts.referenceNumber), notLike(receipts.referenceNumber, "DLV-FEE-%")),
-        ))
-        .limit(1)
-    )[0];
-    if (dep && exitsCashDrawer(dep.paymentMethod)) total = total.plus(money(dep.amount));
+    const directExpected = refundD.minus(applied.reduce((sum, part) => sum.plus(money(part.amount)), money(0)));
+    const direct = await loadWorkOrderDepositReceiptSet(tx, order, directExpected.toFixed(2), { lock: false });
+    for (const dep of direct) {
+      if (exitsCashDrawer(dep.paymentMethod)) total = total.plus(money(dep.amount));
+    }
   }
 
   // ② حصصُ العربون المطبَّقة — **بلا حارسِ العربون** (مطابقةً لـ`cancel.ts` بعد سدّ الفجوة ١/٩):
   // تُصرَف حين توجد حصصٌ فعلاً ولو كان `deposit = 0`. لو بقيت داخل الحارس هنا لَقال التمهيدُ
   // «لا نقد» بينما الخدمةُ تصرفها وتطلب درجاً ⇒ الحائطُ الذي حذّر منه الفحص.
-  for (const part of await appliedCollectionsForWorkOrder(tx, workOrderId)) {
+  for (const part of applied) {
     const amt = round2(money(part.amount));
     if (amt.lte(0)) continue;
     if (exitsCashDrawer(part.method)) {
@@ -190,7 +183,7 @@ export async function workOrderRefundPreflight(
 ): Promise<RefundPreflight | null> {
   const wo = (
     await tx
-      .select({ id: workOrders.id, branchId: workOrders.branchId, invoiceId: workOrders.invoiceId, deposit: workOrders.deposit })
+      .select({ id: workOrders.id, branchId: workOrders.branchId, invoiceId: workOrders.invoiceId, deposit: workOrders.deposit, depositReceiptId: workOrders.depositReceiptId })
       .from(workOrders)
       .where(eq(workOrders.id, workOrderId))
       .limit(1)
@@ -199,7 +192,7 @@ export async function workOrderRefundPreflight(
 
   const branchId = Number(wo.branchId);
   const cancel = operation === "CANCEL"
-    ? await cancelCashOut(tx, workOrderId, wo.deposit ?? null)
+    ? await cancelCashOut(tx, wo)
     : null;
   const cashOut = cancel != null
     ? cancel.total

@@ -12,12 +12,14 @@ const readClient = (relative: string) => readFileSync(new URL(relative, import.m
 describe("اشتقاق طرق القبض من السياسة في كل شاشات المحطة", () => {
   it("لوحة الدفع تُعيد الطريقة غير المدعومة إلى النقد ولا تُقفل المدعومة", () => {
     const source = readComponent("PaymentPanel.tsx");
+    const controls = readComponent("ReceptionTenderControls.tsx");
     const reception = readClient("../../pages/Reception.tsx");
     const submission = readComponent("ReceptionSubmission.tsx");
 
     expect(source).toContain("isPosPaymentMethodEnabled(method)");
     expect(source).toContain('setMethod("CASH")');
-    expect(source).toContain("disabled={!isPosPaymentMethodEnabled(p.v)}");
+    expect(source).toContain("<ReceptionTenderControls");
+    expect(controls).toContain("disabled={!isPosPaymentMethodEnabled(p.v)}");
     expect(submission).toContain(
       "if (!isPosPaymentMethodEnabled(String(method)))",
     );

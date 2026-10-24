@@ -12,6 +12,16 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "server/services/__tests__/testDbCleanup.unit.test.ts",
+      "server/services/__tests__/workOrderSplitRefundPreflight.test.ts",
+      "client/src/components/payments/splitTender.test.ts",
+      "client/src/components/payments/useSplitTender.test.tsx",
+      "client/src/components/payments/useInvoicePaymentSession.test.tsx",
+      "client/src/components/payments/receptionReceiptPayments.test.ts",
+      "client/src/components/reception/__tests__/wave35PaymentPanel.test.tsx",
+      "client/src/components/reception/__tests__/wave35Amounts.test.tsx",
+      "client/src/components/reception/__tests__/wave35DraftPaymentScope.test.ts",
+      "client/src/components/invoice/__tests__/wave35Payload.test.ts",
       "client/src/components/hr/__tests__/wave32Attendance.test.tsx",
       "client/src/components/hr/__tests__/wave32AttendanceCorrection.test.tsx",
       "client/src/components/crm/__tests__/wave32Dossier.test.tsx",

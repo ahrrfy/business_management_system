@@ -92,7 +92,13 @@ describe("عقد شروط الدفع في محرّر الفواتير", () => {
     // `buildCorrectionPayload` يتجاهل `base.payment`؛ إبقاء الحقل ظاهراً يجعل الموظّف
     // يكتب المقبوض في خانةٍ مُهمَلة فلا يُسجَّل إيصالٌ ولا يُخصَم من الذمّة.
     const page = readPage("SalesInvoiceNew.tsx");
-    expect(page).toMatch(/showPayment=\{!isCorrection\}/);
+    const expression = page.match(/showPayment=\{([^}]+)\}/)?.[1];
+    expect(expression).toBeDefined();
+    const visible = new Function("isCorrection", "splitTender", `return (${expression});`);
+    expect(visible(true, {active: false})).toBe(false);
+    expect(visible(true, {active: true})).toBe(false);
+    expect(visible(false, {active: false})).toBe(true);
+    expect(visible(false, {active: true})).toBe(false);
   });
 
   it("منتقي طريقة القبض في التصحيح يشتقّ من السياسة المركزية لا من نصّ ثابت", () => {
