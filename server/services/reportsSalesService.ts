@@ -14,6 +14,17 @@ import { getDb } from "../db";
 import { money, toDbMoney } from "./money";
 import { VOIDED_INVOICE_STATUSES } from "@shared/invoiceStatus";
 import { openBalanceExpr } from "@shared/predicates/openBalance";
+import {
+  componentRightsRawRevenueSql,
+  componentRightsRawCostSql,
+} from "./fulfillment/componentRightsReportSql";
+
+const rightsLineRevenueSql = componentRightsRawRevenueSql(
+  sql`CASE WHEN ii.baseQuantity > 0 THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity ELSE ii.total END`,
+);
+const rightsLineCostSql = componentRightsRawCostSql(
+  sql`CASE WHEN ii.baseQuantity <= 0 THEN ii.lineCost WHEN ii.returnedRestockedBaseQuantity >= ii.baseQuantity THEN 0 ELSE ii.lineCost - ROUND(ii.lineCost * ii.returnedRestockedBaseQuantity / ii.baseQuantity, 2) END`,
+);
 
 /**
  * أعمدةُ مسند «الرصيد المفتوح» بالاسم المستعار `i` (نمطُ SQL الخامّ في هذا الملفّ) —
@@ -143,16 +154,8 @@ export async function getSalesRegister(opts: {
           ELSE ii.quantity END AS CHAR) AS quantity,
         CAST(ii.unitPrice AS CHAR) AS unitPrice,
         CAST(ii.unitCost AS CHAR) AS unitCost,
-        CAST(CASE WHEN ii.baseQuantity > 0
-          THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
-          ELSE ii.total END AS CHAR) AS total,
-        CAST((CASE WHEN ii.baseQuantity > 0
-          THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
-          ELSE ii.total END) - (CASE
-            WHEN ii.baseQuantity <= 0 THEN ii.lineCost
-            WHEN ii.returnedRestockedBaseQuantity >= ii.baseQuantity THEN 0
-            ELSE ii.lineCost - ROUND(ii.lineCost * ii.returnedRestockedBaseQuantity / ii.baseQuantity, 2)
-          END) AS CHAR) AS profit
+        CAST(${rightsLineRevenueSql} AS CHAR) AS total,
+        CAST((${rightsLineRevenueSql}) - (${rightsLineCostSql}) AS CHAR) AS profit
       FROM invoiceItems ii
       JOIN invoices i ON i.id = ii.invoiceId
       JOIN productVariants pv ON pv.id = ii.variantId
@@ -171,21 +174,9 @@ export async function getSalesRegister(opts: {
     await db.execute(sql`
       SELECT
         COUNT(*) AS cnt,
-        CAST(COALESCE(SUM(CASE WHEN ii.baseQuantity > 0
-          THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
-          ELSE ii.total END), 0) AS CHAR) AS revenue,
-        CAST(COALESCE(SUM(CASE
-          WHEN ii.baseQuantity <= 0 THEN ii.lineCost
-          WHEN ii.returnedRestockedBaseQuantity >= ii.baseQuantity THEN 0
-          ELSE ii.lineCost - ROUND(ii.lineCost * ii.returnedRestockedBaseQuantity / ii.baseQuantity, 2)
-        END), 0) AS CHAR) AS cost,
-        CAST(COALESCE(SUM((CASE WHEN ii.baseQuantity > 0
-          THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
-          ELSE ii.total END) - (CASE
-            WHEN ii.baseQuantity <= 0 THEN ii.lineCost
-            WHEN ii.returnedRestockedBaseQuantity >= ii.baseQuantity THEN 0
-            ELSE ii.lineCost - ROUND(ii.lineCost * ii.returnedRestockedBaseQuantity / ii.baseQuantity, 2)
-          END)), 0) AS CHAR) AS profit,
+        CAST(COALESCE(SUM(${rightsLineRevenueSql}), 0) AS CHAR) AS revenue,
+        CAST(COALESCE(SUM(${rightsLineCostSql}), 0) AS CHAR) AS cost,
+        CAST(COALESCE(SUM((${rightsLineRevenueSql}) - (${rightsLineCostSql})), 0) AS CHAR) AS profit,
         CAST(COALESCE(SUM(CASE WHEN ii.baseQuantity > 0
           THEN ii.quantity * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
           ELSE ii.quantity END), 0) AS CHAR) AS qty
@@ -322,24 +313,14 @@ export async function getSalesByDimension(opts: {
           COUNT(DISTINCT i.id) AS invoices,
           -- #reports-1 (تدقيق التثبيت): مرآة إصلاح getTopProducts — الإيراد يُصافى بالمرتجعات
           -- تناسبياً (guard على baseQuantity=0 للخدمات) ⇒ يتّسق مع تبويب المنتجات على نفس الشاشة.
-          CAST(COALESCE(SUM(CASE WHEN ii.baseQuantity > 0
-            THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
-            ELSE ii.total END), 0) AS CHAR) AS revenue,
-          CAST(COALESCE(SUM(CASE WHEN ii.baseQuantity > 0
-            THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
-            ELSE ii.total END), 0) AS CHAR) AS grossSales,
+          CAST(COALESCE(SUM(${rightsLineRevenueSql}), 0) AS CHAR) AS revenue,
+          CAST(COALESCE(SUM(${rightsLineRevenueSql}), 0) AS CHAR) AS grossSales,
           CAST(0 AS CHAR) AS discounts,
           CAST(0 AS CHAR) AS returns,
-          CAST(COALESCE(SUM(CASE WHEN ii.baseQuantity > 0
-            THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
-            ELSE ii.total END), 0) AS CHAR) AS netSales,
+          CAST(COALESCE(SUM(${rightsLineRevenueSql}), 0) AS CHAR) AS netSales,
           CAST(0 AS CHAR) AS paid,
           CAST(0 AS CHAR) AS unpaid,
-          CAST(COALESCE(SUM(CASE
-            WHEN ii.baseQuantity <= 0 THEN ii.lineCost
-            WHEN ii.returnedRestockedBaseQuantity >= ii.baseQuantity THEN 0
-            ELSE ii.lineCost - ROUND(ii.lineCost * ii.returnedRestockedBaseQuantity / ii.baseQuantity, 2)
-          END), 0) AS CHAR) AS cost
+          CAST(COALESCE(SUM(${rightsLineCostSql}), 0) AS CHAR) AS cost
         FROM invoiceItems ii
         JOIN invoices i ON i.id = ii.invoiceId
         JOIN productVariants pv ON pv.id = ii.variantId
@@ -377,11 +358,7 @@ export async function getSalesByDimension(opts: {
       FROM invoices i
       LEFT JOIN (
         SELECT ii.invoiceId,
-          SUM(CASE
-            WHEN ii.baseQuantity <= 0 THEN ii.lineCost
-            WHEN ii.returnedRestockedBaseQuantity >= ii.baseQuantity THEN 0
-            ELSE ii.lineCost - ROUND(ii.lineCost * ii.returnedRestockedBaseQuantity / ii.baseQuantity, 2)
-          END) AS cost
+          SUM(${rightsLineCostSql}) AS cost
         FROM invoiceItems ii
         GROUP BY ii.invoiceId
       ) ic ON ic.invoiceId = i.id

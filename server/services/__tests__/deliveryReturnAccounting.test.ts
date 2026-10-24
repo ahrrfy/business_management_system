@@ -167,6 +167,7 @@ async function seedDispatchedInvoice(input: {
     })));
   }
   const dispatched = await dispatchInvoiceToDelivery({
+    assignedUserId: 2,
     invoiceId: input.invoiceId,
     partyId: 1,
     deliveryFee: "0.00",
@@ -381,6 +382,7 @@ describe("delivery return — accounting mirrors", () => {
     expect(outMovement.referenceType).toBe("PRINT_SALE");
 
     const dispatched = await dispatchInvoiceToDelivery({
+      assignedUserId: 2,
       invoiceId: printSale.invoiceId,
       partyId: 1,
       deliveryFee: "0.00",

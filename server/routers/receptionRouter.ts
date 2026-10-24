@@ -1,4 +1,5 @@
-import { receptionPaymentsSchema } from "../services/reception/splitPayments";
+import { receptionComposedPaymentsSchema } from "../services/reception/splitPayments";
+import {checkoutChargesFields,checkoutChargesIntentSchema,checkoutChargeOptionsSchema,listCheckoutChargeOptions,chargeOnlyCheckoutSchema,createChargeOnlyCheckout,readCheckoutChargesMetadataTx} from "../services/checkoutCharges";
 import { initiateExternalPaymentAttempt, confirmExternalPaymentAttempt } from "../services/posExternalPayment";
 // راوتر محطة خدمة الزبائن — ش١ من docs/reception-cashier-system-design-2026-08-05.md §٦.
 //
@@ -38,6 +39,7 @@ import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled,
 } from "@shared/posPaymentPolicy";
 import { getReceptionDuplicateOrders } from "../services/reception/duplicateOrders";
 import { RECEPTION_CHANNELS } from "@shared/receptionChannel";
+import {withTx} from "../services/tx";
 
 /** عزل الفرع (نمط deliveryRouter.effectiveBranch): المرتفعون يعبرون بـbranchId صريح؛
  *  غيرهم يُجبَرون على فرعهم، وغيابه = FORBIDDEN. */
@@ -80,6 +82,7 @@ const draftLineSchema = z.object({
   lineRequestId: z.string().max(64).nullish(),
 });
 const draftHeaderSchema = z.object({
+  checkoutCharges:checkoutChargesIntentSchema.nullish(),
   customerId: z.number().int().positive().nullish(),
   contactName: z.string().trim().max(255).nullish(),
   contactPhone: z.string().trim().max(32).nullish(),
@@ -114,6 +117,26 @@ function assertDraftImages(lines: Array<{ designImages?: string | null }>) {
 }
 
 export const receptionRouter = router({
+  checkoutRecovery:workordersCashierProcedure.input(z.object({draftId:z.number().int().positive(),branchId:z.number().int().positive()})).query(async({input,ctx})=>{
+    const branchId=effectiveBranch(ctx,input.branchId);
+    if(branchId==null)throw new TRPCError({code:"FORBIDDEN",message:appErrorMessage({what:"تعذر استرجاع القبض",why:"لا فرع فعلي للحساب",doThis:"اختر الفرع المخول"})});
+    const actor={userId:ctx.user.id,branchId,role:ctx.user.role,isOwner:ctx.user.isOwner};
+    const draft=await getDraft(input.draftId,actor);
+    if(draft.status!=="COMMITTED"||!draft.checkoutCharges)throw new TRPCError({code:"PRECONDITION_FAILED",message:appErrorMessage({what:"تعذر استرجاع القبض الموحد",why:"الطلب لا يحمل تثبيت أجور موحداً",doThis:"راجع مستند الطلب الأصلي قبل أي قبض جديد"})});
+    const metadata=await withTx(tx=>readCheckoutChargesMetadataTx(tx,{branchId:Number(draft.branchId),clientRequestId:draft.commitRequestId},actor,"reception.draftCommit"),{gate:"NONE"});
+    if(!metadata.checkoutPaymentSummary||!metadata.checkoutReceipts||!metadata.chargeAllocations)throw new TRPCError({code:"CONFLICT",message:appErrorMessage({what:"دليل القبض غير مكتمل",why:"الإيصال الأصلي لا يحمل التخصيصات المحفوظة",doThis:"راجع محاسب الفرع ولا تكرر القبض"})});
+    return {recoveryToken:draft.commitRequestId,checkoutPaymentSummary:metadata.checkoutPaymentSummary,checkoutReceipts:metadata.checkoutReceipts,chargeAllocations:metadata.chargeAllocations};
+  }),
+  checkoutCharges:workordersCashierProcedure.input(chargeOnlyCheckoutSchema).mutation(({input,ctx})=>{
+    const branchId=effectiveBranch(ctx,input.branchId);
+    if(branchId==null)throw new TRPCError({code:"FORBIDDEN",message:appErrorMessage({what:"تعذر قبض أجور الاستقبال",why:"لا فرع فعلي مسند للحساب",doThis:"اختر الفرع المخول قبل القبض"})});
+    return createChargeOnlyCheckout({...input,branchId},{userId:ctx.user.id,branchId,role:ctx.user.role,isOwner:ctx.user.isOwner},"PRINT_POS","workOrders.receptionCheckout");
+  }),
+  checkoutChargeOptions:workordersCashierProcedure.input(checkoutChargeOptionsSchema).query(({input,ctx})=>{
+    const branchId=effectiveBranch(ctx,input.branchId);
+    if(branchId==null)throw new TRPCError({code:"FORBIDDEN",message:appErrorMessage({what:"تعذر عرض أجور الاستقبال",why:"لا فرع فعلي مسند للحساب",doThis:"اختر الفرع المخول قبل عرض المطالبات"})});
+    return listCheckoutChargeOptions({...input,branchId},{userId:ctx.user.id,branchId,role:ctx.user.role,isOwner:ctx.user.isOwner},"workOrders.receptionCheckout");
+  }),
   initiateExternalPayment: workordersCashierProcedure.input(z.object({
     branchId:z.number().int().positive(),method:z.enum(["CARD","TRANSFER","WALLET"]),
     amount:positiveMoneyString,reference:z.string().trim().min(1).max(100),
@@ -468,7 +491,8 @@ export const receptionRouter = router({
    *  (المال) لا exec — فنّي الطباعة يحرّر ولا يثبّت (V7: treasury=NONE ⇒ لا وردية أصلاً). */
   draftCommit: workordersCashierProcedure
     .input(z.object({
-      payments: receptionPaymentsSchema.optional(),
+      ...checkoutChargesFields,
+      payments: receptionComposedPaymentsSchema.optional(),
       draftId: z.number().int().positive(),
       version: z.number().int().min(0),
       expectedTotal: positiveMoneyString,
@@ -493,6 +517,7 @@ export const receptionRouter = router({
       // ش٧: إسناد الطلب لمندوبٍ داخل معاملة التثبيت — المتبقّي عهدةٌ عليه لا نقدٌ في الدرج.
       delivery: z.object({
         partyId: z.number().int().positive(),
+        assignedUserId: z.number().int().positive().nullish(),
         fee: nonNegMoneyString.nullish(),
         feeCollection: z.enum(["COURIER", "COUNTER", "SHOP"]).nullish(),
         recipientName: z.string().trim().max(255).nullish(),
@@ -548,6 +573,7 @@ export const receptionRouter = router({
           shiftId: input.shiftId,
           collectNow: input.collectNow ?? null,
           ...(input.payments === undefined ? {} : { payments: input.payments }),
+          serviceCharges:input.serviceCharges,approvedChargeAllocations:input.approvedChargeAllocations,chargePayments:input.chargePayments,
           cashRoundIQD: input.cashRoundIQD,
           deliveryFeeHeld: input.deliveryFeeHeld ?? null,
           deliveryFeeTender: input.deliveryFeeTender ?? null,

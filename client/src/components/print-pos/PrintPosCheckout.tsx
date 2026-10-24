@@ -12,6 +12,7 @@ export type EditingInvoiceInfo = {
 };
 
 export interface CheckoutProps {
+  extraChargesSlot?: React.ReactNode;
   C: any;
   cart: CartLine[];
   total: number;
@@ -58,7 +59,7 @@ export function CheckoutColumn(props: CheckoutProps) {
               وضع تعديل طلب محجوز #{props.editingInvoice.invoiceNumber}
               {Number(props.editingInvoice.preCollected) > 0 && (
                 <span style={{ marginInlineStart: 4, fontWeight: 700, color: props.C.fg }}>
-                  (عربون محوّل: {fmt(Number(props.editingInvoice.preCollected))} د.ع)
+                  (عربون محوّل: {fmt(Number(props.editingInvoice.preCollected))}{" "} د.ع)
                 </span>
               )}
             </span>
@@ -100,6 +101,7 @@ export function CheckoutColumn(props: CheckoutProps) {
         setCustomerId={props.setCustomerId}
         addTick={props.addTick}
       />
+      {props.extraChargesSlot}
     </div>
   );
 }

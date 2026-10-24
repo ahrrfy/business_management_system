@@ -13,6 +13,14 @@
  * يرفض المعاملة كاملةً بدلاً من إنشاء رصيد سالب.
  */
 import { TRPCError } from "@trpc/server";
+import type {
+  CheckoutChargesInput,
+  CheckoutChargesResult,
+} from "../../shared/checkoutCharges";
+import {
+  composeCheckoutChargesInTx,
+  hasCheckoutCharges,
+} from "./checkoutCharges";
 import Decimal from "decimal.js";
 import { and, eq, inArray, like, or, sql } from "drizzle-orm";
 import {
@@ -82,7 +90,8 @@ function printServiceCatalogError(why: string): string {
   });
 }
 
-type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" | "TELECOM";
+type PaymentMethod =
+  | "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" | "TELECOM";
 
 export interface PrintSalePaymentLegInput {
   amount: string;
@@ -99,7 +108,7 @@ export interface PrintSaleLineInput {
   unitPriceOverride?: string | null;
 }
 
-export interface CreatePrintSaleInput {
+export interface CreatePrintSaleInput extends CheckoutChargesInput {
   branchId: number;
   /** رقم التتبع الموحّد للمعاملة (R1). */
   trackingNumber?: string | null;
@@ -158,10 +167,14 @@ export interface CreatePrintSaleInput {
    *  جرى دون اتصال، يضبطها `offline.replayPrintSale` حصراً. تُوسَم بها الفاتورة (المنشأ +
    *  الرقم المؤقّت المطبوع + لحظة البيع الحقيقية) — قيود الدفتر تبقى بوقت الخادم (سلامة
    *  assertPeriodOpen)، تماماً كمسار البيع في sale/create. */
-  offlineCapture?: { capturedAt: Date; offlineReceiptNumber: string; deviceId?: string | null } | null;
+  offlineCapture?: { capturedAt: Date; offlineReceiptNumber: string; deviceId?: string | null;
+  } | null;
 }
 
 export interface CreatePrintSaleResult {
+  checkoutReceipts?: CheckoutChargesResult["checkoutReceipts"];
+  checkoutPaymentSummary?: CheckoutChargesResult["checkoutPaymentSummary"];
+  chargeAllocations?: CheckoutChargesResult["chargeAllocations"];
   invoiceId: number;
   invoiceNumber: string;
   /** G3 (١١/٨): shiftId المُثبَّت على الفاتورة الفعليّة (سواء أُنشئت الآن أو idempotent replay).
@@ -194,7 +207,55 @@ export async function createPrintSaleInTx(
   actor: Actor,
   capability?: typeof OFFLINE_PRINT_REPLAY_CAPABILITY,
 ): Promise<CreatePrintSaleResult> {
-    // Codex #1006 P1 — `paymentMode` مُشتقٌّ من وجود التوصيل (COD) لا معلومةٌ مستقلّة؛ إدراجُه في بصمة
+  if (hasCheckoutCharges(input)) {
+    const {
+      serviceCharges: _services,
+      approvedChargeAllocations: _approved,
+      chargePayments: _chargePayments,
+      ...core
+    } = input;
+    const composed = await composeCheckoutChargesInTx(
+      tx,
+      input,
+      actor,
+      "PRINT_POS",
+      async (resolved) => {
+        const result = await createPrintSaleInTx(
+          tx,
+          {
+            ...core,
+            ...resolved,
+            requireExternalPaymentAttempt: false,
+          } as CreatePrintSaleInput,
+          actor,
+          capability,
+        );
+        const preIds = new Set(input.preCollected?.receiptIds ?? []);
+        const receiptIds = (
+          await tx
+            .select({ id: receipts.id })
+            .from(receipts)
+            .where(
+              and(
+                eq(receipts.invoiceId, result.invoiceId),
+                eq(receipts.direction, "IN"),
+              ),
+            )
+            .orderBy(receipts.id)
+        )
+          .map((r) => r.id)
+          .filter((id) => !preIds.has(id));
+        return { result, receiptIds };
+      },
+    );
+    return {
+      ...composed.result,
+      checkoutReceipts: composed.checkoutReceipts,
+      chargeAllocations: composed.chargeAllocations,
+      checkoutPaymentSummary: composed.checkoutPaymentSummary,
+    };
+  }
+  // Codex #1006 P1 — `paymentMode` مُشتقٌّ من وجود التوصيل (COD) لا معلومةٌ مستقلّة؛ إدراجُه في بصمة
     // idempotency يكسر تكرارَ بيع طباعةٍ التزم قبل نشر م١ (بصمتُه بلا paymentMode) بـCONFLICT بدل replay.
     // نستبعده من البصمة وحدها — نظير `createSaleInTx`.
     const { paymentMode: _fingerprintExcludedPaymentMode, ...fingerprintInput } = input;

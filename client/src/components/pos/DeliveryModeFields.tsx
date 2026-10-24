@@ -16,6 +16,7 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { trpc } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { deliveryDriverOptions, requiresDeliveryDriver } from "@/components/delivery/driverOptions";
 import {
   DELIVERY_FEE_COLLECTIONS,
   DELIVERY_FEE_COLLECTION_HINT_AR,
@@ -33,6 +34,7 @@ import {
 } from "./deliveryMode";
 
 export interface DeliveryModeFieldsProps {
+  branchId: number;
   draft: DeliveryDraft;
   onChange: (next: DeliveryDraft) => void;
   /** الجهة المقترَحة لمحافظة المسوّدة (من `delivery.suggestPartyForZone`) — تُطبَّق عند اختيار المحافظة. */
@@ -43,7 +45,7 @@ export interface DeliveryModeFieldsProps {
 
 const LABEL = "mb-1 block text-[10px] font-bold text-muted-foreground";
 
-export function DeliveryModeFields({ draft, onChange, suggestedPartyId = null, disabledReason = null }: DeliveryModeFieldsProps) {
+export function DeliveryModeFields({ branchId, draft, onChange, suggestedPartyId = null, disabledReason = null }: DeliveryModeFieldsProps) {
   const disabled = !!disabledReason;
   const partiesQ = trpc.delivery.listParties.useQuery({ activeOnly: true }, { staleTime: 60_000, enabled: !disabled });
   const quoteQ = trpc.delivery.previewDeliveryQuoteByGovernorate.useQuery(
@@ -57,28 +59,35 @@ export function DeliveryModeFields({ draft, onChange, suggestedPartyId = null, d
     }
   }, [quoteQ.data?.fee, draft.feeManual, draft.partyId]);
 
-  const parties: DeliveryPartyOption[] = (partiesQ.data ?? []).map((p) => ({
-    id: Number(p.id),
-    name: p.name,
-    partyType: p.partyType,
-    defaultFee: String(p.defaultFee ?? "0"),
-  }));
+  const parties: DeliveryPartyOption[] = (partiesQ.data ?? []).map((p) => {
+    const drivers = deliveryDriverOptions(p, branchId);
+    return {
+      id: Number(p.id),
+      name: p.name,
+      partyType: p.partyType,
+      defaultFee: String(p.defaultFee ?? "0"),
+      driverRequired: requiresDeliveryDriver(p),
+      driverUserIds: drivers.map((driver) => driver.userId),
+    };
+  });
+  const selectedParty = (partiesQ.data ?? []).find((party) => Number(party.id) === draft.partyId);
+  const selectedDrivers = deliveryDriverOptions(selectedParty, branchId);
 
   // ترقية مسودات POS القديمة المحفوظة قبل إضافة partyType. من دونها قد تُستعاد شركةٌ
   // كأنها جهة غير معروفة، فيختفي حقل البوليصة حتى يعيد الموظف اختيار الشركة يدوياً.
   useEffect(() => {
-    if (draft.partyId == null || draft.partyType != null) return;
+    if (draft.partyId == null) return;
     const selected = parties.find((party) => party.id === draft.partyId);
     if (!selected) return;
+    const assignedStillValid = draft.assignedUserId == null || (selected.driverUserIds ?? []).includes(draft.assignedUserId);
+    if (draft.partyType === selected.partyType && draft.driverRequired === (selected.driverRequired === true) && assignedStillValid) return;
     onChange({
-      ...draft,
-      partyType: selected.partyType,
+      ...applyPartySelection(draft, selected),
       partyName: draft.partyName || selected.name,
-      externalTrackingRef: draft.externalTrackingRef ?? "",
     });
   // parties تُشتق من partiesQ.data؛ حصر التبعيات بالقيم المستقرة يمنع إعادة كتابة المسودة كل render.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [partiesQ.data, draft.partyId, draft.partyType]);
+  }, [partiesQ.data, draft.partyId, draft.partyType, draft.driverRequired, draft.assignedUserId, branchId]);
 
   const issues = disabled ? [] : validateDeliveryDraft(draft);
 
@@ -90,6 +99,26 @@ export function DeliveryModeFields({ draft, onChange, suggestedPartyId = null, d
         </h2>
         <Link href="/delivery" className="text-[10px] font-bold text-primary hover:underline">إدارة التوصيل</Link>
       </div>
+
+      {draft.driverRequired && (
+        <div>
+          <label className={LABEL} htmlFor="pos-delivery-driver">المندوب الموظف</label>
+          <AppSelect
+            id="pos-delivery-driver"
+            value={draft.assignedUserId != null ? String(draft.assignedUserId) : ""}
+            onValueChange={(value) => onChange({ ...draft, assignedUserId: value ? Number(value) : null })}
+            aria-label="المندوب الموظف"
+            className="h-9 text-xs"
+            disabled={disabled || selectedDrivers.length === 0}
+          >
+            <option value="">اختر المندوب الذي سيستلم الإرسالية</option>
+            {selectedDrivers.map((driver) => <option key={driver.userId} value={String(driver.userId)}>{driver.name}</option>)}
+          </AppSelect>
+          {!partiesQ.isLoading && selectedDrivers.length === 0 && (
+            <p className="mt-1 text-[10px] font-bold text-[var(--sem-warn)]">لا يوجد مندوب نشط ومخوّل في هذا الفرع لهذه الجهة.</p>
+          )}
+        </div>
+      )}
 
       {disabledReason && (
         <p role="status" className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-2 py-1 text-[11px] font-bold text-[var(--sem-warn)]">

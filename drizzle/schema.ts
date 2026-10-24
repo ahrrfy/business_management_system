@@ -25,9 +25,11 @@ import {
 import { sql } from "drizzle-orm";
 import { barcodeIdentityColumn, barcodeIdentitySql } from "./barcodeIdentitySql";
 import type { DigitalCheckoutSnapshot } from "../shared/digitalSale";
+import type { CheckoutChargesInput } from "../shared/checkoutCharges";
 import type { OperationPolicy } from "../shared/operationPermissions";
 import { aftercareExecutions, fulfillmentRequests } from "./fulfillmentSchema";
 export * from "./fulfillmentSchema";
+export * from "./fulfillmentRightsSchema";
 
 /** One real customer receipt; allocation never posts cash or AR a second time. */
 export const customerReceiptSettlements = mysqlTable("customerReceiptSettlements", {
@@ -1244,6 +1246,9 @@ export const invoiceItemBundleComponents = mysqlTable(
       mode: "number",
     }).notNull(),
     componentBaseQuantity: int("componentBaseQuantity").notNull(),
+    // Actual component issue valuation; historical rows remain unknown, never backfilled.
+    issueUnitCost: decimal("issueUnitCost", { precision: 15, scale: 2 }),
+    issueLineCost: decimal("issueLineCost", { precision: 15, scale: 2 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
@@ -4653,6 +4658,8 @@ export const receptionDrafts = mysqlTable(
     /** يولّده **الخادم** عند الإنشاء ويعيش مع الصفّ — طبقة idempotency الثالثة للتثبيت (ش٣):
      *  يصير sourceId `{uuid}-sale` فيصطدم بـuq_invoice_source حتى لو سقط القفلان. */
     commitRequestId: char("commitRequestId", { length: 36 }).notNull(),
+    /** Draft intent only; no tender/provider proof and no financial effect until commit. */
+    checkoutCharges: json("checkoutCharges").$type<Pick<CheckoutChargesInput, "serviceCharges" | "approvedChargeAllocations">>(),
     /** يُرفع عند أوّل قبضٍ (ش٤) **ولا يُخفَض أبداً** — العمود الفقريّ لحارس I3. */
     moneyLocked: boolean("moneyLocked").default(false).notNull(),
     customerId: bigint("customerId", { mode: "number" }).references(

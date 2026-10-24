@@ -1,4 +1,5 @@
 import { consignmentFeeDueSql, createFeeWithholdingQuote } from "./fees";
+import { physicalReturnReceiptExistsSql } from "./workflow/returnReceipt";
 import { remittanceCashReceivedSql } from "./remittanceCash";
 import { shipmentFeeDeliveryProvenExpr } from "./shipments";
 // قراءات الشاشة: الجاهز للإرسال، الإرساليات المفتوحة/كاملة، سجل التوريدات، كشف حساب جهة.
@@ -251,6 +252,9 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
    * ومبالغها غير مسواة أو قيد التوصيل (ASSIGNED, ACCEPTED, PICKED_UP, OUT_FOR_DELIVERY, FAILED, DELIVERED).
    * تظهر فور الإسناد بجدول ذمة الجهة مع أو بدون بحث.
    */
+  const physicalReturnReceived = physicalReturnReceiptExistsSql();
+  const cashInCourierCustody = sql<string>`GREATEST(COALESCE((SELECT SUM(CASE WHEN returned_cash.entryType='COD_COLLECTED' THEN returned_cash.amount WHEN returned_cash.entryType IN ('COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF') THEN -returned_cash.amount ELSE 0 END) FROM deliveryLedgerEntries returned_cash WHERE returned_cash.consignmentId = ${deliveryConsignments.id} AND ${effectiveDeliveryLedgerEntrySql("returned_cash")}),0),0)`;
+  const returnedCustody = and(physicalReturnReceived, sql`${cashInCourierCustody} > 0`, inArray(deliveryConsignments.status, ["DISPATCHED", "PARTIAL"]), inArray(deliveryConsignments.moneyStatus, ["UNSETTLED", "PARTIAL"]));
   const openCandidate = and(
     inArray(deliveryConsignments.status, ["DISPATCHED", "PARTIAL"]),
     sql`${deliveryConsignments.parcelStatus} NOT IN ('CANCELLED','RETURNED')`,
@@ -277,6 +281,8 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
       // فالمتبقّي الحيّ للتوريد = codAmount − collectedAmount − counterSettledAmount − shortfallAssigned.
       // بدونه تحسب شاشة التسوية اليدويّة المتبقّي أعلى من الحدّ الخادميّ فيُرفَض كلُّ توريد.
       shortfallAssigned: consignmentShortfallAssignedSql,
+      physicalReturnReceived,
+      cashInCourierCustody,
       /** المقبوضُ على المستند — تقديرُ ما يخرج من الدرج عند الإرجاع (انظر `listInTransitConsignments`). */
       invoicePaidAmount: invoices.paidAmount,
       deliveryFee: deliveryConsignments.deliveryFee,
@@ -305,7 +311,7 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
     .leftJoin(customers, eq(deliveryConsignments.endCustomerId, customers.id))
     .where(and(
       eq(deliveryConsignments.partyId, partyId),
-      or(openCandidate, unpaidFee),
+      or(openCandidate, unpaidFee, returnedCustody),
       branchId == null ? undefined : eq(deliveryConsignments.branchId, branchId),
       page.cursor != null ? gt(deliveryConsignments.id, page.cursor) : undefined,
     ))

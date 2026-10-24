@@ -75,7 +75,17 @@ import {
   chargePayeeIntent,
   chargePayableRole,
   chargeCustodyIntent,
+  immediateServiceIntent,
 } from "./chargePosting";
+import type {
+  CheckoutServiceCharge,
+  CheckoutChargeAllocation,
+} from "../../../shared/checkoutCharges";
+import {
+  authorizeCheckoutServicesTx,
+  assertCheckoutAuthorityTx,
+  type CheckoutAuthorityPath,
+} from "../checkoutChargesPolicy";
 import {
   fulfillmentCostVisibleTx,
   projectFulfillmentChargeCost,
@@ -610,6 +620,236 @@ async function writeReceiptTx(
   });
   return { receiptId: extractInsertId(result), bucket };
 }
+/** Internal checkout composition. No router accepts policy evidence or posting lines. */
+export async function createCheckoutServicesInTx(
+  tx: Tx,
+  input: {
+    branchId: number;
+    customerId?: number | null;
+    clientRequestId: string;
+    services: CheckoutServiceCharge[];
+    authorityPath?: CheckoutAuthorityPath;
+  },
+  actor: Actor,
+) {
+  const proof = await authorizeCheckoutServicesTx(
+    tx,
+    actor,
+    input.branchId,
+    input.services,
+    input.authorityPath,
+  );
+  const rows: FulfillmentCharge[] = [];
+  if (
+    input.customerId &&
+    !(
+      await tx
+        .select({ id: customers.id })
+        .from(customers)
+        .where(eq(customers.id, input.customerId))
+        .for("update")
+        .limit(1)
+    )[0]
+  )
+    throw fulfillmentError("العميل غير موجود");
+  for (let index = 0; index < input.services.length; index++) {
+    const line = input.services[index];
+    const identity = { ...input, index };
+    const ctx = context("checkoutService", identity, actor, input.branchId);
+    const result = await tx.insert(fulfillmentCharges).values({
+      branchId: input.branchId,
+      customerId: input.customerId ?? null,
+      category: "SERVICE",
+      status: "APPROVED",
+      description: line.description.trim(),
+      amount: toDbMoney(money(line.amount)),
+      externalCost: "0.00",
+      // Guests can exist only as fully collected immediate services, within this transaction.
+      paidAmount: input.customerId ? "0.00" : toDbMoney(money(line.amount)),
+      createdBy: actor.userId,
+      approvedBy: actor.userId,
+      approvedAt: new Date(),
+      clientRequestId: `CHK-SVC:${ctx.sourceHash}`,
+      sourceHash: ctx.sourceHash,
+    });
+    const row = await loadFulfillmentChargeTx(
+      tx,
+      extractInsertId(result),
+      actor,
+      { lock: true },
+    );
+    if (row.customerId) {
+      const amount = money(row.amount);
+      await postEntry(tx, {
+        entryType: "ADJUST",
+        branchId: row.branchId,
+        customerId: row.customerId,
+        amount,
+        revenue: amount,
+        profit: amount,
+        createdBy: actor.userId,
+        dedupeKey: `FULFILLMENT_CHARGE_ACCRUAL:${row.id}`,
+        notes: row.description,
+        postingIntent: chargeAccrualIntent("SERVICE", amount),
+        postingSourceComponents: {
+          roleDebits: { AR: row.amount },
+          roleCredits: { OTHER_REVENUE: row.amount },
+        },
+      });
+      await adjustCustomerBalance(tx, row.customerId, amount);
+    }
+    await audit(tx, actor, "checkoutService", row, {
+      ...proof,
+      description: row.description,
+      amount: row.amount,
+    });
+    rows.push(row);
+  }
+  return rows;
+}
+
+/** Lock approved sources once before receipts or sale effects. Deferred charges always have a real customer. */
+export async function lockCheckoutChargeAllocationsTx(
+  tx: Tx,
+  input: {
+    branchId: number;
+    customerId?: number | null;
+    allocations: ChargeAllocation[];
+    authorityPath?: CheckoutAuthorityPath;
+  },
+  actor: Actor,
+) {
+  if (!input.allocations.length) return [];
+  await assertCheckoutAuthorityTx(
+    tx,
+    actor,
+    input.authorityPath ?? "sales.create",
+  );
+  const rows = await lockAllocationsTx(
+    tx,
+    input.allocations,
+    actor,
+    input.branchId,
+  );
+  assertAllocations(rows, input.allocations);
+  if (rows.some((row) => row.customerId !== input.customerId))
+    throw fulfillmentError("أجور القبض المعتمدة يجب أن تخص عميل العملية نفسه");
+  return rows;
+}
+
+/** Creates a real retained receipt; provider consumption belongs to the whole checkout orchestrator. */
+export async function collectCheckoutChargePortionTx(
+  tx: Tx,
+  input: {
+    branchId: number;
+    customerId?: number | null;
+    clientRequestId: string;
+    sourceHash: string;
+    paymentIndex: number;
+    tender: ChargeTender;
+    allocations: Array<{
+      row: FulfillmentCharge;
+      amount: string;
+      immediateGuest?: boolean;
+    }>;
+  },
+  actor: Actor,
+): Promise<{ receiptId: number; allocations: CheckoutChargeAllocation[] }> {
+  const amount = input.allocations.reduce(
+    (sum, item) => sum.plus(positive(item.amount)),
+    zero(),
+  );
+  const first = input.allocations[0]?.row;
+  if (!first || !amount.gt(0)) throw fulfillmentError("تخصيص الأجور فارغ");
+  const { receiptId, bucket } = await writeReceiptTx(
+    tx,
+    first,
+    input.tender,
+    amount,
+    actor,
+    "IN",
+    `قبض أجور العملية ${input.clientRequestId}`,
+  );
+  const result: CheckoutChargeAllocation[] = [];
+  for (const item of input.allocations) {
+    const row = await loadFulfillmentChargeTx(tx, item.row.id, actor, {
+      lock: true,
+    });
+    const value = positive(item.amount),
+      guest = item.immediateGuest === true;
+    if (
+      row.branchId !== input.branchId ||
+      row.customerId !== (input.customerId ?? null) ||
+      row.status !== "APPROVED" ||
+      (guest
+        ? row.customerId != null ||
+          row.category !== "SERVICE" ||
+          !money(row.externalCost).isZero()
+        : value.gt(money(chargeRemaining(row))))
+    )
+      throw fulfillmentError("تغير مصدر الأجر أو تجاوز تخصيص القبض المتبقي");
+    const cash = paymentAccountRole(input.tender.method, bucket, "IN");
+    await postEntry(tx, {
+      entryType: "PAYMENT_IN",
+      branchId: row.branchId,
+      customerId: row.customerId,
+      receiptId,
+      amount: value,
+      revenue: guest ? value : zero(),
+      profit: guest ? value : zero(),
+      paymentMethod: input.tender.method,
+      createdBy: actor.userId,
+      dedupeKey: `CHECKOUT_CHARGE:${row.id}:R:${receiptId}`,
+      notes: row.description,
+      postingIntent: guest
+        ? immediateServiceIntent(value, input.tender.method, bucket)
+        : chargeCollectionIntent(value, value, input.tender.method, bucket),
+      postingSourceComponents: {
+        roleDebits: { [cash]: item.amount },
+        roleCredits: { [guest ? "OTHER_REVENUE" : "AR"]: item.amount },
+      },
+    });
+    if (row.customerId)
+      await adjustCustomerBalance(tx, row.customerId, value.negated());
+    const inserted = await tx
+      .insert(fulfillmentChargePayments)
+      .values({
+        chargeId: row.id,
+        branchId: row.branchId,
+        kind: "COLLECTION",
+        receiptId,
+        amount: toDbMoney(value),
+        createdBy: actor.userId,
+      clientRequestId: `CHK:${input.sourceHash}:${input.paymentIndex}`,
+        sourceHash: input.sourceHash,
+      });
+    if (!guest)
+      await tx
+        .update(fulfillmentCharges)
+        .set({
+          paidAmount: toDbMoney(money(row.paidAmount).plus(value)),
+          version: row.version + 1,
+        })
+        .where(eq(fulfillmentCharges.id, row.id));
+    await settleAssignedChargeAtCounterTx(
+      tx,
+      { chargeId: row.id, amount: toDbMoney(value), receiptId },
+      actor,
+    );
+    result.push({
+      chargeId: row.id,
+      paymentId: extractInsertId(inserted),
+      receiptId,
+      paymentIndex: input.paymentIndex,
+      amount: toDbMoney(value),
+    });
+  }
+  await tx.update(receipts).set({internalNote:JSON.stringify({
+    externalPaymentReference:input.tender.reference??null,externalPaymentAttemptId:input.tender.externalPaymentAttemptId??null,
+    checkoutChargeCollection:{requestId:input.clientRequestId,sourceHash:input.sourceHash,allocatedAmount:toDbMoney(amount),allocations:result},
+  })}).where(eq(receipts.id,receiptId));
+  return { receiptId, allocations: result };
+}
 /** Reserve the actual OUT receipt globally before any refund ledger/allocation effect. */
 async function reserveChargeRefundConfirmationTx(
   tx: Tx,
@@ -931,7 +1171,36 @@ export function refundFulfillmentCharge(
         intent = chargeRefundIntent(amount, tender.method, bucket);
       const revenue =
         row.category === "PASS_THROUGH" ? zero() : amount.negated();
-      await postEntry(tx, {
+      if (!row.customerId) {
+        if (row.category !== "SERVICE" || !money(row.externalCost).isZero())
+          throw fulfillmentError(
+            "رد أجر عابر يتطلب خدمة مكتبة مدفوعة بلا تكلفة خارجية",
+          );
+        const cash = paymentAccountRole(tender.method, bucket, "OUT");
+        await postEntry(tx, {
+          entryType: "PAYMENT_OUT",
+          branchId: row.branchId,
+          receiptId,
+          amount,
+          revenue,
+          profit: revenue,
+          paymentMethod: tender.method,
+          createdBy: actor.userId,
+          dedupeKey: `FULFILLMENT_SERVICE_REFUND:R:${receiptId}`,
+          notes: input.reason,
+          postingIntent: immediateServiceIntent(
+            amount,
+            tender.method,
+            bucket,
+            true,
+          ),
+          postingSourceComponents: {
+            roleDebits: { OTHER_REVENUE: input.amount },
+            roleCredits: { [cash]: input.amount },
+          },
+        });
+      } else {
+        await postEntry(tx, {
         entryType: "ADJUST",
         branchId: row.branchId,
         customerId: row.customerId,
@@ -965,6 +1234,7 @@ export function refundFulfillmentCharge(
           },
         },
       });
+      }
       await tx.insert(fulfillmentChargePayments).values({
         chargeId: row.id,
         branchId: row.branchId,

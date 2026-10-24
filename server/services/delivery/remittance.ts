@@ -62,6 +62,7 @@ import { nextRemittanceNumber } from "./numbering";
 import { partyCashInHandTx } from "./cashSource";
 import { shortfallAssignedForConsignmentTx } from "./openParcelPredicates";
 import { unremittedCollectionForConsignmentTx } from "./collectionAccounting";
+import { physicalReturnReceiptTx } from "./workflow/returnReceipt";
 import {
   deliveryCustomerCollectionIntent,
   deliveryRemitIntent,
@@ -510,7 +511,8 @@ export async function recordDeliveryRemittanceInTx(
         code: "BAD_REQUEST",
         message: `إرسالية ${cn.consignmentNumber} غير قابلة للتسوية`,
       });
-    if (cn.parcelStatus !== "DELIVERED") {
+    const physicallyReturned = await physicalReturnReceiptTx(tx, cn);
+    if (cn.parcelStatus !== "DELIVERED" && !physicallyReturned) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: `لا يمكن توريد ${cn.consignmentNumber} قبل إثبات وصول العميل`,
@@ -551,7 +553,7 @@ export async function recordDeliveryRemittanceInTx(
         code: "BAD_REQUEST",
         message: `أكثر من المتبقّي للإرسالية ${cn.consignmentNumber}`,
       });
-    if (cn.fulfillmentRequestId != null) {
+    if (cn.fulfillmentRequestId != null || physicallyReturned) {
       const proven = await unremittedCollectionForConsignmentTx(tx, Number(cn.id));
       if (collected.gt(proven))
         throw new TRPCError({

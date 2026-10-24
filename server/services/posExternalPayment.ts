@@ -14,6 +14,7 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   digitalSaleIntents,
   accountingEntries,
+  auditLogs,
   externalPaymentAttempts,
   invoices,
   receipts,
@@ -32,6 +33,14 @@ import { createSaleInTx, DIGITAL_SALE_CAPABILITY, notifySaleCustomerAfterCommit,
 } from "./sale/create";
 import type { CreateSaleInput, CreateSaleResult } from "./sale/types";
 import { withTx, type Actor } from "./tx";
+import type {
+  CheckoutChargesInput,
+  CheckoutChargesResult,
+} from "../../shared/checkoutCharges";
+import {
+  composeCheckoutChargesInTx,
+  hasCheckoutCharges,
+} from "./checkoutCharges";
 
 export type PosExternalPaymentMethod = "CARD" | "CHECK" | "TRANSFER" | "WALLET";
 export type PosExternalPaymentChannel =
@@ -254,6 +263,9 @@ export type ConfirmedPosSaleInput = Omit<
   CreateSaleInput,
   "payment" | "payments"
 > & {
+  serviceCharges?: CheckoutChargesInput["serviceCharges"];
+  approvedChargeAllocations?: CheckoutChargesInput["approvedChargeAllocations"];
+  chargePayments?: CheckoutChargesInput["chargePayments"];
   payment?: ConfirmedPosSalePaymentLeg | null;
   payments?: ConfirmedPosSalePaymentLeg[] | null;
   /** حارس القناة العامة؛ تُبقي الاستدعاءات الداخلية القديمة خارج نطاق شريحة POS. */
@@ -978,6 +990,42 @@ export async function assertExternalPaymentReplay(
   assertAttemptActorAuthority(row, verificationPolicy, actor, trustedDigitalRecovery);
 }
 
+/** A primary charge receipt must prove actual allocation rows and their exact financial entries. */
+async function isUnifiedCheckoutChargeReceiptTx(tx:Tx,receipt:typeof receipts.$inferSelect):Promise<boolean>{
+  try {
+    const note=JSON.parse(receipt.internalNote??"null"),declared=note?.checkoutChargeCollection;
+    if(!declared||typeof declared.sourceHash!=="string"||!/^[a-f0-9]{64}$/.test(declared.sourceHash)||typeof declared.requestId!=="string"||!Array.isArray(declared.allocations))return false;
+    const allocated=await tx.select({payment:fulfillmentChargePayments,charge:fulfillmentCharges}).from(fulfillmentChargePayments)
+      .innerJoin(fulfillmentCharges,eq(fulfillmentCharges.id,fulfillmentChargePayments.chargeId))
+      .where(and(eq(fulfillmentChargePayments.receiptId,receipt.id),eq(fulfillmentChargePayments.kind,"COLLECTION"))).for("update");
+    if(!allocated.length||declared.allocations.length!==allocated.length||receipt.partyType!=="CUSTOMER")return false;
+    const total=allocated.reduce((sum,row)=>sum.plus(money(row.payment.amount)),money("0"));
+    if(!total.eq(receipt.amount)||declared.allocatedAmount!==total.toFixed(2))return false;
+    const entries=await tx.select().from(accountingEntries).where(and(eq(accountingEntries.receiptId,receipt.id),eq(accountingEntries.entryType,"PAYMENT_IN")));
+    if(entries.length!==allocated.length)return false;
+    for(const {payment,charge} of allocated){
+      const link=declared.allocations.find((row:{paymentId?:number})=>row.paymentId===payment.id);
+      const entry=entries.find(row=>row.dedupeKey===`CHECKOUT_CHARGE:${charge.id}:R:${receipt.id}`);
+      if(!link||link.chargeId!==charge.id||link.receiptId!==receipt.id||!money(link.amount).eq(payment.amount)||!money(payment.amount).gt(0)
+        ||payment.branchId!==receipt.branchId||charge.branchId!==receipt.branchId||payment.createdBy!==receipt.createdBy||payment.sourceHash!==declared.sourceHash
+        ||charge.customerId!==receipt.partyId||charge.status!=="APPROVED"||charge.category==="SHOP_EXPENSE"
+        ||(money(charge.externalCost).gt(0)&&charge.createdBy===charge.approvedBy)
+        ||!entry||entry.branchId!==receipt.branchId||entry.customerId!==charge.customerId||entry.createdBy!==receipt.createdBy||!money(entry.amount).eq(payment.amount))return false;
+      if(charge.customerId==null){
+        if(charge.category!=="SERVICE"||!money(charge.externalCost).isZero()||!money(charge.paidAmount).eq(charge.amount)||charge.createdBy!==receipt.createdBy||charge.approvedBy!==charge.createdBy
+          ||charge.payeeSupplierId!=null||charge.payeePartyId!=null||charge.payeeUserId!=null||charge.payeeName!=null||!money(entry.revenue).eq(payment.amount))return false;
+        const [audit]=await tx.select({proof:auditLogs.newValue}).from(auditLogs).where(and(eq(auditLogs.action,"delivery.fulfillment.charges.checkoutService"),eq(auditLogs.entityId,String(charge.id)),eq(auditLogs.userId,charge.createdBy))).limit(1);
+        const policy=typeof audit?.proof==="string"?JSON.parse(audit.proof):audit?.proof;
+        if(!policy||typeof policy!=="object"||!("policy" in policy)||policy.policy!=="SERVICE_ZERO_EXTERNAL_COST_V1"
+          ||!("actorUserId" in policy)||policy.actorUserId!==charge.createdBy||!("branchId" in policy)||policy.branchId!==receipt.branchId
+          ||!("cap" in policy)||typeof policy.cap!=="string"||!("operationAmount" in policy)||typeof policy.operationAmount!=="string"
+          ||!money(policy.cap).gt(0)||money(policy.operationAmount).gt(policy.cap)||money(charge.amount).gt(policy.operationAmount))return false;
+      }else if(!money(entry.revenue).isZero())return false;
+    }
+    return true;
+  }catch{return false;}
+}
+
 /** يُستهلك الصف المقفول في نفس معاملة invoice+receipt+ledger؛ أي فشل لاحق يعيد الأربعة معاً. */
 export async function bindExternalPaymentAttempt(
   tx: Tx,
@@ -999,18 +1047,21 @@ export async function bindExternalPaymentAttempt(
     const excess = money(receipt.amount).minus(allocated);
     const entry = (await tx.select().from(accountingEntries).where(and(eq(accountingEntries.receiptId,receiptId),
       eq(accountingEntries.dedupeKey,`FULFILLMENT_CHARGE_COLLECTION:R:${receiptId}`),eq(accountingEntries.entryType,"PAYMENT_IN"))).limit(1))[0];
-    let declared: {allocatedAmount?:string;excessLiabilityAmount?:string}|undefined;
+    let declared:
+      | {allocatedAmount?:string;excessLiabilityAmount?:string}|undefined;
     try { const note:unknown=JSON.parse(receipt.internalNote??"null");
       if(note&&typeof note==="object"&&"fulfillmentChargeCollection" in note)declared=note.fulfillmentChargeCollection as typeof declared;
     } catch { /* Missing/malformed allocation evidence fails closed below. */ }
     realChargeCollection = allocations.length>0 && allocated.gt(0) && excess.gte(0)
       && receipt.partyType==="CUSTOMER" && receipt.partyId!=null
-      && allocations.every(r=>money(r.payment.amount).gt(0)&&r.payment.branchId===receipt.branchId
+      && allocations.every(
+        (r) =>money(r.payment.amount).gt(0)&&r.payment.branchId===receipt.branchId
         &&r.charge.branchId===receipt.branchId&&r.charge.customerId===receipt.partyId
         &&r.charge.status==="APPROVED"&&r.charge.category!=="SHOP_EXPENSE")
       && entry!=null&&entry.branchId===receipt.branchId&&entry.customerId===receipt.partyId&&money(entry.amount).eq(money(receipt.amount))
       && declared?.allocatedAmount===allocated.toFixed(2)&&declared?.excessLiabilityAmount===excess.toFixed(2)
       && (!excess.gt(0)||entry.notes?.includes(`فائض أمانة عميل ${excess.toFixed(2)}`)===true);
+    if(!realChargeCollection)realChargeCollection=await isUnifiedCheckoutChargeReceiptTx(tx,receipt);
   }
   if (!receipt || !proof || receipt.direction !== "IN" || receipt.status !== "COMPLETED" || receipt.approvalStatus !== "APPROVED"
     || receipt.paymentMethod !== proof.paymentMethod || Number(receipt.branchId) !== Number(proof.branchId)
@@ -1191,9 +1242,11 @@ export async function consumeExternalReceiptAllocationsTx(
       externalPaymentReference: proof.externalReference,
       externalPaymentAttemptId: Number(proof.id),
     });
+    let allocationProof: {externalPaymentReference?:unknown;externalPaymentAttemptId?:unknown}|null=null;
+    try { allocationProof=receipt.internalNote?JSON.parse(receipt.internalNote):null; } catch { /* invalid stored proof fails closed below */ }
     if (
       receipt.referenceNumber !== proof.externalReference &&
-      receipt.internalNote !== note
+      !(allocationProof?.externalPaymentReference===proof.externalReference&&allocationProof?.externalPaymentAttemptId===Number(proof.id))
     ) {
       throw feeTenderError("مرجع الإيصال لا يطابق إثبات عملية المزوّد");
     }
@@ -1430,7 +1483,44 @@ export async function createConfirmedPosSaleInTx(
   input: ConfirmedPosSaleInput,
   actor: Actor,
   capability?: typeof DIGITAL_SALE_CAPABILITY,
-): Promise<CreateSaleResult> {
+): Promise<CreateSaleResult & Partial<CheckoutChargesResult>> {
+  if (hasCheckoutCharges(input)) {
+    const composed = await composeCheckoutChargesInTx(
+      tx,
+      input,
+      actor,
+      "POS",
+      async (resolved) => {
+        const core = coreSaleInput({
+          ...input,
+          ...resolved,
+        } as ConfirmedPosSaleInput);
+        const result = await createSaleInTx(tx, core, actor, capability);
+        const preIds = new Set(input.preCollected?.receiptIds ?? []);
+        const receiptIds = (
+          await tx
+            .select({ id: receipts.id })
+            .from(receipts)
+            .where(
+              and(
+                eq(receipts.invoiceId, result.invoiceId),
+                eq(receipts.direction, "IN"),
+              ),
+            )
+            .orderBy(receipts.id)
+        )
+          .map((r) => r.id)
+          .filter((id) => !preIds.has(id));
+        return { result, receiptIds };
+      },
+    );
+    return {
+      ...composed.result,
+      checkoutReceipts: composed.checkoutReceipts,
+      chargeAllocations: composed.chargeAllocations,
+      checkoutPaymentSummary: composed.checkoutPaymentSummary,
+    };
+  }
   if (money(input.deliveryFeeHeld ?? "0").gt(0)) {
     return createConfirmedFeeTenderSaleInTx(tx, input, actor, capability);
   }

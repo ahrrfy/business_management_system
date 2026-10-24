@@ -11,7 +11,7 @@ describe("current delivery source", () => {
       invoiceNumber: "OLD-42",
     });
     expect(source.href).toBe(
-      "/delivery?tab=fulfillment&kind=aftercare&executionId=8",
+      "/reception/workflow?section=aftercare&executionId=8",
     );
     expect(source.reference).not.toContain("OLD-42");
     expect(source.customerCollectionForbidden).toBe(true);
@@ -23,7 +23,7 @@ describe("current delivery source", () => {
         fulfillmentRequestId: 11,
         invoiceId: null,
       }).href,
-    ).toBe("/delivery?tab=fulfillment&kind=requests&requestId=11");
+    ).toBe("/reception/workflow?section=dispatch&requestId=11");
   });
   it("links a legacy invoice member to its real request without changing the source type", () => {
     expect(
@@ -35,7 +35,7 @@ describe("current delivery source", () => {
       }),
     ).toMatchObject({
       reference: "طلب توصيل #11 · INV-25",
-      href: "/delivery?tab=fulfillment&kind=requests&requestId=11",
+      href: "/reception/workflow?section=dispatch&requestId=11",
       customerCollectionForbidden: false,
     });
   });

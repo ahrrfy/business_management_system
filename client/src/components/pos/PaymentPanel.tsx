@@ -18,6 +18,7 @@ import { PaymentActions } from "./PaymentActions";
 import { SplitPaymentSection, type SplitPaymentSectionProps } from "./SplitPaymentSection";
 
 export interface PaymentPanelProps {
+  extraChargesSlot?: import("react").ReactNode; chargeOnlyDue?:number;
   C: C;
   total: number; payInput: string;
   subtotal: number;
@@ -54,7 +55,9 @@ export interface PaymentPanelProps {
   splitPayment?: Omit<SplitPaymentSectionProps, "C" | "total" | "cartLen">;
 }
 
-export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscountPct, setInvoiceDiscountPct, invoiceDiscountAllowed, effectiveHeaderCapPct, cashRoundingDelta, payInput, setPayInput, paid, change, credit, isChange, isOwing, method, setMethod, paymentRef, setPaymentRef, externalPaymentConfirmed, externalPaymentPending, onConfirmExternalPayment, dueDate, setDueDate, numMode, setNumMode, numPress, onPay, onQuickPay, cartLen, isPending, canPay, hasCustomer, isCreditBlocked = false, saleError, onDismissError, stacked, couponInput, couponCode, couponLabel, setCouponInput, onApplyCoupon, onClearCoupon, couponPending, deliveryFeeHeld = 0, feeMethod, codMode = false, invoiceDiscountType, invoiceDiscountValue, onInvoiceDiscountChange, maxDiscountAmount, splitPayment }: PaymentPanelProps) {
+export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscountPct, setInvoiceDiscountPct, invoiceDiscountAllowed, effectiveHeaderCapPct, cashRoundingDelta, payInput, setPayInput, paid, change, credit, isChange, isOwing, method, setMethod, paymentRef, setPaymentRef, externalPaymentConfirmed, externalPaymentPending, onConfirmExternalPayment, dueDate, setDueDate, numMode, setNumMode, numPress, onPay, onQuickPay, cartLen, isPending, canPay, hasCustomer, isCreditBlocked = false, saleError, onDismissError, stacked, couponInput, couponCode, couponLabel, setCouponInput, onApplyCoupon, onClearCoupon, couponPending, deliveryFeeHeld = 0, feeMethod, codMode = false, invoiceDiscountType, invoiceDiscountValue, onInvoiceDiscountChange, maxDiscountAmount, splitPayment,
+  extraChargesSlot,chargeOnlyDue,
+}: PaymentPanelProps) {
   const isSplitPayment = (splitPayment?.paymentLegs.length ?? 0) > 0;
   const dense = useMediaQuery("(max-height: 820px)");
   const ultra = useMediaQuery("(max-height: 660px)");
@@ -128,6 +131,7 @@ export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoic
         </div>
       )}
 
+
       {/* Total */}
       <PaymentTotals
         C={C} ultra={ultra} fluid={fluid}
@@ -148,6 +152,7 @@ export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoic
           الدفع تحتها ظاهرَين دائماً. بلا هذا كان الفائض يُقصّ بصمت بلا شريط تمرير. */}
       {/* منطقة الإدخال — أزرار الدفع والمبلغ والنمباد مصفوفة بذكاء لتفادي أي تمرير */}
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", scrollbarWidth: "thin" }}>
+      {extraChargesSlot}
 
       {/* طريقة الدفع — ٤ أزرار متساوية في صفٍّ واحد بأعلى اللوحة لسرعة الاختيار */}
       {!isSplitPayment && (
@@ -176,7 +181,7 @@ export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoic
       )}
 
       {splitPayment && (
-        <SplitPaymentSection C={C} total={total} cartLen={cartLen} {...splitPayment} deliveryFeeHeld={deliveryFeeHeld} />
+        <SplitPaymentSection C={C} total={chargeOnlyDue??total} cartLen={cartLen||(chargeOnlyDue?1:0)} {...splitPayment} deliveryFeeHeld={deliveryFeeHeld} />
       )}
 
       {/* Amount display — حقل إدخال المبلغ وزر طي النمباد */}
@@ -234,7 +239,11 @@ export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoic
               }}
             >
               <Calculator aria-hidden size={12} />
-              {numpadOpen ? <ChevronUp aria-hidden size={12} /> : <ChevronDown aria-hidden size={12} />}
+              {numpadOpen ? (
+                    <ChevronUp aria-hidden size={12} />
+                  ) : (
+                    <ChevronDown aria-hidden size={12} />
+                  )}
             </button>
           </div>
         </div>

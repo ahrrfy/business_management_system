@@ -245,6 +245,8 @@ const EXTRA_MIGRATIONS = [
   // Typed no-invoice sources, generated active-source keys and receipt-only proofs.
   // Runs after 0307 so the old consumption CHECK cannot overwrite this contract.
   "drizzle/migrations/0403_fulfillment_requests_aftercare.sql",
+  // Reapply final quantity/customer checks after 0403; keep original issue costs unknown in legacy data.
+  "drizzle/migrations/0404_barcode_workflow_settlements.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without

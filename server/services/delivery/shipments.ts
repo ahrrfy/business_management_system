@@ -47,6 +47,7 @@ import {
 import { deliverySearchSql } from "./readSearch";
 import { normalizeExternalTrackingRef } from "./trackingRefPolicy";
 import type { DeliveryTxActor } from "./types";
+import { physicalReturnReceiptTx, returnCarrierRightsTx, PHYSICAL_RETURN_RECEIVED } from "./workflow/returnReceipt";
 
 const SHIPMENT_OPERATION = "delivery.dispatchInvoiceShipment";
 const MAX_SHIPMENT_INVOICES = 30;
@@ -157,6 +158,7 @@ export async function shipmentFeeDeliveryProvenTx(
     currentRead: true,
   });
   const source = rows.find((row) => Number(row.id) === consignmentId);
+  if (source && await physicalReturnReceiptTx(tx, source) && (await returnCarrierRightsTx(tx, [source.id])).feeDue.gt(0)) return true;
   return (
     !!source &&
     rows.every((row) => Number(row.branchId) === Number(source.branchId)) &&
@@ -177,7 +179,7 @@ export function shipmentFeeDeliveryProvenExpr(
     parcelStatus: SQLWrapper;
   } = deliveryConsignments,
 ) {
-  return sql`(${source.parcelStatus} = 'DELIVERED' OR EXISTS (
+  return sql`(${source.parcelStatus} = 'DELIVERED' OR (${source.parcelStatus} = 'RETURNED' AND EXISTS (SELECT 1 FROM deliveryEvents fee_returned WHERE fee_returned.consignmentId = ${source.id} AND fee_returned.eventType = ${PHYSICAL_RETURN_RECEIVED}) AND EXISTS (SELECT 1 FROM deliveryLedgerEntries fee_earned WHERE fee_earned.consignmentId = ${source.id} AND fee_earned.entryType = 'FEE_EARNED' AND fee_earned.amount > 0)) OR EXISTS (
     SELECT 1 FROM deliveryShipmentMembers fee_source
     INNER JOIN deliveryShipmentMembers fee_sibling ON fee_sibling.leaderConsignmentId = fee_source.leaderConsignmentId
     INNER JOIN deliveryConsignments fee_delivered ON fee_delivered.id = fee_sibling.consignmentId
@@ -371,6 +373,7 @@ export async function dispatchInvoiceShipmentInTx(
   tx: Tx,
   input: DispatchInvoiceShipmentInput,
   actor: DeliveryTxActor,
+  context: { heldReturnReissue?: boolean } = {},
 ) {
   const ids = [...input.invoiceIds].sort((a, b) => a - b);
   if (
@@ -666,8 +669,9 @@ export async function dispatchInvoiceShipmentInTx(
       },
       actor,
       leaderId == null
-        ? undefined
+        ? context.heldReturnReissue ? { heldReturnReissue: true } : undefined
         : {
+            ...(context.heldReturnReissue ? { heldReturnReissue: true } : {}),
             shipmentLeaderConsignmentId: leaderId,
             ...(retainedLeader ? { retainedShipmentLeader: true } : {}),
             ...(isLeader ? {} : { sharedTrackingLeaderId: leaderId }),
@@ -746,6 +750,7 @@ export async function listShipmentInvoiceCandidates(
   assertBranch(Number(anchor.branchId), actor);
   const selection = {
     id: invoices.id,
+    branchId: invoices.branchId,
     invoiceId: invoices.id,
     invoiceNumber: invoices.invoiceNumber,
     total: invoices.total,

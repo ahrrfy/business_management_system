@@ -37,7 +37,13 @@ export interface OperationPermission {
   delegable: boolean;
   requiresCostVisibility?: boolean;
   requiresLegacyReview?: boolean;
-  reservedKind?: "AUTHORITY" | "IDENTITY" | "PUBLIC" | "UNSUPPORTED" | "RETIRED" | null;
+  reservedKind?:
+    | "AUTHORITY"
+    | "IDENTITY"
+    | "PUBLIC"
+    | "UNSUPPORTED"
+    | "RETIRED"
+    | null;
   /** The inherited legacy gate can require FULL even for a query. */
   level?: string | null;
   procedure?: string;
@@ -92,48 +98,54 @@ const policyShape = z
   .strict();
 
 /** Reject unknown paths and reserved authority; aliases are migration inputs only. */
-export const operationPolicySchema = policyShape.transform((policy) => {
-  const grants = { ...policy.grants };
-  const recordScopes = policy.recordScopes ? { ...policy.recordScopes } : undefined;
-  // Only explicitly retired catalog paths are safe to remove from persisted full maps.
-  for (const key of Object.keys(grants))
-    if (getOperationPermission(key)?.reservedKind === "RETIRED") delete grants[key];
-  for (const key of Object.keys(recordScopes ?? {}))
-    if (getOperationPermission(key)?.reservedKind === "RETIRED") delete recordScopes![key];
-  return { ...policy, grants, ...(recordScopes ? { recordScopes } : {}) };
-}).superRefine((policy, ctx) => {
-  const visibility = policy.dataVisibility;
-  if (visibility && visibility.purchaseCost !== visibility.profitMargin) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["dataVisibility"],
-      message:
-        "عرض التكلفة والربح صلاحية واحدة؛ يجب حفظ الخيارين معاً بالقيمة نفسها",
-    });
-  }
-  for (const key of Object.keys(policy.grants)) {
-    const operation = operationByKey.get(key);
-    if (!operation?.delegable) {
+export const operationPolicySchema = policyShape
+  .transform((policy) => {
+    const grants = { ...policy.grants };
+    const recordScopes = policy.recordScopes
+      ? { ...policy.recordScopes }
+      : undefined;
+    // Only explicitly retired catalog paths are safe to remove from persisted full maps.
+    for (const key of Object.keys(grants))
+      if (getOperationPermission(key)?.reservedKind === "RETIRED")
+        delete grants[key];
+    for (const key of Object.keys(recordScopes ?? {}))
+      if (getOperationPermission(key)?.reservedKind === "RETIRED")
+        delete recordScopes![key];
+    return { ...policy, grants, ...(recordScopes ? { recordScopes } : {}) };
+  })
+  .superRefine((policy, ctx) => {
+    const visibility = policy.dataVisibility;
+    if (visibility && visibility.purchaseCost !== visibility.profitMargin) {
       ctx.addIssue({
         code: "custom",
-        path: ["grants", key],
-        message: operation
-          ? "هذه العملية محمية ولا تقبل التفويض من المصفوفة"
-          : "مفتاح العملية غير مسجل في كتالوج الصلاحيات",
+        path: ["dataVisibility"],
+        message:
+          "عرض التكلفة والربح صلاحية واحدة؛ يجب حفظ الخيارين معاً بالقيمة نفسها",
       });
     }
-  }
-  for (const key of Object.keys(policy.recordScopes ?? {})) {
-    const operation = operationByKey.get(key);
-    if (!operation?.delegable || operation.supportsRecordScope !== true) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["recordScopes", key],
-        message: "نطاق السجلات غير متاح لهذه العملية",
-      });
+    for (const key of Object.keys(policy.grants)) {
+      const operation = operationByKey.get(key);
+      if (!operation?.delegable) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["grants", key],
+          message: operation
+            ? "هذه العملية محمية ولا تقبل التفويض من المصفوفة"
+            : "مفتاح العملية غير مسجل في كتالوج الصلاحيات",
+        });
+      }
     }
-  }
-});
+    for (const key of Object.keys(policy.recordScopes ?? {})) {
+      const operation = operationByKey.get(key);
+      if (!operation?.delegable || operation.supportsRecordScope !== true) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["recordScopes", key],
+          message: "نطاق السجلات غير متاح لهذه العملية",
+        });
+      }
+    }
+  });
 
 /**
  * Stored full maps can outlive a catalog change that protects an operation.
@@ -141,16 +153,23 @@ export const operationPolicySchema = policyShape.transform((policy) => {
  * operationDecision. Preserve every other grant, denial, scope and visibility
  * setting, and keep unknown/malformed input fail closed. Writes stay strict.
  */
-export const storedOperationPolicySchema = policyShape.transform((policy) => {
-  const keep = ([key]: [string, unknown]) => operationByKey.get(key)?.delegable !== false;
-  return {
-    ...policy,
-    grants: Object.fromEntries(Object.entries(policy.grants).filter(keep)),
-    ...(policy.recordScopes ? {
-      recordScopes: Object.fromEntries(Object.entries(policy.recordScopes).filter(keep)),
-    } : {}),
-  };
-}).pipe(operationPolicySchema);
+export const storedOperationPolicySchema = policyShape
+  .transform((policy) => {
+    const keep = ([key]: [string, unknown]) =>
+      operationByKey.get(key)?.delegable !== false;
+    return {
+      ...policy,
+      grants: Object.fromEntries(Object.entries(policy.grants).filter(keep)),
+      ...(policy.recordScopes
+        ? {
+            recordScopes: Object.fromEntries(
+              Object.entries(policy.recordScopes).filter(keep),
+            ),
+          }
+        : {}),
+    };
+  })
+  .pipe(operationPolicySchema);
 
 export function getOperationPermission(
   pathOrKey: string,
@@ -173,7 +192,8 @@ function legacyAllowed(
   override: PermissionMap | null | undefined,
   operation: OperationPermission,
 ): boolean {
-  if (operation.path === "invoicePrinting.authorizeBridge") return role !== "courier";
+  if (operation.path === "invoicePrinting.authorizeBridge")
+    return role !== "courier";
   if (role === "admin") return true;
   if (operation.authority === "unknown") return false;
   if (
@@ -182,20 +202,60 @@ function legacyAllowed(
   )
     return false;
   if (operation.authority === "raw-role") return operation.roles.includes(role);
-  if (operation.procedure === "receptionDuplicateReadProcedure") return canCheckReceptionDuplicates(role, override);
-  if (operation.procedure === "digitalCardsPosProcedure" && !canUseDigitalCardsSellingStation(role, override)) return false;
+  if (operation.procedure === "receptionDuplicateReadProcedure")
+    return canCheckReceptionDuplicates(role, override);
+  if (
+    operation.procedure === "digitalCardsPosProcedure" &&
+    !canUseDigitalCardsSellingStation(role, override)
+  )
+    return false;
   if (operation.procedure === "customersReadProcedure") {
-    if (override?.customers === "NONE" && role !== "cashier" && role !== "print_operator") return false;
-    return levelSatisfies(override?.customers, "READ") ||
-      moduleAccessAllowed(role, override, "crm", "READ", ["cashier", "manager", "sales_rep", "accountant"]) ||
-      moduleAccessAllowed(role, override, "sales", "READ", ["cashier", "manager", "sales_rep"]) ||
-      moduleAccessAllowed(role, override, "pos", "READ", ["cashier", "manager", "print_operator"]) ||
-      moduleAccessAllowed(role, override, "workorders", "READ", ["cashier", "manager", "print_operator"]);
+    if (
+      override?.customers === "NONE" &&
+      role !== "cashier" &&
+      role !== "print_operator"
+    )
+      return false;
+    return (
+      levelSatisfies(override?.customers, "READ") ||
+      moduleAccessAllowed(role, override, "crm", "READ", [
+        "cashier",
+        "manager",
+        "sales_rep",
+        "accountant",
+      ]) ||
+      moduleAccessAllowed(role, override, "sales", "READ", [
+        "cashier",
+        "manager",
+        "sales_rep",
+      ]) ||
+      moduleAccessAllowed(role, override, "pos", "READ", [
+        "cashier",
+        "manager",
+        "print_operator",
+      ]) ||
+      moduleAccessAllowed(role, override, "workorders", "READ", [
+        "cashier",
+        "manager",
+        "print_operator",
+      ])
+    );
   }
   if (operation.procedure === "customersReceptionCreateProcedure") {
-    return levelSatisfies(override?.customers, "FULL") ||
-      moduleAccessAllowed(role, override, "crm", "FULL", ["cashier", "manager", "sales_rep", "print_operator"]) ||
-      moduleAccessAllowed(role, override, "workorders", "FULL", ["cashier", "manager", "print_operator"]);
+    return (
+      levelSatisfies(override?.customers, "FULL") ||
+      moduleAccessAllowed(role, override, "crm", "FULL", [
+        "cashier",
+        "manager",
+        "sales_rep",
+        "print_operator",
+      ]) ||
+      moduleAccessAllowed(role, override, "workorders", "FULL", [
+        "cashier",
+        "manager",
+        "print_operator",
+      ])
+    );
   }
   const moduleKeys = operation.module?.split("|").filter(Boolean) ?? [];
   if (moduleKeys.length === 0) {
@@ -210,32 +270,59 @@ function legacyAllowed(
       ? moduleAccessAllowed(role, override, moduleKey, minimum, operation.roles)
       : levelSatisfies(modules[moduleKey], minimum);
   if (operation.procedure === "salesCorrectionProcedure") {
-    return (allows("sales", "FULL") || allows("workorders", "FULL")) &&
-      allows("products", "READ");
+    return (
+      (allows("sales", "FULL") || allows("workorders", "FULL")) &&
+      allows("products", "READ")
+    );
   }
   if (operation.procedure === "salesCorrectionComparisonProcedure") {
-    return allows("sales", "FULL") ||
-      (allows("workorders", "FULL") && allows("products", "READ"));
+    return (
+      allows("sales", "FULL") ||
+      (allows("workorders", "FULL") && allows("products", "READ"))
+    );
   }
   const levels = operation.level?.split("|") ?? [];
   if (levels.length > 1) {
-    if (levels.length !== moduleKeys.length ||
-        levels.some((level) => level !== "READ" && level !== "FULL" && level !== "WRITE")) return false;
+    if (
+      levels.length !== moduleKeys.length ||
+      levels.some(
+        (level) => level !== "READ" && level !== "FULL" && level !== "WRITE",
+      )
+    )
+      return false;
     return moduleKeys.some((moduleKey, index) =>
-      allows(moduleKey, levels[index] === "READ" ? "READ" : "FULL"));
+      allows(moduleKey, levels[index] === "READ" ? "READ" : "FULL"),
+    );
   }
-  return moduleKeys.some((moduleKey) => allows(moduleKey, legacyMinimumLevel(operation)));
+  return moduleKeys.some((moduleKey) =>
+    allows(moduleKey, legacyMinimumLevel(operation)),
+  );
 }
 
 /** Compatibility snapshot: only the real gate's own module can grant an operation. */
 const CASHIER_OPERATIONAL_FINANCE_PATHS = new Set([
-  "shifts.current", "shifts.open", "shifts.close", "shifts.cashDrop", "shifts.list", "shifts.report",
-  "shifts.handoverRecipients", "shifts.eligibleVarianceApprovers",
-  "treasury.getOpenShifts", "treasury.getRecentMovements", "refundRails.preflight",
+  "shifts.current",
+  "shifts.open",
+  "shifts.close",
+  "shifts.cashDrop",
+  "shifts.list",
+  "shifts.report",
+  "shifts.handoverRecipients",
+  "shifts.eligibleVarianceApprovers",
+  "treasury.getOpenShifts",
+  "treasury.getRecentMovements",
+  "refundRails.preflight",
 ]);
 const COMPANY_FINANCE_DOMAINS = new Set([
-  "reports", "accounts", "exchange", "closing", "statutoryAccounting", "cardAccount",
-  "vouchers", "cashTransfers", "supplierPayments",
+  "reports",
+  "accounts",
+  "exchange",
+  "closing",
+  "statutoryAccounting",
+  "cardAccount",
+  "vouchers",
+  "cashTransfers",
+  "supplierPayments",
 ]);
 
 export function legacyOperationPolicy(
@@ -253,16 +340,17 @@ export function legacyOperationPolicy(
     if (!operation.delegable) continue;
     // Converting a station cashier must not promote old shared module keys into
     // company financial authority. Administrators can select these exact actions explicitly.
-    const cashierFinance = role === "cashier" && !CASHIER_OPERATIONAL_FINANCE_PATHS.has(operation.path) && (
-      (operation.module ?? "").split("|").some(module => module === "treasury" || module === "reports") ||
-      COMPANY_FINANCE_DOMAINS.has(operation.domain) || operation.path === "expenses.accrualCorrections"
-    );
-    grants[operation.key] = !cashierFinance && legacyAllowed(
-      role,
-      resolvedLegacyModules,
-      override,
-      operation,
-    );
+    const cashierFinance =
+      role === "cashier" &&
+      !CASHIER_OPERATIONAL_FINANCE_PATHS.has(operation.path) &&
+      ((operation.module ?? "")
+        .split("|")
+        .some((module) => module === "treasury" || module === "reports") ||
+        COMPANY_FINANCE_DOMAINS.has(operation.domain) ||
+        operation.path === "expenses.accrualCorrections");
+    grants[operation.key] =
+      !cashierFinance &&
+      legacyAllowed(role, resolvedLegacyModules, override, operation);
     if (operation.supportsRecordScope === true) {
       recordScopes[operation.key] =
         role === "admin" || role === "manager" ? "BRANCH" : "OWN";
@@ -301,15 +389,16 @@ export function resolveOperationPolicy(
   const legacy = legacyOperationPolicy(role, modules, legacyOverride);
   // Until this account is explicitly converted, preserve its own old grants and revocations.
   // A saved sparse user policy replaces the old individual matrix completely.
-  const inherited = userPolicy == null && legacyIndividual
-    ? applyLegacyIndividualOperationOverrides(
-        rolePolicy ?? legacy,
-        role,
-        legacyIndividual.inheritedModules,
-        legacyIndividual.permissionsOverride,
-        legacyIndividual.atomicPermissions,
-      )
-    : rolePolicy ?? legacy;
+  const inherited =
+    userPolicy == null && legacyIndividual
+      ? applyLegacyIndividualOperationOverrides(
+          rolePolicy ?? legacy,
+          role,
+          legacyIndividual.inheritedModules,
+          legacyIndividual.permissionsOverride,
+          legacyIndividual.atomicPermissions,
+        )
+      : (rolePolicy ?? legacy);
   const grants: Record<string, boolean> = {};
   const recordScopes: Record<string, OperationRecordScope> = {};
   for (const operation of OPERATION_PERMISSIONS) {
@@ -361,18 +450,29 @@ export function resolveOperationPolicy(
     }
   }
   const withdrawal = getOperationPermission("returns.withdrawRequest");
-  const shipmentCandidates = getOperationPermission("delivery.invoiceCandidates");
+  const shipmentCandidates = getOperationPermission(
+    "delivery.invoiceCandidates",
+  );
   if (shipmentCandidates?.delegable) {
-    const explicitlyDenied = userPolicy?.grants[shipmentCandidates.key] === false ||
-      (userPolicy?.grants[shipmentCandidates.key] !== true && rolePolicy?.grants[shipmentCandidates.key] === false);
-    grants[shipmentCandidates.key] = grants["operation.delivery.dispatchInvoice"] === true && !explicitlyDenied;
+    const explicitlyDenied =
+      userPolicy?.grants[shipmentCandidates.key] === false ||
+      (userPolicy?.grants[shipmentCandidates.key] !== true &&
+        rolePolicy?.grants[shipmentCandidates.key] === false);
+    grants[shipmentCandidates.key] =
+      grants["operation.delivery.dispatchInvoice"] === true &&
+      !explicitlyDenied;
   }
   if (withdrawal?.delegable) {
-    const explicitlyDenied = userPolicy?.grants[withdrawal.key] === false ||
-      (userPolicy?.grants[withdrawal.key] !== true && rolePolicy?.grants[withdrawal.key] === false);
-    grants[withdrawal.key] = grants["operation.returns.create"] === true && !explicitlyDenied;
+    const explicitlyDenied =
+      userPolicy?.grants[withdrawal.key] === false ||
+      (userPolicy?.grants[withdrawal.key] !== true &&
+        rolePolicy?.grants[withdrawal.key] === false);
+    grants[withdrawal.key] =
+      grants["operation.returns.create"] === true && !explicitlyDenied;
   }
-  const recruitmentFormOptions = getOperationPermission("recruitment.formOptions");
+  const recruitmentFormOptions = getOperationPermission(
+    "recruitment.formOptions",
+  );
   if (recruitmentFormOptions?.delegable) {
     const explicitlyDenied =
       userPolicy?.grants[recruitmentFormOptions.key] === false ||
@@ -387,6 +487,86 @@ export function resolveOperationPolicy(
     ) {
       grants[recruitmentFormOptions.key] = true;
     }
+  }
+  // These are station companions, not independent business authority. Every
+  // mutation still checks its original native operation for the actual source.
+  // Cap even an explicit companion grant when all of its native grants are gone.
+  const deliveryStationSources = [
+    "delivery.predictiveSearch",
+    "delivery.consignmentTimeline",
+    "delivery.readyForDispatch",
+    "delivery.dispatchByBarcode",
+    "delivery.dispatchInvoice",
+    "delivery.dispatch",
+    "delivery.cancelAssignment",
+    "delivery.reassignConsignment",
+    "delivery.declareReturn",
+    "delivery.returnConsignment",
+    "delivery.returnByBarcode",
+    "delivery.staffConfirm",
+    "delivery.recordRemittance",
+    "delivery.fulfillment.requests.get",
+    "delivery.fulfillment.requests.release",
+    "delivery.fulfillment.requests.reassign",
+    "delivery.fulfillment.aftercare.get",
+    "delivery.fulfillment.aftercare.dispatch",
+    "delivery.fulfillment.aftercare.cancelExecution",
+  ];
+  const stationCompanions: ReadonlyArray<readonly [string, readonly string[]]> =
+    [
+      ["delivery.workflow.preview", deliveryStationSources],
+      ["delivery.workflow.previewBySource", deliveryStationSources],
+      ["delivery.workflow.previewBatch", deliveryStationSources],
+      [
+        "delivery.workflow.dispatchBatch",
+        [
+          "delivery.dispatchByBarcode",
+          "delivery.dispatchInvoice",
+          "delivery.dispatch",
+          "delivery.fulfillment.requests.release",
+          "delivery.fulfillment.aftercare.dispatch",
+        ],
+      ],
+      [
+        "delivery.workflow.assignment",
+        [
+          "delivery.cancelAssignment",
+          "delivery.reassignConsignment",
+          "delivery.declareReturn",
+          "delivery.fulfillment.requests.reassign",
+          "delivery.fulfillment.aftercare.cancelExecution",
+        ],
+      ],
+      [
+        "delivery.workflow.receiveReturn",
+        ["delivery.returnConsignment", "delivery.returnByBarcode"],
+      ],
+      ["delivery.workflow.confirmDelivery", ["delivery.staffConfirm"]],
+      ["sales.checkoutCharges", ["sales.create"]],
+      ["sales.checkoutChargeOptions", ["sales.create"]],
+      ["printPos.checkoutCharges", ["printPos.createSale"]],
+      ["printPos.checkoutChargeOptions", ["printPos.createSale"]],
+      ["reception.checkoutCharges", ["workOrders.receptionCheckout"]],
+      ["reception.checkoutChargeOptions", ["workOrders.receptionCheckout"]],
+      [
+        "reception.initiateExternalPayment",
+        ["workOrders.receptionCheckout", "reception.draftCommit"],
+      ],
+      [
+        "reception.confirmExternalPayment",
+        ["workOrders.receptionCheckout", "reception.draftCommit"],
+      ],
+    ];
+  for (const [path, nativePaths] of stationCompanions) {
+    const operation = getOperationPermission(path);
+    if (!operation?.delegable) continue;
+    const explicitlyDenied =
+      userPolicy?.grants[operation.key] === false ||
+      (userPolicy?.grants[operation.key] !== true &&
+        rolePolicy?.grants[operation.key] === false);
+    grants[operation.key] =
+      !explicitlyDenied &&
+      nativePaths.some((native) => grants[`operation.${native}`] === true);
   }
   return {
     version: 1,
@@ -413,8 +593,12 @@ export function applyLegacyIndividualOperationOverrides(
   rawModules?: PermissionMap | null,
   rawAtomic?: Record<string, boolean> | null,
 ): OperationPolicy {
-  const baseModules = inheritedModules ?? resolvePermissions(role as RoleKey, null);
-  const effectiveModules = applyPermissionOverrides(baseModules, rawModules ?? null);
+  const baseModules =
+    inheritedModules ?? resolvePermissions(role as RoleKey, null);
+  const effectiveModules = applyPermissionOverrides(
+    baseModules,
+    rawModules ?? null,
+  );
   const baseLegacy = legacyOperationPolicy(
     role,
     baseModules,
@@ -472,7 +656,10 @@ export function applyLegacyIndividualOperationOverrides(
       if (operation?.delegable) bridgedGrants[operation.key] = true;
     }
   }
-  return applyLegacyOperationDenials({ ...denied, grants: bridgedGrants }, rawAtomic);
+  return applyLegacyOperationDenials(
+    { ...denied, grants: bridgedGrants },
+    rawAtomic,
+  );
 }
 
 /** Carry only explicit individual restrictions, never old template restrictions. */
@@ -482,7 +669,9 @@ export function applyLegacyIndividualOperationDenials(
   rawModules?: PermissionMap | null,
   rawAtomic?: Record<string, boolean> | null,
 ): OperationPolicy {
-  const full: PermissionMap = Object.fromEntries(ALL_PERMISSION_MODULE_KEYS.map((key) => [key, "FULL"]));
+  const full: PermissionMap = Object.fromEntries(
+    ALL_PERMISSION_MODULE_KEYS.map((key) => [key, "FULL"]),
+  );
   const restricted = { ...full };
   let hasRestriction = false;
   for (const [key, level] of Object.entries(rawModules ?? {})) {
@@ -492,12 +681,18 @@ export function applyLegacyIndividualOperationDenials(
     }
   }
   const grants = { ...policy.grants };
-  if (hasRestriction) for (const operation of OPERATION_PERMISSIONS) {
-    if (operation.delegable && legacyAllowed(role, full, full, operation) &&
-        !legacyAllowed(role, restricted, restricted, operation)) grants[operation.key] = false;
-  }
+  if (hasRestriction)
+    for (const operation of OPERATION_PERMISSIONS) {
+      if (
+        operation.delegable &&
+        legacyAllowed(role, full, full, operation) &&
+        !legacyAllowed(role, restricted, restricted, operation)
+      )
+        grants[operation.key] = false;
+    }
   const result = applyLegacyOperationDenials({ ...policy, grants }, rawAtomic);
-  if (rawModules?.reports === "NONE") result.dataVisibility = { purchaseCost: false, profitMargin: false };
+  if (rawModules?.reports === "NONE")
+    result.dataVisibility = { purchaseCost: false, profitMargin: false };
   return result;
 }
 
@@ -541,7 +736,10 @@ export function hasOperationPolicy(user: OperationUser): boolean {
 function effectivePolicy(user: OperationUser): OperationPolicy {
   if (user.resolvedOperationPolicy) return user.resolvedOperationPolicy;
   const override = user.permissionsOverride as PermissionMap | null | undefined;
-  const atomic = user.atomicPermissions as Record<string, boolean> | null | undefined;
+  const atomic = user.atomicPermissions as
+    | Record<string, boolean>
+    | null
+    | undefined;
   const modules =
     user.resolvedPermissions ??
     resolvePermissions(user.role as RoleKey, override);
@@ -576,7 +774,13 @@ export function operationDecision(
     };
   }
   if (operation.delegable && user.isOwner === true) {
-    return { allowed: true, key: operation.key, source: "owner", reason: "سلطة المالك محفوظة", scope: "BRANCH" };
+    return {
+      allowed: true,
+      key: operation.key,
+      source: "owner",
+      reason: "سلطة المالك محفوظة",
+      scope: "BRANCH",
+    };
   }
   if (!operation.delegable) {
     const owner = operation.authority === "owner" && user.isOwner === true;
@@ -608,14 +812,21 @@ export function operationDecision(
       ? [{ action: "execute", subject: operation.key }]
       : [],
   ).can("execute", operation.key);
-  const hiddenCost = hasOperationPolicy(user) && operation.requiresCostVisibility === true &&
-    (policy.dataVisibility?.purchaseCost !== true || policy.dataVisibility?.profitMargin !== true);
+  const hiddenCost =
+    hasOperationPolicy(user) &&
+    operation.requiresCostVisibility === true &&
+    (policy.dataVisibility?.purchaseCost !== true ||
+      policy.dataVisibility?.profitMargin !== true);
   if (hiddenCost) allowed = false;
   return {
     allowed,
     key: operation.key,
     source,
-    reason: hiddenCost ? "هذه العملية تتطلب تفويض عرض التكلفة والربح" : allowed ? "العملية مفوضة لحسابك" : "العملية غير مفوضة لحسابك",
+    reason: hiddenCost
+      ? "هذه العملية تتطلب تفويض عرض التكلفة والربح"
+      : allowed
+        ? "العملية مفوضة لحسابك"
+        : "العملية غير مفوضة لحسابك",
     ...(operation.supportsRecordScope === true
       ? { scope: policy.recordScopes?.[operation.key] ?? "OWN" }
       : {}),
@@ -663,7 +874,11 @@ export function buildOperationPolicyFromLegacy(
   explicitAtomicGrants?: Record<string, boolean> | null,
   explicitModuleOverride?: PermissionMap | null,
 ): OperationPolicy {
-  const basePolicy = legacyOperationPolicy(role, modules, explicitModuleOverride);
+  const basePolicy = legacyOperationPolicy(
+    role,
+    modules,
+    explicitModuleOverride,
+  );
   if (explicitModuleOverride != null) {
     return applyLegacyIndividualOperationOverrides(
       basePolicy,
@@ -673,10 +888,7 @@ export function buildOperationPolicyFromLegacy(
       explicitAtomicGrants,
     );
   }
-  return applyLegacyOperationDenials(
-    basePolicy,
-    explicitAtomicGrants,
-  );
+  return applyLegacyOperationDenials(basePolicy, explicitAtomicGrants);
 }
 
 /** Navigation summary only. It must never be used to authorize an operation. */
@@ -694,7 +906,9 @@ export function summarizeOperationModules(
     )
       continue;
     // A lookup with alternative legacy gates must not reopen every alternative module.
-    const modules = (operation.navigationModule ?? operation.module)!.split("|");
+    const modules = (operation.navigationModule ?? operation.module)!.split(
+      "|",
+    );
     if (modules.length !== 1 || !own(summary, modules[0]!)) continue;
     const moduleKey = modules[0]!;
     if (operation.kind === "mutation") summary[moduleKey] = "FULL";
@@ -722,33 +936,51 @@ export function canViewOperationData(
 }
 
 /** Selling stations depend on their own execution path, not another action in the same module. */
-export const OPERATION_STATION_PATHS: Readonly<Record<PosStation, string>> = Object.freeze({
-  RETAIL: "sales.create",
-  PRINT_SERVICES: "printPos.createSale",
-  RECEPTION: "workOrders.receptionCheckout",
-});
+export const OPERATION_STATION_PATHS: Readonly<Record<PosStation, string>> =
+  Object.freeze({
+    RETAIL: "sales.create",
+    PRINT_SERVICES: "printPos.createSale",
+    RECEPTION: "workOrders.receptionCheckout",
+  });
 
 /** Display the same decisions as execution; preserve the legacy and protected owner branches. */
-export function deriveOperationAccess(user: OperationUser): EffectiveAccessSummary {
-  if (user.isOwner === true)
-    return deriveEffectiveAccess("admin", null);
+export function deriveOperationAccess(
+  user: OperationUser,
+): EffectiveAccessSummary {
+  if (user.isOwner === true) return deriveEffectiveAccess("admin", null);
   if (!hasOperationPolicy(user))
     return {
-      ...deriveEffectiveAccess(user.role, user.permissionsOverride as PermissionMap | null),
-      canSeeCost: canViewOperationData(user, "purchaseCost") && canViewOperationData(user, "profitMargin"),
+      ...deriveEffectiveAccess(
+        user.role,
+        user.permissionsOverride as PermissionMap | null,
+      ),
+      canSeeCost:
+        canViewOperationData(user, "purchaseCost") &&
+        canViewOperationData(user, "profitMargin"),
     };
   const policy = effectivePolicy(user);
   const current = { ...user, resolvedOperationPolicy: policy };
-  const canSeeCost = canViewOperationData(current, "purchaseCost") &&
+  const canSeeCost =
+    canViewOperationData(current, "purchaseCost") &&
     canViewOperationData(current, "profitMargin");
   const grants = { ...policy.grants };
-  if (!canSeeCost) for (const operation of OPERATION_PERMISSIONS)
-    if (operation.requiresCostVisibility) grants[operation.key] = false;
-  const stations = (Object.keys(OPERATION_STATION_PATHS) as PosStation[])
-    .filter(station => operationDecision(current, OPERATION_STATION_PATHS[station]).allowed);
+  if (!canSeeCost)
+    for (const operation of OPERATION_PERMISSIONS)
+      if (operation.requiresCostVisibility) grants[operation.key] = false;
+  const stations = (
+    Object.keys(OPERATION_STATION_PATHS) as PosStation[]
+  ).filter(
+    (station) =>
+      operationDecision(current, OPERATION_STATION_PATHS[station]).allowed,
+  );
   return {
     resolved: summarizeOperationModules({ ...policy, grants }),
-    station: stations.length === 0 ? "NONE" : stations.length === 1 ? stations[0]! : "MULTI",
+    station:
+      stations.length === 0
+        ? "NONE"
+        : stations.length === 1
+          ? stations[0]!
+          : "MULTI",
     stations,
     canSeeCost,
   };

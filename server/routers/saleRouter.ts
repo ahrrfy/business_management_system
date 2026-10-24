@@ -1,4 +1,11 @@
 import { INVOICE_CHANNELS } from "@shared/invoiceChannel";
+import {
+  checkoutChargesFields,
+  chargeOnlyCheckoutSchema,
+  createChargeOnlyCheckout,
+  checkoutChargeOptionsSchema,
+  listCheckoutChargeOptions,
+} from "../services/checkoutCharges";
 import { failOpaque } from "../lib/opaqueFailure";
 import { canonicalOperationAllowed } from "../operationAuthorization";
 import { TRPCError } from "@trpc/server";
@@ -978,6 +985,45 @@ export function buildSalesListConds(
 }
 
 export const saleRouter = router({
+  checkoutChargeOptions: salesCashierProcedure
+    .input(checkoutChargeOptionsSchema)
+    .query(({ input, ctx }) =>
+      listCheckoutChargeOptions(
+        input,
+        {
+          userId: ctx.user.id,
+          branchId: ctx.user.branchId ?? input.branchId,
+          role: ctx.user.role,
+          isOwner: ctx.user.isOwner,
+        },
+        "sales.create",
+      ),
+    ),
+  checkoutCharges: salesCashierProcedure
+    .input(chargeOnlyCheckoutSchema)
+    .mutation(({ input, ctx }) => {
+      const branchId =
+        ctx.user.role === "admin" ? input.branchId : ctx.user.branchId;
+      if (branchId == null)
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذر قبض الأجور",
+            why: "لا فرع مسند للحساب",
+            doThis: "اطلب إسناد الفرع من الإدارة",
+          }),
+        });
+      return createChargeOnlyCheckout(
+        { ...input, branchId },
+        {
+          userId: ctx.user.id,
+          branchId,
+          role: ctx.user.role,
+          isOwner: ctx.user.isOwner,
+        },
+        "POS",
+      );
+    }),
   /** مسحٌ تشغيليّ سريع لبدء التعديل من الاستقبال؛ التنفيذ النهائي يعيد الحراس تحت الأقفال. */
   lookupForCorrection: salesCorrectionProcedure
     .input(z.object({ invoiceNumber: z.string().trim().min(1).max(80) }))
@@ -1170,6 +1216,7 @@ export const saleRouter = router({
     .input(
       z
         .object({
+          ...checkoutChargesFields,
           branchId: z.number().int().positive(),
           shiftId: z.number().int().positive().optional(),
           customerId: z.number().int().positive().optional(),
@@ -1193,6 +1240,7 @@ export const saleRouter = router({
           delivery: z
             .object({
               partyId: z.number().int().positive(),
+              assignedUserId: z.number().int().positive().nullish(),
               fee: nonNegMoneyString.nullish(),
               feeCollection: z.enum(["COURIER", "COUNTER", "SHOP"]).nullish(),
               recipientName: z.string().trim().max(255).nullish(),
@@ -1213,7 +1261,7 @@ export const saleRouter = router({
 }).nullish(),
           payment: z
             .object({
-              amount: positiveMoneyString,
+              amount: nonNegMoneyString,
               method: posPaymentMethod,
               externalPaymentAttemptId: z.number().int().positive().optional(),
             })
@@ -1221,7 +1269,7 @@ export const saleRouter = router({
           payments: z
             .array(
               z.object({
-                amount: positiveMoneyString,
+                amount: nonNegMoneyString,
                 method: posPaymentMethod,
                 externalPaymentAttemptId: z
                   .number()
@@ -2754,7 +2802,7 @@ export const saleRouter = router({
               }
             : {}),
           // مرجع البطاقة يثبته المراجع بعد قبول الطلب، لا منشئ الطلب قبل معرفة القرار.
-          reference: involvesCardRail ? null : input.reference ?? null,
+          reference: involvesCardRail ? null : (input.reference ?? null),
         },
       };
       const controlReplay = input.clientRequestId

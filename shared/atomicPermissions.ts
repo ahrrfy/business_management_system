@@ -3262,6 +3262,8 @@ export interface OperationalCaps {
   maxPaymentVoucherAmountIqd?: string | null;
   maxExpenseVoucherAmountIqd?: string | null;
   maxRefundAmountIqd?: string | null;
+  /** Missing/null/zero requires independent SERVICE approval. */
+  maxServiceChargeAmountIqd?: string | null;
 }
 
 const moneyCapStringSchema = z
@@ -3277,6 +3279,7 @@ export const operationalCapsSchema = z.object({
   maxPaymentVoucherAmountIqd: moneyCapStringSchema,
   maxExpenseVoucherAmountIqd: moneyCapStringSchema,
   maxRefundAmountIqd: moneyCapStringSchema,
+  maxServiceChargeAmountIqd: moneyCapStringSchema,
 });
 
 export interface SensitiveDataMasking {
@@ -3312,6 +3315,7 @@ export const permissionEnvelopeSchema = z.object({
 // ============================================================================
 
 export const DEFAULT_ZERO_CAPS: Required<OperationalCaps> = {
+  maxServiceChargeAmountIqd: "0.00",
   maxDiscountPercent: 0,
   maxDiscountAmountIqd: "0.00",
   maxCreditSaleLimitIqd: "0.00",
@@ -3321,6 +3325,7 @@ export const DEFAULT_ZERO_CAPS: Required<OperationalCaps> = {
 };
 
 export const DEFAULT_UNLIMITED_CAPS: Required<OperationalCaps> = {
+  maxServiceChargeAmountIqd: "0.00",
   maxDiscountPercent: 100,
   maxDiscountAmountIqd: null,
   maxCreditSaleLimitIqd: null,
@@ -3699,6 +3704,7 @@ export const ROLE_DEFAULT_OPERATIONAL_CAPS: Record<string, Required<OperationalC
     maxPaymentVoucherAmountIqd: "10000000.00",
     maxExpenseVoucherAmountIqd: "2500000.00",
     maxRefundAmountIqd: "1000000.00",
+    maxServiceChargeAmountIqd: "0.00",
   },
   accountant: {
     maxDiscountPercent: 0,
@@ -3707,6 +3713,7 @@ export const ROLE_DEFAULT_OPERATIONAL_CAPS: Record<string, Required<OperationalC
     maxPaymentVoucherAmountIqd: "1000000.00",
     maxExpenseVoucherAmountIqd: "500000.00",
     maxRefundAmountIqd: "0.00",
+    maxServiceChargeAmountIqd: "0.00",
   },
   cashier: {
     maxDiscountPercent: 5,
@@ -3715,6 +3722,7 @@ export const ROLE_DEFAULT_OPERATIONAL_CAPS: Record<string, Required<OperationalC
     maxPaymentVoucherAmountIqd: "0.00",
     maxExpenseVoucherAmountIqd: "0.00",
     maxRefundAmountIqd: "25000.00",
+    maxServiceChargeAmountIqd: "0.00",
   },
   retail_cashier: {
     maxDiscountPercent: 5,
@@ -3723,6 +3731,7 @@ export const ROLE_DEFAULT_OPERATIONAL_CAPS: Record<string, Required<OperationalC
     maxPaymentVoucherAmountIqd: "0.00",
     maxExpenseVoucherAmountIqd: "0.00",
     maxRefundAmountIqd: "25000.00",
+    maxServiceChargeAmountIqd: "0.00",
   },
   print_cashier: {
     maxDiscountPercent: 5,
@@ -3731,6 +3740,7 @@ export const ROLE_DEFAULT_OPERATIONAL_CAPS: Record<string, Required<OperationalC
     maxPaymentVoucherAmountIqd: "0.00",
     maxExpenseVoucherAmountIqd: "0.00",
     maxRefundAmountIqd: "25000.00",
+    maxServiceChargeAmountIqd: "0.00",
   },
   reception_clerk: {
     maxDiscountPercent: 10,
@@ -3739,6 +3749,7 @@ export const ROLE_DEFAULT_OPERATIONAL_CAPS: Record<string, Required<OperationalC
     maxPaymentVoucherAmountIqd: "0.00",
     maxExpenseVoucherAmountIqd: "0.00",
     maxRefundAmountIqd: "50000.00",
+    maxServiceChargeAmountIqd: "0.00",
   },
   sales_rep: {
     maxDiscountPercent: 15,
@@ -3747,6 +3758,7 @@ export const ROLE_DEFAULT_OPERATIONAL_CAPS: Record<string, Required<OperationalC
     maxPaymentVoucherAmountIqd: "0.00",
     maxExpenseVoucherAmountIqd: "0.00",
     maxRefundAmountIqd: "0.00",
+    maxServiceChargeAmountIqd: "0.00",
   },
   warehouse: { ...DEFAULT_ZERO_CAPS },
   purchasing: { ...DEFAULT_ZERO_CAPS },
@@ -3853,6 +3865,12 @@ export function resolveOperationalCaps(
     (fallbackRole ? ROLE_DEFAULT_OPERATIONAL_CAPS[fallbackRole] : undefined) ??
     DEFAULT_ZERO_CAPS;
   const resolved: Required<OperationalCaps> = { ...baseCaps };
+
+  // SERVICE is opt-in even for privileged templates; null never means unlimited.
+  resolved.maxServiceChargeAmountIqd =
+    userCapsOverrides?.maxServiceChargeAmountIqd !== undefined
+      ? userCapsOverrides.maxServiceChargeAmountIqd
+      : (roleCaps?.maxServiceChargeAmountIqd ?? "0.00");
 
   if (roleCaps && typeof roleCaps === "object") {
     if (roleCaps.maxDiscountPercent !== undefined) {
@@ -4211,7 +4229,9 @@ export function deriveAtomicFromLegacyModules(
 export function isPermissionEnvelope(value: unknown): value is PermissionEnvelope {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const obj = value as Record<string, unknown>;
-  return "atomic" in obj || "caps" in obj || "masking" in obj || "modules" in obj;
+  return (
+    "atomic" in obj || "caps" in obj || "masking" in obj || "modules" in obj
+  );
 }
 
 export function normalizePermissionsInput(
@@ -4413,7 +4433,8 @@ export function filterAtomicOverrides(
 
 export function checkSodConflicts(
   permissions?: AtomicPermissionsMap | null,
-): Array<{ group: string; conflictingKeys: [AtomicPermissionKey, AtomicPermissionKey] }> {
+): Array<{ group: string; conflictingKeys: [AtomicPermissionKey, AtomicPermissionKey];
+}> {
   if (!permissions) return [];
   const conflicts: Array<{
     group: string;

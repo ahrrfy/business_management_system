@@ -119,3 +119,28 @@ export function chargeCustodyIntent(amount: Decimal) {
     { roleDebits: { DELIVERY_FLOAT: amount }, roleCredits: { AR: amount } },
   );
 }
+
+export function immediateServiceIntent(
+  amount: Decimal,
+  method: string,
+  bucket: "DRAWER" | "TREASURY" | null,
+  refund = false,
+) {
+  const cash = paymentAccountRole(method, bucket, refund ? "OUT" : "IN");
+  return createPostingIntent(
+    refund ? "FULFILLMENT_SERVICE_REFUND" : "FULFILLMENT_SERVICE_IMMEDIATE",
+    refund ? "PAYMENT_OUT" : "PAYMENT_IN",
+    refund
+      ? [debitLine("OTHER_REVENUE", amount), creditLine(cash, amount)]
+      : [debitLine(cash, amount), creditLine("OTHER_REVENUE", amount)],
+    refund
+      ? {
+          roleDebits: { OTHER_REVENUE: amount },
+          roleCredits: { [cash]: amount },
+        }
+      : {
+          roleDebits: { [cash]: amount },
+          roleCredits: { OTHER_REVENUE: amount },
+        },
+  );
+}

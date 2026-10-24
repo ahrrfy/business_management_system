@@ -238,7 +238,7 @@ export async function docToHtml(doc: PrintDoc): Promise<string> {
         <tbody>
           ${doc.totals.map((t, idx, arr) => {
             const isLast = idx === arr.length - 1;
-            const isTafqit = t.label.includes("كتابة") || t.label.includes("فقط") || t.label.includes("تفقيط");
+            const isTafqit = t.label.includes("كتابة") || t.label.trim() === "فقط" || t.label.includes("تفقيط");
             if (isTafqit) {
               return `<tr>
                 <td colspan="2" style="text-align:center;font-weight:900;font-size:10.5px;padding:3px;border:1px solid #000">${esc(t.value)}</td>

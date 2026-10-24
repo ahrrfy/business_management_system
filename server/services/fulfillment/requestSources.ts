@@ -3,9 +3,9 @@ import {
   customers,
   deliveryConsignments,
   deliveryParties,
-  deliveryPartyMembers,
   deliveryLedgerEntries,
   invoices,
+  receipts,
   workOrders,
 } from "../../../drizzle/schema";
 import {
@@ -27,7 +27,10 @@ import {
   findFulfillmentReplayTx,
   recordFulfillmentMutationTx,
 } from "./core";
-import { assertOperationAuthorityTx } from "../authorization/operationAuthority";
+import {
+  assertOperationAuthorityTx,
+  hasServiceOperationAuthority,
+} from "../authorization/operationAuthority";
 import { extractInsertId } from "../../lib/insertId";
 import { nextConsignmentNumber } from "../delivery/numbering";
 import {
@@ -44,6 +47,10 @@ import { assertNoStaleOpenParcelsTx } from "../delivery/parties";
 import { enqueuePostCommit } from "../tx";
 import { publishRealtimeEvent } from "../../realtime";
 import { REALTIME_EVENT_TYPES } from "../../../shared/realtimeEvents";
+import { validateDeliveryDriverTx } from "../delivery/driverValidation";
+import { heldCustomerParcelReissueTx } from "../delivery/workflow/returnReceipt";
+import { effectiveDeliveryLedgerEntrySql } from "../delivery/legacyLedger";
+import { DELIVERY_CASH_CUSTODY_SIGN } from "../../../shared/deliveryLedgerEntryType";
 
 export async function assertRequestOperationTx(
   tx: Tx,
@@ -111,6 +118,7 @@ export async function dispatchChargeOnlyRequestTx(
     assignedUserId?: number;
     externalTrackingRef?: string;
     reassignConsignmentId?: number;
+    heldReturnReissue?: boolean;
     clientRequestId?: string;
   },
   actor: Actor,
@@ -140,6 +148,14 @@ export async function dispatchChargeOnlyRequestTx(
             .for("update")
             .limit(1)
         )[0];
+  const heldReturnReissue =
+    !!existing &&
+    input.heldReturnReissue === true &&
+    (await heldCustomerParcelReissueTx(tx, existing));
+  if (input.heldReturnReissue && !heldReturnReissue)
+    throw fulfillmentError(
+      "العهدة المستلمة تحمل حقوق ناقل سابقة أو لم يثبت استلامها؛ راجع تسوية الناقل أو المعالجة المرتبطة MISSING_HELD",
+    );
   if (
     input.reassignConsignmentId != null &&
     (!existing ||
@@ -147,9 +163,10 @@ export async function dispatchChargeOnlyRequestTx(
       existing.sourceType !== "FULFILLMENT_REQUEST" ||
       existing.invoiceId != null ||
       existing.branchId !== request.branchId ||
-      !["CANCELLED", "RETURNED"].includes(existing.status) ||
+      (!heldReturnReissue &&
+        !["CANCELLED", "RETURNED"].includes(existing.status)) ||
       !["CANCELLED", "RETURNED"].includes(existing.parcelStatus) ||
-      existing.moneyStatus !== "CANCELLED" ||
+      (!heldReturnReissue && existing.moneyStatus !== "CANCELLED") ||
       existing.remittanceId != null ||
       !money(existing.collectedAmount).isZero())
   )
@@ -163,38 +180,8 @@ export async function dispatchChargeOnlyRequestTx(
       tracking,
       existing?.id,
     );
-  let assignedUserId = input.assignedUserId ?? party.userId ?? null;
-  if (assignedUserId == null && party.partyType === "INDIVIDUAL")
-    assignedUserId =
-      (
-        await tx
-          .select({ id: deliveryPartyMembers.userId })
-          .from(deliveryPartyMembers)
-          .where(
-            and(
-              eq(deliveryPartyMembers.partyId, party.id),
-              eq(deliveryPartyMembers.memberRole, "DRIVER"),
-              eq(deliveryPartyMembers.isActive, true),
-            ),
-          )
-          .limit(1)
-      )[0]?.id ?? null;
-  if (assignedUserId != null && assignedUserId !== party.userId) {
-    const [driver] = await tx
-      .select({ id: deliveryPartyMembers.id })
-      .from(deliveryPartyMembers)
-      .where(
-        and(
-          eq(deliveryPartyMembers.partyId, party.id),
-          eq(deliveryPartyMembers.userId, assignedUserId),
-          eq(deliveryPartyMembers.memberRole, "DRIVER"),
-          eq(deliveryPartyMembers.isActive, true),
-        ),
-      )
-      .limit(1);
-    if (!driver)
-      throw fulfillmentError("السائق ليس عضواً نشطاً في جهة التوصيل المختارة");
-  }
+  await validateDeliveryDriverTx(tx, {partyId:party.id,assignedUserId:input.assignedUserId}, request.branchId);
+  const assignedUserId = input.assignedUserId ?? null;
   await assertNoStaleOpenParcelsTx(tx, party);
   const consignmentNumber =
     existing?.consignmentNumber ??
@@ -229,6 +216,15 @@ export async function dispatchChargeOnlyRequestTx(
     cancelledAt: null,
     cancelledBy: null,
     cancellationReason: null,
+    ...(heldReturnReissue
+      ? {
+          returnedAt: null,
+          returnDeclaredAt: null,
+          returnDeclaredBy: null,
+          returnDeclaredReason: null,
+          codClaimVersion: existing!.codClaimVersion + 1,
+        }
+      : {}),
   };
   let consignmentId: number;
   if (existing) {
@@ -278,6 +274,7 @@ export async function loadRequestSourcesTx(
     recipientPhone: string;
     requestId?: number;
     lock?: boolean;
+    heldReturnReissue?: boolean;
   },
 ) {
   const normalized = normalizeRequestSources(sources);
@@ -364,6 +361,10 @@ export async function loadRequestSourcesTx(
             ),
           )
       : [];
+  const heldIds = new Set<number>();
+  if (input.heldReturnReissue)
+    for (const cn of consignments)
+      if (await heldCustomerParcelReissueTx(tx, cn)) heldIds.add(cn.id);
   const result = normalized.map((source) => {
     const invoice =
       source.invoiceId != null
@@ -414,6 +415,7 @@ export async function loadRequestSourcesTx(
           (invoice
             ? c.invoiceId === invoice.id
             : c.workOrderId === order!.id) &&
+          !heldIds.has(c.id) &&
           !(
             c.status === "CANCELLED" &&
             c.parcelStatus === "CANCELLED" &&
@@ -430,7 +432,12 @@ export async function loadRequestSourcesTx(
     const linkedOrders = invoice
       ? orders.filter((o) => o.invoiceId === invoice.id)
       : [order!];
-    const ready = linkedOrders.every((o) => o.status === "READY");
+    const heldInvoice =
+      invoice != null &&
+      consignments.some((c) => c.invoiceId === invoice.id && heldIds.has(c.id));
+    const ready = linkedOrders.every(
+      (o) => o.status === "READY" || (heldInvoice && o.status === "DELIVERED"),
+    );
     const total = invoice
       ? money(invoice.total).minus(invoice.returnedTotal ?? "0")
       : money(order!.salePrice);
@@ -481,9 +488,22 @@ export async function returnFulfillmentRequestConsignmentTx(
   await assertOperationAuthorityTx(
     tx,
     actor,
-    "delivery.returnConsignment",
+    hasServiceOperationAuthority(
+      deliveryActor.operationAuthority,
+      actor.userId,
+      "delivery.returnByBarcode",
+    )
+      ? "delivery.returnByBarcode"
+      : "delivery.returnConsignment",
     (current) =>
       current.isOwner === true || current.resolvedPermissions?.store === "FULL",
+    hasServiceOperationAuthority(
+      deliveryActor.operationAuthority,
+      actor.userId,
+      "delivery.returnByBarcode",
+    )
+      ? deliveryActor.operationAuthority
+      : undefined,
   );
   if (preview.fulfillmentRequestId == null || preview.invoiceId != null)
     throw fulfillmentError("مصدر إرسالية الأجور غير متسق؛ اطلب مراجعة المسؤول");
@@ -531,10 +551,21 @@ export async function returnFulfillmentRequestConsignmentTx(
       amount: sql<string>`SUM(${deliveryLedgerEntries.amount})`,
     })
     .from(deliveryLedgerEntries)
-    .where(eq(deliveryLedgerEntries.consignmentId, cn.id))
+    .where(
+      and(
+        eq(deliveryLedgerEntries.consignmentId, cn.id),
+        effectiveDeliveryLedgerEntrySql(),
+      ),
+    )
     .groupBy(deliveryLedgerEntries.entryType);
   const amount = (kind: string) =>
     money(ledger.find((r) => r.kind === kind)?.amount ?? "0");
+  const custody = ledger.reduce((sum, row) => {
+    const sign = (
+      DELIVERY_CASH_CUSTODY_SIGN as Readonly<Record<string, number | undefined>>
+    )[row.kind];
+    return sign == null ? sum : sum.plus(money(row.amount).times(sign));
+  }, money(0));
   const collections = await tx
     .select()
     .from(fulfillmentChargePayments)
@@ -545,7 +576,71 @@ export async function returnFulfillmentRequestConsignmentTx(
       ),
     )
     .for("update");
-  const refunds = collections.length
+  if (
+    collections.some(
+      (row) => row.branchId !== cn.branchId || row.partyId !== cn.partyId,
+    )
+  )
+    throw fulfillmentError(
+      "تخصيص قبض الأجر لا يطابق مصدر الإرسالية وجهتها؛ راجع أصل العهدة",
+    );
+  const collectionById = new Map(collections.map((row) => [row.id, row]));
+  const remittances = collections.length
+    ? await tx
+        .select()
+        .from(fulfillmentChargePayments)
+        .where(
+          and(
+            eq(fulfillmentChargePayments.consignmentId, cn.id),
+            eq(fulfillmentChargePayments.kind, "COURIER_REMITTANCE"),
+            inArray(
+              fulfillmentChargePayments.chargeId,
+              Array.from(new Set(collections.map((row) => row.chargeId))),
+            ),
+          ),
+        )
+        .for("update")
+    : [];
+  const receiptIds = remittances.flatMap((row) =>
+    row.receiptId == null ? [] : [row.receiptId],
+  );
+  const remittanceReceipts = receiptIds.length
+    ? await tx
+        .select()
+        .from(receipts)
+        .where(inArray(receipts.id, receiptIds))
+        .for("update")
+    : [];
+  const validRemittances = remittances.filter((row) => {
+    const original =
+      row.originalPaymentId == null
+        ? undefined
+        : collectionById.get(row.originalPaymentId);
+    // The native grouped allocation writer uses a null root only when several
+    // actual collections of this charge share this exact consignment.
+    const roots = collections.filter((root) => root.chargeId === row.chargeId);
+    const ancestry = original
+      ? original.chargeId === row.chargeId
+      : row.originalPaymentId == null && roots.length > 1;
+    const receipt = remittanceReceipts.find(
+      (receipt) => receipt.id === row.receiptId,
+    );
+    return (
+      ancestry &&
+      row.branchId === cn.branchId &&
+      row.partyId === cn.partyId &&
+      receipt?.branchId === cn.branchId &&
+      receipt.direction === "IN" &&
+      receipt.paymentMethod === "CASH" &&
+      receipt.status === "COMPLETED" &&
+      receipt.approvalStatus === "APPROVED" &&
+      money(receipt.amount).gte(row.amount)
+    );
+  });
+  const refundableSources = new Map(
+    [...collections, ...validRemittances].map((row) => [row.id, row]),
+  );
+  const refunds = refundableSources.size
     ? await tx
         .select()
         .from(fulfillmentChargePayments)
@@ -553,29 +648,113 @@ export async function returnFulfillmentRequestConsignmentTx(
           and(
             inArray(
               fulfillmentChargePayments.originalPaymentId,
-              collections.map((r) => r.id),
+              Array.from(refundableSources.keys()),
             ),
             eq(fulfillmentChargePayments.kind, "REFUND"),
           ),
         )
         .for("update")
     : [];
+  const refundReceiptIds = refunds.flatMap((row) =>
+    row.receiptId == null ? [] : [row.receiptId],
+  );
+  const refundReceipts = refundReceiptIds.length
+    ? await tx
+        .select()
+        .from(receipts)
+        .where(inArray(receipts.id, refundReceiptIds))
+        .for("update")
+    : [];
+  const completedRefunds = refunds.filter((row) => {
+    const original =
+      row.originalPaymentId == null
+        ? undefined
+        : refundableSources.get(row.originalPaymentId);
+    const receipt = refundReceipts.find(
+      (receipt) => receipt.id === row.receiptId,
+    );
+    return (
+      original?.chargeId === row.chargeId &&
+      row.branchId === cn.branchId &&
+      receipt?.branchId === cn.branchId &&
+      receipt.direction === "OUT" &&
+      receipt.paymentMethod === "CASH" &&
+      receipt.status === "COMPLETED" &&
+      receipt.approvalStatus === "APPROVED" &&
+      money(receipt.amount).gte(row.amount)
+    );
+  });
   const collected = collections.reduce(
-    (sum, r) => sum.plus(r.amount),
+    (sum, row) => sum.plus(row.amount),
     money(0),
   );
-  const refunded = refunds.reduce((sum, r) => sum.plus(r.amount), money(0));
+  const remitted = validRemittances.reduce(
+    (sum, row) => sum.plus(row.amount),
+    money(0),
+  );
+  const refunded = completedRefunds.reduce(
+    (sum, row) => sum.plus(row.amount),
+    money(0),
+  );
+  const allocationsConsistent = collections.every((root) => {
+    const groupRoots = collections.filter(
+      (row) => row.chargeId === root.chargeId,
+    );
+    const groupRemits = validRemittances.filter(
+      (row) => row.chargeId === root.chargeId,
+    );
+    const groupRefunds = completedRefunds.filter(
+      (row) => row.chargeId === root.chargeId,
+    );
+    return (
+      groupRemits
+        .reduce((sum, row) => sum.plus(row.amount), money(0))
+        .lte(groupRoots.reduce((sum, row) => sum.plus(row.amount), money(0))) &&
+      groupRefunds
+        .reduce((sum, row) => sum.plus(row.amount), money(0))
+        .eq(groupRoots.reduce((sum, row) => sum.plus(row.amount), money(0)))
+    );
+  });
+  const refundCapsValid = Array.from(refundableSources.values()).every(
+    (original) =>
+      completedRefunds
+        .filter((row) => row.originalPaymentId === original.id)
+        .reduce((sum, row) => sum.plus(row.amount), money(0))
+        .lte(money(original.amount)),
+  );
+  const receiptsCoverAllocations =
+    remittanceReceipts.every((receipt) =>
+      validRemittances
+        .filter((row) => row.receiptId === receipt.id)
+        .reduce((sum, row) => sum.plus(row.amount), money(0))
+        .lte(money(receipt.amount)),
+    ) &&
+    refundReceipts.every((receipt) =>
+      completedRefunds
+        .filter((row) => row.receiptId === receipt.id)
+        .reduce((sum, row) => sum.plus(row.amount), money(0))
+        .lte(money(receipt.amount)),
+    );
   if (
-    money(cn.collectedAmount).gt(0) ||
-    collected.gt(refunded) ||
-    amount("COD_COLLECTED").gt(amount("COD_REMITTED"))
+    !custody.isZero() ||
+    !collected.eq(refunded) ||
+    !allocationsConsistent ||
+    !refundCapsValid ||
+    !receiptsCoverAllocations ||
+    money(cn.collectedAmount).gt(remitted) ||
+    !amount("COD_COLLECTED").eq(collected)
   )
     throw fulfillmentError(
-      "الإرسالية تحمل تحصيلاً فعلياً أو عهدة مالية؛ ورّد العهدة وسجّل ردّاً أو تخصيصاً موثقاً للعميل أولاً، ثم استرجع الطرد",
+      "الإرسالية تحمل قبضاً أو عهدة لم تسو فعلياً؛ ورّد النقد من تخصيصه الأصلي ثم نفذ رد الأجر بإيصال OUT مكتمل مرتبط بالقبض أو تخصيص توريده، وراجع أي قبض زائد قبل إغلاق المصدر",
     );
+  // Remittance and actual custody returns already extinguished their original
+  // claim. Release only a genuinely uncollected remainder, never that history again.
   const exposure = amount("COD_ASSIGNED")
     .minus(amount("COD_RELEASED"))
-    .minus(amount("COD_RETURNED"));
+    .minus(amount("COD_REMITTED"))
+    .minus(amount("COD_RETURNED"))
+    .minus(amount("COD_WRITTEN_OFF"))
+    .minus(amount("SHORTFALL_SETTLED"));
   if (exposure.gt(0))
     await appendDeliveryLedgerEntry(tx, {
       eventKey: `CN:${cn.id}:FULFILLMENT_RETURN:${input.clientRequestId}`,

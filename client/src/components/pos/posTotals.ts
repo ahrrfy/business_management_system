@@ -15,6 +15,7 @@ import {
 } from "./posShared";
 
 import { toNormalizedNumber } from "@shared/numberNormalize";
+import { checkoutExtraTotal } from "./checkoutExtraAmounts";
 
 export function parsePosLegAmountD(rawAmount: string): Decimal {
   const norm = toNormalizedNumber(rawAmount ?? "").trim();
@@ -59,7 +60,8 @@ export function computePOSTotals({ cart, activeTab }: ComputePOSTotalsParams) {
     : D(0);
 
   const remainingHeaderAuthorityFractionD = D(0.15).minus(priorDeviationRatioD);
-  const remainingHeaderPctOnSubtotalD = (subtotalD.gt(0) && referenceGrossD.gt(0))
+  const remainingHeaderPctOnSubtotalD =
+    subtotalD.gt(0) && referenceGrossD.gt(0)
     ? remainingHeaderAuthorityFractionD.times(referenceGrossD).div(subtotalD).times(100)
     : D(CASHIER_INVOICE_DISCOUNT_MAX_PCT);
 
@@ -89,6 +91,7 @@ export function computePOSTotals({ cart, activeTab }: ComputePOSTotalsParams) {
   const codMode = activeTab.delivery != null;
   const deliveryPayload = activeTab.delivery ? buildDeliveryPayload(activeTab.delivery) : null;
   const paymentLegs = activeTab.paymentLegs ?? [];
+  const serviceChargeD = checkoutExtraTotal(activeTab.extraCharges),chargeOnly=cart.length===0&&serviceChargeD.gt(0);
   const isSplitPayment = paymentLegs.length > 0;
   const splitHasNonCash = isSplitPayment && paymentLegs.some((l) => l.method !== "CASH");
   const splitHasCash = isSplitPayment && paymentLegs.some((l) => l.method === "CASH");
@@ -97,7 +100,8 @@ export function computePOSTotals({ cart, activeTab }: ComputePOSTotalsParams) {
     : D(0);
   const nonCashLegsPaidD = isSplitPayment
     ? paymentLegs.reduce(
-        (sum, l) => (l.method === "CASH" ? sum : sum.plus(parsePosLegAmountD(l.amount))),
+        (sum, l) =>
+          l.method === "CASH" ? sum : sum.plus(parsePosLegAmountD(l.amount)),
         D(0),
       )
     : D(0);
@@ -105,13 +109,15 @@ export function computePOSTotals({ cart, activeTab }: ComputePOSTotalsParams) {
   const paidD = isSplitPayment ? rawLegsPaidD : D(activeTab.payInput || 0);
 
   const cashRoundedTotalD =
-    (isSplitPayment ? (splitHasCash && !splitHasNonCash) : activeTab.method === "CASH") &&
+    (isSplitPayment ? splitHasCash && !splitHasNonCash
+      : activeTab.method === "CASH") &&
     !cartHasDigital &&
     !codMode
       ? roundCashIQD(netAfterHeaderD.toFixed(2))
       : netAfterHeaderD;
   const cashRoundedPaidD =
-    (isSplitPayment ? (splitHasCash && !splitHasNonCash) : activeTab.method === "CASH") &&
+    (isSplitPayment ? splitHasCash && !splitHasNonCash
+      : activeTab.method === "CASH") &&
     !cartHasDigital &&
     !codMode
       ? roundCashIQD(paidD.toFixed(2))
@@ -132,7 +138,8 @@ export function computePOSTotals({ cart, activeTab }: ComputePOSTotalsParams) {
   const isChange = paidD.gt(0) && paidD.gte(cashRoundedTotalD);
 
   const effectiveTotalD =
-    ((isSplitPayment ? (splitHasCash && !splitHasNonCash) : activeTab.method === "CASH") && !isCredit)
+    (isSplitPayment ? splitHasCash && !splitHasNonCash
+      : activeTab.method === "CASH") && !isCredit
       ? cashRoundedTotalD
       : netAfterHeaderD;
   const total = round2(effectiveTotalD).toNumber();
@@ -140,7 +147,8 @@ export function computePOSTotals({ cart, activeTab }: ComputePOSTotalsParams) {
   const change = round2(paidD.minus(effectiveTotalD)).toNumber();
   const credit = round2(effectiveTotalD.minus(paidD)).toNumber();
   const cashRoundingDelta =
-    (isSplitPayment ? (splitHasCash && !splitHasNonCash) : activeTab.method === "CASH")
+    (isSplitPayment ? splitHasCash && !splitHasNonCash
+      : activeTab.method === "CASH")
       ? cashRoundedTotalD.minus(netAfterHeaderD).toNumber()
       : 0;
 
@@ -149,15 +157,16 @@ export function computePOSTotals({ cart, activeTab }: ComputePOSTotalsParams) {
     (paymentLegs.length < 2 || paymentLegs.some((l) => parsePosLegAmountD(l.amount).lte(0)));
   const splitNonCashOverpay =
     isSplitPayment &&
-    (nonCashLegsPaidD.gt(effectiveTotalD) || (!splitHasCash && paidD.gt(effectiveTotalD)));
+    (nonCashLegsPaidD.gt(chargeOnly?serviceChargeD:effectiveTotalD) || (!splitHasCash && paidD.gt(chargeOnly?serviceChargeD:effectiveTotalD)));
 
   const deliveryFeeHeldD = deliveryPayload?.feeCollection === "COUNTER" ? D(deliveryPayload.fee) : D(0);
-  const externalPaymentAmount = round2(D(isCredit ? paid : total).plus(deliveryFeeHeldD)).toFixed(2);
+  const externalPaymentAmount = round2(D(isCredit ? paid : total).plus(deliveryFeeHeldD)
+      .plus(serviceChargeD)).toFixed(2);
   const externalPaymentFingerprint = `${activeTab.method}|${externalPaymentAmount}|${(activeTab.paymentRef ?? "").trim().toUpperCase()}`;
   const externalPaymentConfirmed = isSplitPayment
     ? !splitInvalidLeg &&
       !splitNonCashOverpay &&
-      paymentLegs.every((leg, index) => isSplitLegExternalConfirmed(leg, index === 0 ? deliveryFeeHeldD : D(0)))
+      paymentLegs.every((leg, index) => isSplitLegExternalConfirmed(leg, index === 0&&!chargeOnly ? deliveryFeeHeldD.plus(serviceChargeD) : D(0)))
     : activeTab.method === "CASH" ||
       (activeTab.externalPayment?.state === "CONFIRMED" &&
         activeTab.externalPayment.fingerprint === externalPaymentFingerprint &&
@@ -214,12 +223,12 @@ export function computePosSaleReceiptSnapshot(params: {
   const splitActive = legs.length > 0;
   const splitMethods = new Set(legs.map((l) => l.method));
   const effectiveMethodCode: PaymentMethod | "MIXED" = splitActive
-    ? (splitMethods.size > 1 ? "MIXED" : (legs[0]?.method ?? activeTab.method))
+    ? splitMethods.size > 1 ? "MIXED" : (legs[0]?.method ?? activeTab.method)
     : activeTab.method;
   const cashFull = !splitActive && activeTab.method === "CASH" && !isCredit;
   const displayPaidD = cashFull ? cashRoundedPaidD : paidD;
   const receiptCalcMethod = splitActive
-    ? (legs.some((l) => l.method === "CASH") ? "CASH" : "CARD")
+    ? legs.some((l) => l.method === "CASH") ? "CASH" : "CARD"
     : activeTab.method;
   const { received: finalReceivedD, change: finalChangeD, credit: finalCreditD } =
     saleReceiptAmounts({ codMode, method: receiptCalcMethod, paidNow: displayPaidD, total: effectiveTotalD, isCredit });
@@ -236,8 +245,8 @@ export function computePosSaleReceiptSnapshot(params: {
         .map((l) => {
           const rawD = parsePosLegAmountD(l.amount);
           const netD = l.method === "CASH"
-            ? (rawD.gt(cashRem) ? cashRem : rawD)
-            : (rawD.gt(nonCashRem) ? nonCashRem : rawD);
+            ? rawD.gt(cashRem) ? cashRem : rawD
+              : rawD.gt(nonCashRem) ? nonCashRem : rawD;
           if (l.method === "CASH") cashRem = cashRem.minus(netD);
           else nonCashRem = nonCashRem.minus(netD);
           return {
@@ -291,7 +300,9 @@ export function validatePosSaleBeforeSubmit(params: {
 }
 
 export interface CustomerCreditLimitCheckParams {
-  selectedCustomer: { creditLimit?: string | number | null; currentBalance?: string | number | null } | null | undefined;
+  selectedCustomer:
+    | { creditLimit?: string | number | null; currentBalance?: string | number | null;
+      } | null | undefined;
   isCredit: boolean;
   creditAmount: number;
 }

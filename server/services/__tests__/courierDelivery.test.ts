@@ -365,7 +365,7 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
       reservedBase: 2,
       availableBase: stockBefore - 2,
     });
-    const res = await dispatchOnlineOrder({ onlineOrderId: o.orderId, partyId: partyA }, MANAGER);
+    const res = await dispatchOnlineOrder({ onlineOrderId: o.orderId, partyId: partyA, assignedUserId: 3 }, MANAGER);
     // قرار المالك (١٠/٨): المندوب خارجي والأجرة له ⇒ الفاتورة بضاعة فقط — كانت 3020 (الشحن
     // إيراداً بهامش ١٠٠٪ يدخل وعاء العمولة بينما يُدفع للمندوب خارج النظام).
     expect(res.total).toBe("20.00");
@@ -438,7 +438,7 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     expect(createdCustomer.creditLimit).toBe("0.00");
 
     await setOnlineOrderStatus({ id: created.orderId, status: "CONFIRMED", scopedBranchId: 1 }, MANAGER.userId);
-    const dispatched = await dispatchOnlineOrder({ onlineOrderId: created.orderId, partyId: partyA }, MANAGER);
+    const dispatched = await dispatchOnlineOrder({ onlineOrderId: created.orderId, partyId: partyA, assignedUserId: 3 }, MANAGER);
 
     const dispatchedInvoice = await invoice(dispatched.invoiceId);
     expect(dispatchedInvoice.paymentMode).toBe("COD");
@@ -542,7 +542,7 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     await d.update(s.couponPrograms).set({ status: "ENDED", validTo: new Date("2026-08-30") }).where(eq(s.couponPrograms.id, 1));
     await d.update(s.promotions).set({ isActive: false }).where(eq(s.promotions.id, 1));
 
-    const dispatched = await dispatchOnlineOrder({ onlineOrderId: created.orderId, partyId: partyA }, MANAGER);
+    const dispatched = await dispatchOnlineOrder({ onlineOrderId: created.orderId, partyId: partyA, assignedUserId: 3 }, MANAGER);
     const dispatchedOrder = await order(created.orderId);
     const dispatchedInvoice = await invoice(dispatched.invoiceId);
     expect(dispatchedOrder).toMatchObject({
@@ -629,9 +629,9 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     // يحاكي backfill يحترم وعدين قديمين فوق الحد الحالي.
     await d.update(s.couponPrograms).set({ perCouponLimit: 1 }).where(eq(s.couponPrograms.id, 1));
 
-    await dispatchOnlineOrder({ onlineOrderId: first.orderId, partyId: partyA }, MANAGER);
+    await dispatchOnlineOrder({ onlineOrderId: first.orderId, partyId: partyA, assignedUserId: 3 }, MANAGER);
     expect((await d.select().from(s.coupons).where(eq(s.coupons.id, 1)))[0].status).toBe("REDEEMED");
-    await expect(dispatchOnlineOrder({ onlineOrderId: second.orderId, partyId: partyA }, MANAGER))
+    await expect(dispatchOnlineOrder({ onlineOrderId: second.orderId, partyId: partyA, assignedUserId: 3 }, MANAGER))
       .resolves.toMatchObject({ orderId: second.orderId });
 
     const reservations = await d.select().from(s.couponReservations);
@@ -672,7 +672,7 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     });
     await blockerReady;
 
-    const dispatchPromise = dispatchOnlineOrder({ onlineOrderId: existing.orderId, partyId: partyA }, MANAGER);
+    const dispatchPromise = dispatchOnlineOrder({ onlineOrderId: existing.orderId, partyId: partyA, assignedUserId: 3 }, MANAGER);
     await waitForDatabaseLockWaits(1);
     const createPromise = createOnlineOrder({
       customerName: "عميل إنشاء مختلف",
@@ -703,9 +703,9 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
   it("dispatchOnlineOrder idempotent: إعادة الإرسال ⇒ alreadyDispatched بلا ازدواج فاتورة/مخزون/ذمّة", async () => {
     const { partyA } = await seedParties();
     const o = await confirmedOrder(1, "ORD-DSP2");
-    const r1 = await dispatchOnlineOrder({ onlineOrderId: o.orderId, partyId: partyA }, MANAGER);
+    const r1 = await dispatchOnlineOrder({ onlineOrderId: o.orderId, partyId: partyA, assignedUserId: 3 }, MANAGER);
     const stockAfter = await stockOf(1);
-    const r2 = await dispatchOnlineOrder({ onlineOrderId: o.orderId, partyId: partyA }, MANAGER);
+    const r2 = await dispatchOnlineOrder({ onlineOrderId: o.orderId, partyId: partyA, assignedUserId: 3 }, MANAGER);
     expect(r2.alreadyDispatched).toBe(true);
     expect(r2.invoiceId).toBe(r1.invoiceId); // نفس الفاتورة
     expect(await stockOf(1)).toBe(stockAfter); // لا خصم ثانٍ
@@ -717,7 +717,7 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     const { partyA } = await seedParties();
     const existing = await confirmedOrder(1, "ORD-FACTOR-DRIFT");
     await db().update(s.productUnits).set({ conversionFactor: "2" }).where(eq(s.productUnits.id, 1));
-    await expect(dispatchOnlineOrder({ onlineOrderId: existing.orderId, partyId: partyA }, MANAGER))
+    await expect(dispatchOnlineOrder({ onlineOrderId: existing.orderId, partyId: partyA, assignedUserId: 3 }, MANAGER))
       .rejects.toThrow(/تغيّر معامل وحدة/);
     expect((await order(existing.orderId)).status).toBe("CONFIRMED");
     expect(await stockOf(1)).toBe(100);
@@ -732,7 +732,7 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     const existing = await confirmedOrder(1, "ORD-DSP-RACE");
 
     const [dispatched, created] = await Promise.all([
-      dispatchOnlineOrder({ onlineOrderId: existing.orderId, partyId: partyA }, MANAGER),
+      dispatchOnlineOrder({ onlineOrderId: existing.orderId, partyId: partyA, assignedUserId: 3 }, MANAGER),
       createOnlineOrder({ customerName: "زبون متزامن", customerPhone: "07701234567", governorate: "baghdad", addressText: "بغداد", clientRequestId: "create-dispatch-lock-order", lines: [{ productUnitId: 1, quantity: 1 }] }),
     ]);
 
@@ -749,7 +749,7 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     const b = await confirmedOrder(2, "ORD-ALLOC-B");
 
     const [dispatchResult, posResult] = await Promise.allSettled([
-      dispatchOnlineOrder({ onlineOrderId: a.orderId, partyId: partyA }, MANAGER),
+      dispatchOnlineOrder({ onlineOrderId: a.orderId, partyId: partyA, assignedUserId: 3 }, MANAGER),
       createSale({
         branchId: 1, customerId: 1, sourceType: "POS", priceTier: "RETAIL", strictStock: true,
         lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],

@@ -45,8 +45,12 @@ import { lockMaterializedCashReceiptSourceForWrite } from "./cash/cashAvailabili
 import { assertOperationAuthorityTx } from "./authorization/operationAuthority";
 import type { ReceptionPaymentLeg } from "@shared/receptionPayments";
 import { normalizeReceptionPayments, lockReceptionSplitProofs, finishReceptionSplit } from "./reception/splitPayments";
+import {composeCheckoutChargesInTx,hasCheckoutCharges,checkoutAllocationReferences,type CheckoutAllocationProof,type CheckoutCompositionInput} from "./checkoutCharges";
+import type {CheckoutChargesInput,CheckoutChargesResult} from "../../shared/checkoutCharges";
+import {fulfillmentError} from "./fulfillment/core";
+import type {CheckoutAuthorityPath} from "./checkoutChargesPolicy";
 
-export interface ReceptionCheckoutInput {
+export interface ReceptionCheckoutInput extends CheckoutChargesInput {
   payments?: ReceptionPaymentLeg[];
   branchId: number;
   /** رقم التتبع الموحّد للمعاملة (R1). */
@@ -127,6 +131,7 @@ export interface ReceptionCheckoutInput {
    */
   delivery?: {
     partyId: number;
+    assignedUserId?: number | null;
     fee?: string | null;
     feeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
     recipientName?: string | null;
@@ -224,7 +229,7 @@ export async function checkoutReception(
   input: ReceptionCheckoutInput,
   actor: Actor,
 ) {
-  assertReceptionPaymentMethod(input);
+  assertReceptionPaymentMethod(input,hasCheckoutCharges(input));
   return withTx((tx) => checkoutReceptionInTx(tx, input, actor));
 }
 
@@ -233,8 +238,8 @@ export async function checkoutReception(
  * قبضٌ موجب بلا طريقة = إدخالٌ ناقص يُرفض؛ وصفر قبض بطريقةٍ مُرسَلة سهواً تُهمَل الطريقة
  * (لا تُختَم على الفاتورة) بدل اختلاق «نقدي» لعمليةٍ لم يدخل فيها دينار.
  */
-function assertReceptionPaymentMethod(input: ReceptionCheckoutInput) {
-  if (input.payments !== undefined) { normalizeReceptionPayments(input); return; }
+function assertReceptionPaymentMethod(input: ReceptionCheckoutInput,composed=false) {
+  if (input.payments !== undefined) { normalizeReceptionPayments(input,composed); return; }
   const newCash = round2(money(input.paidAmount ?? "0"));
   if (newCash.lte(0)) return;
   if (!input.paymentMethod) {
@@ -254,13 +259,37 @@ export async function checkoutReceptionInTx(
   tx: Parameters<Parameters<typeof withTx>[0]>[0],
   input: ReceptionCheckoutInput,
   actor: Actor,
+  authorityPath:CheckoutAuthorityPath="workOrders.receptionCheckout",
+):Promise<Awaited<ReturnType<typeof checkoutReceptionCoreInTx>>&Partial<CheckoutChargesResult>> {
+  if(!hasCheckoutCharges(input))return checkoutReceptionCoreInTx(tx,input,actor);
+  const payments=input.payments??(input.paymentMethod?[{amount:input.paidAmount??"0",method:input.paymentMethod,externalPaymentAttemptId:input.paymentExternalPaymentAttemptId,externalPaymentDeviceId:input.paymentExternalPaymentDeviceId}]:[{amount:input.paidAmount??"0",method:"CASH" as const}]);
+  const composition:CheckoutCompositionInput={...input,payments};
+  const composed=await composeCheckoutChargesInTx(tx,composition,actor,"PRINT_POS",async(resolved,proof)=>{
+    const {serviceCharges:_services,approvedChargeAllocations:_approved,chargePayments:_chargePayments,...source}=input;
+    const coreInput:ReceptionCheckoutInput={...source,payments:resolved.payments as ReceptionPaymentLeg[],paymentMethod:undefined,paymentReference:undefined,paymentExternalPaymentAttemptId:undefined,paymentExternalPaymentDeviceId:undefined,deliveryFeeTender:resolved.deliveryFeeTender as DeliveryFeeTender|undefined};
+    const result=await checkoutReceptionCoreInTx(tx,coreInput,actor,proof);
+    const mapping=(result.paymentAllocations??[]).map(row=>({receiptId:row.receiptId,paymentIndex:row.paymentIndex,kind:row.workOrderId!=null?"DEPOSIT" as const:"GOODS" as const}));
+    const invoiceIds=[result.regularSale?.invoiceId,result.printSale?.invoiceId].filter((id):id is number=>id!=null),orderIds=result.workOrders.map(row=>row.workOrderId);
+    const conditions=[...(invoiceIds.length?[inArray(receipts.invoiceId,invoiceIds)]:[]),...(orderIds.length?[inArray(receipts.workOrderId,orderIds)]:[])];
+    const feeRows=conditions.length?(await tx.select().from(receipts).where(and(eq(receipts.direction,"IN"),or(...conditions))).orderBy(receipts.id)).filter(row=>row.referenceNumber?.startsWith("DLV-FEE-")&&row.status==="COMPLETED"&&row.approvalStatus==="APPROVED"):[];
+    return {result,receiptIds:[...mapping.map(row=>row.receiptId),...feeRows.map(row=>row.id)],receiptAllocations:[...mapping,...feeRows.map(row=>({receiptId:row.id,paymentIndex:input.deliveryFeeTender?.combinedWithPaymentIndex??-1,kind:"HELD_DELIVERY" as const}))]};
+  },authorityPath);
+  return {...composed.result,checkoutPaymentSummary:composed.checkoutPaymentSummary,checkoutReceipts:composed.checkoutReceipts,chargeAllocations:composed.chargeAllocations};
+}
+
+async function checkoutReceptionCoreInTx(
+  tx: Parameters<Parameters<typeof withTx>[0]>[0],
+  input: ReceptionCheckoutInput,
+  actor: Actor,
+  allocationProof?:CheckoutAllocationProof,
 ) {
   // commitDraft يستدعي النواة داخل معاملته بلا الغلاف؛ لذلك الحارس هنا أيضاً.
   // يسبق isCompleteReplay حتى لا يكشف مفتاحٌ مخمّن فاتورةً قديمة غير نقدية.
-  assertReceptionPaymentMethod(input);
+  if(allocationProof)checkoutAllocationReferences(tx,actor,input,allocationProof);
+  assertReceptionPaymentMethod(input,allocationProof!=null);
   {
     const checkoutPayloadHash = idempotencyHash(input);
-    const splitPlan = input.payments === undefined ? null : normalizeReceptionPayments(input);
+    const splitPlan = input.payments === undefined ? null : normalizeReceptionPayments(input,allocationProof!=null);
     const checkoutReplayRefId = await checkIdempotency(
       tx,
       "reception.checkout",
@@ -276,8 +305,9 @@ export async function checkoutReceptionInTx(
     const legacyCompleteReplay =
       checkoutReplayRefId == null && (await isCompleteReplay(tx, input));
     const completeReplay = checkoutReplayRefId != null || legacyCompleteReplay;
+    if(allocationProof&&completeReplay)throw fulfillmentError("مصدر الاستقبال مثبت سابقاً بلا تخصيص الأجور الحالي؛ افتح الإيصال الأصلي ولا تضف قبضاً جديداً على مفتاحه","CONFLICT");
     if (splitPlan) {
-      await lockReceptionSplitProofs(tx, input, splitPlan, actor, completeReplay);
+      await lockReceptionSplitProofs(tx, input, splitPlan, actor, completeReplay,allocationProof);
       input = { ...input, paidAmount: splitPlan.summary.appliedAmount,
         paymentMethod: splitPlan.allCash ? "CASH" : splitPlan.legs.find(l => l.method !== "CASH")!.method,
         ...(splitPlan.roundingEligible ? {} : { cashRoundIQD: false, cashRoundingOverride: null }) };
@@ -984,6 +1014,7 @@ export async function checkoutReceptionInTx(
           {
             invoiceId: carrierInvoiceId,
             partyId: input.delivery.partyId,
+            assignedUserId: input.delivery.assignedUserId ?? null,
             deliveryFee: input.delivery.fee ?? "0",
             feeCollection: input.delivery.feeCollection ?? "COURIER",
             recipientName:
@@ -1203,7 +1234,7 @@ export async function checkoutReceptionInTx(
       );
       if (goodsBinding) await consumeExternalReceiptAllocationsTx(tx,goodsBinding,goods.map(r=>Number(r.id)),actor);
     }
-    const splitMetadata = splitPlan ? await finishReceptionSplit(tx, input, splitPlan, { regularSale, printSale, workOrders }, actor, completeReplay) : {};
+    const splitMetadata = splitPlan ? await finishReceptionSplit(tx, input, splitPlan, { regularSale, printSale, workOrders }, actor, completeReplay,allocationProof) : {};
     return { regularSale, printSale, workOrders, preSplit, dispatch, ...splitMetadata };
   }
 }

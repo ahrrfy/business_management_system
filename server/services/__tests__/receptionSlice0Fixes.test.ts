@@ -233,7 +233,7 @@ describe("I21 — توريد المندوب يُغلق ذمّة العميل ا�
     await db().update(s.customers).set({ currentBalance: "10000.00" }).where(eq(s.customers.id, 1));
 
     const dispatched = await dispatchInvoiceToDelivery(
-      { invoiceId: 501, partyId, deliveryFee: "0", clientRequestId: "slice0-i21-d" }, CASHIER,
+      { assignedUserId: 3, invoiceId: 501, partyId, deliveryFee: "0", clientRequestId: "slice0-i21-d" }, CASHIER,
     );
     expect(dispatched.codAmount).toBe("10000.00");
 

@@ -19,7 +19,7 @@ export function deliverySourceView(source: DeliverySourceReference) {
       href:
         id == null
           ? null
-          : `/delivery?tab=fulfillment&kind=aftercare&executionId=${encodeURIComponent(String(id))}`,
+          : `/reception/workflow?section=aftercare&executionId=${encodeURIComponent(String(id))}`,
       customerCollectionForbidden: true,
     };
   }
@@ -30,7 +30,7 @@ export function deliverySourceView(source: DeliverySourceReference) {
     return {
       label: "طلب توصيل موحد",
       reference: `طلب توصيل #${requestId}${source.invoiceNumber ? ` · ${source.invoiceNumber}` : ""}`,
-      href: `/delivery?tab=fulfillment&kind=requests&requestId=${encodeURIComponent(String(requestId))}`,
+      href: `/reception/workflow?section=dispatch&requestId=${encodeURIComponent(String(requestId))}`,
       customerCollectionForbidden: false,
     };
   }

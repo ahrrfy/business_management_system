@@ -56,6 +56,16 @@ async function returnInvoice(invoiceId: number, quantity: number) {
     operatorReason: "مرتجع مستقل من الشحنة", clientRequestId: `continuity-return-${invoiceId}-${quantity}` }, actor);
 }
 
+async function returnEffects() {
+  return Promise.all([
+    db().select().from(s.invoices), db().select().from(s.invoiceItems),
+    db().select().from(s.receipts), db().select().from(s.accountingEntries),
+    db().select().from(s.inventoryMovements), db().select().from(s.branchStock),
+    db().select().from(s.customers), db().select().from(s.deliveryParties),
+    db().select().from(s.deliveryConsignments), db().select().from(s.deliveryLedgerEntries),
+  ]);
+}
+
 async function confirmAndRemit(consignmentId: number, collectedAmount = "10000") {
   const input = { consignmentId, collectedAmount, evidence: "اتصال شركة التوصيل", clientRequestId: "continuity-confirm" };
   await confirmShipmentDelivery(input, actor);
@@ -246,7 +256,14 @@ describe("shipment continuity after independent invoice changes", () => {
     const survivor = (await db().select().from(s.invoices).where(eq(s.invoices.id, survivorId)))[0];
     const cn = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, group.members[1].id)))[0];
     const result = await returnInvoice(Number(group.members[0].invoiceId), 10);
-    expect(await returnInvoice(Number(group.members[0].invoiceId), 10)).toMatchObject({ ...result, idempotentReplay: true });
+    expect(result.refundReceiptId).toBeNull();
+    const effects = await returnEffects();
+    // Receipt IDs are execution-only adapter metadata; replay retains the public return outcome.
+    expect(await returnInvoice(Number(group.members[0].invoiceId), 10)).toEqual({
+      invoiceId: Number(group.members[0].invoiceId), returnedTotal: "10000.00", fullyReturned: true,
+      pendingRefundAmount: "0.00", pendingRefundVoucherNumber: null, idempotentReplay: true,
+    });
+    expect(await returnEffects()).toEqual(effects);
     expect((await db().select().from(s.invoices).where(eq(s.invoices.id, survivorId)))[0]).toEqual(survivor);
     expect((await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, group.members[1].id)))[0]).toEqual(cn);
     expect((await db().select().from(s.deliveryParties))[0].currentBalance).toBe("10000.00");
@@ -272,7 +289,14 @@ describe("shipment continuity after independent invoice changes", () => {
     const input = { invoiceId: targetId, lines: [{ invoiceItemId: item.id, baseQuantity: 2 }], restock: true,
       refund: { method: "CASH" as const, amount: "2000", shiftId: shift.id }, operatorReason: "رد جزئي بعد التوريد", clientRequestId: "continuity-after-remit-return" };
     const result = await returnSale(input, actor);
-    expect(await returnSale(input, actor)).toMatchObject({ ...result, idempotentReplay: true });
+    expect(result.refundReceiptId).toBeTruthy();
+    expect("refundReceiptIds" in result && result.refundReceiptIds).toEqual([result.refundReceiptId]);
+    const effects = await returnEffects();
+    expect(await returnSale(input, actor)).toEqual({
+      invoiceId: targetId, returnedTotal: "2000.00", fullyReturned: false,
+      pendingRefundAmount: "0.00", pendingRefundVoucherNumber: null, idempotentReplay: true,
+    });
+    expect(await returnEffects()).toEqual(effects);
     expect((await db().select().from(s.invoices).where(eq(s.invoices.id, survivorId)))[0]).toEqual(survivor);
     expect((await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, group.members[1].id)))[0]).toEqual(cn);
     expect((await db().select().from(s.deliveryLedgerEntries)).filter(row => row.consignmentId === group.members[1].id)).toEqual(ledger);

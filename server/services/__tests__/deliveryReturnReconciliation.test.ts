@@ -102,7 +102,7 @@ describe("تسوية إرساليات التوصيل التلقائية عند �
       paymentMethod: "CASH", paidAmount: "0",
       clientRequestId: "r1-full-out",
       regularSale: { lines: [LINE_10], amount: "10000.00" },
-      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
     }, CASHIER);
 
     const invoiceId = sale.regularSale!.invoiceId;
@@ -177,7 +177,7 @@ describe("تسوية إرساليات التوصيل التلقائية عند �
       paymentMethod: "CASH", paidAmount: "0",
       clientRequestId: "r2-delivered-unsettled",
       regularSale: { lines: [LINE_10], amount: "10000.00" },
-      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
     }, CASHIER);
 
     const invoiceId = sale.regularSale!.invoiceId;
@@ -216,7 +216,7 @@ describe("تسوية إرساليات التوصيل التلقائية عند �
       paymentMethod: "CASH", paidAmount: "0",
       clientRequestId: "r2-partial-active",
       regularSale: { lines: [LINE_10], amount: "10000.00" },
-      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
     }, CASHIER);
 
     const invoiceId = sale.regularSale!.invoiceId;
@@ -300,7 +300,7 @@ describe("تسوية إرساليات التوصيل التلقائية عند �
       paymentMethod: "CASH", paidAmount: "0",
       clientRequestId: "r2-collected-part",
       regularSale: { lines: [LINE_10], amount: "10000.00" },
-      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+      delivery: { partyId: 1, assignedUserId: 3, fee: "0", feeCollection: "COURIER" },
     }, CASHIER);
 
     const invoiceId = sale.regularSale!.invoiceId;
