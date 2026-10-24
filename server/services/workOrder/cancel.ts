@@ -19,6 +19,8 @@ import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idem
 import { logAuditTx } from "../auditService";
 import type { TrpcContext } from "../../context";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { reserveExternalRefundConfirmationTx } from "../externalRefundConfirmation";
+import { loadExcessFeeSourceTx } from "../delivery/excessFeeRefund";
 import { appErrorMessage } from "@shared/errors";
 import { refundRailIsImmediate, refundRailNeedsReference, refundRailReceiptShape, type RefundRail } from "@shared/refundRail";
 // ⛔ التسمية العربية للحالة من قاموسها الوحيد — لا تُعاد كتابتها هنا (§٨ قواميس حاكمة).
@@ -30,7 +32,7 @@ import {
   mayCancelWorkOrderWithoutApproval,
 } from "@shared/workOrderControlAuthority";
 import type { ApprovedWorkOrderControl } from "./update";
-import { workOrderFeeHeldNet } from "./deliveryFeeRefund";
+import { workOrderFeeHeldNet, requestNoncashWorkOrderFeeRefundTx } from "./deliveryFeeRefund";
 import { computeWorkOrderInvoiceNetPaidInTx } from "./reverseDelivery";
 import { publishRealtimeEvent } from "../../realtime";
 import { assertOperationAuthorityTx } from "../authorization/operationAuthority";
@@ -866,6 +868,16 @@ export async function cancelWorkOrderInTx(
     )[0];
     const feeHeldNet = round2(money(feeHeldRow?.v ?? "0"));
     if (feeHeldNet.gt(0)) {
+      const feeSource = (await tx.select({paymentMethod:receipts.paymentMethod}).from(receipts).where(and(
+        eq(receipts.workOrderId,workOrderId),eq(receipts.referenceNumber,`DLV-FEE-WO-${workOrderId}`),
+        eq(receipts.direction,"IN"),eq(receipts.status,"COMPLETED"),
+      )).for("update").limit(1))[0];
+      if (feeSource && feeSource.paymentMethod !== "CASH") {
+        const pendingFee = await requestNoncashWorkOrderFeeRefundTx(tx, {
+          workOrderId,branchId:Number(wo.branchId),actor,reason:opts.reason ?? "إلغاء أمر الشغل",
+        });
+        pendingRefundReceiptIds.push(pendingFee.receiptId);
+      } else {
       if (opRail === "CARD") {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
@@ -910,6 +922,8 @@ export async function cancelWorkOrderInTx(
           roleCredits: { [feeAssetRole]: feeHeldNet },
         }),
       });
+    }
+
     }
 
     await tx.update(workOrders).set({
@@ -1023,6 +1037,25 @@ export async function approveWorkOrderCancellationRefund(
         }),
       });
     }
+    const refundPreview = (
+      await tx
+        .select({
+          workOrderId: receipts.workOrderId,
+          note: receipts.internalNote,
+        })
+        .from(receipts)
+        .where(eq(receipts.id, receiptId))
+        .limit(1)
+    )[0];
+    if (
+      refundPreview?.workOrderId != null &&
+      refundPreview.note?.startsWith("WORK_ORDER_CUSTOMER_REFUND:FEE:")
+    )
+      await tx
+        .select({ id: workOrders.id })
+        .from(workOrders)
+        .where(eq(workOrders.id, Number(refundPreview.workOrderId)))
+        .for("update");
     const refund = (
       await tx.select().from(receipts).where(eq(receipts.id, receiptId)).for("update").limit(1)
     )[0];
@@ -1036,10 +1069,12 @@ export async function approveWorkOrderCancellationRefund(
         }),
       });
     }
+    const feeRefund = refund.internalNote.startsWith("WORK_ORDER_CUSTOMER_REFUND:FEE:");
+    const recordedConfirmation = feeRefund ? decodeURIComponent(refund.internalNote.split(":")[4] ?? "") : refund.referenceNumber;
     // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — أُزيل شرط «غير صانع الطلب» (كما في
     // approveVoucher/authorizeExternalTreasuryDisbursement). البوّابة أعلاه (isOwner نشط) تبقى.
     if (refund.status === "COMPLETED" && refund.approvalStatus === "APPROVED") {
-      if (refund.referenceNumber !== confirmedReference) {
+      if (recordedConfirmation !== confirmedReference) {
         throw new TRPCError({
           code: "CONFLICT",
           message: appErrorMessage({
@@ -1051,7 +1086,7 @@ export async function approveWorkOrderCancellationRefund(
       }
       const entry = (
         await tx.select({ id: accountingEntries.id }).from(accountingEntries)
-          .where(and(eq(accountingEntries.receiptId, receiptId), eq(accountingEntries.entryType, "PAYMENT_OUT")))
+          .where(and(eq(accountingEntries.receiptId, receiptId), eq(accountingEntries.entryType, feeRefund ? "DELIVERY_FEE_HELD" : "PAYMENT_OUT")))
           .limit(1)
       )[0];
       if (!entry) {
@@ -1107,6 +1142,13 @@ export async function approveWorkOrderCancellationRefund(
     }
 
     const noteParts = refund.internalNote.split(":");
+    if (feeRefund && wo.status === "READY")
+      await loadExcessFeeSourceTx(
+        tx,
+        { sourceKind: "WORK_ORDER", sourceId: workOrderId },
+        { ...actor, branchId: Number(refund.branchId) },
+        { lock: true, allowedPendingReceiptId: receiptId },
+      );
     const refundKind = noteParts[1];
     const noteWorkOrderId = Number(noteParts[2] ?? 0);
     /**
@@ -1119,10 +1161,10 @@ export async function approveWorkOrderCancellationRefund(
     const REVERSE_KINDS = ["REVERSE_LIABILITY", "REVERSE_AR"] as const;
     const isReverseKind = (REVERSE_KINDS as readonly string[]).includes(String(refundKind));
     /** المصدرُ مُشفَّرٌ بهويّته في NOTE — كما في DIRECT تماماً. */
-    const resolvesLikeDirect = refundKind === "DIRECT" || isReverseKind;
+    const resolvesLikeDirect = refundKind === "DIRECT" || refundKind === "FEE" || isReverseKind;
     if (
       noteWorkOrderId !== workOrderId ||
-      (refundKind !== "DIRECT" && refundKind !== "APPLIED" && !isReverseKind)
+      (refundKind !== "DIRECT" && refundKind !== "FEE" && refundKind !== "APPLIED" && !isReverseKind)
     ) {
       throw new TRPCError({
         code: "CONFLICT",
@@ -1236,6 +1278,7 @@ export async function approveWorkOrderCancellationRefund(
         direction: receipts.direction,
         status: receipts.status,
         approvalStatus: receipts.approvalStatus,
+        paymentMethod:receipts.paymentMethod,referenceNumber:receipts.referenceNumber,workOrderId:receipts.workOrderId,
       }).from(receipts).where(eq(receipts.id, sourceReceiptId)).for("update").limit(1)
     )[0];
     if (
@@ -1259,8 +1302,13 @@ export async function approveWorkOrderCancellationRefund(
       });
     }
 
+    if (feeRefund && (Number(source.workOrderId) !== workOrderId || source.referenceNumber !== `DLV-FEE-WO-${workOrderId}`
+      || source.paymentMethod !== refund.paymentMethod || round2(money(refund.amount)).gt(await workOrderFeeHeldNet(tx,workOrderId)))) {
+      throw new TRPCError({code:"CONFLICT",message:appErrorMessage({what:"تعذّر اعتماد رد أمانة التوصيل",why:"مصدر الأمانة أو وسيلتها أو رصيدها تغير",doThis:"راجع إيصال الأجرة الأصلي والردود السابقة قبل اعتماد الصرف"})});
+    }
     const amount = round2(money(refund.amount));
     const assetRole = paymentAssetRole(refund.paymentMethod, null, "OUT");
+    await reserveExternalRefundConfirmationTx(tx,{receiptId,method:refund.paymentMethod,reference:confirmedReference});
     const confirmationOperation = `workOrder.refund.confirmation.${refund.paymentMethod}`;
     const confirmationFingerprint = idempotencyHash({
       receiptId,
@@ -1310,8 +1358,8 @@ export async function approveWorkOrderCancellationRefund(
     // الحسابُ المقابل يتبع نوعَ الردّ: العربونُ أمانةٌ تُبرَّأ، ودفعةُ التسليم ذمّةٌ تعود.
     // `PAYMENT_OUT_OTHER` لا يقبل `AR` مديناً، ولذلك يُختار profile بحسب النوع لا بتوسيعه.
     const refundIsAr = refundKind === "REVERSE_AR";
-    const counterRole = refundIsAr ? "AR" : "OTHER_LIABILITY";
-    const refundProfile = refundIsAr ? "PAYMENT_OUT_CUSTOMER_REFUND" : "PAYMENT_OUT_OTHER";
+    const counterRole = feeRefund ? "COURIER_PAYABLE" : refundIsAr ? "AR" : "OTHER_LIABILITY";
+    const refundProfile = feeRefund ? "DELIVERY_FEE_HELD_PAYOUT" : refundIsAr ? "PAYMENT_OUT_CUSTOMER_REFUND" : "PAYMENT_OUT_OTHER";
     const postingSource = {
       roleDebits: { [counterRole]: amount },
       roleCredits: { [assetRole]: amount },
@@ -1321,20 +1369,22 @@ export async function approveWorkOrderCancellationRefund(
       approvalStatus: "APPROVED",
       approvedBy: actor.userId,
       approvedAt: new Date(),
-      referenceNumber: confirmedReference,
+      referenceNumber: feeRefund ? `DLV-FEE-WO-${workOrderId}` : confirmedReference,
+      ...(feeRefund ? {partyType: "OTHER" as const, internalNote:`WORK_ORDER_CUSTOMER_REFUND:FEE:${workOrderId}:${sourceReceiptId}:${encodeURIComponent(confirmedReference)}`} : {}),
     }).where(eq(receipts.id, receiptId));
     await postEntry(tx, {
-      entryType: "PAYMENT_OUT",
+      entryType: feeRefund ? "DELIVERY_FEE_HELD" : "PAYMENT_OUT",
+      ...(feeRefund ? {dedupeKey:`DELIVERY_FEE_HELD_REFUND:WO:${workOrderId}`} : {}),
       branchId: Number(refund.branchId),
       invoiceId: refund.invoiceId != null ? Number(refund.invoiceId) : null,
       receiptId,
       customerId: refund.partyId != null ? Number(refund.partyId) : null,
-      amount,
+      amount: feeRefund ? amount.neg() : amount,
       paymentMethod: refund.paymentMethod,
       notes: `اعتماد رد عربون أمر شغل ملغى #${workOrderId}`,
       postingIntent: createPostingIntent(
         refundProfile,
-        "PAYMENT_OUT",
+        feeRefund ? "DELIVERY_FEE_HELD" : "PAYMENT_OUT",
         [debitLine(counterRole, amount), creditLine(assetRole, amount)],
         postingSource,
       ),
@@ -1342,7 +1392,7 @@ export async function approveWorkOrderCancellationRefund(
     });
     // رأس الفاتورة لا يسبق النقد: الرد غير النقدي لا يخفض paidAmount وهو PENDING،
     // ويُشتق الصافي من IN المنفذ ناقص OUT المنفذ لحظة الاعتماد فقط.
-    if (refund.invoiceId != null) {
+    if (!feeRefund && refund.invoiceId != null) {
       const paidAmount = await computeWorkOrderInvoiceNetPaidInTx(
         tx,
         workOrderId,

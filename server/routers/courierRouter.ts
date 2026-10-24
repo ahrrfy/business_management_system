@@ -6,32 +6,72 @@
  * يُسدّد الفاتورة (ذمّة العميل↓) ويرفع عهدة المندوب (delivery.settle يُورّدها للمتجر لاحقاً).
  */
 import { z } from "zod";
-import { SHORTFALL_REASONS, type ShortfallReason } from "@shared/shortfallReason";
+import {
+  SHORTFALL_REASONS,
+  type ShortfallReason,
+} from "@shared/shortfallReason";
 import { nonNegMoneyString } from "../lib/schemas";
 import { courierProcedure, router } from "../trpc";
 import { logAudit } from "../services/auditService";
-import { confirmConsignmentDelivery, confirmCourierDelivery, failCourierDelivery, listMyDeliveries, transitionConsignmentParcel } from "../services/deliveryService";
+import {
+  confirmConsignmentDelivery,
+  confirmCourierDelivery,
+  failCourierDelivery,
+  listMyDeliveries,
+  transitionConsignmentParcel,
+} from "../services/deliveryService";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { retryOnDeadlock } from "../lib/retryDeadlock";
+import { acknowledgeConsignmentClaim } from "../services/delivery/courier";
 
 export const courierRouter = router({
+  acknowledgeConsignmentClaim: courierProcedure
+    .input(
+      z.object({
+        consignmentId: z.number().int().positive(),
+        expectedClaimVersion: z.number().int().positive(),
+        clientRequestId: z.string().trim().min(8).max(80),
+      }),
+    )
+    .mutation(({ input, ctx }) =>
+      retryOnDeadlock(() =>
+        acknowledgeConsignmentClaim(input, { userId: ctx.user.id }),
+      ),
+    ),
   /** توصيلاتي: قيد التوصيل + المُسلّمة حديثاً + عهدتي (غير مرتبط ⇒ linked:false). */
-  myDeliveries: courierProcedure.query(({ ctx }) => listMyDeliveries(ctx.user.id)),
+  myDeliveries: courierProcedure.query(({ ctx }) =>
+    listMyDeliveries(ctx.user.id),
+  ),
 
   /** تأكيد تسليم + تحصيل COD كاملاً لطلبٍ من توصيلاتي (مع فحص Handshake OTP). */
   confirmDelivery: courierProcedure
-    .input(z.object({
-      onlineOrderId: z.number().int().positive(),
-      handshakeOtp: z.string().trim().length(4).optional(),
-    }))
+    .input(
+      z.object({
+        onlineOrderId: z.number().int().positive(),
+        handshakeOtp: z.string().trim().length(4).optional(),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
       const actor = { userId: ctx.user.id };
       let res;
       try {
-        res = await confirmCourierDelivery({ onlineOrderId: input.onlineOrderId, handshakeOtp: input.handshakeOtp }, actor);
+        res = await confirmCourierDelivery(
+          {
+            onlineOrderId: input.onlineOrderId,
+            handshakeOtp: input.handshakeOtp,
+          },
+          actor,
+        );
       } catch (e) {
         // سباق قيد مزدوج نادر (dedupeKey) ⇒ إعادة محاولة واحدة (الثانية ترى DELIVERED فتُرجِع idempotent).
-        if (isDupEntry(e)) res = await confirmCourierDelivery({ onlineOrderId: input.onlineOrderId, handshakeOtp: input.handshakeOtp }, actor);
+        if (isDupEntry(e))
+          res = await confirmCourierDelivery(
+            {
+              onlineOrderId: input.onlineOrderId,
+              handshakeOtp: input.handshakeOtp,
+            },
+            actor,
+          );
         else throw e;
       }
       await logAudit(ctx, {
@@ -58,14 +98,26 @@ export const courierRouter = router({
    * لمسارَي الكاشير (DFP1) بلا نسخةٍ ثانية من المنطق (`confirmConsignmentDelivery` واحدة).
    */
   confirmConsignmentDelivery: courierProcedure
-    .input(z.object({
-      consignmentId: z.number().int().positive(),
-      clientRequestId: z.string().trim().min(8).max(100),
-      collectedAmount: nonNegMoneyString.optional(),
-      shortfallReason: z.enum(SHORTFALL_REASONS as unknown as [ShortfallReason, ...ShortfallReason[]]).optional(),
-    }))
+    .input(
+      z.object({
+        consignmentId: z.number().int().positive(),
+        clientRequestId: z.string().trim().min(8).max(100),
+        collectedAmount: nonNegMoneyString.optional(),
+        collectionEvidence: z.string().trim().min(5).max(2000).optional(),
+        shortfallReason: z
+          .enum(
+            SHORTFALL_REASONS as unknown as [
+              ShortfallReason,
+              ...ShortfallReason[],
+            ],
+          )
+          .optional(),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
-      const res = await retryOnDeadlock(() => confirmConsignmentDelivery(input, { userId: ctx.user.id }));
+      const res = await retryOnDeadlock(() =>
+        confirmConsignmentDelivery(input, { userId: ctx.user.id }),
+      );
       await logAudit(ctx, {
         action: "courier.confirmConsignmentDelivery",
         entityType: "deliveryConsignment",
@@ -81,24 +133,48 @@ export const courierRouter = router({
     }),
 
   parcelTransition: courierProcedure
-    .input(z.object({
-      consignmentId: z.number().int().positive(),
-      toStatus: z.enum(["ASSIGNED", "ACCEPTED", "PICKED_UP", "OUT_FOR_DELIVERY", "FAILED"]),
-      reason: z.string().trim().min(2).max(500).nullish(),
-      clientRequestId: z.string().trim().min(8).max(100),
-    }))
-    .mutation(({ input, ctx }) => retryOnDeadlock(() => transitionConsignmentParcel(input, { userId: ctx.user.id }))),
+    .input(
+      z.object({
+        consignmentId: z.number().int().positive(),
+        toStatus: z.enum([
+          "ASSIGNED",
+          "ACCEPTED",
+          "PICKED_UP",
+          "OUT_FOR_DELIVERY",
+          "FAILED",
+        ]),
+        reason: z.string().trim().min(2).max(500).nullish(),
+        clientRequestId: z.string().trim().min(8).max(100),
+      }),
+    )
+    .mutation(({ input, ctx }) =>
+      retryOnDeadlock(() =>
+        transitionConsignmentParcel(input, { userId: ctx.user.id }),
+      ),
+    ),
 
   /** تعذّر التسليم (رفض الزبون): عكس بيع الطلب المرفوض + إلغاؤه (بلا تحصيل). */
   failDelivery: courierProcedure
-    .input(z.object({ onlineOrderId: z.number().int().positive(), reason: z.string().trim().min(2).max(500) }))
+    .input(
+      z.object({
+        onlineOrderId: z.number().int().positive(),
+        reason: z.string().trim().min(2).max(500),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
       const actor = { userId: ctx.user.id };
       let res;
       try {
-        res = await failCourierDelivery({ onlineOrderId: input.onlineOrderId, reason: input.reason }, actor);
+        res = await failCourierDelivery(
+          { onlineOrderId: input.onlineOrderId, reason: input.reason },
+          actor,
+        );
       } catch (e) {
-        if (isDupEntry(e)) res = await failCourierDelivery({ onlineOrderId: input.onlineOrderId, reason: input.reason }, actor);
+        if (isDupEntry(e))
+          res = await failCourierDelivery(
+            { onlineOrderId: input.onlineOrderId, reason: input.reason },
+            actor,
+          );
         else throw e;
       }
       await logAudit(ctx, {

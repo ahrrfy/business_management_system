@@ -12,6 +12,12 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "server/services/__tests__/fulfillmentChargesVisibility.unit.test.ts",
+      "server/services/__tests__/fulfillmentPosting.test.ts",
+      "server/services/__tests__/fulfillmentChargesPolicy.unit.test.ts",
+      "shared/deliverySource.test.ts",
+      "client/src/lib/printing/printDeliverySource.test.ts",
+      "client/src/components/reception/receptionPaymentAmounts.test.ts",
       "client/src/lib/export.test.ts",
       "client/src/lib/printing/qr.test.ts",
       "client/src/lib/printing/__tests__/wave31StocktakePrint.test.ts",

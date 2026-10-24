@@ -1,3 +1,4 @@
+import type { DeliverySourceReference } from "./deliverySource";
 /**
  * **لوحة جهات التوصيل والتسوية اليوميّة** — العقد المشترك بين الخادم (م١-خادم:
  * `server/services/delivery/board.ts` و`dailySettlement.ts`) والواجهة (م١-عميل: لوحة الخمسة
@@ -45,11 +46,11 @@ export type PartyBoardRow = {
   staleOpenParcels: number;              // أقدم من maxOpenParcelAgeDays
 };
 
-export type SettlementPreviewLine = {
+export type SettlementPreviewLine = DeliverySourceReference & {
   feeWithholding?: string;
   consignmentId: number;
   consignmentNumber: string;
-  invoiceNumber: string;
+  invoiceNumber: string | null;
   customerName: string;
   codAmount: string;
   collectedAmount: string;

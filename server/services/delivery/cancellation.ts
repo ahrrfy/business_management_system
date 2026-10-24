@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { assertAftercareAssignmentCancellationTx } from "../fulfillment/aftercareDelivery";
 import { appErrorMessage } from "@shared/errors";
 import { assertOperationAuthorityTx, hasServiceOperationAuthority } from "../authorization/operationAuthority";
 import { assertNotReturnDeclared } from "./declaredReturn";
@@ -134,6 +135,7 @@ export async function cancelDeliveryAssignmentInTx(
         .for("update")
         .limit(1)
     )[0];
+    if (cn) await assertAftercareAssignmentCancellationTx(tx, cn.id);
     if (!cn)
       throw new TRPCError({
         code: "NOT_FOUND",
@@ -181,7 +183,9 @@ export async function cancelDeliveryAssignmentInTx(
     }
 
     const remaining = round2(
-      money(cn.codAmount).minus(money(cn.collectedAmount ?? "0")),
+      money(cn.codAmount)
+        .minus(money(cn.collectedAmount ?? "0"))
+        .minus(money(cn.counterSettledAmount ?? "0")),
     );
     if (remaining.lt(0)) {
       throw new TRPCError({

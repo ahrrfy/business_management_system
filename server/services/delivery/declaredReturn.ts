@@ -19,6 +19,7 @@
  * `returnConsignment` عن إعادة التحرير حين يجده مُعلَناً.
  */
 import { TRPCError } from "@trpc/server";
+import { declareAftercareReturnTx } from "../fulfillment/aftercareDelivery";
 import { eq } from "drizzle-orm";
 import { deliveryConsignments, deliveryParties } from "../../../drizzle/schema";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
@@ -89,6 +90,8 @@ export async function declareConsignmentReturn(
     if (preview) await tx.select({ id: deliveryParties.id }).from(deliveryParties).where(eq(deliveryParties.id, Number(preview.partyId))).for("update").limit(1);
     if (!options.shipmentMember) await assertStandaloneConsignmentTx(tx, consignmentId, "إعلان الرجوع", { currentRead: true });
     const reason = input.reason.trim();
+    const aftercare = await declareAftercareReturnTx(tx, { consignmentId, reason, clientRequestId: input.clientRequestId ?? `aftercare-declared-return:${consignmentId}` }, actor);
+    if (aftercare.handled) return aftercare;
     if (reason.length < 3) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "سبب رجوع الطرد مطلوب (٣ أحرف على الأقل)" });
     }

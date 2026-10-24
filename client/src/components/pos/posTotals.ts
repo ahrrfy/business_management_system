@@ -24,16 +24,17 @@ export function parsePosLegAmountD(rawAmount: string): Decimal {
 
 export function computeSplitLegFingerprint(
   leg: Pick<PosPaymentLegDraft, "method" | "amount" | "paymentRef">,
+  feeAmount: Decimal = D(0),
 ): string {
-  const amtD = parsePosLegAmountD(leg.amount);
+  const amtD = parsePosLegAmountD(leg.amount).plus(feeAmount);
   return `${leg.method}|${amtD.toFixed(2)}|${(leg.paymentRef ?? "").trim().toUpperCase()}`;
 }
 
-export function isSplitLegExternalConfirmed(leg: PosPaymentLegDraft): boolean {
+export function isSplitLegExternalConfirmed(leg: PosPaymentLegDraft, feeAmount: Decimal = D(0)): boolean {
   if (leg.method === "CASH") return true;
   const ep = leg.externalPayment;
   if (!ep || ep.state !== "CONFIRMED" || ep.attemptId == null) return false;
-  return ep.fingerprint === computeSplitLegFingerprint(leg);
+  return ep.fingerprint === computeSplitLegFingerprint(leg, feeAmount);
 }
 
 export interface ComputePOSTotalsParams {
@@ -150,12 +151,13 @@ export function computePOSTotals({ cart, activeTab }: ComputePOSTotalsParams) {
     isSplitPayment &&
     (nonCashLegsPaidD.gt(effectiveTotalD) || (!splitHasCash && paidD.gt(effectiveTotalD)));
 
-  const externalPaymentAmount = money(isCredit ? paid : total);
+  const deliveryFeeHeldD = deliveryPayload?.feeCollection === "COUNTER" ? D(deliveryPayload.fee) : D(0);
+  const externalPaymentAmount = round2(D(isCredit ? paid : total).plus(deliveryFeeHeldD)).toFixed(2);
   const externalPaymentFingerprint = `${activeTab.method}|${externalPaymentAmount}|${(activeTab.paymentRef ?? "").trim().toUpperCase()}`;
   const externalPaymentConfirmed = isSplitPayment
     ? !splitInvalidLeg &&
       !splitNonCashOverpay &&
-      paymentLegs.every((leg) => isSplitLegExternalConfirmed(leg))
+      paymentLegs.every((leg, index) => isSplitLegExternalConfirmed(leg, index === 0 ? deliveryFeeHeldD : D(0)))
     : activeTab.method === "CASH" ||
       (activeTab.externalPayment?.state === "CONFIRMED" &&
         activeTab.externalPayment.fingerprint === externalPaymentFingerprint &&
@@ -190,7 +192,7 @@ export function computePOSTotals({ cart, activeTab }: ComputePOSTotalsParams) {
     change,
     credit,
     cashRoundingDelta,
-    externalPaymentAmount,
+    externalPaymentAmount, deliveryFeeHeldD,
     externalPaymentFingerprint,
     externalPaymentConfirmed,
     isSplitPayment,

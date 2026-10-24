@@ -83,6 +83,14 @@ export interface JournalLine {
 
 /** The persisted operational meaning that selected the journal map. */
 export type PostingProfile =
+  | "FULFILLMENT_CHARGE_ACCRUAL"
+  | "FULFILLMENT_CHARGE_COST"
+  | "FULFILLMENT_CHARGE_CREDIT"
+  | "FULFILLMENT_CHARGE_COLLECTION"
+  | "FULFILLMENT_CHARGE_CUSTODY"
+  | "FULFILLMENT_COURIER_EXCESS"
+  | "FULFILLMENT_CHARGE_PAYEE"
+  | "FULFILLMENT_CHARGE_EXCESS_REFUND"
   | "SALE_INVENTORY"
   | "SALE_SERVICE"
   | "SALE_SERVICE_FLEX"
@@ -267,6 +275,9 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
     "PURCHASE_CONSIGNMENT_SHORTAGE",
   ],
   PAYMENT_IN: [
+    "FULFILLMENT_CHARGE_COLLECTION",
+    "FULFILLMENT_CHARGE_CUSTODY",
+    "FULFILLMENT_COURIER_EXCESS",
     "PAYMENT_IN_CUSTOMER",
     "PAYMENT_IN_SUPPLIER_REFUND",
     "PAYMENT_IN_PURCHASE_CASH_CLEARING",
@@ -282,6 +293,8 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
     "PAYMENT_IN_EMPLOYEE_ADVANCE_REPAYMENT",
   ],
   PAYMENT_OUT: [
+    "FULFILLMENT_CHARGE_EXCESS_REFUND",
+    "FULFILLMENT_CHARGE_PAYEE",
     "PAYMENT_OUT_SUPPLIER",
     "PAYMENT_OUT_PURCHASE_CASH_CLEARING",
     "PAYMENT_OUT_CUSTOMER_REFUND",
@@ -317,6 +330,9 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
     "RETURN_PURCHASE_CONSIGNMENT",
   ],
   ADJUST: [
+    "FULFILLMENT_CHARGE_ACCRUAL",
+    "FULFILLMENT_CHARGE_COST",
+    "FULFILLMENT_CHARGE_CREDIT",
     "PURCHASE_GRNI_RECEIPT",
     "PURCHASE_GRNI_RECEIPT_REVERSAL",
     "SUPPLIER_INVOICE_GRNI",
@@ -695,6 +711,47 @@ const PNL_ROLES = [
  * compile error until its allowed/required roles and source assertions exist.
  */
 export const PROFILE_POLICIES = Object.freeze({
+  FULFILLMENT_CHARGE_ACCRUAL: profilePolicy("ADJUST", ["AR"], ["OTHER_REVENUE", "OTHER_LIABILITY"], {
+    reversible: false,
+    sourceAssertions: [sourceAssertion("revenue", "CREDIT_MINUS_DEBIT", ["OTHER_REVENUE"])],
+    requireRoleComponents: ["AR", "OTHER_REVENUE", "OTHER_LIABILITY"],
+  }),
+  FULFILLMENT_CHARGE_COST: profilePolicy("ADJUST", ["OPERATING_EXPENSE"], ["AP", "COURIER_PAYABLE", "ACCRUED_EXPENSES"], {
+    reversible: false,
+    sourceAssertions: [sourceAssertion("cost", "DEBIT_MINUS_CREDIT", ["OPERATING_EXPENSE"])],
+    requireRoleComponents: ["OPERATING_EXPENSE", "AP", "COURIER_PAYABLE", "ACCRUED_EXPENSES"],
+  }),
+  FULFILLMENT_CHARGE_CREDIT: profilePolicy("ADJUST", ["OTHER_REVENUE", "OTHER_LIABILITY"], ["AR"], {
+    reversible: false,
+    sourceAssertions: [sourceAssertion("revenue", "CREDIT_MINUS_DEBIT", ["OTHER_REVENUE"])],
+    requireRoleComponents: ["AR", "OTHER_REVENUE", "OTHER_LIABILITY"],
+  }),
+  FULFILLMENT_CHARGE_COLLECTION: profilePolicy("PAYMENT_IN", CASH_ASSETS, ["AR", "OTHER_LIABILITY"], {
+    reversible: false,
+    requiredCreditRoles: ["AR"],
+    sourceAssertions: [sourceAssertion("amount", "DEBIT_MINUS_CREDIT", CASH_ASSETS)],
+    requireRoleComponents: [...CASH_ASSETS, "AR", "OTHER_LIABILITY"],
+  }),
+  FULFILLMENT_CHARGE_CUSTODY: profilePolicy("PAYMENT_IN", ["DELIVERY_FLOAT"], ["AR"], {
+    reversible: false,
+    sourceAssertions: [sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["DELIVERY_FLOAT"])],
+    requireRoleComponents: ["DELIVERY_FLOAT", "AR"],
+  }),
+  FULFILLMENT_COURIER_EXCESS: profilePolicy("PAYMENT_IN", ["DELIVERY_FLOAT"], ["OTHER_LIABILITY"], {
+    reversible: false,
+    sourceAssertions: [sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["DELIVERY_FLOAT"])],
+    requireRoleComponents: ["DELIVERY_FLOAT", "OTHER_LIABILITY"],
+  }),
+  FULFILLMENT_CHARGE_PAYEE: profilePolicy("PAYMENT_OUT", ["AP", "COURIER_PAYABLE", "ACCRUED_EXPENSES", "OTHER_LIABILITY"], CASH_ASSETS, {
+    reversible: false,
+    sourceAssertions: [sourceAssertion("amount", "CREDIT_MINUS_DEBIT", CASH_ASSETS)],
+    requireRoleComponents: ["AP", "COURIER_PAYABLE", "ACCRUED_EXPENSES", "OTHER_LIABILITY", ...CASH_ASSETS],
+  }),
+  FULFILLMENT_CHARGE_EXCESS_REFUND: profilePolicy("PAYMENT_OUT", ["OTHER_LIABILITY"], CASH_ASSETS, {
+    reversible: false,
+    sourceAssertions: [sourceAssertion("amount", "CREDIT_MINUS_DEBIT", CASH_ASSETS)],
+    requireRoleComponents: ["OTHER_LIABILITY", ...CASH_ASSETS],
+  }),
   SALE_INVENTORY: profilePolicy(
     "SALE",
     ["AR", "OTHER_LIABILITY", "COGS"],

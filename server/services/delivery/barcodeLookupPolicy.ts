@@ -268,6 +268,11 @@ export function collapseLinkedDeliveryBarcodeCandidates(
   }
 
   for (const cn of consignmentList) {
+    // Fulfillment source IDs never identify historical invoices or work orders.
+    if (cn.sourceType === "AFTERCARE_EXECUTION" || cn.sourceType === "FULFILLMENT_REQUEST") {
+      targets.push({ kind: "CONSIGNMENT", id: Number(cn.id), matchRank: cn.matchRank });
+      continue;
+    }
     const rank = Number(cn.matchRank ?? 0);
     const cnWoId =
       cn.workOrderId != null

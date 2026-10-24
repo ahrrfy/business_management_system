@@ -22,6 +22,7 @@ import { withSupplierBookVoucherTx } from "../voucher/supplierSettlement";
 //
 // v1 (مؤجَّلٌ صريحاً، يُرفَض بأمان): المُرتجَعة (كلياً/جزئياً)، منشأ WORKORDER، الرقمية، التوصيل النشط.
 import { TRPCError } from "@trpc/server";
+import { assertNoActiveAftercareForInvoiceTx } from "../fulfillment/aftercareSources";
 import { appErrorMessage } from "@shared/errors";
 import { resolvePermissions, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { evaluateRefundOperationalDecision, OperationalApprovalRequiredError } from "@shared/operationalDecision";
@@ -470,6 +471,7 @@ export async function correctSaleInTx(
 
     // ── ١) تحميل الأصل تحت قفل الصفّ + الحرّاس ──
     const inv = (await tx.select().from(invoices).where(eq(invoices.id, input.originalInvoiceId)).for("update").limit(1))[0];
+    if (inv) await assertNoActiveAftercareForInvoiceTx(tx, inv.id);
     if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة",
       });
     if (Number(inv.branchId) !== Number(invPreview.branchId)) {

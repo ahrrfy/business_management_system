@@ -22,6 +22,7 @@ import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { fmt, moneyInput } from "@/lib/money";
 import { Checkbox } from "@/components/ui/checkbox";
+import { FulfillmentSourceActions } from "@/components/fulfillment/FulfillmentSourceActions";
 
 export interface DispatchableInvoice {
   id: number;
@@ -376,6 +377,7 @@ export function InvoiceDispatchDialog({
         </div>
 
         <DialogFooter className="gap-2 sm:justify-start">
+          {invoice && <FulfillmentSourceActions invoiceId={invoice.id} aftercare={false} />}
           <Button
             variant="outline"
             onClick={() => onOpenChange(false)}

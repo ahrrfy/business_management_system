@@ -45,6 +45,7 @@ import { invalidateFinancialQueries } from "@/lib/realtime/financialQueries";
 import { variantDisplayName } from "@shared/variantDisplay";
 import { InvoiceDigitalCards } from "@/components/digitalCards/InvoiceDigitalCards";
 import { InvoiceDispatchDialog } from "@/components/delivery/InvoiceDispatchDialog";
+import { FulfillmentSourceActions } from "@/components/fulfillment/FulfillmentSourceActions";
 import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeliveryAssignmentDialog";
 import ReverseDeliveryRequestDialog from "@/components/workorder/ReverseDeliveryRequestDialog";
 import { useEffect, useState } from "react";
@@ -149,7 +150,7 @@ export default function InvoiceDetail() {
 
   const pay = trpc.sales.pay.useMutation({
     onSuccess: async (r) => {
-      setDone(`تم تسجيل الدفعة. الحالة: ${invoiceStatusLabel(r.status)}.`);
+      setDone(`تم تسجيل الدفعة. الحالة: ${invoiceStatusLabel(r.status)}. ${"notice" in r ? r.notice : ""}`);
       setError("");
       await Promise.all([
         utils.sales.get.invalidate({ invoiceId }),
@@ -667,6 +668,7 @@ export default function InvoiceDetail() {
         backLabel="رجوع للمبيعات"
         actionsClassName="sm:w-full sm:shrink"
         actions={<>
+          <FulfillmentSourceActions invoiceId={invoiceId} branchId={data.branchId} prepare={!["CANCELLED", "RETURNED", "SUPERSEDED"].includes(data.status)} aftercare={!["CANCELLED", "RETURNED", "SUPERSEDED"].includes(data.status)} />
           <DocumentWhatsAppDialog
             kind="INVOICE"
             documentId={invoiceId}

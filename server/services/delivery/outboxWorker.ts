@@ -1,3 +1,4 @@
+import { deliverySourceView } from "@shared/deliverySource";
 import cron, { type ScheduledTask } from "node-cron";
 import { and, asc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { deliveryConsignments, deliveryEvents, deliveryOutbox, deliveryParties, deliveryPartyMembers, users } from "../../../drizzle/schema";
@@ -123,6 +124,10 @@ async function processRow(id: number): Promise<void> {
       assignedUserId: deliveryConsignments.assignedUserId,
       consignmentNumber: deliveryConsignments.consignmentNumber,
       recipientName: deliveryConsignments.recipientName,
+      sourceType: deliveryConsignments.sourceType,
+      sourceId: deliveryConsignments.sourceId,
+      fulfillmentRequestId: deliveryConsignments.fulfillmentRequestId,
+      aftercareExecutionId: deliveryConsignments.aftercareExecutionId,
     }).from(deliveryOutbox)
       .innerJoin(deliveryEvents, eq(deliveryEvents.id, deliveryOutbox.eventId))
       .innerJoin(deliveryConsignments, eq(deliveryConsignments.id, deliveryEvents.consignmentId))
@@ -158,8 +163,8 @@ async function processRow(id: number): Promise<void> {
         userId,
         kind: row.topic === "delivery.failed" || isStale ? "APPROVAL_REQUIRED" : "TASK_ASSIGNED",
         title: notice.title,
-        body: notice.body,
-        route: plan.route,
+        body: `${notice.body}${row.sourceType === "AFTERCARE_EXECUTION" ? " · استكمال نقص / معالجة بلا تحصيل من العميل" : row.fulfillmentRequestId != null || row.sourceType === "FULFILLMENT_REQUEST" ? " · طلب توصيل موحد" : ""}`,
+        route: plan.route === PORTAL_ROUTE || (row.sourceType !== "AFTERCARE_EXECUTION" && row.sourceType !== "FULFILLMENT_REQUEST" && row.fulfillmentRequestId == null) ? plan.route : deliverySourceView(row).href ?? plan.route,
         eventKey: `delivery-outbox:${row.eventId}:user:${userId}`,
         entityType: "deliveryConsignment",
         entityId: Number(row.consignmentId),

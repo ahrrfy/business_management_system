@@ -1,5 +1,6 @@
 import type { ManagerApprovalInput } from "@/components/reception/ManagerApprovalDialog";
 import type { RouterOutputs } from "@/lib/trpc";
+import type { ReceptionDeliveryFeeTender } from "./useDeliveryFeeTender";
 import type { OrderDeliveryValue } from "@/components/reception/ReceptionTypes";
 import {
   type CustomizationData,
@@ -15,6 +16,8 @@ import {
 } from "@/components/reception/cartMath";
 
 export interface ReceptionCheckoutPayloadInput {
+  heldDelivery: string;
+  deliveryFeeTender: ReceptionDeliveryFeeTender | null;
   branchId: number;
   cashRoundActive: boolean;
   effectiveGrandD: import("decimal.js").Decimal;
@@ -72,6 +75,8 @@ export interface ReceptionCheckoutPayloadInput {
   couponCode: string | null;
 }
 export function buildReceptionCheckoutPayload({
+  heldDelivery,
+  deliveryFeeTender,
   branchId,
   cashRoundActive,
   effectiveGrandD,
@@ -235,10 +240,8 @@ export function buildReceptionCheckoutPayload({
     cashRoundingOverride: mixedRoundApplied
       ? (mixedCarrier ?? undefined)
       : undefined,
-    deliveryFeeHeld:
-      orderFeeHeldD.gt(0) && !routeDeliveryToWO
-        ? orderFeeHeldD.toFixed(2)
-        : undefined,
+    deliveryFeeHeld: D(heldDelivery).gt(0) ? heldDelivery : undefined,
+    deliveryFeeTender: deliveryFeeTender ?? undefined,
     delivery: deliveryPayload,
     openingSellUnavailableConfirmed: opts.openingConfirmed === true,
     deferredDirect: sendDeferredDirect,

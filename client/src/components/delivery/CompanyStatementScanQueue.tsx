@@ -1,3 +1,5 @@
+import { deliverySourceView } from "@shared/deliverySource";
+import { DeliverySourceLink } from "./DeliverySourceLink";
 import React, { useCallback, useId, useMemo, useRef, useState } from "react";
 import { CircleX, ScanBarcode } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -67,7 +69,7 @@ export function CompanyStatementScanQueue({
         onQueue(candidate, statementQueueRemaining(candidate).toFixed(2));
       }
       playReadyBeep();
-      notify.ok(shipment.length > 1 ? `أُضيفت فواتير الشحنة (${shipment.length}) إلى الكشف` : "أُضيفت الفاتورة إلى طابور الكشف", result.candidate.consignmentNumber);
+      notify.ok(shipment.length > 1 ? `أُضيفت فواتير الشحنة (${shipment.length}) إلى الكشف` : "أُضيفت الإرسالية إلى طابور الكشف", result.candidate.consignmentNumber);
     }
     setBarcode("");
     focusScanner();
@@ -118,7 +120,7 @@ export function CompanyStatementScanQueue({
                 <span className="text-center text-xs font-black tabular-nums">{index + 1}</span>
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2 text-xs">
-                    <span className="font-black">{candidate.invoiceNumber ?? `فاتورة #${candidate.invoiceId}`}</span>
+                    <span className="font-black"><DeliverySourceLink source={candidate} /></span>
                     <span className="font-mono text-primary" dir="ltr">{candidate.externalTrackingRef}</span>
                   </div>
                   <p className="truncate text-[11px] text-muted-foreground">
@@ -133,10 +135,10 @@ export function CompanyStatementScanQueue({
                   <strong className="tabular-nums" dir="ltr">{fmt(expected.toFixed(2))}</strong>
                 </div>
                 <MoneyInput
-                  disabled={disabled}
-                  value={collectedById[candidate.id] ?? expected.toFixed(2)}
+                  disabled={disabled || candidate.sourceType === "AFTERCARE_EXECUTION"}
+                  value={candidate.sourceType === "AFTERCARE_EXECUTION" ? "0.00" : collectedById[candidate.id] ?? expected.toFixed(2)}
                   onChange={(value) => onCollectedChange(candidate.id, value)}
-                  ariaLabel={`مبلغ الكشف للفاتورة ${candidate.invoiceNumber ?? candidate.invoiceId}`}
+                  ariaLabel={`مبلغ الكشف: ${deliverySourceView(candidate).reference}`}
                   className="h-8 text-end font-mono text-xs"
                 />
                 <Button type="button" size="icon" variant="ghost" disabled={disabled}

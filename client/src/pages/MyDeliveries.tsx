@@ -1,3 +1,4 @@
+import { DeliverySourceLink } from "@/components/delivery/DeliverySourceLink";
 /**
  * MyDeliveries — شاشة المندوب الذاتية «توصيلاتي» (دور courier، جوّال أولاً).
  *
@@ -5,10 +6,12 @@
  * والتحصيل» فتُسدَّد الفاتورة (ذمّة العميل↓) ويرتفع النقد بذمّته (عهدة) حتى يُورّده للمتجر.
  * عزل ذاتي خادمي: كل نقطة تحلّ المندوب من الجلسة (courier.myDeliveries/confirmDelivery).
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertCircle, Banknote, CheckCircle2, Info, KeyRound, Loader2, MapPin, MessageCircle, PackageCheck, Phone, Truck, XCircle } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { fmtInt } from "@/lib/money";
+import { D, fmtInt } from "@/lib/money";
+import { MoneyInput } from "@/components/form/MoneyInput";
+import { Input } from "@/components/ui/input";
 import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
@@ -47,6 +50,13 @@ function rowKey(row: DeliveryRow): string {
 export default function MyDeliveries() {
   const q = trpc.courier.myDeliveries.useQuery(undefined, { refetchOnWindowFocus: true });
   const utils = trpc.useUtils();
+  const operationKeys = useRef(new Map<string, string>());
+  function requestKey(action: string, payload: object) {
+    const fingerprint = `${action}:${JSON.stringify(payload)}`;
+    const key = operationKeys.current.get(fingerprint) ?? crypto.randomUUID();
+    operationKeys.current.set(fingerprint, key);
+    return key;
+  }
 
   useRealtimeEvent(
     [
@@ -85,10 +95,22 @@ export default function MyDeliveries() {
     onSettled: () => setConfirmingKey(null),
   });
 
+  const claimAckM = trpc.courier.acknowledgeConsignmentClaim.useMutation({
+    onSuccess: () => { notify.ok("تم إقرار مبلغ التحصيل الحالي"); void utils.courier.myDeliveries.invalidate(); },
+    onError: (error) => notify.err(error),
+  });
+
+  function acknowledgeClaim(row: DeliveryRow) {
+    if (row.kind !== "consignment" || row.codClaimVersion == null) return;
+    const payload = { consignmentId: row.id, expectedClaimVersion: row.codClaimVersion };
+    claimAckM.mutate({ ...payload, clientRequestId: requestKey("ack", payload) });
+  }
+
   // ختم التسليم يثبت التحصيل في عهدة الجهة؛ التوريد للدرج يتم لاحقاً عند الموظف.
   const confirmCnM = trpc.courier.confirmConsignmentDelivery.useMutation({
     onSuccess: (res) => {
       notify.ok(`تم تسجيل تسليم ${res.consignmentNumber}`);
+      setPartialTarget(null);
       void utils.courier.myDeliveries.invalidate();
     },
     onError: (e) => notify.err(e),
@@ -138,22 +160,17 @@ export default function MyDeliveries() {
       });
       if (!ok) return;
       setConfirmingKey(rowKey(row));
-      confirmCnM.mutate({ consignmentId: row.id, clientRequestId: crypto.randomUUID() });
+      confirmCnM.mutate({ consignmentId: row.id, clientRequestId: requestKey("confirm", { consignmentId: row.id, claimVersion: row.codClaimVersion }) });
       return;
     }
     // طلب متجر: فتح حوار إدخال رمز استلام الزبون (Handshake OTP) ومراجعة التحصيل.
     setOnlineDeliveryTarget(row);
   }
 
-  function doPartialConfirm(row: DeliveryRow, collectedAmount: string, reason?: string) {
+  function doPartialConfirm(row: DeliveryRow, collectedAmount: string, reason?: ShortfallReason, collectionEvidence?: string) {
     setConfirmingKey(rowKey(row));
-    confirmCnM.mutate({
-      consignmentId: row.id,
-      collectedAmount,
-      shortfallReason: (reason ?? "PARTIAL_REFUSAL") as any,
-      clientRequestId: crypto.randomUUID(),
-    });
-    setPartialTarget(null);
+    const payload = { consignmentId: row.id, collectedAmount, ...(collectionEvidence ? { collectionEvidence } : {}), ...(reason ? { shortfallReason: reason } : {}) };
+    confirmCnM.mutate({ ...payload, clientRequestId: requestKey("actualCollection", { ...payload, claimVersion: row.codClaimVersion }) });
   }
 
   if (q.isError) return <div className="p-6"><ErrorState onRetry={() => q.refetch()} /></div>;
@@ -258,8 +275,9 @@ export default function MyDeliveries() {
                 <DeliveryCard
                   key={rowKey(row)}
                   row={row}
-                  busy={confirmingKey === rowKey(row) || confirmM.isPending || confirmCnM.isPending || failM.isPending}
+                  busy={confirmingKey === rowKey(row) || confirmM.isPending || confirmCnM.isPending || failM.isPending || claimAckM.isPending}
                   onConfirm={() => doConfirm(row)}
+                  onAcknowledge={() => acknowledgeClaim(row)}
                   onPartial={() => setPartialTarget(row)}
                   onFail={() => setFailTarget(row)}
                   readOnly={readOnly}
@@ -341,7 +359,7 @@ export default function MyDeliveries() {
           row={partialTarget}
           pending={confirmCnM.isPending}
           onCancel={() => !confirmCnM.isPending && setPartialTarget(null)}
-          onConfirm={(amount, reason) => doPartialConfirm(partialTarget, amount, reason)}
+          onConfirm={(amount, reason, evidence) => doPartialConfirm(partialTarget, amount, reason, evidence)}
         />
       )}
 
@@ -403,7 +421,8 @@ function courierParcelBadge(parcelStatus: string | null | undefined) {
   return { label: CONSIGNMENT_VIEW_AR[key], cls: CONSIGNMENT_VIEW_CLS[key] };
 }
 
-function DeliveryCard({ row, busy, onConfirm, onPartial, onFail, readOnly }: { row: DeliveryRow; busy: boolean; onConfirm: () => void; onPartial: () => void; onFail: () => void; readOnly: boolean }) {
+function DeliveryCard({ row, busy, onConfirm, onPartial, onFail, onAcknowledge, readOnly }: { row: DeliveryRow; busy: boolean; onConfirm: () => void; onPartial: () => void; onFail: () => void; onAcknowledge: () => void; readOnly: boolean }) {
+  const needsClaimAck = row.kind === "consignment" && row.codClaimVersion != null && row.codClaimVersion > 1 && row.codClaimVersion > (row.courierAckClaimVersion ?? 0) && Number(row.codDue) > 0;
   const phone = row.customerPhone;
   const waMsg = `مرحباً${row.customerName ? " " + row.customerName : ""}، أنا مندوب توصيل الرؤية العربية بخصوص طلبك ${row.orderNumber}. أنا في الطريق إليك.`;
   return (
@@ -424,6 +443,7 @@ function DeliveryCard({ row, busy, onConfirm, onPartial, onFail, readOnly }: { r
             )}
           </div>
           <div className="truncate text-sm text-muted-foreground">{row.customerName ?? "عميل"}</div>
+          {row.kind === "consignment" && <DeliverySourceLink source={row} />}
           {(row.shipmentMemberCount ?? 1) > 1 && <div className="mt-1 text-xs text-muted-foreground">شحنة واحدة · {row.shipmentMemberCount} فواتير: {row.invoiceReferences?.join("، ")}</div>}
         </div>
         <div className="shrink-0 text-left">
@@ -443,6 +463,14 @@ function DeliveryCard({ row, busy, onConfirm, onPartial, onFail, readOnly }: { r
           ) : null}
         </div>
       </div>
+
+      {row.kind === "consignment" && row.codClaimVersion != null && (
+        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md border p-2 text-xs">
+          <span>نسخة مطالبة التحصيل {row.codClaimVersion} · المتبقي الحالي {money(row.codDue)} د.ع</span>
+          {needsClaimAck && !readOnly ? <Button type="button" size="sm" variant="outline" disabled={busy} onClick={onAcknowledge}>أقرّ مبلغ التحصيل الحالي</Button> : <span className="text-muted-foreground">{Number(row.codDue) === 0 ? "لا تحصيل من العميل" : "مبلغ التحصيل مقَرّ"}</span>}
+          {needsClaimAck && <span className="text-muted-foreground">راجع المبلغ الحالي قبل مطالبة العميل؛ الإقرار لا يسجل قبضاً أو تسليماً.</span>}
+        </div>
+      )}
 
       {(row.governorate || row.address || (row.latitude && row.longitude)) && (
         <div className="mb-3 flex items-start gap-1.5 text-xs text-muted-foreground">
@@ -508,14 +536,14 @@ function DeliveryCard({ row, busy, onConfirm, onPartial, onFail, readOnly }: { r
             )}
 
             {/* تسليم جزئي — متاح للإرساليات التي عليها مبلغ مطلوب */}
-            {row.kind === "consignment" && Number(row.codDue) > 0 && (
+            {row.kind === "consignment" && row.sourceType !== "AFTERCARE_EXECUTION" && (Number(row.codDue) > 0 || row.fulfillmentRequestId != null || row.sourceType === "FULFILLMENT_REQUEST") && (
               <button
                 type="button"
                 onClick={onPartial}
                 disabled={busy}
                 className="flex items-center gap-1.5 rounded-lg border border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)] px-3 py-1.5 text-xs font-bold text-[var(--sem-warn)] transition hover:bg-[var(--sem-warn)]/20 disabled:opacity-50"
               >
-                <AlertCircle aria-hidden className="size-3.5" /> تسليم جزئي
+                <AlertCircle aria-hidden className="size-3.5" /> {row.fulfillmentRequestId != null || row.sourceType === "FULFILLMENT_REQUEST" ? "سجّل المقبوض الفعلي" : "تسليم جزئي"}
               </button>
             )}
 
@@ -523,7 +551,7 @@ function DeliveryCard({ row, busy, onConfirm, onPartial, onFail, readOnly }: { r
             <button
               type="button"
               onClick={onConfirm}
-              disabled={busy}
+              disabled={busy || needsClaimAck}
               className="flex items-center gap-1.5 rounded-lg bg-teal-600 px-3.5 py-1.5 text-xs font-bold text-white transition hover:bg-teal-700 disabled:opacity-50"
             >
               {busy ? <Loader2 aria-hidden className="size-3.5 animate-spin" /> : <CheckCircle2 aria-hidden className="size-3.5" />}
@@ -546,10 +574,13 @@ function PartialModal({
   row: DeliveryRow;
   pending: boolean;
   onCancel: () => void;
-  onConfirm: (amount: string, reason?: ShortfallReason) => void;
+  onConfirm: (amount: string, reason?: ShortfallReason, evidence?: string) => void;
 }) {
-  const due = Number(row.codDue ?? row.orderTotal ?? 0);
+  const dueD = D(row.codDue ?? row.orderTotal ?? 0);
+  const due = dueD.toFixed(2);
+  const isRequest = row.fulfillmentRequestId != null || row.sourceType === "FULFILLMENT_REQUEST";
   const [amountStr, setAmountStr] = useState("");
+  const [evidence, setEvidence] = useState("");
   const [reason, setReason] = useState<ShortfallReason>("PARTIAL_REFUSAL");
 
   useEffect(() => {
@@ -560,10 +591,11 @@ function PartialModal({
     return () => window.removeEventListener("keydown", onKey);
   }, [pending, onCancel]);
 
-  const numAmount = Number(amountStr);
-  const isValidAmount =
-    amountStr.trim() !== "" && !isNaN(numAmount) && numAmount >= 0 && numAmount < due;
-  const shortage = isValidAmount ? Math.max(0, due - numAmount) : 0;
+  const validMoney = /^(?:\d+|\d*\.\d{1,2})$/.test(amountStr);
+  const actual = validMoney ? D(amountStr) : D(0);
+  const excess = actual.gt(dueD) ? actual.minus(dueD) : D(0);
+  const isValidAmount = validMoney && actual.gte(0) && (isRequest || actual.lt(dueD)) && (!excess.gt(0) || evidence.trim().length >= 5);
+  const shortage = actual.lt(dueD) ? dueD.minus(actual).toFixed(2) : "0.00";
 
   return (
     <div
@@ -580,11 +612,11 @@ function PartialModal({
       >
         <div className="mb-2 flex items-center gap-2 text-base font-bold text-[var(--sem-warn)]">
           <AlertCircle aria-hidden className="size-5" />
-          تسليم جزئي للطرد <span dir="ltr" className="tracking-wider">{row.orderNumber}</span>
+          {isRequest ? "تسجيل المقبوض الفعلي للطرد" : "تسليم جزئي للطرد"} <span dir="ltr" className="tracking-wider">{row.orderNumber}</span>
         </div>
 
         <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
-          أدخل المبلغ الفعلي الذي قبضته من العميل. سيُسجَّل الفرق كعجز تحصيل على الفاتورة وتتحول حالة الطرد إلى مُسلَّم.
+          أدخل ما قبضته فعلياً. يُخصص المستحق لمستنداته ويُسجل العجز على جهة التوصيل بسبب معتمد؛ زيادة المقبوض على مطالبة الطلب تبقى التزاماً للعميل دون بيع جديد.
         </p>
 
         <div className="mb-4 rounded-lg border border-border bg-muted/40 p-3 text-xs space-y-1">
@@ -596,7 +628,7 @@ function PartialModal({
             <>
               <div className="flex justify-between font-medium text-[var(--sem-pos)]">
                 <span>المقبوض:</span>
-                <span className="tabular-nums" dir="ltr">{money(numAmount)} د.ع</span>
+                <span className="tabular-nums" dir="ltr">{money(actual.toFixed(2))} د.ع</span>
               </div>
               <div className="flex justify-between font-bold text-[var(--sem-warn)]">
                 <span>عجز التحصيل:</span>
@@ -611,22 +643,16 @@ function PartialModal({
             <label className="mb-1 block text-xs font-bold text-foreground">
               المبلغ المقبوض فعلياً (د.ع) <span className="text-destructive">*</span>
             </label>
-            <input
-              type="number"
-              min="0"
-              max={Math.max(0, due - 1)}
-              step="any"
-              autoFocus
+            <MoneyInput
               value={amountStr}
-              onChange={(e) => setAmountStr(e.target.value)}
-              placeholder={`أقل من ${money(due)}`}
-              className="w-full rounded-lg border border-border bg-transparent px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              onChange={setAmountStr}
+              ariaLabel="المبلغ المقبوض فعلياً"
+              placeholder={isRequest ? "المبلغ الفعلي مع إثبات الزيادة" : `أقل من ${money(due)}`}
+              className="w-full"
             />
-            {numAmount >= due && amountStr !== "" && (
-              <p className="mt-1 text-[11px] text-[var(--sem-neg)]">
-                للتسليم بالمبلغ الكامل، استخدم زر «تم التسليم» المباشر بدلاً من الجزئي.
-              </p>
-            )}
+            {excess.gt(0) && <p className="mt-1 text-xs text-muted-foreground">زيادة مقبوضة {money(excess.toFixed(2))} د.ع — يلزم إثبات، وتُحفظ للعميل دون زيادة المبيعات.</p>}
+            {isRequest && <Input value={evidence} onChange={(event) => setEvidence(event.target.value)} placeholder="دليل القبض الفعلي (إلزامي عند الزيادة)" aria-label="دليل القبض الفعلي" className="mt-2" maxLength={2000} />}
+
           </div>
 
           <div>
@@ -664,7 +690,7 @@ function PartialModal({
           </button>
           <button
             type="button"
-            onClick={() => isValidAmount && onConfirm(amountStr.trim(), reason)}
+            onClick={() => isValidAmount && onConfirm(actual.toFixed(2), actual.lt(dueD) ? reason : undefined, evidence.trim() || undefined)}
             disabled={pending || !isValidAmount}
             className="flex items-center gap-1.5 rounded-lg bg-[var(--sem-warn)] px-4 py-2 text-sm font-bold text-background transition hover:bg-[var(--sem-warn-hover)] disabled:opacity-50"
           >

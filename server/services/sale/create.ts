@@ -416,7 +416,9 @@ export async function createSaleInTx(
     });
   }
   // م١ (PR-1): أمانةُ أجرة التوصيل إيصالُ درجٍ نقديّ — تلزمها وردية كالبيع النقديّ تماماً.
-  const writesFeeHeldCash = money(input.deliveryFeeHeld ?? "0").gt(0);
+  const writesFeeHeldCash =
+    money(input.deliveryFeeHeld ?? "0").gt(0) &&
+    (input.deliveryFeeTender?.method ?? "CASH") === "CASH";
   if (writesFeeHeldCash && input.shiftId == null) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
@@ -2375,6 +2377,7 @@ export async function createSaleInTx(
       shiftId: input.shiftId ?? null,
       invoiceId,
       amount: feeHeldD,
+      tender: input.deliveryFeeTender,
       actorUserId: actor.userId,
       description: "أجرة توصيل مقبوضة أمانةً للمندوب — بيع مباشر",
     });

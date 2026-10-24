@@ -1,3 +1,4 @@
+import { DeliveryFeePaymentSummary } from "./DeliveryFeePaymentSummary";
 // لوحة الدفع في الكاشير: المبلغ/الكوبون/طرق الدفع/مرجع الإثبات/الاستحقاق — وتفوّض الإجماليّات والنمباد ومنطقة الفعل لأجزائها.
 // استُخرج حرفياً من client/src/pages/POS.tsx (برنامج v2 «السهل الممتنع» م١ — PR-A) بلا تغيير
 // سلوكيّ: الصفحةُ العملاقة (٣٧٨٣ سطراً) قُسِّمت مكوّنياً كي تنزل تحت خطّ أساس `check:page-size`
@@ -48,11 +49,12 @@ export interface PaymentPanelProps {
   setCouponInput: (value: string) => void; onApplyCoupon: () => void; onClearCoupon: () => void;
   couponPending: boolean;
   codMode?: boolean;
+  deliveryFeeHeld?: number; feeMethod?: PaymentMethod;
   isCreditBlocked?: boolean;
   splitPayment?: Omit<SplitPaymentSectionProps, "C" | "total" | "cartLen">;
 }
 
-export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscountPct, setInvoiceDiscountPct, invoiceDiscountAllowed, effectiveHeaderCapPct, cashRoundingDelta, payInput, setPayInput, paid, change, credit, isChange, isOwing, method, setMethod, paymentRef, setPaymentRef, externalPaymentConfirmed, externalPaymentPending, onConfirmExternalPayment, dueDate, setDueDate, numMode, setNumMode, numPress, onPay, onQuickPay, cartLen, isPending, canPay, hasCustomer, isCreditBlocked = false, saleError, onDismissError, stacked, couponInput, couponCode, couponLabel, setCouponInput, onApplyCoupon, onClearCoupon, couponPending, codMode = false, invoiceDiscountType, invoiceDiscountValue, onInvoiceDiscountChange, maxDiscountAmount, splitPayment }: PaymentPanelProps) {
+export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscountPct, setInvoiceDiscountPct, invoiceDiscountAllowed, effectiveHeaderCapPct, cashRoundingDelta, payInput, setPayInput, paid, change, credit, isChange, isOwing, method, setMethod, paymentRef, setPaymentRef, externalPaymentConfirmed, externalPaymentPending, onConfirmExternalPayment, dueDate, setDueDate, numMode, setNumMode, numPress, onPay, onQuickPay, cartLen, isPending, canPay, hasCustomer, isCreditBlocked = false, saleError, onDismissError, stacked, couponInput, couponCode, couponLabel, setCouponInput, onApplyCoupon, onClearCoupon, couponPending, deliveryFeeHeld = 0, feeMethod, codMode = false, invoiceDiscountType, invoiceDiscountValue, onInvoiceDiscountChange, maxDiscountAmount, splitPayment }: PaymentPanelProps) {
   const isSplitPayment = (splitPayment?.paymentLegs.length ?? 0) > 0;
   const dense = useMediaQuery("(max-height: 820px)");
   const ultra = useMediaQuery("(max-height: 660px)");
@@ -174,7 +176,7 @@ export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoic
       )}
 
       {splitPayment && (
-        <SplitPaymentSection C={C} total={total} cartLen={cartLen} {...splitPayment} />
+        <SplitPaymentSection C={C} total={total} cartLen={cartLen} {...splitPayment} deliveryFeeHeld={deliveryFeeHeld} />
       )}
 
       {/* Amount display — حقل إدخال المبلغ وزر طي النمباد */}
@@ -271,6 +273,7 @@ export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoic
         setNumModeAndReveal={setNumModeAndReveal} numPress={numPress}
       />
 
+      <DeliveryFeePaymentSummary amount={deliveryFeeHeld} method={feeMethod ?? method} />
       {/* مرجع ومحاولة الدفع غير النقدي — لا يُفتح الإتمام قبل CONFIRMED خادمية */}
       {!isSplitPayment && (
       <PaymentReferenceField

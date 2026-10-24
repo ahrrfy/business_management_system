@@ -2960,7 +2960,9 @@ export const returnRouter = router({
                 .where(eq(deliveryConsignments.id, Number(deliveryPreview.id)))
                 .for("update")
                 .limit(1);
-              matchedDeliveryPreview = lockedDelivery ?? deliveryPreview;
+              const currentDelivery = lockedDelivery ?? deliveryPreview;
+              if (currentDelivery.invoiceId == null) throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: "تعذّر ربط مرتجع الفاتورة", why: "الإرسالية لا تحمل فاتورة بيع حالية", doThis: "افتح مستند مصدر الإرسالية واستخدم مسار رجوع طلب التجهيز أو المعالجة المخصص" }) });
+              matchedDeliveryPreview = { ...currentDelivery, invoiceId: currentDelivery.invoiceId };
             } else {
               // قفل فجوة الإرسالية
               await tx

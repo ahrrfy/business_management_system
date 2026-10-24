@@ -176,6 +176,13 @@ const receptionWorkOrderSchema = z.object({
   deliveryPhone: z.string().max(20).nullish(),
   // ٥/٨ — مَن يقبض أجرة التوصيل (الأجرة تمريرٌ لا إيراد، خارج salePrice دائماً).
   deliveryFeeCollection: z.enum(["COURIER", "COUNTER", "SHOP"]).nullish(),
+  deliveryFeeTender: z.object({
+  method: z.enum(["CASH", "CARD", "TRANSFER", "WALLET"]),
+  reference: z.string().trim().max(100).nullish(),
+  externalPaymentAttemptId: z.number().int().positive().nullish(),
+  externalPaymentDeviceId: z.string().trim().min(1).max(64).nullish(),
+  combinedWithPaymentIndex: z.number().int().min(0).nullish(),
+}).nullish(),
   // زبون عابر بلا سجلّ عميل: مرجعٌ للطلب فقط (لا عميل ولا ذمّة).
   contactName: z.string().trim().max(255).nullish(),
   contactPhone: z.string().trim().max(32).nullish(),
@@ -194,6 +201,8 @@ const receptionCheckoutSchema = z.object({
   // آجلة/COD/مموَّلة بعربون محتجَز تمرّ بلا طريقة فتُختَم الفاتورة NULL = «آجل» بالاشتقاق.
   paymentMethod: receptionPaymentMethod.nullish(),
   paymentReference: z.string().trim().max(100).nullish(),
+  paymentExternalPaymentAttemptId:z.number().int().positive().nullish(),
+  paymentExternalPaymentDeviceId:z.string().trim().min(1).max(64).nullish(),
   paidAmount: nonNegMoneyString.nullish(),
   clientRequestId: z.string().min(1).max(60),
   // فئة سعر صريحة لكامل سلة الاستقبال (غيابها ⇒ فئة العميل الافتراضية ثم RETAIL، نمط resolveTier).
@@ -208,6 +217,13 @@ const receptionCheckoutSchema = z.object({
   cashRoundingOverride: z.enum(["SALE", "PRINT"]).nullish(),
   // ش٦ (V15): أجرة توصيل الطلب المقبوضة الآن أمانةً للمندوب — نقداً في الدرج حتماً.
   deliveryFeeHeld: positiveMoneyString.nullish(),
+  deliveryFeeTender: z.object({
+  method: z.enum(["CASH", "CARD", "TRANSFER", "WALLET"]),
+  reference: z.string().trim().max(100).nullish(),
+  externalPaymentAttemptId: z.number().int().positive().nullish(),
+  externalPaymentDeviceId: z.string().trim().min(1).max(64).nullish(),
+  combinedWithPaymentIndex: z.number().int().min(0).nullish(),
+}).nullish(),
   // ش٧: إسناد الطلب لمندوبٍ داخل نفس المعاملة — المتبقّي عهدةٌ عليه لا نقدٌ في الدرج.
   delivery: z.object({
     partyId: z.number().int().positive(),

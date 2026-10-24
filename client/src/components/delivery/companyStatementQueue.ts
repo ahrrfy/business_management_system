@@ -1,10 +1,11 @@
+import type { DeliverySourceReference } from "@shared/deliverySource";
 import {
   normalizeBarcodeScannerInput,
   trackingRefsEquivalent,
 } from "@/lib/barcodeScannerInput";
 import { D, round2 } from "@/lib/money";
 
-export interface CompanyStatementQueueCandidate {
+export interface CompanyStatementQueueCandidate extends DeliverySourceReference {
   id: number;
   consignmentNumber: string;
   externalTrackingRef?: string | null;
@@ -32,6 +33,7 @@ export function shipmentStatementCandidates<T extends CompanyStatementQueueCandi
 }
 
 export function statementQueueRemaining(candidate: CompanyStatementQueueCandidate) {
+  if (candidate.sourceType === "AFTERCARE_EXECUTION") return D(0);
   const remaining = round2(
     D(candidate.codAmount)
       .minus(D(candidate.collectedAmount))

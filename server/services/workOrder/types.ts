@@ -1,3 +1,4 @@
+import type { DeliveryFeeTender } from "../delivery/feeHeld";
 // عقد أوامر الشغل (طلب خدمة المطبعة).
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
@@ -57,6 +58,7 @@ export interface CreateWorkOrderInput {
   /** ٥/٨ — مَن يقبض أجرة التوصيل: COURIER (افتراضي) | COUNTER | SHOP. الأجرة **ليست** جزءاً
    *  من salePrice في أيّ حالة — تمريرٌ لا إيراد (قرار المالك). */
   deliveryFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
+  deliveryFeeTender?: DeliveryFeeTender | null;
   /** ٥/٨ — زبون عابر بلا سجلّ عميل: اسمٌ/هاتفٌ مرجعيّان للطلب (لا يُنشئان عميلاً ولا ذمّة). */
   contactName?: string | null;
   contactPhone?: string | null;

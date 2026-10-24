@@ -38,6 +38,7 @@ import { WorkOrderTimelineCard } from "@/components/workorder/WorkOrderTimelineC
 import { ReclassifyDeliveryDialog } from "@/components/workorder/ReclassifyDeliveryDialog";
 import { ManagerApprovalDialog, type ManagerApprovalInput } from "@/components/reception/ManagerApprovalDialog";
 import { WorkOrderDeliverySection } from "@/components/delivery/WorkOrderDeliverySection";
+import { FulfillmentSourceActions } from "@/components/fulfillment/FulfillmentSourceActions";
 import { workOrderStatusHue } from "@shared/workOrderStatus";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { deriveWorkOrderCopyRemaining, formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
@@ -553,6 +554,7 @@ export default function WorkOrderDetail() {
         backHref="/work-orders"
         backLabel="رجوع للقائمة"
         actions={<>
+          <FulfillmentSourceActions workOrderId={workOrderId} branchId={data.branchId} prepare={data.status === "READY"} aftercare={data.status === "DELIVERED"} />
           <CopyAsMenu
             label="نَسخ التَفاصيل"
             plain={formatWorkOrderAsWhatsApp(workOrderCopyPayload)}

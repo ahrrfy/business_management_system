@@ -1,0 +1,121 @@
+import type Decimal from "decimal.js";
+import type { FulfillmentChargeCategory } from "../../../shared/fulfillment";
+import {
+  createPostingIntent,
+  debitLine,
+  creditLine,
+  type AccountRole,
+} from "../accounting/postingEngine";
+import { paymentAccountRole } from "../delivery/posting";
+
+export type ChargePayableRole = Extract<
+  AccountRole,
+  "AP" | "COURIER_PAYABLE" | "ACCRUED_EXPENSES"
+>;
+export function chargePayableRole(row: {
+  payeeSupplierId?: number | null;
+  payeePartyId?: number | null;
+}): ChargePayableRole {
+  return row.payeeSupplierId
+    ? "AP"
+    : row.payeePartyId
+      ? "COURIER_PAYABLE"
+      : "ACCRUED_EXPENSES";
+}
+export function chargeAccrualIntent(
+  category: FulfillmentChargeCategory,
+  amount: Decimal,
+) {
+  const credit =
+    category === "PASS_THROUGH" ? "OTHER_LIABILITY" : "OTHER_REVENUE";
+  return createPostingIntent(
+    "FULFILLMENT_CHARGE_ACCRUAL",
+    "ADJUST",
+    [debitLine("AR", amount), creditLine(credit, amount)],
+    { roleDebits: { AR: amount }, roleCredits: { [credit]: amount } },
+  );
+}
+export function chargeCostIntent(cost: Decimal, payable: ChargePayableRole) {
+  return createPostingIntent(
+    "FULFILLMENT_CHARGE_COST",
+    "ADJUST",
+    [debitLine("OPERATING_EXPENSE", cost), creditLine(payable, cost)],
+    {
+      roleDebits: { OPERATING_EXPENSE: cost },
+      roleCredits: { [payable]: cost },
+    },
+  );
+}
+export function chargeCollectionIntent(
+  amount: Decimal,
+  allocated: Decimal,
+  method: string,
+  bucket: "DRAWER" | "TREASURY" | null,
+) {
+  const cash = paymentAccountRole(method, bucket);
+  const excess = amount.minus(allocated);
+  return createPostingIntent(
+    "FULFILLMENT_CHARGE_COLLECTION",
+    "PAYMENT_IN",
+    [
+      debitLine(cash, amount),
+      creditLine("AR", allocated),
+      ...(excess.gt(0) ? [creditLine("OTHER_LIABILITY", excess)] : []),
+    ],
+    {
+      roleDebits: { [cash]: amount },
+      roleCredits: {
+        AR: allocated,
+        ...(excess.gt(0) ? { OTHER_LIABILITY: excess } : {}),
+      },
+    },
+  );
+}
+export function chargeCreditIntent(
+  category: FulfillmentChargeCategory,
+  amount: Decimal,
+) {
+  const debit =
+    category === "PASS_THROUGH" ? "OTHER_LIABILITY" : "OTHER_REVENUE";
+  return createPostingIntent(
+    "FULFILLMENT_CHARGE_CREDIT",
+    "ADJUST",
+    [debitLine(debit, amount), creditLine("AR", amount)],
+    { roleDebits: { [debit]: amount }, roleCredits: { AR: amount } },
+  );
+}
+export function chargeRefundIntent(
+  amount: Decimal,
+  method: string,
+  bucket: "DRAWER" | "TREASURY" | null,
+) {
+  const cash = paymentAccountRole(method, bucket, "OUT");
+  return createPostingIntent(
+    "PAYMENT_OUT_CUSTOMER_REFUND",
+    "PAYMENT_OUT",
+    [debitLine("AR", amount), creditLine(cash, amount)],
+    { roleDebits: { AR: amount }, roleCredits: { [cash]: amount } },
+  );
+}
+export function chargePayeeIntent(
+  amount: Decimal,
+  payable: ChargePayableRole,
+  method: string,
+  bucket: "DRAWER" | "TREASURY" | null,
+) {
+  const cash = paymentAccountRole(method, bucket, "OUT");
+  return createPostingIntent(
+    "FULFILLMENT_CHARGE_PAYEE",
+    "PAYMENT_OUT",
+    [debitLine(payable, amount), creditLine(cash, amount)],
+    { roleDebits: { [payable]: amount }, roleCredits: { [cash]: amount } },
+  );
+}
+export function chargeCustodyIntent(amount: Decimal) {
+  return createPostingIntent(
+    "FULFILLMENT_CHARGE_CUSTODY",
+    "PAYMENT_IN",
+    [debitLine("DELIVERY_FLOAT", amount), creditLine("AR", amount)],
+    { roleDebits: { DELIVERY_FLOAT: amount }, roleCredits: { AR: amount } },
+  );
+}

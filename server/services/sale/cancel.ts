@@ -24,6 +24,7 @@
 //   - كروت رقميّة: يمرّ بمسار `digitalCards.reversal` لا هذا الإلغاء العام.
 
 import { TRPCError } from "@trpc/server";
+import { assertNoActiveAftercareForInvoiceTx } from "../fulfillment/aftercareSources";
 import { appErrorMessage } from "@shared/errors";
 import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
 import { isDeadInvoice } from "@shared/predicates";
@@ -425,6 +426,7 @@ export async function cancelSaleInTx(
     // ═══ ١) قراءة الفاتورة تحت FOR UPDATE + الحراس ═══
     const invRows = await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).for("update").limit(1);
     const inv = invRows[0];
+    if (inv) await assertNoActiveAftercareForInvoiceTx(tx, inv.id);
     if (!inv) {
       throw new TRPCError({
         code: "NOT_FOUND",

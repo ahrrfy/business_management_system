@@ -3,6 +3,7 @@
  * الطلب غير المعتمد صفر الأثر، والحقيقة النقدية مشتقة من أدلة IN/OUT لا من رأس الفاتورة.
  */
 import { TRPCError } from "@trpc/server";
+import { assertNoActiveAftercareForInvoiceTx } from "../fulfillment/aftercareSources";
 import { and, desc, eq, inArray, isNull, like, notLike, or, sql } from "drizzle-orm";
 import {
   accountingEntries,
@@ -588,6 +589,7 @@ export async function reverseWorkOrderDeliveryInTx(
   }
   const invoiceId = Number(wo.invoiceId);
   const inv = (await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).for("update").limit(1))[0];
+  if (inv) await assertNoActiveAftercareForInvoiceTx(tx, inv.id);
   if (!inv || inv.sourceType !== "WORKORDER") {
     throw new TRPCError({ code: "PRECONDITION_FAILED", message: "فاتورة أمر الشغل غير موجودة أو ليست من منشأ WORKORDER" });
   }

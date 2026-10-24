@@ -1,3 +1,15 @@
+import { and, inArray, or } from "drizzle-orm";
+import {
+  RECEPTION_FEE_ALLOCATION,
+  recordDeliveryFeeHeldInTx,
+  type DeliveryFeeTender,
+} from "./delivery/feeHeld";
+import { externalPaymentAttempts } from "../../drizzle/schema";
+import {
+  lockConfirmedExternalPaymentAttempt,
+  consumeExternalReceiptAllocationsTx,
+  type ExternalPaymentBindingInput,
+} from "./posExternalPayment";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { formatDocumentNumber, stripDocPrefix } from "@shared/documentNumber";
@@ -9,13 +21,6 @@ import {
   receipts,
   shifts,
 } from "../../drizzle/schema";
-import { extractInsertId } from "../lib/insertId";
-import { postEntry } from "./ledgerService";
-import {
-  createPostingIntent,
-  creditLine,
-  debitLine,
-} from "./accounting/postingEngine";
 import type { SaleLineInput, PaymentMethod } from "./sale/types";
 import type { SaleAttributionInput } from "./commissions/attribution";
 import type { PriceTier } from "./pricing";
@@ -61,6 +66,8 @@ export interface ReceptionCheckoutInput {
     "CASH" | "CARD" | "TRANSFER" | "WALLET" | "TELECOM"
   > | null;
   paymentReference?: string | null;
+  paymentExternalPaymentAttemptId?: number | null;
+  paymentExternalPaymentDeviceId?: string | null;
   /** المبلغ المطبّق على الطلب كله. البيع المباشر يُغطّى أولاً، ثم أوامر الشغل بالترتيب. */
   paidAmount?: string | null;
   clientRequestId: string;
@@ -103,6 +110,7 @@ export interface ReceptionCheckoutInput {
    *  DELIVERY_FEE_HELD بـdedupeKey `DELIVERY_FEE_HELD:INV:{invoiceId}` — مرآةُ مسار أمر الشغل
    *  حرفياً، وبها يُرفع حظر COUNTER عن dispatchInvoice (الأجرة في الدرج قبل صرفها للمندوب). */
   deliveryFeeHeld?: string | null;
+  deliveryFeeTender?: DeliveryFeeTender | null;
   /** ش٦ (§٩.٣) — هويّة مُقِرّ تجاوز السعر/الخصم: حين priceOverrideApproved صادقة يُسجَّل سطرُ
    *  تدقيقٍ داخل المعاملة يسمّي المُقِرّ والأسعار النهائية (الراية وحدها كانت بلا هويّة). */
   priceApprovedBy?: number | null;
@@ -263,6 +271,87 @@ export async function checkoutReceptionInTx(
     const legacyCompleteReplay =
       checkoutReplayRefId == null && (await isCompleteReplay(tx, input));
     const completeReplay = checkoutReplayRefId != null || legacyCompleteReplay;
+    let resolvedFeeTender = input.deliveryFeeTender;
+    let resolvedPaymentReference = input.paymentReference;
+    let feeBinding: ExternalPaymentBindingInput | null = null;
+    let goodsBinding: ExternalPaymentBindingInput | null = null;
+    const combinedFee =
+      input.deliveryFeeTender?.combinedWithPaymentIndex != null;
+    if (input.deliveryFeeTender && money(input.deliveryFeeHeld ?? "0").gt(0)) {
+      const tender = input.deliveryFeeTender;
+      if (
+        combinedFee &&
+        (tender.combinedWithPaymentIndex !== 0 ||
+          tender.method !== input.paymentMethod ||
+          !money(input.paidAmount ?? "0").gt(0))
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر تخصيص دفعة الاستقبال",
+            why: "القبض الموحد للأجرة يجب أن يطابق وسيلة القبض الجديد للسلة وفهرسه صفر",
+            doThis:
+              "اختر وسيلة واحدة للقبض الموحد أو استخدم إثباتاً مستقلاً للأجرة",
+          }),
+        });
+      }
+      if (tender.method === "CASH" && tender.externalPaymentAttemptId != null)
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر قبض الأجرة نقداً",
+            why: "القبض النقدي لا يستهلك إثبات دفع خارجي",
+            doThis: "احذف الإثبات أو اختر الوسيلة الفعلية",
+          }),
+        });
+      if (tender.method !== "CASH") {
+        feeBinding = {
+          branchId: input.branchId,
+          channel: "PRINT_POS",
+          method: tender.method,
+          amount: money(input.deliveryFeeHeld!)
+            .plus(combinedFee ? money(input.paidAmount ?? "0") : money("0"))
+            .toFixed(2),
+          attemptId: tender.externalPaymentAttemptId,
+          deviceId: tender.externalPaymentDeviceId,
+        };
+        const attempt = completeReplay
+          ? (
+              await tx
+                .select()
+                .from(externalPaymentAttempts)
+                .where(
+                  eq(
+                    externalPaymentAttempts.id,
+                    tender.externalPaymentAttemptId ?? -1,
+                  ),
+                )
+                .limit(1)
+            )[0]
+          : await lockConfirmedExternalPaymentAttempt(tx, feeBinding, actor);
+        if (!attempt)
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "أكّد الدفع الخارجي قبل إعادة المحاولة",
+              why: "إثبات أجرة التوصيل غير موجود",
+              doThis: "استرجع إثبات العملية المؤكدة دون تمرير البطاقة مجدداً",
+            }),
+          });
+        resolvedFeeTender = { ...tender, reference: attempt.externalReference };
+        if (combinedFee) resolvedPaymentReference = attempt.externalReference;
+      }
+    }
+
+    if (!combinedFee && money(input.paidAmount ?? "0").gt(0) && input.paymentMethod !== "CASH"
+      && (input.deliveryFeeTender != null || input.paymentExternalPaymentAttemptId != null)) {
+      goodsBinding = {branchId:input.branchId,channel:"PRINT_POS",method:input.paymentMethod!,amount:money(input.paidAmount!).toFixed(2),
+        attemptId:input.paymentExternalPaymentAttemptId,deviceId:input.paymentExternalPaymentDeviceId};
+      const goodsAttempt = completeReplay ? (await tx.select().from(externalPaymentAttempts).where(eq(externalPaymentAttempts.id,input.paymentExternalPaymentAttemptId ?? -1)).limit(1))[0]
+        : await lockConfirmedExternalPaymentAttempt(tx,goodsBinding,actor);
+      if (!goodsAttempt) throw new TRPCError({code:"BAD_REQUEST",message:appErrorMessage({what:"أكّد الدفع الخارجي قبل إعادة المحاولة",why:"إثبات قبض البضاعة المستقل غير موجود",doThis:"استرجع إثبات قبض البضاعة أو ادمج الأجرة معه إذا كانت عملية واحدة"})});
+      resolvedPaymentReference=goodsAttempt.externalReference;
+    }
     if (!completeReplay) {
       const shift = await tx
         .select()
@@ -315,7 +404,8 @@ export async function checkoutReceptionInTx(
       const writesMaterialCash =
         (input.paymentMethod === "CASH" &&
           money(input.paidAmount ?? "0").gt(0)) ||
-        money(input.deliveryFeeHeld ?? "0").gt(0);
+        (money(input.deliveryFeeHeld ?? "0").gt(0) &&
+          (input.deliveryFeeTender?.method ?? "CASH") === "CASH");
       if (writesMaterialCash) {
         await lockMaterializedCashReceiptSourceForWrite(tx, {
           branchId: input.branchId,
@@ -417,7 +507,7 @@ export async function checkoutReceptionInTx(
         ? "COD"
         : input.paymentMode != null
           ? input.paymentMode
-          : (input.deferredDirect || receptionDeferredAuthorized)
+          : input.deferredDirect || receptionDeferredAuthorized
             ? "CREDIT"
             : undefined;
 
@@ -568,7 +658,7 @@ export async function checkoutReceptionInTx(
             : null,
           paymentReference:
             newDeposit.gt(0) && input.paymentMethod !== "CASH"
-              ? input.paymentReference?.trim() || null
+              ? resolvedPaymentReference?.trim() || null
               : null,
         };
       });
@@ -646,7 +736,7 @@ export async function checkoutReceptionInTx(
                 // ش٧: المدفوع = **المخصَّص فعلاً** لا مبلغ الفاتورة — مع COD يبقى الفرق عهدةَ مندوب.
                 amount: saleNewCashD.toFixed(2),
                 method: input.paymentMethod!,
-                reference: input.paymentReference?.trim() || null,
+                reference: resolvedPaymentReference?.trim() || null,
               }
             : null,
           codDispatchPending: input.delivery != null,
@@ -708,7 +798,7 @@ export async function checkoutReceptionInTx(
                 // ش٧: المخصَّص فعلاً (الطباعة تُسدَّد كاملةً عند التوصيل بحاملٍ SALE — حارسٌ أعلاه).
                 amount: printNewCashD.toFixed(2),
                 method: input.paymentMethod!,
-                reference: input.paymentReference?.trim() || null,
+                reference: resolvedPaymentReference?.trim() || null,
               }
             : null,
           codDispatchPending: input.delivery != null,
@@ -793,7 +883,12 @@ export async function checkoutReceptionInTx(
     // تُكتب داخل نفس معاملة المستندات (ذرّية) وتُتخطّى عند replay (كُتبت مع الالتزام الأول).
     // ملاحظة الترتيب: تسبق الإسناد عمداً — dispatchInvoiceInTx يشترط وجودها لقبول COUNTER.
     const feeHeldD = round2(money(input.deliveryFeeHeld ?? "0"));
-    if (feeHeldD.gt(0) && !completeReplay) {
+    const basketFeeTender = input.deliveryFeeTender != null;
+    const workOrderHeldD = normalizedWorkOrders.reduce((sum,order)=>sum.plus(order.hasDelivery && order.deliveryFeeCollection==="COUNTER"?money(order.deliveryCost??"0"):money(0)),money(0));
+    const orderHeldD = input.delivery?.feeCollection==="COUNTER"?round2(money(input.delivery.fee??"0")):money(0);
+    if(basketFeeTender && !feeHeldD.eq(workOrderHeldD.plus(orderHeldD)))throw new TRPCError({code:"BAD_REQUEST",message:appErrorMessage({what:"إجمالي أمانة الأجرة لا يطابق مصادرها",why:`المقبوض ${feeHeldD.toFixed(2)} لا يساوي أجرة الطلب وأوامر الشغل ${workOrderHeldD.plus(orderHeldD).toFixed(2)}`,doThis:"أرسل مجموع أجور COUNTER المقبوضة مرة واحدة واترك مبلغ البضاعة منفصلاً"})});
+    const invoiceFeeHeldD = basketFeeTender ? (input.regularSale || input.printSale ? orderHeldD : money(0)) : feeHeldD;
+    if (invoiceFeeHeldD.gt(0) && !completeReplay) {
       // حارس خادميّ (مراجعة عدائية ٩/٨): حين يُرافق الالتقاطَ توصيلٌ في نفس التثبيت يجب أن
       // تكون أجرته «مقبوضة في الاستقبال» وبنفس المبلغ — أمانةٌ مع توصيل COURIER = المندوب
       // يقبض أجرته من الزبون ثانيةً والأمانة تعلق بلا تبرئة؛ ومبلغٌ يخالف الأجرة يترك فرقاً
@@ -808,7 +903,7 @@ export async function checkoutReceptionInTx(
           code: "BAD_REQUEST",
           message: appErrorMessage({
             what: "أمانة الأجرة لا تناسب طريقة التوصيل",
-            why: `أرسلت مبلغ أمانة أجرة (${feeHeldD.toFixed(2)}) مع توصيل أجرته على المندوب (COURIER) — المندوب سيقبضها من الزبون فيصير قبضاً مزدوجاً وأمانتك تعلق بلا تبرئة`,
+            why: `أرسلت مبلغ أمانة أجرة (${invoiceFeeHeldD.toFixed(2)}) مع توصيل أجرته على المندوب (COURIER) — المندوب سيقبضها من الزبون فيصير قبضاً مزدوجاً وأمانتك تعلق بلا تبرئة`,
             doThis:
               "غيّر «التحصيل» إلى «مقبوضة في الاستقبال» (COUNTER)، أو احذف مبلغ الأمانة",
           }),
@@ -816,13 +911,13 @@ export async function checkoutReceptionInTx(
       }
       if (
         input.delivery &&
-        !feeHeldD.eq(round2(money(input.delivery.fee ?? "0")))
+        !invoiceFeeHeldD.eq(round2(money(input.delivery.fee ?? "0")))
       ) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: appErrorMessage({
             what: "قيمة الأمانة يجب أن تساوي أجرة التوصيل",
-            why: `الأمانة المقبوضة ${feeHeldD.toFixed(2)} لا تساوي أجرة التوصيل ${round2(money(input.delivery.fee ?? "0")).toFixed(2)} — الفرق سيترك مالاً بلا مسار ردٍّ عند التوريد`,
+            why: `الأمانة المقبوضة ${invoiceFeeHeldD.toFixed(2)} لا تساوي أجرة التوصيل ${round2(money(input.delivery.fee ?? "0")).toFixed(2)} — الفرق سيترك مالاً بلا مسار ردٍّ عند التوريد`,
             doThis: `اضبط الأمانة على ${round2(money(input.delivery.fee ?? "0")).toFixed(2)} بالضبط، أو عدّل أجرة التوصيل لتطابقها`,
           }),
         });
@@ -844,46 +939,14 @@ export async function checkoutReceptionInTx(
         // عند عدم وجود فاتورة بضاعة أو طباعة ووجود أوامر شغل، تُسجَّل أمانة الأجرة
         // على أمر الشغل الأول تلقائياً عبر createWorkOrderInTx (بإيصال DLV-FEE-WO وقيد DELIVERY_FEE_HELD).
       } else {
-        const feeRes = await tx.insert(receipts).values({
+        await recordDeliveryFeeHeldInTx(tx, {
           branchId: input.branchId,
           shiftId: input.shiftId,
           invoiceId: carrierInvoiceId,
-          direction: "IN",
-          amount: feeHeldD.toFixed(2),
-          // أمانةٌ نقديّة للمندوب تدخل الدرج حتماً — مهما كانت طريقة دفع السلّة (تُصرف له نقداً
-          // من نفس الدرج عند توريده، فقبضُها بغير النقد يترك OUT بلا IN).
-          paymentMethod: "CASH",
-          cashBucket: "DRAWER",
-          status: "COMPLETED",
-          partyType: "OTHER",
-          referenceNumber: `DLV-FEE-INV-${carrierInvoiceId}`,
+          amount: invoiceFeeHeldD,
+          actorUserId: actor.userId,
+          tender: resolvedFeeTender,
           description: "أجرة توصيل مقبوضة أمانةً للمندوب — طلب استقبال",
-          createdBy: actor.userId,
-        });
-        await postEntry(tx, {
-          entryType: "DELIVERY_FEE_HELD",
-          dedupeKey: `DELIVERY_FEE_HELD:INV:${carrierInvoiceId}`,
-          branchId: input.branchId,
-          invoiceId: carrierInvoiceId,
-          receiptId: extractInsertId(feeRes),
-          amount: feeHeldD,
-          notes: "أمانة أجرة توصيل — طلب استقبال",
-          postingSourceComponents: {
-            roleDebits: { CASH: feeHeldD },
-            roleCredits: { COURIER_PAYABLE: feeHeldD },
-          },
-          postingIntent: createPostingIntent(
-            "DELIVERY_FEE_HELD_RECEIPT",
-            "DELIVERY_FEE_HELD",
-            [
-              debitLine("CASH", feeHeldD),
-              creditLine("COURIER_PAYABLE", feeHeldD),
-            ],
-            {
-              roleDebits: { CASH: feeHeldD },
-              roleCredits: { COURIER_PAYABLE: feeHeldD },
-            },
-          ),
         });
       }
     }
@@ -982,7 +1045,7 @@ export async function checkoutReceptionInTx(
           "COURIER";
         if (carrierInvoiceId == null && isFirst) {
           if (feeHeldD.gt(0)) {
-            woDeliveryCost = feeHeldD.toFixed(2);
+            woDeliveryCost = basketFeeTender ? round2(money(order.deliveryFeeCollection==="COUNTER" ? order.deliveryCost??"0" : "0").plus(orderHeldD)).toFixed(2) : feeHeldD.toFixed(2);
             woFeeCollection = "COUNTER";
           } else if (input.delivery!.fee) {
             woDeliveryCost = input.delivery!.fee;
@@ -1042,8 +1105,12 @@ export async function checkoutReceptionInTx(
           // لكل أمر شغل ⇒ عرابين السلة تهبط على درج قابضها نفسه، لا على وردية أخرى يحلّها
           // openShiftIdTx بنفسه (سلّةٌ كانت قابلة للانشطار على درجين ⇒ محاسبة موظّفٍ على نقدٍ لم يستلمه).
           shiftId: input.shiftId,
+          deliveryFeeTender: basketFeeTender && order.hasDelivery && order.deliveryFeeCollection==="COUNTER"
+            ? resolvedFeeTender : (!hasAnySaleInvoice && index===0 ? resolvedFeeTender : order.deliveryFeeTender),
         },
         actor,
+        basketFeeTender && order.hasDelivery && order.deliveryFeeCollection==="COUNTER" && (feeBinding || resolvedFeeTender?.combinedWithPaymentIndex != null)
+          ? RECEPTION_FEE_ALLOCATION : undefined,
       );
       if (!sharedTrackingNumber && created?.orderNumber) {
         sharedTrackingNumber = stripDocPrefix(created.orderNumber).split("-")[0];
@@ -1072,6 +1139,48 @@ export async function checkoutReceptionInTx(
       }
     }
 
+    if (feeBinding || goodsBinding) {
+      const invoiceIds = [regularSale?.invoiceId, printSale?.invoiceId].filter(
+        (id): id is number => id != null,
+      );
+      const workOrderIds = workOrders.map((o) => o.workOrderId);
+      const conditions = [
+        ...(invoiceIds.length ? [inArray(receipts.invoiceId, invoiceIds)] : []),
+        ...(workOrderIds.length
+          ? [inArray(receipts.workOrderId, workOrderIds)]
+          : []),
+      ];
+      const collected = conditions.length
+        ? await tx
+            .select()
+            .from(receipts)
+            .where(
+              and(
+                or(...conditions),
+                eq(receipts.direction, "IN"),
+                eq(receipts.status, "COMPLETED"),
+              ),
+            )
+            .orderBy(receipts.id)
+        : [];
+      const feeReceiptRefs=new Set([
+        ...invoiceIds.map(id=>`DLV-FEE-INV-${id}`),...workOrderIds.map(id=>`DLV-FEE-WO-${id}`),
+      ]);
+      const feeReceipts=collected.filter(r=>r.referenceNumber!=null&&feeReceiptRefs.has(r.referenceNumber));
+      if(feeBinding&&feeReceipts.length===0)throw new Error("Missing fee receipt allocation");
+      const goods = combinedFee || goodsBinding
+        ? collected.filter(
+            (r) =>
+              !r.referenceNumber?.startsWith("DLV-FEE-") &&
+              r.referenceNumber === resolvedPaymentReference &&
+              Number(r.createdBy) === actor.userId,
+          )
+        : [];
+      if (feeBinding) await consumeExternalReceiptAllocationsTx(
+        tx,feeBinding,[...feeReceipts.map(r=>Number(r.id)), ...(combinedFee ? goods.map((r) => Number(r.id)) : [])],actor,
+      );
+      if (goodsBinding) await consumeExternalReceiptAllocationsTx(tx,goodsBinding,goods.map(r=>Number(r.id)),actor);
+    }
     return { regularSale, printSale, workOrders, preSplit, dispatch };
   }
 }

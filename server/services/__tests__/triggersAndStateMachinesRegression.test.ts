@@ -765,8 +765,8 @@ describe("Triggers, State Machines & Operational Lifecycles Regression Suite", (
       // verify dispatchInvoice.ts contract: dispatch accepts PENDING, rejects SUPERSEDED
       const dispatchPath = path.resolve(__dirname, "../delivery/dispatchInvoice.ts");
       const dispatchContent = fs.readFileSync(dispatchPath, "utf-8");
-      expect(dispatchContent).toContain(
-        'if (inv.status === "CANCELLED" || inv.status === "RETURNED" || inv.status === "SUPERSEDED")',
+      expect(dispatchContent).toMatch(
+        /if\s*\(\s*inv\.status\s*===\s*"CANCELLED"\s*\|\|\s*inv\.status\s*===\s*"RETURNED"\s*\|\|\s*inv\.status\s*===\s*"SUPERSEDED"\s*\)/,
       );
 
       // Verify cancelSale contract: cancelSale searches onlineOrders by invoiceId

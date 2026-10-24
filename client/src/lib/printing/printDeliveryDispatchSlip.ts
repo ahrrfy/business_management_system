@@ -1,3 +1,4 @@
+import { deliverySourceView, type DeliverySourceReference } from "@shared/deliverySource";
 /**
  * بوليصة إسناد وتوصيل حرارية (80mm) — ترافق المندوب وتُسلَّم للزبون
  * تشمل تفاصيل الطلب، الباركود، المستلم، والمبلغ المطلوب تحصيله (COD) بدقة.
@@ -9,10 +10,10 @@ import { qrCodeSvgSync } from "./qr";
 import { fmtDateTime } from "../date";
 import { printDoc, type PrintDoc, type PrintResult } from "./print";
 
-export interface DispatchSlipData {
+export interface DispatchSlipData extends DeliverySourceReference {
   consignmentNumber: string;
   orderNumber: string;
-  orderKind?: "workOrder" | "invoice" | "onlineOrder";
+  orderKind?: "workOrder" | "invoice" | "onlineOrder" | "fulfillmentRequest" | "aftercare";
   partyName: string;
   recipientName: string;
   recipientPhone: string;
@@ -31,6 +32,9 @@ export interface DispatchSlipData {
 }
 
 export function buildDeliveryDispatchSlipDoc(d: DispatchSlipData): PrintDoc {
+  const aftercare = d.sourceType === "AFTERCARE_EXECUTION" || d.orderKind === "aftercare";
+  if (aftercare && (Number(d.codAmount) !== 0 || d.feeCollection !== "SHOP")) throw new Error("بوليصة المعالجة تتطلب تحصيلاً صفرياً وأجرة على المكتبة");
+  const sourceLabel = aftercare ? "دفعة معالجة — لا يُطلب مبلغ من العميل" : d.sourceType ? deliverySourceView(d).reference : `رقم ${d.orderKind === "invoice" ? "الفاتورة" : "الطلب"}: #${d.orderNumber}`;
   const codNum = Number(d.codAmount || 0);
   const feeNum = Number(d.deliveryFee || 0);
   const shopFee = d.feeCollection === "SHOP";
@@ -46,7 +50,7 @@ export function buildDeliveryDispatchSlipDoc(d: DispatchSlipData): PrintDoc {
 
   const meta = [
     `رقم الإرسالية: ${d.consignmentNumber}`,
-    `رقم ${d.orderKind === "invoice" ? "الفاتورة" : "الطلب"}: #${d.orderNumber}`,
+    sourceLabel,
     `جهة التوصيل: ${d.partyName}`,
     `تاريخ الإسناد: ${fmtDateTime(d.dispatchedAt ?? new Date())}`,
     `المستلم: ${d.recipientName || "—"} (${d.recipientPhone || "—"})`,
@@ -76,7 +80,7 @@ export function buildDeliveryDispatchSlipDoc(d: DispatchSlipData): PrintDoc {
 
   return {
     kind: "receipt",
-    title: "بوليصة إسناد وتوصيل",
+    title: aftercare ? "بوليصة استكمال نقص / معالجة" : "بوليصة إسناد وتوصيل",
     subtitle: `${CO.name} — ${CO.sub}`,
     meta,
     totals,
@@ -90,6 +94,9 @@ export function buildDeliveryDispatchSlipDoc(d: DispatchSlipData): PrintDoc {
 }
 
 export function renderDeliveryDispatchSlipHtml(d: DispatchSlipData): string {
+  const aftercare = d.sourceType === "AFTERCARE_EXECUTION" || d.orderKind === "aftercare";
+  if (aftercare && (Number(d.codAmount) !== 0 || d.feeCollection !== "SHOP")) throw new Error("بوليصة المعالجة تتطلب تحصيلاً صفرياً وأجرة على المكتبة");
+  const sourceLabel = aftercare ? "دفعة معالجة — لا يُطلب مبلغ من العميل" : d.sourceType ? deliverySourceView(d).reference : `رقم ${d.orderKind === "invoice" ? "الفاتورة" : "الطلب"}: #${d.orderNumber}`;
   const logo = logoUrl();
   let barSvg = "";
   try {
@@ -132,7 +139,7 @@ export function renderDeliveryDispatchSlipHtml(d: DispatchSlipData): string {
   </div>
 
   <div style="border-top:2.5px solid #000;border-bottom:2.5px solid #000;padding:2mm 0;text-align:center;margin:2.5mm 0;background:#000;color:#fff;">
-    <span style="font-size:14px;font-weight:900;letter-spacing:0.5px;">بوليصة إسناد وتوصيل</span>
+    <span style="font-size:14px;font-weight:900;letter-spacing:0.5px;">${aftercare ? "استكمال نقص / معالجة — لا تحصيل من العميل" : "بوليصة إسناد وتوصيل"}</span>
   </div>
 
   ${barSvg ? `
@@ -147,7 +154,7 @@ export function renderDeliveryDispatchSlipHtml(d: DispatchSlipData): string {
     </div>
     <div style="display:flex;justify-content:space-between;padding:1mm 0;border-bottom:1.5px dashed #000;">
       <span style="font-weight:800;">رقم ${d.orderKind === "invoice" ? "الفاتورة" : d.orderKind === "onlineOrder" ? "طلب المتجر" : "الطلب"}:</span>
-      <span style="font-weight:900;font-size:12px;">#${esc(d.orderNumber)}</span>
+      <span style="font-weight:900;font-size:12px;">#${esc(aftercare || d.sourceType ? sourceLabel : d.orderNumber)}</span>
     </div>
     <div style="display:flex;justify-content:space-between;padding:1mm 0;border-bottom:1.5px dashed #000;">
       <span style="font-weight:800;">جهة التوصيل:</span>

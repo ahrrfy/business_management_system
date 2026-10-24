@@ -34,8 +34,9 @@ export function paymentAccountRole(
   direction: PaymentDirection = "IN",
 ): Extract<
   AccountRole,
-  "CASH" | "TREASURY_CASH" | "CARD_BANK" | "CHECKS_RECEIVABLE"
+  "CASH" | "TREASURY_CASH" | "CARD_BANK" | "CHECKS_RECEIVABLE" | "PAYMENT_WALLET"
 > {
+  if (paymentMethod === "WALLET") return "PAYMENT_WALLET";
   if (paymentMethod === "CARD" || paymentMethod === "TRANSFER") {
     return "CARD_BANK";
   }

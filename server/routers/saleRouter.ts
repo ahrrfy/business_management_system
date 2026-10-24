@@ -74,8 +74,6 @@ import { loadRefundCaps } from "../services/returns/refundCaps";
 import { loadCustomerReceiptInvoicePayments } from "../services/customerReceiptProjection";
 import { OperationalApprovalRequiredError } from "@shared/operationalDecision";
 import { RETURN_EXECUTED_AUDIT_ACTION } from "../services/returns/auditActions";
-import { assertNoInTransitConsignment } from "../services/delivery/guards";
-import { registerCounterCollectionTx } from "../services/delivery/counterCollection";
 import { randomUUID } from "node:crypto";
 import {
   canSeeCostForUser,
@@ -1206,6 +1204,13 @@ export const saleRouter = router({
             .nullish(),
           // أجرة التوصيل المقبوضة الآن أمانةً للمندوب (COUNTER) — نقداً في الدرج حتماً، وتساوي `delivery.fee`.
           deliveryFeeHeld: positiveMoneyString.nullish(),
+  deliveryFeeTender: z.object({
+  method: z.enum(["CASH", "CARD", "TRANSFER", "WALLET"]),
+  reference: z.string().trim().max(100).nullish(),
+  externalPaymentAttemptId: z.number().int().positive().nullish(),
+  externalPaymentDeviceId: z.string().trim().min(1).max(64).nullish(),
+  combinedWithPaymentIndex: z.number().int().min(0).nullish(),
+}).nullish(),
           payment: z
             .object({
               amount: positiveMoneyString,
@@ -1578,13 +1583,7 @@ export const saleRouter = router({
         input.method ?? input.payments?.[0]?.method ?? "CASH";
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          // حارس «الإرسالية بالطريق» (مراجعة عدائية ٩/٨): كان في مسار الاستقبال وحده بينما هذه
-          // النقطة — الباب الثاني لنفس الفاتورة — تقبل تسديداً كاونترياً لفاتورةٍ كامل متبقّيها
-          // عهدةُ COD بيد مندوب ⇒ عهدة شبح لا مخرج لها إلا شطبٌ يزوّر خسارة. داخل preInsertCheck
-          // (بعد قفل الفاتورة FOR UPDATE) لنفس علّة TOCTOU الموثّقة في delivery/guards.ts.
-          // ٢٢/٨ — وبعد نجاح الحارس: القبض على فاتورة إرساليةٍ **مُسلَّمة** يُدوَّن عليها في نفس
-          // المعاملة (يخفض المتوقَّع من الجهة — سقف المبلغ تحقّق قبل هذا الخطّاف، وأيّ فشلٍ
-          // لاحق يعكس الاثنين معاً). refKey = مفتاح idempotency الدفعة نفسه إن وُجد.
+          // The shared writer owns invoice guards, real receipt posting and atomic courier-claim reduction.
           const res = await processPayment(
             {
               ...input,
@@ -1596,15 +1595,6 @@ export const saleRouter = router({
                   l.externalPaymentDeviceId ?? input.externalPaymentDeviceId,
               })),
               enforceBranchId,
-              preInsertCheck: async (tx) => {
-                await assertNoInTransitConsignment(tx, input.invoiceId);
-                await registerCounterCollectionTx(tx, {
-                  invoiceId: input.invoiceId,
-                  amount: totalPaymentAmount,
-                  actorUserId: ctx.user.id,
-                  refKey: input.clientRequestId ?? randomUUID(),
-                });
-              },
             },
             {
               userId: ctx.user.id,

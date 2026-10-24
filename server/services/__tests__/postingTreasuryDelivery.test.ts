@@ -28,7 +28,9 @@ describe("P2/Sh2 — treasury and delivery posting contracts", () => {
     expect(paymentAccountRole("TRANSFER", null, "IN")).toBe("CARD_BANK");
     expect(paymentAccountRole("CHECK", null, "IN")).toBe("CHECKS_RECEIVABLE");
     expect(paymentAccountRole("CHECK", null, "OUT")).toBe("CARD_BANK");
-    expect(() => paymentAccountRole("WALLET", null, "IN")).toThrow(
+    expect(paymentAccountRole("WALLET", null, "IN")).toBe("PAYMENT_WALLET");
+    expect(paymentAccountRole("WALLET", null, "OUT")).toBe("PAYMENT_WALLET");
+    expect(() => paymentAccountRole("UNSUPPORTED", null, "IN")).toThrow(
       /تعذّر تحديد حساب الدفع/,
     );
     expect(() => paymentAccountRole("CASH", null, "IN")).toThrow(

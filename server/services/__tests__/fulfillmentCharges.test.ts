@@ -1,0 +1,1609 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { and, eq, sql } from "drizzle-orm";
+import * as s from "../../../drizzle/schema";
+import {
+  fulfillmentCharges,
+  fulfillmentChargePayments,
+} from "../../../drizzle/fulfillmentSchema";
+import { getDb } from "../../db";
+import { extractInsertId } from "../../lib/insertId";
+import { reserveExternalRefundConfirmationTx } from "../externalRefundConfirmation";
+import {
+  createFulfillmentCharge,
+  approveFulfillmentCharge,
+  collectFulfillmentCharges,
+  refundFulfillmentCharge,
+  refundFulfillmentChargeExcess,
+  refundFulfillmentCourierExcess,
+  recordFulfillmentChargeCourierCollection,
+  remitFulfillmentChargeCourier,
+  settleFulfillmentChargePayee,
+  type CreateFulfillmentChargeInput,
+} from "../fulfillment/charges";
+import { listFulfillmentCourierExcess } from "../fulfillment/chargeQueries";
+import { getFinancialPosition } from "../reportsFinancialService";
+import { getCustomerStatement, getARAging } from "../reports/arAging";
+import {
+  initiateExternalPaymentAttempt,
+  confirmExternalPaymentAttempt,
+} from "../posExternalPayment";
+import * as audit from "../auditService";
+import { withTx } from "../tx";
+import {
+  attachFulfillmentRequestClaimsTx,
+  collectAssignedConsignmentClaimsTx,
+} from "../fulfillment/chargeDelivery";
+import { recordDeliveryRemittance } from "../delivery/remittance";
+import { confirmConsignmentDelivery } from "../delivery/courier";
+import { listOpenConsignments } from "../delivery/queries";
+import {
+  createFulfillmentRequest,
+  releaseFulfillmentRequest,
+} from "../fulfillment/requests";
+import { truncateTables } from "./__testUtils__";
+
+const cashier = { userId: 1, branchId: 1, role: "cashier" },
+  manager = { userId: 2, branchId: 1, role: "manager" };
+let sequence = 0;
+const key = () => `FC-TEST-${Date.now()}-${++sequence}`;
+const device = "CHARGE-TEST-TERMINAL";
+function db() {
+  const value = getDb();
+  if (!value) throw new Error("test database required");
+  return value;
+}
+beforeEach(async () => {
+  vi.restoreAllMocks();
+  await truncateTables([
+    "deliveryRemittanceLines",
+    "deliveryRemittances",
+    "deliveryOutbox",
+    "deliveryEvents",
+    "deliveryLedgerEntries",
+    "deliveryShipmentMembers",
+    "deliveryConsignments",
+    "fulfillmentChargePayments",
+    "fulfillmentCharges",
+    "fulfillmentRequestItems",
+    "fulfillmentRequests",
+    "externalPaymentAttempts",
+    "journalLines",
+    "journalEntries",
+    "accountingEntries",
+    "auditLogs",
+    "idempotencyKeys",
+    "receipts",
+    "invoiceItems",
+    "invoices",
+    "shifts",
+    "deliveryParties",
+    "suppliers",
+    "customers",
+    "branches",
+    "users",
+  ]);
+  await db()
+    .insert(s.branches)
+    .values([
+      { id: 1, name: "MAIN", code: "CHARGE1", type: "MAIN" },
+      { id: 2, name: "OTHER", code: "CHARGE2", type: "SALES" },
+    ]);
+  await db()
+    .insert(s.users)
+    .values([
+      {
+        id: 1,
+        openId: "charge-maker",
+        name: "Maker",
+        role: "cashier",
+        branchId: 1,
+      },
+      {
+        id: 2,
+        openId: "charge-checker",
+        name: "Checker",
+        role: "manager",
+        branchId: 1,
+      },
+      {
+        id: 3,
+        openId: "charge-other",
+        name: "Other",
+        role: "cashier",
+        branchId: 2,
+      },
+    ]);
+  await db().insert(s.customers).values({
+    id: 1,
+    name: "Charge Customer",
+    creditLimit: null,
+    currentBalance: "0",
+  });
+  await db()
+    .insert(s.suppliers)
+    .values({ id: 1, name: "Charge Contractor", currentBalance: "0" });
+  await db()
+    .insert(s.shifts)
+    .values([
+      {
+        id: 1,
+        userId: 1,
+        branchId: 1,
+        shiftType: "RECEPTION",
+        status: "OPEN",
+        openingBalance: "10000",
+        openGuard: "1:1:RECEPTION",
+      },
+      {
+        id: 2,
+        userId: 2,
+        branchId: 1,
+        shiftType: "RECEPTION",
+        status: "OPEN",
+        openingBalance: "1000",
+        openGuard: "2:1:RECEPTION",
+      },
+    ]);
+});
+function input(
+  patch: Partial<CreateFulfillmentChargeInput> = {},
+): CreateFulfillmentChargeInput {
+  return {
+    branchId: 1,
+    customerId: 1,
+    category: "SERVICE",
+    description: "أجر تغليف",
+    amount: "2000",
+    externalCost: "0",
+    clientRequestId: key(),
+    ...patch,
+  };
+}
+async function approved(patch: Partial<CreateFulfillmentChargeInput> = {}) {
+  const row = await createFulfillmentCharge(input(patch), cashier);
+  return approveFulfillmentCharge(
+    { id: row.id, expectedVersion: row.version, clientRequestId: key() },
+    manager,
+  );
+}
+async function cashCollect(
+  id: number,
+  version: number,
+  amount = "2000",
+  actual = amount,
+  requestId = key(),
+) {
+  return collectFulfillmentCharges(
+    {
+      branchId: 1,
+      clientRequestId: requestId,
+      allocations: [{ chargeId: id, expectedVersion: version, amount }],
+      amount: actual,
+      tender: { method: "CASH", cashBucket: "DRAWER", shiftId: 1 },
+    },
+    cashier,
+  );
+}
+type ExternalRail = "CARD" | "TRANSFER" | "WALLET";
+async function externalCollect(
+  row: { id: number; version: number },
+  method: ExternalRail,
+  actual = "3000",
+) {
+  const reference = key();
+  const attempt = await initiateExternalPaymentAttempt(
+    {
+      branchId: 1,
+      channel: "SALES_COLLECTION",
+      method,
+      amount: actual,
+      reference,
+      requestId: key(),
+      deviceId: device,
+    },
+    cashier,
+  );
+  await confirmExternalPaymentAttempt(
+    {
+      branchId: 1,
+      channel: "SALES_COLLECTION",
+      attemptId: attempt.attemptId,
+      deviceId: device,
+    },
+    cashier,
+  );
+  return collectFulfillmentCharges(
+    {
+      branchId: 1,
+      clientRequestId: key(),
+      allocations: [
+        { chargeId: row.id, expectedVersion: row.version, amount: "2000" },
+      ],
+      amount: actual,
+      tender: {
+        method,
+        externalPaymentAttemptId: attempt.attemptId,
+        externalPaymentDeviceId: device,
+        reference,
+      },
+    },
+    cashier,
+  );
+}
+async function financialSnapshot() {
+  return Promise.all([
+    db().select().from(s.receipts).orderBy(s.receipts.id),
+    db().select().from(s.accountingEntries).orderBy(s.accountingEntries.id),
+    db().select().from(s.journalEntries).orderBy(s.journalEntries.id),
+    db().select().from(s.journalLines).orderBy(s.journalLines.id),
+    db()
+      .select()
+      .from(fulfillmentChargePayments)
+      .orderBy(fulfillmentChargePayments.id),
+    db().select().from(fulfillmentCharges).orderBy(fulfillmentCharges.id),
+    db().select().from(s.customers).orderBy(s.customers.id),
+    db().select().from(s.idempotencyKeys).orderBy(s.idempotencyKeys.id),
+    db().select().from(s.auditLogs).orderBy(s.auditLogs.id),
+  ]);
+}
+async function allowCashierCost() {
+  await db()
+    .update(s.users)
+    .set({
+      operationPolicy: {
+        version: 1,
+        grants: {},
+        dataVisibility: { purchaseCost: true, profitMargin: true },
+      },
+    })
+    .where(eq(s.users.id, cashier.userId));
+}
+async function balance() {
+  return (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0]
+    .currentBalance;
+}
+describe("classified fulfillment charge lifecycle", () => {
+  it("SERVICE 2000 settles only its own claim beside an already-paid invoice", async () => {
+    await db().insert(s.invoices).values({
+      id: 1,
+      branchId: 1,
+      customerId: 1,
+      invoiceNumber: "CHARGE-PAID",
+      sourceType: "POS",
+      sourceId: key(),
+      subtotal: "50000",
+      total: "50000",
+      paidAmount: "50000",
+      status: "PAID",
+      createdBy: 1,
+    });
+    const row = await approved();
+    expect(await balance()).toBe("2000.00");
+    await cashCollect(row.id, row.version);
+    expect(await balance()).toBe("0.00");
+    expect((await db().select().from(s.invoices))[0].paidAmount).toBe(
+      "50000.00",
+    );
+    expect(await db().select().from(s.invoices)).toHaveLength(1);
+    expect((await db().select().from(s.receipts))[0].invoiceId).toBeNull();
+  });
+  it("OUTSOURCED 5000/3000 posts gross service and independent AP cost", async () => {
+    await allowCashierCost();
+    const row = await approved({
+      category: "OUTSOURCED",
+      amount: "5000",
+      externalCost: "3000",
+      payeeSupplierId: 1,
+    });
+    const entries = await db().select().from(s.accountingEntries);
+    expect(
+      entries.find(
+        (e) => e.dedupeKey === `FULFILLMENT_CHARGE_ACCRUAL:${row.id}`,
+      )?.revenue,
+    ).toBe("5000.00");
+    expect(
+      entries.find((e) => e.dedupeKey === `FULFILLMENT_CHARGE_COST:${row.id}`)
+        ?.cost,
+    ).toBe("3000.00");
+    await settleFulfillmentChargePayee(
+      {
+        id: row.id,
+        expectedVersion: row.version,
+        amount: "3000",
+        clientRequestId: key(),
+        tender: { method: "CASH", cashBucket: "DRAWER", shiftId: 1 },
+      },
+      cashier,
+    );
+    expect((await db().select().from(s.suppliers))[0].currentBalance).toBe(
+      "0.00",
+    );
+    expect(
+      (await db().select().from(s.accountingEntries)).filter(
+        (e) => e.cost === "3000.00",
+      ),
+    ).toHaveLength(1);
+  });
+  it("PASS_THROUGH 3000 is liability with zero revenue and no duplicate expense", async () => {
+    await allowCashierCost();
+    const row = await approved({
+      category: "PASS_THROUGH",
+      amount: "3000",
+      externalCost: "3000",
+      payeeSupplierId: 1,
+    });
+    await cashCollect(row.id, row.version, "3000");
+    expect(
+      (await db().select().from(s.accountingEntries)).every(
+        (e) => e.revenue === "0.00" && e.cost === "0.00",
+      ),
+    ).toBe(true);
+    const current = (await db().select().from(fulfillmentCharges))[0];
+    await settleFulfillmentChargePayee(
+      {
+        id: row.id,
+        expectedVersion: current.version,
+        amount: "3000",
+        clientRequestId: key(),
+        tender: { method: "CASH", shiftId: 1, cashBucket: "DRAWER" },
+      },
+      cashier,
+    );
+    expect(await balance()).toBe("0.00");
+  });
+  it("SHOP_EXPENSE never creates customer AR", async () => {
+    await approved({
+      category: "SHOP_EXPENSE",
+      customerId: null,
+      amount: "0",
+      externalCost: "3000",
+      payeeSupplierId: 1,
+    });
+    expect(await balance()).toBe("0.00");
+    expect((await db().select().from(s.accountingEntries))[0].cost).toBe(
+      "3000.00",
+    );
+  });
+  it("requires independent expense approval", async () => {
+    const row = await createFulfillmentCharge(
+      input({
+        category: "OUTSOURCED",
+        externalCost: "3000",
+        payeeSupplierId: 1,
+      }),
+      manager,
+    );
+    await expect(
+      approveFulfillmentCharge(
+        { id: row.id, expectedVersion: row.version, clientRequestId: key() },
+        manager,
+      ),
+    ).rejects.toThrow(/مستقل/);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+  });
+  it("denies foreign branch, stale versions and allocation above claim", async () => {
+    const row = await approved();
+    await expect(cashCollect(row.id, 1)).rejects.toThrow();
+    await expect(cashCollect(row.id, row.version, "2001")).rejects.toThrow(
+      /يتجاوز/,
+    );
+    await expect(async () =>
+      createFulfillmentCharge(input(), {
+        userId: 3,
+        branchId: 2,
+        role: "cashier",
+      }),
+    ).rejects.toThrow();
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+  });
+  it("same-key replay succeeds before stale version check and changed payload rejects", async () => {
+    const row = await approved(),
+      requestId = key();
+    const first = await cashCollect(
+      row.id,
+      row.version,
+      "2000",
+      "2000",
+      requestId,
+    );
+    expect(
+      (await cashCollect(row.id, row.version, "2000", "2000", requestId))
+        .receiptId,
+    ).toBe(first.receiptId);
+    await expect(
+      cashCollect(row.id, row.version, "1000", "1000", requestId),
+    ).rejects.toThrow();
+    expect(await db().select().from(s.receipts)).toHaveLength(1);
+  });
+  it("concurrent collectors cannot overallocate the same charge", async () => {
+    const row = await approved(),
+      results = await Promise.allSettled([
+        cashCollect(row.id, row.version),
+        cashCollect(row.id, row.version),
+      ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(await db().select().from(s.receipts)).toHaveLength(1);
+    expect(await balance()).toBe("0.00");
+  });
+  it("failed audit rolls back receipt, AR, allocation and idempotency key", async () => {
+    const row = await approved();
+    vi.spyOn(audit, "logAuditTx").mockRejectedValueOnce(
+      new Error("injected audit failure"),
+    );
+    await expect(cashCollect(row.id, row.version)).rejects.toThrow(
+      "injected audit failure",
+    );
+    expect(await balance()).toBe("2000.00");
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect(await db().select().from(fulfillmentChargePayments)).toHaveLength(0);
+  });
+  it("preserves and refunds overcollection liability without modifying customer AR", async () => {
+    const row = await approved(),
+      collected = await cashCollect(row.id, row.version, "2000", "2300");
+    expect(await balance()).toBe("0.00");
+    const updated = (await db().select().from(fulfillmentCharges))[0];
+    await refundFulfillmentChargeExcess(
+      {
+        id: row.id,
+        expectedVersion: updated.version,
+        originalReceiptId: collected.receiptId,
+        amount: "300",
+        reason: "إعادة فائض القبض",
+        clientRequestId: key(),
+      },
+      manager,
+    );
+    expect(await balance()).toBe("0.00");
+    const statement = await getCustomerStatement(1);
+    expect(statement?.fulfillmentHeldExcess).toBe("0.00");
+    expect(
+      statement?.payments.find((p) => p.id === collected.receiptId)?.amount,
+    ).toBe("2000.00");
+  });
+  it("cash availability guard rejects unfunded actual payout after card collection", async () => {
+    await allowCashierCost();
+    const row = await approved({
+      category: "OUTSOURCED",
+      externalCost: "3000",
+      payeeSupplierId: 1,
+    });
+    await db()
+      .update(s.shifts)
+      .set({ openingBalance: "0" })
+      .where(eq(s.shifts.id, 1));
+    await expect(
+      settleFulfillmentChargePayee(
+        {
+          id: row.id,
+          expectedVersion: row.version,
+          amount: "3000",
+          clientRequestId: key(),
+          tender: { method: "CASH", cashBucket: "DRAWER", shiftId: 1 },
+        },
+        cashier,
+      ),
+    ).rejects.toThrow();
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+  });
+  it("card collection and original-rail refund have zero drawer effect and no reusable proof", async () => {
+    const row = await approved(),
+      reference = key();
+    const attempt = await initiateExternalPaymentAttempt(
+      {
+        branchId: 1,
+        channel: "SALES_COLLECTION",
+        method: "CARD",
+        amount: "2000",
+        reference,
+        requestId: key(),
+        deviceId: device,
+      },
+      cashier,
+    );
+    await confirmExternalPaymentAttempt(
+      {
+        branchId: 1,
+        channel: "SALES_COLLECTION",
+        attemptId: attempt.attemptId,
+        deviceId: device,
+      },
+      cashier,
+    );
+    const collect = {
+      branchId: 1,
+      clientRequestId: key(),
+      allocations: [
+        { chargeId: row.id, expectedVersion: row.version, amount: "2000" },
+      ],
+      amount: "2000",
+      tender: {
+        method: "CARD" as const,
+        externalPaymentAttemptId: attempt.attemptId,
+        externalPaymentDeviceId: device,
+        reference,
+      },
+    };
+    await collectFulfillmentCharges(collect, cashier);
+    const current = (await db().select().from(fulfillmentCharges))[0],
+      payment = (await db().select().from(fulfillmentChargePayments))[0];
+    await refundFulfillmentCharge(
+      {
+        id: row.id,
+        expectedVersion: current.version,
+        clientRequestId: key(),
+        originalPaymentId: payment.id,
+        amount: "500",
+        reason: "رد جزء التغليف",
+        reference: key(),
+      },
+      manager,
+    );
+    expect(
+      (await db().select().from(s.receipts)).every(
+        (r) => r.paymentMethod === "CARD" && r.cashBucket === null,
+      ),
+    ).toBe(true);
+    expect(await balance()).toBe("0.00");
+    const another = await approved();
+    await expect(
+      collectFulfillmentCharges(
+        {
+          ...collect,
+          clientRequestId: key(),
+          allocations: [
+            {
+              chargeId: another.id,
+              expectedVersion: another.version,
+              amount: "2000",
+            },
+          ],
+        },
+        cashier,
+      ),
+    ).rejects.toThrow();
+    await expect(
+      refundFulfillmentCharge(
+        {
+          id: row.id,
+          expectedVersion: current.version + 1,
+          clientRequestId: key(),
+          originalPaymentId: payment.id,
+          amount: "1600",
+          reason: "رد فوق التخصيص",
+          reference: key(),
+        },
+        manager,
+      ),
+    ).rejects.toThrow(/يتجاوز/);
+  });
+  it.each(["CARD", "TRANSFER", "WALLET"] as const)(
+    "%s refund proof belongs to one partial refund receipt across claim and excess",
+    async (method) => {
+      const row = await approved(),
+        collected = await externalCollect(row, method);
+      const current = async () =>
+        (
+          await db()
+            .select()
+            .from(fulfillmentCharges)
+            .where(eq(fulfillmentCharges.id, row.id))
+        )[0];
+      const [payment] = await db()
+        .select()
+        .from(fulfillmentChargePayments)
+        .where(
+          and(
+            eq(fulfillmentChargePayments.chargeId, row.id),
+            eq(fulfillmentChargePayments.kind, "COLLECTION"),
+          ),
+        );
+      const reference = key(),
+        refund = {
+          id: row.id,
+          expectedVersion: (await current()).version,
+          clientRequestId: key(),
+          originalPaymentId: payment.id,
+          amount: "500",
+          reason: "رد جزء من الأجر بإثبات مزود مستقل",
+          reference,
+        };
+      const first = await refundFulfillmentCharge(refund, manager),
+        before = await financialSnapshot();
+      expect(await refundFulfillmentCharge(refund, manager)).toEqual(first);
+      expect(await financialSnapshot()).toEqual(before);
+      await expect(
+        refundFulfillmentCharge(
+          {
+            ...refund,
+            expectedVersion: (await current()).version,
+            clientRequestId: key(),
+            amount: "100",
+            reference: ` ${reference.toLowerCase()} `,
+          },
+          manager,
+        ),
+      ).rejects.toThrow();
+      expect(await financialSnapshot()).toEqual(before);
+      await expect(
+        refundFulfillmentChargeExcess(
+          {
+            id: row.id,
+            expectedVersion: (await current()).version,
+            clientRequestId: key(),
+            originalReceiptId: collected.receiptId,
+            amount: "100",
+            reason: "رد أمانة بنفس إثبات الأجر ممنوع",
+            reference,
+          },
+          manager,
+        ),
+      ).rejects.toThrow();
+      expect(await financialSnapshot()).toEqual(before);
+      const excess = {
+        id: row.id,
+        expectedVersion: (await current()).version,
+        clientRequestId: key(),
+        originalReceiptId: collected.receiptId,
+        amount: "500",
+        reason: "رد أمانة بإثبات مزود جديد مستقل",
+        reference: key(),
+      };
+      const excessResult = await refundFulfillmentChargeExcess(excess, manager),
+        afterExcess = await financialSnapshot();
+      expect(await refundFulfillmentChargeExcess(excess, manager)).toEqual(
+        excessResult,
+      );
+      expect(await financialSnapshot()).toEqual(afterExcess);
+      await expect(
+        refundFulfillmentChargeExcess(
+          {
+            ...excess,
+            expectedVersion: (await current()).version,
+            clientRequestId: key(),
+            amount: "100",
+            reference: excess.reference.toLowerCase(),
+          },
+          manager,
+        ),
+      ).rejects.toThrow();
+      expect(await financialSnapshot()).toEqual(afterExcess);
+      await refundFulfillmentCharge(
+        {
+          ...refund,
+          expectedVersion: (await current()).version,
+          clientRequestId: key(),
+          reference: key(),
+        },
+        manager,
+      );
+      const outs = (await db().select().from(s.receipts)).filter(
+        (r) => r.direction === "OUT",
+      );
+      expect(outs).toHaveLength(3);
+      expect(
+        outs.every((r) => r.paymentMethod === method && r.cashBucket === null),
+      ).toBe(true);
+      expect((await current()).refundedAmount).toBe("1000.00");
+      expect(await balance()).toBe("0.00");
+    },
+  );
+  it.each(["CARD", "TRANSFER", "WALLET"] as const)(
+    "%s charge refunds reject a confirmation already reserved by another workflow receipt",
+    async (method) => {
+      const row = await approved(),
+        collected = await externalCollect(row, method),
+        reference = key();
+      // Other refund workflows call this same transaction-level reservation boundary.
+      // The reservation belongs to a real persisted OUT receipt, never an invented invoice/id.
+      await withTx(async (tx) => {
+        const receiptId = extractInsertId(
+          await tx.insert(s.receipts).values({
+            branchId: 1,
+            direction: "OUT",
+            amount: "100",
+            paymentMethod: method,
+            cashBucket: null,
+            status: "COMPLETED",
+            approvalStatus: "APPROVED",
+            partyType: "OTHER",
+            counterpartyName: "مستفيد رد خارجي مستقل",
+            referenceNumber: reference,
+            description: "إيصال مسار رد مستقل لا يخص مطالبة الأجر",
+            createdBy: manager.userId,
+            executedBy: manager.userId,
+            executedAt: new Date(),
+          }),
+        );
+        await reserveExternalRefundConfirmationTx(tx, {
+          receiptId,
+          method,
+          reference,
+        });
+      });
+      const current = (
+          await db()
+            .select()
+            .from(fulfillmentCharges)
+            .where(eq(fulfillmentCharges.id, row.id))
+        )[0],
+        before = await financialSnapshot();
+      const [payment] = await db()
+        .select()
+        .from(fulfillmentChargePayments)
+        .where(
+          and(
+            eq(fulfillmentChargePayments.chargeId, row.id),
+            eq(fulfillmentChargePayments.kind, "COLLECTION"),
+          ),
+        );
+      await expect(
+        refundFulfillmentCharge(
+          {
+            id: row.id,
+            expectedVersion: current.version,
+            clientRequestId: key(),
+            originalPaymentId: payment.id,
+            amount: "100",
+            reason: "لا يعاد استخدام رد مسار آخر",
+            reference: reference.toLowerCase(),
+          },
+          manager,
+        ),
+      ).rejects.toThrow();
+      expect(await financialSnapshot()).toEqual(before);
+      await expect(
+        refundFulfillmentChargeExcess(
+          {
+            id: row.id,
+            expectedVersion: current.version,
+            clientRequestId: key(),
+            originalReceiptId: collected.receiptId,
+            amount: "100",
+            reason: "أمانة لا يعاد لها إثبات مسار آخر",
+            reference,
+          },
+          manager,
+        ),
+      ).rejects.toThrow();
+      expect(await financialSnapshot()).toEqual(before);
+    },
+  );
+  it("refunds courier excess before remittance while preserving the entire actual custody", async () => {
+    await db()
+      .insert(s.fulfillmentRequests)
+      .values({
+        id: 1,
+        branchId: 1,
+        customerId: 1,
+        requestNumber: "FC-EXCESS-REQUEST",
+        recipientName: "عميل",
+        recipientPhone: "+9647701234567",
+        deliveryAddress: "بغداد",
+        createdBy: 1,
+        clientRequestId: key(),
+        sourceHash: "a".repeat(64),
+      });
+    const row = await approved({ requestId: 1 });
+    await db()
+      .insert(s.deliveryParties)
+      .values({ id: 1, name: "ناقل الأمانة", branchId: 1 });
+    await db().insert(s.deliveryConsignments).values({
+      id: 1,
+      consignmentNumber: "FC-EXCESS-CN",
+      branchId: 1,
+      partyId: 1,
+      sourceType: "FULFILLMENT_REQUEST",
+      sourceId: 1,
+      fulfillmentRequestId: 1,
+      codAmount: "0",
+      feeCollection: "SHOP",
+      deliveryFee: "0",
+      endCustomerId: 1,
+      dispatchedBy: 1,
+    });
+    await withTx(async (tx) => {
+      await attachFulfillmentRequestClaimsTx(
+        tx,
+        {
+          requestId: 1,
+          consignmentId: 1,
+          partyId: 1,
+          branchId: 1,
+          clientRequestId: key(),
+        },
+        manager,
+      );
+      await collectAssignedConsignmentClaimsTx(
+        tx,
+        { consignmentId: 1, actualAmount: "2500", eventKey: key() },
+        manager,
+      );
+      await tx
+        .update(s.deliveryConsignments)
+        .set({
+          parcelStatus: "DELIVERED",
+          courierDeliveredAt: new Date(),
+        })
+        .where(eq(s.deliveryConsignments.id, 1));
+    });
+    const source = (await db().select().from(s.accountingEntries)).find((e) =>
+      e.dedupeKey?.startsWith("FULFILLMENT_COURIER_EXCESS:1:"),
+    )!;
+    const current = (await db().select().from(fulfillmentCharges))[0];
+    const refund = {
+      id: row.id,
+      expectedVersion: current.version,
+      clientRequestId: key(),
+      originalExcessEntryId: source.id,
+      consignmentId: 1,
+      amount: "500",
+      reason: "رد أمانة القبض الزائد الموثق",
+      tender: {
+        method: "CASH" as const,
+        cashBucket: "DRAWER" as const,
+        shiftId: 2,
+      },
+    };
+    expect(
+      await getFinancialPosition({ branchId: 1, verify: false }),
+    ).toMatchObject({
+      arDebit: "0.00",
+      arCredit: "0.00",
+      deliveryFloat: "2500.00",
+      fulfillmentCustomerCredit: "500.00",
+      cash: "0.00",
+    });
+    const first = await refundFulfillmentCourierExcess(refund, manager);
+    expect(await refundFulfillmentCourierExcess(refund, manager)).toEqual(
+      first,
+    );
+    expect(await balance()).toBe("0.00");
+    expect(
+      await getFinancialPosition({ branchId: 1, verify: false }),
+    ).toMatchObject({
+      arDebit: "0.00",
+      arCredit: "0.00",
+      deliveryFloat: "2500.00",
+      fulfillmentCustomerCredit: "0.00",
+      cash: "-500.00",
+    });
+    expect(
+      (await db().select().from(s.deliveryParties))[0].currentBalance,
+    ).toBe("2500.00");
+    expect((await getCustomerStatement(1))?.fulfillmentHeldExcess).toBe("0.00");
+    await expect(
+      refundFulfillmentCourierExcess(
+        {
+          ...refund,
+          clientRequestId: key(),
+          expectedVersion: current.version + 1,
+          amount: "1",
+        },
+        manager,
+      ),
+    ).rejects.toThrow(/يتجاوز/);
+    await recordDeliveryRemittance(
+      {
+        branchId: 1,
+        partyId: 1,
+        lines: [{ consignmentId: 1, collectedAmount: "2500" }],
+        countedCash: "2500",
+        targetShiftId: 1,
+        clientRequestId: key(),
+      },
+      cashier,
+    );
+    expect(
+      (await db().select().from(s.deliveryParties))[0].currentBalance,
+    ).toBe("0.00");
+    expect(await balance()).toBe("0.00");
+    expect(await db().select().from(s.invoices)).toHaveLength(0);
+    expect(
+      await getFinancialPosition({ branchId: 1, verify: false }),
+    ).toMatchObject({
+      arDebit: "0.00",
+      arCredit: "0.00",
+      deliveryFloat: "0.00",
+      fulfillmentCustomerCredit: "0.00",
+      cash: "2000.00",
+    });
+    const payments = await db().select().from(fulfillmentChargePayments);
+    expect(
+      payments
+        .filter((p) => p.kind === "COURIER_REMITTANCE")
+        .map((p) => p.amount),
+    ).toEqual(["2000.00"]);
+    const receipts = await db().select().from(s.receipts);
+    expect(receipts.find((r) => r.direction === "IN")?.amount).toBe("2500.00");
+    expect(receipts.find((r) => r.direction === "OUT")?.amount).toBe("500.00");
+    const ledger = await db().select().from(s.deliveryLedgerEntries);
+    expect(
+      ledger
+        .filter((e) => e.entryType === "COD_COLLECTED")
+        .map((e) => e.amount),
+    ).toEqual(["2500.00"]);
+    expect(
+      ledger.filter((e) => e.entryType === "COD_REMITTED").map((e) => e.amount),
+    ).toEqual(["2500.00"]);
+  });
+  it("raw remittance closes finance after actual physical delivery without inventing delivery from payment", async () => {
+    await db()
+      .insert(s.fulfillmentRequests)
+      .values({
+        id: 1,
+        branchId: 1,
+        customerId: 1,
+        requestNumber: "FC-RAW-REQUEST",
+        recipientName: "عميل",
+        recipientPhone: "+9647701234567",
+        deliveryAddress: "بغداد",
+        createdBy: 1,
+        clientRequestId: key(),
+        sourceHash: "a".repeat(64),
+      });
+    const row = await approved({ requestId: 1 });
+    await db()
+      .insert(s.deliveryParties)
+      .values({ id: 1, name: "ناقل", branchId: 1 });
+    await db().insert(s.deliveryConsignments).values({
+      id: 1,
+      consignmentNumber: "FC-RAW-CN",
+      branchId: 1,
+      partyId: 1,
+      sourceType: "FULFILLMENT_REQUEST",
+      sourceId: 1,
+      fulfillmentRequestId: 1,
+      codAmount: "2000",
+      feeCollection: "SHOP",
+      deliveryFee: "0",
+      endCustomerId: 1,
+      dispatchedBy: 1,
+    });
+    await recordFulfillmentChargeCourierCollection(
+      {
+        branchId: 1,
+        partyId: 1,
+        consignmentId: 1,
+        clientRequestId: key(),
+        allocations: [
+          { chargeId: row.id, expectedVersion: row.version, amount: "2000" },
+        ],
+      },
+      cashier,
+    );
+    const remit = async () =>
+      remitFulfillmentChargeCourier(
+        {
+          id: row.id,
+          expectedVersion: (await db().select().from(fulfillmentCharges))[0]
+            .version,
+          clientRequestId: key(),
+          originalPaymentId: (
+            await db().select().from(fulfillmentChargePayments)
+          ).find((p) => p.kind === "COURIER_COLLECTION")!.id,
+          amount: "1000",
+          tender: { method: "CASH", cashBucket: "DRAWER", shiftId: 1 },
+        },
+        cashier,
+      );
+    await remit();
+    expect((await db().select().from(s.deliveryConsignments))[0]).toMatchObject(
+      {
+        status: "PARTIAL",
+        moneyStatus: "PARTIAL",
+        parcelStatus: "ASSIGNED",
+        settledAt: null,
+      },
+    );
+    await db()
+      .update(s.deliveryConsignments)
+      .set({ parcelStatus: "DELIVERED", courierDeliveredAt: new Date() })
+      .where(eq(s.deliveryConsignments.id, 1));
+    await remit();
+    expect((await db().select().from(s.deliveryConsignments))[0]).toMatchObject(
+      {
+        status: "DELIVERED",
+        moneyStatus: "SETTLED",
+        parcelStatus: "DELIVERED",
+        collectedAmount: "2000.00",
+        settledAt: expect.any(Date),
+      },
+    );
+    expect(await balance()).toBe("0.00");
+    expect(
+      (await db().select().from(s.deliveryParties))[0].currentBalance,
+    ).toBe("0.00");
+  });
+  it("refunds and remits goods-only old actual cash with an empty assigned-claims snapshot", async () => {
+    await db()
+      .insert(s.fulfillmentRequests)
+      .values({
+        id: 1,
+        branchId: 1,
+        customerId: 1,
+        requestNumber: "FC-EMPTY-REQUEST",
+        recipientName: "عميل",
+        recipientPhone: "+9647701234567",
+        deliveryAddress: "بغداد",
+        createdBy: 1,
+        clientRequestId: key(),
+        sourceHash: "a".repeat(64),
+      });
+    await db().insert(s.invoices).values({
+      id: 1,
+      branchId: 1,
+      customerId: 1,
+      invoiceNumber: "FC-PAID-GOODS",
+      sourceType: "POS",
+      sourceId: key(),
+      subtotal: "2000",
+      total: "2000",
+      paidAmount: "2000",
+      status: "PAID",
+      createdBy: 1,
+    });
+    await db()
+      .insert(s.deliveryParties)
+      .values({ id: 1, name: "ناقل", branchId: 1 });
+    await db().insert(s.deliveryConsignments).values({
+      id: 1,
+      consignmentNumber: "FC-EMPTY-CN",
+      branchId: 1,
+      partyId: 1,
+      sourceType: "INVOICE",
+      sourceId: 1,
+      invoiceId: 1,
+      fulfillmentRequestId: 1,
+      codAmount: "0",
+      feeCollection: "SHOP",
+      deliveryFee: "0",
+      endCustomerId: 1,
+      dispatchedBy: 1,
+    });
+    await withTx(async (tx) => {
+      expect(
+        await attachFulfillmentRequestClaimsTx(
+          tx,
+          {
+            requestId: 1,
+            consignmentId: 1,
+            partyId: 1,
+            branchId: 1,
+            clientRequestId: key(),
+          },
+          manager,
+        ),
+      ).toEqual({ chargeCodAmount: "0.00" });
+      expect(
+        await collectAssignedConsignmentClaimsTx(
+          tx,
+          { consignmentId: 1, actualAmount: "500", eventKey: key() },
+          manager,
+        ),
+      ).toMatchObject({
+        invoiceAmount: "0.00",
+        chargeAmount: "0.00",
+        excessAmount: "500.00",
+      });
+    });
+    const assignment = (await db().select().from(s.deliveryEvents)).find(
+      (e) => e.eventType === "FULFILLMENT_CHARGES_ASSIGNED",
+    );
+    expect(assignment?.payload).toMatchObject({
+      requestId: 1,
+      customerId: 1,
+      invoiceIds: [1],
+      chargeIds: [],
+    });
+    expect(
+      (await db().select().from(s.accountingEntries)).find((e) =>
+        e.dedupeKey?.startsWith("FULFILLMENT_COURIER_EXCESS:1:"),
+      ),
+    ).toMatchObject({ customerId: 1, amount: "500.00" });
+    expect((await db().select().from(s.invoices))[0].paidAmount).toBe(
+      "2000.00",
+    );
+    expect(await balance()).toBe("0.00");
+    expect(
+      (await db().select().from(s.deliveryParties))[0].currentBalance,
+    ).toBe("500.00");
+    const excess = (
+      await listFulfillmentCourierExcess({ branchId: 1 }, manager)
+    ).rows[0];
+    expect(excess).toMatchObject({
+      fulfillmentRequestId: 1,
+      customerId: 1,
+      originalAmount: "500.00",
+      remainingAmount: "500.00",
+    });
+    const refund = {
+      fulfillmentRequestId: 1,
+      expectedVersion: excess.requestVersion,
+      consignmentId: 1,
+      originalExcessEntryId: excess.originalExcessEntryId,
+      amount: "500",
+      reason: "رد أمانة قبض البضاعة الموثق",
+      clientRequestId: key(),
+      tender: {
+        method: "CASH" as const,
+        cashBucket: "DRAWER" as const,
+        shiftId: 2,
+      },
+    };
+    const first = await refundFulfillmentCourierExcess(refund, manager);
+    expect(await refundFulfillmentCourierExcess(refund, manager)).toEqual(
+      first,
+    );
+    expect(
+      (await listFulfillmentCourierExcess({ branchId: 1 }, manager)).rows[0]
+        .remainingAmount,
+    ).toBe("0.00");
+    expect(
+      await getFinancialPosition({ branchId: 1, verify: false }),
+    ).toMatchObject({
+      arDebit: "0.00",
+      arCredit: "0.00",
+      deliveryFloat: "500.00",
+      fulfillmentCustomerCredit: "0.00",
+      cash: "-500.00",
+    });
+    expect(
+      (await db().select().from(s.deliveryParties))[0].currentBalance,
+    ).toBe("500.00");
+    await db()
+      .update(s.deliveryConsignments)
+      .set({ parcelStatus: "DELIVERED", courierDeliveredAt: new Date() })
+      .where(eq(s.deliveryConsignments.id, 1));
+    await recordDeliveryRemittance(
+      {
+        branchId: 1,
+        partyId: 1,
+        lines: [{ consignmentId: 1, collectedAmount: "500" }],
+        countedCash: "500",
+        targetShiftId: 1,
+        clientRequestId: key(),
+      },
+      cashier,
+    );
+    expect(
+      await getFinancialPosition({ branchId: 1, verify: false }),
+    ).toMatchObject({
+      arDebit: "0.00",
+      arCredit: "0.00",
+      deliveryFloat: "0.00",
+      fulfillmentCustomerCredit: "0.00",
+      cash: "0.00",
+    });
+    expect(
+      (await db().select().from(s.deliveryParties))[0].currentBalance,
+    ).toBe("0.00");
+    expect((await db().select().from(s.invoices))[0].paidAmount).toBe(
+      "2000.00",
+    );
+    expect(await db().select().from(fulfillmentCharges)).toHaveLength(0);
+    expect(await db().select().from(fulfillmentChargePayments)).toHaveLength(0);
+    expect((await db().select().from(s.deliveryConsignments))[0]).toMatchObject(
+      {
+        status: "DELIVERED",
+        moneyStatus: "SETTLED",
+        collectedAmount: "500.00",
+      },
+    );
+  });
+  it("lists, refunds and remits proven anonymous courier excess without inventing customer AR", async () => {
+    const customersBefore = await db()
+      .select()
+      .from(s.customers)
+      .orderBy(s.customers.id);
+    await db()
+      .insert(s.fulfillmentRequests)
+      .values({
+        id: 1,
+        branchId: 1,
+        customerId: null,
+        requestNumber: "FC-ANON-REQUEST",
+        recipientName: "مستلم نقدي بلا حساب",
+        recipientPhone: "+9647707654321",
+        deliveryAddress: "بغداد",
+        createdBy: cashier.userId,
+        clientRequestId: key(),
+        sourceHash: "a".repeat(64),
+      });
+    await db().insert(s.invoices).values({
+      id: 1,
+      branchId: 1,
+      customerId: null,
+      invoiceNumber: "FC-ANON-PAID",
+      sourceType: "POS",
+      sourceId: key(),
+      subtotal: "2000",
+      total: "2000",
+      paidAmount: "2000",
+      status: "PAID",
+      createdBy: cashier.userId,
+    });
+    await db()
+      .insert(s.deliveryParties)
+      .values({ id: 1, name: "ناقل المستلم النقدي", branchId: 1 });
+    await db().insert(s.deliveryConsignments).values({
+      id: 1,
+      consignmentNumber: "FC-ANON-CN",
+      branchId: 1,
+      partyId: 1,
+      sourceType: "INVOICE",
+      sourceId: 1,
+      invoiceId: 1,
+      fulfillmentRequestId: 1,
+      codAmount: "0",
+      feeCollection: "SHOP",
+      deliveryFee: "0",
+      endCustomerId: null,
+      recipientName: "مستلم نقدي بلا حساب",
+      recipientPhone: "+9647707654321",
+      dispatchedBy: cashier.userId,
+    });
+    await withTx(async (tx) => {
+      await attachFulfillmentRequestClaimsTx(
+        tx,
+        {
+          requestId: 1,
+          consignmentId: 1,
+          partyId: 1,
+          branchId: 1,
+          clientRequestId: key(),
+        },
+        manager,
+      );
+      expect(
+        await collectAssignedConsignmentClaimsTx(
+          tx,
+          { consignmentId: 1, actualAmount: "500", eventKey: key() },
+          manager,
+        ),
+      ).toMatchObject({
+        invoiceAmount: "0.00",
+        chargeAmount: "0.00",
+        excessAmount: "500.00",
+      });
+      await tx
+        .update(s.deliveryConsignments)
+        .set({ parcelStatus: "DELIVERED", courierDeliveredAt: new Date() })
+        .where(eq(s.deliveryConsignments.id, 1));
+    });
+    const list = await listFulfillmentCourierExcess({ branchId: 1 }, manager),
+      source = list.rows[0];
+    expect(list.total).toBe(1);
+    expect(source).toMatchObject({
+      fulfillmentRequestId: 1,
+      customerId: null,
+      customerName: "مستلم نقدي بلا حساب",
+      customerPhone: "+9647707654321",
+      originalAmount: "500.00",
+      remainingAmount: "500.00",
+    });
+    expect(
+      (
+        await listFulfillmentCourierExcess(
+          { branchId: 1, search: "0770765" },
+          manager,
+        )
+      ).rows.map((r) => r.originalExcessEntryId),
+    ).toEqual([source.originalExcessEntryId]);
+    expect(
+      (
+        await listFulfillmentCourierExcess(
+          { branchId: 2 },
+          { userId: 3, branchId: 2, role: "cashier" },
+        )
+      ).rows,
+    ).toHaveLength(0);
+    const refund = {
+      fulfillmentRequestId: 1,
+      expectedVersion: source.requestVersion,
+      consignmentId: 1,
+      originalExcessEntryId: source.originalExcessEntryId,
+      amount: "500",
+      reason: "رد قبض مثبت للمستلم النقدي الحقيقي",
+      clientRequestId: key(),
+      tender: {
+        method: "CASH" as const,
+        cashBucket: "DRAWER" as const,
+        shiftId: 2,
+      },
+    };
+    const before = await financialSnapshot();
+    await expect(
+      refundFulfillmentCourierExcess(refund, cashier),
+    ).rejects.toThrow();
+    await expect(
+      refundFulfillmentCourierExcess(
+        { ...refund, amount: "501", clientRequestId: key() },
+        manager,
+      ),
+    ).rejects.toThrow(/يتجاوز/);
+    expect(await financialSnapshot()).toEqual(before);
+    const result = await refundFulfillmentCourierExcess(refund, manager),
+      afterRefund = await financialSnapshot();
+    expect(await refundFulfillmentCourierExcess(refund, manager)).toEqual(
+      result,
+    );
+    expect(await financialSnapshot()).toEqual(afterRefund);
+    const [receipt] = await db()
+      .select()
+      .from(s.receipts)
+      .where(eq(s.receipts.id, result.receiptId));
+    expect(receipt).toMatchObject({
+      direction: "OUT",
+      amount: "500.00",
+      partyType: "OTHER",
+      partyId: null,
+      counterpartyName: "مستلم نقدي بلا حساب",
+      paymentMethod: "CASH",
+      cashBucket: "DRAWER",
+      shiftId: 2,
+    });
+    expect(JSON.parse(receipt.internalNote!)).toMatchObject({
+      fulfillmentRequestId: 1,
+      consignmentId: 1,
+      originalExcessEntryId: source.originalExcessEntryId,
+    });
+    expect(
+      (await listFulfillmentCourierExcess({ branchId: 1 }, manager)).rows[0]
+        .remainingAmount,
+    ).toBe("0.00");
+    expect(
+      (await db().select().from(s.deliveryParties))[0].currentBalance,
+    ).toBe("500.00");
+    expect(
+      await getFinancialPosition({ branchId: 1, verify: false }),
+    ).toMatchObject({
+      arDebit: "0.00",
+      arCredit: "0.00",
+      deliveryFloat: "500.00",
+    });
+    const remit = {
+      branchId: 1,
+      partyId: 1,
+      lines: [{ consignmentId: 1, collectedAmount: "500" }],
+      countedCash: "500",
+      targetShiftId: 1,
+      clientRequestId: key(),
+    };
+    const remitted = await recordDeliveryRemittance(remit, cashier),
+      afterRemit = await financialSnapshot();
+    expect((await recordDeliveryRemittance(remit, cashier)).remittanceId).toBe(
+      remitted.remittanceId,
+    );
+    expect(await financialSnapshot()).toEqual(afterRemit);
+    expect(
+      await getFinancialPosition({ branchId: 1, verify: false }),
+    ).toMatchObject({
+      arDebit: "0.00",
+      arCredit: "0.00",
+      deliveryFloat: "0.00",
+      cash: "0.00",
+    });
+    expect(
+      (await db().select().from(s.deliveryParties))[0].currentBalance,
+    ).toBe("0.00");
+    expect(
+      await db().select().from(s.customers).orderBy(s.customers.id),
+    ).toEqual(customersBefore);
+    expect((await db().select().from(s.invoices))[0]).toMatchObject({
+      customerId: null,
+      paidAmount: "2000.00",
+    });
+    expect(await db().select().from(fulfillmentCharges)).toHaveLength(0);
+    expect(await db().select().from(fulfillmentChargePayments)).toHaveLength(0);
+    expect(
+      (await db().select().from(s.accountingEntries)).every(
+        (e) => e.customerId === null,
+      ),
+    ).toBe(true);
+    expect(
+      (await db().select().from(s.journalLines)).filter((l) => l.role === "AR"),
+    ).toHaveLength(0);
+  });
+  it.each([
+    {
+      scenario: "full counter payment with no custody",
+      courierActual: "0",
+      counterAmount: "2000",
+      closed: true,
+      ar: "0.00",
+    },
+    {
+      scenario: "partial counter payment leaves an open claim",
+      courierActual: "0",
+      counterAmount: "500",
+      closed: false,
+      ar: "1500.00",
+    },
+    {
+      scenario:
+        "actual courier custody stays open after the claim is fully paid",
+      courierActual: "500",
+      counterAmount: "1500",
+      closed: false,
+      ar: "0.00",
+    },
+  ])(
+    "charge-only COMPANY counter collection: $scenario",
+    async ({ courierActual, counterAmount, closed, ar }) => {
+      await db().insert(s.deliveryParties).values({
+        id: 1,
+        name: "شركة التوصيل",
+        partyType: "COMPANY",
+        branchId: 1,
+        currentBalance: "0",
+        isActive: true,
+      });
+      const request = await createFulfillmentRequest(
+        {
+          branchId: 1,
+          customerId: 1,
+          recipientName: "مستلم أجر الطلب",
+          recipientPhone: "07701234567",
+          deliveryAddress: "بغداد",
+          partyId: 1,
+          deliveryFee: "0",
+          feeCollection: "SHOP",
+          sources: [],
+          clientRequestId: key(),
+        },
+        cashier,
+      );
+      const row = await approved({ requestId: request.id });
+      const sent = await releaseFulfillmentRequest(
+        {
+          id: request.id,
+          expectedVersion: request.version,
+          clientRequestId: key(),
+          externalTrackingRef: key(),
+        },
+        manager,
+      );
+      await confirmConsignmentDelivery(
+        {
+          consignmentId: sent.consignmentId,
+          clientRequestId: key(),
+          statementWitness: {
+            partyId: 1,
+            statementNumber: key(),
+            kind: "COMPANY_STATEMENT",
+            collectedAmount: courierActual,
+          },
+        },
+        { userId: manager.userId },
+      );
+      const [before] = await db()
+        .select()
+        .from(s.deliveryConsignments)
+        .where(eq(s.deliveryConsignments.id, sent.consignmentId));
+      expect(before).toMatchObject({
+        invoiceId: null,
+        parcelStatus: "DELIVERED",
+        status: "DISPATCHED",
+        moneyStatus: "UNSETTLED",
+        settledAt: null,
+      });
+      expect(
+        (await listOpenConsignments(1, 1)).rows.map((c) => c.id),
+      ).toContain(sent.consignmentId);
+      const charge = (
+          await db()
+            .select()
+            .from(fulfillmentCharges)
+            .where(eq(fulfillmentCharges.id, row.id))
+        )[0],
+        paymentKey = key(),
+        started = Date.now();
+      const collected = await cashCollect(
+        row.id,
+        charge.version,
+        counterAmount,
+        counterAmount,
+        paymentKey,
+      );
+      const [after] = await db()
+        .select()
+        .from(s.deliveryConsignments)
+        .where(eq(s.deliveryConsignments.id, sent.consignmentId));
+      expect(after.parcelStatus).toBe("DELIVERED");
+      expect(after.courierDeliveredAt).toEqual(before.courierDeliveredAt);
+      expect(after.counterSettledAmount).toBe(`${counterAmount}.00`);
+      expect(after.codClaimVersion).toBe(before.codClaimVersion + 1);
+      expect(after.courierAckClaimVersion).toBe(before.courierAckClaimVersion);
+      expect(after.status).toBe(closed ? "DELIVERED" : "DISPATCHED");
+      expect(after.moneyStatus).toBe(closed ? "SETTLED" : "UNSETTLED");
+      if (closed) {
+        expect(after.settledAt).toBeInstanceOf(Date);
+        expect(after.settledAt!.getTime()).toBeGreaterThanOrEqual(
+          started - 1000,
+        );
+      } else expect(after.settledAt).toBeNull();
+      expect(
+        (await listOpenConsignments(1, 1)).rows.some(
+          (c) => c.id === sent.consignmentId,
+        ),
+      ).toBe(!closed);
+      expect(await balance()).toBe(ar);
+      expect(
+        (await db().select().from(s.deliveryParties))[0].currentBalance,
+      ).toBe(`${courierActual}.00`);
+      const ledger = await db()
+        .select()
+        .from(s.deliveryLedgerEntries)
+        .orderBy(s.deliveryLedgerEntries.id);
+      expect(
+        ledger
+          .filter((e) => e.entryType === "COD_RELEASED")
+          .map((e) => e.amount),
+      ).toEqual([`${counterAmount}.00`]);
+      expect(
+        ledger
+          .filter((e) => e.entryType === "COD_COLLECTED")
+          .map((e) => e.amount),
+      ).toEqual(courierActual === "0" ? [] : ["500.00"]);
+      expect(ledger.filter((e) => e.entryType === "COD_REMITTED")).toHaveLength(
+        0,
+      );
+      const events = await db()
+          .select()
+          .from(s.deliveryEvents)
+          .orderBy(s.deliveryEvents.id),
+        changed = events.filter((e) => e.eventType === "COD_CLAIM_CHANGED");
+      expect(changed).toHaveLength(1);
+      expect(changed[0]).toMatchObject({
+        fromParcelStatus: "DELIVERED",
+        toParcelStatus: "DELIVERED",
+        fromMoneyStatus: before.moneyStatus,
+        toMoneyStatus: after.moneyStatus,
+      });
+      expect(changed[0].payload).toMatchObject({
+        chargeId: row.id,
+        receiptId: collected.receiptId,
+        claimVersion: after.codClaimVersion,
+        ackRequired: true,
+      });
+      const snapshot = await financialSnapshot();
+      expect(
+        (
+          await cashCollect(
+            row.id,
+            charge.version,
+            counterAmount,
+            counterAmount,
+            paymentKey,
+          )
+        ).receiptId,
+      ).toBe(collected.receiptId);
+      expect(await financialSnapshot()).toEqual(snapshot);
+      expect(
+        await db()
+          .select()
+          .from(s.deliveryConsignments)
+          .where(eq(s.deliveryConsignments.id, sent.consignmentId)),
+      ).toEqual([after]);
+      expect(
+        await db().select().from(s.deliveryEvents).orderBy(s.deliveryEvents.id),
+      ).toEqual(events);
+      expect(
+        await db()
+          .select()
+          .from(s.deliveryLedgerEntries)
+          .orderBy(s.deliveryLedgerEntries.id),
+      ).toEqual(ledger);
+      expect(await db().select().from(s.invoices)).toHaveLength(0);
+    },
+  );
+  it("independent charge AR appears in aging and statement without multiplying source invoices", async () => {
+    const row = await approved();
+    const statement = await getCustomerStatement(1),
+      aging = await getARAging({ branchId: 1 });
+    expect(statement?.fulfillmentCharges[0].id).toBe(row.id);
+    expect(statement?.summary.unpaid).toBe("2000.00");
+    expect(aging[0].unpaidTotal).toBe("2000.00");
+    expect(statement?.invoices).toHaveLength(0);
+  });
+});

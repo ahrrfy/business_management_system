@@ -133,6 +133,7 @@ const STATEMENT_ROW_KIND_LABEL: Record<string, string> = {
   RETURN: "مرتجع",
   OPENING_ADJ: "تصحيح افتتاحي",
   INVOICE_ADJUSTMENT: "تسوية ذمة الفاتورة",
+  CHARGE_ADJUSTMENT: "مطالبة أو عكس أجر إضافي",
 };
 function statementMethodLabel(v: string | null | undefined): string {
   if (v && STATEMENT_ROW_KIND_LABEL[v]) return STATEMENT_ROW_KIND_LABEL[v];
@@ -270,6 +271,12 @@ function getStmtPaymentColumns(onDrilldown: (target: DrilldownTarget) => void): 
       meta: { kind: "code" },
       cell: ({ row }) => {
         const p = row.original;
+        if (p.id < 0 && !(p.invoiceId != null && p.invoiceId > 0)) {
+          if (p.paymentMethod === "CHARGE_ADJUSTMENT" || p.paymentMethod === "COD") {
+            return <Link className="underline text-primary" href="/delivery?tab=fulfillment&kind=charges">{p.description ?? "حركة ذمة أجور موثقة"}</Link>;
+          }
+          return <span className="text-xs">{p.description ?? statementMethodLabel(p.paymentMethod)}</span>;
+        }
         if (p.isStandalone) {
           return (
             <button
@@ -291,7 +298,7 @@ function getStmtPaymentColumns(onDrilldown: (target: DrilldownTarget) => void): 
             <button
               type="button"
               onClick={() => {
-                if (p.invoiceId) onDrilldown({ type: "INVOICE", invoiceId: p.invoiceId });
+                if (p.invoiceId != null && p.invoiceId > 0) onDrilldown({ type: "INVOICE", invoiceId: p.invoiceId });
                 else onDrilldown({ type: "VOUCHER", receiptId: p.id });
               }}
               className="font-mono text-primary underline text-xs"
@@ -437,7 +444,30 @@ export default function CustomerStatement() {
   }), [stmt.data?.invoices, invoiceFilter]);
 
   // دفتر الحركات (مدين/دائن/رصيد جارٍ) — يُبنى مرّة ويُشارَك بين الطباعة وتصدير Excel.
-  const ledger = useMemo(() => stmt.data ? customerStatementLedger(stmt.data) : null, [stmt.data]);
+  const ledger = useMemo(() => {
+    if (!stmt.data) return null;
+    // Keep the shared opening/period arithmetic. Temporary row references carry
+    // only presentation metadata through its stable sort; no amount is changed.
+    const chargeRows = new Map<string, StmtPaymentRow>();
+    const payments = stmt.data.payments.map((payment) => {
+      if (payment.paymentMethod !== "CHARGE_ADJUSTMENT") return payment;
+      const ref = `\u0000charge:${payment.id}`;
+      chargeRows.set(ref, payment);
+      return { ...payment, voucherNumber: ref };
+    });
+    const result = customerStatementLedger({ ...stmt.data, payments });
+    return {
+      ...result,
+      txs: result.txs.map((row) => {
+        const charge = chargeRows.get(row.ref);
+        return charge ? {
+          ...row,
+          ref: charge.voucherNumber ?? "أجر إضافي",
+          description: charge.description ?? "مطالبة أو عكس أجر إضافي",
+        } : row;
+      }),
+    };
+  }, [stmt.data]);
 
   // حُمولة نَسخ الكَشف بِثَلاث صِيَغ (نَصّ مُلَخَّص / واتساب مُفَصَّل / TSV لِلَصق في Excel).
   // تُبنى مَرّة واحِدة على دَفتَر الحَرَكات المُجمَّع لِضَمان اتِّساق المَجاميع مَع الطِباعة والتَصدير.
@@ -770,6 +800,20 @@ export default function CustomerStatement() {
             </CardContent>
           </Card>
 
+          {(stmt.data.fulfillmentCharges?.length > 0 || D(stmt.data.fulfillmentHeldExcess ?? "0").gt(0)) && <Card>
+            <CardContent className="p-3 space-y-2">
+              <div className="text-sm font-medium">الأجور الإضافية وأمانات فائض القبض</div>
+              <p className="text-sm">أمانة فائض القبض القابلة للرد: {fmt(stmt.data.fulfillmentHeldExcess ?? "0")} د.ع — منفصلة عن الذمم</p>
+              <DataTable data={stmt.data.fulfillmentCharges ?? []} searchable={false} columns={[
+                {accessorKey:"id",header:"مستند الأجر"}, {accessorKey:"description",header:"البيان"},
+                {accessorKey:"amount",header:"أجر العميل",cell:({row})=>fmt(row.original.amount)},
+                {accessorKey:"paidAmount",header:"المقبوض",cell:({row})=>fmt(row.original.paidAmount)},
+                {accessorKey:"refundedAmount",header:"المردود",cell:({row})=>fmt(row.original.refundedAmount)},
+                {accessorKey:"remainingAmount",header:"المتبقي",cell:({row})=>fmt(row.original.remainingAmount)},
+                {id:"source",header:"المصدر",cell:()=> <Link className="underline" href="/delivery?tab=fulfillment&kind=charges">تفاصيل الأجور وإيصالاتها</Link>},
+              ]}/>
+            </CardContent>
+          </Card>}
           <Card>
             <CardContent className="p-0">
               {/* stmt.data.payments مُقيَّدة بالفترة (from/to) خادمياً فعلاً — getCustomerStatement

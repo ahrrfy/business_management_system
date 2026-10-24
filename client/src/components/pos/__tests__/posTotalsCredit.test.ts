@@ -1,3 +1,4 @@
+import { D } from "@/lib/money";
 import { describe, expect, it } from "vitest";
 import {
   computePOSTotals,
@@ -7,6 +8,8 @@ import {
   validatePosSaleBeforeSubmit,
 } from "../posTotals";
 import type { CartItem, POSTab, PosPaymentLegDraft } from "../posShared";
+import { deliverySendsPayment } from "../deliveryMode";
+import { deliveryFeeTenderForGoods } from "../feeTenderUi";
 
 function makeItem(price: number, qty = 1): CartItem {
   return {
@@ -372,3 +375,44 @@ describe("computePOSTotals & helpers — split / mixed payment legs", () => {
 });
 
 
+
+
+describe("held delivery fee and external payment binding",()=>{
+  function delivery(fee="5000"):NonNullable<POSTab["delivery"]>{return {governorate:"baghdad",address:"Baghdad",partyId:1,partyType:"INDIVIDUAL",partyName:"Courier",externalTrackingRef:"",fee,feeManual:true,feeCollection:"COUNTER",recipientName:"Buyer",recipientPhone:"+9647700000000",customerPhone:"07700000000"};}
+  it("cash fee-only COD leaves goods unpaid and does not link the fee to a nonexistent goods leg",()=>{
+    const tab=makeTab({method:"CASH",payInput:"0",delivery:delivery()});
+    const totals=computePOSTotals({cart:[makeItem(50000)],activeTab:tab});
+    expect(totals.codMode).toBe(true);expect(totals.paid).toBe(0);expect(totals.credit).toBe(50000);
+    expect(totals.deliveryPayload).toMatchObject({feeCollection:"COUNTER",fee:"5000.00"});
+    const sendsGoodsPayment=deliverySendsPayment(tab.method,totals.paidD);
+    expect(sendsGoodsPayment).toBe(false);
+    expect(deliveryFeeTenderForGoods(tab.method,sendsGoodsPayment)).toEqual({method:"CASH"});
+    expect(deliveryFeeTenderForGoods(tab.method,sendsGoodsPayment)).not.toHaveProperty("combinedWithPaymentIndex");
+  });
+  it.each(["CASH","CARD"] as const)("%s goods paid with the held fee retains the actual rail and one combined goods allocation",method=>{
+    const tab=makeTab({method,payInput:"50000",paymentRef:method==="CARD"?"FEE-PROOF":"",delivery:delivery()});
+    const totals=computePOSTotals({cart:[makeItem(50000)],activeTab:tab});
+    expect(totals.total).toBe(50000);expect(totals.paid).toBe(50000);
+    expect(deliveryFeeTenderForGoods(method,deliverySendsPayment(method,totals.paidD))).toEqual({method,combinedWithPaymentIndex:0});
+    if(method==="CARD")expect(totals.externalPaymentAmount).toBe("55000.00");
+  });
+  it("confirms 55,000 while goods allocation stays 50,000",()=>{
+    const tab=makeTab({method:"CARD",payInput:"50000",paymentRef:"FEE-PROOF",delivery:delivery()});
+    const totals=computePOSTotals({cart:[makeItem(50000)],activeTab:tab});
+    expect(totals.total).toBe(50000);expect(totals.paid).toBe(50000);expect(totals.externalPaymentAmount).toBe("55000.00");
+    tab.externalPayment={attemptId:1,requestId:"one",fingerprint:totals.externalPaymentFingerprint,state:"CONFIRMED",deviceId:"DEVICE"};
+    expect(computePOSTotals({cart:[makeItem(50000)],activeTab:tab}).externalPaymentConfirmed).toBe(true);
+    tab.delivery!.fee="6000";
+    expect(computePOSTotals({cart:[makeItem(50000)],activeTab:tab}).externalPaymentConfirmed).toBe(false);
+  });
+  it("split tender adds the fee to the first rail proof only",()=>{
+    const first=makeConfirmedLeg("one","CARD","30000","REF1");
+    first.externalPayment!.fingerprint=computeSplitLegFingerprint(first,D(5000));
+    const tab=makeTab({delivery:delivery(),paymentLegs:[first,makeConfirmedLeg("two","CASH","20000")]});
+    const totals=computePOSTotals({cart:[makeItem(50000)],activeTab:tab});
+    expect(totals.paid).toBe(50000);expect(totals.externalPaymentConfirmed).toBe(true);
+    expect(computeSplitLegFingerprint(first,D(5000))).toContain("35000.00");
+    tab.delivery!.fee="6000";
+    expect(computePOSTotals({cart:[makeItem(50000)],activeTab:tab}).externalPaymentConfirmed).toBe(false);
+  });
+});

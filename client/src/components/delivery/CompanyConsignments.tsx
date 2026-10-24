@@ -1,3 +1,5 @@
+import { deliverySourceView } from "@shared/deliverySource";
+import { DeliverySourceLink } from "./DeliverySourceLink";
 import { useEffect, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -121,7 +123,7 @@ export function ConsignmentsTab({
   };
   const exportRecord = (row: ConsignmentRow): Record<string, string> => ({
     consignment: row.consignmentNumber,
-    invoice: row.invoiceNumber ?? "",
+    invoice: deliverySourceView(row).reference,
     tracking: row.externalTrackingRef ?? "",
     customer: row.customerName ?? row.recipientName ?? "",
     phone: row.customerPhone ?? "",
@@ -139,7 +141,7 @@ export function ConsignmentsTab({
   });
   const exportColumns = [
     { key: "consignment", header: "الإرسالية", text: true },
-    { key: "invoice", header: "الفاتورة", text: true },
+    { key: "invoice", header: "المستند المصدر", text: true },
     { key: "tracking", header: "التتبع", text: true },
     { key: "customer", header: "العميل" },
     { key: "phone", header: "الهاتف", text: true },
@@ -364,7 +366,7 @@ export function ConsignmentsTab({
                   {row.customerPhone}
                 </a>
               )}
-              {row.invoiceNumber && <span>الفاتورة: {row.invoiceNumber}</span>}
+              <DeliverySourceLink source={row} />
               {row.externalTrackingRef && (
                 <span>
                   التتبع: <b dir="ltr">{row.externalTrackingRef}</b>
@@ -414,11 +416,7 @@ export function ConsignmentsTab({
             id: Number(collectConsignmentTarget.id),
             consignmentNumber: collectConsignmentTarget.consignmentNumber,
             partyId,
-            orderNumber:
-              collectConsignmentTarget.invoiceNumber ??
-              (collectConsignmentTarget.invoiceId
-                ? `#${collectConsignmentTarget.invoiceId}`
-                : null),
+            orderNumber: deliverySourceView(collectConsignmentTarget).reference,
             invoiceNumber: collectConsignmentTarget.invoiceNumber,
             customerName:
               collectConsignmentTarget.customerName ??

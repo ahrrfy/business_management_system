@@ -26,6 +26,8 @@ import { sql } from "drizzle-orm";
 import { barcodeIdentityColumn, barcodeIdentitySql } from "./barcodeIdentitySql";
 import type { DigitalCheckoutSnapshot } from "../shared/digitalSale";
 import type { OperationPolicy } from "../shared/operationPermissions";
+import { aftercareExecutions, fulfillmentRequests } from "./fulfillmentSchema";
+export * from "./fulfillmentSchema";
 
 /** One real customer receipt; allocation never posts cash or AR a second time. */
 export const customerReceiptSettlements = mysqlTable("customerReceiptSettlements", {
@@ -3918,7 +3920,7 @@ export const externalPaymentAttempts = mysqlTable(
     consumptionCompleteCheck: check(
       "chk_extpay_consumption_complete",
       sql`(${table.invoiceId} IS NULL AND ${table.receiptId} IS NULL AND ${table.consumedAt} IS NULL)
-        OR (${table.invoiceId} IS NOT NULL AND ${table.receiptId} IS NOT NULL AND ${table.consumedAt} IS NOT NULL
+        OR (${table.receiptId} IS NOT NULL AND ${table.consumedAt} IS NOT NULL
           AND ${table.state} IN ('CONFIRMED','REVERSED'))`,
     ),
   }),
@@ -13523,13 +13525,16 @@ export const deliveryConsignments = mysqlTable(
       .notNull()
       .references(() => deliveryParties.id),
     invoiceId: bigint("invoiceId", { mode: "number" })
-      .notNull()
       .references(() => invoices.id),
     workOrderId: bigint("workOrderId", { mode: "number" }),
+    fulfillmentRequestId: bigint("fulfillmentRequestId", { mode: "number" }),
+    aftercareExecutionId: bigint("aftercareExecutionId", { mode: "number" }),
     sourceType: mysqlEnum("sourceType", [
       "WORK_ORDER",
       "ONLINE_ORDER",
       "INVOICE",
+      "FULFILLMENT_REQUEST",
+      "AFTERCARE_EXECUTION",
     ])
       .default("INVOICE")
       .notNull(),
@@ -13542,6 +13547,9 @@ export const deliveryConsignments = mysqlTable(
       () => customers.id,
     ),
     codAmount: decimal("codAmount", { precision: 15, scale: 2 }).notNull(), // المطلوب تحصيله = total − deposit
+    codClaimVersion: int("codClaimVersion").default(1).notNull(),
+    courierAckClaimVersion: int("courierAckClaimVersion").default(0).notNull(),
+    courierAckAt: timestamp("courierAckAt"),
     collectedAmount: decimal("collectedAmount", { precision: 15, scale: 2 })
       .default("0")
       .notNull(),
@@ -13650,6 +13658,18 @@ export const deliveryConsignments = mysqlTable(
   },
   (table) => ({
     numberIdx: index("idx_consignment_number").on(table.consignmentNumber),
+    fulfillmentRequestIdx: index("idx_cn_fulfillment_request").on(table.fulfillmentRequestId),
+    aftercareExecutionUq: unique("uq_cn_aftercare_execution").on(table.aftercareExecutionId),
+    fulfillmentRequestFk: foreignKey({ name: "fk_cn_fulfillment_request", columns: [table.fulfillmentRequestId], foreignColumns: [fulfillmentRequests.id as AnyMySqlColumn] }),
+    aftercareExecutionFk: foreignKey({ name: "fk_cn_aftercare_execution", columns: [table.aftercareExecutionId], foreignColumns: [aftercareExecutions.id as AnyMySqlColumn] }),
+    sourceShapeCheck: check("chk_cn_source_shape", sql`(
+      ${table.sourceType} IN ('INVOICE','WORK_ORDER','ONLINE_ORDER') AND ${table.invoiceId} IS NOT NULL AND ${table.aftercareExecutionId} IS NULL
+    ) OR (
+      ${table.sourceType} = 'FULFILLMENT_REQUEST' AND ${table.fulfillmentRequestId} IS NOT NULL AND ${table.sourceId} = ${table.fulfillmentRequestId} AND ${table.invoiceId} IS NULL AND ${table.workOrderId} IS NULL AND ${table.aftercareExecutionId} IS NULL
+    ) OR (
+      ${table.sourceType} = 'AFTERCARE_EXECUTION' AND ${table.aftercareExecutionId} IS NOT NULL AND ${table.sourceId} = ${table.aftercareExecutionId} AND ${table.invoiceId} IS NULL AND ${table.workOrderId} IS NULL AND ${table.fulfillmentRequestId} IS NULL AND ${table.codAmount} = 0 AND ${table.feeCollection} = 'SHOP'
+    )`),
+    claimVersionCheck: check("chk_cn_claim_version", sql`${table.codClaimVersion} > 0 AND ${table.courierAckClaimVersion} >= 0 AND ${table.courierAckClaimVersion} <= ${table.codClaimVersion}`),
     partyStatusIdx: index("idx_consignment_party_status").on(
       table.partyId,
       table.status,

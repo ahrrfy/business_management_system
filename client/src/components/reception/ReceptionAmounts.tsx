@@ -132,8 +132,9 @@ export function useReceptionAmounts({
       ? round2(D(orderDelivery.fee || 0))
       : D(0);
   const heldDeliveryD = round2(
-    cart
-      .reduce((s, c) => s.plus(D(lineCounterHeldFee(c))), D(0))
+    (orderDelivery && !cart.some((line) => !isCustomKind(line))
+      ? D(0)
+      : cart.reduce((s, c) => s.plus(D(lineCounterHeldFee(c))), D(0)))
       .plus(orderFeeHeldD),
   );
   const heldDelivery = heldDeliveryD.toNumber();

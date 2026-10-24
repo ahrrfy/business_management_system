@@ -35,6 +35,7 @@ const RECEIPT_INSERT_INVENTORY: Readonly<Record<string, number>> = {
   "delivery/feeHeld.ts": 1,
   "delivery/fees.ts": 2,
   "delivery/historicalFeeWithholding.ts": 1,
+  "delivery/paymentRefunds.ts": 1,
   "delivery/remittance.ts": 2,
   "delivery/returns.ts": 2,
   "delivery/settle.ts": 2,
@@ -46,6 +47,8 @@ const RECEIPT_INSERT_INVENTORY: Readonly<Record<string, number>> = {
   "exchange/settleSupplier.ts": 1,
   "exchange/withdraw.ts": 1,
   "expenseService.ts": 2,
+  "fulfillment/aftercare.ts": 1,
+  "fulfillment/charges.ts": 1,
   "installment/bounce.ts": 1,
   "legacyNegativeShiftService.ts": 2,
   "payroll/advanceRepayment.ts": 1,
@@ -58,7 +61,6 @@ const RECEIPT_INSERT_INVENTORY: Readonly<Record<string, number>> = {
   "purchase/supplierPayments.ts": 2,
   "purchaseReturnsService.ts": 1,
   "reception/deposits.ts": 3,
-  "receptionCheckoutService.ts": 1,
   "returnService.ts": 5,
   // م٢ ق٧: ردُّ إلغاء البيع/المرتجع الكامل وردُّ عكس تسليم أمر الشغل يكتبهما منفّذا محرّك العكس —
   // `sale/cancel.ts` و`workOrder/reverseDelivery.ts` لم يعودا يكتبان إيصالاً (يقفلان المصدر وحسب).
@@ -74,12 +76,13 @@ const RECEIPT_INSERT_INVENTORY: Readonly<Record<string, number>> = {
   "treasuryFundingService.ts": 1,
   "voucher/create.ts": 1,
   "workOrder/cancel.ts": 3,
-  "workOrder/create.ts": 2,
+  "workOrder/create.ts": 1,
   "workOrder/deliver.ts": 1,
-  "workOrder/deliveryFeeRefund.ts": 1,
+  "workOrder/deliveryFeeRefund.ts": 2,
 };
 
 const NON_PHYSICAL_ONLY_WRITERS = new Set([
+  "delivery/paymentRefunds.ts", // Original CARD/TRANSFER/WALLET/CHECK refunds only.
   "exchange/settleSupplier.ts", // EXCHANGE + cashBucket=null
   "installment/bounce.ts", // bounced CHECK compensation, never CASH
 ]);
@@ -261,6 +264,7 @@ describe("closed cash-day writer inventory", () => {
     expect(transitions).toEqual([
       "cashHandoverService.ts",
       "cashVarianceService.ts",
+      "delivery/paymentRefunds.ts",
       "exchange/reverse.ts",
       "expenseService.ts",
       "purchase/pay.ts",
@@ -272,6 +276,10 @@ describe("closed cash-day writer inventory", () => {
     ]);
     for (const relative of transitions) {
       const source = readFileSync(path.join(root, relative), "utf8");
+      if (relative === "delivery/paymentRefunds.ts") {
+        expect(source).toMatch(/assertNonPhysicalOutReceipt\s*\(/);
+        continue;
+      }
       if (relative === "workOrder/cancel.ts") {
         // هذا انتقال تنفيذ CARD/TRANSFER/WALLET فقط؛ CASH يُنفّذ فوراً عند إنشاء الرد.
         expect(source).toMatch(/refund\.paymentMethod === "CASH"/);

@@ -242,7 +242,7 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
   const effLimit = resolvePageLimit(page.limit);
   const feeDue = consignmentFeeDueSql();
   const unpaidFee = and(
-    shipmentFeeDeliveryProvenExpr(),
+    or(shipmentFeeDeliveryProvenExpr(), eq(deliveryConsignments.sourceType, "AFTERCARE_EXECUTION")),
     sql`${feeDue} > 0`,
   );
   /**
@@ -263,6 +263,8 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
       id: deliveryConsignments.id,
       consignmentNumber: deliveryConsignments.consignmentNumber,
       invoiceId: deliveryConsignments.invoiceId,
+      fulfillmentRequestId: deliveryConsignments.fulfillmentRequestId,
+      aftercareExecutionId: deliveryConsignments.aftercareExecutionId,
       invoiceNumber: invoices.invoiceNumber,
       orderTotal: sql<string>`GREATEST(${invoices.total} - ${invoices.returnedTotal}, 0)`,
       orderNumber: workOrders.orderNumber,
@@ -354,6 +356,8 @@ export async function listInTransitConsignments(branchId: number | null, partyId
       id: deliveryConsignments.id,
       consignmentNumber: deliveryConsignments.consignmentNumber,
       invoiceId: deliveryConsignments.invoiceId,
+      fulfillmentRequestId: deliveryConsignments.fulfillmentRequestId,
+      aftercareExecutionId: deliveryConsignments.aftercareExecutionId,
       invoiceNumber: invoices.invoiceNumber,
       workOrderId: deliveryConsignments.workOrderId,
       orderNumber: workOrders.orderNumber,
@@ -550,6 +554,10 @@ export async function listConsignmentsForParty(partyId: number, openOnly = false
       branchId: deliveryConsignments.branchId,
       returnDeclaredAt: deliveryConsignments.returnDeclaredAt,
       invoiceId: deliveryConsignments.invoiceId,
+      fulfillmentRequestId: deliveryConsignments.fulfillmentRequestId,
+      aftercareExecutionId: deliveryConsignments.aftercareExecutionId,
+      sourceType: deliveryConsignments.sourceType,
+      sourceId: deliveryConsignments.sourceId,
       invoiceNumber: invoices.invoiceNumber,
       invoiceStatus: invoices.status,
       codAmount: deliveryConsignments.codAmount,
@@ -904,6 +912,8 @@ export async function getConsignmentTimeline(consignmentId: number) {
         sourceType: deliveryConsignments.sourceType,
         sourceId: deliveryConsignments.sourceId,
         invoiceId: deliveryConsignments.invoiceId,
+        fulfillmentRequestId: deliveryConsignments.fulfillmentRequestId,
+        aftercareExecutionId: deliveryConsignments.aftercareExecutionId,
         invoiceNumber: invoices.invoiceNumber,
         workOrderId: deliveryConsignments.workOrderId,
         orderNumber: workOrders.orderNumber,
@@ -1051,7 +1061,7 @@ export async function listPartyObligations(branchId: number | null) {
         ), 0)), 0)
         FROM deliveryConsignments dc
         WHERE dc.partyId = ${deliveryParties.id}
-          AND ${shipmentFeeDeliveryProvenExpr({ id: sql`dc.id`, partyId: sql`dc.partyId`, branchId: sql`dc.branchId`, parcelStatus: sql`dc.parcelStatus` })}${cnBranch})`,
+          AND (dc.sourceType = 'AFTERCARE_EXECUTION' OR ${shipmentFeeDeliveryProvenExpr({ id: sql`dc.id`, partyId: sql`dc.partyId`, branchId: sql`dc.branchId`, parcelStatus: sql`dc.parcelStatus` })})${cnBranch})`,
       /**
        * Slice DFP1 (٣٠/٨/٢٦، P1 #2) — عمودان جديدان يفكّان codDueTotal إلى مسؤوليّتين دلالياً منفصلتين
        * (نصّ المالك المُغلَق: «٤ أعمدة منفصلة» — الأول من العمود القائم currentBalance، والثاني والثالث
@@ -1243,6 +1253,10 @@ export interface PredictiveConsignmentItem {
   id: number;
   consignmentNumber: string;
   externalTrackingRef: string | null;
+  sourceType?: string | null;
+  sourceId?: number | null;
+  fulfillmentRequestId?: number | null;
+  aftercareExecutionId?: number | null;
   invoiceId: number | null;
   invoiceNumber: string | null;
   workOrderId: number | null;
@@ -1354,6 +1368,10 @@ export async function predictiveSearchConsignments(
       consignmentNumber: deliveryConsignments.consignmentNumber,
       externalTrackingRef: deliveryConsignments.externalTrackingRef,
       invoiceId: deliveryConsignments.invoiceId,
+      fulfillmentRequestId: deliveryConsignments.fulfillmentRequestId,
+      aftercareExecutionId: deliveryConsignments.aftercareExecutionId,
+      sourceType: deliveryConsignments.sourceType,
+      sourceId: deliveryConsignments.sourceId,
       invoiceNumber: invoices.invoiceNumber,
       workOrderId: deliveryConsignments.workOrderId,
       onlineOrderId: onlineOrders.id,
@@ -1446,6 +1464,10 @@ export async function predictiveSearchConsignments(
       id: Number(r.id),
       consignmentNumber: r.consignmentNumber,
       externalTrackingRef: r.externalTrackingRef,
+      sourceType: r.sourceType,
+      sourceId: r.sourceId,
+      fulfillmentRequestId: r.fulfillmentRequestId,
+      aftercareExecutionId: r.aftercareExecutionId,
       invoiceId: r.invoiceId ? Number(r.invoiceId) : null,
       invoiceNumber: r.invoiceNumber,
       workOrderId: r.workOrderId ? Number(r.workOrderId) : null,

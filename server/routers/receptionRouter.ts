@@ -1,3 +1,4 @@
+import { initiateExternalPaymentAttempt, confirmExternalPaymentAttempt } from "../services/posExternalPayment";
 // راوتر محطة خدمة الزبائن — ش١ من docs/reception-cashier-system-design-2026-08-05.md §٦.
 //
 // تستعمل المحطة صلاحيات الاستقبال القائمة؛ فحص التشابه القرائي وحده يقبل أيضاً صلاحية
@@ -112,6 +113,23 @@ function assertDraftImages(lines: Array<{ designImages?: string | null }>) {
 }
 
 export const receptionRouter = router({
+  initiateExternalPayment: workordersCashierProcedure.input(z.object({
+    branchId:z.number().int().positive(),method:z.enum(["CARD","TRANSFER","WALLET"]),
+    amount:positiveMoneyString,reference:z.string().trim().min(1).max(100),
+    requestId:z.string().trim().min(1).max(80),deviceId:z.string().trim().min(1).max(64),
+  })).mutation(({ctx,input})=>{
+    const branchId=effectiveBranch(ctx,input.branchId);
+    if(branchId==null)throw new TRPCError({code:"FORBIDDEN",message:appErrorMessage({what:"تعذّر تأكيد قبض الاستقبال",why:"لا فرع فعلي مسند للمستخدم",doThis:"اختر الفرع المخول أو اطلب إسناد حسابك إلى فرع قبل القبض"})});
+    return initiateExternalPaymentAttempt({...input,branchId,channel:"PRINT_POS"},{userId:ctx.user.id,branchId,role:ctx.user.role});
+  }),
+  confirmExternalPayment: workordersCashierProcedure.input(z.object({
+    branchId:z.number().int().positive(),attemptId:z.number().int().positive(),deviceId:z.string().trim().min(1).max(64),
+  })).mutation(({ctx,input})=>{
+    const branchId=effectiveBranch(ctx,input.branchId);
+    if(branchId==null)throw new TRPCError({code:"FORBIDDEN",message:appErrorMessage({what:"تعذّر تأكيد قبض الاستقبال",why:"لا فرع فعلي مسند للمستخدم",doThis:"اختر الفرع المخول أو اطلب إسناد حسابك إلى فرع قبل القبض"})});
+    return confirmExternalPaymentAttempt({...input,branchId,channel:"PRINT_POS"},{userId:ctx.user.id,branchId,role:ctx.user.role});
+  }),
+
   duplicateOrders: receptionDuplicateReadProcedure
     .input(z.object({
       branchId: z.number().int().positive().nullish(),
@@ -457,10 +475,19 @@ export const receptionRouter = router({
         amount: positiveMoneyString,
         method: inboundPaymentMethod,
         reference: z.string().trim().max(100).nullish(),
+        externalPaymentAttemptId:z.number().int().positive().nullish(),
+        externalPaymentDeviceId:z.string().trim().min(1).max(64).nullish(),
       }).nullish(),
       cashRoundIQD: z.boolean().optional(),
       // ش٦ (V15): أجرة توصيل الطلب المقبوضة الآن أمانةً للمندوب — نقداً في الدرج حتماً.
       deliveryFeeHeld: positiveMoneyString.nullish(),
+  deliveryFeeTender: z.object({
+  method: z.enum(["CASH", "CARD", "TRANSFER", "WALLET"]),
+  reference: z.string().trim().max(100).nullish(),
+  externalPaymentAttemptId: z.number().int().positive().nullish(),
+  externalPaymentDeviceId: z.string().trim().min(1).max(64).nullish(),
+  combinedWithPaymentIndex: z.number().int().min(0).nullish(),
+}).nullish(),
       // ش٧: إسناد الطلب لمندوبٍ داخل معاملة التثبيت — المتبقّي عهدةٌ عليه لا نقدٌ في الدرج.
       delivery: z.object({
         partyId: z.number().int().positive(),
@@ -520,6 +547,7 @@ export const receptionRouter = router({
           collectNow: input.collectNow ?? null,
           cashRoundIQD: input.cashRoundIQD,
           deliveryFeeHeld: input.deliveryFeeHeld ?? null,
+          deliveryFeeTender: input.deliveryFeeTender ?? null,
           delivery: input.delivery ?? null,
           openingSellUnavailableConfirmed: input.openingSellUnavailableConfirmed === true,
           priceOverrideApproved: elevated || approvedBy != null,

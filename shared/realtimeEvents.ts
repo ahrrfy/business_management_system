@@ -235,7 +235,11 @@ export interface StorefrontOrderPlacedPayload {
  */
 export interface DeliveryDispatchedPayload {
   deliveryId: number;
-  invoiceId?: number;
+  invoiceId?: number | null;
+  sourceType?: string;
+  sourceId?: number;
+  fulfillmentRequestId?: number | null;
+  aftercareExecutionId?: number | null;
   orderId?: number;
   trackingNumber?: string;
   driverId: number;
@@ -247,7 +251,11 @@ export interface DeliveryDispatchedPayload {
  */
 export interface DeliveryCompletedPayload {
   deliveryId: number;
-  invoiceId?: number;
+  invoiceId?: number | null;
+  sourceType?: string;
+  sourceId?: number;
+  fulfillmentRequestId?: number | null;
+  aftercareExecutionId?: number | null;
   driverId: number;
   branchId: number;
   collectedAmount?: string;

@@ -1,3 +1,4 @@
+import { fulfillmentChargePayments, fulfillmentCharges } from "../../drizzle/fulfillmentSchema";
 // posExternalPayment — إثباتُ القبض غير النقديّ: INITIATED ⇒ CONFIRMED ⇒ استهلاكٌ مرّةً واحدة.
 //
 // ⚠️ **قاعدةُ صياغةٍ حاكمة لكلّ رسالةٍ في هذا الملفّ:** رفضُه يقع **والزبون واقفٌ وبطاقتُه في
@@ -9,8 +10,15 @@
 // ⇒ كلُّ `why` هنا يقول ما ينقص من الإثبات، ولا يقول أبداً إنّ الطريقة معطّلة؛ و`doThis` يحيل
 //   إلى الزرّ باسمه في الشاشة («تأكيد نجاح الدفع لدى المزوّد») لا إلى «راجع المدير».
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, sql } from "drizzle-orm";
-import { digitalSaleIntents, externalPaymentAttempts, invoices, receipts, salesControlRequests,
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import {
+  digitalSaleIntents,
+  accountingEntries,
+  externalPaymentAttempts,
+  invoices,
+  receipts,
+  salesControlRequests,
+  workOrders,
 } from "../../drizzle/schema";
 import { getDb, type Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
@@ -18,7 +26,7 @@ import { appErrorMessage } from "@shared/errors";
 import { paymentMethodCompact } from "@shared/terms";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { logger } from "../logger";
-import { money, toDbMoney } from "./money";
+import { money, round2, toDbMoney } from "./money";
 import { assertPosPaymentMethodEnabled } from "./posPaymentPolicy";
 import { createSaleInTx, DIGITAL_SALE_CAPABILITY, notifySaleCustomerAfterCommit,
 } from "./sale/create";
@@ -63,6 +71,8 @@ export interface ExternalPaymentBindingInput {
   digitalSaleIntentId?: number | null;
   verificationPolicy?: ExternalPaymentVerificationPolicy;
   businessBinding?: ExternalPaymentBusinessBinding | null;
+  /** Server-computed receipt allocations; never accepted from a router. */
+  allocationReceiptIds?: number[];
 }
 
 export type LockedExternalPaymentAttempt = typeof externalPaymentAttempts.$inferSelect;
@@ -533,17 +543,17 @@ export async function createConfirmedExternalPaymentAttemptTx(
     // بديل للمراجع نفسه بإعادة استعمال المرجع/المبلغ/الجهاز المطابقين بدلاً من تمرير البطاقة
     // ثانيةً. أي اختلاف يبقى تعارضاً صريحاً، والاستهلاك الأحادي يحسم السباق.
     if (
-      duplicateReference.state === "CONFIRMED"
-      && duplicateReference.invoiceId == null
-      && duplicateReference.receiptId == null
-      && duplicateReference.consumedAt == null
-      && fingerprintMatches(duplicateReference, input, actor)
-      && await isRecoverableStaleCorrectionProofTx(
+      duplicateReference.state === "CONFIRMED" &&
+      duplicateReference.invoiceId == null &&
+      duplicateReference.receiptId == null &&
+      duplicateReference.consumedAt == null &&
+      fingerprintMatches(duplicateReference, input, actor) &&
+      (await isRecoverableStaleCorrectionProofTx(
         tx,
         duplicateReference.requestId,
         input.requestId,
         actor,
-      )
+      ))
     ) {
       return duplicateReference;
     }
@@ -881,12 +891,44 @@ export async function assertExternalPaymentReplay(
       .where(eq(receipts.id, Number(row.receiptId)))
       .limit(1)
   )[0];
+  const allocated = input.allocationReceiptIds?.length
+    ? await tx
+        .select()
+        .from(receipts)
+        .where(inArray(receipts.id, input.allocationReceiptIds))
+    : null;
+  const allocatedAmount = allocated?.reduce(
+    (sum, r) => sum.plus(money(r.amount)),
+    money("0"),
+  );
+  const validAllocations =
+    allocated &&
+    allocated.length === new Set(input.allocationReceiptIds).size &&
+    allocated.every(
+      (r) =>
+        Number(r.invoiceId) === invoiceId &&
+        r.direction === "IN" &&
+        r.paymentMethod === row.paymentMethod &&
+        r.status === "COMPLETED" &&
+        (r.referenceNumber === row.externalReference ||
+          r.internalNote ===
+            JSON.stringify({
+              externalPaymentReference: row.externalReference,
+              externalPaymentAttemptId: Number(row.id),
+            })),
+    ) &&
+    allocated.some((r) => Number(r.id) === Number(row.receiptId));
   if (
     !receipt ||
     Number(receipt.invoiceId) !== invoiceId ||
     receipt.paymentMethod !== row.paymentMethod ||
-    !money(receipt.amount).eq(money(row.amount)) ||
-    (receipt.referenceNumber?.trim() || null) !== row.externalReference.trim()
+    !(allocated
+      ? validAllocations && allocatedAmount!.eq(money(row.amount))
+      : money(receipt.amount).eq(money(row.amount))) ||
+    !(allocated
+      ? validAllocations
+      : (receipt.referenceNumber?.trim() || null) ===
+        row.externalReference.trim())
   ) {
     throw new TRPCError({
       code: "CONFLICT",
@@ -940,9 +982,41 @@ export async function assertExternalPaymentReplay(
 export async function bindExternalPaymentAttempt(
   tx: Tx,
   attemptId: number,
-  invoiceId: number,
+  invoiceId: number | null,
   receiptId: number,
 ): Promise<void> {
+  const receipt = (await tx.select().from(receipts).where(eq(receipts.id,receiptId)).for("update").limit(1))[0];
+  const proof = (await tx.select().from(externalPaymentAttempts).where(eq(externalPaymentAttempts.id,attemptId)).for("update").limit(1))[0];
+  const workOrder = invoiceId == null && receipt?.workOrderId != null
+    ? (await tx.select({branchId:workOrders.branchId}).from(workOrders).where(eq(workOrders.id,Number(receipt.workOrderId))).limit(1))[0] : null;
+  let realChargeCollection = false;
+  if (invoiceId == null && receipt && receipt.workOrderId == null) {
+    const allocations = await tx.select({payment:fulfillmentChargePayments,charge:fulfillmentCharges})
+      .from(fulfillmentChargePayments).innerJoin(fulfillmentCharges,eq(fulfillmentCharges.id,fulfillmentChargePayments.chargeId))
+      .where(and(eq(fulfillmentChargePayments.receiptId,receiptId),eq(fulfillmentChargePayments.kind,"COLLECTION")))
+      .orderBy(fulfillmentCharges.id,fulfillmentChargePayments.id).for("update");
+    const allocated = allocations.reduce((sum,r)=>sum.plus(money(r.payment.amount)),money("0"));
+    const excess = money(receipt.amount).minus(allocated);
+    const entry = (await tx.select().from(accountingEntries).where(and(eq(accountingEntries.receiptId,receiptId),
+      eq(accountingEntries.dedupeKey,`FULFILLMENT_CHARGE_COLLECTION:R:${receiptId}`),eq(accountingEntries.entryType,"PAYMENT_IN"))).limit(1))[0];
+    let declared: {allocatedAmount?:string;excessLiabilityAmount?:string}|undefined;
+    try { const note:unknown=JSON.parse(receipt.internalNote??"null");
+      if(note&&typeof note==="object"&&"fulfillmentChargeCollection" in note)declared=note.fulfillmentChargeCollection as typeof declared;
+    } catch { /* Missing/malformed allocation evidence fails closed below. */ }
+    realChargeCollection = allocations.length>0 && allocated.gt(0) && excess.gte(0)
+      && receipt.partyType==="CUSTOMER" && receipt.partyId!=null
+      && allocations.every(r=>money(r.payment.amount).gt(0)&&r.payment.branchId===receipt.branchId
+        &&r.charge.branchId===receipt.branchId&&r.charge.customerId===receipt.partyId
+        &&r.charge.status==="APPROVED"&&r.charge.category!=="SHOP_EXPENSE")
+      && entry!=null&&entry.branchId===receipt.branchId&&entry.customerId===receipt.partyId&&money(entry.amount).eq(money(receipt.amount))
+      && declared?.allocatedAmount===allocated.toFixed(2)&&declared?.excessLiabilityAmount===excess.toFixed(2)
+      && (!excess.gt(0)||entry.notes?.includes(`فائض أمانة عميل ${excess.toFixed(2)}`)===true);
+  }
+  if (!receipt || !proof || receipt.direction !== "IN" || receipt.status !== "COMPLETED" || receipt.approvalStatus !== "APPROVED"
+    || receipt.paymentMethod !== proof.paymentMethod || Number(receipt.branchId) !== Number(proof.branchId)
+    || (invoiceId != null ? Number(receipt.invoiceId) !== invoiceId : receipt.invoiceId != null || (!realChargeCollection && (!workOrder || Number(workOrder.branchId) !== Number(proof.branchId))))) {
+    throw feeTenderError("رأس إثبات القبض يجب أن يرتبط بإيصال منفذ من نفس الفرع والوسيلة ومصدر فاتورة أو أمر شغل أو تخصيص أجور حقيقي");
+  }
   const result: any = await tx
     .update(externalPaymentAttempts)
     .set({ invoiceId, receiptId, consumedAt: new Date() })
@@ -1031,12 +1105,335 @@ function coreSaleInput(
  * تركيب قناة POS: التأكيد الخارجي + الفاتورة + الإيصال + الاستهلاك في معاملة واحدة.
  * نواة البيع العامة تبقى قابلةً لمساراتها الداخلية، أمّا الراوتر العام والبطاقات الرقمية فيمران هنا.
  */
+/** Server-selected, persisted allocations; the caller owns their locked source documents. */
+export async function consumeExternalReceiptAllocationsTx(
+  tx: Tx,
+  binding: ExternalPaymentBindingInput,
+  receiptIds: number[],
+  actor: Actor,
+): Promise<void> {
+  const rows = await tx
+    .select()
+    .from(receipts)
+    .where(inArray(receipts.id, receiptIds))
+    .for("update");
+  const first = rows.find((r) => Number(r.id) === receiptIds[0]);
+  if (
+    !first ||
+    rows.length !== new Set(receiptIds).size ||
+    rows.some(
+      (r) =>
+        r.direction !== "IN" ||
+        r.status !== "COMPLETED" ||
+        r.approvalStatus !== "APPROVED" ||
+        r.paymentMethod !== binding.method ||
+        Number(r.branchId) !== binding.branchId ||
+        Number(r.createdBy) !== actor.userId,
+    ) ||
+    !rows
+      .reduce((sum, r) => sum.plus(money(r.amount)), money("0"))
+      .eq(money(binding.amount))
+  ) {
+    throw feeTenderError(
+      "إيصالات التخصيص لا تطابق القبض المؤكد في المبلغ أو الوسيلة أو الفرع أو القابض",
+    );
+  }
+  const row = (
+    await tx
+      .select()
+      .from(externalPaymentAttempts)
+      .where(eq(externalPaymentAttempts.id, binding.attemptId ?? -1))
+      .for("update")
+      .limit(1)
+  )[0];
+  if (row?.consumedAt != null) {
+    const policy = assertVerificationBinding(row, binding);
+    assertAttemptActorAuthority(row, policy, actor, false);
+    if (
+      row.state !== "CONFIRMED" ||
+      row.confirmedAt == null ||
+      row.channel !== binding.channel ||
+      Number(row.branchId) !== binding.branchId ||
+      row.paymentMethod !== binding.method ||
+      row.deviceId !== binding.deviceId?.trim() ||
+      !money(row.amount).eq(money(binding.amount)) ||
+      Number(row.receiptId) !== Number(first.id) ||
+      (row.invoiceId ?? null) !== (first.invoiceId ?? null)
+    ) {
+      throw feeTenderError(
+        "إثبات القبض مستهلك على تخصيص أو جهاز أو مستند مختلف",
+      );
+    }
+  } else {
+    const confirmed = await lockConfirmedExternalPaymentAttempt(
+      tx,
+      binding,
+      actor,
+    );
+    await bindExternalPaymentAttempt(
+      tx,
+      Number(confirmed.id),
+      first.invoiceId ?? null,
+      Number(first.id),
+    );
+  }
+  const proof =
+    row ??
+    (
+      await tx
+        .select()
+        .from(externalPaymentAttempts)
+        .where(eq(externalPaymentAttempts.id, binding.attemptId!))
+        .limit(1)
+    )[0]!;
+  for (const receipt of rows) {
+    const note = JSON.stringify({
+      externalPaymentReference: proof.externalReference,
+      externalPaymentAttemptId: Number(proof.id),
+    });
+    if (
+      receipt.referenceNumber !== proof.externalReference &&
+      receipt.internalNote !== note
+    ) {
+      throw feeTenderError("مرجع الإيصال لا يطابق إثبات عملية المزوّد");
+    }
+    if (receipt.internalNote == null) await tx.update(receipts).set({internalNote:note}).where(eq(receipts.id,Number(receipt.id)));
+  }
+}
+
+function feeTenderError(why: string): TRPCError {
+  return new TRPCError({
+    code: "CONFLICT",
+    message: appErrorMessage({
+      what: "تعذّر تخصيص قبض أجرة التوصيل",
+      why,
+      doThis:
+        "راجع مبلغ العملية ووسيلة القبض وإثبات نجاحها؛ أعد المحاولة بنفس المفتاح دون تمرير البطاقة ثانية",
+    }),
+  });
+}
+
+/** One external attempt is consumed on its primary receipt; allocations never consume it again. */
+async function createConfirmedFeeTenderSaleInTx(
+  tx: Tx,
+  input: ConfirmedPosSaleInput,
+  actor: Actor,
+  capability?: typeof DIGITAL_SALE_CAPABILITY,
+): Promise<CreateSaleResult> {
+  const tender = input.deliveryFeeTender ?? { method: "CASH" as const };
+  const legs = input.payments?.length
+    ? input.payments
+    : input.payment
+      ? [input.payment]
+      : [];
+  const groups = legs.map((leg, idx) => ({
+    leg,
+    idx,
+    fee: false,
+    amount: money(leg.amount),
+  }));
+  const fee = money(input.deliveryFeeHeld!);
+  const combined = tender.combinedWithPaymentIndex;
+  if (combined != null) {
+    const group = groups[combined];
+    if (
+      !Number.isInteger(combined) ||
+      !group ||
+      group.leg.method !== tender.method ||
+      (tender.externalPaymentAttemptId != null &&
+        tender.externalPaymentAttemptId !== group.leg.externalPaymentAttemptId)
+    ) {
+      throw feeTenderError("تخصيص الأجرة لا يطابق دفعة البضاعة أو إثباتها");
+    }
+    group.fee = true;
+    group.amount = group.amount.plus(fee);
+  } else {
+    groups.push({
+      idx: -1,
+      fee: true,
+      amount: fee,
+      leg: {
+        amount: fee.toFixed(2),
+        method: tender.method,
+        reference: tender.reference,
+        externalPaymentAttemptId: tender.externalPaymentAttemptId,
+      },
+    });
+  }
+  const ids = new Set<number>();
+  for (const group of groups) {
+    assertPosPaymentMethodEnabled(group.leg.method);
+    if (group.leg.method === "CASH") {
+      if (group.leg.externalPaymentAttemptId != null)
+        throw feeTenderError("القبض النقدي لا يستهلك إثبات دفع خارجي");
+    } else if (group.leg.externalPaymentAttemptId != null) {
+      if (ids.has(group.leg.externalPaymentAttemptId))
+        throw feeTenderError(
+          "إثبات واحد مكرر في تخصيصين مستقلين؛ اربط الأجرة بدفعة البضاعة المشتركة",
+        );
+      ids.add(group.leg.externalPaymentAttemptId);
+    }
+  }
+  const existing = input.clientRequestId
+    ? (
+        await tx
+          .select({ id: invoices.id })
+          .from(invoices)
+          .where(eq(invoices.sourceId, input.clientRequestId))
+          .limit(1)
+      )[0]
+    : null;
+  const attempts = new Map<number, LockedExternalPaymentAttempt>();
+  const refs = new Map<number, string>();
+  let feeReference = tender.reference;
+  for (const group of [...groups].sort(
+    (a, b) =>
+      (a.leg.externalPaymentAttemptId ?? 0) -
+      (b.leg.externalPaymentAttemptId ?? 0),
+  )) {
+    if (group.leg.method === "CASH") continue;
+    const binding: ExternalPaymentBindingInput = {
+      branchId: input.branchId,
+      channel: "POS",
+      method: group.leg.method,
+      amount: group.amount.toFixed(2),
+      attemptId: group.leg.externalPaymentAttemptId,
+      deviceId:
+        group.idx === -1
+          ? (tender.externalPaymentDeviceId ?? input.deviceId)
+          : input.deviceId,
+      digitalSaleIntentId: group.leg.externalPaymentIntentId,
+    };
+    const attempt = existing
+      ? (
+          await tx
+            .select()
+            .from(externalPaymentAttempts)
+            .where(eq(externalPaymentAttempts.id, binding.attemptId ?? -1))
+            .limit(1)
+        )[0]
+      : await lockConfirmedExternalPaymentAttempt(tx, binding, actor);
+    if (!attempt)
+      throw feeTenderError(
+        "إثبات القبض مفقود؛ استرجع العملية المؤكدة قبل إعادة الحفظ",
+      );
+    attempts.set(group.idx, attempt);
+    if (group.idx >= 0) refs.set(group.idx, attempt.externalReference);
+    if (group.fee) feeReference = attempt.externalReference;
+  }
+  const core = coreSaleInput(input, refs.get(0), refs);
+  if (input.deliveryFeeTender != null)
+    core.deliveryFeeTender = {
+      ...tender,
+      reference: feeReference,
+      externalPaymentAttemptId:
+        combined != null
+          ? legs[combined]?.externalPaymentAttemptId
+          : tender.externalPaymentAttemptId,
+    };
+  const sale = await createSaleInTx(tx, core, actor, capability);
+  const preIds = new Set(input.preCollected?.receiptIds ?? []);
+  const rows = (
+    await tx
+      .select()
+      .from(receipts)
+      .where(
+        and(
+          eq(receipts.invoiceId, sale.invoiceId),
+          eq(receipts.direction, "IN"),
+        ),
+      )
+      .orderBy(receipts.id)
+  ).filter((r) => !preIds.has(Number(r.id)));
+  const feeRow = rows.find(
+    (r) => r.referenceNumber === `DLV-FEE-INV-${sale.invoiceId}`,
+  );
+  const goodsRows = rows.filter(
+    (r) => !r.referenceNumber?.startsWith("DLV-FEE-"),
+  );
+  if (!feeRow) throw feeTenderError("إيصال أمانة الأجرة غير موجود");
+  // The sale keeps noncash in full and returns excess cash as change. Fee money
+  // is separate from this goods-only budget, including on idempotent replay.
+  const nonCashGoods = legs.reduce((sum, leg) => leg.method === "CASH" ? sum : sum.plus(round2(money(leg.amount))), money(0));
+  const cashGoodsBudget = round2(money(sale.total).minus(round2(money(input.preCollected?.amount ?? "0"))).minus(nonCashGoods));
+  let cashGoodsRemaining = cashGoodsBudget.gt(0) ? cashGoodsBudget : money(0);
+  let goodsReceiptIndex = 0;
+  for (const group of groups) {
+    let goodsAmount = group.idx >= 0 ? round2(money(group.leg.amount)) : money(0);
+    if (group.idx >= 0 && group.leg.method === "CASH") {
+      goodsAmount = goodsAmount.lt(cashGoodsRemaining) ? goodsAmount : cashGoodsRemaining;
+      cashGoodsRemaining = round2(cashGoodsRemaining.minus(goodsAmount));
+    }
+    const expectedAmount = group.leg.method === "CASH"
+      ? goodsAmount.plus(group.fee ? fee : money(0))
+      : group.amount;
+    const allocation = [
+      ...(goodsAmount.gt(0) ? [goodsRows[goodsReceiptIndex++]] : []),
+      ...(group.fee ? [feeRow] : []),
+    ];
+    if (
+      allocation.some(
+        (r) =>
+          !r ||
+          r.paymentMethod !== group.leg.method ||
+          r.status !== "COMPLETED",
+      ) ||
+      !allocation
+        .reduce((sum, r) => sum.plus(money(r.amount)), money("0"))
+        .eq(expectedAmount)
+    ) {
+      throw feeTenderError(
+        "مجموع الإيصالات المخصصة لا يطابق مبلغ القبض المؤكد أو وسيلته",
+      );
+    }
+    if (group.leg.method === "CASH") continue;
+    const attempt = attempts.get(group.idx)!;
+    if (sale.idempotentReplay) {
+      await assertExternalPaymentReplay(
+        tx,
+        sale.invoiceId,
+        {
+          branchId: input.branchId,
+          channel: "POS",
+          method: group.leg.method,
+          amount: group.amount.toFixed(2),
+          attemptId: group.leg.externalPaymentAttemptId,
+          deviceId:
+            group.idx === -1
+              ? (tender.externalPaymentDeviceId ?? input.deviceId)
+              : input.deviceId,
+          digitalSaleIntentId: group.leg.externalPaymentIntentId,
+          allocationReceiptIds: allocation.map((r) => Number(r.id)),
+        },
+        actor,
+        Number(allocation[0].id),
+      );
+    } else {
+      await bindExternalPaymentAttempt(
+        tx,
+        Number(attempt.id),
+        sale.invoiceId,
+        Number(allocation[0].id),
+      );
+      const allocationNote = JSON.stringify({externalPaymentReference:attempt.externalReference,externalPaymentAttemptId:Number(attempt.id)});
+      for (const allocatedReceipt of allocation) if (allocatedReceipt.internalNote == null) {
+        await tx.update(receipts).set({internalNote:allocationNote}).where(eq(receipts.id,Number(allocatedReceipt.id)));
+      }
+    }
+  }
+  if (goodsReceiptIndex !== goodsRows.length) throw feeTenderError("عدد إيصالات البضاعة لا يطابق تخصيصات القبض المحتفظ بها");
+  return sale;
+}
+
 export async function createConfirmedPosSaleInTx(
   tx: Tx,
   input: ConfirmedPosSaleInput,
   actor: Actor,
   capability?: typeof DIGITAL_SALE_CAPABILITY,
 ): Promise<CreateSaleResult> {
+  if (money(input.deliveryFeeHeld ?? "0").gt(0)) {
+    return createConfirmedFeeTenderSaleInTx(tx, input, actor, capability);
+  }
   if (Array.isArray(input.payments) && input.payments.length > 0) {
     for (const leg of input.payments) {
       assertPosPaymentMethodEnabled(leg.method);
@@ -1279,7 +1676,26 @@ export async function createConfirmedPosSaleInTx(
     }
     const replay = await createSaleInTx(tx, coreSaleInput(input, replayRef), actor, capability,
     );
-    await assertExternalPaymentReplay(tx, replay.invoiceId, {
+    await assertExternalPaymentReplay(
+      tx,
+      replay.invoiceId,
+      {
+        branchId: input.branchId,
+        channel: "POS",
+        method: payment.method,
+        amount: payment.amount,
+        attemptId: payment.externalPaymentAttemptId,
+        deviceId: input.deviceId,
+        digitalSaleIntentId: payment.externalPaymentIntentId,
+      },
+      actor,
+    );
+    return replay;
+  }
+
+  return consumeConfirmedExternalPaymentAttemptTx(
+    tx,
+    {
       branchId: input.branchId,
       channel: "POS",
       method: payment.method,
@@ -1287,20 +1703,8 @@ export async function createConfirmedPosSaleInTx(
       attemptId: payment.externalPaymentAttemptId,
       deviceId: input.deviceId,
       digitalSaleIntentId: payment.externalPaymentIntentId,
-    }, actor,
-    );
-    return replay;
-  }
-
-  return consumeConfirmedExternalPaymentAttemptTx(tx, {
-    branchId: input.branchId,
-    channel: "POS",
-    method: payment.method,
-    amount: payment.amount,
-    attemptId: payment.externalPaymentAttemptId,
-    deviceId: input.deviceId,
-    digitalSaleIntentId: payment.externalPaymentIntentId,
-  }, actor,
+    },
+    actor,
     async (attempt) => {
       const sale = await createSaleInTx(tx, coreSaleInput(input, attempt.externalReference), actor, capability,
       );

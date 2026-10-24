@@ -1,3 +1,6 @@
+import { returnFulfillmentRequestConsignmentTx } from "../fulfillment/requestSources";
+import { loadRefundCaps } from "../returns/refundCaps";
+import { routeAftercareDeliveryResultTx } from "../fulfillment/aftercareDelivery";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import Decimal from "decimal.js";
@@ -27,7 +30,11 @@ import { confirmConsignmentDelivery } from "./courier";
 import { reassignDeliveryConsignment } from "./parties";
 import { allocateProportionally } from "./remittance";
 import { refundHeldDeliveryFeeForReturnTx, returnConsignment } from "./returns";
-import { loadShipmentMembersTx, operationalShipmentMembers, shipmentCurrentPartyMembers } from "./shipments";
+import {
+  loadShipmentMembersTx,
+  operationalShipmentMembers,
+  shipmentCurrentPartyMembers,
+} from "./shipments";
 import { staffMarkFailed } from "./staffTransition";
 import type { DeliveryTxActor } from "./types";
 import { declareConsignmentReturn } from "./declaredReturn";
@@ -37,7 +44,9 @@ export interface ShipmentOperationInput {
   consignmentId: number;
   clientRequestId: string;
 }
-type ShipmentRequest = Pick<ShipmentOperationInput, "consignmentId"> & { clientRequestId?: string | null };
+type ShipmentRequest = Pick<ShipmentOperationInput, "consignmentId"> & {
+  clientRequestId?: string | null;
+};
 export interface ShipmentOperationResult {
   consignmentId: number;
   consignmentIds: number[];
@@ -51,7 +60,10 @@ export interface ConfirmShipmentDeliveryInput extends ShipmentOperationInput {
 export interface ShipmentReasonInput extends ShipmentOperationInput {
   reason: string;
 }
-export interface DeclareShipmentReturnInput extends Omit<ShipmentReasonInput, "clientRequestId"> {
+export interface DeclareShipmentReturnInput extends Omit<
+  ShipmentReasonInput,
+  "clientRequestId"
+> {
   clientRequestId?: string | null;
   statementNumber?: string | null;
 }
@@ -106,7 +118,7 @@ async function lockShipmentTx(
     .where(eq(deliveryShipmentMembers.consignmentId, input.consignmentId))
     .limit(1);
   const leaderId = Number(membership?.leaderConsignmentId ?? preview[0].id);
-  const previewLeader = preview.find(row => Number(row.id) === leaderId);
+  const previewLeader = preview.find((row) => Number(row.id) === leaderId);
   if (!previewLeader) reject("قائد الشحنة غير موجود ضمن فواتيرها");
   const partyId = Number(previewLeader.partyId);
   const [party] = await tx
@@ -136,12 +148,17 @@ async function lockShipmentTx(
     .orderBy(asc(deliveryConsignments.id))
     .for("update");
   assertScope(actor, rows);
-  const leader = rows.find(row => Number(row.id) === leaderId);
+  const leader = rows.find((row) => Number(row.id) === leaderId);
   if (
     rows.length !== preview.length ||
-    !leader || Number(leader.partyId) !== partyId ||
-    rows.some(row => Number(row.branchId) !== Number(previewLeader.branchId)) ||
-    shipmentCurrentPartyMembers(rows).some(row => Number(row.partyId) !== partyId)
+    !leader ||
+    Number(leader.partyId) !== partyId ||
+    rows.some(
+      (row) => Number(row.branchId) !== Number(previewLeader.branchId),
+    ) ||
+    shipmentCurrentPartyMembers(rows).some(
+      (row) => Number(row.partyId) !== partyId,
+    )
   )
     reject("أطراف الشحنة غير متسقة");
   return {
@@ -157,8 +174,11 @@ async function executeShipment<I extends ShipmentRequest>(
   actor: DeliveryTxActor,
   apply: (tx: Tx, rows: Member[], partyId: number) => Promise<void>,
   prelock?: (tx: Tx, rows: Member[]) => Promise<void>,
+  sourceRoute?: (tx: Tx) => Promise<ShipmentOperationResult | null>,
 ): Promise<ShipmentOperationResult> {
   return withTx(async (tx) => {
+    const routed = await sourceRoute?.(tx);
+    if (routed) return routed;
     const { rows, partyId, leaderId } = await lockShipmentTx(
       tx,
       input,
@@ -183,15 +203,17 @@ async function executeShipment<I extends ShipmentRequest>(
       return result;
     }
     const operational = operationalShipmentMembers(rows);
-    if (!operational.length) reject("لا توجد فواتير متبقية ضمن دورة توصيل الشحنة");
+    if (!operational.length)
+      reject("لا توجد فواتير متبقية ضمن دورة توصيل الشحنة");
     await apply(tx, operational, partyId);
-    if (input.clientRequestId) await recordIdempotencyKey(
-      tx,
-      namespace,
-      input.clientRequestId,
-      leaderId,
-      hash,
-    );
+    if (input.clientRequestId)
+      await recordIdempotencyKey(
+        tx,
+        namespace,
+        input.clientRequestId,
+        leaderId,
+        hash,
+      );
     return result;
   });
 }
@@ -286,18 +308,48 @@ export async function confirmShipmentDelivery(
 }
 
 /** A return notice releases expected COD, while stock, invoices and cash await physical receipt. */
-export async function declareShipmentReturn(input: DeclareShipmentReturnInput, actor: DeliveryTxActor) {
-  const normalized = { ...input, reason: input.reason.trim(), statementNumber: input.statementNumber?.trim() || null };
-  return executeShipment("delivery.declareShipmentReturn", normalized, actor, async (tx, rows) => {
-    if (rows.some((row) => row.parcelStatus === "DELIVERED" || row.courierDeliveredAt != null || money(row.counterSettledAmount ?? "0").gt(0))) {
-      reject("تضم الشحنة طرداً ثبت تسليمه أو سداداً بعد التسليم", "راجع تفاصيل الشحنة واستخدم مرتجع المبيعات للبضاعة المسلمة");
-    }
-    for (const row of rows) await declareConsignmentReturn({
-      ...normalized,
-      consignmentId: Number(row.id),
-      clientRequestId: normalized.clientRequestId ? memberKey(normalized, Number(row.id)) : null,
-    }, actor, tx, { shipmentMember: true });
-  });
+export async function declareShipmentReturn(
+  input: DeclareShipmentReturnInput,
+  actor: DeliveryTxActor,
+) {
+  const normalized = {
+    ...input,
+    reason: input.reason.trim(),
+    statementNumber: input.statementNumber?.trim() || null,
+  };
+  return executeShipment(
+    "delivery.declareShipmentReturn",
+    normalized,
+    actor,
+    async (tx, rows) => {
+      if (
+        rows.some(
+          (row) =>
+            row.parcelStatus === "DELIVERED" ||
+            row.courierDeliveredAt != null ||
+            money(row.counterSettledAmount ?? "0").gt(0),
+        )
+      ) {
+        reject(
+          "تضم الشحنة طرداً ثبت تسليمه أو سداداً بعد التسليم",
+          "راجع تفاصيل الشحنة واستخدم مرتجع المبيعات للبضاعة المسلمة",
+        );
+      }
+      for (const row of rows)
+        await declareConsignmentReturn(
+          {
+            ...normalized,
+            consignmentId: Number(row.id),
+            clientRequestId: normalized.clientRequestId
+              ? memberKey(normalized, Number(row.id))
+              : null,
+          },
+          actor,
+          tx,
+          { shipmentMember: true },
+        );
+    },
+  );
 }
 
 export async function cancelShipmentAssignment(
@@ -336,11 +388,26 @@ export async function returnShipment(
     input,
     actor,
     async (tx, rows) => {
-      const original = await loadShipmentMembersTx(tx, input.consignmentId, { currentRead: true });
-      const invoiceRows = await tx.select({ returnedTotal: invoices.returnedTotal }).from(invoices)
-        .where(inArray(invoices.id, rows.map(row => Number(row.invoiceId)))).for("update");
-      if (invoiceRows.some(invoice => money(invoice.returnedTotal ?? "0").gt(0)))
-        reject("إحدى الفواتير المتبقية سبق إرجاع جزء منها", "استكمل مرتجع كل فاتورة من صفحة الفاتورة لحفظ الكميات والمبالغ المتبقية");
+      const original = await loadShipmentMembersTx(tx, input.consignmentId, {
+        currentRead: true,
+      });
+      const invoiceRows = await tx
+        .select({ returnedTotal: invoices.returnedTotal })
+        .from(invoices)
+        .where(
+          inArray(
+            invoices.id,
+            rows.map((row) => Number(row.invoiceId)),
+          ),
+        )
+        .for("update");
+      if (
+        invoiceRows.some((invoice) => money(invoice.returnedTotal ?? "0").gt(0))
+      )
+        reject(
+          "إحدى الفواتير المتبقية سبق إرجاع جزء منها",
+          "استكمل مرتجع كل فاتورة من صفحة الفاتورة لحفظ الكميات والمبالغ المتبقية",
+        );
       for (const row of rows)
         await returnConsignment(
           Number(row.id),
@@ -353,22 +420,37 @@ export async function returnShipment(
           tx,
           { shipmentMember: true },
         );
-      for (const source of original.filter(row => money(row.deliveryFee).gt(0)))
-        await refundHeldDeliveryFeeForReturnTx(tx, source, actor, refundShiftId == null ? null : { shiftId: refundShiftId });
+      for (const source of original.filter((row) =>
+        money(row.deliveryFee).gt(0),
+      ))
+        await refundHeldDeliveryFeeForReturnTx(
+          tx,
+          source,
+          actor,
+          refundShiftId == null ? null : { shiftId: refundShiftId },
+        );
     },
     async (tx, rows) => {
       const invoiceIds = rows.map((row) => Number(row.invoiceId));
       const invoiceRows = await tx
-        .select({ paidAmount: invoices.paidAmount })
+        .select({ id: invoices.id, paidAmount: invoices.paidAmount })
         .from(invoices)
         .where(inArray(invoices.id, invoiceIds));
       const unsettledFees = rows.filter((row) => row.feeSettledAt == null);
       const feeRows = await tx
-        .select({ invoiceId: receipts.invoiceId, amount: receipts.amount, direction: receipts.direction })
+        .select({
+          invoiceId: receipts.invoiceId,
+          amount: receipts.amount,
+          direction: receipts.direction,
+          paymentMethod: receipts.paymentMethod,
+        })
         .from(receipts)
         .where(
           and(
-            inArray(receipts.invoiceId, unsettledFees.map((row) => Number(row.invoiceId))),
+            inArray(
+              receipts.invoiceId,
+              unsettledFees.map((row) => Number(row.invoiceId)),
+            ),
             inArray(
               receipts.referenceNumber,
               unsettledFees.flatMap((row) => [
@@ -381,12 +463,26 @@ export async function returnShipment(
           ),
         );
       const feeByInvoice = new Map<number, Decimal>();
-      for (const row of feeRows) {
+      for (const row of feeRows.filter((r) => r.paymentMethod === "CASH")) {
         const id = Number(row.invoiceId);
-        feeByInvoice.set(id, (feeByInvoice.get(id) ?? money(0)).plus(row.direction === "IN" ? money(row.amount) : money(row.amount).neg()));
+        feeByInvoice.set(
+          id,
+          (feeByInvoice.get(id) ?? money(0)).plus(
+            row.direction === "IN"
+              ? money(row.amount)
+              : money(row.amount).neg(),
+          ),
+        );
       }
+      const cashCaps = await Promise.all(
+        invoiceRows
+          .filter((invoice) => money(invoice.paidAmount).gt(0))
+          .map((invoice) => loadRefundCaps(tx, Number(invoice.id))),
+      );
       if (
-        invoiceRows.some((invoice) => money(invoice.paidAmount).gt(0)) ||
+        cashCaps.some((cap) =>
+          (cap.netByMethod.get("CASH") ?? money(0)).gt(0),
+        ) ||
         Array.from(feeByInvoice.values()).some((fee) => fee.gt(0))
       ) {
         const cash = await resolveBranchCashShiftTx(
@@ -401,6 +497,62 @@ export async function returnShipment(
           shiftId: cash.shiftId,
         });
       }
+    },
+    async (tx) => {
+      const source = (
+        await tx
+          .select({
+            sourceType: deliveryConsignments.sourceType,
+            invoiceId: deliveryConsignments.invoiceId,
+          })
+          .from(deliveryConsignments)
+          .where(eq(deliveryConsignments.id, input.consignmentId))
+          .limit(1)
+      )[0];
+      if (source?.sourceType === "AFTERCARE_EXECUTION") {
+        const routed = await routeAftercareDeliveryResultTx(
+          tx,
+          {
+            consignmentId: input.consignmentId,
+            result: "RETURNED",
+            proof: input.reason,
+            clientRequestId: input.clientRequestId,
+            authorization: {
+              kind: "STAFF",
+              operationPath: "delivery.returnConsignment",
+              operationAuthority: actor.operationAuthority,
+            },
+          },
+          actor,
+        );
+        if (routed.handled)
+          return {
+            consignmentId: input.consignmentId,
+            consignmentIds: [input.consignmentId],
+            idempotentReplay: routed.replay,
+          };
+      }
+      if (
+        source?.sourceType === "FULFILLMENT_REQUEST" &&
+        source.invoiceId == null
+      ) {
+        const requestSource = await returnFulfillmentRequestConsignmentTx(
+          tx,
+          {
+            consignmentId: input.consignmentId,
+            reason: input.reason,
+            clientRequestId: input.clientRequestId,
+          },
+          actor,
+        );
+        if (requestSource.handled)
+          return {
+            consignmentId: input.consignmentId,
+            consignmentIds: [input.consignmentId],
+            idempotentReplay: false,
+          };
+      }
+      return null;
     },
   );
 }

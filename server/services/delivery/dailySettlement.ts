@@ -16,9 +16,19 @@ import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
 import { TRPCError } from "@trpc/server";
 import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
-import type { SettlementPreview, SettlementPreviewLine, SettleDailyResult } from "@shared/deliveryBoard";
-import { isShortfallReason, type ShortfallReason } from "@shared/shortfallReason";
-import { computePartyExposure, type PartyExposureLedgerEntry } from "@shared/partyExposure";
+import type {
+  SettlementPreview,
+  SettlementPreviewLine,
+  SettleDailyResult,
+} from "@shared/deliveryBoard";
+import {
+  isShortfallReason,
+  type ShortfallReason,
+} from "@shared/shortfallReason";
+import {
+  computePartyExposure,
+  type PartyExposureLedgerEntry,
+} from "@shared/partyExposure";
 import {
   customers,
   deliveryConsignments,
@@ -28,7 +38,11 @@ import {
   invoices,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
-import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
+import {
+  checkIdempotency,
+  idempotencyHash,
+  recordIdempotencyKey,
+} from "../idempotency";
 import { money, round2, toDbMoney } from "../money";
 import { consignmentShortfallAssignedSql } from "./openParcelPredicates";
 import { recordDeliveryRemittanceInTx } from "./remittance";
@@ -42,7 +56,12 @@ export interface DailySettlementScope {
 async function loadPartyOrThrow(tx: Tx, partyId: number, what: string) {
   const party = (
     await tx
-      .select({ id: deliveryParties.id, name: deliveryParties.name, branchId: deliveryParties.branchId, useCommission: deliveryParties.useCommissionForSettlement })
+      .select({
+        id: deliveryParties.id,
+        name: deliveryParties.name,
+        branchId: deliveryParties.branchId,
+        useCommission: deliveryParties.useCommissionForSettlement,
+      })
       .from(deliveryParties)
       .where(eq(deliveryParties.id, partyId))
       .limit(1)
@@ -65,7 +84,11 @@ async function loadPartyOrThrow(tx: Tx, partyId: number, what: string) {
  * (`codAmount − collectedAmount − counterSettledAmount` > 0) — نفس تعريف سطر التوريد في
  * `recordDeliveryRemittanceInTx` حرفياً، مستثنىً منها المُعلَنُ رجوعُه.
  */
-async function loadSettlementLines(tx: Tx, scope: DailySettlementScope, useCommission = false): Promise<SettlementPreviewLine[]> {
+async function loadSettlementLines(
+  tx: Tx,
+  scope: DailySettlementScope,
+  useCommission = false,
+): Promise<SettlementPreviewLine[]> {
   const rows = await tx
     .select({
       id: deliveryConsignments.id,
@@ -74,7 +97,7 @@ async function loadSettlementLines(tx: Tx, scope: DailySettlementScope, useCommi
       sourceType: deliveryConsignments.sourceType,
       feeCollection: deliveryConsignments.feeCollection,
       feeDue: consignmentFeeDueSql(),
-      orderTotal: sql<string>`GREATEST(${invoices.total} - ${invoices.returnedTotal}, 0)`,
+      orderTotal: sql<string>`GREATEST(COALESCE(${invoices.total} - ${invoices.returnedTotal},0), 0)`,
       collectedAmount: deliveryConsignments.collectedAmount,
       counterSettledAmount: deliveryConsignments.counterSettledAmount,
       // عجزُ التسليم المُقيَّد على الطرد — نقدٌ لم تقبضه الجهة (انظر `openParcelPredicates.ts`).
@@ -86,24 +109,33 @@ async function loadSettlementLines(tx: Tx, scope: DailySettlementScope, useCommi
       customerName: customers.name,
     })
     .from(deliveryConsignments)
-    .innerJoin(invoices, eq(invoices.id, deliveryConsignments.invoiceId))
+    .leftJoin(invoices, eq(invoices.id, deliveryConsignments.invoiceId))
     .leftJoin(customers, eq(customers.id, invoices.customerId))
-    .where(and(
-      eq(deliveryConsignments.partyId, scope.partyId),
-      eq(deliveryConsignments.branchId, scope.branchId),
-      sql`${deliveryConsignments.status} IN ('DISPATCHED', 'PARTIAL')`,
-      eq(deliveryConsignments.parcelStatus, "DELIVERED"),
-      sql`${deliveryConsignments.moneyStatus} IN ('UNSETTLED', 'PARTIAL')`,
-      isNull(deliveryConsignments.returnDeclaredAt),
-    ))
+    .where(
+      and(
+        eq(deliveryConsignments.partyId, scope.partyId),
+        eq(deliveryConsignments.branchId, scope.branchId),
+        sql`${deliveryConsignments.status} IN ('DISPATCHED', 'PARTIAL')`,
+        eq(deliveryConsignments.parcelStatus, "DELIVERED"),
+        sql`${deliveryConsignments.moneyStatus} IN ('UNSETTLED', 'PARTIAL')`,
+        isNull(deliveryConsignments.returnDeclaredAt),
+      ),
+    )
     .orderBy(deliveryConsignments.id);
-  const quoteFee = await createFeeWithholdingQuote(tx, scope.partyId, useCommission);
+  const quoteFee = await createFeeWithholdingQuote(
+    tx,
+    scope.partyId,
+    useCommission,
+  );
   const lines: SettlementPreviewLine[] = [];
   for (const r of rows) {
     const cod = round2(money(r.codAmount));
     const collected = round2(money(r.collectedAmount ?? "0"));
     const remaining = round2(
-      cod.minus(collected).minus(money(r.counterSettledAmount ?? "0")).minus(money(r.shortfallAssigned ?? "0")),
+      cod
+        .minus(collected)
+        .minus(money(r.counterSettledAmount ?? "0"))
+        .minus(money(r.shortfallAssigned ?? "0")),
     );
     if (remaining.lte(0)) continue;
     let feeWithholding = money(0);
@@ -117,7 +149,11 @@ async function loadSettlementLines(tx: Tx, scope: DailySettlementScope, useCommi
       consignmentId: Number(r.id),
       consignmentNumber: r.consignmentNumber,
       invoiceNumber: r.invoiceNumber,
-      customerName: r.customerName ?? r.invoiceContactName ?? r.recipientName ?? "زبون عابر",
+      customerName:
+        r.customerName ??
+        r.invoiceContactName ??
+        r.recipientName ??
+        "زبون عابر",
       codAmount: cod.toFixed(2),
       collectedAmount: collected.toFixed(2),
       remaining: remaining.toFixed(2),
@@ -136,10 +172,19 @@ async function ledgerFeeDue(tx: Tx, partyId: number): Promise<string> {
       total: sql<string>`COALESCE(SUM(${deliveryLedgerEntries.amount}), 0)`,
     })
     .from(deliveryLedgerEntries)
-    .where(and(eq(deliveryLedgerEntries.partyId, partyId), effectiveDeliveryLedgerEntrySql()))
+    .where(
+      and(
+        eq(deliveryLedgerEntries.partyId, partyId),
+        effectiveDeliveryLedgerEntrySql(),
+      ),
+    )
     .groupBy(deliveryLedgerEntries.entryType);
-  const ledger: PartyExposureLedgerEntry[] = agg.map((r) => ({ entryType: r.entryType, amount: String(r.total ?? "0") }));
-  return computePartyExposure({ cashInHand: 0, parcels: [], ledger }).feesOwedToThem;
+  const ledger: PartyExposureLedgerEntry[] = agg.map((r) => ({
+    entryType: r.entryType,
+    amount: String(r.total ?? "0"),
+  }));
+  return computePartyExposure({ cashInHand: 0, parcels: [], ledger })
+    .feesOwedToThem;
 }
 
 export async function previewDailySettlementTx(
@@ -147,22 +192,37 @@ export async function previewDailySettlementTx(
   scope: DailySettlementScope,
   _actor: DeliveryTxActor,
 ): Promise<SettlementPreview> {
-  const party = await loadPartyOrThrow(tx, scope.partyId, "تعذّر حساب تسوية الجهة");
-  const lines = await loadSettlementLines(tx, scope, party.useCommission === true);
-  const expectedCash = round2(lines.reduce((s, l) => s.plus(money(l.remaining)), money(0)));
+  const party = await loadPartyOrThrow(
+    tx,
+    scope.partyId,
+    "تعذّر حساب تسوية الجهة",
+  );
+  const lines = await loadSettlementLines(
+    tx,
+    scope,
+    party.useCommission === true,
+  );
+  const expectedCash = round2(
+    lines.reduce((s, l) => s.plus(money(l.remaining)), money(0)),
+  );
   const returnsAwaiting = (
     await tx
       .select({ n: sql<number>`COUNT(*)` })
       .from(deliveryConsignments)
-      .where(and(
-        eq(deliveryConsignments.partyId, scope.partyId),
-        eq(deliveryConsignments.branchId, scope.branchId),
-        eq(deliveryConsignments.status, "DISPATCHED"),
-        isNotNull(deliveryConsignments.returnDeclaredAt),
-      ))
+      .where(
+        and(
+          eq(deliveryConsignments.partyId, scope.partyId),
+          eq(deliveryConsignments.branchId, scope.branchId),
+          eq(deliveryConsignments.status, "DISPATCHED"),
+          isNotNull(deliveryConsignments.returnDeclaredAt),
+        ),
+      )
   )[0];
   // المعاينة اليومية تحسم أجور المتجر المستحقة؛ الاستقطاع الإضافي يصرح به كشف الشركة.
-  const deductions = lines.reduce((v, l) => v.plus(money(l.feeWithholding ?? "0")), money(0));
+  const deductions = lines.reduce(
+    (v, l) => v.plus(money(l.feeWithholding ?? "0")),
+    money(0),
+  );
   return {
     partyId: scope.partyId,
     branchId: scope.branchId,
@@ -202,7 +262,11 @@ export async function settleDailyTx(
   input: SettleDailyInput,
   actor: DeliveryTxActor,
 ): Promise<SettleDailyResult> {
-  const party = await loadPartyOrThrow(tx, input.partyId, "تعذّر تسجيل التسوية اليوميّة");
+  const party = await loadPartyOrThrow(
+    tx,
+    input.partyId,
+    "تعذّر تسجيل التسوية اليوميّة",
+  );
   // Codex #1012 P1 — إعادةُ تسويةٍ سبق التزامها (ضاعت استجابتُها عبر النشر/الانقطاع): بعد التزام
   // الأولى تصير طرودُها SETTLED فتعود `loadSettlementLines` فارغةً، فكان الرمي «لا شيء يُسوَّى»
   // يسبق فحصَ idempotency في `recordDeliveryRemittanceInTx` ⇒ يُبلَّغ فشلاً عن عمليةٍ نجح مالُها،
@@ -256,18 +320,29 @@ export async function settleDailyTx(
       }
     }
   }
-  const lines = await loadSettlementLines(tx, input, party.useCommission === true);
+  const lines = await loadSettlementLines(
+    tx,
+    input,
+    party.useCommission === true,
+  );
   if (!lines.length) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message: appErrorMessage({
         what: `لا شيء يُسوَّى لجهة «${party.name}» اليوم`,
         why: "لا طرود مُسلَّمة بنقدٍ لم يُورَّد على هذا الفرع — كلّ ما سُلِّم وُرِّد أو سُدِّد بالكاونتر",
-        doThis: "اختم تسليم الطرود التي وصلت زبائنها أوّلاً (كشف الشركة أو «تم التسليم»)، ثمّ أعد التسوية",
+        doThis:
+          "اختم تسليم الطرود التي وصلت زبائنها أوّلاً (كشف الشركة أو «تم التسليم»)، ثمّ أعد التسوية",
       }),
     });
   }
-  const expected = round2(lines.reduce((s, l) => s.plus(money(l.remaining)).minus(money(l.feeWithholding ?? "0")), money(0)));
+  const expected = round2(
+    lines.reduce(
+      (s, l) =>
+        s.plus(money(l.remaining)).minus(money(l.feeWithholding ?? "0")),
+      money(0),
+    ),
+  );
   const counted = round2(money(input.countedCash));
   if (counted.lt(0)) {
     throw new TRPCError({
@@ -279,7 +354,8 @@ export async function settleDailyTx(
       }),
     });
   }
-  let shortfall: { reason: ShortfallReason; notes?: string | null } | null = null;
+  let shortfall: { reason: ShortfallReason; notes?: string | null } | null =
+    null;
   if (counted.lt(expected)) {
     const reason = input.shortfallReason;
     if (!reason || !isShortfallReason(reason)) {
@@ -288,7 +364,8 @@ export async function settleDailyTx(
         message: appErrorMessage({
           what: `النقد المعدود أقلّ من المتوقَّع لجهة «${party.name}»`,
           why: `المتوقَّع ${expected.toFixed(2)} والمعدود ${counted.toFixed(2)} — عجزٌ قدره ${expected.minus(counted).toFixed(2)} بلا سببٍ مصنَّف، والعجزُ يُقيَّد ذمّةً على الجهة فلا يُقبل بلا تصنيف`,
-          doThis: "اختر سبب العجز من القائمة ثمّ أكّد؛ أو أعد عدّ النقد إن كان الفرق خطأً",
+          doThis:
+            "اختر سبب العجز من القائمة ثمّ أكّد؛ أو أعد عدّ النقد إن كان الفرق خطأً",
         }),
       });
     }
@@ -299,12 +376,15 @@ export async function settleDailyTx(
     {
       branchId: input.branchId,
       partyId: input.partyId,
-      lines: lines.map((l) => ({ consignmentId: l.consignmentId, collectedAmount: l.remaining })),
+      lines: lines.map((l) => ({
+        consignmentId: l.consignmentId,
+        collectedAmount: l.remaining,
+      })),
       countedCash: counted.toFixed(2),
       shiftType: input.shiftType ?? "RECEPTION",
       clientRequestId: input.clientRequestId ?? null,
       shortfall,
-      targetShiftId: input.targetShiftId,  // ش-ISOLATION: تمرير الدرج الصريح
+      targetShiftId: input.targetShiftId, // ش-ISOLATION: تمرير الدرج الصريح
     },
     actor,
   );
@@ -325,6 +405,9 @@ export async function settleDailyTx(
     netRemitted: String(res.netRemitted),
     status: res.status === "SHORT" ? "SHORT" : "BALANCED",
     shortfallTotal: String(res.shortfallTotal),
-    receiptId: "receiptInId" in res && res.receiptInId != null ? Number(res.receiptInId) : null,
+    receiptId:
+      "receiptInId" in res && res.receiptInId != null
+        ? Number(res.receiptInId)
+        : null,
   };
 }

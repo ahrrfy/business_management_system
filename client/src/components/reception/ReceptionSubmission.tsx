@@ -7,6 +7,7 @@ import { type CustomizationData } from "@/components/CustomizationDialog";
 import { confirm } from "@/lib/confirm";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
+import { receptionPaymentAmounts } from "./receptionPaymentAmounts";
 import {
   POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE,
   isPosPaymentMethodEnabled,
@@ -160,19 +161,6 @@ export async function prepareReceptionSubmission({
   // الطلب الخالص يثبت التوصيل على أمر الشغل؛ الفواتير تحمل الإسناد الذري.
   const hasCarrierInvoice = regularLines.length > 0 || printLines.length > 0;
   const routeDeliveryToWO = orderDelivery != null && !hasCarrierInvoice;
-  // القبض الآن (COUNTER) على أمر شغلٍ **محفوظٍ** (مسوّدة) غير مدعومٍ خادمياً (collectNow لا
-  // يغطّيه بنيوياً — reception/commit.ts) ⇒ نمنعه برسالةٍ واضحة بدل خطأ خادميّ غامض.
-  if (
-    routeDeliveryToWO &&
-    draftAtSubmit &&
-    orderDelivery?.feeCollection === "COUNTER"
-  ) {
-    notify.err(
-      "قبض أجرة التوصيل الآن غير متاح لطلبٍ محفوظ",
-      "اجعل المندوب يقبضها من الزبون، أو المكتبة تتحمّلها — أو أتمّ الطلب مباشرةً (بلا حفظ المسوّدة) لقبضها الآن.",
-    );
-    return;
-  }
   // عند توجيه توصيل الطلب لأوامر الشغل، يحمل الأمر الأول الأجرة فقط.
   const effectiveWoDelivery = (custom: CustomizationData, idx: number) =>
     routeDeliveryToWO && orderDelivery
@@ -214,17 +202,11 @@ export async function prepareReceptionSubmission({
   // غير مقرَّبة مع علم التقريب كان يجعل الخادم يرى نقصاً (رفضٌ للزبون العابر) أو ذمّةً صامتة.
   // ش٤: المستحقّ الآن = الإجمالي − العربون المقبوض سلفاً (heldD) — الدفع الجديد يقاس عليه.
   // إذا لم يُدخل الكاشير مبلغاً مخصصاً في حقل المدفوع، نعتبر البيع المباشر مدفوعاً بالكامل نقداً
-  const inputPaidD = isReserve
-    ? paidD.gt(0)
-      ? paidD
-      : D(0)
-    : opts.quickFullPay || (!payInput && !deferred && sumDirectNetD.gt(0))
-      ? expectedNowD
-      : paidD;
-  const appliedPaidD =
-    method === "CASH" && inputPaidD.gt(expectedNowD)
-      ? expectedNowD
-      : inputPaidD;
+  const { inputPaidD, appliedPaidD } = receptionPaymentAmounts({
+    paid: paidD.toFixed(2), expectedNow: expectedNowD.toFixed(2),
+    hasExplicitAmount: Boolean(payInput), directNet: sumDirectNetD.toFixed(2),
+    deferred, quickFullPay: opts.quickFullPay, isReservation: isReserve, method,
+  });
   if (
     digitalLines.length > 0 &&
     !round2(appliedPaidD).eq(round2(expectedNowD))
