@@ -35,9 +35,11 @@ export function useCashierExtraCharges(props:{
       const tender=buildChargeOnlyTender(snapshot.extraCharges,actual);
       const result=await mutation.mutateAsync({branchId:props.branchId,shiftId:props.shiftId,customerId:snapshot.customerId,clientRequestId:token,deviceId:actual.find(leg=>leg.method!=="CASH")?.externalPaymentDeviceId??snapshot.externalPayment?.deviceId,
         ...checkoutExtraPayload(snapshot.extraCharges),...tender});
-      if(latest.current.branchId!==branchId||latest.current.shiftId!==shiftId||latest.current.token!==token||latest.current.tab.id!==snapshot.id){notify.ok("تم قبض الأجور للطلب السابق؛ عُد إليه لاسترجاع إيصالاته");return;}
-      props.onCommitted(snapshot.id,{result,recoveryToken:token});notify.ok("تم قبض الأجور وحفظ الإيصال");
-      printCheckoutAllocationReceipt(result,token);props.refresh();
+      const current=latest.current,originActive=current.tab.id===snapshot.id;
+      if(current.branchId!==branchId||current.shiftId!==shiftId||current.channel!==props.channel||(originActive&&current.token!==token)){notify.ok("تم قبض الأجور للطلب السابق؛ عُد إليه لاسترجاع إيصالاته");return;}
+      props.onCommitted(snapshot.id,{result,recoveryToken:token});props.refresh();
+      if(!originActive){notify.ok("تم قبض الأجور للطلب السابق؛ عُد إليه لاسترجاع إيصالاته");return;}
+      notify.ok("تم قبض الأجور وحفظ الإيصال");printCheckoutAllocationReceipt(result,token);
     }catch(error){notify.err(error);}
   }
   const slot=<CheckoutExtraCharges branchId={props.branchId} customerId={props.tab.customerId} channel={props.channel} value={props.tab.extraCharges} onChange={props.onChange}

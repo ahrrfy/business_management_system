@@ -229,7 +229,7 @@ export async function checkoutReception(
   input: ReceptionCheckoutInput,
   actor: Actor,
 ) {
-  assertReceptionPaymentMethod(input);
+  assertReceptionPaymentMethod(input,hasCheckoutCharges(input));
   return withTx((tx) => checkoutReceptionInTx(tx, input, actor));
 }
 

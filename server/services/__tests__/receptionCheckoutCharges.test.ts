@@ -49,6 +49,36 @@ async function card(amount:string){const result=await initiateExternalPaymentAtt
 const charges={serviceCharges:[{description:"تغليف",amount:"3000"}],chargePayments:[{paymentIndex:0,amount:"3000"}]};
 const goods=(quantity="1",amount="1000")=>({amount,lines:[{variantId:1,productUnitId:1,quantity}]});
 describe("actual Reception unified checkout",()=>{
+ it.each(["CASH","CARD"] as const)("Reception entry accepts a composed zero goods leg with a separate %s service collection",async(method)=>{
+  const tender=method==="CARD"?await card("3000"):{method:"CASH" as const,amount:"3000"};
+  const payload={branchId:1,shiftId:1,customerId:1,clientRequestId:key(),regularSale:goods(),paidAmount:"0",deferredDirect:true,paymentMode:"CREDIT" as const,payments:[{...tender,amount:"0"}],...charges};
+  const result=await checkoutReception(payload,actor);
+  expect(result.paymentSummary).toEqual({tenderedAmount:"0.00",appliedAmount:"0.00",changeAmount:"0.00"});
+  expect(result.checkoutPaymentSummary).toEqual({tenderedAmount:"3000.00",appliedAmount:"3000.00",changeAmount:"0.00"});
+  expect(result.paymentAllocations).toHaveLength(0);expect(result.checkoutReceipts?.map(r=>r.kind)).toEqual(["SERVICE"]);
+  expect((await db().select().from(s.invoices))[0]).toMatchObject({total:"1000.00",paidAmount:"0.00",status:"PENDING"});
+  const collected=await db().select().from(s.receipts);expect(collected).toHaveLength(1);
+  expect(collected[0]).toMatchObject({amount:"3000.00",paymentMethod:method,cashBucket:method==="CASH"?"DRAWER":null,status:"COMPLETED"});
+  expect((await db().select().from(fulfillmentCharges))[0]).toMatchObject({amount:"3000.00",paidAmount:"3000.00"});
+  expect((await db().select().from(s.customers))[0].currentBalance).toBe("1000.00");
+  expect((await db().select().from(s.branchStock))[0].quantity).toBe(99);
+  if(method==="CARD")expect((await db().select().from(s.externalPaymentAttempts))[0]).toMatchObject({amount:"3000.00",receiptId:collected[0].id});
+  const replay=await checkoutReception(payload,actor);expect(replay.checkoutReceipts).toEqual(result.checkoutReceipts);
+  expect(await db().select().from(s.receipts)).toHaveLength(1);expect(await db().select().from(fulfillmentCharges)).toHaveLength(1);
+  expect((await db().select().from(s.branchStock))[0].quantity).toBe(99);expect((await db().select().from(s.customers))[0].currentBalance).toBe("1000.00");
+  await expect(checkoutReception({...payload,serviceCharges:[{description:"تغليف مختلف",amount:"3000"}]},actor)).rejects.toThrow();
+  expect(await db().select().from(s.receipts)).toHaveLength(1);
+ });
+ it("Reception entry retains positive-only standalone legs when no actual charge composition is requested",async()=>{
+  const payload={branchId:1,shiftId:1,customerId:1,clientRequestId:key(),regularSale:goods(),paidAmount:"0",deferredDirect:true,payments:[{method:"CASH" as const,amount:"0"}]};
+  await expect(checkoutReception(payload,actor)).rejects.toThrow(/موجبة/);
+  await expect(checkoutReception({...payload,serviceCharges:[],chargePayments:[]},actor)).rejects.toThrow(/موجبة/);
+  expect(await db().select().from(s.invoices)).toHaveLength(0);expect(await db().select().from(s.receipts)).toHaveLength(0);
+ });
+ it("a zero goods leg cannot bypass missing service charge payment allocation",async()=>{
+  await expect(checkoutReception({branchId:1,shiftId:1,customerId:1,clientRequestId:key(),regularSale:goods(),paidAmount:"0",deferredDirect:true,payments:[{method:"CASH",amount:"0"}],serviceCharges:charges.serviceCharges},actor)).rejects.toThrow();
+  expect(await db().select().from(s.invoices)).toHaveLength(0);expect(await db().select().from(s.receipts)).toHaveLength(0);expect(await db().select().from(fulfillmentCharges)).toHaveLength(0);
+ });
  it("collects 50k goods + 3k SERVICE + 5k held fee with one real card operation",async()=>{
   await db().update(s.productPrices).set({price:"50000"}).where(eq(s.productPrices.productUnitId,1));
   await db().insert(s.deliveryParties).values({id:1,name:"Oracle courier",partyType:"COMPANY",isActive:true});

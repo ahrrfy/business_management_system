@@ -41,11 +41,22 @@ describe("charge-only cashier UI command",()=>{
     await act(async()=>{await hook.result.current.submitChargesOnly();});
     expect(mocks.retail.mock.calls[0][0]).toEqual(mocks.retail.mock.calls[1][0]);
   });
-  it("never clears or prints into a different branch or checkout after a delayed committed response",async()=>{
+  it.each(["POS","PRINT_POS"] as const)("%s saves a delayed success into its originating tab after switching tabs without printing on the active tab",async channel=>{
+    const mutation=channel==="POS"?mocks.retail:mocks.printing;
+    let resolve!:(value:typeof result)=>void;mutation.mockImplementationOnce(()=>new Promise(done=>{resolve=done;}));
+    const input=props(channel),hook=renderHook(()=>useCashierExtraCharges(input));let pending!:Promise<void>;
+    act(()=>{pending=hook.result.current.submitChargesOnly();});
+    const next={...props(channel),token:"OTHER-TAB-KEY",tab:{...props(channel).tab,id:8}};hook.rerender(()=>useCashierExtraCharges(next));
+    await act(async()=>{resolve(result);await pending;});
+    expect(mutation).toHaveBeenCalledTimes(1);
+    expect(input.onCommitted).toHaveBeenCalledExactlyOnceWith(7,{result,recoveryToken:"CHECKOUT-TEST-KEY"});
+    expect(next.onCommitted).not.toHaveBeenCalled();expect(mocks.print).not.toHaveBeenCalled();expect(input.refresh).toHaveBeenCalledTimes(1);
+  });
+  it.each([{branchId:2},{shiftId:2},{token:"NEXT-CHECKOUT-KEY"}])("never clears or prints after a changed branch, shift or originating request: %j",async changed=>{
     let resolve!:(value:typeof result)=>void;mocks.retail.mockImplementationOnce(()=>new Promise(done=>{resolve=done;}));
     const input=props(),hook=renderHook(()=>useCashierExtraCharges(input));let pending!:Promise<void>;
     act(()=>{pending=hook.result.current.submitChargesOnly();});
-    const next={...props(),branchId:2,token:"NEXT-CHECKOUT-KEY"};hook.rerender(()=>useCashierExtraCharges(next));
+    const next={...props(),...changed};hook.rerender(()=>useCashierExtraCharges(next));
     await act(async()=>{resolve(result);await pending;});
     expect(input.onCommitted).not.toHaveBeenCalled();expect(next.onCommitted).not.toHaveBeenCalled();expect(mocks.print).not.toHaveBeenCalled();
   });
