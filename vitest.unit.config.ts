@@ -14,6 +14,7 @@ export default defineConfig({
     include: [
       "shared/__tests__/checkoutCharges.test.ts",
       "client/src/components/delivery/driverOptions.test.ts",
+      "client/src/components/delivery/DispatchDialogs.test.tsx",
       "shared/__tests__/deliveryWorkflowPermissions.test.ts",
       "client/src/components/reception/receptionCheckoutCharges.test.ts",
       "client/src/components/reception/useReceptionCheckoutCharges.test.tsx",

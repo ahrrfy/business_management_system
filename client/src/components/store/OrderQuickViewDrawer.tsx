@@ -32,6 +32,7 @@ interface OrderQuickViewDrawerProps {
   onPrintPreparationA4?: (id: number) => void;
   onDispatch?: (order: {
     id: number;
+    branchId: number;
     orderNumber: string;
     total: string;
     customerName: string | null;
@@ -312,6 +313,7 @@ export function OrderQuickViewDrawer({
                     onClick={() =>
                       onDispatch({
                         id: order.id,
+                        branchId: order.branchId,
                         orderNumber: order.orderNumber,
                         total: order.total,
                         customerName: order.customerName,

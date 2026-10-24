@@ -5,7 +5,7 @@ import {fulfillmentCharges,fulfillmentChargePayments} from "../../../drizzle/ful
 import {getDb} from "../../db";
 import {createConfirmedPosSale,initiateExternalPaymentAttempt,confirmExternalPaymentAttempt,type ConfirmedPosSaleInput} from "../posExternalPayment";
 import {createPrintSale} from "../printSaleService";
-import {createChargeOnlyCheckout} from "../checkoutCharges";
+import {createChargeOnlyCheckout,listCheckoutChargeOptions} from "../checkoutCharges";
 import {createDeliveryParty} from "../deliveryService";
 import {createFulfillmentCharge,approveFulfillmentCharge,refundFulfillmentCharge} from "../fulfillment/charges";
 import {truncateTables} from "./__testUtils__";
@@ -41,8 +41,19 @@ async function proof(amount:string,channel:"POS"|"PRINT_POS"="POS"){
   const result=await initiateExternalPaymentAttempt({branchId:1,channel,method:"CARD",amount,reference:key(),requestId:key(),deviceId:device},actor);
   await confirmExternalPaymentAttempt({attemptId:result.attemptId,branchId:1,channel,deviceId:device},actor);return result.attemptId;
 }
-function input():ConfirmedPosSaleInput{return {branchId:1,shiftId:1,deviceId:device,sourceType:"POS",clientRequestId:key(),lines:[{variantId:1,productUnitId:1,quantity:"1"}],payment:{method:"CASH",amount:"50000"},serviceCharges:[{description:"تغليف",amount:"3000"}],chargePayments:[{paymentIndex:0,amount:"3000"}],deliveryFeeHeld:"5000",deliveryFeeTender:{method:"CASH",combinedWithPaymentIndex:0},delivery:{partyId,fee:"5000",feeCollection:"COUNTER",recipientName:"Buyer",recipientPhone:"07700000000",address:"Baghdad"}};}
+function input():ConfirmedPosSaleInput{return {branchId:1,shiftId:1,deviceId:device,sourceType:"POS",clientRequestId:key(),lines:[{variantId:1,productUnitId:1,quantity:"1"}],payment:{method:"CASH",amount:"50000"},serviceCharges:[{description:"تغليف",amount:"3000"}],chargePayments:[{paymentIndex:0,amount:"3000"}],deliveryFeeHeld:"5000",deliveryFeeTender:{method:"CASH",combinedWithPaymentIndex:0},delivery:{partyId,assignedUserId:3,fee:"5000",feeCollection:"COUNTER",recipientName:"Buyer",recipientPhone:"07700000000",address:"Baghdad"}};}
 describe("actual cashier checkout charges",()=>{
+  it("finds outstanding approved charges after more than 100 settled rows with exact DECIMAL remainder",async()=>{
+    const seed=(description:string,amount:string,paidAmount:string)=>({branchId:1,customerId:1,category:"SERVICE" as const,status:"APPROVED" as const,description,amount,paidAmount,createdBy:1,approvedBy:2,clientRequestId:key(),sourceHash:"0".repeat(64)});
+    await db().insert(fulfillmentCharges).values(Array.from({length:101},(_,index)=>seed(`Settled ${index}`,"3000.00","3000.00")));
+    await db().insert(fulfillmentCharges).values([seed("Open after settled history","3000.00","0.00"),seed("One cent outstanding","123456789012.34","123456789012.33")]);
+    const options=await listCheckoutChargeOptions({branchId:1,customerId:1},actor,"sales.create");
+    expect(options).toHaveLength(2);
+    expect(options).toEqual(expect.arrayContaining([
+      expect.objectContaining({description:"Open after settled history",remainingAmount:"3000.00"}),
+      expect.objectContaining({description:"One cent outstanding",remainingAmount:"0.01"}),
+    ]));
+  });
   it("50k goods + 3k guest SERVICE + 5k held fee collects 58k once and issues stock once",async()=>{
     const payload=input(),result=await createConfirmedPosSale(payload,actor);
     expect(result.checkoutPaymentSummary).toEqual({tenderedAmount:"58000.00",appliedAmount:"58000.00",changeAmount:"0.00"});

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, gt, inArray } from "drizzle-orm";
 import { receipts,invoices } from "../../drizzle/schema";
 import { fulfillmentCharges } from "../../drizzle/fulfillmentSchema";
 import type { FulfillmentCharge } from "../../drizzle/fulfillmentSchema";
@@ -88,11 +88,11 @@ export function listCheckoutChargeOptions(
             eq(fulfillmentCharges.branchId, input.branchId),
             eq(fulfillmentCharges.customerId, input.customerId),
             eq(fulfillmentCharges.status, "APPROVED"),
+            gt(fulfillmentCharges.amount, fulfillmentCharges.paidAmount),
           ),
         )
         .limit(100);
       return rows
-        .filter((row) => money(row.amount).gt(money(row.paidAmount)))
         .map((row) => ({
           id: row.id,
           version: row.version,
