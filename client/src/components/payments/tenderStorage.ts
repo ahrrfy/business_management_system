@@ -23,8 +23,8 @@ export function readTenderProof(key: string): TenderProof | null {
   try {
     const p = JSON.parse(localStorage.getItem(key) ?? "null");
     return p &&
-      Number.isInteger(p.attemptId) &&
-      p.attemptId > 0 &&
+      ((Number.isInteger(p.attemptId) && p.attemptId > 0) ||
+        (p.attemptId === null && p.confirmed === false)) &&
       typeof p.deviceId === "string" &&
       typeof p.requestId === "string" &&
       typeof p.fingerprint === "string" &&

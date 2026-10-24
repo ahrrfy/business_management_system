@@ -132,6 +132,35 @@ describe("Reception split tender atomic contract", () => {
     expect(await db().select().from(s.receipts)).toHaveLength(3);
   });
 
+  it("rounds a saved mixed basket with excess split cash and replays the original change", async () => {
+    await db().update(s.productPrices).set({ price: "1060.00" }).where(eq(s.productPrices.productUnitId, 1));
+    const draft = await promoteDraft({ branchId: 1, header: { customerId: 1 }, lines: [
+      { lineKind: "GOODS", variantId: 1, productUnitId: 1, quantity: "1", unitPrice: "1060.00", title: "Goods" },
+      { lineKind: "PRINT", variantId: 2, productUnitId: 2, quantity: "1", unitPrice: "1000.00", title: "Print" },
+    ] }, actor);
+    const [row] = await db().select().from(s.receptionDrafts).where(eq(s.receptionDrafts.id, draft.draftId));
+    const payload = { draftId: draft.draftId, version: row.version, expectedTotal: "2060.00", shiftId: 1, cashRoundIQD: true,
+      payments: [{ method: "CASH" as const, amount: "1500.00" }, { method: "CASH" as const, amount: "1000.00" }] };
+    const result = await commitDraft(payload, actor);
+    expect(result.paymentSummary).toEqual({ tenderedAmount: "2500.00", appliedAmount: "2000.00", changeAmount: "500.00" });
+    const invoices = await db().select().from(s.invoices).orderBy(s.invoices.id);
+    expect(invoices.map(invoice => [invoice.total, invoice.paidAmount])).toEqual([["1000.00", "1000.00"], ["1000.00", "1000.00"]]);
+    expect(result.paymentAllocations!.reduce((sum, allocation) => sum + Number(allocation.amount), 0)).toBe(2000);
+    const replay = await commitDraft(payload, actor);
+    expect(replay.paymentSummary).toEqual(result.paymentSummary);
+    expect(replay.paymentAllocations).toEqual(result.paymentAllocations);
+    expect(await db().select().from(s.receipts)).toHaveLength(3);
+  });
+
+  it("reads every native deposit receipt in an actual read-only transaction", async () => {
+    const result = await checkoutReception(input([{ method: "CASH", amount: "400.00" }, await card("600.00")], {
+      regularSale: undefined, printSale: undefined, workOrders: [{ title: "Historical preview deposit", quantity: 1, salePrice: "1000.00" }],
+    }), actor);
+    const [order] = await db().select().from(s.workOrders).where(eq(s.workOrders.id, result.workOrders[0].workOrderId));
+    const rows = await db().transaction(tx => loadWorkOrderDepositReceiptSet(tx, order, "1000.00", { lock: false }), { accessMode: "read only" });
+    expect(rows.map(receipt => [receipt.paymentMethod, receipt.amount])).toEqual([["CASH", "400.00"], ["CARD", "600.00"]]);
+  });
+
   it("posts split work-order deposits as real per-rail receipts", async () => {
     const result = await checkoutReception(input([{ method: "CASH", amount: "400.00" }, await card("600.00")], { regularSale: undefined, printSale: undefined, workOrders: [{ title: "Custom", quantity: 1, salePrice: "1000.00" }] }), actor) as any;
     const [wo] = await db().select().from(s.workOrders);

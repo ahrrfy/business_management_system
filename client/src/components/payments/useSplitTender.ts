@@ -136,7 +136,16 @@ export function useSplitTender(input: {
           : restore(fingerprint);
       const deviceId = proof?.deviceId ?? (await getDeviceCode());
       const requestId = proof?.requestId ?? crypto.randomUUID();
-      if (!proof) {
+      if (!stillCurrent()) return;
+      if (proof?.attemptId == null) {
+        proof = {
+          attemptId: null,
+          requestId,
+          deviceId,
+          fingerprint,
+          confirmed: false,
+        };
+        remember(proof, epoch);
         const args = {
           branchId: input.branchId,
           method: part.method,
@@ -159,10 +168,13 @@ export function useSplitTender(input: {
         remember(proof, epoch);
       }
       if (!stillCurrent()) return;
+      const attemptId = proof.attemptId;
+      if (attemptId == null)
+        throw new Error("تعذر استعادة محاولة الدفع؛ أعد التحقق بنفس العملية.");
       if (!proof.confirmed) {
         await finish.mutateAsync({
           branchId: input.branchId,
-          attemptId: proof.attemptId,
+          attemptId,
           deviceId,
           ...(input.channel === "POS" ? { channel: "POS" as const } : {}),
         });

@@ -209,7 +209,9 @@ export function materialize(
     const delta = roundedAll.minus(grandAll);
     const carrier = goods.length > 0 ? "SALE" as const : "PRINT" as const;
     const carrierRaw = carrier === "SALE" ? sum(goods) : sum(prints);
-    const fullCashNow = round2(money(roundingTender!.amount).plus(heldNet)).eq(roundedAll);
+    const availableCash = round2(money(roundingTender!.amount).plus(heldNet));
+    // Split legs carry raw tender, including change; legacy collectNow is already capped.
+    const fullCashNow = input.payments ? availableCash.gte(roundedAll) : availableCash.eq(roundedAll);
     if (!delta.isZero() && fullCashNow && !roundedAll.lte(heldNet) && carrierRaw.plus(delta).gt(0)) {
       mixedRoundTarget = carrier;
       if (carrier === "SALE") goodsAmount = round2(carrierRaw.plus(delta));

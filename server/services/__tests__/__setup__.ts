@@ -110,6 +110,17 @@ async function discoverDeleteTriggeredTables(
   return cachedDeleteTriggeredTables;
 }
 
+/** Empty immutable tables need no DDL; populated ones still require the guarded TRUNCATE path. */
+export async function clearTestTable(conn: mysql.Connection, table: string, deleteProtected: boolean) {
+  if (deleteProtected) {
+    const [existing] = await conn.query<mysql.RowDataPacket[]>(`SELECT 1 FROM \`${table}\` LIMIT 1`);
+    if (existing.length === 0) return;
+    await conn.query(`TRUNCATE TABLE \`${table}\``);
+  } else {
+    await conn.query(`DELETE FROM \`${table}\``);
+  }
+}
+
 afterEach(async () => {
   if (!TEST_DB_URL) return;
   // اتصال مُكرَّس طازج بالرابط الملتقَط — مُستقلّ عن تجمّع Drizzle (تُغلقه الاختبارات) وعن أيّ
@@ -124,11 +135,7 @@ afterEach(async () => {
       // يستعمل TRUNCATE عليها (مع تعطيل FK) كي لا نضع منفذ bypass داخل التريغر الإنتاجي.
       // بقية الجداول تبقى على DELETE للأسباب الموثقة أعلى الملف.
       try {
-        if (deleteTriggeredTables.has(t)) {
-          await conn.query(`TRUNCATE TABLE \`${t}\``);
-        } else {
-          await conn.query(`DELETE FROM \`${t}\``);
-        }
+        await clearTestTable(conn, t, deleteTriggeredTables.has(t));
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         const operation = deleteTriggeredTables.has(t) ? "TRUNCATE TABLE" : "DELETE FROM";

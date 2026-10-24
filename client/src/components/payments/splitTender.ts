@@ -3,7 +3,7 @@ import { isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 
 export type TenderMethod = "CASH" | "CARD" | "TRANSFER" | "WALLET";
 export type TenderProof = {
-  attemptId: number;
+  attemptId: number | null;
   requestId: string;
   deviceId: string;
   fingerprint: string;
@@ -84,6 +84,8 @@ export function tenderProblem(
       part.method !== "CASH" &&
       (!part.reference.trim() ||
         !part.proof?.confirmed ||
+        !Number.isInteger(part.proof.attemptId) ||
+        (part.proof.attemptId ?? 0) <= 0 ||
         part.proof.fingerprint !== tenderFingerprint(branchId, channel, part))
     )
       return `أكّد نجاح الدفعة ${index + 1} بالمرجع والمبلغ الحاليين.`;
@@ -104,7 +106,7 @@ export function tenderPayments(parts: TenderPart[]): TenderPayment[] {
     amount: tenderAmount(part.amount).toFixed(2),
     ...(part.method !== "CASH"
       ? {
-          externalPaymentAttemptId: part.proof?.attemptId,
+          externalPaymentAttemptId: part.proof?.attemptId ?? undefined,
           externalPaymentDeviceId: part.proof?.deviceId,
         }
       : {}),

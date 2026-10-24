@@ -61,7 +61,7 @@ function normalize(raw: CustomerReceiptHistoryRequest) {
     receiptIds: input.receiptIds.slice().sort((a, b) => a - b),
   };
 }
-async function evidence(tx: Tx, input: CustomerReceiptHistoryRequest) {
+async function evidence(tx: Tx, input: CustomerReceiptHistoryRequest, lockDeposits = true) {
   const sources = await tx
     .select()
     .from(receipts)
@@ -172,7 +172,7 @@ async function evidence(tx: Tx, input: CustomerReceiptHistoryRequest) {
       ),
     )
     .orderBy(asc(workOrders.id));
-  const depositReceiptSets = Object.fromEntries(await Promise.all(holds.map(async h => [h.id, (await loadWorkOrderDepositReceiptSet(tx, h)).map(r => Number(r.id))] as const)));
+  const depositReceiptSets = Object.fromEntries(await Promise.all(holds.map(async h => [h.id, (await loadWorkOrderDepositReceiptSet(tx, h, undefined, { lock: lockDeposits })).map(r => Number(r.id))] as const)));
   const payments = await tx
     .select()
     .from(orderPayments)
@@ -568,8 +568,8 @@ function planHistory(input: CustomerReceiptHistoryRequest, e: Evidence) {
     },
   };
 }
-async function previewTx(tx: Tx, input: CustomerReceiptHistoryRequest) {
-  const e = await evidence(tx, input);
+async function previewTx(tx: Tx, input: CustomerReceiptHistoryRequest, lockDeposits = true) {
+  const e = await evidence(tx, input, lockDeposits);
   const ids = await tx
     .select({ id: receipts.id })
     .from(receipts)
@@ -600,7 +600,7 @@ export async function previewCustomerReceiptHistory(
   const input = normalize(raw);
   return requireDb().transaction(
     async (tx) => {
-      const p = await previewTx(tx, input);
+      const p = await previewTx(tx, input, false);
       return { input, evidenceHash: p.evidenceHash, ...p.plan };
     },
     { isolationLevel: "repeatable read", accessMode: "read only" },

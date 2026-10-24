@@ -12,6 +12,8 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "server/services/__tests__/testDbCleanup.unit.test.ts",
+      "server/services/__tests__/workOrderSplitRefundPreflight.test.ts",
       "client/src/components/payments/splitTender.test.ts",
       "client/src/components/payments/useSplitTender.test.tsx",
       "client/src/components/payments/receptionReceiptPayments.test.ts",

@@ -85,6 +85,31 @@ describe("split tender confirmation and recovery", () => {
       }),
     );
   });
+  it.each([false, true])(
+    "recovers a lost initiation response with the same request and device (reload=%s)",
+    async (reload) => {
+      state.start.mockRejectedValueOnce(new Error("initiation response lost"));
+      const id = prepare();
+      await act(async () => draft.confirm(id));
+      const originalRequest = state.start.mock.calls[0][0];
+      expect(state.finish).not.toHaveBeenCalled();
+      if (reload) {
+        act(() => root.unmount());
+        root = createRoot(host);
+        render();
+      }
+      await act(async () => draft.confirm(id));
+      expect(state.start).toHaveBeenCalledTimes(2);
+      expect(state.start.mock.calls[1][0]).toEqual(originalRequest);
+      expect(state.finish).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          attemptId: 11,
+          deviceId: originalRequest.deviceId,
+        }),
+      );
+      expect(draft.problem("100")).toBeNull();
+    },
+  );
   it("retries a failed confirmation with the existing initiated attempt", async () => {
     const id = prepare();
     state.finish.mockRejectedValueOnce(new Error("temporary"));

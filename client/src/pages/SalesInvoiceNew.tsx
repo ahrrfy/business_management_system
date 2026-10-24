@@ -602,7 +602,7 @@ export default function SalesInvoice() {
       // العراق VAT=0% افتراضياً — الضريبة اختيارية على مستوى الفاتورة، تُطبَّق فقط عند تفعيلها
       // صراحةً من «تطبيق ضريبة» في ملخّص المبالغ (لعملاء/دوائر تتطلّب فاتورة ضريبية).
       taxRatePercent: state.taxEnabled ? round2(moneyInput(state.taxRatePercent)).toFixed(2) : "0",
-      payments: splitTender.active ? splitTender.parts.map(part => ({ amount: part.amount, method: part.method, ...(part.method !== "CASH" ? { externalPaymentAttemptId: part.proof?.attemptId } : {}) })) : undefined,
+      payments: splitTender.active ? splitTender.parts.map(part => ({ amount: part.amount, method: part.method, ...(part.method !== "CASH" ? { externalPaymentAttemptId: part.proof?.attemptId ?? undefined } : {}) })) : undefined,
       payment: !splitTender.active && hasPayment
         ? {
             amount: paidStr,
