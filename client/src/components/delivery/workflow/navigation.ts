@@ -30,7 +30,7 @@ export function legacyFulfillmentWorkflowHref(search: string): string {
   const params = new URLSearchParams(search);
   const kind = params.get("kind");
   params.delete("tab"); params.delete("kind");
-  params.set("section", kind === "aftercare" ? "aftercare" : kind === "charges" || kind === "refunds" ? "collect" : "dispatch");
+  if (!params.has("section")) params.set("section", kind === "aftercare" ? "aftercare" : kind === "charges" || kind === "refunds" ? "collect" : "dispatch");
   if (kind === "charges" || kind === "refunds") params.set("action", kind);
-  return `/reception/workflow?${params}`;
+  return `/delivery?tab=workflow&${params}`;
 }

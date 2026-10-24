@@ -4,6 +4,8 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { FULFILLMENT_SOURCES } from "../decisions/sources/fulfillment";
 import type { DecisionActor } from "../decisions/types";
+import { decideDecision } from "../decisions";
+import { DECISION_ACTIONS, decisionSpec } from "@shared/decisionRegistry";
 
 const owner: DecisionActor = {
   userId: 2,
@@ -105,6 +107,15 @@ beforeEach(async () => {
     ]);
 });
 describe("fulfillment work appears in the existing inbox", () => {
+  it.each(["review", "settlement", "charge", "followup"])("%s exposes only the original station and rejects every inbox decision action", async mode => {
+    const source = getSource(mode), kind = source.kinds[0];
+    expect(decisionSpec(kind)?.mode).toBe("OPEN_ONLY");
+    expect(source.supportedActions).toEqual([]);
+    for (const action of DECISION_ACTIONS) await expect(decideDecision({ kind, id: 1, action, clientRequestId: `station-only-${mode}-${action}` }, owner)).rejects.toThrow(/لا يدعم فعل/);
+    expect((await db().select().from(s.aftercareCases).where(eq(s.aftercareCases.id, 1)))[0].status).toBe("DRAFT");
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
+  });
   it("shows independent branch-scoped review with a direct same-station link and no blind approve action", async () => {
     const source = getSource("review");
     const rows = await source.list(owner, scope);

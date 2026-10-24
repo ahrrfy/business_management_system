@@ -1631,6 +1631,7 @@ export async function returnSaleInTx(
   const taxRate = taxable.gt(0) ? taxAmount.dividedBy(taxable) : new Decimal(0);
 
   let returnedGrossNet = new Decimal(0);
+  const absorbedComponentRevenueByItem = new Map<number, Decimal>();
   let returnedCost = new Decimal(0);
   // هدايا الفاتورة (0149): تكلفة البنود المُهداة المُرجَعة تُجمَع **منفصلةً**. تكلفتها لم تدخل قيد
   // SALE أصلاً (دخلت قيد GIFT_OUT)، فعكسُها داخل قيد RETURN يُلغي تكلفةً لم تُسجَّل هناك قطّ ⇒
@@ -1836,6 +1837,11 @@ export async function returnSaleInTx(
     const absorbedGross = absorbedCommercial
       .div(new Decimal(1).plus(taxRate))
       .div(new Decimal(1).minus(discountRatio));
+    // Keep the prior component credit on its source item's sector, excluding tax.
+    absorbedComponentRevenueByItem.set(
+      Number(item.id),
+      absorbedCommercial.div(new Decimal(1).plus(taxRate)),
+    );
     returnedGrossNet = returnedGrossNet.plus(
       Decimal.max(0, money(item.total).times(portion).minus(absorbedGross)),
     );
@@ -2288,7 +2294,12 @@ export async function returnSaleInTx(
         ? lineRevenue
         : round2(lineRevenue.times(quantity).div(item.baseQuantity));
     const currentRevenue = round2(
-      cumulativeRevenue(afterQuantity).minus(cumulativeRevenue(beforeQuantity)),
+      Decimal.max(
+        0,
+        cumulativeRevenue(afterQuantity)
+          .minus(cumulativeRevenue(beforeQuantity))
+          .minus(absorbedComponentRevenueByItem.get(Number(item.id)) ?? money(0)),
+      ),
     );
     allocatedReturnRevenue = allocatedReturnRevenue.plus(currentRevenue);
     returnRevenueByRole.set(
