@@ -654,6 +654,7 @@ describe("Store Order Components Suite", () => {
 
       expect(onDispatch).toHaveBeenCalledWith({
         id: 501,
+        branchId: 2,
         orderNumber: "SO-501",
         total: 27000,
         customerName: "فاطمة حيدر",
