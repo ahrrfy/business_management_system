@@ -5,9 +5,13 @@
 import { useId, useMemo } from "react";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Input } from "@/components/ui/input";
+import {
+  REPORT_PERIOD_LABELS,
+  REPORT_COMPARE_LABELS,
+} from "@shared/reportPeriod";
 
-export type PresetKey = "today" | "week" | "mtd" | "qtd" | "ytd" | "lastMonth" | "custom";
-export type CompareMode = "none" | "prev" | "yoy";
+export type PresetKey = keyof typeof REPORT_PERIOD_LABELS;
+export type CompareMode = keyof typeof REPORT_COMPARE_LABELS;
 
 export interface PeriodValue {
   from: string; // YYYY-MM-DD
@@ -24,7 +28,10 @@ export function ymd(d: Date): string {
 }
 
 /** يحسب نطاق [from,to] لفترة جاهزة بالنسبة لليوم الحالي. */
-export function presetRange(preset: PresetKey, today = new Date()): { from: string; to: string } {
+export function presetRange(
+  preset: PresetKey,
+  today = new Date(),
+): { from: string; to: string } {
   const t = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   const to = ymd(t);
   switch (preset) {
@@ -54,16 +61,43 @@ export function presetRange(preset: PresetKey, today = new Date()): { from: stri
 }
 
 /** النطاق المقارَن: السابق (نفس الطول، ينتهي قبل from بيوم) أو السنة الماضية (نفس التواريخ −سنة). */
-export function comparativeRange(from: string, to: string, mode: CompareMode): { from: string; to: string } | null {
+export function comparativeRange(
+  from: string,
+  to: string,
+  mode: CompareMode,
+): { from: string; to: string } | null {
   if (mode === "none") return null;
   const f = new Date(from + "T00:00:00");
   const t = new Date(to + "T00:00:00");
-  if (isNaN(f.getTime()) || isNaN(t.getTime())) return null;
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(from) ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(to) ||
+    isNaN(f.getTime()) ||
+    isNaN(t.getTime()) ||
+    ymd(f) !== from ||
+    ymd(t) !== to ||
+    f > t
+  )
+    return null;
   if (mode === "yoy") {
     const pf = new Date(f);
+    pf.setDate(1);
     pf.setFullYear(f.getFullYear() - 1);
+    pf.setDate(
+      Math.min(
+        f.getDate(),
+        new Date(pf.getFullYear(), pf.getMonth() + 1, 0).getDate(),
+      ),
+    );
     const pt = new Date(t);
+    pt.setDate(1);
     pt.setFullYear(t.getFullYear() - 1);
+    pt.setDate(
+      Math.min(
+        t.getDate(),
+        new Date(pt.getFullYear(), pt.getMonth() + 1, 0).getDate(),
+      ),
+    );
     return { from: ymd(pf), to: ymd(pt) };
   }
   // prev: نطاقٌ بنفس عدد الأيام ينتهي في اليوم السابق لـfrom.
@@ -80,22 +114,7 @@ export const DEFAULT_PERIOD: PeriodValue = {
   preset: "mtd",
 };
 
-const PRESETS: { key: PresetKey; label: string }[] = [
-  { key: "today", label: "اليوم" },
-  { key: "week", label: "آخر ٧ أيام" },
-  { key: "mtd", label: "هذا الشهر" },
-  { key: "qtd", label: "هذا الربع" },
-  { key: "ytd", label: "هذه السنة" },
-  { key: "lastMonth", label: "الشهر الماضي" },
-];
-
-const COMPARE_LABELS: Record<CompareMode, string> = {
-  none: "بلا مقارنة",
-  prev: "الفترة السابقة",
-  yoy: "السنة الماضية",
-};
-
-const inputCls = "h-8 w-32 text-xs";
+const inputCls = "h-8 w-32 min-w-0 text-xs";
 
 export function PeriodFilter({
   value,
@@ -125,28 +144,64 @@ export function PeriodFilter({
   }, [compare, value.from, value.to]);
 
   return (
-    <div className="flex min-w-max items-center gap-1.5" role="group" aria-label="فترة التقرير">
+    <div
+      className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5"
+      role="group"
+      aria-label="فترة التقرير"
+    >
       <label className="sr-only" htmlFor={presetId}>
         الفترة الجاهزة
       </label>
-      <AppSelect id={presetId} size="sm" className="w-32 text-xs" value={value.preset} onValueChange={(next) => setPreset(next as PresetKey)} aria-label="الفترة الجاهزة">
-        {PRESETS.map((preset) => (
-          <option key={preset.key} value={preset.key}>
-            {preset.label}
+      <AppSelect
+        id={presetId}
+        size="sm"
+        className="w-32 text-xs"
+        value={value.preset}
+        onValueChange={(next) => setPreset(next as PresetKey)}
+        aria-label="الفترة الجاهزة"
+      >
+        {(Object.keys(REPORT_PERIOD_LABELS) as PresetKey[]).map((preset) => (
+          <option key={preset} value={preset}>
+            {REPORT_PERIOD_LABELS[preset]}
           </option>
         ))}
-        <option value="custom">فترة مخصصة</option>
       </AppSelect>
 
-      <span className="text-2xs text-muted-foreground">من</span>
-      <Input type="date" value={value.from} onChange={(e) => onChange({ ...value, from: e.target.value, preset: "custom" })} className={inputCls} aria-label="من تاريخ" />
-      <span className="text-2xs text-muted-foreground">إلى</span>
-      <Input type="date" value={value.to} onChange={(e) => onChange({ ...value, to: e.target.value, preset: "custom" })} className={inputCls} aria-label="إلى تاريخ" />
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="text-2xs text-muted-foreground">من</span>
+        <Input
+          type="date"
+          value={value.from}
+          onChange={(e) =>
+            onChange({ ...value, from: e.target.value, preset: "custom" })
+          }
+          className={inputCls}
+          aria-label="من تاريخ"
+        />
+      </div>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="text-2xs text-muted-foreground">إلى</span>
+        <Input
+          type="date"
+          value={value.to}
+          onChange={(e) =>
+            onChange({ ...value, to: e.target.value, preset: "custom" })
+          }
+          className={inputCls}
+          aria-label="إلى تاريخ"
+        />
+      </div>
       {compare !== undefined && onCompareChange && (
-        <AppSelect size="sm" className="w-32 text-xs" value={compare} onValueChange={(next) => onCompareChange(next as CompareMode)} aria-label="المقارنة">
-          {(Object.keys(COMPARE_LABELS) as CompareMode[]).map((m) => (
+        <AppSelect
+          size="sm"
+          className="w-32 text-xs"
+          value={compare}
+          onValueChange={(next) => onCompareChange(next as CompareMode)}
+          aria-label="المقارنة"
+        >
+          {(Object.keys(REPORT_COMPARE_LABELS) as CompareMode[]).map((m) => (
             <option key={m} value={m}>
-              {COMPARE_LABELS[m]}
+              {REPORT_COMPARE_LABELS[m]}
             </option>
           ))}
         </AppSelect>
