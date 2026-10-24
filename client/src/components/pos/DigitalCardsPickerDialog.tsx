@@ -165,7 +165,7 @@ export function DigitalCardsPickerDialog({ open, branchId, offline, onClose, onP
       </div>}
     </div>
     {reporting && <div role="dialog" aria-modal="true" aria-label="بلاغ تغيّر سعر المزوّد" style={{ position: "fixed", inset: 0, zIndex: 62, background: C.overlay, display: "grid", placeItems: "center", padding: 16 }}>
-      <div style={{ width: "min(440px, 100%)", background: C.bg, color: C.fg, padding: 20, borderRadius: 8, display: "grid", gap: 12 }}>
+      <div style={{ width: "min(440px, 100%)", maxHeight: "calc(100dvh - 2rem)", overflowY: "auto", background: C.bg, color: C.fg, padding: 20, borderRadius: 8, display: "grid", gap: 12 }}>
         <strong>بلاغ تغيّر سعر المزوّد — {reporting.name}</strong><p>أدخل المبلغ الذي يخصمه جهاز المزوّد. البلاغ لا يغيّر سعر البيع حتى يعتمد المدير السعر.</p>
         <label>حصة المزوّد على الجهاز<MoneyInput value={reportShare} onChange={setReportShare} style={field} /></label><label>ملاحظة (اختياري)<input value={reportNotes} onChange={(event) => setReportNotes(event.target.value)} style={{ ...field, width: "100%" }} /></label>
         <div style={{ display: "flex", gap: 8 }}><button style={button} onClick={() => setReporting(null)}>إلغاء</button><button style={primary} disabled={!digitalAccess.can("digitalCards.pricing.reportMismatch") || (reportMut.isPending)} onClick={() => {

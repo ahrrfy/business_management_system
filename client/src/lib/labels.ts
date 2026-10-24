@@ -37,12 +37,4 @@ export function shiftTypeLabel(t: string | null | undefined): string {
 }
 
 /** فئة السعر (productPrices.tier / customers.defaultPriceTier). */
-export const PRICE_TIER_AR: Record<string, string> = {
-  RETAIL: "مفرد",
-  WHOLESALE: "جملة",
-  GOVERNMENT: "حكومي",
-};
-export function priceTierLabel(s: string | null | undefined): string {
-  if (!s) return "—";
-  return PRICE_TIER_AR[s] ?? s;
-}
+export { PRICE_TIER_LABELS as PRICE_TIER_AR, priceTierLabel } from "@shared/terms";

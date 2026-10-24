@@ -35,6 +35,28 @@ export const EMPLOYMENT_STATUSES = [
 ] as const;
 export type EmploymentStatus = (typeof EMPLOYMENT_STATUSES)[number]["key"];
 
+/** Shared by the employee statement, spreadsheet and A4 printout. */
+export const ATTENDANCE_STATE_LABELS: Readonly<Record<string, string>> = {
+  present: "حضور",
+  absent: "غياب",
+  open: "بصمة انصراف ناقصة",
+  paidLeave: "إجازة مدفوعة",
+  unpaidLeave: "إجازة بلا راتب",
+  beforeStart: "قبل المباشرة",
+  restWorked: "عمل يوم عطلة",
+};
+
+/** The statement period is UTC; local month setters can drop its first option. */
+export function recentAttendanceMonths(count = 12, now = new Date()): string[] {
+  const cursor = new Date(now);
+  cursor.setUTCDate(1);
+  return Array.from({ length: count }, () => {
+    const period = cursor.toISOString().slice(0, 7);
+    cursor.setUTCMonth(cursor.getUTCMonth() - 1);
+    return period;
+  });
+}
+
 export const GENDERS = ["ذكر", "أنثى"] as const;
 export const MARITAL_STATUSES = ["أعزب", "متزوج", "مطلّق", "أرمل"] as const;
 export const DEGREES = ["ابتدائية", "متوسطة", "إعدادية", "دبلوم", "بكالوريوس", "ماجستير", "دكتوراه"] as const;

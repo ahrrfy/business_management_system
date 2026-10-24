@@ -12,6 +12,9 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "client/src/components/hr/__tests__/wave32Attendance.test.tsx",
+      "client/src/components/hr/__tests__/wave32AttendanceCorrection.test.tsx",
+      "client/src/components/crm/__tests__/wave32Dossier.test.tsx",
       "server/services/__tests__/fulfillmentChargesVisibility.unit.test.ts",
       "server/services/__tests__/fulfillmentPosting.test.ts",
       "server/services/__tests__/fulfillmentChargesPolicy.unit.test.ts",

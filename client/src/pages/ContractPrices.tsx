@@ -1,3 +1,4 @@
+import { PRICE_TIER_LABELS as TIER_LABEL } from "@shared/terms";
 // بند 12ب (٧/٧): التسعير التعاقدي الخاص بعميل (عقود الدوائر الحكومية) — شاشة إدارة بمدير.
 // منتقي عميل → جدول أسعاره التعاقدية (نشطة/معطَّلة) → إضافة سطر: بحث منتج (وحدة قياس محدَّدة
 // من نتيجة البحث نفسها — كل صف نتيجة = متغيّر×وحدة) ثم سعر MoneyInput. السعر التعاقدي النشط
@@ -32,7 +33,6 @@ import { ACTION_LABELS } from "@shared/actionLabels";
 
 type ContractRow = RouterOutputs["customers"]["contractPricesList"][number];
 
-const TIER_LABEL: Record<PriceTier, string> = { RETAIL: "مفرد", WHOLESALE: "جملة", GOVERNMENT: "حكومي" };
 
 const fmtMoney = (v: string) =>
   Number(v).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
