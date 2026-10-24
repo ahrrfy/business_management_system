@@ -1,3 +1,4 @@
+import { loadWorkOrderDepositReceiptSet } from "./workOrder/depositReceiptSet";
 /** Reconstruct old receipt provenance; never receive cash or change customer AR. */
 import { createHash } from "node:crypto";
 import { and, asc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
@@ -140,6 +141,7 @@ async function evidence(tx: Tx, input: CustomerReceiptHistoryRequest) {
           inArray(receipts.partyId, customerIds),
         ),
         invoiceIds.length ? inArray(receipts.invoiceId, invoiceIds) : undefined,
+        inArray(receipts.workOrderId, tx.select({ id: workOrders.id }).from(workOrders).where(inArray(workOrders.customerId, customerIds))),
         inArray(
           receipts.id,
           tx
@@ -170,6 +172,7 @@ async function evidence(tx: Tx, input: CustomerReceiptHistoryRequest) {
       ),
     )
     .orderBy(asc(workOrders.id));
+  const depositReceiptSets = Object.fromEntries(await Promise.all(holds.map(async h => [h.id, (await loadWorkOrderDepositReceiptSet(tx, h)).map(r => Number(r.id))] as const)));
   const payments = await tx
     .select()
     .from(orderPayments)
@@ -252,6 +255,7 @@ async function evidence(tx: Tx, input: CustomerReceiptHistoryRequest) {
     ledger,
     receiptRows,
     holds,
+    depositReceiptSets,
     payments,
     tracked,
     delivery,
@@ -326,21 +330,13 @@ function planHistory(input: CustomerReceiptHistoryRequest, e: Evidence) {
       e.ledger.filter((x) => x.customerId === c.id),
       arAmount,
     );
-    const held = sum(
-      e.holds.filter((h) => h.customerId === c.id),
-      (h) => {
-        const receipt = e.receiptRows.find((r) => r.id === h.depositReceiptId);
-        if (
-          !receipt ||
-          receipt.status !== "COMPLETED" ||
-          receipt.approvalStatus !== "APPROVED" ||
-          receipt.direction !== "IN" ||
-          !money(receipt.amount).eq(h.deposit ?? "0")
-        )
-          fail(`عربون محتجز بلا دليل مطابق #${h.id}`);
-        return money(h.deposit);
-      },
-    );
+    let held = money(0);
+    for (const h of e.holds.filter(h => h.customerId === c.id)) {
+      const ids = e.depositReceiptSets[h.id] ?? [];
+      const source = e.receiptRows.filter(r => ids.includes(r.id));
+      if (!source.length || source.some(r => r.status !== "COMPLETED" || r.approvalStatus !== "APPROVED" || r.direction !== "IN") || !sum(source, r => money(r.amount)).eq(h.deposit ?? "0")) fail(`عربون محتجز بلا دليل مطابق #${h.id}`);
+      held = held.plus(money(h.deposit));
+    }
     if (
       e.payments.some(
         (p) =>

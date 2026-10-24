@@ -18,6 +18,7 @@ export interface ReceptionAmountsInput {
   invoiceDiscountPct: string;
   draftHeld: string;
   method: import("@/components/reception/cartMath").PayMethod;
+  splitPayment?: { hasCash: boolean; hasNonCash: boolean };
   payInput: string;
   customer: import("@/components/customer/customerByPhoneMachine").PhoneCustomer;
   phoneResolution: import("@/components/customer/customerByPhoneMachine").PhoneResolution;
@@ -32,12 +33,14 @@ export function useReceptionAmounts({
   invoiceDiscountPct,
   draftHeld,
   method,
+  splitPayment,
   payInput,
   customer,
   phoneResolution,
   deferred,
   setDeferred,
 }: ReceptionAmountsInput) {
+  const allCash = splitPayment ? splitPayment.hasCash && !splitPayment.hasNonCash : method === "CASH";
   const cartCount = cart.reduce((s, c) => s + c.qty, 0);
   const hasDigitalCards = cart.some((line) => line.digital);
   const sumDirectD = cart
@@ -178,11 +181,13 @@ export function useReceptionAmounts({
   // مراجعة ش٤: مرآة شرط الخادم — لو أنزل التقريبُ الإجماليَّ إلى/تحت العربون المقبوض سلفاً
   // لَسُدَّ الطريق النقديّ (المتوقّع 0 والخادم يطالب بالفارق الخام) ⇒ يسقط التقريب حينها.
   const draftHeldEarlyD = D(draftHeld || 0);
+  const splitRoundingEligible = !splitPayment || (!deferred && D(payInput || 0).plus(draftHeldEarlyD).gte(roundCashIQD(grandTotalD.toFixed(2))));
   const roundedWouldTrapHeld =
     draftHeldEarlyD.gt(0) &&
     roundCashIQD(grandTotalD.toFixed(2)).lte(draftHeldEarlyD);
   const cashRoundActive =
-    method === "CASH" &&
+    allCash &&
+    splitRoundingEligible &&
     cart.length > 0 &&
     !hasDigitalCards &&
     !cart.some(isCustomKind) &&
@@ -207,7 +212,8 @@ export function useReceptionAmounts({
     roundCashIQD(grandTotalD.toFixed(2)).minus(grandTotalD),
   );
   const mixedRoundEligible =
-    method === "CASH" &&
+    allCash &&
+    splitRoundingEligible &&
     cart.length > 0 &&
     !hasDigitalCards &&
     !cashRoundActive &&
@@ -242,7 +248,7 @@ export function useReceptionAmounts({
   const change = round2(changeD).toNumber();
   const remainingD = expectedNowD.minus(paidD);
   const remaining = round2(remainingD).toNumber();
-  const isChange = method === "CASH" && paidD.gt(0) && paidD.gte(expectedNowD);
+  const isChange = (splitPayment ? splitPayment.hasCash : method === "CASH") && paidD.gt(0) && paidD.gte(expectedNowD);
   const isOwing = paidD.gt(0) && paidD.lt(expectedNowD);
 
   const hasCustom = cart.some(isCustomKind);

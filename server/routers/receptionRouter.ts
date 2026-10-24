@@ -1,3 +1,4 @@
+import { receptionPaymentsSchema } from "../services/reception/splitPayments";
 import { initiateExternalPaymentAttempt, confirmExternalPaymentAttempt } from "../services/posExternalPayment";
 // راوتر محطة خدمة الزبائن — ش١ من docs/reception-cashier-system-design-2026-08-05.md §٦.
 //
@@ -467,6 +468,7 @@ export const receptionRouter = router({
    *  (المال) لا exec — فنّي الطباعة يحرّر ولا يثبّت (V7: treasury=NONE ⇒ لا وردية أصلاً). */
   draftCommit: workordersCashierProcedure
     .input(z.object({
+      payments: receptionPaymentsSchema.optional(),
       draftId: z.number().int().positive(),
       version: z.number().int().min(0),
       expectedTotal: positiveMoneyString,
@@ -545,6 +547,7 @@ export const receptionRouter = router({
           expectedTotal: input.expectedTotal,
           shiftId: input.shiftId,
           collectNow: input.collectNow ?? null,
+          ...(input.payments === undefined ? {} : { payments: input.payments }),
           cashRoundIQD: input.cashRoundIQD,
           deliveryFeeHeld: input.deliveryFeeHeld ?? null,
           deliveryFeeTender: input.deliveryFeeTender ?? null,

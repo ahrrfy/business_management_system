@@ -43,8 +43,11 @@ import { assertTelecomCollectAllowed } from "./reception/telecom";
 import { canonicalIraqiMobile } from "../lib/phone";
 import { lockMaterializedCashReceiptSourceForWrite } from "./cash/cashAvailability";
 import { assertOperationAuthorityTx } from "./authorization/operationAuthority";
+import type { ReceptionPaymentLeg } from "@shared/receptionPayments";
+import { normalizeReceptionPayments, lockReceptionSplitProofs, finishReceptionSplit } from "./reception/splitPayments";
 
 export interface ReceptionCheckoutInput {
+  payments?: ReceptionPaymentLeg[];
   branchId: number;
   /** رقم التتبع الموحّد للمعاملة (R1). */
   trackingNumber?: string | null;
@@ -231,6 +234,7 @@ export async function checkoutReception(
  * (لا تُختَم على الفاتورة) بدل اختلاق «نقدي» لعمليةٍ لم يدخل فيها دينار.
  */
 function assertReceptionPaymentMethod(input: ReceptionCheckoutInput) {
+  if (input.payments !== undefined) { normalizeReceptionPayments(input); return; }
   const newCash = round2(money(input.paidAmount ?? "0"));
   if (newCash.lte(0)) return;
   if (!input.paymentMethod) {
@@ -256,6 +260,7 @@ export async function checkoutReceptionInTx(
   assertReceptionPaymentMethod(input);
   {
     const checkoutPayloadHash = idempotencyHash(input);
+    const splitPlan = input.payments === undefined ? null : normalizeReceptionPayments(input);
     const checkoutReplayRefId = await checkIdempotency(
       tx,
       "reception.checkout",
@@ -271,13 +276,22 @@ export async function checkoutReceptionInTx(
     const legacyCompleteReplay =
       checkoutReplayRefId == null && (await isCompleteReplay(tx, input));
     const completeReplay = checkoutReplayRefId != null || legacyCompleteReplay;
+    if (splitPlan) {
+      await lockReceptionSplitProofs(tx, input, splitPlan, actor, completeReplay);
+      input = { ...input, paidAmount: splitPlan.summary.appliedAmount,
+        paymentMethod: splitPlan.allCash ? "CASH" : splitPlan.legs.find(l => l.method !== "CASH")!.method,
+        ...(splitPlan.roundingEligible ? {} : { cashRoundIQD: false, cashRoundingOverride: null }) };
+    }
     let resolvedFeeTender = input.deliveryFeeTender;
+    if (splitPlan && resolvedFeeTender?.method !== "CASH" && resolvedFeeTender) {
+      resolvedFeeTender = { ...resolvedFeeTender, reference: splitPlan.references.get(resolvedFeeTender.combinedWithPaymentIndex ?? -1) ?? null };
+    }
     let resolvedPaymentReference = input.paymentReference;
     let feeBinding: ExternalPaymentBindingInput | null = null;
     let goodsBinding: ExternalPaymentBindingInput | null = null;
     const combinedFee =
       input.deliveryFeeTender?.combinedWithPaymentIndex != null;
-    if (input.deliveryFeeTender && money(input.deliveryFeeHeld ?? "0").gt(0)) {
+    if (!splitPlan && input.deliveryFeeTender && money(input.deliveryFeeHeld ?? "0").gt(0)) {
       const tender = input.deliveryFeeTender;
       if (
         combinedFee &&
@@ -343,7 +357,7 @@ export async function checkoutReceptionInTx(
       }
     }
 
-    if (!combinedFee && money(input.paidAmount ?? "0").gt(0) && input.paymentMethod !== "CASH"
+    if (!splitPlan && !combinedFee && money(input.paidAmount ?? "0").gt(0) && input.paymentMethod !== "CASH"
       && (input.deliveryFeeTender != null || input.paymentExternalPaymentAttemptId != null)) {
       goodsBinding = {branchId:input.branchId,channel:"PRINT_POS",method:input.paymentMethod!,amount:money(input.paidAmount!).toFixed(2),
         attemptId:input.paymentExternalPaymentAttemptId,deviceId:input.paymentExternalPaymentDeviceId};
@@ -402,6 +416,7 @@ export async function checkoutReceptionInTx(
         });
       }
       const writesMaterialCash =
+        (splitPlan?.legs.some(l => l.method === "CASH") && money(splitPlan.summary.appliedAmount).gt(0)) ||
         (input.paymentMethod === "CASH" &&
           money(input.paidAmount ?? "0").gt(0)) ||
         (money(input.deliveryFeeHeld ?? "0").gt(0) &&
@@ -731,7 +746,8 @@ export async function checkoutReceptionInTx(
           // صدق طريقة الدفع (١٨/٨): الدفعة تُبنى **فقط حين يُقبض نقدٌ جديد الآن**. كان الكائن
           // يُبنى دائماً ولو بصفر، فيموت فرع `?? null` في sale/create.ts ويُختَم «نقدي» على
           // فاتورةٍ لم يدخلها دينار. صفر ⇒ null ⇒ paymentMethod NULL = «آجل» بالاشتقاق.
-          payment: saleNewCashD.gt(0)
+          ...(splitPlan ? { payments: splitPlan.targets.get("SALE") ?? [] } : {}),
+          payment: !splitPlan && saleNewCashD.gt(0)
             ? {
                 // ش٧: المدفوع = **المخصَّص فعلاً** لا مبلغ الفاتورة — مع COD يبقى الفرق عهدةَ مندوب.
                 amount: saleNewCashD.toFixed(2),
@@ -793,7 +809,8 @@ export async function checkoutReceptionInTx(
             ? { amount: preSplit.print, receiptIds: [] }
             : null,
           // صدق طريقة الدفع (١٨/٨) — انظر التعليق في buildSale.
-          payment: printNewCashD.gt(0)
+          ...(splitPlan ? { payments: splitPlan.targets.get("PRINT") ?? [] } : {}),
+          payment: !splitPlan && printNewCashD.gt(0)
             ? {
                 // ش٧: المخصَّص فعلاً (الطباعة تُسدَّد كاملةً عند التوصيل بحاملٍ SALE — حارسٌ أعلاه).
                 amount: printNewCashD.toFixed(2),
@@ -1101,6 +1118,11 @@ export async function checkoutReceptionInTx(
           contactName: order.contactName ?? input.contactName ?? null,
           contactPhone: order.contactPhone ?? input.contactPhone ?? null,
           clientRequestId: `${input.clientRequestId}-wo-${index}`,
+          ...(splitPlan ? {
+            depositPayments: splitPlan.targets.get(`WO:${index}`) ?? [],
+            paymentMethod: splitPlan.targets.get(`WO:${index}`)?.[0]?.method ?? null,
+            paymentReference: splitPlan.targets.get(`WO:${index}`)?.[0]?.reference ?? null,
+          } : {}),
           // ش٠ (V4): الوردية المُتحقَّق منها أعلاه (OPEN + RECEPTION + الفرع + المالك تحت قفل) تُمرَّر
           // لكل أمر شغل ⇒ عرابين السلة تهبط على درج قابضها نفسه، لا على وردية أخرى يحلّها
           // openShiftIdTx بنفسه (سلّةٌ كانت قابلة للانشطار على درجين ⇒ محاسبة موظّفٍ على نقدٍ لم يستلمه).
@@ -1109,7 +1131,7 @@ export async function checkoutReceptionInTx(
             ? resolvedFeeTender : (!hasAnySaleInvoice && index===0 ? resolvedFeeTender : order.deliveryFeeTender),
         },
         actor,
-        basketFeeTender && order.hasDelivery && order.deliveryFeeCollection==="COUNTER" && (feeBinding || resolvedFeeTender?.combinedWithPaymentIndex != null)
+        basketFeeTender && order.hasDelivery && order.deliveryFeeCollection==="COUNTER" && (splitPlan != null || feeBinding || resolvedFeeTender?.combinedWithPaymentIndex != null)
           ? RECEPTION_FEE_ALLOCATION : undefined,
       );
       if (!sharedTrackingNumber && created?.orderNumber) {
@@ -1181,6 +1203,7 @@ export async function checkoutReceptionInTx(
       );
       if (goodsBinding) await consumeExternalReceiptAllocationsTx(tx,goodsBinding,goods.map(r=>Number(r.id)),actor);
     }
-    return { regularSale, printSale, workOrders, preSplit, dispatch };
+    const splitMetadata = splitPlan ? await finishReceptionSplit(tx, input, splitPlan, { regularSale, printSale, workOrders }, actor, completeReplay) : {};
+    return { regularSale, printSale, workOrders, preSplit, dispatch, ...splitMetadata };
   }
 }

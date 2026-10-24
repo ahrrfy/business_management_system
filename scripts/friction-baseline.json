@@ -54,7 +54,6 @@
   "D4::client/src/components/purchases/SupplierPaymentsGovernanceWorkspace.tsx": 278,
   "D4::client/src/components/PwaUpdateManager.tsx": 439,
   "D4::client/src/components/reception/CartTable.tsx": 54,
-  "D4::client/src/components/reception/PaymentPanel.tsx": 186,
   "D4::client/src/components/reception/ReceptionInvoiceQueue.tsx": 623,
   "D4::client/src/components/reception/ReceptionOrderQueue.tsx": 148,
   "D4::client/src/components/salesPipeline/PipelineDialogs.tsx": 301,

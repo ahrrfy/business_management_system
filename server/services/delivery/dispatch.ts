@@ -1,3 +1,6 @@
+import { loadWorkOrderDepositReceiptSet } from "../workOrder/depositReceiptSet";
+import { mixedAwarePaymentMethod } from "../sale/payment";
+import { appliedCollectionsForWorkOrder, linkSoleTargetCollectionsToInvoice } from "../deposits";
 // التحوّلات (محاسبة العهدة) — ترتيب أقفال موحّد لمنع الجمود: الإرسالية → الجهة → الفاتورة → الوردية.
 //
 // READY → DELIVERED + إرسالية: فاتورة عميل + SALE + عهدة COD على الجهة (D3).
@@ -722,31 +725,17 @@ async function runWorkOrderDispatchTx(
     // ربط إيصال العربون بالفاتورة (كان workOrderId-only) — append-only على القيد كـdeliverWorkOrder.
     // ش٠ (V3): بهويّته الصريحة (depositReceiptId) — الالتقاط الظنّي كان يتصادم مع إيصال أجرة COUNTER.
     if (depositPaid.gt(0)) {
-      const depRcptId =
-        wo.depositReceiptId != null
-          ? Number(wo.depositReceiptId)
-          : (
-              await tx
-                .select({ id: receipts.id })
-                .from(receipts)
-                .where(
-                  and(
-                    eq(receipts.workOrderId, Number(wo.id)),
-                    eq(receipts.direction, "IN"),
-                    isNull(receipts.invoiceId),
-                    or(
-                      isNull(receipts.referenceNumber),
-                      notLike(receipts.referenceNumber, "DLV-FEE-%"),
-                    ),
-                  ),
-                )
-                .limit(1)
-            )[0]?.id;
-      if (depRcptId != null)
-        await tx
-          .update(receipts)
-          .set({ invoiceId })
-          .where(eq(receipts.id, Number(depRcptId)));
+      const appliedDeposits = await appliedCollectionsForWorkOrder(tx, Number(wo.id));
+      const directAmount = depositPaid.minus(appliedDeposits.reduce((sum, part) => sum.plus(money(part.amount)), money(0)));
+      const directReceipts = await loadWorkOrderDepositReceiptSet(tx, wo, directAmount.toFixed(2));
+      for (const receipt of directReceipts) {
+        await tx.update(receipts).set({ invoiceId }).where(eq(receipts.id, Number(receipt.id)));
+      }
+      if (directReceipts.length || appliedDeposits.length) {
+        const method = [...directReceipts.map(r => r.paymentMethod), ...appliedDeposits.map(r => r.method)].reduce<string | null>((folded, method) => mixedAwarePaymentMethod(folded, method), null);
+        await tx.update(invoices).set({ paymentMethod: method }).where(eq(invoices.id, invoiceId));
+      }
+      await linkSoleTargetCollectionsToInvoice(tx, Number(wo.id), invoiceId);
     }
   }
 

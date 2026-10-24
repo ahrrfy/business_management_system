@@ -1,3 +1,4 @@
+import { receptionDocumentPaymentLegs } from "@/components/payments/receptionReceiptPayments";
 import type { RouterOutputs } from "@/lib/trpc";
 import type { OrderDeliveryValue } from "@/components/reception/ReceptionTypes";
 import {
@@ -93,7 +94,7 @@ export function buildReceptionCheckoutReceipts({
       ? `${customerName} — ${receiptPhone}`
       : (customerName ?? (receiptPhone ? `عميل ${receiptPhone}` : null));
   // ش٤: الفكّة والمتبقّي يقاسان على المستحقّ الآن (بعد خصم العربون السابق heldD).
-  const printedChange = receptionReceiptChange(
+  const printedChange = result.paymentSummary ? (D(result.paymentSummary.changeAmount).gt(0) ? result.paymentSummary.changeAmount : null) : receptionReceiptChange(
     method,
     inputPaidD.toFixed(2),
     expectedNowD.toFixed(2),
@@ -173,9 +174,10 @@ export function buildReceptionCheckoutReceipts({
       change: printedChange,
       credit: regularSettlement!.credit,
       paymentMode: checkoutPaymentMode,
+      paymentLegs: receptionDocumentPaymentLegs(result, { invoiceId: result.regularSale.invoiceId }, regularSettlement!.paid),
       paymentMethod: receptionReceiptMethodLabel({
         settlement: regularSettlement!,
-        methodLabel: PAY_METHOD_LABEL[method],
+        methodLabel: result.paymentAllocations ? "موضح في تفصيل الدفعات" : PAY_METHOD_LABEL[method],
         paymentMode: checkoutPaymentMode,
       }),
       delivery: receiptDelivery,
@@ -193,9 +195,10 @@ export function buildReceptionCheckoutReceipts({
       change: result.regularSale ? null : printedChange,
       credit: printSettlement!.credit,
       paymentMode: checkoutPaymentMode,
+      paymentLegs: receptionDocumentPaymentLegs(result, { invoiceId: result.printSale.invoiceId }, printSettlement!.paid),
       paymentMethod: receptionReceiptMethodLabel({
         settlement: printSettlement!,
-        methodLabel: PAY_METHOD_LABEL[method],
+        methodLabel: result.paymentAllocations ? "موضح في تفصيل الدفعات" : PAY_METHOD_LABEL[method],
         paymentMode: checkoutPaymentMode,
       }),
       delivery: result.regularSale ? null : receiptDelivery,
@@ -213,6 +216,8 @@ export function buildReceptionCheckoutReceipts({
       (result.workOrders[index] as { deposit?: string } | undefined)?.deposit ??
       "0.00";
     const woBalance = round2(D(x.salePriceStr).minus(D(woDeposit)));
+    const parts = receptionDocumentPaymentLegs(result, { workOrderId: result.workOrders[index]?.workOrderId }, woDeposit);
+    const paymentNote = parts?.length ? `تفصيل العربون: ${parts.map(part => `${part.method}: ${fmt(part.amount)} د.ع${part.reference ? ` (${part.reference})` : ""}`).join(" · ")}` : null;
     workOrdersToPrint.push({
       orderNumber: result.workOrders[index]?.orderNumber ?? "",
       orderDate: fmtDate(printedAt),
@@ -229,7 +234,7 @@ export function buildReceptionCheckoutReceipts({
       // ٥/٨ + ٨/٨ — أجرة التوصيل تُطبع صراحةً على التذكرة **خارج الإجمالي**، مع الجهة ومَن
       // يقبضها: يمنع سوءَ الفهم الذي كان يجعل الموظّف والزبون يظنّانها جزءاً من قيمة الطلب،
       // ويُظهر التوصيل حتى حين جاء من زرّ «توصيل هذا الطلب» (كان لا يُطبَع إطلاقاً قبل الإصلاح).
-      notes: eff.has
+      notes: [(eff.has
         ? [
             `توصيل إلى: ${eff.address || "العنوان غير محدد"}`,
             eff.phone ? `هاتف المستلم: ${eff.phone}` : null,
@@ -246,7 +251,7 @@ export function buildReceptionCheckoutReceipts({
           ]
             .filter(Boolean)
             .join(" · ")
-        : null,
+        : null), paymentNote].filter(Boolean).join(" · ") || null,
     });
   });
 

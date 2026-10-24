@@ -39,6 +39,8 @@ export interface CreateWorkOrderInput {
   /** ش٤ (§٧.٢) — جزء `deposit` الذي سبق قبضُه (عرابين مسوّدة عبر orderPayments): له إيصاله
    *  وقيده منذ القبض، فلا يُنشأ له إيصالٌ ثانٍ هنا (I5) — الإيصال للجزء الجديد N = deposit − هذا. */
   depositPreCollected?: string | null;
+  /** Internal reception allocations of the newly collected deposit; proofs are consumed by checkout. */
+  depositPayments?: Array<{ amount: string; method: "CASH" | "CARD" | "TRANSFER" | "WALLET"; reference?: string | null }>;
   paymentMethod?: "CASH" | "CARD" | "TRANSFER" | "WALLET" | "TELECOM" | null;
   paymentReference?: string | null;
   paymentReceiptUrl?: string | null;

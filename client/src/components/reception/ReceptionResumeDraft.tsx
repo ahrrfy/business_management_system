@@ -18,6 +18,7 @@ import {
   type Tier,
 } from "@/components/reception/cartMath";
 export interface ReceptionResumeDraftInput {
+  onPaymentScopeChanged?: () => void;
   branchId: number;
   offline: boolean;
   activeDraftRef: React.RefObject<{ id: number; version: number } | null>;
@@ -178,6 +179,7 @@ export async function ReceptionResumeDraft(
     setCustomerCreditLimit,
     setInvoiceDiscountPct,
     setCouponInput,
+    onPaymentScopeChanged,
   }: ReceptionResumeDraftInput,
   draftId: number,
   isHydrationCurrent: () => boolean = () => true,
@@ -311,6 +313,7 @@ export async function ReceptionResumeDraft(
       );
       return false;
     }
+    if (!shadow && activeDraftRef.current?.id !== draftId && (!forceReload || activeDraftRef.current != null)) onPaymentScopeChanged?.();
     clearCouponIfApplied();
     setCart(prepared.cart);
     setReceptionPhone(toLocalIqMobileDigits(d.contactPhone ?? ""));
