@@ -132,6 +132,56 @@ describe("F6 — تصافُر الدفتر عند المرتجع الكامل ل
       .where(sql`${s.accountingEntries.invoiceId}=${sale.invoiceId} AND ${s.accountingEntries.entryType}='ADJUST'`);
     expect(adjs).toHaveLength(0);
   });
+
+  it("مرتجع جزئي لفاتورة مخصومة 100% بلا رصيد مكوّن يعيد المخزون بقيمة صفر دون NaN أو أثر مكرر", async () => {
+    await reset();
+    await seed("1000.00");
+    const sale = await createSale(
+      {
+        branchId: 1,
+        shiftId: 1,
+        priceTier: "RETAIL",
+        sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }],
+        invoiceDiscount: "2000.00",
+        priceOverrideApproved: true,
+        clientRequestId: "fully-discounted-sale",
+      },
+      actor,
+    );
+    const [item] = await db().select().from(s.invoiceItems)
+      .where(eq(s.invoiceItems.invoiceId, sale.invoiceId));
+    const command = {
+      invoiceId: sale.invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
+      resolution: {
+        kind: "IMMEDIATE_REFUND" as const,
+        method: "CASH" as const,
+        amount: "0.00",
+        shiftId: null,
+        reason: "الفاتورة مجانية بالكامل ولا يوجد مبلغ مقبوض يرد",
+        disposition: "RESTOCK" as const,
+      },
+      clientRequestId: "fully-discounted-partial-return",
+    };
+
+    const returned = await returnSale(command, actor);
+    expect(returned).toMatchObject({ returnedTotal: "0.00", fullyReturned: false });
+    expect((await db().select().from(s.invoiceItems)
+      .where(eq(s.invoiceItems.id, item.id)))[0].returnedBaseQuantity).toBe(1);
+    expect((await db().select().from(s.branchStock)
+      .where(eq(s.branchStock.variantId, 1)))[0].quantity).toBe(9);
+    const movements = await db().select().from(s.inventoryMovements)
+      .where(eq(s.inventoryMovements.referenceId, sale.invoiceId));
+    expect(movements.filter(row => row.movementType === "RETURN")).toHaveLength(1);
+
+    expect(await returnSale(command, actor)).toMatchObject({
+      returnedTotal: "0.00",
+      idempotentReplay: true,
+    });
+    expect(await db().select().from(s.inventoryMovements)
+      .where(eq(s.inventoryMovements.referenceId, sale.invoiceId))).toEqual(movements);
+  });
 });
 
 // عكس أجرة الشحن (مراجعة عدائية ١٢/٧): بيع COD بأجرة شحن يعترف قيد SALE بالشحن ضمن revenue

@@ -1834,9 +1834,13 @@ export async function returnSaleInTx(
         ),
       money(0),
     );
-    const absorbedGross = absorbedCommercial
-      .div(new Decimal(1).plus(taxRate))
-      .div(new Decimal(1).minus(discountRatio));
+    const netPriceRatio = new Decimal(1).minus(discountRatio);
+    const absorbedGross =
+      absorbedCommercial.isZero() || netPriceRatio.isZero()
+        ? money(0)
+        : absorbedCommercial
+            .div(new Decimal(1).plus(taxRate))
+            .div(netPriceRatio);
     // Keep the prior component credit on its source item's sector, excluding tax.
     absorbedComponentRevenueByItem.set(
       Number(item.id),
