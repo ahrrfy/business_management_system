@@ -1,14 +1,18 @@
 // @vitest-environment jsdom
 import React, { act } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BundleKitComponentsStep,
   type BundleKitComponentBatch,
 } from "../BundleKitComponentsStep";
-import { normalizeDecimalInput } from "../QuickRecipeCopyDialog";
+import {
+  QuickRecipeCopyDialog,
+  normalizeDecimalInput,
+} from "../QuickRecipeCopyDialog";
 import type { ComponentRequirementDto } from "@shared/bundleProductionTypes";
-import { D, moneyInput, round2 } from "@/lib/money";
+import { D, formatIqd, moneyInput, round2 } from "@/lib/money";
 import { requiredBatchMultiple } from "@shared/batchDivisibility";
 
 (
@@ -199,7 +203,7 @@ describe("BundleKitComponentsStep & QuickRecipe Transformation Flow", () => {
         const defaultBatchQty =
           c.suggestedBatchQty > 0
             ? c.suggestedBatchQty
-            : (c.requiredBatchMultiple || 1);
+            : c.requiredBatchMultiple || 1;
 
         return ex
           ? {
@@ -305,9 +309,21 @@ describe("BundleKitComponentsStep & QuickRecipe Transformation Flow", () => {
   it("يمنع استنساخ البنود المرجعية الذاتية إذا كانت الوصفة المصدر تحتوي على نفس الصنف الهدف", () => {
     const targetVariantId = 102;
     const sourceRecipeLines = [
-      { inputVariantId: 201, inputProductName: "حبر أزرق", qtyPerOutputBase: "1" },
-      { inputVariantId: 102, inputProductName: "قلم حبر جاف أزرق (نفس الناتج)", qtyPerOutputBase: "1" },
-      { inputVariantId: 202, inputProductName: "أنبوب بلاستيك", qtyPerOutputBase: "1" },
+      {
+        inputVariantId: 201,
+        inputProductName: "حبر أزرق",
+        qtyPerOutputBase: "1",
+      },
+      {
+        inputVariantId: 102,
+        inputProductName: "قلم حبر جاف أزرق (نفس الناتج)",
+        qtyPerOutputBase: "1",
+      },
+      {
+        inputVariantId: 202,
+        inputProductName: "أنبوب بلاستيك",
+        qtyPerOutputBase: "1",
+      },
     ];
 
     const filteredLines = sourceRecipeLines.filter(
@@ -315,7 +331,9 @@ describe("BundleKitComponentsStep & QuickRecipe Transformation Flow", () => {
     );
 
     expect(filteredLines).toHaveLength(2);
-    expect(filteredLines.some((l) => l.inputVariantId === targetVariantId)).toBe(false);
+    expect(
+      filteredLines.some((l) => l.inputVariantId === targetVariantId),
+    ).toBe(false);
   });
 
   it("يحمي من ضياع التحديد التلقائي عند وصول بيانات التحليل المتأخرة عبر المرجع الآمن", () => {
@@ -323,11 +341,15 @@ describe("BundleKitComponentsStep & QuickRecipe Transformation Flow", () => {
     const newlyCreatedVariantIdRef = { current: 102 as number | null };
 
     // 1. وصول بيانات سابقة (stale): الصنف 102 ليس مصنعاً بعد
-    const staleComponents: ComponentRequirementDto[] = [mockComponents[0], mockComponents[1]];
+    const staleComponents: ComponentRequirementDto[] = [
+      mockComponents[0],
+      mockComponents[1],
+    ];
     const hasNewlyCreatedStale =
       newlyCreatedVariantIdRef.current != null &&
       staleComponents.some(
-        (c) => c.variantId === newlyCreatedVariantIdRef.current && c.isManufactured,
+        (c) =>
+          c.variantId === newlyCreatedVariantIdRef.current && c.isManufactured,
       );
 
     expect(hasNewlyCreatedStale).toBe(false);
@@ -348,13 +370,16 @@ describe("BundleKitComponentsStep & QuickRecipe Transformation Flow", () => {
     const hasNewlyCreatedFresh =
       newlyCreatedVariantIdRef.current != null &&
       freshComponents.some(
-        (c) => c.variantId === newlyCreatedVariantIdRef.current && c.isManufactured,
+        (c) =>
+          c.variantId === newlyCreatedVariantIdRef.current && c.isManufactured,
       );
 
     expect(hasNewlyCreatedFresh).toBe(true);
 
     // تطبيق التحديد على الصنف حديث التحويل
-    const target = freshComponents.find((c) => c.variantId === newlyCreatedVariantIdRef.current);
+    const target = freshComponents.find(
+      (c) => c.variantId === newlyCreatedVariantIdRef.current,
+    );
     expect(target).toBeDefined();
     expect(target?.isManufactured).toBe(true);
 
@@ -365,46 +390,96 @@ describe("BundleKitComponentsStep & QuickRecipe Transformation Flow", () => {
 
   it("يتحقق من دقة المنازل العشرية (حد أقصى 4 مراتب) ويقبل الأصفار اللاحقة ويرفض أكثر من 4 مراتب وقيم الصفر والسالب", () => {
     // دالة التحقق من دقة المنازل العشرية المطابقة تماماً لـ QuickRecipeCopyDialog وخادم recipeService.ts
-    function validateLineQtyPrecision(lines: { qtyPerOutputBase: string; inputProductName: string }[]) {
+    function validateLineQtyPrecision(
+      lines: { qtyPerOutputBase: string; inputProductName: string }[],
+    ) {
       for (const l of lines) {
         const q = moneyInput(l.qtyPerOutputBase);
         if (q.lte(0)) {
-          return { valid: false, error: `كمية المادة «${l.inputProductName}» يجب أن تكون رقماً موجباً أكبر من صفر` };
+          return {
+            valid: false,
+            error: `كمية المادة «${l.inputProductName}» يجب أن تكون رقماً موجباً أكبر من صفر`,
+          };
         }
         if (q.decimalPlaces() > 4) {
-          return { valid: false, error: `كمية المادة «${l.inputProductName}» لا يمكن أن تتجاوز 4 مراتب عشرية` };
+          return {
+            valid: false,
+            error: `كمية المادة «${l.inputProductName}» لا يمكن أن تتجاوز 4 مراتب عشرية`,
+          };
         }
       }
       return { valid: true };
     }
 
     // حالات صالحة: عدد صحيح، منزلة، منزلتين، 4 منازل
-    expect(validateLineQtyPrecision([{ qtyPerOutputBase: "5", inputProductName: "ورق" }]).valid).toBe(true);
-    expect(validateLineQtyPrecision([{ qtyPerOutputBase: "2.5", inputProductName: "حبر" }]).valid).toBe(true);
-    expect(validateLineQtyPrecision([{ qtyPerOutputBase: "0.125", inputProductName: "غراء" }]).valid).toBe(true);
-    expect(validateLineQtyPrecision([{ qtyPerOutputBase: "0.1234", inputProductName: "سلك" }]).valid).toBe(true);
+    expect(
+      validateLineQtyPrecision([
+        { qtyPerOutputBase: "5", inputProductName: "ورق" },
+      ]).valid,
+    ).toBe(true);
+    expect(
+      validateLineQtyPrecision([
+        { qtyPerOutputBase: "2.5", inputProductName: "حبر" },
+      ]).valid,
+    ).toBe(true);
+    expect(
+      validateLineQtyPrecision([
+        { qtyPerOutputBase: "0.125", inputProductName: "غراء" },
+      ]).valid,
+    ).toBe(true);
+    expect(
+      validateLineQtyPrecision([
+        { qtyPerOutputBase: "0.1234", inputProductName: "سلك" },
+      ]).valid,
+    ).toBe(true);
 
     // قبول القيم المنسوخة من جداول البيانات التي تحتوي أصفاراً لاحقة طبيعية (مثل 1.50000 أو 2.0000)
-    expect(validateLineQtyPrecision([{ qtyPerOutputBase: "1.50000", inputProductName: "بلاستيك" }]).valid).toBe(true);
-    expect(validateLineQtyPrecision([{ qtyPerOutputBase: "2.0000", inputProductName: "كرتون" }]).valid).toBe(true);
+    expect(
+      validateLineQtyPrecision([
+        { qtyPerOutputBase: "1.50000", inputProductName: "بلاستيك" },
+      ]).valid,
+    ).toBe(true);
+    expect(
+      validateLineQtyPrecision([
+        { qtyPerOutputBase: "2.0000", inputProductName: "كرتون" },
+      ]).valid,
+    ).toBe(true);
 
     // حالات غير صالحة: 5 منازل عشرية حقيقية أو أكثر
-    const invalid5Decimals = validateLineQtyPrecision([{ qtyPerOutputBase: "0.12345", inputProductName: "خام دقيق" }]);
+    const invalid5Decimals = validateLineQtyPrecision([
+      { qtyPerOutputBase: "0.12345", inputProductName: "خام دقيق" },
+    ]);
     expect(invalid5Decimals.valid).toBe(false);
     expect(invalid5Decimals.error).toContain("لا يمكن أن تتجاوز 4 مراتب عشرية");
 
-    const invalid6Decimals = validateLineQtyPrecision([{ qtyPerOutputBase: "1.000001", inputProductName: "بودرة" }]);
+    const invalid6Decimals = validateLineQtyPrecision([
+      { qtyPerOutputBase: "1.000001", inputProductName: "بودرة" },
+    ]);
     expect(invalid6Decimals.valid).toBe(false);
     expect(invalid6Decimals.error).toContain("لا يمكن أن تتجاوز 4 مراتب عشرية");
 
-    const smallFraction = validateLineQtyPrecision([{ qtyPerOutputBase: "0.00001", inputProductName: "صبغة" }]);
+    const smallFraction = validateLineQtyPrecision([
+      { qtyPerOutputBase: "0.00001", inputProductName: "صبغة" },
+    ]);
     expect(smallFraction.valid).toBe(false);
     expect(smallFraction.error).toContain("لا يمكن أن تتجاوز 4 مراتب عشرية");
 
     // حالات غير صالحة: صفر أو سالب أو مدخل غير رقمي
-    expect(validateLineQtyPrecision([{ qtyPerOutputBase: "0", inputProductName: "صفر" }]).valid).toBe(false);
-    expect(validateLineQtyPrecision([{ qtyPerOutputBase: "-2", inputProductName: "سالب" }]).valid).toBe(false);
-    expect(validateLineQtyPrecision([{ qtyPerOutputBase: "abc", inputProductName: "نص" }]).valid).toBe(false);
+    expect(
+      validateLineQtyPrecision([
+        { qtyPerOutputBase: "0", inputProductName: "صفر" },
+      ]).valid,
+    ).toBe(false);
+    expect(
+      validateLineQtyPrecision([
+        { qtyPerOutputBase: "-2", inputProductName: "سالب" },
+      ]).valid,
+    ).toBe(false);
+    expect(
+      validateLineQtyPrecision([
+        { qtyPerOutputBase: "abc", inputProductName: "نص" },
+      ]).valid,
+    ).toBe(false);
   });
 
   it("يسوّي الأرقام المشرقية العربية والفواصل العشرية المحلية إلى أرقام عشرية قياسية عبر normalizeDecimalInput", () => {
@@ -434,13 +509,15 @@ describe("BundleKitComponentsStep & QuickRecipe Transformation Flow", () => {
 
     // بعد اكتمال الـ debounce (مرور 200ms): debouncedSearch يطابق rawSearch
     const debouncedSearchAfter200ms = "حبر";
-    const isDebouncingAfter = rawSearch.trim() !== debouncedSearchAfter200ms.trim();
+    const isDebouncingAfter =
+      rawSearch.trim() !== debouncedSearchAfter200ms.trim();
     expect(isDebouncingAfter).toBe(false);
 
     // عندما تنتهي عمليات البحث وتكون النتيجة فارغة فعلاً، تظهر رسالة عدم العثور
     const queryCompletedEmpty: any[] = [];
     const isSearchingAfter = isDebouncingAfter || false;
-    const showNotFoundAfter = !isSearchingAfter && queryCompletedEmpty.length === 0;
+    const showNotFoundAfter =
+      !isSearchingAfter && queryCompletedEmpty.length === 0;
     expect(showNotFoundAfter).toBe(true);
   });
 
@@ -452,7 +529,9 @@ describe("BundleKitComponentsStep & QuickRecipe Transformation Flow", () => {
     window.addEventListener("unhandledrejection", rejectionHandler);
 
     // 1. حماية استدعاء الطفرة
-    const mockMutateAsync = vi.fn().mockRejectedValue(new Error("شبكة غير مستقرة"));
+    const mockMutateAsync = vi
+      .fn()
+      .mockRejectedValue(new Error("شبكة غير مستقرة"));
     let caughtMutation = false;
     try {
       await mockMutateAsync({ name: "وصفة جديدة" });
@@ -462,7 +541,9 @@ describe("BundleKitComponentsStep & QuickRecipe Transformation Flow", () => {
     expect(caughtMutation).toBe(true);
 
     // 2. حماية استدعاء onRecipeCreated غير المتزامن داخل onSuccess
-    const mockAsyncOnRecipeCreated = vi.fn().mockRejectedValue(new Error("فشل إعادة استعلام التحليل في الخلفية"));
+    const mockAsyncOnRecipeCreated = vi
+      .fn()
+      .mockRejectedValue(new Error("فشل إعادة استعلام التحليل في الخلفية"));
     let handledCallback = false;
     try {
       await mockAsyncOnRecipeCreated(10, 102);
@@ -479,7 +560,9 @@ describe("BundleKitComponentsStep & QuickRecipe Transformation Flow", () => {
     // محاكاة استعلام بمحرك inventoryManagerProcedure يعود بخطأ صلاحيات أو فشل شبكة
     const mockQueryError = {
       isError: true,
-      error: { message: "غير مصرح لك باستعراض المواد الخام بدون صلاحية إدارة المخزون" },
+      error: {
+        message: "غير مصرح لك باستعراض المواد الخام بدون صلاحية إدارة المخزون",
+      },
       data: undefined,
       isLoading: false,
       isFetching: false,
@@ -508,7 +591,11 @@ describe("BundleKitComponentsStep & QuickRecipe Transformation Flow", () => {
     let appliedTemplateName: string | null = null;
 
     // دالة تحاكي تطبيق الوصفة مع التحقق من معرّف الطلب
-    async function simulateApplyTemplate(templateId: number, name: string, delayMs: number) {
+    async function simulateApplyTemplate(
+      templateId: number,
+      name: string,
+      delayMs: number,
+    ) {
       const currentReqId = ++activeRequestId;
       await new Promise((resolve) => setTimeout(resolve, delayMs));
       // إذا كان هذا الطلب قد تم تجاوزه، يتم تجاهله تماماً
@@ -556,9 +643,12 @@ describe("BundleKitComponentsStep & QuickRecipe Transformation Flow", () => {
     const prevMap = new Map(prevBatches.map((b) => [b.variantId, b]));
 
     // منطق التوليد والتحديد المطابق لـ BundleKitProductionDialog
-    const isNewlyCreated = manufacturedComponentWithZeroShortage.variantId === newlyCreatedId;
-    const shouldSelect = manufacturedComponentWithZeroShortage.suggestedBatchQty > 0;
-    const defaultBatchQty = manufacturedComponentWithZeroShortage.suggestedBatchQty;
+    const isNewlyCreated =
+      manufacturedComponentWithZeroShortage.variantId === newlyCreatedId;
+    const shouldSelect =
+      manufacturedComponentWithZeroShortage.suggestedBatchQty > 0;
+    const defaultBatchQty =
+      manufacturedComponentWithZeroShortage.suggestedBatchQty;
 
     const ex = prevMap.get(manufacturedComponentWithZeroShortage.variantId);
     const newBatch = ex
@@ -573,7 +663,8 @@ describe("BundleKitComponentsStep & QuickRecipe Transformation Flow", () => {
           recipeId: manufacturedComponentWithZeroShortage.recipeId,
           batchQty: defaultBatchQty,
           scrapQty: 0,
-          laborPerUnit: manufacturedComponentWithZeroShortage.laborPerUnit || "0.00",
+          laborPerUnit:
+            manufacturedComponentWithZeroShortage.laborPerUnit || "0.00",
           selected: shouldSelect,
         };
 
@@ -596,7 +687,10 @@ describe("BundleKitComponentsStep & QuickRecipe Transformation Flow", () => {
     const isPending = false;
 
     const isSaveDisabled =
-      isPending || lines.length === 0 || !recipeName.trim() || !effectiveBaseUnitId;
+      isPending ||
+      lines.length === 0 ||
+      !recipeName.trim() ||
+      !effectiveBaseUnitId;
 
     expect(isSaveDisabled).toBe(true);
   });
@@ -629,7 +723,10 @@ describe("BundleKitComponentsStep & QuickRecipe Transformation Flow", () => {
     handleSelectTemplate(77, "قالب دفتر تجريبي");
 
     // يجب أن تعلق في pendingTemplate بانتظار التأكيد وألا تُطبّق فوراً
-    expect(pendingTemplate).toEqual({ recipeId: 77, sourceName: "قالب دفتر تجريبي" });
+    expect(pendingTemplate).toEqual({
+      recipeId: 77,
+      sourceName: "قالب دفتر تجريبي",
+    });
     expect(appliedTemplateId).toBeNull();
 
     // تأكيد الاستبدال
@@ -719,10 +816,15 @@ describe("BundleKitComponentsStep & QuickRecipe Transformation Flow", () => {
   });
 
   it("يحافظ على ملاحظات الوصفة المصدر التشغيلية والأمنية ويضيف نص المصدر عند تطبيق القالب", () => {
-    function computeCombinedNotes(recipeNotes: string | null | undefined, sourceName: string): string {
+    function computeCombinedNotes(
+      recipeNotes: string | null | undefined,
+      sourceName: string,
+    ): string {
       const sourceNotes = (recipeNotes || "").trim();
       const provenanceNote = `منسوخة من: ${sourceName}`;
-      return sourceNotes ? `${sourceNotes}\n(${provenanceNote})` : provenanceNote;
+      return sourceNotes
+        ? `${sourceNotes}\n(${provenanceNote})`
+        : provenanceNote;
     }
 
     // 1. قالب يحتوي على تعليمات تشغيلية
@@ -740,7 +842,9 @@ describe("BundleKitComponentsStep & QuickRecipe Transformation Flow", () => {
   });
 
   it("يسترجع نسبة الهدر المعياري للقالب ويحولها إلى نسبة مئوية صحيحة بدلاً من إسقاطها بصمت", () => {
-    function parseTemplateWaste(storedWaste: string | null | undefined): string {
+    function parseTemplateWaste(
+      storedWaste: string | null | undefined,
+    ): string {
       const rawWasteDec = moneyInput(storedWaste ?? "0");
       return rawWasteDec.gt(0) && rawWasteDec.lt(1)
         ? round2(rawWasteDec.mul(100)).toString()
@@ -759,6 +863,403 @@ describe("BundleKitComponentsStep & QuickRecipe Transformation Flow", () => {
   });
 });
 
+const requests = vi.hoisted(() => ({
+  fetch: vi.fn(),
+  create: vi.fn(),
+  success: vi.fn(),
+  error: vi.fn(),
+}));
 
+vi.mock("@/lib/trpc", async () => {
+  const { useMutation } = await import("@tanstack/react-query");
+  return {
+    trpc: {
+      useUtils: () => ({
+        production: { recipes: { get: { fetch: requests.fetch } } },
+      }),
+      production: {
+        recipes: {
+          forProduct: { useQuery: () => ({ data: undefined }) },
+          list: { useQuery: () => ({ data: [] }) },
+          materials: {
+            useQuery: () => ({ data: [], isLoading: false, isFetching: false }),
+          },
+          create: {
+            useMutation: (options: object) =>
+              useMutation({ mutationFn: requests.create, ...options }),
+          },
+        },
+      },
+    },
+  };
+});
 
+vi.mock("@/lib/notify", () => ({
+  notify: { ok: requests.success, err: requests.error, warn: vi.fn() },
+}));
 
+vi.mock("@/components/ui/dialog", async () => {
+  const React = await import("react");
+  const part = ({ children }: { children: React.ReactNode }) => (
+    <div>{children}</div>
+  );
+  return {
+    useDialogComposition: () => ({
+      isComposing: () => false,
+      justEndedComposing: () => false,
+      setComposing() {},
+      markCompositionEnd() {},
+    }),
+    Dialog: ({
+      open,
+      onOpenChange,
+      children,
+    }: {
+      open: boolean;
+      onOpenChange: (open: boolean) => void;
+      children: React.ReactNode;
+    }) =>
+      open ? (
+        <section role="dialog">
+          <button onClick={() => onOpenChange(false)}>إغلاق النافذة</button>
+          {children}
+        </section>
+      ) : null,
+    DialogContent: part,
+    DialogHeader: part,
+    DialogFooter: part,
+    DialogTitle: part,
+    DialogDescription: part,
+  };
+});
+
+vi.mock("@/components/ui/AppSelect", () => ({
+  AppSelect: ({
+    children,
+    value,
+    onValueChange,
+    disabled,
+  }: {
+    children: React.ReactNode;
+    value: string;
+    onValueChange: (value: string) => void;
+    disabled?: boolean;
+  }) => (
+    <select
+      value={value}
+      onChange={(e) => onValueChange(e.target.value)}
+      disabled={disabled}
+    >
+      {children}
+    </select>
+  ),
+}));
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+const component = (variantId: number): ComponentRequirementDto => ({
+  variantId,
+  productId: variantId,
+  baseUnitId: variantId,
+  baseUnitName: "قطعة",
+  productName: `صنف ${variantId}`,
+  sku: `SKU-${variantId}`,
+  componentBaseQuantity: 1,
+  totalRequiredQty: 1,
+  onHandStock: 0,
+  shortageQty: 1,
+  suggestedBatchQty: 1,
+  isManufactured: false,
+  recipeId: null,
+  recipeName: null,
+  requiredBatchMultiple: 1,
+  surplusBufferQty: 0,
+  laborPerUnit: "0",
+  wasteStdPct: "0",
+});
+
+const template = {
+  name: "قالب",
+  laborPerOutputBase: "120",
+  wasteStdPct: "0.05",
+  notes: "تعليمات",
+  lines: [
+    {
+      inputVariantId: 20,
+      inputProductUnitId: 20,
+      inputProductName: "ورق خام",
+      inputSku: "RAW",
+      inputCostPrice: "100",
+      qtyPerOutputBase: "2",
+      notes: "بند محفوظ",
+      units: [{ productUnitId: 20, unitName: "ورقة", isBaseUnit: true }],
+    },
+  ],
+};
+
+describe("QuickRecipeCopyDialog deferred requests", () => {
+  let host: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+  let target: ComponentRequirementDto | null;
+  const created = vi.fn();
+  const closed = vi.fn();
+  const suggestions = [
+    { ...component(30), isManufactured: true, recipeId: 99 },
+  ];
+
+  function draw(nextTarget: ComponentRequirementDto | null = target) {
+    target = nextTarget;
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <QuickRecipeCopyDialog
+          open={target !== null}
+          targetComponent={target}
+          otherBundleComponents={suggestions}
+          onRecipeCreated={created}
+          onOpenChange={(open) => {
+            closed(open);
+            if (!open) draw(null);
+          }}
+        />
+      </QueryClientProvider>,
+    );
+  }
+
+  function button(text: string) {
+    const found = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes(text),
+    );
+    if (!found) throw new Error(`Missing button: ${text}`);
+    return found;
+  }
+
+  async function click(text: string) {
+    await act(async () => {
+      button(text).click();
+    });
+  }
+
+  async function loadTemplate() {
+    requests.fetch.mockResolvedValueOnce(template);
+    await click("صنف 30");
+    expect(host.textContent).toContain("ورق خام");
+  }
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+    queryClient = new QueryClient({
+      defaultOptions: { mutations: { retry: false } },
+    });
+    target = component(10);
+    act(() => draw());
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    queryClient.clear();
+    host.remove();
+  });
+
+  it("keeps an empty draft after resetting during a template request", async () => {
+    await loadTemplate();
+    const pending = deferred<typeof template>();
+    requests.fetch.mockReturnValueOnce(pending.promise);
+    await click("صنف 30");
+    await click("استبدال وتطبيق القالب");
+    await click("بدء بوصفة فارغة");
+    await act(async () => pending.resolve(template));
+    expect(host.textContent).not.toContain("ورق خام");
+    expect(
+      host.querySelector<HTMLInputElement>("#quick-recipe-labor")?.value,
+    ).toBe("0");
+  });
+
+  it("reports the saved variant without closing a newer target draft", async () => {
+    await loadTemplate();
+    const pending = deferred<{ recipeId: number }>();
+    requests.create.mockReturnValueOnce(pending.promise);
+    await click("حفظ الوصفة وتحويل");
+    expect(requests.create.mock.calls[0][0].outputVariantId).toBe(10);
+    await click("إغلاق النافذة");
+    act(() => draw(component(11)));
+    closed.mockClear();
+    await act(async () => pending.resolve({ recipeId: 77 }));
+    expect(created).toHaveBeenCalledWith(77, 10);
+    expect(closed).not.toHaveBeenCalled();
+    expect(
+      host.querySelector<HTMLInputElement>("#quick-recipe-name")?.value,
+    ).toBe("وصفة صنف 11");
+  });
+
+  it("refreshes the caller even after the saved dialog was dismissed", async () => {
+    await loadTemplate();
+    const pending = deferred<{ recipeId: number }>();
+    requests.create.mockReturnValueOnce(pending.promise);
+    await click("حفظ الوصفة وتحويل");
+    await click("إغلاق النافذة");
+    await act(async () => pending.resolve({ recipeId: 77 }));
+    expect(created).toHaveBeenCalledWith(77, 10);
+  });
+
+  it("clears a replacement confirmation when the target changes or closes", async () => {
+    await loadTemplate();
+    await click("صنف 30");
+    expect(host.textContent).toContain("تأكيد استبدال مواد الوصفة");
+    act(() => draw(component(11)));
+    expect(host.textContent).not.toContain("تأكيد استبدال مواد الوصفة");
+    act(() => draw(null));
+    expect(host.querySelectorAll('[role="dialog"]')).toHaveLength(0);
+  });
+  it("keeps a newer draft open while the saved variant refresh is awaited", async () => {
+    await loadTemplate();
+    const refresh = deferred<void>();
+    created.mockReturnValueOnce(refresh.promise);
+    requests.create.mockResolvedValueOnce({ recipeId: 77 });
+    await click("حفظ الوصفة وتحويل");
+    expect(created).toHaveBeenCalledWith(77, 10);
+    act(() => draw(component(11)));
+    closed.mockClear();
+    await act(async () => refresh.resolve());
+    expect(closed).not.toHaveBeenCalled();
+    expect(
+      host.querySelector<HTMLInputElement>("#quick-recipe-name")?.value,
+    ).toBe("وصفة صنف 11");
+  });
+
+  it("ignores stale template completion while another target is loading", async () => {
+    const older = deferred<typeof template>();
+    const newer = deferred<typeof template>();
+    requests.fetch
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(newer.promise);
+    await click("صنف 30");
+    act(() => draw(null));
+    act(() => draw(component(11)));
+    await click("صنف 30");
+    await act(async () => older.resolve(template));
+    expect(host.textContent).not.toContain("ورق خام");
+    expect(button("صنف 30").disabled).toBe(true);
+    await act(async () => newer.resolve(template));
+    expect(host.textContent).toContain("ورق خام");
+    expect(button("صنف 30").disabled).toBe(false);
+  });
+
+  it("disables draft inputs during saving and the awaited caller refresh", async () => {
+    await loadTemplate();
+    const pending = deferred<{ recipeId: number }>();
+    const refresh = deferred<void>();
+    requests.create.mockReturnValueOnce(pending.promise);
+    created.mockReturnValueOnce(refresh.promise);
+    await click("حفظ الوصفة وتحويل");
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const name = host.querySelector<HTMLInputElement>("#quick-recipe-name")!;
+    const labor = host.querySelector<HTMLInputElement>("#quick-recipe-labor")!;
+    const notes = host.querySelector<HTMLTextAreaElement>(
+      "#quick-recipe-notes",
+    )!;
+    expect(name.matches(":disabled")).toBe(true);
+    expect(labor.matches(":disabled")).toBe(true);
+    expect(notes.matches(":disabled")).toBe(true);
+    expect(button("بدء بوصفة فارغة").matches(":disabled")).toBe(true);
+    await act(async () => pending.resolve({ recipeId: 77 }));
+    expect(created).toHaveBeenCalledWith(77, 10);
+    expect(closed).not.toHaveBeenCalled();
+    expect(name.matches(":disabled")).toBe(true);
+    expect(labor.matches(":disabled")).toBe(true);
+    expect(notes.matches(":disabled")).toBe(true);
+    await act(async () => refresh.resolve());
+    expect(closed).toHaveBeenCalledWith(false);
+  });
+
+  it("labels copied base quantities without converting the saved dozen unit or costs", async () => {
+    requests.fetch.mockResolvedValueOnce({
+      ...template,
+      lines: [
+        {
+          ...template.lines[0],
+          inputProductUnitId: 21,
+          units: [
+            {
+              productUnitId: 20,
+              unitName: "قطعة",
+              conversionFactor: "1",
+              isBaseUnit: true,
+            },
+            {
+              productUnitId: 21,
+              unitName: "درزن",
+              conversionFactor: "12",
+              isBaseUnit: false,
+            },
+          ],
+        },
+      ],
+    });
+    await click("صنف 30");
+    const row = Array.from(host.querySelectorAll("tr")).find((item) =>
+      item.textContent?.includes("ورق خام"),
+    )!;
+    expect(row.textContent).toContain("(قطعة)");
+    expect(row.textContent).not.toContain("درزن");
+    expect(row.querySelector<HTMLInputElement>("input")?.value).toBe("2");
+    expect(row.textContent).toContain(formatIqd("100"));
+    expect(row.textContent).toContain(formatIqd("200"));
+    expect(host.textContent).toContain(formatIqd("336.84"));
+    requests.create.mockResolvedValueOnce({ recipeId: 77 });
+    await click("حفظ الوصفة وتحويل");
+    expect(requests.create.mock.calls[0][0].lines).toEqual([
+      {
+        inputVariantId: 20,
+        inputProductUnitId: 21,
+        qtyPerOutputBase: "2",
+        notes: "بند محفوظ",
+      },
+    ]);
+    expect(requests.create.mock.calls[0][0].laborPerOutputBase).toBe("120");
+    expect(requests.create.mock.calls[0][0].wasteStdPct).toBe("0.05");
+  });
+
+  it("preserves copied payload fields and submits once for rapid save clicks", async () => {
+    await loadTemplate();
+    expect(host.textContent).toContain(formatIqd("336.84"));
+    const pending = deferred<{ recipeId: number }>();
+    requests.create.mockReturnValueOnce(pending.promise);
+    await act(async () => {
+      const save = button("حفظ الوصفة وتحويل");
+      save.click();
+      save.click();
+    });
+    expect(requests.create).toHaveBeenCalledTimes(1);
+    expect(requests.create.mock.calls[0][0]).toEqual({
+      name: "وصفة صنف 10",
+      outputVariantId: 10,
+      outputProductUnitId: 10,
+      laborPerOutputBase: "120",
+      wasteStdPct: "0.05",
+      isActive: true,
+      notes: "تعليمات\n(منسوخة من: صنف 30 (وصفة))",
+      lines: [
+        {
+          inputVariantId: 20,
+          inputProductUnitId: 20,
+          qtyPerOutputBase: "2",
+          notes: "بند محفوظ",
+        },
+      ],
+    });
+    await act(async () => pending.resolve({ recipeId: 77 }));
+    expect(closed).toHaveBeenCalledWith(false);
+  });
+});
