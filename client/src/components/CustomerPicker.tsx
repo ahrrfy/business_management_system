@@ -1,3 +1,4 @@
+import { PRICE_TIER_LABELS as TIER_LABEL } from "@shared/terms";
 import { balanceOptionText } from "@/components/BalanceBadge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,7 +13,6 @@ import { X } from "lucide-react";
 
 type Tier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
 
-const TIER_LABEL: Record<Tier, string> = { RETAIL: "مفرد", WHOLESALE: "جملة", GOVERNMENT: "حكومي" };
 const TIER_KEYS = Object.keys(TIER_LABEL) as Tier[];
 
 const selectCls =

@@ -20,6 +20,8 @@ import {
   paymentMethodTooltip,
   paymentMethodLabels,
   channelSearchText,
+  priceTierLabel,
+  PRICE_TIERS,
   type Term,
 } from "./terms";
 import { EXCHANGE_TRANSACTION_LABEL } from "./exchangeTerms";
@@ -27,6 +29,17 @@ import { INVENTORY_MOVEMENT_LABEL, INVENTORY_STOCK_STATUS_LABEL, STOCKTAKE_SCOPE
 import { RECEPTION_CHANNELS, WORK_ORDER_CHANNELS } from "./receptionChannel";
 import { INVOICE_CHANNELS } from "./invoiceChannel";
 import { SALES_LEAD_SOURCES } from "./salesPipeline";
+
+describe("shared price tiers", () => {
+  it("retains option order, Arabic labels and unknown value fallbacks", () => {
+    expect(PRICE_TIERS).toEqual(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
+    expect(PRICE_TIERS.map(priceTierLabel)).toEqual(["مفرد", "جملة", "حكومي"]);
+    expect(priceTierLabel("CUSTOM")).toBe("CUSTOM");
+    expect(priceTierLabel(null)).toBe("—");
+    expect(priceTierLabel(undefined)).toBe("—");
+    expect(priceTierLabel("")).toBe("—");
+  });
+});
 
 /** U+064B..U+0652 (فتحة/ضمّة/كسرة/شدّة/سكون/تنوين) + U+0653..U+065F + U+0670.
  * بالهروب السداسيّ لا بالحروف: نطاقٌ عربيّ داخل [...] يُقلَب بصرياً في المحرّر (bidi)

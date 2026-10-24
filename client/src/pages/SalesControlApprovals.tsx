@@ -1,3 +1,4 @@
+import { priceTierLabel as tierLabel } from "@shared/terms";
 import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "wouter";
@@ -103,11 +104,6 @@ function CorrectionBeforeAfter({ request, approvalAction }: { request: ControlRe
 
   const comparison = buildSalesCorrectionComparison(original.data, payload, catalog.data.rows);
   const delta = D(comparison.afterTotal).minus(D(comparison.beforeTotal));
-  const tierLabel = (value: string | null | undefined) => ({
-    RETAIL: "مفرد",
-    WHOLESALE: "جملة",
-    GOVERNMENT: "حكومي",
-  }[value ?? ""] ?? value ?? "—");
   const beforeCustomer = original.data.customerName
     ? `${original.data.customerName}${original.data.customerId ? ` (#${original.data.customerId})` : ""}`
     : "عميل نقدي";

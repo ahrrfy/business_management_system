@@ -432,3 +432,17 @@ const CHANNEL_SEARCH_ALIASES: Partial<Record<UnifiedChannel, readonly string[]>>
 export function channelSearchText(value: UnifiedChannel): string {
   return [channelCompact(value), ...(CHANNEL_SEARCH_ALIASES[value] ?? [])].join(" ");
 }
+
+/** Customer price tiers, shared by editors, statements, search and exports. */
+export const PRICE_TIER_LABELS = {
+  RETAIL: "مفرد",
+  WHOLESALE: "جملة",
+  GOVERNMENT: "حكومي",
+} as const;
+export type PriceTier = keyof typeof PRICE_TIER_LABELS;
+export const PRICE_TIERS = Object.keys(PRICE_TIER_LABELS) as PriceTier[];
+
+export function priceTierLabel(value: string | null | undefined): string {
+  if (!value) return "—";
+  return PRICE_TIER_LABELS[value as PriceTier] ?? value;
+}

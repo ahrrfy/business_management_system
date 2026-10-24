@@ -1,3 +1,4 @@
+import { PRICE_TIER_LABELS as TIER_LABEL } from "@shared/terms";
 import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { CopyInline } from "@/components/CopyButton";
 import { FILTER_LABELS } from "@shared/uiContracts";
@@ -45,11 +46,6 @@ type OperationsRow = RouterOutputs["customers"]["operations"]["rows"][number];
 type DisplayRow = CustomerRow | OperationsRow;
 
 const TYPE_OPTIONS = ["فرد", "تاجر", "مؤسسة", "شركة", "حكومي"] as const;
-const TIER_LABEL: Record<string, string> = {
-  RETAIL: "مفرد",
-  WHOLESALE: "جملة",
-  GOVERNMENT: "حكومي",
-};
 
 
 const COLLECTION_STATUS: Record<string, { label: string; variant: "neutral" | "success" | "danger" | "warning" | "info" | "secondary" }> = {
@@ -256,7 +252,7 @@ export default function Customers() {
       "النوع": r.customerType ?? "",
       "الهاتف": r.phone ?? "",
       "المدينة/المنطقة": [r.city, r.district].filter(Boolean).join(" / "),
-      "فئة السعر": TIER_LABEL[r.defaultPriceTier] ?? r.defaultPriceTier ?? "",
+      "فئة السعر": TIER_LABEL[r.defaultPriceTier as keyof typeof TIER_LABEL] ?? r.defaultPriceTier ?? "",
       // للمدير null=«بلا حدّ» (لا يُعرَض كصفر)؛ للكاشير null=محجوب فيبقى كالسابق.
       "سقف الائتمان": isElevated && r.creditLimit == null ? "بلا حدّ" : Number(r.creditLimit ?? 0),
       "الرصيد الحالي": Number(r.currentBalance ?? 0),
@@ -354,7 +350,7 @@ export default function Customers() {
       rows: rows.map((r) => ({
         name: r.name ?? "—",
         phone: r.phone ?? "—",
-        type: `${r.customerType ?? ""} · ${TIER_LABEL[r.defaultPriceTier] ?? r.defaultPriceTier ?? ""}`,
+        type: `${r.customerType ?? ""} · ${TIER_LABEL[r.defaultPriceTier as keyof typeof TIER_LABEL] ?? r.defaultPriceTier ?? ""}`,
         city: [r.city, r.district].filter(Boolean).join(" / ") || "—",
         balance: `${fmt(r.currentBalance)} د.ع`,
         status: r.isActive ? "مفعّل" : "معطّل",
@@ -449,7 +445,7 @@ export default function Customers() {
       id: "typeTierAndCity",
       header: "الفئة والنوع / المدينة",
       accessorFn: (c) =>
-        [TIER_LABEL[c.defaultPriceTier] ?? c.defaultPriceTier, c.customerType, c.city, c.district]
+        [TIER_LABEL[c.defaultPriceTier as keyof typeof TIER_LABEL] ?? c.defaultPriceTier, c.customerType, c.city, c.district]
           .filter(Boolean)
           .join(" · "),
       cell: ({ row }) => {
@@ -458,7 +454,7 @@ export default function Customers() {
         return (
           <div className="flex flex-col items-start gap-0.5 text-xs">
             <div className="flex items-center gap-1">
-              <span className="font-medium">{TIER_LABEL[c.defaultPriceTier] ?? c.defaultPriceTier}</span>
+              <span className="font-medium">{TIER_LABEL[c.defaultPriceTier as keyof typeof TIER_LABEL] ?? c.defaultPriceTier}</span>
               {c.customerType && (
                 <span className="text-muted-foreground text-[11px]">({c.customerType})</span>
               )}

@@ -1,3 +1,4 @@
+import { PRICE_TIER_LABELS as TIER_LABEL } from "@shared/terms";
 // بطاقة ٣٦٠° لطرف واحد (عميل/مورّد) — مكوّن مساعد لتبويب «جهات الاتصال» في CrmHub.tsx (S3، T3.3).
 // يستهلك contacts.contact360 + contacts.persons.{list,create,update,setInactive} +
 // contacts.waConsent.set + contacts.findDuplicates (server/routers/contactsRouter.ts).
@@ -61,7 +62,6 @@ type PersonRow = RouterOutputs["contacts"]["persons"]["list"][number];
 const CRM_WRITE_ROLES = ["cashier", "manager", "sales_rep"] as const;
 const SUPPLIER_WRITE_ROLES = ["manager", "warehouse", "purchasing"] as const;
 
-const TIER_LABEL: Record<string, string> = { RETAIL: "مفرد", WHOLESALE: "جملة", GOVERNMENT: "حكومي" };
 // تعريب حالة الفاتورة من `@shared/invoiceStatus` — كان قاموساً محلّياً بلا `SUPERSEDED` ⇒
 // فاتورةُ العميل المُصحَّحة تظهر في بطاقته شارةً إنجليزية خاماً.
 const WA_CONSENT_META: Record<WaConsentValue, { label: string; variant: "neutral" | "success" | "danger" }> = {
@@ -144,7 +144,7 @@ function HeaderCard({ data }: { data: Contact360Data }) {
             <InfoRow icon={Phone} label="الهاتف" value={c.phone ? <span dir="ltr">{c.phone}</span> : "—"} />
             <InfoRow icon={MapPin} label="المدينة" value={c.city || "—"} />
             <InfoRow icon={Users} label="نوع العميل" value={c.customerType || "—"} />
-            <InfoRow label="فئة السعر" value={TIER_LABEL[c.defaultPriceTier] ?? c.defaultPriceTier} />
+            <InfoRow label="فئة السعر" value={TIER_LABEL[c.defaultPriceTier as keyof typeof TIER_LABEL] ?? c.defaultPriceTier} />
             <InfoRow
               icon={Wallet}
               label="الرصيد الحالي"

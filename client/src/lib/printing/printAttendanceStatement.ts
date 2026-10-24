@@ -1,3 +1,4 @@
+import { ATTENDANCE_STATE_LABELS as STATE_LABEL } from "@shared/hr";
 /* ============================================================================
  * كشف حضور الموظف — A4 بالتصميم المرجعي V2
  * (client/src/lib/printing/printAttendanceStatement.ts)
@@ -87,15 +88,6 @@ export interface AttendanceStatementData {
   settings?: CompanySettings;
 }
 
-const STATE_LABEL: Record<StatementDay["state"], string> = {
-  present: "حضور",
-  absent: "غياب",
-  open: "بصمة انصراف ناقصة",
-  paidLeave: "إجازة مدفوعة",
-  unpaidLeave: "إجازة بلا راتب",
-  beforeStart: "قبل المباشرة",
-  restWorked: "عمل يوم عطلة",
-};
 
 export function printAttendanceStatement(d: AttendanceStatementData, days: StatementDay[]): boolean {
   const header = pageHeader(
