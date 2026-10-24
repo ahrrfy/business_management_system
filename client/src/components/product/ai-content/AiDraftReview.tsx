@@ -24,9 +24,6 @@ export function AiDraftReview({
   const saveDraftError = editor.saveDraftError
     ? describeAiError(editor.saveDraftError)
     : null;
-  const decideDraftError = editor.decideDraftError
-    ? describeAiError(editor.decideDraftError)
-    : null;
   if (!visibleDraft) return null;
   return (
     <>
@@ -69,17 +66,6 @@ export function AiDraftReview({
         >
           <p className="font-semibold">تم توليد المسودة لكن تعذر حفظ سجلها</p>
           <p>{saveDraftError.message}</p>
-        </div>
-      )}
-
-      {decideDraftError && (
-        <div
-          role="alert"
-          aria-live="assertive"
-          className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive"
-        >
-          <p className="font-semibold">تعذر تحديث قرار المسودة</p>
-          <p>{decideDraftError.message}</p>
         </div>
       )}
 

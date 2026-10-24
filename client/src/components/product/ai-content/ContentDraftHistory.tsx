@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ErrorState, LoadingState } from "@/components/PageState";
+import { describeAiError } from "@/lib/aiProductError";
 import { PRODUCT_CONTENT_DRAFT_STATUS_LABELS } from "@shared/productContentAiLabels";
 import type { ProductContentDraftEditor } from "./useProductContentDraft";
 export function ContentDraftHistory({
@@ -12,6 +13,9 @@ export function ContentDraftHistory({
 }) {
   if (!editor.canReadHistory) return null;
   const query = editor.history;
+  const decisionError = editor.decideDraftError
+    ? describeAiError(editor.decideDraftError)
+    : null;
   return (
     <section
       className="min-w-0 rounded-md border bg-background/80 p-3"
@@ -21,6 +25,19 @@ export function ContentDraftHistory({
       <p className="mb-2 text-xs text-muted-foreground">
         القرارات تخص النسخ المحفوظة؛ التعديلات الحالية تظهر في النموذج.
       </p>
+      {decisionError && (
+        <div
+          role="alert"
+          aria-live="assertive"
+          className="mb-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive"
+        >
+          <p className="font-semibold">تعذر تحديث قرار المسودة</p>
+          <p>{decisionError.message}</p>
+          {decisionError.action && (
+            <p className="mt-1">{decisionError.action}</p>
+          )}
+        </div>
+      )}
       {query.isLoading ? (
         <LoadingState />
       ) : query.isError ? (

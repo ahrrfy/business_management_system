@@ -103,6 +103,7 @@ export function useProductContentDraft({
   const save = trpc.catalog.saveContentDraft.useMutation();
   const decide = trpc.catalog.decideContentDraft.useMutation();
   const canReadHistory = !!productId && can("catalog.listContentDrafts");
+  const historyScope = String(productId ?? "new");
   const history = trpc.catalog.listContentDrafts.useQuery(
     { productId: productId ?? 0, limit: 10 },
     { enabled: canReadHistory },
@@ -154,8 +155,7 @@ export function useProductContentDraft({
             model: result.model,
           });
           void utils.catalog.listContentDrafts.invalidate({ productId });
-          if (active(token, fingerprint))
-            setSavedDraftId(saved.draftId);
+          if (active(token, fingerprint)) setSavedDraftId(saved.draftId);
         } catch (error) {
           if (active(token, fingerprint)) setError("save", error, key);
         } finally {
@@ -212,7 +212,7 @@ export function useProductContentDraft({
       return;
     locks.current.decide = true;
     setBusy("decide", true);
-    setError("decide", null, factsFingerprint);
+    setError("decide", null, historyScope);
     try {
       await decide.mutateAsync({
         draftId,
@@ -224,7 +224,7 @@ export function useProductContentDraft({
       });
       void utils.catalog.listContentDrafts.invalidate({ productId });
     } catch (error) {
-      setError("decide", error, factsFingerprint);
+      setError("decide", error, historyScope);
     } finally {
       locks.current.decide = false;
       setBusy("decide", false);
@@ -274,7 +274,7 @@ export function useProductContentDraft({
     generateError: errorFor("generate", factsFingerprint),
     validateError: errorFor("validate", draftKey),
     saveDraftError: errorFor("save", draftKey),
-    decideDraftError: errorFor("decide", factsFingerprint),
+    decideDraftError: errorFor("decide", historyScope),
   };
 }
 export type ProductContentDraftEditor = ReturnType<

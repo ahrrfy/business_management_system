@@ -7,6 +7,7 @@ Base: `origin/main` `ba11639257949c0af5c58d1aa7d685cf2956836e`.
 - Product-scoped editor sessions and fact/revision snapshots prevent late generation, validation or save responses from populating another product or approving newly edited text.
 - Save requests retain the submitted product/facts. Invalidate that product after acknowledged persistence; late completion does not attach an old saved-ID badge to another draft. Editing clears the badge.
 - Synchronous locks prevent duplicate generation, validation and decision requests. No paid providers are called during tests or visual QA.
+- Show history decision failures independently of generation and keep them visible when facts change within the same product. Two red-to-green UI regressions cover the automated review finding.
 - Read existing history without triggering generation. Hide cached history when its read permission is revoked; respect the separate save and decision operations.
 - Display canonical Arabic field/status labels. Enforce the tighter AI/channel field limits, including POS 120 characters, without truncating generated text. Over-limit content must be edited and revalidated before save/application.
 - Preserve all six editable fields, hints, keyword/claim/warning details, confidence, cache/image badges, generation/retry, validation, saved history and approval/rejection. Keep API/DTOs and backend policy unchanged.
@@ -23,7 +24,7 @@ Base: `origin/main` `ba11639257949c0af5c58d1aa7d685cf2956836e`.
 
 ## Verification
 
-- 13 initial actual React regressions failed the original implementation. All **25 focused cases** pass after the fixes, including real operation-policy grants/denials, supplier gating, masked versus zero balances, late responses, duplicate clicks, field/payload parity, and edited draft validation.
+- 13 initial actual React regressions failed the original implementation. All **27 focused cases** pass after the fixes, including real operation-policy grants/denials, supplier gating, masked versus zero balances, late responses, duplicate clicks, field/payload parity, and edited draft validation.
 - Both suites registered in `vitest.unit.config.ts` and covered by normal full CI. `pnpm check` and all 46 guards pass locally.
 - Raw friction: D4 **23,704 / 104 files → 23,351 / 102** (−353); D6 **104 / 86 → 103 / 85** (−1). Only the three resolved baseline entries are removed. Vocabulary and oversized-page ratchets remain zero.
 - Actual components, production CSS/tokens and local Cairo fonts: 375×600, 768×600, 1280×600. All content fields/history actions remain reachable; person form footer is reachable at 375×600. Long invoice number, large total, superseded status, conversations, phones and full names remain visible.

@@ -326,3 +326,42 @@ it("locks duplicate history decisions and uses the requested draft ID", async ()
   });
   await act(async () => pending.resolve({}));
 });
+it("shows a failed history decision before any draft has been generated", async () => {
+  state.history = [
+    {
+      id: 22,
+      status: "DRAFT",
+      validation: { ok: true, blockers: [], warnings: [] },
+    },
+  ];
+  state.calls.decide.mockRejectedValue(new Error("رفض الخادم القرار"));
+  render();
+  await act(async () => button("اعتماد")!.click());
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain(
+    "تعذر تحديث قرار المسودة",
+  );
+  expect(state.calls.generate).not.toHaveBeenCalled();
+});
+it("keeps a history decision failure visible when only the product facts change", async () => {
+  state.history = [
+    {
+      id: 22,
+      status: "DRAFT",
+      validation: { ok: true, blockers: [], warnings: [] },
+    },
+  ];
+  const pending = deferred<object>();
+  state.calls.decide.mockImplementation(() =>
+    pending.promise.then(() => {
+      throw new Error("رفض الخادم القرار");
+    }),
+  );
+  render();
+  await act(async () => button("اعتماد")!.click());
+  props.facts = { ...facts, brand: "ماركة جديدة" };
+  render();
+  await act(async () => pending.resolve({}));
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain(
+    "تعذر تحديث قرار المسودة",
+  );
+});
