@@ -5,7 +5,7 @@ import { and, eq, inArray, or } from "drizzle-orm";
 import { receipts, workOrders } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
-import { deliveryFeeHeldReceiptIntent } from "./posting";
+import { deliveryFeeHeldReceiptIntent, paymentAccountRole } from "./posting";
 import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import { lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
 import { postEntry } from "../ledgerService";
@@ -207,6 +207,7 @@ export async function recordDeliveryFeeHeldInTx(
   });
   const receiptId = extractInsertId(feeRes);
   const intent = deliveryFeeHeldReceiptIntent(amount, method, cashBucket);
+  const receivedTo = paymentAccountRole(method, cashBucket, "IN");
   await postEntry(tx, {
     entryType: "DELIVERY_FEE_HELD",
     dedupeKey:
@@ -218,7 +219,10 @@ export async function recordDeliveryFeeHeldInTx(
     receiptId,
     amount,
     notes: "أمانة أجرة توصيل — مقبوضة مع البيع",
-    postingSourceComponents: intent.sourceComponents,
+    postingSourceComponents: {
+      roleDebits: { [receivedTo]: amount },
+      roleCredits: { COURIER_PAYABLE: amount },
+    },
     postingIntent: intent,
   });
   return { receiptId };

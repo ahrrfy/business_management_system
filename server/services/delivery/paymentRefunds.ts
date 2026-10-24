@@ -376,16 +376,14 @@ export async function approveDeliveryPaymentRefund(
   actor: Actor,
 ) {
   return withTx(async (tx) => {
-    const resolved = await resolveApprovalActor(tx, actor);
     assertApprover({
-      actor: resolved,
+      actor: await resolveApprovalActor(tx, actor),
       trigger: "MONEY_OUT",
       subject: `رد مقبوضات توصيل #${input.receiptId}`,
       legacy: () => {
-        if (!resolved.isOwner)
-          throw deliveryRefundError(
-            "اعتماد التنفيذ الخارجي محصور بحساب مالك نشط",
-          );
+        throw deliveryRefundError(
+          "اعتماد التنفيذ الخارجي محصور بحساب مالك نشط",
+        );
       },
     });
     let refund = (
