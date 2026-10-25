@@ -12,6 +12,8 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "client/src/pages/__tests__/m3SalesWingChallenger1.test.ts",
+      "client/src/pages/__tests__/salesPipelineUx.test.tsx",
       "shared/__tests__/commissionTerms.test.ts",
       "client/src/components/account/__tests__/MyPerformanceCard.test.tsx",
       "client/src/components/salesPipeline/__tests__/PipelineDialogs.test.tsx",
