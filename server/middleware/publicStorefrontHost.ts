@@ -7,7 +7,6 @@ const PUBLIC_AUTH = new Set([
   "changePassword", "revokeMySessions", "mySessions", "revokeSession", "twoFactorStatus",
   "twoFactorSetupStart", "twoFactorSetupConfirm", "twoFactorDisable", "twoFactorRegenerateCodes",
 ]);
-const PUBLIC_PUSH = new Set(["publicKey", "myStatus", "subscribe", "unsubscribe"]);
 const PUBLIC_RECRUITMENT = new Set(["submit", "openVacancies"]);
 
 function extractHostname(host: string | undefined): string {
@@ -66,9 +65,10 @@ export function isPublicStorefrontProcedure(procedure: string): boolean {
   if (!/^[A-Za-z0-9_]+\.[A-Za-z0-9_]+$/.test(procedure)) return false;
   const [namespace, operation, ...rest] = procedure.split(".");
   if (rest.length || !namespace || !operation) return false;
-  if (namespace === "storefront" || namespace === "courier") return true;
+  // `courier.*` و`push.*` أُزيلا من الدومين العام: تطبيق المناديب (TWA) حُذف ولا جهاز ميداني يستعمله،
+  // وإشعارات الموظفين للـERP الداخلي وحده (إشعارات العملاء عبر storefront.registerPushDevice).
+  if (namespace === "storefront") return true;
   if (namespace === "auth") return PUBLIC_AUTH.has(operation);
-  if (namespace === "push") return PUBLIC_PUSH.has(operation);
   return namespace === "recruitment" && PUBLIC_RECRUITMENT.has(operation);
 }
 

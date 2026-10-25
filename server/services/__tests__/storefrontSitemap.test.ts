@@ -16,18 +16,18 @@ describe("generateStorefrontSitemapXml", () => {
     expect(xml).toContain("</urlset>");
   });
 
-  it("respects custom origin and caches result", async () => {
+  it("respects custom origin and caches result per origin", async () => {
     invalidateSitemapCache();
     const xml1 = await generateStorefrontSitemapXml("https://example.com");
     expect(xml1).toContain("<loc>https://example.com/store</loc>");
 
-    // Should return cached result
-    const xml2 = await generateStorefrontSitemapXml("https://another.com");
-    expect(xml2).toBe(xml1);
+    // Same origin: served from cache
+    const xml1b = await generateStorefrontSitemapXml("https://example.com");
+    expect(xml1b).toBe(xml1);
 
-    // After invalidate, should regenerate
-    invalidateSitemapCache();
-    const xml3 = await generateStorefrontSitemapXml("https://another.com");
-    expect(xml3).toContain("<loc>https://another.com/store</loc>");
+    // Different origin: never served another origin's cached sitemap
+    const xml2 = await generateStorefrontSitemapXml("https://another.com");
+    expect(xml2).toContain("<loc>https://another.com/store</loc>");
+    expect(xml2).not.toContain("example.com");
   });
 });

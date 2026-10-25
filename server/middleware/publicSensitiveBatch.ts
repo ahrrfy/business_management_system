@@ -26,6 +26,13 @@ const PUBLIC_SENSITIVE_PROCEDURES: ReadonlySet<string> = new Set([
   "storefront.requestFirstOrderCoupon",
   "storefront.cancelOrderPrivate",
   "storefront.cancelOrderByToken",
+  // كتابات/قراءات عامة تُضخَّم ×20 بالدفعة: كل نداء قد يكتب صفاً أو يكشف سعراً ومخزوناً.
+  "storefront.shelfLookup",
+  "storefront.claimFirebaseCustomer",
+  "storefront.submitPublicProductReview",
+  "storefront.createWishlistShare",
+  "storefront.createCartShare",
+  "storefront.registerPushDevice",
 ]);
 
 const CANONICAL_PROCEDURE = /^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$/;
