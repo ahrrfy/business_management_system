@@ -28,8 +28,9 @@
  * المِسنَنة **تنازلية** (scripts/ratchet-core.mjs): الأساس يُخفَّض أو يبقى، ولا يُرفَع أبداً.
  * التحديث بعد الترحيل: node scripts/check-friction.mjs --update-baseline
  * التقرير وحده (بلا حجب):  node scripts/check-friction.mjs --report
+ * إنفاذ محاور محدّدة:     node scripts/check-friction.mjs --enforce-axes=D5
  */
-import { readdirSync, readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertMonotonicDescent } from "./ratchet-core.mjs";
@@ -43,6 +44,9 @@ const UPDATE = process.argv.includes("--update-baseline");
 const SELFTEST_ONLY = process.argv.includes("--selftest");
 /** وضعُ التقرير: يطبع اللوحة ويخرج بـ0 دائماً. تُستعمل في الموجة صفر قبل التشديد. */
 const REPORT_ONLY = process.argv.includes("--report");
+const ENFORCE_AXES_ARG = process.argv
+  .find((arg) => arg.startsWith("--enforce-axes="))
+  ?.slice("--enforce-axes=".length);
 
 // ───────────────────────────── أدوات مشتركة ─────────────────────────────
 
@@ -214,9 +218,6 @@ function collect() {
     bump("D2", rel, detectOpenBalancePredicate(src));
 
     if (rel.startsWith("server/routers/")) {
-      // المطابقةُ بالزوج: إجراءٌ في راوترٍ لا مفتاحَ له في البرميل يبقى غيرَ مُسجَّل
-      // (`routerKey` غيرُ معرَّف ⇒ المفتاح لا يطابق شيئاً) — وهو الصواب: راوترٌ خارج
-      // البرميل لا يصله طلبٌ أصلاً، فوجودُ قرارٍ فيه إمّا شيفرةٌ ميتة أو تسجيلٌ ناقص.
       const routerKey = routerKeys.get(rel);
       const decisions = detectDecisionProcedures(src).filter((d) => !registered.has(`${routerKey}:${d}`));
       bump("D3", rel, decisions.length);
@@ -230,9 +231,6 @@ function collect() {
   // ── D2 أيضاً في shared (المسند يُكتب هناك أحياناً)
   for (const file of walk(path.join(REPO_ROOT, "shared"), /\.ts$/)) {
     const rel = relOf(file);
-    // ⚠️ **المصدرُ الواحد ليس تكراراً.** `shared/predicates/**` هي بالتعريف حيث يُكتب المسند
-    // مرّةً واحدة ليُستورَد؛ عدُّها انتهاكاً يجعل الحارس يُنذر على العلاج نفسه — وحارسٌ
-    // يُنذر كذباً يُتجاوَز فيصير مسرحياً (CLAUDE.md §٤-ج).
     if (rel.startsWith("shared/predicates/")) continue;
     bump("D2", rel, detectOpenBalancePredicate(readFileSync(file, "utf8")));
   }
@@ -247,8 +245,6 @@ function collect() {
     for (const file of walk(root, /\.tsx?$/)) {
       const rel = relOf(file);
       const src = readFileSync(file, "utf8");
-      // العدد هو **الفائض فوق السقف** لا عددَ الأسطر: فيكون الرقم «كم سطراً فوق الميزانية»،
-      // ويسقط الملفّ من المقياس حين يبلغ السقف. عدُّ الأسطر كاملةً كان يبتلع بقيّة المحاور.
       const excess = countLines(src) - cap;
       if (excess > 0) bump("D4", rel, excess);
       bump("D6", rel, detectLocalLabelMap(src));
@@ -265,12 +261,6 @@ function collect() {
   return { current, axisTotals };
 }
 
-/**
- * خريطةُ ملفِّ الراوتر ⇐ مفتاحه في البرميل (`server/routers/purchaseRouter.ts` ⇐ `purchases`).
- * تُقرأ من `server/routers.ts` نفسِه: سطرُ الاستيراد يربط المتغيّر بالملفّ، ومدخلُ الكائن
- * يربط المتغيّر بالمفتاح. ⛔ ولا تُشتقّ بقصّ «Router» من الاسم — `purchaseRouter` مفتاحُه
- * `purchases` لا `purchase`، فالاشتقاق يُنتج مفاتيحَ لا وجودَ لها فيصير كلُّ شيءٍ غيرَ مُسجَّل.
- */
 export function routerKeyByFile() {
   const out = new Map();
   const mounts = [];
@@ -285,8 +275,6 @@ export function routerKeyByFile() {
     const src = stripComments(readFileSync(p, "utf8"));
     const dir = path.posix.dirname(rel.split(path.sep).join("/"));
 
-    // ⚠️ الأقواس تحمل أكثر من اسمٍ أحياناً (`{ voucherRouter, voucherCategoryRouter }`)
-    // — ونمطُ الاسم الواحد كان يُسقط الملفَّ كلَّه فيصير «بلا مفتاح» ⇒ إنذارٌ كاذب.
     const varToFile = new Map();
     for (const m of src.matchAll(/import\s*\{([^}]+)\}\s*from\s*["'](\.[^"']*)["']/g)) {
       const target = path.posix.normalize(path.posix.join(dir, m[2])) + ".ts";
@@ -295,18 +283,12 @@ export function routerKeyByFile() {
         if (name) varToFile.set(name, target);
       }
     }
-    // مفتاحُ التركيب المحلّيّ هو ما يستعمله السجلّ (`cashVariance` لا `treasury.cashVariance`)،
-    // ولذلك نمسح الراوترات المتداخلة كما نمسح البرميل: `cashVarianceRouter` مُركَّبٌ داخل
-    // `treasuryRouter` ولا يظهر في `server/routers.ts` إطلاقاً.
     for (const m of src.matchAll(/^\s+(\w+)\s*:\s*(\w+)\s*,?\s*$/gm)) {
       const file = varToFile.get(m[2]);
       if (file) mounts.push({ parent: rel.split(path.sep).join("/"), child: file, key: m[1] });
     }
   }
 
-  // ⭐ **المسارُ الكامل لا المفتاح المحلّيّ**: `salesRouter` مُركَّبٌ مرّتين — مرّةً في الجذر
-  // (`sales`) ومرّةً داخل البطاقات الرقمية (`digitalCards.sales`). فمفتاحٌ محلّيٌّ باسم
-  // `sales` يُطابق الاثنين، وهي عينُ الفضفاضة التي نُغلقها. الجذرُ `server/routers.ts`.
   const byParent = new Map();
   for (const m of mounts) {
     if (!byParent.has(m.parent)) byParent.set(m.parent, []);
@@ -314,7 +296,7 @@ export function routerKeyByFile() {
   }
   const seen = new Set();
   const descend = (parentRel, prefix) => {
-    if (seen.has(parentRel)) return; // حلقةٌ في التركيب — نقف بدل أن ندور
+    if (seen.has(parentRel)) return;
     seen.add(parentRel);
     for (const m of byParent.get(parentRel) ?? []) {
       const full = prefix ? `${prefix}.${m.key}` : m.key;
@@ -327,20 +309,10 @@ export function routerKeyByFile() {
   return out;
 }
 
-/**
- * أزواجُ (مفتاحُ الراوتر · اسمُ الإجراء) المُسجَّلة في سجلّ القرارات.
- *
- * ⭐ **كانت المطابقةُ بالاسم المجرَّد فكانت تكذب** (٣/٩/٢٦): تسجيلُ `"approve"` مرّةً واحدة
- * يُرضي الحارسَ عن **كلّ** `approve` في **كلّ** راوتر — وهي ثلاثةَ عشرَ موضعاً بقراراتٍ
- * مختلفة تماماً. فيبلغ `D3` صفرَه بينما إجراءُ قرارٍ جديدٌ باسمٍ عامّ يمرّ بلا إنذار.
- * ومقياسٌ يبلغ صفرَه بمطابقةٍ فضفاضة **أسوأ من غيابه**: يُعلن نصراً ويُطفئ الانتباه.
- * والسجلُّ يحمل `procedure: { router, name }` أصلاً — فلا عذرَ للمطابقة المجرَّدة.
- */
 function loadRegisteredDecisions() {
   const p = path.join(REPO_ROOT, DECISION_REGISTRY_REL);
   if (!existsSync(p)) return new Set();
   const src = stripComments(readFileSync(p, "utf8"));
-  // النقطةُ مقبولةٌ في المفتاح: المسارُ الكامل هو ما يُميّز `digitalCards.sales` عن `sales`.
   const pairRe = /router\s*:\s*["'`]([\w.]+)["'`]\s*,\s*name\s*:\s*["'`](\w+)["'`]/g;
   return new Set([...src.matchAll(pairRe)].map((x) => `${x[1]}:${x[2]}`));
 }
@@ -356,6 +328,26 @@ const AXIS_LABEL = {
   D8: "عكسٌ مكتوبٌ بيدٍ خارج محرّك العكس",
 };
 const AXES = Object.keys(AXIS_LABEL);
+
+/**
+ * يحلّل خيار `--enforce-axes=D5,D1` ويتحقّق من صحّة أسماء المحاور.
+ * @returns {Set<string> | null}
+ */
+export function parseEnforceAxes(rawArg) {
+  if (rawArg === undefined || rawArg === null) return null;
+  const parts = String(rawArg)
+    .split(",")
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean);
+  if (parts.length === 0) {
+    throw new Error("خيار --enforce-axes يتطلّب محوراً واحداً على الأقل (مثل --enforce-axes=D5).");
+  }
+  const unknown = parts.filter((a) => !Object.prototype.hasOwnProperty.call(AXIS_LABEL, a));
+  if (unknown.length > 0) {
+    throw new Error(`محاور غير معروفة في --enforce-axes: ${unknown.join(", ")} (المتاح: ${AXES.join(", ")}).`);
+  }
+  return new Set(parts);
+}
 
 function printDashboard(axisTotals, current) {
   const fileCount = (axis) =>
@@ -439,8 +431,6 @@ function runSelfTest({ quiet }) {
     0,
   );
 
-  // (stripper) جسمُ دالّةٍ يبدأ بـJSDoc لا يُبتلَع حتى أوّل تعليق JSX لاحق (الثقب المُصلَح):
-  //     بالنمط القديم كان المسندُ الحسابيّ بعد الـJSDoc يُطرح مع التعليق فتعمى عنه الكواشف.
   const jsdocThenCode = [
     "function calc() {",
     "  /** doc */",
@@ -451,6 +441,16 @@ function runSelfTest({ quiet }) {
   ].join("\n");
   eq("stripper يحفظ الشيفرة بعد JSDoc", /paidAmount - returnedTotal/.test(stripComments(jsdocThenCode)), true);
   eq("الكاشف يرى المسندَ بعد JSDoc", detectOpenBalancePredicate(jsdocThenCode), 1);
+
+  // parseEnforceAxes
+  eq("parseEnforceAxes يقبل محوراً صالحاً", [...parseEnforceAxes("d5")], ["D5"]);
+  let rejectedInvalidAxis = false;
+  try {
+    parseEnforceAxes("D99");
+  } catch {
+    rejectedInvalidAxis = true;
+  }
+  eq("parseEnforceAxes يرفض محوراً غير معروف", rejectedInvalidAxis, true);
 
   if (fails.length > 0) {
     console.error("✗ الاختبار الذاتيّ لمقياس الاحتكاك فشل:\n");
@@ -464,6 +464,14 @@ function runSelfTest({ quiet }) {
 
 runSelfTest({ quiet: !SELFTEST_ONLY });
 if (SELFTEST_ONLY) process.exit(0);
+
+let enforcedAxes = null;
+try {
+  enforcedAxes = parseEnforceAxes(ENFORCE_AXES_ARG);
+} catch (err) {
+  console.error(`✗ ${err.message}`);
+  process.exit(1);
+}
 
 const { current, axisTotals } = collect();
 
@@ -482,15 +490,22 @@ const BASELINE = existsSync(BASELINE_PATH)
   : {};
 
 const findings = [];
+const enforcedFindings = [];
+const advisoryFindings = [];
 for (const [key, count] of current) {
   const allowed = BASELINE[key] ?? 0;
   if (count > allowed) {
     const [axis, subject] = key.split("::");
-    findings.push(
+    const line =
       allowed === 0
         ? `[${axis}] ${subject}: ${count} (الأساس ٠) ⇒ ${AXIS_LABEL[axis]}`
-        : `[${axis}] ${subject}: ${count} (الأساس ${allowed}، +${count - allowed})`,
-    );
+        : `[${axis}] ${subject}: ${count} (الأساس ${allowed}، +${count - allowed})`;
+    findings.push(line);
+    if (!enforcedAxes || enforcedAxes.has(axis)) {
+      enforcedFindings.push(line);
+    } else {
+      advisoryFindings.push(line);
+    }
   }
 }
 
@@ -520,10 +535,20 @@ if (!descent.ok) {
   process.exit(1);
 }
 
-if (findings.length === 0) {
-  console.log(`✓ مقياس الاحتكاك ضمن خطّ الأساس — ${current.size} موضعاً.`);
+if (enforcedFindings.length === 0) {
+  const scopeLabel = enforcedAxes
+    ? ` (المحاور المحروسة بالحجب: ${[...enforcedAxes].join("، ")})`
+    : "";
+  console.log(`✓ مقياس الاحتكاك ضمن خطّ الأساس${scopeLabel} — ${current.size} موضعاً.`);
   printDashboard(axisTotals, current);
   if (!descent.skipped) console.log(descent.message);
+  if (advisoryFindings.length > 0) {
+    console.log(
+      `ℹ️  ${advisoryFindings.length} موضعاً فوق خطّ الأساس في المحاور الاسترشادية (تُشدَّد تدريجياً):`,
+    );
+    for (const f of advisoryFindings.slice(0, 15)) console.log(`   ${f}`);
+    if (advisoryFindings.length > 15) console.log(`   … و${advisoryFindings.length - 15} غيرها`);
+  }
   if (stale.length > 0) {
     console.log(`ℹ️  ${stale.length} موضعاً نظيفاً يمكن حذفه من ${BASELINE_REL}:`);
     for (const k of stale.slice(0, 20)) console.log(`   - ${k}`);
@@ -532,9 +557,9 @@ if (findings.length === 0) {
   process.exit(0);
 }
 
-console.error(`✗ الاحتكاك ارتفع — ${findings.length} موضعاً فوق خطّ الأساس:\n`);
-for (const f of findings.slice(0, 40)) console.error(`  ${f}`);
-if (findings.length > 40) console.error(`  … و${findings.length - 40} غيرها`);
+console.error(`✗ الاحتكاك ارتفع — ${enforcedFindings.length} موضعاً محروساً فوق خطّ الأساس:\n`);
+for (const f of enforcedFindings.slice(0, 40)) console.error(`  ${f}`);
+if (enforcedFindings.length > 40) console.error(`  … و${enforcedFindings.length - 40} غيرها`);
 printDashboard(axisTotals, current);
 console.error(`
 القاعدة: هذه المحاور الثمانية تنزل ولا تصعد. لكلٍّ منها علاجٌ مُعرَّفٌ في خطة v2:
