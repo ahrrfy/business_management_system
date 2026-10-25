@@ -19,12 +19,10 @@ sitemapRouter.get("/robots.txt", (_req, res) => {
   res.status(200).send(fallback);
 });
 
-const handleSitemap = async (req: import("express").Request, res: import("express").Response) => {
+const handleSitemap = async (_req: import("express").Request, res: import("express").Response) => {
   try {
-    const host = req.get("host") || "";
-    const protocol = req.protocol === "https" || req.get("x-forwarded-proto") === "https" ? "https" : "http";
-    const customOrigin = host ? `${protocol}://${host}` : undefined;
-    const xml = await generateStorefrontSitemapXml(customOrigin);
+    // الأصل من PUBLIC_SITE_ORIGIN لا من ترويسة Host: الترويسة يتحكم بها المُرسِل، فتسمّم الكاش.
+    const xml = await generateStorefrontSitemapXml();
     res.setHeader("Content-Type", "application/xml; charset=utf-8");
     res.setHeader("Cache-Control", "public, max-age=3600, s-maxage=3600");
     res.status(200).send(xml);
@@ -36,12 +34,10 @@ const handleSitemap = async (req: import("express").Request, res: import("expres
 sitemapRouter.get("/sitemap.xml", handleSitemap);
 sitemapRouter.get("/store/sitemap.xml", handleSitemap);
 
-const handleMerchantFeed = async (req: import("express").Request, res: import("express").Response) => {
+const handleMerchantFeed = async (_req: import("express").Request, res: import("express").Response) => {
   try {
-    const host = req.get("host") || "";
-    const protocol = req.protocol === "https" || req.get("x-forwarded-proto") === "https" ? "https" : "http";
-    const customOrigin = host ? `${protocol}://${host}` : undefined;
-    const xml = await generateGoogleMerchantFeedXml(customOrigin);
+    // الأصل من PUBLIC_SITE_ORIGIN لا من ترويسة Host: الترويسة يتحكم بها المُرسِل، فتسمّم الكاش.
+    const xml = await generateGoogleMerchantFeedXml();
     res.setHeader("Content-Type", "application/xml; charset=utf-8");
     res.setHeader("Cache-Control", "public, max-age=3600, s-maxage=3600");
     res.status(200).send(xml);
