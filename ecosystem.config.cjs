@@ -218,6 +218,7 @@ module.exports = {
         ...webStudioEnvironment,
         DATABASE_URL: process.env.DATABASE_URL,
         JWT_SECRET: process.env.JWT_SECRET,
+        STOREFRONT_JWT_SECRET: process.env.STOREFRONT_JWT_SECRET ?? "",
         // عمداً بلا CONTROL_DATABASE_URL/DB_ROOT_PW/docker — خادم الويب لا يوفّر شركات أبداً.
       },
       // التقاط السجلّات إلى ملفات دوّارة (يحتاج pm2-logrotate).

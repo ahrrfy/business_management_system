@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from "react";
+import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,6 +20,122 @@ export interface EditOnlineOrderDialogProps {
   onSuccess?: () => void;
 }
 
+export interface EditableDeliveryZoneChoice {
+  id: string;
+  name: string;
+  deliveryFee: number;
+  isActive: boolean;
+}
+
+const ORDER_NOTE_SEPARATOR = "\nملاحظة:";
+const LEADING_ORDER_NOTE_PREFIX = "ملاحظة:";
+
+export function splitShippingAddressAndNotes(
+  rawAddress: string | null | undefined,
+): { shippingAddress: string; notes: string } {
+  const raw = rawAddress?.trim() ?? "";
+  if (!raw) {
+    return { shippingAddress: "", notes: "" };
+  }
+  const sepIdx = raw.indexOf(ORDER_NOTE_SEPARATOR);
+  if (sepIdx >= 0) {
+    return {
+      shippingAddress: raw.slice(0, sepIdx).trim(),
+      notes: raw.slice(sepIdx + ORDER_NOTE_SEPARATOR.length).trim(),
+    };
+  }
+  if (raw.startsWith(LEADING_ORDER_NOTE_PREFIX)) {
+    return {
+      shippingAddress: "",
+      notes: raw.slice(LEADING_ORDER_NOTE_PREFIX.length).trim(),
+    };
+  }
+  return { shippingAddress: raw, notes: "" };
+}
+
+export function resolveEditableDeliveryZoneOptions(
+  zones: ReadonlyArray<EditableDeliveryZoneChoice> | null | undefined,
+  currentGovernorate: string,
+): EditableDeliveryZoneChoice[] {
+  if (zones && zones.length > 0) {
+    const filtered = zones.filter(
+      (z) => z.isActive || z.id === currentGovernorate,
+    );
+    if (filtered.length > 0) {
+      return filtered;
+    }
+  }
+  return GOVERNORATES.map((g) => ({
+    id: g.id,
+    name: g.name,
+    deliveryFee: g.deliveryFee,
+    isActive: true,
+  }));
+}
+
+export function computeEditOnlineOrderTotals(params: {
+  governorate: string;
+  zones: ReadonlyArray<EditableDeliveryZoneChoice>;
+  items: ReadonlyArray<{
+    unitPrice: number;
+    retailUnitPrice?: number;
+    quantity: number;
+    lineTotal: number;
+  }>;
+  itemsModified: boolean;
+  freeShippingThresholdSetting?: string | number | null;
+  freeShippingThresholdGovernoratesSetting?: string | number | null;
+  pricingBenefitDiscount?: string | number | null;
+  couponDiscount?: string | number | null;
+  couponFreeShipping?: boolean;
+}) {
+  const subtotal = params.items.reduce((acc, it) => acc + it.lineTotal, 0);
+  const persistedMerchDiscount = Math.max(
+    Number(params.pricingBenefitDiscount ?? 0) || 0,
+    Number(params.couponDiscount ?? 0) || 0,
+  );
+  const eligibilitySubtotal = params.itemsModified
+    ? params.items.reduce(
+        (acc, it) => acc + (it.retailUnitPrice ?? it.unitPrice) * it.quantity,
+        0,
+      )
+    : subtotal + persistedMerchDiscount;
+  const matchedZone = params.zones.find((z) => z.id === params.governorate);
+  const baseDeliveryFee = matchedZone
+    ? matchedZone.deliveryFee
+    : deliveryFeeFor(params.governorate);
+  const rawThreshold = isBaghdadGovernorate(params.governorate)
+    ? params.freeShippingThresholdSetting
+    : (params.freeShippingThresholdGovernoratesSetting ??
+      params.freeShippingThresholdSetting);
+  const parsedThreshold = rawThreshold != null ? Number(rawThreshold) : NaN;
+  const freeShippingThreshold =
+    Number.isFinite(parsedThreshold) && parsedThreshold > 0
+      ? parsedThreshold
+      : null;
+  const thresholdFree =
+    freeShippingThreshold != null &&
+    eligibilitySubtotal >= freeShippingThreshold;
+  const couponShippingFree = Boolean(
+    params.couponFreeShipping && !thresholdFree && baseDeliveryFee > 0,
+  );
+  const isFreeDelivery = thresholdFree || couponShippingFree;
+  const finalDeliveryFee = isFreeDelivery ? 0 : baseDeliveryFee;
+  const grandTotal = Math.max(0, subtotal + finalDeliveryFee);
+
+  return {
+    subtotal,
+    eligibilitySubtotal,
+    baseDeliveryFee,
+    freeShippingThreshold,
+    thresholdFree,
+    couponShippingFree,
+    isFreeDelivery,
+    finalDeliveryFee,
+    grandTotal,
+  };
+}
+
 interface EditableLineItem {
   id?: number;
   productUnitId: number;
@@ -27,11 +143,93 @@ interface EditableLineItem {
   variantLabel: string;
   unitName: string;
   unitPrice: number;
+  retailUnitPrice: number;
   quantity: number;
   lineTotal: number;
   hasCustomization: boolean;
   customizationSummary: string | null;
   maxOrderQty?: number;
+}
+
+export function shouldHydrateEditOnlineOrderForm(params: {
+  open: boolean;
+  orderId: number | null;
+  detailOrderId: number | null | undefined;
+  hydratedOrderKey: string | null;
+}): { shouldHydrate: boolean; nextHydratedOrderKey: string | null } {
+  if (!params.open) {
+    return { shouldHydrate: false, nextHydratedOrderKey: null };
+  }
+  if (
+    params.orderId == null ||
+    params.detailOrderId == null ||
+    params.detailOrderId !== params.orderId
+  ) {
+    return { shouldHydrate: false, nextHydratedOrderKey: params.hydratedOrderKey };
+  }
+  const key = String(params.detailOrderId);
+  if (params.hydratedOrderKey === key) {
+    return { shouldHydrate: false, nextHydratedOrderKey: key };
+  }
+  return { shouldHydrate: true, nextHydratedOrderKey: key };
+}
+
+export function buildInitialEditOnlineOrderFormState(detail: {
+  customerName?: string | null;
+  customerPhone?: string | null;
+  governorate?: string | null;
+  addressText?: string | null;
+  items?: Array<{
+    id?: number;
+    productUnitId?: number | null;
+    productName: string;
+    variantLabel: string;
+    unitName: string;
+    unitPrice: string | number;
+    retailUnitPrice?: string | number | null;
+    quantity: string | number;
+    hasCustomization: boolean;
+    customizationSummary?: string | null;
+  }>;
+}): {
+  customerName: string;
+  customerPhone: string;
+  governorate: string;
+  shippingAddress: string;
+  notes: string;
+  items: EditableLineItem[];
+  itemsModified: false;
+  qtyDrafts: Record<number, string>;
+} {
+  const splitAddress = splitShippingAddressAndNotes(detail.addressText);
+  const initialItems: EditableLineItem[] = (detail.items ?? []).map((it) => {
+    const uPrice = Number(it.unitPrice) || 0;
+    const rPrice = Number(it.retailUnitPrice ?? it.unitPrice) || uPrice;
+    const qty = Math.floor(Number(it.quantity)) || 1;
+    return {
+      id: it.id,
+      productUnitId: it.productUnitId ?? 0,
+      productName: it.productName,
+      variantLabel: it.variantLabel,
+      unitName: it.unitName,
+      unitPrice: uPrice,
+      retailUnitPrice: rPrice,
+      quantity: qty,
+      lineTotal: uPrice * qty,
+      hasCustomization: it.hasCustomization,
+      customizationSummary: it.customizationSummary ?? null,
+    };
+  });
+  return {
+    customerName: detail.customerName ?? "",
+    customerPhone: detail.customerPhone ?? "",
+    governorate: detail.governorate ?? "baghdad",
+    shippingAddress: splitAddress.shippingAddress,
+    notes: splitAddress.notes,
+    items: initialItems,
+    itemsModified: false,
+    qtyDrafts: {},
+  };
 }
 
 export function EditOnlineOrderDialog({
@@ -53,40 +251,34 @@ export function EditOnlineOrderDialog({
   const [shippingAddress, setShippingAddress] = useState("");
   const [notes, setNotes] = useState("");
   const [items, setItems] = useState<EditableLineItem[]>([]);
+  const [itemsModified, setItemsModified] = useState(false);
   const [qtyDrafts, setQtyDrafts] = useState<Record<number, string>>({});
+  const hydratedOrderKeyRef = useRef<string | null>(null);
 
   // Settings for free shipping threshold
   const settingsQ = trpc.storeAdmin.settings.get.useQuery(undefined, { enabled: open });
 
-  // Populate form state when order details load
+  // Populate/reset form state when dialog opens or switches orderId without clobbering open background refetches
   useEffect(() => {
-    if (detailQ.data) {
-      const d = detailQ.data;
-      setCustomerName(d.customerName ?? "");
-      setCustomerPhone(d.customerPhone ?? "");
-      setGovernorate(d.governorate ?? "baghdad");
-      setShippingAddress(d.addressText ?? "");
-      setNotes("");
-      const initialItems: EditableLineItem[] = (d.items ?? []).map((it) => {
-        const uPrice = Number(it.unitPrice) || 0;
-        const qty = Math.floor(Number(it.quantity)) || 1;
-        return {
-          id: it.id,
-          productUnitId: it.productUnitId ?? 0,
-          productName: it.productName,
-          variantLabel: it.variantLabel,
-          unitName: it.unitName,
-          unitPrice: uPrice,
-          quantity: qty,
-          lineTotal: uPrice * qty,
-          hasCustomization: it.hasCustomization,
-          customizationSummary: it.customizationSummary ?? null,
-        };
-      });
-      setItems(initialItems);
-      setQtyDrafts({});
+    const decision = shouldHydrateEditOnlineOrderForm({
+      open,
+      orderId,
+      detailOrderId: detailQ.data?.id,
+      hydratedOrderKey: hydratedOrderKeyRef.current,
+    });
+    hydratedOrderKeyRef.current = decision.nextHydratedOrderKey;
+    if (decision.shouldHydrate && detailQ.data) {
+      const next = buildInitialEditOnlineOrderFormState(detailQ.data);
+      setCustomerName(next.customerName);
+      setCustomerPhone(next.customerPhone);
+      setGovernorate(next.governorate);
+      setShippingAddress(next.shippingAddress);
+      setNotes(next.notes);
+      setItems(next.items);
+      setItemsModified(next.itemsModified);
+      setQtyDrafts(next.qtyDrafts);
     }
-  }, [detailQ.data]);
+  }, [open, orderId, detailQ.data]);
 
   const updateMutation = trpc.storeAdmin.orders.update.useMutation({
     onSuccess: (res) => {
@@ -100,34 +292,41 @@ export function EditOnlineOrderDialog({
     onError: (e) => notify.err(e),
   });
 
-  // Calculate live totals
-  const subtotal = useMemo(() => {
-    return items.reduce((acc, it) => acc + it.lineTotal, 0);
-  }, [items]);
+  const zoneOptions = useMemo(
+    () => resolveEditableDeliveryZoneOptions(detailQ.data?.deliveryZones, governorate),
+    [detailQ.data?.deliveryZones, governorate],
+  );
 
-  const baseDeliveryFee = useMemo(() => {
-    return deliveryFeeFor(governorate);
-  }, [governorate]);
+  const totals = useMemo(
+    () =>
+      computeEditOnlineOrderTotals({
+        governorate,
+        zones: zoneOptions,
+        items,
+        itemsModified,
+        freeShippingThresholdSetting: settingsQ.data?.freeShippingThreshold,
+        freeShippingThresholdGovernoratesSetting:
+          settingsQ.data?.freeShippingThresholdGovernorates,
+        pricingBenefitDiscount: detailQ.data?.pricingBenefitDiscount,
+        couponDiscount: detailQ.data?.couponDiscount,
+        couponFreeShipping: detailQ.data?.couponFreeShipping,
+      }),
+    [governorate, zoneOptions, items, itemsModified, settingsQ.data, detailQ.data],
+  );
 
-  const freeShippingThreshold = useMemo(() => {
-    const raw = isBaghdadGovernorate(governorate)
-      ? settingsQ.data?.freeShippingThreshold
-      : (settingsQ.data?.freeShippingThresholdGovernorates ?? settingsQ.data?.freeShippingThreshold);
-    return raw ? Number(raw) : null;
-  }, [governorate, settingsQ.data]);
-
-  const isFreeDelivery = useMemo(() => {
-    return freeShippingThreshold != null && freeShippingThreshold > 0 && subtotal >= freeShippingThreshold;
-  }, [freeShippingThreshold, subtotal]);
-
-  const finalDeliveryFee = isFreeDelivery ? 0 : baseDeliveryFee;
+  const {
+    subtotal,
+    baseDeliveryFee,
+    freeShippingThreshold,
+    thresholdFree,
+    couponShippingFree,
+    isFreeDelivery,
+    grandTotal,
+  } = totals;
   const hasCoupon = Boolean(detailQ.data?.couponCode);
   const hasCustomization = items.some((item) => item.hasCustomization);
   const itemsLocked = hasCoupon || hasCustomization;
   const couponDiscount = Number(detailQ.data?.couponDiscount ?? 0);
-  // subtotal is sum of items line totals, which already reflect any coupon discount.
-  // Grand total is subtotal + delivery fee.
-  const grandTotal = Math.max(0, subtotal + finalDeliveryFee);
 
   function handleQuantityChange(index: number, newQty: number, fromDraft = false) {
     if (!Number.isFinite(newQty) || newQty <= 0) return;
@@ -151,6 +350,9 @@ export function EditOnlineOrderDialog({
         return copy;
       });
     }
+    if (updatedQty !== item.quantity) {
+      setItemsModified(true);
+    }
     setItems((prev) => {
       const next = [...prev];
       const current = next[index];
@@ -166,6 +368,7 @@ export function EditOnlineOrderDialog({
 
   function handleRemoveItem(index: number) {
     setQtyDrafts({});
+    setItemsModified(true);
     setItems((prev) => prev.filter((_, i) => i !== index));
   }
 
@@ -177,6 +380,7 @@ export function EditOnlineOrderDialog({
         notify.err(`الصنف «${product.productName}» ليس له سعر مفرد محدد في الكتالوج`);
         return;
       }
+      const retailUnitPrice = Number(product.price ?? effectivePriceStr) || unitPrice;
 
       const factor = Math.max(1, Number(product.conversionFactor) || 1);
       const initialQtyForUnit = (detailQ.data?.items ?? [])
@@ -208,6 +412,7 @@ export function EditOnlineOrderDialog({
       const variantLabel = variantParts.join(" — ") || product.sku;
 
       setQtyDrafts({});
+      setItemsModified(true);
       setItems((prev) => {
         const idx = prev.findIndex((it) => it.productUnitId === product.productUnitId);
         if (idx >= 0) {
@@ -230,6 +435,7 @@ export function EditOnlineOrderDialog({
             variantLabel,
             unitName: product.unitName,
             unitPrice,
+            retailUnitPrice,
             quantity: 1,
             lineTotal: unitPrice,
             hasCustomization: false,
@@ -262,12 +468,13 @@ export function EditOnlineOrderDialog({
       governorate,
       shippingAddress: shippingAddress.trim() || null,
       notes: notes.trim() || null,
-      items: itemsLocked
-        ? undefined
-        : items.map((it) => ({
-            productUnitId: it.productUnitId,
-            quantity: it.quantity,
-          })),
+      items:
+        itemsLocked || !itemsModified
+          ? undefined
+          : items.map((it) => ({
+              productUnitId: it.productUnitId,
+              quantity: it.quantity,
+            })),
     });
   }
 
@@ -323,7 +530,7 @@ export function EditOnlineOrderDialog({
                     value={governorate}
                     onValueChange={setGovernorate}
                   >
-                    {GOVERNORATES.map((g) => (
+                    {zoneOptions.map((g) => (
                       <option key={g.id} value={g.id}>
                         {g.name} ({fmtInt(g.deliveryFee)} د.ع)
                       </option>
@@ -504,11 +711,21 @@ export function EditOnlineOrderDialog({
               </div>
 
               <div className="flex justify-between items-center text-muted-foreground">
-                <span>أجرة التوصيل ({GOVERNORATES.find((g) => g.id === governorate)?.name ?? governorate}):</span>
+                <span>
+                  أجرة التوصيل (
+                  {zoneOptions.find((g) => g.id === governorate)?.name ??
+                    GOVERNORATES.find((g) => g.id === governorate)?.name ??
+                    governorate}
+                  ):
+                </span>
                 {isFreeDelivery ? (
                   <div className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400 font-bold">
                     <span className="line-through text-muted-foreground font-normal">{fmtInt(baseDeliveryFee)} د.ع</span>
-                    <span>مجاني (تجاوز حد الفاتورة)</span>
+                    <span>
+                      {couponShippingFree
+                        ? "مجاني (كوبون شحن مجاني)"
+                        : "مجاني (تجاوز حد الفاتورة)"}
+                    </span>
                   </div>
                 ) : (
                   <span className="font-semibold text-foreground">{fmtInt(baseDeliveryFee)} د.ع</span>
@@ -530,7 +747,11 @@ export function EditOnlineOrderDialog({
               {isFreeDelivery && (
                 <div className="text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1 mt-1">
                   <AlertCircle className="size-3.5" />
-                  مؤهل للشحن المجاني (قيمة الطلب تجاوزت {fmtInt(freeShippingThreshold!)} د.ع)
+                  {couponShippingFree
+                    ? `شحن مجاني مفعّل عبر الكوبون (${detailQ.data?.couponCode ?? ""})`
+                    : thresholdFree && freeShippingThreshold != null
+                      ? `مؤهل للشحن المجاني (قيمة الأصناف بالمفرد تجاوزت ${fmtInt(freeShippingThreshold)} د.ع)`
+                      : "مؤهل للشحن المجاني"}
                 </div>
               )}
             </div>

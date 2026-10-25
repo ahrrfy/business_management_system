@@ -121,8 +121,33 @@ const PUBLIC_AUTH_ENTRY_PATHS = new Set<string>([
   "auth.registerDevice",
 ]);
 
+/**
+ * مسارات المتجر العامة المعرّفة تقنياً كـ `.mutation()` (لإبقاء التوكن/السلة في POST body خارج
+ * سجلات عناوين nginx أو لتسجيل نقرات قياس مجمّعة بلا هوية)، لكنها قراءات/تسعيرات/قياس فقط بلا أي
+ * أثر مالي أو محاسبي أو تشغيلي. تُعفى حصراً من جدول `auditLogs` المحاسبي بينما تبقى كافة إجراءات
+ * الطلبات والإلغاء وتوثيق الهوية والمراجعات والمشاركة وإجراءات الموظفين مدقّقةً بنسبة 100%.
+ */
+const PUBLIC_STOREFRONT_AUDIT_EXEMPT_PATHS = new Set<string>([
+  "storefront.quoteOrderPrivate",
+  "storefront.customerBenefitsPrivate",
+  "storefront.trackOrderPrivate",
+  "storefront.trackOrderByToken",
+  "storefront.trackQuoteRequestPrivate",
+  "storefront.trackQuoteRequestByToken",
+  "storefront.trackBanner",
+  "storefront.trackConversion",
+  "storefront.trackRecommendationClick",
+  "storefront.trackPushInteraction",
+]);
+
 const auditMutationOperation = t.middleware(async ({ ctx, type, path, input, getRawInput, next }) => {
-  if (type !== "mutation" || path.startsWith("platformAdmin.")) return next();
+  if (
+    type !== "mutation" ||
+    path.startsWith("platformAdmin.") ||
+    PUBLIC_STOREFRONT_AUDIT_EXEMPT_PATHS.has(path)
+  ) {
+    return next();
+  }
 
   // الجذر يسبق محلّل input في سلسلة tRPC؛ نقرأ الخام المخبّأ كي لا نفقد معرّف هدف update/delete.
   const auditInput = input === undefined ? await getRawInput() : input;

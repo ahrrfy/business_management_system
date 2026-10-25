@@ -36,6 +36,8 @@ function webEnvBlock(): string {
 const REQUIRED_WEB_ENV_KEYS = [
   "WEB_INSTANCES",
   "DATABASE_URL",
+  "JWT_SECRET",
+  "STOREFRONT_JWT_SECRET",
   "PORT",
   "HOST",
 ] as const;
@@ -91,6 +93,10 @@ describe("عقد تصريح بيئة PM2 لعامل الويب", () => {
     for (const key of REQUIRED_WEB_ENV_KEYS) {
       expect(block, `${key} غير مُصرَّح ⇒ تعديلُه في .env لن يسري أبداً`).toContain(`${key}:`);
     }
+    expect(
+      block,
+      "STOREFRONT_JWT_SECRET يجب أن يمسح القيمة الموروثة عند إزالته من .env ليعود إلى JWT_SECRET",
+    ).toContain('STOREFRONT_JWT_SECRET: process.env.STOREFRONT_JWT_SECRET ?? ""');
     // المفاتيح العددية تُنشر عبر `...webTunables` لا بسطرٍ لكلٍّ منها.
     expect(block, "webTunables غير مبسوطة في كتلة env").toContain("...webTunables");
     for (const key of REQUIRED_WEB_TUNABLES) {

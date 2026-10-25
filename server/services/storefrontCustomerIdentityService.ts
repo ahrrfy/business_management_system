@@ -23,6 +23,7 @@ const FIREBASE_KEYS = createRemoteJWKSet(
 const SESSION_ISSUER = "alarabiya-storefront";
 const SESSION_AUDIENCE = "customer-mobile";
 const CUSTOMER_SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
+const MIN_STOREFRONT_JWT_SECRET_LENGTH = 32;
 
 type FirebaseClaims = {
   uid: string;
@@ -35,10 +36,36 @@ export type StorefrontCustomerSession = {
   customer: { id: number; name: string; phone: string };
 };
 
-function sessionSecret(): Uint8Array {
+function signingSecret(): Uint8Array {
+  const storefrontSecret = process.env.STOREFRONT_JWT_SECRET?.trim() ?? "";
+  if (storefrontSecret.length > 0) {
+    if (storefrontSecret.length < MIN_STOREFRONT_JWT_SECRET_LENGTH) {
+      throw new Error("STOREFRONT_JWT_SECRET must be at least 32 characters when configured");
+    }
+    return new TextEncoder().encode(storefrontSecret);
+  }
   const value = process.env.JWT_SECRET;
   if (!value) throw new Error("JWT_SECRET is required for storefront customer sessions");
   return new TextEncoder().encode(value);
+}
+
+function verificationSecrets(): Uint8Array[] {
+  const storefrontSecret = process.env.STOREFRONT_JWT_SECRET?.trim() ?? "";
+  const staffSecret = process.env.JWT_SECRET ?? "";
+  const rawSecrets: string[] = [];
+  if (storefrontSecret.length > 0) {
+    if (storefrontSecret.length < MIN_STOREFRONT_JWT_SECRET_LENGTH) {
+      throw new Error("STOREFRONT_JWT_SECRET must be at least 32 characters when configured");
+    }
+    rawSecrets.push(storefrontSecret);
+  }
+  if (staffSecret.length > 0 && staffSecret !== storefrontSecret) {
+    rawSecrets.push(staffSecret);
+  }
+  if (rawSecrets.length === 0) {
+    throw new Error("JWT_SECRET is required for storefront customer sessions");
+  }
+  return rawSecrets.map((secret) => new TextEncoder().encode(secret));
 }
 
 function cleanName(value: string): string {
@@ -69,60 +96,87 @@ async function verifyFirebasePhoneToken(idToken: string): Promise<FirebaseClaims
   }
 }
 
-async function resolveCustomer(phone: string, name: string, firebaseUid: string) {
+export async function resolveStorefrontCustomer(phone: string, name: string, firebaseUid: string) {
   return withTx(async (tx) => {
-    const lockName = `online-customer:${phone}`;
-    const lockResult = (await tx.execute(sql`SELECT GET_LOCK(${lockName}, 5) AS locked`)) as unknown;
-    const row = Array.isArray(lockResult)
-      ? (lockResult[0] as Array<{ locked?: number }> | undefined)?.[0]
-      : (lockResult as { rows?: Array<{ locked?: number }> }).rows?.[0];
-    if (Number(row?.locked) !== 1) {
-      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذر تأمين ملف العميل، أعد المحاولة" });
-    }
-    try {
-      const phoneVariants = Array.from(
-        new Set(
-          [
-            phone,
-            ...(phone.startsWith("+964")
-              ? [
-                  `0${phone.slice(4)}`,
-                  `964${phone.slice(4)}`,
-                  `00964${phone.slice(4)}`,
-                  phone.slice(4),
-                ]
-              : []),
-          ].filter(Boolean),
+    const phoneVariants = Array.from(
+      new Set(
+        [
+          phone,
+          ...(phone.startsWith("+964")
+            ? [
+                `0${phone.slice(4)}`,
+                `964${phone.slice(4)}`,
+                `00964${phone.slice(4)}`,
+                phone.slice(4),
+              ]
+            : []),
+        ].filter(Boolean),
+      ),
+    );
+    const normDigits = phone.replace(/\D/g, "");
+    const digitVariants = Array.from(
+      new Set(
+        [
+          normDigits,
+          normDigits ? `00${normDigits}` : "",
+          ...(phone.startsWith("+964")
+            ? [`0${phone.slice(4)}`, phone.slice(4)]
+            : []),
+        ].filter(Boolean),
+      ),
+    );
+    const digitPredicates =
+      digitVariants.length > 0
+        ? (() => {
+            const digitSqlList = sql.join(
+              digitVariants.map((d) => sql`${d}`),
+              sql`, `,
+            );
+            return [
+              sql`REGEXP_REPLACE(COALESCE(${customers.phone}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+              sql`REGEXP_REPLACE(COALESCE(${customers.phone2}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+              sql`REGEXP_REPLACE(COALESCE(${customers.phone3}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+              sql`REGEXP_REPLACE(COALESCE(${customers.whatsapp}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+            ];
+          })()
+        : [];
+
+    // ١) مسار القراءة السريع بلا FOR UPDATE لتفادي قفل الجدول الكامل وأقفال الفجوات المتصادمة عبر REGEXP_REPLACE
+    const candidates = await tx
+      .select({
+        id: customers.id,
+        name: customers.name,
+        isActive: customers.isActive,
+        phone: customers.phone,
+        phone2: customers.phone2,
+        phone3: customers.phone3,
+        whatsapp: customers.whatsapp,
+      })
+      .from(customers)
+      .where(
+        or(
+          inArray(customers.phone, phoneVariants),
+          inArray(customers.phone2, phoneVariants),
+          inArray(customers.phone3, phoneVariants),
+          inArray(customers.whatsapp, phoneVariants),
+          ...digitPredicates,
         ),
-      );
-      const normDigits = phone.replace(/\D/g, "");
-      const digitVariants = Array.from(
-        new Set(
-          [
-            normDigits,
-            normDigits ? `00${normDigits}` : "",
-            ...(phone.startsWith("+964")
-              ? [`0${phone.slice(4)}`, phone.slice(4)]
-              : []),
-          ].filter(Boolean),
-        ),
-      );
-      const digitPredicates =
-        digitVariants.length > 0
-          ? (() => {
-              const digitSqlList = sql.join(
-                digitVariants.map((d) => sql`${d}`),
-                sql`, `,
-              );
-              return [
-                sql`REGEXP_REPLACE(COALESCE(${customers.phone}, ''), '[^0-9]', '') IN (${digitSqlList})`,
-                sql`REGEXP_REPLACE(COALESCE(${customers.phone2}, ''), '[^0-9]', '') IN (${digitSqlList})`,
-                sql`REGEXP_REPLACE(COALESCE(${customers.phone3}, ''), '[^0-9]', '') IN (${digitSqlList})`,
-                sql`REGEXP_REPLACE(COALESCE(${customers.whatsapp}, ''), '[^0-9]', '') IN (${digitSqlList})`,
-              ];
-            })()
-          : [];
-      const candidates = await tx
+      )
+      .orderBy(desc(customers.isActive), desc(customers.id));
+
+    const existing = candidates.find((c) =>
+      [c.phone, c.phone2, c.phone3, c.whatsapp].some(
+        (p) => Boolean(p && p.trim()) && canonicalIraqiMobile(p!.trim()) === phone,
+      ),
+    );
+    const assertActiveCustomer = (isActive: boolean | null | undefined) => {
+      if (isActive === false) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "هذا الرقم مرتبط بعميل معطّل؛ تواصل مع المكتبة" });
+      }
+    };
+
+    if (existing) {
+      const [lockedExisting] = await tx
         .select({
           id: customers.id,
           name: customers.name,
@@ -133,28 +187,48 @@ async function resolveCustomer(phone: string, name: string, firebaseUid: string)
           whatsapp: customers.whatsapp,
         })
         .from(customers)
-        .where(
-          or(
-            inArray(customers.phone, phoneVariants),
-            inArray(customers.phone2, phoneVariants),
-            inArray(customers.phone3, phoneVariants),
-            inArray(customers.whatsapp, phoneVariants),
-            ...digitPredicates,
-          ),
-        )
-        .orderBy(desc(customers.isActive), desc(customers.id))
+        .where(eq(customers.id, existing.id))
+        .limit(1)
         .for("update");
-      const existing = candidates.find((c) =>
-        [c.phone, c.phone2, c.phone3, c.whatsapp].some(
-          (p) => Boolean(p && p.trim()) && canonicalIraqiMobile(p!.trim()) === phone,
-        ),
-      );
-      if (existing) {
-        if (existing.isActive === false) {
-          throw new TRPCError({ code: "FORBIDDEN", message: "هذا الرقم مرتبط بعميل معطّل؛ تواصل مع المكتبة" });
-        }
-        await tx.execute(sql`COMMIT`);
-        return { id: Number(existing.id), name: existing.name, phone };
+      const stillMatches =
+        lockedExisting &&
+        [
+          lockedExisting.phone,
+          lockedExisting.phone2,
+          lockedExisting.phone3,
+          lockedExisting.whatsapp,
+        ].some((p) => Boolean(p && p.trim()) && canonicalIraqiMobile(p!.trim()) === phone);
+      if (stillMatches && lockedExisting) {
+        assertActiveCustomer(lockedExisting.isActive);
+        return { id: Number(lockedExisting.id), name: lockedExisting.name, phone };
+      }
+    }
+
+    // ٢) مسار الإدراج المتسلسل: يُنسّق حصراً عبر قفل استشاري موحّد يمنع تعارض أقفال الفجوات العليا في InnoDB
+    const upsertLockName = "online-customer:upsert";
+    const lockResult = (await tx.execute(sql`SELECT GET_LOCK(${upsertLockName}, 10) AS locked`)) as unknown;
+    const row = Array.isArray(lockResult)
+      ? (lockResult[0] as Array<{ locked?: number }> | undefined)?.[0]
+      : (lockResult as { rows?: Array<{ locked?: number }> }).rows?.[0];
+    if (Number(row?.locked) !== 1) {
+      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذر تأمين ملف العميل، أعد المحاولة" });
+    }
+    try {
+      const [currentByPhone] = await tx
+        .select({
+          id: customers.id,
+          name: customers.name,
+          isActive: customers.isActive,
+        })
+        .from(customers)
+        .where(eq(customers.phone, phone))
+        .orderBy(desc(customers.isActive), desc(customers.id))
+        .limit(1)
+        .for("update");
+
+      if (currentByPhone) {
+        assertActiveCustomer(currentByPhone.isActive);
+        return { id: Number(currentByPhone.id), name: currentByPhone.name, phone };
       }
 
       const inserted = await tx.insert(customers).values({
@@ -167,19 +241,14 @@ async function resolveCustomer(phone: string, name: string, firebaseUid: string)
         isActive: true,
         clientRequestId: `firebase-phone:${firebaseUid}`,
       });
-      const resolved = { id: extractInsertId(inserted), name, phone };
-      await tx.execute(sql`COMMIT`);
-      return resolved;
-    } catch (err) {
-      await tx.execute(sql`ROLLBACK`).catch(() => {});
-      throw err;
+      return { id: extractInsertId(inserted), name, phone };
     } finally {
-      await tx.execute(sql`SELECT RELEASE_LOCK(${lockName})`).catch(() => {});
+      await tx.execute(sql`SELECT RELEASE_LOCK(${upsertLockName})`).catch(() => {});
     }
   });
 }
 
-async function signCustomerSession(input: { customerId: number; firebaseUid: string; phone: string }): Promise<string> {
+export async function signStorefrontCustomerSession(input: { customerId: number; firebaseUid: string; phone: string }): Promise<string> {
   const expiresAt = Math.floor(Date.now() / 1000) + CUSTOMER_SESSION_TTL_SECONDS;
   return new SignJWT({
     scope: "storefront-customer",
@@ -192,33 +261,37 @@ async function signCustomerSession(input: { customerId: number; firebaseUid: str
     .setAudience(SESSION_AUDIENCE)
     .setIssuedAt()
     .setExpirationTime(expiresAt)
-    .sign(sessionSecret());
+    .sign(signingSecret());
 }
 
 export async function claimFirebaseStorefrontCustomer(input: { firebaseIdToken: string; displayName: string }): Promise<StorefrontCustomerSession> {
   const firebase = await verifyFirebasePhoneToken(input.firebaseIdToken);
-  const customer = await resolveCustomer(firebase.phone, cleanName(input.displayName), firebase.uid);
-  const token = await signCustomerSession({ customerId: customer.id, firebaseUid: firebase.uid, phone: firebase.phone });
+  const customer = await resolveStorefrontCustomer(firebase.phone, cleanName(input.displayName), firebase.uid);
+  const token = await signStorefrontCustomerSession({ customerId: customer.id, firebaseUid: firebase.uid, phone: firebase.phone });
   return { token, expiresInSeconds: CUSTOMER_SESSION_TTL_SECONDS, customer };
 }
 
 export async function verifyStorefrontCustomerSession(token: string): Promise<{ customerId: number; firebaseUid: string; phone: string }> {
-  try {
-    const { payload } = await jwtVerify(token, sessionSecret(), {
-      algorithms: ["HS256"],
-      issuer: SESSION_ISSUER,
-      audience: SESSION_AUDIENCE,
-    });
-    const customerId = Number(payload.cid);
-    const firebaseUid = typeof payload.fuid === "string" ? payload.fuid : "";
-    const phone = typeof payload.phone === "string" ? canonicalIraqiMobile(payload.phone) : null;
-    if (payload.scope !== "storefront-customer" || !Number.isInteger(customerId) || customerId <= 0 || !firebaseUid || !phone) {
-      throw new Error("Invalid customer session claims");
+  const secrets = verificationSecrets();
+  for (const secret of secrets) {
+    try {
+      const { payload } = await jwtVerify(token, secret, {
+        algorithms: ["HS256"],
+        issuer: SESSION_ISSUER,
+        audience: SESSION_AUDIENCE,
+      });
+      const customerId = Number(payload.cid);
+      const firebaseUid = typeof payload.fuid === "string" ? payload.fuid : "";
+      const phone = typeof payload.phone === "string" ? canonicalIraqiMobile(payload.phone) : null;
+      if (payload.scope !== "storefront-customer" || !Number.isInteger(customerId) || customerId <= 0 || !firebaseUid || !phone) {
+        throw new Error("Invalid customer session claims");
+      }
+      return { customerId, firebaseUid, phone };
+    } catch {
+      // جرّب السر البديل (مسار التدوير السلس من JWT_SECRET إلى STOREFRONT_JWT_SECRET)
     }
-    return { customerId, firebaseUid, phone };
-  } catch {
-    throw new TRPCError({ code: "UNAUTHORIZED", message: "جلسة العميل غير صالحة أو منتهية؛ أعد تحقق الهاتف" });
   }
+  throw new TRPCError({ code: "UNAUTHORIZED", message: "جلسة العميل غير صالحة أو منتهية؛ أعد تحقق الهاتف" });
 }
 
 /**
