@@ -23,6 +23,7 @@ const FIREBASE_KEYS = createRemoteJWKSet(
 const SESSION_ISSUER = "alarabiya-storefront";
 const SESSION_AUDIENCE = "customer-mobile";
 const CUSTOMER_SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
+const MIN_STOREFRONT_JWT_SECRET_LENGTH = 32;
 
 type FirebaseClaims = {
   uid: string;
@@ -35,10 +36,36 @@ export type StorefrontCustomerSession = {
   customer: { id: number; name: string; phone: string };
 };
 
-function sessionSecret(): Uint8Array {
+function signingSecret(): Uint8Array {
+  const storefrontSecret = process.env.STOREFRONT_JWT_SECRET?.trim() ?? "";
+  if (storefrontSecret.length > 0) {
+    if (storefrontSecret.length < MIN_STOREFRONT_JWT_SECRET_LENGTH) {
+      throw new Error("STOREFRONT_JWT_SECRET must be at least 32 characters when configured");
+    }
+    return new TextEncoder().encode(storefrontSecret);
+  }
   const value = process.env.JWT_SECRET;
   if (!value) throw new Error("JWT_SECRET is required for storefront customer sessions");
   return new TextEncoder().encode(value);
+}
+
+function verificationSecrets(): Uint8Array[] {
+  const storefrontSecret = process.env.STOREFRONT_JWT_SECRET?.trim() ?? "";
+  const staffSecret = process.env.JWT_SECRET ?? "";
+  const rawSecrets: string[] = [];
+  if (storefrontSecret.length > 0) {
+    if (storefrontSecret.length < MIN_STOREFRONT_JWT_SECRET_LENGTH) {
+      throw new Error("STOREFRONT_JWT_SECRET must be at least 32 characters when configured");
+    }
+    rawSecrets.push(storefrontSecret);
+  }
+  if (staffSecret.length > 0 && staffSecret !== storefrontSecret) {
+    rawSecrets.push(staffSecret);
+  }
+  if (rawSecrets.length === 0) {
+    throw new Error("JWT_SECRET is required for storefront customer sessions");
+  }
+  return rawSecrets.map((secret) => new TextEncoder().encode(secret));
 }
 
 function cleanName(value: string): string {
@@ -69,7 +96,7 @@ async function verifyFirebasePhoneToken(idToken: string): Promise<FirebaseClaims
   }
 }
 
-async function resolveCustomer(phone: string, name: string, firebaseUid: string) {
+export async function resolveStorefrontCustomer(phone: string, name: string, firebaseUid: string) {
   return withTx(async (tx) => {
     const lockName = `online-customer:${phone}`;
     const lockResult = (await tx.execute(sql`SELECT GET_LOCK(${lockName}, 5) AS locked`)) as unknown;
@@ -80,6 +107,15 @@ async function resolveCustomer(phone: string, name: string, firebaseUid: string)
       throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذر تأمين ملف العميل، أعد المحاولة" });
     }
     try {
+      // قفل الفهرس المباشر على الهاتف المعياري يضمن حجب المعاملات المتزامنة حتى يلتزم غلاف withTx الخارجي
+      // بعد تحرير GET_LOCK في finally، دون أي COMMIT/ROLLBACK خام يفسد حالة اتصال Drizzle.
+      await tx
+        .select({ id: customers.id })
+        .from(customers)
+        .where(eq(customers.phone, phone))
+        .limit(1)
+        .for("update");
+
       const phoneVariants = Array.from(
         new Set(
           [
@@ -153,7 +189,6 @@ async function resolveCustomer(phone: string, name: string, firebaseUid: string)
         if (existing.isActive === false) {
           throw new TRPCError({ code: "FORBIDDEN", message: "هذا الرقم مرتبط بعميل معطّل؛ تواصل مع المكتبة" });
         }
-        await tx.execute(sql`COMMIT`);
         return { id: Number(existing.id), name: existing.name, phone };
       }
 
@@ -167,19 +202,14 @@ async function resolveCustomer(phone: string, name: string, firebaseUid: string)
         isActive: true,
         clientRequestId: `firebase-phone:${firebaseUid}`,
       });
-      const resolved = { id: extractInsertId(inserted), name, phone };
-      await tx.execute(sql`COMMIT`);
-      return resolved;
-    } catch (err) {
-      await tx.execute(sql`ROLLBACK`).catch(() => {});
-      throw err;
+      return { id: extractInsertId(inserted), name, phone };
     } finally {
       await tx.execute(sql`SELECT RELEASE_LOCK(${lockName})`).catch(() => {});
     }
   });
 }
 
-async function signCustomerSession(input: { customerId: number; firebaseUid: string; phone: string }): Promise<string> {
+export async function signStorefrontCustomerSession(input: { customerId: number; firebaseUid: string; phone: string }): Promise<string> {
   const expiresAt = Math.floor(Date.now() / 1000) + CUSTOMER_SESSION_TTL_SECONDS;
   return new SignJWT({
     scope: "storefront-customer",
@@ -192,33 +222,37 @@ async function signCustomerSession(input: { customerId: number; firebaseUid: str
     .setAudience(SESSION_AUDIENCE)
     .setIssuedAt()
     .setExpirationTime(expiresAt)
-    .sign(sessionSecret());
+    .sign(signingSecret());
 }
 
 export async function claimFirebaseStorefrontCustomer(input: { firebaseIdToken: string; displayName: string }): Promise<StorefrontCustomerSession> {
   const firebase = await verifyFirebasePhoneToken(input.firebaseIdToken);
-  const customer = await resolveCustomer(firebase.phone, cleanName(input.displayName), firebase.uid);
-  const token = await signCustomerSession({ customerId: customer.id, firebaseUid: firebase.uid, phone: firebase.phone });
+  const customer = await resolveStorefrontCustomer(firebase.phone, cleanName(input.displayName), firebase.uid);
+  const token = await signStorefrontCustomerSession({ customerId: customer.id, firebaseUid: firebase.uid, phone: firebase.phone });
   return { token, expiresInSeconds: CUSTOMER_SESSION_TTL_SECONDS, customer };
 }
 
 export async function verifyStorefrontCustomerSession(token: string): Promise<{ customerId: number; firebaseUid: string; phone: string }> {
-  try {
-    const { payload } = await jwtVerify(token, sessionSecret(), {
-      algorithms: ["HS256"],
-      issuer: SESSION_ISSUER,
-      audience: SESSION_AUDIENCE,
-    });
-    const customerId = Number(payload.cid);
-    const firebaseUid = typeof payload.fuid === "string" ? payload.fuid : "";
-    const phone = typeof payload.phone === "string" ? canonicalIraqiMobile(payload.phone) : null;
-    if (payload.scope !== "storefront-customer" || !Number.isInteger(customerId) || customerId <= 0 || !firebaseUid || !phone) {
-      throw new Error("Invalid customer session claims");
+  const secrets = verificationSecrets();
+  for (const secret of secrets) {
+    try {
+      const { payload } = await jwtVerify(token, secret, {
+        algorithms: ["HS256"],
+        issuer: SESSION_ISSUER,
+        audience: SESSION_AUDIENCE,
+      });
+      const customerId = Number(payload.cid);
+      const firebaseUid = typeof payload.fuid === "string" ? payload.fuid : "";
+      const phone = typeof payload.phone === "string" ? canonicalIraqiMobile(payload.phone) : null;
+      if (payload.scope !== "storefront-customer" || !Number.isInteger(customerId) || customerId <= 0 || !firebaseUid || !phone) {
+        throw new Error("Invalid customer session claims");
+      }
+      return { customerId, firebaseUid, phone };
+    } catch {
+      // جرّب السر البديل (مسار التدوير السلس من JWT_SECRET إلى STOREFRONT_JWT_SECRET)
     }
-    return { customerId, firebaseUid, phone };
-  } catch {
-    throw new TRPCError({ code: "UNAUTHORIZED", message: "جلسة العميل غير صالحة أو منتهية؛ أعد تحقق الهاتف" });
   }
+  throw new TRPCError({ code: "UNAUTHORIZED", message: "جلسة العميل غير صالحة أو منتهية؛ أعد تحقق الهاتف" });
 }
 
 /**

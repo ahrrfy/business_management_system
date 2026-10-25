@@ -15,9 +15,12 @@ import {
   couponReservations,
   customers,
   deliveryParties,
+  deliveryPricingRules,
+  deliveryZones,
   invoices,
   onlineOrderItems,
   onlineOrders,
+  productPrices,
   productUnits,
   productVariants,
   productImages,
@@ -28,7 +31,7 @@ import {
   users,
 } from "../../../drizzle/schema";
 import { alias } from "drizzle-orm/mysql-core";
-import { getDb } from "../../db";
+import { getDb, type DB } from "../../db";
 import { money, round2 } from "../money";
 import { withTx } from "../tx";
 import { decodeDataUrl, productImageUrl } from "../../imageRoute";
@@ -45,11 +48,14 @@ import {
 } from "../catalog/variantAvailability";
 import {
   priceOnlineOrderLines,
+  resolveDeliveryFee,
   totalOnlineOrderQuote,
+  type StorefrontPricingBenefitType,
 } from "../onlineOrderService";
 import { normalizeIraqPhoneE164 } from "../../lib/phone";
 import { orderStatusLabel } from "@shared/onlineOrderStatus";
-import { governorateById } from "@shared/governorates";
+import { GOVERNORATES, governorateById, isBaghdadGovernorate } from "@shared/governorates";
+import { computeDeliveryFee, type DeliveryPricingRuleInput } from "@shared/deliveryPricing";
 import type { OnlineOrderLifecycle } from "@shared/onlineOrderLifecycle";
 import { currentOnlineOrderStatus, loadOnlineOrderLifecycles } from "./onlineOrderTracking";
 
@@ -236,6 +242,14 @@ export async function onlineOrderStatusCounts(scopedBranchId: number | null): Pr
   return out;
 }
 
+export interface EditableDeliveryZoneOption {
+  id: string;
+  name: string;
+  deliveryFee: number;
+  isActive: boolean;
+  displayOrder: number;
+}
+
 export interface OnlineOrderDetailItem {
   id?: number;
   productId?: number;
@@ -247,6 +261,7 @@ export interface OnlineOrderDetailItem {
   unitName: string;
   quantity: string;
   unitPrice: string;
+  retailUnitPrice?: string;
   total: string;
   hasCustomization: boolean;
   customizationSummary: string | null;
@@ -255,10 +270,151 @@ export interface OnlineOrderDetail extends OnlineOrderRow {
   branchId: number;
   addressText: string | null;
   subtotal: string;
+  pricingBenefitType: StorefrontPricingBenefitType;
+  pricingBenefitLabel: string | null;
+  pricingBenefitDiscount: string;
+  couponFreeShipping: boolean;
+  deliveryZones: EditableDeliveryZoneOption[];
   deliveryPartyName: string | null;
   /** يوقّع الخادم هذا الرمز ليُستعمل QR كوصلة عامة غير قابلة للتخمين. */
   labelToken: string;
   items: OnlineOrderDetailItem[];
+}
+
+const ORDER_NOTE_SEPARATOR = "\nملاحظة:";
+const LEADING_ORDER_NOTE_PREFIX = "ملاحظة:";
+
+function stripOrderNoteSegment(rawAddress: string | null | undefined): string {
+  const raw = rawAddress?.trim() ?? "";
+  if (!raw) return "";
+  const sepIdx = raw.indexOf(ORDER_NOTE_SEPARATOR);
+  if (sepIdx >= 0) {
+    return raw.slice(0, sepIdx).trim();
+  }
+  if (raw.startsWith(LEADING_ORDER_NOTE_PREFIX)) {
+    return "";
+  }
+  return raw;
+}
+
+/**
+ * يدمج العنوان وملاحظات التوصيل في `shippingAddress` دون تراكم مقاطع `\nملاحظة:` المكررة عند التعديل الإداري.
+ */
+export function composeOrderShippingAddress(
+  existingAddress: string | null | undefined,
+  inputShippingAddress: string | null | undefined,
+  inputNotes: string | null | undefined,
+): string | null {
+  if (inputShippingAddress === undefined && inputNotes === undefined) {
+    return existingAddress ?? null;
+  }
+  const trimmedNotes = inputNotes?.trim() ?? "";
+  if (inputShippingAddress === undefined) {
+    const baseAddress = stripOrderNoteSegment(existingAddress);
+    if (trimmedNotes) {
+      return baseAddress ? `${baseAddress}\nملاحظة: ${trimmedNotes}` : `ملاحظة: ${trimmedNotes}`;
+    }
+    return baseAddress || null;
+  }
+  const rawInputAddress = inputShippingAddress?.trim() ?? "";
+  if (trimmedNotes) {
+    const baseAddress = stripOrderNoteSegment(rawInputAddress);
+    return baseAddress ? `${baseAddress}\nملاحظة: ${trimmedNotes}` : `ملاحظة: ${trimmedNotes}`;
+  }
+  return rawInputAddress || null;
+}
+
+async function loadEditableDeliveryZones(db: DB): Promise<EditableDeliveryZoneOption[]> {
+  const [zoneRows, ruleRows] = await Promise.all([
+    db
+      .select({
+        id: deliveryZones.id,
+        code: deliveryZones.code,
+        name: deliveryZones.name,
+        isActive: deliveryZones.isActive,
+        displayOrder: deliveryZones.displayOrder,
+      })
+      .from(deliveryZones)
+      .orderBy(asc(deliveryZones.displayOrder), asc(deliveryZones.id)),
+    db
+      .select({
+        id: deliveryPricingRules.id,
+        zoneId: deliveryPricingRules.zoneId,
+        ruleType: deliveryPricingRules.ruleType,
+        baseFee: deliveryPricingRules.baseFee,
+        perKmFee: deliveryPricingRules.perKmFee,
+        perKgFee: deliveryPricingRules.perKgFee,
+        minFee: deliveryPricingRules.minFee,
+        maxFee: deliveryPricingRules.maxFee,
+        isActive: deliveryPricingRules.isActive,
+      })
+      .from(deliveryPricingRules)
+      .orderBy(asc(deliveryPricingRules.id)),
+  ]);
+
+  const rulesByZoneId = new Map<number, DeliveryPricingRuleInput[]>();
+  for (const r of ruleRows) {
+    const zId = Number(r.zoneId);
+    const list = rulesByZoneId.get(zId) ?? [];
+    list.push({
+      id: Number(r.id),
+      ruleType: r.ruleType,
+      baseFee: r.baseFee,
+      perKmFee: r.perKmFee ?? null,
+      perKgFee: r.perKgFee ?? null,
+      minFee: r.minFee ?? null,
+      maxFee: r.maxFee ?? null,
+      isActive: Boolean(r.isActive),
+    });
+    rulesByZoneId.set(zId, list);
+  }
+
+  const zoneByCode = new Map<string, (typeof zoneRows)[number]>();
+  for (const z of zoneRows) {
+    zoneByCode.set(z.code.trim(), z);
+  }
+
+  const knownGovIds = new Set<string>(GOVERNORATES.map((g) => g.id));
+  const standardZones: EditableDeliveryZoneOption[] = GOVERNORATES.map((gov, idx) => {
+    const zone = zoneByCode.get(gov.id);
+    if (!zone) {
+      return {
+        id: gov.id,
+        name: gov.name,
+        deliveryFee: gov.deliveryFee,
+        isActive: true,
+        displayOrder: 1000 + idx,
+      };
+    }
+    const rules = rulesByZoneId.get(Number(zone.id)) ?? [];
+    const quote = zone.isActive ? computeDeliveryFee(rules) : null;
+    const fee = quote ? Number(round2(money(quote.fee))) : gov.deliveryFee;
+    return {
+      id: gov.id,
+      name: zone.name.trim() || gov.name,
+      deliveryFee: fee,
+      isActive: Boolean(zone.isActive),
+      displayOrder: Number(zone.displayOrder ?? idx),
+    };
+  });
+
+  const customZones: EditableDeliveryZoneOption[] = zoneRows
+    .filter((z) => Boolean(z.code.trim()) && !knownGovIds.has(z.code.trim()))
+    .map((z, idx) => {
+      const code = z.code.trim();
+      const rules = rulesByZoneId.get(Number(z.id)) ?? [];
+      const quote = z.isActive ? computeDeliveryFee(rules) : null;
+      const fee = quote ? Number(round2(money(quote.fee))) : 0;
+      return {
+        id: code,
+        name: z.name.trim() || code,
+        deliveryFee: fee,
+        isActive: Boolean(z.isActive),
+        displayOrder: Number(z.displayOrder ?? 2000 + idx),
+      };
+    });
+
+  return [...standardZones, ...customZones].sort((a, b) => a.displayOrder - b.displayOrder);
 }
 
 /** تفاصيل طلب (للملصق/العرض) — الطلب + العميل + البنود. */
@@ -267,6 +423,7 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
   if (!db) return null;
   const claimedUsers = alias(users, "claimedUsers");
   const preparedUsers = alias(users, "preparedUsers");
+  const retailPrices = alias(productPrices, "detailRetailPrices");
   const order = (
     await db
       .select({
@@ -290,6 +447,9 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
         total: onlineOrders.total,
         couponCode: onlineOrders.couponCode,
         couponDiscount: onlineOrders.couponDiscount,
+        pricingBenefitType: onlineOrders.pricingBenefitType,
+        pricingBenefitLabel: onlineOrders.pricingBenefitLabel,
+        pricingBenefitDiscount: onlineOrders.pricingBenefitDiscount,
         createdAt: onlineOrders.createdAt,
         reservationExpiresAt: onlineOrders.reservationExpiresAt,
         claimedByUserId: onlineOrders.claimedByUserId,
@@ -314,31 +474,58 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
   if (scopedBranchId != null && Number(order.branchId) !== scopedBranchId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "الطلب يخصّ فرعاً آخر" });
   }
-  const lifecycle = (await loadOnlineOrderLifecycles(db, [id])).get(id) ?? null;
-  const items = await db
-    .select({
-      id: onlineOrderItems.id,
-      productId: products.id,
-      variantId: productVariants.id,
-      productUnitId: onlineOrderItems.productUnitId,
-      productName: products.name,
-      variantName: productVariants.variantName,
-      color: productVariants.color,
-      size: productVariants.size,
-      imageId: productImages.id,
-      imageUrl: productImages.url,
-      unitName: productUnits.unitName,
-      quantity: onlineOrderItems.quantity,
-      unitPrice: onlineOrderItems.unitPrice,
-      total: onlineOrderItems.total,
-      customizationSnapshot: onlineOrderItems.customizationSnapshot,
-    })
-    .from(onlineOrderItems)
-    .innerJoin(productVariants, eq(onlineOrderItems.variantId, productVariants.id))
-    .innerJoin(products, eq(productVariants.productId, products.id))
-    .leftJoin(productUnits, eq(onlineOrderItems.productUnitId, productUnits.id))
-    .leftJoin(productImages, and(eq(productImages.productId, products.id), eq(productImages.isPrimary, true)))
-    .where(eq(onlineOrderItems.onlineOrderId, id));
+  const [lifecycleMap, items, editableZones, couponPromoRow] = await Promise.all([
+    loadOnlineOrderLifecycles(db, [id]),
+    db
+      .select({
+        id: onlineOrderItems.id,
+        productId: products.id,
+        variantId: productVariants.id,
+        productUnitId: onlineOrderItems.productUnitId,
+        productName: products.name,
+        variantName: productVariants.variantName,
+        color: productVariants.color,
+        size: productVariants.size,
+        imageId: productImages.id,
+        imageUrl: productImages.url,
+        unitName: productUnits.unitName,
+        quantity: onlineOrderItems.quantity,
+        unitPrice: onlineOrderItems.unitPrice,
+        retailPrice: retailPrices.price,
+        total: onlineOrderItems.total,
+        customizationSnapshot: onlineOrderItems.customizationSnapshot,
+      })
+      .from(onlineOrderItems)
+      .innerJoin(productVariants, eq(onlineOrderItems.variantId, productVariants.id))
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .leftJoin(productUnits, eq(onlineOrderItems.productUnitId, productUnits.id))
+      .leftJoin(
+        retailPrices,
+        and(
+          eq(retailPrices.productUnitId, onlineOrderItems.productUnitId),
+          eq(retailPrices.priceTier, "RETAIL"),
+        ),
+      )
+      .leftJoin(productImages, and(eq(productImages.productId, products.id), eq(productImages.isPrimary, true)))
+      .where(eq(onlineOrderItems.onlineOrderId, id)),
+    loadEditableDeliveryZones(db),
+    order.couponCode
+      ? db
+          .select({ freeShipping: promotions.freeShipping })
+          .from(couponReservations)
+          .innerJoin(couponPrograms, eq(couponReservations.programId, couponPrograms.id))
+          .innerJoin(promotions, eq(couponPrograms.promotionId, promotions.id))
+          .where(
+            and(
+              eq(couponReservations.onlineOrderId, id),
+              eq(couponReservations.status, "ACTIVE"),
+            ),
+          )
+          .limit(1)
+      : Promise.resolve([]),
+  ]);
+  const lifecycle = lifecycleMap.get(id) ?? null;
+  const couponFreeShipping = Boolean(couponPromoRow[0]?.freeShipping);
   return {
     id: Number(order.id),
     orderNumber: order.orderNumber,
@@ -362,6 +549,11 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
     total: String(order.total),
     couponCode: order.couponCode ?? null,
     couponDiscount: String(order.couponDiscount ?? "0"),
+    pricingBenefitType: (order.pricingBenefitType as StorefrontPricingBenefitType | null) ?? "NONE",
+    pricingBenefitLabel: order.pricingBenefitLabel ?? null,
+    pricingBenefitDiscount: String(order.pricingBenefitDiscount ?? "0.00"),
+    couponFreeShipping,
+    deliveryZones: editableZones,
     itemCount: items.length,
     createdAt: order.createdAt,
     reservationExpiresAt: order.reservationExpiresAt ? new Date(order.reservationExpiresAt) : null,
@@ -387,6 +579,7 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
       unitName: i.unitName ?? "",
       quantity: String(i.quantity),
       unitPrice: String(i.unitPrice),
+      retailUnitPrice: String(i.retailPrice ?? i.unitPrice),
       total: String(i.total),
       hasCustomization: i.customizationSnapshot != null,
       customizationSummary: i.customizationSnapshot?.values
@@ -575,8 +768,6 @@ export async function updateOnlineOrder(
     }
 
     // 4. Resolve or update customer details if provided (CF-05: never mutate shared CRM phone/phone2/phone3 across orders; rebind order to matching/new customer record when phone changes)
-    let heldCustLock: string | null = null;
-    try {
     let targetCustomerId: number | undefined = order.customerId != null ? Number(order.customerId) : undefined;
     if (order.customerId != null && (input.customerName != null || input.customerPhone != null)) {
       const currentCustomerId = Number(order.customerId);
@@ -650,104 +841,116 @@ export async function updateOnlineOrder(
             }),
           });
         }
-        heldCustLock = custLock;
-        const phoneVariants = Array.from(
-          new Set(
-            [
-              normalizedPhone,
-              rawNewPhone,
-              ...(normalizedPhone.startsWith("+964")
-                ? [
-                    `0${normalizedPhone.slice(4)}`,
-                    `964${normalizedPhone.slice(4)}`,
-                    `00964${normalizedPhone.slice(4)}`,
-                    normalizedPhone.slice(4),
-                  ]
-                : []),
-            ].filter(Boolean),
-          ),
-        );
-        const normDigits = normalizedPhone.replace(/\D/g, "");
-        const digitVariants = Array.from(
-          new Set(
-            [
-              normDigits,
-              normDigits ? `00${normDigits}` : "",
-              ...(normalizedPhone.startsWith("+964")
-                ? [`0${normalizedPhone.slice(4)}`, normalizedPhone.slice(4)]
-                : []),
-            ].filter(Boolean),
-          ),
-        );
-        const digitPredicates =
-          digitVariants.length > 0
-            ? (() => {
-                const digitSqlList = sql.join(
-                  digitVariants.map((d) => sql`${d}`),
-                  sql`, `,
-                );
-                return [
-                  sql`REGEXP_REPLACE(COALESCE(${customers.phone}, ''), '[^0-9]', '') IN (${digitSqlList})`,
-                  sql`REGEXP_REPLACE(COALESCE(${customers.phone2}, ''), '[^0-9]', '') IN (${digitSqlList})`,
-                  sql`REGEXP_REPLACE(COALESCE(${customers.phone3}, ''), '[^0-9]', '') IN (${digitSqlList})`,
-                  sql`REGEXP_REPLACE(COALESCE(${customers.whatsapp}, ''), '[^0-9]', '') IN (${digitSqlList})`,
-                ];
-              })()
-            : [];
-        const candidateCustomers = await tx
-          .select({
-            id: customers.id,
-            isActive: customers.isActive,
-            phone: customers.phone,
-            phone2: customers.phone2,
-            phone3: customers.phone3,
-            whatsapp: customers.whatsapp,
-          })
-          .from(customers)
-          .where(
-            or(
-              inArray(customers.phone, phoneVariants),
-              inArray(customers.phone2, phoneVariants),
-              inArray(customers.phone3, phoneVariants),
-              inArray(customers.whatsapp, phoneVariants),
-              ...digitPredicates,
+        try {
+          // قفل الفهرس المباشر على الهاتف المعياري يبقى محتجزاً لدى InnoDB حتى التزام withTx الخارجي،
+          // فلا يتسرّب سجل مكرر بعد تحرير GET_LOCK ودون أي COMMIT/ROLLBACK خام يفسد اتصال Drizzle.
+          await tx
+            .select({ id: customers.id })
+            .from(customers)
+            .where(eq(customers.phone, normalizedPhone))
+            .limit(1)
+            .for("update");
+
+          const phoneVariants = Array.from(
+            new Set(
+              [
+                normalizedPhone,
+                rawNewPhone,
+                ...(normalizedPhone.startsWith("+964")
+                  ? [
+                      `0${normalizedPhone.slice(4)}`,
+                      `964${normalizedPhone.slice(4)}`,
+                      `00964${normalizedPhone.slice(4)}`,
+                      normalizedPhone.slice(4),
+                    ]
+                  : []),
+              ].filter(Boolean),
             ),
-          )
-          .orderBy(desc(customers.isActive), desc(customers.id))
-          .for("update");
-        const matchedCustomer = candidateCustomers.find((c) =>
-          [c.phone, c.phone2, c.phone3, c.whatsapp].some((p) => {
-            if (!p || !p.trim()) return false;
-            try {
-              return normalizeOrderPhone(p.trim()) === normalizedPhone;
-            } catch {
-              return false;
+          );
+          const normDigits = normalizedPhone.replace(/\D/g, "");
+          const digitVariants = Array.from(
+            new Set(
+              [
+                normDigits,
+                normDigits ? `00${normDigits}` : "",
+                ...(normalizedPhone.startsWith("+964")
+                  ? [`0${normalizedPhone.slice(4)}`, normalizedPhone.slice(4)]
+                  : []),
+              ].filter(Boolean),
+            ),
+          );
+          const digitPredicates =
+            digitVariants.length > 0
+              ? (() => {
+                  const digitSqlList = sql.join(
+                    digitVariants.map((d) => sql`${d}`),
+                    sql`, `,
+                  );
+                  return [
+                    sql`REGEXP_REPLACE(COALESCE(${customers.phone}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+                    sql`REGEXP_REPLACE(COALESCE(${customers.phone2}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+                    sql`REGEXP_REPLACE(COALESCE(${customers.phone3}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+                    sql`REGEXP_REPLACE(COALESCE(${customers.whatsapp}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+                  ];
+                })()
+              : [];
+          const candidateCustomers = await tx
+            .select({
+              id: customers.id,
+              isActive: customers.isActive,
+              phone: customers.phone,
+              phone2: customers.phone2,
+              phone3: customers.phone3,
+              whatsapp: customers.whatsapp,
+            })
+            .from(customers)
+            .where(
+              or(
+                inArray(customers.phone, phoneVariants),
+                inArray(customers.phone2, phoneVariants),
+                inArray(customers.phone3, phoneVariants),
+                inArray(customers.whatsapp, phoneVariants),
+                ...digitPredicates,
+              ),
+            )
+            .orderBy(desc(customers.isActive), desc(customers.id))
+            .for("update");
+          const matchedCustomer = candidateCustomers.find((c) =>
+            [c.phone, c.phone2, c.phone3, c.whatsapp].some((p) => {
+              if (!p || !p.trim()) return false;
+              try {
+                return normalizeOrderPhone(p.trim()) === normalizedPhone;
+              } catch {
+                return false;
+              }
+            }),
+          );
+          if (matchedCustomer) {
+            if (matchedCustomer.isActive === false) {
+              throw new TRPCError({
+                code: "FORBIDDEN",
+                message: appErrorMessage({
+                  what: "هذا الرقم مرتبط بعميل معطّل",
+                  why: "سجل العميل المرتبط برقم الهاتف الجديد غير نشط حالياً",
+                  doThis: "أعد تفعيل حساب العميل أولاً من شاشة العملاء أو تحقق من رقم الهاتف المدخل",
+                }),
+              });
             }
-          }),
-        );
-        if (matchedCustomer) {
-          if (matchedCustomer.isActive === false) {
-            throw new TRPCError({
-              code: "FORBIDDEN",
-              message: appErrorMessage({
-                what: "هذا الرقم مرتبط بعميل معطّل",
-                why: "سجل العميل المرتبط برقم الهاتف الجديد غير نشط حالياً",
-                doThis: "أعد تفعيل حساب العميل أولاً من شاشة العملاء أو تحقق من رقم الهاتف المدخل",
-              }),
+            targetCustomerId = Number(matchedCustomer.id);
+          } else {
+            const [inserted] = await tx.insert(customers).values({
+              name: trimmedNewName || existingCustomer?.name || "عميل متجر",
+              phone: normalizedPhone,
+              customerType: "فرد",
+              defaultPriceTier: "RETAIL",
+              creditLimit: "0",
+              currentBalance: "0",
+              isActive: true,
             });
+            targetCustomerId = Number((inserted as { insertId?: number })?.insertId ?? currentCustomerId);
           }
-          targetCustomerId = Number(matchedCustomer.id);
-        } else {
-          const [inserted] = await tx.insert(customers).values({
-            name: trimmedNewName || existingCustomer?.name || "عميل متجر",
-            phone: normalizedPhone,
-            customerType: "فرد",
-            defaultPriceTier: "RETAIL",
-            creditLimit: "0",
-            currentBalance: "0",
-            isActive: true,
-          });
-          targetCustomerId = Number((inserted as { insertId?: number })?.insertId ?? currentCustomerId);
+        } finally {
+          await tx.execute(sql`SELECT RELEASE_LOCK(${custLock})`).catch(() => {});
         }
       } else if (existingCustomer && trimmedNewName && trimmedNewName !== existingCustomer.name) {
         const isVerifiedStorefrontAccount = Boolean(
@@ -783,7 +986,16 @@ export async function updateOnlineOrder(
 
     // 5. Governorate & address & coordinates
     const targetGovernorate = input.governorate?.trim() || order.governorate || "baghdad";
-    if (targetGovernorate && !governorateById(targetGovernorate)) {
+    const matchedDbZone = targetGovernorate
+      ? (
+          await tx
+            .select({ id: deliveryZones.id, isActive: deliveryZones.isActive })
+            .from(deliveryZones)
+            .where(eq(deliveryZones.code, targetGovernorate))
+            .limit(1)
+        )[0]
+      : undefined;
+    if (targetGovernorate && !governorateById(targetGovernorate) && !matchedDbZone) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
@@ -793,10 +1005,25 @@ export async function updateOnlineOrder(
         }),
       });
     }
-    let targetAddress = input.shippingAddress !== undefined ? (input.shippingAddress?.trim() || null) : order.shippingAddress;
-    if (input.notes && input.notes.trim()) {
-      targetAddress = targetAddress ? `${targetAddress}\nملاحظة: ${input.notes.trim()}` : `ملاحظة: ${input.notes.trim()}`;
+    if (
+      matchedDbZone &&
+      matchedDbZone.isActive === false &&
+      targetGovernorate !== (order.governorate ?? "")
+    ) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "منطقة التوصيل المختارة موقوفة حالياً",
+          why: `منطقة التوصيل (${targetGovernorate}) معطّلة في إعدادات المناطق ولا تقبل تحويل طلبات إليها`,
+          doThis: "اختر منطقة توصيل مفعّلة من القائمة المعتمدة",
+        }),
+      });
     }
+    const targetAddress = composeOrderShippingAddress(
+      order.shippingAddress,
+      input.shippingAddress,
+      input.notes,
+    );
     const targetLat = input.latitude !== undefined ? input.latitude : order.latitude;
     const targetLng = input.longitude !== undefined ? input.longitude : order.longitude;
 
@@ -932,12 +1159,27 @@ export async function updateOnlineOrder(
       const unitIds = Array.from(mergedByUnit.keys()).sort((a, b) => a - b);
       await lockProductUnitsForOnlineAllocation(tx, unitIds);
 
+      const isBaghdad = isBaghdadGovernorate(targetGovernorate);
+      const applicableThresholdStr = isBaghdad
+        ? storeSettings?.freeShippingThreshold
+        : (storeSettings?.freeShippingThresholdGovernorates ?? storeSettings?.freeShippingThreshold);
+      const configuredThreshold = applicableThresholdStr ? money(applicableThresholdStr) : null;
+      const freeThreshold = configuredThreshold?.gt(0) ? configuredThreshold : null;
+      const actualDeliveryFee = await resolveDeliveryFee(tx, targetGovernorate);
+
       // Price lines using official online order engine (staff edits can include any active catalog unit)
       const pricing = await priceOnlineOrderLines(
         tx,
         Number(order.branchId),
         lines,
-        { lock: true, allowStaffCatalogUnits: true }
+        {
+          lock: true,
+          allowStaffCatalogUnits: true,
+          deliveryContext: {
+            actualDeliveryFee,
+            freeShippingThreshold: freeThreshold,
+          },
+        },
       );
 
       // Bundle recipe resolution
@@ -1106,6 +1348,9 @@ export async function updateOnlineOrder(
         .set({
           customerId: targetCustomerId,
           couponCode: targetCouponCode,
+          pricingBenefitType: pricing.benefit.type,
+          pricingBenefitLabel: pricing.benefit.label,
+          pricingBenefitDiscount: pricing.benefit.discount,
           subtotal: quoteTotals.subtotal,
           shippingCost: quoteTotals.deliveryFee,
           deliveryFree: quoteTotals.deliveryFree,
@@ -1119,9 +1364,6 @@ export async function updateOnlineOrder(
         })
         .where(eq(onlineOrders.id, order.id));
 
-      if (heldCustLock) {
-        await tx.execute(sql`COMMIT`);
-      }
       return {
         id: order.id,
         total: grandTotal.toFixed(2),
@@ -1137,12 +1379,21 @@ export async function updateOnlineOrder(
         .from(onlineOrderItems)
         .where(eq(onlineOrderItems.onlineOrderId, order.id));
 
+      const benefitDiscount = money(order.pricingBenefitDiscount ?? "0");
+      const couponMerchDiscount = money(order.couponDiscount ?? "0");
+      const persistedMerchandiseDiscount = benefitDiscount.gt(couponMerchDiscount)
+        ? benefitDiscount
+        : couponMerchDiscount;
+      const retailEligibilitySubtotal = round2(
+        money(order.subtotal).plus(persistedMerchandiseDiscount),
+      ).toFixed(2);
+
       const quoteTotals = await totalOnlineOrderQuote(
         tx,
         existingItems,
         targetGovernorate,
         storeSettings?.freeShippingThreshold,
-        String(order.subtotal),
+        retailEligibilitySubtotal,
         storeSettings?.freeShippingThresholdGovernorates,
         couponShipping,
       );
@@ -1152,6 +1403,7 @@ export async function updateOnlineOrder(
       const grandTotal = money(quoteTotals.total);
 
       let targetCouponCode = order.couponCode;
+      let detachedShippingCoupon = false;
       if (activeReservation && couponShipping?.freeShipping && money(order.couponDiscount ?? "0").lte(0)) {
         if (money(quoteTotals.couponDeliveryWaivedAmount).gt(0)) {
           await tx
@@ -1173,6 +1425,7 @@ export async function updateOnlineOrder(
             })
             .where(eq(couponReservations.id, activeReservation.id));
           targetCouponCode = null;
+          detachedShippingCoupon = true;
         }
       }
 
@@ -1181,6 +1434,13 @@ export async function updateOnlineOrder(
         .set({
           customerId: targetCustomerId,
           couponCode: targetCouponCode,
+          ...(detachedShippingCoupon && order.pricingBenefitType === "COUPON"
+            ? {
+                pricingBenefitType: "NONE" as const,
+                pricingBenefitLabel: null,
+                pricingBenefitDiscount: "0.00",
+              }
+            : {}),
           shippingCost: quoteTotals.deliveryFee,
           deliveryFree: quoteTotals.deliveryFree,
           deliveryWaivedAmount: quoteTotals.deliveryWaivedAmount,
@@ -1193,25 +1453,12 @@ export async function updateOnlineOrder(
         })
         .where(eq(onlineOrders.id, order.id));
 
-      if (heldCustLock) {
-        await tx.execute(sql`COMMIT`);
-      }
       return {
         id: order.id,
         total: grandTotal.toFixed(2),
         subtotal: String(order.subtotal),
         deliveryFee: quoteTotals.deliveryFee,
       };
-    }
-    } catch (err) {
-      if (heldCustLock) {
-        await tx.execute(sql`ROLLBACK`).catch(() => {});
-      }
-      throw err;
-    } finally {
-      if (heldCustLock) {
-        await tx.execute(sql`SELECT RELEASE_LOCK(${heldCustLock})`).catch(() => {});
-      }
     }
   });
 }
