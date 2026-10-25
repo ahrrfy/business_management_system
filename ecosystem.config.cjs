@@ -49,6 +49,17 @@ const webTunableKeys = Object.freeze([
   "EVENT_LOOP_MAX_LAG_MS",
   "EVENT_LOOP_CRITICAL_MAX_LAG_MS",
   "EVENT_LOOP_STOREFRONT_MAX_LAG_MS",
+  // ── المتجر العامّ: STOREFRONT_ORDERING_ENABLED مفتاحُ إطفاءٍ طارئ؛ لولا إدراجُه هنا لتجمّد على قيمة
+  // أوّل `pm2 start` فلا يُطفئ الطلبات وقت الطوارئ مهما عُدِّل `.env` ونُشر. (الأسرارُ — Turnstile/VAPID/
+  // BARCODE_SECRET — لا تُدرَج: لا حاجة لتدويرها بنشرٍ عاديّ، ولا نُضاعف نسخها في بيئة PM2.)
+  "STOREFRONT_ORDERING_ENABLED",
+  "STOREFRONT_TURNSTILE_ENABLED",
+  "STOREFRONT_RATE_LIMIT_MAX",
+  "STOREFRONT_ORDER_RATE_LIMIT_MAX",
+  "STOREFRONT_TRACK_RATE_LIMIT_MAX",
+  "STOREFRONT_ANALYTICS_RATE_LIMIT_MAX",
+  "PUBLIC_SITE_ORIGIN",
+  "WEB_PUSH_OUTBOX_INTERVAL_MS",
   // ── أعلامُ الطرح (برنامج v2) — `shared/rolloutFlags.ts` هو تعريفها ────────────────────
   // ⚠️ **لولا إدراجُها هنا لتجمّدت على قيمتها لحظةَ أوّل `pm2 start`** بحكم القاعدة أعلاه:
   // فمفتاحُ إطفاءٍ لسياسةٍ ماليّة يصير عاجزاً عن الإطفاء، ورجوعٌ طارئ يترك السياسة على

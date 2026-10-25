@@ -1,11 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
-import { isPublicStorefrontHost, isPublicStorefrontProcedure, publicStorefrontHostBoundary } from "../../middleware/publicStorefrontHost";
+import { isAllowedOnPublicStorefrontHost, isPublicStorefrontHost, isPublicStorefrontProcedure, publicStorefrontHostBoundary } from "../../middleware/publicStorefrontHost";
 
 describe("public storefront host boundary", () => {
-  it("يسمح فقط بإجراءات المتجر والتوظيف العام والمندوب/الحساب الذاتي", () => {
-    for (const procedure of ["storefront.catalog", "storefront.createOrder", "recruitment.submit", "recruitment.openVacancies", "auth.login", "auth.changePassword", "courier.myDeliveries", "push.subscribe"]) {
+  it("يسمح فقط بإجراءات المتجر والتوظيف العام والدخول/الحساب الذاتي", () => {
+    for (const procedure of ["storefront.catalog", "storefront.createOrder", "recruitment.submit", "recruitment.openVacancies", "auth.login", "auth.changePassword"]) {
       expect(isPublicStorefrontProcedure(procedure)).toBe(true);
     }
+  });
+
+  it("لا يفتح إجراءات المندوب (courier.*) ولا إشعارات الموظفين (push.*) على الدومين العام", () => {
+    // تطبيق المناديب (TWA) حُذف؛ وتأكّد المالك أن لا جهاز ميداني يستعمله عبر alarabiya.online.
+    // push.* يستعمله ERP الداخلي وحده؛ إشعارات العملاء عبر storefront.registerPushDevice.
+    for (const procedure of ["courier.myDeliveries", "courier.confirmDelivery", "push.subscribe", "push.publicKey", "push.myStatus", "push.unsubscribe"]) {
+      expect(isPublicStorefrontProcedure(procedure), procedure).toBe(false);
+    }
+    // ولا تُهرَّب داخل دفعة مع إجراء متجر مسموح.
+    expect(["storefront.catalog", "courier.myDeliveries"].every(isPublicStorefrontProcedure)).toBe(false);
+    expect(isAllowedOnPublicStorefrontHost("POST", "/api/trpc/courier.myDeliveries")).toBe(false);
+    expect(isAllowedOnPublicStorefrontHost("POST", "/api/trpc/storefront.catalog,push.subscribe")).toBe(false);
+    expect(isAllowedOnPublicStorefrontHost("POST", "/api/trpc/storefront.catalog,storefront.settings")).toBe(true);
   });
 
   it("يرفض كل إجراء داخلي واسم إجراء مركب أو دفعة مختلطة", () => {

@@ -13,6 +13,13 @@ describe("storefront public sensitive batch guard", () => {
     "storefront.requestFirstOrderCoupon",
     "storefront.cancelOrderPrivate",
     "storefront.cancelOrderByToken",
+    // نقاط كتابة/قراءة عامة تُضخَّم ×20 بالدفعة: كل نداء قد يكتب صفاً أو يكشف سعراً ومخزوناً.
+    "storefront.shelfLookup",
+    "storefront.claimFirebaseCustomer",
+    "storefront.submitPublicProductReview",
+    "storefront.createWishlistShare",
+    "storefront.createCartShare",
+    "storefront.registerPushDevice",
   ])("counts repeated %s operations against the per-request limit", (procedure) => {
     expect(hasOverfilledPublicSensitiveBatch(`/${procedure},${procedure}`)).toBe(true);
     expect(hasOverfilledPublicSensitiveBatch(`/${procedure}`)).toBe(false);
