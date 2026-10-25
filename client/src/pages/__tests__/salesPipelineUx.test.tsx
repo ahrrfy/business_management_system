@@ -6,10 +6,15 @@ const board = readFileSync(
   "client/src/components/salesPipeline/PipelineBoard.tsx",
   "utf8",
 );
-const dialogs = readFileSync(
-  "client/src/components/salesPipeline/PipelineDialogs.tsx",
-  "utf8",
-);
+const dialogs = [
+  "LeadFormDialog.tsx",
+  "OpportunityFormDialog.tsx",
+  "PipelineActivityDialogs.tsx",
+]
+  .map((file) =>
+    readFileSync(`client/src/components/salesPipeline/${file}`, "utf8"),
+  )
+  .join("\n");
 
 describe("sales pipeline operational UX", () => {
   it("has board/list views, search, overdue filter and recovery states", () => {
@@ -38,7 +43,10 @@ describe("sales pipeline operational UX", () => {
     expect(dialogs).toContain("سبب التعديل");
     expect(dialogs).toContain("سبب الانتقال");
     expect(dialogs).toContain("فاتورة الفوز");
-    expect(dialogs).toContain("won && !invoiceId");
+    expect(dialogs).toContain("!optionsReady ||");
+    expect(dialogs).toContain(
+      "!invoices.some((item) => String(item.id) === invoiceId)",
+    );
   });
 
   it("renders each canonical state from the shared dictionaries", () => {

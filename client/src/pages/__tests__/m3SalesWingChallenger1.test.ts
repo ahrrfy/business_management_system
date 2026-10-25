@@ -46,7 +46,7 @@ const CONTRACT_PRICES_FILE = path.join(
 );
 const PIPELINE_DIALOGS_FILE = path.join(
   REPO_ROOT,
-  "client/src/components/salesPipeline/PipelineDialogs.tsx",
+  "client/src/components/salesPipeline/PipelineActivityDialogs.tsx",
 );
 
 describe("Milestone 3 Challenger 1: Adversarial Verification", () => {
@@ -77,14 +77,16 @@ describe("Milestone 3 Challenger 1: Adversarial Verification", () => {
     it("preferredWhatsAppPhone selects first valid candidate and returns null when all candidates are empty/invalid", () => {
       expect(preferredWhatsAppPhone(null, undefined, "", "   ")).toBeNull();
       expect(preferredWhatsAppPhone("not-a-phone", "123")).toBeNull();
-      expect(
-        preferredWhatsAppPhone(null, "07701234567", "07809999999"),
-      ).toBe("07701234567");
+      expect(preferredWhatsAppPhone(null, "07701234567", "07809999999")).toBe(
+        "07701234567",
+      );
       expect(preferredWhatsAppPhone("  07701234567  ")).toBe("07701234567");
     });
 
     it("sanitizeForWhatsApp strips emojis and pictographs to prevent broken characters", () => {
-      const sanitized = sanitizeForWhatsApp("عرض أسعار 📊 للعميل 🤝 المحترم 🌟");
+      const sanitized = sanitizeForWhatsApp(
+        "عرض أسعار 📊 للعميل 🤝 المحترم 🌟",
+      );
       expect(sanitized).toBe("عرض أسعار للعميل المحترم");
       expect(sanitized).not.toContain("📊");
       expect(sanitized).not.toContain("🤝");
@@ -129,7 +131,9 @@ describe("Milestone 3 Challenger 1: Adversarial Verification", () => {
       expect(content).toMatch(/\{phone\s*&&\s*\(\s*<WhatsAppShare/);
       // RowActions contact config
       expect(content).toContain("phone: qr.customerPhone,");
-      expect(content).toContain('disabledReason: "لا يوجد رقم واتساب مرتبط بعرض السعر"');
+      expect(content).toContain(
+        'disabledReason: "لا يوجد رقم واتساب مرتبط بعرض السعر"',
+      );
     });
 
     it("verifies SalesPipeline.tsx guards tel: and WhatsApp buttons in both Leads and Opportunities", () => {
@@ -214,9 +218,7 @@ describe("Milestone 3 Challenger 1: Adversarial Verification", () => {
       );
 
       // Handler connects to state
-      expect(content).toContain(
-        "onOpenDossier={setSelectedDossierCustomerId}",
-      );
+      expect(content).toContain("onOpenDossier={setSelectedDossierCustomerId}");
 
       // Drawer mounting
       expect(content).toMatch(
@@ -315,8 +317,10 @@ describe("Milestone 3 Challenger 1: Adversarial Verification", () => {
         'const won = kind === "OPPORTUNITY" && opportunityStage === "WON";',
       );
       expect(dialogContent).toContain("فاتورة الفوز");
+      expect(dialogContent).toContain("reason.trim().length < 3 ||");
+      expect(dialogContent).toContain("!optionsReady ||");
       expect(dialogContent).toContain(
-        "disabled={reason.trim().length < 3 || (won && !invoiceId)}",
+        "!invoices.some((item) => String(item.id) === invoiceId)",
       );
       expect(dialogContent).toContain(
         "onSubmit({ reason, invoiceId: Number(invoiceId) || null })",
@@ -361,7 +365,7 @@ describe("Milestone 3 Challenger 1: Adversarial Verification", () => {
       // Verify wrapA4Doc wraps title and content safely
       const docHtml = wrapA4Doc(input.title, tableHtml);
       expect(docHtml).toContain(input.title);
-      expect(docHtml).toContain("dir=\"rtl\"");
+      expect(docHtml).toContain('dir="rtl"');
     });
 
     it("printReportDoc gracefully formats rows with missing or null properties without throwing", () => {
@@ -389,7 +393,12 @@ describe("Milestone 3 Challenger 1: Adversarial Verification", () => {
       const summaryItems = [
         { label: "المجموع الفرعي", value: "100,000 د.ع" },
         { label: "الخصم", value: "10,000 د.ع" },
-        { label: "الإجمالي النهائي", value: "90,000 د.ع", large: true, bold: true },
+        {
+          label: "الإجمالي النهائي",
+          value: "90,000 د.ع",
+          large: true,
+          bold: true,
+        },
       ];
 
       const summaryHtml = docSummary(summaryItems);
@@ -402,11 +411,13 @@ describe("Milestone 3 Challenger 1: Adversarial Verification", () => {
     it("Quotations.tsx printOfficialQuoteDoc handles quotes with zero discount, zero tax and missing notes", () => {
       const content = fs.readFileSync(QUOTATIONS_FILE, "utf-8");
       // Official quote printing function
-      expect(content).toContain("async function printOfficialQuoteDoc(quotationId: number)");
+      expect(content).toContain(
+        "async function printOfficialQuoteDoc(quotationId: number)",
+      );
       expect(content).toContain('title: "عرض أسعار رسمي معتمد"');
-      expect(content).toContain("d.customerName ?? \"—\"");
-      expect(content).toContain("d.customerPhone ?? \"—\"");
-      expect(content).toContain("d.notes ?? \"—\"");
+      expect(content).toContain('d.customerName ?? "—"');
+      expect(content).toContain('d.customerPhone ?? "—"');
+      expect(content).toContain('d.notes ?? "—"');
       // Discount and Tax conditional inclusion
       expect(content).toContain('D(d.discountAmount ?? "0").gt(0)');
       expect(content).toContain('D(d.taxAmount ?? "0").gt(0)');
@@ -419,15 +430,21 @@ describe("Milestone 3 Challenger 1: Adversarial Verification", () => {
       expect(content).toContain("if (items.length === 0)");
       expect(content).toContain('notify.err("لا توجد عروض أسعار لطباعتها")');
       // Uses Decimal reduction to prevent float drift
-      expect(content).toContain("items.reduce((acc, r) => acc.plus(D(r.total ?? 0)), D(0))");
+      expect(content).toContain(
+        "items.reduce((acc, r) => acc.plus(D(r.total ?? 0)), D(0))",
+      );
       expect(content).toContain('title: "تقرير عروض الأسعار والمقايسات"');
     });
 
     it("ContractPrices.tsx printAddendum prints official report and has zero raw <table> tags", () => {
       const content = fs.readFileSync(CONTRACT_PRICES_FILE, "utf-8");
       expect(content).toContain("function printAddendum()");
-      expect(content).toContain("const active = rows.filter((r) => r.isActive);");
-      expect(content).toContain("if (customerId == null || !customer.data || active.length === 0)");
+      expect(content).toContain(
+        "const active = rows.filter((r) => r.isActive);",
+      );
+      expect(content).toContain(
+        "if (customerId == null || !customer.data || active.length === 0)",
+      );
       expect(content).toContain('title: "ملحق الأسعار الخاصة والتعاقدية"');
       expect(content).toContain("printReportDoc({");
       // Zero raw <table> in the entire file
