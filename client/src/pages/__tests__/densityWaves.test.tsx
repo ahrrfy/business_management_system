@@ -102,6 +102,14 @@ vi.mock("@/lib/trpc", () => {
                       input,
                       options: { mutation: true },
                     }),
+                  mutateAsync: async (input: any) => {
+                    state.calls.push({
+                      path: parts.join("."),
+                      input,
+                      options: { mutation: true },
+                    });
+                    return {};
+                  },
                   isPending: false,
                 })
               : key === "useUtils"
@@ -268,7 +276,7 @@ describe("operational wave regressions", () => {
         .input.staleOnly,
     ).toBe(true);
   });
-  it("requires a separate explicit schedule for each selected campaign", () => {
+  it("requires a separate explicit schedule for each selected campaign", async () => {
     act(() => root.render(<StorePushCampaignManager />));
     expect(container.querySelector('input[type="datetime-local"]')).toBeNull();
     click("جدولة");
@@ -281,7 +289,7 @@ describe("operational wave regressions", () => {
       container.querySelector('input[type="datetime-local"]')!,
       "2099-01-01T09:00",
     );
-    click("تأكيد الجدولة");
+    await act(async () => click("تأكيد الجدولة"));
     const sent = state.calls.find(
       (call) => call.path === "storeAdmin.notifications.schedule",
     );
