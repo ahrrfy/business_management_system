@@ -1289,6 +1289,7 @@ export default function WorkOrderDetail() {
                 refundRail: d.refundRail,
                 refundReference: d.refundReference,
                 materials: d.materials,
+                confirmAllMaterialsReturnedUsable: d.confirmAllMaterialsReturnedUsable,
               },
             };
             const attempt: PendingCancelAttempt = { kind: "CONTROL_REQUEST", input };
@@ -1306,6 +1307,7 @@ export default function WorkOrderDetail() {
             refundReference: d.refundReference,
             reason: d.reason,
             materials: d.materials,
+            confirmAllMaterialsReturnedUsable: d.confirmAllMaterialsReturnedUsable,
           };
           const attempt: PendingCancelAttempt = { kind: "DIRECT", input };
           rememberCancelAttempt(attempt);

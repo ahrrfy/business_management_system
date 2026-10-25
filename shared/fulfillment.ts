@@ -40,6 +40,7 @@ export const fulfillmentChargeCategoryLabel: Record<
 export const FULFILLMENT_CHARGE_STATUSES = [
   "DRAFT",
   "APPROVED",
+  "COMPLETED",
   "CANCELLED",
 ] as const;
 export type FulfillmentChargeStatus =
@@ -47,7 +48,12 @@ export type FulfillmentChargeStatus =
 export const fulfillmentChargeStatusLabel: Record<
   FulfillmentChargeStatus,
   string
-> = { DRAFT: "بانتظار الاعتماد", APPROVED: "معتمد", CANCELLED: "ملغى" };
+> = {
+  DRAFT: "بانتظار الاعتماد",
+  APPROVED: "معتمد — بانتظار الإكمال",
+  COMPLETED: "مكتمل",
+  CANCELLED: "ملغى",
+};
 export const AFTERCARE_CASE_STATUSES = [
   "DRAFT",
   "APPROVED",

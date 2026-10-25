@@ -298,6 +298,7 @@ function LegacyReturnContext({
       refundRail: decision.refundRail,
       refundReference: decision.refundReference,
       materials: decision.materials,
+      confirmAllMaterialsReturnedUsable: decision.confirmAllMaterialsReturnedUsable,
     };
     const action: PendingAction = direct
       ? {

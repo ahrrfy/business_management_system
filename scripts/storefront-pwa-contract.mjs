@@ -1,5 +1,5 @@
 export const STOREFRONT_SHELL_CHUNK_GLOB =
-  "assets/{Storefront,authorization-vendor,validation-vendor,operation-catalog-1,operation-catalog-2,badge,framework,data-client,ui-vendor,icons,observability,offline-store,charts,motion,onlineOrderStatus,money,governorates,whatsapp,TurnstileWidget,IntlPhoneInput,UnifiedSearchInput,BarcodeSearchCue,dialog,useBarcodeInput,date,invoiceStatus,intlPhone,numberNormalize,storefrontSearchNormalize,quantityFormat,variantDisplay}-*.js";
+  "assets/{Storefront,badge,framework,data-client,ui-vendor,icons,observability,motion,onlineOrderStatus,money,governorates,whatsapp,TurnstileWidget,IntlPhoneInput,UnifiedSearchInput,BarcodeSearchCue,barcodeNormalize,barcodeScanTiming,dialog,useBarcodeInput,date,invoiceStatus,intlPhone,numberNormalize,storefrontSearchNormalize,quantityFormat,variantDisplay}-*.js";
 
 /** Let the browser own endless SSE bodies so they cannot retain an outgoing worker. */
 export function storefrontApiNetworkMatcher({ url }) {

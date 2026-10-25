@@ -113,7 +113,7 @@ export async function loadAssignedChargeClaimsTx(
     remaining: rows.reduce(
       (s, r) =>
         s.plus(
-          r.status === "APPROVED"
+          ["APPROVED", "COMPLETED"].includes(r.status)
             ? Decimal.max(0, money(r.amount).minus(r.paidAmount))
             : money(0),
         ),
@@ -179,7 +179,7 @@ export async function attachFulfillmentRequestClaimsTx(
     .where(
       and(
         eq(fulfillmentCharges.requestId, input.requestId),
-        eq(fulfillmentCharges.status, "APPROVED"),
+        inArray(fulfillmentCharges.status, ["APPROVED", "COMPLETED"]),
       ),
     )
     .orderBy(asc(fulfillmentCharges.id))

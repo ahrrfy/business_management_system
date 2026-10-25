@@ -27,12 +27,42 @@ export function chargeAccrualIntent(
   amount: Decimal,
 ) {
   const credit =
-    category === "PASS_THROUGH" ? "OTHER_LIABILITY" : "OTHER_REVENUE";
+    category === "PASS_THROUGH"
+      ? "OTHER_LIABILITY"
+      : category === "SERVICE" || category === "OUTSOURCED"
+        ? "DEFERRED_REVENUE"
+        : "OTHER_REVENUE";
   return createPostingIntent(
     "FULFILLMENT_CHARGE_ACCRUAL",
     "ADJUST",
     [debitLine("AR", amount), creditLine(credit, amount)],
     { roleDebits: { AR: amount }, roleCredits: { [credit]: amount } },
+  );
+}
+/** Immediate checkout services are completed in the same transaction and bypass deferral. */
+export function immediateServiceAccrualIntent(amount: Decimal) {
+  return createPostingIntent(
+    "FULFILLMENT_CHARGE_ACCRUAL",
+    "ADJUST",
+    [debitLine("AR", amount), creditLine("OTHER_REVENUE", amount)],
+    {
+      roleDebits: { AR: amount },
+      roleCredits: { OTHER_REVENUE: amount },
+    },
+  );
+}
+export function chargeRecognitionIntent(amount: Decimal) {
+  return createPostingIntent(
+    "FULFILLMENT_CHARGE_RECOGNITION",
+    "ADJUST",
+    [
+      debitLine("DEFERRED_REVENUE", amount),
+      creditLine("OTHER_REVENUE", amount),
+    ],
+    {
+      roleDebits: { DEFERRED_REVENUE: amount },
+      roleCredits: { OTHER_REVENUE: amount },
+    },
   );
 }
 export function chargeCostIntent(cost: Decimal, payable: ChargePayableRole) {
@@ -74,9 +104,14 @@ export function chargeCollectionIntent(
 export function chargeCreditIntent(
   category: FulfillmentChargeCategory,
   amount: Decimal,
+  recognized = true,
 ) {
   const debit =
-    category === "PASS_THROUGH" ? "OTHER_LIABILITY" : "OTHER_REVENUE";
+    category === "PASS_THROUGH"
+      ? "OTHER_LIABILITY"
+      : !recognized && (category === "SERVICE" || category === "OUTSOURCED")
+        ? "DEFERRED_REVENUE"
+        : "OTHER_REVENUE";
   return createPostingIntent(
     "FULFILLMENT_CHARGE_CREDIT",
     "ADJUST",

@@ -276,22 +276,30 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     expect((await listMyDeliveries(4)).linked).toBe(false);
   });
 
-  it("تعذّر التسليم: يعكس البيع (إعادة مخزون + تصفير ذمّة + فاتورة RETURNED + طلب CANCELLED) والمطابِقات نظيفة", async () => {
+  it("تعذّر التسليم الإرثي: ينشئ FAILED وطلب رجوع بلا عكس بيع أو ذمّة أو مخزون", async () => {
     const { partyA } = await seedParties();
     const before = await stockOf(1); // 100
     const o = await shippedOrder(2, "ORD-F1", partyA); // خصم مخزون 2 ⇒ 98
     expect(await stockOf(1)).toBe(before - 2);
     expect(await customerBalance(1)).toBe("20.00");
+    const accountingBefore = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.invoiceId, o.invoiceId));
+    const movementsBefore = await db().select().from(s.inventoryMovements).where(eq(s.inventoryMovements.referenceId, o.invoiceId));
 
     const res = await failCourierDelivery({ onlineOrderId: o.orderId, reason: "رفض الزبون الاستلام" }, { userId: 3 });
-    expect(res.reversed).toBe(true);
-    expect(await stockOf(1)).toBe(before); // أُعيدت البضاعة للمخزون
-    expect(await customerBalance(1)).toBe("0.00"); // ذمّة العميل صُفّيت
-    expect((await invoice(o.invoiceId)).status).toBe("RETURNED");
+    expect(res).toMatchObject({ reversed: false, returnRequested: true, alreadyRequested: false });
+    expect(await stockOf(1)).toBe(before - 2);
+    expect(await customerBalance(1)).toBe("20.00");
+    expect((await invoice(o.invoiceId)).status).toBe("PENDING");
     const ord = await order(o.orderId);
-    expect(ord.status).toBe("CANCELLED");
+    expect(ord.status).toBe("SHIPPED");
     expect(ord.cancelReason).toBe("رفض الزبون الاستلام");
-    expect(await orderPush(o.orderId, "CANCELLED")).toMatchObject({ kind: "TRANSACTIONAL", destination: "/orders" });
+    const cn = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, res.consignmentId)))[0];
+    expect(cn).toMatchObject({ sourceType: "ONLINE_ORDER", sourceId: o.orderId, invoiceId: o.invoiceId,
+      parcelStatus: "FAILED", status: "DISPATCHED", failureReason: "رفض الزبون الاستلام" });
+    expect(cn.returnDeclaredAt).not.toBeNull();
+    expect(await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.invoiceId, o.invoiceId))).toHaveLength(accountingBefore.length);
+    expect(await db().select().from(s.inventoryMovements).where(eq(s.inventoryMovements.referenceId, o.invoiceId))).toHaveLength(movementsBefore.length);
+    expect(await db().select().from(s.accountingEntries).where(and(eq(s.accountingEntries.invoiceId, o.invoiceId), eq(s.accountingEntries.entryType, "RETURN")))).toHaveLength(0);
     expect(await partyBalance(partyA)).toBe("0.00"); // بلا عهدة (لم يُحصَّل)
     await reconcileClean();
   });
@@ -301,10 +309,13 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     const o = await shippedOrder(1, "ORD-F2", partyA);
     // مندوب آخر (userId 4) لا يُلغي طلب جهة أ.
     await expect(failCourierDelivery({ onlineOrderId: o.orderId, reason: "اختبار" }, { userId: 4 })).rejects.toMatchObject({ code: "FORBIDDEN" });
-    // إلغاء صحيح ثم استدعاء ثانٍ ⇒ alreadyCancelled بلا عكس مزدوج.
-    await failCourierDelivery({ onlineOrderId: o.orderId, reason: "عنوان خاطئ" }, { userId: 3 });
+    // تسجيل صحيح ثم استدعاء ثانٍ ⇒ alreadyRequested بلا إرسالية أو أثر مكرر.
+    const first = await failCourierDelivery({ onlineOrderId: o.orderId, reason: "عنوان خاطئ" }, { userId: 3 });
     const again = await failCourierDelivery({ onlineOrderId: o.orderId, reason: "عنوان خاطئ" }, { userId: 3 });
-    expect(again.alreadyCancelled).toBe(true);
+    expect(again).toMatchObject({ consignmentId: first.consignmentId, returnRequested: true, reversed: false, alreadyRequested: true });
+    expect(await db().select().from(s.deliveryConsignments).where(and(
+      eq(s.deliveryConsignments.sourceType, "ONLINE_ORDER"), eq(s.deliveryConsignments.sourceId, o.orderId),
+    ))).toHaveLength(1);
     await reconcileClean();
 
     // طلب محصَّل (paidAmount>0) لا يُعذَّر تسليمه (يُرجَع بعد التسليم عبر المدير).
@@ -342,17 +353,19 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     await reconcileClean();
   });
 
-  it("تعذّر التسليم بأجرة شحن: العكس يشمل الشحن ⇒ ذمّة صفر + صفر إيرادٍ وهميّ + مطابِقات نظيفة", async () => {
+  it("تعذّر التسليم بأجرة شحن: يبقي البيع والأجرة والذمّة حتى الاستلام الفعلي", async () => {
     const { partyA } = await seedParties();
     const o = await shippedOrder(2, "ORD-FF1", partyA, "3000"); // subtotal 20 + شحن 3000 = 3020، AR 3020
     expect(await customerBalance(1)).toBe("3020.00");
+    const stockBefore = await stockOf(1);
+    const revenueBefore = await db().select({ v: s.accountingEntries.revenue }).from(s.accountingEntries).where(eq(s.accountingEntries.invoiceId, o.invoiceId));
     await failCourierDelivery({ onlineOrderId: o.orderId, reason: "الزبون رفض الاستلام" }, { userId: 3 });
-    expect((await order(o.orderId)).status).toBe("CANCELLED");
-    expect((await invoice(o.invoiceId)).status).toBe("RETURNED");
-    expect(await customerBalance(1)).toBe("0.00"); // الذمّة صُفّرت بالكامل (السلعة + الشحن)
-    // الدفتر يتصافر: SALE(20+3000) + RETURN(−3020) = 0 — لا إيراد شحنٍ وهميّ على طلبٍ مُلغى.
+    expect((await order(o.orderId)).status).toBe("SHIPPED");
+    expect((await invoice(o.invoiceId)).status).toBe("PENDING");
+    expect(await customerBalance(1)).toBe("3020.00");
+    expect(await stockOf(1)).toBe(stockBefore);
     const revRows = await db().select({ v: s.accountingEntries.revenue }).from(s.accountingEntries).where(eq(s.accountingEntries.invoiceId, o.invoiceId));
-    expect(revRows.reduce((t, r) => t + Number(r.v), 0)).toBe(0);
+    expect(revRows).toEqual(revenueBefore);
     await reconcileClean();
   });
 

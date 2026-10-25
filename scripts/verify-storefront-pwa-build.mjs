@@ -5,6 +5,23 @@ import { fileURLToPath } from "node:url";
 const STOREFRONT_SOURCE = "src/pages/Storefront.tsx";
 const INDEX_SOURCE = "index.html";
 
+export const FORBIDDEN_ERP_CHUNK_PREFIXES = [
+  "App-",
+  "erp-routes-",
+  "app-shell-",
+  "erp-shell-",
+  "erp-navigation-",
+  "CommandPalette-",
+  "operation-catalog-1-",
+  "operation-catalog-2-",
+  "authorization-vendor-",
+  "validation-vendor-",
+  "offline-store-",
+  "charts-",
+  "legacy-permissions-",
+  "permission-extensions-",
+];
+
 function normalizedUrl(value) {
   return String(value ?? "").replace(/^\.\//, "").replace(/^\//, "");
 }
@@ -62,6 +79,15 @@ export function assertStorefrontPrecacheClosure({ manifest, swSource }) {
   );
   if (heavyAsset) {
     throw new Error(`STOREFRONT_PRECACHE_HEAVY_ASSET_FORBIDDEN:${heavyAsset}`);
+  }
+
+  const forbiddenErpChunk = [...precachedUrls].find((url) => {
+    if (!url.startsWith("assets/") || !url.endsWith(".js")) return false;
+    const base = url.slice("assets/".length);
+    return FORBIDDEN_ERP_CHUNK_PREFIXES.some((prefix) => base.startsWith(prefix));
+  });
+  if (forbiddenErpChunk) {
+    throw new Error(`STOREFRONT_PRECACHE_ERP_CHUNK_FORBIDDEN:${forbiddenErpChunk}`);
   }
 
   const forbiddenAdminEntry = Object.entries(manifest)

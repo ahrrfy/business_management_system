@@ -147,13 +147,6 @@ export async function setWorkOrderMaterialsInTx(
 
     const currentQty = aggregate(currentRows);
     const desiredQty = aggregate(effectiveMaterials);
-    // لقطة التكلفة المحفوظة وقت الاستهلاك — لا تُعاد قراءتها من `costPrice` الحيّ للأصناف
-    // القائمة، وإلّا حرّك تغيّرُ WAVG بين البدء والتعديل قيمةَ WIP بلا أيّ حركةٍ فعلية.
-    const snapshotCost = new Map<number, Decimal>();
-    for (const r of currentRows) {
-      if (!snapshotCost.has(Number(r.variantId))) snapshotCost.set(Number(r.variantId), round2(money(r.unitCost ?? "0")));
-    }
-
     const touchedIds = Array.from(
       new Set(Array.from(currentQty.keys()).concat(Array.from(desiredQty.keys()))),
     ).sort((a, b) => a - b);
@@ -265,17 +258,34 @@ export async function setWorkOrderMaterialsInTx(
     // ── الأثر المخزنيّ/الدفتريّ — فقط بعد بدء التنفيذ ──
     let costDelta = new Decimal(0);
     if (consumed) {
+      const rowsByVariant = new Map<number, typeof currentRows>();
+      for (const row of currentRows) {
+        const variantId = Number(row.variantId);
+        const rows = rowsByVariant.get(variantId) ?? [];
+        rows.push(row);
+        rowsByVariant.set(variantId, rows);
+      }
       for (const vid of touchedIds) {
         const from = currentQty.get(vid) ?? 0;
         const to = desiredQty.get(vid) ?? 0;
         const delta = to - from;
         if (delta === 0) continue;
-        // تكلفة الوحدة: لقطة الاستهلاك للأصناف القائمة (لا تتغيّر بتغيّر WAVG)، والتكلفة
-        // الحيّة للصنف المضاف حديثاً (هي لحظة استهلاكه الفعلية).
-        const unitCost = snapshotCost.get(vid) ?? costMap.get(vid) ?? new Decimal(0);
-        const lineCostDelta = round2(unitCost.times(delta));
-        costDelta = costDelta.plus(lineCostDelta);
         if (delta > 0) {
+          // كل زيادة بعد البدء **دفعة صرف جديدة** بلقطة WAVG الحالية المقفلة أعلاه. لا نعيد
+          // تسعير الكمية القديمة، ولا نطمر الدفعتين في متوسطٍ مقربٍ يضيّع تكلفة الرجوع لاحقاً.
+          const issueUnitCost = costMap.get(vid);
+          if (!issueUnitCost) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: appErrorMessage({
+                what: `تعذر صرف زيادة خامة الصنف #${vid}`,
+                why: "لم تتوفر تكلفة WAVG مثبتة وقت الصرف",
+                doThis: "حدث الصفحة وراجع رصيد الصنف وتكلفته قبل إعادة المحاولة",
+              }),
+            });
+          }
+          const issuedValue = round2(issueUnitCost.times(delta));
+          costDelta = costDelta.plus(issuedValue);
           await applyMovement(tx, {
             variantId: vid,
             branchId: Number(wo.branchId),
@@ -290,8 +300,55 @@ export async function setWorkOrderMaterialsInTx(
             respectProductBackorder: false,
             notes: `تعديل بنود أمر الشغل ${wo.orderNumber}`,
           });
+          await tx.insert(workOrderMaterials).values({
+            workOrderId: input.workOrderId,
+            variantId: vid,
+            baseQuantity: delta,
+            // حصة الصنف الأساس الحاكمة تبقى في سطر الإنشاء الوحيد؛ الزيادة دفعةٌ لاحقة.
+            isBaseMaterial: false,
+            unitCost: issueUnitCost.toFixed(2),
+          });
         } else {
-          // المادة المخفَّضة تعود بالقيمة التي خرجت بها عند البدء، لا بتكلفة اليوم.
+          // الردّ LIFO على دفعات الصرف الفعلية: الزيادة الأحدث تعود أولاً بتكلفتها، ثم الدفعات
+          // الأقدم. سطر الصنف الأساس الحاكم يبقى أخيراً ولا ينخفض دون حصته الملزمة.
+          let remaining = -delta;
+          let returnedValue = money(0);
+          const batches = [...(rowsByVariant.get(vid) ?? [])].sort((a, b) => {
+            const baseOrder = Number(a.isBaseMaterial === true) - Number(b.isBaseMaterial === true);
+            return baseOrder !== 0 ? baseOrder : Number(b.id) - Number(a.id);
+          });
+          for (const batch of batches) {
+            if (remaining <= 0) break;
+            const minimumKeep = batch.isBaseMaterial === true && wo.baseConsumesInventory === true
+              ? Number(baseBaseQuantity ?? 0)
+              : 0;
+            const removable = Math.max(0, Number(batch.baseQuantity) - minimumKeep);
+            const take = Math.min(remaining, removable);
+            if (take <= 0) continue;
+            returnedValue = returnedValue.plus(round2(money(batch.unitCost ?? "0").times(take)));
+            const nextQuantity = Number(batch.baseQuantity) - take;
+            if (nextQuantity === 0) {
+              await tx.delete(workOrderMaterials).where(eq(workOrderMaterials.id, Number(batch.id)));
+            } else {
+              await tx
+                .update(workOrderMaterials)
+                .set({ baseQuantity: nextQuantity })
+                .where(eq(workOrderMaterials.id, Number(batch.id)));
+            }
+            remaining -= take;
+          }
+          if (remaining !== 0) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: appErrorMessage({
+                what: `تعذّر تخفيض مادة أمر الشغل ${wo.orderNumber}`,
+                why: `لم تكفِ دفعات الصرف المثبتة للصنف #${vid} لتغطية ${-delta} وحدة؛ بقيت ${remaining} بلا دفعة تكلفة تاريخية`,
+                doThis: "أوقف التعديل وراجع أسطر خامات الأمر وحركات صرفه؛ لا تُرجع المخزون بتكلفة اليوم تخميناً",
+              }),
+            });
+          }
+          returnedValue = round2(returnedValue);
+          costDelta = costDelta.minus(returnedValue);
           // الحركة والقيمة وWAVG تُحدَّث تحت mutex الصنف وكل أرصدته في primitive واحدة.
           const isService = await isServiceVariant(tx, vid);
           const isBundle = await isBundleVariant(tx, vid);
@@ -300,7 +357,7 @@ export async function setWorkOrderMaterialsInTx(
               variantId: vid,
               branchId: Number(wo.branchId),
               baseQuantity: -delta,
-              historicalValue: lineCostDelta.abs(),
+              historicalValue: returnedValue,
               referenceType: "WORK_ORDER",
               referenceId: input.workOrderId,
               documentNumber: wo.orderNumber,
@@ -336,20 +393,19 @@ export async function setWorkOrderMaterialsInTx(
       }
     }
 
-    // ── إعادة كتابة الصفوف إلى القائمة المطلوبة ──
-    // لقطة التكلفة تُحفظ للأصناف المستهلَكة فقط؛ ما لم يبدأ بعدُ يبقى "0" ويأخذ لقطته عند البدء
-    // (`startWorkOrder` يكتبها) — فلا نُثبّت تكلفةً لمادةٍ لم تُستهلَك.
-    await tx.delete(workOrderMaterials).where(eq(workOrderMaterials.workOrderId, input.workOrderId));
-    for (const vid of desiredIds) {
-      await tx.insert(workOrderMaterials).values({
-        workOrderId: input.workOrderId,
-        variantId: vid,
-        baseQuantity: desiredQty.get(vid)!,
-        isBaseMaterial: wo.baseConsumesInventory === true && vid === baseVariantId,
-        unitCost: consumed
-          ? (snapshotCost.get(vid) ?? costMap.get(vid) ?? new Decimal(0)).toFixed(2)
-          : "0",
-      });
+    // قبل البدء لا توجد دفعات صرف: نعيد كتابة الوصفة المجمّعة بكلفة صفر. بعد البدء عُدّلت
+    // الصفوف أعلاه **موضعياً** كي تبقى كل دفعة وتكلفتها التاريخية دليلاً للرجوع والإلغاء.
+    if (!consumed) {
+      await tx.delete(workOrderMaterials).where(eq(workOrderMaterials.workOrderId, input.workOrderId));
+      for (const vid of desiredIds) {
+        await tx.insert(workOrderMaterials).values({
+          workOrderId: input.workOrderId,
+          variantId: vid,
+          baseQuantity: desiredQty.get(vid)!,
+          isBaseMaterial: wo.baseConsumesInventory === true && vid === baseVariantId,
+          unitCost: "0",
+        });
+      }
     }
 
     const newMaterialsCost = consumed

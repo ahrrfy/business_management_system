@@ -1,10 +1,12 @@
 import { useMemo } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
-import { FileCheck2 } from "lucide-react";
+import { FileCheck2, Printer } from "lucide-react";
 import { DataTable } from "@/components/data-table/DataTable";
+import { Button } from "@/components/ui/button";
 import { fmt } from "@/lib/money";
 import { fmtDateTime } from "@/lib/date";
 import type { RouterOutputs } from "@/lib/trpc";
+import { printRemittanceReceipt } from "@/components/delivery/printRemittanceReceipt";
 
 export type RemittanceRow = RouterOutputs["delivery"]["remittances"][number];
 
@@ -55,8 +57,45 @@ export function DeliveryRemittanceHistoryCard({
         meta: { kind: "actor" },
         cell: ({ row }) => <span className="text-[11px]">{row.original.receivedByName ?? "—"}</span>,
       },
+      {
+        id: "print",
+        header: "المستند",
+        enableSorting: false,
+        cell: ({ row }) => (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 gap-1.5 px-2 text-xs"
+            disabled={!row.original.remittanceNumber}
+            title={
+              row.original.remittanceNumber
+                ? "إعادة طباعة لقطة سند التوريد"
+                : "لا يوجد رقم سند قابل للطباعة"
+            }
+            onClick={() =>
+              printRemittanceReceipt(partyName, {
+                remittanceNumber: row.original.remittanceNumber,
+                collectedTotal: row.original.collectedTotal,
+                feesTotal: row.original.feesTotal,
+                netRemitted: row.original.netRemitted,
+                shortfallTotal: row.original.shortfallTotal,
+                cashReceived: row.original.cashReceived,
+                receivedAt: row.original.receivedAt as unknown as string,
+                branchId: row.original.branchId,
+                shiftId: row.original.shiftId,
+                receivedByName: row.original.receivedByName,
+                copy: { kind: "REPRINT", reason: "طلب إعادة طباعة من سجل التوريدات" },
+              })
+            }
+          >
+            <Printer aria-hidden className="size-3.5" />
+            إعادة طباعة
+          </Button>
+        ),
+      },
     ],
-    [],
+    [partyName],
   );
 
   const rows = remittances.data ?? [];

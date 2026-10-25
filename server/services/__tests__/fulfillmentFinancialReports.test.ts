@@ -15,6 +15,7 @@ import {
 import {
   createFulfillmentCharge,
   approveFulfillmentCharge,
+  completeFulfillmentCharge,
   collectFulfillmentCharges,
   refundFulfillmentCharge,
   refundFulfillmentChargeExcess,
@@ -212,12 +213,42 @@ describe.sequential("classified fulfillment financial report effects", () => {
     }]);
   });
   it("recognizes outsourced gross revenue and cost once, then moves AR/AP into real cash", async () => {
-    const row = await approved({
+    let row = await approved({
       category: "OUTSOURCED",
       amount: "5000",
       externalCost: "3000",
       payeeSupplierId: 1,
     });
+    expect(await pnl()).toMatchObject({
+      revenue: "0.00",
+      totalExpenses: "0.00",
+      netProfit: "0.00",
+    });
+    expect(await position()).toMatchObject({
+      arDebit: "5000.00",
+      fulfillmentDeferredRevenue: "5000.00",
+      totalLiabilities: "5000.00",
+      equity: "0.00",
+    });
+    expect(
+      await db()
+        .select()
+        .from(s.accountingEntries)
+        .where(
+          eq(
+            s.accountingEntries.dedupeKey,
+            `FULFILLMENT_CHARGE_COST:${row.id}`,
+          ),
+        ),
+    ).toHaveLength(0);
+    const completion = {
+      id: row.id,
+      expectedVersion: row.version,
+      clientRequestId: key(),
+      evidence: "إثبات إنجاز الخدمة الخارجية للتقرير المالي",
+    };
+    row = await completeFulfillmentCharge(completion, checker);
+    expect(await completeFulfillmentCharge(completion, checker)).toEqual(row);
     const apColumns = {
       entryType: s.accountingEntries.entryType,
       amount: s.accountingEntries.amount,
@@ -246,6 +277,7 @@ describe.sequential("classified fulfillment financial report effects", () => {
     expect(await position()).toMatchObject({
       arDebit: "5000.00",
       apCredit: "3000.00",
+      fulfillmentDeferredRevenue: "0.00",
       totalAssets: "5000.00",
       totalLiabilities: "3000.00",
       equity: "2000.00",
@@ -379,9 +411,15 @@ describe.sequential("classified fulfillment financial report effects", () => {
       cash: "2300.00",
       arDebit: "0.00",
       arCredit: "0.00",
+      fulfillmentDeferredRevenue: "2000.00",
       fulfillmentCustomerCredit: "300.00",
-      totalLiabilities: "300.00",
-      equity: "2000.00",
+      totalLiabilities: "2300.00",
+      equity: "0.00",
+    });
+    expect(await pnl()).toMatchObject({
+      revenue: "0.00",
+      totalExpenses: "0.00",
+      netProfit: "0.00",
     });
     const entry = (await db().select().from(s.accountingEntries))[0];
     const day =
@@ -409,11 +447,52 @@ describe.sequential("classified fulfillment financial report effects", () => {
       cash: "2000.00",
       arDebit: "0.00",
       arCredit: "0.00",
+      fulfillmentDeferredRevenue: "2000.00",
       fulfillmentCustomerCredit: "0.00",
     });
     expect(await pnl()).toMatchObject({
+      revenue: "0.00",
+      totalExpenses: "0.00",
+      netProfit: "0.00",
+    });
+    const charge = await current(row.id);
+    const completion = {
+      id: charge.id,
+      expectedVersion: charge.version,
+      clientRequestId: key(),
+      evidence: "إثبات إكمال خدمة التقرير بعد رد فائض القبض",
+    };
+    const completed = await completeFulfillmentCharge(completion, checker);
+    expect(await completeFulfillmentCharge(completion, checker)).toEqual(
+      completed,
+    );
+    expect(
+      (
+        await db()
+          .select()
+          .from(s.accountingEntries)
+          .where(
+            eq(
+              s.accountingEntries.dedupeKey,
+              `FULFILLMENT_CHARGE_RECOGNITION:${row.id}`,
+            ),
+          )
+      ).length,
+    ).toBe(1);
+    expect(await pnl()).toMatchObject({
       revenue: "2000.00",
       totalExpenses: "0.00",
+      netProfit: "2000.00",
+    });
+    expect(await position(day)).toMatchObject({
+      fulfillmentDeferredRevenue: "0.00",
+      totalLiabilities: "0.00",
+      equity: "2000.00",
+    });
+    expect(await position()).toMatchObject({
+      cash: "2000.00",
+      totalLiabilities: "0.00",
+      equity: "2000.00",
     });
   });
 
@@ -474,8 +553,10 @@ describe.sequential("classified fulfillment financial report effects", () => {
       arDebit: "0.00",
       deliveryFloat: "2000.00",
       deliveryFloatCustomerBacked: "0.00",
+      fulfillmentDeferredRevenue: "2000.00",
       totalAssets: "2000.00",
-      equity: "2000.00",
+      totalLiabilities: "2000.00",
+      equity: "0.00",
     });
   });
 

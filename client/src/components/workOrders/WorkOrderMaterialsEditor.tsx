@@ -47,11 +47,24 @@ export interface WorkOrderMaterialsEditorProps {
   onCancel: () => void;
 }
 
+/** دفعات التكلفة تبقى منفصلة خادمياً، لكن الموظف يحرر كمية الصنف الإجمالية كسطرٍ واحد. */
+function aggregateEditableMaterials(input: EditableMaterial[]): EditableMaterial[] {
+  const byVariant = new Map<number, EditableMaterial>();
+  for (const row of input) {
+    const current = byVariant.get(row.variantId);
+    byVariant.set(row.variantId, current
+      ? { ...current, baseQuantity: current.baseQuantity + row.baseQuantity }
+      : { ...row });
+  }
+  return Array.from(byVariant.values());
+}
+
 export function WorkOrderMaterialsEditor({
   workOrderId, version, branchId, orderNumber, status, initial, onSaved, onCancel,
 }: WorkOrderMaterialsEditorProps) {
   const me = trpc.auth.me.useQuery();
-  const [rows, setRows] = useState<EditableMaterial[]>(initial);
+  const aggregatedInitial = useMemo(() => aggregateEditableMaterials(initial), [initial]);
+  const [rows, setRows] = useState<EditableMaterial[]>(() => aggregateEditableMaterials(initial));
   const [search, setSearch] = useState("");
   const [reason, setReason] = useState("");
   const searchRef = useRef<HTMLInputElement | null>(null);
@@ -92,9 +105,9 @@ export function WorkOrderMaterialsEditor({
 
   /** الفرق مقابل الأصل — يُعرَض قبل الحفظ فلا يُفاجأ الموظف بأثرٍ لم يتوقّعه. */
   const diff = useMemo(() => {
-    const before = new Map(initial.map((m) => [m.variantId, m.baseQuantity]));
+    const before = new Map(aggregatedInitial.map((m) => [m.variantId, m.baseQuantity]));
     const after = new Map(rows.map((m) => [m.variantId, m.baseQuantity]));
-    const names = new Map([...initial, ...rows].map((m) => [m.variantId, m.productName]));
+    const names = new Map([...aggregatedInitial, ...rows].map((m) => [m.variantId, m.productName]));
     const out: Array<{ variantId: number; name: string; from: number; to: number }> = [];
     const ids = Array.from(new Set([...Array.from(before.keys()), ...Array.from(after.keys())]));
     for (const id of ids) {
@@ -103,7 +116,7 @@ export function WorkOrderMaterialsEditor({
       if (from !== to) out.push({ variantId: id, name: names.get(id) ?? `#${id}`, from, to });
     }
     return out;
-  }, [initial, rows]);
+  }, [aggregatedInitial, rows]);
 
   function addVariant(r: { variantId: number; productName: string; sku: string }) {
     setRows((prev) => {

@@ -145,7 +145,7 @@ describe("حرّاس: لا عملية تفترض أنّ البضاعة في ال
     await dispatch(woId, "gd-1");
 
     await expect(cancelGoverned(woId))
-      .rejects.toThrowError(/استرجع الإرساليّة|استرجع الإرسالية/);
+      .rejects.toThrowError(/فاتورة|استرجاع التسليم/);
 
     // ذرّية: لا شيء تغيّر — الأمر والفاتورة كما هما.
     const wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, woId)))[0];

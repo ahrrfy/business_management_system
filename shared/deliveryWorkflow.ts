@@ -19,6 +19,35 @@ export const WORKFLOW_SOURCE_KINDS = [
 ] as const;
 export type WorkflowSourceKind = (typeof WORKFLOW_SOURCE_KINDS)[number];
 export type WorkflowAction = WorkflowStation | "reassign" | "declareReturn";
+export const WORKFLOW_DOCUMENT_TYPES = [
+  "INVOICE",
+  "SHIPPING_LABEL",
+  "DISPATCH_SLIP",
+  "DELIVERY_MANIFEST",
+  "REMITTANCE_RECEIPT",
+  "PARTY_SETTLEMENT",
+  "PHYSICAL_RETURN_RECEIPT",
+  "SALE_RETURN_RECEIPT",
+  "SHORTFALL_VOUCHER",
+  "OVERAGE_REFUND",
+  "DELIVERY_FEE_REFUND",
+  "DELIVERY_FEE_PAYMENT",
+  "AFTERCARE_SETTLEMENT",
+  "AFTERCARE_WAYBILL",
+] as const;
+export type WorkflowDocumentType = (typeof WORKFLOW_DOCUMENT_TYPES)[number];
+export type WorkflowEffectDirection =
+  | "NONE"
+  | "INCREASE"
+  | "DECREASE"
+  | "TRANSFER"
+  | "CONDITIONAL";
+export interface WorkflowEffectLine {
+  direction: WorkflowEffectDirection;
+  amount?: string;
+  baseQuantity?: number;
+  description: string;
+}
 export interface WorkflowSourceIdentity {
   kind: WorkflowSourceKind;
   id: number;
@@ -87,6 +116,71 @@ export interface WorkflowScanPreview {
     pendingRefundReceiptIds: number[];
   };
   actions: { action: WorkflowAction; allowed: boolean; reason?: string }[];
+  /** Independent operational lenses; never derive all lifecycle state from one status. */
+  summaries: {
+    commercial: {
+      documentNumber: string;
+      status: string;
+      customerId: number | null;
+      currentTotal: string;
+    };
+    parcel: {
+      shipmentNumber: string | null;
+      consignmentCount: number;
+      parcelStatus: string | null;
+      dispatchedAt: string | null;
+      physicallyReturned: boolean;
+    };
+    inventory: {
+      custodyTracked: boolean;
+      reviewRequired: boolean;
+      state: string;
+      baseQuantity: number | null;
+      openBaseQuantity: number | null;
+    };
+    collection: {
+      customerDue: string;
+      customerCollected: string;
+      cashInCourierCustody: string;
+    };
+    remittance: {
+      status: string;
+      courierCustodyDue: string;
+      remittanceId: number | null;
+    };
+    settlement: {
+      status: string;
+      deliveryFee: string;
+      feeCollection: "COURIER" | "COUNTER" | "SHOP";
+      pendingRefundCount: number;
+    };
+  };
+  /** Server-authoritative UI affordances: forbidden actions remain visible with recovery guidance. */
+  allowedActions: {
+    action: WorkflowAction;
+    allowed: boolean;
+    reason?: string;
+    requiredRole?: string;
+    nextStep: string;
+  }[];
+  /** Read-only projection of what the explicit command would affect if later confirmed. */
+  effectPreview: {
+    sale: WorkflowEffectLine;
+    inventory: WorkflowEffectLine;
+    accountsReceivable: WorkflowEffectLine;
+    courierCustody: WorkflowEffectLine;
+    drawerCash: WorkflowEffectLine;
+    bankCash: WorkflowEffectLine;
+    deliveryFee: WorkflowEffectLine;
+    refund: WorkflowEffectLine;
+  };
+  availableDocuments: {
+    type: WorkflowDocumentType;
+    action: "PRINT" | "REPRINT";
+    snapshotId?: number;
+    allowed: boolean;
+    reason?: string;
+  }[];
   returnState?: {
     declared: boolean;
     received: boolean;
@@ -145,10 +239,20 @@ export interface WorkflowDispatchBatchInput {
   clientRequestId: string;
 }
 export interface WorkflowDispatchBatchResult {
+  operationId: string;
   consignmentId: number;
   consignmentNumber: string;
   fulfillmentRequestId: number | null;
   invoiceIds: number[];
+  newVersion: string;
+  nextAction: WorkflowAction | "print" | "monitor";
+  documentSnapshotIds: number[];
+  actualEffects: {
+    saleCreated: boolean;
+    inventoryIssued: boolean;
+    customerCollectionCreated: boolean;
+    deliveryFeePosted: boolean;
+  };
   idempotentReplay: boolean;
 }
 export interface WorkflowBatchPreview {

@@ -51,6 +51,7 @@ export const UNIT_TEST_FILES: string[] = [
       "client/src/components/crm/__tests__/wave32Dossier.test.tsx",
       "server/services/__tests__/fulfillmentChargesVisibility.unit.test.ts",
       "server/services/__tests__/fulfillmentPosting.test.ts",
+      "server/services/__tests__/postingEngine.test.ts",
       "server/services/__tests__/fulfillmentChargesPolicy.unit.test.ts",
       "shared/deliverySource.test.ts",
       "client/src/lib/printing/printDeliverySource.test.ts",
@@ -619,6 +620,7 @@ export const UNIT_TEST_FILES: string[] = [
       "client/src/pages/__tests__/reactEffectLoopGuard.test.ts",
       "client/src/pages/__tests__/salesInvoiceDigitalIntegrity.test.ts",
       "scripts/__tests__/safeDeliveryProtocols.test.ts",
+      "client/src/__tests__/bootstrapApp.test.ts",
 ];
 
 export default defineConfig({

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildChargeCompletionCommand,
+  chargeCompletionAvailable,
+  completionEvidenceValid,
+  defaultChargeWorkspaceAction,
+} from "@/components/fulfillment/ChargesWorkspace";
+import {
   buildDeliveryStatement,
   deliveryTotals,
   fetchAllDeliveryPages,
@@ -149,5 +155,74 @@ describe("delivery company export and statements", () => {
     expect(exported[0].exportCount).toBe("2");
     expect(exported[0].exportTotals).toBe("due: 0.30");
     expect(exported[0].exportBranch).toBe("الفرع #2");
+  });
+});
+
+describe("fulfillment charge completion workspace", () => {
+  it.each(["SERVICE", "OUTSOURCED"])(
+    "exposes evidence-bearing completion for an approved %s charge",
+    (category) => {
+      expect(
+        chargeCompletionAvailable({ status: "APPROVED", category }),
+      ).toBe(true);
+    },
+  );
+
+  it.each([
+    { status: "DRAFT", category: "SERVICE" },
+    { status: "COMPLETED", category: "SERVICE" },
+    { status: "APPROVED", category: "PASS_THROUGH" },
+    { status: "APPROVED", category: "SHOP_EXPENSE" },
+  ])("does not expose completion for $status $category", (charge) => {
+    expect(chargeCompletionAvailable(charge)).toBe(false);
+  });
+
+  it("requires trimmed operational evidence between 5 and 2000 characters", () => {
+    expect(completionEvidenceValid(" تم التسليم ")).toBe(true);
+    expect(completionEvidenceValid("  تم  ")).toBe(false);
+    expect(completionEvidenceValid("x".repeat(2001))).toBe(false);
+  });
+
+  it("builds the existing completion mutation command with trimmed evidence", () => {
+    expect(
+      buildChargeCompletionCommand({
+        id: 17,
+        expectedVersion: 4,
+        clientRequestId: "completion-ui-17",
+        evidence: "  تم تسليم الخدمة للعميل  ",
+      }),
+    ).toEqual({
+      action: "complete",
+      input: {
+        id: 17,
+        expectedVersion: 4,
+        clientRequestId: "completion-ui-17",
+        evidence: "تم تسليم الخدمة للعميل",
+      },
+    });
+    expect(() =>
+      buildChargeCompletionCommand({
+        id: 17,
+        expectedVersion: 4,
+        clientRequestId: "completion-ui-invalid",
+        evidence: "تم",
+      }),
+    ).toThrow("دليل إنجاز الخدمة غير مكتمل");
+  });
+
+  it("defaults managers to completion while cashiers keep normal collection", () => {
+    const approvedService = { status: "APPROVED", category: "SERVICE" };
+    expect(defaultChargeWorkspaceAction(approvedService, true)).toBe(
+      "complete",
+    );
+    expect(defaultChargeWorkspaceAction(approvedService, false)).toBe(
+      "collect",
+    );
+    expect(
+      defaultChargeWorkspaceAction(
+        { status: "APPROVED", category: "OUTSOURCED" },
+        false,
+      ),
+    ).toBe("collect");
   });
 });

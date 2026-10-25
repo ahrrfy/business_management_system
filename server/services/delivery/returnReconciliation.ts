@@ -79,14 +79,8 @@ export async function reconcileDeliveryOnReturnTx(
     ) {
       return false;
     }
-    // مسلمة ومسواة مالياً
-    if (
-      cn.status === "DELIVERED" &&
-      cn.parcelStatus === "DELIVERED" &&
-      cn.moneyStatus === "SETTLED"
-    ) {
-      return false;
-    }
+    // الإرسالية المسلّمة والمسواة مالياً لا تحتاج تحرير COD، لكنها تبقى هنا عمداً:
+    // حدث RETURN_SETTLEMENT هو الدليل الذي يصالح كميات العهدة مع عدادات مرتجع البيع.
     return true;
   });
 
