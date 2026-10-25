@@ -89,13 +89,16 @@ beforeEach(async () => {
     .values({ variantId: 1, branchId: 1, quantity: 10 });
 });
 
-async function purchase(currency: "IQD" | "USD" = "IQD") {
+async function purchase(
+  currency: "IQD" | "USD" = "IQD",
+  settlementType: "CREDIT" | "CASH" = "CREDIT",
+) {
   const draft = await createPurchaseOrder(
     {
       supplierId: 1,
       branchId: 1,
       status: "DRAFT",
-      settlementType: currency === "USD" ? "CREDIT" : "CASH",
+      settlementType,
       clientRequestId: key(),
       agreedCurrency: currency,
       ...(currency === "USD"
@@ -130,7 +133,7 @@ async function purchase(currency: "IQD" | "USD" = "IQD") {
       reason: "وصلت البضاعة كاملة وتحُقّق من مستند المورد",
       confirmedFullReceipt: true,
     },
-    approver,
+    settlementType === "CASH" ? treasurer : approver,
   );
   return draft.purchaseOrderId;
 }
@@ -257,8 +260,45 @@ async function creditReturn(quantity: number) {
 }
 
 describe("purchase settlement evidence across list, detail and supplier statement", () => {
-  it("keeps received CASH PO262-like purchase unpaid until a documented payment", async () => {
-    const poId = await purchase();
+  it("settles newly received CASH IQD purchase atomically across all surfaces", async () => {
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      cashBucket: "TREASURY",
+      direction: "IN",
+      amount: "500000.00",
+      paymentMethod: "CASH",
+      partyType: "OTHER",
+      voucherNumber: "RV-TREASURY-SEED-1",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      description: "تغذية خزينة للاختبار",
+      createdBy: treasurer.userId,
+      approvedBy: treasurer.userId,
+      approvedAt: new Date(),
+    });
+    const poId = await purchase("IQD", "CASH");
+    expect(await surfaces(poId)).toMatchObject({
+      paidAmountIqd: "240000.00",
+      returnedAmountIqd: "0.00",
+      remainingAmountIqd: "0.00",
+      status: "PAID",
+      requiresReview: false,
+    });
+    expect(await db().select().from(s.supplierPayments)).toHaveLength(1);
+    expect(
+      await db()
+        .select()
+        .from(s.receipts)
+        .where(eq(s.receipts.direction, "OUT")),
+    ).toHaveLength(1);
+  });
+
+  it("keeps historical received CASH PO262-like purchase unpaid until a documented payment", async () => {
+    const poId = await purchase("IQD", "CREDIT");
+    await db()
+      .update(s.purchaseOrders)
+      .set({ settlementType: "CASH", paidAmount: "0.00" })
+      .where(eq(s.purchaseOrders.id, poId));
     expect(await surfaces(poId)).toMatchObject({
       paidAmountIqd: "0.00",
       returnedAmountIqd: "0.00",

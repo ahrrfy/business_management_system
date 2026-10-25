@@ -10,6 +10,10 @@ import {
   XCircle,
 } from "lucide-react";
 import { ErrorState, LoadingState } from "@/components/PageState";
+import {
+  PurchaseCashSourceField,
+  usePurchaseCashSourceState,
+} from "@/components/purchases/PurchaseCashSourceField";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -23,6 +27,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { fmtDateTime } from "@/lib/date";
+import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 
@@ -60,6 +65,47 @@ function violatesVisibleSod(
   return ids.some((id) => id != null && Number(id) === Number(currentUserId));
 }
 
+export function deriveApprovePoRevisionGate(params: {
+  isApprovePoRevision: boolean;
+  targetPoId: number;
+  poDetail:
+    | {
+        id?: number | null;
+        settlementType?: string | null;
+        agreedCurrency?: string | null;
+      }
+    | null
+    | undefined;
+  isLoading: boolean;
+  isFetching?: boolean;
+  isError: boolean;
+  confirmedFullReceipt: boolean;
+  isCashSourceBlocked: boolean;
+}) {
+  const isPoDetailReady =
+    !params.isApprovePoRevision ||
+    (params.targetPoId > 0 &&
+      params.poDetail != null &&
+      Number(params.poDetail.id) === params.targetPoId &&
+      !params.isLoading &&
+      !params.isFetching &&
+      !params.isError);
+  const isCashIqdPo =
+    params.isApprovePoRevision &&
+    isPoDetailReady &&
+    params.poDetail?.settlementType === "CASH" &&
+    params.poDetail?.agreedCurrency !== "USD";
+  const isApproveBlocked =
+    (params.isApprovePoRevision &&
+      (!params.confirmedFullReceipt || !isPoDetailReady)) ||
+    (isCashIqdPo && params.isCashSourceBlocked);
+  return {
+    isPoDetailReady,
+    isCashIqdPo,
+    isApproveBlocked,
+  };
+}
+
 export function PurchaseApprovalQueue({
   operationUser,
   currentUserId,
@@ -67,11 +113,6 @@ export function PurchaseApprovalQueue({
 }: {
   operationUser?: OperationUser | null;
   currentUserId: number | null | undefined;
-  /**
-   * ⭐ قرار المالك (٣/٩/٢٦، وسّعه PR #998 على طلب الشراء الداخليّ): لا اعتماد ثانٍ بعد
-   * المالك. مقصورٌ هنا على REQUISITION عمداً — أمر الشراء (`purchase/controls.ts`)
-   * لم يُوسَّع بعد (مراجعة Codex على #998).
-   */
   isOwner?: boolean;
 }) {
   const canDecide = (row: PendingControl) =>
@@ -92,24 +133,74 @@ export function PurchaseApprovalQueue({
   const [decision, setDecision] = useState<Decision>(null);
   const [reason, setReason] = useState("");
   const [confirmedFullReceipt, setConfirmedFullReceipt] = useState(false);
+
+  const isApprovePoRevision =
+    decision?.approve === true &&
+    decision.row.documentType === "PURCHASE_ORDER" &&
+    decision.row.kind === "APPROVE_REVISION";
+  const targetPoId =
+    isApprovePoRevision && decision?.row.documentType === "PURCHASE_ORDER"
+      ? Number(decision.row.purchaseOrderId)
+      : 0;
+  const poDetailQuery = trpc.purchases.get.useQuery(
+    { purchaseOrderId: targetPoId },
+    { enabled: targetPoId > 0 },
+  );
+  const prelimGate = deriveApprovePoRevisionGate({
+    isApprovePoRevision,
+    targetPoId,
+    poDetail: poDetailQuery.data,
+    isLoading: poDetailQuery.isLoading,
+    isFetching: poDetailQuery.isFetching,
+    isError: poDetailQuery.isError,
+    confirmedFullReceipt: confirmedFullReceipt,
+    isCashSourceBlocked: false,
+  });
+  const isPoDetailReady = prelimGate.isPoDetailReady;
+  const isCashIqdPo = prelimGate.isCashIqdPo;
+  const cashSourceState = usePurchaseCashSourceState({
+    branchId: poDetailQuery.data?.branchId,
+    enabled: isCashIqdPo,
+    context: "approval",
+    isCreator:
+      isPoDetailReady &&
+      poDetailQuery.data != null &&
+      currentUserId != null &&
+      Number(poDetailQuery.data.createdBy) === Number(currentUserId),
+  });
+  const { isApproveBlocked } = deriveApprovePoRevisionGate({
+    isApprovePoRevision,
+    targetPoId,
+    poDetail: poDetailQuery.data,
+    isLoading: poDetailQuery.isLoading,
+    isFetching: poDetailQuery.isFetching,
+    isError: poDetailQuery.isError,
+    confirmedFullReceipt: confirmedFullReceipt,
+    isCashSourceBlocked: cashSourceState.isActionBlocked,
+  });
+
   const invalidate = async () => {
     await Promise.all([
       utils.purchases.pendingControls.invalidate(),
       utils.purchases.list.invalidate(),
       utils.purchases.requisitions.invalidate(),
+      utils.purchases.integrityReport.invalidate(),
     ]);
   };
   const close = () => {
     setDecision(null);
     setReason("");
     setConfirmedFullReceipt(false);
+    cashSourceState.reset();
   };
   const success = async (status: string) => {
     notify.ok(
       status === "STALE"
         ? "أُغلق الطلب كمنتهي الصلاحية لأن المستند تغيّر"
         : status === "APPROVED"
-          ? "تم اعتماد الطلب وتطبيقه"
+          ? isCashIqdPo
+            ? "تم اعتماد الفاتورة النقدية واستلام البضاعة وسداد المورد بالكامل"
+            : "تم اعتماد الطلب وتطبيقه"
           : "تم رفض الطلب وتسجيل السبب",
     );
     close();
@@ -126,23 +217,31 @@ export function PurchaseApprovalQueue({
   const pending = orderDecision.isPending || requisitionDecision.isPending;
 
   function submit() {
-    if (!decision || !canDecide(decision.row) || reason.trim().length < 3)
+    if (
+      !decision ||
+      !canDecide(decision.row) ||
+      reason.trim().length < 3 ||
+      isApproveBlocked
+    )
       return;
-    const input = {
+    const baseInput = {
       requestId: Number(decision.row.id),
       decisionKey: decision.decisionKey,
       approve: decision.approve,
       reason: reason.trim(),
-      confirmedFullReceipt:
-        decision.row.documentType === "PURCHASE_ORDER" &&
-        decision.row.kind === "APPROVE_REVISION" &&
-        decision.approve
-          ? confirmedFullReceipt
-          : undefined,
     };
-    if (decision.row.documentType === "PURCHASE_ORDER")
-      orderDecision.mutate(input);
-    else requisitionDecision.mutate(input);
+    if (decision.row.documentType === "PURCHASE_ORDER") {
+      orderDecision.mutate({
+        ...baseInput,
+        confirmedFullReceipt:
+          decision.row.kind === "APPROVE_REVISION" && decision.approve
+            ? confirmedFullReceipt
+            : undefined,
+        cashSource: isCashIqdPo ? cashSourceState.payload : undefined,
+      });
+    } else {
+      requisitionDecision.mutate(baseInput);
+    }
   }
 
   return (
@@ -189,8 +288,7 @@ export function PurchaseApprovalQueue({
           ) : null}
           {queueRows.map((row) => {
             const identityUnavailable = currentUserId == null;
-            const ownerExempt =
-              isOwner === true && row.documentType === "REQUISITION";
+            const ownerExempt = isOwner === true;
             const own =
               !ownerExempt &&
               (identityUnavailable || violatesVisibleSod(row, currentUserId));
@@ -353,6 +451,28 @@ export function PurchaseApprovalQueue({
               onChange={(event) => setReason(event.target.value)}
             />
             <p className="text-xs text-muted-foreground">مطلوب: 3–500 محرف.</p>
+            {isApprovePoRevision && !isPoDetailReady ? (
+              poDetailQuery.isError ? (
+                <ErrorState
+                  message="تعذر تحميل تفاصيل فاتورة الشراء للتحقق من شروط السداد قبل الاعتماد."
+                  onRetry={() => void poDetailQuery.refetch()}
+                />
+              ) : (
+                <LoadingState message="جار التحقق من شروط تسوية الفاتورة ومصدر النقد قبل الاعتماد..." />
+              )
+            ) : null}
+            {isCashIqdPo ? (
+              <div className="space-y-2 rounded-md border bg-muted/30 p-3 text-sm">
+                <p className="font-medium">
+                  فاتورة شراء نقدية ({fmt(poDetailQuery.data?.total ?? 0)} د.ع): الاعتماد يسدد كامل القيمة للمورد فورا وتصبح الذمة المتبقية 0.00.
+                </p>
+                <PurchaseCashSourceField
+                  idPrefix="approval-queue"
+                  context="approval"
+                  state={cashSourceState}
+                />
+              </div>
+            ) : null}
             {decision?.approve &&
             decision.row.documentType === "PURCHASE_ORDER" &&
             decision.row.kind === "APPROVE_REVISION" ? (
@@ -381,10 +501,7 @@ export function PurchaseApprovalQueue({
               disabled={
                 pending ||
                 reason.trim().length < 3 ||
-                (decision?.approve === true &&
-                  decision.row.documentType === "PURCHASE_ORDER" &&
-                  decision.row.kind === "APPROVE_REVISION" &&
-                  !confirmedFullReceipt)
+                isApproveBlocked
               }
               onClick={submit}
             >
@@ -393,7 +510,13 @@ export function PurchaseApprovalQueue({
                 : decision?.approve
                   ? decision.row.documentType === "PURCHASE_ORDER" &&
                     decision.row.kind === "APPROVE_REVISION"
-                    ? "اعتماد وترحيل المخزون"
+                    ? !isPoDetailReady
+                      ? poDetailQuery.isError
+                        ? "تعذر التحقق من الفاتورة"
+                        : "جار التحقق من الفاتورة..."
+                      : isCashIqdPo
+                        ? "اعتماد وترحيل وسداد نقدي فوري"
+                        : "اعتماد وترحيل المخزون"
                     : "اعتماد وتطبيق"
                   : "تأكيد الرفض"}
             </Button>

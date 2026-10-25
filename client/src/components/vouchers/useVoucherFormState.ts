@@ -57,17 +57,32 @@ export function useVoucherFormState(props: VoucherFormProps) {
     }
   }, [method]);
 
+  const queryParams = new URLSearchParams(search);
   const seededCustomerId = isReceipt
-    ? Number(new URLSearchParams(search).get("customerId")) || null
+    ? Number(queryParams.get("customerId")) || null
     : null;
+  const seededSupplierId =
+    !isReceipt &&
+    (queryParams.get("partyType") === "SUPPLIER" ||
+      queryParams.has("supplierId"))
+      ? Number(queryParams.get("partyId") || queryParams.get("supplierId")) ||
+        null
+      : null;
 
   const [partyType, setPartyType] = useState<
     "CUSTOMER" | "SUPPLIER" | "DELIVERY_PARTY" | "OTHER"
-  >(seededCustomerId ? "CUSTOMER" : "OTHER");
+  >(
+    seededCustomerId
+      ? "CUSTOMER"
+      : seededSupplierId ||
+          (!isReceipt && queryParams.get("partyType") === "SUPPLIER")
+        ? "SUPPLIER"
+        : "OTHER",
+  );
 
   const [customerId, setCustomerId] = useState<number | null>(seededCustomerId);
 
-  const [supplierId, setSupplierId] = useState<number | null>(null);
+  const [supplierId, setSupplierId] = useState<number | null>(seededSupplierId);
 
   const [deliveryPartyId, setDeliveryPartyId] = useState<number | null>(null);
 

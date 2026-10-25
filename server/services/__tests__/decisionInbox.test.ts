@@ -396,7 +396,10 @@ describe("decisions.inbox — الصف يعرض ما يقرر عليه", () => {
     expect(row!.amount).toBe("20000.00");
     expect(row!.currency).toBe("IQD");
     expect(row!.href).toBe(`/purchases/${po.purchaseOrderId}`);
-    expect(row!.summaryItems).toHaveLength(2);
+    expect(row!.summaryItems).toHaveLength(3);
+    expect(
+      row!.summaryItems.some((i) => i.label.includes("تسوية الفاتورة:")),
+    ).toBe(true);
     const paper = row!.summaryItems.find((i) => i.label.includes("ورق A4"));
     expect(paper).toMatchObject({
       unitPrice: "200.00",
@@ -440,7 +443,10 @@ describe("decisions.inbox — الصف يعرض ما يقرر عليه", () => {
       (r) => r.kind === "purchase.order.control" && r.id === submitted.requestId,
     );
     expect(row).toBeDefined();
-    expect(row!.summaryItems).toHaveLength(2);
+    expect(row!.summaryItems).toHaveLength(3);
+    expect(
+      row!.summaryItems.some((i) => i.label.includes("تسوية الفاتورة:")),
+    ).toBe(true);
     expect(row!.operationalContext).toBeDefined();
     expect(row!.operationalContext!.badgeLabel).toBe("تفصيل الفاتورة والشحن");
     expect(row!.operationalContext!.fundingSource?.label).toContain("أدمن منشئ");
