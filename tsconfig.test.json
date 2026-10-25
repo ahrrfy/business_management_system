@@ -1,0 +1,23 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "client/src/**/*",
+    "shared/**/*",
+    "server/**/*",
+    "drizzle/**/*",
+    "scripts/__tests__/**/*",
+    "tests/**/*.test.ts",
+    "tests/**/*.spec.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "build",
+    "dist",
+    "_legacy",
+    "expo",
+    "android-native"
+  ],
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/typescript/tsbuildinfo.test"
+  }
+}
