@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   isStandalonePublicRoute,
+  resolvePublicRootTarget,
   shouldBootStandalonePublicShell,
 } from "../BootstrapApp";
 
@@ -41,6 +42,33 @@ describe("BootstrapApp public/ERP shell isolation", () => {
     expect(shouldBootStandalonePublicShell("/store", "localhost")).toBe(true);
     expect(shouldBootStandalonePublicShell("/", "localhost")).toBe(false);
     expect(shouldBootStandalonePublicShell("/pos", "localhost")).toBe(false);
+  });
+
+  it("preserves courier-first root redirect on the public host while sending anonymous/other users to /store", () => {
+    expect(resolvePublicRootTarget(null)).toBe("/store");
+    expect(resolvePublicRootTarget(undefined)).toBe("/store");
+    expect(
+      resolvePublicRootTarget({ role: "admin", isOwner: true, courierShellOnly: false }),
+    ).toBe("/store");
+    expect(
+      resolvePublicRootTarget({ role: "cashier", isOwner: false, courierShellOnly: false }),
+    ).toBe("/store");
+    expect(
+      resolvePublicRootTarget({ courierShellOnly: true, isOwner: false }),
+    ).toBe("/my-deliveries");
+    expect(
+      resolvePublicRootTarget({
+        role: "courier",
+        operationPolicyEnabled: false,
+        isOwner: false,
+      }),
+    ).toBe("/my-deliveries");
+    expect(
+      resolvePublicRootTarget({
+        courierShellOnly: true,
+        isOwner: true,
+      }),
+    ).toBe("/store");
   });
 
   it("enforces zero static imports of ERP App/CommandPalette/Realtime in main.tsx and BootstrapApp.tsx", () => {

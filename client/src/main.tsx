@@ -170,34 +170,75 @@ queryClient.getMutationCache().subscribe((event) => {
   }
 });
 
-// ش١ أوفلاين: عند عودة الاتصال أبطل الاستعلامات مرة واحدة كي تنتعش الشاشات الراكدة
-// (refetchOnReconnect معطَّل أعلاه عمداً — الإنعاش هنا مضبوط بانتقال الحالة الفعلي لا بحدث
-// المتصفح غير الموثوق). في الشريحة ٣ سيسبق تفريغُ طابور المبيعات هذا الإبطال.
-initConnectivity({ onBackOnline: () => void queryClient.invalidateQueries() });
-
 let erpRealtimeBootPromise: Promise<void> | null = null;
+let erpRealtimeBooted = false;
+let erpRealtimeRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let stopFinancialRefresh: (() => void) | null = null;
 
-function ensureErpRealtimeBooted() {
-  if (erpRealtimeBootPromise) return;
+const MAX_REALTIME_BOOT_RETRIES = 3;
+const REALTIME_BOOT_RETRY_BASE_MS = 1500;
+
+function clearErpRealtimeRetryTimer() {
+  if (erpRealtimeRetryTimer !== null) {
+    clearTimeout(erpRealtimeRetryTimer);
+    erpRealtimeRetryTimer = null;
+  }
+}
+
+function isCurrentlyOnErpRoute(): boolean {
+  if (typeof window === "undefined") return false;
+  return !shouldBootStandalonePublicShell(
+    window.location.pathname,
+    window.location.hostname,
+  );
+}
+
+function ensureErpRealtimeBooted(attempt = 0) {
+  if (erpRealtimeBooted || erpRealtimeBootPromise) return;
+  clearErpRealtimeRetryTimer();
   erpRealtimeBootPromise = Promise.all([
     import("@/lib/realtime"),
     import("@/lib/realtime/financialQueries"),
   ])
     .then(([rt, fin]) => {
+      erpRealtimeBooted = true;
       stopFinancialRefresh = fin.installFinancialQueryRefresh(queryClient);
       rt.initRealtime();
     })
     .catch((err) => {
       erpRealtimeBootPromise = null;
       if (import.meta.env.DEV) console.error("[ErpRealtimeBoot]", err);
+      if (attempt < MAX_REALTIME_BOOT_RETRIES && isCurrentlyOnErpRoute()) {
+        const delayMs = REALTIME_BOOT_RETRY_BASE_MS * 2 ** attempt;
+        erpRealtimeRetryTimer = setTimeout(() => {
+          erpRealtimeRetryTimer = null;
+          if (isCurrentlyOnErpRoute()) {
+            ensureErpRealtimeBooted(attempt + 1);
+          }
+        }, delayMs);
+      }
     });
 }
 
+// ش١ أوفلاين: عند عودة الاتصال أبطل الاستعلامات مرة واحدة كي تنتعش الشاشات الراكدة
+// وأعد محاولة تشغيل قناة اللحظية إن تعثّر استيراد حزمتها أثناء انقطاع الشبكة.
+// (refetchOnReconnect معطَّل أعلاه عمداً — الإنعاش هنا مضبوط بانتقال الحالة الفعلي لا بحدث
+// المتصفح غير الموثوق). في الشريحة ٣ سيسبق تفريغُ طابور المبيعات هذا الإبطال.
+initConnectivity({
+  onBackOnline: () => {
+    void queryClient.invalidateQueries();
+    if (!erpRealtimeBooted && isCurrentlyOnErpRoute()) {
+      ensureErpRealtimeBooted(0);
+    }
+  },
+});
+
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
+    clearErpRealtimeRetryTimer();
     stopFinancialRefresh?.();
     stopFinancialRefresh = null;
+    erpRealtimeBooted = false;
     erpRealtimeBootPromise = null;
   });
 }
@@ -208,7 +249,10 @@ function ErpRealtimeBoot() {
   useEffect(() => {
     const hostname =
       typeof window !== "undefined" ? window.location.hostname : "";
-    if (shouldBootStandalonePublicShell(loc, hostname)) return;
+    if (shouldBootStandalonePublicShell(loc, hostname)) {
+      clearErpRealtimeRetryTimer();
+      return;
+    }
     ensureErpRealtimeBooted();
   }, [loc]);
   return null;
