@@ -8,13 +8,15 @@
  *   وصولُ الراوتر مباشرةً إلى الجداول أو قاعدة البيانات يخلط التحقّق الشكليّ بمنطق الأعمال
  *   ويمنع إعادة استعمال المنطق من القنوات الأخرى (الجوال الأصيل / الأوفلاين / الوظائف الخلفية).
  *
- * ما يُحسَب انتهاكاً:
- *   • استيرادٌ وقت التشغيل (`import ... from "..."` أو `import("...")`) في `server/routers/**`
- *     (باستثناء `__tests__` و`*.test.ts`) يستهدف:
+ * ما يُحسَب انتهاكاً (بتحليل شجرة AST الرسمية لمترجم TypeScript):
+ *   • استيرادٌ أو إعادةُ تصديرٍ وقت التشغيل (`ImportDeclaration` / `ExportDeclaration` غير الصرف،
+ *     أو `import("...")` الديناميكيّ `CallExpression`) في `server/routers/**` (باستثناء `__tests__` و`*.test.ts`)
+ *     يستهدف:
  *       - `drizzle/schema` أو أيّ `drizzle/*Schema`
  *       - `server/db` (`../db`, `../../db`, إلخ)
- *   • استيرادُ الأنواع الصرف (`import type ...` أو `import { type X, type Y }`) **مسموحٌ**
- *     لأنّه يُمحى كليّاً عند الترجمة ولا ينشئ تبعيةَ تشغيلٍ على طبقة البيانات.
+ *   • استيرادُ الأنواع الممحيّ عند الترجمة (`import type ...`، `import { type X }`، `export type { X }`،
+ *     أو تعبيرات الأنواع `type T = import("...").Invoice` / `typeof import("...")` من نوع `ImportTypeNode`)
+ *     **مسموحٌ** لأنّه يُمحى كليّاً ولا ينشئ تبعيةَ تشغيلٍ على طبقة البيانات.
  *
  * المِسنَنة تنازلية لكلّ ملفّ (`scripts/ratchet-core.mjs` + `scripts/layer-imports-baseline.json`):
  *   • جميع الراوترات النظيفة مقفلة عند ٠ استيراد مباشر.
@@ -23,6 +25,7 @@
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { assertMonotonicDescent, reportSlack } from "./ratchet-core.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -34,54 +37,6 @@ const BASELINE_REL = "scripts/layer-imports-baseline.json";
 const SELFTEST_ONLY = process.argv.includes("--selftest");
 const UPDATE_BASELINE = process.argv.includes("--update-baseline");
 const REPORT_ONLY = process.argv.includes("--report");
-
-/**
- * يجرّد التعليقات السطرية والكتلية مع الحفاظ على النصوص الحرفية (`"..."` / `'...'` / `` `...` ``)
- * حتى لا تُبتلع المسارات أو علامات الاقتباس.
- */
-export function stripCommentsPreservingStrings(source) {
-  let out = "";
-  let i = 0;
-  const n = source.length;
-  while (i < n) {
-    const ch = source[i];
-    const next = source[i + 1];
-    if (ch === "/" && next === "/") {
-      i += 2;
-      while (i < n && source[i] !== "\n") i += 1;
-      continue;
-    }
-    if (ch === "/" && next === "*") {
-      i += 2;
-      while (i < n && !(source[i] === "*" && source[i + 1] === "/")) {
-        if (source[i] === "\n") out += "\n";
-        i += 1;
-      }
-      i += 2;
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === "`") {
-      const quote = ch;
-      out += ch;
-      i += 1;
-      while (i < n) {
-        const c = source[i];
-        out += c;
-        i += 1;
-        if (c === "\\" && i < n) {
-          out += source[i];
-          i += 1;
-          continue;
-        }
-        if (c === quote) break;
-      }
-      continue;
-    }
-    out += ch;
-    i += 1;
-  }
-  return out;
-}
 
 /** هل المسار المستورَد يستهدف طبقة المخطّط (`drizzle/*Schema`) أو طبقة الاتّصال (`server/db`)؟ */
 export function isForbiddenDataLayerSpecifier(specifier) {
@@ -101,59 +56,78 @@ export function isForbiddenDataLayerSpecifier(specifier) {
   return false;
 }
 
-/** هل عبارة الاستيراد تقتصر على أنواع TypeScript فقط (تُمحى عند الترجمة)؟ */
-function isTypeOnlyImportClause(clauseRaw) {
-  const clause = String(clauseRaw ?? "").trim();
-  if (!clause) return false;
-  if (/^type\s+/.test(clause)) return true;
-  // import { type A, type B as C } from "..."
-  const braceMatch = clause.match(/^\{([\s\S]*)\}$/);
-  if (!braceMatch) return false;
-  const specifiers = braceMatch[1]
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  if (specifiers.length === 0) return true;
-  return specifiers.every((s) => /^type\s+[A-Za-z0-9_$]/.test(s));
+/** هل جملة `ImportDeclaration` تقتصر على أنواع TypeScript الممحيّة فقط؟ */
+function isTypeOnlyImportDeclaration(node) {
+  const clause = node.importClause;
+  if (!clause) return false; // side-effect import "..."
+  if (clause.isTypeOnly) return true;
+  if (clause.name) return false; // default value import
+  const bindings = clause.namedBindings;
+  if (!bindings) return true;
+  if (ts.isNamespaceImport(bindings)) return false; // import * as ns
+  if (ts.isNamedImports(bindings)) {
+    return bindings.elements.every((el) => el.isTypeOnly);
+  }
+  return false;
+}
+
+/** هل جملة `ExportDeclaration` ذات `moduleSpecifier` تقتصر على أنواع TypeScript الممحيّة فقط؟ */
+function isTypeOnlyExportDeclaration(node) {
+  if (node.isTypeOnly) return true;
+  const clause = node.exportClause;
+  if (!clause) return false; // export * from "..."
+  if (ts.isNamespaceExport(clause)) return false; // export * as ns from "..."
+  if (ts.isNamedExports(clause)) {
+    return clause.elements.every((el) => el.isTypeOnly);
+  }
+  return false;
 }
 
 /**
- * يستخرج قائمة المسارات المنتهِكة لحدود الطبقات في مصدر راوتر واحد.
+ * يستخرج قائمة المسارات المنتهِكة لحدود الطبقات في مصدر راوتر واحد عبر شجرة AST لـ TypeScript.
  * @returns {string[]}
  */
-export function detectRouterDataLayerImports(source) {
-  const clean = stripCommentsPreservingStrings(source);
+export function detectRouterDataLayerImports(source, fileName = "router.ts") {
+  const sf = ts.createSourceFile(
+    fileName,
+    String(source ?? ""),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
   const violations = [];
 
-  // 1) import <clause> from "<spec>"
-  const staticImportRe = /\bimport\s+([\s\S]*?)\s+from\s*["'`]([^"'`]+)["'`]/g;
-  for (const match of clean.matchAll(staticImportRe)) {
-    const clause = match[1];
-    const spec = match[2];
-    if (isTypeOnlyImportClause(clause)) continue;
-    if (isForbiddenDataLayerSpecifier(spec)) {
-      violations.push(spec);
+  const visit = (node) => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)) {
+      const spec = node.moduleSpecifier.text;
+      if (!isTypeOnlyImportDeclaration(node) && isForbiddenDataLayerSpecifier(spec)) {
+        violations.push(spec);
+      }
+    } else if (
+      ts.isExportDeclaration(node) &&
+      node.moduleSpecifier &&
+      ts.isStringLiteralLike(node.moduleSpecifier)
+    ) {
+      const spec = node.moduleSpecifier.text;
+      if (!isTypeOnlyExportDeclaration(node) && isForbiddenDataLayerSpecifier(spec)) {
+        violations.push(spec);
+      }
+    } else if (
+      ts.isCallExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+      node.arguments.length >= 1 &&
+      ts.isStringLiteralLike(node.arguments[0])
+    ) {
+      // استيرادٌ ديناميكيّ وقت التشغيل `import("...")` — بينما `type T = import("...").X` هو ImportTypeNode ولا يمرّ هنا.
+      const spec = node.arguments[0].text;
+      if (isForbiddenDataLayerSpecifier(spec)) {
+        violations.push(spec);
+      }
     }
-  }
+    ts.forEachChild(node, visit);
+  };
 
-  // 2) import "<spec>" (side-effect)
-  const sideEffectImportRe = /\bimport\s*["'`]([^"'`]+)["'`]/g;
-  for (const match of clean.matchAll(sideEffectImportRe)) {
-    const spec = match[1];
-    if (isForbiddenDataLayerSpecifier(spec)) {
-      violations.push(spec);
-    }
-  }
-
-  // 3) await import("<spec>") / import("<spec>")
-  const dynamicImportRe = /\bimport\s*\(\s*["'`]([^"'`]+)["'`]\s*\)/g;
-  for (const match of clean.matchAll(dynamicImportRe)) {
-    const spec = match[1];
-    if (isForbiddenDataLayerSpecifier(spec)) {
-      violations.push(spec);
-    }
-  }
-
+  visit(sf);
   return violations;
 }
 
@@ -203,8 +177,18 @@ function runSelfTest({ quiet = false } = {}) {
     1,
   );
   eq(
-    "يمسك الاستيراد الديناميكي import('../db')",
+    "يمسك الاستيراد الديناميكي وقت التشغيل import('../db')",
     detectRouterDataLayerImports('const mod = await import("../db");').length,
+    1,
+  );
+  eq(
+    "يمسك الاستيراد الديناميكي المتسلسل import('../db').then(...)",
+    detectRouterDataLayerImports('import("../db").then((m) => m);').length,
+    1,
+  );
+  eq(
+    "يمسك إعادة التصدير وقت التشغيل export { invoices } from '../../drizzle/schema'",
+    detectRouterDataLayerImports('export { invoices } from "../../drizzle/schema";').length,
     1,
   );
   eq(
@@ -218,14 +202,26 @@ function runSelfTest({ quiet = false } = {}) {
     0,
   );
   eq(
+    "يسمح بتعبير النوع الممحيّ type Invoice = import('../../drizzle/schema').Invoice",
+    detectRouterDataLayerImports(
+      'type Invoice = import("../../drizzle/schema").Invoice;\ntype SchemaMod = typeof import("../db");',
+    ).length,
+    0,
+  );
+  eq(
+    "يسمح بـ export type الصرف",
+    detectRouterDataLayerImports('export type { Invoice } from "../../drizzle/schema";').length,
+    0,
+  );
+  eq(
     "يمسك الاستيراد المختلط (نوع + قيمة وقت تشغيل)",
     detectRouterDataLayerImports('import { type Invoice, invoices } from "../../drizzle/schema";').length,
     1,
   );
   eq(
-    "يتجاهل التعليقات السطرية والكتلية",
+    "يتجاهل التعليقات السطرية والكتلية والنصوص الحرفية",
     detectRouterDataLayerImports(
-      '// import { getDb } from "../db";\n/* import { invoices } from "../../drizzle/schema"; */',
+      '// import { getDb } from "../db";\n/* import { invoices } from "../../drizzle/schema"; */\nconst s = \'import("../db")\';',
     ).length,
     0,
   );
@@ -257,7 +253,7 @@ function main() {
     routerCount += 1;
     const rel = path.relative(REPO_ROOT, fullPath).replace(/\\/g, "/");
     const src = readFileSync(fullPath, "utf8");
-    const hits = detectRouterDataLayerImports(src);
+    const hits = detectRouterDataLayerImports(src, rel);
     if (hits.length > 0) {
       actualMap.set(rel, hits.length);
       detailByFile.set(rel, hits);
@@ -308,51 +304,42 @@ function main() {
     }
   }
 
-  const totalActual = sortedEntries.reduce((s, [, n]) => s + n, 0);
-  const cleanRouters = routerCount - sortedEntries.length;
-
   if (REPORT_ONLY) {
+    const total = sortedEntries.reduce((s, [, n]) => s + n, 0);
     console.log(
-      `تقرير حدود الطبقات: ${cleanRouters}/${routerCount} راوتر نظيف تماماً · ${sortedEntries.length} راوتر إرثي (${totalActual} استيراد).`,
+      `تقرير حدود الطبقات (server/routers/**): ${routerCount - sortedEntries.length}/${routerCount} راوتر نظيف (٠ استيراد مباشر) · ${sortedEntries.length} راوتر إرثي (${total} استيراد).`,
     );
-    for (const [rel, count] of sortedEntries) {
-      console.log(`  - ${rel}: ${count}`);
-    }
     return;
   }
 
-  if (!descent.ok) {
-    console.error(descent.message);
-    process.exit(1);
-  }
-
-  if (violations.length > 0) {
-    console.error(
-      `✗ انتهاك حدود الطبقات في ${violations.length} راوتر (CLAUDE.md §٢: الراوتر لا يستورد drizzle/schema أو server/db مباشرةً):\n`,
-    );
-    for (const v of violations) {
+  if (!descent.ok || violations.length > 0) {
+    if (!descent.ok) {
+      console.error(descent.message);
+    }
+    if (violations.length > 0) {
       console.error(
-        `  - ${v.rel}: ${v.count} استيراد (الأساس المسموح: ${v.allowed}) ← [${v.specs.join(", ")}]`,
+        `✗ انتهاك حدود الطبقات في server/routers/** (${violations.length} راوتر يتجاوز خطّ الأساس):`,
+      );
+      for (const v of violations) {
+        console.error(
+          `  - ${v.rel}: ${v.count} استيراد مباشر (المسموح في الأساس: ${v.allowed}) ← [${v.specs.join(", ")}]`,
+        );
+      }
+      console.error(
+        "\nالقاعدة (CLAUDE.md §٢): الراوتر لا يستورد drizzle/*Schema ولا server/db وقت التشغيل؛ انقل منطق الاستعلام/المعاملة إلى server/services/** (واستعمل import type عند الحاجة للأنواع فقط).",
       );
     }
-    console.error(
-      `\nالإصلاح: انقل استعلامات/تعديلات الجداول إلى خدمةٍ في server/services/** تستقبل Actor، واستورد الخدمة في الراوتر (أو استعمل import type للأنواع فقط).`,
-    );
     process.exit(1);
   }
 
-  const slack = reportSlack({
-    baseline,
-    actual: actualMap,
-    label: "حدود طبقات الراوترات",
-    updateHint: "node scripts/check-layer-imports.mjs --update-baseline",
-  });
-
+  const slack = reportSlack({ actual: actualMap, baseline });
+  const totalFrozen = Object.values(baseline).reduce((s, n) => s + Number(n), 0);
   console.log(
-    `✓ حدود طبقات الراوترات: ${cleanRouters}/${routerCount} راوتر عند ٠ استيراد مباشر (${sortedEntries.length} إرثي مجمَّد عند ${totalActual}).`,
+    `✓ حدود طبقات الراوترات: ${routerCount - sortedEntries.length}/${routerCount} راوتر عند ٠ استيراد مباشر (${sortedEntries.length} إرثي مجمَّد عند ${totalFrozen}).`,
   );
-  if (!descent.skipped) console.log(descent.message);
-  if (slack.total > 0) console.log(slack.message);
+  if (slack) {
+    console.log(slack);
+  }
 }
 
 main();

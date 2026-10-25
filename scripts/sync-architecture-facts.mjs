@@ -77,6 +77,39 @@ function countFiles(rootDir, predicate, { skipTestsDir = false } = {}) {
   return count;
 }
 
+export function extractUnitTestAllowlistCount(unitCfgSrc) {
+  const stripped = String(unitCfgSrc ?? "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+
+  const collectTestPaths = (body) => {
+    const unique = new Set();
+    for (const m of body.matchAll(/["'`]([^"'`\r\n]+\.(?:test|spec)\.[cm]?[jt]sx?)["'`]/g)) {
+      unique.add(m[1]);
+    }
+    return unique.size;
+  };
+
+  const inlineMatch = stripped.match(/\binclude\s*:\s*\[([\s\S]*?)\]/);
+  if (inlineMatch) {
+    return collectTestPaths(inlineMatch[1]);
+  }
+
+  const refMatch = stripped.match(/\binclude\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*)/);
+  if (refMatch) {
+    const ident = refMatch[1].replace(/\$/g, "\\$");
+    const declRe = new RegExp(
+      `\\b(?:const|let|var)\\s+${ident}(?:\\s*:[^=]+)?\\s*=\\s*\\[([\\s\\S]*?)\\]`,
+    );
+    const declMatch = stripped.match(declRe);
+    if (declMatch) {
+      return collectTestPaths(declMatch[1]);
+    }
+  }
+
+  return 0;
+}
+
 export function collectLiveArchitectureFacts(repoRoot = REPO_ROOT) {
   // 1) صفحات الواجهة client/src/pages/**/*.tsx (دون الاختبارات)
   const pages = countFiles(
@@ -136,10 +169,7 @@ export function collectLiveArchitectureFacts(repoRoot = REPO_ROOT) {
 
   // 8) ملفات اختبارات الوحدة المسجّلة في vitest.unit.config.ts
   const unitCfgSrc = readFileSync(path.join(repoRoot, "vitest.unit.config.ts"), "utf8");
-  const includeBlockMatch = unitCfgSrc.match(/include\s*:\s*\[([\s\S]*?)\]/);
-  const unitTestFiles = includeBlockMatch
-    ? [...includeBlockMatch[1].matchAll(/["']([^"']+\.(?:test|spec)\.[cm]?[jt]sx?)["']/g)].length
-    : 0;
+  const unitTestFiles = extractUnitTestAllowlistCount(unitCfgSrc);
 
   // 9) شاردات الاختبار في .github/workflows/ci.yml
   const ciWorkflowSrc = readFileSync(path.join(repoRoot, ".github", "workflows", "ci.yml"), "utf8");
@@ -231,7 +261,13 @@ export function evaluateArchitectureDrift(live, doc) {
   checkTolerance("عدد الحرّاس (check:guards)", live.guardsCount, doc.guardsCount);
   checkTolerance("ملفات الاختبار (§٣)", live.testFiles, doc.testFilesSection3);
   checkTolerance("ملفات الاختبار (§٥)", live.testFiles, doc.testFilesSection5);
-  checkTolerance("اختبارات الوحدة (vitest.unit.config.ts)", live.unitTestFiles, doc.unitTestFiles);
+  if (live.unitTestFiles <= 0) {
+    issues.push(
+      "اختبارات الوحدة (vitest.unit.config.ts): تعذّر استخراج قائمة الملفات المسموحة (العدد ٠) — تحقّق من تعريف UNIT_TEST_FILES / include.",
+    );
+  } else {
+    checkTolerance("اختبارات الوحدة (vitest.unit.config.ts)", live.unitTestFiles, doc.unitTestFiles);
+  }
 
   if (
     Number.isFinite(doc.testFilesSection3) &&
@@ -329,6 +365,24 @@ function runSelfTest({ quiet = false } = {}) {
 
   assert(toArabicDigits(591) === "٥٩١", "تحويل الأرقام إلى العربية الشرقية");
   assert(parseAnyDigits("١٠٨٧٩") === 10879, "تحليل الأرقام العربية الشرقية");
+
+  const refUnitCfg = [
+    "export const UNIT_TEST_FILES: string[] = [",
+    '  "client/src/a.test.ts",',
+    '  // "client/src/commented.test.ts",',
+    '  "server/b.test.tsx",',
+    "];",
+    "export default defineConfig({ test: { include: UNIT_TEST_FILES } });",
+  ].join("\n");
+  assert(
+    extractUnitTestAllowlistCount(refUnitCfg) === 2,
+    "extractUnitTestAllowlistCount يقرأ المصفوفة المرجعية UNIT_TEST_FILES ويتجاهل التعليقات",
+  );
+  const inlineUnitCfg = 'export default defineConfig({ test: { include: ["shared/c.test.ts"] } });';
+  assert(
+    extractUnitTestAllowlistCount(inlineUnitCfg) === 1,
+    "extractUnitTestAllowlistCount يدعم المصفوفة المباشرة include: [...]",
+  );
 
   const sampleStale = [
     "client/src/pages (٢٢٥ صفحة، wouter + TanStack Query)",
