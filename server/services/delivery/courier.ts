@@ -83,6 +83,7 @@ import {
   deliveryFeeAccrualIntent,
 } from "./posting";
 import { consignmentShortfallAssignedSql } from "./openParcelPredicates";
+import { repairDeliveryCustodyFromRecordedEventsTx } from "./custody";
 import {
   isShortfallReason,
   SHORTFALL_REASONS,
@@ -1415,6 +1416,7 @@ export async function confirmConsignmentDelivery(
           }),
         });
       }
+      await repairDeliveryCustodyFromRecordedEventsTx(tx, Number(cn.id));
       return {
         consignmentId: Number(cn.id),
         consignmentNumber: cn.consignmentNumber,
@@ -1423,6 +1425,7 @@ export async function confirmConsignmentDelivery(
       };
     }
     if (cn.parcelStatus === "DELIVERED" && cn.courierDeliveredAt) {
+      await repairDeliveryCustodyFromRecordedEventsTx(tx, Number(cn.id));
       return {
         consignmentId: Number(cn.id),
         consignmentNumber: cn.consignmentNumber,
@@ -2087,8 +2090,10 @@ export async function transitionConsignmentParcel(
       input.clientRequestId,
       payloadHash,
     );
-    if (replayAfterLock != null)
+    if (replayAfterLock != null) {
+      await repairDeliveryCustodyFromRecordedEventsTx(tx, Number(cn.id));
       return { consignmentId: replayAfterLock, replay: true };
+    }
     assertParcelTransition(cn.parcelStatus, input.toStatus);
     const now = new Date();
     const reason = input.reason?.trim() || null;

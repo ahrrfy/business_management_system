@@ -1410,7 +1410,6 @@ export async function loadWorkflowPreviewTx(
   const openCustodyBaseQuantity =
     custodyTotals.prepared +
     custodyTotals.carrier +
-    custodyTotals.delivered +
     custodyTotals.returned +
     custodyTotals.customerOwned +
     custodyTotals.rework;

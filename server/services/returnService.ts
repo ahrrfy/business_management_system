@@ -117,6 +117,7 @@ import {
 import { withTx, type Actor } from "./tx";
 import { reverseInvoiceSaleInTx } from "./reversal/invoiceReversal"; // ق٧: المرتجعُ الكامل يمرّ بمحرّك العكس
 import { reconcileDeliveryOnReturnTx } from "./delivery/returnReconciliation";
+import { repairDeliveryCustodyFromRecordedEventsTx } from "./delivery/custody";
 import { deliveryCustodyReturnIntent } from "./delivery/posting";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
@@ -651,6 +652,15 @@ export async function returnSaleInTx(
               .limit(1)
           )[0]
         : undefined;
+      const replayConsignments = await tx
+        .select({ id: deliveryConsignments.id })
+        .from(deliveryConsignments)
+        .where(eq(deliveryConsignments.invoiceId, input.invoiceId));
+      for (const consignment of replayConsignments)
+        await repairDeliveryCustodyFromRecordedEventsTx(
+          tx,
+          Number(consignment.id),
+        );
       return {
         invoiceId: input.invoiceId,
         returnedTotal: replayOperationTotal.toFixed(2),
@@ -968,6 +978,21 @@ export async function returnSaleInTx(
         why: `الفاتورة ${Number(input.invoiceId)} اختفت بين فتح الشاشة وتنفيذ المرتجع — أُلغيت أو حُذفت في هذه اللحظة`,
         doThis:
           "حدّث قائمة المبيعات وابحث عن الفاتورة برقمها؛ فإن لم تظهر فلا مرتجعَ عليها وأبلِغ المدير بما استلمه الزبون",
+      }),
+    });
+  }
+  if (
+    inv.sourceType === "WORKORDER" &&
+    !options.componentRights &&
+    !input.internalCorrectionReversal
+  ) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ مرتجع بيع مباشر لأمر الشغل",
+        why: "ناتج أمر الشغل مخصّص للعميل ومواده صُرفت أثناء التنفيذ؛ المرتجع المباشر لا يحدد هل الناتج سيعاد إرساله أو يعاد عمله أو يُعتمد هالكاً",
+        doThis:
+          "افتح النقص والمعالجة واختر المصير الفعلي للناتج والمواد ثم سوّ حق العميل؛ يبقى مسار حقوق المكونات المعتمد وتصحيح الفاتورة الداخلي متاحين",
       }),
     });
   }

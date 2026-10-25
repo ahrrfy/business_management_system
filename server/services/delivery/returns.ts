@@ -29,6 +29,7 @@ import type { DeliveryTxActor } from "./types";
 import type { Tx } from "../../db";
 import { assertStandaloneConsignmentTx } from "./shipments";
 import { physicalReturnReceiptTx } from "./workflow/returnReceipt";
+import { repairDeliveryCustodyFromRecordedEventsTx } from "./custody";
 
 /** Existing held-fee refund, shared when the original fee invoice has left a shipment. Caller prelocks cash source then party/CNs. */
 export async function refundHeldDeliveryFeeForReturnTx(
@@ -265,9 +266,20 @@ export async function returnConsignment(
       const existingId = await checkIdempotency(tx, "delivery.return", actor.clientRequestId, payloadHash);
       if (existingId != null) {
         if (Number(existingId) !== Number(consignmentId)) throw new TRPCError({ code: "CONFLICT", message: "مفتاح الإرجاع مرتبط بإرسالية أخرى" });
+        await repairDeliveryCustodyFromRecordedEventsTx(tx, consignmentId);
         return { consignmentId, reversed: true as const, idempotentReplay: true as const };
       }
     }
+    if (sourcePreview?.sourceType === "WORK_ORDER")
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذّر تنفيذ مرتجع بيع مباشر لأمر الشغل",
+          why: "ناتج أمر الشغل مخصّص للعميل ومواده صُرفت أثناء التنفيذ؛ إلغاء الأمر هنا سيعكس البيع ويبقي تكلفة التنفيذ بلا مصير موثّق",
+          doThis:
+            "استعمل مسار النقص والمعالجة وحدد المصير الفعلي: إعادة إرسال الناتج نفسه، أو إعادة عمل، أو اعتماد هدر/تلف ثم تسوية حق العميل",
+        }),
+      });
     const invPreview = (
       await tx.select({ paidAmount: invoices.paidAmount }).from(invoices)
         .where(eq(invoices.id, Number(cnPreview.invoiceId))).limit(1)
@@ -318,7 +330,10 @@ export async function returnConsignment(
       throw new TRPCError({ code: "CONFLICT", message: "تغيّرت أطراف الإرسالية أثناء الإرجاع؛ أعد المحاولة" });
     }
     const replayAfterLock = await checkIdempotency(tx, "delivery.return", actor.clientRequestId, payloadHash);
-    if (replayAfterLock != null) return { consignmentId, reversed: true as const, idempotentReplay: true as const };
+    if (replayAfterLock != null) {
+      await repairDeliveryCustodyFromRecordedEventsTx(tx, consignmentId);
+      return { consignmentId, reversed: true as const, idempotentReplay: true as const };
+    }
     if (cn.status !== "DISPATCHED" || cn.moneyStatus === "PARTIAL" || cn.moneyStatus === "SETTLED") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "يُرجَع فقط طرد لم يُحصَّل منه شيء؛ بعد التحصيل استعمل مرتجعات البيع" });
     }

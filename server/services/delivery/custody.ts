@@ -1,6 +1,7 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import {
   deliveryConsignments,
+  deliveryEvents,
   deliveryShipmentMembers,
   inventoryMovements,
   invoiceItemBundleComponents,
@@ -18,6 +19,7 @@ import {
   type DeliveryCustodyItem,
   DELIVERY_CUSTODY_STATES,
 } from "../../../drizzle/fulfillmentSchema";
+import { componentRightsAdjustments } from "../../../drizzle/fulfillmentRightsSchema";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { fulfillmentError } from "../fulfillment/core";
@@ -27,7 +29,7 @@ export type DeliveryCustodyState = (typeof DELIVERY_CUSTODY_STATES)[number];
 
 interface InitializeCustodyInput {
   consignmentId: number;
-  actorUserId: number;
+  actorUserId: number | null;
   operationId: string;
   leaderConsignmentId?: number;
 }
@@ -431,7 +433,7 @@ export interface TransitionDeliveryCustodyInput {
   eventKey: string;
   eventType: string;
   evidence: Record<string, unknown>;
-  actorUserId: number;
+  actorUserId: number | null;
 }
 
 /** Quantity-only custody transition.  Stock restoration remains a separate valued command. */
@@ -543,4 +545,322 @@ export async function transitionDeliveryCustodyTx(
     .where(eq(deliveryCustodyItems.id, row.id))
     .limit(1);
   return { item: updated!, eventId, replay: false };
+}
+
+type DeliveryCustodyLifecycleEvent = {
+  eventId: number;
+  eventKey: string;
+  consignmentId: number;
+  eventType: string;
+  actorUserId?: number | null;
+  payload?: Record<string, unknown>;
+};
+
+type CustodyLifecycleRule = {
+  fromStates: DeliveryCustodyState[];
+  toState: DeliveryCustodyState;
+};
+
+const COMMERCIAL_RETURN_EVENT_TYPES = new Set([
+  "RETURNED",
+  "PARCEL_RETURNED",
+  "RETURN_SETTLEMENT",
+]);
+
+const COMMERCIAL_RETURN_SOURCE_STATES: DeliveryCustodyState[] = [
+  "RETURNED_PENDING_INSPECTION",
+  "CUSTOMER_OWNED_HELD",
+  "CUSTOMER_DELIVERED",
+  "CARRIER_CUSTODY",
+  "PREPARED_HELD",
+];
+
+async function reconcileCommercialReturnCustodyTx(
+  tx: Tx,
+  input: DeliveryCustodyLifecycleEvent,
+) {
+  const invoiceId = Number(input.payload?.invoiceId);
+  if (!Number.isSafeInteger(invoiceId) || invoiceId <= 0)
+    return { initialized: 0, transitioned: 0 };
+  const actorUserId = input.actorUserId ?? null;
+  const rows = await initializeConsignmentCustodyTx(tx, {
+    consignmentId: input.consignmentId,
+    actorUserId,
+    operationId: `delivery.event:${input.eventId}`,
+  });
+  const itemIds = Array.from(
+    new Set(
+      rows
+        .map((row) => row.invoiceItemId)
+        .filter((id): id is number => id != null),
+    ),
+  );
+  if (!itemIds.length) return { initialized: rows.length, transitioned: 0 };
+  const counters = await tx
+    .select({
+      id: invoiceItems.id,
+      invoiceId: invoiceItems.invoiceId,
+      baseQuantity: invoiceItems.baseQuantity,
+      returnedBaseQuantity: invoiceItems.returnedBaseQuantity,
+      returnedRestockedBaseQuantity:
+        invoiceItems.returnedRestockedBaseQuantity,
+    })
+    .from(invoiceItems)
+    .where(inArray(invoiceItems.id, itemIds))
+    .for("share");
+  const counterByItem = new Map(
+    counters
+      .filter((counter) => Number(counter.invoiceId) === invoiceId)
+      .map((counter) => [Number(counter.id), counter]),
+  );
+  const componentAdjustedItems = new Set(
+    (
+      await tx
+        .select({ invoiceItemId: componentRightsAdjustments.invoiceItemId })
+        .from(componentRightsAdjustments)
+        .where(inArray(componentRightsAdjustments.invoiceItemId, itemIds))
+        .for("share")
+    ).map((row) => Number(row.invoiceItemId)),
+  );
+  let transitioned = 0;
+  for (const original of [...rows].sort(
+    (a, b) => Number(a.id) - Number(b.id),
+  )) {
+    if (
+      original.itemKind !== "STOCKED_ITEM" &&
+      original.itemKind !== "BUNDLE_COMPONENT"
+    )
+      continue;
+    const counter = counterByItem.get(Number(original.invoiceItemId));
+    if (!counter) continue;
+    if (
+      original.itemKind === "BUNDLE_COMPONENT" &&
+      componentAdjustedItems.has(Number(original.invoiceItemId))
+    ) {
+      if (original.reviewStatus !== "REVIEW_REQUIRED")
+        await tx
+          .update(deliveryCustodyItems)
+          .set({
+            reviewStatus: "REVIEW_REQUIRED",
+            reviewReason:
+              "مرتجع حقوق مكوّنات البكج لا يحدد مصير بقية المكونات؛ يلزم تدقيق الكميات قبل إغلاق العهدة",
+            version: Number(original.version) + 1,
+            updatedBy: actorUserId,
+          })
+          .where(
+            and(
+              eq(deliveryCustodyItems.id, original.id),
+              eq(deliveryCustodyItems.version, original.version),
+            ),
+          );
+      continue;
+    }
+    const itemBaseQuantity = Number(counter.baseQuantity);
+    const factor = Number(original.baseQuantity) / itemBaseQuantity;
+    const desiredReturned = Number(counter.returnedBaseQuantity ?? 0) * factor;
+    const desiredRestocked =
+      Number(counter.returnedRestockedBaseQuantity ?? 0) * factor;
+    const desiredDamaged = desiredReturned - desiredRestocked;
+    if (
+      !Number.isSafeInteger(itemBaseQuantity) ||
+      itemBaseQuantity <= 0 ||
+      !Number.isSafeInteger(desiredReturned) ||
+      !Number.isSafeInteger(desiredRestocked) ||
+      !Number.isSafeInteger(desiredDamaged) ||
+      desiredRestocked < 0 ||
+      desiredDamaged < 0 ||
+      desiredReturned > Number(original.baseQuantity)
+    )
+      throw fulfillmentError(
+        `عدادات المرتجع لا تطابق كمية عهدة السطر ${original.sourceLineKey}`,
+        "CONFLICT",
+      );
+    let row = original;
+    for (const [toState, desired] of [
+      ["RESTOCKED_CLOSED", desiredRestocked],
+      ["DAMAGED_CLOSED", desiredDamaged],
+    ] as const) {
+      let missing = desired - quantities(row)[toState];
+      if (missing < 0)
+        throw fulfillmentError(
+          `عداد المرتجع تراجع عن مصير عهدة مثبت للسطر ${row.sourceLineKey}`,
+          "CONFLICT",
+        );
+      for (const fromState of COMMERCIAL_RETURN_SOURCE_STATES) {
+        if (missing === 0) break;
+        const available = quantities(row)[fromState];
+        if (available <= 0) continue;
+        const baseQuantity = Math.min(missing, available);
+        const result = await transitionDeliveryCustodyTx(tx, {
+          custodyItemId: Number(row.id),
+          expectedVersion: Number(row.version),
+          fromState,
+          toState,
+          baseQuantity,
+          operationId: `delivery.event:${input.eventId}`,
+          eventKey: `CUSTODY:DE:${input.eventId}:I:${row.id}:${fromState}:${toState}`,
+          eventType: `DELIVERY_${input.eventType}`,
+          evidence: {
+            ...(input.payload ?? {}),
+            deliveryEventId: input.eventId,
+            deliveryEventKey: input.eventKey,
+            invoiceItemId: Number(row.invoiceItemId),
+            returnedBaseQuantity: Number(
+              counter.returnedBaseQuantity ?? 0,
+            ),
+            returnedRestockedBaseQuantity: Number(
+              counter.returnedRestockedBaseQuantity ?? 0,
+            ),
+          },
+          actorUserId,
+        });
+        row = result.item;
+        missing -= baseQuantity;
+        transitioned += result.replay ? 0 : 1;
+      }
+      if (missing !== 0)
+        throw fulfillmentError(
+          `لا تكفي كمية العهدة المفتوحة لإغلاق مرتجع السطر ${row.sourceLineKey}`,
+          "CONFLICT",
+        );
+    }
+  }
+  return { initialized: rows.length, transitioned };
+}
+
+/**
+ * Mirrors already-authorized physical delivery events into quantity custody.
+ * The event writer remains the operational authority; this hook adds no stock,
+ * sale, collection, receipt or accounting effect.
+ */
+function custodyRuleForEvent(eventType: string): CustodyLifecycleRule | null {
+  if (
+    [
+      "PICKED_UP",
+      "OUT_FOR_DELIVERY",
+      "REASSIGNED",
+      "ASSIGNMENT_REACTIVATED",
+    ].includes(eventType)
+  )
+    return {
+      fromStates: ["PREPARED_HELD", "CUSTOMER_OWNED_HELD"],
+      toState: "CARRIER_CUSTODY",
+    };
+  if (["DELIVERED", "AFTERCARE_DELIVERED"].includes(eventType))
+    return {
+      fromStates: ["PREPARED_HELD", "CARRIER_CUSTODY"],
+      toState: "CUSTOMER_DELIVERED",
+    };
+  if (["WORKFLOW_RETURN_RECEIVED", "AFTERCARE_RETURNED"].includes(eventType))
+    return {
+      // Both events are emitted only by the existing staff-authorized, physically
+      // received and inspected workflows. A declaration/failure event never enters here.
+      fromStates: ["PREPARED_HELD", "CARRIER_CUSTODY", "CUSTOMER_DELIVERED"],
+      toState: "CUSTOMER_OWNED_HELD",
+    };
+  return null;
+}
+
+export async function applyDeliveryCustodyEventTx(
+  tx: Tx,
+  input: DeliveryCustodyLifecycleEvent,
+) {
+  if (COMMERCIAL_RETURN_EVENT_TYPES.has(input.eventType))
+    return reconcileCommercialReturnCustodyTx(tx, input);
+  const rule = custodyRuleForEvent(input.eventType);
+  if (!rule) return { initialized: 0, transitioned: 0 };
+  const actorUserId = input.actorUserId ?? null;
+  const rows = await initializeConsignmentCustodyTx(tx, {
+    consignmentId: input.consignmentId,
+    actorUserId,
+    operationId: `delivery.event:${input.eventId}`,
+  });
+  let transitioned = 0;
+  for (const original of [...rows].sort(
+    (a, b) => Number(a.id) - Number(b.id),
+  )) {
+    let row = original;
+    for (const fromState of rule.fromStates) {
+      const baseQuantity = quantities(row)[fromState];
+      if (baseQuantity <= 0) continue;
+      const result = await transitionDeliveryCustodyTx(tx, {
+        custodyItemId: Number(row.id),
+        expectedVersion: Number(row.version),
+        fromState,
+        toState: rule.toState,
+        baseQuantity,
+        operationId: `delivery.event:${input.eventId}`,
+        eventKey: `CUSTODY:DE:${input.eventId}:I:${row.id}:${fromState}:${rule.toState}`,
+        eventType: `DELIVERY_${input.eventType}`,
+        evidence: {
+          ...(input.payload ?? {}),
+          deliveryEventId: input.eventId,
+          deliveryEventKey: input.eventKey,
+          deliveryEventType: input.eventType,
+        },
+        actorUserId,
+      });
+      row = result.item;
+      transitioned += result.replay ? 0 : 1;
+    }
+  }
+  return { initialized: rows.length, transitioned };
+}
+
+const RECORDED_CUSTODY_EVENT_TYPES = [
+  "PICKED_UP",
+  "OUT_FOR_DELIVERY",
+  "REASSIGNED",
+  "ASSIGNMENT_REACTIVATED",
+  "DELIVERED",
+  "AFTERCARE_DELIVERED",
+  "WORKFLOW_RETURN_RECEIVED",
+  "AFTERCARE_RETURNED",
+  "RETURNED",
+  "PARCEL_RETURNED",
+  "RETURN_SETTLEMENT",
+] as const;
+
+/**
+ * Repairs custody only from definitive physical/commercial-return events which
+ * already committed in this consignment's append-only history. Used by command
+ * replay paths which return before writing the event again. It never infers a
+ * return from cancellation/declaration and never writes stock or finance.
+ */
+export async function repairDeliveryCustodyFromRecordedEventsTx(
+  tx: Tx,
+  consignmentId: number,
+) {
+  const events = await tx
+    .select({
+      id: deliveryEvents.id,
+      eventKey: deliveryEvents.eventKey,
+      eventType: deliveryEvents.eventType,
+      actorUserId: deliveryEvents.actorUserId,
+      payload: deliveryEvents.payload,
+    })
+    .from(deliveryEvents)
+    .where(
+      and(
+        eq(deliveryEvents.consignmentId, consignmentId),
+        inArray(deliveryEvents.eventType, [...RECORDED_CUSTODY_EVENT_TYPES]),
+      ),
+    )
+    .orderBy(asc(deliveryEvents.id))
+    .for("share");
+  let initialized = 0;
+  let transitioned = 0;
+  for (const event of events) {
+    const result = await applyDeliveryCustodyEventTx(tx, {
+      eventId: Number(event.id),
+      eventKey: event.eventKey,
+      consignmentId,
+      eventType: event.eventType,
+      actorUserId: event.actorUserId,
+      payload: (event.payload ?? {}) as Record<string, unknown>,
+    });
+    initialized = Math.max(initialized, result.initialized);
+    transitioned += result.transitioned;
+  }
+  return { initialized, transitioned, custodyEventCount: events.length };
 }

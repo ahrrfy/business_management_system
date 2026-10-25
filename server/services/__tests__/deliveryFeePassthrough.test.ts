@@ -283,7 +283,7 @@ describe("٥/٨ — أجرة التوصيل تمريرٌ لا إيراد", () =>
     expect(await reconcileLedgerProfit()).toEqual([]);
   });
 
-  it("releases work-order materials from WIP once and keeps them as COGS when a delivery return cancels the job", async () => {
+  it("rejects a direct work-order delivery return before cancelling the job or changing COGS", async () => {
     const { partyId } = await seed();
     await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
     const woId = await makeOrder({ deposit: "0", fee: "0", feeCollection: "COURIER" });
@@ -310,19 +310,17 @@ describe("٥/٨ — أجرة التوصيل تمريرٌ لا إيراد", () =>
     const dispatched = await dispatchToDelivery({ assignedUserId: 3, workOrderId: woId, partyId, deliveryFee: "0" }, CASHIER);
     expect(await roleNetDebit("WORK_IN_PROGRESS")).toBe(0);
     expect(await roleNetDebit("COGS")).toBe(4500);
+    const workOrderBefore = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, woId)))[0];
 
-    await returnConsignment(dispatched.consignmentId, {
-      ...MANAGER,
-      clientRequestId: "return-cancelled-work-order-wip",
-      returnReason: "رفض العميل",
-    });
+    await expect(returnConsignment(dispatched.consignmentId, {
+      ...MANAGER, clientRequestId: "return-cancelled-work-order-wip", returnReason: "رفض العميل",
+    })).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
     expect(await roleNetDebit("WORK_IN_PROGRESS")).toBe(0);
     expect(await roleNetDebit("COGS")).toBe(4500);
     const entriesForInvoice = await db().select().from(s.accountingEntries)
       .where(eq(s.accountingEntries.invoiceId, dispatched.invoiceId));
     expect(entriesForInvoice.find((entry) => entry.entryType === "SALE")?.cost).toBe("4500.00");
-    expect(entriesForInvoice.find((entry) => entry.entryType === "RETURN")?.cost).toBe("0.00");
-    expect(entriesForInvoice.reduce((sum, entry) => sum + Number(entry.profit), 0)).toBe(-4500);
-    expect((await db().select().from(s.workOrders).where(eq(s.workOrders.id, woId)))[0].status).toBe("CANCELLED");
+    expect(entriesForInvoice.find((entry) => entry.entryType === "RETURN")).toBeUndefined();
+    expect((await db().select().from(s.workOrders).where(eq(s.workOrders.id, woId)))[0].status).toBe(workOrderBefore.status);
   });
 });

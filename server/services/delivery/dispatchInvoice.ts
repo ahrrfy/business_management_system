@@ -49,7 +49,10 @@ import { fulfillmentRequests } from "../../../drizzle/fulfillmentSchema";
 import { assertNoPendingHeldFeeRefundTx } from "./feeHeld";
 import { validateDeliveryDriverTx } from "./driverValidation";
 import { heldCustomerParcelReissueTx } from "./workflow/returnReceipt";
-import { initializeConsignmentCustodyTx } from "./custody";
+import {
+  initializeConsignmentCustodyTx,
+  repairDeliveryCustodyFromRecordedEventsTx,
+} from "./custody";
 
 /** Service-only context; it is never part of a router input. */
 export interface ShipmentDispatchContext {
@@ -263,6 +266,7 @@ export async function dispatchInvoiceInTx(
         payloadHash,
       );
       if (existingId != null) {
+        await repairDeliveryCustodyFromRecordedEventsTx(tx, existingId);
         const cn = (
           await tx
             .select()
