@@ -979,6 +979,7 @@ export function createUnitTestCommands(testPaths, maxCommandLength = 24000) {
     "run",
     "--config",
     "vitest.unit.config.ts",
+    "--maxWorkers=4",
   ];
   const commands = [];
   let args = [...baseArgs];
@@ -1007,7 +1008,7 @@ export function runSafePushSelftest() {
   const commands = createUnitTestCommands(longTestPaths);
   assert.ok(commands.length > 1);
   assert.deepEqual(
-    commands.flatMap(({ args }) => args.slice(4)),
+    commands.flatMap(({ args }) => args.slice(5)),
     longTestPaths,
   );
   assert.ok(
