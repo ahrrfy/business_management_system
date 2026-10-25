@@ -2,7 +2,7 @@ name: CI Failure Diagnostics
 
 on:
   workflow_run:
-    workflows: ["CI", "Native Android CI", "Security Audit"]
+    workflows: ["CI", "Expo Mobile Check", "Security Audit"]
     types: [completed]
   workflow_dispatch:
     inputs:
