@@ -21,6 +21,10 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Input } from "@/components/ui/input";
+import {
+  PurchaseCashSourceField,
+  usePurchaseCashSourceState,
+} from "@/components/purchases/PurchaseCashSourceField";
 import { QuickSupplierPaymentDialog } from "@/components/purchases/QuickSupplierPaymentDialog";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { useFocusHighlight } from "@/components/search/useFocusHighlight";
@@ -195,22 +199,77 @@ export default function Purchases() {
     id: number;
     poNumber: string;
     controlRequestId?: number;
+    creatorId?: number | null;
     version: number;
+    settlementType: "CASH" | "CREDIT";
+    branchId: number;
+    agreedCurrency: string | null;
+    total: string | null;
   } | null>(null);
   const [quickApprovalReason, setQuickApprovalReason] = useState("اعتماد واستلام البضاعة كاملة");
+  const isQuickCashIqd =
+    quickApprovalTarget != null &&
+    quickApprovalTarget.settlementType === "CASH" &&
+    quickApprovalTarget.agreedCurrency !== "USD";
+  const quickCashSourceState = usePurchaseCashSourceState({
+    branchId: quickApprovalTarget?.branchId,
+    enabled: isQuickCashIqd,
+    context: "approval",
+    isCreator:
+      quickApprovalTarget?.creatorId != null &&
+      me.data?.id != null &&
+      Number(quickApprovalTarget.creatorId) === Number(me.data.id),
+  });
 
   const decideControlMut = trpc.purchases.decideControl.useMutation({
     onSuccess: async (res) => {
+      const wasCash = quickApprovalTarget?.settlementType === "CASH";
       notify.ok(
         res.status === "APPROVED"
-          ? "تم اعتماد أمر الشراء واستلام البضاعة بالكامل وترحيل الفاتورة بنجاح"
+          ? wasCash
+            ? "تم اعتماد الفاتورة النقدية واستلام البضاعة وسداد المورد بالكامل — الذمة المتبقية 0.00"
+            : "تم اعتماد أمر الشراء واستلام البضاعة بالكامل وترحيل الفاتورة بنجاح"
           : "تم تحديث حالة طلب الاعتماد",
       );
       setQuickApprovalTarget(null);
+      quickCashSourceState.reset();
       await Promise.all([
         utils.purchases.list.invalidate(),
         utils.purchases.pendingControls.invalidate(),
+        utils.purchases.integrityReport.invalidate(),
       ]);
+    },
+    onError: (err) => notify.err(err),
+  });
+
+  const autoSettleSupplierMut = trpc.purchases.reconcileSettlement.useMutation({
+    onSuccess: async (res) => {
+      await Promise.all([
+        utils.purchases.list.invalidate(),
+        utils.purchases.integrityReport.invalidate(),
+        utils.suppliers.list.invalidate(),
+      ]);
+      if (
+        res.settledOrdersCount > 0 ||
+        res.partiallySettledOrdersCount > 0 ||
+        res.nativeAdoptedEpisodesCount > 0
+      ) {
+        notify.ok(
+          `تمت مطابقة سندات الصرف السابقة للمورد (${res.supplierName}) وتسوية ${fmt(res.totalSettledAmount)} د.ع دون اي صرف مكرر`,
+        );
+      } else if (res.ownerRequiredEpisodesCount > 0) {
+        notify.warn(
+          "توجد سندات صرف تاريخية مطابقة للفواتير الاصلية لهذا المورد، لكن ربطها التوثيقي يتطلب اعتماد حساب المالك النشط لمنع الصرف المكرر",
+        );
+      } else if (res.unclaimedDisbursementsCount > 0) {
+        notify.warn(
+          "يوجد سند صرف سابق غير مخصص لهذا المورد لا يتطابق تلقائيا مع رصيد الفاتورة المفتوحة؛ راجع كشف حساب المورد قبل اصدار اي دفعة جديدة لمنع الصرف المكرر",
+        );
+      } else {
+        notify.info(
+          "لا توجد سندات صرف سابقة غير مخصصة لهذا المورد؛ استخدم (سداد الفاتورة النقدية الان) لتوثيق الصرف الفعلي",
+        );
+      }
     },
     onError: (err) => notify.err(err),
   });
@@ -756,6 +815,11 @@ export default function Purchases() {
                 cell: ({ row }) => {
                   const settlement = getPurchaseSettlement(row.original);
                   const costHidden = row.original.total === null;
+                  const unpaidReceivedCash =
+                    !costHidden &&
+                    row.original.status === "RECEIVED" &&
+                    row.original.settlementType === "CASH" &&
+                    settlement.status !== "PAID";
                   return (
                     <div className="flex flex-col items-center gap-1">
                       <span
@@ -779,6 +843,12 @@ export default function Purchases() {
                             {settlement.statusLabel}
                           </div>
                         )}
+                        {unpaidReceivedCash ? (
+                          <span className="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-bold badge-status-danger">
+                            <AlertTriangle aria-hidden className="size-3" />
+                            فاتورة نقدية مستلمة غير مسددة
+                          </span>
+                        ) : null}
                         {settlement.requiresReview ? <span className="text-[10px] text-money-negative">يحتاج مراجعة دليل السداد</span> : null}
                       </div>
                     </div>
@@ -864,7 +934,10 @@ export default function Purchases() {
                         {
                           key: "direct-approve",
                           kind: "approve",
-                          label: "اعتماد واستلام البضاعة",
+                          label:
+                            p.settlementType === "CASH"
+                              ? "اعتماد واستلام وسداد نقدي"
+                              : "اعتماد واستلام البضاعة",
                           hidden: !canDirectApprove,
                           disabled:
                             decideControlMut.isPending ||
@@ -874,11 +947,17 @@ export default function Purchases() {
                             : undefined,
                           onSelect: () => {
                             if (!activeControl) return;
+                            quickCashSourceState.reset();
                             setQuickApprovalTarget({
                               id: p.id,
                               poNumber: p.poNumber,
                               controlRequestId: Number(activeControl.id),
+                              creatorId: activeControl.creatorId ?? p.createdBy ?? null,
                               version: Number(p.version),
+                              settlementType: p.settlementType,
+                              branchId: Number(p.branchId),
+                              agreedCurrency: p.agreedCurrency,
+                              total: p.total,
                             });
                             setQuickApprovalReason("اعتماد واستلام البضاعة كاملة");
                           },
@@ -890,7 +969,10 @@ export default function Purchases() {
                         {
                           key: "quick-pay",
                           kind: "edit",
-                          label: "سداد فوري للمورد",
+                          label:
+                            p.settlementType === "CASH"
+                              ? "سداد الفاتورة النقدية الان"
+                              : "سداد فوري للمورد",
                           hidden: p.status !== "RECEIVED" || isSettled,
                           disabled: settlement.requiresReview,
                           disabledReason: settlement.requiresReview ? "راجع دليل السداد قبل طلب دفعة جديدة" : undefined,
@@ -899,6 +981,28 @@ export default function Purchases() {
                             roles: ["manager", "purchasing"],
                             module: "purchases",
                             level: "FULL", operations: ["supplierPayments.requestPayment"] },
+                        },
+                        {
+                          key: "reconcile-vouchers",
+                          kind: "approve",
+                          label: "مطابقة سندات الصرف السابقة",
+                          hidden:
+                            p.status !== "RECEIVED" ||
+                            isSettled ||
+                            p.supplierId == null,
+                          disabled: autoSettleSupplierMut.isPending,
+                          onSelect: () => {
+                            if (p.supplierId == null) return;
+                            autoSettleSupplierMut.mutate({
+                              supplierId: Number(p.supplierId),
+                            });
+                          },
+                          gate: {
+                            roles: ["manager", "purchasing"],
+                            module: "purchases",
+                            level: "FULL",
+                            operations: ["purchases.reconcileSettlement"],
+                          },
                         },
                         {
                           key: "confirm",
@@ -1074,7 +1178,12 @@ export default function Purchases() {
       ) : null}
       <Dialog
         open={quickApprovalTarget != null}
-        onOpenChange={(open) => !open && setQuickApprovalTarget(null)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setQuickApprovalTarget(null);
+            quickCashSourceState.reset();
+          }
+        }}
       >
         <DialogContent className="sm:max-w-md" dir="rtl">
           <DialogHeader>
@@ -1099,12 +1208,27 @@ export default function Purchases() {
                 placeholder="اعتماد واستلام البضاعة كاملة"
               />
             </div>
+            {isQuickCashIqd ? (
+              <div className="space-y-2 rounded-md border bg-muted/30 p-3 text-xs">
+                <p className="font-medium">
+                  هذه فاتورة شراء نقدية: اعتمادها يرحل البضاعة ويسدد كامل قيمتها فورا في نفس العملية وتصبح الذمة المتبقية 0.00.
+                </p>
+                <PurchaseCashSourceField
+                  idPrefix="quick-approve"
+                  context="approval"
+                  state={quickCashSourceState}
+                />
+              </div>
+            ) : null}
           </div>
           <DialogFooter className="gap-2 sm:gap-0">
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setQuickApprovalTarget(null)}
+              onClick={() => {
+                setQuickApprovalTarget(null);
+                quickCashSourceState.reset();
+              }}
               disabled={decideControlMut.isPending}
             >
               إلغاء
@@ -1120,11 +1244,17 @@ export default function Purchases() {
                   approve: true,
                   reason: quickApprovalReason.trim() || "اعتماد واستلام البضاعة كاملة",
                   confirmedFullReceipt: true,
+                  cashSource: isQuickCashIqd ? quickCashSourceState.payload : undefined,
                 });
               }}
-              disabled={quickApprovalReason.trim().length < 3}
+              disabled={
+                quickApprovalReason.trim().length < 3 ||
+                quickCashSourceState.isActionBlocked
+              }
             >
-              تأكيد الاعتماد والاستلام
+              {isQuickCashIqd
+                ? "اعتماد واستلام وسداد نقدي فوري"
+                : "تأكيد الاعتماد والاستلام"}
             </SubmitButton>
           </DialogFooter>
         </DialogContent>

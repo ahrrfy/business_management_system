@@ -1,6 +1,7 @@
 import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import type { OperationUser } from "@shared/operationPermissions";
 import { useMemo, useState } from "react";
+import { Link } from "wouter";
 import {
   AlertOctagon,
   AlertTriangle,
@@ -30,6 +31,8 @@ import { SubmitButton } from "@/components/ui/SubmitButton";
 import { Textarea } from "@/components/ui/textarea";
 import { confirm } from "@/lib/confirm";
 import { fmt } from "@/lib/money";
+import { notify } from "@/lib/notify";
+import { trpc } from "@/lib/trpc";
 import {
   canReviewGovernanceRequest,
   newGovernanceKey,
@@ -74,6 +77,7 @@ const LIVE_SEVERITY_CLASS: Record<LiveSeverity, string> = {
 // قائمةٌ مختلفة تماماً عن CODE_LABEL أعلاه (قضايا مطابقة GRN/فاتورة اليدوية)؛ هذه أكواد
 // تشخيصٍ آليّ من GL مباشرة، صفر تدخّلٍ بشريّ في اكتشافها.
 const LIVE_CODE_LABEL: Record<string, string> = {
+  CASH_RECEIVED_PAYMENT_COVERAGE_GAP: "نقص تغطية شراء نقدي مستلم",
   PAID_AMOUNT_GL_DRIFT: "انحراف المدفوع المسجَّل عن الدفتر",
   NEGATIVE_PO_LEDGER_BALANCE: "رصيد دفتري سالب لأمر الشراء",
   PO_PAYMENT_OVER_ALLOCATION: "تخصيص دفعٍ يتجاوز الاعتراف الدفتري",
@@ -227,6 +231,33 @@ export function PurchaseIntegrityWorkspace({
 }) {
   const can = (path: string) =>
     operationUser == null || canLifecycleOperation(operationUser, path, true);
+  const autoSettleMut = trpc.purchases.reconcileSettlement.useMutation({
+    onSuccess: (res) => {
+      if (
+        res.settledOrdersCount > 0 ||
+        res.partiallySettledOrdersCount > 0 ||
+        res.nativeAdoptedEpisodesCount > 0
+      ) {
+        notify.ok(
+          `تمت مطابقة سندات الصرف السابقة للمورد (${res.supplierName}) وتسوية ${fmt(res.totalSettledAmount)} د.ع دون اي صرف مكرر`,
+        );
+      } else if (res.ownerRequiredEpisodesCount > 0) {
+        notify.warn(
+          "توجد سندات صرف تاريخية مطابقة للفواتير الاصلية لهذا المورد، لكن ربطها التوثيقي يتطلب اعتماد حساب المالك النشط لمنع الصرف المكرر",
+        );
+      } else if (res.unclaimedDisbursementsCount > 0) {
+        notify.warn(
+          "يوجد سند صرف سابق غير مخصص لهذا المورد لا يتطابق تلقائيا مع رصيد الفاتورة المفتوحة؛ راجع كشف حساب المورد قبل اصدار اي دفعة جديدة لمنع الصرف المكرر",
+        );
+      } else {
+        notify.info(
+          "لا توجد سندات صرف سابقة غير مخصصة لهذا المورد؛ افتح الفاتورة من شاشة المشتريات لتوثيق السداد الفعلي",
+        );
+      }
+      onRetryLive();
+    },
+    onError: (err) => notify.err(err),
+  });
   const [openCase, setOpenCase] = useState(false);
   const [resolution, setResolution] = useState<PurchaseIntegrityRow | null>(
     null,
@@ -497,7 +528,16 @@ export function PurchaseIntegrityWorkspace({
         header: "أمر الشراء",
         cell: ({ row }) => (
           <div className="whitespace-nowrap">
-            <bdi dir="ltr">{row.original.poNumber}</bdi>
+            {row.original.purchaseOrderId > 0 ? (
+              <Link
+                href={`/purchases/${row.original.purchaseOrderId}`}
+                className="font-medium text-primary underline-offset-4 hover:underline"
+              >
+                <bdi dir="ltr">{row.original.poNumber}</bdi>
+              </Link>
+            ) : (
+              <bdi dir="ltr">{row.original.poNumber}</bdi>
+            )}
             {row.original.supplierName ? (
               <span className="text-muted-foreground">
                 {" "}
@@ -525,23 +565,47 @@ export function PurchaseIntegrityWorkspace({
       {
         id: "live-actions",
         header: "الإجراء",
-        cell: ({ row }) => (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={pending || !can("purchaseIntegrity.open")}
-            onClick={() => void openFromLiveFinding(row.original)}
-          >
-            فتح قضية
-          </Button>
-        ),
+        cell: ({ row }) => {
+          const canReconcileVouchers =
+            (row.original.code === "CASH_RECEIVED_PAYMENT_COVERAGE_GAP" ||
+              row.original.code === "PAID_AMOUNT_GL_DRIFT") &&
+            row.original.supplierId > 0 &&
+            can("purchases.reconcileSettlement");
+          return (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {canReconcileVouchers ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  disabled={pending || autoSettleMut.isPending}
+                  onClick={() =>
+                    autoSettleMut.mutate({
+                      supplierId: row.original.supplierId,
+                    })
+                  }
+                >
+                  مطابقة سندات المورد
+                </Button>
+              ) : null}
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={pending || !can("purchaseIntegrity.open")}
+                onClick={() => void openFromLiveFinding(row.original)}
+              >
+                فتح قضية
+              </Button>
+            </div>
+          );
+        },
       },
     ],
     // Codex (P2، ٦/٩/٢٦): openFromLiveFinding يُعاد إنشاؤه كل عرضٍ ويحمل branchId الحاليّ في
     // نطاقه — لكن هذا العمود كان محفوظاً بـpending وحده، فيبقى مغلقاً على branchId **قديم**
     // بعد تبديل الفرع بلا تغيّر pending. إدراج الدالّة في الاعتماديات يضمن عمودَ إجراءٍ طازجاً.
-    [pending, openFromLiveFinding],
+    [pending, openFromLiveFinding, autoSettleMut, branchId],
   );
 
   return (

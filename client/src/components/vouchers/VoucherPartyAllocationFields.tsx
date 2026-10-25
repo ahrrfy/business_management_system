@@ -189,10 +189,17 @@ export function VoucherPartyAllocationFields({
           </>
         )}
         {partyType === "SUPPLIER" && (
-          <SupplierPicker
-            supplierId={supplierId}
-            onSupplierChange={setSupplierId}
-          />
+          <>
+            <SupplierPicker
+              supplierId={supplierId}
+              onSupplierChange={setSupplierId}
+            />
+            {!isReceipt && supplierId != null ? (
+              <p className="text-xs text-muted-foreground">
+                عند اعتماد سند الصرف وتنفيذه، ينخفض رصيد ذمة المورد بقيمة السند وتسوى فواتيره المفتوحة تلقائيا من الاقدم.
+              </p>
+            ) : null}
+          </>
         )}
         {partyType === "DELIVERY_PARTY" && (
           <DeliveryPartyPicker

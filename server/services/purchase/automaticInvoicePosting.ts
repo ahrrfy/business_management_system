@@ -43,6 +43,8 @@ import { createSupplierInvoiceInTx } from "./supplierInvoices";
 import { runThreeWayMatchInTx } from "./threeWayMatch";
 import { recordedPurchaseShippingPaymentTx } from "./shippingPayment";
 import { settlePurchaseShippingFromShiftTx } from "./pay";
+import { settlePostedCashPurchaseInvoiceInTx } from "./supplierPayments";
+import type { PurchaseCashSourceInput } from "./types";
 
 function normalizeDeterministicKey(value: string): string {
   const key = value.trim();
@@ -340,6 +342,7 @@ export async function postApprovedPurchaseInvoiceInTx(
       mode: "DRAWER" | "TREASURY" | "ACCRUAL";
       shiftId?: number | null;
     };
+    cashSource?: PurchaseCashSourceInput | null;
   },
 ) {
   if (!Number.isSafeInteger(purchaseOrderId) || purchaseOrderId <= 0) {
@@ -721,12 +724,23 @@ export async function postApprovedPurchaseInvoiceInTx(
         message: "فاتورة المورد مرحلة بلا مرجع قيد",
       });
     }
+    const replayCashSettlement =
+      po.settlementType === "CASH" && money(invoice.totalAmount).gt(0)
+        ? await settlePostedCashPurchaseInvoiceInTx(tx, {
+            purchaseOrder: po,
+            invoice,
+            actor,
+            deterministicKey,
+            cashSource: options?.cashSource,
+          })
+        : null;
     return {
       purchaseOrderId,
       goodsReceiptId,
       supplierInvoiceId,
       matchRunId,
       accountingEntryId: Number(invoice.postingEntryId),
+      supplierPaymentId: replayCashSettlement?.supplierPaymentId ?? null,
       status: "POSTED" as const,
       idempotentReplay: true as const,
     };
@@ -795,10 +809,36 @@ export async function postApprovedPurchaseInvoiceInTx(
     },
   );
 
-  // قرار المالك (٥/١٠/٢٦): CASH يحدّد طريقة السداد المقصودة ولا يثبت وقوعه.
-  // اعتماد أمر الشراء يرحّل الاستلام والفاتورة والالتزام فقط. إنشاء حركة نقدية
-  // ورفع paidAmount محصوران بطلب سداد صريح عبر `supplierPayments.requestPayment`
-  // ثم قرار اعتماد ذلك الطلب عبر `supplierPayments.decidePayment`.
+  // الفاتورة النقدية (CASH) تعني أن المورد استلم نقديته وأن الذمة الآجلة على هذه الفاتورة صفر.
+  // لذلك تُسوّى الفاتورة النقدية ذرياً داخل نفس المعاملة (إثبات الصرف + التخصيص + السند + القيد)
+  // وإذا تعذر توفر النقد أو مصدر الصرف تفشل المعاملة بالكامل بلا ترك فاتورة نقدية غير مسددة.
+  let supplierPaymentId: number | null = null;
+  if (po.settlementType === "CASH" && money(invoice.totalAmount).gt(0)) {
+    const [postedInvoice] = await tx
+      .select()
+      .from(supplierInvoices)
+      .where(eq(supplierInvoices.id, supplierInvoiceId))
+      .for("update")
+      .limit(1);
+    if (!postedInvoice) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذر إتمام التسوية النقدية لفاتورة الشراء",
+          why: "سجل فاتورة المورد المرحلة غير موجود أثناء خطوة السداد النقدي الذري",
+          doThis: "أعد محاولة اعتماد أمر الشراء، وإذا تكرر الخطأ راجع سجل فواتير الموردين",
+        }),
+      });
+    }
+    const cashSettlement = await settlePostedCashPurchaseInvoiceInTx(tx, {
+      purchaseOrder: po,
+      invoice: postedInvoice,
+      actor,
+      deterministicKey,
+      cashSource: options?.cashSource,
+    });
+    supplierPaymentId = cashSettlement.supplierPaymentId;
+  }
 
   return {
     purchaseOrderId,
@@ -807,6 +847,7 @@ export async function postApprovedPurchaseInvoiceInTx(
     matchRunId,
     accountingEntryId,
     shippingPaymentRequestReceiptId,
+    supplierPaymentId,
     status: "POSTED" as const,
     idempotentReplay: false as const,
   };
