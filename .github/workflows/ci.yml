@@ -248,7 +248,7 @@ jobs:
       - name: فحص الأنواع
         run: pnpm check
         env:
-          NODE_OPTIONS: "--max-old-space-size=6144"
+          NODE_OPTIONS: "--max-old-space-size=8192"
       - name: حارس تشخيص فشل CI الآمن
         run: pnpm exec vitest run --config vitest.unit.config.ts scripts/__tests__/ciFailureDiagnosticsWorkflow.test.ts scripts/__tests__/dependencySecurityWorkflow.test.ts scripts/__tests__/ciCriticalPathWorkflow.test.ts scripts/__tests__/safeDeliveryProtocols.test.ts
       - name: الحزمة الوحدوية الكاملة (حاجبة — بلا تنظيف قاعدة)
@@ -384,6 +384,11 @@ jobs:
       # حارس سلامة وتعامد وشبكة الجداول: يمنع انكسار التعامد بين العناوين والصفوف ويحمي شبكة الجداول الأصولية
       - name: حارِس سلامة وتعامد وشبكة الجداول
         run: pnpm check:table-integrity
+      # حارس أنواع الاختبارات (مسنَنةٌ تنازلية): يغلق استثناء *.test.ts(x) من tsconfig.json بلا كسر الشرائح القائمة
+      - name: حارِس أنواع الاختبارات (مسنَنةٌ تنازلية)
+        run: pnpm check:test-types
+        env:
+          NODE_OPTIONS: "--max-old-space-size=10240"
       - name: اختبار مدقّق سلامة البطاقات الرقمية (قراءة فقط)
         run: node scripts/verify-digital-cards-integrity.mjs --selftest
       - name: اختبار عقود النشر والبناء الآمنة
