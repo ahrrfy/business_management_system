@@ -27,11 +27,12 @@ function jobBlock(name: string): string {
 }
 
 describe("CI critical-path policy", () => {
-  it("يقسم الاختبارات إلى ثماني شرائح ويضع MySQL المؤقتة في الذاكرة", () => {
+  it("يقسم الاختبارات إلى ثماني شرائح ويضع MySQL المؤقتة في الذاكرة ويُقصي الاختبارات الوحدوية المكرّرة", () => {
     const testShards = jobBlock("test-shards");
 
     expect(testShards).toContain("shard: [1, 2, 3, 4, 5, 6, 7, 8]");
     expect(testShards).toContain("total: [8]");
+    expect(testShards).toContain('VITEST_EXCLUDE_UNIT: "1"');
     expect(testShards).toContain(
       "--shard=${{ matrix.shard }}/${{ matrix.total }}",
     );
@@ -65,12 +66,20 @@ describe("CI critical-path policy", () => {
     expect(policy).toContain('"--diff-filter=ACDMRT"');
   });
 
-  it("يشغّل الجودة والبناء بالتوازي مع شرائح الاختبار", () => {
+  it("يشغّل الجودة والبناء والحزمة الوحدوية الحاجبة بالتوازي مع شرائح الاختبار", () => {
     const qualityBuild = jobBlock("quality-build");
 
     expect(qualityBuild).toContain("needs: scope");
     expect(qualityBuild).toContain("pnpm check");
     expect(qualityBuild).toContain("pnpm build");
+    expect(qualityBuild).toContain(
+      "pnpm exec cross-env TZ=UTC vitest run --config vitest.unit.config.ts",
+    );
+    const unitStepMatch = qualityBuild.match(
+      /- name: الحزمة الوحدوية الكاملة[\s\S]*?(?=\r?\n\s*- name:)/,
+    );
+    expect(unitStepMatch).not.toBeNull();
+    expect(unitStepMatch![0]).not.toContain("continue-on-error: true");
   });
 
   it("يبقي الفحص المحمي بوابة تجميع خفيفة لا تعيد العمل", () => {
