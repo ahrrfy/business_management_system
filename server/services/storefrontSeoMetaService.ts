@@ -4,6 +4,7 @@ import { categories } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { storefrontProduct } from "./storefrontService";
 import { listStorefrontProductReviews } from "./storefrontProductReviewService";
+import { isPublicStorefrontHost } from "../middleware/publicStorefrontHost";
 
 function escapeHtml(str: string): string {
   return str
@@ -355,13 +356,6 @@ export async function resolveStorefrontSeoMeta(
         addressCountry: "IQ",
         addressLocality: "Baghdad",
       },
-      aggregateRating: {
-        "@type": "AggregateRating",
-        ratingValue: "4.9",
-        reviewCount: "128",
-        bestRating: 5,
-        worstRating: 1,
-      },
       hasOfferCatalog: {
         "@type": "OfferCatalog",
         name: "أقسام وخدمات المكتبة العربية",
@@ -440,7 +434,9 @@ export async function injectStorefrontSeoMeta(
   const pathname = questionIndex >= 0 ? fullUrl.slice(0, questionIndex) : fullUrl;
   const search = questionIndex >= 0 ? fullUrl.slice(questionIndex) : "";
 
-  const meta = await resolveStorefrontSeoMeta(pathname, search, baseOrigin);
+  // الجذر `/` هو واجهة المتجر على الدومين العام وحده؛ على دومين الـERP الداخلي يبقى HTML خاماً.
+  const rootOnInternalHost = pathname === "/" && !isPublicStorefrontHost(req.get("host"));
+  const meta = rootOnInternalHost ? null : await resolveStorefrontSeoMeta(pathname, search, baseOrigin);
   if (!meta) {
     // حقن كود التحقق من جوجل إن وُجد حتى في الصفحات العامة الأخرى
     const googleVerification = process.env.GOOGLE_SITE_VERIFICATION;
