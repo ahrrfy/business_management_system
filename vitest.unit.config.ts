@@ -12,6 +12,10 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "client/src/lib/offline/pinLock.test.ts",
+      "client/src/lib/offline/offlineSecurity.test.ts",
+      "shared/__tests__/offlineOutboxTerms.test.ts",
+      "client/src/components/offline/__tests__/OfflineSyncChip.test.tsx",
       "client/src/pages/__tests__/m3SalesWingChallenger1.test.ts",
       "client/src/pages/__tests__/salesPipelineUx.test.tsx",
       "shared/__tests__/commissionTerms.test.ts",
