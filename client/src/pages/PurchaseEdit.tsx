@@ -488,6 +488,9 @@ export default function PurchaseEdit() {
     if (cashSourceState.validationError) {
       return cashSourceState.validationError;
     }
+    if (cashSourceState.isActionBlocked) {
+      return "انتظر اكتمال تحميل مصادر الصرف النقدي للفرع قبل الحفظ.";
+    }
     if (landed.hasLanded && !landed.hasBase) {
       return "أضِف منتجات بقيمة موجبة قبل إدخال تكلفة الشحن/الكمرك.";
     }

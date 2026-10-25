@@ -17,6 +17,7 @@ import {
   requestSupplierPaymentRefund,
   SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY,
 } from "../purchase/supplierPayments";
+import { reconcileSupplierPurchaseSettlement } from "../purchase/historicalSupplierSettlement";
 import { getPurchaseIntegrityReport } from "../purchaseIntegrityService";
 import {
   confirmPurchaseOrder,
@@ -1945,5 +1946,205 @@ describe("الفواتير النقدية وفواتير الآجل وسندات
         (await computeExpectedCash(tx, shiftC.shiftId, "90000.00")).toFixed(2),
       ),
     ).toBe("90000.00");
+  });
+
+  it("يدعم تعديل مصدر النقد وحده في مسودة امر شراء نقدي، ويطابق السندات التاريخية مع الفواتير الاصلية عبر reconcileSupplierPurchaseSettlement", async () => {
+    await seedBase("600000.00");
+    await db().insert(s.suppliers).values({
+      id: 2,
+      name: "مورد المطابقة التاريخية",
+      currentBalance: "0.00",
+    });
+
+    // ١) إنشاء مسودة CASH موجهة صراحة لدرج مفتوح ثم إغلاق الدرج وتعديل المسودة لتغيير مصدر النقد وحده إلى TREASURY
+    const shiftDraft = await openShift(
+      { branchId: 1, openingBalance: "60000.00" },
+      maker,
+    );
+    const createdDraft = await createPurchaseOrder(
+      {
+        supplierId: 1,
+        branchId: 1,
+        settlementType: "CASH",
+        cashSource: { mode: "DRAWER", shiftId: shiftDraft.shiftId },
+        clientRequestId: `draft-cash-source-only-${randomUUID()}`,
+        items: [
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "2",
+            unitPrice: "5000.00", // 10,000.00
+          },
+        ],
+      },
+      maker,
+    );
+    await db()
+      .update(s.shifts)
+      .set({ status: "CLOSED", openGuard: null, closedAt: new Date() })
+      .where(eq(s.shifts.id, shiftDraft.shiftId));
+
+    const updatedDraft = await updatePurchaseOrder(
+      {
+        purchaseOrderId: createdDraft.purchaseOrderId,
+        expectedVersion: createdDraft.version,
+        revisionReason: "تحويل مصدر الصرف النقدي الى الخزينة بعد اغلاق الوردية",
+        supplierId: 1,
+        settlementType: "CASH",
+        cashSource: { mode: "TREASURY" },
+        agreedCurrency: "IQD",
+        taxRatePercent: "0",
+        items: [
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "2",
+            unitPrice: "5000.00",
+          },
+        ],
+      },
+      owner,
+    );
+    expect(updatedDraft.revisionNo).toBe(2);
+
+    const submittedDraft = await confirmPurchaseOrder(
+      {
+        purchaseOrderId: createdDraft.purchaseOrderId,
+        expectedVersion: updatedDraft.version,
+        reason: "ارسال مسودة محدثة المصدر النقدي للاعتماد",
+        clientRequestId: `submit-updated-source-${randomUUID()}`,
+      },
+      maker,
+    );
+    await decidePurchaseOrderControl(
+      {
+        requestId: submittedDraft.requestId,
+        decisionKey: `approve-updated-source-${randomUUID()}`,
+        approve: true,
+        reason: "اعتماد الفاتورة النقدية المحدث مصدرها للخزينة",
+        confirmedFullReceipt: true,
+      },
+      owner,
+    );
+    const [settledDraftOrder] = await db()
+      .select({ status: s.purchaseOrders.status, paidAmount: s.purchaseOrders.paidAmount })
+      .from(s.purchaseOrders)
+      .where(eq(s.purchaseOrders.id, createdDraft.purchaseOrderId));
+    expect(settledDraftOrder).toEqual({ status: "RECEIVED", paidAmount: "10000.00" });
+
+    // ٢) فاتورة نقدية تاريخية مرتبطة بفاتورة مورد أصلية (supplierInvoices) مع سند صرف تاريخي غير مخصص مطابق
+    const histPo = await createPurchaseOrder(
+      {
+        supplierId: 2,
+        branchId: 1,
+        settlementType: "CREDIT",
+        clientRequestId: `hist-native-po-${randomUUID()}`,
+        items: [
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "3",
+            unitPrice: "5000.00", // 15,000.00
+          },
+        ],
+      },
+      maker,
+    );
+    const histReq = await confirmPurchaseOrder(
+      {
+        purchaseOrderId: histPo.purchaseOrderId,
+        expectedVersion: histPo.version,
+        reason: "ارسال فاتورة للمورد الثاني",
+        clientRequestId: `hist-native-confirm-${randomUUID()}`,
+      },
+      maker,
+    );
+    await decidePurchaseOrderControl(
+      {
+        requestId: histReq.requestId,
+        decisionKey: `hist-native-approve-${randomUUID()}`,
+        approve: true,
+        reason: "اعتماد وترحيل فاتورة اصلية للمورد الثاني",
+        confirmedFullReceipt: true,
+      },
+      reviewer,
+    );
+    // محاكاة الفاتورة النقدية التاريخية قبل الترحيل الذري + سند صرف تاريخي غير مربوط بـ supplierPayments
+    await db()
+      .update(s.purchaseOrders)
+      .set({ settlementType: "CASH", paidAmount: "0.00" })
+      .where(eq(s.purchaseOrders.id, histPo.purchaseOrderId));
+    const histReceiptIns = await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "OUT",
+      amount: "15000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      voucherNumber: "PV-HIST-NATIVE-1",
+      partyType: "SUPPLIER",
+      partyId: 2,
+      referenceNumber: "HIST-NATIVE-REF-1",
+      description: "سند صرف تاريخي للمورد الثاني قبل التخصيص الاصلي",
+      createdBy: owner.userId,
+      approvedBy: owner.userId,
+      approvedAt: new Date(),
+      executedBy: owner.userId,
+      executedAt: new Date(),
+      voucherDate: "2026-10-20",
+    });
+    const histReceiptId = Number(
+      (histReceiptIns as unknown as [{ insertId: number }])[0]?.insertId ??
+        (histReceiptIns as unknown as { insertId: number }).insertId,
+    );
+    await db().insert(s.accountingEntries).values({
+      entryType: "PAYMENT_OUT",
+      amount: "15000.00",
+      supplierId: 2,
+      receiptId: histReceiptId,
+      branchId: 1,
+      description: "قيد صرف تاريخي للمورد الثاني",
+      createdBy: owner.userId,
+      entryDate: new Date(),
+    });
+    await db()
+      .update(s.suppliers)
+      .set({ currentBalance: "0.00" })
+      .where(eq(s.suppliers.id, 2));
+
+    // غير المالك يحصل على ownerRequiredEpisodesCount = 1 بدلاً من ادعاء عدم وجود سندات
+    const nonOwnerAttempt = await reconcileSupplierPurchaseSettlement(
+      { supplierId: 2 },
+      reviewer,
+    );
+    expect(nonOwnerAttempt).toMatchObject({
+      totalSettledAmount: "0.00",
+      ownerRequiredEpisodesCount: 1,
+    });
+
+    // المالك يعتمد الحلقة التاريخية الأصيلة فتُسوى الفاتورة الأصلية وPO دون أي حركة نقد أو ذمة جديدة
+    const ownerReconcile = await reconcileSupplierPurchaseSettlement(
+      { supplierId: 2 },
+      owner,
+    );
+    expect(ownerReconcile).toMatchObject({
+      nativeAdoptedEpisodesCount: 1,
+      settledOrdersCount: 1,
+      totalSettledAmount: "15000.00",
+      ownerRequiredEpisodesCount: 0,
+    });
+    const [histNativeInv] = await db()
+      .select()
+      .from(s.supplierInvoices)
+      .where(eq(s.supplierInvoices.supplierId, 2));
+    expect(histNativeInv).toMatchObject({
+      paymentGate: "SETTLED",
+    });
+    const [histPoAfter] = await db()
+      .select({ paidAmount: s.purchaseOrders.paidAmount })
+      .from(s.purchaseOrders)
+      .where(eq(s.purchaseOrders.id, histPo.purchaseOrderId));
+    expect(histPoAfter?.paidAmount).toBe("15000.00");
   });
 });

@@ -883,4 +883,24 @@ describe("عرض سداد الشراء المثبت", () => {
     expect(ownerNav).toEqual(["/purchases/404"]);
     expect(ownerPending).toEqual([true, false]);
   });
+
+  it("derivePurchaseCashSourceDecision يفرض isActionBlocked عند اختيار مصدر صريح اثناء تحميل بيانات فرع جديد", async () => {
+    const { derivePurchaseCashSourceDecision } = await import(
+      "@/components/purchases/PurchaseCashSourceField"
+    );
+    const loadingExplicit = derivePurchaseCashSourceDecision({
+      normalizedBranchId: 2,
+      enabled: true,
+      context: "create",
+      isCreator: true,
+      mode: "TREASURY",
+      shiftId: "",
+      data: undefined,
+      isLoading: true,
+      isError: false,
+    });
+    expect(loadingExplicit.validationError).toBeNull();
+    expect(loadingExplicit.isActionBlocked).toBe(true);
+    expect(loadingExplicit.payload).toBeUndefined();
+  });
 });

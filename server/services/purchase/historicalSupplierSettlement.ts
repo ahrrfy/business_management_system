@@ -44,6 +44,7 @@ import {
   supplierApEffectSql,
 } from "../ledger/supplierApEffect";
 import { money, toDbMoney } from "../money";
+import { autoSettleSupplierAccountTx } from "../reconciliation/autoSettlementService";
 import { withGovernanceTx, withTx, type Actor } from "../tx";
 import { supplierVoucherRequestKey } from "../voucher/supplierPaymentLink";
 import { sha256, stableCanonical } from "./grniAccounting";
@@ -1813,4 +1814,137 @@ async function adoptHistoricalContext(
     enqueueFinancialRefresh(tx, episode.branchId);
     return result;
   });
+}
+
+export interface ReconcileSupplierPurchaseSettlementResult {
+  supplierId: number;
+  supplierName: string;
+  settledOrdersCount: number;
+  partiallySettledOrdersCount: number;
+  nativeAdoptedEpisodesCount: number;
+  totalSettledAmount: string;
+  ownerRequiredEpisodesCount: number;
+  unclaimedDisbursementsCount: number;
+}
+
+export async function reconcileSupplierPurchaseSettlement(
+  input: { supplierId: number },
+  actor: Actor & { role?: string; isOwner?: boolean },
+): Promise<ReconcileSupplierPurchaseSettlementResult> {
+  const isCrossBranch = actor.role === "admin" || actor.isOwner === true;
+  const scopedBranchId = isCrossBranch
+    ? undefined
+    : Number.isSafeInteger(actor.branchId) && actor.branchId > 0
+      ? actor.branchId
+      : null;
+  if (!isCrossBranch && scopedBranchId == null) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذر مطابقة سندات المورد",
+        why: "لا يوجد فرع مسند لهذا المستخدم في الجلسة الحالية",
+        doThis: "سجل الدخول بحساب مسند لفرع او اطلب من المدير اسناد فرع لحسابك",
+      }),
+    });
+  }
+
+  const { supplierRow, isActiveOwner } = await withTx(
+    async (tx) => {
+      const [sup] = await tx
+        .select({ id: suppliers.id, name: suppliers.name })
+        .from(suppliers)
+        .where(eq(suppliers.id, input.supplierId))
+        .limit(1);
+      const [user] = await tx
+        .select({ isActive: users.isActive, isOwner: users.isOwner })
+        .from(users)
+        .where(eq(users.id, actor.userId))
+        .limit(1);
+      return {
+        supplierRow: sup ?? null,
+        isActiveOwner: Boolean(user?.isActive && user.isOwner),
+      };
+    },
+    { gate: "NONE" },
+  );
+
+  if (!supplierRow) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "المورد المطلوب مطابقة سنداته غير موجود",
+        why: "لم يعثر النظام على سجل المورد المحدد",
+        doThis: "حدث الصفحة وتحقق من اختيار المورد الصحيح",
+      }),
+    });
+  }
+
+  const preview = await previewHistoricalSupplierSettlements({
+    supplierId: input.supplierId,
+    ...(scopedBranchId != null ? { branchId: scopedBranchId } : {}),
+  });
+
+  let nativeAdoptedEpisodesCount = 0;
+  let nativeSettledInvoicesCount = 0;
+  let nativeAdoptedAmount = money(0);
+  let ownerRequiredEpisodesCount = 0;
+
+  if (preview.episodes.length > 0) {
+    if (isActiveOwner) {
+      for (const episode of preview.episodes) {
+        await adoptHistoricalSupplierSettlement(
+          {
+            episodeId: episode.episodeId,
+            evidenceHash: episode.evidenceHash,
+          },
+          actor,
+        );
+        nativeAdoptedEpisodesCount += 1;
+        nativeSettledInvoicesCount += episode.invoiceIds.length;
+        nativeAdoptedAmount = nativeAdoptedAmount.plus(money(episode.total));
+      }
+    } else {
+      ownerRequiredEpisodesCount = preview.episodes.length;
+    }
+  }
+
+  const excludedEntryIds = Array.from(
+    new Set(preview.excluded.flatMap((row) => row.entryIds)),
+  );
+  let unclaimedDisbursementsCount = 0;
+  if (excludedEntryIds.length > 0) {
+    unclaimedDisbursementsCount = await withTx(
+      async (tx) => {
+        const rows = await tx
+          .select({ id: accountingEntries.id })
+          .from(accountingEntries)
+          .where(
+            and(
+              inArray(accountingEntries.id, excludedEntryIds),
+              eq(accountingEntries.entryType, "PAYMENT_OUT"),
+            ),
+          );
+        return rows.length;
+      },
+      { gate: "NONE" },
+    );
+  }
+
+  const legacyResult = await withTx((tx) =>
+    autoSettleSupplierAccountTx(tx, input.supplierId, actor),
+  );
+
+  return {
+    supplierId: input.supplierId,
+    supplierName: supplierRow.name,
+    settledOrdersCount:
+      legacyResult.settledOrdersCount + nativeSettledInvoicesCount,
+    partiallySettledOrdersCount: legacyResult.partiallySettledOrdersCount,
+    nativeAdoptedEpisodesCount,
+    totalSettledAmount: toDbMoney(
+      money(legacyResult.totalSettledAmount).plus(nativeAdoptedAmount),
+    ),
+    ownerRequiredEpisodesCount,
+    unclaimedDisbursementsCount,
+  };
 }

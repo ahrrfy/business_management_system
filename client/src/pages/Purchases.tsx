@@ -242,16 +242,28 @@ export default function Purchases() {
     onError: (err) => notify.err(err),
   });
 
-  const autoSettleSupplierMut = trpc.suppliers.autoSettle.useMutation({
+  const autoSettleSupplierMut = trpc.purchases.reconcileSettlement.useMutation({
     onSuccess: async (res) => {
       await Promise.all([
         utils.purchases.list.invalidate(),
         utils.purchases.integrityReport.invalidate(),
         utils.suppliers.list.invalidate(),
       ]);
-      if (res.settledOrdersCount > 0 || res.partiallySettledOrdersCount > 0) {
+      if (
+        res.settledOrdersCount > 0 ||
+        res.partiallySettledOrdersCount > 0 ||
+        res.nativeAdoptedEpisodesCount > 0
+      ) {
         notify.ok(
-          `تمت مطابقة سندات الصرف السابقة للمورد (${res.supplierName}) وتسوية ${fmt(res.totalSettledAmount)} د.ع بنظام الاقدمية دون اي صرف مكرر`,
+          `تمت مطابقة سندات الصرف السابقة للمورد (${res.supplierName}) وتسوية ${fmt(res.totalSettledAmount)} د.ع دون اي صرف مكرر`,
+        );
+      } else if (res.ownerRequiredEpisodesCount > 0) {
+        notify.warn(
+          "توجد سندات صرف تاريخية مطابقة للفواتير الاصلية لهذا المورد، لكن ربطها التوثيقي يتطلب اعتماد حساب المالك النشط لمنع الصرف المكرر",
+        );
+      } else if (res.unclaimedDisbursementsCount > 0) {
+        notify.warn(
+          "يوجد سند صرف سابق غير مخصص لهذا المورد لا يتطابق تلقائيا مع رصيد الفاتورة المفتوحة؛ راجع كشف حساب المورد قبل اصدار اي دفعة جديدة لمنع الصرف المكرر",
         );
       } else {
         notify.info(
@@ -986,10 +998,10 @@ export default function Purchases() {
                             });
                           },
                           gate: {
-                            roles: ["manager", "accountant"],
-                            module: "suppliers",
+                            roles: ["manager", "purchasing"],
+                            module: "purchases",
                             level: "FULL",
-                            operations: ["suppliers.autoSettle"],
+                            operations: ["purchases.reconcileSettlement"],
                           },
                         },
                         {

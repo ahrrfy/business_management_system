@@ -231,11 +231,23 @@ export function PurchaseIntegrityWorkspace({
 }) {
   const can = (path: string) =>
     operationUser == null || canLifecycleOperation(operationUser, path, true);
-  const autoSettleMut = trpc.suppliers.autoSettle.useMutation({
+  const autoSettleMut = trpc.purchases.reconcileSettlement.useMutation({
     onSuccess: (res) => {
-      if (res.settledOrdersCount > 0 || res.partiallySettledOrdersCount > 0) {
+      if (
+        res.settledOrdersCount > 0 ||
+        res.partiallySettledOrdersCount > 0 ||
+        res.nativeAdoptedEpisodesCount > 0
+      ) {
         notify.ok(
           `تمت مطابقة سندات الصرف السابقة للمورد (${res.supplierName}) وتسوية ${fmt(res.totalSettledAmount)} د.ع دون اي صرف مكرر`,
+        );
+      } else if (res.ownerRequiredEpisodesCount > 0) {
+        notify.warn(
+          "توجد سندات صرف تاريخية مطابقة للفواتير الاصلية لهذا المورد، لكن ربطها التوثيقي يتطلب اعتماد حساب المالك النشط لمنع الصرف المكرر",
+        );
+      } else if (res.unclaimedDisbursementsCount > 0) {
+        notify.warn(
+          "يوجد سند صرف سابق غير مخصص لهذا المورد لا يتطابق تلقائيا مع رصيد الفاتورة المفتوحة؛ راجع كشف حساب المورد قبل اصدار اي دفعة جديدة لمنع الصرف المكرر",
         );
       } else {
         notify.info(
@@ -558,7 +570,7 @@ export function PurchaseIntegrityWorkspace({
             (row.original.code === "CASH_RECEIVED_PAYMENT_COVERAGE_GAP" ||
               row.original.code === "PAID_AMOUNT_GL_DRIFT") &&
             row.original.supplierId > 0 &&
-            can("suppliers.autoSettle");
+            can("purchases.reconcileSettlement");
           return (
             <div className="flex flex-wrap items-center gap-1.5">
               {canReconcileVouchers ? (

@@ -200,7 +200,6 @@ type OrderAmounts = {
   approvedPaymentOut: Decimal;
   approvedPaymentIn: Decimal;
   paymentCancellationIn: Decimal;
-  governedRefundIn: Decimal;
   bookBalance: Decimal;
   validPending: Decimal;
 };
@@ -502,7 +501,6 @@ function emptyAmounts(): OrderAmounts {
     approvedPaymentOut: money(0),
     approvedPaymentIn: money(0),
     paymentCancellationIn: money(0),
-    governedRefundIn: money(0),
     bookBalance: money(0),
     validPending: money(0),
   };
@@ -1027,7 +1025,6 @@ export async function getPurchaseIntegrityReport(
             ) {
               amounts.paymentCancellationIn =
                 amounts.paymentCancellationIn.plus(amount);
-              amounts.governedRefundIn = amounts.governedRefundIn.plus(amount);
             }
           }
         }
@@ -1198,12 +1195,6 @@ export async function getPurchaseIntegrityReport(
           .minus(amounts.approvedPaymentIn)
           .plus(amounts.validPending);
         const coverageDifference = netCovered.minus(amounts.recognizedPurchase);
-        const cashNetCovered = amounts.approvedPaymentOut
-          .minus(amounts.approvedPaymentIn.minus(amounts.governedRefundIn))
-          .plus(amounts.validPending);
-        const cashCoverageDifference = cashNetCovered.minus(
-          amounts.recognizedPurchase,
-        );
         const storedPaid = money(order.paidAmount);
         const paidDifference = storedPaid.minus(linkedPaidAmount);
         const orderAge = ageDays(order.createdAt, asOf);
@@ -1211,15 +1202,15 @@ export async function getPurchaseIntegrityReport(
         if (
           order.settlementType === "CASH" &&
           amounts.recognizedPurchase.gt(0) &&
-          !cashCoverageDifference.isZero()
+          !coverageDifference.isZero()
         ) {
           addFinding(order, {
-            severity: cashCoverageDifference.lt(0) ? "CRITICAL" : "HIGH",
+            severity: coverageDifference.lt(0) ? "CRITICAL" : "HIGH",
             code: "CASH_RECEIVED_PAYMENT_COVERAGE_GAP",
             subjectType: "PURCHASE_ORDER",
             subjectId: poId,
             ageDays: orderAge,
-            summaryAr: cashCoverageDifference.lt(0)
+            summaryAr: coverageDifference.lt(0)
               ? "شراء CASH معترف به في GL بلا تغطية مساوية من الصرف المعتمد والطلبات المعلقة الصالحة."
               : "تغطية شراء CASH تتجاوز الاعتراف الدفتري المرتبط؛ يلزم منع صرف مكرر قبل أي اعتماد جديد.",
             evidence: {
@@ -1227,8 +1218,8 @@ export async function getPurchaseIntegrityReport(
               approvedPaymentOutGl: toDbMoney(amounts.approvedPaymentOut),
               approvedPaymentInGl: toDbMoney(amounts.approvedPaymentIn),
               validPendingPoPay: toDbMoney(amounts.validPending),
-              netCoveredAmount: toDbMoney(cashNetCovered),
-              difference: toDbMoney(cashCoverageDifference),
+              netCoveredAmount: toDbMoney(netCovered),
+              difference: toDbMoney(coverageDifference),
               formula:
                 "PAYMENT_OUT approved - PAYMENT_IN approved + valid pending PO-PAY - (PURCHASE + RETURN)",
             },

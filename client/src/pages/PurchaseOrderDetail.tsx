@@ -207,12 +207,12 @@ export default function PurchaseOrderDetail() {
   const canEdit = canLifecycleOperation(me.data, "purchases.updateOrder", legacyEdit);
   const canSettleShipping = canLifecycleOperation(me.data, "purchases.settleShippingFromShift", legacyEdit);
   const canRequestPayment = canLifecycleOperation(me.data, "supplierPayments.requestPayment", legacyEdit);
-  const canAutoSettle = canLifecycleOperation(me.data, "suppliers.autoSettle", legacyEdit);
+  const canAutoSettle = canLifecycleOperation(me.data, "purchases.reconcileSettlement", legacyEdit);
   const canReverseReceipt = canLifecycleOperation(me.data, "goodsReceiptReversal.requestReversal", legacyEdit);
 
   const [isSettleShippingOpen, setIsSettleShippingOpen] = useState(false);
   const utils = trpc.useUtils();
-  const autoSettleSupplierMut = trpc.suppliers.autoSettle.useMutation({
+  const autoSettleSupplierMut = trpc.purchases.reconcileSettlement.useMutation({
     onSuccess: async (res) => {
       await Promise.all([
         utils.purchases.get.invalidate({ purchaseOrderId }),
@@ -220,9 +220,21 @@ export default function PurchaseOrderDetail() {
         utils.purchases.integrityReport.invalidate(),
         utils.suppliers.list.invalidate(),
       ]);
-      if (res.settledOrdersCount > 0 || res.partiallySettledOrdersCount > 0) {
+      if (
+        res.settledOrdersCount > 0 ||
+        res.partiallySettledOrdersCount > 0 ||
+        res.nativeAdoptedEpisodesCount > 0
+      ) {
         notify.ok(
           `تمت مطابقة سندات الصرف السابقة للمورد (${res.supplierName}) وتسوية ${fmtAr(res.totalSettledAmount)} د.ع دون صرف مكرر`,
+        );
+      } else if (res.ownerRequiredEpisodesCount > 0) {
+        notify.warn(
+          "توجد سندات صرف تاريخية مطابقة للفواتير الاصلية لهذا المورد، لكن ربطها التوثيقي يتطلب اعتماد حساب المالك النشط لمنع الصرف المكرر",
+        );
+      } else if (res.unclaimedDisbursementsCount > 0) {
+        notify.warn(
+          "يوجد سند صرف سابق غير مخصص لهذا المورد لا يتطابق تلقائيا مع رصيد الفاتورة المفتوحة؛ راجع كشف حساب المورد قبل اصدار اي دفعة جديدة لمنع الصرف المكرر",
         );
       } else {
         notify.info(

@@ -61,6 +61,7 @@ import {
   updatePurchaseOrder,
 } from "../services/purchaseService";
 import { settlePurchaseShippingFromShift } from "../services/purchase/pay";
+import { reconcileSupplierPurchaseSettlement } from "../services/purchase/historicalSupplierSettlement";
 import { assertLegacyPurchaseWritePathDisabled } from "../services/purchase/governanceCutover";
 import {
   canSeeCostForUser,
@@ -1466,5 +1467,27 @@ export const purchaseRouter = router({
         nextAction,
         nextActionReason,
       };
+    }),
+
+  reconcileSettlement: purchasesManagerProcedure
+    .input(
+      z.object({
+        supplierId: z.number().int().positive(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const res = await reconcileSupplierPurchaseSettlement(input, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+        isOwner: Boolean((ctx.user as { isOwner?: boolean }).isOwner),
+      });
+      await logAudit(ctx, {
+        action: "purchase.reconcileSettlement",
+        entityType: "supplier",
+        entityId: input.supplierId,
+        newValue: res,
+      });
+      return res;
     }),
 });

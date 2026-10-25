@@ -624,6 +624,9 @@ export default function PurchaseNew() {
     if (cashSourceState.validationError) {
       return cashSourceState.validationError;
     }
+    if (cashSourceState.isActionBlocked) {
+      return "انتظر اكتمال تحميل مصادر الصرف النقدي للفرع قبل الحفظ.";
+    }
     // landed-cost: التوزيع بنسبة القيمة يحتاج قيمة بضاعة موجبة (مرآة حارس الخادم).
     if (landed.hasLanded && !landed.hasBase) {
       return "أضِف منتجات بقيمة موجبة قبل إدخال تكلفة الشحن/الكمرك.";

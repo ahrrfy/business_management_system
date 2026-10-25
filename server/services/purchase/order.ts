@@ -630,6 +630,7 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
       purchaseOrderId,
       actorUserId: actor.userId,
       reason: input.revisionReason?.trim() || "إنشاء أمر الشراء",
+      cashSource: declaredCashSource,
     });
     await replacePurchaseOrderRevisionAllocationsTx(tx, {
       branchId: input.branchId,
@@ -856,6 +857,7 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
       purchaseOrderId: input.purchaseOrderId,
       actorUserId: actor.userId,
       reason: input.revisionReason,
+      cashSource: declaredCashSource,
     });
     await replacePurchaseOrderRevisionAllocationsTx(tx, {
       branchId: Number(po.branchId),

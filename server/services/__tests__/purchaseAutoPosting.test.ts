@@ -676,6 +676,28 @@ describe("اعتماد أمر الشراء النقدي يسدده ذرياً و
     expect((await db().select().from(s.suppliers))[0]?.currentBalance).toBe(
       "20.00",
     );
+    const integrityAfterPartialRefund = await getPurchaseIntegrityReport({
+      branchId: 1,
+      limit: 20,
+    });
+    expect(
+      integrityAfterPartialRefund.findings.filter(
+        (finding) =>
+          finding.purchaseOrderId === purchaseOrderId &&
+          finding.code === "CASH_RECEIVED_PAYMENT_COVERAGE_GAP",
+      ),
+    ).toMatchObject([
+      {
+        severity: "CRITICAL",
+        evidence: {
+          recognizedPurchaseGl: "60.00",
+          approvedPaymentOutGl: "60.00",
+          approvedPaymentInGl: "20.00",
+          netCoveredAmount: "40.00",
+          difference: "-20.00",
+        },
+      },
+    ]);
     await expect(
       listSupplierPaymentSources(
         { branchId: 1, supplierId: 1, purchaseOrderId, limit: 20 },
@@ -709,15 +731,6 @@ describe("اعتماد أمر الشراء النقدي يسدده ذرياً و
     await expect(
       caller.get({ purchaseOrderId }),
     ).resolves.toMatchObject({ linkedCashPaidAmount: "40.00" });
-    const integrityAfterRefund = await getPurchaseIntegrityReport({
-      branchId: 1,
-      limit: 20,
-    });
-    expect(
-      integrityAfterRefund.findings.filter(
-        (finding) => finding.purchaseOrderId === purchaseOrderId,
-      ),
-    ).toHaveLength(0);
   });
 
   it("Codex P1 (٦/٩): أمرٌ نقديّ وصل RECEIVED **قبل** هذا الإصلاح (بلا أيّ صرفٍ مرتبط) لا يُعرَض مُسدَّداً — linkedCashPaidAmount يبقى صفراً رغم CASH+RECEIVED معاً", async () => {
