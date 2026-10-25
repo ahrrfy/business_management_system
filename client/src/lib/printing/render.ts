@@ -205,8 +205,8 @@ export async function docToHtml(doc: PrintDoc): Promise<string> {
             <div style="font-weight:900;font-size:12px;line-height:1.25">${esc(item.name)}</div>
             <div style="font-weight:800;font-size:10.5px;margin-top:1px">${esc(item.quantityPrice)}</div>
           </td>
-          <td style="border:1px solid #000;padding:3px 2px;text-align:left;direction:ltr;font-weight:900;font-variant-numeric:tabular-nums;white-space:nowrap;vertical-align:middle;font-size:12px">
-            ${esc(item.total)}
+          <td style="border:1px solid #000;padding:3px 2px;text-align:right;direction:rtl;font-weight:900;font-variant-numeric:tabular-nums;white-space:normal;overflow-wrap:anywhere;vertical-align:middle;font-size:12px;line-height:1.35">
+            ${htmlLines(item.total)}
           </td>
         </tr>`).join("")}
       </tbody>
@@ -361,7 +361,9 @@ export async function docToRaster(doc: PrintDoc, widthPx = 576): Promise<Raster 
   const itemLayouts = (doc.itemBlocks ?? []).map((item) => ({
     name: measured(ITEM_NAME_FONT, item.name, contentWidth, 2),
     quantityPrice: measured(ITEM_DETAIL_FONT, item.quantityPrice, firstColumnWidth, 2),
-    total: measured(ITEM_DETAIL_FONT, item.total, lastColumnWidth, 2),
+    // Financial totals may contain several explicit lines. Never cap/ellipsize
+    // them: every monetary digit must survive the ESC/POS raster path.
+    total: measured(ITEM_DETAIL_FONT, item.total, lastColumnWidth),
   }));
   const totalLayouts = (doc.totals ?? []).map((total, index, all) => {
     const font = index === all.length - 1 ? "900 44px Cairo, sans-serif" : HEADER_FONT;

@@ -33,6 +33,7 @@ import {
 import {
   preopenShippingLabelWindow,
   printShippingLabel,
+  resolveShippingLabelPaymentState,
 } from "@/lib/printing/shippingLabel";
 import type {
   WorkflowDispatchBatchInput,
@@ -554,14 +555,7 @@ export function WorkflowDispatchStation({
           subtotal: labelPayload.money.currentTotal,
           shippingFee: labelPayload.money.deliveryFee,
           paidAmount: labelPayload.money.paidAmount,
-          paymentState:
-            labelPayload.money.currentTotal == null ||
-            labelPayload.money.paidAmount == null
-              ? undefined
-              : labelPayload.money.codAmount != null &&
-                  Number(labelPayload.money.codAmount) === 0
-                ? "PREPAID"
-                : "COD",
+          paymentState: resolveShippingLabelPaymentState(totalAtDoor),
           deliveryPartyName: labelPayload.party.name,
           createdAt: labelSnapshot.eventOccurredAt,
           printedAt: new Date(),

@@ -69,14 +69,30 @@ export function resolveShippingLabelQrTarget(
     ShippingLabelData,
     "orderNumber" | "qrUrl" | "latitude" | "longitude"
   >,
-  _origin = typeof window !== "undefined" ? window.location.origin : "",
+  origin = typeof window !== "undefined" ? window.location.origin : "",
 ): string | null {
   if (o.latitude && o.longitude) {
     return `https://maps.google.com/?q=${encodeURIComponent(`${o.latitude},${o.longitude}`)}`;
   }
   if (o.qrUrl?.trim()) return o.qrUrl.trim();
-  // رقم الطلب وحده ليس مسار تحقق. يبقى Code128 متاحاً، ولا نطبع QR وهمياً.
+  const orderNumber = o.orderNumber.trim();
+  const verificationOrigin = origin.trim().replace(/\/+$/, "");
+  // ORD وحده يملك مسار تحقق عام حقيقياً في التطبيق. بقية الأرقام، ومنها CN،
+  // تبقى Code128 فقط ما لم يصل رابط QR صريح أو إحداثيات خريطة.
+  if (
+    /^ORD-[A-Z0-9][A-Z0-9-]*$/i.test(orderNumber) &&
+    /^https?:\/\//i.test(verificationOrigin)
+  )
+    return `${verificationOrigin}/verify?ref=${encodeURIComponent(orderNumber)}`;
   return null;
+}
+
+/** حالة الملصق مشتقة من كامل المطلوب عند الباب، بما فيه أجرة جهة التوصيل. */
+export function resolveShippingLabelPaymentState(
+  totalAtDoor: number | null,
+): ShippingLabelData["paymentState"] {
+  if (totalAtDoor == null || !Number.isFinite(totalAtDoor)) return undefined;
+  return totalAtDoor === 0 ? "PREPAID" : "COD";
 }
 
 function fmtDate(d: Date | string | null | undefined): string {
@@ -203,7 +219,7 @@ export async function shippingLabelHtml(
       max-width:${w}mm;
       max-height:${h}mm;
       box-sizing:border-box;
-      padding:1mm 1.2mm;
+      padding:3mm;
       display:flex;
       flex-direction:column;
       justify-content:flex-start;
@@ -242,7 +258,7 @@ export async function shippingLabelHtml(
         width:${w}mm !important;
         height:${h}mm !important;
         max-height:${h}mm !important;
-        padding:1mm !important;
+        padding:3mm !important;
         overflow:hidden !important;
         page-break-after:avoid !important;
         page-break-inside:avoid !important;

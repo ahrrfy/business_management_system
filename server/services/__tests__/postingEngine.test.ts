@@ -16,6 +16,10 @@ import {
   type JournalLine,
   type PostingIntent,
 } from "../accounting/postingEngine";
+import {
+  IRAQI_UNIFIED_ACCOUNTS,
+  SYSTEM_ROLE_TO_IRAQI_UNIFIED_CODE,
+} from "../accounting/iraqiUnifiedChartSeed";
 
 function netByRole(lines: JournalLine[]): Record<string, Decimal> {
   const net: Record<string, Decimal> = {};
@@ -37,6 +41,23 @@ function expectMoney(actual: Decimal | undefined, expected: string): void {
 }
 
 describe("postingEngine — legacy fallback and exact money", () => {
+  it("maps deferred revenue to a posting liability under an existing Iraqi unified parent", () => {
+    const code = SYSTEM_ROLE_TO_IRAQI_UNIFIED_CODE.DEFERRED_REVENUE;
+    const account = IRAQI_UNIFIED_ACCOUNTS.find((row) => row.code === code);
+    const parent = IRAQI_UNIFIED_ACCOUNTS.find(
+      (row) => row.code === account?.parentCode,
+    );
+
+    expect(code).toBe("2691");
+    expect(account).toMatchObject({
+      type: "LIABILITY",
+      normalBalance: "CREDIT",
+      parentCode: "269",
+      isPosting: true,
+    });
+    expect(parent).toMatchObject({ code: "269", type: "LIABILITY" });
+  });
+
   it("keeps the six legacy derivations balanced while Sh2 migrates callers", () => {
     const cases = [
       {

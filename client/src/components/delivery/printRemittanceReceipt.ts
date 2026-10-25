@@ -109,7 +109,10 @@ export function buildRemittanceReceiptDoc(
               line.paymentMethod ? `دفع ${line.paymentMethod}` : null,
               line.feeOffset != null ? `أجرة ${fmt(line.feeOffset)}` : null,
             ].filter(Boolean).join(" · ") || "تخصيص مالي",
-            total: `مخصص ${fmt(line.grossApplied ?? "0")} · نقد ${fmt(line.cashReceived ?? "0")}`,
+            total: [
+              `مخصص ${fmt(line.grossApplied ?? "0")}`,
+              `نقد ${fmt(line.cashReceived ?? "0")}`,
+            ].join("\n"),
           })),
         }
       : {

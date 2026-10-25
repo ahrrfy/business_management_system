@@ -548,6 +548,16 @@ export const IRAQI_UNIFIED_ACCOUNTS: ImportedStatutoryAccount[] = [
     isPosting: true,
     sortOrder: 269,
   },
+  {
+    code: "2691",
+    name: "إيرادات خدمات مقبوضة مقدماً",
+    type: "LIABILITY",
+    normalBalance: "CREDIT",
+    parentCode: "269",
+    isPosting: true,
+    sortOrder: 2691,
+    notes: "إيراد خدمات مؤجل حتى إثبات إنجاز الخدمة والاعتراف بالإيراد",
+  },
 
   // ==========================================
   // 3. الاستخدامات (المصروفات) — طبيعتها مدينة DEBIT

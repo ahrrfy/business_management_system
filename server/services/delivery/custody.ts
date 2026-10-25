@@ -5,6 +5,7 @@ import {
   deliveryShipmentMembers,
   inventoryMovements,
   invoiceItemBundleComponents,
+  invoiceItemServiceMaterials,
   invoiceItems,
   invoices,
   productVariants,
@@ -74,17 +75,28 @@ function initialState(
   return "CARRIER_CUSTODY";
 }
 
-async function movementIdsByVariantTx(
+type PhysicalMovementEvidence = {
+  movementId: number | null;
+  reviewReason: string | null;
+};
+
+async function physicalMovementEvidenceByVariantTx(
   tx: Tx,
   invoiceId: number,
-  variantIds: number[],
+  branchId: number,
+  physicalExpectedByVariant: Map<number, number>,
+  serviceExpectedByVariant: Map<number, number>,
 ) {
-  const map = new Map<number, number[]>();
-  if (!variantIds.length) return map;
+  const result = new Map<number, PhysicalMovementEvidence>();
+  const variantIds = Array.from(physicalExpectedByVariant.keys());
+  if (!variantIds.length) return result;
   const rows = await tx
     .select({
       id: inventoryMovements.id,
       variantId: inventoryMovements.variantId,
+      branchId: inventoryMovements.branchId,
+      quantity: inventoryMovements.quantity,
+      referenceType: inventoryMovements.referenceType,
     })
     .from(inventoryMovements)
     .where(
@@ -94,12 +106,39 @@ async function movementIdsByVariantTx(
         eq(inventoryMovements.movementType, "OUT"),
         inArray(inventoryMovements.variantId, Array.from(new Set(variantIds))),
       ),
-    );
+    )
+    .orderBy(asc(inventoryMovements.id));
+  const rowsByVariant = new Map<number, typeof rows>();
   for (const row of rows) {
-    const id = Number(row.variantId);
-    map.set(id, [...(map.get(id) ?? []), Number(row.id)]);
+    const variantId = Number(row.variantId);
+    rowsByVariant.set(variantId, [
+      ...(rowsByVariant.get(variantId) ?? []),
+      row,
+    ]);
   }
-  return map;
+  for (const [variantId, physicalExpected] of Array.from(
+    physicalExpectedByVariant.entries(),
+  )) {
+    const candidates = rowsByVariant.get(variantId) ?? [];
+    const serviceExpected = serviceExpectedByVariant.get(variantId) ?? 0;
+    const expectedMovementCount = serviceExpected > 0 ? 2 : 1;
+    const physicalMovement = candidates[0];
+    const serviceMovement = candidates[1];
+    const verified =
+      candidates.length === expectedMovementCount &&
+      new Set(candidates.map((row) => row.referenceType)).size === 1 &&
+      candidates.every((row) => Number(row.branchId) === branchId) &&
+      Number(physicalMovement?.quantity ?? 0) === physicalExpected &&
+      (serviceExpected === 0 ||
+        Number(serviceMovement?.quantity ?? 0) === serviceExpected);
+    result.set(variantId, {
+      movementId: verified ? Number(physicalMovement!.id) : null,
+      reviewReason: verified
+        ? null
+        : "لا تطابق بنية حركات الصرف المجمعة لقطة البنود ومكوّنات البكج ومواد الخدمة؛ يلزم تدقيق قبل أي إرجاع مخزني",
+    });
+  }
+  return result;
 }
 
 async function invoiceDraftsTx(
@@ -114,11 +153,13 @@ async function invoiceDraftsTx(
       baseQuantity: invoiceItems.baseQuantity,
       unitCost: invoiceItems.unitCost,
       lineCost: invoiceItems.lineCost,
+      branchId: invoices.branchId,
       isService: products.isService,
       isBundle: products.isBundle,
       productType: products.productType,
     })
     .from(invoiceItems)
+    .innerJoin(invoices, eq(invoices.id, invoiceItems.invoiceId))
     .innerJoin(productVariants, eq(productVariants.id, invoiceItems.variantId))
     .innerJoin(products, eq(products.id, productVariants.productId))
     .where(eq(invoiceItems.invoiceId, invoiceId));
@@ -129,10 +170,51 @@ async function invoiceDraftsTx(
         .from(invoiceItemBundleComponents)
         .where(inArray(invoiceItemBundleComponents.invoiceItemId, itemIds))
     : [];
-  const movementMap = await movementIdsByVariantTx(tx, invoiceId, [
-    ...items.map((item) => Number(item.variantId)),
-    ...components.map((component) => Number(component.componentVariantId)),
-  ]);
+  const serviceMaterials = itemIds.length
+    ? await tx
+        .select()
+        .from(invoiceItemServiceMaterials)
+        .where(inArray(invoiceItemServiceMaterials.invoiceItemId, itemIds))
+    : [];
+  const physicalExpectedByVariant = new Map<number, number>();
+  for (const item of items) {
+    if (item.isService || item.productType === "DIGITAL_CARD") continue;
+    if (item.isBundle) {
+      for (const component of components.filter(
+        (row) => Number(row.invoiceItemId) === Number(item.id),
+      )) {
+        const variantId = Number(component.componentVariantId);
+        physicalExpectedByVariant.set(
+          variantId,
+          (physicalExpectedByVariant.get(variantId) ?? 0) +
+            Number(component.componentBaseQuantity) * Number(item.baseQuantity),
+        );
+      }
+    } else {
+      const variantId = Number(item.variantId);
+      physicalExpectedByVariant.set(
+        variantId,
+        (physicalExpectedByVariant.get(variantId) ?? 0) +
+          Number(item.baseQuantity),
+      );
+    }
+  }
+  const serviceExpectedByVariant = new Map<number, number>();
+  for (const material of serviceMaterials) {
+    const variantId = Number(material.materialVariantId);
+    serviceExpectedByVariant.set(
+      variantId,
+      (serviceExpectedByVariant.get(variantId) ?? 0) +
+        Number(material.baseQuantity),
+    );
+  }
+  const movementEvidence = await physicalMovementEvidenceByVariantTx(
+    tx,
+    invoiceId,
+    Number(items[0]?.branchId ?? 0),
+    physicalExpectedByVariant,
+    serviceExpectedByVariant,
+  );
   const drafts: CustodyDraft[] = [];
   for (const item of items) {
     if (item.isService || item.productType === "DIGITAL_CARD") continue;
@@ -146,18 +228,19 @@ async function invoiceDraftsTx(
           baseQuantity,
           `${keyPrefix}BC:${component.id}`,
         );
-        const movementIds =
-          movementMap.get(Number(component.componentVariantId)) ?? [];
+        const evidence = movementEvidence.get(
+          Number(component.componentVariantId),
+        );
         const valued =
           component.issueUnitCost != null && component.issueLineCost != null;
-        const verified = valued && movementIds.length === 1;
+        const verified = valued && evidence?.movementId != null;
         drafts.push({
           sourceLineKey: `${keyPrefix}BC:${component.id}`,
           itemKind: "BUNDLE_COMPONENT",
           invoiceItemId: Number(item.id),
           bundleComponentId: Number(component.id),
           variantId: Number(component.componentVariantId),
-          originalMovementId: movementIds.length === 1 ? movementIds[0]! : null,
+          originalMovementId: evidence?.movementId ?? null,
           baseQuantity,
           originalIssueUnitCost: component.issueUnitCost,
           originalIssueValue: component.issueLineCost,
@@ -166,28 +249,30 @@ async function invoiceDraftsTx(
             ? null
             : !valued
               ? "لقطة تكلفة مكوّن البكج التاريخية مفقودة؛ يمنع التخمين بسعر اليوم"
-              : "تعذر ربط حركة صرف مكوّن البكج الأصلية الوحيدة؛ يلزم تدقيق",
+              : (evidence?.reviewReason ??
+                "تعذر إثبات حركة الصرف المجمعة لمكوّن البكج؛ يلزم تدقيق"),
         });
       }
       continue;
     }
     const baseQuantity = Number(item.baseQuantity);
     assertPositiveBaseQuantity(baseQuantity, `${keyPrefix}II:${item.id}`);
-    const movementIds = movementMap.get(Number(item.variantId)) ?? [];
-    const verified = movementIds.length === 1;
+    const evidence = movementEvidence.get(Number(item.variantId));
+    const verified = evidence?.movementId != null;
     drafts.push({
       sourceLineKey: `${keyPrefix}II:${item.id}`,
       itemKind: "STOCKED_ITEM",
       invoiceItemId: Number(item.id),
       variantId: Number(item.variantId),
-      originalMovementId: verified ? movementIds[0]! : null,
+      originalMovementId: evidence?.movementId ?? null,
       baseQuantity,
       originalIssueUnitCost: item.unitCost,
       originalIssueValue: item.lineCost,
       reviewStatus: verified ? "VERIFIED" : "REVIEW_REQUIRED",
       reviewReason: verified
         ? null
-        : "تعذر ربط حركة الصرف الأصلية الوحيدة؛ يمنع أي إرجاع مخزني آلي",
+        : (evidence?.reviewReason ??
+          "تعذر إثبات حركة الصرف المجمعة للبند؛ يمنع أي إرجاع مخزني آلي"),
     });
   }
   return drafts;

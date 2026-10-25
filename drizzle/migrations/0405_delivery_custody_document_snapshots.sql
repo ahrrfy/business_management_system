@@ -153,6 +153,78 @@ CREATE TABLE IF NOT EXISTS `deliveryDocumentPrints` (
 );
 --> statement-breakpoint
 
+-- The writers aggregate every physical use of one variant (plain lines plus
+-- frozen bundle components) into the first OUT movement, then write one later
+-- aggregate movement for service materials.  Match that structural contract;
+-- notes are display text and are deliberately not used as evidence.
+DROP TEMPORARY TABLE IF EXISTS `_delivery0405PhysicalMovementEvidence`;
+--> statement-breakpoint
+CREATE TEMPORARY TABLE `_delivery0405PhysicalMovementEvidence` AS
+SELECT physical.`invoiceId`, physical.`variantId`,
+	CASE WHEN movements.`movementCount` = CASE WHEN COALESCE(service.`serviceBaseQuantity`,0)>0 THEN 2 ELSE 1 END
+		AND movements.`referenceTypeCount`=1
+		AND firstMovement.`branchId`=inv.`branchId`
+		AND firstMovement.`quantity`=physical.`physicalBaseQuantity`
+		AND (COALESCE(service.`serviceBaseQuantity`,0)=0 OR (
+			movements.`firstMovementId`<>movements.`lastMovementId`
+			AND lastMovement.`branchId`=inv.`branchId`
+			AND lastMovement.`quantity`=service.`serviceBaseQuantity`
+		)) THEN movements.`firstMovementId` ELSE NULL END AS `originalMovementId`,
+	CASE WHEN movements.`movementCount` = CASE WHEN COALESCE(service.`serviceBaseQuantity`,0)>0 THEN 2 ELSE 1 END
+		AND movements.`referenceTypeCount`=1
+		AND firstMovement.`branchId`=inv.`branchId`
+		AND firstMovement.`quantity`=physical.`physicalBaseQuantity`
+		AND (COALESCE(service.`serviceBaseQuantity`,0)=0 OR (
+			movements.`firstMovementId`<>movements.`lastMovementId`
+			AND lastMovement.`branchId`=inv.`branchId`
+			AND lastMovement.`quantity`=service.`serviceBaseQuantity`
+		)) THEN 'VERIFIED' ELSE 'REVIEW_REQUIRED' END AS `reviewStatus`,
+	CASE WHEN movements.`movementCount` = CASE WHEN COALESCE(service.`serviceBaseQuantity`,0)>0 THEN 2 ELSE 1 END
+		AND movements.`referenceTypeCount`=1
+		AND firstMovement.`branchId`=inv.`branchId`
+		AND firstMovement.`quantity`=physical.`physicalBaseQuantity`
+		AND (COALESCE(service.`serviceBaseQuantity`,0)=0 OR (
+			movements.`firstMovementId`<>movements.`lastMovementId`
+			AND lastMovement.`branchId`=inv.`branchId`
+			AND lastMovement.`quantity`=service.`serviceBaseQuantity`
+		)) THEN NULL ELSE 'لا تطابق بنية حركات الصرف المجمعة لقطة البنود ومكوّنات البكج ومواد الخدمة؛ يلزم تدقيق قبل أي إرجاع مخزني' END AS `reviewReason`
+FROM (
+	SELECT physicalLines.`invoiceId`, physicalLines.`variantId`, SUM(physicalLines.`baseQuantity`) AS `physicalBaseQuantity`
+	FROM (
+		SELECT ii.`invoiceId`, ii.`variantId`, ii.`baseQuantity`
+		FROM `invoiceItems` ii
+		JOIN `productVariants` pv ON pv.`id`=ii.`variantId`
+		JOIN `products` p ON p.`id`=pv.`productId`
+		JOIN (SELECT DISTINCT `invoiceId` FROM `deliveryConsignments` WHERE `invoiceId` IS NOT NULL AND `consignmentStatus` IN ('DISPATCHED','DELIVERED','PARTIAL')) openInvoices ON openInvoices.`invoiceId`=ii.`invoiceId`
+		WHERE p.`isService`=0 AND p.`isBundle`=0 AND COALESCE(p.`productType`,'')<>'DIGITAL_CARD'
+		UNION ALL
+		SELECT ii.`invoiceId`, bc.`componentVariantId`, bc.`componentBaseQuantity`*ii.`baseQuantity`
+		FROM `invoiceItems` ii
+		JOIN `invoiceItemBundleComponents` bc ON bc.`invoiceItemId`=ii.`id`
+		JOIN (SELECT DISTINCT `invoiceId` FROM `deliveryConsignments` WHERE `invoiceId` IS NOT NULL AND `consignmentStatus` IN ('DISPATCHED','DELIVERED','PARTIAL')) openInvoices ON openInvoices.`invoiceId`=ii.`invoiceId`
+	) physicalLines
+	GROUP BY physicalLines.`invoiceId`, physicalLines.`variantId`
+) physical
+JOIN `invoices` inv ON inv.`id`=physical.`invoiceId`
+LEFT JOIN (
+	SELECT ii.`invoiceId`, ism.`materialVariantId` AS `variantId`, SUM(ism.`baseQuantity`) AS `serviceBaseQuantity`
+	FROM `invoiceItemServiceMaterials` ism
+	JOIN `invoiceItems` ii ON ii.`id`=ism.`invoiceItemId`
+	GROUP BY ii.`invoiceId`, ism.`materialVariantId`
+) service ON service.`invoiceId`=physical.`invoiceId` AND service.`variantId`=physical.`variantId`
+LEFT JOIN (
+	SELECT im.`referenceId` AS `invoiceId`, im.`variantId`, COUNT(*) AS `movementCount`,
+		COUNT(DISTINCT im.`referenceType`) AS `referenceTypeCount`, MIN(im.`id`) AS `firstMovementId`, MAX(im.`id`) AS `lastMovementId`
+	FROM `inventoryMovements` im
+	WHERE im.`referenceType` IN ('INVOICE','PRINT_SALE') AND im.`movementType`='OUT'
+	GROUP BY im.`referenceId`, im.`variantId`
+) movements ON movements.`invoiceId`=physical.`invoiceId` AND movements.`variantId`=physical.`variantId`
+LEFT JOIN `inventoryMovements` firstMovement ON firstMovement.`id`=movements.`firstMovementId`
+LEFT JOIN `inventoryMovements` lastMovement ON lastMovement.`id`=movements.`lastMovementId`;
+--> statement-breakpoint
+ALTER TABLE `_delivery0405PhysicalMovementEvidence` ADD PRIMARY KEY (`invoiceId`,`variantId`);
+--> statement-breakpoint
+
 -- Plain stocked invoice lines.  Existing returns are represented only as closed
 -- quantity buckets; this migration never creates a RETURN movement.
 INSERT IGNORE INTO `deliveryCustodyItems` (
@@ -164,21 +236,21 @@ INSERT IGNORE INTO `deliveryCustodyItems` (
 SELECT
 	cn.`id`, COALESCE(sm.`leaderConsignmentId`, cn.`id`), cn.`branchId`, cn.`sourceType`, cn.`sourceId`,
 	CONCAT('II:', ii.`id`), 'STOCKED_ITEM', ii.`id`, ii.`variantId`,
-	CASE WHEN (SELECT COUNT(*) FROM `inventoryMovements` imc WHERE imc.`referenceType`='INVOICE' AND imc.`referenceId`=ii.`invoiceId` AND imc.`variantId`=ii.`variantId` AND imc.`movementType`='OUT') = 1
-		THEN (SELECT MIN(im1.`id`) FROM `inventoryMovements` im1 WHERE im1.`referenceType`='INVOICE' AND im1.`referenceId`=ii.`invoiceId` AND im1.`variantId`=ii.`variantId` AND im1.`movementType`='OUT') ELSE NULL END,
+	evidence.`originalMovementId`,
 	ii.`baseQuantity`, ii.`unitCost`, ii.`lineCost`,
 	CASE WHEN cn.`parcelStatus` IN ('ASSIGNED','ACCEPTED','FAILED') AND cn.`pickedUpAt` IS NULL AND cn.`outForDeliveryAt` IS NULL THEN ii.`baseQuantity`-ii.`returnedBaseQuantity` ELSE 0 END,
 	CASE WHEN (cn.`parcelStatus` NOT IN ('ASSIGNED','ACCEPTED','FAILED','DELIVERED') OR cn.`pickedUpAt` IS NOT NULL OR cn.`outForDeliveryAt` IS NOT NULL) AND cn.`parcelStatus` <> 'DELIVERED' AND cn.`courierDeliveredAt` IS NULL THEN ii.`baseQuantity`-ii.`returnedBaseQuantity` ELSE 0 END,
 	CASE WHEN cn.`parcelStatus`='DELIVERED' OR cn.`courierDeliveredAt` IS NOT NULL THEN ii.`baseQuantity`-ii.`returnedBaseQuantity` ELSE 0 END,
 	ii.`returnedRestockedBaseQuantity`, ii.`returnedBaseQuantity`-ii.`returnedRestockedBaseQuantity`,
-	CASE WHEN (SELECT COUNT(*) FROM `inventoryMovements` imc WHERE imc.`referenceType`='INVOICE' AND imc.`referenceId`=ii.`invoiceId` AND imc.`variantId`=ii.`variantId` AND imc.`movementType`='OUT') = 1 THEN 'VERIFIED' ELSE 'REVIEW_REQUIRED' END,
-	CASE WHEN (SELECT COUNT(*) FROM `inventoryMovements` imc WHERE imc.`referenceType`='INVOICE' AND imc.`referenceId`=ii.`invoiceId` AND imc.`variantId`=ii.`variantId` AND imc.`movementType`='OUT') = 1 THEN NULL ELSE 'تعذر ربط حركة الصرف الأصلية الوحيدة؛ يمنع أي إرجاع مخزني آلي' END,
+	COALESCE(evidence.`reviewStatus`,'REVIEW_REQUIRED'),
+	CASE WHEN evidence.`reviewStatus`='VERIFIED' THEN NULL ELSE COALESCE(evidence.`reviewReason`,'تعذر إثبات حركة الصرف المجمعة للبند؛ يمنع أي إرجاع مخزني آلي') END,
 	cn.`dispatchedBy`, cn.`dispatchedBy`
 FROM `deliveryConsignments` cn
 LEFT JOIN `deliveryShipmentMembers` sm ON sm.`consignmentId`=cn.`id`
 JOIN `invoiceItems` ii ON ii.`invoiceId`=cn.`invoiceId`
 JOIN `productVariants` pv ON pv.`id`=ii.`variantId`
 JOIN `products` p ON p.`id`=pv.`productId`
+LEFT JOIN `_delivery0405PhysicalMovementEvidence` evidence ON evidence.`invoiceId`=ii.`invoiceId` AND evidence.`variantId`=ii.`variantId`
 WHERE cn.`consignmentStatus` IN ('DISPATCHED','DELIVERED','PARTIAL')
 	AND p.`isService`=0 AND p.`isBundle`=0 AND COALESCE(p.`productType`,'') <> 'DIGITAL_CARD';
 --> statement-breakpoint
@@ -193,23 +265,26 @@ INSERT IGNORE INTO `deliveryCustodyItems` (
 SELECT
 	cn.`id`, COALESCE(sm.`leaderConsignmentId`, cn.`id`), cn.`branchId`, cn.`sourceType`, cn.`sourceId`,
 	CONCAT('BC:', bc.`id`), 'BUNDLE_COMPONENT', ii.`id`, bc.`id`, bc.`componentVariantId`,
-	CASE WHEN (SELECT COUNT(*) FROM `inventoryMovements` imc WHERE imc.`referenceType`='INVOICE' AND imc.`referenceId`=ii.`invoiceId` AND imc.`variantId`=bc.`componentVariantId` AND imc.`movementType`='OUT') = 1
-		THEN (SELECT MIN(im1.`id`) FROM `inventoryMovements` im1 WHERE im1.`referenceType`='INVOICE' AND im1.`referenceId`=ii.`invoiceId` AND im1.`variantId`=bc.`componentVariantId` AND im1.`movementType`='OUT') ELSE NULL END,
+	evidence.`originalMovementId`,
 	bc.`componentBaseQuantity`*ii.`baseQuantity`, bc.`issueUnitCost`, bc.`issueLineCost`,
 	CASE WHEN cn.`parcelStatus` IN ('ASSIGNED','ACCEPTED','FAILED') AND cn.`pickedUpAt` IS NULL AND cn.`outForDeliveryAt` IS NULL THEN bc.`componentBaseQuantity`*(ii.`baseQuantity`-ii.`returnedBaseQuantity`) ELSE 0 END,
 	CASE WHEN (cn.`parcelStatus` NOT IN ('ASSIGNED','ACCEPTED','FAILED','DELIVERED') OR cn.`pickedUpAt` IS NOT NULL OR cn.`outForDeliveryAt` IS NOT NULL) AND cn.`parcelStatus` <> 'DELIVERED' AND cn.`courierDeliveredAt` IS NULL THEN bc.`componentBaseQuantity`*(ii.`baseQuantity`-ii.`returnedBaseQuantity`) ELSE 0 END,
 	CASE WHEN cn.`parcelStatus`='DELIVERED' OR cn.`courierDeliveredAt` IS NOT NULL THEN bc.`componentBaseQuantity`*(ii.`baseQuantity`-ii.`returnedBaseQuantity`) ELSE 0 END,
 	bc.`componentBaseQuantity`*ii.`returnedRestockedBaseQuantity`, bc.`componentBaseQuantity`*(ii.`returnedBaseQuantity`-ii.`returnedRestockedBaseQuantity`),
 	CASE WHEN bc.`issueUnitCost` IS NOT NULL AND bc.`issueLineCost` IS NOT NULL
-		AND (SELECT COUNT(*) FROM `inventoryMovements` imc WHERE imc.`referenceType`='INVOICE' AND imc.`referenceId`=ii.`invoiceId` AND imc.`variantId`=bc.`componentVariantId` AND imc.`movementType`='OUT') = 1
+		AND evidence.`reviewStatus`='VERIFIED'
 		THEN 'VERIFIED' ELSE 'REVIEW_REQUIRED' END,
-	CASE WHEN bc.`issueUnitCost` IS NULL OR bc.`issueLineCost` IS NULL THEN 'لقطة تكلفة مكوّن البكج التاريخية مفقودة؛ يمنع التخمين بسعر اليوم' ELSE 'تعذر ربط حركة صرف مكوّن البكج الأصلية الوحيدة؛ يلزم تدقيق' END,
+	CASE WHEN bc.`issueUnitCost` IS NULL OR bc.`issueLineCost` IS NULL THEN 'لقطة تكلفة مكوّن البكج التاريخية مفقودة؛ يمنع التخمين بسعر اليوم' WHEN evidence.`reviewStatus`='VERIFIED' THEN NULL ELSE COALESCE(evidence.`reviewReason`,'تعذر إثبات حركة الصرف المجمعة لمكوّن البكج؛ يلزم تدقيق') END,
 	cn.`dispatchedBy`, cn.`dispatchedBy`
 FROM `deliveryConsignments` cn
 LEFT JOIN `deliveryShipmentMembers` sm ON sm.`consignmentId`=cn.`id`
 JOIN `invoiceItems` ii ON ii.`invoiceId`=cn.`invoiceId`
 JOIN `invoiceItemBundleComponents` bc ON bc.`invoiceItemId`=ii.`id`
+LEFT JOIN `_delivery0405PhysicalMovementEvidence` evidence ON evidence.`invoiceId`=ii.`invoiceId` AND evidence.`variantId`=bc.`componentVariantId`
 WHERE cn.`consignmentStatus` IN ('DISPATCHED','DELIVERED','PARTIAL');
+--> statement-breakpoint
+
+DROP TEMPORARY TABLE IF EXISTS `_delivery0405PhysicalMovementEvidence`;
 --> statement-breakpoint
 
 -- Customized work-order output is custody only; it never enters branchStock as a finished SKU.

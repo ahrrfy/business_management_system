@@ -123,6 +123,24 @@ describe("delivery physical custody", () => {
       issueLineCost: "300.00",
     });
     await db()
+      .insert(s.invoiceItemServiceMaterials)
+      .values([
+        {
+          invoiceItemId: 13,
+          materialVariantId: 1,
+          baseQuantity: 3,
+          unitCost: "100.00",
+          lineCost: "300.00",
+        },
+        {
+          invoiceItemId: 13,
+          materialVariantId: 3,
+          baseQuantity: 4,
+          unitCost: "50.00",
+          lineCost: "200.00",
+        },
+      ]);
+    await db()
       .insert(s.inventoryMovements)
       .values([
         {
@@ -131,7 +149,7 @@ describe("delivery physical custody", () => {
           branchId: 1,
           movementType: "OUT",
           quantity: 2,
-          referenceType: "INVOICE",
+          referenceType: "PRINT_SALE",
           referenceId: 1,
           createdBy: 1,
         },
@@ -141,7 +159,27 @@ describe("delivery physical custody", () => {
           branchId: 1,
           movementType: "OUT",
           quantity: 6,
-          referenceType: "INVOICE",
+          referenceType: "PRINT_SALE",
+          referenceId: 1,
+          createdBy: 1,
+        },
+        {
+          id: 33,
+          variantId: 1,
+          branchId: 1,
+          movementType: "OUT",
+          quantity: 3,
+          referenceType: "PRINT_SALE",
+          referenceId: 1,
+          createdBy: 1,
+        },
+        {
+          id: 34,
+          variantId: 3,
+          branchId: 1,
+          movementType: "OUT",
+          quantity: 4,
+          referenceType: "PRINT_SALE",
           referenceId: 1,
           createdBy: 1,
         },
@@ -184,6 +222,7 @@ describe("delivery physical custody", () => {
         qty: row.baseQuantity,
         carrier: row.carrierCustodyBaseQuantity,
         value: row.originalIssueValue,
+        movementId: row.originalMovementId,
         review: row.reviewStatus,
       })),
     ).toEqual(
@@ -193,6 +232,7 @@ describe("delivery physical custody", () => {
           qty: 2,
           carrier: 2,
           value: "200.00",
+          movementId: 31,
           review: "VERIFIED",
         },
         {
@@ -200,12 +240,13 @@ describe("delivery physical custody", () => {
           qty: 6,
           carrier: 6,
           value: "300.00",
+          movementId: 32,
           review: "VERIFIED",
         },
       ]),
     );
     expect(await db().select().from(deliveryCustodyEvents)).toHaveLength(2);
-    expect(await db().select().from(s.inventoryMovements)).toHaveLength(2);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(4);
   });
 
   it("keeps customized work-order output out of branch stock", async () => {

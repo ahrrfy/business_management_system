@@ -7,7 +7,11 @@ import {
 import { buildDeliveryManifestDoc } from "./deliveryDocs";
 import { buildRemittanceReceiptDoc } from "@/components/delivery/printRemittanceReceipt";
 import { docToHtml } from "./render";
-import { shippingLabelHtml } from "./shippingLabel";
+import {
+  resolveShippingLabelPaymentState,
+  resolveShippingLabelQrTarget,
+  shippingLabelHtml,
+} from "./shippingLabel";
 
 const aftercare: DispatchSlipData = {
   consignmentNumber: "AC-19",
@@ -99,6 +103,30 @@ describe("source-aware delivery slip", () => {
 });
 
 describe("unified delivery documents", () => {
+  it("keeps prepaid goods COD when the courier still collects its fee", () => {
+    const prepaidGoodsCod = 0;
+    const courierFee = 5_000;
+    expect(
+      resolveShippingLabelPaymentState(prepaidGoodsCod + courierFee),
+    ).toBe("COD");
+    expect(resolveShippingLabelPaymentState(0)).toBe("PREPAID");
+  });
+
+  it("creates QR only for the real ORD verification route", () => {
+    expect(
+      resolveShippingLabelQrTarget(
+        { orderNumber: "ORD-100009" },
+        "https://srv1548487.hstgr.cloud",
+      ),
+    ).toBe("https://srv1548487.hstgr.cloud/verify?ref=ORD-100009");
+    expect(
+      resolveShippingLabelQrTarget(
+        { orderNumber: "CN-1-20260917-00275" },
+        "https://srv1548487.hstgr.cloud",
+      ),
+    ).toBeNull();
+  });
+
   it("renders a real handover table with source, recipient and phone", () => {
     const doc = buildDeliveryManifestDoc(
       { name: "شركة النقل", phone: "07800000000" },
@@ -167,10 +195,13 @@ describe("unified delivery documents", () => {
     expect(doc).not.toBeNull();
     expect(doc?.itemBlocks?.[0]?.name).toContain("INV-1");
     expect(doc?.itemBlocks?.[0]?.quantityPrice).toContain("07700000000");
+    expect(doc?.itemBlocks?.[0]?.total).toBe("مخصص 50,000\nنقد 48,000");
     expect(doc?.meta?.join(" ")).toContain("طريقة الدفع: نقدي");
     expect(doc?.meta?.join(" ")).toContain("نسخة معاد طباعتها");
     expect(doc?.barcodeSet?.qrPayload).toBe("");
     const html = await docToHtml(doc!);
+    expect(html).toContain("مخصص 50,000<br>نقد 48,000");
+    expect(html).toContain("overflow-wrap:anywhere");
     expect(html).toContain('class="bc-128"');
     expect(html).not.toContain('class="bc-qr"');
     expect(html).not.toContain("/remittance/DR-17");
