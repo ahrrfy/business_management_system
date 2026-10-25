@@ -77,10 +77,10 @@ export function resolveShippingLabelQrTarget(
   if (o.qrUrl?.trim()) return o.qrUrl.trim();
   const orderNumber = o.orderNumber.trim();
   const verificationOrigin = origin.trim().replace(/\/+$/, "");
-  // ORD وحده يملك مسار تحقق عام حقيقياً في التطبيق. بقية الأرقام، ومنها CN،
-  // تبقى Code128 فقط ما لم يصل رابط QR صريح أو إحداثيات خريطة.
+  // مسار التحقق يدعم مراجع الطلبات والفواتير وأوامر الشغل والشراء.
+  // أرقام الإرساليات CN تبقى Code128 ما لم يصل رابط QR صريح أو خريطة.
   if (
-    /^ORD-[A-Z0-9][A-Z0-9-]*$/i.test(orderNumber) &&
+    /^(?:ORD|INV|WO|PO)-[A-Z0-9][A-Z0-9-]*$/i.test(orderNumber) &&
     /^https?:\/\//i.test(verificationOrigin)
   )
     return `${verificationOrigin}/verify?ref=${encodeURIComponent(orderNumber)}`;

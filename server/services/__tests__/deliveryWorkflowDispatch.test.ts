@@ -428,6 +428,117 @@ describe("atomic barcode batch dispatch", () => {
     );
     expect(await db().select().from(s.invoices)).toHaveLength(2);
   });
+  it.each([
+    { label: "single", invoiceCount: 1 },
+    { label: "grouped", invoiceCount: 2 },
+  ])(
+    "freezes final $label goods and service COD after claims and preserves it on replay",
+    async ({ invoiceCount }) => {
+      await db()
+        .update(s.invoices)
+        .set({
+          subtotal: invoiceCount === 1 ? "10000" : "5000",
+          total: invoiceCount === 1 ? "10000" : "5000",
+          paidAmount: "0",
+          status: "PENDING",
+          paymentMode: "COD",
+        })
+        .where(eq(s.invoices.id, 1));
+      if (invoiceCount === 2)
+        await db()
+          .update(s.invoices)
+          .set({
+            subtotal: "5000",
+            total: "5000",
+            paidAmount: "0",
+            status: "PENDING",
+            paymentMode: "COD",
+          })
+          .where(eq(s.invoices.id, 2));
+      await db()
+        .update(s.customers)
+        .set({ currentBalance: "10000" })
+        .where(eq(s.customers.id, 1));
+      const charge = await createFulfillmentCharge(
+        {
+          branchId: 1,
+          customerId: 1,
+          category: "SERVICE",
+          description: "خدمة ملحقة بالشحنة",
+          amount: "5000",
+          externalCost: "0",
+          clientRequestId: `snapshot-service-${invoiceCount}`,
+        },
+        actor,
+      );
+      await approveFulfillmentCharge(
+        {
+          id: charge.id,
+          expectedVersion: charge.version,
+          clientRequestId: `snapshot-service-approve-${invoiceCount}`,
+        },
+        actor,
+      );
+      const chargePreview = await previewWorkflowScan(
+        { raw: `CHG-${charge.id}`, station: "dispatch", branchId: 1 },
+        actor,
+      );
+      const payload = await input();
+      payload.sources = payload.sources.slice(0, invoiceCount);
+      payload.sources.push({
+        kind: "charge",
+        id: charge.id,
+        expectedVersion: chargePreview.source.version,
+      });
+      payload.clientRequestId = `snapshot-final-claims-${invoiceCount}`;
+      const result = await dispatchWorkflowBatch(payload, actor);
+      const consignments = await db()
+        .select()
+        .from(s.deliveryConsignments)
+        .where(
+          eq(
+            s.deliveryConsignments.fulfillmentRequestId,
+            result.fulfillmentRequestId!,
+          ),
+        );
+      expect(
+        consignments.reduce((sum, row) => sum + Number(row.codAmount), 0),
+      ).toBe(15_000);
+      const snapshots = await db()
+        .select()
+        .from(deliveryDocumentSnapshots)
+        .where(eq(deliveryDocumentSnapshots.sourceId, result.consignmentId));
+      expect(snapshots).toHaveLength(2);
+      for (const snapshot of snapshots) {
+        const document = snapshot.payload as {
+          invoiceIds: number[];
+          money: {
+            codAmount: string;
+            currentTotal: string;
+            paidAmount: string;
+          };
+        };
+        expect(document.invoiceIds).toEqual(
+          invoiceCount === 1 ? [1] : [1, 2],
+        );
+        expect(document.money).toMatchObject({
+          codAmount: "15000.00",
+          currentTotal: "10000.00",
+          paidAmount: "0.00",
+        });
+      }
+      expect(await dispatchWorkflowBatch(payload, actor)).toMatchObject({
+        consignmentId: result.consignmentId,
+        idempotentReplay: true,
+      });
+      expect(
+        await db()
+          .select()
+          .from(deliveryDocumentSnapshots)
+          .where(eq(deliveryDocumentSnapshots.sourceId, result.consignmentId)),
+      ).toEqual(snapshots);
+    },
+  );
   it("requires a classified reason for barcode partial collection and replays collection and remittance without duplicate AR or custody", async () => {
     await db()
       .update(s.invoices)
@@ -591,6 +702,22 @@ describe("atomic barcode batch dispatch", () => {
         codAmount: "0.00",
         endCustomerId: customerId,
       });
+      const snapshots = await db()
+        .select()
+        .from(deliveryDocumentSnapshots)
+        .where(eq(deliveryDocumentSnapshots.sourceId, result.consignmentId));
+      expect(snapshots).toHaveLength(2);
+      for (const snapshot of snapshots) {
+        const document = snapshot.payload as {
+          invoiceIds: number[];
+          money: { codAmount: string; currentTotal: string };
+        };
+        expect(document.invoiceIds).toEqual([]);
+        expect(document.money).toMatchObject({
+          codAmount: "0.00",
+          currentTotal: "0.00",
+        });
+      }
       expect(await noDuplicateEffects()).toEqual(before);
       expect(await db().select().from(s.customers)).toEqual(customersBefore);
       expect(await db().select().from(fulfillmentChargePayments)).toHaveLength(

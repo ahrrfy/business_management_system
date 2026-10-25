@@ -153,6 +153,42 @@ CREATE TABLE IF NOT EXISTS `deliveryDocumentPrints` (
 );
 --> statement-breakpoint
 
+-- A return declaration does not move physical custody.  Only the immutable,
+-- source-bound receipt event proves that the shop actually received and
+-- inspected the parcel.  Aftercare has its own equally definitive writer/event.
+DROP TEMPORARY TABLE IF EXISTS `_delivery0405PhysicalReturnReceipt`;
+--> statement-breakpoint
+CREATE TEMPORARY TABLE `_delivery0405PhysicalReturnReceipt` AS
+SELECT DISTINCT cn.`id` AS `consignmentId`
+FROM `deliveryConsignments` cn
+JOIN `deliveryEvents` receipt ON receipt.`consignmentId`=cn.`id`
+WHERE cn.`parcelStatus`='RETURNED' AND cn.`returnedAt` IS NOT NULL AND (
+	(receipt.`eventType`='WORKFLOW_RETURN_RECEIVED'
+		AND JSON_UNQUOTE(JSON_EXTRACT(receipt.`payload`, '$.version'))='1'
+		AND JSON_UNQUOTE(JSON_EXTRACT(receipt.`payload`, '$.inspected'))='true'
+		AND JSON_UNQUOTE(JSON_EXTRACT(receipt.`payload`, '$.branchId'))=CAST(cn.`branchId` AS CHAR)
+		AND JSON_UNQUOTE(JSON_EXTRACT(receipt.`payload`, '$.sourceType'))=cn.`sourceType`
+		AND JSON_UNQUOTE(JSON_EXTRACT(receipt.`payload`, '$.sourceId'))=CAST(cn.`sourceId` AS CHAR)
+		AND NULLIF(JSON_UNQUOTE(JSON_EXTRACT(receipt.`payload`, '$.invoiceId')), 'null') <=> CAST(cn.`invoiceId` AS CHAR)
+		AND NULLIF(JSON_UNQUOTE(JSON_EXTRACT(receipt.`payload`, '$.workOrderId')), 'null') <=> CAST(cn.`workOrderId` AS CHAR)
+		AND NULLIF(JSON_UNQUOTE(JSON_EXTRACT(receipt.`payload`, '$.fulfillmentRequestId')), 'null') <=> CAST(cn.`fulfillmentRequestId` AS CHAR)
+		AND JSON_UNQUOTE(JSON_EXTRACT(receipt.`payload`, '$.claimVersion'))=CAST(cn.`codClaimVersion` AS CHAR)
+		AND JSON_UNQUOTE(JSON_EXTRACT(receipt.`payload`, '$.dispatchedAt'))=DATE_FORMAT(cn.`dispatchedAt`, '%Y-%m-%dT%H:%i:%s.000Z')
+		AND CHAR_LENGTH(TRIM(JSON_UNQUOTE(JSON_EXTRACT(receipt.`payload`, '$.evidence')))) >= 5)
+	OR (receipt.`eventType`='AFTERCARE_RETURNED'
+		AND cn.`sourceType`='AFTERCARE_EXECUTION'
+		AND JSON_UNQUOTE(JSON_EXTRACT(receipt.`payload`, '$.aftercareExecutionId'))=CAST(cn.`aftercareExecutionId` AS CHAR)
+		AND CHAR_LENGTH(TRIM(JSON_UNQUOTE(JSON_EXTRACT(receipt.`payload`, '$.proof')))) > 0)
+)
+	AND NOT EXISTS (
+		SELECT 1 FROM `deliveryEvents` later
+		WHERE later.`consignmentId`=cn.`id` AND later.`id`>receipt.`id`
+			AND later.`eventType` IN ('PICKED_UP','OUT_FOR_DELIVERY','REASSIGNED','ASSIGNMENT_REACTIVATED','DELIVERED','AFTERCARE_DELIVERED','WORKFLOW_RETURN_RECEIVED','AFTERCARE_RETURNED')
+	);
+--> statement-breakpoint
+ALTER TABLE `_delivery0405PhysicalReturnReceipt` ADD PRIMARY KEY (`consignmentId`);
+--> statement-breakpoint
+
 -- The writers aggregate every physical use of one variant (plain lines plus
 -- frozen bundle components) into the first OUT movement, then write one later
 -- aggregate movement for service materials.  Match that structural contract;
@@ -195,14 +231,13 @@ FROM (
 		FROM `invoiceItems` ii
 		JOIN `productVariants` pv ON pv.`id`=ii.`variantId`
 		JOIN `products` p ON p.`id`=pv.`productId`
-		JOIN (SELECT DISTINCT `invoiceId` FROM `deliveryConsignments` WHERE `invoiceId` IS NOT NULL AND `consignmentStatus` IN ('DISPATCHED','DELIVERED','PARTIAL')) openInvoices ON openInvoices.`invoiceId`=ii.`invoiceId`
 		WHERE p.`isService`=0 AND p.`isBundle`=0 AND COALESCE(p.`productType`,'')<>'DIGITAL_CARD'
 		UNION ALL
 		SELECT ii.`invoiceId`, bc.`componentVariantId`, bc.`componentBaseQuantity`*ii.`baseQuantity`
 		FROM `invoiceItems` ii
 		JOIN `invoiceItemBundleComponents` bc ON bc.`invoiceItemId`=ii.`id`
-		JOIN (SELECT DISTINCT `invoiceId` FROM `deliveryConsignments` WHERE `invoiceId` IS NOT NULL AND `consignmentStatus` IN ('DISPATCHED','DELIVERED','PARTIAL')) openInvoices ON openInvoices.`invoiceId`=ii.`invoiceId`
 	) physicalLines
+	JOIN (SELECT DISTINCT `invoiceId` FROM `deliveryConsignments` WHERE `invoiceId` IS NOT NULL AND `consignmentStatus` IN ('DISPATCHED','DELIVERED','PARTIAL')) openInvoices ON openInvoices.`invoiceId`=physicalLines.`invoiceId`
 	GROUP BY physicalLines.`invoiceId`, physicalLines.`variantId`
 ) physical
 JOIN `invoices` inv ON inv.`id`=physical.`invoiceId`
@@ -231,22 +266,24 @@ INSERT IGNORE INTO `deliveryCustodyItems` (
 	`consignmentId`,`leaderConsignmentId`,`branchId`,`sourceType`,`sourceId`,`sourceLineKey`,`itemKind`,
 	`invoiceItemId`,`variantId`,`originalMovementId`,`baseQuantity`,`originalIssueUnitCost`,`originalIssueValue`,
 	`preparedHeldBaseQuantity`,`carrierCustodyBaseQuantity`,`customerDeliveredBaseQuantity`,
-	`restockedClosedBaseQuantity`,`damagedClosedBaseQuantity`,`reviewStatus`,`reviewReason`,`createdBy`,`updatedBy`
+	`customerOwnedHeldBaseQuantity`,`restockedClosedBaseQuantity`,`damagedClosedBaseQuantity`,`reviewStatus`,`reviewReason`,`createdBy`,`updatedBy`
 )
 SELECT
 	cn.`id`, COALESCE(sm.`leaderConsignmentId`, cn.`id`), cn.`branchId`, cn.`sourceType`, cn.`sourceId`,
 	CONCAT('II:', ii.`id`), 'STOCKED_ITEM', ii.`id`, ii.`variantId`,
 	evidence.`originalMovementId`,
 	ii.`baseQuantity`, ii.`unitCost`, ii.`lineCost`,
-	CASE WHEN cn.`parcelStatus` IN ('ASSIGNED','ACCEPTED','FAILED') AND cn.`pickedUpAt` IS NULL AND cn.`outForDeliveryAt` IS NULL THEN ii.`baseQuantity`-ii.`returnedBaseQuantity` ELSE 0 END,
-	CASE WHEN (cn.`parcelStatus` NOT IN ('ASSIGNED','ACCEPTED','FAILED','DELIVERED') OR cn.`pickedUpAt` IS NOT NULL OR cn.`outForDeliveryAt` IS NOT NULL) AND cn.`parcelStatus` <> 'DELIVERED' AND cn.`courierDeliveredAt` IS NULL THEN ii.`baseQuantity`-ii.`returnedBaseQuantity` ELSE 0 END,
-	CASE WHEN cn.`parcelStatus`='DELIVERED' OR cn.`courierDeliveredAt` IS NOT NULL THEN ii.`baseQuantity`-ii.`returnedBaseQuantity` ELSE 0 END,
+	CASE WHEN receipt.`consignmentId` IS NULL AND cn.`parcelStatus` IN ('ASSIGNED','ACCEPTED','FAILED') AND cn.`pickedUpAt` IS NULL AND cn.`outForDeliveryAt` IS NULL THEN ii.`baseQuantity`-ii.`returnedBaseQuantity` ELSE 0 END,
+	CASE WHEN receipt.`consignmentId` IS NULL AND (cn.`parcelStatus` NOT IN ('ASSIGNED','ACCEPTED','FAILED','DELIVERED') OR cn.`pickedUpAt` IS NOT NULL OR cn.`outForDeliveryAt` IS NOT NULL) AND cn.`parcelStatus` <> 'DELIVERED' AND cn.`courierDeliveredAt` IS NULL THEN ii.`baseQuantity`-ii.`returnedBaseQuantity` ELSE 0 END,
+	CASE WHEN receipt.`consignmentId` IS NULL AND (cn.`parcelStatus`='DELIVERED' OR cn.`courierDeliveredAt` IS NOT NULL) THEN ii.`baseQuantity`-ii.`returnedBaseQuantity` ELSE 0 END,
+	CASE WHEN receipt.`consignmentId` IS NOT NULL THEN ii.`baseQuantity`-ii.`returnedBaseQuantity` ELSE 0 END,
 	ii.`returnedRestockedBaseQuantity`, ii.`returnedBaseQuantity`-ii.`returnedRestockedBaseQuantity`,
 	COALESCE(evidence.`reviewStatus`,'REVIEW_REQUIRED'),
 	CASE WHEN evidence.`reviewStatus`='VERIFIED' THEN NULL ELSE COALESCE(evidence.`reviewReason`,'تعذر إثبات حركة الصرف المجمعة للبند؛ يمنع أي إرجاع مخزني آلي') END,
 	cn.`dispatchedBy`, cn.`dispatchedBy`
 FROM `deliveryConsignments` cn
 LEFT JOIN `deliveryShipmentMembers` sm ON sm.`consignmentId`=cn.`id`
+LEFT JOIN `_delivery0405PhysicalReturnReceipt` receipt ON receipt.`consignmentId`=cn.`id`
 JOIN `invoiceItems` ii ON ii.`invoiceId`=cn.`invoiceId`
 JOIN `productVariants` pv ON pv.`id`=ii.`variantId`
 JOIN `products` p ON p.`id`=pv.`productId`
@@ -260,16 +297,17 @@ INSERT IGNORE INTO `deliveryCustodyItems` (
 	`consignmentId`,`leaderConsignmentId`,`branchId`,`sourceType`,`sourceId`,`sourceLineKey`,`itemKind`,
 	`invoiceItemId`,`bundleComponentId`,`variantId`,`originalMovementId`,`baseQuantity`,`originalIssueUnitCost`,`originalIssueValue`,
 	`preparedHeldBaseQuantity`,`carrierCustodyBaseQuantity`,`customerDeliveredBaseQuantity`,
-	`restockedClosedBaseQuantity`,`damagedClosedBaseQuantity`,`reviewStatus`,`reviewReason`,`createdBy`,`updatedBy`
+	`customerOwnedHeldBaseQuantity`,`restockedClosedBaseQuantity`,`damagedClosedBaseQuantity`,`reviewStatus`,`reviewReason`,`createdBy`,`updatedBy`
 )
 SELECT
 	cn.`id`, COALESCE(sm.`leaderConsignmentId`, cn.`id`), cn.`branchId`, cn.`sourceType`, cn.`sourceId`,
 	CONCAT('BC:', bc.`id`), 'BUNDLE_COMPONENT', ii.`id`, bc.`id`, bc.`componentVariantId`,
 	evidence.`originalMovementId`,
 	bc.`componentBaseQuantity`*ii.`baseQuantity`, bc.`issueUnitCost`, bc.`issueLineCost`,
-	CASE WHEN cn.`parcelStatus` IN ('ASSIGNED','ACCEPTED','FAILED') AND cn.`pickedUpAt` IS NULL AND cn.`outForDeliveryAt` IS NULL THEN bc.`componentBaseQuantity`*(ii.`baseQuantity`-ii.`returnedBaseQuantity`) ELSE 0 END,
-	CASE WHEN (cn.`parcelStatus` NOT IN ('ASSIGNED','ACCEPTED','FAILED','DELIVERED') OR cn.`pickedUpAt` IS NOT NULL OR cn.`outForDeliveryAt` IS NOT NULL) AND cn.`parcelStatus` <> 'DELIVERED' AND cn.`courierDeliveredAt` IS NULL THEN bc.`componentBaseQuantity`*(ii.`baseQuantity`-ii.`returnedBaseQuantity`) ELSE 0 END,
-	CASE WHEN cn.`parcelStatus`='DELIVERED' OR cn.`courierDeliveredAt` IS NOT NULL THEN bc.`componentBaseQuantity`*(ii.`baseQuantity`-ii.`returnedBaseQuantity`) ELSE 0 END,
+	CASE WHEN receipt.`consignmentId` IS NULL AND cn.`parcelStatus` IN ('ASSIGNED','ACCEPTED','FAILED') AND cn.`pickedUpAt` IS NULL AND cn.`outForDeliveryAt` IS NULL THEN bc.`componentBaseQuantity`*(ii.`baseQuantity`-ii.`returnedBaseQuantity`) ELSE 0 END,
+	CASE WHEN receipt.`consignmentId` IS NULL AND (cn.`parcelStatus` NOT IN ('ASSIGNED','ACCEPTED','FAILED','DELIVERED') OR cn.`pickedUpAt` IS NOT NULL OR cn.`outForDeliveryAt` IS NOT NULL) AND cn.`parcelStatus` <> 'DELIVERED' AND cn.`courierDeliveredAt` IS NULL THEN bc.`componentBaseQuantity`*(ii.`baseQuantity`-ii.`returnedBaseQuantity`) ELSE 0 END,
+	CASE WHEN receipt.`consignmentId` IS NULL AND (cn.`parcelStatus`='DELIVERED' OR cn.`courierDeliveredAt` IS NOT NULL) THEN bc.`componentBaseQuantity`*(ii.`baseQuantity`-ii.`returnedBaseQuantity`) ELSE 0 END,
+	CASE WHEN receipt.`consignmentId` IS NOT NULL THEN bc.`componentBaseQuantity`*(ii.`baseQuantity`-ii.`returnedBaseQuantity`) ELSE 0 END,
 	bc.`componentBaseQuantity`*ii.`returnedRestockedBaseQuantity`, bc.`componentBaseQuantity`*(ii.`returnedBaseQuantity`-ii.`returnedRestockedBaseQuantity`),
 	CASE WHEN bc.`issueUnitCost` IS NOT NULL AND bc.`issueLineCost` IS NOT NULL
 		AND evidence.`reviewStatus`='VERIFIED'
@@ -278,6 +316,7 @@ SELECT
 	cn.`dispatchedBy`, cn.`dispatchedBy`
 FROM `deliveryConsignments` cn
 LEFT JOIN `deliveryShipmentMembers` sm ON sm.`consignmentId`=cn.`id`
+LEFT JOIN `_delivery0405PhysicalReturnReceipt` receipt ON receipt.`consignmentId`=cn.`id`
 JOIN `invoiceItems` ii ON ii.`invoiceId`=cn.`invoiceId`
 JOIN `invoiceItemBundleComponents` bc ON bc.`invoiceItemId`=ii.`id`
 LEFT JOIN `_delivery0405PhysicalMovementEvidence` evidence ON evidence.`invoiceId`=ii.`invoiceId` AND evidence.`variantId`=bc.`componentVariantId`
@@ -291,17 +330,19 @@ DROP TEMPORARY TABLE IF EXISTS `_delivery0405PhysicalMovementEvidence`;
 INSERT IGNORE INTO `deliveryCustodyItems` (
 	`consignmentId`,`leaderConsignmentId`,`branchId`,`sourceType`,`sourceId`,`sourceLineKey`,`itemKind`,
 	`baseQuantity`,`originalIssueUnitCost`,`originalIssueValue`,`preparedHeldBaseQuantity`,
-	`carrierCustodyBaseQuantity`,`customerDeliveredBaseQuantity`,`reviewStatus`,`createdBy`,`updatedBy`
+	`carrierCustodyBaseQuantity`,`customerDeliveredBaseQuantity`,`customerOwnedHeldBaseQuantity`,`reviewStatus`,`createdBy`,`updatedBy`
 )
 SELECT cn.`id`, COALESCE(sm.`leaderConsignmentId`, cn.`id`), cn.`branchId`, cn.`sourceType`, cn.`sourceId`,
 	CONCAT('WO:', wo.`id`, ':OUTPUT'), 'WORK_ORDER_OUTPUT', GREATEST(wo.`quantity`,1),
 	ROUND(COALESCE(inv.`costTotal`,0)/GREATEST(wo.`quantity`,1),2), COALESCE(inv.`costTotal`,0),
-	CASE WHEN cn.`parcelStatus` IN ('ASSIGNED','ACCEPTED','FAILED') AND cn.`pickedUpAt` IS NULL AND cn.`outForDeliveryAt` IS NULL THEN GREATEST(wo.`quantity`,1) ELSE 0 END,
-	CASE WHEN (cn.`parcelStatus` NOT IN ('ASSIGNED','ACCEPTED','FAILED','DELIVERED') OR cn.`pickedUpAt` IS NOT NULL OR cn.`outForDeliveryAt` IS NOT NULL) AND cn.`parcelStatus` <> 'DELIVERED' AND cn.`courierDeliveredAt` IS NULL THEN GREATEST(wo.`quantity`,1) ELSE 0 END,
-	CASE WHEN cn.`parcelStatus`='DELIVERED' OR cn.`courierDeliveredAt` IS NOT NULL THEN GREATEST(wo.`quantity`,1) ELSE 0 END,
+	CASE WHEN receipt.`consignmentId` IS NULL AND cn.`parcelStatus` IN ('ASSIGNED','ACCEPTED','FAILED') AND cn.`pickedUpAt` IS NULL AND cn.`outForDeliveryAt` IS NULL THEN GREATEST(wo.`quantity`,1) ELSE 0 END,
+	CASE WHEN receipt.`consignmentId` IS NULL AND (cn.`parcelStatus` NOT IN ('ASSIGNED','ACCEPTED','FAILED','DELIVERED') OR cn.`pickedUpAt` IS NOT NULL OR cn.`outForDeliveryAt` IS NOT NULL) AND cn.`parcelStatus` <> 'DELIVERED' AND cn.`courierDeliveredAt` IS NULL THEN GREATEST(wo.`quantity`,1) ELSE 0 END,
+	CASE WHEN receipt.`consignmentId` IS NULL AND (cn.`parcelStatus`='DELIVERED' OR cn.`courierDeliveredAt` IS NOT NULL) THEN GREATEST(wo.`quantity`,1) ELSE 0 END,
+	CASE WHEN receipt.`consignmentId` IS NOT NULL THEN GREATEST(wo.`quantity`,1) ELSE 0 END,
 	'VERIFIED', cn.`dispatchedBy`, cn.`dispatchedBy`
 FROM `deliveryConsignments` cn
 LEFT JOIN `deliveryShipmentMembers` sm ON sm.`consignmentId`=cn.`id`
+LEFT JOIN `_delivery0405PhysicalReturnReceipt` receipt ON receipt.`consignmentId`=cn.`id`
 JOIN `workOrders` wo ON wo.`id`=cn.`workOrderId`
 LEFT JOIN `invoices` inv ON inv.`id`=cn.`invoiceId`
 WHERE cn.`sourceType`='WORK_ORDER' AND cn.`consignmentStatus` IN ('DISPATCHED','DELIVERED','PARTIAL');
@@ -312,22 +353,35 @@ INSERT IGNORE INTO `deliveryCustodyItems` (
 	`consignmentId`,`leaderConsignmentId`,`branchId`,`sourceType`,`sourceId`,`sourceLineKey`,`itemKind`,
 	`variantId`,`originalMovementId`,`baseQuantity`,`originalIssueUnitCost`,`originalIssueValue`,
 	`preparedHeldBaseQuantity`,`carrierCustodyBaseQuantity`,`customerDeliveredBaseQuantity`,
-	`returnedPendingInspectionBaseQuantity`,`reviewStatus`,`reviewReason`,`createdBy`,`updatedBy`
+	`returnedPendingInspectionBaseQuantity`,`customerOwnedHeldBaseQuantity`,`reviewStatus`,`reviewReason`,`createdBy`,`updatedBy`
 )
 SELECT cn.`id`, COALESCE(sm.`leaderConsignmentId`, cn.`id`), cn.`branchId`, cn.`sourceType`, cn.`sourceId`,
 	CONCAT('AE:', ael.`id`), 'AFTERCARE_OUTPUT', ael.`variantId`, ael.`movementId`, ael.`baseQuantity`,
 	ael.`unitCost`, ael.`lineCost`,
-	CASE WHEN cn.`parcelStatus` IN ('ASSIGNED','ACCEPTED','FAILED') AND cn.`pickedUpAt` IS NULL AND cn.`outForDeliveryAt` IS NULL THEN ael.`baseQuantity`-ael.`returnedBaseQuantity` ELSE 0 END,
-	CASE WHEN (cn.`parcelStatus` NOT IN ('ASSIGNED','ACCEPTED','FAILED','DELIVERED') OR cn.`pickedUpAt` IS NOT NULL OR cn.`outForDeliveryAt` IS NOT NULL) AND cn.`parcelStatus` <> 'DELIVERED' AND cn.`courierDeliveredAt` IS NULL THEN ael.`baseQuantity`-ael.`returnedBaseQuantity` ELSE 0 END,
-	CASE WHEN cn.`parcelStatus`='DELIVERED' OR cn.`courierDeliveredAt` IS NOT NULL THEN ael.`baseQuantity`-ael.`returnedBaseQuantity` ELSE 0 END,
-	ael.`returnedBaseQuantity`,
+	CASE WHEN receipt.`consignmentId` IS NULL AND cn.`parcelStatus` IN ('ASSIGNED','ACCEPTED','FAILED') AND cn.`pickedUpAt` IS NULL AND cn.`outForDeliveryAt` IS NULL THEN ael.`baseQuantity`-ael.`returnedBaseQuantity` ELSE 0 END,
+	CASE WHEN receipt.`consignmentId` IS NULL AND (cn.`parcelStatus` NOT IN ('ASSIGNED','ACCEPTED','FAILED','DELIVERED') OR cn.`pickedUpAt` IS NOT NULL OR cn.`outForDeliveryAt` IS NOT NULL) AND cn.`parcelStatus` <> 'DELIVERED' AND cn.`courierDeliveredAt` IS NULL THEN ael.`baseQuantity`-ael.`returnedBaseQuantity` ELSE 0 END,
+	CASE WHEN receipt.`consignmentId` IS NULL AND (cn.`parcelStatus`='DELIVERED' OR cn.`courierDeliveredAt` IS NOT NULL) THEN ael.`baseQuantity`-ael.`returnedBaseQuantity` ELSE 0 END,
+	CASE WHEN receipt.`consignmentId` IS NULL THEN ael.`returnedBaseQuantity` ELSE 0 END,
+	CASE WHEN receipt.`consignmentId` IS NOT NULL THEN ael.`baseQuantity` ELSE 0 END,
 	CASE WHEN ael.`variantId` IS NULL OR ael.`lineCost`=0 OR ael.`movementId` IS NOT NULL THEN 'VERIFIED' ELSE 'REVIEW_REQUIRED' END,
 	CASE WHEN ael.`variantId` IS NOT NULL AND ael.`lineCost`>0 AND ael.`movementId` IS NULL THEN 'دفعة معالجة مادية بلا حركة صرف أصلية؛ يلزم تدقيق قبل الإرجاع' ELSE NULL END,
 	cn.`dispatchedBy`, cn.`dispatchedBy`
 FROM `deliveryConsignments` cn
 LEFT JOIN `deliveryShipmentMembers` sm ON sm.`consignmentId`=cn.`id`
+LEFT JOIN `_delivery0405PhysicalReturnReceipt` receipt ON receipt.`consignmentId`=cn.`id`
 JOIN `aftercareExecutionLines` ael ON ael.`executionId`=cn.`aftercareExecutionId` AND ael.`kind`='OUTPUT'
-WHERE cn.`sourceType`='AFTERCARE_EXECUTION' AND cn.`consignmentStatus` IN ('DISPATCHED','DELIVERED','PARTIAL');
+JOIN `aftercareExecutions` ae ON ae.`id`=cn.`aftercareExecutionId`
+JOIN `aftercareCases` ac ON ac.`id`=ae.`caseId`
+WHERE cn.`sourceType`='AFTERCARE_EXECUTION' AND (
+	cn.`consignmentStatus` IN ('DISPATCHED','DELIVERED','PARTIAL')
+	OR (cn.`consignmentStatus`='RETURNED' AND receipt.`consignmentId` IS NOT NULL
+		AND ae.`status`='RETURNED' AND ac.`status`='IN_PROGRESS'
+		AND ael.`returnedBaseQuantity`=ael.`baseQuantity` AND ael.`settledBaseQuantity`=0
+		AND NOT EXISTS (SELECT 1 FROM `aftercareExecutionLines` reused WHERE reused.`reusedFromLineId`=ael.`id`))
+);
+--> statement-breakpoint
+
+DROP TEMPORARY TABLE IF EXISTS `_delivery0405PhysicalReturnReceipt`;
 --> statement-breakpoint
 
 -- One immutable cut-over event per non-zero quantity bucket.

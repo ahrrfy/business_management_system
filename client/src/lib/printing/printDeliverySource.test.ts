@@ -112,13 +112,19 @@ describe("unified delivery documents", () => {
     expect(resolveShippingLabelPaymentState(0)).toBe("PREPAID");
   });
 
-  it("creates QR only for the real ORD verification route", () => {
-    expect(
-      resolveShippingLabelQrTarget(
-        { orderNumber: "ORD-100009" },
-        "https://srv1548487.hstgr.cloud",
-      ),
-    ).toBe("https://srv1548487.hstgr.cloud/verify?ref=ORD-100009");
+  it.each(["ORD-100009", "WO-10001", "INV-1-20260806-00068", "PO-2026-001"])(
+    "preserves the supported verification route for %s",
+    (orderNumber) => {
+      expect(
+        resolveShippingLabelQrTarget(
+          { orderNumber },
+          "https://srv1548487.hstgr.cloud",
+        ),
+      ).toBe(`https://srv1548487.hstgr.cloud/verify?ref=${orderNumber}`);
+    },
+  );
+
+  it("omits verification QR for unsupported consignment references", () => {
     expect(
       resolveShippingLabelQrTarget(
         { orderNumber: "CN-1-20260917-00275" },

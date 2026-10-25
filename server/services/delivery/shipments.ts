@@ -340,6 +340,140 @@ async function shipmentDetailsTx(
   };
 }
 
+/** Freeze print evidence only after every member and claim is attached. */
+export async function createFinalShipmentDispatchDocumentSnapshotsTx(
+  tx: Tx,
+  input: {
+    consignmentId: number;
+    clientRequestId: string;
+    operationId: string;
+  },
+  actor: DeliveryTxActor,
+) {
+  const details = await shipmentDetailsTx(tx, input.consignmentId, actor);
+  const leader = details.members.find(
+    (member) => Number(member.id) === Number(details.leaderConsignmentId),
+  );
+  if (!leader)
+    shipmentError(
+      "تعذر تثبيت مستندات الشحنة",
+      "قائد الشحنة غير موجود بعد اكتمال ربط الأعضاء والمطالبات",
+      "حدّث الشحنة وأعد المحاولة قبل الطباعة",
+      "CONFLICT",
+    );
+  const invoiceIds = Array.from(
+    new Set(
+      details.members.flatMap((member) =>
+        member.invoiceId == null ? [] : [Number(member.invoiceId)],
+      ),
+    ),
+  ).sort((a, b) => a - b);
+  const invoiceRows = invoiceIds.length
+    ? await tx
+        .select()
+        .from(invoices)
+        .where(inArray(invoices.id, invoiceIds))
+        .orderBy(asc(invoices.id))
+        .for("share")
+    : [];
+  if (invoiceRows.length !== invoiceIds.length)
+    shipmentError(
+      "تعذر تثبيت مستندات الشحنة",
+      "إحدى فواتير الشحنة مفقودة عند تثبيت اللقطة النهائية",
+      "حدّث الشحنة وأعد المحاولة قبل الطباعة",
+      "CONFLICT",
+    );
+  const [party] = await tx
+    .select({ id: deliveryParties.id, name: deliveryParties.name })
+    .from(deliveryParties)
+    .where(eq(deliveryParties.id, leader.partyId))
+    .for("share")
+    .limit(1);
+  if (!party)
+    shipmentError(
+      "تعذر تثبيت مستندات الشحنة",
+      "جهة التوصيل المرتبطة بالإرسالية غير موجودة",
+      "راجع جهة التوصيل قبل الطباعة",
+      "CONFLICT",
+    );
+  const currentTotal = invoiceRows.reduce(
+    (sum, invoice) =>
+      sum.plus(money(invoice.total).minus(money(invoice.returnedTotal ?? "0"))),
+    money(0),
+  );
+  const paidAmount = invoiceRows.reduce(
+    (sum, invoice) => sum.plus(money(invoice.paidAmount ?? "0")),
+    money(0),
+  );
+  const eventKey = `${input.operationId}:${input.clientRequestId}:${leader.id}`;
+  return createShipmentDispatchDocumentSnapshotsTx(tx, {
+    consignmentId: Number(leader.id),
+    branchId: Number(leader.branchId),
+    shiftId:
+      invoiceRows[0]?.shiftId == null ? null : Number(invoiceRows[0].shiftId),
+    eventKey,
+    eventOccurredAt: leader.dispatchedAt,
+    createdBy: actor.userId,
+    payload: {
+      schemaVersion: 1,
+      operationId: `${input.operationId}:${input.clientRequestId}`,
+      eventOccurredAt: leader.dispatchedAt.toISOString(),
+      evidence: {
+        mode: "COMMITTED_DISPATCH_EVENT",
+        eventKey,
+        unavailableFields: [],
+      },
+      shipment: {
+        consignmentId: Number(leader.id),
+        consignmentNumber: leader.consignmentNumber,
+        fulfillmentRequestId: leader.fulfillmentRequestId,
+        branchId: Number(leader.branchId),
+        partyId: Number(leader.partyId),
+        assignedUserId: leader.assignedUserId,
+        sourceType: leader.sourceType,
+        sourceId: Number(leader.sourceId),
+        members: details.members.map((member) => ({
+          id: Number(member.id),
+          consignmentNumber: member.consignmentNumber,
+          invoiceId:
+            member.invoiceId == null ? null : Number(member.invoiceId),
+          sourceType: member.sourceType,
+          sourceId: Number(member.sourceId),
+        })),
+      },
+      party: { id: Number(party.id), name: party.name },
+      recipient: {
+        name: leader.recipientName,
+        phone: leader.recipientPhone,
+        address: leader.deliveryAddress,
+        governorate: leader.governorate,
+      },
+      money: {
+        codAmount: details.codAmount,
+        deliveryFee: details.deliveryFee,
+        feeCollection: leader.feeCollection,
+        customerCollectionAtDispatch: "0.00",
+        currentTotal: toDbMoney(round2(currentTotal)),
+        paidAmount: toDbMoney(round2(paidAmount)),
+      },
+      invoiceIds,
+      invoices: invoiceRows.map((invoice) => ({
+        id: Number(invoice.id),
+        invoiceNumber: invoice.invoiceNumber,
+        total: String(invoice.total),
+        paidAmount: String(invoice.paidAmount ?? "0.00"),
+        returnedTotal: String(invoice.returnedTotal ?? "0.00"),
+        status: invoice.status,
+        identityEvidence: "EVENT_TIME_RECORD",
+      })),
+      aftercareNotice:
+        leader.sourceType === "AFTERCARE_EXECUTION"
+          ? "تحصيل العميل صفر — الأجرة على المكتبة"
+          : null,
+    },
+  });
+}
+
 export async function getShipmentDetails(
   consignmentId: number,
   actor: DeliveryTxActor,
@@ -383,7 +517,10 @@ export async function dispatchInvoiceShipmentInTx(
   tx: Tx,
   input: DispatchInvoiceShipmentInput,
   actor: DeliveryTxActor,
-  context: { heldReturnReissue?: boolean } = {},
+  context: {
+    heldReturnReissue?: boolean;
+    deferDocumentSnapshots?: boolean;
+  } = {},
 ) {
   const ids = [...input.invoiceIds].sort((a, b) => a - b);
   if (
@@ -660,6 +797,8 @@ export async function dispatchInvoiceShipmentInTx(
   }
   const dispatched: Awaited<ReturnType<typeof dispatchInvoiceInTx>>[] = [];
   const groupedDispatch = ids.length > 1 || memberships.length > 0;
+  const deferMemberSnapshots =
+    groupedDispatch || context.deferDocumentSnapshots === true;
   for (const invoiceId of [
     ...(retainedLeader ? [] : [leaderInvoiceId]),
     ...ids.filter((id) => id !== leaderInvoiceId),
@@ -681,15 +820,19 @@ export async function dispatchInvoiceShipmentInTx(
       },
       actor,
       leaderId == null
-        ? context.heldReturnReissue || groupedDispatch
+        ? context.heldReturnReissue || deferMemberSnapshots
           ? {
               ...(context.heldReturnReissue ? { heldReturnReissue: true } : {}),
-              ...(groupedDispatch ? { deferDocumentSnapshots: true } : {}),
+              ...(deferMemberSnapshots
+                ? { deferDocumentSnapshots: true }
+                : {}),
             }
           : undefined
         : {
             ...(context.heldReturnReissue ? { heldReturnReissue: true } : {}),
-            ...(groupedDispatch ? { deferDocumentSnapshots: true } : {}),
+            ...(deferMemberSnapshots
+              ? { deferDocumentSnapshots: true }
+              : {}),
             shipmentLeaderConsignmentId: leaderId,
             ...(retainedLeader ? { retainedShipmentLeader: true } : {}),
             ...(isLeader ? {} : { sharedTrackingLeaderId: leaderId }),
@@ -706,92 +849,17 @@ export async function dispatchInvoiceShipmentInTx(
   }
   const details = await shipmentDetailsTx(tx, leaderId!, actor);
   let documentSnapshotIds: number[] = [];
-  if (groupedDispatch) {
-    const leader = details.members.find(
-      (member) => Number(member.id) === Number(details.leaderConsignmentId),
-    );
-    if (!leader)
-      shipmentError(
-        "تعذر تثبيت مستندات الشحنة",
-        "قائد الشحنة غير موجود بعد اكتمال ربط الأعضاء",
-        "حدّث الشحنة وأعد المحاولة؛ إن استمر التعارض أبلغ مسؤول النظام",
-        "CONFLICT",
+  if (groupedDispatch && context.deferDocumentSnapshots !== true)
+    documentSnapshotIds =
+      await createFinalShipmentDispatchDocumentSnapshotsTx(
+        tx,
+        {
+          consignmentId: leaderId!,
+          clientRequestId: input.clientRequestId!,
+          operationId: SHIPMENT_OPERATION,
+        },
+        actor,
       );
-    const currentTotal = lockedInvoices.reduce(
-      (sum, invoice) =>
-        sum.plus(
-          money(invoice.total).minus(money(invoice.returnedTotal ?? "0")),
-        ),
-      money(0),
-    );
-    const paidAmount = lockedInvoices.reduce(
-      (sum, invoice) => sum.plus(money(invoice.paidAmount ?? "0")),
-      money(0),
-    );
-    const eventKey = `delivery.dispatchInvoiceShipment:${input.clientRequestId}:${leader.id}`;
-    documentSnapshotIds = await createShipmentDispatchDocumentSnapshotsTx(tx, {
-      consignmentId: Number(leader.id),
-      branchId: Number(leader.branchId),
-      shiftId: anchor.shiftId == null ? null : Number(anchor.shiftId),
-      eventKey,
-      eventOccurredAt: leader.dispatchedAt,
-      createdBy: actor.userId,
-      payload: {
-        schemaVersion: 1,
-        operationId: `${SHIPMENT_OPERATION}:${input.clientRequestId}`,
-        eventOccurredAt: leader.dispatchedAt.toISOString(),
-        evidence: {
-          mode: "COMMITTED_DISPATCH_EVENT",
-          eventKey,
-          unavailableFields: [],
-        },
-        shipment: {
-          consignmentId: Number(leader.id),
-          consignmentNumber: leader.consignmentNumber,
-          fulfillmentRequestId: leader.fulfillmentRequestId,
-          branchId: Number(leader.branchId),
-          partyId: Number(leader.partyId),
-          assignedUserId: leader.assignedUserId,
-          sourceType: leader.sourceType,
-          sourceId: Number(leader.sourceId),
-          members: details.members.map((member) => ({
-            id: Number(member.id),
-            consignmentNumber: member.consignmentNumber,
-            invoiceId:
-              member.invoiceId == null ? null : Number(member.invoiceId),
-            sourceType: member.sourceType,
-            sourceId: Number(member.sourceId),
-          })),
-        },
-        party: { id: Number(party.id), name: party.name },
-        recipient: {
-          name: input.recipientName ?? anchor.contactName ?? null,
-          phone: input.recipientPhone ?? anchor.contactPhone ?? null,
-          address: input.deliveryAddress ?? null,
-          governorate: input.governorate ?? null,
-        },
-        money: {
-          codAmount: details.codAmount,
-          deliveryFee: details.deliveryFee,
-          feeCollection: input.feeCollection ?? "COURIER",
-          customerCollectionAtDispatch: "0.00",
-          currentTotal: toDbMoney(round2(currentTotal)),
-          paidAmount: toDbMoney(round2(paidAmount)),
-        },
-        invoiceIds: lockedInvoices.map((invoice) => Number(invoice.id)),
-        invoices: lockedInvoices.map((invoice) => ({
-          id: Number(invoice.id),
-          invoiceNumber: invoice.invoiceNumber,
-          total: String(invoice.total),
-          paidAmount: String(invoice.paidAmount ?? "0.00"),
-          returnedTotal: String(invoice.returnedTotal ?? "0.00"),
-          status: invoice.status,
-          identityEvidence: "EVENT_TIME_RECORD",
-        })),
-        aftercareNotice: null,
-      },
-    });
-  }
   await tx.insert(auditLogs).values({
     userId: actor.userId,
     branchId: Number(anchor.branchId),
