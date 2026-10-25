@@ -8,8 +8,10 @@
  * كامناً تحت المحاكاة (`vi.mock`).
  *
  * ⭐ ما يفعله هذا الحارس بدقّة:
- *   ١) يفحص كامل شجرة الاختبارات عبر `tsconfig.test.json` (`tsc --noEmit --pretty false`) بذاكرةٍ
- *      مستقلّة (`tsBuildInfoFile` منفصل حتّى لا يفسد كاش `pnpm check` التزايديّ).
+ *   ١) يفحص شجرة الاختبارات عبر `tsconfig.test.json` (`tsc --noEmit --pretty false`):
+ *        • محلياً: يستثمر الكاش التزايديّ المنفصل (`tsbuildinfo.test`) ليكتمل في ثوانٍ بعد التهيئة الأولى.
+ *        • في CI (`CI=true`): يمرّر `--incremental false` لتوفير ~٨٠٠ ميغابايت من رسم البصمات التزايديّ
+ *          على مشغّلات البناء الباردة، مع سقف ذاكرة `10240 MB` يتّسع لشجرة `AppRouter` + ١٤٠٠+ ملفّ اختبار.
  *   ٢) يجمّع عدد أخطاء TypeScript لكلّ ملفّ على حدة (`{ "path/to/file.test.ts": count }`).
  *   ٣) يرفض أيّ ملفّ اختبار جديد يحمل خطأ نوعٍ واحداً، ويرفض ارتفاع أخطاء أيّ ملفّ قديم عن سقفه.
  *   ٤) يفرض المسنَنة التنازلية (`assertMonotonicDescent`) مقابل `origin/main` فلا يُرفَع سقفٌ في PR.
@@ -32,6 +34,7 @@ const BASELINE_PATH = path.join(__dirname, "test-typecheck-baseline.json");
 const BASELINE_REL = "scripts/test-typecheck-baseline.json";
 const TSCONFIG_REL = "tsconfig.test.json";
 const TSC_BIN = path.join(REPO_ROOT, "node_modules", "typescript", "bin", "tsc");
+const DEFAULT_HEAP_MB = 10240;
 
 const UPDATE = process.argv.includes("--update-baseline");
 const SELFTEST_ONLY = process.argv.includes("--selftest");
@@ -45,6 +48,37 @@ export function normalizeDiagnosticPath(rawPath, repoRoot = REPO_ROOT) {
     ? path.relative(repoRoot, cleaned)
     : cleaned;
   return resolved.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+/** يبني معاملات `tsc` مع تعطيل الكاش التزايديّ في بيئات CI الباردة لتقليص استهلاك الذاكرة. */
+export function buildTscArgs(env = process.env) {
+  const isColdCi =
+    env.CI === "true" || env.CI === "1" || env.GITHUB_ACTIONS === "true";
+  const args = [TSC_BIN, "-p", TSCONFIG_REL, "--noEmit", "--pretty", "false"];
+  if (isColdCi) {
+    args.push("--incremental", "false");
+  }
+  return args;
+}
+
+/** يضمن سقف ذاكرة كافٍ لشجرة الاختبارات حتّى لو ورثت العملية سقفاً أدنى من متغيّر خارجيّ. */
+export function resolveCompilerNodeOptions(
+  existingNodeOptions = process.env.NODE_OPTIONS ?? "",
+  minHeapMb = DEFAULT_HEAP_MB,
+) {
+  const cleaned = String(existingNodeOptions ?? "").trim();
+  const match = cleaned.match(/--max-old-space-size=(\d+)/);
+  if (match) {
+    const currentMb = Number.parseInt(match[1], 10);
+    if (Number.isFinite(currentMb) && currentMb >= minHeapMb) {
+      return cleaned;
+    }
+    return cleaned.replace(
+      /--max-old-space-size=\d+/g,
+      `--max-old-space-size=${minHeapMb}`,
+    );
+  }
+  return `${cleaned} --max-old-space-size=${minHeapMb}`.trim();
 }
 
 /**
@@ -149,6 +183,27 @@ function runSelfTest({ quiet }) {
   });
   eq("لا أخطاء إعداد عامة في العيّنة", parsed.globalErrorLines, 0);
 
+  eq(
+    "يرفع سقف الذاكرة الموروث إن كان أقلّ من الحدّ الأدنى الآمن",
+    resolveCompilerNodeOptions("--max-old-space-size=6144", 10240),
+    "--max-old-space-size=10240",
+  );
+  eq(
+    "يحافظ على سقف الذاكرة الأعلى إن وُجد",
+    resolveCompilerNodeOptions("--max-old-space-size=12288", 10240),
+    "--max-old-space-size=12288",
+  );
+  eq(
+    "يعطّل الكاش التزايديّ في CI البارد لتقليص استهلاك الذاكرة",
+    buildTscArgs({ CI: "true" }).slice(-2),
+    ["--incremental", "false"],
+  );
+  eq(
+    "يبقي الكاش التزايديّ محلياً لسرعة التكرار",
+    buildTscArgs({}).includes("--incremental"),
+    false,
+  );
+
   const evalClean = evaluateTestTypeBaseline(
     { "server/a.test.ts": 2 },
     { "server/a.test.ts": 2, "server/cleaned.test.ts": 1 },
@@ -200,14 +255,10 @@ if (!existsSync(TSC_BIN)) {
   process.exit(1);
 }
 
-const existingNodeOptions = process.env.NODE_OPTIONS ?? "";
-const nodeOptions = existingNodeOptions.includes("--max-old-space-size")
-  ? existingNodeOptions
-  : `${existingNodeOptions} --max-old-space-size=6144`.trim();
-
+const nodeOptions = resolveCompilerNodeOptions(process.env.NODE_OPTIONS, DEFAULT_HEAP_MB);
 const tscResult = spawnSync(
   process.execPath,
-  [TSC_BIN, "-p", TSCONFIG_REL, "--noEmit", "--pretty", "false"],
+  buildTscArgs(process.env),
   {
     cwd: REPO_ROOT,
     encoding: "utf8",
