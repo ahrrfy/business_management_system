@@ -340,6 +340,11 @@ describe("RealtimeManager & TabCoordinator — تنسيق التبويبات ا�
       expect(shouldConnectRealtime(publicPath, "localhost")).toBe(false);
     }
 
+    expect(shouldConnectRealtime("/login/", "srv1548487.hstgr.cloud")).toBe(false);
+    expect(shouldConnectRealtime("/login//?next=%2Fpos", "localhost")).toBe(false);
+    expect(shouldConnectRealtime("//", "alarabiya.online")).toBe(false);
+    expect(shouldConnectRealtime("/s/w/", "localhost")).toBe(false);
+
     expect(shouldConnectRealtime("/", "alarabiya.online")).toBe(false);
     expect(shouldConnectRealtime("/", "www.alarabiya.online")).toBe(false);
 
@@ -348,10 +353,22 @@ describe("RealtimeManager & TabCoordinator — تنسيق التبويبات ا�
     expect(shouldConnectRealtime("/pos", "srv1548487.hstgr.cloud")).toBe(true);
     expect(shouldConnectRealtime("/orders", "localhost")).toBe(true);
 
-    // التحقق من RealtimeManager.start() فعلياً على جذر الدومين العام ومسار /store
+    // التحقق من RealtimeManager.start() فعلياً على جذر الدومين العام ومسار /store:
+    // لا يفتح SSE ولا يحجز قفل القيادة حتى لا يجوّع تبويباً داخلياً مفتوحاً بالتوازي
     const originalWindow = (globalThis as any).window;
     const originalEventSource = (globalThis as any).EventSource;
-    const esSpy = vi.fn();
+    const esSpy = vi.fn().mockImplementation(function () {
+      const es = {
+        onopen: null as any,
+        onmessage: null as any,
+        onerror: null as any,
+        close: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      };
+      setTimeout(() => es.onopen?.(), 5);
+      return es;
+    });
     (globalThis as any).EventSource = esSpy;
     try {
       (globalThis as any).window = {
@@ -361,20 +378,85 @@ describe("RealtimeManager & TabCoordinator — تنسيق التبويبات ا�
       tab1.start();
       await new Promise((resolve) => setTimeout(resolve, 40));
       expect(esSpy).not.toHaveBeenCalled();
+      expect(tab1.getIsLeader()).toBe(false);
       expect(tab1.getStatus()).toBe("disconnected");
 
+      // تبويب /login لا يجوز أن يحجز navigator.locks فيمنع تبويب /pos من استلام الأحداث
       (globalThis as any).window = {
-        location: { pathname: "/s/w/tok_abc123", hostname: "localhost" },
+        location: { pathname: "/login", hostname: "srv1548487.hstgr.cloud" },
       };
-      tab2 = new RealtimeManager("tab_public_wishlist");
+      tab1.stop();
+      tab1 = new RealtimeManager("tab_login");
+      tab1.start();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(tab1.getIsLeader()).toBe(false);
+      expect(esSpy).not.toHaveBeenCalled();
+
+      (globalThis as any).window = {
+        location: { pathname: "/pos", hostname: "srv1548487.hstgr.cloud" },
+      };
+      tab2 = new RealtimeManager("tab_pos");
       tab2.start();
       await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(tab2.getIsLeader()).toBe(true);
+      expect(esSpy).toHaveBeenCalledTimes(1);
+      expect(tab2.getStatus()).toBe("connected");
+    } finally {
+      (globalThis as any).window = originalWindow;
+      (globalThis as any).EventSource = originalEventSource;
+    }
+  });
+
+  it("يتصل تلقائياً بعد انتقال SPA من /login إلى مسار داخلي ويستقيل عند العودة لمسار عام", async () => {
+    const originalWindow = (globalThis as any).window;
+    const originalEventSource = (globalThis as any).EventSource;
+    let closedCount = 0;
+    const esSpy = vi.fn().mockImplementation(function () {
+      const es = {
+        onopen: null as any,
+        onmessage: null as any,
+        onerror: null as any,
+        close: vi.fn(() => {
+          closedCount += 1;
+        }),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      };
+      setTimeout(() => es.onopen?.(), 5);
+      return es;
+    });
+    (globalThis as any).EventSource = esSpy;
+
+    const locationState = { pathname: "/login/", hostname: "srv1548487.hstgr.cloud" };
+    (globalThis as any).window = { location: locationState };
+
+    try {
+      tab1 = new RealtimeManager("tab_spa_login_flow");
+      tab1.start();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(tab1.getIsLeader()).toBe(false);
       expect(esSpy).not.toHaveBeenCalled();
-      expect(tab2.getStatus()).toBe("disconnected");
+
+      // بعد نجاح تسجيل الدخول وانتقال SPA إلى "/" واشتراك شاشة النظام بالأحداث اللحظية
+      locationState.pathname = "/";
+      const unsubscribe = tab1.subscribe("*", () => {});
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(tab1.getIsLeader()).toBe(true);
+      expect(esSpy).toHaveBeenCalledTimes(1);
+      expect(tab1.getStatus()).toBe("connected");
+
+      // عند الانتقال إلى مسار عام أو /login يستقيل فوراً ويغلق المقبس
+      locationState.pathname = "/login";
+      tab1.reconcileRouteEligibility();
+      expect(tab1.getIsLeader()).toBe(false);
+      expect(closedCount).toBe(1);
+      expect(tab1.getStatus()).toBe("disconnected");
+      unsubscribe();
     } finally {
       (globalThis as any).window = originalWindow;
       (globalThis as any).EventSource = originalEventSource;
     }
   });
 });
+
 

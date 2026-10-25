@@ -1,7 +1,7 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { router, useFocusEffect } from "expo-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -25,6 +25,7 @@ import {
   normalizeActiveCouponCode,
   reconcileStoredCouponWithCheckout,
   saveActiveCouponCode,
+  shouldInvalidateCouponOnQuoteError,
 } from "@/lib/active-coupon";
 import {
   clearPendingCheckoutAttempt,
@@ -114,6 +115,8 @@ export default function CheckoutScreen() {
     });
     return () => { active = false; };
   }, []);
+  const couponStateRef = useRef({ couponDraft, appliedCouponCode });
+  couponStateRef.current = { couponDraft, appliedCouponCode };
   useFocusEffect(
     useCallback(() => {
       let active = true;
@@ -121,8 +124,8 @@ export default function CheckoutScreen() {
         if (!active || !savedCoupon) return;
         const next = reconcileStoredCouponWithCheckout({
           savedCoupon,
-          couponDraft,
-          appliedCouponCode,
+          couponDraft: couponStateRef.current.couponDraft,
+          appliedCouponCode: couponStateRef.current.appliedCouponCode,
         });
         if (!next.shouldApply) return;
         setCouponDraft(next.couponDraft);
@@ -135,7 +138,7 @@ export default function CheckoutScreen() {
       return () => {
         active = false;
       };
-    }, [appliedCouponCode, couponDraft]),
+    }, []),
   );
   const governorateName =
     governorates.find((item) => item.id === governorate)?.name ?? "بغداد";
@@ -191,7 +194,7 @@ export default function CheckoutScreen() {
     } catch (reason) {
       const message = classifyNetworkError(reason).message;
       setError(message);
-      if (appliedCouponCode) {
+      if (appliedCouponCode && shouldInvalidateCouponOnQuoteError(reason)) {
         setAppliedCouponCode(null);
         setCouponFeedback(message);
         void clearActiveCouponCode(AsyncStorage);
@@ -470,11 +473,12 @@ export default function CheckoutScreen() {
                 setCouponDraft(value);
                 if (
                   appliedCouponCode &&
-                  value.trim().toUpperCase() !== appliedCouponCode
+                  normalizeActiveCouponCode(value) !== appliedCouponCode
                 ) {
                   setAppliedCouponCode(null);
                   setQuote(null);
                   setCouponFeedback(null);
+                  void clearActiveCouponCode(AsyncStorage);
                 }
               }}
             />

@@ -194,6 +194,19 @@ describe("cold offline product studio policy", () => {
     ).toBe(false);
     expect(
       shouldMountGlobalStudioTools({
+        location: "//",
+        offline: false,
+        hostname: "alarabiya.online",
+      }),
+    ).toBe(false);
+    expect(
+      shouldMountGlobalStudioTools({
+        location: "/s/w/",
+        offline: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldMountGlobalStudioTools({
         location: "/?utm_source=social",
         offline: false,
         hostname: "www.alarabiya.online",

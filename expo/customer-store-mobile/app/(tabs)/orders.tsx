@@ -969,6 +969,7 @@ const styles = StyleSheet.create({
   },
   handshakeTitle: {
     color: "#78350F",
+    flexShrink: 1,
     fontSize: 12,
     fontWeight: "900",
     textAlign: "right",
@@ -986,6 +987,7 @@ const styles = StyleSheet.create({
     borderColor: "#F59E0B",
     borderRadius: 10,
     borderWidth: 1,
+    flexShrink: 0,
     paddingHorizontal: 12,
     paddingVertical: 6,
   },

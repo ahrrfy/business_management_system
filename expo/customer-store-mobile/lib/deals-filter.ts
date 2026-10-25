@@ -34,6 +34,16 @@ function collectInStockUnits(product: Product): StorefrontUnitOption[] {
   return [...direct, ...variantUnits];
 }
 
+function unitDiscountRatio(
+  price: string | null | undefined,
+  salePrice: string | null | undefined,
+): number {
+  if (unitDiscountPercent(price, salePrice) == null) return 0;
+  const original = Number(price);
+  const current = Number(salePrice);
+  return (original - current) / original;
+}
+
 export function effectiveProductMaxDiscountPercent(product: Product): number {
   let maxPercent = productDiscountPercent(product) ?? 0;
   for (const unit of collectInStockUnits(product)) {
@@ -43,6 +53,21 @@ export function effectiveProductMaxDiscountPercent(product: Product): number {
     }
   }
   return maxPercent;
+}
+
+export function effectiveProductDiscountRatio(product: Product): number {
+  let maxRatio =
+    productDiscountPercent(product) != null
+      ? (Number(product.price) - Number(product.salePrice)) /
+        Number(product.price)
+      : 0;
+  for (const unit of collectInStockUnits(product)) {
+    const ratio = unitDiscountRatio(unit.price, unit.salePrice);
+    if (ratio > maxRatio) {
+      maxRatio = ratio;
+    }
+  }
+  return maxRatio;
 }
 
 function hasActiveNamedPromotion(product: Product): boolean {
@@ -97,8 +122,8 @@ export function filterDealsProducts(
         .filter(isDiscountedDealProduct)
         .sort(
           (left, right) =>
-            effectiveProductMaxDiscountPercent(right) -
-            effectiveProductMaxDiscountPercent(left),
+            effectiveProductDiscountRatio(right) -
+            effectiveProductDiscountRatio(left),
         );
     case "ALL":
     default:

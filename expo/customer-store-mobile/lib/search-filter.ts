@@ -1,5 +1,5 @@
 import {
-  effectiveProductMaxDiscountPercent,
+  effectiveProductDiscountRatio,
   isDiscountedDealProduct,
 } from "@/lib/deals-filter";
 import { storefrontDisplayPrice } from "@/lib/storefront-api";
@@ -54,8 +54,8 @@ export function filterAndSortSearchProducts(
     }
     if (sort === "DISCOUNT") {
       return (
-        effectiveProductMaxDiscountPercent(right) -
-        effectiveProductMaxDiscountPercent(left)
+        effectiveProductDiscountRatio(right) -
+        effectiveProductDiscountRatio(left)
       );
     }
     return 0;

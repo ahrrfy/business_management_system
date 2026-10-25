@@ -292,9 +292,34 @@ export function resolveStorefrontProductQuantityDelta(
     : { kind: "open-cart", productId };
 }
 
+export function summarizeSingleStorefrontProductCartQuantity(
+  cart: ReadonlyMap<string, CartLine>,
+  productId: number,
+): StorefrontProductCartSummary | undefined {
+  let summary: StorefrontProductCartSummary | undefined;
+  cart.forEach((line, key) => {
+    if (line.productId !== productId) return;
+    if (line.isCustomizable || line.customization) return;
+    if (!summary) {
+      summary = {
+        totalQty: line.qty,
+        lineCount: 1,
+        singleLine: { cartKey: key, qty: line.qty },
+      };
+    } else {
+      summary = {
+        totalQty: summary.totalQty + line.qty,
+        lineCount: summary.lineCount + 1,
+        singleLine: null,
+      };
+    }
+  });
+  return summary;
+}
+
 export function applyStorefrontProductQuantityDelta(
   cart: ReadonlyMap<string, CartLine>,
-  summaries: ReadonlyMap<number, StorefrontProductCartSummary>,
+  _summaries: ReadonlyMap<number, StorefrontProductCartSummary> | null | undefined,
   productId: number,
   delta: number,
   handlers: {
@@ -303,8 +328,12 @@ export function applyStorefrontProductQuantityDelta(
     openCart: (productId: number) => void;
   },
 ): StorefrontProductQuantityDeltaAction {
+  const liveSummary = summarizeSingleStorefrontProductCartQuantity(cart, productId);
+  const liveMap = liveSummary
+    ? new Map<number, StorefrontProductCartSummary>([[productId, liveSummary]])
+    : new Map<number, StorefrontProductCartSummary>();
   const action = resolveStorefrontProductQuantityDelta(
-    summaries,
+    liveMap,
     productId,
     delta,
   );

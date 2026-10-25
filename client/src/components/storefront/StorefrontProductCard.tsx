@@ -4,6 +4,7 @@ import { fmtInt } from "@/lib/money";
 import { formatQuantity } from "@shared/quantityFormat";
 import { AnimatedAddToCartButton } from "./AnimatedAddToCartButton";
 import { StorefrontHeuristicsBadges } from "./StorefrontHeuristicsBadges";
+import { recommendationNeedsSelection } from "./StorefrontRecommendations";
 
 export interface StorefrontCatalogProduct {
   productId: number;
@@ -319,7 +320,7 @@ export function StorefrontProductCard({
                 e.stopPropagation();
                 onUpdateQuantity(p.productId, 1);
               }}
-              disabled={p.stockLeft != null && cartQuantity >= p.stockLeft}
+              disabled={!recommendationNeedsSelection(p) && p.stockLeft != null && cartQuantity >= p.stockLeft}
               aria-label={`زيادة كمية ${p.productName}`}
               className="flex size-7 sm:size-8 shrink-0 items-center justify-center rounded-lg bg-emerald-600 text-white shadow-xs transition hover:bg-emerald-500 active:scale-90 disabled:cursor-not-allowed disabled:opacity-40"
             >

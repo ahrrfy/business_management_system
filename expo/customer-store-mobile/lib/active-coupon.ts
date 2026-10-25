@@ -93,3 +93,44 @@ export function reconcileStoredCouponWithCheckout(params: {
     appliedCouponCode: normalizedSaved,
   };
 }
+
+const DEFINITIVE_COUPON_REJECTION_HTTP_STATUSES = new Set([400, 403, 404, 409, 422]);
+const DEFINITIVE_COUPON_REJECTION_CODES = new Set([
+  "BAD_REQUEST",
+  "FORBIDDEN",
+  "NOT_FOUND",
+  "CONFLICT",
+  "PRECONDITION_FAILED",
+  "UNPROCESSABLE_CONTENT",
+]);
+
+/**
+ * Only clear an applied/stored coupon when the server definitively rejected the
+ * quote request (HTTP 400/403/404/409/422 or business TRPCError code).
+ * Transient offline, timeout, rate-limit (429), 5xx, or expired-session (401)
+ * failures preserve the customer's coupon for immediate retry.
+ */
+export function shouldInvalidateCouponOnQuoteError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (error.name === "AbortError") return false;
+  if (
+    error.name === "TypeError" &&
+    /network request failed|failed to fetch/i.test(error.message)
+  ) {
+    return false;
+  }
+
+  const typed = error as Error & { code?: unknown; httpStatus?: unknown };
+  if (typeof typed.httpStatus === "number") {
+    return DEFINITIVE_COUPON_REJECTION_HTTP_STATUSES.has(typed.httpStatus);
+  }
+  const statusMatch = /\((\d{3})\)/.exec(error.message);
+  if (statusMatch) {
+    return DEFINITIVE_COUPON_REJECTION_HTTP_STATUSES.has(Number(statusMatch[1]));
+  }
+  if (typeof typed.code === "string") {
+    return DEFINITIVE_COUPON_REJECTION_CODES.has(typed.code);
+  }
+  return false;
+}
+

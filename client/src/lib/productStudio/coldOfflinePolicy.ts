@@ -112,12 +112,14 @@ export function shouldMountGlobalStudioTools({
   offline: boolean;
   hostname?: string;
 }): boolean {
-  const cleanPath = location.split(/[?#]/, 1)[0] || "/";
+  const rawPath = (location || "/").split(/[?#]/, 1)[0] || "/";
+  const cleanPath =
+    rawPath.length > 1 ? rawPath.replace(/\/+$/, "") || "/" : rawPath;
   const effectiveHostname =
     hostname ?? (typeof window !== "undefined" ? window.location.hostname : "");
   if (isPublicPath(cleanPath)) return false;
   if (cleanPath === "/" && isPublicHost(effectiveHostname)) return false;
-  return !offline || !isColdOfflineStudioRoute(location);
+  return !offline || !isColdOfflineStudioRoute(cleanPath);
 }
 
 /**

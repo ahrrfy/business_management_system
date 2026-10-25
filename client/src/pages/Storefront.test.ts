@@ -876,5 +876,138 @@ describe("storefront product cart quantity stepper (single vs multi-variant)", (
     expect(cart.get("201:")?.qty).toBe(2);
     expect(cart.get("202:")?.qty).toBe(1);
   });
+
+  it("يحافظ على كل ضغطة سريعة متزامنة (+1/+1 و -1/-1) حتى لو بقيت خريطة summaries من تصيير سابق", () => {
+    let cart = new Map<string, CartLine>([
+      ["101:", makeVariantCartLine({ cartKey: "101:", productUnitId: 101, productId: 50, qty: 2, variantLabel: "أزرق" })],
+    ]);
+    // لقطة قديمة مجمّدة قبل إعادة تصيير React
+    const staleSummaries = summarizeStorefrontProductCartQuantities(cart);
+    const setQty = (cartKey: string, qty: number) => {
+      cart = setStorefrontCartQuantity(cart, cartKey, qty);
+    };
+    const openProduct = vi.fn();
+    const openCart = vi.fn();
+
+    // نقرتان سريعتان +1 قبل تحديث useMemo
+    applyStorefrontProductQuantityDelta(cart, staleSummaries, 50, 1, { setQty, openProduct, openCart });
+    applyStorefrontProductQuantityDelta(cart, staleSummaries, 50, 1, { setQty, openProduct, openCart });
+    expect(cart.get("101:")?.qty).toBe(4);
+
+    // أربع نقرات سريعة -1 تحذف السطر عند وصوله إلى الصفر دون ضياع أي نقرة
+    applyStorefrontProductQuantityDelta(cart, staleSummaries, 50, -1, { setQty, openProduct, openCart });
+    applyStorefrontProductQuantityDelta(cart, staleSummaries, 50, -1, { setQty, openProduct, openCart });
+    expect(cart.get("101:")?.qty).toBe(2);
+    applyStorefrontProductQuantityDelta(cart, staleSummaries, 50, -1, { setQty, openProduct, openCart });
+    applyStorefrontProductQuantityDelta(cart, staleSummaries, 50, -1, { setQty, openProduct, openCart });
+    expect(cart.has("101:")).toBe(false);
+  });
+
+  it("يعزل الأسطر المخصّصة عن عدّاد البطاقة ولا يمسّها عند تعديل السطر العادي لنفس المنتج", () => {
+    let cart = new Map<string, CartLine>([
+      [
+        "301:custom",
+        makeVariantCartLine({
+          cartKey: "301:custom",
+          productUnitId: 301,
+          productId: 88,
+          qty: 5,
+          isCustomizable: true,
+        }),
+      ],
+      [
+        "301:",
+        makeVariantCartLine({
+          cartKey: "301:",
+          productUnitId: 301,
+          productId: 88,
+          qty: 1,
+        }),
+      ],
+    ]);
+    const summaries = summarizeStorefrontProductCartQuantities(cart);
+    expect(summaries.get(88)?.totalQty).toBe(1);
+    expect(summaries.get(88)?.lineCount).toBe(1);
+
+    applyStorefrontProductQuantityDelta(cart, null, 88, 1, {
+      setQty: (cartKey, qty) => {
+        cart = setStorefrontCartQuantity(cart, cartKey, qty);
+      },
+      openProduct: vi.fn(),
+      openCart: vi.fn(),
+    });
+    expect(cart.get("301:")?.qty).toBe(2);
+    expect(cart.get("301:custom")?.qty).toBe(5);
+  });
+
+  it("لا يعطّل زر + في StorefrontProductCard للمنتج متعدد المتغيرات بسبب stockLeft للمتغير الأول فقط", () => {
+    const multiVariantProduct = {
+      productId: 91,
+      productUnitId: 901,
+      productName: "قلم تظليل",
+      brand: null,
+      price: "1000",
+      salePrice: null,
+      stockLeft: 1,
+      unitName: "قطعة",
+      soldCount: 0,
+      inStock: true,
+      variants: [
+        {
+          variantId: 1,
+          label: "أصفر",
+          inStock: true,
+          units: [{ productUnitId: 901, unitName: "قطعة", price: "1000", salePrice: null, inStock: true, stockLeft: 1 }],
+        },
+        {
+          variantId: 2,
+          label: "أخضر",
+          inStock: true,
+          units: [{ productUnitId: 902, unitName: "قطعة", price: "1000", salePrice: null, inStock: true, stockLeft: 10 }],
+        },
+      ],
+    };
+
+    const multiHtml = renderToStaticMarkup(
+      createElement(StorefrontProductCard, {
+        product: multiVariantProduct,
+        isWishlisted: false,
+        onOpen: vi.fn(),
+        onAdd: () => true,
+        onToggleWishlist: vi.fn(),
+        onShare: vi.fn(),
+        canBeOrdered: () => true,
+        actionLabel: "اختر الخيار",
+        cartQuantity: 2,
+        onUpdateQuantity: vi.fn(),
+      }),
+    );
+    expect(multiHtml).not.toMatch(/disabled=""[^>]*aria-label="زيادة كمية قلم تظليل"/);
+
+    const singleOptionAtStockCap = {
+      ...multiVariantProduct,
+      productId: 92,
+      productName: "ممحاة مدرسية",
+      stockLeft: 2,
+      variants: [],
+      storeUnits: [],
+    };
+    const singleHtml = renderToStaticMarkup(
+      createElement(StorefrontProductCard, {
+        product: singleOptionAtStockCap,
+        isWishlisted: false,
+        onOpen: vi.fn(),
+        onAdd: () => true,
+        onToggleWishlist: vi.fn(),
+        onShare: vi.fn(),
+        canBeOrdered: () => true,
+        actionLabel: "أضف إلى السلة",
+        cartQuantity: 2,
+        onUpdateQuantity: vi.fn(),
+      }),
+    );
+    expect(singleHtml).toMatch(/disabled=""[^>]*aria-label="زيادة كمية ممحاة مدرسية"/);
+  });
 });
+
 

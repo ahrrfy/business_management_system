@@ -834,7 +834,7 @@ function StorefrontContent() {
   const productCartQuantities = useMemo(() => summarizeStorefrontProductCartQuantities(cart), [cart]);
   const getProductCartQty = (id: number) => productCartQuantities.get(id)?.totalQty ?? 0;
   const handleProductQuantityDelta = (id: number, delta: number) => {
-    applyStorefrontProductQuantityDelta(cartRef.current, productCartQuantities, id, delta, {
+    applyStorefrontProductQuantityDelta(cartRef.current, null, id, delta, {
       setQty,
       openProduct,
       openCart: () => {

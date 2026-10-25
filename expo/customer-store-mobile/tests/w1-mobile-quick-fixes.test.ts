@@ -9,6 +9,7 @@ import {
   normalizeActiveCouponCode,
   reconcileStoredCouponWithCheckout,
   saveActiveCouponCode,
+  shouldInvalidateCouponOnQuoteError,
   type ActiveCouponStorage,
 } from "../lib/active-coupon";
 import {
@@ -288,7 +289,7 @@ describe("Wave 1 Mobile Storefront Quick Fixes", () => {
       });
     });
 
-    it("wires both loyalty.tsx and checkout.tsx to the shared active-coupon module", () => {
+    it("wires both loyalty.tsx and checkout.tsx to the shared active-coupon module without keystroke snap-back", () => {
       const loyaltySrc = readFileSync(resolve(mobileRoot, "app/loyalty.tsx"), "utf8");
       const checkoutSrc = readFileSync(resolve(mobileRoot, "app/checkout.tsx"), "utf8");
 
@@ -300,6 +301,40 @@ describe("Wave 1 Mobile Storefront Quick Fixes", () => {
       expect(checkoutSrc).toContain("loadActiveCouponCode");
       expect(checkoutSrc).toContain("saveActiveCouponCode");
       expect(checkoutSrc).toContain("clearActiveCouponCode");
+      expect(checkoutSrc).toContain("shouldInvalidateCouponOnQuoteError");
+      expect(checkoutSrc).toContain("couponStateRef");
+      // Must NOT re-run useFocusEffect on every couponDraft/appliedCouponCode keystroke
+      expect(checkoutSrc).not.toContain("}, [appliedCouponCode, couponDraft])");
+    });
+
+    it("preserves stored loyalty coupons on transient network/timeout/5xx/429/401 errors and clears only on definitive client rejections", () => {
+      const offlineErr = Object.assign(new TypeError("Network request failed"));
+      const fetchFailedErr = Object.assign(new TypeError("Failed to fetch"));
+      const abortErr = Object.assign(new Error("Aborted"), { name: "AbortError" });
+      const rateLimitErr = Object.assign(new Error("تعذر إرسال الطلب (429)"), { httpStatus: 429 });
+      const badGatewayErr = Object.assign(new Error("تعذر إرسال الطلب (502)"), { httpStatus: 502 });
+      const expiredSessionErr = Object.assign(new Error("تعذر إرسال الطلب (401)"), { httpStatus: 401 });
+
+      expect(shouldInvalidateCouponOnQuoteError(offlineErr)).toBe(false);
+      expect(shouldInvalidateCouponOnQuoteError(fetchFailedErr)).toBe(false);
+      expect(shouldInvalidateCouponOnQuoteError(abortErr)).toBe(false);
+      expect(shouldInvalidateCouponOnQuoteError(rateLimitErr)).toBe(false);
+      expect(shouldInvalidateCouponOnQuoteError(badGatewayErr)).toBe(false);
+      expect(shouldInvalidateCouponOnQuoteError(expiredSessionErr)).toBe(false);
+
+      const badRequestErr = Object.assign(new Error("تعذر إرسال الطلب (400)"), { httpStatus: 400 });
+      const forbiddenErr = Object.assign(new Error("تعذر إرسال الطلب (403)"), { httpStatus: 403 });
+      const notFoundErr = Object.assign(new Error("تعذر إرسال الطلب (404)"), { httpStatus: 404 });
+      const conflictErr = Object.assign(new Error("تعذر إرسال الطلب (409)"), { httpStatus: 409 });
+      const unprocessableErr = Object.assign(new Error("تعذر إرسال الطلب (422)"), { httpStatus: 422 });
+      const trpcCodeErr = Object.assign(new Error("استجابة الطلب غير صالحة"), { code: "BAD_REQUEST" });
+
+      expect(shouldInvalidateCouponOnQuoteError(badRequestErr)).toBe(true);
+      expect(shouldInvalidateCouponOnQuoteError(forbiddenErr)).toBe(true);
+      expect(shouldInvalidateCouponOnQuoteError(notFoundErr)).toBe(true);
+      expect(shouldInvalidateCouponOnQuoteError(conflictErr)).toBe(true);
+      expect(shouldInvalidateCouponOnQuoteError(unprocessableErr)).toBe(true);
+      expect(shouldInvalidateCouponOnQuoteError(trpcCodeErr)).toBe(true);
     });
   });
 
@@ -326,11 +361,13 @@ describe("Wave 1 Mobile Storefront Quick Fixes", () => {
       expect(extractDeliveryHandshakeOtp(null)).toBeNull();
     });
 
-    it("renders Handshake PIN card in app/(tabs)/orders.tsx when present", () => {
+    it("renders Handshake PIN card in app/(tabs)/orders.tsx with narrow-screen RTL flex guards", () => {
       const ordersSrc = readFileSync(resolve(mobileRoot, "app/(tabs)/orders.tsx"), "utf8");
       expect(ordersSrc).toContain("extractDeliveryHandshakeOtp");
       expect(ordersSrc).toContain("رمز تسليم الشحنة للمندوب");
       expect(ordersSrc).toContain("سلّم هذا الرمز للمندوب يداً بيد عند استلام شحنتك");
+      expect(ordersSrc).toMatch(/handshakeTitle:\s*\{[^}]*flexShrink:\s*1/s);
+      expect(ordersSrc).toMatch(/handshakeBadge:\s*\{[^}]*flexShrink:\s*0/s);
     });
   });
 
@@ -375,7 +412,7 @@ describe("Wave 1 Mobile Storefront Quick Fixes", () => {
       expect(isUnder10kDealProduct(makeProduct("p-null", { price: null, salePrice: null }))).toBe(false);
     });
 
-    it("filters ALL / FLASH / UNDER_10K / DISCOUNTED accurately with zero fake fallbacks", () => {
+    it("filters ALL / FLASH / UNDER_10K / DISCOUNTED accurately with zero fake fallbacks and exact fractional sort order", () => {
       const full25k = makeProduct("full-25k", { price: "25000", salePrice: null });
       const corruptZero = makeProduct("corrupt-zero", { price: "18000", salePrice: "0" });
       const budget6k = makeProduct("budget-6k", { price: "6000", salePrice: null });
@@ -406,6 +443,19 @@ describe("Wave 1 Mobile Storefront Quick Fixes", () => {
         "named-promo",
       ]);
 
+      // Exact fractional ratio tie-breaker: both round to 33%, but 33.44% beats 33.00%
+      const discount33Low = makeProduct("sale-33-low", { price: "30000", salePrice: "20100" });
+      const discount33High = makeProduct("sale-33-high", { price: "30000", salePrice: "19968" });
+      expect(
+        filterDealsProducts([discount33Low, discount33High], "DISCOUNTED").map((p) => p.id),
+      ).toEqual(["sale-33-high", "sale-33-low"]);
+      expect(
+        filterAndSortSearchProducts([discount33Low, discount33High], {
+          availability: "SALE",
+          sort: "DISCOUNT",
+        }).map((p) => p.id),
+      ).toEqual(["sale-33-high", "sale-33-low"]);
+
       // When catalog has NO deals at all, every filter returns [] instead of faking deals!
       const noDealsCatalog = [full25k, corruptZero];
       expect(filterDealsProducts(noDealsCatalog, "ALL")).toEqual([]);
@@ -421,3 +471,4 @@ describe("Wave 1 Mobile Storefront Quick Fixes", () => {
     });
   });
 });
+
