@@ -17,36 +17,42 @@ const PUB_WWW = "www.alarabiya.online";
 const INT = "srv1548487.hstgr.cloud";
 
 describe("isPublicPath", () => {
-  it("المتجر والوظائف ومسارتهما الفرعية عامة", () => {
+  it("المتجر والوظائف والمفضلة المشتركة ومساراتها الفرعية عامة", () => {
     expect(isPublicPath("/store")).toBe(true);
     expect(isPublicPath("/store/abc")).toBe(true);
     expect(isPublicPath("/apply")).toBe(true);
+    expect(isPublicPath("/legal")).toBe(true);
+    expect(isPublicPath("/legal/privacy")).toBe(true);
     expect(isPublicPath("/shelf-lookup")).toBe(true);
     expect(isPublicPath("/price-check")).toBe(true);
+    expect(isPublicPath("/s/w")).toBe(true);
+    expect(isPublicPath("/s/w/tok_abc123")).toBe(true);
   });
   it("كل ما عداها داخليّ — بما فيه المسارات المتشابهة بالاسم", () => {
     expect(isPublicPath("/")).toBe(false);
     expect(isPublicPath("/store-admin")).toBe(false); // ليست بادئة مسار (لا شرطة مائلة)
+    expect(isPublicPath("/s/wishlist")).toBe(false); // ليست /s/w أو /s/w/...
     expect(isPublicPath("/pos")).toBe(false);
     expect(isPublicPath("/reports/anomaly-watch")).toBe(false);
     expect(isPublicPath("/login")).toBe(false);
+    expect(isPublicPath("/my-deliveries")).toBe(false);
     expect(isPublicPath("/kiosk")).toBe(false);
     expect(isPublicPath("/count/AB12")).toBe(false);
   });
 });
 
 describe("resolveHostRedirect", () => {
-  it("مسار داخليّ على الدومين العام ⇒ يُحوَّل لدومين الشركة", () => {
+  it("مسار داخليّ على الدومين العام ⇒ يُحوَّل لدومين الشركة (بما فيه /my-deliveries بعد إغلاق courier.* على العام)", () => {
     expect(resolveHostRedirect(PUB, "/pos")).toBe("internal");
     expect(resolveHostRedirect(PUB, "/store-admin")).toBe("internal");
     expect(resolveHostRedirect(PUB_WWW, "/reports")).toBe("internal");
+    expect(resolveHostRedirect(PUB, "/my-deliveries")).toBe("internal");
+    expect(resolveHostRedirect(PUB_WWW, "/my-deliveries")).toBe("internal");
   });
-  it("مسارات تطبيق المناديب (TWA على الدومين العام) مشتركة — لا تُحوَّل في أي اتجاه", () => {
+  it("مسارات الدخول وحسابي مشتركة — لا تُحوَّل في أي اتجاه", () => {
     expect(resolveHostRedirect(PUB, "/login")).toBeNull();
-    expect(resolveHostRedirect(PUB, "/my-deliveries")).toBeNull();
-    expect(resolveHostRedirect(PUB_WWW, "/my-deliveries")).toBeNull();
     // «حسابي» مشترك: أول دخولٍ لأي مستخدم جديد يقوده إلى /account?mustChange=1 — تحويله
-    // كان يقذف المندوب لمضيفٍ بلا جلسة (الكوكي مقصور بالمضيف) فينتهي بنموذج دخول فارغ.
+    // كان يقذف المستخدم لمضيفٍ بلا جلسة (الكوكي مقصور بالمضيف) فينتهي بنموذج دخول فارغ.
     expect(resolveHostRedirect(PUB, "/account")).toBeNull();
     expect(resolveHostRedirect(INT, "/login")).toBeNull();
     expect(resolveHostRedirect(INT, "/my-deliveries")).toBeNull();
@@ -55,10 +61,15 @@ describe("resolveHostRedirect", () => {
   it("صفحة عامة على دومين الشركة ⇒ تُحوَّل للدومين العام", () => {
     expect(resolveHostRedirect(INT, "/apply")).toBe("public");
     expect(resolveHostRedirect(INT, "/store")).toBe("public");
+    expect(resolveHostRedirect(INT, "/s/w")).toBe("public");
+    expect(resolveHostRedirect(INT, "/s/w/tok_abc123")).toBe("public");
   });
   it("الصفحة في مكانها الصحيح ⇒ بلا تحويل", () => {
     expect(resolveHostRedirect(PUB, "/store")).toBeNull();
     expect(resolveHostRedirect(PUB, "/apply")).toBeNull();
+    expect(resolveHostRedirect(PUB, "/s/w")).toBeNull();
+    expect(resolveHostRedirect(PUB, "/s/w/tok_abc123")).toBeNull();
+    expect(resolveHostRedirect(PUB_WWW, "/s/w/tok_abc123")).toBeNull();
     expect(resolveHostRedirect(INT, "/pos")).toBeNull();
     expect(resolveHostRedirect(INT, "/reports")).toBeNull();
   });

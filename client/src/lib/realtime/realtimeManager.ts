@@ -9,7 +9,19 @@ import {
   type BatchSalesSyncedPayload,
 } from "@shared/realtimeEvents";
 import { D } from "@/lib/money";
+import { isPublicHost, isPublicPath } from "@/lib/siteHosts";
 import { connectivity, type ConnState } from "../offline/connectivity";
+
+/** هل يسمح المسار/المضيف بفتح اتصال SSE داخلي (`/api/realtime/stream`)؟ */
+export function shouldConnectRealtime(pathname: string, hostname: string): boolean {
+  const rawPath = (pathname || "/").split(/[?#]/, 1)[0] || "/";
+  const cleanPath =
+    rawPath.length > 1 ? rawPath.replace(/\/+$/, "") || "/" : rawPath;
+  if (cleanPath === "/login") return false;
+  if (isPublicPath(cleanPath)) return false;
+  if (cleanPath === "/" && isPublicHost(hostname)) return false;
+  return true;
+}
 
 export type RealtimeConnectionStatus =
   | "connected"
@@ -86,15 +98,18 @@ export class RealtimeManager {
       this.handleConnectivityChange(connState);
     });
 
-    // 3. مراقبة خمول التبويب (15 دقيقة في الخلفية)
+    // 3. مراقبة خمول التبويب (15 دقيقة في الخلفية) وتغيّر المسار
     if (typeof document !== "undefined") {
       document.addEventListener("visibilitychange", this.handleVisibilityChange);
       if (document.visibilityState === "hidden") {
         this.armIdleTimer();
       }
     }
+    if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+      window.addEventListener("popstate", this.reconcileRouteEligibility);
+    }
 
-    // 4. إطلاق انتخاب التبويب القائد (Leader Election)
+    // 4. إطلاق انتخاب التبويب القائد (فقط إذا كان المسار داخلياً مسموحاً)
     this.initiateLeaderElection();
   }
 
@@ -155,7 +170,12 @@ export class RealtimeManager {
    * وتسقط بسلاسة لخوارزمية النبضات التنافسية (Heartbeat Election) عند غياب الـ API.
    */
   private initiateLeaderElection(): void {
-    if (this.isLeader || this.status === "idle_disconnected" || this.status === "offline") {
+    if (
+      this.isLeader ||
+      this.status === "idle_disconnected" ||
+      this.status === "offline" ||
+      !this.isAllowedInCurrentWindow()
+    ) {
       return;
     }
 
@@ -169,7 +189,13 @@ export class RealtimeManager {
           { signal: this.lockAbortController.signal },
           async () => {
             this.isLockAcquiring = false;
+            if (!this.isAllowedInCurrentWindow()) {
+              return;
+            }
             await this.becomeLeader();
+            if (!this.isLeader) {
+              return;
+            }
             return new Promise<void>((resolve) => {
               // يبقى القفل محجوزاً حتى يستقيل التبويب أو يُغلق
               this.stepDownResolver = resolve;
@@ -188,7 +214,12 @@ export class RealtimeManager {
   private stepDownResolver: (() => void) | null = null;
 
   private async becomeLeader(): Promise<void> {
-    if (!this.isStarted || this.status === "idle_disconnected" || this.status === "offline") {
+    if (
+      !this.isStarted ||
+      this.status === "idle_disconnected" ||
+      this.status === "offline" ||
+      !this.isAllowedInCurrentWindow()
+    ) {
       return;
     }
 
@@ -243,16 +274,22 @@ export class RealtimeManager {
   }
 
   private claimLeadership(): void {
-    if (this.isLeader || this.status === "idle_disconnected" || this.status === "offline") {
+    if (
+      this.isLeader ||
+      this.status === "idle_disconnected" ||
+      this.status === "offline" ||
+      !this.isAllowedInCurrentWindow()
+    ) {
       return;
     }
-    this.becomeLeader();
+    void this.becomeLeader();
   }
 
   private startHeartbeatWatchdog(): void {
+    if (this.leaderWatchdogTimer) return;
     // التحقق الدوري كل ثانيتين: إذا غاب نبض القائد لأكثر من 4 ثوانٍ، يترشح هذا التبويب
     this.leaderWatchdogTimer = setInterval(() => {
-      if (this.isLeader) return;
+      if (this.isLeader || !this.isAllowedInCurrentWindow()) return;
       const now = Date.now();
       if (now - this.lastLeaderHeartbeat > 4000) {
         this.claimLeadership();
@@ -262,12 +299,52 @@ export class RealtimeManager {
 
   private shouldConnect(): boolean {
     if (typeof window === "undefined") return false;
-    const path = window.location.pathname;
-    if (path === "/login" || path === "/apply" || path === "/legal") {
-      return false;
-    }
-    return true;
+    return shouldConnectRealtime(
+      window.location.pathname ?? "/",
+      window.location.hostname ?? "",
+    );
   }
+
+  private isAllowedInCurrentWindow(): boolean {
+    if (typeof window === "undefined") return true;
+    return this.shouldConnect();
+  }
+
+  /**
+   * إعادة تقييم أهلية المسار الحالي (مثلاً بعد تسجيل الدخول عبر SPA أو الرجوع إلى مسار عام).
+   */
+  reconcileRouteEligibility = (): void => {
+    if (!this.isStarted) return;
+    if (!this.isAllowedInCurrentWindow()) {
+      if (this.leaderWatchdogTimer) {
+        clearInterval(this.leaderWatchdogTimer);
+        this.leaderWatchdogTimer = null;
+      }
+      if (this.lockAbortController) {
+        this.lockAbortController.abort();
+        this.lockAbortController = null;
+        this.isLockAcquiring = false;
+      }
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+      if (this.isLeader) {
+        this.stepDownFromLeader("public_route");
+      } else {
+        this.closeEventSource();
+      }
+      return;
+    }
+    if (this.status === "idle_disconnected" || this.status === "offline") {
+      return;
+    }
+    if (!this.isLeader) {
+      this.initiateLeaderElection();
+    } else if (!this.eventSource && !this.reconnectTimer && !this.isPwaSuspended()) {
+      this.connectEventSource();
+    }
+  };
 
   private isPwaSuspended(): boolean {
     return Date.now() < this.pwaSuspendedUntil;
@@ -598,12 +675,8 @@ export class RealtimeManager {
       if (this.status === "idle_disconnected") {
         this.setStatus("disconnected");
         this.reconnectAttempts = 0;
-        if (this.isLeader) {
-          this.connectEventSource();
-        } else {
-          this.initiateLeaderElection();
-        }
       }
+      this.reconcileRouteEligibility();
     }
   };
 
@@ -657,6 +730,10 @@ export class RealtimeManager {
     }
     const genericListener = listener as (event: RealtimeEvent) => void;
     set.add(genericListener);
+
+    if (this.isStarted) {
+      this.reconcileRouteEligibility();
+    }
 
     // إذا وُجد مقبس EventSource نشط وكان نوع الحدث جديداً، نسجله فوراً
     if (this.eventSource && eventType !== "*" && isNewType) {
@@ -792,6 +869,9 @@ export class RealtimeManager {
 
     if (typeof document !== "undefined") {
       document.removeEventListener("visibilitychange", this.handleVisibilityChange);
+    }
+    if (typeof window !== "undefined" && typeof window.removeEventListener === "function") {
+      window.removeEventListener("popstate", this.reconcileRouteEligibility);
     }
 
     if (this.channel) {

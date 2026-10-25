@@ -21,6 +21,7 @@ import { loadRecentQuoteRequests, type RecentStorefrontQuoteRequest } from "@/li
 import { orderTrackingGuidance, orderTrackingRefreshInterval, orderTrackingUnavailable, ORDER_TRACKING_UNAVAILABLE_MESSAGE } from "@/lib/order-tracking-refresh";
 import {
   acceptStorefrontOfficialQuotation,
+  extractDeliveryHandshakeOtp,
   formatIqd,
   formatLatinNumber,
   cancelStorefrontOrder,
@@ -256,7 +257,12 @@ export default function OrdersScreen() {
       lastTrackingRead.current = { orderNumber: normalizedOrderNumber, at: Date.now() };
       setTracking((current) =>
         current?.orderNumber === result.orderNumber
-          ? { ...current, status: result.status, deliveryProgress: undefined }
+          ? {
+              ...current,
+              status: result.status,
+              deliveryProgress: undefined,
+              deliveryHandshakeOtp: null,
+            }
           : current,
       );
       setCancelPrompt(false);
@@ -551,6 +557,33 @@ export default function OrdersScreen() {
                 <Text style={styles.statusText}>{tracking.deliveryProgress?.label ?? ORDER_STATUS_LABELS[tracking.status] ?? "قيد المتابعة"}</Text>
               </View>
             </View>
+            {(() => {
+              const handshakeOtp = extractDeliveryHandshakeOtp(tracking);
+              if (!handshakeOtp) return null;
+              return (
+                <View
+                  accessibilityLabel={`رمز تسليم الشحنة للمندوب ${handshakeOtp}`}
+                  style={styles.handshakeCard}
+                >
+                  <View style={styles.handshakeCopy}>
+                    <View style={styles.handshakeTitleRow}>
+                      <MaterialIcons color="#92400E" name="verified-user" size={16} />
+                      <Text style={styles.handshakeTitle}>
+                        رمز تسليم الشحنة للمندوب (Handshake PIN)
+                      </Text>
+                    </View>
+                    <Text style={styles.handshakeSubtitle}>
+                      سلّم هذا الرمز للمندوب يداً بيد عند استلام شحنتك
+                    </Text>
+                  </View>
+                  <View style={styles.handshakeBadge}>
+                    <Text selectable style={styles.handshakeCode}>
+                      {handshakeOtp}
+                    </Text>
+                  </View>
+                </View>
+              );
+            })()}
             <View style={styles.liveDivider} />
             <Text style={styles.liveMeta}>
               المحافظة: {tracking.governorate ?? "غير محددة"}
@@ -915,6 +948,55 @@ const styles = StyleSheet.create({
     fontSize: 11,
     marginTop: 4,
     textAlign: "right",
+  },
+  handshakeCard: {
+    alignItems: "center",
+    backgroundColor: "#FFFBEB",
+    borderColor: "#FCD34D",
+    borderRadius: 14,
+    borderWidth: 1,
+    flexDirection: "row-reverse",
+    gap: 10,
+    justifyContent: "space-between",
+    marginTop: 12,
+    padding: 12,
+  },
+  handshakeCopy: { flex: 1 },
+  handshakeTitleRow: {
+    alignItems: "center",
+    flexDirection: "row-reverse",
+    gap: 5,
+  },
+  handshakeTitle: {
+    color: "#78350F",
+    flexShrink: 1,
+    fontSize: 12,
+    fontWeight: "900",
+    textAlign: "right",
+  },
+  handshakeSubtitle: {
+    color: "#92400E",
+    fontSize: 10,
+    fontWeight: "700",
+    lineHeight: 16,
+    marginTop: 3,
+    textAlign: "right",
+  },
+  handshakeBadge: {
+    backgroundColor: "#FFFFFF",
+    borderColor: "#F59E0B",
+    borderRadius: 10,
+    borderWidth: 1,
+    flexShrink: 0,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  handshakeCode: {
+    color: "#78350F",
+    fontSize: 15,
+    fontWeight: "900",
+    letterSpacing: 2,
+    writingDirection: "ltr",
   },
   liveDivider: { backgroundColor: "#CDE0D5", height: 1, marginVertical: 12 },
   liveMeta: {

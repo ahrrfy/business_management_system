@@ -60,6 +60,7 @@ export type StorefrontSettings = {
 export type OnlineOrderTracking = {
   orderNumber: string;
   status: string;
+  deliveryHandshakeOtp?: string | null;
   deliveryProgress?: {
     label: string;
     updatedAt: string | null;
@@ -84,6 +85,15 @@ export type OnlineOrderTracking = {
     total: string;
   }>;
 };
+
+export function extractDeliveryHandshakeOtp(
+  tracking: Pick<OnlineOrderTracking, "deliveryHandshakeOtp"> | null | undefined,
+): string | null {
+  const raw = tracking?.deliveryHandshakeOtp;
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
 export type StorefrontOrderLine = {
   productUnitId: number;
   quantity: number;
@@ -467,7 +477,7 @@ async function storefrontQuery<T>(
       const encoded = encodeURIComponent(JSON.stringify({ json: input }));
       const response = await fetch(
         `${API_BASE}/${procedure}?input=${encoded}`,
-        { headers: { Accept: "application/json" }, signal: controller.signal },
+        { headers: storefrontQueryHeaders(), signal: controller.signal },
       );
       if (!response.ok) {
         const error = new Error(`فشل الاتصال بالمتجر (${response.status})`);
@@ -546,13 +556,55 @@ async function storefrontMutation<T>(
   }
 }
 
+export type StorefrontConstantsSource = {
+  expoConfig?: { version?: string | null } | null;
+  nativeAppVersion?: string | null;
+};
+
+const DEFAULT_STOREFRONT_APP_VERSION = "1.0.0";
+
+function loadExpoConstantsSafe(): StorefrontConstantsSource | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require("expo-constants") as {
+      default?: StorefrontConstantsSource;
+    } & StorefrontConstantsSource;
+    return mod?.default ?? mod ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function resolveStorefrontAppVersion(
+  constantsSource?: StorefrontConstantsSource | null,
+): string {
+  const source =
+    constantsSource === undefined ? loadExpoConstantsSafe() : constantsSource;
+  const candidate =
+    source?.expoConfig?.version?.trim() ||
+    source?.nativeAppVersion?.trim() ||
+    "";
+  return candidate.length > 0 ? candidate : DEFAULT_STOREFRONT_APP_VERSION;
+}
+
+export function storefrontQueryHeaders(
+  appVersion: string = resolveStorefrontAppVersion(),
+): Record<string, string> {
+  return {
+    Accept: "application/json",
+    "X-App-Version": appVersion.trim() || DEFAULT_STOREFRONT_APP_VERSION,
+  };
+}
+
 /** برهان تعريف ضيق للتطبيق الأصلي؛ يعبر حارس CSRF من دون إضعاف طلبات الويب العامة. */
 export function storefrontMutationHeaders(
   platform: string = "android",
+  appVersion: string = resolveStorefrontAppVersion(),
 ): Record<string, string> {
   return {
     Accept: "application/json",
     "Content-Type": "application/json",
+    "X-App-Version": appVersion.trim() || DEFAULT_STOREFRONT_APP_VERSION,
     ...(platform === "web"
       ? { "x-erp-csrf": "1" }
       : { "x-alrueya-client": "android-native" }),
