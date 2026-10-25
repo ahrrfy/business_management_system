@@ -81,7 +81,7 @@
     "check:unique-ar": "node scripts/check-unique-ar.mjs",
     "prepare": "husky",
     "format": "prettier --write .",
-    "test": "cross-env TZ=UTC vitest run",
+    "test": "pnpm test:unit && cross-env TZ=UTC VITEST_EXCLUDE_UNIT=1 vitest run",
     "test:storefront:ops": "cross-env TZ=UTC vitest run --config vitest.storefront-ops.config.ts && node scripts/verify-storefront-pwa-build.test.mjs && node scripts/verify-nginx-storefront-readiness.mjs --selftest && node scripts/deploy.test.mjs",
     "test:storefront:pwa-build": "cross-env ERP_VITE_DISABLE_DOTENV=1 vite build --logLevel warn && node scripts/verify-storefront-pwa-build.mjs",
     "test:storefront:e2e": "playwright test --config playwright.storefront.config.ts",

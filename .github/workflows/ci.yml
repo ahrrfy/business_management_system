@@ -106,6 +106,7 @@ jobs:
       TEST_DATABASE_URL: mysql://root@127.0.0.1:3306/erp_test
       ALLOW_TEST_DB_PORT_3306: "1"
       TEST_CONTROL_DATABASE_URL: mysql://root@127.0.0.1:3306/erp_control_test
+      VITEST_EXCLUDE_UNIT: "1"
       TZ: UTC
     steps:
       - uses: actions/checkout@v7
@@ -136,7 +137,18 @@ jobs:
         # وهي الصيغة الموثَّقة في CLAUDE.md §٣ لتشغيل اختبارٍ واحد.
         run: |
           set -o pipefail
-          total="$(git ls-files "*.test.ts" "*.test.tsx" | grep -cE "^(server|client/src|shared)/")"
+          total="$(node -e '
+            const { execFileSync } = require("node:child_process");
+            const { readFileSync } = require("node:fs");
+            const tracked = execFileSync("git", ["ls-files", "*.test.ts", "*.test.tsx"], { encoding: "utf8" })
+              .split(/\r?\n/)
+              .filter((f) => /^(server|client\/src|shared)\//.test(f));
+            const cfg = readFileSync("vitest.unit.config.ts", "utf8")
+              .replace(/\/\*[\s\S]*?\*\//g, "")
+              .replace(/^\s*\/\/.*$/gm, "");
+            const unit = new Set([...cfg.matchAll(/["\x27]([^"\x27\r\n]+\.test\.tsx?)["\x27]/g)].map((m) => m[1]));
+            console.log(tracked.filter((f) => !unit.has(f)).length);
+          ')"
           pnpm exec cross-env TZ=UTC vitest run --shard=${{ matrix.shard }}/${{ matrix.total }} 2>&1 | tee /tmp/shard.log
           # ⚠️ مخرَج vitest ملوَّن: سطر النتيجة مسبوقٌ برموز ANSI، فمرساةُ "^ *Test Files" لا
           # تطابقه ويَخرج $ran فارغاً فتسقط الوظيفة **رغم خضرة الاختبارات** (وقع فعلاً هنا).
@@ -148,6 +160,7 @@ jobs:
           # ٢٥٪ يعني أنّ `--shard` لم يصل vitest (وعندها تُشغَّل الحزمة كاملةً = ١٠٠٪).
           # لا نقارن بالإجمالي مباشرةً لأنّ المجموعة المُجمَّعة أقلّ قليلاً من الملفات
           # المتعقَّبة فتمرّ المقارنة الصارمة كاذبةً.
+          test "$ran" -gt 0
           test "$((ran * 100))" -lt "$((total * 25))"
 
   # يعمل بالتوازي مع شرائح الاختبار: كان وضعه بعدها يضيف ٥-٧ دقائق كاملة إلى المسار
@@ -238,9 +251,8 @@ jobs:
           NODE_OPTIONS: "--max-old-space-size=6144"
       - name: حارس تشخيص فشل CI الآمن
         run: pnpm exec vitest run --config vitest.unit.config.ts scripts/__tests__/ciFailureDiagnosticsWorkflow.test.ts scripts/__tests__/dependencySecurityWorkflow.test.ts scripts/__tests__/ciCriticalPathWorkflow.test.ts scripts/__tests__/safeDeliveryProtocols.test.ts
-      - name: الحزمة الوحدوية الكاملة (معلوماتية — لا تحجب حتى يثبت استقرارها)
-        continue-on-error: true
-        run: pnpm exec cross-env TZ=UTC vitest run --config vitest.unit.config.ts --retry=2
+      - name: الحزمة الوحدوية الكاملة (حاجبة — بلا تنظيف قاعدة)
+        run: pnpm exec cross-env TZ=UTC vitest run --config vitest.unit.config.ts --retry=1
       - name: حارس عقد إصدار تطبيق Android الأصلي
         run: pnpm check:mobile-release
       - name: حارِس الإيموجي UI

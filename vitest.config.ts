@@ -1,7 +1,8 @@
 import path from "node:path";
 import "dotenv/config";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import { defaultTestDatabaseUrl } from "./scripts/lib/test-db-name.mjs";
+import { UNIT_TEST_FILES } from "./vitest.unit.config";
 
 export default defineConfig({
   resolve: {
@@ -34,6 +35,14 @@ export default defineConfig({
       "server/**/*.test.tsx",
       "client/src/**/*.test.tsx",
       "shared/**/*.test.tsx",
+    ],
+    // عند VITEST_EXCLUDE_UNIT=1 (شوارد التكامل في CI وسكربت pnpm test الموحّد)، نُقصي
+    // الاختبارات الوحدوية التي شُغِّلت سلفاً عبر vitest.unit.config.ts فلا تُعاد مع
+    // تهيئة وتنظيف MySQL. وعند عدم ضبط المتغيّر، تبقى الأوامر الفردية
+    // (vitest run <ملف-وحدوي>) شغّالةً بلا حاجةٍ لتمرير --config يدوياً.
+    exclude: [
+      ...configDefaults.exclude,
+      ...(process.env.VITEST_EXCLUDE_UNIT === "1" ? UNIT_TEST_FILES : []),
     ],
     setupFiles: ["./server/services/__tests__/__setup__.ts"],
     testTimeout: 30000,
