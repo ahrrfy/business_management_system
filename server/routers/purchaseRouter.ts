@@ -61,6 +61,7 @@ import {
   updatePurchaseOrder,
 } from "../services/purchaseService";
 import { settlePurchaseShippingFromShift } from "../services/purchase/pay";
+import { reconcileSupplierPurchaseSettlement } from "../services/purchase/historicalSupplierSettlement";
 import { assertLegacyPurchaseWritePathDisabled } from "../services/purchase/governanceCutover";
 import {
   canSeeCostForUser,
@@ -262,6 +263,13 @@ export const purchaseRouter = router({
           // PROC-03: نسبة الضريبة مُقيّدة [٠،١٠٠] على حدّ الثقة (كانت z.string() بلا قيد ⇒ ضريبة سالبة).
           taxRatePercent: percentString.optional(),
           settlementType: z.enum(["CASH", "CREDIT"]).optional(),
+          cashSource: z
+            .object({
+              mode: z.enum(["DRAWER", "TREASURY"]),
+              shiftId: z.number().int().positive().nullable().optional(),
+            })
+            .nullable()
+            .optional(),
           items: z
             .array(
               z.object({
@@ -348,6 +356,14 @@ export const purchaseRouter = router({
         expectedVersion: z.number().int().positive(),
         revisionReason: z.string().trim().min(3).max(500),
         supplierId: z.number().int().positive(),
+        settlementType: z.enum(["CASH", "CREDIT"]).optional(),
+        cashSource: z
+          .object({
+            mode: z.enum(["DRAWER", "TREASURY"]),
+            shiftId: z.number().int().positive().nullable().optional(),
+          })
+          .nullable()
+          .optional(),
         taxRatePercent: percentString.optional(),
         items: z
           .array(
@@ -600,6 +616,13 @@ export const purchaseRouter = router({
         approve: z.boolean(),
         reason: z.string().trim().min(3).max(500),
         confirmedFullReceipt: z.boolean().optional(),
+        cashSource: z
+          .object({
+            mode: z.enum(["DRAWER", "TREASURY"]),
+            shiftId: z.number().int().positive().nullable().optional(),
+          })
+          .nullable()
+          .optional(),
       }),
     )
     .mutation(({ input, ctx }) =>
@@ -1125,6 +1148,7 @@ export const purchaseRouter = router({
             version: purchaseOrders.version,
             currentRevisionId: purchaseOrders.currentRevisionId,
             approvedRevisionId: purchaseOrders.approvedRevisionId,
+            createdBy: purchaseOrders.createdBy,
             lastEditedBy: purchaseOrders.lastEditedBy,
             submittedBy: purchaseOrders.submittedBy,
             submittedAt: purchaseOrders.submittedAt,
@@ -1443,5 +1467,27 @@ export const purchaseRouter = router({
         nextAction,
         nextActionReason,
       };
+    }),
+
+  reconcileSettlement: purchasesManagerProcedure
+    .input(
+      z.object({
+        supplierId: z.number().int().positive(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const res = await reconcileSupplierPurchaseSettlement(input, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+        isOwner: Boolean((ctx.user as { isOwner?: boolean }).isOwner),
+      });
+      await logAudit(ctx, {
+        action: "purchase.reconcileSettlement",
+        entityType: "supplier",
+        entityId: input.supplierId,
+        newValue: res,
+      });
+      return res;
     }),
 });

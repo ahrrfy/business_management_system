@@ -389,9 +389,17 @@ export async function autoSettleSupplierAccountTx(
   tx: Tx,
   supplierId: number,
   actor: Actor,
+  options?: { branchId?: number },
 ): Promise<AutoSettleSupplierResult> {
+  const scopedBranchId =
+    options?.branchId != null &&
+    Number.isSafeInteger(options.branchId) &&
+    options.branchId > 0
+      ? options.branchId
+      : undefined;
+
   // 1) قفل أوامر الشراء المفتوحة أولاً بترتيب معرفاتها (purchaseOrders -> suppliers)
-  // لمنع أي تعارض أقفال تبادلي مع مسارات سداد المشتريات
+  // لمنع أي تعارض أقفال تبادلي مع مسارات سداد المشتريات، وحساب إجمالي الدين المفتوح عبر كل الفروع بدقة مقابل الرصيد العام للمورد
   const openOrders = await tx
     .select()
     .from(purchaseOrders)
@@ -438,13 +446,29 @@ export async function autoSettleSupplierAccountTx(
   });
 
   let totalOpenPoRemaining = money(0);
+  let scopedOpenPoRemaining = money(0);
   for (const po of openOrders) {
     const total = money(po.total);
     const paid = money(po.paidAmount);
     const rem = total.minus(paid);
     if (rem.gt(0)) {
       totalOpenPoRemaining = totalOpenPoRemaining.plus(rem);
+      if (scopedBranchId == null || Number(po.branchId) === scopedBranchId) {
+        scopedOpenPoRemaining = scopedOpenPoRemaining.plus(rem);
+      }
     }
+  }
+
+  if (scopedOpenPoRemaining.lte(0)) {
+    return {
+      supplierId,
+      supplierName: sup.name,
+      settledOrdersCount: 0,
+      partiallySettledOrdersCount: 0,
+      totalSettledAmount: "0.00",
+      remainingOpenDebt: "0.00",
+      settledOrderNumbers: [],
+    };
   }
 
   const currentBalance = money(sup.currentBalance);
@@ -463,7 +487,7 @@ export async function autoSettleSupplierAccountTx(
       settledOrdersCount: 0,
       partiallySettledOrdersCount: 0,
       totalSettledAmount: "0.00",
-      remainingOpenDebt: toDbMoney(totalOpenPoRemaining),
+      remainingOpenDebt: toDbMoney(scopedOpenPoRemaining),
       settledOrderNumbers: [],
     };
   }
@@ -482,8 +506,14 @@ export async function autoSettleSupplierAccountTx(
     if (needed.lte(0)) continue;
 
     const allocate = availableCredit.lt(needed) ? availableCredit : needed;
-    const newPaid = currentPaid.plus(allocate);
     availableCredit = availableCredit.minus(allocate);
+
+    // حجز الرصيد الدائن حسب ترتيب FIFO الفعلي عبر كل الفروع، مع قصر التعديل على الفرع المصرح به فقط
+    if (scopedBranchId != null && Number(po.branchId) !== scopedBranchId) {
+      continue;
+    }
+
+    const newPaid = currentPaid.plus(allocate);
     totalSettled = totalSettled.plus(allocate);
 
     await tx
@@ -511,11 +541,12 @@ export async function autoSettleSupplierAccountTx(
         partiallySettledOrdersCount: partiallySettledCount,
         totalSettledAmount: toDbMoney(totalSettled),
         settledOrderNumbers,
+        ...(scopedBranchId != null ? { branchId: scopedBranchId } : {}),
       },
     });
   }
 
-  const remainingOpenDebt = totalOpenPoRemaining.minus(totalSettled);
+  const remainingOpenDebt = scopedOpenPoRemaining.minus(totalSettled);
 
   return {
     supplierId,

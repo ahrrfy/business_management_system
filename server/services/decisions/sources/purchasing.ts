@@ -215,6 +215,15 @@ export const purchaseOrderControlSource: DecisionSource = {
                 };
               });
         const amount = usd ? (revision?.usdTotal ?? po?.usdTotal ?? null) : (revision?.total ?? po?.total ?? null);
+        const settlementType = (revision?.settlementType ?? po?.settlementType ?? "CREDIT") as "CASH" | "CREDIT";
+        if (r.kind === "APPROVE_REVISION") {
+          summaryItems.push({
+            label:
+              settlementType === "CASH"
+                ? "تسوية الفاتورة: نقدي — يصرف النقد فورا عند الاعتماد وتسوى الفاتورة تلقائيا ليصبح المتبقي 0.00"
+                : "تسوية الفاتورة: ذمة اجلة — يسجل استحقاق المورد على حسابه دون صرف نقد فوري",
+          });
+        }
         const shipping = revision ?? po;
         const shippingAmount = round2(money(shipping?.shippingCost ?? "0").plus(money(shipping?.customsCost ?? "0")));
         const creatorName = po?.createdBy != null ? (look.user(po.createdBy) ?? `#${po.createdBy}`) : "غير معروف";
@@ -283,7 +292,15 @@ export const purchaseOrderControlSource: DecisionSource = {
             expectedVersion: Number(r.baseOrderVersion),
             confirmations:
               r.kind === "APPROVE_REVISION"
-                ? [{ key: "confirmedFullReceipt", label: "اقر بان البضاعة وصلت كاملة ومطابقة للامر — الاعتماد يشغل الاستلام والفاتورة والذمة في معاملة واحدة" }]
+                ? [
+                    {
+                      key: "confirmedFullReceipt",
+                      label:
+                        settlementType === "CASH"
+                          ? "اقر بان البضاعة وصلت كاملة ومطابقة للامر — الاعتماد يصرف النقد فورا ويسوي الفاتورة في معاملة واحدة"
+                          : "اقر بان البضاعة وصلت كاملة ومطابقة للامر — الاعتماد يشغل الاستلام والفاتورة والذمة في معاملة واحدة",
+                    },
+                  ]
                 : [],
             trigger: purchaseOrderControlTrigger(r.kind, true),
           },

@@ -15,7 +15,7 @@
  */
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
-import { ClipboardList } from "lucide-react";
+import { ClipboardList, CheckCircle2, Send } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { invalidateFinancialQueries } from "@/lib/realtime/financialQueries";
 import {
@@ -24,7 +24,15 @@ import {
   safeMoney,
 } from "@/components/purchases/PurchaseShippingCard";
 import { printPurchaseOrderDoc } from "@/components/purchases/purchaseOrderPrint";
+import {
+  PurchaseSettlementPolicyCard,
+  runImmediatePostWorkflow,
+  runSubmitForApprovalWorkflow,
+  usePurchaseCashSourceState,
+} from "@/components/purchases/PurchaseCashSourceField";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   isWithinPriceDecimals,
   priceDecimalsFor,
@@ -34,6 +42,7 @@ import { variantDisplayName } from "@shared/variantDisplay";
 import { D, fmtAr, formatQuantity, round2, toBase, toUnitPriceStr } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
@@ -70,6 +79,11 @@ import { PageHeader } from "@/components/PageHeader";
 
 const INVOICE_TYPE = "PURCHASE" as const;
 const NEW_ACTIONS = ["save", "print", "duplicate", "paste"] as const;
+
+export const __TEST_ONLY__ = {
+  runSubmitForApprovalWorkflow,
+  runImmediatePostWorkflow,
+};
 
 export default function PurchaseNew() {
   const [, navigate] = useLocation();
@@ -478,7 +492,15 @@ export default function PurchaseNew() {
     customsCost.trim() !== "";
   useUnsavedGuard(isDirty);
 
-  /* ─── mutation ─────────────────────────────────────────────────── */
+  /* ─── مصادر سداد الفاتورة النقدية + الطفرات ─────────────────────── */
+  const cashSourceState = usePurchaseCashSourceState({
+    branchId: state.branchId,
+    enabled: state.paymentTerms === "CASH" && state.currency === "IQD",
+    context: "create",
+    isCreator: true,
+  });
+  const [workflowPending, setWorkflowPending] = useState(false);
+
   const create = trpc.purchases.createOrder.useMutation({
     onSuccess: async () => {
       await invalidateFinancialQueries(queryClient, state.branchId);
@@ -488,6 +510,9 @@ export default function PurchaseNew() {
     },
     onError: (e) => notify.err(e),
   });
+  const createAsyncMut = trpc.purchases.createOrder.useMutation();
+  const confirmAsyncMut = trpc.purchases.confirmOrder.useMutation();
+  const decideAsyncMut = trpc.purchases.decideControl.useMutation();
 
   const createRequisition = trpc.purchases.createRequisition.useMutation({
     onSuccess: async () => {
@@ -596,6 +621,12 @@ export default function PurchaseNew() {
     if (state.currency === "USD" && state.paymentTerms === "CASH") {
       return "فاتورة المورد الدولارية تُسدَّد من مسار الصيرفة؛ اختر «آجل» ثم سجّل التسديد الفعلي بعد الاستلام.";
     }
+    if (cashSourceState.validationError) {
+      return cashSourceState.validationError;
+    }
+    if (cashSourceState.isActionBlocked) {
+      return "انتظر اكتمال تحميل مصادر الصرف النقدي للفرع قبل الحفظ.";
+    }
     // landed-cost: التوزيع بنسبة القيمة يحتاج قيمة بضاعة موجبة (مرآة حارس الخادم).
     if (landed.hasLanded && !landed.hasBase) {
       return "أضِف منتجات بقيمة موجبة قبل إدخال تكلفة الشحن/الكمرك.";
@@ -607,7 +638,6 @@ export default function PurchaseNew() {
     return null;
   }
 
-  // الإنشاء يحفظ مسودة دائماً؛ الاعتماد انتقال مستقل من قائمة المشتريات.
   function buildPayload() {
     return {
       supplierId: state.entityId!,
@@ -615,12 +645,9 @@ export default function PurchaseNew() {
       taxRatePercent: state.taxEnabled
         ? round2(D(state.taxRatePercent || "0")).toFixed(2)
         : "0",
-      // المصطلح المشترك INSTALLMENT هو تسوية مؤجلة في المشتريات؛ أمر CASH وحده يولّد طلب
-      // صرف تلقائياً بقيمة كل استلام، ولا يعود اختيار الواجهة معلومةً مهدورة.
       settlementType:
         state.paymentTerms === "CASH" ? ("CASH" as const) : ("CREDIT" as const),
-      // IDEMPOTENCY (تدقيق ٢/٧): كان المفتاح يُولَّد ويُعلَّق في DOM مخفيّ فقط ولا يُرسَل ⇒ النقر
-      // المزدوج يُنشئ أمرَي شراء. الآن نمرّره في الحمولة فيَحرس الخادم من الازدواج.
+      ...(cashSourceState.payload ? { cashSource: cashSourceState.payload } : {}),
       clientRequestId,
       revisionReason: "إنشاء مسودة أمر شراء من شاشة المشتريات",
       requisitionAllocations: requisition.data
@@ -660,26 +687,16 @@ export default function PurchaseNew() {
       }),
       // USD: أسعار البنود نفسها بالدولار، والخادم يحوّلها إلى التكلفة الدينارية بسعر التثبيت.
       agreedCurrency: state.currency,
-      // ملاحظة (إصلاح رسالة «لا يطابق مجموع البنود»): لا نُرسل usdTotal. حين يوجد «سعر التثبيت»
-      // (إلزاميّ للدولار في هذه الشاشة) يشتقّ الخادمُ إجماليَّ الدولار من البنود نفسها (usdGoods +
-      // الضريبة) بترتيب تقريبٍ سطريٍّ محدَّد؛ وأسعار البنود تُرسَل بمنزلتين عشريّتين (nonNegMoneyString)
-      // بينما كانت الواجهة تشتقّ usdTotal من أسعارٍ كاملة الدقّة (مثل 4.1666) ⇒ الإجماليان يختلفان
-      // بفروق تقريبٍ بحتة فيرفض الحارسُ الحفظَ زوراً. المرجع الوحيد هو حساب الخادم من البنود.
       agreedRate:
         state.currency === "USD"
           ? safeMoney(state.agreedRate).toFixed(4)
           : undefined,
-      // خصم فاتورة المورّد (0204): يُرسَل بعملة الأمر ويُوزّعه الخادم بنسبة القيمة.
       invoiceDiscount: invoiceDiscountAmount.gt(0)
         ? invoiceDiscountAmount.toFixed(2)
         : undefined,
-      // مطابقة فاتورة المورّد: تُرسَل حين يملؤها الموظّف ⇒ الخادم يرفض حفظ أمرٍ يخالف مستنده.
-      // فارغةٌ ⇒ لا مطابقة (السلوك التاريخيّ) — الحقل ضابطٌ اختياريّ لا شرطُ حفظ.
       supplierInvoiceTotal: state.supplierInvoiceTotal.trim()
         ? round2(safeMoney(state.supplierInvoiceTotal)).toFixed(2)
         : undefined,
-      // landed-cost: الشحن/الكمرك (تُرسَل فقط إن كانت موجبة — الخادم يوزّعها بنسبة القيمة ويُرسمِلها).
-      // safeMoney: قيمة وسيطة غير مكتملة («.») ⇒ صفر بدل رمي D() الخام أثناء الحفظ.
       shippingCost: safeMoney(shippingCost).gt(0)
         ? round2(safeMoney(shippingCost)).toFixed(2)
         : undefined,
@@ -690,19 +707,7 @@ export default function PurchaseNew() {
       items: state.items.map((l) => ({
         variantId: l.variantId,
         productUnitId: l.productUnitId,
-        // الكمية بنفس الوحدة المختارة (الخادم يضرب × conversionFactor للحصول على base).
         quantity: D(l.qty).toString(),
-        // سعر الشراء بالوحدة **بعملة الأمر** — بوحدة **الصفّ** المختارة (قطعة/درزن/كرتون)،
-        // ثمّ يقسمه `receive.ts` على معامل الوحدة ليحصل على `costPerBase` الداخل في WAVG.
-        //
-        // PUR-UNIT-01 (٤/٩/٢٦): `l.price` تُملأ في مسارَي الإضافة (ProductSearchBar/BulkPicker)
-        // بـ`estimatedPurchaseUnitPrice = costPriceBase × conversionFactor`، فدرزن (معامل ١٢)
-        // بتكلفةِ قطعةٍ ١٥٠ يُرسَل بسعرِ ١٨٠٠/درزن ⇒ costPerBase=١٥٠ (سليم). قبله كان يُرسَل ١٥٠
-        // ⇒ costPerBase=١٢.٥٠ (سمَّم WAVG). المستعمِل يعدّل `l.price` بحرّية (بيدٍ أو عبر
-        // «وزّع الفرق») والحمولة تحمل ما رآه بلا افتراضٍ صامت.
-        //
-        // `round2(...).toFixed(2)` كان يقصّ سعر الدولار 3.4566 إلى 3.46 صامتاً رغم أنّ العمود
-        // `usdUnitPrice` يحفظ ٤ منازل ⇒ فارقٌ في ذمّة المورّد بحجم الكمية.
         unitPrice: toUnitPriceStr(l.price, state.currency),
       })),
     };
@@ -710,7 +715,7 @@ export default function PurchaseNew() {
 
   function handleSaveRequisition() {
     if (!canLifecycleOperation(me.data, "purchases.createRequisition", true)) return notify.err("إنشاء طلب تأمين غير مفوض لهذا الحساب.");
-    if (createRequisition.isPending) return;
+    if (createRequisition.isPending || workflowPending) return;
     if (state.items.length === 0) {
       notify.warn("أضف منتجاً واحداً على الأقل لطلب التأمين.");
       return;
@@ -751,11 +756,12 @@ export default function PurchaseNew() {
     });
   }
 
+  const isAnySaving =
+    create.isPending || createRequisition.isPending || workflowPending;
+
   function handleSubmit() {
     if (!canLifecycleOperation(me.data, "purchases.createOrder", true)) return notify.err("إنشاء أمر شراء غير مفوض لهذا الحساب.");
-    // ActionButtons (مشترك) لا يُعطِّل زرّ «مسوّدة» أثناء التحفّظ — حارس محلّي يمنع تضارب حفظَين
-    // متزامنين (كلاهما يشترك clientRequestId ثابتاً؛ الخادم يمنع الازدواج، لكن قد يُربَك التوجيه بعد النجاح).
-    if (create.isPending || createRequisition.isPending) return;
+    if (isAnySaving) return;
     if (!state.entityId) {
       handleSaveRequisition();
       return;
@@ -766,6 +772,96 @@ export default function PurchaseNew() {
       return;
     }
     create.mutate(buildPayload());
+  }
+
+  const invalidatePurchaseWorkflowQueries = () =>
+    Promise.all([
+      invalidateFinancialQueries(queryClient, state.branchId),
+      utils.purchases.list.invalidate(),
+      utils.purchases.pendingControls.invalidate(),
+    ]);
+
+  async function handleSaveAndSubmitForApproval() {
+    if (
+      !canLifecycleOperation(me.data, "purchases.createOrder", true) ||
+      !canLifecycleOperation(me.data, "purchases.confirmOrder", true)
+    ) {
+      notify.err("ارسال فاتورة الشراء للاعتماد غير مفوض لهذا الحساب.");
+      return;
+    }
+    if (isAnySaving || !state.entityId) return;
+    const err = validate();
+    if (err) {
+      notify.warn(err);
+      return;
+    }
+    await runSubmitForApprovalWorkflow({
+      isCash: state.paymentTerms === "CASH",
+      clientRequestId,
+      createOrder: () => createAsyncMut.mutateAsync(buildPayload()),
+      confirmOrder: (input) => confirmAsyncMut.mutateAsync(input),
+      invalidateAll: invalidatePurchaseWorkflowQueries,
+      onSuccessToast: (msg) => notify.ok(msg),
+      onErrorToast: (e) => notify.err(e),
+      onNavigate: navigate,
+      setPending: setWorkflowPending,
+    });
+  }
+
+  async function handleSaveAndPostImmediately() {
+    if (
+      me.data?.isOwner !== true ||
+      !canLifecycleOperation(me.data, "purchases.createOrder", true) ||
+      !canLifecycleOperation(me.data, "purchases.confirmOrder", true) ||
+      !canLifecycleOperation(me.data, "purchases.decideControl", true)
+    ) {
+      notify.err("الاعتماد والترحيل الفوري متاح لحساب المالك المفوض فقط.");
+      return;
+    }
+    if (isAnySaving || !state.entityId) return;
+    const err = validate();
+    if (err) {
+      notify.warn(err);
+      return;
+    }
+    const isCash = state.paymentTerms === "CASH";
+    const sourceLabel = cashSourceState.sourceSummaryLabel;
+    const displayTotal =
+      state.currency === "USD"
+        ? `${fmtAr(docTotals.total)} $`
+        : `${fmtAr(landed.grand.toFixed(2))} د.ع`;
+    const ok = await confirm({
+      variant: "info",
+      title: isCash
+        ? "حفظ وترحيل وسداد الفاتورة النقدية فورا"
+        : "حفظ وترحيل الفاتورة الاجلة فورا",
+      description: isCash
+        ? `سيتم استلام البضاعة في المخزون وترحيل فاتورة المورد وسداد مبلغ ${displayTotal} نقدا من (${sourceLabel}) في معاملة واحدة، وتصبح ذمة الفاتورة صفرا (0.00). هل تؤكد استلام البضاعة كاملة؟`
+        : `سيتم استلام البضاعة في المخزون وترحيل فاتورة المورد بقيمة ${displayTotal} كذمة اجلة على المورد في معاملة واحدة. هل تؤكد استلام البضاعة كاملة؟`,
+      confirmText: isCash ? "تأكيد الاستلام والسداد النقدي" : "تأكيد الاستلام والترحيل",
+      cancelText: "تراجع",
+    });
+    if (!ok) return;
+
+    await runImmediatePostWorkflow({
+      isCash,
+      clientRequestId,
+      cashSource: cashSourceState.payload,
+      createOrder: () => createAsyncMut.mutateAsync(buildPayload()),
+      confirmOrder: (input) => confirmAsyncMut.mutateAsync(input),
+      decideOrder: (input) =>
+        decideAsyncMut.mutateAsync({
+          ...input,
+          confirmedFullReceipt: true,
+          cashSource: cashSourceState.payload,
+        }),
+      invalidateAll: invalidatePurchaseWorkflowQueries,
+      onSuccessToast: (msg) => notify.ok(msg),
+      onWarnToast: (msg) => notify.warn(msg),
+      onErrorToast: (e) => notify.err(e),
+      onNavigate: navigate,
+      setPending: setWorkflowPending,
+    });
   }
 
   /**
@@ -1016,6 +1112,13 @@ export default function PurchaseNew() {
             showDetailedDistribution
           />
 
+          <PurchaseSettlementPolicyCard
+            idPrefix="purchase-new"
+            context="create"
+            paymentTerms={state.paymentTerms}
+            currency={state.currency}
+            cashSourceState={cashSourceState}
+          />
           <TotalsPanel
             items={state.items}
             state={state}
@@ -1083,7 +1186,7 @@ export default function PurchaseNew() {
               <Button
                 type="button"
                 className="w-full bg-[var(--sem-warn)] hover:bg-[var(--sem-warn)]/90 text-background font-semibold text-xs h-8 shadow-sm gap-1.5"
-                disabled={!canLifecycleOperation(me.data, "purchases.createRequisition", true) || createRequisition.isPending}
+                disabled={!canLifecycleOperation(me.data, "purchases.createRequisition", true) || isAnySaving}
                 onClick={handleSaveRequisition}
               >
                 <ClipboardList className="size-4" />
@@ -1091,12 +1194,49 @@ export default function PurchaseNew() {
               </Button>
             </section>
           )}
-          <div className="sticky bottom-0 z-10 bg-background/95 backdrop-blur pt-1.5 border-t">
+          <div className="sticky bottom-0 z-10 bg-background/95 backdrop-blur pt-1.5 border-t space-y-1.5">
+            {Boolean(state.entityId) &&
+              state.items.length > 0 &&
+              canLifecycleOperation(me.data, "purchases.createOrder", true) &&
+              canLifecycleOperation(me.data, "purchases.confirmOrder", true) && (
+                <Card>
+                  <CardContent className="p-2.5 flex flex-col gap-1.5">
+                    {me.data?.isOwner === true &&
+                    canLifecycleOperation(me.data, "purchases.decideControl", true) ? (
+                      <Button
+                        type="button"
+                        className="w-full font-semibold h-9 gap-1.5"
+                        disabled={isAnySaving}
+                        onClick={() => void handleSaveAndPostImmediately()}
+                      >
+                        <CheckCircle2 aria-hidden className="size-4" />
+                        {workflowPending
+                          ? ACTION_LABELS.saving
+                          : state.paymentTerms === "CASH"
+                            ? "حفظ وترحيل وسداد الفاتورة فورا"
+                            : "حفظ وترحيل الفاتورة فورا"}
+                      </Button>
+                    ) : (
+                      <Button
+                        type="button"
+                        className="w-full font-semibold h-9 gap-1.5"
+                        disabled={isAnySaving}
+                        onClick={() => void handleSaveAndSubmitForApproval()}
+                      >
+                        <Send aria-hidden className="size-4" />
+                        {workflowPending
+                          ? ACTION_LABELS.saving
+                          : "حفظ وارسال الفاتورة للاعتماد"}
+                      </Button>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
             <ActionButtons
               invoiceType={INVOICE_TYPE}
               items={state.items}
               onAction={handleAction}
-              saving={create.isPending || createRequisition.isPending}
+              saving={isAnySaving}
               pasteAvailable={pasteAvailable}
               availableActions={canLifecycleOperation(me.data, "purchases.createOrder", true) ? NEW_ACTIONS : NEW_ACTIONS.filter((action) => action !== "save")}
               primaryLabel="حفظ المسودة"

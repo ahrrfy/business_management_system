@@ -22,6 +22,11 @@ import {
 } from "@/components/purchases/PurchaseShippingCard";
 import { printPurchaseOrderDoc } from "@/components/purchases/purchaseOrderPrint";
 import {
+  PurchaseSettlementPolicyCard,
+  usePurchaseCashSourceState,
+  type PurchaseCashSourceMode,
+} from "@/components/purchases/PurchaseCashSourceField";
+import {
   isWithinPriceDecimals,
   priceDecimalsMessage,
 } from "@shared/moneyPrecision";
@@ -146,6 +151,7 @@ function stateFromOrder(
     invoiceNumber: order.poNumber,
     entityId: order.supplierId == null ? null : Number(order.supplierId),
     branchId,
+    paymentTerms: order.settlementType === "CASH" ? "CASH" : "INSTALLMENT",
     currency: isUsd ? "USD" : "IQD",
     agreedRate: isUsd ? String(order.agreedRate ?? "") : "",
     // قيمة فاتورة المورّد: تُملأ من `usdTotal` للأمر الدولاريّ **فقط** — فهو بالعقد «مبلغ فاتورة
@@ -175,9 +181,12 @@ function editorFingerprint(
   customsCost: string,
   revisionReason: string,
   shippingFundingSource: "ACCRUAL" | "DRAWER" = "ACCRUAL",
+  cashMode: PurchaseCashSourceMode = "AUTO",
+  cashShiftId = "",
 ): string {
   return JSON.stringify({
     entityId: state.entityId,
+    paymentTerms: state.paymentTerms,
     currency: state.currency,
     agreedRate: state.agreedRate,
     supplierInvoiceTotal: state.supplierInvoiceTotal,
@@ -192,6 +201,8 @@ function editorFingerprint(
     customsCost,
     revisionReason,
     shippingFundingSource,
+    cashMode: state.paymentTerms === "CASH" ? cashMode : "NONE",
+    cashShiftId: state.paymentTerms === "CASH" && cashMode === "DRAWER" ? cashShiftId : "",
     items: state.items.map((l) => [
       l.variantId,
       l.productUnitId,
@@ -227,6 +238,16 @@ export default function PurchaseEdit() {
   /** بصمة اللقطة المحفوظة — مقارنتها بالبصمة الحالية تُعطي «هل تغيّر شيء؟» بلا أعلامٍ متسلسلة. */
   const [baseline, setBaseline] = useState<string | null>(null);
 
+  const cashSourceState = usePurchaseCashSourceState({
+    branchId: Number(po.data?.branchId ?? state.branchId),
+    enabled: state.paymentTerms === "CASH" && state.currency === "IQD",
+    context: "edit",
+    isCreator:
+      po.data != null &&
+      me.data != null &&
+      Number(po.data.createdBy) === Number(me.data.id),
+  });
+
   // تحميل الأمر في المحرّر **مرّةً واحدة**: إعادةُ الحقن عند كل إعادة جلبٍ (invalidate/refocus)
   // كانت ستطمس تعديلاً جارياً بلا إنذار.
   const hydratedRef = useRef(false);
@@ -245,13 +266,30 @@ export default function PurchaseEdit() {
     setCustomsCost(customs);
     const fundingSource = po.data.shippingFundingSource ?? "ACCRUAL";
     setShippingFundingSource(fundingSource);
-    setBaseline(editorFingerprint(next, ship, customs, "", fundingSource));
+    setBaseline(editorFingerprint(next, ship, customs, "", fundingSource, "AUTO", ""));
   }, [po.data]);
 
   // حارس فقدان البيانات: نشِطٌ فقط بعد الحقن وعند اختلافٍ فعليّ عن اللقطة المحفوظة.
   const fingerprint = useMemo(
-    () => editorFingerprint(state, shippingCost, customsCost, revisionReason, shippingFundingSource),
-    [state, shippingCost, customsCost, revisionReason, shippingFundingSource],
+    () =>
+      editorFingerprint(
+        state,
+        shippingCost,
+        customsCost,
+        revisionReason,
+        shippingFundingSource,
+        cashSourceState.mode,
+        cashSourceState.shiftId,
+      ),
+    [
+      state,
+      shippingCost,
+      customsCost,
+      revisionReason,
+      shippingFundingSource,
+      cashSourceState.mode,
+      cashSourceState.shiftId,
+    ],
   );
   useUnsavedGuard(baseline != null && baseline !== fingerprint);
   // البصمة لحظة نجاح الحفظ تُقرأ من ref لا من إغلاق الطفرة (قد يكون من رسمٍ أقدم).
@@ -444,6 +482,15 @@ export default function PurchaseEdit() {
     if (state.currency === "USD" && !safeMoney(state.agreedRate).gt(0)) {
       return "أدخل سعر الصرف المثبت للفاتورة.";
     }
+    if (state.currency === "USD" && state.paymentTerms === "CASH") {
+      return "فاتورة المورد الدولارية تسدد من مسار الصيرفة؛ اختر اجل ثم سجل التسديد الفعلي بعد الاستلام.";
+    }
+    if (cashSourceState.validationError) {
+      return cashSourceState.validationError;
+    }
+    if (cashSourceState.isActionBlocked) {
+      return "انتظر اكتمال تحميل مصادر الصرف النقدي للفرع قبل الحفظ.";
+    }
     if (landed.hasLanded && !landed.hasBase) {
       return "أضِف منتجات بقيمة موجبة قبل إدخال تكلفة الشحن/الكمرك.";
     }
@@ -469,11 +516,18 @@ export default function PurchaseEdit() {
     });
     if (!ok) return;
 
+    const selectedCashSource =
+      state.paymentTerms === "CASH" && state.currency === "IQD"
+        ? cashSourceState.payload
+        : null;
+
     update.mutate({
       purchaseOrderId,
       expectedVersion: Number(po.data?.version),
       revisionReason: revisionReason.trim(),
       supplierId: state.entityId!,
+      settlementType: state.paymentTerms === "CASH" ? "CASH" : "CREDIT",
+      cashSource: selectedCashSource,
       taxRatePercent: state.taxEnabled
         ? round2(D(state.taxRatePercent || "0")).toFixed(2)
         : "0",
@@ -538,7 +592,7 @@ export default function PurchaseEdit() {
     printPurchaseOrderDoc({
       docNum: state.invoiceNumber || null,
       statusLabel: PO_STATUS[data.status] ?? data.status,
-      paymentTerms: data.settlementType,
+      paymentTerms: state.paymentTerms === "CASH" ? "CASH" : "CREDIT",
       docDate: data.orderDate,
       currency: state.currency,
       agreedRate: state.agreedRate,
@@ -770,6 +824,14 @@ export default function PurchaseEdit() {
             paymentRecorded={po.data?.shippingFundingSource === "DRAWER" && po.data.shippingPayment?.hasRecordedPayment === true}
             landed={landed}
             showOptionalBadge
+          />
+
+          <PurchaseSettlementPolicyCard
+            idPrefix="purchase-edit"
+            context="edit"
+            paymentTerms={state.paymentTerms}
+            currency={state.currency}
+            cashSourceState={cashSourceState}
           />
 
           <TotalsPanel
