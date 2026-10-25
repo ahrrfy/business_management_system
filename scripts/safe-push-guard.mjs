@@ -980,6 +980,8 @@ export function createUnitTestCommands(testPaths, maxCommandLength = 24000) {
     "--config",
     "vitest.unit.config.ts",
     "--maxWorkers=4",
+    // Match the integration suite's deadline for large DOM and child-process tests.
+    "--testTimeout=30000",
   ];
   const commands = [];
   let args = [...baseArgs];
@@ -1008,7 +1010,7 @@ export function runSafePushSelftest() {
   const commands = createUnitTestCommands(longTestPaths);
   assert.ok(commands.length > 1);
   assert.deepEqual(
-    commands.flatMap(({ args }) => args.slice(5)),
+    commands.flatMap(({ args }) => args.slice(6)),
     longTestPaths,
   );
   assert.ok(
