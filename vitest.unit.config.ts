@@ -620,6 +620,7 @@ export const UNIT_TEST_FILES: string[] = [
       "client/src/pages/__tests__/reactEffectLoopGuard.test.ts",
       "client/src/pages/__tests__/salesInvoiceDigitalIntegrity.test.ts",
       "scripts/__tests__/safeDeliveryProtocols.test.ts",
+      "client/src/__tests__/bootstrapApp.test.ts",
 ];
 
 export default defineConfig({
