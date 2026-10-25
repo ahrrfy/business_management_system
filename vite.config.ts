@@ -222,6 +222,10 @@ export default defineConfig(({ mode }) => {
         // اسمٌ مميز لدخول SPA يمنع glob قشرة PWA من التقاط أي chunk آخر اسمه index
         // (مثل مكتبة ماسح الباركود) لمجرد تشابه الاسم.
         entryFileNames: "assets/app-[hash].js",
+        chunkFileNames(chunkInfo) {
+          if (chunkInfo.name === "App") return "assets/erp-routes-[hash].js";
+          return "assets/[name]-[hash].js";
+        },
         manualChunks(id) {
           // Legacy permission dictionaries remain needed for untouched roles, but do not
           // belong in the account-sharing or application entry chunks.
@@ -229,7 +233,8 @@ export default defineConfig(({ mode }) => {
           if (id.includes("/shared/atomicPermissions.ts")) return "legacy-permissions";
           // The ERP shell is reused by every operational page; isolate its common
           // dependencies instead of accumulating them in the SPA entry.
-          if (id.includes("/client/src/components/AppLayout.tsx")) return "app-shell";
+          // AppLayout is dynamically reached via lazy("./App") from BootstrapApp.
+          if (id.includes("/client/src/lib/navVisibility.ts") || id.includes("/client/src/lib/moduleRegistry.ts")) return "erp-navigation";
           if (id.includes("/shared/operationPermissionCatalog.part1.generated")) return "operation-catalog-1";
           if (id.includes("/shared/operationPermissionCatalog.part2.generated")) return "operation-catalog-2";
           if (id.includes("/node_modules/@casl/") || id.includes("/node_modules/sift/")) return "authorization-vendor";

@@ -45,7 +45,7 @@ const manifest = {
     file: "assets/app-aaa.js",
     isEntry: true,
     imports: ["_framework.js"],
-    dynamicImports: ["src/pages/Storefront.tsx", "src/pages/Admin.tsx"],
+    dynamicImports: ["src/pages/Storefront.tsx", "src/pages/Admin.tsx", "src/App.tsx"],
   },
   "src/pages/Storefront.tsx": {
     file: "assets/Storefront-bbb.js",
@@ -54,6 +54,10 @@ const manifest = {
   },
   "src/pages/Admin.tsx": {
     file: "assets/Admin-ccc.js",
+    isDynamicEntry: true,
+  },
+  "src/App.tsx": {
+    file: "assets/App-erp.js",
     isDynamicEntry: true,
   },
   "_framework.js": { file: "assets/framework-ddd.js" },
@@ -96,14 +100,57 @@ assert.deepEqual(result.requiredFiles, [
 
 // The canonical allowlist must cover the storefront's shared search-input graph,
 // including the dialog and barcode chunks emitted after the Vite 7.3.7 patch.
-// Unrelated ERP pages must remain excluded.
+// Unrelated ERP pages and ERP RBAC/offline/chart chunks must remain excluded.
 const shellChunkNames = STOREFRONT_SHELL_CHUNK_GLOB.match(/^assets\/\{([^}]+)\}-\*\.js$/)?.[1].split(",");
 assert.ok(shellChunkNames, "storefront shell glob has explicit chunk names");
 for (const file of result.requiredFiles.filter((file) => !file.startsWith("assets/app-"))) {
   const chunkName = file.replace(/^assets\//, "").replace(/-[^-]+\.js$/, "");
   assert.ok(shellChunkNames.includes(chunkName), `${chunkName} must be included in storefront shell precache`);
 }
-for (const adminChunk of ["Admin", "POS", "ProductNew", "Treasury"]) assert.equal(shellChunkNames.includes(adminChunk), false, adminChunk);
+for (const forbiddenChunk of [
+  "Admin",
+  "POS",
+  "ProductNew",
+  "Treasury",
+  "App",
+  "app-shell",
+  "erp-shell",
+  "erp-navigation",
+  "CommandPalette",
+  "operation-catalog-1",
+  "operation-catalog-2",
+  "authorization-vendor",
+  "validation-vendor",
+  "offline-store",
+  "charts",
+  "legacy-permissions",
+  "permission-extensions",
+]) {
+  assert.equal(shellChunkNames.includes(forbiddenChunk), false, `${forbiddenChunk} must not be in storefront shell glob`);
+}
+
+for (const erpChunkFile of [
+  "assets/App-erp.js",
+  "assets/app-shell-abc.js",
+  "assets/erp-shell-abc.js",
+  "assets/operation-catalog-1-abc.js",
+  "assets/operation-catalog-2-abc.js",
+  "assets/authorization-vendor-abc.js",
+  "assets/validation-vendor-abc.js",
+  "assets/offline-store-abc.js",
+  "assets/charts-abc.js",
+  "assets/CommandPalette-abc.js",
+]) {
+  assert.throws(
+    () =>
+      assertStorefrontPrecacheClosure({
+        manifest,
+        swSource: completeSw.replace("];", `,{"url":"${erpChunkFile}","revision":null}];`),
+      }),
+    new RegExp(`STOREFRONT_PRECACHE_ERP_CHUNK_FORBIDDEN:${erpChunkFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+  );
+}
+
 for (const missingChunk of ["UnifiedSearchInput-search", "BarcodeSearchCue-cue", "dialog-dialoghash", "useBarcodeInput-barcodehash"]) {
   assert.throws(() => assertStorefrontPrecacheClosure({
     manifest,
