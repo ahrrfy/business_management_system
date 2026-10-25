@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   queryData: null as unknown,
   querySuccess: true,
   queryError: null as Error | null,
+  previewError: false,
   order: [] as string[],
   user: { role: "manager" } as OperationUser,
 }));
@@ -39,7 +40,7 @@ vi.mock("@/lib/trpc", () => ({
       },
       searchCustomizationTargets: {
         useQuery: (input: { categoryId?: number }) => input.categoryId
-          ? { data: { items: [], total: 3, withTemplate: 1 }, isLoading: false, isFetching: false, isSuccess: true, refetch: vi.fn() }
+          ? { data: { items: [], total: 3, withTemplate: 1 }, isLoading: false, isFetching: false, isSuccess: !mocks.previewError, isError: mocks.previewError, refetch: vi.fn() }
           : { data: { items: [], total: 0, withTemplate: 0 }, isLoading: false, isFetching: false, isSuccess: true, refetch: vi.fn() },
       },
       saveCustomizationTemplate: {
@@ -96,6 +97,7 @@ describe("محرر قالب تخصيص المنتج", () => {
     mocks.queryData = null;
     mocks.querySuccess = true;
     mocks.queryError = null;
+    mocks.previewError = false;
     mocks.refetch.mockReset();
     mocks.confirm.mockReset().mockResolvedValue(true);
     mocks.save.mockReset().mockImplementation(async () => {
@@ -206,5 +208,83 @@ describe("محرر قالب تخصيص المنتج", () => {
     expect(host.textContent).toContain("تعذر الاتصال بالخادم");
     await act(async () => byText<HTMLButtonElement>(host, "button", "إعادة المحاولة").click());
     expect(mocks.refetch).toHaveBeenCalled();
+  });
+
+  it("يعزل وجهات النسخ والرسائل عند الانتقال إلى منتج آخر أثناء النسخ", async () => {
+    let finish!: (result: unknown) => void;
+    mocks.copy.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    await openCategoryCopy(host, false);
+    act(() => byText<HTMLButtonElement>(host, "button", "حفظ ونسخ إلى الفئة").click());
+    await act(async () => root.render(<ProductCustomizationTemplateEditor productId={2} enabled />));
+    expect(host.textContent).not.toContain("الفئة المستهدفة");
+    await act(async () => finish({ sourceTemplateId: 20, copied: 3, skipped: 0 }));
+    expect(host.textContent).not.toContain("تم نسخ القالب");
+  });
+
+  it("يقفل الحفظ والتفعيل مع النسخ ولا يرسل نسخاً مكرراً أثناء التأكيد", async () => {
+    let finish!: (value: boolean) => void;
+    mocks.confirm.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    await openCategoryCopy(host, true);
+    const copy = byText<HTMLButtonElement>(host, "button", "حفظ ونسخ إلى الفئة");
+    act(() => copy.click());
+    expect(byText<HTMLButtonElement>(host, "button", "حفظ قالب التخصيص").disabled).toBe(true);
+    expect(byText<HTMLLabelElement>(host, "label", "يظهر للزبون").querySelector<HTMLInputElement>("input")!.disabled).toBe(true);
+    act(() => copy.click());
+    expect(mocks.confirm).toHaveBeenCalledTimes(1);
+    await act(async () => finish(true));
+    expect(mocks.copy).toHaveBeenCalledTimes(1);
+  });
+
+  it("يعرض فشل تحديث معاينة الفئة ولا يقدم الأرقام المخزنة كمعاينة حديثة", async () => {
+    await openCategoryCopy(host, false);
+    mocks.previewError = true;
+    await act(async () => root.render(<ProductCustomizationTemplateEditor productId={1} enabled />));
+    expect(host.textContent).toContain("تعذّر تحديث معاينة الفئة");
+    expect(byText<HTMLButtonElement>(host, "button", "حفظ ونسخ إلى الفئة").disabled).toBe(true);
+  });
+
+  it("لا يرسل عملية المنتج القديم بعد تأكيد متأخر", async () => {
+    let finish!: (value: boolean) => void;
+    mocks.confirm.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    await openCategoryCopy(host, true);
+    act(() => byText<HTMLButtonElement>(host, "button", "حفظ ونسخ إلى الفئة").click());
+    await act(async () => root.render(<ProductCustomizationTemplateEditor productId={2} enabled />));
+    await act(async () => finish(true));
+    expect(mocks.copy).not.toHaveBeenCalled();
+  });
+
+  it("يفك القفل عند إلغاء التأكيد", async () => {
+    mocks.confirm.mockResolvedValueOnce(false);
+    await openCategoryCopy(host, true);
+    await act(async () => byText<HTMLButtonElement>(host, "button", "حفظ ونسخ إلى الفئة").click());
+    expect(byText<HTMLButtonElement>(host, "button", "حفظ قالب التخصيص").disabled).toBe(false);
+  });
+
+  it("يحفظ هوية وتركيز حقل المفتاح التقني أثناء الكتابة", async () => {
+    const input = byText<HTMLLabelElement>(host, "label", "المفتاح التقني").querySelector<HTMLInputElement>("input")!;
+    input.focus();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "custom_key");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(document.activeElement).toBe(input);
+    expect(input.value).toBe("custom_key");
+  });
+
+  it("لا يعتبر التعديل أثناء تأكيد النسخ محفوظاً عند تحديث الخلفية", async () => {
+    let finish!: (value: boolean) => void;
+    mocks.confirm.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    await openCategoryCopy(host, true);
+    act(() => byText<HTMLButtonElement>(host, "button", "حفظ ونسخ إلى الفئة").click());
+    const title = byText<HTMLLabelElement>(host, "label", "العنوان الذي يراه الزبون").querySelector<HTMLInputElement>("input")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(title, "تعديل أثناء التأكيد");
+      title.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => finish(true));
+    mocks.queryData = { id: 20, productId: 1, kind: "GENERAL", title: "القيمة المرسلة", description: null, isActive: true, fields: [] };
+    await act(async () => root.render(<ProductCustomizationTemplateEditor productId={1} enabled />));
+    expect(title.value).toBe("تعديل أثناء التأكيد");
+    expect(mocks.copy.mock.calls[0][0].sourceTemplate.title).not.toBe("تعديل أثناء التأكيد");
   });
 });
