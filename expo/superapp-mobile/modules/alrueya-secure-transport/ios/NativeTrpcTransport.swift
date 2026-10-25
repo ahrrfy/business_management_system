@@ -225,6 +225,84 @@ final class NativeTrpcTransport {
     }
   }
 
+  func operationsActor() throws -> String {
+    try query(procedure: "auth.me", input: nil, requiresSession: true)
+  }
+
+  func listBranches() throws -> String {
+    try query(procedure: "branches.list", input: nil, requiresSession: true)
+  }
+
+  func listSalesInvoices(limit: Int, offset: Int) throws -> String {
+    guard (1 ... 500).contains(limit), (0 ... 1_000_000).contains(offset) else {
+      throw SecureTransportException(code: "E_SECURE_TRANSPORT_INPUT", reason: "Invalid sales list pagination.")
+    }
+    return try query(procedure: "sales.list", input: ["limit": limit, "offset": offset], requiresSession: true)
+  }
+
+  func getSalesInvoice(invoiceId: Int) throws -> String {
+    guard invoiceId > 0 else {
+      throw SecureTransportException(code: "E_SECURE_TRANSPORT_INPUT", reason: "Invalid invoice id.")
+    }
+    return try query(procedure: "sales.get", input: ["invoiceId": invoiceId], requiresSession: true)
+  }
+
+  func listAdminCatalog(branchId: Int, limit: Int, q: String?) throws -> String {
+    guard branchId > 0, (1 ... 500).contains(limit) else {
+      throw SecureTransportException(code: "E_SECURE_TRANSPORT_INPUT", reason: "Invalid catalog parameters.")
+    }
+    if let q {
+      guard q.count <= 200, !q.contains("\n"), !q.contains("\r") else {
+        throw SecureTransportException(code: "E_SECURE_TRANSPORT_INPUT", reason: "Invalid catalog query.")
+      }
+    }
+    var input: [String: Any] = ["branchId": branchId, "limit": limit]
+    if let cleanQ = q?.trimmingCharacters(in: .whitespacesAndNewlines), !cleanQ.isEmpty {
+      input["q"] = cleanQ
+    }
+    return try query(procedure: "catalog.adminList", input: input, requiresSession: true)
+  }
+
+  func listCustomers() throws -> String {
+    try query(procedure: "customers.list", input: nil, requiresSession: true)
+  }
+
+  func decisionsInbox(limit: Int) throws -> String {
+    guard (1 ... 500).contains(limit) else {
+      throw SecureTransportException(code: "E_SECURE_TRANSPORT_INPUT", reason: "Invalid decisions inbox limit.")
+    }
+    return try query(procedure: "decisions.inbox", input: ["limit": limit], requiresSession: true)
+  }
+
+  func superAppApprovalInbox(limit: Int, offset: Int) throws -> String {
+    guard (1 ... 50).contains(limit), (0 ... 450).contains(offset) else {
+      throw SecureTransportException(code: "E_SECURE_TRANSPORT_INPUT", reason: "Invalid approval inbox pagination.")
+    }
+    return try query(procedure: "superApp.approvalInbox", input: ["limit": limit, "offset": offset], requiresSession: true)
+  }
+
+  func treasuryDashboard() throws -> String {
+    try query(procedure: "treasury.getDashboard", input: nil, requiresSession: true)
+  }
+
+  func treasuryRecentMovements(limit: Int) throws -> String {
+    guard (1 ... 100).contains(limit) else {
+      throw SecureTransportException(code: "E_SECURE_TRANSPORT_INPUT", reason: "Invalid treasury movements limit.")
+    }
+    return try query(procedure: "treasury.getRecentMovements", input: ["limit": limit], requiresSession: true)
+  }
+
+  func listSuppliers() throws -> String {
+    try query(procedure: "suppliers.list", input: nil, requiresSession: true)
+  }
+
+  func listPurchases(limit: Int) throws -> String {
+    guard (1 ... 500).contains(limit) else {
+      throw SecureTransportException(code: "E_SECURE_TRANSPORT_INPUT", reason: "Invalid purchases limit.")
+    }
+    return try query(procedure: "purchases.list", input: ["limit": limit], requiresSession: true)
+  }
+
   func logout() {
     serial {
       defer { SecureNativeSessionStore.clear() }
@@ -383,7 +461,14 @@ final class NativeTrpcTransport {
     guard
       let result = item["result"] as? [String: Any],
       let resultData = result["data"] as? [String: Any],
-      let value = resultData["json"],
+      let value = resultData["json"]
+    else {
+      throw SecureTransportException(code: "E_SECURE_TRANSPORT_RESPONSE", reason: "The server response was incomplete.")
+    }
+    if value is NSNull {
+      return "null"
+    }
+    guard
       JSONSerialization.isValidJSONObject(value),
       let encoded = try? JSONSerialization.data(withJSONObject: value),
       let string = String(data: encoded, encoding: .utf8)

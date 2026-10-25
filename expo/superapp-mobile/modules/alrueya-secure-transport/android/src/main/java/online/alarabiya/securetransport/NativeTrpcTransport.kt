@@ -164,6 +164,65 @@ internal class NativeTrpcTransport(context: Context) {
     requiresSession = true,
   )
 
+  fun operationsActor(): String = query("auth.me", null, requiresSession = true)
+
+  fun listBranches(): String = query("branches.list", null, requiresSession = true)
+
+  fun listSalesInvoices(limit: Int, offset: Int): String {
+    require(limit in 1..500) { "Invalid sales list limit" }
+    require(offset in 0..1_000_000) { "Invalid sales list offset" }
+    val input = JSONObject()
+      .put("limit", limit)
+      .put("offset", offset)
+    return query("sales.list", input, requiresSession = true)
+  }
+
+  fun getSalesInvoice(invoiceId: Int): String {
+    require(invoiceId > 0) { "Invalid invoice id" }
+    return query("sales.get", JSONObject().put("invoiceId", invoiceId), requiresSession = true)
+  }
+
+  fun listAdminCatalog(branchId: Int, limit: Int, q: String?): String {
+    require(branchId > 0) { "Invalid branch id" }
+    require(limit in 1..500) { "Invalid catalog limit" }
+    require(q == null || (q.length <= 200 && q.none { it == '\n' || it == '\r' })) { "Invalid catalog query" }
+    val input = JSONObject()
+      .put("branchId", branchId)
+      .put("limit", limit)
+    q?.trim()?.takeIf { it.isNotEmpty() }?.let { input.put("q", it) }
+    return query("catalog.adminList", input, requiresSession = true)
+  }
+
+  fun listCustomers(): String = query("customers.list", null, requiresSession = true)
+
+  fun decisionsInbox(limit: Int): String {
+    require(limit in 1..500) { "Invalid decisions inbox limit" }
+    return query("decisions.inbox", JSONObject().put("limit", limit), requiresSession = true)
+  }
+
+  fun superAppApprovalInbox(limit: Int, offset: Int): String {
+    require(limit in 1..50) { "Invalid approval inbox limit" }
+    require(offset in 0..450) { "Invalid approval inbox offset" }
+    val input = JSONObject()
+      .put("limit", limit)
+      .put("offset", offset)
+    return query("superApp.approvalInbox", input, requiresSession = true)
+  }
+
+  fun treasuryDashboard(): String = query("treasury.getDashboard", null, requiresSession = true)
+
+  fun treasuryRecentMovements(limit: Int): String {
+    require(limit in 1..100) { "Invalid treasury movements limit" }
+    return query("treasury.getRecentMovements", JSONObject().put("limit", limit), requiresSession = true)
+  }
+
+  fun listSuppliers(): String = query("suppliers.list", null, requiresSession = true)
+
+  fun listPurchases(limit: Int): String {
+    require(limit in 1..500) { "Invalid purchases limit" }
+    return query("purchases.list", JSONObject().put("limit", limit), requiresSession = true)
+  }
+
   @Synchronized
   fun logout() {
     if (sessions.loadCookie() == null) {
