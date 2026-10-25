@@ -4,12 +4,14 @@ import { loadRefundCaps } from "../returns/refundCaps";
 import { createPendingDeliveryRefundTx, deliveryRefundError } from "./paymentRefunds";
 // إرجاع إرسالية (البضاعة عادت): عكس SALE + إعادة مخزون + عكس العهدة + رد العربون.
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import type Decimal from "decimal.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { deliveryConsignments, deliveryParties, inventoryMovements, invoiceItems, invoices, onlineOrders, productVariants, products, receipts, workOrders } from "../../../drizzle/schema";
+import { deliveryConsignments, deliveryParties, inventoryMovements, invoiceItemBundleComponents, invoiceItems, invoices, onlineOrders, productVariants, products, receipts, workOrders } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
-import { applyMovement } from "../inventoryService";
+import { applyValuedInboundMovement } from "../inventoryService";
+import { classifyVariants } from "../bundleService";
 import { createPostingIntent, signedPostingLines, type AccountRole, type PostingSourceComponents } from "../accounting/postingEngine";
 import { adjustCustomerBalance, adjustDeliveryBalance, adjustSupplierBalance, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
@@ -388,9 +390,103 @@ export async function returnConsignment(
       .innerJoin(products, eq(productVariants.productId, products.id))
       .where(eq(invoiceItems.invoiceId, Number(cn.invoiceId)));
 
-    // لا نخمّن من سطر الفاتورة ما خرج من المخزون: نعيد فقط حركات OUT الأصلية المرتبطة
-    // بالفاتورة. هكذا لا يتحول ناتج أمر شغل/خدمة مخصّصة إلى مخزون، وتعود مكوّنات البكج
-    // ومواد الخدمة بذات الكميات الفعلية التي خرجت، لا بإعادة بناء قد تنجرف عن الحركة الأصلية.
+    const itemVariantIds = Array.from(new Set(items.map((item) => Number(item.variantId))));
+    const kindByVariant = await classifyVariants(tx, itemVariantIds);
+    const bundleItemIds = items
+      .filter((item) => kindByVariant.get(Number(item.variantId)) === "BUNDLE")
+      .map((item) => Number(item.id));
+    const bundleSnapshotByItem = new Map<number, Array<{
+      componentVariantId: number;
+      componentBaseQuantity: number;
+      issueUnitCost: string | null;
+      issueLineCost: string | null;
+    }>>();
+    if (bundleItemIds.length) {
+      const snapshots = await tx
+        .select({
+          invoiceItemId: invoiceItemBundleComponents.invoiceItemId,
+          componentVariantId: invoiceItemBundleComponents.componentVariantId,
+          componentBaseQuantity: invoiceItemBundleComponents.componentBaseQuantity,
+          issueUnitCost: invoiceItemBundleComponents.issueUnitCost,
+          issueLineCost: invoiceItemBundleComponents.issueLineCost,
+        })
+        .from(invoiceItemBundleComponents)
+        .where(inArray(invoiceItemBundleComponents.invoiceItemId, bundleItemIds));
+      for (const snapshot of snapshots) {
+        const itemId = Number(snapshot.invoiceItemId);
+        const list = bundleSnapshotByItem.get(itemId) ?? [];
+        list.push({
+          componentVariantId: Number(snapshot.componentVariantId),
+          componentBaseQuantity: Number(snapshot.componentBaseQuantity),
+          issueUnitCost: snapshot.issueUnitCost,
+          issueLineCost: snapshot.issueLineCost,
+        });
+        bundleSnapshotByItem.set(itemId, list);
+      }
+    }
+
+    // نبني العائد المادي من لقطة البيع نفسها: السلعة المخزنية وقِطع البكج فقط. سطر الخدمة
+    // وخاماتُه المستهلكة لا يعودان تلقائياً لمجرد رجوع الطرد، وناتج أمر الشغل ملكٌ للعميل
+    // وليس صنفاً جاهزاً في branchStock. ثم نطابق الكميات مع OUT الأصلي كدليل خروج.
+    const stockOps = new Map<number, { quantity: number; historicalValue: Decimal }>();
+    const restockedItemIds = new Set<number>();
+    if (inv.sourceType !== "WORKORDER") {
+      for (const item of items) {
+        const itemId = Number(item.id);
+        const variantId = Number(item.variantId);
+        const kind = kindByVariant.get(variantId) ?? "STOCKED";
+        if (kind === "SERVICE") continue;
+        if (kind === "BUNDLE") {
+          const snapshots = bundleSnapshotByItem.get(itemId) ?? [];
+          if (!snapshots.length) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: appErrorMessage({
+                what: "تعذّر استلام بكج الإرسالية إلى المخزون",
+                why: `البند ${itemId} لا يحمل لقطة مكوّنات البيع، وإرجاع وصفة اليوم قد يضيف أصنافاً لم تخرج أصلاً`,
+                doThis: "أوقف الإرجاع وافتح مهمة مراجعة للمستند الأصلي لتوثيق المكونات والكميات التاريخية ثم أعد المحاولة",
+              }),
+            });
+          }
+          for (const snapshot of snapshots) {
+            const quantity = snapshot.componentBaseQuantity * Number(item.baseQuantity);
+            const historicalValue = snapshot.issueLineCost != null
+              ? money(snapshot.issueLineCost)
+              : snapshot.issueUnitCost != null
+                ? round2(money(snapshot.issueUnitCost).times(quantity))
+                : null;
+            if (historicalValue == null) {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: appErrorMessage({
+                  what: "تعذّر تقييم مكوّن البكج الراجع",
+                  why: `لقطة البند ${itemId} لا تحمل قيمة صرف تاريخية للمكوّن #${snapshot.componentVariantId}، ولا يجوز استعمال تكلفة اليوم`,
+                  doThis: "أوقف الإرجاع وافتح مهمة مراجعة تكلفة للمستند الأصلي؛ بعد توثيق قيمة الصرف التاريخية أعد المحاولة",
+                }),
+              });
+            }
+            const current = stockOps.get(snapshot.componentVariantId) ?? {
+              quantity: 0,
+              historicalValue: money(0),
+            };
+            current.quantity += quantity;
+            current.historicalValue = current.historicalValue.plus(historicalValue);
+            stockOps.set(snapshot.componentVariantId, current);
+          }
+          restockedItemIds.add(itemId);
+          continue;
+        }
+        const current = stockOps.get(variantId) ?? {
+          quantity: 0,
+          historicalValue: money(0),
+        };
+        current.quantity += Number(item.baseQuantity);
+        current.historicalValue = current.historicalValue.plus(money(item.lineCost));
+        stockOps.set(variantId, current);
+        restockedItemIds.add(itemId);
+      }
+    }
+
     const originalOut = await tx
       .select({
         variantId: inventoryMovements.variantId,
@@ -411,18 +507,32 @@ export async function returnConsignment(
         inArray(inventoryMovements.referenceType, ["INVOICE", "PRINT_SALE"]),
         eq(inventoryMovements.referenceId, Number(cn.invoiceId)),
       ));
-    const stockOps = new Map<number, number>();
+    const issuedByVariant = new Map<number, number>();
     for (const movement of originalOut) {
       const variantId = Number(movement.variantId);
-      stockOps.set(variantId, (stockOps.get(variantId) ?? 0) + Number(movement.quantity));
+      issuedByVariant.set(variantId, (issuedByVariant.get(variantId) ?? 0) + Number(movement.quantity));
     }
-    // تطبيق مجمَّع بترتيب variantId تصاعدي (اتّساق مع sale/create.ts + returnService).
+    for (const [variantId, operation] of Array.from(stockOps.entries())) {
+      const issued = issuedByVariant.get(variantId) ?? 0;
+      if (issued < operation.quantity) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر إثبات كمية البضاعة الراجعة",
+            why: `المستند يطلب إعادة ${operation.quantity} من الصنف #${variantId} بينما حركات الصرف الأصلية المثبتة ${issued} فقط`,
+            doThis: "أوقف الإرجاع وافتح مهمة مراجعة للمستند وحركات الصرف؛ صحّح الدليل التاريخي قبل أي إضافة للمخزون",
+          }),
+        });
+      }
+    }
+    // تطبيق مجمَّع بترتيب variantId تصاعدي، بالقيمة التاريخية لا بتكلفة الصنف الحالية.
     const sortedVids = Array.from(stockOps.keys()).sort((a, b) => a - b);
     for (const vid of sortedVids) {
-      const qty = stockOps.get(vid)!;
-      if (qty <= 0) continue;
-      await applyMovement(tx, {
-        variantId: vid, branchId: Number(cn.branchId), baseQuantity: qty,
+      const operation = stockOps.get(vid)!;
+      if (operation.quantity <= 0) continue;
+      await applyValuedInboundMovement(tx, {
+        variantId: vid, branchId: Number(cn.branchId), baseQuantity: operation.quantity,
+        historicalValue: operation.historicalValue,
         movementType: "RETURN", referenceType: "DELIVERY_RETURN", referenceId: consignmentId,
         documentNumber: cn.consignmentNumber, createdBy: actor.userId,
       });
@@ -486,6 +596,9 @@ export async function returnConsignment(
     let giftCost = money(0);
     let ownedGiftCost = money(0);
     for (const item of items) {
+      // لا نعكس تكلفةً ولا استحقاق مودِع إلا لما عاد فعلياً إلى المخزون. الخدمة
+      // وناتج أمر الشغل يبقيان خارج حركة IN حتى لو عُكست تجارتهما.
+      if (!restockedItemIds.has(Number(item.id))) continue;
       const share = money(item.lineCost);
       if (item.isGift) {
         giftCost = giftCost.plus(share);
@@ -510,8 +623,8 @@ export async function returnConsignment(
 
     const invCustomerId = inv.customerId != null ? Number(inv.customerId) : null;
     const revenueBeforeTax = round2(total.minus(tax));
-    // أمر الشغل لا يعيد مواد WIP (حركاته ليست INVOICE/PRINT_SALE). أمّا خدمة نقطة البيع
-    // فمواد لقطة بيعها عادت فعلياً أعلاه مع OUT الأصلية، لذا يجب عكس COGS بذات lineCost.
+    // أمر الشغل والخدمة لا يعيدان مخزوناً في هذا المسار؛ تكلفة العائد التشغيلي تقتصر
+    // على السلعة أو مكوّنات البكج التي ثبت استلامها وأضيفت فعلياً إلى المخزون.
     const operationalReturnCost = inv.sourceType === "WORKORDER"
       ? money(0)
       : ownedInventoryCost.neg();
@@ -626,16 +739,12 @@ export async function returnConsignment(
     // (`ii.total × (baseQuantity − returnedBaseQuantity) / baseQuantity`) فيُبقي الإرسالية
     // المُرجَعة **بيعاً كاملاً إلى الأبد**، وتكلفتُها تُحيَّد أو لا حسب `returnedRestocked`.
     // المرتجع هنا كامل بحكم التصميم (الحالة RETURNED و`returnedTotal` = الإجمالي)، لكن
-    // «المُعاد للرفّ» يُشتقّ من حركات OUT الأصلية لا من الأسطر — فالخدمة/الصنف الذي لم يخرج
-    // من المخزون لا يُحسب مُعاداً إليه، مرآةً لتمييز `restock` في returnService.
-    // نسخةٌ مستقلّة: `stockOps` استُهلكت في حركات المخزون أعلاه، والتوزيع هنا يستنفدها
-    // سطراً سطراً (صنفٌ واحد قد يتكرّر في أكثر من سطر) فلا يجوز أن يمسّ الأصل.
-    const restockedByVariant = new Map(stockOps);
+    // «المُعاد للرفّ» يتبع خطة العائد المادي أعلاه: السلعة المخزنية أو البكج الذي عادت
+    // مكوّناته فقط. الخدمة وناتج أمر الشغل لا يسجلان عودة مخزنية.
     for (const item of items) {
-      const vid = item.variantId != null ? Number(item.variantId) : null;
-      const restockedPool = vid != null ? (restockedByVariant.get(vid) ?? 0) : 0;
-      const restocked = Math.min(Number(item.baseQuantity), restockedPool);
-      if (vid != null && restocked > 0) restockedByVariant.set(vid, restockedPool - restocked);
+      const restocked = restockedItemIds.has(Number(item.id))
+        ? Number(item.baseQuantity)
+        : 0;
       await tx
         .update(invoiceItems)
         .set({

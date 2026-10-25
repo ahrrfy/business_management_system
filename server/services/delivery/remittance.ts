@@ -1166,5 +1166,6 @@ export async function recordDeliveryRemittanceInTx(
     status,
     // م١ (PR-2): إيصالُ الدرج الذي حمل النقد — تعيده التسوية اليوميّة في ناتجها.
     receiptInId,
+    idempotentReplay: false as const,
   };
 }

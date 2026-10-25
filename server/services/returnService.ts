@@ -75,7 +75,7 @@ import {
   idempotencyHash,
   recordIdempotencyKey,
 } from "./idempotency";
-import { applyMovement, applyValuedInboundMovement } from "./inventoryService";
+import { applyValuedInboundMovement } from "./inventoryService";
 import { allocateLineCost } from "./billing";
 import {
   adjustCustomerBalance,
@@ -1693,7 +1693,7 @@ export async function returnSaleInTx(
   interface StockOp {
     variantId: number;
     baseQuantity: number;
-    historicalValue?: Decimal;
+    historicalValue: Decimal;
   }
   const stockOps: StockOp[] = [];
   const restoredServiceItemIds = new Set<number>();
@@ -1956,16 +1956,23 @@ export async function returnSaleInTx(
             settledQuantity,
           );
           if (!returnQuantity) continue;
+          if (c.issueUnitCost == null) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: appErrorMessage({
+                what: "تعذّر تقييم مكوّن البكج العائد",
+                why: `لقطة البند ${Number(item.id)} لا تحمل تكلفة الصرف التاريخية للمكوّن #${c.componentVariantId}، واستعمال تكلفة اليوم سيغيّر قيمة المخزون`,
+                doThis:
+                  "أوقف المرتجع وافتح مهمة مراجعة تكلفة للمستند الأصلي؛ بعد توثيق تكلفة الصرف التاريخية أعد تنفيذ المرتجع",
+              }),
+            });
+          }
           stockOps.push({
             variantId: c.componentVariantId,
             baseQuantity: returnQuantity,
-            ...(itemRights.length
-              ? {
-                  historicalValue: round2(
-                    money(c.issueUnitCost!).times(returnQuantity),
-                  ),
-                }
-              : {}),
+            historicalValue: round2(
+              money(c.issueUnitCost).times(returnQuantity),
+            ),
           });
         }
       } else if (kind === "SERVICE") {
@@ -1977,6 +1984,7 @@ export async function returnSaleInTx(
         stockOps.push({
           variantId: itemVariantId,
           baseQuantity: line.baseQuantity,
+          historicalValue: lineCost,
         });
       }
     }
@@ -2002,25 +2010,19 @@ export async function returnSaleInTx(
     const aggregated = new Map<
       number,
       {
-        plainQuantity: number;
-        valuedQuantity: number;
+        quantity: number;
         historicalValue: Decimal;
       }
     >();
     for (const op of stockOps) {
       const current = aggregated.get(op.variantId) ?? {
-        plainQuantity: 0,
-        valuedQuantity: 0,
+        quantity: 0,
         historicalValue: money(0),
       };
-      if (op.historicalValue === undefined) {
-        current.plainQuantity += op.baseQuantity;
-      } else {
-        current.valuedQuantity += op.baseQuantity;
-        current.historicalValue = current.historicalValue.plus(
-          op.historicalValue,
-        );
-      }
+      current.quantity += op.baseQuantity;
+      current.historicalValue = current.historicalValue.plus(
+        op.historicalValue,
+      );
       aggregated.set(op.variantId, current);
     }
     const sortedVariantIds = Array.from(aggregated.keys()).sort(
@@ -2028,23 +2030,11 @@ export async function returnSaleInTx(
     );
     for (const vid of sortedVariantIds) {
       const operation = aggregated.get(vid)!;
-      if (operation.plainQuantity > 0) {
-        await applyMovement(tx, {
-          variantId: vid,
-          branchId: Number(inv.branchId),
-          baseQuantity: operation.plainQuantity,
-          movementType: "RETURN",
-          referenceType: "RETURN",
-          referenceId: input.invoiceId,
-          documentNumber: inv.invoiceNumber,
-          createdBy: actor.userId,
-        });
-      }
-      if (operation.valuedQuantity > 0) {
+      if (operation.quantity > 0) {
         await applyValuedInboundMovement(tx, {
           variantId: vid,
           branchId: Number(inv.branchId),
-          baseQuantity: operation.valuedQuantity,
+          baseQuantity: operation.quantity,
           historicalValue: operation.historicalValue,
           movementType: "RETURN",
           referenceType: "RETURN",

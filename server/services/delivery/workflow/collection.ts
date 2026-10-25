@@ -13,21 +13,27 @@ import {
   fulfillmentMutationContext,
   recordFulfillmentMutationTx,
 } from "../../fulfillment/core";
-import { toDbMoney } from "../../money";
+import { money, round2, toDbMoney } from "../../money";
 import { withTx, type Actor } from "../../tx";
 import { confirmConsignmentDelivery } from "../courier";
+import { allocateProportionally } from "../remittance";
 import {
   loadShipmentMembersTx,
   operationalShipmentMembers,
 } from "../shipments";
 import { currentWorkflowActorTx, loadWorkflowPreviewTx } from "./preview";
+import { isShortfallReason } from "../../../../shared/shortfallReason";
 
-/** Staff explicitly witnesses full current collection; actual counter remittance remains separate. */
+/** Staff explicitly witnesses customer collection; courier remittance remains a separate command. */
 export function confirmWorkflowDelivery(
   input: {
     source: WorkflowDispatchSource;
     branchId?: number;
     evidence: string;
+    /** Absent preserves the fast path: collect the full current customer claim. */
+    collectedAmount?: string;
+    /** Required when the explicit amount is below the current customer claim. */
+    shortfallReason?: string;
     clientRequestId: string;
   },
   actor: Actor,
@@ -87,6 +93,10 @@ export function confirmWorkflowDelivery(
         throw fulfillmentError(
           "الشحنة مسلمة أو أعلن رجوع بعض أعضائها؛ راجع النتيجة الحالية قبل إجراء جماعي",
         );
+      const claims: Array<{
+        row: (typeof members)[number];
+        due: ReturnType<typeof money>;
+      }> = [];
       for (const row of members) {
         const invoice =
           row.invoiceId == null
@@ -100,7 +110,36 @@ export function confirmWorkflowDelivery(
                   .limit(1)
               )[0];
         const charges = await loadAssignedChargeClaimsTx(tx, row.id);
-        const collected = assignedGoodsCodDue(invoice).plus(charges.remaining);
+        claims.push({
+          row,
+          due: round2(assignedGoodsCodDue(invoice).plus(charges.remaining)),
+        });
+      }
+      const totalDue = round2(
+        claims.reduce((sum, claim) => sum.plus(claim.due), money(0)),
+      );
+      const collected =
+        input.collectedAmount == null
+          ? totalDue
+          : round2(money(input.collectedAmount));
+      if (!collected.isFinite() || collected.lt(0) || collected.gt(totalDue))
+        throw fulfillmentError(
+          `المقبوض ${collected.toFixed(2)} خارج مطالبة العميل الحالية ${totalDue.toFixed(2)}`,
+        );
+      const hasShortfall = collected.lt(totalDue);
+      if (
+        hasShortfall &&
+        (!input.shortfallReason || !isShortfallReason(input.shortfallReason))
+      )
+        throw fulfillmentError(
+          "اختر سبب العجز المعتمد قبل إثبات مبلغ تحصيل أقل من مطالبة العميل",
+        );
+      const allocations = allocateProportionally(
+        collected,
+        claims.map((claim) => claim.due),
+      );
+      for (let index = 0; index < claims.length; index += 1) {
+        const { row } = claims[index];
         await confirmConsignmentDelivery(
           {
             consignmentId: row.id,
@@ -109,7 +148,10 @@ export function confirmWorkflowDelivery(
               partyId: row.partyId,
               statementNumber: `STAFF:${input.evidence.trim()}`.slice(0, 160),
               kind: "STAFF_CONFIRMED",
-              collectedAmount: toDbMoney(collected),
+              collectedAmount: toDbMoney(allocations[index]),
+              ...(hasShortfall
+                ? { shortfallReason: input.shortfallReason }
+                : {}),
             },
           },
           auth.actor,

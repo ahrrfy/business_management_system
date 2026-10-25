@@ -11,6 +11,7 @@ import { reserveExternalRefundConfirmationTx } from "../externalRefundConfirmati
 import {
   createFulfillmentCharge,
   approveFulfillmentCharge,
+  completeFulfillmentCharge,
   collectFulfillmentCharges,
   refundFulfillmentCharge,
   refundFulfillmentChargeExcess,
@@ -263,7 +264,7 @@ async function balance() {
     .currentBalance;
 }
 describe("classified fulfillment charge lifecycle", () => {
-  it("SERVICE 2000 settles only its own claim beside an already-paid invoice", async () => {
+  it("SERVICE 2000 stays deferred when paid before completion and settles only its own claim", async () => {
     await db().insert(s.invoices).values({
       id: 1,
       branchId: 1,
@@ -286,8 +287,18 @@ describe("classified fulfillment charge lifecycle", () => {
     );
     expect(await db().select().from(s.invoices)).toHaveLength(1);
     expect((await db().select().from(s.receipts))[0].invoiceId).toBeNull();
+    const accrual = (await db().select().from(s.accountingEntries)).find(
+      (entry) => entry.dedupeKey === `FULFILLMENT_CHARGE_ACCRUAL:${row.id}`,
+    );
+    expect(accrual?.revenue).toBe("0.00");
+    expect(
+      (await db().select().from(s.accountingEntries)).some(
+        (entry) =>
+          entry.dedupeKey === `FULFILLMENT_CHARGE_RECOGNITION:${row.id}`,
+      ),
+    ).toBe(false);
   });
-  it("OUTSOURCED 5000/3000 posts gross service and independent AP cost", async () => {
+  it("OUTSOURCED 5000/3000 recognizes revenue and AP cost once at completion", async () => {
     await allowCashierCost();
     const row = await approved({
       category: "OUTSOURCED",
@@ -300,15 +311,41 @@ describe("classified fulfillment charge lifecycle", () => {
       entries.find(
         (e) => e.dedupeKey === `FULFILLMENT_CHARGE_ACCRUAL:${row.id}`,
       )?.revenue,
-    ).toBe("5000.00");
+    ).toBe("0.00");
     expect(
       entries.find((e) => e.dedupeKey === `FULFILLMENT_CHARGE_COST:${row.id}`)
         ?.cost,
+    ).toBeUndefined();
+    const completionInput = {
+      id: row.id,
+      expectedVersion: row.version,
+      clientRequestId: key(),
+      evidence: "إثبات استلام الخدمة الخارجية مكتملة",
+    };
+    const completed = await completeFulfillmentCharge(completionInput, manager);
+    expect(await completeFulfillmentCharge(completionInput, manager)).toEqual(
+      completed,
+    );
+    const afterCompletion = await db().select().from(s.accountingEntries);
+    expect(
+      afterCompletion.find(
+        (e) => e.dedupeKey === `FULFILLMENT_CHARGE_RECOGNITION:${row.id}`,
+      )?.revenue,
+    ).toBe("5000.00");
+    expect(
+      afterCompletion.find(
+        (e) => e.dedupeKey === `FULFILLMENT_CHARGE_COST:${row.id}`,
+      )?.cost,
     ).toBe("3000.00");
+    expect(
+      afterCompletion.filter(
+        (e) => e.dedupeKey === `FULFILLMENT_CHARGE_COST:${row.id}`,
+      ),
+    ).toHaveLength(1);
     await settleFulfillmentChargePayee(
       {
         id: row.id,
-        expectedVersion: row.version,
+        expectedVersion: completed.version,
         amount: "3000",
         clientRequestId: key(),
         tender: { method: "CASH", cashBucket: "DRAWER", shiftId: 1 },
@@ -323,6 +360,31 @@ describe("classified fulfillment charge lifecycle", () => {
         (e) => e.cost === "3000.00",
       ),
     ).toHaveLength(1);
+  });
+  it("completes a legacy-posted service without posting revenue again", async () => {
+    const row = await approved();
+    await db()
+      .update(fulfillmentCharges)
+      .set({ legacyPostedAt: new Date() })
+      .where(eq(fulfillmentCharges.id, row.id));
+    const before = await db().select().from(s.accountingEntries);
+    await completeFulfillmentCharge(
+      {
+        id: row.id,
+        expectedVersion: row.version,
+        clientRequestId: key(),
+        evidence: "إثبات إكمال سجل مرحل سابقاً",
+      },
+      manager,
+    );
+    const after = await db().select().from(s.accountingEntries);
+    expect(after).toHaveLength(before.length);
+    expect(
+      after.some(
+        (entry) =>
+          entry.dedupeKey === `FULFILLMENT_CHARGE_RECOGNITION:${row.id}`,
+      ),
+    ).toBe(false);
   });
   it("PASS_THROUGH 3000 is liability with zero revenue and no duplicate expense", async () => {
     await allowCashierCost();
@@ -543,6 +605,11 @@ describe("classified fulfillment charge lifecycle", () => {
         (r) => r.paymentMethod === "CARD" && r.cashBucket === null,
       ),
     ).toBe(true);
+    expect(
+      (await db().select().from(s.accountingEntries)).find((entry) =>
+        entry.dedupeKey?.startsWith("FULFILLMENT_CHARGE_CREDIT:R:"),
+      )?.revenue,
+    ).toBe("0.00");
     expect(await balance()).toBe("0.00");
     const another = await approved();
     await expect(

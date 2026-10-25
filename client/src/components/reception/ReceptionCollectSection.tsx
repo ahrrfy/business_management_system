@@ -21,6 +21,7 @@ import {
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Badge } from "@/components/ui/badge";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -50,6 +51,11 @@ import { CompanyStatementImport } from "@/components/delivery/CompanyStatementIm
 import { docBarcode } from "@shared/documentNumber";
 import type { WorkflowScanPreview } from "@shared/deliveryWorkflow";
 import { deliverySourceView } from "@shared/deliverySource";
+import {
+  SHORTFALL_REASONS,
+  SHORTFALL_REASON_LABEL_AR,
+  type ShortfallReason,
+} from "@shared/shortfallReason";
 
 export type PartyObligation = RouterOutputs["delivery"]["obligations"][number];
 type FinancialRetry = { signature: string; key: string };
@@ -61,6 +67,141 @@ function financialRetryKey(
   if (ref.current?.signature !== signature)
     ref.current = { signature, key: crypto.randomUUID() };
   return ref.current!.key;
+}
+
+function BarcodeCustomerCollection({
+  preview,
+  partyName,
+  pending,
+  onConfirm,
+  onCancel,
+}: {
+  preview: WorkflowScanPreview;
+  partyName?: string;
+  pending: boolean;
+  onConfirm: (input: {
+    collectedAmount: string;
+    shortfallReason?: ShortfallReason;
+  }) => void;
+  onCancel: () => void;
+}) {
+  const due = D(preview.money.codAmount);
+  const [mode, setMode] = useState<"full" | "different">("full");
+  const [amount, setAmount] = useState(due.toFixed(2));
+  const [shortfallReason, setShortfallReason] = useState<ShortfallReason | "">(
+    "",
+  );
+  const amountValid = /^(?:\d+|\d*\.\d{1,2})$/.test(amount.trim());
+  const entered = amountValid ? D(amount) : D(0);
+  const effective = mode === "full" ? due : entered;
+  const shortfall = round2(due.minus(effective));
+  const isShort = shortfall.gt(0);
+  const isOver = effective.gt(due);
+  const canConfirm =
+    !pending &&
+    (mode === "full" || amountValid) &&
+    !isOver &&
+    (!isShort || shortfallReason !== "");
+
+  return (
+    <div className="space-y-3 rounded-md border bg-muted/20 p-3">
+      <div>
+        <p className="text-sm font-bold">تحصيل العميل</p>
+        <p className="text-xs leading-5 text-muted-foreground">
+          المسح عرّف الشحنة فقط. عند التأكيد ينتقل المقبوض إلى عهدة{" "}
+          {partyName ?? "جهة التوصيل"}؛ توريد الجهة للدرج إجراء مستقل لاحقاً.
+        </p>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <Button
+          type="button"
+          size="sm"
+          variant={mode === "full" ? "default" : "outline"}
+          disabled={pending}
+          onClick={() => {
+            setMode("full");
+            setAmount(due.toFixed(2));
+            setShortfallReason("");
+          }}
+        >
+          تحصيل المطلوب بالكامل
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={mode === "different" ? "secondary" : "outline"}
+          disabled={pending}
+          onClick={() => setMode("different")}
+        >
+          مبلغ مختلف
+        </Button>
+      </div>
+      {mode === "different" && (
+        <div className="space-y-2">
+          <Label htmlFor="workflow-customer-collected-amount">
+            المقبوض فعلياً من العميل
+          </Label>
+          <MoneyInput
+            id="workflow-customer-collected-amount"
+            ariaLabel="المبلغ المقبوض فعلياً من العميل"
+            value={amount}
+            onChange={setAmount}
+          />
+          {isOver && (
+            <p className="text-xs font-medium text-destructive">
+              المبلغ أكبر من المطالبة الحالية؛ سجّل الفائض من مساره المستقل.
+            </p>
+          )}
+          {isShort && (
+            <>
+              <p className="text-xs font-medium text-[var(--sem-warn)]">
+                العجز {fmt(shortfall.toFixed(2))} د.ع سيُقيّد على جهة التوصيل،
+                لا على العميل.
+              </p>
+              <AppSelect
+                aria-label="سبب عجز تحصيل العميل"
+                value={shortfallReason}
+                onValueChange={(value) =>
+                  setShortfallReason(value as ShortfallReason | "")
+                }
+              >
+                <option value="">— اختر سبب العجز (إلزامي) —</option>
+                {SHORTFALL_REASONS.map((reason) => (
+                  <option key={reason} value={reason}>
+                    {SHORTFALL_REASON_LABEL_AR[reason]}
+                  </option>
+                ))}
+              </AppSelect>
+            </>
+          )}
+        </div>
+      )}
+      <div className="flex flex-wrap justify-end gap-2">
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          disabled={pending}
+          onClick={onCancel}
+        >
+          تراجع
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          disabled={!canConfirm}
+          onClick={() =>
+            onConfirm({
+              collectedAmount: effective.toFixed(2),
+              ...(isShort && shortfallReason ? { shortfallReason } : {}),
+            })
+          }
+        >
+          {pending ? "جارٍ الإثبات…" : "إثبات التسليم وتحصيل العميل"}
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 export interface ReceptionCollectSectionProps {
@@ -112,6 +253,11 @@ export function ReceptionCollectSection({
     preview: WorkflowScanPreview;
     raw: string;
   } | null>(null);
+  const [pendingCustomerCollection, setPendingCustomerCollection] = useState<{
+    preview: WorkflowScanPreview;
+    groupKey: string;
+    partyName?: string;
+  } | null>(null);
   const scanSequence = useRef(0);
   const acceptedGroups = useRef(new Set<string>());
   const confirmRetry = useRef<{ signature: string; key: string } | null>(null);
@@ -119,6 +265,7 @@ export function ReceptionCollectSection({
     scanSequence.current++;
     acceptedGroups.current.clear();
     setScanContext(null);
+    setPendingCustomerCollection(null);
     setReturnedCustodyOnly(false);
     return () => {
       scanSequence.current++;
@@ -314,7 +461,7 @@ export function ReceptionCollectSection({
   const remitMut = trpc.delivery.recordRemittance.useMutation({
     onSuccess: (r) => {
       notify.ok(
-        "تم التحصيل والتوريد للدرج — " + r.remittanceNumber,
+        "تم توريد نقد جهة التوصيل إلى الدرج — " + r.remittanceNumber,
         "صاف " + fmt(r.netRemitted) + " د.ع",
       );
       printRemittanceReceipt(selectedParty?.name ?? "المندوب", r);
@@ -324,7 +471,7 @@ export function ReceptionCollectSection({
       void openConsQ.refetch();
       void utils.delivery.invalidate();
     },
-    onError: (e) => notify.err(e, "تعذّر التحصيل"),
+    onError: (e) => notify.err(e, "تعذّر توريد جهة التوصيل"),
   });
 
   const companyStatementMut = trpc.delivery.recordCompanyStatement.useMutation({
@@ -460,7 +607,7 @@ export function ReceptionCollectSection({
     }
 
     const ok = await confirm({
-      title: "تأكيد التحصيل والتوريد للدرج",
+      title: "تأكيد توريد جهة التوصيل للدرج",
       description: [
         `الجهة: ${selectedParty?.name ?? ""}`,
         `المبلغ المستلَم: ${fmt(amount.toFixed(2))} د.ع`,
@@ -470,7 +617,7 @@ export function ReceptionCollectSection({
           ? `تسوية جزئية — يبقى ${fmt(round2(D(String(remittableTotal)).minus(amount)).toFixed(2))} د.ع نقد بعهدة الجهة`
           : "تسوية كاملة للطرود المسلّمة — الأجرة معزولة تلقائياً",
       ].join("\n"),
-      confirmText: "قبض وتوريد للدرج",
+      confirmText: "تسجيل توريد الجهة",
     });
     if (!ok || generation !== scanSequence.current) return;
     const payload = {
@@ -534,7 +681,7 @@ export function ReceptionCollectSection({
       ]
         .filter(Boolean)
         .join("\n"),
-      confirmText: "تأكيد التسوية والقبض",
+      confirmText: "تأكيد كشف الجهة وتوريدها",
     });
     if (!ok || generation !== scanSequence.current) return;
 
@@ -667,35 +814,15 @@ export function ReceptionCollectSection({
         } else if (
           groupMembers.some((row) => row.parcelStatus !== "DELIVERED")
         ) {
-          const ok = await confirm({
-            title: "إثبات التسليم الفعلي للشحنة",
-            description: `الشحنة ${timeline.shipment.consignmentNumber} — ${preview.recipient.name ?? "المستلم"}\nالمطلوب الحالي من العميل ${fmt(preview.money.codAmount)} د.ع\nأثبت أن كامل الشحنة سُلِّم فعلياً وقبض المندوب هذا المبلغ. أجرة التوصيل منفصلة.`,
-            confirmText: "إثبات التسليم والقبض",
+          setPendingCustomerCollection({
+            preview,
+            groupKey,
+            partyName: pInfo?.name,
           });
-          if (generation !== scanSequence.current || draftBusyRef.current)
-            return;
-          if (ok) {
-            const signature = JSON.stringify({
-              leaderId,
-              amount: preview.money.codAmount,
-              version: preview.source.version,
-            });
-            if (confirmRetry.current?.signature !== signature)
-              confirmRetry.current = { signature, key: crypto.randomUUID() };
-            await workflowConfirmMut.mutateAsync({
-              source: {
-                kind: preview.source.kind,
-                id: preview.source.id,
-                expectedVersion: preview.source.version,
-              },
-              branchId: preview.source.branchId,
-              evidence:
-                "إثبات الموظف بعد مسح الشحنة واستلام إفادة التسليم الفعلي",
-              clientRequestId: confirmRetry.current.key,
-            });
-            if (generation === scanSequence.current)
-              setCountedCash(preview.money.codAmount);
-          } else acceptedGroups.current.delete(groupKey);
+          notify.info(
+            "تمت قراءة الشحنة بلا أثر مالي",
+            "راجع تحصيل العميل ثم اضغط التأكيد؛ توريد الجهة يبقى إجراءً مستقلاً.",
+          );
         } else {
           setCountedCash(preview.money.cashInCourierCustody);
           notify.ok(
@@ -718,7 +845,6 @@ export function ReceptionCollectSection({
       utils,
       branchId,
       partiesQ.data,
-      workflowConfirmMut,
       switchCollectParty,
       onOpenCharge,
       onBarcodeConsumed,
@@ -750,7 +876,7 @@ export function ReceptionCollectSection({
           <div className="flex items-center gap-2">
             <ScanLine className="size-5 text-primary shrink-0" />
             <span className="text-sm font-extrabold text-primary">
-              البحث التنبؤي الذكي ومسح الباركود للتحصيل
+              البحث ومسح الباركود لتحصيل العميل أو توريد الجهة
             </span>
           </div>
           <span className="text-xs text-muted-foreground font-mono bg-background/80 px-2 py-0.5 rounded border">
@@ -773,9 +899,62 @@ export function ReceptionCollectSection({
         <Card className="p-3 space-y-2">
           <strong dir="ltr">{scanContext.preview.printSource.number}</strong>
           <p className="text-sm">
-            المطالبة الحالية {fmt(scanContext.preview.money.codAmount)} د.ع ·
-            أمانة الأجرة {fmt(scanContext.preview.money.heldDeliveryFee)} د.ع
+            مطالبة العميل الحالية {fmt(scanContext.preview.money.codAmount)} د.ع
+            · أمانة الأجرة {fmt(scanContext.preview.money.heldDeliveryFee)} د.ع
           </p>
+          {pendingCustomerCollection &&
+            pendingCustomerCollection.preview.source.kind ===
+              scanContext.preview.source.kind &&
+            pendingCustomerCollection.preview.source.id ===
+              scanContext.preview.source.id && (
+              <BarcodeCustomerCollection
+                key={`${pendingCustomerCollection.preview.source.kind}:${pendingCustomerCollection.preview.source.id}:${pendingCustomerCollection.preview.source.version}`}
+                preview={pendingCustomerCollection.preview}
+                partyName={pendingCustomerCollection.partyName}
+                pending={workflowConfirmMut.isPending}
+                onCancel={() => {
+                  acceptedGroups.current.delete(
+                    pendingCustomerCollection.groupKey,
+                  );
+                  setPendingCustomerCollection(null);
+                }}
+                onConfirm={({ collectedAmount, shortfallReason }) => {
+                  const signature = JSON.stringify({
+                    source: pendingCustomerCollection.preview.source,
+                    collectedAmount,
+                    shortfallReason: shortfallReason ?? null,
+                  });
+                  if (confirmRetry.current?.signature !== signature)
+                    confirmRetry.current = {
+                      signature,
+                      key: crypto.randomUUID(),
+                    };
+                  workflowConfirmMut.mutate(
+                    {
+                      source: {
+                        kind: pendingCustomerCollection.preview.source.kind,
+                        id: pendingCustomerCollection.preview.source.id,
+                        expectedVersion:
+                          pendingCustomerCollection.preview.source.version,
+                      },
+                      branchId:
+                        pendingCustomerCollection.preview.source.branchId,
+                      evidence:
+                        "إثبات الموظف بعد مسح الشحنة واستلام إفادة التسليم الفعلي",
+                      collectedAmount,
+                      ...(shortfallReason ? { shortfallReason } : {}),
+                      clientRequestId: confirmRetry.current.key,
+                    },
+                    {
+                      onSuccess: () => {
+                        setCountedCash(collectedAmount);
+                        setPendingCustomerCollection(null);
+                      },
+                    },
+                  );
+                }}
+              />
+            )}
           {scanContext.preview.relations.aftercareExecutionId != null && (
             <>
               <p className="text-sm text-muted-foreground">
@@ -820,8 +999,8 @@ export function ReceptionCollectSection({
       )}
       <Card className="gap-0 p-4">
         <h2 className="mb-3 font-extrabold flex items-center gap-2">
-          <BarChart3 aria-hidden className="size-5" /> تحصيل وذمم المناديب
-          والشركات
+          <BarChart3 aria-hidden className="size-5" /> تحصيل العميل وتوريد جهات
+          التوصيل
         </h2>
         <AppSelect
           disabled={companyStatementMut.isPending || remitMut.isPending}
@@ -1356,7 +1535,7 @@ export function ReceptionCollectSection({
                   {shift && statementSelectedRows.length > 0 && (
                     <div className="rounded-xl border border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)]/20 p-4 space-y-3">
                       <p className="text-sm font-extrabold text-[var(--sem-pos)]">
-                        مطابقة الكشف والقبض في الدرج
+                        مطابقة كشف الجهة وتوريد الصافي للدرج
                       </p>
                       <div className="grid grid-cols-3 gap-2 text-xs border-b border-[var(--sem-pos)]/20 pb-3">
                         <div>
@@ -1422,6 +1601,11 @@ export function ReceptionCollectSection({
                             : "تسوية الكشف وتوريد النقد"}
                         </Button>
                       </div>
+                      <p className="text-[11px] leading-5 text-muted-foreground">
+                        هذا المسار نقدي إلى درج الوردية فقط. إذا كان السداد
+                        تحويلاً بنكياً فلا تسجله كنقد؛ أوقف العملية وسلّم مرجع
+                        التحويل للمحاسب لإثباته قبل التسوية.
+                      </p>
                     </div>
                   )}
                 </div>
@@ -1579,11 +1763,11 @@ export function ReceptionCollectSection({
                   {shift && remittableTotal > 0 && (
                     <div className="rounded-xl border border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)]/20 p-4 space-y-3">
                       <p className="text-sm font-extrabold text-[var(--sem-pos)]">
-                        قبض وتوريد النقد للدرج
+                        توريد جهة التوصيل للدرج
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        توريد المبالغ المحصلة من الطرود المسلمة للوردية الحالية
-                        — الأجرة معزولة
+                        نقل النقد الذي سبق تحصيله من العملاء من عهدة الجهة إلى
+                        الوردية الحالية — الأجرة معزولة
                       </p>
                       <div className="flex gap-2">
                         <MoneyInput
@@ -1605,9 +1789,14 @@ export function ReceptionCollectSection({
                           disabled={!countedCash || remitMut.isPending}
                           onClick={() => void handleCollect()}
                         >
-                          {remitMut.isPending ? "…" : "قبض وتوريد"}
+                          {remitMut.isPending ? "…" : "تسجيل التوريد"}
                         </Button>
                       </div>
+                      <p className="text-[11px] leading-5 text-muted-foreground">
+                        هذا المسار نقدي إلى درج الوردية فقط. إذا كان السداد
+                        تحويلاً بنكياً فلا تسجله كنقد؛ أوقف العملية وسلّم مرجع
+                        التحويل للمحاسب لإثباته قبل التسوية.
+                      </p>
                       {countedCash &&
                         D(String(remittableTotal)).gt(0) &&
                         D(countedCash).lt(D(String(remittableTotal))) && (

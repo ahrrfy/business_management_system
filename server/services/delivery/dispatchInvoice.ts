@@ -49,6 +49,7 @@ import { fulfillmentRequests } from "../../../drizzle/fulfillmentSchema";
 import { assertNoPendingHeldFeeRefundTx } from "./feeHeld";
 import { validateDeliveryDriverTx } from "./driverValidation";
 import { heldCustomerParcelReissueTx } from "./workflow/returnReceipt";
+import { initializeConsignmentCustodyTx } from "./custody";
 
 /** Service-only context; it is never part of a router input. */
 export interface ShipmentDispatchContext {
@@ -386,7 +387,7 @@ export async function dispatchInvoiceInTx(
       inv.sourceType === "WORKORDER" && linkedOrders.length === 1
         ? linkedOrders[0]
         : undefined;
-    await assertNoPendingHeldFeeRefundTx(tx,{invoiceId:Number(inv.id)});
+    await assertNoPendingHeldFeeRefundTx(tx, { invoiceId: Number(inv.id) });
     if (
       inv.sourceType === "WORKORDER" &&
       (!linkedOrder ||
@@ -477,10 +478,23 @@ export async function dispatchInvoiceInTx(
         });
       }
     }
-    const heldReturnReissue = already != null && shipment?.heldReturnReissue === true && await heldCustomerParcelReissueTx(tx, already);
-    if (shipment?.heldReturnReissue && !heldReturnReissue) throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({ what: "تعذرت إعادة إرسال العهدة المستلمة", why: "لا يوجد استلام فعلي صالح أو بقي نقد/تاريخ أجرة مرتبط بالناقل الأصلي", doThis: "سوّ حقوق الناقل من محطة التحصيل، أو افتح معالجة نقص MISSING_HELD مرتبطة بالمصدر لإعادة إرسال نفس العهدة بلا صرف مخزون جديد" }) });
+    const heldReturnReissue =
+      already != null &&
+      shipment?.heldReturnReissue === true &&
+      (await heldCustomerParcelReissueTx(tx, already));
+    if (shipment?.heldReturnReissue && !heldReturnReissue)
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذرت إعادة إرسال العهدة المستلمة",
+          why: "لا يوجد استلام فعلي صالح أو بقي نقد/تاريخ أجرة مرتبط بالناقل الأصلي",
+          doThis:
+            "سوّ حقوق الناقل من محطة التحصيل، أو افتح معالجة نقص MISSING_HELD مرتبطة بالمصدر لإعادة إرسال نفس العهدة بلا صرف مخزون جديد",
+        }),
+      });
     if (
-      already && !heldReturnReissue &&
+      already &&
+      !heldReturnReissue &&
       (already.status !== "CANCELLED" ||
         already.parcelStatus !== "CANCELLED" ||
         already.moneyStatus !== "CANCELLED")
@@ -667,7 +681,13 @@ export async function dispatchInvoiceInTx(
           cancellationReason: null,
           cancelledBy: null,
           returnedAt: null,
-          ...(heldReturnReissue ? { returnDeclaredAt: null, returnDeclaredBy: null, returnDeclaredReason: null } : {}),
+          ...(heldReturnReissue
+            ? {
+                returnDeclaredAt: null,
+                returnDeclaredBy: null,
+                returnDeclaredReason: null,
+              }
+            : {}),
         })
         .where(eq(deliveryConsignments.id, consignmentId));
     } else {
@@ -802,6 +822,13 @@ export async function dispatchInvoiceInTx(
             }
           : {}),
       },
+    });
+    await initializeConsignmentCustodyTx(tx, {
+      consignmentId,
+      actorUserId: actor.userId,
+      operationId:
+        input.clientRequestId ?? `delivery.dispatchInvoice:${consignmentId}`,
+      leaderConsignmentId: shipment?.shipmentLeaderConsignmentId,
     });
 
     if (input.clientRequestId) {

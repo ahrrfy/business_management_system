@@ -924,7 +924,7 @@ describe.sequential("cancelSale — إصلاحات مراجعة Codex (١٢/٨)"
     expect(await stockOf(1, 1)).toBe(8);
   });
 
-  it("إلغاء سطر خدمة يعيد موادها بقيمة اللقطة ولا يوسم الخدمة نفسها كمخزون", async () => {
+  it("إلغاء سطر خدمة لا يعيد الخدمة أو خاماتها المستهلكة إلى المخزون", async () => {
     await db().insert(s.products).values({ id: 2, name: "خدمة تصميم", isService: true });
     await db().insert(s.productVariants).values({ id: 2, productId: 2, sku: "SVC-2", costPrice: "0.00" });
     await db().insert(s.productUnits).values({
@@ -964,9 +964,10 @@ describe.sequential("cancelSale — إصلاحات مراجعة Codex (١٢/٨)"
     expect(cancelledItem.returnedBaseQuantity).toBe(2);
     expect(cancelledItem.returnedRestockedBaseQuantity).toBe(0);
     expect(await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 2))).toHaveLength(0);
-    expect(await stockOf(1, 1)).toBe(10);
+    // الخامة استُهلكت فعلياً في تنفيذ الخدمة؛ عكس البيع وحده ليس إثبات رجوع مادي.
+    expect(await stockOf(1, 1)).toBe(6);
     expect((await db().select({ cost: s.productVariants.costPrice }).from(s.productVariants)
-      .where(eq(s.productVariants.id, 1)))[0].cost).toBe("700.00");
+      .where(eq(s.productVariants.id, 1)))[0].cost).toBe("900.00");
   });
 
   it("P2: replay بعد استرداد فعليّ يعيد بناء refundAmount الحقيقيّ (لا صفراً وهمياً)", async () => {

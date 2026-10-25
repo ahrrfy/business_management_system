@@ -12,8 +12,10 @@ import type {
  *  4: الموارد (الإيرادات)
  */
 export const IRAQI_UNIFIED_PROFILE_KEY = "IRAQI_STATUTORY_UNIFIED";
-export const IRAQI_UNIFIED_PROFILE_NAME = "دليل النظام المحاسبي الموحد العراقي — المطبعة والقرطاسية";
-export const IRAQI_UNIFIED_AUTHORITY_REF = "النظام المحاسبي الموحد العراقي / ديوان الرقابة المالية ونقابة المحاسبين والمدققين العراقيين";
+export const IRAQI_UNIFIED_PROFILE_NAME =
+  "دليل النظام المحاسبي الموحد العراقي — المطبعة والقرطاسية";
+export const IRAQI_UNIFIED_AUTHORITY_REF =
+  "النظام المحاسبي الموحد العراقي / ديوان الرقابة المالية ونقابة المحاسبين والمدققين العراقيين";
 
 export const IRAQI_UNIFIED_ACCOUNTS: ImportedStatutoryAccount[] = [
   // ==========================================
@@ -924,6 +926,7 @@ export const SYSTEM_ROLE_TO_IRAQI_UNIFIED_CODE: Record<string, string> = {
   LOAN_RECEIVABLE: "1584", // سلف وقروض حسنة للغير
   INVESTMENT_PAYABLE: "228", // أموال تشغيل واستثمار بالمشاركة
   OTHER_LIABILITY: "269", // التزامات أخرى
+  DEFERRED_REVENUE: "2691", // إيراد خدمات مؤجل حتى إثبات الإكمال
 
   // المصروفات والاستخدامات
   COGS: "321", // تكلفة المبيعات

@@ -27,6 +27,7 @@ import {
   releaseFulfillmentRequest,
 } from "../fulfillment/requests";
 import { dispatchInvoiceToDelivery } from "../delivery/dispatchInvoice";
+import { recordDeliveryRemittance } from "../delivery/remittance";
 
 const actor = { userId: 1, role: "admin", branchId: 1 };
 const db = () => {
@@ -130,6 +131,17 @@ async function noDuplicateEffects() {
     movements: await db().select().from(s.inventoryMovements),
     receipts: await db().select().from(s.receipts),
     entries: await db().select().from(s.accountingEntries),
+  };
+}
+async function collectionEffects() {
+  return {
+    invoices: await db().select().from(s.invoices),
+    customers: await db().select().from(s.customers),
+    parties: await db().select().from(s.deliveryParties),
+    consignments: await db().select().from(s.deliveryConsignments),
+    ledger: await db().select().from(s.deliveryLedgerEntries),
+    remittances: await db().select().from(s.deliveryRemittances),
+    receipts: await db().select().from(s.receipts),
   };
 }
 async function useSparseNativeRole(grants: Record<string, boolean>) {
@@ -416,6 +428,103 @@ describe("atomic barcode batch dispatch", () => {
       true,
     );
     expect(await db().select().from(s.invoices)).toHaveLength(2);
+  });
+  it("requires a classified reason for barcode partial collection and replays collection and remittance without duplicate AR or custody", async () => {
+    await db()
+      .update(s.invoices)
+      .set({ paidAmount: "0", status: "PENDING", paymentMode: "COD" });
+    await db()
+      .update(s.customers)
+      .set({ currentBalance: "20000" })
+      .where(eq(s.customers.id, 1));
+    const payload = await input();
+    payload.clientRequestId = "workflow-partial-dispatch";
+    const dispatched = await dispatchWorkflowBatch(payload, actor);
+    const preview = await previewWorkflowScan(
+      {
+        raw: docBarcode("CN", dispatched.consignmentNumber),
+        station: "collect",
+        branchId: 1,
+      },
+      actor,
+    );
+    expect(preview.money.codAmount).toBe("20000.00");
+    const baseProof = {
+      source: {
+        kind: preview.source.kind,
+        id: preview.source.id,
+        expectedVersion: preview.source.version,
+      },
+      branchId: 1,
+      evidence: "إفادة اتصال المندوب بعد التسليم",
+      collectedAmount: "15000",
+      clientRequestId: "workflow-partial-collection",
+    };
+    const beforeRejected = await collectionEffects();
+    await expect(confirmWorkflowDelivery(baseProof, actor)).rejects.toThrow(
+      /سبب العجز/,
+    );
+    expect(await collectionEffects()).toEqual(beforeRejected);
+
+    const proof = {
+      ...baseProof,
+      shortfallReason: "PARTIAL_REFUSAL",
+    };
+    expect(await confirmWorkflowDelivery(proof, actor)).toMatchObject({
+      consignmentId: dispatched.consignmentId,
+      idempotentReplay: false,
+    });
+    const afterCollection = await collectionEffects();
+    expect(afterCollection.invoices.map((row) => row.paidAmount)).toEqual([
+      "10000.00",
+      "10000.00",
+    ]);
+    expect(afterCollection.customers[0]?.currentBalance).toBe("0.00");
+    expect(afterCollection.parties[0]?.currentBalance).toBe("20000.00");
+    expect(
+      afterCollection.ledger
+        .filter((row) => row.entryType === "COD_COLLECTED")
+        .reduce((sum, row) => sum + Number(row.amount), 0),
+    ).toBe(15000);
+    expect(
+      afterCollection.ledger
+        .filter((row) => row.entryType === "SHORTFALL_ASSIGNED")
+        .reduce((sum, row) => sum + Number(row.amount), 0),
+    ).toBe(5000);
+    expect(afterCollection.receipts).toHaveLength(0);
+    expect(afterCollection.remittances).toHaveLength(0);
+    expect(await confirmWorkflowDelivery(proof, actor)).toMatchObject({
+      idempotentReplay: true,
+    });
+    expect(await collectionEffects()).toEqual(afterCollection);
+
+    const cashLines = afterCollection.ledger
+      .filter((row) => row.entryType === "COD_COLLECTED")
+      .map((row) => ({
+        consignmentId: Number(row.consignmentId),
+        collectedAmount: row.amount,
+      }));
+    const remittance = {
+      branchId: 1,
+      partyId: 1,
+      shiftType: "RETAIL" as const,
+      targetShiftId: 1,
+      lines: cashLines,
+      countedCash: "15000",
+      clientRequestId: "workflow-partial-remittance",
+    };
+    expect(await recordDeliveryRemittance(remittance, actor)).toMatchObject({
+      idempotentReplay: false,
+    });
+    const afterRemittance = await collectionEffects();
+    expect(afterRemittance.customers[0]?.currentBalance).toBe("0.00");
+    expect(afterRemittance.parties[0]?.currentBalance).toBe("5000.00");
+    expect(afterRemittance.remittances).toHaveLength(1);
+    expect(afterRemittance.receipts).toHaveLength(1);
+    expect(await recordDeliveryRemittance(remittance, actor)).toMatchObject({
+      idempotentReplay: true,
+    });
+    expect(await collectionEffects()).toEqual(afterRemittance);
   });
   it("quotes one requested courier fee rather than per-source legacy delivery fees", async () => {
     const payload = await input();

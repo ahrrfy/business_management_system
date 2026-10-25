@@ -122,6 +122,7 @@ const workOrderCancelPayload = z.object({
    */
   refundRail: z.enum(REFUND_RAILS).nullish(),
   refundReference: z.string().trim().min(3).max(100).nullish(),
+  confirmAllMaterialsReturnedUsable: z.boolean().nullish(),
   materials: z.array(z.object({
     workOrderMaterialId: z.number().int().positive(),
     returnBase: z.number().int().min(0),
@@ -2485,15 +2486,14 @@ export const workOrderRouter = router({
       clientRequestId: z.string().trim().min(1).max(100).optional(),
       /** سببُ الإلغاء — يُكتب على الأمر (0237) فيصير قابلاً للقراءة والتقرير لا حبيسَ التدقيق. */
       reason: workOrderControlReason,
-      /**
-       * مصيرُ كلّ خامة مستهلَكة. **حذفُه = رجوعٌ كامل** (السلوك القائم حرفياً)، ووجودُه
-       * يلزمه تغطيةُ كلّ الأسطر بمجموعٍ يساوي المستهلَك بالضبط — تتحقّق منه الخدمة.
-       */
+      /** مصيرُ كلّ خامة مستهلَكة؛ بعد البدء يلزم هذا أو إقرار الرجوع الكامل أدناه. */
       materials: z.array(z.object({
         workOrderMaterialId: z.number().int().positive(),
         returnBase: z.number().int().min(0),
         wasteBase: z.number().int().min(0),
       })).max(200).optional(),
+      /** إقرارٌ صريح بأنّ كل الخامات المستهلَكة عادت صالحةً فعلياً. */
+      confirmAllMaterialsReturnedUsable: z.boolean().optional(),
       branchId: z.number().int().positive().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
@@ -2516,13 +2516,18 @@ export const workOrderRouter = router({
           expectedVersion: input.expectedVersion,
           reason: input.reason,
           materials: input.materials ?? null,
+          confirmAllMaterialsReturnedUsable: input.confirmAllMaterialsReturnedUsable ?? false,
         },
       );
       await logAudit(ctx, {
         action: "workOrder.cancel",
         entityType: "workOrder",
         entityId: input.workOrderId,
-        newValue: { reason: input.reason ?? null, wastedLines: (input.materials ?? []).filter((m) => m.wasteBase > 0).length },
+        newValue: {
+          reason: input.reason ?? null,
+          wastedLines: (input.materials ?? []).filter((m) => m.wasteBase > 0).length,
+          allMaterialsReturnedUsable: input.confirmAllMaterialsReturnedUsable === true,
+        },
       });
       return res;
     }),

@@ -991,6 +991,18 @@ export async function assertExternalPaymentReplay(
 }
 
 /** A primary charge receipt must prove actual allocation rows and their exact financial entries. */
+function isCollectibleFulfillmentCharge(
+  charge: typeof fulfillmentCharges.$inferSelect,
+): boolean {
+  if (charge.status === "APPROVED") return true;
+  return (
+    charge.status === "COMPLETED" &&
+    charge.completedBy != null &&
+    charge.completedAt != null &&
+    (charge.completionEvidence?.trim().length ?? 0) >= 5
+  );
+}
+
 async function isUnifiedCheckoutChargeReceiptTx(tx:Tx,receipt:typeof receipts.$inferSelect):Promise<boolean>{
   try {
     const note=JSON.parse(receipt.internalNote??"null"),declared=note?.checkoutChargeCollection;
@@ -1008,11 +1020,11 @@ async function isUnifiedCheckoutChargeReceiptTx(tx:Tx,receipt:typeof receipts.$i
       const entry=entries.find(row=>row.dedupeKey===`CHECKOUT_CHARGE:${charge.id}:R:${receipt.id}`);
       if(!link||link.chargeId!==charge.id||link.receiptId!==receipt.id||!money(link.amount).eq(payment.amount)||!money(payment.amount).gt(0)
         ||payment.branchId!==receipt.branchId||charge.branchId!==receipt.branchId||payment.createdBy!==receipt.createdBy||payment.sourceHash!==declared.sourceHash
-        ||charge.customerId!==receipt.partyId||charge.status!=="APPROVED"||charge.category==="SHOP_EXPENSE"
+        ||charge.customerId!==receipt.partyId||!isCollectibleFulfillmentCharge(charge)||charge.category==="SHOP_EXPENSE"
         ||(money(charge.externalCost).gt(0)&&charge.createdBy===charge.approvedBy)
         ||!entry||entry.branchId!==receipt.branchId||entry.customerId!==charge.customerId||entry.createdBy!==receipt.createdBy||!money(entry.amount).eq(payment.amount))return false;
       if(charge.customerId==null){
-        if(charge.category!=="SERVICE"||!money(charge.externalCost).isZero()||!money(charge.paidAmount).eq(charge.amount)||charge.createdBy!==receipt.createdBy||charge.approvedBy!==charge.createdBy
+        if(charge.status!=="COMPLETED"||charge.category!=="SERVICE"||!money(charge.externalCost).isZero()||!money(charge.paidAmount).eq(charge.amount)||charge.createdBy!==receipt.createdBy||charge.approvedBy!==charge.createdBy||charge.completedBy!==charge.createdBy
           ||charge.payeeSupplierId!=null||charge.payeePartyId!=null||charge.payeeUserId!=null||charge.payeeName!=null||!money(entry.revenue).eq(payment.amount))return false;
         const [audit]=await tx.select({proof:auditLogs.newValue}).from(auditLogs).where(and(eq(auditLogs.action,"delivery.fulfillment.charges.checkoutService"),eq(auditLogs.entityId,String(charge.id)),eq(auditLogs.userId,charge.createdBy))).limit(1);
         const policy=typeof audit?.proof==="string"?JSON.parse(audit.proof):audit?.proof;

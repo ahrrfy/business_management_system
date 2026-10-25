@@ -1,16 +1,13 @@
 import { deliverySourceView, type DeliverySourceReference } from "@shared/deliverySource";
-/**
- * بوليصة إسناد وتوصيل حرارية (80mm) — ترافق المندوب وتُسلَّم للزبون
- * تشمل تفاصيل الطلب، الباركود، المستلم، والمبلغ المطلوب تحصيله (COD) بدقة.
- */
-import { BRAND as B, CO, esc, fmt, logoUrl } from "./brand";
-import { wrapReceiptDoc } from "./docHtml";
-import { code128Svg } from "./barcode";
-import { qrCodeSvgSync } from "./qr";
-import { fmtDateTime } from "../date";
+import { CO, fmt } from "./brand";
 import { printDoc, type PrintDoc, type PrintResult } from "./print";
+import {
+  createDeliveryDocumentSnapshot,
+  deliveryDocumentAuditLines,
+  type DeliveryDocumentAudit,
+} from "./deliveryDocumentSnapshot";
 
-export interface DispatchSlipData extends DeliverySourceReference {
+export interface DispatchSlipData extends DeliverySourceReference, DeliveryDocumentAudit {
   consignmentNumber: string;
   orderNumber: string;
   orderKind?: "workOrder" | "invoice" | "onlineOrder" | "fulfillmentRequest" | "aftercare";
@@ -21,254 +18,138 @@ export interface DispatchSlipData extends DeliverySourceReference {
   governorate?: string | null;
   salePrice: string;
   deposit?: string | null;
-  codAmount: string; // المبلغ الصافي المطلوب تحصيله من الزبون عند الباب
+  codAmount: string;
   deliveryFee?: string | null;
   feeCollection?: "COURIER" | "COUNTER" | "SHOP";
   title?: string | null;
+  items?: readonly {
+    name?: string | null;
+    productName?: string | null;
+    title?: string | null;
+    quantity?: number | string | null;
+    price?: number | string | null;
+    unitPrice?: number | string | null;
+    total?: number | string | null;
+  }[] | null;
   notes?: string | null;
-  dispatchedAt?: Date | string;
-  /** رابط عام حقيقي وموقّع يفتح معلومات المستند/الطلب. */
+  /** وقت الإسناد المثبت في الخادم؛ لا يُستبدل بوقت إعادة الطباعة. */
+  dispatchedAt?: Date | string | null;
+  /** رابط تحقق عام حقيقي فقط. إن غاب يبقى Code128 بلا QR. */
   qrUrl?: string | null;
 }
 
-export function buildDeliveryDispatchSlipDoc(d: DispatchSlipData): PrintDoc {
-  const aftercare = d.sourceType === "AFTERCARE_EXECUTION" || d.orderKind === "aftercare";
-  if (aftercare && (Number(d.codAmount) !== 0 || d.feeCollection !== "SHOP")) throw new Error("بوليصة المعالجة تتطلب تحصيلاً صفرياً وأجرة على المكتبة");
-  const sourceLabel = aftercare ? "دفعة معالجة — لا يُطلب مبلغ من العميل" : d.sourceType ? deliverySourceView(d).reference : `رقم ${d.orderKind === "invoice" ? "الفاتورة" : "الطلب"}: #${d.orderNumber}`;
+export function buildDeliveryDispatchSlipDoc(
+  d: DispatchSlipData,
+  now = new Date(),
+): PrintDoc {
+  const aftercare =
+    d.sourceType === "AFTERCARE_EXECUTION" || d.orderKind === "aftercare";
+  if (
+    aftercare &&
+    (Number(d.codAmount) !== 0 || d.feeCollection !== "SHOP")
+  ) {
+    throw new Error(
+      "بوليصة المعالجة تتطلب تحصيلاً صفرياً وأجرة على المكتبة",
+    );
+  }
+
+  const snapshot = createDeliveryDocumentSnapshot({
+    documentType: "DISPATCH_SLIP",
+    payload: d,
+    audit: {
+      eventAt: d.dispatchedAt ?? d.eventAt,
+      printedAt: d.printedAt,
+      copy: d.copy,
+    },
+    now,
+  });
+  const sourceLabel = aftercare
+    ? "دفعة معالجة — لا يُطلب مبلغ من العميل"
+    : d.sourceType
+      ? deliverySourceView(d).reference
+      : `رقم ${d.orderKind === "invoice" ? "الفاتورة" : "الطلب"}: #${d.orderNumber}`;
   const codNum = Number(d.codAmount || 0);
   const feeNum = Number(d.deliveryFee || 0);
-  const shopFee = d.feeCollection === "SHOP";
   const courierFee = d.feeCollection === "COURIER";
-  const counterFee = d.feeCollection === "COUNTER";
-  const totalToCollectFromCustomer = courierFee ? codNum + feeNum : codNum;
-
-  const feeExplanation = shopFee
-    ? "على المكتبة (مجاناً)"
-    : counterFee
-    ? "مقبوضة مسبقاً"
-    : "يقبضها المندوب";
-
-  const meta = [
-    `رقم الإرسالية: ${d.consignmentNumber}`,
-    sourceLabel,
-    `جهة التوصيل: ${d.partyName}`,
-    `تاريخ الإسناد: ${fmtDateTime(d.dispatchedAt ?? new Date())}`,
-    `المستلم: ${d.recipientName || "—"} (${d.recipientPhone || "—"})`,
-    `العنوان: ${d.deliveryAddress || "غير محدد"}${d.governorate ? ` (${d.governorate})` : ""}`,
-    ...(d.notes ? [`ملاحظات: ${d.notes}`] : []),
-  ];
-
+  const totalAtDoor = courierFee ? codNum + feeNum : codNum;
+  const feeExplanation =
+    d.feeCollection === "SHOP"
+      ? "على المكتبة (مجاناً)"
+      : d.feeCollection === "COUNTER"
+        ? "مقبوضة مسبقاً"
+        : "يقبضها المندوب";
   const depositNum = Number(d.deposit || 0);
-  const isFullyPrepaid = depositNum >= Number(d.salePrice || 0) && codNum === 0;
-
-  const totals = [
-    { label: "قيمة الطلب", value: `${fmt(d.salePrice)} د.ع` },
-    ...(depositNum > 0
-      ? [{
-          label: isFullyPrepaid ? "المدفوع مسبقاً (مدفوع بالكامل)" : "المدفوع مسبقاً (عربون)",
-          value: `- ${fmt(d.deposit!)} د.ع`,
-        }]
-      : []),
-    { label: `أجرة التوصيل (${feeExplanation})`, value: feeNum > 0 ? `${fmt(feeNum)} د.ع` : "مجاناً" },
-    {
-      label: isFullyPrepaid && courierFee
-        ? "المطلوب تحصيله عند الاستلام (أجرة التوصيل فقط)"
-        : "المطلوب تحصيله عند الاستلام",
-      value: `${fmt(totalToCollectFromCustomer)} د.ع`,
-    },
-  ];
+  const isFullyPrepaid =
+    depositNum >= Number(d.salePrice || 0) && codNum === 0;
+  const rows = d.items?.length
+    ? d.items.map((item) => {
+        const quantity = Number(item.quantity ?? 1);
+        return [
+          item.title || item.productName || item.name || "بند الطلب",
+          String(item.quantity ?? 1),
+          `${fmt(item.total ?? Number(item.unitPrice ?? item.price ?? 0) * quantity)} د.ع`,
+        ];
+      })
+    : [[d.title || sourceLabel, "1", `${fmt(d.salePrice)} د.ع`]];
 
   return {
     kind: "receipt",
-    title: aftercare ? "بوليصة استكمال نقص / معالجة" : "بوليصة إسناد وتوصيل",
+    title: aftercare
+      ? "بوليصة استكمال نقص / معالجة"
+      : "بوليصة إسناد وتوصيل",
     subtitle: `${CO.name} — ${CO.sub}`,
-    meta,
-    totals,
-    footer: "توقيع واستلام المندوب: ____________  توقيع الزبون: ____________\nيرجى التأكد من محتويات الطرد ومطابقة المبلغ قبل الاستلام",
+    meta: [
+      `رقم الإرسالية: ${d.consignmentNumber}`,
+      sourceLabel,
+      `جهة التوصيل: ${d.partyName}`,
+      ...deliveryDocumentAuditLines("وقت الإسناد", snapshot),
+      `المستلم: ${d.recipientName || "—"}`,
+      `هاتف المستلم: ${d.recipientPhone || "—"}`,
+      `العنوان: ${d.deliveryAddress || "غير محدد"}${d.governorate ? ` (${d.governorate})` : ""}`,
+      ...(d.notes ? [`ملاحظات: ${d.notes}`] : []),
+    ],
+    columns: ["البند", "الكمية", "المبلغ"],
+    rows,
+    totals: [
+      { label: "قيمة الطلب", value: `${fmt(d.salePrice)} د.ع` },
+      ...(depositNum > 0
+        ? [{
+            label: isFullyPrepaid ? "مدفوع مسبقاً بالكامل" : "العربون",
+            value: `${fmt(d.deposit!)} د.ع`,
+          }]
+        : []),
+      {
+        label: `أجرة التوصيل — ${feeExplanation}`,
+        value: feeNum > 0 ? `${fmt(feeNum)} د.ع` : "مجاناً",
+      },
+      {
+        label:
+          isFullyPrepaid && courierFee
+            ? "المطلوب تحصيله عند الاستلام (أجرة التوصيل فقط)"
+            : "المطلوب تحصيله عند الاستلام",
+        value: `${fmt(totalAtDoor)} د.ع`,
+      },
+    ],
+    footer: aftercare
+      ? "لا يطالب العميل بأي مبلغ — أجرة الإعادة على المكتبة\nتوقيع المندوب: ____________  توقيع العميل: ____________"
+      : "توقيع واستلام المندوب: ____________  توقيع العميل: ____________\nيرجى التأكد من محتويات الطرد ومطابقة المبلغ قبل الاستلام",
     barcodeSet: {
       barcode128: d.consignmentNumber,
-      qrPayload: d.qrUrl ?? d.consignmentNumber,
-      displayLabel: `إرسالية: ${d.consignmentNumber}\nالطلب #${d.orderNumber} · المستلم: ${d.recipientName || "—"}`,
+      qrPayload: d.qrUrl?.trim() ?? "",
+      displayLabel: `إرسالية: ${d.consignmentNumber}\n${sourceLabel}`,
     },
   };
 }
 
-export function renderDeliveryDispatchSlipHtml(d: DispatchSlipData): string {
-  const aftercare = d.sourceType === "AFTERCARE_EXECUTION" || d.orderKind === "aftercare";
-  if (aftercare && (Number(d.codAmount) !== 0 || d.feeCollection !== "SHOP")) throw new Error("بوليصة المعالجة تتطلب تحصيلاً صفرياً وأجرة على المكتبة");
-  const sourceLabel = aftercare ? "دفعة معالجة — لا يُطلب مبلغ من العميل" : d.sourceType ? deliverySourceView(d).reference : `رقم ${d.orderKind === "invoice" ? "الفاتورة" : "الطلب"}: #${d.orderNumber}`;
-  const logo = logoUrl();
-  let barSvg = "";
-  try {
-    const bc = code128Svg(d.consignmentNumber, { moduleWidth: 1.35, height: 48, showText: true });
-    barSvg = bc.svg;
-  } catch {
-    /* بلا باركود عند تعذر التوليد */
-  }
-
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
-  const qrPayload = d.consignmentNumber
-    ? `https://alarabiya.online/track/${encodeURIComponent(d.consignmentNumber)}`
-    : (origin ? `${origin}/verify?ref=${encodeURIComponent(d.orderNumber)}` : `/verify?ref=${encodeURIComponent(d.orderNumber)}`);
-  const qrSvg = qrCodeSvgSync(qrPayload, { size: 125, margin: 1 });
-
-  const codNum = Number(d.codAmount || 0);
-  const feeNum = Number(d.deliveryFee || 0);
-  const shopFee = d.feeCollection === "SHOP";
-  const courierFee = d.feeCollection === "COURIER";
-  const counterFee = d.feeCollection === "COUNTER";
-
-  // إجمالي ما يدفعه الزبون عند الباب:
-  // إذا كانت الأجرة على المندوب (COURIER)، يقبض COD + الأجرة.
-  // إذا كانت الأجرة مقبوضة مسبقاً (COUNTER) أو مجاناً على المحل (SHOP)، يدفع فقط COD.
-  const totalToCollectFromCustomer = courierFee ? codNum + feeNum : codNum;
-
-  const feeExplanation = shopFee
-    ? "على المكتبة (مجاناً للزبون)"
-    : counterFee
-    ? "مقبوضة مسبقاً في المحل"
-    : "يقبضها المندوب من الزبون";
-
-  const isFullyPrepaidHtml = Number(d.deposit || 0) >= Number(d.salePrice || 0) && codNum === 0;
-
-  const body = `
-  <div style="text-align:center;margin-bottom:2mm;">
-    ${logo ? `<img src="${logo}" style="height:44px;margin-bottom:1.5mm;" onerror="this.style.display='none'">` : ""}
-    <div style="font-size:15px;font-weight:900;color:#000;">${esc(CO.name)}</div>
-    <div style="font-size:11px;font-weight:800;color:#000;">${esc(CO.sub)}</div>
-  </div>
-
-  <div style="border-top:2.5px solid #000;border-bottom:2.5px solid #000;padding:2mm 0;text-align:center;margin:2.5mm 0;background:#000;color:#fff;">
-    <span style="font-size:14px;font-weight:900;letter-spacing:0.5px;">${aftercare ? "استكمال نقص / معالجة — لا تحصيل من العميل" : "بوليصة إسناد وتوصيل"}</span>
-  </div>
-
-  ${barSvg ? `
-  <div style="text-align:center;margin:3mm 0;overflow:hidden;">
-    <div style="display:inline-block;max-width:100%;">${barSvg}</div>
-  </div>` : ""}
-
-  <div style="margin:2.5mm 0;font-size:11px;color:#000;">
-    <div style="display:flex;justify-content:space-between;padding:1mm 0;border-bottom:1.5px dashed #000;">
-      <span style="font-weight:800;">رقم الإرسالية:</span>
-      <span style="font-weight:900;direction:ltr;font-size:12px;">${esc(d.consignmentNumber)}</span>
-    </div>
-    <div style="display:flex;justify-content:space-between;padding:1mm 0;border-bottom:1.5px dashed #000;">
-      <span style="font-weight:800;">رقم ${d.orderKind === "invoice" ? "الفاتورة" : d.orderKind === "onlineOrder" ? "طلب المتجر" : "الطلب"}:</span>
-      <span style="font-weight:900;font-size:12px;">#${esc(aftercare || d.sourceType ? sourceLabel : d.orderNumber)}</span>
-    </div>
-    <div style="display:flex;justify-content:space-between;padding:1mm 0;border-bottom:1.5px dashed #000;">
-      <span style="font-weight:800;">جهة التوصيل:</span>
-      <span style="font-weight:900;">${esc(d.partyName)}</span>
-    </div>
-    <div style="display:flex;justify-content:space-between;padding:1mm 0;border-bottom:1.5px dashed #000;">
-      <span style="font-weight:800;">تاريخ الإسناد:</span>
-      <span style="font-weight:800;">${fmtDateTime(d.dispatchedAt ?? new Date())}</span>
-    </div>
-  </div>
-
-  <!-- بيانات المستلم -->
-  <div style="margin:3mm 0;border:2px solid #000;border-radius:5px;padding:2.5mm;background:#fff;color:#000;">
-    <div style="text-align:center;font-weight:900;font-size:12px;margin-bottom:1.5mm;border-bottom:2px solid #000;padding-bottom:1mm;background:#f0f0f0;">
-      بيانات المستلم
-    </div>
-    <div style="font-size:12px;font-weight:900;margin-bottom:1mm;">👤 ${esc(d.recipientName || "—")}</div>
-    <div style="font-size:13px;font-weight:900;direction:ltr;text-align:right;margin-bottom:1.5mm;letter-spacing:0.3px;">
-      📞 ${esc(d.recipientPhone || "—")}
-    </div>
-    <div style="font-size:11px;font-weight:800;color:#000;line-height:1.4;">
-      📍 ${esc(d.deliveryAddress || "العنوان غير محدد")}
-      ${d.governorate ? ` (${esc(d.governorate)})` : ""}
-    </div>
-  </div>
-
-  <!-- الحسابات والمبالغ -->
-  <div style="margin:3mm 0;border:2px solid #000;border-radius:5px;padding:2.5mm;background:#fff;color:#000;">
-    <div style="display:flex;justify-content:space-between;font-size:11px;padding:0.8mm 0;">
-      <span style="font-weight:800;">قيمة الطلب:</span>
-      <span style="font-weight:900;">${fmt(d.salePrice)} د.ع</span>
-    </div>
-    ${Number(d.deposit || 0) > 0 ? `
-    <div style="display:flex;justify-content:space-between;font-size:11px;padding:0.8mm 0;font-weight:900;">
-      <span>${isFullyPrepaidHtml ? "المدفوع مسبقاً (مدفوع بالكامل):" : "المدفوع مسبقاً (عربون):"}</span>
-      <span>- ${fmt(d.deposit!)} د.ع</span>
-    </div>` : ""}
-
-    <div style="display:flex;justify-content:space-between;font-size:11px;padding:0.8mm 0;border-top:1.5px dashed #000;margin-top:1mm;padding-top:1mm;">
-      <span style="font-weight:800;">أجرة التوصيل:</span>
-      <span style="font-weight:900;">${feeNum > 0 ? `${fmt(feeNum)} د.ع` : "مجاناً"}</span>
-    </div>
-    <div style="font-size:10px;font-weight:800;color:#000;text-align:left;margin-bottom:1.5mm;">(${feeExplanation})</div>
-
-    <!-- المبلغ المطلوب عند الباب -->
-    <div style="border-top:2.5px solid #000;margin-top:2mm;padding-top:2mm;text-align:center;background:#f5f5f5;border-radius:4px;padding-bottom:1.5mm;">
-      <div style="font-size:11.5px;font-weight:900;color:#000;">
-        ${isFullyPrepaidHtml && courierFee ? "المطلوب تحصيله من الزبون عند الاستلام (أجرة التوصيل فقط)" : "المطلوب تحصيله من الزبون عند الاستلام"}
-      </div>
-      <div style="font-size:20px;font-weight:900;color:#000;margin-top:1mm;letter-spacing:0.5px;">
-        ${fmt(totalToCollectFromCustomer)} د.ع
-      </div>
-      ${isFullyPrepaidHtml ? `<div style="font-size:10.5px;font-weight:800;color:#0D6B52;margin-top:1.5mm;">البضاعة مدفوعة مسبقاً بالكامل بالفرع</div>` : ""}
-    </div>
-  </div>
-
-  ${d.notes ? `
-  <div style="margin:2.5mm 0;font-size:10.5px;font-weight:800;border:1.5px dashed #000;padding:2mm;border-radius:4px;background:#fafafa;">
-    <b>ملاحظات التوصيل:</b> ${esc(d.notes)}
-  </div>` : ""}
-
-  <!-- رمز QR عريض وفائق الوضوح للتحقق والمسح السريع -->
-  <div style="text-align:center;margin:3.5mm 0 2mm 0;border:2px solid #000;border-radius:5px;padding:2.5mm;background:#fff;">
-    <div style="font-weight:900;font-size:11px;margin-bottom:1.5mm;color:#000;">
-      رمز التحقق والتتبع السريع (QR)
-    </div>
-    <div style="display:inline-block;padding:2px;background:#fff;">
-      ${qrSvg}
-    </div>
-    <div style="font-size:9.5px;font-weight:800;color:#000;margin-top:1.5mm;">
-      امسح الرمز بكاميرا الهاتف لمتابعة حالة الطرد
-    </div>
-  </div>
-
-  <!-- التواقيع -->
-  <div style="margin-top:4mm;display:flex;justify-content:space-between;font-size:11px;font-weight:900;border-top:2px dashed #000;padding-top:2.5mm;">
-    <div style="text-align:center;width:48%;">
-      <div>توقيع واستلام المندوب</div>
-      <div style="height:9mm;"></div>
-      <div style="border-top:1.5px solid #000;margin:0 3mm;"></div>
-    </div>
-    <div style="text-align:center;width:48%;">
-      <div>توقيع واستلام الزبون</div>
-      <div style="height:9mm;"></div>
-      <div style="border-top:1.5px solid #000;margin:0 3mm;"></div>
-    </div>
-  </div>
-
-  <div style="margin-top:3.5mm;text-align:center;font-size:10px;font-weight:800;color:#000;border-top:1.5px solid #000;padding-top:2mm;line-height:1.4;">
-    يرجى التأكد من محتويات الطرد ومطابقة المبلغ قبل الاستلام.<br>
-    ${CO.phones.length > 0 ? `خدمة العملاء: ${CO.phones[0].n}` : ""}
-  </div>
-  `;
-
-  const html = wrapReceiptDoc(`بوليصة ${d.consignmentNumber}`, body);
-  return html;
-}
-
-/**
- * طباعة بوليصة الإسناد والتوصيل الحرارية بالأولوية المتدرجة الصامتة:
- *  ١) جسر الخادم الحراري الصامت (حين يكون مفعّلاً ومضبوطاً)
- *  ٢) WebUSB لطابعة الإيصالات الحرارية المتصلة عبر Zadig WinUSB (ربط تلقائي صامت)
- *  ٣) نافذة حوار المتصفح (بديل أخير إن تعذّرت النواقل الصامتة)
- * متوافقة استدعائياً مع كافة شاشات الواجهة المتزامنة (تعيد boolean وتطلق الإرسال الصامت).
- */
 export function printDeliveryDispatchSlip(d: DispatchSlipData): boolean {
-  void printDeliveryDispatchSlipAsync(d).catch((e) => {
-    console.warn("[dispatch-slip] فشل الطباعة:", e);
+  void printDeliveryDispatchSlipAsync(d).catch((error) => {
+    console.warn("[dispatch-slip] فشل الطباعة:", error);
   });
   return true;
 }
 
-export async function printDeliveryDispatchSlipAsync(d: DispatchSlipData): Promise<PrintResult> {
-  const doc = buildDeliveryDispatchSlipDoc(d);
-  return printDoc(doc);
+export function printDeliveryDispatchSlipAsync(
+  d: DispatchSlipData,
+): Promise<PrintResult> {
+  return printDoc(buildDeliveryDispatchSlipDoc(d));
 }
-

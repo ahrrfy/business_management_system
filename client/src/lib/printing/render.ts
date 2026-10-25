@@ -258,11 +258,15 @@ export async function docToHtml(doc: PrintDoc): Promise<string> {
       </table>`
     : "";
 
-  // قسم الباركود — QR + Code128 + نص العرض
+  // لا نولّد QR من رقمٍ خام. QR يُطبع فقط حين يمرّر منشئ المستند رابط تحقق صريحاً.
+  // يبقى Code128 التشغيلي متاحاً للمسح داخل النظام حتى إن لم يوجد رابط تحقق عام.
   let barcodeSection = "";
   if (doc.barcodeSet) {
+    const hasVerifiedQr = Boolean(doc.barcodeSet.qrPayload.trim());
     const [qrSvg, bc128Result] = await Promise.all([
-      qrCodeSvg(resolveQrUrl(doc.barcodeSet.qrPayload), { size: 100, margin: 1 }),
+      hasVerifiedQr
+        ? qrCodeSvg(resolveQrUrl(doc.barcodeSet.qrPayload), { size: 100, margin: 1 })
+        : Promise.resolve(""),
       Promise.resolve(code128Svg(doc.barcodeSet.barcode128, { moduleWidth: 1.5, height: 38, showText: true })),
     ]);
     const labelHtml = doc.barcodeSet.displayLabel
@@ -270,7 +274,7 @@ export async function docToHtml(doc: PrintDoc): Promise<string> {
       .map((l) => `<span>${esc(l)}</span>`)
       .join("<br>");
     barcodeSection = `<div class="bc-wrap">
-      <div class="bc-qr">${qrSvg}</div>
+      ${qrSvg ? `<div class="bc-qr">${qrSvg}</div>` : ""}
       <p class="bc-lbl">${labelHtml}</p>
       <div class="bc-128">${bc128Result.svg}</div>
     </div>`;
@@ -370,6 +374,7 @@ export async function docToRaster(doc: PrintDoc, widthPx = 576): Promise<Raster 
     };
   });
   const footerLines = doc.footer ? measured(FOOTER_FONT, doc.footer, contentWidth) : [];
+  const hasVerifiedQr = Boolean(doc.barcodeSet?.qrPayload.trim());
   const barcodeLabelLines = doc.barcodeSet
     ? measured("16px Cairo, sans-serif", doc.barcodeSet.displayLabel, contentWidth)
     : [];
@@ -399,7 +404,7 @@ export async function docToRaster(doc: PrintDoc, widthPx = 576): Promise<Raster 
     0,
   );
   const barcodeHeight = doc.barcodeSet
-    ? 10 + 144 + 6 + barcodeLabelLines.length * 18 + 6 + (fittedBarcode?.height ?? 0)
+    ? 10 + (hasVerifiedQr ? 144 + 6 : 0) + barcodeLabelLines.length * 18 + 6 + (fittedBarcode?.height ?? 0)
     : 0;
   const height = Math.ceil(
     RASTER_PAD * 2 + titleLines.length * TITLE_LINE + subtitleLines.length * META_LINE
@@ -485,12 +490,14 @@ export async function docToRaster(doc: PrintDoc, widthPx = 576): Promise<Raster 
     y += 10; // gap قبل الباركود
     const QR_SIZE = 144;
 
-    // QR — يُحمَّل كـ PNG data URL ويُرسم على Canvas
-    try {
-      const qrUrl = await qrCodeDataUrl(resolveQrUrl(doc.barcodeSet.qrPayload), { size: QR_SIZE });
-      await drawImage(ctx, qrUrl, (widthPx - QR_SIZE) / 2, y, QR_SIZE, QR_SIZE);
-    } catch { /* تدهور سلس */ }
-    y += QR_SIZE + 6;
+    if (hasVerifiedQr) {
+      // QR موثّق فقط — يُحمَّل كـ PNG data URL ويُرسم على Canvas.
+      try {
+        const qrUrl = await qrCodeDataUrl(resolveQrUrl(doc.barcodeSet.qrPayload), { size: QR_SIZE });
+        await drawImage(ctx, qrUrl, (widthPx - QR_SIZE) / 2, y, QR_SIZE, QR_SIZE);
+      } catch { /* تدهور سلس */ }
+      y += QR_SIZE + 6;
+    }
 
     // نص العرض أسفل QR
     for (const line of barcodeLabelLines) {

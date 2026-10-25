@@ -53,7 +53,10 @@ export interface ShippingLabelData {
   deliveryPartyName?: string | null;
   /** رقم التتبع أو مرجع إيصال شركة التوصيل (اختياري). */
   externalTrackingRef?: string | null;
+  /** وقت حدث التجهيز/الإسناد المحفوظ، وليس وقت إعادة الطباعة. */
   createdAt?: Date | string | null;
+  /** وقت إنتاج هذه النسخة؛ مستقل عن وقت الحدث أعلاه. */
+  printedAt?: Date | string | null;
   items: ShippingLabelItem[];
   /** رابط عام موقّع للملصق؛ عند المسح يفتح ملخص الطلب بدلاً من نص باركود غير مفيد. */
   qrUrl?: string | null;
@@ -314,7 +317,8 @@ export async function shippingLabelHtml(
           <div style="font-size:5pt;font-weight:900;margin-top:0.2mm;">${hasMap ? "خرائط Google" : "تتبع الشحنة"}</div>
         </td>
         <td style="border-left:1.5px solid #000;padding:0.5mm 0.8mm;vertical-align:top;font-size:6.2pt;line-height:1.2;">
-          <div><b>التاريخ:</b> ${esc(fmtDate(o.createdAt))}</div>
+          <div><b>تاريخ الإسناد:</b> ${esc(fmtDate(o.createdAt))}</div>
+          ${o.printedAt ? `<div><b>تاريخ الطباعة:</b> ${esc(fmtDate(o.printedAt))}</div>` : ""}
           <div><b>شركة الشحن:</b> ${esc(o.deliveryPartyName || "توصيل داخلي")}</div>
           ${o.externalTrackingRef ? `<div><b>المرجع:</b> <span dir="ltr" style="font-weight:900;font-family:monospace">${esc(o.externalTrackingRef)}</span></div>` : ""}
           ${hasMap ? `<div style="font-size:5.8pt;font-weight:800;margin-top:0.2mm;">إحداثيات: <span dir="ltr">${esc(String(o.latitude).slice(0, 8))},${esc(String(o.longitude).slice(0, 8))}</span></div>` : ""}
@@ -427,7 +431,8 @@ export async function shippingLabelHtml(
               <div style="font-size:5.5pt;font-weight:900;">${hasMap ? "خرائط Google" : "تتبع الشحنة"}</div>
             </td>
             <td style="border-left:1.5px solid #000;padding:0.8mm;vertical-align:top;font-size:6.5pt;line-height:1.25;">
-              <div><b>التاريخ:</b> ${esc(fmtDate(o.createdAt))}</div>
+              <div><b>تاريخ الإسناد:</b> ${esc(fmtDate(o.createdAt))}</div>
+              ${o.printedAt ? `<div><b>تاريخ الطباعة:</b> ${esc(fmtDate(o.printedAt))}</div>` : ""}
               <div><b>الشحن:</b> ${esc(o.deliveryPartyName || "توصيل")}</div>
               ${o.externalTrackingRef ? `<div><b>المرجع:</b> <span dir="ltr" style="font-weight:900;">${esc(o.externalTrackingRef)}</span></div>` : ""}
             </td>

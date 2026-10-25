@@ -1,6 +1,9 @@
 import { loadWorkOrderDepositReceiptSet } from "../workOrder/depositReceiptSet";
 import { mixedAwarePaymentMethod } from "../sale/payment";
-import { appliedCollectionsForWorkOrder, linkSoleTargetCollectionsToInvoice } from "../deposits";
+import {
+  appliedCollectionsForWorkOrder,
+  linkSoleTargetCollectionsToInvoice,
+} from "../deposits";
 // التحوّلات (محاسبة العهدة) — ترتيب أقفال موحّد لمنع الجمود: الإرسالية → الجهة → الفاتورة → الوردية.
 //
 // READY → DELIVERED + إرسالية: فاتورة عميل + SALE + عهدة COD على الجهة (D3).
@@ -67,6 +70,7 @@ import {
 } from "../workOrder/baseInventorySnapshot";
 import { publishRealtimeEvent } from "../../realtime";
 import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
+import { initializeConsignmentCustodyTx } from "./custody";
 
 // ═══════════════════════════ التحوّلات (محاسبة العهدة) ═══════════════════════════
 // ترتيب أقفال موحّد لمنع الجمود: الإرسالية → الجهة → الفاتورة → الوردية.
@@ -179,7 +183,15 @@ export async function prepareWorkOrderDeliveryInvoiceInTx(
     .for("update")
     .limit(1);
   if (!source)
-    throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: "تعذّر تجهيز أمر الشغل للتوصيل", why: "أمر الشغل غير موجود", doThis: "حدّث طلب التجهيز واختر أمر شغل قائماً من الفرع نفسه قبل الإرسال" }) });
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر تجهيز أمر الشغل للتوصيل",
+        why: "أمر الشغل غير موجود",
+        doThis:
+          "حدّث طلب التجهيز واختر أمر شغل قائماً من الفرع نفسه قبل الإرسال",
+      }),
+    });
   return runWorkOrderDispatchTx(
     tx,
     {
@@ -283,7 +295,10 @@ async function runWorkOrderDispatchTx(
       code: "BAD_REQUEST",
       message: "الأمر ليس جاهزاً للإرسال",
     });
-  await assertNoPendingHeldFeeRefundTx(tx,{workOrderId:Number(wo.id),...(wo.invoiceId==null?{}:{invoiceId:Number(wo.invoiceId)})});
+  await assertNoPendingHeldFeeRefundTx(tx, {
+    workOrderId: Number(wo.id),
+    ...(wo.invoiceId == null ? {} : { invoiceId: Number(wo.invoiceId) }),
+  });
   // حارس خادمي مقابل طابور الواجهة: لا يتحول الاستلام المباشر إلى شحنة بسبب
   // رابط قديم أو طلب API يدوي. يحدد موظف خدمة العملاء طريقة التسليم أولاً.
   if (!prepareOnly && !wo.hasDelivery) {
@@ -310,7 +325,8 @@ async function runWorkOrderDispatchTx(
   const externalTrackingRef = prepareOnly
     ? null
     : requireExternalTrackingRef(party.partyType, normalizedTrackingRef);
-  if (!prepareOnly) await validateDeliveryDriverTx(tx, input, Number(wo.branchId));
+  if (!prepareOnly)
+    await validateDeliveryDriverTx(tx, input, Number(wo.branchId));
   const assignedUserId = input.assignedUserId ?? null;
 
   if (
@@ -686,15 +702,39 @@ async function runWorkOrderDispatchTx(
     // ربط إيصال العربون بالفاتورة (كان workOrderId-only) — append-only على القيد كـdeliverWorkOrder.
     // ش٠ (V3): بهويّته الصريحة (depositReceiptId) — الالتقاط الظنّي كان يتصادم مع إيصال أجرة COUNTER.
     if (depositPaid.gt(0)) {
-      const appliedDeposits = await appliedCollectionsForWorkOrder(tx, Number(wo.id));
-      const directAmount = depositPaid.minus(appliedDeposits.reduce((sum, part) => sum.plus(money(part.amount)), money(0)));
-      const directReceipts = await loadWorkOrderDepositReceiptSet(tx, wo, directAmount.toFixed(2));
+      const appliedDeposits = await appliedCollectionsForWorkOrder(
+        tx,
+        Number(wo.id),
+      );
+      const directAmount = depositPaid.minus(
+        appliedDeposits.reduce(
+          (sum, part) => sum.plus(money(part.amount)),
+          money(0),
+        ),
+      );
+      const directReceipts = await loadWorkOrderDepositReceiptSet(
+        tx,
+        wo,
+        directAmount.toFixed(2),
+      );
       for (const receipt of directReceipts) {
-        await tx.update(receipts).set({ invoiceId }).where(eq(receipts.id, Number(receipt.id)));
+        await tx
+          .update(receipts)
+          .set({ invoiceId })
+          .where(eq(receipts.id, Number(receipt.id)));
       }
       if (directReceipts.length || appliedDeposits.length) {
-        const method = [...directReceipts.map(r => r.paymentMethod), ...appliedDeposits.map(r => r.method)].reduce<string | null>((folded, method) => mixedAwarePaymentMethod(folded, method), null);
-        await tx.update(invoices).set({ paymentMethod: method }).where(eq(invoices.id, invoiceId));
+        const method = [
+          ...directReceipts.map((r) => r.paymentMethod),
+          ...appliedDeposits.map((r) => r.method),
+        ].reduce<string | null>(
+          (folded, method) => mixedAwarePaymentMethod(folded, method),
+          null,
+        );
+        await tx
+          .update(invoices)
+          .set({ paymentMethod: method })
+          .where(eq(invoices.id, invoiceId));
       }
       await linkSoleTargetCollectionsToInvoice(tx, Number(wo.id), invoiceId);
     }
@@ -838,6 +878,12 @@ async function runWorkOrderDispatchTx(
       sourceType: "WORK_ORDER",
       sourceId: consignmentSourceId,
     },
+  });
+  await initializeConsignmentCustodyTx(tx, {
+    consignmentId,
+    actorUserId: actor.userId,
+    operationId:
+      input.clientRequestId ?? `delivery.dispatchWorkOrder:${consignmentId}`,
   });
   if (codPositive) {
     await appendDeliveryLedgerEntry(tx, {
