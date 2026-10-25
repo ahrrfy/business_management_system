@@ -1012,6 +1012,13 @@ describe("statutory accounting compliance", () => {
 
   it("يبذر دليل النظام المحاسبي الموحد العراقي ويربط الحسابات التشغيلية بنسبة 100% ويجتاز بوابة الجاهزية", async () => {
     await seedFoundation();
+    await db().insert(s.accounts).values({
+      code: "2910",
+      name: "إيرادات خدمات مقبوضة مقدماً",
+      type: "LIABILITY",
+      systemRole: "DEFERRED_REVENUE",
+      sortOrder: 7,
+    });
     let seeded: Awaited<ReturnType<typeof seedIraqiUnifiedProfile>> | null = null;
     await withTx(async (tx) => {
       seeded = await seedIraqiUnifiedProfile(tx, ACTOR_ID);
@@ -1019,7 +1026,7 @@ describe("statutory accounting compliance", () => {
 
     expect(seeded).toBeDefined();
     expect(seeded!.accountsImported).toBeGreaterThanOrEqual(50);
-    expect(seeded!.mappedAccounts).toBe(6);
+    expect(seeded!.mappedAccounts).toBe(7);
 
     await withTx(async (tx) => {
       await approveStatutoryProfile(

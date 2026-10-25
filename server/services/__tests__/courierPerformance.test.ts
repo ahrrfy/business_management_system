@@ -106,10 +106,12 @@ describe("تقرير أداء المناديب", () => {
 
     const res = await getCourierPerformance({});
     const A = rowOf(res, partyA);
-    expect(A.assigned).toBe(3);
+    expect(A.assigned).toBe(2);
     expect(A.delivered).toBe(2);
     expect(A.inTransit).toBe(0);
-    expect(A.failed).toBe(1);
+    expect(A.failed).toBe(0);
+    expect(A.cnAssigned).toBe(1);
+    expect(A.cnFailed).toBe(1);
     expect(A.failRate).toBe("33.33"); // 1 ÷ (2+1)
     expect(A.deliveredValue).toBe("50.00");
     expect(A.codCollected).toBe("50.00"); // حُصِّل كامل عند التسليم
@@ -127,12 +129,12 @@ describe("تقرير أداء المناديب", () => {
 
     // الإجماليات.
     expect(res.summary).toMatchObject({
-      parties: 2, assigned: 4, delivered: 2, inTransit: 1, failed: 1,
+      parties: 2, assigned: 3, delivered: 2, inTransit: 1, failed: 0, cnAssigned: 1, cnFailed: 1,
       failRate: "33.33", deliveredValue: "50.00", codCollected: "50.00", custodyOutstanding: "50.00",
     });
   });
 
-  it("«المتعذّر» يحتسب إلغاء المندوب (بسبب) لا الإلغاء بلا سبب", async () => {
+  it("«المتعذّر» ينتقل إلى قناة الإرساليات الموحدة ولا يحتسب الإلغاء الإداري", async () => {
     const { partyA } = await seedParties();
     const o1 = await shippedOrder(1, "ORD-Q1", partyA);
     const o2 = await shippedOrder(1, "ORD-Q2", partyA);
@@ -142,8 +144,10 @@ describe("تقرير أداء المناديب", () => {
     await failCourierDelivery({ onlineOrderId: o2.orderId, reason: "عنوان خاطئ" }, { userId: 3 });
 
     const A = rowOf(await getCourierPerformance({}), partyA);
-    expect(A.assigned).toBe(2);
-    expect(A.failed).toBe(1); // فقط ذو السبب
+    expect(A.assigned).toBe(1);
+    expect(A.failed).toBe(0);
+    expect(A.cnAssigned).toBe(1);
+    expect(A.cnFailed).toBe(1);
   });
 
   it("فلترة الفترة: طلبٌ خارج النطاق لا يُحتسب", async () => {

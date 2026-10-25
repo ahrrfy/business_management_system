@@ -105,7 +105,8 @@ export interface LoadVariantAvailabilityOptions {
 
 // أثناء النشر المختلط قد يكتب إصدارٌ قديم NULL؛ تاريخ الطلب هو fallback حتمي لا حجزٌ أبدي.
 const activeOnlineAllocationCondition = sql`
-  (
+  ${onlineOrders.invoiceId} IS NULL
+  AND (
     ${onlineOrders.status} IN ('CONFIRMED', 'PROCESSING')
     OR (
       ${onlineOrders.status} = 'PENDING'

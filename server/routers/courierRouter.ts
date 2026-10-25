@@ -153,12 +153,12 @@ export const courierRouter = router({
       ),
     ),
 
-  /** تعذّر التسليم (رفض الزبون): عكس بيع الطلب المرفوض + إلغاؤه (بلا تحصيل). */
+  /** تعذّر التسليم: إعلان وطلب رجوع فقط؛ لا عكس مالي أو مخزني قبل الاستلام والفحص. */
   failDelivery: courierProcedure
     .input(
       z.object({
         onlineOrderId: z.number().int().positive(),
-        reason: z.string().trim().min(2).max(500),
+        reason: z.string().trim().min(3).max(500),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -181,7 +181,11 @@ export const courierRouter = router({
         action: "courier.failDelivery",
         entityType: "onlineOrder",
         entityId: input.onlineOrderId,
-        newValue: { reason: input.reason, reversed: res.reversed },
+        newValue: {
+          reason: input.reason,
+          returnDeclared: true,
+          financialOrInventoryReversal: false,
+        },
       });
       return res;
     }),

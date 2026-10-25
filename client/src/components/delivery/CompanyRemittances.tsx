@@ -7,6 +7,9 @@ import { moneyCol } from "./companyConsignmentColumns";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { fmtDateTime } from "@/lib/date";
 import { deliveryTotals, fetchAllDeliveryPages } from "@/lib/deliveryWorkspace";
+import { Button } from "@/components/ui/button";
+import { Printer } from "lucide-react";
+import { printRemittanceReceipt } from "./printRemittanceReceipt";
 type PartyRow = RouterOutputs["delivery"]["listParties"][number];
 type RemittanceRow =
   RouterOutputs["delivery"]["remittancesPage"]["rows"][number];
@@ -88,6 +91,41 @@ export function RemittancesTab({
             ? "بعجز"
             : "بزيادة",
       meta: { kind: "status" },
+    },
+    {
+      id: "print",
+      header: "المستند",
+      enableSorting: false,
+      cell: ({ row }) => (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-8 gap-1.5 px-2 text-xs"
+          disabled={!row.original.remittanceNumber}
+          onClick={() =>
+            printRemittanceReceipt(party.name, {
+              remittanceNumber: row.original.remittanceNumber,
+              collectedTotal: row.original.collectedTotal,
+              feesTotal: row.original.feesTotal,
+              netRemitted: row.original.netRemitted,
+              shortfallTotal: row.original.shortfallTotal,
+              cashReceived: row.original.cashReceived,
+              receivedAt: row.original.receivedAt,
+              branchId: row.original.branchId,
+              shiftId: row.original.shiftId,
+              receivedByName: row.original.receivedByName,
+              copy: {
+                kind: "REPRINT",
+                reason: "طلب إعادة طباعة من سجل توريدات الشركة",
+              },
+            })
+          }
+        >
+          <Printer aria-hidden className="size-3.5" />
+          إعادة طباعة
+        </Button>
+      ),
     },
   ];
   const exportColumns = [

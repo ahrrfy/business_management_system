@@ -2563,6 +2563,13 @@
 			"when": 1788148862000,
 			"tag": "0404_barcode_workflow_settlements",
 			"breakpoints": true
+		},
+		{
+			"idx": 405,
+			"version": "5",
+			"when": 1788148863000,
+			"tag": "0405_delivery_custody_document_snapshots",
+			"breakpoints": true
 		}
 	]
 }

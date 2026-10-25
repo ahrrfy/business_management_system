@@ -35,14 +35,17 @@ import {
   validateRequestPartyTx,
   dispatchChargeOnlyRequestTx,
 } from "./requestSources";
-import { dispatchInvoiceShipmentInTx } from "../delivery/shipments";
+import {
+  createFinalShipmentDispatchDocumentSnapshotsTx,
+  dispatchInvoiceShipmentInTx,
+  loadShipmentMembersTx,
+} from "../delivery/shipments";
 import { prepareWorkOrderDeliveryInvoiceInTx } from "../delivery/dispatch";
 import {
   attachFulfillmentRequestClaimsTx,
   restoreFulfillmentRequestClaimsTx,
 } from "./chargeDelivery";
 import { deliveryConsignments, receipts } from "../../../drizzle/schema";
-import { loadShipmentMembersTx } from "../delivery/shipments";
 import { heldCustomerParcelReissueTx } from "../delivery/workflow/returnReceipt";
 
 export type FulfillmentRequestFields = {
@@ -189,7 +192,7 @@ async function assertWorkflowRequestCompositionTx(
       .where(
         and(
           eq(fulfillmentCharges.requestId, input.id!),
-          eq(fulfillmentCharges.status, "APPROVED"),
+          inArray(fulfillmentCharges.status, ["APPROVED", "COMPLETED"]),
         ),
       )
       .for("update");
@@ -223,8 +226,11 @@ export async function chargeDispatchEligibilityTx(
 ) {
   const paid = money(charge.paidAmount),
     remaining = money(charge.amount).minus(paid);
+  const collectibleLifecycle = ["APPROVED", "COMPLETED"].includes(
+    charge.status,
+  );
   if (
-    charge.status !== "APPROVED" ||
+    !collectibleLifecycle ||
     !money(charge.amount).gt(0) ||
     money(charge.refundedAmount).gt(0)
   )
@@ -801,7 +807,7 @@ export async function releaseFulfillmentRequestInTx(
       .where(
         and(
           eq(fulfillmentCharges.requestId, request.id),
-          eq(fulfillmentCharges.status, "APPROVED"),
+          inArray(fulfillmentCharges.status, ["APPROVED", "COMPLETED"]),
         ),
       )
       .for("update");
@@ -842,6 +848,7 @@ export async function releaseFulfillmentRequestInTx(
           notes: request.notes,
         },
         actor,
+        { deferDocumentSnapshots: true },
       );
   await attachFulfillmentRequestClaimsTx(
     tx,
@@ -851,6 +858,15 @@ export async function releaseFulfillmentRequestInTx(
       partyId: request.partyId,
       branchId: request.branchId,
       clientRequestId: input.clientRequestId,
+    },
+    actor,
+  );
+  await createFinalShipmentDispatchDocumentSnapshotsTx(
+    tx,
+    {
+      consignmentId: shipment.consignmentId,
+      clientRequestId: input.clientRequestId,
+      operationId: "fulfillment.request.release",
     },
     actor,
   );
@@ -1071,7 +1087,7 @@ export async function reassignFulfillmentRequestInTx(
           notes: request.notes,
         },
         actor,
-        { heldReturnReissue },
+        { heldReturnReissue, deferDocumentSnapshots: true },
       )
     : await dispatchChargeOnlyRequestTx(
         tx,
@@ -1100,6 +1116,15 @@ export async function reassignFulfillmentRequestInTx(
       partyId,
       branchId: request.branchId,
       clientRequestId: input.clientRequestId,
+    },
+    actor,
+  );
+  await createFinalShipmentDispatchDocumentSnapshotsTx(
+    tx,
+    {
+      consignmentId: shipment.consignmentId,
+      clientRequestId: input.clientRequestId,
+      operationId: "fulfillment.request.reassign",
     },
     actor,
   );

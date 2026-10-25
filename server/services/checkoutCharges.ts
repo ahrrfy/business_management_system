@@ -87,7 +87,7 @@ export function listCheckoutChargeOptions(
           and(
             eq(fulfillmentCharges.branchId, input.branchId),
             eq(fulfillmentCharges.customerId, input.customerId),
-            eq(fulfillmentCharges.status, "APPROVED"),
+            inArray(fulfillmentCharges.status, ["APPROVED", "COMPLETED"]),
             gt(fulfillmentCharges.amount, fulfillmentCharges.paidAmount),
           ),
         )

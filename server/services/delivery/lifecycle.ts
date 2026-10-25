@@ -20,6 +20,7 @@ import type { DeliveryConsignmentStatus } from "@shared/deliveryStatuses";
 import { appErrorMessage } from "@shared/errors";
 import { money, round2 } from "../money";
 import { consignmentShortfallAssignedSql } from "./openParcelPredicates";
+import { applyDeliveryCustodyEventTx } from "./custody";
 
 export type ParcelStatus =
   | "ASSIGNED"
@@ -236,6 +237,14 @@ export async function appendDeliveryEvent(
       eventType: input.eventType,
       ...payload,
     },
+  });
+  await applyDeliveryCustodyEventTx(tx, {
+    eventId,
+    eventKey: input.eventKey,
+    consignmentId: input.consignmentId,
+    eventType: input.eventType,
+    actorUserId: input.actorUserId,
+    payload,
   });
   return eventId;
 }

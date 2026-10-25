@@ -15,6 +15,7 @@ import {
   loadOperationUserTx,
 } from "../authorization/operationAuthority";
 import { appendDeliveryEvent } from "../delivery/lifecycle";
+import { repairDeliveryCustodyFromRecordedEventsTx } from "../delivery/custody";
 import type { DeliveryTxActor } from "../delivery/types";
 import { money, toDbMoney } from "../money";
 import type { Actor } from "../tx";
@@ -136,8 +137,10 @@ export async function routeAftercareDeliveryResultTx(
     cn.branchId,
   );
   const replay = await findFulfillmentReplayTx(tx, context);
-  if (replay)
+  if (replay) {
+    await repairDeliveryCustodyFromRecordedEventsTx(tx, cn.id);
     return { handled: true as const, executionId: replay, replay: true };
+  }
   const [execution] = await tx
     .select()
     .from(aftercareExecutions)

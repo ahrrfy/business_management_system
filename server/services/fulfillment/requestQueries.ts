@@ -208,7 +208,7 @@ export async function getFulfillmentRequest(id: number, actor: Actor) {
         money(0),
       );
       const chargeRemaining = charges
-        .filter((r) => r.status === "APPROVED")
+        .filter((r) => ["APPROVED", "COMPLETED"].includes(r.status))
         .reduce(
           (sum, r) => sum.plus(money(r.amount).minus(r.paidAmount)),
           money(0),
@@ -219,7 +219,7 @@ export async function getFulfillmentRequest(id: number, actor: Actor) {
         charges: charges.map((r) => ({
           ...projectFulfillmentChargeCost(r, costVisible),
           remainingAmount:
-            r.status === "APPROVED"
+            ["APPROVED", "COMPLETED"].includes(r.status)
               ? toDbMoney(money(r.amount).minus(r.paidAmount))
               : "0.00",
         })),

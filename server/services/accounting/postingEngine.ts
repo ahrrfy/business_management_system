@@ -42,6 +42,7 @@ export const ACCOUNT_ROLES = [
   "LOAN_PAYABLE",
   "LOAN_RECEIVABLE",
   "INVESTMENT_PAYABLE",
+  "DEFERRED_REVENUE",
   "OTHER_LIABILITY",
   "CAPITAL",
   "RETAINED_EARNINGS",
@@ -87,6 +88,7 @@ export type PostingProfile =
   | "FULFILLMENT_SERVICE_REFUND"
   | "AFTERCARE_ISSUE_RETURN"
   | "FULFILLMENT_CHARGE_ACCRUAL"
+  | "FULFILLMENT_CHARGE_RECOGNITION"
   | "FULFILLMENT_CHARGE_COST"
   | "FULFILLMENT_CHARGE_CREDIT"
   | "FULFILLMENT_CHARGE_COLLECTION"
@@ -157,6 +159,7 @@ export type PostingProfile =
   | "RETURN_PURCHASE_CONSIGNMENT"
   | "ADJUST_INVENTORY_GAIN"
   | "ADJUST_INVENTORY_LOSS"
+  | "ADJUST_DAMAGED_RETURN_RECLASS"
   | "ADJUST_INVENTORY_REVALUATION_GAIN"
   | "ADJUST_INVENTORY_REVALUATION_LOSS"
   | "ADJUST_WIP_CONSUME"
@@ -337,6 +340,7 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
   ADJUST: [
     "AFTERCARE_ISSUE_RETURN",
     "FULFILLMENT_CHARGE_ACCRUAL",
+    "FULFILLMENT_CHARGE_RECOGNITION",
     "FULFILLMENT_CHARGE_COST",
     "FULFILLMENT_CHARGE_CREDIT",
     "PURCHASE_GRNI_RECEIPT",
@@ -345,6 +349,7 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
     "SUPPLIER_INVOICE_GRNI_REVERSAL",
     "ADJUST_INVENTORY_GAIN",
     "ADJUST_INVENTORY_LOSS",
+    "ADJUST_DAMAGED_RETURN_RECLASS",
     "ADJUST_INVENTORY_REVALUATION_GAIN",
     "ADJUST_INVENTORY_REVALUATION_LOSS",
     "ADJUST_WIP_CONSUME",
@@ -717,22 +722,32 @@ const PNL_ROLES = [
  * compile error until its allowed/required roles and source assertions exist.
  */
 export const PROFILE_POLICIES = Object.freeze({
-  FULFILLMENT_SERVICE_IMMEDIATE: profilePolicy("PAYMENT_IN", CASH_ASSETS, ["OTHER_REVENUE"], {
-    reversible: false,
-    sourceAssertions: [
-      sourceAssertion("amount", "DEBIT_MINUS_CREDIT", CASH_ASSETS),
-      sourceAssertion("revenue", "CREDIT_MINUS_DEBIT", ["OTHER_REVENUE"]),
-    ],
-    requireRoleComponents: [...CASH_ASSETS, "OTHER_REVENUE"],
-  }),
-  FULFILLMENT_SERVICE_REFUND: profilePolicy("PAYMENT_OUT", ["OTHER_REVENUE"], CASH_ASSETS, {
-    reversible: false,
-    sourceAssertions: [
-      sourceAssertion("amount", "CREDIT_MINUS_DEBIT", CASH_ASSETS),
-      sourceAssertion("revenue", "CREDIT_MINUS_DEBIT", ["OTHER_REVENUE"]),
-    ],
-    requireRoleComponents: ["OTHER_REVENUE", ...CASH_ASSETS],
-  }),
+  FULFILLMENT_SERVICE_IMMEDIATE: profilePolicy(
+    "PAYMENT_IN",
+    CASH_ASSETS,
+    ["OTHER_REVENUE"],
+    {
+      reversible: false,
+      sourceAssertions: [
+        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", CASH_ASSETS),
+        sourceAssertion("revenue", "CREDIT_MINUS_DEBIT", ["OTHER_REVENUE"]),
+      ],
+      requireRoleComponents: [...CASH_ASSETS, "OTHER_REVENUE"],
+    },
+  ),
+  FULFILLMENT_SERVICE_REFUND: profilePolicy(
+    "PAYMENT_OUT",
+    ["OTHER_REVENUE"],
+    CASH_ASSETS,
+    {
+      reversible: false,
+      sourceAssertions: [
+        sourceAssertion("amount", "CREDIT_MINUS_DEBIT", CASH_ASSETS),
+        sourceAssertion("revenue", "CREDIT_MINUS_DEBIT", ["OTHER_REVENUE"]),
+      ],
+      requireRoleComponents: ["OTHER_REVENUE", ...CASH_ASSETS],
+    },
+  ),
   AFTERCARE_ISSUE_RETURN: profilePolicy("ADJUST", ["INVENTORY"], ["LOSSES"], {
     reversible: false,
     sourceAssertions: [
@@ -741,47 +756,136 @@ export const PROFILE_POLICIES = Object.freeze({
     ],
     requireRoleComponents: ["INVENTORY", "LOSSES"],
   }),
-  FULFILLMENT_CHARGE_ACCRUAL: profilePolicy("ADJUST", ["AR"], ["OTHER_REVENUE", "OTHER_LIABILITY"], {
-    reversible: false,
-    sourceAssertions: [sourceAssertion("revenue", "CREDIT_MINUS_DEBIT", ["OTHER_REVENUE"])],
-    requireRoleComponents: ["AR", "OTHER_REVENUE", "OTHER_LIABILITY"],
-  }),
-  FULFILLMENT_CHARGE_COST: profilePolicy("ADJUST", ["OPERATING_EXPENSE"], ["AP", "COURIER_PAYABLE", "ACCRUED_EXPENSES"], {
-    reversible: false,
-    sourceAssertions: [sourceAssertion("cost", "DEBIT_MINUS_CREDIT", ["OPERATING_EXPENSE"])],
-    requireRoleComponents: ["OPERATING_EXPENSE", "AP", "COURIER_PAYABLE", "ACCRUED_EXPENSES"],
-  }),
-  FULFILLMENT_CHARGE_CREDIT: profilePolicy("ADJUST", ["OTHER_REVENUE", "OTHER_LIABILITY"], ["AR"], {
-    reversible: false,
-    sourceAssertions: [sourceAssertion("revenue", "CREDIT_MINUS_DEBIT", ["OTHER_REVENUE"])],
-    requireRoleComponents: ["AR", "OTHER_REVENUE", "OTHER_LIABILITY"],
-  }),
-  FULFILLMENT_CHARGE_COLLECTION: profilePolicy("PAYMENT_IN", CASH_ASSETS, ["AR", "OTHER_LIABILITY"], {
-    reversible: false,
-    requiredCreditRoles: ["AR"],
-    sourceAssertions: [sourceAssertion("amount", "DEBIT_MINUS_CREDIT", CASH_ASSETS)],
-    requireRoleComponents: [...CASH_ASSETS, "AR", "OTHER_LIABILITY"],
-  }),
-  FULFILLMENT_CHARGE_CUSTODY: profilePolicy("PAYMENT_IN", ["DELIVERY_FLOAT"], ["AR"], {
-    reversible: false,
-    sourceAssertions: [sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["DELIVERY_FLOAT"])],
-    requireRoleComponents: ["DELIVERY_FLOAT", "AR"],
-  }),
-  FULFILLMENT_COURIER_EXCESS: profilePolicy("PAYMENT_IN", ["DELIVERY_FLOAT"], ["OTHER_LIABILITY"], {
-    reversible: false,
-    sourceAssertions: [sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["DELIVERY_FLOAT"])],
-    requireRoleComponents: ["DELIVERY_FLOAT", "OTHER_LIABILITY"],
-  }),
-  FULFILLMENT_CHARGE_PAYEE: profilePolicy("PAYMENT_OUT", ["AP", "COURIER_PAYABLE", "ACCRUED_EXPENSES", "OTHER_LIABILITY"], CASH_ASSETS, {
-    reversible: false,
-    sourceAssertions: [sourceAssertion("amount", "CREDIT_MINUS_DEBIT", CASH_ASSETS)],
-    requireRoleComponents: ["AP", "COURIER_PAYABLE", "ACCRUED_EXPENSES", "OTHER_LIABILITY", ...CASH_ASSETS],
-  }),
-  FULFILLMENT_CHARGE_EXCESS_REFUND: profilePolicy("PAYMENT_OUT", ["OTHER_LIABILITY"], CASH_ASSETS, {
-    reversible: false,
-    sourceAssertions: [sourceAssertion("amount", "CREDIT_MINUS_DEBIT", CASH_ASSETS)],
-    requireRoleComponents: ["OTHER_LIABILITY", ...CASH_ASSETS],
-  }),
+  FULFILLMENT_CHARGE_ACCRUAL: profilePolicy(
+    "ADJUST",
+    ["AR"],
+    ["OTHER_REVENUE", "OTHER_LIABILITY", "DEFERRED_REVENUE"],
+    {
+      reversible: false,
+      sourceAssertions: [
+        sourceAssertion("revenue", "CREDIT_MINUS_DEBIT", ["OTHER_REVENUE"]),
+      ],
+      requireRoleComponents: [
+        "AR",
+        "OTHER_REVENUE",
+        "OTHER_LIABILITY",
+        "DEFERRED_REVENUE",
+      ],
+    },
+  ),
+  FULFILLMENT_CHARGE_RECOGNITION: profilePolicy(
+    "ADJUST",
+    ["DEFERRED_REVENUE"],
+    ["OTHER_REVENUE"],
+    {
+      reversible: false,
+      sourceAssertions: [
+        sourceAssertion("revenue", "CREDIT_MINUS_DEBIT", ["OTHER_REVENUE"]),
+      ],
+      requireRoleComponents: ["DEFERRED_REVENUE", "OTHER_REVENUE"],
+    },
+  ),
+  FULFILLMENT_CHARGE_COST: profilePolicy(
+    "ADJUST",
+    ["OPERATING_EXPENSE"],
+    ["AP", "COURIER_PAYABLE", "ACCRUED_EXPENSES"],
+    {
+      reversible: false,
+      sourceAssertions: [
+        sourceAssertion("cost", "DEBIT_MINUS_CREDIT", ["OPERATING_EXPENSE"]),
+      ],
+      requireRoleComponents: [
+        "OPERATING_EXPENSE",
+        "AP",
+        "COURIER_PAYABLE",
+        "ACCRUED_EXPENSES",
+      ],
+    },
+  ),
+  FULFILLMENT_CHARGE_CREDIT: profilePolicy(
+    "ADJUST",
+    ["OTHER_REVENUE", "OTHER_LIABILITY", "DEFERRED_REVENUE"],
+    ["AR"],
+    {
+      reversible: false,
+      sourceAssertions: [
+        sourceAssertion("revenue", "CREDIT_MINUS_DEBIT", ["OTHER_REVENUE"]),
+      ],
+      requireRoleComponents: [
+        "AR",
+        "OTHER_REVENUE",
+        "OTHER_LIABILITY",
+        "DEFERRED_REVENUE",
+      ],
+    },
+  ),
+  FULFILLMENT_CHARGE_COLLECTION: profilePolicy(
+    "PAYMENT_IN",
+    CASH_ASSETS,
+    ["AR", "OTHER_LIABILITY"],
+    {
+      reversible: false,
+      requiredCreditRoles: ["AR"],
+      sourceAssertions: [
+        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", CASH_ASSETS),
+      ],
+      requireRoleComponents: [...CASH_ASSETS, "AR", "OTHER_LIABILITY"],
+    },
+  ),
+  FULFILLMENT_CHARGE_CUSTODY: profilePolicy(
+    "PAYMENT_IN",
+    ["DELIVERY_FLOAT"],
+    ["AR"],
+    {
+      reversible: false,
+      sourceAssertions: [
+        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["DELIVERY_FLOAT"]),
+      ],
+      requireRoleComponents: ["DELIVERY_FLOAT", "AR"],
+    },
+  ),
+  FULFILLMENT_COURIER_EXCESS: profilePolicy(
+    "PAYMENT_IN",
+    ["DELIVERY_FLOAT"],
+    ["OTHER_LIABILITY"],
+    {
+      reversible: false,
+      sourceAssertions: [
+        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["DELIVERY_FLOAT"]),
+      ],
+      requireRoleComponents: ["DELIVERY_FLOAT", "OTHER_LIABILITY"],
+    },
+  ),
+  FULFILLMENT_CHARGE_PAYEE: profilePolicy(
+    "PAYMENT_OUT",
+    ["AP", "COURIER_PAYABLE", "ACCRUED_EXPENSES", "OTHER_LIABILITY"],
+    CASH_ASSETS,
+    {
+      reversible: false,
+      sourceAssertions: [
+        sourceAssertion("amount", "CREDIT_MINUS_DEBIT", CASH_ASSETS),
+      ],
+      requireRoleComponents: [
+        "AP",
+        "COURIER_PAYABLE",
+        "ACCRUED_EXPENSES",
+        "OTHER_LIABILITY",
+        ...CASH_ASSETS,
+      ],
+    },
+  ),
+  FULFILLMENT_CHARGE_EXCESS_REFUND: profilePolicy(
+    "PAYMENT_OUT",
+    ["OTHER_LIABILITY"],
+    CASH_ASSETS,
+    {
+      reversible: false,
+      sourceAssertions: [
+        sourceAssertion("amount", "CREDIT_MINUS_DEBIT", CASH_ASSETS),
+      ],
+      requireRoleComponents: ["OTHER_LIABILITY", ...CASH_ASSETS],
+    },
+  ),
   SALE_INVENTORY: profilePolicy(
     "SALE",
     ["AR", "OTHER_LIABILITY", "COGS"],
@@ -970,29 +1074,18 @@ export const PROFILE_POLICIES = Object.freeze({
     ["OTHER_LIABILITY"],
     {
       sourceAssertions: [
-        sourceAssertion("amount", "CREDIT_MINUS_DEBIT", [
-          "OTHER_LIABILITY",
-        ]),
+        sourceAssertion("amount", "CREDIT_MINUS_DEBIT", ["OTHER_LIABILITY"]),
       ],
-      requireRoleComponents: [
-        "INVENTORY",
-        "TAX_PAYABLE",
-        "OTHER_LIABILITY",
-      ],
+      requireRoleComponents: ["INVENTORY", "TAX_PAYABLE", "OTHER_LIABILITY"],
     },
   ),
-  PURCHASE_GRNI_RECEIPT: profilePolicy(
-    "ADJUST",
-    ["INVENTORY"],
-    ["GRNI"],
-    {
-      sourceAssertions: [
-        sourceAssertion("cost", "DEBIT_MINUS_CREDIT", ["INVENTORY"]),
-        sourceAssertion("amount", "CREDIT_MINUS_DEBIT", ["GRNI"]),
-      ],
-      requireRoleComponents: ["INVENTORY", "GRNI"],
-    },
-  ),
+  PURCHASE_GRNI_RECEIPT: profilePolicy("ADJUST", ["INVENTORY"], ["GRNI"], {
+    sourceAssertions: [
+      sourceAssertion("cost", "DEBIT_MINUS_CREDIT", ["INVENTORY"]),
+      sourceAssertion("amount", "CREDIT_MINUS_DEBIT", ["GRNI"]),
+    ],
+    requireRoleComponents: ["INVENTORY", "GRNI"],
+  }),
   PURCHASE_GRNI_RECEIPT_REVERSAL: profilePolicy(
     "ADJUST",
     ["GRNI", "PURCHASE_PRICE_VARIANCE"],
@@ -1014,7 +1107,12 @@ export const PROFILE_POLICIES = Object.freeze({
         sourceAssertion("amount", "CREDIT_MINUS_DEBIT", ["AP"]),
         sourceAssertion("cost", "DEBIT_MINUS_CREDIT", ["GRNI"]),
       ],
-      requireRoleComponents: ["GRNI", "TAX_PAYABLE", "AP", "PURCHASE_PRICE_VARIANCE"],
+      requireRoleComponents: [
+        "GRNI",
+        "TAX_PAYABLE",
+        "AP",
+        "PURCHASE_PRICE_VARIANCE",
+      ],
     },
   ),
   SUPPLIER_INVOICE_GRNI_REVERSAL: profilePolicy(
@@ -1026,7 +1124,12 @@ export const PROFILE_POLICIES = Object.freeze({
         sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["AP"]),
         sourceAssertion("cost", "CREDIT_MINUS_DEBIT", ["GRNI"]),
       ],
-      requireRoleComponents: ["AP", "GRNI", "TAX_PAYABLE", "PURCHASE_PRICE_VARIANCE"],
+      requireRoleComponents: [
+        "AP",
+        "GRNI",
+        "TAX_PAYABLE",
+        "PURCHASE_PRICE_VARIANCE",
+      ],
     },
   ),
   PURCHASE_FIXED_ASSET: profilePolicy("PURCHASE", ["FIXED_ASSETS"], ["AP"], {
@@ -1131,10 +1234,7 @@ export const PROFILE_POLICIES = Object.freeze({
       sourceAssertions: [
         sourceAssertion("amount", "DEBIT_MINUS_CREDIT", CASH_ASSETS),
       ],
-      requireRoleComponents: [
-        ...CASH_ASSETS,
-        ...VOUCHER_CATEGORY_IN_ROLES,
-      ],
+      requireRoleComponents: [...CASH_ASSETS, ...VOUCHER_CATEGORY_IN_ROLES],
     },
   ),
   /** ردّ فعلي لصرف مصنّف سابق: Dr أصل الدفع / Cr نفس مصروف/سحب الصرف. */
@@ -1147,10 +1247,7 @@ export const PROFILE_POLICIES = Object.freeze({
       sourceAssertions: [
         sourceAssertion("amount", "DEBIT_MINUS_CREDIT", CASH_ASSETS),
       ],
-      requireRoleComponents: [
-        ...CASH_ASSETS,
-        ...VOUCHER_CATEGORY_OUT_ROLES,
-      ],
+      requireRoleComponents: [...CASH_ASSETS, ...VOUCHER_CATEGORY_OUT_ROLES],
     },
   ),
   PAYMENT_IN_TREASURY: profilePolicy(
@@ -1427,10 +1524,7 @@ export const PROFILE_POLICIES = Object.freeze({
       sourceAssertions: [
         sourceAssertion("amount", "CREDIT_MINUS_DEBIT", CASH_ASSETS),
       ],
-      requireRoleComponents: [
-        ...VOUCHER_CATEGORY_OUT_ROLES,
-        ...CASH_ASSETS,
-      ],
+      requireRoleComponents: [...VOUCHER_CATEGORY_OUT_ROLES, ...CASH_ASSETS],
     },
   ),
   /** ردّ فعلي لقبض مصنّف سابق: Dr نفس إيراد/التزام القبض / Cr أصل الدفع. */
@@ -1443,10 +1537,7 @@ export const PROFILE_POLICIES = Object.freeze({
       sourceAssertions: [
         sourceAssertion("amount", "CREDIT_MINUS_DEBIT", CASH_ASSETS),
       ],
-      requireRoleComponents: [
-        ...VOUCHER_CATEGORY_IN_ROLES,
-        ...CASH_ASSETS,
-      ],
+      requireRoleComponents: [...VOUCHER_CATEGORY_IN_ROLES, ...CASH_ASSETS],
     },
   ),
 
@@ -1522,7 +1613,10 @@ export const PROFILE_POLICIES = Object.freeze({
       // فحص المصدر لكل عكس تسليمٍ لأمر شغل: في ACTIVE يتراجع العكس (المخرج الوحيد للأمر المُسلَّم)،
       // وفي SHADOW يتراكم فجوةً. يحرسه الآن workOrderReversalPosting في postingProfiles.test.ts.
       sourceAssertions: [
-        sourceAssertion("revenue", "CREDIT_MINUS_DEBIT", ["SALES_FLEX", "DELIVERY_REVENUE"]),
+        sourceAssertion("revenue", "CREDIT_MINUS_DEBIT", [
+          "SALES_FLEX",
+          "DELIVERY_REVENUE",
+        ]),
         sourceAssertion("cost", "DEBIT_MINUS_CREDIT", ["COGS"]),
       ],
       requireRoleComponents: [
@@ -1708,6 +1802,17 @@ export const PROFILE_POLICIES = Object.freeze({
   ADJUST_INVENTORY_LOSS: profilePolicy("ADJUST", ["LOSSES"], ["INVENTORY"], {
     requireRoleComponents: ["LOSSES", "INVENTORY"],
   }),
+  ADJUST_DAMAGED_RETURN_RECLASS: profilePolicy("ADJUST", ["LOSSES"], ["COGS"], {
+    reversible: false,
+    sourceAssertions: [
+      sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["LOSSES", "COGS"]),
+      sourceAssertion("revenue", "DEBIT_MINUS_CREDIT", ["LOSSES", "COGS"]),
+      sourceAssertion("cost", "DEBIT_MINUS_CREDIT", ["LOSSES", "COGS"]),
+      sourceAssertion("profit", "DEBIT_MINUS_CREDIT", ["LOSSES", "COGS"]),
+      sourceAssertion("taxAmount", "DEBIT_MINUS_CREDIT", ["LOSSES", "COGS"]),
+    ],
+    requireRoleComponents: ["LOSSES", "COGS"],
+  }),
   // إعادة تقييم تكلفة المخزون (تصحيح WAVG بلا تغيّر كميّة) — حسابُ تسويةٍ مخصَّص (INVENTORY_REVALUATION)
   // لا يخلطها بإيرادات/خسائر التشغيل (قرار المالك ١٣/٩ عن تدقيق م١). تبقى ADJUST_INVENTORY_GAIN/LOSS
   // لتسويات الكمّية الفعليّة (جرد · عجز نقل · تسوية مخزون). المخزونُ يتحرّك مقابل حساب التسوية.
@@ -1759,35 +1864,25 @@ export const PROFILE_POLICIES = Object.freeze({
    * والثابت المحروس: `ADJUST_WIP_CONSUME` (دخولٌ) − `ADJUST_WIP_CANCEL` (رجوع) −
    * `ADJUST_WIP_WASTE` (هدر) = **صفر** لكل أمرٍ عند إغلاقه.
    */
-  ADJUST_WIP_WASTE: profilePolicy(
-    "ADJUST",
-    ["LOSSES"],
-    ["WORK_IN_PROGRESS"],
-    {
-      sourceAssertions: [
-        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["LOSSES"]),
-      ],
-      requireRoleComponents: ["LOSSES", "WORK_IN_PROGRESS"],
-    },
-  ),
+  ADJUST_WIP_WASTE: profilePolicy("ADJUST", ["LOSSES"], ["WORK_IN_PROGRESS"], {
+    sourceAssertions: [
+      sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["LOSSES"]),
+    ],
+    requireRoleComponents: ["LOSSES", "WORK_IN_PROGRESS"],
+  }),
   ADJUST_CASH: profilePolicy("ADJUST", CASH_ASSETS, ["ROUNDING_DIFF"], {
     sourceAssertions: [
       sourceAssertion("amount", "DEBIT_MINUS_CREDIT", CASH_ASSETS),
     ],
     requireRoleComponents: [...CASH_ASSETS, "ROUNDING_DIFF"],
   }),
-  CASH_DAILY_SHORTAGE: profilePolicy(
-    "ADJUST",
-    ["LOSSES"],
-    ["TREASURY_CASH"],
-    {
-      reversible: false,
-      sourceAssertions: [
-        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["LOSSES"]),
-      ],
-      requireRoleComponents: ["LOSSES", "TREASURY_CASH"],
-    },
-  ),
+  CASH_DAILY_SHORTAGE: profilePolicy("ADJUST", ["LOSSES"], ["TREASURY_CASH"], {
+    reversible: false,
+    sourceAssertions: [
+      sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["LOSSES"]),
+    ],
+    requireRoleComponents: ["LOSSES", "TREASURY_CASH"],
+  }),
   CASH_DAILY_SURPLUS: profilePolicy(
     "ADJUST",
     ["TREASURY_CASH"],
@@ -1868,11 +1963,7 @@ export const PROFILE_POLICIES = Object.freeze({
     {
       reversible: false,
       sourceAssertions: [
-        sourceAssertion(
-          "amount",
-          "DEBIT_MINUS_CREDIT",
-          PAYROLL_EXPENSE_ROLES,
-        ),
+        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", PAYROLL_EXPENSE_ROLES),
       ],
       requireRoleComponents: [
         ...PAYROLL_EXPENSE_ROLES,
@@ -1887,11 +1978,7 @@ export const PROFILE_POLICIES = Object.freeze({
     {
       reversible: false,
       sourceAssertions: [
-        sourceAssertion(
-          "amount",
-          "DEBIT_MINUS_CREDIT",
-          PAYROLL_EXPENSE_ROLES,
-        ),
+        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", PAYROLL_EXPENSE_ROLES),
       ],
       requireRoleComponents: [
         ...PAYROLL_EXPENSE_ROLES,
@@ -2016,10 +2103,7 @@ export const PROFILE_POLICIES = Object.freeze({
           ACCRUABLE_EXPENSE_ROLES,
         ),
       ],
-      requireRoleComponents: [
-        ...ACCRUABLE_EXPENSE_ROLES,
-        "ACCRUED_EXPENSES",
-      ],
+      requireRoleComponents: [...ACCRUABLE_EXPENSE_ROLES, "ACCRUED_EXPENSES"],
     },
   ),
   ADJUST_EXPENSE_ACCRUAL_REVERSAL: profilePolicy(
@@ -2035,10 +2119,7 @@ export const PROFILE_POLICIES = Object.freeze({
           ACCRUABLE_EXPENSE_ROLES,
         ),
       ],
-      requireRoleComponents: [
-        ...ACCRUABLE_EXPENSE_ROLES,
-        "ACCRUED_EXPENSES",
-      ],
+      requireRoleComponents: [...ACCRUABLE_EXPENSE_ROLES, "ACCRUED_EXPENSES"],
     },
   ),
   ADJUST_FIXED_ASSET_ACCRUAL: profilePolicy(
@@ -2168,16 +2249,8 @@ export const PROFILE_POLICIES = Object.freeze({
   ),
   OPENING_EXCHANGE_COMBINED: profilePolicy(
     "OPENING",
-    [
-      "EXCHANGE_RECEIVABLE_IQD",
-      "EXCHANGE_RECEIVABLE_USD",
-      "OPENING_EQUITY",
-    ],
-    [
-      "EXCHANGE_PAYABLE_IQD",
-      "EXCHANGE_PAYABLE_USD",
-      "OPENING_EQUITY",
-    ],
+    ["EXCHANGE_RECEIVABLE_IQD", "EXCHANGE_RECEIVABLE_USD", "OPENING_EQUITY"],
+    ["EXCHANGE_PAYABLE_IQD", "EXCHANGE_PAYABLE_USD", "OPENING_EQUITY"],
     {
       reversible: false,
       requireRoleComponents: [
@@ -2441,7 +2514,11 @@ export const PROFILE_POLICIES = Object.freeze({
       sourceAssertions: [
         // القيدُ متوازنٌ داخلياً — لا مصدرٌ يقود المبلغَ من قيدٍ آخر.
       ],
-      requireRoleComponents: ["COURIER_PAYABLE", ...CASH_ASSETS, "DELIVERY_REVENUE"],
+      requireRoleComponents: [
+        "COURIER_PAYABLE",
+        ...CASH_ASSETS,
+        "DELIVERY_REVENUE",
+      ],
     },
   ),
   DELIVERY_FEE_HELD_RECEIPT: profilePolicy(
@@ -2745,6 +2822,7 @@ export const ACTIVATION_REQUIRED_POSTING_PROFILES = Object.freeze([
 
 export const ACTIVATION_REQUIRED_ACCOUNT_ROLES = Object.freeze([
   "GRNI",
+  "DEFERRED_REVENUE",
   "OTHER_LIABILITY",
   "PAYROLL_TAX_PAYABLE",
   "SOCIAL_SECURITY_PAYABLE",
