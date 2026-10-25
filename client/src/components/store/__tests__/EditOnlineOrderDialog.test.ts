@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildInitialEditOnlineOrderFormState,
   computeEditOnlineOrderTotals,
   resolveEditableDeliveryZoneOptions,
+  shouldHydrateEditOnlineOrderForm,
   splitShippingAddressAndNotes,
 } from "../EditOnlineOrderDialog";
 
@@ -99,5 +101,78 @@ describe("EditOnlineOrderDialog helpers — dynamic zones, notes split, and thre
     expect(couponFreeTotals.couponShippingFree).toBe(true);
     expect(couponFreeTotals.finalDeliveryFee).toBe(0);
     expect(couponFreeTotals.grandTotal).toBe(9000);
+  });
+
+  it("resets form state & itemsModified when cancelling and reopening the same cached orderId without clobbering open background refetches", () => {
+    const cachedDetail = {
+      id: 101,
+      customerName: "نور الهدى",
+      customerPhone: "+9647701234567",
+      governorate: "baghdad-karkh",
+      addressText: "حي الجامعة\nملاحظة: اتصال مسبق",
+      items: [
+        {
+          id: 1,
+          productUnitId: 5,
+          productName: "دفتر جامعي",
+          variantLabel: "A4",
+          unitName: "قطعة",
+          unitPrice: "3500.00",
+          retailUnitPrice: "4500.00",
+          quantity: "2",
+          hasCustomization: false,
+          customizationSummary: null,
+        },
+      ],
+    };
+
+    // 1. First open hydrates order 101
+    const open1 = shouldHydrateEditOnlineOrderForm({
+      open: true,
+      orderId: 101,
+      detailOrderId: cachedDetail.id,
+      hydratedOrderKey: null,
+    });
+    expect(open1).toEqual({ shouldHydrate: true, nextHydratedOrderKey: "101" });
+
+    const initialForm = buildInitialEditOnlineOrderFormState(cachedDetail);
+    expect(initialForm.itemsModified).toBe(false);
+    expect(initialForm.governorate).toBe("baghdad-karkh");
+    expect(initialForm.shippingAddress).toBe("حي الجامعة");
+    expect(initialForm.notes).toBe("اتصال مسبق");
+    expect(initialForm.items[0]).toMatchObject({
+      productUnitId: 5,
+      unitPrice: 3500,
+      retailUnitPrice: 4500,
+      quantity: 2,
+      lineTotal: 7000,
+    });
+
+    // 2. Background refetch while still open must NOT clobber unsaved edits
+    const bgRefetchWhileOpen = shouldHydrateEditOnlineOrderForm({
+      open: true,
+      orderId: 101,
+      detailOrderId: cachedDetail.id,
+      hydratedOrderKey: open1.nextHydratedOrderKey,
+    });
+    expect(bgRefetchWhileOpen).toEqual({ shouldHydrate: false, nextHydratedOrderKey: "101" });
+
+    // 3. Closing dialog clears hydrated key
+    const afterCancel = shouldHydrateEditOnlineOrderForm({
+      open: false,
+      orderId: 101,
+      detailOrderId: cachedDetail.id,
+      hydratedOrderKey: open1.nextHydratedOrderKey,
+    });
+    expect(afterCancel).toEqual({ shouldHydrate: false, nextHydratedOrderKey: null });
+
+    // 4. Reopening the SAME cached orderId (without detailQ.data changing reference) MUST re-hydrate cleanly!
+    const reopenSameCached = shouldHydrateEditOnlineOrderForm({
+      open: true,
+      orderId: 101,
+      detailOrderId: cachedDetail.id,
+      hydratedOrderKey: afterCancel.nextHydratedOrderKey,
+    });
+    expect(reopenSameCached).toEqual({ shouldHydrate: true, nextHydratedOrderKey: "101" });
   });
 });

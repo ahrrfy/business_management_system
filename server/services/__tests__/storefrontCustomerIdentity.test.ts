@@ -234,12 +234,13 @@ describe("storefrontCustomerIdentityService — فصل سر JWT وسلامة م�
 
     // التأكد من تحرير القفل الاستشاري بعد اكتمال المعاملات
     const lockCheck = (await db().execute(
-      sql`SELECT IS_FREE_LOCK(${`online-customer:${phone}`}) AS freeLock`,
+      sql`SELECT IS_FREE_LOCK('online-customer:upsert') AS freeUpsert, IS_FREE_LOCK(${`online-customer:${phone}`}) AS freePhone`,
     )) as unknown;
     const freeRow = Array.isArray(lockCheck)
-      ? (lockCheck[0] as Array<{ freeLock?: number }> | undefined)?.[0]
-      : (lockCheck as { rows?: Array<{ freeLock?: number }> }).rows?.[0];
-    expect(Number(freeRow?.freeLock)).toBe(1);
+      ? (lockCheck[0] as Array<{ freeUpsert?: number; freePhone?: number }> | undefined)?.[0]
+      : (lockCheck as { rows?: Array<{ freeUpsert?: number; freePhone?: number }> }).rows?.[0];
+    expect(Number(freeRow?.freeUpsert)).toBe(1);
+    expect(Number(freeRow?.freePhone)).toBe(1);
 
     // عند تعطيل العميل تفشل المعاملة بـ FORBIDDEN ويظل القفل محرّراً ولا يعمل postCommit على rollback
     await db()
@@ -252,12 +253,13 @@ describe("storefrontCustomerIdentityService — فصل سر JWT وسلامة م�
     });
 
     const lockAfterReject = (await db().execute(
-      sql`SELECT IS_FREE_LOCK(${`online-customer:${phone}`}) AS freeLock`,
+      sql`SELECT IS_FREE_LOCK('online-customer:upsert') AS freeUpsert, IS_FREE_LOCK(${`online-customer:${phone}`}) AS freePhone`,
     )) as unknown;
     const freeAfterRejectRow = Array.isArray(lockAfterReject)
-      ? (lockAfterReject[0] as Array<{ freeLock?: number }> | undefined)?.[0]
-      : (lockAfterReject as { rows?: Array<{ freeLock?: number }> }).rows?.[0];
-    expect(Number(freeAfterRejectRow?.freeLock)).toBe(1);
+      ? (lockAfterReject[0] as Array<{ freeUpsert?: number; freePhone?: number }> | undefined)?.[0]
+      : (lockAfterReject as { rows?: Array<{ freeUpsert?: number; freePhone?: number }> }).rows?.[0];
+    expect(Number(freeAfterRejectRow?.freeUpsert)).toBe(1);
+    expect(Number(freeAfterRejectRow?.freePhone)).toBe(1);
 
     // تحقق إضافي أن withTx + enqueuePostCommit يعملان بتسلسل سليم دون كسر من COMMIT خام
     let postCommitObservedRow = false;
@@ -280,5 +282,42 @@ describe("storefrontCustomerIdentityService — فصل سر JWT وسلامة م�
       });
     });
     expect(postCommitObservedRow).toBe(true);
+  });
+
+  it("ينشئ عدة عملاء بأرقام هواتف مختلفة بالتوازي (تصاعدياً وتنازلياً) دون ER_LOCK_DEADLOCK", async () => {
+    const distinctPhones = [
+      "+9647709000006",
+      "+9647701000001",
+      "+9647708000005",
+      "+9647702000002",
+      "+9647707000004",
+      "+9647703000003",
+    ];
+
+    const created = await Promise.all(
+      distinctPhones.map((p, idx) =>
+        customerIdentity.resolveStorefrontCustomer(p, `عميل متوازي ${idx + 1}`, `uid-distinct-${idx + 1}`),
+      ),
+    );
+
+    expect(created).toHaveLength(distinctPhones.length);
+    const uniqueIds = new Set(created.map((c) => c.id));
+    expect(uniqueIds.size).toBe(distinctPhones.length);
+
+    // استدعاء متزامن ثانٍ للأرقام الموجودة سلفاً يسلك المسار السريع دون أقفال فجوات متصادمة
+    const resolvedAgain = await Promise.all(
+      distinctPhones.map((p, idx) =>
+        customerIdentity.resolveStorefrontCustomer(p, `عميل متوازي ${idx + 1}`, `uid-distinct-${idx + 1}`),
+      ),
+    );
+    expect(resolvedAgain.map((c) => c.id)).toEqual(created.map((c) => c.id));
+
+    const lockCheck = (await db().execute(
+      sql`SELECT IS_FREE_LOCK('online-customer:upsert') AS freeUpsert`,
+    )) as unknown;
+    const freeRow = Array.isArray(lockCheck)
+      ? (lockCheck[0] as Array<{ freeUpsert?: number }> | undefined)?.[0]
+      : (lockCheck as { rows?: Array<{ freeUpsert?: number }> }).rows?.[0];
+    expect(Number(freeRow?.freeUpsert)).toBe(1);
   });
 });

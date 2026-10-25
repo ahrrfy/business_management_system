@@ -28,7 +28,7 @@ import {
 import { dispatchOnlineOrder } from "../services/storeAdmin/dispatchOnlineOrder";
 import { listDeliveryParties } from "../services/deliveryService";
 import { isDupEntry } from "@shared/errorMap.ar";
-import { GOVERNORATE_IDS } from "@shared/governorates";
+// رموز مناطق التوصيل الديناميكية (deliveryZones.code) تُتحقّق في updateOnlineOrder لا بـ enum ثابت.
 import {
   createBanner,
   deleteBanner,
@@ -356,7 +356,7 @@ const ordersRouter = router({
         customerName: z.string().trim().min(1).max(255).nullish(),
         customerPhone: z.string().trim().min(5).max(30).nullish(),
         shippingAddress: z.string().trim().max(1000).nullish(),
-        governorate: z.enum(GOVERNORATE_IDS).nullish(),
+        governorate: z.string().trim().min(1).max(40).nullish(),
         latitude: z.string().nullish(),
         longitude: z.string().nullish(),
         notes: z.string().trim().max(500).nullish(),

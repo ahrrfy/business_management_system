@@ -297,8 +297,22 @@ function stripOrderNoteSegment(rawAddress: string | null | undefined): string {
   return raw;
 }
 
+function extractOrderNoteSegment(rawAddress: string | null | undefined): string {
+  const raw = rawAddress?.trim() ?? "";
+  if (!raw) return "";
+  const sepIdx = raw.indexOf(ORDER_NOTE_SEPARATOR);
+  if (sepIdx >= 0) {
+    return raw.slice(sepIdx + ORDER_NOTE_SEPARATOR.length).trim();
+  }
+  if (raw.startsWith(LEADING_ORDER_NOTE_PREFIX)) {
+    return raw.slice(LEADING_ORDER_NOTE_PREFIX.length).trim();
+  }
+  return "";
+}
+
 /**
- * يدمج العنوان وملاحظات التوصيل في `shippingAddress` دون تراكم مقاطع `\nملاحظة:` المكررة عند التعديل الإداري.
+ * يدمج العنوان وملاحظات التوصيل في `shippingAddress` دون تراكم مقاطع `\nملاحظة:` المكررة
+ * ودون حذف الملاحظة القائمة عند تعديل الشارع وحده (`inputNotes === undefined`).
  */
 export function composeOrderShippingAddress(
   existingAddress: string | null | undefined,
@@ -308,20 +322,28 @@ export function composeOrderShippingAddress(
   if (inputShippingAddress === undefined && inputNotes === undefined) {
     return existingAddress ?? null;
   }
-  const trimmedNotes = inputNotes?.trim() ?? "";
-  if (inputShippingAddress === undefined) {
-    const baseAddress = stripOrderNoteSegment(existingAddress);
-    if (trimmedNotes) {
-      return baseAddress ? `${baseAddress}\nملاحظة: ${trimmedNotes}` : `ملاحظة: ${trimmedNotes}`;
+
+  const baseAddress =
+    inputShippingAddress === undefined
+      ? stripOrderNoteSegment(existingAddress)
+      : stripOrderNoteSegment(inputShippingAddress);
+
+  let effectiveNotes = "";
+  if (inputNotes !== undefined) {
+    effectiveNotes = inputNotes?.trim() ?? "";
+  } else {
+    const embeddedInInput = extractOrderNoteSegment(inputShippingAddress);
+    if (embeddedInInput) {
+      effectiveNotes = embeddedInInput;
+    } else if (inputShippingAddress != null && inputShippingAddress.trim() !== "") {
+      effectiveNotes = extractOrderNoteSegment(existingAddress);
     }
-    return baseAddress || null;
   }
-  const rawInputAddress = inputShippingAddress?.trim() ?? "";
-  if (trimmedNotes) {
-    const baseAddress = stripOrderNoteSegment(rawInputAddress);
-    return baseAddress ? `${baseAddress}\nملاحظة: ${trimmedNotes}` : `ملاحظة: ${trimmedNotes}`;
+
+  if (effectiveNotes) {
+    return baseAddress ? `${baseAddress}\nملاحظة: ${effectiveNotes}` : `ملاحظة: ${effectiveNotes}`;
   }
-  return rawInputAddress || null;
+  return baseAddress || null;
 }
 
 async function loadEditableDeliveryZones(db: DB): Promise<EditableDeliveryZoneOption[]> {
@@ -387,7 +409,8 @@ async function loadEditableDeliveryZones(db: DB): Promise<EditableDeliveryZoneOp
       };
     }
     const rules = rulesByZoneId.get(Number(zone.id)) ?? [];
-    const quote = zone.isActive ? computeDeliveryFee(rules) : null;
+    // نحتفظ بقراءة قاعدة التسعير حتى لو أُوقفت المنطقة لاحقاً كي يعرض الطلب القائم عليها أجرتها الحقيقية
+    const quote = computeDeliveryFee(rules);
     const fee = quote ? Number(round2(money(quote.fee))) : gov.deliveryFee;
     return {
       id: gov.id,
@@ -403,7 +426,7 @@ async function loadEditableDeliveryZones(db: DB): Promise<EditableDeliveryZoneOp
     .map((z, idx) => {
       const code = z.code.trim();
       const rules = rulesByZoneId.get(Number(z.id)) ?? [];
-      const quote = z.isActive ? computeDeliveryFee(rules) : null;
+      const quote = computeDeliveryFee(rules);
       const fee = quote ? Number(round2(money(quote.fee))) : 0;
       return {
         id: code,
@@ -824,77 +847,86 @@ export async function updateOnlineOrder(
             }),
           });
         }
-        const custLock = `online-customer:${normalizedPhone}`;
-        const lockResult = (await tx.execute(
-          sql`SELECT GET_LOCK(${custLock}, 5) AS locked`,
-        )) as unknown;
-        const lockRow = Array.isArray(lockResult)
-          ? (lockResult[0] as Array<{ locked?: number }> | undefined)?.[0]
-          : (lockResult as { rows?: Array<{ locked?: number }> })?.rows?.[0];
-        if (Number(lockRow?.locked) !== 1) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: appErrorMessage({
-              what: "تعذّر تأمين سجل الزبون",
-              why: "تزامن تعديل آخر على نفس رقم الهاتف حالياً",
-              doThis: "أعد المحاولة بعد لحظات",
-            }),
-          });
-        }
-        try {
-          // قفل الفهرس المباشر على الهاتف المعياري يبقى محتجزاً لدى InnoDB حتى التزام withTx الخارجي،
-          // فلا يتسرّب سجل مكرر بعد تحرير GET_LOCK ودون أي COMMIT/ROLLBACK خام يفسد اتصال Drizzle.
-          await tx
-            .select({ id: customers.id })
-            .from(customers)
-            .where(eq(customers.phone, normalizedPhone))
-            .limit(1)
-            .for("update");
+        const phoneVariants = Array.from(
+          new Set(
+            [
+              normalizedPhone,
+              rawNewPhone,
+              ...(normalizedPhone.startsWith("+964")
+                ? [
+                    `0${normalizedPhone.slice(4)}`,
+                    `964${normalizedPhone.slice(4)}`,
+                    `00964${normalizedPhone.slice(4)}`,
+                    normalizedPhone.slice(4),
+                  ]
+                : []),
+            ].filter(Boolean),
+          ),
+        );
+        const normDigits = normalizedPhone.replace(/\D/g, "");
+        const digitVariants = Array.from(
+          new Set(
+            [
+              normDigits,
+              normDigits ? `00${normDigits}` : "",
+              ...(normalizedPhone.startsWith("+964")
+                ? [`0${normalizedPhone.slice(4)}`, normalizedPhone.slice(4)]
+                : []),
+            ].filter(Boolean),
+          ),
+        );
+        const digitPredicates =
+          digitVariants.length > 0
+            ? (() => {
+                const digitSqlList = sql.join(
+                  digitVariants.map((d) => sql`${d}`),
+                  sql`, `,
+                );
+                return [
+                  sql`REGEXP_REPLACE(COALESCE(${customers.phone}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+                  sql`REGEXP_REPLACE(COALESCE(${customers.phone2}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+                  sql`REGEXP_REPLACE(COALESCE(${customers.phone3}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+                  sql`REGEXP_REPLACE(COALESCE(${customers.whatsapp}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+                ];
+              })()
+            : [];
 
-          const phoneVariants = Array.from(
-            new Set(
-              [
-                normalizedPhone,
-                rawNewPhone,
-                ...(normalizedPhone.startsWith("+964")
-                  ? [
-                      `0${normalizedPhone.slice(4)}`,
-                      `964${normalizedPhone.slice(4)}`,
-                      `00964${normalizedPhone.slice(4)}`,
-                      normalizedPhone.slice(4),
-                    ]
-                  : []),
-              ].filter(Boolean),
+        // ١) قراءة المرشحين بدون FOR UPDATE لتجنّب قفل الجدول الكامل وأقفال الفجوات المتصادمة عبر REGEXP_REPLACE
+        const candidateCustomers = await tx
+          .select({
+            id: customers.id,
+            isActive: customers.isActive,
+            phone: customers.phone,
+            phone2: customers.phone2,
+            phone3: customers.phone3,
+            whatsapp: customers.whatsapp,
+          })
+          .from(customers)
+          .where(
+            or(
+              inArray(customers.phone, phoneVariants),
+              inArray(customers.phone2, phoneVariants),
+              inArray(customers.phone3, phoneVariants),
+              inArray(customers.whatsapp, phoneVariants),
+              ...digitPredicates,
             ),
-          );
-          const normDigits = normalizedPhone.replace(/\D/g, "");
-          const digitVariants = Array.from(
-            new Set(
-              [
-                normDigits,
-                normDigits ? `00${normDigits}` : "",
-                ...(normalizedPhone.startsWith("+964")
-                  ? [`0${normalizedPhone.slice(4)}`, normalizedPhone.slice(4)]
-                  : []),
-              ].filter(Boolean),
-            ),
-          );
-          const digitPredicates =
-            digitVariants.length > 0
-              ? (() => {
-                  const digitSqlList = sql.join(
-                    digitVariants.map((d) => sql`${d}`),
-                    sql`, `,
-                  );
-                  return [
-                    sql`REGEXP_REPLACE(COALESCE(${customers.phone}, ''), '[^0-9]', '') IN (${digitSqlList})`,
-                    sql`REGEXP_REPLACE(COALESCE(${customers.phone2}, ''), '[^0-9]', '') IN (${digitSqlList})`,
-                    sql`REGEXP_REPLACE(COALESCE(${customers.phone3}, ''), '[^0-9]', '') IN (${digitSqlList})`,
-                    sql`REGEXP_REPLACE(COALESCE(${customers.whatsapp}, ''), '[^0-9]', '') IN (${digitSqlList})`,
-                  ];
-                })()
-              : [];
-          const candidateCustomers = await tx
+          )
+          .orderBy(desc(customers.isActive), desc(customers.id));
+
+        const matchedCustomer = candidateCustomers.find((c) =>
+          [c.phone, c.phone2, c.phone3, c.whatsapp].some((p) => {
+            if (!p || !p.trim()) return false;
+            try {
+              return normalizeOrderPhone(p.trim()) === normalizedPhone;
+            } catch {
+              return false;
+            }
+          }),
+        );
+
+        let resolvedExistingCustomer = false;
+        if (matchedCustomer) {
+          const [lockedMatched] = await tx
             .select({
               id: customers.id,
               isActive: customers.isActive,
@@ -904,29 +936,26 @@ export async function updateOnlineOrder(
               whatsapp: customers.whatsapp,
             })
             .from(customers)
-            .where(
-              or(
-                inArray(customers.phone, phoneVariants),
-                inArray(customers.phone2, phoneVariants),
-                inArray(customers.phone3, phoneVariants),
-                inArray(customers.whatsapp, phoneVariants),
-                ...digitPredicates,
-              ),
-            )
-            .orderBy(desc(customers.isActive), desc(customers.id))
+            .where(eq(customers.id, matchedCustomer.id))
+            .limit(1)
             .for("update");
-          const matchedCustomer = candidateCustomers.find((c) =>
-            [c.phone, c.phone2, c.phone3, c.whatsapp].some((p) => {
+          const stillMatches =
+            lockedMatched &&
+            [
+              lockedMatched.phone,
+              lockedMatched.phone2,
+              lockedMatched.phone3,
+              lockedMatched.whatsapp,
+            ].some((p) => {
               if (!p || !p.trim()) return false;
               try {
                 return normalizeOrderPhone(p.trim()) === normalizedPhone;
               } catch {
                 return false;
               }
-            }),
-          );
-          if (matchedCustomer) {
-            if (matchedCustomer.isActive === false) {
+            });
+          if (stillMatches && lockedMatched) {
+            if (lockedMatched.isActive === false) {
               throw new TRPCError({
                 code: "FORBIDDEN",
                 message: appErrorMessage({
@@ -936,21 +965,68 @@ export async function updateOnlineOrder(
                 }),
               });
             }
-            targetCustomerId = Number(matchedCustomer.id);
-          } else {
-            const [inserted] = await tx.insert(customers).values({
-              name: trimmedNewName || existingCustomer?.name || "عميل متجر",
-              phone: normalizedPhone,
-              customerType: "فرد",
-              defaultPriceTier: "RETAIL",
-              creditLimit: "0",
-              currentBalance: "0",
-              isActive: true,
-            });
-            targetCustomerId = Number((inserted as { insertId?: number })?.insertId ?? currentCustomerId);
+            targetCustomerId = Number(lockedMatched.id);
+            resolvedExistingCustomer = true;
           }
-        } finally {
-          await tx.execute(sql`SELECT RELEASE_LOCK(${custLock})`).catch(() => {});
+        }
+
+        if (!resolvedExistingCustomer) {
+          // ٢) تسلسل مسار الإدراج عبر قفل استشاري موحّد يمنع تعارض أقفال الفجوات المتزامنة في InnoDB
+          const upsertLockName = "online-customer:upsert";
+          const lockResult = (await tx.execute(
+            sql`SELECT GET_LOCK(${upsertLockName}, 10) AS locked`,
+          )) as unknown;
+          const lockRow = Array.isArray(lockResult)
+            ? (lockResult[0] as Array<{ locked?: number }> | undefined)?.[0]
+            : (lockResult as { rows?: Array<{ locked?: number }> })?.rows?.[0];
+          if (Number(lockRow?.locked) !== 1) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: appErrorMessage({
+                what: "تعذّر تأمين سجل الزبون",
+                why: "تزامن تعديل آخر على سجلات الزبائن حالياً",
+                doThis: "أعد المحاولة بعد لحظات",
+              }),
+            });
+          }
+          try {
+            const [currentByPhone] = await tx
+              .select({
+                id: customers.id,
+                isActive: customers.isActive,
+              })
+              .from(customers)
+              .where(eq(customers.phone, normalizedPhone))
+              .orderBy(desc(customers.isActive), desc(customers.id))
+              .limit(1)
+              .for("update");
+            if (currentByPhone) {
+              if (currentByPhone.isActive === false) {
+                throw new TRPCError({
+                  code: "FORBIDDEN",
+                  message: appErrorMessage({
+                    what: "هذا الرقم مرتبط بعميل معطّل",
+                    why: "سجل العميل المرتبط برقم الهاتف الجديد غير نشط حالياً",
+                    doThis: "أعد تفعيل حساب العميل أولاً من شاشة العملاء أو تحقق من رقم الهاتف المدخل",
+                  }),
+                });
+              }
+              targetCustomerId = Number(currentByPhone.id);
+            } else {
+              const [inserted] = await tx.insert(customers).values({
+                name: trimmedNewName || existingCustomer?.name || "عميل متجر",
+                phone: normalizedPhone,
+                customerType: "فرد",
+                defaultPriceTier: "RETAIL",
+                creditLimit: "0",
+                currentBalance: "0",
+                isActive: true,
+              });
+              targetCustomerId = Number((inserted as { insertId?: number })?.insertId ?? currentCustomerId);
+            }
+          } finally {
+            await tx.execute(sql`SELECT RELEASE_LOCK(${upsertLockName})`).catch(() => {});
+          }
         }
       } else if (existingCustomer && trimmedNewName && trimmedNewName !== existingCustomer.name) {
         const isVerifiedStorefrontAccount = Boolean(
@@ -1082,6 +1158,88 @@ export async function updateOnlineOrder(
       }
     }
 
+    let retainedDeactivatedZoneFee: ReturnType<typeof money> | null = null;
+    if (
+      matchedDbZone &&
+      matchedDbZone.isActive === false &&
+      targetGovernorate === (order.governorate ?? "")
+    ) {
+      const zoneRules = await tx
+        .select({
+          id: deliveryPricingRules.id,
+          ruleType: deliveryPricingRules.ruleType,
+          baseFee: deliveryPricingRules.baseFee,
+          perKmFee: deliveryPricingRules.perKmFee,
+          perKgFee: deliveryPricingRules.perKgFee,
+          minFee: deliveryPricingRules.minFee,
+          maxFee: deliveryPricingRules.maxFee,
+          isActive: deliveryPricingRules.isActive,
+        })
+        .from(deliveryPricingRules)
+        .where(eq(deliveryPricingRules.zoneId, matchedDbZone.id))
+        .orderBy(asc(deliveryPricingRules.id));
+      const inactiveZoneQuote = computeDeliveryFee(
+        zoneRules.map((r) => ({
+          id: Number(r.id),
+          ruleType: r.ruleType,
+          baseFee: r.baseFee,
+          perKmFee: r.perKmFee ?? null,
+          perKgFee: r.perKgFee ?? null,
+          minFee: r.minFee ?? null,
+          maxFee: r.maxFee ?? null,
+          isActive: Boolean(r.isActive),
+        })),
+      );
+      if (inactiveZoneQuote) {
+        retainedDeactivatedZoneFee = round2(money(inactiveZoneQuote.fee));
+      } else if (!governorateById(targetGovernorate)) {
+        retainedDeactivatedZoneFee = order.deliveryFree
+          ? round2(money(order.deliveryWaivedAmount ?? "0"))
+          : round2(money(order.shippingCost ?? "0"));
+      }
+    }
+
+    const quoteOrderTotals = async (
+      lineItems: Array<{ lineTotal: string }>,
+      eligibilitySubtotalStr: string,
+    ) => {
+      const baseQuote = await totalOnlineOrderQuote(
+        tx,
+        lineItems,
+        targetGovernorate,
+        storeSettings?.freeShippingThreshold,
+        eligibilitySubtotalStr,
+        storeSettings?.freeShippingThresholdGovernorates,
+        couponShipping,
+      );
+      if (retainedDeactivatedZoneFee == null) {
+        return baseQuote;
+      }
+      const subtotal = round2(money(baseQuote.subtotal));
+      const freeThreshold = baseQuote.freeShippingThreshold
+        ? money(baseQuote.freeShippingThreshold)
+        : null;
+      const eligibilitySubtotal = round2(money(eligibilitySubtotalStr));
+      const thresholdFree = Boolean(freeThreshold && eligibilitySubtotal.gte(freeThreshold));
+      const couponFree = Boolean(
+        couponShipping?.freeShipping && !thresholdFree && retainedDeactivatedZoneFee.gt(0),
+      );
+      const deliveryFree = thresholdFree || couponFree;
+      const customerDeliveryFee = deliveryFree ? round2(money(0)) : retainedDeactivatedZoneFee;
+      const deliveryWaivedAmount = deliveryFree ? retainedDeactivatedZoneFee : round2(money(0));
+      const couponDeliveryWaivedAmount = couponFree ? retainedDeactivatedZoneFee : round2(money(0));
+      const total = round2(subtotal.plus(customerDeliveryFee));
+      return {
+        ...baseQuote,
+        deliveryFee: customerDeliveryFee.toFixed(2),
+        deliveryFree,
+        deliveryWaivedAmount: deliveryWaivedAmount.toFixed(2),
+        couponDeliveryWaivedAmount: couponDeliveryWaivedAmount.toFixed(2),
+        couponShippingApplied: couponFree,
+        total: total.toFixed(2),
+      };
+    };
+
     // 6. Handle items update if items array provided
     if (input.items !== undefined) {
       const customizedItem = (await tx
@@ -1165,7 +1323,8 @@ export async function updateOnlineOrder(
         : (storeSettings?.freeShippingThresholdGovernorates ?? storeSettings?.freeShippingThreshold);
       const configuredThreshold = applicableThresholdStr ? money(applicableThresholdStr) : null;
       const freeThreshold = configuredThreshold?.gt(0) ? configuredThreshold : null;
-      const actualDeliveryFee = await resolveDeliveryFee(tx, targetGovernorate);
+      const actualDeliveryFee =
+        retainedDeactivatedZoneFee ?? (await resolveDeliveryFee(tx, targetGovernorate));
 
       // Price lines using official online order engine (staff edits can include any active catalog unit)
       const pricing = await priceOnlineOrderLines(
@@ -1286,15 +1445,7 @@ export async function updateOnlineOrder(
         ),
       );
 
-      const quoteTotals = await totalOnlineOrderQuote(
-        tx,
-        pricing.items,
-        targetGovernorate,
-        storeSettings?.freeShippingThreshold,
-        retailSubtotal.toFixed(2),
-        storeSettings?.freeShippingThresholdGovernorates,
-        couponShipping,
-      );
+      const quoteTotals = await quoteOrderTotals(pricing.items, retailSubtotal.toFixed(2));
 
       // Deduct coupon discount if order had one
       const currentCouponDiscount = money(order.couponDiscount ?? "0");
@@ -1388,15 +1539,7 @@ export async function updateOnlineOrder(
         money(order.subtotal).plus(persistedMerchandiseDiscount),
       ).toFixed(2);
 
-      const quoteTotals = await totalOnlineOrderQuote(
-        tx,
-        existingItems,
-        targetGovernorate,
-        storeSettings?.freeShippingThreshold,
-        retailEligibilitySubtotal,
-        storeSettings?.freeShippingThresholdGovernorates,
-        couponShipping,
-      );
+      const quoteTotals = await quoteOrderTotals(existingItems, retailEligibilitySubtotal);
 
       // quoteTotals.total is subtotal (sum of existing item line totals, which already reflect any coupon discount) + deliveryFee.
       // Do NOT subtract couponDiscount again to prevent double coupon deduction.

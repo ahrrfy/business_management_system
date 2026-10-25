@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from "react";
+import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -151,6 +151,87 @@ interface EditableLineItem {
   maxOrderQty?: number;
 }
 
+export function shouldHydrateEditOnlineOrderForm(params: {
+  open: boolean;
+  orderId: number | null;
+  detailOrderId: number | null | undefined;
+  hydratedOrderKey: string | null;
+}): { shouldHydrate: boolean; nextHydratedOrderKey: string | null } {
+  if (!params.open) {
+    return { shouldHydrate: false, nextHydratedOrderKey: null };
+  }
+  if (
+    params.orderId == null ||
+    params.detailOrderId == null ||
+    params.detailOrderId !== params.orderId
+  ) {
+    return { shouldHydrate: false, nextHydratedOrderKey: params.hydratedOrderKey };
+  }
+  const key = String(params.detailOrderId);
+  if (params.hydratedOrderKey === key) {
+    return { shouldHydrate: false, nextHydratedOrderKey: key };
+  }
+  return { shouldHydrate: true, nextHydratedOrderKey: key };
+}
+
+export function buildInitialEditOnlineOrderFormState(detail: {
+  customerName?: string | null;
+  customerPhone?: string | null;
+  governorate?: string | null;
+  addressText?: string | null;
+  items?: Array<{
+    id?: number;
+    productUnitId?: number | null;
+    productName: string;
+    variantLabel: string;
+    unitName: string;
+    unitPrice: string | number;
+    retailUnitPrice?: string | number | null;
+    quantity: string | number;
+    hasCustomization: boolean;
+    customizationSummary?: string | null;
+  }>;
+}): {
+  customerName: string;
+  customerPhone: string;
+  governorate: string;
+  shippingAddress: string;
+  notes: string;
+  items: EditableLineItem[];
+  itemsModified: false;
+  qtyDrafts: Record<number, string>;
+} {
+  const splitAddress = splitShippingAddressAndNotes(detail.addressText);
+  const initialItems: EditableLineItem[] = (detail.items ?? []).map((it) => {
+    const uPrice = Number(it.unitPrice) || 0;
+    const rPrice = Number(it.retailUnitPrice ?? it.unitPrice) || uPrice;
+    const qty = Math.floor(Number(it.quantity)) || 1;
+    return {
+      id: it.id,
+      productUnitId: it.productUnitId ?? 0,
+      productName: it.productName,
+      variantLabel: it.variantLabel,
+      unitName: it.unitName,
+      unitPrice: uPrice,
+      retailUnitPrice: rPrice,
+      quantity: qty,
+      lineTotal: uPrice * qty,
+      hasCustomization: it.hasCustomization,
+      customizationSummary: it.customizationSummary ?? null,
+    };
+  });
+  return {
+    customerName: detail.customerName ?? "",
+    customerPhone: detail.customerPhone ?? "",
+    governorate: detail.governorate ?? "baghdad",
+    shippingAddress: splitAddress.shippingAddress,
+    notes: splitAddress.notes,
+    items: initialItems,
+    itemsModified: false,
+    qtyDrafts: {},
+  };
+}
+
 export function EditOnlineOrderDialog({
   orderId,
   open,
@@ -172,43 +253,32 @@ export function EditOnlineOrderDialog({
   const [items, setItems] = useState<EditableLineItem[]>([]);
   const [itemsModified, setItemsModified] = useState(false);
   const [qtyDrafts, setQtyDrafts] = useState<Record<number, string>>({});
+  const hydratedOrderKeyRef = useRef<string | null>(null);
 
   // Settings for free shipping threshold
   const settingsQ = trpc.storeAdmin.settings.get.useQuery(undefined, { enabled: open });
 
-  // Populate form state when order details load
+  // Populate/reset form state when dialog opens or switches orderId without clobbering open background refetches
   useEffect(() => {
-    if (detailQ.data) {
-      const d = detailQ.data;
-      const splitAddress = splitShippingAddressAndNotes(d.addressText);
-      setCustomerName(d.customerName ?? "");
-      setCustomerPhone(d.customerPhone ?? "");
-      setGovernorate(d.governorate ?? "baghdad");
-      setShippingAddress(splitAddress.shippingAddress);
-      setNotes(splitAddress.notes);
-      const initialItems: EditableLineItem[] = (d.items ?? []).map((it) => {
-        const uPrice = Number(it.unitPrice) || 0;
-        const rPrice = Number(it.retailUnitPrice ?? it.unitPrice) || uPrice;
-        const qty = Math.floor(Number(it.quantity)) || 1;
-        return {
-          id: it.id,
-          productUnitId: it.productUnitId ?? 0,
-          productName: it.productName,
-          variantLabel: it.variantLabel,
-          unitName: it.unitName,
-          unitPrice: uPrice,
-          retailUnitPrice: rPrice,
-          quantity: qty,
-          lineTotal: uPrice * qty,
-          hasCustomization: it.hasCustomization,
-          customizationSummary: it.customizationSummary ?? null,
-        };
-      });
-      setItems(initialItems);
-      setItemsModified(false);
-      setQtyDrafts({});
+    const decision = shouldHydrateEditOnlineOrderForm({
+      open,
+      orderId,
+      detailOrderId: detailQ.data?.id,
+      hydratedOrderKey: hydratedOrderKeyRef.current,
+    });
+    hydratedOrderKeyRef.current = decision.nextHydratedOrderKey;
+    if (decision.shouldHydrate && detailQ.data) {
+      const next = buildInitialEditOnlineOrderFormState(detailQ.data);
+      setCustomerName(next.customerName);
+      setCustomerPhone(next.customerPhone);
+      setGovernorate(next.governorate);
+      setShippingAddress(next.shippingAddress);
+      setNotes(next.notes);
+      setItems(next.items);
+      setItemsModified(next.itemsModified);
+      setQtyDrafts(next.qtyDrafts);
     }
-  }, [detailQ.data]);
+  }, [open, orderId, detailQ.data]);
 
   const updateMutation = trpc.storeAdmin.orders.update.useMutation({
     onSuccess: (res) => {
