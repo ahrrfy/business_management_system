@@ -1,15 +1,13 @@
-import { CommandPalette } from "@/components/CommandPalette";
 import { ConfirmHost } from "@/components/ConfirmHost";
 import { Toaster } from "@/components/ui/sonner";
 import { InteractionDraftSafety } from "@/components/InteractionDraftSafety";
 import { PwaUpdateManager } from "@/components/PwaUpdateManager";
+import { lazyWithRetry as lazy } from "@/lib/lazyWithRetry";
 import {
   initConnectivity,
   isDisconnected,
   useConnectivity,
 } from "@/lib/offline/connectivity";
-import { initRealtime } from "@/lib/realtime";
-import { installFinancialQueryRefresh } from "@/lib/realtime/financialQueries";
 import { shouldMountGlobalStudioTools } from "@/lib/productStudio/coldOfflinePolicy";
 import { screenAttributionHeaders } from "@/lib/screenAttribution";
 import { trpc } from "@/lib/trpc";
@@ -18,9 +16,13 @@ import { UNAUTHED_ERR_MSG } from "@shared/const";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TRPCClientError } from "@trpc/client";
 import { ThemeProvider } from "next-themes";
+import { Suspense, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { useLocation } from "wouter";
-import App from "./App";
+import {
+  BootstrapApp,
+  shouldBootStandalonePublicShell,
+} from "./BootstrapApp";
 import { applyStoredDisplayScale } from "@/lib/displayScale";
 import { installGlobalInteractionAudio } from "@/lib/audioFeedback";
 // خط Cairo مستضاف محلياً ومباشراً عبر public/fonts في index.css (بلا اعتماد على Google Fonts CDN أو مسارات خارجية) ⇒ يعمل النظام كاملاً بلا إنترنت.
@@ -29,6 +31,12 @@ import "animate.css/animate.min.css";
 import "./lib/theme/tokens.css";
 import "./lib/theme/comfort.css";
 import "./sentry"; // مراقبة أخطاء العميل (لا أثر دون VITE_SENTRY_DSN_CLIENT)
+
+const LazyCommandPalette = lazy(() =>
+  import("@/components/CommandPalette").then((m) => ({
+    default: m.CommandPalette,
+  })),
+);
 
 /**
  * حارس عام لحقول التاريخ والوقت في شاشات النظام:
@@ -77,17 +85,24 @@ installGlobalInteractionAudio();
 // يضبط حقول التواريخ والأوقات فوراً وديناميكياً لتظهر بنسق لاتيني غربي 1234 وبلا انعكاس حروفي
 installDateTimeInputLocaleGuard();
 
-/** أدوات عامة قد تفتح بحثاً/مسحاً شبكياً؛ لا تُركب على Studio البارد. */
+/** أدوات عامة قد تفتح بحثاً/مسحاً شبكياً؛ لا تُركب على المسارات العامة للزبائن ولا على Studio البارد. */
 function GlobalOverlays() {
   const [loc] = useLocation();
   const connectivity = useConnectivity();
   const offline =
     isDisconnected(connectivity) ||
     (typeof navigator !== "undefined" && !navigator.onLine);
+  const hostname =
+    typeof window !== "undefined" ? window.location.hostname : "";
+  const mountCommandPalette =
+    !shouldBootStandalonePublicShell(loc, hostname) &&
+    shouldMountGlobalStudioTools({ location: loc, offline });
   return (
     <>
-      {shouldMountGlobalStudioTools({ location: loc, offline }) && (
-        <CommandPalette />
+      {mountCommandPalette && (
+        <Suspense fallback={null}>
+          <LazyCommandPalette />
+        </Suspense>
       )}
       <ConfirmHost />
       <Toaster richColors position="top-center" dir="rtl" />
@@ -159,9 +174,45 @@ queryClient.getMutationCache().subscribe((event) => {
 // (refetchOnReconnect معطَّل أعلاه عمداً — الإنعاش هنا مضبوط بانتقال الحالة الفعلي لا بحدث
 // المتصفح غير الموثوق). في الشريحة ٣ سيسبق تفريغُ طابور المبيعات هذا الإبطال.
 initConnectivity({ onBackOnline: () => void queryClient.invalidateQueries() });
-const stopFinancialRefresh = installFinancialQueryRefresh(queryClient);
-if (import.meta.hot) import.meta.hot.dispose(stopFinancialRefresh);
-initRealtime();
+
+let erpRealtimeBootPromise: Promise<void> | null = null;
+let stopFinancialRefresh: (() => void) | null = null;
+
+function ensureErpRealtimeBooted() {
+  if (erpRealtimeBootPromise) return;
+  erpRealtimeBootPromise = Promise.all([
+    import("@/lib/realtime"),
+    import("@/lib/realtime/financialQueries"),
+  ])
+    .then(([rt, fin]) => {
+      stopFinancialRefresh = fin.installFinancialQueryRefresh(queryClient);
+      rt.initRealtime();
+    })
+    .catch((err) => {
+      erpRealtimeBootPromise = null;
+      if (import.meta.env.DEV) console.error("[ErpRealtimeBoot]", err);
+    });
+}
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    stopFinancialRefresh?.();
+    stopFinancialRefresh = null;
+    erpRealtimeBootPromise = null;
+  });
+}
+
+/** يشغّل قناة اللحظية وإنعاش الاستعلامات المالية للشاشات الداخلية فقط (لا على /store والمسارات العامة). */
+function ErpRealtimeBoot() {
+  const [loc] = useLocation();
+  useEffect(() => {
+    const hostname =
+      typeof window !== "undefined" ? window.location.hostname : "";
+    if (shouldBootStandalonePublicShell(loc, hostname)) return;
+    ensureErpRealtimeBooted();
+  }, [loc]);
+  return null;
+}
 
 const trpcClient = createErpTrpcClient(() => screenAttributionHeaders());
 
@@ -169,7 +220,8 @@ createRoot(document.getElementById("root")!).render(
   <trpc.Provider client={trpcClient} queryClient={queryClient}>
     <QueryClientProvider client={queryClient}>
       <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
-        <App />
+        <ErpRealtimeBoot />
+        <BootstrapApp />
         <InteractionDraftSafety />
         <PwaUpdateManager />
         <GlobalOverlays />
