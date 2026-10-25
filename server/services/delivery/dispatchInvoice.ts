@@ -635,7 +635,8 @@ export async function dispatchInvoiceInTx(
     // أبداً ⇒ أجرةٌ قبضناها من الزبون أمانةً **لا تصل المندوب إطلاقاً** وتبقى في الدرج بلا
     // مالك. مطابقةٌ الآن لمسار أمر الشغل (dispatch.ts): COUNTER تُصرف فوراً دائماً (قبضناها
     // بالفعل)، وSHOP تُصرف حين لا توريدَ يُخصم منه.
-    const dispatchedAt = new Date();
+    // Match TIMESTAMP(0) before both writes; MySQL may round fractional seconds.
+    const dispatchedAt = new Date(Math.floor(Date.now() / 1_000) * 1_000);
     let consignmentId: number;
     let consignmentNumber: string;
     if (already) {
