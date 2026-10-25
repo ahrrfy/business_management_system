@@ -2,16 +2,7 @@ import path from "node:path";
 import { defineConfig } from "vitest/config";
 
 /** اختبارات منطقية خالصة لا تحتاج قاعدة MySQL؛ تبقى منفصلة عن حزمة التكامل التي تنظف قاعدة الاختبار. */
-export default defineConfig({
-  resolve: {
-    alias: {
-      "@shared": path.resolve(import.meta.dirname, "shared"),
-      "@": path.resolve(import.meta.dirname, "client", "src"),
-    },
-  },
-  test: {
-    environment: "node",
-    include: [
+export const UNIT_TEST_FILES: string[] = [
       "client/src/pages/__tests__/densityWaves.test.tsx",
       "client/src/pages/store/__tests__/StorePushCampaignManager.test.tsx",
       "shared/__tests__/storePushCampaignTerms.test.ts",
@@ -629,6 +620,21 @@ export default defineConfig({
       "client/src/pages/__tests__/reactEffectLoopGuard.test.ts",
       "client/src/pages/__tests__/salesInvoiceDigitalIntegrity.test.ts",
       "scripts/__tests__/safeDeliveryProtocols.test.ts",
-    ],
+];
+
+export default defineConfig({
+  resolve: {
+    alias: {
+      "@shared": path.resolve(import.meta.dirname, "shared"),
+      "@": path.resolve(import.meta.dirname, "client", "src"),
+    },
+  },
+  test: {
+    environment: "node",
+    testTimeout: 15000,
+    env: {
+      VITEST_UNIT_SUITE: "1",
+    },
+    include: UNIT_TEST_FILES,
   },
 });

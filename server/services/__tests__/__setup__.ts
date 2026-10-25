@@ -6,10 +6,11 @@
  * (الجداول الأحدث — stocktake/production/HR/الأصول/السندات — كانت تَنقص ⇒ ٢٢ فشل عزل في CI، تدقيق
  * ١٤/٦). الاستثناء: __drizzle_migrations.
  *
- * **اتصال مُكرَّس طازج (لا تجمّع Drizzle) — إصلاح فلاكي ٢٠/٦:** بعض الاختبارات تُغلق تجمّع Drizzle
- * (closeDb عبر truncateTables) أو تُبدّل حالته؛ الاعتماد على getPool() جَعل afterEach يَفشل/يُتخطّى
- * بصمت أحياناً ⇒ branches لا تُحذَف ⇒ DUPLICATE KEY في الملف التالي (تراكم متقطّع). اتصال mysql
- * مُنشأ طازجاً كلَّ afterEach مُستقلٌّ تماماً عن حالة التجمّع ⇒ تنظيف موثوق دائماً.
+ * **اتصال تنظيف خاصّ مُكرَّس لكل ملف اختبار (مُستقلّ عن تجمّع Drizzle):** بعض الاختبارات تُغلق تجمّع
+ * Drizzle (closeDb عبر truncateTables) أو تُبدّل حالته؛ الاعتماد على getPool() جَعل afterEach يَفشل/
+ * يُتخطّى بصمت أحياناً ⇒ branches لا تُحذَف ⇒ DUPLICATE KEY في الملف التالي (تراكم متقطّع). اتصال
+ * mysql خاصّ بـ __setup__ يُعاد استعماله عبر اختبارات الملف الواحد (تلافياً لمصافحة TCP+RSA المكلفة
+ * في كلّ it) ويُغلَق في afterAll أو فور أي خطأ ليضمن عزلاً تامّاً وصفر اتصالات متسرّبة.
  *
  * **DELETE لا TRUNCATE:** DML تَحترم FK_CHECKS=0 (TRUNCATE وهو DDL لا يَحترمها على الجداول الأمّ).
  * **conn.query (نصّي) لا conn.execute (مُهيَّأ):** العبارة المُهيَّأة المُخبَّأة تَبيت عبر تغيّر
@@ -17,7 +18,7 @@
  * **فشل صريح لا مُبتلَع:** أي إخفاق DELETE يَرمي باسم الجدول بدل الابتلاع الصامت الذي يُخفي التراكم.
  */
 import mysql from "mysql2/promise";
-import { afterEach } from "vitest";
+import { afterAll, afterEach } from "vitest";
 import { closeDb } from "../../db";
 
 // يُشغَّل كـsetupFile قبل شيفرة كل ملف اختبار (وقبل التقاط ORIGINAL_KEY فيه): يضمن وجود مفتاح
@@ -82,6 +83,37 @@ const TEST_DB_URL = assertSafeCleanupTarget(process.env.DATABASE_URL);
 
 let cachedTables: string[] | null = null;
 let cachedDeleteTriggeredTables: Set<string> | null = null;
+let cleanupConn: mysql.Connection | null = null;
+
+function setSocketRef(conn: mysql.Connection, referenced: boolean) {
+  const stream = (
+    conn as unknown as {
+      connection?: { stream?: { ref?: () => void; unref?: () => void } };
+    }
+  ).connection?.stream;
+  if (referenced) stream?.ref?.();
+  else stream?.unref?.();
+}
+
+export async function closeCleanupConn() {
+  const conn = cleanupConn;
+  cleanupConn = null;
+  if (!conn) return;
+  setSocketRef(conn, true);
+  await conn.end().catch(() => {});
+}
+
+async function acquireCleanupConn(
+  url: string,
+  createConnection: typeof mysql.createConnection = mysql.createConnection,
+): Promise<mysql.Connection> {
+  if (cleanupConn) {
+    setSocketRef(cleanupConn, true);
+    return cleanupConn;
+  }
+  cleanupConn = await createConnection(url);
+  return cleanupConn;
+}
 
 async function discoverTables(conn: mysql.Connection): Promise<string[]> {
   if (cachedTables) return cachedTables;
@@ -121,44 +153,93 @@ export async function populatedTestTables(conn: mysql.Connection, tables: string
   return rows.map(row => row.name as string);
 }
 
-export async function clearTestTable(conn: mysql.Connection, table: string, deleteProtected: boolean) {
+export async function clearTestTable(
+  conn: mysql.Connection,
+  table: string,
+  deleteProtected: boolean,
+  alreadyProvedPopulated = false,
+) {
   if (deleteProtected) {
-    const [existing] = await conn.query<mysql.RowDataPacket[]>(`SELECT 1 FROM \`${table}\` LIMIT 1`);
-    if (existing.length === 0) return;
+    if (!alreadyProvedPopulated) {
+      const [existing] = await conn.query<mysql.RowDataPacket[]>(`SELECT 1 FROM \`${table}\` LIMIT 1`);
+      if (existing.length === 0) return;
+    }
     await conn.query(`TRUNCATE TABLE \`${table}\``);
   } else {
     await conn.query(`DELETE FROM \`${table}\``);
   }
 }
 
-afterEach(async () => {
-  if (!TEST_DB_URL) return;
-  // اتصال مُكرَّس طازج بالرابط الملتقَط — مُستقلّ عن تجمّع Drizzle (تُغلقه الاختبارات) وعن أيّ
-  // تبديل لـprocess.env.DATABASE_URL داخل اختبار.
-  const conn = await mysql.createConnection(TEST_DB_URL);
-  try {
-    const tables = await discoverTables(conn);
-    const deleteTriggeredTables = await discoverDeleteTriggeredTables(conn);
-    await conn.query("SET FOREIGN_KEY_CHECKS = 0");
-    // One exact existence snapshot avoids hundreds of empty DELETE round trips per pure unit test.
-    for (const t of await populatedTestTables(conn, tables)) {
-      // جداول الأثر غير القابل للمحو تحرس DELETE بتريغر مقصود في الإنتاج. تنظيف الاختبار وحده
-      // يستعمل TRUNCATE عليها (مع تعطيل FK) كي لا نضع منفذ bypass داخل التريغر الإنتاجي.
-      // بقية الجداول تبقى على DELETE للأسباب الموثقة أعلى الملف.
-      try {
-        await clearTestTable(conn, t, deleteTriggeredTables.has(t));
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        const operation = deleteTriggeredTables.has(t) ? "TRUNCATE TABLE" : "DELETE FROM";
-        throw new Error(`__setup__ cleanup: ${operation} ${t} failed: ${msg}`);
-      }
+export async function readSnapshotWithReconnect(
+  url: string,
+  createConnection: typeof mysql.createConnection = mysql.createConnection,
+): Promise<{
+  conn: mysql.Connection;
+  populated: string[];
+  deleteTriggeredTables: Set<string>;
+}> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const hadCachedConn = cleanupConn !== null;
+    const conn = await acquireCleanupConn(url, createConnection);
+    try {
+      const tables = await discoverTables(conn);
+      const deleteTriggeredTables = await discoverDeleteTriggeredTables(conn);
+      const populated = await populatedTestTables(conn, tables);
+      return { conn, populated, deleteTriggeredTables };
+    } catch (err) {
+      await closeCleanupConn();
+      if (!hadCachedConn || attempt === 1) throw err;
     }
-    await conn.query("SET FOREIGN_KEY_CHECKS = 1");
-  } finally {
-    await conn.end();
   }
-  // أعد ضبط تجمّع Drizzle: الحذف مع FK_CHECKS=0 يَزيد نسخة metadata للجداول ⇒ العبارات المُهيَّأة
-  // المُخبَّأة على اتصالات التجمّع تَبيت ⇒ ER_TABLE_DEF_CHANGED متقطّع في reset/seed الملف التالي.
-  // الإغلاق يُجبر getDb() التالي على تجمّع جديد بعبارات نظيفة (نفس نمط truncateTables) ⇒ عزل موثوق.
-  await closeDb();
-});
+  throw new Error("__setup__: unreachable cleanup snapshot retry");
+}
+
+if (process.env.VITEST_UNIT_SUITE !== "1") {
+  afterEach(async () => {
+    if (!TEST_DB_URL) return;
+    const { conn, populated, deleteTriggeredTables } =
+      await readSnapshotWithReconnect(TEST_DB_URL);
+
+    if (populated.length === 0) {
+      setSocketRef(conn, false);
+      if (process.env.CONTROL_DATABASE_URL) {
+        await closeDb();
+      }
+      return;
+    }
+
+    try {
+      await conn.query("SET FOREIGN_KEY_CHECKS = 0");
+      // One exact existence snapshot avoids hundreds of empty DELETE round trips per pure unit test.
+      for (const t of populated) {
+        // جداول الأثر غير القابل للمحو تحرس DELETE بتريغر مقصود في الإنتاج. تنظيف الاختبار وحده
+        // يستعمل TRUNCATE عليها (مع تعطيل FK) كي لا نضع منفذ bypass داخل التريغر الإنتاجي.
+        // بقية الجداول تبقى على DELETE للأسباب الموثقة أعلى الملف.
+        try {
+          await clearTestTable(conn, t, deleteTriggeredTables.has(t), true);
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : String(e);
+          const operation = deleteTriggeredTables.has(t) ? "TRUNCATE TABLE" : "DELETE FROM";
+          throw new Error(`__setup__ cleanup: ${operation} ${t} failed: ${msg}`);
+        }
+      }
+      await conn.query("SET FOREIGN_KEY_CHECKS = 1");
+      setSocketRef(conn, false);
+    } catch (err) {
+      await closeCleanupConn();
+      await closeDb();
+      throw err;
+    }
+    // أعد ضبط تجمّع Drizzle: الحذف مع FK_CHECKS=0 يَزيد نسخة metadata للجداول ⇒ العبارات المُهيَّأة
+    // المُخبَّأة على اتصالات التجمّع تَبيت ⇒ ER_TABLE_DEF_CHANGED متقطّع في reset/seed الملف التالي.
+    // الإغلاق يُجبر getDb() التالي على تجمّع جديد بعبارات نظيفة (نفس نمط truncateTables) ⇒ عزل موثوق.
+    await closeDb();
+  });
+
+  afterAll(async () => {
+    await closeCleanupConn();
+    if (TEST_DB_URL) {
+      await closeDb();
+    }
+  });
+}
