@@ -12,6 +12,7 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "client/src/pages/__tests__/densityWaves.test.tsx",
       "client/src/pages/store/__tests__/StorePushCampaignManager.test.tsx",
       "shared/__tests__/storePushCampaignTerms.test.ts",
       "client/src/components/form/__tests__/ImageUploader.test.tsx",
