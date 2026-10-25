@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { RealtimeManager } from "../realtimeManager";
+import { RealtimeManager, shouldConnectRealtime } from "../realtimeManager";
 import {
   createRealtimeEvent,
   REALTIME_EVENT_TYPES,
@@ -313,6 +313,64 @@ describe("RealtimeManager & TabCoordinator — تنسيق التبويبات ا�
       resume();
       await new Promise((resolve) => setTimeout(resolve, 80));
       expect(tab1.getStatus()).toBe("connected");
+    } finally {
+      (globalThis as any).window = originalWindow;
+      (globalThis as any).EventSource = originalEventSource;
+    }
+  });
+
+  it("يرفض اتصال SSE على جميع المسارات العامة وعلى جذر الدومين العام ويسمح به داخلياً", async () => {
+    expect(shouldConnectRealtime("/login", "srv1548487.hstgr.cloud")).toBe(false);
+    expect(shouldConnectRealtime("/login", "localhost")).toBe(false);
+
+    for (const publicPath of [
+      "/store",
+      "/store/item-1",
+      "/store/mobile-turnstile",
+      "/apply",
+      "/legal",
+      "/legal/privacy",
+      "/shelf-lookup",
+      "/price-check",
+      "/s/w",
+      "/s/w/tok_abc123",
+    ]) {
+      expect(shouldConnectRealtime(publicPath, "alarabiya.online")).toBe(false);
+      expect(shouldConnectRealtime(publicPath, "srv1548487.hstgr.cloud")).toBe(false);
+      expect(shouldConnectRealtime(publicPath, "localhost")).toBe(false);
+    }
+
+    expect(shouldConnectRealtime("/", "alarabiya.online")).toBe(false);
+    expect(shouldConnectRealtime("/", "www.alarabiya.online")).toBe(false);
+
+    expect(shouldConnectRealtime("/", "srv1548487.hstgr.cloud")).toBe(true);
+    expect(shouldConnectRealtime("/", "localhost")).toBe(true);
+    expect(shouldConnectRealtime("/pos", "srv1548487.hstgr.cloud")).toBe(true);
+    expect(shouldConnectRealtime("/orders", "localhost")).toBe(true);
+
+    // التحقق من RealtimeManager.start() فعلياً على جذر الدومين العام ومسار /store
+    const originalWindow = (globalThis as any).window;
+    const originalEventSource = (globalThis as any).EventSource;
+    const esSpy = vi.fn();
+    (globalThis as any).EventSource = esSpy;
+    try {
+      (globalThis as any).window = {
+        location: { pathname: "/", hostname: "alarabiya.online" },
+      };
+      tab1 = new RealtimeManager("tab_public_root");
+      tab1.start();
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(esSpy).not.toHaveBeenCalled();
+      expect(tab1.getStatus()).toBe("disconnected");
+
+      (globalThis as any).window = {
+        location: { pathname: "/s/w/tok_abc123", hostname: "localhost" },
+      };
+      tab2 = new RealtimeManager("tab_public_wishlist");
+      tab2.start();
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(esSpy).not.toHaveBeenCalled();
+      expect(tab2.getStatus()).toBe("disconnected");
     } finally {
       (globalThis as any).window = originalWindow;
       (globalThis as any).EventSource = originalEventSource;

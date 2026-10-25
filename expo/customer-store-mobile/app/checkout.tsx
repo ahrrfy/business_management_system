@@ -1,6 +1,7 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
-import { router } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { router, useFocusEffect } from "expo-router";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -18,6 +19,13 @@ import {
 import { NativeTurnstile } from "@/components/native-turnstile";
 import { IraqiPhoneInput } from "@/components/iraqi-phone-input";
 import { ScreenContainer } from "@/components/screen-container";
+import {
+  clearActiveCouponCode,
+  loadActiveCouponCode,
+  normalizeActiveCouponCode,
+  reconcileStoredCouponWithCheckout,
+  saveActiveCouponCode,
+} from "@/lib/active-coupon";
 import {
   clearPendingCheckoutAttempt,
   requestIdForFingerprint,
@@ -106,6 +114,29 @@ export default function CheckoutScreen() {
     });
     return () => { active = false; };
   }, []);
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      void loadActiveCouponCode(AsyncStorage).then((savedCoupon) => {
+        if (!active || !savedCoupon) return;
+        const next = reconcileStoredCouponWithCheckout({
+          savedCoupon,
+          couponDraft,
+          appliedCouponCode,
+        });
+        if (!next.shouldApply) return;
+        setCouponDraft(next.couponDraft);
+        setAppliedCouponCode(next.appliedCouponCode);
+        setQuote(null);
+        setCouponFeedback(
+          "تم استرداد الكوبون المفعّل من مزايا الولاء؛ سيُتحقق منه عند مراجعة السعر النهائي.",
+        );
+      });
+      return () => {
+        active = false;
+      };
+    }, [appliedCouponCode, couponDraft]),
+  );
   const governorateName =
     governorates.find((item) => item.id === governorate)?.name ?? "بغداد";
   const requestLines = useMemo(() => checkoutRequestLines(lines), [lines]);
@@ -163,13 +194,14 @@ export default function CheckoutScreen() {
       if (appliedCouponCode) {
         setAppliedCouponCode(null);
         setCouponFeedback(message);
+        void clearActiveCouponCode(AsyncStorage);
       }
     } finally {
       setSubmitting(false);
     }
   };
   const applyCoupon = () => {
-    const normalized = couponDraft.trim().toUpperCase().replace(/\s+/g, "");
+    const normalized = normalizeActiveCouponCode(couponDraft);
     if (!normalized) {
       setCouponFeedback("اكتب رمز الكوبون أولاً.");
       return;
@@ -178,12 +210,14 @@ export default function CheckoutScreen() {
     setCouponDraft(normalized);
     setQuote(null);
     setCouponFeedback("سيُتحقق من الكوبون عند مراجعة السعر النهائي.");
+    void saveActiveCouponCode(AsyncStorage, normalized);
   };
   const removeCoupon = () => {
     setCouponDraft("");
     setAppliedCouponCode(null);
     setCouponFeedback(null);
     setQuote(null);
+    void clearActiveCouponCode(AsyncStorage);
   };
   const submitVerifiedOrder = async (turnstileToken: string) => {
     if (!activeQuote || submitting || !validate()) return;
@@ -239,6 +273,7 @@ export default function CheckoutScreen() {
           guestTrackingExpiresAt: result.guestTrackingExpiresAt,
         }),
         clearPendingCheckoutAttempt(),
+        clearActiveCouponCode(AsyncStorage),
       ]);
       void enableTransactionalPush(customerSessionToken ?? undefined);
       clearCart();

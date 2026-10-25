@@ -10,7 +10,7 @@ import { storefrontVariantMedia } from "@/components/storefront/StorefrontMedia"
 import { StorefrontProductDialog } from "@/components/storefront/StorefrontProductDialog";
 import { type StorefrontProductForCartAction,recommendationNeedsSelection,storefrontProductCanBeOrdered } from "@/components/storefront/StorefrontRecommendations";
 import { StorefrontTrackingPanel } from "@/components/storefront/StorefrontTrackingPanel";
-import { type CartLine,type StorefrontCartSelection,addStorefrontCartLine,addStorefrontCartLines,money,reconcileStorefrontCartPricing,reconcileStorefrontCartQuote,recordStorefrontCartChange,setStorefrontCartQuantity } from "@/components/storefront/storefrontCartMath";
+import { type CartLine,type StorefrontCartSelection,addStorefrontCartLine,addStorefrontCartLines,applyStorefrontProductQuantityDelta,money,reconcileStorefrontCartPricing,reconcileStorefrontCartQuote,recordStorefrontCartChange,setStorefrontCartQuantity,summarizeStorefrontProductCartQuantities } from "@/components/storefront/storefrontCartMath";
 import { type AvailabilityFilter,type CatalogSort,type Panel,type PriceFilter,type ShareFeedbackTone,collectStorefrontFailures,hasStorefrontAnalyticsConsent,shouldAutoLoadStorefrontNextPage } from "@/components/storefront/storefrontCatalogModel";
 import { type StorefrontCustomization,type StorefrontCustomizationField,customizationCartKey,getStorefrontCustomizationConfig } from "@/components/storefront/storefrontCustomizationModel";
 import { type CheckoutFieldErrors,type CheckoutForm,DEFAULT_FORM,STOREFRONT_PERSIST_REQUEST_EVENT,type StorefrontCheckoutAttempt,loadCart,loadCheckoutAttempt,loadForm,loadStorefrontWishlist,saveCart,saveCheckoutAttempt,saveStorefrontSnapshot,storefrontCheckoutFingerprint,validateStorefrontCheckout } from "@/components/storefront/storefrontPersistence";
@@ -19,7 +19,7 @@ import { storefrontCatalogProductScope } from "@/components/storefront/storefron
 import { storefrontShippingThreshold } from "@/lib/storefrontShipping";
 export { BundleMedia,clampStorefrontZoomPoint,storefrontMediaUrls,storefrontVariantMedia } from "@/components/storefront/StorefrontMedia";
 export { recommendationActionLabel,recommendationNeedsSelection,storefrontProductCanBeOrdered } from "@/components/storefront/StorefrontRecommendations";
-export { addStorefrontCartLine,addStorefrontCartLines,reconcileStorefrontCartPricing,reconcileStorefrontCartQuote,recordStorefrontCartChange,setStorefrontCartQuantity,type CartLine,type StorefrontCartProduct,type StorefrontCartSelection,type StorefrontPricingSnapshot } from "@/components/storefront/storefrontCartMath";
+export { addStorefrontCartLine,addStorefrontCartLines,applyStorefrontProductQuantityDelta,reconcileStorefrontCartPricing,reconcileStorefrontCartQuote,recordStorefrontCartChange,resolveStorefrontProductQuantityDelta,setStorefrontCartQuantity,summarizeStorefrontProductCartQuantities,type CartLine,type StorefrontCartProduct,type StorefrontCartSelection,type StorefrontPricingSnapshot,type StorefrontProductCartSummary,type StorefrontProductQuantityDeltaAction } from "@/components/storefront/storefrontCartMath";
 export { collectStorefrontFailures,shouldAutoLoadStorefrontNextPage,storefrontCategoryCount,type AvailabilityFilter,type StorefrontSource } from "@/components/storefront/storefrontCatalogModel";
 export { getStorefrontCustomizationConfig,storefrontTurnstileSubmissionReady,summarizeStorefrontCustomization,type StorefrontCustomization,type StorefrontCustomizationConfig,type StorefrontCustomizationField,type StorefrontCustomizationKind,type StorefrontCustomizationTemplate } from "@/components/storefront/storefrontCustomizationModel";
 export { loadCart,loadCheckoutAttempt,saveCart,saveCheckoutAttempt,saveForm,saveStorefrontSnapshot,storefrontCheckoutFingerprint,validateStorefrontCheckout,type CheckoutFieldErrors,type CheckoutForm,type StorefrontCheckoutAttempt } from "@/components/storefront/storefrontPersistence";
@@ -831,20 +831,17 @@ function StorefrontContent() {
 
   const cartLines = useMemo(() => Array.from(cart.values()), [cart]);
   const { pulseHeart, toggleWishlist, shareProduct, shareCart } = storefrontSharingActions({setHeartPulseTarget, setHeartPulseNonce, setSharePulseTarget, setSharePulseNonce, setWishlistIds, setShareFeedback, cartLines, createCartShareM});
-  const productCartQuantities = useMemo(() => {
-    const map = new Map<number, { qty: number; cartKey: string }>();
-    cart.forEach((line, key) => {
-      if (!line.isCustomizable && !line.customization) {
-        const prev = map.get(line.productId);
-        map.set(line.productId, { qty: (prev?.qty ?? 0) + line.qty, cartKey: key });
-      }
-    });
-    return map;
-  }, [cart]);
-  const getProductCartQty = (id: number) => productCartQuantities.get(id)?.qty ?? 0;
+  const productCartQuantities = useMemo(() => summarizeStorefrontProductCartQuantities(cart), [cart]);
+  const getProductCartQty = (id: number) => productCartQuantities.get(id)?.totalQty ?? 0;
   const handleProductQuantityDelta = (id: number, delta: number) => {
-    const info = productCartQuantities.get(id);
-    if (info) setQty(info.cartKey, info.qty + delta);
+    applyStorefrontProductQuantityDelta(cartRef.current, productCartQuantities, id, delta, {
+      setQty,
+      openProduct,
+      openCart: () => {
+        setCartStatus("يوجد أكثر من خيار لهذا المنتج في السلة؛ عدّل الكمية من السلة.");
+        setPanel("cart");
+      },
+    });
   };
   const lastAddedItem = useMemo(() => cartLines[cartLines.length - 1] ?? null, [cartLines]);
   const cartHasCustomization = cartLines.some((line) => Boolean(line.customization));
@@ -992,7 +989,9 @@ function StorefrontContent() {
       setCartStatus(qty <= 0 ? `تمت إزالة ${line.name} من السلة.` : `أصبحت كمية ${line.name}: ${formatQuantity(Math.max(1, qty))}.`);
     }
     recordStorefrontCartChange();
-    setCart((prev) => setStorefrontCartQuantity(prev, cartKey, qty));
+    const next = setStorefrontCartQuantity(cartRef.current, cartKey, qty);
+    cartRef.current = next;
+    setCart(next);
   }
   function openCheckout() {
     if (!storeOpen || !orderingEnabled) return; // بوابتا المتجر والطلب ظاهرتان للزبون.

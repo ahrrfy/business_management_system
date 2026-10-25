@@ -40,6 +40,8 @@ import {
   saveCheckoutAttempt,
   saveStorefrontSnapshot,
   setStorefrontCartQuantity,
+  summarizeStorefrontProductCartQuantities,
+  applyStorefrontProductQuantityDelta,
   summarizeStorefrontCustomization,
   storefrontCheckoutFingerprint,
   storefrontCategoryCount,
@@ -791,6 +793,88 @@ describe("storefront category strip and categories navigation", () => {
     expect(source).toContain('id="store-categories-strip"');
     expect(source).toContain("<StorefrontCategories");
     expect(source).toContain("<CategoryChipStrip");
+  });
+});
+
+describe("storefront product cart quantity stepper (single vs multi-variant)", () => {
+  function makeVariantCartLine(overrides: Partial<CartLine> & Pick<CartLine, "cartKey" | "productUnitId" | "productId" | "qty">): CartLine {
+    return {
+      name: "قلم حبر جاف",
+      price: "1500.00",
+      imageUrl: null,
+      unitName: "قطعة",
+      stockLimit: 20,
+      ...overrides,
+    };
+  }
+
+  it("يضبط كمية السطر الوحيد بدقة عند +1 و -1 دون مساس الأصناف الأخرى", () => {
+    let cart = new Map<string, CartLine>([
+      ["101:", makeVariantCartLine({ cartKey: "101:", productUnitId: 101, productId: 50, qty: 2, variantLabel: "أزرق" })],
+    ]);
+    const openProduct = vi.fn();
+    const openCart = vi.fn();
+    const setQty = (cartKey: string, qty: number) => {
+      cart = setStorefrontCartQuantity(cart, cartKey, qty);
+    };
+
+    let summaries = summarizeStorefrontProductCartQuantities(cart);
+    expect(summaries.get(50)?.totalQty).toBe(2);
+
+    applyStorefrontProductQuantityDelta(cart, summaries, 50, 1, { setQty, openProduct, openCart });
+    expect(cart.get("101:")?.qty).toBe(3);
+    expect(openProduct).not.toHaveBeenCalled();
+    expect(openCart).not.toHaveBeenCalled();
+
+    summaries = summarizeStorefrontProductCartQuantities(cart);
+    applyStorefrontProductQuantityDelta(cart, summaries, 50, -1, { setQty, openProduct, openCart });
+    expect(cart.get("101:")?.qty).toBe(2);
+
+    // نزول إلى الصفر يحذف السطر تماماً
+    summaries = summarizeStorefrontProductCartQuantities(cart);
+    applyStorefrontProductQuantityDelta(cart, summaries, 50, -2, { setQty, openProduct, openCart });
+    expect(cart.has("101:")).toBe(false);
+  });
+
+  it("يمنع تلويث كميات المتغيرات عند وجود أكثر من لون/وحدة لنفس المنتج في السلة (+1 و -1)", () => {
+    let cart = new Map<string, CartLine>([
+      ["201:", makeVariantCartLine({ cartKey: "201:", productUnitId: 201, productId: 77, qty: 2, name: "دفتر سلك — أزرق", variantLabel: "أزرق" })],
+      ["202:", makeVariantCartLine({ cartKey: "202:", productUnitId: 202, productId: 77, qty: 1, name: "دفتر سلك — أحمر", variantLabel: "أحمر" })],
+    ]);
+    const setQty = vi.fn((cartKey: string, qty: number) => {
+      cart = setStorefrontCartQuantity(cart, cartKey, qty);
+    });
+    const openProduct = vi.fn();
+    const openCart = vi.fn();
+
+    const summaries = summarizeStorefrontProductCartQuantities(cart);
+    expect(summaries.get(77)?.totalQty).toBe(3);
+    expect(summaries.get(77)?.lineCount).toBe(2);
+    expect(summaries.get(77)?.singleLine).toBeNull();
+
+    // ضغط -1 لا يجوز أن يكتب (3 - 1 = 2) فوق المتغير الأخير 202:!
+    const decAction = applyStorefrontProductQuantityDelta(cart, summaries, 77, -1, {
+      setQty,
+      openProduct,
+      openCart,
+    });
+    expect(decAction).toEqual({ kind: "open-cart", productId: 77 });
+    expect(setQty).not.toHaveBeenCalled();
+    expect(openCart).toHaveBeenCalledWith(77);
+    expect(cart.get("201:")?.qty).toBe(2);
+    expect(cart.get("202:")?.qty).toBe(1);
+
+    // ضغط +1 يفتح منتقي المنتج لاختيار اللون المراد زيادته دون تلويث أي سطر قائم
+    const incAction = applyStorefrontProductQuantityDelta(cart, summaries, 77, 1, {
+      setQty,
+      openProduct,
+      openCart,
+    });
+    expect(incAction).toEqual({ kind: "open-product", productId: 77 });
+    expect(setQty).not.toHaveBeenCalled();
+    expect(openProduct).toHaveBeenCalledWith(77);
+    expect(cart.get("201:")?.qty).toBe(2);
+    expect(cart.get("202:")?.qty).toBe(1);
   });
 });
 

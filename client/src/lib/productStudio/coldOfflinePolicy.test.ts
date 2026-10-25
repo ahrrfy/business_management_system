@@ -156,4 +156,69 @@ describe("cold offline product studio policy", () => {
       }),
     ).toBe(true);
   });
+
+  it("never mounts internal CommandPalette/scanner tools on public paths or public host root", () => {
+    for (const publicLoc of [
+      "/store",
+      "/store?q=notebook",
+      "/store/mobile-turnstile",
+      "/apply",
+      "/legal",
+      "/legal/privacy",
+      "/shelf-lookup?branch=1",
+      "/price-check",
+      "/s/w",
+      "/s/w/tok_abc123",
+    ]) {
+      expect(
+        shouldMountGlobalStudioTools({
+          location: publicLoc,
+          offline: false,
+          hostname: "localhost",
+        }),
+      ).toBe(false);
+      expect(
+        shouldMountGlobalStudioTools({
+          location: publicLoc,
+          offline: false,
+        }),
+      ).toBe(false);
+    }
+
+    expect(
+      shouldMountGlobalStudioTools({
+        location: "/",
+        offline: false,
+        hostname: "alarabiya.online",
+      }),
+    ).toBe(false);
+    expect(
+      shouldMountGlobalStudioTools({
+        location: "/?utm_source=social",
+        offline: false,
+        hostname: "www.alarabiya.online",
+      }),
+    ).toBe(false);
+
+    expect(
+      shouldMountGlobalStudioTools({
+        location: "/",
+        offline: false,
+        hostname: "srv1548487.hstgr.cloud",
+      }),
+    ).toBe(true);
+    expect(
+      shouldMountGlobalStudioTools({
+        location: "/",
+        offline: false,
+        hostname: "localhost",
+      }),
+    ).toBe(true);
+    expect(
+      shouldMountGlobalStudioTools({
+        location: "/inventory",
+        offline: false,
+      }),
+    ).toBe(true);
+  });
 });

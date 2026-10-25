@@ -9,7 +9,17 @@ import {
   type BatchSalesSyncedPayload,
 } from "@shared/realtimeEvents";
 import { D } from "@/lib/money";
+import { isPublicHost, isPublicPath } from "@/lib/siteHosts";
 import { connectivity, type ConnState } from "../offline/connectivity";
+
+/** هل يسمح المسار/المضيف بفتح اتصال SSE داخلي (`/api/realtime/stream`)؟ */
+export function shouldConnectRealtime(pathname: string, hostname: string): boolean {
+  const cleanPath = pathname.split(/[?#]/, 1)[0] || "/";
+  if (cleanPath === "/login") return false;
+  if (isPublicPath(cleanPath)) return false;
+  if (cleanPath === "/" && isPublicHost(hostname)) return false;
+  return true;
+}
 
 export type RealtimeConnectionStatus =
   | "connected"
@@ -262,11 +272,10 @@ export class RealtimeManager {
 
   private shouldConnect(): boolean {
     if (typeof window === "undefined") return false;
-    const path = window.location.pathname;
-    if (path === "/login" || path === "/apply" || path === "/legal") {
-      return false;
-    }
-    return true;
+    return shouldConnectRealtime(
+      window.location.pathname ?? "/",
+      window.location.hostname ?? "",
+    );
   }
 
   private isPwaSuspended(): boolean {
