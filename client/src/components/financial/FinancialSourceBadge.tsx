@@ -15,6 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { CardBrandIcon } from "@/components/ui/CardBrandLogos";
 import { cn } from "@/lib/utils";
 import { paymentMethodTerm } from "@shared/terms";
+import { financialSourceLabel } from "@shared/financialSource";
 
 export type FinancialSourceKind =
   | "DRAWER"
@@ -43,14 +44,6 @@ export interface FinancialSourceBadgeProps extends Omit<
   compact?: boolean;
 }
 
-const SOURCE_LABEL: Record<string, string> = {
-  DRAWER: "درج كاشير",
-  TREASURY: "خزينة إدارية",
-  BANK: "حساب بنكي",
-  STOCK: "مخزون",
-  OTHER: "مصدر آخر",
-};
-
 const SOURCE_ICON: Record<string, LucideIcon> = {
   DRAWER: Banknote,
   TREASURY: Building2,
@@ -67,10 +60,6 @@ const SOURCE_ICON: Record<string, LucideIcon> = {
 
 function normalized(value?: string | null) {
   return value?.trim().toUpperCase() || "";
-}
-
-function sourceLabel(code: string, original?: string | null) {
-  return paymentMethodTerm(code)?.compact ?? SOURCE_LABEL[code] ?? original;
 }
 
 function sourceTone(source: string) {
@@ -101,11 +90,18 @@ export function FinancialSourceBadge({
   const Icon = SOURCE_ICON[semanticSource] ?? SOURCE_ICON[method] ?? CircleHelp;
 
   const parts: ReactNode[] = [];
-  if (showMethod && method) parts.push(sourceLabel(method, paymentMethod));
+  if (showMethod && method)
+    parts.push(paymentMethodTerm(method)?.compact ?? paymentMethod);
   if (showBucket && bucket && bucket !== method)
-    parts.push(sourceLabel(bucket, cashBucket));
+    parts.push(financialSourceLabel(bucket, cashBucket ?? bucket));
+  if (showBucket && !bucket && normalizedSource && normalizedSource !== method)
+    parts.push(
+      financialSourceLabel(normalizedSource, source ?? normalizedSource),
+    );
   if (!parts.length && normalizedSource)
-    parts.push(sourceLabel(normalizedSource, source));
+    parts.push(
+      financialSourceLabel(normalizedSource, source ?? normalizedSource),
+    );
 
   const content =
     label ??
@@ -125,7 +121,11 @@ export function FinancialSourceBadge({
   return (
     <Badge
       variant={sourceTone(semanticSource)}
-      className={cn(compact ? "h-5 px-1.5 text-[10px]" : "min-h-6", className)}
+      className={cn(
+        "max-w-full flex-wrap whitespace-normal [overflow-wrap:anywhere]",
+        compact ? "min-h-5 px-1.5 text-[10px]" : "min-h-6",
+        className,
+      )}
       {...props}
     >
       <Icon aria-hidden className="shrink-0" />

@@ -12,6 +12,9 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "client/src/components/expenses/ExpenseTracePanel.test.tsx",
+      "shared/__tests__/financialSource.test.ts",
+      "client/src/components/financial/__tests__/FinancialTraceDetails.test.tsx",
       "client/src/components/product/__tests__/AiProductContentAssistant.test.tsx",
       "client/src/components/contacts/__tests__/Contact360Panel.test.tsx",
       "shared/__tests__/checkoutCharges.test.ts",
