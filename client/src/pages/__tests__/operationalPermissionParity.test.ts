@@ -89,36 +89,49 @@ describe("operational UI permission parity", () => {
   });
 
   it("binds dispatch and manual proof to exact operations while preserving legacy remittance gate", () => {
-    const source =
-      readPage("DeliveryHub.tsx") +
-      "\n" +
+    const readyForDispatch = readPage("DeliveryReadyForDispatchTab.tsx");
+    const deliveryHub = readPage("DeliveryHub.tsx");
+    const settlement =
       readComponent("delivery/DeliverySettleTab.tsx") +
       "\n" +
       readComponent("delivery/DeliverySettleSummaryCard.tsx");
     const dispatchAuthority = section(
-      source,
+      readyForDispatch,
       "const canDispatch",
       "const [target",
     );
-    const dispatchActions = section(source, "<RowActions", "<DispatchDialog");
+    const dispatchActions = section(
+      readyForDispatch,
+      "<RowActions",
+      "const dispatchByBarcodeMutation",
+    );
     const manualProofAuthority = section(
-      source,
+      deliveryHub,
       "const isManager",
       "// ── Mutations",
     );
     const manualProofAction = section(
-      source,
+      deliveryHub,
       "{isManager && (r.viewKey",
       "{phone &&",
     );
-    const remitAuthority = section(source, "const canRemit", "const canReturn");
-    const remitAction = section(source, "{canRemit && (", "</Button>");
+    const remitAuthority = section(
+      settlement,
+      "const canRemit",
+      "const canReturn",
+    );
+    const remitAction = section(
+      settlement,
+      "{canRemit && (",
+      "</Button>",
+    );
 
     expect(dispatchAuthority).toContain('useOperationPermission("delivery.dispatch")');
     expect(dispatchAuthority).toContain('useOperationPermission("delivery.dispatchByBarcode")');
     expect(dispatchActions).toContain('o.sourceType === "ONLINE_ORDER"');
     expect(dispatchActions).toContain('operations:');
     expect(dispatchActions).toContain('"delivery.dispatchByBarcode"');
+    expect(dispatchActions).toContain('"delivery.dispatch"');
     expect(manualProofAuthority).toContain('useOperationPermission("delivery.manualProof")');
     expect(manualProofAction).toContain("setManualProofTarget(r)");
     expect(remitAuthority).toMatch(

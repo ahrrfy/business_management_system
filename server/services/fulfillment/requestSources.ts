@@ -51,6 +51,7 @@ import { validateDeliveryDriverTx } from "../delivery/driverValidation";
 import { heldCustomerParcelReissueTx } from "../delivery/workflow/returnReceipt";
 import { effectiveDeliveryLedgerEntrySql } from "../delivery/legacyLedger";
 import { DELIVERY_CASH_CUSTODY_SIGN } from "../../../shared/deliveryLedgerEntryType";
+import { initializeConsignmentCustodyTx } from "../delivery/custody";
 
 export async function assertRequestOperationTx(
   tx: Tx,
@@ -180,7 +181,11 @@ export async function dispatchChargeOnlyRequestTx(
       tracking,
       existing?.id,
     );
-  await validateDeliveryDriverTx(tx, {partyId:party.id,assignedUserId:input.assignedUserId}, request.branchId);
+  await validateDeliveryDriverTx(
+    tx,
+    { partyId: party.id, assignedUserId: input.assignedUserId },
+    request.branchId,
+  );
   const assignedUserId = input.assignedUserId ?? null;
   await assertNoStaleOpenParcelsTx(tx, party);
   const consignmentNumber =
@@ -247,6 +252,11 @@ export async function dispatchChargeOnlyRequestTx(
     toMoneyStatus: "NOT_APPLICABLE",
     actorUserId: actor.userId,
     payload: { fulfillmentRequestId: request.id, partyId: party.id },
+  });
+  await initializeConsignmentCustodyTx(tx, {
+    consignmentId,
+    actorUserId: actor.userId,
+    operationId: `fulfillment.request.release:${input.clientRequestId}`,
   });
   enqueuePostCommit(tx, () => {
     publishRealtimeEvent(

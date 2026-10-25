@@ -6,7 +6,7 @@
  * لم يقع، وهدرٌ حقيقيّ **لا يظهر في أيّ تقرير** — فلا يعرف المالك أنّه ينزف.
  *
  * الثوابت المحروسة:
- *  (أ) بلا قرار ⇒ رجوعٌ كامل — **صفر تغيّرٍ سلوكيّ** لكلّ مستدعٍ قائم.
+ *  (أ) بلا قرارٍ صريح ⇒ رفض؛ الرجوع الكامل يحتاج إقراراً موثّقاً.
  *  (ب) قرارٌ جزئيّ ⇒ يعود ما قُرِّر وحده، والباقي قيدُ **خسارة** بلا أيّ حركة مخزون.
  *  (ج) `CONSUME − CANCEL − WASTE = 0` — لا دينارَ يبقى معلّقاً في WIP.
  *  (د) مجموعٌ لا يساوي المستهلَك ⇒ **رفض** (لا امتصاصَ صامت).
@@ -21,6 +21,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { truncateTables } from "./__testUtils__";
 import { createWorkOrder } from "../workOrder/create";
+import { cancelWorkOrder } from "../workOrder/cancel";
 import { startWorkOrder } from "../workOrder/lifecycle";
 import {
   approveWorkOrderControlRequest,
@@ -108,6 +109,7 @@ async function cancelGoverned(
   input: {
     reason: string;
     materials?: Array<{ workOrderMaterialId: number; returnBase: number; wasteBase: number }>;
+    confirmAllMaterialsReturnedUsable?: boolean;
   },
 ) {
   const [workOrder] = await db().select({ version: s.workOrders.version })
@@ -118,7 +120,11 @@ async function cancelGoverned(
     requestType: "CANCEL",
     baseVersion: Number(workOrder.version),
     reason: input.reason,
-    payload: { refundShiftId: null, materials: input.materials ?? null },
+    payload: {
+      refundShiftId: null,
+      materials: input.materials ?? null,
+      confirmAllMaterialsReturnedUsable: input.confirmAllMaterialsReturnedUsable ?? false,
+    },
   }, MANAGER);
   return approveWorkOrderControlRequest(
     Number(request.id),
@@ -157,11 +163,31 @@ const entriesByKeyPrefix = async (prefix: string) =>
   (await db().select().from(s.accountingEntries)).filter((e) => (e.dedupeKey ?? "").startsWith(prefix));
 
 describe("ش٤ — إلغاء أمر الشغل: قرار الخامة والسبب", () => {
-  it("⭐ (أ) بلا قرار ⇒ رجوعٌ كامل وصفر هدر — السلوك القائم حرفياً", async () => {
+  it("⭐ (أ) بلا قرار أو بقائمة فارغة ⇒ رفضٌ ذريّ ولا رجوع صامت", async () => {
     const woId = await startedOrder("cw-1");
     expect(await stockOf(1)).toBe(90);
+    const [workOrder] = await db().select({ version: s.workOrders.version })
+      .from(s.workOrders).where(eq(s.workOrders.id, woId));
 
-    await cancelGoverned(woId, { reason: "العميل ألغى الطلب" });
+    await expect(cancelWorkOrder(woId, OWNER, {
+      expectedVersion: Number(workOrder.version),
+      reason: "العميل ألغى الطلب",
+    }, { approvedControlRequestId: 999 }))
+      .rejects.toThrowError(/قرار.*صريح|أكّد.*رجوعها/);
+
+    expect(await stockOf(1)).toBe(90);
+    expect(await stockOf(2)).toBe(96);
+    expect((await db().select().from(s.workOrders).where(eq(s.workOrders.id, woId)))[0].status)
+      .toBe("IN_PROGRESS");
+  });
+
+  it("الإقرار الصريح برجوع جميع الخامات يعيدها كاملة ويصفّر WIP", async () => {
+    const woId = await startedOrder("cw-all-returned");
+
+    await cancelGoverned(woId, {
+      reason: "العميل ألغى الطلب والخامات سليمة",
+      confirmAllMaterialsReturnedUsable: true,
+    });
 
     expect(await stockOf(1)).toBe(100);
     expect(await stockOf(2)).toBe(100);
@@ -181,7 +207,10 @@ describe("ش٤ — إلغاء أمر الشغل: قرار الخامة والس�
     await db().update(s.productVariants).set({ costPrice: "600.00" })
       .where(eq(s.productVariants.id, 1));
 
-    await cancelGoverned(woId, { reason: "إلغاء بعد استلام خامة لاحق" });
+    await cancelGoverned(woId, {
+      reason: "إلغاء بعد استلام خامة لاحق",
+      confirmAllMaterialsReturnedUsable: true,
+    });
 
     expect(await stockOf(1)).toBe(110);
     expect((await db().select({ cost: s.productVariants.costPrice }).from(s.productVariants)
@@ -248,7 +277,10 @@ describe("ش٤ — إلغاء أمر الشغل: قرار الخامة والس�
 
   it("⭐ (و) السببُ والفاعلُ والوقتُ تُكتَب على الأمر نفسه", async () => {
     const woId = await startedOrder("cw-5");
-    await cancelGoverned(woId, { reason: "لم يحضر العميل لاستلام الطلب" });
+    await cancelGoverned(woId, {
+      reason: "لم يحضر العميل لاستلام الطلب",
+      confirmAllMaterialsReturnedUsable: true,
+    });
     const wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, woId)))[0];
     expect(wo.cancelReason).toBe("لم يحضر العميل لاستلام الطلب");
     // الإلغاء الحاكم يُنفَّذ لحظة الاعتماد، لذلك يُنسب إلى صاحب القرار المستقل
@@ -266,7 +298,10 @@ describe("ش٤ — إلغاء أمر الشغل: قرار الخامة والس�
     } as never);
     await db().update(s.workOrders).set({ invoiceId: 900 }).where(eq(s.workOrders.id, woId));
 
-    await expect(cancelGoverned(woId, { reason: "إلغاء موثق بعد صدور الفاتورة" }))
+    await expect(cancelGoverned(woId, {
+      reason: "إلغاء موثق بعد صدور الفاتورة",
+      confirmAllMaterialsReturnedUsable: true,
+    }))
       .rejects.toThrowError(/فاتورة|استرجاع/);
     expect(await stockOf(1)).toBe(90); // لم تعد المواد — لا عكسَ نصفيّ
   });

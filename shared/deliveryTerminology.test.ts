@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { DELIVERY_TERMS, term, termCompact, termProse, termTooltip, type DeliveryTermKey } from "./deliveryTerminology";
+import {
+  DELIVERY_TERMS,
+  term,
+  termCompact,
+  termProse,
+  termTooltip,
+  type DeliveryTermKey,
+} from "./deliveryTerminology";
 
 describe("قاموس مصطلحات التوصيل — البنية", () => {
   it("كل مصطلح يحوي compact + prose + tooltip بلا فراغ", () => {
@@ -7,7 +14,9 @@ describe("قاموس مصطلحات التوصيل — البنية", () => {
       expect(val.compact.trim(), `compact for ${key}`).not.toBe("");
       expect(val.prose.trim(), `prose for ${key}`).not.toBe("");
       expect(val.tooltip.trim(), `tooltip for ${key}`).not.toBe("");
-      expect(val.tooltip.length, `tooltip ${key} ≥ 20`).toBeGreaterThanOrEqual(15);
+      expect(val.tooltip.length, `tooltip ${key} ≥ 20`).toBeGreaterThanOrEqual(
+        15,
+      );
     }
   });
 
@@ -15,20 +24,57 @@ describe("قاموس مصطلحات التوصيل — البنية", () => {
     // U+064B..U+0652 diacritics (fatha, damma, kasra, shadda, sukun, tanwin variants).
     const tashkeelRe = /[ً-ْ]/;
     for (const [key, val] of Object.entries(DELIVERY_TERMS)) {
-      expect(tashkeelRe.test(val.compact), `compact for ${key} contains tashkeel: "${val.compact}"`).toBe(false);
+      expect(
+        tashkeelRe.test(val.compact),
+        `compact for ${key} contains tashkeel: "${val.compact}"`,
+      ).toBe(false);
     }
   });
 
   it("النسخة prose قد تحوي تشكيلاً (فقرات كاملة)", () => {
     // At least a few prose values should contain tashkeel — that's their purpose.
     const tashkeelRe = /[ً-ْ]/;
-    const hasTashkeel = Object.values(DELIVERY_TERMS).filter((v) => tashkeelRe.test(v.prose));
+    const hasTashkeel = Object.values(DELIVERY_TERMS).filter((v) =>
+      tashkeelRe.test(v.prose),
+    );
     expect(hasTashkeel.length).toBeGreaterThan(5);
   });
 });
 
 describe("قاموس مصطلحات التوصيل — تغطية المفاهيم الأساسية", () => {
   const mustExist: DeliveryTermKey[] = [
+    "shipment",
+    "parcel",
+    "consignment",
+    "shipmentSource",
+    "deliveryParty",
+    "assignmentMode",
+    "collectionAndRemittanceMode",
+    "returnsAndAftercareMode",
+    "customerCollection",
+    "courierRemittance",
+    "deliverySettlement",
+    "cancelAssignment",
+    "requestReturn",
+    "receivePhysicalReturn",
+    "commercialReturn",
+    "deliveryTrust",
+    "deliveryPartyPayable",
+    "recipient",
+    "recipientPhone",
+    "deliveryAddress",
+    "amountDueAtDoor",
+    "deliveryFee",
+    "eventTime",
+    "printTime",
+    "reprintReason",
+    "shippingLabel",
+    "assignmentSlip",
+    "deliveryManifest",
+    "remittanceReceipt",
+    "settlementStatement",
+    "physicalReturnReceipt",
+    "reprintCopy",
     "cashInHand",
     "parcelsInTransit",
     "deliveredUncollected",
@@ -71,9 +117,17 @@ describe("المصطلحات المُسمَّاة تُطابق قاموس partyE
   it("cashInHand.compact = «نقد بيده» (تناسق مع PARTY_EXPOSURE_LABEL_AR)", async () => {
     const { PARTY_EXPOSURE_LABEL_AR } = await import("./partyExposure");
     expect(termCompact("cashInHand")).toBe(PARTY_EXPOSURE_LABEL_AR.cashInHand);
-    expect(termCompact("parcelsInTransit")).toBe(PARTY_EXPOSURE_LABEL_AR.parcelsInTransit);
-    expect(termCompact("deliveredUncollected")).toBe(PARTY_EXPOSURE_LABEL_AR.deliveredUncollected);
-    expect(termCompact("feesOwedToCourier")).toBe(PARTY_EXPOSURE_LABEL_AR.feesOwedToThem);
-    expect(termCompact("netResponsibility")).toBe(PARTY_EXPOSURE_LABEL_AR.netResponsibility);
+    expect(termCompact("parcelsInTransit")).toBe(
+      PARTY_EXPOSURE_LABEL_AR.parcelsInTransit,
+    );
+    expect(termCompact("deliveredUncollected")).toBe(
+      PARTY_EXPOSURE_LABEL_AR.deliveredUncollected,
+    );
+    expect(termCompact("feesOwedToCourier")).toBe(
+      PARTY_EXPOSURE_LABEL_AR.feesOwedToThem,
+    );
+    expect(termCompact("netResponsibility")).toBe(
+      PARTY_EXPOSURE_LABEL_AR.netResponsibility,
+    );
   });
 });

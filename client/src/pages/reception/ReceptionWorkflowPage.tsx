@@ -15,19 +15,32 @@ import {
 import { lazyWithRetry } from "@/lib/lazyWithRetry";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
+  explicitWorkflowSection,
   positiveWorkflowParam,
   workflowSection,
   workflowSourceContext,
   workflowSourceBarcode,
 } from "@/components/delivery/workflow/navigation";
+import { WorkflowModeNavigation } from "@/components/delivery/workflow/WorkflowModeNavigation";
+import {
+  browserWorkflowModeStorage,
+  persistWorkflowMode,
+  readStoredWorkflowMode,
+  workflowDefaultSection,
+  workflowModeForSection,
+  type WorkflowMode,
+} from "@/components/delivery/workflow/workflowModes";
 import type { WorkflowScanPreview } from "@shared/deliveryWorkflow";
-const AftercareStation = lazyWithRetry(() => import("@/components/fulfillment/AftercareStation").then(module => ({default:module.AftercareStation})));
+const AftercareStation = lazyWithRetry(() =>
+  import("@/components/fulfillment/AftercareStation").then((module) => ({
+    default: module.AftercareStation,
+  })),
+);
 import { Link, useLocation, useSearch } from "wouter";
 
 import {
   AlertTriangle,
   BadgeDollarSign,
-  Ban,
   BarChart3,
   Building2,
   CheckCircle2,
@@ -36,14 +49,11 @@ import {
   FilePenLine,
   FileText,
   Info,
-  Package,
   Printer,
-  RefreshCcw,
   ScanLine,
   Square,
   Truck,
   User,
-  Wallet,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card } from "@/components/ui/card";
@@ -54,7 +64,6 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { Badge } from "@/components/ui/badge";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { MoneyInput } from "@/components/form/MoneyInput";
-import { cn } from "@/lib/utils";
 import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
@@ -86,21 +95,18 @@ import { fmtDateTime } from "@/lib/date";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 
-type Section =
-  | "dispatch"
-  | "collect"
-  | "edit"
-  | "return"
-  | "cancelAssignment"
-  | "aftercare";
+type Section = ReturnType<typeof workflowSection>;
 
 export default function DeliveryWorkflowPage() {
   const pageSearch = useSearch();
   const [location, navigate] = useLocation();
   const isDeliveryModule = location.startsWith("/delivery");
-  const [activeSection, setActiveSection] = useState<Section>(() =>
-    workflowSection(pageSearch),
-  );
+  const [activeSection, setActiveSection] = useState<Section>(() => {
+    const explicitSection = explicitWorkflowSection(pageSearch);
+    if (explicitSection) return explicitSection;
+    const storedMode = readStoredWorkflowMode(browserWorkflowModeStorage());
+    return workflowDefaultSection(storedMode ?? "assignment");
+  });
   const pendingMutations = useIsMutating();
   const pageParams = new URLSearchParams(pageSearch);
   const [cancelScannedCode, setCancelScannedCode] = useState<string | null>(
@@ -215,6 +221,9 @@ export default function DeliveryWorkflowPage() {
       for (const [key, value] of Object.entries(extra)) params.set(key, value);
     navigate(location + "?" + params.toString(), { replace: true });
   }
+  function chooseMode(mode: WorkflowMode) {
+    chooseSection(workflowDefaultSection(mode));
+  }
   function openAftercare(context: {
     raw?: string;
     caseId?: number;
@@ -227,8 +236,15 @@ export default function DeliveryWorkflowPage() {
     chooseSection("aftercare", extra);
   }
   useEffect(() => {
-    setActiveSection(workflowSection(pageSearch));
+    const explicitSection = explicitWorkflowSection(pageSearch);
+    if (explicitSection) setActiveSection(explicitSection);
   }, [pageSearch]);
+  useEffect(() => {
+    persistWorkflowMode(
+      browserWorkflowModeStorage(),
+      workflowModeForSection(activeSection),
+    );
+  }, [activeSection]);
   // enabled: !!branchId يمنع الاستعلام حتى يصل me.data — لا سقوط صامت على فرع افتراضي (§ G3)
   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
   const shiftQ = trpc.shifts.current.useQuery(
@@ -427,8 +443,7 @@ export default function DeliveryWorkflowPage() {
   }, [returnEnabled, editEnabled]);
   const sourceContextKey = useRef<string | null>(null);
   useEffect(() => {
-    if (!branchId || activeSection === "aftercare")
-      return;
+    if (!branchId || activeSection === "aftercare") return;
     const source = workflowSourceContext(pageSearch);
     if (!source) return;
     const key =
@@ -442,7 +457,8 @@ export default function DeliveryWorkflowPage() {
         sourceContextKey.current = key;
         const raw = workflowSourceBarcode(preview.source);
         if (activeSection === "dispatch") setDispatchScannedCode(raw);
-        else if (activeSection === "cancelAssignment") setCancelScannedCode(raw);
+        else if (activeSection === "cancelAssignment")
+          setCancelScannedCode(raw);
         else if (activeSection === "collect") setCollectScannedCode(raw);
         else if (activeSection === "return") void lookupWorkOrder(raw);
         else void lookupInvoiceForEdit(raw);
@@ -456,7 +472,14 @@ export default function DeliveryWorkflowPage() {
     return () => {
       current = false;
     };
-  }, [activeSection, branchId, pageSearch, utils, lookupInvoiceForEdit, lookupWorkOrder]);
+  }, [
+    activeSection,
+    branchId,
+    pageSearch,
+    utils,
+    lookupInvoiceForEdit,
+    lookupWorkOrder,
+  ]);
 
   return (
     <div
@@ -466,13 +489,11 @@ export default function DeliveryWorkflowPage() {
       <div className="shrink-0 border-b bg-card px-4 py-3">
         <PageHeader
           title={
-            isDeliveryModule
-              ? "سير العمل بالباركود (إسناد وتحصيل)"
-              : "التوصيل والإسناد"
+            isDeliveryModule ? "تنفيذ التوصيل بالباركود" : "التوصيل والإسناد"
           }
           description={
             isDeliveryModule
-              ? "إسناد الطرود للمناديب والشركات، تحصيل الذمم، تعديل الفواتير، واستلام المرتجعات بالماسح الضوئي."
+              ? "امسح المستند في محطته المعتادة، راجع الأثر، ثم نفذ الإجراء الرئيسي مرة واحدة."
               : undefined
           }
           icon={<Truck aria-hidden className="size-5 text-primary" />}
@@ -573,63 +594,14 @@ export default function DeliveryWorkflowPage() {
         )}
       </div>
 
-      <div
-        className="grid shrink-0 grid-cols-2 border-b bg-card sm:grid-cols-3 lg:grid-cols-6"
-        role="tablist"
-        aria-label="أقسام التوصيل والفواتير"
-      >
-        {[
-          {
-            key: "dispatch" as const,
-            icon: <Truck aria-hidden className="size-4" />,
-            label: "إسناد للمندوب",
-          },
-          {
-            key: "cancelAssignment" as const,
-            icon: <Ban aria-hidden className="size-4" />,
-            label: "إلغاء الإسناد والتوصيل",
-          },
-          {
-            key: "collect" as const,
-            icon: <Wallet aria-hidden className="size-4" />,
-            label: "تحصيل وذمم",
-          },
-          {
-            key: "edit" as const,
-            icon: <FilePenLine aria-hidden className="size-4" />,
-            label: "تعديل فاتورة",
-          },
-          {
-            key: "return" as const,
-            icon: <RefreshCcw aria-hidden className="size-4" />,
-            label: "إلغاء / مرتجع",
-          },
-          {
-            key: "aftercare" as const,
-            icon: <Package aria-hidden className="size-4" />,
-            label: "النقص والتعويض",
-          },
-        ].map(({ key, icon, label }) => (
-          <button
-            key={key}
-            id={`workflow-tab-${key}`}
-            type="button"
-            role="tab"
-            aria-selected={activeSection === key}
-            aria-controls="workflow-active-panel"
-            disabled={pendingMutations > 0}
-            onClick={() => chooseSection(key)}
-            className={cn(
-              "flex min-h-11 items-center justify-center gap-2 px-2 py-2.5 text-sm font-bold transition-colors",
-              activeSection === key
-                ? "border-b-2 border-primary text-primary"
-                : "text-muted-foreground hover:bg-muted/40",
-            )}
-          >
-            {icon} {label}
-          </button>
-        ))}
-      </div>
+      <WorkflowModeNavigation
+        activeSection={activeSection}
+        disabled={pendingMutations > 0}
+        disabledReason="توجد عملية قيد الحفظ؛ منعنا تغيير المحطة حتى لا يفقد الموظف نتيجتها."
+        nextStep="انتظر اكتمال الحفظ ثم تابع المسح من المحطة المختارة."
+        onModeChange={chooseMode}
+        onSectionChange={chooseSection}
+      />
 
       <div
         id="workflow-active-panel"
@@ -696,15 +668,21 @@ export default function DeliveryWorkflowPage() {
           />
         )}
         {activeSection === "aftercare" && branchId && (
-          <React.Suspense fallback={<div role="status" aria-label="تحميل محطة المعالجة"><Skeleton className="mx-auto h-28 max-w-4xl" /></div>}>
-          <AftercareStation
-            key={String(branchId)}
-            branchId={branchId}
-            caseId={positiveWorkflowParam(pageParams, "caseId")}
-            executionId={positiveWorkflowParam(pageParams, "executionId")}
-            scannedBarcode={aftercareScannedCode}
-            onBarcodeConsumed={() => setAftercareScannedCode(null)}
-          />
+          <React.Suspense
+            fallback={
+              <div role="status" aria-label="تحميل محطة المعالجة">
+                <Skeleton className="mx-auto h-28 max-w-4xl" />
+              </div>
+            }
+          >
+            <AftercareStation
+              key={String(branchId)}
+              branchId={branchId}
+              caseId={positiveWorkflowParam(pageParams, "caseId")}
+              executionId={positiveWorkflowParam(pageParams, "executionId")}
+              scannedBarcode={aftercareScannedCode}
+              onBarcodeConsumed={() => setAftercareScannedCode(null)}
+            />
           </React.Suspense>
         )}
 

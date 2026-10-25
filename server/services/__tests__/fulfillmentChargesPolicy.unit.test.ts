@@ -8,6 +8,8 @@ import {
   chargeRefundIntent,
   chargePayeeIntent,
   chargeCustodyIntent,
+  chargeRecognitionIntent,
+  immediateServiceAccrualIntent,
 } from "../fulfillment/chargePosting";
 import {
   validatePostingIntentPolicy,
@@ -19,18 +21,30 @@ function role(intent: PostingIntent, name: string) {
   return line ? money(line.debit).minus(line.credit).toFixed(2) : "0.00";
 }
 describe("classified fulfillment charge journal contracts", () => {
-  it("recognizes outsourced gross 5000 and cost 3000 independently, never just margin", () => {
-    const revenue = chargeAccrualIntent("OUTSOURCED", money("5000")),
+  it("defers outsourced gross 5000 until completion and posts cost independently", () => {
+    const accrual = chargeAccrualIntent("OUTSOURCED", money("5000")),
+      recognition = chargeRecognitionIntent(money("5000")),
       cost = chargeCostIntent(money("3000"), "AP");
-    expect(role(revenue, "AR")).toBe("5000.00");
-    expect(role(revenue, "OTHER_REVENUE")).toBe("-5000.00");
+    expect(role(accrual, "AR")).toBe("5000.00");
+    expect(role(accrual, "DEFERRED_REVENUE")).toBe("-5000.00");
+    expect(role(accrual, "OTHER_REVENUE")).toBe("0.00");
+    expect(role(recognition, "DEFERRED_REVENUE")).toBe("5000.00");
+    expect(role(recognition, "OTHER_REVENUE")).toBe("-5000.00");
     expect(role(cost, "OPERATING_EXPENSE")).toBe("3000.00");
     expect(role(cost, "AP")).toBe("-3000.00");
     expect(() =>
-      validatePostingIntentPolicy(revenue, "ADJUST", {
+      validatePostingIntentPolicy(accrual, "ADJUST", {
+        amount: "5000",
+        revenue: "0",
+        roleDebits: { AR: "5000" },
+        roleCredits: { DEFERRED_REVENUE: "5000" },
+      }),
+    ).not.toThrow();
+    expect(() =>
+      validatePostingIntentPolicy(recognition, "ADJUST", {
         amount: "5000",
         revenue: "5000",
-        roleDebits: { AR: "5000" },
+        roleDebits: { DEFERRED_REVENUE: "5000" },
         roleCredits: { OTHER_REVENUE: "5000" },
       }),
     ).not.toThrow();
@@ -42,6 +56,11 @@ describe("classified fulfillment charge journal contracts", () => {
         roleCredits: { AP: "3000" },
       }),
     ).not.toThrow();
+  });
+  it("uses direct revenue only for an immediate completed checkout service", () => {
+    const intent = immediateServiceAccrualIntent(money("3000"));
+    expect(role(intent, "OTHER_REVENUE")).toBe("-3000.00");
+    expect(role(intent, "DEFERRED_REVENUE")).toBe("0.00");
   });
   it("pass-through 3000 creates a liability and zero revenue", () => {
     const intent = chargeAccrualIntent("PASS_THROUGH", money("3000"));
@@ -72,7 +91,7 @@ describe("classified fulfillment charge journal contracts", () => {
       );
       expect(role(intent, "CASH")).toBe("0.00");
       expect(role(intent, "TREASURY_CASH")).toBe("0.00");
-      const asset=method==="WALLET"?"PAYMENT_WALLET":"CARD_BANK";
+      const asset = method === "WALLET" ? "PAYMENT_WALLET" : "CARD_BANK";
       expect(role(intent, asset)).toBe("2000.00");
       expect(() =>
         validatePostingIntentPolicy(intent, "PAYMENT_IN", {
@@ -118,6 +137,19 @@ describe("classified fulfillment charge journal contracts", () => {
       }),
     ).not.toThrow();
   });
+  it("refunds an approved, uncompleted service from deferred revenue", () => {
+    const credit = chargeCreditIntent("SERVICE", money("500"), false);
+    expect(role(credit, "DEFERRED_REVENUE")).toBe("500.00");
+    expect(role(credit, "OTHER_REVENUE")).toBe("0.00");
+    expect(() =>
+      validatePostingIntentPolicy(credit, "ADJUST", {
+        amount: "-500",
+        revenue: "0",
+        roleDebits: { DEFERRED_REVENUE: "500" },
+        roleCredits: { AR: "500" },
+      }),
+    ).not.toThrow();
+  });
   it("payee payout clears payable without a second expense", () => {
     const intent = chargePayeeIntent(money("3000"), "AP", "CASH", "DRAWER");
     expect(role(intent, "CASH")).toBe("-3000.00");
@@ -131,12 +163,12 @@ describe("classified fulfillment charge journal contracts", () => {
     expect(role(intent, "CASH")).toBe("0.00");
   });
   it("rejects a balanced journal whose independent source facts do not agree", () => {
-    const intent = chargeAccrualIntent("SERVICE", money("5000"));
+    const intent = chargeRecognitionIntent(money("5000"));
     expect(() =>
       validatePostingIntentPolicy(intent, "ADJUST", {
         amount: "5000",
         revenue: "4000",
-        roleDebits: { AR: "5000" },
+        roleDebits: { DEFERRED_REVENUE: "5000" },
         roleCredits: { OTHER_REVENUE: "5000" },
       }),
     ).toThrow();

@@ -653,4 +653,13 @@ export const CHART_ACCOUNTS: SeedAccount[] = [
     systemRole: "INVESTMENT_PAYABLE",
     sortOrder: 2195,
   },
+  {
+    id: 72,
+    code: "2910",
+    name: "إيراد خدمات مؤجل",
+    type: "LIABILITY",
+    parentId: 8,
+    systemRole: "DEFERRED_REVENUE",
+    sortOrder: 291,
+  },
 ];

@@ -15,6 +15,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Loader2, PackageX } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -108,6 +109,8 @@ export function CancelWorkOrderDialogById({
 export interface CancelDecision {
   reason: string;
   materials: Array<{ workOrderMaterialId: number; returnBase: number; wasteBase: number }> | undefined;
+  /** إقرار الموظف بأن جميع الخامات المستهلَكة عادت صالحة فعلياً. */
+  confirmAllMaterialsReturnedUsable: boolean | undefined;
   /** درجُ الاسترداد النقديّ — يُرسَل فقط حين يخرج نقدٌ فعلاً من **درج**. */
   refundShiftId: number | undefined;
   /** رافدُ الردّ — `undefined` ⇒ لا نقدَ يخرج (فلا رافد). */
@@ -161,6 +164,7 @@ export default function CancelWorkOrderDialog({
 }) {
   const [reason, setReason] = useState("");
   const [waste, setWaste] = useState<Record<number, number>>({});
+  const [allReturnedConfirmed, setAllReturnedConfirmed] = useState(false);
   /** حالةُ المنتقي الموحَّد — الاختيارُ وسببُ الحجب والتحميل، كلُّها من الخادم لا من تخمين. */
   const [rail, setRail] = useState<RefundRailPickerState | null>(null);
 
@@ -171,6 +175,7 @@ export default function CancelWorkOrderDialog({
     if (!open) return;
     setReason("");
     setWaste({});
+    setAllReturnedConfirmed(false);
     setRail(null);
   }, [open]);
 
@@ -190,6 +195,7 @@ export default function CancelWorkOrderDialog({
 
   const hasMaterials = materials.length > 0;
   const anyWaste = materials.some((m) => (waste[m.id] ?? 0) > 0);
+  const materialDecisionReady = !hasMaterials || anyWaste || allReturnedConfirmed;
   /**
    * **الكلفة محجوبةٌ عن بعض الأدوار** (`redactPosCost` — الكاشير يرى الكمّيات لا الأسعار)
    * فتصل `unitCost = null`. و`Number(null ?? 0)` كان يُنتج **صفراً يُعرَض رقماً حقيقياً**:
@@ -247,7 +253,7 @@ export default function CancelWorkOrderDialog({
             <div>
               <Label className="text-xs font-bold">مصير الخامة المستهلَكة</Label>
               <p className="mt-1 text-2xs text-muted-foreground">
-                افتراضياً يعود كلُّ شيء للمخزون. سجّل التالف فعلاً — يُحمَّل خسارةً ولا يعود صنفاً صالحاً.
+                سجّل التالف فعلاً. إن لم يوجد هدر، أكّد صراحةً أن جميع الكميات عادت صالحة قبل الإلغاء.
               </p>
               <div className="mt-2 overflow-x-auto rounded-md border">
                 <table className="w-full text-2xs">
@@ -304,6 +310,18 @@ export default function CancelWorkOrderDialog({
                     </span>
                   )}
                 </p>
+              )}
+              {!anyWaste && (
+                <label className="mt-2 flex cursor-pointer items-start gap-2 rounded-md border bg-muted/20 p-2 text-2xs font-bold">
+                  <Checkbox
+                    checked={allReturnedConfirmed}
+                    onCheckedChange={(checked) => setAllReturnedConfirmed(checked === true)}
+                    aria-label="تأكيد رجوع جميع الخامات صالحة"
+                  />
+                  <span>
+                    تحققتُ فعلياً: جميع الخامات المستهلَكة أعلاه عادت صالحة ويمكن إعادتها إلى المخزون المتاح.
+                  </span>
+                </label>
               )}
             </div>
           ) : (
@@ -362,7 +380,7 @@ export default function CancelWorkOrderDialog({
         <DialogFooter>
           <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
             {/* سببُ التعطيل مقروءٌ دائماً — زرٌّ معطَّلٌ بلا سبب هو نصفُ البابِ المسدود. */}
-            {(preflightPending || preflightFailed || railBlockReason || reason.trim().length < 3) && (
+            {(preflightPending || preflightFailed || railBlockReason || reason.trim().length < 3 || !materialDecisionReady) && (
               <span className="text-2xs font-bold text-[var(--sem-warn)] sm:me-auto">
                 {preflightPending
                   ? "جارٍ التحقق من النقد والورديات المفتوحة…"
@@ -370,6 +388,8 @@ export default function CancelWorkOrderDialog({
                     ? "تعذّر التحقق من وردية ردّ المبلغ."
                     : reason.trim().length < 3
                       ? "اكتب سبب الإلغاء (٣ أحرف على الأقل)."
+                      : !materialDecisionReady
+                        ? "أكّد رجوع جميع الخامات صالحة، أو سجّل الهدر الفعلي."
                       : railBlockReason}
               </span>
             )}
@@ -377,18 +397,19 @@ export default function CancelWorkOrderDialog({
               <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={pending}>تراجع</Button>
               <Button
                 variant="destructive"
-                disabled={pending || preflightPending || preflightFailed || reason.trim().length < 3 || railBlockReason != null}
+                disabled={pending || preflightPending || preflightFailed || reason.trim().length < 3 || railBlockReason != null || !materialDecisionReady}
                 onClick={() =>
                   onConfirm({
                     reason: reason.trim(),
-                    // بلا هدرٍ ⇒ لا نُرسل الحقل إطلاقاً: العقد يقرأ غيابه «رجوعٌ كامل» — أقصرُ
-                    // حمولةً وأصدقُ نيّةً من إرسال أصفارٍ صريحة.
                     materials: anyWaste
                       ? materials.map((m) => ({
                           workOrderMaterialId: m.id,
                           wasteBase: waste[m.id] ?? 0,
                           returnBase: m.baseQuantity - (waste[m.id] ?? 0),
                         }))
+                      : undefined,
+                    confirmAllMaterialsReturnedUsable: hasMaterials && !anyWaste && allReturnedConfirmed
+                      ? true
                       : undefined,
                     // الدرجُ يُرسَل لرافد الدرج وحده — الخزينةُ والبطاقةُ لا وردية لهما.
                     refundShiftId: refundShiftId ?? undefined,

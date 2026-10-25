@@ -30,10 +30,20 @@ const pending: WorkflowDispatchBatchInput = {
   clientRequestId: "saved-lost-response-command",
 };
 const result: WorkflowDispatchBatchResult = {
+  operationId: "workflow.dispatchBatch:saved-lost-response-command",
   consignmentId: 801,
   consignmentNumber: "100091",
   fulfillmentRequestId: 67,
   invoiceIds: [42, 43],
+  newVersion: "committed-shipment-version",
+  nextAction: "print",
+  documentSnapshotIds: [901, 902],
+  actualEffects: {
+    saleCreated: false,
+    inventoryIssued: false,
+    customerCollectionCreated: false,
+    deliveryFeePosted: false,
+  },
   idempotentReplay: false,
 };
 

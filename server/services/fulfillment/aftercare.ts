@@ -74,6 +74,7 @@ import {
   type AftercareSourceInput,
 } from "./aftercareSources";
 import { postAftercareIssueTx } from "./aftercarePosting";
+import { initializeConsignmentCustodyTx } from "../delivery/custody";
 
 type Identity = FulfillmentMutationIdentity & { id: number };
 export type CreateAftercareCaseInput = AftercareSourceInput & {
@@ -666,7 +667,7 @@ export async function dispatchAftercareExecutionTx(
       "هذه الحالة تحت تسوية إيقاف؛ لا ترسل عهدتها",
       "CONFLICT",
     );
-  const party = await validateDeliveryDriverTx(tx,input,row.branchId);
+  const party = await validateDeliveryDriverTx(tx, input, row.branchId);
   const tracking = requireExternalTrackingRef(
     party.partyType,
     input.externalTrackingRef,
@@ -722,6 +723,11 @@ export async function dispatchAftercareExecutionTx(
       caseId: row.id,
       codAmount: "0.00",
     },
+  });
+  await initializeConsignmentCustodyTx(tx, {
+    consignmentId,
+    actorUserId: actor.userId,
+    operationId: `aftercare.dispatch:${input.clientRequestId}`,
   });
   await recordFulfillmentMutationTx(tx, context, execution.id);
   await audit(tx, actor, "dispatch", row.id, { ...input, consignmentId });
