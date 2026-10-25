@@ -81,6 +81,26 @@ type AlrueyaSecureTransportNativeModule = {
   startFocusedMobileTask(clientRequestId: string): Promise<string>;
   resolveFocusedMobileTask(resolutionNote: string | null, clientRequestId: string): Promise<string>;
   getMobileCommandCenter(): Promise<string>;
+  getMobileExpoPushStatus(): Promise<string>;
+  registerMobileExpoPush(
+    expoPushToken: string,
+    platform: "ANDROID" | "IOS",
+    environment: "dev" | "staging" | "prod",
+    appVersion: string,
+  ): Promise<string>;
+  revokeMobileExpoPush(): Promise<string>;
+  getOperationsActor(): Promise<string>;
+  listBranches(): Promise<string>;
+  listSalesInvoices(limit: number, offset: number): Promise<string>;
+  getSalesInvoice(invoiceId: number): Promise<string>;
+  listAdminCatalog(branchId: number, limit: number, q: string | null): Promise<string>;
+  listCustomers(): Promise<string>;
+  getDecisionsInbox(limit: number): Promise<string>;
+  getSuperAppApprovalInbox(limit: number, offset: number): Promise<string>;
+  getTreasuryDashboard(): Promise<string>;
+  getTreasuryRecentMovements(limit: number): Promise<string>;
+  listSuppliers(): Promise<string>;
+  listPurchases(limit: number): Promise<string>;
   logout(): Promise<Readonly<{ cleared: true }>>;
 };
 

@@ -99,6 +99,54 @@ class AlrueyaSecureTransportModule : Module() {
       transport().mobileRevokeExpoPush()
     }
 
+    AsyncFunction("getOperationsActor") {
+      transport().operationsActor()
+    }
+
+    AsyncFunction("listBranches") {
+      transport().listBranches()
+    }
+
+    AsyncFunction("listSalesInvoices") { limit: Int, offset: Int ->
+      transport().listSalesInvoices(limit, offset)
+    }
+
+    AsyncFunction("getSalesInvoice") { invoiceId: Int ->
+      transport().getSalesInvoice(invoiceId)
+    }
+
+    AsyncFunction("listAdminCatalog") { branchId: Int, limit: Int, q: String? ->
+      transport().listAdminCatalog(branchId, limit, q)
+    }
+
+    AsyncFunction("listCustomers") {
+      transport().listCustomers()
+    }
+
+    AsyncFunction("getDecisionsInbox") { limit: Int ->
+      transport().decisionsInbox(limit)
+    }
+
+    AsyncFunction("getSuperAppApprovalInbox") { limit: Int, offset: Int ->
+      transport().superAppApprovalInbox(limit, offset)
+    }
+
+    AsyncFunction("getTreasuryDashboard") {
+      transport().treasuryDashboard()
+    }
+
+    AsyncFunction("getTreasuryRecentMovements") { limit: Int ->
+      transport().treasuryRecentMovements(limit)
+    }
+
+    AsyncFunction("listSuppliers") {
+      transport().listSuppliers()
+    }
+
+    AsyncFunction("listPurchases") { limit: Int ->
+      transport().listPurchases(limit)
+    }
+
     AsyncFunction("logout") {
       transport().logout()
       mapOf("cleared" to true)
