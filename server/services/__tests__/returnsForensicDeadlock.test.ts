@@ -279,27 +279,20 @@ describe("تدقيق جنائيّ: «المرتجع وهميّ ويبتلع ال
       .rejects.toThrow(/محسوم/);
   });
 
-  /**
-   * ⚠️ العطبُ الكامن يبقى موثَّقاً لا مُصلَحاً (قرارٌ مسجَّل في `returnService.ts`):
-   * `restock` مُجبَرٌ على false على مستوى **الفاتورة** لفواتير WORKORDER. غيرُ قابلٍ للوقوع
-   * اليوم (بندٌ واحدٌ هو ناتجُ الأمر، ولم يُخصَم قطّ)، وإصلاحُه يلزمه **profile** يقبل
-   * `INVENTORY` لعكس مخزون أمر شغل + إعادةَ استحقاق أمانةٍ لكلّ مودِعٍ على حدة.
-   * هذا الاختبار يُثبّت السلوك القائم كي لا يتغيّر سهواً.
-   */
-  it("فاتورة WORKORDER: restock مُجبَرٌ على false للفاتورة كلّها — سلوكٌ مقصودٌ موثَّق", async () => {
+  it("فاتورة WORKORDER: المرتجع المباشر مرفوض قبل أي أثر بلا مصير تشغيلي معتمد", async () => {
     const created = await saleByManager();
     await db().update(s.invoices).set({ sourceType: "WORKORDER" }).where(eq(s.invoices.id, created.invoiceId));
     const items = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, created.invoiceId));
 
-    await withTx((tx) => returnSaleInTx(tx, {
+    await expect(withTx((tx) => returnSaleInTx(tx, {
       invoiceId: created.invoiceId,
       lines: [{ invoiceItemId: Number(items[0].id), baseQuantity: 5 }],
-      restock: true, // يُتجاهَل عمداً لفواتير أمر الشغل
-    }, SOLE_MANAGER));
+      restock: true,
+    }, SOLE_MANAGER))).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
     expect(await stockOf()).toBe(95);
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.id, Number(items[0].id))))[0];
-    expect(Number(item.returnedBaseQuantity ?? 0)).toBe(5);
+    expect(Number(item.returnedBaseQuantity ?? 0)).toBe(0);
     expect(Number(item.returnedRestockedBaseQuantity ?? 0)).toBe(0);
   });
 });

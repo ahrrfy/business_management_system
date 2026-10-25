@@ -12,6 +12,7 @@ import type { TrpcContext } from "../context";
 import {
   createFulfillmentCharge,
   approveFulfillmentCharge,
+  completeFulfillmentCharge,
   collectFulfillmentCharges,
   refundFulfillmentCharge,
   refundFulfillmentChargeExcess,
@@ -125,6 +126,13 @@ export const fulfillmentChargesRouter = router({
   approve: deliveryManagerProcedure
     .input(transition)
     .mutation(({ ctx, input }) => approveFulfillmentCharge(input, actor(ctx))),
+  complete: deliveryManagerProcedure
+    .input(
+      transition.extend({
+        evidence: z.string().trim().min(5).max(2000),
+      }),
+    )
+    .mutation(({ ctx, input }) => completeFulfillmentCharge(input, actor(ctx))),
   collect: deliveryCashierProcedure
     .input(
       z.object({

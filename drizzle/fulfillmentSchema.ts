@@ -29,6 +29,7 @@ import {
   inventoryMovements,
   productVariants,
   receipts,
+  shifts,
   suppliers,
   users,
   workOrders,
@@ -235,6 +236,11 @@ export const fulfillmentCharges = mysqlTable(
     createdBy: int("createdBy").notNull(),
     approvedBy: int("approvedBy"),
     approvedAt: timestamp("approvedAt"),
+    completedBy: int("completedBy"),
+    completedAt: timestamp("completedAt"),
+    completionEvidence: text("completionEvidence"),
+    /** Cut-over marker: approval already posted revenue/cost under the pre-0405 contract. */
+    legacyPostedAt: timestamp("legacyPostedAt"),
     cancelledBy: int("cancelledBy"),
     cancelledAt: timestamp("cancelledAt"),
     reason: text("reason"),
@@ -286,6 +292,11 @@ export const fulfillmentCharges = mysqlTable(
       columns: [t.approvedBy],
       foreignColumns: [users.id],
     }),
+    completerFk: foreignKey({
+      name: "fk_fc_completer",
+      columns: [t.completedBy],
+      foreignColumns: [users.id],
+    }),
     cancelFk: foreignKey({
       name: "fk_fc_cancel",
       columns: [t.cancelledBy],
@@ -301,13 +312,20 @@ export const fulfillmentCharges = mysqlTable(
     ),
     customerCheck: check(
       "chk_fc_customer",
-      sql`${t.amount} = 0 OR ${t.customerId} IS NOT NULL OR (${t.category} = 'SERVICE' AND ${t.status} = 'APPROVED' AND ${t.externalCost} = 0 AND ${t.paidAmount} = ${t.amount} AND ${t.payeeSupplierId} IS NULL AND ${t.payeePartyId} IS NULL AND ${t.payeeUserId} IS NULL AND ${t.payeeName} IS NULL)`,
+      sql`${t.amount} = 0 OR ${t.customerId} IS NOT NULL OR (${t.category} = 'SERVICE' AND ${t.status} IN ('APPROVED','COMPLETED') AND ${t.externalCost} = 0 AND ${t.paidAmount} = ${t.amount} AND ${t.payeeSupplierId} IS NULL AND ${t.payeePartyId} IS NULL AND ${t.payeeUserId} IS NULL AND ${t.payeeName} IS NULL)`,
     ),
     payeeCheck: check(
       "chk_fc_payee",
       sql`${t.externalCost} = 0 OR ((${t.payeeSupplierId} IS NOT NULL) + (${t.payeePartyId} IS NOT NULL) + (${t.payeeUserId} IS NOT NULL) + (${t.payeeName} IS NOT NULL AND CHAR_LENGTH(TRIM(${t.payeeName})) > 0) = 1)`,
     ),
     versionCheck: check("chk_fc_version", sql`${t.version} > 0`),
+    lifecycleCheck: check(
+      "chk_fc_lifecycle",
+      sql`(${t.status} = 'DRAFT' AND ${t.approvedBy} IS NULL AND ${t.approvedAt} IS NULL AND ${t.completedBy} IS NULL AND ${t.completedAt} IS NULL)
+        OR (${t.status} = 'APPROVED' AND ${t.approvedBy} IS NOT NULL AND ${t.approvedAt} IS NOT NULL AND ${t.completedBy} IS NULL AND ${t.completedAt} IS NULL)
+        OR (${t.status} = 'COMPLETED' AND ${t.approvedBy} IS NOT NULL AND ${t.approvedAt} IS NOT NULL AND ${t.completedBy} IS NOT NULL AND ${t.completedAt} IS NOT NULL AND ${t.completionEvidence} IS NOT NULL)
+        OR (${t.status} = 'CANCELLED')`,
+    ),
   }),
 );
 
@@ -813,6 +831,364 @@ export const aftercareSettlements = mysqlTable(
     ),
   }),
 );
+
+/**
+ * Physical custody is independent from the commercial invoice, customer debt and
+ * carrier settlement.  Quantities are kept in exclusive buckets so partial
+ * delivery/return/inspection never has to overload `deliveryConsignments.status`.
+ */
+export const deliveryCustodyItems = mysqlTable(
+  "deliveryCustodyItems",
+  {
+    id: id("id").autoincrement().primaryKey(),
+    consignmentId: id("consignmentId").notNull(),
+    leaderConsignmentId: id("leaderConsignmentId").notNull(),
+    branchId: id("branchId").notNull(),
+    sourceType: mysqlEnum("sourceType", [
+      "INVOICE",
+      "WORK_ORDER",
+      "ONLINE_ORDER",
+      "FULFILLMENT_REQUEST",
+      "AFTERCARE_EXECUTION",
+    ]).notNull(),
+    sourceId: id("sourceId").notNull(),
+    sourceLineKey: varchar("sourceLineKey", { length: 120 }).notNull(),
+    itemKind: mysqlEnum("itemKind", [
+      "STOCKED_ITEM",
+      "BUNDLE_COMPONENT",
+      "WORK_ORDER_OUTPUT",
+      "AFTERCARE_OUTPUT",
+    ]).notNull(),
+    invoiceItemId: id("invoiceItemId"),
+    bundleComponentId: id("bundleComponentId"),
+    variantId: id("variantId"),
+    originalMovementId: id("originalMovementId"),
+    baseQuantity: int("baseQuantity").notNull(),
+    originalIssueUnitCost: amount("originalIssueUnitCost"),
+    originalIssueValue: amount("originalIssueValue"),
+    preparedHeldBaseQuantity: int("preparedHeldBaseQuantity")
+      .default(0)
+      .notNull(),
+    carrierCustodyBaseQuantity: int("carrierCustodyBaseQuantity")
+      .default(0)
+      .notNull(),
+    customerDeliveredBaseQuantity: int("customerDeliveredBaseQuantity")
+      .default(0)
+      .notNull(),
+    returnedPendingInspectionBaseQuantity: int(
+      "returnedPendingInspectionBaseQuantity",
+    )
+      .default(0)
+      .notNull(),
+    customerOwnedHeldBaseQuantity: int("customerOwnedHeldBaseQuantity")
+      .default(0)
+      .notNull(),
+    reworkWipBaseQuantity: int("reworkWipBaseQuantity").default(0).notNull(),
+    restockedClosedBaseQuantity: int("restockedClosedBaseQuantity")
+      .default(0)
+      .notNull(),
+    damagedClosedBaseQuantity: int("damagedClosedBaseQuantity")
+      .default(0)
+      .notNull(),
+    reviewStatus: mysqlEnum("reviewStatus", [
+      "VERIFIED",
+      "REVIEW_REQUIRED",
+      "RESOLVED",
+    ])
+      .default("VERIFIED")
+      .notNull(),
+    reviewReason: text("reviewReason"),
+    version: int("version").default(1).notNull(),
+    /** Null only for the read-only cut-over backfill; native commands always stamp an actor. */
+    createdBy: int("createdBy"),
+    updatedBy: int("updatedBy"),
+    closedAt: timestamp("closedAt"),
+    ...dates(),
+  },
+  (t): MySqlTableExtraConfig => ({
+    lineUq: unique("uq_dci_source_line").on(t.consignmentId, t.sourceLineKey),
+    shipmentIdx: index("idx_dci_shipment").on(
+      t.leaderConsignmentId,
+      t.reviewStatus,
+    ),
+    sourceIdx: index("idx_dci_source").on(t.sourceType, t.sourceId),
+    variantIdx: index("idx_dci_variant").on(t.variantId),
+    movementIdx: index("idx_dci_movement").on(t.originalMovementId),
+    consignmentFk: foreignKey({
+      name: "fk_dci_consignment",
+      columns: [t.consignmentId],
+      foreignColumns: [deliveryConsignments.id],
+    }),
+    leaderFk: foreignKey({
+      name: "fk_dci_leader",
+      columns: [t.leaderConsignmentId],
+      foreignColumns: [deliveryConsignments.id],
+    }),
+    branchFk: foreignKey({
+      name: "fk_dci_branch",
+      columns: [t.branchId],
+      foreignColumns: [branches.id],
+    }),
+    invoiceItemFk: foreignKey({
+      name: "fk_dci_invoice_item",
+      columns: [t.invoiceItemId],
+      foreignColumns: [invoiceItems.id],
+    }),
+    componentFk: foreignKey({
+      name: "fk_dci_bundle_component",
+      columns: [t.bundleComponentId],
+      foreignColumns: [invoiceItemBundleComponents.id],
+    }),
+    variantFk: foreignKey({
+      name: "fk_dci_variant",
+      columns: [t.variantId],
+      foreignColumns: [productVariants.id],
+    }),
+    movementFk: foreignKey({
+      name: "fk_dci_movement",
+      columns: [t.originalMovementId],
+      foreignColumns: [inventoryMovements.id],
+    }),
+    creatorFk: foreignKey({
+      name: "fk_dci_creator",
+      columns: [t.createdBy],
+      foreignColumns: [users.id],
+    }),
+    updaterFk: foreignKey({
+      name: "fk_dci_updater",
+      columns: [t.updatedBy],
+      foreignColumns: [users.id],
+    }),
+    quantityCheck: check(
+      "chk_dci_quantity_conservation",
+      sql`${t.baseQuantity} > 0
+        AND ${t.preparedHeldBaseQuantity} >= 0
+        AND ${t.carrierCustodyBaseQuantity} >= 0
+        AND ${t.customerDeliveredBaseQuantity} >= 0
+        AND ${t.returnedPendingInspectionBaseQuantity} >= 0
+        AND ${t.customerOwnedHeldBaseQuantity} >= 0
+        AND ${t.reworkWipBaseQuantity} >= 0
+        AND ${t.restockedClosedBaseQuantity} >= 0
+        AND ${t.damagedClosedBaseQuantity} >= 0
+        AND ${t.preparedHeldBaseQuantity}
+          + ${t.carrierCustodyBaseQuantity}
+          + ${t.customerDeliveredBaseQuantity}
+          + ${t.returnedPendingInspectionBaseQuantity}
+          + ${t.customerOwnedHeldBaseQuantity}
+          + ${t.reworkWipBaseQuantity}
+          + ${t.restockedClosedBaseQuantity}
+          + ${t.damagedClosedBaseQuantity} = ${t.baseQuantity}`,
+    ),
+    valueCheck: check(
+      "chk_dci_historical_value",
+      sql`(${t.originalIssueUnitCost} IS NULL AND ${t.originalIssueValue} IS NULL)
+        OR (${t.originalIssueUnitCost} >= 0 AND ${t.originalIssueValue} >= 0)`,
+    ),
+    reviewCheck: check(
+      "chk_dci_review_reason",
+      sql`${t.reviewStatus} <> 'REVIEW_REQUIRED'
+        OR (${t.reviewReason} IS NOT NULL AND CHAR_LENGTH(TRIM(${t.reviewReason})) >= 3)`,
+    ),
+    shapeCheck: check(
+      "chk_dci_item_shape",
+      sql`(${t.itemKind} = 'STOCKED_ITEM' AND ${t.invoiceItemId} IS NOT NULL AND ${t.bundleComponentId} IS NULL AND ${t.variantId} IS NOT NULL)
+        OR (${t.itemKind} = 'BUNDLE_COMPONENT' AND ${t.invoiceItemId} IS NOT NULL AND ${t.bundleComponentId} IS NOT NULL AND ${t.variantId} IS NOT NULL)
+        OR (${t.itemKind} = 'WORK_ORDER_OUTPUT' AND ${t.bundleComponentId} IS NULL AND ${t.variantId} IS NULL AND ${t.originalMovementId} IS NULL)
+        OR (${t.itemKind} = 'AFTERCARE_OUTPUT' AND ${t.bundleComponentId} IS NULL)`,
+    ),
+    versionCheck: check("chk_dci_version", sql`${t.version} > 0`),
+  }),
+);
+
+export type DeliveryCustodyItem = typeof deliveryCustodyItems.$inferSelect;
+export type InsertDeliveryCustodyItem =
+  typeof deliveryCustodyItems.$inferInsert;
+
+export const DELIVERY_CUSTODY_STATES = [
+  "PREPARED_HELD",
+  "CARRIER_CUSTODY",
+  "CUSTOMER_DELIVERED",
+  "RETURNED_PENDING_INSPECTION",
+  "CUSTOMER_OWNED_HELD",
+  "REWORK_WIP",
+  "RESTOCKED_CLOSED",
+  "DAMAGED_CLOSED",
+] as const;
+
+/** Append-only evidence for each quantity transition. */
+export const deliveryCustodyEvents = mysqlTable(
+  "deliveryCustodyEvents",
+  {
+    id: id("id").autoincrement().primaryKey(),
+    eventKey: varchar("eventKey", { length: 160 }).notNull(),
+    custodyItemId: id("custodyItemId").notNull(),
+    consignmentId: id("consignmentId").notNull(),
+    operationId: varchar("operationId", { length: 100 }).notNull(),
+    eventType: varchar("eventType", { length: 60 }).notNull(),
+    fromState: mysqlEnum("fromState", DELIVERY_CUSTODY_STATES),
+    toState: mysqlEnum("toState", DELIVERY_CUSTODY_STATES).notNull(),
+    baseQuantity: int("baseQuantity").notNull(),
+    evidence: json("evidence").notNull(),
+    /** Null only for MIGRATED_OPEN events produced by migration 0405. */
+    actorUserId: int("actorUserId"),
+    occurredAt: timestamp("occurredAt").defaultNow().notNull(),
+  },
+  (t): MySqlTableExtraConfig => ({
+    eventUq: unique("uq_dce_event_key").on(t.eventKey),
+    itemTimeIdx: index("idx_dce_item_time").on(t.custodyItemId, t.occurredAt),
+    consignmentIdx: index("idx_dce_consignment").on(t.consignmentId),
+    itemFk: foreignKey({
+      name: "fk_dce_item",
+      columns: [t.custodyItemId],
+      foreignColumns: [deliveryCustodyItems.id],
+    }),
+    consignmentFk: foreignKey({
+      name: "fk_dce_consignment",
+      columns: [t.consignmentId],
+      foreignColumns: [deliveryConsignments.id],
+    }),
+    actorFk: foreignKey({
+      name: "fk_dce_actor",
+      columns: [t.actorUserId],
+      foreignColumns: [users.id],
+    }),
+    quantityCheck: check("chk_dce_quantity", sql`${t.baseQuantity} > 0`),
+    transitionCheck: check(
+      "chk_dce_transition",
+      sql`${t.fromState} IS NULL OR ${t.fromState} <> ${t.toState}`,
+    ),
+  }),
+);
+
+export type DeliveryCustodyEvent = typeof deliveryCustodyEvents.$inferSelect;
+
+/** Immutable event payload used by original printing and every later reprint. */
+export const deliveryDocumentSnapshots = mysqlTable(
+  "deliveryDocumentSnapshots",
+  {
+    id: id("id").autoincrement().primaryKey(),
+    documentNumber: varchar("documentNumber", { length: 80 }).notNull(),
+    documentType: mysqlEnum("documentType", [
+      "INVOICE",
+      "SHIPPING_LABEL",
+      "DISPATCH_SLIP",
+      "DELIVERY_MANIFEST",
+      "REMITTANCE_RECEIPT",
+      "PARTY_SETTLEMENT",
+      "PHYSICAL_RETURN_RECEIPT",
+      "SALE_RETURN_RECEIPT",
+      "SHORTFALL_VOUCHER",
+      "OVERAGE_REFUND",
+      "DELIVERY_FEE_REFUND",
+      "DELIVERY_FEE_PAYMENT",
+      "AFTERCARE_SETTLEMENT",
+      "AFTERCARE_WAYBILL",
+    ]).notNull(),
+    layout: mysqlEnum("layout", [
+      "A4_12MM",
+      "THERMAL_80_CONTENT_72",
+      "LABEL_80X120_SAFE_3",
+      "LABEL_100X150_SAFE_3",
+      "MULTIPAGE_PACK",
+    ]).notNull(),
+    sourceType: mysqlEnum("sourceType", [
+      "INVOICE",
+      "CONSIGNMENT",
+      "SHIPMENT",
+      "REMITTANCE",
+      "RETURN_RECEIPT",
+      "AFTERCARE_EXECUTION",
+      "AFTERCARE_SETTLEMENT",
+      "PARTY_SETTLEMENT",
+    ]).notNull(),
+    sourceId: id("sourceId").notNull(),
+    sourceVersion: varchar("sourceVersion", { length: 128 }).notNull(),
+    branchId: id("branchId").notNull(),
+    shiftId: id("shiftId"),
+    eventKey: varchar("eventKey", { length: 160 }).notNull(),
+    eventOccurredAt: timestamp("eventOccurredAt").notNull(),
+    payload: json("payload").notNull(),
+    payloadHash: char("payloadHash", { length: 64 }).notNull(),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t): MySqlTableExtraConfig => ({
+    numberUq: unique("uq_dds_number").on(t.documentNumber),
+    eventUq: unique("uq_dds_event_document").on(t.eventKey, t.documentType),
+    sourceIdx: index("idx_dds_source").on(
+      t.sourceType,
+      t.sourceId,
+      t.documentType,
+    ),
+    branchTimeIdx: index("idx_dds_branch_time").on(t.branchId, t.createdAt),
+    branchFk: foreignKey({
+      name: "fk_dds_branch",
+      columns: [t.branchId],
+      foreignColumns: [branches.id],
+    }),
+    shiftFk: foreignKey({
+      name: "fk_dds_shift",
+      columns: [t.shiftId],
+      foreignColumns: [shifts.id],
+    }),
+    actorFk: foreignKey({
+      name: "fk_dds_actor",
+      columns: [t.createdBy],
+      foreignColumns: [users.id],
+    }),
+  }),
+);
+
+export type DeliveryDocumentSnapshot =
+  typeof deliveryDocumentSnapshots.$inferSelect;
+
+/** Printing is an operational side effect only; it never posts money or stock. */
+export const deliveryDocumentPrints = mysqlTable(
+  "deliveryDocumentPrints",
+  {
+    id: id("id").autoincrement().primaryKey(),
+    snapshotId: id("snapshotId").notNull(),
+    clientRequestId: varchar("clientRequestId", { length: 80 }).notNull(),
+    requestHash: char("requestHash", { length: 64 }).notNull(),
+    copyType: mysqlEnum("copyType", ["ORIGINAL", "REPRINT"])
+      .default("ORIGINAL")
+      .notNull(),
+    reason: varchar("reason", { length: 500 }),
+    printerKey: varchar("printerKey", { length: 120 }),
+    status: mysqlEnum("status", ["REQUESTED", "SENT", "FAILED", "CANCELLED"])
+      .default("REQUESTED")
+      .notNull(),
+    requestedBy: int("requestedBy").notNull(),
+    requestedAt: timestamp("requestedAt").defaultNow().notNull(),
+    completedAt: timestamp("completedAt"),
+    errorMessage: varchar("errorMessage", { length: 500 }),
+  },
+  (t): MySqlTableExtraConfig => ({
+    requestUq: unique("uq_ddp_request").on(t.clientRequestId),
+    snapshotIdx: index("idx_ddp_snapshot").on(t.snapshotId, t.requestedAt),
+    snapshotFk: foreignKey({
+      name: "fk_ddp_snapshot",
+      columns: [t.snapshotId],
+      foreignColumns: [deliveryDocumentSnapshots.id],
+    }),
+    actorFk: foreignKey({
+      name: "fk_ddp_actor",
+      columns: [t.requestedBy],
+      foreignColumns: [users.id],
+    }),
+    copyCheck: check(
+      "chk_ddp_copy_reason",
+      sql`(${t.copyType} = 'ORIGINAL') OR (${t.copyType} = 'REPRINT' AND ${t.reason} IS NOT NULL AND CHAR_LENGTH(TRIM(${t.reason})) >= 3)`,
+    ),
+    resultCheck: check(
+      "chk_ddp_result",
+      sql`(${t.status} = 'FAILED' AND ${t.errorMessage} IS NOT NULL)
+        OR (${t.status} <> 'FAILED' AND ${t.errorMessage} IS NULL)`,
+    ),
+  }),
+);
+
+export type DeliveryDocumentPrint = typeof deliveryDocumentPrints.$inferSelect;
 
 export const aftercareSettlementLines = mysqlTable(
   "aftercareSettlementLines",

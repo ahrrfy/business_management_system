@@ -13,10 +13,7 @@ import { dispatchToDelivery } from "../delivery/dispatch";
 import { cancelDeliveryAssignment } from "../delivery/cancellation";
 import { createWorkOrder } from "../workOrder/create";
 import { deliverWorkOrder } from "../workOrder/deliver";
-import {
-  approveWorkOrderControlRequest,
-  requestWorkOrderControl,
-} from "../workOrder/controlRequests";
+import { requestWorkOrderControl } from "../workOrder/controlRequests";
 import { createVoucher } from "../voucherService";
 
 const TABLES = [
@@ -32,7 +29,6 @@ const TABLES = [
 
 const MANAGER = { userId: 1, branchId: 1, role: "manager" };
 const CASHIER = { userId: 2, branchId: 1, role: "cashier" };
-const OWNER = { userId: 4, branchId: 1, role: "manager" as const };
 
 function db() {
   const d = getDb();
@@ -196,19 +192,18 @@ describe("إصلاحات إسناد التوصيل والذمم في كاشير 
     expect(parcelBefore).toBeDefined();
     expect(parcelBefore.parcelStatus).toBe("OUT_FOR_DELIVERY");
 
-    // التحقق أولاً من أن الحارس يمنع الإلغاء المباشر ما دام الطرد مسنداً للتوصيل
-    const directCancelReq = await requestWorkOrderControl({
-      requestKey: `cancel-dispatch-blocked-${randomUUID()}`,
-      workOrderId,
-      requestType: "CANCEL",
-      baseVersion: Number(woBefore.version),
-      reason: "محاولة إلغاء مباشرة والأمر مسند",
-      payload: { refundShiftId: shift.shiftId, materials: null },
-    }, MANAGER);
-
+    // صدور الفاتورة يغلق CANCEL منذ إنشاء الطلب نفسه: المسار الصحيح هو استرجاع التسليم،
+    // ولا ننشئ طلب تحكم معلّقاً معروفاً سلفاً أنه غير قابل للاعتماد.
     await expect(
-      approveWorkOrderControlRequest(Number(directCancelReq.id), OWNER, "موافق"),
-    ).rejects.toThrowError(/استرجع الإرساليّة|استرجع الإرسالية/);
+      requestWorkOrderControl({
+        requestKey: `cancel-dispatch-blocked-${randomUUID()}`,
+        workOrderId,
+        requestType: "CANCEL",
+        baseVersion: Number(woBefore.version),
+        reason: "محاولة إلغاء مباشرة والأمر مسند",
+        payload: { refundShiftId: shift.shiftId, materials: null },
+      }, MANAGER),
+    ).rejects.toThrowError(/فاتورة|استرجاع التسليم/);
 
     // إلغاء إسناد التوصيل من إدارة التوصيل (فك الشحنة واسترداد الطرد)
     await cancelDeliveryAssignment({
@@ -223,17 +218,15 @@ describe("إصلاحات إسناد التوصيل والذمم في كاشير 
 
     // بعد فك الشحنة، لأن الأمر صدرت له فاتورة بيع، حارس الفاتورة (ز) يرفض الإلغاء ويوجه لمسار استرجاع التسليم
     const [woReadyForCancel] = await db().select().from(s.workOrders).where(eq(s.workOrders.id, workOrderId));
-    const request = await requestWorkOrderControl({
-      requestKey: `cancel-dispatch-ok-${randomUUID()}`,
-      workOrderId,
-      requestType: "CANCEL",
-      baseVersion: Number(woReadyForCancel.version),
-      reason: "محاولة إلغاء أمر بعد صدور فاتورته",
-      payload: { refundShiftId: shift.shiftId, materials: null },
-    }, MANAGER);
-
     await expect(
-      approveWorkOrderControlRequest(Number(request.id), OWNER, "موافق"),
-    ).rejects.toThrowError(/فاتورة|استرجاع/);
+      requestWorkOrderControl({
+        requestKey: `cancel-dispatch-ok-${randomUUID()}`,
+        workOrderId,
+        requestType: "CANCEL",
+        baseVersion: Number(woReadyForCancel.version),
+        reason: "محاولة إلغاء أمر بعد صدور فاتورته",
+        payload: { refundShiftId: shift.shiftId, materials: null },
+      }, MANAGER),
+    ).rejects.toThrowError(/فاتورة|استرجاع التسليم/);
   });
 });

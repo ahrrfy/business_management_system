@@ -123,6 +123,54 @@ public final class AlrueyaSecureTransportModule: Module {
       try self.transport.mobileRevokeExpoPush()
     }
 
+    AsyncFunction("getOperationsActor") {
+      try self.transport.operationsActor()
+    }
+
+    AsyncFunction("listBranches") {
+      try self.transport.listBranches()
+    }
+
+    AsyncFunction("listSalesInvoices") { (limit: Int, offset: Int) in
+      try self.transport.listSalesInvoices(limit: limit, offset: offset)
+    }
+
+    AsyncFunction("getSalesInvoice") { (invoiceId: Int) in
+      try self.transport.getSalesInvoice(invoiceId: invoiceId)
+    }
+
+    AsyncFunction("listAdminCatalog") { (branchId: Int, limit: Int, q: String?) in
+      try self.transport.listAdminCatalog(branchId: branchId, limit: limit, q: q)
+    }
+
+    AsyncFunction("listCustomers") {
+      try self.transport.listCustomers()
+    }
+
+    AsyncFunction("getDecisionsInbox") { (limit: Int) in
+      try self.transport.decisionsInbox(limit: limit)
+    }
+
+    AsyncFunction("getSuperAppApprovalInbox") { (limit: Int, offset: Int) in
+      try self.transport.superAppApprovalInbox(limit: limit, offset: offset)
+    }
+
+    AsyncFunction("getTreasuryDashboard") {
+      try self.transport.treasuryDashboard()
+    }
+
+    AsyncFunction("getTreasuryRecentMovements") { (limit: Int) in
+      try self.transport.treasuryRecentMovements(limit: limit)
+    }
+
+    AsyncFunction("listSuppliers") {
+      try self.transport.listSuppliers()
+    }
+
+    AsyncFunction("listPurchases") { (limit: Int) in
+      try self.transport.listPurchases(limit: limit)
+    }
+
     AsyncFunction("logout") {
       self.transport.logout()
       return ["cleared": true]

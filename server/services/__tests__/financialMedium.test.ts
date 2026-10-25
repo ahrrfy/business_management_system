@@ -144,7 +144,7 @@ describe("reconcileCustomerBalances — لا انحراف وهمي بعد مرت
 });
 
 describe("WORKORDER — إرجاع لا يُعيد المتغيّر الأساس إلى المخزون (لا مخزون وهمي)", () => {
-  it("returnSale على فاتورة WORKORDER يَفرض restock=false", async () => {
+  it("يرفض المرتجع العام لأمر منفذ حتى مع قرار تالف، بلا أثر مالي أو مخزني", async () => {
     await setStock(1, 1, 5); // مواد كافية للبدء (نستخدم variantId 1 كمواد + كأساس للتبسيط)
     // M10: تسليم WO نقداً يَستوجب وردية مفتوحة لمستخدم actor.
     const shiftId = await openShift(1, 1);
@@ -170,7 +170,11 @@ describe("WORKORDER — إرجاع لا يُعيد المتغيّر الأساس
 
     const stockBefore = (await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1)))[0].quantity;
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, deliver.invoiceId)))[0];
-    await returnSale({
+    const invoiceBefore = (await db().select().from(s.invoices).where(eq(s.invoices.id, deliver.invoiceId)))[0];
+    const workOrderBefore = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, wo.workOrderId)))[0];
+    const receiptsBefore = (await db().select().from(s.receipts)).length;
+    const entriesBefore = (await db().select().from(s.accountingEntries)).length;
+    await expect(returnSale({
       invoiceId: deliver.invoiceId,
       lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
       resolution: {
@@ -181,8 +185,15 @@ describe("WORKORDER — إرجاع لا يُعيد المتغيّر الأساس
         reason: "مرتجع أمر شغل مخصص لا يعود إلى مخزون الرف",
         disposition: "DAMAGED",
       },
-    }, actor);
+    }, actor)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
     const stockAfter = (await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1)))[0].quantity;
-    expect(stockAfter).toBe(stockBefore); // لا تغيير — لم يُعَد المنتج الأساس وهمياً
+    const invoiceAfter = (await db().select().from(s.invoices).where(eq(s.invoices.id, deliver.invoiceId)))[0];
+    const workOrderAfter = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, wo.workOrderId)))[0];
+    expect(stockAfter).toBe(stockBefore);
+    expect(invoiceAfter.status).toBe(invoiceBefore.status);
+    expect(invoiceAfter.paidAmount).toBe(invoiceBefore.paidAmount);
+    expect(workOrderAfter.status).toBe(workOrderBefore.status);
+    expect(await db().select().from(s.receipts)).toHaveLength(receiptsBefore);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(entriesBefore);
   });
 });

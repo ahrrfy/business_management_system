@@ -15,8 +15,12 @@
   و`mobilePayslipReveal` و`mobileRequestLeave` و`mobileWithdrawLatestLeave`
   و`mobileStartFocusedTask` و`mobileResolveFocusedTask`، إضافة إلى
   `superApp.mobileCommandCenter` و`mobileExpoPushStatus` و`mobileRegisterExpoPush`
-  و`mobileRevokeExpoPush`. لا توجد نقطة نهاية عامة، ولا يقبل أي إجراءٍ أو معرّف
-  موظف/فرع/مهمة من JavaScript خارج هذه العقود.
+  و`mobileRevokeExpoPush`، وقراءات المتابعة التشغيلية المسماة للقراءة فقط:
+  `auth.me` و`branches.list` و`sales.list` و`sales.get` و`catalog.adminList`
+  و`customers.list` و`decisions.inbox` و`superApp.approvalInbox`
+  و`treasury.getDashboard` و`treasury.getRecentMovements` و`suppliers.list`
+  و`purchases.list`. لا توجد نقطة نهاية عامة، ولا تُنفَّذ قرارات اعتماد مالية أو تشغيلية
+  من النقل الأصلي دون تذكرة step-up مستقلة قصيرة العمر وفق `SECURITY.md`.
 - عنوان الخادم وSPKI pins يحقنان عند البناء بواسطة
   `plugins/withAlrueyaSecureTransport.js`. بناء الإنتاج يفشل عند غياب pin، والمطابقة
   تتحقق بعد TLS/hostname validation وقبل إرسال جسم POST.

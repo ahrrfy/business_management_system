@@ -14,7 +14,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 
 import { AnimatedReveal } from "@/components/AnimatedReveal";
-import { ExperienceState } from "@/components/ExperienceState";
+import { ExperienceState, type ExperienceStateKind } from "@/components/ExperienceState";
 import { UnifiedScreenHeader } from "@/components/UnifiedScreenHeader";
 import { colors, radius, space } from "@/constants/theme";
 import { formatIqd } from "@/lib/format";
@@ -40,6 +40,12 @@ type ApprovalItem = {
   expectedVersion?: number | null;
 };
 
+type FeedbackNotice = {
+  state: Extract<ExperienceStateKind, "success" | "error" | "pending">;
+  title: string;
+  detail: string;
+};
+
 const categoryConfig: Record<ApprovalCategory, { label: string; icon: keyof typeof Ionicons.glyphMap }> = {
   STOCK: { label: "تسوية مخزن", icon: "cube-outline" },
   EXPENSE: { label: "مصروفات", icon: "cash-outline" },
@@ -59,7 +65,7 @@ export default function ApprovalsScreen() {
   const [filter, setFilter] = useState<"ALL" | ApprovalCategory>("ALL");
   const [selectedItem, setSelectedItem] = useState<ApprovalItem | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [feedback, setFeedback] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<FeedbackNotice | null>(null);
   const [rejectModalVisible, setRejectModalVisible] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
   const [refreshing, setRefreshing] = useState(false);
@@ -104,7 +110,7 @@ export default function ApprovalsScreen() {
             applicant: "نظام الرقابة والقرارات التنفيذية",
             branch: "الفرع الرئيسي - المنصور",
             amountOrMetric: d.actionLabel,
-            reason: `مؤشر تشغيلي حقيقي من قاعدة البيانات يتطلب قراراً إدارياً (${d.actionLabel}).`,
+            reason: `مؤشر تشغيلي حقيقي من قاعدة البيانات يتطلب متابعة إدارية (${d.actionLabel}).`,
             createdAt: "اليوم",
           });
         }
@@ -134,24 +140,42 @@ export default function ApprovalsScreen() {
   };
 
   const handleApprove = async (item: ApprovalItem) => {
+    if (!item.kind || !item.numericId) {
+      setSelectedItem(null);
+      setFeedback({
+        state: "pending",
+        title: `«${item.title}» مؤشر رقابي تنفيذي`,
+        detail: "يُعالج هذا المؤشر من الوحدة المختصة على لوحة الحوكمة المعتمدة وليس كطلب اعتماد منفرد.",
+      });
+      return;
+    }
+
     setIsProcessing(true);
     try {
       await unlockLocalSession();
-      if (item.kind && item.numericId) {
-        await submitRealDecision({
-          kind: item.kind,
-          id: item.numericId,
-          action: "APPROVE",
-          expectedVersion: item.expectedVersion,
-        });
-      }
+      await submitRealDecision({
+        kind: item.kind,
+        id: item.numericId,
+        action: "APPROVE",
+        expectedVersion: item.expectedVersion,
+      });
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setItems((prev) => prev.filter((i) => i.id !== item.id));
       setSelectedItem(null);
-      setFeedback(`تم اعتماد القرار بنجاح وتوثيق موافقة الإدارة: «${item.title}»`);
-    } catch (err: any) {
+      setFeedback({
+        state: "success",
+        title: `تم اعتماد القرار بنجاح وتوثيق موافقة الإدارة: «${item.title}»`,
+        detail: "سُجل الإجراء في سجل التدقيق المالي والإداري.",
+      });
+    } catch (err: unknown) {
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      setFeedback(err?.message || "فشلت عملية المصادقة. أعد المحاولة ثانية.");
+      const message = err instanceof Error && err.message ? err.message : "فشلت عملية المصادقة. أعد المحاولة ثانية.";
+      setSelectedItem(null);
+      setFeedback({
+        state: "error",
+        title: message,
+        detail: "لم يُسجّل أي تغيير على الخادم حفاظاً على سلامة الصلاحيات والتدقيق.",
+      });
     } finally {
       setIsProcessing(false);
     }
@@ -159,27 +183,48 @@ export default function ApprovalsScreen() {
 
   const handleRejectConfirm = async () => {
     if (!selectedItem) return;
+    if (!selectedItem.kind || !selectedItem.numericId) {
+      setRejectModalVisible(false);
+      setSelectedItem(null);
+      setFeedback({
+        state: "pending",
+        title: `«${selectedItem.title}» مؤشر رقابي تنفيذي`,
+        detail: "يُعالج هذا المؤشر من الوحدة المختصة على لوحة الحوكمة المعتمدة وليس كطلب اعتماد منفرد.",
+      });
+      return;
+    }
+
     setIsProcessing(true);
     try {
-      if (selectedItem.kind && selectedItem.numericId) {
-        await submitRealDecision({
-          kind: selectedItem.kind,
-          id: selectedItem.numericId,
-          action: "REJECT",
-          reason: rejectReason.trim() || undefined,
-          expectedVersion: selectedItem.expectedVersion,
-        });
-      }
+      await unlockLocalSession();
+      await submitRealDecision({
+        kind: selectedItem.kind,
+        id: selectedItem.numericId,
+        action: "REJECT",
+        reason: rejectReason.trim() || undefined,
+        expectedVersion: selectedItem.expectedVersion,
+      });
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
       const title = selectedItem.title;
       setItems((prev) => prev.filter((i) => i.id !== selectedItem.id));
       setRejectModalVisible(false);
       setSelectedItem(null);
       setRejectReason("");
-      setFeedback(`تم صرف النظر عن القرار: «${title}» وتسجيل الملاحظة.`);
-    } catch (err: any) {
+      setFeedback({
+        state: "success",
+        title: `تم صرف النظر عن القرار: «${title}» وتسجيل الملاحظة.`,
+        detail: "سُجل الإجراء في سجل التدقيق المالي والإداري.",
+      });
+    } catch (err: unknown) {
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      setFeedback(err?.message || "فشلت عملية تسجيل الرفض. أعد المحاولة ثانية.");
+      const message = err instanceof Error && err.message ? err.message : "فشلت عملية تسجيل الرفض. أعد المحاولة ثانية.";
+      setRejectModalVisible(false);
+      setSelectedItem(null);
+      setFeedback({
+        state: "error",
+        title: message,
+        detail: "لم يُسجّل أي تغيير على الخادم حفاظاً على سلامة الصلاحيات والتدقيق.",
+      });
     } finally {
       setIsProcessing(false);
     }
@@ -216,9 +261,9 @@ export default function ApprovalsScreen() {
         {feedback ? (
           <ExperienceState
             compact
-            detail="سُجل الإجراء في سجل التدقيق المالي والإداري."
-            state="success"
-            title={feedback}
+            detail={feedback.detail}
+            state={feedback.state}
+            title={feedback.title}
           />
         ) : null}
 
@@ -237,7 +282,7 @@ export default function ApprovalsScreen() {
               key={tab.key}
               onPress={() => {
                 void Haptics.selectionAsync();
-                setFilter(tab.key as any);
+                setFilter(tab.key);
               }}
               style={[styles.filterTab, filter === tab.key && styles.filterTabActive]}
             >
@@ -365,33 +410,42 @@ export default function ApprovalsScreen() {
                   </View>
                 </View>
 
-                <View style={styles.actionsRow}>
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={isProcessing}
-                    onPress={() => setRejectModalVisible(true)}
-                    style={[styles.rejectBtn, isProcessing && styles.btnDisabled]}
-                  >
-                    <Ionicons color={colors.danger} name="close-circle-outline" size={18} />
-                    <Text style={styles.rejectBtnText}>صرف النظر</Text>
-                  </Pressable>
+                {selectedItem.kind && selectedItem.numericId ? (
+                  <View style={styles.actionsRow}>
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={isProcessing}
+                      onPress={() => setRejectModalVisible(true)}
+                      style={[styles.rejectBtn, isProcessing && styles.btnDisabled]}
+                    >
+                      <Ionicons color={colors.danger} name="close-circle-outline" size={18} />
+                      <Text style={styles.rejectBtnText}>صرف النظر</Text>
+                    </Pressable>
 
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={isProcessing}
-                    onPress={() => void handleApprove(selectedItem)}
-                    style={[styles.approveBtn, isProcessing && styles.btnDisabled]}
-                  >
-                    {isProcessing ? (
-                      <ActivityIndicator color={colors.surface} size="small" />
-                    ) : (
-                      <>
-                        <Ionicons color={colors.surface} name="checkmark-circle-outline" size={18} />
-                        <Text style={styles.approveBtnText}>اعتماد القرار رسمياً</Text>
-                      </>
-                    )}
-                  </Pressable>
-                </View>
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={isProcessing}
+                      onPress={() => void handleApprove(selectedItem)}
+                      style={[styles.approveBtn, isProcessing && styles.btnDisabled]}
+                    >
+                      {isProcessing ? (
+                        <ActivityIndicator color={colors.surface} size="small" />
+                      ) : (
+                        <>
+                          <Ionicons color={colors.surface} name="checkmark-circle-outline" size={18} />
+                          <Text style={styles.approveBtnText}>اعتماد القرار رسمياً</Text>
+                        </>
+                      )}
+                    </Pressable>
+                  </View>
+                ) : (
+                  <ExperienceState
+                    compact
+                    detail="هذا مؤشر رقابي من غرفة القيادة؛ يُتابَع إجراءه التشغيلي عبر الوحدة المختصة على لوحة الحوكمة المعتمدة."
+                    state="pending"
+                    title="للمتابعة الرقابية عبر لوحة الحوكمة"
+                  />
+                )}
               </>
             ) : null}
           </Pressable>
@@ -432,8 +486,9 @@ export default function ApprovalsScreen() {
               </Pressable>
               <Pressable
                 accessibilityRole="button"
-                onPress={handleRejectConfirm}
-                style={styles.confirmRejectBtn}
+                disabled={isProcessing}
+                onPress={() => void handleRejectConfirm()}
+                style={[styles.confirmRejectBtn, isProcessing && styles.btnDisabled]}
               >
                 <Text style={styles.confirmRejectText}>تأكيد القرار</Text>
               </Pressable>

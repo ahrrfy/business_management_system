@@ -211,42 +211,61 @@ export default function PurchasesScreen() {
                     <Text style={styles.emptyText}>لا توجد أوامر شراء مطابقة للبحث</Text>
                   </View>
                 ) : (
-                  filteredOrders.map((po) => (
-                    <View key={po.id} style={styles.orderCard}>
-                      <View style={styles.orderHeader}>
-                        <View style={styles.orderBadge}>
-                          <Text style={styles.orderBadgeText}>{po.poNumber}</Text>
-                        </View>
-                        <Text style={styles.orderDate}>{po.orderDate}</Text>
-                      </View>
+                  filteredOrders.map((po) => {
+                    const statusBadge =
+                      po.status === "RECEIVED"
+                        ? {
+                            pill: styles.statusPillGreen,
+                            text: styles.statusTextGreen,
+                            label: "مستلم في المستودع",
+                          }
+                        : po.status === "SENT"
+                          ? {
+                              pill: styles.statusPillOrange,
+                              text: styles.statusTextOrange,
+                              label: "بانتظار الاعتماد",
+                            }
+                          : po.status === "CONFIRMED"
+                            ? {
+                                pill: styles.statusPillInfo,
+                                text: styles.statusTextInfo,
+                                label: "مؤكد قيد التوريد",
+                              }
+                            : po.status === "CANCELLED"
+                              ? {
+                                  pill: styles.statusPillDanger,
+                                  text: styles.statusTextDanger,
+                                  label: "ملغى",
+                                }
+                              : {
+                                  pill: styles.statusPillMuted,
+                                  text: styles.statusTextMuted,
+                                  label: "مسودة",
+                                };
 
-                      <View style={styles.orderBody}>
-                        <Text style={styles.supplierTitle}>{po.supplierName}</Text>
-                        <View style={styles.priceRow}>
-                          <Text style={styles.orderTotal}>{formatIqd(po.total)}</Text>
-                          <View
-                            style={[
-                              styles.statusPill,
-                              po.status === "RECEIVED" ? styles.statusPillGreen : styles.statusPillOrange,
-                            ]}
-                          >
-                            <Text
-                              style={[
-                                styles.statusPillText,
-                                po.status === "RECEIVED" ? styles.statusTextGreen : styles.statusTextOrange,
-                              ]}
-                            >
-                              {po.status === "RECEIVED"
-                                ? "مستلم في المستودع"
-                                : po.status === "CONFIRMED"
-                                ? "مؤكد قيد التوريد"
-                                : "مسودة"}
-                            </Text>
+                    return (
+                      <View key={po.id} style={styles.orderCard}>
+                        <View style={styles.orderHeader}>
+                          <View style={styles.orderBadge}>
+                            <Text style={styles.orderBadgeText}>{po.poNumber}</Text>
+                          </View>
+                          <Text style={styles.orderDate}>{po.orderDate}</Text>
+                        </View>
+
+                        <View style={styles.orderBody}>
+                          <Text style={styles.supplierTitle}>{po.supplierName}</Text>
+                          <View style={styles.priceRow}>
+                            <Text style={styles.orderTotal}>{formatIqd(po.total)}</Text>
+                            <View style={[styles.statusPill, statusBadge.pill]}>
+                              <Text style={[styles.statusPillText, statusBadge.text]}>
+                                {statusBadge.label}
+                              </Text>
+                            </View>
                           </View>
                         </View>
                       </View>
-                    </View>
-                  ))
+                    );
+                  })
                 )}
               </View>
             </AnimatedReveal>
@@ -535,6 +554,15 @@ const styles = StyleSheet.create({
   statusPillOrange: {
     backgroundColor: colors.warningSoft,
   },
+  statusPillInfo: {
+    backgroundColor: colors.infoSoft,
+  },
+  statusPillDanger: {
+    backgroundColor: colors.dangerSoft,
+  },
+  statusPillMuted: {
+    backgroundColor: colors.surfaceMuted,
+  },
   statusPillText: {
     fontFamily: "Cairo_600SemiBold",
     fontSize: 11,
@@ -544,6 +572,15 @@ const styles = StyleSheet.create({
   },
   statusTextOrange: {
     color: colors.warning,
+  },
+  statusTextInfo: {
+    color: colors.info,
+  },
+  statusTextDanger: {
+    color: colors.danger,
+  },
+  statusTextMuted: {
+    color: colors.mutedInk,
   },
   supplierCard: {
     backgroundColor: colors.surface,

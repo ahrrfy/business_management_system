@@ -14,6 +14,7 @@ import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { retryOnDeadlock } from "../../lib/retryDeadlock";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { appErrorMessage } from "@shared/errors";
 import { idempotencyHash, payloadHashMatches } from "../idempotency";
 import { money, round2, toDbMoney } from "../money";
 import { computeDrawerCashBalance, computeTreasuryCashBalance } from "../cash/cashAvailability";
@@ -64,6 +65,7 @@ export interface CancelControlPayload {
   /** مرجعُ التنفيذ الخارجيّ — لرافد البطاقة وحده. */
   refundReference?: string | null;
   materials?: WorkOrderCancelMaterialDecision[] | null;
+  confirmAllMaterialsReturnedUsable?: boolean | null;
 }
 export interface ReverseDeliveryControlPayload {
   expectedVersion: number;
@@ -178,10 +180,49 @@ export async function requestWorkOrderControl(
       throw new TRPCError({ code: "CONFLICT", message: "تغيّر أمر الشغل منذ فتحه — حدّث الصفحة قبل إرسال الطلب" });
     }
     if (input.requestType === "CANCEL") {
+      if (wo.invoiceId != null) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعذر طلب إلغاء أمر الشغل بعد الفوترة",
+            why: "الأمر مرتبط بفاتورة وحقوق مالية ومخزنية لا يعكسها إلغاء الأمر وحده",
+            doThis: "استخدم استرجاع التسليم ليعالج الفاتورة والذمة والمواد معاً",
+          }),
+        });
+      }
       // **رفضُ البطاقة عند وجود جزءٍ نقديٍّ لا يقبلها** (مراجعة Codex P2 على #930): حصصٌ
       // مطبَّقة أو أمانةُ أجرة تُردّان نقداً حتماً، فطلبُ البطاقة يُنشئ تحكّماً يستحيل اعتمادُه
       // (التنفيذُ يرفضه فيبقى معلّقاً للأبد). نرفضه هنا فلا يُخزَّن أصلاً.
       const cancelPayload = input.payload as unknown as CancelControlPayload;
+      const materialDecisions = cancelPayload.materials ?? [];
+      const allReturned = cancelPayload.confirmAllMaterialsReturnedUsable === true;
+      if (allReturned && materialDecisions.length > 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذر اعتماد قرار خامات الإلغاء",
+            why: "تم جمع إقرار رجوع جميع الخامات مع جدول رجوع وهدر تفصيلي",
+            doThis: "اختر إقرار الرجوع الكامل أو الجدول التفصيلي، ولا ترسلهما معاً",
+          }),
+        });
+      }
+      if ((wo.status === "IN_PROGRESS" || wo.status === "READY") && !allReturned && materialDecisions.length === 0) {
+        const consumedMaterial = await tx
+          .select({ id: workOrderMaterials.id })
+          .from(workOrderMaterials)
+          .where(eq(workOrderMaterials.workOrderId, input.workOrderId))
+          .limit(1);
+        if (consumedMaterial.length > 0) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: appErrorMessage({
+              what: "تعذر إرسال طلب إلغاء أمر الشغل",
+              why: "بدأ التنفيذ وتوجد خامات مستهلكة بلا مصير نهائي مثبت",
+              doThis: "أكد رجوع جميع الخامات صالحة أو وزع كل سطر بين الراجع والهدر",
+            }),
+          });
+        }
+      }
       if ((cancelPayload.refundRail ?? "DRAWER") === "CARD") {
         const appliedCash = (await appliedCollectionsForWorkOrder(tx, input.workOrderId)).some(
           (part) => (part.method === "CASH" || part.method === "TELECOM") && money(part.amount).gt(0),
@@ -490,6 +531,7 @@ export async function approveWorkOrderControlRequest(
         refundRail: override?.refundRail ?? payload.refundRail ?? null,
         refundReference: override?.refundReference ?? payload.refundReference ?? null,
         materials: payload.materials ?? null,
+        confirmAllMaterialsReturnedUsable: payload.confirmAllMaterialsReturnedUsable === true,
         clientRequestId: `wo-control-cancel-${id}`,
       }, control);
     } else {

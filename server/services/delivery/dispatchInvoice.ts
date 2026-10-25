@@ -49,6 +49,11 @@ import { fulfillmentRequests } from "../../../drizzle/fulfillmentSchema";
 import { assertNoPendingHeldFeeRefundTx } from "./feeHeld";
 import { validateDeliveryDriverTx } from "./driverValidation";
 import { heldCustomerParcelReissueTx } from "./workflow/returnReceipt";
+import {
+  initializeConsignmentCustodyTx,
+  repairDeliveryCustodyFromRecordedEventsTx,
+} from "./custody";
+import { createShipmentDispatchDocumentSnapshotsTx } from "./documentSnapshots";
 
 /** Service-only context; it is never part of a router input. */
 export interface ShipmentDispatchContext {
@@ -57,6 +62,8 @@ export interface ShipmentDispatchContext {
   shipmentLeaderConsignmentId?: number;
   sharedTrackingLeaderId?: number;
   retainedShipmentLeader?: boolean;
+  /** Group writer freezes one canonical snapshot only after every member is linked. */
+  deferDocumentSnapshots?: boolean;
 }
 
 /** Call after invoice locks; current reads preserve the existing held-fee owner. */
@@ -262,6 +269,7 @@ export async function dispatchInvoiceInTx(
         payloadHash,
       );
       if (existingId != null) {
+        await repairDeliveryCustodyFromRecordedEventsTx(tx, existingId);
         const cn = (
           await tx
             .select()
@@ -386,7 +394,7 @@ export async function dispatchInvoiceInTx(
       inv.sourceType === "WORKORDER" && linkedOrders.length === 1
         ? linkedOrders[0]
         : undefined;
-    await assertNoPendingHeldFeeRefundTx(tx,{invoiceId:Number(inv.id)});
+    await assertNoPendingHeldFeeRefundTx(tx, { invoiceId: Number(inv.id) });
     if (
       inv.sourceType === "WORKORDER" &&
       (!linkedOrder ||
@@ -477,10 +485,23 @@ export async function dispatchInvoiceInTx(
         });
       }
     }
-    const heldReturnReissue = already != null && shipment?.heldReturnReissue === true && await heldCustomerParcelReissueTx(tx, already);
-    if (shipment?.heldReturnReissue && !heldReturnReissue) throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({ what: "تعذرت إعادة إرسال العهدة المستلمة", why: "لا يوجد استلام فعلي صالح أو بقي نقد/تاريخ أجرة مرتبط بالناقل الأصلي", doThis: "سوّ حقوق الناقل من محطة التحصيل، أو افتح معالجة نقص MISSING_HELD مرتبطة بالمصدر لإعادة إرسال نفس العهدة بلا صرف مخزون جديد" }) });
+    const heldReturnReissue =
+      already != null &&
+      shipment?.heldReturnReissue === true &&
+      (await heldCustomerParcelReissueTx(tx, already));
+    if (shipment?.heldReturnReissue && !heldReturnReissue)
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذرت إعادة إرسال العهدة المستلمة",
+          why: "لا يوجد استلام فعلي صالح أو بقي نقد/تاريخ أجرة مرتبط بالناقل الأصلي",
+          doThis:
+            "سوّ حقوق الناقل من محطة التحصيل، أو افتح معالجة نقص MISSING_HELD مرتبطة بالمصدر لإعادة إرسال نفس العهدة بلا صرف مخزون جديد",
+        }),
+      });
     if (
-      already && !heldReturnReissue &&
+      already &&
+      !heldReturnReissue &&
       (already.status !== "CANCELLED" ||
         already.parcelStatus !== "CANCELLED" ||
         already.moneyStatus !== "CANCELLED")
@@ -614,7 +635,8 @@ export async function dispatchInvoiceInTx(
     // أبداً ⇒ أجرةٌ قبضناها من الزبون أمانةً **لا تصل المندوب إطلاقاً** وتبقى في الدرج بلا
     // مالك. مطابقةٌ الآن لمسار أمر الشغل (dispatch.ts): COUNTER تُصرف فوراً دائماً (قبضناها
     // بالفعل)، وSHOP تُصرف حين لا توريدَ يُخصم منه.
-    const dispatchedAt = new Date();
+    // Match TIMESTAMP(0) before both writes; MySQL may round fractional seconds.
+    const dispatchedAt = new Date(Math.floor(Date.now() / 1_000) * 1_000);
     let consignmentId: number;
     let consignmentNumber: string;
     if (already) {
@@ -667,7 +689,13 @@ export async function dispatchInvoiceInTx(
           cancellationReason: null,
           cancelledBy: null,
           returnedAt: null,
-          ...(heldReturnReissue ? { returnDeclaredAt: null, returnDeclaredBy: null, returnDeclaredReason: null } : {}),
+          ...(heldReturnReissue
+            ? {
+                returnDeclaredAt: null,
+                returnDeclaredBy: null,
+                returnDeclaredReason: null,
+              }
+            : {}),
         })
         .where(eq(deliveryConsignments.id, consignmentId));
     } else {
@@ -759,10 +787,11 @@ export async function dispatchInvoiceInTx(
       });
     }
 
-    await appendDeliveryEvent(tx, {
-      eventKey: already
-        ? `CN:${consignmentId}:ASSIGNMENT_REACTIVATED:${input.clientRequestId ?? dispatchedAt.getTime()}`
-        : `CN:${consignmentId}:OUT_FOR_DELIVERY`,
+    const assignmentEventKey = already
+      ? `CN:${consignmentId}:ASSIGNMENT_REACTIVATED:${input.clientRequestId ?? dispatchedAt.getTime()}`
+      : `CN:${consignmentId}:OUT_FOR_DELIVERY`;
+    const assignmentEventId = await appendDeliveryEvent(tx, {
+      eventKey: assignmentEventKey,
       consignmentId,
       eventType: already ? "ASSIGNMENT_REACTIVATED" : "OUT_FOR_DELIVERY",
       fromParcelStatus: already?.parcelStatus ?? null,
@@ -803,6 +832,110 @@ export async function dispatchInvoiceInTx(
           : {}),
       },
     });
+    await initializeConsignmentCustodyTx(tx, {
+      consignmentId,
+      actorUserId: actor.userId,
+      operationId:
+        input.clientRequestId ?? `delivery.dispatchInvoice:${consignmentId}`,
+      leaderConsignmentId: shipment?.shipmentLeaderConsignmentId,
+    });
+    if (
+      shipment?.shipmentLeaderConsignmentId == null &&
+      shipment?.deferDocumentSnapshots !== true
+    ) {
+      const sourceType =
+        already?.sourceType ??
+        (input.onlineOrderId != null
+          ? "ONLINE_ORDER"
+          : linkedOrder
+            ? "WORK_ORDER"
+            : "INVOICE");
+      const sourceId =
+        already == null
+          ? input.onlineOrderId != null
+            ? Number(input.onlineOrderId)
+            : linkedOrder
+              ? Number(linkedOrder.id)
+              : Number(inv.id)
+          : Number(already.sourceId);
+      const currentTotal = round2(
+        money(inv.total).minus(money(inv.returnedTotal ?? "0")),
+      );
+      await createShipmentDispatchDocumentSnapshotsTx(tx, {
+        consignmentId,
+        branchId: Number(inv.branchId),
+        shiftId: inv.shiftId == null ? null : Number(inv.shiftId),
+        eventKey: assignmentEventKey,
+        eventOccurredAt: dispatchedAt,
+        createdBy: actor.userId,
+        payload: {
+          schemaVersion: 1,
+          operationId:
+            input.clientRequestId ??
+            `delivery.dispatchInvoice:${consignmentId}`,
+          eventOccurredAt: dispatchedAt.toISOString(),
+          evidence: {
+            mode: "COMMITTED_DISPATCH_EVENT",
+            eventId: assignmentEventId,
+            eventKey: assignmentEventKey,
+            unavailableFields: [],
+          },
+          shipment: {
+            consignmentId,
+            consignmentNumber,
+            fulfillmentRequestId:
+              input.fulfillmentRequestId ??
+              already?.fulfillmentRequestId ??
+              null,
+            branchId: Number(inv.branchId),
+            partyId: Number(input.partyId),
+            assignedUserId,
+            sourceType,
+            sourceId,
+            members: [
+              {
+                id: consignmentId,
+                consignmentNumber,
+                invoiceId: Number(inv.id),
+                sourceType,
+                sourceId,
+              },
+            ],
+          },
+          party: { id: Number(party.id), name: party.name },
+          recipient: {
+            name: input.recipientName ?? inv.contactName ?? null,
+            phone: input.recipientPhone ?? inv.contactPhone ?? null,
+            address: input.deliveryAddress ?? null,
+            governorate: input.governorate ?? null,
+          },
+          money: {
+            codAmount: codAmount.toFixed(2),
+            deliveryFee: fee.toFixed(2),
+            feeCollection,
+            customerCollectionAtDispatch: "0.00",
+            currentTotal: currentTotal.toFixed(2),
+            paidAmount: round2(money(inv.paidAmount ?? "0")).toFixed(2),
+          },
+          invoiceIds: [Number(inv.id)],
+          invoices: [
+            {
+              id: Number(inv.id),
+              invoiceNumber: inv.invoiceNumber,
+              total: String(inv.total),
+              paidAmount: String(inv.paidAmount ?? "0.00"),
+              returnedTotal: String(inv.returnedTotal ?? "0.00"),
+              status: inv.status,
+              identityEvidence: "EVENT_TIME_RECORD",
+            },
+          ],
+          aftercareNotice:
+            sourceType === "AFTERCARE_EXECUTION"
+              ? "تحصيل العميل صفر — الأجرة على المكتبة"
+              : null,
+        },
+      });
+    }
 
     if (input.clientRequestId) {
       await recordIdempotencyKey(

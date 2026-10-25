@@ -1,0 +1,33 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "client/src/**/*.d.ts",
+    "shared/**/*.d.ts",
+    "server/**/*.d.ts",
+    "client/src/**/*.test.ts",
+    "client/src/**/*.test.tsx",
+    "client/src/**/__tests__/**/*.ts",
+    "client/src/**/__tests__/**/*.tsx",
+    "shared/**/*.test.ts",
+    "shared/**/*.test.tsx",
+    "shared/**/__tests__/**/*.ts",
+    "server/**/*.test.ts",
+    "server/**/*.test.tsx",
+    "server/**/__tests__/**/*.ts",
+    "scripts/__tests__/**/*.ts",
+    "tests/**/*.test.ts",
+    "tests/**/*.spec.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "build",
+    "dist",
+    "_legacy",
+    "expo",
+    "android-native"
+  ],
+  "compilerOptions": {
+    "incremental": true,
+    "tsBuildInfoFile": "./node_modules/typescript/tsbuildinfo.test"
+  }
+}

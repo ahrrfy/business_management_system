@@ -305,6 +305,7 @@ const STAGES = [
   ],
 ];
 const EXACT_LABELS = {
+  "delivery.documents.prepareShipmentPrintBundle": "تجهيز حزمة طباعة الشحنة",
   "sales.checkoutCharges": "قبض أجور إضافية في كاشير التجزئة",
   "sales.checkoutChargeOptions": "عرض الأجور المعتمدة القابلة للقبض في التجزئة",
   "printPos.checkoutCharges": "قبض أجور إضافية في كاشير الطباعة",
@@ -906,6 +907,7 @@ const WORDS = {
   members: "الأعضاء",
   consignment: "الشحنة",
   consignments: "الشحنات",
+  shipment: "الشحنة",
   parcel: "الطرد",
   parcels: "الطرود",
   courier: "المندوب",

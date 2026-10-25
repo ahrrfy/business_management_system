@@ -8,7 +8,7 @@
  *     و`materialsCost` يتبع الفرق. لا تعديل صامت على مواد استُهلكت فعلاً.
  *  ③ **idempotency طبيعيّة**: إرسال القائمة نفسها مرّتين ⇒ فرقٌ صفر ⇒ صفر حركة وصفر قيد.
  *     (هذا سبب اختيار العقد التصريحيّ — شبكة الاستقبال متقطّعة وإعادة الإرسال واقعة.)
- *  ④ لقطة التكلفة وقت الاستهلاك لا تتحرّك بتغيّر WAVG بعده.
+ *  ④ كل زيادة بعد البدء تُختم بـWAVG لحظتها، وتبقى الدفعات السابقة بقيمتها التاريخية.
  *  ⑤ الأمر المُسلَّم لا تُعدَّل بنوده، وبضاعة الأمانة لا تصلح مادةً.
  */
 import { randomUUID } from "node:crypto";
@@ -299,18 +299,42 @@ describe("② بعد البدء — كل فرقٍ يقابله حركةٌ وقي
     expect(negative).toBeTruthy(); // عكسٌ صريح لا حذفٌ صامت
   });
 
-  it("④ لقطة التكلفة تثبت: تغيّر WAVG بعد البدء لا يحرّك قيمة ما استُهلك", async () => {
+  it("④ الزيادة بعد البدء تُصرف بـWAVG الحالي كدفعة مستقلة وتحفظ قيمة الدفعة السابقة", async () => {
     const woId = await newWorkOrder([{ variantId: 1, baseQuantity: 10 }]);
     await startApprovedWorkOrder(woId); // لقطة 1000
 
-    // ارتفع سعر الشراء لاحقاً — يجب ألّا يمسّ حصّة هذا الأمر.
+    // ارتفع WAVG لاحقاً: العشر السابقة تبقى @1000، والقطعة الجديدة وحدها @9999.
     await db().update(s.productVariants).set({ costPrice: "9999.00" }).where(eq(s.productVariants.id, 1));
 
     await editMaterialsAfterStart(woId, [
       { variantId: 1, baseQuantity: 11 },
     ]);
-    // الفرق قطعةٌ واحدة بلقطة 1000 لا بـ9999.
-    expect(Number((await loadWo(woId)).materialsCost)).toBeCloseTo(11000, 2);
+    expect(Number((await loadWo(woId)).materialsCost)).toBeCloseTo(19999, 2);
+    expect((await loadMats(woId)).sort((a, b) => Number(a.id) - Number(b.id)).map((row) => ({
+      quantity: Number(row.baseQuantity),
+      unitCost: row.unitCost,
+    }))).toEqual([
+      { quantity: 10, unitCost: "1000.00" },
+      { quantity: 1, unitCost: "9999.00" },
+    ]);
+
+    // الردّ يستهلك أحدث دفعة أولاً ويعيدها بقيمتها 9999، لا بلقطة الدفعة الأولى 1000.
+    await db().update(s.branchStock).set({ quantity: 500 }).where(and(
+      eq(s.branchStock.variantId, 1),
+      eq(s.branchStock.branchId, 1),
+    ));
+    await db().update(s.productVariants).set({ costPrice: "1040.00" })
+      .where(eq(s.productVariants.id, 1));
+    await editMaterialsAfterStart(woId, [{ variantId: 1, baseQuantity: 10 }]);
+
+    expect(await stockOf(1)).toBe(501);
+    expect((await db().select({ cost: s.productVariants.costPrice }).from(s.productVariants)
+      .where(eq(s.productVariants.id, 1)))[0].cost).toBe("1057.88");
+    expect(Number((await loadWo(woId)).materialsCost)).toBe(10000);
+    expect((await loadMats(woId)).map((row) => ({
+      quantity: Number(row.baseQuantity),
+      unitCost: row.unitCost,
+    }))).toEqual([{ quantity: 10, unitCost: "1000.00" }]);
   });
 
   it("تخفيض مادة مستهلَكة يعيد فرقها بالقيمة التاريخية ويمزج WAVG", async () => {

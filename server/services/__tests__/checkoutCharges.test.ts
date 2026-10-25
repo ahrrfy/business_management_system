@@ -44,7 +44,7 @@ async function proof(amount:string,channel:"POS"|"PRINT_POS"="POS"){
 function input():ConfirmedPosSaleInput{return {branchId:1,shiftId:1,deviceId:device,sourceType:"POS",clientRequestId:key(),lines:[{variantId:1,productUnitId:1,quantity:"1"}],payment:{method:"CASH",amount:"50000"},serviceCharges:[{description:"تغليف",amount:"3000"}],chargePayments:[{paymentIndex:0,amount:"3000"}],deliveryFeeHeld:"5000",deliveryFeeTender:{method:"CASH",combinedWithPaymentIndex:0},delivery:{partyId,assignedUserId:3,fee:"5000",feeCollection:"COUNTER",recipientName:"Buyer",recipientPhone:"07700000000",address:"Baghdad"}};}
 describe("actual cashier checkout charges",()=>{
   it("finds outstanding approved charges after more than 100 settled rows with exact DECIMAL remainder",async()=>{
-    const seed=(description:string,amount:string,paidAmount:string)=>({branchId:1,customerId:1,category:"SERVICE" as const,status:"APPROVED" as const,description,amount,paidAmount,createdBy:1,approvedBy:2,clientRequestId:key(),sourceHash:"0".repeat(64)});
+    const seed=(description:string,amount:string,paidAmount:string)=>({branchId:1,customerId:1,category:"SERVICE" as const,status:"APPROVED" as const,description,amount,paidAmount,createdBy:1,approvedBy:2,approvedAt:new Date(),clientRequestId:key(),sourceHash:"0".repeat(64)});
     await db().insert(fulfillmentCharges).values(Array.from({length:101},(_,index)=>seed(`Settled ${index}`,"3000.00","3000.00")));
     await db().insert(fulfillmentCharges).values([seed("Open after settled history","3000.00","0.00"),seed("One cent outstanding","123456789012.34","123456789012.33")]);
     const options=await listCheckoutChargeOptions({branchId:1,customerId:1},actor,"sales.create");
@@ -115,11 +115,15 @@ describe("actual cashier checkout charges",()=>{
     const entries=await db().select().from(s.accountingEntries);expect(entries).toHaveLength(1);expect(entries[0].customerId).toBeNull();expect(entries[0].revenue).toBe("3000.00");
   });
   it.each(["POS","PRINT_POS"] as const)("%s charge-only mixed tender preserves actual CARD and drawer cash with one cash change",async channel=>{
-    const result=await createChargeOnlyCheckout({branchId:1,shiftId:channel==="POS"?1:3,deviceId:device,clientRequestId:key(),payments:[{method:"CARD",amount:"0",externalPaymentAttemptId:await proof("1500",channel),externalPaymentDeviceId:device},{method:"CASH",amount:"500"}],serviceCharges:[{description:"Mixed guest service",amount:"3000"}],chargePayments:[{paymentIndex:0,amount:"1500"},{paymentIndex:1,amount:"1500"}]},actor,channel);
+    const payload={branchId:1,shiftId:channel==="POS"?1:3,deviceId:device,clientRequestId:key(),payments:[{method:"CARD" as const,amount:"0",externalPaymentAttemptId:await proof("1500",channel),externalPaymentDeviceId:device},{method:"CASH" as const,amount:"500"}],serviceCharges:[{description:"Mixed guest service",amount:"3000"}],chargePayments:[{paymentIndex:0,amount:"1500"},{paymentIndex:1,amount:"1500"}]};
+    const result=await createChargeOnlyCheckout(payload,actor,channel);
     expect(result.checkoutPaymentSummary).toEqual({tenderedAmount:"3500.00",appliedAmount:"3000.00",changeAmount:"500.00"});
     const rows=await db().select().from(s.receipts);expect(rows).toHaveLength(2);
     expect(rows.find(row=>row.paymentMethod==="CARD")).toMatchObject({amount:"1500.00",cashBucket:null});
     expect(rows.find(row=>row.paymentMethod==="CASH")).toMatchObject({amount:"1500.00",cashBucket:"DRAWER"});
+    const replay=await createChargeOnlyCheckout(payload,actor,channel);expect(replay).toMatchObject(result);expect(replay.idempotentReplay).toBe(true);
+    await expect(createChargeOnlyCheckout({...payload,clientRequestId:key()},actor,channel)).rejects.toThrow();
+    expect(await db().select().from(s.receipts)).toHaveLength(2);
     expect(await db().select().from(s.invoices)).toHaveLength(0);expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
   });
   it("known customer service accrues and collects once; guest refund reverses direct revenue on original rail",async()=>{

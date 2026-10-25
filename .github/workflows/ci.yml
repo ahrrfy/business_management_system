@@ -248,7 +248,7 @@ jobs:
       - name: فحص الأنواع
         run: pnpm check
         env:
-          NODE_OPTIONS: "--max-old-space-size=6144"
+          NODE_OPTIONS: "--max-old-space-size=8192"
       - name: حارس تشخيص فشل CI الآمن
         run: pnpm exec vitest run --config vitest.unit.config.ts scripts/__tests__/ciFailureDiagnosticsWorkflow.test.ts scripts/__tests__/dependencySecurityWorkflow.test.ts scripts/__tests__/ciCriticalPathWorkflow.test.ts scripts/__tests__/safeDeliveryProtocols.test.ts
       - name: الحزمة الوحدوية الكاملة (حاجبة — بلا تنظيف قاعدة)
@@ -354,11 +354,9 @@ jobs:
       # ⛔ ولا تدّعي قياسَ **جودة** النصّ — لا يستطيعه حارس؛ تقيس المرور بالعقد وحده.
       - name: حارِس رسائل الخطأ (مسننةٌ تنازلية)
         run: pnpm check:error-messages
-      # مقياس الاحتكاك (برنامج v2، الموجة ٠) — **وضعُ التقرير**: يطبع لوحة العلل الثمانية
-      # ولا يحجب. سببُ التقرير أوّلاً: خطُّ الأساس يُجمَّد قبل أن يبدأ الترحيل، فتشديدُه قبل
-      # وجود العلاجات (سجلّ القرارات · محرّك العكس · shared/predicates) كان سيمنع كلّ PR
-      # على دينٍ قائمٍ لا علاقةَ له به. يُشدَّد إلى `check:friction:strict` في الموجة ٩.
-      - name: مقياس الاحتكاك (تقرير — لا يحجب)
+      # مقياس الاحتكاك (برنامج v2، الموجة ٠ + Wave D): يحجب رفع خطّ الأساس الكلّي عبر المسننة التنازلية
+      # ويفرض حجب المحور D5 (*New.tsx/*Edit.tsx جديدة)، مع طباعة تقرير المحاور الأخرى استرشادياً.
+      - name: مقياس الاحتكاك (حجب المسننة + المحور D5)
         run: pnpm check:friction
       # سجلّ الأتمتة (§٣ من خطة v2): كلّ انتقالِ حالةٍ يُصرّح AUTO بدليلٍ مُسمّى أو
       # MANUAL بمبرّرِ حكمٍ بشريّ. ⛔ ولا يدّعي قياسَ جودة النصّ — الطولُ مقياسُ وجودٍ لا جودة.
@@ -384,6 +382,17 @@ jobs:
       # حارس سلامة وتعامد وشبكة الجداول: يمنع انكسار التعامد بين العناوين والصفوف ويحمي شبكة الجداول الأصولية
       - name: حارِس سلامة وتعامد وشبكة الجداول
         run: pnpm check:table-integrity
+      # حارس أنواع الاختبارات (مسنَنةٌ تنازلية): يغلق استثناء *.test.ts(x) من tsconfig.json بلا كسر الشرائح القائمة
+      - name: حارِس أنواع الاختبارات (مسنَنةٌ تنازلية)
+        run: pnpm check:test-types
+        env:
+          NODE_OPTIONS: "--max-old-space-size=10240"
+      # حارس الحقائق المعمارية الحيّة في CLAUDE.md (Wave D1): يمنع انجراف الأرقام والتوصيفات البنيوية
+      - name: حارِس الحقائق المعمارية في CLAUDE.md
+        run: pnpm check:arch-facts
+      # حارس حدود الطبقات (Wave D2): يمنع استيراد drizzle/*Schema أو server/db وقت التشغيل في server/routers/**
+      - name: حارِس حدود الطبقات في الراوترات (مسنَنةٌ تنازلية)
+        run: pnpm check:layer-imports
       - name: اختبار مدقّق سلامة البطاقات الرقمية (قراءة فقط)
         run: node scripts/verify-digital-cards-integrity.mjs --selftest
       - name: اختبار عقود النشر والبناء الآمنة
