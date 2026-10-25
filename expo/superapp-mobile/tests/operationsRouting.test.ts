@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  __resetOperationalSessionUnlockForTests,
   centsToMoneyNumber,
   fetchRealApprovals,
   fetchRealCustomers,
@@ -23,6 +24,9 @@ import {
 } from "../lib/secureTransport";
 
 const mockPlatform = vi.hoisted(() => ({ OS: "android" as string }));
+const mockLocalAuth = vi.hoisted(() => ({
+  authenticateAsync: vi.fn(async () => ({ success: true as const })),
+}));
 
 vi.mock("expo", () => ({
   requireOptionalNativeModule: vi.fn(() => null),
@@ -31,6 +35,8 @@ vi.mock("expo", () => ({
 vi.mock("react-native", () => ({
   Platform: mockPlatform,
 }));
+
+vi.mock("expo-local-authentication", () => mockLocalAuth);
 
 describe("operations routes and business logic invariants", () => {
   it("defines canonical routes for all core enterprise operational modules", () => {
@@ -211,12 +217,16 @@ describe("Wave C2 — Native Secure Transport routing, anti-doubling, money prec
 
   beforeEach(() => {
     mockPlatform.OS = "android";
+    mockLocalAuth.authenticateAsync.mockReset();
+    mockLocalAuth.authenticateAsync.mockResolvedValue({ success: true });
     process.env.NODE_ENV = "test";
     delete process.env.EXPO_PUBLIC_ALLOW_WEB_TRANSPORT_FALLBACK;
     __setNativeSecureTransportForTests(undefined);
+    __resetOperationalSessionUnlockForTests();
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     globalThis.fetch = originalFetch;
     process.env.NODE_ENV = originalNodeEnv;
     if (originalFallbackFlag === undefined) {
@@ -226,6 +236,7 @@ describe("Wave C2 — Native Secure Transport routing, anti-doubling, money prec
     }
     mockPlatform.OS = "android";
     __setNativeSecureTransportForTests(undefined);
+    __resetOperationalSessionUnlockForTests();
   });
 
   it("enforces zero raw fetch, zero Math.random, and zero hardcoded VPS host in operationsApi.ts", async () => {
@@ -359,6 +370,7 @@ describe("Wave C2 — Native Secure Transport routing, anti-doubling, money prec
       listPurchases: vi.fn(async () =>
         JSON.stringify([
           { id: 44, poNumber: "PO-2026-44", supplierName: "شركة الرافدين للتوريد", total: "6000000", paidAmount: "2000000", status: "RECEIVED", orderDate: "2026-10-24T12:00:00Z" },
+          { id: 45, poNumber: "PO-2026-45", supplierName: "شركة الرافدين للتوريد", total: "3500000", paidAmount: "0", status: "SENT", orderDate: "2026-10-25T12:00:00Z" },
         ]),
       ),
     });
@@ -400,10 +412,59 @@ describe("Wave C2 — Native Secure Transport routing, anti-doubling, money prec
     expect(suppliers[0]?.currentBalance).toBe(4100000);
 
     const purchases = await fetchRealPurchases();
+    expect(purchases).toHaveLength(2);
     expect(purchases[0]?.status).toBe("RECEIVED");
     expect(purchases[0]?.total).toBe(6000000);
+    expect(purchases[1]?.status).toBe("SENT");
+    expect(purchases[1]?.total).toBe(3500000);
 
+    expect(mockLocalAuth.authenticateAsync).toHaveBeenCalledTimes(1);
     expect(forbiddenFetch).not.toHaveBeenCalled();
+  });
+
+  it("authenticates Android Keystore session once per concurrent load batch, renews after expiry, and retries on E_SECURE_TRANSPORT_SESSION_LOCKED", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-25T21:00:00Z"));
+
+    let throwLockedOnce = false;
+    const listPurchasesSpy = vi.fn(async () => {
+      if (throwLockedOnce) {
+        throwLockedOnce = false;
+        const lockedErr = new Error("The protected work session was not unlocked.");
+        (lockedErr as Error & { code: string }).code = "E_SECURE_TRANSPORT_SESSION_LOCKED";
+        throw lockedErr;
+      }
+      return JSON.stringify([
+        { id: 77, poNumber: "PO-77", supplierName: "مورد", total: "100000", paidAmount: "0", status: "SENT" },
+      ]);
+    });
+
+    __setNativeSecureTransportForTests({
+      listPurchases: listPurchasesSpy,
+      listSuppliers: vi.fn(async () =>
+        JSON.stringify([{ id: 1, name: "مورد", phone: "07700000000", currentBalance: "0" }]),
+      ),
+    });
+
+    // 1. Concurrent Promise.all load batch prompts Android authentication ONCE
+    const [batchPurchases, batchSuppliers] = await Promise.all([
+      fetchRealPurchases(),
+      fetchRealSuppliers(),
+    ]);
+    expect(batchPurchases[0]?.status).toBe("SENT");
+    expect(batchSuppliers).toHaveLength(1);
+    expect(mockLocalAuth.authenticateAsync).toHaveBeenCalledTimes(1);
+
+    // 2. After the 30s Android Keystore window expires, refreshing re-authenticates before reading
+    vi.advanceTimersByTime(31_000);
+    await fetchRealPurchases();
+    expect(mockLocalAuth.authenticateAsync).toHaveBeenCalledTimes(2);
+
+    // 3. Even inside the reuse window, an explicit E_SECURE_TRANSPORT_SESSION_LOCKED forces re-unlock + retry
+    throwLockedOnce = true;
+    const recovered = await fetchRealPurchases();
+    expect(recovered[0]?.poNumber).toBe("PO-77");
+    expect(mockLocalAuth.authenticateAsync).toHaveBeenCalledTimes(3);
   });
 
   it("fails closed with SecureTransportUnavailableError on native production when native module is missing", async () => {
@@ -419,6 +480,7 @@ describe("Wave C2 — Native Secure Transport routing, anti-doubling, money prec
 
     await expect(fetchRealInvoices()).rejects.toBeInstanceOf(SecureTransportUnavailableError);
     await expect(fetchRealInventory()).rejects.toBeInstanceOf(SecureTransportUnavailableError);
+    expect(mockLocalAuth.authenticateAsync).not.toHaveBeenCalled();
     expect(forbiddenFetch).not.toHaveBeenCalled();
   });
 
