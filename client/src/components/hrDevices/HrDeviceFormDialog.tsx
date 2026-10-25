@@ -40,13 +40,13 @@ export function HrDeviceFormDialog({
         if (!o) onClose();
       }}
     >
-      <DialogContent>
+      <DialogContent showCloseButton={!isPending}>
         <DialogHeader>
           <DialogTitle>
             {editId != null ? "تعديل جهاز حضور" : "إضافة جهاز حضور"}
           </DialogTitle>
         </DialogHeader>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <fieldset disabled={isPending} className="grid min-w-0 grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="space-y-1 sm:col-span-2">
             <Label htmlFor="d-name">اسم الجهاز</Label>
             <Input
@@ -149,14 +149,14 @@ export function HrDeviceFormDialog({
               placeholder="1"
             />
           </div>
-        </div>
+        </fieldset>
         <p className="text-[11px] text-muted-foreground">
           عند التسجيل المسبق يلزم ربط الرقم التسلسلي بعنوان جهاز فريد. الشبكات
           المشتركة أو NAT تحتاج مفتاح جهاز خاصاً في إعداد الخادم. لا تُقبل
           بصمات الجهاز المكتشف قبل الاعتماد.
         </p>
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="outline" disabled={isPending} onClick={onClose}>
             إلغاء
           </Button>
           <Button
