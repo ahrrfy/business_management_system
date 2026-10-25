@@ -38,7 +38,10 @@ function shouldPreserveOfflinePin(
   );
 }
 
-async function derivePinHash(pin: string, salt: Uint8Array): Promise<Uint8Array> {
+async function derivePinHash(
+  pin: string,
+  salt: Uint8Array,
+): Promise<Uint8Array> {
   const material = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(pin),
@@ -47,7 +50,12 @@ async function derivePinHash(pin: string, salt: Uint8Array): Promise<Uint8Array>
     ["deriveBits"],
   );
   const bits = await crypto.subtle.deriveBits(
-    { name: "PBKDF2", hash: "SHA-256", salt: salt as BufferSource, iterations: PBKDF2_ITERATIONS },
+    {
+      name: "PBKDF2",
+      hash: "SHA-256",
+      salt: salt as BufferSource,
+      iterations: PBKDF2_ITERATIONS,
+    },
     material,
     256,
   );
@@ -62,6 +70,33 @@ function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
   return diff === 0;
 }
 
+function sameProfileVersion(
+  current: OfflineProfileRow | undefined,
+  expected: OfflineProfileRow,
+): boolean {
+  if (!current) return false;
+  const fields = [
+    "companyId",
+    "userId",
+    "branchId",
+    "role",
+    "name",
+    "savedAt",
+  ] as const;
+  const sameBytes = (
+    a: Uint8Array | null | undefined,
+    b: Uint8Array | null | undefined,
+  ) =>
+    a == null || b == null
+      ? a === b
+      : constantTimeEqual(new Uint8Array(a), new Uint8Array(b));
+  return (
+    fields.every((field) => current[field] === expected[field]) &&
+    sameBytes(current.pinSalt, expected.pinSalt) &&
+    sameBytes(current.pinHash, expected.pinHash)
+  );
+}
+
 /** يُحدَّث عند كل دخول/جلسة أونلاين ناجحة (من POS) — هوية «آخر مستخدم معروف» للجهاز. */
 export async function saveOfflineProfile(user: {
   id: number;
@@ -71,23 +106,25 @@ export async function saveOfflineProfile(user: {
   branchId: number | null;
 }): Promise<void> {
   try {
-    const existing = await offlineDb.profile.get("profile");
-    const nextScope: StudioTenantScope = {
-      companyId: user.companyId,
-      userId: user.id,
-    };
-    const preservePin = shouldPreserveOfflinePin(existing, nextScope);
-    await offlineDb.profile.put({
-      key: "profile",
-      companyId: user.companyId,
-      userId: user.id,
-      name: user.name,
-      role: user.role,
-      branchId: user.branchId,
-      // تغيّر الشركة أو المستخدم على الجهاز ⇒ PIN القديم يخص نطاقاً آخر فيُمسح ويُعاد ضبطه.
-      pinSalt: preservePin && existing ? existing.pinSalt : null,
-      pinHash: preservePin && existing ? existing.pinHash : null,
-      savedAt: new Date().toISOString(),
+    await offlineDb.transaction("rw", offlineDb.profile, async () => {
+      const existing = await offlineDb.profile.get("profile");
+      const nextScope: StudioTenantScope = {
+        companyId: user.companyId,
+        userId: user.id,
+      };
+      const preservePin = shouldPreserveOfflinePin(existing, nextScope);
+      await offlineDb.profile.put({
+        key: "profile",
+        companyId: user.companyId,
+        userId: user.id,
+        name: user.name,
+        role: user.role,
+        branchId: user.branchId,
+        // تغيّر الشركة أو المستخدم على الجهاز ⇒ PIN القديم يخص نطاقاً آخر فيُمسح ويُعاد ضبطه.
+        pinSalt: preservePin && existing ? existing.pinSalt : null,
+        pinHash: preservePin && existing ? existing.pinHash : null,
+        savedAt: new Date().toISOString(),
+      });
     });
   } catch {
     // فشل التخزين المحلي لا يمسّ التشغيل الأونلايني.
@@ -116,17 +153,31 @@ export async function getOfflineProfile(): Promise<OfflineProfile | null> {
   }
 }
 
-export async function setOfflinePin(pin: string): Promise<{ ok: boolean; error?: string }> {
+export async function setOfflinePin(
+  pin: string,
+): Promise<{ ok: boolean; error?: string }> {
   const trimmed = pin.trim();
   if (!/^\d{4,8}$/.test(trimmed)) {
     return { ok: false, error: "رمز PIN من ٤ إلى ٨ أرقام" };
   }
   const row = await offlineDb.profile.get("profile");
-  if (!row) return { ok: false, error: "لا ملف جهاز — سجّل الدخول أونلاين أولاً" };
+  if (!row)
+    return { ok: false, error: "لا ملف جهاز — سجّل الدخول أونلاين أولاً" };
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const hash = await derivePinHash(trimmed, salt);
-  await offlineDb.profile.put({ ...row, pinSalt: salt, pinHash: hash });
-  return { ok: true };
+  // Derive outside the IndexedDB transaction; compare and write atomically afterwards.
+  return offlineDb.transaction("rw", offlineDb.profile, async () => {
+    const current = await offlineDb.profile.get("profile");
+    if (!sameProfileVersion(current, row)) {
+      return {
+        ok: false,
+        error:
+          "تغير ملف الجهاز أثناء ضبط الرمز. أعد فتح الإعدادات وحاول مجدداً.",
+      };
+    }
+    await offlineDb.profile.put({ ...current!, pinSalt: salt, pinHash: hash });
+    return { ok: true };
+  });
 }
 
 export async function verifyOfflinePin(pin: string): Promise<boolean> {
