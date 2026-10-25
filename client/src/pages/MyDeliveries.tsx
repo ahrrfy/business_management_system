@@ -119,7 +119,7 @@ export default function MyDeliveries() {
 
   const failM = trpc.courier.failDelivery.useMutation({
     onSuccess: (res) => {
-      notify.ok(`أُلغِي الطلب ${res.orderNumber}${res.reversed ? " وأُعيدت البضاعة للمخزون" : ""}`);
+      notify.ok(`سُجّل تعذّر ${res.orderNumber} وطُلب رجوع الطرد؛ لا يتحرك المخزون قبل الاستلام والفحص`);
       setFailTarget(null);
       void utils.courier.myDeliveries.invalidate();
     },
@@ -707,7 +707,7 @@ function PartialModal({
   );
 }
 
-/** حوار «تعذّر التسليم»: سبب إلزامي ثم عكس بيع الطلب + إلغاؤه. z-[100]. */
+/** حوار «تعذّر التسليم»: سبب إلزامي ثم وسم الطرد وطلب رجوعه بلا عكس مالي أو مخزني. z-[100]. */
 function FailModal({ row, pending, onCancel, onConfirm }: { row: DeliveryRow; pending: boolean; onCancel: () => void; onConfirm: (reason: string) => void }) {
   const [reason, setReason] = useState("");
   useEffect(() => {
@@ -726,7 +726,7 @@ function FailModal({ row, pending, onCancel, onConfirm }: { row: DeliveryRow; pe
         <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
           {row.kind === "consignment"
             ? "سيُسجَّل تعذّر المحاولة مع السبب، ويبقى الطرد قابلاً لإعادة المحاولة أو الإرجاع من الإدارة. لن يُلغى البيع أو يتحرك المخزون الآن."
-            : "سيُلغى طلب المتجر وتُعاد بضاعته للمخزون وتُصفّى ذمّة العميل. لا يمكن التراجع."}
+            : "سيُسجَّل تعذّر المحاولة ويُطلب رجوع الطرد إلى الفرع. لن يُلغى البيع أو تتحرك الذمّة أو يعود المخزون قبل الاستلام والفحص."}
         </p>
         <div className="mb-2 flex flex-wrap gap-1.5">
           {REASONS.map((r) => (
@@ -745,12 +745,12 @@ function FailModal({ row, pending, onCancel, onConfirm }: { row: DeliveryRow; pe
         <div className="flex items-center justify-end gap-2">
           <button onClick={onCancel} disabled={pending} className="rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition hover:bg-accent disabled:opacity-50">تراجع</button>
           <button
-            onClick={() => reason.trim().length >= 2 && onConfirm(reason.trim())}
-            disabled={pending || reason.trim().length < 2}
+            onClick={() => reason.trim().length >= 3 && onConfirm(reason.trim())}
+            disabled={pending || reason.trim().length < 3}
             className="flex items-center gap-1.5 rounded-lg bg-[var(--sem-neg)] px-4 py-2 text-sm font-bold text-background transition hover:bg-[var(--sem-neg-hover)] disabled:opacity-50"
           >
             {pending ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <XCircle aria-hidden className="size-4" />}
-            تأكيد الإلغاء
+            تأكيد التعذّر
           </button>
         </div>
       </div>

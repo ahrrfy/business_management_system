@@ -377,7 +377,7 @@ export async function fulfillmentChargeClaimsForRequests(
     .where(
       and(
         eq(fulfillmentCharges.branchId, branchId),
-        eq(fulfillmentCharges.status, "APPROVED"),
+        inArray(fulfillmentCharges.status, ["APPROVED", "COMPLETED"]),
         inArray(fulfillmentCharges.requestId, requestIds),
       ),
     );

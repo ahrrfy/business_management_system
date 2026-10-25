@@ -22,6 +22,7 @@ import {
 import { adjustSupplierBalance, postEntry } from "../../ledgerService";
 import { money, round2, toDbMoney } from "../../money";
 import { classifyGiftPosting } from "../../sale/giftPosting";
+import { postDamagedReturnReclassificationTx } from "../../returns/damagedReturnReclassification";
 import { userNameSnapshot } from "../../userSnapshot";
 import { recordEffect } from "../effectLedger";
 import type { EffectExecutor, ExecutionOutcome, PendingEffect, ReversalRun } from "../types";
@@ -123,6 +124,7 @@ function reversedCosts(ctx: InvoiceContext, run: ReversalRun) {
   let restockedGiftCost = new Decimal(0);
   let serviceRestockedCost = new Decimal(0);
   let serviceRestockedGiftCost = new Decimal(0);
+  let ownedPhysicalCost = new Decimal(0);
   for (const line of state.lines) {
     const lineCost = round2(line.lineCost);
     if (line.isGift) {
@@ -134,6 +136,15 @@ function reversedCosts(ctx: InvoiceContext, run: ReversalRun) {
       restockedCost = restockedCost.plus(lineCost);
       if (line.kind === "SERVICE" && !line.serviceMaterialsRestored) {
         serviceRestockedCost = serviceRestockedCost.plus(lineCost);
+      }
+      if (
+        line.kind !== "SERVICE" &&
+        !ctx.consignByVariant.has(line.variantId) &&
+        !ctx.digitalVariants.has(line.variantId)
+      ) {
+        // البكج المقبول لا يحوي خدمةً أو أمانةً أو بكجاً آخر؛ lineCost هو مجموع
+        // قيم صرف مكوّناته المملوكة التاريخية، لذلك يدخل هنا ككتلة مملوكة واحدة.
+        ownedPhysicalCost = ownedPhysicalCost.plus(lineCost);
       }
     }
   }
@@ -158,6 +169,9 @@ function reversedCosts(ctx: InvoiceContext, run: ReversalRun) {
   const financiallyRestockedGiftCost = state.restock
     ? round2(Decimal.max(new Decimal(0), reversedGiftCost.minus(serviceRestockedGiftCost)))
     : new Decimal(0);
+  const ownedDamagedCost = !state.restock && ctx.invoice.sourceType !== "WORKORDER"
+    ? round2(ownedPhysicalCost)
+    : new Decimal(0);
   return {
     restockedCost,
     /** ما يظهر في نصّ القيد «عكس كلفة تحليلية»: صفرٌ حين لا تعود البضاعة (نصُّ المرتجع القائم). */
@@ -167,6 +181,7 @@ function reversedCosts(ctx: InvoiceContext, run: ReversalRun) {
     financiallyRestockedGiftCost,
     serviceRestockedCost,
     consignmentRestockedCost,
+    ownedDamagedCost,
   };
 }
 
@@ -269,6 +284,7 @@ export const invoiceSaleLedgerExecutor: EffectExecutor = async (tx, effects, run
     const reasonNote = (run.decisions.reasonNote ?? "").trim();
     // إلغاء فاتورة هدايا صِرفة لا يعكس SALE/AR؛ عكس GIFT_OUT هو أثره المالي.
     let returnEntryId: number | null = null;
+    let damagedReclassificationEntryId: number | null = null;
     if (returnPostingIntent) {
       returnEntryId = await postEntry(tx, {
         entryType: "RETURN",
@@ -289,6 +305,14 @@ export const invoiceSaleLedgerExecutor: EffectExecutor = async (tx, effects, run
         postingIntent: returnPostingIntent,
         postingSourceComponents: returnPostingSource,
       });
+      damagedReclassificationEntryId = await postDamagedReturnReclassificationTx(tx, {
+        branchId: Number(inv.branchId),
+        invoiceId: run.documentId,
+        sourceReturnEntryId: returnEntryId,
+        historicalCost: costs.ownedDamagedCost,
+        createdBy: run.actor.userId,
+        createdByNameSnapshot: cancelOperatorName,
+      });
     }
     writeLedgerState(run, { remainingAmount, remainingRevenue, remainingTax });
     outcomes.push({
@@ -304,6 +328,8 @@ export const invoiceSaleLedgerExecutor: EffectExecutor = async (tx, effects, run
         taxAmount: remainingTax.neg().toFixed(2),
         cost: ownedRestockedCost.neg().toFixed(2),
         profile: returnPostingIntent ? returnProfile : null,
+        damagedReclassificationEntryId,
+        damagedHistoricalCost: costs.ownedDamagedCost.toFixed(2),
       },
     });
   }

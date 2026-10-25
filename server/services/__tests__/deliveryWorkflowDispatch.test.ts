@@ -6,6 +6,7 @@ import {
   fulfillmentRequests,
   fulfillmentCharges,
   fulfillmentChargePayments,
+  deliveryDocumentSnapshots,
 } from "../../../drizzle/fulfillmentSchema";
 import type { WorkflowDispatchBatchInput } from "../../../shared/deliveryWorkflow";
 import { docBarcode } from "../../../shared/documentNumber";
@@ -27,6 +28,7 @@ import {
   releaseFulfillmentRequest,
 } from "../fulfillment/requests";
 import { dispatchInvoiceToDelivery } from "../delivery/dispatchInvoice";
+import { recordDeliveryRemittance } from "../delivery/remittance";
 
 const actor = { userId: 1, role: "admin", branchId: 1 };
 const db = () => {
@@ -132,6 +134,17 @@ async function noDuplicateEffects() {
     entries: await db().select().from(s.accountingEntries),
   };
 }
+async function collectionEffects() {
+  return {
+    invoices: await db().select().from(s.invoices),
+    customers: await db().select().from(s.customers),
+    parties: await db().select().from(s.deliveryParties),
+    consignments: await db().select().from(s.deliveryConsignments),
+    ledger: await db().select().from(s.deliveryLedgerEntries),
+    remittances: await db().select().from(s.deliveryRemittances),
+    receipts: await db().select().from(s.receipts),
+  };
+}
 async function useSparseNativeRole(grants: Record<string, boolean>) {
   await db()
     .insert(s.roles)
@@ -151,20 +164,18 @@ async function useSparseNativeRole(grants: Record<string, boolean>) {
 }
 describe("atomic barcode batch dispatch", () => {
   it("checks every locked implicit FR member before invoice-only authority can materialize an unbilled work order", async () => {
-    await db()
-      .insert(s.workOrders)
-      .values({
-        id: 51,
-        orderNumber: "READY-UNBILLED-51",
-        branchId: 1,
-        customerId: 1,
-        title: "خدمة فعلية جاهزة غير مفوترة",
-        status: "READY",
-        salePrice: "7000",
-        deposit: "0",
-        paymentMode: "COD",
-        createdBy: 1,
-      });
+    await db().insert(s.workOrders).values({
+      id: 51,
+      orderNumber: "READY-UNBILLED-51",
+      branchId: 1,
+      customerId: 1,
+      title: "خدمة فعلية جاهزة غير مفوترة",
+      status: "READY",
+      salePrice: "7000",
+      deposit: "0",
+      paymentMode: "COD",
+      createdBy: 1,
+    });
     const base = await input();
     const request = await createFulfillmentRequest(
       {
@@ -417,6 +428,214 @@ describe("atomic barcode batch dispatch", () => {
     );
     expect(await db().select().from(s.invoices)).toHaveLength(2);
   });
+  it.each([
+    { label: "single", invoiceCount: 1 },
+    { label: "grouped", invoiceCount: 2 },
+  ])(
+    "freezes final $label goods and service COD after claims and preserves it on replay",
+    async ({ invoiceCount }) => {
+      await db()
+        .update(s.invoices)
+        .set({
+          subtotal: invoiceCount === 1 ? "10000" : "5000",
+          total: invoiceCount === 1 ? "10000" : "5000",
+          paidAmount: "0",
+          status: "PENDING",
+          paymentMode: "COD",
+        })
+        .where(eq(s.invoices.id, 1));
+      if (invoiceCount === 2)
+        await db()
+          .update(s.invoices)
+          .set({
+            subtotal: "5000",
+            total: "5000",
+            paidAmount: "0",
+            status: "PENDING",
+            paymentMode: "COD",
+          })
+          .where(eq(s.invoices.id, 2));
+      await db()
+        .update(s.customers)
+        .set({ currentBalance: "10000" })
+        .where(eq(s.customers.id, 1));
+      const charge = await createFulfillmentCharge(
+        {
+          branchId: 1,
+          customerId: 1,
+          category: "SERVICE",
+          description: "خدمة ملحقة بالشحنة",
+          amount: "5000",
+          externalCost: "0",
+          clientRequestId: `snapshot-service-${invoiceCount}`,
+        },
+        actor,
+      );
+      await approveFulfillmentCharge(
+        {
+          id: charge.id,
+          expectedVersion: charge.version,
+          clientRequestId: `snapshot-service-approve-${invoiceCount}`,
+        },
+        actor,
+      );
+      const chargePreview = await previewWorkflowScan(
+        { raw: `CHG-${charge.id}`, station: "dispatch", branchId: 1 },
+        actor,
+      );
+      const payload = await input();
+      payload.sources = payload.sources.slice(0, invoiceCount);
+      payload.sources.push({
+        kind: "charge",
+        id: charge.id,
+        expectedVersion: chargePreview.source.version,
+      });
+      payload.clientRequestId = `snapshot-final-claims-${invoiceCount}`;
+      const result = await dispatchWorkflowBatch(payload, actor);
+      const consignments = await db()
+        .select()
+        .from(s.deliveryConsignments)
+        .where(
+          eq(
+            s.deliveryConsignments.fulfillmentRequestId,
+            result.fulfillmentRequestId!,
+          ),
+        );
+      expect(
+        consignments.reduce((sum, row) => sum + Number(row.codAmount), 0),
+      ).toBe(15_000);
+      const snapshots = await db()
+        .select()
+        .from(deliveryDocumentSnapshots)
+        .where(eq(deliveryDocumentSnapshots.sourceId, result.consignmentId));
+      expect(snapshots).toHaveLength(2);
+      for (const snapshot of snapshots) {
+        const document = snapshot.payload as {
+          invoiceIds: number[];
+          money: {
+            codAmount: string;
+            currentTotal: string;
+            paidAmount: string;
+          };
+        };
+        expect(document.invoiceIds).toEqual(
+          invoiceCount === 1 ? [1] : [1, 2],
+        );
+        expect(document.money).toMatchObject({
+          codAmount: "15000.00",
+          currentTotal: "10000.00",
+          paidAmount: "0.00",
+        });
+      }
+      expect(await dispatchWorkflowBatch(payload, actor)).toMatchObject({
+        consignmentId: result.consignmentId,
+        idempotentReplay: true,
+      });
+      expect(
+        await db()
+          .select()
+          .from(deliveryDocumentSnapshots)
+          .where(eq(deliveryDocumentSnapshots.sourceId, result.consignmentId)),
+      ).toEqual(snapshots);
+    },
+  );
+  it("requires a classified reason for barcode partial collection and replays collection and remittance without duplicate AR or custody", async () => {
+    await db()
+      .update(s.invoices)
+      .set({ paidAmount: "0", status: "PENDING", paymentMode: "COD" });
+    await db()
+      .update(s.customers)
+      .set({ currentBalance: "20000" })
+      .where(eq(s.customers.id, 1));
+    const payload = await input();
+    payload.clientRequestId = "workflow-partial-dispatch";
+    const dispatched = await dispatchWorkflowBatch(payload, actor);
+    const preview = await previewWorkflowScan(
+      {
+        raw: docBarcode("CN", dispatched.consignmentNumber),
+        station: "collect",
+        branchId: 1,
+      },
+      actor,
+    );
+    expect(preview.money.codAmount).toBe("20000.00");
+    const baseProof = {
+      source: {
+        kind: preview.source.kind,
+        id: preview.source.id,
+        expectedVersion: preview.source.version,
+      },
+      branchId: 1,
+      evidence: "إفادة اتصال المندوب بعد التسليم",
+      collectedAmount: "15000",
+      clientRequestId: "workflow-partial-collection",
+    };
+    const beforeRejected = await collectionEffects();
+    await expect(confirmWorkflowDelivery(baseProof, actor)).rejects.toThrow(
+      /سبب العجز/,
+    );
+    expect(await collectionEffects()).toEqual(beforeRejected);
+
+    const proof = {
+      ...baseProof,
+      shortfallReason: "PARTIAL_REFUSAL",
+    };
+    expect(await confirmWorkflowDelivery(proof, actor)).toMatchObject({
+      consignmentId: dispatched.consignmentId,
+      idempotentReplay: false,
+    });
+    const afterCollection = await collectionEffects();
+    expect(afterCollection.invoices.map((row) => row.paidAmount)).toEqual([
+      "10000.00",
+      "10000.00",
+    ]);
+    expect(afterCollection.customers[0]?.currentBalance).toBe("0.00");
+    expect(afterCollection.parties[0]?.currentBalance).toBe("20000.00");
+    expect(
+      afterCollection.ledger
+        .filter((row) => row.entryType === "COD_COLLECTED")
+        .reduce((sum, row) => sum + Number(row.amount), 0),
+    ).toBe(15000);
+    expect(
+      afterCollection.ledger
+        .filter((row) => row.entryType === "SHORTFALL_ASSIGNED")
+        .reduce((sum, row) => sum + Number(row.amount), 0),
+    ).toBe(5000);
+    expect(afterCollection.receipts).toHaveLength(0);
+    expect(afterCollection.remittances).toHaveLength(0);
+    expect(await confirmWorkflowDelivery(proof, actor)).toMatchObject({
+      idempotentReplay: true,
+    });
+    expect(await collectionEffects()).toEqual(afterCollection);
+
+    const cashLines = afterCollection.ledger
+      .filter((row) => row.entryType === "COD_COLLECTED")
+      .map((row) => ({
+        consignmentId: Number(row.consignmentId),
+        collectedAmount: row.amount,
+      }));
+    const remittance = {
+      branchId: 1,
+      partyId: 1,
+      shiftType: "RETAIL" as const,
+      targetShiftId: 1,
+      lines: cashLines,
+      countedCash: "15000",
+      clientRequestId: "workflow-partial-remittance",
+    };
+    expect(await recordDeliveryRemittance(remittance, actor)).toMatchObject({
+      idempotentReplay: false,
+    });
+    const afterRemittance = await collectionEffects();
+    expect(afterRemittance.customers[0]?.currentBalance).toBe("0.00");
+    expect(afterRemittance.parties[0]?.currentBalance).toBe("5000.00");
+    expect(afterRemittance.remittances).toHaveLength(1);
+    expect(afterRemittance.receipts).toHaveLength(1);
+    expect(await recordDeliveryRemittance(remittance, actor)).toMatchObject({
+      idempotentReplay: true,
+    });
+    expect(await collectionEffects()).toEqual(afterRemittance);
+  });
   it("quotes one requested courier fee rather than per-source legacy delivery fees", async () => {
     const payload = await input();
     const preview = await previewWorkflowBatch(
@@ -483,6 +702,22 @@ describe("atomic barcode batch dispatch", () => {
         codAmount: "0.00",
         endCustomerId: customerId,
       });
+      const snapshots = await db()
+        .select()
+        .from(deliveryDocumentSnapshots)
+        .where(eq(deliveryDocumentSnapshots.sourceId, result.consignmentId));
+      expect(snapshots).toHaveLength(2);
+      for (const snapshot of snapshots) {
+        const document = snapshot.payload as {
+          invoiceIds: number[];
+          money: { codAmount: string; currentTotal: string };
+        };
+        expect(document.invoiceIds).toEqual([]);
+        expect(document.money).toMatchObject({
+          codAmount: "0.00",
+          currentTotal: "0.00",
+        });
+      }
       expect(await noDuplicateEffects()).toEqual(before);
       expect(await db().select().from(s.customers)).toEqual(customersBefore);
       expect(await db().select().from(fulfillmentChargePayments)).toHaveLength(
@@ -503,6 +738,7 @@ describe("atomic barcode batch dispatch", () => {
   );
   it("creates one genuine group, replays after lost response, and never sells/issues/collects again", async () => {
     const payload = await input();
+    payload.deliveryFee = "5000";
     const before = await noDuplicateEffects();
     const result = await dispatchWorkflowBatch(payload, actor);
     expect(result.invoiceIds).toEqual([1, 2]);
@@ -511,6 +747,38 @@ describe("atomic barcode batch dispatch", () => {
     expect(consignments).toHaveLength(2);
     expect(consignments.every((c) => c.assignedUserId === 2)).toBe(true);
     expect(await noDuplicateEffects()).toEqual(before);
+    const snapshotsBeforeReplay = await db()
+      .select()
+      .from(deliveryDocumentSnapshots)
+      .where(eq(deliveryDocumentSnapshots.sourceId, result.consignmentId));
+    expect(snapshotsBeforeReplay).toHaveLength(2);
+    expect(result.documentSnapshotIds).toEqual(
+      snapshotsBeforeReplay.map((row) => Number(row.id)).sort((a, b) => a - b),
+    );
+    for (const snapshot of snapshotsBeforeReplay) {
+      const document = snapshot.payload as {
+        shipment: { members: Array<{ invoiceId: number | null }> };
+        invoiceIds: number[];
+        money: {
+          codAmount: string;
+          deliveryFee: string;
+          currentTotal: string;
+          paidAmount: string;
+        };
+      };
+      expect(document.shipment.members).toHaveLength(2);
+      expect(document.invoiceIds).toEqual([1, 2]);
+      expect(document.money).toMatchObject({
+        codAmount: "0.00",
+        deliveryFee: "5000.00",
+        currentTotal: "20000.00",
+        paidAmount: "20000.00",
+      });
+    }
+    await db()
+      .update(s.invoices)
+      .set({ paidAmount: "9000", status: "PARTIALLY_PAID" })
+      .where(eq(s.invoices.id, 2));
     const replay = await dispatchWorkflowBatch(payload, actor);
     expect(replay).toMatchObject({
       consignmentId: result.consignmentId,
@@ -518,6 +786,12 @@ describe("atomic barcode batch dispatch", () => {
     });
     expect(await db().select().from(fulfillmentRequests)).toHaveLength(1);
     expect(await db().select().from(s.deliveryConsignments)).toHaveLength(2);
+    expect(
+      await db()
+        .select()
+        .from(deliveryDocumentSnapshots)
+        .where(eq(deliveryDocumentSnapshots.sourceId, result.consignmentId)),
+    ).toEqual(snapshotsBeforeReplay);
     const member = await previewWorkflowScan(
       { raw: "INV-80002", station: "collect", branchId: 1 },
       actor,
@@ -730,15 +1004,13 @@ describe("native driver assignment guards", () => {
         .update(s.deliveryParties)
         .set({ userId: null })
         .where(eq(s.deliveryParties.id, 1));
-      await db()
-        .insert(s.deliveryPartyMembers)
-        .values({
-          partyId: 1,
-          userId: 2,
-          memberRole: "DRIVER",
-          isActive: true,
-          createdBy: 1,
-        });
+      await db().insert(s.deliveryPartyMembers).values({
+        partyId: 1,
+        userId: 2,
+        memberRole: "DRIVER",
+        isActive: true,
+        createdBy: 1,
+      });
       const command = await nativeDriverSetup(family),
         before = await nativeDriverSnapshot();
       await expect(command()).rejects.toThrow(/صراحة/);

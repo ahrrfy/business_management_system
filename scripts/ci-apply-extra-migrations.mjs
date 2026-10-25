@@ -247,6 +247,9 @@ const EXTRA_MIGRATIONS = [
   "drizzle/migrations/0403_fulfillment_requests_aftercare.sql",
   // Reapply final quantity/customer checks after 0403; keep original issue costs unknown in legacy data.
   "drizzle/migrations/0404_barcode_workflow_settlements.sql",
+  // Custody/snapshot tables plus final guest SERVICE and completion lifecycle checks.
+  // drizzle-kit does not reliably replace existing named CHECK constraints during db:push.
+  "drizzle/migrations/0405_delivery_custody_document_snapshots.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without

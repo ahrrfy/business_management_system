@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import {
   aftercareExecutions,
   fulfillmentRequests,
@@ -316,7 +316,10 @@ export async function mutateWorkflowAssignment(
                 .where(
                   and(
                     eq(fulfillmentCharges.requestId, request.id),
-                    eq(fulfillmentCharges.status, "APPROVED"),
+                    inArray(fulfillmentCharges.status, [
+                      "APPROVED",
+                      "COMPLETED",
+                    ]),
                   ),
                 )
                 .for("update");

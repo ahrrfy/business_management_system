@@ -637,7 +637,13 @@ describe("أوامر الشغل/المطبعة", () => {
       requestType: "CANCEL",
       baseVersion: Number(current.version),
       reason: "إلغاء أمر الاختبار بعد بدء التنفيذ وإرجاع مواده",
-      payload: { refundShiftId: null, materials: null },
+      // العقد الجديد لا يعيد خامات أمرٍ بدأ تنفيذه بالتخمين: هذا السيناريو يثبت
+      // صراحةً أن الصنف الأساس والحبر عادا صالحين فعلياً، وهو ما تتوقعه assertions أدناه.
+      payload: {
+        refundShiftId: null,
+        materials: null,
+        confirmAllMaterialsReturnedUsable: true,
+      },
     }, { ...actor, role: "admin" });
     await approveWorkOrderControlRequest(
       Number(request.id),

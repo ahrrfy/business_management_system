@@ -232,7 +232,9 @@ export async function plSnapshot(
       FROM accountingEntries ae
       WHERE (ae.entryType IN ('SALE','RETURN') OR
         (ae.entryType = 'ADJUST' AND
-          (ae.dedupeKey LIKE 'FULFILLMENT_CHARGE_ACCRUAL:%' OR ae.dedupeKey LIKE 'FULFILLMENT_CHARGE_CREDIT:%')))
+          (ae.dedupeKey LIKE 'FULFILLMENT_CHARGE_ACCRUAL:%'
+            OR ae.dedupeKey LIKE 'FULFILLMENT_CHARGE_RECOGNITION:%'
+            OR ae.dedupeKey LIKE 'FULFILLMENT_CHARGE_CREDIT:%')))
         -- PURCHASE-RETURN (تدقيق ٢/٧): مرتجع الشراء يُقيَّد أيضاً بنوع RETURN لكن بـsupplierId (لا
         -- invoiceId/customerId)، وقيمته على cost سالبة ⇒ كان يُخفِّض COGS ويَنفخ الربح بلا أي بيع.
         -- COGS = تكلفة المُباع فقط ⇒ نستثني مرتجعات الشراء (supplierId NOT NULL) ونُبقي مرتجعات البيع.
@@ -1021,6 +1023,8 @@ export interface FinancialPosition {
   deliveryFeeDueLiability: string;
   /** Classified pass-through claims still owed to their identified beneficiaries. */
   fulfillmentPassThroughLiability: string;
+  /** Service amounts approved before operational completion; released only by recognition/refund evidence. */
+  fulfillmentDeferredRevenue: string;
   /** Accrued contractor costs outside supplier trade AP (supplier AP is already included). */
   fulfillmentPayeeLiability: string;
   /** Actual customer overcollections held separately from customer trade AR. */
@@ -1088,6 +1092,7 @@ export async function getFinancialPosition(
     deliveryFeeHeldLiability: zero,
     deliveryFeeDueLiability: zero,
     fulfillmentPassThroughLiability: zero,
+    fulfillmentDeferredRevenue: zero,
     fulfillmentPayeeLiability: zero,
     fulfillmentCustomerCredit: zero,
     accruedSalaryLiability: zero,
@@ -1580,6 +1585,67 @@ export async function getFinancialPosition(
   );
   const fulfillmentPassThroughLiability =
     fulfillmentLiabilityByKind.get("PASS_THROUGH") ?? money(0);
+  // Prefer the immutable posting intent. In legacy/OFF mode postEntry intentionally
+  // omits that evidence, so reconstruct only the writer events whose persisted
+  // revenue fields prove whether the amount was deferred. Never infer from today's
+  // charge status: that would rewrite historical/as-of reports after completion.
+  const deferredRevenueRow = rowsOf(
+    await db.execute(sql`
+      SELECT CAST(COALESCE(SUM(deferred_event.delta), 0) AS CHAR) AS balance
+      FROM (
+        SELECT ae.branchId, ae.entryDate,
+          intent_line.credit - intent_line.debit AS delta
+        FROM accountingEntries ae
+        JOIN JSON_TABLE(
+          COALESCE(ae.postingIntentJson, JSON_OBJECT('lines', JSON_ARRAY())),
+          '$.lines[*]' COLUMNS (
+            role_name VARCHAR(64) PATH '$.role',
+            debit DECIMAL(15,2) PATH '$.debit',
+            credit DECIMAL(15,2) PATH '$.credit'
+          )
+        ) AS intent_line
+        WHERE intent_line.role_name = 'DEFERRED_REVENUE'
+
+        UNION ALL
+
+        SELECT ae.branchId, ae.entryDate, ae.amount
+        FROM accountingEntries ae
+        JOIN fulfillmentCharges fc
+          ON ae.dedupeKey = CONCAT('FULFILLMENT_CHARGE_ACCRUAL:', fc.id)
+        WHERE ae.postingIntentJson IS NULL
+          AND fc.category IN ('SERVICE', 'OUTSOURCED')
+          AND ae.revenue = 0
+
+        UNION ALL
+
+        SELECT ae.branchId, ae.entryDate, -ae.amount
+        FROM accountingEntries ae
+        JOIN fulfillmentCharges fc
+          ON ae.dedupeKey = CONCAT('FULFILLMENT_CHARGE_RECOGNITION:', fc.id)
+        WHERE ae.postingIntentJson IS NULL
+          AND fc.category IN ('SERVICE', 'OUTSOURCED')
+
+        UNION ALL
+
+        SELECT ae.branchId, ae.entryDate, ae.amount
+        FROM accountingEntries ae
+        JOIN fulfillmentChargePayments fcp
+          ON ae.dedupeKey = CONCAT('FULFILLMENT_CHARGE_CREDIT:R:', fcp.receiptId)
+          AND fcp.kind = 'REFUND'
+        JOIN fulfillmentCharges fc ON fc.id = fcp.chargeId
+        WHERE ae.postingIntentJson IS NULL
+          AND fc.category IN ('SERVICE', 'OUTSOURCED')
+          AND ae.revenue = 0
+      ) deferred_event
+      WHERE 1 = 1
+        ${bId ? sql`AND deferred_event.branchId = ${bId}` : sql``}
+        ${asOf ? sql`AND deferred_event.entryDate <= ${asOf}` : sql``}
+    `),
+  )[0] as { balance?: string } | undefined;
+  const deferredRevenueNet = money(deferredRevenueRow?.balance ?? 0);
+  const fulfillmentDeferredRevenue = deferredRevenueNet.gt(0)
+    ? deferredRevenueNet
+    : money(0);
   const fulfillmentPayeeLiability =
     fulfillmentLiabilityByKind.get("PAYEE") ?? money(0);
   const fulfillmentCustomerCredit =
@@ -1788,6 +1854,7 @@ export async function getFinancialPosition(
     .add(deliveryFeeHeldLiability)
     .add(deliveryFeeDueLiability)
     .add(fulfillmentPassThroughLiability)
+    .add(fulfillmentDeferredRevenue)
     .add(fulfillmentPayeeLiability)
     .add(fulfillmentCustomerCredit)
     .add(accruedSalaryLiability)
@@ -1842,6 +1909,7 @@ export async function getFinancialPosition(
     deliveryFeeHeldLiability: toDbMoney(deliveryFeeHeldLiability),
     deliveryFeeDueLiability: toDbMoney(deliveryFeeDueLiability),
     fulfillmentPassThroughLiability: toDbMoney(fulfillmentPassThroughLiability),
+    fulfillmentDeferredRevenue: toDbMoney(fulfillmentDeferredRevenue),
     fulfillmentPayeeLiability: toDbMoney(fulfillmentPayeeLiability),
     fulfillmentCustomerCredit: toDbMoney(fulfillmentCustomerCredit),
     accruedSalaryLiability: toDbMoney(accruedSalaryLiability),

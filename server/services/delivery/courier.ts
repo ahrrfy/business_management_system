@@ -16,7 +16,7 @@
 // في شاشة «توصيلاتي»** («قبول الطلب» ⇐ «استلمت الطرد» ⇐ «خرج للتوصيل» ⇐ «تم التسليم»).
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
-import { assertNotReturnDeclared } from "./declaredReturn";
+import { assertNotReturnDeclared, declareConsignmentReturn } from "./declaredReturn";
 import {
   assertStandaloneConsignmentTx,
   loadShipmentMembersTx,
@@ -49,6 +49,7 @@ import {
   workOrders,
 } from "../../../drizzle/schema";
 import { getDb, type Tx } from "../../db";
+import { extractInsertId } from "../../lib/insertId";
 import { money, round2, toDbMoney } from "../money";
 import {
   adjustCustomerBalance,
@@ -56,8 +57,8 @@ import {
   computeInvoiceStatus,
   postEntry,
 } from "../ledgerService";
-import { returnSale } from "../returnService";
 import { awardDeliveredOnlineOrderPoints } from "../storeAdmin/loyaltyService";
+import { resolveConsignmentNumber } from "../workOrder/helpers";
 import { enqueuePostCommit, withTx } from "../tx";
 import {
   checkIdempotency,
@@ -82,6 +83,7 @@ import {
   deliveryFeeAccrualIntent,
 } from "./posting";
 import { consignmentShortfallAssignedSql } from "./openParcelPredicates";
+import { repairDeliveryCustodyFromRecordedEventsTx } from "./custody";
 import {
   isShortfallReason,
   SHORTFALL_REASONS,
@@ -1414,6 +1416,7 @@ export async function confirmConsignmentDelivery(
           }),
         });
       }
+      await repairDeliveryCustodyFromRecordedEventsTx(tx, Number(cn.id));
       return {
         consignmentId: Number(cn.id),
         consignmentNumber: cn.consignmentNumber,
@@ -1422,6 +1425,7 @@ export async function confirmConsignmentDelivery(
       };
     }
     if (cn.parcelStatus === "DELIVERED" && cn.courierDeliveredAt) {
+      await repairDeliveryCustodyFromRecordedEventsTx(tx, Number(cn.id));
       return {
         consignmentId: Number(cn.id),
         consignmentNumber: cn.consignmentNumber,
@@ -2086,8 +2090,10 @@ export async function transitionConsignmentParcel(
       input.clientRequestId,
       payloadHash,
     );
-    if (replayAfterLock != null)
+    if (replayAfterLock != null) {
+      await repairDeliveryCustodyFromRecordedEventsTx(tx, Number(cn.id));
       return { consignmentId: replayAfterLock, replay: true };
+    }
     assertParcelTransition(cn.parcelStatus, input.toStatus);
     const now = new Date();
     const reason = input.reason?.trim() || null;
@@ -2181,16 +2187,16 @@ export async function transitionConsignmentParcel(
 export interface FailDeliveryResult {
   orderId: number;
   orderNumber: string;
+  consignmentId: number;
+  consignmentNumber: string;
+  returnRequested: true;
   reversed: boolean;
-  alreadyCancelled?: boolean;
+  alreadyRequested?: boolean;
 }
 
 /**
- * تعذّر التسليم (رفض الزبون/عنوان خاطئ): يعكس بيع الطلب المرفوض ذرّياً ويُلغيه.
- * البضاعة تعود للمخزون + قيد RETURN عاكس + تُصفّى ذمّة العميل عن الفاتورة + الفاتورة RETURNED + الطلب
- * CANCELLED (بسبب). بلا عهدة (لم يُحصَّل شيء). يُعاد استخدام returnSale المُختبَر (idempotent بمفتاح
- * `courier-fail:<order>` ⇒ استرداد آمن لو فشل تحديث الطلب بعد نجاح العكس). محصورٌ بطلبٍ **غير محصَّل**
- * (paidAmount=0): بعد التحصيل يكون إرجاعاً بعد التسليم (مدير)، لا «تعذّر تسليم».
+ * تعذّر التسليم لطلب متجر إرثي: يرحّل الطلب إلى إرسالية موحّدة FAILED ويعلن رجوعها.
+ * التصريح ميداني فقط؛ الاستلام والفحص اللاحقان هما اللذان يعكسان البيع والمخزون.
  */
 export async function failCourierDelivery(
   input: { onlineOrderId: number; reason: string },
@@ -2205,7 +2211,7 @@ export async function failCourierDelivery(
         what: "تعذّر تسجيل «تعذّر التسليم»",
         why:
           partyId == null
-            ? "حسابك غير مرتبطٍ بجهة توصيلٍ نشطة، وهذه الحركة تعكس البيع وتُعيد البضاعة للمخزون فلا تقع بلا جهةٍ تُنسَب إليها"
+            ? "حسابك غير مرتبطٍ بجهة توصيلٍ نشطة، فلا يمكن إسناد طلب الرجوع إلى جهةٍ مسؤولة"
             : "دورك في الجهة «محاسب»: تراجع الكشف والتوريد ولا تُحرّك الطرود في الميدان",
         doThis:
           partyId == null
@@ -2214,12 +2220,12 @@ export async function failCourierDelivery(
       }),
     });
   const reason = (input.reason ?? "").trim();
-  if (reason.length < 2)
+  if (reason.length < 3)
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: appErrorMessage({
         what: "تعذّر تسجيل «تعذّر التسليم»",
-        why: "السبب فارغٌ أو أقصر من حرفين، وهذه الحركة تعكس البيع وتُعيد البضاعة للمخزون فلا تُسجَّل بلا سببٍ موثَّق",
+        why: "السبب فارغٌ أو أقصر من ثلاثة أحرف، وطلب الرجوع لا يُسجَّل بلا سببٍ موثَّق",
         doThis:
           "اكتب سبباً قصيراً وواضحاً (رفض العميل الاستلام · العميل غير متوفّر · عنوان خاطئ · تعذّر التواصل) ثمّ احفظ",
       }),
@@ -2230,17 +2236,13 @@ export async function failCourierDelivery(
       code: "INTERNAL_SERVER_ERROR",
       message: appErrorMessage({
         what: "تعذّر تسجيل «تعذّر التسليم»",
-        why: "الاتصال بقاعدة البيانات منقطعٌ الآن، فلا يمكن عكس البيع ولا إعادة البضاعة للمخزون",
+        why: "الاتصال بقاعدة البيانات منقطعٌ الآن، فلا يمكن تسجيل التعذّر وطلب الرجوع",
         doThis:
           "أعِد البضاعة إلى المتجر وأبلِغ كاشير الاستقبال برقم الطلب، وأعِد التسجيل بعد عودة الاتصال",
       }),
     });
 
-  // المرحلة ①: **مطالبة ذرّية** بالطلب تحت قفل الصفّ (SHIPPED→CANCELLED). تُسلسِل ضدّ التحصيل المتزامن
-  // (confirmCourierDelivery يقفل نفس الصفّ ويشترط SHIPPED/DELIVERED) ⇒ لا يعكس هذا فاتورةً حُصِّلت
-  // للتوّ (مراجعة عدائية ١٢/٧): إمّا هذا يُطالِب أولاً فيرى confirm الحالة CANCELLED فيُرفَض، أو confirm
-  // يُطالِب فيرى هذا DELIVERED فيُرفَض. فحص paidAmount يجري **تحت القفل** بعد المطالبة.
-  const claim = await withTx(async (tx) => {
+  return withTx(async (tx) => {
     const order = (
       await tx
         .select()
@@ -2264,7 +2266,7 @@ export async function failCourierDelivery(
         code: "FORBIDDEN",
         message: appErrorMessage({
           what: `تعذّر تسجيل «تعذّر التسليم» للطلب ${order.orderNumber}`,
-          why: "الطلب مُسنَدٌ إلى جهة توصيلٍ أخرى، وعكسُ بيعه يخصّ الجهة المُسنَد إليها",
+          why: "الطلب مُسنَدٌ إلى جهة توصيلٍ أخرى، وطلب الرجوع يخصّ الجهة التي تحمل الطرد",
           doThis:
             "أعِد البضاعة إلى المتجر وأبلِغ كاشير الاستقبال برقم الطلب ليُسجّل التعذّر بنفسه، أو المدير إن لزم نقلُ الإسناد",
         }),
@@ -2274,17 +2276,37 @@ export async function failCourierDelivery(
         code: "BAD_REQUEST",
         message: appErrorMessage({
           what: `تعذّر تسجيل «تعذّر التسليم» للطلب ${order.orderNumber}`,
-          why: "لا فاتورة على الطلب، وهذه الحركة تعكس فاتورةً وتُعيد بنودها للمخزون",
+          why: "لا فاتورة على الطلب، فلا يمكن ربط رجوع الطرد بأصل البيع",
           doThis:
             "أعِد البضاعة إلى المتجر وأبلِغ كاشير الاستقبال برقم الطلب ليُغلقه من صفحة الطلبات",
         }),
       });
+    if (order.status !== "SHIPPED")
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: `تعذّر تسجيل «تعذّر التسليم» للطلب ${order.orderNumber}`,
+          why: `حالة الطلب ${order.status} لا «مُرسَل» — وطلب الرجوع لا يقع إلّا على طردٍ خرج ولم يُسلَّم`,
+          doThis: "حدّث «توصيلاتي»؛ إن كان الطلب مُسلَّماً فنفّذ مرتجع بيع موثّقاً من الإدارة",
+        }),
+      });
+
+    // المصدر ← الجهة ← الإرسالية ← الفاتورة: ترتيب الأقفال الحاكم لمسارات التوصيل.
+    await tx.select({ id: deliveryParties.id }).from(deliveryParties)
+      .where(eq(deliveryParties.id, partyId)).for("update").limit(1);
+    const existingConsignment = (await tx.select().from(deliveryConsignments)
+      .where(eq(deliveryConsignments.invoiceId, Number(order.invoiceId))).for("update").limit(1))[0];
     const inv = (
       await tx
         .select({
           status: invoices.status,
           paidAmount: invoices.paidAmount,
+          returnedTotal: invoices.returnedTotal,
+          total: invoices.total,
           branchId: invoices.branchId,
+          customerId: invoices.customerId,
+          contactName: invoices.contactName,
+          contactPhone: invoices.contactPhone,
         })
         .from(invoices)
         .where(eq(invoices.id, Number(order.invoiceId)))
@@ -2296,115 +2318,84 @@ export async function failCourierDelivery(
         code: "NOT_FOUND",
         message: appErrorMessage({
           what: `تعذّر تسجيل «تعذّر التسليم» للطلب ${order.orderNumber}`,
-          why: `فاتورة الطلب (رقم ${Number(order.invoiceId)}) مفقودةٌ من السجلّ، ولا يُعكَس بيعٌ بلا فاتورةٍ تُعكَس`,
+          why: `فاتورة الطلب (رقم ${Number(order.invoiceId)}) مفقودةٌ من السجلّ، فلا يمكن إنشاء عهدة رجوع مرتبطة بأصل البيع`,
           doThis:
             "أعِد البضاعة إلى المتجر وأبلِغ كاشير الاستقبال برقم الطلب ليُصلِح ارتباط الفاتورة",
         }),
       });
-    if (order.status === "CANCELLED") {
-      // استرداد idempotent: مُطالَبٌ سابقاً — أكمِل العكس إن لم تُرجَع الفاتورة بعد (فشلٌ بين المطالبة والعكس).
-      const done = inv.status === "CANCELLED" || inv.status === "RETURNED";
-      await enqueueStorefrontOrderStatusPush(tx, {
+    if (inv.status === "CANCELLED" || inv.status === "RETURNED")
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: `تعذّر تسجيل رجوع الطلب ${order.orderNumber}`,
+          why: `فاتورته في حالة ${inv.status} ولا تقبل عهدة رجوع جديدة`,
+          doThis: "راجع مستند المرتجع القائم بدل إنشاء رجوع ثانٍ",
+        }),
+      });
+    if (existingConsignment?.returnDeclaredAt != null) {
+      return {
         orderId: Number(order.id),
         orderNumber: order.orderNumber,
-        customerId: order.customerId == null ? null : Number(order.customerId),
-        status: "CANCELLED",
-      });
-      return {
-        orderNumber: order.orderNumber,
-        invoiceId: Number(order.invoiceId),
-        branchId: Number(inv.branchId),
-        needsReverse: !done,
-        alreadyDone: done,
+        consignmentId: Number(existingConsignment.id),
+        consignmentNumber: existingConsignment.consignmentNumber,
+        returnRequested: true as const,
+        reversed: false,
+        alreadyRequested: true,
       };
     }
-    if (order.status !== "SHIPPED")
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: appErrorMessage({
-          what: `تعذّر تسجيل «تعذّر التسليم» للطلب ${order.orderNumber}`,
-          why: `حالة الطلب ${order.status} لا «مُرسَل» — و«تعذّر التسليم» لا يقع إلّا على طردٍ خرج ولم يُسلَّم`,
-          doThis:
-            "اسحب قائمة «توصيلاتي» للتحديث؛ فإن كان الطلب مُسلَّماً فالإرجاع بعد التسليم يُنفّذه المدير من صفحة المرتجعات",
-        }),
-      });
-    if (money(inv.paidAmount ?? "0").gt(0)) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: appErrorMessage({
-          what: `تعذّر تسجيل «تعذّر التسليم» للطلب ${order.orderNumber}`,
-          why: `الفاتورة قُبض عليها ${money(inv.paidAmount ?? "0").toFixed(2)} سلفاً — وما قُبض يلزمه ردٌّ موثَّق لا عكسٌ صامت من الميدان`,
-          doThis:
-            "أعِد البضاعة إلى المتجر، وأبلِغ المدير برقم الطلب ليُنفّذ إرجاعاً بعد التسليم مع ردّ المبلغ للزبون",
-        }),
-      });
-    }
-    await tx
-      .update(onlineOrders)
-      .set({ status: "CANCELLED", cancelReason: reason })
-      .where(eq(onlineOrders.id, order.id));
-    await enqueueStorefrontOrderStatusPush(tx, {
-      orderId: Number(order.id),
-      orderNumber: order.orderNumber,
-      customerId: order.customerId == null ? null : Number(order.customerId),
-      status: "CANCELLED",
-    });
-    return {
-      orderNumber: order.orderNumber,
-      invoiceId: Number(order.invoiceId),
-      branchId: Number(inv.branchId),
-      needsReverse: true,
-      alreadyDone: false,
-    };
-  });
-  if (claim.alreadyDone) {
-    return {
-      orderId: input.onlineOrderId,
-      orderNumber: claim.orderNumber,
-      reversed: false,
-      alreadyCancelled: true,
-    };
-  }
 
-  // المرحلة ②: عكس البيع (returnSale ذرّي، idempotent). الطلب مُطالَبٌ CANCELLED ⇒ لا يتدخّل confirm.
-  let reversed = false;
-  if (claim.needsReverse) {
-    const items = await db
-      .select({
-        id: invoiceItems.id,
-        baseQuantity: invoiceItems.baseQuantity,
-        returnedBaseQuantity: invoiceItems.returnedBaseQuantity,
-      })
-      .from(invoiceItems)
-      .where(eq(invoiceItems.invoiceId, claim.invoiceId));
-    const lines = items
-      .map((i) => ({
-        invoiceItemId: Number(i.id),
-        baseQuantity:
-          Number(i.baseQuantity) - Number(i.returnedBaseQuantity ?? 0),
-      }))
-      .filter((l) => l.baseQuantity > 0);
-    if (lines.length > 0) {
-      // إعادة مخزون + عكس SALE + تصفير ذمّة العميل + الفاتورة RETURNED. actor.branchId=فرع الفاتورة
-      // (المندوب عابرٌ للفروع). لا استرداد نقدي (paidAmount=0 مُتحقَّقٌ تحت القفل).
-      await returnSale(
-        {
-          invoiceId: claim.invoiceId,
-          lines,
-          refund: null,
-          restock: true,
-          clientRequestId: `courier-fail:${input.onlineOrderId}`,
-        },
-        { userId: actor.userId, branchId: claim.branchId, role: "courier" },
-      );
-      reversed = true;
+    const outstanding = Decimal.max(money(inv.total).minus(money(inv.returnedTotal ?? "0")).minus(money(inv.paidAmount ?? "0")), 0);
+    const now = new Date();
+    let consignmentId: number;
+    let consignmentNumber: string;
+    if (existingConsignment) {
+      consignmentId = Number(existingConsignment.id);
+      consignmentNumber = existingConsignment.consignmentNumber;
+      if (existingConsignment.status !== "DISPATCHED" || money(existingConsignment.collectedAmount ?? "0").gt(0))
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: `تعذّر طلب رجوع ${existingConsignment.consignmentNumber}`,
+            why: "الإرسالية مغلقة أو حُصّل منها مال",
+            doThis: "افتح الإرسالية من التسوية ونفّذ استرجاعاً كاملاً",
+          }),
+        });
+      if (existingConsignment.parcelStatus !== "FAILED") {
+        assertParcelTransition(existingConsignment.parcelStatus as ParcelStatus, "FAILED");
+        await tx.update(deliveryConsignments).set({ parcelStatus: "FAILED", failedAt: now, failureReason: reason })
+          .where(eq(deliveryConsignments.id, consignmentId));
+        await appendDeliveryEvent(tx, { eventKey: `CN:${consignmentId}:FAILED:LEGACY_RETURN`, consignmentId,
+          eventType: "FAILED", fromParcelStatus: existingConsignment.parcelStatus, toParcelStatus: "FAILED",
+          actorUserId: actor.userId, payload: { reason, source: "LEGACY_ONLINE_ORDER" } });
+      }
+    } else {
+      consignmentNumber = await resolveConsignmentNumber(tx, order.orderNumber, Number(inv.branchId));
+      consignmentId = extractInsertId(await tx.insert(deliveryConsignments).values({
+        consignmentNumber, branchId: Number(inv.branchId), partyId, invoiceId: Number(order.invoiceId),
+        sourceType: "ONLINE_ORDER", sourceId: Number(order.id), assignedUserId: actor.userId,
+        endCustomerId: order.customerId == null ? inv.customerId : Number(order.customerId),
+        codAmount: toDbMoney(outstanding), collectedAmount: "0.00", deliveryFee: "0.00", feeCollection: "COURIER",
+        recipientName: inv.contactName ?? null, recipientPhone: inv.contactPhone ?? null,
+        deliveryAddress: order.shippingAddress ?? null, governorate: order.governorate ?? null,
+        latitude: order.latitude ?? null, longitude: order.longitude ?? null,
+        parcelStatus: "FAILED", moneyStatus: outstanding.gt(0) ? "UNSETTLED" : "NOT_APPLICABLE", status: "DISPATCHED",
+        dispatchedBy: actor.userId, dispatchedAt: order.orderDate, outForDeliveryAt: order.orderDate,
+        failedAt: now, failureReason: reason,
+      }));
+      if (outstanding.gt(0)) await appendDeliveryLedgerEntry(tx, { eventKey: `CN:${consignmentId}:COD_ASSIGNED`, partyId,
+        consignmentId, branchId: Number(inv.branchId), entryType: "COD_ASSIGNED", amount: toDbMoney(outstanding),
+        actorUserId: actor.userId, notes: `ترحيل طلب متجر إرثي ${order.orderNumber} إلى دورة الرجوع الموحدة` });
+      await appendDeliveryEvent(tx, { eventKey: `CN:${consignmentId}:FAILED:LEGACY_RETURN`, consignmentId,
+        eventType: "FAILED", fromParcelStatus: "OUT_FOR_DELIVERY", toParcelStatus: "FAILED",
+        actorUserId: actor.userId, payload: { reason, source: "LEGACY_ONLINE_ORDER" } });
     }
-  }
-  return {
-    orderId: input.onlineOrderId,
-    orderNumber: claim.orderNumber,
-    reversed,
-  };
+
+    await tx.update(onlineOrders).set({ cancelReason: reason }).where(eq(onlineOrders.id, order.id));
+    await declareConsignmentReturn({ consignmentId, reason, clientRequestId: `courier-fail:${input.onlineOrderId}` },
+      { userId: actor.userId, branchId: Number(inv.branchId), role: "courier" }, tx);
+    return { orderId: Number(order.id), orderNumber: order.orderNumber, consignmentId, consignmentNumber,
+      returnRequested: true as const, reversed: false, alreadyRequested: false };
+  });
 }
 
 export interface SupplementaryCollectionInput {
