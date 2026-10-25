@@ -956,13 +956,15 @@ export default function SalesPipeline() {
                 lead: null,
                 requestKey: requestKey(),
               }),
-            onTransition: (row, toStage) =>
+            onTransition: (row, toStage) => {
+              setOptionBranchId(row.branchId);
               setTransition({
                 kind: "OPPORTUNITY",
                 row,
                 toStage,
                 requestKey: requestKey(),
-              }),
+              });
+            },
             onHistory: (row) =>
               setHistory({ kind: "OPPORTUNITY", id: row.id, title: row.title }),
           }}
@@ -1020,11 +1022,15 @@ export default function SalesPipeline() {
         onSubmit={submitOpportunityForm}
       />
       <PipelineTransitionDialog
+        key={transition?.requestKey ?? "closed-transition"}
         open={transition != null}
         onOpenChange={(open) => {
           if (!open) setTransition(null);
         }}
         kind={transition?.kind ?? "LEAD"}
+        branchId={transition?.row.branchId ?? null}
+        optionsError={optionsQ.isError}
+        onRetryOptions={() => void optionsQ.refetch()}
         leadStatus={
           transition?.kind === "LEAD" ? transition.toStatus : undefined
         }

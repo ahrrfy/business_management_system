@@ -12,6 +12,9 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "shared/__tests__/commissionTerms.test.ts",
+      "client/src/components/account/__tests__/MyPerformanceCard.test.tsx",
+      "client/src/components/salesPipeline/__tests__/PipelineDialogs.test.tsx",
       "client/src/components/expenses/ExpenseTracePanel.test.tsx",
       "shared/__tests__/financialSource.test.ts",
       "client/src/components/financial/__tests__/FinancialTraceDetails.test.tsx",
