@@ -22,14 +22,21 @@ describe("audited public UX contracts", () => {
   it("keeps delivery settlement navigation reactive on the same route", () => {
     const source = readPage("DeliveryHub.tsx");
     const hub = source.slice(
-      source.indexOf("export default function DeliveryHub()"),
-      source.indexOf("// ───────────────────────── تبويب: جاهز للإرسال"),
+      source.indexOf("function DeliveryHub({"),
+      source.indexOf("export function DeliveryFollowupHub()"),
     );
 
+    expect(hub.length).toBeGreaterThan(0);
     expect(hub).toContain("const search = useSearch();");
-    expect(hub).toContain("setTab(readTabFromSearch(search));");
-    expect(hub).toContain("}, [search]);");
+    expect(hub).toContain(
+      'setTab(section === "settlement" ? "settle" : readTabFromSearch(search));',
+    );
+    expect(hub).toContain("}, [search, section]);");
+    expect(source).toContain("export function DeliverySettlementHub()");
     expect(source).toContain(
+      "href={`/delivery?tab=settlement&party=${r.partyId}`}",
+    );
+    expect(source).not.toContain(
       "href={`/delivery?tab=settle&party=${r.partyId}`}",
     );
   });

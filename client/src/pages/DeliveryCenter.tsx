@@ -1,49 +1,80 @@
-// DeliveryCenter — وحدة «التوصيل» بتبويبين (إدارة التوصيل + جهات التوصيل). محصورة بأدوار التوصيل.
-// (الاسم DeliveryCenter لتفادي التضارب مع DeliveryHub القائمة = شاشة الإرسال/التسوية المُضمَّنة.)
+// DeliveryCenter — المداخل اليومية الثلاثة لدورة التوصيل، مع الأدوات الإدارية تحت «المزيد».
 import { lazyWithRetry as lazy } from "@/lib/lazyWithRetry";
 import { PageTabs, type HubTab } from "@/components/PageTabs";
 import { useSearch } from "wouter";
 
-const DeliveryHub = lazy(() => import("@/pages/DeliveryHub"));
+const DeliveryFollowup = lazy(async () => ({
+  default: (await import("@/pages/DeliveryHub")).DeliveryFollowupHub,
+}));
+const DeliverySettlement = lazy(async () => ({
+  default: (await import("@/pages/DeliveryHub")).DeliverySettlementHub,
+}));
+const DeliveryMore = lazy(() => import("@/pages/DeliveryMore"));
 const FulfillmentHub = lazy(() => import("@/pages/FulfillmentHub"));
-const ReceptionWorkflowPage = lazy(() => import("@/pages/reception/ReceptionWorkflowPage"));
-const DeliveryParties = lazy(() => import("@/pages/DeliveryParties"));
-const DeliveryPricingZones = lazy(() => import("@/pages/DeliveryPricingZones"));
-const CommissionComparisonReport = lazy(() => import("@/pages/CommissionComparisonReport"));
-const CourierPerformanceReport = lazy(() => import("@/pages/CourierPerformanceReport"));
-const DeliveryAgingReport = lazy(() => import("@/pages/DeliveryAgingReport"));
+const ReceptionWorkflowPage = lazy(
+  () => import("@/pages/reception/ReceptionWorkflowPage"),
+);
 
 const TABS: HubTab[] = [
   {
     value: "workflow",
-    label: "سير العمل بالباركود (إسناد وتحصيل)",
-    gate: { roles: ["admin", "manager", "accountant", "cashier", "auditor"], module: "store" },
+    label: "التنفيذ بالباركود",
+    gate: {
+      roles: ["admin", "manager", "accountant", "cashier", "auditor"],
+      module: "store",
+    },
     Component: ReceptionWorkflowPage,
   },
-  { value: "dispatch", label: "إدارة التوصيل والمتابعة", gate: { roles: ["admin", "manager", "accountant", "cashier", "auditor"], module: "store" }, Component: DeliveryHub },
-  { value: "parties", label: "جهات التوصيل", gate: { roles: ["admin", "manager", "accountant", "cashier", "auditor"], module: "store" }, Component: DeliveryParties },
-  // Slice I (٢٩/٨/٢٦): إدارة مناطق التسعير — للمدير فقط (deliveryManagerProcedure على الخادم).
   {
-    value: "pricing",
-    label: "مناطق التسعير",
+    value: "followup",
+    label: "المتابعة والاستثناءات",
     gate: {
-      roles: ["admin", "manager"],
+      roles: ["admin", "manager", "accountant", "cashier", "auditor"],
       module: "store",
-      operations: ["delivery.listZones", "delivery.listPricingRules"],
     },
-    Component: DeliveryPricingZones,
+    Component: DeliveryFollowup,
   },
-  // Slice K (٢٩/٨/٢٦): مقارنةُ الأجرة المدفوعة بالعمولة التقديريّة — قرارُ تفعيل H2 يتّخذه المالك
-  // بعد رؤية أرقامٍ حقيقيّة (بلاغه: «راقب الأرقام أسبوعين»). للمدير + المحاسب + المدقّق.
-  { value: "commission-comparison", label: "مقارنة العمولة", gate: { roles: ["admin", "manager", "accountant", "auditor"], module: "reports", operations: ["delivery.commissionComparison"] }, Component: CommissionComparisonReport },
-  // أداء المناديب: تقريرٌ يكشف قيمة/تحصيل النقد ⇒ بوّابة التقارير (يُخفى عن الكاشير؛ الخادم يفرض reportViewerProcedure).
-  { value: "performance", label: "أداء المناديب", gate: { roles: ["admin", "manager", "accountant", "auditor"], module: "reports", operations: ["reports.courierPerformance"] }, Component: CourierPerformanceReport },
-  // أعمار الإرساليات (١٠/٨): نظير أعمار الذمم لعُهد المناديب — نفس بوّابة التقارير.
-  { value: "aging", label: "أعمار الإرساليات", gate: { roles: ["admin", "manager", "accountant", "auditor"], module: "reports", operations: ["reports.consignmentAging"] }, Component: DeliveryAgingReport },
+  {
+    value: "settlement",
+    label: "تسوية الجهات",
+    gate: {
+      roles: ["admin", "manager", "accountant", "cashier", "auditor"],
+      module: "store",
+    },
+    Component: DeliverySettlement,
+  },
+  {
+    value: "more",
+    label: "المزيد",
+    gate: {
+      roles: ["admin", "manager", "accountant", "cashier", "auditor"],
+      module: "store",
+    },
+    Component: DeliveryMore,
+  },
 ];
+
+const LEGACY_TAB_ALIASES = {
+  dispatch: "followup",
+  transit: "followup",
+  board: "followup",
+  settle: "settlement",
+  parties: "more",
+  pricing: "more",
+  "commission-comparison": "more",
+  performance: "more",
+  aging: "more",
+} as const;
 
 export default function DeliveryCenter() {
   const search = useSearch();
-  if (new URLSearchParams(search).get("tab") === "fulfillment") return <FulfillmentHub />;
-  return <PageTabs tabs={TABS} ariaLabel="أقسام التوصيل" tabAliases={{ settle: "dispatch", transit: "dispatch", board: "dispatch" }} />;
+  if (new URLSearchParams(search).get("tab") === "fulfillment")
+    return <FulfillmentHub />;
+  return (
+    <PageTabs
+      tabs={TABS}
+      ariaLabel="محطات التوصيل"
+      tabAliases={LEGACY_TAB_ALIASES}
+    />
+  );
 }

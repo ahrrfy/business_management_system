@@ -18,6 +18,7 @@ import { routeAftercareDeliveryResultTx } from "../../fulfillment/aftercareDeliv
 import { money } from "../../money";
 import { withTx, type Actor } from "../../tx";
 import { appendDeliveryEvent } from "../lifecycle";
+import { repairDeliveryCustodyFromRecordedEventsTx } from "../custody";
 import { loadShipmentMembersTx } from "../shipments";
 import { currentWorkflowActorTx, loadWorkflowPreviewTx } from "./preview";
 import {
@@ -116,7 +117,11 @@ export function receiveWorkflowReturn(
           ? {}
           : { aftercareExecutionId: preview.relations.aftercareExecutionId }),
       });
-      if (replay) return result(true);
+      if (replay) {
+        for (const id of ids)
+          await repairDeliveryCustodyFromRecordedEventsTx(tx, id);
+        return result(true);
+      }
       if (preview.source.version !== input.source.expectedVersion)
         throw fulfillmentError(
           "تغيرت الشحنة أو حقوقها منذ المعاينة؛ حدثها قبل إثبات العهدة",

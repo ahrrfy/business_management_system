@@ -68,6 +68,7 @@ import {
 } from "./core";
 import {
   chargeAccrualIntent,
+  chargeRecognitionIntent,
   chargeCollectionIntent,
   chargeCostIntent,
   chargeCreditIntent,
@@ -75,6 +76,7 @@ import {
   chargePayeeIntent,
   chargePayableRole,
   chargeCustodyIntent,
+  immediateServiceAccrualIntent,
   immediateServiceIntent,
 } from "./chargePosting";
 import type {
@@ -428,8 +430,12 @@ export function approveFulfillmentCharge(input: Transition, actor: Actor) {
           cod ? "COD" : "CREDIT",
         );
         const intent = chargeAccrualIntent(row.category, money(row.amount));
+        const deferred =
+          row.category === "SERVICE" || row.category === "OUTSOURCED";
         const revenue =
-          row.category === "PASS_THROUGH" ? zero() : money(row.amount);
+          row.category === "PASS_THROUGH" || deferred
+            ? zero()
+            : money(row.amount);
         await postEntry(tx, {
           entryType: "ADJUST",
           branchId: row.branchId,
@@ -446,13 +452,15 @@ export function approveFulfillmentCharge(input: Transition, actor: Actor) {
             roleCredits: {
               [row.category === "PASS_THROUGH"
                 ? "OTHER_LIABILITY"
-                : "OTHER_REVENUE"]: row.amount,
+                : deferred
+                  ? "DEFERRED_REVENUE"
+                  : "OTHER_REVENUE"]: row.amount,
             },
           },
         });
         await adjustCustomerBalance(tx, row.customerId!, money(row.amount));
       }
-      if (money(row.externalCost).gt(0) && row.category !== "PASS_THROUGH") {
+      if (money(row.externalCost).gt(0) && row.category === "SHOP_EXPENSE") {
         const payable = chargePayableRole(row),
           intent = chargeCostIntent(money(row.externalCost), payable);
         await postEntry(tx, {
@@ -490,6 +498,97 @@ export function approveFulfillmentCharge(input: Transition, actor: Actor) {
         .where(eq(fulfillmentCharges.id, row.id));
       await recordFulfillmentMutationTx(tx, ctx, row.id);
       await audit(tx, actor, "approve", row, { approvedBy: actor.userId });
+      return loadFulfillmentChargeTx(tx, row.id, actor);
+    }),
+  );
+}
+
+export function completeFulfillmentCharge(
+  input: Transition & { evidence: string },
+  actor: Actor,
+) {
+  return retryOnDup(() =>
+    withTx(async (tx) => {
+      await assertChargeOperationTx(tx, actor, "complete", true);
+      const row = await loadFulfillmentChargeTx(tx, input.id, actor, {
+          lock: true,
+        }),
+        ctx = context("complete", input, actor, row.branchId);
+      if (await findFulfillmentReplayTx(tx, ctx))
+        return loadFulfillmentChargeTx(tx, row.id, actor);
+      assertFulfillmentVersion(row, input.expectedVersion);
+      const evidence = input.evidence.trim();
+      if (
+        row.status !== "APPROVED" ||
+        !["SERVICE", "OUTSOURCED"].includes(row.category) ||
+        evidence.length < 5
+      )
+        throw fulfillmentError(
+          "الإكمال يحتاج خدمة معتمدة ودليلاً تشغيلياً واضحاً",
+        );
+
+      // Rows stamped by the migration were already recognized under the legacy
+      // approval contract. Completing them changes lifecycle only.
+      if (!row.legacyPostedAt) {
+        const recognized = money(row.amount).minus(row.refundedAmount);
+        if (recognized.gt(0)) {
+          await postEntry(tx, {
+            entryType: "ADJUST",
+            branchId: row.branchId,
+            customerId: row.customerId,
+            amount: recognized,
+            revenue: recognized,
+            profit: recognized,
+            createdBy: actor.userId,
+            dedupeKey: `FULFILLMENT_CHARGE_RECOGNITION:${row.id}`,
+            notes: `${row.description} — ${evidence}`,
+            postingIntent: chargeRecognitionIntent(recognized),
+            postingSourceComponents: {
+              roleDebits: { DEFERRED_REVENUE: toDbMoney(recognized) },
+              roleCredits: { OTHER_REVENUE: toDbMoney(recognized) },
+            },
+          });
+        }
+        if (row.category === "OUTSOURCED" && money(row.externalCost).gt(0)) {
+          const payable = chargePayableRole(row),
+            cost = money(row.externalCost);
+          await postEntry(tx, {
+            entryType: "ADJUST",
+            branchId: row.branchId,
+            supplierId: row.payeeSupplierId,
+            deliveryPartyId: row.payeePartyId,
+            amount: cost,
+            cost,
+            profit: cost.negated(),
+            createdBy: actor.userId,
+            dedupeKey: `FULFILLMENT_CHARGE_COST:${row.id}`,
+            notes: `${row.description} — ${evidence}`,
+            postingIntent: chargeCostIntent(cost, payable),
+            postingSourceComponents: {
+              roleDebits: { OPERATING_EXPENSE: row.externalCost },
+              roleCredits: { [payable]: row.externalCost },
+            },
+          });
+          if (row.payeeSupplierId)
+            await adjustSupplierBalance(tx, row.payeeSupplierId, cost);
+        }
+      }
+
+      await tx
+        .update(fulfillmentCharges)
+        .set({
+          status: "COMPLETED",
+          completedBy: actor.userId,
+          completedAt: new Date(),
+          completionEvidence: evidence,
+          version: row.version + 1,
+        })
+        .where(eq(fulfillmentCharges.id, row.id));
+      await recordFulfillmentMutationTx(tx, ctx, row.id);
+      await audit(tx, actor, "complete", row, {
+        evidence,
+        legacyPostedAt: row.legacyPostedAt,
+      });
       return loadFulfillmentChargeTx(tx, row.id, actor);
     }),
   );
@@ -656,11 +755,12 @@ export async function createCheckoutServicesInTx(
     const line = input.services[index];
     const identity = { ...input, index };
     const ctx = context("checkoutService", identity, actor, input.branchId);
+    const completedAt = new Date();
     const result = await tx.insert(fulfillmentCharges).values({
       branchId: input.branchId,
       customerId: input.customerId ?? null,
       category: "SERVICE",
-      status: "APPROVED",
+      status: "COMPLETED",
       description: line.description.trim(),
       amount: toDbMoney(money(line.amount)),
       externalCost: "0.00",
@@ -668,7 +768,10 @@ export async function createCheckoutServicesInTx(
       paidAmount: input.customerId ? "0.00" : toDbMoney(money(line.amount)),
       createdBy: actor.userId,
       approvedBy: actor.userId,
-      approvedAt: new Date(),
+      approvedAt: completedAt,
+      completedBy: actor.userId,
+      completedAt,
+      completionEvidence: "خدمة فورية مكتملة ضمن عملية البيع",
       clientRequestId: `CHK-SVC:${ctx.sourceHash}`,
       sourceHash: ctx.sourceHash,
     });
@@ -690,7 +793,7 @@ export async function createCheckoutServicesInTx(
         createdBy: actor.userId,
         dedupeKey: `FULFILLMENT_CHARGE_ACCRUAL:${row.id}`,
         notes: row.description,
-        postingIntent: chargeAccrualIntent("SERVICE", amount),
+        postingIntent: immediateServiceAccrualIntent(amount),
         postingSourceComponents: {
           roleDebits: { AR: row.amount },
           roleCredits: { OTHER_REVENUE: row.amount },
@@ -780,7 +883,7 @@ export async function collectCheckoutChargePortionTx(
     if (
       row.branchId !== input.branchId ||
       row.customerId !== (input.customerId ?? null) ||
-      row.status !== "APPROVED" ||
+      !["APPROVED", "COMPLETED"].includes(row.status) ||
       (guest
         ? row.customerId != null ||
           row.category !== "SERVICE" ||
@@ -811,18 +914,16 @@ export async function collectCheckoutChargePortionTx(
     });
     if (row.customerId)
       await adjustCustomerBalance(tx, row.customerId, value.negated());
-    const inserted = await tx
-      .insert(fulfillmentChargePayments)
-      .values({
-        chargeId: row.id,
-        branchId: row.branchId,
-        kind: "COLLECTION",
-        receiptId,
-        amount: toDbMoney(value),
-        createdBy: actor.userId,
+    const inserted = await tx.insert(fulfillmentChargePayments).values({
+      chargeId: row.id,
+      branchId: row.branchId,
+      kind: "COLLECTION",
+      receiptId,
+      amount: toDbMoney(value),
+      createdBy: actor.userId,
       clientRequestId: `CHK:${input.sourceHash}:${input.paymentIndex}`,
-        sourceHash: input.sourceHash,
-      });
+      sourceHash: input.sourceHash,
+    });
     if (!guest)
       await tx
         .update(fulfillmentCharges)
@@ -844,10 +945,21 @@ export async function collectCheckoutChargePortionTx(
       amount: toDbMoney(value),
     });
   }
-  await tx.update(receipts).set({internalNote:JSON.stringify({
-    externalPaymentReference:input.tender.reference??null,externalPaymentAttemptId:input.tender.externalPaymentAttemptId??null,
-    checkoutChargeCollection:{requestId:input.clientRequestId,sourceHash:input.sourceHash,allocatedAmount:toDbMoney(amount),allocations:result},
-  })}).where(eq(receipts.id,receiptId));
+  await tx
+    .update(receipts)
+    .set({
+      internalNote: JSON.stringify({
+        externalPaymentReference: input.tender.reference ?? null,
+        externalPaymentAttemptId: input.tender.externalPaymentAttemptId ?? null,
+        checkoutChargeCollection: {
+          requestId: input.clientRequestId,
+          sourceHash: input.sourceHash,
+          allocatedAmount: toDbMoney(amount),
+          allocations: result,
+        },
+      }),
+    })
+    .where(eq(receipts.id, receiptId));
   return { receiptId, allocations: result };
 }
 /** Reserve the actual OUT receipt globally before any refund ledger/allocation effect. */
@@ -899,7 +1011,7 @@ function assertAllocations(
     const allocation = allocations.find((a) => a.chargeId === row.id)!;
     assertFulfillmentVersion(row, allocation.expectedVersion);
     if (
-      row.status !== "APPROVED" ||
+      !["APPROVED", "COMPLETED"].includes(row.status) ||
       positive(allocation.amount).gt(money(chargeRemaining(row)))
     )
       throw fulfillmentError(
@@ -1070,7 +1182,10 @@ export function refundFulfillmentCharge(
       const replay = await findFulfillmentReplayTx(tx, ctx);
       if (replay) return { receiptId: replay };
       assertFulfillmentVersion(row, input.expectedVersion);
-      if (row.status !== "APPROVED" || input.reason.trim().length < 5)
+      if (
+        !["APPROVED", "COMPLETED"].includes(row.status) ||
+        input.reason.trim().length < 5
+      )
         throw fulfillmentError("الرد يحتاج أجرًا معتمداً وسبباً موثقاً");
       const [original] = await tx
         .select()
@@ -1165,12 +1280,20 @@ export function refundFulfillmentCharge(
         `رد أجر ${row.id} من تخصيص ${original.id} / إيصال ${receipt.id}: ${input.reason}`,
       );
       await reserveChargeRefundConfirmationTx(tx, receiptId, tender);
+      const recognized = row.status === "COMPLETED" || !!row.legacyPostedAt;
       const debit =
-        row.category === "PASS_THROUGH" ? "OTHER_LIABILITY" : "OTHER_REVENUE";
-      const credit = chargeCreditIntent(row.category, amount),
+        row.category === "PASS_THROUGH"
+          ? "OTHER_LIABILITY"
+          : !recognized &&
+              (row.category === "SERVICE" || row.category === "OUTSOURCED")
+            ? "DEFERRED_REVENUE"
+            : "OTHER_REVENUE";
+      const credit = chargeCreditIntent(row.category, amount, recognized),
         intent = chargeRefundIntent(amount, tender.method, bucket);
       const revenue =
-        row.category === "PASS_THROUGH" ? zero() : amount.negated();
+        row.category === "PASS_THROUGH" || !recognized
+          ? zero()
+          : amount.negated();
       if (!row.customerId) {
         if (row.category !== "SERVICE" || !money(row.externalCost).isZero())
           throw fulfillmentError(
@@ -1201,39 +1324,39 @@ export function refundFulfillmentCharge(
         });
       } else {
         await postEntry(tx, {
-        entryType: "ADJUST",
-        branchId: row.branchId,
-        customerId: row.customerId,
-        amount: amount.negated(),
-        revenue,
-        profit: revenue,
-        createdBy: actor.userId,
-        dedupeKey: `FULFILLMENT_CHARGE_CREDIT:R:${receiptId}`,
-        notes: input.reason,
-        postingIntent: credit,
-        postingSourceComponents: {
-          roleDebits: { [debit]: input.amount },
-          roleCredits: { AR: input.amount },
-        },
-      });
-      await postEntry(tx, {
-        entryType: "PAYMENT_OUT",
-        branchId: row.branchId,
-        customerId: row.customerId,
-        receiptId,
-        amount,
-        paymentMethod: tender.method,
-        createdBy: actor.userId,
-        dedupeKey: `FULFILLMENT_CHARGE_REFUND:R:${receiptId}`,
-        notes: input.reason,
-        postingIntent: intent,
-        postingSourceComponents: {
-          roleDebits: { AR: input.amount },
-          roleCredits: {
-            [paymentAccountRole(tender.method, bucket, "OUT")]: input.amount,
+          entryType: "ADJUST",
+          branchId: row.branchId,
+          customerId: row.customerId,
+          amount: amount.negated(),
+          revenue,
+          profit: revenue,
+          createdBy: actor.userId,
+          dedupeKey: `FULFILLMENT_CHARGE_CREDIT:R:${receiptId}`,
+          notes: input.reason,
+          postingIntent: credit,
+          postingSourceComponents: {
+            roleDebits: { [debit]: input.amount },
+            roleCredits: { AR: input.amount },
           },
-        },
-      });
+        });
+        await postEntry(tx, {
+          entryType: "PAYMENT_OUT",
+          branchId: row.branchId,
+          customerId: row.customerId,
+          receiptId,
+          amount,
+          paymentMethod: tender.method,
+          createdBy: actor.userId,
+          dedupeKey: `FULFILLMENT_CHARGE_REFUND:R:${receiptId}`,
+          notes: input.reason,
+          postingIntent: intent,
+          postingSourceComponents: {
+            roleDebits: { AR: input.amount },
+            roleCredits: {
+              [paymentAccountRole(tender.method, bucket, "OUT")]: input.amount,
+            },
+          },
+        });
       }
       await tx.insert(fulfillmentChargePayments).values({
         chargeId: row.id,
@@ -1627,11 +1750,11 @@ export function settleFulfillmentChargePayee(
       const replay = await findFulfillmentReplayTx(tx, ctx);
       if (replay) return { receiptId: replay };
       assertFulfillmentVersion(row, input.expectedVersion);
-      if (
-        row.status !== "APPROVED" ||
-        !row.approvedBy ||
-        row.approvedBy === row.createdBy
-      )
+      const payableReady =
+        row.category === "OUTSOURCED"
+          ? row.status === "COMPLETED" || !!row.legacyPostedAt
+          : ["APPROVED", "COMPLETED"].includes(row.status);
+      if (!payableReady || !row.approvedBy || row.approvedBy === row.createdBy)
         throw fulfillmentError(
           "سداد الجهة يحتاج استحقاقاً معتمداً من مسؤول مستقل عن منشئه",
         );

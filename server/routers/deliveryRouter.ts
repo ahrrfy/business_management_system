@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { fulfillmentRouter } from "./fulfillmentRouter";
 import { deliveryFeeRefundRouter } from "./deliveryFeeRefundRouter";
 import { deliveryWorkflowRouter } from "./deliveryWorkflowRouter";
+import { deliveryDocumentsRouter } from "./deliveryDocumentsRouter";
 import { and, desc, eq, sql as dsql } from "drizzle-orm";
 import { z } from "zod";
 import { type ShortfallReason, SHORTFALL_REASONS } from "@shared/shortfallReason";
@@ -155,6 +156,7 @@ function settlementBranchOf(
 export const deliveryRouter = router({
   fulfillment: fulfillmentRouter,
   workflow: deliveryWorkflowRouter,
+  documents: deliveryDocumentsRouter,
   paymentRefunds: deliveryFeeRefundRouter,
   // قائمة جهات التوصيل + عهدتها (branch-scoped: غير المرتفعين يَرون فرعهم فقط).
   listParties: deliveryReadProcedure

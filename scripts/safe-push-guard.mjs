@@ -971,7 +971,59 @@ export function collectModifiedUnitTestsForPush({
   return matchedTests;
 }
 
+export function createUnitTestCommands(testPaths, maxCommandLength = 24000) {
+  // Invoke the local CLI directly: pnpm.cmd adds cmd.exe's much smaller limit.
+  const command = process.execPath;
+  const baseArgs = [
+    path.join(REPO_ROOT, "node_modules", "vitest", "vitest.mjs"),
+    "run",
+    "--config",
+    "vitest.unit.config.ts",
+    "--maxWorkers=4",
+    // Match the integration suite's deadline for large DOM and child-process tests.
+    "--testTimeout=30000",
+  ];
+  const commands = [];
+  let args = [...baseArgs];
+  const sizeOf = (values) =>
+    [command, ...values].reduce((size, value) => size + value.length + 3, 0);
+  for (const testPath of testPaths) {
+    if (sizeOf([...args, testPath]) > maxCommandLength) {
+      if (args.length === baseArgs.length)
+        throw new Error("Unit test path exceeds the process argument limit");
+      commands.push({ command, args });
+      args = [...baseArgs];
+    }
+    args.push(testPath);
+  }
+  if (args.length > baseArgs.length) commands.push({ command, args });
+  return commands;
+}
+
 export function runSafePushSelftest() {
+  const longTestPaths = Array.from(
+    { length: 500 },
+    (_, index) =>
+      `client/src/components/${"nested/".repeat(8)}test-${index}.test.tsx`,
+  );
+  longTestPaths.push("client/src/test with spaces & literal.test.ts");
+  const commands = createUnitTestCommands(longTestPaths);
+  assert.ok(commands.length > 1);
+  assert.deepEqual(
+    commands.flatMap(({ args }) => args.slice(6)),
+    longTestPaths,
+  );
+  assert.ok(
+    commands.every(
+      ({ command, args }) =>
+        command === process.execPath &&
+        [command, ...args].reduce(
+          (size, value) => size + value.length + 3,
+          0,
+        ) <= 24000,
+    ),
+  );
+  assert.deepEqual(createUnitTestCommands([]), []);
   const blockedStdin = evaluatePrePushPolicy({
     remoteRefs: ["refs/heads/main"],
     currentBranch: "feature/test",
@@ -1392,29 +1444,21 @@ function main() {
     console.log(
       `▶ [بروتوكول الدفع الآمن] تشغيل ${modifiedUnitTests.length} ملف اختبار وحدة متأثر قبل الدفع…`,
     );
-    const pnpmCmd = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
-    const testRes = spawnSync(
-      pnpmCmd,
-      [
-        "exec",
-        "vitest",
-        "run",
-        "--config",
-        "vitest.unit.config.ts",
-        ...modifiedUnitTests,
-      ],
-      {
+    for (const { command, args: testArgs } of createUnitTestCommands(
+      modifiedUnitTests,
+    )) {
+      const testRes = spawnSync(command, testArgs, {
         cwd: REPO_ROOT,
         stdio: "inherit",
-        shell: process.platform === "win32",
+        shell: false,
         env: { ...process.env, TZ: "UTC" },
-      },
-    );
-    if (testRes.status !== 0) {
-      console.error(
-        "\n⛔ [PRE_PUSH_UNIT_TEST_FAILED] فشل أحد اختبارات الوحدة المتأثرة؛ تم إيقاف الدفع لحماية CI.\n",
-      );
-      process.exit(testRes.status ?? 1);
+      });
+      if (testRes.status !== 0) {
+        console.error(
+          "\n⛔ [PRE_PUSH_UNIT_TEST_FAILED] فشل أحد اختبارات الوحدة المتأثرة؛ تم إيقاف الدفع لحماية CI.\n",
+        );
+        process.exit(testRes.status ?? 1);
+      }
     }
   }
 }

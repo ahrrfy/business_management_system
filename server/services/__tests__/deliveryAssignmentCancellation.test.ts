@@ -5,6 +5,8 @@ import { getDb } from "../../db";
 import { appRouter } from "../../routers";
 import { cancelDeliveryAssignment } from "../delivery/cancellation";
 import { dispatchInvoiceToDelivery } from "../delivery/dispatchInvoice";
+import { loadVariantAvailability } from "../catalog/variantAvailability";
+import { dispatchOnlineOrder } from "../storeAdmin/dispatchOnlineOrder";
 import { returnByBarcode } from "../delivery/barcodeReturnService";
 import { listConsignmentsForParty } from "../delivery/queries";
 import { moduleAccessAllowed } from "@shared/permissions";
@@ -980,6 +982,11 @@ describe("إلغاء إسناد إرسالية مرتبطة بطلب متجر إ
       status: "SHIPPED",
       deliveryPartyId: 1,
     });
+    await d.insert(s.onlineOrderItems).values({ onlineOrderId: 301, variantId: 1, productUnitId: 1,
+      quantity: "4", baseQuantity: 4, unitPrice: "6250.00", total: "25000.00" });
+    expect((await loadVariantAvailability(d, 1, [1])).get(1)).toMatchObject({
+      onHandBase: 25, reservedBase: 0, availableBase: 25,
+    });
 
     // إرسالية توصيل مرتبطة بالطلب
     await d.insert(s.deliveryConsignments).values({
@@ -1025,6 +1032,15 @@ describe("إلغاء إسناد إرسالية مرتبطة بطلب متجر إ
     expect(updatedOrder.deliveryPartyId).toBeNull();
     expect(updatedOrder.reservationExpiresAt).toBeDefined();
     expect(new Date(updatedOrder.reservationExpiresAt!).getTime()).toBeGreaterThan(now);
+    expect((await loadVariantAvailability(d, 1, [1])).get(1)).toMatchObject({
+      onHandBase: 25, reservedBase: 0, availableBase: 25,
+    });
+
+    const reassigned = await dispatchOnlineOrder({ onlineOrderId: 301, partyId: 2, assignedUserId: 4 }, MANAGER);
+    expect(reassigned.invoiceId).toBe(301);
+    expect((await loadVariantAvailability(d, 1, [1])).get(1)).toMatchObject({
+      onHandBase: 25, reservedBase: 0, availableBase: 25,
+    });
   });
 
   it("ينجح في إلغاء الإسناد عندما يكون مصدر الإرسالية INVOICE مرتبطة بطلب متجر إلكتروني منتهي الحجز", async () => {

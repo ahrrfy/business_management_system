@@ -21,6 +21,7 @@ import { mutateWorkflowAssignment } from "../services/delivery/workflow/assignme
 import { confirmWorkflowDelivery } from "../services/delivery/workflow/collection";
 import { retryOnDeadlock } from "../lib/retryDeadlock";
 import { receiveWorkflowReturn } from "../services/delivery/workflow/returns";
+import { SHORTFALL_REASONS } from "../../shared/shortfallReason";
 
 const source = z.object({
   kind: z.enum(WORKFLOW_SOURCE_KINDS),
@@ -63,6 +64,10 @@ export const deliveryWorkflowRouter = router({
         source,
         branchId,
         evidence: z.string().trim().min(3).max(255),
+        collectedAmount: nonNegMoneyString.optional(),
+        shortfallReason: z
+          .enum(SHORTFALL_REASONS as readonly [string, ...string[]])
+          .optional(),
         clientRequestId,
       }),
     )

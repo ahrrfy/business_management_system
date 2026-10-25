@@ -138,6 +138,7 @@ beforeEach(async () => {
       payeeSupplierId: 1,
       createdBy: 4,
       approvedBy: 4,
+      approvedAt: new Date(),
       clientRequestId: "vis-charge-create",
       sourceHash,
     });

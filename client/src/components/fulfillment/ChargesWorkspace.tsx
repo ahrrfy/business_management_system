@@ -7,6 +7,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
@@ -28,6 +29,7 @@ type Row = ChargeApiOutput["list"]["rows"][number];
 type Action =
   | "create"
   | "approve"
+  | "complete"
   | "collect"
   | "refund"
   | "refundExcess"
@@ -38,6 +40,42 @@ type Action =
 type Command = {
   [A in Action]: { action: A; input: ChargeApiInput[A] };
 }[Action];
+
+export function chargeCompletionAvailable(charge: {
+  status: string;
+  category: string;
+}) {
+  return (
+    charge.status === "APPROVED" &&
+    ["SERVICE", "OUTSOURCED"].includes(charge.category)
+  );
+}
+
+export function completionEvidenceValid(evidence: string) {
+  const length = evidence.trim().length;
+  return length >= 5 && length <= 2000;
+}
+
+export function defaultChargeWorkspaceAction(
+  charge: { status: string; category: string },
+  canComplete: boolean,
+): Exclude<Action, "create"> {
+  if (charge.status === "DRAFT") return "approve";
+  if (chargeCompletionAvailable(charge) && canComplete) return "complete";
+  return charge.category === "SHOP_EXPENSE" ? "settlePayee" : "collect";
+}
+
+export function buildChargeCompletionCommand(input: {
+  id: number;
+  expectedVersion: number;
+  clientRequestId: string;
+  evidence: string;
+}): Extract<Command, { action: "complete" }> {
+  const evidence = input.evidence.trim();
+  if (!completionEvidenceValid(evidence))
+    throw new Error("دليل إنجاز الخدمة غير مكتمل");
+  return { action: "complete", input: { ...input, evidence } };
+}
 const uuid = () => crypto.randomUUID();
 function persistentKey(name: string) {
   const old = localStorage.getItem(name);
@@ -115,6 +153,27 @@ function ChargesWorkspaceContent({
   const me = trpc.auth.me.useQuery(),
     branches = trpc.branches.list.useQuery(undefined, { enabled: !embedded }),
     utils = trpc.useUtils();
+  const can = (op: Action) =>
+    lifecycleActionAllowed(
+      me.data,
+      `delivery.fulfillment.charges.${op}`,
+      !!me.data &&
+        moduleAccessAllowed(
+          me.data.role,
+          me.data.permissionsOverride as PermissionMap | null,
+          "store",
+          "FULL",
+          [
+            "approve",
+            "complete",
+            "refund",
+            "refundExcess",
+            "refundCourierExcess",
+          ].includes(op)
+            ? ["manager"]
+            : ["cashier", "manager"],
+        ),
+    );
   const [search, setSearch] = useState(""),
     [searchDebounced, setSearchDebounced] = useState(""),
     [page, setPage] = useState(0);
@@ -145,7 +204,8 @@ function ChargesWorkspaceContent({
   const [bucket, setBucket] = useState<"DRAWER" | "TREASURY">("DRAWER"),
     [shift, setShift] = useState(""),
     [reference, setReference] = useState(""),
-    [reason, setReason] = useState("");
+    [reason, setReason] = useState(""),
+    [completionEvidence, setCompletionEvidence] = useState("");
   const [originalPayment, setOriginalPayment] = useState(""),
     [party, setParty] = useState(""),
     [consignment, setConsignment] = useState("");
@@ -201,6 +261,8 @@ function ChargesWorkspaceContent({
           : undefined;
     if (target) setSelected(target);
     setAction(pending.action);
+    if (pending.action === "complete")
+      setCompletionEvidence(pending.input.evidence);
     setShowCreate(false);
   }, [pending]);
   const list = trpc.delivery.fulfillment.charges.list.useQuery(
@@ -233,6 +295,7 @@ function ChargesWorkspaceContent({
   const mutations = {
     create: trpc.delivery.fulfillment.charges.create.useMutation(),
     approve: trpc.delivery.fulfillment.charges.approve.useMutation(),
+    complete: trpc.delivery.fulfillment.charges.complete.useMutation(),
     collect: trpc.delivery.fulfillment.charges.collect.useMutation(),
     refund: trpc.delivery.fulfillment.charges.refund.useMutation(),
     refundExcess: trpc.delivery.fulfillment.charges.refundExcess.useMutation(),
@@ -267,6 +330,7 @@ function ChargesWorkspaceContent({
     setShowCreate(false);
     setPaymentAmount("");
     setReference("");
+    setCompletionEvidence("");
     setOriginalPayment("");
     setParty("");
     setConsignment("");
@@ -292,13 +356,7 @@ function ChargesWorkspaceContent({
     )
       return;
     initialActionFor.current = row.id;
-    setAction(
-      row.status === "DRAFT"
-        ? "approve"
-        : row.category === "SHOP_EXPENSE"
-          ? "settlePayee"
-          : "collect",
-    );
+    setAction(defaultChargeWorkspaceAction(row, can("complete")));
   }, [
     row?.id,
     row?.status,
@@ -308,23 +366,6 @@ function ChargesWorkspaceContent({
     busy,
     proof,
   ]);
-  const can = (op: Action) =>
-    lifecycleActionAllowed(
-      me.data,
-      `delivery.fulfillment.charges.${op}`,
-      !!me.data &&
-        moduleAccessAllowed(
-          me.data.role,
-          me.data.permissionsOverride as PermissionMap | null,
-          "store",
-          "FULL",
-          ["approve", "refund", "refundExcess", "refundCourierExcess"].includes(
-            op,
-          )
-            ? ["manager"]
-            : ["cashier", "manager"],
-        ),
-    );
   async function refresh() {
     await utils.delivery.fulfillment.charges.invalidate();
   }
@@ -349,8 +390,16 @@ function ChargesWorkspaceContent({
         case "approve":
           await mutations.approve.mutateAsync(command.input);
           setAction(
-            row?.category === "SHOP_EXPENSE" ? "settlePayee" : "collect",
+            defaultChargeWorkspaceAction(
+              { status: "APPROVED", category: row?.category ?? "" },
+              can("complete"),
+            ),
           );
+          break;
+        case "complete":
+          await mutations.complete.mutateAsync(command.input);
+          setAction("collect");
+          setCompletionEvidence("");
           break;
         case "collect":
           await mutations.collect.mutateAsync(command.input);
@@ -428,10 +477,14 @@ function ChargesWorkspaceContent({
       setError("اختر فرع المطالبة قبل الإجراء");
       return;
     }
+    if (action === "complete" && !completionEvidenceValid(completionEvidence)) {
+      setError("أدخل دليلاً واضحاً على إنجاز الخدمة (5 أحرف على الأقل)");
+      return;
+    }
     if (
       !(await confirm({
         title: "تثبيت إجراء الأجر",
-        description: `${row.description} — ${action === "approve" ? "اعتماد المطالبة والاستحقاق" : fmt(paymentAmount || "0") + " د.ع"}`,
+        description: `${row.description} — ${action === "approve" ? "اعتماد المطالبة والاستحقاق" : action === "complete" ? `إثبات إنجاز الخدمة: ${completionEvidence.trim()}` : fmt(paymentAmount || "0") + " د.ع"}`,
         variant: action === "refund" ? "danger" : "warning",
       }))
     )
@@ -450,6 +503,13 @@ function ChargesWorkspaceContent({
       externalPaymentDeviceId: persistentKey("fulfillment-charge-device"),
     };
     if (action === "approve") await execute({ action, input: identity });
+    if (action === "complete")
+      await execute(
+        buildChargeCompletionCommand({
+          ...identity,
+          evidence: completionEvidence,
+        }),
+      );
     if (action === "collect")
       await execute({
         action,
@@ -626,11 +686,15 @@ function ChargesWorkspaceContent({
             onClick={() => {
               setSelected(row.original.id);
               setAction(
-                row.original.status === "DRAFT" ? "approve" : "collect",
+                defaultChargeWorkspaceAction(
+                  row.original,
+                  can("complete"),
+                ),
               );
               setPaymentAmount(row.original.remainingAmount);
               setOriginalPayment("");
               setProof(null);
+              setCompletionEvidence("");
             }}
           >
             عرض وتنفيذ
@@ -1019,6 +1083,7 @@ function ChargesWorkspaceContent({
                     setAction(v as Exclude<Action, "create">);
                     setOriginalPayment("");
                     setProof(null);
+                    setCompletionEvidence("");
                     if (["remitCourier", "refundCourierExcess"].includes(v))
                       setMethod("CASH");
                   }}
@@ -1028,6 +1093,9 @@ function ChargesWorkspaceContent({
                     <option value="approve">
                       اعتماد المطالبة واستحقاق الجهة
                     </option>
+                  )}
+                  {chargeCompletionAvailable(row) && (
+                    <option value="complete">إثبات إنجاز الخدمة</option>
                   )}
                   {row.status !== "DRAFT" && (
                     <>
@@ -1039,7 +1107,10 @@ function ChargesWorkspaceContent({
                       <option value="refundCourierExcess">
                         رد أمانة قبض زائد لدى الناقل
                       </option>
-                      {detail.data?.costVisible && (
+                      {detail.data?.costVisible &&
+                        (row.category !== "OUTSOURCED" ||
+                          row.status === "COMPLETED" ||
+                          !!row.legacyPostedAt) && (
                         <option value="settlePayee">
                           سداد الجهة المستفيدة
                         </option>
@@ -1052,7 +1123,7 @@ function ChargesWorkspaceContent({
                   )}
                 </AppSelect>
               </Field>
-              {action !== "approve" && (
+              {!["approve", "complete"].includes(action) && (
                 <Field label="المبلغ الفعلي">
                   <MoneyInput
                     value={paymentAmount}
@@ -1061,6 +1132,20 @@ function ChargesWorkspaceContent({
                       setProof(null);
                     }}
                     required
+                    disabled={disabled}
+                  />
+                </Field>
+              )}
+              {action === "complete" && (
+                <Field label="دليل إنجاز الخدمة">
+                  <Textarea
+                    value={completionEvidence}
+                    onChange={(e) => setCompletionEvidence(e.target.value)}
+                    required
+                    minLength={5}
+                    maxLength={2000}
+                    rows={3}
+                    placeholder="مثال: تم تسليم التجهيز للعميل أو إرفاق إثبات إنجاز الجهة الخارجية"
                     disabled={disabled}
                   />
                 </Field>
@@ -1300,7 +1385,20 @@ function ChargesWorkspaceContent({
                 يبقى عهدة عليه حتى يورّده كاملاً، ولا تتغير ذمة العميل.
               </p>
             )}
+            {action === "complete" && !can("complete") && (
+              <p className="text-sm text-muted-foreground">
+                إثبات إنجاز الخدمة يحتاج صلاحية مدير مخوّل.
+              </p>
+            )}
+            {action === "complete" &&
+              !completionEvidenceValid(completionEvidence) && (
+                <p className="text-sm text-muted-foreground">
+                  اكتب دليلاً تشغيلياً واضحاً من 5 أحرف على الأقل لتفعيل
+                  الإجراء.
+                </p>
+              )}
             <p className="text-xs text-muted-foreground">
+              إثبات الإنجاز يحوّل إيراد الخدمة المؤجل إلى إيراد فعلي مرة واحدة.
               الرد يلغي الجزء المردود من الأجر ويخرج من وسيلة ومصدر القبض
               الأصليين. التوريد يبرئ عهدة الناقل فقط. سداد الجهة لا ينشئ مصروفاً
               ثانياً.
@@ -1317,6 +1415,8 @@ function ChargesWorkspaceContent({
               disabled={
                 disabled ||
                 !can(action) ||
+                (action === "complete" &&
+                  !completionEvidenceValid(completionEvidence)) ||
                 (["approve", "settlePayee"].includes(action) &&
                   !detail.data?.costVisible) ||
                 (action === "collect" &&
