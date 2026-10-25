@@ -29,6 +29,7 @@ export interface FinancialAuditFlagProps extends Omit<
   resolved?: boolean;
   icon?: LucideIcon;
   compact?: boolean;
+  wrap?: boolean;
 }
 
 const CONFIG: Record<
@@ -57,6 +58,7 @@ export function FinancialAuditFlag({
   resolved = false,
   icon,
   compact = false,
+  wrap = false,
   className,
   ...props
 }: FinancialAuditFlagProps) {
@@ -71,15 +73,28 @@ export function FinancialAuditFlag({
       className={cn(
         "max-w-full gap-1",
         compact ? "h-5 px-1.5 text-[10px]" : "min-h-6",
+        wrap && "h-auto flex-wrap justify-start whitespace-normal",
         className,
       )}
       title={title}
       {...props}
     >
       <Icon aria-hidden className="shrink-0" />
-      <span className="truncate">{label}</span>
+      <span
+        className={
+          wrap ? "min-w-0 break-words [overflow-wrap:anywhere]" : "truncate"
+        }
+      >
+        {label}
+      </span>
       {code ? (
-        <span className="font-mono text-[0.9em] opacity-70" dir="ltr">
+        <span
+          className={cn(
+            "font-mono text-[0.9em] opacity-70",
+            wrap && "min-w-0 break-all",
+          )}
+          dir="ltr"
+        >
           {code}
         </span>
       ) : null}
