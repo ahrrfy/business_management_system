@@ -31,6 +31,8 @@ import {
 import { appendPurchaseOrderEventTx } from "./revisions";
 import { postApprovedPurchaseInvoiceInTx, recognizeShippingAndCustomsInTx } from "./automaticInvoicePosting";
 import { recordedPurchaseShippingPaymentTx } from "./shippingPayment";
+import { prelockCashPurchaseSettlementInTx } from "./supplierPayments";
+import type { PurchaseCashSourceInput } from "./types";
 import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 
 export type PurchaseOrderControlKind =
@@ -438,6 +440,7 @@ export async function decidePurchaseOrderControl(
     approve: boolean;
     reason: string;
     confirmedFullReceipt?: boolean;
+    cashSource?: PurchaseCashSourceInput | null;
   },
   actor: Actor,
   options: { legacyConfirmOnly?: true } = {},
@@ -466,21 +469,44 @@ export async function decidePurchaseOrderControl(
     reason,
     confirmedFullReceipt: input.confirmedFullReceipt ?? false,
     legacyConfirmOnly: options.legacyConfirmOnly ?? false,
+    ...(input.cashSource !== undefined
+      ? {
+          cashSource: input.cashSource
+            ? {
+                mode: input.cashSource.mode,
+                shiftId: input.cashSource.shiftId ?? null,
+              }
+            : null,
+        }
+      : {}),
   });
   return withTx(async (tx) => {
-    // Documented shipping uses the creator's frozen source, never the reviewer.
-    // Acquire it before the PO, in the same source -> document order as cash writers.
+    // Documented shipping and CASH invoice settlement lock their cash source
+    // before the PO, in the same source -> document order as all cash writers.
     if (input.approve && preview.status === "PENDING" && (preview.kind === "CANCEL_ORDER" || (preview.kind === "APPROVE_REVISION" && !options.legacyConfirmOnly))) {
       const [sourcePo] = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, preview.purchaseOrderId)).limit(1);
-      if (sourcePo?.shippingFundingSource === "DRAWER" && sourcePo.shippingFundingShiftId != null && Number(sourcePo.currentRevisionId) === Number(preview.revisionId) && Number(sourcePo.version) === Number(preview.baseOrderVersion)) {
-        const recordedReceiptId = await recordedPurchaseShippingPaymentTx(tx, {
-          purchaseOrderId: Number(sourcePo.id), branchId: Number(sourcePo.branchId), creatorId: Number(sourcePo.createdBy),
-          amount: money(sourcePo.shippingCost ?? "0").plus(money(sourcePo.customsCost ?? "0")).toFixed(2),
-          shiftId: sourcePo.shippingFundingShiftId,
-        });
-        if (recordedReceiptId == null) await lockCashSourceForUpdate(tx, {
-          branchId: Number(sourcePo.branchId), cashBucket: "DRAWER", shiftId: Number(sourcePo.shippingFundingShiftId),
-        });
+      if (sourcePo && Number(sourcePo.currentRevisionId) === Number(preview.revisionId) && Number(sourcePo.version) === Number(preview.baseOrderVersion)) {
+        if (sourcePo.shippingFundingSource === "DRAWER" && sourcePo.shippingFundingShiftId != null) {
+          const recordedReceiptId = await recordedPurchaseShippingPaymentTx(tx, {
+            purchaseOrderId: Number(sourcePo.id), branchId: Number(sourcePo.branchId), creatorId: Number(sourcePo.createdBy),
+            amount: money(sourcePo.shippingCost ?? "0").plus(money(sourcePo.customsCost ?? "0")).toFixed(2),
+            shiftId: sourcePo.shippingFundingShiftId,
+          });
+          if (recordedReceiptId == null) await lockCashSourceForUpdate(tx, {
+            branchId: Number(sourcePo.branchId), cashBucket: "DRAWER", shiftId: Number(sourcePo.shippingFundingShiftId),
+          });
+        }
+        if (preview.kind === "APPROVE_REVISION" && sourcePo.settlementType === "CASH" && money(sourcePo.total).gt(0)) {
+          try {
+            await prelockCashPurchaseSettlementInTx(tx, {
+              purchaseOrder: sourcePo,
+              reviewer: actor,
+              explicitCashSource: input.cashSource,
+            });
+          } catch {
+            // Defer diagnostic failure until after idempotency/governance/stale checks.
+          }
+        }
       }
     }
     // استعادة أهلية الصنف للجرد الافتتاحي تعتمد على رؤية كل أوامر الشراء غير الملغاة.
@@ -729,6 +755,7 @@ export async function decidePurchaseOrderControl(
           Number(po.id),
           resolvedActor,
           decisionKey,
+          { cashSource: input.cashSource },
         );
         applicationEvidence = {
           automaticInvoicePosting: true,
@@ -739,6 +766,7 @@ export async function decidePurchaseOrderControl(
           accountingEntryId: posting.accountingEntryId,
           shippingPaymentRequestReceiptId:
             posting.shippingPaymentRequestReceiptId,
+          supplierPaymentId: posting.supplierPaymentId,
         };
       }
     } else if (request.kind === "CANCEL_ORDER") {

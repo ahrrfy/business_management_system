@@ -52,11 +52,18 @@ export interface PurchaseDocumentInput {
   shippingShiftId?: number | null;
 }
 
+export interface PurchaseCashSourceInput {
+  mode: "DRAWER" | "TREASURY";
+  shiftId?: number | null;
+}
+
 export interface CreatePurchaseOrderInput extends PurchaseDocumentInput {
   supplierId: number;
   branchId: number;
-  /** Planned terms only; neither CASH nor CREDIT proves physical supplier payment. */
+  /** CASH settles supplier AP atomically upon invoice posting; CREDIT leaves AP open on supplier account. */
   settlementType?: PurchaseSettlementType;
+  /** Explicit cash source for CASH purchase orders (maker's open shift drawer or main treasury). */
+  cashSource?: PurchaseCashSourceInput | null;
   /** Goods remain a draft pending review; explicitly paid shipping is recorded immediately. */
   status?: "DRAFT";
   notes?: string | null;
@@ -74,6 +81,8 @@ export interface CreatePurchaseOrderInput extends PurchaseDocumentInput {
 export interface UpdatePurchaseOrderInput extends PurchaseDocumentInput {
   purchaseOrderId: number;
   supplierId: number;
+  settlementType?: PurchaseSettlementType;
+  cashSource?: PurchaseCashSourceInput | null;
   notes?: string | null;
   /** نسخة projection التي عاينها المحرر؛ يمنع حفظاً فوق تعديل أحدث. */
   expectedVersion: number;

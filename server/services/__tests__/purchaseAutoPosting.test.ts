@@ -371,9 +371,8 @@ describe("اعتماد أمر الشراء يرحّل الفاتورة والا�
   });
 });
 
-describe("اعتماد أمر الشراء النقدي لا يعني دفعه — السداد حدث مستقل (قرار المالك ٥/١٠/٢٦)", () => {
+describe("اعتماد أمر الشراء النقدي يسدده ذرياً وتصبح الذمة المتبقية صفراً", () => {
   beforeEach(async () => {
-    // رصيد خزينة مرجعي يثبت أن اعتماد الأمر لا يستهلك ديناراً منه.
     await db().insert(s.receipts).values({
       branchId: 1,
       shiftId: null,
@@ -391,6 +390,7 @@ describe("اعتماد أمر الشراء النقدي لا يعني دفعه �
   async function submitCashOrder(
     clientRequestIdPrefix: string,
     shippingCost = "0.00",
+    cashSource?: { mode: "DRAWER"; shiftId?: number } | { mode: "TREASURY" },
   ) {
     const draft = await createPurchaseOrder(
       {
@@ -399,6 +399,7 @@ describe("اعتماد أمر الشراء النقدي لا يعني دفعه �
         status: "DRAFT",
         settlementType: "CASH",
         shippingCost,
+        cashSource,
         clientRequestId: `${clientRequestIdPrefix}-draft`,
         items: [
           { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "6.00" },
@@ -421,14 +422,47 @@ describe("اعتماد أمر الشراء النقدي لا يعني دفعه �
     };
   }
 
-  it("مديرٌ مستقل يعتمد الأمر النقدي بلا صلاحية صرف لأن الاعتماد لا ينشئ حركة نقدية", async () => {
+  it("يفشل الاعتماد مغلقاً (ROLLBACK) إذا لم يتوفر مصدر نقدي صالح، وينجح ذرياً عند وجود وردية مفتوحة للمنشئ", async () => {
+    const { purchaseOrderId: unbackedPoId, requestId: unbackedReqId } =
+      await submitCashOrder("cash-nonowner-unbacked", "10.00");
+
+    await expect(
+      decidePurchaseOrderControl(
+        {
+          requestId: unbackedReqId,
+          decisionKey: `purchase-decision-PURCHASE_ORDER-${unbackedReqId}-approve-${randomUUID()}`,
+          approve: true,
+          reason: "محاولة اعتماد بلا مصدر نقدي للمعتمد المستقل ولا وردية للمنشئ",
+          confirmedFullReceipt: true,
+        },
+        approver,
+      ),
+    ).rejects.toThrow();
+
+    expect(
+      (
+        await db()
+          .select({
+            status: s.purchaseOrders.status,
+            paidAmount: s.purchaseOrders.paidAmount,
+          })
+          .from(s.purchaseOrders)
+          .where(eq(s.purchaseOrders.id, unbackedPoId))
+      )[0],
+    ).toMatchObject({ status: "SENT", paidAmount: "0.00" });
+    expect(await db().select().from(s.supplierInvoices)).toHaveLength(0);
+    expect((await db().select().from(s.suppliers))[0]?.currentBalance).toBe(
+      "0.00",
+    );
+
     const shift = await openShift(
       { branchId: 1, openingBalance: "100.00" },
       creator,
     );
     const { purchaseOrderId, requestId } = await submitCashOrder(
-      "cash-nonowner",
+      "cash-nonowner-declared",
       "10.00",
+      { mode: "DRAWER", shiftId: shift.shiftId },
     );
     await decidePurchaseOrderControl(
       {
@@ -438,7 +472,7 @@ describe("اعتماد أمر الشراء النقدي لا يعني دفعه �
         reason: "تحققت من المورد والأسعار ووصول كامل الكميات",
         confirmedFullReceipt: true,
       },
-      approver, // معتمد أمر مستقل، وليس مالك الخزينة
+      approver,
     );
 
     expect(
@@ -451,19 +485,14 @@ describe("اعتماد أمر الشراء النقدي لا يعني دفعه �
           .from(s.purchaseOrders)
           .where(eq(s.purchaseOrders.id, purchaseOrderId))
       )[0],
-    ).toMatchObject({ status: "RECEIVED", paidAmount: "0.00" });
-    expect(await db().select().from(s.supplierPaymentRequests)).toHaveLength(0);
-    expect(await db().select().from(s.supplierPayments)).toHaveLength(0);
-    expect(
-      (await db().select().from(s.receipts)).filter(
-        (row) => row.direction === "OUT" && row.partyType === "SUPPLIER",
-      ),
-    ).toHaveLength(0);
+    ).toMatchObject({ status: "RECEIVED", paidAmount: "60.00" });
+    expect(await db().select().from(s.supplierPaymentRequests)).toHaveLength(1);
+    expect(await db().select().from(s.supplierPayments)).toHaveLength(1);
     expect(
       (await db().select().from(s.accountingEntries)).filter(
         (row) => row.entryType === "PAYMENT_OUT",
       ),
-    ).toHaveLength(0);
+    ).toHaveLength(1);
     expect(
       (await db().select().from(s.receipts)).find((row) =>
         row.referenceNumber?.startsWith("SHIP-"),
@@ -479,13 +508,13 @@ describe("اعتماد أمر الشراء النقدي لا يعني دفعه �
       await db().transaction(async (tx) =>
         (await computeExpectedCash(tx, shift.shiftId, "100.00")).toFixed(2),
       ),
-    ).toBe("100.00");
+    ).toBe("40.00");
     expect((await db().select().from(s.suppliers))[0]?.currentBalance).toBe(
-      "60.00",
+      "0.00",
     );
   });
 
-  it("اعتماد المالك أيضاً يترك الفاتورة مفتوحة والمتبقي ظاهراً حتى تنفيذ السداد صراحةً", async () => {
+  it("اعتماد المالك للفاتورة النقدية يسددها ذرياً ويصفّر الذمة ويحفظ قابلية الاسترداد المحكوم", async () => {
     const shift = await openShift(
       { branchId: 1, openingBalance: "100.00" },
       creator,
@@ -497,6 +526,7 @@ describe("اعتماد أمر الشراء النقدي لا يعني دفعه �
       approve: true,
       reason: "تحققت من المورد والأسعار ووصول كامل الكميات",
       confirmedFullReceipt: true,
+      cashSource: { mode: "DRAWER" as const, shiftId: shift.shiftId },
     };
     await decidePurchaseOrderControl(
       approvalInput,
@@ -517,39 +547,36 @@ describe("اعتماد أمر الشراء النقدي لا يعني دفعه �
       )[0],
     ).toMatchObject({
       status: "RECEIVED",
-      paidAmount: "0.00",
+      paidAmount: "60.00",
     });
 
     const [invoice] = await db()
       .select()
       .from(s.supplierInvoices)
       .where(eq(s.supplierInvoices.supplierId, 1));
-    expect(invoice).toMatchObject({ status: "POSTED", paymentGate: "OPEN" });
+    expect(invoice).toMatchObject({ status: "POSTED", paymentGate: "SETTLED" });
 
-    expect(await db().select().from(s.supplierPaymentRequests)).toHaveLength(0);
-    expect(await db().select().from(s.supplierPayments)).toHaveLength(0);
+    expect(await db().select().from(s.supplierPaymentRequests)).toHaveLength(1);
+    expect(await db().select().from(s.supplierPayments)).toHaveLength(1);
     expect((await db().select().from(s.suppliers))[0]?.currentBalance).toBe(
-      "60.00",
+      "0.00",
     );
     expect(
       (await db().select().from(s.receipts)).filter(
         (row) => row.direction === "OUT" && row.partyType === "SUPPLIER",
       ),
-    ).toHaveLength(0);
+    ).toHaveLength(1);
     expect(
       (await db().select().from(s.accountingEntries)).filter(
         (row) => row.entryType === "PAYMENT_OUT",
       ),
-    ).toHaveLength(0);
+    ).toHaveLength(1);
     expect(
       await db().transaction(async (tx) =>
         (await computeExpectedCash(tx, shift.shiftId, "100.00")).toFixed(2),
       ),
-    ).toBe("100.00");
+    ).toBe("40.00");
 
-    // Codex (P1، ٦/٩): شارة «مُسدَّدٌ فعلاً» في Purchases.tsx تُشتقّ من purchases.list.
-    // linkedCashPaidAmount — لا من settlementType+status وحدهما — فتثبت هنا أنّ الإشارة
-    // الحقيقية التي يعتمدها العمود تبقى صفراً حتى يقع دفعٌ فعلي مستقل.
     const { purchaseRouter } = await import("../../routers/purchaseRouter");
     const caller = purchaseRouter.createCaller({
       req: { headers: {} } as never,
@@ -569,89 +596,9 @@ describe("اعتماد أمر الشراء النقدي لا يعني دفعه �
     expect(listedOrder).toMatchObject({
       id: purchaseOrderId,
       settlementType: "CASH",
-      linkedCashPaidAmount: "0.00",
+      linkedCashPaidAmount: "60.00",
     });
 
-    const paymentInput = {
-      supplierId: 1,
-      branchId: 1,
-      requestKey: "cash-owner-explicit-payment",
-      currency: "IQD" as const,
-      exchangeRate: null,
-      amount: "60.00",
-      currencyAmount: "60.00",
-      paymentMethod: "CASH" as const,
-      cashSource: { mode: "DRAWER" as const, shiftId: shift.shiftId },
-      evidenceType: "CASH_ACKNOWLEDGEMENT" as const,
-      evidenceReference: "CASH-HANDOVER-TEST-1",
-      reason: "سداد صريح بعد تسليم النقد للمورد",
-      allocations: [
-        {
-          supplierInvoiceId: Number(invoice.id),
-          invoiceVersion: Number(invoice.version),
-          amount: "60.00",
-          currencyAmount: "60.00",
-        },
-      ],
-    };
-    await expect(
-      listSupplierPaymentSources(
-        { branchId: 1, supplierId: 1, purchaseOrderId, limit: 20 },
-        creator,
-      ),
-    ).resolves.toMatchObject({
-      total: 1,
-      rows: [{ id: Number(invoice.id), remainingAmount: "60.00" }],
-    });
-    const paymentRequest = await requestSupplierPayment(paymentInput, creator);
-    await expect(
-      requestSupplierPayment(paymentInput, creator),
-    ).resolves.toMatchObject({
-      requestId: paymentRequest.requestId,
-      idempotent: true,
-    });
-    expect(
-      (await db().select().from(s.accountingEntries)).filter(
-        (row) => row.entryType === "PAYMENT_OUT",
-      ),
-    ).toHaveLength(0);
-    expect(
-      await db().transaction(async (tx) =>
-        (await computeExpectedCash(tx, shift.shiftId, "100.00")).toFixed(2),
-      ),
-    ).toBe("100.00");
-
-    const paymentDecision = {
-      requestId: paymentRequest.requestId,
-      decisionKey: "cash-owner-explicit-payment-approve",
-      action: "APPROVE" as const,
-      reviewReason: "تم التحقق من تسليم النقد للمورد",
-    };
-    await decideSupplierPayment(paymentDecision, treasurer);
-    await expect(
-      decideSupplierPayment(paymentDecision, treasurer),
-    ).resolves.toMatchObject({ idempotent: true });
-    expect(
-      (
-        await db()
-          .select({ paidAmount: s.purchaseOrders.paidAmount })
-          .from(s.purchaseOrders)
-          .where(eq(s.purchaseOrders.id, purchaseOrderId))
-      )[0]?.paidAmount,
-    ).toBe("60.00");
-    expect((await db().select().from(s.suppliers))[0]?.currentBalance).toBe(
-      "0.00",
-    );
-    expect(
-      (await db().select().from(s.accountingEntries)).filter(
-        (row) => row.entryType === "PAYMENT_OUT",
-      ),
-    ).toHaveLength(1);
-    expect(
-      await db().transaction(async (tx) =>
-        (await computeExpectedCash(tx, shift.shiftId, "100.00")).toFixed(2),
-      ),
-    ).toBe("40.00");
     const integrity = await getPurchaseIntegrityReport({
       branchId: 1,
       limit: 20,
@@ -729,6 +676,28 @@ describe("اعتماد أمر الشراء النقدي لا يعني دفعه �
     expect((await db().select().from(s.suppliers))[0]?.currentBalance).toBe(
       "20.00",
     );
+    const integrityAfterPartialRefund = await getPurchaseIntegrityReport({
+      branchId: 1,
+      limit: 20,
+    });
+    expect(
+      integrityAfterPartialRefund.findings.filter(
+        (finding) =>
+          finding.purchaseOrderId === purchaseOrderId &&
+          finding.code === "CASH_RECEIVED_PAYMENT_COVERAGE_GAP",
+      ),
+    ).toMatchObject([
+      {
+        severity: "CRITICAL",
+        evidence: {
+          recognizedPurchaseGl: "60.00",
+          approvedPaymentOutGl: "60.00",
+          approvedPaymentInGl: "20.00",
+          netCoveredAmount: "40.00",
+          difference: "-20.00",
+        },
+      },
+    ]);
     await expect(
       listSupplierPaymentSources(
         { branchId: 1, supplierId: 1, purchaseOrderId, limit: 20 },
@@ -762,15 +731,6 @@ describe("اعتماد أمر الشراء النقدي لا يعني دفعه �
     await expect(
       caller.get({ purchaseOrderId }),
     ).resolves.toMatchObject({ linkedCashPaidAmount: "40.00" });
-    const integrityAfterRefund = await getPurchaseIntegrityReport({
-      branchId: 1,
-      limit: 20,
-    });
-    expect(
-      integrityAfterRefund.findings.filter(
-        (finding) => finding.purchaseOrderId === purchaseOrderId,
-      ),
-    ).toHaveLength(0);
   });
 
   it("Codex P1 (٦/٩): أمرٌ نقديّ وصل RECEIVED **قبل** هذا الإصلاح (بلا أيّ صرفٍ مرتبط) لا يُعرَض مُسدَّداً — linkedCashPaidAmount يبقى صفراً رغم CASH+RECEIVED معاً", async () => {

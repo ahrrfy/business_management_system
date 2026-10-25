@@ -136,6 +136,7 @@ async function seedNativePayment(singlePo = false, withRefund = false) {
     await insertPo({
       id,
       total: "100.00",
+      settlementType: "CREDIT",
       paidAmount:
         withRefund && id === shares.length
           ? toDbMoney(money(share).minus("5.00"))
@@ -512,14 +513,14 @@ describe("getPurchaseIntegrityReport — GL forensic read model", () => {
     expect(summary).toMatchObject({
       branchCount: 2,
       scannedOrderCount: 1,
-      findingCount: 1,
-      severityCounts: { CRITICAL: 0, HIGH: 1, MEDIUM: 0, INFO: 0 },
+      findingCount: 2,
+      severityCounts: { CRITICAL: 1, HIGH: 1, MEDIUM: 0, INFO: 0 },
       truncatedBranchIds: [],
     });
     expect(await relevantCounts()).toEqual(before);
   });
 
-  it("لا يعدّ CASH غير المدفوع خللاً، ويكشف انحراف paidAmount والرصيد الدفتري السالب بلا كتابة أو تسريب فرع", async () => {
+  it("يكشف الفاتورة النقدية غير المسددة وانحراف paidAmount والرصيد الدفتري السالب بلا كتابة أو تسريب فرع", async () => {
     await insertPo({ id: 1, total: "100.00", paidAmount: "35.00" });
     await insertEntry({
       id: 11,
@@ -607,7 +608,27 @@ describe("getPurchaseIntegrityReport — GL forensic read model", () => {
       report.findings
         .filter((finding) => finding.purchaseOrderId === 1)
         .map((finding) => finding.code),
-    ).toEqual(["PAID_AMOUNT_GL_DRIFT"]);
+    ).toEqual([
+      "CASH_RECEIVED_PAYMENT_COVERAGE_GAP",
+      "PAID_AMOUNT_GL_DRIFT",
+    ]);
+
+    expect(
+      report.findings.find(
+        (finding) =>
+          finding.purchaseOrderId === 1 &&
+          finding.code === "CASH_RECEIVED_PAYMENT_COVERAGE_GAP",
+      ),
+    ).toMatchObject({
+      severity: "CRITICAL",
+      evidence: {
+        recognizedPurchaseGl: "100.00",
+        approvedPaymentOutGl: "40.00",
+        validPendingPoPay: "20.00",
+        netCoveredAmount: "60.00",
+        difference: "-40.00",
+      },
+    });
 
     expect(
       report.findings.find(
@@ -628,6 +649,21 @@ describe("getPurchaseIntegrityReport — GL forensic read model", () => {
           finding.code === "NEGATIVE_PO_LEDGER_BALANCE",
       )?.evidence,
     ).toMatchObject({ bookBalance: "-20.00", overAllocatedBy: "20.00" });
+    expect(
+      report.findings.find(
+        (finding) =>
+          finding.purchaseOrderId === 2 &&
+          finding.code === "CASH_RECEIVED_PAYMENT_COVERAGE_GAP",
+      ),
+    ).toMatchObject({
+      severity: "HIGH",
+      evidence: {
+        recognizedPurchaseGl: "50.00",
+        approvedPaymentOutGl: "70.00",
+        netCoveredAmount: "70.00",
+        difference: "20.00",
+      },
+    });
   });
 
   it("لا يحتسب طلب PO-PAY معطوباً، ويعرض أعمار المعلّق/المرفوض وCREDIT التاريخي كمراجعة فقط", async () => {
@@ -919,7 +955,12 @@ describe("getPurchaseIntegrityReport — GL forensic read model", () => {
   });
 
   it("يفهم ترحيل GRNI الحديث واسترداد دفعة المورد المرتبط بالأمر بلا إنذارات كاذبة", async () => {
-    await insertPo({ id: 9, total: "100.00", paidAmount: "0.00" });
+    await insertPo({
+      id: 9,
+      total: "100.00",
+      paidAmount: "0.00",
+      settlementType: "CREDIT",
+    });
     await insertEntry({
       id: 91,
       purchaseOrderId: 9,

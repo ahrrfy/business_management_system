@@ -75,10 +75,10 @@ export async function setupVite(app: Express, server: Server) {
   });
 }
 
-export function serveStatic(app: Express) {
+export function serveStatic(app: Express, distPathOverride?: string) {
   // In production the server is bundled to dist/index.js, so the client build
   // sits alongside it at dist/public.
-  const distPath = path.resolve(import.meta.dirname, "public");
+  const distPath = distPathOverride ?? path.resolve(import.meta.dirname, "public");
   if (!fs.existsSync(distPath)) {
     console.error(`Build directory not found: ${distPath} — run "pnpm build" first.`);
   }
@@ -93,6 +93,8 @@ export function serveStatic(app: Express) {
   // index.html و sw.js يجب إعادة التحقّق منهما كي يصل التحديث فور كل نشر.
   app.use(
     express.static(distPath, {
+      // index:false — وإلا قدّم static ملف index.html الخام للجذر `/` قبل معالج حقن SEO أدناه.
+      index: false,
       setHeaders: (res) => {
         res.setHeader("Cache-Control", "no-cache");
       },

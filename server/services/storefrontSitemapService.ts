@@ -4,8 +4,8 @@ import { getDb } from "../db";
 import { storefrontPublishableCondition } from "./storefrontEligibilityService";
 import { imageHash } from "../imageRoute";
 
-let cachedXml: string | null = null;
-let cacheExpiresAt = 0;
+// الكاش مفتاحه الأصل (origin): خريطةٌ مولّدة لأصلٍ ما لا تُخدَم أبداً لأصلٍ آخر.
+const sitemapCache = new Map<string, { xml: string; expiresAt: number }>();
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 function escapeXml(unsafe: string): string {
@@ -30,10 +30,6 @@ function formatDate(d: Date | string | null | undefined): string {
 
 export async function generateStorefrontSitemapXml(customOrigin?: string): Promise<string> {
   const now = Date.now();
-  if (cachedXml && now < cacheExpiresAt) {
-    return cachedXml;
-  }
-
   const baseOrigin = (
     customOrigin ||
     process.env.PUBLIC_SITE_ORIGIN ||
@@ -41,11 +37,15 @@ export async function generateStorefrontSitemapXml(customOrigin?: string): Promi
     "https://alarabiya.online"
   ).replace(/\/+$/, "");
 
+  const hit = sitemapCache.get(baseOrigin);
+  if (hit && now < hit.expiresAt) {
+    return hit.xml;
+  }
+
   const db = getDb();
   if (!db) {
     const xml = buildFallbackSitemap(baseOrigin);
-    cachedXml = xml;
-    cacheExpiresAt = now + CACHE_TTL_MS;
+    sitemapCache.set(baseOrigin, { xml, expiresAt: now + CACHE_TTL_MS });
     return xml;
   }
 
@@ -159,13 +159,11 @@ export async function generateStorefrontSitemapXml(customOrigin?: string): Promi
 ${urls.join("\n")}
 </urlset>`;
 
-    cachedXml = xml;
-    cacheExpiresAt = now + CACHE_TTL_MS;
+    sitemapCache.set(baseOrigin, { xml, expiresAt: now + CACHE_TTL_MS });
     return xml;
   } catch (error) {
     const xml = buildFallbackSitemap(baseOrigin);
-    cachedXml = xml;
-    cacheExpiresAt = now + CACHE_TTL_MS;
+    sitemapCache.set(baseOrigin, { xml, expiresAt: now + CACHE_TTL_MS });
     return xml;
   }
 }
@@ -187,7 +185,6 @@ function buildFallbackSitemap(baseOrigin: string): string {
 }
 
 export function invalidateSitemapCache(): void {
-  cachedXml = null;
-  cacheExpiresAt = 0;
+  sitemapCache.clear();
 }
 

@@ -54,6 +54,12 @@ export async function createPurchaseOrderRevisionTx(
     actorUserId: number;
     reason: string;
     origin?: "NATIVE" | "LEGACY";
+    cashSource?: {
+      mode: "DRAWER" | "TREASURY";
+      shiftId?: number | null;
+      payerUserId?: number | null;
+      explicit?: boolean;
+    } | null;
   },
 ) {
   const reason = input.reason.trim();
@@ -168,6 +174,23 @@ export async function createPurchaseOrderRevisionTx(
     usdInvoiceDiscount:
       po.usdInvoiceDiscount == null ? null : String(po.usdInvoiceDiscount),
     notes: po.notes ?? null,
+    ...(input.cashSource
+      ? {
+          cashSource: {
+            mode: input.cashSource.mode,
+            shiftId:
+              input.cashSource.mode === "DRAWER" &&
+              input.cashSource.shiftId != null
+                ? Number(input.cashSource.shiftId)
+                : null,
+            payerUserId:
+              input.cashSource.payerUserId == null
+                ? null
+                : Number(input.cashSource.payerUserId),
+            explicit: input.cashSource.explicit !== false,
+          },
+        }
+      : {}),
     items,
   };
   const payloadCanonical = canonicalJson(payload);

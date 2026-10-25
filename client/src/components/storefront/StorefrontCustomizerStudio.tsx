@@ -433,6 +433,9 @@ export function StorefrontCustomizerStudio({
 
           {/* Actions */}
           <div className="mt-2 border-t border-slate-100 pt-3 dark:border-slate-800">
+            <p className="text-xs font-bold text-amber-700 dark:text-amber-400">
+              المعاينة للاطلاع فقط: الشعار والصورة لا ترسل مع الطلب، أرسل شعارك لخدمة العملاء بعد إتمام الطلب.
+            </p>
             <Button
               type="button"
               onClick={handleApply}
@@ -441,12 +444,12 @@ export function StorefrontCustomizerStudio({
               {applied ? (
                 <>
                   <CheckCircle2 className="size-4" />
-                  <span>تم اعتماد بيانات البروفة للطلب!</span>
+                  <span>تم إدراج النص في الطلب</span>
                 </>
               ) : (
                 <>
                   <Eye className="size-4" />
-                  <span>اعتماد بروفة التخصيص وإرفاقها</span>
+                  <span>اعتماد نص التخصيص</span>
                 </>
               )}
             </Button>
