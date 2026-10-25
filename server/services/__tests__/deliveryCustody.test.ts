@@ -83,12 +83,14 @@ describe("delivery physical custody", () => {
           id: 11,
           invoiceId: 1,
           variantId: 1,
-          quantity: "2.000",
-          baseQuantity: 2,
+          quantity: "4.000",
+          baseQuantity: 4,
+          returnedBaseQuantity: 3,
+          returnedRestockedBaseQuantity: 1,
           unitPrice: "200.00",
           unitCost: "100.00",
-          lineCost: "200.00",
-          total: "400.00",
+          lineCost: "400.00",
+          total: "800.00",
         },
         {
           id: 12,
@@ -96,6 +98,8 @@ describe("delivery physical custody", () => {
           variantId: 2,
           quantity: "3.000",
           baseQuantity: 3,
+          returnedBaseQuantity: 1,
+          returnedRestockedBaseQuantity: 0,
           unitPrice: "300.00",
           unitCost: "100.00",
           lineCost: "300.00",
@@ -148,7 +152,7 @@ describe("delivery physical custody", () => {
           variantId: 1,
           branchId: 1,
           movementType: "OUT",
-          quantity: 2,
+          quantity: 4,
           referenceType: "PRINT_SALE",
           referenceId: 1,
           createdBy: 1,
@@ -221,6 +225,8 @@ describe("delivery physical custody", () => {
         kind: row.itemKind,
         qty: row.baseQuantity,
         carrier: row.carrierCustodyBaseQuantity,
+        restocked: row.restockedClosedBaseQuantity,
+        damaged: row.damagedClosedBaseQuantity,
         value: row.originalIssueValue,
         movementId: row.originalMovementId,
         review: row.reviewStatus,
@@ -229,24 +235,106 @@ describe("delivery physical custody", () => {
       expect.arrayContaining([
         {
           kind: "STOCKED_ITEM",
-          qty: 2,
-          carrier: 2,
-          value: "200.00",
+          qty: 4,
+          carrier: 1,
+          restocked: 1,
+          damaged: 2,
+          value: "400.00",
           movementId: 31,
           review: "VERIFIED",
         },
         {
           kind: "BUNDLE_COMPONENT",
           qty: 6,
-          carrier: 6,
+          carrier: 4,
+          restocked: 0,
+          damaged: 2,
           value: "300.00",
           movementId: 32,
           review: "VERIFIED",
         },
       ]),
     );
-    expect(await db().select().from(deliveryCustodyEvents)).toHaveLength(2);
+    expect(
+      (await db().select().from(deliveryCustodyEvents)).map((event) => ({
+        state: event.toState,
+        quantity: event.baseQuantity,
+      })),
+    ).toEqual(
+      expect.arrayContaining([
+        { state: "CARRIER_CUSTODY", quantity: 1 },
+        { state: "RESTOCKED_CLOSED", quantity: 1 },
+        { state: "DAMAGED_CLOSED", quantity: 2 },
+        { state: "CARRIER_CUSTODY", quantity: 4 },
+        { state: "DAMAGED_CLOSED", quantity: 2 },
+      ]),
+    );
+    expect(await db().select().from(deliveryCustodyEvents)).toHaveLength(5);
     expect(await db().select().from(s.inventoryMovements)).toHaveLength(4);
+  });
+
+  it("fails closed when cumulative return counters exceed the sold quantity", async () => {
+    await seedCatalog();
+    await db().insert(s.invoices).values({
+      id: 8,
+      invoiceNumber: "CUST-INVALID-RETURN",
+      branchId: 1,
+      customerId: 1,
+      subtotal: "200.00",
+      total: "200.00",
+      costTotal: "200.00",
+      paidAmount: "200.00",
+      status: "RETURNED",
+      createdBy: 1,
+    });
+    await db().insert(s.invoiceItems).values({
+      id: 81,
+      invoiceId: 8,
+      variantId: 1,
+      quantity: "2.000",
+      baseQuantity: 2,
+      returnedBaseQuantity: 3,
+      returnedRestockedBaseQuantity: 1,
+      unitPrice: "100.00",
+      unitCost: "100.00",
+      lineCost: "200.00",
+      total: "200.00",
+    });
+    await db().insert(s.inventoryMovements).values({
+      id: 81,
+      variantId: 1,
+      branchId: 1,
+      movementType: "OUT",
+      quantity: 2,
+      referenceType: "INVOICE",
+      referenceId: 8,
+      createdBy: 1,
+    });
+    await db().insert(s.deliveryConsignments).values({
+      id: 8,
+      consignmentNumber: "CUST-CN-INVALID-RETURN",
+      branchId: 1,
+      partyId: 1,
+      invoiceId: 8,
+      sourceType: "INVOICE",
+      sourceId: 8,
+      codAmount: "0.00",
+      deliveryFee: "0.00",
+      parcelStatus: "OUT_FOR_DELIVERY",
+      status: "DISPATCHED",
+      dispatchedBy: 1,
+    });
+    await expect(
+      withTx((tx) =>
+        initializeConsignmentCustodyTx(tx, {
+          consignmentId: 8,
+          actorUserId: 1,
+          operationId: "custody-invalid-return",
+        }),
+      ),
+    ).rejects.toThrow(/عدادات المرتجع غير متسقة/);
+    expect(await db().select().from(deliveryCustodyItems)).toHaveLength(0);
+    expect(await db().select().from(deliveryCustodyEvents)).toHaveLength(0);
   });
 
   it("keeps customized work-order output out of branch stock", async () => {

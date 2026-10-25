@@ -49,6 +49,9 @@ interface CustodyDraft {
   baseQuantity: number;
   originalIssueUnitCost?: string | null;
   originalIssueValue?: string | null;
+  initialOpenBaseQuantity: number;
+  restockedClosedBaseQuantity: number;
+  damagedClosedBaseQuantity: number;
   reviewStatus: "VERIFIED" | "REVIEW_REQUIRED";
   reviewReason?: string | null;
 }
@@ -59,6 +62,56 @@ function assertPositiveBaseQuantity(value: number, sourceLineKey: string) {
       `كمية عهدة غير صالحة في السطر ${sourceLineKey}؛ راجع المستند الأصلي`,
       "CONFLICT",
     );
+}
+
+function invoiceReturnBuckets(
+  baseQuantity: number,
+  returnedBaseQuantity: number,
+  returnedRestockedBaseQuantity: number,
+  multiplier: number,
+  sourceLineKey: string,
+) {
+  if (
+    ![baseQuantity, returnedBaseQuantity, returnedRestockedBaseQuantity].every(
+      Number.isSafeInteger,
+    ) ||
+    !Number.isSafeInteger(multiplier) ||
+    baseQuantity <= 0 ||
+    multiplier <= 0 ||
+    returnedBaseQuantity < 0 ||
+    returnedBaseQuantity > baseQuantity ||
+    returnedRestockedBaseQuantity < 0 ||
+    returnedRestockedBaseQuantity > returnedBaseQuantity
+  )
+    throw fulfillmentError(
+      `عدادات المرتجع غير متسقة في السطر ${sourceLineKey}؛ أوقف الإسناد وراجع أصل البيع والمرتجع`,
+      "CONFLICT",
+    );
+  const totalBaseQuantity = baseQuantity * multiplier;
+  const initialOpenBaseQuantity =
+    (baseQuantity - returnedBaseQuantity) * multiplier;
+  const restockedClosedBaseQuantity =
+    returnedRestockedBaseQuantity * multiplier;
+  const damagedClosedBaseQuantity =
+    (returnedBaseQuantity - returnedRestockedBaseQuantity) * multiplier;
+  if (
+    ![
+      totalBaseQuantity,
+      initialOpenBaseQuantity,
+      restockedClosedBaseQuantity,
+      damagedClosedBaseQuantity,
+    ].every(Number.isSafeInteger)
+  )
+    throw fulfillmentError(
+      `كمية عهدة تتجاوز النطاق الآمن في السطر ${sourceLineKey}`,
+      "CONFLICT",
+    );
+  return {
+    totalBaseQuantity,
+    initialOpenBaseQuantity,
+    restockedClosedBaseQuantity,
+    damagedClosedBaseQuantity,
+  };
 }
 
 function initialState(
@@ -151,6 +204,8 @@ async function invoiceDraftsTx(
       id: invoiceItems.id,
       variantId: invoiceItems.variantId,
       baseQuantity: invoiceItems.baseQuantity,
+      returnedBaseQuantity: invoiceItems.returnedBaseQuantity,
+      returnedRestockedBaseQuantity: invoiceItems.returnedRestockedBaseQuantity,
       unitCost: invoiceItems.unitCost,
       lineCost: invoiceItems.lineCost,
       branchId: invoices.branchId,
@@ -222,12 +277,15 @@ async function invoiceDraftsTx(
       for (const component of components.filter(
         (row) => Number(row.invoiceItemId) === Number(item.id),
       )) {
-        const baseQuantity =
-          Number(component.componentBaseQuantity) * Number(item.baseQuantity);
-        assertPositiveBaseQuantity(
-          baseQuantity,
-          `${keyPrefix}BC:${component.id}`,
+        const sourceLineKey = `${keyPrefix}BC:${component.id}`;
+        const buckets = invoiceReturnBuckets(
+          Number(item.baseQuantity),
+          Number(item.returnedBaseQuantity),
+          Number(item.returnedRestockedBaseQuantity),
+          Number(component.componentBaseQuantity),
+          sourceLineKey,
         );
+        const baseQuantity = buckets.totalBaseQuantity;
         const evidence = movementEvidence.get(
           Number(component.componentVariantId),
         );
@@ -235,7 +293,7 @@ async function invoiceDraftsTx(
           component.issueUnitCost != null && component.issueLineCost != null;
         const verified = valued && evidence?.movementId != null;
         drafts.push({
-          sourceLineKey: `${keyPrefix}BC:${component.id}`,
+          sourceLineKey,
           itemKind: "BUNDLE_COMPONENT",
           invoiceItemId: Number(item.id),
           bundleComponentId: Number(component.id),
@@ -244,6 +302,9 @@ async function invoiceDraftsTx(
           baseQuantity,
           originalIssueUnitCost: component.issueUnitCost,
           originalIssueValue: component.issueLineCost,
+          initialOpenBaseQuantity: buckets.initialOpenBaseQuantity,
+          restockedClosedBaseQuantity: buckets.restockedClosedBaseQuantity,
+          damagedClosedBaseQuantity: buckets.damagedClosedBaseQuantity,
           reviewStatus: verified ? "VERIFIED" : "REVIEW_REQUIRED",
           reviewReason: verified
             ? null
@@ -255,12 +316,19 @@ async function invoiceDraftsTx(
       }
       continue;
     }
-    const baseQuantity = Number(item.baseQuantity);
-    assertPositiveBaseQuantity(baseQuantity, `${keyPrefix}II:${item.id}`);
+    const sourceLineKey = `${keyPrefix}II:${item.id}`;
+    const buckets = invoiceReturnBuckets(
+      Number(item.baseQuantity),
+      Number(item.returnedBaseQuantity),
+      Number(item.returnedRestockedBaseQuantity),
+      1,
+      sourceLineKey,
+    );
+    const baseQuantity = buckets.totalBaseQuantity;
     const evidence = movementEvidence.get(Number(item.variantId));
     const verified = evidence?.movementId != null;
     drafts.push({
-      sourceLineKey: `${keyPrefix}II:${item.id}`,
+      sourceLineKey,
       itemKind: "STOCKED_ITEM",
       invoiceItemId: Number(item.id),
       variantId: Number(item.variantId),
@@ -268,6 +336,9 @@ async function invoiceDraftsTx(
       baseQuantity,
       originalIssueUnitCost: item.unitCost,
       originalIssueValue: item.lineCost,
+      initialOpenBaseQuantity: buckets.initialOpenBaseQuantity,
+      restockedClosedBaseQuantity: buckets.restockedClosedBaseQuantity,
+      damagedClosedBaseQuantity: buckets.damagedClosedBaseQuantity,
       reviewStatus: verified ? "VERIFIED" : "REVIEW_REQUIRED",
       reviewReason: verified
         ? null
@@ -308,6 +379,9 @@ async function workOrderDraftTx(
     baseQuantity,
     originalIssueUnitCost: toDbMoney(lineCost.div(baseQuantity)),
     originalIssueValue: toDbMoney(lineCost),
+    initialOpenBaseQuantity: baseQuantity,
+    restockedClosedBaseQuantity: 0,
+    damagedClosedBaseQuantity: 0,
     reviewStatus: "VERIFIED",
   };
 }
@@ -352,6 +426,9 @@ async function sourceDraftsTx(
         baseQuantity,
         originalIssueUnitCost: line.unitCost,
         originalIssueValue: line.lineCost,
+        initialOpenBaseQuantity: baseQuantity,
+        restockedClosedBaseQuantity: 0,
+        damagedClosedBaseQuantity: 0,
         reviewStatus: verified ? "VERIFIED" : "REVIEW_REQUIRED",
         reviewReason: verified
           ? null
@@ -458,11 +535,13 @@ export async function initializeConsignmentCustodyTx(
       originalIssueUnitCost: draft.originalIssueUnitCost ?? null,
       originalIssueValue: draft.originalIssueValue ?? null,
       preparedHeldBaseQuantity:
-        state === "PREPARED_HELD" ? draft.baseQuantity : 0,
+        state === "PREPARED_HELD" ? draft.initialOpenBaseQuantity : 0,
       carrierCustodyBaseQuantity:
-        state === "CARRIER_CUSTODY" ? draft.baseQuantity : 0,
+        state === "CARRIER_CUSTODY" ? draft.initialOpenBaseQuantity : 0,
       customerDeliveredBaseQuantity:
-        state === "CUSTOMER_DELIVERED" ? draft.baseQuantity : 0,
+        state === "CUSTOMER_DELIVERED" ? draft.initialOpenBaseQuantity : 0,
+      restockedClosedBaseQuantity: draft.restockedClosedBaseQuantity,
+      damagedClosedBaseQuantity: draft.damagedClosedBaseQuantity,
       reviewStatus: draft.reviewStatus,
       reviewReason: draft.reviewReason ?? null,
       createdBy: input.actorUserId,
@@ -474,22 +553,37 @@ export async function initializeConsignmentCustodyTx(
     .from(deliveryCustodyItems)
     .where(eq(deliveryCustodyItems.consignmentId, consignment.id))
     .for("update");
-  for (const row of rows)
-    await tx.insert(deliveryCustodyEvents).values({
-      eventKey: `CUSTODY:${row.id}:INIT`,
-      custodyItemId: Number(row.id),
-      consignmentId: Number(consignment.id),
-      operationId: input.operationId,
-      eventType: "CUSTODY_INITIALIZED",
-      fromState: null,
-      toState: state,
-      baseQuantity: Number(row.baseQuantity),
-      evidence: {
-        sourceLineKey: row.sourceLineKey,
-        reviewStatus: row.reviewStatus,
-      },
-      actorUserId: input.actorUserId,
-    });
+  for (const row of rows) {
+    const rowQuantities = quantities(row);
+    const initializedBuckets: Array<[DeliveryCustodyState, number, string]> = [
+      [state, rowQuantities[state], "INIT"],
+      [
+        "RESTOCKED_CLOSED",
+        rowQuantities.RESTOCKED_CLOSED,
+        "INIT:RESTOCKED_CLOSED",
+      ],
+      ["DAMAGED_CLOSED", rowQuantities.DAMAGED_CLOSED, "INIT:DAMAGED_CLOSED"],
+    ];
+    for (const [toState, baseQuantity, eventSuffix] of initializedBuckets) {
+      if (baseQuantity <= 0) continue;
+      await tx.insert(deliveryCustodyEvents).values({
+        eventKey: `CUSTODY:${row.id}:${eventSuffix}`,
+        custodyItemId: Number(row.id),
+        consignmentId: Number(consignment.id),
+        operationId: input.operationId,
+        eventType: "CUSTODY_INITIALIZED",
+        fromState: null,
+        toState,
+        baseQuantity,
+        evidence: {
+          sourceLineKey: row.sourceLineKey,
+          reviewStatus: row.reviewStatus,
+          initialBucket: toState,
+        },
+        actorUserId: input.actorUserId,
+      });
+    }
+  }
   return rows;
 }
 
