@@ -110,6 +110,61 @@ describe("typed barcode workflow preview", () => {
       remainingAmount: "6000.00",
       codAmount: "6000.00",
     });
+    expect(invoice.summaries).toMatchObject({
+      commercial: {
+        documentNumber: "70001",
+        status: "PENDING",
+        customerId: 1,
+        currentTotal: "9000.00",
+      },
+      parcel: {
+        shipmentNumber: null,
+        consignmentCount: 0,
+        parcelStatus: null,
+        physicallyReturned: false,
+      },
+      inventory: {
+        custodyTracked: false,
+        reviewRequired: false,
+        state: "NOT_ASSIGNED",
+        baseQuantity: null,
+      },
+      collection: {
+        customerDue: "6000.00",
+        customerCollected: "0.00",
+        cashInCourierCustody: "0.00",
+      },
+    });
+    expect(
+      invoice.allowedActions.find((a) => a.action === "dispatch"),
+    ).toMatchObject({
+      allowed: true,
+      requiredRole: "موظف إسناد مخوّل",
+      nextStep: "راجع الجهة والمستلم ثم أكّد الإسناد مرة واحدة",
+    });
+    expect(invoice.effectPreview).toMatchObject({
+      sale: { direction: "NONE" },
+      inventory: { direction: "TRANSFER" },
+      accountsReceivable: { direction: "NONE" },
+      courierCustody: { direction: "NONE" },
+      drawerCash: { direction: "NONE" },
+      bankCash: { direction: "NONE" },
+      refund: { direction: "NONE" },
+    });
+    expect(invoice.availableDocuments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "INVOICE",
+          action: "PRINT",
+          allowed: true,
+        }),
+        expect.objectContaining({
+          type: "SHIPPING_LABEL",
+          action: "PRINT",
+          allowed: true,
+        }),
+      ]),
+    );
     expect(JSON.stringify(invoice)).not.toMatch(
       /costTotal|materialsCost|laborCost|totalCost/,
     );
@@ -183,6 +238,44 @@ describe("typed barcode workflow preview", () => {
       ),
     ).rejects.toThrow(/مستندات مختلفة/);
   });
+  it("offers reprint only from the immutable document snapshot", async () => {
+    const eventAt = new Date("2026-10-24T09:15:00.000Z");
+    await db()
+      .insert(s.deliveryDocumentSnapshots)
+      .values({
+        id: 41,
+        documentNumber: "DDS-INV-70001",
+        documentType: "INVOICE",
+        layout: "A4_12MM",
+        sourceType: "INVOICE",
+        sourceId: 1,
+        sourceVersion: "invoice:1:v1",
+        branchId: 1,
+        eventKey: "INVOICE:1:ISSUED",
+        eventOccurredAt: eventAt,
+        payload: { invoiceNumber: "70001", eventAt: eventAt.toISOString() },
+        payloadHash: "d".repeat(64),
+        createdBy: 1,
+      });
+    const preview = await previewWorkflowScan(
+      { raw: "INV-70001", station: "edit", branchId: 1 },
+      actor,
+    );
+    expect(
+      preview.availableDocuments.find((doc) => doc.type === "INVOICE"),
+    ).toEqual({
+      type: "INVOICE",
+      action: "REPRINT",
+      snapshotId: 41,
+      allowed: true,
+    });
+    expect(
+      preview.availableDocuments.find((doc) => doc.type === "SHIPPING_LABEL"),
+    ).toMatchObject({
+      action: "REPRINT",
+      allowed: false,
+    });
+  });
   it("identifies real AE and CHG records without inventing a commercial invoice", async () => {
     await db()
       .insert(aftercareCases)
@@ -223,6 +316,8 @@ describe("typed barcode workflow preview", () => {
         description: "خدمة فعلية",
         amount: "3000",
         createdBy: 1,
+        approvedBy: 1,
+        approvedAt: new Date("2026-10-24T10:00:00.000Z"),
         clientRequestId: "scan-charge-001",
         sourceHash: "c".repeat(64),
       });
@@ -241,12 +336,26 @@ describe("typed barcode workflow preview", () => {
     });
     expect(ae.relations.invoiceId).toBeUndefined();
     expect(ae.money.codAmount).toBe("0.00");
+    expect(ae.summaries.collection.customerDue).toBe("0.00");
+    expect(ae.effectPreview).toMatchObject({
+      sale: { direction: "NONE" },
+      inventory: { direction: "TRANSFER" },
+      accountsReceivable: { direction: "NONE" },
+    });
+    expect(
+      ae.availableDocuments.find((doc) => doc.type === "AFTERCARE_WAYBILL"),
+    ).toMatchObject({ allowed: true, action: "PRINT" });
     const charge = await previewWorkflowScan(
       { raw: "CHG-1", station: "collect", branchId: 1 },
       actor,
     );
     expect(charge.source.kind).toBe("charge");
     expect(charge.money.remainingAmount).toBe("3000.00");
+    expect(charge.summaries.commercial).toMatchObject({
+      documentNumber: "CHG-1",
+      status: "APPROVED",
+      customerId: 1,
+    });
     expect(normalizeKnownSystemBarcode("ُِ-1")).toBe("AE-1");
   });
 });

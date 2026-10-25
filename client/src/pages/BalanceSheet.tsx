@@ -85,6 +85,10 @@ export default function BalanceSheet() {
         v: p.fulfillmentPassThroughLiability,
       },
       {
+        label: "إيراد خدمات مؤجل حتى الإكمال",
+        v: p.fulfillmentDeferredRevenue,
+      },
+      {
         label: "مستحقات متعهدين خارج ذمم الموردين",
         v: p.fulfillmentPayeeLiability,
       },
@@ -110,6 +114,9 @@ export default function BalanceSheet() {
           : "",
         !D(p.fulfillmentPassThroughLiability).isZero()
           ? "المبالغ بالنيابة التزام للمستفيد وليست إيراداً للمكتبة؛ سدادها يبرئ الالتزام دون مصروف جديد."
+          : "",
+        !D(p.fulfillmentDeferredRevenue).isZero()
+          ? "الخدمات المقبوضة غير المكتملة التزام مؤجل، ولا تتحول إلى إيراد إلا عند إثبات الإكمال."
           : "",
         !D(p.fulfillmentCustomerCredit).isZero()
           ? "فائض القبض مال مستحق للعميل خارج الذمة التجارية، ولا يرفع إيراد الخدمة."

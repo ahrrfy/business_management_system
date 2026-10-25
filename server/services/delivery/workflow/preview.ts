@@ -11,6 +11,8 @@ import {
 import {
   aftercareCases,
   aftercareExecutions,
+  deliveryCustodyItems,
+  deliveryDocumentSnapshots,
   fulfillmentCharges,
   fulfillmentRequestItems,
   fulfillmentRequests,
@@ -61,6 +63,7 @@ import { workflowDispatchNativePaths } from "./nativeAuthority";
 
 type SourceRef = { kind: WorkflowSourceKind; id: number };
 type CurrentUser = Awaited<ReturnType<typeof loadOperationUserTx>>;
+
 const positive = (value: ReturnType<typeof money>) =>
   value.gt(0) ? value : money(0);
 export const workflowMoney = (value: ReturnType<typeof money>) =>
@@ -275,6 +278,7 @@ export async function loadWorkflowPreviewTx(
   current?: CurrentUser,
   requestedBranchId?: number,
   lock = false,
+  selectedStation: WorkflowStation = "dispatch",
 ): Promise<WorkflowScanPreview> {
   let invoice: typeof invoices.$inferSelect | undefined;
   let order: typeof workOrders.$inferSelect | undefined;
@@ -433,6 +437,7 @@ export async function loadWorkflowPreviewTx(
       current,
       requestedBranchId,
       lock,
+      selectedStation,
     );
     return {
       ...grouped,
@@ -457,6 +462,15 @@ export async function loadWorkflowPreviewTx(
       },
       status: charge.status,
       relations: { ...grouped.relations, chargeId: charge.id },
+      summaries: {
+        ...grouped.summaries,
+        commercial: {
+          ...grouped.summaries.commercial,
+          documentNumber: `CHG-${charge.id}`,
+          status: charge.status,
+          customerId: charge.customerId,
+        },
+      },
     };
   }
   if (!cn) {
@@ -603,7 +617,7 @@ export async function loadWorkflowPreviewTx(
         .where(
           and(
             eq(fulfillmentCharges.requestId, request.id),
-            eq(fulfillmentCharges.status, "APPROVED"),
+            inArray(fulfillmentCharges.status, ["APPROVED", "COMPLETED"]),
           ),
         )
     : [];
@@ -1037,10 +1051,25 @@ export async function loadWorkflowPreviewTx(
       }
     : undefined;
   let expandedRequestDispatchAllowed = true;
-  if (request && !authority(current,"delivery.fulfillment.requests.release")) {
+  if (request && !authority(current, "delivery.fulfillment.requests.release")) {
     for (const item of requestItems) {
-      const workOrder = item.workOrderId == null ? undefined : (await tx.select({invoiceId:workOrders.invoiceId}).from(workOrders).where(eq(workOrders.id,item.workOrderId)).limit(1))[0];
-      if (!workflowDispatchNativePaths(item.invoiceId != null ? "invoice" : "workOrder",item.invoiceId != null || workOrder?.invoiceId != null).some(path=>authority(current,path))) expandedRequestDispatchAllowed = false;
+      const workOrder =
+        item.workOrderId == null
+          ? undefined
+          : (
+              await tx
+                .select({ invoiceId: workOrders.invoiceId })
+                .from(workOrders)
+                .where(eq(workOrders.id, item.workOrderId))
+                .limit(1)
+            )[0];
+      if (
+        !workflowDispatchNativePaths(
+          item.invoiceId != null ? "invoice" : "workOrder",
+          item.invoiceId != null || workOrder?.invoiceId != null,
+        ).some((path) => authority(current, path))
+      )
+        expandedRequestDispatchAllowed = false;
     }
   }
   const chargeEligibility = charge
@@ -1052,19 +1081,22 @@ export async function loadWorkflowPreviewTx(
         !activeCn &&
         ready &&
         (!charge || chargeEligibility?.eligible === true) &&
-        !pendingRefundReceiptIds.length && expandedRequestDispatchAllowed,
-      !expandedRequestDispatchAllowed ? "طلب التجهيز يضم مستنداً لا تملك صلاحية إرساله الأصلية؛ راجع كل مصدر أو اطلب تفويض إصدار الطلب الكامل" : activeCn
-        ? "للمصدر إرسالية قائمة؛ افتحها لإعادة الإسناد أو إعلان الرجوع"
-        : pendingRefundReceiptIds.length
-          ? "أكمل رد أمانة الأجرة المعلق أولاً"
-          : charge
-            ? (chargeEligibility?.reason ??
-              "حدد هوية مستلم حقيقية ومصدراً معتمداً أو قبضاً مثبتاً قبل الإرسال")
-            : "المصدر غير جاهز أو ملغى؛ راجع المستند الحالي",
+        !pendingRefundReceiptIds.length &&
+        expandedRequestDispatchAllowed,
+      !expandedRequestDispatchAllowed
+        ? "طلب التجهيز يضم مستنداً لا تملك صلاحية إرساله الأصلية؛ راجع كل مصدر أو اطلب تفويض إصدار الطلب الكامل"
+        : activeCn
+          ? "للمصدر إرسالية قائمة؛ افتحها لإعادة الإسناد أو إعلان الرجوع"
+          : pendingRefundReceiptIds.length
+            ? "أكمل رد أمانة الأجرة المعلق أولاً"
+            : charge
+              ? (chargeEligibility?.reason ??
+                "حدد هوية مستلم حقيقية ومصدراً معتمداً أو قبضاً مثبتاً قبل الإرسال")
+              : "المصدر غير جاهز أو ملغى؛ راجع المستند الحالي",
     ],
     collect: [
       charge && !cn
-        ? charge.status === "APPROVED" &&
+        ? ["APPROVED", "COMPLETED"].includes(charge.status) &&
           money(charge.amount).gt(charge.paidAmount)
         : !!activeCn && !execution && cn!.returnDeclaredAt == null,
       execution
@@ -1196,6 +1228,501 @@ export async function loadWorkflowPreviewTx(
                   sourceId: cn!.id,
                   number: cn!.consignmentNumber,
                 };
+  const custodySource = execution
+    ? ({ type: "AFTERCARE_EXECUTION", id: execution.id } as const)
+    : request
+      ? ({ type: "FULFILLMENT_REQUEST", id: request.id } as const)
+      : online
+        ? ({ type: "ONLINE_ORDER", id: online.id } as const)
+        : order
+          ? ({ type: "WORK_ORDER", id: order.id } as const)
+          : invoice
+            ? ({ type: "INVOICE", id: invoice.id } as const)
+            : null;
+  const custodyRows = await tx
+    .select({
+      baseQuantity: deliveryCustodyItems.baseQuantity,
+      preparedHeld: deliveryCustodyItems.preparedHeldBaseQuantity,
+      carrierCustody: deliveryCustodyItems.carrierCustodyBaseQuantity,
+      customerDelivered: deliveryCustodyItems.customerDeliveredBaseQuantity,
+      returnedPendingInspection:
+        deliveryCustodyItems.returnedPendingInspectionBaseQuantity,
+      customerOwnedHeld: deliveryCustodyItems.customerOwnedHeldBaseQuantity,
+      reworkWip: deliveryCustodyItems.reworkWipBaseQuantity,
+      restockedClosed: deliveryCustodyItems.restockedClosedBaseQuantity,
+      damagedClosed: deliveryCustodyItems.damagedClosedBaseQuantity,
+      reviewStatus: deliveryCustodyItems.reviewStatus,
+    })
+    .from(deliveryCustodyItems)
+    .where(
+      members.length
+        ? inArray(
+            deliveryCustodyItems.consignmentId,
+            members.map((member) => member.id),
+          )
+        : custodySource
+          ? and(
+              eq(deliveryCustodyItems.branchId, branchId),
+              eq(deliveryCustodyItems.sourceType, custodySource.type),
+              eq(deliveryCustodyItems.sourceId, custodySource.id),
+            )
+          : sql`FALSE`,
+    );
+  const custodyTotals = custodyRows.reduce(
+    (sum, row) => ({
+      base: sum.base + row.baseQuantity,
+      prepared: sum.prepared + row.preparedHeld,
+      carrier: sum.carrier + row.carrierCustody,
+      delivered: sum.delivered + row.customerDelivered,
+      returned: sum.returned + row.returnedPendingInspection,
+      customerOwned: sum.customerOwned + row.customerOwnedHeld,
+      rework: sum.rework + row.reworkWip,
+      restocked: sum.restocked + row.restockedClosed,
+      damaged: sum.damaged + row.damagedClosed,
+    }),
+    {
+      base: 0,
+      prepared: 0,
+      carrier: 0,
+      delivered: 0,
+      returned: 0,
+      customerOwned: 0,
+      rework: 0,
+      restocked: 0,
+      damaged: 0,
+    },
+  );
+  const allCustodyStates: [string, number][] = [
+    ["PREPARED_HELD", custodyTotals.prepared],
+    ["CARRIER_CUSTODY", custodyTotals.carrier],
+    ["CUSTOMER_DELIVERED", custodyTotals.delivered],
+    ["RETURNED_PENDING_INSPECTION", custodyTotals.returned],
+    ["CUSTOMER_OWNED_HELD", custodyTotals.customerOwned],
+    ["REWORK_WIP", custodyTotals.rework],
+    ["RESTOCKED_CLOSED", custodyTotals.restocked],
+    ["DAMAGED_CLOSED", custodyTotals.damaged],
+  ];
+  const custodyStates = allCustodyStates.filter(
+    ([, baseQuantity]) => baseQuantity > 0,
+  );
+  const parcelStatuses = new Set(members.map((member) => member.parcelStatus));
+  const parcelStatus =
+    parcelStatuses.size === 0
+      ? null
+      : parcelStatuses.size === 1
+        ? Array.from(parcelStatuses)[0]!
+        : "MIXED";
+  const collectedByCustomer = members.reduce(
+    (sum, member) =>
+      sum.plus(member.collectedAmount).plus(member.counterSettledAmount),
+    money(0),
+  );
+  const remittanceIds = Array.from(
+    new Set(
+      members.flatMap((member) =>
+        member.remittanceId == null ? [] : [member.remittanceId],
+      ),
+    ),
+  );
+  const remittanceId = remittanceIds.length === 1 ? remittanceIds[0]! : null;
+  const snapshotSources: SQL[] = [];
+  if (invoice)
+    snapshotSources.push(
+      and(
+        eq(deliveryDocumentSnapshots.sourceType, "INVOICE"),
+        eq(deliveryDocumentSnapshots.sourceId, invoice.id),
+      )!,
+    );
+  const shipmentSourceId =
+    group?.leaderConsignmentId ?? members[0]?.id ?? cn?.id;
+  if (shipmentSourceId != null)
+    snapshotSources.push(
+      and(
+        inArray(deliveryDocumentSnapshots.sourceType, [
+          "CONSIGNMENT",
+          "SHIPMENT",
+          "RETURN_RECEIPT",
+        ]),
+        eq(deliveryDocumentSnapshots.sourceId, shipmentSourceId),
+      )!,
+    );
+  if (remittanceId != null)
+    snapshotSources.push(
+      and(
+        eq(deliveryDocumentSnapshots.sourceType, "REMITTANCE"),
+        eq(deliveryDocumentSnapshots.sourceId, remittanceId),
+      )!,
+    );
+  if (execution)
+    snapshotSources.push(
+      and(
+        eq(deliveryDocumentSnapshots.sourceType, "AFTERCARE_EXECUTION"),
+        eq(deliveryDocumentSnapshots.sourceId, execution.id),
+      )!,
+    );
+  const documentSnapshots = snapshotSources.length
+    ? await tx
+        .select({
+          id: deliveryDocumentSnapshots.id,
+          documentType: deliveryDocumentSnapshots.documentType,
+        })
+        .from(deliveryDocumentSnapshots)
+        .where(
+          and(
+            eq(deliveryDocumentSnapshots.branchId, branchId),
+            or(...snapshotSources),
+          ),
+        )
+        .orderBy(desc(deliveryDocumentSnapshots.id))
+    : [];
+  const snapshotByDocument = new Map<
+    (typeof documentSnapshots)[number]["documentType"],
+    number
+  >();
+  for (const snapshot of documentSnapshots)
+    if (!snapshotByDocument.has(snapshot.documentType))
+      snapshotByDocument.set(snapshot.documentType, snapshot.id);
+  const courierCustody = money(moneyView.cashInCourierCustody);
+  const feeSettledCount = members.filter(
+    (member) => member.feeSettledAt != null,
+  ).length;
+  const legacyInventoryState = !cn
+    ? "NOT_ASSIGNED"
+    : physicallyReceived && pendingCommercial
+      ? "RETURNED_PENDING_COMMERCIAL_DECISION"
+      : physicallyReceived
+        ? "RETURNED_RECEIVED"
+        : parcelStatus === "DELIVERED"
+          ? "CUSTOMER_DELIVERED"
+          : "CARRIER_CUSTODY";
+  const inventoryState =
+    custodyStates.length === 0
+      ? legacyInventoryState
+      : custodyStates.length === 1
+        ? custodyStates[0]![0]
+        : "MIXED";
+  const inventoryReviewRequired =
+    custodyRows.some((row) => row.reviewStatus === "REVIEW_REQUIRED") ||
+    (cn != null && custodyRows.length === 0) ||
+    (custodyRows.length === 0 &&
+      physicallyReceived &&
+      (pendingCommercial || pendingSourceClosure));
+  const openCustodyBaseQuantity =
+    custodyTotals.prepared +
+    custodyTotals.carrier +
+    custodyTotals.returned +
+    custodyTotals.customerOwned +
+    custodyTotals.rework;
+  const remittanceStatus = !cn
+    ? "NOT_APPLICABLE"
+    : courierCustody.gt(0)
+      ? "COURIER_CUSTODY_OPEN"
+      : remittanceId != null
+        ? "REMITTED"
+        : "NO_RECORDED_CUSTODY";
+  const settlementStatus = pendingRefundReceiptIds.length
+    ? "REFUND_PENDING"
+    : courierCustody.gt(0)
+      ? "COURIER_CUSTODY_OPEN"
+      : money(moneyView.deliveryFee).gt(0) && feeSettledCount < members.length
+        ? "DELIVERY_FEE_OPEN"
+        : cn
+          ? "SETTLED_OR_NOT_APPLICABLE"
+          : "NOT_STARTED";
+  const actionRoles: Record<WorkflowAction, string> = {
+    dispatch: "موظف إسناد مخوّل",
+    collect: "موظف تحصيل مخوّل",
+    cancelAssignment: "موظف إسناد مخوّل",
+    reassign: "موظف إسناد مخوّل",
+    declareReturn: "موظف متابعة توصيل مخوّل",
+    return: "موظف استلام مرتجعات مخوّل",
+    edit: "موظف تصحيح مبيعات مخوّل",
+    aftercare: "موظف معالجة مخوّل",
+  };
+  const actionNextSteps: Record<WorkflowAction, string> = {
+    dispatch: "راجع الجهة والمستلم ثم أكّد الإسناد مرة واحدة",
+    collect: "أثبت التسليم ومبلغ تحصيل العميل الفعلي ثم أكّد",
+    cancelAssignment:
+      "تحقق أن الطرد ما زال في المكتبة ولا توجد عهدة نقدية ثم أكّد الإلغاء",
+    reassign: "اختر جهة التوصيل الجديدة ثم أكّد إعادة الإسناد",
+    declareReturn: "سجّل سبب طلب الرجوع وانتظر الاستلام المادي",
+    return:
+      "حدّد الطرود المستلمة فعلياً وأثبت الفحص؛ لا تنفذ مرتجع بيع أو استرداد تلقائياً",
+    edit: "افتح التصحيح المحكوم مع النسخة الحالية للمستند",
+    aftercare: "افتح قضية نقص أو تعويض مرتبطة بأصل البيع",
+  };
+  const allowedActions: WorkflowScanPreview["allowedActions"] = actions.map(
+    (action) => ({
+      ...action,
+      requiredRole: actionRoles[action.action],
+      nextStep: action.allowed
+        ? actionNextSteps[action.action]
+        : (action.reason ?? "راجع المسؤول المخوّل وحالة المستند الحالية"),
+    }),
+  );
+  const none = (description: string) => ({
+    direction: "NONE" as const,
+    description,
+  });
+  const conditional = (description: string, amount?: string) => ({
+    direction: "CONDITIONAL" as const,
+    ...(amount == null ? {} : { amount }),
+    description,
+  });
+  const effectPreview: WorkflowScanPreview["effectPreview"] = {
+    sale: none("المسح قراءة فقط ولا ينشئ بيعاً"),
+    inventory: none("المسح قراءة فقط ولا يخصم أو يعيد مخزوناً"),
+    accountsReceivable: none("المسح قراءة فقط ولا يغيّر ذمة العميل"),
+    courierCustody: none("المسح قراءة فقط ولا يغيّر عهدة جهة التوصيل"),
+    drawerCash: none("المسح لا يحرّك نقد الدرج"),
+    bankCash: none("المسح لا يحرّك رصيد البنك"),
+    deliveryFee: none("المسح لا يستحق ولا يدفع أجرة توصيل"),
+    refund: none("المسح لا ينشئ استرداداً"),
+  };
+  const selectedActionAllowed =
+    actions.find((action) => action.action === selectedStation)?.allowed ===
+    true;
+  if (selectedStation === "dispatch" && selectedActionAllowed) {
+    if (online && !invoice) {
+      effectPreview.sale = {
+        direction: "INCREASE",
+        amount: workflowMoney(total),
+        description: "عند التأكيد فقط يُنشأ بيع طلب المتجر مرة واحدة",
+      };
+      effectPreview.inventory = {
+        direction: "DECREASE",
+        description: "عند التأكيد فقط يُصرف مخزون طلب المتجر مرة واحدة",
+      };
+    } else if (order && !invoice) {
+      effectPreview.sale = {
+        direction: "INCREASE",
+        amount: workflowMoney(total),
+        description: "عند التأكيد فقط تُنشأ فاتورة أمر الشغل مرة واحدة",
+      };
+      effectPreview.inventory = {
+        direction: "TRANSFER",
+        description:
+          "عند التأكيد فقط تنتقل تكلفة أمر الشغل من تحت التنفيذ إلى تكلفة المبيعات؛ لا خصم مخزون ثانٍ",
+      };
+    } else if (
+      request &&
+      requestItems.some(
+        (item) => item.invoiceId == null && item.materializedInvoiceId == null,
+      )
+    ) {
+      effectPreview.sale = conditional(
+        "عند التأكيد تُنشأ الآثار الأصلية مرة واحدة للمصادر غير المفوترة داخل الطلب الجامع",
+      );
+      effectPreview.inventory = conditional(
+        "كل مصدر غير مفوتر ينفذ صرفه الأصلي مرة واحدة؛ المصادر المفوترة تنتقل عهدتها فقط",
+      );
+    } else {
+      effectPreview.inventory = {
+        direction: "TRANSFER",
+        description:
+          "عند التأكيد تنتقل العهدة إلى جهة التوصيل بلا خصم مخزون أو بيع جديد",
+      };
+    }
+    effectPreview.deliveryFee = money(moneyView.deliveryFee).isZero()
+      ? none("لا توجد أجرة توصيل")
+      : moneyView.feeCollection === "SHOP"
+        ? conditional(
+            "الأجرة على المكتبة وتصبح مصروفاً أو التزاماً عند استحقاقها الفعلي",
+            moneyView.deliveryFee,
+          )
+        : moneyView.feeCollection === "COUNTER"
+          ? conditional(
+              "الأجرة المقبوضة بالكاونتر تبقى أمانة حتى تسويتها مع جهة التوصيل",
+              moneyView.deliveryFee,
+            )
+          : none("جهة التوصيل تقبض الأجرة مباشرة خارج درج المكتبة");
+  }
+  if (selectedStation === "collect" && selectedActionAllowed) {
+    effectPreview.accountsReceivable = {
+      direction: "DECREASE",
+      amount: moneyView.codAmount,
+      description:
+        "عند التأكيد تنخفض مطالبة العميل مرة واحدة بالمبلغ المحصل والعجز المثبت",
+    };
+    effectPreview.courierCustody = {
+      direction: "CONDITIONAL",
+      description:
+        "عند التأكيد فقط تزداد العهدة النقدية بالمحصّل الفعلي؛ ويثبت أي عجز بذمة مستقلة على جهة التوصيل بسبب معتمد",
+    };
+    effectPreview.drawerCash = none(
+      "تحصيل العميل مع جهة التوصيل لا يعني توريد النقد إلى الدرج",
+    );
+    effectPreview.bankCash = none(
+      "تحصيل العميل لا يثبت تحويلاً بنكياً؛ التوريد أمر مستقل بإثباته",
+    );
+  }
+  if (selectedStation === "cancelAssignment" && selectedActionAllowed) {
+    effectPreview.inventory = none(
+      "إلغاء الإسناد قبل الخروج يغيّر العهدة التشغيلية فقط ولا يعيد مخزوناً مصروفاً",
+    );
+  }
+  if (selectedStation === "return" && selectedActionAllowed) {
+    effectPreview.inventory = none(
+      "استلام المرتجع يثبت العهدة والفحص فقط؛ الإتاحة تحتاج قراراً منفصلاً وتكلفة الصرف الأصلية",
+    );
+    effectPreview.accountsReceivable = none(
+      "استلام الطرد لا ينفذ مرتجع بيع ولا يخفض ذمة العميل تلقائياً",
+    );
+    effectPreview.refund = conditional(
+      "إن تقرر مرتجع البيع، ينفذ الاسترداد لاحقاً بمستنده وعلى السكة الأصلية",
+    );
+  }
+  if (selectedStation === "edit" && selectedActionAllowed) {
+    effectPreview.sale = conditional(
+      "التصحيح المحكوم قد يستبدل القيم التجارية مع حفظ الأصل ومنع التكرار",
+    );
+    effectPreview.inventory = conditional(
+      "فروق الكميات وحدها تتحرك عند اعتماد التصحيح، لا عند المسح",
+    );
+    effectPreview.accountsReceivable = conditional(
+      "ذمة العميل تتبع فرق التصحيح المعتمد فقط",
+    );
+    effectPreview.refund = conditional(
+      "أي مبلغ واجب الرد ينفذ بمستند استرداد مستقل",
+    );
+  }
+  if (selectedStation === "aftercare" && selectedActionAllowed) {
+    effectPreview.inventory = conditional(
+      "لا صرف عند فتح القضية؛ البديل أو خامات الإعادة تصرف مرة واحدة بعد اعتماد خطة المواد وتجهيزها",
+    );
+    effectPreview.deliveryFee = conditional(
+      "أجرة إرسال المعالجة على المكتبة عند الإسناد الفعلي",
+      moneyView.deliveryFee,
+    );
+  }
+  const dispatchCreatesSnapshot =
+    selectedStation === "dispatch" && selectedActionAllowed;
+  const snapshotDocument = (
+    type: WorkflowScanPreview["availableDocuments"][number]["type"],
+    canCreateOnSelectedAction: boolean,
+    reason: string,
+  ): WorkflowScanPreview["availableDocuments"][number] => {
+    const snapshotId = snapshotByDocument.get(type);
+    if (snapshotId != null)
+      return {
+        type,
+        action: "REPRINT",
+        snapshotId,
+        allowed: true,
+      };
+    if (canCreateOnSelectedAction)
+      return {
+        type,
+        action: "PRINT",
+        allowed: true,
+      };
+    return {
+      type,
+      action: "REPRINT",
+      allowed: false,
+      reason,
+    };
+  };
+  const availableDocuments: WorkflowScanPreview["availableDocuments"] = [
+    snapshotDocument(
+      "INVOICE",
+      invoice != null && dispatchCreatesSnapshot,
+      invoice
+        ? "لا توجد لقطة حدث أصلية للفاتورة؛ لا تطبع من القيم الحية"
+        : "لا توجد فاتورة مرتبطة بهذا المصدر",
+    ),
+    snapshotDocument(
+      "SHIPPING_LABEL",
+      dispatchCreatesSnapshot,
+      cn
+        ? "لقطة ملصق الشحن مفقودة؛ راجع سجل عملية الإسناد ولا تطبع من القيم الحية"
+        : "يصبح ملصق الشحن متاحاً ضمن تأكيد الإسناد",
+    ),
+    snapshotDocument(
+      "DISPATCH_SLIP",
+      dispatchCreatesSnapshot,
+      cn
+        ? "لقطة بوليصة الإسناد مفقودة؛ راجع سجل العملية"
+        : "تصدر بوليصة الإسناد ضمن التأكيد",
+    ),
+    snapshotDocument(
+      "DELIVERY_MANIFEST",
+      dispatchCreatesSnapshot,
+      cn
+        ? "لقطة محضر التسليم مفقودة؛ راجع سجل العملية"
+        : "يتطلب محضر التسليم تأكيد الإسناد",
+    ),
+    snapshotDocument(
+      "REMITTANCE_RECEIPT",
+      false,
+      remittanceId == null
+        ? "لا يوجد توريد جهة مثبت لهذه الشحنة"
+        : "لقطة إيصال التوريد مفقودة؛ لا تعِد طباعته من القيم الحية",
+    ),
+    snapshotDocument(
+      "PARTY_SETTLEMENT",
+      false,
+      remittanceId == null
+        ? "لا توجد تسوية جهة مرتبطة قابلة للطباعة"
+        : "لقطة تسوية الجهة مفقودة؛ راجع سجل التسوية",
+    ),
+    snapshotDocument(
+      "PHYSICAL_RETURN_RECEIPT",
+      false,
+      physicallyReceived
+        ? "لقطة محضر الاستلام المادي مفقودة؛ لا تطبع من الحالة الحية"
+        : "يصدر المحضر بعد استلام الطرد وفحصه فعلياً",
+    ),
+    snapshotDocument(
+      "AFTERCARE_WAYBILL",
+      execution != null && dispatchCreatesSnapshot,
+      execution && cn
+        ? "لقطة بوليصة المعالجة مفقودة؛ راجع سجل الإسناد"
+        : "تتاح بوليصة المعالجة ضمن إسناد دفعة المعالجة",
+    ),
+  ];
+  const summaries: WorkflowScanPreview["summaries"] = {
+    commercial: {
+      documentNumber: number,
+      status,
+      customerId,
+      currentTotal: moneyView.currentTotal,
+    },
+    parcel: {
+      shipmentNumber:
+        members[0]?.consignmentNumber ?? cn?.consignmentNumber ?? null,
+      consignmentCount: members.length,
+      parcelStatus,
+      dispatchedAt:
+        members[0]?.dispatchedAt?.toISOString() ??
+        cn?.dispatchedAt?.toISOString() ??
+        null,
+      physicallyReturned: physicallyReceived,
+    },
+    inventory: {
+      custodyTracked: custodyRows.length > 0,
+      reviewRequired: inventoryReviewRequired,
+      state: inventoryState,
+      baseQuantity: custodyRows.length ? custodyTotals.base : null,
+      openBaseQuantity: custodyRows.length ? openCustodyBaseQuantity : null,
+    },
+    collection: {
+      customerDue: moneyView.codAmount,
+      customerCollected: workflowMoney(collectedByCustomer),
+      cashInCourierCustody: moneyView.cashInCourierCustody,
+    },
+    remittance: {
+      status: remittanceStatus,
+      courierCustodyDue: moneyView.cashInCourierCustody,
+      remittanceId,
+    },
+    settlement: {
+      status: settlementStatus,
+      deliveryFee: moneyView.deliveryFee,
+      feeCollection: moneyView.feeCollection,
+      pendingRefundCount: pendingRefundReceiptIds.length,
+    },
+  };
   return {
     source: {
       ...ref,
@@ -1273,6 +1800,10 @@ export async function loadWorkflowPreviewTx(
     },
     money: moneyView,
     actions,
+    summaries,
+    allowedActions,
+    effectPreview,
+    availableDocuments,
     returnState,
     group,
   };
@@ -1291,7 +1822,14 @@ export async function previewWorkflowScan(
           ? undefined
           : auth.actor.branchId);
       const ref = await resolveWorkflowSourceTx(tx, input.raw, branchId);
-      return loadWorkflowPreviewTx(tx, ref, auth.current, branchId);
+      return loadWorkflowPreviewTx(
+        tx,
+        ref,
+        auth.current,
+        branchId,
+        false,
+        input.station,
+      );
     },
     { gate: "NONE" },
   );
@@ -1309,6 +1847,8 @@ export async function previewWorkflowSource(
         input.source,
         auth.current,
         input.branchId,
+        false,
+        input.station,
       );
     },
     { gate: "NONE" },

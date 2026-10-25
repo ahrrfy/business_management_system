@@ -58,8 +58,12 @@ describe("PageTabs nested deep-link compatibility", () => {
   it("preserves direct tab precedence over an alias collision", () => {
     state.search = "tab=workflow"; render({ workflow: "dispatch" }); expect(active()).toBe("سير العمل");
   });
-  it("wires the three existing DeliveryHub deep-link aliases at the delivery entry point", () => {
+  it("wires the legacy DeliveryHub and administrative deep links to the three daily entries", () => {
     const source = readFileSync("client/src/pages/DeliveryCenter.tsx", "utf8");
-    for (const alias of Object.keys(aliases)) expect(source).toMatch(new RegExp(`${alias}:\\s*"dispatch"`));
+    for (const alias of ["dispatch", "transit", "board"])
+      expect(source).toMatch(new RegExp(`${alias}:\\s*"followup"`));
+    expect(source).toMatch(/settle:\s*"settlement"/);
+    for (const alias of ["parties", "pricing", "performance", "aging"])
+      expect(source).toMatch(new RegExp(`${alias}:\\s*"more"`));
   });
 });

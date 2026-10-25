@@ -16,6 +16,10 @@ import {
   type JournalLine,
   type PostingIntent,
 } from "../accounting/postingEngine";
+import {
+  IRAQI_UNIFIED_ACCOUNTS,
+  SYSTEM_ROLE_TO_IRAQI_UNIFIED_CODE,
+} from "../accounting/iraqiUnifiedChartSeed";
 
 function netByRole(lines: JournalLine[]): Record<string, Decimal> {
   const net: Record<string, Decimal> = {};
@@ -37,6 +41,23 @@ function expectMoney(actual: Decimal | undefined, expected: string): void {
 }
 
 describe("postingEngine — legacy fallback and exact money", () => {
+  it("maps deferred revenue to a posting liability under an existing Iraqi unified parent", () => {
+    const code = SYSTEM_ROLE_TO_IRAQI_UNIFIED_CODE.DEFERRED_REVENUE;
+    const account = IRAQI_UNIFIED_ACCOUNTS.find((row) => row.code === code);
+    const parent = IRAQI_UNIFIED_ACCOUNTS.find(
+      (row) => row.code === account?.parentCode,
+    );
+
+    expect(code).toBe("2691");
+    expect(account).toMatchObject({
+      type: "LIABILITY",
+      normalBalance: "CREDIT",
+      parentCode: "269",
+      isPosting: true,
+    });
+    expect(parent).toMatchObject({ code: "269", type: "LIABILITY" });
+  });
+
   it("keeps the six legacy derivations balanced while Sh2 migrates callers", () => {
     const cases = [
       {
@@ -138,6 +159,61 @@ describe("postingEngine — legacy fallback and exact money", () => {
 });
 
 describe("postingEngine — explicit PostingIntent", () => {
+  it("allows damaged-return reclassification only as zero-analytical LOSSES to COGS", () => {
+    const source = {
+      roleDebits: { LOSSES: "100.00" },
+      roleCredits: { COGS: "100.00" },
+    };
+    const intent = createPostingIntent(
+      "ADJUST_DAMAGED_RETURN_RECLASS",
+      "ADJUST",
+      [debitLine("LOSSES", "100.00"), creditLine("COGS", "100.00")],
+      source,
+    );
+    expect(
+      postingLinesFor({
+        entryType: "ADJUST",
+        amount: "0.00",
+        revenue: "0.00",
+        cost: "0.00",
+        profit: "0.00",
+        taxAmount: "0.00",
+        ...source,
+        intent,
+      }),
+    ).toEqual(intent.lines);
+    expect(() =>
+      postingLinesFor({
+        entryType: "ADJUST",
+        amount: "0.00",
+        revenue: "0.00",
+        cost: "0.00",
+        profit: "1.00",
+        taxAmount: "0.00",
+        ...source,
+        intent,
+      }),
+    ).toThrow(InvalidPostingIntentError);
+    const inventoryIntent = createPostingIntent(
+      "ADJUST_DAMAGED_RETURN_RECLASS",
+      "ADJUST",
+      [debitLine("LOSSES", "100.00"), creditLine("INVENTORY", "100.00")],
+    );
+    expect(() =>
+      postingLinesFor({
+        entryType: "ADJUST",
+        amount: "0.00",
+        revenue: "0.00",
+        cost: "0.00",
+        profit: "0.00",
+        taxAmount: "0.00",
+        roleDebits: { LOSSES: "100.00" },
+        roleCredits: { INVENTORY: "100.00" },
+        intent: inventoryIntent,
+      }),
+    ).toThrow(InvalidPostingIntentError);
+  });
+
   it("creates and validates a balanced profile and postingLinesFor trusts only that validated intent", () => {
     const intent = createPostingIntent(
       "PAYMENT_IN_CUSTOMER",

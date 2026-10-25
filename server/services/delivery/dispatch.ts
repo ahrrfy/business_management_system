@@ -1,6 +1,9 @@
 import { loadWorkOrderDepositReceiptSet } from "../workOrder/depositReceiptSet";
 import { mixedAwarePaymentMethod } from "../sale/payment";
-import { appliedCollectionsForWorkOrder, linkSoleTargetCollectionsToInvoice } from "../deposits";
+import {
+  appliedCollectionsForWorkOrder,
+  linkSoleTargetCollectionsToInvoice,
+} from "../deposits";
 // التحوّلات (محاسبة العهدة) — ترتيب أقفال موحّد لمنع الجمود: الإرسالية → الجهة → الفاتورة → الوردية.
 //
 // READY → DELIVERED + إرسالية: فاتورة عميل + SALE + عهدة COD على الجهة (D3).
@@ -67,6 +70,8 @@ import {
 } from "../workOrder/baseInventorySnapshot";
 import { publishRealtimeEvent } from "../../realtime";
 import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
+import { initializeConsignmentCustodyTx } from "./custody";
+import { createShipmentDispatchDocumentSnapshotsTx } from "./documentSnapshots";
 
 // ═══════════════════════════ التحوّلات (محاسبة العهدة) ═══════════════════════════
 // ترتيب أقفال موحّد لمنع الجمود: الإرسالية → الجهة → الفاتورة → الوردية.
@@ -179,7 +184,15 @@ export async function prepareWorkOrderDeliveryInvoiceInTx(
     .for("update")
     .limit(1);
   if (!source)
-    throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: "تعذّر تجهيز أمر الشغل للتوصيل", why: "أمر الشغل غير موجود", doThis: "حدّث طلب التجهيز واختر أمر شغل قائماً من الفرع نفسه قبل الإرسال" }) });
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر تجهيز أمر الشغل للتوصيل",
+        why: "أمر الشغل غير موجود",
+        doThis:
+          "حدّث طلب التجهيز واختر أمر شغل قائماً من الفرع نفسه قبل الإرسال",
+      }),
+    });
   return runWorkOrderDispatchTx(
     tx,
     {
@@ -283,7 +296,10 @@ async function runWorkOrderDispatchTx(
       code: "BAD_REQUEST",
       message: "الأمر ليس جاهزاً للإرسال",
     });
-  await assertNoPendingHeldFeeRefundTx(tx,{workOrderId:Number(wo.id),...(wo.invoiceId==null?{}:{invoiceId:Number(wo.invoiceId)})});
+  await assertNoPendingHeldFeeRefundTx(tx, {
+    workOrderId: Number(wo.id),
+    ...(wo.invoiceId == null ? {} : { invoiceId: Number(wo.invoiceId) }),
+  });
   // حارس خادمي مقابل طابور الواجهة: لا يتحول الاستلام المباشر إلى شحنة بسبب
   // رابط قديم أو طلب API يدوي. يحدد موظف خدمة العملاء طريقة التسليم أولاً.
   if (!prepareOnly && !wo.hasDelivery) {
@@ -310,7 +326,8 @@ async function runWorkOrderDispatchTx(
   const externalTrackingRef = prepareOnly
     ? null
     : requireExternalTrackingRef(party.partyType, normalizedTrackingRef);
-  if (!prepareOnly) await validateDeliveryDriverTx(tx, input, Number(wo.branchId));
+  if (!prepareOnly)
+    await validateDeliveryDriverTx(tx, input, Number(wo.branchId));
   const assignedUserId = input.assignedUserId ?? null;
 
   if (
@@ -686,15 +703,39 @@ async function runWorkOrderDispatchTx(
     // ربط إيصال العربون بالفاتورة (كان workOrderId-only) — append-only على القيد كـdeliverWorkOrder.
     // ش٠ (V3): بهويّته الصريحة (depositReceiptId) — الالتقاط الظنّي كان يتصادم مع إيصال أجرة COUNTER.
     if (depositPaid.gt(0)) {
-      const appliedDeposits = await appliedCollectionsForWorkOrder(tx, Number(wo.id));
-      const directAmount = depositPaid.minus(appliedDeposits.reduce((sum, part) => sum.plus(money(part.amount)), money(0)));
-      const directReceipts = await loadWorkOrderDepositReceiptSet(tx, wo, directAmount.toFixed(2));
+      const appliedDeposits = await appliedCollectionsForWorkOrder(
+        tx,
+        Number(wo.id),
+      );
+      const directAmount = depositPaid.minus(
+        appliedDeposits.reduce(
+          (sum, part) => sum.plus(money(part.amount)),
+          money(0),
+        ),
+      );
+      const directReceipts = await loadWorkOrderDepositReceiptSet(
+        tx,
+        wo,
+        directAmount.toFixed(2),
+      );
       for (const receipt of directReceipts) {
-        await tx.update(receipts).set({ invoiceId }).where(eq(receipts.id, Number(receipt.id)));
+        await tx
+          .update(receipts)
+          .set({ invoiceId })
+          .where(eq(receipts.id, Number(receipt.id)));
       }
       if (directReceipts.length || appliedDeposits.length) {
-        const method = [...directReceipts.map(r => r.paymentMethod), ...appliedDeposits.map(r => r.method)].reduce<string | null>((folded, method) => mixedAwarePaymentMethod(folded, method), null);
-        await tx.update(invoices).set({ paymentMethod: method }).where(eq(invoices.id, invoiceId));
+        const method = [
+          ...directReceipts.map((r) => r.paymentMethod),
+          ...appliedDeposits.map((r) => r.method),
+        ].reduce<string | null>(
+          (folded, method) => mixedAwarePaymentMethod(folded, method),
+          null,
+        );
+        await tx
+          .update(invoices)
+          .set({ paymentMethod: method })
+          .where(eq(invoices.id, invoiceId));
       }
       await linkSoleTargetCollectionsToInvoice(tx, Number(wo.id), invoiceId);
     }
@@ -724,6 +765,11 @@ async function runWorkOrderDispatchTx(
     ? reusableCn.consignmentNumber
     : await resolveConsignmentNumber(tx, wo.orderNumber, Number(wo.branchId));
   const codPositive = codAmount.gt(0);
+  // `deliveryConsignments.dispatchedAt`, `deliveryEvents.occurredAt` and
+  // document snapshots are all TIMESTAMP(0). Freeze the event once at the
+  // persisted precision so the source row and immutable print payload cannot
+  // diverge by sub-second truncation on replay/read-back.
+  const dispatchedAt = new Date(Math.floor(Date.now() / 1_000) * 1_000);
   // الأجرة تُسوَّى لحظة الإرسال متى كان النقد بأيدينا أو لا توريدَ يُنتظَر:
   //   COUNTER ⇒ قبضناها أمانةً في الاستقبال والمندوب واقفٌ الآن ⇒ تُدفَع له نقداً من الدرج.
   //   codAmount=0 ⇒ لا توريد قادم أصلاً ⇒ لا مجال لخصمها لاحقاً (هذه هي الحالة التي كانت
@@ -758,12 +804,12 @@ async function runWorkOrderDispatchTx(
         moneyStatus: codPositive ? "UNSETTLED" : "NOT_APPLICABLE",
         status: "DISPATCHED",
         remittanceId: null,
-        settledAt: codPositive ? null : new Date(),
+        settledAt: codPositive ? null : dispatchedAt,
         dispatchedBy: actor.userId,
-        dispatchedAt: new Date(),
+        dispatchedAt,
         acceptedAt: null,
         pickedUpAt: null,
-        outForDeliveryAt: new Date(),
+        outForDeliveryAt: dispatchedAt,
         courierDeliveredAt: null,
         custodyRecognizedAt: null,
         failedAt: null,
@@ -811,22 +857,23 @@ async function runWorkOrderDispatchTx(
         // COD=0 يعني «لا عهدة مالية»، لا يعني أن الطرد وصل. كل طرد يبدأ تشغيلياً
         // DISPATCHED ويبقى ظاهراً للمندوب حتى ختم التسليم الفعلي.
         status: "DISPATCHED",
-        settledAt: codPositive ? null : new Date(),
+        settledAt: codPositive ? null : dispatchedAt,
         dispatchedBy: actor.userId,
-        dispatchedAt: new Date(),
-        outForDeliveryAt: new Date(),
+        dispatchedAt,
+        outForDeliveryAt: dispatchedAt,
         externalTrackingRef,
       });
   const consignmentId = reusableCn
     ? Number(reusableCn.id)
     : extractInsertId(cnRes!);
 
-  await appendDeliveryEvent(tx, {
+  const assignmentEventKey = reusableCn
+    ? `CN:${consignmentId}:REASSIGNED:${input.clientRequestId ?? dispatchedAt.getTime()}`
+    : `CN:${consignmentId}:OUT_FOR_DELIVERY`;
+  const assignmentEventId = await appendDeliveryEvent(tx, {
     // مفتاحُ حدثٍ فريدٌ لكل إسناد (append-only): إعادةُ التنشيط حدثٌ مستقلّ لا استبدالٌ
     // للأول — فيبقى تاريخ الطرد كاملاً: أُسنِد، أُلغي، أُعيد إسناده لجهةٍ أخرى.
-    eventKey: reusableCn
-      ? `CN:${consignmentId}:REASSIGNED:${input.clientRequestId ?? Date.now()}`
-      : `CN:${consignmentId}:OUT_FOR_DELIVERY`,
+    eventKey: assignmentEventKey,
     consignmentId,
     eventType: reusableCn ? "REASSIGNED" : "OUT_FOR_DELIVERY",
     fromParcelStatus: reusableCn ? reusableCn.parcelStatus : null,
@@ -839,11 +886,97 @@ async function runWorkOrderDispatchTx(
       sourceId: consignmentSourceId,
     },
   });
+  await initializeConsignmentCustodyTx(tx, {
+    consignmentId,
+    actorUserId: actor.userId,
+    operationId:
+      input.clientRequestId ?? `delivery.dispatchWorkOrder:${consignmentId}`,
+  });
+  const invoiceCurrentTotal = reusingInvoice
+    ? round2(
+        money(priorInvoice!.total).minus(
+          money(priorInvoice!.returnedTotal ?? "0"),
+        ),
+      )
+    : round2(salePrice);
+  const invoicePaidAmount = reusingInvoice
+    ? round2(money(priorInvoice!.paidAmount ?? "0"))
+    : depositPaid;
+  const snapshotPayload = {
+    schemaVersion: 1 as const,
+    operationId:
+      input.clientRequestId ?? `delivery.dispatchWorkOrder:${consignmentId}`,
+    eventOccurredAt: dispatchedAt.toISOString(),
+    evidence: {
+      mode: "COMMITTED_DISPATCH_EVENT" as const,
+      eventId: assignmentEventId,
+      eventKey: assignmentEventKey,
+      unavailableFields: [],
+    },
+    shipment: {
+      consignmentId,
+      consignmentNumber,
+      fulfillmentRequestId: null,
+      branchId: Number(wo.branchId),
+      partyId: Number(input.partyId),
+      assignedUserId,
+      sourceType: "WORK_ORDER",
+      sourceId: consignmentSourceId,
+      members: [
+        {
+          id: consignmentId,
+          consignmentNumber,
+          invoiceId,
+          sourceType: "WORK_ORDER",
+          sourceId: consignmentSourceId,
+        },
+      ],
+    },
+    party: { id: Number(party.id), name: party.name },
+    recipient: {
+      name: input.recipientName ?? null,
+      phone: input.recipientPhone ?? wo.deliveryPhone ?? null,
+      address: input.deliveryAddress ?? wo.deliveryAddress ?? null,
+      governorate: null,
+    },
+    money: {
+      codAmount: codAmount.toFixed(2),
+      deliveryFee: fee.toFixed(2),
+      feeCollection,
+      customerCollectionAtDispatch: "0.00" as const,
+      currentTotal: invoiceCurrentTotal.toFixed(2),
+      paidAmount: invoicePaidAmount.toFixed(2),
+    },
+    invoiceIds: [invoiceId],
+    invoices: [
+      {
+        id: invoiceId,
+        invoiceNumber,
+        total: salePrice.toFixed(2),
+        paidAmount: invoicePaidAmount.toFixed(2),
+        returnedTotal: reusingInvoice
+          ? String(priorInvoice!.returnedTotal ?? "0.00")
+          : "0.00",
+        status: reusingInvoice ? priorInvoice!.status : invStatus,
+        identityEvidence: "EVENT_TIME_RECORD" as const,
+      },
+    ],
+    aftercareNotice: null,
+  };
+  await createShipmentDispatchDocumentSnapshotsTx(tx, {
+    consignmentId,
+    branchId: Number(wo.branchId),
+    shiftId: dispatchShiftId,
+    eventKey: assignmentEventKey,
+    eventOccurredAt: dispatchedAt,
+    createdBy: actor.userId,
+    payload: snapshotPayload,
+  });
   if (codPositive) {
     await appendDeliveryLedgerEntry(tx, {
       // تعرّضٌ جديد لجهةٍ جديدة ⇒ قيدٌ جديد (الأول حُرِّر بـCOD_RELEASED عند الإلغاء).
       eventKey: reusableCn
-        ? `CN:${consignmentId}:COD_ASSIGNED:REACTIVATED:${input.clientRequestId ?? Date.now()}`
+        ? `CN:${consignmentId}:COD_ASSIGNED:REACTIVATED:${input.clientRequestId ?? dispatchedAt.getTime()}`
         : `CN:${consignmentId}:COD_ASSIGNED`,
       partyId: input.partyId,
       consignmentId,

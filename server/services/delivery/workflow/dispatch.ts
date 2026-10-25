@@ -1,10 +1,12 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import {
   deliveryConsignments,
+  deliveryParties,
   invoices,
   onlineOrders,
 } from "../../../../drizzle/schema";
 import {
+  deliveryDocumentSnapshots,
   fulfillmentRequestItems,
   fulfillmentRequests,
   fulfillmentCharges,
@@ -46,6 +48,11 @@ import {
   hasOperationPolicy,
   operationDecision,
 } from "../../../../shared/operationPermissions";
+import { idempotencyHash } from "../../idempotency";
+import {
+  bootstrapHistoricalShipmentDocumentSnapshotsTx,
+  createShipmentDispatchDocumentSnapshotsTx,
+} from "../documentSnapshots";
 
 function validateSources(sources: WorkflowDispatchSource[]) {
   if (
@@ -203,6 +210,8 @@ async function resultTx(
   tx: Tx,
   consignmentId: number,
   idempotentReplay: boolean,
+  input: WorkflowDispatchBatchInput,
+  actorUserId: number,
 ): Promise<WorkflowDispatchBatchResult> {
   const [row] = await tx
     .select()
@@ -215,7 +224,15 @@ async function resultTx(
       "CONFLICT",
     );
   const members = await tx
-    .select({ invoiceId: deliveryConsignments.invoiceId })
+    .select({
+      id: deliveryConsignments.id,
+      consignmentNumber: deliveryConsignments.consignmentNumber,
+      invoiceId: deliveryConsignments.invoiceId,
+      sourceType: deliveryConsignments.sourceType,
+      sourceId: deliveryConsignments.sourceId,
+      codAmount: deliveryConsignments.codAmount,
+      deliveryFee: deliveryConsignments.deliveryFee,
+    })
     .from(deliveryConsignments)
     .where(
       row.fulfillmentRequestId == null
@@ -225,15 +242,203 @@ async function resultTx(
             row.fulfillmentRequestId,
           ),
     );
+  const invoiceIds = Array.from(
+    new Set(
+      members.flatMap((member) =>
+        member.invoiceId == null ? [] : [Number(member.invoiceId)],
+      ),
+    ),
+  );
+  const operationId = `workflow.dispatchBatch:${input.clientRequestId}`;
+  const eventKey = `${operationId}:${row.id}`;
+  const sourceVersion = idempotencyHash({
+    consignmentId: row.id,
+    claimVersion: row.codClaimVersion,
+    parcelStatus: row.parcelStatus,
+    moneyStatus: row.moneyStatus,
+    status: row.status,
+    dispatchedAt: row.dispatchedAt,
+    members,
+  });
+  const snapshotCandidates = await tx
+    .select({
+      id: deliveryDocumentSnapshots.id,
+      documentType: deliveryDocumentSnapshots.documentType,
+      eventKey: deliveryDocumentSnapshots.eventKey,
+      eventOccurredAt: deliveryDocumentSnapshots.eventOccurredAt,
+    })
+    .from(deliveryDocumentSnapshots)
+    .where(
+      and(
+        eq(deliveryDocumentSnapshots.sourceType, "SHIPMENT"),
+        eq(deliveryDocumentSnapshots.sourceId, Number(row.id)),
+        inArray(deliveryDocumentSnapshots.documentType, [
+          "DISPATCH_SLIP",
+          "SHIPPING_LABEL",
+        ]),
+      ),
+    )
+    .orderBy(desc(deliveryDocumentSnapshots.id));
+  const dispatchSecond = Math.floor(row.dispatchedAt.getTime() / 1_000);
+  const existingSnapshots = (
+    ["DISPATCH_SLIP", "SHIPPING_LABEL"] as const
+  ).flatMap((documentType) => {
+    const snapshot = snapshotCandidates.find(
+      (candidate) =>
+        candidate.documentType === documentType &&
+        (candidate.eventKey === eventKey ||
+          Math.floor(candidate.eventOccurredAt.getTime() / 1_000) ===
+            dispatchSecond),
+    );
+    return snapshot ? [snapshot] : [];
+  });
+  let snapshotIds: number[] = existingSnapshots.map((snapshot) =>
+    Number(snapshot.id),
+  );
+  if (existingSnapshots.length < 2) {
+    if (idempotentReplay) {
+      snapshotIds = await bootstrapHistoricalShipmentDocumentSnapshotsTx(tx, {
+        consignmentId: Number(row.id),
+        branchId: Number(row.branchId),
+      });
+    } else {
+      const [partySnapshot] = await tx
+        .select({ id: deliveryParties.id, name: deliveryParties.name })
+        .from(deliveryParties)
+        .where(eq(deliveryParties.id, row.partyId))
+        .limit(1);
+      const invoiceSnapshots = invoiceIds.length
+        ? await tx
+            .select({
+              id: invoices.id,
+              invoiceNumber: invoices.invoiceNumber,
+              total: invoices.total,
+              paidAmount: invoices.paidAmount,
+              returnedTotal: invoices.returnedTotal,
+              status: invoices.status,
+            })
+            .from(invoices)
+            .where(inArray(invoices.id, invoiceIds))
+        : [];
+      const currentTotal = invoiceSnapshots
+        .reduce(
+          (sum, invoice) =>
+            sum.plus(money(invoice.total).minus(invoice.returnedTotal ?? "0")),
+          money(0),
+        )
+        .toFixed(2);
+      const paidAmount = invoiceSnapshots
+        .reduce((sum, invoice) => sum.plus(money(invoice.paidAmount)), money(0))
+        .toFixed(2);
+      const shipmentCodAmount = members
+        .reduce((sum, member) => sum.plus(money(member.codAmount)), money(0))
+        .toFixed(2);
+      const shipmentDeliveryFee = members
+        .reduce((sum, member) => sum.plus(money(member.deliveryFee)), money(0))
+        .toFixed(2);
+      const shipmentMembers = members.map(
+        ({ codAmount: _codAmount, deliveryFee: _deliveryFee, ...member }) =>
+          member,
+      );
+      const payload = {
+        schemaVersion: 1 as const,
+        operationId,
+        eventOccurredAt: row.dispatchedAt.toISOString(),
+        evidence: {
+          mode: "COMMITTED_DISPATCH_EVENT" as const,
+          eventKey,
+          unavailableFields: [],
+        },
+        shipment: {
+          consignmentId: Number(row.id),
+          consignmentNumber: row.consignmentNumber,
+          fulfillmentRequestId: row.fulfillmentRequestId,
+          branchId: Number(row.branchId),
+          partyId: Number(row.partyId),
+          assignedUserId: row.assignedUserId,
+          sourceType: row.sourceType,
+          sourceId: Number(row.sourceId),
+          members: shipmentMembers,
+        },
+        party: {
+          id: Number(row.partyId),
+          name: partySnapshot?.name ?? "جهة توصيل",
+        },
+        recipient: {
+          name: row.recipientName,
+          phone: row.recipientPhone,
+          address: row.deliveryAddress,
+          governorate: row.governorate,
+        },
+        money: {
+          codAmount: shipmentCodAmount,
+          deliveryFee: shipmentDeliveryFee,
+          feeCollection: row.feeCollection,
+          customerCollectionAtDispatch: "0.00" as const,
+          currentTotal,
+          paidAmount,
+        },
+        invoiceIds,
+        invoices: invoiceSnapshots,
+        aftercareNotice:
+          row.sourceType === "AFTERCARE_EXECUTION"
+            ? "تحصيل العميل صفر — الأجرة على المكتبة"
+            : null,
+      };
+      snapshotIds.push(
+        ...(await createShipmentDispatchDocumentSnapshotsTx(tx, {
+          consignmentId: Number(row.id),
+          branchId: Number(row.branchId),
+          eventKey,
+          eventOccurredAt: row.dispatchedAt,
+          createdBy: actorUserId,
+          sourceVersion,
+          payload,
+          documentTypes: ["DISPATCH_SLIP", "SHIPPING_LABEL"].filter(
+            (type) =>
+              !existingSnapshots.some(
+                (snapshot) => snapshot.documentType === type,
+              ),
+          ) as Array<"DISPATCH_SLIP" | "SHIPPING_LABEL">,
+        })),
+      );
+    }
+  }
+  const [requestItemEffects] =
+    row.fulfillmentRequestId == null
+      ? []
+      : await tx
+          .select({ id: fulfillmentRequestItems.id })
+          .from(fulfillmentRequestItems)
+          .where(
+            and(
+              eq(
+                fulfillmentRequestItems.requestId,
+                Number(row.fulfillmentRequestId),
+              ),
+              inArray(
+                fulfillmentRequestItems.materializedInvoiceId,
+                invoiceIds.length ? invoiceIds : [-1],
+              ),
+            ),
+          )
+          .limit(1);
   return {
+    operationId,
     consignmentId: row.id,
     consignmentNumber: row.consignmentNumber,
     fulfillmentRequestId: row.fulfillmentRequestId,
-    invoiceIds: Array.from(
-      new Set(
-        members.flatMap((m) => (m.invoiceId == null ? [] : [m.invoiceId])),
-      ),
-    ),
+    invoiceIds,
+    newVersion: sourceVersion,
+    nextAction: "print",
+    documentSnapshotIds: snapshotIds.sort((a, b) => a - b),
+    actualEffects: {
+      saleCreated:
+        row.sourceType === "ONLINE_ORDER" || requestItemEffects != null,
+      inventoryIssued: row.sourceType === "ONLINE_ORDER",
+      customerCollectionCreated: false,
+      deliveryFeePosted: false,
+    },
     idempotentReplay,
   };
 }
@@ -307,7 +512,7 @@ export async function dispatchWorkflowBatch(
         branchId,
       );
       const replay = await findFulfillmentReplayTx(tx, context);
-      if (replay) return resultTx(tx, replay, true);
+      if (replay) return resultTx(tx, replay, true, input, auth.actor.userId);
       for (const p of previews) {
         const expected = input.sources.find(
           (s) => s.kind === p.source.kind && s.id === p.source.id,
@@ -373,7 +578,13 @@ export async function dispatchWorkflowBatch(
           context,
           dispatched.consignmentId,
         );
-        return resultTx(tx, dispatched.consignmentId, false);
+        return resultTx(
+          tx,
+          dispatched.consignmentId,
+          false,
+          input,
+          auth.actor.userId,
+        );
       }
       const phone = canonicalIraqiMobile(input.recipientPhone);
       if (
@@ -428,16 +639,51 @@ export async function dispatchWorkflowBatch(
               eq(fulfillmentRequestItems.requestId, requestId),
               eq(fulfillmentRequestItems.isActive, true),
             ),
-          ).for("update");
-        const canReleaseRequest = hasOperationPolicy(auth.current) ? operationDecision(auth.current,"delivery.fulfillment.requests.release").allowed : auth.current.isOwner === true || auth.current.role === "admin" || auth.current.resolvedPermissions?.store === "FULL";
-        if (canReleaseRequest) nativePaths.push("delivery.fulfillment.requests.release");
-        else for (const item of items) {
-          const member = await loadWorkflowPreviewTx(tx,item.invoiceId != null ? {kind:"invoice",id:item.invoiceId}:{kind:"workOrder",id:item.workOrderId!},auth.current,branchId,true);
-          const paths = workflowDispatchNativePaths(member.source.kind,member.relations.invoiceId != null);
-          const path = paths.find(path=>hasOperationPolicy(auth.current)?operationDecision(auth.current,path).allowed:auth.current.isOwner===true||auth.current.role==="admin"||auth.current.resolvedPermissions?.store==="FULL") ?? paths[0]!;
-          await assertOperationAuthorityTx(tx,auth.actor,path,current=>current.isOwner===true||current.resolvedPermissions?.store==="FULL");
-          nativePaths.push(path);
-        }
+          )
+          .for("update");
+        const canReleaseRequest = hasOperationPolicy(auth.current)
+          ? operationDecision(
+              auth.current,
+              "delivery.fulfillment.requests.release",
+            ).allowed
+          : auth.current.isOwner === true ||
+            auth.current.role === "admin" ||
+            auth.current.resolvedPermissions?.store === "FULL";
+        if (canReleaseRequest)
+          nativePaths.push("delivery.fulfillment.requests.release");
+        else
+          for (const item of items) {
+            const member = await loadWorkflowPreviewTx(
+              tx,
+              item.invoiceId != null
+                ? { kind: "invoice", id: item.invoiceId }
+                : { kind: "workOrder", id: item.workOrderId! },
+              auth.current,
+              branchId,
+              true,
+            );
+            const paths = workflowDispatchNativePaths(
+              member.source.kind,
+              member.relations.invoiceId != null,
+            );
+            const path =
+              paths.find((path) =>
+                hasOperationPolicy(auth.current)
+                  ? operationDecision(auth.current, path).allowed
+                  : auth.current.isOwner === true ||
+                    auth.current.role === "admin" ||
+                    auth.current.resolvedPermissions?.store === "FULL",
+              ) ?? paths[0]!;
+            await assertOperationAuthorityTx(
+              tx,
+              auth.actor,
+              path,
+              (current) =>
+                current.isOwner === true ||
+                current.resolvedPermissions?.store === "FULL",
+            );
+            nativePaths.push(path);
+          }
         const compositionSources = items.map((r) =>
           r.invoiceId != null
             ? { invoiceId: r.invoiceId }
@@ -449,7 +695,7 @@ export async function dispatchWorkflowBatch(
           .where(
             and(
               eq(fulfillmentCharges.requestId, requestId),
-              eq(fulfillmentCharges.status, "APPROVED"),
+              inArray(fulfillmentCharges.status, ["APPROVED", "COMPLETED"]),
             ),
           )
           .for("update");
@@ -567,7 +813,13 @@ export async function dispatchWorkflowBatch(
         requestAuthority,
       );
       await recordFulfillmentMutationTx(tx, context, released.consignmentId);
-      return resultTx(tx, released.consignmentId, false);
+      return resultTx(
+        tx,
+        released.consignmentId,
+        false,
+        input,
+        auth.actor.userId,
+      );
     }),
   );
 }
@@ -612,7 +864,7 @@ async function dispatchOnlineSingleton(
       const replay = await findFulfillmentReplayTx(tx, context);
       if (replay)
         return {
-          replay: await resultTx(tx, replay, true),
+          replay: await resultTx(tx, replay, true, input, auth.actor.userId),
           actor: auth.actor,
           context,
         };
@@ -701,6 +953,8 @@ async function dispatchOnlineSingleton(
         tx,
         replay ?? cn.id,
         dispatched.alreadyDispatched === true || replay != null,
+        input,
+        auth.actor.userId,
       );
     }),
   );

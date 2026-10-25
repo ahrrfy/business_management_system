@@ -109,8 +109,8 @@ async function resolveLockedReceptionCashShift(
  * **قرارُ مصير الخامة عند الإلغاء** (ش٤، ١٩/٨) — سطرٌ لكلّ مادّة، تصريحيّاً.
  *
  * `returnBase + wasteBase` **يجب** أن يساوي `baseQuantity` بالضبط: لا كمّيةَ تتبخّر بين
- * الرقمين، ولا فرقَ يُمتصّ صامتاً (§٥). وحذفُ الحقل كلّياً = **رجوعٌ كامل** — أي السلوك
- * القائم حرفياً، فلا تتغيّر نتيجةُ أيّ مستدعٍ لم يُعدَّل.
+ * الرقمين، ولا فرقَ يُمتصّ صامتاً (§٥). وبعد بدء التنفيذ لا يكفي حذفُ القائمة أو إرسالُها
+ * فارغةً: إمّا تغطيةٌ صريحة لكلّ سطر، أو تأكيدٌ صريح بأنّ **كلّ** الخامات عادت صالحة.
  */
 export interface WorkOrderCancelMaterialDecision {
   workOrderMaterialId: number;
@@ -137,6 +137,8 @@ export interface CancelWorkOrderOptions {
   expectedVersion?: number;
   reason?: string | null;
   materials?: readonly WorkOrderCancelMaterialDecision[] | null;
+  /** إقرارٌ صريح بديلٌ عن قائمة الأسطر: جميع الخامات المستهلَكة عادت صالحةً فعلياً. */
+  confirmAllMaterialsReturnedUsable?: boolean | null;
 }
 
 export async function cancelWorkOrderInTx(
@@ -184,6 +186,7 @@ export async function cancelWorkOrderInTx(
           refundReference: (opts.refundReference ?? "").trim() || null,
           expectedVersion: opts.expectedVersion,
           reason,
+          confirmAllMaterialsReturnedUsable: opts.confirmAllMaterialsReturnedUsable === true,
           materials: (opts.materials ?? [])
             .map((m) => [Number(m.workOrderMaterialId), Number(m.returnBase), Number(m.wasteBase)])
             .sort((a, b) => a[0] - b[0]),
@@ -359,11 +362,34 @@ export async function cancelWorkOrderInTx(
       mats.sort((a, b) => Number(a.variantId) - Number(b.variantId));
 
       // ── قرارُ مصير الخامة (ش٤) ─────────────────────────────────────────────────
-      // بلا قرارٍ صريح: **رجوعٌ كامل** — نفسُ ما كان يفعله هذا المسار حرفياً.
+      // لا افتراض بعد بدء التنفيذ: الرجوع الكامل يحتاج إقراراً صريحاً، وإلّا لكانت حمولةٌ
+      // قديمة أو حقلٌ سقط من الواجهة يعيد الهدر إلى المخزون المتاح بلا علم الموظف.
       const decisions = new Map<number, { returnBase: number; wasteBase: number }>();
-      if (opts.materials && opts.materials.length > 0) {
+      const explicitAllReturned = opts.confirmAllMaterialsReturnedUsable === true;
+      const explicitDecisions = opts.materials ?? [];
+      if (explicitAllReturned && explicitDecisions.length > 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: `تعذّر إلغاء طلب الخدمة ${wo.orderNumber}`,
+            why: "وصل تأكيدُ رجوع جميع الخامات مع قائمة رجوع/هدر تفصيلية في الطلب نفسه — وهما قراران متعارضان لا يجوز ترجيح أحدهما صامتاً",
+            doThis: "اختر مساراً واحداً: أكّد رجوع الجميع صالحاً، أو أرسل جدول كلّ سطر بما عاد وما تلف",
+          }),
+        });
+      }
+      if (mats.length > 0 && !explicitAllReturned && explicitDecisions.length === 0) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: `تعذّر إلغاء طلب الخدمة ${wo.orderNumber}`,
+            why: `بدأ تنفيذ الطلب وله ${mats.length} سطر خامة مستهلَكة، لكن لم يصل قرارٌ صريح بمصيرها — وإرجاعها كلّها تلقائياً قد يعيد خامةً مستهلكة أو تالفة إلى الرصيد المتاح`,
+            doThis: "افتح الإلغاء من جديد: أكّد أن جميع الخامات عادت صالحة فعلياً، أو حدّد لكل سطر الكمية الراجعة والهدر",
+          }),
+        });
+      }
+      if (explicitDecisions.length > 0) {
         const known = new Map(mats.map((m) => [Number(m.id), Number(m.baseQuantity)]));
-        for (const d of opts.materials) {
+        for (const d of explicitDecisions) {
           const id = Number(d.workOrderMaterialId);
           const consumed = known.get(id);
           if (consumed == null) {
@@ -460,8 +486,8 @@ export async function cancelWorkOrderInTx(
           previous.value = previous.value.plus(lineValue);
           returnedByVariant.set(variantId, previous);
         }
-        // التكلفةُ بلقطة `unitCost` المختومة عند البدء — لا بتكلفةِ اليوم: الرجوعُ يعيد
-        // للمخزون ما خرج منه بقيمته وقتَها، وإلّا حرّك حقوقاً بفرق تقييمٍ لا سببَ له.
+        // التكلفةُ بلقطة `unitCost` المختومة وقت صرف **دفعة** السطر (البدء أو زيادة لاحقة)،
+        // لا بتكلفةِ اليوم: الرجوعُ يعيد للمخزون ما خرج منه بقيمته وقتَها.
         // الأصناف الخدمية والبكجات لا رصيد مخزني لها فلا تدخل في returnedCost المعكوس لمخزون الرف (§١٨/٨).
         if (!isNonStock) {
           returnedCost = returnedCost.plus(round2(money(m.unitCost ?? "0").times(d.returnBase)));
@@ -514,7 +540,7 @@ export async function cancelWorkOrderInTx(
           postingSourceComponents: { roleDebits: { LOSSES: wastedCost }, roleCredits: { WORK_IN_PROGRESS: wastedCost } },
         });
       }
-    } else if (opts.materials && opts.materials.length > 0) {
+    } else if ((opts.materials && opts.materials.length > 0) || opts.confirmAllMaterialsReturnedUsable === true) {
       // أمرٌ لم يبدأ ⇒ لا خامةَ مستهلَكة أصلاً. قبولُ قرارِ هدرٍ هنا يُوهم الموظّف بأنّه سُجِّل.
       throw new TRPCError({
         code: "BAD_REQUEST",
