@@ -21,6 +21,7 @@ import { HrDeviceDetailCard } from "@/components/hrDevices/HrDeviceDetailCard";
 import { HrDeviceUsersDialog } from "@/components/hrDevices/HrDeviceUsersDialog";
 import { HrDeviceGuideDialog } from "@/components/hrDevices/HrDeviceGuideDialog";
 import { HrDeviceFormDialog } from "@/components/hrDevices/HrDeviceFormDialog";
+import { deviceConnectionFeedback } from "@/components/hrDevices/hrDeviceOperations";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -63,7 +64,7 @@ import {
   WifiOff,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ACTION_LABELS } from "@shared/actionLabels";
 
 const selectCls =
@@ -86,6 +87,7 @@ export default function HrDevices() {
   const [editId, setEditId] = useState<number | null>(null);
   const [form, setForm] = useState({ ...emptyForm });
   const [mapDeviceId, setMapDeviceId] = useState<number | null>(null);
+  const mappingLock = useRef(false);
   const [guideOpen, setGuideOpen] = useState(false);
   const [unmatchedOnly, setUnmatchedOnly] = useState(false);
   const [punchOffset, setPunchOffset] = useState(0);
@@ -154,6 +156,7 @@ export default function HrDevices() {
   const refresh = async () => {
     await Promise.all([
       utils.hrDevices.list.invalidate(),
+      utils.hrDevices.bridgeStatus.invalidate(),
       utils.hrDevices.punchesList.invalidate(),
       utils.hrDevices.deviceUsers.invalidate(),
       utils.hrDevices.pendingOrigins.invalidate(),
@@ -215,6 +218,7 @@ export default function HrDevices() {
     onError: (e) => notify.err(e),
   });
   const mapUser = trpc.hrDevices.mapUser.useMutation({
+    onSettled: () => { mappingLock.current = false; },
     onSuccess: async (r) => {
       notify.ok(
         r.backfilled > 0
@@ -548,6 +552,7 @@ export default function HrDevices() {
     deviceCode: string | null;
     ip: string | null;
   }) => {
+    if (create.isPending || update.isPending) return;
     setForm({
       name: d.name ?? "",
       serialNumber: d.serialNumber ?? "",
@@ -588,6 +593,7 @@ export default function HrDevices() {
       key: "edit",
       kind: "edit",
       label: "تعديل بيانات الجهاز",
+      disabled: create.isPending || update.isPending,
       icon: Pencil,
       gate: { module: "hr", level: "FULL" },
       onSelect: () => startEdit(d),
@@ -686,14 +692,11 @@ export default function HrDevices() {
   };
 
   const testDeviceConnection = async (deviceId: number) => {
-    const result = await list.refetch();
-    const fresh = result.data?.find((d) => d.id === deviceId);
-    if (fresh?.status === "online")
-      notify.ok("الجهاز متصل ويستقبل الخادم إشاراته الآن");
-    else
-      notify.warn(
-        "لم تصل إشارة حديثة من الجهاز — راجع الشبكة وإعدادات الاتصال",
-      );
+    try {
+      const result = await list.refetch();
+      const feedback = deviceConnectionFeedback(result, deviceId);
+      notify[feedback.kind](feedback.message);
+    } catch (error) { notify.err(error); }
   };
 
   return (
@@ -710,7 +713,7 @@ export default function HrDevices() {
             >
               <ListChecks className="size-4" /> معالجة البصمات الآن
             </Button>
-            <Button onClick={() => setOpenAdd(true)}>
+            <Button disabled={create.isPending || update.isPending} onClick={() => setOpenAdd(true)}>
               <Plus className="size-4" /> جهاز جديد
             </Button>
           </div>
@@ -719,13 +722,13 @@ export default function HrDevices() {
 
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-y py-2.5 text-xs">
         <span
-          className={`inline-flex items-center gap-2 font-semibold ${bridgeOn ? "text-[var(--status-active)]" : "text-[var(--sem-neg)]"}`}
+          className={`inline-flex items-center gap-2 font-semibold ${bridge.isError || bridge.isLoading ? "text-muted-foreground" : bridgeOn ? "text-[var(--status-active)]" : "text-[var(--sem-neg)]"}`}
         >
           <Circle aria-hidden className="size-2 fill-current" />
-          {bridgeOn ? "خدمة الاستقبال تعمل" : "خدمة الاستقبال متوقفة"}
+          {bridge.isError ? "تعذّر التحقق من خدمة الاستقبال" : bridge.isLoading ? "جارٍ التحقق من خدمة الاستقبال…" : bridgeOn ? "خدمة الاستقبال تعمل" : "خدمة الاستقبال متوقفة"}
         </span>
         <span className="text-muted-foreground">
-          <b className="text-foreground tabular-nums">{onlineNow}</b> متصل الآن
+          <b className="text-foreground tabular-nums">{bridge.isError || bridge.isLoading ? "—" : onlineNow}</b> متصل الآن
         </span>
         <span className="text-muted-foreground">
           <b className="text-[var(--sem-warn)] tabular-nums">
@@ -1081,8 +1084,15 @@ export default function HrDevices() {
         deviceUsersLoading={deviceUsers.isLoading}
         totalDeviceUsers={deviceUsers.data?.length ?? 0}
         employeeOptions={employeeOptions}
+        deviceUsersError={deviceUsers.isError}
+        employeeOptionsLoading={opts.isLoading}
+        employeeOptionsError={opts.isError}
+        isMapping={mapUser.isPending}
+        onRetryUsers={() => void deviceUsers.refetch()}
+        onRetryEmployees={() => void opts.refetch()}
         onMapUser={(enrollId, employeeId) => {
-          if (mapDeviceId != null) {
+          if (mapDeviceId != null && !mappingLock.current && !mapUser.isPending && !deviceUsers.isError && !opts.isError && opts.isSuccess) {
+            mappingLock.current = true;
             mapUser.mutate({
               deviceId: mapDeviceId,
               enrollId,
@@ -1102,6 +1112,7 @@ export default function HrDevices() {
       <HrDeviceFormDialog
         open={openAdd}
         onClose={() => {
+          if (create.isPending || update.isPending) return;
           setOpenAdd(false);
           setForm({ ...emptyForm });
           setEditId(null);
