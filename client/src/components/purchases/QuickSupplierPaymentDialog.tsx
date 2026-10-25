@@ -45,6 +45,25 @@ const EVIDENCE_LABELS: Record<PaymentEvidence, string> = {
   OTHER: "مستند آخر",
 };
 
+export function deriveDefaultQuickCashSource(
+  data:
+    | {
+        drawers?: ReadonlyArray<{ id: number }>;
+        canUseTreasury?: boolean;
+      }
+    | null
+    | undefined,
+): { cashMode: "DRAWER" | "TREASURY"; cashShiftId: string } {
+  const drawers = data?.drawers ?? [];
+  if (drawers.length === 1) {
+    return { cashMode: "DRAWER", cashShiftId: String(drawers[0]!.id) };
+  }
+  if (drawers.length === 0 && data?.canUseTreasury === true) {
+    return { cashMode: "TREASURY", cashShiftId: "" };
+  }
+  return { cashMode: "DRAWER", cashShiftId: "" };
+}
+
 export interface QuickSupplierPaymentDialogProps {
   open: boolean;
   onClose: () => void;
@@ -99,16 +118,6 @@ export function QuickSupplierPaymentDialog({
     { enabled: open && method === "CASH" && branchId > 0 },
   );
   const cashModeAutoSelectedRef = useRef(false);
-  useEffect(() => {
-    if (!cashSourcesQuery.data || cashModeAutoSelectedRef.current) return;
-    cashModeAutoSelectedRef.current = true;
-    const drawers = cashSourcesQuery.data.drawers ?? [];
-    if (drawers.length === 1) {
-      setCashShiftId(String(drawers[0].id));
-    } else if (drawers.length === 0 && cashSourcesQuery.data.canUseTreasury === true) {
-      setCashMode("TREASURY");
-    }
-  }, [cashSourcesQuery.data]);
 
   const matchedInvoice = useMemo(() => {
     const rows = paymentSourcesQuery.data?.rows ?? [];
@@ -125,30 +134,58 @@ export function QuickSupplierPaymentDialog({
   }, [paymentSourcesQuery.data?.rows, purchaseOrderId]);
 
   useEffect(() => {
-    if (open) {
+    if (!open) {
       cashModeAutoSelectedRef.current = false;
-      setRequestKey(`pay-po-${purchaseOrderId}-${crypto.randomUUID()}`);
-      const maxPayable = matchedInvoice
-        ? currency === "USD"
-          ? matchedInvoice.remainingCurrencyAmount || remainingAmount
-          : matchedInvoice.remainingAmount || remainingAmount
-        : remainingAmount;
-      setAmount(maxPayable || "0");
-      setReason(`سداد فاتورة أمر الشراء ${poNumber}`);
-      setEvidenceReference("");
-      setExternalReference("");
-      setMethod("CASH");
-      setCashMode("DRAWER");
-      setCashShiftId("");
-      setEvidenceType("CASH_ACKNOWLEDGEMENT");
+      return;
     }
+    cashModeAutoSelectedRef.current = false;
+    setRequestKey(`pay-po-${purchaseOrderId}-${crypto.randomUUID()}`);
+    const maxPayable = matchedInvoice
+      ? currency === "USD"
+        ? matchedInvoice.remainingCurrencyAmount || remainingAmount
+        : matchedInvoice.remainingAmount || remainingAmount
+      : remainingAmount;
+    setAmount(maxPayable || "0");
+    setReason(`سداد فاتورة أمر الشراء ${poNumber}`);
+    setEvidenceReference("");
+    setExternalReference("");
+    setMethod("CASH");
+    setCashMode("DRAWER");
+    setCashShiftId("");
+    setEvidenceType("CASH_ACKNOWLEDGEMENT");
   }, [
     open,
+    branchId,
     matchedInvoice,
     poNumber,
     remainingAmount,
     currency,
     purchaseOrderId,
+  ]);
+
+  useEffect(() => {
+    if (
+      !open ||
+      method !== "CASH" ||
+      !cashSourcesQuery.data ||
+      cashModeAutoSelectedRef.current
+    ) {
+      return;
+    }
+    cashModeAutoSelectedRef.current = true;
+    const next = deriveDefaultQuickCashSource(cashSourcesQuery.data);
+    setCashMode(next.cashMode);
+    setCashShiftId(next.cashShiftId);
+  }, [
+    open,
+    branchId,
+    matchedInvoice,
+    poNumber,
+    remainingAmount,
+    currency,
+    purchaseOrderId,
+    method,
+    cashSourcesQuery.data,
   ]);
 
   const requestPaymentMut = trpc.supplierPayments.requestPayment.useMutation({
@@ -180,8 +217,8 @@ export function QuickSupplierPaymentDialog({
       ? parsedAmount.lte(
           moneyInput(
             currency === "USD"
-              ? matchedInvoice.remainingCurrencyAmount
-              : matchedInvoice.remainingAmount,
+            ? matchedInvoice.remainingCurrencyAmount
+            : matchedInvoice.remainingAmount,
           ),
         )
       : true);
@@ -303,8 +340,8 @@ export function QuickSupplierPaymentDialog({
                 <span className="font-bold text-money-negative tabular-nums">
                   {fmt(
                     currency === "USD"
-                      ? matchedInvoice.remainingCurrencyAmount
-                      : matchedInvoice.remainingAmount,
+                    ? matchedInvoice.remainingCurrencyAmount
+                    : matchedInvoice.remainingAmount,
                   )}{" "}
                   {currency === "USD" ? "$" : "د.ع"}
                 </span>
@@ -365,7 +402,7 @@ export function QuickSupplierPaymentDialog({
                   id="pay-cash-source"
                   value={cashMode}
                   onValueChange={(value) =>
-                    setCashMode(value as "DRAWER" | "TREASURY")
+                  setCashMode(value as "DRAWER" | "TREASURY")
                   }
                 >
                   <option value="DRAWER">درجي المفتوح</option>

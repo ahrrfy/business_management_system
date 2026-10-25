@@ -129,7 +129,7 @@ vi.mock("@/components/ui/AppSelect", () => ({
   AppSelect: ({
     children,
     value,
-    onValueChange: _onValueChange,
+    onValueChange,
     ...rest
   }: {
     children: React.ReactNode;
@@ -140,7 +140,8 @@ vi.mock("@/components/ui/AppSelect", () => ({
       "select",
       {
         value,
-        onChange: () => undefined,
+        onChange: (e: React.ChangeEvent<HTMLSelectElement>) =>
+          onValueChange?.(e.target.value),
         "data-selected-value": value,
         ...rest,
       },
@@ -999,4 +1000,152 @@ describe("عرض سداد الشراء المثبت", () => {
       isApproveBlocked: true,
     });
   });
+
+  it("QuickSupplierPaymentDialog يعيد تطبيق مصدر النقد الافتراضي (الدرج الوحيد او الخزينة) بعد تهيئة النافذة او وصول matchedInvoice مع بيانات مخزنة مؤقتا", async () => {
+    const { JSDOM } = await import("jsdom");
+    const { createRoot } = await import("react-dom/client");
+    const { act } = React;
+    const { QuickSupplierPaymentDialog } = await vi.importActual<
+      typeof import("@/components/purchases/QuickSupplierPaymentDialog")
+    >("@/components/purchases/QuickSupplierPaymentDialog");
+
+    const dom = new JSDOM("<!doctype html><html><body></body></html>");
+    const prevGlobals = {
+      window: globalThis.window,
+      document: globalThis.document,
+      HTMLElement: globalThis.HTMLElement,
+      HTMLInputElement: globalThis.HTMLInputElement,
+      HTMLSelectElement: globalThis.HTMLSelectElement,
+      Event: globalThis.Event,
+      IS_REACT_ACT_ENVIRONMENT: (globalThis as Record<string, unknown>)
+        .IS_REACT_ACT_ENVIRONMENT,
+    };
+    Object.assign(globalThis, {
+      window: dom.window,
+      document: dom.window.document,
+      HTMLElement: dom.window.HTMLElement,
+      HTMLInputElement: dom.window.HTMLInputElement,
+      HTMLSelectElement: dom.window.HTMLSelectElement,
+      Event: dom.window.Event,
+      IS_REACT_ACT_ENVIRONMENT: true,
+    });
+
+    const host = dom.window.document.createElement("div");
+    dom.window.document.body.appendChild(host);
+    const root = createRoot(host);
+
+    const baseProps = {
+      onClose: vi.fn(),
+      purchaseOrderId: 346,
+      poNumber: "PO-1-20261022-00010",
+      supplierId: 56,
+      supplierName: "مورد عام نقدي",
+      branchId: 1,
+      currency: "IQD" as const,
+      remainingAmount: "8000.00",
+    };
+
+    try {
+      // ١) فتح النافذة مع وجود cashSources مخزنة مؤقتاً قبل اكتمال matchedInvoice ثم وصول matchedInvoice لاحقاً
+      const cachedSingleDrawer = {
+        drawers: [{ id: 14, shiftType: "MORNING" }],
+        canUseTreasury: true,
+      };
+      state.cashSourcesResult = {
+        data: cachedSingleDrawer,
+        isLoading: false,
+        isError: false,
+      };
+      state.paymentSourcesResult = {
+        data: undefined,
+        isLoading: true,
+      };
+
+      await act(async () => {
+        root.render(
+          React.createElement(QuickSupplierPaymentDialog, {
+            ...baseProps,
+            open: true,
+          }),
+        );
+      });
+
+      // يصل matchedInvoice بعد التهيئة بينما cashSourcesQuery.data لم يتغير مرجعه
+      state.paymentSourcesResult = {
+        data: {
+          rows: [
+            {
+              id: 901,
+              invoiceNumber: "PINV-346",
+              currency: "IQD",
+              remainingAmount: "8000.00",
+              pendingAmount: "0.00",
+              version: 1,
+              purchaseOrderIds: [346],
+            } as unknown as {
+              id: number;
+              invoiceNumber: string;
+              currency: string;
+              remainingAmount: string;
+              pendingAmount: string;
+            },
+          ],
+        },
+        isLoading: false,
+      };
+
+      await act(async () => {
+        root.render(
+          React.createElement(QuickSupplierPaymentDialog, {
+            ...baseProps,
+            open: true,
+          }),
+        );
+      });
+
+      const drawerSelect = host.querySelector(
+        'select[aria-label="درج الدافع"]',
+      );
+      expect(drawerSelect?.getAttribute("data-selected-value")).toBe("14");
+
+      // ٢) إغلاق النافذة ثم إعادة فتحها مع خزينة فقط وبدون أدراج مخزنة في الكاش
+      await act(async () => {
+        root.render(
+          React.createElement(QuickSupplierPaymentDialog, {
+            ...baseProps,
+            open: false,
+          }),
+        );
+      });
+
+      const cachedTreasuryOnly = {
+        drawers: [],
+        canUseTreasury: true,
+      };
+      state.cashSourcesResult = {
+        data: cachedTreasuryOnly,
+        isLoading: false,
+        isError: false,
+      };
+
+      await act(async () => {
+        root.render(
+          React.createElement(QuickSupplierPaymentDialog, {
+            ...baseProps,
+            open: true,
+          }),
+        );
+      });
+
+      const sourceSelect = host.querySelector("#pay-cash-source");
+      expect(sourceSelect?.getAttribute("data-selected-value")).toBe(
+        "TREASURY",
+      );
+    } finally {
+      await act(async () => {
+        root.unmount();
+      });
+      Object.assign(globalThis, prevGlobals);
+    }
+  }, 20_000);
 });
