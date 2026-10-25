@@ -16,14 +16,12 @@ import {
 import { ProductCard } from "@/components/product-card";
 import { ScreenContainer } from "@/components/screen-container";
 import { useCart } from "@/lib/cart-context";
+import { filterDealsProducts, type DealFilter } from "@/lib/deals-filter";
 import {
   formatLatinNumber,
-  productDiscountPercent,
   useStorefrontCatalog,
   useStorefrontMarketing,
 } from "@/lib/storefront-api";
-
-type DealFilter = "ALL" | "FLASH" | "UNDER_10K" | "DISCOUNTED";
 
 export default function DealsScreen() {
   const { width } = useWindowDimensions();
@@ -70,38 +68,11 @@ export default function DealsScreen() {
     setRefreshing(false);
   };
 
-  // Sub-10,000 IQD products
-  const sub10kProducts = useMemo(() => {
-    return products.filter((p) => {
-      const price = Number(p.salePrice ?? p.price ?? 0);
-      return price > 0 && price <= 10000;
-    });
-  }, [products]);
-
-  // Flash deals / discounted products
-  const flashProducts = useMemo(() => {
-    return products.filter((p) => {
-      const discount = productDiscountPercent(p);
-      return (
-        (discount !== null && discount > 0) ||
-        (p.salePrice != null && Number(p.salePrice) < Number(p.price))
-      );
-    });
-  }, [products]);
-
-  // Filtered products list
-  const filteredProducts = useMemo(() => {
-    switch (filter) {
-      case "FLASH":
-        return flashProducts.length > 0 ? flashProducts : products.slice(0, 8);
-      case "UNDER_10K":
-        return sub10kProducts.length > 0 ? sub10kProducts : products;
-      case "DISCOUNTED":
-        return flashProducts;
-      default:
-        return products;
-    }
-  }, [filter, products, flashProducts, sub10kProducts]);
+  // Filtered deals list (strictly genuine discounted/promotional or sub-10k deals)
+  const filteredProducts = useMemo(
+    () => filterDealsProducts(products, filter),
+    [filter, products],
+  );
 
   return (
     <ScreenContainer className="flex-1" containerClassName="bg-background">

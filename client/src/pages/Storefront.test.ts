@@ -40,6 +40,8 @@ import {
   saveCheckoutAttempt,
   saveStorefrontSnapshot,
   setStorefrontCartQuantity,
+  summarizeStorefrontProductCartQuantities,
+  applyStorefrontProductQuantityDelta,
   summarizeStorefrontCustomization,
   storefrontCheckoutFingerprint,
   storefrontCategoryCount,
@@ -793,4 +795,219 @@ describe("storefront category strip and categories navigation", () => {
     expect(source).toContain("<CategoryChipStrip");
   });
 });
+
+describe("storefront product cart quantity stepper (single vs multi-variant)", () => {
+  function makeVariantCartLine(overrides: Partial<CartLine> & Pick<CartLine, "cartKey" | "productUnitId" | "productId" | "qty">): CartLine {
+    return {
+      name: "قلم حبر جاف",
+      price: "1500.00",
+      imageUrl: null,
+      unitName: "قطعة",
+      stockLimit: 20,
+      ...overrides,
+    };
+  }
+
+  it("يضبط كمية السطر الوحيد بدقة عند +1 و -1 دون مساس الأصناف الأخرى", () => {
+    let cart = new Map<string, CartLine>([
+      ["101:", makeVariantCartLine({ cartKey: "101:", productUnitId: 101, productId: 50, qty: 2, variantLabel: "أزرق" })],
+    ]);
+    const openProduct = vi.fn();
+    const openCart = vi.fn();
+    const setQty = (cartKey: string, qty: number) => {
+      cart = setStorefrontCartQuantity(cart, cartKey, qty);
+    };
+
+    let summaries = summarizeStorefrontProductCartQuantities(cart);
+    expect(summaries.get(50)?.totalQty).toBe(2);
+
+    applyStorefrontProductQuantityDelta(cart, summaries, 50, 1, { setQty, openProduct, openCart });
+    expect(cart.get("101:")?.qty).toBe(3);
+    expect(openProduct).not.toHaveBeenCalled();
+    expect(openCart).not.toHaveBeenCalled();
+
+    summaries = summarizeStorefrontProductCartQuantities(cart);
+    applyStorefrontProductQuantityDelta(cart, summaries, 50, -1, { setQty, openProduct, openCart });
+    expect(cart.get("101:")?.qty).toBe(2);
+
+    // نزول إلى الصفر يحذف السطر تماماً
+    summaries = summarizeStorefrontProductCartQuantities(cart);
+    applyStorefrontProductQuantityDelta(cart, summaries, 50, -2, { setQty, openProduct, openCart });
+    expect(cart.has("101:")).toBe(false);
+  });
+
+  it("يمنع تلويث كميات المتغيرات عند وجود أكثر من لون/وحدة لنفس المنتج في السلة (+1 و -1)", () => {
+    let cart = new Map<string, CartLine>([
+      ["201:", makeVariantCartLine({ cartKey: "201:", productUnitId: 201, productId: 77, qty: 2, name: "دفتر سلك — أزرق", variantLabel: "أزرق" })],
+      ["202:", makeVariantCartLine({ cartKey: "202:", productUnitId: 202, productId: 77, qty: 1, name: "دفتر سلك — أحمر", variantLabel: "أحمر" })],
+    ]);
+    const setQty = vi.fn((cartKey: string, qty: number) => {
+      cart = setStorefrontCartQuantity(cart, cartKey, qty);
+    });
+    const openProduct = vi.fn();
+    const openCart = vi.fn();
+
+    const summaries = summarizeStorefrontProductCartQuantities(cart);
+    expect(summaries.get(77)?.totalQty).toBe(3);
+    expect(summaries.get(77)?.lineCount).toBe(2);
+    expect(summaries.get(77)?.singleLine).toBeNull();
+
+    // ضغط -1 لا يجوز أن يكتب (3 - 1 = 2) فوق المتغير الأخير 202:!
+    const decAction = applyStorefrontProductQuantityDelta(cart, summaries, 77, -1, {
+      setQty,
+      openProduct,
+      openCart,
+    });
+    expect(decAction).toEqual({ kind: "open-cart", productId: 77 });
+    expect(setQty).not.toHaveBeenCalled();
+    expect(openCart).toHaveBeenCalledWith(77);
+    expect(cart.get("201:")?.qty).toBe(2);
+    expect(cart.get("202:")?.qty).toBe(1);
+
+    // ضغط +1 يفتح منتقي المنتج لاختيار اللون المراد زيادته دون تلويث أي سطر قائم
+    const incAction = applyStorefrontProductQuantityDelta(cart, summaries, 77, 1, {
+      setQty,
+      openProduct,
+      openCart,
+    });
+    expect(incAction).toEqual({ kind: "open-product", productId: 77 });
+    expect(setQty).not.toHaveBeenCalled();
+    expect(openProduct).toHaveBeenCalledWith(77);
+    expect(cart.get("201:")?.qty).toBe(2);
+    expect(cart.get("202:")?.qty).toBe(1);
+  });
+
+  it("يحافظ على كل ضغطة سريعة متزامنة (+1/+1 و -1/-1) حتى لو بقيت خريطة summaries من تصيير سابق", () => {
+    let cart = new Map<string, CartLine>([
+      ["101:", makeVariantCartLine({ cartKey: "101:", productUnitId: 101, productId: 50, qty: 2, variantLabel: "أزرق" })],
+    ]);
+    // لقطة قديمة مجمّدة قبل إعادة تصيير React
+    const staleSummaries = summarizeStorefrontProductCartQuantities(cart);
+    const setQty = (cartKey: string, qty: number) => {
+      cart = setStorefrontCartQuantity(cart, cartKey, qty);
+    };
+    const openProduct = vi.fn();
+    const openCart = vi.fn();
+
+    // نقرتان سريعتان +1 قبل تحديث useMemo
+    applyStorefrontProductQuantityDelta(cart, staleSummaries, 50, 1, { setQty, openProduct, openCart });
+    applyStorefrontProductQuantityDelta(cart, staleSummaries, 50, 1, { setQty, openProduct, openCart });
+    expect(cart.get("101:")?.qty).toBe(4);
+
+    // أربع نقرات سريعة -1 تحذف السطر عند وصوله إلى الصفر دون ضياع أي نقرة
+    applyStorefrontProductQuantityDelta(cart, staleSummaries, 50, -1, { setQty, openProduct, openCart });
+    applyStorefrontProductQuantityDelta(cart, staleSummaries, 50, -1, { setQty, openProduct, openCart });
+    expect(cart.get("101:")?.qty).toBe(2);
+    applyStorefrontProductQuantityDelta(cart, staleSummaries, 50, -1, { setQty, openProduct, openCart });
+    applyStorefrontProductQuantityDelta(cart, staleSummaries, 50, -1, { setQty, openProduct, openCart });
+    expect(cart.has("101:")).toBe(false);
+  });
+
+  it("يعزل الأسطر المخصّصة عن عدّاد البطاقة ولا يمسّها عند تعديل السطر العادي لنفس المنتج", () => {
+    let cart = new Map<string, CartLine>([
+      [
+        "301:custom",
+        makeVariantCartLine({
+          cartKey: "301:custom",
+          productUnitId: 301,
+          productId: 88,
+          qty: 5,
+          isCustomizable: true,
+        }),
+      ],
+      [
+        "301:",
+        makeVariantCartLine({
+          cartKey: "301:",
+          productUnitId: 301,
+          productId: 88,
+          qty: 1,
+        }),
+      ],
+    ]);
+    const summaries = summarizeStorefrontProductCartQuantities(cart);
+    expect(summaries.get(88)?.totalQty).toBe(1);
+    expect(summaries.get(88)?.lineCount).toBe(1);
+
+    applyStorefrontProductQuantityDelta(cart, null, 88, 1, {
+      setQty: (cartKey, qty) => {
+        cart = setStorefrontCartQuantity(cart, cartKey, qty);
+      },
+      openProduct: vi.fn(),
+      openCart: vi.fn(),
+    });
+    expect(cart.get("301:")?.qty).toBe(2);
+    expect(cart.get("301:custom")?.qty).toBe(5);
+  });
+
+  it("لا يعطّل زر + في StorefrontProductCard للمنتج متعدد المتغيرات بسبب stockLeft للمتغير الأول فقط", () => {
+    const multiVariantProduct = {
+      productId: 91,
+      productUnitId: 901,
+      productName: "قلم تظليل",
+      brand: null,
+      price: "1000",
+      salePrice: null,
+      stockLeft: 1,
+      unitName: "قطعة",
+      soldCount: 0,
+      inStock: true,
+      variants: [
+        {
+          variantId: 1,
+          label: "أصفر",
+          inStock: true,
+          units: [{ productUnitId: 901, unitName: "قطعة", price: "1000", salePrice: null, inStock: true, stockLeft: 1 }],
+        },
+        {
+          variantId: 2,
+          label: "أخضر",
+          inStock: true,
+          units: [{ productUnitId: 902, unitName: "قطعة", price: "1000", salePrice: null, inStock: true, stockLeft: 10 }],
+        },
+      ],
+    };
+
+    const multiHtml = renderToStaticMarkup(
+      createElement(StorefrontProductCard, {
+        product: multiVariantProduct,
+        isWishlisted: false,
+        onOpen: vi.fn(),
+        onAdd: () => true,
+        onToggleWishlist: vi.fn(),
+        onShare: vi.fn(),
+        canBeOrdered: () => true,
+        actionLabel: "اختر الخيار",
+        cartQuantity: 2,
+        onUpdateQuantity: vi.fn(),
+      }),
+    );
+    expect(multiHtml).not.toMatch(/disabled=""[^>]*aria-label="زيادة كمية قلم تظليل"/);
+
+    const singleOptionAtStockCap = {
+      ...multiVariantProduct,
+      productId: 92,
+      productName: "ممحاة مدرسية",
+      stockLeft: 2,
+      variants: [],
+      storeUnits: [],
+    };
+    const singleHtml = renderToStaticMarkup(
+      createElement(StorefrontProductCard, {
+        product: singleOptionAtStockCap,
+        isWishlisted: false,
+        onOpen: vi.fn(),
+        onAdd: () => true,
+        onToggleWishlist: vi.fn(),
+        onShare: vi.fn(),
+        canBeOrdered: () => true,
+        actionLabel: "أضف إلى السلة",
+        cartQuantity: 2,
+        onUpdateQuantity: vi.fn(),
+      }),
+    );
+    expect(singleHtml).toMatch(/disabled=""[^>]*aria-label="زيادة كمية ممحاة مدرسية"/);
+  });
+});
+
 

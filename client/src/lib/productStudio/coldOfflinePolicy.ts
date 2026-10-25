@@ -3,6 +3,7 @@ import {
   sameStudioTenantScope,
   type StudioTenantScope,
 } from "@/lib/productStudio/studioTenantScope";
+import { isPublicHost, isPublicPath } from "@/lib/siteHosts";
 
 /** المسار الوحيد الذي يمكن فتحه عند إقلاع بارد بلا جلسة شبكة: استعادة مسودة Studio مشفرة. */
 export const COLD_OFFLINE_STUDIO_PATH = "/catalog/image-studio";
@@ -101,15 +102,24 @@ export function coldStudioShellCapabilities(coldStudio: boolean) {
   };
 }
 
-/** CommandPalette يضم البحث العالمي وماسح الباركود؛ لا يركبان على URL Studio البارد. */
+/** CommandPalette يضم البحث العالمي وماسح الباركود؛ لا يركبان على URL Studio البارد أو المسارات العامة. */
 export function shouldMountGlobalStudioTools({
   location,
   offline,
+  hostname,
 }: {
   location: string;
   offline: boolean;
+  hostname?: string;
 }): boolean {
-  return !offline || !isColdOfflineStudioRoute(location);
+  const rawPath = (location || "/").split(/[?#]/, 1)[0] || "/";
+  const cleanPath =
+    rawPath.length > 1 ? rawPath.replace(/\/+$/, "") || "/" : rawPath;
+  const effectiveHostname =
+    hostname ?? (typeof window !== "undefined" ? window.location.hostname : "");
+  if (isPublicPath(cleanPath)) return false;
+  if (cleanPath === "/" && isPublicHost(effectiveHostname)) return false;
+  return !offline || !isColdOfflineStudioRoute(cleanPath);
 }
 
 /**

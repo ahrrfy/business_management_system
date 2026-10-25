@@ -10,6 +10,7 @@
     "storefront.claimFirebaseCustomer",
     "storefront.createQuoteRequest",
     "storefront.customerBenefits",
+    "storefront.customerBenefitsPrivate",
     "storefront.createWishlistShare",
     "storefront.getWishlistShare",
     "storefront.productReviews",

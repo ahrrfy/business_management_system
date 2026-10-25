@@ -5,7 +5,12 @@ import { ActivityIndicator, FlatList, ScrollView, StyleSheet, Text, TextInput, T
 
 import { ProductCard } from "@/components/product-card";
 import { ScreenContainer } from "@/components/screen-container";
-import { productDiscountPercent, storefrontDisplayPrice, useStorefrontCatalog, useStorefrontCategories } from "@/lib/storefront-api";
+import {
+  filterAndSortSearchProducts,
+  type SearchAvailabilityFilter,
+  type SearchSortOrder,
+} from "@/lib/search-filter";
+import { useStorefrontCatalog, useStorefrontCategories } from "@/lib/storefront-api";
 
 export default function SearchScreen() {
   const { query: initialQuery } = useLocalSearchParams<{ query?: string }>();
@@ -14,26 +19,17 @@ export default function SearchScreen() {
   const [query, setQuery] = useState(initialQuery ?? "");
   const [submitted, setSubmitted] = useState(initialQuery ?? "");
   const [categoryId, setCategoryId] = useState<number | null>(null);
-  const [availability, setAvailability] = useState<"ALL" | "IN_STOCK" | "SALE">("ALL");
-  const [sort, setSort] = useState<"RELEVANCE" | "PRICE_ASC" | "PRICE_DESC" | "DISCOUNT">("RELEVANCE");
+  const [availability, setAvailability] = useState<SearchAvailabilityFilter>("ALL");
+  const [sort, setSort] = useState<SearchSortOrder>("RELEVANCE");
   useEffect(() => { setQuery(initialQuery ?? ""); setSubmitted(initialQuery ?? ""); }, [initialQuery]);
   const { products, loading, error, hasMore, loadMore, loadingMore, refresh } = useStorefrontCatalog(categoryId ?? undefined, submitted, { enabled: Boolean(submitted.trim()), limit: 16 });
   const { categories } = useStorefrontCategories();
   const submit = () => { setSubmitted(query.trim()); setCategoryId(null); setAvailability("ALL"); setSort("RELEVANCE"); };
-  const filteredProducts = useMemo(() => {
-    const list = products.filter((product) => availability === "SALE" ? productDiscountPercent(product) != null : product.availability === "متوفر");
-    return [...list].sort((left, right) => {
-      const leftPrice = Number(storefrontDisplayPrice(left) ?? 0); const rightPrice = Number(storefrontDisplayPrice(right) ?? 0);
-      if (sort === "PRICE_ASC") return leftPrice - rightPrice;
-      if (sort === "PRICE_DESC") return rightPrice - leftPrice;
-      if (sort === "DISCOUNT") return (productDiscountPercent(right) ?? 0) - (productDiscountPercent(left) ?? 0);
-      return 0;
-    });
-  }, [availability, products, sort]);
+  const filteredProducts = useMemo(
+    () => filterAndSortSearchProducts(products, { availability, sort }),
+    [availability, products, sort],
+  );
   const hasActiveFilters = categoryId != null || availability !== "ALL" || sort !== "RELEVANCE";
-  useEffect(() => {
-    if (hasActiveFilters && hasMore && !loading && !loadingMore) loadMore();
-  }, [hasActiveFilters, hasMore, loadMore, loading, loadingMore]);
   return <ScreenContainer className="flex-1" containerClassName="bg-background">
     <FlatList data={filteredProducts} numColumns={columns} key={`search-grid-${columns}`} keyExtractor={(item) => item.id} contentContainerStyle={styles.content} columnWrapperStyle={columns > 1 && filteredProducts.length ? styles.gridRow : undefined} keyboardShouldPersistTaps="handled" onEndReached={loadMore} onEndReachedThreshold={0.45} renderItem={({ item }) => <View style={[styles.gridItem, columns === 1 && styles.gridItemSingle]}><ProductCard fullWidth product={item} /></View>}
       ListHeaderComponent={<><View style={styles.topbar}><TouchableOpacity activeOpacity={0.8} onPress={() => router.back()} style={styles.back}><MaterialIcons color="#0C5A4B" name="arrow-forward" size={22} /></TouchableOpacity><Text style={styles.title}>البحث في المكتبة</Text><View style={styles.back} /></View><View style={styles.search}><MaterialIcons color="#55716A" name="search" size={22} /><TextInput autoFocus value={query} onChangeText={setQuery} onSubmitEditing={submit} placeholder="اكتب اسم المنتج أو المؤلف" placeholderTextColor="#71827C" returnKeyType="search" style={styles.input} textAlign="right" /><TouchableOpacity activeOpacity={0.8} onPress={submit} style={styles.submit}><Text style={styles.submitText}>بحث</Text></TouchableOpacity></View>{submitted ? <><View style={styles.resultRow}><Text style={styles.resultTitle}>نتائج البحث عن «{submitted}»</Text><Text style={styles.count}>{filteredProducts.length} منتج</Text></View><Text style={styles.filterLabel}>فلترة النتائج</Text><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips} style={styles.chipsScroller}><TouchableOpacity activeOpacity={0.82} onPress={() => setAvailability(availability === "IN_STOCK" ? "ALL" : "IN_STOCK")} style={[styles.chip, availability === "IN_STOCK" && styles.chipActive]}><MaterialIcons color={availability === "IN_STOCK" ? "#FFFFFF" : "#075B4E"} name="inventory" size={15} /><Text style={[styles.chipText, availability === "IN_STOCK" && styles.chipTextActive]}>متوفر الآن</Text></TouchableOpacity><TouchableOpacity activeOpacity={0.82} onPress={() => setAvailability(availability === "SALE" ? "ALL" : "SALE")} style={[styles.chip, availability === "SALE" && styles.chipSale]}><MaterialIcons color={availability === "SALE" ? "#FFFFFF" : "#C95A3B"} name="local-offer" size={15} /><Text style={[styles.chipText, availability === "SALE" && styles.chipTextActive]}>عروض فقط</Text></TouchableOpacity>{categories.map((category) => <TouchableOpacity activeOpacity={0.82} key={category.id} onPress={() => setCategoryId(categoryId === category.id ? null : category.id)} style={[styles.chip, categoryId === category.id && styles.chipActive]}><Text style={[styles.chipText, categoryId === category.id && styles.chipTextActive]}>{category.name}</Text></TouchableOpacity>)}</ScrollView><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips} style={styles.sortScroller}><TouchableOpacity activeOpacity={0.82} onPress={() => setSort("RELEVANCE")} style={[styles.sortChip, sort === "RELEVANCE" && styles.sortActive]}><Text style={[styles.sortText, sort === "RELEVANCE" && styles.sortTextActive]}>الأكثر صلة</Text></TouchableOpacity><TouchableOpacity activeOpacity={0.82} onPress={() => setSort("PRICE_ASC")} style={[styles.sortChip, sort === "PRICE_ASC" && styles.sortActive]}><Text style={[styles.sortText, sort === "PRICE_ASC" && styles.sortTextActive]}>السعر: الأقل</Text></TouchableOpacity><TouchableOpacity activeOpacity={0.82} onPress={() => setSort("PRICE_DESC")} style={[styles.sortChip, sort === "PRICE_DESC" && styles.sortActive]}><Text style={[styles.sortText, sort === "PRICE_DESC" && styles.sortTextActive]}>السعر: الأعلى</Text></TouchableOpacity><TouchableOpacity activeOpacity={0.82} onPress={() => setSort("DISCOUNT")} style={[styles.sortChip, sort === "DISCOUNT" && styles.sortActive]}><Text style={[styles.sortText, sort === "DISCOUNT" && styles.sortTextActive]}>أعلى خصم</Text></TouchableOpacity></ScrollView>{hasActiveFilters && <TouchableOpacity activeOpacity={0.8} onPress={() => { setCategoryId(null); setAvailability("ALL"); setSort("RELEVANCE"); }} style={styles.clear}><MaterialIcons color="#6E5750" name="filter-alt-off" size={16} /><Text style={styles.clearText}>مسح الفلاتر</Text></TouchableOpacity>}</> : <View style={styles.discovery}><MaterialIcons color="#0C5A4B" name="manage-search" size={28} /><Text style={styles.discoveryTitle}>ابحث عن كل ما تحتاجه</Text><Text style={styles.discoveryText}>اكتب اسم الكتاب أو المادة أو العلامة التجارية، وستظهر النتائج من منتجات المكتبة.</Text></View>}</>}

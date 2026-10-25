@@ -1,7 +1,7 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Haptics from "expo-haptics";
-import { router } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -16,6 +16,11 @@ import {
 } from "react-native";
 
 import { ScreenContainer } from "@/components/screen-container";
+import {
+  ACTIVE_COUPON_STORAGE_KEY,
+  loadActiveCouponCode,
+  normalizeActiveCouponCode,
+} from "@/lib/active-coupon";
 import {
   clearVerifiedCustomerSession,
   loadVerifiedCustomerSession,
@@ -115,8 +120,6 @@ export function calculateLoyaltyProgress(points: number, threshold: number = 500
   };
 }
 
-const ACTIVE_COUPON_STORAGE_KEY = "alarabiya-active-coupon";
-
 export default function LoyaltyScreen({ isTab = false }: { isTab?: boolean } = {}) {
   const [session, setSession] = useState<VerifiedCustomerSession | null | undefined>(undefined);
   const [benefits, setBenefits] = useState<StorefrontCustomerBenefits | null>(null);
@@ -150,12 +153,19 @@ export default function LoyaltyScreen({ isTab = false }: { isTab?: boolean } = {
 
   useEffect(() => {
     void load();
-    AsyncStorage.getItem(ACTIVE_COUPON_STORAGE_KEY)
-      .then((saved) => {
-        if (saved) setActiveCouponCode(saved);
-      })
-      .catch(() => undefined);
   }, [load]);
+
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      void loadActiveCouponCode(AsyncStorage).then((saved) => {
+        if (active) setActiveCouponCode(saved);
+      });
+      return () => {
+        active = false;
+      };
+    }, []),
+  );
 
   const requestFirstOrderCoupon = async () => {
     if (!session || requestingFirstOrderCoupon) return;
@@ -178,13 +188,14 @@ export default function LoyaltyScreen({ isTab = false }: { isTab?: boolean } = {
   };
 
   const handleActivateCoupon = async (code: string) => {
+    const normalized = normalizeActiveCouponCode(code) ?? code;
     try {
-      Clipboard.setString(code);
+      Clipboard.setString(normalized);
     } catch {
       // gracefully ignore clipboard platform differences
     }
-    setActiveCouponCode(code);
-    await AsyncStorage.setItem(ACTIVE_COUPON_STORAGE_KEY, code).catch(() => undefined);
+    setActiveCouponCode(normalized);
+    await AsyncStorage.setItem(ACTIVE_COUPON_STORAGE_KEY, normalized).catch(() => undefined);
 
     if (Platform.OS === "ios" || Platform.OS === "android") {
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -517,7 +528,8 @@ export default function LoyaltyScreen({ isTab = false }: { isTab?: boolean } = {
         <Text style={styles.section}>القسائم الخاصة بك</Text>
         {benefits?.coupons.length ? (
           benefits.coupons.map((coupon) => {
-            const isActivated = activeCouponCode === coupon.code;
+            const isActivated =
+              activeCouponCode === (normalizeActiveCouponCode(coupon.code) ?? coupon.code);
             return (
               <View
                 key={coupon.id}
