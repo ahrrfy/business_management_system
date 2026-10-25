@@ -79,3 +79,21 @@ client/public/imgly-assets/
 # ملاحظة: AGENTS.md **متتبَّع** عمداً (مؤشّر رقيق إلى CLAUDE.md) — لا تُضِفه هنا.
 .agents/
 .codex/
+
+# أسرار وتواقيع ونواتج بناء أصلية — لا تُلتزَم أبداً (تدقيق ٢٥/١٠/٢٦: كانت خارج .gitignore، ومحميّةً محلياً فقط بـ.git/info/exclude).
+/.recovered-secrets/
+*.jks
+*.keystore
+*.aab
+*.apk
+/twa/
+/android-native/
+/ERP-Desktop.exe
+
+# حالة أدوات وبيئة محلّية — لا تُلتزَم.
+/.aeos/
+/.superpowers/
+/.playwright-cli/
+/logs/
+/output/
+/official-packages/
