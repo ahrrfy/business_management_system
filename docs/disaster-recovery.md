@@ -93,7 +93,7 @@ grep -vE '^(CREATE DATABASE|USE |DROP DATABASE)' backups/<أحدث نسخة>.sql
 #    للنسخ الخارجية المشفّرة (.sql.gpg): فكّها أولاً بـ gpg -d (§٢) ثمّ مرّرها عبر نفس مرشّح grep.
 
 # 3) قارن عدد الصفوف في الجداول الحرجة (على القاعدة المؤقّتة حصراً)
-#    استعادة كاملة ~١١٨ جدولاً؛ نقصٌ حادّ في العدد أو الصفوف = استيراد ناقص.
+#    استعادة كاملة ~٣٣٠ جدولاً (عدّ ٢٠٢٦-١٠-٢٥)؛ نقصٌ حادّ في العدد أو الصفوف = استيراد ناقص.
 docker exec erp-mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot erp_restore_test -e "
   SELECT \"invoices\" tbl, COUNT(*) n FROM invoices
   UNION SELECT \"products\",          COUNT(*) FROM products
@@ -104,7 +104,8 @@ docker exec erp-mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot erp_r
 docker exec erp-mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "DROP DATABASE erp_restore_test;"'
 ```
 
-سجّل تاريخ آخر اختبار ناجح هنا: `آخر اختبار استعادة: ٢٠٢٦-٠٧-٢٢ ✓ (١١٨ جدولاً، قاعدة مؤقّتة، الإنتاج لم يُمَسّ)`
+سجّل تاريخ آخر اختبار ناجح هنا: `آخر اختبار استعادة: ٢٠٢٦-١٠-٢٥ ✓ (٣٣٠ جدولاً، زمن الاستعادة ~٢٠٧ث لنسخة ١٧٩ م.ب، قاعدة تمرين معزولة على erp-test-db:3310 عبر pnpm db:restore-drill، الإنتاج لم يُمَسّ)`
+> ⚠️ هذا التمرين استعاد نسخةً **محلية** غير مشفّرة. نسخ VPS المشفّرة (`.sql.gpg`) لم يُختبر فكّها بعد — يتطلّب عبارة GPG من الـescrow (§٤.١)؛ أجرِ تمريناً منها ثم أضف سطراً هنا.
 
 ## ٤. سيناريوهات الطوارئ
 
