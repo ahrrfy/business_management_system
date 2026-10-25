@@ -1931,7 +1931,12 @@ export async function reconcileSupplierPurchaseSettlement(
   }
 
   const legacyResult = await withTx((tx) =>
-    autoSettleSupplierAccountTx(tx, input.supplierId, actor),
+    autoSettleSupplierAccountTx(
+      tx,
+      input.supplierId,
+      actor,
+      scopedBranchId != null ? { branchId: scopedBranchId } : undefined,
+    ),
   );
 
   return {

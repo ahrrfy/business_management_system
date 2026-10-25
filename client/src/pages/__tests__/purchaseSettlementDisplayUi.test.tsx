@@ -903,4 +903,100 @@ describe("عرض سداد الشراء المثبت", () => {
     expect(loadingExplicit.isActionBlocked).toBe(true);
     expect(loadingExplicit.payload).toBeUndefined();
   });
+
+  it("يحجب اعتماد APPROVE_REVISION في PurchaseApprovalQueue حتى تكتمل تفاصيل الفاتورة بنجاح ويبقيه محجوبا عند التحميل او التحديث او الخطأ", async () => {
+    const { deriveApprovePoRevisionGate } = await import(
+      "@/components/purchases/PurchaseApprovalQueue"
+    );
+
+    // أثناء التحميل الأولي (data غير متاحة بعد): محجوب حتى مع تأكيد الاستلام الكامل
+    expect(
+      deriveApprovePoRevisionGate({
+        isApprovePoRevision: true,
+        targetPoId: 262,
+        poDetail: undefined,
+        isLoading: true,
+        isFetching: true,
+        isError: false,
+        confirmedFullReceipt: true,
+        isCashSourceBlocked: false,
+      }),
+    ).toEqual({
+      isPoDetailReady: false,
+      isCashIqdPo: false,
+      isApproveBlocked: true,
+    });
+
+    // عند فشل الاستعلام (حتى لو وُجدت بيانات قديمة مخزنة مؤقتاً): محجوب
+    expect(
+      deriveApprovePoRevisionGate({
+        isApprovePoRevision: true,
+        targetPoId: 262,
+        poDetail: { id: 262, settlementType: "CREDIT", agreedCurrency: "IQD" },
+        isLoading: false,
+        isFetching: false,
+        isError: true,
+        confirmedFullReceipt: true,
+        isCashSourceBlocked: false,
+      }),
+    ).toEqual({
+      isPoDetailReady: false,
+      isCashIqdPo: false,
+      isApproveBlocked: true,
+    });
+
+    // أثناء إعادة الجلب لفاتورة قد تكون تحولت من آجل إلى نقدي: محجوب حتى يستقر الجلب
+    expect(
+      deriveApprovePoRevisionGate({
+        isApprovePoRevision: true,
+        targetPoId: 262,
+        poDetail: { id: 262, settlementType: "CREDIT", agreedCurrency: "IQD" },
+        isLoading: false,
+        isFetching: true,
+        isError: false,
+        confirmedFullReceipt: true,
+        isCashSourceBlocked: false,
+      }),
+    ).toEqual({
+      isPoDetailReady: false,
+      isCashIqdPo: false,
+      isApproveBlocked: true,
+    });
+
+    // بعد اكتمال تحميل فاتورة آجلة وتأكيد الاستلام: مسموح
+    expect(
+      deriveApprovePoRevisionGate({
+        isApprovePoRevision: true,
+        targetPoId: 262,
+        poDetail: { id: 262, settlementType: "CREDIT", agreedCurrency: "IQD" },
+        isLoading: false,
+        isFetching: false,
+        isError: false,
+        confirmedFullReceipt: true,
+        isCashSourceBlocked: false,
+      }),
+    ).toEqual({
+      isPoDetailReady: true,
+      isCashIqdPo: false,
+      isApproveBlocked: false,
+    });
+
+    // بعد اكتمال تحميل فاتورة نقدية بالدينار: يتبع حجب مصدر النقد
+    expect(
+      deriveApprovePoRevisionGate({
+        isApprovePoRevision: true,
+        targetPoId: 262,
+        poDetail: { id: 262, settlementType: "CASH", agreedCurrency: "IQD" },
+        isLoading: false,
+        isFetching: false,
+        isError: false,
+        confirmedFullReceipt: true,
+        isCashSourceBlocked: true,
+      }),
+    ).toEqual({
+      isPoDetailReady: true,
+      isCashIqdPo: true,
+      isApproveBlocked: true,
+    });
+  });
 });

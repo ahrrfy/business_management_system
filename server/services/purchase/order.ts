@@ -56,7 +56,7 @@ async function captureOrderCashSourceTx(
         Number(previous.id),
         previous.currentRevisionId == null ? null : Number(previous.currentRevisionId),
       );
-      if (prevDeclared?.mode === "TREASURY") {
+      if (prevDeclared != null && prevDeclared.explicit !== false) {
         return prevDeclared;
       }
       if (prevDeclared?.mode === "DRAWER" && prevDeclared.shiftId != null) {

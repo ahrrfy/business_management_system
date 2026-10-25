@@ -2147,4 +2147,156 @@ describe("الفواتير النقدية وفواتير الآجل وسندات
       .where(eq(s.purchaseOrders.id, histPo.purchaseOrderId));
     expect(histPoAfter?.paidAmount).toBe("15000.00");
   });
+
+  it("يحفظ الدرج الصريح المغلق عبر تعديلات المسودة غير المرتبطة بمصدر النقد ويعزل مطابقة الاوامر القديمة بين الفروع", async () => {
+    await seedBase("500000.00");
+
+    // ١) درج صريح (explicit: true) أُغلق لاحقاً ثم عُدلت كمية المسودة دون تغيير cashSource => يبقى الدرج الصريح المغلق محفوظاً ويرفض الاعتماد التلقائي مغلقاً
+    const explicitShiftA = await openShift(
+      { branchId: 1, openingBalance: "80000.00" },
+      maker,
+    );
+    const explicitDraft = await createPurchaseOrder(
+      {
+        supplierId: 1,
+        branchId: 1,
+        status: "DRAFT",
+        settlementType: "CASH",
+        cashSource: { mode: "DRAWER", shiftId: explicitShiftA.shiftId },
+        clientRequestId: `exp-drawer-draft-${randomUUID()}`,
+        items: [
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "2",
+            unitPrice: "5000.00", // 10,000
+          },
+        ],
+      },
+      maker,
+    );
+    await db()
+      .update(s.shifts)
+      .set({ status: "CLOSED", openGuard: null, closedAt: new Date() })
+      .where(eq(s.shifts.id, explicitShiftA.shiftId));
+
+    // فتح وردية جديدة للمنشئ ثم تعديل الكمية فقط دون تمرير cashSource
+    await openShift({ branchId: 1, openingBalance: "80000.00" }, maker);
+    const updatedExplicitDraft = await updatePurchaseOrder(
+      {
+        purchaseOrderId: explicitDraft.purchaseOrderId,
+        expectedVersion: explicitDraft.version,
+        supplierId: 1,
+        branchId: 1,
+        settlementType: "CASH",
+        revisionReason: "تعديل الكمية فقط دون استبدال الدرج المحدد صراحة",
+        items: [
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "3",
+            unitPrice: "5000.00", // 15,000
+          },
+        ],
+      },
+      maker,
+    );
+    const submittedExplicitDraft = await confirmPurchaseOrder(
+      {
+        purchaseOrderId: explicitDraft.purchaseOrderId,
+        expectedVersion: updatedExplicitDraft.version,
+        reason: "ارسال المسودة بعد تعديل الكمية",
+        clientRequestId: `exp-drawer-confirm-${randomUUID()}`,
+      },
+      maker,
+    );
+
+    // يجب أن يفشل الاعتماد مغلقاً حتى للمالك ما لم يمرر مصدر صرف بديل صريح
+    await expect(
+      decidePurchaseOrderControl(
+        {
+          requestId: submittedExplicitDraft.requestId,
+          decisionKey: `exp-drawer-approve-fail-${randomUUID()}`,
+          approve: true,
+          reason: "محاولة اعتماد مع بقاء الدرج الصريح المغلق",
+          confirmedFullReceipt: true,
+          cashSource: undefined,
+        },
+        owner,
+      ),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    // ٢) عزل الفروع في مسار مطابقة الأوامر القديمة غير المربوطة بفاتورة أصلية
+    await db().insert(s.branches).values({
+      id: 2,
+      name: "الفرع الثاني",
+      code: "BR2",
+      isMain: false,
+      isActive: true,
+    });
+    await db().insert(s.suppliers).values({
+      id: 3,
+      name: "مورد مشترك بين فرعين",
+      currentBalance: "0.00",
+    });
+    await db().insert(s.purchaseOrders).values([
+      {
+        id: 9101,
+        poNumber: "PO-LEGACY-BR2-1",
+        supplierId: 3,
+        branchId: 2,
+        status: "RECEIVED",
+        settlementType: "CASH",
+        orderDate: new Date("2026-10-01T08:00:00Z"),
+        subtotal: "20000.00",
+        taxAmount: "0.00",
+        shippingCost: "0.00",
+        customsCost: "0.00",
+        total: "20000.00",
+        paidAmount: "0.00",
+        createdBy: owner.userId,
+      },
+      {
+        id: 9102,
+        poNumber: "PO-LEGACY-BR1-1",
+        supplierId: 3,
+        branchId: 1,
+        status: "RECEIVED",
+        settlementType: "CASH",
+        orderDate: new Date("2026-10-02T08:00:00Z"),
+        subtotal: "15000.00",
+        taxAmount: "0.00",
+        shippingCost: "0.00",
+        customsCost: "0.00",
+        total: "15000.00",
+        paidAmount: "0.00",
+        createdBy: maker.userId,
+      },
+    ]);
+
+    // مدير الفرع الأول (غير مالك) يطابق فرعه فقط ولا يمس أمر الفرع الثاني
+    const branchScopedReconcile = await reconcileSupplierPurchaseSettlement(
+      { supplierId: 3 },
+      reviewer,
+    );
+    expect(branchScopedReconcile).toMatchObject({
+      settledOrdersCount: 1,
+      totalSettledAmount: "15000.00",
+    });
+
+    const legacyPosAfterBranch1 = await db()
+      .select({
+        id: s.purchaseOrders.id,
+        branchId: s.purchaseOrders.branchId,
+        paidAmount: s.purchaseOrders.paidAmount,
+      })
+      .from(s.purchaseOrders)
+      .where(eq(s.purchaseOrders.supplierId, 3));
+    expect(
+      legacyPosAfterBranch1.find((r) => Number(r.id) === 9101)?.paidAmount,
+    ).toBe("0.00");
+    expect(
+      legacyPosAfterBranch1.find((r) => Number(r.id) === 9102)?.paidAmount,
+    ).toBe("15000.00");
+  });
 });

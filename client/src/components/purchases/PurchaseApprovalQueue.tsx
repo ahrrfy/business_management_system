@@ -65,6 +65,47 @@ function violatesVisibleSod(
   return ids.some((id) => id != null && Number(id) === Number(currentUserId));
 }
 
+export function deriveApprovePoRevisionGate(params: {
+  isApprovePoRevision: boolean;
+  targetPoId: number;
+  poDetail:
+    | {
+        id?: number | null;
+        settlementType?: string | null;
+        agreedCurrency?: string | null;
+      }
+    | null
+    | undefined;
+  isLoading: boolean;
+  isFetching?: boolean;
+  isError: boolean;
+  confirmedFullReceipt: boolean;
+  isCashSourceBlocked: boolean;
+}) {
+  const isPoDetailReady =
+    !params.isApprovePoRevision ||
+    (params.targetPoId > 0 &&
+      params.poDetail != null &&
+      Number(params.poDetail.id) === params.targetPoId &&
+      !params.isLoading &&
+      !params.isFetching &&
+      !params.isError);
+  const isCashIqdPo =
+    params.isApprovePoRevision &&
+    isPoDetailReady &&
+    params.poDetail?.settlementType === "CASH" &&
+    params.poDetail?.agreedCurrency !== "USD";
+  const isApproveBlocked =
+    (params.isApprovePoRevision &&
+      (!params.confirmedFullReceipt || !isPoDetailReady)) ||
+    (isCashIqdPo && params.isCashSourceBlocked);
+  return {
+    isPoDetailReady,
+    isCashIqdPo,
+    isApproveBlocked,
+  };
+}
+
 export function PurchaseApprovalQueue({
   operationUser,
   currentUserId,
@@ -105,18 +146,37 @@ export function PurchaseApprovalQueue({
     { purchaseOrderId: targetPoId },
     { enabled: targetPoId > 0 },
   );
-  const isCashIqdPo =
-    isApprovePoRevision &&
-    poDetailQuery.data?.settlementType === "CASH" &&
-    poDetailQuery.data?.agreedCurrency !== "USD";
+  const prelimGate = deriveApprovePoRevisionGate({
+    isApprovePoRevision,
+    targetPoId,
+    poDetail: poDetailQuery.data,
+    isLoading: poDetailQuery.isLoading,
+    isFetching: poDetailQuery.isFetching,
+    isError: poDetailQuery.isError,
+    confirmedFullReceipt: confirmedFullReceipt,
+    isCashSourceBlocked: false,
+  });
+  const isPoDetailReady = prelimGate.isPoDetailReady;
+  const isCashIqdPo = prelimGate.isCashIqdPo;
   const cashSourceState = usePurchaseCashSourceState({
     branchId: poDetailQuery.data?.branchId,
     enabled: isCashIqdPo,
     context: "approval",
     isCreator:
+      isPoDetailReady &&
       poDetailQuery.data != null &&
       currentUserId != null &&
       Number(poDetailQuery.data.createdBy) === Number(currentUserId),
+  });
+  const { isApproveBlocked } = deriveApprovePoRevisionGate({
+    isApprovePoRevision,
+    targetPoId,
+    poDetail: poDetailQuery.data,
+    isLoading: poDetailQuery.isLoading,
+    isFetching: poDetailQuery.isFetching,
+    isError: poDetailQuery.isError,
+    confirmedFullReceipt: confirmedFullReceipt,
+    isCashSourceBlocked: cashSourceState.isActionBlocked,
   });
 
   const invalidate = async () => {
@@ -157,7 +217,12 @@ export function PurchaseApprovalQueue({
   const pending = orderDecision.isPending || requisitionDecision.isPending;
 
   function submit() {
-    if (!decision || !canDecide(decision.row) || reason.trim().length < 3)
+    if (
+      !decision ||
+      !canDecide(decision.row) ||
+      reason.trim().length < 3 ||
+      isApproveBlocked
+    )
       return;
     const baseInput = {
       requestId: Number(decision.row.id),
@@ -386,6 +451,16 @@ export function PurchaseApprovalQueue({
               onChange={(event) => setReason(event.target.value)}
             />
             <p className="text-xs text-muted-foreground">مطلوب: 3–500 محرف.</p>
+            {isApprovePoRevision && !isPoDetailReady ? (
+              poDetailQuery.isError ? (
+                <ErrorState
+                  message="تعذر تحميل تفاصيل فاتورة الشراء للتحقق من شروط السداد قبل الاعتماد."
+                  onRetry={() => void poDetailQuery.refetch()}
+                />
+              ) : (
+                <LoadingState message="جار التحقق من شروط تسوية الفاتورة ومصدر النقد قبل الاعتماد..." />
+              )
+            ) : null}
             {isCashIqdPo ? (
               <div className="space-y-2 rounded-md border bg-muted/30 p-3 text-sm">
                 <p className="font-medium">
@@ -426,12 +501,7 @@ export function PurchaseApprovalQueue({
               disabled={
                 pending ||
                 reason.trim().length < 3 ||
-                (decision?.approve === true &&
-                  decision.row.documentType === "PURCHASE_ORDER" &&
-                  decision.row.kind === "APPROVE_REVISION" &&
-                  !confirmedFullReceipt) ||
-                (isCashIqdPo &&
-                  (poDetailQuery.isLoading || cashSourceState.isActionBlocked))
+                isApproveBlocked
               }
               onClick={submit}
             >
@@ -440,9 +510,13 @@ export function PurchaseApprovalQueue({
                 : decision?.approve
                   ? decision.row.documentType === "PURCHASE_ORDER" &&
                     decision.row.kind === "APPROVE_REVISION"
-                    ? isCashIqdPo
-                      ? "اعتماد وترحيل وسداد نقدي فوري"
-                      : "اعتماد وترحيل المخزون"
+                    ? !isPoDetailReady
+                      ? poDetailQuery.isError
+                        ? "تعذر التحقق من الفاتورة"
+                        : "جار التحقق من الفاتورة..."
+                      : isCashIqdPo
+                        ? "اعتماد وترحيل وسداد نقدي فوري"
+                        : "اعتماد وترحيل المخزون"
                     : "اعتماد وتطبيق"
                   : "تأكيد الرفض"}
             </Button>
