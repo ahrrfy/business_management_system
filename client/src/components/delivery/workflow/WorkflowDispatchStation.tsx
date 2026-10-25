@@ -10,7 +10,10 @@ import {
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useIsMutating } from "@tanstack/react-query";
 import { RequestsWorkspace } from "@/components/fulfillment/RequestsWorkspace";
-import { deliveryDriverOptions, requiresDeliveryDriver } from "../driverOptions";
+import {
+  deliveryDriverOptions,
+  requiresDeliveryDriver,
+} from "../driverOptions";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -52,6 +55,10 @@ type Scanned = { raw: string; preview: WorkflowScanPreview };
 
 type DispatchSnapshotPayload = {
   eventOccurredAt: string;
+  evidence?: {
+    mode?: "COMMITTED_DISPATCH_EVENT" | "HISTORICAL_ORIGINAL_EVIDENCE";
+    notice?: string;
+  };
   shipment: {
     consignmentId: number;
     consignmentNumber: string;
@@ -67,16 +74,16 @@ type DispatchSnapshotPayload = {
     governorate: string | null;
   };
   money: {
-    codAmount: string;
-    deliveryFee: string;
-    feeCollection: "COURIER" | "COUNTER" | "SHOP";
-    currentTotal: string;
-    paidAmount: string;
+    codAmount: string | null;
+    deliveryFee: string | null;
+    feeCollection: "COURIER" | "COUNTER" | "SHOP" | null;
+    currentTotal: string | null;
+    paidAmount: string | null;
   };
   invoices: Array<{
     id: number;
     invoiceNumber: string;
-    total: string;
+    total: string | null;
   }>;
 };
 
@@ -92,7 +99,9 @@ function dispatchSnapshotPayload(
     !payload.money ||
     !Array.isArray(payload.invoices)
   )
-    throw new Error("لقطة مستند الإسناد ناقصة؛ أعد إنشاء الحزمة من مسؤول النظام");
+    throw new Error(
+      "لقطة مستند الإسناد ناقصة؛ أعد إنشاء الحزمة من مسؤول النظام",
+    );
   return payload as DispatchSnapshotPayload;
 }
 const definitiveErrors = new Set([
@@ -148,6 +157,8 @@ export function WorkflowDispatchStation({
   const inputRef = useRef<HTMLInputElement>(null);
   const utils = trpc.useUtils();
   const dispatch = trpc.delivery.workflow.dispatchBatch.useMutation();
+  const prepareShipmentPrintBundle =
+    trpc.delivery.documents.prepareShipmentPrintBundle.useMutation();
   const requestDocumentPrint =
     trpc.delivery.documents.requestPrint.useMutation();
   const completeDocumentPrint =
@@ -419,11 +430,24 @@ export function WorkflowDispatchStation({
   ) {
     setPrinting(true);
     try {
-      const snapshots = await utils.delivery.documents.list.fetch({
+      let snapshots = await utils.delivery.documents.list.fetch({
         sourceType: "SHIPMENT",
         sourceId: result.consignmentId,
         branchId,
       });
+      if (
+        !snapshots.some(
+          (snapshot) => snapshot.documentType === "DISPATCH_SLIP",
+        ) ||
+        !snapshots.some(
+          (snapshot) => snapshot.documentType === "SHIPPING_LABEL",
+        )
+      ) {
+        snapshots = await prepareShipmentPrintBundle.mutateAsync({
+          consignmentId: result.consignmentId,
+          branchId,
+        });
+      }
       const slipSnapshot = snapshots.find(
         (snapshot) => snapshot.documentType === "DISPATCH_SLIP",
       );
@@ -431,9 +455,7 @@ export function WorkflowDispatchStation({
         (snapshot) => snapshot.documentType === "SHIPPING_LABEL",
       );
       if (!slipSnapshot || !labelSnapshot)
-        throw new Error(
-          "لم تكتمل لقطات حزمة الإسناد؛ لا تطبع من القيم الحية",
-        );
+        throw new Error("لم تكتمل لقطات حزمة الإسناد؛ لا تطبع من القيم الحية");
       const payload = dispatchSnapshotPayload(slipSnapshot);
       const hasPrintedSlip = slipSnapshot.printHistory.some(
         (attempt) => attempt.status === "SENT",
@@ -448,7 +470,8 @@ export function WorkflowDispatchStation({
           ? { reason: "طلب إعادة طباعة من محطة الإسناد" }
           : {}),
       });
-      const invoice = payload.invoices.length === 1 ? payload.invoices[0] : null;
+      const invoice =
+        payload.invoices.length === 1 ? payload.invoices[0] : null;
       const slip: DispatchSlipData = {
         sourceType: payload.shipment.sourceType,
         sourceId: payload.shipment.sourceId,
@@ -474,10 +497,11 @@ export function WorkflowDispatchStation({
         deliveryFee: payload.money.deliveryFee,
         feeCollection: payload.money.feeCollection,
         dispatchedAt: slipSnapshot.eventOccurredAt,
+        notes: payload.evidence?.notice ?? null,
         items: payload.invoices.map((item) => ({
           name: `فاتورة ${item.invoiceNumber}`,
           quantity: 1,
-          total: item.total,
+          ...(item.total == null ? {} : { total: item.total }),
         })),
         copy:
           slipCopy === "REPRINT"
@@ -510,10 +534,14 @@ export function WorkflowDispatchStation({
           : {}),
       });
       const totalAtDoor =
-        Number(labelPayload.money.codAmount) +
-        (labelPayload.money.feeCollection === "COURIER"
-          ? Number(labelPayload.money.deliveryFee)
-          : 0);
+        labelPayload.money.codAmount == null ||
+        (labelPayload.money.feeCollection === "COURIER" &&
+          labelPayload.money.deliveryFee == null)
+          ? null
+          : Number(labelPayload.money.codAmount) +
+            (labelPayload.money.feeCollection === "COURIER"
+              ? Number(labelPayload.money.deliveryFee)
+              : 0);
       const labelPrinted = await printShippingLabel(
         {
           orderNumber: labelPayload.shipment.consignmentNumber,
@@ -522,16 +550,23 @@ export function WorkflowDispatchStation({
           customerPhone: labelPayload.recipient.phone,
           governorate: labelPayload.recipient.governorate,
           addressText: labelPayload.recipient.address,
-          total: String(totalAtDoor),
+          total: totalAtDoor == null ? null : String(totalAtDoor),
           subtotal: labelPayload.money.currentTotal,
           shippingFee: labelPayload.money.deliveryFee,
           paidAmount: labelPayload.money.paidAmount,
           paymentState:
-            Number(labelPayload.money.codAmount) === 0 ? "PREPAID" : "COD",
+            labelPayload.money.currentTotal == null ||
+            labelPayload.money.paidAmount == null
+              ? undefined
+              : labelPayload.money.codAmount != null &&
+                  Number(labelPayload.money.codAmount) === 0
+                ? "PREPAID"
+                : "COD",
           deliveryPartyName: labelPayload.party.name,
           createdAt: labelSnapshot.eventOccurredAt,
           printedAt: new Date(),
           isReprint: labelCopy === "REPRINT",
+          notes: labelPayload.evidence?.notice ?? null,
           items: labelPayload.invoices.map((item) => ({
             productName: `فاتورة ${item.invoiceNumber}`,
             unitName: "",
@@ -544,7 +579,9 @@ export function WorkflowDispatchStation({
         printId: labelAttempt.print.id,
         branchId,
         status: labelPrinted.ok ? "SENT" : "FAILED",
-        ...(!labelPrinted.ok ? { errorMessage: "حجبت نافذة طباعة الملصق" } : {}),
+        ...(!labelPrinted.ok
+          ? { errorMessage: "حجبت نافذة طباعة الملصق" }
+          : {}),
       });
       if (mounted.current)
         setPrintMessage(
@@ -622,10 +659,7 @@ export function WorkflowDispatchStation({
         setMessage("اختر جهة التوصيل صراحة قبل التأكيد");
         return;
       }
-      if (
-        needsDriver &&
-        !draft.driverId
-      ) {
+      if (needsDriver && !draft.driverId) {
         setMessage("اختر الموظف المندوب المرتبط بالجهة");
         return;
       }
@@ -1022,27 +1056,28 @@ export function WorkflowDispatchStation({
             </AppSelect>
           </label>
           {selectedParty && needsDriver && (
-              <label className="space-y-1 text-sm">
-                الموظف المندوب
-                <AppSelect
-                  value={draft.driverId}
-                  disabled={formFrozen}
-                  onValueChange={(value) => change("driverId", value)}
-                >
-                  <option value="">اختر الموظف المندوب</option>
-                  {drivers.map((m) => (
-                    <option key={m.userId} value={m.userId}>
-                      {m.name}
-                    </option>
-                  ))}
-                </AppSelect>
-                {!drivers.length && (
-                  <span className="text-destructive">
-                    لا يوجد موظف توصيل نشط في فرع العمل؛ راجع مسؤول المناديب لتصحيح الربط.
-                  </span>
-                )}
-              </label>
-            )}
+            <label className="space-y-1 text-sm">
+              الموظف المندوب
+              <AppSelect
+                value={draft.driverId}
+                disabled={formFrozen}
+                onValueChange={(value) => change("driverId", value)}
+              >
+                <option value="">اختر الموظف المندوب</option>
+                {drivers.map((m) => (
+                  <option key={m.userId} value={m.userId}>
+                    {m.name}
+                  </option>
+                ))}
+              </AppSelect>
+              {!drivers.length && (
+                <span className="text-destructive">
+                  لا يوجد موظف توصيل نشط في فرع العمل؛ راجع مسؤول المناديب
+                  لتصحيح الربط.
+                </span>
+              )}
+            </label>
+          )}
           <label className="space-y-1 text-sm">
             اسم المستلم
             <Input

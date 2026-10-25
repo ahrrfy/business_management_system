@@ -60,6 +60,7 @@ export default defineConfig({
       "client/src/components/crm/__tests__/wave32Dossier.test.tsx",
       "server/services/__tests__/fulfillmentChargesVisibility.unit.test.ts",
       "server/services/__tests__/fulfillmentPosting.test.ts",
+      "server/services/__tests__/postingEngine.test.ts",
       "server/services/__tests__/fulfillmentChargesPolicy.unit.test.ts",
       "shared/deliverySource.test.ts",
       "client/src/lib/printing/printDeliverySource.test.ts",

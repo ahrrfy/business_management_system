@@ -252,18 +252,56 @@ describe("delivery custody follows the operational lifecycle", () => {
       carrierCustodyBaseQuantity: 0,
       customerDeliveredBaseQuantity: 1,
     });
-    expect(await db().select().from(deliveryCustodyEvents)).toHaveLength(1);
+    const repairedEventCount = (
+      await db().select().from(deliveryCustodyEvents)
+    ).length;
+    expect(repairedEventCount).toBeGreaterThanOrEqual(1);
+    expect(
+      (
+        await confirmConsignmentDelivery(
+          { consignmentId: 1, clientRequestId: "custody-delivered" },
+          { userId: 2 },
+        )
+      ).alreadyDelivered,
+    ).toBe(true);
+    expect(await db().select().from(deliveryCustodyEvents)).toHaveLength(
+      repairedEventCount,
+    );
     expect(await nonCustodyEffects()).toEqual(effects);
   });
 
   it("does not move custody on declaration, then follows physical receipt and held reissue", async () => {
-    const source = await seedInvoiceConsignment(2, "OUT_FOR_DELIVERY");
+    const source = await seedInvoiceConsignment(2, "ASSIGNED");
     await withTx((tx) =>
       initializeConsignmentCustodyTx(tx, {
         consignmentId: 2,
         actorUserId: 1,
         operationId: "custody-return-seed",
       }),
+    );
+    await transitionConsignmentParcel(
+      {
+        consignmentId: 2,
+        toStatus: "ACCEPTED",
+        clientRequestId: "custody-return-accepted",
+      },
+      { userId: 2 },
+    );
+    await transitionConsignmentParcel(
+      {
+        consignmentId: 2,
+        toStatus: "PICKED_UP",
+        clientRequestId: "custody-return-pickup",
+      },
+      { userId: 2 },
+    );
+    await transitionConsignmentParcel(
+      {
+        consignmentId: 2,
+        toStatus: "OUT_FOR_DELIVERY",
+        clientRequestId: "custody-return-out",
+      },
+      { userId: 2 },
     );
     const effects = await nonCustodyEffects();
     await transitionConsignmentParcel(
@@ -310,6 +348,22 @@ describe("delivery custody follows the operational lifecycle", () => {
       },
       ADMIN,
     );
+    expect(await custody(2)).toMatchObject({
+      carrierCustodyBaseQuantity: 0,
+      customerOwnedHeldBaseQuantity: 1,
+    });
+    expect(
+      (
+        await transitionConsignmentParcel(
+          {
+            consignmentId: 2,
+            toStatus: "PICKED_UP",
+            clientRequestId: "custody-return-pickup",
+          },
+          { userId: 2 },
+        )
+      ).replay,
+    ).toBe(true);
     expect(await custody(2)).toMatchObject({
       carrierCustodyBaseQuantity: 0,
       customerOwnedHeldBaseQuantity: 1,

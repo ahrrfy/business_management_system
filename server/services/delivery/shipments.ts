@@ -47,7 +47,12 @@ import {
 import { deliverySearchSql } from "./readSearch";
 import { normalizeExternalTrackingRef } from "./trackingRefPolicy";
 import type { DeliveryTxActor } from "./types";
-import { physicalReturnReceiptTx, returnCarrierRightsTx, PHYSICAL_RETURN_RECEIVED } from "./workflow/returnReceipt";
+import { createShipmentDispatchDocumentSnapshotsTx } from "./documentSnapshots";
+import {
+  physicalReturnReceiptTx,
+  returnCarrierRightsTx,
+  PHYSICAL_RETURN_RECEIVED,
+} from "./workflow/returnReceipt";
 
 const SHIPMENT_OPERATION = "delivery.dispatchInvoiceShipment";
 const MAX_SHIPMENT_INVOICES = 30;
@@ -158,7 +163,12 @@ export async function shipmentFeeDeliveryProvenTx(
     currentRead: true,
   });
   const source = rows.find((row) => Number(row.id) === consignmentId);
-  if (source && await physicalReturnReceiptTx(tx, source) && (await returnCarrierRightsTx(tx, [source.id])).feeDue.gt(0)) return true;
+  if (
+    source &&
+    (await physicalReturnReceiptTx(tx, source)) &&
+    (await returnCarrierRightsTx(tx, [source.id])).feeDue.gt(0)
+  )
+    return true;
   return (
     !!source &&
     rows.every((row) => Number(row.branchId) === Number(source.branchId)) &&
@@ -525,7 +535,8 @@ export async function dispatchInvoiceShipmentInTx(
         .for("update")
     : [];
   let leaderId: number | undefined;
-  for(const invoice of lockedInvoices)await assertNoPendingHeldFeeRefundTx(tx,{invoiceId:Number(invoice.id)});
+  for (const invoice of lockedInvoices)
+    await assertNoPendingHeldFeeRefundTx(tx, { invoiceId: Number(invoice.id) });
   let leaderInvoiceId = ids[0];
   let retainedLeader: DeliveryConsignment | undefined;
   if (memberships.length) {
@@ -648,6 +659,7 @@ export async function dispatchInvoiceShipmentInTx(
     }
   }
   const dispatched: Awaited<ReturnType<typeof dispatchInvoiceInTx>>[] = [];
+  const groupedDispatch = ids.length > 1 || memberships.length > 0;
   for (const invoiceId of [
     ...(retainedLeader ? [] : [leaderInvoiceId]),
     ...ids.filter((id) => id !== leaderInvoiceId),
@@ -669,9 +681,15 @@ export async function dispatchInvoiceShipmentInTx(
       },
       actor,
       leaderId == null
-        ? context.heldReturnReissue ? { heldReturnReissue: true } : undefined
+        ? context.heldReturnReissue || groupedDispatch
+          ? {
+              ...(context.heldReturnReissue ? { heldReturnReissue: true } : {}),
+              ...(groupedDispatch ? { deferDocumentSnapshots: true } : {}),
+            }
+          : undefined
         : {
             ...(context.heldReturnReissue ? { heldReturnReissue: true } : {}),
+            ...(groupedDispatch ? { deferDocumentSnapshots: true } : {}),
             shipmentLeaderConsignmentId: leaderId,
             ...(retainedLeader ? { retainedShipmentLeader: true } : {}),
             ...(isLeader ? {} : { sharedTrackingLeaderId: leaderId }),
@@ -687,6 +705,93 @@ export async function dispatchInvoiceShipmentInTx(
     dispatched.push(row);
   }
   const details = await shipmentDetailsTx(tx, leaderId!, actor);
+  let documentSnapshotIds: number[] = [];
+  if (groupedDispatch) {
+    const leader = details.members.find(
+      (member) => Number(member.id) === Number(details.leaderConsignmentId),
+    );
+    if (!leader)
+      shipmentError(
+        "تعذر تثبيت مستندات الشحنة",
+        "قائد الشحنة غير موجود بعد اكتمال ربط الأعضاء",
+        "حدّث الشحنة وأعد المحاولة؛ إن استمر التعارض أبلغ مسؤول النظام",
+        "CONFLICT",
+      );
+    const currentTotal = lockedInvoices.reduce(
+      (sum, invoice) =>
+        sum.plus(
+          money(invoice.total).minus(money(invoice.returnedTotal ?? "0")),
+        ),
+      money(0),
+    );
+    const paidAmount = lockedInvoices.reduce(
+      (sum, invoice) => sum.plus(money(invoice.paidAmount ?? "0")),
+      money(0),
+    );
+    const eventKey = `delivery.dispatchInvoiceShipment:${input.clientRequestId}:${leader.id}`;
+    documentSnapshotIds = await createShipmentDispatchDocumentSnapshotsTx(tx, {
+      consignmentId: Number(leader.id),
+      branchId: Number(leader.branchId),
+      shiftId: anchor.shiftId == null ? null : Number(anchor.shiftId),
+      eventKey,
+      eventOccurredAt: leader.dispatchedAt,
+      createdBy: actor.userId,
+      payload: {
+        schemaVersion: 1,
+        operationId: `${SHIPMENT_OPERATION}:${input.clientRequestId}`,
+        eventOccurredAt: leader.dispatchedAt.toISOString(),
+        evidence: {
+          mode: "COMMITTED_DISPATCH_EVENT",
+          eventKey,
+          unavailableFields: [],
+        },
+        shipment: {
+          consignmentId: Number(leader.id),
+          consignmentNumber: leader.consignmentNumber,
+          fulfillmentRequestId: leader.fulfillmentRequestId,
+          branchId: Number(leader.branchId),
+          partyId: Number(leader.partyId),
+          assignedUserId: leader.assignedUserId,
+          sourceType: leader.sourceType,
+          sourceId: Number(leader.sourceId),
+          members: details.members.map((member) => ({
+            id: Number(member.id),
+            consignmentNumber: member.consignmentNumber,
+            invoiceId:
+              member.invoiceId == null ? null : Number(member.invoiceId),
+            sourceType: member.sourceType,
+            sourceId: Number(member.sourceId),
+          })),
+        },
+        party: { id: Number(party.id), name: party.name },
+        recipient: {
+          name: input.recipientName ?? anchor.contactName ?? null,
+          phone: input.recipientPhone ?? anchor.contactPhone ?? null,
+          address: input.deliveryAddress ?? null,
+          governorate: input.governorate ?? null,
+        },
+        money: {
+          codAmount: details.codAmount,
+          deliveryFee: details.deliveryFee,
+          feeCollection: input.feeCollection ?? "COURIER",
+          customerCollectionAtDispatch: "0.00",
+          currentTotal: toDbMoney(round2(currentTotal)),
+          paidAmount: toDbMoney(round2(paidAmount)),
+        },
+        invoiceIds: lockedInvoices.map((invoice) => Number(invoice.id)),
+        invoices: lockedInvoices.map((invoice) => ({
+          id: Number(invoice.id),
+          invoiceNumber: invoice.invoiceNumber,
+          total: String(invoice.total),
+          paidAmount: String(invoice.paidAmount ?? "0.00"),
+          returnedTotal: String(invoice.returnedTotal ?? "0.00"),
+          status: invoice.status,
+          identityEvidence: "EVENT_TIME_RECORD",
+        })),
+        aftercareNotice: null,
+      },
+    });
+  }
   await tx.insert(auditLogs).values({
     userId: actor.userId,
     branchId: Number(anchor.branchId),
@@ -728,6 +833,7 @@ export async function dispatchInvoiceShipmentInTx(
     ...details,
     consignmentId: leaderId!,
     invoiceId: leaderInvoiceId,
+    documentSnapshotIds,
     idempotentReplay: false,
   };
 }

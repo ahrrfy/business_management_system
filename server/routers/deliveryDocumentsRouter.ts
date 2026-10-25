@@ -9,6 +9,7 @@ import {
 } from "../trpc";
 import { withTx } from "../services/tx";
 import {
+  bootstrapHistoricalShipmentDocumentSnapshotsTx,
   completeDeliveryDocumentPrintTx,
   listDeliveryDocumentSnapshotsTx,
   requestDeliveryDocumentPrintTx,
@@ -27,7 +28,12 @@ const sourceTypes = [
 
 type DocumentContext = {
   scopedBranchId?: number | null;
-  user: { id: number; branchId?: number | null; role?: string; isOwner?: boolean | null };
+  user: {
+    id: number;
+    branchId?: number | null;
+    role?: string;
+    isOwner?: boolean | null;
+  };
 };
 
 function documentBranch(ctx: DocumentContext, requested?: number) {
@@ -45,11 +51,11 @@ function documentBranch(ctx: DocumentContext, requested?: number) {
       message: appErrorMessage({
         what: "تعذر فتح مستند التوصيل",
         why: "المستند يخص فرعاً خارج نطاق حسابك الحالي",
-        doThis: "انتقل إلى محطة الفرع الصحيح أو اطلب من مسؤول مخول تنفيذ الطباعة",
+        doThis:
+          "انتقل إلى محطة الفرع الصحيح أو اطلب من مسؤول مخول تنفيذ الطباعة",
       }),
     });
-  const value =
-    enforcedBranch ?? requested ?? assignedBranch;
+  const value = enforcedBranch ?? requested ?? assignedBranch;
   if (!Number.isSafeInteger(value) || value <= 0)
     throw new TRPCError({
       code: "BAD_REQUEST",
@@ -79,6 +85,27 @@ export const deliveryDocumentsRouter = router({
           branchId: documentBranch(ctx, input.branchId),
         }),
       ),
+    ),
+  prepareShipmentPrintBundle: deliveryCashierProcedure
+    .input(
+      z.object({
+        consignmentId: z.number().int().positive(),
+        branchId: z.number().int().positive().optional(),
+      }),
+    )
+    .mutation(({ input, ctx }) =>
+      withTx(async (tx) => {
+        const branchId = documentBranch(ctx, input.branchId);
+        await bootstrapHistoricalShipmentDocumentSnapshotsTx(tx, {
+          consignmentId: input.consignmentId,
+          branchId,
+        });
+        return listDeliveryDocumentSnapshotsTx(tx, {
+          sourceType: "SHIPMENT",
+          sourceId: input.consignmentId,
+          branchId,
+        });
+      }),
     ),
   requestPrint: deliveryCashierProcedure
     .input(

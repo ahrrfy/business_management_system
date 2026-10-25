@@ -7,7 +7,7 @@ import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import type Decimal from "decimal.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { deliveryConsignments, deliveryParties, inventoryMovements, invoiceItemBundleComponents, invoiceItems, invoices, onlineOrders, productVariants, products, receipts, workOrders } from "../../../drizzle/schema";
+import { accountingEntries, deliveryConsignments, deliveryParties, inventoryMovements, invoiceItemBundleComponents, invoiceItems, invoices, onlineOrders, productVariants, products, receipts, workOrderMaterials, workOrders } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { applyValuedInboundMovement } from "../inventoryService";
@@ -224,7 +224,7 @@ export async function returnConsignment(
   options: { shipmentMember?: boolean } = {},
 ) {
   const run = async (tx: Tx) => {
-    const sourcePreview=(await tx.select({sourceType:deliveryConsignments.sourceType,invoiceId:deliveryConsignments.invoiceId}).from(deliveryConsignments).where(eq(deliveryConsignments.id,consignmentId)).limit(1))[0];
+    const sourcePreview=(await tx.select({sourceType:deliveryConsignments.sourceType,invoiceId:deliveryConsignments.invoiceId,workOrderId:deliveryConsignments.workOrderId}).from(deliveryConsignments).where(eq(deliveryConsignments.id,consignmentId)).limit(1))[0];
     if(sourcePreview?.sourceType==="AFTERCARE_EXECUTION"){
     const sourceResult=await routeAftercareDeliveryResultTx(tx,{consignmentId,result:"RETURNED",proof:actor.returnReason??"",clientRequestId:actor.clientRequestId??`aftercare-return:${consignmentId}`,
       authorization:{kind:"STAFF",operationPath:"delivery.returnConsignment",operationAuthority:actor.operationAuthority}},actor);
@@ -249,6 +249,8 @@ export async function returnConsignment(
           branchId: deliveryConsignments.branchId,
           partyId: deliveryConsignments.partyId,
           invoiceId: deliveryConsignments.invoiceId,
+          sourceType: deliveryConsignments.sourceType,
+          workOrderId: deliveryConsignments.workOrderId,
           consignmentNumber: deliveryConsignments.consignmentNumber,
           feeSettledAt: deliveryConsignments.feeSettledAt,
         })
@@ -270,16 +272,49 @@ export async function returnConsignment(
         return { consignmentId, reversed: true as const, idempotentReplay: true as const };
       }
     }
-    if (sourcePreview?.sourceType === "WORK_ORDER")
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: appErrorMessage({
-          what: "تعذّر تنفيذ مرتجع بيع مباشر لأمر الشغل",
-          why: "ناتج أمر الشغل مخصّص للعميل ومواده صُرفت أثناء التنفيذ؛ إلغاء الأمر هنا سيعكس البيع ويبقي تكلفة التنفيذ بلا مصير موثّق",
-          doThis:
-            "استعمل مسار النقص والمعالجة وحدد المصير الفعلي: إعادة إرسال الناتج نفسه، أو إعادة عمل، أو اعتماد هدر/تلف ثم تسوية حق العميل",
-        }),
-      });
+    if (cnPreview.sourceType === "WORK_ORDER") {
+      const workOrder = cnPreview.workOrderId == null
+        ? null
+        : (await tx.select({ materialsCost: workOrders.materialsCost, laborCost: workOrders.laborCost, workStartedAt: workOrders.workStartedAt })
+          .from(workOrders).where(eq(workOrders.id, Number(cnPreview.workOrderId))).for("share").limit(1))[0];
+      const postedCost = cnPreview.invoiceId == null
+        ? money(0)
+        : money((await tx.select({ cost: sql<string>`COALESCE(SUM(${accountingEntries.cost}),0)` })
+          .from(accountingEntries).where(and(
+            eq(accountingEntries.invoiceId, Number(cnPreview.invoiceId)),
+            eq(accountingEntries.entryType, "SALE"),
+          )))[0]?.cost ?? "0");
+      const materialEvidence = workOrder == null
+        ? null
+        : (await tx.select({ id: workOrderMaterials.id }).from(workOrderMaterials)
+          .where(and(
+            eq(workOrderMaterials.workOrderId, Number(cnPreview.workOrderId)),
+            sql`${workOrderMaterials.baseQuantity} > 0`,
+            sql`${workOrderMaterials.unitCost} > 0`,
+          )).for("share").limit(1))[0];
+      const movementEvidence = workOrder == null
+        ? null
+        : (await tx.select({ id: inventoryMovements.id }).from(inventoryMovements).where(and(
+          eq(inventoryMovements.referenceType, "WORK_ORDER"),
+          eq(inventoryMovements.referenceId, Number(cnPreview.workOrderId)),
+          eq(inventoryMovements.movementType, "OUT"),
+        )).for("share").limit(1))[0];
+      const executionCost = workOrder == null
+        ? null
+        : round2(money(workOrder.materialsCost).plus(money(workOrder.laborCost)).plus(postedCost));
+      if (executionCost == null || executionCost.gt(0) || workOrder?.workStartedAt != null || materialEvidence || movementEvidence)
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعذّر تنفيذ مرتجع بيع مباشر لأمر الشغل",
+            why: workOrder == null
+              ? "تعذر إثبات أمر الشغل الأصلي ومصير تكلفته"
+              : "أمر الشغل بدأ تنفيذه أو يحمل تكلفة أو خامات أو حركة صرف فعلية؛ إلغاؤه هنا سيعكس البيع ويبقي التنفيذ بلا مصير محاسبي ومخزني موثّق",
+            doThis:
+              "استعمل النقص والمعالجة أو عكس تسليم أمر الشغل المعتمد، وحدد إعادة الإرسال أو إعادة العمل أو الهدر/التلف ثم سوّ حق العميل",
+          }),
+        });
+    }
     const invPreview = (
       await tx.select({ paidAmount: invoices.paidAmount }).from(invoices)
         .where(eq(invoices.id, Number(cnPreview.invoiceId))).limit(1)
@@ -325,7 +360,9 @@ export async function returnConsignment(
     if (
       Number(cn.branchId) !== Number(cnPreview.branchId) ||
       Number(cn.partyId) !== Number(cnPreview.partyId) ||
-      Number(cn.invoiceId) !== Number(cnPreview.invoiceId)
+      Number(cn.invoiceId) !== Number(cnPreview.invoiceId) ||
+      cn.sourceType !== cnPreview.sourceType ||
+      Number(cn.workOrderId ?? 0) !== Number(cnPreview.workOrderId ?? 0)
     ) {
       throw new TRPCError({ code: "CONFLICT", message: "تغيّرت أطراف الإرسالية أثناء الإرجاع؛ أعد المحاولة" });
     }

@@ -41,6 +41,7 @@ import {
   invoiceItemServiceMaterials,
   invoiceItems,
   invoices,
+  inventoryMovements,
   onlineOrders,
   productVariants,
   products,
@@ -50,6 +51,7 @@ import {
   salesControlRequests,
   shifts,
   users,
+  workOrderMaterials,
   workOrders,
 } from "../../drizzle/schema";
 import { retryOnDeadlock } from "../lib/retryDeadlock";
@@ -123,6 +125,7 @@ import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { userNameSnapshot } from "./userSnapshot";
 import { classifyGiftPosting } from "./sale/giftPosting";
+import { postDamagedReturnReclassificationTx } from "./returns/damagedReturnReclassification";
 import { paymentAssetRole } from "./sale/paymentPosting";
 import { nextVoucherNumber } from "./voucher/helpers";
 import { assertNoActiveInstallmentPlanAfterInvoiceLockTx } from "./installment/guards";
@@ -986,15 +989,91 @@ export async function returnSaleInTx(
     !options.componentRights &&
     !input.internalCorrectionReversal
   ) {
-    throw new TRPCError({
-      code: "PRECONDITION_FAILED",
-      message: appErrorMessage({
-        what: "تعذّر تنفيذ مرتجع بيع مباشر لأمر الشغل",
-        why: "ناتج أمر الشغل مخصّص للعميل ومواده صُرفت أثناء التنفيذ؛ المرتجع المباشر لا يحدد هل الناتج سيعاد إرساله أو يعاد عمله أو يُعتمد هالكاً",
-        doThis:
-          "افتح النقص والمعالجة واختر المصير الفعلي للناتج والمواد ثم سوّ حق العميل؛ يبقى مسار حقوق المكونات المعتمد وتصحيح الفاتورة الداخلي متاحين",
-      }),
-    });
+    const linkedWorkOrder = (
+      await tx
+        .select({
+          id: workOrders.id,
+          materialsCost: workOrders.materialsCost,
+          laborCost: workOrders.laborCost,
+          workStartedAt: workOrders.workStartedAt,
+        })
+        .from(workOrders)
+        .where(eq(workOrders.invoiceId, inv.id))
+        .for("share")
+        .limit(1)
+    )[0];
+    const postedCost = money(
+      (
+        await tx
+          .select({
+            cost: sql<string>`COALESCE(SUM(${accountingEntries.cost}),0)`,
+          })
+          .from(accountingEntries)
+          .where(
+            and(
+              eq(accountingEntries.invoiceId, inv.id),
+              eq(accountingEntries.entryType, "SALE"),
+            ),
+          )
+      )[0]?.cost ?? "0",
+    );
+    const materialEvidence = linkedWorkOrder
+      ? (
+          await tx
+            .select({ id: workOrderMaterials.id })
+            .from(workOrderMaterials)
+            .where(
+              and(
+                eq(workOrderMaterials.workOrderId, linkedWorkOrder.id),
+                sql`${workOrderMaterials.baseQuantity} > 0`,
+                sql`${workOrderMaterials.unitCost} > 0`,
+              ),
+            )
+            .for("share")
+            .limit(1)
+        )[0]
+      : null;
+    const movementEvidence = linkedWorkOrder
+      ? (
+          await tx
+            .select({ id: inventoryMovements.id })
+            .from(inventoryMovements)
+            .where(
+              and(
+                eq(inventoryMovements.referenceType, "WORK_ORDER"),
+                eq(inventoryMovements.referenceId, linkedWorkOrder.id),
+                eq(inventoryMovements.movementType, "OUT"),
+              ),
+            )
+            .for("share")
+            .limit(1)
+        )[0]
+      : null;
+    const executionCost = linkedWorkOrder
+      ? round2(
+          money(linkedWorkOrder.materialsCost)
+            .plus(money(linkedWorkOrder.laborCost))
+            .plus(postedCost),
+        )
+      : null;
+    if (
+      executionCost == null ||
+      executionCost.gt(0) ||
+      linkedWorkOrder?.workStartedAt != null ||
+      materialEvidence != null ||
+      movementEvidence != null
+    )
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذّر تنفيذ مرتجع بيع مباشر لأمر الشغل",
+          why: executionCost == null
+            ? "تعذر إثبات أمر الشغل الأصلي ومصير تكلفته"
+            : "أمر الشغل بدأ تنفيذه أو يحمل تكلفة أو خامات أو حركة صرف فعلية؛ مسار مرتجع البيع العام لا يعيد تصنيف تكلفته إلى إعادة عمل أو هدر/خسارة",
+          doThis:
+            "استعمل عكس التسليم المعتمد أو النقص والمعالجة، وحدد إعادة الإرسال أو إعادة العمل أو الهدر/التلف ثم سوّ حق العميل؛ لا يُعاد ناتج أمر الشغل المخصص إلى مخزون الرف",
+        }),
+      });
   }
   if (Number(inv.branchId) !== Number(invPreview.branchId)) {
     throw new TRPCError({
@@ -2172,6 +2251,7 @@ export async function returnSaleInTx(
   const byConsignor = new Map<number, { paid: Decimal; gift: Decimal }>();
   let nonRestoredServicePaidCost = new Decimal(0);
   let nonRestoredServiceGiftCost = new Decimal(0);
+  let ownedDamagedCost = new Decimal(0);
   for (const { line, item } of work) {
     const share = allocateLineCost(
       item.lineCost,
@@ -2195,6 +2275,16 @@ export async function returnSaleInTx(
       if (item.isGift)
         nonRestoredServiceGiftCost = nonRestoredServiceGiftCost.plus(share);
       else nonRestoredServicePaidCost = nonRestoredServicePaidCost.plus(share);
+    } else if (
+      !restock &&
+      inv.sourceType !== "WORKORDER" &&
+      !options.componentRights &&
+      !item.isGift &&
+      !digitalVariants.has(Number(item.variantId))
+    ) {
+      // الصنف العادي والبكج كلاهما يحملان lineCost التاريخية المتراكمة. مكوّنات
+      // البكج محكومة بأنها مملوكة ومخزنية، فلا نقرأ تكلفة اليوم ولا نخمّن قيمة.
+      ownedDamagedCost = ownedDamagedCost.plus(share);
     }
   }
   const consignmentPaidShare = round2(
@@ -2214,6 +2304,7 @@ export async function returnSaleInTx(
   // لذلك نعكس لقطة COGS/GIFT_OUT الأصلية كي لا تتضاعف الكلفة.
   nonRestoredServicePaidCost = round2(nonRestoredServicePaidCost);
   nonRestoredServiceGiftCost = round2(nonRestoredServiceGiftCost);
+  ownedDamagedCost = round2(ownedDamagedCost);
   const ownedReversedCost = restock
     ? round2(
         Decimal.max(
@@ -2393,7 +2484,7 @@ export async function returnSaleInTx(
     : null;
   // مرتجع هدية صِرفة لا يعكس SALE/AR؛ أثره المالي الوحيد عكس GIFT_OUT عند عودتها.
   if (returnPostingIntent) {
-    await postEntry(tx, {
+    const returnEntryId = await postEntry(tx, {
       entryType: "RETURN",
       branchId: Number(inv.branchId),
       invoiceId: input.invoiceId,
@@ -2420,6 +2511,14 @@ export async function returnSaleInTx(
           : ""),
       postingIntent: returnPostingIntent,
       postingSourceComponents: returnPostingSource,
+    });
+    await postDamagedReturnReclassificationTx(tx, {
+      branchId: Number(inv.branchId),
+      invoiceId: input.invoiceId,
+      sourceReturnEntryId: returnEntryId,
+      historicalCost: ownedDamagedCost,
+      createdBy: actor.userId,
+      createdByNameSnapshot: returnOperatorName,
     });
   }
 

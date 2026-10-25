@@ -223,13 +223,11 @@ export async function chargeDispatchEligibilityTx(
 ) {
   const paid = money(charge.paidAmount),
     remaining = money(charge.amount).minus(paid);
-  const completedPaidImmediateService =
-    charge.category === "SERVICE" &&
-    charge.status === "COMPLETED" &&
-    paid.gt(0) &&
-    paid.eq(charge.amount);
+  const collectibleLifecycle = ["APPROVED", "COMPLETED"].includes(
+    charge.status,
+  );
   if (
-    (charge.status !== "APPROVED" && !completedPaidImmediateService) ||
+    !collectibleLifecycle ||
     !money(charge.amount).gt(0) ||
     money(charge.refundedAmount).gt(0)
   )

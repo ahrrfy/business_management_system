@@ -617,7 +617,7 @@ export async function loadWorkflowPreviewTx(
         .where(
           and(
             eq(fulfillmentCharges.requestId, request.id),
-            eq(fulfillmentCharges.status, "APPROVED"),
+            inArray(fulfillmentCharges.status, ["APPROVED", "COMPLETED"]),
           ),
         )
     : [];
@@ -1096,7 +1096,7 @@ export async function loadWorkflowPreviewTx(
     ],
     collect: [
       charge && !cn
-        ? charge.status === "APPROVED" &&
+        ? ["APPROVED", "COMPLETED"].includes(charge.status) &&
           money(charge.amount).gt(charge.paidAmount)
         : !!activeCn && !execution && cn!.returnDeclaredAt == null,
       execution

@@ -1069,7 +1069,7 @@ export async function bindExternalPaymentAttempt(
       && allocations.every(
         (r) =>money(r.payment.amount).gt(0)&&r.payment.branchId===receipt.branchId
         &&r.charge.branchId===receipt.branchId&&r.charge.customerId===receipt.partyId
-        &&r.charge.status==="APPROVED"&&r.charge.category!=="SHOP_EXPENSE")
+        &&isCollectibleFulfillmentCharge(r.charge)&&r.charge.category!=="SHOP_EXPENSE")
       && entry!=null&&entry.branchId===receipt.branchId&&entry.customerId===receipt.partyId&&money(entry.amount).eq(money(receipt.amount))
       && declared?.allocatedAmount===allocated.toFixed(2)&&declared?.excessLiabilityAmount===excess.toFixed(2)
       && (!excess.gt(0)||entry.notes?.includes(`فائض أمانة عميل ${excess.toFixed(2)}`)===true);

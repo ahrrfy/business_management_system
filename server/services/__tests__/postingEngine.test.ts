@@ -138,6 +138,61 @@ describe("postingEngine — legacy fallback and exact money", () => {
 });
 
 describe("postingEngine — explicit PostingIntent", () => {
+  it("allows damaged-return reclassification only as zero-analytical LOSSES to COGS", () => {
+    const source = {
+      roleDebits: { LOSSES: "100.00" },
+      roleCredits: { COGS: "100.00" },
+    };
+    const intent = createPostingIntent(
+      "ADJUST_DAMAGED_RETURN_RECLASS",
+      "ADJUST",
+      [debitLine("LOSSES", "100.00"), creditLine("COGS", "100.00")],
+      source,
+    );
+    expect(
+      postingLinesFor({
+        entryType: "ADJUST",
+        amount: "0.00",
+        revenue: "0.00",
+        cost: "0.00",
+        profit: "0.00",
+        taxAmount: "0.00",
+        ...source,
+        intent,
+      }),
+    ).toEqual(intent.lines);
+    expect(() =>
+      postingLinesFor({
+        entryType: "ADJUST",
+        amount: "0.00",
+        revenue: "0.00",
+        cost: "0.00",
+        profit: "1.00",
+        taxAmount: "0.00",
+        ...source,
+        intent,
+      }),
+    ).toThrow(InvalidPostingIntentError);
+    const inventoryIntent = createPostingIntent(
+      "ADJUST_DAMAGED_RETURN_RECLASS",
+      "ADJUST",
+      [debitLine("LOSSES", "100.00"), creditLine("INVENTORY", "100.00")],
+    );
+    expect(() =>
+      postingLinesFor({
+        entryType: "ADJUST",
+        amount: "0.00",
+        revenue: "0.00",
+        cost: "0.00",
+        profit: "0.00",
+        taxAmount: "0.00",
+        roleDebits: { LOSSES: "100.00" },
+        roleCredits: { INVENTORY: "100.00" },
+        intent: inventoryIntent,
+      }),
+    ).toThrow(InvalidPostingIntentError);
+  });
+
   it("creates and validates a balanced profile and postingLinesFor trusts only that validated intent", () => {
     const intent = createPostingIntent(
       "PAYMENT_IN_CUSTOMER",

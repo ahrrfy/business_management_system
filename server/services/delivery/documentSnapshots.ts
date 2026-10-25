@@ -1,4 +1,9 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
+import {
+  deliveryConsignments,
+  deliveryEvents,
+  deliveryShipmentMembers,
+} from "../../../drizzle/schema";
 import {
   deliveryDocumentPrints,
   deliveryDocumentSnapshots,
@@ -39,6 +44,74 @@ export interface CreateDeliveryDocumentSnapshotInput {
   createdBy: number;
 }
 
+export interface ShipmentDispatchDocumentPayload {
+  schemaVersion: 1;
+  operationId: string;
+  eventOccurredAt: string;
+  evidence: {
+    mode: "COMMITTED_DISPATCH_EVENT" | "HISTORICAL_ORIGINAL_EVIDENCE";
+    eventId?: number;
+    eventKey: string;
+    unavailableFields: string[];
+    notice?: string;
+  };
+  shipment: {
+    consignmentId: number;
+    consignmentNumber: string;
+    fulfillmentRequestId: number | null;
+    branchId: number;
+    partyId: number;
+    assignedUserId: number | null;
+    sourceType: string;
+    sourceId: number;
+    members: Array<{
+      id: number;
+      consignmentNumber: string;
+      invoiceId: number | null;
+      sourceType: string;
+      sourceId: number;
+    }>;
+  };
+  party: { id: number; name: string };
+  recipient: {
+    name: string | null;
+    phone: string | null;
+    address: string | null;
+    governorate: string | null;
+  };
+  money: {
+    codAmount: string | null;
+    deliveryFee: string | null;
+    feeCollection: "COURIER" | "COUNTER" | "SHOP" | null;
+    customerCollectionAtDispatch: "0.00";
+    currentTotal: string | null;
+    paidAmount: string | null;
+  };
+  invoiceIds: number[];
+  invoices: Array<{
+    id: number;
+    invoiceNumber: string;
+    total: string | null;
+    paidAmount?: string | null;
+    returnedTotal?: string | null;
+    status?: string | null;
+    identityEvidence?: "EVENT_TIME_RECORD" | "INTERNAL_ID_ONLY";
+  }>;
+  aftercareNotice: string | null;
+}
+
+export interface CreateShipmentDispatchDocumentsInput {
+  consignmentId: number;
+  branchId: number;
+  shiftId?: number | null;
+  eventKey: string;
+  eventOccurredAt: Date;
+  createdBy: number;
+  payload: ShipmentDispatchDocumentPayload;
+  sourceVersion?: string;
+  documentTypes?: Array<"DISPATCH_SLIP" | "SHIPPING_LABEL">;
+}
+
 function documentNumber(
   input: CreateDeliveryDocumentSnapshotInput,
   hash: string,
@@ -47,23 +120,30 @@ function documentNumber(
   return `DDS-${kind}-${input.sourceId}-${hash.slice(0, 12)}`.slice(0, 80);
 }
 
+function timestampSecond(value: Date): number {
+  return Math.floor(value.getTime() / 1_000) * 1_000;
+}
+
 function assertSameSnapshot(
   row: typeof deliveryDocumentSnapshots.$inferSelect,
   input: CreateDeliveryDocumentSnapshotInput,
   payloadHash: string,
 ) {
-  if (
-    row.payloadHash !== payloadHash ||
-    row.sourceType !== input.sourceType ||
-    row.sourceId !== input.sourceId ||
-    row.sourceVersion !== input.sourceVersion ||
-    row.branchId !== input.branchId ||
-    (row.shiftId ?? null) !== (input.shiftId ?? null) ||
-    row.layout !== input.layout ||
-    row.eventOccurredAt.getTime() !== input.eventOccurredAt.getTime()
-  )
+  const mismatches = [
+    row.payloadHash !== payloadHash ? "payload" : null,
+    row.sourceType !== input.sourceType ? "sourceType" : null,
+    row.sourceId !== input.sourceId ? "sourceId" : null,
+    row.sourceVersion !== input.sourceVersion ? "sourceVersion" : null,
+    row.branchId !== input.branchId ? "branchId" : null,
+    (row.shiftId ?? null) !== (input.shiftId ?? null) ? "shiftId" : null,
+    row.layout !== input.layout ? "layout" : null,
+    row.eventOccurredAt.getTime() !== timestampSecond(input.eventOccurredAt)
+      ? "eventOccurredAt"
+      : null,
+  ].filter((value): value is string => value != null);
+  if (mismatches.length)
     throw fulfillmentError(
-      "لقطة المستند موجودة ببيانات مختلفة؛ لا يجوز استبدال أثر الطباعة الأصلي",
+      `لقطة المستند موجودة ببيانات مختلفة (${mismatches.join("، ")})؛ لا يجوز استبدال أثر الطباعة الأصلي`,
       "CONFLICT",
     );
 }
@@ -107,7 +187,9 @@ export async function createDeliveryDocumentSnapshotTx(
       branchId: input.branchId,
       shiftId: input.shiftId ?? null,
       eventKey: input.eventKey,
-      eventOccurredAt: input.eventOccurredAt,
+      // MySQL TIMESTAMP without FSP can round fractional seconds. Normalize
+      // deliberately so event identity is stable across insert and replay.
+      eventOccurredAt: new Date(timestampSecond(input.eventOccurredAt)),
       payload: input.payload,
       payloadHash,
       createdBy: input.createdBy,
@@ -132,6 +214,327 @@ export async function createDeliveryDocumentSnapshotTx(
   if (!snapshot) throw fulfillmentError("تعذر تثبيت لقطة المستند", "CONFLICT");
   assertSameSnapshot(snapshot, input, payloadHash);
   return { snapshot, idempotentReplay: false };
+}
+
+/**
+ * Persists the two documents emitted by a committed dispatch event. The input
+ * is the caller's event-time evidence; this helper never reloads invoice money
+ * or replaces it with later live values.
+ */
+export async function createShipmentDispatchDocumentSnapshotsTx(
+  tx: Tx,
+  input: CreateShipmentDispatchDocumentsInput,
+) {
+  if (
+    !Number.isSafeInteger(input.consignmentId) ||
+    input.consignmentId <= 0 ||
+    !Number.isSafeInteger(input.createdBy) ||
+    input.createdBy <= 0 ||
+    !Number.isFinite(input.eventOccurredAt.getTime())
+  )
+    throw fulfillmentError(
+      "دليل حدث الإسناد غير صالح لإنشاء المطبوعات",
+      "BAD_REQUEST",
+    );
+  if (
+    input.payload.shipment.consignmentId !== input.consignmentId ||
+    input.payload.shipment.branchId !== input.branchId ||
+    input.payload.eventOccurredAt !== input.eventOccurredAt.toISOString() ||
+    input.payload.evidence.eventKey !== input.eventKey
+  )
+    throw fulfillmentError(
+      "هوية لقطة الإسناد لا تطابق دليل الحدث الأصلي",
+      "CONFLICT",
+    );
+
+  const sourceVersion = input.sourceVersion ?? idempotencyHash(input.payload);
+  const snapshotIds: number[] = [];
+  const requestedTypes = new Set(
+    input.documentTypes ?? ["DISPATCH_SLIP", "SHIPPING_LABEL"],
+  );
+  for (const document of [
+    {
+      documentType: "DISPATCH_SLIP" as const,
+      layout: "THERMAL_80_CONTENT_72" as const,
+    },
+    {
+      documentType: "SHIPPING_LABEL" as const,
+      layout: "LABEL_100X150_SAFE_3" as const,
+    },
+  ]) {
+    if (!requestedTypes.has(document.documentType)) continue;
+    const created = await createDeliveryDocumentSnapshotTx(tx, {
+      documentType: document.documentType,
+      layout: document.layout,
+      sourceType: "SHIPMENT",
+      sourceId: input.consignmentId,
+      sourceVersion,
+      branchId: input.branchId,
+      shiftId: input.shiftId ?? null,
+      eventKey: input.eventKey,
+      eventOccurredAt: input.eventOccurredAt,
+      payload: { ...input.payload, documentType: document.documentType },
+      createdBy: input.createdBy,
+    });
+    snapshotIds.push(Number(created.snapshot.id));
+  }
+  return snapshotIds.sort((a, b) => a - b);
+}
+
+const assignmentEventTypes = [
+  "OUT_FOR_DELIVERY",
+  "ASSIGNMENT_REACTIVATED",
+  "REASSIGNED",
+] as const;
+
+function eventPayload(value: unknown): Record<string, unknown> | null {
+  return value != null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/**
+ * Explicit, authorized bootstrap for shipments created before document
+ * snapshots existed. It requires an immutable assignment event whose party and
+ * source identity still match the recorded consignment. Mutable invoice totals,
+ * payment state and directory labels are deliberately recorded as unavailable.
+ */
+export async function bootstrapHistoricalShipmentDocumentSnapshotsTx(
+  tx: Tx,
+  input: { consignmentId: number; branchId: number },
+) {
+  const existing = await tx
+    .select()
+    .from(deliveryDocumentSnapshots)
+    .where(
+      and(
+        eq(deliveryDocumentSnapshots.sourceType, "SHIPMENT"),
+        eq(deliveryDocumentSnapshots.sourceId, input.consignmentId),
+        eq(deliveryDocumentSnapshots.branchId, input.branchId),
+        inArray(deliveryDocumentSnapshots.documentType, [
+          "DISPATCH_SLIP",
+          "SHIPPING_LABEL",
+        ]),
+      ),
+    );
+  const [membership] = await tx
+    .select({ leaderId: deliveryShipmentMembers.leaderConsignmentId })
+    .from(deliveryShipmentMembers)
+    .where(eq(deliveryShipmentMembers.consignmentId, input.consignmentId))
+    .limit(1);
+  if (membership && Number(membership.leaderId) !== Number(input.consignmentId))
+    throw fulfillmentError(
+      "اطبع الشحنة من باركود الإرسالية القائدة؛ لا تُنشأ لقطة تاريخية لعضو منفرد",
+      "CONFLICT",
+    );
+
+  const [leader] = await tx
+    .select()
+    .from(deliveryConsignments)
+    .where(eq(deliveryConsignments.id, input.consignmentId))
+    .for("update")
+    .limit(1);
+  if (!leader) throw fulfillmentError("الإرسالية غير موجودة", "NOT_FOUND");
+  if (Number(leader.branchId) !== input.branchId)
+    throw fulfillmentError("الإرسالية خارج نطاق الفرع الحالي", "FORBIDDEN");
+
+  const events = await tx
+    .select()
+    .from(deliveryEvents)
+    .where(
+      and(
+        eq(deliveryEvents.consignmentId, input.consignmentId),
+        or(
+          ...assignmentEventTypes.map((type) =>
+            eq(deliveryEvents.eventType, type),
+          ),
+        ),
+      ),
+    )
+    .orderBy(desc(deliveryEvents.occurredAt), desc(deliveryEvents.id));
+  const originalEvent = events.find((event) => {
+    const payload = eventPayload(event.payload);
+    return (
+      event.actorUserId != null &&
+      Number(payload?.partyId) === Number(leader.partyId) &&
+      String(payload?.sourceType ?? "") === leader.sourceType &&
+      Number(payload?.sourceId) === Number(leader.sourceId)
+    );
+  });
+  if (!originalEvent || originalEvent.actorUserId == null)
+    throw fulfillmentError(
+      "لا تتوفر واقعة إسناد أصلية متطابقة؛ لا يمكن إنشاء نسخة تاريخية من القيم الحية",
+      "CONFLICT",
+    );
+
+  const memberRows = membership
+    ? await tx
+        .select({
+          id: deliveryConsignments.id,
+          consignmentNumber: deliveryConsignments.consignmentNumber,
+          invoiceId: deliveryConsignments.invoiceId,
+          sourceType: deliveryConsignments.sourceType,
+          sourceId: deliveryConsignments.sourceId,
+        })
+        .from(deliveryShipmentMembers)
+        .innerJoin(
+          deliveryConsignments,
+          eq(deliveryConsignments.id, deliveryShipmentMembers.consignmentId),
+        )
+        .where(
+          eq(deliveryShipmentMembers.leaderConsignmentId, input.consignmentId),
+        )
+    : [
+        {
+          id: leader.id,
+          consignmentNumber: leader.consignmentNumber,
+          invoiceId: leader.invoiceId,
+          sourceType: leader.sourceType,
+          sourceId: leader.sourceId,
+        },
+      ];
+  const members = memberRows.length ? memberRows : [leader];
+  const invoiceIds = Array.from(
+    new Set(
+      members.flatMap((member) =>
+        member.invoiceId == null ? [] : [Number(member.invoiceId)],
+      ),
+    ),
+  );
+  const eventOccurredAt = originalEvent.occurredAt;
+  const eventKey = `legacy-document:${idempotencyHash({
+    eventId: Number(originalEvent.id),
+    eventKey: originalEvent.eventKey,
+  }).slice(0, 40)}`;
+  const sameEventExisting = existing.filter((row) => {
+    const payload = eventPayload(row.payload);
+    const evidence = eventPayload(payload?.evidence);
+    return (
+      row.eventKey === eventKey ||
+      Number(evidence?.eventId) === Number(originalEvent.id)
+    );
+  });
+  const existingTypes = new Set(
+    sameEventExisting.map((row) => row.documentType),
+  );
+  if (existingTypes.has("DISPATCH_SLIP") && existingTypes.has("SHIPPING_LABEL"))
+    return sameEventExisting.map((row) => Number(row.id)).sort((a, b) => a - b);
+
+  // A prior failure may have persisted only one document for this exact
+  // assignment. Complete the pair from that immutable row itself.
+  const immutablePeer = sameEventExisting[0];
+  if (immutablePeer) {
+    const missingTypes = (["DISPATCH_SLIP", "SHIPPING_LABEL"] as const).filter(
+      (type) => !existingTypes.has(type),
+    );
+    const created: number[] = [];
+    for (const documentType of missingTypes) {
+      const peerPayload = eventPayload(immutablePeer.payload);
+      const row = await createDeliveryDocumentSnapshotTx(tx, {
+        documentType,
+        layout:
+          documentType === "DISPATCH_SLIP"
+            ? "THERMAL_80_CONTENT_72"
+            : "LABEL_100X150_SAFE_3",
+        sourceType: "SHIPMENT",
+        sourceId: input.consignmentId,
+        sourceVersion: immutablePeer.sourceVersion,
+        branchId: input.branchId,
+        shiftId: immutablePeer.shiftId,
+        eventKey: immutablePeer.eventKey,
+        eventOccurredAt: immutablePeer.eventOccurredAt,
+        payload: {
+          ...(peerPayload ?? { immutablePayload: immutablePeer.payload }),
+          documentType,
+        },
+        createdBy: immutablePeer.createdBy,
+      });
+      created.push(Number(row.snapshot.id));
+    }
+    return Array.from(
+      new Set([...sameEventExisting.map((row) => Number(row.id)), ...created]),
+    ).sort((a, b) => a - b);
+  }
+  const payload: ShipmentDispatchDocumentPayload = {
+    schemaVersion: 1,
+    operationId: `historical:${originalEvent.eventKey}`,
+    eventOccurredAt: eventOccurredAt.toISOString(),
+    evidence: {
+      mode: "HISTORICAL_ORIGINAL_EVIDENCE",
+      eventId: Number(originalEvent.id),
+      eventKey,
+      unavailableFields: [
+        "party.nameAtDispatch",
+        "recipient.atDispatch",
+        "shipment.assignedUserAtDispatch",
+        "invoice.numberAtDispatch",
+        "invoice.totalAtDispatch",
+        "money.codAmountAtDispatch",
+        "money.deliveryFeeAtDispatch",
+        "money.feeCollectionAtDispatch",
+        "money.currentTotalAtDispatch",
+        "money.paidAmountAtDispatch",
+      ],
+      notice:
+        "نسخة تاريخية: وقت الإسناد وهوية المصدر من الحدث الأصلي؛ بيانات المستلم من سجل الإرسالية الحالي؛ المبالغ واسم الجهة وقت الإسناد غير متاحة.",
+    },
+    shipment: {
+      consignmentId: Number(leader.id),
+      consignmentNumber: leader.consignmentNumber,
+      fulfillmentRequestId: leader.fulfillmentRequestId,
+      branchId: Number(leader.branchId),
+      partyId: Number(leader.partyId),
+      assignedUserId: leader.assignedUserId,
+      sourceType: leader.sourceType,
+      sourceId: Number(leader.sourceId),
+      members: members.map((member) => ({
+        id: Number(member.id),
+        consignmentNumber: member.consignmentNumber,
+        invoiceId: member.invoiceId == null ? null : Number(member.invoiceId),
+        sourceType: member.sourceType,
+        sourceId: Number(member.sourceId),
+      })),
+    },
+    party: {
+      id: Number(leader.partyId),
+      name: `جهة التوصيل #${Number(leader.partyId)} (الاسم وقت الإسناد غير متاح)`,
+    },
+    recipient: {
+      name: leader.recipientName,
+      phone: leader.recipientPhone,
+      address: leader.deliveryAddress,
+      governorate: leader.governorate,
+    },
+    money: {
+      codAmount: null,
+      deliveryFee: null,
+      feeCollection: null,
+      customerCollectionAtDispatch: "0.00",
+      currentTotal: null,
+      paidAmount: null,
+    },
+    invoiceIds,
+    invoices: invoiceIds.map((id) => ({
+      id,
+      invoiceNumber: `#${id}`,
+      total: null,
+      identityEvidence: "INTERNAL_ID_ONLY",
+    })),
+    aftercareNotice:
+      leader.sourceType === "AFTERCARE_EXECUTION"
+        ? "تحصيل العميل صفر — الأجرة على المكتبة"
+        : null,
+  };
+  const created = await createShipmentDispatchDocumentSnapshotsTx(tx, {
+    consignmentId: Number(leader.id),
+    branchId: Number(leader.branchId),
+    eventKey,
+    eventOccurredAt,
+    createdBy: Number(originalEvent.actorUserId),
+    payload,
+    documentTypes: ["DISPATCH_SLIP", "SHIPPING_LABEL"],
+  });
+  return created;
 }
 
 export interface RequestDeliveryDocumentPrintInput {
@@ -283,7 +686,10 @@ export async function listDeliveryDocumentSnapshotsTx(
         eq(deliveryDocumentSnapshots.branchId, input.branchId),
       ),
     )
-    .orderBy(desc(deliveryDocumentSnapshots.createdAt));
+    .orderBy(
+      desc(deliveryDocumentSnapshots.createdAt),
+      desc(deliveryDocumentSnapshots.id),
+    );
   if (!snapshots.length) return [];
   const prints = await tx
     .select()

@@ -386,6 +386,96 @@ describe("classified fulfillment charge lifecycle", () => {
       ),
     ).toBe(false);
   });
+  it.each([
+    { timing: "before assignment", completeBeforeAssignment: true },
+    { timing: "after assignment", completeBeforeAssignment: false },
+  ])(
+    "keeps an unpaid COMPLETED service in courier COD $timing",
+    async ({ completeBeforeAssignment }) => {
+      await db().insert(s.deliveryParties).values({
+        id: 1,
+        name: "ناقل الخدمة المكتملة",
+        partyType: "COMPANY",
+        branchId: 1,
+        currentBalance: "0",
+        isActive: true,
+      });
+      const request = await createFulfillmentRequest(
+        {
+          branchId: 1,
+          customerId: 1,
+          recipientName: "مستلم خدمة مكتملة",
+          recipientPhone: "07701234567",
+          deliveryAddress: "بغداد",
+          partyId: 1,
+          deliveryFee: "0",
+          feeCollection: "SHOP",
+          sources: [],
+          clientRequestId: key(),
+        },
+        cashier,
+      );
+      const approvedCharge = await approved({ requestId: request.id });
+      let currentCharge = approvedCharge;
+      if (completeBeforeAssignment)
+        currentCharge = await completeFulfillmentCharge(
+          {
+            id: approvedCharge.id,
+            expectedVersion: approvedCharge.version,
+            clientRequestId: key(),
+            evidence: "اكتمل تجهيز الخدمة قبل إسناد الشحنة",
+          },
+          manager,
+        );
+
+      const sent = await releaseFulfillmentRequest(
+        {
+          id: request.id,
+          expectedVersion: request.version,
+          clientRequestId: key(),
+          externalTrackingRef: key(),
+        },
+        manager,
+      );
+      if (!completeBeforeAssignment)
+        currentCharge = await completeFulfillmentCharge(
+          {
+            id: approvedCharge.id,
+            expectedVersion: approvedCharge.version,
+            clientRequestId: key(),
+            evidence: "اكتمل تجهيز الخدمة بعد إسناد الشحنة",
+          },
+          manager,
+        );
+
+      expect(currentCharge.status).toBe("COMPLETED");
+      expect(
+        (
+          await db()
+            .select()
+            .from(s.deliveryConsignments)
+            .where(eq(s.deliveryConsignments.id, sent.consignmentId))
+        )[0].codAmount,
+      ).toBe("2000.00");
+      await withTx(async (tx) => {
+        expect(
+          await collectAssignedConsignmentClaimsTx(
+            tx,
+            {
+              consignmentId: sent.consignmentId,
+              actualAmount: "2000",
+              eventKey: key(),
+            },
+            manager,
+          ),
+        ).toMatchObject({
+          invoiceAmount: "0.00",
+          chargeAmount: "2000.00",
+          excessAmount: "0.00",
+        });
+      });
+    },
+  );
   it("PASS_THROUGH 3000 is liability with zero revenue and no duplicate expense", async () => {
     await allowCashierCost();
     const row = await approved({

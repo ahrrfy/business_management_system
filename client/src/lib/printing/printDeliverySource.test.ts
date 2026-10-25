@@ -65,11 +65,36 @@ describe("source-aware delivery slip", () => {
       },
       new Date("2026-10-25T15:30:00Z"),
     );
-    expect(doc.meta?.some((line) => line.startsWith("وقت الإسناد:"))).toBe(true);
-    expect(doc.meta?.some((line) => line.startsWith("وقت الطباعة:"))).toBe(true);
+    expect(doc.meta?.some((line) => line.startsWith("وقت الإسناد:"))).toBe(
+      true,
+    );
+    expect(doc.meta?.some((line) => line.startsWith("وقت الطباعة:"))).toBe(
+      true,
+    );
     expect(doc.meta?.join(" ")).toContain("نسخة معاد طباعتها");
     expect(doc.meta?.join(" ")).toContain("نسخة بدل فاقد");
     expect(doc.barcodeSet?.qrPayload).toBe("");
+  });
+
+  it("labels unavailable historical amounts instead of silently printing zero", () => {
+    const doc = buildDeliveryDispatchSlipDoc({
+      ...aftercare,
+      sourceType: "INVOICE",
+      invoiceId: 4,
+      orderKind: "invoice",
+      salePrice: null,
+      deposit: null,
+      codAmount: null,
+      deliveryFee: null,
+      feeCollection: "COURIER",
+      notes:
+        "نسخة تاريخية: المبالغ وقت الإسناد غير متاحة؛ تحقق من المطالبة الحالية.",
+    });
+    expect(doc.totals?.map((row) => row.value)).toEqual([
+      "غير متاحة تاريخياً",
+      "غير متاح تاريخياً",
+    ]);
+    expect(doc.meta?.join(" ")).toContain("نسخة تاريخية");
   });
 });
 
@@ -167,5 +192,25 @@ describe("unified delivery documents", () => {
     expect(html).toContain("تاريخ الإسناد:");
     expect(html).toContain("تاريخ الطباعة:");
     expect(html).toContain("إعادة طباعة");
+  });
+
+  it("does not turn an unavailable historical label amount into COD zero", async () => {
+    const html = await shippingLabelHtml({
+      orderNumber: "CN-LEGACY-44",
+      customerName: "علي",
+      customerPhone: "07700000000",
+      governorate: "بغداد",
+      addressText: "المنصور",
+      total: null,
+      notes: "نسخة تاريخية: المبلغ غير متاح.",
+      createdAt: "2026-10-24T12:00:00Z",
+      printedAt: "2026-10-25T12:00:00Z",
+      isReprint: true,
+      items: [],
+    });
+    expect(html).toContain("المبلغ وقت الإسناد غير متاح");
+    expect(html).toContain("تحقق من المطالبة الحالية قبل التسليم");
+    expect(html).not.toContain("تحصيل نقدي إلزامي");
+    expect(html).not.toContain('class="bc-qr"');
   });
 });

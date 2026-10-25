@@ -5,6 +5,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { cancelSale } from "../sale/cancel";
 import { createSale } from "../saleService";
+import { returnSale } from "../returnService";
 import { truncateTables } from "./__testUtils__";
 
 const owner = { userId: 1, branchId: 1, role: "admin" as const };
@@ -217,5 +218,69 @@ describe("invoice reversal historical valuation", () => {
       ),
     ).rejects.toThrow(/مراجعة تكلفة/);
     expect(await stockAndCost()).toEqual({ quantity: 10, cost: "200.00" });
+  });
+
+  it("full damaged bundle reclassifies owned historical cost once without inventory or analytical duplication", async () => {
+    const sale = await createSale(
+      {
+        branchId: 1,
+        customerId: 1,
+        sourceType: "ORDER",
+        lines: [{ variantId: 2, productUnitId: 2, quantity: "1" }],
+      },
+      owner,
+    );
+    const item = (
+      await db()
+        .select()
+        .from(s.invoiceItems)
+        .where(eq(s.invoiceItems.invoiceId, sale.invoiceId))
+    )[0]!;
+    await setCurrentPool();
+    const input = {
+      invoiceId: sale.invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
+      refund: null,
+      restock: false,
+      operatorReason: "full damaged bundle",
+      clientRequestId: "full-damaged-bundle-reclass",
+    } as const;
+
+    await returnSale(input, owner);
+    await returnSale(input, owner);
+
+    expect(await stockAndCost()).toEqual({ quantity: 10, cost: "200.00" });
+    expect(
+      await db()
+        .select()
+        .from(s.branchStock)
+        .where(eq(s.branchStock.variantId, 2)),
+    ).toHaveLength(0);
+    const movements = await db()
+      .select()
+      .from(s.inventoryMovements)
+      .where(eq(s.inventoryMovements.referenceId, sale.invoiceId));
+    expect(movements.filter((movement) => movement.movementType === "RETURN")).toHaveLength(0);
+
+    const entries = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(eq(s.accountingEntries.invoiceId, sale.invoiceId));
+    const returned = entries.find((entry) => entry.entryType === "RETURN")!;
+    const reclassifications = entries.filter((entry) =>
+      entry.dedupeKey?.startsWith("DAMAGED_RETURN_RECLASS:"),
+    );
+    expect(reclassifications).toHaveLength(1);
+    expect(reclassifications[0]).toMatchObject({
+      dedupeKey: `DAMAGED_RETURN_RECLASS:${returned.id}`,
+      amount: "0.00",
+      revenue: "0.00",
+      cost: "0.00",
+      profit: "0.00",
+      taxAmount: "0.00",
+    });
+    expect(
+      entries.reduce((sum, entry) => sum + Number(entry.profit), 0),
+    ).toBe(-100);
   });
 });

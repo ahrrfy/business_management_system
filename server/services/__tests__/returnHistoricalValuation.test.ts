@@ -159,19 +159,19 @@ describe("ordinary sale return historical valuation", () => {
   });
 
   it("does not add stock or change WAVG when the returned unit is damaged", async () => {
-    const { sale, item } = await createHistoricalSale("1");
+    const { sale, item } = await createHistoricalSale("3");
     await resetCurrentPool();
 
-    await returnSale(
-      {
-        invoiceId: sale.invoiceId,
-        lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
-        refund: null,
-        restock: false,
-        operatorReason: "damaged item",
-      },
-      owner,
-    );
+    const input = {
+      invoiceId: sale.invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
+      refund: null,
+      restock: false,
+      operatorReason: "damaged partial item",
+      clientRequestId: "partial-damaged-historical-reclass",
+    } as const;
+    await returnSale(input, owner);
+    await returnSale(input, owner);
 
     const stock = (
       await db()
@@ -187,5 +187,30 @@ describe("ordinary sale return historical valuation", () => {
     )[0]!;
     expect(stock.quantity).toBe(10);
     expect(variant.costPrice).toBe("200.00");
+
+    const movements = await db()
+      .select()
+      .from(s.inventoryMovements)
+      .where(eq(s.inventoryMovements.referenceId, sale.invoiceId));
+    expect(movements.filter((movement) => movement.movementType === "RETURN")).toHaveLength(0);
+    const entries = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(eq(s.accountingEntries.invoiceId, sale.invoiceId));
+    const returned = entries.find((entry) => entry.entryType === "RETURN")!;
+    const reclassifications = entries.filter((entry) =>
+      entry.dedupeKey?.startsWith("DAMAGED_RETURN_RECLASS:"),
+    );
+    expect(reclassifications).toHaveLength(1);
+    expect(reclassifications[0]).toMatchObject({
+      dedupeKey: `DAMAGED_RETURN_RECLASS:${returned.id}`,
+      amount: "0.00",
+      revenue: "0.00",
+      cost: "0.00",
+      profit: "0.00",
+      taxAmount: "0.00",
+    });
+    // الربح التشغيلي لم يُصنع أو يُحذف بالقيد التصنيفي: 1200 − 500 = 700.
+    expect(entries.reduce((sum, entry) => sum + Number(entry.profit), 0)).toBe(700);
   });
 });

@@ -6,6 +6,7 @@ import {
   fulfillmentRequests,
   fulfillmentCharges,
   fulfillmentChargePayments,
+  deliveryDocumentSnapshots,
 } from "../../../drizzle/fulfillmentSchema";
 import type { WorkflowDispatchBatchInput } from "../../../shared/deliveryWorkflow";
 import { docBarcode } from "../../../shared/documentNumber";
@@ -163,20 +164,18 @@ async function useSparseNativeRole(grants: Record<string, boolean>) {
 }
 describe("atomic barcode batch dispatch", () => {
   it("checks every locked implicit FR member before invoice-only authority can materialize an unbilled work order", async () => {
-    await db()
-      .insert(s.workOrders)
-      .values({
-        id: 51,
-        orderNumber: "READY-UNBILLED-51",
-        branchId: 1,
-        customerId: 1,
-        title: "خدمة فعلية جاهزة غير مفوترة",
-        status: "READY",
-        salePrice: "7000",
-        deposit: "0",
-        paymentMode: "COD",
-        createdBy: 1,
-      });
+    await db().insert(s.workOrders).values({
+      id: 51,
+      orderNumber: "READY-UNBILLED-51",
+      branchId: 1,
+      customerId: 1,
+      title: "خدمة فعلية جاهزة غير مفوترة",
+      status: "READY",
+      salePrice: "7000",
+      deposit: "0",
+      paymentMode: "COD",
+      createdBy: 1,
+    });
     const base = await input();
     const request = await createFulfillmentRequest(
       {
@@ -612,6 +611,7 @@ describe("atomic barcode batch dispatch", () => {
   );
   it("creates one genuine group, replays after lost response, and never sells/issues/collects again", async () => {
     const payload = await input();
+    payload.deliveryFee = "5000";
     const before = await noDuplicateEffects();
     const result = await dispatchWorkflowBatch(payload, actor);
     expect(result.invoiceIds).toEqual([1, 2]);
@@ -620,6 +620,38 @@ describe("atomic barcode batch dispatch", () => {
     expect(consignments).toHaveLength(2);
     expect(consignments.every((c) => c.assignedUserId === 2)).toBe(true);
     expect(await noDuplicateEffects()).toEqual(before);
+    const snapshotsBeforeReplay = await db()
+      .select()
+      .from(deliveryDocumentSnapshots)
+      .where(eq(deliveryDocumentSnapshots.sourceId, result.consignmentId));
+    expect(snapshotsBeforeReplay).toHaveLength(2);
+    expect(result.documentSnapshotIds).toEqual(
+      snapshotsBeforeReplay.map((row) => Number(row.id)).sort((a, b) => a - b),
+    );
+    for (const snapshot of snapshotsBeforeReplay) {
+      const document = snapshot.payload as {
+        shipment: { members: Array<{ invoiceId: number | null }> };
+        invoiceIds: number[];
+        money: {
+          codAmount: string;
+          deliveryFee: string;
+          currentTotal: string;
+          paidAmount: string;
+        };
+      };
+      expect(document.shipment.members).toHaveLength(2);
+      expect(document.invoiceIds).toEqual([1, 2]);
+      expect(document.money).toMatchObject({
+        codAmount: "0.00",
+        deliveryFee: "5000.00",
+        currentTotal: "20000.00",
+        paidAmount: "20000.00",
+      });
+    }
+    await db()
+      .update(s.invoices)
+      .set({ paidAmount: "9000", status: "PARTIALLY_PAID" })
+      .where(eq(s.invoices.id, 2));
     const replay = await dispatchWorkflowBatch(payload, actor);
     expect(replay).toMatchObject({
       consignmentId: result.consignmentId,
@@ -627,6 +659,12 @@ describe("atomic barcode batch dispatch", () => {
     });
     expect(await db().select().from(fulfillmentRequests)).toHaveLength(1);
     expect(await db().select().from(s.deliveryConsignments)).toHaveLength(2);
+    expect(
+      await db()
+        .select()
+        .from(deliveryDocumentSnapshots)
+        .where(eq(deliveryDocumentSnapshots.sourceId, result.consignmentId)),
+    ).toEqual(snapshotsBeforeReplay);
     const member = await previewWorkflowScan(
       { raw: "INV-80002", station: "collect", branchId: 1 },
       actor,
@@ -839,15 +877,13 @@ describe("native driver assignment guards", () => {
         .update(s.deliveryParties)
         .set({ userId: null })
         .where(eq(s.deliveryParties.id, 1));
-      await db()
-        .insert(s.deliveryPartyMembers)
-        .values({
-          partyId: 1,
-          userId: 2,
-          memberRole: "DRIVER",
-          isActive: true,
-          createdBy: 1,
-        });
+      await db().insert(s.deliveryPartyMembers).values({
+        partyId: 1,
+        userId: 2,
+        memberRole: "DRIVER",
+        isActive: true,
+        createdBy: 1,
+      });
       const command = await nativeDriverSetup(family),
         before = await nativeDriverSnapshot();
       await expect(command()).rejects.toThrow(/صراحة/);

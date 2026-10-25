@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import {
   deliveryConsignments,
   deliveryParties,
@@ -49,7 +49,10 @@ import {
   operationDecision,
 } from "../../../../shared/operationPermissions";
 import { idempotencyHash } from "../../idempotency";
-import { createDeliveryDocumentSnapshotTx } from "../documentSnapshots";
+import {
+  bootstrapHistoricalShipmentDocumentSnapshotsTx,
+  createShipmentDispatchDocumentSnapshotsTx,
+} from "../documentSnapshots";
 
 function validateSources(sources: WorkflowDispatchSource[]) {
   if (
@@ -223,9 +226,12 @@ async function resultTx(
   const members = await tx
     .select({
       id: deliveryConsignments.id,
+      consignmentNumber: deliveryConsignments.consignmentNumber,
       invoiceId: deliveryConsignments.invoiceId,
       sourceType: deliveryConsignments.sourceType,
       sourceId: deliveryConsignments.sourceId,
+      codAmount: deliveryConsignments.codAmount,
+      deliveryFee: deliveryConsignments.deliveryFee,
     })
     .from(deliveryConsignments)
     .where(
@@ -254,122 +260,148 @@ async function resultTx(
     dispatchedAt: row.dispatchedAt,
     members,
   });
-  const existingSnapshots = await tx
+  const snapshotCandidates = await tx
     .select({
       id: deliveryDocumentSnapshots.id,
       documentType: deliveryDocumentSnapshots.documentType,
+      eventKey: deliveryDocumentSnapshots.eventKey,
+      eventOccurredAt: deliveryDocumentSnapshots.eventOccurredAt,
     })
     .from(deliveryDocumentSnapshots)
     .where(
       and(
-        eq(deliveryDocumentSnapshots.eventKey, eventKey),
+        eq(deliveryDocumentSnapshots.sourceType, "SHIPMENT"),
+        eq(deliveryDocumentSnapshots.sourceId, Number(row.id)),
         inArray(deliveryDocumentSnapshots.documentType, [
           "DISPATCH_SLIP",
           "SHIPPING_LABEL",
         ]),
       ),
+    )
+    .orderBy(desc(deliveryDocumentSnapshots.id));
+  const dispatchSecond = Math.floor(row.dispatchedAt.getTime() / 1_000);
+  const existingSnapshots = (
+    ["DISPATCH_SLIP", "SHIPPING_LABEL"] as const
+  ).flatMap((documentType) => {
+    const snapshot = snapshotCandidates.find(
+      (candidate) =>
+        candidate.documentType === documentType &&
+        (candidate.eventKey === eventKey ||
+          Math.floor(candidate.eventOccurredAt.getTime() / 1_000) ===
+            dispatchSecond),
     );
-  const snapshotIds: number[] = existingSnapshots.map((snapshot) =>
+    return snapshot ? [snapshot] : [];
+  });
+  let snapshotIds: number[] = existingSnapshots.map((snapshot) =>
     Number(snapshot.id),
   );
   if (existingSnapshots.length < 2) {
-    const [partySnapshot] = await tx
-      .select({ id: deliveryParties.id, name: deliveryParties.name })
-      .from(deliveryParties)
-      .where(eq(deliveryParties.id, row.partyId))
-      .limit(1);
-    const invoiceSnapshots = invoiceIds.length
-      ? await tx
-          .select({
-            id: invoices.id,
-            invoiceNumber: invoices.invoiceNumber,
-            total: invoices.total,
-            paidAmount: invoices.paidAmount,
-            returnedTotal: invoices.returnedTotal,
-            status: invoices.status,
-          })
-          .from(invoices)
-          .where(inArray(invoices.id, invoiceIds))
-      : [];
-    const currentTotal = invoiceSnapshots
-      .reduce(
-        (sum, invoice) =>
-          sum.plus(money(invoice.total).minus(invoice.returnedTotal ?? "0")),
-        money(0),
-      )
-      .toFixed(2);
-    const paidAmount = invoiceSnapshots
-      .reduce((sum, invoice) => sum.plus(money(invoice.paidAmount)), money(0))
-      .toFixed(2);
-    const payload = {
-      schemaVersion: 1,
-      operationId,
-      eventOccurredAt: row.dispatchedAt.toISOString(),
-      shipment: {
+    if (idempotentReplay) {
+      snapshotIds = await bootstrapHistoricalShipmentDocumentSnapshotsTx(tx, {
         consignmentId: Number(row.id),
-        consignmentNumber: row.consignmentNumber,
-        fulfillmentRequestId: row.fulfillmentRequestId,
         branchId: Number(row.branchId),
-        partyId: Number(row.partyId),
-        assignedUserId: row.assignedUserId,
-        sourceType: row.sourceType,
-        sourceId: Number(row.sourceId),
-        members,
-      },
-      party: {
-        id: Number(row.partyId),
-        name: partySnapshot?.name ?? "جهة توصيل",
-      },
-      recipient: {
-        name: row.recipientName,
-        phone: row.recipientPhone,
-        address: row.deliveryAddress,
-        governorate: row.governorate,
-      },
-      money: {
-        codAmount: row.codAmount,
-        deliveryFee: row.deliveryFee,
-        feeCollection: row.feeCollection,
-        customerCollectionAtDispatch: "0.00",
-        currentTotal,
-        paidAmount,
-      },
-      invoiceIds,
-      invoices: invoiceSnapshots,
-      aftercareNotice:
-        row.sourceType === "AFTERCARE_EXECUTION"
-          ? "تحصيل العميل صفر — الأجرة على المكتبة"
-          : null,
-    };
-    for (const document of [
-      {
-        type: "DISPATCH_SLIP" as const,
-        layout: "THERMAL_80_CONTENT_72" as const,
-      },
-      {
-        type: "SHIPPING_LABEL" as const,
-        layout: "LABEL_100X150_SAFE_3" as const,
-      },
-    ]) {
-      if (
-        existingSnapshots.some(
-          (snapshot) => snapshot.documentType === document.type,
-        )
-      )
-        continue;
-      const created = await createDeliveryDocumentSnapshotTx(tx, {
-        documentType: document.type,
-        layout: document.layout,
-        sourceType: "SHIPMENT",
-        sourceId: Number(row.id),
-        sourceVersion,
-        branchId: Number(row.branchId),
-        eventKey,
-        eventOccurredAt: row.dispatchedAt,
-        payload: { ...payload, documentType: document.type },
-        createdBy: actorUserId,
       });
-      snapshotIds.push(Number(created.snapshot.id));
+    } else {
+      const [partySnapshot] = await tx
+        .select({ id: deliveryParties.id, name: deliveryParties.name })
+        .from(deliveryParties)
+        .where(eq(deliveryParties.id, row.partyId))
+        .limit(1);
+      const invoiceSnapshots = invoiceIds.length
+        ? await tx
+            .select({
+              id: invoices.id,
+              invoiceNumber: invoices.invoiceNumber,
+              total: invoices.total,
+              paidAmount: invoices.paidAmount,
+              returnedTotal: invoices.returnedTotal,
+              status: invoices.status,
+            })
+            .from(invoices)
+            .where(inArray(invoices.id, invoiceIds))
+        : [];
+      const currentTotal = invoiceSnapshots
+        .reduce(
+          (sum, invoice) =>
+            sum.plus(money(invoice.total).minus(invoice.returnedTotal ?? "0")),
+          money(0),
+        )
+        .toFixed(2);
+      const paidAmount = invoiceSnapshots
+        .reduce((sum, invoice) => sum.plus(money(invoice.paidAmount)), money(0))
+        .toFixed(2);
+      const shipmentCodAmount = members
+        .reduce((sum, member) => sum.plus(money(member.codAmount)), money(0))
+        .toFixed(2);
+      const shipmentDeliveryFee = members
+        .reduce((sum, member) => sum.plus(money(member.deliveryFee)), money(0))
+        .toFixed(2);
+      const shipmentMembers = members.map(
+        ({ codAmount: _codAmount, deliveryFee: _deliveryFee, ...member }) =>
+          member,
+      );
+      const payload = {
+        schemaVersion: 1 as const,
+        operationId,
+        eventOccurredAt: row.dispatchedAt.toISOString(),
+        evidence: {
+          mode: "COMMITTED_DISPATCH_EVENT" as const,
+          eventKey,
+          unavailableFields: [],
+        },
+        shipment: {
+          consignmentId: Number(row.id),
+          consignmentNumber: row.consignmentNumber,
+          fulfillmentRequestId: row.fulfillmentRequestId,
+          branchId: Number(row.branchId),
+          partyId: Number(row.partyId),
+          assignedUserId: row.assignedUserId,
+          sourceType: row.sourceType,
+          sourceId: Number(row.sourceId),
+          members: shipmentMembers,
+        },
+        party: {
+          id: Number(row.partyId),
+          name: partySnapshot?.name ?? "جهة توصيل",
+        },
+        recipient: {
+          name: row.recipientName,
+          phone: row.recipientPhone,
+          address: row.deliveryAddress,
+          governorate: row.governorate,
+        },
+        money: {
+          codAmount: shipmentCodAmount,
+          deliveryFee: shipmentDeliveryFee,
+          feeCollection: row.feeCollection,
+          customerCollectionAtDispatch: "0.00" as const,
+          currentTotal,
+          paidAmount,
+        },
+        invoiceIds,
+        invoices: invoiceSnapshots,
+        aftercareNotice:
+          row.sourceType === "AFTERCARE_EXECUTION"
+            ? "تحصيل العميل صفر — الأجرة على المكتبة"
+            : null,
+      };
+      snapshotIds.push(
+        ...(await createShipmentDispatchDocumentSnapshotsTx(tx, {
+          consignmentId: Number(row.id),
+          branchId: Number(row.branchId),
+          eventKey,
+          eventOccurredAt: row.dispatchedAt,
+          createdBy: actorUserId,
+          sourceVersion,
+          payload,
+          documentTypes: ["DISPATCH_SLIP", "SHIPPING_LABEL"].filter(
+            (type) =>
+              !existingSnapshots.some(
+                (snapshot) => snapshot.documentType === type,
+              ),
+          ) as Array<"DISPATCH_SLIP" | "SHIPPING_LABEL">,
+        })),
+      );
     }
   }
   const [requestItemEffects] =

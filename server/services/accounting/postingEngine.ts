@@ -159,6 +159,7 @@ export type PostingProfile =
   | "RETURN_PURCHASE_CONSIGNMENT"
   | "ADJUST_INVENTORY_GAIN"
   | "ADJUST_INVENTORY_LOSS"
+  | "ADJUST_DAMAGED_RETURN_RECLASS"
   | "ADJUST_INVENTORY_REVALUATION_GAIN"
   | "ADJUST_INVENTORY_REVALUATION_LOSS"
   | "ADJUST_WIP_CONSUME"
@@ -348,6 +349,7 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
     "SUPPLIER_INVOICE_GRNI_REVERSAL",
     "ADJUST_INVENTORY_GAIN",
     "ADJUST_INVENTORY_LOSS",
+    "ADJUST_DAMAGED_RETURN_RECLASS",
     "ADJUST_INVENTORY_REVALUATION_GAIN",
     "ADJUST_INVENTORY_REVALUATION_LOSS",
     "ADJUST_WIP_CONSUME",
@@ -1799,6 +1801,17 @@ export const PROFILE_POLICIES = Object.freeze({
   ),
   ADJUST_INVENTORY_LOSS: profilePolicy("ADJUST", ["LOSSES"], ["INVENTORY"], {
     requireRoleComponents: ["LOSSES", "INVENTORY"],
+  }),
+  ADJUST_DAMAGED_RETURN_RECLASS: profilePolicy("ADJUST", ["LOSSES"], ["COGS"], {
+    reversible: false,
+    sourceAssertions: [
+      sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["LOSSES", "COGS"]),
+      sourceAssertion("revenue", "DEBIT_MINUS_CREDIT", ["LOSSES", "COGS"]),
+      sourceAssertion("cost", "DEBIT_MINUS_CREDIT", ["LOSSES", "COGS"]),
+      sourceAssertion("profit", "DEBIT_MINUS_CREDIT", ["LOSSES", "COGS"]),
+      sourceAssertion("taxAmount", "DEBIT_MINUS_CREDIT", ["LOSSES", "COGS"]),
+    ],
+    requireRoleComponents: ["LOSSES", "COGS"],
   }),
   // إعادة تقييم تكلفة المخزون (تصحيح WAVG بلا تغيّر كميّة) — حسابُ تسويةٍ مخصَّص (INVENTORY_REVALUATION)
   // لا يخلطها بإيرادات/خسائر التشغيل (قرار المالك ١٣/٩ عن تدقيق م١). تبقى ADJUST_INVENTORY_GAIN/LOSS

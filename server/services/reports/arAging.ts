@@ -614,7 +614,7 @@ export async function getCustomerStatement(
     : [];
 
   const openingBalance = await customerOpeningBalance(customerId, from, to);
-  const chargeConds=[eq(fulfillmentCharges.customerId,customerId),eq(fulfillmentCharges.status,"APPROVED")];
+  const chargeConds=[eq(fulfillmentCharges.customerId,customerId),inArray(fulfillmentCharges.status,["APPROVED","COMPLETED"])];
   if(branchId)chargeConds.push(eq(fulfillmentCharges.branchId,branchId));
   if(from)chargeConds.push(sql`${fulfillmentCharges.approvedAt} >= ${`${from} 00:00:00`}`);
   if(to)chargeConds.push(sql`${fulfillmentCharges.approvedAt} < ${`${nextDayStr(to)} 00:00:00`}`);

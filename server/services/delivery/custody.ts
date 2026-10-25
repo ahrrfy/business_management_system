@@ -89,7 +89,7 @@ async function movementIdsByVariantTx(
     .from(inventoryMovements)
     .where(
       and(
-        eq(inventoryMovements.referenceType, "INVOICE"),
+        inArray(inventoryMovements.referenceType, ["INVOICE", "PRINT_SALE"]),
         eq(inventoryMovements.referenceId, invoiceId),
         eq(inventoryMovements.movementType, "OUT"),
         inArray(inventoryMovements.variantId, Array.from(new Set(variantIds))),
@@ -575,6 +575,67 @@ const COMMERCIAL_RETURN_SOURCE_STATES: DeliveryCustodyState[] = [
   "PREPARED_HELD",
 ];
 
+async function deliveryCustodyEventAppliedTx(
+  tx: Tx,
+  custodyItemId: number,
+  input: DeliveryCustodyLifecycleEvent,
+) {
+  return Boolean(
+    (
+      await tx
+        .select({ id: deliveryCustodyEvents.id })
+        .from(deliveryCustodyEvents)
+        .where(
+          and(
+            eq(deliveryCustodyEvents.custodyItemId, custodyItemId),
+            eq(
+              deliveryCustodyEvents.operationId,
+              `delivery.event:${input.eventId}`,
+            ),
+            eq(
+              deliveryCustodyEvents.eventType,
+              `DELIVERY_${input.eventType}`,
+            ),
+          ),
+        )
+        .limit(1)
+    )[0],
+  );
+}
+
+async function markDeliveryCustodyEventAppliedTx(
+  tx: Tx,
+  row: DeliveryCustodyItem,
+  input: DeliveryCustodyLifecycleEvent,
+  targetState: DeliveryCustodyState,
+) {
+  if (await deliveryCustodyEventAppliedTx(tx, Number(row.id), input)) return;
+  const stateAtApplication = (
+    Object.entries(quantities(row)) as Array<
+      [DeliveryCustodyState, number]
+    >
+  ).find(([, baseQuantity]) => baseQuantity > 0)?.[0];
+  await tx.insert(deliveryCustodyEvents).values({
+    eventKey: `CUSTODY:DE:${input.eventId}:I:${row.id}:APPLIED`,
+    custodyItemId: Number(row.id),
+    consignmentId: Number(row.consignmentId),
+    operationId: `delivery.event:${input.eventId}`,
+    eventType: `DELIVERY_${input.eventType}`,
+    fromState: null,
+    toState: stateAtApplication ?? targetState,
+    baseQuantity: Number(row.baseQuantity),
+    evidence: {
+      ...(input.payload ?? {}),
+      deliveryEventId: input.eventId,
+      deliveryEventKey: input.eventKey,
+      deliveryEventType: input.eventType,
+      application: "NO_QUANTITY_TRANSITION",
+      quantitiesAtApplication: quantities(row),
+    },
+    actorUserId: input.actorUserId ?? null,
+  });
+}
+
 async function reconcileCommercialReturnCustodyTx(
   tx: Tx,
   input: DeliveryCustodyLifecycleEvent,
@@ -595,7 +656,16 @@ async function reconcileCommercialReturnCustodyTx(
         .filter((id): id is number => id != null),
     ),
   );
-  if (!itemIds.length) return { initialized: rows.length, transitioned: 0 };
+  if (!itemIds.length) {
+    for (const row of rows)
+      await markDeliveryCustodyEventAppliedTx(
+        tx,
+        row,
+        input,
+        "DAMAGED_CLOSED",
+      );
+    return { initialized: rows.length, transitioned: 0 };
+  }
   const counters = await tx
     .select({
       id: invoiceItems.id,
@@ -627,12 +697,31 @@ async function reconcileCommercialReturnCustodyTx(
     (a, b) => Number(a.id) - Number(b.id),
   )) {
     if (
-      original.itemKind !== "STOCKED_ITEM" &&
-      original.itemKind !== "BUNDLE_COMPONENT"
+      await deliveryCustodyEventAppliedTx(tx, Number(original.id), input)
     )
       continue;
+    if (
+      original.itemKind !== "STOCKED_ITEM" &&
+      original.itemKind !== "BUNDLE_COMPONENT"
+    ) {
+      await markDeliveryCustodyEventAppliedTx(
+        tx,
+        original,
+        input,
+        "DAMAGED_CLOSED",
+      );
+      continue;
+    }
     const counter = counterByItem.get(Number(original.invoiceItemId));
-    if (!counter) continue;
+    if (!counter) {
+      await markDeliveryCustodyEventAppliedTx(
+        tx,
+        original,
+        input,
+        "DAMAGED_CLOSED",
+      );
+      continue;
+    }
     if (
       original.itemKind === "BUNDLE_COMPONENT" &&
       componentAdjustedItems.has(Number(original.invoiceItemId))
@@ -653,6 +742,12 @@ async function reconcileCommercialReturnCustodyTx(
               eq(deliveryCustodyItems.version, original.version),
             ),
           );
+      await markDeliveryCustodyEventAppliedTx(
+        tx,
+        original,
+        input,
+        "DAMAGED_CLOSED",
+      );
       continue;
     }
     const itemBaseQuantity = Number(counter.baseQuantity);
@@ -724,6 +819,12 @@ async function reconcileCommercialReturnCustodyTx(
           "CONFLICT",
         );
     }
+    await markDeliveryCustodyEventAppliedTx(
+      tx,
+      row,
+      input,
+      desiredRestocked > 0 ? "RESTOCKED_CLOSED" : "DAMAGED_CLOSED",
+    );
   }
   return { initialized: rows.length, transitioned };
 }
@@ -779,6 +880,10 @@ export async function applyDeliveryCustodyEventTx(
   for (const original of [...rows].sort(
     (a, b) => Number(a.id) - Number(b.id),
   )) {
+    if (
+      await deliveryCustodyEventAppliedTx(tx, Number(original.id), input)
+    )
+      continue;
     let row = original;
     for (const fromState of rule.fromStates) {
       const baseQuantity = quantities(row)[fromState];
@@ -803,6 +908,12 @@ export async function applyDeliveryCustodyEventTx(
       row = result.item;
       transitioned += result.replay ? 0 : 1;
     }
+    await markDeliveryCustodyEventAppliedTx(
+      tx,
+      row,
+      input,
+      rule.toState,
+    );
   }
   return { initialized: rows.length, transitioned };
 }
