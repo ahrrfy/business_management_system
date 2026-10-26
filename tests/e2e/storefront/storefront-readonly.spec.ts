@@ -29,6 +29,12 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+});
+
+const INITIAL_HYDRATION_TIMEOUT_MS = 15_000;
+
 test("home, search and product details remain usable without writes", async ({ page }) => {
   const orderAttempts = await blockOrderCreation(page);
   await page.goto("/store", { waitUntil: "domcontentloaded" });
@@ -36,16 +42,19 @@ test("home, search and product details remain usable without writes", async ({ p
   await expect(page).toHaveTitle(/مكتبة العربية/);
   await expect(page.getByRole("heading", { level: 1, name: "مكتبة العربية للتسوق والتوصيل في العراق" })).toBeAttached();
   const productLink = page.locator('article.store-product-card button[aria-label^="فتح تفاصيل "]').first();
-  await expect(productLink).toBeVisible();
+  await expect(productLink).toBeVisible({ timeout: INITIAL_HYDRATION_TIMEOUT_MS });
   const productName = (await productLink.getAttribute("aria-label"))!.replace("فتح تفاصيل ", "");
 
-  const search = page.getByRole("searchbox", { name: "البحث في منتجات مكتبة العربية" });
+  const search = page.getByRole("combobox", { name: "البحث في منتجات مكتبة العربية" });
   await search.fill(productName);
+  await search.press("Enter");
   await expect(productLink).toBeVisible();
   await productLink.click();
-  await expect(page.getByRole("dialog")).toBeVisible();
-  await expect(page.getByRole("dialog")).toContainText(productName);
-  await page.getByRole("dialog").getByRole("button", { name: "رجوع" }).click();
+  const productDialog = page.getByRole("dialog", { name: "تفاصيل المنتج" });
+  await expect(productDialog).toBeVisible();
+  await expect(productDialog).toContainText(productName);
+  await productDialog.getByRole("button", { name: "إغلاق تفاصيل المنتج" }).click();
+  await expect(productDialog).toHaveCount(0);
 
   await expectNoHorizontalOverflow(page);
   expect(orderAttempts()).toBe(0);
@@ -56,7 +65,7 @@ test("cart and checkout validation never create an order", async ({ page }) => {
   await page.goto("/store", { waitUntil: "domcontentloaded" });
 
   const directAdd = page.locator("article.store-product-card button", { hasText: /^أضف إلى السلة$/ }).first();
-  await expect(directAdd).toBeVisible();
+  await expect(directAdd).toBeVisible({ timeout: INITIAL_HYDRATION_TIMEOUT_MS });
   await expect(directAdd).toBeEnabled();
   await directAdd.click();
   await page.getByRole("button", { name: "السلة", exact: true }).click();
@@ -69,7 +78,10 @@ test("cart and checkout validation never create an order", async ({ page }) => {
   await expect(checkoutDialog).toBeVisible();
   await checkoutDialog.getByRole("button", { name: "تأكيد الطلب — الدفع عند الاستلام" }).click();
 
-  await expect(checkoutDialog.getByRole("alert")).toContainText("اكتب الاسم الكامل لاستلام الطلب");
+  await expect(checkoutDialog.getByRole("alert")).toHaveCount(3);
+  await expect(checkoutDialog.locator("#storefront-checkout-name-error")).toHaveText("اكتب الاسم الكامل لاستلام الطلب.");
+  await expect(checkoutDialog.locator("#storefront-checkout-phone-error")).toHaveText("اكتب رقم هاتف صالحاً للتواصل معك.");
+  await expect(checkoutDialog.locator("#storefront-checkout-address-error")).toHaveText("اكتب عنواناً واضحاً من 3 أحرف على الأقل.");
   await expect(checkoutDialog.locator("#storefront-checkout-name")).toBeFocused();
   await expectNoHorizontalOverflow(page);
   expect(orderAttempts()).toBe(0);
@@ -125,7 +137,7 @@ for (const includeHero of [true, false]) {
     });
     await page.goto("/store", { waitUntil: "domcontentloaded" });
     const carousel = page.getByRole("region", { name: includeHero ? "العروض الرئيسية" : "العروض الترويجية بين المنتجات" });
-    await expect(carousel).toBeVisible();
+    await expect(carousel).toBeVisible({ timeout: INITIAL_HYDRATION_TIMEOUT_MS });
     const hero = carousel.getByRole("img", { name: includeHero ? "Layout fixture hero" : "Layout fixture inline", exact: true });
     await expect(hero).toBeVisible();
     const layout = await hero.evaluate((element) => {
@@ -181,6 +193,7 @@ test("fallback marketing creative keeps its managed placement for metrics", asyn
   });
   await page.goto("/store", { waitUntil: "domcontentloaded" });
   const fallback = page.getByRole("img", { name: "Metrics fixture fallback", exact: true }).last();
+  await expect(fallback).toBeVisible({ timeout: INITIAL_HYDRATION_TIMEOUT_MS });
   await fallback.scrollIntoViewIfNeeded();
   expect(await fallback.evaluate((element) => {
     const rect = element.getBoundingClientRect();
