@@ -1154,7 +1154,90 @@ describe("Slice 3 — customizer asset upload, cart identity, studio gating, and
       "النص ب",
     );
   });
+
+  it("marks logo preparation as uploading and clears stale assets synchronously before slow FileReader finishes", async () => {
+    let latestAssets: { logoAssetKey?: string; previewAssetKey?: string } = {};
+    const uploadStates: CustomizationStudioUploadState[] = [];
+
+    act(() => {
+      root.render(
+        <StorefrontCustomizerStudio
+          productName="درع تكريم"
+          onAssetsChange={(a) => {
+            latestAssets = a;
+          }}
+          onUploadStateChange={(s) => uploadStates.push(s)}
+        />,
+      );
+    });
+
+    // 1. Upload initial Logo A cleanly
+    uploadMutateAsyncMock.mockResolvedValueOnce({
+      assetKey: "customizer/t1/logo/logo_initial.png",
+      sha256: "init",
+      mimeType: "image/png",
+      byteLength: 68,
+    });
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const logoInitial = new File([new Uint8Array([137, 80, 78, 71])], "initial.png", {
+      type: "image/png",
+    });
+    await act(async () => {
+      Object.defineProperty(fileInput, "files", { value: [logoInitial], configurable: true });
+      fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(latestAssets.logoAssetKey).toBe("customizer/t1/logo/logo_initial.png");
+
+    // 2. Make FileReader slow and select replacement Logo B
+    let resolveSlowReader!: () => void;
+    class SlowFileReader {
+      result: string | null = null;
+      onload: ((ev: { target: { result: string } }) => void) | null = null;
+      onerror: (() => void) | null = null;
+      readAsDataURL(file: Blob) {
+        const mime = file.type || "image/png";
+        const dataUrl = `data:${mime};base64,${ONE_PIXEL_PNG_BASE64}`;
+        this.result = dataUrl;
+        resolveSlowReader = () => this.onload?.({ target: { result: dataUrl } });
+      }
+    }
+    globalThis.FileReader = SlowFileReader as unknown as typeof FileReader;
+
+    const logoReplacement = new File([new Uint8Array([137, 80, 78, 71, 2])], "replace.png", {
+      type: "image/png",
+    });
+    act(() => {
+      Object.defineProperty(fileInput, "files", {
+        value: [logoReplacement],
+        configurable: true,
+      });
+      fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    // Synchronously before FileReader resolves: state is "uploading" and old logoAssetKey is cleared
+    expect(uploadStates[uploadStates.length - 1]).toBe("uploading");
+    expect(latestAssets).toEqual({ logoAssetKey: undefined, previewAssetKey: undefined });
+
+    // Customer cancels during slow FileReader via إزالة الشعار
+    const removeBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("إزالة الشعار"),
+    )!;
+    act(() => {
+      removeBtn.click();
+    });
+    expect(uploadStates[uploadStates.length - 1]).toBe("idle");
+
+    // When slow FileReader finally resolves, superseded epoch must NOT upload or publish assets
+    await act(async () => {
+      resolveSlowReader?.();
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(uploadMutateAsyncMock).toHaveBeenCalledTimes(1);
+    expect(latestAssets).toEqual({ logoAssetKey: undefined, previewAssetKey: undefined });
+  });
 });
+
 
 
 

@@ -82,6 +82,29 @@ export function aggregateB2BQuoteLines(
   }));
 }
 
+function describeB2BCartLineCustomization(customization: unknown): string | null {
+  if (!customization || typeof customization !== "object") return null;
+  const record = customization as {
+    values?: Record<string, string>;
+    logoAssetKey?: string;
+    previewAssetKey?: string;
+  };
+  const base = summarizeStorefrontCustomization(customization as never);
+  const fallbackValues =
+    !base && record.values
+      ? Object.entries(record.values)
+          .map(([, v]) => (typeof v === "string" ? v.trim() : ""))
+          .filter(Boolean)
+          .join(" • ")
+      : "";
+  const parts = [
+    base || fallbackValues || null,
+    record.logoAssetKey ? "شعار مرفوع" : null,
+    record.previewAssetKey ? "معاينة تصميم معتمدة" : null,
+  ].filter((p): p is string => Boolean(p));
+  return parts.length > 0 ? parts.join(" • ") : null;
+}
+
 export default function StorefrontB2BQuoteDialog({
   open,
   onOpenChange,
@@ -91,7 +114,7 @@ export default function StorefrontB2BQuoteDialog({
   customerSessionToken = null,
 }: StorefrontB2BQuoteDialogProps) {
   const hasCustomItems = useMemo(
-    () => cartLines.some((l) => Boolean(summarizeStorefrontCustomization(l.customization as never))),
+    () => cartLines.some((l) => Boolean(describeB2BCartLineCustomization(l.customization))),
     [cartLines],
   );
 
@@ -202,19 +225,33 @@ export default function StorefrontB2BQuoteDialog({
 
     const customSummaries = cartLines
       .map((line) => {
-        const summary = summarizeStorefrontCustomization(line.customization as never);
-        return summary ? `${line.name}: ${summary}` : null;
+        const summary = describeB2BCartLineCustomization(line.customization);
+        if (!summary) return null;
+        const qtyNum = Math.max(1, Math.round(Number(line.qty) || 0));
+        const unitLabel = line.unitName ? ` ${line.unitName}` : "";
+        const itemLabel = line.variantLabel
+          ? `${line.name} (${line.variantLabel})`
+          : line.name;
+        return `${itemLabel} [×${qtyNum}${unitLabel}]: ${summary}`;
       })
       .filter((v): v is string => Boolean(v));
 
     const userNote = note.trim();
+    const summaryBlock =
+      customSummaries.length > 0 ? `تفاصيل التخصيص: ${customSummaries.join(" | ")}` : "";
     const combinedNote =
-      customSummaries.length > 0 && !userNote.includes(customSummaries[0]!)
-        ? [userNote, `تفاصيل التخصيص: ${customSummaries.join(" | ")}`].filter(Boolean).join("\n")
+      summaryBlock && !userNote.includes(summaryBlock)
+        ? [userNote, summaryBlock].filter(Boolean).join("\n")
         : userNote;
 
     if (combinedNote.length < 5) {
       setFormError("يرجى كتابة وصف مختصر لاحتياجكم أو شروط التوريد (5 أحرف على الأقل).");
+      return;
+    }
+    if (combinedNote.length > 2000) {
+      setFormError(
+        "يتجاوز إجمالي الملاحظة وتفاصيل التخصيص الحد الأقصى المسموح (2000 حرف). يرجى اختصار الملاحظة.",
+      );
       return;
     }
     if (!canSubmitOnline) {
@@ -232,7 +269,7 @@ export default function StorefrontB2BQuoteDialog({
       customerSessionToken && customerSessionToken.trim().length >= 40
         ? customerSessionToken.trim()
         : undefined;
-    const finalNote = combinedNote.slice(0, 2000);
+    const finalNote = combinedNote;
 
     const fingerprint = JSON.stringify({
       cleanName,

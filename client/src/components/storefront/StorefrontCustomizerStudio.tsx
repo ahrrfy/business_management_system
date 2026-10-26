@@ -351,8 +351,11 @@ export function StorefrontCustomizerStudio({
   }, [renderCanvasAsync]);
 
   const uploadLogoPayload = useCallback(
-    async (payload: PendingLogoPayload): Promise<string | null> => {
-      const epoch = ++uploadEpochRef.current;
+    async (
+      payload: PendingLogoPayload,
+      existingEpoch?: number,
+    ): Promise<string | null> => {
+      const epoch = existingEpoch ?? ++uploadEpochRef.current;
       activeUploadKindRef.current = "LOGO";
       setUploadError(null);
       setFailedAction(null);
@@ -385,35 +388,42 @@ export function StorefrontCustomizerStudio({
     [emitAssets, reportUploadState, uploadAssetM],
   );
 
-  const cancelInFlightApplyOnError = () => {
-    if (activeUploadKindRef.current === "APPLY") {
-      uploadEpochRef.current += 1;
-      activeUploadKindRef.current = null;
-    }
-  };
-
   const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
 
+    const epoch = ++uploadEpochRef.current;
+    activeUploadKindRef.current = "LOGO";
+    pendingLogoRef.current = null;
+    setLogoImage(null);
+    setLogoPreviewUrl(null);
+    setApplied(false);
+    emitAssets(undefined, undefined);
+
     const validation = validateCustomizationAssetFile(file);
     if (!validation.ok) {
-      cancelInFlightApplyOnError();
+      activeUploadKindRef.current = null;
       setFailedAction(null);
       setUploadError(validation.error);
       reportUploadState("error");
       return;
     }
 
+    setUploadError(null);
+    setFailedAction(null);
+    reportUploadState("uploading");
+
     try {
       const dataUrl = await readFileAsDataUrl(file);
+      if (!mountedRef.current || epoch !== uploadEpochRef.current) return;
+
       const pureBase64 = stripDataUrlBase64(dataUrl);
       if (
         !pureBase64 ||
         estimateBase64ByteLength(pureBase64) > MAX_CUSTOMIZATION_ASSET_BYTES
       ) {
-        cancelInFlightApplyOnError();
+        activeUploadKindRef.current = null;
         setFailedAction(null);
         setUploadError(
           "حجم الصورة يتجاوز الحد الأقصى المسموح (2 ميجابايت). يرجى اختيار صورة أصغر.",
@@ -423,20 +433,20 @@ export function StorefrontCustomizerStudio({
       }
 
       const loadedImg = await loadStudioImage(dataUrl);
+      if (!mountedRef.current || epoch !== uploadEpochRef.current) return;
+
       const dimCheck = validateCustomizationImageDimensions(
         loadedImg.naturalWidth || loadedImg.width,
         loadedImg.naturalHeight || loadedImg.height,
       );
       if (!dimCheck.ok) {
-        cancelInFlightApplyOnError();
+        activeUploadKindRef.current = null;
         setFailedAction(null);
         setUploadError(dimCheck.error);
         reportUploadState("error");
         return;
       }
 
-      if (!mountedRef.current) return;
-      setApplied(false);
       setLogoImage(loadedImg);
       setLogoPreviewUrl(dataUrl);
 
@@ -447,11 +457,10 @@ export function StorefrontCustomizerStudio({
         dataUrl,
       };
       pendingLogoRef.current = payload;
-      emitAssets(undefined, undefined);
-      await uploadLogoPayload(payload);
+      await uploadLogoPayload(payload, epoch);
     } catch (error) {
-      if (!mountedRef.current) return;
-      cancelInFlightApplyOnError();
+      if (!mountedRef.current || epoch !== uploadEpochRef.current) return;
+      activeUploadKindRef.current = null;
       setFailedAction(null);
       setUploadError(formatCustomizationUploadError(error));
       reportUploadState("error");
@@ -739,11 +748,17 @@ export function StorefrontCustomizerStudio({
                 />
               </label>
 
-              {(logoPreviewUrl || uploadState === "error") && (
+              {(logoPreviewUrl ||
+                uploadState === "error" ||
+                (uploadState === "uploading" &&
+                  activeUploadKindRef.current === "LOGO")) && (
                 <button
                   type="button"
                   onClick={removeLogo}
-                  disabled={uploadState === "uploading"}
+                  disabled={
+                    uploadState === "uploading" &&
+                    activeUploadKindRef.current === "APPLY"
+                  }
                   className="rounded-lg text-xs font-bold text-[var(--sem-neg)] hover:underline disabled:opacity-50"
                 >
                   إزالة الشعار

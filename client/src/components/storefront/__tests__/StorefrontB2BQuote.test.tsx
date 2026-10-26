@@ -457,6 +457,89 @@ describe("StorefrontB2BQuoteButton & lazy official StorefrontB2BQuoteDialog", ()
     });
     expect(container.querySelector("form")).not.toBeNull();
   });
+
+  it("preserves per-design quantities in note customization summaries when distinct customizations share the same productUnitId", async () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    const multiDesignLines = [
+      {
+        cartKey: "u-501::design-a",
+        productUnitId: 501,
+        name: "درع كريستال",
+        qty: 10,
+        price: "15000",
+        unitName: "قطعة",
+        customization: {
+          templateId: 7,
+          selections: [
+            {
+              fieldKey: "engraving",
+              label: "الحفر",
+              value: "تكريم فرع بغداد",
+              displayValue: "تكريم فرع بغداد",
+            },
+          ],
+          values: { engraving: "تكريم فرع بغداد" },
+        },
+      },
+      {
+        cartKey: "u-501::design-b",
+        productUnitId: 501,
+        name: "درع كريستال",
+        qty: 20,
+        price: "15000",
+        unitName: "قطعة",
+        customization: {
+          templateId: 7,
+          values: { engraving: "تكريم فرع البصرة" },
+          logoAssetKey: "customizer/t1/logo/basra.png",
+        },
+      },
+    ];
+
+    await act(async () => {
+      root!.render(
+        <StorefrontB2BQuoteButton
+          cartLines={multiDesignLines}
+          cartSubtotal={450000}
+          orderingEnabled={true}
+          turnstileSiteKey="site-key"
+        />,
+      );
+    });
+
+    const officialBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("طلب عرض سعر رسمي"),
+    )!;
+    await act(async () => {
+      officialBtn.click();
+    });
+    await waitForLazyDialog(container);
+
+    await act(async () => {
+      setNativeValue(container!.querySelector<HTMLInputElement>("#b2b-quote-customer-name")!, "أحمد الطائي");
+      setNativeValue(container!.querySelector<HTMLInputElement>("#b2b-quote-customer-phone")!, "07705554433");
+      setNativeValue(container!.querySelector<HTMLTextAreaElement>("#b2b-quote-note")!, "يرجى تسعير الدفعتين معاً");
+      container!.querySelector<HTMLButtonElement>('[data-testid="solve-b2b-turnstile"]')!.click();
+    });
+
+    const form = container.querySelector("form")!;
+    await act(async () => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+
+    expect(createQuoteMutateMock).toHaveBeenCalledTimes(1);
+    const payload = createQuoteMutateMock.mock.calls[0]![0] as {
+      lines: Array<{ productUnitId: number; quantity: number }>;
+      note: string;
+    };
+    expect(payload.lines).toEqual([{ productUnitId: 501, quantity: 30 }]);
+    expect(payload.note).toContain("درع كريستال [×10 قطعة]: الحفر: تكريم فرع بغداد");
+    expect(payload.note).toContain("درع كريستال [×20 قطعة]: تكريم فرع البصرة • شعار مرفوع");
+  });
 });
+
 
 
