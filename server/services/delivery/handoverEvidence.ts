@@ -29,7 +29,6 @@ export async function physicalHandoverConsignmentIdsTx(
       and(
         inArray(deliveryEvents.consignmentId, ids),
         inArray(deliveryEvents.eventType, [
-          "ASSIGNED",
           "ASSIGNMENT_REACTIVATED",
           "PICKED_UP",
           "OUT_FOR_DELIVERY",
@@ -42,8 +41,9 @@ export async function physicalHandoverConsignmentIdsTx(
   for (const event of events) {
     const consignmentId = Number(event.consignmentId);
     const legacyAssignmentKey = `CN:${consignmentId}:OUT_FOR_DELIVERY`;
+    // The courier's FAILED -> ASSIGNED retry is only a status change. It
+    // cannot reset physical custody or erase an earlier staff/courier exit.
     if (
-      event.eventType === "ASSIGNED" ||
       event.eventType === "ASSIGNMENT_REACTIVATED" ||
       (event.eventType === "OUT_FOR_DELIVERY" &&
         event.eventKey === legacyAssignmentKey)

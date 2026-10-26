@@ -12,6 +12,8 @@ import { listConsignmentsForParty } from "../delivery/queries";
 import { moduleAccessAllowed } from "@shared/permissions";
 import { physicalHandoverConsignmentIdsTx } from "../delivery/handoverEvidence";
 import { withTx } from "../tx";
+import { staffHandoverConsignments } from "../delivery/staffTransition";
+import { transitionConsignmentParcel } from "../delivery/courier";
 
 const TABLES = [
   "productPrices",
@@ -421,6 +423,40 @@ describe("cancelDeliveryAssignment — عقد الإلغاء التشغيلي", 
         ),
       );
     expect(released).toHaveLength(0);
+  });
+
+  it("retains staff departure evidence through courier FAILED then ASSIGNED without releasing COD", async () => {
+    await seedInvoice();
+    const created = await dispatch();
+    await db().update(s.deliveryConsignments).set({ parcelStatus: "ASSIGNED", outForDeliveryAt: null })
+      .where(eq(s.deliveryConsignments.id, created.consignmentId));
+    expect(await staffHandoverConsignments({ consignmentIds: [created.consignmentId], clientRequestId: "staff-before-retry" }, MANAGER))
+      .toMatchObject({ moved: 1 });
+    await transitionConsignmentParcel({ consignmentId: created.consignmentId, toStatus: "FAILED", reason: "العميل غير متوفر",
+      clientRequestId: "courier-failed-after-staff-out" }, { userId: 3 });
+    await transitionConsignmentParcel({ consignmentId: created.consignmentId, toStatus: "ASSIGNED",
+      clientRequestId: "courier-retry-without-return" }, { userId: 3 });
+    const [before] = await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, created.consignmentId));
+    expect(before.parcelStatus).toBe("ASSIGNED");
+    expect(before.pickedUpAt).toBeNull();
+    expect(before.outForDeliveryAt).not.toBeNull();
+    const ledger = await db().select().from(s.deliveryLedgerEntries);
+    const invoices = await db().select().from(s.invoices);
+    const receipts = await db().select().from(s.receipts);
+    const stock = await db().select().from(s.branchStock);
+    const parties = await db().select().from(s.deliveryParties);
+    await expect(cancelDeliveryAssignment({ consignmentId: created.consignmentId, reason: "محاولة إلغاء بعد إعادة المحاولة",
+      clientRequestId: "cancel-after-courier-retry", physicalHeldConfirmed: true }, MANAGER))
+      .rejects.toThrow(/أعلن الرجوع/);
+    expect((await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, created.consignmentId)))[0]).toEqual(before);
+    expect(await db().select().from(s.deliveryLedgerEntries)).toEqual(ledger);
+    expect(ledger.filter(row => row.entryType === "COD_RELEASED")).toHaveLength(0);
+    expect(await db().select().from(s.invoices)).toEqual(invoices);
+    expect(await db().select().from(s.receipts)).toEqual(receipts);
+    expect(await db().select().from(s.branchStock)).toEqual(stock);
+    expect(await db().select().from(s.deliveryParties)).toEqual(parties);
+    expect(await withTx(tx => physicalHandoverConsignmentIdsTx(tx, [created.consignmentId])))
+      .toEqual(new Set([created.consignmentId]));
   });
 
   it("يحصر دليل الخروج في محاولة الإسناد الحالية", async () => {
