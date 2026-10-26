@@ -4,7 +4,11 @@ import React, { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it } from "vitest";
 import { Router } from "wouter";
-import { splitCompiledErpUtilitiesCss } from "../../../vite.config";
+import {
+  CSS_ASSET_BUDGET_BYTES,
+  cssAssetBudgetViolation,
+  splitCompiledErpUtilitiesCss,
+} from "../../../vite.config";
 import {
   BootstrapApp,
   isStandalonePublicRoute,
@@ -159,6 +163,9 @@ describe("BootstrapApp public/ERP shell isolation", () => {
     expect(mainSrc).not.toMatch(/^\s*import\s+App\s+from\s+["']\.\/App["']/m);
     expect(mainSrc).not.toMatch(/animate\.css/);
     expect(mainSrc).toMatch(/import\s+["']\.\/styles\/animate-subset\.css["']/);
+    expect(mainSrc).toMatch(
+      /import\s+["']\.\/lib\/theme\/semantic-utilities\.css["']/,
+    );
     expect(mainSrc).not.toMatch(/erp(?:-variants)?\.css/);
     expect(mainSrc).not.toMatch(
       /^\s*import\s+.*from\s+["']@\/components\/CommandPalette["']/m,
@@ -189,6 +196,95 @@ describe("BootstrapApp public/ERP shell isolation", () => {
     expect(appIdx).toBeGreaterThan(erpVariantsIdx);
   });
 
+  it("covers 100% of the transitive public runtime TS/TSX closure in index.css @source directives and keeps universal @media print rules", () => {
+    const repoRoot = path.resolve(import.meta.dirname, "../../..");
+    const clientSrc = path.join(repoRoot, "client/src");
+    const indexCss = fs.readFileSync(path.join(clientSrc, "index.css"), "utf8");
+    const erpCss = fs.readFileSync(path.join(clientSrc, "erp.css"), "utf8");
+
+    expect(indexCss).toMatch(/@media\s+print\s*\{/);
+    expect(indexCss).toContain("[data-sonner-toaster]");
+    expect(erpCss).toContain('@import "./lib/theme/semantic-utilities.css";');
+
+    const resolveRuntimeImport = (fromFile: string, spec: string): string | null => {
+      let base: string;
+      if (spec.startsWith("@/")) base = path.join(clientSrc, spec.slice(2));
+      else if (spec.startsWith("@shared/")) {
+        base = path.join(repoRoot, "shared", spec.slice("@shared/".length));
+      } else if (spec.startsWith(".")) {
+        base = path.resolve(path.dirname(fromFile), spec);
+      } else {
+        return null;
+      }
+      for (const ext of ["", ".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.tsx"]) {
+        const candidate = base + ext;
+        if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+          return candidate;
+        }
+      }
+      return null;
+    };
+
+    const excludedLazyErpSpecs = new Set([
+      "./App",
+      "./erp.css",
+      "./styles/erp-variants.css",
+      "@/components/CommandPalette",
+      "@/lib/realtime",
+      "@/lib/realtime/financialQueries",
+    ]);
+
+    const visitedPublic = new Set<string>();
+    const queue = [
+      path.join(clientSrc, "main.tsx"),
+      path.join(clientSrc, "BootstrapApp.tsx"),
+    ];
+    const importRe =
+      /(?:^|\n)\s*(?:import|export)\s+(?!type\s)(?:[^"']*?\s+from\s+)?["']([^"']+)["']|import\(\s*["']([^"']+)["']\s*\)/g;
+
+    while (queue.length > 0) {
+      const file = queue.shift();
+      if (!file || visitedPublic.has(file)) continue;
+      visitedPublic.add(file);
+      if (!/\.(?:ts|tsx|js|jsx)$/.test(file)) continue;
+      const src = fs.readFileSync(file, "utf8");
+      for (const m of Array.from(src.matchAll(importRe))) {
+        const spec = m[1] || m[2];
+        if (!spec || excludedLazyErpSpecs.has(spec)) continue;
+        const resolved = resolveRuntimeImport(file, spec);
+        if (resolved && !visitedPublic.has(resolved)) queue.push(resolved);
+      }
+    }
+
+    expect(visitedPublic.has(path.join(clientSrc, "pages/Storefront.tsx"))).toBe(true);
+    expect(visitedPublic.has(path.join(clientSrc, "pages/ShelfPriceLookup.tsx"))).toBe(true);
+
+    const declaredSources: string[] = [];
+    for (const line of indexCss.split(/\r?\n/)) {
+      const match = line.trim().match(/^@source\s+"([^"]+)";$/);
+      if (match?.[1]) {
+        declaredSources.push(path.resolve(clientSrc, match[1]));
+      }
+    }
+
+    const uncoveredTsFiles = Array.from(visitedPublic)
+      .filter((f) => /\.(?:ts|tsx|js|jsx)$/.test(f))
+      .filter((f) => {
+        const normF = path.resolve(f);
+        return !declaredSources.some((srcPath) => {
+          if (normF === srcPath) return true;
+          if (fs.existsSync(srcPath) && fs.statSync(srcPath).isDirectory()) {
+            const rel = path.relative(srcPath, normF);
+            return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+          }
+          return false;
+        });
+      })
+      .map((f) => path.relative(repoRoot, f).replace(/\\/g, "/"));
+
+    expect(uncoveredTsFiles).toEqual([]);
+  });
+
   it("defines 100% of animate__* classes used across client/src/** in animate-subset.css without global @keyframes pulse collision", () => {
     const repoRoot = path.resolve(import.meta.dirname, "../../..");
     const clientSrc = path.join(repoRoot, "client/src");
@@ -216,24 +312,26 @@ describe("BootstrapApp public/ERP shell isolation", () => {
     expect(subsetNoComments).toMatch(/@keyframes\s+animate-pulse\b/);
   });
 
-  it("splits canonical @layer utilities cleanly without losing rules or scrambling order on tricky CSS tokens", () => {
+  it("splits canonical @layer utilities cleanly, keeps post-Tailwind semantic utilities at the end of part2, and enforces the 300 KB CSS asset ceiling", () => {
     const sample = [
       "/*! header */",
       "@layer properties;",
-      '@layer utilities{.p-4{padding:1rem}.content-brace{content:"{;}"}.escaped\\:\\{x\\}{color:red}/* } comment */@media (width>=40rem){.sm\\:px-6{padding-inline:1.5rem}}}',
+      '@layer utilities{.bg-primary{background-color:var(--primary)}.text-primary-foreground{color:var(--primary-foreground)}.border-border{border-color:var(--border)}.content-brace{content:"{;}"}.escaped\\:\\{x\\}{color:red}/* } comment */@media (width>=40rem){.sm\\:px-6{padding-inline:1.5rem}}}',
+      "@layer utilities{.text-money-positive{color:var(--money-positive)}.badge-stock-out{color:var(--stock-out);background:color-mix(in oklch,var(--stock-out) 18%,transparent)}.badge-status-active{color:var(--status-active);background:color-mix(in oklch,var(--status-active) 15%,transparent)}}",
       "@property --tw-shadow{syntax:\"*+\";inherits:false}",
       ".app-sidebar{background:var(--sidebar-solid)}",
     ].join("");
 
     const { part1, part2 } = splitCompiledErpUtilitiesCss(sample);
+    const combined = `${part1}\n${part2}`;
     expect(part1).toContain("@layer properties;");
     expect(part2).toContain("@layer properties;");
-    expect(part1).toContain(".p-4{padding:1rem}");
-    expect(part2).toContain("@media (width>=40rem){.sm\\:px-6{padding-inline:1.5rem}}");
+    expect(part1).toContain(".bg-primary{background-color:var(--primary)}");
+    expect(combined).toContain("@media (width>=40rem){.sm\\:px-6{padding-inline:1.5rem}}");
+    expect(part2).toContain(".badge-stock-out{color:var(--stock-out)");
+    expect(part2).toContain(".badge-status-active{color:var(--status-active)");
     expect(part2).toContain(".app-sidebar{background:var(--sidebar-solid)}");
-
-    const combined = `${part1}\n${part2}`;
-    expect(combined.indexOf(".p-4{padding:1rem}")).toBeLessThan(
+    expect(combined.indexOf(".bg-primary{background-color:var(--primary)}")).toBeLessThan(
       combined.indexOf('.content-brace{content:"{;}"}'),
     );
     expect(combined.indexOf('.content-brace{content:"{;}"}')).toBeLessThan(
@@ -242,10 +340,39 @@ describe("BootstrapApp public/ERP shell isolation", () => {
     expect(combined.indexOf(".escaped\\:\\{x\\}{color:red}")).toBeLessThan(
       combined.indexOf(".sm\\:px-6{padding-inline:1.5rem}"),
     );
+    expect(combined.indexOf(".sm\\:px-6{padding-inline:1.5rem}")).toBeLessThan(
+      combined.indexOf(".badge-status-active{color:var(--status-active)"),
+    );
+    expect(part2.indexOf(".badge-status-active{color:var(--status-active)")).toBeLessThan(
+      part2.indexOf(".app-sidebar{background:var(--sidebar-solid)}"),
+    );
 
     const singleRule = "@layer properties;@layer utilities{.flex{display:flex}}";
     const fallback = splitCompiledErpUtilitiesCss(singleRule);
     expect(fallback.part1).toBe(singleRule);
     expect(fallback.part2).toBe("@layer properties;");
+
+    expect(CSS_ASSET_BUDGET_BYTES).toBe(300_000);
+    expect(
+      cssAssetBudgetViolation({
+        type: "asset",
+        fileName: "assets/index-abc.css",
+        source: "a".repeat(CSS_ASSET_BUDGET_BYTES),
+      }),
+    ).toBeNull();
+    expect(
+      cssAssetBudgetViolation({
+        type: "asset",
+        fileName: "assets/erp-abc.css",
+        source: new Uint8Array(CSS_ASSET_BUDGET_BYTES + 1),
+      }),
+    ).toContain("CSS_BUDGET_EXCEEDED assets/erp-abc.css: 300001 > 300000");
+    expect(
+      cssAssetBudgetViolation({
+        type: "asset",
+        fileName: "assets/logo.png",
+        source: new Uint8Array(CSS_ASSET_BUDGET_BYTES + 500),
+      }),
+    ).toBeNull();
   });
 });

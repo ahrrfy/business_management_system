@@ -29,6 +29,7 @@ import { installGlobalInteractionAudio } from "@/lib/audioFeedback";
 import "./index.css";
 import "./styles/animate-subset.css";
 import "./lib/theme/tokens.css";
+import "./lib/theme/semantic-utilities.css";
 import "./lib/theme/comfort.css";
 import "./sentry"; // مراقبة أخطاء العميل (لا أثر دون VITE_SENTRY_DSN_CLIENT)
 

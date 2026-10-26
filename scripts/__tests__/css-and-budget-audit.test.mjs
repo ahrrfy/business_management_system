@@ -292,6 +292,9 @@ test("production dist/public CSS assets stay strictly under 300,000 bytes and pr
     ".animate__fadeIn",
     ".animate__heartBeat",
     ".storefront",
+    ".badge-status-active",
+    "@media print",
+    "[data-sonner-toaster]",
   ]) {
     assert.ok(
       builtIndexCss.includes(requiredToken),
@@ -422,8 +425,8 @@ test("production dist/public CSS assets stay strictly under 300,000 bytes and pr
     `Public index-*.css is missing ${missingPublicRules.length} utility rules reachable from public routes`,
   );
 
-  // 3. Verify 100% of ALL repo Tailwind utilities across client/src/** + shared/** exist in
-  //    [erp-*.css + erp-variants-*.css] in IDENTICAL canonical order to a monolithic build!
+  // 3. Verify 100% of ALL repo Tailwind utilities + semantic utilities across client/src/** + shared/**
+  //    exist in [erp-*.css + erp-variants-*.css] in IDENTICAL canonical order to a monolithic build!
   const rawErpCss = fs.readFileSync(path.join(clientSrc, "erp.css"), "utf8");
   const fullRefCompiler = await compile(rawErpCss, {
     base: clientSrc,
@@ -453,5 +456,41 @@ test("production dist/public CSS assets stay strictly under 300,000 bytes and pr
     actualErpCombinedRules,
     expectedCanonicalErpRules,
     "Split ERP CSS chunks must match monolithic Tailwind canonical rule sequence 100% rule-for-rule and in exact order",
+  );
+
+  // 4. Verify combined runtime cascade [index-*.css, erp-*.css, erp-variants-*.css] keeps semantic
+  //    status/money utilities AFTER all Tailwind color/background utilities so <Badge className="badge-status-active">
+  //    and <Badge variant="outline" className="badge-stock-out"> are never clobbered by lazy ERP CSS.
+  const combinedRuntimeUtilityRules = [
+    ...extractLayerUtilitiesRules(await canonicalizeCss(builtIndexCss)),
+    ...actualErpCombinedRules,
+  ];
+  const lastIndexMatching = (prefix) => {
+    for (let idx = combinedRuntimeUtilityRules.length - 1; idx >= 0; idx--) {
+      if (combinedRuntimeUtilityRules[idx].startsWith(prefix)) return idx;
+    }
+    return -1;
+  };
+
+  const lastBgPrimary = lastIndexMatching(".bg-primary{");
+  const lastTextPrimaryFg = lastIndexMatching(".text-primary-foreground{");
+  const lastTextFg = lastIndexMatching(".text-foreground{");
+  const lastBgMuted = lastIndexMatching(".bg-muted{");
+  const lastBadgeStatusActive = lastIndexMatching(".badge-status-active{");
+  const lastBadgeStockOut = lastIndexMatching(".badge-stock-out{");
+  const lastTextMoneyPos = lastIndexMatching(".text-money-positive{");
+
+  assert.ok(lastBgPrimary > -1 && lastTextPrimaryFg > -1 && lastTextFg > -1 && lastBgMuted > -1);
+  assert.ok(
+    lastBadgeStatusActive > Math.max(lastBgPrimary, lastTextPrimaryFg, lastTextFg, lastBgMuted),
+    `Expected .badge-status-active (${lastBadgeStatusActive}) after Tailwind utilities (.bg-primary=${lastBgPrimary}, .text-primary-foreground=${lastTextPrimaryFg}, .text-foreground=${lastTextFg})`,
+  );
+  assert.ok(
+    lastBadgeStockOut > Math.max(lastBgPrimary, lastTextPrimaryFg, lastTextFg, lastBgMuted),
+    `Expected .badge-stock-out (${lastBadgeStockOut}) after Tailwind utilities`,
+  );
+  assert.ok(
+    lastTextMoneyPos > Math.max(lastTextPrimaryFg, lastTextFg),
+    `Expected .text-money-positive (${lastTextMoneyPos}) after Tailwind text utilities`,
   );
 });

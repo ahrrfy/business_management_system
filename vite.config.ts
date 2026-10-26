@@ -222,13 +222,34 @@ function splitErpStylesForBuild(): Plugin {
   };
 }
 
+export const CSS_ASSET_BUDGET_BYTES = 300_000;
+
+export function cssAssetBudgetViolation(output: {
+  type?: string;
+  fileName?: string;
+  source?: string | Uint8Array;
+}): string | null {
+  if (output?.type !== "asset" || !output.fileName?.endsWith(".css")) {
+    return null;
+  }
+  const source = output.source ?? "";
+  const bytes =
+    typeof source === "string"
+      ? Buffer.byteLength(source)
+      : source.byteLength;
+  return bytes > CSS_ASSET_BUDGET_BYTES
+    ? `CSS_BUDGET_EXCEEDED ${output.fileName}: ${bytes} > ${CSS_ASSET_BUDGET_BYTES}`
+    : null;
+}
+
 function enforceBuildContracts(): Plugin {
   return {
     name: "enforce-build-contracts",
     apply: "build",
     generateBundle(_options, bundle) {
       for (const output of Object.values(bundle)) {
-        const violation = chunkBudgetViolation(output);
+        const violation =
+          chunkBudgetViolation(output) ?? cssAssetBudgetViolation(output);
         if (violation) this.error(violation);
       }
     },

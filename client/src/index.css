@@ -1,6 +1,7 @@
 @import "tailwindcss" source(none);
 @source "../index.html";
 @source "./main.tsx";
+@source "./sentry.ts";
 @source "./BootstrapApp.tsx";
 @source "./pages/Storefront.tsx";
 @source "./pages/MobileTurnstile.tsx";
@@ -15,6 +16,7 @@
 @source "./components/RouteFallback.tsx";
 @source "./components/form/IntlPhoneInput.tsx";
 @source "./components/form/MoneyInput.tsx";
+@source "./components/pos/useSmartScanInput.ts";
 @source "./components/scan";
 @source "./components/search";
 @source "./components/store";
@@ -798,6 +800,29 @@ input[type="month"]::-webkit-calendar-picker-indicator {
 @utility flex-safe {
   min-height: 0;
   min-width: 0;
+}
+
+/* تصفير الطباعة المشترك للمسارات العامة والنظام: خلفية بيضاء ونصّ أسود وإخفاء تنبيهات sonner. */
+@media print {
+  @page { margin: 12mm; }
+
+  html,
+  body,
+  #root {
+    min-height: 0 !important;
+    height: auto !important;
+    overflow: visible !important;
+    background: #fff !important;
+  }
+
+  body {
+    color: #000 !important;
+    color-scheme: light;
+  }
+
+  [data-sonner-toaster] {
+    display: none !important;
+  }
 }
 
 /* حالة أعمدة الجداول اليدوية تضبطها TableColumnVisibility على الخلايا نفسها. */
