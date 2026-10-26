@@ -19,19 +19,58 @@ function db() {
 }
 
 let seq = 0;
-async function seedOrder(o: { customerId: number; branchId: number; status: s.OnlineOrder["status"]; total: string; date: string; gov?: string | null }) {
+async function seedOrder(o: {
+  customerId: number;
+  branchId: number;
+  status: s.OnlineOrder["status"];
+  total: string;
+  shipping?: string;
+  invoiceId?: number | null;
+  date: string;
+  gov?: string | null;
+}) {
   seq++;
+  const shipping = o.shipping ?? "0";
+  const subtotal = (Number(o.total) - Number(shipping)).toFixed(2);
   await db().insert(s.onlineOrders).values({
     orderNumber: `ORD-${String(seq).padStart(4, "0")}`,
     customerId: o.customerId, branchId: o.branchId,
-    subtotal: o.total, shippingCost: "0", taxAmount: "0", total: o.total,
+    invoiceId: o.invoiceId ?? null,
+    subtotal, shippingCost: shipping, taxAmount: "0", total: o.total,
     status: o.status, orderDate: new Date(o.date), governorate: o.gov ?? null,
   });
 }
 
+async function seedInvoice(inv: {
+  customerId: number;
+  branchId?: number;
+  total: string;
+  returnedTotal?: string;
+  deliveryFee?: string;
+  status?: s.Invoice["status"];
+}) {
+  seq++;
+  const deliveryFee = inv.deliveryFee ?? "0.00";
+  const subtotal = (Number(inv.total) - Number(deliveryFee)).toFixed(2);
+  const [res] = await db().insert(s.invoices).values({
+    invoiceNumber: `INV-${String(seq).padStart(4, "0")}`,
+    sourceType: "ONLINE",
+    branchId: inv.branchId ?? STORE,
+    customerId: inv.customerId,
+    subtotal,
+    total: inv.total,
+    deliveryFee,
+    returnedTotal: inv.returnedTotal ?? "0.00",
+    paidAmount: inv.total,
+    status: inv.status ?? "PAID",
+    createdBy: 1,
+  });
+  return Number((res as { insertId: number }).insertId);
+}
+
 beforeEach(async () => {
   seq = 0;
-  await truncateTables(["onlineOrderItems", "onlineOrders", "customers", "branches", "users"]);
+  await truncateTables(["onlineOrderItems", "onlineOrders", "invoiceItems", "invoices", "customers", "branches", "users"]);
   await db().insert(s.branches).values([
     { id: STORE, name: "الرئيسي", code: "MAIN", type: "MAIN" },
     { id: OTHER, name: "المبيعات", code: "SALES", type: "SALES" },
@@ -160,5 +199,79 @@ describe("getStoreCustomers — تحصين (مراجعة عدائية ١٣/٧)",
     expect(p0.rows[0].customerId).toBe(21); // id ASC عند التعادل
     expect(p1.rows[0].customerId).toBe(22);
     expect(p0.rows[0].customerId).not.toBe(p1.rows[0].customerId); // بلا تكرار
+  });
+});
+
+describe("getStoreCustomers — صافي البضاعة بعد الشحن والمرتجعات وتصحيح الفواتير (Wave 4)", () => {
+  it("يخصم الشحن والمرتجعات الجزئية/الكاملة ويعتمد الفاتورة المصحّحة في إنفاق العميل والملخّص والفرز", async () => {
+    // c1:
+    //  1) طلب قيد التجهيز بلا فاتورة: إجمالي 15,000 يتضمن شحن 5,000 ⇒ صافي بضاعة = 10,000
+    await seedOrder({
+      customerId: 1,
+      branchId: STORE,
+      status: "CONFIRMED",
+      total: "15000",
+      shipping: "5000",
+      date: "2026-07-01T10:00:00Z",
+      gov: "بغداد",
+    });
+    //  2) طلب مُسلَّم بفاتورة بضاعتها 20,000 + أجرة توصيل على الفاتورة 3,000 (total=23,000) ومرتجع جزئي 7,500 ⇒ صافي = 12,500
+    const invPartial = await seedInvoice({
+      customerId: 1,
+      total: "23000.00",
+      deliveryFee: "3000.00",
+      returnedTotal: "7500.00",
+      status: "PAID",
+    });
+    await seedOrder({
+      customerId: 1,
+      branchId: STORE,
+      status: "DELIVERED",
+      total: "25000",
+      shipping: "5000",
+      invoiceId: invPartial,
+      date: "2026-07-02T10:00:00Z",
+      gov: "بغداد",
+    });
+
+    // c2:
+    //  1) طلب مُسلَّم صُحِّحت فاتورته عبر sale/correct من 30,000 (SUPERSEDED) إلى 18,000 (PAID)
+    await seedInvoice({ customerId: 2, total: "30000.00", status: "SUPERSEDED" });
+    const invCorrected = await seedInvoice({ customerId: 2, total: "18000.00", status: "PAID" });
+    await seedOrder({
+      customerId: 2,
+      branchId: STORE,
+      status: "DELIVERED",
+      total: "30000",
+      shipping: "0",
+      invoiceId: invCorrected,
+      date: "2026-07-03T10:00:00Z",
+      gov: "البصرة",
+    });
+    //  2) طلب فاتورته بحالة RETURNED بالكامل ⇒ صافي = 0.00
+    const invFullReturn = await seedInvoice({
+      customerId: 2,
+      total: "9000.00",
+      returnedTotal: "9000.00",
+      status: "RETURNED",
+    });
+    await seedOrder({
+      customerId: 2,
+      branchId: STORE,
+      status: "DELIVERED",
+      total: "9000",
+      invoiceId: invFullReturn,
+      date: "2026-07-04T10:00:00Z",
+      gov: "البصرة",
+    });
+
+    const r = await getStoreCustomers({ scopedBranchId: STORE, sort: "spend" });
+    expect(r.rows.map((x) => x.customerId)).toEqual([1, 2]); // c1 (22,500) قبل c2 (18,000)
+    const c1 = r.rows.find((x) => x.customerId === 1)!;
+    const c2 = r.rows.find((x) => x.customerId === 2)!;
+    expect(c1.spend).toBe("22500.00");
+    expect(c2.spend).toBe("18000.00");
+    expect(r.summary.totalRevenue).toBe("40500.00");
+    expect(r.summary.avgSpend).toBe("20250.00");
   });
 });

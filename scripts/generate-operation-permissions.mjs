@@ -1772,6 +1772,9 @@ Object.assign(WORDS, {
   label: "التسمية",
   system: "النظام",
   authorize: "تفويض",
+  redeem: "استبدال",
+  points: "النقاط",
+  point: "النقطة",
 });
 
 function labelFor(path, kind) {

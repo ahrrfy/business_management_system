@@ -1,4 +1,5 @@
 import { effectiveDeliveryLedgerEntrySql } from "./delivery/legacyLedger";
+import { reverseOnlineOrderLoyaltyPoints } from "./storeAdmin/loyaltyService";
 import { TRPCError } from "@trpc/server";
 import { assertNoActiveAftercareForInvoiceTx } from "./fulfillment/aftercareSources";
 import { componentRightsAdjustments } from "../../drizzle/fulfillmentRightsSchema";
@@ -1671,6 +1672,11 @@ export async function returnSaleInTx(
       })
       .where(eq(invoices.id, input.invoiceId));
     if (inv.sourceType === "ONLINE") {
+      const linkedOrders = await tx
+        .select({ id: onlineOrders.id, orderNumber: onlineOrders.orderNumber })
+        .from(onlineOrders)
+        .where(eq(onlineOrders.invoiceId, input.invoiceId))
+        .for("update");
       await tx
         .update(onlineOrders)
         .set({
@@ -1688,6 +1694,14 @@ export async function returnSaleInTx(
             sql`${onlineOrders.status} != 'CANCELLED'`,
           ),
         );
+      for (const ord of linkedOrders) {
+        await reverseOnlineOrderLoyaltyPoints(tx, {
+          onlineOrderId: Number(ord.id),
+          remainingNetMerchandiseIqd: "0.00",
+          idempotencyKey: `rev:order:${ord.id}:retfull:${input.invoiceId}`,
+          reasonLabel: `استرداد نقاط مرتجع كامل للطلب ${ord.orderNumber}`,
+        });
+      }
     }
     if (!input.internalCorrectionReversal && !isUnremittedDelivery) {
       await reconcileDeliveryOnReturnTx(tx, {
@@ -2483,6 +2497,7 @@ export async function returnSaleInTx(
       )
     : null;
   // مرتجع هدية صِرفة لا يعكس SALE/AR؛ أثره المالي الوحيد عكس GIFT_OUT عند عودتها.
+  let createdReturnEntryId: number | null = null;
   if (returnPostingIntent) {
     const returnEntryId = await postEntry(tx, {
       entryType: "RETURN",
@@ -2512,6 +2527,7 @@ export async function returnSaleInTx(
       postingIntent: returnPostingIntent,
       postingSourceComponents: returnPostingSource,
     });
+    createdReturnEntryId = returnEntryId;
     await postDamagedReturnReclassificationTx(tx, {
       branchId: Number(inv.branchId),
       invoiceId: input.invoiceId,
@@ -2926,6 +2942,36 @@ export async function returnSaleInTx(
           sql`${onlineOrders.status} != 'CANCELLED'`,
         ),
       );
+  }
+
+  if (inv.sourceType === "ONLINE" && !input.internalCorrectionReversal) {
+    const linkedOrders = await tx
+      .select({ id: onlineOrders.id, orderNumber: onlineOrders.orderNumber })
+      .from(onlineOrders)
+      .where(eq(onlineOrders.invoiceId, input.invoiceId))
+      .for("update");
+    if (linkedOrders.length > 0) {
+      const remainingNetMerchandise = Decimal.max(
+        0,
+        money(inv.total)
+          .minus(newReturnedTotal)
+          .minus(money(inv.deliveryFee ?? "0")),
+      );
+      for (const ord of linkedOrders) {
+        const reversalKey =
+          createdReturnEntryId != null
+            ? `rev:order:${ord.id}:ret:${createdReturnEntryId}`
+            : `rev:order:${ord.id}:retamt:${toDbMoney(newReturnedTotal)}`;
+        await reverseOnlineOrderLoyaltyPoints(tx, {
+          onlineOrderId: Number(ord.id),
+          remainingNetMerchandiseIqd: remainingNetMerchandise,
+          idempotencyKey: reversalKey,
+          reasonLabel: fullyReturned
+            ? `استرداد نقاط مرتجع كامل للطلب ${ord.orderNumber}`
+            : `استرداد نقاط مرتجع جزئي للطلب ${ord.orderNumber}`,
+        });
+      }
+    }
   }
 
   // AR: the portion not refunded in cash is dropped from the customer's balance.

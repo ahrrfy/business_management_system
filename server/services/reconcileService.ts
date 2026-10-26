@@ -1046,6 +1046,18 @@ export async function reconcileOnlineOrderConsignmentSync(): Promise<ReconcileRe
   if (!db) return [];
   const issues: ReconcileResult[] = [];
 
+  // أحدث إرسالية مرتبطة بالطلب — يطابق الربط المزدوج في `onlineOrderTracking.ts:23-28`
+  // (`invoiceId` أو `sourceType='ONLINE_ORDER' AND sourceId=order.id`) كي لا تبقى الإرسالية
+  // الأولى الملغاة تحجب الإرسالية اللاحقة المُعاد إسنادها عبر الفاتورة.
+  const latestConsignmentIdExpr = sql<number | null>`(
+    SELECT MAX(dc.id)
+    FROM deliveryConsignments dc
+    WHERE (
+      (${onlineOrders.invoiceId} IS NOT NULL AND dc.invoiceId = ${onlineOrders.invoiceId})
+      OR (dc.sourceType = 'ONLINE_ORDER' AND dc.sourceId = ${onlineOrders.id})
+    )
+  )`;
+
   // 1) طلبٌ SHIPPED/DELIVERED بلا إرسالية — يحكمه cutover env: بلا cutover لا كاشف.
   const cutoverRaw = process.env.ONLINE_ORDER_CONSIGNMENT_REQUIRED_FROM;
   const cutover = cutoverRaw ? new Date(cutoverRaw) : null;
@@ -1053,17 +1065,10 @@ export async function reconcileOnlineOrderConsignmentSync(): Promise<ReconcileRe
     const orphanShipped = await db
       .select({ id: onlineOrders.id, orderNumber: onlineOrders.orderNumber, status: onlineOrders.status })
       .from(onlineOrders)
-      .leftJoin(
-        deliveryConsignments,
-        and(
-          eq(deliveryConsignments.sourceType, "ONLINE_ORDER"),
-          eq(deliveryConsignments.sourceId, onlineOrders.id),
-        ),
-      )
       .where(and(
         inArray(onlineOrders.status, ["SHIPPED", "DELIVERED"]),
         gte(onlineOrders.createdAt, cutover),
-        sql`${deliveryConsignments.id} IS NULL`,
+        sql`${latestConsignmentIdExpr} IS NULL`,
       ));
     for (const row of orphanShipped) {
       issues.push({
@@ -1077,7 +1082,7 @@ export async function reconcileOnlineOrderConsignmentSync(): Promise<ReconcileRe
     }
   }
 
-  // 2/3/4) الحالات المزدوجة — INNER JOIN.
+  // 2/3/4) الحالات المزدوجة — على أحدث إرسالية للطلب حصراً.
   const linked = await db
     .select({
       orderId: onlineOrders.id,
@@ -1092,10 +1097,7 @@ export async function reconcileOnlineOrderConsignmentSync(): Promise<ReconcileRe
     .from(onlineOrders)
     .innerJoin(
       deliveryConsignments,
-      and(
-        eq(deliveryConsignments.sourceType, "ONLINE_ORDER"),
-        eq(deliveryConsignments.sourceId, onlineOrders.id),
-      ),
+      sql`${deliveryConsignments.id} = ${latestConsignmentIdExpr}`,
     );
 
   for (const row of linked) {
@@ -1136,9 +1138,18 @@ export async function reconcileOnlineOrderConsignmentSync(): Promise<ReconcileRe
     }
 
     // 3-عكسي ب) إرسالية CANCELLED/RETURNED × طلب لا يزال قبل-طرفيّ.
+    // استثناء `cancelDeliveryAssignment`: عند إلغاء الإسناد يعود الطلب إلى CONFIRMED/PROCESSING
+    // مع تصفير `deliveryPartyId` بانتظار إعادة الإسناد، فلا يُعدّ انحرافاً إلا إذا بقي SHIPPED أو عالقاً بجهة.
+    const awaitingReassignmentAfterCancel =
+      row.parcelStatus === "CANCELLED" &&
+      (row.orderStatus === "CONFIRMED" || row.orderStatus === "PROCESSING") &&
+      row.orderPartyId == null;
+
     if (
       (row.parcelStatus === "CANCELLED" || row.parcelStatus === "RETURNED") &&
-      row.orderStatus !== "CANCELLED" && row.orderStatus !== "DELIVERED"
+      row.orderStatus !== "CANCELLED" &&
+      row.orderStatus !== "DELIVERED" &&
+      !awaitingReassignmentAfterCancel
     ) {
       issues.push({
         entity: "consignmentTerminalOrderPreTerminal",

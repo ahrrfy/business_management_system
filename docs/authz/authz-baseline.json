@@ -124,8 +124,6 @@
     "systemRouter.getTaxSettings@server/routers/systemRouter.ts",
     "systemRouter.health@server/routers/systemRouter.ts",
     "systemRouter.resetSystem@server/routers/systemRouter.ts",
-    "systemRouter.restoreBackup@server/routers/systemRouter.ts",
-    "systemRouter.restoreUpload@server/routers/systemRouter.ts",
     "systemRouter.updateOpeningMode@server/routers/systemRouter.ts",
     "systemRouter.updateTaxSettings@server/routers/systemRouter.ts",
     "treasuryRouter.fundTreasury@server/routers/treasuryRouter.ts",

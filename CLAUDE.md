@@ -19,8 +19,8 @@
 client/src/pages (٢٧٢ صفحة، wouter + TanStack Query)
    └─ client/src/lib/trpc.ts ──POST /api/trpc──▶ server/routers.ts (برميل يجمع ٩٨ راوتراً)
         └─ server/routers/*  : تحقّق zod + اختيار الإجراء المُبوَّب (بلا منطق أعمال)
-             └─ server/services/*  : منطق الأعمال داخل withTx (٧٤٢ ملفاً/حزمة)
-                  └─ drizzle/schema.ts (٣٤٣ جدولاً، ١٨٧٨٧ سطراً) ──▶ MySQL 8
+             └─ server/services/*  : منطق الأعمال داخل withTx (٧٤٤ ملفاً/حزمة)
+                  └─ drizzle/schema.ts (٣٤٥ جدولاً، ١٨٨٦٩ سطراً) ──▶ MySQL 8
 ```
 
 - **قاعدة الطبقات:** الراوتر بلا منطق أعمال، والخدمة **لا تقرأ `ctx`** — تستقبل `Actor { userId, branchId, role }` (`server/services/tx.ts`). كسرُ هذا يُعمي حرّاس الصلاحيات ويجعل الخدمة غير قابلة لإعادة الاستعمال من قناةٍ أخرى (أوفلاين/أندرويد/استيراد).
@@ -37,7 +37,7 @@ pnpm dev                          # http://localhost:3000
 pnpm check                        # فحص الأنواع (tsc --noEmit)
 pnpm check:guards                 # حزمة الحرّاس (٤٩ حارساً) — بوّابة ما قبل الدفع (§٣.١)
 pnpm test:db:init                 # تهيئة قاعدة اختبار هذه الشجرة طازجةً (بعد تغيّر المخطط)
-pnpm test                         # الحزمة الكاملة (vitest، TZ=UTC، ١٤٢٤ ملف اختبار)
+pnpm test                         # الحزمة الكاملة (vitest، TZ=UTC، ١٤٣٢ ملف اختبار)
 pnpm test:unit                    # ٥٩١ ملف منطقيّ بلا قاعدة — ثوانٍ، للتكرار السريع
 pnpm build && pnpm start          # بناء الإنتاج (vite + esbuild) ثم تشغيله من dist/
 pnpm format                       # prettier — ⚠️ **بلا نطاق**: يُعيد تنسيق المستودع كلّه (~٢٥٩٦ ملفاً)
@@ -138,7 +138,7 @@ pnpm exec cross-env TZ=UTC vitest run server/services/__tests__/sale.test.ts -t 
 3. **الدمج والنشر الآلي (Automated Merge & Deploy):**
    - بعد اجتياز جميع الفحوصات بنجاح تام وتحولها للأخضر، يتم دمج الفرع مع `main` وتنفيذ إجراءات النشر المعتمدة.
 
-## ٥. اتفاقيات الكود (مُلزمة — يحرسها ١٤٢٤ ملف اختبار + حرّاس §٣.١)
+## ٥. اتفاقيات الكود (مُلزمة — يحرسها ١٤٣٢ ملف اختبار + حرّاس §٣.١)
 - **الذرّية:** كل عملية أعمال داخل `withTx(tx => …)` (server/services/tx.ts)؛ أي throw ⇒ ROLLBACK كامل.
 - **المخزون:** بالوحدة الأساس (int) لكل (variant × branch) في `branchStock`. كل تغيير عبر `inventoryService.applyMovement` (يكتب حركة + يحدّث الرصيد تحت قفل `.for("update")`). `baseQuantity = quantity × conversionFactor` ويجب أن يكون صحيحاً.
 - **الأموال:** كلها عبر `decimal.js` + `money.ts` (round2 HALF_UP، toDbMoney نصاً). **ممنوع** `parseFloat`/`Number` على الأموال.

@@ -731,7 +731,7 @@ export async function setOnlineOrderStatus(
         input.cancelReason?.trim() || "أُلغي الطلب قبل الإرسال",
       );
     }
-    if (input.status === "DELIVERED") {
+    if (input.status === "DELIVERED" && order.customerId != null) {
       await awardDeliveredOnlineOrderPoints(tx, {
         onlineOrderId: input.id,
         customerId: Number(order.customerId),

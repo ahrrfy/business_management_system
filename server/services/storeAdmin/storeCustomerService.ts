@@ -6,7 +6,7 @@
  * الملغاة (لا قيمة محقَّقة/قيد تنفيذ). عزل الفرع كبقيّة راوتر الطلبات (scopedBranchId؛ المرتفع=كل المتجر).
  */
 import { and, eq, sql } from "drizzle-orm";
-import { customers, onlineOrders } from "../../../drizzle/schema";
+import { customers, invoices, onlineOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { escLike } from "../../lib/sqlLike";
 import { money, toDbMoney } from "../money";
@@ -52,6 +52,17 @@ const EMPTY_SUMMARY: StoreCustomerSummary = {
   totalCustomers: 0, repeatCustomers: 0, repeatRate: 0, totalRevenue: "0.00", avgSpend: "0.00",
 };
 
+const netMerchandiseExpr = sql<string>`(
+  CASE
+    WHEN ${onlineOrders.invoiceId} IS NOT NULL AND ${invoices.id} IS NOT NULL THEN
+      CASE
+        WHEN ${invoices.status} IN ('CANCELLED', 'RETURNED', 'SUPERSEDED') THEN 0
+        ELSE GREATEST(${invoices.total} - COALESCE(${invoices.returnedTotal}, 0) - COALESCE(${invoices.deliveryFee}, 0), 0)
+      END
+    ELSE GREATEST(${onlineOrders.total} - COALESCE(${onlineOrders.shippingCost}, 0), 0)
+  END
+)`;
+
 export async function getStoreCustomers(input: {
   scopedBranchId: number | null;
   q?: string;
@@ -77,7 +88,7 @@ export async function getStoreCustomers(input: {
     ? sql`(${customers.name} LIKE ${like} ESCAPE '!' OR ${customers.searchNorm} LIKE ${like} ESCAPE '!' OR ${customers.phone} LIKE ${like} ESCAPE '!')`
     : undefined;
 
-  const spendExpr = sql`COALESCE(SUM(CASE WHEN ${currentOnlineOrderStatus} <> 'CANCELLED' THEN ${onlineOrders.total} ELSE 0 END), 0)`;
+  const spendExpr = sql`COALESCE(SUM(CASE WHEN ${currentOnlineOrderStatus} <> 'CANCELLED' THEN ${netMerchandiseExpr} ELSE 0 END), 0)`;
   // كاسر تعادلٍ ثابت (customers.id) على كل فرع فرزٍ ⇒ ترتيبٌ كليّ حتميّ فيثبُت الترقيم (limit/offset)
   // ولا يتكرّر/يُتخطّى عميلٌ عند تساوي قيم الفرز (شائع: إنفاق 0 لمن طلباته كلّها ملغاة — مراجعة ١٣/٧).
   const orderByExpr =
@@ -102,6 +113,7 @@ export async function getStoreCustomers(input: {
     })
     .from(customers)
     .innerJoin(onlineOrders, joinOn)
+    .leftJoin(invoices, eq(invoices.id, onlineOrders.invoiceId))
     .where(qCond)
     .groupBy(customers.id)
     .orderBy(orderByExpr)
@@ -135,6 +147,7 @@ export async function getStoreCustomers(input: {
       spend: sql<string>`${spendExpr}`.as("spend"),
     })
     .from(onlineOrders)
+    .leftJoin(invoices, eq(invoices.id, onlineOrders.invoiceId))
     .where(orderBranch)
     .groupBy(onlineOrders.customerId)
     .as("pc");

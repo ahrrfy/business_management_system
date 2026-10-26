@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 const mobileRoot = resolve(__dirname, "..");
 const loyaltySrc = readFileSync(resolve(mobileRoot, "app/loyalty.tsx"), "utf8");
 const perksSrc = readFileSync(resolve(mobileRoot, "app/(tabs)/perks.tsx"), "utf8");
+const apiSrc = readFileSync(resolve(mobileRoot, "lib/storefront-api.ts"), "utf8");
 
 // Strict Zero-Emoji Regex guard
 const FORBIDDEN_EMOJI_REGEX =
@@ -51,13 +52,25 @@ describe("Milestone 4: Dedicated Loyalty & Rewards Experience", () => {
     });
   });
 
-  describe("3. Direct Voucher / Coupon Activation", () => {
+  describe("3. Direct Voucher / Coupon Activation & Self-Service Points Redemption", () => {
     it("verifies activate coupon button and success state in loyalty screen", () => {
       expect(loyaltySrc).toContain("تفعيل الكوبون");
       expect(loyaltySrc).toContain("تم التفعيل بنجاح");
       expect(loyaltySrc).toContain("handleActivateCoupon");
+      expect(loyaltySrc).toContain("saveActiveCouponCode");
       expect(loyaltySrc).toContain("Clipboard.setString");
       expect(loyaltySrc).toContain("Haptics.notificationAsync");
+    });
+
+    it("verifies self-service loyalty points redemption wiring and idempotent request key", () => {
+      expect(apiSrc).toContain("redeemStorefrontLoyaltyPoints");
+      expect(apiSrc).toContain('"storefront.redeemLoyaltyPoints"');
+      expect(loyaltySrc).toContain("redeemStorefrontLoyaltyPoints");
+      expect(loyaltySrc).toContain("استبدال النقاط بقسيمة خصم");
+      expect(loyaltySrc).toContain("استبدال النقاط وتفعيل الكوبون");
+      expect(loyaltySrc).toContain("clientRequestId: redeemRequestId");
+      expect(loyaltySrc).toContain("ORDER_REVERSE");
+      expect(loyaltySrc).toContain("REDEEM");
     });
   });
 

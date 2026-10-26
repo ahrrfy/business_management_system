@@ -274,6 +274,16 @@ export type StorefrontFirstOrderCouponResult = {
   programName: string;
   validTo: string | null;
 };
+export type StorefrontRedeemLoyaltyResult = {
+  outcome: "ISSUED" | "REPLAYED";
+  code: string;
+  programName: string;
+  discountIqd: string;
+  minOrderSpendIqd: string;
+  pointsRedeemed: number;
+  pointsBalance: string;
+  validTo: string | null;
+};
 
 export type ApiProduct = {
   productId: number;
@@ -1052,6 +1062,18 @@ export function requestStorefrontFirstOrderCoupon(customerSessionToken: string) 
   return storefrontMutation<StorefrontFirstOrderCouponResult>(
     "storefront.requestFirstOrderCoupon",
     { customerSessionToken },
+  );
+}
+
+/** استبدال ذاتي للنقاط بقسيمة خصم شخصية مع حماية عدم التكرار عبر clientRequestId. */
+export function redeemStorefrontLoyaltyPoints(input: {
+  customerSessionToken: string;
+  points: number;
+  clientRequestId: string;
+}) {
+  return storefrontMutation<StorefrontRedeemLoyaltyResult>(
+    "storefront.redeemLoyaltyPoints",
+    input,
   );
 }
 
