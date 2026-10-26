@@ -19,6 +19,7 @@ import {
   invoices,
 } from "../../../drizzle/schema";
 import {
+  aftercareExecutions,
   deliveryDocumentPrints,
   deliveryDocumentSnapshots,
 } from "../../../drizzle/fulfillmentSchema";
@@ -453,19 +454,55 @@ export async function bootstrapHistoricalShipmentDocumentSnapshotsTx(
       ),
     )
     .orderBy(desc(deliveryEvents.occurredAt), desc(deliveryEvents.id));
-  // OUT_FOR_DELIVERY is also used for later physical-departure transitions.
-  // Select the newest event that actually proves the current assignment
-  // identity instead of assuming the newest status transition is assignment.
+  // OUT_FOR_DELIVERY also records a later departure/retry, without assignment
+  // identity. Do not let that hide the last actual assignment, or skip a newer
+  // assignment merely because its identity conflicts with today's shipment.
   const originalEvent = events.find((event) => {
     const payload = eventPayload(event.payload);
     return (
-      event.actorUserId != null &&
-      Number(payload?.partyId) === Number(leader.partyId) &&
-      String(payload?.sourceType ?? "") === leader.sourceType &&
-      Number(payload?.sourceId) === Number(leader.sourceId)
+      event.eventType !== "OUT_FOR_DELIVERY" ||
+      ["partyId", "sourceType", "sourceId"].some((key) =>
+        Object.hasOwn(payload ?? {}, key),
+      )
     );
   });
-  const originalPayload = eventPayload(originalEvent?.payload);
+  let originalPayload = eventPayload(originalEvent?.payload);
+  // Native aftercare events originally saved the execution identity only.
+  // Its persisted dispatch association must independently prove this carrier,
+  // consignment and actor; never infer them from the current directory alone.
+  if (
+    originalEvent?.eventType === "AFTERCARE_DISPATCHED" &&
+    originalPayload?.partyId == null &&
+    originalPayload?.sourceType == null &&
+    originalPayload?.sourceId == null &&
+    Number.isSafeInteger(Number(originalPayload?.caseId)) &&
+    Number(originalPayload?.caseId) > 0 &&
+    leader.sourceType === "AFTERCARE_EXECUTION" &&
+    Number(originalPayload?.aftercareExecutionId) === leader.sourceId
+  ) {
+    const [execution] = await tx
+      .select({ id: aftercareExecutions.id, partyId: aftercareExecutions.partyId })
+      .from(aftercareExecutions)
+      .where(
+        and(
+          eq(aftercareExecutions.id, leader.sourceId),
+          eq(aftercareExecutions.caseId, Number(originalPayload?.caseId)),
+          eq(aftercareExecutions.consignmentId, leader.id),
+          eq(aftercareExecutions.branchId, input.branchId),
+          eq(aftercareExecutions.partyId, leader.partyId),
+          eq(aftercareExecutions.dispatchedBy, originalEvent.actorUserId ?? 0),
+        ),
+      )
+      .for("share")
+      .limit(1);
+    if (execution)
+      originalPayload = {
+        ...originalPayload,
+        partyId: execution.partyId,
+        sourceType: "AFTERCARE_EXECUTION",
+        sourceId: execution.id,
+      };
+  }
   if (
     !originalEvent ||
     originalEvent.actorUserId == null ||

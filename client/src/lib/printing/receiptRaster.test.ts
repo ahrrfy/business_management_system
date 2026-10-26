@@ -62,6 +62,17 @@ describe("compact 80mm receipt", () => {
   const sale = { receiptNumber: "12345", date: "23/10/2026", time: "10:00", cashierName: "كاشير",
     items: [{ name: "دفتر", quantity: 1, price: "1000", total: "1000" }], subtotal: "1000", total: "1000", paid: "1000", paymentMethod: "نقدي" };
 
+  it.each(["النسخة الأصلية", "نسخة معاد طباعتها — بالقيم الحالية", "نسخة معاد طباعتها — بالقيم الحالية ومعلومات السداد والمرتجع المسجلة وقت الطباعة"])("renders and measures copy label %s above the thermal receipt items", async (copyLabel) => {
+    canvasFixture();
+    const plain = await receiptToCanvas(sale);
+    const fixture = canvasFixture();
+    const labeled = await receiptToCanvas({ ...sale, copyLabel });
+    const header = fixture.text.filter((entry) => entry.y < fixture.text.find((entry) => entry.value === "المنتج")!.y);
+    expect(header.map((entry) => entry.value).join(" ")).toContain(copyLabel);
+    expect(labeled!.height).toBeGreaterThan(plain!.height);
+    expect(Math.max(...fixture.text.map((entry) => entry.y))).toBeLessThan(labeled!.height);
+  });
+
   it.each([
     { kind: "COD", received: 0, credit: 0, isCredit: false, delivery: true },
     { kind: "CREDIT", received: 4000, credit: 6000, isCredit: true, delivery: false },

@@ -56,7 +56,9 @@ export function useWorkflowDocumentPrinter(branchId: number) {
     return attempt;
   }
   async function snapshotJob(snapshot: WorkflowDocumentSnapshot): Promise<WorkflowPrintJob> {
-    const doc = snapshot.documentType === "DISPATCH_SLIP" || snapshot.documentType === "AFTERCARE_WAYBILL"
+    const dispatchSlip = snapshot.documentType === "DISPATCH_SLIP" ||
+      (snapshot.documentType === "AFTERCARE_WAYBILL" && !!(snapshot.payload as { shipment?: unknown } | null)?.shipment);
+    const doc = dispatchSlip
       ? buildDeliveryDispatchSlipDoc(dispatchDocumentData(snapshot)) : workflowEventDocument(snapshot);
     const copyType = snapshot.printHistory.some((attempt) => attempt.status === "SENT") ? "REPRINT" : "ORIGINAL";
     const attempt = await request.mutateAsync({ snapshotId: snapshot.id, branchId, clientRequestId: crypto.randomUUID(), copyType,

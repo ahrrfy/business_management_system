@@ -4,6 +4,7 @@ import * as s from "../../../drizzle/schema";
 import {
   deliveryDocumentPrints,
   deliveryDocumentSnapshots,
+  aftercareExecutions,
 } from "../../../drizzle/fulfillmentSchema";
 import { getDb } from "../../db";
 import { withTx } from "../tx";
@@ -26,6 +27,7 @@ import {
   createAftercareCase,
   approveAftercareCase,
   prepareAftercareExecution,
+  dispatchAftercareExecution,
 } from "../fulfillment/aftercare";
 import { getAftercareCase } from "../fulfillment/aftercareQueries";
 import {
@@ -171,7 +173,339 @@ async function businessSnapshot() {
   ]);
 }
 
+async function preparedAftercare() {
+  await db().insert(s.users).values({
+    id: 2,
+    openId: "native-aftercare-approver",
+    role: "admin",
+    isOwner: true,
+    branchId: 1,
+  });
+  const approver = { userId: 2, branchId: 1, role: "admin" };
+  const [item] = await db()
+    .select()
+    .from(s.invoiceItems)
+    .where(eq(s.invoiceItems.invoiceId, 1));
+  const created = await createAftercareCase(
+    {
+      branchId: 1,
+      invoiceId: 1,
+      clientRequestId: "native-aftercare-create",
+      reason: "بديل لنقص موثق",
+      evidence: "محضر أصل المبيع",
+      lines: [
+        {
+          originalInvoiceItemId: item.id,
+          componentVariantId: 1,
+          baseQuantity: 1,
+          disposition: "REPLACEMENT",
+          evidence: "دليل نقص فعلي",
+        },
+      ],
+    },
+    actor,
+  );
+  await approveAftercareCase(
+    {
+      id: created.id,
+      expectedVersion: 1,
+      clientRequestId: "native-aftercare-approve",
+    },
+    approver,
+  );
+  let detail = await getAftercareCase(created.id, approver);
+  await prepareAftercareExecution(
+    {
+      id: created.id,
+      expectedVersion: detail.case.version,
+      clientRequestId: "native-aftercare-prepare",
+      recipientName: "مستلم المعالجة",
+      recipientPhone: "07700000000",
+      deliveryAddress: "عنوان المعالجة",
+      deliveryFee: "0.00",
+      lines: [{ aftercareLineId: detail.lines[0].id, baseQuantity: 1 }],
+    },
+    approver,
+  );
+  detail = await getAftercareCase(created.id, approver);
+  return detail.executions[0];
+}
+
 describe("workflow committed document printing", () => {
+  it("captures native aftercare documents atomically and prints immutable evidence without another business effect", async () => {
+    const execution = await preparedAftercare();
+    const command = {
+      id: execution.id,
+      expectedVersion: execution.version,
+      clientRequestId: "native-aftercare-dispatch",
+      partyId: 1,
+    };
+    const result = await dispatchAftercareExecution(command, actor);
+    const rows = await db().select().from(deliveryDocumentSnapshots);
+    expect(rows.map((row) => row.documentType).sort()).toEqual([
+      "AFTERCARE_WAYBILL",
+      "DELIVERY_MANIFEST",
+      "DISPATCH_SLIP",
+      "SHIPPING_LABEL",
+    ]);
+    const slip = rows.find((row) => row.documentType === "DISPATCH_SLIP")!;
+    expect(slip.eventKey).toBe(`AC:${execution.id}:DISPATCH`);
+    expect(slip.payload).toMatchObject({
+      evidence: { mode: "COMMITTED_DISPATCH_EVENT" },
+      shipment: {
+        consignmentId: result.consignmentId,
+        sourceType: "AFTERCARE_EXECUTION",
+        sourceId: execution.id,
+      },
+      recipient: { name: "مستلم المعالجة", address: "عنوان المعالجة" },
+      money: { codAmount: "0.00", deliveryFee: "0.00", feeCollection: "SHOP" },
+      invoices: [],
+    });
+    await db()
+      .update(s.deliveryConsignments)
+      .set({ recipientName: "اسم لاحق", deliveryAddress: "عنوان لاحق" })
+      .where(eq(s.deliveryConsignments.id, result.consignmentId!));
+    await db()
+      .update(s.deliveryParties)
+      .set({ name: "اسم جهة لاحق" })
+      .where(eq(s.deliveryParties.id, 1));
+    const committed = await businessSnapshot();
+    expect((await dispatchAftercareExecution(command, actor)).replay).toBe(
+      true,
+    );
+    const prepared = await withTx((tx) =>
+      prepareShipmentWorkflowDocumentsTx(tx, {
+        consignmentId: result.consignmentId!,
+        branchId: 1,
+      }),
+    );
+    expect(prepared.map((row) => row.id).sort()).toEqual(
+      rows.map((row) => row.id).sort(),
+    );
+    expect(prepared.find((row) => row.id === slip.id)!.payload).toEqual(
+      slip.payload,
+    );
+    const attempt = await withTx((tx) =>
+      requestDeliveryDocumentPrintTx(tx, {
+        snapshotId: slip.id,
+        branchId: 1,
+        clientRequestId: "native-aftercare-print",
+        copyType: "ORIGINAL",
+        requestedBy: 1,
+      }),
+    );
+    await withTx((tx) =>
+      completeDeliveryDocumentPrintTx(tx, {
+        printId: attempt.print.id,
+        branchId: 1,
+        status: "SENT",
+      }),
+    );
+    expect(await businessSnapshot()).toEqual(committed);
+  });
+
+  it("prepares legacy native aftercare documents from its recorded dispatch association and rejects a mismatched party", async () => {
+    const execution = await preparedAftercare();
+    const result = await dispatchAftercareExecution(
+      {
+        id: execution.id,
+        expectedVersion: execution.version,
+        clientRequestId: "historical-aftercare-dispatch",
+        partyId: 1,
+      },
+      actor,
+    );
+    await db().delete(deliveryDocumentSnapshots);
+    // Original native dispatches saved this smaller event payload.
+    await db()
+      .update(s.deliveryEvents)
+      .set({
+        payload: {
+          aftercareExecutionId: execution.id,
+          caseId: execution.caseId,
+          codAmount: "0.00",
+        },
+      })
+      .where(eq(s.deliveryEvents.eventKey, `AC:${execution.id}:DISPATCH`));
+    const committed = await businessSnapshot();
+    const prepared = await withTx((tx) =>
+      prepareShipmentWorkflowDocumentsTx(tx, {
+        consignmentId: result.consignmentId!,
+        branchId: 1,
+      }),
+    );
+    expect(prepared).toHaveLength(3);
+    expect(
+      prepared.find((row) => row.documentType === "DISPATCH_SLIP")!.payload,
+    ).toMatchObject({
+      evidence: { mode: "HISTORICAL_ORIGINAL_EVIDENCE" },
+      shipment: {
+        sourceType: "AFTERCARE_EXECUTION",
+        sourceId: execution.id,
+        partyId: 1,
+      },
+      money: { codAmount: null, deliveryFee: null },
+    });
+    expect(await businessSnapshot()).toEqual(committed);
+    await db()
+      .update(s.deliveryConsignments)
+      .set({ partyId: 2 })
+      .where(eq(s.deliveryConsignments.id, result.consignmentId!));
+    await expect(
+      withTx((tx) =>
+        prepareShipmentWorkflowDocumentsTx(tx, {
+          consignmentId: result.consignmentId!,
+          branchId: 1,
+        }),
+      ),
+    ).rejects.toThrow(/إسناد أصلية/);
+    expect((await db().select().from(aftercareExecutions))[0].partyId).toBe(1);
+  });
+
+  it.each([{}, { reason: "إعادة المحاولة" }, { source: "STAFF_HANDOVER" }])(
+    "ignores later departure payload %j when preparing the latest assignment documents",
+    async (payload) => {
+      await withTx((tx) =>
+        captureShipmentAssignmentDocumentsTx(tx, {
+          consignmentId: 1,
+          branchId: 1,
+          eventKey: "print:assignment:original",
+        }),
+      );
+      const frozen = await db().select().from(deliveryDocumentSnapshots);
+      await db()
+        .insert(s.deliveryEvents)
+        .values({
+          consignmentId: 1,
+          eventKey: "print:later-departure",
+          eventType: "OUT_FOR_DELIVERY",
+          fromParcelStatus: "FAILED",
+          toParcelStatus: "OUT_FOR_DELIVERY",
+          actorUserId: 1,
+          occurredAt: new Date("2026-10-26T08:00:00.000Z"),
+          payload,
+        });
+      const before = await businessSnapshot();
+      const prepared = await withTx((tx) =>
+        prepareShipmentWorkflowDocumentsTx(tx, {
+          consignmentId: 1,
+          branchId: 1,
+        }),
+      );
+      expect(prepared.map((row) => row.id).sort()).toEqual(
+        frozen.map((row) => row.id).sort(),
+      );
+      expect(await db().select().from(deliveryDocumentSnapshots)).toEqual(
+        frozen,
+      );
+      expect(await businessSnapshot()).toEqual(before);
+    },
+  );
+
+  it.each([
+    { partyId: 2, sourceType: "INVOICE", sourceId: 1 },
+    { partyId: 2 },
+    { sourceId: 999 },
+  ])(
+    "does not skip a newer assignment with conflicting or incomplete identity %j",
+    async (payload) => {
+      await withTx((tx) =>
+        captureShipmentAssignmentDocumentsTx(tx, {
+          consignmentId: 1,
+          branchId: 1,
+          eventKey: "print:assignment:original",
+        }),
+      );
+      await db()
+        .insert(s.deliveryEvents)
+        .values({
+          consignmentId: 1,
+          eventKey: "print:bad-assignment",
+          eventType: "OUT_FOR_DELIVERY",
+          actorUserId: 1,
+          occurredAt: new Date("2026-10-26T08:00:00.000Z"),
+          payload,
+        });
+      await expect(
+        withTx((tx) =>
+          prepareShipmentWorkflowDocumentsTx(tx, {
+            consignmentId: 1,
+            branchId: 1,
+          }),
+        ),
+      ).rejects.toThrow(/إسناد أصلية/);
+    },
+  );
+
+  it("recovers the same original print before and after completion while rejecting different requests and cross-branch replay", async () => {
+    const [snapshotId] = await withTx((tx) =>
+      captureShipmentAssignmentDocumentsTx(tx, {
+        consignmentId: 1,
+        branchId: 1,
+        eventKey: "print:assignment:original",
+      }),
+    );
+    const command = {
+      snapshotId,
+      branchId: 1,
+      clientRequestId: "lost-original-response",
+      copyType: "ORIGINAL" as const,
+      requestedBy: 1,
+    };
+    const before = await businessSnapshot();
+    const attempt = await withTx((tx) =>
+      requestDeliveryDocumentPrintTx(tx, command),
+    );
+    expect(
+      await withTx((tx) => requestDeliveryDocumentPrintTx(tx, command)),
+    ).toEqual({ print: attempt.print, idempotentReplay: true });
+    await expect(
+      withTx((tx) =>
+        requestDeliveryDocumentPrintTx(tx, {
+          ...command,
+          printerKey: "different-printer",
+        }),
+      ),
+    ).rejects.toThrow(/طلب مختلف/);
+    await expect(
+      withTx((tx) =>
+        requestDeliveryDocumentPrintTx(tx, {
+          ...command,
+          clientRequestId: "different-original",
+        }),
+      ),
+    ).rejects.toThrow(/قيد التنفيذ/);
+    await expect(
+      withTx((tx) =>
+        requestDeliveryDocumentPrintTx(tx, { ...command, branchId: 2 }),
+      ),
+    ).rejects.toThrow(/الفرع/);
+    await withTx((tx) =>
+      completeDeliveryDocumentPrintTx(tx, {
+        printId: attempt.print.id,
+        branchId: 1,
+        status: "SENT",
+      }),
+    );
+    const replay = await withTx((tx) =>
+      requestDeliveryDocumentPrintTx(tx, command),
+    );
+    expect(replay).toMatchObject({
+      print: { id: attempt.print.id, status: "SENT" },
+      idempotentReplay: true,
+    });
+    await expect(
+      withTx((tx) =>
+        requestDeliveryDocumentPrintTx(tx, {
+          ...command,
+          clientRequestId: "different-original",
+        }),
+      ),
+    ).rejects.toThrow(/طُبعت النسخة الأصلية/);
+    expect(await db().select().from(deliveryDocumentPrints)).toHaveLength(1);
+    expect(await businessSnapshot()).toEqual(before);
+  });
+
   it("freezes a quantity-only settlement document on its own source and never reposts on replay or reprint", async () => {
     await db()
       .insert(s.users)
@@ -420,15 +754,17 @@ describe("workflow committed document printing", () => {
   });
 
   it("ignores a later departure transition when bootstrapping the assignment documents", async () => {
-    await db().insert(s.deliveryEvents).values({
-      id: 2,
-      consignmentId: 1,
-      eventKey: "print:departure:retry",
-      eventType: "OUT_FOR_DELIVERY",
-      actorUserId: 1,
-      occurredAt: new Date("2026-10-25T09:00:00.000Z"),
-      payload: { reason: "غادرت الشحنة بعد إعادة المحاولة" },
-    });
+    await db()
+      .insert(s.deliveryEvents)
+      .values({
+        id: 2,
+        consignmentId: 1,
+        eventKey: "print:departure:retry",
+        eventType: "OUT_FOR_DELIVERY",
+        actorUserId: 1,
+        occurredAt: new Date("2026-10-25T09:00:00.000Z"),
+        payload: { reason: "غادرت الشحنة بعد إعادة المحاولة" },
+      });
     const ids = await withTx((tx) =>
       bootstrapHistoricalShipmentDocumentSnapshotsTx(tx, {
         consignmentId: 1,
