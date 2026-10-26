@@ -4,7 +4,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { confirmConsignmentDelivery } from "../delivery/courier";
-import { hashCouponCode } from "../couponService";
+import { hashCouponCode, issueBounceBackCouponTx } from "../couponService";
+import { money } from "../money";
 import { createOnlineOrder, quoteOnlineOrder } from "../onlineOrderService";
 import { returnSale } from "../returnService";
 import { cancelSale } from "../sale/cancel";
@@ -1056,5 +1057,196 @@ describe("Wave 4 — دورة حياة دفتر الولاء المتكاملة 
     expect(replayedBig.outcome).toBe("REPLAYED");
     expect(replayedBig.code).toBe(issuedBig.code);
     expect(replayedBig.pointsBalance).toBe("150.00");
+  });
+
+  it("لا تحجب برامج قسائم الولاء المولّدة (أكثر من 10 قيم استبدال مختلفة) برنامج قسيمة العودة العام النشط في issueBounceBackCouponTx", async () => {
+    const d = db();
+    const validFrom = new Date("2025-01-01T00:00:00.000Z");
+
+    const [promoRes] = await d.insert(s.promotions).values({
+      name: "عرض قسيمة العودة العام",
+      description: "خصم 2,500 د.ع للزيارة القادمة",
+      type: "AMOUNT",
+      discountPercent: "0.00",
+      discountAmount: "2500.00",
+      maxDiscountAmount: "2500.00",
+      minLineAmount: "0.00",
+      minOrderSpend: "10000.00",
+      scope: "ALL",
+      effectiveFrom: validFrom,
+      effectiveTo: null,
+      customerTier: null,
+      branchId: null,
+      freeShipping: false,
+      shippingDiscountAmount: "0.00",
+      priority: 50,
+      isActive: true,
+      applicationMode: "COUPON",
+      isStoreManaged: false,
+      createdBy: 1,
+    });
+    const bouncePromoId = Number((promoRes as { insertId: number }).insertId);
+
+    const [progRes] = await d.insert(s.couponPrograms).values({
+      promotionId: bouncePromoId,
+      name: "برنامج هدية العودة العام",
+      status: "ACTIVE",
+      branchId: null,
+      validFrom,
+      validTo: null,
+      perCouponLimit: 1,
+      perCustomerLimit: 10,
+      isFirstOrderSelfService: false,
+      codePrefix: "NEXT",
+      designJson: {
+        isAutoBounceBack: true,
+        bounceBackHeadline: "هدية العودة",
+        bounceBackPrefix: "NEXT",
+        autoBounceBackMinInvoice: "15000.00",
+      },
+      createdBy: 1,
+    });
+    const bounceProgramId = Number((progRes as { insertId: number }).insertId);
+
+    // إضافة برنامج كوبونات عام لاحق بـ isAutoBounceBack: false للتأكد من عدم التقاطه في SQL
+    await d.insert(s.couponPrograms).values({
+      promotionId: bouncePromoId,
+      name: "برنامج كوبونات عادي بلا عودة تلقائية",
+      status: "ACTIVE",
+      branchId: null,
+      validFrom,
+      validTo: null,
+      perCouponLimit: 1,
+      perCustomerLimit: 10,
+      isFirstOrderSelfService: false,
+      codePrefix: "REG",
+      designJson: {
+        isAutoBounceBack: false,
+        bounceBackHeadline: "لا ينبغي إصداره",
+      },
+      createdBy: 1,
+    });
+
+    const loyaltyProgram = (await d.select().from(s.loyaltyPrograms))[0]!;
+    await d.insert(s.loyaltyAccounts).values({
+      programId: Number(loyaltyProgram.id),
+      customerId: 101,
+      pointsBalance: "5000.00",
+    });
+
+    const customerSession = await signStorefrontCustomerSession({
+      customerId: 101,
+      firebaseUid: "uid-customer-101-crowding",
+      phone: CUSTOMER_PHONE,
+      sessionVersion: 0,
+    });
+
+    // تنفيذ 12 عملية استبدال بقيم نقاط مختلفة (100..111) لتوليد 12 برنامج LOY عام أحدث من برنامج العودة
+    for (let pts = 100; pts <= 111; pts += 1) {
+      const redeemed = await redeemStorefrontLoyaltyPoints({
+        customerSessionToken: customerSession,
+        points: pts,
+        clientRequestId: `w4-crowding-redeem-${pts}`,
+      });
+      expect(redeemed.outcome).toBe("ISSUED");
+    }
+
+    const loyPrograms = await d
+      .select({ id: s.couponPrograms.id })
+      .from(s.couponPrograms)
+      .where(eq(s.couponPrograms.codePrefix, "LOY"));
+    expect(loyPrograms).toHaveLength(12);
+    for (const lp of loyPrograms) {
+      expect(Number(lp.id)).toBeGreaterThan(bounceProgramId);
+    }
+
+    // تحت الحد الأدنى للفاتورة (10,000 < 15,000) لا تصدر قسيمة عودة
+    const belowMin = await withTx((tx) =>
+      issueBounceBackCouponTx(tx, {
+        branchId: 1,
+        customerId: 101,
+        customerTier: "RETAIL",
+        invoiceTotal: money("10000.00"),
+      }),
+    );
+    expect(belowMin).toBeNull();
+
+    // عند استيفاء الحد الأدنى تصدر قسيمة العودة رغم وجود 12 برنامج LOY أحدث + برنامج REG
+    const issuedBounce = await withTx((tx) =>
+      issueBounceBackCouponTx(tx, {
+        branchId: 1,
+        customerId: 101,
+        customerTier: "RETAIL",
+        invoiceTotal: money("20000.00"),
+      }),
+    );
+    expect(issuedBounce).not.toBeNull();
+    expect(issuedBounce?.headline).toBe("هدية العودة");
+    expect(issuedBounce?.code).toMatch(/^NEXT-[A-Z0-9]{5}-[A-Z0-9]{5}$/);
+
+    const storedBounceCoupon = (
+      await d
+        .select()
+        .from(s.coupons)
+        .where(eq(s.coupons.codeHash, hashCouponCode(issuedBounce!.code)))
+    )[0];
+    expect(storedBounceCoupon).toBeDefined();
+    expect(Number(storedBounceCoupon?.programId)).toBe(bounceProgramId);
+
+    // التحقق من تجاهل designJson الفارغ {} وبقاء أولوية الفرع المحدد (branchId=1) على البرنامج العام (branchId=null)
+    await d.insert(s.couponPrograms).values({
+      promotionId: bouncePromoId,
+      name: "برنامج بتصميم فارغ",
+      status: "ACTIVE",
+      branchId: 1,
+      validFrom,
+      validTo: null,
+      perCouponLimit: 1,
+      perCustomerLimit: 10,
+      isFirstOrderSelfService: false,
+      codePrefix: "EMPTY",
+      designJson: {},
+      createdBy: 1,
+    });
+    const [branchProgRes] = await d.insert(s.couponPrograms).values({
+      promotionId: bouncePromoId,
+      name: "برنامج هدية العودة لفرع الرئيسي",
+      status: "ACTIVE",
+      branchId: 1,
+      validFrom,
+      validTo: null,
+      perCouponLimit: 1,
+      perCustomerLimit: 10,
+      isFirstOrderSelfService: false,
+      codePrefix: "BR1",
+      designJson: {
+        isAutoBounceBack: true,
+        bounceBackHeadline: "هدية الفرع الرئيسي",
+        bounceBackPrefix: "BR1",
+        autoBounceBackMinInvoice: "15000.00",
+      },
+      createdBy: 1,
+    });
+    const branchBounceProgramId = Number((branchProgRes as { insertId: number }).insertId);
+
+    const issuedBranchBounce = await withTx((tx) =>
+      issueBounceBackCouponTx(tx, {
+        branchId: 1,
+        customerId: 101,
+        customerTier: "RETAIL",
+        invoiceTotal: money("20000.00"),
+      }),
+    );
+    expect(issuedBranchBounce).not.toBeNull();
+    expect(issuedBranchBounce?.headline).toBe("هدية الفرع الرئيسي");
+    expect(issuedBranchBounce?.code).toMatch(/^BR1-[A-Z0-9]{5}-[A-Z0-9]{5}$/);
+
+    const storedBranchCoupon = (
+      await d
+        .select()
+        .from(s.coupons)
+        .where(eq(s.coupons.codeHash, hashCouponCode(issuedBranchBounce!.code)))
+    )[0];
+    expect(Number(storedBranchCoupon?.programId)).toBe(branchBounceProgramId);
   });
 });
