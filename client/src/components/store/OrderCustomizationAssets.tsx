@@ -1,8 +1,17 @@
 import React from "react";
 import { Download, ExternalLink, Image as ImageIcon } from "lucide-react";
+import { governorateById } from "@shared/governorates";
 
 const ORDER_NOTE_SEPARATOR = "\nملاحظة:";
 const LEADING_ORDER_NOTE_PREFIX = "ملاحظة:";
+
+export function formatOrderGovernorate(
+  rawGovernorate: string | null | undefined,
+): string | null {
+  const trimmed = rawGovernorate?.trim() ?? "";
+  if (!trimmed) return null;
+  return governorateById(trimmed)?.name ?? trimmed;
+}
 
 export function splitShippingAddressAndNotes(
   rawAddress: string | null | undefined,

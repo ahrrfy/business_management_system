@@ -57,6 +57,15 @@ function createClientRequestId(): string {
   return `sq-${Date.now()}-${Math.floor(Math.random() * 1_000_000_000)}`;
 }
 
+export const MAX_B2B_QUOTE_DISTINCT_UNITS = 30;
+export const MAX_B2B_QUOTE_UNIT_QUANTITY = 10_000;
+
+function normalizeLocaleDigits(raw: string): string {
+  return raw
+    .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0));
+}
+
 export function aggregateB2BQuoteLines(
   cartLines: ReadonlyArray<B2BQuoteCartLineInput>,
 ): Array<{ productUnitId: number; quantity: number }> {
@@ -65,11 +74,12 @@ export function aggregateB2BQuoteLines(
     const unitId = Math.floor(Number(line.productUnitId));
     const qty = Math.floor(Number(line.qty));
     if (!Number.isSafeInteger(unitId) || unitId <= 0 || qty <= 0) continue;
-    byUnit.set(unitId, Math.min(10_000, (byUnit.get(unitId) ?? 0) + qty));
+    byUnit.set(unitId, (byUnit.get(unitId) ?? 0) + qty);
   }
-  return Array.from(byUnit.entries())
-    .slice(0, 30)
-    .map(([productUnitId, quantity]) => ({ productUnitId, quantity }));
+  return Array.from(byUnit.entries()).map(([productUnitId, quantity]) => ({
+    productUnitId,
+    quantity,
+  }));
 }
 
 export default function StorefrontB2BQuoteDialog({
@@ -103,6 +113,15 @@ export default function StorefrontB2BQuoteDialog({
   const attemptRef = useRef<{ fingerprint: string; clientRequestId: string } | null>(null);
 
   const normalizedLines = useMemo(() => aggregateB2BQuoteLines(cartLines), [cartLines]);
+  const lineLimitError = useMemo(() => {
+    if (normalizedLines.length > MAX_B2B_QUOTE_DISTINCT_UNITS) {
+      return `تحتوي السلة على ${normalizedLines.length} صنفاً مختلفاً، بينما الحد الأقصى لطلب عرض السعر الواحد هو ${MAX_B2B_QUOTE_DISTINCT_UNITS} صنفاً. يرجى تقسيم السلة أو تنزيل العرض التقديري (B2B PDF).`;
+    }
+    if (normalizedLines.some((line) => line.quantity > MAX_B2B_QUOTE_UNIT_QUANTITY)) {
+      return `تتجاوز كمية أحد الأصناف الحد الأقصى المسموح للطلب الواحد (${MAX_B2B_QUOTE_UNIT_QUANTITY} وحدة). يرجى تقليل الكمية أو توضيح الكمية الكلية في تفاصيل الطلب.`;
+    }
+    return null;
+  }, [normalizedLines]);
   const canSubmitOnline = Boolean(orderingEnabled && turnstileSiteKey);
 
   const createQuoteM = trpc.storefront.createQuoteRequest.useMutation({
@@ -139,12 +158,16 @@ export default function StorefrontB2BQuoteDialog({
       setFormError("السلة لا تحتوي على وحدات صالحة لطلب عرض السعر.");
       return;
     }
+    if (lineLimitError) {
+      setFormError(lineLimitError);
+      return;
+    }
     const cleanName = customerName.trim();
     if (!cleanName) {
       setFormError("يرجى إدخال الاسم الكامل لمقدم الطلب.");
       return;
     }
-    const cleanPhone = customerPhone.replace(/\s+/g, " ").trim();
+    const cleanPhone = normalizeLocaleDigits(customerPhone).replace(/\s+/g, " ").trim();
     const phoneDigits = cleanPhone.replace(/\D/g, "");
     if (phoneDigits.length < 10 || cleanPhone.length > 20) {
       setFormError("يرجى إدخال رقم هاتف صحيح للتواصل.");
@@ -462,12 +485,12 @@ export default function StorefrontB2BQuoteDialog({
               </p>
             )}
 
-            {formError && (
+            {(lineLimitError || formError) && (
               <p
                 role="alert"
                 className="rounded-xl bg-[var(--sem-neg)]/5 px-3 py-2 text-xs font-semibold text-[var(--sem-neg)]"
               >
-                {formError}
+                {lineLimitError ?? formError}
               </p>
             )}
 
@@ -481,7 +504,12 @@ export default function StorefrontB2BQuoteDialog({
               </button>
               <button
                 type="submit"
-                disabled={createQuoteM.isPending || !canSubmitOnline || normalizedLines.length === 0}
+                disabled={
+                  createQuoteM.isPending ||
+                  !canSubmitOnline ||
+                  normalizedLines.length === 0 ||
+                  Boolean(lineLimitError)
+                }
                 className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-primary px-5 py-2.5 text-xs font-black text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {createQuoteM.isPending ? (

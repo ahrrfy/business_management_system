@@ -21,6 +21,7 @@ import { ReceptionDuplicateAlert } from "@/components/reception/ReceptionDuplica
 import { OrderLifecycleStatus } from "@/components/store/OrderLifecycleStatus";
 import {
   OrderCustomizationAssets,
+  formatOrderGovernorate,
   resolveOrderShippingAddressAndNotes,
 } from "@/components/store/OrderCustomizationAssets";
 
@@ -148,7 +149,7 @@ export function OrderQuickViewDrawer({
                         <MapPin className="size-3.5 mt-0.5 shrink-0 text-muted-foreground" aria-hidden />
                         <div className="flex flex-col gap-0.5">
                           <span>
-                            {order.governorate ?? "المحافظة غير محددة"}
+                            {formatOrderGovernorate(order.governorate) ?? "المحافظة غير محددة"}
                             {shippingAddress ? ` — ${shippingAddress}` : ""}
                           </span>
                           {order.latitude && order.longitude && (

@@ -505,4 +505,315 @@ describe("Slice 3 — customizer asset upload, cart identity, studio gating, and
     expect(storefrontSource).toContain("notes: form.notes.trim() || undefined");
     expect(storefrontSource).not.toContain("\\nملاحظة:");
   });
+
+  it("awaits async baseImageUrl before painting and exporting PREVIEW (never blank canvas) and falls back cleanly on CORS-tainted canvas", async () => {
+    const drawEvents: string[] = [];
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(function (
+      this: HTMLCanvasElement,
+    ) {
+      return {
+        clearRect: () => {
+          drawEvents.push("clearRect");
+        },
+        fillRect: () => {
+          drawEvents.push("fillRect");
+        },
+        strokeRect: () => {
+          drawEvents.push("strokeRect");
+        },
+        fillText: (text: string) => {
+          drawEvents.push(`fillText:${text}`);
+        },
+        drawImage: () => {
+          drawEvents.push("drawImage");
+          (this as HTMLCanvasElement & { __tainted?: boolean }).__tainted = true;
+        },
+        save: vi.fn(),
+        restore: vi.fn(),
+        createLinearGradient: () => ({ addColorStop: vi.fn() }),
+      } as unknown as CanvasRenderingContext2D;
+    } as never);
+
+    let taintNextBgDraw = false;
+    vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockImplementation(function (
+      this: HTMLCanvasElement,
+    ) {
+      drawEvents.push("toDataURL");
+      if (taintNextBgDraw && (this as HTMLCanvasElement & { __tainted?: boolean }).__tainted) {
+        throw new DOMException("Tainted canvases may not be exported.", "SecurityError");
+      }
+      return ONE_PIXEL_PNG_DATA_URL;
+    });
+
+    uploadMutateAsyncMock.mockResolvedValue({
+      assetKey: "customizer/t1/preview/nonblank123.png",
+      sha256: "abc",
+      mimeType: "image/png",
+      byteLength: 68,
+    });
+
+    let latestAssets: { logoAssetKey?: string; previewAssetKey?: string } = {};
+    await act(async () => {
+      root.render(
+        <StorefrontCustomizerStudio
+          productName="كوب خزفي مطبوع"
+          baseImageUrl="https://cdn.example.com/mug.png"
+          onAssetsChange={(assets) => {
+            latestAssets = assets;
+          }}
+        />,
+      );
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    drawEvents.length = 0;
+    const applyButton = Array.from(container.querySelectorAll("button")).find((btn) =>
+      btn.textContent?.includes("اعتماد"),
+    )!;
+
+    await act(async () => {
+      applyButton.click();
+      await new Promise((r) => setTimeout(r, 30));
+    });
+
+    const exportIdx = drawEvents.indexOf("toDataURL");
+    expect(exportIdx).toBeGreaterThan(0);
+    const eventsBeforeExport = drawEvents.slice(0, exportIdx);
+    const lastClearIdx = eventsBeforeExport.lastIndexOf("clearRect");
+    const paintedAfterLastClear = eventsBeforeExport.slice(lastClearIdx + 1);
+    expect(paintedAfterLastClear).toContain("drawImage");
+    expect(paintedAfterLastClear.some((ev) => ev.startsWith("fillText:"))).toBe(true);
+    expect(latestAssets.previewAssetKey).toBe("customizer/t1/preview/nonblank123.png");
+
+    // Simulate cross-origin baseImageUrl tainting the main canvas -> studio must fallback to clean offscreen canvas
+    taintNextBgDraw = true;
+    uploadMutateAsyncMock.mockResolvedValueOnce({
+      assetKey: "customizer/t1/preview/untainted_fallback.png",
+      sha256: "def",
+      mimeType: "image/png",
+      byteLength: 68,
+    });
+
+    await act(async () => {
+      applyButton.click();
+      await new Promise((r) => setTimeout(r, 30));
+    });
+
+    expect(latestAssets.previewAssetKey).toBe("customizer/t1/preview/untainted_fallback.png");
+  });
+
+  it("rejects >4096px logo dimensions client-side, invalidates stale previewAssetKey on text edit or logo removal, clears auto-filled FILE field, and resets studio across products", async () => {
+    // 1. Oversized image (> 4096px) rejected before network call
+    class HugeMockImage {
+      width = 5000;
+      height = 5000;
+      naturalWidth = 5000;
+      naturalHeight = 5000;
+      crossOrigin = "";
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_val: string) {
+        queueMicrotask(() => this.onload?.());
+      }
+    }
+    globalThis.Image = HugeMockImage as unknown as typeof Image;
+
+    let latestAssets: { logoAssetKey?: string; previewAssetKey?: string } = {};
+    act(() => {
+      root.render(
+        <StorefrontCustomizerStudio
+          productName="درع تكريم"
+          onAssetsChange={(a) => {
+            latestAssets = a;
+          }}
+        />,
+      );
+    });
+
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const hugePng = new File([new Uint8Array([137, 80, 78, 71])], "huge-5000px.png", {
+      type: "image/png",
+    });
+    await act(async () => {
+      Object.defineProperty(fileInput, "files", { value: [hugePng], configurable: true });
+      fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    expect(uploadMutateAsyncMock).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("4096");
+
+    // Restore normal 200x200 image
+    class NormalMockImage {
+      width = 200;
+      height = 200;
+      naturalWidth = 200;
+      naturalHeight = 200;
+      crossOrigin = "";
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_val: string) {
+        queueMicrotask(() => this.onload?.());
+      }
+    }
+    globalThis.Image = NormalMockImage as unknown as typeof Image;
+
+    // 2. Render inside StorefrontProductInformation to verify FILE field & cross-product reset
+    const fileFieldDef = {
+      id: 1,
+      fieldKey: "logo_ref",
+      label: "ملف الشعار",
+      fieldType: "FILE" as const,
+      isRequired: true,
+      sortOrder: 0,
+      maxLength: null,
+      options: [],
+      dependency: null,
+      priceDelta: "0",
+    };
+    const validConfig: StorefrontCustomizationConfig = {
+      id: 12,
+      kind: "PRINT",
+      title: "خيارات الطباعة",
+      description: null,
+      fields: [fileFieldDef],
+    };
+
+    const makeProduct = (productId: number, productName: string) => ({
+      productId,
+      productName,
+      brand: null,
+      description: "وصف",
+      category: "المطبوعات",
+      categoryId: 3,
+      unitName: "قطعة",
+      productUnitId: 900 + productId,
+      price: "5000",
+      salePrice: null,
+      promotionName: null,
+      inStock: true,
+      stockLeft: 10,
+      soldCount: 0,
+      imageUrl: null,
+      imageUrls: [],
+      isCustomizable: true,
+      customizationKind: "PRINT" as const,
+      customizationTemplate: null,
+      isBundle: false,
+      bundleItems: [],
+      variants: [],
+      storeUnits: [],
+      ratingAverage: "5.0",
+      reviewsCount: 0,
+    });
+
+    let fieldValues: Record<string, string> = {};
+    const renderInfo = (productId: number, productName: string) => {
+      root.render(
+        <StorefrontProductInformation
+          product={makeProduct(productId, productName) as never}
+          setProductReviewOpenRequest={vi.fn()}
+          setSelectedId={vi.fn()}
+          selectCategory={vi.fn()}
+          detailUnit={null}
+          variantQuantities={new Map()}
+          setSelectedVariantId={vi.fn()}
+          setSelectedStoreUnitId={vi.fn()}
+          setVariantQuantity={vi.fn()}
+          detailVariant={null}
+          customizationConfig={validConfig}
+          visibleCustomizationFields={[fileFieldDef]}
+          customizationValues={fieldValues}
+          customizationValidation={null}
+          updateCustomizationField={(field, val) => {
+            fieldValues = { ...fieldValues, [field.fieldKey]: val };
+            renderInfo(productId, productName);
+          }}
+          setCustomizationAssets={(assets) => {
+            latestAssets = assets;
+          }}
+          detailMedia={{ urls: undefined, fallbackUrl: null }}
+        />,
+      );
+    };
+
+    act(() => {
+      renderInfo(101, "درع كريستال");
+    });
+
+    uploadMutateAsyncMock
+      .mockResolvedValueOnce({
+        assetKey: "customizer/t1/logo/logo_v1.png",
+        sha256: "1",
+        mimeType: "image/png",
+        byteLength: 68,
+      })
+      .mockResolvedValueOnce({
+        assetKey: "customizer/t1/preview/preview_v1.png",
+        sha256: "2",
+        mimeType: "image/png",
+        byteLength: 68,
+      });
+
+    const studioFileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const validLogo = new File([new Uint8Array([137, 80, 78, 71])], "brand.png", {
+      type: "image/png",
+    });
+    await act(async () => {
+      Object.defineProperty(studioFileInput, "files", { value: [validLogo], configurable: true });
+      studioFileInput.dispatchEvent(new Event("change", { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    expect(fieldValues.logo_ref).toBe("شعار مرفوع مع الطلب");
+    expect(latestAssets.logoAssetKey).toBe("customizer/t1/logo/logo_v1.png");
+
+    const applyBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("اعتماد"),
+    )!;
+    await act(async () => {
+      applyBtn.click();
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(latestAssets).toEqual({
+      logoAssetKey: "customizer/t1/logo/logo_v1.png",
+      previewAssetKey: "customizer/t1/preview/preview_v1.png",
+    });
+
+    // Editing studio customText must invalidate stale previewAssetKey while keeping logoAssetKey
+    const textInput = container.querySelector("#custom-text-input") as HTMLInputElement;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+        textInput,
+        "نص جديد مختلف",
+      );
+      textInput.dispatchEvent(new Event("input", { bubbles: true }));
+      textInput.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(latestAssets).toEqual({
+      logoAssetKey: "customizer/t1/logo/logo_v1.png",
+      previewAssetKey: undefined,
+    });
+
+    // Removing logo must clear BOTH logoAssetKey & previewAssetKey AND clear auto-filled FILE placeholder
+    const removeBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("إزالة الشعار"),
+    )!;
+    act(() => {
+      removeBtn.click();
+    });
+    expect(latestAssets).toEqual({
+      logoAssetKey: undefined,
+      previewAssetKey: undefined,
+    });
+    expect(fieldValues.logo_ref).toBe("");
+
+    // Switching productId resets studio text input cleanly (no state bleed across products)
+    act(() => {
+      renderInfo(202, "قلم معدني محفور");
+    });
+    const nextTextInput = container.querySelector("#custom-text-input") as HTMLInputElement;
+    expect(nextTextInput.value).toBe("");
+  });
 });
+

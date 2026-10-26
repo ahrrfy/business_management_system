@@ -1,6 +1,6 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { router } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -22,8 +22,11 @@ import {
   ACCOUNT_DELETION_DISCLOSURE,
   confirmAndDeleteStorefrontAccountStep,
   extractIraqiPhoneLocalInput,
+  formatAccountDeletionError,
   isMobilePhoneOtpAvailable,
+  normalizeOtpDigits,
   sendAccountDeletionOtpStep,
+  type CachedDeletionOtpVerification,
 } from "@/lib/account-deletion";
 import {
   clearVerifiedCustomerSession,
@@ -67,6 +70,9 @@ export default function AccountScreen() {
   const [otpCode, setOtpCode] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [deletionError, setDeletionError] = useState<string | null>(null);
+  const cachedVerificationRef = useRef<CachedDeletionOtpVerification | null>(
+    null,
+  );
 
   useEffect(() => {
     let active = true;
@@ -120,12 +126,19 @@ export default function AccountScreen() {
     }
   };
 
+  const closeDeleteModal = () => {
+    if (deleting) return;
+    cachedVerificationRef.current = null;
+    setDeleteModalOpen(false);
+  };
+
   const requestAccountDeletion = async () => {
     const latestSession = await loadVerifiedCustomerSession();
     setSession(latestSession);
     if (latestSession?.customer.phone) {
       setPhoneLocal(extractIraqiPhoneLocalInput(latestSession.customer.phone));
     }
+    cachedVerificationRef.current = null;
     setOtpCode("");
     setDeletionError(null);
     setDeletionStep(
@@ -138,6 +151,7 @@ export default function AccountScreen() {
     if (deleting) return;
     setDeleting(true);
     setDeletionError(null);
+    cachedVerificationRef.current = null;
     try {
       const candidatePhone =
         session?.customer.phone &&
@@ -156,11 +170,7 @@ export default function AccountScreen() {
       setTargetPhoneDisplay(outcome.normalizedPhone);
       setDeletionStep("CODE");
     } catch (error) {
-      setDeletionError(
-        error instanceof Error
-          ? error.message
-          : "تعذّر إرسال رمز التحقق الهاتفي. حاول مرة أخرى.",
-      );
+      setDeletionError(formatAccountDeletionError(error));
     } finally {
       setDeleting(false);
     }
@@ -175,16 +185,19 @@ export default function AccountScreen() {
         confirmOtp: confirmStorefrontPhoneOtp,
         deleteAccount: deleteMyStorefrontAccount,
         clearSession: clearVerifiedCustomerSession,
+        cachedVerification: cachedVerificationRef.current,
+        onVerified: (verification) => {
+          cachedVerificationRef.current = verification;
+        },
+        onInvalidateVerification: () => {
+          cachedVerificationRef.current = null;
+        },
       });
       setSession(null);
       setOtpCode("");
       setDeletionStep("DELETED");
     } catch (error) {
-      setDeletionError(
-        error instanceof Error
-          ? error.message
-          : "تعذّر إتمام حذف الحساب حالياً. تحقق من الرمز وحاول مرة أخرى.",
-      );
+      setDeletionError(formatAccountDeletionError(error));
     } finally {
       setDeleting(false);
     }
@@ -412,7 +425,7 @@ export default function AccountScreen() {
 
       <Modal
         animationType="slide"
-        onRequestClose={() => !deleting && setDeleteModalOpen(false)}
+        onRequestClose={closeDeleteModal}
         presentationStyle="pageSheet"
         visible={deleteModalOpen}
       >
@@ -433,7 +446,7 @@ export default function AccountScreen() {
                 accessibilityLabel="إغلاق نافذة حذف الحساب"
                 accessibilityRole="button"
                 disabled={deleting}
-                onPress={() => setDeleteModalOpen(false)}
+                onPress={closeDeleteModal}
                 style={styles.modalCloseBtn}
               >
                 <MaterialIcons color="#52655D" name="close" size={22} />
@@ -460,7 +473,7 @@ export default function AccountScreen() {
                 </Text>
                 <TouchableOpacity
                   accessibilityRole="button"
-                  onPress={() => setDeleteModalOpen(false)}
+                  onPress={closeDeleteModal}
                   style={styles.modalPrimaryBtn}
                 >
                   <Text style={styles.modalPrimaryBtnText}>تم</Text>
@@ -475,7 +488,10 @@ export default function AccountScreen() {
                     </Text>
                     <IraqiPhoneInput
                       editable={!deleting}
-                      onChangeText={setPhoneLocal}
+                      onChangeText={(nextPhone) => {
+                        cachedVerificationRef.current = null;
+                        setPhoneLocal(nextPhone);
+                      }}
                       value={phoneLocal}
                     />
                     <Text style={styles.fieldHelp}>
@@ -513,7 +529,9 @@ export default function AccountScreen() {
                       editable={!deleting}
                       keyboardType="number-pad"
                       maxLength={6}
-                      onChangeText={setOtpCode}
+                      onChangeText={(val) =>
+                        setOtpCode(normalizeOtpDigits(val).replace(/\D/g, "").slice(0, 6))
+                      }
                       placeholder="000000"
                       placeholderTextColor="#8A9992"
                       style={styles.otpInput}
@@ -542,6 +560,7 @@ export default function AccountScreen() {
                       accessibilityRole="button"
                       disabled={deleting}
                       onPress={() => {
+                        cachedVerificationRef.current = null;
                         setOtpCode("");
                         setDeletionError(null);
                         setDeletionStep("PHONE");

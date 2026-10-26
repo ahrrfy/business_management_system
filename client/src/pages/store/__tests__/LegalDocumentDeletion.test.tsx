@@ -249,4 +249,26 @@ describe("LegalDocument /legal/delete-account interactive deletion request", () 
         ?.getAttribute("data-reset-key"),
     ).toBe("1");
   });
+
+  it("blocks premature submission while storefront.settings is still loading so Turnstile cannot be bypassed", () => {
+    mockSettingsUseQuery.mockReturnValue({
+      data: undefined,
+      isLoading: true,
+    });
+    act(() => root.render(<LegalDocument />));
+
+    const phoneInput = container.querySelector('input[type="tel"]') as HTMLInputElement;
+    const submitBtn = container.querySelector('button[type="submit"]') as HTMLButtonElement;
+    const form = container.querySelector("form") as HTMLFormElement;
+
+    expect(submitBtn.disabled).toBe(true);
+
+    setInputValue(phoneInput, "07701234567");
+    act(() => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+
+    expect(mockMutate).not.toHaveBeenCalled();
+  });
 });
+

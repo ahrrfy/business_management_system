@@ -100,4 +100,24 @@ describe("onlineOrder printing address & customerNotes resolution", () => {
     expect(unifiedWithLegacyFallback.customerAddress).toBe("بغداد — المنصور - شارع 14 رمضان");
     expect(unifiedWithLegacyFallback.notes).toBe("ملاحظة مدمجة قديمة");
   });
+
+  it("resolves canonical English governorate IDs (e.g. baghdad) to Arabic labels in Thermal receipt and Preparation A4 HTML", () => {
+    const thermal = buildOnlineOrderThermalDoc(
+      makePrintOrder({
+        governorate: "baghdad",
+        customerNotes: "ملاحظة اختبار",
+      }),
+    );
+    expect(thermal.meta).toContain("العنوان: بغداد — المنصور - شارع 14 رمضان");
+
+    const prepHtml = buildOnlineOrderPreparationA4Html(
+      makePrintOrder({
+        governorate: "baghdad",
+        customerNotes: "ملاحظة اختبار",
+      }),
+    );
+    expect(prepHtml).toContain("بغداد — المنصور - شارع 14 رمضان");
+    expect(prepHtml).not.toContain("baghdad —");
+  });
 });
+

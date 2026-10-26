@@ -7,6 +7,7 @@ export type CustomizationStudioUploadState =
   | "error";
 
 export const MAX_CUSTOMIZATION_ASSET_BYTES = 2 * 1024 * 1024;
+export const MAX_CUSTOMIZATION_IMAGE_DIMENSION = 4096;
 
 const ALLOWED_CUSTOMIZATION_MIMES: ReadonlySet<string> = new Set([
   "image/png",
@@ -58,6 +59,43 @@ export function validateCustomizationAssetFile(file: {
   return { ok: true, mimeType: mime as CustomizationAssetMime };
 }
 
+export function validateCustomizationImageDimensions(
+  width: number,
+  height: number,
+): { ok: true } | { ok: false; error: string } {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return {
+      ok: false,
+      error: "تعذّرت قراءة أبعاد ملف الصورة. يرجى اختيار ملف صورة صالح.",
+    };
+  }
+  if (
+    width > MAX_CUSTOMIZATION_IMAGE_DIMENSION ||
+    height > MAX_CUSTOMIZATION_IMAGE_DIMENSION
+  ) {
+    return {
+      ok: false,
+      error: `أبعاد الصورة تتجاوز الحد الأقصى المسموح (${MAX_CUSTOMIZATION_IMAGE_DIMENSION}×${MAX_CUSTOMIZATION_IMAGE_DIMENSION} بكسل). يرجى اختيار صورة بأبعاد أصغر.`,
+    };
+  }
+  return { ok: true };
+}
+
+export function loadStudioImage(
+  src: string,
+  options?: { crossOrigin?: string },
+): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    if (options?.crossOrigin) {
+      img.crossOrigin = options.crossOrigin;
+    }
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("تعذّر تحميل ملف الصورة للمعاينة."));
+    img.src = src;
+  });
+}
+
 export function readFileAsDataUrl(file: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -76,8 +114,54 @@ export function readFileAsDataUrl(file: Blob): Promise<string> {
   });
 }
 
+function tryExportCanvasToBase64(
+  target: Pick<HTMLCanvasElement, "toDataURL">,
+):
+  | {
+      ok: true;
+      mimeType: CustomizationAssetMime;
+      dataBase64: string;
+      dataUrl: string;
+    }
+  | { ok: false; error: string } {
+  const pngUrl = target.toDataURL("image/png");
+  const pngBase64 = stripDataUrlBase64(pngUrl);
+  if (
+    pngBase64 &&
+    estimateBase64ByteLength(pngBase64) <= MAX_CUSTOMIZATION_ASSET_BYTES
+  ) {
+    return {
+      ok: true,
+      mimeType: "image/png",
+      dataBase64: pngBase64,
+      dataUrl: pngUrl,
+    };
+  }
+
+  const webpUrl = target.toDataURL("image/webp", 0.86);
+  const webpBase64 = stripDataUrlBase64(webpUrl);
+  if (
+    webpBase64 &&
+    estimateBase64ByteLength(webpBase64) <= MAX_CUSTOMIZATION_ASSET_BYTES
+  ) {
+    return {
+      ok: true,
+      mimeType: "image/webp",
+      dataBase64: webpBase64,
+      dataUrl: webpUrl,
+    };
+  }
+
+  return {
+    ok: false,
+    error:
+      "حجم صورة المعاينة يتجاوز الحد الأقصى المسموح (2 ميجابايت). يرجى تصغير الشعار والمحاولة مجدداً.",
+  };
+}
+
 export function exportStudioCanvasPayload(
   canvas: Pick<HTMLCanvasElement, "toDataURL"> | null,
+  fallbackUntaintedCanvasFactory?: () => Pick<HTMLCanvasElement, "toDataURL"> | null,
 ):
   | {
       ok: true;
@@ -90,46 +174,25 @@ export function exportStudioCanvasPayload(
     return { ok: false, error: "لوحة المعاينة غير جاهزة حالياً. أعد المحاولة." };
   }
   try {
-    const pngUrl = canvas.toDataURL("image/png");
-    const pngBase64 = stripDataUrlBase64(pngUrl);
-    if (
-      pngBase64 &&
-      estimateBase64ByteLength(pngBase64) <= MAX_CUSTOMIZATION_ASSET_BYTES
-    ) {
-      return {
-        ok: true,
-        mimeType: "image/png",
-        dataBase64: pngBase64,
-        dataUrl: pngUrl,
-      };
-    }
-
-    const webpUrl = canvas.toDataURL("image/webp", 0.86);
-    const webpBase64 = stripDataUrlBase64(webpUrl);
-    if (
-      webpBase64 &&
-      estimateBase64ByteLength(webpBase64) <= MAX_CUSTOMIZATION_ASSET_BYTES
-    ) {
-      return {
-        ok: true,
-        mimeType: "image/webp",
-        dataBase64: webpBase64,
-        dataUrl: webpUrl,
-      };
-    }
-
-    return {
-      ok: false,
-      error:
-        "حجم صورة المعاينة يتجاوز الحد الأقصى المسموح (2 ميجابايت). يرجى تصغير الشعار والمحاولة مجدداً.",
-    };
+    return tryExportCanvasToBase64(canvas);
   } catch {
+    if (fallbackUntaintedCanvasFactory) {
+      try {
+        const cleanCanvas = fallbackUntaintedCanvasFactory();
+        if (cleanCanvas) {
+          return tryExportCanvasToBase64(cleanCanvas);
+        }
+      } catch {
+        // Fall through to unified Arabic error below
+      }
+    }
     return {
       ok: false,
       error: "تعذّر تصدير صورة المعاينة من المتصفح. يرجى إعادة المحاولة.",
     };
   }
 }
+
 
 export function formatCustomizationUploadError(error: unknown): string {
   const errObj =

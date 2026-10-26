@@ -295,4 +295,56 @@ describe("StorefrontB2BQuoteButton & lazy official StorefrontB2BQuoteDialog", ()
     expect(container.querySelector('[data-testid="b2b-turnstile"]')).toBeNull();
     expect(container.textContent).toContain("متوقف مؤقتاً");
   });
+
+  it("never silently truncates carts with >30 distinct units or >10,000 unit quantity and accepts Arabic-Indic phone digits", async () => {
+    const { aggregateB2BQuoteLines } = await import("../StorefrontB2BQuoteDialog");
+
+    const thirtyFiveLines = Array.from({ length: 35 }, (_, idx) => ({
+      cartKey: `u-${idx + 1}::base`,
+      productUnitId: idx + 1,
+      name: `صنف شركات رقم ${idx + 1}`,
+      qty: idx === 0 ? 15_000 : 10,
+      price: "1000",
+    }));
+
+    const aggregated = aggregateB2BQuoteLines(thirtyFiveLines);
+    expect(aggregated).toHaveLength(35);
+    expect(aggregated[0]?.quantity).toBe(15_000);
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root!.render(
+        <StorefrontB2BQuoteButton
+          cartLines={thirtyFiveLines}
+          cartSubtotal={500000}
+          orderingEnabled={true}
+          turnstileSiteKey="site-key"
+        />,
+      );
+    });
+
+    const officialBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("طلب عرض سعر رسمي"),
+    )!;
+    await act(async () => {
+      officialBtn.click();
+    });
+    await waitForLazyDialog(container);
+
+    expect(container.textContent).toContain("35 صنف");
+    expect(container.textContent).toContain("30");
+
+    const submitBtn = container.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+    expect(submitBtn.disabled).toBe(true);
+
+    const form = container.querySelector("form")!;
+    await act(async () => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    expect(createQuoteMutateMock).not.toHaveBeenCalled();
+  });
 });
+

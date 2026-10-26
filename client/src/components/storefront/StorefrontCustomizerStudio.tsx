@@ -20,9 +20,11 @@ import {
   estimateBase64ByteLength,
   exportStudioCanvasPayload,
   formatCustomizationUploadError,
+  loadStudioImage,
   readFileAsDataUrl,
   stripDataUrlBase64,
   validateCustomizationAssetFile,
+  validateCustomizationImageDimensions,
   type CustomizationAssetMime,
   type CustomizationStudioUploadState,
 } from "./storefrontCustomizationUpload";
@@ -82,6 +84,10 @@ export function StorefrontCustomizerStudio({
 }: StorefrontCustomizerStudioProps) {
   const uploadAssetM = trpc.storefront.uploadCustomizationAsset.useMutation();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const mountedRef = useRef(true);
+  const uploadEpochRef = useRef(0);
+  const drawSeqRef = useRef(0);
+
   const [customText, setCustomText] = useState("");
   const [secondaryText, setSecondaryText] = useState("");
   const [selectedFont, setSelectedFont] = useState(ARABIC_FONTS[0].id);
@@ -101,6 +107,13 @@ export function StorefrontCustomizerStudio({
   const pendingLogoRef = useRef<PendingLogoPayload | null>(null);
   const logoAssetKeyRef = useRef<string | undefined>(undefined);
   const previewAssetKeyRef = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const reportUploadState = useCallback(
     (next: CustomizationStudioUploadState) => {
@@ -122,107 +135,30 @@ export function StorefrontCustomizerStudio({
     [onAssetsChange],
   );
 
-  const uploadLogoPayload = useCallback(
-    async (payload: PendingLogoPayload): Promise<string | null> => {
-      setUploadError(null);
-      setFailedAction(null);
-      reportUploadState("uploading");
-      try {
-        const uploaded = await uploadAssetM.mutateAsync({
-          kind: "LOGO",
-          mimeType: payload.mimeType,
-          dataBase64: payload.dataBase64,
-        });
-        emitAssets(uploaded.assetKey, previewAssetKeyRef.current);
-        reportUploadState("uploaded");
-        return uploaded.assetKey;
-      } catch (error) {
-        setFailedAction("LOGO");
-        setUploadError(formatCustomizationUploadError(error));
-        reportUploadState("error");
-        return null;
-      }
-    },
-    [emitAssets, reportUploadState, uploadAssetM],
-  );
-
-  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file) return;
-
-    const validation = validateCustomizationAssetFile(file);
-    if (!validation.ok) {
-      pendingLogoRef.current = null;
-      setFailedAction(null);
-      setUploadError(validation.error);
-      reportUploadState("error");
-      return;
+  const invalidatePreviewIfStale = useCallback(() => {
+    setApplied(false);
+    if (previewAssetKeyRef.current) {
+      emitAssets(logoAssetKeyRef.current, undefined);
+      reportUploadState(logoAssetKeyRef.current ? "uploaded" : "idle");
     }
+  }, [emitAssets, reportUploadState]);
 
-    try {
-      const dataUrl = await readFileAsDataUrl(file);
-      const pureBase64 = stripDataUrlBase64(dataUrl);
-      if (
-        !pureBase64 ||
-        estimateBase64ByteLength(pureBase64) > MAX_CUSTOMIZATION_ASSET_BYTES
-      ) {
-        pendingLogoRef.current = null;
-        setFailedAction(null);
-        setUploadError(
-          "حجم الصورة يتجاوز الحد الأقصى المسموح (2 ميجابايت). يرجى اختيار صورة أصغر.",
-        );
-        reportUploadState("error");
-        return;
-      }
+  const paintStudioMockup = useCallback(
+    (
+      targetCanvas: HTMLCanvasElement,
+      bgImg?: HTMLImageElement,
+      overrideLogo?: HTMLImageElement | null,
+    ) => {
+      const ctx = targetCanvas.getContext("2d");
+      if (!ctx) return;
 
-      const img = new Image();
-      img.onload = () => {
-        setLogoImage(img);
-        setLogoPreviewUrl(dataUrl);
-      };
-      img.src = dataUrl;
+      const width = 600;
+      const height = 480;
+      targetCanvas.width = width;
+      targetCanvas.height = height;
+      ctx.clearRect(0, 0, width, height);
 
-      const payload: PendingLogoPayload = {
-        fileName: file.name,
-        mimeType: validation.mimeType,
-        dataBase64: pureBase64,
-        dataUrl,
-      };
-      pendingLogoRef.current = payload;
-      await uploadLogoPayload(payload);
-    } catch (error) {
-      setFailedAction(null);
-      setUploadError(formatCustomizationUploadError(error));
-      reportUploadState("error");
-    }
-  };
-
-  const removeLogo = () => {
-    pendingLogoRef.current = null;
-    setLogoImage(null);
-    setLogoPreviewUrl(null);
-    setUploadError(null);
-    setFailedAction(null);
-    emitAssets(undefined, previewAssetKeyRef.current);
-    reportUploadState(previewAssetKeyRef.current ? "uploaded" : "idle");
-  };
-
-  const redrawCanvas = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const width = 600;
-    const height = 480;
-    canvas.width = width;
-    canvas.height = height;
-
-    ctx.clearRect(0, 0, width, height);
-
-    const renderMockup = (bgImg?: HTMLImageElement) => {
-      if (bgImg) {
+      if (bgImg && bgImg.width > 0 && bgImg.height > 0) {
         const hRatio = width / bgImg.width;
         const vRatio = height / bgImg.height;
         const ratio = Math.min(hRatio, vRatio);
@@ -264,22 +200,23 @@ export function StorefrontCustomizerStudio({
       }
 
       const posY = (height * verticalPosition) / 100;
+      const activeLogo = overrideLogo !== undefined ? overrideLogo : logoImage;
 
-      if (logoImage) {
+      if (activeLogo && activeLogo.width > 0 && activeLogo.height > 0) {
         const logoMaxDim = 80;
         const logoScale = Math.min(
-          logoMaxDim / logoImage.width,
-          logoMaxDim / logoImage.height,
+          logoMaxDim / activeLogo.width,
+          logoMaxDim / activeLogo.height,
         );
-        const logoW = logoImage.width * logoScale;
-        const logoH = logoImage.height * logoScale;
+        const logoW = activeLogo.width * logoScale;
+        const logoH = activeLogo.height * logoScale;
         const logoX = width / 2 - logoW / 2;
         const logoY = posY - 70 - logoH / 2;
 
         ctx.save();
         ctx.shadowColor = "rgba(0,0,0,0.35)";
         ctx.shadowBlur = 8;
-        ctx.drawImage(logoImage, logoX, logoY, logoW, logoH);
+        ctx.drawImage(activeLogo, logoX, logoY, logoW, logoH);
         ctx.restore();
       }
 
@@ -328,49 +265,177 @@ export function StorefrontCustomizerStudio({
         width - 25,
         height - 20,
       );
-    };
+    },
+    [
+      customText,
+      secondaryText,
+      selectedFont,
+      selectedColor,
+      fontSize,
+      verticalPosition,
+      logoImage,
+      productName,
+    ],
+  );
 
-    if (baseImageUrl) {
-      const bg = new Image();
-      bg.crossOrigin = "anonymous";
-      bg.onload = () => {
-        renderMockup(bg);
-      };
-      bg.onerror = () => {
-        renderMockup();
-      };
-      bg.src = baseImageUrl;
-    } else {
-      renderMockup();
-    }
-  }, [
-    baseImageUrl,
-    customText,
-    secondaryText,
-    selectedFont,
-    selectedColor,
-    fontSize,
-    verticalPosition,
-    logoImage,
-    productName,
-  ]);
+  const renderCanvasAsync = useCallback(
+    async (overrideLogo?: HTMLImageElement | null) => {
+      const seq = ++drawSeqRef.current;
+      let bgImg: HTMLImageElement | undefined;
+      if (baseImageUrl) {
+        try {
+          bgImg = await loadStudioImage(baseImageUrl, { crossOrigin: "anonymous" });
+        } catch {
+          bgImg = undefined;
+        }
+      }
+      if (!mountedRef.current || seq !== drawSeqRef.current) return;
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      paintStudioMockup(canvas, bgImg, overrideLogo);
+    },
+    [baseImageUrl, paintStudioMockup],
+  );
+
+  const redrawCanvas = useCallback(() => {
+    void renderCanvasAsync();
+  }, [renderCanvasAsync]);
 
   useEffect(() => {
-    redrawCanvas();
-  }, [redrawCanvas]);
+    void renderCanvasAsync();
+  }, [renderCanvasAsync]);
 
-  const downloadProof = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+  const uploadLogoPayload = useCallback(
+    async (payload: PendingLogoPayload): Promise<string | null> => {
+      const epoch = ++uploadEpochRef.current;
+      setUploadError(null);
+      setFailedAction(null);
+      reportUploadState("uploading");
+      try {
+        const uploaded = await uploadAssetM.mutateAsync({
+          kind: "LOGO",
+          mimeType: payload.mimeType,
+          dataBase64: payload.dataBase64,
+        });
+        if (!mountedRef.current || epoch !== uploadEpochRef.current) return null;
+        emitAssets(uploaded.assetKey, undefined);
+        reportUploadState("uploaded");
+        return uploaded.assetKey;
+      } catch (error) {
+        if (!mountedRef.current || epoch !== uploadEpochRef.current) return null;
+        setFailedAction("LOGO");
+        setUploadError(formatCustomizationUploadError(error));
+        reportUploadState("error");
+        return null;
+      }
+    },
+    [emitAssets, reportUploadState, uploadAssetM],
+  );
+
+  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+
+    const validation = validateCustomizationAssetFile(file);
+    if (!validation.ok) {
+      pendingLogoRef.current = null;
+      setFailedAction(null);
+      setUploadError(validation.error);
+      reportUploadState("error");
+      return;
+    }
+
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      const pureBase64 = stripDataUrlBase64(dataUrl);
+      if (
+        !pureBase64 ||
+        estimateBase64ByteLength(pureBase64) > MAX_CUSTOMIZATION_ASSET_BYTES
+      ) {
+        pendingLogoRef.current = null;
+        setFailedAction(null);
+        setUploadError(
+          "حجم الصورة يتجاوز الحد الأقصى المسموح (2 ميجابايت). يرجى اختيار صورة أصغر.",
+        );
+        reportUploadState("error");
+        return;
+      }
+
+      const loadedImg = await loadStudioImage(dataUrl);
+      const dimCheck = validateCustomizationImageDimensions(
+        loadedImg.naturalWidth || loadedImg.width,
+        loadedImg.naturalHeight || loadedImg.height,
+      );
+      if (!dimCheck.ok) {
+        pendingLogoRef.current = null;
+        setFailedAction(null);
+        setUploadError(dimCheck.error);
+        reportUploadState("error");
+        return;
+      }
+
+      if (!mountedRef.current) return;
+      setApplied(false);
+      setLogoImage(loadedImg);
+      setLogoPreviewUrl(dataUrl);
+
+      const payload: PendingLogoPayload = {
+        fileName: file.name,
+        mimeType: validation.mimeType,
+        dataBase64: pureBase64,
+        dataUrl,
+      };
+      pendingLogoRef.current = payload;
+      await uploadLogoPayload(payload);
+    } catch (error) {
+      if (!mountedRef.current) return;
+      setFailedAction(null);
+      setUploadError(formatCustomizationUploadError(error));
+      reportUploadState("error");
+    }
+  };
+
+  const removeLogo = () => {
+    uploadEpochRef.current += 1;
+    pendingLogoRef.current = null;
+    setLogoImage(null);
+    setLogoPreviewUrl(null);
+    setApplied(false);
+    setUploadError(null);
+    setFailedAction(null);
+    emitAssets(undefined, undefined);
+    reportUploadState("idle");
+  };
+
+  const buildUntaintedFallbackCanvas = useCallback(() => {
+    const offscreen = document.createElement("canvas");
+    paintStudioMockup(offscreen, undefined);
+    return offscreen;
+  }, [paintStudioMockup]);
+
+  const downloadProof = async () => {
+    await renderCanvasAsync();
+    const exported = exportStudioCanvasPayload(
+      canvasRef.current,
+      buildUntaintedFallbackCanvas,
+    );
+    if (!exported.ok) return;
     const link = document.createElement("a");
     link.download = `proof-${productName.replace(/\s+/g, "_")}.png`;
-    link.href = canvas.toDataURL("image/png");
+    link.href = exported.dataUrl;
     link.click();
   };
 
   const handleApply = async () => {
-    redrawCanvas();
-    const exported = exportStudioCanvasPayload(canvasRef.current);
+    const epoch = ++uploadEpochRef.current;
+    await renderCanvasAsync();
+    if (!mountedRef.current || epoch !== uploadEpochRef.current) return;
+
+    const exported = exportStudioCanvasPayload(
+      canvasRef.current,
+      buildUntaintedFallbackCanvas,
+    );
     if (!exported.ok) {
       setFailedAction("PREVIEW");
       setUploadError(exported.error);
@@ -390,6 +455,7 @@ export function StorefrontCustomizerStudio({
           mimeType: pendingLogoRef.current.mimeType,
           dataBase64: pendingLogoRef.current.dataBase64,
         });
+        if (!mountedRef.current || epoch !== uploadEpochRef.current) return;
         currentLogoKey = logoUploaded.assetKey;
       }
 
@@ -398,6 +464,7 @@ export function StorefrontCustomizerStudio({
         mimeType: exported.mimeType,
         dataBase64: exported.dataBase64,
       });
+      if (!mountedRef.current || epoch !== uploadEpochRef.current) return;
 
       emitAssets(currentLogoKey, previewUploaded.assetKey);
       reportUploadState("uploaded");
@@ -413,8 +480,11 @@ export function StorefrontCustomizerStudio({
         previewAssetKey: previewUploaded.assetKey,
       });
       setApplied(true);
-      setTimeout(() => setApplied(false), 3000);
+      setTimeout(() => {
+        if (mountedRef.current) setApplied(false);
+      }, 3000);
     } catch (error) {
+      if (!mountedRef.current || epoch !== uploadEpochRef.current) return;
       setFailedAction("PREVIEW");
       setUploadError(formatCustomizationUploadError(error));
       reportUploadState("error");
@@ -467,7 +537,7 @@ export function StorefrontCustomizerStudio({
           <div className="mt-3 flex w-full items-center justify-between gap-2">
             <button
               type="button"
-              onClick={downloadProof}
+              onClick={() => void downloadProof()}
               className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-black text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
             >
               <Download className="size-3.5" />
@@ -496,7 +566,10 @@ export function StorefrontCustomizerStudio({
             <Input
               id="custom-text-input"
               value={customText}
-              onChange={(e) => setCustomText(e.target.value)}
+              onChange={(e) => {
+                setCustomText(e.target.value);
+                invalidatePreviewIfStale();
+              }}
               placeholder="مثال: د. أحمد الهاشمي أو شركة الرؤية"
               maxLength={60}
               className="mt-1 text-xs font-bold"
@@ -513,7 +586,10 @@ export function StorefrontCustomizerStudio({
             <Input
               id="secondary-text-input"
               value={secondaryText}
-              onChange={(e) => setSecondaryText(e.target.value)}
+              onChange={(e) => {
+                setSecondaryText(e.target.value);
+                invalidatePreviewIfStale();
+              }}
               placeholder="مثال: المدير التنفيذي / بغداد"
               maxLength={60}
               className="mt-1 text-xs"
@@ -529,7 +605,10 @@ export function StorefrontCustomizerStudio({
                 <button
                   key={font.id}
                   type="button"
-                  onClick={() => setSelectedFont(font.id)}
+                  onClick={() => {
+                    setSelectedFont(font.id);
+                    invalidatePreviewIfStale();
+                  }}
                   className={`rounded-lg border px-2 py-1.5 text-right text-[11px] font-black transition ${
                     selectedFont === font.id
                       ? "border-blue-600 bg-blue-50 text-blue-700 dark:border-blue-500 dark:bg-blue-950/60 dark:text-blue-300"
@@ -551,7 +630,10 @@ export function StorefrontCustomizerStudio({
                 <button
                   key={color.id}
                   type="button"
-                  onClick={() => setSelectedColor(color.hex)}
+                  onClick={() => {
+                    setSelectedColor(color.hex);
+                    invalidatePreviewIfStale();
+                  }}
                   title={color.name}
                   aria-label={color.name}
                   className={`size-7 rounded-full border-2 transition ${

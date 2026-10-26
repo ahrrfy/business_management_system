@@ -73,6 +73,10 @@ export default function LegalDocument() {
 
   const handleSubmitDeletion = (e: React.FormEvent) => {
     e.preventDefault();
+    if (settingsQ.isLoading) {
+      setError("جارٍ التحقق من إعدادات الحماية الأمنية، يرجى الانتظار لحظة ثم المحاولة.");
+      return;
+    }
     const normalizedPhone = normalizeIraqiMobileInput(phone);
     if (!normalizedPhone) {
       setError("يرجى إدخال رقم هاتف عراقي صالح يبدأ بـ 07");
@@ -470,10 +474,10 @@ export default function LegalDocument() {
                 <div className="pt-2">
                   <button
                     type="submit"
-                    disabled={requestDeletionM.isPending}
+                    disabled={requestDeletionM.isPending || settingsQ.isLoading}
                     className="inline-flex items-center gap-2 rounded-xl bg-[#B02B1A] px-5 py-2.5 text-xs font-bold text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    {requestDeletionM.isPending ? (
+                    {requestDeletionM.isPending || settingsQ.isLoading ? (
                       <Loader2 className="size-4 animate-spin" />
                     ) : (
                       <Trash2 className="size-4" />

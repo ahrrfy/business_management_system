@@ -53,6 +53,7 @@ export function StorefrontProductInformation({
   setCustomizationAssets,
   setCustomizationUploadState,
 }: Props) {
+  const autoFilledFileValueRef = React.useRef<string | null>(null);
   return (
     <div className="min-w-0">
       {product.brand && (
@@ -251,6 +252,7 @@ export function StorefrontProductInformation({
 
       {product.isCustomizable && Boolean(customizationConfig) && (
         <StorefrontCustomizerStudio
+          key={product.productId}
           productName={product.productName}
           baseImageUrl={detailMedia.fallbackUrl ?? product.imageUrl}
           onAssetsChange={(assets) => {
@@ -258,12 +260,20 @@ export function StorefrontProductInformation({
             const fileField = visibleCustomizationFields.find(
               (f) => f.fieldType === "FILE",
             );
-            if (
-              fileField &&
-              assets.logoAssetKey &&
-              !(customizationValues[fileField.fieldKey] ?? "").trim()
-            ) {
+            if (!fileField) return;
+            const currentFileVal = (customizationValues[fileField.fieldKey] ?? "").trim();
+            if (assets.logoAssetKey && !currentFileVal) {
+              autoFilledFileValueRef.current = "شعار مرفوع مع الطلب";
               updateCustomizationField(fileField, "شعار مرفوع مع الطلب");
+            } else if (
+              !assets.logoAssetKey &&
+              currentFileVal &&
+              (currentFileVal === "شعار مرفوع مع الطلب" ||
+                currentFileVal === "شعار مرفق من استوديو المعاينة الحية" ||
+                currentFileVal === autoFilledFileValueRef.current)
+            ) {
+              autoFilledFileValueRef.current = null;
+              updateCustomizationField(fileField, "");
             }
           }}
           onUploadStateChange={setCustomizationUploadState}
@@ -282,10 +292,10 @@ export function StorefrontProductInformation({
               (f) => f.fieldType === "FILE",
             );
             if (fileField && customData.hasLogo) {
-              updateCustomizationField(
-                fileField,
-                customData.logoFileName || "شعار مرفق من استوديو المعاينة الحية",
-              );
+              const nextFileLabel =
+                customData.logoFileName || "شعار مرفق من استوديو المعاينة الحية";
+              autoFilledFileValueRef.current = nextFileLabel;
+              updateCustomizationField(fileField, nextFileLabel);
             }
           }}
           className="mt-4"

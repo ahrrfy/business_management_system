@@ -31,6 +31,82 @@ export function isFirebaseNativeUnavailableError(error: unknown): boolean {
   );
 }
 
+export const DELETION_OTP_TOKEN_TTL_MS = 4 * 60 * 1000;
+
+export interface CachedDeletionOtpVerification {
+  firebaseIdToken: string;
+  phone: string;
+  verifiedAt: number;
+}
+
+export function normalizeOtpDigits(raw: string): string {
+  return raw
+    .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
+    .trim();
+}
+
+export function formatAccountDeletionError(error: unknown): string {
+  const errObj =
+    typeof error === "object" && error !== null
+      ? (error as { code?: unknown; message?: unknown })
+      : null;
+  const rawMessage =
+    typeof errObj?.message === "string"
+      ? errObj.message.trim()
+      : typeof error === "string"
+        ? error.trim()
+        : "";
+  const rawCode = typeof errObj?.code === "string" ? errObj.code.toLowerCase() : "";
+  const combined = `${rawCode} ${rawMessage}`.toLowerCase();
+
+  // Preserve clean Arabic messages from backend / local validation
+  if (rawMessage && /[\u0600-\u06FF]/.test(rawMessage)) {
+    return rawMessage;
+  }
+
+  if (combined.includes("invalid-verification-code") || combined.includes("invalid verification code")) {
+    return "رمز التحقق غير صحيح. تأكد من الأرقام الستة وحاول مرة أخرى.";
+  }
+  if (combined.includes("session-expired") || combined.includes("code-expired")) {
+    return "انتهت صلاحية رمز التحقق. اطلب رمز تحقق جديداً ثم حاول مرة أخرى.";
+  }
+  if (combined.includes("too-many-requests") || combined.includes("quota-exceeded")) {
+    return "تم تجاوز عدد المحاولات المسموح مؤقتاً. انتظر قليلاً ثم أعد المحاولة.";
+  }
+  if (combined.includes("invalid-phone-number") || combined.includes("missing-phone-number")) {
+    return "رقم الهاتف غير صالح. تأكد من إدخال رقم عراقي صحيح ثم أعد المحاولة.";
+  }
+  if (
+    combined.includes("network-request-failed") ||
+    combined.includes("network error") ||
+    combined.includes("fetch failed") ||
+    combined.includes("aborted")
+  ) {
+    return "تعذّر الاتصال بالخادم حالياً. تحقق من الإنترنت وحاول مرة أخرى.";
+  }
+
+  return "تعذّر إتمام العملية حالياً. تحقق من البيانات وحاول مرة أخرى.";
+}
+
+function shouldInvalidateCachedVerification(error: unknown): boolean {
+  const errObj =
+    typeof error === "object" && error !== null
+      ? (error as { code?: unknown; message?: unknown; data?: { code?: unknown } })
+      : null;
+  const code =
+    typeof errObj?.data?.code === "string"
+      ? errObj.data.code
+      : typeof errObj?.code === "string"
+        ? errObj.code
+        : "";
+  const msg = typeof errObj?.message === "string" ? errObj.message : "";
+  return (
+    code === "UNAUTHORIZED" ||
+    /انتهت صلاحية|غير صالح|تسجيل الدخول|unauthorized|token/i.test(msg)
+  );
+}
+
 export type SendDeletionOtpOutcome =
   | { nextStep: "CODE"; normalizedPhone: string }
   | { nextStep: "WEB_FALLBACK"; message: string };
@@ -66,7 +142,7 @@ export async function sendAccountDeletionOtpStep(
             : "تعذّر تشغيل التحقق الهاتفي الأصيل على هذا الجهاز؛ يمكنك استخدام صفحة الحذف عبر الويب.",
       };
     }
-    throw error;
+    throw new Error(formatAccountDeletionError(error));
   }
 }
 
@@ -76,16 +152,56 @@ export async function confirmAndDeleteStorefrontAccountStep(
     confirmOtp: (code: string) => Promise<{ firebaseIdToken: string; phone: string }>;
     deleteAccount: (input: { firebaseIdToken: string }) => Promise<{ ok: true; deletedAt: string }>;
     clearSession: () => Promise<void>;
+    cachedVerification?: CachedDeletionOtpVerification | null;
+    now?: number;
+    onVerified?: (verification: CachedDeletionOtpVerification) => void;
+    onInvalidateVerification?: () => void;
   },
 ): Promise<{ ok: true; deletedAt: string }> {
-  const cleanCode = rawCode.trim();
-  if (!/^\d{6}$/.test(cleanCode)) {
-    throw new Error("اكتب رمز التحقق المؤلف من 6 أرقام لإتمام حذف الحساب.");
+  const now = deps.now ?? Date.now();
+  const cached = deps.cachedVerification ?? null;
+  const hasFreshToken =
+    cached !== null &&
+    Boolean(cached.firebaseIdToken) &&
+    now - cached.verifiedAt >= 0 &&
+    now - cached.verifiedAt < DELETION_OTP_TOKEN_TTL_MS;
+
+  let firebaseIdToken: string;
+  if (hasFreshToken && cached) {
+    firebaseIdToken = cached.firebaseIdToken;
+  } else {
+    if (cached) {
+      deps.onInvalidateVerification?.();
+    }
+    const cleanCode = normalizeOtpDigits(rawCode);
+    if (!/^\d{6}$/.test(cleanCode)) {
+      throw new Error("اكتب رمز التحقق المؤلف من 6 أرقام لإتمام حذف الحساب.");
+    }
+    try {
+      const verified = await deps.confirmOtp(cleanCode);
+      firebaseIdToken = verified.firebaseIdToken;
+      deps.onVerified?.({
+        firebaseIdToken: verified.firebaseIdToken,
+        phone: verified.phone,
+        verifiedAt: now,
+      });
+    } catch (error) {
+      throw new Error(formatAccountDeletionError(error));
+    }
   }
-  const verified = await deps.confirmOtp(cleanCode);
-  const result = await deps.deleteAccount({
-    firebaseIdToken: verified.firebaseIdToken,
-  });
-  await deps.clearSession();
-  return result;
+
+  try {
+    const result = await deps.deleteAccount({
+      firebaseIdToken,
+    });
+    deps.onInvalidateVerification?.();
+    await deps.clearSession();
+    return result;
+  } catch (error) {
+    if (shouldInvalidateCachedVerification(error)) {
+      deps.onInvalidateVerification?.();
+    }
+    throw new Error(formatAccountDeletionError(error));
+  }
 }
+

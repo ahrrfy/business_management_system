@@ -134,4 +134,91 @@ describe("Mobile in-app OTP account deletion (app/(tabs)/account.tsx & lib/accou
     });
     expect(expoGoStep.nextStep).toBe("WEB_FALLBACK");
   });
+
+  it("reuses freshly verified Firebase ID token when deleteMyStorefrontAccount fails once (single-use native activeConfirmation), accepts Arabic-Indic digits, and translates English Firebase errors to Arabic", async () => {
+    let confirmationConsumed = false;
+    const confirmOtp = vi.fn(async (_code: string) => {
+      if (confirmationConsumed) {
+        throw new Error("اطلب رمز تحقق جديداً أولاً.");
+      }
+      confirmationConsumed = true;
+      return {
+        firebaseIdToken: "fb-single-use-token-" + "z".repeat(110),
+        phone: "+9647701234567",
+      };
+    });
+
+    let deleteCalls = 0;
+    const deleteAccount = vi.fn(async () => {
+      deleteCalls += 1;
+      if (deleteCalls === 1) {
+        throw new Error("تعذّر الاتصال بالخادم مؤقتاً");
+      }
+      return { ok: true as const, deletedAt: "2026-10-26T09:20:00.000Z" };
+    });
+    const clearSession = vi.fn(async () => undefined);
+
+    let cached: { firebaseIdToken: string; phone: string; verifiedAt: number } | null = null;
+    const t0 = 1_700_000_000_000;
+
+    // 1st attempt with Arabic-Indic digits: confirmOtp succeeds (consumes native confirmation), deleteAccount fails
+    await expect(
+      confirmAndDeleteStorefrontAccountStep("٦٥٤٣٢١", {
+        confirmOtp,
+        deleteAccount,
+        clearSession,
+        cachedVerification: cached,
+        now: t0,
+        onVerified: (v) => {
+          cached = v;
+        },
+        onInvalidateVerification: () => {
+          cached = null;
+        },
+      }),
+    ).rejects.toThrow(/تعذّر الاتصال/);
+
+    expect(confirmOtp).toHaveBeenCalledTimes(1);
+    expect(confirmOtp).toHaveBeenCalledWith("654321");
+    expect(cached).not.toBeNull();
+    expect(clearSession).not.toHaveBeenCalled();
+
+    // 2nd attempt 30s later: reuses cached token WITHOUT calling single-use confirmOtp again!
+    const retryResult = await confirmAndDeleteStorefrontAccountStep("٦٥٤٣٢١", {
+      confirmOtp,
+      deleteAccount,
+      clearSession,
+      cachedVerification: cached,
+      now: t0 + 30_000,
+      onVerified: (v) => {
+        cached = v;
+      },
+      onInvalidateVerification: () => {
+        cached = null;
+      },
+    });
+
+    expect(confirmOtp).toHaveBeenCalledTimes(1);
+    expect(deleteAccount).toHaveBeenCalledTimes(2);
+    expect(clearSession).toHaveBeenCalledTimes(1);
+    expect(cached).toBeNull();
+    expect(retryResult).toEqual({
+      ok: true,
+      deletedAt: "2026-10-26T09:20:00.000Z",
+    });
+
+    // Raw English Firebase error from @react-native-firebase/auth must surface in clean Arabic
+    await expect(
+      confirmAndDeleteStorefrontAccountStep("111222", {
+        confirmOtp: async () => {
+          throw new Error(
+            "[auth/invalid-verification-code] The SMS verification code used to create the phone auth credential is invalid.",
+          );
+        },
+        deleteAccount: vi.fn(),
+        clearSession: vi.fn(),
+      }),
+    ).rejects.toThrow(/رمز التحقق غير صحيح/);
+  });
 });
+

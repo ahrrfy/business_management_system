@@ -25,6 +25,7 @@ import { OrderLifecycleStatus } from "@/components/store/OrderLifecycleStatus";
 import { OrderLeaderboardModal } from "@/components/store/OrderLeaderboardModal";
 import {
   OrderCustomizationAssets,
+  formatOrderGovernorate,
   resolveOrderShippingAddressAndNotes,
 } from "@/components/store/OrderCustomizationAssets";
 import {
@@ -930,7 +931,7 @@ export default function OrderFulfillment() {
                 {shippingAddress && (
                   <div className="text-muted-foreground">
                     <span className="font-bold text-foreground">العنوان: </span>
-                    {duplicateReview.detail.governorate ? `${duplicateReview.detail.governorate} — ` : ""}
+                    {duplicateReview.detail.governorate ? `${formatOrderGovernorate(duplicateReview.detail.governorate)} — ` : ""}
                     {shippingAddress}
                   </div>
                 )}
