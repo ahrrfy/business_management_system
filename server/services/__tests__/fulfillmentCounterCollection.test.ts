@@ -188,6 +188,7 @@ describe("request goods collection while courier is in transit", () => {
           consignmentId: sent.consignmentId,
           reason: "تأجيل التوصيل بعد قبض الكاونتر",
           clientRequestId: "fc-reassign-cancel",
+          physicalHeldConfirmed: true,
         },
         admin,
       );
@@ -355,6 +356,7 @@ describe("request goods collection while courier is in transit", () => {
         consignmentId: first.consignmentId,
         reason: "إعادة جدولة",
         clientRequestId: "fc-legacy-cancel",
+        physicalHeldConfirmed: true,
       },
       admin,
     );

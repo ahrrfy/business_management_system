@@ -461,6 +461,7 @@ describe("delivery returns retain the actual original payment rails", () => {
         consignmentId: first.cn.id,
         reason: "regroup before physical dispatch",
         clientRequestId: key(),
+        physicalHeldConfirmed: true,
       },
       owner,
     );

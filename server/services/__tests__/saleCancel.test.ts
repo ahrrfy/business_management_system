@@ -1410,6 +1410,7 @@ describe.sequential("cancelSale — حارس التوصيل الموحّد", () 
         consignmentId: dispatched.consignmentId,
         reason: "إلغاء الإسناد قبل تصحيح الفاتورة",
         clientRequestId: "release-before-sale-correct",
+        physicalHeldConfirmed: true,
       },
       admin,
     );
