@@ -22,9 +22,15 @@ export function storefrontProceduresFromRequest(input: RequestTarget): string[] 
   return pathname.slice(index + marker.length).split(",").filter(Boolean);
 }
 
+const STOREFRONT_HEAVY_WRITE_PROCEDURES = new Set([
+  "storefront.createOrder",
+  "storefront.uploadCustomizationAsset",
+  "storefront.createQuoteRequest",
+]);
+
 export function storefrontRequestDeadlineMs(input: RequestTarget): number | null {
   const procedures = storefrontProceduresFromRequest(input);
-  if (procedures.includes("storefront.createOrder")) {
+  if (procedures.some((procedure) => STOREFRONT_HEAVY_WRITE_PROCEDURES.has(procedure))) {
     return STOREFRONT_CREATE_ORDER_DEADLINE_MS;
   }
   return procedures.some((procedure) => procedure.startsWith("storefront."))

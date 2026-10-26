@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import React, { lazy, Suspense, useEffect, useState } from "react";
 import {
   AlertCircle,
   CheckCircle2,
@@ -19,6 +19,11 @@ import { trpc } from "@/lib/trpc";
 import { fmtInt } from "@/lib/money";
 import { ReceptionDuplicateAlert } from "@/components/reception/ReceptionDuplicateAlert";
 import { OrderLifecycleStatus } from "@/components/store/OrderLifecycleStatus";
+import {
+  OrderCustomizationAssets,
+  formatOrderGovernorate,
+  resolveOrderShippingAddressAndNotes,
+} from "@/components/store/OrderCustomizationAssets";
 
 const ConsignmentTimelineDrawer = lazy(() => import("@/components/delivery/ConsignmentTimelineDrawer")
   .then(module => ({ default: module.ConsignmentTimelineDrawer })));
@@ -136,26 +141,39 @@ export function OrderQuickViewDrawer({
                   )}
                 </div>
 
-                <div className="flex items-start gap-1.5 text-muted-foreground">
-                  <MapPin className="size-3.5 mt-0.5 shrink-0 text-muted-foreground" aria-hidden />
-                  <div className="flex flex-col gap-0.5">
-                    <span>
-                      {order.governorate ?? "المحافظة غير محددة"}
-                      {order.addressText ? ` — ${order.addressText}` : ""}
-                    </span>
-                    {order.latitude && order.longitude && (
-                      <a
-                        href={`https://maps.google.com/?q=${encodeURIComponent(`${order.latitude},${order.longitude}`)}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-1 text-[11px] font-bold text-primary hover:underline mt-0.5"
-                      >
-                        <ExternalLink className="size-3" aria-hidden />
-                        موقع التوصيل على خرائط Google
-                      </a>
-                    )}
-                  </div>
-                </div>
+                {(() => {
+                  const { shippingAddress, notes } = resolveOrderShippingAddressAndNotes(order);
+                  return (
+                    <>
+                      <div className="flex items-start gap-1.5 text-muted-foreground">
+                        <MapPin className="size-3.5 mt-0.5 shrink-0 text-muted-foreground" aria-hidden />
+                        <div className="flex flex-col gap-0.5">
+                          <span>
+                            {formatOrderGovernorate(order.governorate) ?? "المحافظة غير محددة"}
+                            {shippingAddress ? ` — ${shippingAddress}` : ""}
+                          </span>
+                          {order.latitude && order.longitude && (
+                            <a
+                              href={`https://maps.google.com/?q=${encodeURIComponent(`${order.latitude},${order.longitude}`)}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 text-[11px] font-bold text-primary hover:underline mt-0.5"
+                            >
+                              <ExternalLink className="size-3" aria-hidden />
+                              موقع التوصيل على خرائط Google
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                      {notes && (
+                        <div className="rounded border border-border bg-muted/40 px-2.5 py-1.5 text-[11px] text-foreground">
+                          <span className="font-bold text-muted-foreground">ملاحظات العميل: </span>
+                          <span>{notes}</span>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
 
                 {/* الموظف المسؤول والمجهز */}
                 <div className="pt-2 border-t flex flex-wrap gap-2 text-[11px]">
@@ -232,6 +250,11 @@ export function OrderQuickViewDrawer({
                             {it.customizationSummary}
                           </div>
                         )}
+                        <OrderCustomizationAssets
+                          previewAssetUrl={it.previewAssetUrl}
+                          logoAssetUrl={it.logoAssetUrl}
+                          productName={it.productName}
+                        />
                       </div>
                     </div>
                   ))}

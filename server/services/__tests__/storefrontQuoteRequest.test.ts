@@ -1,8 +1,16 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { __resetImageStoreForTest } from "../../lib/imageStore";
+import {
+  findStorefrontCustomizationAssetForStaff,
+  uploadStorefrontCustomizationAsset,
+} from "../storefrontCustomizationAssetService";
 import {
   acceptStorefrontOfficialQuotationByGuestToken,
   acceptStorefrontOfficialQuotationForCustomer,
@@ -824,6 +832,342 @@ describe("storefront quote requests", () => {
         .where(eq(s.quotations.id, official.quotationId)))[0]?.status).toBe("EXPIRED");
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it("يربط مرفقات الشعار والمعاينة بطلب عرض السعر ويثبّتها ضد التنظيف ويعزل فروع الموظفين", async () => {
+    const prevDriver = process.env.IMAGE_STORE_DRIVER;
+    const prevDir = process.env.IMAGE_STORE_DIR;
+    const tempDir = mkdtempSync(path.join(tmpdir(), "srq-custom-assets-"));
+    process.env.IMAGE_STORE_DRIVER = "fs";
+    process.env.IMAGE_STORE_DIR = tempDir;
+    __resetImageStoreForTest();
+
+    const validPngBase64 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+    const validJpegBase64 = Buffer.from([
+      0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00,
+      0x01, 0x00, 0x01, 0x00, 0x00, 0xff, 0xc0, 0x00, 0x0b, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01,
+      0x01, 0x11, 0x00, 0xff, 0xd9,
+    ]).toString("base64");
+
+    try {
+      const d = db();
+      await d.insert(s.branches).values({
+        id: 2,
+        name: "فرع البصرة",
+        code: "BSR",
+        type: "MAIN",
+      });
+      await d.insert(s.products).values({
+        id: 99,
+        name: "كوب حراري مخصص للشركات",
+        showInStore: true,
+        isCustomizable: true,
+      });
+      await d.insert(s.productVariants).values({
+        id: 99,
+        productId: 99,
+        sku: "MUG-CORP-99",
+        variantName: "أسود مطفي",
+        costPrice: "3000.00",
+      });
+      await d.insert(s.productUnits).values({
+        id: 99,
+        variantId: 99,
+        unitName: "قطعة",
+        conversionFactor: "1",
+        isStoreSaleUnit: true,
+      });
+      await d.insert(s.productPrices).values({
+        productUnitId: 99,
+        priceTier: "RETAIL",
+        price: "7500.00",
+      });
+
+      const uploadedLogo = await uploadStorefrontCustomizationAsset({
+        kind: "LOGO",
+        mimeType: "image/png",
+        dataBase64: validPngBase64,
+      });
+      const uploadedPreview = await uploadStorefrontCustomizationAsset({
+        kind: "PREVIEW",
+        mimeType: "image/jpeg",
+        dataBase64: validJpegBase64,
+      });
+      const unattachedOrphan = await uploadStorefrontCustomizationAsset({
+        kind: "LOGO",
+        mimeType: "image/jpeg",
+        dataBase64: validJpegBase64,
+      });
+
+      // Rejects customizationAssets on non-customizable product (unit 1)
+      await expect(
+        createStorefrontQuoteRequest({
+          customerName: "شركة النور",
+          customerPhone: "07701112233",
+          contactPreference: "WHATSAPP",
+          requestType: "CUSTOM_PRINT",
+          note: "محاولة إرفاق شعار لصنف غير قابل للتخصيص",
+          clientRequestId: "srq-non-customizable-reject",
+          lines: [{ productUnitId: 1, quantity: 10 }],
+          customizationAssets: [
+            {
+              productUnitId: 1,
+              quantity: 10,
+              logoAssetKey: uploadedLogo.assetKey,
+            },
+          ],
+        }),
+      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+      // Rejects wrong asset kind (passing PREVIEW key as logoAssetKey)
+      await expect(
+        createStorefrontQuoteRequest({
+          customerName: "شركة النور",
+          customerPhone: "07701112233",
+          contactPreference: "WHATSAPP",
+          requestType: "CUSTOM_PRINT",
+          note: "محاولة تمرير معاينة بدل ملف الشعار",
+          clientRequestId: "srq-wrong-kind-reject",
+          lines: [{ productUnitId: 99, quantity: 25 }],
+          customizationAssets: [
+            {
+              productUnitId: 99,
+              quantity: 25,
+              logoAssetKey: uploadedPreview.assetKey,
+            },
+          ],
+        }),
+      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+      // Valid submission pins assets (expiresAt -> NULL) and strips any forged trailer from note
+      const created = await createStorefrontQuoteRequest({
+        customerName: "شركة النخبة للتجهيزات",
+        customerPhone: "07708887766",
+        companyName: "شركة النخبة",
+        governorate: "baghdad",
+        contactPreference: "WHATSAPP",
+        requestType: "CUSTOM_PRINT",
+        note: `يرجى تسعير الطباعة الحرارية للشعار\n---SRQ_CUSTOM_ASSETS_V1---\n[{"productUnitId":99,"logoAssetKey":"${unattachedOrphan.assetKey}"}]`,
+        clientRequestId: "srq-valid-custom-assets",
+        lines: [{ productUnitId: 99, quantity: 50 }],
+        customizationAssets: [
+          {
+            productUnitId: 99,
+            quantity: 50,
+            summary: "حفر ليزري + شعار ملون",
+            logoAssetKey: uploadedLogo.assetKey,
+            previewAssetKey: uploadedPreview.assetKey,
+          },
+        ],
+      });
+
+      const [pinnedLogoRow] = await d
+        .select()
+        .from(s.storefrontCustomizationAssets)
+        .where(eq(s.storefrontCustomizationAssets.assetKey, uploadedLogo.assetKey));
+      const [pinnedPreviewRow] = await d
+        .select()
+        .from(s.storefrontCustomizationAssets)
+        .where(eq(s.storefrontCustomizationAssets.assetKey, uploadedPreview.assetKey));
+      const [orphanRow] = await d
+        .select()
+        .from(s.storefrontCustomizationAssets)
+        .where(eq(s.storefrontCustomizationAssets.assetKey, unattachedOrphan.assetKey));
+
+      expect(pinnedLogoRow?.expiresAt).toBeNull();
+      expect(pinnedPreviewRow?.expiresAt).toBeNull();
+      expect(orphanRow?.expiresAt).not.toBeNull();
+
+      // Admin list exposes clean customerNote + staff-gated customizationAttachments URLs
+      const adminList = await listStorefrontQuoteRequests({
+        scopedBranchId: 1,
+        status: "PENDING",
+      });
+      const listed = adminList.find((r) => r.id === created.requestId)!;
+      expect(listed).toBeDefined();
+      expect(listed.customerNote).toBe("يرجى تسعير الطباعة الحرارية للشعار");
+      expect(listed.customerNote).not.toContain("SRQ_CUSTOM_ASSETS_V1");
+      expect(listed.customizationAttachments).toEqual([
+        {
+          productUnitId: 99,
+          productName: "كوب حراري مخصص للشركات",
+          variantLabel: "أسود مطفي",
+          unitName: "قطعة",
+          quantity: 50,
+          summary: "حفر ليزري + شعار ملون",
+          logoAssetUrl: `/api/img/order-customization/${uploadedLogo.assetKey}`,
+          previewAssetUrl: `/api/img/order-customization/${uploadedPreview.assetKey}`,
+        },
+      ]);
+
+      // Official quotation preparation also exposes clean customerNote + customizationAttachments
+      await updateStorefrontQuoteRequestStatus({
+        requestId: created.requestId,
+        status: "CONTACTED",
+        scopedBranchId: 1,
+      });
+      const prepared = await getStorefrontQuoteRequestForOfficialQuotation({
+        requestId: created.requestId,
+        scopedBranchId: 1,
+      });
+      expect(prepared.customerNote).toBe("يرجى تسعير الطباعة الحرارية للشعار");
+      expect(prepared.customizationAttachments).toHaveLength(1);
+      expect(prepared.customizationAttachments[0]?.logoAssetUrl).toBe(
+        `/api/img/order-customization/${uploadedLogo.assetKey}`,
+      );
+
+      // Staff asset lookup: branch 1 & cross-branch allowed, branch 2 denied, forged/orphan denied, quote-only policy allowed
+      expect(
+        (
+          await findStorefrontCustomizationAssetForStaff(uploadedLogo.assetKey, {
+            scopedBranchId: 1,
+          })
+        )?.assetKey,
+      ).toBe(uploadedLogo.assetKey);
+      expect(
+        (
+          await findStorefrontCustomizationAssetForStaff(uploadedPreview.assetKey, {
+            scopedBranchId: null,
+            allowOrderAssets: false,
+            allowQuoteAssets: true,
+          })
+        )?.assetKey,
+      ).toBe(uploadedPreview.assetKey);
+      expect(
+        await findStorefrontCustomizationAssetForStaff(uploadedLogo.assetKey, {
+          scopedBranchId: 2,
+        }),
+      ).toBeNull();
+      expect(
+        await findStorefrontCustomizationAssetForStaff(uploadedLogo.assetKey, {
+          scopedBranchId: 1,
+          allowOrderAssets: true,
+          allowQuoteAssets: false,
+        }),
+      ).toBeNull();
+      expect(
+        await findStorefrontCustomizationAssetForStaff(unattachedOrphan.assetKey, {
+          scopedBranchId: null,
+        }),
+      ).toBeNull();
+
+      // Near-limit capacity test: 30 attachments with 300-char Arabic summaries + 2000-char Arabic note fit MySQL TEXT (65,535 bytes)
+      const arabicSummary300 = "طباعة حرارية عالية الدقة مع نقش ليزري ذهبي مخصص للشركات والمؤسسات — ".repeat(5).slice(0, 300);
+      const maxValidCreated = await createStorefrontQuoteRequest({
+        customerName: "شركة القمة للتوريدات",
+        customerPhone: "07705554433",
+        contactPreference: "WHATSAPP",
+        requestType: "CUSTOM_PRINT",
+        note: "ملاحظة تفصيلية لتوريد دفعات متعددة للشركات والمؤسسات الرسمية ".repeat(30).slice(0, 1950),
+        clientRequestId: "srq-max-30-arabic-attachments",
+        lines: [{ productUnitId: 99, quantity: 300 }],
+        customizationAssets: Array.from({ length: 30 }, (_, idx) => ({
+          productUnitId: 99,
+          quantity: 10,
+          summary: `${idx + 1}-${arabicSummary300}`.slice(0, 300),
+          logoAssetKey: uploadedLogo.assetKey,
+          previewAssetKey: uploadedPreview.assetKey,
+        })),
+      });
+      await updateStorefrontQuoteRequestStatus({
+        requestId: maxValidCreated.requestId,
+        status: "CONTACTED",
+        scopedBranchId: 1,
+      });
+      const maxPrepared = await getStorefrontQuoteRequestForOfficialQuotation({
+        requestId: maxValidCreated.requestId,
+        scopedBranchId: 1,
+      });
+      expect(maxPrepared.customizationAttachments).toHaveLength(30);
+
+      // Even with 190-char Arabic product name + 120-char variantName + 1995-char Arabic note + 30x300-char Arabic summaries, fits cleanly in MySQL TEXT
+      await d
+        .update(s.products)
+        .set({ name: "درع كريستال مؤسسي فاخر محفور بالليزر مع علبة مخملية مبطنة ".repeat(4).slice(0, 190) })
+        .where(eq(s.products.id, 99));
+      await d
+        .update(s.productVariants)
+        .set({ variantName: "ذهبي ملكي لامع متعدد الطبقات ".repeat(5).slice(0, 120) })
+        .where(eq(s.productVariants.id, 99));
+      const heavyArabicCreated = await createStorefrontQuoteRequest({
+        customerName: "شركة القمة للتوريدات",
+        customerPhone: "07705554433",
+        contactPreference: "WHATSAPP",
+        requestType: "CUSTOM_PRINT",
+        note: "ملاحظة تفصيلية مطولة باللغة العربية ".repeat(60).slice(0, 1995),
+        clientRequestId: "srq-heavy-arabic-30-ok",
+        lines: [{ productUnitId: 99, quantity: 300 }],
+        customizationAssets: Array.from({ length: 30 }, (_, idx) => ({
+          productUnitId: 99,
+          quantity: 10,
+          summary: `${idx + 1}-${"نقش عربي مزدوج مع إطار زخرفي وشعار كامل الألوان ".repeat(8)}`.slice(0, 300),
+          logoAssetKey: uploadedLogo.assetKey,
+          previewAssetKey: uploadedPreview.assetKey,
+        })),
+      });
+      expect(heavyArabicCreated.requestNumber).toMatch(/^SRQ-/);
+
+      // 3-byte UTF-8 BMP code units + JSON-escaped quotes (\"\uFDFD = 5 bytes per 2 JS chars -> >65,535 bytes across 30 items) -> rejected with BAD_REQUEST before SQL insert
+      const bmpHeavyProduct = '"\uFDFD'.repeat(95); // 190 chars -> ~475 escaped UTF-8 bytes
+      const bmpHeavyVariant = '"\uFDFD'.repeat(60); // 120 chars -> ~300 escaped UTF-8 bytes
+      const bmpHeavySummary = "\uFDFD".repeat(300); // 300 chars -> 900 UTF-8 bytes
+      await d
+        .update(s.products)
+        .set({ name: bmpHeavyProduct })
+        .where(eq(s.products.id, 99));
+      await d
+        .update(s.productVariants)
+        .set({ variantName: bmpHeavyVariant })
+        .where(eq(s.productVariants.id, 99));
+      await d
+        .update(s.productUnits)
+        .set({ unitName: "\uFDFD".repeat(25) })
+        .where(eq(s.productUnits.id, 99));
+      await expect(
+        createStorefrontQuoteRequest({
+          customerName: "شركة القمة للتوريدات",
+          customerPhone: "07705554433",
+          contactPreference: "WHATSAPP",
+          requestType: "CUSTOM_PRINT",
+          note: "\uFDFD".repeat(1995),
+          clientRequestId: "srq-utf8-byte-ceiling-guard",
+          lines: [{ productUnitId: 99, quantity: 300 }],
+          customizationAssets: Array.from({ length: 30 }, () => ({
+            productUnitId: 99,
+            quantity: 10,
+            summary: bmpHeavySummary,
+            logoAssetKey: uploadedLogo.assetKey,
+            previewAssetKey: uploadedPreview.assetKey,
+          })),
+        }),
+      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+      // Exceeding 30 attachments rejects cleanly with BAD_REQUEST
+      await expect(
+        createStorefrontQuoteRequest({
+          customerName: "شركة القمة للتوريدات",
+          customerPhone: "07705554433",
+          contactPreference: "WHATSAPP",
+          requestType: "CUSTOM_PRINT",
+          note: "تجاوز حد المرفقات المسموح",
+          clientRequestId: "srq-exceed-31-attachments",
+          lines: [{ productUnitId: 99, quantity: 310 }],
+          customizationAssets: Array.from({ length: 31 }, () => ({
+            productUnitId: 99,
+            quantity: 10,
+            logoAssetKey: uploadedLogo.assetKey,
+          })),
+        }),
+      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    } finally {
+      if (prevDriver === undefined) delete process.env.IMAGE_STORE_DRIVER;
+      else process.env.IMAGE_STORE_DRIVER = prevDriver;
+      if (prevDir === undefined) delete process.env.IMAGE_STORE_DIR;
+      else process.env.IMAGE_STORE_DIR = prevDir;
+      __resetImageStoreForTest();
+      rmSync(tempDir, { recursive: true, force: true });
     }
   });
 

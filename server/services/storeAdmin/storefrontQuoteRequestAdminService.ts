@@ -12,6 +12,11 @@ import {
 } from "../../../drizzle/schema";
 import { appErrorMessage } from "@shared/errors";
 import { getDb, type Tx } from "../../db";
+import { orderCustomizationAssetUrl } from "../../imageRoute";
+import {
+  splitQuoteCustomerNoteAndAssets,
+  type StoredQuoteCustomizationAttachment,
+} from "../../lib/quoteRequestCustomizationMeta";
 import { withTx } from "../tx";
 import { resolveContractPrices } from "../contractPriceService";
 import { resolveEffectivePriceReference } from "../pricing";
@@ -34,6 +39,25 @@ const ALLOWED_TRANSITIONS: Record<
   CLOSED: [],
   CANCELLED: [],
 };
+
+function mapQuoteCustomizationAttachmentsForStaff(
+  attachments: ReadonlyArray<StoredQuoteCustomizationAttachment>,
+) {
+  return attachments.map((att) => ({
+    productUnitId: att.productUnitId,
+    productName: att.productName,
+    variantLabel: att.variantLabel,
+    unitName: att.unitName,
+    quantity: att.quantity,
+    summary: att.summary,
+    logoAssetUrl: att.logoAssetKey
+      ? orderCustomizationAssetUrl(att.logoAssetKey)
+      : null,
+    previewAssetUrl: att.previewAssetKey
+      ? orderCustomizationAssetUrl(att.previewAssetKey)
+      : null,
+  }));
+}
 
 export async function listStorefrontQuoteRequests(input: {
   scopedBranchId: number | null;
@@ -90,29 +114,35 @@ export async function listStorefrontQuoteRequests(input: {
     const requestId = Number(item.quoteRequestId);
     itemsByRequest.set(requestId, [...(itemsByRequest.get(requestId) ?? []), item]);
   }
-  return rows.map((row) => ({
-    id: Number(row.id),
-    requestNumber: row.requestNumber,
-    branchId: Number(row.branchId),
-    status: row.status as StorefrontQuoteRequestStatus,
-    requestType: row.requestType,
-    companyName: row.companyName ?? null,
-    governorate: row.governorate ?? null,
-    contactPreference: row.contactPreference,
-    customerNote: row.customerNote,
-    staffNote: row.staffNote ?? null,
-    officialQuotationId: row.officialQuotationId ? Number(row.officialQuotationId) : null,
-    officialQuoteNumber: row.officialQuoteNumber ?? null,
-    customerName: row.customerName ?? null,
-    customerPhone: row.customerPhone ?? null,
-    createdAt: row.createdAt,
-    items: (itemsByRequest.get(Number(row.id)) ?? []).map((item) => ({
-      productName: item.productName,
-      variantLabel: item.variantLabel ?? null,
-      unitName: item.unitName,
-      quantity: Number(item.quantity),
-    })),
-  }));
+  return rows.map((row) => {
+    const parsedNote = splitQuoteCustomerNoteAndAssets(row.customerNote);
+    return {
+      id: Number(row.id),
+      requestNumber: row.requestNumber,
+      branchId: Number(row.branchId),
+      status: row.status as StorefrontQuoteRequestStatus,
+      requestType: row.requestType,
+      companyName: row.companyName ?? null,
+      governorate: row.governorate ?? null,
+      contactPreference: row.contactPreference,
+      customerNote: parsedNote.customerNote,
+      customizationAttachments: mapQuoteCustomizationAttachmentsForStaff(
+        parsedNote.attachments,
+      ),
+      staffNote: row.staffNote ?? null,
+      officialQuotationId: row.officialQuotationId ? Number(row.officialQuotationId) : null,
+      officialQuoteNumber: row.officialQuoteNumber ?? null,
+      customerName: row.customerName ?? null,
+      customerPhone: row.customerPhone ?? null,
+      createdAt: row.createdAt,
+      items: (itemsByRequest.get(Number(row.id)) ?? []).map((item) => ({
+        productName: item.productName,
+        variantLabel: item.variantLabel ?? null,
+        unitName: item.unitName,
+        quantity: Number(item.quantity),
+      })),
+    };
+  });
 }
 
 /**
@@ -229,6 +259,7 @@ export async function getStorefrontQuoteRequestForOfficialQuotation(input: {
     const unitId = Number(price.productUnitId);
     if (price.priceTier === priceTier) priceByUnit.set(unitId, price.price);
   }
+  const parsedRequestNote = splitQuoteCustomerNoteAndAssets(request.customerNote);
   return {
     id: Number(request.id),
     requestNumber: request.requestNumber,
@@ -237,7 +268,10 @@ export async function getStorefrontQuoteRequestForOfficialQuotation(input: {
     companyName: request.companyName ?? null,
     governorate: request.governorate ?? null,
     contactPreference: request.contactPreference,
-    customerNote: request.customerNote,
+    customerNote: parsedRequestNote.customerNote,
+    customizationAttachments: mapQuoteCustomizationAttachmentsForStaff(
+      parsedRequestNote.attachments,
+    ),
     customerId: request.customerId ? Number(request.customerId) : null,
     customerName: request.customerName ?? null,
     customerPriceTier: priceTier,

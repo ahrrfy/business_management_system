@@ -9,7 +9,12 @@ type CustomizationField = { fieldKey: string; dependency: CustomizationDependenc
 export const DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH = 2_000;
 
 export function serializeStorefrontCustomizationIdentity(
-  customization?: { templateId: number; values?: Record<string, string> },
+  customization?: {
+    templateId: number;
+    values?: Record<string, string>;
+    logoAssetKey?: string;
+    previewAssetKey?: string;
+  },
 ): string {
   if (!customization) return "";
   const values = Object.fromEntries(Object.entries(customization.values ?? {})
@@ -19,7 +24,14 @@ export function serializeStorefrontCustomizationIdentity(
       return key && value ? [[key, value] as const] : [];
     })
     .sort(([left], [right]) => left.localeCompare(right)));
-  return JSON.stringify({ templateId: customization.templateId, values });
+  const logoAssetKey = customization.logoAssetKey?.trim() || undefined;
+  const previewAssetKey = customization.previewAssetKey?.trim() || undefined;
+  return JSON.stringify({
+    templateId: customization.templateId,
+    values,
+    ...(logoAssetKey ? { logoAssetKey } : {}),
+    ...(previewAssetKey ? { previewAssetKey } : {}),
+  });
 }
 
 export function storefrontVisibleCustomizationFieldKeys(

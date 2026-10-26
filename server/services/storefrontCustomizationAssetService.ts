@@ -5,6 +5,7 @@ import {
   onlineOrderItems,
   onlineOrders,
   storefrontCustomizationAssets,
+  storefrontQuoteRequests,
   type StorefrontCustomizationAsset,
 } from "../../drizzle/schema";
 import {
@@ -17,6 +18,7 @@ import {
   isImageStoreUnavailableError,
 } from "../lib/imageStore";
 import { parseImageDimensions } from "../lib/imageValidation";
+import { splitQuoteCustomerNoteAndAssets } from "../lib/quoteRequestCustomizationMeta";
 import { requireDb } from "./tx";
 
 export const MAX_CUSTOMIZATION_ASSET_BYTES = 2 * 1024 * 1024;
@@ -239,10 +241,17 @@ export async function uploadStorefrontCustomizationAsset(
 
 export async function findStorefrontCustomizationAssetForStaff(
   identifier: string,
-  options?: { scopedBranchId?: number | null },
+  options?: {
+    scopedBranchId?: number | null;
+    allowOrderAssets?: boolean;
+    allowQuoteAssets?: boolean;
+  },
 ): Promise<StorefrontCustomizationAsset | null> {
   const trimmed = identifier.trim();
   if (!trimmed || trimmed.length > 255) return null;
+  const allowOrderAssets = options?.allowOrderAssets ?? true;
+  const allowQuoteAssets = options?.allowQuoteAssets ?? true;
+  if (!allowOrderAssets && !allowQuoteAssets) return null;
 
   const db = requireDb();
   let row: StorefrontCustomizationAsset | undefined;
@@ -279,26 +288,58 @@ export async function findStorefrontCustomizationAssetForStaff(
   }
 
   const scopedBranchId = options?.scopedBranchId ?? null;
-  const attachedConditions = [
-    sql`(
-      JSON_UNQUOTE(JSON_EXTRACT(${onlineOrderItems.customizationSnapshot}, '$.logoAssetKey')) = ${row.assetKey}
-      OR JSON_UNQUOTE(JSON_EXTRACT(${onlineOrderItems.customizationSnapshot}, '$.previewAssetKey')) = ${row.assetKey}
-    )`,
-  ];
-  if (scopedBranchId != null) {
-    attachedConditions.push(eq(onlineOrders.branchId, scopedBranchId));
+  if (allowOrderAssets) {
+    const attachedConditions = [
+      sql`(
+        JSON_UNQUOTE(JSON_EXTRACT(${onlineOrderItems.customizationSnapshot}, '$.logoAssetKey')) = ${row.assetKey}
+        OR JSON_UNQUOTE(JSON_EXTRACT(${onlineOrderItems.customizationSnapshot}, '$.previewAssetKey')) = ${row.assetKey}
+      )`,
+    ];
+    if (scopedBranchId != null) {
+      attachedConditions.push(eq(onlineOrders.branchId, scopedBranchId));
+    }
+
+    const [attachedOrder] = await db
+      .select({ id: onlineOrders.id })
+      .from(onlineOrderItems)
+      .innerJoin(onlineOrders, eq(onlineOrders.id, onlineOrderItems.onlineOrderId))
+      .where(and(...attachedConditions))
+      .limit(1);
+
+    if (attachedOrder) {
+      return row;
+    }
   }
 
-  const [attachedOrder] = await db
-    .select({ id: onlineOrders.id })
-    .from(onlineOrderItems)
-    .innerJoin(onlineOrders, eq(onlineOrders.id, onlineOrderItems.onlineOrderId))
-    .where(and(...attachedConditions))
-    .limit(1);
+  if (allowQuoteAssets) {
+    const escapedKey = row.assetKey.replace(/[\\%_]/g, "\\$&");
+    const quoteConditions = [
+      sql`${storefrontQuoteRequests.customerNote} LIKE ${"%---SRQ_CUSTOM_ASSETS_V1---%"}`,
+      sql`${storefrontQuoteRequests.customerNote} LIKE ${`%${escapedKey}%`} ESCAPE '\\\\'`,
+    ];
+    if (scopedBranchId != null) {
+      quoteConditions.push(eq(storefrontQuoteRequests.branchId, scopedBranchId));
+    }
+    const candidateQuotes = await db
+      .select({
+        id: storefrontQuoteRequests.id,
+        customerNote: storefrontQuoteRequests.customerNote,
+      })
+      .from(storefrontQuoteRequests)
+      .where(and(...quoteConditions))
+      .limit(25);
 
-  if (!attachedOrder) {
-    return null;
+    const attachedToQuote = candidateQuotes.some((q) =>
+      splitQuoteCustomerNoteAndAssets(q.customerNote).attachments.some(
+        (att) =>
+          att.logoAssetKey === row.assetKey ||
+          att.previewAssetKey === row.assetKey,
+      ),
+    );
+    if (attachedToQuote) {
+      return row;
+    }
   }
 
-  return row;
+  return null;
 }

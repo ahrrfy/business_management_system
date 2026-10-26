@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback, useRef } from "react";
+import React, { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,6 +12,13 @@ import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { fmtInt } from "@/lib/money";
 import { Loader2, Trash2, ShoppingCart, AlertCircle, Package } from "lucide-react";
+import {
+  OrderCustomizationAssets,
+  resolveOrderShippingAddressAndNotes,
+  splitShippingAddressAndNotes,
+} from "./OrderCustomizationAssets";
+
+export { splitShippingAddressAndNotes };
 
 export interface EditOnlineOrderDialogProps {
   orderId: number | null;
@@ -25,32 +32,6 @@ export interface EditableDeliveryZoneChoice {
   name: string;
   deliveryFee: number;
   isActive: boolean;
-}
-
-const ORDER_NOTE_SEPARATOR = "\nملاحظة:";
-const LEADING_ORDER_NOTE_PREFIX = "ملاحظة:";
-
-export function splitShippingAddressAndNotes(
-  rawAddress: string | null | undefined,
-): { shippingAddress: string; notes: string } {
-  const raw = rawAddress?.trim() ?? "";
-  if (!raw) {
-    return { shippingAddress: "", notes: "" };
-  }
-  const sepIdx = raw.indexOf(ORDER_NOTE_SEPARATOR);
-  if (sepIdx >= 0) {
-    return {
-      shippingAddress: raw.slice(0, sepIdx).trim(),
-      notes: raw.slice(sepIdx + ORDER_NOTE_SEPARATOR.length).trim(),
-    };
-  }
-  if (raw.startsWith(LEADING_ORDER_NOTE_PREFIX)) {
-    return {
-      shippingAddress: "",
-      notes: raw.slice(LEADING_ORDER_NOTE_PREFIX.length).trim(),
-    };
-  }
-  return { shippingAddress: raw, notes: "" };
 }
 
 export function resolveEditableDeliveryZoneOptions(
@@ -148,6 +129,8 @@ interface EditableLineItem {
   lineTotal: number;
   hasCustomization: boolean;
   customizationSummary: string | null;
+  logoAssetUrl?: string | null;
+  previewAssetUrl?: string | null;
   maxOrderQty?: number;
 }
 
@@ -179,6 +162,7 @@ export function buildInitialEditOnlineOrderFormState(detail: {
   customerPhone?: string | null;
   governorate?: string | null;
   addressText?: string | null;
+  customerNotes?: string | null;
   items?: Array<{
     id?: number;
     productUnitId?: number | null;
@@ -190,6 +174,8 @@ export function buildInitialEditOnlineOrderFormState(detail: {
     quantity: string | number;
     hasCustomization: boolean;
     customizationSummary?: string | null;
+    logoAssetUrl?: string | null;
+    previewAssetUrl?: string | null;
   }>;
 }): {
   customerName: string;
@@ -201,7 +187,7 @@ export function buildInitialEditOnlineOrderFormState(detail: {
   itemsModified: false;
   qtyDrafts: Record<number, string>;
 } {
-  const splitAddress = splitShippingAddressAndNotes(detail.addressText);
+  const resolvedAddress = resolveOrderShippingAddressAndNotes(detail);
   const initialItems: EditableLineItem[] = (detail.items ?? []).map((it) => {
     const uPrice = Number(it.unitPrice) || 0;
     const rPrice = Number(it.retailUnitPrice ?? it.unitPrice) || uPrice;
@@ -218,14 +204,16 @@ export function buildInitialEditOnlineOrderFormState(detail: {
       lineTotal: uPrice * qty,
       hasCustomization: it.hasCustomization,
       customizationSummary: it.customizationSummary ?? null,
+      logoAssetUrl: it.logoAssetUrl ?? null,
+      previewAssetUrl: it.previewAssetUrl ?? null,
     };
   });
   return {
     customerName: detail.customerName ?? "",
     customerPhone: detail.customerPhone ?? "",
     governorate: detail.governorate ?? "baghdad",
-    shippingAddress: splitAddress.shippingAddress,
-    notes: splitAddress.notes,
+    shippingAddress: resolvedAddress.shippingAddress,
+    notes: resolvedAddress.notes,
     items: initialItems,
     itemsModified: false,
     qtyDrafts: {},
@@ -609,6 +597,12 @@ export function EditOnlineOrderDialog({
                             {[it.variantLabel, it.unitName].filter(Boolean).join(" — ")}
                           </div>
                           {it.customizationSummary && <div className="mt-1 text-xs font-semibold text-blue-700 dark:text-blue-300">تخصيص: {it.customizationSummary}</div>}
+                          <OrderCustomizationAssets
+                            previewAssetUrl={it.previewAssetUrl}
+                            logoAssetUrl={it.logoAssetUrl}
+                            productName={it.productName}
+                            compact
+                          />
                         </td>
                         <td className="p-2.5 whitespace-nowrap">{fmtInt(it.unitPrice)} د.ع</td>
                         <td className="p-2.5 text-center whitespace-nowrap">

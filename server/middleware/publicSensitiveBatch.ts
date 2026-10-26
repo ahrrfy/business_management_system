@@ -36,6 +36,7 @@ const PUBLIC_SENSITIVE_PROCEDURES: ReadonlySet<string> = new Set([
   "storefront.deleteMe",
   "storefront.requestAccountDeletion",
   "storefront.uploadCustomizationAsset",
+  "storefront.redeemLoyaltyPoints",
 ]);
 
 const CANONICAL_PROCEDURE = /^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$/;

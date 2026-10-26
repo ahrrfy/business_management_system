@@ -1,4 +1,4 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import { Link, useLocation } from "wouter";
 import {
   FileText,
@@ -7,14 +7,42 @@ import {
   RotateCcw,
   ArrowRight,
   CheckCircle2,
+  Loader2,
   Phone,
   Store,
 } from "lucide-react";
+import { trpc } from "@/lib/trpc";
+import { TurnstileWidget } from "@/components/storefront/TurnstileWidget";
+
+function normalizeIraqiMobileInput(raw: string): string | null {
+  const ascii = raw
+    .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0));
+  const digits = ascii.replace(/\D/g, "");
+  if (digits.startsWith("00964") && digits.length === 15) {
+    const candidate = `0${digits.slice(5)}`;
+    return /^07\d{9}$/.test(candidate) ? candidate : null;
+  }
+  if (digits.startsWith("964") && digits.length === 13) {
+    const candidate = `0${digits.slice(3)}`;
+    return /^07\d{9}$/.test(candidate) ? candidate : null;
+  }
+  if (digits.startsWith("7") && digits.length === 10) {
+    return `0${digits}`;
+  }
+  return /^07\d{9}$/.test(digits) ? digits : null;
+}
 
 export default function LegalDocument() {
   const [location] = useLocation();
   const [phone, setPhone] = useState("");
-  const [submitted, setSubmitted] = useState(false);
+  const [reason, setReason] = useState("");
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const [turnstileResetKey, setTurnstileResetKey] = useState(0);
+  const [submissionResult, setSubmissionResult] = useState<{
+    requestNumber: string;
+    retentionDays: number;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const isPrivacy = location.includes("privacy");
@@ -22,15 +50,49 @@ export default function LegalDocument() {
   const isReturns = location.includes("returns");
   const isDeletion = location.includes("delete-account");
 
+  const settingsQ = trpc.storefront.settings.useQuery(undefined, {
+    enabled: isDeletion,
+    staleTime: 5 * 60 * 1000,
+  });
+  const turnstileSiteKey = settingsQ.data?.turnstileSiteKey ?? null;
+
+  const requestDeletionM = trpc.storefront.requestAccountDeletion.useMutation({
+    onSuccess: (res) => {
+      setError(null);
+      setSubmissionResult({
+        requestNumber: res.requestNumber,
+        retentionDays: res.retentionDays,
+      });
+    },
+    onError: (err) => {
+      setTurnstileToken(null);
+      setTurnstileResetKey((k) => k + 1);
+      setError(err.message || "تعذّر إرسال طلب حذف الحساب — حاول مجدداً.");
+    },
+  });
+
   const handleSubmitDeletion = (e: React.FormEvent) => {
     e.preventDefault();
-    const cleanPhone = phone.trim().replace(/\D/g, "");
-    if (!cleanPhone || cleanPhone.length < 10) {
+    if (settingsQ.isLoading) {
+      setError("جارٍ التحقق من إعدادات الحماية الأمنية، يرجى الانتظار لحظة ثم المحاولة.");
+      return;
+    }
+    const normalizedPhone = normalizeIraqiMobileInput(phone);
+    if (!normalizedPhone) {
       setError("يرجى إدخال رقم هاتف عراقي صالح يبدأ بـ 07");
       return;
     }
+    if (turnstileSiteKey && !turnstileToken) {
+      setError("يرجى إكمال التحقق الأمني قبل إرسال طلب الحذف.");
+      return;
+    }
     setError(null);
-    setSubmitted(true);
+    const trimmedReason = reason.trim();
+    requestDeletionM.mutate({
+      phone: normalizedPhone,
+      reason: trimmedReason ? trimmedReason.slice(0, 500) : undefined,
+      turnstileToken: turnstileSiteKey ? turnstileToken : undefined,
+    });
   };
 
   return (
@@ -324,61 +386,102 @@ export default function LegalDocument() {
 
             <section className="space-y-3 text-sm leading-relaxed text-[#354640]">
               <p>
-                وفقاً لسياسة Google Play وإرشادات الخصوصية، نتيح لك طلب حذف حسابك
-                وكافة بياناتك الشخصية المرتبطة به في «مكتبة العربية» دون الحاجة لتثبيت التطبيق.
+                وفقاً لسياسة Google Play وإرشادات الخصوصية، نتيح لك تقديم طلب رسمي لحذف حسابك
+                وبياناتك الشخصية المرتبطة به في «مكتبة العربية» عبر الويب، كما يتاح الحذف الفوري
+                المؤكد عبر رمز التحقق الهاتفي (OTP) مباشرةً من داخل <strong>تطبيق الجوال</strong> (تبويب «حسابي»).
               </p>
               <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs leading-relaxed text-amber-900">
-                <strong>ما الذي يحدث عند حذف حسابك؟</strong>
+                <strong>سياسة الحذف والاحتفاظ المحاسبي المعتمدة (365 يوماً):</strong>
                 <ul className="mt-1.5 list-inside list-disc space-y-1">
-                  <li>مسح اسمك ورقم هاتفك وعناوينك المحفوظة من قاعدة بيانات العملاء.</li>
-                  <li>إلغاء تنشيط رصيد نقاط الولاء والقسائم غير المستخدمة.</li>
-                  <li>تُحفظ الفواتير المالية السابقة لأغراض المحاسبة القانونية بدون أي ربط بهويتك.</li>
+                  <li>إخفاء البيانات الشخصية غير المحاسبية (الاسم، الهاتف، العناوين، ومعرفات الإشعارات) وتعطيل جميع الجلسات الفعالة.</li>
+                  <li>إلغاء تنشيط رصيد نقاط الولاء والقسائم الترويجية غير المستخدمة (يشترط إغلاق الطلبات النشطة وتسوية أي أرصدة معلقة أولاً).</li>
+                  <li>الاحتفاظ بالفواتير والأرصدة وسجلات التدقيق القانونية لمدة <strong>سنة واحدة (365 يوماً)</strong> فقط للامتثال المحاسبي والقانوني دون أي استخدام تسويقي.</li>
                 </ul>
               </div>
             </section>
 
-            {submitted ? (
+            {submissionResult ? (
               <div className="rounded-2xl border border-[#C5EBD6] bg-[#F2FBF6] p-6 text-center">
                 <span className="mx-auto flex size-12 items-center justify-center rounded-full bg-[#0E806A] text-white">
                   <CheckCircle2 className="size-6" />
                 </span>
                 <h3 className="mt-3 text-base font-extrabold text-[#112A25]">
-                  تم استلام طلب حذف الحساب بنجاح
+                  تم تسجيل طلب حذف الحساب بنجاح
                 </h3>
-                <p className="mt-1 text-xs text-[#4F685D]">
-                  سيتم مراجعة ومعالجة حذف كافة البيانات المرتبطة بالرقم ({phone}) نهائياً خلال 7 أيام عمل.
+                <p className="mt-2 text-sm font-black text-[#0E806A]" dir="ltr">
+                  {submissionResult.requestNumber}
+                </p>
+                <p className="mt-2 text-xs leading-relaxed text-[#4F685D]">
+                  احتفظ برقم الطلب أعلاه للمتابعة. ستُعالج إدارة الخصوصية إخفاء البيانات الشخصية
+                  وتعطيل الجلسات مع تطبيق مهلة الاحتفاظ المحاسبي القانوني ({submissionResult.retentionDays} يوماً).
                 </p>
               </div>
             ) : (
-              <form onSubmit={handleSubmitDeletion} className="space-y-4 pt-2">
+              <form onSubmit={handleSubmitDeletion} noValidate className="space-y-4 pt-2">
                 <div>
-                  <label className="block text-xs font-bold text-[#112A25]">
+                  <label htmlFor="delete-account-phone" className="block text-xs font-bold text-[#112A25]">
                     رقم الهاتف العراقي المسجل به في التطبيق
                   </label>
                   <div className="relative mt-1.5">
                     <input
+                      id="delete-account-phone"
                       type="tel"
                       value={phone}
                       onChange={(e) => setPhone(e.target.value)}
                       placeholder="07xxxxxxxxx (+964)"
                       data-country="+964"
                       dir="ltr"
-                      className="w-full rounded-xl border border-[#D0D7D4] px-4 py-2.5 text-right text-sm outline-none focus:border-[#0E806A] focus:ring-1 focus:ring-[#0E806A]"
+                      disabled={requestDeletionM.isPending}
+                      className="w-full rounded-xl border border-[#D0D7D4] px-4 py-2.5 text-right text-sm outline-none focus:border-[#0E806A] focus:ring-1 focus:ring-[#0E806A] disabled:opacity-60"
                       required
                     />
                     <Phone className="pointer-events-none absolute left-3 top-3 size-4 text-muted-foreground" />
                   </div>
-                  {error && (
-                    <p className="mt-1 text-xs font-bold text-red-600">{error}</p>
-                  )}
                 </div>
+
+                <div>
+                  <label htmlFor="delete-account-reason" className="block text-xs font-bold text-[#112A25]">
+                    سبب طلب الحذف (اختياري — بحد أقصى 500 حرف)
+                  </label>
+                  <textarea
+                    id="delete-account-reason"
+                    rows={3}
+                    maxLength={500}
+                    value={reason}
+                    onChange={(e) => setReason(e.target.value)}
+                    disabled={requestDeletionM.isPending}
+                    placeholder="يمكنك ذكر سبب الحذف أو أي ملاحظة إضافية لمراجعتها..."
+                    className="mt-1.5 w-full rounded-xl border border-[#D0D7D4] px-4 py-2.5 text-sm outline-none focus:border-[#0E806A] focus:ring-1 focus:ring-[#0E806A] disabled:opacity-60"
+                  />
+                </div>
+
+                {turnstileSiteKey && (
+                  <div className="pt-1">
+                    <TurnstileWidget
+                      siteKey={turnstileSiteKey}
+                      resetKey={turnstileResetKey}
+                      onTokenChange={setTurnstileToken}
+                    />
+                  </div>
+                )}
+
+                {error && (
+                  <p role="alert" className="mt-1 text-xs font-bold text-red-600">
+                    {error}
+                  </p>
+                )}
 
                 <div className="pt-2">
                   <button
                     type="submit"
-                    className="inline-flex items-center gap-2 rounded-xl bg-[#B02B1A] px-5 py-2.5 text-xs font-bold text-white transition-opacity hover:opacity-90"
+                    disabled={requestDeletionM.isPending || settingsQ.isLoading}
+                    className="inline-flex items-center gap-2 rounded-xl bg-[#B02B1A] px-5 py-2.5 text-xs font-bold text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    <Trash2 className="size-4" />
+                    {requestDeletionM.isPending || settingsQ.isLoading ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="size-4" />
+                    )}
                     تأكيد إرسال طلب حذف الحساب
                   </button>
                 </div>

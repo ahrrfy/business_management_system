@@ -544,9 +544,18 @@ export async function shippingLabelHtml(
             <span style="font-weight:900;font-size:9.5pt;">${esc(o.customerName ?? "عميل")}</span>
             <span style="font-weight:900;font-size:11pt;direction:ltr;font-variant-numeric:tabular-nums;">${esc(o.customerPhone || "")}</span>
           </div>
-          <div style="font-size:6.8pt;font-weight:800;line-height:1.15;margin-top:0.2mm;">
+          <div style="font-size:6.8pt;font-weight:800;line-height:1.15;margin-top:0.2mm;max-height:2.3em;overflow:hidden;">
             <b>العنوان:</b> ${esc(o.addressText || "—")}
           </div>
+          ${
+            o.notes
+              ? `
+          <div style="font-size:6pt;font-weight:900;line-height:1.1;border-top:1px dashed #000;padding-top:0.2mm;margin-top:0.2mm;max-height:2.2em;overflow:hidden;">
+            <b>ملاحظة:</b> ${esc(o.notes)}
+          </div>
+          `
+              : ""
+          }
         </td>
       </tr>
     </table>

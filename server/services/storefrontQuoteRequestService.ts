@@ -4,7 +4,7 @@
  */
 import { randomBytes, randomUUID } from "node:crypto";
 import { TRPCError } from "@trpc/server";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import {
   bundleComponents,
   categories,
@@ -14,13 +14,23 @@ import {
   productPrices,
   products,
   quotationItems,
+  storefrontCustomizationAssets,
   storefrontQuoteRequestItems,
   storefrontQuoteRequests,
   quotations,
 } from "../../drizzle/schema";
 import { appErrorMessage } from "@shared/errors";
 import { getDb, type Tx } from "../db";
+import { isCurrentTenantCustomizerKey } from "../lib/imageStore";
 import { extractInsertId } from "../lib/insertId";
+import {
+  MAX_QUOTE_ATTACHMENT_SUMMARY_CHARS,
+  MAX_QUOTE_CUSTOMIZATION_ATTACHMENTS,
+  encodeQuoteCustomerNoteWithAssets,
+  isQuoteCustomerNoteWithinColumnCapacity,
+  stripQuoteCustomizationTrailer,
+  type StoredQuoteCustomizationAttachment,
+} from "../lib/quoteRequestCustomizationMeta";
 import { retryOnDup } from "../lib/retryDup";
 import {
   buildStorefrontGuestTrackingToken,
@@ -50,6 +60,14 @@ export type StorefrontQuoteContactPreference = "PHONE" | "WHATSAPP";
 const QUOTE_REQUEST_GUEST_TRACKING_TTL_SECONDS = 60 * 60 * 24 * 30;
 const QUOTE_REQUEST_GUEST_TRACKING_DOMAIN = "STORE_QUOTE_REQUEST_TRACKING_V1";
 
+export interface StorefrontQuoteCustomizationAssetInput {
+  productUnitId: number;
+  quantity: number;
+  summary?: string | null;
+  logoAssetKey?: string | null;
+  previewAssetKey?: string | null;
+}
+
 export interface CreateStorefrontQuoteRequestInput {
   customerName: string;
   customerPhone: string;
@@ -60,6 +78,7 @@ export interface CreateStorefrontQuoteRequestInput {
   note: string;
   clientRequestId: string;
   lines: Array<{ productUnitId: number; quantity: number }>;
+  customizationAssets?: StorefrontQuoteCustomizationAssetInput[];
   authenticatedCustomer?: { customerId: number; phone: string } | null;
 }
 
@@ -203,6 +222,7 @@ async function loadRequestItems(
       color: productVariants.color,
       size: productVariants.size,
       productName: products.name,
+      isCustomizable: products.isCustomizable,
     })
     .from(productUnits)
     .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
@@ -250,8 +270,238 @@ async function loadRequestItems(
       unitName: row.unitName,
       quantity: line.quantity,
       baseQuantity: baseQuantity.toNumber(),
+      isCustomizable: Boolean(row.isCustomizable),
     };
   });
+}
+
+type NormalizedQuoteCustomizationAsset = {
+  productUnitId: number;
+  quantity: number;
+  summary: string | null;
+  logoAssetKey: string | null;
+  previewAssetKey: string | null;
+};
+
+function normalizeQuoteAssetKey(
+  raw: string | null | undefined,
+  fieldLabel: string,
+): string | null {
+  if (raw == null) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (
+    trimmed.length > 255 ||
+    /[\u0000-\u001f\u007f\\]/.test(trimmed) ||
+    !isCurrentTenantCustomizerKey(trimmed)
+  ) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر قبول مرفقات التخصيص في طلب عرض السعر",
+        why: `معرّف مرفق ${fieldLabel} غير صالح أو خارج نطاق المتجر`,
+        doThis: "أعد رفع الشعار أو اعتماد المعاينة من أستوديو التخصيص ثم أرسل الطلب",
+      }),
+    });
+  }
+  return trimmed;
+}
+
+function normalizeQuoteCustomizationAssets(
+  rawAssets: CreateStorefrontQuoteRequestInput["customizationAssets"],
+  lines: ReadonlyArray<{ productUnitId: number; quantity: number }>,
+): NormalizedQuoteCustomizationAsset[] {
+  if (!rawAssets || rawAssets.length === 0) return [];
+  if (rawAssets.length > MAX_QUOTE_CUSTOMIZATION_ATTACHMENTS) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر إرسال طلب عرض السعر",
+        why: `يتجاوز عدد مرفقات التصميم الحد الأقصى المسموح (${MAX_QUOTE_CUSTOMIZATION_ATTACHMENTS} تصميماً)`,
+        doThis: "قسّم التصاميم المرفوعة إلى أكثر من طلب عرض سعر ثم أعد الإرسال",
+      }),
+    });
+  }
+
+  const lineQtyByUnit = new Map(
+    lines.map((line) => [line.productUnitId, line.quantity]),
+  );
+  const customQtyByUnit = new Map<number, number>();
+  const normalized: NormalizedQuoteCustomizationAsset[] = [];
+
+  for (const entry of rawAssets) {
+    const unitId = Number(entry.productUnitId);
+    const quantity = Math.floor(Number(entry.quantity));
+    const maxUnitQty = lineQtyByUnit.get(unitId);
+    if (
+      !Number.isSafeInteger(unitId) ||
+      unitId <= 0 ||
+      maxUnitQty == null ||
+      !Number.isSafeInteger(quantity) ||
+      quantity <= 0 ||
+      quantity > 10_000
+    ) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر قبول مرفقات التخصيص في طلب عرض السعر",
+          why: "أحد مرفقات التخصيص يشير إلى صنف غير موجود في بنود الطلب أو بكمية غير صالحة",
+          doThis: "حدّث السلّة وتأكد من بنود التخصيص ثم أعد إرسال الطلب",
+        }),
+      });
+    }
+
+    const nextUnitSum = (customQtyByUnit.get(unitId) ?? 0) + quantity;
+    if (nextUnitSum > maxUnitQty) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر قبول مرفقات التخصيص في طلب عرض السعر",
+          why: "مجموع كميات التصاميم المخصّصة يتجاوز الكمية الإجمالية للصنف في الطلب",
+          doThis: "حدّث السلّة وتأكد من تطابق كميات التصاميم ثم أعد الإرسال",
+        }),
+      });
+    }
+    customQtyByUnit.set(unitId, nextUnitSum);
+
+    const logoAssetKey = normalizeQuoteAssetKey(entry.logoAssetKey, "الشعار");
+    const previewAssetKey = normalizeQuoteAssetKey(entry.previewAssetKey, "المعاينة");
+    if (!logoAssetKey && !previewAssetKey) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر قبول مرفقات التخصيص في طلب عرض السعر",
+          why: "وصل سجل مرفق تخصيص فارغ بلا شعار ولا معاينة تصميم",
+          doThis: "أعد تطبيق التصميم من أستوديو المنتج ثم أعد إرسال الطلب",
+        }),
+      });
+    }
+
+    const summary =
+      typeof entry.summary === "string" && entry.summary.trim()
+        ? entry.summary.trim().slice(0, MAX_QUOTE_ATTACHMENT_SUMMARY_CHARS)
+        : null;
+
+    normalized.push({
+      productUnitId: unitId,
+      quantity,
+      summary,
+      logoAssetKey,
+      previewAssetKey,
+    });
+  }
+
+  return normalized;
+}
+
+async function verifyAndBuildQuoteCustomizationAttachments(
+  tx: Tx,
+  items: ReadonlyArray<{
+    productUnitId: number;
+    productName: string;
+    variantLabel: string | null;
+    unitName: string;
+    isCustomizable: boolean;
+  }>,
+  normalizedAssets: ReadonlyArray<NormalizedQuoteCustomizationAsset>,
+): Promise<{
+  attachments: StoredQuoteCustomizationAttachment[];
+  pinnedAssetKeys: string[];
+}> {
+  if (normalizedAssets.length === 0) {
+    return { attachments: [], pinnedAssetKeys: [] };
+  }
+
+  const itemByUnit = new Map(items.map((it) => [it.productUnitId, it]));
+  for (const entry of normalizedAssets) {
+    const item = itemByUnit.get(entry.productUnitId);
+    if (!item || !item.isCustomizable) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: `تعذّر تخصيص «${item?.productName ?? "الصنف"}»`,
+          why: "هذا الصنف غير مهيأ لاستقبال ملفات تخصيص في المتجر",
+          doThis: "احذف مرفق التخصيص أو اختر صنفاً قابلاً للتخصيص ثم أعد الإرسال",
+        }),
+      });
+    }
+  }
+
+  const distinctKeys = Array.from(
+    new Set(
+      normalizedAssets.flatMap((entry) =>
+        [entry.logoAssetKey, entry.previewAssetKey].filter(
+          (k): k is string => typeof k === "string" && k.length > 0,
+        ),
+      ),
+    ),
+  );
+
+  const assetRows = await tx
+    .select({
+      assetKey: storefrontCustomizationAssets.assetKey,
+      kind: storefrontCustomizationAssets.kind,
+    })
+    .from(storefrontCustomizationAssets)
+    .where(
+      and(
+        inArray(storefrontCustomizationAssets.assetKey, distinctKeys),
+        or(
+          isNull(storefrontCustomizationAssets.expiresAt),
+          sql`${storefrontCustomizationAssets.expiresAt} > CURRENT_TIMESTAMP`,
+        )!,
+      ),
+    );
+
+  const assetsByKey = new Map<string, { assetKey: string; kind: "LOGO" | "PREVIEW" }>();
+  for (const row of assetRows) {
+    if (isCurrentTenantCustomizerKey(row.assetKey)) {
+      assetsByKey.set(row.assetKey, { assetKey: row.assetKey, kind: row.kind });
+    }
+  }
+
+  const attachments: StoredQuoteCustomizationAttachment[] = [];
+  for (const entry of normalizedAssets) {
+    const item = itemByUnit.get(entry.productUnitId)!;
+    if (entry.logoAssetKey) {
+      const asset = assetsByKey.get(entry.logoAssetKey);
+      if (!asset || asset.kind !== "LOGO") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: `تعذّر إرفاق شعار «${item.productName}»`,
+            why: "مرفق الشعار غير موجود أو انتهت صلاحيته أو لا يطابق نوع الشعار المطلوب",
+            doThis: "أعد رفع ملف الشعار من أستوديو المنتج ثم أعد إرسال طلب عرض السعر",
+          }),
+        });
+      }
+    }
+    if (entry.previewAssetKey) {
+      const asset = assetsByKey.get(entry.previewAssetKey);
+      if (!asset || asset.kind !== "PREVIEW") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: `تعذّر إرفاق معاينة «${item.productName}»`,
+            why: "مرفق المعاينة غير موجود أو انتهت صلاحيته أو لا يطابق نوع المعاينة المطلوب",
+            doThis: "أعد اعتماد معاينة التصميم من أستوديو المنتج ثم أعد إرسال طلب عرض السعر",
+          }),
+        });
+      }
+    }
+    attachments.push({
+      productUnitId: entry.productUnitId,
+      productName: item.productName,
+      variantLabel: item.variantLabel,
+      unitName: item.unitName,
+      quantity: entry.quantity,
+      summary: entry.summary,
+      logoAssetKey: entry.logoAssetKey,
+      previewAssetKey: entry.previewAssetKey,
+    });
+  }
+
+  return { attachments, pinnedAssetKeys: distinctKeys };
 }
 
 type QuoteRequestTrackingHeader = {
@@ -937,9 +1187,9 @@ async function createStorefrontQuoteRequestAttempt(
 ): Promise<CreateStorefrontQuoteRequestResult> {
   const name = input.customerName.trim();
   const phone = normalizeStorePhone(input.customerPhone);
-  const note = input.note.trim();
+  const note = stripQuoteCustomizationTrailer(input.note);
   const clientRequestId = input.clientRequestId.trim();
-  if (!name || !note || !clientRequestId) {
+  if (!name || note.length < 5 || note.length > 2_000 || !clientRequestId) {
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: appErrorMessage({
@@ -950,6 +1200,10 @@ async function createStorefrontQuoteRequestAttempt(
     });
   }
   const lines = normalizeLines(input.lines);
+  const normalizedAssets = normalizeQuoteCustomizationAssets(
+    input.customizationAssets,
+    lines,
+  );
   return withTx(async (tx) => {
     // الطلب التجاري يبقى متاحاً حتى عند إغلاق البيع المباشر، لكن لا يقبل فرعاً غائباً أو معطلاً.
     const storefront = await requireStorefrontContext(tx, {
@@ -997,6 +1251,27 @@ async function createStorefrontQuoteRequestAttempt(
       );
     }
     const items = await loadRequestItems(tx, lines);
+    const { attachments, pinnedAssetKeys } =
+      await verifyAndBuildQuoteCustomizationAttachments(
+        tx,
+        items,
+        normalizedAssets,
+      );
+    const storedCustomerNote = encodeQuoteCustomerNoteWithAssets(
+      note,
+      attachments,
+    );
+    if (!isQuoteCustomerNoteWithinColumnCapacity(storedCustomerNote)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر إرسال طلب عرض السعر",
+          why: "يتجاوز حجم الملاحظة ومرفقات التخصيص المدمجة السعة المسموحة للطلب الواحد",
+          doThis:
+            "اختصر ملاحظة الطلب أو قسّم التصاميم المرفوعة إلى أكثر من طلب عرض سعر ثم أعد الإرسال",
+        }),
+      });
+    }
     const guestTrackingPublicId = randomBytes(16).toString("hex");
     // عمود MySQL timestamp دقته بالثانية هنا؛ نطبّع قبل التوقيع كي لا يقرّب التخزين
     // ثانيةً إلى الأمام فيصبح رمز الضيف الجديد غير مطابق للـ hash المحفوظ.
@@ -1019,7 +1294,7 @@ async function createStorefrontQuoteRequestAttempt(
       companyName: input.companyName?.trim() || null,
       governorate: input.governorate?.trim() || null,
       contactPreference: input.contactPreference,
-      customerNote: note,
+      customerNote: storedCustomerNote,
       clientRequestId,
       guestTrackingPublicId,
       guestTrackingTokenHash: hashStorefrontGuestTrackingToken(guestTrackingToken),
@@ -1032,8 +1307,17 @@ async function createStorefrontQuoteRequestAttempt(
       .set({ requestNumber })
       .where(eq(storefrontQuoteRequests.id, requestId));
     await tx.insert(storefrontQuoteRequestItems).values(
-      items.map((item) => ({ quoteRequestId: requestId, ...item })),
+      items.map(({ isCustomizable: _isCustomizable, ...persistedItem }) => ({
+        quoteRequestId: requestId,
+        ...persistedItem,
+      })),
     );
+    if (pinnedAssetKeys.length > 0) {
+      await tx
+        .update(storefrontCustomizationAssets)
+        .set({ expiresAt: null })
+        .where(inArray(storefrontCustomizationAssets.assetKey, pinnedAssetKeys));
+    }
     return {
       requestId,
       requestNumber,

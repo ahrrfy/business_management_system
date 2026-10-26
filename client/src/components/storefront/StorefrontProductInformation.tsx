@@ -1,6 +1,11 @@
+import React from "react";
 import { money, priceLabel } from "@/components/storefront/storefrontCartMath";
 import { CustomizationFieldControl } from "@/components/storefront/storefrontCustomizationModel";
-import { StorefrontCustomizerStudio } from "@/components/storefront/StorefrontCustomizerStudio";
+import {
+  StorefrontCustomizerStudio,
+  type StorefrontCustomizerStudioHandle,
+} from "@/components/storefront/StorefrontCustomizerStudio";
+import { type CustomizationStudioUploadState } from "@/components/storefront/storefrontCustomizationUpload";
 import { StorefrontHeuristicsBadges } from "@/components/storefront/StorefrontHeuristicsBadges";
 import { formatQuantity } from "@/lib/money";
 import { ArrowRight, Flame, Star, Store, Tag } from "lucide-react";
@@ -23,7 +28,14 @@ type Props = Pick<
   | "customizationValidation"
   | "updateCustomizationField"
   | "detailMedia"
-> & { product: NonNullable<StorefrontProductDialogProps["product"]> };
+> & {
+  product: NonNullable<StorefrontProductDialogProps["product"]>;
+  setCustomizationAssets?: (assets: {
+    logoAssetKey?: string;
+    previewAssetKey?: string;
+  }) => void;
+  setCustomizationUploadState?: (state: CustomizationStudioUploadState) => void;
+};
 export function StorefrontProductInformation({
   product,
   setProductReviewOpenRequest,
@@ -41,7 +53,15 @@ export function StorefrontProductInformation({
   customizationValidation,
   updateCustomizationField,
   detailMedia,
+  setCustomizationAssets,
+  setCustomizationUploadState,
 }: Props) {
+  const autoFilledFileValueRef = React.useRef<string | null>(null);
+  const studioRef = React.useRef<StorefrontCustomizerStudioHandle | null>(null);
+  const latestLogoAssetKeyRef = React.useRef<string | undefined>(undefined);
+  React.useEffect(() => {
+    latestLogoAssetKeyRef.current = undefined;
+  }, [product.productId]);
   return (
     <div className="min-w-0">
       {product.brand && (
@@ -208,7 +228,24 @@ export function StorefrontProductInformation({
                   <CustomizationFieldControl
                     field={field}
                     value={customizationValues[field.fieldKey] ?? ""}
-                    onChange={(value) => updateCustomizationField(field, value)}
+                    onChange={(value) => {
+                      updateCustomizationField(field, value);
+                      const primaryField = visibleCustomizationFields.find(
+                        (f) => f.fieldType === "TEXT" || f.fieldType === "TEXTAREA",
+                      );
+                      const syncPrimaryText =
+                        primaryField && field.fieldKey === primaryField.fieldKey
+                          ? value
+                          : undefined;
+                      if (studioRef.current) {
+                        studioRef.current.invalidateSavedPreview(syncPrimaryText);
+                      } else {
+                        setCustomizationAssets?.({
+                          logoAssetKey: latestLogoAssetKeyRef.current,
+                          previewAssetKey: undefined,
+                        });
+                      }
+                    }}
                     controlId={controlId}
                     labelId={labelId}
                     describedBy={describedBy}
@@ -219,8 +256,7 @@ export function StorefrontProductInformation({
                       id={hintId}
                       className="mt-1 block text-xs font-medium text-[#6c5a3f]"
                     >
-                      أدخل اسم الملف أو مرجع التصميم؛ يرفق الملف عبر الفريق أو
-                      واتساب.
+                      ارفع الشعار من استوديو المعاينة الحية أدناه ليُحفظ مع الطلب أو اكتب مرجع التصميم.
                     </span>
                   )}
                 </div>
@@ -239,11 +275,41 @@ export function StorefrontProductInformation({
         </section>
       ) : null}
 
-      {product.isCustomizable && (
+      {product.isCustomizable && Boolean(customizationConfig) && (
         <StorefrontCustomizerStudio
+          key={product.productId}
+          studioRef={studioRef}
           productName={product.productName}
           baseImageUrl={detailMedia.fallbackUrl ?? product.imageUrl}
+          onAssetsChange={(assets) => {
+            latestLogoAssetKeyRef.current = assets.logoAssetKey;
+            setCustomizationAssets?.(assets);
+            const fileField = visibleCustomizationFields.find(
+              (f) => f.fieldType === "FILE",
+            );
+            if (!fileField) return;
+            const currentFileVal = (customizationValues[fileField.fieldKey] ?? "").trim();
+            if (assets.logoAssetKey && !currentFileVal) {
+              autoFilledFileValueRef.current = "شعار مرفوع مع الطلب";
+              updateCustomizationField(fileField, "شعار مرفوع مع الطلب");
+            } else if (
+              !assets.logoAssetKey &&
+              currentFileVal &&
+              (currentFileVal === "شعار مرفوع مع الطلب" ||
+                currentFileVal === "شعار مرفق من استوديو المعاينة الحية" ||
+                currentFileVal === autoFilledFileValueRef.current)
+            ) {
+              autoFilledFileValueRef.current = null;
+              updateCustomizationField(fileField, "");
+            }
+          }}
+          onUploadStateChange={setCustomizationUploadState}
           onApplyCustomization={(customData) => {
+            latestLogoAssetKeyRef.current = customData.logoAssetKey;
+            setCustomizationAssets?.({
+              logoAssetKey: customData.logoAssetKey,
+              previewAssetKey: customData.previewAssetKey,
+            });
             const primaryField = visibleCustomizationFields.find(
               (f) => f.fieldType === "TEXT" || f.fieldType === "TEXTAREA",
             );
@@ -254,10 +320,10 @@ export function StorefrontProductInformation({
               (f) => f.fieldType === "FILE",
             );
             if (fileField && customData.hasLogo) {
-              updateCustomizationField(
-                fileField,
-                "شعار مرفق من استوديو المعاينة الحية",
-              );
+              const nextFileLabel =
+                customData.logoFileName || "شعار مرفق من استوديو المعاينة الحية";
+              autoFilledFileValueRef.current = nextFileLabel;
+              updateCustomizationField(fileField, nextFileLabel);
             }
           }}
           className="mt-4"
