@@ -112,6 +112,11 @@ describe("tRPC splitLink non-batched sensitive storefront transport", () => {
         turnstileToken: "ts-token",
         lines: [{ productUnitId: 10, quantity: 50 }],
       }),
+      client.storefront.redeemLoyaltyPoints.mutate({
+        customerSessionToken: "s".repeat(48),
+        points: 100,
+        clientRequestId: "redeem-test-12345678",
+      }),
       client.storefront.settings.query(),
       client.storefront.categories.query(),
     ]);
@@ -120,6 +125,7 @@ describe("tRPC splitLink non-batched sensitive storefront transport", () => {
     expect(urls).toContain("/api/trpc/storefront.uploadCustomizationAsset");
     expect(urls).toContain("/api/trpc/storefront.requestAccountDeletion");
     expect(urls).toContain("/api/trpc/storefront.createQuoteRequest");
+    expect(urls).toContain("/api/trpc/storefront.redeemLoyaltyPoints");
 
     const batchedRead = urls.find((u) => u.includes("batch=1"));
     expect(batchedRead).toBe(

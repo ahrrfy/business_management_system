@@ -2577,6 +2577,13 @@
 			"when": 1788148864000,
 			"tag": "0406_storefront_w2_privacy_customization",
 			"breakpoints": true
+		},
+		{
+			"idx": 407,
+			"version": "5",
+			"when": 1788148865000,
+			"tag": "0407_loyalty_ledger_multi_reverse",
+			"breakpoints": true
 		}
 	]
 }

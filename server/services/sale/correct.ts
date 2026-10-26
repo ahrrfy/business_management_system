@@ -50,6 +50,7 @@ import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { adjustCustomerBalance, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { returnSaleInTx } from "../returnService";
+import { reverseOnlineOrderLoyaltyPoints } from "../storeAdmin/loyaltyService";
 import { openShiftIdTx, resolveBranchCashShiftTx } from "../shiftService";
 import { loadRefundCaps } from "../returns/refundCaps";
 import { type Actor } from "../tx";
@@ -888,6 +889,41 @@ export async function correctSaleInTx(
         .update(onlineOrders)
         .set({ invoiceId: newId })
         .where(eq(onlineOrders.invoiceId, input.originalInvoiceId));
+    }
+
+    if (inv.sourceType === "ONLINE") {
+      const linkedOnlineOrders = await tx
+        .select({ id: onlineOrders.id, orderNumber: onlineOrders.orderNumber })
+        .from(onlineOrders)
+        .where(eq(onlineOrders.invoiceId, newId))
+        .for("update");
+      if (linkedOnlineOrders.length > 0) {
+        const newInvRow = (
+          await tx
+            .select({
+              total: invoices.total,
+              returnedTotal: invoices.returnedTotal,
+              deliveryFee: invoices.deliveryFee,
+            })
+            .from(invoices)
+            .where(eq(invoices.id, newId))
+            .limit(1)
+        )[0];
+        const remainingNetMerchandise = Decimal.max(
+          0,
+          money(newInvRow?.total ?? newTotal)
+            .minus(money(newInvRow?.returnedTotal ?? "0"))
+            .minus(money(newInvRow?.deliveryFee ?? "0")),
+        );
+        for (const ord of linkedOnlineOrders) {
+          await reverseOnlineOrderLoyaltyPoints(tx, {
+            onlineOrderId: Number(ord.id),
+            remainingNetMerchandiseIqd: remainingNetMerchandise,
+            idempotencyKey: `rev:order:${ord.id}:corr:${newId}`,
+            reasonLabel: `استرداد فرق نقاط لتصحيح فاتورة الطلب ${ord.orderNumber}`,
+          });
+        }
+      }
     }
 
     // ── ٩) الفرق الزائد (overpay): المقبوض سلفاً > مستحقّ المصحّح ⇒ يُردّ نقداً أو يُرصَّد ──

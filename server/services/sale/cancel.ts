@@ -43,6 +43,7 @@ import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idem
 import { money, round2, toDbMoney } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
 import { openShiftIdTx, resolveBranchCashShiftTx, shiftIdForCashTx } from "../shiftService";
+import { reverseOnlineOrderLoyaltyPoints } from "../storeAdmin/loyaltyService";
 import {
   assertCashOutAvailable,
   computeDrawerCashBalance,
@@ -822,6 +823,11 @@ export async function cancelSaleInTx(
     // بلا مزامنة يترك الطلب SHIPPED/DELIVERED بينما المخزون رجع والقيد عُكس ⇒ طوابير المندوبين وتحليلات
     // المتجر تُظهر طلباً حيّاً مقابل فاتورةٍ ملغاة. نُحدّث للحالة CANCELLED بنفس المعاملة (ذرّياً).
     if (inv.sourceType === "ONLINE") {
+      const linkedOrders = await tx
+        .select({ id: onlineOrders.id, orderNumber: onlineOrders.orderNumber })
+        .from(onlineOrders)
+        .where(eq(onlineOrders.invoiceId, input.invoiceId))
+        .for("update");
       await tx
         .update(onlineOrders)
         .set({
@@ -829,6 +835,14 @@ export async function cancelSaleInTx(
           cancelReason: input.reason?.trim() || "إلغاء فاتورة",
         })
         .where(and(eq(onlineOrders.invoiceId, input.invoiceId), sql`${onlineOrders.status} != 'CANCELLED'`));
+      for (const ord of linkedOrders) {
+        await reverseOnlineOrderLoyaltyPoints(tx, {
+          onlineOrderId: Number(ord.id),
+          remainingNetMerchandiseIqd: "0.00",
+          idempotencyKey: `rev:order:${ord.id}:cancelinv:${input.invoiceId}`,
+          reasonLabel: `استرداد نقاط إلغاء فاتورة الطلب ${ord.orderNumber}`,
+        });
+      }
     }
 
     // ═══ ٤) وسم CANCELLED مع لقطة تدقيق — المدفوع أنقصه منفّذُ الردّ بما خرج فعلاً ═══

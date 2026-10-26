@@ -2970,6 +2970,7 @@ export const loyaltyLedgerEntries = mysqlTable(
       precision: 18,
       scale: 2,
     }).notNull(),
+    idempotencyKey: varchar("idempotencyKey", { length: 100 }),
     note: varchar("note", { length: 255 }),
     createdBy: int("createdBy").references(() => users.id, {
       onDelete: "set null",
@@ -2981,9 +2982,9 @@ export const loyaltyLedgerEntries = mysqlTable(
       table.accountId,
       table.createdAt,
     ),
-    orderEarnUq: unique("uq_loyalty_order_earn").on(
-      table.onlineOrderId,
-      table.entryType,
+    orderIdx: index("idx_loyalty_ledger_order").on(table.onlineOrderId),
+    idempotencyUq: unique("uq_loyalty_ledger_idempotency").on(
+      table.idempotencyKey,
     ),
   }),
 );

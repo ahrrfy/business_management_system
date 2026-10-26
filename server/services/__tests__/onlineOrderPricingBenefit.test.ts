@@ -208,4 +208,75 @@ describe("online storefront pricing benefit", () => {
       freeShippingRemaining: "0.00",
     });
   });
+
+  it("يقصّ خصم قسيمة المبلغ الثابت (maxDiscountAmount) عبر عدة أسطر ووحدات فلا يتضاعف بعدد القطع", async () => {
+    const d = db();
+    await d.insert(s.promotions).values({
+      id: 10,
+      name: "قسيمة ولاء 1500 د.ع",
+      type: "AMOUNT",
+      discountPercent: "0.00",
+      discountAmount: "1500.00",
+      maxDiscountAmount: "1500.00",
+      minOrderSpend: "3000.00",
+      scope: "ALL",
+      effectiveFrom: new Date("2026-01-01"),
+      effectiveTo: new Date("2027-01-01"),
+      branchId: null,
+      customerTier: null,
+      minLineAmount: "0.00",
+      priority: 100,
+      isActive: true,
+      applicationMode: "COUPON",
+      isStoreManaged: false,
+    });
+    await d.insert(s.couponPrograms).values({
+      id: 10,
+      promotionId: 10,
+      name: "استبدال نقاط الولاء 1500",
+      status: "ACTIVE",
+      branchId: null,
+      validFrom: new Date("2026-01-01"),
+      validTo: new Date("2027-01-01"),
+      perCouponLimit: 1,
+      perCustomerLimit: 999_999,
+      codePrefix: "LOY",
+      createdBy: 1,
+    });
+    await d.insert(s.coupons).values({
+      id: 10,
+      programId: 10,
+      code: "LOY-CAP1500",
+      codeHash: hashCouponCode("LOY-CAP1500"),
+      status: "ACTIVE",
+    });
+
+    const lines = [
+      { productUnitId: 1, quantity: 2 }, // 2 x 1000 = 2000
+      { productUnitId: 2, quantity: 2 }, // 2 x 1000 = 2000 -> retailSubtotal = 4000
+    ];
+    const quote = await quoteOnlineOrder({
+      governorate: "baghdad",
+      couponCode: "LOY-CAP1500",
+      lines,
+    });
+
+    expect(quote.retailSubtotal).toBe("4000.00");
+    expect(quote.couponDiscount).toBe("1500.00");
+    expect(quote.subtotal).toBe("2500.00");
+
+    const created = await createOnlineOrder({
+      customerName: "عميل قسيمة ولاء",
+      customerPhone: "07709998887",
+      governorate: "baghdad",
+      addressText: "بغداد — المنصور",
+      couponCode: "LOY-CAP1500",
+      clientRequestId: "loy-cap-1500-order",
+      lines,
+      expectedGrandTotal: quote.total,
+    });
+    const order = (await d.select().from(s.onlineOrders).where(eq(s.onlineOrders.id, created.orderId)))[0]!;
+    expect(order.subtotal).toBe("2500.00");
+    expect(order.couponDiscount).toBe("1500.00");
+  });
 });

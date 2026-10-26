@@ -45,15 +45,15 @@ async function seed() {
     { id: 1, name: "عميل متجر", phone: "+9647701234567", currentBalance: "0.00", creditLimit: null },
   ]);
   await d.insert(s.deliveryParties).values([
-    { id: 1, name: "جهة أ", partyKind: "INDIVIDUAL", currentBalance: "0.00", isActive: true },
-    { id: 2, name: "جهة ب", partyKind: "INDIVIDUAL", currentBalance: "0.00", isActive: true },
+    { id: 1, name: "جهة أ", partyType: "INDIVIDUAL", currentBalance: "0.00", isActive: true },
+    { id: 2, name: "جهة ب", partyType: "INDIVIDUAL", currentBalance: "0.00", isActive: true },
   ]);
 }
 
 async function makeOrder(
   n: number,
-  status: "PENDING" | "PROCESSING" | "SHIPPED" | "DELIVERED" | "CANCELLED",
-  extra: { deliveryPartyId?: number; invoiceId?: number } = {},
+  status: "PENDING" | "CONFIRMED" | "PROCESSING" | "SHIPPED" | "DELIVERED" | "CANCELLED",
+  extra: { deliveryPartyId?: number | null; invoiceId?: number } = {},
 ): Promise<number> {
   const [res] = await db().insert(s.onlineOrders).values({
     orderNumber: `ORD-${n}`,
@@ -71,6 +71,7 @@ async function makeOrder(
 async function makeInvoice(n: number): Promise<number> {
   const [res] = await db().insert(s.invoices).values({
     invoiceNumber: `INV-${n}`,
+    sourceType: "ONLINE",
     branchId: 1,
     customerId: 1,
     subtotal: "10.00", total: "10.00", paidAmount: "0.00", returnedTotal: "0.00",
@@ -82,17 +83,25 @@ async function makeInvoice(n: number): Promise<number> {
 async function makeConsignment(
   n: number,
   orderId: number,
-  invoiceId: number,
+  invoiceId: number | null,
   partyId: number,
   parcelStatus: "ASSIGNED" | "DELIVERED" | "CANCELLED" | "RETURNED",
+  extra: { sourceType?: "ONLINE_ORDER" | "INVOICE"; sourceId?: number } = {},
 ): Promise<number> {
+  const sourceType = extra.sourceType ?? "ONLINE_ORDER";
+  const sourceId =
+    extra.sourceId !== undefined
+      ? extra.sourceId
+      : sourceType === "INVOICE"
+        ? (invoiceId ?? orderId)
+        : orderId;
   const [res] = await db().insert(s.deliveryConsignments).values({
     consignmentNumber: `CN-${n}`,
     branchId: 1,
     partyId,
     invoiceId,
-    sourceType: "ONLINE_ORDER",
-    sourceId: orderId,
+    sourceType,
+    sourceId,
     codAmount: "10.00", collectedAmount: "0.00", counterSettledAmount: "0.00",
     deliveryFee: "0.00", feeCollection: "COURIER",
     parcelStatus,
@@ -191,6 +200,86 @@ describe("reconcileOnlineOrderConsignmentSync", () => {
     const invoiceId = await makeInvoice(11);
     const orderId = await makeOrder(11, "DELIVERED", { invoiceId, deliveryPartyId: 1 });
     await makeConsignment(11, orderId, invoiceId, 1, "DELIVERED");
+    expect(await reconcileOnlineOrderConsignmentSync()).toEqual([]);
+  });
+
+  it("إرسالية CANCELLED وطلب أُعيدت حالته إلى CONFIRMED أو PROCESSING بلا جهة توصيل (بانتظار إعادة الإسناد) ⇒ لا انحراف", async () => {
+    const inv1 = await makeInvoice(12);
+    const ordConfirmed = await makeOrder(12, "CONFIRMED", { invoiceId: inv1, deliveryPartyId: null });
+    await makeConsignment(12, ordConfirmed, inv1, 1, "CANCELLED");
+
+    const inv2 = await makeInvoice(13);
+    const ordProcessing = await makeOrder(13, "PROCESSING", { invoiceId: inv2, deliveryPartyId: null });
+    await makeConsignment(13, ordProcessing, inv2, 1, "CANCELLED");
+
+    expect(await reconcileOnlineOrderConsignmentSync()).toEqual([]);
+  });
+
+  it("إرسالية أولى CANCELLED لجهة أ ثم إرسالية ثانية DELIVERED لجهة ب (بعد تصحيح الفاتورة أو إسناد الفاتورة) ⇒ لا انحراف كاذب", async () => {
+    process.env.ONLINE_ORDER_CONSIGNMENT_REQUIRED_FROM = "2000-01-01T00:00:00Z";
+
+    // مسار ١: إرسالية أولى ONLINE_ORDER على الفاتورة الأصلية ملغاة، ثم فاتورة مصحّحة أُسنِدت عبر INVOICE وسُلِّمت لجهة ب
+    const invOld = await makeInvoice(1401);
+    const invNew = await makeInvoice(1402);
+    const ord1 = await makeOrder(14, "DELIVERED", { invoiceId: invNew, deliveryPartyId: 2 });
+    await makeConsignment(1401, ord1, invOld, 1, "CANCELLED");
+    await makeConsignment(1402, ord1, invNew, 2, "DELIVERED", { sourceType: "INVOICE", sourceId: invNew });
+
+    // مسار ٢: سلسلة إرساليتين ملغاتين (ONLINE_ORDER ثم INVOICE) تليها ثالثة DELIVERED على أحدث فاتورة
+    const invA = await makeInvoice(1501);
+    const invB = await makeInvoice(1502);
+    const invC = await makeInvoice(1503);
+    const ord2 = await makeOrder(15, "DELIVERED", { invoiceId: invC, deliveryPartyId: 2 });
+    await makeConsignment(1501, ord2, invA, 1, "CANCELLED");
+    await makeConsignment(1502, ord2, invB, 1, "CANCELLED", { sourceType: "INVOICE", sourceId: invB });
+    await makeConsignment(1503, ord2, invC, 2, "DELIVERED", { sourceType: "INVOICE", sourceId: invC });
+
+    // مسار ٣: طلب SHIPPED بعد cutover مرتبط بإرسالية INVOICE فقط ⇒ لا يُكشف كـ orderShippedWithoutConsignment
+    const inv3 = await makeInvoice(150);
+    const ord3 = await makeOrder(150, "SHIPPED", { invoiceId: inv3, deliveryPartyId: 2 });
+    await makeConsignment(1504, ord3, inv3, 2, "ASSIGNED", { sourceType: "INVOICE", sourceId: inv3 });
+
+    expect(await reconcileOnlineOrderConsignmentSync()).toEqual([]);
+  });
+
+  it("طلب عالق على جهة توصيل (CONFIRMED مع deliveryPartyId != null) أو إرسالية RETURNED على طلب غير طرفيّ ⇒ يُكشف", async () => {
+    const inv1 = await makeInvoice(16);
+    const ordStuckAssigned = await makeOrder(16, "CONFIRMED", { invoiceId: inv1, deliveryPartyId: 1 });
+    await makeConsignment(16, ordStuckAssigned, inv1, 1, "CANCELLED");
+
+    const inv2 = await makeInvoice(17);
+    const ordReturnedPreTerminal = await makeOrder(17, "CONFIRMED", { invoiceId: inv2, deliveryPartyId: null });
+    await makeConsignment(17, ordReturnedPreTerminal, inv2, 1, "RETURNED");
+
+    const issues = await reconcileOnlineOrderConsignmentSync();
+    const terminalDriftIds = issues
+      .filter((i) => i.entity === "consignmentTerminalOrderPreTerminal")
+      .map((i) => i.id)
+      .sort((a, b) => a - b);
+    expect(terminalDriftIds).toEqual([ordStuckAssigned, ordReturnedPreTerminal]);
+  });
+
+  it("إرسالية أولى CANCELLED عبر ONLINE_ORDER ثم إرسالية ثانية DELIVERED عبر INVOICE بقيت على الفاتورة السابقة بعد تصحيح الفاتورة إلى invNew ⇒ لا انحراف كاذب", async () => {
+    const inv0 = await makeInvoice(1800);
+    const inv1 = await makeInvoice(1801);
+    const [resInv2] = await db().insert(s.invoices).values({
+      invoiceNumber: "INV-1802",
+      sourceType: "ONLINE",
+      branchId: 1,
+      customerId: 1,
+      subtotal: "10.00",
+      total: "10.00",
+      paidAmount: "10.00",
+      returnedTotal: "0.00",
+      correctionOfInvoiceId: inv1,
+      createdBy: 1,
+    });
+    const inv2 = Number((resInv2 as { insertId: number }).insertId);
+    const ord = await makeOrder(18, "DELIVERED", { invoiceId: inv2, deliveryPartyId: 2 });
+
+    await makeConsignment(1801, ord, inv0, 1, "CANCELLED", { sourceType: "ONLINE_ORDER", sourceId: ord });
+    await makeConsignment(1802, ord, inv1, 2, "DELIVERED", { sourceType: "INVOICE", sourceId: inv1 });
+
     expect(await reconcileOnlineOrderConsignmentSync()).toEqual([]);
   });
 });

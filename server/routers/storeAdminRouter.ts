@@ -72,7 +72,12 @@ import { resolveStorefrontBranchId } from "../services/storefrontService";
 import { withTx } from "../services/tx";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
 import { assertSafeBannerCtaUrl } from "../lib/bannerSafety";
-import { listLoyaltyPrograms, loyaltyOverview, saveLoyaltyProgram } from "../services/storeAdmin/loyaltyService";
+import {
+  listLoyaltyLedgerEntries,
+  listLoyaltyPrograms,
+  loyaltyOverview,
+  saveLoyaltyProgram,
+} from "../services/storeAdmin/loyaltyService";
 import {
   approveStorefrontPushCampaign,
   cancelStorefrontPushCampaign,
@@ -781,6 +786,24 @@ const customersRouter = router({
 const loyaltyRouter = router({
   programs: storeGlobalAdminProcedure.query(() => listLoyaltyPrograms()),
   overview: storeGlobalAdminProcedure.query(() => loyaltyOverview()),
+  ledger: storeGlobalAdminProcedure
+    .input(
+      z
+        .object({
+          limit: z.number().int().min(1).max(200).default(100),
+          entryType: z
+            .enum([
+              "ORDER_EARN",
+              "ORDER_REVERSE",
+              "REDEEM",
+              "ADJUSTMENT",
+              "EXPIRE",
+            ])
+            .optional(),
+        })
+        .optional(),
+    )
+    .query(({ input }) => listLoyaltyLedgerEntries(input)),
   saveProgram: storeGlobalAdminProcedure.input(z.object({
     id: z.number().int().positive().optional(),
     name: z.string().trim().min(2).max(120),
