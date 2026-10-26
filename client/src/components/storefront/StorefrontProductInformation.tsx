@@ -1,6 +1,8 @@
+import React from "react";
 import { money, priceLabel } from "@/components/storefront/storefrontCartMath";
 import { CustomizationFieldControl } from "@/components/storefront/storefrontCustomizationModel";
 import { StorefrontCustomizerStudio } from "@/components/storefront/StorefrontCustomizerStudio";
+import { type CustomizationStudioUploadState } from "@/components/storefront/storefrontCustomizationUpload";
 import { StorefrontHeuristicsBadges } from "@/components/storefront/StorefrontHeuristicsBadges";
 import { formatQuantity } from "@/lib/money";
 import { ArrowRight, Flame, Star, Store, Tag } from "lucide-react";
@@ -23,7 +25,14 @@ type Props = Pick<
   | "customizationValidation"
   | "updateCustomizationField"
   | "detailMedia"
-> & { product: NonNullable<StorefrontProductDialogProps["product"]> };
+> & {
+  product: NonNullable<StorefrontProductDialogProps["product"]>;
+  setCustomizationAssets?: (assets: {
+    logoAssetKey?: string;
+    previewAssetKey?: string;
+  }) => void;
+  setCustomizationUploadState?: (state: CustomizationStudioUploadState) => void;
+};
 export function StorefrontProductInformation({
   product,
   setProductReviewOpenRequest,
@@ -41,6 +50,8 @@ export function StorefrontProductInformation({
   customizationValidation,
   updateCustomizationField,
   detailMedia,
+  setCustomizationAssets,
+  setCustomizationUploadState,
 }: Props) {
   return (
     <div className="min-w-0">
@@ -219,8 +230,7 @@ export function StorefrontProductInformation({
                       id={hintId}
                       className="mt-1 block text-xs font-medium text-[#6c5a3f]"
                     >
-                      أدخل اسم الملف أو مرجع التصميم؛ يرفق الملف عبر الفريق أو
-                      واتساب.
+                      ارفع الشعار من استوديو المعاينة الحية أدناه ليُحفظ مع الطلب أو اكتب مرجع التصميم.
                     </span>
                   )}
                 </div>
@@ -239,11 +249,29 @@ export function StorefrontProductInformation({
         </section>
       ) : null}
 
-      {product.isCustomizable && (
+      {product.isCustomizable && Boolean(customizationConfig) && (
         <StorefrontCustomizerStudio
           productName={product.productName}
           baseImageUrl={detailMedia.fallbackUrl ?? product.imageUrl}
+          onAssetsChange={(assets) => {
+            setCustomizationAssets?.(assets);
+            const fileField = visibleCustomizationFields.find(
+              (f) => f.fieldType === "FILE",
+            );
+            if (
+              fileField &&
+              assets.logoAssetKey &&
+              !(customizationValues[fileField.fieldKey] ?? "").trim()
+            ) {
+              updateCustomizationField(fileField, "شعار مرفوع مع الطلب");
+            }
+          }}
+          onUploadStateChange={setCustomizationUploadState}
           onApplyCustomization={(customData) => {
+            setCustomizationAssets?.({
+              logoAssetKey: customData.logoAssetKey,
+              previewAssetKey: customData.previewAssetKey,
+            });
             const primaryField = visibleCustomizationFields.find(
               (f) => f.fieldType === "TEXT" || f.fieldType === "TEXTAREA",
             );
@@ -256,7 +284,7 @@ export function StorefrontProductInformation({
             if (fileField && customData.hasLogo) {
               updateCustomizationField(
                 fileField,
-                "شعار مرفق من استوديو المعاينة الحية",
+                customData.logoFileName || "شعار مرفق من استوديو المعاينة الحية",
               );
             }
           }}

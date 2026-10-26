@@ -1,22 +1,28 @@
-import React, { useState } from "react";
+import React, { Suspense, lazy, useState } from "react";
 import Decimal from "decimal.js";
-import { FileText, Loader2, Check } from "lucide-react";
+import { Building2, Check, FileText, Loader2 } from "lucide-react";
 import { printQuotationV2 } from "@/lib/printing/printTemplatesV2";
-import { summarizeStorefrontCustomization } from "@/pages/Storefront";
+import { summarizeStorefrontCustomization } from "@/components/storefront/storefrontCustomizationModel";
 
-interface CartLineItem {
+const StorefrontB2BQuoteDialog = lazy(() => import("./StorefrontB2BQuoteDialog"));
+
+export interface CartLineItem {
   cartKey: string;
+  productUnitId: number;
   name: string;
   qty: number;
   price: string | number;
   variantLabel?: string;
   unitName?: string;
-  customization?: any;
+  customization?: unknown;
 }
 
-interface StorefrontB2BQuoteButtonProps {
+export interface StorefrontB2BQuoteButtonProps {
   cartLines: CartLineItem[];
   cartSubtotal: number;
+  orderingEnabled?: boolean;
+  turnstileSiteKey?: string | null;
+  customerSessionToken?: string | null;
   className?: string;
 }
 
@@ -32,10 +38,14 @@ function toDecimalSafe(val: unknown): Decimal {
 export function StorefrontB2BQuoteButton({
   cartLines,
   cartSubtotal: _cartSubtotal,
+  orderingEnabled = true,
+  turnstileSiteKey = null,
+  customerSessionToken = null,
   className = "",
 }: StorefrontB2BQuoteButtonProps) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isGenerated, setIsGenerated] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(false);
 
   const handleGenerate = () => {
     if (cartLines.length === 0) return;
@@ -56,7 +66,7 @@ export function StorefrontB2BQuoteButton({
       let computedSubtotal = new Decimal(0);
 
       const items = cartLines.map((line) => {
-        const customText = summarizeStorefrontCustomization(line.customization);
+        const customText = summarizeStorefrontCustomization(line.customization as never);
         const details = [line.variantLabel, line.unitName, customText].filter(Boolean).join(" - ");
         const fullName = details ? `${line.name} (${details})` : line.name;
         const decUnitPrice = toDecimalSafe(line.price);
@@ -98,29 +108,55 @@ export function StorefrontB2BQuoteButton({
   };
 
   return (
-    <button
-      type="button"
-      onClick={handleGenerate}
-      disabled={isGenerating || cartLines.length === 0}
-      className={`inline-flex items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-xs font-black text-white shadow-xs transition hover:bg-slate-800 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700 ${className}`}
-      aria-label="تنزيل وطباعة عرض سعر رسمي B2B"
-    >
-      {isGenerating ? (
-        <>
-          <Loader2 aria-hidden className="size-4 animate-spin" />
-          <span>جارٍ إعداد مستند عرض السعر…</span>
-        </>
-      ) : isGenerated ? (
-        <>
-          <Check aria-hidden className="size-4 text-emerald-400" />
-          <span>تم توليد عرض السعر بنجاح</span>
-        </>
-      ) : (
-        <>
-          <FileText aria-hidden className="size-4 text-amber-400" />
-          <span>تنزيل عرض سعر رسمي ومختوم (B2B PDF)</span>
-        </>
+    <div className={`space-y-2 ${className}`}>
+      <button
+        type="button"
+        onClick={() => setDialogOpen(true)}
+        disabled={cartLines.length === 0}
+        className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-[#183D36]/25 bg-[#183D36] px-4 py-3 text-xs font-black text-white shadow-xs transition hover:opacity-95 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700"
+        aria-label="تقديم طلب عرض سعر رسمي للشركات"
+      >
+        <Building2 aria-hidden className="size-4 shrink-0" />
+        <span>طلب عرض سعر رسمي للشركات والمؤسسات</span>
+      </button>
+
+      <button
+        type="button"
+        onClick={handleGenerate}
+        disabled={isGenerating || cartLines.length === 0}
+        className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-xs font-black text-white shadow-xs transition hover:bg-slate-800 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:hover:bg-slate-800"
+        aria-label="تنزيل وطباعة عرض سعر تقديري B2B PDF"
+      >
+        {isGenerating ? (
+          <>
+            <Loader2 aria-hidden className="size-4 animate-spin" />
+            <span>جارٍ إعداد مستند عرض السعر…</span>
+          </>
+        ) : isGenerated ? (
+          <>
+            <Check aria-hidden className="size-4 text-emerald-400" />
+            <span>تم توليد عرض السعر بنجاح</span>
+          </>
+        ) : (
+          <>
+            <FileText aria-hidden className="size-4 text-amber-400" />
+            <span>تنزيل عرض سعر تقديري فوري (B2B PDF)</span>
+          </>
+        )}
+      </button>
+
+      {dialogOpen && (
+        <Suspense fallback={null}>
+          <StorefrontB2BQuoteDialog
+            open={dialogOpen}
+            onOpenChange={setDialogOpen}
+            cartLines={cartLines}
+            orderingEnabled={orderingEnabled}
+            turnstileSiteKey={turnstileSiteKey}
+            customerSessionToken={customerSessionToken}
+          />
+        </Suspense>
       )}
-    </button>
+    </div>
   );
 }

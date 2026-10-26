@@ -15,6 +15,7 @@ export interface OnlineOrderPrintData {
   customerPhone: string | null;
   governorate: string | null;
   addressText: string | null;
+  customerNotes?: string | null;
   latitude?: string | null;
   longitude?: string | null;
   status: string;
@@ -24,7 +25,18 @@ export interface OnlineOrderPrintData {
   deliveryWaivedAmount?: string;
   total: string;
   createdAt: Date | string;
-  items: { productName: string; variantLabel: string; imageUrl: string | null; unitName: string; quantity: string; unitPrice: string; total: string; customizationSummary?: string | null }[];
+  items: {
+    productName: string;
+    variantLabel: string;
+    imageUrl: string | null;
+    unitName: string;
+    quantity: string;
+    unitPrice: string;
+    total: string;
+    customizationSummary?: string | null;
+    previewAssetUrl?: string | null;
+    logoAssetUrl?: string | null;
+  }[];
   notes?: string | null;
   isReprint?: boolean;
   reprintedAt?: Date | string;
@@ -37,7 +49,46 @@ export interface OnlineOrderPrintData {
   qrUrl?: string | null;
 }
 
-const absoluteImage = (src: string | null): string | null => {
+const ORDER_NOTE_SEPARATOR = "\nملاحظة:";
+const LEADING_ORDER_NOTE_PREFIX = "ملاحظة:";
+
+function splitPrintShippingAddressAndNotes(rawAddress: string | null | undefined): {
+  shippingAddress: string;
+  notes: string;
+} {
+  const raw = rawAddress?.trim() ?? "";
+  if (!raw) return { shippingAddress: "", notes: "" };
+  const sepIdx = raw.indexOf(ORDER_NOTE_SEPARATOR);
+  if (sepIdx >= 0) {
+    return {
+      shippingAddress: raw.slice(0, sepIdx).trim(),
+      notes: raw.slice(sepIdx + ORDER_NOTE_SEPARATOR.length).trim(),
+    };
+  }
+  if (raw.startsWith(LEADING_ORDER_NOTE_PREFIX)) {
+    return {
+      shippingAddress: "",
+      notes: raw.slice(LEADING_ORDER_NOTE_PREFIX.length).trim(),
+    };
+  }
+  return { shippingAddress: raw, notes: "" };
+}
+
+export function resolveOnlineOrderPrintAddressAndNotes(d: {
+  addressText?: string | null;
+  customerNotes?: string | null;
+  notes?: string | null;
+}): { shippingAddress: string | null; notes: string | null } {
+  const split = splitPrintShippingAddressAndNotes(d.addressText);
+  const directCustomerNotes = d.customerNotes?.trim() ? d.customerNotes.trim() : null;
+  const fallbackNotes = d.notes?.trim() ? d.notes.trim() : null;
+  return {
+    shippingAddress: split.shippingAddress || null,
+    notes: directCustomerNotes ?? fallbackNotes ?? (split.notes || null),
+  };
+}
+
+const absoluteImage = (src: string | null | undefined): string | null => {
   if (!src) return null;
   if (/^(data:|https?:)/i.test(src)) return src;
   return typeof window === "undefined" ? src : `${window.location.origin}${src.startsWith("/") ? src : `/${src}`}`;
@@ -48,7 +99,8 @@ export function buildOnlineOrderThermalDoc(d: OnlineOrderPrintData) {
     ? `https://maps.google.com/?q=${encodeURIComponent(`${d.latitude},${d.longitude}`)}`
     : null;
 
-  const address = [d.governorate, d.addressText].filter(Boolean).join(" — ");
+  const { shippingAddress, notes: resolvedNotes } = resolveOnlineOrderPrintAddressAndNotes(d);
+  const address = [d.governorate, shippingAddress].filter(Boolean).join(" — ");
 
   return {
     kind: "receipt" as const,
@@ -59,7 +111,7 @@ export function buildOnlineOrderThermalDoc(d: OnlineOrderPrintData) {
       `الزبون: ${d.customerName ?? "عميل"}`,
       d.customerPhone ? `الهاتف: ${d.customerPhone}` : "",
       address ? `العنوان: ${address}` : "",
-      d.notes ? `ملاحظات: ${d.notes}` : "",
+      resolvedNotes ? `ملاحظات: ${resolvedNotes}` : "",
       d.latitude && d.longitude ? `الموقع: مثبت على الخريطة (امسح QR للملاحة)` : "",
       d.isReprint ? `نسخة معاد طباعتها${d.reprintedBy ? ` بواسطة: ${d.reprintedBy}` : ""}${d.reprintedAt ? ` في: ${fmtDateTime(d.reprintedAt)}` : ""}` : "",
     ].filter(Boolean),
@@ -98,10 +150,10 @@ export async function printOnlineOrderThermal(d: OnlineOrderPrintData): Promise<
   await printDoc(buildOnlineOrderThermalDoc(d));
 }
 
-/** ورقة تجهيز A4: الصورة والخصائص والكمية بجانب كل صنف لتقليل خطأ الالتقاط. */
-export function printOnlineOrderPreparationA4(d: OnlineOrderPrintData): void {
+export function buildOnlineOrderPreparationA4Html(d: OnlineOrderPrintData): string {
+  const { shippingAddress, notes: resolvedNotes } = resolveOnlineOrderPrintAddressAndNotes(d);
   const products = d.items.map((item, index) => {
-    const image = absoluteImage(item.imageUrl);
+    const image = absoluteImage(item.previewAssetUrl || item.imageUrl);
     return `<article class="item">
       <div class="num">${index + 1}</div>
       ${image ? `<img src="${esc(image)}" alt="${esc(item.productName)}" />` : `<div class="no-image">لا توجد صورة</div>`}
@@ -124,25 +176,28 @@ export function printOnlineOrderPreparationA4(d: OnlineOrderPrintData): void {
     }
   }
 
-  const html = `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>ورقة تجهيز ${esc(d.orderNumber)}</title>${CAIRO_FONT}
+  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>ورقة تجهيز ${esc(d.orderNumber)}</title>${CAIRO_FONT}
   <style>
     @page{size:A4 portrait;margin:10mm}*{box-sizing:border-box}body{font-family:'Cairo',sans-serif;color:#111;margin:0;font-size:12px}.head{border-bottom:3px solid #087f5b;padding-bottom:6mm;display:flex;justify-content:space-between;gap:8mm}.brand{font-size:20px;font-weight:900}.sub{color:#555;font-size:11px}.title{text-align:left}.title h1{margin:0;font-size:22px}.title p{margin:2px 0;font-weight:800}.boxes{display:grid;grid-template-columns:1fr 1fr;gap:4mm;margin:6mm 0}.box{border:1px solid #bfc8c3;border-radius:3mm;padding:4mm}.box b{display:block;color:#087f5b;margin-bottom:1mm}.customer{font-size:14px;font-weight:800}.items-title{font-size:16px;font-weight:900;margin:5mm 0 3mm}.item{display:grid;grid-template-columns:8mm 25mm 1fr 22mm;gap:4mm;align-items:center;border:1.5px solid #222;border-radius:3mm;padding:3mm;margin-bottom:3mm;break-inside:avoid}.item img,.no-image{width:25mm;height:25mm;object-fit:cover;border-radius:2mm;background:#f1f3f2}.no-image{display:grid;place-items:center;text-align:center;font-size:9px;color:#777}.num{font-size:16px;font-weight:900;text-align:center}.info h3{margin:0;font-size:14px}.info p{margin:1mm 0 0;color:#444}.variant{font-weight:900;color:#087f5b}.customization{border:1px solid #9fc8bb;border-radius:2mm;background:#eef8f4;padding:2mm;color:#173f35!important}.qty{font-size:24px;font-weight:900;text-align:center;border-right:1px dashed #aaa;padding-right:3mm}.foot{display:flex;justify-content:space-between;border-top:2px solid #111;margin-top:6mm;padding-top:4mm;font-weight:800}.cod{font-size:18px;color:#087f5b}@media print{body{print-color-adjust:exact;-webkit-print-color-adjust:exact}}
   </style></head><body><header class="head"><div><div class="brand">${esc(CO.short)}</div><div class="sub">${esc(CO.address)} · ${esc(CO.phones[1]?.n ?? CO.phones[0]?.n ?? "")}</div></div><div class="title"><h1>ورقة تجهيز الطلب</h1><div style="display:inline-flex;align-items:center;gap:6px;margin:2px 0;"><span dir="ltr" style="font-weight:800;font-size:13px;">${esc(d.orderNumber)}</span>${barcodeHtml}</div><p>${esc(fmtDateTime(d.createdAt))}</p></div></header>
-  <section class="boxes"><div class="box"><b>بيانات المستلم</b><div class="customer">${esc(d.customerName ?? "—")}</div><div dir="ltr">${esc(d.customerPhone ?? "—")}</div></div><div class="box"><b>عنوان التسليم</b><div>${esc([d.governorate, d.addressText].filter(Boolean).join(" — ") || "—")}</div>${d.latitude && d.longitude ? `<div style="margin-top:2mm;font-size:11px;font-weight:bold;color:#087f5b">الموقع على الخريطة: <a href="https://maps.google.com/?q=${encodeURIComponent(`${d.latitude},${d.longitude}`)}" target="_blank" style="color:#087f5b;text-decoration:underline">فتح خرائط Google (${esc(d.latitude)}, ${esc(d.longitude)})</a></div>` : ""}</div></section>
+  <section class="boxes"><div class="box"><b>بيانات المستلم</b><div class="customer">${esc(d.customerName ?? "—")}</div><div dir="ltr">${esc(d.customerPhone ?? "—")}</div></div><div class="box"><b>عنوان التسليم</b><div>${esc([d.governorate, shippingAddress].filter(Boolean).join(" — ") || "—")}</div>${resolvedNotes ? `<div style="margin-top:2mm;font-size:11px;color:#222"><b>ملاحظات العميل</b><div>${esc(resolvedNotes)}</div></div>` : ""}${d.latitude && d.longitude ? `<div style="margin-top:2mm;font-size:11px;font-weight:bold;color:#087f5b">الموقع على الخريطة: <a href="https://maps.google.com/?q=${encodeURIComponent(`${d.latitude},${d.longitude}`)}" target="_blank" style="color:#087f5b;text-decoration:underline">فتح خرائط Google (${esc(d.latitude)}, ${esc(d.longitude)})</a></div>` : ""}</div></section>
   <h2 class="items-title">المنتجات المطلوب تجهيزها (${d.items.length})</h2>${products}<footer class="foot"><span>الحالة: ${esc(d.status)}</span><span class="cod">المبلغ عند الاستلام: ${esc(fmt(d.total))} د.ع ${d.deliveryFree ? "(شحن مجاني)" : ""}</span></footer>
   <script>window.addEventListener('load',()=>{(document.fonts?.ready||Promise.resolve()).then(()=>setTimeout(()=>window.print(),80))});window.addEventListener('afterprint',()=>window.close())</script></body></html>`;
-  openPrintWindow(html, "width=900,height=1100");
+}
+
+/** ورقة تجهيز A4: الصورة والخصائص والكمية بجانب كل صنف لتقليل خطأ الالتقاط. */
+export function printOnlineOrderPreparationA4(d: OnlineOrderPrintData): void {
+  openPrintWindow(buildOnlineOrderPreparationA4Html(d), "width=900,height=1100");
 }
 
 /** تجهيز بيانات فاتورة المتجر بالتصميم الموحد (A4) — لفواتير الاستقبال. */
 export function buildOnlineOrderInvoicePrintData(d: OnlineOrderPrintData): InvoicePrintData {
   const govName = d.governorate ? (governorateById(d.governorate)?.name ?? d.governorate) : null;
-  const cleanAddress = d.addressText?.trim() || null;
-  const address = [govName, cleanAddress].filter(Boolean).join(" — ") || null;
+  const { shippingAddress, notes: resolvedNotes } = resolveOnlineOrderPrintAddressAndNotes(d);
+  const address = [govName, shippingAddress].filter(Boolean).join(" — ") || null;
   const discountVal = d.discountAmount ?? d.couponDiscount ?? undefined;
   const couponNote = d.couponCode ? `كوبون خصم: ${d.couponCode}` : null;
-  const cleanNotes = d.notes?.trim() || null;
-  const notes = [cleanNotes, couponNote].filter(Boolean).join(" | ") || null;
+  const notes = [resolvedNotes, couponNote].filter(Boolean).join(" | ") || null;
   const qrTarget = d.qrUrl?.trim()
     || (d.labelToken
       ? `${storefrontUrl()}?order=${encodeURIComponent(d.orderNumber)}&token=${encodeURIComponent(d.labelToken)}`

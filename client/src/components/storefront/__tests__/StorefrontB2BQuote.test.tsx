@@ -1,0 +1,298 @@
+// @vitest-environment jsdom
+import React, { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean; React?: typeof React }).IS_REACT_ACT_ENVIRONMENT = true;
+(globalThis as unknown as { React?: typeof React }).React = React;
+
+const printQuotationV2Mock = vi.fn();
+const createQuoteMutateMock = vi.fn();
+let latestCreateQuoteOptions: {
+  onSuccess?: (res: unknown) => void;
+  onError?: (err: { message?: string }) => void;
+} = {};
+
+vi.mock("@/lib/printing/printTemplatesV2", () => ({
+  printQuotationV2: (...args: unknown[]) => printQuotationV2Mock(...args),
+}));
+
+vi.mock("@/components/storefront/TurnstileWidget", () => ({
+  TurnstileWidget: (props: {
+    siteKey: string;
+    resetKey?: number;
+    onTokenChange: (token: string | null) => void;
+  }) => (
+    <div data-testid="b2b-turnstile" data-site-key={props.siteKey} data-reset-key={String(props.resetKey ?? 0)}>
+      <button
+        type="button"
+        data-testid="solve-b2b-turnstile"
+        onClick={() => props.onTokenChange("mock")}
+      >
+        تحقق أمني
+      </button>
+    </div>
+  ),
+}));
+
+vi.mock("@/components/ui/dialog", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/components/ui/dialog")>();
+  return {
+    ...actual,
+    Dialog: ({ open, children }: { open: boolean; children: React.ReactNode }) =>
+      open ? <div data-testid="b2b-dialog-root">{children}</div> : null,
+    DialogContent: ({ children, className }: { children: React.ReactNode; className?: string }) => (
+      <div data-testid="b2b-dialog-content" className={className}>
+        {children}
+      </div>
+    ),
+    DialogHeader: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+    DialogTitle: ({ children }: { children: React.ReactNode }) => <h2>{children}</h2>,
+    DialogDescription: ({ children }: { children: React.ReactNode }) => <p>{children}</p>,
+    DialogFooter: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  };
+});
+
+vi.mock("@/lib/trpc", () => ({
+  trpc: {
+    storefront: {
+      createQuoteRequest: {
+        useMutation: (opts?: typeof latestCreateQuoteOptions) => {
+          latestCreateQuoteOptions = opts ?? {};
+          return {
+            mutate: (input: unknown) => createQuoteMutateMock(input),
+            isPending: false,
+          };
+        },
+      },
+    },
+  },
+}));
+
+import { StorefrontB2BQuoteButton } from "../StorefrontB2BQuoteButton";
+
+function setNativeValue(el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement, value: string) {
+  const proto =
+    el instanceof HTMLTextAreaElement
+      ? HTMLTextAreaElement.prototype
+      : el instanceof HTMLSelectElement
+        ? HTMLSelectElement.prototype
+        : HTMLInputElement.prototype;
+  const descriptor = Object.getOwnPropertyDescriptor(proto, "value");
+  descriptor?.set?.call(el, value);
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+async function waitForLazyDialog(container: HTMLElement): Promise<HTMLElement> {
+  const deadline = Date.now() + 4000;
+  while (Date.now() < deadline) {
+    const el = container.querySelector<HTMLElement>('[data-testid="b2b-dialog-content"]');
+    if (el) return el;
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+  }
+  throw new Error("Timed out waiting for lazy StorefrontB2BQuoteDialog to resolve");
+}
+
+describe("StorefrontB2BQuoteButton & lazy official StorefrontB2BQuoteDialog", () => {
+  let container: HTMLDivElement | null = null;
+  let root: Root | null = null;
+
+  beforeEach(() => {
+    printQuotationV2Mock.mockReset();
+    createQuoteMutateMock.mockReset();
+    latestCreateQuoteOptions = {};
+  });
+
+  afterEach(() => {
+    if (root) {
+      act(() => root!.unmount());
+      root = null;
+    }
+    if (container) {
+      container.remove();
+      container = null;
+    }
+  });
+
+  const sampleCartLines = [
+    {
+      cartKey: "u-101::base",
+      productUnitId: 101,
+      name: "ورق A4 للطباعة المكتبية",
+      qty: 20,
+      price: "6500",
+      unitName: "رزمة",
+    },
+    {
+      cartKey: "u-202::custom",
+      productUnitId: 202,
+      name: "أقلام دعائية مطبوعة",
+      qty: 100,
+      price: "750",
+      unitName: "قطعة",
+      variantLabel: "أزرق",
+    },
+  ];
+
+  it("keeps estimated PDF download via printQuotationV2 AND opens lazy official B2B quote dialog", async () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root!.render(
+        <StorefrontB2BQuoteButton
+          cartLines={sampleCartLines}
+          cartSubtotal={205000}
+          orderingEnabled={true}
+          turnstileSiteKey="site-key"
+        />,
+      );
+    });
+
+    const pdfBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("B2B PDF"),
+    );
+    expect(pdfBtn).toBeDefined();
+    await act(async () => {
+      pdfBtn!.click();
+    });
+    expect(printQuotationV2Mock).toHaveBeenCalledTimes(1);
+
+    const officialBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("طلب عرض سعر رسمي"),
+    );
+    expect(officialBtn).toBeDefined();
+    await act(async () => {
+      officialBtn!.click();
+    });
+    // Wait for React.lazy dynamic import to resolve
+    await waitForLazyDialog(container);
+
+    const dialogContent = container.querySelector('[data-testid="b2b-dialog-content"]');
+    expect(dialogContent).not.toBeNull();
+    expect(dialogContent?.className).toContain("sm:max-w-");
+  });
+
+  it("submits createQuoteRequest with productUnitId lines, Turnstile token, and displays SRQ-... requestNumber and tracking details", async () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    const sessionToken = "s".repeat(48);
+
+    await act(async () => {
+      root!.render(
+        <StorefrontB2BQuoteButton
+          cartLines={sampleCartLines}
+          cartSubtotal={205000}
+          orderingEnabled={true}
+          turnstileSiteKey="site-key"
+          customerSessionToken={sessionToken}
+        />,
+      );
+    });
+
+    const officialBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("طلب عرض سعر رسمي"),
+    )!;
+    await act(async () => {
+      officialBtn.click();
+    });
+    await waitForLazyDialog(container);
+
+    const nameInput = container.querySelector<HTMLInputElement>("#b2b-quote-customer-name")!;
+    const phoneInput = container.querySelector<HTMLInputElement>("#b2b-quote-customer-phone")!;
+    const companyInput = container.querySelector<HTMLInputElement>("#b2b-quote-company-name")!;
+    const noteInput = container.querySelector<HTMLTextAreaElement>("#b2b-quote-note")!;
+
+    await act(async () => {
+      setNativeValue(nameInput, "حيدر الكاظمي");
+      setNativeValue(phoneInput, "07701234567");
+      setNativeValue(companyInput, "شركة الأفق للمقاولات");
+      setNativeValue(noteInput, "نرغب بعرض سعر رسمي مختوم مع التوصيل لمقر الشركة في الكرادة");
+    });
+
+    // Submitting before solving Turnstile must be blocked
+    const form = container.querySelector("form")!;
+    await act(async () => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    expect(createQuoteMutateMock).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("أكمل التحقق الأمني");
+
+    // Solve Turnstile and submit
+    const solveBtn = container.querySelector<HTMLButtonElement>('[data-testid="solve-b2b-turnstile"]')!;
+    await act(async () => {
+      solveBtn.click();
+    });
+    await act(async () => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+
+    expect(createQuoteMutateMock).toHaveBeenCalledTimes(1);
+    const payload = createQuoteMutateMock.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      customerSessionToken: sessionToken,
+      customerName: "حيدر الكاظمي",
+      customerPhone: "+9647701234567",
+      companyName: "شركة الأفق للمقاولات",
+      governorate: "baghdad",
+      contactPreference: "WHATSAPP",
+      requestType: "BUSINESS",
+      note: "نرغب بعرض سعر رسمي مختوم مع التوصيل لمقر الشركة في الكرادة",
+      turnstileToken: "mock",
+      lines: [
+        { productUnitId: 101, quantity: 20 },
+        { productUnitId: 202, quantity: 100 },
+      ],
+    });
+    expect(typeof payload.clientRequestId).toBe("string");
+    expect((payload.clientRequestId as string).length).toBeGreaterThanOrEqual(8);
+
+    // Simulate backend success response
+    await act(async () => {
+      latestCreateQuoteOptions.onSuccess?.({
+        requestId: 88,
+        requestNumber: "SRQ-2026-0088",
+        guestTrackingToken: "gst_token_" + "x".repeat(64),
+        guestTrackingExpiresAt: "2026-11-25T07:00:00.000Z",
+        idempotentReplay: false,
+      });
+    });
+
+    expect(container.textContent).toContain("SRQ-2026-0088");
+    expect(container.textContent).toContain("gst_token_");
+  });
+
+  it("blocks submission with clear alert when Turnstile / ordering is disabled (matching checkout)", async () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root!.render(
+        <StorefrontB2BQuoteButton
+          cartLines={sampleCartLines}
+          cartSubtotal={205000}
+          orderingEnabled={false}
+          turnstileSiteKey={null}
+        />,
+      );
+    });
+
+    const officialBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("طلب عرض سعر رسمي"),
+    )!;
+    await act(async () => {
+      officialBtn.click();
+    });
+    await waitForLazyDialog(container);
+
+    expect(container.querySelector('[data-testid="b2b-turnstile"]')).toBeNull();
+    expect(container.textContent).toContain("متوقف مؤقتاً");
+  });
+});

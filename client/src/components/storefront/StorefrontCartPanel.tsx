@@ -261,6 +261,8 @@ export function StorefrontCartPanel({
           <StorefrontB2BQuoteButton
             cartLines={cartLines}
             cartSubtotal={cartSubtotal}
+            orderingEnabled={orderingEnabled}
+            turnstileSiteKey={settings?.turnstileSiteKey ?? null}
             className="mt-2 w-full"
           />
         </>

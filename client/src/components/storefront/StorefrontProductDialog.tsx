@@ -1,5 +1,9 @@
 import { AnimatedAddToCartButton } from "@/components/storefront/AnimatedAddToCartButton";
 import { type StorefrontCustomizationField } from "@/components/storefront/storefrontCustomizationModel";
+import {
+  isCustomizationUploadBlockingAddToCart,
+  type CustomizationStudioUploadState,
+} from "@/components/storefront/storefrontCustomizationUpload";
 import { ProductGallery } from "@/components/storefront/StorefrontMedia";
 import { StorefrontPersonalAdvisorCard } from "@/components/storefront/StorefrontPersonalAdvisorCard";
 import { StorefrontProductReviews } from "@/components/storefront/StorefrontProductReviews";
@@ -61,6 +65,12 @@ export interface StorefrontProductDialogProps {
     field: StorefrontCustomizationField,
     value: string,
   ) => void;
+  customizationUploadState?: CustomizationStudioUploadState;
+  setCustomizationUploadState?: (state: CustomizationStudioUploadState) => void;
+  setCustomizationAssets?: (assets: {
+    logoAssetKey?: string;
+    previewAssetKey?: string;
+  }) => void;
   addSelectedVariants: (sourceElement?: HTMLElement | null) => boolean;
   addSelectedUnit: (sourceElement?: HTMLElement | null) => boolean;
   getProductCartQty: (id: number) => number;
@@ -101,6 +111,9 @@ export function StorefrontProductDialog({
   customizationValues,
   customizationValidation,
   updateCustomizationField,
+  customizationUploadState,
+  setCustomizationUploadState,
+  setCustomizationAssets,
   addSelectedVariants,
   addSelectedUnit,
   getProductCartQty,
@@ -221,6 +234,8 @@ export function StorefrontProductDialog({
                       customizationValidation={customizationValidation}
                       updateCustomizationField={updateCustomizationField}
                       detailMedia={detailMedia}
+                      setCustomizationAssets={setCustomizationAssets}
+                      setCustomizationUploadState={setCustomizationUploadState}
                     />
                   </div>
                   <div className="sticky bottom-0 mt-2 border-t border-slate-100 bg-white/95 pt-2 backdrop-blur-sm dark:border-slate-800 dark:bg-slate-900/95">
@@ -232,6 +247,9 @@ export function StorefrontProductDialog({
                       }}
                       disabled={
                         (product.isCustomizable && !customizationConfig) ||
+                        isCustomizationUploadBlockingAddToCart(
+                          customizationUploadState,
+                        ) ||
                         !!customizationValidation ||
                         ((product?.variants?.length ?? 0) > 1
                           ? !Array.from(variantQuantities.values()).some(
@@ -242,13 +260,17 @@ export function StorefrontProductDialog({
                       label={
                         product.isCustomizable && !customizationConfig
                           ? "إعداد التخصيص غير مكتمل"
-                          : product.isCustomizable
-                            ? "أضف المنتج المخصص إلى السلة"
-                            : (product?.variants?.length ?? 0) > 1
-                              ? "أضف الاختيارات إلى السلة"
-                              : detailUnit?.inStock
-                                ? "أضف إلى السلة"
-                                : "غير متوفّر"
+                          : customizationUploadState === "uploading"
+                            ? "جارٍ رفع مرفق التخصيص..."
+                            : customizationUploadState === "error"
+                              ? "أكمل رفع المرفق أو أزله أولاً"
+                              : product.isCustomizable
+                                ? "أضف المنتج المخصص إلى السلة"
+                                : (product?.variants?.length ?? 0) > 1
+                                  ? "أضف الاختيارات إلى السلة"
+                                  : detailUnit?.inStock
+                                    ? "أضف إلى السلة"
+                                    : "غير متوفّر"
                       }
                       icon={
                         product.isCustomizable && !customizationConfig ? (

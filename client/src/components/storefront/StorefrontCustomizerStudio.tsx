@@ -1,30 +1,51 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import {
-  Type,
   Image as ImageIcon,
   Download,
   Sparkles,
   RefreshCw,
   Eye,
-  Sliders,
   CheckCircle2,
   AlertCircle,
+  Loader2,
+  RotateCcw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { trpc } from "@/lib/trpc";
+import {
+  MAX_CUSTOMIZATION_ASSET_BYTES,
+  estimateBase64ByteLength,
+  exportStudioCanvasPayload,
+  formatCustomizationUploadError,
+  readFileAsDataUrl,
+  stripDataUrlBase64,
+  validateCustomizationAssetFile,
+  type CustomizationAssetMime,
+  type CustomizationStudioUploadState,
+} from "./storefrontCustomizationUpload";
 
 interface StorefrontCustomizerStudioProps {
   productName: string;
   baseImageUrl?: string | null;
   onApplyCustomization?: (data: {
     customText: string;
+    secondaryText?: string;
     fontFamily: string;
     textColor: string;
     hasLogo: boolean;
+    logoFileName?: string;
     previewDataUrl?: string;
+    logoAssetKey?: string;
+    previewAssetKey?: string;
   }) => void;
+  onAssetsChange?: (assets: {
+    logoAssetKey?: string;
+    previewAssetKey?: string;
+  }) => void;
+  onUploadStateChange?: (state: CustomizationStudioUploadState) => void;
   className?: string;
 }
 
@@ -44,47 +65,149 @@ const PRESET_COLORS = [
   { id: "emerald", name: "أخضر زمردي", hex: "#0E806A" },
 ];
 
+type PendingLogoPayload = {
+  fileName: string;
+  mimeType: CustomizationAssetMime;
+  dataBase64: string;
+  dataUrl: string;
+};
+
 export function StorefrontCustomizerStudio({
   productName,
   baseImageUrl,
   onApplyCustomization,
+  onAssetsChange,
+  onUploadStateChange,
   className = "",
 }: StorefrontCustomizerStudioProps) {
+  const uploadAssetM = trpc.storefront.uploadCustomizationAsset.useMutation();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [customText, setCustomText] = useState("");
   const [secondaryText, setSecondaryText] = useState("");
   const [selectedFont, setSelectedFont] = useState(ARABIC_FONTS[0].id);
   const [selectedColor, setSelectedColor] = useState(PRESET_COLORS[0].hex);
-  const [fontSize, setFontSize] = useState(36);
-  const [verticalPosition, setVerticalPosition] = useState(55); // percentage
+  const [fontSize] = useState(36);
+  const [verticalPosition] = useState(55);
   const [logoImage, setLogoImage] = useState<HTMLImageElement | null>(null);
   const [logoPreviewUrl, setLogoPreviewUrl] = useState<string | null>(null);
   const [applied, setApplied] = useState(false);
-  const [imageLoaded, setImageLoaded] = useState(false);
 
-  // Handle uploaded logo
-  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const [uploadState, setUploadState] =
+    useState<CustomizationStudioUploadState>("idle");
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [failedAction, setFailedAction] = useState<"LOGO" | "PREVIEW" | null>(
+    null,
+  );
+  const pendingLogoRef = useRef<PendingLogoPayload | null>(null);
+  const logoAssetKeyRef = useRef<string | undefined>(undefined);
+  const previewAssetKeyRef = useRef<string | undefined>(undefined);
+
+  const reportUploadState = useCallback(
+    (next: CustomizationStudioUploadState) => {
+      setUploadState(next);
+      onUploadStateChange?.(next);
+    },
+    [onUploadStateChange],
+  );
+
+  const emitAssets = useCallback(
+    (nextLogoKey?: string, nextPreviewKey?: string) => {
+      logoAssetKeyRef.current = nextLogoKey || undefined;
+      previewAssetKeyRef.current = nextPreviewKey || undefined;
+      onAssetsChange?.({
+        logoAssetKey: logoAssetKeyRef.current,
+        previewAssetKey: previewAssetKeyRef.current,
+      });
+    },
+    [onAssetsChange],
+  );
+
+  const uploadLogoPayload = useCallback(
+    async (payload: PendingLogoPayload): Promise<string | null> => {
+      setUploadError(null);
+      setFailedAction(null);
+      reportUploadState("uploading");
+      try {
+        const uploaded = await uploadAssetM.mutateAsync({
+          kind: "LOGO",
+          mimeType: payload.mimeType,
+          dataBase64: payload.dataBase64,
+        });
+        emitAssets(uploaded.assetKey, previewAssetKeyRef.current);
+        reportUploadState("uploaded");
+        return uploaded.assetKey;
+      } catch (error) {
+        setFailedAction("LOGO");
+        setUploadError(formatCustomizationUploadError(error));
+        reportUploadState("error");
+        return null;
+      }
+    },
+    [emitAssets, reportUploadState, uploadAssetM],
+  );
+
+  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = "";
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
+    const validation = validateCustomizationAssetFile(file);
+    if (!validation.ok) {
+      pendingLogoRef.current = null;
+      setFailedAction(null);
+      setUploadError(validation.error);
+      reportUploadState("error");
+      return;
+    }
+
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      const pureBase64 = stripDataUrlBase64(dataUrl);
+      if (
+        !pureBase64 ||
+        estimateBase64ByteLength(pureBase64) > MAX_CUSTOMIZATION_ASSET_BYTES
+      ) {
+        pendingLogoRef.current = null;
+        setFailedAction(null);
+        setUploadError(
+          "حجم الصورة يتجاوز الحد الأقصى المسموح (2 ميجابايت). يرجى اختيار صورة أصغر.",
+        );
+        reportUploadState("error");
+        return;
+      }
+
       const img = new Image();
       img.onload = () => {
         setLogoImage(img);
-        setLogoPreviewUrl(event.target?.result as string);
+        setLogoPreviewUrl(dataUrl);
       };
-      img.src = event.target?.result as string;
-    };
-    reader.readAsDataURL(file);
+      img.src = dataUrl;
+
+      const payload: PendingLogoPayload = {
+        fileName: file.name,
+        mimeType: validation.mimeType,
+        dataBase64: pureBase64,
+        dataUrl,
+      };
+      pendingLogoRef.current = payload;
+      await uploadLogoPayload(payload);
+    } catch (error) {
+      setFailedAction(null);
+      setUploadError(formatCustomizationUploadError(error));
+      reportUploadState("error");
+    }
   };
 
   const removeLogo = () => {
+    pendingLogoRef.current = null;
     setLogoImage(null);
     setLogoPreviewUrl(null);
+    setUploadError(null);
+    setFailedAction(null);
+    emitAssets(undefined, previewAssetKeyRef.current);
+    reportUploadState(previewAssetKeyRef.current ? "uploaded" : "idle");
   };
 
-  // Render on Canvas
   const redrawCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -96,12 +219,10 @@ export function StorefrontCustomizerStudio({
     canvas.width = width;
     canvas.height = height;
 
-    // Draw background or placeholder
     ctx.clearRect(0, 0, width, height);
 
     const renderMockup = (bgImg?: HTMLImageElement) => {
       if (bgImg) {
-        // Draw background image scaled nicely
         const hRatio = width / bgImg.width;
         const vRatio = height / bgImg.height;
         const ratio = Math.min(hRatio, vRatio);
@@ -118,10 +239,9 @@ export function StorefrontCustomizerStudio({
           centerShiftX,
           centerShiftY,
           bgImg.width * ratio,
-          bgImg.height * ratio
+          bgImg.height * ratio,
         );
       } else {
-        // High-end stylized gradient mockup canvas
         const gradient = ctx.createLinearGradient(0, 0, width, height);
         gradient.addColorStop(0, "#1E293B");
         gradient.addColorStop(0.5, "#0F172A");
@@ -129,30 +249,28 @@ export function StorefrontCustomizerStudio({
         ctx.fillStyle = gradient;
         ctx.fillRect(0, 0, width, height);
 
-        // Elegant framing grid lines
         ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
         ctx.lineWidth = 1;
         ctx.strokeRect(20, 20, width - 40, height - 40);
 
-        // Mockup badge frame
         ctx.strokeStyle = "rgba(212, 175, 55, 0.35)";
         ctx.lineWidth = 2;
         ctx.strokeRect(35, 35, width - 70, height - 70);
 
-        // Watermark subtle product name
         ctx.font = "bold 14px 'Cairo', sans-serif";
         ctx.fillStyle = "rgba(255, 255, 255, 0.25)";
         ctx.textAlign = "center";
         ctx.fillText(productName, width / 2, 60);
       }
 
-      // Draw subtle shadow behind text
       const posY = (height * verticalPosition) / 100;
 
-      // Draw Logo if uploaded
       if (logoImage) {
         const logoMaxDim = 80;
-        const logoScale = Math.min(logoMaxDim / logoImage.width, logoMaxDim / logoImage.height);
+        const logoScale = Math.min(
+          logoMaxDim / logoImage.width,
+          logoMaxDim / logoImage.height,
+        );
         const logoW = logoImage.width * logoScale;
         const logoH = logoImage.height * logoScale;
         const logoX = width / 2 - logoW / 2;
@@ -165,27 +283,22 @@ export function StorefrontCustomizerStudio({
         ctx.restore();
       }
 
-      // Font selection
-      const fontObj = ARABIC_FONTS.find((f) => f.id === selectedFont) ?? ARABIC_FONTS[0];
+      const fontObj =
+        ARABIC_FONTS.find((f) => f.id === selectedFont) ?? ARABIC_FONTS[0];
 
-      // Draw Primary Custom Text
       if (customText.trim()) {
         ctx.save();
         ctx.font = `bold ${fontSize}px ${fontObj.css}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-
-        // Text shadow for realism
         ctx.shadowColor = "rgba(0, 0, 0, 0.4)";
         ctx.shadowBlur = 6;
         ctx.shadowOffsetX = 1;
         ctx.shadowOffsetY = 2;
-
         ctx.fillStyle = selectedColor;
         ctx.fillText(customText.trim(), width / 2, posY);
         ctx.restore();
       } else {
-        // Placeholder text
         ctx.save();
         ctx.font = `italic 24px ${fontObj.css}`;
         ctx.textAlign = "center";
@@ -195,7 +308,6 @@ export function StorefrontCustomizerStudio({
         ctx.restore();
       }
 
-      // Draw Secondary Text (Subtitle or phone/role)
       if (secondaryText.trim()) {
         ctx.save();
         ctx.font = `bold ${Math.round(fontSize * 0.55)}px ${fontObj.css}`;
@@ -208,18 +320,20 @@ export function StorefrontCustomizerStudio({
         ctx.restore();
       }
 
-      // Live Watermark in corner
       ctx.font = "bold 11px sans-serif";
       ctx.textAlign = "right";
       ctx.fillStyle = "rgba(255, 255, 255, 0.5)";
-      ctx.fillText("معاينة حية — استوديو الرؤية العربية", width - 25, height - 20);
+      ctx.fillText(
+        "معاينة حية — استوديو الرؤية العربية",
+        width - 25,
+        height - 20,
+      );
     };
 
     if (baseImageUrl) {
       const bg = new Image();
       bg.crossOrigin = "anonymous";
       bg.onload = () => {
-        setImageLoaded(true);
         renderMockup(bg);
       };
       bg.onerror = () => {
@@ -254,27 +368,74 @@ export function StorefrontCustomizerStudio({
     link.click();
   };
 
-  const handleApply = () => {
-    const canvas = canvasRef.current;
-    const previewDataUrl = canvas ? canvas.toDataURL("image/png") : undefined;
-    if (onApplyCustomization) {
-      onApplyCustomization({
+  const handleApply = async () => {
+    redrawCanvas();
+    const exported = exportStudioCanvasPayload(canvasRef.current);
+    if (!exported.ok) {
+      setFailedAction("PREVIEW");
+      setUploadError(exported.error);
+      reportUploadState("error");
+      return;
+    }
+
+    setUploadError(null);
+    setFailedAction(null);
+    reportUploadState("uploading");
+
+    try {
+      let currentLogoKey = logoAssetKeyRef.current;
+      if (pendingLogoRef.current && !currentLogoKey) {
+        const logoUploaded = await uploadAssetM.mutateAsync({
+          kind: "LOGO",
+          mimeType: pendingLogoRef.current.mimeType,
+          dataBase64: pendingLogoRef.current.dataBase64,
+        });
+        currentLogoKey = logoUploaded.assetKey;
+      }
+
+      const previewUploaded = await uploadAssetM.mutateAsync({
+        kind: "PREVIEW",
+        mimeType: exported.mimeType,
+        dataBase64: exported.dataBase64,
+      });
+
+      emitAssets(currentLogoKey, previewUploaded.assetKey);
+      reportUploadState("uploaded");
+      onApplyCustomization?.({
         customText,
+        secondaryText,
         fontFamily: selectedFont,
         textColor: selectedColor,
-        hasLogo: Boolean(logoImage),
-        previewDataUrl,
+        hasLogo: Boolean(currentLogoKey || logoImage),
+        logoFileName: pendingLogoRef.current?.fileName,
+        previewDataUrl: exported.dataUrl,
+        logoAssetKey: currentLogoKey,
+        previewAssetKey: previewUploaded.assetKey,
       });
+      setApplied(true);
+      setTimeout(() => setApplied(false), 3000);
+    } catch (error) {
+      setFailedAction("PREVIEW");
+      setUploadError(formatCustomizationUploadError(error));
+      reportUploadState("error");
     }
-    setApplied(true);
-    setTimeout(() => setApplied(false), 3000);
+  };
+
+  const retryUpload = async () => {
+    if (failedAction === "LOGO" && pendingLogoRef.current) {
+      await uploadLogoPayload(pendingLogoRef.current);
+      return;
+    }
+    if (failedAction === "PREVIEW") {
+      await handleApply();
+    }
   };
 
   return (
     <div
       className={`rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900 ${className}`}
     >
-      <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
+      <div className="mb-4 flex flex-col gap-1 border-b border-slate-100 pb-3 sm:flex-row sm:items-center sm:justify-between dark:border-slate-800">
         <div className="flex items-center gap-2">
           <div className="flex size-7 items-center justify-center rounded-lg bg-amber-500/10 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400">
             <Sparkles className="size-4" />
@@ -284,23 +445,22 @@ export function StorefrontCustomizerStudio({
               استوديو المعاينة الحية للطباعة والتخصيص
             </h4>
             <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
-              شاهد اسمك وشعارك فورياً على المنتج قبل الإضافة للسلة
+              شاهد اسمك وشعارك فورياً واحفظ المعاينة والشعار مباشرة مع طلبك
             </p>
           </div>
         </div>
 
-        <Badge variant="outline" className="text-[10px] font-black self-start">
-          تفاعل لحظي في المتصفح
+        <Badge variant="outline" className="self-start text-[10px] font-black">
+          حفظ مباشر مع الطلب
         </Badge>
       </div>
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
-        {/* Canvas Display Viewport */}
-        <div className="lg:col-span-7 flex flex-col items-center justify-center">
+        <div className="flex flex-col items-center justify-center lg:col-span-7">
           <div className="relative w-full overflow-hidden rounded-xl border border-slate-200 bg-slate-950 shadow-inner dark:border-slate-800">
             <canvas
               ref={canvasRef}
-              className="w-full h-auto max-h-[360px] object-contain block mx-auto"
+              className="mx-auto block h-auto max-h-[360px] w-full object-contain"
             />
           </div>
 
@@ -325,10 +485,12 @@ export function StorefrontCustomizerStudio({
           </div>
         </div>
 
-        {/* Customization Controls */}
-        <div className="lg:col-span-5 flex flex-col gap-3.5 text-right">
+        <div className="flex flex-col gap-3.5 text-right lg:col-span-5">
           <div>
-            <Label htmlFor="custom-text-input" className="text-xs font-black text-slate-700 dark:text-slate-300">
+            <Label
+              htmlFor="custom-text-input"
+              className="text-xs font-black text-slate-700 dark:text-slate-300"
+            >
               نص التخصيص أو الاسم الرئيسي
             </Label>
             <Input
@@ -342,7 +504,10 @@ export function StorefrontCustomizerStudio({
           </div>
 
           <div>
-            <Label htmlFor="secondary-text-input" className="text-xs font-bold text-slate-600 dark:text-slate-400">
+            <Label
+              htmlFor="secondary-text-input"
+              className="text-xs font-bold text-slate-600 dark:text-slate-400"
+            >
               السطر الثانوي أو الصفة (اختياري)
             </Label>
             <Input
@@ -355,7 +520,6 @@ export function StorefrontCustomizerStudio({
             />
           </div>
 
-          {/* Font Selection */}
           <div>
             <Label className="text-xs font-bold text-slate-700 dark:text-slate-300">
               نوع الخط العربي
@@ -378,7 +542,6 @@ export function StorefrontCustomizerStudio({
             </div>
           </div>
 
-          {/* Color Selection */}
           <div>
             <Label className="text-xs font-bold text-slate-700 dark:text-slate-300">
               لون الطباعة / النقش
@@ -393,7 +556,7 @@ export function StorefrontCustomizerStudio({
                   aria-label={color.name}
                   className={`size-7 rounded-full border-2 transition ${
                     selectedColor === color.hex
-                      ? "ring-2 ring-blue-600 ring-offset-2 scale-110"
+                      ? "scale-110 ring-2 ring-blue-600 ring-offset-2"
                       : "hover:scale-105"
                   } ${color.id === "white" ? "border-slate-300" : "border-transparent"}`}
                   style={{ backgroundColor: color.hex }}
@@ -402,28 +565,29 @@ export function StorefrontCustomizerStudio({
             </div>
           </div>
 
-          {/* Logo Upload */}
           <div>
             <Label className="text-xs font-bold text-slate-700 dark:text-slate-300">
-              رفع شعار الشركة (Logo)
+              رفع شعار الشركة (PNG / JPEG / WebP حتى 2 ميجابايت)
             </Label>
-            <div className="mt-1 flex items-center gap-2">
-              <label className="cursor-pointer inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
                 <ImageIcon className="size-3.5" />
                 <span>اختر ملف الشعار</span>
                 <input
                   type="file"
-                  accept="image/png, image/jpeg, image/svg+xml"
+                  accept="image/png,image/jpeg,image/webp"
                   onChange={handleLogoUpload}
+                  disabled={uploadState === "uploading"}
                   className="sr-only"
                 />
               </label>
 
-              {logoPreviewUrl && (
+              {(logoPreviewUrl || uploadState === "error") && (
                 <button
                   type="button"
                   onClick={removeLogo}
-                  className="rounded-lg text-xs font-bold text-rose-600 hover:underline"
+                  disabled={uploadState === "uploading"}
+                  className="rounded-lg text-xs font-bold text-[var(--sem-neg)] hover:underline disabled:opacity-50"
                 >
                   إزالة الشعار
                 </button>
@@ -431,25 +595,75 @@ export function StorefrontCustomizerStudio({
             </div>
           </div>
 
-          {/* Actions */}
-          <div className="mt-2 border-t border-slate-100 pt-3 dark:border-slate-800">
-            <p className="text-xs font-bold text-amber-700 dark:text-amber-400">
-              المعاينة للاطلاع فقط: الشعار والصورة لا ترسل مع الطلب، أرسل شعارك لخدمة العملاء بعد إتمام الطلب.
-            </p>
+          <div className="mt-2 space-y-2.5 border-t border-slate-100 pt-3 dark:border-slate-800">
+            {uploadState === "uploading" && (
+              <div
+                role="status"
+                className="flex items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-bold text-blue-800 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-200"
+              >
+                <Loader2 className="size-3.5 shrink-0 animate-spin" />
+                <span>جارٍ رفع وحفظ مرفقات التخصيص بأمان...</span>
+              </div>
+            )}
+
+            {uploadState === "uploaded" && (
+              <div
+                role="status"
+                className="flex items-center gap-2 rounded-xl border border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)] px-3 py-2 text-xs font-bold text-[var(--sem-pos)]"
+              >
+                <CheckCircle2 className="size-3.5 shrink-0" />
+                <span>تم رفع وحفظ مرفقات التخصيص لربطها بالطلب</span>
+              </div>
+            )}
+
+            {uploadState === "error" && uploadError && (
+              <div
+                role="alert"
+                className="space-y-2 rounded-xl border border-[var(--sem-neg)]/30 bg-[var(--sem-neg-bg)] px-3 py-2.5 text-xs font-bold text-[var(--sem-neg)]"
+              >
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
+                  <span>{uploadError}</span>
+                </div>
+                {failedAction && (
+                  <button
+                    type="button"
+                    onClick={retryUpload}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--sem-neg)]/40 bg-white px-2.5 py-1 text-[11px] font-black text-[var(--sem-neg)] hover:bg-slate-50"
+                  >
+                    <RotateCcw className="size-3" />
+                    <span>إعادة المحاولة</span>
+                  </button>
+                )}
+              </div>
+            )}
+
+            {uploadState === "idle" && (
+              <p className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
+                اضغط «اعتماد التخصيص والمعاينة» لحفظ صورة المعاينة والشعار مباشرة مع طلبك.
+              </p>
+            )}
+
             <Button
               type="button"
               onClick={handleApply}
-              className="w-full text-xs font-black bg-blue-600 hover:bg-blue-700 text-white gap-2"
+              disabled={uploadState === "uploading"}
+              className="w-full gap-2 bg-blue-600 text-xs font-black text-white hover:bg-blue-700"
             >
-              {applied ? (
+              {uploadState === "uploading" ? (
+                <>
+                  <Loader2 className="size-4 animate-spin" />
+                  <span>جارٍ الحفظ والرفع...</span>
+                </>
+              ) : applied ? (
                 <>
                   <CheckCircle2 className="size-4" />
-                  <span>تم إدراج النص في الطلب</span>
+                  <span>تم اعتماد وحفظ التخصيص في الطلب</span>
                 </>
               ) : (
                 <>
                   <Eye className="size-4" />
-                  <span>اعتماد نص التخصيص</span>
+                  <span>اعتماد التخصيص والمعاينة</span>
                 </>
               )}
             </Button>

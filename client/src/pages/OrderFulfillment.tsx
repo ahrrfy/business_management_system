@@ -7,7 +7,7 @@ import { OrderDispatchDialog, type DispatchOrder } from "@/components/store/Orde
  * حقيقية + يُخصم المخزون + قيد دفتر عبر orders.dispatch) ← تُسلَّم. عزل الفرع خادمياً.
  * الإرسال مديريّ فقط (يُقرّ ائتمان COD المؤقّت للزبون النقدي) — يُخفى زرّه عن غير المدير.
  */
-import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
+import React, { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import { useSearch } from "wouter";
 import { AlertTriangle, Check, CheckCircle2, ClipboardList, Eye, FileText, Loader2, MapPin, Package, PackageCheck, Pencil, Printer, ReceiptText, RefreshCw, Store, Trophy, Truck, UserCheck, Volume2, VolumeX, X } from "lucide-react";
 import { ReceptionCommandAlert } from "@/components/reception/ReceptionCommandAlert";
@@ -24,12 +24,17 @@ import { OrderQuickViewDrawer } from "@/components/store/OrderQuickViewDrawer";
 import { OrderLifecycleStatus } from "@/components/store/OrderLifecycleStatus";
 import { OrderLeaderboardModal } from "@/components/store/OrderLeaderboardModal";
 import {
+  OrderCustomizationAssets,
+  resolveOrderShippingAddressAndNotes,
+} from "@/components/store/OrderCustomizationAssets";
+import {
   AUDIO_FEEDBACK_CHANGE_EVENT,
   isAudioFeedbackEnabled,
   playAudioFeedback,
   setAudioFeedbackEnabled,
 } from "@/lib/audioFeedback";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { D, fmtInt } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -86,6 +91,30 @@ function normalizeOrderStatus(status: string): OnlineOrderStatus {
 
 
 type Row = RouterOutputs["storeAdmin"]["orders"]["list"][number];
+type OrderDetailPayload = NonNullable<RouterOutputs["storeAdmin"]["orders"]["detail"]>;
+
+export function toShippingLabelPayload(d: OrderDetailPayload) {
+  const resolved = resolveOrderShippingAddressAndNotes(d);
+  return {
+    orderNumber: d.orderNumber,
+    customerName: d.customerName,
+    customerPhone: d.customerPhone,
+    governorate: d.governorate,
+    addressText: resolved.shippingAddress || null,
+    notes: resolved.notes || null,
+    latitude: d.latitude,
+    longitude: d.longitude,
+    total: d.total,
+    deliveryPartyName: d.deliveryPartyName,
+    createdAt: d.createdAt,
+    items: d.items.map((it) => ({
+      productName: [it.productName, it.variantLabel].filter(Boolean).join(" — "),
+      unitName: it.unitName,
+      quantity: it.quantity,
+    })),
+    qrUrl: `${storefrontUrl()}?order=${encodeURIComponent(d.orderNumber)}&token=${encodeURIComponent(d.labelToken)}`,
+  };
+}
 
 // حجم صفحة الطلبات — نفس الافتراضي التاريخي (كان سقفاً صامتاً)، الآن صفحة أولى من ترقيم حقيقي.
 const PAGE_SIZE = 200;
@@ -110,7 +139,9 @@ export default function OrderFulfillment() {
     Number.isSafeInteger(linkedOrderId) && linkedOrderId > 0 ? linkedOrderId : null,
   );
   const [duplicateReview, setDuplicateReview] = useState<{
-    orderId: number; result: ReceptionDuplicateResult | null;
+    orderId: number;
+    result: ReceptionDuplicateResult | null;
+    detail: OrderDetailPayload | null;
   } | null>(null);
   const duplicateReviewRef = useRef<HTMLElement | null>(null);
   const [checkingDuplicateId, setCheckingDuplicateId] = useState<number | null>(null);
@@ -158,14 +189,17 @@ export default function OrderFulfillment() {
     setCheckingDuplicateId(orderId);
     setDuplicateReview(null);
     duplicateActionRef.current = null;
+    let loadedDetail: OrderDetailPayload | null = null;
     try {
-      const reference = await resolveOnlineDuplicateReference(orderId,
-        () => utils.storeAdmin.orders.detail.fetch({ id: orderId }));
+      const reference = await resolveOnlineDuplicateReference(orderId, async () => {
+        loadedDetail = await utils.storeAdmin.orders.detail.fetch({ id: orderId });
+        return loadedDetail;
+      });
       const result = await utils.reception.duplicateOrders.fetch(reference, { staleTime: 0 });
       if (epoch !== duplicateCheckEpoch.current) return false;
       if (result.matches.length || result.truncated) {
         duplicateActionRef.current = proceed;
-        setDuplicateReview({ orderId, result });
+        setDuplicateReview({ orderId, result, detail: loadedDetail });
         return false;
       }
       proceed();
@@ -173,7 +207,7 @@ export default function OrderFulfillment() {
     } catch {
       if (epoch !== duplicateCheckEpoch.current) return false;
       duplicateActionRef.current = proceed;
-      setDuplicateReview({ orderId, result: null });
+      setDuplicateReview({ orderId, result: null, detail: loadedDetail });
       return false;
     } finally {
       if (epoch === duplicateCheckEpoch.current) setCheckingDuplicateId(null);
@@ -704,23 +738,6 @@ export default function OrderFulfillment() {
       await proceed();
     }
   }
-  function toShippingLabelPayload(d: NonNullable<RouterOutputs["storeAdmin"]["orders"]["detail"]>) {
-    return {
-      orderNumber: d.orderNumber,
-      customerName: d.customerName,
-      customerPhone: d.customerPhone,
-      governorate: d.governorate,
-      addressText: d.addressText,
-      latitude: d.latitude,
-      longitude: d.longitude,
-      total: d.total,
-      deliveryPartyName: d.deliveryPartyName,
-      createdAt: d.createdAt,
-      items: d.items.map((it) => ({ productName: [it.productName, it.variantLabel].filter(Boolean).join(" — "), unitName: it.unitName, quantity: it.quantity })),
-      qrUrl: `${storefrontUrl()}?order=${encodeURIComponent(d.orderNumber)}&token=${encodeURIComponent(d.labelToken)}`,
-    };
-  }
-
   async function printLabel(id: number) {
     setPrintingId(id);
     const labelWin = preopenShippingLabelWindow();
@@ -902,6 +919,44 @@ export default function OrderFulfillment() {
           <p className="text-sm font-bold">
             مراجعة {visibleOrders.find((order) => order.id === duplicateReview.orderId)?.orderNumber ?? `طلب #${duplicateReview.orderId}`}
           </p>
+          {duplicateReview.detail && (() => {
+            const { shippingAddress, notes } = resolveOrderShippingAddressAndNotes(duplicateReview.detail);
+            const customItems = duplicateReview.detail.items.filter(
+              (it) => it.hasCustomization || it.previewAssetUrl || it.logoAssetUrl,
+            );
+            if (!shippingAddress && !notes && customItems.length === 0) return null;
+            return (
+              <Card className="p-3 text-xs space-y-1.5 shadow-none">
+                {shippingAddress && (
+                  <div className="text-muted-foreground">
+                    <span className="font-bold text-foreground">العنوان: </span>
+                    {duplicateReview.detail.governorate ? `${duplicateReview.detail.governorate} — ` : ""}
+                    {shippingAddress}
+                  </div>
+                )}
+                {notes && (
+                  <div className="text-muted-foreground">
+                    <span className="font-bold text-foreground">ملاحظات العميل: </span>
+                    {notes}
+                  </div>
+                )}
+                {customItems.map((it, idx) => (
+                  <div key={it.id ?? idx} className="pt-1 border-t border-border/60">
+                    <div className="font-semibold text-foreground">{it.productName}</div>
+                    {it.customizationSummary && (
+                      <div className="text-[11px] text-muted-foreground">{it.customizationSummary}</div>
+                    )}
+                    <OrderCustomizationAssets
+                      previewAssetUrl={it.previewAssetUrl}
+                      logoAssetUrl={it.logoAssetUrl}
+                      productName={it.productName}
+                      compact
+                    />
+                  </div>
+                ))}
+              </Card>
+            );
+          })()}
           {duplicateReview.result ? (
             <ReceptionDuplicateAlertView
               result={duplicateReview.result}

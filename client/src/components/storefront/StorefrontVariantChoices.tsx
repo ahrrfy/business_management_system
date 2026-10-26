@@ -1,3 +1,4 @@
+import React from "react";
 import { formatQuantity } from "@/lib/money";
 import { variantDescriptor } from "@shared/variantDisplay";
 import { Minus, Plus } from "lucide-react";

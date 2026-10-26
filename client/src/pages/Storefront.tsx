@@ -12,7 +12,8 @@ import { type StorefrontProductForCartAction,recommendationNeedsSelection,storef
 import { StorefrontTrackingPanel } from "@/components/storefront/StorefrontTrackingPanel";
 import { type CartLine,type StorefrontCartSelection,addStorefrontCartLine,addStorefrontCartLines,applyStorefrontProductQuantityDelta,money,reconcileStorefrontCartPricing,reconcileStorefrontCartQuote,recordStorefrontCartChange,setStorefrontCartQuantity,summarizeStorefrontProductCartQuantities } from "@/components/storefront/storefrontCartMath";
 import { type AvailabilityFilter,type CatalogSort,type Panel,type PriceFilter,type ShareFeedbackTone,collectStorefrontFailures,hasStorefrontAnalyticsConsent,shouldAutoLoadStorefrontNextPage } from "@/components/storefront/storefrontCatalogModel";
-import { type StorefrontCustomization,type StorefrontCustomizationField,customizationCartKey,getStorefrontCustomizationConfig } from "@/components/storefront/storefrontCustomizationModel";
+import { type StorefrontCustomization,type StorefrontCustomizationField,buildStorefrontCustomizationPayload,customizationCartKey,getStorefrontCustomizationConfig } from "@/components/storefront/storefrontCustomizationModel";
+import { type CustomizationStudioUploadState,isCustomizationUploadBlockingAddToCart } from "@/components/storefront/storefrontCustomizationUpload";
 import { type CheckoutFieldErrors,type CheckoutForm,DEFAULT_FORM,STOREFRONT_PERSIST_REQUEST_EVENT,type StorefrontCheckoutAttempt,loadCart,loadCheckoutAttempt,loadForm,loadStorefrontWishlist,saveCart,saveCheckoutAttempt,saveStorefrontSnapshot,storefrontCheckoutFingerprint,validateStorefrontCheckout } from "@/components/storefront/storefrontPersistence";
 import { storefrontSharingActions } from "@/components/storefront/storefrontSharing";
 import { storefrontCatalogProductScope } from "@/components/storefront/storefrontCatalogModel";
@@ -21,7 +22,7 @@ export { BundleMedia,clampStorefrontZoomPoint,storefrontMediaUrls,storefrontVari
 export { recommendationActionLabel,recommendationNeedsSelection,storefrontProductCanBeOrdered } from "@/components/storefront/StorefrontRecommendations";
 export { addStorefrontCartLine,addStorefrontCartLines,applyStorefrontProductQuantityDelta,reconcileStorefrontCartPricing,reconcileStorefrontCartQuote,recordStorefrontCartChange,resolveStorefrontProductQuantityDelta,setStorefrontCartQuantity,summarizeStorefrontProductCartQuantities,type CartLine,type StorefrontCartProduct,type StorefrontCartSelection,type StorefrontPricingSnapshot,type StorefrontProductCartSummary,type StorefrontProductQuantityDeltaAction } from "@/components/storefront/storefrontCartMath";
 export { collectStorefrontFailures,shouldAutoLoadStorefrontNextPage,storefrontCategoryCount,type AvailabilityFilter,type StorefrontSource } from "@/components/storefront/storefrontCatalogModel";
-export { getStorefrontCustomizationConfig,storefrontTurnstileSubmissionReady,summarizeStorefrontCustomization,type StorefrontCustomization,type StorefrontCustomizationConfig,type StorefrontCustomizationField,type StorefrontCustomizationKind,type StorefrontCustomizationTemplate } from "@/components/storefront/storefrontCustomizationModel";
+export { buildStorefrontCustomizationPayload,createStorefrontCatalogSeedBucket,getStorefrontCustomizationConfig,storefrontTurnstileSubmissionReady,summarizeStorefrontCustomization,type StorefrontCustomization,type StorefrontCustomizationConfig,type StorefrontCustomizationField,type StorefrontCustomizationKind,type StorefrontCustomizationTemplate } from "@/components/storefront/storefrontCustomizationModel";
 export { loadCart,loadCheckoutAttempt,saveCart,saveCheckoutAttempt,saveForm,saveStorefrontSnapshot,storefrontCheckoutFingerprint,validateStorefrontCheckout,type CheckoutFieldErrors,type CheckoutForm,type StorefrontCheckoutAttempt } from "@/components/storefront/storefrontPersistence";
 /**
  * /store — واجهة المتجر التسويقي للزبون (B2C) على الجوال.
@@ -122,7 +123,7 @@ function StorefrontContent() {
   const [priceFilter, setPriceFilter] = useState<PriceFilter>("ALL");
   const [brand, setBrand] = useState("");
   const [sort, setSort] = useState<CatalogSort>("RECOMMENDED");
-  const [catalogSeed, setCatalogSeed] = useState(() => Math.random().toString(36).slice(2, 10));
+  const [catalogSeed, setCatalogSeed] = useState(() => `sf-${Math.floor(Date.now() / (15 * 60 * 1000))}`);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [recentlyAddedProductId, setRecentlyAddedProductId] = useState<number | null>(null);
   const [heartPulseTarget, setHeartPulseTarget] = useState<string | null>(null);
@@ -135,6 +136,8 @@ function StorefrontContent() {
   // كي لا تختلط وحدات مختلفة للون نفسه داخل السلة أو عند التسعير الخادمي.
   const [variantQuantities, setVariantQuantities] = useState<Map<number, number>>(new Map());
   const [customizationDraft, setCustomizationDraft] = useState<StorefrontCustomization>({ templateId: 0, kind: "PRINT" });
+  const [customizationUploadState, setCustomizationUploadState] = useState<CustomizationStudioUploadState>("idle");
+  const setCustomizationAssets = (assets: { logoAssetKey?: string; previewAssetKey?: string }) => setCustomizationDraft((prev) => ({ ...prev, logoAssetKey: assets.logoAssetKey || undefined, previewAssetKey: assets.previewAssetKey || undefined }));
   const [panel, setPanel] = useState<Panel>(null);
   const [wishlistIds, setWishlistIds] = useState<Set<number>>(loadStorefrontWishlist);
   const [showWishlist, setShowWishlist] = useState(false);
@@ -366,7 +369,7 @@ function StorefrontContent() {
   };
   const storefrontQuoteLines = useMemo(
     () => Array.from(cart.values()).map((line) => ({ productUnitId: line.productUnitId, quantity: line.qty,
-      customization: line.customization ? { templateId: line.customization.templateId, values: line.customization.values ?? {} } : undefined })),
+      customization: buildStorefrontCustomizationPayload(line.customization) })),
     [cart],
   );
   const storefrontQuoteInput = useMemo(() => ({
@@ -522,7 +525,7 @@ function StorefrontContent() {
             lines: Array.from(cartRef.current.values()).map((line) => ({
               productUnitId: line.productUnitId,
               quantity: line.qty,
-              customization: line.customization ? { templateId: line.customization.templateId, values: line.customization.values ?? {} } : undefined,
+              customization: buildStorefrontCustomizationPayload(line.customization),
             })),
           };
           const currentRequiresPrivateQuote = Boolean(appliedCouponCode) || currentQuoteInput.lines.some((line) => line.customization != null);
@@ -688,6 +691,7 @@ function StorefrontContent() {
     setSelectedVariantId(null);
     setVariantQuantities(new Map());
     setCustomizationDraft({ templateId: 0, kind: "PRINT", values: {} });
+    setCustomizationUploadState("idle");
   }, [selectedId]);
 
   useEffect(() => {
@@ -919,7 +923,7 @@ function StorefrontContent() {
     });
   }
   function addSelectedVariants(sourceElement?: HTMLElement | null) {
-    if (!detailQ.data || !storefrontProductCanBeOrdered(detailQ.data) || customizationValidation || (detailQ.data.isCustomizable && !customizationConfig)) return false;
+    if (!detailQ.data || !storefrontProductCanBeOrdered(detailQ.data) || isCustomizationUploadBlockingAddToCart(customizationUploadState) || customizationValidation || (detailQ.data.isCustomizable && !customizationConfig)) return false;
     const selections: StorefrontCartSelection[] = [];
     const customization = selectedCustomization();
     for (const variant of detailQ.data.variants ?? []) {
@@ -947,7 +951,7 @@ function StorefrontContent() {
     return commitCartSelections(selections);
   }
   function addSelectedUnit(sourceElement?: HTMLElement | null) {
-    if (!detailQ.data || !storefrontProductCanBeOrdered(detailQ.data) || !detailUnit || !detailUnit.inStock || customizationValidation || (detailQ.data.isCustomizable && !customizationConfig)) return false;
+    if (!detailQ.data || !storefrontProductCanBeOrdered(detailQ.data) || !detailUnit || !detailUnit.inStock || isCustomizationUploadBlockingAddToCart(customizationUploadState) || customizationValidation || (detailQ.data.isCustomizable && !customizationConfig)) return false;
     const basePrice = detailUnit.salePrice ?? detailUnit.price;
     if (!basePrice) return false;
     const customization = selectedCustomization();
@@ -1078,7 +1082,7 @@ function StorefrontContent() {
       lines: cartLines.map((l, index) => ({
         productUnitId: l.productUnitId,
         quantity: l.qty,
-        customization: l.customization ? { templateId: l.customization.templateId, values: l.customization.values ?? {} } : undefined,
+        customization: buildStorefrontCustomizationPayload(l.customization),
         expectedUnitPrice: quoteQ.data?.lines[index]?.unitPrice ?? Number(l.price).toFixed(2),
       })),
       expectedGrandTotal: attempt.expectedGrandTotal,
@@ -1150,7 +1154,7 @@ function StorefrontContent() {
       )}
 
       {/* تفاصيل المنتج (ورقة سفلية) */}
-      <StorefrontProductDialog selectedId={selectedId} setSelectedId={setSelectedId} productDialogCloseRef={productDialogCloseRef} productDialogTriggerRef={productDialogTriggerRef} product={product} toggleWishlist={toggleWishlist} wishlistIds={wishlistIds} heartPulseTarget={heartPulseTarget} heartPulseNonce={heartPulseNonce} shareProduct={shareProduct} sharePulseTarget={sharePulseTarget} sharePulseNonce={sharePulseNonce} productLoading={productLoading} detailMedia={detailMedia} setProductReviewOpenRequest={setProductReviewOpenRequest} selectCategory={selectCategory} detailUnit={detailUnit} variantQuantities={variantQuantities} setSelectedVariantId={setSelectedVariantId} setSelectedStoreUnitId={setSelectedStoreUnitId} setVariantQuantity={setVariantQuantity} detailVariant={detailVariant} customizationConfig={customizationConfig} visibleCustomizationFields={visibleCustomizationFields} customizationValues={customizationValues} customizationValidation={customizationValidation} updateCustomizationField={updateCustomizationField} addSelectedVariants={addSelectedVariants} addSelectedUnit={addSelectedUnit} getProductCartQty={getProductCartQty} settings={settings} relatedQ={relatedQ} addCatalogProduct={addCatalogProduct} trackRecommendationClick={trackRecommendationClick} productReviewOpenRequest={productReviewOpenRequest} />
+      <StorefrontProductDialog selectedId={selectedId} setSelectedId={setSelectedId} productDialogCloseRef={productDialogCloseRef} productDialogTriggerRef={productDialogTriggerRef} product={product} toggleWishlist={toggleWishlist} wishlistIds={wishlistIds} heartPulseTarget={heartPulseTarget} heartPulseNonce={heartPulseNonce} shareProduct={shareProduct} sharePulseTarget={sharePulseTarget} sharePulseNonce={sharePulseNonce} productLoading={productLoading} detailMedia={detailMedia} setProductReviewOpenRequest={setProductReviewOpenRequest} selectCategory={selectCategory} detailUnit={detailUnit} variantQuantities={variantQuantities} setSelectedVariantId={setSelectedVariantId} setSelectedStoreUnitId={setSelectedStoreUnitId} setVariantQuantity={setVariantQuantity} detailVariant={detailVariant} customizationConfig={customizationConfig} visibleCustomizationFields={visibleCustomizationFields} customizationValues={customizationValues} customizationValidation={customizationValidation} updateCustomizationField={updateCustomizationField} customizationUploadState={customizationUploadState} setCustomizationUploadState={setCustomizationUploadState} setCustomizationAssets={setCustomizationAssets} addSelectedVariants={addSelectedVariants} addSelectedUnit={addSelectedUnit} getProductCartQty={getProductCartQty} settings={settings} relatedQ={relatedQ} addCatalogProduct={addCatalogProduct} trackRecommendationClick={trackRecommendationClick} productReviewOpenRequest={productReviewOpenRequest} />
 
       {/* ═══ السلة ═══ */}
       {panel === "cart" && (

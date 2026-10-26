@@ -1,3 +1,4 @@
+import React from "react";
 import {
   DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH,
   serializeStorefrontCustomizationIdentity,
@@ -9,6 +10,12 @@ export function storefrontTurnstileSubmissionReady(
   token: string | null | undefined,
 ): boolean {
   return orderingEnabled && !!siteKey?.trim() && !!token?.trim();
+}
+
+export function createStorefrontCatalogSeedBucket(
+  now: number = Date.now(),
+): string {
+  return `sf-${Math.floor(now / (15 * 60 * 1000))}`;
 }
 
 export type StorefrontCustomizationKind = "PRINT" | "GIFT";
@@ -43,6 +50,8 @@ export type StorefrontCustomization = {
   templateId: number;
   kind: StorefrontCustomizationKind;
   values?: Record<string, string>;
+  logoAssetKey?: string;
+  previewAssetKey?: string;
   selections?: Array<{
     fieldKey: string;
     label: string;
@@ -57,6 +66,25 @@ export type StorefrontCustomization = {
   message?: string;
   uploadName?: string;
 };
+
+export type StorefrontCustomizationOrderPayload = {
+  templateId: number;
+  values: Record<string, string>;
+  logoAssetKey?: string;
+  previewAssetKey?: string;
+};
+
+export function buildStorefrontCustomizationPayload(
+  customization?: StorefrontCustomization,
+): StorefrontCustomizationOrderPayload | undefined {
+  if (!customization) return undefined;
+  return {
+    templateId: customization.templateId,
+    values: customization.values ?? {},
+    logoAssetKey: customization.logoAssetKey?.trim() || undefined,
+    previewAssetKey: customization.previewAssetKey?.trim() || undefined,
+  };
+}
 
 export type StorefrontCustomizationConfig = {
   id: number;

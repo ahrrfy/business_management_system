@@ -116,9 +116,26 @@ export function loadCart(
           Number.isFinite(rawLine.stockLimit)
             ? Math.max(1, Math.min(Math.floor(rawLine.stockLimit), 999))
             : null;
+        const rawCustomization = rawLine.customization;
+        const sanitizedCustomization =
+          rawCustomization && typeof rawCustomization === "object"
+            ? {
+                ...rawCustomization,
+                logoAssetKey:
+                  typeof rawCustomization.logoAssetKey === "string" &&
+                  rawCustomization.logoAssetKey.trim()
+                    ? rawCustomization.logoAssetKey.trim()
+                    : undefined,
+                previewAssetKey:
+                  typeof rawCustomization.previewAssetKey === "string" &&
+                  rawCustomization.previewAssetKey.trim()
+                    ? rawCustomization.previewAssetKey.trim()
+                    : undefined,
+              }
+            : undefined;
         const cartKey = customizationCartKey(
           rawLine.productUnitId,
-          rawLine.customization,
+          sanitizedCustomization,
         );
         const previous = m.get(cartKey);
         const effectiveLimit =
@@ -129,6 +146,7 @@ export function loadCart(
               : Math.min(previous.stockLimit, stockLimit);
         const line = {
           ...rawLine,
+          customization: sanitizedCustomization,
           stockLimit: effectiveLimit,
           qty: Math.min(
             (previous?.qty ?? 0) + Math.max(1, Math.floor(rawLine.qty)),
