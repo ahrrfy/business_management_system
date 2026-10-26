@@ -16,6 +16,8 @@ import { ledgerFeeDue, payDeliveryFee, payPartyDeliveryFees } from "../delivery/
 import { confirmConsignmentDelivery, listMyDeliveries, transitionConsignmentParcel } from "../delivery/courier";
 import { recordCompanyStatement } from "../delivery/companyStatement";
 import { listOpenConsignments } from "../delivery/queries";
+import { deliveryDocumentSnapshots } from "../../../drizzle/fulfillmentSchema";
+import { prepareShipmentWorkflowDocumentsTx } from "../delivery/documentSnapshots";
 
 const actor = { userId: 1, branchId: 1, role: "admin" as const };
 const db = () => getDb()!;
@@ -180,7 +182,7 @@ describe("shipment continuity after independent invoice changes", () => {
     const deadId = Number(group.members[index].invoiceId);
     const survivorId = Number(group.members[1 - index].invoiceId);
     await cancel(deadId);
-    await cancelShipmentAssignment({ consignmentId: group.leaderConsignmentId, reason: "إعادة جدولة التوصيل", clientRequestId: "continuity-cancel-assignment" }, actor);
+    await cancelShipmentAssignment({ consignmentId: group.leaderConsignmentId, reason: "إعادة جدولة التوصيل", clientRequestId: "continuity-cancel-assignment", physicalHeldConfirmed: true }, actor);
     const choices = await listShipmentInvoiceCandidates(survivorId, actor);
     expect(choices.requiredInvoiceIds).toEqual([survivorId]);
     expect(choices.candidates).toHaveLength(0);
@@ -195,12 +197,66 @@ describe("shipment continuity after independent invoice changes", () => {
     expect(await db().select().from(s.deliveryShipmentMembers)).toHaveLength(2);
   });
 
+  it("keeps the original pack when its leader closes without a new assignment", async () => {
+    const group = await shipment();
+    const originals = await db().select().from(deliveryDocumentSnapshots);
+    await cancel(Number(group.members[0].invoiceId));
+    const prepared = await withTx(tx => prepareShipmentWorkflowDocumentsTx(tx, { consignmentId: group.leaderConsignmentId, branchId: 1 }));
+    expect(prepared.map(row => row.id).sort((a, b) => a - b)).toEqual(originals.map(row => row.id));
+    expect(await db().select().from(deliveryDocumentSnapshots)).toEqual(originals);
+  });
+
+  it("uses the surviving member's new assignment when another employee redispatches a closed leader's group", async () => {
+    const group = await shipment("COUNTER");
+    const leaderId = group.leaderConsignmentId;
+    const survivor = group.members[1];
+    const originals = await db().select().from(deliveryDocumentSnapshots);
+    await cancel(Number(group.members[0].invoiceId));
+    await cancelShipmentAssignment({ consignmentId: leaderId, reason: "إعادة جدولة التوصيل",
+      clientRequestId: "other-employee-cancel", physicalHeldConfirmed: true }, actor);
+    const [closedLeader] = await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, leaderId));
+    const leaderEvents = (await db().select().from(s.deliveryEvents)).filter(row => row.consignmentId === leaderId);
+    await db().insert(s.users).values({ id: 2, openId: "continuity-second-admin", role: "admin", branchId: 1 });
+    const secondActor = { ...actor, userId: 2 };
+    const input = { invoiceId: Number(survivor.invoiceId), invoiceIds: [Number(survivor.invoiceId)], partyId: 1,
+      deliveryFee: "1500", feeCollection: "COUNTER" as const, externalTrackingRef: "CONTINUITY-TRACK",
+      recipientPhone: "07701234567", clientRequestId: "other-employee-redispatch" };
+    const result = await dispatchInvoiceShipment(input, secondActor);
+    if (!("documentSnapshotIds" in result) || !result.documentSnapshotIds)
+      throw new Error("Fresh redispatch must persist its document pack");
+    const snapshotIds = result.documentSnapshotIds;
+    expect(result.leaderConsignmentId).toBe(leaderId);
+    expect((await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, leaderId)))[0]).toEqual(closedLeader);
+    const events = await db().select().from(s.deliveryEvents);
+    expect(events.filter(row => row.consignmentId === leaderId)).toEqual(leaderEvents);
+    const assignment = events.find(row => row.consignmentId === survivor.id && row.eventType === "ASSIGNMENT_REACTIVATED")!;
+    expect(assignment.actorUserId).toBe(2);
+    const snapshots = await db().select().from(deliveryDocumentSnapshots);
+    expect(snapshots.filter(row => originals.some(original => original.id === row.id))).toEqual(originals);
+    const current = snapshots.filter(row => snapshotIds.includes(row.id));
+    expect(current).toHaveLength(3);
+    for (const row of current) {
+      expect(row.createdBy).toBe(2);
+      expect(row.eventOccurredAt).toEqual(assignment.occurredAt);
+      if (row.documentType !== "DELIVERY_MANIFEST") expect(row.payload).toMatchObject({
+        evidence: { mode: "COMMITTED_DISPATCH_EVENT", eventId: assignment.id },
+        shipment: { consignmentId: leaderId }, money: { deliveryFee: "1500.00", codAmount: "10000.00" },
+      });
+    }
+    const effects = await returnEffects();
+    expect(await dispatchInvoiceShipment(input, secondActor)).toMatchObject({ idempotentReplay: true });
+    const prepared = await withTx(tx => prepareShipmentWorkflowDocumentsTx(tx, { consignmentId: leaderId, branchId: 1 }));
+    expect(prepared.slice(0, 3).map(row => row.id).sort((a, b) => a - b)).toEqual(snapshotIds);
+    expect(await db().select().from(deliveryDocumentSnapshots)).toEqual(snapshots);
+    expect(await returnEffects()).toEqual(effects);
+  });
+
   it("redispatches a live leader to a new party without changing its closed follower or historical party ledger", async () => {
     const group = await shipment("SHOP");
     const leader = group.members[0];
     const closed = group.members[1];
     await cancel(Number(closed.invoiceId));
-    await cancelShipmentAssignment({ consignmentId: group.leaderConsignmentId, reason: "تغيير جهة التوصيل", clientRequestId: "new-party-cancel" }, actor);
+    await cancelShipmentAssignment({ consignmentId: group.leaderConsignmentId, reason: "تغيير جهة التوصيل", clientRequestId: "new-party-cancel", physicalHeldConfirmed: true }, actor);
     const [closedBefore] = await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, closed.id));
     const oldLedger = await db().select().from(s.deliveryLedgerEntries).where(eq(s.deliveryLedgerEntries.partyId, 1));
     await db().insert(s.deliveryParties).values({ id: 2, name: "شركة جديدة", partyType: "COMPANY", branchId: 1, currentBalance: "0", defaultFee: "0" });

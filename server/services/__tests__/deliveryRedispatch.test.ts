@@ -92,7 +92,7 @@ describe("إعادة الإسناد بعد الإلغاء — تبديل الم�
     expect(await balanceOf()).toBe(20000);
 
     await cancelDeliveryAssignment(
-      { consignmentId: first.consignmentId, reason: "تبديل المندوب", clientRequestId: "c1" },
+      { consignmentId: first.consignmentId, reason: "تبديل المندوب", clientRequestId: "c1", physicalHeldConfirmed: true },
       MANAGER,
     );
     expect((await listReadyForDispatch(1)).map((x) => Number(x.id))).toContain(woId);
@@ -134,7 +134,7 @@ describe("إعادة الإسناد بعد الإلغاء — تبديل الم�
     const woId = await readyOrder("rd-3");
     const first = await dispatchToDelivery({ workOrderId: woId, partyId: 1, clientRequestId: "d5" }, CASHIER);
     await cancelDeliveryAssignment(
-      { consignmentId: first.consignmentId, reason: "تبديل", clientRequestId: "c2" },
+      { consignmentId: first.consignmentId, reason: "تبديل", clientRequestId: "c2", physicalHeldConfirmed: true },
       MANAGER,
     );
     // محاكاة صفٍّ ملغى يحمل تحصيلاً (شكلٌ لا ينتجه المسار العاديّ لكنّ الحارس يجب أن يمسكه).

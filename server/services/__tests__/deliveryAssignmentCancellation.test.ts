@@ -10,12 +10,18 @@ import { dispatchOnlineOrder } from "../storeAdmin/dispatchOnlineOrder";
 import { returnByBarcode } from "../delivery/barcodeReturnService";
 import { listConsignmentsForParty } from "../delivery/queries";
 import { moduleAccessAllowed } from "@shared/permissions";
+import { physicalHandoverConsignmentIdsTx } from "../delivery/handoverEvidence";
+import { withTx } from "../tx";
+import { staffHandoverConsignments } from "../delivery/staffTransition";
+import { transitionConsignmentParcel } from "../delivery/courier";
 
 const TABLES = [
   "productPrices",
   "shifts",
   "deliveryOutbox",
   "deliveryEvents",
+  "deliveryDocumentPrints",
+  "deliveryDocumentSnapshots",
   "deliveryLedgerEntries",
   "deliveryRemittanceLines",
   "deliveryRemittances",
@@ -264,7 +270,7 @@ describe("cancelDeliveryAssignment — عقد الإلغاء التشغيلي", 
       delivery: { partyId: 1, assignedUserId: 3, fee: "0" }, clientRequestId: "canonical-sale-dispatch-denied" })).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect((await db().select().from(s.invoices)).length).toBe(1);
   });
-  it.each(["OUT_FOR_DELIVERY", "FAILED"] as const)(
+  it.each(["OUT_FOR_DELIVERY", "ACCEPTED", "FAILED"] as const)(
     "%s: يلغي الإسناد ويحرر COD بلا لمس الفاتورة أو المخزون أو الإيصالات",
     async (parcelStatus) => {
       await seedInvoice();
@@ -278,13 +284,14 @@ describe("cancelDeliveryAssignment — عقد الإلغاء التشغيلي", 
         createdBy: 2,
       });
       const created = await dispatch();
-      if (parcelStatus === "FAILED") {
+      if (parcelStatus !== "OUT_FOR_DELIVERY") {
         await db()
           .update(s.deliveryConsignments)
           .set({
-            parcelStatus: "FAILED",
-            failedAt: new Date(),
-            failureReason: "تعذر",
+            parcelStatus,
+            ...(parcelStatus === "ACCEPTED"
+              ? { acceptedAt: new Date() }
+              : { failedAt: new Date(), failureReason: "تعذر" }),
           })
           .where(eq(s.deliveryConsignments.id, created.consignmentId));
       }
@@ -310,6 +317,7 @@ describe("cancelDeliveryAssignment — عقد الإلغاء التشغيلي", 
           consignmentId: created.consignmentId,
           reason: "إلغاء طلب التوصيل بناءً على طلب العميل",
           clientRequestId: `cancel-${parcelStatus.toLowerCase()}-100`,
+          physicalHeldConfirmed: true,
         },
         MANAGER,
       );
@@ -382,8 +390,112 @@ describe("cancelDeliveryAssignment — عقد الإلغاء التشغيلي", 
     },
   );
 
+  it("يرفض الإلغاء بعد خروج فعلي مثبت ولا يحرر COD", async () => {
+    await seedInvoice();
+    const created = await dispatch();
+    await db().insert(s.deliveryEvents).values({
+      eventKey: `CN:${created.consignmentId}:STAFF_OUT:confirmed-after-assignment`,
+      consignmentId: created.consignmentId,
+      eventType: "OUT_FOR_DELIVERY",
+      fromParcelStatus: "OUT_FOR_DELIVERY",
+      toParcelStatus: "OUT_FOR_DELIVERY",
+    });
+
+    await expect(
+      cancelDeliveryAssignment(
+        {
+          consignmentId: created.consignmentId,
+          reason: "محاولة إلغاء بعد الخروج",
+          clientRequestId: "cancel-after-real-handover-100",
+          physicalHeldConfirmed: true,
+        },
+        MANAGER,
+      ),
+    ).rejects.toThrow(/ثبت استلام الناقل|أعلن الرجوع/);
+
+    const released = await db()
+      .select()
+      .from(s.deliveryLedgerEntries)
+      .where(
+        and(
+          eq(s.deliveryLedgerEntries.consignmentId, created.consignmentId),
+          eq(s.deliveryLedgerEntries.entryType, "COD_RELEASED"),
+        ),
+      );
+    expect(released).toHaveLength(0);
+  });
+
+  it("retains staff departure evidence through courier FAILED then ASSIGNED without releasing COD", async () => {
+    await seedInvoice();
+    const created = await dispatch();
+    await db().update(s.deliveryConsignments).set({ parcelStatus: "ASSIGNED", outForDeliveryAt: null })
+      .where(eq(s.deliveryConsignments.id, created.consignmentId));
+    expect(await staffHandoverConsignments({ consignmentIds: [created.consignmentId], clientRequestId: "staff-before-retry" }, MANAGER))
+      .toMatchObject({ moved: 1 });
+    await transitionConsignmentParcel({ consignmentId: created.consignmentId, toStatus: "FAILED", reason: "العميل غير متوفر",
+      clientRequestId: "courier-failed-after-staff-out" }, { userId: 3 });
+    await transitionConsignmentParcel({ consignmentId: created.consignmentId, toStatus: "ASSIGNED",
+      clientRequestId: "courier-retry-without-return" }, { userId: 3 });
+    const [before] = await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, created.consignmentId));
+    expect(before.parcelStatus).toBe("ASSIGNED");
+    expect(before.pickedUpAt).toBeNull();
+    expect(before.outForDeliveryAt).not.toBeNull();
+    const ledger = await db().select().from(s.deliveryLedgerEntries);
+    const invoices = await db().select().from(s.invoices);
+    const receipts = await db().select().from(s.receipts);
+    const stock = await db().select().from(s.branchStock);
+    const parties = await db().select().from(s.deliveryParties);
+    await expect(cancelDeliveryAssignment({ consignmentId: created.consignmentId, reason: "محاولة إلغاء بعد إعادة المحاولة",
+      clientRequestId: "cancel-after-courier-retry", physicalHeldConfirmed: true }, MANAGER))
+      .rejects.toThrow(/أعلن الرجوع/);
+    expect((await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, created.consignmentId)))[0]).toEqual(before);
+    expect(await db().select().from(s.deliveryLedgerEntries)).toEqual(ledger);
+    expect(ledger.filter(row => row.entryType === "COD_RELEASED")).toHaveLength(0);
+    expect(await db().select().from(s.invoices)).toEqual(invoices);
+    expect(await db().select().from(s.receipts)).toEqual(receipts);
+    expect(await db().select().from(s.branchStock)).toEqual(stock);
+    expect(await db().select().from(s.deliveryParties)).toEqual(parties);
+    expect(await withTx(tx => physicalHandoverConsignmentIdsTx(tx, [created.consignmentId])))
+      .toEqual(new Set([created.consignmentId]));
+  });
+
+  it("يحصر دليل الخروج في محاولة الإسناد الحالية", async () => {
+    await seedInvoice();
+    const created = await dispatch();
+    await db().insert(s.deliveryEvents).values([
+      {
+        eventKey: `CN:${created.consignmentId}:STAFF_OUT:old-attempt`,
+        consignmentId: created.consignmentId,
+        eventType: "OUT_FOR_DELIVERY",
+        toParcelStatus: "OUT_FOR_DELIVERY",
+      },
+      {
+        eventKey: `CN:${created.consignmentId}:ASSIGNMENT_REACTIVATED:test`,
+        consignmentId: created.consignmentId,
+        eventType: "ASSIGNMENT_REACTIVATED",
+        toParcelStatus: "ASSIGNED",
+      },
+    ]);
+    expect(
+      await withTx((tx) =>
+        physicalHandoverConsignmentIdsTx(tx, [created.consignmentId]),
+      ),
+    ).toEqual(new Set());
+
+    await db().insert(s.deliveryEvents).values({
+      eventKey: `CN:${created.consignmentId}:STAFF_OUT:new-attempt`,
+      consignmentId: created.consignmentId,
+      eventType: "OUT_FOR_DELIVERY",
+      toParcelStatus: "OUT_FOR_DELIVERY",
+    });
+    expect(
+      await withTx((tx) =>
+        physicalHandoverConsignmentIdsTx(tx, [created.consignmentId]),
+      ),
+    ).toEqual(new Set([created.consignmentId]));
+  });
+
   it.each([
-    "ACCEPTED",
     "PICKED_UP",
     "DELIVERED",
     "RETURNED",
@@ -401,6 +513,7 @@ describe("cancelDeliveryAssignment — عقد الإلغاء التشغيلي", 
           consignmentId: created.consignmentId,
           reason: "سبب صالح للإلغاء",
           clientRequestId: `cancel-reject-${parcelStatus.toLowerCase()}`,
+          physicalHeldConfirmed: true,
         },
         MANAGER,
       ),
@@ -441,6 +554,7 @@ describe("cancelDeliveryAssignment — عقد الإلغاء التشغيلي", 
             consignmentId: created.consignmentId,
             reason: "سبب صالح للإلغاء",
             clientRequestId: `cancel-money-${mode.toLowerCase()}`,
+            physicalHeldConfirmed: true,
           },
           MANAGER,
         ),
@@ -455,6 +569,7 @@ describe("cancelDeliveryAssignment — عقد الإلغاء التشغيلي", 
       consignmentId: created.consignmentId,
       reason: "إلغاء موثق",
       clientRequestId: "cancel-idempotent-100",
+      physicalHeldConfirmed: true,
     };
     expect(
       (await cancelDeliveryAssignment(input, MANAGER)).idempotentReplay,
@@ -495,6 +610,7 @@ describe("cancelDeliveryAssignment — عقد الإلغاء التشغيلي", 
       consignmentId: created.consignmentId,
       reason: "سبب صالح",
       clientRequestId: "cancel-auth-100",
+      physicalHeldConfirmed: true,
     };
     await expect(cancelDeliveryAssignment(input, SALES)).rejects.toMatchObject({
       code: "FORBIDDEN",
@@ -515,6 +631,7 @@ describe("cancelDeliveryAssignment — عقد الإلغاء التشغيلي", 
         consignmentId: createdForCashier.consignmentId,
         reason: "إلغاء بواسطة كاشير",
         clientRequestId: "cancel-cashier-auth-104",
+        physicalHeldConfirmed: true,
       },
       CASHIER,
     );
@@ -531,6 +648,7 @@ describe("dispatchInvoiceToDelivery — إعادة تنشيط السجل الم�
         consignmentId: first.consignmentId,
         reason: "تغيير جهة التوصيل",
         clientRequestId: "cancel-before-reactivation",
+        physicalHeldConfirmed: true,
       },
       MANAGER,
     );
@@ -703,6 +821,7 @@ describe("dispatchInvoiceToDelivery — إعادة تنشيط السجل الم�
       consignmentId: dispatched.consignmentId,
       reason: "إلغاء كاشير عبر الراوتر",
       clientRequestId: "router-cashier-cancel-105",
+      physicalHeldConfirmed: true,
     });
     expect(cancelled.consignmentId).toBe(dispatched.consignmentId);
 
@@ -793,6 +912,7 @@ describe("dispatchInvoiceToDelivery — إعادة تنشيط السجل الم�
       consignmentId: dispatched.consignmentId,
       reason: "إلغاء بواسطة موظف استقبال مصرح",
       clientRequestId: "router-clerk-cancel-107",
+      physicalHeldConfirmed: true,
     });
     expect(clerkCancel.consignmentId).toBe(dispatched.consignmentId);
   });
@@ -870,6 +990,7 @@ describe("ذرية إسناد وإلغاء التوصيل في استعلاما�
         consignmentId: dispatched.consignmentId,
         reason: "إلغاء الإسناد للتجربة الذرية",
         clientRequestId: "cancel-atomicity-100",
+        physicalHeldConfirmed: true,
       },
       MANAGER,
     );
@@ -1010,6 +1131,7 @@ describe("إلغاء إسناد إرسالية مرتبطة بطلب متجر إ
         consignmentId: 301,
         reason: "خطأ في الإسناد للمندوب",
         clientRequestId: "cancel-online-ord-301",
+        physicalHeldConfirmed: true,
       },
       CASHIER,
     );
@@ -1088,6 +1210,7 @@ describe("إلغاء إسناد إرسالية مرتبطة بطلب متجر إ
         consignmentId: 302,
         reason: "العميل يرغب بالاستلام من الفرع",
         clientRequestId: "cancel-online-ord-302",
+        physicalHeldConfirmed: true,
       },
       CASHIER,
     );

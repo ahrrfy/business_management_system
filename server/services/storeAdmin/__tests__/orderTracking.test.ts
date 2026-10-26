@@ -235,6 +235,7 @@ describe("online order current lifecycle", () => {
           consignmentId: 1,
           reason: "إعادة إسناد الطلب لجهة التوصيل",
           clientRequestId: `tracking-cancel-${sequence}`,
+          physicalHeldConfirmed: true,
         },
         actor,
       );

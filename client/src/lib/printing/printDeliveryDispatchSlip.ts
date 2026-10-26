@@ -3,7 +3,7 @@ import {
   type DeliverySourceReference,
 } from "@shared/deliverySource";
 import { CO, fmt } from "./brand";
-import { printDoc, type PrintDoc, type PrintResult } from "./print";
+import { printDoc, type PrintDoc, type PrintResult, type PrintWindowOptions } from "./print";
 import {
   createDeliveryDocumentSnapshot,
   deliveryDocumentAuditLines,
@@ -180,8 +180,8 @@ export function buildDeliveryDispatchSlipDoc(
   };
 }
 
-export function printDeliveryDispatchSlip(d: DispatchSlipData): boolean {
-  void printDeliveryDispatchSlipAsync(d).catch((error) => {
+export function printDeliveryDispatchSlip(d: DispatchSlipData, options?: PrintWindowOptions): boolean {
+  void printDeliveryDispatchSlipAsync(d, options).catch((error) => {
     console.warn("[dispatch-slip] فشل الطباعة:", error);
   });
   return true;
@@ -189,6 +189,7 @@ export function printDeliveryDispatchSlip(d: DispatchSlipData): boolean {
 
 export function printDeliveryDispatchSlipAsync(
   d: DispatchSlipData,
+  options?: PrintWindowOptions,
 ): Promise<PrintResult> {
-  return printDoc(buildDeliveryDispatchSlipDoc(d));
+  return printDoc(buildDeliveryDispatchSlipDoc(d), options);
 }

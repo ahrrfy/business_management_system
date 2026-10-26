@@ -13,6 +13,7 @@ import {
   Loader2,
   MapPin,
   Phone,
+  Printer,
   ScanLine,
   Search,
   Square,
@@ -27,11 +28,19 @@ import { Badge } from "@/components/ui/badge";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { cn } from "@/lib/utils";
 import { D, fmt, moneyInput, round2 } from "@/lib/money";
-import { notify } from "@/lib/notify";
+import { errMsg, notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { confirm } from "@/lib/confirm";
-import { printRemittanceReceipt } from "@/components/delivery/printRemittanceReceipt";
-import { printCompanyStatementReceipt } from "@/lib/printing/printCompanyStatementReceipt";
+import {
+  printRemittanceReceiptAsync,
+  type RemittanceReceiptData,
+} from "@/components/delivery/printRemittanceReceipt";
+import { preopenDocumentWindow } from "@/lib/printing/print";
+import { WorkflowPrintActions } from "@/components/delivery/workflow/WorkflowPrintActions";
+import {
+  printCompanyStatementReceiptAsync,
+  type CompanyStatementReceiptData,
+} from "@/lib/printing/printCompanyStatementReceipt";
 import { CompanyStatementScanQueue } from "@/components/delivery/CompanyStatementScanQueue";
 import {
   statementQueueRemaining,
@@ -59,6 +68,15 @@ import {
 
 export type PartyObligation = RouterOutputs["delivery"]["obligations"][number];
 type FinancialRetry = { signature: string; key: string };
+type SavedRemittancePrint = {
+  partyName: string;
+  branchId: number;
+  receipt: RemittanceReceiptData;
+};
+type SavedCompanyStatementPrint = {
+  branchId: number;
+  receipt: CompanyStatementReceiptData;
+};
 function financialRetryKey(
   ref: { current: FinancialRetry | null },
   payload: unknown,
@@ -248,6 +266,29 @@ export function ReceptionCollectSection({
   const [isSearchingCollect, setIsSearchingCollect] = useState(false);
   const remittanceRetry = useRef<FinancialRetry | null>(null);
   const statementRetry = useRef<FinancialRetry | null>(null);
+  const remittancePrintContext = useRef<{
+    partyName: string;
+    branchId: number;
+    shiftId: number;
+    window: Window | null;
+  } | null>(null);
+  const [lastRemittance, setLastRemittance] =
+    useState<SavedRemittancePrint | null>(null);
+  const [printingRemittance, setPrintingRemittance] = useState(false);
+  const [remittancePrintMessage, setRemittancePrintMessage] = useState("");
+  const statementPrintContext = useRef<{
+    branchId: number;
+    window: Window | null;
+    companyName: string;
+    deductionsTotal: string;
+    notes?: string;
+    statementConsignmentCount: number;
+  } | null>(null);
+  const [lastCompanyStatement, setLastCompanyStatement] =
+    useState<SavedCompanyStatementPrint | null>(null);
+  const [printingCompanyStatement, setPrintingCompanyStatement] =
+    useState(false);
+  const [companyPrintMessage, setCompanyPrintMessage] = useState("");
 
   const [scanContext, setScanContext] = useState<{
     preview: WorkflowScanPreview;
@@ -458,48 +499,178 @@ export function ReceptionCollectSection({
     },
   );
 
+  async function printSavedRemittance(
+    saved: SavedRemittancePrint,
+    into: Window | null,
+    reprint: boolean,
+  ) {
+    setPrintingRemittance(true);
+    setRemittancePrintMessage("");
+    try {
+      const result = await printRemittanceReceiptAsync(
+        saved.partyName,
+        {
+          ...saved.receipt,
+          ...(reprint
+            ? {
+                copy: {
+                  kind: "REPRINT" as const,
+                  reason: "إعادة طباعة سند التوريد المحفوظ",
+                },
+              }
+            : {}),
+        },
+        { into },
+      );
+      if (!result.ok)
+        throw new Error(
+          "حُجبت نافذة الطباعة؛ اسمح بها ثم استخدم إعادة طباعة السند المحفوظ",
+        );
+      setRemittancePrintMessage(
+        result.via === "browser"
+          ? "فتحت معاينة السند المحفوظ للطباعة"
+          : "أرسل السند المحفوظ إلى الطابعة",
+      );
+    } catch (error) {
+      setRemittancePrintMessage(
+        `التوريد مثبت؛ تعذرت الطباعة فقط. ${errMsg(error)}`,
+      );
+      notify.err(
+        error,
+        "التوريد مثبت؛ لا تعِد تسجيله. أعد طباعة السند المحفوظ",
+      );
+      try {
+        if (into && !into.closed) into.close();
+      } catch {
+        /* Only the failed print window is released. */
+      }
+    } finally {
+      setPrintingRemittance(false);
+    }
+  }
+
   const remitMut = trpc.delivery.recordRemittance.useMutation({
     onSuccess: (r) => {
+      const context = remittancePrintContext.current;
+      remittancePrintContext.current = null;
+      const saved = {
+        partyName: context?.partyName ?? selectedParty?.name ?? "جهة التوصيل",
+        branchId: context?.branchId ?? branchId,
+        receipt: {
+          ...r,
+          branchId: context?.branchId ?? branchId,
+          shiftId: context?.shiftId ?? shift?.id,
+        },
+      };
+      setLastRemittance(saved);
       notify.ok(
         "تم توريد نقد جهة التوصيل إلى الدرج — " + r.remittanceNumber,
         "صاف " + fmt(r.netRemitted) + " د.ع",
       );
-      printRemittanceReceipt(selectedParty?.name ?? "المندوب", r);
+      void printSavedRemittance(
+        saved,
+        context?.window ?? null,
+        r.idempotentReplay,
+      );
       setCountedCash("");
       remittanceRetry.current = null;
       void obligationsQ.refetch();
       void openConsQ.refetch();
       void utils.delivery.invalidate();
     },
-    onError: (e) => notify.err(e, "تعذّر توريد جهة التوصيل"),
+    onError: (e) => {
+      const window = remittancePrintContext.current?.window;
+      remittancePrintContext.current = null;
+      try {
+        if (window && !window.closed) window.close();
+      } catch {
+        /* No print is sent on an unconfirmed transaction. */
+      }
+      notify.err(e, "تعذّر توريد جهة التوصيل");
+    },
   });
+
+  async function printSavedCompanyStatement(
+    saved: SavedCompanyStatementPrint,
+    into: Window | null,
+    reprint: boolean,
+  ) {
+    setPrintingCompanyStatement(true);
+    setCompanyPrintMessage("");
+    try {
+      const result = await printCompanyStatementReceiptAsync(
+        {
+          ...saved.receipt,
+          ...(reprint
+            ? {
+                copy: {
+                  kind: "REPRINT" as const,
+                  reason: "إعادة طباعة كشف الشركة المحفوظ",
+                },
+              }
+            : {}),
+        },
+        { into },
+      );
+      if (!result.ok)
+        throw new Error(
+          "حُجبت نافذة الطباعة؛ اسمح بها ثم أعد طباعة الكشف المحفوظ",
+        );
+      setCompanyPrintMessage(
+        result.via === "browser"
+          ? "فتحت معاينة الكشف المحفوظ للطباعة"
+          : "أرسل الكشف المحفوظ إلى الطابعة",
+      );
+    } catch (error) {
+      setCompanyPrintMessage(`الكشف مثبت؛ تعذرت الطباعة فقط. ${errMsg(error)}`);
+      notify.err(
+        error,
+        "الكشف مثبت؛ أعد طباعة النسخة المحفوظة ولا تسجل كشفاً جديداً",
+      );
+      try {
+        if (into && !into.closed) into.close();
+      } catch {
+        /* Release only the failed print preview. */
+      }
+    } finally {
+      setPrintingCompanyStatement(false);
+    }
+  }
 
   const companyStatementMut = trpc.delivery.recordCompanyStatement.useMutation({
     onSuccess: (r) => {
+      const context = statementPrintContext.current;
+      statementPrintContext.current = null;
+      const saved: SavedCompanyStatementPrint = {
+        branchId: context?.branchId ?? branchId,
+        receipt: {
+          companyName:
+            context?.companyName ??
+            partyInfo?.name ??
+            selectedParty?.name ??
+            "شركة التوصيل",
+          statementNumber: r.statementNumber,
+          remittanceNumber: r.remittanceNumber,
+          deliveriesConfirmed: r.deliveriesConfirmed,
+          collectedTotal: r.collectedTotal,
+          deductionsTotal: context?.deductionsTotal,
+          netRemitted: r.netRemitted,
+          statementConsignmentCount: context?.statementConsignmentCount,
+          notes: context?.notes,
+        },
+      };
+      setLastCompanyStatement(saved);
       notify.ok(
         `سُجِّل كشف الشركة ${r.statementNumber}`,
-        `سند التوريد ${r.remittanceNumber ?? ""} — صافٍ ${fmt(r.netRemitted)} د.ع`,
+        r.remittanceNumber == null
+          ? "كشف إثبات دون توريد نقدي"
+          : `سند التوريد ${r.remittanceNumber} — صافٍ ${fmt(r.netRemitted)} د.ع`,
       );
-      const remainingOpen = openRows.filter(
-        (row) => !selectedStatementLines[row.id],
+      void printSavedCompanyStatement(
+        saved,
+        context?.window ?? null,
+        r.idempotentReplay === true,
       );
-      const remainingOpenAmount = remainingOpen.reduce(
-        (sum, row) => sum + Number(row.codAmount || 0),
-        0,
-      );
-      printCompanyStatementReceipt({
-        companyName: partyInfo?.name ?? selectedParty?.name ?? "شركة التوصيل",
-        statementNumber: r.statementNumber,
-        remittanceNumber: r.remittanceNumber,
-        deliveriesConfirmed: r.deliveriesConfirmed,
-        collectedTotal: r.collectedTotal,
-        deductionsTotal: statementDeductions || "0",
-        netRemitted: r.netRemitted,
-        remainingOpenCount: remainingOpen.length,
-        remainingOpenAmount: remainingOpenAmount.toFixed(2),
-        settledAt: new Date(),
-        notes: statementNotes.trim() || undefined,
-      });
       setStatementNumber("");
       setStatementDeductions("");
       setStatementNotes("");
@@ -512,7 +683,16 @@ export function ReceptionCollectSection({
       void openConsQ.refetch();
       void utils.delivery.invalidate();
     },
-    onError: (e) => notify.err(e, "تعذّر تسجيل كشف شركة التوصيل"),
+    onError: (e) => {
+      const window = statementPrintContext.current?.window;
+      statementPrintContext.current = null;
+      try {
+        if (window && !window.closed) window.close();
+      } catch {
+        /* Never print an unconfirmed statement. */
+      }
+      notify.err(e, "تعذّر تسجيل كشف شركة التوصيل");
+    },
   });
 
   async function handleConfirmDelivery(row: (typeof openRows)[number]) {
@@ -561,7 +741,8 @@ export function ReceptionCollectSection({
 
   async function handleCollect() {
     const generation = scanSequence.current;
-    if (!selectedPartyId || !countedCash || !shift) return;
+    if (!selectedPartyId || !countedCash || !shift || remitMut.isPending)
+      return;
     const amount = D(countedCash);
     if (amount.lte(0)) {
       notify.err("أدخل مبلغاً صحيحاً");
@@ -627,6 +808,14 @@ export function ReceptionCollectSection({
       lines,
       countedCash: amount.toFixed(2),
     };
+    // Reserve after the explicit cash confirmation, before the network mutation.
+    // A blocked popup is retained as null; the saved result always has a direct reprint button.
+    remittancePrintContext.current = {
+      partyName: selectedParty?.name ?? partyInfo?.name ?? "جهة التوصيل",
+      branchId,
+      shiftId: shift.id,
+      window: preopenDocumentWindow("width=380,height=700"),
+    };
     remitMut.mutate({
       ...payload,
       clientRequestId: financialRetryKey(remittanceRetry, payload),
@@ -635,7 +824,13 @@ export function ReceptionCollectSection({
 
   async function handleCompanyStatementCollect() {
     const generation = scanSequence.current;
-    if (!selectedPartyId || !shift || openConsStillLoading) return;
+    if (
+      !selectedPartyId ||
+      !shift ||
+      openConsStillLoading ||
+      companyStatementMut.isPending
+    )
+      return;
     if (!statementNumber.trim()) {
       notify.err("يرجى إدخال رقم كشف الشركة");
       return;
@@ -698,6 +893,14 @@ export function ReceptionCollectSection({
       notes: statementNotes.trim() || undefined,
       lines,
       countedCash: cash.toFixed(2),
+    };
+    statementPrintContext.current = {
+      branchId,
+      companyName: partyInfo?.name ?? selectedParty?.name ?? "شركة التوصيل",
+      deductionsTotal: payload.deductionsTotal ?? "0.00",
+      notes: payload.notes,
+      statementConsignmentCount: lines.length,
+      window: preopenDocumentWindow("width=380,height=700"),
     };
     companyStatementMut.mutate({
       ...payload,
@@ -870,6 +1073,64 @@ export function ReceptionCollectSection({
 
   return (
     <div className="mx-auto max-w-2xl space-y-4">
+      {lastCompanyStatement?.branchId === branchId && (
+        <Card className="p-3 space-y-2" role="status">
+          <p className="font-medium">
+            كشف مثبت: {lastCompanyStatement.receipt.statementNumber} —{" "}
+            {lastCompanyStatement.receipt.companyName}
+          </p>
+          <p className="text-sm">
+            {lastCompanyStatement.receipt.remittanceNumber == null
+              ? "كشف إثبات دون توريد نقدي."
+              : `صافي التوريد ${fmt(lastCompanyStatement.receipt.netRemitted)} د.ع.`}{" "}
+            إعادة الطباعة لا تسجل كشفاً أو توريداً جديداً.
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={printingCompanyStatement}
+            onClick={() => {
+              const into = preopenDocumentWindow("width=380,height=700");
+              void printSavedCompanyStatement(lastCompanyStatement, into, true);
+            }}
+          >
+            <Printer className="size-4 me-1" aria-hidden /> إعادة طباعة كشف
+            الشركة المثبت
+          </Button>
+          {companyPrintMessage && (
+            <p className="text-sm whitespace-pre-wrap">{companyPrintMessage}</p>
+          )}
+        </Card>
+      )}
+      {lastRemittance?.branchId === branchId && (
+        <Card className="p-3 space-y-2" role="status">
+          <p className="font-medium">
+            توريد مثبت: {lastRemittance.receipt.remittanceNumber} —{" "}
+            {lastRemittance.partyName}
+          </p>
+          <p className="text-sm">
+            صافي التوريد {fmt(lastRemittance.receipt.netRemitted)} د.ع. إعادة
+            الطباعة لا تسجل قبضاً أو توريداً جديداً.
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={printingRemittance}
+            onClick={() => {
+              const into = preopenDocumentWindow("width=380,height=700");
+              void printSavedRemittance(lastRemittance, into, true);
+            }}
+          >
+            <Printer className="size-4 me-1" aria-hidden /> إعادة طباعة سند
+            التوريد
+          </Button>
+          {remittancePrintMessage && (
+            <p className="text-sm whitespace-pre-wrap">
+              {remittancePrintMessage}
+            </p>
+          )}
+        </Card>
+      )}
       {/* ─── حقل البحث التنبؤي الذكي ومسح الباركود للتحصيل ─── */}
       <div className="rounded-2xl border-2 border-dashed border-primary/40 bg-primary/5 p-4 space-y-3">
         <div className="flex items-center justify-between">
@@ -902,6 +1163,11 @@ export function ReceptionCollectSection({
             مطالبة العميل الحالية {fmt(scanContext.preview.money.codAmount)} د.ع
             · أمانة الأجرة {fmt(scanContext.preview.money.heldDeliveryFee)} د.ع
           </p>
+          <WorkflowPrintActions
+            branchId={scanContext.preview.source.branchId}
+            preview={scanContext.preview}
+            mode="collect"
+          />
           {pendingCustomerCollection &&
             pendingCustomerCollection.preview.source.kind ===
               scanContext.preview.source.kind &&

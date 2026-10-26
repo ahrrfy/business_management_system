@@ -7,6 +7,7 @@ import {
   aftercareExecutions,
   aftercareExecutionLines,
   aftercareLines,
+  deliveryDocumentSnapshots,
 } from "../../../drizzle/fulfillmentSchema";
 import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
@@ -672,9 +673,29 @@ describe("aftercare real document, stock, custody and fee integration", () => {
       partyId: 1,
     };
     const sent = await dispatchAftercareExecution(dispatch, CHECKER);
+    expect(sent.documentSnapshotIds).toHaveLength(4);
     expect(await dispatchAftercareExecution(dispatch, CHECKER)).toMatchObject({
       consignmentId: sent.consignmentId,
       replay: true,
+    });
+    const documents = await db()
+      .select()
+      .from(deliveryDocumentSnapshots)
+      .where(eq(deliveryDocumentSnapshots.sourceId, sent.consignmentId!));
+    expect(documents.map((row) => row.documentType).sort()).toEqual([
+      "AFTERCARE_WAYBILL",
+      "DELIVERY_MANIFEST",
+      "DISPATCH_SLIP",
+      "SHIPPING_LABEL",
+    ]);
+    expect(
+      documents.find((row) => row.documentType === "AFTERCARE_WAYBILL")
+        ?.payload,
+    ).toMatchObject({
+      notice: "تحصيل العميل صفر — الأجرة على المكتبة",
+      totals: expect.arrayContaining([
+        { label: "تحصيل العميل", value: "0.00" },
+      ]),
     });
     const [cn] = await db()
       .select()

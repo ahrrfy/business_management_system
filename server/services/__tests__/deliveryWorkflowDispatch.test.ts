@@ -29,6 +29,14 @@ import {
 } from "../fulfillment/requests";
 import { dispatchInvoiceToDelivery } from "../delivery/dispatchInvoice";
 import { recordDeliveryRemittance } from "../delivery/remittance";
+import { dispatchInvoiceShipment } from "../delivery/shipments";
+import {
+  createShipmentDispatchDocumentSnapshotsTx,
+  prepareShipmentWorkflowDocumentsTx,
+  type ShipmentDispatchDocumentPayload,
+} from "../delivery/documentSnapshots";
+import { withTx } from "../tx";
+import { idempotencyHash } from "../idempotency";
 
 const actor = { userId: 1, role: "admin", branchId: 1 };
 const db = () => {
@@ -163,6 +171,139 @@ async function useSparseNativeRole(grants: Record<string, boolean>) {
     .where(eq(s.users.id, 1));
 }
 describe("atomic barcode batch dispatch", () => {
+  it.each([
+    { channel: "workflow", legacy: false, degraded: false },
+    { channel: "workflow", legacy: true, degraded: false },
+    { channel: "invoice", legacy: false, degraded: false },
+    { channel: "invoice", legacy: true, degraded: false },
+    { channel: "workflow", legacy: true, degraded: true },
+  ])(
+    "preserves committed $channel snapshots during preparation (legacy=$legacy)",
+    async ({ channel, legacy, degraded }) => {
+      const command = await input();
+      command.deliveryFee = "5000";
+      const dispatched =
+        channel === "workflow"
+          ? await dispatchWorkflowBatch(command, actor)
+          : await dispatchInvoiceShipment(
+              {
+                invoiceId: 1,
+                invoiceIds: [1, 2],
+                partyId: 1,
+                assignedUserId: 2,
+                deliveryFee: command.deliveryFee,
+                feeCollection: "COURIER",
+                recipientName: command.recipientName,
+                recipientPhone: command.recipientPhone,
+                deliveryAddress: command.deliveryAddress,
+                clientRequestId: "group-print-preparation",
+              },
+              actor,
+            );
+      if (legacy) {
+        const rows = await db().select().from(deliveryDocumentSnapshots);
+        for (const row of rows.filter(
+          (row) => row.documentType !== "DELIVERY_MANIFEST",
+        )) {
+          const payload = row.payload as { evidence: { eventId?: number } };
+          delete payload.evidence.eventId;
+          await db()
+            .update(deliveryDocumentSnapshots)
+            .set({ payload, payloadHash: idempotencyHash(payload) })
+            .where(eq(deliveryDocumentSnapshots.id, row.id));
+        }
+      }
+      const committed = await db().select().from(deliveryDocumentSnapshots);
+      if (degraded) {
+        const slip = committed.find(
+          (row) => row.documentType === "DISPATCH_SLIP",
+        )!;
+        const [assignment] = await db()
+          .select()
+          .from(s.deliveryEvents)
+          .where(eq(s.deliveryEvents.consignmentId, dispatched.consignmentId));
+        const payload = structuredClone(
+          slip.payload as ShipmentDispatchDocumentPayload,
+        );
+        const eventKey = "legacy-degraded-duplicate";
+        payload.evidence = {
+          ...payload.evidence,
+          mode: "HISTORICAL_ORIGINAL_EVIDENCE",
+          eventId: assignment.id,
+          eventKey,
+        };
+        payload.money = {
+          ...payload.money,
+          currentTotal: null,
+          paidAmount: null,
+          deliveryFee: null,
+        };
+        payload.invoices = payload.invoices.map((invoice) => ({
+          id: invoice.id,
+          invoiceNumber: `#${invoice.id}`,
+          total: null,
+        }));
+        await withTx((tx) =>
+          createShipmentDispatchDocumentSnapshotsTx(tx, {
+            consignmentId: dispatched.consignmentId,
+            branchId: 1,
+            eventKey,
+            eventOccurredAt: slip.eventOccurredAt,
+            createdBy: 1,
+            payload,
+          }),
+        );
+      }
+      const frozen = await db().select().from(deliveryDocumentSnapshots);
+      await db()
+        .update(s.invoices)
+        .set({ paidAmount: "9000", status: "PARTIALLY_PAID" })
+        .where(eq(s.invoices.id, 2));
+      const before = await noDuplicateEffects();
+      const prepared = await withTx((tx) =>
+        prepareShipmentWorkflowDocumentsTx(tx, {
+          consignmentId: dispatched.consignmentId,
+          branchId: 1,
+        }),
+      );
+      expect(prepared.map((row) => row.id).sort()).toEqual(
+        frozen.map((row) => row.id).sort(),
+      );
+      expect(await db().select().from(deliveryDocumentSnapshots)).toEqual(
+        frozen,
+      );
+      const selected = [
+        "DISPATCH_SLIP",
+        "SHIPPING_LABEL",
+        "DELIVERY_MANIFEST",
+      ].map((type) => prepared.find((row) => row.documentType === type)!);
+      expect(selected.map((row) => row.id).sort()).toEqual(
+        committed.map((row) => row.id).sort(),
+      );
+      for (const row of selected.filter(
+        (row) => row.documentType !== "DELIVERY_MANIFEST",
+      ))
+        expect(row.payload).toMatchObject({
+          evidence: { mode: "COMMITTED_DISPATCH_EVENT" },
+          money: {
+            deliveryFee: "5000.00",
+            currentTotal: "20000.00",
+            paidAmount: "20000.00",
+          },
+          invoices: expect.arrayContaining([
+            expect.objectContaining({
+              id: 1,
+              invoiceNumber: "80001",
+              total: "10000.00",
+              paidAmount: "10000.00",
+              returnedTotal: "0.00",
+              status: "PAID",
+            }),
+          ]),
+        });
+      expect(await noDuplicateEffects()).toEqual(before);
+    },
+  );
   it("checks every locked implicit FR member before invoice-only authority can materialize an unbilled work order", async () => {
     await db().insert(s.workOrders).values({
       id: 51,
@@ -508,8 +649,10 @@ describe("atomic barcode batch dispatch", () => {
         .select()
         .from(deliveryDocumentSnapshots)
         .where(eq(deliveryDocumentSnapshots.sourceId, result.consignmentId));
-      expect(snapshots).toHaveLength(2);
-      for (const snapshot of snapshots) {
+      expect(snapshots).toHaveLength(3);
+      for (const snapshot of snapshots.filter(
+        (row) => row.documentType !== "DELIVERY_MANIFEST",
+      )) {
         const document = snapshot.payload as {
           invoiceIds: number[];
           money: {
@@ -518,9 +661,7 @@ describe("atomic barcode batch dispatch", () => {
             paidAmount: string;
           };
         };
-        expect(document.invoiceIds).toEqual(
-          invoiceCount === 1 ? [1] : [1, 2],
-        );
+        expect(document.invoiceIds).toEqual(invoiceCount === 1 ? [1] : [1, 2]);
         expect(document.money).toMatchObject({
           codAmount: "15000.00",
           currentTotal: "10000.00",
@@ -706,8 +847,10 @@ describe("atomic barcode batch dispatch", () => {
         .select()
         .from(deliveryDocumentSnapshots)
         .where(eq(deliveryDocumentSnapshots.sourceId, result.consignmentId));
-      expect(snapshots).toHaveLength(2);
-      for (const snapshot of snapshots) {
+      expect(snapshots).toHaveLength(3);
+      for (const snapshot of snapshots.filter(
+        (row) => row.documentType !== "DELIVERY_MANIFEST",
+      )) {
         const document = snapshot.payload as {
           invoiceIds: number[];
           money: { codAmount: string; currentTotal: string };
@@ -751,11 +894,13 @@ describe("atomic barcode batch dispatch", () => {
       .select()
       .from(deliveryDocumentSnapshots)
       .where(eq(deliveryDocumentSnapshots.sourceId, result.consignmentId));
-    expect(snapshotsBeforeReplay).toHaveLength(2);
+    expect(snapshotsBeforeReplay).toHaveLength(3);
     expect(result.documentSnapshotIds).toEqual(
       snapshotsBeforeReplay.map((row) => Number(row.id)).sort((a, b) => a - b),
     );
-    for (const snapshot of snapshotsBeforeReplay) {
+    for (const snapshot of snapshotsBeforeReplay.filter(
+      (row) => row.documentType !== "DELIVERY_MANIFEST",
+    )) {
       const document = snapshot.payload as {
         shipment: { members: Array<{ invoiceId: number | null }> };
         invoiceIds: number[];
@@ -881,6 +1026,7 @@ describe("atomic barcode batch dispatch", () => {
           action: "cancelAssignment",
           reason: "العميل ألغى",
           clientRequestId: "workflow-cancel-001",
+          physicalHeldConfirmed: true,
         },
         actor,
       ),

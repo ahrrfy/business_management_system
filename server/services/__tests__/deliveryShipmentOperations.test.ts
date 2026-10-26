@@ -370,6 +370,7 @@ describe("one physical shipment with independent invoice accounting", () => {
       consignmentId: 12,
       reason: "طلب العميل الاستلام من الفرع",
       clientRequestId: "cancel-all",
+      physicalHeldConfirmed: true,
     };
     await cancelShipmentAssignment(input, actor);
     const after = await snapshot();

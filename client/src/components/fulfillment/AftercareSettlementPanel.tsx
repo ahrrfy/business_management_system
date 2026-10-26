@@ -12,6 +12,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { D, fmt } from "@/lib/money";
 import { paymentMethodCompact } from "@shared/terms";
 import { confirm } from "@/lib/confirm";
+import { WorkflowPrintActions } from "@/components/delivery/workflow/WorkflowPrintActions";
 
 type Api = RouterInputs["delivery"]["fulfillment"]["aftercare"];
 type Detail = RouterOutputs["delivery"]["fulfillment"]["aftercare"]["get"];
@@ -194,6 +195,13 @@ export function AftercareSettlementPanel({
             <p className="text-sm">
               قيمة المخزون الصالح: {fmt(settlement.restoredValue)}
             </p>
+          )}
+          {settlement.status === "POSTED" && (
+            <WorkflowPrintActions
+              branchId={data.case.branchId}
+              settlementId={settlement.id}
+              mode="aftercare"
+            />
           )}
           <div className="flex flex-wrap gap-2">
             {settlement.status === "REQUESTED" &&

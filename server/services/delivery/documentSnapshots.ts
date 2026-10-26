@@ -1,10 +1,25 @@
-import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  inArray,
+  ne,
+  notInArray,
+  or,
+  sql,
+} from "drizzle-orm";
 import {
   deliveryConsignments,
   deliveryEvents,
+  deliveryParties,
+  deliveryRemittanceLines,
+  deliveryRemittances,
   deliveryShipmentMembers,
+  invoices,
 } from "../../../drizzle/schema";
 import {
+  aftercareExecutions,
   deliveryDocumentPrints,
   deliveryDocumentSnapshots,
 } from "../../../drizzle/fulfillmentSchema";
@@ -12,6 +27,7 @@ import type { WorkflowDocumentType } from "../../../shared/deliveryWorkflow";
 import type { Tx } from "../../db";
 import { fulfillmentError } from "../fulfillment/core";
 import { idempotencyHash } from "../idempotency";
+import { money, toDbMoney } from "../money";
 
 export type DeliveryDocumentLayout =
   | "A4_12MM"
@@ -109,7 +125,64 @@ export interface CreateShipmentDispatchDocumentsInput {
   createdBy: number;
   payload: ShipmentDispatchDocumentPayload;
   sourceVersion?: string;
-  documentTypes?: Array<"DISPATCH_SLIP" | "SHIPPING_LABEL">;
+  documentTypes?: Array<
+    "DISPATCH_SLIP" | "SHIPPING_LABEL" | "DELIVERY_MANIFEST"
+  >;
+}
+
+/** Thermal/A4 operational document: all values are frozen source facts, never a new posting. */
+export interface GenericWorkflowDocumentPayload {
+  schemaVersion: 1;
+  title: string;
+  documentNumber: string;
+  eventOccurredAt: string;
+  rows: Array<{ label: string; value: string }>;
+  totals: Array<{ label: string; value: string }>;
+  notice: string;
+}
+
+export type WorkflowDocumentBody = Omit<
+  GenericWorkflowDocumentPayload,
+  "schemaVersion" | "eventOccurredAt"
+>;
+
+function shipmentManifest(
+  payload: ShipmentDispatchDocumentPayload,
+): GenericWorkflowDocumentPayload {
+  return {
+    schemaVersion: 1,
+    title: "محضر تسليم طرود لجهة التوصيل",
+    documentNumber: payload.shipment.consignmentNumber,
+    eventOccurredAt: payload.eventOccurredAt,
+    rows: [
+      { label: "جهة التوصيل", value: payload.party.name },
+      {
+        label: "المستلم",
+        value: payload.recipient.name ?? "غير متاح في دليل الحدث",
+      },
+      ...payload.shipment.members.map((member) => ({
+        label: "إرسالية",
+        value: member.consignmentNumber,
+      })),
+    ],
+    totals: [
+      { label: "عدد الطرود", value: String(payload.shipment.members.length) },
+      ...(payload.money.codAmount == null
+        ? []
+        : [
+            {
+              label: "مطالبة العميل عند الإسناد",
+              value: payload.money.codAmount,
+            },
+          ]),
+      ...(payload.money.deliveryFee == null
+        ? []
+        : [{ label: "أجرة التوصيل", value: payload.money.deliveryFee }]),
+    ],
+    notice:
+      payload.evidence?.notice ??
+      "يثبت تسليم الطرود لجهة التوصيل؛ لا يثبت قبض العميل أو توريد النقد إلى المكتبة. الاسم: __________ التوقيع: __________",
+  };
 }
 
 function documentNumber(
@@ -117,7 +190,14 @@ function documentNumber(
   hash: string,
 ) {
   const kind = input.documentType.replaceAll("_", "-");
-  return `DDS-${kind}-${input.sourceId}-${hash.slice(0, 12)}`.slice(0, 80);
+  // A manifest can render the same rows on two distinct assignment events.
+  // Its immutable identity is the event plus payload, not the visible rows
+  // alone; otherwise the number unique key silently aliases reassignments.
+  const identityHash = idempotencyHash({ eventKey: input.eventKey, hash });
+  return `DDS-${kind}-${input.sourceId}-${identityHash.slice(0, 12)}`.slice(
+    0,
+    80,
+  );
 }
 
 function timestampSecond(value: Date): number {
@@ -211,7 +291,27 @@ export async function createDeliveryDocumentSnapshotTx(
       )
       .limit(1)
   )[0];
-  if (!snapshot) throw fulfillmentError("تعذر تثبيت لقطة المستند", "CONFLICT");
+  if (!snapshot) {
+    const [numberCollision] = await tx
+      .select({
+        eventKey: deliveryDocumentSnapshots.eventKey,
+        documentType: deliveryDocumentSnapshots.documentType,
+      })
+      .from(deliveryDocumentSnapshots)
+      .where(
+        eq(
+          deliveryDocumentSnapshots.documentNumber,
+          documentNumber(input, payloadHash),
+        ),
+      )
+      .limit(1);
+    throw fulfillmentError(
+      numberCollision
+        ? `رقم لقطة المستند مرتبط بحدث آخر (${numberCollision.documentType} / ${numberCollision.eventKey})`
+        : "تعذر تثبيت لقطة المستند",
+      "CONFLICT",
+    );
+  }
   assertSameSnapshot(snapshot, input, payloadHash);
   return { snapshot, idempotentReplay: false };
 }
@@ -247,11 +347,48 @@ export async function createShipmentDispatchDocumentSnapshotsTx(
       "CONFLICT",
     );
 
-  const sourceVersion = input.sourceVersion ?? idempotencyHash(input.payload);
+  let payload = input.payload;
+  let eventOccurredAt = input.eventOccurredAt;
+  if (
+    payload.evidence.mode === "COMMITTED_DISPATCH_EVENT" &&
+    payload.evidence.eventId == null
+  ) {
+    const { events, sources } = await shipmentAssignmentEventsTx(tx, input);
+    const assignment = events.find(isAssignmentEvent);
+    const source = sources.find((row) => row.id === assignment?.consignmentId);
+    const identity = assignmentIdentity(assignment?.payload);
+    if (
+      !assignment ||
+      !source ||
+      assignment.actorUserId !== input.createdBy ||
+      Number(identity?.partyId) !== payload.shipment.partyId ||
+      identity?.sourceType !== source.sourceType ||
+      Number(identity?.sourceId) !== source.sourceId ||
+      !payload.shipment.members.some(
+        (member) =>
+          member.id === source.id &&
+          member.sourceType === source.sourceType &&
+          member.sourceId === source.sourceId,
+      )
+    )
+      throw fulfillmentError(
+        "حدث الإسناد لا يثبت الجهة والمصدر الحاليين",
+        "CONFLICT",
+      );
+    if (assignment.consignmentId !== input.consignmentId)
+      eventOccurredAt = assignment.occurredAt;
+    payload = {
+      ...payload,
+      eventOccurredAt: eventOccurredAt.toISOString(),
+      evidence: { ...payload.evidence, eventId: assignment.id },
+    };
+  }
+  const sourceVersion = input.sourceVersion ?? idempotencyHash(payload);
   const snapshotIds: number[] = [];
   const requestedTypes = new Set(
     input.documentTypes ?? ["DISPATCH_SLIP", "SHIPPING_LABEL"],
   );
+  requestedTypes.add("DELIVERY_MANIFEST");
   for (const document of [
     {
       documentType: "DISPATCH_SLIP" as const,
@@ -260,6 +397,10 @@ export async function createShipmentDispatchDocumentSnapshotsTx(
     {
       documentType: "SHIPPING_LABEL" as const,
       layout: "LABEL_100X150_SAFE_3" as const,
+    },
+    {
+      documentType: "DELIVERY_MANIFEST" as const,
+      layout: "THERMAL_80_CONTENT_72" as const,
     },
   ]) {
     if (!requestedTypes.has(document.documentType)) continue;
@@ -272,8 +413,11 @@ export async function createShipmentDispatchDocumentSnapshotsTx(
       branchId: input.branchId,
       shiftId: input.shiftId ?? null,
       eventKey: input.eventKey,
-      eventOccurredAt: input.eventOccurredAt,
-      payload: { ...input.payload, documentType: document.documentType },
+      eventOccurredAt,
+      payload:
+        document.documentType === "DELIVERY_MANIFEST"
+          ? shipmentManifest(payload)
+          : { ...payload, documentType: document.documentType },
       createdBy: input.createdBy,
     });
     snapshotIds.push(Number(created.snapshot.id));
@@ -285,12 +429,122 @@ const assignmentEventTypes = [
   "OUT_FOR_DELIVERY",
   "ASSIGNMENT_REACTIVATED",
   "REASSIGNED",
+  "AFTERCARE_DISPATCHED",
 ] as const;
 
 function eventPayload(value: unknown): Record<string, unknown> | null {
   return value != null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+function assignmentIdentity(value: unknown): Record<string, unknown> | null {
+  const payload = eventPayload(value);
+  // Native charge-only dispatches recorded the request FK and carrier directly.
+  // Normalize that immutable identity without reading today's request values.
+  const requestId = Number(payload?.fulfillmentRequestId);
+  return payload?.sourceType == null &&
+    payload?.sourceId == null &&
+    Number.isSafeInteger(requestId) &&
+    requestId > 0
+    ? { ...payload, sourceType: "FULFILLMENT_REQUEST", sourceId: requestId }
+    : payload;
+}
+
+function isAssignmentEvent(event: typeof deliveryEvents.$inferSelect) {
+  const payload = eventPayload(event.payload);
+  return (
+    event.eventType !== "OUT_FOR_DELIVERY" ||
+    ["partyId", "sourceType", "sourceId"].some((key) =>
+      Object.hasOwn(payload ?? {}, key),
+    )
+  );
+}
+
+/** A closed fee leader keeps its history; the latest real member assignment proves redispatch. */
+async function shipmentAssignmentEventsTx(
+  tx: Tx,
+  input: { consignmentId: number; branchId: number },
+) {
+  const [leader] = await tx
+    .select()
+    .from(deliveryConsignments)
+    .where(
+      and(
+        eq(deliveryConsignments.id, input.consignmentId),
+        eq(deliveryConsignments.branchId, input.branchId),
+      ),
+    )
+    .limit(1);
+  if (!leader)
+    throw fulfillmentError("الإرسالية خارج نطاق الفرع الحالي", "FORBIDDEN");
+  let sources = [leader];
+  if (
+    ["CANCELLED", "RETURNED", "WRITTEN_OFF"].includes(leader.status) ||
+    ["CANCELLED", "RETURNED"].includes(leader.parcelStatus)
+  ) {
+    const grouped = await tx
+      .select({ row: deliveryConsignments })
+      .from(deliveryShipmentMembers)
+      .innerJoin(
+        deliveryConsignments,
+        eq(deliveryConsignments.id, deliveryShipmentMembers.consignmentId),
+      )
+      .where(
+        and(
+          eq(deliveryShipmentMembers.leaderConsignmentId, leader.id),
+          eq(deliveryConsignments.branchId, input.branchId),
+        ),
+      );
+    if (grouped.length) sources = grouped.map(({ row }) => row);
+  }
+  const events = await tx
+    .select()
+    .from(deliveryEvents)
+    .where(
+      and(
+        inArray(
+          deliveryEvents.consignmentId,
+          sources.map((row) => row.id),
+        ),
+        inArray(deliveryEvents.eventType, [...assignmentEventTypes]),
+      ),
+    )
+    .orderBy(desc(deliveryEvents.occurredAt), desc(deliveryEvents.id));
+  const leaderAssignment = events.find(
+    (event) => event.consignmentId === leader.id && isAssignmentEvent(event),
+  );
+  // Initial member events follow the leader in the same group operation. Only
+  // assignments after the leader first closed can supersede that group's pack.
+  const [closure] =
+    sources.length > 1 && leaderAssignment
+      ? await tx
+          .select({ id: deliveryEvents.id })
+          .from(deliveryEvents)
+          .where(
+            and(
+              eq(deliveryEvents.consignmentId, leader.id),
+              sql`${deliveryEvents.id} > ${leaderAssignment.id}`,
+              or(
+                inArray(deliveryEvents.toParcelStatus, [
+                  "CANCELLED",
+                  "RETURNED",
+                ]),
+                eq(deliveryEvents.toMoneyStatus, "WRITTEN_OFF"),
+              ),
+            ),
+          )
+          .orderBy(asc(deliveryEvents.id))
+          .limit(1)
+      : [];
+  return {
+    sources,
+    events: events.filter(
+      (event) =>
+        event.consignmentId === leader.id ||
+        (closure != null && event.id > closure.id),
+    ),
+  };
 }
 
 /**
@@ -314,6 +568,7 @@ export async function bootstrapHistoricalShipmentDocumentSnapshotsTx(
         inArray(deliveryDocumentSnapshots.documentType, [
           "DISPATCH_SLIP",
           "SHIPPING_LABEL",
+          "DELIVERY_MANIFEST",
         ]),
       ),
     );
@@ -338,30 +593,62 @@ export async function bootstrapHistoricalShipmentDocumentSnapshotsTx(
   if (Number(leader.branchId) !== input.branchId)
     throw fulfillmentError("الإرسالية خارج نطاق الفرع الحالي", "FORBIDDEN");
 
-  const events = await tx
-    .select()
-    .from(deliveryEvents)
-    .where(
-      and(
-        eq(deliveryEvents.consignmentId, input.consignmentId),
-        or(
-          ...assignmentEventTypes.map((type) =>
-            eq(deliveryEvents.eventType, type),
-          ),
+  const { events, sources } = await shipmentAssignmentEventsTx(tx, input);
+  // OUT_FOR_DELIVERY also records a later departure/retry, without assignment
+  // identity. Do not let that hide the last actual assignment, or skip a newer
+  // assignment merely because its identity conflicts with today's shipment.
+  const originalEvent = events.find(isAssignmentEvent);
+  const assignmentSource = sources.find(
+    (row) => row.id === originalEvent?.consignmentId,
+  );
+  let originalPayload = assignmentIdentity(originalEvent?.payload);
+  // Native aftercare events originally saved the execution identity only.
+  // Its persisted dispatch association must independently prove this carrier,
+  // consignment and actor; never infer them from the current directory alone.
+  if (
+    originalEvent?.eventType === "AFTERCARE_DISPATCHED" &&
+    originalPayload?.partyId == null &&
+    originalPayload?.sourceType == null &&
+    originalPayload?.sourceId == null &&
+    Number.isSafeInteger(Number(originalPayload?.caseId)) &&
+    Number(originalPayload?.caseId) > 0 &&
+    leader.sourceType === "AFTERCARE_EXECUTION" &&
+    Number(originalPayload?.aftercareExecutionId) === leader.sourceId
+  ) {
+    const [execution] = await tx
+      .select({
+        id: aftercareExecutions.id,
+        partyId: aftercareExecutions.partyId,
+      })
+      .from(aftercareExecutions)
+      .where(
+        and(
+          eq(aftercareExecutions.id, leader.sourceId),
+          eq(aftercareExecutions.caseId, Number(originalPayload?.caseId)),
+          eq(aftercareExecutions.consignmentId, leader.id),
+          eq(aftercareExecutions.branchId, input.branchId),
+          eq(aftercareExecutions.partyId, leader.partyId),
+          eq(aftercareExecutions.dispatchedBy, originalEvent.actorUserId ?? 0),
         ),
-      ),
-    )
-    .orderBy(desc(deliveryEvents.occurredAt), desc(deliveryEvents.id));
-  const originalEvent = events.find((event) => {
-    const payload = eventPayload(event.payload);
-    return (
-      event.actorUserId != null &&
-      Number(payload?.partyId) === Number(leader.partyId) &&
-      String(payload?.sourceType ?? "") === leader.sourceType &&
-      Number(payload?.sourceId) === Number(leader.sourceId)
-    );
-  });
-  if (!originalEvent || originalEvent.actorUserId == null)
+      )
+      .for("share")
+      .limit(1);
+    if (execution)
+      originalPayload = {
+        ...originalPayload,
+        partyId: execution.partyId,
+        sourceType: "AFTERCARE_EXECUTION",
+        sourceId: execution.id,
+      };
+  }
+  if (
+    !originalEvent ||
+    !assignmentSource ||
+    originalEvent.actorUserId == null ||
+    Number(originalPayload?.partyId) !== Number(leader.partyId) ||
+    String(originalPayload?.sourceType ?? "") !== assignmentSource.sourceType ||
+    Number(originalPayload?.sourceId) !== Number(assignmentSource.sourceId)
+  )
     throw fulfillmentError(
       "لا تتوفر واقعة إسناد أصلية متطابقة؛ لا يمكن إنشاء نسخة تاريخية من القيم الحية",
       "CONFLICT",
@@ -406,34 +693,115 @@ export async function bootstrapHistoricalShipmentDocumentSnapshotsTx(
     eventId: Number(originalEvent.id),
     eventKey: originalEvent.eventKey,
   }).slice(0, 40)}`;
-  const sameEventExisting = existing.filter((row) => {
+  const peerEventKeys = new Set(
+    existing
+      .filter((row) => {
+        const payload = eventPayload(row.payload);
+        const evidence = eventPayload(payload?.evidence);
+        if (evidence?.eventId != null)
+          return Number(evidence.eventId) === Number(originalEvent.id);
+        if (row.eventKey === originalEvent.eventKey) return true;
+        // Older committed group/workflow snapshots used their operation key.
+        // Reuse them only when frozen source/actor identity identifies one
+        // assignment, or its event second disambiguates repeated assignments.
+        const shipment = eventPayload(payload?.shipment);
+        if (
+          evidence?.mode !== "COMMITTED_DISPATCH_EVENT" ||
+          evidence.eventKey !== row.eventKey ||
+          Number(shipment?.consignmentId) !== leader.id ||
+          Number(shipment?.branchId) !== input.branchId
+        )
+          return false;
+        const matches = events.filter((event) => {
+          const identity = assignmentIdentity(event.payload);
+          const frozenSource =
+            event.consignmentId === Number(shipment?.consignmentId)
+              ? shipment
+              : Array.isArray(shipment?.members)
+                ? shipment.members
+                    .map(eventPayload)
+                    .find(
+                      (member) => Number(member?.id) === event.consignmentId,
+                    )
+                : null;
+          return (
+            isAssignmentEvent(event) &&
+            event.actorUserId === row.createdBy &&
+            Number(identity?.partyId) === Number(shipment?.partyId) &&
+            frozenSource != null &&
+            identity?.sourceType === frozenSource.sourceType &&
+            Number(identity?.sourceId) === Number(frozenSource.sourceId)
+          );
+        });
+        if (matches.length === 1) return matches[0].id === originalEvent.id;
+        const simultaneous = matches.filter(
+          (event) =>
+            timestampSecond(event.occurredAt) ===
+            timestampSecond(row.eventOccurredAt),
+        );
+        if (
+          simultaneous.length > 1 &&
+          simultaneous.some((event) => event.id === originalEvent.id)
+        )
+          throw fulfillmentError(
+            "تعذر ربط لقطة الإسناد المحفوظة بواقعة واحدة؛ راجع دليل الإسناد الأصلي",
+            "CONFLICT",
+          );
+        return (
+          simultaneous.length === 1 && simultaneous[0].id === originalEvent.id
+        );
+      })
+      .map((row) => row.eventKey),
+  );
+  let sameEventExisting = existing.filter((row) => {
     const payload = eventPayload(row.payload);
     const evidence = eventPayload(payload?.evidence);
     return (
       row.eventKey === eventKey ||
+      peerEventKeys.has(row.eventKey) ||
       Number(evidence?.eventId) === Number(originalEvent.id)
     );
   });
+  // Keep audit history, but repair/print one consistent committed pack ahead of
+  // degraded historical copies which an older preparation may have appended.
+  const committedPeer = sameEventExisting
+    .filter(
+      (row) =>
+        row.documentType !== "DELIVERY_MANIFEST" &&
+        eventPayload(eventPayload(row.payload)?.evidence)?.mode ===
+          "COMMITTED_DISPATCH_EVENT",
+    )
+    .sort((a, b) => b.id - a.id)[0];
+  if (committedPeer)
+    sameEventExisting = sameEventExisting.filter(
+      (row) => row.eventKey === committedPeer.eventKey,
+    );
   const existingTypes = new Set(
     sameEventExisting.map((row) => row.documentType),
   );
-  if (existingTypes.has("DISPATCH_SLIP") && existingTypes.has("SHIPPING_LABEL"))
+  if (
+    existingTypes.has("DISPATCH_SLIP") &&
+    existingTypes.has("SHIPPING_LABEL") &&
+    existingTypes.has("DELIVERY_MANIFEST")
+  )
     return sameEventExisting.map((row) => Number(row.id)).sort((a, b) => a - b);
 
   // A prior failure may have persisted only one document for this exact
   // assignment. Complete the pair from that immutable row itself.
-  const immutablePeer = sameEventExisting[0];
+  const immutablePeer = sameEventExisting.find(
+    (row) => row.documentType !== "DELIVERY_MANIFEST",
+  );
   if (immutablePeer) {
-    const missingTypes = (["DISPATCH_SLIP", "SHIPPING_LABEL"] as const).filter(
-      (type) => !existingTypes.has(type),
-    );
+    const missingTypes = (
+      ["DISPATCH_SLIP", "SHIPPING_LABEL", "DELIVERY_MANIFEST"] as const
+    ).filter((type) => !existingTypes.has(type));
     const created: number[] = [];
     for (const documentType of missingTypes) {
       const peerPayload = eventPayload(immutablePeer.payload);
       const row = await createDeliveryDocumentSnapshotTx(tx, {
         documentType,
         layout:
-          documentType === "DISPATCH_SLIP"
+          documentType !== "SHIPPING_LABEL"
             ? "THERMAL_80_CONTENT_72"
             : "LABEL_100X150_SAFE_3",
         sourceType: "SHIPMENT",
@@ -443,10 +811,35 @@ export async function bootstrapHistoricalShipmentDocumentSnapshotsTx(
         shiftId: immutablePeer.shiftId,
         eventKey: immutablePeer.eventKey,
         eventOccurredAt: immutablePeer.eventOccurredAt,
-        payload: {
-          ...(peerPayload ?? { immutablePayload: immutablePeer.payload }),
-          documentType,
-        },
+        payload:
+          documentType === "DELIVERY_MANIFEST"
+            ? eventPayload(peerPayload?.shipment) &&
+              eventPayload(peerPayload?.party) &&
+              eventPayload(peerPayload?.recipient) &&
+              eventPayload(peerPayload?.money) &&
+              Array.isArray(eventPayload(peerPayload?.shipment)?.members)
+              ? shipmentManifest(
+                  immutablePeer.payload as ShipmentDispatchDocumentPayload,
+                )
+              : {
+                  schemaVersion: 1,
+                  title: "محضر تسليم طرود لجهة التوصيل",
+                  documentNumber: leader.consignmentNumber,
+                  eventOccurredAt: immutablePeer.eventOccurredAt.toISOString(),
+                  rows: [
+                    {
+                      label: "مصدر الدليل",
+                      value: immutablePeer.documentNumber,
+                    },
+                  ],
+                  totals: [],
+                  notice:
+                    "نسخة من دليل الإسناد المحفوظ؛ بيانات الحدث غير المتاحة لا تُستبدل بقيم اليوم.",
+                }
+            : {
+                ...(peerPayload ?? { immutablePayload: immutablePeer.payload }),
+                documentType,
+              },
         createdBy: immutablePeer.createdBy,
       });
       created.push(Number(row.snapshot.id));
@@ -497,7 +890,10 @@ export async function bootstrapHistoricalShipmentDocumentSnapshotsTx(
     },
     party: {
       id: Number(leader.partyId),
-      name: `جهة التوصيل #${Number(leader.partyId)} (الاسم وقت الإسناد غير متاح)`,
+      name:
+        typeof eventPayload(originalEvent.payload)?.partyName === "string"
+          ? String(eventPayload(originalEvent.payload)?.partyName)
+          : `جهة التوصيل #${Number(leader.partyId)} (الاسم وقت الإسناد غير متاح)`,
     },
     recipient: {
       name: leader.recipientName,
@@ -537,6 +933,394 @@ export async function bootstrapHistoricalShipmentDocumentSnapshotsTx(
   return created;
 }
 
+/** Called only in the transaction which has just committed this assignment event. */
+export async function captureShipmentAssignmentDocumentsTx(
+  tx: Tx,
+  input: { consignmentId: number; branchId: number; eventKey: string },
+) {
+  const [leader] = await tx
+    .select()
+    .from(deliveryConsignments)
+    .where(
+      and(
+        eq(deliveryConsignments.id, input.consignmentId),
+        eq(deliveryConsignments.branchId, input.branchId),
+      ),
+    )
+    .for("update")
+    .limit(1);
+  if (!leader)
+    throw fulfillmentError("الإرسالية خارج نطاق الفرع الحالي", "FORBIDDEN");
+  const [event] = await tx
+    .select()
+    .from(deliveryEvents)
+    .where(
+      and(
+        eq(deliveryEvents.consignmentId, leader.id),
+        eq(deliveryEvents.eventKey, input.eventKey),
+        inArray(deliveryEvents.eventType, [...assignmentEventTypes]),
+      ),
+    )
+    .limit(1);
+  const recorded = assignmentIdentity(event?.payload);
+  if (
+    !event?.actorUserId ||
+    Number(recorded?.partyId) !== leader.partyId ||
+    recorded?.sourceType !== leader.sourceType ||
+    Number(recorded?.sourceId) !== leader.sourceId
+  )
+    throw fulfillmentError(
+      "حدث الإسناد لا يثبت الجهة والمصدر الحاليين",
+      "CONFLICT",
+    );
+  const [party] = await tx
+    .select({ name: deliveryParties.name })
+    .from(deliveryParties)
+    .where(eq(deliveryParties.id, leader.partyId))
+    .for("share")
+    .limit(1);
+  const grouped = await tx
+    .select({ row: deliveryConsignments })
+    .from(deliveryShipmentMembers)
+    .innerJoin(
+      deliveryConsignments,
+      eq(deliveryConsignments.id, deliveryShipmentMembers.consignmentId),
+    )
+    .where(
+      and(
+        eq(deliveryShipmentMembers.leaderConsignmentId, leader.id),
+        notInArray(deliveryConsignments.status, [
+          "CANCELLED",
+          "RETURNED",
+          "WRITTEN_OFF",
+        ]),
+        notInArray(deliveryConsignments.parcelStatus, [
+          "CANCELLED",
+          "RETURNED",
+        ]),
+      ),
+    )
+    .orderBy(asc(deliveryConsignments.id));
+  const members = grouped.length ? grouped.map(({ row }) => row) : [leader];
+  const invoiceIds = Array.from(
+    new Set(
+      members.flatMap((row) => (row.invoiceId == null ? [] : [row.invoiceId])),
+    ),
+  );
+  const originals = invoiceIds.length
+    ? await tx
+        .select({
+          id: invoices.id,
+          invoiceNumber: invoices.invoiceNumber,
+          total: invoices.total,
+          paidAmount: invoices.paidAmount,
+          returnedTotal: invoices.returnedTotal,
+          status: invoices.status,
+        })
+        .from(invoices)
+        .where(inArray(invoices.id, invoiceIds))
+        .orderBy(asc(invoices.id))
+        .for("share")
+    : [];
+  const payload: ShipmentDispatchDocumentPayload = {
+    schemaVersion: 1,
+    operationId: event.eventKey,
+    eventOccurredAt: event.occurredAt.toISOString(),
+    evidence: {
+      mode: "COMMITTED_DISPATCH_EVENT",
+      eventId: event.id,
+      eventKey: event.eventKey,
+      unavailableFields: [],
+    },
+    shipment: {
+      consignmentId: leader.id,
+      consignmentNumber: leader.consignmentNumber,
+      fulfillmentRequestId: leader.fulfillmentRequestId,
+      branchId: leader.branchId,
+      partyId: leader.partyId,
+      assignedUserId: leader.assignedUserId,
+      sourceType: leader.sourceType,
+      sourceId: leader.sourceId,
+      members: members.map((row) => ({
+        id: row.id,
+        consignmentNumber: row.consignmentNumber,
+        invoiceId: row.invoiceId,
+        sourceType: row.sourceType,
+        sourceId: row.sourceId,
+      })),
+    },
+    party: {
+      id: leader.partyId,
+      name: party?.name ?? `جهة التوصيل #${leader.partyId}`,
+    },
+    recipient: {
+      name: leader.recipientName,
+      phone: leader.recipientPhone,
+      address: leader.deliveryAddress,
+      governorate: leader.governorate,
+    },
+    money: {
+      codAmount: toDbMoney(
+        members.reduce((sum, row) => sum.plus(row.codAmount), money(0)),
+      ),
+      deliveryFee: leader.deliveryFee,
+      feeCollection: leader.feeCollection,
+      customerCollectionAtDispatch: "0.00",
+      currentTotal: toDbMoney(
+        originals.reduce(
+          (sum, row) =>
+            sum.plus(money(row.total).minus(row.returnedTotal ?? "0")),
+          money(0),
+        ),
+      ),
+      paidAmount: toDbMoney(
+        originals.reduce((sum, row) => sum.plus(row.paidAmount), money(0)),
+      ),
+    },
+    invoiceIds,
+    invoices: originals,
+    aftercareNotice:
+      leader.sourceType === "AFTERCARE_EXECUTION"
+        ? "تحصيل العميل صفر — الأجرة على المكتبة"
+        : null,
+  };
+  return createShipmentDispatchDocumentSnapshotsTx(tx, {
+    consignmentId: leader.id,
+    branchId: leader.branchId,
+    eventKey: event.eventKey,
+    eventOccurredAt: event.occurredAt,
+    createdBy: event.actorUserId,
+    payload,
+  });
+}
+
+/** Rebuild an operational page only from the immutable event's explicitly saved body. */
+export async function createRecordedShipmentDocumentTx(
+  tx: Tx,
+  input: {
+    consignmentId: number;
+    branchId: number;
+    eventKey: string;
+    documentType: "PHYSICAL_RETURN_RECEIPT" | "DELIVERY_MANIFEST";
+  },
+) {
+  const [event] = await tx
+    .select()
+    .from(deliveryEvents)
+    .where(eq(deliveryEvents.eventKey, input.eventKey))
+    .limit(1);
+  const [leader] = await tx
+    .select({ branchId: deliveryConsignments.branchId })
+    .from(deliveryConsignments)
+    .where(eq(deliveryConsignments.id, input.consignmentId))
+    .limit(1);
+  if (!leader || leader.branchId !== input.branchId)
+    throw fulfillmentError(
+      "المستند خارج نطاق الشحنة والفرع الحالي",
+      "FORBIDDEN",
+    );
+  if (event && event.consignmentId !== input.consignmentId) {
+    const [member] = await tx
+      .select({ id: deliveryShipmentMembers.consignmentId })
+      .from(deliveryShipmentMembers)
+      .where(
+        and(
+          eq(deliveryShipmentMembers.leaderConsignmentId, input.consignmentId),
+          eq(deliveryShipmentMembers.consignmentId, event.consignmentId),
+        ),
+      )
+      .limit(1);
+    if (!member)
+      throw fulfillmentError(
+        "حدث المستند لا ينتمي إلى أعضاء هذه الشحنة",
+        "CONFLICT",
+      );
+  }
+  const recorded = eventPayload(event?.payload);
+  const body = eventPayload(recorded?.document);
+  if (
+    !event?.actorUserId ||
+    Number(recorded?.branchId) !== input.branchId ||
+    Number(recorded?.leaderConsignmentId) !== input.consignmentId ||
+    !body ||
+    recorded?.documentType !== input.documentType ||
+    typeof body.title !== "string" ||
+    typeof body.documentNumber !== "string" ||
+    typeof body.notice !== "string" ||
+    !Array.isArray(body.rows) ||
+    !Array.isArray(body.totals) ||
+    [...body.rows, ...body.totals].some(
+      (row) =>
+        !eventPayload(row) ||
+        typeof row.label !== "string" ||
+        typeof row.value !== "string",
+    )
+  )
+    throw fulfillmentError(
+      "لا يوجد دليل حدث أصلي صالح لمستند المحطة",
+      "CONFLICT",
+    );
+  const payload: GenericWorkflowDocumentPayload = {
+    schemaVersion: 1,
+    title: body.title,
+    documentNumber: body.documentNumber,
+    eventOccurredAt: event.occurredAt.toISOString(),
+    rows: body.rows as GenericWorkflowDocumentPayload["rows"],
+    totals: body.totals as GenericWorkflowDocumentPayload["totals"],
+    notice: body.notice,
+  };
+  const created = await createDeliveryDocumentSnapshotTx(tx, {
+    documentType: input.documentType,
+    layout: "THERMAL_80_CONTENT_72",
+    sourceType: "SHIPMENT",
+    sourceId: input.consignmentId,
+    sourceVersion: idempotencyHash({ eventId: event.id, payload }),
+    branchId: input.branchId,
+    eventKey: event.eventKey,
+    eventOccurredAt: event.occurredAt,
+    payload,
+    createdBy: event.actorUserId,
+  });
+  return Number(created.snapshot.id);
+}
+
+/** Prepare metadata-only pages for a real shipment and its persisted financial documents. */
+export async function prepareShipmentWorkflowDocumentsTx(
+  tx: Tx,
+  input: { consignmentId: number; branchId: number },
+) {
+  const assignmentSnapshotIds = new Set(
+    await bootstrapHistoricalShipmentDocumentSnapshotsTx(tx, input),
+  );
+  const grouped = await tx
+    .select({ id: deliveryShipmentMembers.consignmentId })
+    .from(deliveryShipmentMembers)
+    .where(
+      eq(deliveryShipmentMembers.leaderConsignmentId, input.consignmentId),
+    );
+  const memberIds = grouped.length
+    ? grouped.map((row) => row.id)
+    : [input.consignmentId];
+  const events = await tx
+    .select()
+    .from(deliveryEvents)
+    .where(inArray(deliveryEvents.consignmentId, memberIds))
+    .orderBy(asc(deliveryEvents.id));
+  for (const event of events) {
+    const recorded = eventPayload(event.payload);
+    if (
+      Number(recorded?.leaderConsignmentId) !== input.consignmentId ||
+      Number(recorded?.branchId) !== input.branchId ||
+      !recorded?.document
+    )
+      continue;
+    if (
+      recorded.documentType === "PHYSICAL_RETURN_RECEIPT" ||
+      recorded.documentType === "DELIVERY_MANIFEST"
+    )
+      await createRecordedShipmentDocumentTx(tx, {
+        ...input,
+        eventKey: event.eventKey,
+        documentType: recorded.documentType,
+      });
+  }
+  const relevant = await tx
+    .select()
+    .from(deliveryRemittanceLines)
+    .where(inArray(deliveryRemittanceLines.consignmentId, memberIds))
+    .orderBy(asc(deliveryRemittanceLines.id));
+  const legacyBindings = await tx
+    .select({ remittanceId: deliveryConsignments.remittanceId })
+    .from(deliveryConsignments)
+    .where(inArray(deliveryConsignments.id, memberIds));
+  const remittanceIds = Array.from(
+    new Set([
+      ...relevant.map((row) => row.remittanceId),
+      ...legacyBindings.flatMap((row) =>
+        row.remittanceId == null ? [] : [row.remittanceId],
+      ),
+    ]),
+  );
+  const remittances = remittanceIds.length
+    ? await tx
+        .select()
+        .from(deliveryRemittances)
+        .where(
+          and(
+            inArray(deliveryRemittances.id, remittanceIds),
+            eq(deliveryRemittances.branchId, input.branchId),
+          ),
+        )
+        .orderBy(asc(deliveryRemittances.id))
+    : [];
+  for (const remittance of remittances) {
+    if (remittance.receivedBy == null) continue; // No invented historical issuer.
+    const allocation = relevant.filter(
+      (row) => row.remittanceId === remittance.id,
+    );
+    for (const documentType of [
+      "REMITTANCE_RECEIPT",
+      "PARTY_SETTLEMENT",
+    ] as const) {
+      const payload: GenericWorkflowDocumentPayload = {
+        schemaVersion: 1,
+        title:
+          documentType === "REMITTANCE_RECEIPT"
+            ? "إيصال توريد جهة التوصيل"
+            : "كشف تسوية جهة التوصيل",
+        documentNumber: remittance.remittanceNumber,
+        eventOccurredAt: remittance.receivedAt.toISOString(),
+        rows: [
+          { label: "معرف جهة التوصيل", value: String(remittance.partyId) },
+          {
+            label: "الوردية المستلمة",
+            value:
+              remittance.shiftId == null
+                ? "غير مسجلة في سند التوريد"
+                : String(remittance.shiftId),
+          },
+          ...allocation.map((line) => ({
+            label: `حصة الإرسالية #${line.consignmentId}`,
+            value: `مطبق ${line.grossApplied}؛ نقد ${line.cashReceived}؛ حسم أجور ${line.feeOffset}`,
+          })),
+        ],
+        totals: [
+          { label: "إجمالي تحصيلات الدفعة", value: remittance.collectedTotal },
+          { label: "الأجور", value: remittance.feesTotal },
+          { label: "الاستقطاعات", value: remittance.deductionsTotal },
+          { label: "صافي التوريد", value: remittance.netRemitted },
+          { label: "العجز المتبقي", value: remittance.shortfallTotal },
+        ],
+        notice:
+          "نسخة من سند التوريد الفعلي بأرقامه ووقت استلامه. إجماليات الدفعة تخص جميع إرساليات السند؛ الصفوف تبين حصة هذه الشحنة فقط. لا يمثل تحصيلاً جديداً من العميل ولا يرحّل نقداً جديداً.",
+      };
+      await createDeliveryDocumentSnapshotTx(tx, {
+        documentType,
+        layout: "THERMAL_80_CONTENT_72",
+        sourceType: "SHIPMENT",
+        sourceId: input.consignmentId,
+        sourceVersion: idempotencyHash(payload),
+        branchId: input.branchId,
+        shiftId: remittance.shiftId,
+        eventKey: `SHIPMENT:${input.consignmentId}:REMITTANCE:${remittance.id}`,
+        eventOccurredAt: remittance.receivedAt,
+        payload,
+        createdBy: remittance.receivedBy,
+      });
+    }
+  }
+  const documents = await listDeliveryDocumentSnapshotsTx(tx, {
+    sourceType: "SHIPMENT",
+    sourceId: input.consignmentId,
+    branchId: input.branchId,
+  });
+  return documents.sort(
+    (a, b) =>
+      Number(assignmentSnapshotIds.has(b.id)) -
+      Number(assignmentSnapshotIds.has(a.id)),
+  );
+}
+
 export interface RequestDeliveryDocumentPrintInput {
   snapshotId: number;
   branchId: number;
@@ -562,6 +1346,24 @@ export async function requestDeliveryDocumentPrintTx(
     reason,
     printerKey: input.printerKey ?? null,
   });
+  const [snapshot] = await tx
+    .select({
+      id: deliveryDocumentSnapshots.id,
+      branchId: deliveryDocumentSnapshots.branchId,
+      documentType: deliveryDocumentSnapshots.documentType,
+    })
+    .from(deliveryDocumentSnapshots)
+    .where(eq(deliveryDocumentSnapshots.id, input.snapshotId))
+    .for("update")
+    .limit(1);
+  if (!snapshot) throw fulfillmentError("لقطة المستند غير موجودة", "NOT_FOUND");
+  if (snapshot.branchId !== input.branchId)
+    throw fulfillmentError("المستند خارج نطاق الفرع الحالي", "FORBIDDEN");
+  if (snapshot.documentType === "INVOICE")
+    throw fulfillmentError(
+      "طباعة الفاتورة تتطلب مسار الفواتير وصلاحيته المستقلة",
+      "FORBIDDEN",
+    );
   const previous = (
     await tx
       .select()
@@ -575,19 +1377,32 @@ export async function requestDeliveryDocumentPrintTx(
       throw fulfillmentError("مفتاح الطباعة مستخدم لطلب مختلف", "CONFLICT");
     return { print: previous, idempotentReplay: true };
   }
-  const snapshot = (
-    await tx
-      .select({
-        id: deliveryDocumentSnapshots.id,
-        branchId: deliveryDocumentSnapshots.branchId,
-      })
-      .from(deliveryDocumentSnapshots)
-      .where(eq(deliveryDocumentSnapshots.id, input.snapshotId))
-      .limit(1)
-  )[0];
-  if (!snapshot) throw fulfillmentError("لقطة المستند غير موجودة", "NOT_FOUND");
-  if (snapshot.branchId !== input.branchId)
-    throw fulfillmentError("المستند خارج نطاق الفرع الحالي", "FORBIDDEN");
+  if (input.copyType === "ORIGINAL") {
+    const existingOriginal = (
+      await tx
+        .select({
+          id: deliveryDocumentPrints.id,
+          status: deliveryDocumentPrints.status,
+        })
+        .from(deliveryDocumentPrints)
+        .where(
+          and(
+            eq(deliveryDocumentPrints.snapshotId, input.snapshotId),
+            eq(deliveryDocumentPrints.copyType, "ORIGINAL"),
+            inArray(deliveryDocumentPrints.status, ["REQUESTED", "SENT"]),
+          ),
+        )
+        .for("update")
+        .limit(1)
+    )[0];
+    if (existingOriginal)
+      throw fulfillmentError(
+        existingOriginal.status === "SENT"
+          ? "طُبعت النسخة الأصلية؛ استخدم إعادة الطباعة مع تسجيل السبب"
+          : "طلب طباعة النسخة الأصلية ما زال قيد التنفيذ؛ أكمل نتيجته قبل إنشاء محاولة أخرى",
+        "CONFLICT",
+      );
+  }
   await tx
     .insert(deliveryDocumentPrints)
     .values({
@@ -632,13 +1447,21 @@ export async function completeDeliveryDocumentPrintTx(
   if (!row) throw fulfillmentError("طلب الطباعة غير موجود", "NOT_FOUND");
   const snapshot = (
     await tx
-      .select({ branchId: deliveryDocumentSnapshots.branchId })
+      .select({
+        branchId: deliveryDocumentSnapshots.branchId,
+        documentType: deliveryDocumentSnapshots.documentType,
+      })
       .from(deliveryDocumentSnapshots)
       .where(eq(deliveryDocumentSnapshots.id, row.snapshotId))
       .limit(1)
   )[0];
   if (!snapshot || snapshot.branchId !== input.branchId)
     throw fulfillmentError("طلب الطباعة خارج نطاق الفرع الحالي", "FORBIDDEN");
+  if (snapshot.documentType === "INVOICE")
+    throw fulfillmentError(
+      "طباعة الفاتورة تتطلب مسار الفواتير وصلاحيته المستقلة",
+      "FORBIDDEN",
+    );
   const errorMessage = input.errorMessage?.trim() || null;
   if (input.status === "FAILED" && !errorMessage)
     throw fulfillmentError("سبب فشل الطباعة مطلوب", "BAD_REQUEST");
@@ -684,10 +1507,11 @@ export async function listDeliveryDocumentSnapshotsTx(
         eq(deliveryDocumentSnapshots.sourceType, input.sourceType),
         eq(deliveryDocumentSnapshots.sourceId, input.sourceId),
         eq(deliveryDocumentSnapshots.branchId, input.branchId),
+        ne(deliveryDocumentSnapshots.documentType, "INVOICE"),
       ),
     )
     .orderBy(
-      desc(deliveryDocumentSnapshots.createdAt),
+      desc(deliveryDocumentSnapshots.eventOccurredAt),
       desc(deliveryDocumentSnapshots.id),
     );
   if (!snapshots.length) return [];

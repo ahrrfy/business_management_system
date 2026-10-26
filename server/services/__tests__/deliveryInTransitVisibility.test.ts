@@ -140,7 +140,7 @@ describe("طابور «جاهز للإرسال» — إلغاء الإسناد �
 
     const consignmentId = Number((await db().select().from(s.deliveryConsignments))[0].id);
     await cancelDeliveryAssignment(
-      { consignmentId, reason: "تبديل المندوب", clientRequestId: "cancel-1" },
+      { consignmentId, reason: "تبديل المندوب", clientRequestId: "cancel-1", physicalHeldConfirmed: true },
       MANAGER,
     );
 

@@ -244,10 +244,10 @@ export async function dispatchChargeOnlyRequestTx(
     );
   await appendDeliveryEvent(tx, {
     eventKey: existing
-      ? `CN:${consignmentId}:REASSIGNED:${input.clientRequestId}`
+      ? `CN:${consignmentId}:ASSIGNMENT_REACTIVATED:${input.clientRequestId}`
       : `CN:${consignmentId}:OUT_FOR_DELIVERY`,
     consignmentId,
-    eventType: existing ? "REASSIGNED" : "OUT_FOR_DELIVERY",
+    eventType: existing ? "ASSIGNMENT_REACTIVATED" : "OUT_FOR_DELIVERY",
     toParcelStatus: "OUT_FOR_DELIVERY",
     toMoneyStatus: "NOT_APPLICABLE",
     actorUserId: actor.userId,

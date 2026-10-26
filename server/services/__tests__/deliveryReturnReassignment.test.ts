@@ -131,9 +131,10 @@ describe("reassignment preserves return and terminal eligibility", () => {
 
   it("reassigns a healthy parcel and preserves committed replay after a later return declaration", async () => {
     const before = await snapshot();
-    expect(await reassignDeliveryConsignment(request, actor)).toEqual({
+    expect(await reassignDeliveryConsignment(request, actor)).toMatchObject({
       consignmentId: 1,
       replay: false,
+      documentSnapshotIds: expect.any(Array),
     });
     const after = await snapshot();
     expect(after.consignments[0]).toMatchObject({
@@ -149,9 +150,10 @@ describe("reassignment preserves return and terminal eligibility", () => {
       .set({ returnDeclaredAt: new Date("2026-10-12T09:00:00Z") })
       .where(eq(s.deliveryConsignments.id, 1));
     const declared = await snapshot();
-    expect(await reassignDeliveryConsignment(request, actor)).toEqual({
+    expect(await reassignDeliveryConsignment(request, actor)).toMatchObject({
       consignmentId: 1,
       replay: true,
+      documentSnapshotIds: expect.any(Array),
     });
     expect(await snapshot()).toEqual(declared);
     await expect(

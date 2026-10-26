@@ -17,6 +17,7 @@ import { deliveryCashSource, partyCashInHandTx } from "./cashSource";
 import { loadScopedPartyExposureInputsTx } from "./scopedExposure";
 import { deliverySearchSql } from "./readSearch";
 import { appendDeliveryEvent } from "./lifecycle";
+import { captureShipmentAssignmentDocumentsTx, listDeliveryDocumentSnapshotsTx } from "./documentSnapshots";
 import {
   assertExternalTrackingRefAvailable,
   normalizeExternalTrackingRef,
@@ -825,7 +826,8 @@ export async function reassignDeliveryConsignment(
       });
     }
     const replay = await checkIdempotency(tx, "delivery.reassignConsignment", input.clientRequestId, payloadHash);
-    if (replay != null) return { consignmentId: replay, replay: true as const };
+    if (replay != null) return { consignmentId: replay, replay: true as const,
+      documentSnapshotIds: (await listDeliveryDocumentSnapshotsTx(tx, { sourceType: "SHIPMENT", sourceId: replay, branchId: Number(cn.branchId) })).filter((row) => row.eventKey === `CN:${cn.id}:REASSIGNED:${input.clientRequestId}`).map((row) => row.id).sort((a, b) => a - b) };
     if (cn.returnDeclaredAt != null) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
@@ -937,7 +939,12 @@ export async function reassignDeliveryConsignment(
       payload: {
         fromUserId: cn.assignedUserId,
         toUserId: input.assignedUserId ?? null,
+        partyId: Number(cn.partyId), partyName: party.name,
+        sourceType: cn.sourceType, sourceId: Number(cn.sourceId),
       },
+    });
+    const documentSnapshotIds = shipmentFollower ? [] : await captureShipmentAssignmentDocumentsTx(tx, {
+      consignmentId: Number(cn.id), branchId: Number(cn.branchId), eventKey: `CN:${cn.id}:REASSIGNED:${input.clientRequestId}`,
     });
     await recordIdempotencyKey(
       tx,
@@ -946,7 +953,7 @@ export async function reassignDeliveryConsignment(
       Number(cn.id),
       payloadHash,
     );
-    return { consignmentId: Number(cn.id), replay: false as const };
+    return { consignmentId: Number(cn.id), replay: false as const, documentSnapshotIds };
   };
   return existingTx ? run(existingTx) : withTx(run);
 }

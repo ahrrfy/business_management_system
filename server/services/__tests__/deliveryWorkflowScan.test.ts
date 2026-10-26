@@ -156,7 +156,8 @@ describe("typed barcode workflow preview", () => {
         expect.objectContaining({
           type: "INVOICE",
           action: "PRINT",
-          allowed: true,
+          allowed: false,
+          reason: expect.stringMatching(/مسار الفاتورة/),
         }),
         expect.objectContaining({
           type: "SHIPPING_LABEL",
@@ -238,7 +239,7 @@ describe("typed barcode workflow preview", () => {
       ),
     ).rejects.toThrow(/مستندات مختلفة/);
   });
-  it("offers reprint only from the immutable document snapshot", async () => {
+  it("keeps invoice printing in its protected invoice route even if a delivery snapshot exists", async () => {
     const eventAt = new Date("2026-10-24T09:15:00.000Z");
     await db()
       .insert(s.deliveryDocumentSnapshots)
@@ -265,9 +266,9 @@ describe("typed barcode workflow preview", () => {
       preview.availableDocuments.find((doc) => doc.type === "INVOICE"),
     ).toEqual({
       type: "INVOICE",
-      action: "REPRINT",
-      snapshotId: 41,
-      allowed: true,
+      action: "PRINT",
+      allowed: false,
+      reason: "اطبع النسخة الحالية من مسار الفاتورة وصلاحية الطباعة المستقلة",
     });
     expect(
       preview.availableDocuments.find((doc) => doc.type === "SHIPPING_LABEL"),

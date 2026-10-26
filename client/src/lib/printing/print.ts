@@ -1,4 +1,5 @@
 import { EscPos, type Raster } from "./escpos";
+import type { PrintWindowOptions } from "./brand";
 import { docToHtml, docToRaster, printHtml, type PrintDoc } from "./render";
 import { isPaired, sendBytes, tryReconnectPrinter, isWebUsbSupported } from "./thermal";
 import { isServerBridgeEnabled, sendRawToServer } from "./serverBridge";
@@ -14,6 +15,8 @@ import {
 } from "./printTemplates";
 
 export type { PrintDoc, ReceiptBrowserData, WorkOrderReceiptData, LabelRenderItem, LabelRenderOpts, LabelSize };
+export type { PrintWindowOptions } from "./brand";
+export { preopenDocumentWindow } from "./brand";
 export { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter } from "./thermal";
 export type { PrinterRole } from "./thermal";
 export {
@@ -26,6 +29,12 @@ export {
 export type PrintResult =
   | { via: "server" | "thermal" | "browser"; ok: true }
   | { via: "browser"; ok: false; reason: "popup-blocked" };
+
+function closeUnusedPrintWindow(options?: PrintWindowOptions): void {
+  try {
+    if (options?.into && !options.into.closed) options.into.close();
+  } catch { /* Hardware success must survive a window already closed by the user. */ }
+}
 
 /** بناء بايتات ESC/POS من المستند (نقطية Canvas + قطع). يعيد null إن تعذّر الرسم (بلا DOM). */
 async function buildReceiptBytes(doc: PrintDoc): Promise<Uint8Array | null> {
@@ -41,7 +50,7 @@ async function buildReceiptBytes(doc: PrintDoc): Promise<Uint8Array | null> {
  *  ٣) **حوار المتصفّح** — بديل أخير بعرض 80مم.
  * أي فشل في مستوى أعلى يتدهّور بسلاسة للمستوى التالي ⇒ لا تُسقَط الطباعة أبداً.
  */
-export async function printDoc(doc: PrintDoc): Promise<PrintResult> {
+export async function printDoc(doc: PrintDoc, options?: PrintWindowOptions): Promise<PrintResult> {
   // إعادة ربط صامتة تلقائية بالطابعة الحرارية المتصلة عبر WebUSB (Zadig WinUSB) إن لم تكن مربوطة في الذاكرة
   if (!isPaired() && isWebUsbSupported()) {
     try {
@@ -57,6 +66,7 @@ export async function printDoc(doc: PrintDoc): Promise<PrintResult> {
     if (bytes) {
       try {
         await sendRawToServer(bytes);
+        closeUnusedPrintWindow(options);
         return { via: "server", ok: true };
       } catch (e) {
         // فشل الجسر ⇒ تدهور سلس للبديل الحراري المباشر (لا نُسقط الطباعة).
@@ -79,6 +89,7 @@ export async function printDoc(doc: PrintDoc): Promise<PrintResult> {
     if (bytes) {
       try {
         await sendBytes(bytes);
+        closeUnusedPrintWindow(options);
         return { via: "thermal", ok: true };
       } catch (e) {
         console.warn("[print] فشل WebUSB، نتراجع لنافذة المتصفّح:", e);
@@ -88,7 +99,7 @@ export async function printDoc(doc: PrintDoc): Promise<PrintResult> {
 
   // ٣) حوار طباعة المتصفّح (بديل أخير).
   const html = await docToHtml(doc); // async: توليد QR SVG
-  return printHtml(html)
+  return (options ? printHtml(html, options) : printHtml(html))
     ? { via: "browser", ok: true }
     : { via: "browser", ok: false, reason: "popup-blocked" };
 }
@@ -101,7 +112,7 @@ export async function printDoc(doc: PrintDoc): Promise<PrintResult> {
  */
 export async function printReceipt(
   d: ReceiptBrowserData,
-  options: { openDrawer?: boolean } = {},
+  options: PrintWindowOptions & { openDrawer?: boolean } = {},
 ): Promise<PrintResult> {
   // ش٢ (§١٠) — حارسٌ بنيويّ: قالب الإيصال لمستندٍ محاسبيّ حقيقيّ حصراً. حمولةٌ بلا رقمٍ، أو
   // برقم مسوّدة (DRF-)، تُنتج ورقةً لا يميّزها الزبون عن إيصال دفعٍ فعليّ — تُطبَع المسوّدة
@@ -132,6 +143,7 @@ export async function printReceipt(
       if (bridgeEnabled) {
         try {
           await sendRawToServer(bytes);
+          closeUnusedPrintWindow(options);
           return { via: "server", ok: true };
         } catch (e) {
           console.warn("[print] فشل جسر الخادم، نتراجع للبديل:", e);
@@ -147,6 +159,7 @@ export async function printReceipt(
       if (isPaired()) {
         try {
           await sendBytes(bytes);
+          closeUnusedPrintWindow(options);
           return { via: "thermal", ok: true };
         } catch (e) {
           // طابعة مفصولة/خطأ نقل ⇒ تدهور سلس لنافذة المتصفّح (لا تُسقَط الطباعة).
@@ -155,7 +168,7 @@ export async function printReceipt(
       }
     }
   }
-  return printBrowserReceipt(d)
+  return ("into" in options ? printBrowserReceipt(d, options) : printBrowserReceipt(d))
     ? { via: "browser", ok: true }
     : { via: "browser", ok: false, reason: "popup-blocked" };
 }

@@ -6,6 +6,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useIsMutating } from "@tanstack/react-query";
 import { useSessionBranchInference } from "@/hooks/useSessionContext";
 import { WorkflowDispatchStation } from "@/components/delivery/workflow/WorkflowDispatchStation";
+import { WorkflowPrintActions } from "@/components/delivery/workflow/WorkflowPrintActions";
 import { WorkflowCollectStation } from "@/components/delivery/workflow/WorkflowCollectStation";
 import { WorkflowReturnSourceCard } from "@/components/delivery/workflow/WorkflowReturnSourceCard";
 import {
@@ -780,6 +781,7 @@ export default function DeliveryWorkflowPage() {
                   </Button>
                 </div>
                 <div className="space-y-4 p-4">
+                  {branchId && <WorkflowPrintActions branchId={branchId} invoiceIds={[editScanned.id]} preview={editScanContext ?? undefined} mode="edit" />}
                   <div className="grid overflow-hidden rounded-md border bg-background sm:grid-cols-2">
                     <div className="border-b p-3 sm:border-e">
                       <p className="text-xs text-muted-foreground">العميل</p>

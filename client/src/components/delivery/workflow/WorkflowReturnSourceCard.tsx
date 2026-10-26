@@ -10,6 +10,7 @@ import { fmt } from "@/lib/money";
 import { confirm } from "@/lib/confirm";
 import type { WorkflowScanPreview } from "@shared/deliveryWorkflow";
 import { workflowSourceBarcode } from "./navigation";
+import { WorkflowPrintActions } from "./WorkflowPrintActions";
 import {
   WorkflowCommercialReturn,
   useWorkflowCommercialReturnBusy,
@@ -432,6 +433,11 @@ function WorkflowReturnSourceCardContent({
       <h2 className="break-words font-semibold">
         الطرد المرتبط: {current.printSource.number}
       </h2>
+      <WorkflowPrintActions
+        branchId={branchId}
+        preview={current}
+        mode="return"
+      />
       <p className="text-sm text-muted-foreground">
         {current.recipient.name} · تحصيل العميل {fmt(current.money.codAmount)}{" "}
         د.ع{aftercare ? " · معالجة على حساب المكتبة" : ""}

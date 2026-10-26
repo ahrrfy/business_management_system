@@ -361,9 +361,10 @@ export async function createFinalShipmentDispatchDocumentSnapshotsTx(
       "حدّث الشحنة وأعد المحاولة قبل الطباعة",
       "CONFLICT",
     );
+  const dispatchedMembers = operationalShipmentMembers(details.members);
   const invoiceIds = Array.from(
     new Set(
-      details.members.flatMap((member) =>
+      dispatchedMembers.flatMap((member) =>
         member.invoiceId == null ? [] : [Number(member.invoiceId)],
       ),
     ),
@@ -432,7 +433,7 @@ export async function createFinalShipmentDispatchDocumentSnapshotsTx(
         assignedUserId: leader.assignedUserId,
         sourceType: leader.sourceType,
         sourceId: Number(leader.sourceId),
-        members: details.members.map((member) => ({
+        members: dispatchedMembers.map((member) => ({
           id: Number(member.id),
           consignmentNumber: member.consignmentNumber,
           invoiceId:
@@ -449,7 +450,12 @@ export async function createFinalShipmentDispatchDocumentSnapshotsTx(
         governorate: leader.governorate,
       },
       money: {
-        codAmount: details.codAmount,
+        codAmount: toDbMoney(
+          dispatchedMembers.reduce(
+            (sum, member) => sum.plus(member.codAmount),
+            money(0),
+          ),
+        ),
         deliveryFee: details.deliveryFee,
         feeCollection: leader.feeCollection,
         customerCollectionAtDispatch: "0.00",
