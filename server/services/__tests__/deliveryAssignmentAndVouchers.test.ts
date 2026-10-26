@@ -210,6 +210,7 @@ describe("إصلاحات إسناد التوصيل والذمم في كاشير 
       consignmentId: Number(parcelBefore.id),
       reason: "فك الشحنة بناء على طلب العميل لإلغاء الأمر",
       clientRequestId: `req-cancel-cn-${randomUUID()}`,
+      physicalHeldConfirmed: true,
     }, MANAGER);
 
     const [parcelCancelled] = await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, parcelBefore.id));

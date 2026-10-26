@@ -180,7 +180,7 @@ describe("shipment continuity after independent invoice changes", () => {
     const deadId = Number(group.members[index].invoiceId);
     const survivorId = Number(group.members[1 - index].invoiceId);
     await cancel(deadId);
-    await cancelShipmentAssignment({ consignmentId: group.leaderConsignmentId, reason: "إعادة جدولة التوصيل", clientRequestId: "continuity-cancel-assignment" }, actor);
+    await cancelShipmentAssignment({ consignmentId: group.leaderConsignmentId, reason: "إعادة جدولة التوصيل", clientRequestId: "continuity-cancel-assignment", physicalHeldConfirmed: true }, actor);
     const choices = await listShipmentInvoiceCandidates(survivorId, actor);
     expect(choices.requiredInvoiceIds).toEqual([survivorId]);
     expect(choices.candidates).toHaveLength(0);
@@ -200,7 +200,7 @@ describe("shipment continuity after independent invoice changes", () => {
     const leader = group.members[0];
     const closed = group.members[1];
     await cancel(Number(closed.invoiceId));
-    await cancelShipmentAssignment({ consignmentId: group.leaderConsignmentId, reason: "تغيير جهة التوصيل", clientRequestId: "new-party-cancel" }, actor);
+    await cancelShipmentAssignment({ consignmentId: group.leaderConsignmentId, reason: "تغيير جهة التوصيل", clientRequestId: "new-party-cancel", physicalHeldConfirmed: true }, actor);
     const [closedBefore] = await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, closed.id));
     const oldLedger = await db().select().from(s.deliveryLedgerEntries).where(eq(s.deliveryLedgerEntries.partyId, 1));
     await db().insert(s.deliveryParties).values({ id: 2, name: "شركة جديدة", partyType: "COMPANY", branchId: 1, currentBalance: "0", defaultFee: "0" });

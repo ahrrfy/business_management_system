@@ -148,7 +148,7 @@ describe("ثابت الدفتر لكلّ طرد: Σ التعرّض = 0 عند ا
   it("إلغاءُ إسناد", async () => {
     await openReception();
     const a = await saleWithDelivery("inv-c", "2");
-    await cancelDeliveryAssignment({ consignmentId: a.consignmentId, reason: "أُسند خطأً", clientRequestId: "cancel-c" }, MANAGER);
+    await cancelDeliveryAssignment({ consignmentId: a.consignmentId, reason: "أُسند خطأً", clientRequestId: "cancel-c", physicalHeldConfirmed: true }, MANAGER);
     const cn = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, a.consignmentId)))[0];
     expect(cn.status).toBe("CANCELLED");
     await expectBalanced(a.consignmentId);
