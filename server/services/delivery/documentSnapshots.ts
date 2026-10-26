@@ -384,6 +384,7 @@ const assignmentEventTypes = [
   "OUT_FOR_DELIVERY",
   "ASSIGNMENT_REACTIVATED",
   "REASSIGNED",
+  "AFTERCARE_DISPATCHED",
 ] as const;
 
 function eventPayload(value: unknown): Record<string, unknown> | null {
@@ -452,7 +453,18 @@ export async function bootstrapHistoricalShipmentDocumentSnapshotsTx(
       ),
     )
     .orderBy(desc(deliveryEvents.occurredAt), desc(deliveryEvents.id));
-  const originalEvent = events[0];
+  // OUT_FOR_DELIVERY is also used for later physical-departure transitions.
+  // Select the newest event that actually proves the current assignment
+  // identity instead of assuming the newest status transition is assignment.
+  const originalEvent = events.find((event) => {
+    const payload = eventPayload(event.payload);
+    return (
+      event.actorUserId != null &&
+      Number(payload?.partyId) === Number(leader.partyId) &&
+      String(payload?.sourceType ?? "") === leader.sourceType &&
+      Number(payload?.sourceId) === Number(leader.sourceId)
+    );
+  });
   const originalPayload = eventPayload(originalEvent?.payload);
   if (
     !originalEvent ||
@@ -1102,6 +1114,19 @@ export async function requestDeliveryDocumentPrintTx(
       "طباعة الفاتورة تتطلب مسار الفواتير وصلاحيته المستقلة",
       "FORBIDDEN",
     );
+  const previous = (
+    await tx
+      .select()
+      .from(deliveryDocumentPrints)
+      .where(eq(deliveryDocumentPrints.clientRequestId, input.clientRequestId))
+      .for("update")
+      .limit(1)
+  )[0];
+  if (previous) {
+    if (previous.requestHash !== requestHash)
+      throw fulfillmentError("مفتاح الطباعة مستخدم لطلب مختلف", "CONFLICT");
+    return { print: previous, idempotentReplay: true };
+  }
   if (input.copyType === "ORIGINAL") {
     const existingOriginal = (
       await tx
@@ -1127,19 +1152,6 @@ export async function requestDeliveryDocumentPrintTx(
           : "طلب طباعة النسخة الأصلية ما زال قيد التنفيذ؛ أكمل نتيجته قبل إنشاء محاولة أخرى",
         "CONFLICT",
       );
-  }
-  const previous = (
-    await tx
-      .select()
-      .from(deliveryDocumentPrints)
-      .where(eq(deliveryDocumentPrints.clientRequestId, input.clientRequestId))
-      .for("update")
-      .limit(1)
-  )[0];
-  if (previous) {
-    if (previous.requestHash !== requestHash)
-      throw fulfillmentError("مفتاح الطباعة مستخدم لطلب مختلف", "CONFLICT");
-    return { print: previous, idempotentReplay: true };
   }
   await tx
     .insert(deliveryDocumentPrints)

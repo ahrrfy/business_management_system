@@ -93,7 +93,13 @@ export function useWorkflowDocumentPrinter(branchId: number) {
     let prepareError: unknown;
     try { documents = await snapshots(consignmentId); } catch (cause) { prepareError = cause; }
     const slip = documents.find((doc) => doc.documentType === "DISPATCH_SLIP");
-    const manifest = documents.find((doc) => doc.documentType === "DELIVERY_MANIFEST");
+    const manifest = slip
+      ? documents.find(
+          (doc) =>
+            doc.documentType === "DELIVERY_MANIFEST" &&
+            doc.eventKey === slip.eventKey,
+        )
+      : undefined;
     const payload = slip ? dispatchDocumentPayload(slip) : null;
     const jobs: WorkflowPrintJob[] = [];
     const preview = payload ? null : await utils.delivery.workflow.previewBySource.fetch({ source: { kind: "consignment", id: consignmentId }, station: "dispatch", branchId });

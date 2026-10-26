@@ -75,6 +75,20 @@ function drawReceipt(
   ctx.textBaseline = "alphabetic";
   let y = drawReceiptHeader(ctx, d, assets);
 
+  if (d.copyLabel) {
+    receiptRule(ctx, y);
+    y += 30;
+    ctx.font = "900 22px Cairo, sans-serif";
+    ctx.textAlign = "center";
+    const copyLines = receiptTextLines(ctx, d.copyLabel, W - PAD * 2 - 24);
+    copyLines.forEach((line, index) =>
+      ctx.fillText(line, W / 2, y + index * 27),
+    );
+    y += Math.max(copyLines.length, 1) * 27;
+    receiptRule(ctx, y);
+    y += 28;
+  }
+
   ctx.font = "900 22px Cairo, sans-serif";
   ctx.textAlign = "right";
   ctx.fillText("المنتج", COL_NAME_R, y);

@@ -75,6 +75,10 @@ import {
 } from "./aftercareSources";
 import { postAftercareIssueTx } from "./aftercarePosting";
 import { initializeConsignmentCustodyTx } from "../delivery/custody";
+import {
+  captureShipmentAssignmentDocumentsTx,
+  createDeliveryDocumentSnapshotTx,
+} from "../delivery/documentSnapshots";
 
 type Identity = FulfillmentMutationIdentity & { id: number };
 export type CreateAftercareCaseInput = AftercareSourceInput & {
@@ -675,6 +679,8 @@ export async function dispatchAftercareExecutionTx(
   if (tracking)
     await assertExternalTrackingRefAvailable(tx, party.id, tracking);
   const number = await nextConsignmentNumber(tx, row.branchId);
+  const dispatchedAt = new Date();
+  const assignmentEventKey = `AC:${execution.id}:DISPATCH`;
   const consignmentId = extractInsertId(
     await tx.insert(deliveryConsignments).values({
       consignmentNumber: number,
@@ -697,6 +703,7 @@ export async function dispatchAftercareExecutionTx(
       externalTrackingRef: tracking,
       assignedUserId: input.assignedUserId,
       dispatchedBy: actor.userId,
+      dispatchedAt,
       notes: "معالجة بعد البيع — لا يطالب العميل بأي مبلغ",
     }),
   );
@@ -707,12 +714,12 @@ export async function dispatchAftercareExecutionTx(
       consignmentId,
       status: "DISPATCHED",
       dispatchedBy: actor.userId,
-      dispatchedAt: new Date(),
+      dispatchedAt,
       version: execution.version + 1,
     })
     .where(eq(aftercareExecutions.id, execution.id));
   await appendDeliveryEvent(tx, {
-    eventKey: `AC:${execution.id}:DISPATCH`,
+    eventKey: assignmentEventKey,
     consignmentId,
     eventType: "AFTERCARE_DISPATCHED",
     toParcelStatus: "ASSIGNED",
@@ -722,6 +729,10 @@ export async function dispatchAftercareExecutionTx(
       aftercareExecutionId: execution.id,
       caseId: row.id,
       codAmount: "0.00",
+      partyId: party.id,
+      partyName: party.name,
+      sourceType: "AFTERCARE_EXECUTION",
+      sourceId: execution.id,
     },
   });
   await initializeConsignmentCustodyTx(tx, {
@@ -729,9 +740,50 @@ export async function dispatchAftercareExecutionTx(
     actorUserId: actor.userId,
     operationId: `aftercare.dispatch:${input.clientRequestId}`,
   });
+  const documentSnapshotIds = await captureShipmentAssignmentDocumentsTx(tx, {
+    consignmentId,
+    branchId: row.branchId,
+    eventKey: assignmentEventKey,
+  });
+  const waybill = await createDeliveryDocumentSnapshotTx(tx, {
+    documentType: "AFTERCARE_WAYBILL",
+    layout: "THERMAL_80_CONTENT_72",
+    sourceType: "SHIPMENT",
+    sourceId: consignmentId,
+    sourceVersion: assignmentEventKey,
+    branchId: row.branchId,
+    eventKey: assignmentEventKey,
+    eventOccurredAt: dispatchedAt,
+    payload: {
+      schemaVersion: 1,
+      title: "بوليصة معالجة بعد البيع",
+      documentNumber: number,
+      eventOccurredAt: dispatchedAt.toISOString(),
+      rows: [
+        { label: "جهة التوصيل", value: party.name },
+        { label: "المستلم", value: execution.recipientName ?? "غير مسجل" },
+        { label: "الهاتف", value: execution.recipientPhone ?? "غير مسجل" },
+        { label: "العنوان", value: execution.deliveryAddress ?? "غير مسجل" },
+        { label: "قضية المعالجة", value: row.caseNumber },
+        { label: "دفعة المعالجة", value: String(execution.id) },
+      ],
+      totals: [
+        { label: "تحصيل العميل", value: "0.00" },
+        { label: "أجرة التوصيل على المكتبة", value: execution.deliveryFee },
+      ],
+      notice: "تحصيل العميل صفر — الأجرة على المكتبة",
+    },
+    createdBy: actor.userId,
+  });
+  documentSnapshotIds.push(Number(waybill.snapshot.id));
   await recordFulfillmentMutationTx(tx, context, execution.id);
   await audit(tx, actor, "dispatch", row.id, { ...input, consignmentId });
-  return { id: execution.id, consignmentId, replay: false };
+  return {
+    id: execution.id,
+    consignmentId,
+    documentSnapshotIds: documentSnapshotIds.sort((a, b) => a - b),
+    replay: false,
+  };
 }
 
 export type DeliveryResult = Identity & {

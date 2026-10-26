@@ -93,6 +93,16 @@ describe("compact 80mm receipt", () => {
       expect(fixture.text.map((entry) => entry.value)).toContain(contact.l);
     }
   });
+  it("marks reprinted invoice copies on the silent thermal raster", async () => {
+    const fixture = canvasFixture();
+    await receiptToCanvas({
+      ...sale,
+      copyLabel: "نسخة معاد طباعتها — بالقيم الحالية",
+    });
+    expect(fixture.text.map((entry) => entry.value).join(" ")).toContain(
+      "نسخة معاد طباعتها — بالقيم الحالية",
+    );
+  });
   it("retains an issued coupon code and every redemption condition in silent printing", async () => {
     const fixture = canvasFixture();
     await receiptToCanvas({ ...sale, bounceBackCoupon: { code: "NEXT-AUDIT01", headline: "هدية الزيارة القادمة", discountText: "5%", minSpendText: "الحد الأدنى10000", validToText: "حتى31/10/2026" } });

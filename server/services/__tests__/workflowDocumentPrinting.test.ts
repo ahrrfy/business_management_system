@@ -372,6 +372,81 @@ describe("workflow committed document printing", () => {
     expect(await businessSnapshot()).toEqual(before);
   });
 
+  it("recovers the same original-print request before rejecting a genuinely new original", async () => {
+    const [snapshotId] = await withTx((tx) =>
+      captureShipmentAssignmentDocumentsTx(tx, {
+        consignmentId: 1,
+        branchId: 1,
+        eventKey: "print:assignment:original",
+      }),
+    );
+    const command = {
+      snapshotId,
+      branchId: 1,
+      clientRequestId: "original-print-lost-response",
+      copyType: "ORIGINAL" as const,
+      requestedBy: 1,
+    };
+    const first = await withTx((tx) =>
+      requestDeliveryDocumentPrintTx(tx, command),
+    );
+    expect(
+      await withTx((tx) => requestDeliveryDocumentPrintTx(tx, command)),
+    ).toMatchObject({
+      print: { id: first.print.id, status: "REQUESTED" },
+      idempotentReplay: true,
+    });
+    await withTx((tx) =>
+      completeDeliveryDocumentPrintTx(tx, {
+        printId: first.print.id,
+        branchId: 1,
+        status: "SENT",
+      }),
+    );
+    expect(
+      await withTx((tx) => requestDeliveryDocumentPrintTx(tx, command)),
+    ).toMatchObject({
+      print: { id: first.print.id, status: "SENT" },
+      idempotentReplay: true,
+    });
+    await expect(
+      withTx((tx) =>
+        requestDeliveryDocumentPrintTx(tx, {
+          ...command,
+          clientRequestId: "another-original-print-request",
+        }),
+      ),
+    ).rejects.toThrow(/النسخة الأصلية/);
+  });
+
+  it("ignores a later departure transition when bootstrapping the assignment documents", async () => {
+    await db().insert(s.deliveryEvents).values({
+      id: 2,
+      consignmentId: 1,
+      eventKey: "print:departure:retry",
+      eventType: "OUT_FOR_DELIVERY",
+      actorUserId: 1,
+      occurredAt: new Date("2026-10-25T09:00:00.000Z"),
+      payload: { reason: "غادرت الشحنة بعد إعادة المحاولة" },
+    });
+    const ids = await withTx((tx) =>
+      bootstrapHistoricalShipmentDocumentSnapshotsTx(tx, {
+        consignmentId: 1,
+        branchId: 1,
+      }),
+    );
+    expect(ids).toHaveLength(3);
+    const [slip] = await db()
+      .select()
+      .from(deliveryDocumentSnapshots)
+      .where(eq(deliveryDocumentSnapshots.documentType, "DISPATCH_SLIP"));
+    expect(slip.eventOccurredAt).toEqual(eventAt);
+    expect((slip.payload as ShipmentDispatchDocumentPayload).party).toEqual({
+      id: 1,
+      name: "الجهة الأولى",
+    });
+  });
+
   it("selects the newest REASSIGNED event despite an old slip/label pair and retains both generations", async () => {
     await withTx((tx) =>
       captureShipmentAssignmentDocumentsTx(tx, {
