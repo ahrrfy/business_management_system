@@ -666,6 +666,57 @@ describe("StorefrontB2BQuoteButton & lazy official StorefrontB2BQuoteDialog", ()
       },
     ]);
   });
+
+  it("blocks submission with clear alert when >30 separate customized design attachments share <=30 productUnitIds", async () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    const thirtyOneAttachmentsSameUnit = Array.from({ length: 31 }, (_, idx) => ({
+      cartKey: `u-777::design-${idx + 1}`,
+      productUnitId: 777,
+      name: "درع تكريم مؤسسي",
+      qty: 2,
+      price: "12000",
+      unitName: "قطعة",
+      customization: {
+        templateId: 5,
+        values: { recipient: `موظف رقم ${idx + 1}` },
+        logoAssetKey: `customizer/default/logo/design_${String(idx + 1).padStart(2, "0")}.png`,
+      },
+    }));
+
+    await act(async () => {
+      root!.render(
+        <StorefrontB2BQuoteButton
+          cartLines={thirtyOneAttachmentsSameUnit}
+          cartSubtotal={744000}
+          orderingEnabled={true}
+          turnstileSiteKey="site-key"
+        />,
+      );
+    });
+
+    const officialBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("طلب عرض سعر رسمي"),
+    )!;
+    await act(async () => {
+      officialBtn.click();
+    });
+    await waitForLazyDialog(container);
+
+    expect(container.textContent).toContain("31 تصميماً مرفوعاً منفصلاً");
+    expect(container.textContent).toContain("30 تصميماً");
+
+    const submitBtn = container.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+    expect(submitBtn.disabled).toBe(true);
+
+    const form = container.querySelector("form")!;
+    await act(async () => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    expect(createQuoteMutateMock).not.toHaveBeenCalled();
+  });
 });
 
 

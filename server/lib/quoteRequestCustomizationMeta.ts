@@ -3,13 +3,18 @@ import { z } from "zod";
 export const QUOTE_CUSTOMIZATION_TRAILER_MARKER = "\n---SRQ_CUSTOM_ASSETS_V1---\n";
 const BARE_MARKER = "---SRQ_CUSTOM_ASSETS_V1---";
 
+export const MAX_QUOTE_CUSTOMIZATION_ATTACHMENTS = 30;
+export const MAX_QUOTE_ATTACHMENT_SUMMARY_CHARS = 300;
+/** السعة القصوى لعمود MySQL TEXT (`storefront_quote_requests.customerNote`) بالبايت (UTF-8). */
+export const MAX_QUOTE_CUSTOMER_NOTE_UTF8_BYTES = 65_535;
+
 export const quoteCustomizationAssetsInputSchema = z
   .array(
     z
       .object({
         productUnitId: z.number().int().positive(),
         quantity: z.number().int().positive().max(10_000),
-        summary: z.string().trim().max(500).nullish(),
+        summary: z.string().trim().max(MAX_QUOTE_ATTACHMENT_SUMMARY_CHARS).nullish(),
         logoAssetKey: z.string().trim().min(1).max(255).nullish(),
         previewAssetKey: z.string().trim().min(1).max(255).nullish(),
       })
@@ -18,7 +23,7 @@ export const quoteCustomizationAssetsInputSchema = z
         "يجب أن يتضمّن مرفق التخصيص شعاراً أو معاينة تصميم واحدة على الأقل",
       ),
   )
-  .max(60)
+  .max(MAX_QUOTE_CUSTOMIZATION_ATTACHMENTS)
   .optional();
 
 export interface StoredQuoteCustomizationAttachment {
@@ -51,6 +56,12 @@ export function encodeQuoteCustomerNoteWithAssets(
     return sanitizedNote;
   }
   return `${sanitizedNote}${QUOTE_CUSTOMIZATION_TRAILER_MARKER}${JSON.stringify(attachments)}`;
+}
+
+export function isQuoteCustomerNoteWithinColumnCapacity(
+  encodedNote: string,
+): boolean {
+  return Buffer.byteLength(encodedNote, "utf8") <= MAX_QUOTE_CUSTOMER_NOTE_UTF8_BYTES;
 }
 
 function normalizeParsedAttachment(

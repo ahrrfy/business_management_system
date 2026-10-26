@@ -33,12 +33,16 @@ const ALL_PUBLIC_SENSITIVE_STOREFRONT_PROCEDURES = [
   "storefront.deleteMe",
   "storefront.requestAccountDeletion",
   "storefront.uploadCustomizationAsset",
+  "storefront.redeemLoyaltyPoints",
 ] as const;
 
 describe("tRPC splitLink non-batched sensitive storefront transport", () => {
   it("marks every sensitive storefront procedure as non-batched while keeping read queries batched", () => {
     for (const proc of ALL_PUBLIC_SENSITIVE_STOREFRONT_PROCEDURES) {
       expect(isNonBatchedStorefrontProcedure(proc)).toBe(true);
+      expect(
+        hasOverfilledPublicSensitiveBatch(`/${proc},storefront.createOrder`),
+      ).toBe(true);
     }
     expect(isNonBatchedStorefrontProcedure("storefront.settings")).toBe(false);
     expect(isNonBatchedStorefrontProcedure("storefront.catalog")).toBe(false);

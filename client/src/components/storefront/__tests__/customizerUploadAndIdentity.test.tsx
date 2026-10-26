@@ -1236,8 +1236,217 @@ describe("Slice 3 — customizer asset upload, cart identity, studio gating, and
     expect(uploadMutateAsyncMock).toHaveBeenCalledTimes(1);
     expect(latestAssets).toEqual({ logoAssetKey: undefined, previewAssetKey: undefined });
   });
+
+  it("disables refresh/download buttons while applying and exports a freshly painted dedicated canvas even when baseImageUrl resolves slowly", async () => {
+    const pendingBgLoads: Array<() => void> = [];
+    class SlowBgImage {
+      width = 400;
+      height = 400;
+      naturalWidth = 400;
+      naturalHeight = 400;
+      crossOrigin = "";
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_val: string) {
+        pendingBgLoads.push(() => this.onload?.());
+      }
+    }
+    globalThis.Image = SlowBgImage as unknown as typeof Image;
+
+    const canvasPaintLog = new WeakMap<HTMLCanvasElement, string[]>();
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(function (
+      this: HTMLCanvasElement,
+    ) {
+      if (!canvasPaintLog.has(this)) canvasPaintLog.set(this, []);
+      const log = canvasPaintLog.get(this)!;
+      return {
+        clearRect: () => log.push("clearRect"),
+        fillRect: () => log.push("fillRect"),
+        strokeRect: () => log.push("strokeRect"),
+        fillText: (text: string) => log.push(`fillText:${text}`),
+        drawImage: () => log.push("drawImage"),
+        save: vi.fn(),
+        restore: vi.fn(),
+        createLinearGradient: () => ({ addColorStop: vi.fn() }),
+      } as unknown as CanvasRenderingContext2D;
+    } as never);
+
+    let exportedCanvasLog: string[] = [];
+    vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockImplementation(function (
+      this: HTMLCanvasElement,
+    ) {
+      exportedCanvasLog = [...(canvasPaintLog.get(this) ?? [])];
+      return ONE_PIXEL_PNG_DATA_URL;
+    });
+
+    uploadMutateAsyncMock.mockResolvedValue({
+      assetKey: "customizer/t1/preview/dedicated_canvas_ok.png",
+      sha256: "abc123",
+      mimeType: "image/png",
+      byteLength: 68,
+    });
+
+    let latestAssets: { logoAssetKey?: string; previewAssetKey?: string } = {};
+    act(() => {
+      root.render(
+        <StorefrontCustomizerStudio
+          productName="درع فاخر"
+          baseImageUrl="https://cdn.example.com/slow-shield.png"
+          onAssetsChange={(a) => {
+            latestAssets = a;
+          }}
+        />,
+      );
+    });
+
+    const textInput = container.querySelector("#custom-text-input") as HTMLInputElement;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+        textInput,
+        "شركة الرؤية العربية",
+      );
+      textInput.dispatchEvent(new Event("input", { bubbles: true }));
+      textInput.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    const applyButton = Array.from(container.querySelectorAll("button")).find((btn) =>
+      btn.textContent?.includes("اعتماد"),
+    )!;
+    const downloadButton = Array.from(container.querySelectorAll("button")).find((btn) =>
+      btn.textContent?.includes("تنزيل بروفة"),
+    )!;
+    const refreshButton = container.querySelector(
+      'button[title="إعادة تحديث المعاينة"]',
+    ) as HTMLButtonElement;
+
+    act(() => {
+      applyButton.click();
+    });
+
+    // While Apply is awaiting slow baseImageUrl, competing render buttons are disabled
+    expect(downloadButton.disabled).toBe(true);
+    expect(refreshButton.disabled).toBe(true);
+
+    // Even if refresh/download click events are dispatched manually while Apply image load is pending:
+    act(() => {
+      refreshButton.click();
+      downloadButton.click();
+    });
+
+    await act(async () => {
+      while (pendingBgLoads.length > 0) {
+        pendingBgLoads.shift()?.();
+      }
+      await new Promise((r) => setTimeout(r, 30));
+    });
+
+    expect(exportedCanvasLog).toContain("drawImage");
+    expect(exportedCanvasLog).toContain("fillText:شركة الرؤية العربية");
+    expect(latestAssets.previewAssetKey).toBe("customizer/t1/preview/dedicated_canvas_ok.png");
+  });
+
+  it("invalidates stale previewAssetKey and aborts in-flight APPLY preview upload when switching variant baseImageUrl on the same mounted product", async () => {
+    uploadMutateAsyncMock
+      .mockResolvedValueOnce({
+        assetKey: "customizer/t1/logo/shared_logo.png",
+        sha256: "logo1",
+        mimeType: "image/png",
+        byteLength: 68,
+      })
+      .mockResolvedValueOnce({
+        assetKey: "customizer/t1/preview/variant_red_preview.png",
+        sha256: "prev1",
+        mimeType: "image/png",
+        byteLength: 68,
+      });
+
+    let latestAssets: { logoAssetKey?: string; previewAssetKey?: string } = {};
+    const renderStudioVariant = (baseImageUrl: string) => {
+      root.render(
+        <StorefrontCustomizerStudio
+          productName="قميص بولو مطرز"
+          baseImageUrl={baseImageUrl}
+          onAssetsChange={(assets) => {
+            latestAssets = assets;
+          }}
+        />,
+      );
+    };
+
+    act(() => {
+      renderStudioVariant("https://cdn.example.com/polo-red.png");
+    });
+
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const validLogo = new File([new Uint8Array([137, 80, 78, 71])], "logo.png", {
+      type: "image/png",
+    });
+    await act(async () => {
+      Object.defineProperty(fileInput, "files", { value: [validLogo], configurable: true });
+      fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    const applyButton = Array.from(container.querySelectorAll("button")).find((btn) =>
+      btn.textContent?.includes("اعتماد"),
+    )!;
+    await act(async () => {
+      applyButton.click();
+      await new Promise((r) => setTimeout(r, 25));
+    });
+
+    expect(latestAssets).toEqual({
+      logoAssetKey: "customizer/t1/logo/shared_logo.png",
+      previewAssetKey: "customizer/t1/preview/variant_red_preview.png",
+    });
+
+    // Switch variant image on the same mounted product -> red preview must be invalidated, logo preserved
+    act(() => {
+      renderStudioVariant("https://cdn.example.com/polo-navy.png");
+    });
+
+    expect(latestAssets).toEqual({
+      logoAssetKey: "customizer/t1/logo/shared_logo.png",
+      previewAssetKey: undefined,
+    });
+
+    // Also verify in-flight APPLY upload is aborted if user switches variant mid-upload
+    let resolveInFlightPreview!: (val: {
+      assetKey: string;
+      sha256: string;
+      mimeType: "image/png";
+      byteLength: number;
+    }) => void;
+    uploadMutateAsyncMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveInFlightPreview = resolve;
+        }),
+    );
+
+    await act(async () => {
+      applyButton.click();
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    // Switch variant while APPLY upload is still pending
+    act(() => {
+      renderStudioVariant("https://cdn.example.com/polo-black.png");
+    });
+
+    await act(async () => {
+      resolveInFlightPreview({
+        assetKey: "customizer/t1/preview/stale_navy_preview.png",
+        sha256: "stale",
+        mimeType: "image/png",
+        byteLength: 68,
+      });
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    expect(latestAssets).toEqual({
+      logoAssetKey: "customizer/t1/logo/shared_logo.png",
+      previewAssetKey: undefined,
+    });
+  });
 });
-
-
-
-

@@ -59,7 +59,8 @@ function createClientRequestId(): string {
 
 export const MAX_B2B_QUOTE_DISTINCT_UNITS = 30;
 export const MAX_B2B_QUOTE_UNIT_QUANTITY = 10_000;
-export const MAX_B2B_QUOTE_CUSTOM_ATTACHMENTS = 60;
+export const MAX_B2B_QUOTE_CUSTOM_ATTACHMENTS = 30;
+export const MAX_B2B_QUOTE_ATTACHMENT_SUMMARY_CHARS = 300;
 
 export interface B2BQuoteCustomizationAssetInput {
   productUnitId: number;
@@ -146,7 +147,11 @@ export function extractB2BCartCustomizationAssets(
         ? record.previewAssetKey.trim()
         : undefined;
     if (!logoAssetKey && !previewAssetKey) continue;
-    const summary = summarizeCartCustomizationText(line.customization)?.slice(0, 500) || undefined;
+    const summary =
+      summarizeCartCustomizationText(line.customization)?.slice(
+        0,
+        MAX_B2B_QUOTE_ATTACHMENT_SUMMARY_CHARS,
+      ) || undefined;
     result.push({
       productUnitId: unitId,
       quantity: qty,

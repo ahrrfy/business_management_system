@@ -43,6 +43,7 @@ const NON_BATCHED_STOREFRONT_PROCEDURES: ReadonlySet<string> = new Set([
   "storefront.deleteMe",
   "storefront.requestAccountDeletion",
   "storefront.uploadCustomizationAsset",
+  "storefront.redeemLoyaltyPoints",
 ]);
 
 export function isNonBatchedStorefrontProcedure(path: string): boolean {

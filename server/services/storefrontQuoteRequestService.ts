@@ -24,7 +24,10 @@ import { getDb, type Tx } from "../db";
 import { isCurrentTenantCustomizerKey } from "../lib/imageStore";
 import { extractInsertId } from "../lib/insertId";
 import {
+  MAX_QUOTE_ATTACHMENT_SUMMARY_CHARS,
+  MAX_QUOTE_CUSTOMIZATION_ATTACHMENTS,
   encodeQuoteCustomerNoteWithAssets,
+  isQuoteCustomerNoteWithinColumnCapacity,
   stripQuoteCustomizationTrailer,
   type StoredQuoteCustomizationAttachment,
 } from "../lib/quoteRequestCustomizationMeta";
@@ -56,7 +59,6 @@ export type StorefrontQuoteContactPreference = "PHONE" | "WHATSAPP";
 
 const QUOTE_REQUEST_GUEST_TRACKING_TTL_SECONDS = 60 * 60 * 24 * 30;
 const QUOTE_REQUEST_GUEST_TRACKING_DOMAIN = "STORE_QUOTE_REQUEST_TRACKING_V1";
-const MAX_QUOTE_CUSTOMIZATION_ATTACHMENTS = 60;
 
 export interface StorefrontQuoteCustomizationAssetInput {
   productUnitId: number;
@@ -377,7 +379,7 @@ function normalizeQuoteCustomizationAssets(
 
     const summary =
       typeof entry.summary === "string" && entry.summary.trim()
-        ? entry.summary.trim().slice(0, 500)
+        ? entry.summary.trim().slice(0, MAX_QUOTE_ATTACHMENT_SUMMARY_CHARS)
         : null;
 
     normalized.push({
@@ -1259,6 +1261,17 @@ async function createStorefrontQuoteRequestAttempt(
       note,
       attachments,
     );
+    if (!isQuoteCustomerNoteWithinColumnCapacity(storedCustomerNote)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر إرسال طلب عرض السعر",
+          why: "يتجاوز حجم الملاحظة ومرفقات التخصيص المدمجة السعة المسموحة للطلب الواحد",
+          doThis:
+            "اختصر ملاحظة الطلب أو قسّم التصاميم المرفوعة إلى أكثر من طلب عرض سعر ثم أعد الإرسال",
+        }),
+      });
+    }
     const guestTrackingPublicId = randomBytes(16).toString("hex");
     // عمود MySQL timestamp دقته بالثانية هنا؛ نطبّع قبل التوقيع كي لا يقرّب التخزين
     // ثانيةً إلى الأمام فيصبح رمز الضيف الجديد غير مطابق للـ hash المحفوظ.

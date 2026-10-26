@@ -175,6 +175,16 @@ export function StorefrontCustomizerStudio({
     }
   }, [emitAssets, reportUploadState]);
 
+  const prevBasePropsRef = useRef({ baseImageUrl, productName });
+  useEffect(() => {
+    const prev = prevBasePropsRef.current;
+    if (prev.baseImageUrl === baseImageUrl && prev.productName === productName) {
+      return;
+    }
+    prevBasePropsRef.current = { baseImageUrl, productName };
+    invalidatePreviewIfStale();
+  }, [baseImageUrl, productName, invalidatePreviewIfStale]);
+
   useImperativeHandle(
     studioRef,
     () => ({
@@ -324,7 +334,7 @@ export function StorefrontCustomizerStudio({
   );
 
   const renderCanvasAsync = useCallback(
-    async (overrideLogo?: HTMLImageElement | null) => {
+    async (overrideLogo?: HTMLImageElement | null): Promise<boolean> => {
       const seq = ++drawSeqRef.current;
       let bgImg: HTMLImageElement | undefined;
       if (baseImageUrl) {
@@ -334,15 +344,45 @@ export function StorefrontCustomizerStudio({
           bgImg = undefined;
         }
       }
-      if (!mountedRef.current || seq !== drawSeqRef.current) return;
+      if (!mountedRef.current || seq !== drawSeqRef.current) return false;
       const canvas = canvasRef.current;
-      if (!canvas) return;
+      if (!canvas) return false;
       paintStudioMockup(canvas, bgImg, overrideLogo);
+      return true;
+    },
+    [baseImageUrl, paintStudioMockup],
+  );
+
+  /**
+   * يرسم لقطة التصدير/الاعتماد في لوحة معزولة غير خاضعة لسباقات drawSeqRef من الأزرار الأخرى،
+   * مع مزامنة اللوحة المرئية إن لم يسبقها رسم أحدث.
+   */
+  const renderDedicatedExportCanvasAsync = useCallback(
+    async (
+      overrideLogo?: HTMLImageElement | null,
+    ): Promise<HTMLCanvasElement | null> => {
+      const seq = ++drawSeqRef.current;
+      let bgImg: HTMLImageElement | undefined;
+      if (baseImageUrl) {
+        try {
+          bgImg = await loadStudioImage(baseImageUrl, { crossOrigin: "anonymous" });
+        } catch {
+          bgImg = undefined;
+        }
+      }
+      if (!mountedRef.current) return null;
+      const exportCanvas = document.createElement("canvas");
+      paintStudioMockup(exportCanvas, bgImg, overrideLogo);
+      if (seq === drawSeqRef.current && canvasRef.current) {
+        paintStudioMockup(canvasRef.current, bgImg, overrideLogo);
+      }
+      return exportCanvas;
     },
     [baseImageUrl, paintStudioMockup],
   );
 
   const redrawCanvas = useCallback(() => {
+    if (activeUploadKindRef.current === "APPLY") return;
     void renderCanvasAsync();
   }, [renderCanvasAsync]);
 
@@ -487,9 +527,11 @@ export function StorefrontCustomizerStudio({
   }, [paintStudioMockup]);
 
   const downloadProof = async () => {
-    await renderCanvasAsync();
+    if (activeUploadKindRef.current === "APPLY") return;
+    const exportCanvas = await renderDedicatedExportCanvasAsync();
+    if (!exportCanvas) return;
     const exported = exportStudioCanvasPayload(
-      canvasRef.current,
+      exportCanvas,
       buildUntaintedFallbackCanvas,
     );
     if (!exported.ok) return;
@@ -506,11 +548,11 @@ export function StorefrontCustomizerStudio({
     setFailedAction(null);
     reportUploadState("uploading");
     try {
-      await renderCanvasAsync();
-      if (!mountedRef.current || epoch !== uploadEpochRef.current) return;
+      const exportCanvas = await renderDedicatedExportCanvasAsync();
+      if (!mountedRef.current || epoch !== uploadEpochRef.current || !exportCanvas) return;
 
       const exported = exportStudioCanvasPayload(
-        canvasRef.current,
+        exportCanvas,
         buildUntaintedFallbackCanvas,
       );
       if (!exported.ok) {
@@ -621,8 +663,9 @@ export function StorefrontCustomizerStudio({
           <div className="mt-3 flex w-full items-center justify-between gap-2">
             <button
               type="button"
+              disabled={uploadState === "uploading"}
               onClick={() => void downloadProof()}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-black text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-black text-slate-700 hover:bg-slate-100 disabled:pointer-events-none disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
             >
               <Download className="size-3.5" />
               <span>تنزيل بروفة التصميم (PNG)</span>
@@ -630,8 +673,9 @@ export function StorefrontCustomizerStudio({
 
             <button
               type="button"
+              disabled={uploadState === "uploading"}
               onClick={redrawCanvas}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-100 disabled:pointer-events-none disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
               title="إعادة تحديث المعاينة"
             >
               <RefreshCw className="size-3.5" />

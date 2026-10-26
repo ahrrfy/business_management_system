@@ -1052,6 +1052,115 @@ describe("storefront quote requests", () => {
           scopedBranchId: null,
         }),
       ).toBeNull();
+
+      // Near-limit capacity test: 30 attachments with 300-char Arabic summaries + 2000-char Arabic note fit MySQL TEXT (65,535 bytes)
+      const arabicSummary300 = "طباعة حرارية عالية الدقة مع نقش ليزري ذهبي مخصص للشركات والمؤسسات — ".repeat(5).slice(0, 300);
+      const maxValidCreated = await createStorefrontQuoteRequest({
+        customerName: "شركة القمة للتوريدات",
+        customerPhone: "07705554433",
+        contactPreference: "WHATSAPP",
+        requestType: "CUSTOM_PRINT",
+        note: "ملاحظة تفصيلية لتوريد دفعات متعددة للشركات والمؤسسات الرسمية ".repeat(30).slice(0, 1950),
+        clientRequestId: "srq-max-30-arabic-attachments",
+        lines: [{ productUnitId: 99, quantity: 300 }],
+        customizationAssets: Array.from({ length: 30 }, (_, idx) => ({
+          productUnitId: 99,
+          quantity: 10,
+          summary: `${idx + 1}-${arabicSummary300}`.slice(0, 300),
+          logoAssetKey: uploadedLogo.assetKey,
+          previewAssetKey: uploadedPreview.assetKey,
+        })),
+      });
+      await updateStorefrontQuoteRequestStatus({
+        requestId: maxValidCreated.requestId,
+        status: "CONTACTED",
+        scopedBranchId: 1,
+      });
+      const maxPrepared = await getStorefrontQuoteRequestForOfficialQuotation({
+        requestId: maxValidCreated.requestId,
+        scopedBranchId: 1,
+      });
+      expect(maxPrepared.customizationAttachments).toHaveLength(30);
+
+      // Even with 190-char Arabic product name + 120-char variantName + 1995-char Arabic note + 30x300-char Arabic summaries, fits cleanly in MySQL TEXT
+      await d
+        .update(s.products)
+        .set({ name: "درع كريستال مؤسسي فاخر محفور بالليزر مع علبة مخملية مبطنة ".repeat(4).slice(0, 190) })
+        .where(eq(s.products.id, 99));
+      await d
+        .update(s.productVariants)
+        .set({ variantName: "ذهبي ملكي لامع متعدد الطبقات ".repeat(5).slice(0, 120) })
+        .where(eq(s.productVariants.id, 99));
+      const heavyArabicCreated = await createStorefrontQuoteRequest({
+        customerName: "شركة القمة للتوريدات",
+        customerPhone: "07705554433",
+        contactPreference: "WHATSAPP",
+        requestType: "CUSTOM_PRINT",
+        note: "ملاحظة تفصيلية مطولة باللغة العربية ".repeat(60).slice(0, 1995),
+        clientRequestId: "srq-heavy-arabic-30-ok",
+        lines: [{ productUnitId: 99, quantity: 300 }],
+        customizationAssets: Array.from({ length: 30 }, (_, idx) => ({
+          productUnitId: 99,
+          quantity: 10,
+          summary: `${idx + 1}-${"نقش عربي مزدوج مع إطار زخرفي وشعار كامل الألوان ".repeat(8)}`.slice(0, 300),
+          logoAssetKey: uploadedLogo.assetKey,
+          previewAssetKey: uploadedPreview.assetKey,
+        })),
+      });
+      expect(heavyArabicCreated.requestNumber).toMatch(/^SRQ-/);
+
+      // 3-byte UTF-8 BMP code units + JSON-escaped quotes (\"\uFDFD = 5 bytes per 2 JS chars -> >65,535 bytes across 30 items) -> rejected with BAD_REQUEST before SQL insert
+      const bmpHeavyProduct = '"\uFDFD'.repeat(95); // 190 chars -> ~475 escaped UTF-8 bytes
+      const bmpHeavyVariant = '"\uFDFD'.repeat(60); // 120 chars -> ~300 escaped UTF-8 bytes
+      const bmpHeavySummary = "\uFDFD".repeat(300); // 300 chars -> 900 UTF-8 bytes
+      await d
+        .update(s.products)
+        .set({ name: bmpHeavyProduct })
+        .where(eq(s.products.id, 99));
+      await d
+        .update(s.productVariants)
+        .set({ variantName: bmpHeavyVariant })
+        .where(eq(s.productVariants.id, 99));
+      await d
+        .update(s.productUnits)
+        .set({ unitName: "\uFDFD".repeat(25) })
+        .where(eq(s.productUnits.id, 99));
+      await expect(
+        createStorefrontQuoteRequest({
+          customerName: "شركة القمة للتوريدات",
+          customerPhone: "07705554433",
+          contactPreference: "WHATSAPP",
+          requestType: "CUSTOM_PRINT",
+          note: "\uFDFD".repeat(1995),
+          clientRequestId: "srq-utf8-byte-ceiling-guard",
+          lines: [{ productUnitId: 99, quantity: 300 }],
+          customizationAssets: Array.from({ length: 30 }, () => ({
+            productUnitId: 99,
+            quantity: 10,
+            summary: bmpHeavySummary,
+            logoAssetKey: uploadedLogo.assetKey,
+            previewAssetKey: uploadedPreview.assetKey,
+          })),
+        }),
+      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+      // Exceeding 30 attachments rejects cleanly with BAD_REQUEST
+      await expect(
+        createStorefrontQuoteRequest({
+          customerName: "شركة القمة للتوريدات",
+          customerPhone: "07705554433",
+          contactPreference: "WHATSAPP",
+          requestType: "CUSTOM_PRINT",
+          note: "تجاوز حد المرفقات المسموح",
+          clientRequestId: "srq-exceed-31-attachments",
+          lines: [{ productUnitId: 99, quantity: 310 }],
+          customizationAssets: Array.from({ length: 31 }, () => ({
+            productUnitId: 99,
+            quantity: 10,
+            logoAssetKey: uploadedLogo.assetKey,
+          })),
+        }),
+      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
     } finally {
       if (prevDriver === undefined) delete process.env.IMAGE_STORE_DRIVER;
       else process.env.IMAGE_STORE_DRIVER = prevDriver;
