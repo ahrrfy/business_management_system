@@ -36,7 +36,10 @@ import { money, round2 } from "../money";
 import { withTx } from "../tx";
 import { decodeDataUrl, orderCustomizationAssetUrl, productImageUrl } from "../../imageRoute";
 import { onlineOrderLabelToken } from "../barcodeService";
-import { awardDeliveredOnlineOrderPoints } from "./loyaltyService";
+import {
+  awardDeliveredOnlineOrderPoints,
+  reverseOnlineOrderLoyaltyPoints,
+} from "./loyaltyService";
 import {
   confirmCouponReservationForOnlineOrder,
   releaseCouponReservationForOnlineOrder,
@@ -730,8 +733,14 @@ export async function setOnlineOrderStatus(
         input.id,
         input.cancelReason?.trim() || "أُلغي الطلب قبل الإرسال",
       );
+      await reverseOnlineOrderLoyaltyPoints(tx, {
+        onlineOrderId: input.id,
+        remainingNetMerchandiseIqd: "0.00",
+        idempotencyKey: `rev:order:${input.id}:cancelord`,
+        reasonLabel: `استرداد نقاط إلغاء الطلب ${order.orderNumber}`,
+      });
     }
-    if (input.status === "DELIVERED") {
+    if (input.status === "DELIVERED" && order.customerId != null) {
       await awardDeliveredOnlineOrderPoints(tx, {
         onlineOrderId: input.id,
         customerId: Number(order.customerId),

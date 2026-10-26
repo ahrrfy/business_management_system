@@ -745,6 +745,7 @@ export async function issueBounceBackCouponTx(
       or(isNull(couponPrograms.branchId), eq(couponPrograms.branchId, input.branchId)),
       sql`${couponPrograms.validFrom} <= ${today}`,
       or(isNull(couponPrograms.validTo), sql`${couponPrograms.validTo} >= ${today}`),
+      sql`JSON_EXTRACT(${couponPrograms.designJson}, '$.isAutoBounceBack') = true`,
       eq(promotions.isActive, true),
       eq(promotions.applicationMode, "COUPON"),
       or(isNull(promotions.branchId), eq(promotions.branchId, input.branchId)),

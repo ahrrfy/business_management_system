@@ -11,8 +11,8 @@
  * النطاق الزمنيّ بحبيبة يوم بغداد (UTC+3): الحدود تُحسب كلحظات UTC فيبقى الفلتر على العمود مفهرَساً.
  * عزل الفرع: يُمرَّر scopedBranchId (null للمرتفعين ⇒ كل المتجر)، كبقيّة راوتر الطلبات.
  */
-import { and, desc, eq, gte, lt, ne, sql } from "drizzle-orm";
-import { onlineOrderItems, onlineOrders, productVariants, products } from "../../../drizzle/schema";
+import { and, desc, eq, gte, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { invoiceItems, invoices, onlineOrderItems, onlineOrders, productVariants, products } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { currentOnlineOrderStatus } from "./onlineOrderTracking";
 import { money, toDbMoney } from "../money";
@@ -54,8 +54,8 @@ export interface StoreAnalyticsKpis {
   activeOrders: number; // غير الملغاة
   cancelledOrders: number;
   deliveredOrders: number;
-  revenue: string; // Σ total للطلبات غير الملغاة
-  deliveredRevenue: string; // Σ total للمُسلَّمة
+  revenue: string; // صافي البضاعة للطلبات غير الملغاة (بعد خصم الشحن والمرتجعات)
+  deliveredRevenue: string; // صافي البضاعة للمُسلَّمة (بعد خصم الشحن والمرتجعات)
   aov: string; // متوسّط قيمة الطلب = revenue / activeOrders
   fulfillmentRate: number; // delivered / activeOrders (0..1)
   cancellationRate: number; // cancelled / totalOrders (0..1)
@@ -77,6 +77,23 @@ const EMPTY_KPIS: StoreAnalyticsKpis = {
   totalOrders: 0, activeOrders: 0, cancelledOrders: 0, deliveredOrders: 0,
   revenue: "0.00", deliveredRevenue: "0.00", aov: "0.00", fulfillmentRate: 0, cancellationRate: 0,
 };
+
+/**
+ * مصدر الحقيقة الواحد لصافي قيمة البضاعة لكل طلب متجر:
+ * - عند وجود فاتورة مرتبطة (`invoiceId IS NOT NULL`): يُعتمد صافي الفاتورة الفعليّ
+ *   بعد طرح المرتجعات (`returnedTotal`) وأجرة التوصيل (`deliveryFee`) مع تصفير الفواتير الملغاة/المرتجعة/المستبدلة.
+ * - قبل الإرسال (`invoiceId IS NULL`): يُعتمد صافي البضاعة (`total - shippingCost`).
+ */
+const netMerchandiseExpr = sql<string>`(
+  CASE
+    WHEN ${onlineOrders.invoiceId} IS NOT NULL AND ${invoices.id} IS NOT NULL THEN
+      CASE
+        WHEN ${invoices.status} IN ('CANCELLED', 'RETURNED', 'SUPERSEDED') THEN 0
+        ELSE GREATEST(${invoices.total} - COALESCE(${invoices.returnedTotal}, 0) - COALESCE(${invoices.deliveryFee}, 0), 0)
+      END
+    ELSE GREATEST(${onlineOrders.total} - COALESCE(${onlineOrders.shippingCost}, 0), 0)
+  END
+)`;
 
 export async function getStoreAnalytics(input: {
   scopedBranchId: number | null;
@@ -100,10 +117,11 @@ export async function getStoreAnalytics(input: {
       totalOrders: sql<number>`COUNT(*)`,
       cancelledOrders: sql<number>`COALESCE(SUM(${currentOnlineOrderStatus} = 'CANCELLED'), 0)`,
       deliveredOrders: sql<number>`COALESCE(SUM(${currentOnlineOrderStatus} = 'DELIVERED'), 0)`,
-      revenue: sql<string>`COALESCE(SUM(CASE WHEN ${currentOnlineOrderStatus} <> 'CANCELLED' THEN ${onlineOrders.subtotal} ELSE 0 END), 0)`,
-      deliveredRevenue: sql<string>`COALESCE(SUM(CASE WHEN ${currentOnlineOrderStatus} = 'DELIVERED' THEN ${onlineOrders.subtotal} ELSE 0 END), 0)`,
+      revenue: sql<string>`COALESCE(SUM(CASE WHEN ${currentOnlineOrderStatus} <> 'CANCELLED' THEN ${netMerchandiseExpr} ELSE 0 END), 0)`,
+      deliveredRevenue: sql<string>`COALESCE(SUM(CASE WHEN ${currentOnlineOrderStatus} = 'DELIVERED' THEN ${netMerchandiseExpr} ELSE 0 END), 0)`,
     })
     .from(onlineOrders)
+    .leftJoin(invoices, eq(invoices.id, onlineOrders.invoiceId))
     .where(where);
 
   const totalOrders = Number(k?.totalOrders ?? 0);
@@ -128,9 +146,10 @@ export async function getStoreAnalytics(input: {
     .select({
       ymd: sql<string>`DATE(${onlineOrders.orderDate} + INTERVAL 3 HOUR)`,
       orders: sql<number>`COUNT(*)`,
-      revenue: sql<string>`COALESCE(SUM(CASE WHEN ${currentOnlineOrderStatus} <> 'CANCELLED' THEN ${onlineOrders.subtotal} ELSE 0 END), 0)`,
+      revenue: sql<string>`COALESCE(SUM(CASE WHEN ${currentOnlineOrderStatus} <> 'CANCELLED' THEN ${netMerchandiseExpr} ELSE 0 END), 0)`,
     })
     .from(onlineOrders)
+    .leftJoin(invoices, eq(invoices.id, onlineOrders.invoiceId))
     .where(where)
     .groupBy(dayExpr)
     .orderBy(dayExpr);
@@ -142,28 +161,89 @@ export async function getStoreAnalytics(input: {
     revenue: trendByDay.get(ymd)?.revenue ?? "0.00",
   }));
 
-  // 4) أعلى المنتجات (بالإيراد) — الطلبات غير الملغاة فقط
-  const topRows = await db
-    .select({
-      productId: products.id,
-      name: products.name,
-      qty: sql<number>`COALESCE(SUM(${onlineOrderItems.baseQuantity}), 0)`,
-      revenue: sql<string>`COALESCE(SUM(${onlineOrderItems.total}), 0)`,
-    })
-    .from(onlineOrderItems)
-    .innerJoin(onlineOrders, eq(onlineOrderItems.onlineOrderId, onlineOrders.id))
-    .innerJoin(productVariants, eq(onlineOrderItems.variantId, productVariants.id))
-    .innerJoin(products, eq(productVariants.productId, products.id))
-    .where(and(where, ne(currentOnlineOrderStatus, "CANCELLED")))
-    .groupBy(products.id)
-    .orderBy(desc(sql`SUM(${onlineOrderItems.total})`))
-    .limit(8);
-  const topProducts = topRows.map((r) => ({
-    productId: Number(r.productId),
-    name: r.name,
-    qty: Number(r.qty),
-    revenue: toDbMoney(money(r.revenue ?? "0")),
-  }));
+  // 4) أعلى المنتجات (بالإيراد الصافي) — يعتمد بنود الفاتورة الصافية بعد المرتجعات الجزئية
+  // وتصحيح الفواتير (`sale/correct`) عند وجود بنود فاتورة، ويسقط لبنود الطلب الأولية قبل الإرسال فقط.
+  const invoicedLineRevenueExpr = sql<string>`CASE
+    WHEN ${invoiceItems.baseQuantity} > 0 THEN ROUND(
+      ${invoiceItems.total}
+      * (${invoiceItems.baseQuantity} - ${invoiceItems.returnedBaseQuantity})
+      / ${invoiceItems.baseQuantity}
+      * (CASE
+          WHEN ${invoices.subtotal} > 0 AND COALESCE(${invoices.discountAmount}, 0) > 0
+            THEN GREATEST(${invoices.subtotal} - COALESCE(${invoices.discountAmount}, 0), 0) / ${invoices.subtotal}
+          ELSE 1
+        END),
+      2
+    )
+    ELSE 0
+  END`;
+
+  const [invoicedTopRows, pendingTopRows] = await Promise.all([
+    db
+      .select({
+        productId: products.id,
+        name: products.name,
+        qty: sql<number>`COALESCE(SUM(${invoiceItems.baseQuantity} - ${invoiceItems.returnedBaseQuantity}), 0)`,
+        revenue: sql<string>`COALESCE(SUM(${invoicedLineRevenueExpr}), 0)`,
+      })
+      .from(onlineOrders)
+      .innerJoin(invoices, eq(invoices.id, onlineOrders.invoiceId))
+      .innerJoin(invoiceItems, eq(invoiceItems.invoiceId, invoices.id))
+      .innerJoin(productVariants, eq(invoiceItems.variantId, productVariants.id))
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(and(
+        where,
+        ne(currentOnlineOrderStatus, "CANCELLED"),
+        sql`${invoices.status} NOT IN ('CANCELLED', 'RETURNED', 'SUPERSEDED')`,
+        sql`${invoiceItems.baseQuantity} > ${invoiceItems.returnedBaseQuantity}`,
+      ))
+      .groupBy(products.id),
+    db
+      .select({
+        productId: products.id,
+        name: products.name,
+        qty: sql<number>`COALESCE(SUM(${onlineOrderItems.baseQuantity}), 0)`,
+        revenue: sql<string>`COALESCE(SUM(${onlineOrderItems.total}), 0)`,
+      })
+      .from(onlineOrderItems)
+      .innerJoin(onlineOrders, eq(onlineOrderItems.onlineOrderId, onlineOrders.id))
+      .leftJoin(invoices, eq(invoices.id, onlineOrders.invoiceId))
+      .innerJoin(productVariants, eq(onlineOrderItems.variantId, productVariants.id))
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(and(
+        where,
+        ne(currentOnlineOrderStatus, "CANCELLED"),
+        or(isNull(onlineOrders.invoiceId), isNull(invoices.id), sql`${invoices.status} NOT IN ('CANCELLED', 'RETURNED', 'SUPERSEDED')`),
+        sql`NOT EXISTS (SELECT 1 FROM invoiceItems ii0 WHERE ii0.invoiceId = ${onlineOrders.invoiceId})`,
+      ))
+      .groupBy(products.id),
+  ]);
+
+  const mergedTopProducts = new Map<number, { productId: number; name: string; qty: number; revenue: ReturnType<typeof money> }>();
+  for (const r of [...invoicedTopRows, ...pendingTopRows]) {
+    const pid = Number(r.productId);
+    const existing = mergedTopProducts.get(pid);
+    if (existing) {
+      existing.qty += Number(r.qty);
+      existing.revenue = existing.revenue.plus(money(r.revenue ?? "0"));
+    } else {
+      mergedTopProducts.set(pid, {
+        productId: pid,
+        name: r.name,
+        qty: Number(r.qty),
+        revenue: money(r.revenue ?? "0"),
+      });
+    }
+  }
+  const topProducts = Array.from(mergedTopProducts.values())
+    .sort((a, b) => b.revenue.comparedTo(a.revenue) || a.productId - b.productId)
+    .slice(0, 8)
+    .map((r) => ({
+      productId: r.productId,
+      name: r.name,
+      qty: r.qty,
+      revenue: toDbMoney(r.revenue),
+    }));
 
   // 5) التوزيع الجغرافيّ (المحافظة)
   const govExpr = sql`COALESCE(NULLIF(${onlineOrders.governorate}, ''), 'غير محدَّد')`;
@@ -171,9 +251,10 @@ export async function getStoreAnalytics(input: {
     .select({
       governorate: sql<string>`COALESCE(NULLIF(${onlineOrders.governorate}, ''), 'غير محدَّد')`,
       orders: sql<number>`COUNT(*)`,
-      revenue: sql<string>`COALESCE(SUM(CASE WHEN ${currentOnlineOrderStatus} <> 'CANCELLED' THEN ${onlineOrders.subtotal} ELSE 0 END), 0)`,
+      revenue: sql<string>`COALESCE(SUM(CASE WHEN ${currentOnlineOrderStatus} <> 'CANCELLED' THEN ${netMerchandiseExpr} ELSE 0 END), 0)`,
     })
     .from(onlineOrders)
+    .leftJoin(invoices, eq(invoices.id, onlineOrders.invoiceId))
     .where(where)
     .groupBy(govExpr)
     .orderBy(desc(sql`COUNT(*)`))

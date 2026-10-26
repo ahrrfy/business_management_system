@@ -11,6 +11,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
@@ -20,6 +21,7 @@ import {
   ACTIVE_COUPON_STORAGE_KEY,
   loadActiveCouponCode,
   normalizeActiveCouponCode,
+  saveActiveCouponCode,
 } from "@/lib/active-coupon";
 import {
   clearVerifiedCustomerSession,
@@ -27,11 +29,28 @@ import {
   type VerifiedCustomerSession,
 } from "@/lib/customer-session";
 import {
+  computeLoyaltyRedeemPreview,
+  formatIqd,
   formatLatinNumber,
   getStorefrontCustomerBenefits,
+  redeemStorefrontLoyaltyPoints,
   requestStorefrontFirstOrderCoupon,
   type StorefrontCustomerBenefits,
 } from "@/lib/storefront-api";
+
+const ENTRY_TYPE_LABELS: Record<string, string> = {
+  ORDER_EARN: "اكتساب نقاط طلب",
+  ORDER_REVERSE: "استرداد نقاط مرتجع أو تصحيح",
+  REDEEM: "استبدال نقاط بقسيمة خصم",
+  ADJUSTMENT: "تسوية نقاط يدوية",
+  MANUAL_ADJUST: "تسوية نقاط يدوية",
+  EXPIRE: "انتهاء صلاحية نقاط",
+};
+
+function createRedeemClientRequestId(): string {
+  const randomPart = Math.random().toString(36).slice(2, 10);
+  return `loy-redeem-${Date.now().toString(36)}-${randomPart}`;
+}
 
 export type LoyaltyTier = "BRONZE" | "SILVER" | "GOLD" | "VIP";
 
@@ -126,6 +145,9 @@ export default function LoyaltyScreen({ isTab = false }: { isTab?: boolean } = {
   const [loading, setLoading] = useState(true);
   const [requestingFirstOrderCoupon, setRequestingFirstOrderCoupon] = useState(false);
   const [activeCouponCode, setActiveCouponCode] = useState<string | null>(null);
+  const [redeemPointsInput, setRedeemPointsInput] = useState("");
+  const [redeemRequestId, setRedeemRequestId] = useState(() => createRedeemClientRequestId());
+  const [redeemingPoints, setRedeemingPoints] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -195,6 +217,7 @@ export default function LoyaltyScreen({ isTab = false }: { isTab?: boolean } = {
       // gracefully ignore clipboard platform differences
     }
     setActiveCouponCode(normalized);
+    await saveActiveCouponCode(AsyncStorage, normalized);
     await AsyncStorage.setItem(ACTIVE_COUPON_STORAGE_KEY, normalized).catch(() => undefined);
 
     if (Platform.OS === "ios" || Platform.OS === "android") {
@@ -207,6 +230,69 @@ export default function LoyaltyScreen({ isTab = false }: { isTab?: boolean } = {
     const raw = Number(loyalty?.pointsBalance ?? 0);
     return Number.isFinite(raw) && raw >= 0 ? raw : 0;
   }, [loyalty?.pointsBalance]);
+
+  useEffect(() => {
+    if (loyalty && redeemPointsInput === "" && loyalty.minRedeemPoints > 0) {
+      setRedeemPointsInput(String(loyalty.minRedeemPoints));
+    }
+  }, [loyalty, redeemPointsInput]);
+
+  const updateRedeemPointsDraft = useCallback((rawValue: string) => {
+    const digitsOnly = rawValue.replace(/[^\d]/g, "");
+    setRedeemPointsInput((prev) => {
+      if (prev !== digitsOnly) {
+        setRedeemRequestId(createRedeemClientRequestId());
+      }
+      return digitsOnly;
+    });
+  }, []);
+
+  const redeemPreview = useMemo(
+    () =>
+      computeLoyaltyRedeemPreview({
+        pointsNumber,
+        redeemPointsInput,
+        loyalty,
+      }),
+    [loyalty, pointsNumber, redeemPointsInput],
+  );
+
+  const handleRedeemPoints = async () => {
+    if (!session || !loyalty || redeemingPoints) return;
+    if (!redeemPreview.canRedeem) {
+      Alert.alert(
+        "تعذر استبدال النقاط",
+        `أدخل عدداً صحيحاً بين ${formatLatinNumber(redeemPreview.minRedeemPoints)} و ${formatLatinNumber(redeemPreview.redeemableBalance)} نقطة.`,
+      );
+      return;
+    }
+    setRedeemingPoints(true);
+    try {
+      const result = await redeemStorefrontLoyaltyPoints({
+        customerSessionToken: session.token,
+        points: redeemPreview.parsedPoints,
+        clientRequestId: redeemRequestId,
+      });
+      await handleActivateCoupon(result.code);
+      setRedeemRequestId(createRedeemClientRequestId());
+      const minSpendLabel =
+        Number(result.minOrderSpendIqd) > 0
+          ? formatIqd(result.minOrderSpendIqd)
+          : "بدون حد أدنى";
+      Alert.alert(
+        "تم استبدال النقاط وتفعيل الكوبون",
+        `رمز القسيمة: ${result.code}\nقيمة الخصم: ${formatIqd(result.discountIqd)}\nالحد الأدنى للطلب: ${minSpendLabel}\nتم نسخ الرمز وتفعيله تلقائياً لطلبك القادم.`,
+      );
+      await load();
+    } catch (error) {
+      Alert.alert(
+        "تعذر استبدال النقاط",
+        error instanceof Error ? error.message : "أعد المحاولة لاحقاً.",
+      );
+    } finally {
+      setRedeemingPoints(false);
+    }
+  };
 
   const currentTier = useMemo(() => resolveLoyaltyTier(pointsNumber), [pointsNumber]);
 
@@ -362,7 +448,10 @@ export default function LoyaltyScreen({ isTab = false }: { isTab?: boolean } = {
 
           {loyalty ? (
             <Text style={styles.rules}>
-              كل نقطة تعادل {formatLatinNumber(loyalty.iqdDiscountPerPoint)} د.ع. يبدأ الاستبدال من {formatLatinNumber(loyalty.minRedeemPoints)} نقطة وبحد أقصى {formatLatinNumber(loyalty.maxRedeemPercent)}% من قيمة المنتجات.
+              كل نقطة تعادل {formatLatinNumber(loyalty.iqdDiscountPerPoint)} د.ع. يبدأ الاستبدال من {formatLatinNumber(loyalty.minRedeemPoints)} نقطة
+              {Number(loyalty.maxRedeemPercent) > 0 && Number(loyalty.maxRedeemPercent) < 100
+                ? ` وبحد أقصى ${formatLatinNumber(loyalty.maxRedeemPercent)}% من قيمة المنتجات.`
+                : " بدون حد نسبي على قيمة السلة."}
             </Text>
           ) : (
             <Text style={styles.rules}>
@@ -370,6 +459,94 @@ export default function LoyaltyScreen({ isTab = false }: { isTab?: boolean } = {
             </Text>
           )}
         </View>
+
+        {/* Self-Service Points-to-Coupon Redemption Card */}
+        {loyalty && (
+          <View style={redeemStyles.card}>
+            <View style={redeemStyles.headerRow}>
+              <MaterialIcons name="redeem" size={20} color="#075B4E" />
+              <Text style={redeemStyles.title}>استبدال النقاط بقسيمة خصم</Text>
+              <View style={redeemStyles.pill}>
+                <Text style={redeemStyles.pillText}>
+                  الحد الأدنى {formatLatinNumber(loyalty.minRedeemPoints)} نقطة
+                </Text>
+              </View>
+            </View>
+            <Text style={redeemStyles.hint}>
+              حوّل نقاطك المتاحة فوراً إلى قسيمة خصم شخصية تُفعّل تلقائياً على سلتك القادمة.
+            </Text>
+
+            <View style={redeemStyles.quickRow}>
+              <TouchableOpacity
+                accessibilityRole="button"
+                onPress={() => updateRedeemPointsDraft(String(loyalty.minRedeemPoints))}
+                style={redeemStyles.quickChip}
+              >
+                <Text style={redeemStyles.quickChipText}>
+                  أدنى استبدال ({formatLatinNumber(loyalty.minRedeemPoints)})
+                </Text>
+              </TouchableOpacity>
+              {redeemPreview.redeemableBalance > loyalty.minRedeemPoints && (
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  onPress={() => updateRedeemPointsDraft(String(redeemPreview.redeemableBalance))}
+                  style={redeemStyles.quickChip}
+                >
+                  <Text style={redeemStyles.quickChipText}>
+                    كامل الرصيد ({formatLatinNumber(redeemPreview.redeemableBalance)})
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            <View style={redeemStyles.inputRow}>
+              <TextInput
+                accessibilityLabel="عدد النقاط المراد استبدالها"
+                editable={!redeemingPoints}
+                keyboardType="number-pad"
+                onChangeText={updateRedeemPointsDraft}
+                placeholder={`من ${formatLatinNumber(loyalty.minRedeemPoints)} نقطة`}
+                placeholderTextColor="#94A3B8"
+                style={redeemStyles.input}
+                value={redeemPointsInput}
+              />
+              <Text style={redeemStyles.inputUnit}>نقطة</Text>
+            </View>
+
+            {redeemPreview.discountIqd > 0 && (
+              <View style={redeemStyles.previewBox}>
+                <Text style={redeemStyles.previewPrimary}>
+                  قيمة الخصم: {formatIqd(redeemPreview.discountIqd)}
+                </Text>
+                <Text style={redeemStyles.previewSecondary}>
+                  الحد الأدنى لقيمة السلة:{" "}
+                  {redeemPreview.minOrderSpendIqd > 0
+                    ? formatIqd(redeemPreview.minOrderSpendIqd)
+                    : "بدون حد أدنى"}
+                </Text>
+              </View>
+            )}
+
+            <TouchableOpacity
+              accessibilityRole="button"
+              disabled={!redeemPreview.canRedeem || redeemingPoints}
+              onPress={() => void handleRedeemPoints()}
+              style={[
+                redeemStyles.button,
+                (!redeemPreview.canRedeem || redeemingPoints) && redeemStyles.buttonDisabled,
+              ]}
+            >
+              {redeemingPoints ? (
+                <ActivityIndicator color="#FFFFFF" size="small" />
+              ) : (
+                <View style={redeemStyles.buttonInner}>
+                  <MaterialIcons name="flash-on" size={16} color="#FFFFFF" />
+                  <Text style={redeemStyles.buttonText}>استبدال النقاط وتفعيل الكوبون</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+          </View>
+        )}
 
         {/* Verification Status Banner */}
         <View style={styles.verify}>
@@ -590,8 +767,10 @@ export default function LoyaltyScreen({ isTab = false }: { isTab?: boolean } = {
         {loyalty?.ledger.length ? (
           loyalty.ledger.map((entry, index) => (
             <View key={`${entry.createdAt}-${index}`} style={styles.ledger}>
-              <View>
-                <Text style={styles.ledgerTitle}>{entry.note ?? entry.entryType}</Text>
+              <View style={{ flex: 1, marginLeft: 10 }}>
+                <Text style={styles.ledgerTitle}>
+                  {entry.note ?? ENTRY_TYPE_LABELS[entry.entryType] ?? entry.entryType}
+                </Text>
                 <Text style={styles.ledgerDate}>
                   {new Date(entry.createdAt).toLocaleDateString("en-US")}
                 </Text>
@@ -631,6 +810,98 @@ export default function LoyaltyScreen({ isTab = false }: { isTab?: boolean } = {
     </ScreenContainer>
   );
 }
+
+const redeemStyles = StyleSheet.create({
+  card: {
+    backgroundColor: "#FFFFFF",
+    borderColor: "#BBF7D0",
+    borderRadius: 16,
+    borderWidth: 1.5,
+    marginTop: 14,
+    padding: 14,
+    shadowColor: "#0F172A",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  headerRow: {
+    alignItems: "center",
+    flexDirection: "row-reverse",
+    gap: 7,
+  },
+  title: { color: "#0F172A", fontSize: 14, fontWeight: "900", textAlign: "right" },
+  pill: {
+    backgroundColor: "#ECFDF5",
+    borderRadius: 8,
+    marginRight: "auto",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  pillText: { color: "#065F46", fontSize: 10, fontWeight: "800" },
+  hint: { color: "#475569", fontSize: 11, lineHeight: 18, marginTop: 6, textAlign: "right" },
+  quickRow: {
+    flexDirection: "row-reverse",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 10,
+  },
+  quickChip: {
+    backgroundColor: "#F1F5F9",
+    borderColor: "#CBD5E1",
+    borderRadius: 10,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  quickChipText: { color: "#1E293B", fontSize: 11, fontWeight: "800" },
+  inputRow: {
+    alignItems: "center",
+    backgroundColor: "#F8FAFC",
+    borderColor: "#CBD5E1",
+    borderRadius: 12,
+    borderWidth: 1,
+    flexDirection: "row-reverse",
+    marginTop: 10,
+    paddingHorizontal: 12,
+  },
+  input: {
+    color: "#0F172A",
+    flex: 1,
+    fontSize: 15,
+    fontWeight: "900",
+    minHeight: 42,
+    textAlign: "right",
+  },
+  inputUnit: { color: "#64748B", fontSize: 12, fontWeight: "800" },
+  previewBox: {
+    backgroundColor: "#F0FDF4",
+    borderColor: "#BBF7D0",
+    borderRadius: 12,
+    borderWidth: 1,
+    marginTop: 10,
+    padding: 10,
+  },
+  previewPrimary: { color: "#065F46", fontSize: 13, fontWeight: "900", textAlign: "right" },
+  previewSecondary: { color: "#047857", fontSize: 11, marginTop: 3, textAlign: "right" },
+  button: {
+    alignItems: "center",
+    backgroundColor: "#075B4E",
+    borderRadius: 12,
+    justifyContent: "center",
+    marginTop: 12,
+    minHeight: 44,
+    paddingHorizontal: 14,
+  },
+  buttonInner: {
+    alignItems: "center",
+    flexDirection: "row-reverse",
+    gap: 6,
+    justifyContent: "center",
+  },
+  buttonDisabled: { opacity: 0.55 },
+  buttonText: { color: "#FFFFFF", fontSize: 12, fontWeight: "900" },
+});
 
 const tierPerksStyles = StyleSheet.create({
   container: { marginTop: 18 },

@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
-import { and, desc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { createRemoteJWKSet, jwtVerify, SignJWT } from "jose";
 
 import {
@@ -14,6 +14,7 @@ import {
 import { getDb } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { canonicalIraqiMobile } from "../lib/phone";
+import { baghdadToday } from "./businessDay";
 import { withTx } from "./tx";
 
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || "store-alarabiya";
@@ -446,7 +447,10 @@ export async function requireActiveStorefrontCustomer(token: string): Promise<{ 
 }
 
 /** لقطة شخصية محدودة: لا تعيد CRM أو معلومات إدارية، بل ما يلزم لبطاقة الولاء والقسائم فقط. */
-export async function storefrontCustomerBenefits(session: { customerId: number; phone: string }) {
+export async function storefrontCustomerBenefits(
+  session: { customerId: number; phone: string },
+  options?: { now?: Date },
+) {
   const db = getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة بيانات المتجر غير متاحة" });
 
@@ -495,7 +499,7 @@ export async function storefrontCustomerBenefits(session: { customerId: number; 
       .limit(20)
     : [];
 
-  const today = new Date();
+  const today = baghdadToday(options?.now);
   const assignedCoupons = await db
     .select({ id: coupons.id, code: coupons.code, name: couponPrograms.name, validTo: couponPrograms.validTo })
     .from(coupons)
@@ -504,8 +508,8 @@ export async function storefrontCustomerBenefits(session: { customerId: number; 
       eq(coupons.customerId, Number(customer.id)),
       eq(coupons.status, "ACTIVE"),
       eq(couponPrograms.status, "ACTIVE"),
-      lte(couponPrograms.validFrom, today),
-      or(isNull(couponPrograms.validTo), gte(couponPrograms.validTo, today)),
+      sql`${couponPrograms.validFrom} <= ${today}`,
+      or(isNull(couponPrograms.validTo), sql`${couponPrograms.validTo} >= ${today}`),
     ))
     .orderBy(desc(coupons.issuedAt))
     .limit(20);

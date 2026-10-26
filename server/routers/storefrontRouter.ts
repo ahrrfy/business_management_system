@@ -50,6 +50,7 @@ import { createVerifiedStorefrontQuoteRequest } from "../services/storefrontQuot
 import { STOREFRONT_TURNSTILE_TOKEN_MAX_LENGTH } from "@shared/storefrontTurnstile";
 import { registerStorefrontPushDevice, trackStorefrontPushInteraction } from "../services/storeAdmin/storefrontPushCampaignService";
 import { claimFirebaseStorefrontCustomer, requireActiveStorefrontCustomer, storefrontCustomerBenefits } from "../services/storefrontCustomerIdentityService";
+import { redeemStorefrontLoyaltyPoints } from "../services/storeAdmin/loyaltyService";
 import { listStorefrontProductReviews, submitStorefrontProductReview, submitPublicStorefrontReview } from "../services/storefrontProductReviewService";
 import { requestStorefrontFirstOrderCoupon } from "../services/storefrontFirstOrderCouponService";
 import { createStorefrontWishlistShare, resolveStorefrontWishlistShare } from "../services/storefrontWishlistShareService";
@@ -252,6 +253,17 @@ export const storefrontRouter = router({
       const customer = await requireActiveStorefrontCustomer(input.customerSessionToken);
       return requestStorefrontFirstOrderCoupon(customer.customerId);
     }),
+
+  /** استبدال نقاط الولاء بقسيمة خصم شخصية فورية للعميل الموثق (محمي بـ clientRequestId). */
+  redeemLoyaltyPoints: storefrontPublicWriteProcedure
+    .input(
+      z.object({
+        customerSessionToken: z.string().trim().min(40).max(4_000),
+        points: z.number().int().positive().max(1_000_000),
+        clientRequestId: z.string().trim().min(8).max(80),
+      }),
+    )
+    .mutation(({ input }) => redeemStorefrontLoyaltyPoints(input)),
 
   /** كتالوج المتجر: فلترة فئة + بحث نصّي + صفحات متسلسلة بلا اقتطاع صامت. */
   catalog: publicProcedure

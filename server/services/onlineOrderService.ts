@@ -19,6 +19,7 @@ import {
   randomUUID,
   timingSafeEqual,
 } from "node:crypto";
+import Decimal from "decimal.js";
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import {
@@ -1418,6 +1419,52 @@ export async function priceOnlineOrderLines(
     money(options.coupon.minOrderSpend).gt(0);
   const minSpendSatisfied =
     !hasMinSpend || retailSubtotal.gte(money(options.coupon!.minOrderSpend));
+
+  const maxCouponCap =
+    options.coupon?.maxDiscountAmount &&
+    money(options.coupon.maxDiscountAmount).gt(0)
+      ? round2(money(options.coupon.maxDiscountAmount))
+      : null;
+  if (maxCouponCap) {
+    let remainingUncapped = round2(
+      candidates.reduce(
+        (sum, item) =>
+          sum.plus(money(item.couponDiscountCandidatePerUnit).times(item.quantity)),
+        money(0),
+      ),
+    );
+    if (remainingUncapped.gt(maxCouponCap)) {
+      let remainingCap = maxCouponCap;
+      for (const item of candidates) {
+        const lineUncapped = round2(
+          money(item.couponDiscountCandidatePerUnit).times(item.quantity),
+        );
+        if (lineUncapped.lte(0) || item.quantity <= 0) continue;
+        const isLastQualifying = remainingUncapped.eq(lineUncapped);
+        const idealLineDisc = isLastQualifying
+          ? remainingCap
+          : round2(remainingCap.times(lineUncapped).dividedBy(remainingUncapped));
+        const targetLineDisc = Decimal.min(
+          remainingCap,
+          lineUncapped,
+          idealLineDisc,
+        );
+        const cappedPerUnit = Decimal.min(
+          money(item.retailUnitPrice),
+          Decimal.max(
+            0,
+            targetLineDisc
+              .dividedBy(item.quantity)
+              .toDecimalPlaces(2, Decimal.ROUND_DOWN),
+          ),
+        );
+        item.couponDiscountCandidatePerUnit = cappedPerUnit.toFixed(2);
+        const actualLineDisc = round2(cappedPerUnit.times(item.quantity));
+        remainingCap = Decimal.max(0, remainingCap.minus(actualLineDisc));
+        remainingUncapped = Decimal.max(0, remainingUncapped.minus(lineUncapped));
+      }
+    }
+  }
 
   let wholesaleDiscount = money(0);
   let offerDiscount = money(0);

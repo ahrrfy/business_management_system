@@ -274,6 +274,16 @@ export type StorefrontFirstOrderCouponResult = {
   programName: string;
   validTo: string | null;
 };
+export type StorefrontRedeemLoyaltyResult = {
+  outcome: "ISSUED" | "REPLAYED";
+  code: string;
+  programName: string;
+  discountIqd: string;
+  minOrderSpendIqd: string;
+  pointsRedeemed: number;
+  pointsBalance: string;
+  validTo: string | null;
+};
 
 export type ApiProduct = {
   productId: number;
@@ -1052,6 +1062,74 @@ export function requestStorefrontFirstOrderCoupon(customerSessionToken: string) 
   return storefrontMutation<StorefrontFirstOrderCouponResult>(
     "storefront.requestFirstOrderCoupon",
     { customerSessionToken },
+  );
+}
+
+/** الحد الأقصى للنقاط المسموح باستبدالها في عملية واحدة (يطابق عقد الخادم `storefront.redeemLoyaltyPoints`). */
+export const MAX_LOYALTY_REDEEM_POINTS = 1_000_000;
+
+/**
+ * معاينة حتمية لاستبدال النقاط تطابق قواعد الخادم (`loyaltyService.ts`):
+ * - `maxRedeemPercent` في النطاق `(0, 100)` يفرض حداً أدنى لقيمة السلة = `ceil(discountIqd * 100 / maxRedeemPercent)`.
+ * - `maxRedeemPercent <= 0` أو `>= 100` يعني بدون سقف نسبي ⇒ الحد الأدنى للسلة = `0` (وليس قسمة على `1%`!).
+ * - الحد الأقصى للاستبدال في المرة الواحدة يُسقَّف عند `1,000,000` نقطة.
+ */
+export function computeLoyaltyRedeemPreview(input: {
+  pointsNumber: number;
+  redeemPointsInput: string;
+  loyalty:
+    | {
+        iqdDiscountPerPoint: string | number;
+        minRedeemPoints: number;
+        maxRedeemPercent: number;
+      }
+    | null
+    | undefined;
+}) {
+  const wholeBalance = Math.max(0, Math.floor(Number(input.pointsNumber) || 0));
+  const redeemableBalance = Math.min(MAX_LOYALTY_REDEEM_POINTS, wholeBalance);
+  const parsedPoints = Math.max(0, Math.floor(Number(input.redeemPointsInput) || 0));
+  const iqdPerPoint = Number(input.loyalty?.iqdDiscountPerPoint ?? 0);
+  const minRedeemPoints = Math.max(0, Math.floor(Number(input.loyalty?.minRedeemPoints ?? 0)));
+  const rawMaxPercent = Number(input.loyalty?.maxRedeemPercent ?? 0);
+  const hasRelativeCap =
+    Number.isFinite(rawMaxPercent) && rawMaxPercent > 0 && rawMaxPercent < 100;
+  const discountIqd =
+    parsedPoints > 0 && Number.isFinite(iqdPerPoint) && iqdPerPoint > 0
+      ? Math.round(parsedPoints * iqdPerPoint * 100) / 100
+      : 0;
+  const minOrderSpendIqd =
+    discountIqd > 0 && hasRelativeCap
+      ? Math.ceil((discountIqd * 100) / rawMaxPercent)
+      : 0;
+  const canRedeem = Boolean(
+    input.loyalty &&
+      parsedPoints > 0 &&
+      parsedPoints >= minRedeemPoints &&
+      parsedPoints <= redeemableBalance &&
+      discountIqd > 0,
+  );
+  return {
+    wholeBalance,
+    redeemableBalance,
+    parsedPoints,
+    minRedeemPoints,
+    hasRelativeCap,
+    discountIqd,
+    minOrderSpendIqd,
+    canRedeem,
+  };
+}
+
+/** استبدال ذاتي للنقاط بقسيمة خصم شخصية مع حماية عدم التكرار عبر clientRequestId. */
+export function redeemStorefrontLoyaltyPoints(input: {
+  customerSessionToken: string;
+  points: number;
+  clientRequestId: string;
+}) {
+  return storefrontMutation<StorefrontRedeemLoyaltyResult>(
+    "storefront.redeemLoyaltyPoints",
+    input,
   );
 }
 
