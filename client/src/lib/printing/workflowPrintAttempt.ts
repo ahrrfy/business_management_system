@@ -22,6 +22,31 @@ export interface WorkflowPrintAttempt {
 const keyFor = (userId: number, branchId: number, snapshotId: number) =>
   `workflow-print-attempt:${userId}:${branchId}:${snapshotId}`;
 
+/** Browser-owned locks have no lease timeout and are released when the tab dies. */
+export async function withWorkflowPrintOwnership<T>(
+  userId: number,
+  branchId: number,
+  action: () => Promise<T>,
+): Promise<T> {
+  if (typeof navigator === "undefined" || !navigator.locks?.request)
+    throw new Error(
+      "تعذر تأمين الطباعة بين علامات التبويب؛ افتح النظام عبر اتصال آمن بمتصفح حديث يدعم قفل الطباعة",
+    );
+  // A branch bundle may contain several snapshots. Own its whole action rather
+  // than releasing between authorization, a slow transport and its journal ack.
+  return navigator.locks.request(
+    `workflow-print-owner:${userId}:${branchId}`,
+    { ifAvailable: true },
+    async (owner) => {
+      if (!owner)
+        throw new Error(
+          "محاولة طباعة لهذا المستخدم والفرع تعمل في علامة تبويب أخرى؛ انتظر اكتمالها ثم راجع نتيجة الطباعة",
+        );
+      return action();
+    },
+  );
+}
+
 export function saveWorkflowPrintAttempt(attempt: WorkflowPrintAttempt): void {
   try {
     localStorage.setItem(
@@ -111,7 +136,30 @@ export function beginWorkflowPrintAttempt(
   return attempt;
 }
 
-/** Clear only after the server acknowledged the same transport outcome. */
+/** Forget only a request the server definitively refused before authorization. */
+export function discardRejectedWorkflowPrintAttempt(
+  attempt: WorkflowPrintAttempt,
+  cause: unknown,
+): boolean {
+  const code = (cause as { data?: { code?: string } } | null)?.data?.code;
+  if (
+    attempt.printId != null ||
+    attempt.outcome ||
+    !code ||
+    ![
+      "BAD_REQUEST",
+      "UNAUTHORIZED",
+      "FORBIDDEN",
+      "NOT_FOUND",
+      "CONFLICT",
+    ].includes(code)
+  )
+    return false;
+  finishWorkflowPrintAttempt(attempt);
+  return true;
+}
+
+/** Clear only an acknowledged outcome or a definitively rejected identity. */
 export function finishWorkflowPrintAttempt(
   attempt: WorkflowPrintAttempt,
 ): void {

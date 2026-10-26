@@ -20,6 +20,8 @@ const state = vi.hoisted(() => ({
   openPreview: vi.fn(),
   userId: 1,
   branchId: 1,
+  heldLocks: new Set<string>(),
+  lockRequest: vi.fn(),
 }));
 vi.mock("@/lib/trpc", () => ({
   trpc: {
@@ -125,11 +127,22 @@ function manifest(title: string) {
 
 describe("workflow shipment document selection", () => {
   let root: Root;
+  let extraRoots: Root[];
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
     state.userId = 1;
     state.branchId = 1;
+    extraRoots = [];
+    state.heldLocks.clear();
+    state.lockRequest.mockImplementation(async (name, options, callback) => {
+      expect(options).toEqual({ ifAvailable: true });
+      if (state.heldLocks.has(name)) return callback(null);
+      state.heldLocks.add(name);
+      try { return await callback({ name, mode: "exclusive" }); }
+      finally { state.heldLocks.delete(name); }
+    });
+    Object.defineProperty(navigator, "locks", { configurable: true, value: { request: state.lockRequest } });
     state.documents = [
       document(
         4,
@@ -161,7 +174,18 @@ describe("workflow shipment document selection", () => {
     root = createRoot(window.document.createElement("div"));
     act(() => root.render(<Consumer />));
   });
-  afterEach(() => act(() => root.unmount()));
+  afterEach(() => {
+    act(() => { root.unmount(); extraRoots.forEach((item) => item.unmount()); });
+    expect(state.heldLocks.size).toBe(0);
+  });
+
+  function secondPrinter(userId = state.userId) {
+    state.userId = userId;
+    const secondRoot = createRoot(window.document.createElement("div"));
+    extraRoots.push(secondRoot);
+    act(() => secondRoot.render(<Consumer />));
+    return printer;
+  }
 
   function remount() {
     act(() => root.unmount());
@@ -425,5 +449,119 @@ describe("workflow shipment document selection", () => {
       expect(state.printDoc).not.toHaveBeenCalled();
       expect(state.error).toHaveBeenCalledWith(expect.stringContaining("فعّل تخزين المتصفح"));
     } finally { save.mockRestore(); }
+  });
+
+  it.each(["request", "transport", "completion"] as const)("excludes a second hook while the first document's %s is pending", async (stage) => {
+    const first = printer;
+    const second = secondPrinter();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const delayed = async () => { entered.resolve(); await release.promise; };
+    if (stage === "request") state.request.mockImplementationOnce(async () => { await delayed(); return { print: { id: 6, status: "REQUESTED" } }; });
+    if (stage === "transport") state.printDoc.mockImplementationOnce(async () => { await delayed(); return { ok: true, via: "server" }; });
+    if (stage === "completion") state.complete.mockImplementationOnce(delayed);
+    let active: ReturnType<typeof first.printSnapshot>;
+    const unused = { closed: false, close: vi.fn() } as unknown as Window;
+    try {
+      await act(async () => { active = first.printSnapshot(waybill(), null); await entered.promise; });
+      await act(async () => { await second.printSnapshot(waybill(), unused); });
+      expect(state.request).toHaveBeenCalledOnce();
+      expect(state.printDoc).toHaveBeenCalledTimes(stage === "request" ? 0 : 1);
+      expect(unused.close).toHaveBeenCalledOnce();
+      expect(state.heldLocks.size).toBe(1);
+    } finally {
+      await act(async () => { release.resolve(); await active!; });
+    }
+    expect(state.printDoc).toHaveBeenCalledOnce();
+    expect(state.complete).toHaveBeenCalledOnce();
+  });
+
+  it("excludes a second label preview through completion and releases ownership after an error", async () => {
+    state.documents.push(document(5, "SHIPPING_LABEL", "assignment", dispatch));
+    const first = printer;
+    const second = secondPrinter();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    state.complete.mockImplementationOnce(async () => { entered.resolve(); await release.promise; throw new Error("completion response lost"); });
+    let active: ReturnType<typeof first.printLabel>;
+    try {
+      await act(async () => { active = first.printLabel(7, null); await entered.promise; });
+      await act(async () => { await second.printLabel(7, null); });
+      expect(state.request).toHaveBeenCalledOnce();
+      expect(state.printLabel).toHaveBeenCalledOnce();
+    } finally {
+      await act(async () => { release.resolve(); await active!; });
+    }
+    await act(async () => { await second.printLabel(7, null); });
+    expect(state.request).toHaveBeenCalledTimes(2);
+    expect(state.printLabel).toHaveBeenCalledOnce();
+    expect(state.complete).toHaveBeenCalledTimes(2);
+  });
+
+  it("lets the backend reject a competing actor's saved original, then creates a reprint from updated SENT history", async () => {
+    const first = printer;
+    const second = secondPrinter(2);
+    const snapshot = waybill();
+    state.request.mockRejectedValueOnce(new Error("network response lost"));
+    await act(async () => { await second.printSnapshot(snapshot, null); });
+    const rejectedId = state.request.mock.calls[0][0].clientRequestId;
+    let originalId: string | undefined;
+    state.request.mockImplementation(async (input) => {
+      if (input.copyType === "ORIGINAL") {
+        if (originalId && originalId !== input.clientRequestId) throw Object.assign(new Error("original is owned by another actor"), { data: { code: "CONFLICT" } });
+        originalId = input.clientRequestId;
+      }
+      return { print: { id: 6, status: "REQUESTED" } };
+    });
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    state.printDoc.mockImplementationOnce(async () => { entered.resolve(); await release.promise; return { ok: true, via: "server" }; });
+    let active: ReturnType<typeof first.printSnapshot>;
+    try {
+      await act(async () => { active = first.printSnapshot(snapshot, null); await entered.promise; });
+      await act(async () => { await second.printSnapshot(snapshot, null); });
+      expect(state.request).toHaveBeenCalledTimes(3);
+      expect(state.request.mock.calls[2][0].clientRequestId).toBe(rejectedId);
+      expect(state.printDoc).toHaveBeenCalledOnce();
+    } finally {
+      await act(async () => { release.resolve(); await active!; });
+    }
+    snapshot.printHistory = [{ status: "SENT" }];
+    await act(async () => { await second.printSnapshot(snapshot, null); });
+    expect(state.request.mock.calls[3][0]).toMatchObject({ copyType: "REPRINT", reason: "إعادة طباعة من محطة سير العمل" });
+    expect(state.request.mock.calls[3][0].clientRequestId).not.toBe(rejectedId);
+    expect(state.printDoc).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["INTERNAL_SERVER_ERROR", "TIMEOUT"])("retains an uncertain %s request identity and releases the lock", async (code) => {
+    state.request.mockRejectedValueOnce(Object.assign(new Error("response uncertain"), { data: { code } }));
+    await act(async () => { await printer.printSnapshot(waybill(), null); });
+    const first = state.request.mock.calls[0][0];
+    remount();
+    await act(async () => { await printer.printSnapshot(waybill(), null); });
+    expect(state.request.mock.calls[1][0]).toEqual(first);
+    expect(state.printDoc).toHaveBeenCalledOnce();
+  });
+
+  it("retains a known physical outcome despite a later definitive authorization rejection", async () => {
+    state.complete.mockRejectedValueOnce(new Error("completion response lost"));
+    await act(async () => { await printer.printSnapshot(waybill(), null); });
+    const first = state.request.mock.calls[0][0];
+    state.request.mockRejectedValueOnce(Object.assign(new Error("permission changed"), { data: { code: "FORBIDDEN" } }));
+    await act(async () => { await printer.printSnapshot(waybill(), null); });
+    await act(async () => { await printer.printSnapshot(waybill(), null); });
+    expect(state.request.mock.calls[2][0]).toEqual(first);
+    expect(state.printDoc).toHaveBeenCalledOnce();
+    expect(state.complete).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed when cross-tab Web Locks are unavailable", async () => {
+    Object.defineProperty(navigator, "locks", { configurable: true, value: undefined });
+    const unused = { closed: false, close: vi.fn() } as unknown as Window;
+    await act(async () => { await printer.printSnapshot(waybill(), unused); });
+    expect(state.request).not.toHaveBeenCalled();
+    expect(state.printDoc).not.toHaveBeenCalled();
+    expect(unused.close).toHaveBeenCalledOnce();
+    expect(state.error).toHaveBeenCalledWith(expect.stringContaining("متصفح"));
   });
 });

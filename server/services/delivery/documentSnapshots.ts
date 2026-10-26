@@ -348,35 +348,38 @@ export async function createShipmentDispatchDocumentSnapshotsTx(
     );
 
   let payload = input.payload;
+  let eventOccurredAt = input.eventOccurredAt;
   if (
     payload.evidence.mode === "COMMITTED_DISPATCH_EVENT" &&
     payload.evidence.eventId == null
   ) {
-    const events = await tx
-      .select()
-      .from(deliveryEvents)
-      .where(
-        and(
-          eq(deliveryEvents.consignmentId, input.consignmentId),
-          inArray(deliveryEvents.eventType, [...assignmentEventTypes]),
-        ),
-      )
-      .orderBy(desc(deliveryEvents.occurredAt), desc(deliveryEvents.id));
+    const { events, sources } = await shipmentAssignmentEventsTx(tx, input);
     const assignment = events.find(isAssignmentEvent);
+    const source = sources.find((row) => row.id === assignment?.consignmentId);
     const identity = assignmentIdentity(assignment?.payload);
     if (
       !assignment ||
+      !source ||
       assignment.actorUserId !== input.createdBy ||
       Number(identity?.partyId) !== payload.shipment.partyId ||
-      identity?.sourceType !== payload.shipment.sourceType ||
-      Number(identity?.sourceId) !== payload.shipment.sourceId
+      identity?.sourceType !== source.sourceType ||
+      Number(identity?.sourceId) !== source.sourceId ||
+      !payload.shipment.members.some(
+        (member) =>
+          member.id === source.id &&
+          member.sourceType === source.sourceType &&
+          member.sourceId === source.sourceId,
+      )
     )
       throw fulfillmentError(
         "حدث الإسناد لا يثبت الجهة والمصدر الحاليين",
         "CONFLICT",
       );
+    if (assignment.consignmentId !== input.consignmentId)
+      eventOccurredAt = assignment.occurredAt;
     payload = {
       ...payload,
+      eventOccurredAt: eventOccurredAt.toISOString(),
       evidence: { ...payload.evidence, eventId: assignment.id },
     };
   }
@@ -410,7 +413,7 @@ export async function createShipmentDispatchDocumentSnapshotsTx(
       branchId: input.branchId,
       shiftId: input.shiftId ?? null,
       eventKey: input.eventKey,
-      eventOccurredAt: input.eventOccurredAt,
+      eventOccurredAt,
       payload:
         document.documentType === "DELIVERY_MANIFEST"
           ? shipmentManifest(payload)
@@ -456,6 +459,92 @@ function isAssignmentEvent(event: typeof deliveryEvents.$inferSelect) {
       Object.hasOwn(payload ?? {}, key),
     )
   );
+}
+
+/** A closed fee leader keeps its history; the latest real member assignment proves redispatch. */
+async function shipmentAssignmentEventsTx(
+  tx: Tx,
+  input: { consignmentId: number; branchId: number },
+) {
+  const [leader] = await tx
+    .select()
+    .from(deliveryConsignments)
+    .where(
+      and(
+        eq(deliveryConsignments.id, input.consignmentId),
+        eq(deliveryConsignments.branchId, input.branchId),
+      ),
+    )
+    .limit(1);
+  if (!leader)
+    throw fulfillmentError("الإرسالية خارج نطاق الفرع الحالي", "FORBIDDEN");
+  let sources = [leader];
+  if (
+    ["CANCELLED", "RETURNED", "WRITTEN_OFF"].includes(leader.status) ||
+    ["CANCELLED", "RETURNED"].includes(leader.parcelStatus)
+  ) {
+    const grouped = await tx
+      .select({ row: deliveryConsignments })
+      .from(deliveryShipmentMembers)
+      .innerJoin(
+        deliveryConsignments,
+        eq(deliveryConsignments.id, deliveryShipmentMembers.consignmentId),
+      )
+      .where(
+        and(
+          eq(deliveryShipmentMembers.leaderConsignmentId, leader.id),
+          eq(deliveryConsignments.branchId, input.branchId),
+        ),
+      );
+    if (grouped.length) sources = grouped.map(({ row }) => row);
+  }
+  const events = await tx
+    .select()
+    .from(deliveryEvents)
+    .where(
+      and(
+        inArray(
+          deliveryEvents.consignmentId,
+          sources.map((row) => row.id),
+        ),
+        inArray(deliveryEvents.eventType, [...assignmentEventTypes]),
+      ),
+    )
+    .orderBy(desc(deliveryEvents.occurredAt), desc(deliveryEvents.id));
+  const leaderAssignment = events.find(
+    (event) => event.consignmentId === leader.id && isAssignmentEvent(event),
+  );
+  // Initial member events follow the leader in the same group operation. Only
+  // assignments after the leader first closed can supersede that group's pack.
+  const [closure] =
+    sources.length > 1 && leaderAssignment
+      ? await tx
+          .select({ id: deliveryEvents.id })
+          .from(deliveryEvents)
+          .where(
+            and(
+              eq(deliveryEvents.consignmentId, leader.id),
+              sql`${deliveryEvents.id} > ${leaderAssignment.id}`,
+              or(
+                inArray(deliveryEvents.toParcelStatus, [
+                  "CANCELLED",
+                  "RETURNED",
+                ]),
+                eq(deliveryEvents.toMoneyStatus, "WRITTEN_OFF"),
+              ),
+            ),
+          )
+          .orderBy(asc(deliveryEvents.id))
+          .limit(1)
+      : [];
+  return {
+    sources,
+    events: events.filter(
+      (event) =>
+        event.consignmentId === leader.id ||
+        (closure != null && event.id > closure.id),
+    ),
+  };
 }
 
 /**
@@ -504,24 +593,14 @@ export async function bootstrapHistoricalShipmentDocumentSnapshotsTx(
   if (Number(leader.branchId) !== input.branchId)
     throw fulfillmentError("الإرسالية خارج نطاق الفرع الحالي", "FORBIDDEN");
 
-  const events = await tx
-    .select()
-    .from(deliveryEvents)
-    .where(
-      and(
-        eq(deliveryEvents.consignmentId, input.consignmentId),
-        or(
-          ...assignmentEventTypes.map((type) =>
-            eq(deliveryEvents.eventType, type),
-          ),
-        ),
-      ),
-    )
-    .orderBy(desc(deliveryEvents.occurredAt), desc(deliveryEvents.id));
+  const { events, sources } = await shipmentAssignmentEventsTx(tx, input);
   // OUT_FOR_DELIVERY also records a later departure/retry, without assignment
   // identity. Do not let that hide the last actual assignment, or skip a newer
   // assignment merely because its identity conflicts with today's shipment.
   const originalEvent = events.find(isAssignmentEvent);
+  const assignmentSource = sources.find(
+    (row) => row.id === originalEvent?.consignmentId,
+  );
   let originalPayload = assignmentIdentity(originalEvent?.payload);
   // Native aftercare events originally saved the execution identity only.
   // Its persisted dispatch association must independently prove this carrier,
@@ -564,10 +643,11 @@ export async function bootstrapHistoricalShipmentDocumentSnapshotsTx(
   }
   if (
     !originalEvent ||
+    !assignmentSource ||
     originalEvent.actorUserId == null ||
     Number(originalPayload?.partyId) !== Number(leader.partyId) ||
-    String(originalPayload?.sourceType ?? "") !== leader.sourceType ||
-    Number(originalPayload?.sourceId) !== Number(leader.sourceId)
+    String(originalPayload?.sourceType ?? "") !== assignmentSource.sourceType ||
+    Number(originalPayload?.sourceId) !== Number(assignmentSource.sourceId)
   )
     throw fulfillmentError(
       "لا تتوفر واقعة إسناد أصلية متطابقة؛ لا يمكن إنشاء نسخة تاريخية من القيم الحية",
@@ -634,12 +714,23 @@ export async function bootstrapHistoricalShipmentDocumentSnapshotsTx(
           return false;
         const matches = events.filter((event) => {
           const identity = assignmentIdentity(event.payload);
+          const frozenSource =
+            event.consignmentId === Number(shipment?.consignmentId)
+              ? shipment
+              : Array.isArray(shipment?.members)
+                ? shipment.members
+                    .map(eventPayload)
+                    .find(
+                      (member) => Number(member?.id) === event.consignmentId,
+                    )
+                : null;
           return (
             isAssignmentEvent(event) &&
             event.actorUserId === row.createdBy &&
             Number(identity?.partyId) === Number(shipment?.partyId) &&
-            identity?.sourceType === shipment?.sourceType &&
-            Number(identity?.sourceId) === Number(shipment?.sourceId)
+            frozenSource != null &&
+            identity?.sourceType === frozenSource.sourceType &&
+            Number(identity?.sourceId) === Number(frozenSource.sourceId)
           );
         });
         if (matches.length === 1) return matches[0].id === originalEvent.id;
