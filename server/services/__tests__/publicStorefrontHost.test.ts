@@ -8,6 +8,21 @@ describe("public storefront host boundary", () => {
     }
   });
 
+  it("يسمح بدفعة استمارة التوظيف مع أسماء الفروع العامة فقط من الكشك", () => {
+    expect(isPublicStorefrontProcedure("kiosk.publicBranches")).toBe(true);
+    expect(isAllowedOnPublicStorefrontHost(
+      "POST",
+      "/api/trpc/recruitment.openVacancies,kiosk.publicBranches",
+    )).toBe(true);
+    for (const procedure of ["kiosk.banner", "kiosk.lookup", "kiosk.deviceLogin", "kiosk.deviceMe", "kiosk.deviceLogout", "kiosk.devices.list"]) {
+      expect(isPublicStorefrontProcedure(procedure), procedure).toBe(false);
+      expect(isAllowedOnPublicStorefrontHost(
+        "POST",
+        `/api/trpc/recruitment.openVacancies,kiosk.publicBranches,${procedure}`,
+      ), procedure).toBe(false);
+    }
+  });
+
   it("لا يفتح إجراءات المندوب (courier.*) ولا إشعارات الموظفين (push.*) على الدومين العام", () => {
     // تطبيق المناديب (TWA) حُذف؛ وتأكّد المالك أن لا جهاز ميداني يستعمله عبر alarabiya.online.
     // push.* يستعمله ERP الداخلي وحده؛ إشعارات العملاء عبر storefront.registerPushDevice.

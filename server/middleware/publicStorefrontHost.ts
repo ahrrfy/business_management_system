@@ -69,6 +69,8 @@ export function isPublicStorefrontProcedure(procedure: string): boolean {
   // وإشعارات الموظفين للـERP الداخلي وحده (إشعارات العملاء عبر storefront.registerPushDevice).
   if (namespace === "storefront") return true;
   if (namespace === "auth") return PUBLIC_AUTH.has(operation);
+  // استمارة التوظيف العامة تحتاج أسماء الفروع النشطة ومعرّفاتها فقط، دون بقية عمليات الكشك.
+  if (namespace === "kiosk") return operation === "publicBranches";
   return namespace === "recruitment" && PUBLIC_RECRUITMENT.has(operation);
 }
 

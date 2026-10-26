@@ -30,6 +30,30 @@ assert.equal(
   "production contract must enable both vhosts",
 );
 
+{
+  const publicSite = fs.readFileSync(
+    path.join(PROJECT_ROOT, "deploy/nginx-public.conf"),
+    "utf8",
+  );
+  const locations = [...publicSite.matchAll(/location\s+~\s+"([^"]+)"/gu)]
+    .map((match) => new RegExp(match[1]));
+  const matchedLocation = (uri) => locations.findIndex((location) => location.test(uri));
+  assert.equal(locations.length, 3, "public API must retain recovery, auth and general locations");
+  for (const uri of [
+    "/api/trpc/kiosk.publicBranches",
+    "/api/trpc/recruitment.openVacancies,kiosk.publicBranches",
+    "/api/trpc/kiosk.publicBranches,recruitment.openVacancies",
+  ]) assert.equal(matchedLocation(uri), 2, `public recruitment request must reach Node: ${uri}`);
+  assert.equal(matchedLocation("/api/trpc/kiosk.publicBranches,auth.login"), 1,
+    "branch options must not bypass the auth limiter");
+  assert.equal(matchedLocation("/api/trpc/auth.resetPasswordWithToken,kiosk.publicBranches"), 0,
+    "branch options must not bypass the password recovery limiter");
+  for (const operation of ["banner", "lookup", "deviceLogin", "deviceMe", "deviceLogout", "devices.list", "publicBranchesExtra"]) {
+    assert.equal(matchedLocation(`/api/trpc/recruitment.openVacancies,kiosk.${operation}`), -1,
+      `other kiosk operations must remain blocked: ${operation}`);
+  }
+}
+
 function createFixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "nginx-contract-test-"));
   const projectRoot = path.join(root, "project");
