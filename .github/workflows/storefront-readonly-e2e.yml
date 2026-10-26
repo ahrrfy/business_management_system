@@ -8,6 +8,11 @@ on:
         required: true
         type: string
         default: https://alarabiya.online
+      resolve_via_host:
+        description: Optional direct-origin hostname whose public IPv4 pins base_url in /etc/hosts when CDN challenges runner IPs
+        required: false
+        type: string
+        default: ""
   workflow_call:
     inputs:
       base_url:
@@ -15,12 +20,17 @@ on:
         required: false
         type: string
         default: https://alarabiya.online
+      resolve_via_host:
+        description: Optional direct-origin hostname whose public IPv4 pins base_url in /etc/hosts when CDN challenges runner IPs
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
 
 concurrency:
-  group: storefront-readonly-e2e-${{ inputs.base_url }}
+  group: storefront-readonly-e2e-${{ inputs.base_url }}-${{ inputs.resolve_via_host }}
   cancel-in-progress: true
 
 jobs:
@@ -29,7 +39,6 @@ jobs:
     timeout-minutes: 20
     env:
       CI: "true"
-      STOREFRONT_E2E_BASE_URL: ${{ inputs.base_url }}
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -39,6 +48,83 @@ jobs:
         with:
           node-version-file: .node-version
           cache: pnpm
+      - name: Configure storefront target and optional direct-origin IPv4 pin
+        env:
+          INPUT_BASE_URL: ${{ inputs.base_url }}
+          INPUT_RESOLVE_VIA_HOST: ${{ inputs.resolve_via_host }}
+        run: |
+          node --input-type=module <<'EOF'
+          import dns from "node:dns/promises";
+          import fs from "node:fs";
+          import net from "node:net";
+          import { execFileSync } from "node:child_process";
+
+          const HOST_RE = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i;
+          const INTERNAL_ORIGIN_HOST = "srv1548487.hstgr.cloud";
+          const CANONICAL_PUBLIC_ORIGIN = "https://alarabiya.online";
+
+          function isPublicIpv4(ip) {
+            if (net.isIPv4(ip) !== true) return false;
+            const [a, b] = ip.split(".").map(Number);
+            if (a === 0 || a === 10 || a === 127 || a >= 224) return false;
+            if (a === 100 && b >= 64 && b <= 127) return false;
+            if (a === 169 && b === 254) return false;
+            if (a === 172 && b >= 16 && b <= 31) return false;
+            if (a === 192 && b === 168) return false;
+            if (a === 198 && (b === 18 || b === 19)) return false;
+            return true;
+          }
+
+          const rawBase = (process.env.INPUT_BASE_URL ?? "").trim() || CANONICAL_PUBLIC_ORIGIN;
+          const rawVia = (process.env.INPUT_RESOLVE_VIA_HOST ?? "").trim();
+          const parsedInput = new URL(rawBase);
+          if (
+            parsedInput.protocol !== "https:" ||
+            parsedInput.username ||
+            parsedInput.password ||
+            parsedInput.search ||
+            parsedInput.hash ||
+            (parsedInput.pathname !== "/" && parsedInput.pathname !== "")
+          ) {
+            throw new Error("STOREFRONT_E2E_BASE_URL_INVALID");
+          }
+
+          const useInternalOriginPin =
+            rawVia === "" && parsedInput.hostname.toLowerCase() === INTERNAL_ORIGIN_HOST;
+          const effectiveOrigin = useInternalOriginPin ? CANONICAL_PUBLIC_ORIGIN : parsedInput.origin;
+          const effectiveUrl = new URL(effectiveOrigin);
+          const viaHost = useInternalOriginPin ? INTERNAL_ORIGIN_HOST : rawVia;
+
+          if (viaHost !== "") {
+            if (
+              effectiveUrl.port !== "" ||
+              net.isIP(effectiveUrl.hostname) !== 0 ||
+              net.isIP(viaHost) !== 0 ||
+              !HOST_RE.test(effectiveUrl.hostname) ||
+              !HOST_RE.test(viaHost)
+            ) {
+              throw new Error("STOREFRONT_E2E_RESOLVE_HOST_INVALID");
+            }
+            const { address } = await dns.lookup(viaHost, { family: 4 });
+            if (!isPublicIpv4(address)) {
+              throw new Error("STOREFRONT_E2E_RESOLVE_IP_NOT_PUBLIC");
+            }
+            const aliases = effectiveUrl.hostname.startsWith("www.")
+              ? [effectiveUrl.hostname]
+              : [effectiveUrl.hostname, `www.${effectiveUrl.hostname}`];
+            execFileSync("sudo", ["tee", "-a", "/etc/hosts"], {
+              input: `${address} ${aliases.join(" ")}\n`,
+              stdio: ["pipe", "ignore", "inherit"],
+            });
+            console.log(`Pinned ${aliases.join(", ")} -> ${viaHost} (${address})`);
+          }
+
+          fs.appendFileSync(
+            process.env.GITHUB_ENV,
+            `STOREFRONT_E2E_BASE_URL=${effectiveOrigin}\n`,
+            "utf8",
+          );
+          EOF
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:storefront:e2e
