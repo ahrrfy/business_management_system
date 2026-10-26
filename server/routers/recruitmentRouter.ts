@@ -210,6 +210,27 @@ const {
 } = applicantFields;
 const publicApplicantFields = {
   ...publicApplicantFieldsBase,
+  degree: z.enum(DEGREES, { error: "التحصيل الدراسي مطلوب" }),
+  birthDate: z
+    .string({ error: "أدخل تاريخ الميلاد لتحديد العمر" })
+    .trim()
+    .min(1, "أدخل تاريخ الميلاد لتحديد العمر")
+    .regex(ISO_DATE_RE, "صيغة التاريخ يجب أن تكون YYYY-MM-DD"),
+  experience: z
+    .string({ error: "الخبرات العملية مطلوبة" })
+    .trim()
+    .min(1, "الخبرات العملية مطلوبة")
+    .max(120),
+  skills: z
+    .string({ error: "المهارات مطلوبة" })
+    .trim()
+    .min(1, "المهارات مطلوبة")
+    .max(500),
+  residentialAddress: z
+    .string({ error: "العنوان الكامل مع أقرب نقطة دالة مطلوب" })
+    .trim()
+    .min(1, "العنوان الكامل مع أقرب نقطة دالة مطلوب")
+    .max(255),
   phone: z
     .string()
     .trim()
@@ -375,7 +396,7 @@ export const recruitmentRouter = router({
 
   /**
    * استمارة التقديم الخارجية — إجراء **عام** (بلا مصادقة).
-   * يُنشئ متقدّماً بمصدر external ومرحلة new. الحارس الأساس: الاسم مطلوب (zod).
+   * يُنشئ متقدّماً بمصدر external ومرحلة new بعد التحقّق من بيانات التقديم الإلزامية.
    * إن مرّر vacancyId صالحاً، يُربَط المتقدّم بالوظيفة ويؤخذ العنوان من سجلّها (الخدمة).
    */
   submit: publicProcedure

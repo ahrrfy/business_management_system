@@ -615,6 +615,18 @@ function ApplyModal({ target, branches, onClose }: { target: Vacancy | "general"
       phoneRef.current?.focus();
       return;
     }
+    const missingField = [
+      { value: birthDate, id: "cj-birth", message: "أدخل تاريخ الميلاد لتحديد العمر" },
+      { value: residentialAddress, id: "cj-address", message: "أدخل العنوان الكامل مع أقرب نقطة دالة" },
+      { value: degree, id: "cj-degree", message: "اختر التحصيل الدراسي" },
+      { value: experience, id: "cj-exp", message: "أدخل الخبرات العملية، أو اختر بدون خبرة" },
+      { value: skills, id: "cj-skills", message: "أدخل المهارات والبرامج التي تتقنها" },
+    ].find((field) => !field.value.trim());
+    if (missingField) {
+      setErr(missingField.message);
+      e.currentTarget.querySelector<HTMLElement>(`#${missingField.id}`)?.focus();
+      return;
+    }
     if (whatsappPhone.trim() && !IRAQI_MOBILE_RE.test(whatsappPhone.trim())) {
       setErr("أدخل رقم واتساب عراقي صحيحاً بصيغة +9647XXXXXXXXX أو اتركه فارغاً");
       return;
@@ -641,19 +653,19 @@ function ApplyModal({ target, branches, onClose }: { target: Vacancy | "general"
       phone,
       whatsappPhone: whatsappPhone.trim() || undefined,
       email: email.trim() || undefined,
-      birthDate: birthDate.trim() || undefined,
+      birthDate: birthDate.trim(),
       gender: (gender || undefined) as never,
       maritalStatus: (maritalStatus || undefined) as never,
       governorate: governorate.trim() || undefined,
       district: district.trim() || undefined,
-      residentialAddress: residentialAddress.trim() || undefined,
+      residentialAddress: residentialAddress.trim(),
       degree: (degree || undefined) as never,
       major: major.trim() || undefined,
       education: education.trim() || undefined,
       availabilityStatus: (availabilityStatus || undefined) as never,
-      experience: experience.trim() || undefined,
+      experience: experience.trim(),
       previousEmployer: previousEmployer.trim() || undefined,
-      skills: skills.trim() || undefined,
+      skills: skills.trim(),
       preferredBranch: preferredBranch.trim() || undefined,
       employmentType: (employmentType || undefined) as never,
       shiftPreference: (shiftPreference || undefined) as never,
@@ -719,7 +731,7 @@ function ApplyModal({ target, branches, onClose }: { target: Vacancy | "general"
               <div className="cj-fsec">البيانات الشخصية والتواصل</div>
               <div className="cj-field full">
                 <label htmlFor="cj-name">الاسم الرباعي واللقب <i>*</i></label>
-                <input ref={nameRef} id="cj-name" className="cj-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="الاسم الأول واسم الأب والجد واللقب" autoComplete="name" />
+                <input ref={nameRef} id="cj-name" className="cj-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="الاسم الأول واسم الأب والجد واللقب" autoComplete="name" maxLength={200} required />
               </div>
               <div className="cj-field">
                 <label htmlFor="cj-phone">رقم الهاتف الأساسي <i>*</i></label>
@@ -734,8 +746,8 @@ function ApplyModal({ target, branches, onClose }: { target: Vacancy | "general"
                 <input id="cj-email" className="cj-input" type="email" style={{ direction: "ltr", textAlign: "right" }} value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@example.com" autoComplete="email" maxLength={100} />
               </div>
               <div className="cj-field">
-                <label htmlFor="cj-birth">تاريخ الميلاد</label>
-                <input id="cj-birth" className="cj-input" type="date" value={birthDate} onChange={(e) => setBirthDate(e.target.value)} />
+                <label htmlFor="cj-birth">العمر (تاريخ الميلاد) <i>*</i></label>
+                <input id="cj-birth" className="cj-input" type="date" value={birthDate} onChange={(e) => setBirthDate(e.target.value)} required />
               </div>
               <div className="cj-field">
                 <label htmlFor="cj-gender">الجنس</label>
@@ -763,14 +775,14 @@ function ApplyModal({ target, branches, onClose }: { target: Vacancy | "general"
                 <input id="cj-district" className="cj-input" value={district} onChange={(e) => setDistrict(e.target.value)} placeholder="مثال: الكرادة، المنصور، الدورة" maxLength={120} />
               </div>
               <div className="cj-field full">
-                <label htmlFor="cj-address">عنوان السكن التفصيلي / أقرب نقطة دالة</label>
-                <input id="cj-address" className="cj-input" value={residentialAddress} onChange={(e) => setResidentialAddress(e.target.value)} maxLength={255} placeholder="مثال: حي الجامعة — قرب تقاطع الرواد (لا تكتب رقم البطاقة الوطنية)" autoComplete="street-address" />
+                <label htmlFor="cj-address">العنوان الكامل مع أقرب نقطة دالة <i>*</i></label>
+                <input id="cj-address" className="cj-input" value={residentialAddress} onChange={(e) => setResidentialAddress(e.target.value)} maxLength={255} placeholder="المحافظة، المنطقة، الشارع، رقم الدار وأقرب نقطة دالة" autoComplete="street-address" required />
               </div>
 
               <div className="cj-fsec">المؤهل العلمي والخبرة والمهارات</div>
               <div className="cj-field">
-                <label htmlFor="cj-degree">التحصيل الدراسي</label>
-                <AppSelect id="cj-degree" className="cj-input" value={degree} onValueChange={setDegree}>
+                <label htmlFor="cj-degree">التحصيل الدراسي <i>*</i></label>
+                <AppSelect id="cj-degree" className="cj-input" value={degree} onValueChange={setDegree} required>
                   <option value="">— اختر المؤهل —</option>
                   {DEGREES.map((d) => <option key={d} value={d}>{d}</option>)}
                 </AppSelect>
@@ -791,8 +803,8 @@ function ApplyModal({ target, branches, onClose }: { target: Vacancy | "general"
                 </AppSelect>
               </div>
               <div className="cj-field">
-                <label htmlFor="cj-exp">سنوات الخبرة العملية</label>
-                <input id="cj-exp" list="cj-exp-list" className="cj-input" value={experience} onChange={(e) => setExperience(e.target.value)} placeholder="مثال: ٣ – ٥ سنوات" maxLength={120} />
+                <label htmlFor="cj-exp">سنوات الخبرة العملية <i>*</i></label>
+                <input id="cj-exp" list="cj-exp-list" className="cj-input" value={experience} onChange={(e) => setExperience(e.target.value)} placeholder="مثال: ٣ – ٥ سنوات، أو بدون خبرة" maxLength={120} required />
                 <datalist id="cj-exp-list">
                   {APPLICANT_EXPERIENCE_LEVELS.map((lvl) => <option key={lvl} value={lvl} />)}
                 </datalist>
@@ -802,8 +814,8 @@ function ApplyModal({ target, branches, onClose }: { target: Vacancy | "general"
                 <input id="cj-prev-emp" className="cj-input" value={previousEmployer} onChange={(e) => setPreviousEmployer(e.target.value)} placeholder="مثال: مطبعة أو شركة سابقة" maxLength={200} />
               </div>
               <div className="cj-field full">
-                <label htmlFor="cj-skills">المهارات والبرامج المتقنة</label>
-                <input id="cj-skills" className="cj-input" value={skills} onChange={(e) => setSkills(e.target.value)} placeholder="مثال: Photoshop, Illustrator, Excel، مبيعات، إدارة مخزن، تشغيل مكائن طباعة" maxLength={500} />
+                <label htmlFor="cj-skills">المهارات والبرامج المتقنة <i>*</i></label>
+                <input id="cj-skills" className="cj-input" value={skills} onChange={(e) => setSkills(e.target.value)} placeholder="مثال: Photoshop, Illustrator, Excel، مبيعات، إدارة مخزن، تشغيل مكائن طباعة" maxLength={500} required />
               </div>
 
               <div className="cj-fsec">تفضيلات العمل والدوام والمرفقات</div>
