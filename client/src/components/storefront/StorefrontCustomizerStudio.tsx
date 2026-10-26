@@ -1,4 +1,10 @@
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, {
+  useState,
+  useRef,
+  useEffect,
+  useCallback,
+  useImperativeHandle,
+} from "react";
 import {
   Image as ImageIcon,
   Download,
@@ -29,9 +35,14 @@ import {
   type CustomizationStudioUploadState,
 } from "./storefrontCustomizationUpload";
 
+export interface StorefrontCustomizerStudioHandle {
+  invalidateSavedPreview: (syncPrimaryText?: string) => void;
+}
+
 interface StorefrontCustomizerStudioProps {
   productName: string;
   baseImageUrl?: string | null;
+  studioRef?: React.Ref<StorefrontCustomizerStudioHandle>;
   onApplyCustomization?: (data: {
     customText: string;
     secondaryText?: string;
@@ -78,6 +89,7 @@ type PendingLogoPayload = {
 export function StorefrontCustomizerStudio({
   productName,
   baseImageUrl,
+  studioRef,
   onApplyCustomization,
   onAssetsChange,
   onUploadStateChange,
@@ -162,6 +174,19 @@ export function StorefrontCustomizerStudio({
       reportUploadState(logoAssetKeyRef.current ? "uploaded" : "idle");
     }
   }, [emitAssets, reportUploadState]);
+
+  useImperativeHandle(
+    studioRef,
+    () => ({
+      invalidateSavedPreview: (syncPrimaryText?: string) => {
+        if (syncPrimaryText !== undefined) {
+          setCustomText(syncPrimaryText);
+        }
+        invalidatePreviewIfStale();
+      },
+    }),
+    [invalidatePreviewIfStale],
+  );
 
   const paintStudioMockup = useCallback(
     (
@@ -360,6 +385,13 @@ export function StorefrontCustomizerStudio({
     [emitAssets, reportUploadState, uploadAssetM],
   );
 
+  const cancelInFlightApplyOnError = () => {
+    if (activeUploadKindRef.current === "APPLY") {
+      uploadEpochRef.current += 1;
+      activeUploadKindRef.current = null;
+    }
+  };
+
   const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = "";
@@ -367,6 +399,7 @@ export function StorefrontCustomizerStudio({
 
     const validation = validateCustomizationAssetFile(file);
     if (!validation.ok) {
+      cancelInFlightApplyOnError();
       setFailedAction(null);
       setUploadError(validation.error);
       reportUploadState("error");
@@ -380,6 +413,7 @@ export function StorefrontCustomizerStudio({
         !pureBase64 ||
         estimateBase64ByteLength(pureBase64) > MAX_CUSTOMIZATION_ASSET_BYTES
       ) {
+        cancelInFlightApplyOnError();
         setFailedAction(null);
         setUploadError(
           "حجم الصورة يتجاوز الحد الأقصى المسموح (2 ميجابايت). يرجى اختيار صورة أصغر.",
@@ -394,6 +428,7 @@ export function StorefrontCustomizerStudio({
         loadedImg.naturalHeight || loadedImg.height,
       );
       if (!dimCheck.ok) {
+        cancelInFlightApplyOnError();
         setFailedAction(null);
         setUploadError(dimCheck.error);
         reportUploadState("error");
@@ -416,6 +451,7 @@ export function StorefrontCustomizerStudio({
       await uploadLogoPayload(payload);
     } catch (error) {
       if (!mountedRef.current) return;
+      cancelInFlightApplyOnError();
       setFailedAction(null);
       setUploadError(formatCustomizationUploadError(error));
       reportUploadState("error");
@@ -457,6 +493,9 @@ export function StorefrontCustomizerStudio({
   const handleApply = async () => {
     const epoch = ++uploadEpochRef.current;
     activeUploadKindRef.current = "APPLY";
+    setUploadError(null);
+    setFailedAction(null);
+    reportUploadState("uploading");
     try {
       await renderCanvasAsync();
       if (!mountedRef.current || epoch !== uploadEpochRef.current) return;
@@ -471,10 +510,6 @@ export function StorefrontCustomizerStudio({
         reportUploadState("error");
         return;
       }
-
-      setUploadError(null);
-      setFailedAction(null);
-      reportUploadState("uploading");
 
       const activeLogoPayload = pendingLogoRef.current;
       let currentLogoKey = activeLogoPayload

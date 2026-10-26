@@ -961,6 +961,200 @@ describe("Slice 3 — customizer asset upload, cart identity, studio gating, and
       previewAssetKey: "customizer/t1/preview/preview_B.png",
     });
   });
+
+  it("blocks Add to Cart synchronously on Apply before slow baseImageUrl finishes loading and restores idle on cancel", async () => {
+    let resolveBgLoad!: () => void;
+    class SlowBgImage {
+      width = 400;
+      height = 400;
+      naturalWidth = 400;
+      naturalHeight = 400;
+      crossOrigin = "";
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_val: string) {
+        resolveBgLoad = () => this.onload?.();
+      }
+    }
+    globalThis.Image = SlowBgImage as unknown as typeof Image;
+
+    const uploadStates: CustomizationStudioUploadState[] = [];
+    act(() => {
+      root.render(
+        <StorefrontCustomizerStudio
+          productName="درع فاخر"
+          baseImageUrl="https://cdn.example.com/slow-product.png"
+          onUploadStateChange={(state) => uploadStates.push(state)}
+        />,
+      );
+    });
+
+    const applyBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("اعتماد"),
+    )!;
+    act(() => {
+      applyBtn.click();
+    });
+
+    // Must immediately block Add to Cart BEFORE slow background image resolves
+    expect(uploadStates[uploadStates.length - 1]).toBe("uploading");
+    expect(isCustomizationUploadBlockingAddToCart(uploadStates[uploadStates.length - 1]!)).toBe(
+      true,
+    );
+
+    // Editing studio text while waiting for background image cancels APPLY and restores idle
+    const textInput = container.querySelector("#custom-text-input") as HTMLInputElement;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+        textInput,
+        "تعديل أثناء التحميل",
+      );
+      textInput.dispatchEvent(new Event("input", { bubbles: true }));
+      textInput.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(uploadStates[uploadStates.length - 1]).toBe("idle");
+
+    await act(async () => {
+      resolveBgLoad?.();
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(uploadMutateAsyncMock).not.toHaveBeenCalled();
+  });
+
+  it("invalidates saved previewAssetKey and syncs studio text when customer edits template TEXT field above studio", async () => {
+    const textFieldDef = {
+      id: 11,
+      fieldKey: "engraving_text",
+      label: "النص المطلوب",
+      fieldType: "TEXT" as const,
+      isRequired: true,
+      sortOrder: 0,
+      maxLength: 100,
+      options: [],
+      dependency: null,
+      priceDelta: "0",
+    };
+    const validConfig: StorefrontCustomizationConfig = {
+      id: 15,
+      kind: "PRINT",
+      title: "خيارات الحفر",
+      description: null,
+      fields: [textFieldDef],
+    };
+    const mockProduct = {
+      productId: 303,
+      productName: "درع تكريم ملكي",
+      brand: null,
+      description: "وصف",
+      category: "الدروع",
+      categoryId: 3,
+      unitName: "قطعة",
+      productUnitId: 1303,
+      price: "15000",
+      salePrice: null,
+      promotionName: null,
+      inStock: true,
+      stockLeft: 10,
+      soldCount: 0,
+      imageUrl: null,
+      imageUrls: [],
+      isCustomizable: true,
+      customizationKind: "PRINT" as const,
+      customizationTemplate: null,
+      isBundle: false,
+      bundleItems: [],
+      variants: [],
+      storeUnits: [],
+      ratingAverage: "5.0",
+      reviewsCount: 0,
+    };
+
+    let fieldValues: Record<string, string> = {};
+    let latestAssets: { logoAssetKey?: string; previewAssetKey?: string } = {};
+
+    const renderInfo = () => {
+      root.render(
+        <StorefrontProductInformation
+          product={mockProduct as never}
+          setProductReviewOpenRequest={vi.fn()}
+          setSelectedId={vi.fn()}
+          selectCategory={vi.fn()}
+          detailUnit={null}
+          variantQuantities={new Map()}
+          setSelectedVariantId={vi.fn()}
+          setSelectedStoreUnitId={vi.fn()}
+          setVariantQuantity={vi.fn()}
+          detailVariant={null}
+          customizationConfig={validConfig}
+          visibleCustomizationFields={[textFieldDef]}
+          customizationValues={fieldValues}
+          customizationValidation={null}
+          updateCustomizationField={(field, val) => {
+            fieldValues = { ...fieldValues, [field.fieldKey]: val };
+            renderInfo();
+          }}
+          setCustomizationAssets={(assets) => {
+            latestAssets = assets;
+          }}
+          detailMedia={{ urls: undefined, fallbackUrl: null }}
+        />,
+      );
+    };
+
+    act(() => {
+      renderInfo();
+    });
+
+    // Apply studio text A -> saves preview_A and populates engraving_text = "النص أ"
+    uploadMutateAsyncMock.mockResolvedValueOnce({
+      assetKey: "customizer/t1/preview/preview_A.png",
+      sha256: "pa",
+      mimeType: "image/png",
+      byteLength: 68,
+    });
+
+    const studioInput = container.querySelector("#custom-text-input") as HTMLInputElement;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+        studioInput,
+        "النص أ",
+      );
+      studioInput.dispatchEvent(new Event("input", { bubbles: true }));
+      studioInput.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    const applyBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("اعتماد"),
+    )!;
+    await act(async () => {
+      applyBtn.click();
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    expect(fieldValues.engraving_text).toBe("النص أ");
+    expect(latestAssets.previewAssetKey).toBe("customizer/t1/preview/preview_A.png");
+
+    // Customer now edits template TEXT field above studio to "النص ب"
+    const templateInput = container.querySelector(
+      "#storefront-customization-11",
+    ) as HTMLInputElement;
+    expect(templateInput).not.toBeNull();
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+        templateInput,
+        "النص ب",
+      );
+      templateInput.dispatchEvent(new Event("input", { bubbles: true }));
+      templateInput.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    expect(fieldValues.engraving_text).toBe("النص ب");
+    expect(latestAssets.previewAssetKey).toBeUndefined();
+    expect((container.querySelector("#custom-text-input") as HTMLInputElement).value).toBe(
+      "النص ب",
+    );
+  });
 });
+
 
 

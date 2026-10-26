@@ -1,7 +1,10 @@
 import React from "react";
 import { money, priceLabel } from "@/components/storefront/storefrontCartMath";
 import { CustomizationFieldControl } from "@/components/storefront/storefrontCustomizationModel";
-import { StorefrontCustomizerStudio } from "@/components/storefront/StorefrontCustomizerStudio";
+import {
+  StorefrontCustomizerStudio,
+  type StorefrontCustomizerStudioHandle,
+} from "@/components/storefront/StorefrontCustomizerStudio";
 import { type CustomizationStudioUploadState } from "@/components/storefront/storefrontCustomizationUpload";
 import { StorefrontHeuristicsBadges } from "@/components/storefront/StorefrontHeuristicsBadges";
 import { formatQuantity } from "@/lib/money";
@@ -54,6 +57,11 @@ export function StorefrontProductInformation({
   setCustomizationUploadState,
 }: Props) {
   const autoFilledFileValueRef = React.useRef<string | null>(null);
+  const studioRef = React.useRef<StorefrontCustomizerStudioHandle | null>(null);
+  const latestLogoAssetKeyRef = React.useRef<string | undefined>(undefined);
+  React.useEffect(() => {
+    latestLogoAssetKeyRef.current = undefined;
+  }, [product.productId]);
   return (
     <div className="min-w-0">
       {product.brand && (
@@ -220,7 +228,24 @@ export function StorefrontProductInformation({
                   <CustomizationFieldControl
                     field={field}
                     value={customizationValues[field.fieldKey] ?? ""}
-                    onChange={(value) => updateCustomizationField(field, value)}
+                    onChange={(value) => {
+                      updateCustomizationField(field, value);
+                      const primaryField = visibleCustomizationFields.find(
+                        (f) => f.fieldType === "TEXT" || f.fieldType === "TEXTAREA",
+                      );
+                      const syncPrimaryText =
+                        primaryField && field.fieldKey === primaryField.fieldKey
+                          ? value
+                          : undefined;
+                      if (studioRef.current) {
+                        studioRef.current.invalidateSavedPreview(syncPrimaryText);
+                      } else {
+                        setCustomizationAssets?.({
+                          logoAssetKey: latestLogoAssetKeyRef.current,
+                          previewAssetKey: undefined,
+                        });
+                      }
+                    }}
                     controlId={controlId}
                     labelId={labelId}
                     describedBy={describedBy}
@@ -253,9 +278,11 @@ export function StorefrontProductInformation({
       {product.isCustomizable && Boolean(customizationConfig) && (
         <StorefrontCustomizerStudio
           key={product.productId}
+          studioRef={studioRef}
           productName={product.productName}
           baseImageUrl={detailMedia.fallbackUrl ?? product.imageUrl}
           onAssetsChange={(assets) => {
+            latestLogoAssetKeyRef.current = assets.logoAssetKey;
             setCustomizationAssets?.(assets);
             const fileField = visibleCustomizationFields.find(
               (f) => f.fieldType === "FILE",
@@ -278,6 +305,7 @@ export function StorefrontProductInformation({
           }}
           onUploadStateChange={setCustomizationUploadState}
           onApplyCustomization={(customData) => {
+            latestLogoAssetKeyRef.current = customData.logoAssetKey;
             setCustomizationAssets?.({
               logoAssetKey: customData.logoAssetKey,
               previewAssetKey: customData.previewAssetKey,
