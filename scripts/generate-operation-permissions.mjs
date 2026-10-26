@@ -1730,6 +1730,7 @@ Object.assign(WORDS, {
   track: "تتبع",
   unlock: "إعادة فتح",
   unsubscribe: "إلغاء الاشتراك",
+  deletion: "الحذف",
 });
 
 function procedureUsesOwnerScope(name, info, visited = new Set()) {

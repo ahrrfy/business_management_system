@@ -157,6 +157,8 @@ const TABLE_AR: Record<string, string> = {
   stocktakeSessions: "جلسات الجرد",
   cashMissedDailyCountExceptions: "استثناءات الجرد النقدي اليومي المفقود",
   cashMissedDailyCountExceptionEvents: "أحداث استثناءات الجرد النقدي اليومي المفقود",
+  storefrontAccountDeletionRequests: "طلبات حذف حساب المتجر",
+  storefrontCustomizationAssets: "ملفات تخصيص طلبات المتجر",
 };
 
 /**
@@ -781,6 +783,8 @@ export const UNIQUE_AR: Record<string, UniqueInfo> = {
   uq_dsd_intent_item: { msg: "هذا الكرت مثبَّتٌ في فاتورةٍ مسبقاً — لا يُثبَّت الكرت الواحد مرّتين." },
   uq_iism_item_material: { msg: "مادة الخدمة هذه محتسبة مسبقاً على بند الفاتورة نفسه — لا تُكرر استهلاكها." },
   uq_wom_one_base_material: { msg: "مادة المنتج الأساس مسجّلة مسبقاً على أمر الشغل — عدّل السطر القائم بدل تكراره." },
+  uq_sf_acct_del_req_num: { msg: "تعارض نادر عند إنشاء رقم طلب حذف الحساب — أعد الإرسال لتوليد رقم جديد." },
+  uq_sf_custom_asset_key: { msg: "ملف التخصيص هذا مسجّل مسبقاً بالمفتاح نفسه — لا حاجة لإعادة رفعه." },
 };
 
 // ── مستخرجات من سلسلة الأسباب (Drizzle يلفّ خطأ mysql2 داخل cause) ──────────

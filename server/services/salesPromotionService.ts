@@ -345,6 +345,9 @@ export interface PromotionRuleSnapshotInput {
   todayYmd: string;
   includeStoreManaged?: boolean;
   requiredApplicationMode?: "AUTO" | "COUPON";
+  specificPromotionId?: number | null;
+  /** Current Read + FOR UPDATE للعروض وأهدافها عند تثبيت طلب المتجر دفعةً واحدة خارج حلقة الأسطر. */
+  lockForUpdate?: boolean;
 }
 
 export interface PromotionRuleSnapshot {
@@ -353,6 +356,7 @@ export interface PromotionRuleSnapshot {
   readonly todayYmd: string;
   readonly includeStoreManaged: boolean;
   readonly requiredApplicationMode: "AUTO" | "COUPON";
+  readonly specificPromotionId?: number | null;
   readonly rules: ReadonlyArray<{
     readonly id: number;
     readonly name: string;
@@ -375,14 +379,14 @@ export interface PromotionRuleSnapshot {
 }
 
 /**
- * لقطة قراءة واحدة لعرض كتالوج المتجر: استعلام قواعد + استعلام أهداف، بصرف النظر عن عدد المنتجات.
- * لا تُستعمل عند تثبيت الطلب؛ ذلك المسار يبقى على resolvePromotionForLine مع FOR UPDATE.
+ * لقطة مجمّعة لقواعد العروض وأهدافها (استعلام قواعد + استعلام أهداف لغير ALL فقط، بصرف النظر عن عدد الأسطر).
+ * تدعم `specificPromotionId` للكوبونات و`lockForUpdate` بترتيب مفاتيح تصاعدي لتثبيت الطلب بلا N+1.
  */
 export async function loadPromotionRuleSnapshot(
   tx: Tx,
   input: PromotionRuleSnapshotInput,
 ): Promise<PromotionRuleSnapshot> {
-  const candidateRows = await tx
+  const baseCandidateQuery = tx
     .select({
       id: promotions.id,
       name: promotions.name,
@@ -402,6 +406,7 @@ export async function loadPromotionRuleSnapshot(
       and(
         eq(promotions.isActive, true),
         eq(promotions.applicationMode, input.requiredApplicationMode ?? "AUTO"),
+        input.specificPromotionId != null ? eq(promotions.id, input.specificPromotionId) : undefined,
         sql`${promotions.effectiveFrom} <= DATE(${input.todayYmd})`,
         or(isNull(promotions.effectiveTo), sql`${promotions.effectiveTo} >= DATE(${input.todayYmd})`)!,
         or(isNull(promotions.branchId), eq(promotions.branchId, input.branchId))!,
@@ -411,19 +416,36 @@ export async function loadPromotionRuleSnapshot(
     )
     .orderBy(asc(promotions.id));
 
-  const ids = candidateRows.map((row) => Number(row.id));
-  const targetRows = ids.length
-    ? await tx
-        .select({
-          promotionId: promotionTargets.promotionId,
-          categoryId: promotionTargets.categoryId,
-          productId: promotionTargets.productId,
-          variantId: promotionTargets.variantId,
-        })
-        .from(promotionTargets)
-        .where(inArray(promotionTargets.promotionId, ids))
-        .orderBy(asc(promotionTargets.promotionId), asc(promotionTargets.id))
-    : [];
+  const candidateRows = input.lockForUpdate
+    ? await baseCandidateQuery.for("update")
+    : await baseCandidateQuery;
+
+  const targetLookupIds = (
+    input.lockForUpdate
+      ? candidateRows.filter((row) => row.scope !== "ALL")
+      : candidateRows
+  ).map((row) => Number(row.id));
+  let targetRows: Array<{
+    promotionId: number;
+    categoryId: number | null;
+    productId: number | null;
+    variantId: number | null;
+  }> = [];
+  if (targetLookupIds.length) {
+    const baseTargetQuery = tx
+      .select({
+        promotionId: promotionTargets.promotionId,
+        categoryId: promotionTargets.categoryId,
+        productId: promotionTargets.productId,
+        variantId: promotionTargets.variantId,
+      })
+      .from(promotionTargets)
+      .where(inArray(promotionTargets.promotionId, targetLookupIds))
+      .orderBy(asc(promotionTargets.promotionId), asc(promotionTargets.id));
+    targetRows = input.lockForUpdate
+      ? await baseTargetQuery.for("update")
+      : await baseTargetQuery;
+  }
   const targetsByPromotion = new Map<number, Array<{
     categoryId: number | null;
     productId: number | null;
@@ -446,6 +468,7 @@ export async function loadPromotionRuleSnapshot(
     todayYmd: input.todayYmd,
     includeStoreManaged: input.includeStoreManaged === true,
     requiredApplicationMode: input.requiredApplicationMode ?? "AUTO",
+    specificPromotionId: input.specificPromotionId ?? null,
     rules: candidateRows.map((row) => ({
       id: Number(row.id),
       name: row.name,
@@ -464,7 +487,7 @@ export async function loadPromotionRuleSnapshot(
   };
 }
 
-/** حلّ نقي من snapshot محمّلة مسبقاً؛ لا ينفّذ SQL ويمكن استدعاؤه لكل بطاقات الصفحة. */
+/** حلّ نقي من snapshot محمّلة مسبقاً؛ لا ينفّذ SQL ويمكن استدعاؤه لكل بطاقات الصفحة وأسطر السلة. */
 export function resolvePromotionFromSnapshot(
   snapshot: PromotionRuleSnapshot,
   input: ResolveLineInput,
@@ -475,13 +498,14 @@ export function resolvePromotionFromSnapshot(
     input.customerTier !== snapshot.customerTier ||
     input.todayYmd !== snapshot.todayYmd ||
     (input.requiredApplicationMode ?? "AUTO") !== snapshot.requiredApplicationMode ||
+    (input.specificPromotionId ?? null) !== (snapshot.specificPromotionId ?? null) ||
     Boolean(input.includeStoreManaged) !== snapshot.includeStoreManaged
   ) {
     return null;
   }
 
   const unitPrice = money(input.unitPrice);
-  const lineAmount = money(input.lineAmount);
+  const lineAmount = round2(money(input.lineAmount));
   if (unitPrice.lte(0)) return null;
 
   const scored: Array<{

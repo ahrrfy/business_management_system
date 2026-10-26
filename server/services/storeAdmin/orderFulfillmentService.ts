@@ -8,7 +8,7 @@
  */
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
-import { and, asc, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import {
   bundleComponents,
   couponPrograms,
@@ -34,7 +34,7 @@ import { alias } from "drizzle-orm/mysql-core";
 import { getDb, type DB } from "../../db";
 import { money, round2 } from "../money";
 import { withTx } from "../tx";
-import { decodeDataUrl, productImageUrl } from "../../imageRoute";
+import { decodeDataUrl, orderCustomizationAssetUrl, productImageUrl } from "../../imageRoute";
 import { onlineOrderLabelToken } from "../barcodeService";
 import { awardDeliveredOnlineOrderPoints } from "./loyaltyService";
 import {
@@ -265,10 +265,13 @@ export interface OnlineOrderDetailItem {
   total: string;
   hasCustomization: boolean;
   customizationSummary: string | null;
+  logoAssetUrl?: string | null;
+  previewAssetUrl?: string | null;
 }
 export interface OnlineOrderDetail extends OnlineOrderRow {
   branchId: number;
   addressText: string | null;
+  customerNotes: string | null;
   subtotal: string;
   pricingBenefitType: StorefrontPricingBenefitType;
   pricingBenefitLabel: string | null;
@@ -318,6 +321,7 @@ export function composeOrderShippingAddress(
   existingAddress: string | null | undefined,
   inputShippingAddress: string | null | undefined,
   inputNotes: string | null | undefined,
+  existingCustomerNotes?: string | null,
 ): string | null {
   if (inputShippingAddress === undefined && inputNotes === undefined) {
     return existingAddress ?? null;
@@ -336,7 +340,7 @@ export function composeOrderShippingAddress(
     if (embeddedInInput) {
       effectiveNotes = embeddedInInput;
     } else if (inputShippingAddress != null && inputShippingAddress.trim() !== "") {
-      effectiveNotes = extractOrderNoteSegment(existingAddress);
+      effectiveNotes = existingCustomerNotes?.trim() || extractOrderNoteSegment(existingAddress);
     }
   }
 
@@ -344,6 +348,29 @@ export function composeOrderShippingAddress(
     return baseAddress ? `${baseAddress}\nملاحظة: ${effectiveNotes}` : `ملاحظة: ${effectiveNotes}`;
   }
   return baseAddress || null;
+}
+
+function resolveUpdatedCustomerNotes(
+  existingCustomerNotes: string | null | undefined,
+  existingAddress: string | null | undefined,
+  inputShippingAddress: string | null | undefined,
+  inputNotes: string | null | undefined,
+): string | null {
+  if (inputNotes !== undefined) {
+    const trimmed = inputNotes?.trim() ?? "";
+    return trimmed || null;
+  }
+  if (inputShippingAddress !== undefined) {
+    const embeddedInInput = extractOrderNoteSegment(inputShippingAddress);
+    if (embeddedInInput) return embeddedInInput;
+    if (inputShippingAddress != null && inputShippingAddress.trim() !== "") {
+      const preserved = existingCustomerNotes?.trim() || extractOrderNoteSegment(existingAddress);
+      return preserved || null;
+    }
+    return null;
+  }
+  const existing = existingCustomerNotes?.trim() || extractOrderNoteSegment(existingAddress);
+  return existing || null;
 }
 
 async function loadEditableDeliveryZones(db: DB): Promise<EditableDeliveryZoneOption[]> {
@@ -484,6 +511,7 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
         fulfillmentDurationMinutes: onlineOrders.fulfillmentDurationMinutes,
         contactStatus: onlineOrders.contactStatus,
         contactNotes: onlineOrders.contactNotes,
+        customerNotes: onlineOrders.customerNotes,
       })
       .from(onlineOrders)
       .leftJoin(customers, eq(onlineOrders.customerId, customers.id))
@@ -549,6 +577,9 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
   ]);
   const lifecycle = lifecycleMap.get(id) ?? null;
   const couponFreeShipping = Boolean(couponPromoRow[0]?.freeShipping);
+  const resolvedCustomerNotes = order.customerNotes?.trim()
+    ? order.customerNotes.trim()
+    : extractOrderNoteSegment(order.addressText) || null;
   return {
     id: Number(order.id),
     orderNumber: order.orderNumber,
@@ -559,6 +590,7 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
     customerPhone: order.customerPhone ?? null,
     governorate: order.governorate ?? null,
     addressText: order.addressText ?? null,
+    customerNotes: resolvedCustomerNotes,
     latitude: order.latitude ? String(order.latitude) : null,
     longitude: order.longitude ? String(order.longitude) : null,
     subtotal: String(order.subtotal),
@@ -608,6 +640,12 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
       customizationSummary: i.customizationSnapshot?.values
         .map((value) => `${value.label}: ${value.displayValue}`)
         .join(" • ") || null,
+      logoAssetUrl: i.customizationSnapshot?.logoAssetKey
+        ? orderCustomizationAssetUrl(i.customizationSnapshot.logoAssetKey)
+        : null,
+      previewAssetUrl: i.customizationSnapshot?.previewAssetKey
+        ? orderCustomizationAssetUrl(i.customizationSnapshot.previewAssetKey)
+        : null,
     })),
   };
 }
@@ -903,12 +941,15 @@ export async function updateOnlineOrder(
           })
           .from(customers)
           .where(
-            or(
-              inArray(customers.phone, phoneVariants),
-              inArray(customers.phone2, phoneVariants),
-              inArray(customers.phone3, phoneVariants),
-              inArray(customers.whatsapp, phoneVariants),
-              ...digitPredicates,
+            and(
+              isNull(customers.deletedAt),
+              or(
+                inArray(customers.phone, phoneVariants),
+                inArray(customers.phone2, phoneVariants),
+                inArray(customers.phone3, phoneVariants),
+                inArray(customers.whatsapp, phoneVariants),
+                ...digitPredicates,
+              )!,
             ),
           )
           .orderBy(desc(customers.isActive), desc(customers.id));
@@ -930,6 +971,7 @@ export async function updateOnlineOrder(
             .select({
               id: customers.id,
               isActive: customers.isActive,
+              deletedAt: customers.deletedAt,
               phone: customers.phone,
               phone2: customers.phone2,
               phone3: customers.phone3,
@@ -941,6 +983,7 @@ export async function updateOnlineOrder(
             .for("update");
           const stillMatches =
             lockedMatched &&
+            lockedMatched.deletedAt == null &&
             [
               lockedMatched.phone,
               lockedMatched.phone2,
@@ -996,7 +1039,7 @@ export async function updateOnlineOrder(
                 isActive: customers.isActive,
               })
               .from(customers)
-              .where(eq(customers.phone, normalizedPhone))
+              .where(and(eq(customers.phone, normalizedPhone), isNull(customers.deletedAt)))
               .orderBy(desc(customers.isActive), desc(customers.id))
               .limit(1)
               .for("update");
@@ -1096,6 +1139,13 @@ export async function updateOnlineOrder(
       });
     }
     const targetAddress = composeOrderShippingAddress(
+      order.shippingAddress,
+      input.shippingAddress,
+      input.notes,
+      order.customerNotes,
+    );
+    const targetCustomerNotes = resolveUpdatedCustomerNotes(
+      order.customerNotes,
       order.shippingAddress,
       input.shippingAddress,
       input.notes,
@@ -1509,6 +1559,7 @@ export async function updateOnlineOrder(
           total: grandTotal.toFixed(2),
           governorate: targetGovernorate,
           shippingAddress: targetAddress,
+          customerNotes: targetCustomerNotes,
           latitude: targetLat,
           longitude: targetLng,
           updatedAt: new Date(),
@@ -1590,6 +1641,7 @@ export async function updateOnlineOrder(
           total: grandTotal.toFixed(2),
           governorate: targetGovernorate,
           shippingAddress: targetAddress,
+          customerNotes: targetCustomerNotes,
           latitude: targetLat,
           longitude: targetLng,
           updatedAt: new Date(),

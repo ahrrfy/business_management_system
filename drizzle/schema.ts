@@ -438,6 +438,9 @@ export const customers = mysqlTable(
       .notNull(),
     waConsentAt: timestamp("waConsentAt"),
     waConsentSource: varchar("waConsentSource", { length: 40 }),
+    deletedAt: timestamp("deletedAt"),
+    retentionUntil: timestamp("retentionUntil"),
+    sessionVersion: int("sessionVersion").default(0).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
     // توسعة D2 (١/٧): عمود مولَّد STORED بتطبيع عربي، نفس نمط products.searchNorm (هَجرة 0039).
@@ -453,6 +456,10 @@ export const customers = mysqlTable(
     ),
     // gap-audit low (٥/٧): فهرس يدعم مسار aging المجمَّع بلا فرع (WHERE isActive=TRUE). هجرة 0053.
     activeIdx: index("idx_customer_active").on(table.isActive),
+    deletedRetentionIdx: index("idx_customers_deleted_retention").on(
+      table.deletedAt,
+      table.retentionUntil,
+    ),
   }),
 );
 
@@ -8589,6 +8596,7 @@ export const onlineOrders = mysqlTable(
       .default("NOT_CONTACTED")
       .notNull(),
     contactNotes: varchar("contactNotes", { length: 500 }),
+    customerNotes: text("customerNotes"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
@@ -8687,6 +8695,8 @@ export type OnlineOrderCustomizationSnapshot = {
     displayValue: string;
   }>;
   unitPriceDelta: string;
+  logoAssetKey?: string;
+  previewAssetKey?: string;
 };
 
 export const onlineOrderItems = mysqlTable(
@@ -8897,6 +8907,77 @@ export const storefrontCartShares = mysqlTable(
 );
 export type StorefrontCartShare = typeof storefrontCartShares.$inferSelect;
 export type InsertStorefrontCartShare = typeof storefrontCartShares.$inferInsert;
+
+/** طلبات حذف حساب المتجر عبر الويب العام (/legal/delete-account) — تحفظ تجزئة الهاتف فقط بلا كشف وجود الحساب. */
+export const storefrontAccountDeletionRequests = mysqlTable(
+  "storefrontAccountDeletionRequests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    requestNumber: varchar("requestNumber", { length: 40 }).notNull(),
+    phoneHash: varchar("phoneHash", { length: 64 }).notNull(),
+    customerId: bigint("customerId", { mode: "number" }),
+    reason: varchar("reason", { length: 500 }),
+    status: mysqlEnum("status", ["PENDING_REVIEW", "COMPLETED", "REJECTED"])
+      .default("PENDING_REVIEW")
+      .notNull(),
+    retentionUntil: timestamp("retentionUntil").notNull(),
+    requestedIpHash: varchar("requestedIpHash", { length: 64 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    processedAt: timestamp("processedAt"),
+  },
+  (table) => ({
+    requestNumberUq: unique("uq_sf_acct_del_req_num").on(table.requestNumber),
+    phoneHashIdx: index("idx_sf_acct_del_phone_hash").on(
+      table.phoneHash,
+      table.createdAt,
+    ),
+    statusCreatedIdx: index("idx_sf_acct_del_status").on(
+      table.status,
+      table.createdAt,
+    ),
+    customerIdx: index("idx_sf_acct_del_customer").on(table.customerId),
+    customerFk: foreignKey({
+      columns: [table.customerId],
+      foreignColumns: [customers.id],
+      name: "fk_sf_acct_del_customer",
+    }).onDelete("set null"),
+  }),
+);
+export type StorefrontAccountDeletionRequest =
+  typeof storefrontAccountDeletionRequests.$inferSelect;
+export type InsertStorefrontAccountDeletionRequest =
+  typeof storefrontAccountDeletionRequests.$inferInsert;
+
+/** أصول تخصيص طلبات المتجر (شعار/معاينة) المرفوعة إلى المخزن الخاص قبل إرفاقها بالطلب. */
+export const storefrontCustomizationAssets = mysqlTable(
+  "storefrontCustomizationAssets",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    assetKey: varchar("assetKey", { length: 255 }).notNull(),
+    sha256: char("sha256", { length: 64 }).notNull(),
+    mimeType: mysqlEnum("mimeType", [
+      "image/png",
+      "image/jpeg",
+      "image/webp",
+    ]).notNull(),
+    byteLength: int("byteLength").notNull(),
+    kind: mysqlEnum("kind", ["LOGO", "PREVIEW"]).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    expiresAt: timestamp("expiresAt"),
+  },
+  (table) => ({
+    assetKeyUq: unique("uq_sf_custom_asset_key").on(table.assetKey),
+    sha256KindIdx: index("idx_sf_custom_asset_sha_kind").on(
+      table.sha256,
+      table.kind,
+    ),
+    expiresAtIdx: index("idx_sf_custom_asset_expires").on(table.expiresAt),
+  }),
+);
+export type StorefrontCustomizationAsset =
+  typeof storefrontCustomizationAssets.$inferSelect;
+export type InsertStorefrontCustomizationAsset =
+  typeof storefrontCustomizationAssets.$inferInsert;
 
 // ═══════════════════════ إدارة المتجر (لوحة hPanel): بنرات + إعدادات ═══════════════════════
 /**

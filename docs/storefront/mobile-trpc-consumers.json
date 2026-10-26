@@ -8,6 +8,7 @@
     "storefront.acceptQuoteRequestPrivate",
     "storefront.requestFirstOrderCoupon",
     "storefront.claimFirebaseCustomer",
+    "storefront.deleteMe",
     "storefront.createQuoteRequest",
     "storefront.customerBenefits",
     "storefront.customerBenefitsPrivate",

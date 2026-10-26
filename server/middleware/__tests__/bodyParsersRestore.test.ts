@@ -63,4 +63,40 @@ describe("restore upload body parser boundary", () => {
     });
     expect(response.status).toBe(413);
   });
+
+  it("يسمح بحمولة JSON حتى 3MB لمسار storefront.uploadCustomizationAsset المفرد ويرفض التجميع أو تجاوز 3MB", async () => {
+    const app = express();
+    applyBodyParsers(app);
+    app.post("/api/trpc/storefront.uploadCustomizationAsset", (_req, res) => res.status(204).end());
+    app.post("/api/trpc/auth.login,storefront.uploadCustomizationAsset", (_req, res) => res.status(204).end());
+    const url = await listen(app);
+
+    // ~2.7MB base64 JSON (يمثّل صورة خام ~2MiB ضمن العقد المعلن) يمرّ عبر المسار المفرد
+    const allowedResponse = await fetch(`${url}/api/trpc/storefront.uploadCustomizationAsset`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "LOGO",
+        mimeType: "image/png",
+        dataBase64: "A".repeat(2_700_000),
+      }),
+    });
+    expect(allowedResponse.status).toBe(204);
+
+    // مسار مجمَّع يحمل الاسم نفسه يبقى محكوماً بسقف 1MB العام (413)
+    const batchedResponse = await fetch(`${url}/api/trpc/auth.login,storefront.uploadCustomizationAsset`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ payload: "A".repeat(1_500_000) }),
+    });
+    expect(batchedResponse.status).toBe(413);
+
+    // تجاوز سقف 3MB على المسار المفرد يُرفض بـ 413
+    const oversizedResponse = await fetch(`${url}/api/trpc/storefront.uploadCustomizationAsset`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dataBase64: "A".repeat(3_300_000) }),
+    });
+    expect(oversizedResponse.status).toBe(413);
+  });
 });

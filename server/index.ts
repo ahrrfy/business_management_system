@@ -133,6 +133,9 @@ async function startServer() {
   assertStorefrontProductionReadiness();
   const storefrontOrderingEnabled =
     process.env.STOREFRONT_ORDERING_ENABLED === "1";
+  const storefrontTurnstileEnabled =
+    storefrontOrderingEnabled ||
+    process.env.STOREFRONT_TURNSTILE_ENABLED === "1";
 
   const isDev = process.env.NODE_ENV === "development";
   // إنتاج آمن افتراضياً: غياب HOST أو الربط العام العرضي يوقف الإقلاع قبل فتح المنفذ.
@@ -252,13 +255,13 @@ async function startServer() {
                 "'self'",
                 "'unsafe-inline'",
                 "'unsafe-eval'",
-                ...(storefrontOrderingEnabled
+                ...(storefrontTurnstileEnabled
                   ? [STOREFRONT_TURNSTILE_SCRIPT_ORIGIN]
                   : []),
               ]
             : [
                 "'self'",
-                ...(storefrontOrderingEnabled
+                ...(storefrontTurnstileEnabled
                   ? [STOREFRONT_TURNSTILE_SCRIPT_ORIGIN]
                   : []),
               ],
@@ -275,17 +278,17 @@ async function startServer() {
                 "'self'",
                 "ws://localhost:*",
                 "wss://localhost:*",
-                ...(storefrontOrderingEnabled
+                ...(storefrontTurnstileEnabled
                   ? [STOREFRONT_TURNSTILE_SCRIPT_ORIGIN]
                   : []),
               ]
             : [
                 "'self'",
-                ...(storefrontOrderingEnabled
+                ...(storefrontTurnstileEnabled
                   ? [STOREFRONT_TURNSTILE_SCRIPT_ORIGIN]
                   : []),
               ],
-          frameSrc: storefrontOrderingEnabled
+          frameSrc: storefrontTurnstileEnabled
             ? [STOREFRONT_TURNSTILE_SCRIPT_ORIGIN]
             : ["'none'"],
           fontSrc: ["'self'", "data:"], // خط Cairo مستضاف محلياً (@fontsource) ⇒ لا حاجة لـgstatic.
@@ -657,6 +660,41 @@ async function startServer() {
       skip: (req) => !req.path.includes("storefront.trackOrder"),
       handler: rateLimitHandler(
         "محاولات تتبّع كثيرة، انتظر قليلاً ثم أعد المحاولة.",
+      ),
+    }),
+  );
+
+  // حدّ صارم على رفع مرفقات التخصيص (حتى ٢م.ب لكل ملف) وطلبات حذف الحساب العلنية قبل حدّ التصفّح العام (٦٠٠/١٥د).
+  app.use(
+    "/api/trpc",
+    rateLimit({
+      windowMs: 15 * 60 * 1000,
+      limit: Number(
+        process.env.STOREFRONT_CUSTOMIZATION_UPLOAD_RATE_LIMIT_MAX ?? 24,
+      ),
+      standardHeaders: "draft-7",
+      legacyHeaders: false,
+      skip: (req) =>
+        !req.path.includes("storefront.uploadCustomizationAsset"),
+      handler: rateLimitHandler(
+        "عمليات رفع مرفقات تخصيص كثيرة، انتظر قليلاً ثم أعد المحاولة.",
+      ),
+    }),
+  );
+
+  app.use(
+    "/api/trpc",
+    rateLimit({
+      windowMs: 15 * 60 * 1000,
+      limit: Number(
+        process.env.STOREFRONT_ACCOUNT_DELETION_RATE_LIMIT_MAX ?? 8,
+      ),
+      standardHeaders: "draft-7",
+      legacyHeaders: false,
+      skip: (req) =>
+        !req.path.includes("storefront.requestAccountDeletion"),
+      handler: rateLimitHandler(
+        "طلبات حذف حساب كثيرة، انتظر قليلاً ثم أعد المحاولة.",
       ),
     }),
   );

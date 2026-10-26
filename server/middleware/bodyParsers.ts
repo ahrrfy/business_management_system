@@ -64,6 +64,11 @@ export function applyBodyParsers(app: Express): void {
     if (req.path.includes("recruitment.submit") || req.path.includes("recruitment.create")) {
       return express.json({ limit: "3mb" })(req, res, next);
     }
+    // مرفقات تخصيص المتجر (شعار/معاينة): حتى ٢م.ب خام (~٢.٨م.ب base64) على مسار مفرد غير مجمَّع
+    // حصراً (publicSensitiveBatch يمنع التجميع، وindex.ts يفرض حدّ معدّل صارم قبل التخزين).
+    if (req.path === "/storefront.uploadCustomizationAsset") {
+      return express.json({ limit: "3mb" })(req, res, next);
+    }
     next();
   });
   // json/urlencoded العامّان: يتخطّيان /api/webhooks/* — تلك المسارات تحتاج Buffer خاماً كاملاً

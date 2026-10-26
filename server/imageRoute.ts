@@ -28,13 +28,22 @@ import {
   stocktakeItems,
   storeBanners,
 } from "../drizzle/schema";
+import { resolvePermissions, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { hasOperationPolicy, operationDecision } from "@shared/operationPermissions";
 import { getSessionContext } from "./auth/session";
+import {
+  normalizeOwnerAuthority,
+  resolveCustomRole,
+  type AuthUser,
+} from "./context";
 import { getDb, isMultiTenantModeActive } from "./db";
+import { canCrossBranches } from "./lib/branchAuthority";
 import {
   getImageStore,
   ImageStoreClientAbortError,
   isCurrentTenantCandidateKey,
   isImageStoreClientAbortError,
+  isImageStoreOperational,
   isImageStoreUnavailableError,
   MAX_PUBLIC_PRODUCT_THUMBNAIL_BYTES,
   MAX_PUBLISHED_PRODUCT_IMAGE_BYTES,
@@ -45,6 +54,7 @@ import {
 import { logger } from "./logger";
 import { resolveKioskDevice } from "./services/kioskDeviceService";
 import { inspectStorefrontContext } from "./services/storefrontContextService";
+import { findStorefrontCustomizationAssetForStaff } from "./services/storefrontCustomizationAssetService";
 import type { Request, Response } from "express";
 import type { Readable } from "node:stream";
 import type { PublicProductImageWidth } from "./lib/imageStore";
@@ -206,6 +216,16 @@ export function countProductImageUrl(
     imageId,
     source,
   );
+}
+
+/** رابط مرفق تخصيص طلب المتجر (شعار/معاينة) — محمي بصلاحية قراءة المتجر للموظفين حصراً، بمقاطع مسار نظيفة بلا %2F. */
+export function orderCustomizationAssetUrl(assetKey: string): string {
+  const encodedPath = assetKey
+    .split("/")
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  return `/api/img/order-customization/${encodedPath}`;
 }
 
 /**
@@ -850,6 +870,114 @@ export function imageRouter(): Router {
     } catch (e) {
       logger.error({ err: e, productImageId: id }, "img: kiosk product image fetch failed");
       return res.status(500).end();
+    }
+  });
+
+  /**
+   * مرفق تخصيص طلب متجر (شعار العميل أو معاينة الإنتاج) — **سريّ وخاصّ بالموظفين المخوّلين بقراءة المتجر**:
+   *  - الزائر غير المسجّل ⇒ 401
+   *  - الموظف الذي لا يملك صلاحية `store` (مثل `courier` حيث `store === "NONE"`) ⇒ 403
+   *  - المرفق يُخدَم من المخزن الخاص مع `Cache-Control: private, no-store` و`X-Content-Type-Options: nosniff`.
+   */
+  r.get(/^\/order-customization\/.+$/, async (req, res) => {
+    const db = getDb();
+    if (!db) return res.status(503).end();
+
+    const abortController = new AbortController();
+    const abortRead = () => abortController.abort();
+    const abortOnEarlyClose = () => {
+      if (!res.writableEnded) abortController.abort();
+    };
+    req.once("aborted", abortRead);
+    res.once("close", abortOnEarlyClose);
+
+    try {
+      const { user: rawUser } = await getSessionContext(req);
+      if (!rawUser) {
+        preventCachingStoredImageFailure(res);
+        return res.status(401).end();
+      }
+
+      const user = rawUser as AuthUser;
+      if (user.isOwner) normalizeOwnerAuthority(user);
+      else await resolveCustomRole(user);
+
+      if (user.isOwner !== true && hasOperationPolicy(user)) {
+        if (!operationDecision(user, "storeAdmin.orders.detail").allowed) {
+          preventCachingStoredImageFailure(res);
+          return res.status(403).end();
+        }
+      } else if (user.role !== "admin") {
+        const permissions = resolvePermissions(
+          user.role as RoleKey,
+          (user.permissionsOverride as PermissionMap | null) ?? null,
+        );
+        if ((permissions.store ?? "NONE") === "NONE") {
+          preventCachingStoredImageFailure(res);
+          return res.status(403).end();
+        }
+      }
+
+      const crossBranch = canCrossBranches(user);
+      if (!crossBranch && user.branchId == null) {
+        preventCachingStoredImageFailure(res);
+        return res.status(403).end();
+      }
+      const scopedBranchId = crossBranch ? null : Number(user.branchId);
+
+      let identifier = "";
+      try {
+        identifier = decodeURIComponent(req.path.slice("/order-customization/".length));
+      } catch {
+        preventCachingStoredImageFailure(res);
+        return res.status(400).end();
+      }
+      const asset = await findStorefrontCustomizationAssetForStaff(identifier, { scopedBranchId });
+      if (!asset) {
+        preventCachingStoredImageFailure(res);
+        return res.status(404).end();
+      }
+
+      if (!isImageStoreOperational()) {
+        preventCachingStoredImageFailure(res);
+        return res.status(503).end();
+      }
+
+      const body = await getImageStore().getBuffer(asset.assetKey, asset.byteLength, {
+        signal: abortController.signal,
+      });
+      if (!body) {
+        preventCachingStoredImageFailure(res);
+        return res.status(404).end();
+      }
+      if (
+        body.length !== asset.byteLength ||
+        createHash("sha256").update(body).digest("hex") !== asset.sha256.toLowerCase()
+      ) {
+        preventCachingStoredImageFailure(res);
+        return res.status(500).end();
+      }
+
+      res.setHeader("Cache-Control", "private, no-store");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Vary", "Cookie");
+      res.setHeader("Content-Type", asset.mimeType);
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+      res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
+      res.setHeader("Content-Length", String(body.length));
+      return res.end(body);
+    } catch (error) {
+      if (isImageStoreClientAbortError(error)) return res;
+      preventCachingStoredImageFailure(res);
+      if (isImageStoreUnavailableError(error)) {
+        return res.status(503).end();
+      }
+      logger.error({ err: error }, "img: order customization asset fetch failed");
+      return res.status(500).end();
+    } finally {
+      req.off("aborted", abortRead);
+      res.off("close", abortOnEarlyClose);
     }
   });
 

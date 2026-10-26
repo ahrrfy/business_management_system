@@ -49,13 +49,21 @@ import { createVerifiedStorefrontOrder } from "../services/storefrontOrderGate";
 import { createVerifiedStorefrontQuoteRequest } from "../services/storefrontQuoteRequestGate";
 import { STOREFRONT_TURNSTILE_TOKEN_MAX_LENGTH } from "@shared/storefrontTurnstile";
 import { registerStorefrontPushDevice, trackStorefrontPushInteraction } from "../services/storeAdmin/storefrontPushCampaignService";
-import { claimFirebaseStorefrontCustomer, requireActiveStorefrontCustomer, storefrontCustomerBenefits, verifyStorefrontCustomerSession } from "../services/storefrontCustomerIdentityService";
+import { claimFirebaseStorefrontCustomer, requireActiveStorefrontCustomer, storefrontCustomerBenefits } from "../services/storefrontCustomerIdentityService";
 import { listStorefrontProductReviews, submitStorefrontProductReview, submitPublicStorefrontReview } from "../services/storefrontProductReviewService";
 import { requestStorefrontFirstOrderCoupon } from "../services/storefrontFirstOrderCouponService";
 import { createStorefrontWishlistShare, resolveStorefrontWishlistShare } from "../services/storefrontWishlistShareService";
 import { createStorefrontCartShare, resolveStorefrontCartShare } from "../services/storefrontCartShareService";
 import { lookupShelfPrice } from "../services/shelfPriceService";
 import { recordShelfLookupEvent } from "../services/shelfAnalyticsService";
+import {
+  deleteMyStorefrontAccount,
+  requestStorefrontAccountDeletion,
+} from "../services/storefrontAccountDeletionService";
+import {
+  MAX_CUSTOMIZATION_BASE64_CHARS,
+  uploadStorefrontCustomizationAsset,
+} from "../services/storefrontCustomizationAssetService";
 import { barcodeString } from "../lib/schemas";
 
 const labelSummaryInput = z.object({
@@ -68,6 +76,8 @@ const onlineOrderCustomizationInput = z.object({
   // الحد الأعلى نفسه الذي تسمح به إدارة القالب؛ الحد الأدق لكل حقل يُفرض بعد تحميل القالب.
   values: z.record(z.string().trim().min(1).max(80), z.string().max(10_000))
     .refine((values) => Object.keys(values).length <= 50, "حقول التخصيص أكثر من الحد المسموح"),
+  logoAssetKey: z.string().trim().min(10).max(255).optional(),
+  previewAssetKey: z.string().trim().min(10).max(255).optional(),
 });
 
 const STOREFRONT_CUSTOMIZATION_PAYLOAD_MAX_BYTES = 512 * 1024;
@@ -155,6 +165,52 @@ export const storefrontRouter = router({
     .input(z.object({ firebaseIdToken: z.string().trim().min(100).max(8_000), displayName: z.string().trim().min(2).max(120) }))
     .mutation(({ input }) => claimFirebaseStorefrontCustomer(input)),
 
+  /** حذف الحساب الفوري للتطبيق الأصيل بعد تحقق Firebase Phone OTP حيّ مع الاحتفاظ المحاسبي لمدة سنة. */
+  deleteMe: storefrontPublicWriteProcedure
+    .input(z.object({
+      firebaseIdToken: z.string().trim().min(1).max(8_000),
+      reason: z.string().trim().max(500).optional(),
+    }))
+    .mutation(({ input }) => deleteMyStorefrontAccount(input)),
+
+  /** طلب حذف الحساب عبر الويب دون تعداد أرقام العملاء ومع حماية Turnstile عند تفعيلها. */
+  requestAccountDeletion: storefrontPublicWriteProcedure
+    .input(z.object({
+      phone: z.string().trim().min(5).max(20),
+      reason: z.string().trim().max(500).optional(),
+      turnstileToken: z.string().trim().min(1).max(STOREFRONT_TURNSTILE_TOKEN_MAX_LENGTH).nullish(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      if (process.env.STOREFRONT_TURNSTILE_ENABLED === "1") {
+        if (!input.turnstileToken) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "رمز التحقق الأمني مطلوب",
+              why: "نظام حماية المتجر يتطلب إتمام فحص الأمان Turnstile قبل إرسال طلب حذف الحساب",
+              doThis: "أعد تحميل الصفحة وأكمل اختبار الأمان ثم أعد إرسال الطلب",
+            }),
+          });
+        }
+        await verifyStorefrontTurnstile(input.turnstileToken, { allowWhenOrderingDisabled: true });
+      }
+      const requestedIp = ctx.req.ip || ctx.req.socket?.remoteAddress || null;
+      return requestStorefrontAccountDeletion({
+        phone: input.phone,
+        reason: input.reason,
+        requestedIp,
+      });
+    }),
+
+  /** رفع مرفق تخصيص (شعار العميل أو معاينة الإنتاج) مع فحص الترويسة الثنائية وحدّ 2MB. */
+  uploadCustomizationAsset: storefrontPublicWriteProcedure
+    .input(z.object({
+      kind: z.enum(["LOGO", "PREVIEW"]),
+      mimeType: z.enum(["image/png", "image/jpeg", "image/webp"]),
+      dataBase64: z.string().min(16).max(MAX_CUSTOMIZATION_BASE64_CHARS),
+    }))
+    .mutation(({ input }) => uploadStorefrontCustomizationAsset(input)),
+
   /**
    * @deprecated منزوعُ الوظيفة (Tier-1 #2، ٢٥/٨). كان GET يترك JWT في `?input=...` فيسجَّل في
    * nginx access.log على VPS مشترك. المسار `customerBenefitsPrivate` (POST body) صار مصدر
@@ -187,7 +243,7 @@ export const storefrontRouter = router({
    */
   customerBenefitsPrivate: storefrontPublicWriteProcedure
     .input(z.object({ customerSessionToken: z.string().trim().min(40).max(4_000) }))
-    .mutation(async ({ input }) => storefrontCustomerBenefits(await verifyStorefrontCustomerSession(input.customerSessionToken))),
+    .mutation(async ({ input }) => storefrontCustomerBenefits(await requireActiveStorefrontCustomer(input.customerSessionToken))),
 
   /** لا يصدر إلا بطلب صاحب جلسة الهاتف، مرة واحدة وقبل أي طلب متجر سابق. */
   requestFirstOrderCoupon: storefrontPublicWriteProcedure
@@ -294,7 +350,7 @@ export const storefrontRouter = router({
             }),
           });
         }
-        await verifyStorefrontTurnstile(input.turnstileToken);
+        await verifyStorefrontTurnstile(input.turnstileToken, { allowWhenOrderingDisabled: true });
       }
       return submitPublicStorefrontReview({
         productId: input.productId,
