@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import Decimal from "decimal.js";
-import { and, asc, eq, inArray, or } from "drizzle-orm";
+import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
 import {
   accountingEntries,
   fulfillmentChargePayments,
@@ -72,7 +72,7 @@ type EvidenceCache = {
 };
 
 /** A bounded number of indexed reads, independent of the number of listed vouchers. */
-async function listEvidenceCache(
+export async function listPurchasePriorPaymentEvidenceCache(
   db: DB | Tx,
   candidates: EvidenceCache["receipts"],
 ): Promise<EvidenceCache> {
@@ -162,6 +162,60 @@ async function listEvidenceCache(
           .orderBy(asc(allocations.id))
       : [],
   };
+}
+
+/** Narrow lifetime history before the safety bound; full evidence remains authoritative. */
+export async function purchasePriorPaymentCandidates(
+  db: DB | Tx,
+  input: { supplierId: number; branchId?: number },
+  options: { requireUnused: boolean; allowPendingCancellation?: boolean },
+) {
+  return db
+    .select()
+    .from(receipts)
+    .where(
+      and(
+        eq(receipts.partyType, "SUPPLIER"),
+        eq(receipts.partyId, input.supplierId),
+        input.branchId == null
+          ? undefined
+          : eq(receipts.branchId, input.branchId),
+        eq(receipts.direction, "OUT"),
+        eq(receipts.status, "COMPLETED"),
+        eq(receipts.approvalStatus, "APPROVED"),
+        inArray(receipts.paymentMethod, ["CASH", "CARD", "TRANSFER", "WALLET"]),
+        sql`${receipts.amount} > 0`,
+        sql`(${receipts.referenceNumber} IS NULL OR ${receipts.referenceNumber} NOT LIKE 'CANCEL-VCH-%')`,
+        sql`EXISTS (SELECT 1 FROM accountingEntries pe WHERE pe.receiptId = ${receipts.id}
+      AND pe.entryType = 'PAYMENT_OUT' AND pe.purchaseOrderId IS NULL
+      AND pe.supplierId = ${receipts.partyId} AND pe.branchId = ${receipts.branchId}
+      AND pe.amount = ${receipts.amount} AND (pe.purchaseLiabilityAccount IS NULL OR pe.purchaseLiabilityAccount <> 'CASH_CLEARING'))`,
+        sql`NOT EXISTS (SELECT 1 FROM supplierPayments np WHERE np.receiptId = ${receipts.id}
+      OR np.accountingEntryId IN (SELECT ne.id FROM accountingEntries ne WHERE ne.receiptId = ${receipts.id}))`,
+        sql`NOT EXISTS (SELECT 1 FROM legacySupplierInvoiceSettlements lp WHERE lp.sourceReceiptId = ${receipts.id}
+      OR lp.sourceAccountingEntryId IN (SELECT le.id FROM accountingEntries le WHERE le.receiptId = ${receipts.id}))`,
+        sql`NOT EXISTS (SELECT 1 FROM exchangeTransactions ex WHERE ex.receiptId = ${receipts.id})`,
+        sql`NOT EXISTS (SELECT 1 FROM fulfillmentChargePayments fp WHERE fp.receiptId = ${receipts.id})`,
+        options.allowPendingCancellation
+          ? undefined
+          : sql`NOT EXISTS (SELECT 1 FROM receipts cancellation
+      WHERE cancellation.referenceNumber = CONCAT('CANCEL-VCH-', ${receipts.id})
+      AND cancellation.receiptApprovalStatus IN ('PENDING_APPROVAL', 'APPROVED'))`,
+        sql`NOT EXISTS (SELECT 1 FROM supplierBookSettlementSources bs
+      WHERE (bs.sourceReceiptId = ${receipts.id} OR bs.sourceAccountingEntryId IN
+        (SELECT be.id FROM accountingEntries be WHERE be.receiptId = ${receipts.id}))
+      AND (COALESCE(JSON_UNQUOTE(JSON_EXTRACT(bs.sourceSnapshot, '$.purpose')), '') <> 'PURCHASE_ADVANCE'
+        OR COALESCE(JSON_EXTRACT(bs.sourceSnapshot, '$.version'), 0) <> 1 OR bs.status = 'REVERSED'
+        OR bs.amount - bs.reversedAmount ${
+          options.requireUnused
+            ? sql`- COALESCE((SELECT SUM(ba.allocatedAmount - ba.reversedAmount)
+          FROM supplierBookSettlementAllocations ba WHERE ba.sourceId = bs.id), 0)`
+            : sql``
+        } <= 0))`,
+      ),
+    )
+    .orderBy(asc(receipts.id))
+    .limit(501);
 }
 
 /** Read and execution use the same eligibility checks. Execution requires GOVERNANCE at transaction entry. */
@@ -398,26 +452,14 @@ export async function listPurchasePriorPayments(
   }>
 > {
   validIds(input.supplierId, input.branchId);
-  const candidates = await db
-    .select()
-    .from(receipts)
-    .where(
-      and(
-        eq(receipts.partyType, "SUPPLIER"),
-        eq(receipts.partyId, input.supplierId),
-        eq(receipts.branchId, input.branchId),
-        eq(receipts.direction, "OUT"),
-        eq(receipts.status, "COMPLETED"),
-        eq(receipts.approvalStatus, "APPROVED"),
-      ),
-    )
-    .orderBy(asc(receipts.id))
-    .limit(501);
+  const candidates = await purchasePriorPaymentCandidates(db, input, {
+    requireUnused: true,
+  });
   if (candidates.length > 500)
     fail("تجاوز عدد السندات حد القراءة الآمنة؛ راجع حساب المورد");
   const result: Awaited<ReturnType<typeof listPurchasePriorPayments>> = [];
   if (!candidates.length) return result;
-  const cache = await listEvidenceCache(db, candidates);
+  const cache = await listPurchasePriorPaymentEvidenceCache(db, candidates);
   for (const candidate of candidates) {
     try {
       const value = await readPurchasePriorPaymentEvidence(

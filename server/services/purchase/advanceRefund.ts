@@ -1,5 +1,5 @@
 import Decimal from "decimal.js";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   receipts,
   supplierBookSettlementSources as sources,
@@ -16,7 +16,11 @@ import { money, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
 import { assertBranchOwnership } from "../voucher/helpers";
 import type { VoucherInput } from "../voucher/types";
-import { readPurchasePriorPaymentEvidence } from "./priorPayment";
+import {
+  readPurchasePriorPaymentEvidence,
+  purchasePriorPaymentCandidates,
+  listPurchasePriorPaymentEvidenceCache,
+} from "./priorPayment";
 import { sha256, stableCanonical } from "./grniAccounting";
 import {
   isPurchaseAdvanceSnapshot,
@@ -42,33 +46,24 @@ async function candidates(
   branchId?: number,
   includePendingCancellation = false,
 ) {
-  const rows = await db
-    .select({ id: receipts.id })
-    .from(receipts)
-    .where(
-      and(
-        eq(receipts.partyType, "SUPPLIER"),
-        eq(receipts.partyId, supplierId),
-        branchId == null ? undefined : eq(receipts.branchId, branchId),
-        eq(receipts.direction, "OUT"),
-        eq(receipts.approvalStatus, "APPROVED"),
-        eq(receipts.status, "COMPLETED"),
-      ),
-    )
-    .orderBy(asc(receipts.id))
-    .limit(501);
+  const rows = await purchasePriorPaymentCandidates(
+    db,
+    { supplierId, branchId },
+    {
+      requireUnused: false,
+      allowPendingCancellation: includePendingCancellation,
+    },
+  );
   if (rows.length > 500) fail("تجاوز عدد مصادر المورد حد المراجعة الآمنة");
+  if (!rows.length) return [];
+  const cache = await listPurchasePriorPaymentEvidenceCache(db, rows);
   const result = [];
   for (const row of rows) {
     let value;
     try {
-      value = await readPurchasePriorPaymentEvidence(
-        db,
-        row.id,
-        false,
-        undefined,
-        { allowPendingCancellation: includePendingCancellation },
-      );
+      value = await readPurchasePriorPaymentEvidence(db, row.id, false, cache, {
+        allowPendingCancellation: includePendingCancellation,
+      });
     } catch (error) {
       if (
         error instanceof Error &&

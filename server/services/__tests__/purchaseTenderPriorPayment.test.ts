@@ -13,6 +13,11 @@ import {
 import { loadSupplierBookInvoiceTotals } from "../purchase/supplierBookProjection";
 import { unapplySupplierBookSettlementSourceTx } from "../purchase/supplierBookSettlement";
 import { truncateTables } from "./__testUtils__";
+import {
+  capturePurchaseTenderTx,
+  listPurchaseTenderSources,
+} from "../purchase/tender";
+import { listSupplierAdvanceRefundSources } from "../purchase/advanceRefund";
 
 const db = () => getDb()!;
 const actor = { userId: 9, branchId: 1, role: "manager" };
@@ -259,6 +264,218 @@ async function moneyTrail() {
 }
 
 describe("purchase prior payment allocation", () => {
+  it("filters more than500 native payments before listing an eligible prior/refund source", async () => {
+    const { receiptId } = await fixture();
+    const base = receiptId + 1000;
+    const history = Array.from({ length: 501 }, (_, index) => ({
+      id: base + index,
+      key: `NATIVE-HISTORY-${index}`,
+    }));
+    await db()
+      .insert(s.receipts)
+      .values(
+        history.map(({ id, key }) => ({
+          id,
+          direction: "OUT" as const,
+          branchId: 1,
+          amount: "1",
+          paymentMethod: "CARD" as const,
+          partyType: "SUPPLIER" as const,
+          partyId: 1,
+          voucherNumber: key,
+          referenceNumber: key,
+          createdBy: 7,
+          status: "COMPLETED" as const,
+          approvalStatus: "APPROVED" as const,
+        })),
+      );
+    await db()
+      .insert(s.accountingEntries)
+      .values(
+        history.map(({ id }) => ({
+          id,
+          receiptId: id,
+          entryType: "PAYMENT_OUT" as const,
+          branchId: 1,
+          supplierId: 1,
+          amount: "1",
+          createdBy: 7,
+          entryDate: new Date("2026-01-01T00:00:00Z"),
+        })),
+      );
+    await db()
+      .insert(s.supplierPaymentRequests)
+      .values(
+        history.map(({ id, key }) => ({
+          id,
+          requestKey: key,
+          supplierId: 1,
+          branchId: 1,
+          currency: "IQD" as const,
+          requestedAmount: "1",
+          requestedCurrencyAmount: "1",
+          paymentMethod: "CARD" as const,
+          externalReference: key,
+          payloadCanonical: "{}",
+          payloadHash: sha256(key),
+          evidenceType: "BANK_ADVICE" as const,
+          evidenceReference: key,
+          evidenceHash: sha256(key),
+          reason: "posted native history fixture",
+          status: "APPROVED" as const,
+          requestedBy: 7,
+          reviewedBy: 9,
+          reviewedAt: new Date(),
+          decisionKey: key,
+          decisionHash: sha256(key),
+          appliedAt: new Date(),
+        })),
+      );
+    await db()
+      .insert(s.supplierPayments)
+      .values(
+        history.map(({ id, key }) => ({
+          id,
+          paymentNumber: key,
+          requestId: id,
+          supplierId: 1,
+          branchId: 1,
+          currency: "IQD" as const,
+          amount: "1",
+          currencyAmount: "1",
+          paymentMethod: "CARD" as const,
+          externalReference: key,
+          receiptId: id,
+          accountingEntryId: id,
+          payloadCanonical: "{}",
+          payloadHash: sha256(key),
+          postedBy: 9,
+        })),
+      );
+    expect(
+      (
+        await listPurchaseTenderSources({ supplierId: 1, branchId: 1 }, actor)
+      ).previousPayments.map((row) => row.id),
+    ).toEqual([receiptId]);
+    expect(
+      (
+        await listSupplierAdvanceRefundSources(
+          { supplierId: 1, branchId: 1 },
+          actor,
+        )
+      ).map((row) => row.id),
+    ).toEqual([receiptId]);
+    await db()
+      .update(s.receipts)
+      .set({ status: "REVERSED" })
+      .where(eq(s.receipts.id, receiptId));
+    expect(
+      (await listPurchaseTenderSources({ supplierId: 1, branchId: 1 }, actor))
+        .previousPayments,
+    ).toEqual([]);
+    expect(
+      await listSupplierAdvanceRefundSources(
+        { supplierId: 1, branchId: 1 },
+        actor,
+      ),
+    ).toEqual([]);
+  });
+
+  it("keeps fully allocated advances refundable while excluding them from new prior allocations", async () => {
+    const { receiptId } = await fixture("100");
+    await apply(receiptId);
+    expect(
+      await listPurchasePriorPayments(db(), { supplierId: 1, branchId: 1 }),
+    ).toEqual([]);
+    expect(
+      await listSupplierAdvanceRefundSources(
+        { supplierId: 1, branchId: 1 },
+        actor,
+      ),
+    ).toMatchObject([
+      { id: receiptId, remainingAmount: "100.00", unusedAmount: "0.00" },
+    ]);
+    await expect(
+      withGovernanceTx((tx) =>
+        capturePurchaseTenderTx(
+          tx,
+          {
+            supplierId: 1,
+            branchId: 1,
+            settlementType: "CASH",
+            tender: { mode: "TREASURY", previousReceiptId: receiptId },
+          },
+          actor,
+        ),
+      ),
+    ).rejects.toThrow(/غير متاحة/);
+  });
+
+  it("validates a selected receipt directly while genuinely eligible listing overflow remains closed", async () => {
+    const { receiptId } = await fixture();
+    const base = receiptId + 1000;
+    const history = Array.from({ length: 501 }, (_, index) => ({
+      id: base + index,
+      key: `ELIGIBLE-HISTORY-${index}`,
+    }));
+    await db()
+      .insert(s.receipts)
+      .values(
+        history.map(({ id, key }) => ({
+          id,
+          direction: "OUT" as const,
+          branchId: 1,
+          amount: "1",
+          paymentMethod: "CARD" as const,
+          partyType: "SUPPLIER" as const,
+          partyId: 1,
+          voucherNumber: key,
+          referenceNumber: key,
+          createdBy: 7,
+          status: "COMPLETED" as const,
+          approvalStatus: "APPROVED" as const,
+        })),
+      );
+    await db()
+      .insert(s.accountingEntries)
+      .values(
+        history.map(({ id }) => ({
+          id,
+          receiptId: id,
+          entryType: "PAYMENT_OUT" as const,
+          branchId: 1,
+          supplierId: 1,
+          amount: "1",
+          createdBy: 7,
+          entryDate: new Date("2026-01-01T00:00:00Z"),
+        })),
+      );
+    await expect(
+      listPurchasePriorPayments(db(), { supplierId: 1, branchId: 1 }),
+    ).rejects.toThrow(/حد القراءة الآمنة/);
+    await expect(
+      listSupplierAdvanceRefundSources({ supplierId: 1, branchId: 1 }, actor),
+    ).rejects.toThrow(/حد المراجعة الآمنة/);
+    const input = {
+      supplierId: 1,
+      branchId: 1,
+      settlementType: "CASH",
+      tender: { mode: "TREASURY" as const, previousReceiptId: receiptId },
+    };
+    expect(
+      await withGovernanceTx((tx) => capturePurchaseTenderTx(tx, input, actor)),
+    ).toEqual(input.tender);
+    await expect(
+      withGovernanceTx((tx) =>
+        capturePurchaseTenderTx(tx, { ...input, supplierId: 2 }, actor),
+      ),
+    ).rejects.toThrow(/غير متاحة/);
+    await expect(
+      withGovernanceTx((tx) =>
+        capturePurchaseTenderTx(tx, { ...input, branchId: 2 }, actor),
+      ),
+    ).rejects.toThrow(/غير متاحة/);
+  });
   it("consumes part of a larger prepayment, retains its remainder and replays without money or AP writes", async () => {
     const { receiptId } = await fixture();
     const before = await moneyTrail();

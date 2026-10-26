@@ -14,7 +14,12 @@ import {
 import type { DB, Tx } from "../../db";
 import { requireDb, type Actor } from "../tx";
 import { assertPurchaseBranch } from "./internal";
-import { listPurchasePriorPayments } from "./priorPayment";
+import {
+  listPurchasePriorPayments,
+  readPurchasePriorPaymentEvidence,
+} from "./priorPayment";
+import { assertSupplierAdvanceInboundHistory } from "./advanceRefundEvidence";
+import { money } from "../money";
 import { sha256 } from "./grniAccounting";
 
 export function purchaseTenderError(what: string, why: string) {
@@ -105,13 +110,27 @@ export async function capturePurchaseTenderTx(
   }
   if (!tender) return null;
   if (tender.previousReceiptId != null) {
-    const candidates = await listPurchasePriorPayments(tx, input);
-    if (!candidates.some((row) => row.id === tender.previousReceiptId)) {
+    const value = await readPurchasePriorPaymentEvidence(
+      tx,
+      tender.previousReceiptId,
+      false,
+    );
+    if (
+      value.native ||
+      value.receipt.partyId !== input.supplierId ||
+      value.receipt.branchId !== input.branchId ||
+      !money(value.availableAmount).gt(0)
+    ) {
       throw purchaseTenderError(
         "تعذر ربط الدفعة السابقة",
         "الدفعة غير متاحة للتخصيص لهذا المورد والفرع",
       );
     }
+    await assertSupplierAdvanceInboundHistory(
+      tx,
+      input.supplierId,
+      input.branchId,
+    );
   }
   if (tender.mode === "CARD") {
     await assertPurchaseCardAccountTx(tx, tender.accountId);
