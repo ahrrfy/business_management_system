@@ -41,6 +41,7 @@ import {
   ImageStoreClientAbortError,
   isCurrentTenantCandidateKey,
   isImageStoreClientAbortError,
+  isImageStoreOperational,
   isImageStoreUnavailableError,
   MAX_PUBLIC_PRODUCT_THUMBNAIL_BYTES,
   MAX_PUBLISHED_PRODUCT_IMAGE_BYTES,
@@ -215,9 +216,14 @@ export function countProductImageUrl(
   );
 }
 
-/** رابط مرفق تخصيص طلب المتجر (شعار/معاينة) — محمي بصلاحية قراءة المتجر للموظفين حصراً. */
+/** رابط مرفق تخصيص طلب المتجر (شعار/معاينة) — محمي بصلاحية قراءة المتجر للموظفين حصراً، بمقاطع مسار نظيفة بلا %2F. */
 export function orderCustomizationAssetUrl(assetKey: string): string {
-  return `/api/img/order-customization/${encodeURIComponent(assetKey)}`;
+  const encodedPath = assetKey
+    .split("/")
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  return `/api/img/order-customization/${encodedPath}`;
 }
 
 /**
@@ -914,6 +920,11 @@ export function imageRouter(): Router {
       if (!asset) {
         preventCachingStoredImageFailure(res);
         return res.status(404).end();
+      }
+
+      if (!isImageStoreOperational()) {
+        preventCachingStoredImageFailure(res);
+        return res.status(503).end();
       }
 
       const body = await getImageStore().getBuffer(asset.assetKey, asset.byteLength, {

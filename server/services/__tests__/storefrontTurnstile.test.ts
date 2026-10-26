@@ -127,4 +127,66 @@ describe("Cloudflare Turnstile Siteverify", () => {
       .rejects.toMatchObject({ code: "BAD_REQUEST" });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+
+  it("supports non-order public endpoints (e.g. account deletion) when ordering is paused", async () => {
+    const pausedOrderingEnv: NodeJS.ProcessEnv = {
+      ...READY_ENV,
+      STOREFRONT_ORDERING_ENABLED: "0",
+    };
+
+    expect(getPublicStorefrontTurnstileSettings(pausedOrderingEnv)).toEqual({
+      orderingEnabled: false,
+      turnstileSiteKey: "public-site-key-placeholder",
+    });
+    expect(
+      getPublicStorefrontTurnstileSettings({
+        ...pausedOrderingEnv,
+        STOREFRONT_TURNSTILE_ENABLED: "0",
+      }),
+    ).toEqual({
+      orderingEnabled: false,
+      turnstileSiteKey: null,
+    });
+
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            success: true,
+            action: STOREFRONT_TURNSTILE_ACTION,
+            hostname: "alarabiya.online",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    );
+
+    // Order endpoints stay fail-closed when ordering is paused
+    await expect(
+      verifyStorefrontTurnstile("visitor-token", {
+        env: pausedOrderingEnv,
+        fetchImpl,
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    // Non-order endpoints (allowWhenOrderingDisabled: true) verify Turnstile normally when enabled
+    await expect(
+      verifyStorefrontTurnstile("visitor-token", {
+        env: pausedOrderingEnv,
+        fetchImpl,
+        allowWhenOrderingDisabled: true,
+      }),
+    ).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    // Non-order endpoints treat disabled Turnstile as a no-op when ordering is paused
+    await expect(
+      verifyStorefrontTurnstile(undefined, {
+        env: { ...pausedOrderingEnv, STOREFRONT_TURNSTILE_ENABLED: "0" },
+        fetchImpl,
+        allowWhenOrderingDisabled: true,
+      }),
+    ).resolves.toBeUndefined();
+  });
 });
+

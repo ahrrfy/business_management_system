@@ -168,7 +168,7 @@ export const storefrontRouter = router({
   /** حذف الحساب الفوري للتطبيق الأصيل بعد تحقق Firebase Phone OTP حيّ مع الاحتفاظ المحاسبي لمدة سنة. */
   deleteMe: storefrontPublicWriteProcedure
     .input(z.object({
-      firebaseIdToken: z.string().trim().min(20).max(8_000),
+      firebaseIdToken: z.string().trim().min(1).max(8_000),
       reason: z.string().trim().max(500).optional(),
     }))
     .mutation(({ input }) => deleteMyStorefrontAccount(input)),
@@ -192,7 +192,7 @@ export const storefrontRouter = router({
             }),
           });
         }
-        await verifyStorefrontTurnstile(input.turnstileToken);
+        await verifyStorefrontTurnstile(input.turnstileToken, { allowWhenOrderingDisabled: true });
       }
       const requestedIp = ctx.req.ip || ctx.req.socket?.remoteAddress || null;
       return requestStorefrontAccountDeletion({
@@ -350,7 +350,7 @@ export const storefrontRouter = router({
             }),
           });
         }
-        await verifyStorefrontTurnstile(input.turnstileToken);
+        await verifyStorefrontTurnstile(input.turnstileToken, { allowWhenOrderingDisabled: true });
       }
       return submitPublicStorefrontReview({
         productId: input.productId,

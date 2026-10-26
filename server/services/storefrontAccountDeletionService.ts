@@ -133,30 +133,68 @@ export async function deleteMyStorefrontAccount(input: {
   const retentionUntil = addRetentionPeriod(now);
 
   return withTx(async (tx) => {
-    const initialMatches = await findMatchingActiveCustomers(tx, firebase.phone);
-    if (initialMatches.length === 0) {
-      return {
-        ok: true as const,
-        deletedAt: now.toISOString(),
-        retentionUntil: retentionUntil.toISOString(),
-      };
+    const custLock = `online-customer:${firebase.phone}`;
+    const lockRes = (await tx.execute(
+      sql`SELECT GET_LOCK(${custLock}, 5) AS locked`,
+    )) as unknown;
+    const lockedRow = Array.isArray(lockRes)
+      ? (lockRes[0] as { locked?: number }[])?.[0]
+      : (lockRes as { rows?: { locked?: number }[] })?.rows?.[0];
+    if (!lockedRow || Number(lockedRow.locked) !== 1) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر إتمام حذف الحساب الآن",
+          why: "تزامن إجراء آخر على نفس رقم الهاتف في هذه اللحظة",
+          doThis: "انتظر لحظات ثم أعد المحاولة",
+        }),
+      });
     }
 
-    const candidateIds = initialMatches.map((c) => Number(c.id)).sort((a, b) => a - b);
-    const lockedCustomers = await tx
-      .select({
-        id: customers.id,
-        currentBalance: customers.currentBalance,
-        deletedAt: customers.deletedAt,
-        phone: customers.phone,
-        phone2: customers.phone2,
-        phone3: customers.phone3,
-        whatsapp: customers.whatsapp,
-      })
-      .from(customers)
-      .where(inArray(customers.id, candidateIds))
-      .orderBy(asc(customers.id))
-      .for("update");
+    let lockedCustomers: Array<{
+      id: number;
+      currentBalance: string;
+      deletedAt: Date | null;
+      phone: string | null;
+      phone2: string | null;
+      phone3: string | null;
+      whatsapp: string | null;
+    }> = [];
+    try {
+      const initialMatches = await findMatchingActiveCustomers(tx, firebase.phone);
+      const currentPhoneRows = await tx
+        .select({ id: customers.id })
+        .from(customers)
+        .where(and(eq(customers.phone, firebase.phone), isNull(customers.deletedAt)))
+        .orderBy(asc(customers.id))
+        .for("update");
+
+      const candidateIds = Array.from(
+        new Set([
+          ...initialMatches.map((c) => Number(c.id)),
+          ...currentPhoneRows.map((c) => Number(c.id)),
+        ]),
+      ).sort((a, b) => a - b);
+
+      if (candidateIds.length > 0) {
+        lockedCustomers = await tx
+          .select({
+            id: customers.id,
+            currentBalance: customers.currentBalance,
+            deletedAt: customers.deletedAt,
+            phone: customers.phone,
+            phone2: customers.phone2,
+            phone3: customers.phone3,
+            whatsapp: customers.whatsapp,
+          })
+          .from(customers)
+          .where(inArray(customers.id, candidateIds))
+          .orderBy(asc(customers.id))
+          .for("update");
+      }
+    } finally {
+      await tx.execute(sql`SELECT RELEASE_LOCK(${custLock})`).catch(() => {});
+    }
 
     const activeMatches = lockedCustomers.filter(
       (c) => c.deletedAt == null && rowMatchesCanonicalPhone(c, firebase.phone),
@@ -184,6 +222,8 @@ export async function deleteMyStorefrontAccount(input: {
       }
     }
 
+    // Current read (FOR SHARE) بعد قفل صف العميل FOR UPDATE لتجاوز لقطة REPEATABLE READ القديمة
+    // ومنع حذف حساب أُدرج له طلب PENDING متزامن للتوّ.
     const [inFlightOrder] = await tx
       .select({
         id: onlineOrders.id,
@@ -202,7 +242,8 @@ export async function deleteMyStorefrontAccount(input: {
           ]),
         ),
       )
-      .limit(1);
+      .limit(1)
+      .for("share");
 
     if (inFlightOrder) {
       throw new TRPCError({
@@ -232,6 +273,8 @@ export async function deleteMyStorefrontAccount(input: {
         notes: null,
         clientRequestId: null,
         waConsent: "OPTED_OUT",
+        waConsentAt: now,
+        waConsentSource: null,
         isActive: false,
         deletedAt: now,
         retentionUntil,

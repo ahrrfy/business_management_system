@@ -68,15 +68,30 @@ export function assertStorefrontOrderingReadiness(
   }
 }
 
-function readStorefrontTurnstileConfig(env: NodeJS.ProcessEnv): StorefrontTurnstileConfig {
+function isTurnstileWidgetReady(env: NodeJS.ProcessEnv): boolean {
+  return (
+    env.STOREFRONT_TURNSTILE_ENABLED === "1" &&
+    Boolean(env.STOREFRONT_TURNSTILE_SITE_KEY?.trim()) &&
+    Boolean(env.STOREFRONT_TURNSTILE_SECRET_KEY?.trim()) &&
+    Boolean(readExactHostnames(env.STOREFRONT_TURNSTILE_HOSTNAMES))
+  );
+}
+
+function readStorefrontTurnstileConfig(
+  env: NodeJS.ProcessEnv,
+  allowWhenOrderingDisabled = false,
+): StorefrontTurnstileConfig {
   const readiness = checkStorefrontOrderingReadiness(env);
-  if (!readiness.orderingEnabled) {
+  if (!allowWhenOrderingDisabled && !readiness.orderingEnabled) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message: "إنشاء الطلبات متوقف مؤقتاً",
     });
   }
-  if (!readiness.ready) {
+  const ready = allowWhenOrderingDisabled
+    ? isTurnstileWidgetReady(env)
+    : readiness.ready;
+  if (!ready) {
     throw new TRPCError({
       code: "SERVICE_UNAVAILABLE",
       message: "تعذّر التحقق الآمن من الطلب حالياً — حاول لاحقاً",
@@ -94,12 +109,12 @@ export function getPublicStorefrontTurnstileSettings(
   env: NodeJS.ProcessEnv = process.env,
 ): { orderingEnabled: boolean; turnstileSiteKey: string | null } {
   const readiness = checkStorefrontOrderingReadiness(env);
+  const turnstileReady = isTurnstileWidgetReady(env);
   return {
     orderingEnabled: readiness.orderingEnabled && readiness.ready,
-    turnstileSiteKey:
-      readiness.orderingEnabled && readiness.ready
-        ? env.STOREFRONT_TURNSTILE_SITE_KEY!.trim()
-        : null,
+    turnstileSiteKey: turnstileReady
+      ? env.STOREFRONT_TURNSTILE_SITE_KEY!.trim()
+      : null,
   };
 }
 
@@ -116,6 +131,8 @@ interface VerifyOptions {
   env?: NodeJS.ProcessEnv;
   fetchImpl?: FetchLike;
   idempotencyKey?: string;
+  /** يسمح بالتحقق الأمني لنماذج الخصوصية/المراجعة العامة حتى عند إيقاف استلام الطلبات مؤقتاً. */
+  allowWhenOrderingDisabled?: boolean;
 }
 
 async function siteverifyAttempt(
@@ -159,14 +176,21 @@ async function siteverifyAttempt(
  * الوحيدة تحمل idempotency_key نفسه كي لا تتحول مهلة Siteverify إلى استهلاك مبهم ثانٍ.
  */
 export async function verifyStorefrontTurnstile(
-  rawToken: string,
+  rawToken: string | null | undefined,
   options: VerifyOptions = {},
 ): Promise<void> {
-  const token = rawToken.trim();
+  const env = options.env ?? process.env;
+  if (options.allowWhenOrderingDisabled === true && env.STOREFRONT_TURNSTILE_ENABLED !== "1") {
+    return;
+  }
+  const token = typeof rawToken === "string" ? rawToken.trim() : "";
   if (!token || token.length > STOREFRONT_TURNSTILE_TOKEN_MAX_LENGTH) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "تحقق الأمان غير صالح — أعد المحاولة" });
   }
-  const config = readStorefrontTurnstileConfig(options.env ?? process.env);
+  const config = readStorefrontTurnstileConfig(
+    env,
+    options.allowWhenOrderingDisabled === true,
+  );
   const fetchImpl = options.fetchImpl ?? fetch;
   const idempotencyKey = options.idempotencyKey ?? randomUUID();
 

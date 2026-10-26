@@ -629,6 +629,7 @@ export async function lockOrCreateOnlineCustomer(
         .select({
           id: customers.id,
           isActive: customers.isActive,
+          deletedAt: customers.deletedAt,
           phone: customers.phone,
           phone2: customers.phone2,
           phone3: customers.phone3,
@@ -650,6 +651,7 @@ export async function lockOrCreateOnlineCustomer(
     if (
       !existing ||
       existing.isActive !== true ||
+      existing.deletedAt != null ||
       !verifiedPhones.includes(phone)
     ) {
       throw new TRPCError({
@@ -688,7 +690,7 @@ export async function lockOrCreateOnlineCustomer(
       await tx
         .select({ id: customers.id })
         .from(customers)
-        .where(eq(customers.phone, phone))
+        .where(and(eq(customers.phone, phone), isNull(customers.deletedAt)))
         .limit(1)
         .for("update")
     )[0];
@@ -2147,6 +2149,9 @@ async function createOnlineOrderAttempt(
       item.productName = current.productName;
       item.isBundle = current.isBundle;
       item.baseQuantity = current.baseQuantity;
+      item.retailUnitPrice = current.retailUnitPrice;
+      item.customizationPriceDelta = current.customizationPriceDelta;
+      item.customizationSnapshot = current.customizationSnapshot;
       item.unitPrice = current.unitPrice;
       item.lineTotal = current.lineTotal;
       item.discountPerUnit = current.discountPerUnit;

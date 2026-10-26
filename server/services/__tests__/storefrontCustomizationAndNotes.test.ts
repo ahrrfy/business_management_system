@@ -287,6 +287,63 @@ describe("Storefront Wave 2 — Customizer Asset Upload, Staff Image Gate, custo
         dataBase64: png8192Header.toString("base64"),
       }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    // Polyglot / header-only fake PNG (8-byte PNG signature + <svg> payload, no IHDR) -> rejected with BAD_REQUEST
+    const polyglotPngSvg = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"></svg>', "utf8"),
+    ]);
+    await expect(
+      caller.uploadCustomizationAsset({
+        kind: "LOGO",
+        mimeType: "image/png",
+        dataBase64: polyglotPngSvg.toString("base64"),
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    // Polyglot / header-only fake JPEG (FF D8 FF + <svg> payload, no SOFn frame) -> rejected with BAD_REQUEST
+    const polyglotJpegSvg = Buffer.concat([
+      Buffer.from([0xff, 0xd8, 0xff]),
+      Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"></svg>', "utf8"),
+    ]);
+    await expect(
+      caller.uploadCustomizationAsset({
+        kind: "LOGO",
+        mimeType: "image/jpeg",
+        dataBase64: polyglotJpegSvg.toString("base64"),
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    // Polyglot / header-only fake WEBP (RIFF....WEBP + FAKE chunk, no VP8/VP8L/VP8X) -> rejected with BAD_REQUEST
+    const polyglotWebp = Buffer.from("RIFF\x18\x00\x00\x00WEBPFAKE0123456789abcdef", "binary");
+    await expect(
+      caller.uploadCustomizationAsset({
+        kind: "LOGO",
+        mimeType: "image/webp",
+        dataBase64: polyglotWebp.toString("base64"),
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    // Unconfigured production ImageStore -> SERVICE_UNAVAILABLE (never unhandled 500)
+    const prevNodeEnv = process.env.NODE_ENV;
+    try {
+      process.env.NODE_ENV = "production";
+      delete process.env.IMAGE_STORE_DRIVER;
+      __resetImageStoreForTest();
+      await expect(
+        caller.uploadCustomizationAsset({
+          kind: "LOGO",
+          mimeType: "image/png",
+          dataBase64: VALID_PNG_BASE64,
+        }),
+      ).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
+    } finally {
+      if (prevNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = prevNodeEnv;
+      process.env.IMAGE_STORE_DRIVER = "fs";
+      process.env.IMAGE_STORE_DIR = tempImageDir;
+      __resetImageStoreForTest();
+    }
   });
 
   it("attaches logoAssetKey & previewAssetKey to createOnlineOrder snapshot, persists customerNotes, and gates /api/img/order-customization to store staff only", async () => {
@@ -498,8 +555,9 @@ describe("Storefront Wave 2 — Customizer Asset Upload, Staff Image Gate, custo
 
     const detail = (await getOnlineOrder(created.orderId, null)) as any;
     expect(detail.customerNotes).toBe("الاتصال قبل الوصول بنصف ساعة");
-    expect(detail.items[0]?.logoAssetUrl).toMatch(/^\/api\/img\/order-customization\//);
-    expect(detail.items[0]?.previewAssetUrl).toMatch(/^\/api\/img\/order-customization\//);
+    expect(detail.items[0]?.logoAssetUrl).toBe(`/api/img/order-customization/${logoAsset.assetKey}`);
+    expect(detail.items[0]?.logoAssetUrl).not.toContain("%2F");
+    expect(detail.items[0]?.previewAssetUrl).toBe(`/api/img/order-customization/${previewAsset.assetKey}`);
 
     // Pre-0406 fallback: if customerNotes is NULL in DB, getOnlineOrder falls back to shippingAddress note
     await db()
@@ -509,7 +567,7 @@ describe("Storefront Wave 2 — Customizer Asset Upload, Staff Image Gate, custo
     const fallbackDetail = (await getOnlineOrder(created.orderId, null)) as any;
     expect(fallbackDetail.customerNotes).toBe("الاتصال قبل الوصول بنصف ساعة");
 
-    // Staff updateOnlineOrder synchronizes customerNotes
+    // Staff updateOnlineOrder synchronizes customerNotes, and preserves customerNotes in shippingAddress even if shippingAddress lacked an embedded note
     await updateOnlineOrder(
       {
         id: created.orderId,
@@ -520,6 +578,27 @@ describe("Storefront Wave 2 — Customizer Asset Upload, Staff Image Gate, custo
     );
     const updatedDetail = (await getOnlineOrder(created.orderId, null)) as any;
     expect(updatedDetail.customerNotes).toBe("توصيل بعد الساعة الرابعة عصراً");
+
+    await db()
+      .update(s.onlineOrders)
+      .set({ shippingAddress: "شارع فلسطين فقط" })
+      .where(eq(s.onlineOrders.id, created.orderId));
+    await updateOnlineOrder(
+      {
+        id: created.orderId,
+        shippingAddress: "شارع الربيع - حي الجامعة",
+        scopedBranchId: null,
+      },
+      1,
+    );
+    const [syncedOrder] = await db()
+      .select()
+      .from(s.onlineOrders)
+      .where(eq(s.onlineOrders.id, created.orderId));
+    expect(syncedOrder.customerNotes).toBe("توصيل بعد الساعة الرابعة عصراً");
+    expect(syncedOrder.shippingAddress).toBe(
+      "شارع الربيع - حي الجامعة\nملاحظة: توصيل بعد الساعة الرابعة عصراً",
+    );
 
     // Verify HTTP staff gate on /api/img/order-customization/...
     const srv = await startImageTestServer();
@@ -555,13 +634,38 @@ describe("Storefront Wave 2 — Customizer Asset Upload, Staff Image Gate, custo
       const servedBytes = Buffer.from(await adminRes.arrayBuffer());
       expect(servedBytes.equals(Buffer.from(VALID_PNG_BASE64, "base64"))).toBe(true);
 
-      // 4) Proxy-decoded path (/api/img/order-customization/single/storefront-customizer/...) also works for store admin
-      const unencodedRes = await fetch(
-        `${srv.baseUrl}/api/img/order-customization/${logoAsset.assetKey}`,
+      // 4) Legacy %2F-encoded path AND numeric :id both work for store admin
+      const encodedRes = await fetch(
+        `${srv.baseUrl}/api/img/order-customization/${encodeURIComponent(logoAsset.assetKey)}`,
         { headers: { cookie: adminCookie, "user-agent": staffUa } },
       );
-      expect(unencodedRes.status).toBe(200);
-      expect(Buffer.from(await unencodedRes.arrayBuffer()).equals(servedBytes)).toBe(true);
+      expect(encodedRes.status).toBe(200);
+      expect(Buffer.from(await encodedRes.arrayBuffer()).equals(servedBytes)).toBe(true);
+
+      const numericRes = await fetch(
+        `${srv.baseUrl}/api/img/order-customization/${postAttachLogoRow.id}`,
+        { headers: { cookie: adminCookie, "user-agent": staffUa } },
+      );
+      expect(numericRes.status).toBe(200);
+      expect(Buffer.from(await numericRes.arrayBuffer()).equals(servedBytes)).toBe(true);
+
+      // 5) Unconfigured production ImageStore -> 503 (never 500)
+      const prevNodeEnv = process.env.NODE_ENV;
+      try {
+        process.env.NODE_ENV = "production";
+        delete process.env.IMAGE_STORE_DRIVER;
+        __resetImageStoreForTest();
+        const unavailRes = await fetch(targetUrl, {
+          headers: { cookie: adminCookie, "user-agent": staffUa },
+        });
+        expect(unavailRes.status).toBe(503);
+      } finally {
+        if (prevNodeEnv === undefined) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = prevNodeEnv;
+        process.env.IMAGE_STORE_DRIVER = "fs";
+        process.env.IMAGE_STORE_DIR = tempImageDir;
+        __resetImageStoreForTest();
+      }
     } finally {
       await srv.close();
     }

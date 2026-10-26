@@ -18,6 +18,10 @@ const STOREFRONT_SECRET = "storefront_jwt_secret_v1_for_testing_only_12345";
 const ORIGINAL_JWT_SECRET = process.env.JWT_SECRET;
 const ORIGINAL_STOREFRONT_JWT_SECRET = process.env.STOREFRONT_JWT_SECRET;
 const ORIGINAL_TURNSTILE_ENABLED = process.env.STOREFRONT_TURNSTILE_ENABLED;
+const ORIGINAL_ORDERING_ENABLED = process.env.STOREFRONT_ORDERING_ENABLED;
+const ORIGINAL_TURNSTILE_SITE_KEY = process.env.STOREFRONT_TURNSTILE_SITE_KEY;
+const ORIGINAL_TURNSTILE_SECRET_KEY = process.env.STOREFRONT_TURNSTILE_SECRET_KEY;
+const ORIGINAL_TURNSTILE_HOSTNAMES = process.env.STOREFRONT_TURNSTILE_HOSTNAMES;
 
 const mountedStorefrontRouter = router({ storefront: storefrontRouter });
 
@@ -111,6 +115,14 @@ describe("Storefront Wave 2 — Account Deletion & 1-Year Accounting Retention",
     else process.env.STOREFRONT_JWT_SECRET = ORIGINAL_STOREFRONT_JWT_SECRET;
     if (ORIGINAL_TURNSTILE_ENABLED === undefined) delete process.env.STOREFRONT_TURNSTILE_ENABLED;
     else process.env.STOREFRONT_TURNSTILE_ENABLED = ORIGINAL_TURNSTILE_ENABLED;
+    if (ORIGINAL_ORDERING_ENABLED === undefined) delete process.env.STOREFRONT_ORDERING_ENABLED;
+    else process.env.STOREFRONT_ORDERING_ENABLED = ORIGINAL_ORDERING_ENABLED;
+    if (ORIGINAL_TURNSTILE_SITE_KEY === undefined) delete process.env.STOREFRONT_TURNSTILE_SITE_KEY;
+    else process.env.STOREFRONT_TURNSTILE_SITE_KEY = ORIGINAL_TURNSTILE_SITE_KEY;
+    if (ORIGINAL_TURNSTILE_SECRET_KEY === undefined) delete process.env.STOREFRONT_TURNSTILE_SECRET_KEY;
+    else process.env.STOREFRONT_TURNSTILE_SECRET_KEY = ORIGINAL_TURNSTILE_SECRET_KEY;
+    if (ORIGINAL_TURNSTILE_HOSTNAMES === undefined) delete process.env.STOREFRONT_TURNSTILE_HOSTNAMES;
+    else process.env.STOREFRONT_TURNSTILE_HOSTNAMES = ORIGINAL_TURNSTILE_HOSTNAMES;
   });
 
   it("blocks HTTP batching for deleteMe, requestAccountDeletion, and uploadCustomizationAsset", () => {
@@ -581,6 +593,115 @@ describe("Storefront Wave 2 — Account Deletion & 1-Year Accounting Retention",
         turnstileToken: "valid-turnstile-token",
       }),
     ).resolves.toMatchObject({ ok: true, retentionDays: 365 });
-    expect(turnstileSpy).toHaveBeenCalledWith("valid-turnstile-token");
+    expect(turnstileSpy).toHaveBeenCalled();
+    turnstileSpy.mockRestore();
+  });
+
+  it("rejects short non-empty invalid firebaseIdToken with UNAUTHORIZED (not Zod BAD_REQUEST)", async () => {
+    const caller = publicCaller();
+    await expect(
+      caller.deleteMe({ firebaseIdToken: "bad-token" }),
+    ).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  });
+
+  it("allows requestAccountDeletion with real Turnstile verification even when STOREFRONT_ORDERING_ENABLED=0", async () => {
+    process.env.STOREFRONT_TURNSTILE_ENABLED = "1";
+    process.env.STOREFRONT_ORDERING_ENABLED = "0";
+    process.env.STOREFRONT_TURNSTILE_SITE_KEY = "0x4AAAAAA_test_site";
+    process.env.STOREFRONT_TURNSTILE_SECRET_KEY = "0x4AAAAAA_test_secret";
+    process.env.STOREFRONT_TURNSTILE_HOSTNAMES = "store.alarabiya.iq";
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          success: true,
+          action: "storefront_order_verify",
+          hostname: "store.alarabiya.iq",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+
+    const caller = publicCaller("203.0.113.99");
+    await expect(
+      caller.requestAccountDeletion({
+        phone: "07708889900",
+        reason: "طلب حذف قانوني أثناء إيقاف الطلبات مؤقتاً",
+        turnstileToken: "real-cf-turnstile-token",
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      requestNumber: expect.stringMatching(/^ADR-/),
+      retentionDays: 365,
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("prevents MVCC stale-snapshot account deletion when a concurrent transaction commits a PENDING order on MySQL 8 REPEATABLE READ", async () => {
+    setFirebaseVerifier(async () => ({
+      uid: "fuid-race-mvcc",
+      phone: "+9647721112233",
+    }));
+
+    const caller = publicCaller();
+    const claimed = await caller.claimFirebaseCustomer({
+      firebaseIdToken: "r".repeat(120),
+      displayName: "مصطفى السعدي",
+    });
+    const customerId = claimed.customer.id;
+
+    let resolveLocked!: () => void;
+    const customerRowLocked = new Promise<void>((resolve) => {
+      resolveLocked = resolve;
+    });
+    let resolveDeleteDispatched!: () => void;
+    const deleteDispatched = new Promise<void>((resolve) => {
+      resolveDeleteDispatched = resolve;
+    });
+
+    // Transaction 1 (simulating createOnlineOrder holding customers FOR UPDATE, then inserting PENDING order and committing)
+    const tx1Promise = db().transaction(async (tx) => {
+      await tx
+        .select({ id: s.customers.id })
+        .from(s.customers)
+        .where(eq(s.customers.id, customerId))
+        .for("update");
+      resolveLocked();
+
+      await deleteDispatched;
+      // Give tx2 enough time to run its initial plain SELECT (freezing its REPEATABLE READ snapshot) and block on FOR UPDATE
+      await new Promise((r) => setTimeout(r, 150));
+
+      await tx.insert(s.onlineOrders).values({
+        id: 950,
+        orderNumber: "ORD-RACE-950",
+        customerId,
+        branchId: 1,
+        subtotal: "10000.00",
+        shippingCost: "5000.00",
+        total: "15000.00",
+        status: "PENDING",
+        shippingAddress: "بغداد - زيونة",
+        governorate: "baghdad",
+      });
+    });
+
+    await customerRowLocked;
+    const deletePromise = caller.deleteMe({
+      firebaseIdToken: "r".repeat(120),
+    });
+    resolveDeleteDispatched();
+
+    await tx1Promise;
+    await expect(deletePromise).rejects.toMatchObject({ code: "CONFLICT" });
+
+    // Customer must NOT be anonymized while ORD-RACE-950 is PENDING!
+    const [afterCustomer] = await db()
+      .select()
+      .from(s.customers)
+      .where(eq(s.customers.id, customerId));
+    expect(afterCustomer.isActive).toBe(true);
+    expect(afterCustomer.deletedAt).toBeNull();
+    expect(afterCustomer.phone).toBe("+9647721112233");
   });
 });

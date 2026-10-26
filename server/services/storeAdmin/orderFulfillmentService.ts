@@ -8,7 +8,7 @@
  */
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
-import { and, asc, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import {
   bundleComponents,
   couponPrograms,
@@ -321,6 +321,7 @@ export function composeOrderShippingAddress(
   existingAddress: string | null | undefined,
   inputShippingAddress: string | null | undefined,
   inputNotes: string | null | undefined,
+  existingCustomerNotes?: string | null,
 ): string | null {
   if (inputShippingAddress === undefined && inputNotes === undefined) {
     return existingAddress ?? null;
@@ -339,7 +340,7 @@ export function composeOrderShippingAddress(
     if (embeddedInInput) {
       effectiveNotes = embeddedInInput;
     } else if (inputShippingAddress != null && inputShippingAddress.trim() !== "") {
-      effectiveNotes = extractOrderNoteSegment(existingAddress);
+      effectiveNotes = existingCustomerNotes?.trim() || extractOrderNoteSegment(existingAddress);
     }
   }
 
@@ -940,12 +941,15 @@ export async function updateOnlineOrder(
           })
           .from(customers)
           .where(
-            or(
-              inArray(customers.phone, phoneVariants),
-              inArray(customers.phone2, phoneVariants),
-              inArray(customers.phone3, phoneVariants),
-              inArray(customers.whatsapp, phoneVariants),
-              ...digitPredicates,
+            and(
+              isNull(customers.deletedAt),
+              or(
+                inArray(customers.phone, phoneVariants),
+                inArray(customers.phone2, phoneVariants),
+                inArray(customers.phone3, phoneVariants),
+                inArray(customers.whatsapp, phoneVariants),
+                ...digitPredicates,
+              )!,
             ),
           )
           .orderBy(desc(customers.isActive), desc(customers.id));
@@ -967,6 +971,7 @@ export async function updateOnlineOrder(
             .select({
               id: customers.id,
               isActive: customers.isActive,
+              deletedAt: customers.deletedAt,
               phone: customers.phone,
               phone2: customers.phone2,
               phone3: customers.phone3,
@@ -978,6 +983,7 @@ export async function updateOnlineOrder(
             .for("update");
           const stillMatches =
             lockedMatched &&
+            lockedMatched.deletedAt == null &&
             [
               lockedMatched.phone,
               lockedMatched.phone2,
@@ -1033,7 +1039,7 @@ export async function updateOnlineOrder(
                 isActive: customers.isActive,
               })
               .from(customers)
-              .where(eq(customers.phone, normalizedPhone))
+              .where(and(eq(customers.phone, normalizedPhone), isNull(customers.deletedAt)))
               .orderBy(desc(customers.isActive), desc(customers.id))
               .limit(1)
               .for("update");
@@ -1136,6 +1142,7 @@ export async function updateOnlineOrder(
       order.shippingAddress,
       input.shippingAddress,
       input.notes,
+      order.customerNotes,
     );
     const targetCustomerNotes = resolveUpdatedCustomerNotes(
       order.customerNotes,

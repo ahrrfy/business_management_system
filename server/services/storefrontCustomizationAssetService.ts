@@ -11,6 +11,7 @@ import {
   extForMime,
   getImageStore,
   isCurrentTenantCustomizerKey,
+  isImageStoreOperational,
   isImageStoreUnavailableError,
 } from "../lib/imageStore";
 import { parseImageDimensions } from "../lib/imageValidation";
@@ -83,14 +84,19 @@ function decodeStrictCustomizationBase64(raw: string): Buffer {
 
 function matchesDeclaredMagicBytes(bytes: Buffer, mimeType: CustomizationAssetMime): boolean {
   if (mimeType === "image/png") {
-    return bytes.length >= 8 && bytes.subarray(0, 8).equals(PNG_MAGIC);
+    return (
+      bytes.length >= 24 &&
+      bytes.subarray(0, 8).equals(PNG_MAGIC) &&
+      bytes.readUInt32BE(8) === 13 &&
+      bytes.toString("ascii", 12, 16) === "IHDR"
+    );
   }
   if (mimeType === "image/jpeg") {
     return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
   }
   if (mimeType === "image/webp") {
     return (
-      bytes.length >= 12 &&
+      bytes.length >= 16 &&
       bytes.subarray(0, 4).toString("ascii") === "RIFF" &&
       bytes.subarray(8, 12).toString("ascii") === "WEBP"
     );
@@ -111,12 +117,15 @@ export async function uploadStorefrontCustomizationAsset(
   }
 
   const dims = parseImageDimensions(bytes, input.mimeType);
+  if (!dims || dims.width <= 0 || dims.height <= 0) {
+    badAsset(
+      "بنية إطار الصورة غير مكتملة أو تالفة",
+      "استخدم صورة حقيقية صالحة بصيغة PNG أو JPEG أو WebP فقط",
+    );
+  }
   if (
-    dims &&
-    (dims.width <= 0 ||
-      dims.height <= 0 ||
-      dims.width > MAX_CUSTOMIZATION_IMAGE_DIMENSION ||
-      dims.height > MAX_CUSTOMIZATION_IMAGE_DIMENSION)
+    dims.width > MAX_CUSTOMIZATION_IMAGE_DIMENSION ||
+    dims.height > MAX_CUSTOMIZATION_IMAGE_DIMENSION
   ) {
     badAsset(
       `أبعاد الصورة تتجاوز الحدّ الأقصى المسموح (${MAX_CUSTOMIZATION_IMAGE_DIMENSION} بكسل)`,
@@ -134,6 +143,17 @@ export async function uploadStorefrontCustomizationAsset(
         what: "تعذّر حفظ مرفق التخصيص",
         why: "فشل التحقق من نطاق تخزين المرفق",
         doThis: "أعد المحاولة بعد قليل",
+      }),
+    });
+  }
+
+  if (!isImageStoreOperational()) {
+    throw new TRPCError({
+      code: "SERVICE_UNAVAILABLE",
+      message: appErrorMessage({
+        what: "خدمة رفع المرفقات غير متاحة مؤقتاً",
+        why: "مخزن الملفات الآمن غير مهيّأ حالياً لاستقبال المرفقات",
+        doThis: "انتظر لحظات ثم أعد رفع الشعار أو تواصل مع إدارة المتجر",
       }),
     });
   }
