@@ -10,7 +10,16 @@ export interface WorkflowDocumentSnapshot {
   documentNumber: string;
   eventOccurredAt: Date | string;
   payload: unknown;
-  printHistory: Array<{ status: string }>;
+  printHistory: Array<{
+    status: string;
+    id?: number;
+    snapshotId?: number;
+    clientRequestId?: string;
+    copyType?: "ORIGINAL" | "REPRINT";
+    reason?: string | null;
+    printerKey?: string | null;
+    requestedBy?: number;
+  }>;
 }
 export interface DispatchDocumentPayload {
   shipment: { consignmentId: number; consignmentNumber: string; fulfillmentRequestId: number | null; sourceType: string; sourceId: number };

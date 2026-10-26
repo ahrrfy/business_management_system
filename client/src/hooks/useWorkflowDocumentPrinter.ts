@@ -3,7 +3,7 @@ import { trpc } from "@/lib/trpc";
 import { notify, errMsg } from "@/lib/notify";
 import { D } from "@/lib/money";
 import { openPrintWindow } from "@/lib/printing/brand";
-import { printDoc, printReceipt } from "@/lib/printing/print";
+import { printDoc, printReceipt, type PrintResult } from "@/lib/printing/print";
 import { docToHtml } from "@/lib/printing/render";
 import { buildDeliveryDispatchSlipDoc } from "@/lib/printing/printDeliveryDispatchSlip";
 import { printShippingLabel, resolveShippingLabelPaymentState } from "@/lib/printing/shippingLabel";
@@ -13,6 +13,7 @@ import { invoiceDetailPrintData } from "@/lib/printing/invoiceDetailPrintData";
 import { beginInvoicePrintAttempt, completeInvoicePrintAttempt, type InvoicePrintPurpose } from "@/lib/printing/invoicePrintAttempt";
 import { dispatchDocumentData, dispatchDocumentPayload, workflowEventDocument, runWorkflowPrintPack, type WorkflowDocumentSnapshot, type WorkflowPrintJob } from "@/lib/printing/workflowDocuments";
 import { operationDecision } from "@shared/operationPermissions";
+import { beginWorkflowPrintAttempt, saveWorkflowPrintAttempt, finishWorkflowPrintAttempt, discardRejectedWorkflowPrintAttempt, withWorkflowPrintOwnership, type WorkflowPrintAttempt } from "@/lib/printing/workflowPrintAttempt";
 
 /** Only reads documents and journals printing; never calls a financial command. */
 export function useWorkflowDocumentPrinter(branchId: number) {
@@ -60,22 +61,66 @@ export function useWorkflowDocumentPrinter(branchId: number) {
       (snapshot.documentType === "AFTERCARE_WAYBILL" && !!(snapshot.payload as { shipment?: unknown } | null)?.shipment);
     const doc = dispatchSlip
       ? buildDeliveryDispatchSlipDoc(dispatchDocumentData(snapshot)) : workflowEventDocument(snapshot);
-    const copyType = snapshot.printHistory.some((attempt) => attempt.status === "SENT") ? "REPRINT" : "ORIGINAL";
-    const attempt = await request.mutateAsync({ snapshotId: snapshot.id, branchId, clientRequestId: crypto.randomUUID(), copyType,
-      ...(copyType === "REPRINT" ? { reason: "إعادة طباعة من محطة سير العمل" } : {}) });
-    return { title: doc.title, silent: () => printDoc(doc, { into: null }), html: () => docToHtml(doc),
+    const attempt = await authorizeSnapshot(snapshot, "إعادة طباعة من محطة سير العمل");
+    return { title: doc.title, silent: async () => {
+        const known = knownPrintResult(attempt);
+        if (known) return known;
+        const result = await printDoc(doc, { into: null });
+        if (result.ok) rememberOutcome(attempt, true, undefined, result.via);
+        return result;
+      }, html: () => docToHtml(doc),
       complete: async (sent, error) => {
-        await complete.mutateAsync({ printId: attempt.print.id, branchId, status: sent ? "SENT" : "FAILED", ...(!sent ? { errorMessage: (error || "تعذرت الطباعة").slice(0, 500) } : {}) });
-        await utils.delivery.documents.list.invalidate();
+        if (!attempt.outcome) rememberOutcome(attempt, sent, error, sent ? "browser" : undefined);
+        await acknowledgeOutcome(attempt);
       } };
+  }
+  async function authorizeSnapshot(snapshot: WorkflowDocumentSnapshot, reason: string) {
+    if (!user.data) throw new Error("تعذر تحديد مستخدم الطباعة؛ أعد تسجيل الدخول ثم أعد فتح المستند");
+    const attempt = beginWorkflowPrintAttempt(user.data.id, branchId, snapshot, reason);
+    const response = await request.mutateAsync(attempt.request).catch(async (cause: unknown) => {
+      if (discardRejectedWorkflowPrintAttempt(attempt, cause)) {
+        // Refresh the winner's history so a later click can explicitly reprint.
+        try { await utils.delivery.documents.list.invalidate(); } catch { /* Preserve the request's rejection message. */ }
+      }
+      throw cause;
+    });
+    attempt.printId = response.print.id;
+    if (!attempt.outcome && response.print.status !== "REQUESTED" && ["SENT", "FAILED", "CANCELLED"].includes(response.print.status)) {
+      attempt.outcome = { status: response.print.status as "SENT" | "FAILED" | "CANCELLED",
+        ...(response.print.status === "FAILED" ? { errorMessage: response.print.errorMessage || "تعذرت الطباعة" } : {}) };
+    }
+    saveWorkflowPrintAttempt(attempt);
+    return attempt;
+  }
+  function rememberOutcome(attempt: WorkflowPrintAttempt, sent: boolean, error?: string, via?: PrintResult["via"]) {
+    attempt.outcome = { status: sent ? "SENT" : "FAILED", ...(via ? { via } : {}),
+      ...(!sent ? { errorMessage: (error || "تعذرت الطباعة").slice(0, 500) } : {}) };
+    saveWorkflowPrintAttempt(attempt);
+  }
+  function knownPrintResult(attempt: WorkflowPrintAttempt): PrintResult | undefined {
+    if (!attempt.outcome) return;
+    if (attempt.outcome.status !== "SENT") throw new Error(attempt.outcome.errorMessage || "محاولة الطباعة السابقة ملغاة؛ أعد الطباعة بمحاولة جديدة");
+    return { ok: true, via: attempt.outcome.via ?? "server" };
+  }
+  async function acknowledgeOutcome(attempt: WorkflowPrintAttempt) {
+    const outcome = attempt.outcome!;
+    await complete.mutateAsync({ printId: attempt.printId!, branchId: attempt.request.branchId, status: outcome.status,
+      ...(outcome.status === "FAILED" ? { errorMessage: outcome.errorMessage } : {}) });
+    finishWorkflowPrintAttempt(attempt);
+    await utils.delivery.documents.list.invalidate();
   }
   function unavailableJob(title: string, cause: unknown): WorkflowPrintJob {
     return { title, silent: async () => { throw new Error(errMsg(cause)); }, html: async () => "", complete: async () => {} };
   }
-  async function run(window: Window | null, build: () => Promise<WorkflowPrintJob[]>) {
+  function ownOperationalPrint<T>(action: () => Promise<T>) {
+    if (!user.data) throw new Error("تعذر تحديد مستخدم الطباعة؛ أعد تسجيل الدخول ثم أعد فتح المستند");
+    return withWorkflowPrintOwnership(user.data.id, branchId, action);
+  }
+  async function run(window: Window | null, build: () => Promise<WorkflowPrintJob[]>, operational = false) {
     if (lock.current) { closeUnused(window); return; }
     lock.current = true; setBusy(true); setMessage("");
     try {
+      const execute = async () => {
       const jobs = await build();
       if (!jobs.length) throw new Error("لا يوجد مستند مثبت متاح للطباعة في هذه العملية");
       let previewOpened = false;
@@ -87,6 +132,8 @@ export function useWorkflowDocumentPrinter(branchId: number) {
       setMessage(text);
       if (failures.length) notify.warn("تمت المعاملة؛ راجع نتيجة الطباعة", text);
       return outcomes;
+      };
+      return await (operational ? ownOperationalPrint(execute) : execute());
     } catch (cause) { closeUnused(window); const text = `تمت المعاملة؛ تعذرت الطباعة فقط. ${errMsg(cause)} — أعد الطباعة دون إعادة المعاملة.`; setMessage(text); notify.err(text); }
     finally { lock.current = false; setBusy(false); }
   }
@@ -116,9 +163,9 @@ export function useWorkflowDocumentPrinter(branchId: number) {
     try { if (!manifest) throw prepareError ?? new Error("محضر تسليم الشحنة غير متاح؛ راجع سجل الإسناد"); jobs.push(await snapshotJob(manifest)); }
     catch (cause) { jobs.push(unavailableJob("محضر تسليم الشحنة", cause)); }
     return jobs;
-  });
+  }, true);
   const printInvoice = (invoiceId: number, window: Window | null) => run(window, async () => [await invoiceJob(invoiceId)]);
-  const printSnapshot = (snapshot: WorkflowDocumentSnapshot, window: Window | null) => run(window, async () => [await snapshotJob(snapshot)]);
+  const printSnapshot = (snapshot: WorkflowDocumentSnapshot, window: Window | null) => run(window, async () => [await snapshotJob(snapshot)], true);
   async function printA4(invoiceId: number, window: Window | null) {
     if (lock.current) { closeUnused(window); return; }
     lock.current = true; setBusy(true);
@@ -133,18 +180,27 @@ export function useWorkflowDocumentPrinter(branchId: number) {
     if (lock.current) { closeUnused(window); return; }
     lock.current = true; setBusy(true);
     try {
+      await ownOperationalPrint(async () => {
       const documents = await snapshots(consignmentId); const snapshot = documents.find((doc) => doc.documentType === "SHIPPING_LABEL");
       if (!snapshot) throw new Error("لقطة ملصق الشحنة غير متاحة");
       const payload = dispatchDocumentPayload(snapshot);
-      const copyType = snapshot.printHistory.some((attempt) => attempt.status === "SENT") ? "REPRINT" : "ORIGINAL";
-      const attempt = await request.mutateAsync({ snapshotId: snapshot.id, branchId, clientRequestId: crypto.randomUUID(), copyType, ...(copyType === "REPRINT" ? { reason: "إعادة طباعة ملصق الشحنة من محطة سير العمل" } : {}) });
+      const attempt = await authorizeSnapshot(snapshot, "إعادة طباعة ملصق الشحنة من محطة سير العمل");
+      if (attempt.outcome) {
+        await acknowledgeOutcome(attempt);
+        closeUnused(window);
+        knownPrintResult(attempt);
+        setMessage("تم تسجيل نتيجة ملصق الشحنة السابق دون إرسال نسخة أخرى");
+        return;
+      }
       const atDoor = payload.money.codAmount == null || (payload.money.feeCollection === "COURIER" && payload.money.deliveryFee == null) ? null : D(payload.money.codAmount).plus(payload.money.feeCollection === "COURIER" ? payload.money.deliveryFee! : 0).toFixed(2);
       const result = await printShippingLabel({ orderNumber: payload.shipment.consignmentNumber, barcodeValue: payload.shipment.consignmentNumber, customerName: payload.recipient.name, customerPhone: payload.recipient.phone,
         governorate: payload.recipient.governorate, addressText: payload.recipient.address, total: atDoor, subtotal: payload.money.currentTotal, shippingFee: payload.money.deliveryFee, paidAmount: payload.money.paidAmount,
-        paymentState: resolveShippingLabelPaymentState(atDoor == null ? null : Number(atDoor)), deliveryPartyName: payload.party.name, createdAt: snapshot.eventOccurredAt, printedAt: new Date(), isReprint: copyType === "REPRINT", notes: payload.evidence?.notice,
+        paymentState: resolveShippingLabelPaymentState(atDoor == null ? null : Number(atDoor)), deliveryPartyName: payload.party.name, createdAt: snapshot.eventOccurredAt, printedAt: new Date(), isReprint: attempt.request.copyType === "REPRINT", notes: payload.evidence?.notice,
         items: payload.invoices.map((invoice) => ({ productName: `فاتورة ${invoice.invoiceNumber}`, unitName: "", quantity: "1" })) }, { into: window });
-      await complete.mutateAsync({ printId: attempt.print.id, branchId, status: result.ok ? "SENT" : "FAILED", ...(!result.ok ? { errorMessage: "حجبت نافذة معاينة الملصق" } : {}) });
+      rememberOutcome(attempt, result.ok, "حجبت نافذة معاينة الملصق", "browser");
+      await acknowledgeOutcome(attempt);
       if (!result.ok) throw new Error("حجبت نافذة معاينة الملصق؛ أعد فتحها من زر الملصق"); setMessage("فتحت معاينة ملصق الشحنة بالطابعة والمقاس المحفوظين");
+      });
     } catch (cause) { closeUnused(window); setMessage(errMsg(cause)); notify.err(cause, "تعذرت طباعة الملصق فقط"); }
     finally { lock.current = false; setBusy(false); }
   }
