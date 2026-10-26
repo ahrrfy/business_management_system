@@ -189,6 +189,7 @@ function editorFingerprint(
   revisionReason: string,
   shippingFundingSource: "ACCRUAL" | "DRAWER" = "ACCRUAL",
   tender: PurchaseTenderDraft = purchaseTenderDraft(),
+  preservingLegacy = false,
 ): string {
   return JSON.stringify({
     entityId: state.entityId,
@@ -208,6 +209,7 @@ function editorFingerprint(
     revisionReason,
     shippingFundingSource,
     tender: state.paymentTerms === "CASH" ? tender : null,
+    preservingLegacy: state.paymentTerms === "CASH" && preservingLegacy,
     items: state.items.map((l) => [
       l.variantId,
       l.productUnitId,
@@ -311,6 +313,8 @@ export default function PurchaseEdit() {
     tenderState.reset(
       po.data.tender,
       `${po.data.branchId}:${po.data.supplierId}`,
+      po.data.legacyCashSource,
+      po.data.settlementType === "CASH" && po.data.tender == null,
     );
     setBaseline(
       editorFingerprint(
@@ -319,7 +323,8 @@ export default function PurchaseEdit() {
         customs,
         "",
         fundingSource,
-        purchaseTenderDraft(po.data.tender),
+        purchaseTenderDraft(po.data.tender, po.data.legacyCashSource),
+        po.data.tender == null,
       ),
     );
   }, [po.data]);
@@ -334,6 +339,7 @@ export default function PurchaseEdit() {
         revisionReason,
         shippingFundingSource,
         tenderState.draft,
+        tenderState.preservingLegacy,
       ),
     [
       state,
@@ -342,6 +348,7 @@ export default function PurchaseEdit() {
       revisionReason,
       shippingFundingSource,
       tenderState.draft,
+      tenderState.preservingLegacy,
     ],
   );
   useUnsavedGuard(baseline != null && baseline !== fingerprint);
@@ -537,6 +544,7 @@ export default function PurchaseEdit() {
     });
     if (!ok) return;
 
+    // Omission retains the server's saved legacy declaration and payer identity.
     const selectedTender =
       state.paymentTerms === "CASH" && state.currency === "IQD"
         ? tenderState.payload

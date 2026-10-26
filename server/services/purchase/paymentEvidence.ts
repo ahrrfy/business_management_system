@@ -1,17 +1,20 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
 import type { PurchaseTenderInput } from "@shared/purchaseTender";
 import type { PurchasePaymentReceiptEvidence } from "@shared/purchasePaymentEvidence";
 import {
   accountingEntries,
+  exchangeTransactions,
   receipts,
+  supplierInvoices,
   supplierBookSettlementAllocations as allocations,
   supplierBookSettlementSources as sources,
 } from "../../../drizzle/schema";
 import type { DB, Tx } from "../../db";
 import { money, toDbMoney } from "../money";
 import { sha256 } from "./grniAccounting";
+import { isOwnedSupplierIncoming } from "./advanceRefundOwnership";
 
 const MAX_ROWS = 500;
 function invalid(why: string): never {
@@ -57,6 +60,8 @@ export async function loadPurchasePaymentEvidence(
       receipt: receipts,
       entryType: accountingEntries.entryType,
       entryAmount: accountingEntries.amount,
+      entryDedupeKey: accountingEntries.dedupeKey,
+      exchangeHouseId: accountingEntries.exchangeHouseId,
     })
     .from(accountingEntries)
     .innerJoin(receipts, eq(receipts.id, accountingEntries.receiptId))
@@ -65,7 +70,11 @@ export async function loadPurchasePaymentEvidence(
         eq(accountingEntries.purchaseOrderId, order.id),
         eq(accountingEntries.supplierId, order.supplierId),
         eq(accountingEntries.branchId, order.branchId),
-        inArray(accountingEntries.entryType, ["PAYMENT_OUT", "PAYMENT_IN"]),
+        inArray(accountingEntries.entryType, [
+          "PAYMENT_OUT",
+          "PAYMENT_IN",
+          "EXCHANGE_SETTLE",
+        ]),
         eq(receipts.partyType, "SUPPLIER"),
         eq(receipts.partyId, order.supplierId),
         eq(receipts.branchId, order.branchId),
@@ -80,10 +89,56 @@ export async function loadPurchasePaymentEvidence(
   for (const row of rows) {
     if (
       row.receipt.direction !==
-        (row.entryType === "PAYMENT_OUT" ? "OUT" : "IN") ||
+        (row.entryType === "PAYMENT_IN" ? "IN" : "OUT") ||
       !money(row.entryAmount).abs().eq(row.receipt.amount)
     )
       invalid("قيد السند الأصلي لا يطابق اتجاهه أو قيمته");
+    if (row.entryType === "EXCHANGE_SETTLE") {
+      const transactions = await db
+        .select()
+        .from(exchangeTransactions)
+        .where(eq(exchangeTransactions.receiptId, row.receipt.id))
+        .limit(2);
+      const txn = transactions[0];
+      if (
+        transactions.length !== 1 ||
+        txn.type !== "SETTLE" ||
+        txn.supplierId !== order.supplierId ||
+        txn.branchId !== order.branchId ||
+        txn.purchaseOrderId !== order.id ||
+        txn.exchangeHouseId !== row.exchangeHouseId ||
+        row.entryDedupeKey !== `EXSET:${txn.txnNumber}` ||
+        row.receipt.paymentMethod !== "EXCHANGE" ||
+        row.receipt.referenceNumber !== txn.txnNumber ||
+        !money(row.entryAmount).gt(0) ||
+        !money(row.receipt.amount).eq(
+          money(txn.settledIqd).gt(0) ? txn.settledIqd : txn.iqdAmount,
+        ) ||
+        (txn.status === "ACTIVE"
+          ? row.receipt.status !== "COMPLETED"
+          : txn.status !== "REVERSED" || row.receipt.status !== "REVERSED")
+      )
+        invalid("ملكية سند تسوية الصيرفة لا تطابق العملية الأصلية");
+      if (txn.status === "REVERSED") {
+        const counters = await db
+          .select()
+          .from(receipts)
+          .where(eq(receipts.referenceNumber, `REV-EX-${txn.txnNumber}`))
+          .limit(2);
+        const counter = counters[0];
+        if (
+          counters.length !== 1 ||
+          counter.direction !== "IN" ||
+          counter.approvalStatus !== "APPROVED" ||
+          counter.partyType !== "SUPPLIER" ||
+          counter.partyId !== order.supplierId ||
+          counter.branchId !== order.branchId ||
+          !(await isOwnedSupplierIncoming(db, counter))
+        )
+          invalid("تعذر إثبات سند عكس الصيرفة وقيده الأصلي");
+        result.set(counter.id, project(counter));
+      }
+    }
     result.set(row.receipt.id, project(row.receipt));
   }
 
@@ -92,6 +147,10 @@ export async function loadPurchasePaymentEvidence(
       .select({ source: sources, allocation: allocations, receipt: receipts })
       .from(sources)
       .innerJoin(allocations, eq(allocations.sourceId, sources.id))
+      .innerJoin(
+        supplierInvoices,
+        eq(supplierInvoices.id, allocations.supplierInvoiceId),
+      )
       .innerJoin(receipts, eq(receipts.id, sources.sourceReceiptId))
       .where(
         and(
@@ -99,6 +158,20 @@ export async function loadPurchasePaymentEvidence(
           eq(sources.supplierId, order.supplierId),
           eq(sources.branchId, order.branchId),
           eq(sources.kind, "PAYMENT"),
+          eq(supplierInvoices.supplierId, order.supplierId),
+          eq(supplierInvoices.branchId, order.branchId),
+          or(
+            eq(supplierInvoices.legacyPurchaseOrderId, order.id),
+            sql`EXISTS (SELECT 1 FROM supplierInvoiceLines sil
+              INNER JOIN purchaseOrderRevisionItems pori ON pori.id = sil.purchaseOrderRevisionItemId
+              INNER JOIN purchaseOrderRevisions por ON por.id = pori.revisionId
+              WHERE sil.supplierInvoiceId = ${supplierInvoices.id} AND por.purchaseOrderId = ${order.id})`,
+            sql`EXISTS (SELECT 1 FROM supplierInvoiceMatchRuns simr
+              INNER JOIN supplierInvoiceMatchAllocations sima ON sima.matchRunId = simr.id
+              INNER JOIN goodsReceiptItems gri ON gri.id = sima.goodsReceiptItemId
+              INNER JOIN purchaseOrderItems poi ON poi.id = gri.purchaseOrderItemId
+              WHERE simr.supplierInvoiceId = ${supplierInvoices.id} AND poi.purchaseOrderId = ${order.id})`,
+          ),
           eq(receipts.partyType, "SUPPLIER"),
           eq(receipts.partyId, order.supplierId),
           eq(receipts.branchId, order.branchId),

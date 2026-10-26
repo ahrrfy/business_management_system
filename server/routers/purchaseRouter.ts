@@ -4,6 +4,7 @@ import { paginateKeyset } from "../lib/paginateKeyset";
 import { z } from "zod";
 import { purchaseTenderSchema } from "@shared/purchaseTender";
 import { loadPurchasePaymentEvidence } from "../services/purchase/paymentEvidence";
+import { readDeclaredPurchaseCashSourceTx } from "../services/purchase/supplierPayments";
 import {
   listPurchaseTenderSources,
   readPurchaseTenderTx,
@@ -1545,6 +1546,7 @@ export const purchaseRouter = router({
         return {
           ...poMasked,
           tender: null,
+          legacyCashSource: null,
           paymentReceipts: [],
           items: itemsMasked,
           nextAction,
@@ -1553,10 +1555,15 @@ export const purchaseRouter = router({
       }
       const tender = await readPurchaseTenderTx(db, Number(po.id),
         po.currentRevisionId == null ? null : Number(po.currentRevisionId));
+      const legacyCashSource = !tender && po.settlementType === "CASH"
+        ? await readDeclaredPurchaseCashSourceTx(db, Number(po.id),
+            po.currentRevisionId == null ? null : Number(po.currentRevisionId))
+        : null;
       const paymentReceipts = await loadPurchasePaymentEvidence(db, po, tender);
       return {
         ...po,
         tender,
+        legacyCashSource,
         paymentReceipts,
         paidAmount: settlement.paidAmountIqd,
         paidUsd:

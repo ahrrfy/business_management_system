@@ -318,16 +318,17 @@ async function availability(sourceReceiptId: number) {
 
 describe("purchase advance refund public voucher lifecycle", () => {
   it("preserves large allocation evidence beyond the old audit cap through replay and cancellation", async () => {
-    const sourceId = await previousPayment("300");
+    const sourceId = await previousPayment("400");
     await approve({ mode: "DRAWER", previousReceiptId: sourceId }, "1");
     const [templateInvoice] = await db().select().from(s.supplierInvoices);
     const [templateOrder] = await db().select().from(s.purchaseOrders);
     const [templateAllocation] = await db()
       .select()
       .from(s.supplierBookSettlementAllocations);
-    // Expand a valid posted fixture to 300 separately owned invoice targets;
+    // 400 targets exceed 8192 bytes even when allocation IDs start at one.
+    // Expand a valid posted fixture to separately owned invoice targets;
     // the refund, retry and cancellation themselves use the public services.
-    for (let index = 1; index < 300; index++) {
+    for (let index = 1; index < 400; index++) {
       const { id: _orderId, ...order } = templateOrder;
       const orderId = extractInsertId(
         await db()
@@ -390,10 +391,10 @@ describe("purchase advance refund public voucher lifecycle", () => {
       .update(s.suppliers)
       .set({ currentBalance: "0" })
       .where(eq(s.suppliers.id, 1));
-    const input = refundInput(sourceId, "300");
+    const input = refundInput(sourceId, "400");
     const refund = await createVoucher(input, maker);
     const evidence = await readAdvanceRefundEvidence(db(), refund.receiptId);
-    expect(evidence?.allocations).toHaveLength(300);
+    expect(evidence?.allocations).toHaveLength(400);
     expect(
       Buffer.byteLength(
         JSON.stringify({
@@ -426,7 +427,7 @@ describe("purchase advance refund public voucher lifecycle", () => {
     expect((await balances()).supplier).toBe("0.00");
     expect(
       (await readAdvanceRefundEvidence(db(), refund.receiptId))?.allocations,
-    ).toHaveLength(300);
+    ).toHaveLength(400);
   }, 120000);
 
   it("accepts an owned governed cash return before and after its formal reversal", async () => {

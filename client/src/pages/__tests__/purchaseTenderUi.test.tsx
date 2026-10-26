@@ -5,8 +5,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   PurchaseTenderField,
   usePurchaseTenderState,
+  type PurchaseLegacyCashSource,
 } from "@/components/purchases/PurchaseTenderField";
-import type { PurchaseTenderInput } from "@shared/purchaseTender";
+import {
+  purchaseTenderSchema,
+  PURCHASE_TENDER_REFERENCE_MAX_LENGTH,
+  type PurchaseTenderInput,
+} from "@shared/purchaseTender";
 
 const mock = vi.hoisted(() => ({
   cash: {
@@ -69,30 +74,43 @@ let root: Root;
 let container: HTMLDivElement;
 let current: ReturnType<typeof usePurchaseTenderState>;
 let savedPayload: PurchaseTenderInput | undefined;
+let saveCount: number;
 function Workspace({
   supplierId = 2,
   branchId = 1,
   saved,
   isCreator = true,
   enabled = true,
+  editLegacy = false,
+  legacySource,
+  keepLegacy,
 }: {
   supplierId?: number;
   branchId?: number;
   saved?: PurchaseTenderInput;
   isCreator?: boolean;
   enabled?: boolean;
+  editLegacy?: boolean;
+  legacySource?: PurchaseLegacyCashSource | null;
+  keepLegacy?: boolean;
 }) {
   current = usePurchaseTenderState({
     branchId,
     supplierId,
     enabled,
-    context: saved ? "edit" : "create",
+    context: saved || editLegacy ? "edit" : "create",
     isCreator,
     total: "100",
   });
   useEffect(() => {
-    if (saved) current.reset(saved);
-  }, [saved]);
+    if (saved || editLegacy)
+      current.reset(
+        saved,
+        `${branchId}:${supplierId}`,
+        legacySource,
+        keepLegacy,
+      );
+  }, [saved, editLegacy, legacySource, keepLegacy]);
   return (
     <>
       <PurchaseTenderField
@@ -104,7 +122,10 @@ function Workspace({
       <button
         data-save="true"
         onClick={() => {
-          if (!current.isActionBlocked) savedPayload = current.payload;
+          if (!current.isActionBlocked) {
+            savedPayload = current.payload;
+            saveCount += 1;
+          }
         }}
       >
         حفظ
@@ -152,6 +173,7 @@ beforeEach(() => {
     name: "بطاقة الشركة",
   };
   savedPayload = undefined;
+  saveCount = 0;
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -274,5 +296,102 @@ describe("purchase tender creation and saved revision", () => {
     await mount({ enabled: false });
     expect(current.payload).toBeUndefined();
     expect(current.isActionBlocked).toBe(false);
+  });
+  it("preserves legacy TREASURY on an unrelated edit without requiring new source authority", async () => {
+    mock.cash.data.canUseTreasury = false;
+    mock.sources.isError = true;
+    await mount({
+      editLegacy: true,
+      legacySource: { mode: "TREASURY", shiftId: null },
+    });
+    expect(current.preservingLegacy).toBe(true);
+    expect(current.draft.mode).toBe("TREASURY");
+    expect(current.draft.shiftId).toBe("");
+    expect(current.isActionBlocked).toBe(false);
+    expect(
+      container.querySelector<HTMLSelectElement>('[aria-label="مصدر السداد"]')
+        ?.value,
+    ).toBe("KEEP");
+    await save();
+    expect(saveCount).toBe(1);
+    expect(savedPayload).toBeUndefined();
+  });
+  it.each([true, false])(
+    "keeps a frozen legacy drawer for creator=%s without choosing the editor's open drawer",
+    async (isCreator) => {
+      await mount({
+        editLegacy: true,
+        isCreator,
+        legacySource: { mode: "DRAWER", shiftId: 92 },
+      });
+      expect(current.draft.shiftId).toBe("92");
+      expect(current.sourceSummaryLabel).toContain("#92");
+      expect(current.isActionBlocked).toBe(false);
+      await save();
+      expect(saveCount).toBe(1);
+      expect(savedPayload).toBeUndefined();
+    },
+  );
+  it("replaces a legacy source only after an explicit selection and can restore preservation", async () => {
+    await mount({
+      editLegacy: true,
+      isCreator: false,
+      legacySource: { mode: "DRAWER", shiftId: 92 },
+    });
+    await choose("مصدر السداد", "TREASURY");
+    expect(current.preservingLegacy).toBe(false);
+    await save();
+    expect(savedPayload).toEqual({ mode: "TREASURY" });
+    await choose("مصدر السداد", "KEEP");
+    expect(current.preservingLegacy).toBe(true);
+    expect(current.draft.shiftId).toBe("92");
+    await save();
+    expect(savedPayload).toBeUndefined();
+  });
+  it("does not invent a source when a legacy edit has no saved declaration", async () => {
+    await mount({ editLegacy: true, legacySource: null });
+    expect(current.draft.shiftId).toBe("");
+    expect(current.preservingLegacy).toBe(true);
+    await save();
+    expect(saveCount).toBe(1);
+    expect(savedPayload).toBeUndefined();
+  });
+  it("offers preservation only for existing cash declarations, not a credit draft converted to cash", async () => {
+    await mount({ editLegacy: true, enabled: false, keepLegacy: false });
+    await mount({ editLegacy: true, enabled: true, keepLegacy: false });
+    expect(current.canPreserveLegacy).toBe(false);
+    expect(current.preservingLegacy).toBe(false);
+    expect(container.querySelector('option[value="KEEP"]')).toBeNull();
+    expect(current.payload).toEqual({ mode: "DRAWER", shiftId: 41 });
+  });
+  it("accepts a 100-character reference and rejects 101 in the shared schema and form", async () => {
+    expect(PURCHASE_TENDER_REFERENCE_MAX_LENGTH).toBe(100);
+    const card = {
+      mode: "CARD" as const,
+      accountId: 8,
+      cardLastFour: "1234",
+      referenceNumber: "R".repeat(100),
+    };
+    expect(purchaseTenderSchema.safeParse(card).success).toBe(true);
+    expect(
+      purchaseTenderSchema.safeParse({
+        ...card,
+        referenceNumber: "R".repeat(101),
+      }).success,
+    ).toBe(false);
+    await mount();
+    await choose("مصدر السداد", "CARD");
+    await change("cardLastFour", "1234");
+    expect(
+      container.querySelector<HTMLInputElement>(
+        '[aria-label="مرجع عملية البطاقة"]',
+      )?.maxLength,
+    ).toBe(100);
+    await change("referenceNumber", card.referenceNumber);
+    await save();
+    expect(savedPayload).toEqual(card);
+    await change("referenceNumber", "R".repeat(101));
+    expect(current.isActionBlocked).toBe(true);
+    expect(current.validationError).toContain("100");
   });
 });

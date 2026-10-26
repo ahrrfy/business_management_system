@@ -27,10 +27,12 @@
 
 - Ten focused UI/printing suites after main integration: 118 tests passed (`.codex/purchase-merged-ui.log`).
 - Seven additional navigation tests passed; actual browser navigation opened refund #99 and then original #81 with the page mounted. The vouchers page now handles the receipt deep link.
-- Fifty-three focused financial DB cases passed, including prior-payment allocation, remainder settlement, refund/cancellation, a 300-allocation audit document, and actual governed return/exchange reversals. Independent re-review closed all three confirmed refund findings.
+- Fifty-three focused financial DB cases passed, including prior-payment allocation, remainder settlement, refund/cancellation, a large audit document, and actual governed return/exchange reversals. Independent re-review closed all three confirmed refund findings.
 - Nine related financial suites passed 154 cases (`.codex/purchase-related-financial.log`).
 - Candidate lookup filters native/legacy/exchange/fulfillment claims and unavailable capacity before the 500-eligible-source bound. Three regressions cover 501 native receipts, allocated-versus-unused capacity and direct selected-receipt validation. Eligible overflow still fails explicitly; no truncated result proves absence.
 - Typecheck and all 49 guards passed after correcting iterator compatibility and the SSR test props.
 - Creation/edit browser fixtures exercised actual pages and captured mutation payloads; wide and 390px screenshots are in `output/playwright/`. These are local UI checks, not production transactions or bank confirmation.
 - Final full-style refund form and purchase creation captures are in `.codex/qa/`; the refund form submitted the original source ID and the different actual refund method without viewport overflow.
+- PR review corrections: preserve saved pre-tender cash sources until explicit replacement; enforce the receipt's 100-character card-reference limit; scope prior evidence to the requested order before its bound; include owned exchange settlement/reversal receipts. Focused UI cases passed 17/17 and evidence DB cases 10/10.
+- The large-evidence fixture now uses 400 targets, so it exceeds the old 8192-byte cap independently of generated ID lengths; the targeted replay/cancellation case passed. The earlier 300-target fixture measured 8184 bytes on CI's fresh IDs.
 - Full local suite is still running. Its unit phase passed 6197 tests; later source changes require final-head CI before release.

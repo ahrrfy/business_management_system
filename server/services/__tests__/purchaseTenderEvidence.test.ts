@@ -14,6 +14,11 @@ import { sha256, stableCanonical } from "../purchase/grniAccounting";
 import { loadPurchasePaymentEvidence } from "../purchase/paymentEvidence";
 import { purchasePaymentSourceLabel } from "@shared/purchasePaymentEvidence";
 import { truncateTables } from "./__testUtils__";
+import {
+  createExchangeHouse,
+  settleSupplierViaExchange,
+  reverseExchangeTransaction,
+} from "../exchangeHouseService";
 
 const db = () => getDb()!;
 const order = { id: 1, branchId: 1, supplierId: 1 };
@@ -21,6 +26,8 @@ beforeEach(async () => {
   await truncateTables([
     "supplierBookSettlementAllocations",
     "supplierBookSettlementSources",
+    "exchangeTransactions",
+    "exchangeHouses",
     "supplierInvoices",
     "accountingEntries",
     "receipts",
@@ -118,12 +125,30 @@ async function bookAllocation(targetOrderId = 1) {
     .select()
     .from(s.receipts)
     .where(eq(s.receipts.id, id));
+  if (targetOrderId !== 1) {
+    const [first] = await db()
+      .select()
+      .from(s.purchaseOrders)
+      .where(eq(s.purchaseOrders.id, 1));
+    await db()
+      .insert(s.purchaseOrders)
+      .values({
+        ...first,
+        id: targetOrderId,
+        poNumber: `EVIDENCE-PO-${targetOrderId}`,
+      });
+  }
   const invoiceId = extractInsertId(
     await db()
       .insert(s.supplierInvoices)
       .values({
         invoiceNumber: "EVIDENCE-SI",
         clientRequestId: "EVIDENCE-SI",
+        origin: "LEGACY",
+        liabilityClass: "LEGACY_AP",
+        legacyPurchaseOrderId: targetOrderId,
+        legacySettlementEvidenceHash: "3".repeat(64),
+        status: "POSTED",
         supplierId: 1,
         branchId: 1,
         invoiceDate: "2026-01-02",
@@ -182,10 +207,155 @@ async function bookAllocation(targetOrderId = 1) {
         targetHash: sha256(target),
       }),
   );
-  return { id, sourceId, allocationId };
+  return { id, sourceId, allocationId, invoiceId };
 }
 
 describe("purchase receipt evidence projection", () => {
+  it("scopes a prior source with more than500 other purchase allocations before the evidence bound", async () => {
+    const prior = await bookAllocation();
+    const [first] = await db()
+      .select()
+      .from(s.supplierInvoices)
+      .where(eq(s.supplierInvoices.id, prior.invoiceId));
+    const other = Array.from({ length: 501 }, (_, index) => ({
+      orderId: index + 2,
+      invoiceId: prior.invoiceId + 1000 + index,
+    }));
+    await db()
+      .insert(s.purchaseOrders)
+      .values(
+        other.map(({ orderId }) => ({
+          id: orderId,
+          poNumber: `OTHER-${orderId}`,
+          supplierId: 1,
+          branchId: 1,
+          subtotal: "0.01",
+          total: "0.01",
+          settlementType: "CASH" as const,
+          status: "RECEIVED" as const,
+          createdBy: 7,
+        })),
+      );
+    await db()
+      .insert(s.supplierInvoices)
+      .values(
+        other.map(({ orderId, invoiceId }) => ({
+          ...first,
+          id: invoiceId,
+          invoiceNumber: `OTHER-${invoiceId}`,
+          clientRequestId: `OTHER-${invoiceId}`,
+          legacyPurchaseOrderId: orderId,
+          subtotal: "0.01",
+          totalAmount: "0.01",
+          externalInvoiceNumber: null,
+          externalNumberNorm: null,
+        })),
+      );
+    await db()
+      .insert(s.supplierBookSettlementAllocations)
+      .values(
+        other.map(({ orderId, invoiceId }) => {
+          const targetSnapshot = stableCanonical({
+            purchaseOrderId: orderId,
+            invoice: { id: invoiceId, supplierId: 1, branchId: 1 },
+          });
+          return {
+            sourceId: prior.sourceId,
+            supplierInvoiceId: invoiceId,
+            allocatedAmount: "0.01",
+            allocatedCurrencyAmount: "0.01",
+            targetSnapshot,
+            targetHash: sha256(targetSnapshot),
+          };
+        }),
+      );
+    const tender = { mode: "TREASURY" as const, previousReceiptId: prior.id };
+    expect(
+      await loadPurchasePaymentEvidence(db(), order, tender),
+    ).toMatchObject([{ id: prior.id, allocatedAmount: "100.00" }]);
+    expect(
+      await loadPurchasePaymentEvidence(db(), { ...order, id: 502 }, tender),
+    ).toMatchObject([{ id: prior.id, allocatedAmount: "0.01" }]);
+  });
+
+  it("projects the real PO-linked exchange OUT and its verified reversal IN without writing evidence", async () => {
+    const actor = { userId: 7, branchId: 1, role: "manager", isOwner: true };
+    const reverser = { ...actor, userId: 8 };
+    await db()
+      .insert(s.users)
+      .values({
+        id: 8,
+        openId: "evidence-reverser",
+        name: "Reverser",
+        role: "manager",
+        branchId: 1,
+        isOwner: true,
+      });
+    await db()
+      .update(s.suppliers)
+      .set({ currentBalance: "100", currentBalanceUsd: "1" })
+      .where(eq(s.suppliers.id, 1));
+    await db()
+      .update(s.purchaseOrders)
+      .set({ agreedCurrency: "USD", usdTotal: "1", agreedRate: "100" })
+      .where(eq(s.purchaseOrders.id, 1));
+    const house = await createExchangeHouse(
+      { name: "Evidence exchange" },
+      actor,
+    );
+    const settled = await settleSupplierViaExchange(
+      {
+        exchangeHouseId: house.id,
+        branchId: 1,
+        supplierId: 1,
+        purchaseOrderId: 1,
+        currency: "IQD",
+        walletAmount: "100",
+        settledUsd: "1",
+        confirmNegative: true,
+      },
+      actor,
+    );
+    const before = await db().select().from(s.receipts);
+    const projected = await loadPurchasePaymentEvidence(db(), order, null);
+    expect(projected).toHaveLength(1);
+    expect(projected[0]).toMatchObject({
+      id: settled.receiptId,
+      voucherNumber: settled.voucherNumber,
+      direction: "OUT",
+      paymentMethod: "EXCHANGE",
+      amount: "100.00",
+      referenceNumber: settled.txnNumber,
+      status: "COMPLETED",
+    });
+    expect(await db().select().from(s.receipts)).toEqual(before);
+    await reverseExchangeTransaction(settled.txnId, reverser);
+    const afterReverse = await db().select().from(s.receipts);
+    const reversed = await loadPurchasePaymentEvidence(db(), order, null);
+    expect(reversed).toHaveLength(2);
+    expect(reversed[0]).toMatchObject({
+      id: settled.receiptId,
+      direction: "OUT",
+      paymentMethod: "EXCHANGE",
+      amount: "100.00",
+      status: "REVERSED",
+    });
+    expect(reversed[1]).toMatchObject({
+      direction: "IN",
+      paymentMethod: "EXCHANGE",
+      amount: "100.00",
+      referenceNumber: `REV-EX-${settled.txnNumber}`,
+      status: "COMPLETED",
+    });
+    expect(await db().select().from(s.receipts)).toEqual(afterReverse);
+    await db()
+      .update(s.receipts)
+      .set({ amount: "99" })
+      .where(eq(s.receipts.id, reversed[1].id));
+    await expect(
+      loadPurchasePaymentEvidence(db(), order, null),
+    ).rejects.toThrow(/عكس الصيرفة/);
+  });
   it("returns original card receipt and PO-linked refund history in deterministic order", async () => {
     const original = await receipt({ status: "REVERSED" });
     const refund = await receipt({ direction: "IN", amount: "25.00" });

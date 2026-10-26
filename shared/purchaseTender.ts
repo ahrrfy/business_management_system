@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+export const PURCHASE_TENDER_REFERENCE_MAX_LENGTH = 100;
 const previousReceiptId = z.number().int().positive().optional();
 
 /** Payment intent captured in the immutable purchase revision; never proof of payment. */
@@ -16,7 +17,11 @@ export const purchaseTenderSchema = z.discriminatedUnion("mode", [
     .object({
       mode: z.literal("CARD"),
       accountId: z.number().int().positive(),
-      referenceNumber: z.string().trim().min(1).max(160),
+      referenceNumber: z
+        .string()
+        .trim()
+        .min(1)
+        .max(PURCHASE_TENDER_REFERENCE_MAX_LENGTH),
       cardLastFour: z.string().regex(/^\d{4}$/),
       previousReceiptId,
     })

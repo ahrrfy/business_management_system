@@ -44,7 +44,7 @@ import {
   auditLogs,
   users,
 } from "../../../drizzle/schema";
-import type { Tx } from "../../db";
+import type { DB, Tx } from "../../db";
 import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import { extractAffectedRows, extractInsertId } from "../../lib/insertId";
 import {
@@ -3247,7 +3247,7 @@ export interface DeclaredPurchaseCashSource {
 }
 
 export async function readDeclaredPurchaseCashSourceTx(
-  tx: Tx,
+  tx: DB | Tx,
   purchaseOrderId: number,
   revisionId: number | null,
 ): Promise<DeclaredPurchaseCashSource | null> {
