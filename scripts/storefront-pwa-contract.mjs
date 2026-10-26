@@ -1,6 +1,8 @@
 export const STOREFRONT_SHELL_CHUNK_GLOB =
   "assets/{Storefront,badge,framework,data-client,ui-vendor,icons,observability,motion,onlineOrderStatus,money,governorates,whatsapp,TurnstileWidget,IntlPhoneInput,UnifiedSearchInput,BarcodeSearchCue,barcodeNormalize,barcodeScanTiming,dialog,useBarcodeInput,date,invoiceStatus,intlPhone,numberNormalize,storefrontSearchNormalize,quantityFormat,variantDisplay}-*.js";
 
+export const STOREFRONT_SHELL_CSS_GLOB = "assets/{index,Storefront}-*.css";
+
 /** Let the browser own endless SSE bodies so they cannot retain an outgoing worker. */
 export function storefrontApiNetworkMatcher({ url }) {
   // Workbox serializes this function: do not reference outer variables.

@@ -27,8 +27,9 @@ import { applyStoredDisplayScale } from "@/lib/displayScale";
 import { installGlobalInteractionAudio } from "@/lib/audioFeedback";
 // خط Cairo مستضاف محلياً ومباشراً عبر public/fonts في index.css (بلا اعتماد على Google Fonts CDN أو مسارات خارجية) ⇒ يعمل النظام كاملاً بلا إنترنت.
 import "./index.css";
-import "animate.css/animate.min.css";
+import "./styles/animate-subset.css";
 import "./lib/theme/tokens.css";
+import "./lib/theme/semantic-utilities.css";
 import "./lib/theme/comfort.css";
 import "./sentry"; // مراقبة أخطاء العميل (لا أثر دون VITE_SENTRY_DSN_CLIENT)
 
