@@ -12,6 +12,7 @@ import {
 } from "./scripts/vite-build-contract.mjs";
 import {
   STOREFRONT_SHELL_CHUNK_GLOB,
+  STOREFRONT_SHELL_CSS_GLOB,
   storefrontApiNetworkMatcher,
   storefrontPrivateImageNetworkMatcher,
   storefrontPublicImageCacheMatcher,
@@ -19,13 +20,236 @@ import {
 
 const projectRoot = path.resolve(import.meta.dirname);
 
+function scanTopLevelCssStatements(
+  css: string,
+  startIndex = 0,
+  endIndex = css.length,
+): Array<{ start: number; end: number; text: string }> {
+  const statements: Array<{ start: number; end: number; text: string }> = [];
+  let i = startIndex;
+
+  while (i < endIndex) {
+    while (i < endIndex && /\s/.test(css[i]!)) i++;
+    if (i >= endIndex) break;
+
+    if (css[i] === "/" && css[i + 1] === "*") {
+      const commentStart = i;
+      i += 2;
+      while (i < endIndex && !(css[i] === "*" && css[i + 1] === "/")) i++;
+      i = Math.min(endIndex, i + 2);
+      statements.push({
+        start: commentStart,
+        end: i,
+        text: css.slice(commentStart, i),
+      });
+      continue;
+    }
+
+    const stmtStart = i;
+    let depth = 0;
+    while (i < endIndex) {
+      const ch = css[i]!;
+      if (ch === "/" && css[i + 1] === "*") {
+        i += 2;
+        while (i < endIndex && !(css[i] === "*" && css[i + 1] === "/")) i++;
+        i = Math.min(endIndex, i + 2);
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        const quote = ch;
+        i++;
+        while (i < endIndex) {
+          if (css[i] === "\\") {
+            i += 2;
+            continue;
+          }
+          if (css[i] === quote) {
+            i++;
+            break;
+          }
+          i++;
+        }
+        continue;
+      }
+      if (ch === "\\") {
+        i += 2;
+        continue;
+      }
+      if (ch === "{") {
+        depth++;
+        i++;
+        continue;
+      }
+      if (ch === "}") {
+        depth = Math.max(0, depth - 1);
+        i++;
+        if (depth === 0) break;
+        continue;
+      }
+      if (ch === ";" && depth === 0) {
+        i++;
+        break;
+      }
+      i++;
+    }
+
+    statements.push({
+      start: stmtStart,
+      end: i,
+      text: css.slice(stmtStart, i),
+    });
+  }
+
+  return statements;
+}
+
+/**
+ * Splits compiled ERP CSS (`@layer utilities { ... }`) cleanly at a top-level
+ * rule boundary into two balanced chunks while preserving 100% of Tailwind's
+ * canonical rule order (preventing cross-chunk `@media` / shorthand regressions).
+ */
+export function splitCompiledErpUtilitiesCss(compiledCss: string): {
+  part1: string;
+  part2: string;
+} {
+  const topStatements = scanTopLevelCssStatements(compiledCss);
+  const innerUtilityRules: string[] = [];
+  const prefixStatements: string[] = [];
+  const suffixStatements: string[] = [];
+  let seenUtilitiesBlock = false;
+
+  for (const stmt of topStatements) {
+    const trimmed = stmt.text.trim();
+    if (/^@layer\s+utilities\b[\s{]/.test(trimmed) && trimmed.endsWith("}")) {
+      seenUtilitiesBlock = true;
+      const openBrace = stmt.text.indexOf("{");
+      const closeBrace = stmt.text.lastIndexOf("}");
+      const inner = scanTopLevelCssStatements(
+        stmt.text,
+        openBrace + 1,
+        closeBrace,
+      );
+      for (const rule of inner) {
+        if (rule.text.trim().length > 0) {
+          innerUtilityRules.push(rule.text);
+        }
+      }
+    } else if (!seenUtilitiesBlock) {
+      prefixStatements.push(stmt.text);
+    } else {
+      suffixStatements.push(stmt.text);
+    }
+  }
+
+  if (innerUtilityRules.length < 2) {
+    return {
+      part1: compiledCss,
+      part2: "@layer properties;",
+    };
+  }
+
+  const prefix = prefixStatements.join("");
+  const suffix = suffixStatements.join("");
+  const ruleByteLengths = innerUtilityRules.map((rule) =>
+    Buffer.byteLength(rule),
+  );
+  const totalInnerBytes = ruleByteLengths.reduce((acc, b) => acc + b, 0);
+  const suffixBytes = Buffer.byteLength(suffix);
+  const targetPart1InnerBytes = Math.min(
+    totalInnerBytes - 1,
+    Math.floor((totalInnerBytes + suffixBytes) / 2),
+  );
+
+  let runningBytes = 0;
+  let splitIndex = 1;
+  for (let idx = 0; idx < ruleByteLengths.length - 1; idx++) {
+    runningBytes += ruleByteLengths[idx]!;
+    splitIndex = idx + 1;
+    if (runningBytes >= targetPart1InnerBytes) break;
+  }
+
+  const sharedLayerHeader = prefix.includes("@layer properties")
+    ? prefix
+    : `@layer properties;${prefix}`;
+
+  return {
+    part1: `${sharedLayerHeader}@layer utilities{${innerUtilityRules.slice(0, splitIndex).join("")}}`,
+    part2: `@layer properties;@layer utilities{${innerUtilityRules.slice(splitIndex).join("")}}${suffix}`,
+  };
+}
+
+function normalizeCssModuleId(id: string): string {
+  return id
+    .split("?", 1)[0]!
+    .replace(/\\/g, "/")
+    .replace(/^[A-Z]:/, (drive) => drive.toLowerCase());
+}
+
+function splitErpStylesForBuild(): Plugin {
+  const erpCssPath = path
+    .resolve(projectRoot, "client", "src", "erp.css")
+    .replace(/\\/g, "/");
+  const erpCssNorm = normalizeCssModuleId(erpCssPath);
+  const erpVariantsNorm = normalizeCssModuleId(
+    path.resolve(projectRoot, "client", "src", "styles", "erp-variants.css"),
+  );
+  let splitResult: { part1: string; part2: string } | null = null;
+
+  return {
+    name: "split-erp-styles-for-build",
+    apply: "build",
+    buildStart() {
+      splitResult = null;
+    },
+    async transform(code, id) {
+      const normId = normalizeCssModuleId(id);
+      if (normId === erpCssNorm) {
+        splitResult = splitCompiledErpUtilitiesCss(code);
+        return { code: splitResult.part1, map: null };
+      }
+      if (normId === erpVariantsNorm) {
+        if (!splitResult) {
+          const resolved = await this.resolve(erpCssPath);
+          await this.load({ id: resolved?.id ?? erpCssPath });
+        }
+        if (!splitResult) {
+          this.error("ERP_CSS_SPLIT_SOURCE_NOT_LOADED");
+        }
+        return { code: splitResult.part2, map: null };
+      }
+      return null;
+    },
+  };
+}
+
+export const CSS_ASSET_BUDGET_BYTES = 300_000;
+
+export function cssAssetBudgetViolation(output: {
+  type?: string;
+  fileName?: string;
+  source?: string | Uint8Array;
+}): string | null {
+  if (output?.type !== "asset" || !output.fileName?.endsWith(".css")) {
+    return null;
+  }
+  const source = output.source ?? "";
+  const bytes =
+    typeof source === "string"
+      ? Buffer.byteLength(source)
+      : source.byteLength;
+  return bytes > CSS_ASSET_BUDGET_BYTES
+    ? `CSS_BUDGET_EXCEEDED ${output.fileName}: ${bytes} > ${CSS_ASSET_BUDGET_BYTES}`
+    : null;
+}
+
 function enforceBuildContracts(): Plugin {
   return {
     name: "enforce-build-contracts",
     apply: "build",
     generateBundle(_options, bundle) {
       for (const output of Object.values(bundle)) {
-        const violation = chunkBudgetViolation(output);
+        const violation =
+          chunkBudgetViolation(output) ?? cssAssetBudgetViolation(output);
         if (violation) this.error(violation);
       }
     },
@@ -71,6 +295,7 @@ export default defineConfig(({ mode }) => {
   plugins: [
     react(),
     tailwindcss(),
+    splitErpStylesForBuild(),
     enforceBuildContracts(),
     VitePWA({
       // الإصدار الجديد يثبت في الخلفية ويبقى waiting. هذا السلوك يمنع خلط حزم
@@ -88,7 +313,7 @@ export default defineConfig(({ mode }) => {
         globPatterns: [
           "index.html",
           "assets/app-*.js",
-          "assets/index-*.css",
+          STOREFRONT_SHELL_CSS_GLOB,
           STOREFRONT_SHELL_CHUNK_GLOB,
           "fonts/*.woff2",
         ],

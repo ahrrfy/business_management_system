@@ -7,6 +7,8 @@ const INDEX_SOURCE = "index.html";
 
 export const FORBIDDEN_ERP_CHUNK_PREFIXES = [
   "App-",
+  "erp-",
+  "erp-variants-",
   "erp-routes-",
   "app-shell-",
   "erp-shell-",
@@ -52,6 +54,9 @@ function staticImportClosure(manifest, roots) {
       throw new Error(`STOREFRONT_PRECACHE_MANIFEST_IMPORT_INVALID:${key}`);
     }
     requiredFiles.add(normalizedUrl(entry.file));
+    for (const cssFile of entry.css ?? []) {
+      requiredFiles.add(normalizedUrl(cssFile));
+    }
     for (const importedKey of entry.imports ?? []) visit(importedKey);
   }
 
@@ -82,7 +87,9 @@ export function assertStorefrontPrecacheClosure({ manifest, swSource }) {
   }
 
   const forbiddenErpChunk = [...precachedUrls].find((url) => {
-    if (!url.startsWith("assets/") || !url.endsWith(".js")) return false;
+    if (!url.startsWith("assets/") || (!url.endsWith(".js") && !url.endsWith(".css"))) {
+      return false;
+    }
     const base = url.slice("assets/".length);
     return FORBIDDEN_ERP_CHUNK_PREFIXES.some((prefix) => base.startsWith(prefix));
   });
