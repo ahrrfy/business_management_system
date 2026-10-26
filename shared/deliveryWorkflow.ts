@@ -162,6 +162,8 @@ export interface WorkflowScanPreview {
     reason?: string;
     requiredRole?: string;
     nextStep: string;
+    /** Cancellation must not infer physical possession from a click. */
+    requiresPhysicalHeldConfirmation?: boolean;
   }[];
   /** Read-only projection of what the explicit command would affect if later confirmed. */
   effectPreview: {

@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, or, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, or, sql, type SQL } from "drizzle-orm";
 import {
   customers,
   deliveryConsignments,
@@ -45,7 +45,11 @@ import {
   prepareDeliveryBarcodeLookup,
   namespaceAllowsTarget,
 } from "../barcodeLookupPolicy";
-import { loadShipmentMembersTx } from "../shipments";
+import {
+  loadShipmentMembersTx,
+  operationalShipmentMembers,
+} from "../shipments";
+import { physicalHandoverConsignmentIdsTx } from "../handoverEvidence";
 import {
   assignedGoodsCodDue,
   loadAssignedChargeClaimsTx,
@@ -665,6 +669,11 @@ export async function loadWorkflowPreviewTx(
     }
   }
   const members = cn ? await loadShipmentMembersTx(tx, cn.id) : [];
+  const operationalMembers = operationalShipmentMembers(members);
+  const physicalHandoverIds = await physicalHandoverConsignmentIdsTx(
+    tx,
+    operationalMembers.map((member) => Number(member.id)),
+  );
   const feeSource =
     members.find((member) => money(member.deliveryFee).gt(0)) ?? members[0];
   if (members.some((member) => member.branchId !== branchId))
@@ -1105,12 +1114,20 @@ export async function loadWorkflowPreviewTx(
     ],
     cancelAssignment: [
       !!activeCn &&
-        cn!.returnDeclaredAt == null &&
-        ["ASSIGNED", "ACCEPTED", "FAILED"].includes(cn!.parcelStatus) &&
-        cn!.pickedUpAt == null &&
-        cn!.outForDeliveryAt == null &&
-        money(cn!.collectedAmount).isZero(),
-      "بعد الاستلام من المندوب يلزم إعلان الرجوع ثم الاستلام الفعلي",
+        operationalMembers.length > 0 &&
+        operationalMembers.every(
+          (member) =>
+            !["CANCELLED", "RETURNED"].includes(member.status) &&
+            member.returnDeclaredAt == null &&
+            ["ASSIGNED", "ACCEPTED", "OUT_FOR_DELIVERY", "FAILED"].includes(
+              member.parcelStatus,
+            ) &&
+            member.pickedUpAt == null &&
+            !physicalHandoverIds.has(Number(member.id)) &&
+            money(member.collectedAmount).isZero() &&
+            member.remittanceId == null,
+        ),
+      "ثبت تقدم الشحنة بعد الإسناد أو بدأ تحصيلها؛ استخدم إعلان الرجوع ثم الاستلام الفعلي",
     ],
     reassign: [
       !!cn &&
@@ -1370,6 +1387,7 @@ export async function loadWorkflowPreviewTx(
         .where(
           and(
             eq(deliveryDocumentSnapshots.branchId, branchId),
+            ne(deliveryDocumentSnapshots.documentType, "INVOICE"),
             or(...snapshotSources),
           ),
         )
@@ -1443,7 +1461,7 @@ export async function loadWorkflowPreviewTx(
     dispatch: "راجع الجهة والمستلم ثم أكّد الإسناد مرة واحدة",
     collect: "أثبت التسليم ومبلغ تحصيل العميل الفعلي ثم أكّد",
     cancelAssignment:
-      "تحقق أن الطرد ما زال في المكتبة ولا توجد عهدة نقدية ثم أكّد الإلغاء",
+      "تحقق أن كامل الشحنة عادت إلى عهدة المكتبة ولا توجد عهدة نقدية ثم أكّد تحرير الطلب لإعادة الإسناد",
     reassign: "اختر جهة التوصيل الجديدة ثم أكّد إعادة الإسناد",
     declareReturn: "سجّل سبب طلب الرجوع وانتظر الاستلام المادي",
     return:
@@ -1454,6 +1472,9 @@ export async function loadWorkflowPreviewTx(
   const allowedActions: WorkflowScanPreview["allowedActions"] = actions.map(
     (action) => ({
       ...action,
+      ...(action.action === "cancelAssignment"
+        ? { requiresPhysicalHeldConfirmation: true }
+        : {}),
       requiredRole: actionRoles[action.action],
       nextStep: action.allowed
         ? actionNextSteps[action.action]
@@ -1558,7 +1579,7 @@ export async function loadWorkflowPreviewTx(
   }
   if (selectedStation === "cancelAssignment" && selectedActionAllowed) {
     effectPreview.inventory = none(
-      "إلغاء الإسناد قبل الخروج يغيّر العهدة التشغيلية فقط ولا يعيد مخزوناً مصروفاً",
+      "إلغاء الإسناد بعد عودة كامل الشحنة يفك عهدة الجهة فقط ولا يعيد مخزوناً مصروفاً ولا يعكس البيع",
     );
   }
   if (selectedStation === "return" && selectedActionAllowed) {
@@ -1624,13 +1645,14 @@ export async function loadWorkflowPreviewTx(
     };
   };
   const availableDocuments: WorkflowScanPreview["availableDocuments"] = [
-    snapshotDocument(
-      "INVOICE",
-      invoice != null && dispatchCreatesSnapshot,
-      invoice
-        ? "لا توجد لقطة حدث أصلية للفاتورة؛ لا تطبع من القيم الحية"
+    {
+      type: "INVOICE",
+      action: "PRINT",
+      allowed: false,
+      reason: invoice
+        ? "اطبع النسخة الحالية من مسار الفاتورة وصلاحية الطباعة المستقلة"
         : "لا توجد فاتورة مرتبطة بهذا المصدر",
-    ),
+    },
     snapshotDocument(
       "SHIPPING_LABEL",
       dispatchCreatesSnapshot,

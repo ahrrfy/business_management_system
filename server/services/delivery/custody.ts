@@ -1026,6 +1026,14 @@ function custodyRuleForEvent(eventType: string): CustodyLifecycleRule | null {
       fromStates: ["PREPARED_HELD", "CUSTOMER_OWNED_HELD"],
       toState: "CARRIER_CUSTODY",
     };
+  if (eventType === "ASSIGNMENT_CANCELLED")
+    return {
+      // Assignment means carrier custody in the operating workflow. This
+      // reversal is allowed only after the operator confirms that the complete
+      // shipment physically returned to the library.
+      fromStates: ["CARRIER_CUSTODY"],
+      toState: "PREPARED_HELD",
+    };
   if (["DELIVERED", "AFTERCARE_DELIVERED"].includes(eventType))
     return {
       fromStates: ["PREPARED_HELD", "CARRIER_CUSTODY"],
@@ -1102,6 +1110,7 @@ const RECORDED_CUSTODY_EVENT_TYPES = [
   "OUT_FOR_DELIVERY",
   "REASSIGNED",
   "ASSIGNMENT_REACTIVATED",
+  "ASSIGNMENT_CANCELLED",
   "DELIVERED",
   "AFTERCARE_DELIVERED",
   "WORKFLOW_RETURN_RECEIVED",

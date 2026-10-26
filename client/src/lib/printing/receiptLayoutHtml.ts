@@ -145,6 +145,7 @@ export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
   const body = `<div class="compact-receipt" style="width:72mm;max-width:100%;margin:0 auto;overflow-wrap:anywhere">
 
   ${receiptHeaderHtml(d, barSvg)}
+  ${d.copyLabel ? `<div style="border:2px solid #000;padding:1mm 1.5mm;margin:1.5mm 0;text-align:center;font-size:10.5px;font-weight:900;">${esc(d.copyLabel)}</div>` : ""}
   ${
     d.revision
       ? `

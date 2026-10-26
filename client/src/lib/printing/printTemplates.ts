@@ -11,6 +11,7 @@ import { paymentMethodTerm } from "@shared/terms";
  */
 import { workOrderStatusLabel, workOrderStatusPrintColor } from "@shared/workOrderStatus";
 import { BRAND as B, CAIRO_FONT, CO, RECEIPT_PHONES, STOREFRONT_URL, esc, fmt, fmtC, openPrintWindow, logoUrl } from './brand';
+import type { PrintWindowOptions } from "./brand";
 import { fmtQty } from '@shared/quantityFormat';
 import { variantDisplayName } from "@shared/variantDisplay";
 import { fmtDate, fmtDateTime } from '../date';
@@ -150,9 +151,11 @@ export interface InvoicePrintData {
     amount: string | number;
     reference?: string | null;
   }> | null;
+  /** وسم ظاهر يميّز النسخة الأصلية من إعادة الطباعة المبنية على القيم الحالية. */
+  copyLabel?: string | null;
 }
 
-export async function printInvoiceA4(d: InvoicePrintData): Promise<boolean> {
+export async function printInvoiceA4(d: InvoicePrintData, options?: PrintWindowOptions): Promise<boolean> {
   // hifi-redesign (٥/٧/٢٦): ينفَّذ عبر printSalesInvoiceV2 بالتصميم المرجعي. الحقول الوصفية (customerTaxId/
   // companyTaxId/notes) لم تعُد تظهر بالترويسة الجديدة (الأرقام القانونية تُقرأ من إعدادات الشركة).
   const date = fmtDate(d.invoiceDate ?? new Date());
@@ -180,6 +183,7 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<boolean> {
     customerPhone: d.customerPhone,
     paymentMethod: d.paymentMethod,
     paymentLegs: d.paymentLegs ?? null,
+    copyLabel: d.copyLabel ?? null,
     salesRep: d.salespersonName,
     customerBalanceBefore: facts.balanceBefore,
     customerBalanceAfter: facts.balanceAfter,
@@ -214,7 +218,7 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<boolean> {
       commercialRegistry: COMPANY_SETTINGS.commercialRegistry,
       chamberLicense: COMPANY_SETTINGS.chamberLicense,
     },
-  });
+  }, options);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -957,6 +961,8 @@ export function printProductionDoc(d: ProductionDocData, mode: 'order' | 'docume
 export interface ReceiptBrowserData {
   invoiceId?: number;
   receiptNumber: string;
+  /** وسم ظاهر يميّز النسخة الأصلية من إعادة الطباعة. */
+  copyLabel?: string | null;
   date: string;
   time?: string | null;
   cashierName?: string | null;
@@ -1031,8 +1037,10 @@ export interface ReceiptBrowserData {
 
 export { buildBrowserReceiptHtml } from "./receiptLayoutHtml";
 
-export function printBrowserReceipt(d: ReceiptBrowserData): boolean {
-  return openPrintWindow(buildBrowserReceiptHtml(d), 'width=380,height=700');
+export function printBrowserReceipt(d: ReceiptBrowserData, options?: PrintWindowOptions): boolean {
+  return options
+    ? openPrintWindow(buildBrowserReceiptHtml(d), 'width=380,height=700', options)
+    : openPrintWindow(buildBrowserReceiptHtml(d), 'width=380,height=700');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

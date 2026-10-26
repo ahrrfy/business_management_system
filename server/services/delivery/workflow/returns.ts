@@ -25,6 +25,11 @@ import {
   PHYSICAL_RETURN_RECEIVED,
   physicalReturnReceiptTx,
 } from "./returnReceipt";
+import {
+  createRecordedShipmentDocumentTx,
+  listDeliveryDocumentSnapshotsTx,
+  type WorkflowDocumentBody,
+} from "../documentSnapshots";
 
 export interface ReceiveWorkflowReturnInput {
   source: WorkflowDispatchSource;
@@ -101,11 +106,13 @@ export function receiveWorkflowReturn(
           member.sourceType === "FULFILLMENT_REQUEST" &&
           member.invoiceId == null,
       );
+      let documentSnapshotIds: number[] = [];
       const result = (idempotentReplay: boolean) => ({
         consignmentId: leaderId,
         consignmentIds: [...ids].sort((a, b) => a - b),
         mode: "PHYSICAL_RECEIPT" as const,
         idempotentReplay,
+        documentSnapshotIds,
         commercialActionRequired: hasCommercialSource,
         sourceClosureRequired: hasStandaloneRequestSource,
         refundActionRequired:
@@ -120,6 +127,23 @@ export function receiveWorkflowReturn(
       if (replay) {
         for (const id of ids)
           await repairDeliveryCustodyFromRecordedEventsTx(tx, id);
+        const eventKeys = new Set(
+          ids.map((id) => `CN:${id}:PHYSICAL_RETURN:${input.clientRequestId}`),
+        );
+        documentSnapshotIds = (
+          await listDeliveryDocumentSnapshotsTx(tx, {
+            sourceType: "SHIPMENT",
+            sourceId: leaderId,
+            branchId: preview.source.branchId,
+          })
+        )
+          .filter(
+            (row) =>
+              eventKeys.has(row.eventKey) &&
+              row.documentType === "PHYSICAL_RETURN_RECEIPT",
+          )
+          .map((row) => row.id)
+          .sort((a, b) => a - b);
         return result(true);
       }
       if (preview.source.version !== input.source.expectedVersion)
@@ -143,6 +167,29 @@ export function receiveWorkflowReturn(
             "الطرد لا ينتمي إلى فرع الاستلام",
             "FORBIDDEN",
           );
+        const documentEventKey = `CN:${row.id}:PHYSICAL_RETURN:${input.clientRequestId}`;
+        const document: WorkflowDocumentBody = {
+          title: "محضر استلام وفحص طرد عائد",
+          documentNumber: row.consignmentNumber,
+          rows: [
+            { label: "الإرسالية المستلمة", value: row.consignmentNumber },
+            {
+              label: "مصدر العهدة",
+              value: `${row.sourceType} #${row.sourceId}`,
+            },
+            { label: "صاحب العهدة", value: row.recipientName ?? "غير مسجل" },
+            { label: "نتيجة الاستلام والفحص", value: input.evidence.trim() },
+          ],
+          totals: [],
+          notice:
+            "يثبت الاستلام والفحص المادي فقط. لا يلغي البيع، ولا يعيد المبيع إلى المخزون المتاح، ولا يرد مال العميل. الحقوق التجارية والمالية على مستنداتها الأصلية.",
+        };
+        const documentEvidence = {
+          branchId: row.branchId,
+          leaderConsignmentId: leaderId,
+          documentType: "PHYSICAL_RETURN_RECEIPT",
+          document,
+        };
         if (row.sourceType === "AFTERCARE_EXECUTION") {
           await routeAftercareDeliveryResultTx(
             tx,
@@ -158,6 +205,21 @@ export function receiveWorkflowReturn(
               },
             },
             auth.actor,
+          );
+          await appendDeliveryEvent(tx, {
+            eventKey: documentEventKey,
+            consignmentId: row.id,
+            eventType: "WORKFLOW_PHYSICAL_RETURN_RECEIPT",
+            actorUserId: auth.actor.userId,
+            payload: { ...documentEvidence, metadataOnly: true },
+          });
+          documentSnapshotIds.push(
+            await createRecordedShipmentDocumentTx(tx, {
+              consignmentId: leaderId,
+              branchId: row.branchId,
+              eventKey: documentEventKey,
+              documentType: "PHYSICAL_RETURN_RECEIPT",
+            }),
           );
           continue;
         }
@@ -182,13 +244,14 @@ export function receiveWorkflowReturn(
           .set({ parcelStatus: "RETURNED", returnedAt: receivedAt })
           .where(eq(deliveryConsignments.id, row.id));
         await appendDeliveryEvent(tx, {
-          eventKey: `CN:${row.id}:PHYSICAL_RETURN:${input.clientRequestId}`,
+          eventKey: documentEventKey,
           consignmentId: row.id,
           eventType: PHYSICAL_RETURN_RECEIVED,
           fromParcelStatus: row.parcelStatus,
           toParcelStatus: "RETURNED",
           actorUserId: auth.actor.userId,
           payload: {
+            ...documentEvidence,
             version: 1,
             inspected: true,
             branchId: row.branchId,
@@ -205,6 +268,14 @@ export function receiveWorkflowReturn(
             availableStockAdded: false,
           },
         });
+        documentSnapshotIds.push(
+          await createRecordedShipmentDocumentTx(tx, {
+            consignmentId: leaderId,
+            branchId: row.branchId,
+            eventKey: documentEventKey,
+            documentType: "PHYSICAL_RETURN_RECEIPT",
+          }),
+        );
         await logAuditTx(tx, auth.actor, {
           action: "delivery.physicalReturn.received",
           entityType: "deliveryConsignment",

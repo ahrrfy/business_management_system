@@ -10,6 +10,7 @@ import { salesInvoiceTotals } from "./receiptLayoutInvoiceTotals";
  * غير المشمولة بالتسليم هذا. الأسماء المُعاد تصديرها في هذا الملف هي المداخل الرئيسية للثمانية أعلاه.
  */
 import { BRAND as B, esc, fmt, fmtC, openPrintWindow } from './brand';
+import type { PrintWindowOptions } from "./brand";
 import { fmtQty } from '@shared/quantityFormat';
 import Decimal from 'decimal.js';
 import { docBarcode } from '@shared/documentNumber';
@@ -174,6 +175,8 @@ export interface SalesInvoiceV2Data {
   }> | null;
   salesRep?: string | null;
   branchName?: string | null;
+  /** وسم النسخة كما أجازه مسار طباعة الفواتير. */
+  copyLabel?: string | null;
 
   items: {
     productName: string;
@@ -264,6 +267,7 @@ export function buildSalesInvoiceV2Html(d: SalesInvoiceV2Data): string {
           : []),
         ...(d.salesRep ? [{ label: 'مندوب المبيعات', value: d.salesRep }] : []),
         ...(d.branchName ? [{ label: 'الفرع', value: d.branchName }] : []),
+        ...(d.copyLabel ? [{ label: 'نوع النسخة', value: d.copyLabel }] : []),
       ],
     },
   ]);
@@ -323,8 +327,10 @@ export function buildSalesInvoiceV2Html(d: SalesInvoiceV2Data): string {
   return wrapA4Doc(`فاتورة ${d.invoiceNumber}`, body);
 }
 
-export function printSalesInvoiceV2(d: SalesInvoiceV2Data): boolean {
-  return openPrintWindow(buildSalesInvoiceV2Html(d));
+export function printSalesInvoiceV2(d: SalesInvoiceV2Data, options?: PrintWindowOptions): boolean {
+  return options
+    ? openPrintWindow(buildSalesInvoiceV2Html(d), undefined, options)
+    : openPrintWindow(buildSalesInvoiceV2Html(d));
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

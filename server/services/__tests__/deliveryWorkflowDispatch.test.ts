@@ -508,8 +508,10 @@ describe("atomic barcode batch dispatch", () => {
         .select()
         .from(deliveryDocumentSnapshots)
         .where(eq(deliveryDocumentSnapshots.sourceId, result.consignmentId));
-      expect(snapshots).toHaveLength(2);
-      for (const snapshot of snapshots) {
+      expect(snapshots).toHaveLength(3);
+      for (const snapshot of snapshots.filter(
+        (row) => row.documentType !== "DELIVERY_MANIFEST",
+      )) {
         const document = snapshot.payload as {
           invoiceIds: number[];
           money: {
@@ -518,9 +520,7 @@ describe("atomic barcode batch dispatch", () => {
             paidAmount: string;
           };
         };
-        expect(document.invoiceIds).toEqual(
-          invoiceCount === 1 ? [1] : [1, 2],
-        );
+        expect(document.invoiceIds).toEqual(invoiceCount === 1 ? [1] : [1, 2]);
         expect(document.money).toMatchObject({
           codAmount: "15000.00",
           currentTotal: "10000.00",
@@ -706,8 +706,10 @@ describe("atomic barcode batch dispatch", () => {
         .select()
         .from(deliveryDocumentSnapshots)
         .where(eq(deliveryDocumentSnapshots.sourceId, result.consignmentId));
-      expect(snapshots).toHaveLength(2);
-      for (const snapshot of snapshots) {
+      expect(snapshots).toHaveLength(3);
+      for (const snapshot of snapshots.filter(
+        (row) => row.documentType !== "DELIVERY_MANIFEST",
+      )) {
         const document = snapshot.payload as {
           invoiceIds: number[];
           money: { codAmount: string; currentTotal: string };
@@ -751,11 +753,13 @@ describe("atomic barcode batch dispatch", () => {
       .select()
       .from(deliveryDocumentSnapshots)
       .where(eq(deliveryDocumentSnapshots.sourceId, result.consignmentId));
-    expect(snapshotsBeforeReplay).toHaveLength(2);
+    expect(snapshotsBeforeReplay).toHaveLength(3);
     expect(result.documentSnapshotIds).toEqual(
       snapshotsBeforeReplay.map((row) => Number(row.id)).sort((a, b) => a - b),
     );
-    for (const snapshot of snapshotsBeforeReplay) {
+    for (const snapshot of snapshotsBeforeReplay.filter(
+      (row) => row.documentType !== "DELIVERY_MANIFEST",
+    )) {
       const document = snapshot.payload as {
         shipment: { members: Array<{ invoiceId: number | null }> };
         invoiceIds: number[];
@@ -881,6 +885,7 @@ describe("atomic barcode batch dispatch", () => {
           action: "cancelAssignment",
           reason: "العميل ألغى",
           clientRequestId: "workflow-cancel-001",
+          physicalHeldConfirmed: true,
         },
         actor,
       ),

@@ -15,6 +15,7 @@ import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { trpc } from "@/lib/trpc";
 import { ACTION_LABELS as L } from "@shared/actionLabels";
+import { WorkflowPrintActions } from "./workflow/WorkflowPrintActions";
 
 export interface ScannedOrderForCancellation {
   id: number;
@@ -78,6 +79,12 @@ export function CancelDeliveryAssignmentSection({
   const utils = trpc.useUtils();
   const [barcodeInput, setBarcodeInput] = useState("");
   const [preview, setPreview] = useState<WorkflowScanPreview | null>(null);
+  const [completed, setCompleted] = useState<{
+    label: string;
+    branchId: number;
+    source: { kind: WorkflowScanPreview["source"]["kind"]; id: number };
+    consignmentId: number;
+  } | null>(null);
   const [sourceRaw, setSourceRaw] = useState("");
   const [reason, setReason] = useState("");
   const [mode, setMode] = useState<
@@ -115,6 +122,7 @@ export function CancelDeliveryAssignmentSection({
   useEffect(() => {
     sequence.current++;
     setPreview(null);
+    setCompleted(null);
     setSourceRaw("");
     setReason("");
     retryIdentity.current = null;
@@ -135,6 +143,7 @@ export function CancelDeliveryAssignmentSection({
         });
         if (generation !== sequence.current || busyRef.current) return;
         setPreview(next);
+        setCompleted(null);
         setSourceRaw(raw);
         setReason("");
         setPartyId("");
@@ -225,8 +234,10 @@ export function CancelDeliveryAssignmentSection({
       notify.err("اختر جهة التوصيل والمندوب الموظف المرتبط بها صراحةً");
       return;
     }
-    if (mode === "cancelAssignment" && isAftercare && !physicalHeld) {
-      openAftercare();
+    if (mode === "cancelAssignment" && !physicalHeld) {
+      notify.err(
+        "تحقق أولاً أن كامل الشحنة عادت فعلياً إلى عهدة المكتبة",
+      );
       return;
     }
     const label =
@@ -238,7 +249,7 @@ export function CancelDeliveryAssignmentSection({
     if (
       !(await confirm({
         title: label,
-        description: `${preview.printSource.number} — ${preview.recipient.name ?? "المستلم"}\n${reason.trim()}\nإلغاء الإسناد وإعلان الرجوع لا يثبتان استلام البضاعة أو رد المال.`,
+        description: `${preview.printSource.number} — ${preview.recipient.name ?? "المستلم"}\n${reason.trim()}\nإلغاء الإسناد يفك عهدة الجهة بعد عودة كامل الشحنة، ولا يلغي البيع أو يعيد المخزون. إعلان الرجوع وحده لا يثبت الاستلام.`,
         confirmText: label,
         variant: mode === "reassign" ? "info" : "warning",
       }))
@@ -261,10 +272,18 @@ export function CancelDeliveryAssignmentSection({
     const signature = JSON.stringify(payload);
     if (retryIdentity.current?.signature !== signature)
       retryIdentity.current = { signature, key: crypto.randomUUID() };
+    let committed = false;
     try {
-      await mutation.mutateAsync({
+      const result = await mutation.mutateAsync({
         ...payload,
         clientRequestId: retryIdentity.current.key,
+      });
+      committed = true;
+      setCompleted({
+        label,
+        branchId: preview.source.branchId,
+        source: { kind: preview.source.kind, id: preview.source.id },
+        consignmentId: result.consignmentId,
       });
       retryIdentity.current = null;
       notify.ok(`تم ${label}`);
@@ -290,6 +309,11 @@ export function CancelDeliveryAssignmentSection({
       setReason("");
       setPhysicalHeld(false);
     } catch {
+      if (committed)
+        notify.warn(
+          "تم الإجراء وحفظ مستنداته؛ تعذر تحديث المعاينة فقط",
+          "استخدم نتيجة الإجراء للطباعة، ولا تعِد المعاملة",
+        );
       /* Mutation error preserves the same retry identity and draft. */
     }
   }
@@ -315,6 +339,19 @@ export function CancelDeliveryAssignmentSection({
           <p className="text-sm text-muted-foreground">{L.loading}</p>
         )}
       </div>
+      {completed && (
+        <Card className="p-3 space-y-2" role="status">
+          <p className="font-medium">
+            تم {completed.label}؛ مستندات الإجراء محفوظة.
+          </p>
+          <WorkflowPrintActions
+            branchId={completed.branchId}
+            source={completed.source}
+            consignmentId={completed.consignmentId}
+            mode="cancel"
+          />
+        </Card>
+      )}
       {preview && (
         <Card className="p-4 space-y-4">
           <div className="flex items-center justify-between gap-2">
@@ -341,6 +378,11 @@ export function CancelDeliveryAssignmentSection({
             المطلوب الحالي {fmt(preview.money.codAmount)} د.ع ·{" "}
             {preview.group?.consignmentIds.length ?? 0} مستند توصيل مرتبط
           </p>
+          <WorkflowPrintActions
+            branchId={preview.source.branchId}
+            preview={preview}
+            mode="cancel"
+          />
           {preview.relations.chargeId != null && (
             <Button
               variant="outline"
@@ -367,16 +409,41 @@ export function CancelDeliveryAssignmentSection({
             <>
               <AppSelect
                 value={mode}
-                onValueChange={(value) => setMode(value as typeof mode)}
+                onValueChange={(value) => {
+                  setMode(value as typeof mode);
+                  setPhysicalHeld(false);
+                }}
                 disabled={mutation.isPending}
               >
-                <option value="cancelAssignment">
-                  إلغاء الإسناد قبل استلام الناقل
+                <option
+                  value="cancelAssignment"
+                  disabled={
+                    !preview.actions.find(
+                      (item) => item.action === "cancelAssignment",
+                    )?.allowed
+                  }
+                >
+                  إلغاء الإسناد — عادت الشحنة للمكتبة
                 </option>
-                <option value="declareReturn">
+                <option
+                  value="declareReturn"
+                  disabled={
+                    !preview.actions.find(
+                      (item) => item.action === "declareReturn",
+                    )?.allowed
+                  }
+                >
                   إعلان الرجوع — دون إثبات استلام
                 </option>
-                <option value="reassign">إعادة الإسناد للمندوب</option>
+                <option
+                  value="reassign"
+                  disabled={
+                    !preview.actions.find((item) => item.action === "reassign")
+                      ?.allowed
+                  }
+                >
+                  إعادة الإسناد للمندوب
+                </option>
               </AppSelect>
               {!action?.allowed && (
                 <p className="text-sm text-muted-foreground">
@@ -391,7 +458,7 @@ export function CancelDeliveryAssignmentSection({
                 maxLength={500}
                 disabled={mutation.isPending}
               />
-              {mode === "cancelAssignment" && isAftercare && (
+              {mode === "cancelAssignment" && (
                 <label className="flex items-center gap-2 text-sm">
                   <Checkbox
                     checked={physicalHeld}
@@ -400,7 +467,7 @@ export function CancelDeliveryAssignmentSection({
                     }
                     disabled={mutation.isPending}
                   />{" "}
-                  تحققت فعلياً أن كامل الدفعة بعهدة المكتبة ولم يستلمها الناقل
+                  تحققت فعلياً أن كامل الشحنة عادت إلى عهدة المكتبة
                 </label>
               )}
               {mode === "reassign" && !isAftercare && (
@@ -471,6 +538,7 @@ export function CancelDeliveryAssignmentSection({
                     !action?.allowed ||
                     reason.trim().length < 3 ||
                     mutation.isPending ||
+                    (mode === "cancelAssignment" && !physicalHeld) ||
                     (mode === "reassign" &&
                       (!partyId || (internalDriverRequired && !assignedUserId)))
                   }

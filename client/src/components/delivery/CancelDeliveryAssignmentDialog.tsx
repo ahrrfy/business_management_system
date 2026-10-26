@@ -99,9 +99,9 @@ export function CancelDeliveryAssignmentDialog({
             {consignment?.number ?? ""}
           </DialogTitle>
           <DialogDescription className="text-start leading-6">
-            إلغاء الإسناد متاح قبل استلام الناقل الفعلي للطرد. بعد الاستلام أعلن
-            الرجوع ثم أثبت الاستلام والفحص من محطة المرتجعات؛ إعلان الرجوع لا
-            يعيد مخزوناً ولا يرد مالاً.
+            الإسناد يعني أن جهة التوصيل استلمت الشحنة وأصبحت بعهدتها. لا يُلغى
+            الإسناد إلا بعد عودة كامل الشحنة فعلياً إلى المكتبة؛ بعدها يصبح الطلب
+            حراً لإعادة الإسناد، دون إلغاء البيع أو إعادة المخزون.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-1.5">
@@ -123,17 +123,16 @@ export function CancelDeliveryAssignmentDialog({
         {canCancel && !canCancel.allowed && (
           <p className="text-sm text-muted-foreground">{canCancel.reason}</p>
         )}
-        {isAftercare && (
-          <div className="space-y-2">
-            <label className="flex items-center gap-2 text-sm">
-              <Checkbox
-                checked={physicalHeld}
-                onCheckedChange={(checked) => setPhysicalHeld(checked === true)}
-                disabled={cancel.isPending}
-              />{" "}
-              تحققت فعلياً من كامل عهدة المكتبة قبل استلام الناقل
-            </label>
-            {onNavigateToAftercare && (
+        <div className="space-y-2">
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox
+              checked={physicalHeld}
+              onCheckedChange={(checked) => setPhysicalHeld(checked === true)}
+              disabled={cancel.isPending || !canCancel?.allowed}
+            />{" "}
+            تحققت فعلياً أن كامل الشحنة عادت إلى عهدة المكتبة
+          </label>
+          {isAftercare && onNavigateToAftercare && (
               <Button
                 variant="outline"
                 onClick={() =>
@@ -145,9 +144,8 @@ export function CancelDeliveryAssignmentDialog({
               >
                 فتح محضر المعالجة والعهدة
               </Button>
-            )}
-          </div>
-        )}
+          )}
+        </div>
         <DialogFooter className="gap-2 sm:justify-start">
           <Button
             variant="outline"
@@ -185,7 +183,7 @@ export function CancelDeliveryAssignmentDialog({
               !canCancel?.allowed ||
               reason.trim().length < 3 ||
               cancel.isPending ||
-              (isAftercare && !physicalHeld)
+              !physicalHeld
             }
             onClick={() =>
               preview.data &&
@@ -203,7 +201,7 @@ export function CancelDeliveryAssignmentDialog({
               })
             }
           >
-            {cancel.isPending ? L.cancelling : "إلغاء إسناد التوصيل"}
+            {cancel.isPending ? L.cancelling : "إلغاء الإسناد وتحرير الطلب"}
           </Button>
         </DialogFooter>
       </DialogContent>

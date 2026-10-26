@@ -173,6 +173,31 @@ export function logoUrl(): string {
 /** Open a print window with given HTML. يعيد false إن حُجبت النافذة المنبثقة (ليُبلَّغ المستخدم). */
 let reservedPrintWindow: Window | null = null;
 
+export interface PrintWindowOptions {
+  /** Explicit reservation, including null when the user's popup reservation failed. */
+  into?: Window | null;
+}
+
+/** Reserve one document during the click without sharing or replacing another job's window. */
+export function preopenDocumentWindow(opts = "width=900,height=1100"): Window | null {
+  if (typeof window === "undefined") return null;
+  let opened: Window | null = null;
+  try {
+    opened = window.open("", "_blank", opts);
+    if (!opened) return null;
+    opened.document.write(
+      '<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>جاري تجهيز المستند</title></head>' +
+        '<body style="font-family:Arial,sans-serif;display:grid;place-items:center;min-height:90vh;color:#555">' +
+        "<p>جاري حفظ المستند وتجهيز قالب الطباعة المعتمد…</p></body></html>",
+    );
+    opened.document.close();
+    return opened;
+  } catch {
+    try { opened?.close(); } catch { /* A failed reservation must not leak an empty window. */ }
+    return null;
+  }
+}
+
 /**
  * Reserve the popup synchronously from the user's "save and print" click.
  * The approved template consumes it after the asynchronous save/navigation.
@@ -181,15 +206,8 @@ export function reservePrintWindow(opts = "width=900,height=1100"): boolean {
   if (typeof window === "undefined") return false;
   if (reservedPrintWindow && !reservedPrintWindow.closed)
     reservedPrintWindow.close();
-  reservedPrintWindow = window.open("", "_blank", opts);
-  if (!reservedPrintWindow) return false;
-  reservedPrintWindow.document.write(
-    '<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>جاري تجهيز المستند</title></head>' +
-      '<body style="font-family:Arial,sans-serif;display:grid;place-items:center;min-height:90vh;color:#555">' +
-      "<p>جاري حفظ المستند وتجهيز قالب الطباعة المعتمد…</p></body></html>",
-  );
-  reservedPrintWindow.document.close();
-  return true;
+  reservedPrintWindow = preopenDocumentWindow(opts);
+  return reservedPrintWindow != null;
 }
 
 export function releaseReservedPrintWindow(): void {
@@ -201,17 +219,24 @@ export function releaseReservedPrintWindow(): void {
 export function openPrintWindow(
   html: string,
   opts = "width=900,height=1100",
+  options?: PrintWindowOptions,
 ): boolean {
   if (typeof window === "undefined") return false;
-  const w =
-    reservedPrintWindow && !reservedPrintWindow.closed
+  const explicit = options != null && "into" in options;
+  const w = explicit
+    ? options.into
+    : reservedPrintWindow && !reservedPrintWindow.closed
       ? reservedPrintWindow
       : window.open("", "_blank", opts);
-  reservedPrintWindow = null;
-  if (!w) return false; // نافذة منبثقة محجوبة ⇒ لم تُفتح الطباعة
-  w.document.open();
-  w.document.write(html);
-  w.document.close();
+  if (!explicit) reservedPrintWindow = null;
+  if (!w || w.closed) return false;
+  try {
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+  } catch {
+    return false;
+  }
 
   // تحصين دفاعي مباشر (Defense-in-Depth):
   // بما أن النافذة فُتحت محلياً من نفس الأصل (about:blank)، يربط المتصل الأحداث برمجياً مباشرة على DOM

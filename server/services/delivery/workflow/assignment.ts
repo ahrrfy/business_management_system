@@ -25,6 +25,7 @@ import { reassignDeliveryConsignment } from "../parties";
 import {
   dispatchInvoiceShipmentInTx,
   loadShipmentMembersTx,
+  operationalShipmentMembers,
 } from "../shipments";
 import { currentWorkflowActorTx, loadWorkflowPreviewTx } from "./preview";
 import { validateDriverTx } from "./dispatch";
@@ -36,6 +37,8 @@ import { dispatchInvoiceInTx } from "../dispatchInvoice";
 import { deliveryConsignments } from "../../../../drizzle/schema";
 import { appendDeliveryEvent } from "../lifecycle";
 import { money } from "../../money";
+import { listDeliveryDocumentSnapshotsTx } from "../documentSnapshots";
+import { physicalHandoverConsignmentIdsTx } from "../handoverEvidence";
 
 export interface WorkflowAssignmentInput {
   source: WorkflowDispatchSource;
@@ -91,7 +94,18 @@ export async function mutateWorkflowAssignment(
         preview.source.branchId,
       );
       const replay = await findFulfillmentReplayTx(tx, context);
-      if (replay) return { consignmentId: replay, idempotentReplay: true };
+      if (replay)
+        return {
+          consignmentId: replay,
+          idempotentReplay: true,
+          documentSnapshotIds: (
+            await listDeliveryDocumentSnapshotsTx(tx, {
+              sourceType: "SHIPMENT",
+              sourceId: replay,
+              branchId: preview.source.branchId,
+            })
+          ).map((row) => row.id),
+        };
       if (preview.source.version !== input.source.expectedVersion)
         throw fulfillmentError(
           "تغيرت الإرسالية أو المطالبة منذ المعاينة؛ حدّثها قبل الإجراء",
@@ -108,6 +122,7 @@ export async function mutateWorkflowAssignment(
       const members = await loadShipmentMembersTx(tx, consignmentId, {
         currentRead: true,
       });
+      const operationalMembers = operationalShipmentMembers(members);
       if (preview.relations.aftercareExecutionId != null) {
         if (input.action === "reassign")
           throw fulfillmentError(
@@ -155,24 +170,38 @@ export async function mutateWorkflowAssignment(
             tx,
           );
       } else if (input.action === "cancelAssignment") {
+        if (input.physicalHeldConfirmed !== true)
+          throw fulfillmentError(
+            "تحقق فعلياً أن كامل الشحنة عادت إلى عهدة المكتبة قبل إلغاء الإسناد",
+          );
+        const physicalHandoverIds = await physicalHandoverConsignmentIdsTx(
+          tx,
+          operationalMembers.map((member) => Number(member.id)),
+        );
         if (
-          members.some(
+          operationalMembers.some(
             (c) =>
               c.pickedUpAt != null ||
-              c.outForDeliveryAt != null ||
-              !["ASSIGNED", "ACCEPTED", "FAILED"].includes(c.parcelStatus),
+              physicalHandoverIds.has(Number(c.id)) ||
+              c.returnDeclaredAt != null ||
+              !money(c.collectedAmount).isZero() ||
+              c.remittanceId != null ||
+              !["ASSIGNED", "ACCEPTED", "OUT_FOR_DELIVERY", "FAILED"].includes(
+                c.parcelStatus,
+              ),
           )
         )
           throw fulfillmentError(
-            "إلغاء الإسناد لا يثبت رجوع الطرد؛ أعلن الرجوع ثم استلمه وافحصه فعلياً",
+            "تقدمت الشحنة بعد الإسناد؛ أعلن الرجوع ثم استلمها وافحصها فعلياً قبل فك العهدة",
           );
-        for (const member of members)
+        for (const member of operationalMembers)
           await cancelDeliveryAssignmentInTx(
             tx,
             {
               consignmentId: member.id,
               reason: input.reason,
               clientRequestId: `${input.clientRequestId}:${member.id}`,
+              physicalHeldConfirmed: true,
             },
             auth.actor,
             { shipmentMember: true },
@@ -274,6 +303,9 @@ export async function mutateWorkflowAssignment(
                 consignmentId: member.id,
                 reason: input.reason,
                 clientRequestId: `${input.clientRequestId}:cancel:${member.id}`,
+                // The branch is reached only while the shipment remains
+                // eligible for deassignment under the custody guard above.
+                physicalHeldConfirmed: true,
               },
               auth.actor,
               { shipmentMember: true },
@@ -400,7 +432,17 @@ export async function mutateWorkflowAssignment(
         }
       }
       await recordFulfillmentMutationTx(tx, context, consignmentId);
-      return { consignmentId, idempotentReplay: false };
+      return {
+        consignmentId,
+        idempotentReplay: false,
+        documentSnapshotIds: (
+          await listDeliveryDocumentSnapshotsTx(tx, {
+            sourceType: "SHIPMENT",
+            sourceId: consignmentId,
+            branchId: preview.source.branchId,
+          })
+        ).map((row) => row.id),
+      };
     }),
   );
 }

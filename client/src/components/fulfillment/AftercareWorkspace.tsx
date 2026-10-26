@@ -1,5 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
-import { deliveryDriverOptions, requiresDeliveryDriver } from "@/components/delivery/driverOptions";
+import {
+  deliveryDriverOptions,
+  requiresDeliveryDriver,
+} from "@/components/delivery/driverOptions";
 import { useSearch } from "wouter";
 import {
   Plus,
@@ -23,8 +26,8 @@ import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { confirm } from "@/lib/confirm";
-import { printDeliveryDispatchSlip } from "@/lib/printing/printDeliveryDispatchSlip";
 import { printLabel } from "@/lib/printing/print";
+import { WorkflowPrintActions } from "@/components/delivery/workflow/WorkflowPrintActions";
 import { AftercareSettlementPanel } from "./AftercareSettlementPanel";
 import type { AftercareStationProps } from "./AftercareStation";
 import { D, fmt } from "@/lib/money";
@@ -751,7 +754,8 @@ function AftercareDetail({
           }}
         />
       ))}
-      {["APPROVED", "IN_PROGRESS"].includes(row.status) && (
+      {(["APPROVED", "IN_PROGRESS"].includes(row.status) ||
+        data.settlement?.status === "POSTED") && (
         <AftercareSettlementPanel
           data={data}
           onChange={async () => {
@@ -1095,6 +1099,12 @@ function AftercareExecution({
         دفعة {execution.id} — {aftercareExecutionStatusLabel[execution.status]}{" "}
         — {execution.partyName ?? "لم تسند"}
       </p>
+      <WorkflowPrintActions
+        branchId={execution.branchId}
+        source={{ kind: "aftercareExecution", id: execution.id }}
+        consignmentId={execution.consignmentId}
+        mode="aftercare"
+      />
       <div className="flex flex-wrap items-center gap-2">
         <code dir="ltr">{execution.barcode}</code>
         <Button
@@ -1154,37 +1164,6 @@ function AftercareExecution({
               ? `— البوليصة ${execution.externalTrackingRef}`
               : ""}
           </p>
-          {execution.consignmentNumber && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() =>
-                void printDeliveryDispatchSlip({
-                  sourceType: "AFTERCARE_EXECUTION",
-                  sourceId: execution.id,
-                  aftercareExecutionId: execution.id,
-                  invoiceId: null,
-                  orderKind: "aftercare",
-                  orderNumber: String(execution.id),
-                  consignmentNumber: execution.consignmentNumber!,
-                  partyName: execution.partyName ?? "جهة توصيل المعالجة",
-                  recipientName: execution.recipientName,
-                  recipientPhone: execution.recipientPhone,
-                  deliveryAddress: execution.deliveryAddress,
-                  salePrice: "0.00",
-                  codAmount: "0.00",
-                  deliveryFee: execution.deliveryFee,
-                  feeCollection: "SHOP",
-                  title: "استكمال نقص / معالجة — لا يطالب العميل بأي مبلغ",
-                  dispatchedAt: execution.dispatchedAt ?? undefined,
-                })
-              }
-            >
-              <Printer className="size-4" />
-              بوليصة معالجة بلا تحصيل
-            </Button>
-          )}
         </div>
       )}
       <DataTable
@@ -1231,11 +1210,17 @@ function AftercareExecution({
             }}
           >
             <option value="">اختر الناقل</option>
-            {parties.data?.filter(party => party.branchId == null || party.branchId === execution.branchId).map((party) => (
-              <option key={party.id} value={String(party.id)}>
-                {party.name}
-              </option>
-            ))}
+            {parties.data
+              ?.filter(
+                (party) =>
+                  party.branchId == null ||
+                  party.branchId === execution.branchId,
+              )
+              .map((party) => (
+                <option key={party.id} value={String(party.id)}>
+                  {party.name}
+                </option>
+              ))}
           </AppSelect>
           <AppSelect
             aria-label="موظف التوصيل"

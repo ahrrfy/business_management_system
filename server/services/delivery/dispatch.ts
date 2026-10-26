@@ -868,14 +868,14 @@ async function runWorkOrderDispatchTx(
     : extractInsertId(cnRes!);
 
   const assignmentEventKey = reusableCn
-    ? `CN:${consignmentId}:REASSIGNED:${input.clientRequestId ?? dispatchedAt.getTime()}`
+    ? `CN:${consignmentId}:ASSIGNMENT_REACTIVATED:${input.clientRequestId ?? dispatchedAt.getTime()}`
     : `CN:${consignmentId}:OUT_FOR_DELIVERY`;
   const assignmentEventId = await appendDeliveryEvent(tx, {
     // مفتاحُ حدثٍ فريدٌ لكل إسناد (append-only): إعادةُ التنشيط حدثٌ مستقلّ لا استبدالٌ
     // للأول — فيبقى تاريخ الطرد كاملاً: أُسنِد، أُلغي، أُعيد إسناده لجهةٍ أخرى.
     eventKey: assignmentEventKey,
     consignmentId,
-    eventType: reusableCn ? "REASSIGNED" : "OUT_FOR_DELIVERY",
+    eventType: reusableCn ? "ASSIGNMENT_REACTIVATED" : "OUT_FOR_DELIVERY",
     fromParcelStatus: reusableCn ? reusableCn.parcelStatus : null,
     toParcelStatus: "OUT_FOR_DELIVERY",
     toMoneyStatus: codPositive ? "UNSETTLED" : "NOT_APPLICABLE",
