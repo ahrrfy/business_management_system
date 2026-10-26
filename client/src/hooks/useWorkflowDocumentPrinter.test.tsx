@@ -3,6 +3,8 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useWorkflowDocumentPrinter } from "./useWorkflowDocumentPrinter";
+import type { WorkflowDocumentSnapshot } from "@/lib/printing/workflowDocuments";
+import type { WorkflowDocumentType } from "@shared/deliveryWorkflow";
 
 const state = vi.hoisted(() => ({
   documents: [] as Array<Record<string, unknown>>,
@@ -15,6 +17,9 @@ const state = vi.hoisted(() => ({
   printLabel: vi.fn(),
   warn: vi.fn(),
   error: vi.fn(),
+  openPreview: vi.fn(),
+  userId: 1,
+  branchId: 1,
 }));
 vi.mock("@/lib/trpc", () => ({
   trpc: {
@@ -23,7 +28,7 @@ vi.mock("@/lib/trpc", () => ({
     }),
     auth: {
       me: {
-        useQuery: () => ({ data: { id: 1, role: "admin", isOwner: true } }),
+        useQuery: () => ({ data: { id: state.userId, role: "admin", isOwner: true } }),
       },
     },
     delivery: {
@@ -54,16 +59,23 @@ vi.mock("@/lib/printing/shippingLabel", () => ({
   printShippingLabel: state.printLabel,
   resolveShippingLabelPaymentState: () => "PAID",
 }));
+vi.mock("@/lib/printing/brand", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/printing/brand")>(),
+  openPrintWindow: state.openPreview,
+}));
+vi.mock("@/lib/printing/render", () => ({
+  docToHtml: async () => "<html><body>workflow document</body></html>",
+}));
 
 let printer: ReturnType<typeof useWorkflowDocumentPrinter>;
 function Consumer() {
-  printer = useWorkflowDocumentPrinter(1);
+  printer = useWorkflowDocumentPrinter(state.branchId);
   return null;
 }
 
 function document(
   id: number,
-  documentType: string,
+  documentType: WorkflowDocumentType,
   eventKey: string,
   payload: unknown,
 ) {
@@ -74,7 +86,7 @@ function document(
     documentNumber: `DOC-${id}`,
     eventOccurredAt: "2026-10-26T08:00:00Z",
     payload,
-    printHistory: [],
+    printHistory: [] as WorkflowDocumentSnapshot["printHistory"],
   };
 }
 const dispatch = {
@@ -115,6 +127,9 @@ describe("workflow shipment document selection", () => {
   let root: Root;
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.clear();
+    state.userId = 1;
+    state.branchId = 1;
     state.documents = [
       document(
         4,
@@ -141,11 +156,22 @@ describe("workflow shipment document selection", () => {
     state.invalidate.mockResolvedValue(undefined);
     state.printDoc.mockResolvedValue({ ok: true, via: "server" });
     state.printLabel.mockResolvedValue({ ok: true, via: "browser" });
+    state.openPreview.mockReturnValue(true);
     (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
     root = createRoot(window.document.createElement("div"));
     act(() => root.render(<Consumer />));
   });
   afterEach(() => act(() => root.unmount()));
+
+  function remount() {
+    act(() => root.unmount());
+    root = createRoot(window.document.createElement("div"));
+    act(() => root.render(<Consumer />));
+  }
+
+  function waybill() {
+    return document(6, "AFTERCARE_WAYBILL", "assignment", manifest("بوليصة معالجة بعد البيع"));
+  }
 
   it("prints the slip's handover manifest after a newer customer collection, without printing an aftercare sale", async () => {
     await act(async () => {
@@ -222,5 +248,182 @@ describe("workflow shipment document selection", () => {
       status: "SENT",
     });
     expect(state.error).not.toHaveBeenCalled();
+  });
+
+  it("persists an original request before the API and replays it after a lost response and remount", async () => {
+    state.request.mockImplementationOnce(async (input) => {
+      expect(Object.values(localStorage)).toContainEqual(expect.stringContaining(input.clientRequestId));
+      throw new Error("request response lost");
+    });
+    await act(async () => { await printer.printSnapshot(waybill(), null); });
+    expect(state.printDoc).not.toHaveBeenCalled();
+    const first = state.request.mock.calls[0][0];
+    remount();
+    await act(async () => { await printer.printSnapshot(waybill(), null); });
+    expect(state.request.mock.calls[1][0]).toEqual(first);
+    expect(first.copyType).toBe("ORIGINAL");
+    expect(state.printDoc).toHaveBeenCalledOnce();
+  });
+
+  it("replays a label request after a lost response and remount", async () => {
+    state.documents.push(document(5, "SHIPPING_LABEL", "assignment", dispatch));
+    state.request.mockRejectedValueOnce(new Error("request response lost"));
+    await act(async () => { await printer.printLabel(7, null); });
+    const first = state.request.mock.calls[0][0];
+    remount();
+    await act(async () => { await printer.printLabel(7, null); });
+    expect(state.request.mock.calls[1][0]).toEqual(first);
+    expect(state.printLabel).toHaveBeenCalledOnce();
+  });
+
+  it("retries a known SENT acknowledgement after remount without sending another document", async () => {
+    state.complete.mockRejectedValueOnce(new Error("completion response lost"));
+    await act(async () => { await printer.printSnapshot(waybill(), null); });
+    const first = state.request.mock.calls[0][0];
+    remount();
+    await act(async () => { await printer.printSnapshot(waybill(), null); });
+    expect(state.request.mock.calls[1][0]).toEqual(first);
+    expect(state.printDoc).toHaveBeenCalledOnce();
+    expect(state.complete.mock.calls.map(([input]) => input)).toEqual([
+      { printId: 6, branchId: 1, status: "SENT" },
+      { printId: 6, branchId: 1, status: "SENT" },
+    ]);
+  });
+
+  it("retries a label completion acknowledgement without reopening its preview", async () => {
+    state.documents.push(document(5, "SHIPPING_LABEL", "assignment", dispatch));
+    state.complete.mockRejectedValueOnce(new Error("completion response lost"));
+    await act(async () => { await printer.printLabel(7, null); });
+    const first = state.request.mock.calls[0][0];
+    remount();
+    await act(async () => { await printer.printLabel(7, null); });
+    expect(state.request.mock.calls[1][0]).toEqual(first);
+    expect(state.printLabel).toHaveBeenCalledOnce();
+    expect(state.complete).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a known FAILED acknowledgement without repeating the failed transport", async () => {
+    state.printDoc.mockRejectedValueOnce(new Error("printer disconnected"));
+    state.complete.mockRejectedValueOnce(new Error("completion response lost"));
+    await act(async () => { await printer.printSnapshot(waybill(), null); });
+    remount();
+    await act(async () => { await printer.printSnapshot(waybill(), null); });
+    expect(state.printDoc).toHaveBeenCalledOnce();
+    expect(state.complete.mock.calls[1][0]).toEqual(state.complete.mock.calls[0][0]);
+    expect(state.complete.mock.calls[1][0].status).toBe("FAILED");
+  });
+
+  it.each(["ORIGINAL", "REPRINT"] as const)("resumes this actor's server REQUESTED %s with its exact reason and printer", async (copyType) => {
+    const snapshot = waybill();
+    snapshot.printHistory = [
+      ...(copyType === "REPRINT" ? [{ status: "SENT" }] : []),
+      { id: 65, status: "REQUESTED", clientRequestId: "pending-server-request", requestedBy: 1, copyType,
+        reason: copyType === "REPRINT" ? "سبب النسخة السابق" : null, printerKey: "saved-printer" },
+    ];
+    await act(async () => { await printer.printSnapshot(snapshot, null); });
+    expect(state.request).toHaveBeenCalledWith({ snapshotId: 6, branchId: 1,
+      clientRequestId: "pending-server-request", copyType, printerKey: "saved-printer",
+      ...(copyType === "REPRINT" ? { reason: "سبب النسخة السابق" } : {}) });
+    expect(state.printDoc).toHaveBeenCalledOnce();
+  });
+
+  it("keeps pending identities isolated by actor and branch", async () => {
+    state.request.mockRejectedValue(new Error("response lost"));
+    await act(async () => { await printer.printSnapshot(waybill(), null); });
+    const first = state.request.mock.calls[0][0];
+    state.userId = 2;
+    remount();
+    await act(async () => { await printer.printSnapshot(waybill(), null); });
+    state.userId = 1;
+    state.branchId = 2;
+    remount();
+    await act(async () => { await printer.printSnapshot(waybill(), null); });
+    state.branchId = 1;
+    remount();
+    await act(async () => { await printer.printSnapshot(waybill(), null); });
+    const inputs = state.request.mock.calls.map(([input]) => input);
+    expect(new Set(inputs.slice(0, 3).map((input) => input.clientRequestId)).size).toBe(3);
+    expect(inputs[2].branchId).toBe(2);
+    expect(inputs[3]).toEqual(first);
+    expect(state.printDoc).not.toHaveBeenCalled();
+  });
+
+  it("never resumes another actor's server REQUESTED original", async () => {
+    const snapshot = waybill();
+    snapshot.printHistory = [{ id: 65, status: "REQUESTED", clientRequestId: "other-actor-request", requestedBy: 2, copyType: "ORIGINAL" }];
+    state.request.mockRejectedValueOnce(new Error("original belongs to another actor"));
+    await act(async () => { await printer.printSnapshot(snapshot, null); });
+    expect(state.request.mock.calls[0][0].clientRequestId).not.toBe("other-actor-request");
+    expect(state.printDoc).not.toHaveBeenCalled();
+  });
+
+  it("does not send a document already SENT in the replay response", async () => {
+    state.request.mockRejectedValueOnce(new Error("response lost"));
+    await act(async () => { await printer.printSnapshot(waybill(), null); });
+    state.request.mockResolvedValueOnce({ print: { id: 6, status: "SENT" } });
+    remount();
+    await act(async () => { await printer.printSnapshot(waybill(), null); });
+    expect(state.printDoc).not.toHaveBeenCalled();
+    expect(state.complete).toHaveBeenCalledWith({ printId: 6, branchId: 1, status: "SENT" });
+  });
+
+  it("acknowledges both shipment documents after remount without repeating either physical send", async () => {
+    state.complete.mockRejectedValue(new Error("completion response lost"));
+    await act(async () => { await printer.printShipment(7, null); });
+    expect(state.printDoc).toHaveBeenCalledTimes(2);
+    remount();
+    state.complete.mockResolvedValue({});
+    await act(async () => { await printer.printShipment(7, null); });
+    expect(state.printDoc).toHaveBeenCalledTimes(2);
+    expect(state.complete).toHaveBeenCalledTimes(4);
+    expect(state.request.mock.calls[2][0]).toEqual(state.request.mock.calls[0][0]);
+    expect(state.request.mock.calls[3][0]).toEqual(state.request.mock.calls[1][0]);
+  });
+
+  it("does not reopen a successful browser pack while retrying its completion acknowledgement", async () => {
+    state.printDoc.mockResolvedValue({ ok: false, via: "browser", reason: "popup-blocked" });
+    state.complete.mockRejectedValueOnce(new Error("completion response lost"));
+    await act(async () => { await printer.printSnapshot(waybill(), null); });
+    remount();
+    await act(async () => { await printer.printSnapshot(waybill(), null); });
+    expect(state.openPreview).toHaveBeenCalledOnce();
+    expect(state.printDoc).toHaveBeenCalledOnce();
+    expect(state.complete).toHaveBeenCalledTimes(2);
+    expect(printer.message).toContain("معاينة الطباعة");
+  });
+
+  it("keeps an explicit label REPRINT identity and reason when its response is lost", async () => {
+    const label = document(5, "SHIPPING_LABEL", "assignment", dispatch);
+    label.printHistory = [{ status: "SENT" }];
+    state.documents.push(label);
+    state.request.mockRejectedValueOnce(new Error("request response lost"));
+    await act(async () => { await printer.printLabel(7, null); });
+    const first = state.request.mock.calls[0][0];
+    label.printHistory = [];
+    remount();
+    await act(async () => { await printer.printLabel(7, null); });
+    expect(first).toMatchObject({ copyType: "REPRINT", reason: "إعادة طباعة ملصق الشحنة من محطة سير العمل" });
+    expect(state.request.mock.calls[1][0]).toEqual(first);
+    expect(state.printLabel.mock.calls[0][0].isReprint).toBe(true);
+  });
+
+  it("creates an explicit reprint with a new identity after a successful original", async () => {
+    const snapshot = waybill();
+    await act(async () => { await printer.printSnapshot(snapshot, null); });
+    snapshot.printHistory = [{ status: "SENT" }];
+    await act(async () => { await printer.printSnapshot(snapshot, null); });
+    expect(state.request.mock.calls[1][0]).toMatchObject({ copyType: "REPRINT", reason: "إعادة طباعة من محطة سير العمل" });
+    expect(state.request.mock.calls[1][0].clientRequestId).not.toBe(state.request.mock.calls[0][0].clientRequestId);
+    expect(state.printDoc).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not authorize printing when durable browser storage is unavailable", async () => {
+    const save = vi.spyOn(Storage.prototype, "setItem").mockImplementationOnce(() => { throw new Error("storage blocked"); });
+    try {
+      await act(async () => { await printer.printSnapshot(waybill(), null); });
+      expect(state.request).not.toHaveBeenCalled();
+      expect(state.printDoc).not.toHaveBeenCalled();
+      expect(state.error).toHaveBeenCalledWith(expect.stringContaining("فعّل تخزين المتصفح"));
+    } finally { save.mockRestore(); }
   });
 });

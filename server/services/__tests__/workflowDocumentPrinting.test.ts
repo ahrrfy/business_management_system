@@ -870,6 +870,44 @@ describe("workflow committed document printing", () => {
     expect(await businessSnapshot()).toEqual(before);
   });
 
+  it("freezes the current order value after a partial return when reassigning an open parcel", async () => {
+    await db()
+      .update(s.invoices)
+      .set({ returnedTotal: "40.00" })
+      .where(eq(s.invoices.id, 1));
+    await db()
+      .update(s.deliveryConsignments)
+      .set({ codAmount: "60.00" })
+      .where(eq(s.deliveryConsignments.id, 1));
+    const before = await businessSnapshot();
+    await reassignDeliveryConsignment(
+      {
+        consignmentId: 1,
+        partyId: 1,
+        clientRequestId: "net-reassignment-snapshot",
+      },
+      actor,
+    );
+    const [slip] = await db()
+      .select()
+      .from(deliveryDocumentSnapshots)
+      .where(eq(deliveryDocumentSnapshots.documentType, "DISPATCH_SLIP"));
+    expect(slip.payload).toMatchObject({
+      money: { currentTotal: "60.00", codAmount: "60.00" },
+      invoices: [
+        {
+          id: 1,
+          total: "100.00",
+          returnedTotal: "40.00",
+          invoiceNumber: "PRINT-INV-1",
+          paidAmount: "0.00",
+          status: "PENDING",
+        },
+      ],
+    });
+    expect(await businessSnapshot()).toEqual(before);
+  });
+
   it("commits a physical inspection receipt with no stock, sale or refund and retains its exact replay", async () => {
     const preview = await previewWorkflowSource(
       {

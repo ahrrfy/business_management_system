@@ -194,7 +194,10 @@ function documentNumber(
   // Its immutable identity is the event plus payload, not the visible rows
   // alone; otherwise the number unique key silently aliases reassignments.
   const identityHash = idempotencyHash({ eventKey: input.eventKey, hash });
-  return `DDS-${kind}-${input.sourceId}-${identityHash.slice(0, 12)}`.slice(0, 80);
+  return `DDS-${kind}-${input.sourceId}-${identityHash.slice(0, 12)}`.slice(
+    0,
+    80,
+  );
 }
 
 function timestampSecond(value: Date): number {
@@ -295,7 +298,12 @@ export async function createDeliveryDocumentSnapshotTx(
         documentType: deliveryDocumentSnapshots.documentType,
       })
       .from(deliveryDocumentSnapshots)
-      .where(eq(deliveryDocumentSnapshots.documentNumber, documentNumber(input, payloadHash)))
+      .where(
+        eq(
+          deliveryDocumentSnapshots.documentNumber,
+          documentNumber(input, payloadHash),
+        ),
+      )
       .limit(1);
     throw fulfillmentError(
       numberCollision
@@ -339,7 +347,40 @@ export async function createShipmentDispatchDocumentSnapshotsTx(
       "CONFLICT",
     );
 
-  const sourceVersion = input.sourceVersion ?? idempotencyHash(input.payload);
+  let payload = input.payload;
+  if (
+    payload.evidence.mode === "COMMITTED_DISPATCH_EVENT" &&
+    payload.evidence.eventId == null
+  ) {
+    const events = await tx
+      .select()
+      .from(deliveryEvents)
+      .where(
+        and(
+          eq(deliveryEvents.consignmentId, input.consignmentId),
+          inArray(deliveryEvents.eventType, [...assignmentEventTypes]),
+        ),
+      )
+      .orderBy(desc(deliveryEvents.occurredAt), desc(deliveryEvents.id));
+    const assignment = events.find(isAssignmentEvent);
+    const identity = assignmentIdentity(assignment?.payload);
+    if (
+      !assignment ||
+      assignment.actorUserId !== input.createdBy ||
+      Number(identity?.partyId) !== payload.shipment.partyId ||
+      identity?.sourceType !== payload.shipment.sourceType ||
+      Number(identity?.sourceId) !== payload.shipment.sourceId
+    )
+      throw fulfillmentError(
+        "حدث الإسناد لا يثبت الجهة والمصدر الحاليين",
+        "CONFLICT",
+      );
+    payload = {
+      ...payload,
+      evidence: { ...payload.evidence, eventId: assignment.id },
+    };
+  }
+  const sourceVersion = input.sourceVersion ?? idempotencyHash(payload);
   const snapshotIds: number[] = [];
   const requestedTypes = new Set(
     input.documentTypes ?? ["DISPATCH_SLIP", "SHIPPING_LABEL"],
@@ -372,8 +413,8 @@ export async function createShipmentDispatchDocumentSnapshotsTx(
       eventOccurredAt: input.eventOccurredAt,
       payload:
         document.documentType === "DELIVERY_MANIFEST"
-          ? shipmentManifest(input.payload)
-          : { ...input.payload, documentType: document.documentType },
+          ? shipmentManifest(payload)
+          : { ...payload, documentType: document.documentType },
       createdBy: input.createdBy,
     });
     snapshotIds.push(Number(created.snapshot.id));
@@ -392,6 +433,29 @@ function eventPayload(value: unknown): Record<string, unknown> | null {
   return value != null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+function assignmentIdentity(value: unknown): Record<string, unknown> | null {
+  const payload = eventPayload(value);
+  // Native charge-only dispatches recorded the request FK and carrier directly.
+  // Normalize that immutable identity without reading today's request values.
+  const requestId = Number(payload?.fulfillmentRequestId);
+  return payload?.sourceType == null &&
+    payload?.sourceId == null &&
+    Number.isSafeInteger(requestId) &&
+    requestId > 0
+    ? { ...payload, sourceType: "FULFILLMENT_REQUEST", sourceId: requestId }
+    : payload;
+}
+
+function isAssignmentEvent(event: typeof deliveryEvents.$inferSelect) {
+  const payload = eventPayload(event.payload);
+  return (
+    event.eventType !== "OUT_FOR_DELIVERY" ||
+    ["partyId", "sourceType", "sourceId"].some((key) =>
+      Object.hasOwn(payload ?? {}, key),
+    )
+  );
 }
 
 /**
@@ -457,16 +521,8 @@ export async function bootstrapHistoricalShipmentDocumentSnapshotsTx(
   // OUT_FOR_DELIVERY also records a later departure/retry, without assignment
   // identity. Do not let that hide the last actual assignment, or skip a newer
   // assignment merely because its identity conflicts with today's shipment.
-  const originalEvent = events.find((event) => {
-    const payload = eventPayload(event.payload);
-    return (
-      event.eventType !== "OUT_FOR_DELIVERY" ||
-      ["partyId", "sourceType", "sourceId"].some((key) =>
-        Object.hasOwn(payload ?? {}, key),
-      )
-    );
-  });
-  let originalPayload = eventPayload(originalEvent?.payload);
+  const originalEvent = events.find(isAssignmentEvent);
+  let originalPayload = assignmentIdentity(originalEvent?.payload);
   // Native aftercare events originally saved the execution identity only.
   // Its persisted dispatch association must independently prove this carrier,
   // consignment and actor; never infer them from the current directory alone.
@@ -481,7 +537,10 @@ export async function bootstrapHistoricalShipmentDocumentSnapshotsTx(
     Number(originalPayload?.aftercareExecutionId) === leader.sourceId
   ) {
     const [execution] = await tx
-      .select({ id: aftercareExecutions.id, partyId: aftercareExecutions.partyId })
+      .select({
+        id: aftercareExecutions.id,
+        partyId: aftercareExecutions.partyId,
+      })
       .from(aftercareExecutions)
       .where(
         and(
@@ -558,14 +617,52 @@ export async function bootstrapHistoricalShipmentDocumentSnapshotsTx(
     existing
       .filter((row) => {
         const payload = eventPayload(row.payload);
+        const evidence = eventPayload(payload?.evidence);
+        if (evidence?.eventId != null)
+          return Number(evidence.eventId) === Number(originalEvent.id);
+        if (row.eventKey === originalEvent.eventKey) return true;
+        // Older committed group/workflow snapshots used their operation key.
+        // Reuse them only when frozen source/actor identity identifies one
+        // assignment, or its event second disambiguates repeated assignments.
+        const shipment = eventPayload(payload?.shipment);
+        if (
+          evidence?.mode !== "COMMITTED_DISPATCH_EVENT" ||
+          evidence.eventKey !== row.eventKey ||
+          Number(shipment?.consignmentId) !== leader.id ||
+          Number(shipment?.branchId) !== input.branchId
+        )
+          return false;
+        const matches = events.filter((event) => {
+          const identity = assignmentIdentity(event.payload);
+          return (
+            isAssignmentEvent(event) &&
+            event.actorUserId === row.createdBy &&
+            Number(identity?.partyId) === Number(shipment?.partyId) &&
+            identity?.sourceType === shipment?.sourceType &&
+            Number(identity?.sourceId) === Number(shipment?.sourceId)
+          );
+        });
+        if (matches.length === 1) return matches[0].id === originalEvent.id;
+        const simultaneous = matches.filter(
+          (event) =>
+            timestampSecond(event.occurredAt) ===
+            timestampSecond(row.eventOccurredAt),
+        );
+        if (
+          simultaneous.length > 1 &&
+          simultaneous.some((event) => event.id === originalEvent.id)
+        )
+          throw fulfillmentError(
+            "تعذر ربط لقطة الإسناد المحفوظة بواقعة واحدة؛ راجع دليل الإسناد الأصلي",
+            "CONFLICT",
+          );
         return (
-          Number(eventPayload(payload?.evidence)?.eventId) ===
-          Number(originalEvent.id)
+          simultaneous.length === 1 && simultaneous[0].id === originalEvent.id
         );
       })
       .map((row) => row.eventKey),
   );
-  const sameEventExisting = existing.filter((row) => {
+  let sameEventExisting = existing.filter((row) => {
     const payload = eventPayload(row.payload);
     const evidence = eventPayload(payload?.evidence);
     return (
@@ -574,6 +671,20 @@ export async function bootstrapHistoricalShipmentDocumentSnapshotsTx(
       Number(evidence?.eventId) === Number(originalEvent.id)
     );
   });
+  // Keep audit history, but repair/print one consistent committed pack ahead of
+  // degraded historical copies which an older preparation may have appended.
+  const committedPeer = sameEventExisting
+    .filter(
+      (row) =>
+        row.documentType !== "DELIVERY_MANIFEST" &&
+        eventPayload(eventPayload(row.payload)?.evidence)?.mode ===
+          "COMMITTED_DISPATCH_EVENT",
+    )
+    .sort((a, b) => b.id - a.id)[0];
+  if (committedPeer)
+    sameEventExisting = sameEventExisting.filter(
+      (row) => row.eventKey === committedPeer.eventKey,
+    );
   const existingTypes = new Set(
     sameEventExisting.map((row) => row.documentType),
   );
@@ -760,7 +871,7 @@ export async function captureShipmentAssignmentDocumentsTx(
       ),
     )
     .limit(1);
-  const recorded = eventPayload(event?.payload);
+  const recorded = assignmentIdentity(event?.payload);
   if (
     !event?.actorUserId ||
     Number(recorded?.partyId) !== leader.partyId ||
@@ -865,7 +976,11 @@ export async function captureShipmentAssignmentDocumentsTx(
       feeCollection: leader.feeCollection,
       customerCollectionAtDispatch: "0.00",
       currentTotal: toDbMoney(
-        originals.reduce((sum, row) => sum.plus(row.total), money(0)),
+        originals.reduce(
+          (sum, row) =>
+            sum.plus(money(row.total).minus(row.returnedTotal ?? "0")),
+          money(0),
+        ),
       ),
       paidAmount: toDbMoney(
         originals.reduce((sum, row) => sum.plus(row.paidAmount), money(0)),
@@ -983,7 +1098,9 @@ export async function prepareShipmentWorkflowDocumentsTx(
   tx: Tx,
   input: { consignmentId: number; branchId: number },
 ) {
-  await bootstrapHistoricalShipmentDocumentSnapshotsTx(tx, input);
+  const assignmentSnapshotIds = new Set(
+    await bootstrapHistoricalShipmentDocumentSnapshotsTx(tx, input),
+  );
   const grouped = await tx
     .select({ id: deliveryShipmentMembers.consignmentId })
     .from(deliveryShipmentMembers)
@@ -1101,11 +1218,16 @@ export async function prepareShipmentWorkflowDocumentsTx(
       });
     }
   }
-  return listDeliveryDocumentSnapshotsTx(tx, {
+  const documents = await listDeliveryDocumentSnapshotsTx(tx, {
     sourceType: "SHIPMENT",
     sourceId: input.consignmentId,
     branchId: input.branchId,
   });
+  return documents.sort(
+    (a, b) =>
+      Number(assignmentSnapshotIds.has(b.id)) -
+      Number(assignmentSnapshotIds.has(a.id)),
+  );
 }
 
 export interface RequestDeliveryDocumentPrintInput {
