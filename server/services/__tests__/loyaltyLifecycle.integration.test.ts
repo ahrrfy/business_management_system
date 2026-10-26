@@ -21,6 +21,7 @@ import {
   awardDeliveredOnlineOrderPoints,
   listLoyaltyLedgerEntries,
   redeemStorefrontLoyaltyPoints,
+  reverseOnlineOrderLoyaltyPoints,
   saveLoyaltyProgram,
 } from "../storeAdmin/loyaltyService";
 import { getStoreAnalytics } from "../storeAdmin/storeAnalyticsService";
@@ -1248,5 +1249,229 @@ describe("Wave 4 — دورة حياة دفتر الولاء المتكاملة 
         .where(eq(s.coupons.codeHash, hashCouponCode(issuedBranchBounce!.code)))
     )[0];
     expect(Number(storedBranchCoupon?.programId)).toBe(branchBounceProgramId);
+  });
+
+  it("يقرأ عمليات العكس السابقة بقراءة قافلة حالية (FOR UPDATE) تحت REPEATABLE READ فلا يخصم مرتين عند تداخل مرتجعين جزئيين", async () => {
+    const d = db();
+    // طلب من 4 وحدات = 20,000 د.ع -> 200.00 نقطة
+    const delivered = await createAndDeliverOrder({
+      lines: [{ productUnitId: 1, quantity: 4 }],
+      requestId: "w4-rr-overlap-returns",
+    });
+
+    const invItem = (
+      await d
+        .select()
+        .from(s.invoiceItems)
+        .where(eq(s.invoiceItems.invoiceId, delivered.invoiceId))
+    )[0]!;
+
+    // 1) محاكاة حتمية للقطة REPEATABLE READ مجمّدة قبل التزام المرتجع الأول:
+    let markSnapshotReady!: () => void;
+    const snapshotReady = new Promise<void>((r) => {
+      markSnapshotReady = r;
+    });
+    let releaseSecondTx!: () => void;
+    const firstReturnCommitted = new Promise<void>((r) => {
+      releaseSecondTx = r;
+    });
+
+    const secondReversePromise = withTx(async (tx) => {
+      // قراءة غير قافلة تفتح لقطة REPEATABLE READ قبل التزام المرتجع الأول
+      await tx
+        .select({ id: s.loyaltyLedgerEntries.id })
+        .from(s.loyaltyLedgerEntries)
+        .where(eq(s.loyaltyLedgerEntries.onlineOrderId, delivered.orderId));
+      markSnapshotReady();
+      await firstReturnCommitted;
+      // بعد التزام المرتجع الأول (-50 نقطة)، صافي البضاعة المتبقي بعد المرتجع الثاني = 10,000 د.ع (100 نقطة مستبقاة)
+      return reverseOnlineOrderLoyaltyPoints(tx, {
+        onlineOrderId: delivered.orderId,
+        remainingNetMerchandiseIqd: "10000.00",
+        idempotencyKey: `rev:order:${delivered.orderId}:rr-second`,
+        reasonLabel: `مرتجع جزئي متداخل للطلب ${delivered.orderNumber}`,
+      });
+    });
+
+    await snapshotReady;
+
+    // تنفيذ المرتجع الجزئي الأول فعلياً (قطعة واحدة = 5,000 د.ع -> استرداد -50.00 نقطة، الرصيد يصبح 150.00)
+    await returnSale(
+      {
+        invoiceId: delivered.invoiceId,
+        lines: [{ invoiceItemId: Number(invItem.id), baseQuantity: 1 }],
+        refund: null,
+        clientRequestId: "w4-rr-partial-1",
+      },
+      ADMIN_ACTOR,
+    );
+
+    releaseSecondTx();
+    const secondReverse = await secondReversePromise;
+    expect(secondReverse).toMatchObject({
+      reversed: "50.00",
+      unrecovered: "0.00",
+      balance: "100.00",
+    });
+
+    const accountAfter = (
+      await d
+        .select()
+        .from(s.loyaltyAccounts)
+        .where(eq(s.loyaltyAccounts.customerId, 101))
+    )[0]!;
+    // يجب أن يتبقى 100.00 نقطة (وليس 50.00 بسبب تجاهل المرتجع الأول في اللقطة القديمة)
+    expect(accountAfter.pointsBalance).toBe("100.00");
+
+    // 2) تشغيل مرتجعين جزئيين متزامنين فعلياً عبر returnSale بالتوازي على طلب ثانٍ
+    const secondDelivered = await createAndDeliverOrder({
+      lines: [{ productUnitId: 1, quantity: 4 }],
+      requestId: "w4-parallel-returns-real",
+    });
+    const secondInvItem = (
+      await d
+        .select()
+        .from(s.invoiceItems)
+        .where(eq(s.invoiceItems.invoiceId, secondDelivered.invoiceId))
+    )[0]!;
+
+    await Promise.all([
+      returnSale(
+        {
+          invoiceId: secondDelivered.invoiceId,
+          lines: [{ invoiceItemId: Number(secondInvItem.id), baseQuantity: 1 }],
+          refund: null,
+          clientRequestId: "w4-parallel-ret-a",
+        },
+        ADMIN_ACTOR,
+      ),
+      returnSale(
+        {
+          invoiceId: secondDelivered.invoiceId,
+          lines: [{ invoiceItemId: Number(secondInvItem.id), baseQuantity: 1 }],
+          refund: null,
+          clientRequestId: "w4-parallel-ret-b",
+        },
+        ADMIN_ACTOR,
+      ),
+    ]);
+
+    const finalAccount = (
+      await d
+        .select()
+        .from(s.loyaltyAccounts)
+        .where(eq(s.loyaltyAccounts.customerId, 101))
+    )[0]!;
+    // 100.00 من الطلب الأول + (200.00 - 50.00 - 50.00 = 100.00) من الطلب الثاني = 200.00
+    expect(finalAccount.pointsBalance).toBe("200.00");
+  });
+
+  it("يوحّد ترتيب أقفال العميل والبرنامج بين استبدال النقاط وتسليم الطلبات المتزامنة دون ER_LOCK_DEADLOCK", async () => {
+    const d = db();
+    // شحن الرصيد المبدئي: 3 طلبات × 200 نقطة = 600.00 نقطة
+    for (let i = 1; i <= 3; i++) {
+      await createAndDeliverOrder({
+        lines: [{ productUnitId: 1, quantity: 4 }],
+        requestId: `w4-seed-concurrent-${i}`,
+      });
+    }
+
+    // تجهيز 3 طلبات جديدة جاهزة للتسليم (كل منها يمنح 200.00 نقطة عند DELIVERED)
+    const pendingDeliveries: Array<{ orderId: number; consignmentId: number; reqId: string }> = [];
+    for (let i = 1; i <= 3; i++) {
+      const reqId = `w4-race-deliver-${i}`;
+      const quote = await quoteOnlineOrder({
+        governorate: "baghdad",
+        authenticatedCustomer: { customerId: 101, phone: CUSTOMER_PHONE },
+        lines: [{ productUnitId: 1, quantity: 4 }],
+      });
+      const created = await createOnlineOrder({
+        customerName: "زينب العميلة",
+        customerPhone: CUSTOMER_PHONE,
+        governorate: "baghdad",
+        addressText: "بغداد — الكرادة الشرقية",
+        authenticatedCustomer: { customerId: 101, phone: CUSTOMER_PHONE },
+        clientRequestId: reqId,
+        lines: [{ productUnitId: 1, quantity: 4 }],
+        expectedGrandTotal: quote.total,
+      });
+      await claimOnlineOrder(
+        {
+          id: created.orderId,
+          scopedBranchId: null,
+        },
+        ADMIN_ACTOR,
+      );
+      await markOnlineOrderPrepared(
+        {
+          id: created.orderId,
+          scopedBranchId: null,
+        },
+        ADMIN_ACTOR,
+      );
+      const dispatched = await dispatchOnlineOrder(
+        {
+          onlineOrderId: created.orderId,
+          partyId: 1,
+        },
+        ADMIN_ACTOR,
+      );
+      pendingDeliveries.push({
+        orderId: created.orderId,
+        consignmentId: dispatched.consignmentId!,
+        reqId,
+      });
+    }
+
+    const sessionToken = await signStorefrontCustomerSession({
+      customerId: 101,
+      firebaseUid: "uid-customer-101-lock-order",
+      phone: CUSTOMER_PHONE,
+      sessionVersion: 0,
+    });
+
+    // تشغيل 3 عمليات استبدال نقاط + 3 عمليات تسليم طلبات لنفس العميل بالتوازي الكامل
+    const results = await Promise.all([
+      ...pendingDeliveries.map((item) =>
+        confirmConsignmentDelivery(
+          {
+            consignmentId: item.consignmentId,
+            clientRequestId: `deliver-${item.reqId}`,
+            statementWitness: {
+              partyId: 1,
+              statementNumber: `STMT-${item.reqId}`,
+              kind: "STAFF_CONFIRMED",
+            },
+          },
+          ADMIN_ACTOR,
+        ),
+      ),
+      redeemStorefrontLoyaltyPoints({
+        customerSessionToken: sessionToken,
+        points: 100,
+        clientRequestId: "w4-race-redeem-101",
+      }),
+      redeemStorefrontLoyaltyPoints({
+        customerSessionToken: sessionToken,
+        points: 110,
+        clientRequestId: "w4-race-redeem-102",
+      }),
+      redeemStorefrontLoyaltyPoints({
+        customerSessionToken: sessionToken,
+        points: 120,
+        clientRequestId: "w4-race-redeem-103",
+      }),
+    ]);
+
+    expect(results).toHaveLength(6);
+
+    const finalAcc = (
+      await d
+        .select()
+        .from(s.loyaltyAccounts)
+        .where(eq(s.loyaltyAccounts.customerId, 101))
+    )[0]!;
+    // الرصيد النهائي = 600 (مبدئي) + 600 (3 طلبات مسلّمة) - (100 + 110 + 120) = 870.00
+    expect(finalAcc.pointsBalance).toBe("870.00");
   });
 });

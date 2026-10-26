@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, asc, desc, eq, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 
 import { appErrorMessage } from "../../../shared/errors";
 import {
@@ -18,6 +18,7 @@ import {
 } from "../../../drizzle/schema";
 import { getDb, type Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
+import { retryOnDeadlock } from "../../lib/retryDeadlock";
 import { baghdadToday, utcDayStart } from "../businessDay";
 import { hashCouponCode } from "../couponService";
 import { type DecimalInput, money, round2, toDbMoney } from "../money";
@@ -188,6 +189,8 @@ export async function awardDeliveredOnlineOrderPoints(
         : 0;
   if (!Number.isFinite(customerId) || customerId <= 0) return null;
 
+  // ترتيب الأقفال الموحّد عبر كل عمليات الولاء: customers -> loyaltyPrograms -> loyaltyAccounts
+  // يمنع التوقف المتبادل (deadlock) عند تزامن تسليم طلب مع استبدال العميل لنقاطه.
   const customerRow = (
     await tx
       .select({
@@ -197,6 +200,7 @@ export async function awardDeliveredOnlineOrderPoints(
       })
       .from(customers)
       .where(eq(customers.id, customerId))
+      .for("update")
       .limit(1)
   )[0];
   if (
@@ -219,22 +223,28 @@ export async function awardDeliveredOnlineOrderPoints(
   if (!program) return null;
 
   const idempotencyKey = `earn:order:${input.onlineOrderId}`;
-  const already = (
+  const alreadyByOrder = (
     await tx
       .select({ id: loyaltyLedgerEntries.id })
       .from(loyaltyLedgerEntries)
       .where(
-        or(
-          eq(loyaltyLedgerEntries.idempotencyKey, idempotencyKey),
-          and(
-            eq(loyaltyLedgerEntries.onlineOrderId, input.onlineOrderId),
-            eq(loyaltyLedgerEntries.entryType, "ORDER_EARN"),
-          ),
+        and(
+          eq(loyaltyLedgerEntries.onlineOrderId, input.onlineOrderId),
+          eq(loyaltyLedgerEntries.entryType, "ORDER_EARN"),
         ),
       )
+      .for("update")
       .limit(1)
   )[0];
-  if (already) return null;
+  if (alreadyByOrder) return null;
+  const alreadyByKey = (
+    await tx
+      .select({ id: loyaltyLedgerEntries.id })
+      .from(loyaltyLedgerEntries)
+      .where(eq(loyaltyLedgerEntries.idempotencyKey, idempotencyKey))
+      .limit(1)
+  )[0];
+  if (alreadyByKey) return null;
 
   let eligibleNetIqd: Decimal;
   if (orderRow.invoiceId != null) {
@@ -363,6 +373,32 @@ export async function reverseOnlineOrderLoyaltyPoints(
 
   const boundedIdempotencyKey = boundLoyaltyIdempotencyKey(input.idempotencyKey);
 
+  // قفل صفّ الطلب ثمّ العميل أولاً لتوحيد ترتيب الأقفال مع الاستبدال والاكتساب
+  const orderRow = (
+    await tx
+      .select({
+        customerId: onlineOrders.customerId,
+        total: onlineOrders.total,
+        shippingCost: onlineOrders.shippingCost,
+      })
+      .from(onlineOrders)
+      .where(eq(onlineOrders.id, input.onlineOrderId))
+      .for("update")
+      .limit(1)
+  )[0];
+  let lockedCustomerId =
+    orderRow?.customerId != null && Number(orderRow.customerId) > 0
+      ? Number(orderRow.customerId)
+      : 0;
+  if (lockedCustomerId > 0) {
+    await tx
+      .select({ id: customers.id })
+      .from(customers)
+      .where(eq(customers.id, lockedCustomerId))
+      .for("update")
+      .limit(1);
+  }
+
   const existingByKey = (
     await tx
       .select({ id: loyaltyLedgerEntries.id })
@@ -388,6 +424,17 @@ export async function reverseOnlineOrderLoyaltyPoints(
   )[0];
   if (!earnRow) return null;
 
+  const earnCustomerId = Number(earnRow.customerId);
+  if (earnCustomerId > 0 && earnCustomerId !== lockedCustomerId) {
+    await tx
+      .select({ id: customers.id })
+      .from(customers)
+      .where(eq(customers.id, earnCustomerId))
+      .for("update")
+      .limit(1);
+    lockedCustomerId = earnCustomerId;
+  }
+
   const earnedPoints = round2(money(earnRow.pointsDelta));
   if (!earnedPoints.gt(0)) return null;
 
@@ -402,26 +449,14 @@ export async function reverseOnlineOrderLoyaltyPoints(
   if (!account) return null;
 
   let originalNetMerchandise = parseOriginalEarnedNetMerchandise(earnRow.note);
-  if (!originalNetMerchandise) {
-    const orderRow = (
-      await tx
-        .select({
-          total: onlineOrders.total,
-          shippingCost: onlineOrders.shippingCost,
-        })
-        .from(onlineOrders)
-        .where(eq(onlineOrders.id, input.onlineOrderId))
-        .limit(1)
-    )[0];
-    if (orderRow) {
-      const fallback = round2(
-        Decimal.max(
-          0,
-          money(orderRow.total ?? "0").minus(money(orderRow.shippingCost ?? "0")),
-        ),
-      );
-      if (fallback.gt(0)) originalNetMerchandise = fallback;
-    }
+  if (!originalNetMerchandise && orderRow) {
+    const fallback = round2(
+      Decimal.max(
+        0,
+        money(orderRow.total ?? "0").minus(money(orderRow.shippingCost ?? "0")),
+      ),
+    );
+    if (fallback.gt(0)) originalNetMerchandise = fallback;
   }
   if (!originalNetMerchandise || !originalNetMerchandise.gt(0)) return null;
 
@@ -433,8 +468,10 @@ export async function reverseOnlineOrderLoyaltyPoints(
     earnedPoints.times(clampedRemainingIqd).dividedBy(originalNetMerchandise),
   );
 
+  // قراءة قافلة حالية (FOR UPDATE) لتجاوز لقطة REPEATABLE READ القديمة عند تداخل مرتجعين جزئيين
   const priorReversals = await tx
     .select({
+      idempotencyKey: loyaltyLedgerEntries.idempotencyKey,
       pointsDelta: loyaltyLedgerEntries.pointsDelta,
       note: loyaltyLedgerEntries.note,
     })
@@ -445,7 +482,11 @@ export async function reverseOnlineOrderLoyaltyPoints(
         eq(loyaltyLedgerEntries.onlineOrderId, input.onlineOrderId),
         eq(loyaltyLedgerEntries.entryType, "ORDER_REVERSE"),
       ),
-    );
+    )
+    .for("update");
+  if (priorReversals.some((rev) => rev.idempotencyKey === boundedIdempotencyKey)) {
+    return null;
+  }
 
   let priorAccountedClawback = money(0);
   for (const rev of priorReversals) {
@@ -579,42 +620,43 @@ export async function redeemStorefrontLoyaltyPoints(input: {
     trimmedRequestId,
   );
 
-  return withTx(async (tx) => {
-    const lockedCustomer = (
-      await tx
-        .select({
-          id: customers.id,
-          isActive: customers.isActive,
-          deletedAt: customers.deletedAt,
-        })
-        .from(customers)
-        .where(eq(customers.id, session.customerId))
-        .for("update")
-        .limit(1)
-    )[0];
-    if (
-      !lockedCustomer ||
-      lockedCustomer.isActive === false ||
-      lockedCustomer.deletedAt != null
-    ) {
-      throw new TRPCError({
-        code: "UNAUTHORIZED",
-        message: appErrorMessage({
-          what: "انتهت صلاحية جلسة العميل",
-          why: "لم يعد الحساب نشطاً لإصدار قسائم الولاء",
-          doThis: "أعد تسجيل الدخول وتحقق من رقم هاتفك",
-        }),
-      });
-    }
+  return retryOnDeadlock(() =>
+    withTx(async (tx) => {
+      // ترتيب الأقفال الموحّد: customers -> loyaltyPrograms -> loyaltyAccounts
+      const lockedCustomer = (
+        await tx
+          .select({
+            id: customers.id,
+            isActive: customers.isActive,
+            deletedAt: customers.deletedAt,
+          })
+          .from(customers)
+          .where(eq(customers.id, session.customerId))
+          .for("update")
+          .limit(1)
+      )[0];
+      if (
+        !lockedCustomer ||
+        lockedCustomer.isActive === false ||
+        lockedCustomer.deletedAt != null
+      ) {
+        throw new TRPCError({
+          code: "UNAUTHORIZED",
+          message: appErrorMessage({
+            what: "انتهت صلاحية جلسة العميل",
+            why: "لم يعد الحساب نشطاً لإصدار قسائم الولاء",
+            doThis: "أعد تسجيل الدخول وتحقق من رقم هاتفك",
+          }),
+        });
+      }
 
-    const existingRedeem = (
-      await tx
-        .select()
-        .from(loyaltyLedgerEntries)
-        .where(eq(loyaltyLedgerEntries.idempotencyKey, idempotencyKey))
-        .for("update")
-        .limit(1)
-    )[0];
+      const existingRedeem = (
+        await tx
+          .select()
+          .from(loyaltyLedgerEntries)
+          .where(eq(loyaltyLedgerEntries.idempotencyKey, idempotencyKey))
+          .limit(1)
+      )[0];
     if (existingRedeem) {
       const priorRedeemedPoints = Math.round(
         money(existingRedeem.pointsDelta).abs().toNumber(),
@@ -948,7 +990,8 @@ export async function redeemStorefrontLoyaltyPoints(input: {
       pointsBalance: toDbMoney(nextBalance),
       validTo: resolvedValidTo,
     };
-  });
+  }),
+  );
 }
 
 export async function loyaltyOverview(limit = 30) {
