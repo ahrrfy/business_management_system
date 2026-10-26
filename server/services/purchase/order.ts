@@ -2,11 +2,27 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { desc, eq, inArray, like, sql } from "drizzle-orm";
-import { branches, productVariants, products, purchaseOrderItems, purchaseOrders, shifts, suppliers } from "../../../drizzle/schema";
-import { isWithinPriceDecimals, priceDecimalsMessage, type PriceCurrency } from "../../../shared/moneyPrecision";
+import {
+  branches,
+  productVariants,
+  products,
+  purchaseOrderItems,
+  purchaseOrders,
+  shifts,
+  suppliers,
+} from "../../../drizzle/schema";
+import {
+  isWithinPriceDecimals,
+  priceDecimalsMessage,
+  type PriceCurrency,
+} from "../../../shared/moneyPrecision";
 import { appErrorMessage } from "../../../shared/errors";
 import { extractInsertId } from "../../lib/insertId";
-import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
+import {
+  checkIdempotency,
+  idempotencyHash,
+  recordIdempotencyKey,
+} from "../idempotency";
 import { convertToBaseQuantity } from "../inventoryService";
 import { money, round2, sumMoney, toDateStr, toDbMoney } from "../money";
 import {
@@ -16,16 +32,30 @@ import {
 import type { Tx } from "../../db";
 import { withTx, type Actor } from "../tx";
 import { assertPurchaseBranch } from "./internal";
-import type { ConfirmPurchaseOrderInput, CreatePurchaseOrderInput, PurchaseCashSourceInput, PurchaseDocumentInput, PurchaseSettlementType, UpdatePurchaseOrderInput } from "./types";
+import type {
+  ConfirmPurchaseOrderInput,
+  CreatePurchaseOrderInput,
+  PurchaseCashSourceInput,
+  PurchaseDocumentInput,
+  PurchaseSettlementType,
+  UpdatePurchaseOrderInput,
+} from "./types";
 import { submitPurchaseOrderForApproval } from "./controls";
 import { replacePurchaseOrderRevisionAllocationsTx } from "./requisitions";
-import { appendPurchaseOrderEventTx, createPurchaseOrderRevisionTx } from "./revisions";
+import {
+  appendPurchaseOrderEventTx,
+  createPurchaseOrderRevisionTx,
+} from "./revisions";
 import { openShiftIdTx } from "../shiftService";
 import { PETTY_CASH_LIMIT_IQD } from "../expenseService";
 import { nextCounterValue } from "../numbering";
 import { recordedPurchaseShippingPaymentTx } from "./shippingPayment";
 import { recognizeShippingAndCustomsInTx } from "./automaticInvoicePosting";
-import { readDeclaredPurchaseCashSourceTx, type DeclaredPurchaseCashSource } from "./supplierPayments";
+import {
+  readDeclaredPurchaseCashSourceTx,
+  type DeclaredPurchaseCashSource,
+} from "./supplierPayments";
+import { capturePurchaseTenderTx } from "./tender";
 
 async function captureOrderCashSourceTx(
   tx: Tx,
@@ -42,7 +72,8 @@ async function captureOrderCashSourceTx(
         message: appErrorMessage({
           what: "تعذر حفظ مصدر الصرف النقدي",
           why: "فاتورة الشراء الآجلة تسجّل ذمة على الحساب ولا تقبل مصدر صرف نقدي فوري",
-          doThis: "احذف مصدر النقد للفاتورة الآجلة، أو حوّل نوع التسوية إلى نقدي",
+          doThis:
+            "احذف مصدر النقد للفاتورة الآجلة، أو حوّل نوع التسوية إلى نقدي",
         }),
       });
     }
@@ -54,7 +85,9 @@ async function captureOrderCashSourceTx(
       const prevDeclared = await readDeclaredPurchaseCashSourceTx(
         tx,
         Number(previous.id),
-        previous.currentRevisionId == null ? null : Number(previous.currentRevisionId),
+        previous.currentRevisionId == null
+          ? null
+          : Number(previous.currentRevisionId),
       );
       if (prevDeclared != null && prevDeclared.explicit !== false) {
         return prevDeclared;
@@ -82,7 +115,12 @@ async function captureOrderCashSourceTx(
     }
     const openShiftId = await openShiftIdTx(tx, creatorId, branchId);
     return openShiftId != null
-      ? { mode: "DRAWER", shiftId: openShiftId, payerUserId: creatorId, explicit: false }
+      ? {
+          mode: "DRAWER",
+          shiftId: openShiftId,
+          payerUserId: creatorId,
+          explicit: false,
+        }
       : null;
   }
   if (cashSourceInput.mode === "TREASURY") {
@@ -92,11 +130,17 @@ async function captureOrderCashSourceTx(
         message: appErrorMessage({
           what: "تعذر حفظ مصدر الصرف من الخزينة",
           why: "الخزينة الرئيسية لا تقبل رقم وردية",
-          doThis: "اختر الخزينة الرئيسية دون رقم وردية، أو اختر درج الوردية المفتوحة",
+          doThis:
+            "اختر الخزينة الرئيسية دون رقم وردية، أو اختر درج الوردية المفتوحة",
         }),
       });
     }
-    return { mode: "TREASURY", shiftId: null, payerUserId: creatorId, explicit: true };
+    return {
+      mode: "TREASURY",
+      shiftId: null,
+      payerUserId: creatorId,
+      explicit: true,
+    };
   }
   if (cashSourceInput.mode !== "DRAWER") {
     throw new TRPCError({
@@ -104,11 +148,13 @@ async function captureOrderCashSourceTx(
       message: appErrorMessage({
         what: "تعذر حفظ مصدر الصرف النقدي",
         why: "مصدر الصرف المرسل غير مدعوم لفاتورة الشراء النقدية",
-        doThis: "اختر درج الوردية المفتوحة أو الخزينة الرئيسية كمصدر للصرف النقدي",
+        doThis:
+          "اختر درج الوردية المفتوحة أو الخزينة الرئيسية كمصدر للصرف النقدي",
       }),
     });
   }
-  const shiftId = cashSourceInput.shiftId ?? (await openShiftIdTx(tx, creatorId, branchId));
+  const shiftId =
+    cashSourceInput.shiftId ?? (await openShiftIdTx(tx, creatorId, branchId));
   const [shift] =
     shiftId == null
       ? []
@@ -124,77 +170,163 @@ async function captureOrderCashSourceTx(
       message: appErrorMessage({
         what: "تعذر حفظ مصدر صرف الفاتورة النقدية من الدرج",
         why: "لا توجد وردية مفتوحة تخص منشئ الفاتورة في هذا الفرع",
-        doThis: "افتح وردية صالحة أولاً، أو اختر الخزينة الرئيسية ليعتمدها المالك النشط",
+        doThis:
+          "افتح وردية صالحة أولاً، أو اختر الخزينة الرئيسية ليعتمدها المالك النشط",
       }),
     });
   }
-  return { mode: "DRAWER", shiftId: Number(shift.id), payerUserId: creatorId, explicit: true };
+  return {
+    mode: "DRAWER",
+    shiftId: Number(shift.id),
+    payerUserId: creatorId,
+    explicit: true,
+  };
 }
 
 async function captureShippingSourceTx(
-  tx: Tx, input: PurchaseDocumentInput, actor: Actor, branchId: number,
+  tx: Tx,
+  input: PurchaseDocumentInput,
+  actor: Actor,
+  branchId: number,
   previous?: typeof purchaseOrders.$inferSelect,
 ) {
-  const source = input.shippingFundingSource ?? previous?.shippingFundingSource ?? "ACCRUAL";
-  const requestedShift = source === "DRAWER" ? input.shippingShiftId ?? previous?.shippingFundingShiftId ?? null : null;
-  const sourceUnchanged = previous && source === previous.shippingFundingSource
-    && requestedShift === previous.shippingFundingShiftId
-    && money(input.shippingCost ?? "0").eq(money(previous.shippingCost ?? "0"))
-    && money(input.customsCost ?? "0").eq(money(previous.customsCost ?? "0"));
+  const source =
+    input.shippingFundingSource ?? previous?.shippingFundingSource ?? "ACCRUAL";
+  const requestedShift =
+    source === "DRAWER"
+      ? (input.shippingShiftId ?? previous?.shippingFundingShiftId ?? null)
+      : null;
+  const sourceUnchanged =
+    previous &&
+    source === previous.shippingFundingSource &&
+    requestedShift === previous.shippingFundingShiftId &&
+    money(input.shippingCost ?? "0").eq(money(previous.shippingCost ?? "0")) &&
+    money(input.customsCost ?? "0").eq(money(previous.customsCost ?? "0"));
   if (previous?.shippingFundingSource === "DRAWER") {
     const recorded = await recordedPurchaseShippingPaymentTx(tx, {
-      purchaseOrderId: Number(previous.id), branchId, creatorId: Number(previous.createdBy),
-      amount: toDbMoney(money(previous.shippingCost ?? "0").plus(money(previous.customsCost ?? "0"))),
+      purchaseOrderId: Number(previous.id),
+      branchId,
+      creatorId: Number(previous.createdBy),
+      amount: toDbMoney(
+        money(previous.shippingCost ?? "0").plus(
+          money(previous.customsCost ?? "0"),
+        ),
+      ),
       shiftId: previous.shippingFundingShiftId,
     });
     if (recorded != null) {
-      if (!sourceUnchanged) throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
-        what: "تعذر تعديل الشحن المدفوع", why: "مبلغ الشحن ومصدره مثبتان بإيصال وقيد نقدي فعلي",
-        doThis: "اترك الشحن المدفوع كما هو؛ عالج أي استرداد من مسار تصحيح المصروف المرتبط",
-      }) });
-      return { shippingFundingSource: "DRAWER" as const, shippingFundingShiftId: previous.shippingFundingShiftId };
+      if (!sourceUnchanged)
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذر تعديل الشحن المدفوع",
+            why: "مبلغ الشحن ومصدره مثبتان بإيصال وقيد نقدي فعلي",
+            doThis:
+              "اترك الشحن المدفوع كما هو؛ عالج أي استرداد من مسار تصحيح المصروف المرتبط",
+          }),
+        });
+      return {
+        shippingFundingSource: "DRAWER" as const,
+        shippingFundingShiftId: previous.shippingFundingShiftId,
+      };
     }
   }
-  if (previous && Number(previous.createdBy) !== actor.userId && !sourceUnchanged) throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({
-    what: "تعذر تعديل تصريح دفع الشحن", why: "تصريح الدفع ومصدره ومبلغه تخص منشئ الفاتورة، لا المحرر أو المعتمد",
-    doThis: "اترك تصريح المنشئ كما هو، أو اطلب منه مراجعة الدفع ومصدره",
-  }) });
+  if (
+    previous &&
+    Number(previous.createdBy) !== actor.userId &&
+    !sourceUnchanged
+  )
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذر تعديل تصريح دفع الشحن",
+        why: "تصريح الدفع ومصدره ومبلغه تخص منشئ الفاتورة، لا المحرر أو المعتمد",
+        doThis: "اترك تصريح المنشئ كما هو، أو اطلب منه مراجعة الدفع ومصدره",
+      }),
+    });
   if (source === "ACCRUAL") {
-    if (input.shippingShiftId != null) throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
-      what: "تعذر حفظ مصدر الشحن", why: "الشحن غير المدفوع لا يملك وردية صرف",
-      doThis: "اختر غير مدفوع دون وردية، أو صرح بالدفع النقدي من درجك",
-    }) });
-    return { shippingFundingSource: "ACCRUAL" as const, shippingFundingShiftId: null };
+    if (input.shippingShiftId != null)
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذر حفظ مصدر الشحن",
+          why: "الشحن غير المدفوع لا يملك وردية صرف",
+          doThis: "اختر غير مدفوع دون وردية، أو صرح بالدفع النقدي من درجك",
+        }),
+      });
+    return {
+      shippingFundingSource: "ACCRUAL" as const,
+      shippingFundingShiftId: null,
+    };
   }
-  const amount = round2(money(input.shippingCost ?? "0").plus(money(input.customsCost ?? "0")));
-  if (!amount.gt(0) || amount.gte(PETTY_CASH_LIMIT_IQD)) throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
-    what: "تعذر حفظ دفع الشحن من الدرج", why: "مبلغ الشحن يجب أن يكون موجباً وأقل من سقف النثرية",
-    doThis: "صحح أجرة الشحن، أو استخدم مسار الصرف الإداري للمبلغ المتجاوز للسقف",
-  }) });
+  const amount = round2(
+    money(input.shippingCost ?? "0").plus(money(input.customsCost ?? "0")),
+  );
+  if (!amount.gt(0) || amount.gte(PETTY_CASH_LIMIT_IQD))
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذر حفظ دفع الشحن من الدرج",
+        why: "مبلغ الشحن يجب أن يكون موجباً وأقل من سقف النثرية",
+        doThis:
+          "صحح أجرة الشحن، أو استخدم مسار الصرف الإداري للمبلغ المتجاوز للسقف",
+      }),
+    });
   const creatorId = Number(previous?.createdBy ?? actor.userId);
-  const shiftId = requestedShift ?? await openShiftIdTx(tx, creatorId, branchId, "RETAIL");
-  const [shift] = shiftId == null ? [] : await tx.select().from(shifts).where(eq(shifts.id, shiftId)).for("update").limit(1);
-  if (!shift || shift.status !== "OPEN" || Number(shift.branchId) !== branchId || Number(shift.userId) !== creatorId) {
-    throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
-      what: "تعذر توثيق دفع الشحن من الدرج", why: "مصدر الدفع ليس وردية مفتوحة تخص منشئ الفاتورة في فرعها",
-      doThis: "حدد درجك الفعلي المفتوح؛ لا تستخدم درج المعتمد ولا تحول الدفع للخزينة تلقائياً",
-    }) });
+  const shiftId =
+    requestedShift ?? (await openShiftIdTx(tx, creatorId, branchId, "RETAIL"));
+  const [shift] =
+    shiftId == null
+      ? []
+      : await tx
+          .select()
+          .from(shifts)
+          .where(eq(shifts.id, shiftId))
+          .for("update")
+          .limit(1);
+  if (
+    !shift ||
+    shift.status !== "OPEN" ||
+    Number(shift.branchId) !== branchId ||
+    Number(shift.userId) !== creatorId
+  ) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "تعذر توثيق دفع الشحن من الدرج",
+        why: "مصدر الدفع ليس وردية مفتوحة تخص منشئ الفاتورة في فرعها",
+        doThis:
+          "حدد درجك الفعلي المفتوح؛ لا تستخدم درج المعتمد ولا تحول الدفع للخزينة تلقائياً",
+      }),
+    });
   }
-  return { shippingFundingSource: "DRAWER" as const, shippingFundingShiftId: Number(shift.id) };
+  return {
+    shippingFundingSource: "DRAWER" as const,
+    shippingFundingShiftId: Number(shift.id),
+  };
 }
 
 /** تسلسل سعر ضمني لعمود decimal(15,4) — نظير toDbRate في exchangeHouseService. */
-const toDbRate = (x: Decimal): string => x.toDecimalPlaces(4, Decimal.ROUND_HALF_UP).toFixed(4);
+const toDbRate = (x: Decimal): string =>
+  x.toDecimalPlaces(4, Decimal.ROUND_HALF_UP).toFixed(4);
 
 /**
  * حارس الأصناف القابلة للشراء — بكج أو صنف أمانة يُرفَض عند الإدخال لا عند الاستلام.
  * مُستخرَجٌ كي يحرس **الإنشاء والتعديل** معاً: تعديلٌ يُدخل بكجاً كان سيتجاوز حارس الإنشاء
  * ويتعثّر لاحقاً في `applyMovement` بعد جهد إدخالٍ كامل (بضاعةٌ على الرصيف بلا AP).
  */
-async function assertPurchasableVariants(tx: Tx, uniqueVariantIds: number[]): Promise<void> {
+async function assertPurchasableVariants(
+  tx: Tx,
+  uniqueVariantIds: number[],
+): Promise<void> {
   if (!uniqueVariantIds.length) return;
   const flags = await tx
-    .select({ isBundle: products.isBundle, isConsignment: products.isConsignment, productName: products.name, sku: productVariants.sku })
+    .select({
+      isBundle: products.isBundle,
+      isConsignment: products.isConsignment,
+      productName: products.name,
+      sku: productVariants.sku,
+    })
     .from(productVariants)
     .innerJoin(products, eq(productVariants.productId, products.id))
     .where(inArray(productVariants.id, uniqueVariantIds));
@@ -243,10 +375,17 @@ async function variantLabel(tx: Tx, variantId: number): Promise<string> {
  * الشاشتين امتنعتا عن إرسال القيمة أصلاً هرباً من الرفض، فضاع الضابط كلّه وصار الأمر يُحفَظ بلا
  * أيّ تحقّقٍ من مستنده. الرسالة الآن **تشخيصيّة**: الرقمان والفرق واتّجاهه وسببه المعتاد.
  */
-function assertSupplierInvoiceMatch(declaredRaw: string, expected: Decimal, currency: "IQD" | "USD"): void {
+function assertSupplierInvoiceMatch(
+  declaredRaw: string,
+  expected: Decimal,
+  currency: "IQD" | "USD",
+): void {
   const declared = round2(money(declaredRaw));
   if (declared.lt(0)) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "قيمة فاتورة المورّد لا تصحّ أن تكون سالبة" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "قيمة فاتورة المورّد لا تصحّ أن تكون سالبة",
+    });
   }
   const expectedR = round2(expected);
   if (declared.eq(expectedR)) return;
@@ -275,10 +414,16 @@ function assertSupplierInvoiceMatch(declaredRaw: string, expected: Decimal, curr
 function allocateByValue(grossLines: Decimal[], target: Decimal): Decimal[] {
   const grossTotal = grossLines.reduce((acc, g) => acc.plus(g), new Decimal(0));
   if (grossTotal.lte(0)) return grossLines.map(() => new Decimal(0));
-  const allocated = grossLines.map((g) => round2(g.times(target).dividedBy(grossTotal)));
+  const allocated = grossLines.map((g) =>
+    round2(g.times(target).dividedBy(grossTotal)),
+  );
   let absorbIdx = -1;
   for (let i = 0; i < grossLines.length; i++) {
-    if (grossLines[i].gt(0) && (absorbIdx < 0 || grossLines[i].gt(grossLines[absorbIdx]))) absorbIdx = i;
+    if (
+      grossLines[i].gt(0) &&
+      (absorbIdx < 0 || grossLines[i].gt(grossLines[absorbIdx]))
+    )
+      absorbIdx = i;
   }
   if (absorbIdx >= 0) {
     const sum = allocated.reduce((acc, a) => acc.plus(a), new Decimal(0));
@@ -298,11 +443,15 @@ function allocateByValue(grossLines: Decimal[], target: Decimal): Decimal[] {
  */
 async function computePurchaseDocument(tx: Tx, input: PurchaseDocumentInput) {
   const agreedCurrency = input.agreedCurrency ?? "IQD";
-  const explicitUsdRate = agreedCurrency === "USD" && input.agreedRate != null
-    ? money(input.agreedRate)
-    : null;
+  const explicitUsdRate =
+    agreedCurrency === "USD" && input.agreedRate != null
+      ? money(input.agreedRate)
+      : null;
   if (explicitUsdRate && explicitUsdRate.lte(0)) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "سعر صرف تثبيت الفاتورة يجب أن يكون موجباً" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "سعر صرف تثبيت الفاتورة يجب أن يكون موجباً",
+    });
   }
 
   // عملةُ **أسعار البنود** ليست دائماً عملةَ الأمر: المسار القديم (agreedCurrency=USD بلا سعر
@@ -322,8 +471,16 @@ async function computePurchaseDocument(tx: Tx, input: PurchaseDocumentInput) {
   for (const it of input.items) {
     // PROC-01: حدّ ثقة الخدمة — money() لا يَرفض السالب وحده، فنَفحص الإشارة صراحةً
     // (الخدمة تُستدعى أيضاً من importService/seed لا الراوتر فقط ⇒ دفاع متعمّق إلزامي).
-    if (money(it.unitPrice).lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "سعر الشراء لا يصحّ أن يكون سالباً" });
-    if (money(it.quantity).lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "كمية الشراء يجب أن تكون موجبة" });
+    if (money(it.unitPrice).lt(0))
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "سعر الشراء لا يصحّ أن يكون سالباً",
+      });
+    if (money(it.quantity).lte(0))
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "كمية الشراء يجب أن تكون موجبة",
+      });
     // دقّة السعر حسب عملته (`shared/moneyPrecision`): الدينار منزلتان (عمود decimal(15,2))
     // والدولار أربع (عمود usdUnitPrice decimal(15,4)). **رفضٌ صريح لا قصٌّ صامت**: قصُّ 3.4566
     // إلى 3.46 يبدو نجاحاً بينما يُنقص ذمّة المورّد ويُسمّم WAVG لكلّ بيعةٍ لاحقة من الصنف.
@@ -332,28 +489,52 @@ async function computePurchaseDocument(tx: Tx, input: PurchaseDocumentInput) {
     // (والراوتر يجعل الحقل إلزامياً أصلاً، فلا يبلغها إلا مستدعٍ مباشر). إقحامُها في فحص الدقّة
     // يُنتج رسالة «يقبل منزلتين» عن حقلٍ لم يُرسَل إطلاقاً — تشخيصٌ مضلِّل. والصيغُ التالفة يردّها
     // `money()` أعلاه برسالتها الصحيحة («قيمة غير صالحة») قبل الوصول إلى هنا.
-    const rawUnitPrice = it.unitPrice == null ? "" : String(it.unitPrice).trim();
-    if (rawUnitPrice !== "" && !isWithinPriceDecimals(rawUnitPrice, linePriceCurrency)) {
+    const rawUnitPrice =
+      it.unitPrice == null ? "" : String(it.unitPrice).trim();
+    if (
+      rawUnitPrice !== "" &&
+      !isWithinPriceDecimals(rawUnitPrice, linePriceCurrency)
+    ) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: priceDecimalsMessage(linePriceCurrency, await variantLabel(tx, it.variantId), rawUnitPrice),
+        message: priceDecimalsMessage(
+          linePriceCurrency,
+          await variantLabel(tx, it.variantId),
+          rawUnitPrice,
+        ),
       });
     }
-    const { baseQuantity } = await convertToBaseQuantity(tx, it.productUnitId, it.quantity, it.variantId);
+    const { baseQuantity } = await convertToBaseQuantity(
+      tx,
+      it.productUnitId,
+      it.quantity,
+      it.variantId,
+    );
     const qty = money(it.quantity);
     const grossUnitDoc = money(it.unitPrice);
-    gross.push({ it, baseQuantity, qty, grossUnitDoc, grossLineDoc: round2(grossUnitDoc.times(qty)) });
+    gross.push({
+      it,
+      baseQuantity,
+      qty,
+      grossUnitDoc,
+      grossLineDoc: round2(grossUnitDoc.times(qty)),
+    });
   }
 
   // ═══ خصم فاتورة المورّد (0204) ═════════════════════════════════════════════════
   // يُدخَل بعملة المستند ويُوزَّع **بنسبة القيمة**، فتُخزَّن أعمدةُ المال صافيةً ⇒ الذمّة وتكلفةُ
   // المخزون ومرتجعُ الشراء تلتقطه بلا تغييرٍ في قرّائها (قرار المالك: «تكلفة الصنف = سعر المورّد
   // وحده» — وخصمُ المورّد جزءٌ من سعره، فيَنقص التكلفة لا يُسجَّل إيراداً).
-  const grossSubtotalDoc = round2(sumMoney(gross.map((g) => g.grossLineDoc.toFixed(2))));
+  const grossSubtotalDoc = round2(
+    sumMoney(gross.map((g) => g.grossLineDoc.toFixed(2))),
+  );
   const discountDoc = round2(money(input.invoiceDiscount ?? "0"));
   const docSym = linePriceCurrency === "USD" ? "$" : "د.ع";
   if (discountDoc.lt(0)) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "خصم فاتورة المورّد لا يصحّ أن يكون سالباً" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "خصم فاتورة المورّد لا يصحّ أن يكون سالباً",
+    });
   }
   if (discountDoc.gt(grossSubtotalDoc)) {
     // خصمٌ يتجاوز البضاعة يقلب الذمّة والتكلفة سالبتَين — رفضٌ بالرقمين لا رسالةٌ عامّة.
@@ -365,12 +546,19 @@ async function computePurchaseDocument(tx: Tx, input: PurchaseDocumentInput) {
     });
   }
   const netTargetDoc = grossSubtotalDoc.minus(discountDoc);
-  const netLinesDoc = allocateByValue(gross.map((g) => g.grossLineDoc), netTargetDoc);
+  const netLinesDoc = allocateByValue(
+    gross.map((g) => g.grossLineDoc),
+    netTargetDoc,
+  );
   // نسبةُ الصافي إلى الإجماليّ: تُشتقّ منها **أسعار الوحدة** الصافية. لا نشتقّها من إجمالي السطر
   // مقسوماً على الكمّية: ذلك يُعيد تقريباً مركّباً يُزحزح سعر الدولار ذا الأربع منازل حتى بلا خصم.
-  const discountRatio = grossSubtotalDoc.gt(0) ? netTargetDoc.dividedBy(grossSubtotalDoc) : new Decimal(1);
+  const discountRatio = grossSubtotalDoc.gt(0)
+    ? netTargetDoc.dividedBy(grossSubtotalDoc)
+    : new Decimal(1);
   const roundDocPrice = (x: Decimal) =>
-    linePriceCurrency === "USD" ? x.toDecimalPlaces(4, Decimal.ROUND_HALF_UP) : round2(x);
+    linePriceCurrency === "USD"
+      ? x.toDecimalPlaces(4, Decimal.ROUND_HALF_UP)
+      : round2(x);
 
   // ═══ تمريرة ٢: الصفوف النهائية (صافيةً بعد الخصم) ══════════════════════════════
   const rows = [];
@@ -380,22 +568,31 @@ async function computePurchaseDocument(tx: Tx, input: PurchaseDocumentInput) {
   for (let i = 0; i < gross.length; i++) {
     const g = gross[i];
     // بلا خصم ⇒ النسبة ١ والسعر الصافي = الأصليّ **حرفياً** (صفر أثرٍ على السلوك القائم).
-    const netUnitDoc = discountDoc.isZero() ? g.grossUnitDoc : roundDocPrice(g.grossUnitDoc.times(discountRatio));
+    const netUnitDoc = discountDoc.isZero()
+      ? g.grossUnitDoc
+      : roundDocPrice(g.grossUnitDoc.times(discountRatio));
     const netLineDoc = netLinesDoc[i];
     const usdUnitPrice = explicitUsdRate ? netUnitDoc : null;
     const usdLineNet = explicitUsdRate ? netLineDoc : null;
     // المسار الجديد: سعر البند المُدخل USD ويُحوّل بسعر التثبيت. المسار القديم بلا agreedRate
     // يبقى متوافقاً: unitPrice ديناري وusdTotal مرجع إجمالي فقط.
     // سعرُ الوحدة الدينارية يبقى ٢dp (عمودُه decimal(15,2)) — عرضٌ ومرجعُ تكلفةِ الوحدة عند الاستلام.
-    const iqdUnitPrice = explicitUsdRate ? round2(netUnitDoc.times(explicitUsdRate)) : netUnitDoc;
+    const iqdUnitPrice = explicitUsdRate
+      ? round2(netUnitDoc.times(explicitUsdRate))
+      : netUnitDoc;
     // إجماليُّ السطر بالدينار يُترجَم من **إجمالي السطر بالدولار**، لا من سعر الوحدة بعد تقريبه:
     // الالتزام دولاريّ والدينارُ ترجمتُه بسعر التثبيت. الضربُ بعد التقريب كان يُراكم فرقَ التقريب
     // × الكمية (٥٠٠٠ وحدة × فرق ٠٫٤ د.ع = ٢٠٠٠ د.ع) فيخالف إجماليُّ الأمر فاتورةَ المورّد وذمّته.
-    const lineNet = explicitUsdRate ? round2(netLineDoc.times(explicitUsdRate)) : netLineDoc;
+    const lineNet = explicitUsdRate
+      ? round2(netLineDoc.times(explicitUsdRate))
+      : netLineDoc;
     lineNets.push(lineNet.toFixed(2));
     if (usdLineNet) usdLineNets.push(usdLineNet.toFixed(2));
     grossLineIqds.push(
-      (explicitUsdRate ? round2(g.grossLineDoc.times(explicitUsdRate)) : g.grossLineDoc).toFixed(2),
+      (explicitUsdRate
+        ? round2(g.grossLineDoc.times(explicitUsdRate))
+        : g.grossLineDoc
+      ).toFixed(2),
     );
     rows.push({
       variantId: g.it.variantId,
@@ -409,18 +606,31 @@ async function computePurchaseDocument(tx: Tx, input: PurchaseDocumentInput) {
       // لقطةُ ورقة المورّد: السعر **قبل** الخصم. `null` بلا خصم ⇒ القارئ يسقط على `unitPrice`.
       listUnitPrice: discountDoc.isZero()
         ? null
-        : toDbMoney(explicitUsdRate ? round2(g.grossUnitDoc.times(explicitUsdRate)) : g.grossUnitDoc),
-      usdListUnitPrice: discountDoc.isZero() || !explicitUsdRate ? null : toDbRate(g.grossUnitDoc),
+        : toDbMoney(
+            explicitUsdRate
+              ? round2(g.grossUnitDoc.times(explicitUsdRate))
+              : g.grossUnitDoc,
+          ),
+      usdListUnitPrice:
+        discountDoc.isZero() || !explicitUsdRate
+          ? null
+          : toDbRate(g.grossUnitDoc),
     });
   }
   // PROC-03: نسبة الضريبة في [٠، ١٠٠] — تَمنع ضريبة سالبة تُخفّض الإجمالي/AP، أو نسبة شاذّة.
   const taxRate = money(input.taxRatePercent ?? "0");
-  if (taxRate.lt(0) || taxRate.gt(100)) throw new TRPCError({ code: "BAD_REQUEST", message: "نسبة الضريبة يجب أن تكون بين ٠ و١٠٠" });
+  if (taxRate.lt(0) || taxRate.gt(100))
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "نسبة الضريبة يجب أن تكون بين ٠ و١٠٠",
+    });
   const subtotal = round2(sumMoney(lineNets));
   // الضريبة على الوعاء **بعد الخصم** (المعالجة القياسية: الخصم التجاريّ يُنقص وعاء الضريبة).
   const tax = round2(subtotal.times(taxRate).dividedBy(100));
   // الخصمُ بالدينار = فرقُ الإجماليَّين الدينارّيَين (للأمر الدولاريّ هو ترجمةُ خصمه بسعر التثبيت).
-  const invoiceDiscountIqd = round2(round2(sumMoney(grossLineIqds)).minus(subtotal));
+  const invoiceDiscountIqd = round2(
+    round2(sumMoney(grossLineIqds)).minus(subtotal),
+  );
   const usdInvoiceDiscountVal = explicitUsdRate ? discountDoc : null;
 
   // landed-cost (تكلفة الشحن/الكمرك): قرار المالك (٥/٨/٢٦) — تُخزَّن على الأمر وتُسجَّل مصروفَ
@@ -429,12 +639,23 @@ async function computePurchaseDocument(tx: Tx, input: PurchaseDocumentInput) {
   // **قبل** الاشتقاق والتخزين ⇒ الأعمدة المخزَّنة تطابق ما يقرأه الاستلام تماماً (Codex P2).
   const shippingCost = round2(money(input.shippingCost ?? "0"));
   const customsCost = round2(money(input.customsCost ?? "0"));
-  if (shippingCost.lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "تكلفة الشحن لا تصحّ أن تكون سالبة" });
-  if (customsCost.lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "تكلفة الكمرك لا تصحّ أن تكون سالبة" });
+  if (shippingCost.lt(0))
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "تكلفة الشحن لا تصحّ أن تكون سالبة",
+    });
+  if (customsCost.lt(0))
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "تكلفة الكمرك لا تصحّ أن تكون سالبة",
+    });
   const landed = round2(shippingCost.plus(customsCost));
   // التوزيع بنسبة القيمة يتطلّب قيمة بضاعة موجبة — لا وعاء للتوزيع عند subtotal=0 (كلّ الأسعار صفر).
   if (landed.gt(0) && subtotal.lte(0)) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن توزيع الشحن/الكمرك على أمر بقيمة بضاعة صفر" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "لا يمكن توزيع الشحن/الكمرك على أمر بقيمة بضاعة صفر",
+    });
   }
   const total = round2(subtotal.plus(tax));
 
@@ -447,16 +668,25 @@ async function computePurchaseDocument(tx: Tx, input: PurchaseDocumentInput) {
     const usdGoods = round2(sumMoney(usdLineNets));
     const usdTax = round2(usdGoods.times(taxRate).dividedBy(100));
     const expectedUsdInvoiceTotal = round2(usdGoods.plus(usdTax));
-    usdTotalVal = explicitUsdRate ? expectedUsdInvoiceTotal : money(input.usdTotal ?? 0);
+    usdTotalVal = explicitUsdRate
+      ? expectedUsdInvoiceTotal
+      : money(input.usdTotal ?? 0);
     if (usdTotalVal.lte(0)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ بالدولار (فاتورة المورد) يجب أن يكون موجباً" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "المبلغ بالدولار (فاتورة المورد) يجب أن يكون موجباً",
+      });
     }
     if (explicitUsdRate) {
       expectedInvoiceTotal = expectedUsdInvoiceTotal;
       // `usdTotal` مسارٌ قديمٌ يحمل نفس معنى `supplierInvoiceTotal` ⇒ يمرّ بالحارس نفسه برسالته
       // المُرقَّمة (كانت «لا يطابق مجموع البنود» عمياء: بلا رقمٍ ولا سببٍ ولا سبيلِ تسوية).
       if (input.usdTotal != null) {
-        assertSupplierInvoiceMatch(input.usdTotal, expectedUsdInvoiceTotal, "USD");
+        assertSupplierInvoiceMatch(
+          input.usdTotal,
+          expectedUsdInvoiceTotal,
+          "USD",
+        );
       }
     }
     agreedRateVal = explicitUsdRate ?? total.dividedBy(usdTotalVal);
@@ -465,29 +695,76 @@ async function computePurchaseDocument(tx: Tx, input: PurchaseDocumentInput) {
   // ضابط مطابقة فاتورة المورّد: يُفحَص بعملة **أسعار البنود** لا بـ`agreedCurrency` — فالمسار
   // القديم (USD بلا سعر تثبيت) أسعارُه دينارية وإجماليّه دينارّي، فمقارنتُه بعلامة «$» كانت
   // ستقارن رقمين بعملتين وتُسمّي الدينار دولاراً. `linePriceCurrency` هو المعيار الصادق الوحيد.
-  if (input.supplierInvoiceTotal != null && String(input.supplierInvoiceTotal).trim() !== "") {
-    assertSupplierInvoiceMatch(input.supplierInvoiceTotal, expectedInvoiceTotal, linePriceCurrency);
+  if (
+    input.supplierInvoiceTotal != null &&
+    String(input.supplierInvoiceTotal).trim() !== ""
+  ) {
+    assertSupplierInvoiceMatch(
+      input.supplierInvoiceTotal,
+      expectedInvoiceTotal,
+      linePriceCurrency,
+    );
   }
 
-  return { rows, subtotal, tax, taxRate, shippingCost, customsCost, total, agreedCurrency, usdTotalVal, agreedRateVal, invoiceDiscountIqd, usdInvoiceDiscountVal };
+  return {
+    rows,
+    subtotal,
+    tax,
+    taxRate,
+    shippingCost,
+    customsCost,
+    total,
+    agreedCurrency,
+    usdTotalVal,
+    agreedRateVal,
+    invoiceDiscountIqd,
+    usdInvoiceDiscountVal,
+  };
 }
 
-async function purchaseCreationReplayTx(tx: Tx, key: string | undefined, hash: string) {
+async function purchaseCreationReplayTx(
+  tx: Tx,
+  key: string | undefined,
+  hash: string,
+) {
   if (!key) return null;
-  const existing = await checkIdempotency(tx, "purchase.create", key, hash, { requireStoredHash: true });
+  const existing = await checkIdempotency(tx, "purchase.create", key, hash, {
+    requireStoredHash: true,
+  });
   if (existing == null) return null;
-  const [saved] = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, existing)).for("share").limit(1);
-  if (!saved) throw new TRPCError({ code: "CONFLICT", message: "سجل إعادة الطلب يشير إلى أمر شراء غير موجود" });
-  return { purchaseOrderId: existing, poNumber: saved.poNumber, total: String(saved.total), status: saved.status,
-    version: Number(saved.version), revisionId: saved.currentRevisionId == null ? null : Number(saved.currentRevisionId), idempotent: true as const };
+  const [saved] = await tx
+    .select()
+    .from(purchaseOrders)
+    .where(eq(purchaseOrders.id, existing))
+    .for("share")
+    .limit(1);
+  if (!saved)
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "سجل إعادة الطلب يشير إلى أمر شراء غير موجود",
+    });
+  return {
+    purchaseOrderId: existing,
+    poNumber: saved.poNumber,
+    total: String(saved.total),
+    status: saved.status,
+    version: Number(saved.version),
+    revisionId:
+      saved.currentRevisionId == null ? null : Number(saved.currentRevisionId),
+    idempotent: true as const,
+  };
 }
 
-export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor: Actor) {
+export async function createPurchaseOrder(
+  input: CreatePurchaseOrderInput,
+  actor: Actor,
+) {
   // دفاع الخدمة نفسها: لا يستطيع مستدعٍ داخلي/قديم تجاوز maker-checker بإنشاء أمر معتمد.
   if (input.status != null && input.status !== "DRAFT") {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "إنشاء أمر الشراء يحفظ مسودة فقط؛ أرسله ثم اعتمده مستخدم مستقل من قائمة المشتريات",
+      message:
+        "إنشاء أمر الشراء يحفظ مسودة فقط؛ أرسله ثم اعتمده مستخدم مستقل من قائمة المشتريات",
     });
   }
   let requestHash: string | undefined;
@@ -502,6 +779,7 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
       supplierId: input.supplierId,
       branchId: input.branchId,
       settlementType: input.settlementType ?? "CREDIT",
+      ...(input.tender !== undefined ? { tender: input.tender } : {}),
       ...(input.cashSource !== undefined
         ? {
             cashSource: input.cashSource
@@ -529,27 +807,49 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
           quantity: i.quantity,
           unitPrice: i.unitPrice,
         }))
-        .sort((a, b) =>
-          a.variantId - b.variantId ||
-          a.productUnitId - b.productUnitId ||
-          a.quantity.localeCompare(b.quantity) ||
-          a.unitPrice.localeCompare(b.unitPrice),
+        .sort(
+          (a, b) =>
+            a.variantId - b.variantId ||
+            a.productUnitId - b.productUnitId ||
+            a.quantity.localeCompare(b.quantity) ||
+            a.unitPrice.localeCompare(b.unitPrice),
         ),
     };
     const payloadHash = idempotencyHash(payloadFingerprint);
     requestHash = payloadHash;
-    const replay = await purchaseCreationReplayTx(tx, input.clientRequestId, payloadHash);
+    const replay = await purchaseCreationReplayTx(
+      tx,
+      input.clientRequestId,
+      payloadHash,
+    );
     if (replay) return replay;
 
     // Cash source precedes branch/PO locks, matching payment and close lock order.
-    const shippingSource = await captureShippingSourceTx(tx, input, actor, input.branchId);
-    const declaredCashSource = await captureOrderCashSourceTx(
+    const shippingSource = await captureShippingSourceTx(
       tx,
-      input.settlementType ?? "CREDIT",
-      input.cashSource,
+      input,
       actor,
       input.branchId,
     );
+    const declaredTender = await capturePurchaseTenderTx(
+      tx,
+      {
+        tender: input.tender,
+        settlementType: input.settlementType ?? "CREDIT",
+        supplierId: input.supplierId,
+        branchId: input.branchId,
+      },
+      actor,
+    );
+    const declaredCashSource = declaredTender
+      ? null
+      : await captureOrderCashSourceTx(
+          tx,
+          input.settlementType ?? "CREDIT",
+          input.cashSource,
+          actor,
+          input.branchId,
+        );
     // نفس قفل الفرع الذي تبدأ به جلسة الجرد: يمنع سباق «التقاط نطاق OPENING ↔ إنشاء قائمة شراء».
     // إن سبق الجردُ، ينظف أمر الشراء العنصر الموجود أدناه؛ وإن سبق الشراءُ، يراه فلتر الجرد بعد القفل.
     const [branch] = await tx
@@ -558,26 +858,52 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
       .where(eq(branches.id, input.branchId))
       .for("update")
       .limit(1);
-    if (!branch) throw new TRPCError({ code: "BAD_REQUEST", message: "الفرع غير موجود" });
+    if (!branch)
+      throw new TRPCError({ code: "BAD_REQUEST", message: "الفرع غير موجود" });
 
-    if (!input.items.length) throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشراء بلا أصناف" });
+    if (!input.items.length)
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "أمر الشراء بلا أصناف",
+      });
 
     // بضاعة الأمانة (§٥-ط، الحارس ١ — أخطر باب ازدواج AP): لا أمر شراء لمورّد من نوع CONSIGNOR —
     // بضاعته تُستلم بسند إيداع لا بأمر شراء (وإلا نشأ دين عند الاستلام + دين ثانٍ عند البيع).
-    const [sup] = await tx.select({ kind: suppliers.supplierKind }).from(suppliers)
-      .where(eq(suppliers.id, input.supplierId)).limit(1);
+    const [sup] = await tx
+      .select({ kind: suppliers.supplierKind })
+      .from(suppliers)
+      .where(eq(suppliers.id, input.supplierId))
+      .limit(1);
     if (sup?.kind === "CONSIGNOR")
-      throw new TRPCError({ code: "BAD_REQUEST", message: "هذا مودِع أمانة — تُستلم بضاعته بسند إيداع من تبويب سندات الأمانة، لا بأمر شراء" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message:
+          "هذا مودِع أمانة — تُستلم بضاعته بسند إيداع من تبويب سندات الأمانة، لا بأمر شراء",
+      });
 
     // gstack B5 (Bundle in PO ⇒ inventory limbo): البكج بلا مخزون ذاتي — تسجيله في أمر شراء يؤدّي إلى
     // فشل الاستلام بحاجز `applyMovement` بعد جهد إدخال كامل، وقد يترك بضاعة على الرصيف بلا AP. نرفض
     // عند الإدخال بدل التعثّر متأخّراً. `listForPurchase` يستبعده من المنتقيات، لكن الدفاع في العمق
     // على مستوى الخدمة يحرس المسارات الأخرى (استيراد/API خارجي/راوتر لا يمرّ بمنتقي الشاشة).
-    const uniqueVariantIds = Array.from(new Set(input.items.map((it) => it.variantId)));
+    const uniqueVariantIds = Array.from(
+      new Set(input.items.map((it) => it.variantId)),
+    );
     await assertPurchasableVariants(tx, uniqueVariantIds);
 
-    const { rows, subtotal, tax, taxRate, shippingCost, customsCost, total, agreedCurrency, usdTotalVal, agreedRateVal, invoiceDiscountIqd, usdInvoiceDiscountVal } =
-      await computePurchaseDocument(tx, input);
+    const {
+      rows,
+      subtotal,
+      tax,
+      taxRate,
+      shippingCost,
+      customsCost,
+      total,
+      agreedCurrency,
+      usdTotalVal,
+      agreedRateVal,
+      invoiceDiscountIqd,
+      usdInvoiceDiscountVal,
+    } = await computePurchaseDocument(tx, input);
     const settlementType = input.settlementType ?? "CREDIT";
     if (agreedCurrency === "USD" && settlementType === "CASH") {
       throw new TRPCError({
@@ -585,7 +911,8 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
         message: appErrorMessage({
           what: "لا يمكن حفظ أمر شراءٍ دولاريّ بتسويةٍ نقدية",
           why: "فاتورة المورد الدولارية تُسدَّد من مسار الصيرفة، لا من صرف الخزينة المباشر",
-          doThis: "اختر تسويةً آجلة لأمر الشراء، أو حوّل عملته إلى الدينار إن كانت التسوية نقدية",
+          doThis:
+            "اختر تسويةً آجلة لأمر الشراء، أو حوّل عملته إلى الدينار إن كانت التسوية نقدية",
         }),
       });
     }
@@ -614,7 +941,9 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
       // خصم فاتورة المورّد (0204): إفصاحٌ وإعادةُ تحميلٍ للمحرّر — الأعمدة المالية مخزَّنة صافيةً
       // أصلاً، فلا يدخل هذا الحقل أيّ حساب (وإلّا خُصم مرّتين).
       invoiceDiscount: invoiceDiscountIqd.toFixed(2),
-      usdInvoiceDiscount: usdInvoiceDiscountVal ? usdInvoiceDiscountVal.toFixed(2) : null,
+      usdInvoiceDiscount: usdInvoiceDiscountVal
+        ? usdInvoiceDiscountVal.toFixed(2)
+        : null,
       agreedRate: agreedRateVal ? toDbRate(agreedRateVal) : null,
       notes: input.notes ?? null,
       createdBy: actor.userId,
@@ -622,15 +951,16 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
     const purchaseOrderId = extractInsertId(insRes);
 
     if (rows.length > 0) {
-      await tx.insert(purchaseOrderItems).values(
-        rows.map((r) => ({ purchaseOrderId, ...r })),
-      );
+      await tx
+        .insert(purchaseOrderItems)
+        .values(rows.map((r) => ({ purchaseOrderId, ...r })));
     }
     const revision = await createPurchaseOrderRevisionTx(tx, {
       purchaseOrderId,
       actorUserId: actor.userId,
       reason: input.revisionReason?.trim() || "إنشاء أمر الشراء",
       cashSource: declaredCashSource,
+      tender: declaredTender,
     });
     await replacePurchaseOrderRevisionAllocationsTx(tx, {
       branchId: input.branchId,
@@ -639,7 +969,10 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
     });
     await tx
       .update(purchaseOrders)
-      .set({ currentRevisionId: revision.revisionId, lastEditedBy: actor.userId })
+      .set({
+        currentRevisionId: revision.revisionId,
+        lastEditedBy: actor.userId,
+      })
       .where(eq(purchaseOrders.id, purchaseOrderId));
     const [governed] = await tx
       .select({ version: purchaseOrders.version })
@@ -659,22 +992,43 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
         version: governed.version,
         revisionNo: revision.revisionNo,
         ...(declaredCashSource ? { cashSource: declaredCashSource } : {}),
+        ...(declaredTender ? { tender: declaredTender } : {}),
       },
     });
     if (shippingSource.shippingFundingSource === "DRAWER") {
       await recognizeShippingAndCustomsInTx(tx, {
-        purchaseOrderId, poNumber, branchId: input.branchId,
-        shippingCost: shippingCost.toFixed(2), customsCost: customsCost.toFixed(2),
-        actor, creatorId: actor.userId, deterministicKey: `shipping-create:${purchaseOrderId}`,
-        recognizedAt: new Date(), evidencePrefix: "PO-CREATION-SHIPPING", recordPaidDeclaration: true,
-        shippingFundingSource: { mode: "DRAWER", shiftId: shippingSource.shippingFundingShiftId },
+        purchaseOrderId,
+        poNumber,
+        branchId: input.branchId,
+        shippingCost: shippingCost.toFixed(2),
+        customsCost: customsCost.toFixed(2),
+        actor,
+        creatorId: actor.userId,
+        deterministicKey: `shipping-create:${purchaseOrderId}`,
+        recognizedAt: new Date(),
+        evidencePrefix: "PO-CREATION-SHIPPING",
+        recordPaidDeclaration: true,
+        shippingFundingSource: {
+          mode: "DRAWER",
+          shiftId: shippingSource.shippingFundingShiftId,
+        },
       });
     }
     // قائمة الشراء غير الملغاة تخرج الصنف فوراً من أي جرد افتتاحي نشط في الفرع، حتى لو بدأ العد.
-    await removeVariantsFromActiveOpeningStocktakes(tx, input.branchId, uniqueVariantIds);
+    await removeVariantsFromActiveOpeningStocktakes(
+      tx,
+      input.branchId,
+      uniqueVariantIds,
+    );
     // IDEM-06: سجّل مفتاح الـidempotency — طلب متزامن مكرّر يصطدم بالقيد الفريد فيُلغى (ROLLBACK).
     if (input.clientRequestId)
-      await recordIdempotencyKey(tx, "purchase.create", input.clientRequestId, purchaseOrderId, payloadHash);
+      await recordIdempotencyKey(
+        tx,
+        "purchase.create",
+        input.clientRequestId,
+        purchaseOrderId,
+        payloadHash,
+      );
     return {
       purchaseOrderId,
       poNumber,
@@ -688,7 +1042,9 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
     // A simultaneous retry may have committed after our first snapshot. Recover
     // only after rollback using a fresh transaction; never gap-lock absent keys.
     if (input.clientRequestId && requestHash) {
-      const replay = await withTx(tx => purchaseCreationReplayTx(tx, input.clientRequestId, requestHash!));
+      const replay = await withTx((tx) =>
+        purchaseCreationReplayTx(tx, input.clientRequestId, requestHash!),
+      );
       if (replay) return replay;
     }
     throw error;
@@ -696,7 +1052,10 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
 }
 
 /** توافق اسمي: «التأكيد» صار إرسالاً وطلب اعتماد صفري الأثر، ولا يفتح الاستلام مباشرة. */
-export async function confirmPurchaseOrder(input: ConfirmPurchaseOrderInput, actor: Actor & { role?: string }) {
+export async function confirmPurchaseOrder(
+  input: ConfirmPurchaseOrderInput,
+  actor: Actor & { role?: string },
+) {
   return submitPurchaseOrderForApproval(
     {
       purchaseOrderId: input.purchaseOrderId,
@@ -723,25 +1082,59 @@ export async function confirmPurchaseOrder(input: ConfirmPurchaseOrderInput, act
  *
  * القفل بترتيب الإنشاء نفسه (الفرع ← الأمر) فلا دورةَ انتظارٍ مع مسارٍ آخر.
  */
-export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor: Actor & { role?: string }) {
+export async function updatePurchaseOrder(
+  input: UpdatePurchaseOrderInput,
+  actor: Actor & { role?: string },
+) {
   return withTx(async (tx) => {
-    if (!input.items.length) throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشراء بلا أصناف" });
+    if (!input.items.length)
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "أمر الشراء بلا أصناف",
+      });
 
     const poPreview = (
-      await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, input.purchaseOrderId)).limit(1)
+      await tx
+        .select()
+        .from(purchaseOrders)
+        .where(eq(purchaseOrders.id, input.purchaseOrderId))
+        .limit(1)
     )[0];
-    if (!poPreview) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
+    if (!poPreview)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: "أمر الشراء غير موجود",
+      });
     assertPurchaseBranch(poPreview, actor);
     const nextSettlementType = input.settlementType ?? poPreview.settlementType;
-    const shippingSource = await captureShippingSourceTx(tx, input, actor, Number(poPreview.branchId), poPreview);
-    const declaredCashSource = await captureOrderCashSourceTx(
+    const shippingSource = await captureShippingSourceTx(
       tx,
-      nextSettlementType,
-      input.cashSource,
+      input,
       actor,
       Number(poPreview.branchId),
       poPreview,
     );
+    const declaredTender = await capturePurchaseTenderTx(
+      tx,
+      {
+        tender: input.tender,
+        settlementType: nextSettlementType,
+        supplierId: input.supplierId,
+        branchId: Number(poPreview.branchId),
+        previous: poPreview,
+      },
+      actor,
+    );
+    const declaredCashSource = declaredTender
+      ? null
+      : await captureOrderCashSourceTx(
+          tx,
+          nextSettlementType,
+          input.cashSource,
+          actor,
+          Number(poPreview.branchId),
+          poPreview,
+        );
 
     // نفس قفل الفرع الذي يبدأ به الإنشاء والجرد: يحفظ ترتيب الأقفال (فرع ← أمر) ويمنع سباق
     // «التقاط نطاق OPENING ↔ تعديل قائمة الشراء».
@@ -751,14 +1144,27 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
       .where(eq(branches.id, Number(poPreview.branchId)))
       .for("update")
       .limit(1);
-    if (!branch) throw new TRPCError({ code: "BAD_REQUEST", message: "الفرع غير موجود" });
+    if (!branch)
+      throw new TRPCError({ code: "BAD_REQUEST", message: "الفرع غير موجود" });
 
     const po = (
-      await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, input.purchaseOrderId)).for("update").limit(1)
+      await tx
+        .select()
+        .from(purchaseOrders)
+        .where(eq(purchaseOrders.id, input.purchaseOrderId))
+        .for("update")
+        .limit(1)
     )[0];
-    if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
+    if (!po)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: "أمر الشراء غير موجود",
+      });
     assertPurchaseBranch(po, actor);
-    if (Number(po.version) !== input.expectedVersion || Number(po.version) !== Number(poPreview.version)) {
+    if (
+      Number(po.version) !== input.expectedVersion ||
+      Number(po.version) !== Number(poPreview.version)
+    ) {
       throw new TRPCError({
         code: "CONFLICT",
         message: "تغيّر أمر الشراء؛ حدّث الصفحة ثم أعد المحاولة",
@@ -767,37 +1173,70 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
     if (po.status !== "DRAFT") {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "لا يُعدَّل إلا أمر شراء مسوّدة؛ أعده من مسار القرار أو أنشئ مراجعة جديدة محكومة",
+        message:
+          "لا يُعدَّل إلا أمر شراء مسوّدة؛ أعده من مسار القرار أو أنشئ مراجعة جديدة محكومة",
       });
     }
 
     const existingItems = await tx
-      .select({ variantId: purchaseOrderItems.variantId, receivedBaseQuantity: purchaseOrderItems.receivedBaseQuantity })
+      .select({
+        variantId: purchaseOrderItems.variantId,
+        receivedBaseQuantity: purchaseOrderItems.receivedBaseQuantity,
+      })
       .from(purchaseOrderItems)
       .where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId));
     if (existingItems.some((i) => (i.receivedBaseQuantity ?? 0) > 0)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "استُلمت بضاعة من هذا الأمر — لا يُعدَّل بعد الاستلام؛ استعمل مرتجع شراء",
+        message:
+          "استُلمت بضاعة من هذا الأمر — لا يُعدَّل بعد الاستلام؛ استعمل مرتجع شراء",
       });
     }
     // دفاع متعمّق: الدفع للمورّد لا يقع إلّا مع الاستلام ⇒ وجودُه يعني أثراً مالياً قائماً.
     if (money(po.paidAmount).gt(0) || money(po.paidUsd ?? "0").gt(0)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشراء عليه دفعة مسجَّلة — لا يمكن تعديله" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "أمر الشراء عليه دفعة مسجَّلة — لا يمكن تعديله",
+      });
     }
 
     // بضاعة الأمانة: تبديل المورّد إلى مودِع أمانة يفتح باب ازدواج AP نفسه الذي يحرسه الإنشاء.
-    const [sup] = await tx.select({ kind: suppliers.supplierKind }).from(suppliers)
-      .where(eq(suppliers.id, input.supplierId)).limit(1);
-    if (!sup) throw new TRPCError({ code: "BAD_REQUEST", message: "المورّد غير موجود" });
+    const [sup] = await tx
+      .select({ kind: suppliers.supplierKind })
+      .from(suppliers)
+      .where(eq(suppliers.id, input.supplierId))
+      .limit(1);
+    if (!sup)
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "المورّد غير موجود",
+      });
     if (sup.kind === "CONSIGNOR")
-      throw new TRPCError({ code: "BAD_REQUEST", message: "هذا مودِع أمانة — تُستلم بضاعته بسند إيداع من تبويب سندات الأمانة، لا بأمر شراء" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message:
+          "هذا مودِع أمانة — تُستلم بضاعته بسند إيداع من تبويب سندات الأمانة، لا بأمر شراء",
+      });
 
-    const nextVariantIds = Array.from(new Set(input.items.map((it) => it.variantId)));
+    const nextVariantIds = Array.from(
+      new Set(input.items.map((it) => it.variantId)),
+    );
     await assertPurchasableVariants(tx, nextVariantIds);
 
-    const { rows, subtotal, tax, taxRate, shippingCost, customsCost, total, agreedCurrency, usdTotalVal, agreedRateVal, invoiceDiscountIqd, usdInvoiceDiscountVal } =
-      await computePurchaseDocument(tx, input);
+    const {
+      rows,
+      subtotal,
+      tax,
+      taxRate,
+      shippingCost,
+      customsCost,
+      total,
+      agreedCurrency,
+      usdTotalVal,
+      agreedRateVal,
+      invoiceDiscountIqd,
+      usdInvoiceDiscountVal,
+    } = await computePurchaseDocument(tx, input);
     const effectiveSettlementType = input.settlementType ?? po.settlementType;
     if (agreedCurrency === "USD" && effectiveSettlementType === "CASH") {
       throw new TRPCError({
@@ -805,59 +1244,83 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
         message: appErrorMessage({
           what: "لا يمكن تعديل أمر شراءٍ نقديّ إلى عملة الدولار",
           why: "فاتورة المورد الدولارية تُسدَّد من مسار الصيرفة، لا من صرف الخزينة المباشر الذي يستعمله أمرٌ نقديّ",
-          doThis: "أبقِ عملة الأمر بالدينار، أو حوّله إلى تسويةٍ آجلة أولاً إن كانت الفاتورة دولارية فعلاً",
+          doThis:
+            "أبقِ عملة الأمر بالدينار، أو حوّله إلى تسويةٍ آجلة أولاً إن كانت الفاتورة دولارية فعلاً",
         }),
       });
     }
 
-    const previousRevisionId = po.currentRevisionId == null ? null : Number(po.currentRevisionId);
-    await tx.update(purchaseOrders).set({
-      supplierId: input.supplierId,
-      settlementType: effectiveSettlementType,
-      subtotal: subtotal.toFixed(2),
-      taxAmount: tax.toFixed(2),
-      taxRatePercent: taxRate.toFixed(2),
-      shippingCost: shippingCost.toFixed(2),
-      customsCost: customsCost.toFixed(2),
-      ...shippingSource,
-      total: total.toFixed(2),
-      // الحالة تبقى كما هي: التعديل ليس اعتماداً ولا سحباً للاعتماد (لكلٍّ إجراؤه).
-      agreedCurrency,
-      usdTotal: usdTotalVal ? usdTotalVal.toFixed(2) : null,
-      // خصم فاتورة المورّد (0204): إفصاحٌ وإعادةُ تحميلٍ للمحرّر — الأعمدة المالية مخزَّنة صافيةً
-      // أصلاً، فلا يدخل هذا الحقل أيّ حساب (وإلّا خُصم مرّتين).
-      invoiceDiscount: invoiceDiscountIqd.toFixed(2),
-      usdInvoiceDiscount: usdInvoiceDiscountVal ? usdInvoiceDiscountVal.toFixed(2) : null,
-      agreedRate: agreedRateVal ? toDbRate(agreedRateVal) : null,
-      notes: input.notes ?? null,
-      lastEditedBy: actor.userId,
-      // بلا هذا السطر يبقى `version` ثابتاً بعد التعديل الناجح ⇒ فحص `expectedVersion` أعلاه
-      // يفقد قدرته على كشف تعديلٍ متزامنٍ ثانٍ (تحديثٌ ضائع صامت — راجع نمط الترقيم في
-      // purchaseCharges.ts/supplierPayments.ts/returnGovernance.ts/requisitions.ts).
-      version: sql`${purchaseOrders.version} + 1`,
-    }).where(eq(purchaseOrders.id, input.purchaseOrderId));
+    const previousRevisionId =
+      po.currentRevisionId == null ? null : Number(po.currentRevisionId);
+    await tx
+      .update(purchaseOrders)
+      .set({
+        supplierId: input.supplierId,
+        settlementType: effectiveSettlementType,
+        subtotal: subtotal.toFixed(2),
+        taxAmount: tax.toFixed(2),
+        taxRatePercent: taxRate.toFixed(2),
+        shippingCost: shippingCost.toFixed(2),
+        customsCost: customsCost.toFixed(2),
+        ...shippingSource,
+        total: total.toFixed(2),
+        // الحالة تبقى كما هي: التعديل ليس اعتماداً ولا سحباً للاعتماد (لكلٍّ إجراؤه).
+        agreedCurrency,
+        usdTotal: usdTotalVal ? usdTotalVal.toFixed(2) : null,
+        // خصم فاتورة المورّد (0204): إفصاحٌ وإعادةُ تحميلٍ للمحرّر — الأعمدة المالية مخزَّنة صافيةً
+        // أصلاً، فلا يدخل هذا الحقل أيّ حساب (وإلّا خُصم مرّتين).
+        invoiceDiscount: invoiceDiscountIqd.toFixed(2),
+        usdInvoiceDiscount: usdInvoiceDiscountVal
+          ? usdInvoiceDiscountVal.toFixed(2)
+          : null,
+        agreedRate: agreedRateVal ? toDbRate(agreedRateVal) : null,
+        notes: input.notes ?? null,
+        lastEditedBy: actor.userId,
+        // بلا هذا السطر يبقى `version` ثابتاً بعد التعديل الناجح ⇒ فحص `expectedVersion` أعلاه
+        // يفقد قدرته على كشف تعديلٍ متزامنٍ ثانٍ (تحديثٌ ضائع صامت — راجع نمط الترقيم في
+        // purchaseCharges.ts/supplierPayments.ts/returnGovernance.ts/requisitions.ts).
+        version: sql`${purchaseOrders.version} + 1`,
+      })
+      .where(eq(purchaseOrders.id, input.purchaseOrderId));
 
-    await tx.delete(purchaseOrderItems).where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId));
+    await tx
+      .delete(purchaseOrderItems)
+      .where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId));
     if (rows.length > 0) {
-      await tx.insert(purchaseOrderItems).values(
-        rows.map((r) => ({ purchaseOrderId: input.purchaseOrderId, ...r })),
-      );
+      await tx
+        .insert(purchaseOrderItems)
+        .values(
+          rows.map((r) => ({ purchaseOrderId: input.purchaseOrderId, ...r })),
+        );
     }
 
     // أهليّة الجرد الافتتاحيّ تتبع البنود لا الأمر: صنفٌ حُذف من الأمر يعود مؤهَّلاً للعدّ، وصنفٌ
     // أُضيف يخرج منه فوراً. الترتيب (استرجاعٌ ثمّ إخراج) يمنع إعادةَ إدخال صنفٍ باقٍ في الطرفين.
-    const previousVariantIds = Array.from(new Set(existingItems.map((i) => Number(i.variantId))));
+    const previousVariantIds = Array.from(
+      new Set(existingItems.map((i) => Number(i.variantId))),
+    );
     const nextVariantSet = new Set(nextVariantIds);
-    const droppedVariantIds = previousVariantIds.filter((id) => !nextVariantSet.has(id));
+    const droppedVariantIds = previousVariantIds.filter(
+      (id) => !nextVariantSet.has(id),
+    );
     if (droppedVariantIds.length) {
-      await restoreVariantsToActiveOpeningStocktakes(tx, Number(po.branchId), droppedVariantIds);
+      await restoreVariantsToActiveOpeningStocktakes(
+        tx,
+        Number(po.branchId),
+        droppedVariantIds,
+      );
     }
-    await removeVariantsFromActiveOpeningStocktakes(tx, Number(po.branchId), nextVariantIds);
+    await removeVariantsFromActiveOpeningStocktakes(
+      tx,
+      Number(po.branchId),
+      nextVariantIds,
+    );
     const revision = await createPurchaseOrderRevisionTx(tx, {
       purchaseOrderId: input.purchaseOrderId,
       actorUserId: actor.userId,
       reason: input.revisionReason,
       cashSource: declaredCashSource,
+      tender: declaredTender,
     });
     await replacePurchaseOrderRevisionAllocationsTx(tx, {
       branchId: Number(po.branchId),
@@ -867,7 +1330,10 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
     });
     await tx
       .update(purchaseOrders)
-      .set({ currentRevisionId: revision.revisionId, lastEditedBy: actor.userId })
+      .set({
+        currentRevisionId: revision.revisionId,
+        lastEditedBy: actor.userId,
+      })
       .where(eq(purchaseOrders.id, input.purchaseOrderId));
     const [governed] = await tx
       .select({ version: purchaseOrders.version })
@@ -888,16 +1354,30 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
         previousVersion: input.expectedVersion,
         version: governed.version,
         ...(declaredCashSource ? { cashSource: declaredCashSource } : {}),
+        ...(declaredTender ? { tender: declaredTender } : {}),
       },
     });
 
-    if (shippingSource.shippingFundingSource === "DRAWER" && po.shippingFundingSource !== "DRAWER") {
+    if (
+      shippingSource.shippingFundingSource === "DRAWER" &&
+      po.shippingFundingSource !== "DRAWER"
+    ) {
       await recognizeShippingAndCustomsInTx(tx, {
-        purchaseOrderId: input.purchaseOrderId, poNumber: po.poNumber, branchId: Number(po.branchId),
-        shippingCost: shippingCost.toFixed(2), customsCost: customsCost.toFixed(2),
-        actor, creatorId: Number(po.createdBy), deterministicKey: `shipping-save:${po.id}:${revision.revisionNo}`,
-        recognizedAt: new Date(), evidencePrefix: "PO-CREATION-SHIPPING", recordPaidDeclaration: true,
-        shippingFundingSource: { mode: "DRAWER", shiftId: shippingSource.shippingFundingShiftId },
+        purchaseOrderId: input.purchaseOrderId,
+        poNumber: po.poNumber,
+        branchId: Number(po.branchId),
+        shippingCost: shippingCost.toFixed(2),
+        customsCost: customsCost.toFixed(2),
+        actor,
+        creatorId: Number(po.createdBy),
+        deterministicKey: `shipping-save:${po.id}:${revision.revisionNo}`,
+        recognizedAt: new Date(),
+        evidencePrefix: "PO-CREATION-SHIPPING",
+        recordPaidDeclaration: true,
+        shippingFundingSource: {
+          mode: "DRAWER",
+          shiftId: shippingSource.shippingFundingShiftId,
+        },
       });
     }
 
@@ -918,11 +1398,15 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
  * أي قيد دفتر/AP/مخزون/إيصال؛ كل التأثيرات المالية والمخزنية تحدث في receivePurchase فقط).
  * أمرٌ استُلمت منه بضاعة يُعالَج بمرتجع شراء لا بالإلغاء.
  */
-export async function cancelPurchaseOrder(purchaseOrderId: number, actor: Actor & { role?: string }) {
+export async function cancelPurchaseOrder(
+  purchaseOrderId: number,
+  actor: Actor & { role?: string },
+) {
   void purchaseOrderId;
   void actor;
   throw new TRPCError({
     code: "BAD_REQUEST",
-    message: "الإلغاء المباشر متوقف؛ أنشئ طلب CANCEL_ORDER ليعتمده مستخدم مستقل",
+    message:
+      "الإلغاء المباشر متوقف؛ أنشئ طلب CANCEL_ORDER ليعتمده مستخدم مستقل",
   });
 }

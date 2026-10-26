@@ -25,6 +25,52 @@ export type BookInvoiceTotals = {
   creditedAmount: string;
   creditedCurrencyAmount: string;
 };
+
+/** Only this versioned source format permits an explicitly retained, unallocated advance. */
+export function isPurchaseAdvanceSnapshot(snapshot: string): boolean {
+  try {
+    const value = JSON.parse(snapshot);
+    return value?.purpose === "PURCHASE_ADVANCE" && value.version === 1;
+  } catch {
+    return false;
+  }
+}
+
+export function purchaseAdvanceAvailableAmount(
+  source: { amount: string; reversedAmount: string },
+  rows: readonly { allocatedAmount: string; reversedAmount: string }[],
+): string {
+  const allocated = rows.reduce(
+    (sum, row) => sum.plus(row.allocatedAmount),
+    money(0),
+  );
+  const reversed = rows.reduce(
+    (sum, row) => sum.plus(row.reversedAmount),
+    money(0),
+  );
+  const available = money(source.amount)
+    .minus(source.reversedAmount)
+    .minus(allocated.minus(reversed));
+  if (
+    money(source.reversedAmount).lt(0) ||
+    money(source.reversedAmount).gt(source.amount) ||
+    rows.some(
+      (row) =>
+        money(row.reversedAmount).lt(0) ||
+        money(row.reversedAmount).gt(row.allocatedAmount),
+    ) ||
+    available.lt(0)
+  )
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذر قراءة الرصيد المقدم للمورد",
+        why: "رصيد المصدر لا يطابق تخصيصاته أو مبالغ عكسه",
+        doThis: "راجع سند الصرف وروابطه قبل متابعة التسوية",
+      }),
+    });
+  return toDbMoney(available);
+}
 const MAX_ROWS = 20_000;
 function assertBounded(length: number) {
   if (length > MAX_ROWS)
@@ -166,6 +212,7 @@ export async function loadSupplierBookReceiptSettlement(
       reversedAmount: sources.reversedAmount,
       accountingEntryId: sources.sourceAccountingEntryId,
       adoptedAt: sources.adoptedAt,
+      sourceSnapshot: sources.sourceSnapshot,
     })
     .from(sources)
     .where(eq(sources.sourceReceiptId, receiptId))
@@ -198,6 +245,16 @@ export async function loadSupplierBookReceiptSettlement(
     .orderBy(asc(allocations.id))
     .limit(MAX_ROWS + 1);
   assertBounded(rows.length);
+  const { sourceSnapshot, ...sourceFields } = source;
+  const unallocatedAmount = isPurchaseAdvanceSnapshot(sourceSnapshot)
+    ? purchaseAdvanceAvailableAmount(
+        source,
+        rows.map((row) => ({
+          allocatedAmount: row.amount,
+          reversedAmount: row.reversedAmount,
+        })),
+      )
+    : "0.00";
   const invoiceIds = rows.flatMap((row) =>
     row.supplierInvoiceId == null ? [] : [Number(row.supplierInvoiceId)],
   );
@@ -236,14 +293,16 @@ export async function loadSupplierBookReceiptSettlement(
   assertBounded(credits.length);
   return {
     kind: "BOOK" as const,
-    ...source,
+    ...sourceFields,
+    unallocatedAmount,
     allocations: rows.map((row) => ({
       ...row,
       targetKind:
         row.supplierInvoiceId == null
           ? ("OPENING" as const)
           : ("INVOICE" as const),
-      targetDate: row.invoiceDate ?? row.openingDate?.toISOString().slice(0, 10) ?? null,
+      targetDate:
+        row.invoiceDate ?? row.openingDate?.toISOString().slice(0, 10) ?? null,
     })),
     credits,
   };

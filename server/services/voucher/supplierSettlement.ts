@@ -41,6 +41,7 @@ import {
 } from "./supplierPaymentLink";
 import type { VoucherInput } from "./types";
 import { supplierVoucherCurrencyAmount } from "../purchase/supplierVoucherCurrency";
+import { readAdvanceRefundEvidence } from "../purchase/advanceRefundEvidence";
 
 type PreparedAllocation = SupplierVoucherAllocation & {
   currencyAmount: string;
@@ -101,10 +102,13 @@ export async function receiptNeedsSupplierBookGateTx(tx: Tx, receiptId: number):
   const [receipt] = await tx.select().from(receipts).where(eq(receipts.id, receiptId)).limit(1);
   if (!receipt) return false;
   if (receipt.partyType === "CUSTOMER") return true;
+  if (receipt.direction === "IN" && receipt.partyType === "SUPPLIER") return true;
+  if (await readAdvanceRefundEvidence(tx, receiptId)) return true;
   const [bookSource] = await tx.select({ id: supplierBookSettlementSources.id }).from(supplierBookSettlementSources).where(eq(supplierBookSettlementSources.sourceReceiptId, receiptId)).limit(1);
   if (bookSource) return true;
   const cancellation = /^CANCEL-VCH-(\d+)$/.exec(receipt.referenceNumber ?? "");
   if (cancellation) {
+    if (await readAdvanceRefundEvidence(tx, Number(cancellation[1]))) return true;
     const [source] = await tx.select({ id: supplierBookSettlementSources.id }).from(supplierBookSettlementSources)
       .where(eq(supplierBookSettlementSources.sourceReceiptId, Number(cancellation[1]))).for("share").limit(1);
     return !!source;

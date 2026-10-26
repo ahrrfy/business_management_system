@@ -2,6 +2,7 @@ import { prepareSupplierBookVoucherTx } from "../purchase/supplierBookSettlement
 // إنشاء سند قبض/صرف مستقلّ ذرّياً (Maker-Checker + idempotency).
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
+import { prepareSupplierAdvanceRefundTx, applySupplierAdvanceRefundTx, assertSupplierAdvanceRefundReplayTx, assertAdvanceOriginalCancellationTx } from "../purchase/advanceRefund";
 import { isDeadInvoice } from "@shared/predicates";
 import { allocateVoucherToInvoiceTx } from "./invoiceAllocation";
 import { assertNoNativeSupplierDebtForGenericPaymentTx } from "./supplierNativePaymentGuard";
@@ -656,6 +657,7 @@ export async function createVoucherTx(
           });
         }
         await assertSupplierVoucherReplayTx(tx, input, existingRefId);
+        await assertSupplierAdvanceRefundReplayTx(tx, input, existingRefId);
         return {
           receiptId: existingRefId,
           voucherNumber: r.voucherNumber ?? "",
@@ -666,6 +668,10 @@ export async function createVoucherTx(
       }
     }
   }
+  const advanceRefundPlan = !options?.systemRequest
+    ? await prepareSupplierAdvanceRefundTx(tx, input, actor) : null;
+  if (options?.systemRequest?.kind === "VOUCHER_CANCELLATION" && options.systemRequest.originalDirection === "OUT")
+    await assertAdvanceOriginalCancellationTx(tx, options.systemRequest.originalReceiptId);
   const supplierBookPlan = !options?.systemRequest && input.voucherType === "PAYMENT" && input.partyType === "SUPPLIER" && input.partyId && ["CASH", "CARD", "TRANSFER", "WALLET"].includes(input.paymentMethod)
     ? await prepareSupplierBookVoucherTx(tx, { supplierId: input.partyId, branchId: input.branchId, amount: input.amount, voucherDate: input.voucherDate ?? baghdadToday(), allocations: input.supplierAllocations }, actor) : null;
 
@@ -1165,6 +1171,7 @@ export async function createVoucherTx(
 
     } else if (input.partyType === "SUPPLIER" && input.partyId) {
       await adjustSupplierBalance(tx, input.partyId, amount);
+      if (advanceRefundPlan) await applySupplierAdvanceRefundTx(tx, receiptId, advanceRefundPlan, actor);
     } else if (input.partyType === "DELIVERY_PARTY" && input.partyId) {
       await adjustDeliveryBalance(
         tx,
@@ -1372,7 +1379,7 @@ export async function createVoucher(
     assertInboundPaymentMethodEnabled(input.paymentMethod);
   }
   return withMysqlDeadlockRetry(() =>
-    withSupplierBookVoucherTx(async tx => input.partyType === "CUSTOMER" || (input.voucherType === "PAYMENT" && input.partyType === "SUPPLIER" && !!input.partyId && !isSystemPaymentReference(input.referenceNumber) && await supplierScopeNeedsBookGateTx(tx, Number(input.partyId))), async (tx) => {
+    withSupplierBookVoucherTx(async tx => input.partyType === "CUSTOMER" || (input.voucherType === "RECEIPT" && input.partyType === "SUPPLIER") || (input.voucherType === "PAYMENT" && input.partyType === "SUPPLIER" && !!input.partyId && !isSystemPaymentReference(input.referenceNumber) && await supplierScopeNeedsBookGateTx(tx, Number(input.partyId))), async (tx) => {
       const result = await createVoucherTx(tx, input, actor);
       // ن-٢-هـ (Codex ٢٩/٨): مسارُ الراوتر (`vouchers.create`) يمرّ هنا — إشعارٌ
       // مركزيٌّ يُغني عن حاجةِ الراوتر لاستدعاءِ notifier يدوياً.

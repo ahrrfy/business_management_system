@@ -25,11 +25,13 @@ import {
 } from "@/components/purchases/PurchaseShippingCard";
 import { printPurchaseOrderDoc } from "@/components/purchases/purchaseOrderPrint";
 import {
-  PurchaseSettlementPolicyCard,
   runImmediatePostWorkflow,
   runSubmitForApprovalWorkflow,
-  usePurchaseCashSourceState,
 } from "@/components/purchases/PurchaseCashSourceField";
+import {
+  PurchaseTenderField,
+  usePurchaseTenderState,
+} from "@/components/purchases/PurchaseTenderField";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -39,7 +41,14 @@ import {
   priceDecimalsMessage,
 } from "@shared/moneyPrecision";
 import { variantDisplayName } from "@shared/variantDisplay";
-import { D, fmtAr, formatQuantity, round2, toBase, toUnitPriceStr } from "@/lib/money";
+import {
+  D,
+  fmtAr,
+  formatQuantity,
+  round2,
+  toBase,
+  toUnitPriceStr,
+} from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { confirm } from "@/lib/confirm";
@@ -99,15 +108,27 @@ export default function PurchaseNew() {
     const value = Number(raw);
     return Number.isInteger(value) && value > 0 ? value : null;
   }, [searchParams]);
-  const prefillKey = useMemo(() => searchParams.get("prefillKey"), [searchParams]);
-  const isUnassignedMode = useMemo(() => searchParams.get("mode") === "unassigned_sourcing", [searchParams]);
-  const autoReason = useMemo(() => searchParams.get("autoReason"), [searchParams]);
+  const prefillKey = useMemo(
+    () => searchParams.get("prefillKey"),
+    [searchParams],
+  );
+  const isUnassignedMode = useMemo(
+    () => searchParams.get("mode") === "unassigned_sourcing",
+    [searchParams],
+  );
+  const autoReason = useMemo(
+    () => searchParams.get("autoReason"),
+    [searchParams],
+  );
 
   const [prefillVariantIds] = useState<number[]>(() => {
     if (!prefillKey) {
       const rawItems = searchParams.get("items");
       if (rawItems) {
-        return rawItems.split(",").map(Number).filter((id) => Number.isInteger(id) && id > 0);
+        return rawItems
+          .split(",")
+          .map(Number)
+          .filter((id) => Number.isInteger(id) && id > 0);
       }
       return [];
     }
@@ -116,7 +137,9 @@ export default function PurchaseNew() {
       if (data) {
         const parsed = JSON.parse(data);
         if (Array.isArray(parsed)) {
-          return parsed.map(Number).filter((id) => Number.isInteger(id) && id > 0);
+          return parsed
+            .map(Number)
+            .filter((id) => Number.isInteger(id) && id > 0);
         }
       }
     } catch {
@@ -156,7 +179,10 @@ export default function PurchaseNew() {
 
   /* ─── editor state (reducer) ───────────────────────────────────── */
   const [state, dispatch] = useReducer(invoiceReducer, undefined, () => ({
-    ...createInitialState(INVOICE_TYPE, me.data?.branchId ? Number(me.data.branchId) : 0),
+    ...createInitialState(
+      INVOICE_TYPE,
+      me.data?.branchId ? Number(me.data.branchId) : 0,
+    ),
   }));
 
   const requisitionHydratedRef = useRef(false);
@@ -213,7 +239,11 @@ export default function PurchaseNew() {
           // ويُعيد الحساب. الأمر يبدأ بالدينار (لا عمود عملة على `purchaseRequisitions`) —
           // تحويلُ العملة قرارُ المستخدم قبل الحفظ، والمحرّر يرفض الحفظَ الدولاريّ بلا
           // `agreedRate > 0`.
-          price: derivePurchaseLinePriceFromRequisition(item.estimatedUnitPrice, row.costPriceBase, conversionFactor),
+          price: derivePurchaseLinePriceFromRequisition(
+            item.estimatedUnitPrice,
+            row.costPriceBase,
+            conversionFactor,
+          ),
           costBase: row.costPriceBase ?? "0",
           discount: "0",
           discountType: "percent",
@@ -478,53 +508,7 @@ export default function PurchaseNew() {
     { enabled: state.entityId != null, staleTime: 60_000 },
   );
 
-  // حارس فقدان البيانات (نمط CustomerNew/ExpenseNew): dirty عند إدخال فعليّ فقط (مورّد/بنود/شحن/كمرك/ملاحظات)
-  // — شاشة فارغة حديثة الفتح لا تُحسب إدخالاً كي لا يظهر تحذير كاذب.
-  const isDirty =
-    state.entityId != null ||
-    state.items.length > 0 ||
-    state.notes.trim() !== "" ||
-    Boolean(state.terms?.trim()) ||
-    state.poReference.trim() !== "" ||
-    state.supplierInvoiceTotal.trim() !== "" ||
-    state.globalDiscount.trim() !== "" ||
-    shippingCost.trim() !== "" ||
-    customsCost.trim() !== "";
-  useUnsavedGuard(isDirty);
-
   /* ─── مصادر سداد الفاتورة النقدية + الطفرات ─────────────────────── */
-  const cashSourceState = usePurchaseCashSourceState({
-    branchId: state.branchId,
-    enabled: state.paymentTerms === "CASH" && state.currency === "IQD",
-    context: "create",
-    isCreator: true,
-  });
-  const [workflowPending, setWorkflowPending] = useState(false);
-
-  const create = trpc.purchases.createOrder.useMutation({
-    onSuccess: async () => {
-      await invalidateFinancialQueries(queryClient, state.branchId);
-      notify.ok("حُفظ أمر الشراء مسودة — راجعه ثم أرسله للاعتماد من قائمة المشتريات");
-      bypassUnsavedGuard();
-      navigate("/purchases");
-    },
-    onError: (e) => notify.err(e),
-  });
-  const createAsyncMut = trpc.purchases.createOrder.useMutation();
-  const confirmAsyncMut = trpc.purchases.confirmOrder.useMutation();
-  const decideAsyncMut = trpc.purchases.decideControl.useMutation();
-
-  const createRequisition = trpc.purchases.createRequisition.useMutation({
-    onSuccess: async () => {
-      await utils.purchases.requisitions.invalidate();
-      notify.ok("تم حفظ طلب التأمين بنجاح وإسناده لمدير المشتريات للبحث والتفاوض مع الموردين في السوق");
-      bypassUnsavedGuard();
-      navigate("/purchases?tab=requisitions");
-    },
-    onError: (e) => notify.err(e),
-  });
-
-  /* ─── validation + submit ──────────────────────────────────────── */
   const totals = useMemo(() => calcTotals(state.items, state), [state]);
 
   // إجماليّ المستند بعملته **بترتيب تقريب الخادم** (سطراً سطراً ثمّ الجمع) — لا
@@ -558,6 +542,61 @@ export default function PurchaseNew() {
     ],
   );
 
+  const tenderState = usePurchaseTenderState({
+    branchId: state.branchId,
+    enabled: state.paymentTerms === "CASH" && state.currency === "IQD",
+    context: "create",
+    supplierId: state.entityId,
+    total: docTotals.total,
+    isCreator: true,
+  });
+  // حارس فقدان البيانات (نمط CustomerNew/ExpenseNew): dirty عند إدخال فعليّ فقط (مورّد/بنود/شحن/كمرك/ملاحظات)
+  // — شاشة فارغة حديثة الفتح لا تُحسب إدخالاً كي لا يظهر تحذير كاذب.
+  const isDirty =
+    state.entityId != null ||
+    state.items.length > 0 ||
+    state.notes.trim() !== "" ||
+    Boolean(state.terms?.trim()) ||
+    state.poReference.trim() !== "" ||
+    state.supplierInvoiceTotal.trim() !== "" ||
+    state.globalDiscount.trim() !== "" ||
+    shippingCost.trim() !== "" ||
+    customsCost.trim() !== "" ||
+    tenderState.draft.mode !== "DRAWER" ||
+    tenderState.draft.referenceNumber !== "" ||
+    tenderState.draft.previousReceiptId !== "";
+  useUnsavedGuard(isDirty);
+
+  const [workflowPending, setWorkflowPending] = useState(false);
+
+  const create = trpc.purchases.createOrder.useMutation({
+    onSuccess: async () => {
+      await invalidateFinancialQueries(queryClient, state.branchId);
+      notify.ok(
+        "حُفظ أمر الشراء مسودة — راجعه ثم أرسله للاعتماد من قائمة المشتريات",
+      );
+      bypassUnsavedGuard();
+      navigate("/purchases");
+    },
+    onError: (e) => notify.err(e),
+  });
+  const createAsyncMut = trpc.purchases.createOrder.useMutation();
+  const confirmAsyncMut = trpc.purchases.confirmOrder.useMutation();
+  const decideAsyncMut = trpc.purchases.decideControl.useMutation();
+
+  const createRequisition = trpc.purchases.createRequisition.useMutation({
+    onSuccess: async () => {
+      await utils.purchases.requisitions.invalidate();
+      notify.ok(
+        "تم حفظ طلب التأمين بنجاح وإسناده لمدير المشتريات للبحث والتفاوض مع الموردين في السوق",
+      );
+      bypassUnsavedGuard();
+      navigate("/purchases?tab=requisitions");
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  /* ─── validation + submit ──────────────────────────────────────── */
   // landed-cost: الإجماليّ يشمل الشحن/الكمرك (يُوزَّعان بنسبة القيمة). الشحن خارجه (مصروف نقلٍ لا ذمّة مورّد).
   const landed = useMemo(
     () =>
@@ -621,10 +660,10 @@ export default function PurchaseNew() {
     if (state.currency === "USD" && state.paymentTerms === "CASH") {
       return "فاتورة المورد الدولارية تُسدَّد من مسار الصيرفة؛ اختر «آجل» ثم سجّل التسديد الفعلي بعد الاستلام.";
     }
-    if (cashSourceState.validationError) {
-      return cashSourceState.validationError;
+    if (tenderState.validationError) {
+      return tenderState.validationError;
     }
-    if (cashSourceState.isActionBlocked) {
+    if (tenderState.isActionBlocked) {
       return "انتظر اكتمال تحميل مصادر الصرف النقدي للفرع قبل الحفظ.";
     }
     // landed-cost: التوزيع بنسبة القيمة يحتاج قيمة بضاعة موجبة (مرآة حارس الخادم).
@@ -647,7 +686,7 @@ export default function PurchaseNew() {
         : "0",
       settlementType:
         state.paymentTerms === "CASH" ? ("CASH" as const) : ("CREDIT" as const),
-      ...(cashSourceState.payload ? { cashSource: cashSourceState.payload } : {}),
+      ...(tenderState.payload ? { tender: tenderState.payload } : {}),
       clientRequestId,
       revisionReason: "إنشاء مسودة أمر شراء من شاشة المشتريات",
       requisitionAllocations: requisition.data
@@ -703,7 +742,9 @@ export default function PurchaseNew() {
       customsCost: safeMoney(customsCost).gt(0)
         ? round2(safeMoney(customsCost)).toFixed(2)
         : undefined,
-      shippingFundingSource: landed.hasLanded ? shippingFundingSource : "ACCRUAL",
+      shippingFundingSource: landed.hasLanded
+        ? shippingFundingSource
+        : "ACCRUAL",
       items: state.items.map((l) => ({
         variantId: l.variantId,
         productUnitId: l.productUnitId,
@@ -714,7 +755,8 @@ export default function PurchaseNew() {
   }
 
   function handleSaveRequisition() {
-    if (!canLifecycleOperation(me.data, "purchases.createRequisition", true)) return notify.err("إنشاء طلب تأمين غير مفوض لهذا الحساب.");
+    if (!canLifecycleOperation(me.data, "purchases.createRequisition", true))
+      return notify.err("إنشاء طلب تأمين غير مفوض لهذا الحساب.");
     if (createRequisition.isPending || workflowPending) return;
     if (state.items.length === 0) {
       notify.warn("أضف منتجاً واحداً على الأقل لطلب التأمين.");
@@ -760,7 +802,8 @@ export default function PurchaseNew() {
     create.isPending || createRequisition.isPending || workflowPending;
 
   function handleSubmit() {
-    if (!canLifecycleOperation(me.data, "purchases.createOrder", true)) return notify.err("إنشاء أمر شراء غير مفوض لهذا الحساب.");
+    if (!canLifecycleOperation(me.data, "purchases.createOrder", true))
+      return notify.err("إنشاء أمر شراء غير مفوض لهذا الحساب.");
     if (isAnySaving) return;
     if (!state.entityId) {
       handleSaveRequisition();
@@ -825,7 +868,7 @@ export default function PurchaseNew() {
       return;
     }
     const isCash = state.paymentTerms === "CASH";
-    const sourceLabel = cashSourceState.sourceSummaryLabel;
+    const sourceLabel = tenderState.sourceSummaryLabel;
     const displayTotal =
       state.currency === "USD"
         ? `${fmtAr(docTotals.total)} $`
@@ -836,9 +879,11 @@ export default function PurchaseNew() {
         ? "حفظ وترحيل وسداد الفاتورة النقدية فورا"
         : "حفظ وترحيل الفاتورة الاجلة فورا",
       description: isCash
-        ? `سيتم استلام البضاعة في المخزون وترحيل فاتورة المورد وسداد مبلغ ${displayTotal} نقدا من (${sourceLabel}) في معاملة واحدة، وتصبح ذمة الفاتورة صفرا (0.00). هل تؤكد استلام البضاعة كاملة؟`
+        ? `سيتم استلام البضاعة في المخزون وترحيل فاتورة المورد وسداد مبلغ ${displayTotal} من (${sourceLabel}) مع احتساب الدفعة السابقة المحددة في معاملة واحدة، وتصبح ذمة الفاتورة صفرا (0.00). هل تؤكد استلام البضاعة كاملة؟`
         : `سيتم استلام البضاعة في المخزون وترحيل فاتورة المورد بقيمة ${displayTotal} كذمة اجلة على المورد في معاملة واحدة. هل تؤكد استلام البضاعة كاملة؟`,
-      confirmText: isCash ? "تأكيد الاستلام والسداد النقدي" : "تأكيد الاستلام والترحيل",
+      confirmText: isCash
+        ? "تأكيد الاستلام والسداد النقدي"
+        : "تأكيد الاستلام والترحيل",
       cancelText: "تراجع",
     });
     if (!ok) return;
@@ -846,14 +891,14 @@ export default function PurchaseNew() {
     await runImmediatePostWorkflow({
       isCash,
       clientRequestId,
-      cashSource: cashSourceState.payload,
+      cashSource: undefined,
       createOrder: () => createAsyncMut.mutateAsync(buildPayload()),
       confirmOrder: (input) => confirmAsyncMut.mutateAsync(input),
       decideOrder: (input) =>
         decideAsyncMut.mutateAsync({
           ...input,
           confirmedFullReceipt: true,
-          cashSource: cashSourceState.payload,
+          cashSource: undefined,
         }),
       invalidateAll: invalidatePurchaseWorkflowQueries,
       onSuccessToast: (msg) => notify.ok(msg),
@@ -895,6 +940,7 @@ export default function PurchaseNew() {
       currency: state.currency,
       agreedRate: state.agreedRate,
       paymentTerms: state.paymentTerms,
+      tender: tenderState.payload,
       shippingCost,
       customsCost,
       notes: state.notes,
@@ -990,6 +1036,7 @@ export default function PurchaseNew() {
         // landed-cost حالة محلّية (خارج reducer) ⇒ نُصفّرها يدوياً مع تفريغ السلّة.
         setShippingCost("");
         setCustomsCost("");
+        tenderState.reset();
         return;
       }
       // Esc ⇒ إغلاق Bulk Picker إن كان مفتوحاً
@@ -1015,6 +1062,7 @@ export default function PurchaseNew() {
     shippingFundingSource,
     supplierRow.data,
     branches.data,
+    tenderState,
   ]);
 
   /* ─── render ───────────────────────────────────────────────────── */
@@ -1060,6 +1108,12 @@ export default function PurchaseNew() {
         state={state}
         dispatch={dispatch}
         invoiceType={INVOICE_TYPE}
+      />
+      <PurchaseTenderField
+        idPrefix="purchase-new"
+        state={tenderState}
+        paymentTerms={state.paymentTerms}
+        currency={state.currency}
       />
 
       {/* Body: products on the right, totals/actions/terms on the left (RTL → aside on left).
@@ -1112,13 +1166,6 @@ export default function PurchaseNew() {
             showDetailedDistribution
           />
 
-          <PurchaseSettlementPolicyCard
-            idPrefix="purchase-new"
-            context="create"
-            paymentTerms={state.paymentTerms}
-            currency={state.currency}
-            cashSourceState={cashSourceState}
-          />
           <TotalsPanel
             items={state.items}
             state={state}
@@ -1186,7 +1233,13 @@ export default function PurchaseNew() {
               <Button
                 type="button"
                 className="w-full bg-[var(--sem-warn)] hover:bg-[var(--sem-warn)]/90 text-background font-semibold text-xs h-8 shadow-sm gap-1.5"
-                disabled={!canLifecycleOperation(me.data, "purchases.createRequisition", true) || isAnySaving}
+                disabled={
+                  !canLifecycleOperation(
+                    me.data,
+                    "purchases.createRequisition",
+                    true,
+                  ) || isAnySaving
+                }
                 onClick={handleSaveRequisition}
               >
                 <ClipboardList className="size-4" />
@@ -1198,11 +1251,19 @@ export default function PurchaseNew() {
             {Boolean(state.entityId) &&
               state.items.length > 0 &&
               canLifecycleOperation(me.data, "purchases.createOrder", true) &&
-              canLifecycleOperation(me.data, "purchases.confirmOrder", true) && (
+              canLifecycleOperation(
+                me.data,
+                "purchases.confirmOrder",
+                true,
+              ) && (
                 <Card>
                   <CardContent className="p-2.5 flex flex-col gap-1.5">
                     {me.data?.isOwner === true &&
-                    canLifecycleOperation(me.data, "purchases.decideControl", true) ? (
+                    canLifecycleOperation(
+                      me.data,
+                      "purchases.decideControl",
+                      true,
+                    ) ? (
                       <Button
                         type="button"
                         className="w-full font-semibold h-9 gap-1.5"
@@ -1238,7 +1299,11 @@ export default function PurchaseNew() {
               onAction={handleAction}
               saving={isAnySaving}
               pasteAvailable={pasteAvailable}
-              availableActions={canLifecycleOperation(me.data, "purchases.createOrder", true) ? NEW_ACTIONS : NEW_ACTIONS.filter((action) => action !== "save")}
+              availableActions={
+                canLifecycleOperation(me.data, "purchases.createOrder", true)
+                  ? NEW_ACTIONS
+                  : NEW_ACTIONS.filter((action) => action !== "save")
+              }
               primaryLabel="حفظ المسودة"
             />
           </div>

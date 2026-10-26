@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { advanceRefundLinkText } from "@shared/purchasePaymentEvidence";
 import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
 import { ActorCell } from "@/components/data-table/ActorCell";
 import { ATTRIBUTION_LABELS } from "@shared/uiContracts";
@@ -12,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import type { ImageItem } from "@/components/form/ImageUploader";
 import { VoucherRejectDialog } from "@/components/vouchers/VoucherRejectDialog";
+import { VoucherDeepLinkDialog } from "@/components/vouchers/VoucherDeepLinkDialog";
 import { VoucherSummaryCards } from "@/components/vouchers/VoucherSummaryCards";
 import { getVoucherExportColumns } from "@/components/vouchers/voucherExport";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -491,7 +493,7 @@ export default function Vouchers() {
         partyName: v.partyName ?? v.counterpartyName ?? "—",
         partyBalance: null,
         categoryName: v.categoryName,
-        description: v.description ?? "",
+        description: [v.description, advanceRefundLinkText(v.advanceRefund)].filter(Boolean).join("\n"),
         counterpartyName: v.counterpartyName,
         approvalStatus: v.approvalStatus as
           | "APPROVED"
@@ -1197,6 +1199,7 @@ export default function Vouchers() {
         </CardContent>
       </Card>
 
+      <VoucherDeepLinkDialog />
       {/* حوار سبب الرفض — بديل window.prompt: السبب سجلّ تدقيقي إلزامي. */}
       <VoucherRejectDialog
         rejectTarget={rejectTarget}

@@ -2,6 +2,13 @@ import { TRPCError } from "@trpc/server";
 import { and, desc, eq, gte, inArray, lt, or, sql } from "drizzle-orm";
 import { paginateKeyset } from "../lib/paginateKeyset";
 import { z } from "zod";
+import { purchaseTenderSchema } from "@shared/purchaseTender";
+import { loadPurchasePaymentEvidence } from "../services/purchase/paymentEvidence";
+import { readDeclaredPurchaseCashSourceTx } from "../services/purchase/supplierPayments";
+import {
+  listPurchaseTenderSources,
+  readPurchaseTenderTx,
+} from "../services/purchase/tender";
 import {
   accrualObligations,
   accrualObligationEvents,
@@ -144,6 +151,20 @@ export function buildPurchasesListConds(
 }
 
 export const purchaseRouter = router({
+  paymentSources: purchasesManagerProcedure
+    .input(
+      z.object({
+        supplierId: z.number().int().positive(),
+        branchId: z.number().int().positive(),
+      }),
+    )
+    .query(({ input, ctx }) =>
+      listPurchaseTenderSources(input, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+      }),
+    ),
   priceInsights: purchasesManagerProcedure
     .input(
       z.object({
@@ -263,6 +284,7 @@ export const purchaseRouter = router({
           // PROC-03: نسبة الضريبة مُقيّدة [٠،١٠٠] على حدّ الثقة (كانت z.string() بلا قيد ⇒ ضريبة سالبة).
           taxRatePercent: percentString.optional(),
           settlementType: z.enum(["CASH", "CREDIT"]).optional(),
+          tender: purchaseTenderSchema.nullish(),
           cashSource: z
             .object({
               mode: z.enum(["DRAWER", "TREASURY"]),
@@ -357,6 +379,7 @@ export const purchaseRouter = router({
         revisionReason: z.string().trim().min(3).max(500),
         supplierId: z.number().int().positive(),
         settlementType: z.enum(["CASH", "CREDIT"]).optional(),
+        tender: purchaseTenderSchema.nullish(),
         cashSource: z
           .object({
             mode: z.enum(["DRAWER", "TREASURY"]),
@@ -514,7 +537,8 @@ export const purchaseRouter = router({
           message: appErrorMessage({
             what: "تعذر صرف شحن أمر الشراء",
             why: "لا يوجد فرع مُسنَد لهذا المستخدم في جلسة العمل الحالية",
-            doThis: "سجّل الدخول بمستخدم مُسنَد لفرع أو اطلب من المدير إسناد فرع لحسابك",
+            doThis:
+              "سجّل الدخول بمستخدم مُسنَد لفرع أو اطلب من المدير إسناد فرع لحسابك",
           }),
         });
       }
@@ -1205,7 +1229,9 @@ export const purchaseRouter = router({
           // سيُخطئ عند كمّيةٍ كسريّة مقرَّبة ⇒ نقرأه من مصدره.
           productId: products.id,
           conversionFactor: productUnits.conversionFactor,
-          barcode: sql<string | null>`COALESCE(NULLIF(${productUnits.barcode}, ''), NULLIF(${productVariants.sku}, ''))`,
+          barcode: sql<
+            string | null
+          >`COALESCE(NULLIF(${productUnits.barcode}, ''), NULLIF(${productVariants.sku}, ''))`,
         })
         .from(purchaseOrderItems)
         .leftJoin(
@@ -1226,13 +1252,16 @@ export const purchaseRouter = router({
        * ⛔ لا نمرّ بخدمة الشراء (`server/services/purchase/**` ممنوعُ المسّ في هذه الموجة).
        *   استعلامان مقروءان مباشرةً على المخطّط، بحدود صفٍّ واحد ومصفوفٍ محدودٍ (LIMIT 1).
        */
-      const [controlSetting] = po.branchId != null
-        ? await db
-            .select({ requireRequisition: purchaseControlSettings.requireRequisition })
-            .from(purchaseControlSettings)
-            .where(eq(purchaseControlSettings.branchId, Number(po.branchId)))
-            .limit(1)
-        : [];
+      const [controlSetting] =
+        po.branchId != null
+          ? await db
+              .select({
+                requireRequisition: purchaseControlSettings.requireRequisition,
+              })
+              .from(purchaseControlSettings)
+              .where(eq(purchaseControlSettings.branchId, Number(po.branchId)))
+              .limit(1)
+          : [];
       const activeApprovals = await db
         .select({ status: purchaseOrderControlRequests.status })
         .from(purchaseOrderControlRequests)
@@ -1274,12 +1303,21 @@ export const purchaseRouter = router({
           : null;
 
       // فحص وسحب بيانات سداد الشحن/الكمرك المرتبطة بالأمر
-      const shippingTotal = money(po.shippingCost ?? 0).plus(money(po.customsCost ?? 0));
+      const shippingTotal = money(po.shippingCost ?? 0).plus(
+        money(po.customsCost ?? 0),
+      );
       let shippingPayment: {
         hasShipping: boolean;
         obligationId: number | null;
         hasRecordedPayment: boolean;
-        refund: { receiptId: number; voucherNumber: string | null; amount: string; cashBucket: string | null; shiftId: number | null; occurredAt: Date } | null;
+        refund: {
+          receiptId: number;
+          voucherNumber: string | null;
+          amount: string;
+          cashBucket: string | null;
+          shiftId: number | null;
+          occurredAt: Date;
+        } | null;
         totalLanded: string;
         obligationStatus: string;
         beneficiaryName: string | null;
@@ -1308,9 +1346,24 @@ export const purchaseRouter = router({
           .orderBy(desc(accrualObligations.id))
           .limit(1);
 
-        const [recordedPayment] = shippingObligation ? await db.select({ id: accrualObligationEvents.id, receiptId: accrualObligationEvents.receiptId })
-          .from(accrualObligationEvents).where(and(eq(accrualObligationEvents.obligationId, shippingObligation.id),
-            eq(accrualObligationEvents.eventType, "PAYMENT_SETTLED"))).limit(1) : [];
+        const [recordedPayment] = shippingObligation
+          ? await db
+              .select({
+                id: accrualObligationEvents.id,
+                receiptId: accrualObligationEvents.receiptId,
+              })
+              .from(accrualObligationEvents)
+              .where(
+                and(
+                  eq(
+                    accrualObligationEvents.obligationId,
+                    shippingObligation.id,
+                  ),
+                  eq(accrualObligationEvents.eventType, "PAYMENT_SETTLED"),
+                ),
+              )
+              .limit(1)
+          : [];
         let linkedReceipt: {
           id: number;
           referenceNumber: string | null;
@@ -1341,7 +1394,8 @@ export const purchaseRouter = router({
             .orderBy(desc(accrualObligationEvents.id))
             .limit(1);
 
-          let receiptId = recordedPayment?.receiptId ?? latestEvent?.receiptId ?? null;
+          let receiptId =
+            recordedPayment?.receiptId ?? latestEvent?.receiptId ?? null;
           if (!receiptId && shippingObligation.expenseId != null) {
             const [exp] = await db
               .select({ receiptId: expenses.receiptId })
@@ -1382,30 +1436,72 @@ export const purchaseRouter = router({
           }
         }
 
-        const [refundEvent] = shippingObligation ? await db.select({ receiptId: accrualObligationEvents.receiptId })
-          .from(accrualObligationEvents).where(and(eq(accrualObligationEvents.obligationId, shippingObligation.id),
-            eq(accrualObligationEvents.eventType, "SETTLEMENT_REVERSED"))).orderBy(desc(accrualObligationEvents.id)).limit(1) : [];
-        const [refundReceipt] = refundEvent?.receiptId ? await db.select().from(receipts)
-          .where(eq(receipts.id, refundEvent.receiptId)).limit(1) : [];
+        const [refundEvent] = shippingObligation
+          ? await db
+              .select({ receiptId: accrualObligationEvents.receiptId })
+              .from(accrualObligationEvents)
+              .where(
+                and(
+                  eq(
+                    accrualObligationEvents.obligationId,
+                    shippingObligation.id,
+                  ),
+                  eq(accrualObligationEvents.eventType, "SETTLEMENT_REVERSED"),
+                ),
+              )
+              .orderBy(desc(accrualObligationEvents.id))
+              .limit(1)
+          : [];
+        const [refundReceipt] = refundEvent?.receiptId
+          ? await db
+              .select()
+              .from(receipts)
+              .where(eq(receipts.id, refundEvent.receiptId))
+              .limit(1)
+          : [];
         shippingPayment = {
           hasShipping: true,
-          obligationId: shippingObligation ? Number(shippingObligation.id) : null,
+          obligationId: shippingObligation
+            ? Number(shippingObligation.id)
+            : null,
           hasRecordedPayment: recordedPayment != null,
-          refund: refundReceipt ? { receiptId: Number(refundReceipt.id), voucherNumber: refundReceipt.voucherNumber,
-            amount: refundReceipt.amount, cashBucket: refundReceipt.cashBucket, shiftId: refundReceipt.shiftId,
-            occurredAt: refundReceipt.executedAt ?? refundReceipt.approvedAt ?? refundReceipt.createdAt } : null,
+          refund: refundReceipt
+            ? {
+                receiptId: Number(refundReceipt.id),
+                voucherNumber: refundReceipt.voucherNumber,
+                amount: refundReceipt.amount,
+                cashBucket: refundReceipt.cashBucket,
+                shiftId: refundReceipt.shiftId,
+                occurredAt:
+                  refundReceipt.executedAt ??
+                  refundReceipt.approvedAt ??
+                  refundReceipt.createdAt,
+              }
+            : null,
           totalLanded: toDbMoney(shippingTotal),
           obligationStatus: shippingObligation?.status ?? "NONE",
           beneficiaryName: shippingObligation?.beneficiaryName ?? null,
           evidenceReference: shippingObligation?.evidenceReference ?? null,
           voucherId: linkedReceipt ? Number(linkedReceipt.id) : null,
-          voucherNumber: linkedReceipt?.voucherNumber ?? linkedReceipt?.referenceNumber ?? null,
+          voucherNumber:
+            linkedReceipt?.voucherNumber ??
+            linkedReceipt?.referenceNumber ??
+            null,
           voucherStatus: linkedReceipt?.status ?? null,
           approvalStatus: linkedReceipt?.approvalStatus ?? null,
           cashBucket: linkedReceipt?.cashBucket ?? null,
-          shiftId: linkedReceipt?.shiftId ? Number(linkedReceipt.shiftId) : null,
-          payee: linkedReceipt?.counterpartyName ?? shippingObligation?.beneficiaryName ?? null,
-          paidAt: linkedReceipt?.executedAt ?? linkedReceipt?.approvedAt ?? linkedReceipt?.createdAt ?? null,
+          shiftId: linkedReceipt?.shiftId
+            ? Number(linkedReceipt.shiftId)
+            : null,
+          payee:
+            linkedReceipt?.counterpartyName ??
+            shippingObligation?.beneficiaryName ??
+            null,
+          paidAt:
+            linkedReceipt?.executedAt ??
+            linkedReceipt?.approvedAt ??
+            linkedReceipt?.createdAt ??
+            null,
           settledAmount: linkedReceipt?.amount ?? null,
         };
       }
@@ -1447,10 +1543,28 @@ export const purchaseRouter = router({
               usdListUnitPrice: null,
             }) as unknown as typeof row,
         );
-        return { ...poMasked, items: itemsMasked, nextAction, nextActionReason };
+        return {
+          ...poMasked,
+          tender: null,
+          legacyCashSource: null,
+          paymentReceipts: [],
+          items: itemsMasked,
+          nextAction,
+          nextActionReason,
+        };
       }
+      const tender = await readPurchaseTenderTx(db, Number(po.id),
+        po.currentRevisionId == null ? null : Number(po.currentRevisionId));
+      const legacyCashSource = !tender && po.settlementType === "CASH"
+        ? await readDeclaredPurchaseCashSourceTx(db, Number(po.id),
+            po.currentRevisionId == null ? null : Number(po.currentRevisionId))
+        : null;
+      const paymentReceipts = await loadPurchasePaymentEvidence(db, po, tender);
       return {
         ...po,
+        tender,
+        legacyCashSource,
+        paymentReceipts,
         paidAmount: settlement.paidAmountIqd,
         paidUsd:
           po.agreedCurrency === "USD"

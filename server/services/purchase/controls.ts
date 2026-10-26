@@ -21,7 +21,7 @@ import {
 } from "../idempotency";
 import { money } from "../money";
 import { restoreVariantsToActiveOpeningStocktakes } from "../stocktake/openingEligibility";
-import { requireDb, withTx, type Actor } from "../tx";
+import { requireDb, withTx, withGovernanceTx, type Actor } from "../tx";
 import { assertPurchaseBranch } from "./internal";
 import {
   getPurchaseControlSettingsTx,
@@ -29,7 +29,10 @@ import {
   releasePurchaseOrderRevisionAllocationsTx,
 } from "./requisitions";
 import { appendPurchaseOrderEventTx } from "./revisions";
-import { postApprovedPurchaseInvoiceInTx, recognizeShippingAndCustomsInTx } from "./automaticInvoicePosting";
+import {
+  postApprovedPurchaseInvoiceInTx,
+  recognizeShippingAndCustomsInTx,
+} from "./automaticInvoicePosting";
 import { recordedPurchaseShippingPaymentTx } from "./shippingPayment";
 import { prelockCashPurchaseSettlementInTx } from "./supplierPayments";
 import type { PurchaseCashSourceInput } from "./types";
@@ -262,7 +265,9 @@ export async function requestPurchaseOrderControl(
   input: PurchaseOrderControlRequestInput,
   actor: Actor,
 ) {
-  const result = await withTx((tx) => requestPurchaseOrderControlTx(tx, input, actor));
+  const result = await withTx((tx) =>
+    requestPurchaseOrderControlTx(tx, input, actor),
+  );
   // اعتماد المراجعة يثبت واقعةً مستقلة: وصول البضاعة كاملة ومطابقتها. إنشاء الطلب وحده
   // لا يحمل هذا الإقرار، لذلك يبقى بانتظار تأكيد صريح حتى لو كان المنشئ هو المالك.
   if (input.kind === "APPROVE_REVISION") return result;
@@ -480,23 +485,57 @@ export async function decidePurchaseOrderControl(
         }
       : {}),
   });
-  return withTx(async (tx) => {
+  const runTransaction =
+    input.approve && preview.kind === "APPROVE_REVISION"
+      ? withGovernanceTx
+      : withTx;
+  return runTransaction(async (tx) => {
     // Documented shipping and CASH invoice settlement lock their cash source
     // before the PO, in the same source -> document order as all cash writers.
-    if (input.approve && preview.status === "PENDING" && (preview.kind === "CANCEL_ORDER" || (preview.kind === "APPROVE_REVISION" && !options.legacyConfirmOnly))) {
-      const [sourcePo] = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, preview.purchaseOrderId)).limit(1);
-      if (sourcePo && Number(sourcePo.currentRevisionId) === Number(preview.revisionId) && Number(sourcePo.version) === Number(preview.baseOrderVersion)) {
-        if (sourcePo.shippingFundingSource === "DRAWER" && sourcePo.shippingFundingShiftId != null) {
-          const recordedReceiptId = await recordedPurchaseShippingPaymentTx(tx, {
-            purchaseOrderId: Number(sourcePo.id), branchId: Number(sourcePo.branchId), creatorId: Number(sourcePo.createdBy),
-            amount: money(sourcePo.shippingCost ?? "0").plus(money(sourcePo.customsCost ?? "0")).toFixed(2),
-            shiftId: sourcePo.shippingFundingShiftId,
-          });
-          if (recordedReceiptId == null) await lockCashSourceForUpdate(tx, {
-            branchId: Number(sourcePo.branchId), cashBucket: "DRAWER", shiftId: Number(sourcePo.shippingFundingShiftId),
-          });
+    if (
+      input.approve &&
+      preview.status === "PENDING" &&
+      (preview.kind === "CANCEL_ORDER" ||
+        (preview.kind === "APPROVE_REVISION" && !options.legacyConfirmOnly))
+    ) {
+      const [sourcePo] = await tx
+        .select()
+        .from(purchaseOrders)
+        .where(eq(purchaseOrders.id, preview.purchaseOrderId))
+        .limit(1);
+      if (
+        sourcePo &&
+        Number(sourcePo.currentRevisionId) === Number(preview.revisionId) &&
+        Number(sourcePo.version) === Number(preview.baseOrderVersion)
+      ) {
+        if (
+          sourcePo.shippingFundingSource === "DRAWER" &&
+          sourcePo.shippingFundingShiftId != null
+        ) {
+          const recordedReceiptId = await recordedPurchaseShippingPaymentTx(
+            tx,
+            {
+              purchaseOrderId: Number(sourcePo.id),
+              branchId: Number(sourcePo.branchId),
+              creatorId: Number(sourcePo.createdBy),
+              amount: money(sourcePo.shippingCost ?? "0")
+                .plus(money(sourcePo.customsCost ?? "0"))
+                .toFixed(2),
+              shiftId: sourcePo.shippingFundingShiftId,
+            },
+          );
+          if (recordedReceiptId == null)
+            await lockCashSourceForUpdate(tx, {
+              branchId: Number(sourcePo.branchId),
+              cashBucket: "DRAWER",
+              shiftId: Number(sourcePo.shippingFundingShiftId),
+            });
         }
-        if (preview.kind === "APPROVE_REVISION" && sourcePo.settlementType === "CASH" && money(sourcePo.total).gt(0)) {
+        if (
+          preview.kind === "APPROVE_REVISION" &&
+          sourcePo.settlementType === "CASH" &&
+          money(sourcePo.total).gt(0)
+        ) {
           try {
             await prelockCashPurchaseSettlementInTx(tx, {
               purchaseOrder: sourcePo,
@@ -785,14 +824,25 @@ export async function decidePurchaseOrderControl(
       const items = await assertCancellationSafeTx(tx, Number(po.id));
       // Cancellation reverses the goods plan, not cash that already left the
       // creator's drawer. Post only the explicitly declared freight; no GRN/AP.
-      const shippingPaymentRequestReceiptId = po.shippingFundingSource === "DRAWER"
-        ? await recognizeShippingAndCustomsInTx(tx, {
-          purchaseOrderId: Number(po.id), poNumber: po.poNumber, branchId: Number(po.branchId),
-          shippingCost: String(po.shippingCost ?? "0"), customsCost: String(po.customsCost ?? "0"),
-          actor: resolvedActor, creatorId: Number(po.createdBy), deterministicKey: `cancel-shipping:${decisionKey}`,
-          recognizedAt: new Date(), evidencePrefix: "PO-CANCELLATION-SHIPPING",
-          shippingFundingSource: { mode: "DRAWER", shiftId: po.shippingFundingShiftId },
-        }) : null;
+      const shippingPaymentRequestReceiptId =
+        po.shippingFundingSource === "DRAWER"
+          ? await recognizeShippingAndCustomsInTx(tx, {
+              purchaseOrderId: Number(po.id),
+              poNumber: po.poNumber,
+              branchId: Number(po.branchId),
+              shippingCost: String(po.shippingCost ?? "0"),
+              customsCost: String(po.customsCost ?? "0"),
+              actor: resolvedActor,
+              creatorId: Number(po.createdBy),
+              deterministicKey: `cancel-shipping:${decisionKey}`,
+              recognizedAt: new Date(),
+              evidencePrefix: "PO-CANCELLATION-SHIPPING",
+              shippingFundingSource: {
+                mode: "DRAWER",
+                shiftId: po.shippingFundingShiftId,
+              },
+            })
+          : null;
       const releasedAllocations =
         po.currentRevisionId == null
           ? []
@@ -938,7 +988,11 @@ export async function listPendingPurchaseOrderControls(
           : lt(purchaseOrderControlRequests.id, page.cursor),
       ),
     )
-    .orderBy(page.order === "ASC" ? asc(purchaseOrderControlRequests.id) : desc(purchaseOrderControlRequests.id))
+    .orderBy(
+      page.order === "ASC"
+        ? asc(purchaseOrderControlRequests.id)
+        : desc(purchaseOrderControlRequests.id),
+    )
     .limit(page.limit + 1);
 }
 

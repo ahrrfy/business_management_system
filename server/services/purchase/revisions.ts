@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { PurchaseTenderInput } from "@shared/purchaseTender";
 import { TRPCError } from "@trpc/server";
 import { variantDescriptor } from "@shared/variantDisplay";
 import { and, desc, eq } from "drizzle-orm";
@@ -54,6 +55,7 @@ export async function createPurchaseOrderRevisionTx(
     actorUserId: number;
     reason: string;
     origin?: "NATIVE" | "LEGACY";
+    tender?: PurchaseTenderInput | null;
     cashSource?: {
       mode: "DRAWER" | "TREASURY";
       shiftId?: number | null;
@@ -100,13 +102,22 @@ export async function createPurchaseOrderRevisionTx(
       unitName: productUnits.unitName,
     })
     .from(purchaseOrderItems)
-    .innerJoin(productVariants, eq(purchaseOrderItems.variantId, productVariants.id))
+    .innerJoin(
+      productVariants,
+      eq(purchaseOrderItems.variantId, productVariants.id),
+    )
     .innerJoin(products, eq(productVariants.productId, products.id))
-    .leftJoin(productUnits, eq(purchaseOrderItems.productUnitId, productUnits.id))
+    .leftJoin(
+      productUnits,
+      eq(purchaseOrderItems.productUnitId, productUnits.id),
+    )
     .where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId))
     .orderBy(purchaseOrderItems.id);
   if (rows.length === 0) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشراء بلا أصناف" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "أمر الشراء بلا أصناف",
+    });
   }
 
   const [latest] = await tx
@@ -130,11 +141,13 @@ export async function createPurchaseOrderRevisionTx(
       sku: row.sku,
     });
     const resolvedVariantName =
-      desc || (row.variantName == null ? null : String(row.variantName).trim() || null);
+      desc ||
+      (row.variantName == null ? null : String(row.variantName).trim() || null);
     return {
       lineNo: index + 1,
       variantId: Number(row.variantId),
-      productUnitId: row.productUnitId == null ? null : Number(row.productUnitId),
+      productUnitId:
+        row.productUnitId == null ? null : Number(row.productUnitId),
       quantity: String(row.quantity),
       baseQuantity: Number(row.baseQuantity),
       listUnitPrice: String(row.listUnitPrice ?? row.unitPrice),
@@ -191,6 +204,7 @@ export async function createPurchaseOrderRevisionTx(
           },
         }
       : {}),
+    ...(input.tender ? { tender: input.tender } : {}),
     items,
   };
   const payloadCanonical = canonicalJson(payload);
@@ -245,7 +259,11 @@ export async function createPurchaseOrderRevisionTx(
     createdBy: input.actorUserId,
   });
   const revisionId = extractInsertId(inserted);
-  const revisionItems: Array<{ id: number; lineNo: number; baseQuantity: number }> = [];
+  const revisionItems: Array<{
+    id: number;
+    lineNo: number;
+    baseQuantity: number;
+  }> = [];
   for (const item of items) {
     const result = await tx.insert(purchaseOrderRevisionItems).values({
       revisionId,
@@ -257,7 +275,13 @@ export async function createPurchaseOrderRevisionTx(
       baseQuantity: item.baseQuantity,
     });
   }
-  return { revisionId, revisionNo, payloadHash, payloadCanonical, revisionItems };
+  return {
+    revisionId,
+    revisionNo,
+    payloadHash,
+    payloadCanonical,
+    revisionItems,
+  };
 }
 
 /** سلسلة أحداث محكمة البصمة. صف الأمر يجب أن يكون مقفلاً قبل الاستدعاء. */
@@ -297,7 +321,11 @@ export async function appendPurchaseOrderEventTx(
         message: "مفتاح حدث أمر الشراء مستعمل بحمولة مختلفة",
       });
     }
-    return { eventId: Number(existing.id), eventHash: existing.eventHash, idempotent: true as const };
+    return {
+      eventId: Number(existing.id),
+      eventHash: existing.eventHash,
+      idempotent: true as const,
+    };
   }
   const [previous] = await tx
     .select({ eventHash: purchaseOrderEvents.eventHash })
@@ -306,7 +334,9 @@ export async function appendPurchaseOrderEventTx(
     .orderBy(desc(purchaseOrderEvents.id))
     .limit(1);
   const previousEventHash = previous?.eventHash ?? null;
-  const eventHash = sha256(`${previousEventHash ?? "GENESIS"}\n${payloadCanonical}`);
+  const eventHash = sha256(
+    `${previousEventHash ?? "GENESIS"}\n${payloadCanonical}`,
+  );
   const result = await tx.insert(purchaseOrderEvents).values({
     eventKey: input.eventKey,
     purchaseOrderId: input.purchaseOrderId,
@@ -320,22 +350,33 @@ export async function appendPurchaseOrderEventTx(
     previousEventHash,
     eventHash,
   });
-  return { eventId: extractInsertId(result), eventHash, idempotent: false as const };
+  return {
+    eventId: extractInsertId(result),
+    eventHash,
+    idempotent: false as const,
+  };
 }
 
-async function assertReadablePurchaseOrder(purchaseOrderId: number, actor: Actor) {
+async function assertReadablePurchaseOrder(
+  purchaseOrderId: number,
+  actor: Actor,
+) {
   const db = requireDb();
   const [po] = await db
     .select({ id: purchaseOrders.id, branchId: purchaseOrders.branchId })
     .from(purchaseOrders)
     .where(eq(purchaseOrders.id, purchaseOrderId))
     .limit(1);
-  if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
+  if (!po)
+    throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
   assertPurchaseBranch(po, actor);
   return po;
 }
 
-export async function listPurchaseOrderRevisions(purchaseOrderId: number, actor: Actor) {
+export async function listPurchaseOrderRevisions(
+  purchaseOrderId: number,
+  actor: Actor,
+) {
   await assertReadablePurchaseOrder(purchaseOrderId, actor);
   return requireDb()
     .select()
@@ -361,7 +402,10 @@ export async function getPurchaseOrderRevision(
     )
     .limit(1);
   if (!revision) {
-    throw new TRPCError({ code: "NOT_FOUND", message: "مراجعة أمر الشراء غير موجودة" });
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "مراجعة أمر الشراء غير موجودة",
+    });
   }
   const rawItems = await db
     .select({
@@ -373,27 +417,35 @@ export async function getPurchaseOrderRevision(
       sku: productVariants.sku,
     })
     .from(purchaseOrderRevisionItems)
-    .leftJoin(productVariants, eq(purchaseOrderRevisionItems.variantId, productVariants.id))
+    .leftJoin(
+      productVariants,
+      eq(purchaseOrderRevisionItems.variantId, productVariants.id),
+    )
     .where(eq(purchaseOrderRevisionItems.revisionId, input.revisionId))
     .orderBy(purchaseOrderRevisionItems.lineNo);
-  const items = rawItems.map(({ item, variantName, color, size, variantKind, sku }) => {
-    const fallbackDesc = variantDescriptor({
-      productName: item.productNameSnapshot,
-      variantName,
-      color,
-      size,
-      variantKind,
-      sku: item.skuSnapshot ?? sku,
-    });
-    return {
-      ...item,
-      variantNameSnapshot: item.variantNameSnapshot?.trim() || fallbackDesc || null,
-    };
-  });
+  const items = rawItems.map(
+    ({ item, variantName, color, size, variantKind, sku }) => {
+      const fallbackDesc = variantDescriptor({
+        productName: item.productNameSnapshot,
+        variantName,
+        color,
+        size,
+        variantKind,
+        sku: item.skuSnapshot ?? sku,
+      });
+      return {
+        ...item,
+        variantNameSnapshot:
+          item.variantNameSnapshot?.trim() || fallbackDesc || null,
+      };
+    },
+  );
   return { ...revision, items };
 }
 
-export type PurchaseRevisionComparable = Awaited<ReturnType<typeof getPurchaseOrderRevision>>;
+export type PurchaseRevisionComparable = Awaited<
+  ReturnType<typeof getPurchaseOrderRevision>
+>;
 
 /** فرقٌ منظم للواجهة: حقول الرأس والأسطر المضافة/المحذوفة/المعدلة. */
 export function diffPurchaseOrderRevisions(
@@ -422,7 +474,9 @@ export function diffPurchaseOrderRevisions(
       ? []
       : [{ field, before: from[field] ?? null, after: to[field] ?? null }],
   );
-  const fromItems = new Map(from.items.map((item) => [Number(item.lineNo), item]));
+  const fromItems = new Map(
+    from.items.map((item) => [Number(item.lineNo), item]),
+  );
   const toItems = new Map(to.items.map((item) => [Number(item.lineNo), item]));
   const lineNos = Array.from(
     new Set([...Array.from(fromItems.keys()), ...Array.from(toItems.keys())]),
@@ -444,20 +498,35 @@ export function diffPurchaseOrderRevisions(
       return [];
     return [{ lineNo, before, after }];
   });
-  return { fromRevisionId: Number(from.id), toRevisionId: Number(to.id), head, items };
+  return {
+    fromRevisionId: Number(from.id),
+    toRevisionId: Number(to.id),
+    head,
+    items,
+  };
 }
 
 export async function getPurchaseOrderRevisionDiff(
-  input: { purchaseOrderId: number; fromRevisionId: number; toRevisionId: number },
+  input: {
+    purchaseOrderId: number;
+    fromRevisionId: number;
+    toRevisionId: number;
+  },
   actor: Actor,
 ) {
   const [from, to] = await Promise.all([
     getPurchaseOrderRevision(
-      { purchaseOrderId: input.purchaseOrderId, revisionId: input.fromRevisionId },
+      {
+        purchaseOrderId: input.purchaseOrderId,
+        revisionId: input.fromRevisionId,
+      },
       actor,
     ),
     getPurchaseOrderRevision(
-      { purchaseOrderId: input.purchaseOrderId, revisionId: input.toRevisionId },
+      {
+        purchaseOrderId: input.purchaseOrderId,
+        revisionId: input.toRevisionId,
+      },
       actor,
     ),
   ]);

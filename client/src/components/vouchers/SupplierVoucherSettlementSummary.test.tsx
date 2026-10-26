@@ -1,5 +1,7 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { Router } from "wouter";
+import { advanceRefundLinkText } from "@shared/purchasePaymentEvidence";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@/components/data-table/DataTable", () => ({
@@ -58,6 +60,41 @@ describe("saved supplier voucher settlement summary", () => {
     );
     expect(html).toContain("بانتظار الاعتماد والصرف");
     expect(html).not.toContain("معتمد ومصروف");
+  });
+  it("shows the unused original advance separately from invoice allocations", () => {
+    const html = renderToStaticMarkup(
+      <SupplierVoucherSettlementSummary
+        settlement={null}
+        bookSettlement={{
+          kind: "BOOK",
+          status: "APPLIED",
+          accountingEntryId: 55,
+          unallocatedAmount: "250.50",
+          allocations: [],
+          credits: [],
+        }}
+      />,
+    );
+    expect(html).toContain("رصيد دفعة سابقة متاح للتخصيص");
+    expect(html).toContain("250.5");
+  });
+  it("links an executed refund to the original source without disclosing a source amount", () => {
+    const links = { kind: "ADVANCE_REFUND" as const, sourceReceiptId: 17,
+      refundedReceiptId: 21, refundReceiptIds: [], cancellationReceiptIds: [] };
+    const html = renderToStaticMarkup(<Router ssrPath="/treasury"><SupplierVoucherSettlementSummary
+      settlement={null} advanceRefund={links} /></Router>);
+    expect(html).toContain("الدفعة الأصلية");
+    expect(html).toContain("/treasury?tab=vouchers&amp;voucherId=17");
+    expect(advanceRefundLinkText(links)).toContain("#17");
+  });
+  it("shows refund and cancellation references on the original source", () => {
+    const links = { kind: "ADVANCE_SOURCE" as const, sourceReceiptId: 17,
+      refundedReceiptId: null, refundReceiptIds: [21], cancellationReceiptIds: [22] };
+    const html = renderToStaticMarkup(<Router ssrPath="/treasury"><SupplierVoucherSettlementSummary
+      settlement={null} advanceRefund={links} /></Router>);
+    expect(html).toContain("voucherId=21");
+    expect(html).toContain("voucherId=22");
+    expect(advanceRefundLinkText(links)).toContain("عكوس الاسترداد");
   });
   it("renders nothing for vouchers without a saved supplier settlement", () => {
     expect(

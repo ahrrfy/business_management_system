@@ -1,3 +1,4 @@
+import { PurchasePaymentEvidence, purchasePaymentEvidencePrintMeta } from "@/components/purchases/PurchasePaymentEvidence";
 import { useState } from "react";
 import { purchaseShippingAdjustmentLabel } from "@/components/purchases/purchaseGovernanceUiPolicy";
 import { PurchaseShippingRefund } from "@/components/purchases/PurchaseShippingRefund";
@@ -327,6 +328,7 @@ export default function PurchaseOrderDetail() {
       docNum: d.poNumber ?? `#${d.id}`,
       docDate: fmtDate(d.orderDate),
       meta: [
+        ...(!costHidden ? purchasePaymentEvidencePrintMeta(d) : []),
         {
           title: "معلومات المورّد",
           fields: [{ label: "الاسم", value: d.supplierName ?? "—" }],
@@ -499,6 +501,8 @@ export default function PurchaseOrderDetail() {
           ) : null}
         </CardContent>
       </Card>
+
+      {!costHidden ? <PurchasePaymentEvidence tender={d.tender} paymentReceipts={d.paymentReceipts ?? []} /> : null}
 
       {/* بعد cutover، الدفع يُخصَّص إلى فاتورة مورد مرحّلة لا إلى أمر الشراء مباشرةً. */}
       {settlement.requiresReview ? (

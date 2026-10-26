@@ -1,4 +1,5 @@
 // عقد الشراء المشترك (أمر الشراء/الاستلام/تسديد فاتورة الدولار).
+import type { PurchaseTenderInput } from "@shared/purchaseTender";
 
 type PaymentMethod = "CASH" | "CARD" | "TRANSFER" | "WALLET";
 type SupplierPaymentMethod = "CASH";
@@ -58,6 +59,7 @@ export interface PurchaseCashSourceInput {
 }
 
 export interface CreatePurchaseOrderInput extends PurchaseDocumentInput {
+  tender?: PurchaseTenderInput | null;
   supplierId: number;
   branchId: number;
   /** CASH settles supplier AP atomically upon invoice posting; CREDIT leaves AP open on supplier account. */
@@ -79,6 +81,7 @@ export interface CreatePurchaseOrderInput extends PurchaseDocumentInput {
  * الفرع يحدّد ترقيم الأمر وعزلَه الأمنيّ، والحالة لها إجراؤها المستقلّ (اعتماد/إلغاء).
  */
 export interface UpdatePurchaseOrderInput extends PurchaseDocumentInput {
+  tender?: PurchaseTenderInput | null;
   purchaseOrderId: number;
   supplierId: number;
   settlementType?: PurchaseSettlementType;

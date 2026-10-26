@@ -3,6 +3,8 @@ import { prepareSupplierBookVoucherTx, applySupplierBookVoucherTx, type LiveSupp
 // اعتماد/رفض سند مُعلَّق (Maker-Checker، SOD-04: مالك نشط والمُعتمِد ≠ المُنشئ بلا استثناء).
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
+import { assertAdvanceOriginalCancellationTx, restoreSupplierAdvanceRefundTx, prepareSupplierAdvanceRefundTx } from "../purchase/advanceRefund";
+import { readAdvanceRefundEvidence } from "../purchase/advanceRefundEvidence";
 import { logAuditTx } from "../auditService";
 import { allocateVoucherToInvoiceTx } from "./invoiceAllocation";
 import { assertNoNativeSupplierDebtForGenericPaymentTx } from "./supplierNativePaymentGuard";
@@ -988,6 +990,11 @@ export async function approveVoucherTx(
       message: "السند ليس طلباً معلّقاً صالحاً للاعتماد",
     });
   }
+  if (!systemRequest && r.direction === "IN" && r.partyType === "SUPPLIER") {
+    await prepareSupplierAdvanceRefundTx(tx, { voucherType: "RECEIPT", branchId: Number(r.branchId),
+      partyType: "SUPPLIER", partyId: r.partyId, amount: r.amount, paymentMethod: r.paymentMethod as PaymentMethod,
+      description: r.description ?? "استرداد مورد", clientRequestId: `approve:${r.id}` }, actor);
+  }
   if (
     r.direction === "OUT" &&
     r.partyType === "SUPPLIER" &&
@@ -1246,6 +1253,9 @@ export async function approveVoucherTx(
     }
   }
   const amount = money(r.amount);
+  const advanceRefundCancellation = cancellationOriginal
+    ? await readAdvanceRefundEvidence(tx, cancellationOriginal.id) : null;
+  if (cancellationOriginal?.direction === "OUT") await assertAdvanceOriginalCancellationTx(tx, cancellationOriginal.id);
   const direction = r.direction as "IN" | "OUT";
   const branchId = Number(r.branchId);
   const partyType = r.partyType as PartyType | null;
@@ -1860,6 +1870,7 @@ export async function approveVoucherTx(
     partyId != null &&
     direction === "OUT" &&
     systemRequest?.kind !== "PURCHASE_SUPPLIER_USD" &&
+    !advanceRefundCancellation &&
     !purchaseCashClearing
   ) {
     const [sup] = await tx
@@ -2046,6 +2057,7 @@ export async function approveVoucherTx(
   }
 
   if (cancellationOriginal) {
+    await restoreSupplierAdvanceRefundTx(tx, cancellationOriginal.id, receiptId, actor);
     await unapplySupplierBookSettlementSourceTx(tx, {
       sourceReceiptId: Number(cancellationOriginal.id),
       reversalKey: `VOUCHER_CANCELLATION:${receiptId}`,
@@ -2416,7 +2428,7 @@ export async function approveVoucherTx(
       partyId,
       direction === "OUT" ? amount.neg() : amount,
     );
-    if (direction === "OUT" && !supplierBookPlan) {
+    if (direction === "OUT" && !supplierBookPlan && !advanceRefundCancellation) {
       const [sRec] = await tx
         .select({ currentBalance: suppliers.currentBalance })
         .from(suppliers)

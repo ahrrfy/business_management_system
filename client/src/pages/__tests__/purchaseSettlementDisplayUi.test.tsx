@@ -60,11 +60,17 @@ function makeTrpcProxy(path: string[] = []): unknown {
         return () => ({ data: state.order, isLoading: false });
       }
       if (joined === "vouchers.get.useQuery") {
-        return () => ({ data: state.voucher, isLoading: false, isError: false });
+        return () => ({
+          data: state.voucher,
+          isLoading: false,
+          isError: false,
+        });
       }
       if (joined === "purchases.pendingControls.useInfiniteQuery") {
         return () => ({
-          data: { pages: [{ rows: state.pendingControlRows, nextCursor: null }] },
+          data: {
+            pages: [{ rows: state.pendingControlRows, nextCursor: null }],
+          },
           isLoading: false,
           isFetching: false,
           error: null,
@@ -114,13 +120,8 @@ vi.mock("@/lib/trpc", () => ({
   trpc: makeTrpcProxy(),
 }));
 vi.mock("wouter", () => ({
-  Link: ({
-    children,
-    href,
-  }: {
-    children: React.ReactNode;
-    href?: string;
-  }) => React.createElement("a", { href }, children),
+  Link: ({ children, href }: { children: React.ReactNode; href?: string }) =>
+    React.createElement("a", { href }, children),
   useLocation: () => ["/vouchers/payment/new", vi.fn()],
   useParams: () => ({ id: "262" }),
   useSearch: () => state.search,
@@ -471,9 +472,8 @@ describe("عرض سداد الشراء المثبت", () => {
   });
 
   it("يرسل undefined في الوضع التلقائي لمصدر نقد الفاتورة النقدية فلا يصطدم المعتمد المستقل بدرجه الشخصي", async () => {
-    const { buildPurchaseCashSourcePayload } = await import(
-      "@/components/purchases/PurchaseCashSourceField"
-    );
+    const { buildPurchaseCashSourcePayload } =
+      await import("@/components/purchases/PurchaseCashSourceField");
     expect(buildPurchaseCashSourcePayload("AUTO", "99")).toBeUndefined();
     expect(buildPurchaseCashSourcePayload("TREASURY", "99")).toEqual({
       mode: "TREASURY",
@@ -538,9 +538,8 @@ describe("عرض سداد الشراء المثبت", () => {
   });
 
   it("يعزل shiftId بين الفروع ويحجب وضع الدرج او الخزينة عند غياب الفرع او عدم جاهزية الاستعلام", async () => {
-    const { derivePurchaseCashSourceDecision } = await import(
-      "@/components/purchases/PurchaseCashSourceField"
-    );
+    const { derivePurchaseCashSourceDecision } =
+      await import("@/components/purchases/PurchaseCashSourceField");
 
     // غياب الفرع (skipToken نشط) مع بقاء shiftId قديم من فرع سابق: لا يتسرب shiftId ولا يمر الحفظ.
     const missingBranch = derivePurchaseCashSourceDecision({
@@ -597,9 +596,8 @@ describe("عرض سداد الشراء المثبت", () => {
   });
 
   it("يرسم تنبيه الفاتورة النقدية المستلمة غير المسددة في PurchaseDetailDrawer بمتغير --sem-danger-bg المعرف", async () => {
-    const { PurchaseDetailDrawer } = await import(
-      "@/components/purchases/PurchaseDetailDrawer"
-    );
+    const { PurchaseDetailDrawer } =
+      await import("@/components/purchases/PurchaseDetailDrawer");
     state.order = {
       ...state.order,
       status: "RECEIVED",
@@ -620,9 +618,8 @@ describe("عرض سداد الشراء المثبت", () => {
   });
 
   it("يهيئ سند صرف المورد من معاملات الرابط ويعرض اشعار تسوية ذمة المورد عند اختيار المورد", async () => {
-    const { default: VoucherFormShared } = await import(
-      "@/components/vouchers/VoucherFormShared"
-    );
+    const { default: VoucherFormShared } =
+      await import("@/components/vouchers/VoucherFormShared");
 
     state.search = "?partyType=SUPPLIER&partyId=15";
     const html = renderToStaticMarkup(
@@ -640,7 +637,10 @@ describe("عرض سداد الشراء المثبت", () => {
       await import("@/components/purchases/PurchaseCashSourceField");
 
     state.cashSourcesResult = {
-      data: { drawers: [{ id: 12, shiftType: "MORNING" }], canUseTreasury: true },
+      data: {
+        drawers: [{ id: 12, shiftType: "MORNING" }],
+        canUseTreasury: true,
+      },
       isLoading: false,
       isError: false,
     };
@@ -662,21 +662,36 @@ describe("عرض سداد الشراء المثبت", () => {
     }
 
     const cashIqdHtml = renderToStaticMarkup(
-      React.createElement(PolicyProbe, { paymentTerms: "CASH", currency: "IQD" }),
+      React.createElement(PolicyProbe, {
+        paymentTerms: "CASH",
+        currency: "IQD",
+      }),
     );
-    expect(cashIqdHtml).toContain("صافي الذمة المتبقية على هذه الفاتورة يساوي صفرا (0.00)");
+    expect(cashIqdHtml).toContain(
+      "صافي الذمة المتبقية على هذه الفاتورة يساوي صفرا (0.00)",
+    );
     expect(cashIqdHtml).toContain("مصدر سداد الفاتورة النقدية");
 
     const cashUsdHtml = renderToStaticMarkup(
-      React.createElement(PolicyProbe, { paymentTerms: "CASH", currency: "USD" }),
+      React.createElement(PolicyProbe, {
+        paymentTerms: "CASH",
+        currency: "USD",
+      }),
     );
-    expect(cashUsdHtml).toContain("صافي الذمة المتبقية على هذه الفاتورة يساوي صفرا (0.00)");
+    expect(cashUsdHtml).toContain(
+      "صافي الذمة المتبقية على هذه الفاتورة يساوي صفرا (0.00)",
+    );
     expect(cashUsdHtml).not.toContain("مصدر سداد الفاتورة النقدية");
 
     const creditHtml = renderToStaticMarkup(
-      React.createElement(PolicyProbe, { paymentTerms: "CREDIT", currency: "IQD" }),
+      React.createElement(PolicyProbe, {
+        paymentTerms: "CREDIT",
+        currency: "IQD",
+      }),
     );
-    expect(creditHtml).toContain("ترفع هذه الفاتورة ذمة المورد بقيمتها عند الاعتماد والترحيل");
+    expect(creditHtml).toContain(
+      "ترفع هذه الفاتورة ذمة المورد بقيمتها عند الاعتماد والترحيل",
+    );
     expect(creditHtml).toContain("سند صرف للمورد");
     expect(creditHtml).not.toContain("مصدر سداد الفاتورة النقدية");
   });
@@ -690,8 +705,8 @@ describe("عرض سداد الشراء المثبت", () => {
 
     expect(createPage).not.toContain('buildPayload("CONFIRMED")');
     expect(createPage).toContain('primaryLabel="حفظ المسودة"');
-    expect(createPage).toContain(
-      'notify.ok("حُفظ أمر الشراء مسودة — راجعه ثم أرسله للاعتماد من قائمة المشتريات")',
+    expect(createPage).toMatch(
+      /notify\.ok\(\s*"حُفظ أمر الشراء مسودة — راجعه ثم أرسله للاعتماد من قائمة المشتريات",?\s*\)/,
     );
 
     const submitStart = createPage.indexOf(
@@ -714,24 +729,29 @@ describe("عرض سداد الشراء المثبت", () => {
       'canLifecycleOperation(me.data, "purchases.decideControl", true)',
     );
     expect(ownerBody).toContain("confirmedFullReceipt: true");
-    expect(ownerBody).toContain("cashSource: cashSourceState.payload");
+    expect(ownerBody).toContain("cashSource: undefined");
+    expect(createPage).toContain("{ tender: tenderState.payload }");
   });
 
   it("يهيئ نموذج سند الصرف تلقائيا على المورد عند تمرير partyType=SUPPLIER&partyId في الرابط", async () => {
     const { readFileSync } = await import("node:fs");
     const voucherStateSrc = readFileSync(
-      new URL("../../components/vouchers/useVoucherFormState.ts", import.meta.url),
+      new URL(
+        "../../components/vouchers/useVoucherFormState.ts",
+        import.meta.url,
+      ),
       "utf8",
     );
-    expect(voucherStateSrc).toContain('queryParams.get("partyType") === "SUPPLIER"');
+    expect(voucherStateSrc).toContain(
+      'queryParams.get("partyType") === "SUPPLIER"',
+    );
     expect(voucherStateSrc).toContain('queryParams.get("partyId")');
     expect(voucherStateSrc).toContain("seededSupplierId");
   });
 
   it("يطبق استثناء المالك في PurchaseApprovalQueue على اوامر الشراء مع بقاء فصل المهام لغير المالك", async () => {
-    const { PurchaseApprovalQueue } = await import(
-      "@/components/purchases/PurchaseApprovalQueue"
-    );
+    const { PurchaseApprovalQueue } =
+      await import("@/components/purchases/PurchaseApprovalQueue");
 
     state.pendingControlRows = [
       {
@@ -771,9 +791,8 @@ describe("عرض سداد الشراء المثبت", () => {
   });
 
   it("يعرض مسار مطابقة السند السابق في PurchaseOrderDetail للفاتورة النقدية العالقة ويحجب الروابط عند غياب المورد", async () => {
-    const { default: PurchaseOrderDetail } = await import(
-      "@/pages/PurchaseOrderDetail"
-    );
+    const { default: PurchaseOrderDetail } =
+      await import("@/pages/PurchaseOrderDetail");
 
     state.order = {
       ...state.order,
@@ -822,7 +841,9 @@ describe("عرض سداد الشراء المثبت", () => {
         return { purchaseOrderId: 301, version: 1, poNumber: "PO-301" };
       },
       confirmOrder: async (input) => {
-        submitSteps.push(`confirm:${input.purchaseOrderId}:${input.expectedVersion}`);
+        submitSteps.push(
+          `confirm:${input.purchaseOrderId}:${input.expectedVersion}`,
+        );
         return { requestId: 801 };
       },
       invalidateAll: async () => {
@@ -886,9 +907,8 @@ describe("عرض سداد الشراء المثبت", () => {
   });
 
   it("derivePurchaseCashSourceDecision يفرض isActionBlocked عند اختيار مصدر صريح اثناء تحميل بيانات فرع جديد", async () => {
-    const { derivePurchaseCashSourceDecision } = await import(
-      "@/components/purchases/PurchaseCashSourceField"
-    );
+    const { derivePurchaseCashSourceDecision } =
+      await import("@/components/purchases/PurchaseCashSourceField");
     const loadingExplicit = derivePurchaseCashSourceDecision({
       normalizedBranchId: 2,
       enabled: true,
@@ -906,9 +926,8 @@ describe("عرض سداد الشراء المثبت", () => {
   });
 
   it("يحجب اعتماد APPROVE_REVISION في PurchaseApprovalQueue حتى تكتمل تفاصيل الفاتورة بنجاح ويبقيه محجوبا عند التحميل او التحديث او الخطأ", async () => {
-    const { deriveApprovePoRevisionGate } = await import(
-      "@/components/purchases/PurchaseApprovalQueue"
-    );
+    const { deriveApprovePoRevisionGate } =
+      await import("@/components/purchases/PurchaseApprovalQueue");
 
     // أثناء التحميل الأولي (data غير متاحة بعد): محجوب حتى مع تأكيد الاستلام الكامل
     expect(

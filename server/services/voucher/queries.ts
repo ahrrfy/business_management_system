@@ -8,6 +8,7 @@ import { localDayStart, localNextDayStart } from "../dateRange";
 import type { PartyType, PaymentMethod } from "./types";
 import { supplierVoucherSettlementDetails } from "./supplierSettlement";
 import { loadSupplierBookReceiptSettlement } from "../purchase/supplierBookProjection";
+import { loadSupplierAdvanceRefundLinks } from "../purchase/advanceRefundEvidence";
 import {
   expensePaymentResubmitKey,
   parseExpensePaymentResubmitDescription,
@@ -283,7 +284,8 @@ export async function getVoucher(receiptId: number) {
   }
   const supplierSettlement = await supplierVoucherSettlementDetails(db, receiptId);
   const bookSettlement = r.partyType === "SUPPLIER" ? await loadSupplierBookReceiptSettlement(db, receiptId) : null;
-  return { ...r, createdByName, approvedByName, categoryName, partyName, invoiceNumber, exchangeHouseId, exchangeHouseName, supplierSettlement, bookSettlement };
+  const advanceRefund = r.partyType === "SUPPLIER" ? await loadSupplierAdvanceRefundLinks(db, receiptId) : null;
+  return { ...r, createdByName, approvedByName, categoryName, partyName, invoiceNumber, exchangeHouseId, exchangeHouseName, supplierSettlement, bookSettlement, advanceRefund };
 }
 
 /** يَجلب السندات الأخيرة لنفس الطرف خلال نافذة أيام محدّدة — للتحذير من الازدواج (دفعة مكرّرة).

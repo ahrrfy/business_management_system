@@ -1,3 +1,4 @@
+import { PurchasePaymentEvidence } from "./PurchasePaymentEvidence";
 import { poItemColumns, type PoItemRow } from "./purchaseDetailColumns";
 import { useEffect, useMemo, useState } from "react";
 import { purchaseShippingAdjustmentLabel } from "./purchaseGovernanceUiPolicy";
@@ -8,7 +9,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { Card, CardContent } from "@/components/ui/card";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog,
@@ -53,6 +59,7 @@ import {
   PurchaseCashSourceField,
   usePurchaseCashSourceState,
 } from "./PurchaseCashSourceField";
+import { purchaseTenderLabel } from "@shared/purchaseTender";
 import { QuickSupplierPaymentDialog } from "./QuickSupplierPaymentDialog";
 
 
@@ -64,7 +71,9 @@ const PO_STATUS: Record<string, string> = {
   CANCELLED: "ملغى",
 };
 
-function statusVariant(status: string): "default" | "secondary" | "destructive" | "outline" {
+function statusVariant(
+  status: string,
+): "default" | "secondary" | "destructive" | "outline" {
   if (status === "RECEIVED") return "default";
   if (status === "CANCELLED") return "destructive";
   if (status === "DRAFT") return "outline";
@@ -90,21 +99,50 @@ export function PurchaseDetailDrawer({
   );
   const me = trpc.auth.me.useQuery();
 
-  const [activeTab, setActiveTab] = useState<"details" | "governance">("details");
+  const [activeTab, setActiveTab] = useState<"details" | "governance">(
+    "details",
+  );
   const [isPaymentOpen, setIsPaymentOpen] = useState(false);
   const [isApprovalOpen, setIsApprovalOpen] = useState(false);
-  const [approvalReason, setApprovalReason] = useState("اعتماد واستلام البضاعة كاملة");
+  const [approvalReason, setApprovalReason] = useState(
+    "اعتماد واستلام البضاعة كاملة",
+  );
 
   const legacyEdit = hasModuleAccess(
     me.data?.role ?? "",
-    (me.data as { permissionsOverride?: Record<string, "NONE" | "READ" | "FULL"> | null } | undefined)?.permissionsOverride ?? null,
+    (
+      me.data as
+        | {
+            permissionsOverride?: Record<
+              string,
+              "NONE" | "READ" | "FULL"
+            > | null;
+          }
+        | undefined
+    )?.permissionsOverride ?? null,
     "purchases",
     "FULL",
   );
-  const canEdit = canLifecycleOperation(me.data, "purchases.updateOrder", legacyEdit);
-  const canConfirm = canLifecycleOperation(me.data, "purchases.confirmOrder", legacyEdit);
-  const canDecide = canLifecycleOperation(me.data, "purchases.decideControl", legacyEdit);
-  const canRequestPayment = canLifecycleOperation(me.data, "supplierPayments.requestPayment", legacyEdit);
+  const canEdit = canLifecycleOperation(
+    me.data,
+    "purchases.updateOrder",
+    legacyEdit,
+  );
+  const canConfirm = canLifecycleOperation(
+    me.data,
+    "purchases.confirmOrder",
+    legacyEdit,
+  );
+  const canDecide = canLifecycleOperation(
+    me.data,
+    "purchases.decideControl",
+    legacyEdit,
+  );
+  const canRequestPayment = canLifecycleOperation(
+    me.data,
+    "supplierPayments.requestPayment",
+    legacyEdit,
+  );
   const canExecuteReturn = [
     "returns.executePurchaseReturnCart",
     "returns.lookupItemForReturn",
@@ -114,18 +152,29 @@ export function PurchaseDetailDrawer({
     "purchaseReturnGovernance.requestReturn",
     "purchaseReturnGovernance.returnSources",
   ].every((path) => canLifecycleOperation(me.data, path, legacyEdit));
-  const canSettleShipping = canLifecycleOperation(me.data, "purchases.settleShippingFromShift", legacyEdit);
+  const canSettleShipping = canLifecycleOperation(
+    me.data,
+    "purchases.settleShippingFromShift",
+    legacyEdit,
+  );
 
   const pendingControls = trpc.purchases.pendingControls.useInfiniteQuery(
     { limit: 200 },
-    { enabled: isOpen && canLifecycleOperation(me.data, "purchases.pendingControls", legacyEdit),
-      getNextPageParam: (page) => page.hasMore ? page.nextCursor ?? undefined : undefined,
+    {
+      enabled:
+        isOpen &&
+        canLifecycleOperation(me.data, "purchases.pendingControls", legacyEdit),
+      getNextPageParam: (page) =>
+        page.hasMore ? (page.nextCursor ?? undefined) : undefined,
     },
   );
 
-  const pendingControlRows = useMemo(() => pendingControls.data?.pages.flatMap((page) => page.rows) ?? [], [pendingControls.data]);
+  const pendingControlRows = useMemo(
+    () => pendingControls.data?.pages.flatMap((page) => page.rows) ?? [],
+    [pendingControls.data],
+  );
   const activeControlRequest = useMemo(() => {
-    return (pendingControlRows).find(
+    return pendingControlRows.find(
       (
         row,
       ): row is Extract<
@@ -139,7 +188,7 @@ export function PurchaseDetailDrawer({
   }, [pendingControlRows, purchaseOrderId]);
 
   const hasPendingOrderControl = useMemo(() => {
-    return (pendingControlRows).some(
+    return pendingControlRows.some(
       (row) =>
         row.documentType === "PURCHASE_ORDER" &&
         Number(row.purchaseOrderId) === purchaseOrderId,
@@ -151,7 +200,15 @@ export function PurchaseDetailDrawer({
     if (isOpen && po.data?.status === "SENT" && !hasPendingOrderControl && pendingControls.hasNextPage && !pendingControls.isFetching && !pendingControls.isError) {
       void pendingControls.fetchNextPage();
     }
-  }, [isOpen, po.data?.status, hasPendingOrderControl, pendingControls.hasNextPage, pendingControls.isFetching, pendingControls.isError, pendingControls.fetchNextPage]);
+  }, [
+    isOpen,
+    po.data?.status,
+    hasPendingOrderControl,
+    pendingControls.hasNextPage,
+    pendingControls.isFetching,
+    pendingControls.isError,
+    pendingControls.fetchNextPage,
+  ]);
 
   const orderDecisionMut = trpc.purchases.decideControl.useMutation({
     onSuccess: async (res) => {
@@ -165,7 +222,9 @@ export function PurchaseDetailDrawer({
       );
       setIsApprovalOpen(false);
       await Promise.all([
-        utils.purchases.get.invalidate({ purchaseOrderId: purchaseOrderId ?? 0 }),
+        utils.purchases.get.invalidate({
+          purchaseOrderId: purchaseOrderId ?? 0,
+        }),
         utils.purchases.list.invalidate(),
         utils.purchases.pendingControls.invalidate(),
         utils.purchases.integrityReport.invalidate(),
@@ -179,7 +238,9 @@ export function PurchaseDetailDrawer({
       notify.ok("تم إرسال أمر الشراء للاعتماد");
       setIsApprovalOpen(false);
       await Promise.all([
-        utils.purchases.get.invalidate({ purchaseOrderId: purchaseOrderId ?? 0 }),
+        utils.purchases.get.invalidate({
+          purchaseOrderId: purchaseOrderId ?? 0,
+        }),
         utils.purchases.list.invalidate(),
         utils.purchases.pendingControls.invalidate(),
       ]);
@@ -196,7 +257,9 @@ export function PurchaseDetailDrawer({
       );
       setIsSettleShippingOpen(false);
       await Promise.all([
-        utils.purchases.get.invalidate({ purchaseOrderId: purchaseOrderId ?? 0 }),
+        utils.purchases.get.invalidate({
+          purchaseOrderId: purchaseOrderId ?? 0,
+        }),
         utils.purchases.list.invalidate(),
       ]);
     },
@@ -216,7 +279,9 @@ export function PurchaseDetailDrawer({
     !d.items.some((it) => (it.receivedBaseQuantity ?? 0) > 0) &&
     !D(d.paidAmount ?? 0).gt(0) &&
     !D(d.paidUsd ?? 0).gt(0) &&
-    !D((d as { linkedCashPaidAmount?: string | null }).linkedCashPaidAmount ?? 0).gt(0);
+    !D(
+      (d as { linkedCashPaidAmount?: string | null }).linkedCashPaidAmount ?? 0,
+    ).gt(0);
 
   const currentUserId = me.data?.id;
   const isOwner = me.data?.isOwner === true;
@@ -227,7 +292,7 @@ export function PurchaseDetailDrawer({
     isApprovalOpen;
   const cashSourceState = usePurchaseCashSourceState({
     branchId: d?.branchId,
-    enabled: Boolean(isCashIqdApproval),
+    enabled: Boolean(isCashIqdApproval) && !d?.tender,
     context: "approval",
     isCreator:
       d != null &&
@@ -263,7 +328,7 @@ export function PurchaseDetailDrawer({
         reason: approvalReason.trim() || "اعتماد واستلام البضاعة كاملة",
         confirmedFullReceipt: true,
         cashSource:
-          d.settlementType === "CASH" && !isUsd
+          d.settlementType === "CASH" && !isUsd && !d.tender
             ? cashSourceState.payload
             : undefined,
       });
@@ -299,7 +364,9 @@ export function PurchaseDetailDrawer({
           </div>
         </SheetHeader>
 
-        {po.isLoading ? <LoadingState message="جارٍ تحميل تفاصيل أمر الشراء…" /> : null}
+        {po.isLoading ? (
+          <LoadingState message="جارٍ تحميل تفاصيل أمر الشراء…" />
+        ) : null}
         {po.error ? <ErrorState message={po.error.message} /> : null}
         {!po.isLoading && !po.error && !d ? (
           <EmptyState title="أمر الشراء غير موجود" description="قد يكون محذوفاً أو غير متاح لفرعك." />
@@ -334,7 +401,7 @@ export function PurchaseDetailDrawer({
                             {d.supplierName ?? `#${d.supplierId}`}
                           </Link>
                         ) : (
-                          d.supplierName ?? "—"
+                          (d.supplierName ?? "—")
                         )}
                       </div>
                     </div>
@@ -343,16 +410,30 @@ export function PurchaseDetailDrawer({
                       <div className="tabular-nums">{fmtDate(d.orderDate)}</div>
                     </div>
                     <div>
-                      <div className="text-xs text-muted-foreground">العملة</div>
-                      <div>{d.agreedCurrency ?? "IQD"} {isUsd && d.agreedRate ? `(${fmt(d.agreedRate)})` : ""}</div>
+                      <div className="text-xs text-muted-foreground">
+                        العملة
+                      </div>
+                      <div>
+                        {d.agreedCurrency ?? "IQD"}{" "}
+                        {isUsd && d.agreedRate ? `(${fmt(d.agreedRate)})` : ""}
+                      </div>
                     </div>
                     <div>
                       <div className="text-xs text-muted-foreground">طريقة السداد</div>
                       <div>{settlement.intentLabel}</div>
-                      {!costHidden ? <div className="text-xs">{settlement.statusLabel}</div> : null}
+                      {!costHidden ? (
+                        <div className="text-xs">{settlement.statusLabel}</div>
+                      ) : null}
                     </div>
                   </CardContent>
                 </Card>
+
+                {!costHidden ? (
+                  <PurchasePaymentEvidence
+                    tender={d.tender}
+                    paymentReceipts={d.paymentReceipts ?? []}
+                  />
+                ) : null}
 
                 {settlement.requiresReview ? (
                   <p role="alert" className="border border-money-negative p-2 text-xs text-money-negative">
@@ -367,15 +448,43 @@ export function PurchaseDetailDrawer({
                     role="alert"
                     className="rounded-md border border-[var(--sem-danger)]/40 bg-[var(--sem-danger-bg)] p-2.5 text-xs text-[var(--sem-danger)]"
                   >
-                    تنبيه حرج: هذه فاتورة شراء نقدية مستلمة تاريخيا ولم تسو ذمتها بعد (المتبقي {fmt(remaining.toFixed(2))} {isUsd ? "$" : "د.ع"}). سددها فورا او طابق سنداتها من كشف المورد لمنع الصرف المزدوج.
+                    تنبيه حرج: هذه فاتورة شراء نقدية مستلمة تاريخيا ولم تسو
+                    ذمتها بعد (المتبقي {fmt(remaining.toFixed(2))}{" "}
+                    {isUsd ? "$" : "د.ع"}). سددها فورا او طابق سنداتها من كشف
+                    المورد لمنع الصرف المزدوج.
                   </p>
                 ) : null}
-                {pendingControls.isError && <ErrorState message={pendingControls.error.message} onRetry={() => void pendingControls.refetch()} />}
-                {!costHidden && <dl className="grid grid-cols-1 gap-2 rounded-md border p-2 text-xs sm:grid-cols-3">
-                  <div><dt className="text-muted-foreground">المجموع قبل الضريبة (د.ع)</dt><dd className="font-semibold">{fmtAr(d.subtotal)}</dd></div>
-                  <div><dt className="text-muted-foreground">خصم المورد المطبق (د.ع)</dt><dd className="font-semibold">{fmtAr(d.invoiceDiscount ?? 0)}{isUsd ? ` (${fmtAr(d.usdInvoiceDiscount ?? 0)} $)` : ""}</dd></div>
-                  <div><dt className="text-muted-foreground">الضريبة (د.ع)</dt><dd className="font-semibold">{fmtAr(d.taxAmount)}</dd></div>
-                </dl>}
+                {pendingControls.isError && (
+                  <ErrorState
+                    message={pendingControls.error.message}
+                    onRetry={() => void pendingControls.refetch()}
+                  />
+                )}
+                {!costHidden && (
+                  <dl className="grid grid-cols-1 gap-2 rounded-md border p-2 text-xs sm:grid-cols-3">
+                    <div>
+                      <dt className="text-muted-foreground">
+                        المجموع قبل الضريبة (د.ع)
+                      </dt>
+                      <dd className="font-semibold">{fmtAr(d.subtotal)}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-muted-foreground">
+                        خصم المورد المطبق (د.ع)
+                      </dt>
+                      <dd className="font-semibold">
+                        {fmtAr(d.invoiceDiscount ?? 0)}
+                        {isUsd
+                          ? ` (${fmtAr(d.usdInvoiceDiscount ?? 0)} $)`
+                          : ""}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-muted-foreground">الضريبة (د.ع)</dt>
+                      <dd className="font-semibold">{fmtAr(d.taxAmount)}</dd>
+                    </div>
+                  </dl>
+                )}
                 {/* الأرقام المالية السريعة */}
                 {!costHidden ? (
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
@@ -405,9 +514,20 @@ export function PurchaseDetailDrawer({
                 ) : null}
 
                 {!costHidden && D(settlement.returnedAmount).gt(0) ? (
-                  <p className="text-xs text-muted-foreground">تخفيض الذمة: {fmt(settlement.returnedAmount)} {isUsd ? "$" : "د.ع"}</p>
+                  <p className="text-xs text-muted-foreground">
+                    تخفيض الذمة: {fmt(settlement.returnedAmount)}{" "}
+                    {isUsd ? "$" : "د.ع"}
+                  </p>
                 ) : null}
-                {!costHidden && !D(settlement.invoiceTotalAmount).eq(D(isUsd ? d.usdTotal ?? 0 : d.total ?? 0)) ? <p className="text-xs text-muted-foreground">المفوتر بذمة المورد: {fmt(settlement.invoiceTotalAmount)} {isUsd ? "$" : "د.ع"}</p> : null}
+                {!costHidden &&
+                !D(settlement.invoiceTotalAmount).eq(
+                  D(isUsd ? (d.usdTotal ?? 0) : (d.total ?? 0)),
+                ) ? (
+                  <p className="text-xs text-muted-foreground">
+                    المفوتر بذمة المورد: {fmt(settlement.invoiceTotalAmount)}{" "}
+                    {isUsd ? "$" : "د.ع"}
+                  </p>
+                ) : null}
                 {/* أشرطة الإجراءات المباشرة (استلام / سداد / مرتجع) */}
                 <div className="flex flex-wrap items-center gap-2 p-2.5 rounded-lg border bg-muted/30">
                   {canApproveDirectly ? (
@@ -454,7 +574,11 @@ export function PurchaseDetailDrawer({
                 <div>
                   <div className="text-xs font-semibold mb-1.5 flex items-center justify-between">
                     <span>بنود الأمر ({d.items.length})</span>
-                    {d.notes ? <span className="text-muted-foreground font-normal">ملاحظات: {d.notes}</span> : null}
+                    {d.notes ? (
+                      <span className="text-muted-foreground font-normal">
+                        ملاحظات: {d.notes}
+                      </span>
+                    ) : null}
                   </div>
                   <div className="rounded-md border overflow-hidden">
                     <DataTable<PoItemRow>
@@ -503,7 +627,9 @@ export function PurchaseDetailDrawer({
                         ) : (
                           <Badge variant="outline" className="border-[var(--sem-danger)]/40 bg-[var(--sem-danger-bg)] text-[var(--sem-danger)] gap-1 text-[11px] py-0.5">
                             <AlertTriangle className="size-3" aria-hidden />
-                            {purchaseShippingAdjustmentLabel(d.shippingPayment?.obligationStatus) ?? "مستحق غير مسدد"}
+                            {purchaseShippingAdjustmentLabel(
+                              d.shippingPayment?.obligationStatus,
+                            ) ?? "مستحق غير مسدد"}
                           </Badge>
                         )}
                       </div>
@@ -511,21 +637,39 @@ export function PurchaseDetailDrawer({
 
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                       <div>
-                        <span className="text-muted-foreground block text-[11px]">الشحن:</span>
-                        <span className="font-medium">{fmtAr(d.shippingCost)} د.ع</span>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground block text-[11px]">الكمرك:</span>
-                        <span className="font-medium">{fmtAr(d.customsCost)} د.ع</span>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground block text-[11px]">الإجمالي:</span>
-                        <span className="font-bold text-foreground">
-                          {fmtAr(d.shippingPayment?.totalLanded ?? D(d.shippingCost ?? 0).plus(D(d.customsCost ?? 0)).toString())} د.ع
+                        <span className="text-muted-foreground block text-[11px]">
+                          الشحن:
+                        </span>
+                        <span className="font-medium">
+                          {fmtAr(d.shippingCost)} د.ع
                         </span>
                       </div>
                       <div>
-                        <span className="text-muted-foreground block text-[11px]">سند الصرف:</span>
+                        <span className="text-muted-foreground block text-[11px]">
+                          الكمرك:
+                        </span>
+                        <span className="font-medium">
+                          {fmtAr(d.customsCost)} د.ع
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground block text-[11px]">
+                          الإجمالي:
+                        </span>
+                        <span className="font-bold text-foreground">
+                          {fmtAr(
+                            d.shippingPayment?.totalLanded ??
+                              D(d.shippingCost ?? 0)
+                                .plus(D(d.customsCost ?? 0))
+                                .toString(),
+                          )}{" "}
+                          د.ع
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground block text-[11px]">
+                          سند الصرف:
+                        </span>
                         {d.shippingPayment?.voucherNumber ? (
                           <Link
                             href={`/vouchers?search=${encodeURIComponent(d.shippingPayment.voucherNumber)}`}
@@ -541,10 +685,31 @@ export function PurchaseDetailDrawer({
                       </div>
                     </div>
 
-                    <PurchaseShippingRefund refund={d.shippingPayment?.refund} />
-                    {d.shippingPayment?.payee && <p className="text-xs text-muted-foreground">الجهة المستفيدة / الناقل: <span className="font-semibold text-foreground">{d.shippingPayment.payee}</span></p>}
-                    {d.shippingFundingSource === "DRAWER" && d.shippingPayment?.obligationStatus === "PAYMENT_PENDING" && <p className="border-t pt-2 text-xs text-muted-foreground">تصريح الدفع من درج المنشئ ينتظر اعتماد سند الشحن المرتبط أعلاه، مستقلاً عن اعتماد الفاتورة. لا تغلق الوردية قبل توثيقه.</p>}
-                    {canSettleShipping && d.shippingFundingSource !== "DRAWER" && !d.shippingPayment?.hasRecordedPayment && d.shippingPayment?.obligationStatus !== "PAID" && d.status === "RECEIVED" ? (
+                    <PurchaseShippingRefund
+                      refund={d.shippingPayment?.refund}
+                    />
+                    {d.shippingPayment?.payee && (
+                      <p className="text-xs text-muted-foreground">
+                        الجهة المستفيدة / الناقل:{" "}
+                        <span className="font-semibold text-foreground">
+                          {d.shippingPayment.payee}
+                        </span>
+                      </p>
+                    )}
+                    {d.shippingFundingSource === "DRAWER" &&
+                      d.shippingPayment?.obligationStatus ===
+                        "PAYMENT_PENDING" && (
+                        <p className="border-t pt-2 text-xs text-muted-foreground">
+                          تصريح الدفع من درج المنشئ ينتظر اعتماد سند الشحن
+                          المرتبط أعلاه، مستقلاً عن اعتماد الفاتورة. لا تغلق
+                          الوردية قبل توثيقه.
+                        </p>
+                      )}
+                    {canSettleShipping &&
+                    d.shippingFundingSource !== "DRAWER" &&
+                    !d.shippingPayment?.hasRecordedPayment &&
+                    d.shippingPayment?.obligationStatus !== "PAID" &&
+                    d.status === "RECEIVED" ? (
                       <div className="pt-2 border-t flex items-center justify-between gap-2 flex-wrap">
                         <span className="text-[11px] text-muted-foreground">صرف نقدي من الدرج المفتوح للوردية</span>
                         <Button
@@ -644,11 +809,27 @@ export function PurchaseDetailDrawer({
                       <p className="font-medium">
                         هذه فاتورة شراء نقدية ({fmt(d.total)} د.ع): اعتمادها يسدد كامل القيمة للمورد فورا وتصبح الذمة المتبقية 0.00.
                       </p>
-                      <PurchaseCashSourceField
-                        idPrefix="drawer-approve"
-                        context="approval"
-                        state={cashSourceState}
-                      />
+                      {d.tender ? (
+                        <div className="space-y-1">
+                          <p>طريقة السداد: {purchaseTenderLabel(d.tender)}</p>
+                          {d.tender.previousReceiptId ? (
+                            <p>
+                              ربط السند السابق #{d.tender.previousReceiptId}{" "}
+                              وسداد المتبقي فقط.
+                            </p>
+                          ) : null}
+                          <p className="text-muted-foreground">
+                            تغيير طريقة السداد يتطلب تعديل نسخة الفاتورة وإعادة
+                            إرسالها.
+                          </p>
+                        </div>
+                      ) : (
+                        <PurchaseCashSourceField
+                          idPrefix="drawer-approve"
+                          context="approval"
+                          state={cashSourceState}
+                        />
+                      )}
                     </div>
                   ) : null}
                 </div>
@@ -712,7 +893,10 @@ export function PurchaseDetailDrawer({
                   </DialogTitle>
                   <DialogDescription className="space-y-2 pt-2 text-right">
                     <div>
-                      أمر الشراء: <span className="font-semibold text-foreground">{d.poNumber}</span>
+                      أمر الشراء:{" "}
+                      <span className="font-semibold text-foreground">
+                        {d.poNumber}
+                      </span>
                     </div>
                     <div>
                       مبلغ الشحن والكمرك المستحق:{" "}
