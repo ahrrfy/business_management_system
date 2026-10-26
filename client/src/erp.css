@@ -1,0 +1,148 @@
+/*
+ * أنماط قشرة النظام الإداري (ERP):
+ * تُحمَّل ديناميكياً عند إقلاع `ErpApp` في `BootstrapApp.tsx` بدلاً من إثقال الزائر العام
+ * على `/store` وباقي الصفحات العامة بأدوات ~٢٧٠ صفحة تشغيلية.
+ *
+ * في وضع التطوير (`vite dev`) يبني `@tailwindcss/vite` كامل أدوات المستودع هنا مباشرةً؛
+ * وفي بناء الإنتاج (`vite build`) يقسم مكمّل البناء في `vite.config.ts` كتلة `@layer utilities`
+ * القانونية من المنتصف إلى `erp.css` و`styles/erp-variants.css` مع الحفاظ التام على ترتيب
+ * القواعد القانوني لـTailwind دون أي ازدواج أو كسر في أولوية الـ`@media`.
+ */
+@reference "./index.css";
+@source "../index.html";
+@source "./";
+@source "../../shared";
+@source not "./**/*.test.{ts,tsx}";
+@source not "./__tests__";
+@source not "../../shared/**/*.test.{ts,tsx}";
+
+@layer utilities {
+  @tailwind utilities;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   الشريط الجانبي المصمَّت (أزرق) + الشريحة النشطة المتّصلة بمنحنى — القائمة النشطة.
+   قواعد غير مُطبَّقة في طبقة (unlayered) عمداً: تَغلِب أدوات Tailwind (مثل hover:bg-accent)
+   على العناصر المُعاد تلوينها بلا حاجة إلى !important.
+   التطبيق دائماً RTL (body{direction:rtl}) ⇒ يسار = حافة المحتوى، يمين = داخل اللوحة.
+   لذا نستعمل left/right الفيزيائيَّين صراحةً (أوضح وأضمن من الخصائص المنطقية هنا).
+   ═══════════════════════════════════════════════════════════════════════════ */
+.app-sidebar { background: var(--sidebar-solid); color: var(--sidebar-on-strong); }
+.app-sidebar .sb-header { border-bottom: 1px solid var(--sidebar-line); }
+.app-sidebar .sb-header button:hover { background: var(--sidebar-soft); color: var(--sidebar-on-strong); }
+
+.app-sidebar .sb-search { background: var(--sidebar-soft); color: var(--sidebar-on); border: 1px solid var(--sidebar-line); }
+.app-sidebar .sb-search:hover { background: var(--sidebar-soft-hover); color: var(--sidebar-on-strong); }
+.app-sidebar .sb-search kbd { background: var(--sidebar-soft); border: 1px solid var(--sidebar-line); color: var(--sidebar-on-strong); opacity: 1; }
+
+.app-sidebar .sb-divider { height: 1px; background: var(--sidebar-line); border: 0; }
+
+/* عناصر التنقّل غير النشطة */
+.app-sidebar .sb-item { color: var(--sidebar-on); }
+.app-sidebar .sb-item:hover { background: var(--sidebar-soft); color: var(--sidebar-on-strong); }
+
+/* الشريحة النشطة: بيضاء تندمج بالمحتوى، محدّبة نحو الداخل، ومقعّرة عند حافة المحتوى */
+.app-sidebar .sb-active {
+  position: relative;
+  background: var(--sidebar-pill);
+  color: var(--sidebar-pill-on);
+  margin: 2px 8px 2px 0;                 /* يمين ٨px إبقاءً للإزاحة الداخلية، يسار ٠ التصاقاً بالمحتوى */
+  border-radius: 0 16px 16px 0;          /* محدّبة يميناً (الداخل)، ملتصقة يساراً (المحتوى) — بلا ظلّ */
+}
+.app-sidebar .sb-active:hover { background: var(--sidebar-pill); color: var(--sidebar-pill-on); }
+/* الزاويتان المقعّرتان — اللوحة الزرقاء تنحني داخل الشريحة البيضاء */
+.app-sidebar .sb-active::before,
+.app-sidebar .sb-active::after {
+  content: ""; position: absolute; left: 0; width: 16px; height: 16px;
+  background: var(--sidebar-solid); pointer-events: none;
+}
+.app-sidebar .sb-active::before { top: 0; border-bottom-right-radius: 16px; }
+.app-sidebar .sb-active::after { bottom: 0; border-top-right-radius: 16px; }
+
+/* التذييل: بطاقة الحساب + الخروج على اللوحة الزرقاء */
+.app-sidebar .sb-footer { border-top: 1px solid var(--sidebar-line); }
+.app-sidebar .sb-account { background: var(--sidebar-soft); color: var(--sidebar-on-strong); }
+.app-sidebar .sb-account:hover { background: var(--sidebar-soft-hover); }
+.app-sidebar .sb-account-active { background: var(--sidebar-pill); color: var(--sidebar-pill-on); }
+.app-sidebar .sb-avatar { background: var(--sidebar-soft); color: var(--sidebar-on-strong); }
+.app-sidebar .sb-sub { color: var(--sidebar-on); }
+.app-sidebar .sb-logout { color: var(--sidebar-on); }
+.app-sidebar .sb-logout:hover { background: var(--sidebar-soft); color: var(--sidebar-on-strong); }
+
+/* شريط تمرير رفيع (في RTL يقع يساراً = جهة المحتوى) كي لا يفصل الشريحةَ عن الحافة */
+.app-sidebar .sb-scroll { scrollbar-width: none; }
+.app-sidebar .sb-scroll::-webkit-scrollbar { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .app-sidebar .sb-item, .app-sidebar .sb-active { transition: none; }
+}
+
+/*
+ * طباعة صفحات النظام (القوائم والمسودات): أزرار الطباعة القديمة تستدعي
+ * window.print() في النافذة الحالية. من دون هذه القواعد كان المتصفح يطبع
+ * الشريط الجانبي والتنقّل أيضاً، وقد يبقي الجدول محبوساً داخل حاوية تمرير.
+ * قوالب الفواتير والإيصالات المخصصة تفتح نافذة مستقلة، لذلك لا تتأثر هنا.
+ */
+@media print {
+  @page { margin: 12mm; }
+
+  html,
+  body,
+  #root,
+  .app-shell {
+    min-height: 0 !important;
+    height: auto !important;
+    overflow: visible !important;
+    background: #fff !important;
+  }
+
+  body {
+    color: #000 !important;
+    color-scheme: light;
+  }
+
+  /* التنقّل جزء من واجهة التشغيل، وليس من المستند المطبوع. */
+  .app-sidebar,
+  .app-shell > header,
+  [data-sonner-toaster] {
+    display: none !important;
+  }
+
+  .app-main {
+    overflow: visible !important;
+    padding: 0 !important;
+  }
+
+  /* تبقى تسمية القائمة وعدد السجلات، وتُخفى أدوات التشغيل فقط.
+     صندوق الفلاتر (١٢/٨) أُخِذ خارج `.list-toolbar-actions` ضمن تنسيق الصفَّين — نُخفيه صراحةً
+     كي لا تُطبَع حقول البحث والفلاتر فوق الجدول (ملاحظة Codex P2 على PR #557). */
+  .list-toolbar-actions,
+  .list-toolbar-filter-panel {
+    display: none !important;
+  }
+
+  /* أزرار PageHeader.actions (تصدير/طباعة/إضافة/…) لا تُطبع مع محتوى الصفحة — تصبح Ink
+     على الورق بلا فائدة، ومربكة للقارئ. تُوسم بـdata-page-header-actions من المكوّن. */
+  [data-page-header-actions] {
+    display: none !important;
+  }
+
+  /* لا نطبع فقط الصفوف المرئية داخل جدول قابل للتمرير. */
+  .print-table-shell {
+    max-height: none !important;
+    overflow: visible !important;
+  }
+
+  .print-table-shell thead th {
+    position: static !important;
+  }
+
+  .app-main table {
+    width: 100% !important;
+  }
+
+  .app-main tr,
+  .app-main [data-slot="card"] {
+    break-inside: avoid;
+  }
+}

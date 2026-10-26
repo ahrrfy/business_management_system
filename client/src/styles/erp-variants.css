@@ -1,0 +1,7 @@
+/*
+ * النصف الثاني من أدوات ERP القانونية في بناء الإنتاج (`vite build`):
+ * يُغذّيه مكمّل `splitErpStylesForBuild` في `vite.config.ts` بالنصف اللاحق من
+ * `@layer utilities` + تعريفات `@property` والقواعد غير المُطبَّقة، بينما تبقى كامل
+ * القواعد مجتمعة في `erp.css` أثناء التطوير المحلّي (`vite dev`) لسرعة التحديث الفوري.
+ */
+@layer properties;

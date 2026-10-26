@@ -7,7 +7,6 @@ import {
   redirectTargetUrl,
   resolveHostRedirect,
 } from "@/lib/siteHosts";
-import { trpc } from "@/lib/trpc";
 import { Suspense, useEffect } from "react";
 import { Redirect, Route, Switch, useLocation } from "wouter";
 
@@ -16,7 +15,13 @@ const MobileTurnstile = lazy(() => import("@/pages/MobileTurnstile"));
 const LegalDocument = lazy(() => import("@/pages/LegalDocument"));
 const JobApply = lazy(() => import("@/pages/JobApply"));
 const ShelfPriceLookup = lazy(() => import("@/pages/ShelfPriceLookup"));
-const ErpApp = lazy(() => import("./App"));
+const ErpApp = lazy(() =>
+  Promise.all([
+    import("./erp.css"),
+    import("./styles/erp-variants.css"),
+    import("./App"),
+  ]).then(([, , mod]) => mod),
+);
 
 function normalizePathname(pathname: string): string {
   return (pathname || "/").split("?", 1)[0].split("#", 1)[0] || "/";
@@ -25,30 +30,6 @@ function normalizePathname(pathname: string): string {
 /** هل المسار من الصفحات العامة المستقلّة التي تعمل بلا قشرة ERP ولا صلاحياتها؟ */
 export function isStandalonePublicRoute(pathname: string): boolean {
   return isPublicPath(normalizePathname(pathname));
-}
-
-/**
- * يحدّد وجهة الجذر `/` على الدومين العام مع الحفاظ على أولوية توجيه المندوب المسجَّل
- * إلى `/my-deliveries` (تطبيق المندوب يبدأ من `/` على الدومين العام)، وتوجيه الزوّار وبقية الأدوار إلى `/store`.
- */
-export function resolvePublicRootTarget(
-  actor:
-    | {
-        courierShellOnly?: boolean | null;
-        role?: string | null;
-        operationPolicyEnabled?: boolean | null;
-        isOwner?: boolean | null;
-      }
-    | null
-    | undefined,
-): "/my-deliveries" | "/store" {
-  const courierShellOnly =
-    actor?.courierShellOnly ??
-    (actor?.role === "courier" && !actor.operationPolicyEnabled);
-  if (courierShellOnly && !actor?.isOwner) {
-    return "/my-deliveries";
-  }
-  return "/store";
 }
 
 /**
@@ -78,12 +59,6 @@ function HostPolicy() {
     }
   }, [loc]);
   return null;
-}
-
-function PublicRootRoute() {
-  const me = trpc.auth.me.useQuery(undefined, { retry: false });
-  if (me.isLoading) return <RouteFallback />;
-  return <Redirect to={resolvePublicRootTarget(me.data)} />;
 }
 
 function PublicNotFound() {
@@ -130,7 +105,9 @@ export function BootstrapApp() {
             <Route path="/price-check">
               <Redirect to="/shelf-lookup" />
             </Route>
-            <Route path="/" component={PublicRootRoute} />
+            <Route path="/">
+              <Redirect to="/store" />
+            </Route>
             <Route component={PublicNotFound} />
           </Switch>
         </Suspense>

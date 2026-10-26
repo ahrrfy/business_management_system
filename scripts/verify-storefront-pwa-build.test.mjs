@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import "./storefront-pwa-contract.test.mjs";
 import {
   STOREFRONT_SHELL_CHUNK_GLOB,
+  STOREFRONT_SHELL_CSS_GLOB,
   storefrontPublicImageCacheMatcher,
   storefrontPrivateImageNetworkMatcher,
 } from "./storefront-pwa-contract.mjs";
@@ -45,12 +46,14 @@ const manifest = {
     file: "assets/app-aaa.js",
     isEntry: true,
     imports: ["_framework.js"],
+    css: ["assets/index-aaa.css"],
     dynamicImports: ["src/pages/Storefront.tsx", "src/pages/Admin.tsx", "src/App.tsx"],
   },
   "src/pages/Storefront.tsx": {
     file: "assets/Storefront-bbb.js",
     isDynamicEntry: true,
     imports: ["_date.js", "_UnifiedSearchInput.js", "_dialog.js"],
+    css: ["assets/Storefront-bbb.css"],
   },
   "src/pages/Admin.tsx": {
     file: "assets/Admin-ccc.js",
@@ -75,8 +78,10 @@ const manifest = {
 const completeSw = `self.__WB_MANIFEST = [
   {"url":"index.html","revision":"1"},
   {"url":"assets/app-aaa.js","revision":null},
+  {"url":"assets/index-aaa.css","revision":null},
   {"url":"assets/framework-ddd.js","revision":null},
   {"url":"assets/Storefront-bbb.js","revision":null},
+  {"url":"assets/Storefront-bbb.css","revision":null},
   {"url":"assets/date-eee.js","revision":null},
   {"url":"assets/numberNormalize-fff.js","revision":null},
   {"url":"assets/UnifiedSearchInput-search.js","revision":null},
@@ -88,12 +93,14 @@ const completeSw = `self.__WB_MANIFEST = [
 const result = assertStorefrontPrecacheClosure({ manifest, swSource: completeSw });
 assert.deepEqual(result.requiredFiles, [
   "assets/BarcodeSearchCue-cue.js",
+  "assets/Storefront-bbb.css",
   "assets/Storefront-bbb.js",
   "assets/UnifiedSearchInput-search.js",
   "assets/app-aaa.js",
   "assets/date-eee.js",
   "assets/dialog-dialoghash.js",
   "assets/framework-ddd.js",
+  "assets/index-aaa.css",
   "assets/numberNormalize-fff.js",
   "assets/useBarcodeInput-barcodehash.js",
 ]);
@@ -103,16 +110,28 @@ assert.deepEqual(result.requiredFiles, [
 // Unrelated ERP pages and ERP RBAC/offline/chart chunks must remain excluded.
 const shellChunkNames = STOREFRONT_SHELL_CHUNK_GLOB.match(/^assets\/\{([^}]+)\}-\*\.js$/)?.[1].split(",");
 assert.ok(shellChunkNames, "storefront shell glob has explicit chunk names");
-for (const file of result.requiredFiles.filter((file) => !file.startsWith("assets/app-"))) {
+for (const file of result.requiredFiles.filter(
+  (file) => file.endsWith(".js") && !file.startsWith("assets/app-"),
+)) {
   const chunkName = file.replace(/^assets\//, "").replace(/-[^-]+\.js$/, "");
   assert.ok(shellChunkNames.includes(chunkName), `${chunkName} must be included in storefront shell precache`);
 }
+
+const shellCssNames = STOREFRONT_SHELL_CSS_GLOB.match(/^assets\/\{([^}]+)\}-\*\.css$/)?.[1].split(",");
+assert.deepEqual(shellCssNames, ["index", "Storefront"]);
+for (const cssFile of result.requiredFiles.filter((file) => file.endsWith(".css"))) {
+  const cssChunkName = cssFile.replace(/^assets\//, "").replace(/-[^-]+\.css$/, "");
+  assert.ok(shellCssNames.includes(cssChunkName), `${cssChunkName} CSS must be included in storefront shell CSS glob`);
+}
+
 for (const forbiddenChunk of [
   "Admin",
   "POS",
   "ProductNew",
   "Treasury",
   "App",
+  "erp",
+  "erp-variants",
   "app-shell",
   "erp-shell",
   "erp-navigation",
@@ -127,10 +146,14 @@ for (const forbiddenChunk of [
   "permission-extensions",
 ]) {
   assert.equal(shellChunkNames.includes(forbiddenChunk), false, `${forbiddenChunk} must not be in storefront shell glob`);
+  assert.equal(shellCssNames.includes(forbiddenChunk), false, `${forbiddenChunk} must not be in storefront shell CSS glob`);
 }
 
 for (const erpChunkFile of [
   "assets/App-erp.js",
+  "assets/erp-abc.css",
+  "assets/erp-variants-abc.css",
+  "assets/erp-shell-abc.css",
   "assets/app-shell-abc.js",
   "assets/erp-shell-abc.js",
   "assets/operation-catalog-1-abc.js",
@@ -148,6 +171,17 @@ for (const erpChunkFile of [
         swSource: completeSw.replace("];", `,{"url":"${erpChunkFile}","revision":null}];`),
       }),
     new RegExp(`STOREFRONT_PRECACHE_ERP_CHUNK_FORBIDDEN:${erpChunkFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+  );
+}
+
+for (const missingCss of ["index-aaa", "Storefront-bbb"]) {
+  assert.throws(
+    () =>
+      assertStorefrontPrecacheClosure({
+        manifest,
+        swSource: completeSw.replace(`{"url":"assets/${missingCss}.css","revision":null}`, ""),
+      }),
+    /STOREFRONT_PRECACHE_STATIC_IMPORT_MISSING/,
   );
 }
 

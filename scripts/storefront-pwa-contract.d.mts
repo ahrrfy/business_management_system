@@ -1,4 +1,5 @@
 export const STOREFRONT_SHELL_CHUNK_GLOB: string;
+export const STOREFRONT_SHELL_CSS_GLOB: string;
 
 type WorkboxUrlMatchInput = {
   request?: Pick<Request, "method">;
