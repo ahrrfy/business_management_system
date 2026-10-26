@@ -1,7 +1,9 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import {
+  onlineOrderItems,
+  onlineOrders,
   storefrontCustomizationAssets,
   type StorefrontCustomizationAsset,
 } from "../../drizzle/schema";
@@ -21,6 +23,7 @@ export const MAX_CUSTOMIZATION_ASSET_BYTES = 2 * 1024 * 1024;
 export const MAX_CUSTOMIZATION_BASE64_CHARS = 2_800_000;
 const MAX_CUSTOMIZATION_IMAGE_DIMENSION = 4096;
 const ORPHAN_ASSET_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const DEFAULT_CUSTOMIZATION_ORPHAN_WINDOW_MAX = 120;
 
 const STRICT_BASE64_RE =
   /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
@@ -158,6 +161,41 @@ export async function uploadStorefrontCustomizationAsset(
     });
   }
 
+  const db = requireDb();
+  const [existingAsset] = await db
+    .select({ id: storefrontCustomizationAssets.id })
+    .from(storefrontCustomizationAssets)
+    .where(eq(storefrontCustomizationAssets.assetKey, assetKey))
+    .limit(1);
+
+  if (!existingAsset) {
+    const orphanWindowMax = Number(
+      process.env.STOREFRONT_CUSTOMIZATION_ORPHAN_WINDOW_MAX ??
+        DEFAULT_CUSTOMIZATION_ORPHAN_WINDOW_MAX,
+    );
+    if (Number.isFinite(orphanWindowMax) && orphanWindowMax > 0) {
+      const [recentOrphans] = await db
+        .select({ count: sql<number>`COUNT(*)` })
+        .from(storefrontCustomizationAssets)
+        .where(
+          and(
+            isNotNull(storefrontCustomizationAssets.expiresAt),
+            sql`${storefrontCustomizationAssets.createdAt} >= DATE_SUB(NOW(), INTERVAL 15 MINUTE)`,
+          ),
+        );
+      if (Number(recentOrphans?.count ?? 0) >= orphanWindowMax) {
+        throw new TRPCError({
+          code: "TOO_MANY_REQUESTS",
+          message: appErrorMessage({
+            what: "تعذّر رفع مرفق التخصيص حالياً",
+            why: "تم تجاوز الحدّ المؤقت للمرفقات قيد الإعداد غير المربوطة بطلب",
+            doThis: "انتظر بضع دقائق أو أكمل إرسال طلبك الحالي ثم أعد المحاولة",
+          }),
+        });
+      }
+    }
+  }
+
   try {
     await getImageStore().put(assetKey, bytes, input.mimeType);
   } catch (error) {
@@ -174,7 +212,6 @@ export async function uploadStorefrontCustomizationAsset(
     throw error;
   }
 
-  const db = requireDb();
   const expiresAt = new Date(Date.now() + ORPHAN_ASSET_TTL_MS);
   await db
     .insert(storefrontCustomizationAssets)
@@ -202,6 +239,7 @@ export async function uploadStorefrontCustomizationAsset(
 
 export async function findStorefrontCustomizationAssetForStaff(
   identifier: string,
+  options?: { scopedBranchId?: number | null },
 ): Promise<StorefrontCustomizationAsset | null> {
   const trimmed = identifier.trim();
   if (!trimmed || trimmed.length > 255) return null;
@@ -215,19 +253,52 @@ export async function findStorefrontCustomizationAssetForStaff(
     [row] = await db
       .select()
       .from(storefrontCustomizationAssets)
-      .where(eq(storefrontCustomizationAssets.id, numericId))
+      .where(
+        and(
+          eq(storefrontCustomizationAssets.id, numericId),
+          isNull(storefrontCustomizationAssets.expiresAt),
+        ),
+      )
       .limit(1);
   } else {
     if (!isCurrentTenantCustomizerKey(trimmed)) return null;
     [row] = await db
       .select()
       .from(storefrontCustomizationAssets)
-      .where(eq(storefrontCustomizationAssets.assetKey, trimmed))
+      .where(
+        and(
+          eq(storefrontCustomizationAssets.assetKey, trimmed),
+          isNull(storefrontCustomizationAssets.expiresAt),
+        ),
+      )
       .limit(1);
   }
 
   if (!row || !isCurrentTenantCustomizerKey(row.assetKey)) {
     return null;
   }
+
+  const scopedBranchId = options?.scopedBranchId ?? null;
+  const attachedConditions = [
+    sql`(
+      JSON_UNQUOTE(JSON_EXTRACT(${onlineOrderItems.customizationSnapshot}, '$.logoAssetKey')) = ${row.assetKey}
+      OR JSON_UNQUOTE(JSON_EXTRACT(${onlineOrderItems.customizationSnapshot}, '$.previewAssetKey')) = ${row.assetKey}
+    )`,
+  ];
+  if (scopedBranchId != null) {
+    attachedConditions.push(eq(onlineOrders.branchId, scopedBranchId));
+  }
+
+  const [attachedOrder] = await db
+    .select({ id: onlineOrders.id })
+    .from(onlineOrderItems)
+    .innerJoin(onlineOrders, eq(onlineOrders.id, onlineOrderItems.onlineOrderId))
+    .where(and(...attachedConditions))
+    .limit(1);
+
+  if (!attachedOrder) {
+    return null;
+  }
+
   return row;
 }

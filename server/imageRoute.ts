@@ -29,6 +29,7 @@ import {
   storeBanners,
 } from "../drizzle/schema";
 import { resolvePermissions, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { hasOperationPolicy, operationDecision } from "@shared/operationPermissions";
 import { getSessionContext } from "./auth/session";
 import {
   normalizeOwnerAuthority,
@@ -36,6 +37,7 @@ import {
   type AuthUser,
 } from "./context";
 import { getDb, isMultiTenantModeActive } from "./db";
+import { canCrossBranches } from "./lib/branchAuthority";
 import {
   getImageStore,
   ImageStoreClientAbortError,
@@ -900,14 +902,28 @@ export function imageRouter(): Router {
       if (user.isOwner) normalizeOwnerAuthority(user);
       else await resolveCustomRole(user);
 
-      const permissions = resolvePermissions(
-        user.role as RoleKey,
-        (user.permissionsOverride as PermissionMap | null) ?? null,
-      );
-      if ((permissions.store ?? "NONE") === "NONE") {
+      if (user.isOwner !== true && hasOperationPolicy(user)) {
+        if (!operationDecision(user, "storeAdmin.orders.detail").allowed) {
+          preventCachingStoredImageFailure(res);
+          return res.status(403).end();
+        }
+      } else if (user.role !== "admin") {
+        const permissions = resolvePermissions(
+          user.role as RoleKey,
+          (user.permissionsOverride as PermissionMap | null) ?? null,
+        );
+        if ((permissions.store ?? "NONE") === "NONE") {
+          preventCachingStoredImageFailure(res);
+          return res.status(403).end();
+        }
+      }
+
+      const crossBranch = canCrossBranches(user);
+      if (!crossBranch && user.branchId == null) {
         preventCachingStoredImageFailure(res);
         return res.status(403).end();
       }
+      const scopedBranchId = crossBranch ? null : Number(user.branchId);
 
       let identifier = "";
       try {
@@ -916,7 +932,7 @@ export function imageRouter(): Router {
         preventCachingStoredImageFailure(res);
         return res.status(400).end();
       }
-      const asset = await findStorefrontCustomizationAssetForStaff(identifier);
+      const asset = await findStorefrontCustomizationAssetForStaff(identifier, { scopedBranchId });
       if (!asset) {
         preventCachingStoredImageFailure(res);
         return res.status(404).end();

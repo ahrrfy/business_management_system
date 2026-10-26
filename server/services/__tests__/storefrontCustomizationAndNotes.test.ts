@@ -882,4 +882,169 @@ describe("Storefront Wave 2 — Customizer Asset Upload, Staff Image Gate, custo
     expect(onlineOrderSrc).not.toMatch(/await\s+resolvePromotionForLine\s*\(/);
     expect(onlineOrderSrc).not.toMatch(/await\s+resolveCouponPromotionForLine\s*\(/);
   });
+
+  it("enforces branch isolation, blocks unattached orphan enumeration on /api/img/order-customization, and caps unattached upload surges", async () => {
+    const d = db();
+    await d.insert(s.branches).values({ id: 2, name: "فرع المبيعات", code: "SALES", type: "SALES" });
+    await d.insert(s.users).values([
+      {
+        id: 3,
+        openId: "w2-branch1-cashier",
+        name: "كاشير الفرع الأول",
+        role: "cashier",
+        branchId: 1,
+        loginMethod: "local",
+        isActive: true,
+        sessionsValidFrom: new Date("2026-01-01T00:00:00Z"),
+      },
+      {
+        id: 4,
+        openId: "w2-branch2-cashier",
+        name: "كاشير الفرع الثاني",
+        role: "cashier",
+        branchId: 2,
+        loginMethod: "local",
+        isActive: true,
+        sessionsValidFrom: new Date("2026-01-01T00:00:00Z"),
+      },
+      {
+        id: 5,
+        openId: "w2-unassigned-cashier",
+        name: "كاشير بلا فرع",
+        role: "cashier",
+        branchId: null,
+        loginMethod: "local",
+        isActive: true,
+        sessionsValidFrom: new Date("2026-01-01T00:00:00Z"),
+      },
+    ]);
+
+    const caller = publicCaller();
+    const attachedLogo = await caller.uploadCustomizationAsset({
+      kind: "LOGO",
+      mimeType: "image/png",
+      dataBase64: VALID_PNG_BASE64,
+    });
+    const orphanLogo = await caller.uploadCustomizationAsset({
+      kind: "LOGO",
+      mimeType: "image/jpeg",
+      dataBase64: VALID_JPEG_BASE64,
+    });
+
+    // Enforce unattached orphan surge cap before writing new blobs to ImageStore
+    const prevOrphanCap = process.env.STOREFRONT_CUSTOMIZATION_ORPHAN_WINDOW_MAX;
+    try {
+      process.env.STOREFRONT_CUSTOMIZATION_ORPHAN_WINDOW_MAX = "2";
+      // 3rd distinct unattached asset (WEBP) is rejected with TOO_MANY_REQUESTS
+      await expect(
+        caller.uploadCustomizationAsset({
+          kind: "PREVIEW",
+          mimeType: "image/webp",
+          dataBase64: VALID_WEBP_BASE64,
+        }),
+      ).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS" });
+
+      // Re-uploading an already-recorded asset remains idempotent even while cap is full
+      await expect(
+        caller.uploadCustomizationAsset({
+          kind: "LOGO",
+          mimeType: "image/png",
+          dataBase64: VALID_PNG_BASE64,
+        }),
+      ).resolves.toMatchObject({ assetKey: attachedLogo.assetKey });
+    } finally {
+      if (prevOrphanCap === undefined) delete process.env.STOREFRONT_CUSTOMIZATION_ORPHAN_WINDOW_MAX;
+      else process.env.STOREFRONT_CUSTOMIZATION_ORPHAN_WINDOW_MAX = prevOrphanCap;
+    }
+
+    // Attach attachedLogo to a Branch 1 online order (leaving orphanLogo unattached)
+    const quote = await quoteOnlineOrder({
+      governorate: "baghdad",
+      lines: [
+        {
+          productUnitId: 100,
+          quantity: 1,
+          customization: {
+            templateId: 1,
+            values: { engraving_text: "فرع 1" },
+            logoAssetKey: attachedLogo.assetKey,
+          } as any,
+        },
+      ],
+    });
+    await createOnlineOrder({
+      customerName: "سارة الفرع الأول",
+      customerPhone: "07709998877",
+      governorate: "baghdad",
+      addressText: "بغداد - الكرادة",
+      clientRequestId: "w2-branch-isolation-order-001",
+      expectedGrandTotal: quote.total,
+      lines: [
+        {
+          productUnitId: 100,
+          quantity: 1,
+          expectedUnitPrice: "6500.00",
+          customization: {
+            templateId: 1,
+            values: { engraving_text: "فرع 1" },
+            logoAssetKey: attachedLogo.assetKey,
+          } as any,
+        },
+      ],
+    } as any);
+
+    const [attachedRow] = await d
+      .select()
+      .from(s.storefrontCustomizationAssets)
+      .where(eq(s.storefrontCustomizationAssets.assetKey, attachedLogo.assetKey));
+    const [orphanRow] = await d
+      .select()
+      .from(s.storefrontCustomizationAssets)
+      .where(eq(s.storefrontCustomizationAssets.assetKey, orphanLogo.assetKey));
+
+    const srv = await startImageTestServer();
+    try {
+      const staffUa = "vitest-branch-isolation/1.0";
+      const cookieFor = async (userId: number) =>
+        `${COOKIE_NAME}=${await signSession(userId, undefined, { headers: { "user-agent": staffUa } })}`;
+
+      const adminCookie = await cookieFor(1);
+      const branch1Cookie = await cookieFor(3);
+      const branch2Cookie = await cookieFor(4);
+      const unassignedCookie = await cookieFor(5);
+
+      // 1) Unattached orphan asset is never served via /api/img/order-customization (even to admin, by key or numeric id)
+      for (const pathSuffix of [orphanLogo.assetKey, String(orphanRow.id)]) {
+        const orphanRes = await fetch(`${srv.baseUrl}/api/img/order-customization/${pathSuffix}`, {
+          headers: { cookie: adminCookie, "user-agent": staffUa },
+        });
+        expect(orphanRes.status).toBe(404);
+      }
+
+      // 2) Branch-1 staff can read Branch-1 attached asset (both by assetKey and numeric id)
+      for (const pathSuffix of [attachedLogo.assetKey, String(attachedRow.id)]) {
+        const b1Res = await fetch(`${srv.baseUrl}/api/img/order-customization/${pathSuffix}`, {
+          headers: { cookie: branch1Cookie, "user-agent": staffUa },
+        });
+        expect(b1Res.status).toBe(200);
+      }
+
+      // 3) Branch-2 staff CANNOT read Branch-1 attached asset (404 on both assetKey and numeric id — prevents cross-branch ID enumeration)
+      for (const pathSuffix of [attachedLogo.assetKey, String(attachedRow.id)]) {
+        const b2Res = await fetch(`${srv.baseUrl}/api/img/order-customization/${pathSuffix}`, {
+          headers: { cookie: branch2Cookie, "user-agent": staffUa },
+        });
+        expect(b2Res.status).toBe(404);
+      }
+
+      // 4) Non-admin staff without an assigned branch gets 403
+      const unassignedRes = await fetch(
+        `${srv.baseUrl}/api/img/order-customization/${attachedLogo.assetKey}`,
+        { headers: { cookie: unassignedCookie, "user-agent": staffUa } },
+      );
+      expect(unassignedRes.status).toBe(403);
+    } finally {
+      await srv.close();
+    }
+  });
 });
