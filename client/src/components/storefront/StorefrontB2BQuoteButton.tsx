@@ -46,6 +46,12 @@ export function StorefrontB2BQuoteButton({
   const [isGenerating, setIsGenerating] = useState(false);
   const [isGenerated, setIsGenerated] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [hasOpenedDialog, setHasOpenedDialog] = useState(false);
+
+  const openQuoteDialog = () => {
+    setHasOpenedDialog(true);
+    setDialogOpen(true);
+  };
 
   const handleGenerate = () => {
     if (cartLines.length === 0) return;
@@ -111,7 +117,7 @@ export function StorefrontB2BQuoteButton({
     <div className={`space-y-2 ${className}`}>
       <button
         type="button"
-        onClick={() => setDialogOpen(true)}
+        onClick={openQuoteDialog}
         disabled={cartLines.length === 0}
         className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-[#183D36]/25 bg-[#183D36] px-4 py-3 text-xs font-black text-white shadow-xs transition hover:opacity-95 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700"
         aria-label="تقديم طلب عرض سعر رسمي للشركات"
@@ -145,7 +151,7 @@ export function StorefrontB2BQuoteButton({
         )}
       </button>
 
-      {dialogOpen && (
+      {(dialogOpen || hasOpenedDialog) && (
         <Suspense fallback={null}>
           <StorefrontB2BQuoteDialog
             open={dialogOpen}

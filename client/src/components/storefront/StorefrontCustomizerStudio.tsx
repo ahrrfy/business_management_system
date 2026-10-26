@@ -72,6 +72,7 @@ type PendingLogoPayload = {
   mimeType: CustomizationAssetMime;
   dataBase64: string;
   dataUrl: string;
+  uploadedAssetKey?: string;
 };
 
 export function StorefrontCustomizerStudio({
@@ -86,6 +87,7 @@ export function StorefrontCustomizerStudio({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const mountedRef = useRef(true);
   const uploadEpochRef = useRef(0);
+  const activeUploadKindRef = useRef<"LOGO" | "APPLY" | null>(null);
   const drawSeqRef = useRef(0);
 
   const [customText, setCustomText] = useState("");
@@ -137,6 +139,24 @@ export function StorefrontCustomizerStudio({
 
   const invalidatePreviewIfStale = useCallback(() => {
     setApplied(false);
+    if (activeUploadKindRef.current === "APPLY") {
+      uploadEpochRef.current += 1;
+      activeUploadKindRef.current = null;
+      const validLogoKey = pendingLogoRef.current?.uploadedAssetKey;
+      emitAssets(validLogoKey, undefined);
+      if (pendingLogoRef.current && !validLogoKey) {
+        setFailedAction("LOGO");
+        setUploadError(
+          "تعذّر رفع الشعار المحدد سابقاً. أعد المحاولة أو اضغط اعتماد التخصيص مجدداً.",
+        );
+        reportUploadState("error");
+      } else {
+        setUploadError(null);
+        setFailedAction(null);
+        reportUploadState(validLogoKey ? "uploaded" : "idle");
+      }
+      return;
+    }
     if (previewAssetKeyRef.current) {
       emitAssets(logoAssetKeyRef.current, undefined);
       reportUploadState(logoAssetKeyRef.current ? "uploaded" : "idle");
@@ -308,6 +328,7 @@ export function StorefrontCustomizerStudio({
   const uploadLogoPayload = useCallback(
     async (payload: PendingLogoPayload): Promise<string | null> => {
       const epoch = ++uploadEpochRef.current;
+      activeUploadKindRef.current = "LOGO";
       setUploadError(null);
       setFailedAction(null);
       reportUploadState("uploading");
@@ -318,6 +339,9 @@ export function StorefrontCustomizerStudio({
           dataBase64: payload.dataBase64,
         });
         if (!mountedRef.current || epoch !== uploadEpochRef.current) return null;
+        if (pendingLogoRef.current === payload) {
+          payload.uploadedAssetKey = uploaded.assetKey;
+        }
         emitAssets(uploaded.assetKey, undefined);
         reportUploadState("uploaded");
         return uploaded.assetKey;
@@ -327,6 +351,10 @@ export function StorefrontCustomizerStudio({
         setUploadError(formatCustomizationUploadError(error));
         reportUploadState("error");
         return null;
+      } finally {
+        if (epoch === uploadEpochRef.current) {
+          activeUploadKindRef.current = null;
+        }
       }
     },
     [emitAssets, reportUploadState, uploadAssetM],
@@ -339,7 +367,6 @@ export function StorefrontCustomizerStudio({
 
     const validation = validateCustomizationAssetFile(file);
     if (!validation.ok) {
-      pendingLogoRef.current = null;
       setFailedAction(null);
       setUploadError(validation.error);
       reportUploadState("error");
@@ -353,7 +380,6 @@ export function StorefrontCustomizerStudio({
         !pureBase64 ||
         estimateBase64ByteLength(pureBase64) > MAX_CUSTOMIZATION_ASSET_BYTES
       ) {
-        pendingLogoRef.current = null;
         setFailedAction(null);
         setUploadError(
           "حجم الصورة يتجاوز الحد الأقصى المسموح (2 ميجابايت). يرجى اختيار صورة أصغر.",
@@ -368,7 +394,6 @@ export function StorefrontCustomizerStudio({
         loadedImg.naturalHeight || loadedImg.height,
       );
       if (!dimCheck.ok) {
-        pendingLogoRef.current = null;
         setFailedAction(null);
         setUploadError(dimCheck.error);
         reportUploadState("error");
@@ -387,6 +412,7 @@ export function StorefrontCustomizerStudio({
         dataUrl,
       };
       pendingLogoRef.current = payload;
+      emitAssets(undefined, undefined);
       await uploadLogoPayload(payload);
     } catch (error) {
       if (!mountedRef.current) return;
@@ -398,6 +424,7 @@ export function StorefrontCustomizerStudio({
 
   const removeLogo = () => {
     uploadEpochRef.current += 1;
+    activeUploadKindRef.current = null;
     pendingLogoRef.current = null;
     setLogoImage(null);
     setLogoPreviewUrl(null);
@@ -429,34 +456,40 @@ export function StorefrontCustomizerStudio({
 
   const handleApply = async () => {
     const epoch = ++uploadEpochRef.current;
-    await renderCanvasAsync();
-    if (!mountedRef.current || epoch !== uploadEpochRef.current) return;
-
-    const exported = exportStudioCanvasPayload(
-      canvasRef.current,
-      buildUntaintedFallbackCanvas,
-    );
-    if (!exported.ok) {
-      setFailedAction("PREVIEW");
-      setUploadError(exported.error);
-      reportUploadState("error");
-      return;
-    }
-
-    setUploadError(null);
-    setFailedAction(null);
-    reportUploadState("uploading");
-
+    activeUploadKindRef.current = "APPLY";
     try {
-      let currentLogoKey = logoAssetKeyRef.current;
-      if (pendingLogoRef.current && !currentLogoKey) {
+      await renderCanvasAsync();
+      if (!mountedRef.current || epoch !== uploadEpochRef.current) return;
+
+      const exported = exportStudioCanvasPayload(
+        canvasRef.current,
+        buildUntaintedFallbackCanvas,
+      );
+      if (!exported.ok) {
+        setFailedAction("PREVIEW");
+        setUploadError(exported.error);
+        reportUploadState("error");
+        return;
+      }
+
+      setUploadError(null);
+      setFailedAction(null);
+      reportUploadState("uploading");
+
+      const activeLogoPayload = pendingLogoRef.current;
+      let currentLogoKey = activeLogoPayload
+        ? activeLogoPayload.uploadedAssetKey
+        : undefined;
+      if (activeLogoPayload && !currentLogoKey) {
         const logoUploaded = await uploadAssetM.mutateAsync({
           kind: "LOGO",
-          mimeType: pendingLogoRef.current.mimeType,
-          dataBase64: pendingLogoRef.current.dataBase64,
+          mimeType: activeLogoPayload.mimeType,
+          dataBase64: activeLogoPayload.dataBase64,
         });
         if (!mountedRef.current || epoch !== uploadEpochRef.current) return;
+        activeLogoPayload.uploadedAssetKey = logoUploaded.assetKey;
         currentLogoKey = logoUploaded.assetKey;
+        emitAssets(currentLogoKey, undefined);
       }
 
       const previewUploaded = await uploadAssetM.mutateAsync({
@@ -474,7 +507,7 @@ export function StorefrontCustomizerStudio({
         fontFamily: selectedFont,
         textColor: selectedColor,
         hasLogo: Boolean(currentLogoKey || logoImage),
-        logoFileName: pendingLogoRef.current?.fileName,
+        logoFileName: activeLogoPayload?.fileName,
         previewDataUrl: exported.dataUrl,
         logoAssetKey: currentLogoKey,
         previewAssetKey: previewUploaded.assetKey,
@@ -485,9 +518,16 @@ export function StorefrontCustomizerStudio({
       }, 3000);
     } catch (error) {
       if (!mountedRef.current || epoch !== uploadEpochRef.current) return;
-      setFailedAction("PREVIEW");
+      const pendingLogoMissingKey = Boolean(
+        pendingLogoRef.current && !pendingLogoRef.current.uploadedAssetKey,
+      );
+      setFailedAction(pendingLogoMissingKey ? "LOGO" : "PREVIEW");
       setUploadError(formatCustomizationUploadError(error));
       reportUploadState("error");
+    } finally {
+      if (epoch === uploadEpochRef.current) {
+        activeUploadKindRef.current = null;
+      }
     }
   };
 

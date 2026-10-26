@@ -109,8 +109,10 @@ export default function StorefrontB2BQuoteDialog({
   const [formError, setFormError] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState<QuoteRequestSuccessState | null>(null);
   const [copiedField, setCopiedField] = useState<"number" | "token" | null>(null);
+  const [isSubmittingLocal, setIsSubmittingLocal] = useState(false);
 
   const attemptRef = useRef<{ fingerprint: string; clientRequestId: string } | null>(null);
+  const isSubmittingRef = useRef(false);
 
   const normalizedLines = useMemo(() => aggregateB2BQuoteLines(cartLines), [cartLines]);
   const lineLimitError = useMemo(() => {
@@ -126,6 +128,8 @@ export default function StorefrontB2BQuoteDialog({
 
   const createQuoteM = trpc.storefront.createQuoteRequest.useMutation({
     onSuccess: (res) => {
+      isSubmittingRef.current = false;
+      setIsSubmittingLocal(false);
       setFormError(null);
       setSubmitted({
         requestNumber: res.requestNumber,
@@ -134,11 +138,30 @@ export default function StorefrontB2BQuoteDialog({
       });
     },
     onError: (err) => {
+      isSubmittingRef.current = false;
+      setIsSubmittingLocal(false);
       setTurnstileToken(null);
       setTurnstileResetKey((k) => k + 1);
       setFormError(err.message || "تعذّر إرسال طلب عرض السعر — يرجى المحاولة مرة أخرى.");
     },
   });
+
+  const isQuotePending = createQuoteM.isPending || isSubmittingLocal;
+
+  function handleOpenChange(nextOpen: boolean) {
+    if (!nextOpen && (createQuoteM.isPending || isSubmittingRef.current)) {
+      return;
+    }
+    onOpenChange(nextOpen);
+  }
+
+  function resetForAnotherRequest() {
+    setSubmitted(null);
+    setFormError(null);
+    attemptRef.current = null;
+    setTurnstileToken(null);
+    setTurnstileResetKey((k) => k + 1);
+  }
 
   async function copyValue(value: string, kind: "number" | "token") {
     try {
@@ -152,6 +175,9 @@ export default function StorefrontB2BQuoteDialog({
 
   function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (createQuoteM.isPending || isSubmittingRef.current) {
+      return;
+    }
     setFormError(null);
 
     if (normalizedLines.length === 0) {
@@ -226,6 +252,8 @@ export default function StorefrontB2BQuoteDialog({
       };
     }
 
+    isSubmittingRef.current = true;
+    setIsSubmittingLocal(true);
     createQuoteM.mutate({
       customerSessionToken: cleanSession,
       customerName: cleanName,
@@ -253,8 +281,17 @@ export default function StorefrontB2BQuoteDialog({
   }, [submitted?.guestTrackingExpiresAt]);
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto" dir="rtl">
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent
+        className="sm:max-w-lg max-h-[90vh] overflow-y-auto"
+        dir="rtl"
+        onEscapeKeyDown={(e) => {
+          if (isQuotePending) e.preventDefault();
+        }}
+        onInteractOutside={(e) => {
+          if (isQuotePending) e.preventDefault();
+        }}
+      >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base font-black text-foreground">
             <Building2 className="size-5 text-primary" aria-hidden />
@@ -323,11 +360,18 @@ export default function StorefrontB2BQuoteDialog({
               </p>
             </div>
 
-            <DialogFooter>
+            <DialogFooter className="gap-2">
               <button
                 type="button"
-                onClick={() => onOpenChange(false)}
-                className="w-full rounded-xl bg-primary px-4 py-2.5 text-xs font-black text-primary-foreground transition hover:opacity-90"
+                onClick={resetForAnotherRequest}
+                className="rounded-xl border border-border bg-background px-4 py-2.5 text-xs font-bold text-foreground transition hover:bg-accent"
+              >
+                طلب عرض سعر جديد
+              </button>
+              <button
+                type="button"
+                onClick={() => handleOpenChange(false)}
+                className="flex-1 rounded-xl bg-primary px-4 py-2.5 text-xs font-black text-primary-foreground transition hover:opacity-90"
               >
                 إغلاق
               </button>
@@ -497,22 +541,23 @@ export default function StorefrontB2BQuoteDialog({
             <DialogFooter className="gap-2 pt-1">
               <button
                 type="button"
-                onClick={() => onOpenChange(false)}
-                className="rounded-xl border border-border bg-background px-4 py-2.5 text-xs font-bold text-muted-foreground transition hover:bg-accent"
+                disabled={isQuotePending}
+                onClick={() => handleOpenChange(false)}
+                className="rounded-xl border border-border bg-background px-4 py-2.5 text-xs font-bold text-muted-foreground transition hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
               >
                 إلغاء
               </button>
               <button
                 type="submit"
                 disabled={
-                  createQuoteM.isPending ||
+                  isQuotePending ||
                   !canSubmitOnline ||
                   normalizedLines.length === 0 ||
                   Boolean(lineLimitError)
                 }
                 className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-primary px-5 py-2.5 text-xs font-black text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {createQuoteM.isPending ? (
+                {isQuotePending ? (
                   <>
                     <Loader2 className="size-4 animate-spin" aria-hidden />
                     <span>جارٍ الإرسال…</span>

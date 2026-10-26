@@ -39,8 +39,27 @@ vi.mock("@/components/ui/dialog", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/components/ui/dialog")>();
   return {
     ...actual,
-    Dialog: ({ open, children }: { open: boolean; children: React.ReactNode }) =>
-      open ? <div data-testid="b2b-dialog-root">{children}</div> : null,
+    Dialog: ({
+      open,
+      onOpenChange,
+      children,
+    }: {
+      open: boolean;
+      onOpenChange?: (nextOpen: boolean) => void;
+      children: React.ReactNode;
+    }) =>
+      open ? (
+        <div data-testid="b2b-dialog-root">
+          <button
+            type="button"
+            data-testid="b2b-dialog-backdrop-close"
+            onClick={() => onOpenChange?.(false)}
+          >
+            backdrop-close
+          </button>
+          {children}
+        </div>
+      ) : null,
     DialogContent: ({ children, className }: { children: React.ReactNode; className?: string }) => (
       <div data-testid="b2b-dialog-content" className={className}>
         {children}
@@ -346,5 +365,98 @@ describe("StorefrontB2BQuoteButton & lazy official StorefrontB2BQuoteDialog", ()
     });
     expect(createQuoteMutateMock).not.toHaveBeenCalled();
   });
+
+  it("blocks dialog dismissal while quote request is in flight and preserves SRQ confirmation across close/reopen", async () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root!.render(
+        <StorefrontB2BQuoteButton
+          cartLines={sampleCartLines}
+          cartSubtotal={205000}
+          orderingEnabled={true}
+          turnstileSiteKey="site-key"
+        />,
+      );
+    });
+
+    const officialBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("طلب عرض سعر رسمي"),
+    )!;
+    await act(async () => {
+      officialBtn.click();
+    });
+    await waitForLazyDialog(container);
+
+    await act(async () => {
+      setNativeValue(container!.querySelector<HTMLInputElement>("#b2b-quote-customer-name")!, "سارة العبيدي");
+      setNativeValue(container!.querySelector<HTMLInputElement>("#b2b-quote-customer-phone")!, "07709998877");
+      setNativeValue(container!.querySelector<HTMLTextAreaElement>("#b2b-quote-note")!, "عرض سعر تجهيز قرطاسية سنوية");
+      container!.querySelector<HTMLButtonElement>('[data-testid="solve-b2b-turnstile"]')!.click();
+    });
+
+    const form = container.querySelector("form")!;
+    await act(async () => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    expect(createQuoteMutateMock).toHaveBeenCalledTimes(1);
+
+    // Attempt to dismiss via backdrop/Escape or Cancel while mutation is still in flight
+    const backdropCloseBtn = container.querySelector<HTMLButtonElement>(
+      '[data-testid="b2b-dialog-backdrop-close"]',
+    )!;
+    const cancelBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.trim() === "إلغاء",
+    )!;
+    expect(cancelBtn.disabled).toBe(true);
+
+    await act(async () => {
+      backdropCloseBtn.click();
+      cancelBtn.click();
+    });
+    // Dialog must remain open so onSuccess will not fire on an unmounted component
+    expect(container.querySelector('[data-testid="b2b-dialog-content"]')).not.toBeNull();
+
+    // Resolve mutation while dialog is still mounted and open
+    await act(async () => {
+      latestCreateQuoteOptions.onSuccess?.({
+        requestId: 91,
+        requestNumber: "SRQ-2026-0091",
+        guestTrackingToken: "gst_keep_" + "y".repeat(64),
+        guestTrackingExpiresAt: "2026-11-25T07:00:00.000Z",
+        idempotentReplay: false,
+      });
+    });
+
+    expect(container.textContent).toContain("SRQ-2026-0091");
+    expect(container.textContent).toContain("gst_keep_");
+
+    // Close dialog via إغلاق, then reopen: confirmation details must remain accessible
+    const closeBtn = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.trim() === "إغلاق",
+    )!;
+    await act(async () => {
+      closeBtn.click();
+    });
+    expect(container.querySelector('[data-testid="b2b-dialog-content"]')).toBeNull();
+
+    await act(async () => {
+      officialBtn.click();
+    });
+    expect(container.textContent).toContain("SRQ-2026-0091");
+    expect(container.textContent).toContain("gst_keep_");
+
+    // Clicking "طلب عرض سعر جديد" resets back to the form cleanly
+    const anotherBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("طلب عرض سعر جديد"),
+    )!;
+    await act(async () => {
+      anotherBtn.click();
+    });
+    expect(container.querySelector("form")).not.toBeNull();
+  });
 });
+
 

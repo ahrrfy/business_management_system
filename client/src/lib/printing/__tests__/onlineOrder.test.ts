@@ -119,5 +119,27 @@ describe("onlineOrder printing address & customerNotes resolution", () => {
     expect(prepHtml).toContain("بغداد — المنصور - شارع 14 رمضان");
     expect(prepHtml).not.toContain("baghdad —");
   });
+
+  it("renders delivery notes in compact 80x50mm shipping label HTML without leaking legacy notes into address", async () => {
+    const { shippingLabelHtml } = await import("../shippingLabel");
+    const compactHtml = await shippingLabelHtml(
+      {
+        orderNumber: "WEB-2026-0777",
+        customerName: "مؤسسة الرافدين",
+        customerPhone: "07709998877",
+        governorate: "baghdad",
+        addressText: "المنصور - شارع 14 رمضان",
+        notes: "الاتصال بالمستلم قبل نصف ساعة من الوصول",
+        paymentState: "COD",
+        total: "50000",
+        items: [{ productName: "دفتر ملاحظات جلدي", unitName: "قطعة", quantity: "5" }],
+      },
+      { widthMm: 80, heightMm: 50 },
+    );
+    expect(compactHtml).toContain("المنصور - شارع 14 رمضان");
+    expect(compactHtml).toContain("الاتصال بالمستلم قبل نصف ساعة من الوصول");
+    expect(compactHtml).toContain("ملاحظة:");
+  });
 });
+
 

@@ -815,5 +815,152 @@ describe("Slice 3 — customizer asset upload, cart identity, studio gating, and
     const nextTextInput = container.querySelector("#custom-text-input") as HTMLInputElement;
     expect(nextTextInput.value).toBe("");
   });
+
+  it("aborts in-flight APPLY preview upload when studio text changes before upload resolves", async () => {
+    let resolvePreviewUpload!: (val: {
+      assetKey: string;
+      sha256: string;
+      mimeType: "image/png";
+      byteLength: number;
+    }) => void;
+    uploadMutateAsyncMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolvePreviewUpload = resolve;
+        }),
+    );
+
+    const onApplyCustomization = vi.fn();
+    let latestAssets: { logoAssetKey?: string; previewAssetKey?: string } = {};
+
+    act(() => {
+      root.render(
+        <StorefrontCustomizerStudio
+          productName="درع تكريم"
+          onApplyCustomization={onApplyCustomization}
+          onAssetsChange={(assets) => {
+            latestAssets = assets;
+          }}
+        />,
+      );
+    });
+
+    const textInput = container.querySelector("#custom-text-input") as HTMLInputElement;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+        textInput,
+        "النص الأول",
+      );
+      textInput.dispatchEvent(new Event("input", { bubbles: true }));
+      textInput.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    const applyBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("اعتماد"),
+    )!;
+    await act(async () => {
+      applyBtn.click();
+      await Promise.resolve();
+    });
+    expect(uploadMutateAsyncMock).toHaveBeenCalledTimes(1);
+
+    // User edits studio text while PREVIEW upload is still in flight
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+        textInput,
+        "النص المعدّل أثناء الرفع",
+      );
+      textInput.dispatchEvent(new Event("input", { bubbles: true }));
+      textInput.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    // Stale PREVIEW upload resolves afterwards — must be discarded
+    await act(async () => {
+      resolvePreviewUpload({
+        assetKey: "customizer/t1/preview/stale_preview.png",
+        sha256: "stale",
+        mimeType: "image/png",
+        byteLength: 68,
+      });
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    expect(onApplyCustomization).not.toHaveBeenCalled();
+    expect(latestAssets.previewAssetKey).toBeUndefined();
+  });
+
+  it("clears previous logoAssetKey when replacement logo upload fails and re-uploads the new logo on APPLY", async () => {
+    let latestAssets: { logoAssetKey?: string; previewAssetKey?: string } = {};
+
+    act(() => {
+      root.render(
+        <StorefrontCustomizerStudio
+          productName="كوب سيراميك"
+          onAssetsChange={(assets) => {
+            latestAssets = assets;
+          }}
+        />,
+      );
+    });
+
+    // 1. Upload Logo A -> succeeds
+    uploadMutateAsyncMock.mockResolvedValueOnce({
+      assetKey: "customizer/t1/logo/logo_A.png",
+      sha256: "a",
+      mimeType: "image/png",
+      byteLength: 68,
+    });
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const logoA = new File([new Uint8Array([137, 80, 78, 71])], "logoA.png", {
+      type: "image/png",
+    });
+    await act(async () => {
+      Object.defineProperty(fileInput, "files", { value: [logoA], configurable: true });
+      fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(latestAssets.logoAssetKey).toBe("customizer/t1/logo/logo_A.png");
+
+    // 2. Replace with Logo B whose initial LOGO upload fails -> must NOT retain logo_A.png
+    uploadMutateAsyncMock.mockRejectedValueOnce(new Error("Network error"));
+    const logoB = new File([new Uint8Array([137, 80, 78, 71, 1])], "logoB.png", {
+      type: "image/png",
+    });
+    await act(async () => {
+      Object.defineProperty(fileInput, "files", { value: [logoB], configurable: true });
+      fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(latestAssets.logoAssetKey).toBeUndefined();
+
+    // 3. Clicking APPLY must upload Logo B first and then PREVIEW (never reusing logo_A.png)
+    uploadMutateAsyncMock
+      .mockResolvedValueOnce({
+        assetKey: "customizer/t1/logo/logo_B.png",
+        sha256: "b",
+        mimeType: "image/png",
+        byteLength: 68,
+      })
+      .mockResolvedValueOnce({
+        assetKey: "customizer/t1/preview/preview_B.png",
+        sha256: "pb",
+        mimeType: "image/png",
+        byteLength: 68,
+      });
+
+    const applyBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("اعتماد"),
+    )!;
+    await act(async () => {
+      applyBtn.click();
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    expect(latestAssets).toEqual({
+      logoAssetKey: "customizer/t1/logo/logo_B.png",
+      previewAssetKey: "customizer/t1/preview/preview_B.png",
+    });
+  });
 });
+
 
