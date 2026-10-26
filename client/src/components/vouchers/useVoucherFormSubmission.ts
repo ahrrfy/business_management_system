@@ -36,6 +36,10 @@ export function useVoucherFormSubmission(
     | "partyType"
     | "customerId"
     | "supplierId"
+    | "supplierAdvanceRefundReceiptId"
+    | "supplierAdvanceRefundValidationError"
+    | "selectedSupplierAdvanceRefund"
+    | "supplierAdvanceRefundWarning"
     | "deliveryPartyId"
     | "description"
     | "referenceNumber"
@@ -68,6 +72,10 @@ export function useVoucherFormSubmission(
     partyType,
     customerId,
     supplierId,
+    supplierAdvanceRefundReceiptId,
+    supplierAdvanceRefundValidationError,
+    selectedSupplierAdvanceRefund,
+    supplierAdvanceRefundWarning,
     deliveryPartyId,
     description,
     referenceNumber,
@@ -104,12 +112,13 @@ export function useVoucherFormSubmission(
       await Promise.all([
         utils.vouchers.list.invalidate(),
         utils.vouchers.aggregate.invalidate(),
-        ...(direction === "OUT" && partyType === "SUPPLIER"
+        ...(partyType === "SUPPLIER" && (direction === "OUT" || supplierAdvanceRefundReceiptId != null)
           ? [
               utils.suppliers.invalidate(),
               utils.purchases.invalidate(),
               utils.supplierPayments.invalidate(),
               utils.reports.supplierStatement.invalidate(),
+              utils.vouchers.supplierAdvanceRefundSources.invalidate(),
             ]
           : []),
       ]);
@@ -154,6 +163,8 @@ export function useVoucherFormSubmission(
       return "اختر العميل المرتبط بالسند.";
     if (partyType === "SUPPLIER" && !supplierId)
       return "اختر المورّد المرتبط بالسند.";
+    if (supplierAdvanceRefundValidationError)
+      return supplierAdvanceRefundValidationError;
     if (partyType === "DELIVERY_PARTY" && !deliveryPartyId)
       return "اختر جهة التوصيل المرتبطة بالسند.";
     if (partyType === "OTHER" && voucherCategoryId === "") {
@@ -188,6 +199,8 @@ export function useVoucherFormSubmission(
       paymentMethod: method,
       partyType,
       partyId,
+      ...(isReceipt && partyType === "SUPPLIER" && supplierAdvanceRefundReceiptId != null
+        ? { supplierAdvanceRefundReceiptId } : {}),
       description: description.trim(),
       referenceNumber: referenceNumber.trim() || null,
       // لا صكوك في الإنشاء (قرار المالك) — الحقل يبقى بالعقد للسجلات التاريخية فقط.
@@ -234,9 +247,11 @@ export function useVoucherFormSubmission(
     const isOut = direction === "OUT";
 
     const title = isOut ? "تأكيد سند الصرف" : "تأكيد سند القبض";
-    const description = isOut
+    const sourceNotice = isReceipt && partyType === "SUPPLIER" && selectedSupplierAdvanceRefund
+      ? ` يرتبط الاسترداد بسند الدفعة السابقة ${selectedSupplierAdvanceRefund.voucherNumber ?? `#${selectedSupplierAdvanceRefund.id}`} (${paymentMethodCompact(selectedSupplierAdvanceRefund.paymentMethod)})، ويقبض بطريقة الاسترداد الفعلية المختارة. ${supplierAdvanceRefundWarning}` : "";
+    const description = (isOut
       ? `سيُسجَّل سند صرف بمبلغ ${formattedAmount} د.ع لصالح «${partyDisplayName}» بطريقة «${methodLabel}» ويُحال للاعتماد والتنفيذ المالي. هل تؤكد العملية؟`
-      : `سيُسجَّل سند قبض بمبلغ ${formattedAmount} د.ع من «${partyDisplayName}» بطريقة «${methodLabel}» وتُثبَّت الحركة المالية في الدفتر. هل تؤكد العملية؟`;
+      : `سيُسجَّل سند قبض بمبلغ ${formattedAmount} د.ع من «${partyDisplayName}» بطريقة «${methodLabel}» وتُثبَّت الحركة المالية في الدفتر. هل تؤكد العملية؟`) + sourceNotice;
     const confirmText = isOut ? "تأكيد الصرف" : "تأكيد القبض";
 
     const ok = await confirm({

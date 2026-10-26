@@ -2,7 +2,8 @@ import {
   voucherInvoiceEligible,
   voucherInvoiceRemaining as invoiceRemaining,
 } from "./voucherInvoiceAllocation";
-import { fmt } from "@/lib/money";
+import { fmt, moneyInput } from "@/lib/money";
+import { skipToken } from "@tanstack/react-query";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMemo, useState } from "react";
@@ -20,6 +21,7 @@ export function useVoucherFormQueries(
     | "partyType"
     | "customerId"
     | "supplierId"
+    | "supplierAdvanceRefundReceiptId"
     | "deliveryPartyId"
     | "counterpartyName"
     | "invoiceId"
@@ -35,10 +37,37 @@ export function useVoucherFormQueries(
     partyType,
     customerId,
     supplierId,
+    supplierAdvanceRefundReceiptId,
     deliveryPartyId,
     counterpartyName,
     invoiceId,
   } = ctx;
+
+  const supplierAdvanceRefundActive = isReceipt && partyType === "SUPPLIER" && supplierId != null && branchId != null;
+  const supplierAdvanceRefundSources = trpc.vouchers.supplierAdvanceRefundSources.useQuery(
+    supplierAdvanceRefundActive ? { supplierId, branchId } : skipToken,
+    { retry: false },
+  );
+  const advanceRefundSources = supplierAdvanceRefundSources.data ?? [];
+  const selectedSupplierAdvanceRefund = supplierAdvanceRefundActive
+    ? advanceRefundSources.find((row) => row.id === supplierAdvanceRefundReceiptId) : undefined;
+  let supplierAdvanceRefundValidationError = "";
+  if (supplierAdvanceRefundActive) {
+    if (supplierAdvanceRefundSources.isError) {
+      supplierAdvanceRefundValidationError = supplierAdvanceRefundSources.error?.message || "تعذر التحقق من الدفعات السابقة القابلة للاسترداد؛ أعد المحاولة قبل الحفظ.";
+    } else if (supplierAdvanceRefundSources.isLoading || supplierAdvanceRefundSources.isFetching || !supplierAdvanceRefundSources.data) {
+      supplierAdvanceRefundValidationError = "انتظر اكتمال التحقق من الدفعات السابقة القابلة للاسترداد قبل الحفظ.";
+    } else if (supplierAdvanceRefundReceiptId != null && !selectedSupplierAdvanceRefund) {
+      supplierAdvanceRefundValidationError = "الدفعة السابقة المحددة لم تعد قابلة للاسترداد؛ حدّث المصادر واختر سنداً متاحاً.";
+    } else if (advanceRefundSources.length > 0 && !selectedSupplierAdvanceRefund) {
+      supplierAdvanceRefundValidationError = "اختر الدفعة السابقة المستردة لربط سند القبض بأصل الأموال.";
+    } else if (selectedSupplierAdvanceRefund && moneyInput(amount).gt(selectedSupplierAdvanceRefund.remainingAmount)) {
+      supplierAdvanceRefundValidationError = "مبلغ الاسترداد يتجاوز المتبقي القابل للاسترداد من السند المحدد؛ خفّض المبلغ أو اختر سنداً آخر.";
+    }
+  }
+  const supplierAdvanceRefundWarning = selectedSupplierAdvanceRefund && moneyInput(amount).gt(selectedSupplierAdvanceRefund.unusedAmount)
+    ? "مبلغ الاسترداد يتجاوز الجزء غير المستخدم من الدفعة؛ قد يعيد فتح ذمة الفواتير المرتبطة بها بمقدار الجزء المسترد من تخصيصاتها." : "";
+  const supplierAdvanceRefundBlocked = supplierAdvanceRefundValidationError !== "";
 
   // عميل/مورّد المُختار (لمعاينة الرَصيد).
   const customerData = trpc.customers.get.useQuery(
@@ -159,6 +188,12 @@ export function useVoucherFormQueries(
     return null;
   }, [amountNum, partyType, customerData.data, supplierData.data, direction]);
   return {
+    supplierAdvanceRefundActive,
+    supplierAdvanceRefundSources,
+    selectedSupplierAdvanceRefund,
+    supplierAdvanceRefundValidationError,
+    supplierAdvanceRefundWarning,
+    supplierAdvanceRefundBlocked,
     customerData,
     supplierData,
     invoiceQ,

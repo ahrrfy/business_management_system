@@ -1,3 +1,4 @@
+import { purchasePaymentEvidencePrintText } from "@/components/purchases/PurchasePaymentEvidence";
 import { getPurchaseSettlement, getPurchaseSettlementIntentLabel } from "@shared/purchaseSettlement";
 import { Link } from "wouter";
 import { balanceOptionText } from "@/components/BalanceBadge";
@@ -461,6 +462,7 @@ export default function Purchases() {
         statusLabel: `${PO_STATUS[d.status] ?? d.status} · ${settlement.intentLabel} · ${settlement.statusLabel}${settlement.requiresReview ? " · يحتاج مراجعة دليل السداد" : ""}`,
         statusColor,
         supplierName: d.supplierName,
+        paymentMethod: d.total == null ? undefined : purchasePaymentEvidencePrintText(d),
         items: d.items.map((it, index) => ({
           productName: it.productName ?? "",
           unitName: it.unitName,

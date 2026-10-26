@@ -3,6 +3,9 @@ import { defineConfig } from "vitest/config";
 
 /** اختبارات منطقية خالصة لا تحتاج قاعدة MySQL؛ تبقى منفصلة عن حزمة التكامل التي تنظف قاعدة الاختبار. */
 export const UNIT_TEST_FILES: string[] = [
+      "client/src/components/vouchers/__tests__/voucherDeepLink.test.tsx",
+      "client/src/components/vouchers/__tests__/voucherAdvanceRefund.test.tsx",
+      "client/src/pages/__tests__/purchaseTenderUi.test.tsx",
       "client/src/pages/__tests__/densityWaves.test.tsx",
       "client/src/pages/store/__tests__/StorePushCampaignManager.test.tsx",
       "shared/__tests__/storePushCampaignTerms.test.ts",

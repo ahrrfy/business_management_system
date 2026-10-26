@@ -17,6 +17,7 @@ import {
 import { getDb, type Tx } from "../db";
 import { money, toDbMoney } from "./money";
 import { parseSystemPaymentRequest } from "./voucher/create";
+import { loadPurchaseSettlements } from "./purchase/settlementProjection";
 
 export const MAX_PURCHASE_INTEGRITY_LIMIT = 500;
 const DEFAULT_PURCHASE_INTEGRITY_LIMIT = 100;
@@ -1185,15 +1186,22 @@ export async function getPurchaseIntegrityReport(
         });
       }
 
+      const settlementEvidence = await loadPurchaseSettlements(tx, orderRows);
       for (const order of orderRows) {
         const poId = Number(order.id);
         const amounts = amountsByOrder.get(poId) ?? emptyAmounts();
-        const linkedPaidAmount = amounts.approvedPaymentOut.minus(
-          amounts.paymentCancellationIn,
+        // A prior approved voucher has no PO-linked money movement. Its explicit
+        // allocation covers this invoice without creating another PAYMENT_OUT.
+        const priorPaid = money(
+          settlementEvidence.get(poId)?.bookPaidAmountIqd ?? "0",
         );
+        const linkedPaidAmount = amounts.approvedPaymentOut
+          .minus(amounts.paymentCancellationIn)
+          .plus(priorPaid);
         const netCovered = amounts.approvedPaymentOut
           .minus(amounts.approvedPaymentIn)
-          .plus(amounts.validPending);
+          .plus(amounts.validPending)
+          .plus(priorPaid);
         const coverageDifference = netCovered.minus(amounts.recognizedPurchase);
         const storedPaid = money(order.paidAmount);
         const paidDifference = storedPaid.minus(linkedPaidAmount);

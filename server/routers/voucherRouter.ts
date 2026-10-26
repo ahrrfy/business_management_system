@@ -47,6 +47,7 @@ import {
 } from "../services/voucher/create";
 import { withMysqlDeadlockRetry } from "../services/voucher/deadlockRetry";
 import { positiveMoneyString } from "../lib/schemas";
+import { listSupplierAdvanceRefundSources } from "../services/purchase/advanceRefund";
 
 const partyType = z.enum(["CUSTOMER", "SUPPLIER", "DELIVERY_PARTY", "OTHER"]);
 // قرار المالك (٢٢/٧): لا تعامل بالصكوك — CHECK محذوف من طرق الإنشاء، ويبقى في reportableMethod
@@ -79,6 +80,11 @@ const voucherListFilters = z.object({
 type VoucherListFilters = z.infer<typeof voucherListFilters>;
 
 export const voucherRouter = router({
+  supplierAdvanceRefundSources: treasuryManagerReadProcedure
+    .input(z.object({ supplierId: z.number().int().positive(), branchId: z.number().int().positive() }))
+    .query(({ input, ctx }) => listSupplierAdvanceRefundSources(input, {
+      userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role,
+    })),
   /** معلومات حوكمة الواجهة. العتبة تخص سياسة القبض القائمة؛ كل سند صرف يحتاج اعتماداً. */
   thresholds: treasuryManagerReadProcedure.query(() => ({
     approval: getApprovalThreshold(),
@@ -111,6 +117,7 @@ export const voucherRouter = router({
         // attachment-upload (٥/٧): ربط سند العميل بفاتورة بيع مُحدَّدة (اختياري).
         invoiceId: z.number().int().positive().nullish(),
         supplierAllocations: z.array(z.object({ supplierInvoiceId: z.number().int().positive(), invoiceVersion: z.number().int().positive(), amount: positiveMoneyString })).min(1).max(500).optional(),
+        supplierAdvanceRefundReceiptId: z.number().int().positive().optional(),
         clientRequestId: z.string().min(1).max(80),
       }),
     )

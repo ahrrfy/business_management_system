@@ -84,6 +84,17 @@ export function useVoucherFormState(props: VoucherFormProps) {
 
   const [supplierId, setSupplierId] = useState<number | null>(seededSupplierId);
 
+  const advanceRefundScope = `${voucherType}:${branchId ?? ""}:${partyType}:${supplierId ?? ""}`;
+  const [advanceRefundSelection, setAdvanceRefundSelection] = useState<{ scope: string; receiptId: number } | null>(null);
+  const supplierAdvanceRefundReceiptId = advanceRefundSelection?.scope === advanceRefundScope
+    ? advanceRefundSelection.receiptId : null;
+  function setSupplierAdvanceRefundReceiptId(receiptId: number | null) {
+    setAdvanceRefundSelection(receiptId == null ? null : { scope: advanceRefundScope, receiptId });
+  }
+  useEffect(() => {
+    setAdvanceRefundSelection((current) => current?.scope === advanceRefundScope ? current : null);
+  }, [advanceRefundScope]);
+
   const [deliveryPartyId, setDeliveryPartyId] = useState<number | null>(null);
 
   const [description, setDescription] = useState("");
@@ -210,6 +221,8 @@ export function useVoucherFormState(props: VoucherFormProps) {
     setCustomerId,
     supplierId,
     setSupplierId,
+    supplierAdvanceRefundReceiptId,
+    setSupplierAdvanceRefundReceiptId,
     deliveryPartyId,
     setDeliveryPartyId,
     description,

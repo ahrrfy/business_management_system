@@ -1,3 +1,7 @@
+import {
+  purchaseTenderLabel,
+  type PurchaseTenderInput,
+} from "@shared/purchaseTender";
 import { D, fmtAr, formatQuantity, round2, toUnitPriceStr } from "@/lib/money";
 import { fmtDate, type DateInput } from "@/lib/date";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -5,7 +9,10 @@ import { calcLineTotal, type InvoiceLine } from "@/components/invoice";
 import { priceDecimalsFor, type PriceCurrency } from "@shared/moneyPrecision";
 import { getPurchaseSettlementIntentLabel } from "@shared/purchaseSettlement";
 import { notify } from "@/lib/notify";
-import { safeMoney, type PurchaseLandedCostResult } from "./PurchaseShippingCard";
+import {
+  safeMoney,
+  type PurchaseLandedCostResult,
+} from "./PurchaseShippingCard";
 
 export interface PrintPurchaseOrderOptions {
   title?: string;
@@ -16,6 +23,7 @@ export interface PrintPurchaseOrderOptions {
   currency: PriceCurrency | string;
   agreedRate: string;
   paymentTerms?: string;
+  tender?: PurchaseTenderInput | null;
   shippingCost: string;
   customsCost: string;
   notes: string;
@@ -44,6 +52,7 @@ export function printPurchaseOrderDoc({
   currency,
   agreedRate,
   paymentTerms,
+  tender,
   shippingCost,
   customsCost,
   notes,
@@ -95,7 +104,10 @@ export function printPurchaseOrderDoc({
   const taxAmount = safeMoney(docTotals.tax);
 
   const summary = [
-    { label: `المجموع الفرعي (${priceSym})`, value: fmtAr(docTotals.grossSubtotal || docTotals.subtotal) },
+    {
+      label: `المجموع الفرعي (${priceSym})`,
+      value: fmtAr(docTotals.grossSubtotal || docTotals.subtotal),
+    },
     ...(discountAmount.gt(0)
       ? [
           {
@@ -139,7 +151,9 @@ export function printPurchaseOrderDoc({
   const orderFields = [
     { label: "رقم الأمر", value: docNum || "—" },
     { label: "الحالة", value: statusLabel },
-    ...(showBranch && branchName ? [{ label: "الفرع", value: branchName }] : []),
+    ...(showBranch && branchName
+      ? [{ label: "الفرع", value: branchName }]
+      : []),
     { label: "العملة", value: usd ? "دولار أمريكي" : "دينار عراقي" },
     ...(usd && rate.gt(0)
       ? [{ label: "سعر التثبيت", value: `${fmtAr(agreedRate)} د.ع/$` }]
@@ -150,6 +164,19 @@ export function printPurchaseOrderDoc({
             label: "التسوية",
             value: getPurchaseSettlementIntentLabel(paymentTerms),
           },
+        ]
+      : []),
+    ...(paymentTerms === "CASH" && tender
+      ? [
+          { label: "مصدر السداد المعلن", value: purchaseTenderLabel(tender) },
+          ...(tender.previousReceiptId
+            ? [
+                {
+                  label: "الدفعة السابقة المحددة",
+                  value: `سند #${tender.previousReceiptId}`,
+                },
+              ]
+            : []),
         ]
       : []),
     ...(safeMoney(shippingCost).gt(0)
@@ -168,9 +195,7 @@ export function printPurchaseOrderDoc({
           },
         ]
       : []),
-    ...(notes.trim()
-      ? [{ label: "ملاحظات", value: notes.trim() }]
-      : []),
+    ...(notes.trim() ? [{ label: "ملاحظات", value: notes.trim() }] : []),
     ...((poReference ?? "").trim()
       ? [{ label: "مرجع أمر الشراء", value: (poReference ?? "").trim() }]
       : []),
@@ -198,11 +223,28 @@ export function printPurchaseOrderDoc({
       { key: "barcode", label: "الباركود", width: "24mm", align: "center" },
       { key: "name", label: "المنتج" },
       { key: "unit", label: "الوحدة", width: "18mm", align: "center" },
-      { key: "price", label: `السعر (${priceSym})`, width: "22mm", align: "left" },
+      {
+        key: "price",
+        label: `السعر (${priceSym})`,
+        width: "22mm",
+        align: "left",
+      },
       { key: "qty", label: "الكمية", width: "16mm", align: "center" },
-      { key: "total", label: `الإجمالي (${priceSym})`, width: "24mm", align: "left" },
+      {
+        key: "total",
+        label: `الإجمالي (${priceSym})`,
+        width: "24mm",
+        align: "left",
+      },
       ...(showIqdEquivalent
-        ? [{ key: "iqd", label: "المعادل د.ع", width: "24mm", align: "left" as const }]
+        ? [
+            {
+              key: "iqd",
+              label: "المعادل د.ع",
+              width: "24mm",
+              align: "left" as const,
+            },
+          ]
         : []),
     ],
     rows,

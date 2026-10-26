@@ -1,0 +1,13 @@
+# Purchase tender settlement
+
+Approved scope: keep CASH/CREDIT (نقدية/آجلة). A single tender choice exposes drawer, branch treasury or company card with progressive fields. Draft intent is immutable revision data, not a payment. Cash purchase posting completes only when fully settled; supplier's other debts remain independent.
+
+- Persist `PurchaseTenderInput` in revision canonical payload/hash and event; preserve existing callers using cashSource. Restore intent when editing and show it to the independent reviewer.
+- Drawer and treasury retain existing authority, branch, owner, cash availability, shift reconciliation and ledger contracts. Company CARD uses the active CARD_BANK chart account and verified-format last four/reference, with no physical cash bucket. Reference is documentary evidence, not automatic bank verification.
+- Explicitly selected existing approved supplier OUT receipts are allocated under exclusive financial governance. Linking changes allocations/status only, never creates cash or another AP decrement. Support partial consumption of larger prepayments with an explicit unused balance and audit provenance, plus cancellation/reversal of both unused and allocated amounts. Never infer payment from supplier balance.
+- Settle only the unpaid remainder using the selected instrument. Replays reuse original source, request and receipt identities. No silent source fallback for an explicit tender.
+- Existing shipping/customs, stock and WAVG recognition remain separate. Reports, document printing and refunds use original receipt/allocation identity. Currency restrictions must be explicit; card settlement must not invent an exchange rate.
+- The refund form explicitly selects the original advance. Its receipt records how money actually returned, which can differ from the original payment method. Cancelling that refund restores only current payable allocations; remaining capacity stays an unused advance. A generic unrelated supplier receipt must not silently reopen the original advance capacity.
+- Treat CASH/CREDIT as settlement terms, tender as the source of any new remainder, and an existing approved receipt as evidence of money already disbursed. Display these amounts separately; saving a draft or linking a receipt does not disburse money.
+
+Acceptance evidence: actual DB tests for drawer/treasury/card, prior equal/smaller/larger payments, repeated and concurrent approval, branch/supplier/source rejection, insufficient cash rollback, close/reversal/refund and reports; rendered creation/edit/approval; type and guard gates; full financial CI suite on final head.

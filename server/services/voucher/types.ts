@@ -26,6 +26,8 @@ export interface VoucherInput {
   /** Frozen supplier invoice allocations; omission proposes oldest eligible invoices first. */
   supplierAllocations?: import("@shared/supplierVoucherSettlement").SupplierVoucherAllocation[];
   supplierCashSource?: { mode: "DRAWER" | "TREASURY"; shiftId?: number | null };
+  /** Original approved supplier OUT receipt whose advance is being refunded. */
+  supplierAdvanceRefundReceiptId?: number;
   /** Idempotency: نفس المفتاح ⇒ سند واحد (لا صرف/قبض نقدي مزدوج عند النقر المزدوج/إعادة الشبكة). */
   clientRequestId: string;
 }

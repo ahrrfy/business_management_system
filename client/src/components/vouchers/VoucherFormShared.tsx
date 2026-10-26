@@ -12,13 +12,45 @@ import { AlertTriangle, Building2, Printer, ShieldCheck } from "lucide-react";
 import { Link } from "wouter";
 import { voucherCreateActionLabel } from "@/components/vouchers/voucherUiPolicy";
 import { VoucherCategoryQuickCreate } from "@/components/vouchers/VoucherCategoryQuickCreate";
-import { useVoucherForm } from "./useVoucherForm";
+import React from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { fmtAr } from "@/lib/money";
+import { paymentMethodCompact } from "@shared/terms";
+import { useVoucherForm, type VoucherFormModel } from "./useVoucherForm";
 import type { VoucherFormProps } from "./voucherFormTypes";
 export type { VoucherFormProps } from "./voucherFormTypes";
 import { LedgerPreviewRow } from "./voucherFormTypes";
 import { ledgerPreviewColumns } from "./voucherFormTypes";
 import { VoucherPaymentFields } from "./VoucherPaymentFields";
 import { VoucherPartyAllocationFields } from "./VoucherPartyAllocationFields";
+
+export function SupplierAdvanceRefundFields({ model }: { model: Pick<VoucherFormModel,
+  "supplierAdvanceRefundActive" | "supplierAdvanceRefundSources" | "supplierAdvanceRefundReceiptId" |
+  "setSupplierAdvanceRefundReceiptId" | "selectedSupplierAdvanceRefund" | "supplierAdvanceRefundValidationError" |
+  "supplierAdvanceRefundWarning" | "method"
+> }) {
+  const sources = model.supplierAdvanceRefundSources.data ?? [];
+  if (!model.supplierAdvanceRefundActive || (!sources.length && !model.supplierAdvanceRefundValidationError && model.supplierAdvanceRefundReceiptId == null)) return null;
+  const selected = model.selectedSupplierAdvanceRefund;
+  return <Card className="lg:col-span-2"><CardContent className="space-y-2 p-3.5 text-xs">
+    <Label htmlFor="supplier-advance-refund-source">الدفعة السابقة المستردة</Label>
+    {sources.length > 0 ? <AppSelect id="supplier-advance-refund-source" aria-label="الدفعة السابقة المستردة" value={model.supplierAdvanceRefundReceiptId == null ? "" : String(model.supplierAdvanceRefundReceiptId)} onValueChange={(value) => model.setSupplierAdvanceRefundReceiptId(value ? Number(value) : null)}>
+      <option value="">اختر سند الدفعة السابقة</option>
+      {sources.map((source) => <option key={source.id} value={String(source.id)}>{source.voucherNumber ?? `سند #${source.id}`} — {paymentMethodCompact(source.paymentMethod)} — المتبقي {fmtAr(source.remainingAmount)} د.ع</option>)}
+    </AppSelect> : null}
+    {selected ? <div className="flex flex-wrap gap-x-5 gap-y-1">
+      <span>السند الأصلي: {selected.voucherNumber ?? `#${selected.id}`}</span>
+      <span>أصل الدفعة: {fmtAr(selected.amount)} د.ع</span>
+      <span>المتبقي القابل للاسترداد: {fmtAr(selected.remainingAmount)} د.ع</span>
+      <span>الجزء غير المستخدم: {fmtAr(selected.unusedAmount)} د.ع</span>
+      <span>طريقة الدفعة الأصلية: {paymentMethodCompact(selected.paymentMethod)}</span>
+      <span>طريقة الاسترداد الفعلية: {paymentMethodCompact(model.method)}</span>
+    </div> : null}
+    {model.supplierAdvanceRefundWarning ? <p className="text-[var(--sem-warn)]">{model.supplierAdvanceRefundWarning}</p> : null}
+    {model.supplierAdvanceRefundValidationError ? <p role="alert" className="text-[var(--sem-warn)]">{model.supplierAdvanceRefundValidationError}</p> : null}
+    {model.supplierAdvanceRefundSources.isError ? <Button type="button" variant="outline" size="sm" onClick={() => void model.supplierAdvanceRefundSources.refetch()}>إعادة التحقق من الدفعات السابقة</Button> : null}
+  </CardContent></Card>;
+}
 
 export default function VoucherFormShared(props: VoucherFormProps) {
   const model = useVoucherForm(props);
@@ -81,6 +113,7 @@ export default function VoucherFormShared(props: VoucherFormProps) {
     selectedInList,
     invoiceRemaining,
     hardBlock,
+    supplierAdvanceRefundBlocked,
     treasuryNotice,
     awaitsOwnerDisbursement,
     recent,
@@ -180,6 +213,8 @@ export default function VoucherFormShared(props: VoucherFormProps) {
             balanceWarn,
           }}
         />
+
+        <SupplierAdvanceRefundFields model={model} />
 
         {/* الوَصف + مَعاينة القَيد + المرفقات في بطاقة مدمجة واحدة */}
         <Card className="lg:col-span-2">
@@ -285,7 +320,7 @@ export default function VoucherFormShared(props: VoucherFormProps) {
       <div className="flex flex-wrap items-center gap-2">
         <Button
           onClick={() => submit(null)}
-          disabled={!canCreate || create.isPending || hardBlock}
+          disabled={!canCreate || create.isPending || hardBlock || supplierAdvanceRefundBlocked}
           className={submitColor}
           title={hardBlock ? "افتح وردية قبل سند نقدي للكاشير" : "Ctrl+S"}
         >
@@ -296,7 +331,7 @@ export default function VoucherFormShared(props: VoucherFormProps) {
             <Button
               variant="outline"
               onClick={() => submit("thermal")}
-              disabled={!canCreate || create.isPending || hardBlock}
+              disabled={!canCreate || create.isPending || hardBlock || supplierAdvanceRefundBlocked}
               title="Ctrl+Enter"
             >
               <Printer aria-hidden className="size-4 ms-1" />
@@ -305,7 +340,7 @@ export default function VoucherFormShared(props: VoucherFormProps) {
             <Button
               variant="outline"
               onClick={() => submit("a4")}
-              disabled={!canCreate || create.isPending || hardBlock}
+              disabled={!canCreate || create.isPending || hardBlock || supplierAdvanceRefundBlocked}
             >
               <Printer aria-hidden className="size-4 ms-1" />
               حفظ + طباعة A4

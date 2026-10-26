@@ -42,7 +42,11 @@ import { money, round2, toDbMoney } from "../money";
 import { withGovernanceTx, withTx, type Actor } from "../tx";
 import { sha256, stableCanonical } from "./grniAccounting";
 import { loadPurchaseSettlements } from "./settlementProjection";
-import { loadSupplierBookInvoiceTotals } from "./supplierBookProjection";
+import {
+  isPurchaseAdvanceSnapshot,
+  loadSupplierBookInvoiceTotals,
+  purchaseAdvanceAvailableAmount,
+} from "./supplierBookProjection";
 import { loadSupplierFormalCreditTotals } from "./supplierFormalCreditProjection";
 import {
   requestPurchaseIntegrityResolutionInTx,
@@ -764,6 +768,36 @@ async function loadContext(
       options.manualSource.allocations,
     );
   const plan = buildSupplierBookFifo(targets, candidate, manualSources);
+  const advanceSources = bookSources.filter((source) =>
+    isPurchaseAdvanceSnapshot(source.sourceSnapshot),
+  );
+  if (
+    advanceSources.some(
+      (source) => sha256(source.sourceSnapshot) !== source.sourceHash,
+    )
+  )
+    fail("تلفت بصمة مصدر الرصيد المقدم للمورد");
+  const advanceAllocations = advanceSources.length
+    ? await tx
+        .select()
+        .from(allocations)
+        .where(
+          inArray(
+            allocations.sourceId,
+            advanceSources.map((source) => source.id),
+          ),
+        )
+    : [];
+  const unusedAdvances = advanceSources.reduce(
+    (sum, source) =>
+      sum.plus(
+        purchaseAdvanceAvailableAmount(
+          source,
+          advanceAllocations.filter((row) => row.sourceId === source.id),
+        ),
+      ),
+    money(0),
+  );
   if (
     plan.sources.length > 100 ||
     plan.sources.reduce((n, s) => n + s.allocations.length, 0) > 2000 ||
@@ -777,9 +811,13 @@ async function loadContext(
   )
     fail("التوزيع أكبر من حد الاعتماد الذري؛ قسم نطاق المراجعة");
   if (
-    !money(plan.remaining).eq(
-      money(supplier.currentBalance).minus(options.futurePayment?.amount ?? 0),
-    )
+    !money(plan.remaining)
+      .minus(unusedAdvances)
+      .eq(
+        money(supplier.currentBalance).minus(
+          options.futurePayment?.amount ?? 0,
+        ),
+      )
   )
     fail(
       `تخصيص المصادر لا يطابق صافي AP: المتبقي ${plan.remaining} والدفتر ${supplier.currentBalance}`,
@@ -1156,7 +1194,7 @@ export async function applySupplierBookVoucherTx(
 }
 
 /** Rebuild derived invoice gates and PO caches; source money/AP is changed only by its original service. */
-async function refreshTargets(tx: Tx, invoiceIds: number[]) {
+export async function refreshTargets(tx: Tx, invoiceIds: number[]) {
   if (!invoiceIds.length) return;
   const invoices = await tx
     .select()
@@ -1655,17 +1693,24 @@ export async function unapplySupplierBookSettlementSourceTx(
     .where(eq(allocations.sourceId, source.id))
     .orderBy(asc(allocations.id))
     .for("update");
+  const advance = isPurchaseAdvanceSnapshot(source.sourceSnapshot);
+  const unusedAdvance = advance
+    ? money(purchaseAdvanceAvailableAmount(source, rows))
+    : money(0);
   if (
-    !rows
-      .reduce((s, a) => s.plus(a.allocatedAmount), money(0))
-      .eq(source.amount) ||
-    !rows
-      .reduce((s, a) => s.plus(a.reversedAmount), money(0))
-      .eq(source.reversedAmount) ||
+    (!advance &&
+      !rows
+        .reduce((s, a) => s.plus(a.allocatedAmount), money(0))
+        .eq(source.amount)) ||
+    (!advance &&
+      !rows
+        .reduce((s, a) => s.plus(a.reversedAmount), money(0))
+        .eq(source.reversedAmount)) ||
     rows.some((a) => sha256(a.targetSnapshot) !== a.targetHash)
   )
     fail("تعارض مجموع تخصيصات المصدر أو بصماتها");
-  let left = amount;
+  // An explicit advance refunds its unused money first, then releases invoice allocations.
+  let left = amount.minus(Decimal.min(amount, unusedAdvance));
   let usdUndo = money(0);
   const touched = new Set<number>();
   for (const row of [...rows].reverse()) {

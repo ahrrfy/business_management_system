@@ -94,7 +94,7 @@ export function VoucherDrilldownView({ receiptId }: { receiptId: number }) {
         </div>
       </div>
 
-      <SupplierVoucherSettlementSummary settlement={vch.supplierSettlement} bookSettlement={vch.bookSettlement} />
+      <SupplierVoucherSettlementSummary settlement={vch.supplierSettlement} bookSettlement={vch.bookSettlement} advanceRefund={vch.advanceRefund} />
 
       {vch.description && (
         <div className="rounded-lg border bg-muted/10 p-3 space-y-1">

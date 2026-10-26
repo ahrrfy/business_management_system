@@ -14,6 +14,7 @@ import {
   PurchaseCashSourceField,
   usePurchaseCashSourceState,
 } from "@/components/purchases/PurchaseCashSourceField";
+import { purchaseTenderLabel } from "@shared/purchaseTender";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -160,7 +161,7 @@ export function PurchaseApprovalQueue({
   const isCashIqdPo = prelimGate.isCashIqdPo;
   const cashSourceState = usePurchaseCashSourceState({
     branchId: poDetailQuery.data?.branchId,
-    enabled: isCashIqdPo,
+    enabled: isCashIqdPo && !poDetailQuery.data?.tender,
     context: "approval",
     isCreator:
       isPoDetailReady &&
@@ -237,7 +238,10 @@ export function PurchaseApprovalQueue({
           decision.row.kind === "APPROVE_REVISION" && decision.approve
             ? confirmedFullReceipt
             : undefined,
-        cashSource: isCashIqdPo ? cashSourceState.payload : undefined,
+        cashSource:
+          isCashIqdPo && !poDetailQuery.data?.tender
+            ? cashSourceState.payload
+            : undefined,
       });
     } else {
       requisitionDecision.mutate(baseInput);
@@ -464,13 +468,35 @@ export function PurchaseApprovalQueue({
             {isCashIqdPo ? (
               <div className="space-y-2 rounded-md border bg-muted/30 p-3 text-sm">
                 <p className="font-medium">
-                  فاتورة شراء نقدية ({fmt(poDetailQuery.data?.total ?? 0)} د.ع): الاعتماد يسدد كامل القيمة للمورد فورا وتصبح الذمة المتبقية 0.00.
+                  فاتورة شراء نقدية ({fmt(poDetailQuery.data?.total ?? 0)} د.ع):
+                  الاعتماد يسدد كامل القيمة للمورد فورا وتصبح الذمة المتبقية
+                  0.00.
                 </p>
-                <PurchaseCashSourceField
-                  idPrefix="approval-queue"
-                  context="approval"
-                  state={cashSourceState}
-                />
+                {poDetailQuery.data?.tender ? (
+                  <div className="space-y-1 text-xs">
+                    <p>
+                      طريقة السداد المعتمدة:{" "}
+                      {purchaseTenderLabel(poDetailQuery.data.tender)}
+                    </p>
+                    {poDetailQuery.data.tender.previousReceiptId ? (
+                      <p>
+                        ربط سند سابق #
+                        {poDetailQuery.data.tender.previousReceiptId} ثم سداد
+                        المتبقي فقط؛ دون تكرار الصرف.
+                      </p>
+                    ) : null}
+                    <p className="text-muted-foreground">
+                      تغيير طريقة السداد يتطلب تعديل نسخة الفاتورة وإعادة
+                      إرسالها.
+                    </p>
+                  </div>
+                ) : (
+                  <PurchaseCashSourceField
+                    idPrefix="approval-queue"
+                    context="approval"
+                    state={cashSourceState}
+                  />
+                )}
               </div>
             ) : null}
             {decision?.approve &&
@@ -498,11 +524,7 @@ export function PurchaseApprovalQueue({
             </Button>
             <Button
               variant={decision?.approve ? "default" : "destructive"}
-              disabled={
-                pending ||
-                reason.trim().length < 3 ||
-                isApproveBlocked
-              }
+              disabled={pending || reason.trim().length < 3 || isApproveBlocked}
               onClick={submit}
             >
               {pending

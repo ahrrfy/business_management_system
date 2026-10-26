@@ -22,16 +22,24 @@ import {
 } from "@/components/purchases/PurchaseShippingCard";
 import { printPurchaseOrderDoc } from "@/components/purchases/purchaseOrderPrint";
 import {
-  PurchaseSettlementPolicyCard,
-  usePurchaseCashSourceState,
-  type PurchaseCashSourceMode,
-} from "@/components/purchases/PurchaseCashSourceField";
+  PurchaseTenderField,
+  usePurchaseTenderState,
+  purchaseTenderDraft,
+  type PurchaseTenderDraft,
+} from "@/components/purchases/PurchaseTenderField";
 import {
   isWithinPriceDecimals,
   priceDecimalsMessage,
 } from "@shared/moneyPrecision";
 import { variantDisplayName } from "@shared/variantDisplay";
-import { D, fmtAr, formatQuantity, round2, toBase, toUnitPriceStr } from "@/lib/money";
+import {
+  D,
+  fmtAr,
+  formatQuantity,
+  round2,
+  toBase,
+  toUnitPriceStr,
+} from "@/lib/money";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { LoadingState, ErrorState } from "@/components/PageState";
@@ -91,7 +99,6 @@ const EDIT_SHORTCUTS = [
   { key: "F9", label: "طباعة" },
   { key: "Esc", label: "إلغاء" },
 ];
-
 
 type PurchaseOrderData = NonNullable<RouterOutputs["purchases"]["get"]>;
 
@@ -181,8 +188,7 @@ function editorFingerprint(
   customsCost: string,
   revisionReason: string,
   shippingFundingSource: "ACCRUAL" | "DRAWER" = "ACCRUAL",
-  cashMode: PurchaseCashSourceMode = "AUTO",
-  cashShiftId = "",
+  tender: PurchaseTenderDraft = purchaseTenderDraft(),
 ): string {
   return JSON.stringify({
     entityId: state.entityId,
@@ -201,8 +207,7 @@ function editorFingerprint(
     customsCost,
     revisionReason,
     shippingFundingSource,
-    cashMode: state.paymentTerms === "CASH" ? cashMode : "NONE",
-    cashShiftId: state.paymentTerms === "CASH" && cashMode === "DRAWER" ? cashShiftId : "",
+    tender: state.paymentTerms === "CASH" ? tender : null,
     items: state.items.map((l) => [
       l.variantId,
       l.productUnitId,
@@ -232,16 +237,53 @@ export default function PurchaseEdit() {
   );
   const [shippingCost, setShippingCost] = useState("");
   const [customsCost, setCustomsCost] = useState("");
-  const [shippingFundingSource, setShippingFundingSource] = useState<"ACCRUAL" | "DRAWER">("DRAWER");
+  const [shippingFundingSource, setShippingFundingSource] = useState<
+    "ACCRUAL" | "DRAWER"
+  >("DRAWER");
   const [revisionReason, setRevisionReason] = useState("");
   const [bulkOpen, setBulkOpen] = useState(false);
   /** بصمة اللقطة المحفوظة — مقارنتها بالبصمة الحالية تُعطي «هل تغيّر شيء؟» بلا أعلامٍ متسلسلة. */
   const [baseline, setBaseline] = useState<string | null>(null);
 
-  const cashSourceState = usePurchaseCashSourceState({
+  const totals = useMemo(() => calcTotals(state.items, state), [state]);
+
+  // إجماليّ المستند بعملته **بترتيب تقريب الخادم** (سطراً سطراً ثمّ الجمع) — لا
+  // `totals.grandTotal` الذي يجمع غير المقرَّب فيقرّب مرّةً واحدة. الفرق فلسٌ حقيقيّ
+  // بالدولار ذي الأربع منازل، وهو ما تُبنى عليه المطابقة والعرض معاً («المعروض = المحفوظ»).
+  // خصم فاتورة المورّد (0204): يُدخَل مبلغاً أو نسبةً في لوحة المبالغ، ويُشتقّ المبلغُ من
+  // **قيمة البضاعة بترتيب تقريب الخادم** كي يطابق ما يوزّعه `computePurchaseDocument` بالضبط.
+  const invoiceDiscountAmount = useMemo(() => {
+    const gross = D(deriveDocumentTotal(state.items).grossSubtotal);
+    const raw = safeMoney(state.globalDiscount || "0");
+    const amount =
+      state.globalDiscountType === "percent"
+        ? round2(gross.times(raw).dividedBy(100))
+        : round2(raw);
+    if (amount.isNegative()) return D(0);
+    return amount.gt(gross) ? gross : amount;
+  }, [state.items, state.globalDiscount, state.globalDiscountType]);
+
+  const docTotals = useMemo(
+    () =>
+      deriveDocumentTotal(
+        state.items,
+        state.taxEnabled ? state.taxRatePercent || "0" : "0",
+        invoiceDiscountAmount.toFixed(2),
+      ),
+    [
+      state.items,
+      state.taxEnabled,
+      state.taxRatePercent,
+      invoiceDiscountAmount,
+    ],
+  );
+
+  const tenderState = usePurchaseTenderState({
     branchId: Number(po.data?.branchId ?? state.branchId),
     enabled: state.paymentTerms === "CASH" && state.currency === "IQD",
     context: "edit",
+    supplierId: state.entityId,
+    total: docTotals.total,
     isCreator:
       po.data != null &&
       me.data != null &&
@@ -266,7 +308,20 @@ export default function PurchaseEdit() {
     setCustomsCost(customs);
     const fundingSource = po.data.shippingFundingSource ?? "ACCRUAL";
     setShippingFundingSource(fundingSource);
-    setBaseline(editorFingerprint(next, ship, customs, "", fundingSource, "AUTO", ""));
+    tenderState.reset(
+      po.data.tender,
+      `${po.data.branchId}:${po.data.supplierId}`,
+    );
+    setBaseline(
+      editorFingerprint(
+        next,
+        ship,
+        customs,
+        "",
+        fundingSource,
+        purchaseTenderDraft(po.data.tender),
+      ),
+    );
   }, [po.data]);
 
   // حارس فقدان البيانات: نشِطٌ فقط بعد الحقن وعند اختلافٍ فعليّ عن اللقطة المحفوظة.
@@ -278,8 +333,7 @@ export default function PurchaseEdit() {
         customsCost,
         revisionReason,
         shippingFundingSource,
-        cashSourceState.mode,
-        cashSourceState.shiftId,
+        tenderState.draft,
       ),
     [
       state,
@@ -287,8 +341,7 @@ export default function PurchaseEdit() {
       customsCost,
       revisionReason,
       shippingFundingSource,
-      cashSourceState.mode,
-      cashSourceState.shiftId,
+      tenderState.draft,
     ],
   );
   useUnsavedGuard(baseline != null && baseline !== fingerprint);
@@ -361,39 +414,6 @@ export default function PurchaseEdit() {
     },
     onError: (e) => notify.err(e),
   });
-
-  const totals = useMemo(() => calcTotals(state.items, state), [state]);
-
-  // إجماليّ المستند بعملته **بترتيب تقريب الخادم** (سطراً سطراً ثمّ الجمع) — لا
-  // `totals.grandTotal` الذي يجمع غير المقرَّب فيقرّب مرّةً واحدة. الفرق فلسٌ حقيقيّ
-  // بالدولار ذي الأربع منازل، وهو ما تُبنى عليه المطابقة والعرض معاً («المعروض = المحفوظ»).
-  // خصم فاتورة المورّد (0204): يُدخَل مبلغاً أو نسبةً في لوحة المبالغ، ويُشتقّ المبلغُ من
-  // **قيمة البضاعة بترتيب تقريب الخادم** كي يطابق ما يوزّعه `computePurchaseDocument` بالضبط.
-  const invoiceDiscountAmount = useMemo(() => {
-    const gross = D(deriveDocumentTotal(state.items).grossSubtotal);
-    const raw = safeMoney(state.globalDiscount || "0");
-    const amount =
-      state.globalDiscountType === "percent"
-        ? round2(gross.times(raw).dividedBy(100))
-        : round2(raw);
-    if (amount.isNegative()) return D(0);
-    return amount.gt(gross) ? gross : amount;
-  }, [state.items, state.globalDiscount, state.globalDiscountType]);
-
-  const docTotals = useMemo(
-    () =>
-      deriveDocumentTotal(
-        state.items,
-        state.taxEnabled ? state.taxRatePercent || "0" : "0",
-        invoiceDiscountAmount.toFixed(2),
-      ),
-    [
-      state.items,
-      state.taxEnabled,
-      state.taxRatePercent,
-      invoiceDiscountAmount,
-    ],
-  );
 
   // نفس معاينة PurchaseNew: الشحن/الكمرك **خارج** الإجمالي (مصروف نقلٍ لا ذمّة مورّد).
   const landed = useMemo(
@@ -485,10 +505,10 @@ export default function PurchaseEdit() {
     if (state.currency === "USD" && state.paymentTerms === "CASH") {
       return "فاتورة المورد الدولارية تسدد من مسار الصيرفة؛ اختر اجل ثم سجل التسديد الفعلي بعد الاستلام.";
     }
-    if (cashSourceState.validationError) {
-      return cashSourceState.validationError;
+    if (tenderState.validationError) {
+      return tenderState.validationError;
     }
-    if (cashSourceState.isActionBlocked) {
+    if (tenderState.isActionBlocked) {
       return "انتظر اكتمال تحميل مصادر الصرف النقدي للفرع قبل الحفظ.";
     }
     if (landed.hasLanded && !landed.hasBase) {
@@ -501,7 +521,8 @@ export default function PurchaseEdit() {
   }
 
   async function handleSubmit() {
-    if (!canLifecycleOperation(me.data, "purchases.updateOrder", true)) return notify.err("تعديل أمر الشراء غير مفوض لهذا الحساب.");
+    if (!canLifecycleOperation(me.data, "purchases.updateOrder", true))
+      return notify.err("تعديل أمر الشراء غير مفوض لهذا الحساب.");
     if (update.isPending) return;
     const err = validate();
     if (err) {
@@ -516,9 +537,9 @@ export default function PurchaseEdit() {
     });
     if (!ok) return;
 
-    const selectedCashSource =
+    const selectedTender =
       state.paymentTerms === "CASH" && state.currency === "IQD"
-        ? cashSourceState.payload
+        ? tenderState.payload
         : null;
 
     update.mutate({
@@ -527,7 +548,7 @@ export default function PurchaseEdit() {
       revisionReason: revisionReason.trim(),
       supplierId: state.entityId!,
       settlementType: state.paymentTerms === "CASH" ? "CASH" : "CREDIT",
-      cashSource: selectedCashSource,
+      ...(selectedTender ? { tender: selectedTender } : {}),
       taxRatePercent: state.taxEnabled
         ? round2(D(state.taxRatePercent || "0")).toFixed(2)
         : "0",
@@ -557,9 +578,13 @@ export default function PurchaseEdit() {
       customsCost: safeMoney(customsCost).gt(0)
         ? round2(safeMoney(customsCost)).toFixed(2)
         : undefined,
-      shippingFundingSource: landed.hasLanded ? shippingFundingSource : "ACCRUAL",
-      shippingShiftId: landed.hasLanded && shippingFundingSource === "DRAWER"
-        ? po.data?.shippingFundingShiftId ?? undefined : undefined,
+      shippingFundingSource: landed.hasLanded
+        ? shippingFundingSource
+        : "ACCRUAL",
+      shippingShiftId:
+        landed.hasLanded && shippingFundingSource === "DRAWER"
+          ? (po.data?.shippingFundingShiftId ?? undefined)
+          : undefined,
       items: state.items.map((l) => ({
         variantId: l.variantId,
         productUnitId: l.productUnitId,
@@ -593,6 +618,7 @@ export default function PurchaseEdit() {
       docNum: state.invoiceNumber || null,
       statusLabel: PO_STATUS[data.status] ?? data.status,
       paymentTerms: state.paymentTerms === "CASH" ? "CASH" : "CREDIT",
+      tender: tenderState.payload,
       docDate: data.orderDate,
       currency: state.currency,
       agreedRate: state.agreedRate,
@@ -673,7 +699,15 @@ export default function PurchaseEdit() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bulkOpen, update.isPending, state, shippingCost, customsCost, shippingFundingSource]);
+  }, [
+    bulkOpen,
+    update.isPending,
+    state,
+    shippingCost,
+    customsCost,
+    shippingFundingSource,
+    tenderState,
+  ]);
 
   /* ─── حالات ما قبل المحرّر ──────────────────────────────────────── */
   if (!Number.isFinite(purchaseOrderId) || purchaseOrderId <= 0) {
@@ -782,6 +816,12 @@ export default function PurchaseEdit() {
         statusBadge={PO_STATUS[order.status] ?? order.status}
         lockBranch
       />
+      <PurchaseTenderField
+        idPrefix="purchase-edit"
+        state={tenderState}
+        paymentTerms={state.paymentTerms}
+        currency={state.currency}
+      />
 
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
         <div className="flex min-w-0 flex-1 flex-col gap-2 h-[60vh] min-h-[420px] print:h-auto print:min-h-fit">
@@ -821,17 +861,12 @@ export default function PurchaseEdit() {
             onCustomsCostChange={setCustomsCost}
             shippingFundingSource={shippingFundingSource}
             onShippingFundingSourceChange={setShippingFundingSource}
-            paymentRecorded={po.data?.shippingFundingSource === "DRAWER" && po.data.shippingPayment?.hasRecordedPayment === true}
+            paymentRecorded={
+              po.data?.shippingFundingSource === "DRAWER" &&
+              po.data.shippingPayment?.hasRecordedPayment === true
+            }
             landed={landed}
             showOptionalBadge
-          />
-
-          <PurchaseSettlementPolicyCard
-            idPrefix="purchase-edit"
-            context="edit"
-            paymentTerms={state.paymentTerms}
-            currency={state.currency}
-            cashSourceState={cashSourceState}
           />
 
           <TotalsPanel
@@ -912,7 +947,11 @@ export default function PurchaseEdit() {
             onAction={handleAction}
             saving={update.isPending}
             pasteAvailable={pasteAvailable}
-            availableActions={canLifecycleOperation(me.data, "purchases.updateOrder", true) ? EDIT_ACTIONS : EDIT_ACTIONS.filter((action) => action !== "save")}
+            availableActions={
+              canLifecycleOperation(me.data, "purchases.updateOrder", true)
+                ? EDIT_ACTIONS
+                : EDIT_ACTIONS.filter((action) => action !== "save")
+            }
             primaryLabel="حفظ التعديلات قبل الاعتماد"
             printLabel="طباعة"
           />
