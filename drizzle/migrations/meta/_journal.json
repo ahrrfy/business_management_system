@@ -2570,6 +2570,13 @@
 			"when": 1788148863000,
 			"tag": "0405_delivery_custody_document_snapshots",
 			"breakpoints": true
+		},
+		{
+			"idx": 406,
+			"version": "5",
+			"when": 1788148864000,
+			"tag": "0406_storefront_w2_privacy_customization",
+			"breakpoints": true
 		}
 	]
 }

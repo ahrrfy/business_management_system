@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { and, desc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { createRemoteJWKSet, jwtVerify, SignJWT } from "jose";
 
@@ -25,10 +26,24 @@ const SESSION_AUDIENCE = "customer-mobile";
 const CUSTOMER_SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
 const MIN_STOREFRONT_JWT_SECRET_LENGTH = 32;
 
-type FirebaseClaims = {
+export type FirebaseClaims = {
   uid: string;
   phone: string;
 };
+
+let firebasePhoneTokenVerifierOverrideForTest:
+  | ((idToken: string) => Promise<FirebaseClaims>)
+  | null = null;
+
+/** خطاف اختبار محروس: يسمح لاختبارات التكامل بالتحقق من دورة Firebase دون اتصال خارجي بـJWKS. */
+export function __setFirebasePhoneTokenVerifierForTest(
+  verifier: ((idToken: string) => Promise<FirebaseClaims>) | null,
+): void {
+  if (process.env.NODE_ENV !== "test" && !process.env.VITEST) {
+    throw new Error("__setFirebasePhoneTokenVerifierForTest is restricted to test environments");
+  }
+  firebasePhoneTokenVerifierOverrideForTest = verifier;
+}
 
 export type StorefrontCustomerSession = {
   token: string;
@@ -77,7 +92,13 @@ function cleanName(value: string): string {
 }
 
 /** يتحقق من ID token عبر مفاتيح Firebase العامة ولا يحتاج إرسال مفتاح خدمة إلى التطبيق. */
-async function verifyFirebasePhoneToken(idToken: string): Promise<FirebaseClaims> {
+export async function verifyFirebasePhoneToken(idToken: string): Promise<FirebaseClaims> {
+  if (
+    firebasePhoneTokenVerifierOverrideForTest &&
+    (process.env.NODE_ENV === "test" || Boolean(process.env.VITEST))
+  ) {
+    return firebasePhoneTokenVerifierOverrideForTest(idToken);
+  }
   try {
     const { payload } = await jwtVerify(idToken, FIREBASE_KEYS, {
       audience: FIREBASE_PROJECT_ID,
@@ -147,6 +168,8 @@ export async function resolveStorefrontCustomer(phone: string, name: string, fir
         id: customers.id,
         name: customers.name,
         isActive: customers.isActive,
+        deletedAt: customers.deletedAt,
+        sessionVersion: customers.sessionVersion,
         phone: customers.phone,
         phone2: customers.phone2,
         phone3: customers.phone3,
@@ -154,17 +177,21 @@ export async function resolveStorefrontCustomer(phone: string, name: string, fir
       })
       .from(customers)
       .where(
-        or(
-          inArray(customers.phone, phoneVariants),
-          inArray(customers.phone2, phoneVariants),
-          inArray(customers.phone3, phoneVariants),
-          inArray(customers.whatsapp, phoneVariants),
-          ...digitPredicates,
+        and(
+          isNull(customers.deletedAt),
+          or(
+            inArray(customers.phone, phoneVariants),
+            inArray(customers.phone2, phoneVariants),
+            inArray(customers.phone3, phoneVariants),
+            inArray(customers.whatsapp, phoneVariants),
+            ...digitPredicates,
+          )!,
         ),
       )
       .orderBy(desc(customers.isActive), desc(customers.id));
 
     const existing = candidates.find((c) =>
+      c.deletedAt == null &&
       [c.phone, c.phone2, c.phone3, c.whatsapp].some(
         (p) => Boolean(p && p.trim()) && canonicalIraqiMobile(p!.trim()) === phone,
       ),
@@ -181,6 +208,8 @@ export async function resolveStorefrontCustomer(phone: string, name: string, fir
           id: customers.id,
           name: customers.name,
           isActive: customers.isActive,
+          deletedAt: customers.deletedAt,
+          sessionVersion: customers.sessionVersion,
           phone: customers.phone,
           phone2: customers.phone2,
           phone3: customers.phone3,
@@ -192,6 +221,7 @@ export async function resolveStorefrontCustomer(phone: string, name: string, fir
         .for("update");
       const stillMatches =
         lockedExisting &&
+        lockedExisting.deletedAt == null &&
         [
           lockedExisting.phone,
           lockedExisting.phone2,
@@ -200,7 +230,12 @@ export async function resolveStorefrontCustomer(phone: string, name: string, fir
         ].some((p) => Boolean(p && p.trim()) && canonicalIraqiMobile(p!.trim()) === phone);
       if (stillMatches && lockedExisting) {
         assertActiveCustomer(lockedExisting.isActive);
-        return { id: Number(lockedExisting.id), name: lockedExisting.name, phone };
+        return {
+          id: Number(lockedExisting.id),
+          name: lockedExisting.name,
+          phone,
+          sessionVersion: Number(lockedExisting.sessionVersion ?? 0),
+        };
       }
     }
 
@@ -219,16 +254,23 @@ export async function resolveStorefrontCustomer(phone: string, name: string, fir
           id: customers.id,
           name: customers.name,
           isActive: customers.isActive,
+          deletedAt: customers.deletedAt,
+          sessionVersion: customers.sessionVersion,
         })
         .from(customers)
-        .where(eq(customers.phone, phone))
+        .where(and(eq(customers.phone, phone), isNull(customers.deletedAt)))
         .orderBy(desc(customers.isActive), desc(customers.id))
         .limit(1)
         .for("update");
 
       if (currentByPhone) {
         assertActiveCustomer(currentByPhone.isActive);
-        return { id: Number(currentByPhone.id), name: currentByPhone.name, phone };
+        return {
+          id: Number(currentByPhone.id),
+          name: currentByPhone.name,
+          phone,
+          sessionVersion: Number(currentByPhone.sessionVersion ?? 0),
+        };
       }
 
       const inserted = await tx.insert(customers).values({
@@ -239,22 +281,31 @@ export async function resolveStorefrontCustomer(phone: string, name: string, fir
         creditLimit: "0",
         currentBalance: "0",
         isActive: true,
+        sessionVersion: 0,
         clientRequestId: `firebase-phone:${firebaseUid}`,
       });
-      return { id: extractInsertId(inserted), name, phone };
+      return { id: extractInsertId(inserted), name, phone, sessionVersion: 0 };
     } finally {
       await tx.execute(sql`SELECT RELEASE_LOCK(${upsertLockName})`).catch(() => {});
     }
   });
 }
 
-export async function signStorefrontCustomerSession(input: { customerId: number; firebaseUid: string; phone: string }): Promise<string> {
+export async function signStorefrontCustomerSession(input: {
+  customerId: number;
+  firebaseUid: string;
+  phone: string;
+  sessionVersion?: number;
+}): Promise<string> {
   const expiresAt = Math.floor(Date.now() / 1000) + CUSTOMER_SESSION_TTL_SECONDS;
+  const sessionVersion =
+    input.sessionVersion === undefined ? 0 : Math.max(0, Math.trunc(Number(input.sessionVersion)));
   return new SignJWT({
     scope: "storefront-customer",
     cid: input.customerId,
     fuid: input.firebaseUid,
     phone: input.phone,
+    sv: sessionVersion,
   })
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
     .setIssuer(SESSION_ISSUER)
@@ -266,13 +317,26 @@ export async function signStorefrontCustomerSession(input: { customerId: number;
 
 export async function claimFirebaseStorefrontCustomer(input: { firebaseIdToken: string; displayName: string }): Promise<StorefrontCustomerSession> {
   const firebase = await verifyFirebasePhoneToken(input.firebaseIdToken);
-  const customer = await resolveStorefrontCustomer(firebase.phone, cleanName(input.displayName), firebase.uid);
-  const token = await signStorefrontCustomerSession({ customerId: customer.id, firebaseUid: firebase.uid, phone: firebase.phone });
+  const resolved = await resolveStorefrontCustomer(firebase.phone, cleanName(input.displayName), firebase.uid);
+  const customer = { id: resolved.id, name: resolved.name, phone: resolved.phone };
+  const token = await signStorefrontCustomerSession({
+    customerId: resolved.id,
+    firebaseUid: firebase.uid,
+    phone: firebase.phone,
+    sessionVersion: resolved.sessionVersion,
+  });
   return { token, expiresInSeconds: CUSTOMER_SESSION_TTL_SECONDS, customer };
 }
 
 export async function verifyStorefrontCustomerSession(token: string): Promise<{ customerId: number; firebaseUid: string; phone: string }> {
   const secrets = verificationSecrets();
+  let decodedClaims: {
+    customerId: number;
+    firebaseUid: string;
+    phone: string;
+    tokenSv: number;
+  } | null = null;
+
   for (const secret of secrets) {
     try {
       const { payload } = await jwtVerify(token, secret, {
@@ -283,15 +347,61 @@ export async function verifyStorefrontCustomerSession(token: string): Promise<{ 
       const customerId = Number(payload.cid);
       const firebaseUid = typeof payload.fuid === "string" ? payload.fuid : "";
       const phone = typeof payload.phone === "string" ? canonicalIraqiMobile(payload.phone) : null;
-      if (payload.scope !== "storefront-customer" || !Number.isInteger(customerId) || customerId <= 0 || !firebaseUid || !phone) {
+      const tokenSv = payload.sv === undefined ? 0 : Number(payload.sv);
+      if (
+        payload.scope !== "storefront-customer" ||
+        !Number.isInteger(customerId) ||
+        customerId <= 0 ||
+        !firebaseUid ||
+        !phone ||
+        !Number.isInteger(tokenSv) ||
+        tokenSv < 0
+      ) {
         throw new Error("Invalid customer session claims");
       }
-      return { customerId, firebaseUid, phone };
+      decodedClaims = { customerId, firebaseUid, phone, tokenSv };
+      break;
     } catch {
       // جرّب السر البديل (مسار التدوير السلس من JWT_SECRET إلى STOREFRONT_JWT_SECRET)
     }
   }
-  throw new TRPCError({ code: "UNAUTHORIZED", message: "جلسة العميل غير صالحة أو منتهية؛ أعد تحقق الهاتف" });
+  if (!decodedClaims) {
+    throw new TRPCError({ code: "UNAUTHORIZED", message: "جلسة العميل غير صالحة أو منتهية؛ أعد تحقق الهاتف" });
+  }
+
+  const db = getDb();
+  if (db) {
+    const [customer] = await db
+      .select({
+        isActive: customers.isActive,
+        deletedAt: customers.deletedAt,
+        sessionVersion: customers.sessionVersion,
+      })
+      .from(customers)
+      .where(eq(customers.id, decodedClaims.customerId))
+      .limit(1);
+    if (
+      customer &&
+      (customer.isActive === false ||
+        customer.deletedAt != null ||
+        Number(customer.sessionVersion ?? 0) !== decodedClaims.tokenSv)
+    ) {
+      throw new TRPCError({
+        code: "UNAUTHORIZED",
+        message: appErrorMessage({
+          what: "انتهت صلاحية جلسة العميل",
+          why: "تم إيقاف الحساب أو حذفه أو إبطال الجلسات السابقة",
+          doThis: "أعد تسجيل الدخول وتحقق من رقم هاتفك للمتابعة",
+        }),
+      });
+    }
+  }
+
+  return {
+    customerId: decodedClaims.customerId,
+    firebaseUid: decodedClaims.firebaseUid,
+    phone: decodedClaims.phone,
+  };
 }
 
 /**
@@ -317,11 +427,13 @@ export async function requireActiveStorefrontCustomer(token: string): Promise<{ 
       phone3: customers.phone3,
       whatsapp: customers.whatsapp,
       isActive: customers.isActive,
+      deletedAt: customers.deletedAt,
+      sessionVersion: customers.sessionVersion,
     })
     .from(customers)
     .where(eq(customers.id, session.customerId))
     .limit(1))[0];
-  if (!customer || customer.isActive === false) {
+  if (!customer || customer.isActive === false || customer.deletedAt != null) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: "لم تعد جلسة العميل صالحة؛ أعد تحقق الهاتف" });
   }
   const phoneCandidates = [customer.phone, customer.phone2, customer.phone3, customer.whatsapp]
@@ -347,6 +459,7 @@ export async function storefrontCustomerBenefits(session: { customerId: number; 
       phone3: customers.phone3,
       whatsapp: customers.whatsapp,
       isActive: customers.isActive,
+      deletedAt: customers.deletedAt,
     })
     .from(customers)
     .where(eq(customers.id, session.customerId))
@@ -356,7 +469,7 @@ export async function storefrontCustomerBenefits(session: { customerId: number; 
         .filter((value): value is string => typeof value === "string" && value.length > 0)
         .map(canonicalIraqiMobile)
     : [];
-  if (!customer || customer.isActive === false || !phoneCandidates.includes(session.phone)) {
+  if (!customer || customer.isActive === false || customer.deletedAt != null || !phoneCandidates.includes(session.phone)) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: "لم تعد جلسة العميل صالحة؛ أعد تحقق الهاتف" });
   }
 

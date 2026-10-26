@@ -28,7 +28,14 @@ export {
   readR2ResilienceConfig,
 } from "./resilience";
 export type { R2ResilienceConfig, R2ResilienceSnapshot } from "./resilience";
-export { imageStoreTenantPrefix, isCurrentTenantCandidateKey, studioObjectPrefix } from "./tenantNamespace";
+export {
+  customizerObjectPrefix,
+  customizerObjectRoot,
+  imageStoreTenantPrefix,
+  isCurrentTenantCandidateKey,
+  isCurrentTenantCustomizerKey,
+  studioObjectPrefix,
+} from "./tenantNamespace";
 
 let cached: ImageStore | null = null;
 let cachedDriver: "fs" | "r2" | null = null;

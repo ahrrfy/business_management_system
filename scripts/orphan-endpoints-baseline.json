@@ -38,6 +38,8 @@
     "recruitment.vacancyGet",
     "returns.rejectRequest",
     "storefront.customerBenefitsPrivate",
+    "storefront.requestAccountDeletion",
+    "storefront.uploadCustomizationAsset",
     "supplierInvoiceApproval.get",
     "suppliers.autoSettleAll",
     "users.changePassword",

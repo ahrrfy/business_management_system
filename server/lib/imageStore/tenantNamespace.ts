@@ -23,3 +23,22 @@ export function studioObjectPrefix(kind: "original" | "candidate"): string {
 export function isCurrentTenantCandidateKey(key: string): boolean {
   return key.startsWith(`${studioObjectPrefix("candidate")}/`);
 }
+
+/** جذر مرفقات تخصيص طلبات المتجر (شعارات ومعاينات العملاء الخاصة — لا تُخدَم علناً). */
+export function customizerObjectRoot(): string {
+  return `${imageStoreTenantPrefix()}/storefront-customizer/`;
+}
+
+export function customizerObjectPrefix(kind: "logo" | "preview"): string {
+  return `${customizerObjectRoot()}${kind}`;
+}
+
+/** يتحقّق أنّ مفتاح مرفق التخصيص يقع داخل نطاق الشركة الحالية ومجلّد logo|preview حصراً. */
+export function isCurrentTenantCustomizerKey(key: string): boolean {
+  if (key.includes("..") || key.includes("\\")) return false;
+  return (
+    key.startsWith(`${customizerObjectPrefix("logo")}/`) ||
+    key.startsWith(`${customizerObjectPrefix("preview")}/`)
+  );
+}
+

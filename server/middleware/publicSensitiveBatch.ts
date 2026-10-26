@@ -33,6 +33,9 @@ const PUBLIC_SENSITIVE_PROCEDURES: ReadonlySet<string> = new Set([
   "storefront.createWishlistShare",
   "storefront.createCartShare",
   "storefront.registerPushDevice",
+  "storefront.deleteMe",
+  "storefront.requestAccountDeletion",
+  "storefront.uploadCustomizationAsset",
 ]);
 
 const CANONICAL_PROCEDURE = /^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$/;

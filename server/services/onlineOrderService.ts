@@ -19,7 +19,7 @@ import {
   randomUUID,
   timingSafeEqual,
 } from "node:crypto";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import {
   bundleComponents,
@@ -34,6 +34,7 @@ import {
   productUnits,
   productVariants,
   products,
+  storefrontCustomizationAssets,
   storeSettings as storeSettingsTable,
   type OnlineOrderCustomizationSnapshot,
 } from "../../drizzle/schema";
@@ -41,11 +42,15 @@ import { appErrorMessage } from "@shared/errors";
 import { deliveryFeeFor, governorateById, isBaghdadGovernorate } from "@shared/governorates";
 import { previewDeliveryQuote } from "./delivery/pricingRules";
 import { getDb, type Tx } from "../db";
+import { isCurrentTenantCustomizerKey } from "../lib/imageStore";
 import { extractInsertId } from "../lib/insertId";
 import { normalizeIraqPhoneE164 } from "../lib/phone";
 import { money, round2, sumMoney, toDbMoney, toDbQty } from "./money";
 import { nextCounterValue, nextTransactionTrackingNumber } from "./numbering";
-import { resolvePromotionForLine } from "./salesPromotionService";
+import {
+  loadPromotionRuleSnapshot,
+  resolvePromotionFromSnapshot,
+} from "./salesPromotionService";
 import { requireStorefrontContext } from "./storefrontContextService";
 import { withTx } from "./tx";
 import {
@@ -55,7 +60,6 @@ import {
   reserveCouponForOnlineOrder,
   type LockedCoupon,
 } from "./couponService";
-import { resolveCouponPromotionForLine } from "./salesPromotionService";
 import { verifyOnlineOrderLabelToken } from "./barcodeService";
 import {
   loadVariantAvailability,
@@ -153,6 +157,8 @@ export interface OnlineOrderLineInput {
 export interface OnlineOrderCustomizationInput {
   templateId: number;
   values: Record<string, string>;
+  logoAssetKey?: string;
+  previewAssetKey?: string;
 }
 
 export const MAX_ONLINE_ORDER_DISTINCT_UNITS = 30;
@@ -188,6 +194,32 @@ function normalizeExpectedUnitPrice(
   }
 }
 
+function normalizeCustomizationAssetKey(
+  rawKey: string | undefined,
+  label: string,
+): string | undefined {
+  if (rawKey == null) return undefined;
+  if (typeof rawKey !== "string") {
+    throw customizationInputError(
+      "BAD_REQUEST",
+      "تعذّر تجهيز التخصيص",
+      `مرفق ${label} وصل بصيغة غير صالحة`,
+      "أعد رفع الصورة من صفحة المنتج ثم حاول مجدداً",
+    );
+  }
+  const trimmed = rawKey.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.length > 255 || !isCurrentTenantCustomizerKey(trimmed)) {
+    throw customizationInputError(
+      "BAD_REQUEST",
+      "تعذّر تجهيز التخصيص",
+      `مفتاح مرفق ${label} خارج النطاق المسموح أو بصيغة غير صالحة`,
+      "أعد رفع الصورة من صفحة المنتج ثم حاول مجدداً",
+    );
+  }
+  return trimmed;
+}
+
 function normalizeCustomizationInput(
   customization: OnlineOrderCustomizationInput | null | undefined,
 ): OnlineOrderCustomizationInput | undefined {
@@ -208,7 +240,14 @@ function normalizeCustomizationInput(
     const value = rawValue.trim();
     if (value) values[fieldKey] = value;
   }
-  return { templateId: customization.templateId, values };
+  const logoAssetKey = normalizeCustomizationAssetKey(customization.logoAssetKey, "الشعار");
+  const previewAssetKey = normalizeCustomizationAssetKey(customization.previewAssetKey, "المعاينة");
+  return {
+    templateId: customization.templateId,
+    values,
+    ...(logoAssetKey ? { logoAssetKey } : {}),
+    ...(previewAssetKey ? { previewAssetKey } : {}),
+  };
 }
 
 function customizationIdentity(customization: OnlineOrderCustomizationInput | undefined): string {
@@ -497,6 +536,8 @@ async function loadOwnedReplay(
     const storedCustomization = line.customizationSnapshot == null ? undefined : normalizeCustomizationInput({
       templateId: line.customizationSnapshot.templateId,
       values: Object.fromEntries(line.customizationSnapshot.values.map((value) => [value.fieldKey, value.value])),
+      logoAssetKey: line.customizationSnapshot.logoAssetKey,
+      previewAssetKey: line.customizationSnapshot.previewAssetKey,
     });
     const identity = onlineOrderLineIdentity({ productUnitId: unitId, customization: storedCustomization });
     storedLineQuantities.set(
@@ -720,8 +761,166 @@ function validCustomizationPriceDelta(value: unknown): boolean {
   return /^\d{1,13}(?:\.\d{1,2})?$/.test(String(value ?? "0").trim());
 }
 
-async function resolveOnlineOrderCustomization(
+type BatchedCustomizationTemplate = {
+  id: number;
+  productId: number;
+  kind: "PRINT" | "GIFT" | "GENERAL";
+  title: string;
+};
+
+type BatchedCustomizationField = {
+  templateId: number;
+  fieldKey: string;
+  label: string;
+  fieldType: typeof productCustomizationFields.$inferSelect["fieldType"];
+  isRequired: boolean;
+  maxLength: number | null;
+  options: typeof productCustomizationFields.$inferSelect["optionsJson"];
+  dependency: typeof productCustomizationFields.$inferSelect["dependencyJson"];
+  priceDelta: string | null;
+};
+
+type BatchedCustomizationAsset = {
+  assetKey: string;
+  kind: "LOGO" | "PREVIEW";
+};
+
+type OnlineOrderCustomizationBatch = {
+  templatesById: ReadonlyMap<number, BatchedCustomizationTemplate>;
+  fieldsByTemplateId: ReadonlyMap<number, ReadonlyArray<BatchedCustomizationField>>;
+  assetsByKey: ReadonlyMap<string, BatchedCustomizationAsset>;
+};
+
+async function loadOnlineOrderCustomizationBatch(
   tx: Tx,
+  lines: ReadonlyArray<Pick<OnlineOrderLineInput, "customization">>,
+): Promise<OnlineOrderCustomizationBatch> {
+  const templateIds = Array.from(
+    new Set(
+      lines.flatMap((line) =>
+        line.customization != null && Number.isSafeInteger(line.customization.templateId) && line.customization.templateId > 0
+          ? [Number(line.customization.templateId)]
+          : [],
+      ),
+    ),
+  ).sort((a, b) => a - b);
+
+  const assetKeys = Array.from(
+    new Set(
+      lines.flatMap((line) => {
+        if (!line.customization) return [];
+        const keys: string[] = [];
+        const logoKey = normalizeCustomizationAssetKey(line.customization.logoAssetKey, "الشعار");
+        const previewKey = normalizeCustomizationAssetKey(line.customization.previewAssetKey, "المعاينة");
+        if (logoKey) keys.push(logoKey);
+        if (previewKey) keys.push(previewKey);
+        return keys;
+      }),
+    ),
+  ).sort();
+
+  const templateRows = templateIds.length
+    ? await tx
+        .select({
+          id: productCustomizationTemplates.id,
+          productId: productCustomizationTemplates.productId,
+          kind: productCustomizationTemplates.kind,
+          title: productCustomizationTemplates.title,
+        })
+        .from(productCustomizationTemplates)
+        .where(
+          and(
+            inArray(productCustomizationTemplates.id, templateIds),
+            eq(productCustomizationTemplates.isActive, true),
+          ),
+        )
+    : [];
+
+  const templatesById = new Map<number, BatchedCustomizationTemplate>();
+  for (const row of templateRows) {
+    templatesById.set(Number(row.id), {
+      id: Number(row.id),
+      productId: Number(row.productId),
+      kind: row.kind,
+      title: row.title,
+    });
+  }
+
+  const activeTemplateIds = Array.from(templatesById.keys()).sort((a, b) => a - b);
+  const fieldRows = activeTemplateIds.length
+    ? await tx
+        .select({
+          templateId: productCustomizationFields.templateId,
+          fieldKey: productCustomizationFields.fieldKey,
+          label: productCustomizationFields.label,
+          fieldType: productCustomizationFields.fieldType,
+          isRequired: productCustomizationFields.isRequired,
+          maxLength: productCustomizationFields.maxLength,
+          options: productCustomizationFields.optionsJson,
+          dependency: productCustomizationFields.dependencyJson,
+          priceDelta: productCustomizationFields.priceDelta,
+        })
+        .from(productCustomizationFields)
+        .where(
+          and(
+            inArray(productCustomizationFields.templateId, activeTemplateIds),
+            eq(productCustomizationFields.isActive, true),
+          ),
+        )
+        .orderBy(
+          asc(productCustomizationFields.templateId),
+          asc(productCustomizationFields.sortOrder),
+          asc(productCustomizationFields.id),
+        )
+    : [];
+
+  const fieldsByTemplateId = new Map<number, BatchedCustomizationField[]>();
+  for (const row of fieldRows) {
+    const templateId = Number(row.templateId);
+    const list = fieldsByTemplateId.get(templateId) ?? [];
+    list.push({
+      templateId,
+      fieldKey: row.fieldKey,
+      label: row.label,
+      fieldType: row.fieldType,
+      isRequired: row.isRequired,
+      maxLength: row.maxLength,
+      options: row.options,
+      dependency: row.dependency,
+      priceDelta: row.priceDelta,
+    });
+    fieldsByTemplateId.set(templateId, list);
+  }
+
+  const assetRows = assetKeys.length
+    ? await tx
+        .select({
+          assetKey: storefrontCustomizationAssets.assetKey,
+          kind: storefrontCustomizationAssets.kind,
+        })
+        .from(storefrontCustomizationAssets)
+        .where(
+          and(
+            inArray(storefrontCustomizationAssets.assetKey, assetKeys),
+            or(
+              isNull(storefrontCustomizationAssets.expiresAt),
+              sql`${storefrontCustomizationAssets.expiresAt} > CURRENT_TIMESTAMP`,
+            )!,
+          ),
+        )
+    : [];
+
+  const assetsByKey = new Map<string, BatchedCustomizationAsset>();
+  for (const row of assetRows) {
+    if (isCurrentTenantCustomizerKey(row.assetKey)) {
+      assetsByKey.set(row.assetKey, { assetKey: row.assetKey, kind: row.kind });
+    }
+  }
+
+  return { templatesById, fieldsByTemplateId, assetsByKey };
+}
+
+function resolveOnlineOrderCustomizationFromBatch(
   product: {
     productId: number;
     productName: string;
@@ -729,8 +928,9 @@ async function resolveOnlineOrderCustomization(
     isCustomizable: boolean | null;
   },
   customization: OnlineOrderCustomizationInput | null | undefined,
+  batch: OnlineOrderCustomizationBatch,
   options?: { allowWithoutCustomization?: boolean },
-): Promise<{ snapshot: OnlineOrderCustomizationSnapshot | null; priceDelta: ReturnType<typeof money> }> {
+): { snapshot: OnlineOrderCustomizationSnapshot | null; priceDelta: ReturnType<typeof money> } {
   if (product.isCustomizable !== true) {
     if (customization != null) {
       throw customizationInputError("BAD_REQUEST", `تعذّر تخصيص «${product.productName}»`, "هذا الصنف غير مهيأ لاستقبال تفاصيل تخصيص", "احذف تفاصيل التخصيص أو افتح المنتج الصحيح من المتجر");
@@ -743,15 +943,11 @@ async function resolveOnlineOrderCustomization(
     }
     throw customizationInputError("BAD_REQUEST", `تفاصيل «${product.productName}» ناقصة`, "الصنف قابل للتخصيص ولم تصل معه تفاصيل الزبون", "افتح صفحة المنتج وأكمل حقول التخصيص قبل إضافته إلى الطلب");
   }
-  const template = (await tx.select({
-    id: productCustomizationTemplates.id,
-    kind: productCustomizationTemplates.kind,
-    title: productCustomizationTemplates.title,
-  }).from(productCustomizationTemplates).where(and(
-    eq(productCustomizationTemplates.productId, product.productId),
-    eq(productCustomizationTemplates.id, customization.templateId),
-    eq(productCustomizationTemplates.isActive, true),
-  )).limit(1))[0];
+  const candidateTemplate = batch.templatesById.get(Number(customization.templateId));
+  const template =
+    candidateTemplate && candidateTemplate.productId === product.productId
+      ? candidateTemplate
+      : undefined;
   if (!template) {
     throw customizationInputError("CONFLICT", `تغيّر تخصيص «${product.productName}»`, "قالب التخصيص الذي استُعمل في السلة لم يعد القالب النشط", "حدّث صفحة المنتج وأدخل التفاصيل في الحقول الحالية ثم أعد التأكيد");
   }
@@ -764,19 +960,34 @@ async function resolveOnlineOrderCustomization(
       "حدّث صفحة المنتج، وإن بقيت المشكلة فتواصل معنا لتصحيح إعداد القالب",
     );
   }
-  const fields = await tx.select({
-    fieldKey: productCustomizationFields.fieldKey,
-    label: productCustomizationFields.label,
-    fieldType: productCustomizationFields.fieldType,
-    isRequired: productCustomizationFields.isRequired,
-    maxLength: productCustomizationFields.maxLength,
-    options: productCustomizationFields.optionsJson,
-    dependency: productCustomizationFields.dependencyJson,
-    priceDelta: productCustomizationFields.priceDelta,
-  }).from(productCustomizationFields).where(and(
-    eq(productCustomizationFields.templateId, Number(template.id)),
-    eq(productCustomizationFields.isActive, true),
-  )).orderBy(asc(productCustomizationFields.sortOrder), asc(productCustomizationFields.id));
+
+  const logoAssetKey = normalizeCustomizationAssetKey(customization.logoAssetKey, "الشعار");
+  if (logoAssetKey) {
+    const asset = batch.assetsByKey.get(logoAssetKey);
+    if (!asset || asset.kind !== "LOGO") {
+      throw customizationInputError(
+        "BAD_REQUEST",
+        `تعذّر إرفاق شعار «${product.productName}»`,
+        "مرفق الشعار غير موجود أو لا يطابق نوع الشعار المطلوب",
+        "أعد رفع ملف الشعار من صفحة المنتج ثم أعد المحاولة",
+      );
+    }
+  }
+
+  const previewAssetKey = normalizeCustomizationAssetKey(customization.previewAssetKey, "المعاينة");
+  if (previewAssetKey) {
+    const asset = batch.assetsByKey.get(previewAssetKey);
+    if (!asset || asset.kind !== "PREVIEW") {
+      throw customizationInputError(
+        "BAD_REQUEST",
+        `تعذّر إرفاق معاينة «${product.productName}»`,
+        "مرفق المعاينة غير موجود أو لا يطابق نوع المعاينة المطلوب",
+        "أعد رفع صورة المعاينة من صفحة المنتج ثم أعد المحاولة",
+      );
+    }
+  }
+
+  const fields = batch.fieldsByTemplateId.get(template.id) ?? [];
   const knownKeys = new Set(fields.map((field) => field.fieldKey));
   if (Object.entries(customization.values).some(([key, value]) => value !== "" && !knownKeys.has(key))) {
     throw customizationInputError("BAD_REQUEST", `تعذّر تخصيص «${product.productName}»`, "وصل حقل تخصيص غير موجود في القالب الحالي", "حدّث صفحة المنتج وأدخل التفاصيل في الحقول الظاهرة فقط");
@@ -805,8 +1016,8 @@ async function resolveOnlineOrderCustomization(
     if (value.length > (field.maxLength ?? 2_000)) {
       throw customizationInputError("BAD_REQUEST", `قيمة «${field.label}» طويلة`, "النص المدخل تجاوز الحد المضبوط لهذا الحقل", "اختصر النص إلى الحد الظاهر في الحقل ثم أعد المحاولة");
     }
-    const options = field.options ?? [];
-    const selectedOption = options.find((option) => option.value === value);
+    const optionsList = field.options ?? [];
+    const selectedOption = optionsList.find((option) => option.value === value);
     if ((field.fieldType === "SELECT" || field.fieldType === "SWATCH") && !selectedOption) {
       throw customizationInputError("BAD_REQUEST", `خيار «${field.label}» غير صالح`, "القيمة المرسلة ليست من خيارات القالب الحالي", "حدّث صفحة المنتج واختر قيمة من القائمة الظاهرة");
     }
@@ -847,6 +1058,8 @@ async function resolveOnlineOrderCustomization(
       title: template.title,
       values,
       unitPriceDelta: roundedDelta.toFixed(2),
+      ...(logoAssetKey ? { logoAssetKey } : {}),
+      ...(previewAssetKey ? { previewAssetKey } : {}),
     },
     priceDelta: roundedDelta,
   };
@@ -936,7 +1149,7 @@ export interface OnlineOrderQuoteResult {
   total: string;
 }
 
-/** محرك التسعير الوحيد للـquote وللتثبيت؛ lineAmount يستعمل كمية السلة الفعلية. */
+/** محرك التسعير الوحيد للـquote وللتثبيت؛ يحمّل القوالب والعروض والكوبون دفعةً واحدة خارج حلقة الأسطر. */
 export async function priceOnlineOrderLines(
   tx: Tx,
   branchId: number,
@@ -997,6 +1210,28 @@ export async function priceOnlineOrderLines(
   const rows = options.lock ? await query.for("update") : await query;
   const byUnit = new Map(rows.map((row) => [Number(row.productUnitId), row]));
   const todayYmd = todayYmdBaghdad();
+
+  const customizationBatch = await loadOnlineOrderCustomizationBatch(tx, lines);
+  const autoPromoSnapshot = await loadPromotionRuleSnapshot(tx, {
+    branchId,
+    customerTier: RETAIL,
+    todayYmd,
+    includeStoreManaged: true,
+    requiredApplicationMode: "AUTO",
+    lockForUpdate: options.lock,
+  });
+  const couponPromoSnapshot = options.coupon
+    ? await loadPromotionRuleSnapshot(tx, {
+        branchId,
+        customerTier: RETAIL,
+        todayYmd,
+        includeStoreManaged: true,
+        requiredApplicationMode: "COUPON",
+        specificPromotionId: options.coupon.promotionId,
+        lockForUpdate: options.lock,
+      })
+    : null;
+
   const candidates: Array<
     PricedOnlineOrderLine & {
       baseRetailUnitPrice: string;
@@ -1035,8 +1270,7 @@ export async function priceOnlineOrderLines(
         }),
       });
     }
-    const resolvedCustomization = await resolveOnlineOrderCustomization(
-      tx,
+    const resolvedCustomization = resolveOnlineOrderCustomizationFromBatch(
       {
         productId: Number(row.productId),
         productName: row.productName,
@@ -1044,6 +1278,7 @@ export async function priceOnlineOrderLines(
         isCustomizable: row.isCustomizable,
       },
       line.customization,
+      customizationBatch,
       { allowWithoutCustomization: options.allowStaffCatalogUnits },
     );
     const base = money(quantity).times(row.conversionFactor ?? 1);
@@ -1075,22 +1310,22 @@ export async function priceOnlineOrderLines(
     const productId = Number(row.productId);
     const variantId = Number(row.variantId);
     const categoryId = row.categoryId == null ? null : Number(row.categoryId);
-    const promo = await resolvePromotionForLine(tx, {
+    const lineAmountStr = retail.times(quantity).toFixed(2);
+    const promo = resolvePromotionFromSnapshot(autoPromoSnapshot, {
       branchId,
       customerTier: RETAIL,
       productId,
       variantId,
       categoryId,
       unitPrice: retail.toFixed(2),
-      lineAmount: retail.times(quantity).toFixed(2),
+      lineAmount: lineAmountStr,
       hasContractPrice: false,
       todayYmd,
       includeStoreManaged: true,
-      lockForUpdate: options.lock,
     });
     const automaticDiscount = promo ? money(promo.discountForUnit) : money(0);
-    const couponPromo = options.coupon
-      ? await resolveCouponPromotionForLine(tx, options.coupon.promotionId, {
+    const couponPromo = couponPromoSnapshot && options.coupon
+      ? resolvePromotionFromSnapshot(couponPromoSnapshot, {
           branchId,
           customerTier: RETAIL,
           productId,
@@ -1099,11 +1334,12 @@ export async function priceOnlineOrderLines(
           // العروض والكوبونات منفعتان بديلتان في المتجر، لا طبقتا خصم. لذلك يُقاس
           // الكوبون على سعر المفرد الأصلي لا على السعر بعد العرض التلقائي.
           unitPrice: retail.toFixed(2),
-          lineAmount: retail.times(quantity).toFixed(2),
+          lineAmount: lineAmountStr,
           hasContractPrice: false,
           todayYmd,
           includeStoreManaged: true,
-          lockForUpdate: options.lock,
+          requiredApplicationMode: "COUPON",
+          specificPromotionId: options.coupon.promotionId,
         })
       : null;
     const couponDiscount = couponPromo
@@ -2188,6 +2424,7 @@ async function createOnlineOrderAttempt(
       total: toDbMoney(total),
       status: "PENDING",
       shippingAddress: requestedShippingAddress,
+      customerNotes: input.notes?.trim() ? input.notes.trim() : null,
       governorate: input.governorate,
       latitude: input.latitude != null ? String(input.latitude) : null,
       longitude: input.longitude != null ? String(input.longitude) : null,
@@ -2240,6 +2477,23 @@ async function createOnlineOrderAttempt(
           customizationSnapshot: it.customizationSnapshot,
         })),
       );
+      const attachedAssetKeys = Array.from(
+        new Set(
+          items.flatMap((it) => {
+            const snap = it.customizationSnapshot;
+            if (!snap) return [];
+            return [snap.logoAssetKey, snap.previewAssetKey].filter(
+              (k): k is string => typeof k === "string" && k.length > 0,
+            );
+          }),
+        ),
+      );
+      if (attachedAssetKeys.length > 0) {
+        await tx
+          .update(storefrontCustomizationAssets)
+          .set({ expiresAt: null })
+          .where(inArray(storefrontCustomizationAssets.assetKey, attachedAssetKeys));
+      }
     }
     if (selectedCoupon && couponReservationAmount.gt(0)) {
       await reserveCouponForOnlineOrder(tx, selectedCoupon, {
