@@ -23,6 +23,13 @@ import {
 } from "../shipments";
 import { currentWorkflowActorTx, loadWorkflowPreviewTx } from "./preview";
 import { isShortfallReason } from "../../../../shared/shortfallReason";
+import { idempotencyHash } from "../../idempotency";
+import { appendDeliveryEvent } from "../lifecycle";
+import {
+  createRecordedShipmentDocumentTx,
+  listDeliveryDocumentSnapshotsTx,
+  type WorkflowDocumentBody,
+} from "../documentSnapshots";
 
 /** Staff explicitly witnesses customer collection; courier remittance remains a separate command. */
 export function confirmWorkflowDelivery(
@@ -64,7 +71,21 @@ export function confirmWorkflowDelivery(
         preview.source.branchId,
       );
       const replay = await findFulfillmentReplayTx(tx, context);
-      if (replay) return { consignmentId: replay, idempotentReplay: true };
+      const documentEventKey = `WORKFLOW:COLLECTION:${idempotencyHash(context)}`;
+      if (replay)
+        return {
+          consignmentId: replay,
+          idempotentReplay: true,
+          documentSnapshotIds: (
+            await listDeliveryDocumentSnapshotsTx(tx, {
+              sourceType: "SHIPMENT",
+              sourceId: replay,
+              branchId: preview.source.branchId,
+            })
+          )
+            .filter((row) => row.eventKey === documentEventKey)
+            .map((row) => row.id),
+        };
       if (preview.source.version !== input.source.expectedVersion)
         throw fulfillmentError(
           "تغيرت مطالبة الشحنة منذ معاينتها؛ حدثها قبل إثبات القبض",
@@ -159,8 +180,56 @@ export function confirmWorkflowDelivery(
           { shipmentMember: true },
         );
       }
+      const leader = members.find((row) => row.id === leaderId) ?? members[0]!;
+      const document: WorkflowDocumentBody = {
+        title: "محضر تسليم وتحصيل العميل",
+        documentNumber: leader.consignmentNumber,
+        rows: [
+          { label: "دليل التسليم والتحصيل", value: input.evidence.trim() },
+          ...claims.map(({ row }, index) => ({
+            label: row.consignmentNumber,
+            value: `المقبوض الفعلي ${toDbMoney(allocations[index])}`,
+          })),
+          ...(hasShortfall
+            ? [{ label: "سبب العجز المعتمد", value: input.shortfallReason! }]
+            : []),
+        ],
+        totals: [
+          { label: "مطالبة العميل عند التأكيد", value: toDbMoney(totalDue) },
+          { label: "المقبوض الفعلي من العميل", value: toDbMoney(collected) },
+          {
+            label: "العجز المنسوب لجهة التوصيل",
+            value: toDbMoney(totalDue.minus(collected)),
+          },
+        ],
+        notice:
+          "يثبت تسليم الشحنة ومبلغ العميل الفعلي وفق واقعة التأكيد. النقد يبقى بعهدة الناقل حتى توريده؛ ليس هذا سند توريد للدرج ولا قبضاً جديداً.",
+      };
+      await appendDeliveryEvent(tx, {
+        eventKey: documentEventKey,
+        consignmentId: leaderId,
+        eventType: "WORKFLOW_CUSTOMER_COLLECTION_CONFIRMED",
+        actorUserId: auth.actor.userId,
+        payload: {
+          branchId: preview.source.branchId,
+          leaderConsignmentId: leaderId,
+          documentType: "DELIVERY_MANIFEST",
+          document,
+          metadataOnly: true,
+        },
+      });
+      const documentId = await createRecordedShipmentDocumentTx(tx, {
+        consignmentId: leaderId,
+        branchId: preview.source.branchId,
+        eventKey: documentEventKey,
+        documentType: "DELIVERY_MANIFEST",
+      });
       await recordFulfillmentMutationTx(tx, context, leaderId);
-      return { consignmentId: leaderId, idempotentReplay: false };
+      return {
+        consignmentId: leaderId,
+        idempotentReplay: false,
+        documentSnapshotIds: [documentId],
+      };
     }),
   );
 }

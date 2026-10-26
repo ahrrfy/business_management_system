@@ -16,15 +16,19 @@ import { appendDeliveryEvent, appendDeliveryLedgerEntry, assertConsignmentStatus
 import type { DeliveryTxActor } from "./types";
 import type { Tx } from "../../db";
 import { assertStandaloneConsignmentTx } from "./shipments";
+import { physicalHandoverConsignmentIdsTx } from "./handoverEvidence";
 
 export interface CancelDeliveryAssignmentInput {
   consignmentId: number;
   reason: string;
   clientRequestId: string;
+  /** شهادة تشغيلية صريحة أن كامل الشحنة عاد إلى عهدة المكتبة فعلياً. */
+  physicalHeldConfirmed?: boolean;
 }
 
 /**
- * يلغي إسناد التوصيل فقط. لا يعكس البيع، ولا يعيد المخزون، ولا يكتب إيصالاً.
+ * يفك عهدة جهة التوصيل بعد عودة كامل الشحنة فعلياً. لا يعكس البيع، ولا يعيد
+ * المخزون، ولا يكتب إيصالاً؛ يصبح المصدر حراً لإعادة الإسناد.
  * تحرير تعرّض COD يتم بقيد دفتر غير قابل للتعديل، ويبقى سجل الإرسالية نفسه
  * متاحاً لإعادة التنشيط لاحقاً كي لا نفقد سلسلة المسؤولية.
  */
@@ -79,6 +83,7 @@ export async function cancelDeliveryAssignmentInTx(
     const payloadHash = idempotencyHash({
       consignmentId: Number(input.consignmentId),
       reason,
+      physicalHeldConfirmed: input.physicalHeldConfirmed === true,
     });
     // افحص الفرع قبل إعادة نتيجة idempotent كي لا تتحول إعادة التشغيل إلى قناة IDOR.
     const scopedBranch =
@@ -116,6 +121,7 @@ export async function cancelDeliveryAssignmentInTx(
       "delivery.cancelAssignment",
       input.clientRequestId,
       payloadHash,
+      { forUpdate: true },
     );
     if (replay != null) {
       if (Number(replay) !== Number(input.consignmentId)) {
@@ -154,6 +160,7 @@ export async function cancelDeliveryAssignmentInTx(
       "delivery.cancelAssignment",
       input.clientRequestId,
       payloadHash,
+      { forUpdate: true },
     );
     if (replayAfterLock != null) {
       return {
@@ -165,7 +172,12 @@ export async function cancelDeliveryAssignmentInTx(
     // رجوعٌ مُعلَن: تعرّضُه حُرِّر سلفاً، وإلغاءُ الإسناد يكتب `COD_RELEASED` ثانياً ⇒ تحريرٌ
     // مزدوج (ولا فهرسَ فريد على `eventKey` يمنعه). المخرجُ الوحيد: الاسترجاع بعد الاستلام.
     assertNotReturnDeclared(cn, "cancel");
-    if (cn.parcelStatus !== "ASSIGNED" && cn.parcelStatus !== "OUT_FOR_DELIVERY" && cn.parcelStatus !== "FAILED") {
+    if (
+      cn.parcelStatus !== "ASSIGNED" &&
+      cn.parcelStatus !== "ACCEPTED" &&
+      cn.parcelStatus !== "OUT_FOR_DELIVERY" &&
+      cn.parcelStatus !== "FAILED"
+    ) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message:
@@ -179,6 +191,31 @@ export async function cancelDeliveryAssignmentInTx(
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: "لا يُلغى إسناد بدأ تحصيله أو رُبط بتوريد",
+      });
+    }
+    if (input.physicalHeldConfirmed !== true) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذر إلغاء الإسناد وتحرير الطلب",
+          why: "لم يُثبت أن كامل الشحنة عاد فعلياً إلى عهدة المكتبة",
+          doThis:
+            "استلم كامل الشحنة أولاً، ثم فعّل تأكيد العودة وأعد تنفيذ إلغاء الإسناد",
+        }),
+      });
+    }
+    const physicalHandoverIds = await physicalHandoverConsignmentIdsTx(tx, [
+      Number(cn.id),
+    ]);
+    if (cn.pickedUpAt != null || physicalHandoverIds.has(Number(cn.id))) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذر إلغاء الإسناد مباشرةً",
+          why: "توجد حركة استلام أو خروج لاحقة للإسناد الحالي",
+          doThis:
+            "أعلن الرجوع، ثم أثبت الاستلام المادي والفحص قبل تسوية العهدة",
+        }),
       });
     }
 
@@ -267,6 +304,7 @@ export async function cancelDeliveryAssignmentInTx(
         assignedUserId:
           cn.assignedUserId == null ? null : Number(cn.assignedUserId),
         releasedCod: remaining.toFixed(2),
+        physicalHeldConfirmed: true,
       },
     });
 

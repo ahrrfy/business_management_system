@@ -2,7 +2,7 @@ import { imageDataToRaster, type Raster } from "./escpos";
 import { code128Svg } from "./barcode";
 import { qrCodeSvg, qrCodeDataUrl } from "./qr";
 import type { BarcodeSet } from "@shared/barcodeTypes";
-import { CAIRO_FONT, CO, logoUrl, openPrintWindow } from "./brand";
+import { CAIRO_FONT, CO, logoUrl, openPrintWindow, type PrintWindowOptions } from "./brand";
 import { formatPaymentMethodPrintHtml, isCardPaymentMethod } from "./cardBrandLogos";
 
 /** بندٌ مركّب لإيصال 80مم: الاسم مستقل عن سطر الكمية/السعر والإجمالي. */
@@ -351,13 +351,34 @@ export async function docToRaster(doc: PrintDoc, widthPx = 576): Promise<Raster 
   const headerLast = doc.columns?.at(-1) ?? "";
   const hasRows = !!doc.rows?.length;
   const hasItems = !!doc.itemBlocks?.length;
-  const headingHeight = doc.columns && (hasRows || hasItems) ? HEADER_LINE : 0;
   const firstColumnWidth = contentWidth * 0.68;
   const lastColumnWidth = contentWidth - firstColumnWidth - 12;
-  const rowLayouts = !hasItems ? (doc.rows ?? []).map((row) => ({
-    first: measured(ROW_FONT, row[0] ?? "", firstColumnWidth),
-    last: measured(ROW_FONT, row.at(-1) ?? "", lastColumnWidth),
-  })) : [];
+  const columnCount = (doc.rows ?? []).reduce(
+    (count, row) => Math.max(count, row.length),
+    Math.max(doc.columns?.length ?? 0, 1),
+  );
+  const columnGap = Math.min(12, contentWidth / (columnCount * 4));
+  const tableWidth = contentWidth - columnGap * (columnCount - 1);
+  const middleShare = columnCount > 2 ? Math.min(0.18, 0.4 / (columnCount - 2)) : 0;
+  let columnRight = widthPx - RASTER_PAD;
+  const tableColumns = Array.from({ length: columnCount }, (_, index) => {
+    const width = columnCount === 1 ? contentWidth
+      : columnCount === 2 ? index === 0 ? firstColumnWidth : lastColumnWidth
+        : tableWidth * (index === 0 ? 0.7 - middleShare * (columnCount - 2) : index === columnCount - 1 ? 0.3 : middleShare);
+    const right = columnRight;
+    const left = right - width;
+    columnRight = left - columnGap;
+    return { width, right, left };
+  });
+  const tableHeader = tableColumns.map((column, index) =>
+    measured(HEADER_FONT, doc.columns?.[index] ?? "", column.width),
+  );
+  const headingHeight = doc.columns && (hasRows || hasItems)
+    ? (hasItems ? 1 : tableHeader.reduce((count, lines) => Math.max(count, lines.length), 1)) * HEADER_LINE
+    : 0;
+  const rowLayouts = !hasItems ? (doc.rows ?? []).map((row) =>
+    tableColumns.map((column, index) => measured(ROW_FONT, row[index] ?? "", column.width)),
+  ) : [];
   const itemLayouts = (doc.itemBlocks ?? []).map((item) => ({
     name: measured(ITEM_NAME_FONT, item.name, contentWidth, 2),
     quantityPrice: measured(ITEM_DETAIL_FONT, item.quantityPrice, firstColumnWidth, 2),
@@ -393,7 +414,7 @@ export async function docToRaster(doc: PrintDoc, widthPx = 576): Promise<Raster 
     : null;
 
   const rowsHeight = rowLayouts.reduce(
-    (sum, row) => sum + Math.max(row.first.length, row.last.length, 1) * ROW_LINE + 6,
+    (sum, row) => sum + row.reduce((count, lines) => Math.max(count, lines.length), 1) * ROW_LINE + 6,
     0,
   );
   const itemsHeight = itemLayouts.reduce(
@@ -447,6 +468,21 @@ export async function docToRaster(doc: PrintDoc, widthPx = 576): Promise<Raster 
       if (last[index]) { ctx!.textAlign = "left"; ctx!.fillText(last[index], left, y); }
     }
   };
+  const drawTableRow = (cells: string[][], font: string, lineHeight: number) => {
+    ctx!.font = font;
+    ctx!.fillStyle = "#000";
+    const count = cells.reduce((max, lines) => Math.max(max, lines.length), 1);
+    for (let line = 0; line < count; line += 1) {
+      y += lineHeight;
+      cells.forEach((lines, index) => {
+        if (!lines[line]) return;
+        const column = tableColumns[index];
+        const align: CanvasTextAlign = index === 0 ? "right" : index === columnCount - 1 ? "left" : "center";
+        ctx!.textAlign = align;
+        ctx!.fillText(lines[line], align === "right" ? column.right : align === "left" ? column.left : (column.right + column.left) / 2, y);
+      });
+    }
+  };
   const dashedRule = () => {
     ctx!.save();
     ctx!.strokeStyle = "#000";
@@ -465,12 +501,13 @@ export async function docToRaster(doc: PrintDoc, widthPx = 576): Promise<Raster 
   for (const lines of metaLines) drawLines(lines, META_FONT, META_LINE, widthPx / 2, "center");
 
   if (headingHeight) {
-    drawColumns([headerFirst], [headerLast], HEADER_FONT, HEADER_LINE);
+    if (hasItems) drawColumns([headerFirst], [headerLast], HEADER_FONT, HEADER_LINE);
+    else drawTableRow(tableHeader, HEADER_FONT, HEADER_LINE);
     ctx.fillRect(left, y + 4, contentWidth, 2);
     y += 6;
   }
   for (const row of rowLayouts) {
-    drawColumns(row.first, row.last, ROW_FONT, ROW_LINE);
+    drawTableRow(row, ROW_FONT, ROW_LINE);
     y += 6;
   }
   for (const item of itemLayouts) {
@@ -525,6 +562,8 @@ export async function docToRaster(doc: PrintDoc, widthPx = 576): Promise<Raster 
   return imageDataToRaster({ width: widthPx, height, data: img.data });
 }
 
-export function printHtml(html: string): boolean {
-  return openPrintWindow(html, "width=380,height=640");
+export function printHtml(html: string, options?: PrintWindowOptions): boolean {
+  return options
+    ? openPrintWindow(html, "width=380,height=640", options)
+    : openPrintWindow(html, "width=380,height=640");
 }

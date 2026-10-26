@@ -275,13 +275,14 @@ async function resultTx(
         inArray(deliveryDocumentSnapshots.documentType, [
           "DISPATCH_SLIP",
           "SHIPPING_LABEL",
+          "DELIVERY_MANIFEST",
         ]),
       ),
     )
     .orderBy(desc(deliveryDocumentSnapshots.id));
   const dispatchSecond = Math.floor(row.dispatchedAt.getTime() / 1_000);
   const existingSnapshots = (
-    ["DISPATCH_SLIP", "SHIPPING_LABEL"] as const
+    ["DISPATCH_SLIP", "SHIPPING_LABEL", "DELIVERY_MANIFEST"] as const
   ).flatMap((documentType) => {
     const snapshot = snapshotCandidates.find(
       (candidate) =>
@@ -295,7 +296,7 @@ async function resultTx(
   let snapshotIds: number[] = existingSnapshots.map((snapshot) =>
     Number(snapshot.id),
   );
-  if (existingSnapshots.length < 2) {
+  if (existingSnapshots.length < 3) {
     if (idempotentReplay) {
       snapshotIds = await bootstrapHistoricalShipmentDocumentSnapshotsTx(tx, {
         consignmentId: Number(row.id),
@@ -394,12 +395,16 @@ async function resultTx(
           createdBy: actorUserId,
           sourceVersion,
           payload,
-          documentTypes: ["DISPATCH_SLIP", "SHIPPING_LABEL"].filter(
+          documentTypes: [
+            "DISPATCH_SLIP",
+            "SHIPPING_LABEL",
+            "DELIVERY_MANIFEST",
+          ].filter(
             (type) =>
               !existingSnapshots.some(
                 (snapshot) => snapshot.documentType === type,
               ),
-          ) as Array<"DISPATCH_SLIP" | "SHIPPING_LABEL">,
+          ) as Array<"DISPATCH_SLIP" | "SHIPPING_LABEL" | "DELIVERY_MANIFEST">,
         })),
       );
     }

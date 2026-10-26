@@ -198,6 +198,7 @@ async function sale(method: "CASH" | "CARD" | "TRANSFER" | "WALLET") {
       consignmentId: cn.id,
       reason: "combine before physical dispatch",
       clientRequestId: key(),
+      physicalHeldConfirmed: true,
     },
     actor,
   );

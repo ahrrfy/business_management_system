@@ -1,5 +1,11 @@
 import { fmt } from "@/lib/money";
-import { printDoc, type PrintDoc } from "@/lib/printing/print";
+import {
+  printDoc,
+  type PrintDoc,
+  type PrintResult,
+  type PrintWindowOptions,
+} from "@/lib/printing/print";
+import { notify } from "@/lib/notify";
 import {
   createDeliveryDocumentSnapshot,
   deliveryDocumentAuditLines,
@@ -56,7 +62,10 @@ export function buildRemittanceReceiptDoc(
   });
   const actualCash = r.cashReceived ?? r.netRemitted;
   const totals: Array<{ label: string; value: string }> = [
-    { label: "إجمالي تحصيل العميل المسوّى", value: `${fmt(r.collectedTotal)} د.ع` },
+    {
+      label: "إجمالي تحصيل العميل المسوّى",
+      value: `${fmt(r.collectedTotal)} د.ع`,
+    },
     { label: "النقد المستلم فعلياً", value: `${fmt(actualCash)} د.ع` },
     { label: "مستحق جهة التوصيل", value: `${fmt(r.feesTotal)} د.ع` },
   ];
@@ -103,12 +112,17 @@ export function buildRemittanceReceiptDoc(
                   ? `طلب ${line.orderNumber}`
                   : null,
               line.recipientName || null,
-            ].filter(Boolean).join(" · "),
-            quantityPrice: [
-              line.recipientPhone ? `هاتف ${line.recipientPhone}` : null,
-              line.paymentMethod ? `دفع ${line.paymentMethod}` : null,
-              line.feeOffset != null ? `أجرة ${fmt(line.feeOffset)}` : null,
-            ].filter(Boolean).join(" · ") || "تخصيص مالي",
+            ]
+              .filter(Boolean)
+              .join(" · "),
+            quantityPrice:
+              [
+                line.recipientPhone ? `هاتف ${line.recipientPhone}` : null,
+                line.paymentMethod ? `دفع ${line.paymentMethod}` : null,
+                line.feeOffset != null ? `أجرة ${fmt(line.feeOffset)}` : null,
+              ]
+                .filter(Boolean)
+                .join(" · ") || "تخصيص مالي",
             total: [
               `مخصص ${fmt(line.grossApplied ?? "0")}`,
               `نقد ${fmt(line.cashReceived ?? "0")}`,
@@ -139,10 +153,33 @@ export function buildRemittanceReceiptDoc(
 export function printRemittanceReceipt(
   partyName: string,
   r: RemittanceReceiptData,
+  options?: PrintWindowOptions,
 ): void {
+  void printRemittanceReceiptAsync(partyName, r, options)
+    .then((result) => {
+      if (!result.ok)
+        notify.err(
+          "حُجبت نافذة الطباعة؛ أعد طباعة السند المحفوظ ولا تسجل التوريد مرة أخرى",
+          "التوريد مثبت؛ تعذرت الطباعة فقط",
+        );
+    })
+    .catch((error) => {
+      notify.err(
+        error,
+        "التوريد مثبت؛ تعذرت الطباعة فقط. أعد طباعة السند المحفوظ",
+      );
+    });
+}
+
+export async function printRemittanceReceiptAsync(
+  partyName: string,
+  r: RemittanceReceiptData,
+  options?: PrintWindowOptions,
+): Promise<PrintResult> {
   const doc = buildRemittanceReceiptDoc(partyName, r);
-  if (!doc) return;
-  void printDoc(doc).catch((error) => {
-    console.warn("[delivery-remittance] فشلت الطباعة بعد ثبوت التوريد:", error);
-  });
+  if (!doc)
+    throw new Error(
+      "لا يوجد رقم سند توريد مثبت للطباعة؛ افتح السند الأصلي ثم أعد المحاولة",
+    );
+  return printDoc(doc, options);
 }

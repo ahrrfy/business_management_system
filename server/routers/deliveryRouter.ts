@@ -248,7 +248,7 @@ export const deliveryRouter = router({
       wholeShipment: z.boolean().optional(),
       consignmentId: z.number().int().positive(),
       reason: z.string().trim().min(3).max(500),
-      clientRequestId: z.string().trim().min(8).max(100),
+      clientRequestId: z.string().trim().min(8).max(100), physicalHeldConfirmed: z.boolean().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       const cancelActor = {
@@ -262,7 +262,7 @@ export const deliveryRouter = router({
         action: "delivery.assignment.cancel",
         entityType: "deliveryConsignment",
         entityId: input.consignmentId,
-        newValue: { reason: input.reason },
+        newValue: { reason: input.reason, physicalHeldConfirmed: input.physicalHeldConfirmed === true },
       });
       return res;
     }),

@@ -9,7 +9,7 @@ import {
 } from "../trpc";
 import { withTx } from "../services/tx";
 import {
-  bootstrapHistoricalShipmentDocumentSnapshotsTx,
+  prepareShipmentWorkflowDocumentsTx,
   completeDeliveryDocumentPrintTx,
   listDeliveryDocumentSnapshotsTx,
   requestDeliveryDocumentPrintTx,
@@ -96,13 +96,13 @@ export const deliveryDocumentsRouter = router({
     .mutation(({ input, ctx }) =>
       withTx(async (tx) => {
         const branchId = documentBranch(ctx, input.branchId);
-        await bootstrapHistoricalShipmentDocumentSnapshotsTx(tx, {
+        // Prepare every missing immutable document for the latest assignment
+        // event before returning the bundle. This operation only records
+        // document evidence; it never repeats assignment, collection, stock,
+        // or accounting effects. Historical rows are completed from their
+        // original event evidence rather than current mutable shipment data.
+        return prepareShipmentWorkflowDocumentsTx(tx, {
           consignmentId: input.consignmentId,
-          branchId,
-        });
-        return listDeliveryDocumentSnapshotsTx(tx, {
-          sourceType: "SHIPMENT",
-          sourceId: input.consignmentId,
           branchId,
         });
       }),

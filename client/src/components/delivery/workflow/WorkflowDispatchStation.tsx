@@ -26,15 +26,9 @@ import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { fmt } from "@/lib/money";
-import {
-  printDeliveryDispatchSlipAsync,
-  type DispatchSlipData,
-} from "@/lib/printing/printDeliveryDispatchSlip";
-import {
-  preopenShippingLabelWindow,
-  printShippingLabel,
-  resolveShippingLabelPaymentState,
-} from "@/lib/printing/shippingLabel";
+import { useWorkflowDocumentPrinter } from "@/hooks/useWorkflowDocumentPrinter";
+import { preopenDocumentWindow } from "@/lib/printing/print";
+import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 import type {
   WorkflowDispatchBatchInput,
   WorkflowDispatchBatchResult,
@@ -50,61 +44,8 @@ import {
 } from "./dispatchDraft";
 
 type Party = RouterOutputs["delivery"]["listParties"][number];
-type DeliveryDocumentSnapshot =
-  RouterOutputs["delivery"]["documents"]["list"][number];
 type Scanned = { raw: string; preview: WorkflowScanPreview };
 
-type DispatchSnapshotPayload = {
-  eventOccurredAt: string;
-  evidence?: {
-    mode?: "COMMITTED_DISPATCH_EVENT" | "HISTORICAL_ORIGINAL_EVIDENCE";
-    notice?: string;
-  };
-  shipment: {
-    consignmentId: number;
-    consignmentNumber: string;
-    fulfillmentRequestId: number | null;
-    sourceType: string;
-    sourceId: number;
-  };
-  party: { id: number; name: string };
-  recipient: {
-    name: string | null;
-    phone: string | null;
-    address: string | null;
-    governorate: string | null;
-  };
-  money: {
-    codAmount: string | null;
-    deliveryFee: string | null;
-    feeCollection: "COURIER" | "COUNTER" | "SHOP" | null;
-    currentTotal: string | null;
-    paidAmount: string | null;
-  };
-  invoices: Array<{
-    id: number;
-    invoiceNumber: string;
-    total: string | null;
-  }>;
-};
-
-function dispatchSnapshotPayload(
-  snapshot: DeliveryDocumentSnapshot,
-): DispatchSnapshotPayload {
-  const payload = snapshot.payload as Partial<DispatchSnapshotPayload> | null;
-  if (
-    !payload ||
-    !payload.shipment?.consignmentNumber ||
-    !payload.party?.name ||
-    !payload.recipient ||
-    !payload.money ||
-    !Array.isArray(payload.invoices)
-  )
-    throw new Error(
-      "لقطة مستند الإسناد ناقصة؛ أعد إنشاء الحزمة من مسؤول النظام",
-    );
-  return payload as DispatchSnapshotPayload;
-}
 const definitiveErrors = new Set([
   "BAD_REQUEST",
   "FORBIDDEN",
@@ -147,7 +88,8 @@ export function WorkflowDispatchStation({
     useState<WorkflowDispatchBatchResult | null>(
       () => draft.lastCommitted?.result ?? null,
     );
-  const [printing, setPrinting] = useState(false);
+  const documentPrinter = useWorkflowDocumentPrinter(branchId);
+  const printing = documentPrinter.busy;
   const [printMessage, setPrintMessage] = useState("");
   const [confirming, setConfirming] = useState(false);
   const rowsRef = useRef<Scanned[]>([]);
@@ -158,12 +100,6 @@ export function WorkflowDispatchStation({
   const inputRef = useRef<HTMLInputElement>(null);
   const utils = trpc.useUtils();
   const dispatch = trpc.delivery.workflow.dispatchBatch.useMutation();
-  const prepareShipmentPrintBundle =
-    trpc.delivery.documents.prepareShipmentPrintBundle.useMutation();
-  const requestDocumentPrint =
-    trpc.delivery.documents.requestPrint.useMutation();
-  const completeDocumentPrint =
-    trpc.delivery.documents.completePrint.useMutation();
   const availableParties = parties.filter(
     (party) => party.branchId == null || party.branchId === branchId,
   );
@@ -425,177 +361,11 @@ export function WorkflowDispatchStation({
     ignoreInputFields: true,
   });
 
-  async function printResult(
-    result: Pick<WorkflowDispatchBatchResult, "consignmentId">,
-    labelWindow?: Window | null,
-  ) {
-    setPrinting(true);
-    try {
-      let snapshots = await utils.delivery.documents.list.fetch({
-        sourceType: "SHIPMENT",
-        sourceId: result.consignmentId,
-        branchId,
-      });
-      if (
-        !snapshots.some(
-          (snapshot) => snapshot.documentType === "DISPATCH_SLIP",
-        ) ||
-        !snapshots.some(
-          (snapshot) => snapshot.documentType === "SHIPPING_LABEL",
-        )
-      ) {
-        snapshots = await prepareShipmentPrintBundle.mutateAsync({
-          consignmentId: result.consignmentId,
-          branchId,
-        });
-      }
-      const slipSnapshot = snapshots.find(
-        (snapshot) => snapshot.documentType === "DISPATCH_SLIP",
-      );
-      const labelSnapshot = snapshots.find(
-        (snapshot) => snapshot.documentType === "SHIPPING_LABEL",
-      );
-      if (!slipSnapshot || !labelSnapshot)
-        throw new Error("لم تكتمل لقطات حزمة الإسناد؛ لا تطبع من القيم الحية");
-      const payload = dispatchSnapshotPayload(slipSnapshot);
-      const hasPrintedSlip = slipSnapshot.printHistory.some(
-        (attempt) => attempt.status === "SENT",
-      );
-      const slipCopy = hasPrintedSlip ? "REPRINT" : "ORIGINAL";
-      const slipAttempt = await requestDocumentPrint.mutateAsync({
-        snapshotId: slipSnapshot.id,
-        branchId,
-        clientRequestId: crypto.randomUUID(),
-        copyType: slipCopy,
-        ...(slipCopy === "REPRINT"
-          ? { reason: "طلب إعادة طباعة من محطة الإسناد" }
-          : {}),
-      });
-      const invoice =
-        payload.invoices.length === 1 ? payload.invoices[0] : null;
-      const slip: DispatchSlipData = {
-        sourceType: payload.shipment.sourceType,
-        sourceId: payload.shipment.sourceId,
-        fulfillmentRequestId: payload.shipment.fulfillmentRequestId,
-        invoiceId: invoice?.id ?? null,
-        invoiceNumber: invoice?.invoiceNumber ?? null,
-        consignmentNumber: payload.shipment.consignmentNumber,
-        orderNumber:
-          payload.invoices.map((item) => item.invoiceNumber).join("، ") ||
-          payload.shipment.consignmentNumber,
-        orderKind:
-          payload.shipment.sourceType === "AFTERCARE_EXECUTION"
-            ? "aftercare"
-            : undefined,
-        partyName: payload.party.name,
-        recipientName: payload.recipient.name ?? "",
-        recipientPhone: payload.recipient.phone ?? "",
-        deliveryAddress: payload.recipient.address ?? "",
-        governorate: payload.recipient.governorate,
-        salePrice: payload.money.currentTotal,
-        deposit: payload.money.paidAmount,
-        codAmount: payload.money.codAmount,
-        deliveryFee: payload.money.deliveryFee,
-        feeCollection: payload.money.feeCollection,
-        dispatchedAt: slipSnapshot.eventOccurredAt,
-        notes: payload.evidence?.notice ?? null,
-        items: payload.invoices.map((item) => ({
-          name: `فاتورة ${item.invoiceNumber}`,
-          quantity: 1,
-          ...(item.total == null ? {} : { total: item.total }),
-        })),
-        copy:
-          slipCopy === "REPRINT"
-            ? {
-                kind: "REPRINT",
-                reason: "طلب إعادة طباعة من محطة الإسناد",
-              }
-            : { kind: "ORIGINAL" },
-      };
-      const printed = await printDeliveryDispatchSlipAsync(slip);
-      await completeDocumentPrint.mutateAsync({
-        printId: slipAttempt.print.id,
-        branchId,
-        status: printed.ok ? "SENT" : "FAILED",
-        ...(!printed.ok ? { errorMessage: "حجبت نافذة طباعة البوليصة" } : {}),
-      });
-
-      const labelPayload = dispatchSnapshotPayload(labelSnapshot);
-      const hasPrintedLabel = labelSnapshot.printHistory.some(
-        (attempt) => attempt.status === "SENT",
-      );
-      const labelCopy = hasPrintedLabel ? "REPRINT" : "ORIGINAL";
-      const labelAttempt = await requestDocumentPrint.mutateAsync({
-        snapshotId: labelSnapshot.id,
-        branchId,
-        clientRequestId: crypto.randomUUID(),
-        copyType: labelCopy,
-        ...(labelCopy === "REPRINT"
-          ? { reason: "طلب إعادة طباعة من محطة الإسناد" }
-          : {}),
-      });
-      const totalAtDoor =
-        labelPayload.money.codAmount == null ||
-        (labelPayload.money.feeCollection === "COURIER" &&
-          labelPayload.money.deliveryFee == null)
-          ? null
-          : Number(labelPayload.money.codAmount) +
-            (labelPayload.money.feeCollection === "COURIER"
-              ? Number(labelPayload.money.deliveryFee)
-              : 0);
-      const labelPrinted = await printShippingLabel(
-        {
-          orderNumber: labelPayload.shipment.consignmentNumber,
-          barcodeValue: labelPayload.shipment.consignmentNumber,
-          customerName: labelPayload.recipient.name,
-          customerPhone: labelPayload.recipient.phone,
-          governorate: labelPayload.recipient.governorate,
-          addressText: labelPayload.recipient.address,
-          total: totalAtDoor == null ? null : String(totalAtDoor),
-          subtotal: labelPayload.money.currentTotal,
-          shippingFee: labelPayload.money.deliveryFee,
-          paidAmount: labelPayload.money.paidAmount,
-          paymentState: resolveShippingLabelPaymentState(totalAtDoor),
-          deliveryPartyName: labelPayload.party.name,
-          createdAt: labelSnapshot.eventOccurredAt,
-          printedAt: new Date(),
-          isReprint: labelCopy === "REPRINT",
-          notes: labelPayload.evidence?.notice ?? null,
-          items: labelPayload.invoices.map((item) => ({
-            productName: `فاتورة ${item.invoiceNumber}`,
-            unitName: "",
-            quantity: "1",
-          })),
-        },
-        { into: labelWindow ?? null },
-      );
-      await completeDocumentPrint.mutateAsync({
-        printId: labelAttempt.print.id,
-        branchId,
-        status: labelPrinted.ok ? "SENT" : "FAILED",
-        ...(!labelPrinted.ok
-          ? { errorMessage: "حجبت نافذة طباعة الملصق" }
-          : {}),
-      });
-      if (mounted.current)
-        setPrintMessage(
-          printed.ok && labelPrinted.ok
-            ? "تم إرسال بوليصة الإسناد وملصق الشحن للطباعة"
-            : "تم الإسناد؛ تعذر جزء من الحزمة، أعد الطباعة",
-        );
-    } catch (error) {
-      if (mounted.current) {
-        setPrintMessage(
-          "تم الإسناد؛ تعذرت الطباعة، أعد الطباعة دون إعادة الإسناد",
-        );
-        notify.err(error, "تعذرت الطباعة فقط");
-      }
-    } finally {
-      if (mounted.current) setPrinting(false);
-    }
+  async function printResult(result: Pick<WorkflowDispatchBatchResult, "consignmentId">, window?: Window | null) {
+    await documentPrinter.printShipment(result.consignmentId, window ?? null);
   }
 
-  async function send(pending: WorkflowDispatchBatchInput) {
+  async function send(pending: WorkflowDispatchBatchInput, printWindow?: Window | null) {
     persistDraft((old) => ({ ...old, pending }));
     try {
       const result = await dispatch.mutateAsync(pending);
@@ -616,8 +386,14 @@ export function WorkflowDispatchStation({
       setMessage(`تم الإسناد ${result.consignmentNumber}`);
       void utils.delivery.invalidate();
       void utils.workOrders.invalidate();
-      setPrintMessage("تم الإسناد؛ اطبع الحزمة دون إعادة الإسناد");
+      setPrintMessage("تم الإسناد؛ مطبوعاته متاحة دون إعادة الإسناد");
+      if (printWindow !== undefined) {
+        // الاستعادة idempotent قد تعني أن الخادم ثبّت الإسناد ثم انقطع الرد
+        // قبل الطباعة. الطباعة أثر مستقل وآمن، لذلك تُستعاد من نفس النتيجة.
+        await printResult(result, printWindow);
+      }
     } catch (error) {
+      if (printWindow && !printWindow.closed) printWindow.close();
       const code = (error as { data?: { code?: string } }).data?.code;
       if (code && definitiveErrors.has(code)) {
         restored.current = null;
@@ -680,6 +456,7 @@ export function WorkflowDispatchStation({
       });
       if (!ok || !mounted.current || currentGeneration !== generation.current)
         return;
+      const printWindow = preopenDocumentWindow();
       await send({
         sources: quote.sources.map(({ source }) => ({
           kind: source.kind,
@@ -699,7 +476,7 @@ export function WorkflowDispatchStation({
         externalTrackingRef: snapshot.tracking.trim() || undefined,
         notes: snapshot.notes.trim() || undefined,
         clientRequestId: crypto.randomUUID(),
-      });
+      }, printWindow);
     } finally {
       submitLock.current = false;
       if (mounted.current) setConfirming(false);
@@ -742,7 +519,7 @@ export function WorkflowDispatchStation({
           void refreshRows();
         }}
         onPrintConsignment={(id) => {
-          const labelWindow = preopenShippingLabelWindow();
+          const labelWindow = preopenDocumentWindow();
           void printResult({ consignmentId: id }, labelWindow);
         }}
       />
@@ -762,7 +539,7 @@ export function WorkflowDispatchStation({
               className="ms-auto gap-1"
               disabled={printing}
               onClick={() => {
-                const labelWindow = preopenShippingLabelWindow();
+                const labelWindow = preopenDocumentWindow();
                 void printResult(committed, labelWindow);
               }}
             >
@@ -770,7 +547,14 @@ export function WorkflowDispatchStation({
               طباعة حزمة الإسناد
             </Button>
           </div>
-          <p className="text-sm text-muted-foreground">{printMessage}</p>
+          <p className="text-sm text-muted-foreground" role="status">{documentPrinter.message || printMessage}</p>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" size="sm" disabled={printing} onClick={() => { const window = preopenShippingLabelWindow(); void documentPrinter.printLabel(committed.consignmentId, window); }}>ملصق الشحنة</Button>
+            {committed.invoiceIds.map((id) => <div key={id} className="flex flex-wrap gap-1">
+              <Button type="button" variant="outline" size="sm" disabled={printing || !documentPrinter.canInvoice} title={!documentPrinter.canInvoice ? "تحتاج صلاحية طباعة الفاتورة أو إعادة طباعتها" : undefined} onClick={() => { const window = preopenDocumentWindow(); void documentPrinter.printInvoice(id, window); }}>فاتورة {committed.invoiceIds.length > 1 ? `#${id} ` : ""}حرارية</Button>
+              <Button type="button" variant="outline" size="sm" disabled={printing || !documentPrinter.canInvoice} onClick={() => { const window = preopenDocumentWindow(); void documentPrinter.printA4(id, window); }}>فاتورة {committed.invoiceIds.length > 1 ? `#${id} ` : ""}A4</Button>
+            </div>)}
+          </div>
         </Card>
       )}
       <Card className="gap-3 p-3">
@@ -862,7 +646,7 @@ export function WorkflowDispatchStation({
                     disabled={printing || formFrozen}
                     onClick={() => {
                       if (!preview.relations.consignmentId) return;
-                      const labelWindow = preopenShippingLabelWindow();
+                      const labelWindow = preopenDocumentWindow();
                       void printResult(
                         { consignmentId: preview.relations.consignmentId },
                         labelWindow,
@@ -1171,7 +955,7 @@ export function WorkflowDispatchStation({
           }
           onClick={() => void submit()}
         >
-          {frozen ? "استعادة نتيجة الإسناد" : "تأكيد الإسناد"}
+          {frozen ? "استعادة نتيجة الإسناد" : "تأكيد الإسناد وطباعة"}
         </SubmitButton>
       </Card>
     </div>

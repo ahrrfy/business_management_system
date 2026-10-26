@@ -452,6 +452,7 @@ describe("fulfillment request atomic release", () => {
         consignmentId: first.consignmentId,
         reason: "تأجيل تسليم الدفعة",
         clientRequestId: "fr-reassign-cancel",
+        physicalHeldConfirmed: true,
       },
       actor,
     );

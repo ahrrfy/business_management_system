@@ -106,11 +106,13 @@ describe("alternate delivery dispatch document snapshots", () => {
         .select()
         .from(deliveryDocumentSnapshots)
         .where(eq(deliveryDocumentSnapshots.sourceId, result.consignmentId));
-      expect(beforeReplay).toHaveLength(2);
+      expect(beforeReplay).toHaveLength(3);
       expect(new Set(beforeReplay.map((row) => row.documentType))).toEqual(
-        new Set(["DISPATCH_SLIP", "SHIPPING_LABEL"]),
+        new Set(["DISPATCH_SLIP", "SHIPPING_LABEL", "DELIVERY_MANIFEST"]),
       );
-      for (const snapshot of beforeReplay) {
+      for (const snapshot of beforeReplay.filter(
+        (row) => row.documentType !== "DELIVERY_MANIFEST",
+      )) {
         const payload = snapshot.payload as {
           evidence: { mode: string };
           money: { currentTotal: string; paidAmount: string };
@@ -201,7 +203,7 @@ describe("alternate delivery dispatch document snapshots", () => {
       .select()
       .from(deliveryDocumentSnapshots)
       .where(eq(deliveryDocumentSnapshots.sourceId, result.consignmentId));
-    expect(snapshots).toHaveLength(2);
+    expect(snapshots).toHaveLength(3);
     expect(
       snapshots.every(
         (snapshot) =>

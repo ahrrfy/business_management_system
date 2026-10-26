@@ -130,6 +130,18 @@ describe("delivery document snapshots", () => {
         status: "SENT",
       }),
     );
+    await expect(
+      withTx((tx) =>
+        requestDeliveryDocumentPrintTx(tx, {
+          snapshotId: snapshot.id,
+          branchId: 1,
+          clientRequestId: "print-original-again-80",
+          copyType: "ORIGINAL",
+          printerKey: "label-front",
+          requestedBy: 1,
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
     const reprint = await withTx((tx) =>
       requestDeliveryDocumentPrintTx(tx, {
         snapshotId: snapshot.id,
@@ -253,16 +265,19 @@ describe("delivery document snapshots", () => {
         branchId: 1,
       }),
     );
-    expect(snapshotIds).toHaveLength(2);
+    expect(snapshotIds).toHaveLength(3);
     const snapshots = await db()
       .select()
       .from(deliveryDocumentSnapshots)
       .where(eq(deliveryDocumentSnapshots.sourceId, 91));
     expect(snapshots.map((row) => row.documentType).sort()).toEqual([
+      "DELIVERY_MANIFEST",
       "DISPATCH_SLIP",
       "SHIPPING_LABEL",
     ]);
-    for (const snapshot of snapshots) {
+    for (const snapshot of snapshots.filter(
+      (row) => row.documentType !== "DELIVERY_MANIFEST",
+    )) {
       const payload = snapshot.payload as {
         evidence: { mode: string; notice: string; unavailableFields: string[] };
         money: { codAmount: string | null; deliveryFee: string | null };

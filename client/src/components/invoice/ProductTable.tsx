@@ -260,7 +260,9 @@ export function ProductTable({
   useEffect(() => {
     if (addTick === 0) return;
     const raf = requestAnimationFrame(() => {
-      lastRowRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+      const row = lastRowRef.current;
+      if (typeof row?.scrollIntoView === "function")
+        row.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
     });
     return () => cancelAnimationFrame(raf);
   }, [addTick]);

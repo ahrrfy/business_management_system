@@ -6,24 +6,56 @@ import { CO, esc, fmt, logoUrl } from "./brand";
 import { wrapReceiptDoc } from "./docHtml";
 import { code128Svg } from "./barcode";
 import { qrCodeSvgSync } from "./qr";
-import { fmtDateTime } from "../date";
-import { printDoc, type PrintDoc, type PrintResult } from "./print";
+import {
+  printDoc,
+  type PrintDoc,
+  type PrintResult,
+  type PrintWindowOptions,
+} from "./print";
+import { notify } from "../notify";
+import {
+  createDeliveryDocumentSnapshot,
+  deliveryDocumentAuditLines,
+  type DeliveryDocumentAudit,
+} from "./deliveryDocumentSnapshot";
 
-export interface CompanyStatementReceiptData {
+export interface CompanyStatementReceiptData extends DeliveryDocumentAudit {
   companyName: string;
   statementNumber: string;
   remittanceNumber: string | null;
   deliveriesConfirmed: number;
+  /** Count of the committed request's selected consignments, independent of replay's new-confirmation count. */
+  statementConsignmentCount?: number;
   collectedTotal: string;
   deductionsTotal?: string | null;
   netRemitted: string;
   remainingOpenCount?: number;
   remainingOpenAmount?: string;
-  settledAt?: Date | string;
+  settledAt?: Date | string | null;
   notes?: string | null;
 }
 
-export function buildCompanyStatementReceiptDoc(d: CompanyStatementReceiptData): PrintDoc {
+function statementAuditLines(
+  d: CompanyStatementReceiptData,
+  now: Date,
+): string[] {
+  const eventAt = d.settledAt ?? d.eventAt;
+  const snapshot = createDeliveryDocumentSnapshot({
+    documentType: "REMITTANCE_RECEIPT",
+    payload: d,
+    audit: { eventAt, printedAt: d.printedAt, copy: d.copy },
+    now,
+  });
+  return [
+    ...(!eventAt ? ["تاريخ التسوية: غير متاح في السجل"] : []),
+    ...deliveryDocumentAuditLines("تاريخ التسوية", snapshot),
+  ];
+}
+
+export function buildCompanyStatementReceiptDoc(
+  d: CompanyStatementReceiptData,
+  now = new Date(),
+): PrintDoc {
   const collectedNum = Number(d.collectedTotal || 0);
   const deductionsNum = Number(d.deductionsTotal || 0);
   const netNum = Number(d.netRemitted || 0);
@@ -32,17 +64,24 @@ export function buildCompanyStatementReceiptDoc(d: CompanyStatementReceiptData):
     `شركة التوصيل: ${d.companyName}`,
     `رقم كشف الشركة: ${d.statementNumber}`,
     ...(d.remittanceNumber ? [`رقم سند التوريد: ${d.remittanceNumber}`] : []),
-    `تاريخ التسوية: ${fmtDateTime(d.settledAt ?? new Date())}`,
-    `عدد الطرود المسلّمة: ${d.deliveriesConfirmed} طرد`,
+    ...statementAuditLines(d, now),
+    d.statementConsignmentCount != null
+      ? `عدد إرساليات الكشف: ${d.statementConsignmentCount}`
+      : `تسليمات أثبتتها المعاملة: ${d.deliveriesConfirmed}`,
     ...(d.remainingOpenCount != null && d.remainingOpenCount > 0
-      ? [`الطرود المتبقية: ${d.remainingOpenCount} طرد${d.remainingOpenAmount ? ` (${fmt(d.remainingOpenAmount)} د.ع)` : ""}`]
+      ? [
+          `الطرود المتبقية: ${d.remainingOpenCount} طرد${d.remainingOpenAmount ? ` (${fmt(d.remainingOpenAmount)} د.ع)` : ""}`,
+        ]
       : []),
     ...(d.notes ? [`ملاحظات: ${d.notes}`] : []),
   ];
 
   const totals = [
     { label: "إجمالي التحصيل (COD)", value: `${fmt(collectedNum)} د.ع` },
-    { label: "استقطاعات الشركة (أجور/عمولات)", value: `- ${fmt(deductionsNum)} د.ع` },
+    {
+      label: "استقطاعات الشركة (أجور/عمولات)",
+      value: `- ${fmt(deductionsNum)} د.ع`,
+    },
     { label: "صافي النقد المورّد للدرج", value: `${fmt(netNum)} د.ع` },
   ];
 
@@ -56,7 +95,8 @@ export function buildCompanyStatementReceiptDoc(d: CompanyStatementReceiptData):
     subtitle: `${CO.name} — ${d.companyName}`,
     meta,
     totals,
-    footer: "توقيع الكاشير: ____________  توقيع ممثل الشركة: ____________\nسند تسوية مالي موثق بنظام إدارة أعمال الرؤية العربية",
+    footer:
+      "توقيع الكاشير: ____________  توقيع ممثل الشركة: ____________\nسند تسوية مالي موثق بنظام إدارة أعمال الرؤية العربية",
     barcodeSet: {
       barcode128: d.statementNumber,
       qrPayload,
@@ -65,7 +105,10 @@ export function buildCompanyStatementReceiptDoc(d: CompanyStatementReceiptData):
   };
 }
 
-export function renderCompanyStatementReceiptHtml(d: CompanyStatementReceiptData): string {
+export function renderCompanyStatementReceiptHtml(
+  d: CompanyStatementReceiptData,
+  now = new Date(),
+): string {
   const logo = logoUrl();
   const collectedNum = Number(d.collectedTotal || 0);
   const deductionsNum = Number(d.deductionsTotal || 0);
@@ -73,7 +116,11 @@ export function renderCompanyStatementReceiptHtml(d: CompanyStatementReceiptData
 
   let barSvg = "";
   try {
-    const bc = code128Svg(d.statementNumber, { moduleWidth: 1.35, height: 45, showText: true });
+    const bc = code128Svg(d.statementNumber, {
+      moduleWidth: 1.35,
+      height: 45,
+      showText: true,
+    });
     barSvg = bc.svg;
   } catch {
     /* ignore */
@@ -95,10 +142,14 @@ export function renderCompanyStatementReceiptHtml(d: CompanyStatementReceiptData
     <span style="font-size:13.5px;font-weight:900;letter-spacing:0.5px;">إيصال تسوية كشف شركة توصيل</span>
   </div>
 
-  ${barSvg ? `
+  ${
+    barSvg
+      ? `
   <div style="text-align:center;margin:3mm 0;overflow:hidden;">
     <div style="display:inline-block;max-width:100%;">${barSvg}</div>
-  </div>` : ""}
+  </div>`
+      : ""
+  }
 
   <div style="margin:2.5mm 0;font-size:11px;color:#000;">
     <div style="display:flex;justify-content:space-between;padding:1mm 0;border-bottom:1.5px dashed #000;">
@@ -109,18 +160,24 @@ export function renderCompanyStatementReceiptHtml(d: CompanyStatementReceiptData
       <span style="font-weight:800;">رقم كشف الشركة:</span>
       <span style="font-weight:900;direction:ltr;font-size:12px;">${esc(d.statementNumber)}</span>
     </div>
-    ${d.remittanceNumber ? `
+    ${
+      d.remittanceNumber
+        ? `
     <div style="display:flex;justify-content:space-between;padding:1mm 0;border-bottom:1.5px dashed #000;">
       <span style="font-weight:800;">رقم سند التوريد:</span>
       <span style="font-weight:900;direction:ltr;font-size:12px;">${esc(d.remittanceNumber)}</span>
-    </div>` : ""}
+    </div>`
+        : ""
+    }
+    ${statementAuditLines(d, now)
+      .map(
+        (line) =>
+          `<div style="padding:1mm 0;border-bottom:1.5px dashed #000;font-weight:800;">${esc(line)}</div>`,
+      )
+      .join("")}
     <div style="display:flex;justify-content:space-between;padding:1mm 0;border-bottom:1.5px dashed #000;">
-      <span style="font-weight:800;">تاريخ التسوية:</span>
-      <span style="font-weight:800;">${fmtDateTime(d.settledAt ?? new Date())}</span>
-    </div>
-    <div style="display:flex;justify-content:space-between;padding:1mm 0;border-bottom:1.5px dashed #000;">
-      <span style="font-weight:800;">عدد الطرود المسلّمة:</span>
-      <span style="font-weight:900;font-size:12px;">${d.deliveriesConfirmed} طرد</span>
+      <span style="font-weight:800;">${d.statementConsignmentCount != null ? "عدد إرساليات الكشف:" : "تسليمات أثبتتها المعاملة:"}</span>
+      <span style="font-weight:900;font-size:12px;">${d.statementConsignmentCount ?? d.deliveriesConfirmed}</span>
     </div>
   </div>
 
@@ -144,24 +201,36 @@ export function renderCompanyStatementReceiptHtml(d: CompanyStatementReceiptData
     </div>
   </div>
 
-  ${d.remainingOpenCount != null && d.remainingOpenCount > 0 ? `
+  ${
+    d.remainingOpenCount != null && d.remainingOpenCount > 0
+      ? `
   <div style="margin:2.5mm 0;border:2px solid #000;border-radius:5px;padding:2mm;font-size:10.5px;background:#fff;color:#000;">
     <div style="font-weight:900;font-size:11.5px;margin-bottom:1mm;border-bottom:1.5px solid #000;padding-bottom:0.5mm;">الطرود المتبقية بذمة الشركة:</div>
     <div style="display:flex;justify-content:space-between;padding:0.5mm 0;">
       <span style="font-weight:800;">عدد الطرود المتبقية:</span>
       <span style="font-weight:900;">${d.remainingOpenCount} طرد</span>
     </div>
-    ${d.remainingOpenAmount ? `
+    ${
+      d.remainingOpenAmount
+        ? `
     <div style="display:flex;justify-content:space-between;padding:0.5mm 0;">
       <span style="font-weight:800;">إجمالي القيمة المعلقة:</span>
       <span style="font-weight:900;">${fmt(d.remainingOpenAmount)} د.ع</span>
-    </div>` : ""}
-  </div>` : ""}
+    </div>`
+        : ""
+    }
+  </div>`
+      : ""
+  }
 
-  ${d.notes ? `
+  ${
+    d.notes
+      ? `
   <div style="margin:2.5mm 0;font-size:10.5px;font-weight:800;border:1.5px dashed #000;padding:2mm;border-radius:4px;background:#fafafa;color:#000;">
     <b>ملاحظات:</b> ${esc(d.notes)}
-  </div>` : ""}
+  </div>`
+      : ""
+  }
 
   <!-- رمز QR عريض وفائق الوضوح للتحقق والمسح السريع -->
   <div style="text-align:center;margin:3.5mm 0 2mm 0;border:2px solid #000;border-radius:5px;padding:2.5mm;background:#fff;">
@@ -205,17 +274,33 @@ export function renderCompanyStatementReceiptHtml(d: CompanyStatementReceiptData
  *  ١) جسر الخادم الحراري الصامت (حين يكون مفعّلاً ومضبوطاً)
  *  ٢) WebUSB لطابعة الإيصالات الحرارية المتصلة عبر Zadig WinUSB (ربط تلقائي صامت)
  *  ٣) نافذة حوار المتصفح (بديل أخير إن تعذّرت النواقل الصامتة)
- * متوافقة استدعائياً مع كافة شاشات الواجهة المتزامنة (تعيد boolean وتطلق الإرسال الصامت).
+ * الغلاف القديم يعيد وعد النتيجة الفعلية، ولا يعتبر بدء الإرسال نجاحاً للطباعة.
  */
-export function printCompanyStatementReceipt(d: CompanyStatementReceiptData): boolean {
-  void printCompanyStatementReceiptAsync(d).catch((e) => {
-    console.warn("[statement-receipt] فشل الطباعة:", e);
-  });
-  return true;
+export async function printCompanyStatementReceipt(
+  d: CompanyStatementReceiptData,
+  options?: PrintWindowOptions,
+): Promise<PrintResult> {
+  try {
+    const result = await printCompanyStatementReceiptAsync(d, options);
+    if (!result.ok)
+      notify.err(
+        "حُجبت نافذة الطباعة؛ أعد طباعة الكشف المحفوظ دون تسجيل تسوية جديدة",
+        "التسوية مثبتة؛ تعذرت الطباعة فقط",
+      );
+    return result;
+  } catch (error) {
+    notify.err(
+      error,
+      "التسوية مثبتة؛ تعذرت الطباعة فقط. أعد طباعة الكشف المحفوظ",
+    );
+    throw error;
+  }
 }
 
-export async function printCompanyStatementReceiptAsync(d: CompanyStatementReceiptData): Promise<PrintResult> {
+export async function printCompanyStatementReceiptAsync(
+  d: CompanyStatementReceiptData,
+  options?: PrintWindowOptions,
+): Promise<PrintResult> {
   const doc = buildCompanyStatementReceiptDoc(d);
-  return printDoc(doc);
+  return printDoc(doc, options);
 }
-

@@ -18,6 +18,7 @@ import type {
   AftercareSettlementSourceRight,
   FulfillmentMutationIdentity,
 } from "../../../shared/fulfillment";
+import { aftercareDispositionLabel } from "../../../shared/fulfillment";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { logAuditTx } from "../auditService";
@@ -36,6 +37,11 @@ import {
   recordFulfillmentMutationTx,
 } from "./core";
 import { fulfillmentCostVisibleTx } from "./visibility";
+import {
+  createDeliveryDocumentSnapshotTx,
+  listDeliveryDocumentSnapshotsTx,
+  type GenericWorkflowDocumentPayload,
+} from "../delivery/documentSnapshots";
 
 export type AftercareSettlementInput = {
   id: number;
@@ -576,7 +582,22 @@ export async function postAftercareSettlement(
       row.branchId,
     );
     if (await findFulfillmentReplayTx(tx, context))
-      return { id: row.id, replay: true };
+      return {
+        id: row.id,
+        replay: true,
+        documentSnapshotIds: (
+          await listDeliveryDocumentSnapshotsTx(tx, {
+            sourceType: "AFTERCARE_SETTLEMENT",
+            sourceId: row.id,
+            branchId: row.branchId,
+          })
+        )
+          .filter(
+            (snapshot) =>
+              snapshot.eventKey === `AFTERCARE_SETTLEMENT:${row.id}:POSTED`,
+          )
+          .map((snapshot) => snapshot.id),
+      };
     assertFulfillmentVersion(row, input.expectedVersion);
     if (
       row.status !== "APPROVED" ||
@@ -684,6 +705,67 @@ export async function postAftercareSettlement(
       .update(aftercareCases)
       .set({ status: "IN_PROGRESS", version: data.row.version + 1 })
       .where(eq(aftercareCases.id, row.caseId));
+    const [posted] = await tx
+      .select({ postedAt: aftercareSettlements.postedAt })
+      .from(aftercareSettlements)
+      .where(eq(aftercareSettlements.id, row.id))
+      .limit(1);
+    if (!posted?.postedAt)
+      throw fulfillmentError(
+        "تعذر إثبات وقت ترحيل التسوية؛ لم تحفظ المطبوعات",
+        "CONFLICT",
+      );
+    const payload: GenericWorkflowDocumentPayload = {
+      schemaVersion: 1,
+      title: "محضر تسوية عهدة المعالجة",
+      documentNumber: `${data.row.caseNumber}/SET-${row.id}`,
+      eventOccurredAt: posted.postedAt.toISOString(),
+      rows: [
+        { label: "حالة المعالجة", value: data.row.caseNumber },
+        { label: "رقم التسوية", value: String(row.id) },
+        {
+          label: "مرجع أصل المبيع",
+          value:
+            data.row.invoiceId != null
+              ? `فاتورة #${data.row.invoiceId}`
+              : `أمر شغل #${data.row.workOrderId}`,
+        },
+        { label: "طالب التسوية", value: `#${row.createdBy}` },
+        {
+          label: "المراجع المستقل",
+          value: `#${row.approvedBy} — ${row.approvedAt?.toISOString() ?? "الاعتماد المحفوظ"}`,
+        },
+        { label: "منفذ الترحيل", value: `#${actor.userId}` },
+        ...data.projected.map((line) => ({
+          label: `سطر دفعة المعالجة #${line.executionLineId}`,
+          value: `${aftercareDispositionLabel[line.disposition]}؛ صالح ${line.usableBaseQuantity}؛ مستهلك ${line.consumedBaseQuantity}؛ تالف ${line.damagedBaseQuantity}؛ ${line.originalMovementId == null ? "لا حركة صرف مخزني أصلية لهذا السطر" : `مرجع الصرف #${line.originalMovementId}`}`,
+        })),
+        ...data.sourceRights.map((right) => ({
+          label: `حق أصل المبيع المتبقي — بند #${right.invoiceItemId}`,
+          value: `المصدر #${right.originalMovementId}؛ صالح ${right.usableBaseQuantity}؛ تالف ${right.damagedBaseQuantity}؛ تنفيذه التجاري والمالي من مساره المستقل`,
+        })),
+      ],
+      totals: [
+        {
+          label: "عدد أسطر عهدة المعالجة المسواة",
+          value: String(data.projected.length),
+        },
+      ],
+      notice:
+        "يثبت مصائر عهدة المعالجة التي رحلت بهذه التسوية فقط. حقوق أصل المبيع والتحصيل ورد الأموال تبقى على مستنداتها المستقلة. لا يتضمن هذا المحضر تكاليف داخلية ولا ينشئ قيداً أو قبضاً جديداً.",
+    };
+    const document = await createDeliveryDocumentSnapshotTx(tx, {
+      documentType: "AFTERCARE_SETTLEMENT",
+      layout: "THERMAL_80_CONTENT_72",
+      sourceType: "AFTERCARE_SETTLEMENT",
+      sourceId: row.id,
+      sourceVersion: row.previewHash,
+      branchId: row.branchId,
+      eventKey: `AFTERCARE_SETTLEMENT:${row.id}:POSTED`,
+      eventOccurredAt: posted.postedAt,
+      payload,
+      createdBy: actor.userId,
+    });
     await recordFulfillmentMutationTx(tx, context, row.id);
     await logAuditTx(tx, actor, {
       action: "delivery.fulfillment.aftercare.settlementPost",
@@ -695,7 +777,11 @@ export async function postAftercareSettlement(
         originalSourceReturnRequired: data.sourceRights.length > 0,
       },
     });
-    return { id: row.id, replay: false };
+    return {
+      id: row.id,
+      replay: false,
+      documentSnapshotIds: [Number(document.snapshot.id)],
+    };
   });
 }
 

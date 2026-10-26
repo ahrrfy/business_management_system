@@ -60,6 +60,7 @@ export interface ConfirmShipmentDeliveryInput extends ShipmentOperationInput {
 }
 export interface ShipmentReasonInput extends ShipmentOperationInput {
   reason: string;
+  physicalHeldConfirmed?: boolean;
 }
 export interface DeclareShipmentReturnInput extends Omit<
   ShipmentReasonInput,
