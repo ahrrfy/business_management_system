@@ -13,6 +13,14 @@ import { getJobApplicantCvByKey } from "../jobApplicantCvService";
 import { mapDeviceUserToEmployee } from "../hrDevices/punchStore";
 import { truncateTables } from "./__testUtils__";
 
+const PUBLIC_APPLICANT_DETAILS = {
+  birthDate: "1998-05-14",
+  degree: "بكالوريوس",
+  experience: "بدون خبرة",
+  skills: "استخدام الحاسوب",
+  residentialAddress: "بغداد، العامرية، شارع العمل الشعبي، قرب المكتبة",
+} as const;
+
 const BRANCH_ONE_CV_KEY = "A".repeat(43);
 
 function db() {
@@ -363,6 +371,7 @@ describe("recruitment branch isolation", () => {
     expect(general?.branchId).toBe(1);
     expect(general?.vacancyId).toBeNull();
     const publicGeneral = await scoped.recruitment.submit({
+      ...PUBLIC_APPLICANT_DETAILS,
       name: "Public general applicant",
       phone: "+9647701234567",
       residentialAddress: "Baghdad — Karrada",
@@ -380,6 +389,43 @@ describe("recruitment branch isolation", () => {
       branchId: 1,
       vacancyId: null,
     });
+  });
+
+  it("requires all public application details without creating incomplete applicants", async () => {
+    const anonymous = appRouter.createCaller({
+      req: { headers: {} },
+      res: { cookie() {}, clearCookie() {} },
+      sessionId: null,
+      platformAdmin: null,
+      user: null,
+    } as unknown as TrpcContext);
+    const validInput = {
+      ...PUBLIC_APPLICANT_DETAILS,
+      name: "متقدم لاختبار الحقول الإلزامية",
+      phone: "+9647701234567",
+    };
+    const before = await db().select().from(schema.jobApplicants);
+    for (const vacancyId of [undefined, 51]) {
+      for (const field of Object.keys(validInput)) {
+        for (const value of [undefined, "", "   "]) {
+          const input = { ...validInput, vacancyId, [field]: value };
+          await expect(
+            anonymous.recruitment.submit(input as never),
+            `${field}=${String(value)}; vacancyId=${String(vacancyId)}`,
+          ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+        }
+      }
+    }
+    expect(await db().select().from(schema.jobApplicants)).toEqual(before);
+
+    const submitted = await anonymous.recruitment.submit({
+      ...validInput,
+      name: `  ${validInput.name}  `,
+      experience: "  بدون خبرة  ",
+      skills: `  ${validInput.skills}  `,
+      residentialAddress: `  ${validInput.residentialAddress}  `,
+    });
+    expect(submitted).toMatchObject(validInput);
   });
 
   it("keeps admin/owner company-wide and rejects branchless HR users", async () => {
@@ -408,6 +454,7 @@ describe("recruitment branch isolation", () => {
     // وظيفة ٥٣ (HQ role) غير منشورة — المجهول يُرفَض حتى لو عرف معرّفها.
     await expect(
       anonymous.recruitment.submit({
+        ...PUBLIC_APPLICANT_DETAILS,
         name: "Attacker",
         phone: "+9647701234567",
         vacancyId: 53,
@@ -417,6 +464,7 @@ describe("recruitment branch isolation", () => {
 
     // وظيفة ٥١ منشورة — يُقبَل لكن عنوانه الوهميّ يُستبدَل بعنوان السجلّ الموثوق.
     const applied = await anonymous.recruitment.submit({
+      ...PUBLIC_APPLICANT_DETAILS,
       name: "Honest applicant",
       phone: "+9647701234567",
       vacancyId: 51,
@@ -471,6 +519,7 @@ describe("recruitment branch isolation", () => {
     } as unknown as TrpcContext);
     await expect(
       anonymous.recruitment.submit({
+        ...PUBLIC_APPLICANT_DETAILS,
         name: "Attacker",
         phone: "+9647701234567",
         vacancyId: incomplete!.id,
@@ -480,6 +529,7 @@ describe("recruitment branch isolation", () => {
     });
     await expect(
       anonymous.recruitment.submit({
+        ...PUBLIC_APPLICANT_DETAILS,
         name: "Branch injector",
         phone: "+9647701234567",
         branchId: 1,
@@ -489,6 +539,7 @@ describe("recruitment branch isolation", () => {
     });
     await expect(
       anonymous.recruitment.submit({
+        ...PUBLIC_APPLICANT_DETAILS,
         name: "Unsafe portfolio",
         phone: "+9647701234567",
         portfolioUrl: "javascript:alert(1)",
@@ -498,6 +549,7 @@ describe("recruitment branch isolation", () => {
     });
     await expect(
       anonymous.recruitment.submit({
+        ...PUBLIC_APPLICANT_DETAILS,
         name: "Malformed portfolio",
         phone: "+9647701234567",
         portfolioUrl: "not a URL",
@@ -506,10 +558,14 @@ describe("recruitment branch isolation", () => {
       code: "BAD_REQUEST",
     });
     await expect(
-      anonymous.recruitment.submit({ name: "No phone" }),
+      anonymous.recruitment.submit({
+        ...PUBLIC_APPLICANT_DETAILS,
+        name: "No phone",
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
     await expect(
       anonymous.recruitment.submit({
+        ...PUBLIC_APPLICANT_DETAILS,
         name: "Malformed email",
         phone: "+9647701234567",
         email: "not-an-email",
@@ -517,6 +573,7 @@ describe("recruitment branch isolation", () => {
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     const submitted = await anonymous.recruitment.submit({
+      ...PUBLIC_APPLICANT_DETAILS,
       name: "علي حسين كاظم العبيدي",
       phone: "+9647701234567",
       whatsappPhone: "+9647801234567",
@@ -563,6 +620,7 @@ describe("recruitment branch isolation", () => {
 
     await expect(
       anonymous.recruitment.submit({
+        ...PUBLIC_APPLICANT_DETAILS,
         name: "Overflow salary",
         phone: "+9647701234567",
         expectedSalary: "999999999999",
@@ -624,6 +682,7 @@ describe("recruitment branch isolation", () => {
     // حدّ ١٠٠ حرف للمسمى الوظيفي في التقديم والتعيين (تطابق employees.position varchar(100))
     await expect(
       anonymous.recruitment.submit({
+        ...PUBLIC_APPLICANT_DETAILS,
         name: "Too long job title",
         phone: "+9647701234567",
         jobTitle: "وظيفة".repeat(25),
@@ -632,7 +691,9 @@ describe("recruitment branch isolation", () => {
 
     // تحويل المتقدّم إلى موظف ذرّياً داخل نفس المعاملة ومنع التحويل المكرّر أو العابر للفروع
     const scopedMgr1 = await caller(2);
-    const beforeEmpCount = (await scopedMgr1.employees.list({ includeInactive: true })).rows.length;
+    const beforeEmpCount = (
+      await scopedMgr1.employees.list({ includeInactive: true })
+    ).rows.length;
     await expect(
       scopedMgr1.employees.create({
         firstName: "Cross",
@@ -642,7 +703,9 @@ describe("recruitment branch isolation", () => {
         applicantId: 62,
       }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
-    expect((await scopedMgr1.employees.list({ includeInactive: true })).rows).toHaveLength(beforeEmpCount);
+    expect(
+      (await scopedMgr1.employees.list({ includeInactive: true })).rows,
+    ).toHaveLength(beforeEmpCount);
 
     const convertedEmp = await scopedMgr1.employees.create({
       firstName: "Branch",
@@ -672,7 +735,9 @@ describe("recruitment branch isolation", () => {
       code: "CONFLICT",
       message: expect.stringMatching(/تم تعيين هذا المتقدّم مسبقاً كموظف/),
     });
-    expect((await scopedMgr1.employees.list({ includeInactive: true })).rows).toHaveLength(beforeEmpCount + 1);
+    expect(
+      (await scopedMgr1.employees.list({ includeInactive: true })).rows,
+    ).toHaveLength(beforeEmpCount + 1);
 
     await expect(
       admin.employees.createWithAccount({
@@ -727,13 +792,17 @@ describe("recruitment branch isolation", () => {
       admin.recruitment.updateStage({ id: 64, stage: "rejected" }),
     ).rejects.toMatchObject({
       code: "CONFLICT",
-      message: expect.stringMatching(/لا يمكن تغيير مرحلة متقدّم تم تعيينه كموظف/),
+      message: expect.stringMatching(
+        /لا يمكن تغيير مرحلة متقدّم تم تعيينه كموظف/,
+      ),
     });
     await expect(
       admin.recruitment.setRating({ id: 64, rating: 4, stage: "archived" }),
     ).rejects.toMatchObject({
       code: "CONFLICT",
-      message: expect.stringMatching(/لا يمكن تغيير مرحلة متقدّم تم تعيينه كموظف/),
+      message: expect.stringMatching(
+        /لا يمكن تغيير مرحلة متقدّم تم تعيينه كموظف/,
+      ),
     });
   });
 
