@@ -18,6 +18,7 @@ import { confirm } from "@/lib/confirm";
 import { D, formatQuantity, moneyInput } from "@/lib/money";
 import { salesOperationAllowed } from "@/lib/salesOperationAccess";
 import { PageHeader } from "@/components/PageHeader";
+import { OrderCustomizationAssets } from "@/components/store/OrderCustomizationAssets";
 import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/invoiceTransfer";
 import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
@@ -590,9 +591,32 @@ export default function QuotationNew() {
       />
 
       {!isEdit && sourceQuoteRequest.data && (
-        <div className="rounded-md border border-primary/25 bg-primary/5 px-3 py-1.5 text-xs leading-5 text-foreground">
-          <span className="font-semibold">عرض رسمي من الطلب {sourceQuoteRequest.data.requestNumber}.</span>{" "}
-          راجع الأسعار والكميات والتوفر قبل الحفظ؛ لا يحجز هذا العرض مخزوناً ولا يصدر فاتورة.
+        <div className="space-y-2 rounded-md border border-primary/25 bg-primary/5 px-3 py-2 text-xs leading-5 text-foreground">
+          <div>
+            <span className="font-semibold">عرض رسمي من الطلب {sourceQuoteRequest.data.requestNumber}.</span>{" "}
+            راجع الأسعار والكميات والتوفر قبل الحفظ؛ لا يحجز هذا العرض مخزوناً ولا يصدر فاتورة.
+          </div>
+          {sourceQuoteRequest.data.customizationAttachments &&
+            sourceQuoteRequest.data.customizationAttachments.length > 0 && (
+              <div className="space-y-1.5 border-t border-primary/20 pt-1.5">
+                <div className="font-semibold">مرفقات التخصيص المرفوعة من العميل:</div>
+                {sourceQuoteRequest.data.customizationAttachments.map((att, idx) => (
+                  <div key={`${att.productUnitId}-${idx}`} className="space-y-0.5">
+                    <div>
+                      {att.productName}
+                      {att.variantLabel ? ` — ${att.variantLabel}` : ""} · {formatQuantity(att.quantity)} {att.unitName}
+                      {att.summary ? ` (${att.summary})` : ""}
+                    </div>
+                    <OrderCustomizationAssets
+                      previewAssetUrl={att.previewAssetUrl}
+                      logoAssetUrl={att.logoAssetUrl}
+                      productName={att.productName}
+                      compact
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
         </div>
       )}
 

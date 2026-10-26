@@ -902,8 +902,14 @@ export function imageRouter(): Router {
       if (user.isOwner) normalizeOwnerAuthority(user);
       else await resolveCustomRole(user);
 
+      let allowOrderAssets = true;
+      let allowQuoteAssets = true;
       if (user.isOwner !== true && hasOperationPolicy(user)) {
-        if (!operationDecision(user, "storeAdmin.orders.detail").allowed) {
+        allowOrderAssets = operationDecision(user, "storeAdmin.orders.detail").allowed;
+        allowQuoteAssets =
+          operationDecision(user, "storeAdmin.quoteRequests.list").allowed ||
+          operationDecision(user, "storeAdmin.quoteRequests.prepareOfficialQuotation").allowed;
+        if (!allowOrderAssets && !allowQuoteAssets) {
           preventCachingStoredImageFailure(res);
           return res.status(403).end();
         }
@@ -932,7 +938,11 @@ export function imageRouter(): Router {
         preventCachingStoredImageFailure(res);
         return res.status(400).end();
       }
-      const asset = await findStorefrontCustomizationAssetForStaff(identifier, { scopedBranchId });
+      const asset = await findStorefrontCustomizationAssetForStaff(identifier, {
+        scopedBranchId,
+        allowOrderAssets,
+        allowQuoteAssets,
+      });
       if (!asset) {
         preventCachingStoredImageFailure(res);
         return res.status(404).end();

@@ -5,6 +5,7 @@ import { useState } from "react";
 import { Link } from "wouter";
 
 import { PageHeader } from "@/components/PageHeader";
+import { OrderCustomizationAssets } from "@/components/store/OrderCustomizationAssets";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -86,6 +87,26 @@ export default function StoreQuoteRequests() {
                 <div className="mt-3 rounded-lg bg-muted/40 p-3 text-sm">
                   {request.items.map((item, index) => <div key={`${item.productName}-${index}`} className="py-0.5">{item.productName}{item.variantLabel ? ` — ${item.variantLabel}` : ""} · {formatQuantity(item.quantity)} {item.unitName}</div>)}
                 </div>
+                {request.customizationAttachments && request.customizationAttachments.length > 0 && (
+                  <div className="mt-3 space-y-2 rounded-lg border border-border/70 bg-muted/20 p-3">
+                    <div className="text-xs font-bold text-foreground">مرفقات التصميم والتخصيص</div>
+                    {request.customizationAttachments.map((att, attIdx) => (
+                      <div key={`${att.productUnitId}-${attIdx}`} className="space-y-1 text-xs">
+                        <div className="font-medium text-foreground">
+                          {att.productName}
+                          {att.variantLabel ? ` — ${att.variantLabel}` : ""} · {formatQuantity(att.quantity)} {att.unitName}
+                          {att.summary ? ` (${att.summary})` : ""}
+                        </div>
+                        <OrderCustomizationAssets
+                          previewAssetUrl={att.previewAssetUrl}
+                          logoAssetUrl={att.logoAssetUrl}
+                          productName={att.productName}
+                          compact
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {request.status === "QUOTED" && (
                   <p className="mt-3 rounded-lg border border-border/70 bg-muted/30 p-3 text-xs leading-5 text-muted-foreground">
                     العرض الرسمي هو مسار قبول العميل أو طلب إعادة التسعير. عند القبول يعيد النظام التحقق من السعر والتوفر التشغيلي (ATP)؛ إذا تغيّرا يعود العرض لمراجعة الموظف وإعادة التسعير، ولا ينشئ القبول فاتورة أو طلب بيع.

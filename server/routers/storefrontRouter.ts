@@ -46,7 +46,7 @@ import { recordBannerMetric } from "../services/storeAdmin/bannerMetricsService"
 import { recordStoreConversionMetric, recordStoreRecommendationClick } from "../services/storeAdmin/storeConversionMetricsService";
 import { verifyStorefrontTurnstile } from "../services/storefrontTurnstile";
 import { createVerifiedStorefrontOrder } from "../services/storefrontOrderGate";
-import { createVerifiedStorefrontQuoteRequest } from "../services/storefrontQuoteRequestGate";
+import { createVerifiedStorefrontQuoteRequest } from "../services/storefrontQuoteRequestGate"; import { quoteCustomizationAssetsInputSchema } from "../lib/quoteRequestCustomizationMeta";
 import { STOREFRONT_TURNSTILE_TOKEN_MAX_LENGTH } from "@shared/storefrontTurnstile";
 import { registerStorefrontPushDevice, trackStorefrontPushInteraction } from "../services/storeAdmin/storefrontPushCampaignService";
 import { claimFirebaseStorefrontCustomer, requireActiveStorefrontCustomer, storefrontCustomerBenefits } from "../services/storefrontCustomerIdentityService";
@@ -559,12 +559,12 @@ export const storefrontRouter = router({
         note: z.string().trim().min(5).max(2_000),
         clientRequestId: z.string().trim().min(8).max(80),
         turnstileToken: z.string().trim().min(1).max(STOREFRONT_TURNSTILE_TOKEN_MAX_LENGTH),
-        lines: z.array(
-          z.object({
-            productUnitId: z.number().int().positive(),
-            quantity: z.number().int().positive().max(10_000),
-          }),
-        ).min(1).max(30),
+        lines: z.array(z.object({
+          productUnitId: z.number().int().positive(),
+          quantity: z.number().int().positive().max(10_000),
+        })).min(1).max(30),
+        // مرفقات الشعار والمعاينة المرفوعة لكل تصميم مخصّص
+        customizationAssets: quoteCustomizationAssetsInputSchema,
       }),
     )
     .mutation(async ({ input }) => {

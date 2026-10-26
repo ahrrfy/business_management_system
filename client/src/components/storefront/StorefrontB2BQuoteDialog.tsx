@@ -59,6 +59,15 @@ function createClientRequestId(): string {
 
 export const MAX_B2B_QUOTE_DISTINCT_UNITS = 30;
 export const MAX_B2B_QUOTE_UNIT_QUANTITY = 10_000;
+export const MAX_B2B_QUOTE_CUSTOM_ATTACHMENTS = 60;
+
+export interface B2BQuoteCustomizationAssetInput {
+  productUnitId: number;
+  quantity: number;
+  summary?: string;
+  logoAssetKey?: string;
+  previewAssetKey?: string;
+}
 
 function normalizeLocaleDigits(raw: string): string {
   return raw
@@ -82,27 +91,71 @@ export function aggregateB2BQuoteLines(
   }));
 }
 
-function describeB2BCartLineCustomization(customization: unknown): string | null {
+function summarizeCartCustomizationText(customization: unknown): string | null {
   if (!customization || typeof customization !== "object") return null;
   const record = customization as {
     values?: Record<string, string>;
+  };
+  const base = summarizeStorefrontCustomization(customization as never);
+  if (base) return base;
+  if (!record.values) return null;
+  const fallback = Object.entries(record.values)
+    .map(([, v]) => (typeof v === "string" ? v.trim() : ""))
+    .filter(Boolean)
+    .join(" • ");
+  return fallback || null;
+}
+
+function describeB2BCartLineCustomization(customization: unknown): string | null {
+  if (!customization || typeof customization !== "object") return null;
+  const record = customization as {
     logoAssetKey?: string;
     previewAssetKey?: string;
   };
-  const base = summarizeStorefrontCustomization(customization as never);
-  const fallbackValues =
-    !base && record.values
-      ? Object.entries(record.values)
-          .map(([, v]) => (typeof v === "string" ? v.trim() : ""))
-          .filter(Boolean)
-          .join(" • ")
-      : "";
+  const textSummary = summarizeCartCustomizationText(customization);
+  const logoKey = typeof record.logoAssetKey === "string" ? record.logoAssetKey.trim() : "";
+  const previewKey =
+    typeof record.previewAssetKey === "string" ? record.previewAssetKey.trim() : "";
   const parts = [
-    base || fallbackValues || null,
-    record.logoAssetKey ? "شعار مرفوع" : null,
-    record.previewAssetKey ? "معاينة تصميم معتمدة" : null,
+    textSummary,
+    logoKey ? "شعار مرفوع" : null,
+    previewKey ? "معاينة تصميم معتمدة" : null,
   ].filter((p): p is string => Boolean(p));
   return parts.length > 0 ? parts.join(" • ") : null;
+}
+
+export function extractB2BCartCustomizationAssets(
+  cartLines: ReadonlyArray<B2BQuoteCartLineInput>,
+): B2BQuoteCustomizationAssetInput[] {
+  const result: B2BQuoteCustomizationAssetInput[] = [];
+  for (const line of cartLines) {
+    const unitId = Math.floor(Number(line.productUnitId));
+    const qty = Math.floor(Number(line.qty));
+    if (!Number.isSafeInteger(unitId) || unitId <= 0 || qty <= 0) continue;
+    if (!line.customization || typeof line.customization !== "object") continue;
+    const record = line.customization as {
+      logoAssetKey?: string;
+      previewAssetKey?: string;
+    };
+    const logoAssetKey =
+      typeof record.logoAssetKey === "string" && record.logoAssetKey.trim().length > 0
+        ? record.logoAssetKey.trim()
+        : undefined;
+    const previewAssetKey =
+      typeof record.previewAssetKey === "string" && record.previewAssetKey.trim().length > 0
+        ? record.previewAssetKey.trim()
+        : undefined;
+    if (!logoAssetKey && !previewAssetKey) continue;
+    const summary = summarizeCartCustomizationText(line.customization)?.slice(0, 500) || undefined;
+    result.push({
+      productUnitId: unitId,
+      quantity: qty,
+      ...(summary ? { summary } : {}),
+      ...(logoAssetKey ? { logoAssetKey } : {}),
+      ...(previewAssetKey ? { previewAssetKey } : {}),
+    });
+  }
+  return result;
 }
 
 export default function StorefrontB2BQuoteDialog({
@@ -138,6 +191,10 @@ export default function StorefrontB2BQuoteDialog({
   const isSubmittingRef = useRef(false);
 
   const normalizedLines = useMemo(() => aggregateB2BQuoteLines(cartLines), [cartLines]);
+  const customizationAssets = useMemo(
+    () => extractB2BCartCustomizationAssets(cartLines),
+    [cartLines],
+  );
   const lineLimitError = useMemo(() => {
     if (normalizedLines.length > MAX_B2B_QUOTE_DISTINCT_UNITS) {
       return `تحتوي السلة على ${normalizedLines.length} صنفاً مختلفاً، بينما الحد الأقصى لطلب عرض السعر الواحد هو ${MAX_B2B_QUOTE_DISTINCT_UNITS} صنفاً. يرجى تقسيم السلة أو تنزيل العرض التقديري (B2B PDF).`;
@@ -145,8 +202,11 @@ export default function StorefrontB2BQuoteDialog({
     if (normalizedLines.some((line) => line.quantity > MAX_B2B_QUOTE_UNIT_QUANTITY)) {
       return `تتجاوز كمية أحد الأصناف الحد الأقصى المسموح للطلب الواحد (${MAX_B2B_QUOTE_UNIT_QUANTITY} وحدة). يرجى تقليل الكمية أو توضيح الكمية الكلية في تفاصيل الطلب.`;
     }
+    if (customizationAssets.length > MAX_B2B_QUOTE_CUSTOM_ATTACHMENTS) {
+      return `تحتوي السلة على ${customizationAssets.length} تصميماً مرفوعاً منفصلاً، بينما الحد الأقصى للطلب الواحد هو ${MAX_B2B_QUOTE_CUSTOM_ATTACHMENTS} تصميماً. يرجى تقسيم التصاميم على أكثر من طلب.`;
+    }
     return null;
-  }, [normalizedLines]);
+  }, [normalizedLines, customizationAssets.length]);
   const canSubmitOnline = Boolean(orderingEnabled && turnstileSiteKey);
 
   const createQuoteM = trpc.storefront.createQuoteRequest.useMutation({
@@ -225,9 +285,11 @@ export default function StorefrontB2BQuoteDialog({
 
     const customSummaries = cartLines
       .map((line) => {
+        const unitId = Math.floor(Number(line.productUnitId));
+        const qtyNum = Math.floor(Number(line.qty));
+        if (!Number.isSafeInteger(unitId) || unitId <= 0 || qtyNum <= 0) return null;
         const summary = describeB2BCartLineCustomization(line.customization);
         if (!summary) return null;
-        const qtyNum = Math.max(1, Math.round(Number(line.qty) || 0));
         const unitLabel = line.unitName ? ` ${line.unitName}` : "";
         const itemLabel = line.variantLabel
           ? `${line.name} (${line.variantLabel})`
@@ -280,6 +342,7 @@ export default function StorefrontB2BQuoteDialog({
       requestType,
       finalNote,
       normalizedLines,
+      customizationAssets,
     });
 
     if (!attemptRef.current || attemptRef.current.fingerprint !== fingerprint) {
@@ -303,6 +366,7 @@ export default function StorefrontB2BQuoteDialog({
       clientRequestId: attemptRef.current.clientRequestId,
       turnstileToken,
       lines: normalizedLines,
+      ...(customizationAssets.length > 0 ? { customizationAssets } : {}),
     });
   }
 
@@ -320,7 +384,8 @@ export default function StorefrontB2BQuoteDialog({
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
-        className="sm:max-w-lg max-h-[90vh] overflow-y-auto"
+        overlayClassName="z-[80]"
+        className="z-[81] sm:max-w-lg max-h-[90vh] overflow-y-auto"
         dir="rtl"
         onEscapeKeyDown={(e) => {
           if (isQuotePending) e.preventDefault();

@@ -60,8 +60,20 @@ vi.mock("@/components/ui/dialog", async (importOriginal) => {
           {children}
         </div>
       ) : null,
-    DialogContent: ({ children, className }: { children: React.ReactNode; className?: string }) => (
-      <div data-testid="b2b-dialog-content" className={className}>
+    DialogContent: ({
+      children,
+      className,
+      overlayClassName,
+    }: {
+      children: React.ReactNode;
+      className?: string;
+      overlayClassName?: string;
+    }) => (
+      <div
+        data-testid="b2b-dialog-content"
+        className={className}
+        data-overlay-class={overlayClassName}
+      >
         {children}
       </div>
     ),
@@ -534,10 +546,125 @@ describe("StorefrontB2BQuoteButton & lazy official StorefrontB2BQuoteDialog", ()
     const payload = createQuoteMutateMock.mock.calls[0]![0] as {
       lines: Array<{ productUnitId: number; quantity: number }>;
       note: string;
+      customizationAssets?: Array<{
+        productUnitId: number;
+        quantity: number;
+        summary?: string;
+        logoAssetKey?: string;
+        previewAssetKey?: string;
+      }>;
     };
     expect(payload.lines).toEqual([{ productUnitId: 501, quantity: 30 }]);
     expect(payload.note).toContain("درع كريستال [×10 قطعة]: الحفر: تكريم فرع بغداد");
     expect(payload.note).toContain("درع كريستال [×20 قطعة]: تكريم فرع البصرة • شعار مرفوع");
+    expect(payload.customizationAssets).toEqual([
+      {
+        productUnitId: 501,
+        quantity: 20,
+        summary: "تكريم فرع البصرة",
+        logoAssetKey: "customizer/t1/logo/basra.png",
+      },
+    ]);
+  });
+
+  it("layers quote dialog overlay (z-80) and content (z-81) above StorefrontPanelShell (z-55 / z-56) and attaches both logoAssetKey and previewAssetKey", async () => {
+    const actualDialog = await vi.importActual<typeof import("@/components/ui/dialog")>(
+      "@/components/ui/dialog",
+    );
+    const { StorefrontPanelShell } = await import("../StorefrontPanelShell");
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    const linesWithAssets = [
+      {
+        cartKey: "u-901::studio",
+        productUnitId: 901,
+        name: "كوب حراري",
+        qty: 15,
+        price: "8000",
+        unitName: "قطعة",
+        customization: {
+          templateId: 12,
+          logoAssetKey: "customizer/default/logo/aabbcc.png",
+          previewAssetKey: "customizer/default/preview/ddeeff.png",
+        },
+      },
+    ];
+
+    await act(async () => {
+      root!.render(
+        <StorefrontPanelShell title="سلة المشتريات" onClose={() => {}}>
+          <StorefrontB2BQuoteButton
+            cartLines={linesWithAssets}
+            cartSubtotal={120000}
+            orderingEnabled={true}
+            turnstileSiteKey="site-key"
+          />
+          <actualDialog.Dialog open>
+            <actualDialog.DialogContent
+              overlayClassName="z-[80]"
+              className="z-[81] sm:max-w-lg"
+            >
+              <actualDialog.DialogTitle>اختبار الطبقات</actualDialog.DialogTitle>
+              <actualDialog.DialogDescription>فوق السلة</actualDialog.DialogDescription>
+            </actualDialog.DialogContent>
+          </actualDialog.Dialog>
+        </StorefrontPanelShell>,
+      );
+    });
+
+    // Verify real DialogOverlay and DialogContent twMerge z-[80]/z-[81] above StorefrontPanelShell z-[55]/z-[56]
+    const realOverlay = document.body.querySelector<HTMLElement>('[data-slot="dialog-overlay"]');
+    const realContent = document.body.querySelector<HTMLElement>('[data-slot="dialog-content"]');
+    expect(realOverlay?.className).toContain("z-[80]");
+    expect(realOverlay?.className).not.toContain("z-50");
+    expect(realContent?.className).toContain("z-[81]");
+    expect(realContent?.className).not.toContain("z-50");
+
+    // Verify StorefrontB2BQuoteDialog itself passes overlayClassName="z-[80]" and className containing "z-[81]"
+    const officialBtn = Array.from(document.body.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("طلب عرض سعر رسمي"),
+    )!;
+    await act(async () => {
+      officialBtn.click();
+    });
+
+    const dialogEl = await waitForLazyDialog(document.body);
+    expect(dialogEl.getAttribute("data-overlay-class")).toBe("z-[80]");
+    expect(dialogEl.className).toContain("z-[81]");
+
+    await act(async () => {
+      setNativeValue(document.body.querySelector<HTMLInputElement>("#b2b-quote-customer-name")!, "مؤسسة الرافدين");
+      setNativeValue(document.body.querySelector<HTMLInputElement>("#b2b-quote-customer-phone")!, "07709998877");
+      setNativeValue(document.body.querySelector<HTMLTextAreaElement>("#b2b-quote-note")!, "طباعة الشعار المعتمد");
+      document.body.querySelector<HTMLButtonElement>('[data-testid="solve-b2b-turnstile"]')!.click();
+    });
+
+    const form = dialogEl.querySelector("form")!;
+    await act(async () => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+
+    expect(createQuoteMutateMock).toHaveBeenCalledTimes(1);
+    const firstPayload = createQuoteMutateMock.mock.calls[0]![0] as {
+      clientRequestId: string;
+      customizationAssets?: Array<{
+        productUnitId: number;
+        quantity: number;
+        logoAssetKey?: string;
+        previewAssetKey?: string;
+      }>;
+    };
+    expect(firstPayload.customizationAssets).toEqual([
+      {
+        productUnitId: 901,
+        quantity: 15,
+        logoAssetKey: "customizer/default/logo/aabbcc.png",
+        previewAssetKey: "customizer/default/preview/ddeeff.png",
+      },
+    ]);
   });
 });
 
