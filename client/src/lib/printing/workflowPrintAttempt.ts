@@ -100,37 +100,17 @@ export function beginWorkflowPrintAttempt(
   const copyType = snapshot.printHistory.some((row) => row.status === "SENT")
     ? "REPRINT"
     : "ORIGINAL";
-  const pending = snapshot.printHistory.find(
-    (row) =>
-      row.status === "REQUESTED" &&
-      row.requestedBy === userId &&
-      row.copyType === copyType &&
-      Number.isSafeInteger(row.id) &&
-      row.id! > 0 &&
-      (row.snapshotId == null || row.snapshotId === snapshot.id) &&
-      typeof row.clientRequestId === "string" &&
-      row.clientRequestId.length >= 8 &&
-      row.clientRequestId.length <= 80 &&
-      (copyType !== "REPRINT" ||
-        (typeof row.reason === "string" && row.reason.trim().length >= 3)),
-  );
+  // History may belong to another device/profile of this same employee. Only
+  // the locally saved request above proves ownership of a recoverable attempt.
   const attempt: WorkflowPrintAttempt = {
     userId,
     request: {
       snapshotId: snapshot.id,
       branchId,
-      clientRequestId: pending?.clientRequestId ?? crypto.randomUUID(),
+      clientRequestId: crypto.randomUUID(),
       copyType,
-      ...(pending?.reason != null
-        ? { reason: pending.reason }
-        : copyType === "REPRINT"
-          ? { reason: reprintReason }
-          : {}),
-      ...(pending?.printerKey != null
-        ? { printerKey: pending.printerKey }
-        : {}),
+      ...(copyType === "REPRINT" ? { reason: reprintReason } : {}),
     },
-    ...(pending ? { printId: pending.id } : {}),
   };
   saveWorkflowPrintAttempt(attempt);
   return attempt;

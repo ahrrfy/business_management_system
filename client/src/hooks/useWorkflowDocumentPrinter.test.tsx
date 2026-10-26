@@ -337,18 +337,47 @@ describe("workflow shipment document selection", () => {
     expect(state.complete.mock.calls[1][0].status).toBe("FAILED");
   });
 
-  it.each(["ORIGINAL", "REPRINT"] as const)("resumes this actor's server REQUESTED %s with its exact reason and printer", async (copyType) => {
+  it.each(["ORIGINAL", "REPRINT"] as const)("never adopts this actor's REQUESTED %s from another browser", async (copyType) => {
     const snapshot = waybill();
     snapshot.printHistory = [
       ...(copyType === "REPRINT" ? [{ status: "SENT" }] : []),
       { id: 65, status: "REQUESTED", clientRequestId: "pending-server-request", requestedBy: 1, copyType,
         reason: copyType === "REPRINT" ? "سبب النسخة السابق" : null, printerKey: "saved-printer" },
     ];
+    expect(localStorage.length).toBe(0);
+    state.request.mockImplementation(async (input) => {
+      if (input.clientRequestId === "pending-server-request") return { print: { id: 65, status: "REQUESTED" } };
+      if (copyType === "ORIGINAL") throw Object.assign(new Error("original is still printing in another browser"), { data: { code: "CONFLICT" } });
+      return { print: { id: 66, status: "REQUESTED" } };
+    });
     await act(async () => { await printer.printSnapshot(snapshot, null); });
-    expect(state.request).toHaveBeenCalledWith({ snapshotId: 6, branchId: 1,
-      clientRequestId: "pending-server-request", copyType, printerKey: "saved-printer",
-      ...(copyType === "REPRINT" ? { reason: "سبب النسخة السابق" } : {}) });
-    expect(state.printDoc).toHaveBeenCalledOnce();
+    const request = state.request.mock.calls[0][0];
+    expect(request.clientRequestId).not.toBe("pending-server-request");
+    expect(request).toMatchObject({ snapshotId: 6, branchId: 1, copyType });
+    expect(request.printerKey).toBeUndefined();
+    if (copyType === "ORIGINAL") {
+      expect(state.printDoc).not.toHaveBeenCalled();
+      expect(state.complete).not.toHaveBeenCalled();
+      expect(localStorage.length).toBe(0);
+    } else {
+      expect(request.reason).toBe("إعادة طباعة من محطة سير العمل");
+      expect(state.printDoc).toHaveBeenCalledOnce();
+      expect(state.complete).toHaveBeenCalledWith({ printId: 66, branchId: 1, status: "SENT" });
+    }
+  });
+
+  it("never adopts this actor's REQUESTED label original from another browser", async () => {
+    const snapshot = document(5, "SHIPPING_LABEL", "assignment", dispatch);
+    snapshot.printHistory = [{ id: 65, status: "REQUESTED", clientRequestId: "remote-label-request", requestedBy: 1, copyType: "ORIGINAL" }];
+    state.documents.push(snapshot);
+    state.request.mockImplementation(async (input) => {
+      if (input.clientRequestId === "remote-label-request") return { print: { id: 65, status: "REQUESTED" } };
+      throw Object.assign(new Error("original is still printing in another browser"), { data: { code: "CONFLICT" } });
+    });
+    await act(async () => { await printer.printLabel(7, null); });
+    expect(state.request.mock.calls[0][0].clientRequestId).not.toBe("remote-label-request");
+    expect(state.printLabel).not.toHaveBeenCalled();
+    expect(state.complete).not.toHaveBeenCalled();
   });
 
   it("keeps pending identities isolated by actor and branch", async () => {
