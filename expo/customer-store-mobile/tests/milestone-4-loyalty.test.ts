@@ -65,12 +65,83 @@ describe("Milestone 4: Dedicated Loyalty & Rewards Experience", () => {
     it("verifies self-service loyalty points redemption wiring and idempotent request key", () => {
       expect(apiSrc).toContain("redeemStorefrontLoyaltyPoints");
       expect(apiSrc).toContain('"storefront.redeemLoyaltyPoints"');
+      expect(apiSrc).toContain("computeLoyaltyRedeemPreview");
       expect(loyaltySrc).toContain("redeemStorefrontLoyaltyPoints");
+      expect(loyaltySrc).toContain("computeLoyaltyRedeemPreview");
+      expect(loyaltySrc).toContain("بدون حد أدنى");
       expect(loyaltySrc).toContain("استبدال النقاط بقسيمة خصم");
       expect(loyaltySrc).toContain("استبدال النقاط وتفعيل الكوبون");
       expect(loyaltySrc).toContain("clientRequestId: redeemRequestId");
       expect(loyaltySrc).toContain("ORDER_REVERSE");
       expect(loyaltySrc).toContain("REDEEM");
+    });
+
+    it("computes deterministic redemption preview matching backend maxRedeemPercent and 1,000,000 cap rules", async () => {
+      const { computeLoyaltyRedeemPreview, MAX_LOYALTY_REDEEM_POINTS } = await import("../lib/storefront-api");
+
+      // maxRedeemPercent = 0 means NO relative cap (minOrderSpendIqd = 0, NOT divided by 1%!)
+      const uncappedZero = computeLoyaltyRedeemPreview({
+        pointsNumber: 500,
+        redeemPointsInput: "100",
+        loyalty: {
+          iqdDiscountPerPoint: "50",
+          minRedeemPoints: 50,
+          maxRedeemPercent: 0,
+        },
+      });
+      expect(uncappedZero).toMatchObject({
+        discountIqd: 5000,
+        minOrderSpendIqd: 0,
+        hasRelativeCap: false,
+        canRedeem: true,
+      });
+
+      // maxRedeemPercent = 100 also means NO relative cap beyond discount itself (minOrderSpendIqd = 0)
+      const uncappedHundred = computeLoyaltyRedeemPreview({
+        pointsNumber: 500,
+        redeemPointsInput: "100",
+        loyalty: {
+          iqdDiscountPerPoint: "50",
+          minRedeemPoints: 50,
+          maxRedeemPercent: 100,
+        },
+      });
+      expect(uncappedHundred).toMatchObject({
+        discountIqd: 5000,
+        minOrderSpendIqd: 0,
+        hasRelativeCap: false,
+        canRedeem: true,
+      });
+
+      // maxRedeemPercent = 25 enforces ceil(5000 * 100 / 25) = 20,000 IQD min cart spend
+      const capped25 = computeLoyaltyRedeemPreview({
+        pointsNumber: 500,
+        redeemPointsInput: "100",
+        loyalty: {
+          iqdDiscountPerPoint: "50",
+          minRedeemPoints: 50,
+          maxRedeemPercent: 25,
+        },
+      });
+      expect(capped25).toMatchObject({
+        discountIqd: 5000,
+        minOrderSpendIqd: 20000,
+        hasRelativeCap: true,
+        canRedeem: true,
+      });
+
+      // Balance > 1,000,000 caps single-transaction redeemableBalance at 1,000,000 matching server Zod .max(1_000_000)
+      const hugeBalance = computeLoyaltyRedeemPreview({
+        pointsNumber: 1_500_000,
+        redeemPointsInput: "1200000",
+        loyalty: {
+          iqdDiscountPerPoint: "10",
+          minRedeemPoints: 100,
+          maxRedeemPercent: 50,
+        },
+      });
+      expect(hugeBalance.redeemableBalance).toBe(MAX_LOYALTY_REDEEM_POINTS);
+      expect(hugeBalance.canRedeem).toBe(false);
     });
   });
 

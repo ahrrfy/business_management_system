@@ -279,4 +279,69 @@ describe("getStoreAnalytics — صافي البضاعة بعد المرتجعا�
     expect(byGov["بغداد"].revenue).toBe("22000.00");
     expect(byGov["البصرة"].revenue).toBe("5000.00");
   });
+
+  it("أعلى المنتجات (topProducts) يعتمد الكمية والإيراد الصافي بعد المرتجعات الجزئية وتصحيح الفواتير بدلاً من بنود الطلب الأولية المجمّدة", async () => {
+    // 1) طلب مُسلَّم: بنوده الأولية 4 أقلام × 5,000 = 20,000، أُرجع منه قلم واحد (returnedBaseQuantity=1) ⇒ الصافي 3 أقلام بـ 15,000
+    const invPartial = await seedInvoice({
+      total: "20000.00",
+      returnedTotal: "5000.00",
+      status: "PAID",
+    });
+    const ordPartial = await seedOrder({
+      branchId: STORE,
+      status: "DELIVERED",
+      total: "20000",
+      invoiceId: invPartial,
+      date: "2026-07-04T10:00:00Z",
+      gov: "بغداد",
+    });
+    await seedItem(ordPartial, 1, 4, "20000.00");
+    await db().insert(s.invoiceItems).values({
+      invoiceId: invPartial,
+      variantId: 1,
+      quantity: "4.000",
+      baseQuantity: 4,
+      returnedBaseQuantity: 1,
+      unitPrice: "5000.00",
+      total: "20000.00",
+    });
+
+    // 2) طلب صُحِّحت فاتورته من 3 دفاتر (12,000) إلى دفترين (8,000) عبر sale/correct
+    const invCorrected = await seedInvoice({ total: "8000.00", status: "PAID" });
+    const ordCorrected = await seedOrder({
+      branchId: STORE,
+      status: "DELIVERED",
+      total: "12000",
+      invoiceId: invCorrected,
+      date: "2026-07-04T12:00:00Z",
+      gov: "بغداد",
+    });
+    await seedItem(ordCorrected, 2, 3, "12000.00");
+    await db().insert(s.invoiceItems).values({
+      invoiceId: invCorrected,
+      variantId: 2,
+      quantity: "2.000",
+      baseQuantity: 2,
+      returnedBaseQuantity: 0,
+      unitPrice: "4000.00",
+      total: "8000.00",
+    });
+
+    // 3) طلب قبل الإرسال (بلا فاتورة): دفتر واحد بـ 4,000 ⇒ يُجمع من onlineOrderItems
+    const ordPending = await seedOrder({
+      branchId: STORE,
+      status: "CONFIRMED",
+      total: "4000",
+      date: "2026-07-04T14:00:00Z",
+      gov: "البصرة",
+    });
+    await seedItem(ordPending, 2, 1, "4000.00");
+
+    const a = await getStoreAnalytics({ scopedBranchId: STORE, fromYmd: FROM, toYmd: TO });
+    expect(a.kpis.revenue).toBe("27000.00"); // 15,000 + 8,000 + 4,000
+    const pen = a.topProducts.find((p) => p.name === "قلم")!;
+    const notebook = a.topProducts.find((p) => p.name === "دفتر")!;
+    expect(pen).toEqual({ productId: 1, name: "قلم", qty: 3, revenue: "15000.00" });
+    expect(notebook).toEqual({ productId: 2, name: "دفتر", qty: 3, revenue: "12000.00" });
+  });
 });

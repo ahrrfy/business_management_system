@@ -258,4 +258,28 @@ describe("reconcileOnlineOrderConsignmentSync", () => {
       .sort((a, b) => a - b);
     expect(terminalDriftIds).toEqual([ordStuckAssigned, ordReturnedPreTerminal]);
   });
+
+  it("إرسالية أولى CANCELLED عبر ONLINE_ORDER ثم إرسالية ثانية DELIVERED عبر INVOICE بقيت على الفاتورة السابقة بعد تصحيح الفاتورة إلى invNew ⇒ لا انحراف كاذب", async () => {
+    const inv0 = await makeInvoice(1800);
+    const inv1 = await makeInvoice(1801);
+    const [resInv2] = await db().insert(s.invoices).values({
+      invoiceNumber: "INV-1802",
+      sourceType: "ONLINE",
+      branchId: 1,
+      customerId: 1,
+      subtotal: "10.00",
+      total: "10.00",
+      paidAmount: "10.00",
+      returnedTotal: "0.00",
+      correctionOfInvoiceId: inv1,
+      createdBy: 1,
+    });
+    const inv2 = Number((resInv2 as { insertId: number }).insertId);
+    const ord = await makeOrder(18, "DELIVERED", { invoiceId: inv2, deliveryPartyId: 2 });
+
+    await makeConsignment(1801, ord, inv0, 1, "CANCELLED", { sourceType: "ONLINE_ORDER", sourceId: ord });
+    await makeConsignment(1802, ord, inv1, 2, "DELIVERED", { sourceType: "INVOICE", sourceId: inv1 });
+
+    expect(await reconcileOnlineOrderConsignmentSync()).toEqual([]);
+  });
 });

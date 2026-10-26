@@ -1046,17 +1046,42 @@ export async function reconcileOnlineOrderConsignmentSync(): Promise<ReconcileRe
   if (!db) return [];
   const issues: ReconcileResult[] = [];
 
-  // أحدث إرسالية مرتبطة بالطلب — يطابق الربط المزدوج في `onlineOrderTracking.ts:23-28`
-  // (`invoiceId` أو `sourceType='ONLINE_ORDER' AND sourceId=order.id`) كي لا تبقى الإرسالية
-  // الأولى الملغاة تحجب الإرسالية اللاحقة المُعاد إسنادها عبر الفاتورة.
-  const latestConsignmentIdExpr = sql<number | null>`(
-    SELECT MAX(dc.id)
-    FROM deliveryConsignments dc
-    WHERE (
-      (${onlineOrders.invoiceId} IS NOT NULL AND dc.invoiceId = ${onlineOrders.invoiceId})
-      OR (dc.sourceType = 'ONLINE_ORDER' AND dc.sourceId = ${onlineOrders.id})
-    )
-  )`;
+  // أحدث إرسالية مرتبطة بالطلب — يطابق الربط المزدوج في `onlineOrderTracking.ts` مع تتبّع
+  // سلسلة تصحيح الفاتورة (`correctionOfInvoiceId` حتى قفزتين) واستعمال استعلامات فرعيّة مفهرَسة
+  // بدلاً من `OR` غير المفهرَس، كي لا تبقى إرسالية سابقة ملغاة تحجب إرسالية التسليم الفعليّة.
+  const latestConsignmentIdExpr = sql<number | null>`NULLIF(GREATEST(
+    COALESCE((
+      SELECT MAX(dc.id)
+      FROM deliveryConsignments dc
+      WHERE ${onlineOrders.invoiceId} IS NOT NULL AND dc.invoiceId = ${onlineOrders.invoiceId}
+    ), 0),
+    COALESCE((
+      SELECT MAX(dc.id)
+      FROM deliveryConsignments dc
+      WHERE ${onlineOrders.invoiceId} IS NOT NULL
+        AND dc.invoiceId = (
+          SELECT inv0.correctionOfInvoiceId
+          FROM invoices inv0
+          WHERE inv0.id = ${onlineOrders.invoiceId}
+        )
+    ), 0),
+    COALESCE((
+      SELECT MAX(dc.id)
+      FROM deliveryConsignments dc
+      WHERE ${onlineOrders.invoiceId} IS NOT NULL
+        AND dc.invoiceId = (
+          SELECT inv1.correctionOfInvoiceId
+          FROM invoices inv0
+          INNER JOIN invoices inv1 ON inv1.id = inv0.correctionOfInvoiceId
+          WHERE inv0.id = ${onlineOrders.invoiceId}
+        )
+    ), 0),
+    COALESCE((
+      SELECT MAX(dc.id)
+      FROM deliveryConsignments dc
+      WHERE dc.sourceType = 'ONLINE_ORDER' AND dc.sourceId = ${onlineOrders.id}
+    ), 0)
+  ), 0)`;
 
   // 1) طلبٌ SHIPPED/DELIVERED بلا إرسالية — يحكمه cutover env: بلا cutover لا كاشف.
   const cutoverRaw = process.env.ONLINE_ORDER_CONSIGNMENT_REQUIRED_FROM;

@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, asc, desc, eq, isNull, or, sql } from "drizzle-orm";
@@ -329,6 +329,25 @@ export async function awardDeliveredOnlineOrderPoints(
  * يحافظ على معدل الاكتساب الأصلي لقيد ORDER_EARN ولا يُسقط المرتجع المحاسبي إذا سبق
  * للعميل صرف نقاطه (يقتطع المتاح ويُسقف الرصيد عند 0.00 مع توثيق الفارق في الدفتر).
  */
+function boundLoyaltyIdempotencyKey(rawKey: string): string {
+  if (rawKey.length <= 100) return rawKey;
+  const digest = createHash("sha256").update(rawKey).digest("hex").slice(0, 48);
+  return `${rawKey.slice(0, 49)}:h:${digest}`;
+}
+
+export function buildRedeemIdempotencyKey(
+  customerId: number,
+  trimmedRequestId: string,
+): string {
+  const raw = `redeem:${customerId}:${trimmedRequestId}`;
+  if (raw.length <= 100) return raw;
+  const digest = createHash("sha256")
+    .update(trimmedRequestId)
+    .digest("hex")
+    .slice(0, 48);
+  return `redeem:${customerId}:h:${digest}`;
+}
+
 export async function reverseOnlineOrderLoyaltyPoints(
   tx: Tx,
   input: {
@@ -342,11 +361,13 @@ export async function reverseOnlineOrderLoyaltyPoints(
     return null;
   }
 
+  const boundedIdempotencyKey = boundLoyaltyIdempotencyKey(input.idempotencyKey);
+
   const existingByKey = (
     await tx
       .select({ id: loyaltyLedgerEntries.id })
       .from(loyaltyLedgerEntries)
-      .where(eq(loyaltyLedgerEntries.idempotencyKey, input.idempotencyKey))
+      .where(eq(loyaltyLedgerEntries.idempotencyKey, boundedIdempotencyKey))
       .limit(1)
   )[0];
   if (existingByKey) return null;
@@ -462,9 +483,11 @@ export async function reverseOnlineOrderLoyaltyPoints(
   }
 
   const deltaSigned = actualDeducted.gt(0) ? actualDeducted.negated() : money(0);
-  const note = unrecovered.gt(0)
-    ? `${input.reasonLabel} — تعذّر استرداد ${toDbMoney(unrecovered)} نقطة لاستنفاد الرصيد`
-    : input.reasonLabel;
+  const unrecoveredSuffix = unrecovered.gt(0)
+    ? ` — تعذّر استرداد ${toDbMoney(unrecovered)} نقطة لاستنفاد الرصيد`
+    : "";
+  const maxReasonLen = Math.max(0, 255 - unrecoveredSuffix.length);
+  const note = `${input.reasonLabel.slice(0, maxReasonLen)}${unrecoveredSuffix}`;
 
   await tx.insert(loyaltyLedgerEntries).values({
     accountId: Number(account.id),
@@ -473,7 +496,7 @@ export async function reverseOnlineOrderLoyaltyPoints(
     entryType: "ORDER_REVERSE",
     pointsDelta: toDbMoney(deltaSigned),
     balanceAfter: toDbMoney(nextBalance),
-    idempotencyKey: input.idempotencyKey,
+    idempotencyKey: boundedIdempotencyKey,
     note,
   });
 
@@ -551,7 +574,10 @@ export async function redeemStorefrontLoyaltyPoints(input: {
   const session = await requireActiveStorefrontCustomer(
     input.customerSessionToken,
   );
-  const idempotencyKey = `redeem:${session.customerId}:${trimmedRequestId}`;
+  const idempotencyKey = buildRedeemIdempotencyKey(
+    session.customerId,
+    trimmedRequestId,
+  );
 
   return withTx(async (tx) => {
     const lockedCustomer = (
@@ -642,6 +668,14 @@ export async function redeemStorefrontLoyaltyPoints(input: {
           };
         }
       }
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر استرجاع قسيمة الاستبدال السابقة",
+          why: "تم تنفيذ طلب الاستبدال هذا مسبقاً ولكن لم تعد القسيمة المرتبطة متاحة للإعادة",
+          doThis: "تحقق من قسائمك الفعّالة أو أعد المحاولة بطلب استبدال جديد",
+        }),
+      });
     }
 
     const program = (
@@ -811,6 +845,10 @@ export async function redeemStorefrontLoyaltyPoints(input: {
             eq(promotions.scope, "ALL"),
             isNull(promotions.branchId),
             isNull(promotions.customerTier),
+            sql`${promotions.effectiveFrom} <= ${todayYmd}`,
+            validToYmd
+              ? sql`${promotions.effectiveTo} = ${validToYmd}`
+              : isNull(promotions.effectiveTo),
             eq(promotions.discountAmount, discountDb),
             eq(promotions.maxDiscountAmount, discountDb),
             eq(promotions.minOrderSpend, minSpendDb),

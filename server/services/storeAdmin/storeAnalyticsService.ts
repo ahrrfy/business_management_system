@@ -12,7 +12,7 @@
  * عزل الفرع: يُمرَّر scopedBranchId (null للمرتفعين ⇒ كل المتجر)، كبقيّة راوتر الطلبات.
  */
 import { and, desc, eq, gte, isNull, lt, ne, or, sql } from "drizzle-orm";
-import { invoices, onlineOrderItems, onlineOrders, productVariants, products } from "../../../drizzle/schema";
+import { invoiceItems, invoices, onlineOrderItems, onlineOrders, productVariants, products } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { currentOnlineOrderStatus } from "./onlineOrderTracking";
 import { money, toDbMoney } from "../money";
@@ -161,33 +161,89 @@ export async function getStoreAnalytics(input: {
     revenue: trendByDay.get(ymd)?.revenue ?? "0.00",
   }));
 
-  // 4) أعلى المنتجات (بالإيراد) — الطلبات غير الملغاة وغير المرتجعة كليّاً فقط
-  const topRows = await db
-    .select({
-      productId: products.id,
-      name: products.name,
-      qty: sql<number>`COALESCE(SUM(${onlineOrderItems.baseQuantity}), 0)`,
-      revenue: sql<string>`COALESCE(SUM(${onlineOrderItems.total}), 0)`,
-    })
-    .from(onlineOrderItems)
-    .innerJoin(onlineOrders, eq(onlineOrderItems.onlineOrderId, onlineOrders.id))
-    .leftJoin(invoices, eq(invoices.id, onlineOrders.invoiceId))
-    .innerJoin(productVariants, eq(onlineOrderItems.variantId, productVariants.id))
-    .innerJoin(products, eq(productVariants.productId, products.id))
-    .where(and(
-      where,
-      ne(currentOnlineOrderStatus, "CANCELLED"),
-      or(isNull(onlineOrders.invoiceId), isNull(invoices.id), sql`${invoices.status} NOT IN ('CANCELLED', 'RETURNED', 'SUPERSEDED')`),
-    ))
-    .groupBy(products.id)
-    .orderBy(desc(sql`SUM(${onlineOrderItems.total})`))
-    .limit(8);
-  const topProducts = topRows.map((r) => ({
-    productId: Number(r.productId),
-    name: r.name,
-    qty: Number(r.qty),
-    revenue: toDbMoney(money(r.revenue ?? "0")),
-  }));
+  // 4) أعلى المنتجات (بالإيراد الصافي) — يعتمد بنود الفاتورة الصافية بعد المرتجعات الجزئية
+  // وتصحيح الفواتير (`sale/correct`) عند وجود بنود فاتورة، ويسقط لبنود الطلب الأولية قبل الإرسال فقط.
+  const invoicedLineRevenueExpr = sql<string>`CASE
+    WHEN ${invoiceItems.baseQuantity} > 0 THEN ROUND(
+      ${invoiceItems.total}
+      * (${invoiceItems.baseQuantity} - ${invoiceItems.returnedBaseQuantity})
+      / ${invoiceItems.baseQuantity}
+      * (CASE
+          WHEN ${invoices.subtotal} > 0 AND COALESCE(${invoices.discountAmount}, 0) > 0
+            THEN GREATEST(${invoices.subtotal} - COALESCE(${invoices.discountAmount}, 0), 0) / ${invoices.subtotal}
+          ELSE 1
+        END),
+      2
+    )
+    ELSE 0
+  END`;
+
+  const [invoicedTopRows, pendingTopRows] = await Promise.all([
+    db
+      .select({
+        productId: products.id,
+        name: products.name,
+        qty: sql<number>`COALESCE(SUM(${invoiceItems.baseQuantity} - ${invoiceItems.returnedBaseQuantity}), 0)`,
+        revenue: sql<string>`COALESCE(SUM(${invoicedLineRevenueExpr}), 0)`,
+      })
+      .from(onlineOrders)
+      .innerJoin(invoices, eq(invoices.id, onlineOrders.invoiceId))
+      .innerJoin(invoiceItems, eq(invoiceItems.invoiceId, invoices.id))
+      .innerJoin(productVariants, eq(invoiceItems.variantId, productVariants.id))
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(and(
+        where,
+        ne(currentOnlineOrderStatus, "CANCELLED"),
+        sql`${invoices.status} NOT IN ('CANCELLED', 'RETURNED', 'SUPERSEDED')`,
+        sql`${invoiceItems.baseQuantity} > ${invoiceItems.returnedBaseQuantity}`,
+      ))
+      .groupBy(products.id),
+    db
+      .select({
+        productId: products.id,
+        name: products.name,
+        qty: sql<number>`COALESCE(SUM(${onlineOrderItems.baseQuantity}), 0)`,
+        revenue: sql<string>`COALESCE(SUM(${onlineOrderItems.total}), 0)`,
+      })
+      .from(onlineOrderItems)
+      .innerJoin(onlineOrders, eq(onlineOrderItems.onlineOrderId, onlineOrders.id))
+      .leftJoin(invoices, eq(invoices.id, onlineOrders.invoiceId))
+      .innerJoin(productVariants, eq(onlineOrderItems.variantId, productVariants.id))
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(and(
+        where,
+        ne(currentOnlineOrderStatus, "CANCELLED"),
+        or(isNull(onlineOrders.invoiceId), isNull(invoices.id), sql`${invoices.status} NOT IN ('CANCELLED', 'RETURNED', 'SUPERSEDED')`),
+        sql`NOT EXISTS (SELECT 1 FROM invoiceItems ii0 WHERE ii0.invoiceId = ${onlineOrders.invoiceId})`,
+      ))
+      .groupBy(products.id),
+  ]);
+
+  const mergedTopProducts = new Map<number, { productId: number; name: string; qty: number; revenue: ReturnType<typeof money> }>();
+  for (const r of [...invoicedTopRows, ...pendingTopRows]) {
+    const pid = Number(r.productId);
+    const existing = mergedTopProducts.get(pid);
+    if (existing) {
+      existing.qty += Number(r.qty);
+      existing.revenue = existing.revenue.plus(money(r.revenue ?? "0"));
+    } else {
+      mergedTopProducts.set(pid, {
+        productId: pid,
+        name: r.name,
+        qty: Number(r.qty),
+        revenue: money(r.revenue ?? "0"),
+      });
+    }
+  }
+  const topProducts = Array.from(mergedTopProducts.values())
+    .sort((a, b) => b.revenue.comparedTo(a.revenue) || a.productId - b.productId)
+    .slice(0, 8)
+    .map((r) => ({
+      productId: r.productId,
+      name: r.name,
+      qty: r.qty,
+      revenue: toDbMoney(r.revenue),
+    }));
 
   // 5) التوزيع الجغرافيّ (المحافظة)
   const govExpr = sql`COALESCE(NULLIF(${onlineOrders.governorate}, ''), 'غير محدَّد')`;

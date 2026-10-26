@@ -7,7 +7,9 @@ import { confirmConsignmentDelivery } from "../delivery/courier";
 import { hashCouponCode } from "../couponService";
 import { createOnlineOrder, quoteOnlineOrder } from "../onlineOrderService";
 import { returnSale } from "../returnService";
+import { cancelSale } from "../sale/cancel";
 import { correctSale } from "../sale/correct";
+import { createSale } from "../saleService";
 import {
   claimOnlineOrder,
   markOnlineOrderPrepared,
@@ -20,6 +22,8 @@ import {
   redeemStorefrontLoyaltyPoints,
   saveLoyaltyProgram,
 } from "../storeAdmin/loyaltyService";
+import { getStoreAnalytics } from "../storeAdmin/storeAnalyticsService";
+import { getStoreCustomers } from "../storeAdmin/storeCustomerService";
 import {
   signStorefrontCustomerSession,
   storefrontCustomerBenefits,
@@ -817,5 +821,240 @@ describe("Wave 4 — دورة حياة دفتر الولاء المتكاملة 
       ["ORDER_REVERSE", "0.00", "0.00"],
     ]);
     expect(ledgerRows[2]!.note).toContain("100.00");
+  });
+
+  it("يحافظ على حالة الطلب DELIVERED ومؤشرات التحليلات وإنفاق العميل عند تصحيح فاتورة طلب متجر (لأعلى ثم مرتجعات جزئية متتابعة)", async () => {
+    const d = db();
+    const delivered = await createAndDeliverOrder({
+      lines: [{ productUnitId: 1, quantity: 3 }], // 15,000 د.ع -> 150.00 نقطة
+      requestId: "w4-upward-correct-then-returns",
+    });
+
+    await d
+      .update(s.deliveryConsignments)
+      .set({
+        parcelStatus: "DELIVERED",
+        status: "DELIVERED",
+        moneyStatus: "SETTLED",
+        settledAt: new Date(),
+      })
+      .where(eq(s.deliveryConsignments.invoiceId, delivered.invoiceId));
+
+    // تصحيح لأعلى: من 3 قطع (15,000 د.ع) إلى 5 قطع (25,000 د.ع)
+    const upward = await correctSale(
+      {
+        originalInvoiceId: delivered.invoiceId,
+        notes: "زيادة الكمية إلى 5 قطع بعد المراجعة",
+        clientRequestId: "w4-correct-upward-1",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "5" }],
+      },
+      ADMIN_ACTOR,
+    );
+
+    // 1) حالة الطلب الإلكتروني يجب أن تبقى DELIVERED (لا تتحول خطأً إلى CANCELLED أثناء العكس الداخلي!)
+    const orderAfterCorrect = (
+      await d
+        .select()
+        .from(s.onlineOrders)
+        .where(eq(s.onlineOrders.id, delivered.orderId))
+    )[0]!;
+    expect(orderAfterCorrect.status).toBe("DELIVERED");
+    expect(Number(orderAfterCorrect.invoiceId)).toBe(upward.correctedInvoiceId);
+
+    // 2) التحليلات وإنفاق العميل يعكسان الفاتورة المصحّحة (25,000 د.ع) والطلب المُسلّم (1 لا 0!)
+    const todayBaghdad = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Baghdad",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+    const analyticsAfterUpward = await getStoreAnalytics({
+      scopedBranchId: 1,
+      fromYmd: todayBaghdad,
+      toYmd: todayBaghdad,
+    });
+    expect(analyticsAfterUpward.kpis.deliveredOrders).toBe(1);
+    expect(analyticsAfterUpward.kpis.cancelledOrders).toBe(0);
+    expect(analyticsAfterUpward.kpis.revenue).toBe("25000.00");
+    expect(analyticsAfterUpward.kpis.deliveredRevenue).toBe("25000.00");
+
+    const customersAfterUpward = await getStoreCustomers({ scopedBranchId: 1 });
+    const zRow = customersAfterUpward.rows.find((r) => r.customerId === 101)!;
+    expect(zRow.deliveredOrders).toBe(1);
+    expect(zRow.spend).toBe("25000.00");
+
+    // 3) التصحيح لأعلى لا يمنح نقاطاً إضافية مزدوجة ولا يخصم نقاطاً (يبقى 150.00)
+    let account = (
+      await d
+        .select()
+        .from(s.loyaltyAccounts)
+        .where(eq(s.loyaltyAccounts.customerId, 101))
+    )[0]!;
+    expect(account.pointsBalance).toBe("150.00");
+
+    const newInvItem = (
+      await d
+        .select()
+        .from(s.invoiceItems)
+        .where(eq(s.invoiceItems.invoiceId, upward.correctedInvoiceId))
+    )[0]!;
+
+    // 4) مرتجع جزئي أول على الفاتورة البديلة: قطعتان (10,000 د.ع) -> يتبقى 15,000 د.ع (= أصل الاكتساب) -> استرداد 0 نقطة
+    await returnSale(
+      {
+        invoiceId: upward.correctedInvoiceId,
+        lines: [{ invoiceItemId: Number(newInvItem.id), baseQuantity: 2 }],
+        refund: null,
+        clientRequestId: "w4-ret-after-upward-1",
+      },
+      ADMIN_ACTOR,
+    );
+    account = (
+      await d
+        .select()
+        .from(s.loyaltyAccounts)
+        .where(eq(s.loyaltyAccounts.customerId, 101))
+    )[0]!;
+    expect(account.pointsBalance).toBe("150.00");
+
+    // 5) مرتجع جزئي ثانٍ على الفاتورة البديلة: قطعة واحدة (5,000 د.ع) -> يتبقى 10,000 د.ع (< 15,000 د.ع) -> استرداد -50.00 نقطة
+    await returnSale(
+      {
+        invoiceId: upward.correctedInvoiceId,
+        lines: [{ invoiceItemId: Number(newInvItem.id), baseQuantity: 1 }],
+        refund: null,
+        clientRequestId: "w4-ret-after-upward-2",
+      },
+      ADMIN_ACTOR,
+    );
+    account = (
+      await d
+        .select()
+        .from(s.loyaltyAccounts)
+        .where(eq(s.loyaltyAccounts.customerId, 101))
+    )[0]!;
+    expect(account.pointsBalance).toBe("100.00");
+  });
+
+  it("يستردّ كامل النقاط المكتسبة عند إلغاء فاتورة طلب متجر عبر cancelSale", async () => {
+    const d = db();
+
+    const sale = await createSale(
+      {
+        branchId: 1,
+        customerId: 101,
+        sourceType: "ONLINE",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }], // 10,000 د.ع
+      },
+      ADMIN_ACTOR,
+    );
+    const [ordRes] = await d.insert(s.onlineOrders).values({
+      orderNumber: "ORD-CANCEL-LOY-1",
+      customerId: 101,
+      branchId: 1,
+      invoiceId: sale.invoiceId,
+      subtotal: "10000.00",
+      shippingCost: "0.00",
+      taxAmount: "0.00",
+      total: "10000.00",
+      status: "SHIPPED",
+      clientRequestId: "w4-cancel-sale-order-1",
+    });
+    const orderId = Number((ordRes as { insertId: number }).insertId);
+
+    // منح نقاط الطلب عند إتمام التسليم المباشر
+    await setOnlineOrderStatus(
+      { id: orderId, status: "DELIVERED", scopedBranchId: null },
+      ADMIN_ACTOR.userId,
+    );
+    let account = (
+      await d
+        .select()
+        .from(s.loyaltyAccounts)
+        .where(eq(s.loyaltyAccounts.customerId, 101))
+    )[0]!;
+    expect(account.pointsBalance).toBe("100.00");
+
+    // تحويل حالة الطلب إلى PROCESSING بلا عهدة قبل إلغاء الفاتورة عبر cancelSale
+    await d
+      .update(s.onlineOrders)
+      .set({ status: "PROCESSING" })
+      .where(eq(s.onlineOrders.id, orderId));
+
+    await cancelSale(
+      {
+        invoiceId: sale.invoiceId,
+        refundPaymentMethod: "CASH",
+        reason: "إلغاء فاتورة الطلب بعد المراجعة",
+      },
+      ADMIN_ACTOR,
+    );
+
+    account = (
+      await d
+        .select()
+        .from(s.loyaltyAccounts)
+        .where(eq(s.loyaltyAccounts.customerId, 101))
+    )[0]!;
+    expect(account.pointsBalance).toBe("0.00");
+
+    const cancelLedger = await d
+      .select()
+      .from(s.loyaltyLedgerEntries)
+      .where(eq(s.loyaltyLedgerEntries.onlineOrderId, orderId))
+      .orderBy(asc(s.loyaltyLedgerEntries.id));
+    expect(cancelLedger.map((r) => [r.entryType, r.pointsDelta, r.balanceAfter])).toEqual([
+      ["ORDER_EARN", "100.00", "100.00"],
+      ["ORDER_REVERSE", "-100.00", "0.00"],
+    ]);
+  });
+
+  it("يدعم مفتاح clientRequestId بطول 80 حرفاً مع معرّف عميل bigint طويل دون خطأ ER_DATA_TOO_LONG مع حماية الإعادة", async () => {
+    const d = db();
+    const bigCustomerId = 100_000_000_000_101;
+    const bigPhone = "+9647708889991";
+    await d.insert(s.customers).values({
+      id: bigCustomerId,
+      name: "عميل بمعرّف كبير",
+      phone: bigPhone,
+      customerType: "فرد",
+      defaultPriceTier: "RETAIL",
+      currentBalance: "0.00",
+      creditLimit: "9999999.00",
+      isActive: true,
+      sessionVersion: 0,
+    });
+    const program = (await d.select().from(s.loyaltyPrograms))[0]!;
+    await d.insert(s.loyaltyAccounts).values({
+      programId: Number(program.id),
+      customerId: bigCustomerId,
+      pointsBalance: "250.00",
+    });
+
+    const bigSession = await signStorefrontCustomerSession({
+      customerId: bigCustomerId,
+      firebaseUid: "uid-big-customer",
+      phone: bigPhone,
+      sessionVersion: 0,
+    });
+    const maxLenRequestId = `req-${"x".repeat(76)}`; // 80 chars exact
+    expect(maxLenRequestId).toHaveLength(80);
+
+    const issuedBig = await redeemStorefrontLoyaltyPoints({
+      customerSessionToken: bigSession,
+      points: 100,
+      clientRequestId: maxLenRequestId,
+    });
+    expect(issuedBig.outcome).toBe("ISSUED");
+    expect(issuedBig.pointsBalance).toBe("150.00");
+
+    const replayedBig = await redeemStorefrontLoyaltyPoints({
+      customerSessionToken: bigSession,
+      points: 100,
+      clientRequestId: maxLenRequestId,
+    });
+    expect(replayedBig.outcome).toBe("REPLAYED");
+    expect(replayedBig.code).toBe(issuedBig.code);
+    expect(replayedBig.pointsBalance).toBe("150.00");
   });
 });

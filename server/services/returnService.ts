@@ -2924,24 +2924,26 @@ export async function returnSaleInTx(
     })
     .where(eq(invoices.id, input.invoiceId));
 
-  if (fullyReturned && inv.sourceType === "ONLINE") {
-    await tx
-      .update(onlineOrders)
-      .set({
-        status: "CANCELLED",
-        cancelReason:
-          resolutionReason ||
-          (typeof input.operatorReason === "string"
-            ? input.operatorReason.trim()
-            : null) ||
-          "مرتجع فاتورة كامل",
-      })
-      .where(
-        and(
-          eq(onlineOrders.invoiceId, input.invoiceId),
-          sql`${onlineOrders.status} != 'CANCELLED'`,
-        ),
-      );
+  if (!input.internalCorrectionReversal) {
+    if (fullyReturned && inv.sourceType === "ONLINE") {
+      await tx
+        .update(onlineOrders)
+        .set({
+          status: "CANCELLED",
+          cancelReason:
+            resolutionReason ||
+            (typeof input.operatorReason === "string"
+              ? input.operatorReason.trim()
+              : null) ||
+            "مرتجع فاتورة كامل",
+        })
+        .where(
+          and(
+            eq(onlineOrders.invoiceId, input.invoiceId),
+            sql`${onlineOrders.status} != 'CANCELLED'`,
+          ),
+        );
+    }
   }
 
   if (inv.sourceType === "ONLINE" && !input.internalCorrectionReversal) {

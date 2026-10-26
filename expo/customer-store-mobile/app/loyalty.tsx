@@ -29,6 +29,7 @@ import {
   type VerifiedCustomerSession,
 } from "@/lib/customer-session";
 import {
+  computeLoyaltyRedeemPreview,
   formatIqd,
   formatLatinNumber,
   getStorefrontCustomerBenefits,
@@ -246,41 +247,22 @@ export default function LoyaltyScreen({ isTab = false }: { isTab?: boolean } = {
     });
   }, []);
 
-  const redeemPreview = useMemo(() => {
-    const wholeBalance = Math.floor(pointsNumber);
-    const parsedPoints = Math.floor(Number(redeemPointsInput) || 0);
-    const iqdPerPoint = Number(loyalty?.iqdDiscountPerPoint ?? 0);
-    const minRedeemPoints = Number(loyalty?.minRedeemPoints ?? 0);
-    const maxPercent = Math.min(100, Math.max(1, Number(loyalty?.maxRedeemPercent ?? 100)));
-    const discountIqd =
-      parsedPoints > 0 && Number.isFinite(iqdPerPoint) && iqdPerPoint > 0
-        ? Math.round(parsedPoints * iqdPerPoint * 100) / 100
-        : 0;
-    const minOrderSpendIqd =
-      discountIqd > 0 ? Math.ceil((discountIqd * 100) / maxPercent) : 0;
-    const canRedeem = Boolean(
-      loyalty &&
-        parsedPoints > 0 &&
-        parsedPoints >= minRedeemPoints &&
-        parsedPoints <= wholeBalance &&
-        discountIqd > 0,
-    );
-    return {
-      wholeBalance,
-      parsedPoints,
-      minRedeemPoints,
-      discountIqd,
-      minOrderSpendIqd,
-      canRedeem,
-    };
-  }, [loyalty, pointsNumber, redeemPointsInput]);
+  const redeemPreview = useMemo(
+    () =>
+      computeLoyaltyRedeemPreview({
+        pointsNumber,
+        redeemPointsInput,
+        loyalty,
+      }),
+    [loyalty, pointsNumber, redeemPointsInput],
+  );
 
   const handleRedeemPoints = async () => {
     if (!session || !loyalty || redeemingPoints) return;
     if (!redeemPreview.canRedeem) {
       Alert.alert(
         "تعذر استبدال النقاط",
-        `أدخل عدداً صحيحاً بين ${formatLatinNumber(redeemPreview.minRedeemPoints)} و ${formatLatinNumber(redeemPreview.wholeBalance)} نقطة.`,
+        `أدخل عدداً صحيحاً بين ${formatLatinNumber(redeemPreview.minRedeemPoints)} و ${formatLatinNumber(redeemPreview.redeemableBalance)} نقطة.`,
       );
       return;
     }
@@ -293,9 +275,13 @@ export default function LoyaltyScreen({ isTab = false }: { isTab?: boolean } = {
       });
       await handleActivateCoupon(result.code);
       setRedeemRequestId(createRedeemClientRequestId());
+      const minSpendLabel =
+        Number(result.minOrderSpendIqd) > 0
+          ? formatIqd(result.minOrderSpendIqd)
+          : "بدون حد أدنى";
       Alert.alert(
         "تم استبدال النقاط وتفعيل الكوبون",
-        `رمز القسيمة: ${result.code}\nقيمة الخصم: ${formatIqd(result.discountIqd)}\nالحد الأدنى للطلب: ${formatIqd(result.minOrderSpendIqd)}\nتم نسخ الرمز وتفعيله تلقائياً لطلبك القادم.`,
+        `رمز القسيمة: ${result.code}\nقيمة الخصم: ${formatIqd(result.discountIqd)}\nالحد الأدنى للطلب: ${minSpendLabel}\nتم نسخ الرمز وتفعيله تلقائياً لطلبك القادم.`,
       );
       await load();
     } catch (error) {
@@ -462,7 +448,10 @@ export default function LoyaltyScreen({ isTab = false }: { isTab?: boolean } = {
 
           {loyalty ? (
             <Text style={styles.rules}>
-              كل نقطة تعادل {formatLatinNumber(loyalty.iqdDiscountPerPoint)} د.ع. يبدأ الاستبدال من {formatLatinNumber(loyalty.minRedeemPoints)} نقطة وبحد أقصى {formatLatinNumber(loyalty.maxRedeemPercent)}% من قيمة المنتجات.
+              كل نقطة تعادل {formatLatinNumber(loyalty.iqdDiscountPerPoint)} د.ع. يبدأ الاستبدال من {formatLatinNumber(loyalty.minRedeemPoints)} نقطة
+              {Number(loyalty.maxRedeemPercent) > 0 && Number(loyalty.maxRedeemPercent) < 100
+                ? ` وبحد أقصى ${formatLatinNumber(loyalty.maxRedeemPercent)}% من قيمة المنتجات.`
+                : " بدون حد نسبي على قيمة السلة."}
             </Text>
           ) : (
             <Text style={styles.rules}>
@@ -497,14 +486,14 @@ export default function LoyaltyScreen({ isTab = false }: { isTab?: boolean } = {
                   أدنى استبدال ({formatLatinNumber(loyalty.minRedeemPoints)})
                 </Text>
               </TouchableOpacity>
-              {redeemPreview.wholeBalance > loyalty.minRedeemPoints && (
+              {redeemPreview.redeemableBalance > loyalty.minRedeemPoints && (
                 <TouchableOpacity
                   accessibilityRole="button"
-                  onPress={() => updateRedeemPointsDraft(String(redeemPreview.wholeBalance))}
+                  onPress={() => updateRedeemPointsDraft(String(redeemPreview.redeemableBalance))}
                   style={redeemStyles.quickChip}
                 >
                   <Text style={redeemStyles.quickChipText}>
-                    كامل الرصيد ({formatLatinNumber(redeemPreview.wholeBalance)})
+                    كامل الرصيد ({formatLatinNumber(redeemPreview.redeemableBalance)})
                   </Text>
                 </TouchableOpacity>
               )}
@@ -530,7 +519,10 @@ export default function LoyaltyScreen({ isTab = false }: { isTab?: boolean } = {
                   قيمة الخصم: {formatIqd(redeemPreview.discountIqd)}
                 </Text>
                 <Text style={redeemStyles.previewSecondary}>
-                  الحد الأدنى لقيمة السلة: {formatIqd(redeemPreview.minOrderSpendIqd)}
+                  الحد الأدنى لقيمة السلة:{" "}
+                  {redeemPreview.minOrderSpendIqd > 0
+                    ? formatIqd(redeemPreview.minOrderSpendIqd)
+                    : "بدون حد أدنى"}
                 </Text>
               </View>
             )}
