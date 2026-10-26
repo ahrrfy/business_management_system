@@ -623,7 +623,12 @@ export function StorefrontCustomizerStudio({
               >
                 <div className="flex items-start gap-2">
                   <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
-                  <span>{uploadError}</span>
+                  <div className="space-y-0.5">
+                    <div>{uploadError}</div>
+                    <div className="text-[11px] font-semibold opacity-90">
+                      المرفقات التي تعذّر رفعها لا ترسل مع الطلب حتى تعيد المحاولة أو تزيل الشعار.
+                    </div>
+                  </div>
                 </div>
                 {failedAction && (
                   <button
