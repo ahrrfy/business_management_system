@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 
 const read = (path: string) =>
@@ -38,6 +39,7 @@ describe("dependency security coverage", () => {
     expect(rootOverrides["postcss-selector-parser@<7.1.6"]).toBe("7.1.6");
     expect(rootOverrides["proxy-addr@<2.0.8"]).toBe("2.0.8");
     expect(rootOverrides["source-map-js@<1.2.2"]).toBe("1.2.2");
+    expect(rootOverrides["qs@<6.16.1"]).toBe("6.16.1");
 
     const packageJson = JSON.parse(
       read("expo/customer-store-mobile/package.json"),
@@ -82,5 +84,32 @@ describe("dependency security coverage", () => {
     expect(osvConfig).toContain('id = "GHSA-vfj7-8cjw-p6xm"');
     expect(osvConfig).toContain('id = "GHSA-hp3w-g68c-fv3c"');
     expect(osvConfig).toContain('reason = "');
+  });
+
+  it("مصدر Express يستخدم qs المصححة دون انهيار عند مصفوفة comma بقيمة toString غير قابلة للاستدعاء", () => {
+    const appRequire = createRequire(resolve(process.cwd(), "package.json"));
+    const expressRequire = createRequire(appRequire.resolve("express"));
+    const qs = expressRequire("qs");
+    expect(() => qs.stringify(JSON.parse('{"a":[{"toString":"x"}]}'), { arrayFormat: "comma" })).not.toThrow();
+    expect(() => qs.stringify(JSON.parse('{"a":[{"toString":"x"}]}'), { arrayFormat: "comma", encodeValuesOnly: true })).not.toThrow();
+  });
+
+  it("يقصر استثناء deepmerge على مسارات إعداد البناء المفحوصة في الأقفال الثلاثة", () => {
+    for (const [lock, expectedParent] of [
+      ["pnpm-lock.yaml", "@rollup/plugin-node-resolve@"],
+      ["expo/customer-store-mobile/pnpm-lock.yaml", "@expo/config@"],
+      ["expo/superapp-mobile/pnpm-lock.yaml", "@expo/config@"],
+    ]) {
+      let parent = "";
+      const consumers: string[] = [];
+      for (const line of read(lock).replaceAll("\r\n", "\n").split("\n")) {
+        if (/^  \S/.test(line)) parent = line.trim().replace(/^['"]/, "");
+        if (/^      deepmerge:/.test(line)) consumers.push(parent);
+      }
+      expect(consumers).toHaveLength(1);
+      expect(consumers[0]?.startsWith(expectedParent)).toBe(true);
+      const manifest = JSON.parse(read(lock.replace("pnpm-lock.yaml", "package.json")));
+      expect(manifest.dependencies?.deepmerge).toBeUndefined();
+    }
   });
 });

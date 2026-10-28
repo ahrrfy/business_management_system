@@ -119,7 +119,7 @@ export default function Shifts() {
   const [fundingShiftId, setFundingShiftId] = useState<number | null>(null);
   const [fundingAmount, setFundingAmount] = useState("");
   const [fundingNote, setFundingNote] = useState("");
-  const [fundingSourceReceiptId, setFundingSourceReceiptId] = useState("");
+  const [fundingSourceReceiptId, setFundingSourceReceiptId] = useState("TREASURY");
   const [fundingClientRequestId, setFundingClientRequestId] = useState("");
   const [fundingSourceCursor, setFundingSourceCursor] = useState<number | null>(null);
   const [fundingSourceCursorHistory, setFundingSourceCursorHistory] = useState<Array<number | null>>([]);
@@ -294,7 +294,7 @@ export default function Shifts() {
   function openFundingDialog(shiftId: number) {
     setFundingAmount("");
     setFundingNote("");
-    setFundingSourceReceiptId("");
+    setFundingSourceReceiptId("TREASURY");
     setFundingSourceCursor(null);
     setFundingSourceCursorHistory([]);
     setFundingClientRequestId(
@@ -543,6 +543,7 @@ export default function Shifts() {
                   <div className="mt-1 text-xs text-muted-foreground">
                     سلّمها: {request.requestedByName ?? `#${request.requestedBy}`} · {request.evidenceNote}
                   </div>
+                  <div className="mt-1 text-xs text-muted-foreground">المصدر: {request.sourceKind === "TREASURY" ? "خزينة الفرع" : `سحب من درج وردية #${request.sourceShiftId}`}</div>
                   {request.sourceReferenceNumber && (
                     <div className="mt-1 text-xs text-muted-foreground" dir="ltr">
                       {request.sourceReferenceNumber} · receipt #{request.sourceTreasuryReceiptId}
@@ -587,7 +588,7 @@ export default function Shifts() {
           <CardHeader className="pb-2">
             <div className="font-bold">طلبات عهدة أرسلت ولم تُستلم بعد</div>
             <p className="text-xs text-muted-foreground">
-              ما تزال صفريّة الأثر. يمكنك إلغاء الطلب لتحرير سحب المصدر إذا تعذّر التسليم.
+              ما تزال صفريّة الأثر. يمكنك إلغاء الطلب إذا تعذّر التسليم؛ يتحرر إيصال السحب المرتبط إن وُجد.
             </p>
           </CardHeader>
           <CardContent className="space-y-2">
@@ -601,7 +602,7 @@ export default function Shifts() {
                     وردية #{request.shiftId} — {request.targetUserName ?? `#${request.targetUserId}`} · {fmt(request.amount)} د.ع
                   </div>
                   <div className="mt-1 text-xs text-muted-foreground">
-                    {request.sourceReferenceNumber} · من وردية #{request.sourceShiftId} · {request.evidenceNote}
+                    {request.sourceKind === "TREASURY" ? "خزينة الفرع" : `${request.sourceReferenceNumber} · سحب من درج وردية #${request.sourceShiftId}`} · {request.evidenceNote}
                   </div>
                 </div>
                 <Button
@@ -1031,7 +1032,9 @@ export default function Shifts() {
         fundingReportLoading={fundingReportQ.isLoading}
         fundingExpected={fundingExpected}
         fundingSources={fundingSources}
-        fundingSourcesLoading={fundingSourcesQ.isLoading}
+        fundingSourcesLoading={fundingSourcesQ.isFetching}
+        treasuryAvailable={fundingSourcesQ.data?.treasuryAvailable}
+        fundingSourcesError={fundingSourcesQ.error?.message}
         fundingSourcesNextCursor={fundingSourcesQ.data?.nextCursor}
         fundingSourceReceiptId={fundingSourceReceiptId}
         setFundingSourceReceiptId={(val) => {
@@ -1066,7 +1069,8 @@ export default function Shifts() {
             shiftId: fundingShiftId,
             amount: D(fundingAmount).toFixed(2),
             evidenceNote: fundingNote.trim(),
-            sourceTreasuryReceiptId: Number(fundingSourceReceiptId),
+            sourceKind: fundingSourceReceiptId === "TREASURY" ? "TREASURY" : "CASH_DROP",
+            sourceTreasuryReceiptId: fundingSourceReceiptId === "TREASURY" ? null : Number(fundingSourceReceiptId),
             clientRequestId: fundingClientRequestId,
           });
         }}

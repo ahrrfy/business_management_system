@@ -11,6 +11,7 @@ import {
 } from "../cash/cashAvailability";
 import { getShiftReport } from "../shiftService";
 import { toDateStr } from "../money";
+import { idempotencyHash } from "../idempotency";
 import { getTreasurySummary } from "../reportsTreasuryService";
 import { getFinancialPosition } from "../reportsFinancialService";
 import { getDashboard } from "../treasury/dashboard";
@@ -106,6 +107,120 @@ beforeEach(async () => {
 });
 
 describe("additional shift funding — عهدة خزنة إلى درج بقبول فعلي", () => {
+  const treasuryRequest = (key: string, shiftId = 101, amount = "125.50") => requestAdditionalShiftFunding({
+    shiftId, amount, sourceKind: "TREASURY", sourceTreasuryReceiptId: null,
+    evidenceNote: "تمويل من خزينة الفرع لتغطية حاجة الوردية", clientRequestId: key,
+  }, OWNER);
+
+  async function fundTreasuryForTest(amount = "500.00") {
+    await db().update(s.receipts).set({ amount }).where(eq(s.receipts.referenceNumber, "TEST-TREASURY-FUND"));
+  }
+
+  it("يموّل من الخزينة بلا سحب سابق ويحفظ الساقين والقيد والهوية ويعيد القبول مرة واحدة", async () => {
+    await fundTreasuryForTest();
+    const before = await balances(101, "100.00");
+    const sources = await listEligibleShiftFundingSources({ targetShiftId: 101 }, OWNER);
+    expect(sources).toMatchObject({ treasuryAvailable: "500.00", items: [] });
+    const request = await treasuryRequest("treasury-direct");
+    expect(request).toMatchObject({ sourceKind: "TREASURY", sourceShiftId: null, sourceTreasuryReceiptId: null, status: "PENDING" });
+    expect(await balances(101, "100.00")).toEqual(before);
+    expect(await db().select().from(s.shiftFundingSourceLinks)).toHaveLength(0);
+    expect(await listMyPendingShiftFunding(CASHIER_A)).toEqual([expect.objectContaining({ sourceKind: "TREASURY", requestedBy: 1, targetUserId: 2 })]);
+    await expect(treasuryRequest("treasury-duplicate-target")).rejects.toMatchObject({ code: "CONFLICT" });
+    const results = await Promise.all([
+      respondToShiftFundingRequest({ requestReceiptId: request.requestReceiptId, decision: "ACCEPT" }, CASHIER_A),
+      respondToShiftFundingRequest({ requestReceiptId: request.requestReceiptId, decision: "ACCEPT" }, CASHIER_A),
+    ]);
+    expect(results.filter((row) => row.idempotent)).toHaveLength(1);
+    expect(await balances(101, "100.00")).toEqual({ treasury: "374.50", drawer: "225.50" });
+    const rows = await db().select().from(s.receipts).where(eq(s.receipts.referenceNumber, request.referenceNumber));
+    expect(rows).toHaveLength(2);
+    expect(rows.find((row) => row.direction === "OUT")).toMatchObject({ cashBucket: "TREASURY", createdBy: 1, approvedBy: 2 });
+    expect(rows.find((row) => row.direction === "IN")).toMatchObject({ cashBucket: "DRAWER", shiftId: 101, createdBy: 2, approvedBy: 2 });
+    expect(await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.dedupeKey, `SHIFT_TOPUP:${request.requestReceiptId}`))).toEqual([
+      expect.objectContaining({ entryType: "SHIFT_FLOAT_OUT", amount: "125.50", revenue: "0.00", cost: "0.00", profit: "0.00" }),
+    ]);
+    await db().update(s.shifts).set({ status: "CLOSED", openGuard: null }).where(eq(s.shifts.id, 101));
+    expect(await treasuryRequest("treasury-direct")).toMatchObject({ idempotent: true, status: "COMPLETED" });
+    expect(await respondToShiftFundingRequest({ requestReceiptId: request.requestReceiptId, decision: "ACCEPT" }, CASHIER_A)).toMatchObject({ idempotent: true });
+  });
+
+  it("إلغاء ورفض تمويل الخزينة يحرران الوردية بلا حركة نقدية أو رابط مصدر مختلق", async () => {
+    await fundTreasuryForTest();
+    const request = await treasuryRequest("treasury-cancel");
+    expect(await cancelShiftFundingRequest({ requestReceiptId: request.requestReceiptId, cancellationReason: "لم يتم تسليم النقد" }, OWNER)).toMatchObject({ status: "FAILED" });
+    expect(await cancelShiftFundingRequest({ requestReceiptId: request.requestReceiptId, cancellationReason: "لم يتم تسليم النقد" }, OWNER)).toMatchObject({ idempotent: true });
+    const replacement = await treasuryRequest("treasury-reject");
+    expect(await respondToShiftFundingRequest({ requestReceiptId: replacement.requestReceiptId, decision: "REJECT", rejectionReason: "لم أستلم أي نقد" }, CASHIER_A)).toMatchObject({ status: "FAILED" });
+    expect(await balances(101, "100.00")).toEqual({ treasury: "500.00", drawer: "100.00" });
+    expect(await db().select().from(s.shiftFundingSourceLinks)).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+  });
+
+  it("يفحص رصيد الخزينة عند الاستلام ويمنع تسليم طلبين فوق المتاح دون أثر جزئي", async () => {
+    await fundTreasuryForTest("200.00");
+    const a = await treasuryRequest("treasury-race-a", 101, "150");
+    const b = await treasuryRequest("treasury-race-b", 102, "150");
+    const outcomes = await Promise.allSettled([
+      respondToShiftFundingRequest({ requestReceiptId: a.requestReceiptId, decision: "ACCEPT" }, CASHIER_A),
+      respondToShiftFundingRequest({ requestReceiptId: b.requestReceiptId, decision: "ACCEPT" }, CASHIER_B),
+    ]);
+    expect(outcomes.filter((row) => row.status === "fulfilled")).toHaveLength(1);
+    expect((await balances(101, "100.00")).treasury).toBe("50.00");
+    expect(await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "SHIFT_FLOAT_OUT"))).toHaveLength(1);
+    expect(await listPendingShiftFundingForOwners(OWNER)).toHaveLength(1);
+    await expect(treasuryRequest("treasury-too-large", 103, "51")).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
+
+  it("يستبعد سحب الوردية المغلقة ويرفض اختياره خادمياً مع إبقاء النقد متاحاً من الخزينة", async () => {
+    const source = await acceptedDrop("300", "closed-source");
+    await db().update(s.shifts).set({ status: "CLOSED", openGuard: null }).where(eq(s.shifts.id, 103));
+    expect(await listEligibleShiftFundingSources({ targetShiftId: 101 }, OWNER)).toMatchObject({ items: [], treasuryAvailable: "300.00" });
+    await expect(requestAdditionalShiftFunding({ shiftId: 101, amount: "300", sourceTreasuryReceiptId: source.inReceiptId,
+      evidenceNote: "محاولة تمويل من سحب وردية أغلقت", clientRequestId: "closed-drop-source" }, OWNER)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    const request = await treasuryRequest("closed-cash-is-treasury", 101, "200");
+    await respondToShiftFundingRequest({ requestReceiptId: request.requestReceiptId, decision: "ACCEPT" }, CASHIER_A);
+    expect(await balances(101, "100.00")).toEqual({ treasury: "100.00", drawer: "300.00" });
+  });
+
+  it("إغلاق المصدر بعد الطلب يمنع القبول مع إبقاء مسار الإلغاء متاحاً وحفظ التاريخ", async () => {
+    const source = await acceptedDrop("75", "source-closes-pending");
+    const request = await requestAdditionalShiftFunding({ shiftId: 101, amount: "75", sourceTreasuryReceiptId: source.inReceiptId,
+      evidenceNote: "عهدة من سحب درج نشط قبل إغلاقه", clientRequestId: "drop-before-close" }, OWNER);
+    const before = await balances(101, "100.00");
+    await db().update(s.shifts).set({ status: "CLOSED", openGuard: null }).where(eq(s.shifts.id, 103));
+    await expect(respondToShiftFundingRequest({ requestReceiptId: request.requestReceiptId, decision: "ACCEPT" }, CASHIER_A)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(await balances(101, "100.00")).toEqual(before);
+    expect(await cancelShiftFundingRequest({ requestReceiptId: request.requestReceiptId, cancellationReason: "أغلقت وردية المصدر قبل التسليم" }, OWNER)).toMatchObject({ status: "FAILED" });
+    expect(await db().select().from(s.receipts).where(eq(s.receipts.id, source.inReceiptId))).toEqual([expect.objectContaining({ status: "COMPLETED", amount: "75.00" })]);
+  });
+
+  it("يحافظ على عقود v1 الموقعة عند قبول طلب قديم", async () => {
+    const source = await acceptedDrop("80", "legacy-and-other-branch");
+    const request = await requestAdditionalShiftFunding({ shiftId: 101, amount: "80", sourceTreasuryReceiptId: source.inReceiptId,
+      evidenceNote: "عقد تمويل قديم محفوظ قبل تحديث المصادر", clientRequestId: "legacy-source-contract" }, OWNER);
+    const [row] = await db().select().from(s.receipts).where(eq(s.receipts.id, request.requestReceiptId));
+    const metadata = JSON.parse(row!.internalNote!);
+    metadata.version = 1;
+    delete metadata.sourceKind;
+    await db().update(s.receipts).set({ internalNote: JSON.stringify(metadata), signatureHash: idempotencyHash(metadata) }).where(eq(s.receipts.id, request.requestReceiptId));
+    expect(await respondToShiftFundingRequest({ requestReceiptId: request.requestReceiptId, decision: "ACCEPT" }, CASHIER_A)).toMatchObject({ status: "COMPLETED", sourceKind: "CASH_DROP" });
+    expect(await balances(101, "100.00")).toEqual({ treasury: "0.00", drawer: "180.00" });
+  });
+
+  it("تمويل الخزينة يرفض خلط المصدر أو الاعتماد من غير المالك أو الاستلام من طرف آخر", async () => {
+    await fundTreasuryForTest();
+    const input = { shiftId: 101, amount: "50", sourceKind: "TREASURY" as const,
+      evidenceNote: "طلب تمويل من الخزينة محكوم بهوية الأطراف", clientRequestId: "treasury-authority" };
+    await expect(requestAdditionalShiftFunding({ ...input, sourceTreasuryReceiptId: 1 }, OWNER)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(requestAdditionalShiftFunding(input, { userId: 4, branchId: 1, role: "manager" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    const request = await requestAdditionalShiftFunding(input, OWNER);
+    await expect(respondToShiftFundingRequest({ requestReceiptId: request.requestReceiptId, decision: "ACCEPT" }, CASHIER_B)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await db().update(s.users).set({ isOwner: false }).where(eq(s.users.id, 1));
+    await expect(respondToShiftFundingRequest({ requestReceiptId: request.requestReceiptId, decision: "ACCEPT" }, CASHIER_A)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(await balances(101, "100.00")).toEqual({ treasury: "500.00", drawer: "100.00" });
+  });
+
   it("يبقى الطلب صفري الأثر ثم ينفذ الساقين والقيد والتقرير عند قبول صاحب الوردية", async () => {
     const source = await acceptedDrop("300", "happy-300");
     expect((await listEligibleShiftFundingSources({ targetShiftId: 101 }, OWNER)).items).toEqual([

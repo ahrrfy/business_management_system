@@ -10,3 +10,11 @@ reason = "braces is pulled only by Tailwind, Metro, and Jest build/test tooling,
 id = "GHSA-hp3w-g68c-fv3c"
 reason = "sprintf-js is pulled only through js-yaml in Expo development tooling, does not evaluate untrusted format strings in the native app runtime, and has no patched release yet"
 
+# Assessed 2026-10-28: node-resolve merges its fixed defaults; Expo Config.js
+# modifyConfigAsync merges repository-owned local app/plugin configuration.
+# The resolved consumers are checked by dependencySecurityWorkflow.test.ts.
+[[IgnoredVulns]]
+id = "GHSA-gcqx-w48m-w2h4"
+ignoreUntil = 2026-11-28
+reason = "deepmerge is used only by @rollup/plugin-node-resolve and @expo/config build/config tooling, with no HTTP or native-runtime user payload reaching these merge calls; no patched release is available"
+

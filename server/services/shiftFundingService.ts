@@ -33,6 +33,7 @@ import {
   assertNonPhysicalOutReceipt,
   assertTreasuryOutException,
   computeDrawerCashBalance,
+  computeTreasuryCashBalance,
 } from "./cash/cashAvailability";
 import { idempotencyHash, withIdempotency } from "./idempotency";
 import { postEntry } from "./ledgerService";
@@ -50,7 +51,8 @@ export interface RequestShiftFundingInput {
   shiftId: number;
   amount: string;
   evidenceNote: string;
-  sourceTreasuryReceiptId: number;
+  sourceKind?: "TREASURY" | "CASH_DROP";
+  sourceTreasuryReceiptId?: number | null;
   clientRequestId: string;
 }
 
@@ -67,17 +69,18 @@ export interface CancelShiftFundingInput {
 
 type FundingMetadata = {
   kind: "SHIFT_ADDITIONAL_FUNDING";
-  version: 1;
+  version: 1 | 2;
+  sourceKind?: "TREASURY" | "CASH_DROP";
   shiftId: number;
   branchId: number;
   targetUserId: number;
   requestedBy: number;
   amount: string;
   evidenceNote: string;
-  sourceTreasuryReceiptId: number;
-  sourceShiftId: number;
-  sourceReferenceNumber: string;
-  sourceFingerprint: string;
+  sourceTreasuryReceiptId: number | null;
+  sourceShiftId: number | null;
+  sourceReferenceNumber: string | null;
+  sourceFingerprint: string | null;
   clientRequestId: string;
   payloadHash: string;
 };
@@ -93,9 +96,10 @@ export interface PendingShiftFunding {
   requestedByName: string | null;
   targetUserId: number;
   targetUserName: string | null;
-  sourceTreasuryReceiptId: number;
-  sourceShiftId: number;
-  sourceReferenceNumber: string;
+  sourceKind: "TREASURY" | "CASH_DROP";
+  sourceTreasuryReceiptId: number | null;
+  sourceShiftId: number | null;
+  sourceReferenceNumber: string | null;
   createdAt: Date;
 }
 
@@ -112,6 +116,7 @@ export interface EligibleShiftFundingSource {
 export interface EligibleShiftFundingSourcePage {
   items: EligibleShiftFundingSource[];
   nextCursor: number | null;
+  treasuryAvailable: string;
 }
 
 export interface ListEligibleShiftFundingSourcesInput {
@@ -158,10 +163,18 @@ function normalizeRequest(input: RequestShiftFundingInput) {
   if (!Number.isInteger(input.shiftId) || input.shiftId <= 0) {
     fail("رقم الوردية غير صالح", "BAD_REQUEST");
   }
-  const sourceTreasuryReceiptId = input.sourceTreasuryReceiptId;
+  const sourceKind = input.sourceKind ?? "CASH_DROP";
+  const sourceTreasuryReceiptId = input.sourceTreasuryReceiptId ?? null;
+  if (sourceKind !== "TREASURY" && sourceKind !== "CASH_DROP") {
+    fail("مصدر التمويل غير صالح", "BAD_REQUEST");
+  }
+  if (sourceKind === "TREASURY" && sourceTreasuryReceiptId != null) {
+    fail("تمويل الخزينة لا يقبل إيصال سحب وردية؛ اختر مصدر التمويل الصحيح", "BAD_REQUEST");
+  }
   if (
-    !Number.isInteger(sourceTreasuryReceiptId) ||
-    sourceTreasuryReceiptId <= 0
+    sourceKind === "CASH_DROP" &&
+    (!Number.isInteger(sourceTreasuryReceiptId) ||
+    sourceTreasuryReceiptId == null || sourceTreasuryReceiptId <= 0)
   ) {
     fail(
       "تمويل الوردية المفتوحة يتطلب إيصال سحب نقدي مكتمل من وردية أخرى وبالمبلغ نفسه",
@@ -173,6 +186,7 @@ function normalizeRequest(input: RequestShiftFundingInput) {
     amount,
     amountDb: toDbMoney(amount),
     evidenceNote,
+    sourceKind,
     sourceTreasuryReceiptId,
     clientRequestId,
   };
@@ -204,7 +218,7 @@ function parseMetadata(row: RequestRow): FundingMetadata {
   const value = parsed as Partial<FundingMetadata>;
   const valid =
     value?.kind === "SHIFT_ADDITIONAL_FUNDING" &&
-    value.version === 1 &&
+    (value.version === 1 || value.version === 2) &&
     Number.isInteger(value.shiftId) &&
     Number(value.shiftId) > 0 &&
     Number.isInteger(value.branchId) &&
@@ -217,14 +231,21 @@ function parseMetadata(row: RequestRow): FundingMetadata {
     typeof value.evidenceNote === "string" &&
     typeof value.clientRequestId === "string" &&
     typeof value.payloadHash === "string" &&
-    Number.isInteger(value.sourceTreasuryReceiptId) &&
-    Number(value.sourceTreasuryReceiptId) > 0 &&
-    Number.isInteger(value.sourceShiftId) &&
-    Number(value.sourceShiftId) > 0 &&
-    typeof value.sourceReferenceNumber === "string" &&
-    value.sourceReferenceNumber.startsWith("CD-") &&
-    typeof value.sourceFingerprint === "string" &&
-    value.sourceFingerprint.length > 0;
+    (
+      (value.version === 2 && value.sourceKind === "TREASURY" &&
+        value.sourceTreasuryReceiptId === null && value.sourceShiftId === null &&
+        value.sourceReferenceNumber === null && value.sourceFingerprint === null) ||
+      (((value.version === 1 && value.sourceKind == null) ||
+        (value.version === 2 && value.sourceKind === "CASH_DROP")) &&
+        Number.isInteger(value.sourceTreasuryReceiptId) &&
+        Number(value.sourceTreasuryReceiptId) > 0 &&
+        Number.isInteger(value.sourceShiftId) &&
+        Number(value.sourceShiftId) > 0 &&
+        typeof value.sourceReferenceNumber === "string" &&
+        value.sourceReferenceNumber.startsWith("CD-") &&
+        typeof value.sourceFingerprint === "string" &&
+        value.sourceFingerprint.length > 0)
+    );
   if (!valid) {
     fail("عقد طلب تمويل الوردية ناقص أو غير صالح", "PRECONDITION_FAILED");
   }
@@ -528,6 +549,34 @@ async function lockAndValidateCashDropSource(
   };
 }
 
+/** Match the cash guard's lock order: all drawers by id, then treasury, then receipts. */
+async function lockFundingShifts(tx: Tx, targetShiftId: number, sourceReceiptId: number | null) {
+  let sourceShiftId: number | null = null;
+  if (sourceReceiptId != null) {
+    const [source] = await tx
+      .select({ reference: receipts.referenceNumber, branchId: receipts.branchId })
+      .from(receipts).where(eq(receipts.id, sourceReceiptId)).limit(1);
+    const drawers = source?.reference
+      ? await tx.select({ shiftId: receipts.shiftId }).from(receipts).where(and(
+          eq(receipts.branchId, Number(source.branchId)),
+          eq(receipts.referenceNumber, source.reference),
+          eq(receipts.direction, "OUT"), eq(receipts.cashBucket, "DRAWER"),
+        ))
+      : [];
+    if (drawers.length === 1) sourceShiftId = drawers[0]!.shiftId;
+  }
+  const ids = Array.from(new Set([targetShiftId, ...(sourceShiftId == null ? [] : [sourceShiftId])])).sort((a, b) => a - b);
+  const locked = await tx.select().from(shifts).where(inArray(shifts.id, ids))
+    .orderBy(asc(shifts.id)).for("update");
+  if (sourceReceiptId != null) {
+    const source = locked.find((row) => Number(row.id) === sourceShiftId);
+    const target = locked.find((row) => Number(row.id) === targetShiftId);
+    if (!source || source.status !== "OPEN" || Number(source.branchId) !== Number(target?.branchId)) {
+      fail("سحب مصدر التمويل يجب أن يكون من درج وردية نشطة في الفرع نفسه؛ استخدم الخزينة لأموال الورديات المغلقة");
+    }
+  }
+}
+
 async function assertSourceUnused(tx: Tx, sourceReceiptId: number) {
   const [link] = await tx
     .select()
@@ -545,6 +594,9 @@ async function lockFundingSourceLink(
   requestReceiptId: number,
   metadata: FundingMetadata,
 ) {
+  // Treasury funding has no withdrawal source to reserve. Its signed request is
+  // serialized by the target drawer lock and checked against live cash on acceptance.
+  if (metadata.sourceKind === "TREASURY") return null;
   const [link] = await tx
     .select()
     .from(shiftFundingSourceLinks)
@@ -579,6 +631,7 @@ async function releaseFundingSourceLink(
   metadata: FundingMetadata,
 ) {
   const link = await lockFundingSourceLink(tx, requestReceiptId, metadata);
+  if (!link) return;
   if (link.state === "RELEASED") return;
   if (link.state !== "PENDING") {
     fail("مصدر تمويل الوردية نُفّذ ولا يمكن تحريره", "CONFLICT");
@@ -666,6 +719,7 @@ async function resultOf(
     targetUserId: metadata.targetUserId,
     targetUserName: target?.name ?? null,
     sourceTreasuryReceiptId: metadata.sourceTreasuryReceiptId,
+    sourceKind: metadata.sourceKind ?? "CASH_DROP",
     sourceShiftId: metadata.sourceShiftId,
     sourceReferenceNumber: metadata.sourceReferenceNumber,
     createdAt: row.createdAt,
@@ -713,6 +767,7 @@ export async function requestAdditionalShiftFunding(
         const branchId = Number(preview.branchId);
 
         assertTreasuryOutException("SHIFT_FLOAT_INTERNAL");
+        await lockFundingShifts(tx, input.shiftId, input.sourceTreasuryReceiptId);
         const availability = await assertCashTransferAvailable(tx, {
           source: { branchId, cashBucket: "TREASURY", shiftId: null },
           destination: {
@@ -770,38 +825,44 @@ export async function requestAdditionalShiftFunding(
           .where(eq(shiftFundingSourceLinks.activeTargetShiftId, input.shiftId))
           .for("update")
           .limit(1);
-        if (pendingLink)
+        const pendingRequests = await tx.select().from(receipts).where(and(
+          like(receipts.referenceNumber, `${REFERENCE_PREFIX}${branchId}-${input.shiftId}-%`),
+          eq(receipts.direction, "OUT"), eq(receipts.status, "PENDING"),
+          eq(receipts.approvalStatus, "PENDING_APPROVAL"),
+        )).for("update");
+        if (pendingLink || pendingRequests.some((row) => scanFundingMetadata(row)?.shiftId === input.shiftId))
           fail(
             "توجد لهذه الوردية عهدة إضافية معلقة؛ نفّذها أو ارفضها أولاً",
             "CONFLICT",
           );
 
-        const source = await lockAndValidateCashDropSource(
+        const source = input.sourceTreasuryReceiptId == null ? null : await lockAndValidateCashDropSource(
           tx,
           input.sourceTreasuryReceiptId,
           branchId,
           input.amountDb,
         );
-        if (source.sourceShiftId === input.shiftId) {
+        if (source?.sourceShiftId === input.shiftId) {
           fail(
             "يجب أن يأتي التمويل الإضافي من سحب وردية أخرى، لا من الوردية نفسها",
           );
         }
-        await assertSourceUnused(tx, source.id);
+        if (source) await assertSourceUnused(tx, source.id);
 
         const metadata: FundingMetadata = {
           kind: "SHIFT_ADDITIONAL_FUNDING",
-          version: 1,
+          version: 2,
+          sourceKind: input.sourceKind,
           shiftId: input.shiftId,
           branchId,
           targetUserId: Number(shift.userId),
           requestedBy: Number(owner.id),
           amount: input.amountDb,
           evidenceNote: input.evidenceNote,
-          sourceTreasuryReceiptId: source.id,
-          sourceShiftId: source.sourceShiftId,
-          sourceReferenceNumber: source.referenceNumber,
-          sourceFingerprint: source.fingerprint,
+          sourceTreasuryReceiptId: source?.id ?? null,
+          sourceShiftId: source?.sourceShiftId ?? null,
+          sourceReferenceNumber: source?.referenceNumber ?? null,
+          sourceFingerprint: source?.fingerprint ?? null,
           clientRequestId: input.clientRequestId,
           payloadHash,
         };
@@ -835,7 +896,7 @@ export async function requestAdditionalShiftFunding(
           createdBy: owner.id,
         });
         const requestReceiptId = extractInsertId(insert);
-        await tx.insert(shiftFundingSourceLinks).values({
+        if (source) await tx.insert(shiftFundingSourceLinks).values({
           requestReceiptId,
           sourceReceiptId: source.id,
           activeSourceReceiptId: source.id,
@@ -856,7 +917,8 @@ export async function requestAdditionalShiftFunding(
             amount: input.amountDb,
             drawerBefore: toDbMoney(drawerBefore),
             treasuryAvailable: availability.availableBefore,
-            sourceTreasuryReceiptId: source.id,
+            sourceKind: input.sourceKind,
+            sourceTreasuryReceiptId: source?.id ?? null,
             payloadHash,
           },
           ipAddress: actor.ipAddress ?? null,
@@ -935,6 +997,7 @@ export async function listMyPendingShiftFunding(
       targetUserId: metadata.targetUserId,
       targetUserName: target?.name ?? null,
       sourceTreasuryReceiptId: metadata.sourceTreasuryReceiptId,
+      sourceKind: metadata.sourceKind ?? "CASH_DROP",
       sourceShiftId: metadata.sourceShiftId,
       sourceReferenceNumber: metadata.sourceReferenceNumber,
       createdAt: row.createdAt,
@@ -998,6 +1061,7 @@ export async function listPendingShiftFundingForOwners(
       targetUserId: metadata.targetUserId,
       targetUserName: target?.name ?? null,
       sourceTreasuryReceiptId: metadata.sourceTreasuryReceiptId,
+      sourceKind: metadata.sourceKind ?? "CASH_DROP",
       sourceShiftId: metadata.sourceShiftId,
       sourceReferenceNumber: metadata.sourceReferenceNumber,
       createdAt: row.createdAt,
@@ -1045,6 +1109,8 @@ export async function listEligibleShiftFundingSources(
   // are restricted to this bounded page, so the endpoint never scans cash-drop
   // or STF history globally as the installation grows.
   const PAGE_SIZE = 50;
+  const treasuryAvailable = await db.transaction(async (tx) =>
+    toDbMoney(await computeTreasuryCashBalance(tx, Number(targetShift.branchId))));
   const candidates = await db
     .select()
     .from(receipts)
@@ -1072,7 +1138,7 @@ export async function listEligibleShiftFundingSources(
     candidates.length > PAGE_SIZE
       ? Number(pageCandidates[pageCandidates.length - 1]!.id)
       : null;
-  if (pageCandidates.length === 0) return { items: [], nextCursor };
+  if (pageCandidates.length === 0) return { items: [], nextCursor, treasuryAvailable };
 
   const candidateIds = pageCandidates.map((row) => Number(row.id));
   const references = pageCandidates.map((row) => String(row.referenceNumber));
@@ -1133,7 +1199,7 @@ export async function listEligibleShiftFundingSources(
           .select({ shiftId: shifts.id, userName: users.name })
           .from(shifts)
           .leftJoin(users, eq(shifts.userId, users.id))
-          .where(inArray(shifts.id, sourceShiftIds));
+          .where(and(inArray(shifts.id, sourceShiftIds), eq(shifts.status, "OPEN"), eq(shifts.branchId, Number(targetShift.branchId))));
   const userNameByShift = new Map(
     sourceUsers.map((row) => [Number(row.shiftId), row.userName]),
   );
@@ -1178,6 +1244,7 @@ export async function listEligibleShiftFundingSources(
       );
       if (
         sourceShiftId == null ||
+        !userNameByShift.has(sourceShiftId) ||
         sourceShiftId === input.targetShiftId ||
         drawer.status !== "COMPLETED" ||
         drawer.approvalStatus !== "APPROVED" ||
@@ -1199,7 +1266,7 @@ export async function listEligibleShiftFundingSources(
       ];
     },
   );
-  return { items, nextCursor };
+  return { items, nextCursor, treasuryAvailable };
 }
 
 async function lockRequestAndSource(
@@ -1207,7 +1274,7 @@ async function lockRequestAndSource(
   requestReceiptId: number,
   metadata: FundingMetadata,
 ) {
-  const ids = [requestReceiptId, metadata.sourceTreasuryReceiptId].sort(
+  const ids = [requestReceiptId, ...(metadata.sourceTreasuryReceiptId == null ? [] : [metadata.sourceTreasuryReceiptId])].sort(
     (a, b) => a - b,
   );
   const rows = await tx
@@ -1233,12 +1300,13 @@ async function lockRequestAndSource(
       : request.status === "FAILED"
         ? "RELEASED"
         : "PENDING";
-  if (link.state !== expectedLinkState) {
+  if (link && link.state !== expectedLinkState) {
     fail(
       "حالة رابط مصدر تمويل الوردية لا تطابق حالة الطلب",
       "PRECONDITION_FAILED",
     );
   }
+  if (metadata.sourceTreasuryReceiptId == null) return request;
   const source = await lockAndValidateCashDropSource(
     tx,
     metadata.sourceTreasuryReceiptId,
@@ -1447,7 +1515,7 @@ export async function respondToShiftFundingRequest(
         request.status === "FAILED" &&
         request.approvalStatus === "REJECTED"
       ) {
-        if (link.state !== "RELEASED") {
+        if (link && link.state !== "RELEASED") {
           fail("طلب التمويل المرفوض ما زال يحجز مصدره", "PRECONDITION_FAILED");
         }
         return resultOf(tx, request, true);
@@ -1458,7 +1526,7 @@ export async function respondToShiftFundingRequest(
       ) {
         fail("طلب التمويل لم يعد قابلاً للرفض", "CONFLICT");
       }
-      if (link.state !== "PENDING") {
+      if (link && link.state !== "PENDING") {
         fail("مصدر طلب التمويل لم يعد محجوزاً له", "PRECONDITION_FAILED");
       }
       const [target] = await tx
@@ -1522,7 +1590,7 @@ export async function respondToShiftFundingRequest(
         Number(preview.id),
         metadata,
       );
-      if (link.state !== "CONSUMED") {
+      if (link && link.state !== "CONSUMED") {
         fail(
           "طلب التمويل المنفذ لا يملك رابط مصدر مستهلكاً",
           "PRECONDITION_FAILED",
@@ -1534,6 +1602,7 @@ export async function respondToShiftFundingRequest(
     assertTreasuryOutException("SHIFT_FLOAT_INTERNAL");
     let availability: Awaited<ReturnType<typeof assertCashTransferAvailable>>;
     try {
+      await lockFundingShifts(tx, metadata.shiftId, metadata.sourceTreasuryReceiptId);
       availability = await assertCashTransferAvailable(tx, {
         source: {
           branchId: metadata.branchId,

@@ -31,6 +31,8 @@ export interface ShiftFundingDialogProps {
   fundingExpected: Decimal | null;
   fundingSources: FundingSourceItem[];
   fundingSourcesLoading: boolean;
+  treasuryAvailable?: string;
+  fundingSourcesError?: string;
   fundingSourcesNextCursor?: number | null;
   fundingSourceReceiptId: string;
   setFundingSourceReceiptId: (v: string) => void;
@@ -55,6 +57,8 @@ export function ShiftFundingDialog({
   fundingExpected,
   fundingSources,
   fundingSourcesLoading,
+  treasuryAvailable,
+  fundingSourcesError,
   fundingSourcesNextCursor,
   fundingSourceReceiptId,
   setFundingSourceReceiptId,
@@ -78,14 +82,14 @@ export function ShiftFundingDialog({
         if (!open) onClose();
       }}
     >
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="grid-cols-1 sm:max-w-lg" aria-describedby="shift-funding-summary">
         <DialogHeader>
           <DialogTitle>
             تمويل إضافي للوردية #{fundingShiftId} — {fundingRowUserName ?? ""}
           </DialogTitle>
         </DialogHeader>
-        <div className="space-y-4">
-          <div className="rounded-lg border bg-muted/30 p-3 text-xs text-muted-foreground">
+        <div className="min-w-0 space-y-4">
+          <div id="shift-funding-summary" className="rounded-lg border bg-muted/30 p-3 text-xs text-muted-foreground">
             هذا طلب تسليم فقط: لا تُخصم الخزنة ولا يزيد الدرج حتى يستلم صاحب الوردية النقد فعلياً
             ويؤكد الاستلام. الرصيد المتوقع الحي: {fundingReportLoading ? "جارٍ الحساب…" : fundingExpected == null ? "—" : `${fmt(fundingExpected.toString())} د.ع`}.
           </div>
@@ -96,11 +100,11 @@ export function ShiftFundingDialog({
           )}
           <div className="space-y-1.5">
             <label htmlFor="shift-funding-source" className="text-sm font-bold">
-              سحب الوردية المصدر
+              مصدر التمويل
             </label>
             <AppSelect
               id="shift-funding-source"
-              className={`${selectCls} h-10 w-full`}
+              className={`${selectCls} h-10 min-w-0 w-full [&>span]:block [&>span]:truncate`}
               value={fundingSourceReceiptId}
               disabled={fundingSourcesLoading}
               onValueChange={(value) => {
@@ -112,24 +116,27 @@ export function ShiftFundingDialog({
                 setFundingAmount(selected?.amount ?? "");
               }}
             >
-              <option value="">اختر سحباً نقدياً مقبولاً وغير مستخدم</option>
+              <option value="">اختر مصدر التمويل</option>
+              <option value="TREASURY">خزينة الفرع — {treasuryAvailable == null ? "—" : fmt(treasuryAvailable)} د.ع متاح</option>
               {fundingSources.map((source) => (
                 <option key={source.receiptId} value={source.receiptId}>
-                  {source.referenceNumber} — وردية #{source.sourceShiftId} {source.sourceUserName ?? ""} — {fmt(source.amount)} د.ع
+                  {source.referenceNumber} — سحب من درج نشط #{source.sourceShiftId} {source.sourceUserName ?? ""} — {fmt(source.amount)} د.ع
                 </option>
               ))}
             </AppSelect>
             <p className="text-xs text-muted-foreground">
-              إلزامي: يجب أن يكون سحباً مقبولاً من وردية أخرى وبنفس المبلغ، ولا يمكن استعماله مرتين. من دون سحبٍ فعلي أغلق الوردية وافتح وردية جديدة بعهدة من الخزينة.
+              اختر الخزينة وأدخل المبلغ، أو سحباً نقدياً فعلياً من درج وردية نشطة أخرى بعد قبول الخزينة له. السحب يُستخدم مرة واحدة وبمبلغه الكامل؛ أموال الورديات المغلقة تُموّل من الخزينة.
             </p>
-            {!fundingSourcesLoading && fundingSources.length === 0 && (
+            <p className="text-xs text-muted-foreground">الرصيد المعروض غير محجوز، ويُفحص مجدداً عند الاستلام. لا يُسحب نقد جديد من درج المصدر عند قبول التمويل.</p>
+            {fundingSourcesError && <p role="alert" className="text-xs text-destructive">تعذّر تحميل مصادر التمويل: {fundingSourcesError}</p>}
+            {!fundingSourcesLoading && fundingSourceReceiptId !== "TREASURY" && fundingSources.length === 0 && (
               <p className="text-xs font-bold text-warning">
                 {fundingSourcesNextCursor != null
                   ? "لا يوجد مصدر صالح في هذه الصفحة؛ اعرض المصادر الأقدم."
-                  : "لا يوجد سحب وردية مقبول متاح لهذا الفرع. نفّذ السحب واستلمه في الخزينة أولاً."}
+                  : "لا يوجد سحب مقبول من درج نشط. يمكنك التمويل من خزينة الفرع أو تنفيذ سحب واستلامه في الخزينة أولاً."}
               </p>
             )}
-            <div className="flex items-center justify-between gap-2">
+            {(fundingSourcesNextCursor != null || fundingSourceCursorHistory.length > 0) && <div className="flex items-center justify-between gap-2">
               <Button
                 type="button"
                 variant="outline"
@@ -163,11 +170,11 @@ export function ShiftFundingDialog({
               >
                 الأقدم
               </Button>
-            </div>
+            </div>}
           </div>
           <div className="space-y-1.5">
             <label htmlFor="shift-funding-amount" className="text-sm font-bold">
-              المبلغ المطابق للسحب
+              {fundingSourceReceiptId === "TREASURY" ? "مبلغ التمويل من الخزينة" : "المبلغ المطابق للسحب"}
             </label>
             <MoneyInput
               id="shift-funding-amount"
@@ -175,8 +182,11 @@ export function ShiftFundingDialog({
               onChange={setFundingAmount}
               placeholder="0"
               ariaLabel="مبلغ التمويل الإضافي للوردية"
-              disabled
+              disabled={fundingSourceReceiptId !== "TREASURY" || isPending}
             />
+            {fundingSourceReceiptId === "TREASURY" && treasuryAvailable != null && D(fundingAmount || 0).gt(treasuryAvailable) && (
+              <p role="alert" className="text-xs text-destructive">المبلغ يتجاوز رصيد الخزينة المتاح: {fmt(treasuryAvailable)} د.ع.</p>
+            )}
           </div>
           <div className="space-y-1.5">
             <label htmlFor="shift-funding-note" className="text-sm font-bold">
@@ -199,12 +209,15 @@ export function ShiftFundingDialog({
           <Button
             disabled={
               isPending ||
+              fundingSourcesLoading ||
+              !!fundingSourcesError ||
               fundingReportLoading ||
               fundingExpected == null ||
               fundingExpected.lt(0) ||
               !fundingAmount ||
               !fundingSourceReceiptId ||
               D(fundingAmount || 0).lte(0) ||
+              (fundingSourceReceiptId === "TREASURY" && (treasuryAvailable == null || D(fundingAmount || 0).gt(treasuryAvailable))) ||
               fundingNote.trim().length < 10 ||
               !fundingClientRequestId
             }

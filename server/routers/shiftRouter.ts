@@ -146,7 +146,7 @@ export const shiftRouter = router({
     }),
   ),
 
-  /** سحوبات الورديات المقبولة المتاحة كمصدرٍ وحيد لعهدة إضافية. */
+  /** رصيد الخزينة وسحوبات الأدراج النشطة المقبولة المتاحة للتمويل. */
   fundingSources: ownerProcedure
     .input(z.object({
       targetShiftId: z.number().int().positive(),
@@ -198,7 +198,8 @@ export const shiftRouter = router({
         shiftId: z.number().int().positive(),
         amount: z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ التمويل غير صالح"),
         evidenceNote: z.string().trim().min(10).max(500),
-        sourceTreasuryReceiptId: z.number().int().positive(),
+        sourceKind: z.enum(["TREASURY", "CASH_DROP"]).optional(),
+        sourceTreasuryReceiptId: z.number().int().positive().nullish(),
         clientRequestId: z.string().trim().min(1).max(64),
       }),
     )
