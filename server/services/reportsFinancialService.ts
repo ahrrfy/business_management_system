@@ -19,6 +19,7 @@ import {
 } from "./reconcileService";
 import { supplierApEffectSql } from "./ledger/supplierApEffect";
 import { readLegacyVoucherActivity } from "./reports/financialActivity";
+import { readConsignmentCogs } from "./reports/consignmentCogs";
 import { financialActivityJournalSql } from "./reports/financialJournal";
 import { readValuationAt } from "./inventory/valuationSnapshot";
 import { receiptCashEventAtSql } from "./cash/cashEventAt";
@@ -466,7 +467,7 @@ export async function plSnapshot(
   );
 
   const revenue = money(rc.revenue ?? 0).plus(voucherActivity.revenue);
-  const cogs = money(rc.cogs ?? 0);
+  const cogs = money(rc.cogs ?? 0).plus(await readConsignmentCogs(db, from, to, branchId));
   const grossProfit = revenue.sub(cogs);
 
   const expenseLines: PLLine[] = exRows.map((r) => ({

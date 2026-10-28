@@ -19,7 +19,7 @@
 client/src/pages (٢٧٢ صفحة، wouter + TanStack Query)
    └─ client/src/lib/trpc.ts ──POST /api/trpc──▶ server/routers.ts (برميل يجمع ٩٨ راوتراً)
         └─ server/routers/*  : تحقّق zod + اختيار الإجراء المُبوَّب (بلا منطق أعمال)
-             └─ server/services/*  : منطق الأعمال داخل withTx (٧٥٤ ملفاً/حزمة)
+             └─ server/services/*  : منطق الأعمال داخل withTx (٧٥٥ ملفاً/حزمة)
                   └─ drizzle/schema.ts (٣٤٥ جدولاً، ١٨٨٦٩ سطراً) ──▶ MySQL 8
 ```
 

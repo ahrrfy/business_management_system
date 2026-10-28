@@ -36,7 +36,7 @@ const effectiveLineCostSql = sql`CASE
   ELSE COALESCE(ii.lineCost, 0)
 END`;
 
-const netLineCostSql = componentRightsRawCostSql(sql`CASE
+const ordinaryNetLineCostSql = componentRightsRawCostSql(sql`CASE
   WHEN ii.baseQuantity <= 0 THEN ${effectiveLineCostSql}
   WHEN COALESCE(ii.returnedRestockedBaseQuantity, 0) >= ii.baseQuantity THEN 0
   ELSE ${effectiveLineCostSql} - ROUND(
@@ -44,6 +44,7 @@ const netLineCostSql = componentRightsRawCostSql(sql`CASE
     2
   )
 END`);
+const netLineCostSql = sql`COALESCE(rp.workOrderCost, ${ordinaryNetLineCostSql})`;
 
 export interface SalesAnalyticsFilters {
   from?: string; // YYYY-MM-DD

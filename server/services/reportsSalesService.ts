@@ -18,13 +18,14 @@ import {
   componentRightsRawCostSql,
   invoiceLineReportProjectionSql,
   reportInvoiceDeliveryRevenueSql,
-  reportInvoiceGoodsRevenueSql, reportInvoiceOriginalGoodsRevenueSql,
+  reportInvoiceGoodsRevenueSql, reportInvoiceOriginalGoodsRevenueSql, reportWorkOrderCogsSql,
 } from "./fulfillment/componentRightsReportSql";
 
 const rightsLineRevenueSql = sql`rp.revenue`;
-const rightsLineCostSql = componentRightsRawCostSql(
+const rawLineCostSql = componentRightsRawCostSql(
   sql`CASE WHEN ii.baseQuantity <= 0 THEN ii.lineCost WHEN ii.returnedRestockedBaseQuantity >= ii.baseQuantity THEN 0 ELSE ii.lineCost - ROUND(ii.lineCost * ii.returnedRestockedBaseQuantity / ii.baseQuantity, 2) END`,
 );
+const rightsLineCostSql = sql`COALESCE(rp.workOrderCost, ${rawLineCostSql})`;
 
 /**
  * أعمدةُ مسند «الرصيد المفتوح» بالاسم المستعار `i` (نمطُ SQL الخامّ في هذا الملفّ) —
@@ -367,11 +368,11 @@ export async function getSalesByDimension(opts: {
         -- يساوي سالبَ المقبوض (≤ 0) ⇒ القصُّ وحده يمنعها من خصم ذمّةِ فاتورةٍ حيّة من «غير
         -- المدفوع». وضعٌ موقَّعٌ هنا كان سيُنقص الرقم بمقدار ما قُبِض على كلّ فاتورةٍ مُرتجَعة.
         CAST(COALESCE(SUM(${openBalanceExpr(INVOICE_ALIAS_OPEN_BALANCE_COLS, "COLLECTIBLE")}), 0) AS CHAR) AS unpaid,
-        CAST(COALESCE(SUM(COALESCE(ic.cost, i.costTotal)), 0) AS CHAR) AS cost
+        CAST(COALESCE(SUM(COALESCE(${reportWorkOrderCogsSql()}, ic.cost, i.costTotal)), 0) AS CHAR) AS cost
       FROM invoices i
       LEFT JOIN (
         SELECT ii.invoiceId,
-          SUM(${rightsLineCostSql}) AS cost
+          SUM(${rawLineCostSql}) AS cost
         FROM invoiceItems ii
         GROUP BY ii.invoiceId
       ) ic ON ic.invoiceId = i.id

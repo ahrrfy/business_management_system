@@ -44,7 +44,7 @@ export const componentRightsRawCostSql = (ordinary: SQL) =>
 
 /** Reporting only: delivery remains an invoice-level revenue, never a product margin. */
 export function reportInvoiceDeliveryRevenueSql(): SQL {
-  return sql`CASE WHEN i.invoiceStatus = 'RETURNED' OR (COALESCE(i.returnedTotal, 0) > 0 AND i.total <= i.returnedTotal) THEN 0
+  return sql`CASE WHEN i.invoiceStatus = 'RETURNED' THEN 0
     ELSE LEAST(GREATEST(COALESCE(i.total, 0) - COALESCE(i.cashRoundingAdjustment, 0) - COALESCE(i.returnedTotal, 0), 0), COALESCE(i.deliveryFee, 0)) END`;
 }
 
@@ -55,13 +55,23 @@ export function reportInvoiceOriginalGoodsRevenueSql(): SQL {
 
 export function reportInvoiceGoodsRevenueSql(): SQL {
   // Cash rounding is posted separately; it is neither a goods discount nor delivery revenue.
-  const remainingGross = sql`CASE WHEN i.invoiceStatus = 'RETURNED' OR (COALESCE(i.returnedTotal, 0) > 0 AND i.total <= i.returnedTotal) THEN 0
+  const remainingGross = sql`CASE WHEN i.invoiceStatus = 'RETURNED' THEN 0
     ELSE GREATEST(i.total - COALESCE(i.cashRoundingAdjustment, 0) - COALESCE(i.returnedTotal, 0) - (${reportInvoiceDeliveryRevenueSql()}), 0) END`;
   const remainingTax = sql`CASE WHEN COALESCE(i.taxAmount, 0) = 0 OR ${remainingGross} = 0 THEN 0 ELSE GREATEST(0, COALESCE(
     i.taxAmount + (SELECT SUM(rt.taxAmount) FROM accountingEntries rt WHERE rt.invoiceId = i.id AND rt.entryType = 'RETURN' AND rt.supplierId IS NULL),
     ROUND(${remainingGross} * i.taxAmount / NULLIF(i.total - COALESCE(i.cashRoundingAdjustment, 0) - COALESCE(i.deliveryFee, 0), 0), 2)
   )) END`;
   return sql`GREATEST(${remainingGross} - (${remainingTax}), 0)`;
+}
+
+/** Work-order delivery lines may have no cost; use its recorded materials, including dated reversals. */
+export function reportWorkOrderCogsSql(): SQL {
+  return sql`CASE WHEN i.sourceType = 'WORKORDER' AND EXISTS (
+    SELECT 1 FROM accountingEntries woSale WHERE woSale.invoiceId=i.id
+      AND woSale.branchId=i.branchId AND woSale.entryType='SALE' AND woSale.supplierId IS NULL
+  ) THEN (SELECT COALESCE(SUM(woCost.cost),0) FROM accountingEntries woCost
+    WHERE woCost.invoiceId=i.id AND woCost.branchId=i.branchId AND woCost.supplierId IS NULL
+      AND woCost.entryType IN ('SALE','RETURN')) ELSE NULL END`;
 }
 
 /**
@@ -82,9 +92,18 @@ export function invoiceLineReportProjectionSql(invoiceScope: SQL): SQL {
     CASE WHEN allocated.originalTotal > 0 THEN
       ROUND(allocated.originalGoodsValue * allocated.originalCumulative / allocated.originalTotal, 2)
       - ROUND(allocated.originalGoodsValue * (allocated.originalCumulative - allocated.originalWeight) / allocated.originalTotal, 2)
-      ELSE 0 END AS originalRevenue
+      ELSE 0 END AS originalRevenue,
+    CASE WHEN allocated.workOrderCogs IS NULL THEN NULL
+      WHEN allocated.originalTotal > 0 THEN
+        ROUND(allocated.workOrderCogs * allocated.originalCumulative / allocated.originalTotal, 2)
+        - ROUND(allocated.workOrderCogs * (allocated.originalCumulative - allocated.originalWeight) / allocated.originalTotal, 2)
+      ELSE ROUND(allocated.workOrderCogs * allocated.linePosition / allocated.lineCount, 2)
+        - ROUND(allocated.workOrderCogs * (allocated.linePosition - 1) / allocated.lineCount, 2)
+    END AS workOrderCost
     FROM (
       SELECT weighted.*,
+        ROW_NUMBER() OVER (PARTITION BY weighted.invoiceId ORDER BY weighted.id) AS linePosition,
+        COUNT(*) OVER (PARTITION BY weighted.invoiceId) AS lineCount,
         SUM(weighted.weight) OVER (PARTITION BY weighted.invoiceId) AS weightTotal,
         SUM(weighted.weight) OVER (PARTITION BY weighted.invoiceId ORDER BY weighted.id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS weightCumulative,
         SUM(weighted.originalWeight) OVER (PARTITION BY weighted.invoiceId) AS originalTotal,
@@ -92,7 +111,8 @@ export function invoiceLineReportProjectionSql(invoiceScope: SQL): SQL {
       FROM (
         SELECT ii.id, ii.invoiceId, ${weight} AS weight, GREATEST(ii.total, 0) AS originalWeight,
           ${reportInvoiceGoodsRevenueSql()} AS goodsValue,
-          ${reportInvoiceOriginalGoodsRevenueSql()} AS originalGoodsValue
+          ${reportInvoiceOriginalGoodsRevenueSql()} AS originalGoodsValue,
+          ${reportWorkOrderCogsSql()} AS workOrderCogs
         FROM invoiceItems ii JOIN invoices i ON i.id = ii.invoiceId
         WHERE ${invoiceScope}
       ) weighted
