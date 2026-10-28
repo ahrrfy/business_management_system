@@ -24,7 +24,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { assertDbTarget, targetEnvironment } from "./lib/db-target.mjs";
-import { resolveBackupClient, backupDumpCommand } from "./lib/backup-client.mjs";
+import { resolveBackupClient, backupDumpCommand, completeBackupDump } from "./lib/backup-client.mjs";
 
 // ─── وضع تعدّد الشركات: نسخة منفصلة لكل شركة فعّالة، ثم خروج (لا يُكمل لمنطق قاعدة واحدة) ───
 if (process.argv.includes("--all-companies")) {
@@ -81,7 +81,7 @@ const noRotate = process.argv.includes("--no-rotate");
 // BACKUP_TARGET_URL, and is harmless for root-operated scheduled backups.
 const COMMON_DUMP = ["--single-transaction", "--routines", "--events", "--no-tablespaces"];
 const SOURCE_DATA_FLAG = "--source-data=2";
-let db, dumpCmd, dumpArgs, dumpCleanup, resolvedTarget;
+let db, dumpCmd, dumpArgs, dumpCleanup, resolvedTarget, selected;
 // Standalone/cron backups follow DATABASE_URL too; never fall back to another server's credentials.
 const targetUrl = process.env.BACKUP_TARGET_URL ?? process.env.DATABASE_URL;
 try {
@@ -89,7 +89,7 @@ try {
     throw new Error(
       "DATABASE_URL or BACKUP_TARGET_URL is required to identify the backup target",
     );
-  const selected = await resolveBackupClient(targetUrl, { container });
+  selected = await resolveBackupClient(targetUrl, { container });
   resolvedTarget = selected.target;
   db = resolvedTarget.db;
   const dumpFlags =
@@ -113,7 +113,7 @@ process.once("exit", () => dumpCleanup?.());
 // --single-transaction: لقطة متّسقة بلا قفل الجداول (آمن أثناء التشغيل).
 // بثّ stdout مباشرة إلى الملف ⇒ يصمد لقواعد بأي حجم (لا سقف 512MB في الذاكرة).
 // كل مسارات الفشل (فشل التشغيل، خطأ كتابة، رمز ≠0) تُرفض هنا — والملف الجزئي يُمحى لدى المستدعي.
-function dumpToFile() {
+function dumpToFile(guard) {
   return new Promise((resolve, reject) => {
     const sink = createWriteStream(partial, { mode: 0o600, flags: "wx" });
     sink.write(`-- ALROYA_DB_NEUTRAL_BACKUP:${encodeURIComponent(db)}\n`);
@@ -125,44 +125,69 @@ function dumpToFile() {
     let settled = false;
     let exitCode = null;
     let sinkClosed = false;
+    let childClosed = false;
+    let failure;
+    let unsubscribe;
+    let killTimer;
     const fail = (err) => {
-      if (settled) return;
-      settled = true;
+      if (settled || failure) return;
+      failure = err;
       try { child.kill(); } catch { /* تجاهل */ }
+      dumpCleanup?.();
+      child.stdout.unpipe(sink);
       sink.destroy();
-      reject(err);
+      // Wait for both handles before the caller deletes the partial file,
+      // including on Windows where destroy() does not close it synchronously.
+      if (!childClosed) killTimer = setTimeout(() => {
+        try { child.kill("SIGKILL"); } catch { /* already closed */ }
+      }, 5000);
+      maybeDone();
     };
     const maybeDone = () => {
-      if (settled || exitCode === null || !sinkClosed) return;
-      if (exitCode !== 0) {
+      if (settled || !childClosed || !sinkClosed) return;
+      if (exitCode !== 0 && !failure) {
         const hint = stderrTail.split("\n").filter(Boolean).slice(-3).join(" | ");
         fail(new Error(`mysqldump فشل (رمز ${exitCode})${hint ? `: ${hint}` : ""}`));
         return;
       }
       settled = true;
-      resolve();
+      clearTimeout(killTimer);
+      unsubscribe?.();
+      if (failure) reject(failure);
+      else resolve();
     };
     child.stderr.on("data", (d) => { stderrTail = (stderrTail + d.toString()).slice(-4096); });
     child.on("error", (e) => fail(new Error(`تعذّر تشغيل ${dumpCmd}: ${e?.message ?? e}`)));
     // خطأ كتابة (امتلاء القرص…) في أي لحظة ⇒ فشل فوري — لا «نجاح» بملف مبتور.
     sink.on("error", (e) => fail(new Error(`فشل كتابة ملف النسخة: ${e?.message ?? e}`)));
     sink.on("close", () => { sinkClosed = true; maybeDone(); });
-    child.on("exit", (code) => { exitCode = code ?? 1; maybeDone(); });
-    child.stdout.pipe(sink);
+    child.on("close", (code) => { exitCode = code ?? 1; childClosed = true; maybeDone(); });
+    child.stdout.on("error", fail);
+    unsubscribe = guard?.onFailure(fail);
+    if (!failure) child.stdout.pipe(sink);
+    else child.stdout.resume();
   });
 }
 
 try {
   await assertDbTarget(resolvedTarget);
-  await dumpToFile();
-  dumpCleanup?.();
-  const size = statSync(partial).size;
-  if (size < 512) {
-    throw new Error(`الناتج صغير بشكل مريب (${size} bytes) — قد يكون فشلاً صامتاً`);
-  }
-  renameSync(partial, out);
-  console.log(`✓ نسخة احتياطية: ${out} (${(size / 1024).toFixed(1)} KB)`);
-  console.log(`  للاستعادة الآمنة: أوقف عمال الويب ثم نفّذ pnpm db:restore ${out}`);
+  await completeBackupDump(selected, {
+    dump: dumpToFile,
+    publish() {
+      dumpCleanup?.();
+      const size = statSync(partial).size;
+      if (size < 512) throw new Error(`الناتج صغير بشكل مريب (${size} bytes) — قد يكون فشلاً صامتاً`);
+      renameSync(partial, out);
+      console.log(`✓ نسخة احتياطية: ${out} (${(size / 1024).toFixed(1)} KB)`);
+      console.log(`  للاستعادة الآمنة: أوقف عمال الويب ثم نفّذ pnpm db:restore ${out}`);
+    },
+    discard() {
+      dumpCleanup?.();
+      for (const path of [partial, out]) {
+        try { unlinkSync(path); } catch (error) { if (error.code !== "ENOENT") throw error; }
+      }
+    },
+  });
 } catch (e) {
   dumpCleanup?.();
   // لا نُبقي ملفاً جزئياً/فارغاً — يُحسب «أحدث نسخة» لدى بوّابة الهجرة وشاشة الاستعادة.

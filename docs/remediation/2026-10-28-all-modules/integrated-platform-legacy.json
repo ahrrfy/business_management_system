@@ -1,0 +1,23 @@
+{
+  "integratedAt": "2026-10-28T19:36:40.976Z",
+  "source": "D:/business_management_system-worktrees/audit-fix-platform-1028",
+  "worker": "backup_import_fixes",
+  "reviewer": "independent_contract_review",
+  "review": "No remaining material objection after required 30s inspect timeout; bounded stock direct Docker topology only",
+  "files": {
+    "scripts/backup.mjs": "5c677fdc1da01c5a4d612578bface2271514d8f9239fe6c0d82a438f09557238",
+    "scripts/lib/db-target.mjs": "2b930c064c6798f44562d5c68e72126025f4cdde7181ffbc6c5cc4b03671cf2f",
+    "scripts/lib/db-target.test.mjs": "1ad7d9f2b24cffe53a173d1ef89446d849c0fda32a35bcdd998086e0c1eb4842",
+    "scripts/lib/backup-client.mjs": "36cdea1051296638aa00576cee1a13431d068ff836af9715fd2828733fd1577e",
+    "scripts/lib/backup-client.test.mjs": "bb4886c565d3acab1a382f5929ae9151294100a537feeb40a050720c26700cbd",
+    "scripts/lib/backup-client.mysql80.test.mjs": "6d51f666e289315e99447f7ec9b752580d04e6f6034d06772c96b37d46eb4a78",
+    "scripts/provision-backup-client.mjs": "88c02feaff16408d783bd7515257efdeea67b17ec432a56b1a43f99d97dcccfb",
+    "docs/deployment-vps.md": "0e1bcdcb28dd64edeeb2433422b4b90102879f5b551930ae145693de8430a385"
+  },
+  "evidence": {
+    "unitPassed": 57,
+    "actualSmokePassed": 2,
+    "actualSmokeSha256": "f470c5773d3d32e81bfc5959c431befacc10422b1f0f77c85a13fb634b2e9e38",
+    "limits": "Full CLI positive dump/roundtrip is real. Wrong UUID and KILL use real sentinel and real partial helper; live CLI sidecar interruption was not exercised."
+  }
+}

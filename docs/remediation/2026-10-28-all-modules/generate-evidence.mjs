@@ -39,9 +39,9 @@ fs.writeFileSync(path.join(directory,'closure-register.json'),JSON.stringify({
 
 const changed=[...execFileSync('git',['diff','--name-only',integratedBase],{cwd:root,encoding:'utf8'}).split(/\r?\n/),
  ...execFileSync('git',['ls-files','--others','--exclude-standard'],{cwd:root,encoding:'utf8'}).split(/\r?\n/)];
-const sourceFiles=[...new Set(changed)].filter(file=>/^(client\/|server\/|shared\/|scripts\/|drizzle\/|vitest\.unit\.config\.ts$|CLAUDE\.md$)/.test(file)).sort();
+const sourceFiles=[...new Set(changed)].filter(file=>/^(client\/|server\/|shared\/|scripts\/|drizzle\/|\.github\/workflows\/|vitest\.unit\.config\.ts$|CLAUDE\.md$)/.test(file)).sort();
 const sourceHashes=Object.fromEntries(sourceFiles.map(file=>[file,createHash('sha256').update(fs.readFileSync(path.join(root,file))).digest('hex')]));
-const logs=['typecheck.log','guards-final.log','build.log','branch-red.log','branch-green.log','migration-dry-run.log','full-test-docker-failure.log','full-test-final.log','producer-isolated-retry.log','integration-local-budget-interrupted.log','b2b-isolated-retry.log','ci-fixtures-green.log','local-target-guards.log','backup80-node-green.log','backup80-deploy-green.log'];
+const logs=['typecheck.log','guards-final.log','build.log','branch-red.log','branch-green.log','migration-dry-run.log','full-test-docker-failure.log','full-test-final.log','producer-isolated-retry.log','integration-local-budget-interrupted.log','b2b-isolated-retry.log','ci-fixtures-green.log','local-target-guards.log','backup80-node-green.log','backup80-deploy-green.log','backup80-legacy-node-green.log','backup80-legacy-real-green.log','backup80-legacy-deploy-green.log'];
 const logHashes=Object.fromEntries(logs.filter(file=>fs.existsSync(path.join(directory,file))).map(file=>[file,createHash('sha256').update(fs.readFileSync(path.join(directory,file))).digest('hex')]));
 fs.writeFileSync(path.join(directory,'evidence-manifest.json'),JSON.stringify({
  generatedAt:new Date().toISOString(),base:integratedBase,headAtCapture:execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim(),

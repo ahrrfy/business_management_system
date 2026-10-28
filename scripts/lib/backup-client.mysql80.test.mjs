@@ -2,12 +2,20 @@
 // normal DB ports, missing ownership labels, or any server except MySQL 8.0.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync, spawn } from "node:child_process";
 import {
-  backupDumpCommand,
-  resolveBackupClient,
-  BACKUP_CLIENT_VERSION,
-} from "./backup-client.mjs";
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+  existsSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, dirname, basename, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { resolveBackupClient, completeBackupDump } from "./backup-client.mjs";
 import {
   mysqlCommand,
   parseDbTarget,
@@ -106,7 +114,7 @@ test("MySQL 8.0 smoke configuration rejects live/default targets before SQL", ()
 });
 
 test(
-  "pinned MySQL 8.4 client dumps and roundtrips a fresh isolated MySQL 8.0 snapshot",
+  "matching MySQL 8.0 client preserves binlog coordinates, roundtrips and rejects changed identity",
   {
     skip: process.env.RUN_BACKUP_MYSQL80_SMOKE !== "1",
     timeout: 120000,
@@ -139,7 +147,37 @@ test(
     const mysql = await import("mysql2/promise");
     const connection = await mysql.createConnection(serverUrl.toString());
     const created = new Set();
-    const commands = [];
+    const artifactDir = mkdtempSync(join(tmpdir(), "erp-backup80-smoke-"));
+    const cli = (extraEnv) =>
+      new Promise((resolveRun, reject) => {
+        const child = spawn(
+          process.execPath,
+          [
+            fileURLToPath(new URL("../backup.mjs", import.meta.url)),
+            "--no-rotate",
+          ],
+          {
+            env: {
+              ...process.env,
+              ...targetEnvironment(initial),
+              BACKUP_TARGET_URL: rawUrl,
+              BACKUP_DIR: artifactDir,
+              ...extraEnv,
+            },
+            stdio: ["ignore", "pipe", "pipe"],
+          },
+        );
+        let stdout = "",
+          stderr = "";
+        child.stdout.on("data", (data) => {
+          stdout = (stdout + data).slice(-16384);
+        });
+        child.stderr.on("data", (data) => {
+          stderr = (stderr + data).slice(-16384);
+        });
+        child.on("error", reject);
+        child.on("close", (status) => resolveRun({ status, stdout, stderr }));
+      });
     try {
       const [[server]] = await connection.query(
         "SELECT @@version AS version, @@server_uuid AS uuid, @@log_bin AS binlog",
@@ -186,8 +224,7 @@ test(
         `SELECT id, label, amount, HEX(payload) AS payload FROM \`${config.db}\`.snapshot ORDER BY id`,
       );
 
-      // Force this smoke to exercise the isolated artifact even when CI happens
-      // to have a modern native client. All Docker/DB operations remain real.
+      // Server generation must win even if CI has a modern native client.
       const withoutNative = (command, args, options) => {
         if (command === "mysqldump")
           throw new Error("native disabled in isolated-client smoke");
@@ -202,45 +239,86 @@ test(
             expectedUuid: initial.serverUuid,
           }),
       });
-      assert.equal(selected.kind, "isolated");
-      const flags = [
-        "--single-transaction",
-        "--routines",
-        "--events",
-        "--no-tablespaces",
-        "--source-data=2",
-        "--set-gtid-purged=OFF",
-        config.db,
-      ];
-      const goodCommand = backupDumpCommand(selected, flags);
-      commands.push(goodCommand);
-      const dump = spawnSync(goodCommand.command, goodCommand.args, {
-        env: targetEnvironment(selected.target),
-        maxBuffer: 16 * 1024 * 1024,
-      });
-      assert.equal(dump.status, 0, dump.stderr?.toString());
-      assert.match(dump.stdout.toString(), /CREATE TABLE `snapshot`/);
-      goodCommand.cleanup?.();
-
-      const wrongCommand = backupDumpCommand(
-        {
-          ...selected,
-          target: {
-            ...selected.target,
-            serverUuid: "00000000-0000-0000-0000-000000000000",
-          },
-        },
-        flags,
+      assert.equal(selected.kind, "legacy-container");
+      assert.equal(selected.imageId, inspected.Image);
+      const good = await cli({});
+      assert.equal(good.status, 0, good.stderr);
+      const backups = readdirSync(artifactDir).filter((name) =>
+        name.endsWith(".sql"),
       );
-      commands.push(wrongCommand);
-      const wrong = spawnSync(wrongCommand.command, wrongCommand.args, {
-        env: targetEnvironment(selected.target),
-        maxBuffer: 1024 * 1024,
-      });
-      assert.notEqual(wrong.status, 0);
-      assert.match(wrong.stderr.toString(), /DB_TARGET_IDENTITY_MISMATCH/);
-      assert.doesNotMatch(wrong.stdout.toString(), /CREATE TABLE `snapshot`/);
-      wrongCommand.cleanup?.();
+      assert.equal(backups.length, 1);
+      const dump = readFileSync(join(artifactDir, backups[0]));
+      assert.match(dump.toString(), /CREATE TABLE `snapshot`/);
+      assert.match(
+        dump.toString(),
+        /^-- CHANGE (?:REPLICATION SOURCE|MASTER) TO .*?(?:SOURCE|MASTER)_LOG_FILE='[^']+', (?:SOURCE|MASTER)_LOG_POS=\d+;/m,
+      );
+      assert.equal(
+        readdirSync(artifactDir).some((name) => name.endsWith(".partial")),
+        false,
+      );
+
+      let wrongStarted = false;
+      await assert.rejects(
+        completeBackupDump(
+          {
+            ...selected,
+            target: {
+              ...selected.target,
+              serverUuid: "00000000-0000-0000-0000-000000000000",
+            },
+          },
+          {
+            dump() {
+              wrongStarted = true;
+            },
+            publish() {
+              assert.fail("wrong UUID cannot publish");
+            },
+            discard() {},
+          },
+        ),
+        /DB_TARGET_IDENTITY_MISMATCH/,
+      );
+      assert.equal(wrongStarted, false);
+
+      // Kill only this test's own sentinel session, after producing a partial
+      // artifact. A disconnected monitor must never promote it to .sql.
+      let sentinel;
+      const interruptedPartial = join(artifactDir, "interrupted.sql.partial");
+      const interruptedAccepted = join(artifactDir, "interrupted.sql");
+      await assert.rejects(
+        completeBackupDump(
+          selected,
+          {
+            async dump(guard) {
+              writeFileSync(interruptedPartial, dump);
+              const disconnected = new Promise((resolveFailure) =>
+                guard.onFailure(resolveFailure),
+              );
+              await connection.query(
+                `KILL CONNECTION ${Number(sentinel.connection.threadId)}`,
+              );
+              await disconnected;
+            },
+            publish() {
+              renameSync(interruptedPartial, interruptedAccepted);
+            },
+            discard() {
+              rmSync(interruptedPartial, { force: true });
+            },
+          },
+          {
+            createConnection: async (url) => {
+              sentinel = await mysql.createConnection(url);
+              return sentinel;
+            },
+          },
+        ),
+        /BACKUP_TARGET_CONTINUITY/,
+      );
+      assert.equal(existsSync(interruptedAccepted), false);
+      assert.equal(existsSync(interruptedPartial), false);
 
       const destinationUrl = new URL(rawUrl);
       destinationUrl.pathname = `/${destination}`;
@@ -250,7 +328,7 @@ test(
       });
       // mysql 8.0 already supports --init-command. Reuse the exact dump UUID guard
       // on this actual restore connection and disable reconnects.
-      const pin = goodCommand.args.find((arg) =>
+      const pin = mysqlCommand(selected.target, "mysqldump").args.find((arg) =>
         arg.startsWith("--init-command="),
       );
       assert.ok(pin);
@@ -263,7 +341,7 @@ test(
       ]);
       const replay = spawnSync(restore.command, restore.args, {
         env: targetEnvironment(restoreTarget),
-        input: dump.stdout,
+        input: dump,
         maxBuffer: 1024 * 1024,
       });
       assert.equal(replay.status, 0, replay.stderr?.toString());
@@ -273,15 +351,19 @@ test(
       assert.deepEqual(actual, expected);
       console.log(
         JSON.stringify({
-          clientVersion: BACKUP_CLIENT_VERSION,
+          clientVersion: server.version,
           serverVersion: server.version,
           sourceRows: expected.length,
           roundtripRows: actual.length,
           wrongUuidRejected: true,
+          binlogCoordinatesPresent: true,
+          disconnectedSentinelRejected: true,
         }),
       );
     } finally {
-      for (const command of commands) command.cleanup?.();
+      assert.equal(dirname(resolve(artifactDir)), resolve(tmpdir()));
+      assert.ok(basename(artifactDir).startsWith("erp-backup80-smoke-"));
+      rmSync(artifactDir, { recursive: true, force: true });
       // Use the same non-reconnecting connection; never delete a pre-existing DB.
       try {
         const [[server]] = await connection.query(

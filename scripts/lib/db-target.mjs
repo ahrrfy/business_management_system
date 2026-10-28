@@ -2,11 +2,11 @@ import { execFileSync as runFile } from "node:child_process";
 import mysql from "mysql2/promise";
 
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1"]);
-const IDENTITY_SQL = "SELECT @@server_uuid, DATABASE()";
+const IDENTITY_SQL = "SELECT @@server_uuid, DATABASE(), @@version";
 
 export function identitySql(target) {
   return target.allowMissingDatabase
-    ? `SELECT @@server_uuid, COALESCE((SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE BINARY SCHEMA_NAME = BINARY '${target.db}'), '')`
+    ? `SELECT @@server_uuid, COALESCE((SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE BINARY SCHEMA_NAME = BINARY '${target.db}'), ''), @@version`
     : IDENTITY_SQL;
 }
 
@@ -55,6 +55,7 @@ async function readIdentity(target) {
     return {
       serverUuid: rows[0]?.[fields[0]?.name],
       db: rows[0]?.[fields[1]?.name] || null,
+      serverVersion: rows[0]?.[fields[2]?.name],
     };
   } catch {
     throw new Error("DB_TARGET_IDENTITY_UNAVAILABLE");
@@ -63,7 +64,7 @@ async function readIdentity(target) {
   }
 }
 
-function dockerBinding(target, container, execFileSync) {
+export function dockerBinding(target, container, execFileSync = runFile) {
   if (!LOOPBACK.has(target.host))
     throw new Error(
       "DB_TARGET_DOCKER_REMOTE: use a native client for a remote URL",
@@ -74,6 +75,7 @@ function dockerBinding(target, container, execFileSync) {
       execFileSync("docker", ["inspect", container], {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
+        timeout: 30000,
       }),
     )[0];
   } catch {
@@ -102,7 +104,11 @@ function dockerBinding(target, container, execFileSync) {
     throw new Error(
       "DB_TARGET_BINDING_MISMATCH: DB_CONTAINER does not publish the DATABASE_URL endpoint",
     );
-  return { containerId: inspected.Id, containerPort: ports[0] };
+  return {
+    containerId: inspected.Id,
+    containerPort: ports[0],
+    inspection: inspected,
+  };
 }
 
 export function targetEnvironment(target, env = process.env) {
@@ -134,8 +140,8 @@ export function mysqlCommand(target, binary, extra = []) {
       throw new Error("DB_TARGET_UUID_INVALID");
     // MySQL executes this on the dump connection and on every reconnect. A
     // different UUID produces an invalid sql_mode error before any table dump.
-    // backup-client.mjs selects a capable client first; an 8.0 server's older
-    // bundled client is replaced by the prepared isolated client, not unpinned.
+    // The bounded stock-Docker 8.0 path uses a separate continuity guard and
+    // constructs its matching older client's arguments without this option.
     args.push(
       `--init-command=SET SESSION sql_mode = IF(@@server_uuid = '${target.serverUuid}', @@sql_mode, 'DB_TARGET_IDENTITY_MISMATCH')`,
     );
@@ -234,7 +240,7 @@ export async function resolveDbTarget(
   } = {},
 ) {
   const parsed = { ...parseDbTarget(rawUrl), allowMissingDatabase };
-  const binding =
+  const { inspection: _inspection, ...binding } =
     adapter === "docker" ? dockerBinding(parsed, container, execFileSync) : {};
   const actual = await queryIdentity(parsed);
   if (
@@ -249,6 +255,7 @@ export async function resolveDbTarget(
     adapter,
     ...binding,
     serverUuid: actual.serverUuid,
+    serverVersion: actual.serverVersion,
   });
   // Verify the adapter independently, not just the connection used by migrations.
   await assertDbTarget(target, {

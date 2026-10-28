@@ -170,6 +170,8 @@ jobs:
           RUN_BACKUP_MYSQL80_SMOKE: "1"
           BACKUP_SMOKE_CONTAINER: ${{ job.services.mysql.id }}
           BACKUP_SMOKE_DATABASE_URL: mysql://root@127.0.0.1:3306/erp_backup_client_80_smoke_test
+          DB_CONTAINER: ${{ job.services.mysql.id }}
+          BACKUP_TARGET_URL: mysql://root@127.0.0.1:3306/erp_backup_client_80_smoke_test
         run: |
           node scripts/provision-backup-client.mjs --isolated --pull
           node --test scripts/lib/backup-client.mysql80.test.mjs

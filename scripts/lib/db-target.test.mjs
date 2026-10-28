@@ -6,6 +6,31 @@ import { EventEmitter } from "node:events";
 import { PassThrough, Readable, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { resolveBackupClient, backupDumpCommand } from "./backup-client.mjs";
+import { dockerBinding, parseDbTarget } from "./db-target.mjs";
+
+test(
+  "Docker inspection has a bounded timeout and never exposes subprocess details",
+  { timeout: 200 },
+  () => {
+    let inspectedOptions;
+    assert.throws(
+      () =>
+        dockerBinding(
+          parseDbTarget("mysql://root@127.0.0.1:33330/erp"),
+          "explicit-container",
+          (_command, _args, options) => {
+            inspectedOptions = options;
+            throw Object.assign(
+              new Error("synthetic-secret-subprocess-details"),
+              { code: "ETIMEDOUT" },
+            );
+          },
+        ),
+      (error) => error.message === "DB_TARGET_CONTAINER_UNAVAILABLE",
+    );
+    assert.equal(inspectedOptions.timeout, 30000);
+  },
+);
 
 // Run the real selection branch with subprocesses/identity reads replaced at the I/O edge.
 // No dump, restore or database write is ever executed by this harness.
@@ -40,7 +65,10 @@ async function backupSelection({
           },
         },
       ]);
-    if (args[0] === "exec") return args.includes("mysqldump") ? "mysqldump Ver 8.4.9\n --init-command=name SQL on connect" : `${adapterUuid}\terp\n`;
+    if (args[0] === "exec")
+      return args.includes("mysqldump")
+        ? "mysqldump Ver 8.4.9\n --init-command=name SQL on connect"
+        : `${adapterUuid}\terp\n`;
     throw new Error(`unexpected command ${command}`);
   };
   let helpers = {};
@@ -48,7 +76,11 @@ async function backupSelection({
     const actual = await import("./db-target.mjs");
     const dependencies = {
       execFileSync,
-      queryIdentity: async () => ({ serverUuid: uuid, db: "erp" }),
+      queryIdentity: async () => ({
+        serverUuid: uuid,
+        db: "erp",
+        serverVersion: "8.4.9",
+      }),
     };
     helpers = {
       resolveDbTarget: (url, options) =>
@@ -56,7 +88,13 @@ async function backupSelection({
       assertDbTarget: (target) => actual.assertDbTarget(target, dependencies),
       mysqlCommand: actual.mysqlCommand,
       targetEnvironment: actual.targetEnvironment,
-      resolveBackupClient: (url, options) => resolveBackupClient(url, { ...options, execFileSync, resolveTarget: (value, config) => actual.resolveDbTarget(value, { ...config, ...dependencies }) }),
+      resolveBackupClient: (url, options) =>
+        resolveBackupClient(url, {
+          ...options,
+          execFileSync,
+          resolveTarget: (value, config) =>
+            actual.resolveDbTarget(value, { ...config, ...dependencies }),
+        }),
       backupDumpCommand,
     };
   }
@@ -125,28 +163,49 @@ test("backup pins the actual native dump connection and every reconnect", async 
   assert.ok(!result.dumpArgs.includes("--force"));
 });
 test("an older dump client rejecting the pin option aborts the streaming backup", async () => {
-  const source = readFileSync(new URL("../backup.mjs", import.meta.url), "utf8");
-  const start = source.indexOf("function dumpToFile()");
+  const source = readFileSync(
+    new URL("../backup.mjs", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf("function dumpToFile(");
   const body = source.slice(start, source.indexOf("\ntry {", start));
-  const sink = new Writable({ write(chunk, encoding, callback) { callback(); } });
+  const sink = new Writable({
+    write(chunk, encoding, callback) {
+      callback();
+    },
+  });
   const child = new EventEmitter();
   child.stdout = new PassThrough();
   child.stderr = new PassThrough();
   child.kill = () => {};
   const context = vm.createContext({
-    partial: "not-created.partial", db: "erp", dumpCmd: "mysqldump", dumpArgs: ["--init-command=guard"], resolvedTarget: {},
-    targetEnvironment: () => ({}), createWriteStream: () => sink,
+    partial: "not-created.partial",
+    db: "erp",
+    dumpCmd: "mysqldump",
+    dumpArgs: ["--init-command=guard"],
+    resolvedTarget: {},
+    targetEnvironment: () => ({}),
+    createWriteStream: () => sink,
+    dumpCleanup() {},
+    setTimeout,
+    clearTimeout,
     spawn: (command, args) => {
-      assert.ok(args.some(arg => arg.startsWith("--init-command=")));
+      assert.ok(args.some((arg) => arg.startsWith("--init-command=")));
       queueMicrotask(() => {
         child.stderr.write("unknown variable 'init-command=guard'");
         child.stdout.end("-- incomplete dump");
-        child.emit("exit", 2);
+        child.emit("close", 2);
       });
       return child;
     },
   });
-  await assert.rejects(vm.runInContext(`(async () => { ${body}; await dumpToFile(); })()`, context), /unknown variable.*init-command/);
+  await assert.rejects(
+    vm.runInContext(
+      `(async () => { ${body}; await dumpToFile(); })()`,
+      context,
+    ),
+    /unknown variable.*init-command/,
+  );
 });
 
 async function restoreExecution({
