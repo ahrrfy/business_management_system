@@ -137,9 +137,9 @@ function closePackRows(
     { section: "قيمة المشتريات", value: fmtAr(d.purchases.total) },
     { section: "المصروفات", value: fmtAr(d.expenses.total) },
     { section: "صافي الربح", value: fmtAr(d.profit.netProfit) },
-    { section: "مقبوضات الخزينة", value: fmtAr(d.treasury.totalIn) },
-    { section: "مدفوعات الخزينة", value: fmtAr(d.treasury.totalOut) },
-    { section: "صافي حركة الخزينة", value: fmtAr(d.treasury.net) },
+    { section: "مقبوضات وسائل الدفع", value: fmtAr(d.treasury.totalIn) },
+    { section: "مدفوعات وسائل الدفع", value: fmtAr(d.treasury.totalOut) },
+    { section: "صافي حركة الوسائل", value: fmtAr(d.treasury.net) },
     { section: "ذمم العملاء (كما في نهاية الشهر)", value: fmtAr(hist.ar) },
     { section: "ذمم الموردين (كما في نهاية الشهر)", value: fmtAr(hist.ap) },
     { section: "أوامر شغل مُسلَّمة", value: String(d.workOrdersDelivered) },
@@ -178,9 +178,9 @@ export function monthlyCloseExportRows(
     { section: "قيمة المشتريات", value: toExcelMoney(d.purchases.total) },
     { section: "المصروفات", value: toExcelMoney(d.expenses.total) },
     { section: "صافي الربح", value: toExcelMoney(d.profit.netProfit) },
-    { section: "مقبوضات الخزينة", value: toExcelMoney(d.treasury.totalIn) },
-    { section: "مدفوعات الخزينة", value: toExcelMoney(d.treasury.totalOut) },
-    { section: "صافي حركة الخزينة", value: toExcelMoney(d.treasury.net) },
+    { section: "مقبوضات وسائل الدفع", value: toExcelMoney(d.treasury.totalIn) },
+    { section: "مدفوعات وسائل الدفع", value: toExcelMoney(d.treasury.totalOut) },
+    { section: "صافي حركة الوسائل", value: toExcelMoney(d.treasury.net) },
     {
       section: "ذمم العملاء (كما في نهاية الشهر)",
       value: toExcelMoney(hist.ar),
@@ -226,7 +226,7 @@ const COMPARE_METRICS: {
   { key: "expenses", label: "المصروفات", pick: (d) => d.expenses.total },
   {
     key: "treasuryNet",
-    label: "صافي حركة الخزينة",
+    label: "صافي حركة الوسائل",
     pick: (d) => d.treasury.net,
   },
 ];
@@ -753,7 +753,7 @@ export default function MonthlyClosePack() {
               tone={D(d.profit.netProfit).isNegative() ? "negative" : "positive"}
             />
             <StatCard
-              label="صافي حركة الخزينة"
+              label="صافي حركة الوسائل"
               value={fmtAr(d.treasury.net)}
               sub={`دخل ${fmtAr(d.treasury.totalIn)} — خرج ${fmtAr(d.treasury.totalOut)}`}
               icon={Scale}

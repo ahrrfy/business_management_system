@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import { balanceStatementRows, customerStatementLedger, statementClosingBalance } from "@/lib/statementPeriodLedger";
 
 describe("statement period closing", () => {
+  it("keeps a posted cancelled original with its dated reversal in the historical ledger", () => {
+    const original = { invoiceDate: "2026-09-01", invoiceNumber: "CANCELLED-POSTED", status: "CANCELLED", total: "100", ledgerTotal: "100.00" };
+    expect(customerStatementLedger({ summary: { openingBalance: "0" }, invoices: [original], payments: [] }).closingBalance).toBe("100.00");
+    expect(customerStatementLedger({ summary: { openingBalance: "0" }, invoices: [original],
+      payments: [{ createdAt: "2026-10-01", direction: "IN", amount: "100", paymentMethod: "RETURN" }] }).closingBalance).toBe("0.00");
+  });
   it.each(["customer", "supplier"] as const)("keeps historical %s closing separate from live balance with only an end date", (kind) => {
     const rows = [{ t: 1, debit: kind === "customer" ? "50" : null, credit: kind === "supplier" ? "50" : null }];
     const ledger = balanceStatementRows(rows, "100", kind);

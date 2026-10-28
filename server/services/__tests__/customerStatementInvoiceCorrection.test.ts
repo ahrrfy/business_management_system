@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { getARAging, getCustomerStatement } from "../reports/arAging";
 import { money } from "../money";
+import { getMonthlyClosePack } from "../reports/monthlyClosePack";
 import { truncateTables } from "./__testUtils__";
 
 beforeEach(async () => {
-  await truncateTables(["invoiceItems", "invoices", "accountingEntries", "customers", "branches", "users"]);
+  await truncateTables(["receipts", "invoiceItems", "invoices", "accountingEntries", "customers", "branches", "users"]);
   const db = getDb()!;
   await db.insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
   await db.insert(s.users).values({ id: 1, openId: "statement-correction", name: "المدير", role: "admin", branchId: 1 });
@@ -20,6 +22,51 @@ beforeEach(async () => {
 });
 
 describe("أثر تصحيح الفاتورة في كشف العميل", () => {
+  it("يحفظ أصل الإلغاء وعكسه عبر الفترات ولا يصنع ائتمانًا وهميًا", async () => {
+    const db = getDb()!;
+    await db.delete(s.accountingEntries).where(eq(s.accountingEntries.customerId, 1));
+    await db.update(s.customers).set({ currentBalance: "0.00" }).where(eq(s.customers.id, 1));
+    await db.insert(s.invoices).values({ id: 50, invoiceNumber: "CANCEL-HISTORY", customerId: 1,
+      branchId: 1, sourceType: "POS", status: "CANCELLED", subtotal: "100", total: "100",
+      returnedTotal: "100", paidAmount: "0", invoiceDate: new Date("2020-02-01T12:00:00Z"), createdBy: 1 });
+    await db.insert(s.accountingEntries).values([
+      { entryType: "SALE", customerId: 1, invoiceId: 50, branchId: 1, amount: "100", revenue: "100", entryDate: new Date("2020-02-01T12:00:00Z") },
+      { entryType: "RETURN", customerId: 1, invoiceId: 50, branchId: 1, amount: "-100", revenue: "-100", entryDate: new Date("2020-03-01T12:00:00Z") },
+    ]);
+    const later = (await getCustomerStatement(1, { from: "2021-01-01", branchId: 1 }))!;
+    expect(later.summary.openingBalance).toBe("0.00");
+    expect(later.payments).toHaveLength(0);
+    const beforeCancellation = (await getCustomerStatement(1, { to: "2020-02-28", branchId: 1 }))!;
+    expect(beforeCancellation.invoices[0].ledgerTotal).toBe("100.00");
+    expect(beforeCancellation.payments).toHaveLength(0);
+    const reversalPeriod = (await getCustomerStatement(1, { from: "2020-03-01", to: "2020-03-31", branchId: 1 }))!;
+    expect(reversalPeriod.summary.openingBalance).toBe("100.00");
+    expect(reversalPeriod.payments).toMatchObject([{ paymentMethod: "RETURN", amount: "100.00" }]);
+    expect((await getMonthlyClosePack({ month: "2020-02", branchId: 1 })).sales).toMatchObject({ total: "100.00", returnedTotal: "0.00", netAfterReturns: "100.00" });
+    expect((await getMonthlyClosePack({ month: "2020-03", branchId: 1 })).sales).toMatchObject({ total: "0.00", returnedTotal: "100.00", netAfterReturns: "-100.00" });
+  });
+
+  it("يعزل فواتير وحركات وافتتاح الفرع ويُفصح عن رصيد الشركة منفصلًا", async () => {
+    const db = getDb()!;
+    await db.delete(s.accountingEntries).where(eq(s.accountingEntries.customerId, 1));
+    await db.insert(s.branches).values({ id: 2, name: "المبيعات", code: "SALES", type: "SALES" });
+    await db.update(s.customers).set({ currentBalance: "0.00" }).where(eq(s.customers.id, 1));
+    await db.insert(s.invoices).values({ id: 51, invoiceNumber: "BRANCH-CLAIM", customerId: 1, branchId: 1,
+      sourceType: "POS", status: "PENDING", subtotal: "100", total: "100", invoiceDate: new Date("2020-01-01T12:00:00Z"), createdBy: 1 });
+    await db.insert(s.receipts).values({ id: 51, direction: "IN", branchId: 2, partyType: "CUSTOMER", partyId: 1,
+      amount: "100", paymentMethod: "CARD", approvalStatus: "APPROVED", status: "COMPLETED", createdBy: 1,
+      createdAt: new Date("2020-01-02T12:00:00Z") });
+    await db.insert(s.accountingEntries).values([
+      { entryType: "SALE", customerId: 1, invoiceId: 51, branchId: 1, amount: "100", entryDate: new Date("2020-01-01T12:00:00Z") },
+      { entryType: "PAYMENT_IN", customerId: 1, branchId: 2, receiptId: 51, amount: "100", entryDate: new Date("2020-01-02T12:00:00Z") },
+    ]);
+    const statement = (await getCustomerStatement(1, { branchId: 1, from: "2020-01-01" }))!;
+    expect(statement.payments).toHaveLength(0);
+    expect(statement.summary).toMatchObject({ currentBalance: "100.00", companyCurrentBalance: "0.00", scopedBranchId: 1 });
+    const aging = await getARAging({ branchId: 1 });
+    expect(aging).toMatchObject([{ customerId: 1, currentBalance: "100.00", unpaidTotal: "100.00" }]);
+  });
+
   it("يعرض الصافي والمتبقي الحاليين دون احتساب الأصل المستبدل ويحفظ مستنداته التاريخية", async () => {
     const db = getDb()!;
     await db.insert(s.invoices).values([

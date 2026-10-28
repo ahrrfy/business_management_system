@@ -18,6 +18,12 @@ import {
   reconcileSupplierBalances,
 } from "./reconcileService";
 import { supplierApEffectSql } from "./ledger/supplierApEffect";
+import { readLegacyVoucherActivity } from "./reports/financialActivity";
+import { financialActivityJournalSql } from "./reports/financialJournal";
+import { readValuationAt } from "./inventory/valuationSnapshot";
+import { receiptCashEventAtSql } from "./cash/cashEventAt";
+import { internalCashMovementSql } from "./reports/financialCashMovement";
+import { utcDayRange } from "./businessDay";
 
 /** أعمدة القيد بالاسم المستعار `ae` — أثر AP الموحَّد (PURCHASE القديم + GRNI/ADJUST الحديث). */
 const AE_AP = {
@@ -135,7 +141,7 @@ async function activeJournalPlSnapshot(
     FROM journalLines jl
     INNER JOIN journalEntries je ON je.id = jl.journalId
     WHERE je.status = 'POSTED'
-      AND (je.sourceType IS NULL OR je.sourceType <> 'SHADOW_OPENING')
+      ${financialActivityJournalSql()}
       AND je.cycleId = ${cycleId}
       AND je.entryDate >= ${from} AND je.entryDate <= ${to}
       ${branch}
@@ -258,30 +264,10 @@ export async function plSnapshot(
     `),
   );
 
-  // GAP-01: مصاريف سندات الصرف (PAYMENT_OUT) المباشرة (partyType = 'OTHER' أو ملف صرف تصنيف/مصروف)
-  // التي سُجلت عبر واجهة السندات دون صف في جدول expenses.
-  const voucherExpenseRows = rowsOf(
-    await db.execute(sql`
-      SELECT
-        COALESCE(vc.name, r.description, ae.notes, 'مصروفات سندات متنوعة') AS category,
-        CAST(COALESCE(SUM(ae.amount), 0) AS CHAR) AS amount
-      FROM accountingEntries ae
-      INNER JOIN receipts r ON r.id = ae.receiptId
-      LEFT JOIN voucherCategories vc ON vc.id = r.voucherCategoryId
-      WHERE ae.entryType = 'PAYMENT_OUT'
-        AND (ae.dedupeKey IS NULL OR ae.dedupeKey NOT LIKE 'FULFILLMENT_CHARGE_%')
-        AND (
-          ae.postingProfile IN ('PAYMENT_OUT_OTHER', 'PAYMENT_OUT_CATEGORY', 'PAYMENT_OUT_EXPENSE')
-          OR r.voucherPartyType = 'OTHER'
-        )
-        AND r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
-        AND r.receiptApprovalStatus = 'APPROVED'
-        AND ae.entryDate >= ${from} AND ae.entryDate <= ${to}
-        ${branchAe}
-      GROUP BY COALESCE(vc.name, r.description, ae.notes, 'مصروفات سندات متنوعة')
-      ORDER BY SUM(ae.amount) DESC
-    `),
-  );
+  // Recognition follows the persisted counter-account, not OTHER or a cash direction.
+  // Refunds/settlements already represented by their source cannot create another expense.
+  const voucherActivity = await readLegacyVoucherActivity(db, from, to, branchId);
+  const voucherExpenseRows = voucherActivity.expenseLines;
 
   // الرواتب على أساس الاستحقاق: حدث الاعتماد يحمل الأجر المكتسب + حصة الشركة في الضمان +
   // استحقاق نهاية الخدمة، ويُؤرَّخ بنهاية فترة الخدمة. إعادة المسيّر للمسودة تنشئ ACCRUAL_REVERSAL
@@ -479,7 +465,7 @@ export async function plSnapshot(
   `),
   );
 
-  const revenue = money(rc.revenue ?? 0);
+  const revenue = money(rc.revenue ?? 0).plus(voucherActivity.revenue);
   const cogs = money(rc.cogs ?? 0);
   const grossProfit = revenue.sub(cogs);
 
@@ -979,6 +965,13 @@ export interface FinancialPosition {
   arDebit: string; // ذمم مدينة (عملاء يدينون لنا)
   arCredit: string; // سُلف العملاء (دفعوا زيادة)
   inventory: string;
+  inventoryValuation: {
+    source: "LIVE" | "SNAPSHOT";
+    cutoffDate: string | null;
+    value: string;
+    branchId: number | null;
+    capturedAt: string | null;
+  };
   fixedAssets: string;
   apCredit: string; // ذمم دائنة (نحن نَدين للموردين)
   apDebit: string; // سُلف للموردين
@@ -1078,6 +1071,7 @@ export async function getFinancialPosition(
     arDebit: zero,
     arCredit: zero,
     inventory: zero,
+    inventoryValuation: { source: "LIVE", cutoffDate: opts.asOf ?? null, value: zero, branchId: opts.branchId ?? null, capturedAt: null },
     fixedAssets: zero,
     apCredit: zero,
     apDebit: zero,
@@ -1303,7 +1297,10 @@ export async function getFinancialPosition(
   // كانت هذه القراءة تستثني in-transit فيَنخفض الأصل زوراً طوال فترة النقل ثمّ يعود عند الاستلام.
   // نفس منطق `readInventoryValuation` — نُبقيه SQL خامّاً هنا كي يحترم فلترَ الفرع/التاريخ نفسه (bId).
   // فلترُ الفرع على in-transit = فرعُ المصدر (البضاعةُ في عهدته حتى تسلَّمها الوجهة، نمطُ قيد «عجز النقل»).
-  const inv = rowsOf(
+  const historicalInventory = asOf
+    ? await db.transaction((tx) => readValuationAt(tx, asOf, bId), { accessMode: "read only", isolationLevel: "repeatable read" })
+    : null;
+  const inv = historicalInventory ? { v: historicalInventory.totalValue } : rowsOf(
     await db.execute(sql`
     SELECT CAST(
       COALESCE(SUM(bs.quantity * pv.costPrice), 0)
@@ -1877,7 +1874,7 @@ export async function getFinancialPosition(
   }
 
   const historicalNote = isHistorical
-    ? `النقد ورصيد زين والذمم وعهدة التوصيل وأجورها والتزامات الأجور المصنفة وفائض قبض العميل مبنيّة من دفاتر مؤرخة حتى هذا التاريخ. المخزون والأصول الثابتة وعرابين أوامر الشغل والطلبات المحفوظة ورصيد الصيرفة تبقى بقيمتها الحالية لغياب سجل تاريخ تكلفة كامل.${payrollMode?.cycleId ? " خصوم الرواتب وسلف الموظفين مبنيّة من اليومية حتى تاريخ اللقطة." : " وفي وضع OFF تُعاد خصوم الرواتب وسلف الموظفين تاريخياً من أصل دفاترها وتخصيصات السداد/الاسترداد وعكوسها المؤرخة حتى اللقطة."}`
+    ? `النقد ورصيد زين والذمم وعهدة التوصيل وأجورها والتزامات الأجور المصنفة وفائض قبض العميل مبنيّة من دفاتر مؤرخة حتى هذا التاريخ. ${historicalInventory?.source === "SNAPSHOT" ? "المخزون من لقطة الإقفال الرسمية المطابقة للتاريخ والفرع." : "المخزون تقديري من الحالة الحالية لعدم وجود لقطة إقفال للتاريخ المطلوب."} الأصول الثابتة وعرابين أوامر الشغل والطلبات المحفوظة ورصيد الصيرفة تبقى بقيمتها الحالية.${payrollMode?.cycleId ? " خصوم الرواتب وسلف الموظفين مبنيّة من اليومية حتى تاريخ اللقطة." : " وفي وضع OFF تُعاد خصوم الرواتب وسلف الموظفين تاريخياً من أصل دفاترها وتخصيصات السداد/الاسترداد وعكوسها المؤرخة حتى اللقطة."}`
     : null;
   const interbranchNote =
     bId && !payrollMode?.cycleId
@@ -1895,6 +1892,13 @@ export async function getFinancialPosition(
     arDebit: toDbMoney(arDebit),
     arCredit: toDbMoney(arCredit),
     inventory: toDbMoney(inventory),
+    inventoryValuation: {
+      source: historicalInventory?.source ?? "LIVE",
+      cutoffDate: asOf ?? null,
+      value: toDbMoney(inventory),
+      branchId: bId ?? null,
+      capturedAt: historicalInventory?.capturedAt?.toISOString() ?? null,
+    },
     fixedAssets: toDbMoney(fixedAssets),
     apCredit: toDbMoney(apCredit),
     apDebit: toDbMoney(apDebit),
@@ -1954,13 +1958,18 @@ export interface CashFlowLine {
   label: string;
   amount: string;
 }
-export interface CashFlowResult {
-  period: { from: string; to: string };
+export interface CashFlowMovementGroup {
   inflows: CashFlowLine[];
   outflows: CashFlowLine[];
   totalIn: string;
   totalOut: string;
   net: string;
+}
+export interface CashFlowResult extends CashFlowMovementGroup {
+  period: { from: string; to: string };
+  purpose: "PAYMENT_MOVEMENTS";
+  dateBasis: "CASH_EVENT_AT";
+  internal: CashFlowMovementGroup;
 }
 
 export async function getCashFlow(opts: {
@@ -1968,65 +1977,43 @@ export async function getCashFlow(opts: {
   to: string;
   branchId?: number;
 }): Promise<CashFlowResult> {
-  const db = getDb();
+  const emptyGroup = (): CashFlowMovementGroup => ({
+    inflows: [], outflows: [], totalIn: "0.00", totalOut: "0.00", net: "0.00",
+  });
   const base: CashFlowResult = {
-    period: { from: opts.from, to: opts.to },
-    inflows: [],
-    outflows: [],
-    totalIn: "0",
-    totalOut: "0",
-    net: "0",
+    period: { from: opts.from, to: opts.to }, purpose: "PAYMENT_MOVEMENTS",
+    dateBasis: "CASH_EVENT_AT", ...emptyGroup(), internal: emptyGroup(),
   };
+  const db = getDb();
   if (!db) return base;
-
-  // FIN-04 (تدقيق ٢٠/٦): توحيد أساس التاريخ. كانت هذه الدالة تُبوّب وتُرشّح على DATE(r.createdAt)
-  // — وهو timestamp بتوقيت خادم MySQL المحليّ — بينما كل القوائم الأخرى (P&L/الأستاذ/المصروفات)
-  // تُفتاح على entryDate (عمود DATE)، فينشأ أساسٌ مزدوج وانحراف عند حدود UTC. الإصلاح: نشتقّ تاريخ
-  // العمل من قيد الدفتر المرتبط بالإيصال (ae.receiptId → ae.entryDate) — نفس الأساس الذي يفتاح عليه
-  // الباقي — مع COALESCE احتياطيٍّ على DATE(r.createdAt) لأي إيصال نادر بلا قيد دفتر مرتبط (لا يُسقَط
-  // صفّ أبداً، فلا يتغيّر مجموع النقد، بل يتّسق التبويب الزمنيّ فقط). LEFT JOIN يحفظ مجموعة الإيصالات
-  // كما هي تماماً (قائدةً)، والربط على entryType النقديّ (PAYMENT_IN/OUT) يطابق قيد الإيصال الوحيد.
-  const rows = rowsOf(
-    await db.execute(sql`
-    SELECT r.direction AS direction, r.paymentMethod AS method, CAST(COALESCE(SUM(r.amount), 0) AS CHAR) AS amount
+  const { start, endExclusive } = utcDayRange(opts.from, opts.to);
+  const cashAt = receiptCashEventAtSql("r");
+  const rows = rowsOf(await db.execute(sql`
+    SELECT r.direction, r.paymentMethod AS method,
+      ${internalCashMovementSql()} AS internalMovement,
+      CAST(COALESCE(SUM(r.amount), 0) AS CHAR) AS amount
     FROM receipts r
-    LEFT JOIN accountingEntries ae
-      ON ae.receiptId = r.id AND ae.entryType IN ('PAYMENT_IN', 'PAYMENT_OUT')
     WHERE r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
       AND r.receiptApprovalStatus = 'APPROVED'
-      AND COALESCE(ae.entryDate, DATE(r.createdAt)) >= ${opts.from}
-      AND COALESCE(ae.entryDate, DATE(r.createdAt)) <= ${opts.to}
+      AND ${cashAt} >= ${start.toISOString().slice(0, 19).replace("T", " ")}
+      AND ${cashAt} < ${endExclusive.toISOString().slice(0, 19).replace("T", " ")}
       ${opts.branchId ? sql`AND r.branchId = ${opts.branchId}` : sql``}
-    GROUP BY r.direction, r.paymentMethod
-  `),
-  );
-
-  const inflows: CashFlowLine[] = [];
-  const outflows: CashFlowLine[] = [];
-  let totalIn = money(0);
-  let totalOut = money(0);
-  for (const r of rows) {
-    const amt = money(r.amount ?? 0);
-    const line: CashFlowLine = {
-      key: String(r.method),
-      label: PAY_METHOD_AR[String(r.method)] ?? String(r.method),
-      amount: toDbMoney(amt),
+    GROUP BY r.direction, r.paymentMethod, internalMovement
+  `));
+  for (const row of rows) {
+    const group = Number(row.internalMovement) === 1 ? base.internal : base;
+    const line = {
+      key: String(row.method), label: PAY_METHOD_AR[String(row.method)] ?? String(row.method),
+      amount: toDbMoney(money(row.amount ?? 0)),
     };
-    if (r.direction === "IN") {
-      inflows.push(line);
-      totalIn = totalIn.add(amt);
+    if (row.direction === "IN") {
+      group.inflows.push(line);
+      group.totalIn = toDbMoney(money(group.totalIn).plus(line.amount));
     } else {
-      outflows.push(line);
-      totalOut = totalOut.add(amt);
+      group.outflows.push(line);
+      group.totalOut = toDbMoney(money(group.totalOut).plus(line.amount));
     }
+    group.net = toDbMoney(money(group.totalIn).minus(group.totalOut));
   }
-
-  return {
-    period: { from: opts.from, to: opts.to },
-    inflows,
-    outflows,
-    totalIn: toDbMoney(totalIn),
-    totalOut: toDbMoney(totalOut),
-    net: toDbMoney(totalIn.sub(totalOut)),
-  };
+  return base;
 }

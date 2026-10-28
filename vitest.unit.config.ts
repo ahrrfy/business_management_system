@@ -243,6 +243,8 @@ export const UNIT_TEST_FILES: string[] = [
       "client/src/components/storefront/ConsentChoice.test.ts",
       "client/src/pages/ExchangeStatement.test.ts",
       "client/src/pages/BalanceSheet.test.tsx",
+      "client/src/components/reports/__tests__/PeriodFilter.test.tsx",
+      "client/src/lib/reportFinancialPresentation.test.ts",
       "client/src/pages/MonthlyClosePack.test.ts",
       "client/src/pages/PayrollAccrual.test.tsx",
       "client/src/pages/PayrollReport.test.tsx",

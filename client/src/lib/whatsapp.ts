@@ -225,6 +225,8 @@ export function buildQuotationMessage(data: QuotationMessageData): string {
 }
 
 export interface StatementMessageData {
+  scopeLabel?: string;
+  scopedBalance?: string | number;
   entityName: string;
   entityType: "customer" | "supplier";
   currentBalance: string | number;
@@ -254,6 +256,8 @@ export function buildStatementMessage(data: StatementMessageData): string {
     COMPANY_NAME,
     "",
   ];
+  if (data.scopeLabel) lines.push(`نطاق تفاصيل الكشف: ${data.scopeLabel}`);
+  if (data.scopedBalance != null) lines.push(`رصيد نطاق الكشف: ${fmtMoney(data.scopedBalance)} د.ع.`, "المطالبة أدناه بحسب الرصيد الكلي للشركة، وليست إضافةً إلى رصيد الفرع.");
 
   if (data.totalSales) lines.push(`إجمالي ${isCustomer ? "المبيعات" : "المشتريات"}: ${fmtMoney(data.totalSales)} د.ع.`);
   if (data.totalPaid) lines.push(`إجمالي المدفوع: ${fmtMoney(data.totalPaid)} د.ع.`);

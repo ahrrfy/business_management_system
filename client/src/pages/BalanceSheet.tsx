@@ -16,12 +16,13 @@ import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { toExcelMoney } from "@/lib/payrollAccrual";
+import { ymd } from "@/components/reports/PeriodFilter";
+import { inventoryValuationDescription } from "@/lib/reportFinancialPresentation";
 import { selectCls } from "@/lib/ui/formStyles";
 
-/** اليوم YYYY-MM-DD محلياً — لا toISOString (ينزاح قرب منتصف الليل ببغداد UTC+3). */
+/** الحد الأعلى يطابق يوم المحاسبة UTC المستعمل في القيود والتقارير. */
 function todayYmd(): string {
-  const n = new Date();
-  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
+  return ymd(new Date());
 }
 
 type Pos = RouterOutputs["reports"]["financialPosition"];
@@ -39,13 +40,11 @@ export default function BalanceSheet() {
     asOf: asOf || undefined,
   });
   const p = q.data;
-  // P1-#2 (٢٥/٨): عند تحديد تاريخٍ ماضٍ، نعرض مصدر تقييم المخزون: SNAPSHOT (لقطة رسمية عند
-  // إقفال الفترة) أم LIVE (تقديريّ من مخزون اليوم — الفترة لم تُقفَل بعد أو قبل هجرة 0266).
-  // نعرضه صراحةً كي يفهم المدير أنّ الرقم قابلٌ للتغيّر رجعياً إن لم يكن SNAPSHOT.
-  const valuationSource = trpc.reports.inventoryValuationAt.useQuery(
-    { cutoffDate: asOf || todayYmd() },
-    { enabled: !!asOf },
-  );
+  // المصدر والمبلغ يأتيان من استجابة واحدة؛ لا شارة لقطة فوق مبلغ حيّ من استعلام آخر.
+  const inventoryValuation = p?.inventoryValuation;
+  const inventorySourceLabel = inventoryValuation
+    ? inventoryValuationDescription(inventoryValuation)
+    : "";
 
   const sections = useMemo(() => {
     if (!p) return null;
@@ -68,7 +67,7 @@ export default function BalanceSheet() {
       { label: "الأصول الثابتة (بالتكلفة)", v: p.fixedAssets },
       { label: "سلف مستحقة على الموظفين", v: p.employeeAdvanceReceivable },
       { label: "مستحق لنا على الفروع الأخرى", v: p.dueFromBranches },
-    ].filter((r) => D(r.v).gt(0));
+    ].filter((r) => !D(r.v).isZero());
     const liabilities = [
       { label: "الذمم الدائنة (موردون)", v: p.apCredit },
       { label: "تسوية مشتريات نقدية معلّقة", v: p.cashPurchaseClearingCredit },
@@ -138,6 +137,7 @@ export default function BalanceSheet() {
     NOTE,
     disclosure,
     activeLedgerNote,
+    inventorySourceLabel ? `مصدر تقييم المخزون: ${inventorySourceLabel}.` : "",
     p?.historicalNote ?? "",
     p?.interbranchNote ?? "",
   ]
@@ -192,8 +192,29 @@ export default function BalanceSheet() {
   }
 
   function onExport() {
+    if (!p) return;
+    const reportDate = p.asOf || todayYmd();
     exportRows(flatRows(), {
-      filename: "الميزانية-العمومية",
+      filename: `الميزانية-العمومية-${reportDate}-${branchId || "الشركة"}`,
+      title: "الميزانية العمومية",
+      meta: [
+        { label: "كما في", value: reportDate },
+        { label: "الفرع", value: branchLabel },
+        {
+          label: "أساس التقرير",
+          value: `ميزانية تشغيلية مشتقّة — وضع الدفتر ${p.accountingMode}`,
+        },
+        { label: "مصدر تقييم المخزون", value: inventorySourceLabel },
+        ...(inventoryValuation?.capturedAt
+          ? [
+              {
+                label: "وقت التقاط المخزون",
+                value: inventoryValuation.capturedAt,
+              },
+            ]
+          : []),
+        { label: "ملاحظات التقرير", value: fullNote },
+      ],
       columns: [
         { key: "label", header: "البند" },
         {
@@ -280,23 +301,20 @@ export default function BalanceSheet() {
               onChange={(e) => setAsOf(e.target.value)}
               className="h-9 w-40"
             />
-            {asOf && valuationSource.data && (
+            {asOf && inventoryValuation && (
               <span
                 className={`text-[10px] rounded-md px-1.5 py-0.5 font-semibold ${
-                  valuationSource.data.source === "SNAPSHOT"
+                  inventoryValuation.source === "SNAPSHOT"
                     ? "badge-status-active"
                     : "badge-stock-low"
                 }`}
                 title={
-                  valuationSource.data.source === "SNAPSHOT"
+                  inventoryValuation.source === "SNAPSHOT"
                     ? "المخزون مقروءٌ من لقطة رسمية التُقطت عند إقفال الفترة — الرقم غير قابلٍ للتغيّر رجعياً."
                     : "لا لقطةَ رسمية لهذا التاريخ — المخزون مقروءٌ حيّاً من مخزون اليوم، فالرقم قد يتغيّر بأيّ حركةٍ لاحقة."
                 }
               >
-                المخزون:{" "}
-                {valuationSource.data.source === "SNAPSHOT"
-                  ? "لقطة رسمية"
-                  : "تقديريّ (بلا لقطة)"}
+                المخزون: {inventorySourceLabel}
               </span>
             )}
           </div>
@@ -336,7 +354,7 @@ export default function BalanceSheet() {
           </CardContent>
         </Card>
       ) : (
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <SectionCard
             title="الأصول"
             rows={sections.assets}

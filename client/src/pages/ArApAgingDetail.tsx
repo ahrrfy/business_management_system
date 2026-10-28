@@ -7,6 +7,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { Link, useLocation } from "wouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
+import { AR_AGING_LEGACY_BASIS } from "@/lib/agingOutput";
 import { Card, CardContent } from "@/components/ui/card";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { DataTable } from "@/components/data-table/DataTable";
@@ -64,7 +65,8 @@ export default function ArApAgingDetail() {
         { label: "31–60 يوم", value: fmtAr(totals.d31_60), tone: "warning" },
         { label: "61–90 يوم", value: fmtAr(totals.d61_90), tone: "warning" },
         { label: "أكثر من 90", value: fmtAr(totals.d91p), tone: "negative" },
-        { label: `الإجمالي (${totals.count})`, value: fmtAr(totals.unpaid), tone: "info" },
+        { label: `الصافي المعروض (${totals.count})`, value: fmtAr(totals.unpaid), tone: "info" },
+        { label: "أرصدة غير مخصصة مخصومة عرضيًا", value: fmtAr(totals.unallocatedCredit), tone: "info" },
       ]
     : [];
 
@@ -91,7 +93,9 @@ export default function ArApAgingDetail() {
             secondary={row.original.number}
             secondaryTitle={isAR ? "فتح الفاتورة" : "فتح أمر الشراء"}
             onSecondaryClick={() => {
-              navigate(isAR ? `/invoices/${row.original.id}` : `/purchases/${row.original.id}`);
+              navigate(row.original.documentType === "FULFILLMENT_CHARGE"
+                ? "/delivery?tab=fulfillment"
+                : isAR ? `/invoices/${row.original.id}` : `/purchases/${row.original.id}`);
             }}
             copyValue={row.original.number}
             copyTitle={isAR ? "نسخ رقم الفاتورة" : "نسخ رقم أمر الشراء"}
@@ -149,6 +153,11 @@ export default function ArApAgingDetail() {
   function onExport() {
     exportRows(rows, {
       filename: `تفصيل-أعمار-${isAR ? "الذمم-المدينة" : "الذمم-الدائنة"}`,
+      meta: [
+        ...(isAR ? [{ label: "أساس الرصيد القديم", value: AR_AGING_LEGACY_BASIS }] : []),
+        { label: "أساس العرض", value: "صافي الأعمار بعد التخصيصات المعتمدة وخصم الأرصدة غير المخصصة عرضيًا وفق FIFO؛ لا تعديل على المستندات" },
+        { label: "أرصدة غير مخصصة مخصومة عرضيًا", value: fmtAr(totals?.unallocatedCredit ?? "0") },
+      ],
       columns: [
         { key: "number", header: isAR ? "رقم الفاتورة" : "رقم أمر الشراء" },
         { key: "partyName", header: isAR ? "العميل" : "المورد" },
@@ -164,6 +173,7 @@ export default function ArApAgingDetail() {
   function onPrint() {
     printReportDoc({
       title: isAR ? "تفصيل أعمار الذمم المدينة" : "تفصيل أعمار الذمم الدائنة",
+      note: `الصافي بعد التخصيصات المعتمدة وخصم الأرصدة غير المخصصة من الأقدم عرضيًا وفق منهج الملخص. لا ينشئ هذا الكشف تخصيصًا أو سندًا. ${isAR ? AR_AGING_LEGACY_BASIS : ""}`,
       headerExtra: [
         { label: "النوع", value: SIDE_LABEL[side] },
         { label: "الفرع", value: branchLabel },
@@ -191,6 +201,7 @@ export default function ArApAgingDetail() {
             { label: "61–90", value: fmtAr(totals.d61_90) },
             { label: "+90", value: fmtAr(totals.d91p) },
             { label: "إجمالي المتبقّي", value: fmtAr(totals.unpaid), large: true, bold: true },
+            { label: "أرصدة غير مخصصة مخصومة عرضيًا", value: fmtAr(totals.unallocatedCredit) },
           ]
         : undefined,
     });
@@ -200,6 +211,7 @@ export default function ArApAgingDetail() {
     <ReportShell
       title="تفصيل أعمار الذمم"
       description="كل مستندٍ مستحقّ منفرداً (فاتورة/أمر شراء) بعدد أيّام تأخّره وشريحته العمرية ومتبقّيه."
+      note={`التخصيصات المعتمدة محفوظة. الأرصدة غير المخصصة تُخصم عرضيًا من الأقدم وفق منهج الملخص، وتظهر منفصلة؛ لا يغيّر عرض التقرير رصيد فاتورة أو ينشئ تخصيصًا أو سندًا. ${isAR ? AR_AGING_LEGACY_BASIS : ""}`}
       kpis={kpis}
       onExport={onExport}
       onPrint={onPrint}

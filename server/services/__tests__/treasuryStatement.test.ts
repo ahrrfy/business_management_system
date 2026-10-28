@@ -6,7 +6,7 @@ import { sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { getTreasuryStatement, getTreasuryStatementExport } from "../reportsTreasuryService";
+import { getTreasuryStatement, getTreasuryStatementExport, getTreasurySummary } from "../reportsTreasuryService";
 import { withTx } from "../tx";
 import { computeTreasuryCashBalance } from "../cash/cashAvailability";
 import { toDbMoney } from "../money";
@@ -69,6 +69,92 @@ beforeEach(async () => {
 });
 
 describe("كشف حركة الخزينة النقدية — رصيدٌ جارٍ", () => {
+  it("يفصل نقد الخزينة عن الدرج وغير النقد دون تغيير الإيصالات أو الأرصدة", async () => {
+    await tRec({
+      dir: "OUT",
+      amount: "1000000",
+      date: "2026-09-02T09:00:00Z",
+      voucherNumber: "PV-1",
+    });
+    await db()
+      .insert(s.shifts)
+      .values({
+        id: 1,
+        userId: 1,
+        branchId: 1,
+        shiftType: "RETAIL",
+        status: "OPEN",
+        openingBalance: "0",
+      });
+    await db()
+      .insert(s.receipts)
+      .values([
+        {
+          branchId: 1,
+          shiftId: 1,
+          direction: "IN",
+          amount: "300000",
+          paymentMethod: "CASH",
+          cashBucket: "DRAWER",
+          status: "COMPLETED",
+          approvalStatus: "APPROVED",
+          createdBy: 1,
+          createdAt: new Date("2026-09-02T10:00:00Z"),
+        },
+        {
+          branchId: 1,
+          direction: "IN",
+          amount: "200000",
+          paymentMethod: "CARD",
+          cashBucket: null,
+          status: "COMPLETED",
+          approvalStatus: "APPROVED",
+          createdBy: 1,
+          createdAt: new Date("2026-09-02T10:00:00Z"),
+        },
+      ]);
+    const before = await db().select().from(s.receipts);
+    const balanceBefore = await withTx((tx) =>
+      computeTreasuryCashBalance(tx, 1),
+    );
+    const report = await getTreasurySummary({
+      branchId: 1,
+      from: "2026-09-01",
+      to: "2026-09-30",
+    });
+    expect(report).toMatchObject({
+      totalIn: "500000.00",
+      totalOut: "1000000.00",
+      net: "-500000.00",
+      cashNet: "-700000.00",
+    });
+    expect(report.methods).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: "CASH",
+          settlement: "DRAWER",
+          in: "300000.00",
+          out: "0.00",
+        }),
+        expect.objectContaining({
+          key: "CASH_TREASURY",
+          settlement: "TREASURY",
+          in: "0.00",
+          out: "1000000.00",
+        }),
+        expect.objectContaining({
+          key: "CARD",
+          settlement: "NON_CASH",
+          in: "200000.00",
+        }),
+      ]),
+    );
+    expect(await db().select().from(s.receipts)).toEqual(before);
+    expect(
+      toDbMoney(await withTx((tx) => computeTreasuryCashBalance(tx, 1))),
+    ).toBe(toDbMoney(balanceBefore));
+  })
+
   it("الافتتاحيّ من قبل الفترة، والرصيد الجارٍ يتراكم، والختاميّ = افتتاحيّ + وارد − صادر", async () => {
     await tRec({ dir: "IN", amount: "1000000", date: "2026-08-31T09:00:00Z", ref: "TF-1" }); // قبل الفترة
     await tRec({ dir: "IN", amount: "500000", date: "2026-09-02T09:00:00Z", ref: "CH-1" });

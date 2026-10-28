@@ -437,6 +437,8 @@ export async function closeYear(
         gte(journalEntries.entryDate, yearStartDate),
         lte(journalEntries.entryDate, cutoffDateValue),
         inArray(accounts.type, ["REVENUE", "EXPENSE"]),
+        // Capital inventory revaluation stays in its historical role; it is not trading income.
+        ne(journalLines.role, "INVENTORY_REVALUATION"),
         or(
           isNull(journalEntries.postingProfile),
           ne(journalEntries.postingProfile, "ADJUST_YEAR_CLOSE"),

@@ -17,6 +17,13 @@ import {
 const noEmoji = (s: string) => !/\p{Extended_Pictographic}/u.test(s);
 
 describe("sanitizeForWhatsApp", () => {
+  it("لا يطالب برصيد الفرع كدين شركة إضافي حين الرصيد العالمي صفر", () => {
+    const message = buildStatementMessage({ entityName: "عميل", entityType: "customer", currentBalance: "0.00", scopeLabel: "الفرع #1", scopedBalance: "100.00" });
+    expect(message).toContain("نطاق تفاصيل الكشف: الفرع #1");
+    expect(message).toContain("رصيد نطاق الكشف: 100");
+    expect(message).toContain("لا توجد ذمم مستحقّة");
+    expect(message).not.toContain("لنا عليكم: 100");
+  });
   it("يُزيل الإيموجي (BMP والـastral) ومحدّد العرض FE0F", () => {
     expect(sanitizeForWhatsApp("🧾 *فاتورة*")).toBe("*فاتورة*");
     expect(sanitizeForWhatsApp("⚠️ تنبيه")).toBe("تنبيه");

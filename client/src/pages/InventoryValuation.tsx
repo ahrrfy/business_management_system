@@ -11,7 +11,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
 
-import { fmtAr, fmtInt, formatQuantity } from "@/lib/money";
+import { D, fmtAr, fmtInt, formatQuantity } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -19,7 +19,7 @@ import { printReportDoc } from "@/lib/printing/reportDoc";
 type Row = RouterOutputs["reports"]["inventoryValuation"]["rows"][number];
 
 const NOTE =
-  "القيمة بالتكلفة (آخر تكلفة) لكل وحدة أساس × الكمية الحالية في المخزون؛ الكمية بالوحدة الأساس. لقطة لحظية للرصيد الحالي.";
+  "التقييم بالتكلفة الحالية المحفوظة لكل وحدة أساس. المجموع المالي يشمل البضاعة المملوكة بالطريق، والأمانة إفصاح خارجه. العدد والكمية في الإجماليات للرصيد المستقر فقط.";
 
 export default function InventoryValuation() {
   const [branchId, setBranchId] = useState<number | "">("");
@@ -28,6 +28,14 @@ export default function InventoryValuation() {
 
   const rows = q.data?.rows ?? [];
   const totals = q.data?.totals;
+  const inTransit = q.data?.inTransit;
+  const consignment = q.data?.consignment;
+  const stockValue = D(totals?.totalValue ?? 0).minus(inTransit?.totalValue ?? 0).toFixed(2);
+  const disclosureRows = [
+    ...(inTransit ? [{ categoryId: null, categoryName: "بضاعة مملوكة بالطريق", ...inTransit, scope: "ضمن أصول المخزون" }] : []),
+    ...(consignment ? [{ categoryId: null, categoryName: "بضاعة أمانة — إفصاح", ...consignment, scope: "خارج أصول المخزون" }] : []),
+  ];
+  const exportData = [...rows.map((row) => ({ ...row, scope: "رصيد مملوك مستقر" })), ...disclosureRows];
 
   const kpis: KpiItem[] = totals
     ? [
@@ -40,14 +48,17 @@ export default function InventoryValuation() {
   const branchLabel = branchId ? (branches.data?.find((b) => b.id === branchId)?.name ?? String(branchId)) : "الكل";
 
   function onExport() {
-    exportRows(rows, {
+    exportRows(exportData, {
       filename: `تقييم-المخزون${branchId ? `-${branchLabel}` : ""}`,
       columns: [
         { key: "categoryName", header: "الفئة" },
+        { key: "scope", header: "نطاق القيمة" },
         { key: "items", header: "عدد المنتجات", map: (r) => r.items },
         { key: "totalQty", header: "إجمالي الكمية", map: (r) => r.totalQty },
         { key: "totalValue", header: "القيمة بالتكلفة", map: (r) => Number(r.totalValue) },
       ],
+      meta: [{ label: "أساس التقرير", value: NOTE }, { label: "الفرع", value: branchLabel }],
+      totalsRow: totals ? { categoryName: "أصول المخزون — تشمل الطريق وتستثني الأمانة", totalValue: Number(totals.totalValue) } : undefined,
     });
   }
 
@@ -65,8 +76,8 @@ export default function InventoryValuation() {
         { key: "qty", label: "إجمالي الكمية", align: "left" },
         { key: "value", label: "القيمة بالتكلفة", align: "left" },
       ],
-      rows: rows.map((r) => ({
-        category: r.categoryName,
+      rows: exportData.map((r) => ({
+        category: `${r.categoryName} — ${r.scope}`,
         items: String(r.items),
         qty: formatQuantity(r.totalQty),
         value: fmtAr(r.totalValue),
@@ -85,7 +96,7 @@ export default function InventoryValuation() {
     {
       id: "categoryName", header: "الفئة",
       accessorFn: (r) => r.categoryName,
-      footer: () => (totals ? "الإجمالي" : null),
+      footer: () => (totals ? "إجمالي الرصيد المستقر" : null),
       meta: { kind: "text", wrap: true },
     },
     {
@@ -106,10 +117,10 @@ export default function InventoryValuation() {
       id: "totalValue", header: "القيمة بالتكلفة",
       accessorFn: (r) => Number(r.totalValue),
       cell: ({ row }) => <span className="font-medium">{fmtAr(row.original.totalValue)}</span>,
-      footer: () => (totals ? fmtAr(totals.totalValue) : null),
+      footer: () => (totals ? fmtAr(stockValue) : null),
       meta: { kind: "money" },
     },
-  ], [totals]);
+  ], [totals, stockValue]);
 
   return (
     <ReportShell
@@ -119,8 +130,8 @@ export default function InventoryValuation() {
       kpis={kpis}
       onExport={onExport}
       onPrint={onPrint}
-      exportDisabled={!rows.length}
-      printDisabled={!rows.length}
+      exportDisabled={!q.data}
+      printDisabled={!q.data}
       filters={
         <FilterField label="الفرع">
           <AppSelect value={branchId === "" ? "" : String(branchId)} onValueChange={(v) => setBranchId(v ? Number(v) : "")}>
@@ -142,6 +153,18 @@ export default function InventoryValuation() {
           />
         </CardContent>
       </Card>
+      {q.data && (
+        <Card>
+          <CardContent className="space-y-3 py-4 text-sm">
+            {disclosureRows.map((row) => (
+              <div key={row.scope} className="flex flex-wrap items-center justify-between gap-2 border-b pb-2 last:border-b-0 last:pb-0">
+                <div><span className="font-medium">{row.categoryName}</span><span className="ms-2 text-muted-foreground">{row.scope}</span></div>
+                <div className="text-muted-foreground">{fmtInt(row.items)} متغيّر · {formatQuantity(row.totalQty)} وحدة أساس · <span className="font-medium text-foreground">{fmtAr(row.totalValue)} د.ع</span></div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
     </ReportShell>
   );
 }

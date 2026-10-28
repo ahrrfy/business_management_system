@@ -30,6 +30,9 @@ import {
   requireCompleteAccountantPackJournal,
 } from "../accounting/statutoryReports";
 import { withTx } from "../tx";
+import { getProfitAndLoss } from "../reportsFinancialService";
+import { getTrialBalance } from "../reports/trialBalance";
+import { getGeneralLedger } from "../reports/generalLedger";
 
 const ACTOR_ID = 1;
 const CURRENT_CYCLE_ID = "statutory-test-cycle-current";
@@ -264,6 +267,7 @@ async function postJournal(
   branchId: number,
   lines: JournalLine[],
   cycleId = CURRENT_CYCLE_ID,
+  postingProfile?: "ADJUST_YEAR_CLOSE",
 ) {
   const entryResult = await db().insert(s.accountingEntries).values({
     entryType: "ADJUST",
@@ -277,7 +281,7 @@ async function postJournal(
   });
   const entryId = extractInsertId(entryResult);
   await withTx((tx) =>
-    writeJournal(tx, entryId, new Date(`${date}T00:00:00.000Z`), branchId, lines, { cycleId }),
+    writeJournal(tx, entryId, new Date(`${date}T00:00:00.000Z`), branchId, lines, { cycleId, postingProfile }),
   );
   return entryId;
 }
@@ -287,6 +291,63 @@ function makeCtx(user: unknown) {
 }
 
 describe("statutory accounting compliance", () => {
+  it.each([20, -20])("يحفظ تسوية التقييم الرأسمالية %s في الحقوق دون نتيجة النشاط أو تغيير القيد", async (delta) => {
+    await seedFoundation();
+    await db().insert(s.accounts).values([
+      { code: "1200", name: "مخزون", type: "ASSET", systemRole: "INVENTORY" },
+      { code: "5680", name: "تسوية تقييم", type: "EXPENSE", systemRole: "INVENTORY_REVALUATION" },
+    ]);
+    await withTx(async (tx) => {
+      const seeded = await seedIraqiUnifiedProfile(tx, ACTOR_ID);
+      await approveStatutoryProfile(tx, { profileId: seeded.profileId, accountantName: "محاسب الاختبار", approvalReference: "مصادقة مراجعة 2026" }, ACTOR_ID);
+    });
+    await postJournal("2026-08-01", 1, [
+      { role: "INVENTORY", debit: "100.00", credit: "0.00" },
+      { role: "OPENING_EQUITY", debit: "0.00", credit: "100.00" },
+    ]);
+    await postJournal("2026-08-02", 1, delta > 0 ? [
+      { role: "INVENTORY", debit: "20.00", credit: "0.00" },
+      { role: "INVENTORY_REVALUATION", debit: "0.00", credit: "20.00" },
+    ] : [
+      { role: "INVENTORY_REVALUATION", debit: "20.00", credit: "0.00" },
+      { role: "INVENTORY", debit: "0.00", credit: "20.00" },
+    ]);
+    const income = await getStatutoryIncomeStatement({ from: "2026-08-01", to: "2026-08-31" });
+    expect(income.available && income.totals.netIncome).toBe("0.00");
+    expect((await getProfitAndLoss({ from: "2026-08-01", to: "2026-08-31" })).current.netProfit).toBe("0.00");
+    const position = await getStatutoryBalanceSheet({ asOf: "2026-08-31" });
+    if (!position.available) throw new Error(position.reason);
+    expect(position.totals).toMatchObject({ assets: `${100 + delta}.00`, equity: `${100 + delta}.00`, unclosedResult: "0.00", difference: "0.00" });
+    expect(position.equity.some((row) => row.code === "328" && row.amount === `${delta}.00`)).toBe(true);
+    const trial = await getStatutoryTrialBalance({ from: "2026-08-01", to: "2026-08-31" });
+    if (!trial.available) throw new Error(trial.reason);
+    expect(trial.totals).toMatchObject({ debit: "120.00", credit: "120.00", difference: "0.00" });
+    expect(trial.rows.find((row) => row.code === "328")?.type).toBe("EQUITY");
+    const roleAccount = (await db().select().from(s.accounts).where(eq(s.accounts.systemRole, "INVENTORY_REVALUATION")))[0];
+    expect(roleAccount.type).toBe("EXPENSE");
+    const operationalTrial = await getTrialBalance({ from: "2026-08-01", to: "2026-08-31" });
+    expect(operationalTrial.rows.find((row) => row.systemRole === "INVENTORY_REVALUATION")?.type).toBe("EQUITY");
+    const ledger = await getGeneralLedger({ accountId: Number(roleAccount.id), from: "2026-08-01", to: "2026-08-31" });
+    expect(ledger.account.type).toBe("EQUITY");
+    expect(ledger.totals).toMatchObject(delta > 0 ? { debit: "0.00", credit: "20.00" } : { debit: "20.00", credit: "0.00" });
+  });
+
+  it("تعرض قائمة الدخل النشاط قبل قيد تصفير السنة ويبقى التصفير في ميزان المراجعة", async () => {
+    await seedFoundation();
+    await db().insert(s.accounts).values({ code: "3200", name: "أرباح محتجزة", type: "EQUITY", systemRole: "RETAINED_EARNINGS" });
+    await withTx(async (tx) => {
+      const seeded = await seedIraqiUnifiedProfile(tx, ACTOR_ID);
+      await approveStatutoryProfile(tx, { profileId: seeded.profileId, accountantName: "محاسب الاختبار", approvalReference: "مصادقة إقفال 2026" }, ACTOR_ID);
+    });
+    await postJournal("2026-08-01", 1, [ { role: "CASH", debit: "100.00", credit: "0.00" }, { role: "SALES_STATIONERY", debit: "0.00", credit: "100.00" } ]);
+    await postJournal("2026-08-02", 1, [ { role: "OPERATING_EXPENSE", debit: "40.00", credit: "0.00" }, { role: "CASH", debit: "0.00", credit: "40.00" } ]);
+    await postJournal("2026-12-31", 1, [ { role: "SALES_STATIONERY", debit: "100.00", credit: "0.00" }, { role: "OPERATING_EXPENSE", debit: "0.00", credit: "40.00" }, { role: "RETAINED_EARNINGS", debit: "0.00", credit: "60.00" } ], CURRENT_CYCLE_ID, "ADJUST_YEAR_CLOSE");
+    const income = await getStatutoryIncomeStatement({ from: "2026-01-01", to: "2026-12-31" });
+    expect(income.available && income.totals).toEqual({ revenue: "100.00", expenses: "40.00", netIncome: "60.00" });
+    const position = await getStatutoryBalanceSheet({ asOf: "2026-12-31" });
+    expect(position.available && position.totals).toMatchObject({ equity: "60.00", unclosedResult: "0.00", difference: "0.00" });
+  });
+
   it("كاشف §٥: سطرٌ POSTED بلا حسابٍ نظاميّ يُعرَض في unmapped لا يُسقَط صامتاً", async () => {
     await seedFoundation();
     await approveCompleteProfile();

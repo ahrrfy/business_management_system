@@ -298,7 +298,9 @@ describe("تعميم نمط الخلايا المكدسة StackedEntityCell وت
       expect(vouchersSrc).toContain("navigate(`/invoices/${r.invoiceId}`)");
       expect(purchaseRegSrc).toContain("navigate(`/purchases/${row.original.poId}`)");
       expect(salesRegSrc).toContain("navigate(`/invoices/${row.original.invoiceId}`)");
-      expect(arApDetailSrc).toContain("navigate(isAR ? `/invoices/${row.original.id}` : `/purchases/${row.original.id}`)");
+      expect(arApDetailSrc).toContain('row.original.documentType === "FULFILLMENT_CHARGE"');
+      expect(arApDetailSrc).toContain('"/delivery?tab=fulfillment"');
+      expect(arApDetailSrc).toContain('isAR ? `/invoices/${row.original.id}` : `/purchases/${row.original.id}`');
     });
   });
 

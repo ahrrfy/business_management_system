@@ -393,7 +393,7 @@ export async function getGeneralLedger(input: {
       id: Number(account.id),
       code: account.code,
       name: account.name,
-      type: account.type as AccountType,
+      type: account.systemRole === "INVENTORY_REVALUATION" ? "EQUITY" : account.type as AccountType,
       systemRole: account.systemRole,
     },
     openingBalance: opening.balance,

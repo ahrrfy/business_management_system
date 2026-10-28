@@ -63,7 +63,7 @@ const SECTIONS: Section[] = [
       { title: "سجل القيود اليومية", desc: "استعراض وتدقيق قيود اليومية والتسويات المحاسبية المتوازنة", href: "/journal", icon: BookOpen, gate: "manager", status: "ready" },
       { title: "دفتر الأستاذ العام", desc: "حركة حساب ورصيده الجاري مع مستند المصدر", href: "/reports/general-ledger", icon: BookOpen, gate: "manager", status: "ready" },
       { title: "الميزانية العمومية", desc: "أصول/خصوم/حقوق ملكية (مبسّطة مشتقّة)", href: "/reports/balance-sheet", icon: Landmark, gate: "manager", status: "ready" },
-      { title: "التدفّقات النقدية", desc: "مقبوضات/مدفوعات (أساس نقدي)", href: "/reports/cash-flow", icon: Droplet, gate: "manager", status: "ready" },
+      { title: "حركة وسائل الدفع", desc: "حركات خارجية وداخلية منفصلة حسب تحقق النقد", href: "/reports/cash-flow", icon: Droplet, gate: "manager", status: "ready" },
     ],
   },
   {

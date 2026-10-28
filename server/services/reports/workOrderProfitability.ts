@@ -92,10 +92,6 @@ export interface WorkOrderProfitabilityResult {
   };
 }
 
-/** سقف مسحٍ وقائي: أوامر الشغل قليلة الحجم (عشرات يومياً) — ٢٠ ألفاً تغطي سنواتٍ لنطاق واحد.
- *  الإجماليات تُحسب على المجموعة الممسوحة؛ لو بلغ النطاق السقف فالمطلوب تضييق المدى. */
-const MAX_SCAN = 20_000;
-
 const SECONDS_PER_HOUR = 3600;
 
 export async function workOrderProfitability(
@@ -126,6 +122,9 @@ export async function workOrderProfitability(
 
   // عمود enum الخام اسمه workOrderStatus (الوسيط الأول لـmysqlEnum) لا status — فخّ موثَّق.
   const branchCond = input.branchId ? sql`AND wo.branchId = ${input.branchId}` : sql``;
+  const scope = sql`wo.workOrderStatus = 'DELIVERED'
+    AND wo.deliveredAt >= ${localDayStart(input.from)}
+    AND wo.deliveredAt < ${localNextDayStart(input.to)} ${branchCond}`;
   const raw = rowsOf(
     await db.execute(sql`
       SELECT
@@ -147,12 +146,9 @@ export async function workOrderProfitability(
       LEFT JOIN customers c ON c.id = wo.customerId
       LEFT JOIN branches b ON b.id = wo.branchId
       LEFT JOIN invoices inv ON inv.id = wo.invoiceId
-      WHERE wo.workOrderStatus = 'DELIVERED'
-        AND wo.deliveredAt >= ${localDayStart(input.from)}
-        AND wo.deliveredAt < ${localNextDayStart(input.to)}
-        ${branchCond}
+      WHERE ${scope}
       ORDER BY wo.deliveredAt DESC, wo.id DESC
-      LIMIT ${MAX_SCAN}
+      LIMIT ${limit} OFFSET ${offset}
     `),
   );
 
@@ -193,36 +189,37 @@ export async function workOrderProfitability(
     };
   });
 
-  // الإجماليات = مجموع الصفوف نفسها (بعد تقريب كل صف) بدقّة decimal — لا SUM() SQL منفصل
-  // كي لا ينحرف صف الإجماليات سنتاً عن مجموع ما يراه المستخدم فعلاً.
-  const totalsAcc = allRows.reduce(
-    (acc, r) => {
-      acc.revenue = acc.revenue.plus(money(r.revenue));
-      acc.materials = acc.materials.plus(money(r.materialsCost));
-      acc.quotedLabor = acc.quotedLabor.plus(money(r.quotedLaborCost));
-      if (r.hours != null) acc.hours = acc.hours.plus(money(r.hours));
-      if (r.laborCost != null) acc.labor = acc.labor.plus(money(r.laborCost));
-      acc.profit = acc.profit.plus(money(r.profit));
-      return acc;
-    },
-    {
-      revenue: new Decimal(0),
-      materials: new Decimal(0),
-      quotedLabor: new Decimal(0),
-      hours: new Decimal(0),
-      labor: new Decimal(0),
-      profit: new Decimal(0),
-    },
-  );
+  // Aggregate the complete filter with the same per-row rounding, independently of pagination.
+  const revenueSql = sql`ROUND(COALESCE(inv.total - COALESCE(inv.taxAmount, 0), wo.salePrice, 0), 2)`;
+  const materialsSql = sql`ROUND(COALESCE(wo.materialsCost, 0), 2)`;
+  const laborSql = rate != null
+    ? sql`CASE WHEN wo.workSeconds IS NULL THEN 0 ELSE ROUND(CAST(${toDbMoney(rate)} AS DECIMAL(15,2)) * wo.workSeconds / 3600, 2) END`
+    : sql`0`;
+  const summary = rowsOf(await db.execute(sql`
+    SELECT COUNT(*) AS count,
+      CAST(COALESCE(SUM(${revenueSql}), 0) AS CHAR) AS revenue,
+      CAST(COALESCE(SUM(${materialsSql}), 0) AS CHAR) AS materials,
+      CAST(COALESCE(SUM(ROUND(COALESCE(wo.laborCost, 0), 2)), 0) AS CHAR) AS quotedLabor,
+      CAST(COALESCE(SUM(CASE WHEN wo.workSeconds IS NULL THEN 0 ELSE ROUND(wo.workSeconds / 3600, 2) END), 0) AS CHAR) AS hours,
+      CAST(COALESCE(SUM(${laborSql}), 0) AS CHAR) AS labor,
+      CAST(COALESCE(SUM(${revenueSql} - ${materialsSql} - ${laborSql}), 0) AS CHAR) AS profit
+    FROM workOrders wo LEFT JOIN invoices inv ON inv.id = wo.invoiceId
+    WHERE ${scope}
+  `))[0] ?? {};
+  const totalsAcc = {
+    revenue: money(summary.revenue ?? 0), materials: money(summary.materials ?? 0),
+    quotedLabor: money(summary.quotedLabor ?? 0), hours: money(summary.hours ?? 0),
+    labor: money(summary.labor ?? 0), profit: money(summary.profit ?? 0),
+  };
   const totalMargin = totalsAcc.revenue.gt(0)
     ? round2(totalsAcc.profit.div(totalsAcc.revenue).times(100)).toFixed(2)
     : null;
 
   return {
-    rows: allRows.slice(offset, offset + limit),
-    totalCount: allRows.length,
+    rows: allRows,
+    totalCount: Number(summary.count ?? 0),
     totals: {
-      count: allRows.length,
+      count: Number(summary.count ?? 0),
       revenue: toDbMoney(totalsAcc.revenue),
       materialsCost: toDbMoney(totalsAcc.materials),
       quotedLaborCost: toDbMoney(totalsAcc.quotedLabor),

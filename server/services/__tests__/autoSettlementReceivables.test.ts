@@ -251,6 +251,14 @@ describe("تسوية ومطابقة ذمم العملاء التلقائية (FI
     const aging = await getARAging({ branchId: 1 });
     const row = aging.find((r) => r.customerId === 40);
     expect(row).toBeUndefined();
+
+    // With no branch ledger, a partially settled company balance also caps the
+    // legacy invoice view. Reporting must not allocate that payment to the source.
+    await d.update(s.customers).set({ currentBalance: "25000.00" }).where(sql`id = 40`);
+    const partial = (await getARAging({ branchId: 1 })).find((r) => r.customerId === 40);
+    expect(partial).toMatchObject({ currentBalance: "25000.00", unpaidTotal: "25000.00" });
+    const [unchanged] = await d.select().from(s.invoices).where(sql`id = 401`);
+    expect(unchanged.paidAmount).toBe("0.00");
   });
 
   it("المطابقة الشاملة لكافة الحسابات (autoSettleAllAccountsTx) تعالج عدة عملاء في معاملة واحدة", async () => {

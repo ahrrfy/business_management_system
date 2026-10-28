@@ -24,7 +24,7 @@ export function statementClosingBalance(from: string, to: string, periodClosing:
 }
 
 type Actor = { createdBy?: number | null; createdByName?: string | null };
-type CustomerInvoice = Actor & { invoiceDate: DateInput; invoiceNumber: string; status: string; total: string };
+type CustomerInvoice = Actor & { invoiceDate: DateInput; invoiceNumber: string; status: string; total: string; ledgerTotal?: string };
 type CustomerPayment = Actor & {
   createdAt: DateInput; voucherNumber?: string | null; paymentMethod?: string | null;
   isStandalone?: boolean; direction: string; amount: string;
@@ -35,10 +35,10 @@ export function customerStatementLedger(data: {
 }) {
   const actor = (row: Actor) => row.createdByName ?? (row.createdBy ? `مستخدم #${row.createdBy}` : "غير موثق");
   // Historical invoice amounts and reversing movements must both remain in this ledger.
-  const invoices = data.invoices.filter((row) => row.status !== "CANCELLED").map((row) => ({
+  const invoices = data.invoices.filter((row) => row.ledgerTotal != null ? !D(row.ledgerTotal).isZero() : row.status !== "CANCELLED").map((row) => ({
     t: (toDate(row.invoiceDate)?.getTime() ?? 0), date: fmtDate(row.invoiceDate),
     ref: row.invoiceNumber, description: "فاتورة مبيعات", actor: actor(row),
-    debit: row.total, credit: null as string | null,
+    debit: row.ledgerTotal ?? row.total, credit: null as string | null,
   }));
   const payments = data.payments.map((row) => ({
     t: (toDate(row.createdAt)?.getTime() ?? 0), date: fmtDate(row.createdAt),

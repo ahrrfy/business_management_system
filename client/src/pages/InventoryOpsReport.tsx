@@ -157,6 +157,14 @@ export default function InventoryOpsReport() {
     return [];
   }, [view, reorder.data, dead.data, risk.data, variance.data, negatives.data]);
 
+  const loadedCount = (view === "reorder" ? reorder.data?.rows : view === "dead" ? dead.data?.rows
+    : view === "risk" ? risk.data?.rows : view === "variance" ? variance.data?.rows : negatives.data?.rows)?.length ?? 0;
+  const matchingCount = view === "reorder" ? (reorder.data?.totals.outCount ?? 0) + (reorder.data?.totals.lowCount ?? 0)
+    : view === "dead" ? dead.data?.summary.count ?? 0 : view === "risk" ? risk.data?.summary.count ?? 0
+    : view === "variance" ? variance.data?.summary.count ?? 0 : negatives.data?.summary.count ?? 0;
+  const scopeNote = `${VIEW_DESC[view]} الإجماليات لكامل نطاق الفرع والفترة؛ البحث والفئة يرشحان الصفوف المحمّلة فقط.${loadedCount < matchingCount
+    ? ` المعروض والمصدّر أول ${fmtInt(loadedCount)} من ${fmtInt(matchingCount)} سطراً؛ ضيّق نطاق الفرع أو الفترة للوصول لبقية التفاصيل.` : ""}`;
+
   // ── التصدير + الطباعة لكل عرض ── الصفوف تمرّ عبر applyFilters كي يطابق المُصدَّر/المطبوع ما يُعرض.
   type AnyRow = AnyRowLocal;
   function exportConfig(): { rows: AnyRow[]; columns: ExportColumn<AnyRow>[]; printCols: { key: string; label: string; align?: "left" }[] } {
@@ -272,7 +280,8 @@ export default function InventoryOpsReport() {
     exportRows(cfg.rows, {
       filename: `مخزون-${VIEW_LABEL[view]}`,
       title: `المخزون التشغيلي — ${VIEW_LABEL[view]}`,
-      meta: [{ label: "الفرع", value: branchLabel }, { label: "تاريخ الإصدار", value: fmtDate(new Date()) }],
+      meta: [{ label: "الفرع", value: branchLabel }, { label: "تاريخ الإصدار", value: fmtDate(new Date()) },
+        { label: "نطاق التقرير", value: scopeNote }, ...kpis.map((item) => ({ label: item.label, value: String(item.value) }))],
       columns: cfg.columns,
     });
   }
@@ -281,7 +290,7 @@ export default function InventoryOpsReport() {
     const cfg = exportConfig();
     printReportDoc({
       title: `المخزون التشغيلي — ${VIEW_LABEL[view]}`,
-      note: VIEW_DESC[view],
+      note: scopeNote,
       headerExtra: [
         { label: "الفرع", value: branchLabel },
         ...(view === "variance" ? [{ label: "الفترة", value: `${from} — ${to}` }] : []),
@@ -308,6 +317,7 @@ export default function InventoryOpsReport() {
         }
         return o;
       }),
+      summary: kpis.map((item) => ({ label: item.label, value: String(item.value) })),
     });
   }
 
@@ -317,7 +327,7 @@ export default function InventoryOpsReport() {
     <ReportShell
       title="تقارير المخزون التشغيلية"
       description="قرارات تقلّل النفاد وتجميد رأس المال."
-      note={VIEW_DESC[view]}
+      note={scopeNote}
       kpis={kpis}
       onExport={onExport}
       onPrint={onPrint}

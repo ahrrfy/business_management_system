@@ -153,7 +153,7 @@ export async function getCreditExposure(opts: { branchId?: number; limit?: numbe
     const d61_90 = money(r.d61_90 ?? 0);
     const days = Number(r.daysOverdue ?? 0) || 0;
 
-    const overLimit = !!limitVal && limitVal.greaterThan(0) && balance.greaterThan(limitVal);
+    const overLimit = limitVal != null && balance.greaterThan(limitVal);
     const overAmt = overLimit && limitVal ? balance.sub(limitVal) : money(0);
     const available = limitVal ? limitVal.sub(balance) : null;
     const utilizationPct =

@@ -10,6 +10,8 @@ import { sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { signedMoveQty } from "./inventoryService";
 import { money, toDbMoney } from "./money";
+import { VOIDED_INVOICE_STATUSES } from "@shared/invoiceStatus";
+import { invoiceLineReportProjectionSql } from "./fulfillment/componentRightsReportSql";
 
 /** فكّ نتيجة mysql2 (الصفوف في الفهرس 0). */
 function rowsOf(res: unknown): any[] {
@@ -260,23 +262,26 @@ export async function getAbcAnalysis(opts: {
 
   const branchCond = opts.branchId ? sql`AND i.branchId = ${opts.branchId}` : sql``;
 
+  const where = sql`i.invoiceStatus NOT IN (${sql.join(VOIDED_INVOICE_STATUSES.map((status) => sql`${status}`), sql`, `)})
+    AND DATE(i.invoiceDate) BETWEEN ${opts.from} AND ${opts.to} ${branchCond}`;
+  const projection = invoiceLineReportProjectionSql(where);
+
   // تجميع الإيراد لكل منتج. invoiceStatus هو اسم عمود الحالة في DB.
   const aggRows = rowsOf(
     await db.execute(sql`
       SELECT
         p.id AS productId,
         p.name AS productName,
-        CAST(COALESCE(SUM(ii.total), 0) AS CHAR) AS revenue
+        CAST(COALESCE(SUM(rp.revenue), 0) AS CHAR) AS revenue
       FROM invoiceItems ii
       JOIN invoices i ON i.id = ii.invoiceId
+      JOIN (${projection}) rp ON rp.id = ii.id
       JOIN productVariants pv ON pv.id = ii.variantId
       JOIN products p ON p.id = pv.productId
-      WHERE i.invoiceStatus NOT IN ('CANCELLED', 'RETURNED')
-        AND DATE(i.invoiceDate) BETWEEN ${opts.from} AND ${opts.to}
-        ${branchCond}
+      WHERE ${where}
       GROUP BY p.id, p.name
-      HAVING SUM(ii.total) > 0
-      ORDER BY SUM(ii.total) DESC
+      HAVING SUM(rp.revenue) > 0
+      ORDER BY SUM(rp.revenue) DESC, p.id ASC
     `),
   );
 

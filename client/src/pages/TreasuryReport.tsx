@@ -59,7 +59,8 @@ export default function TreasuryReport() {
     ? [
         { label: "المقبوضات", value: fmtAr(ts.totalIn), tone: "positive" },
         { label: "المدفوعات", value: fmtAr(ts.totalOut), tone: "negative" },
-        { label: "صافي الصندوق", value: fmtAr(ts.net), tone: D(ts.net).gte(0) ? "positive" : "negative" },
+        { label: "صافي حركة الوسائل", value: fmtAr(ts.net), tone: D(ts.net).gte(0) ? "positive" : "negative" },
+        { label: "صافي حركة النقد", value: fmtAr(ts.cashNet), tone: D(ts.cashNet).gte(0) ? "positive" : "negative", hint: "صافي النقد ضمن الحركات المعروضة، وليس الرصيد المتاح" },
         {
           label: "فروقات الورديات",
           value: fmtAr(ts.shifts.totalVariance),
@@ -71,7 +72,7 @@ export default function TreasuryReport() {
 
   // صفوف جدول طرق الدفع لإعادة الاستعمال (عرض/تصدير/طباعة).
   const rows = useMemo(
-    () => (ts ? ts.methods.map((m) => ({ ...m, settlementLabel: m.settlement === "DRAWER" ? "درج الكاشير" : "إلكتروني / خارج الدرج" })) : []),
+    () => (ts ? ts.methods.map((m) => ({ ...m, settlementLabel: m.settlement === "DRAWER" ? "درج الكاشير" : m.settlement === "TREASURY" ? "خزينة الفرع" : m.settlement === "UNASSIGNED" ? "نقد غير منسوب — يحتاج مراجعة" : "إلكتروني / خارج الدرج" })) : []),
     [ts],
   );
 
@@ -87,7 +88,8 @@ export default function TreasuryReport() {
       "",
       `المقبوضات: ${fmtAr(ts.totalIn)}`,
       `المدفوعات: ${fmtAr(ts.totalOut)}`,
-      `صافي الصندوق: ${fmtAr(ts.net)}`,
+      `صافي حركة الوسائل: ${fmtAr(ts.net)}`,
+      `صافي حركة النقد: ${fmtAr(ts.cashNet)}`,
       "",
       `عدد الورديات: ${ts.shifts.count}`,
       `النقد المعدود: ${fmtAr(ts.shifts.totalCounted)}`,
@@ -183,6 +185,7 @@ export default function TreasuryReport() {
       totalIn: ts.totalIn,
       totalOut: ts.totalOut,
       net: ts.net,
+      cashNet: ts.cashNet,
       shiftsCount: ts.shifts.count,
       totalCounted: ts.shifts.totalCounted,
       totalVariance: ts.shifts.totalVariance,
@@ -193,11 +196,11 @@ export default function TreasuryReport() {
   // تنقّل سريع بين الفترات المتجاورة (يوم سابق/تالي) — يزيح كامل نافذة [from,to] بنفس طولها،
   // مفيدٌ خاصةً حين الفترة يوم واحد (إغلاق يومي متتابع) لكنه يعمل لأي طول فترة.
   function shiftPeriod(deltaDays: number) {
-    const f = new Date(`${period.from}T00:00:00`);
-    const t = new Date(`${period.to}T00:00:00`);
+    const f = new Date(`${period.from}T00:00:00Z`);
+    const t = new Date(`${period.to}T00:00:00Z`);
     if (isNaN(f.getTime()) || isNaN(t.getTime())) return;
-    f.setDate(f.getDate() + deltaDays);
-    t.setDate(t.getDate() + deltaDays);
+    f.setUTCDate(f.getUTCDate() + deltaDays);
+    t.setUTCDate(t.getUTCDate() + deltaDays);
     setPeriod({ from: ymd(f), to: ymd(t), preset: "custom" });
   }
   /** أعمدة ملخّص الخزينة + ذيل الإجماليات (مقبوضات/مدفوعات/صافي). */
