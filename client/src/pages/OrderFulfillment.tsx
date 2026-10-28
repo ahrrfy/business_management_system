@@ -658,6 +658,7 @@ export default function OrderFulfillment() {
                   branchId: o.branchId,
                   orderNumber: o.orderNumber,
                   total: o.total,
+                  amountDueAtDoor: o.amountDueAtDoor,
                   customerName: o.customerName,
                   deliveryFree: o.deliveryFree,
                   deliveryWaivedAmount: o.deliveryWaivedAmount,

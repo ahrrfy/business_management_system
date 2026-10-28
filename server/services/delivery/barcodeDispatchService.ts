@@ -56,6 +56,7 @@ export interface BarcodeDispatchResult {
   invoiceNumber?: string | null;
   codAmount: string;
   deliveryFee: string;
+  feeCollection?: "COURIER" | "COUNTER" | "SHOP";
   recipientName?: string | null;
   recipientPhone?: string | null;
   deliveryAddress?: string | null;
@@ -363,6 +364,10 @@ export async function dispatchByBarcode(
         externalTrackingRef: input.externalTrackingRef ?? null,
         deliveryAddress: input.deliveryAddress ?? onlineOrder.shippingAddress ?? null,
         notes: input.notes ?? null,
+        assignedUserId: input.assignedUserId,
+        recipientName: input.recipientName,
+        recipientPhone: input.recipientPhone,
+        deliveryFee: input.deliveryFee,
       },
       dispatchActor,
     );
@@ -381,6 +386,7 @@ export async function dispatchByBarcode(
       invoiceNumber: res.invoiceNumber,
       codAmount: String(createdCn?.codAmount ?? res.total),
       deliveryFee: String(createdCn?.deliveryFee ?? "0"),
+      feeCollection: createdCn?.feeCollection,
       recipientName: createdCn?.recipientName ?? onlineOrder.customerName ?? null,
       recipientPhone: createdCn?.recipientPhone ?? onlineOrder.customerPhone ?? null,
       deliveryAddress: createdCn?.deliveryAddress ?? onlineOrder.shippingAddress ?? null,
@@ -469,6 +475,7 @@ export async function dispatchByBarcode(
       actor,
     );
 
+    const [createdCn] = await db.select().from(deliveryConsignments).where(eq(deliveryConsignments.id, res.consignmentId)).limit(1);
     return {
       sourceType: "WORK_ORDER",
       sourceId: Number(workOrder.id),
@@ -479,8 +486,9 @@ export async function dispatchByBarcode(
       invoiceNumber: res.invoiceNumber,
       codAmount: res.codAmount,
       deliveryFee: res.deliveryFee,
-      recipientName: workOrder.customerName ?? null,
-      recipientPhone: workOrder.deliveryPhone ?? workOrder.customerPhone ?? null,
+      feeCollection: createdCn?.feeCollection,
+      recipientName: createdCn?.recipientName ?? workOrder.customerName ?? null,
+      recipientPhone: createdCn?.recipientPhone ?? workOrder.deliveryPhone ?? workOrder.customerPhone ?? null,
       deliveryAddress: input.deliveryAddress ?? workOrder.deliveryAddress ?? null,
       partyName: party.name,
       qrPayload: workOrderBarcodeSet({
@@ -552,6 +560,12 @@ export async function dispatchByBarcode(
             onlineOrderId: Number(linkedOrder.id),
             partyId: input.partyId,
             externalTrackingRef: input.externalTrackingRef ?? null,
+            assignedUserId: input.assignedUserId,
+            recipientName: input.recipientName,
+            recipientPhone: input.recipientPhone,
+            deliveryAddress: input.deliveryAddress,
+            notes: input.notes,
+            deliveryFee: input.deliveryFee,
           },
           dispatchActor,
         );
@@ -568,6 +582,7 @@ export async function dispatchByBarcode(
           invoiceNumber: res.invoiceNumber,
           codAmount: String(createdCn?.codAmount ?? res.total),
           deliveryFee: String(createdCn?.deliveryFee ?? "0"),
+          feeCollection: createdCn?.feeCollection,
           recipientName: createdCn?.recipientName ?? invoice.contactName ?? null,
           recipientPhone: createdCn?.recipientPhone ?? invoice.contactPhone ?? null,
           deliveryAddress: createdCn?.deliveryAddress ?? input.deliveryAddress ?? invoice.customerAddress ?? null,
@@ -594,6 +609,7 @@ export async function dispatchByBarcode(
       actor,
     );
 
+    const [createdCn] = await db.select().from(deliveryConsignments).where(eq(deliveryConsignments.id, res.consignmentId)).limit(1);
     return {
       sourceType: "INVOICE",
       sourceId: Number(invoice.id),
@@ -604,8 +620,9 @@ export async function dispatchByBarcode(
       invoiceNumber: invoice.invoiceNumber,
       codAmount: res.codAmount,
       deliveryFee: res.deliveryFee,
-      recipientName: invoice.contactName ?? null,
-      recipientPhone: invoice.contactPhone ?? null,
+      feeCollection: createdCn?.feeCollection,
+      recipientName: createdCn?.recipientName ?? invoice.contactName ?? null,
+      recipientPhone: createdCn?.recipientPhone ?? invoice.contactPhone ?? null,
       deliveryAddress: input.deliveryAddress ?? invoice.customerAddress ?? null,
       partyName: party.name,
       qrPayload: invoiceBarcodeSet({

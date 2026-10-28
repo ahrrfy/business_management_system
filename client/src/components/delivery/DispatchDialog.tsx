@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { fmt } from "@/lib/money";
+import { D, fmt, moneyInput, positiveDiff } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import type { RouterOutputs } from "@/lib/trpc";
 import { deliveryDriverOptions, requiresDeliveryDriver } from "./driverOptions";
@@ -20,6 +20,7 @@ export interface DispatchableOrder {
   branchId: number | null;
   orderNumber: string;
   title: string;
+  sourceType?: string | null;
   customerName?: string | null;
   customerPhone?: string | null;
   salePrice: string;
@@ -79,10 +80,8 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
   useMemo(() => {
     if (order) {
       setPartyId("");
-      // الأجرة المُثبَّتة على الطلب سلفاً (سعر المكتبة للعميل) تسبق سعر المندوب — يبقى قابلاً للتعديل
-      // إن اتّفق الاثنان على غيره لهذه الرحلة تحديداً.
-      const preset = Number(order.deliveryCost ?? 0);
-      setFee(preset > 0 ? String(preset) : "0");
+      // طلب المتجر يحتفظ بأجرته المثبتة؛ تبقى أجرة أمر الشغل قابلة للتعديل عند اختيار الجهة.
+      setFee(D(order.deliveryCost).toFixed(2));
       setRecipientName(order.customerName?.trim() || "");
       setRecipientPhone(order.deliveryPhone?.trim() || order.customerPhone?.trim() || "");
       setDeliveryAddress(order.deliveryAddress?.trim() || "");
@@ -91,17 +90,18 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
       setExternalTrackingRef("");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [order?.id]);
+  }, [order?.id, order?.sourceType]);
 
   if (!order) return null;
-  const cod = Math.max(0, Number(order.salePrice) - Number(order.deposit ?? 0));
-  const feeNum = Math.max(0, Number(fee) || 0);
+  const fixedOnlineFee = order.sourceType === "ONLINE_ORDER";
+  const cod = positiveDiff(order.salePrice, order.deposit);
+  const feeNum = moneyInput(fee).isPositive() ? moneyInput(fee) : D(0);
   const feeCollection = order.deliveryFeeCollection ?? "COURIER";
   // «الكلي الذي سيدفعه العميل للمندوب» — تغيَّر بمَن قبض الأجرة (بلاغ المالك ٢٨/٨/٢٦):
   //   COURIER: المندوب يقبض COD + الأجرة معاً.
   //   COUNTER: الأجرة قُبضت أمانةً في الاستقبال ⇒ للمندوب COD فقط.
   //   SHOP: المكتبة تدفع للمندوب ⇒ للمندوب COD فقط.
-  const customerPaysCourier = feeCollection === "COURIER" ? cod + feeNum : cod;
+  const customerPaysCourier = feeCollection === "COURIER" ? cod.plus(feeNum) : cod;
   const feeCollectionLabel =
     feeCollection === "COURIER" ? "المندوب يقبض الأجرة"
     : feeCollection === "COUNTER" ? "الأجرة قُبضت مسبقاً في الاستقبال"
@@ -112,7 +112,7 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
     setAssignedUserId("");
     setExternalTrackingRef("");
     const p = parties.find((x) => String(x.id) === id);
-    if (p) setFee(String(Number(p.defaultFee ?? 0)));
+    if (p && !fixedOnlineFee) setFee(D(p.defaultFee).toFixed(2));
   };
 
   // النافذة نفسها هي حوار التأكيد (تعرض الجهة والمبالغ و«لا رجعة» صراحةً) ⇒ لا نفتح حوار تأكيد
@@ -197,7 +197,11 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
           </div>
           <div>
             <label className="mb-1.5 block text-sm font-bold">أجرة التوصيل (د.ع)</label>
-            <MoneyInput value={fee} onChange={setFee} className="h-11 text-end tabular-nums" ariaLabel="أجرة التوصيل" />
+            {fixedOnlineFee ? (
+              <div role="status" aria-label="أجرة التوصيل المثبتة" className="flex h-11 items-center justify-end rounded-md border px-3 tabular-nums">{fmt(fee)} د.ع</div>
+            ) : (
+              <MoneyInput value={fee} onChange={setFee} className="h-11 text-end tabular-nums" ariaLabel="أجرة التوصيل" />
+            )}
           </div>
         </div>
         <div className="mb-3 grid gap-3 sm:grid-cols-2">
@@ -220,11 +224,11 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
         </div>
         <div className="mb-4 space-y-1 rounded-md border bg-muted/30 p-3 text-sm">
           <div className="flex justify-between"><span className="text-muted-foreground">سعر البيع</span><span dir="ltr" className="tabular-nums">{fmt(order.salePrice)} د.ع</span></div>
-          {Number(order.deposit ?? 0) > 0 && <div className="flex justify-between"><span className="text-muted-foreground">العربون المقبوض</span><span dir="ltr" className="tabular-nums text-[var(--sem-pos)]">−{fmt(order.deposit ?? "0")} د.ع</span></div>}
+          {D(order.deposit).isPositive() && <div className="flex justify-between"><span className="text-muted-foreground">العربون المقبوض</span><span dir="ltr" className="tabular-nums text-[var(--sem-pos)]">−{fmt(order.deposit ?? "0")} د.ع</span></div>}
           <div className="flex justify-between border-t pt-1"><span className="text-muted-foreground">مبلغ التحصيل (COD)</span><span dir="ltr" className="tabular-nums">{fmt(String(cod))} د.ع</span></div>
           {/* Slice B (٢٩/٨/٢٦): «إجمالي ما يدفعه الزبون للمندوب» = COD (+ الأجرة إن كان المندوب يقبضها).
              بلاغ المالك: «يجب أن يعلم الزبون بالمبلغ الكلي النهائي شاملاً التوصيل». يُقرأ للزبون قبل الإرسال. */}
-          {feeNum > 0 && (
+          {feeNum.isPositive() && (
             <div className="flex justify-between text-xs"><span className="text-muted-foreground">أجرة التوصيل — {feeCollectionLabel}</span><span dir="ltr" className="tabular-nums">{fmt(String(feeNum))} د.ع</span></div>
           )}
           <div className="flex justify-between border-t border-[var(--sem-info)] pt-2 mt-1 text-base font-black text-[var(--sem-info)]">
@@ -279,8 +283,8 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
               customerPhone: recipientPhone || order.deliveryPhone || order.customerPhone,
               deliveryAddress: order.deliveryAddress,
               courierName: selectedParty?.name,
-              codAmount: cod,
-              deliveryFee: feeNum,
+              codAmount: cod.toFixed(2),
+              deliveryFee: feeNum.toFixed(2),
               feeCollection: feeCollection,
             }}
             size="sm"

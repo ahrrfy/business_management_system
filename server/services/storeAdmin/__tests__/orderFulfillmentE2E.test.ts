@@ -11,9 +11,9 @@
  * =========================================================================================
  */
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../../drizzle/schema";
-import { getDb } from "../../../db";
+import { getDb, type Tx } from "../../../db";
 import {
   claimOnlineOrder,
   markOnlineOrderPrepared,
@@ -25,6 +25,19 @@ import { sweepExpiredOnlineOrdersOnce } from "../../onlineOrderExpirySweeper";
 import { truncateTables } from "../../__tests__/__testUtils__";
 import { ensureFinancialPostingGate } from "../../reports/monthCloseGate";
 import { money } from "../../money";
+import * as onlineDispatch from "../dispatchOnlineOrder";
+import { dispatchByBarcode } from "../../delivery/barcodeDispatchService";
+import { previewWorkflowScan } from "../../delivery/workflow/preview";
+import { dispatchWorkflowBatch } from "../../delivery/workflow/dispatch";
+import { mutateWorkflowAssignment } from "../../delivery/workflow/assignment";
+import { confirmWorkflowDelivery } from "../../delivery/workflow/collection";
+import * as invoiceDispatch from "../../delivery/dispatchInvoice";
+import { loadWorkflowPreviewTx } from "../../delivery/workflow/preview";
+import { docBarcode } from "../../../../shared/documentNumber";
+import { cancelDeliveryAssignment } from "../../delivery/cancellation";
+import type { WorkflowDispatchBatchInput } from "../../../../shared/deliveryWorkflow";
+import { withTx } from "../../tx";
+import { fulfillmentMutationContext, recordFulfillmentMutationTx } from "../../fulfillment/core";
 
 function db() {
   const d = getDb();
@@ -1098,5 +1111,434 @@ describe("Tier 4: Real-World Scenarios (Comprehensive End-to-End Operational Lif
     // The orphan invoice should be safely returned
     const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, dispatchRes.invoiceId)).limit(1))[0];
     expect(inv.status).toBe("RETURNED");
+  });
+});
+
+describe("Store dispatch approved snapshot and identity regressions", () => {
+  function barrier() {
+    let release!: () => void;
+    const promise = new Promise<void>((resolve) => { release = resolve; });
+    return { promise, release };
+  }
+  async function holdRow(lock: (tx: Tx) => PromiseLike<unknown>) {
+    const entered = barrier();
+    const resume = barrier();
+    const transaction = withTx(async (tx) => {
+      await lock(tx);
+      entered.release();
+      await resume.promise;
+    }, { gate: "NONE" });
+    await Promise.race([entered.promise, transaction]);
+    return async () => { resume.release(); await transaction; };
+  }
+  async function bounded<T>(request: Promise<T>) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([request, new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("nonwaiting operation waited on a row lock")), 5000);
+      })]);
+    } finally { if (timer) clearTimeout(timer); }
+  }
+  async function workflowInput(
+    orderNumber: string,
+  ): Promise<WorkflowDispatchBatchInput> {
+    await db().update(s.users).set({ isOwner: true }).where(eq(s.users.id, 1));
+    const preview = await previewWorkflowScan(
+      { raw: orderNumber, station: "dispatch", branchId: 1 },
+      ADMIN_ACTOR,
+    );
+    return {
+      sources: [
+        {
+          kind: preview.source.kind,
+          id: preview.source.id,
+          expectedVersion: preview.source.version,
+        },
+      ],
+      partyId: 1,
+      branchId: 1,
+      deliveryFee: preview.money.deliveryFee,
+      feeCollection: preview.money.feeCollection,
+      recipientName: "مستلم الطلب",
+      recipientPhone: "07701234567",
+      deliveryAddress: preview.recipient.address!,
+      clientRequestId: "store-dispatch-snapshot-regression",
+    };
+  }
+  async function effects() {
+    return {
+      invoices: await db().select().from(s.invoices),
+      movements: await db().select().from(s.inventoryMovements),
+      stock: await db().select().from(s.branchStock),
+      receipts: await db().select().from(s.receipts),
+      entries: await db().select().from(s.accountingEntries),
+    };
+  }
+  async function completeDispatchState() {
+    return {
+      ...(await effects()), orders: await db().select().from(s.onlineOrders),
+      parcels: await db().select().from(s.deliveryConsignments),
+      ledger: await db().select().from(s.deliveryLedgerEntries),
+      events: await db().select().from(s.deliveryEvents),
+      replay: await db().select().from(s.idempotencyKeys),
+      documents: await db().select().from(s.deliveryDocumentSnapshots),
+    };
+  }
+  async function cancelledAssignment() {
+    const { orderId } = await seedOnlineOrder({ status: "PROCESSING" });
+    await db().update(s.users).set({ isOwner: true }).where(eq(s.users.id, 1));
+    const first = await dispatchOnlineOrder({ onlineOrderId: orderId, partyId: 1 }, ADMIN_ACTOR);
+    await cancelDeliveryAssignment({ consignmentId: first.consignmentId!, reason: "إعادة إسناد الطلب", clientRequestId: "contention-cancelled-order", physicalHeldConfirmed: true }, ADMIN_ACTOR);
+    const preview = await previewWorkflowScan({ raw: docBarcode("CN", first.consignmentNumber!), station: "dispatch", branchId: 1 }, ADMIN_ACTOR);
+    const input = { source: { kind: preview.source.kind, id: preview.source.id, expectedVersion: preview.source.version },
+      action: "reassign" as const, partyId: 2, externalTrackingRef: "CONTENTION-NEW-CARRIER", reason: "إعادة إسناد محكومة",
+      clientRequestId: "contention-reassignment", branchId: 1 };
+    return { orderId, first, input };
+  }
+  it("rolls back all reactivation writes when the terminal online order lock is busy and retries cleanly", async () => {
+    const { orderId, first, input } = await cancelledAssignment();
+    const before = await completeDispatchState();
+    const release = await holdRow((tx) => tx.select().from(s.onlineOrders).where(eq(s.onlineOrders.id, orderId)).for("update"));
+    const request = mutateWorkflowAssignment(input, ADMIN_ACTOR);
+    try {
+      await expect(bounded(request)).rejects.toMatchObject({ code: "CONFLICT", message: expect.stringContaining("لم تُحفظ إعادة الإسناد") });
+      expect(await completeDispatchState()).toEqual(before);
+    } finally { await release(); await Promise.allSettled([request]); }
+    const result = await mutateWorkflowAssignment(input, ADMIN_ACTOR);
+    expect(result.consignmentId).toBe(first.consignmentId);
+    expect(await getOrder(orderId)).toMatchObject({ status: "SHIPPED", deliveryPartyId: 2, invoiceId: first.invoiceId });
+    expect(await effects()).toEqual({ invoices: before.invoices, movements: before.movements, stock: before.stock, receipts: before.receipts, entries: before.entries });
+  });
+  it("resolves concurrent ORD dispatch and workflow reassignment without a parcel/order deadlock", async () => {
+    const { orderId, first, input } = await cancelledAssignment();
+    const before = await effects();
+    const orderLocked = barrier();
+    const resumeDispatch = barrier();
+    const original = invoiceDispatch.dispatchInvoiceInTx;
+    const seam = vi.spyOn(invoiceDispatch, "dispatchInvoiceInTx").mockImplementation(async (tx, dispatchInput, actor, shipment) => {
+      if (dispatchInput.clientRequestId?.startsWith("online-parcel:")) {
+        orderLocked.release();
+        await resumeDispatch.promise;
+      }
+      return original(tx, dispatchInput, actor, shipment);
+    });
+    const dispatch = dispatchOnlineOrder({ onlineOrderId: orderId, partyId: 1 }, ADMIN_ACTOR);
+    let reassignment: ReturnType<typeof mutateWorkflowAssignment> | undefined;
+    try {
+      await bounded(Promise.race([orderLocked.promise, dispatch.then(() => undefined)]));
+      reassignment = mutateWorkflowAssignment(input, ADMIN_ACTOR);
+      await expect(bounded(reassignment)).rejects.toMatchObject({ code: "CONFLICT" });
+      resumeDispatch.release();
+      expect((await dispatch).consignmentId).toBe(first.consignmentId);
+      expect(await effects()).toEqual(before);
+      expect((await getOrder(orderId)).deliveryPartyId).toBe(1);
+    } finally {
+      resumeDispatch.release();
+      await Promise.allSettled([dispatch, ...(reassignment ? [reassignment] : [])]);
+      seam.mockRestore();
+    }
+  });
+  it("does not wait on locked order items in a locked workflow preview", async () => {
+    const { orderId } = await seedOnlineOrder({ status: "PROCESSING" });
+    const release = await holdRow((tx) => tx.select().from(s.onlineOrderItems).where(eq(s.onlineOrderItems.onlineOrderId, orderId)).for("update"));
+    const request = withTx((tx) => loadWorkflowPreviewTx(tx, { kind: "onlineOrder", id: orderId }, undefined, 1, true), { gate: "NONE" });
+    try { await expect(bounded(request)).rejects.toMatchObject({ code: "CONFLICT" }); }
+    finally { await release(); await Promise.allSettled([request]); }
+  });
+  it.each(["address", "same-total items"])(
+    "rejects stale %s preview before any sale or stock effects",
+    async (change) => {
+      const { orderId, orderNumber } = await seedOnlineOrder({
+        status: "PROCESSING",
+      });
+      const payload = await workflowInput(orderNumber);
+      const before = await effects();
+      if (change === "address")
+        await db()
+          .update(s.onlineOrders)
+          .set({ shippingAddress: "بغداد الكرادة العنوان الجديد" })
+          .where(eq(s.onlineOrders.id, orderId));
+      else
+        await db()
+          .update(s.onlineOrderItems)
+          .set({
+            variantId: 2,
+            productUnitId: 2,
+            quantity: "5",
+            baseQuantity: 5,
+            unitPrice: "1000",
+          })
+          .where(eq(s.onlineOrderItems.onlineOrderId, orderId));
+      await expect(dispatchWorkflowBatch(payload, ADMIN_ACTOR)).rejects.toThrow(
+        /تغير طلب المتجر/,
+      );
+      expect(await effects()).toEqual(before);
+    },
+  );
+  it.each(["address", "same-total items"])(
+    "rechecks changed %s between intent commit and the locked sale transaction",
+    async (change) => {
+      const { orderId, orderNumber } = await seedOnlineOrder({
+        status: "PROCESSING",
+      });
+      const payload = await workflowInput(orderNumber);
+      const original = onlineDispatch.dispatchOnlineOrder;
+      const before = await effects();
+      const seam = vi
+        .spyOn(onlineDispatch, "dispatchOnlineOrder")
+        .mockImplementationOnce(async (input, actor) => {
+          if (change === "address")
+            await db()
+              .update(s.onlineOrders)
+              .set({ shippingAddress: "بغداد الكرادة العنوان المعدل" })
+              .where(eq(s.onlineOrders.id, orderId));
+          else
+            await db()
+              .update(s.onlineOrderItems)
+              .set({
+                variantId: 2,
+                productUnitId: 2,
+                quantity: "5",
+                baseQuantity: 5,
+                unitPrice: "1000",
+              })
+              .where(eq(s.onlineOrderItems.onlineOrderId, orderId));
+          return original(input, actor);
+        });
+      try {
+        await expect(
+          dispatchWorkflowBatch(payload, ADMIN_ACTOR),
+        ).rejects.toThrow(/تغير طلب المتجر/);
+        expect(await effects()).toEqual(before);
+        if (change === "address")
+          expect((await getOrder(orderId)).shippingAddress).toContain(
+            "العنوان المعدل",
+          );
+      } finally {
+        seam.mockRestore();
+      }
+    },
+  );
+  it.each(["SHIPPED", "DELIVERED"])("recovers a matching historical %s online intent without entering sale dispatch again", async (state) => {
+    const { orderId, orderNumber } = await seedOnlineOrder({
+      status: "PROCESSING",
+    });
+    const payload = await workflowInput(orderNumber);
+    await withTx(
+      async (tx) =>
+        recordFulfillmentMutationTx(
+          tx,
+          fulfillmentMutationContext(
+            "workflow.onlineIntent",
+            payload,
+            payload,
+            ADMIN_ACTOR,
+            1,
+          ),
+          orderId,
+        ),
+      { gate: "NONE" },
+    );
+    const first = await dispatchOnlineOrder(
+      {
+        onlineOrderId: orderId,
+        partyId: payload.partyId,
+        deliveryAddress: payload.deliveryAddress,
+        recipientName: payload.recipientName,
+        recipientPhone: payload.recipientPhone,
+      },
+      ADMIN_ACTOR,
+    );
+    if (state === "DELIVERED") {
+      const preview = await previewWorkflowScan({ raw: docBarcode("CN", first.consignmentNumber!), station: "collect", branchId: 1 }, ADMIN_ACTOR);
+      await confirmWorkflowDelivery({ source: { kind: preview.source.kind, id: preview.source.id, expectedVersion: preview.source.version },
+        branchId: 1, evidence: "تأكيد استلام العميل وتحصيل كامل الطلب", clientRequestId: "historical-intent-delivered-proof" }, ADMIN_ACTOR);
+      expect((await getOrder(orderId)).status).toBe("DELIVERED");
+    }
+    const before = await effects();
+    const ledgerBefore = await db().select().from(s.deliveryLedgerEntries);
+    const partiesBefore = await db().select().from(s.deliveryParties);
+    if (state === "SHIPPED") {
+      const frozen = await completeDispatchState();
+      for (const table of ["parcel", "order"] as const) {
+        const release = await holdRow((tx) => table === "parcel"
+          ? tx.select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, first.consignmentId!)).for("update")
+          : tx.select().from(s.onlineOrders).where(eq(s.onlineOrders.id, orderId)).for("update"));
+        const request = dispatchWorkflowBatch(payload, ADMIN_ACTOR);
+        try {
+          await expect(bounded(request)).rejects.toMatchObject({ code: "CONFLICT", message: expect.stringContaining("بالمفتاح نفسه") });
+          expect(await completeDispatchState()).toEqual(frozen);
+        } finally { await release(); await Promise.allSettled([request]); }
+      }
+    }
+    const seam = vi.spyOn(onlineDispatch, "dispatchOnlineOrder");
+    try {
+      const replay = await dispatchWorkflowBatch(payload, ADMIN_ACTOR);
+      expect(replay).toMatchObject({
+        consignmentId: first.consignmentId,
+        idempotentReplay: true,
+      });
+      expect(seam).not.toHaveBeenCalled();
+      expect(await effects()).toEqual(before);
+      expect(await db().select().from(s.deliveryLedgerEntries)).toEqual(ledgerBefore);
+      expect(await db().select().from(s.deliveryParties)).toEqual(partiesBefore);
+    } finally {
+      seam.mockRestore();
+    }
+  });
+  it("commits workflow replay identity with dispatch and rejects changed replay payload", async () => {
+    const { orderNumber } = await seedOnlineOrder({ status: "PROCESSING" });
+    const payload = await workflowInput(orderNumber);
+    const original = onlineDispatch.dispatchOnlineOrder;
+    const seam = vi
+      .spyOn(onlineDispatch, "dispatchOnlineOrder")
+      .mockImplementationOnce(async (input, actor) => {
+        await original(input, actor);
+        throw new Error("simulated response loss after domain commit");
+      });
+    try {
+      await expect(dispatchWorkflowBatch(payload, ADMIN_ACTOR)).rejects.toThrow(
+        /response loss/,
+      );
+    } finally {
+      seam.mockRestore();
+    }
+    const before = await effects();
+    const replay = await dispatchWorkflowBatch(payload, ADMIN_ACTOR);
+    expect(replay.idempotentReplay).toBe(true);
+    expect(await effects()).toEqual(before);
+    await expect(
+      dispatchWorkflowBatch(
+        { ...payload, recipientName: "مستلم مختلف" },
+        ADMIN_ACTOR,
+      ),
+    ).rejects.toThrow();
+    expect(await db().select().from(s.deliveryConsignments)).toHaveLength(1);
+  });
+  it.each(["ORD", "ONLINE invoice"])(
+    "preserves explicit driver and recipient through %s barcode",
+    async (route) => {
+      await db()
+        .update(s.deliveryParties)
+        .set({ userId: 2 })
+        .where(eq(s.deliveryParties.id, 1));
+      const { orderId, orderNumber } = await seedOnlineOrder({
+        status: "PROCESSING",
+        orderNumber: "ORD-880123",
+      });
+      let barcode = orderNumber;
+      if (route === "ONLINE invoice") {
+        const first = await dispatchOnlineOrder(
+          { onlineOrderId: orderId, partyId: 1, assignedUserId: 2 },
+          ADMIN_ACTOR,
+        );
+        await cancelDeliveryAssignment(
+          {
+            consignmentId: first.consignmentId!,
+            reason: "تغيير مستلم الطلب",
+            clientRequestId: "barcode-cancel-for-reassign",
+            physicalHeldConfirmed: true,
+          },
+          ADMIN_ACTOR,
+        );
+        barcode = `INV-${first.invoiceNumber}`;
+      }
+      const customerIdentity = () =>
+        db()
+          .select({
+            name: s.customers.name,
+            phone: s.customers.phone,
+            address: s.customers.address,
+          })
+          .from(s.customers);
+      const beforeCustomer = await customerIdentity();
+      const result = await dispatchByBarcode(
+        {
+          barcode,
+          partyId: 1,
+          assignedUserId: 2,
+          recipientName: "مستلم بديل",
+          recipientPhone: "07701234568",
+          deliveryAddress: "بغداد زيونة عنوان بديل",
+          notes: "الاتصال عند الوصول",
+          deliveryFee: "5000",
+        },
+        ADMIN_ACTOR,
+      );
+      const [parcel] = await db()
+        .select()
+        .from(s.deliveryConsignments)
+        .where(eq(s.deliveryConsignments.id, result.consignmentId));
+      expect(parcel).toMatchObject({
+        assignedUserId: 2,
+        recipientName: "مستلم بديل",
+        deliveryAddress: "بغداد زيونة عنوان بديل",
+        notes: "الاتصال عند الوصول",
+        feeCollection: "COURIER",
+      });
+      expect(parcel.recipientPhone).toContain("7701234568");
+      expect(result.feeCollection).toBe("COURIER");
+      expect(await customerIdentity()).toEqual(beforeCustomer);
+      expect(await db().select().from(s.invoices)).toHaveLength(1);
+      expect(await db().select().from(s.inventoryMovements)).toHaveLength(1);
+    },
+  );
+  it("rejects explicit online fee mismatch without financial effects", async () => {
+    const { orderNumber } = await seedOnlineOrder({ status: "PROCESSING" });
+    const before = await effects();
+    await expect(
+      dispatchByBarcode(
+        { barcode: orderNumber, partyId: 1, deliveryFee: "4999" },
+        ADMIN_ACTOR,
+      ),
+    ).rejects.toThrow(/أجرة طلب المتجر/);
+    expect(await effects()).toEqual(before);
+  });
+  it("reassigns a cancelled online parcel with its invoice and stock identities intact", async () => {
+    const { orderId, orderNumber } = await seedOnlineOrder({
+      status: "PROCESSING",
+    });
+    await db().update(s.users).set({ isOwner: true }).where(eq(s.users.id, 1));
+    const first = await dispatchOnlineOrder(
+      { onlineOrderId: orderId, partyId: 1 },
+      ADMIN_ACTOR,
+    );
+    await cancelDeliveryAssignment(
+      {
+        consignmentId: first.consignmentId!,
+        reason: "تغيير جهة التوصيل",
+        clientRequestId: "workflow-online-cancel",
+        physicalHeldConfirmed: true,
+      },
+      ADMIN_ACTOR,
+    );
+    const preview = await previewWorkflowScan(
+      { raw: orderNumber, station: "dispatch", branchId: 1 },
+      ADMIN_ACTOR,
+    );
+    const before = await effects();
+    const result = await mutateWorkflowAssignment(
+      {
+        source: {
+          kind: preview.source.kind,
+          id: preview.source.id,
+          expectedVersion: preview.source.version,
+        },
+        action: "reassign",
+        partyId: 2,
+        externalTrackingRef: "ONLINE-NEW-CARRIER-REF",
+        reason: "إعادة إسناد الطلب للشركة",
+        clientRequestId: "workflow-online-reassign",
+        branchId: 1,
+      },
+      ADMIN_ACTOR,
+    );
+    expect(result.consignmentId).toBe(first.consignmentId);
+    expect(await getOrder(orderId)).toMatchObject({
+      status: "SHIPPED",
+      deliveryPartyId: 2,
+      invoiceId: first.invoiceId,
+    });
+    expect(await effects()).toEqual(before);
   });
 });

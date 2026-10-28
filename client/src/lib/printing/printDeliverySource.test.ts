@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
+const printed = vi.hoisted(() => ({ label: vi.fn(), slip: vi.fn() }));
 vi.mock("./print", () => ({ printDoc: vi.fn() }));
+vi.mock("./shippingLabel", async (original) => ({ ...await original<typeof import("./shippingLabel")>(), printShippingLabel: printed.label }));
+vi.mock("./printDeliveryDispatchSlip", async (original) => ({ ...await original<typeof import("./printDeliveryDispatchSlip")>(), printDeliveryDispatchSlipAsync: printed.slip }));
 import {
   buildDeliveryDispatchSlipDoc,
   type DispatchSlipData,
 } from "./printDeliveryDispatchSlip";
-import { buildDeliveryManifestDoc } from "./deliveryDocs";
+import { buildDeliveryManifestDoc, printDeliverySlip, printReadyOrderLabel } from "./deliveryDocs";
 import { buildRemittanceReceiptDoc } from "@/components/delivery/printRemittanceReceipt";
 import { docToHtml } from "./render";
 import {
@@ -103,6 +106,31 @@ describe("source-aware delivery slip", () => {
 });
 
 describe("unified delivery documents", () => {
+  it("prints only the courier fee after the linked goods invoice is fully paid", async () => {
+    printed.label.mockResolvedValue({ ok: true });
+    await printReadyOrderLabel({ orderNumber: "ORD-19", title: "بضاعة", quantity: 1, salePrice: "30000.00", deposit: "30000.00", customerName: "عميل", customerPhone: null, deliveryAddress: null, deliveryCost: "5000.00", deliveryFeeCollection: "COURIER" });
+    expect(printed.label).toHaveBeenLastCalledWith(expect.objectContaining({ total: "5000.00" }), undefined);
+  });
+
+  it.each(["COURIER", "SHOP", "COUNTER"] as const)("agrees on label and slip door totals for an online %s fee", async feeCollection => {
+    printed.label.mockResolvedValue({ ok: true });
+    printed.slip.mockResolvedValue({ ok: true });
+    const order = { orderNumber: "ORD-19", title: "بضاعة", quantity: 1, salePrice: "40000.00", deposit: "0.00", customerName: "old recipient", customerPhone: "old phone", deliveryAddress: "old address", deliveryCost: "5000.00", deliveryFeeCollection: feeCollection };
+    await printReadyOrderLabel(order);
+    const expected = feeCollection === "COURIER" ? "45000.00" : "40000.00";
+    expect(printed.label).toHaveBeenLastCalledWith(expect.objectContaining({ total: expected }), undefined);
+    printDeliverySlip(order, { name: "carrier" }, { sourceType: "ONLINE_ORDER", sourceId: 19, invoiceId: 24, invoiceNumber: "INV-24", consignmentNumber: "CN-19", codAmount: "40000.00", deliveryFee: "5000.00", feeCollection, recipientName: "saved recipient", recipientPhone: "07701234567", deliveryAddress: "saved address" });
+    const payload = printed.slip.mock.lastCall![0];
+    expect(payload).toMatchObject({ orderKind: "onlineOrder", sourceType: "ONLINE_ORDER", sourceId: 19, invoiceId: 24, orderNumber: "ORD-19", recipientName: "saved recipient", recipientPhone: "07701234567", deliveryAddress: "saved address", feeCollection });
+    const slip = buildDeliveryDispatchSlipDoc(payload);
+    expect(slip.totals?.at(-1)?.value).toBe(feeCollection === "COURIER" ? "45,000 د.ع" : "40,000 د.ع");
+  });
+
+  it("uses the known source fee collection for legacy dispatch responses", () => {
+    printed.slip.mockResolvedValue({ ok: true });
+    printDeliverySlip({ orderNumber: "ORD-19", title: "بضاعة", quantity: 1, salePrice: "40000", deposit: null, customerName: "customer", customerPhone: null, deliveryAddress: null, deliveryFeeCollection: "SHOP" }, undefined, { sourceType: "ONLINE_ORDER", consignmentNumber: "CN-19", codAmount: "40000", deliveryFee: "5000" });
+    expect(printed.slip.mock.lastCall![0].feeCollection).toBe("SHOP");
+  });
   it("keeps prepaid goods COD when the courier still collects its fee", () => {
     const prepaidGoodsCod = 0;
     const courierFee = 5_000;

@@ -1,4 +1,5 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
+import { mysqlCodeFrom } from "@shared/errorMap.ar";
 import {
   deliveryConsignments,
   deliveryParties,
@@ -40,6 +41,7 @@ import {
 import { money, toDbMoney } from "../../money";
 import { withTx, type Actor } from "../../tx";
 import { dispatchOnlineOrder } from "../../storeAdmin/dispatchOnlineOrder";
+import { onlineOrderDispatchSnapshotTx } from "../../storeAdmin/onlineOrderTracking";
 import { logAuditTx } from "../../auditService";
 import { currentWorkflowActorTx, loadWorkflowPreviewTx } from "./preview";
 import { workflowDispatchNativePaths } from "./nativeAuthority";
@@ -888,20 +890,41 @@ async function dispatchOnlineSingleton(
         .from(onlineOrders)
         .where(eq(onlineOrders.id, source.id))
         .limit(1);
+      const legacyRecovery = pending != null && order != null && ["SHIPPED", "DELIVERED"].includes(order.status);
+      if (legacyRecovery) {
+        const [parcel] = await tx.select().from(deliveryConsignments)
+          .where(and(eq(deliveryConsignments.invoiceId, order.invoiceId!),
+            eq(deliveryConsignments.sourceType, "ONLINE_ORDER"), eq(deliveryConsignments.sourceId, source.id)))
+          .for("update", { noWait: true }).limit(1);
+        const [currentOrder] = await tx.select().from(onlineOrders).where(eq(onlineOrders.id, source.id)).for("update", { noWait: true }).limit(1);
+        const sameText = (a: string | null | undefined, b: string | null | undefined) => (a ?? "").trim() === (b ?? "").trim();
+        if (!parcel || !currentOrder || !["SHIPPED", "DELIVERED"].includes(currentOrder.status) || currentOrder.invoiceId !== parcel.invoiceId
+          || !["DISPATCHED", "PARTIAL", "DELIVERED"].includes(parcel.status)
+          || ["CANCELLED", "RETURNED"].includes(parcel.parcelStatus)
+          || parcel.partyId !== input.partyId || parcel.assignedUserId !== (input.assignedUserId ?? null)
+          || !money(parcel.deliveryFee).eq(input.deliveryFee) || parcel.feeCollection !== input.feeCollection
+          || !sameText(parcel.externalTrackingRef, input.externalTrackingRef)
+          || !sameText(parcel.deliveryAddress, input.deliveryAddress ?? order.shippingAddress)
+          || (input.recipientName != null && !sameText(parcel.recipientName, input.recipientName))
+          || (input.recipientPhone != null && canonicalIraqiMobile(parcel.recipientPhone) !== canonicalIraqiMobile(input.recipientPhone))
+          || !sameText(parcel.notes, input.notes))
+          throw fulfillmentError("تعذر مطابقة إرسال الطلب السابق مع المحاولة المحفوظة؛ افتح الإرسالية الحالية", "CONFLICT");
+        // An older deployment persisted intent separately. Recover the proven parcel only;
+        // never reopen the sale writer without its approved snapshot.
+        await recordFulfillmentMutationTx(tx, context, parcel.id);
+        return { replay: await resultTx(tx, parcel.id, true, input, auth.actor.userId), actor: auth.actor, context };
+      }
       if (
-        !(pending && order?.status === "SHIPPED") &&
         source.expectedVersion !== preview.source.version
       )
         throw fulfillmentError("تغير طلب المتجر منذ المعاينة", "CONFLICT");
       if (
-        !pending &&
         !preview.actions.some((a) => a.action === "dispatch" && a.allowed)
       )
         throw fulfillmentError(
           "طلب المتجر ليس جاهزاً لإسناد جديد؛ افتح إرساليته الحالية",
         );
       if (
-        !pending &&
         (!money(input.deliveryFee).eq(preview.money.deliveryFee) ||
           input.feeCollection !== preview.money.feeCollection)
       )
@@ -910,10 +933,14 @@ async function dispatchOnlineSingleton(
         );
       await validateDriverTx(tx, input, preview.source.branchId);
       if (!pending) await recordFulfillmentMutationTx(tx, intent, source.id);
-      return { actor: auth.actor, context };
+      return { actor: auth.actor, context, expectedOrderSnapshot: order ? await onlineOrderDispatchSnapshotTx(tx, order) : undefined };
     },
     { gate: "NONE" },
-  );
+  ).catch((error: unknown) => {
+    if (mysqlCodeFrom(error) === "ER_LOCK_NOWAIT")
+      throw fulfillmentError("إرسالية الطلب قيد إجراء آخر الآن؛ أعد المحاولة بالمفتاح نفسه بعد اكتماله", "CONFLICT");
+    throw error;
+  });
   if (before.replay) return before.replay;
   const dispatched = await dispatchOnlineOrder(
     {
@@ -923,6 +950,11 @@ async function dispatchOnlineSingleton(
       externalTrackingRef: input.externalTrackingRef,
       deliveryAddress: input.deliveryAddress,
       notes: input.notes,
+      recipientName: input.recipientName,
+      recipientPhone: input.recipientPhone,
+      deliveryFee: input.deliveryFee,
+      expectedOrderSnapshot: before.expectedOrderSnapshot,
+      workflowMutation: before.context,
     },
     before.actor,
   );
@@ -957,7 +989,7 @@ async function dispatchOnlineSingleton(
       return resultTx(
         tx,
         replay ?? cn.id,
-        dispatched.alreadyDispatched === true || replay != null,
+        dispatched.alreadyDispatched === true,
         input,
         auth.actor.userId,
       );

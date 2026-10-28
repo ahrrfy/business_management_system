@@ -8,9 +8,14 @@ import {
   deliveryParties,
   onlineOrders,
   users,
+  onlineOrderItems,
+  customers,
 } from "../../../drizzle/schema";
 import { alias } from "drizzle-orm/mysql-core";
-import type { DB } from "../../db";
+import type { DB, Tx } from "../../db";
+import { idempotencyHash } from "../idempotency";
+import { mysqlCodeFrom } from "@shared/errorMap.ar";
+import { fulfillmentError } from "../fulfillment/core";
 import {
   deriveOnlineOrderLifecycle,
   type OnlineOrderLifecycle,
@@ -18,6 +23,40 @@ import {
 import { deliveryEventLabel } from "@shared/deliveryEventType";
 import { orderStatusLabel } from "@shared/onlineOrderStatus";
 import { consignmentShortfallAssignedSql } from "../delivery/openParcelPredicates";
+
+/** The same ordered source facts approve a preview and guard the locked sale writer. */
+export async function onlineOrderDispatchSnapshotTx(
+  tx: Tx,
+  order: typeof onlineOrders.$inferSelect,
+  lock: boolean | "nowait" = false,
+): Promise<string> {
+  const query = tx.select().from(onlineOrderItems)
+    .where(eq(onlineOrderItems.onlineOrderId, order.id)).orderBy(onlineOrderItems.id);
+  const items = await (lock ? query.for("update", lock === "nowait" ? { noWait: true } : undefined) : query)
+    .catch((error: unknown) => {
+      if (mysqlCodeFrom(error) === "ER_LOCK_NOWAIT")
+        throw fulfillmentError("بنود الطلب قيد التعديل الآن؛ حدّث المعاينة وأعد المحاولة بعد اكتمال التعديل", "CONFLICT");
+      throw error;
+    });
+  const [customer] = await tx.select({
+    id: customers.id, name: customers.name, phone: customers.phone,
+    phone2: customers.phone2, whatsapp: customers.whatsapp, address: customers.address,
+  }).from(customers).where(eq(customers.id, order.customerId)).limit(1);
+  return idempotencyHash({
+    order: {
+      id: order.id, orderNumber: order.orderNumber, branchId: order.branchId,
+      customerId: order.customerId, status: order.status, invoiceId: order.invoiceId,
+      shippingAddress: order.shippingAddress, governorate: order.governorate,
+      latitude: order.latitude, longitude: order.longitude,
+      subtotal: order.subtotal, total: order.total, taxAmount: order.taxAmount,
+      shippingCost: order.shippingCost, deliveryFree: order.deliveryFree,
+      deliveryWaivedAmount: order.deliveryWaivedAmount, couponCode: order.couponCode,
+      couponDiscount: order.couponDiscount, deliveryPartyId: order.deliveryPartyId,
+    },
+    items,
+    customer,
+  });
+}
 
 /** Indexed invoice identity wins; only an unlinked legacy order falls back to its source identity. */
 export const latestOnlineOrderConsignmentId = sql<number>`COALESCE(

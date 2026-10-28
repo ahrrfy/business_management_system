@@ -40,6 +40,7 @@ interface OrderQuickViewDrawerProps {
     branchId: number;
     orderNumber: string;
     total: string;
+    amountDueAtDoor?: string;
     customerName: string | null;
     deliveryFree?: boolean;
     deliveryWaivedAmount?: string;
@@ -339,6 +340,7 @@ export function OrderQuickViewDrawer({
                         branchId: order.branchId,
                         orderNumber: order.orderNumber,
                         total: order.total,
+                        amountDueAtDoor: order.amountDueAtDoor,
                         customerName: order.customerName,
                         deliveryFree: order.deliveryFree,
                         deliveryWaivedAmount: order.deliveryWaivedAmount,

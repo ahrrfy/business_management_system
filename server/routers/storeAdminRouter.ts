@@ -8,6 +8,7 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
+import { canCrossBranches } from "../lib/branchAuthority";
 import { managerApprovalSchema } from "@shared/managerApproval";
 import { verifyManagerApproval } from "./saleRouter";
 import { logAudit } from "../services/auditService";
@@ -96,8 +97,8 @@ const statusEnum = z.enum(["PENDING", "CONFIRMED", "PROCESSING", "SHIPPED", "DEL
 
 /** الفرع المُسنَد للفاعل (قرار المالك ١٢/٨: عزل مدير الفرع): المالك/الأدمن فقط ⇒ null بلا قيد
  *  (owner مُطبَّع ⇒ admin)؛ مدير الفرع وغيره ⇒ فرعهم المُسنَد. */
-function actorScopedBranch(user: { role: string; branchId: number | null }): number | null {
-  const elevated = user.role === "admin";
+function actorScopedBranch(user: { role: string; branchId: number | null; isOwner?: boolean }): number | null {
+  const elevated = canCrossBranches(user);
   if (elevated) return null;
   if (user.branchId == null) {
     throw new TRPCError({
@@ -279,10 +280,21 @@ const ordersRouter = router({
   autoAssignRoundRobin: storeFulfillProcedure
     .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
     .mutation(async ({ input, ctx }) => {
-      const scopedBranchId = input?.branchId ?? actorScopedBranch(ctx.user);
+      const actorBranchId = actorScopedBranch(ctx.user);
+      if (actorBranchId != null && input?.branchId != null && input.branchId !== actorBranchId) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر توزيع طلبات فرع آخر",
+            why: "حسابك مقيّد بفرعك المُسنَد",
+            doThis: "اختر فرعك المُسنَد ثم أعد المحاولة",
+          }),
+        });
+      }
+      const scopedBranchId = actorBranchId ?? input?.branchId ?? null;
       const res = await autoAssignRoundRobinOnlineOrders(
         { scopedBranchId },
-        { userId: ctx.user.id, role: ctx.user.role }
+        { userId: ctx.user.id, branchId: ctx.user.branchId, role: ctx.user.role, isOwner: ctx.user.isOwner }
       );
       if (res.assignedCount > 0) {
         await logAudit(ctx, {
