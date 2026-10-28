@@ -5,6 +5,7 @@ import { employeeDocuments, employees } from "../../drizzle/schema";
 import { getDb, type DB, type Tx } from "../db";
 import { withTx, type Actor, type MaybeScopedActor } from "./tx";
 import { baghdadToday } from "./businessDay";
+import { lockHrEmployeeTx, resolveHrActorTx } from "./hr/resourceScope";
 
 function requireDb() {
   const db = getDb();
@@ -188,22 +189,8 @@ export async function getDocumentById(
 /** إضافة مستند جديد لموظف. */
 export async function addEmployeeDocument(actor: MaybeScopedActor, input: AddDocumentInput) {
   return withTx(async (tx) => {
-    const [emp] = await tx
-      .select({ id: employees.id, branchId: employees.branchId })
-      .from(employees)
-      .where(eq(employees.id, input.employeeId))
-      .limit(1);
-
-    if (!emp) {
-      throw new TRPCError({
-        code: "NOT_FOUND",
-        message: appErrorMessage({
-          what: "تعذّر إضافة المستند",
-          why: "الموظف المطلوب غير مسجّل في قاعدة البيانات",
-          doThis: "تحقّق من معرّف الموظف وأعد المحاولة",
-        }),
-      });
-    }
+    const currentActor = await resolveHrActorTx(tx, actor, "hrEnterprise.documents.add");
+    await lockHrEmployeeTx(tx, currentActor, input.employeeId);
 
     const today = baghdadToday();
     const alertDays = input.alertDaysBefore ?? 30;
@@ -232,10 +219,12 @@ export async function addEmployeeDocument(actor: MaybeScopedActor, input: AddDoc
 /** تعديل مستند موظف. */
 export async function updateEmployeeDocument(actor: MaybeScopedActor, input: UpdateDocumentInput) {
   return withTx(async (tx) => {
+    const currentActor = await resolveHrActorTx(tx, actor, "hrEnterprise.documents.update");
     const [doc] = await tx
       .select()
       .from(employeeDocuments)
       .where(eq(employeeDocuments.id, input.id))
+      .for("update")
       .limit(1);
 
     if (!doc) {
@@ -249,6 +238,7 @@ export async function updateEmployeeDocument(actor: MaybeScopedActor, input: Upd
       });
     }
 
+    await lockHrEmployeeTx(tx, currentActor, doc.employeeId);
     const today = baghdadToday();
     const expiry = input.expiryDate !== undefined ? input.expiryDate : doc.expiryDate;
     const alertDays = input.alertDaysBefore !== undefined ? input.alertDaysBefore : doc.alertDaysBefore;
@@ -278,10 +268,12 @@ export async function updateEmployeeDocument(actor: MaybeScopedActor, input: Upd
 /** حذف مستند. */
 export async function deleteEmployeeDocument(actor: MaybeScopedActor, id: number) {
   return withTx(async (tx) => {
+    const currentActor = await resolveHrActorTx(tx, actor, "hrEnterprise.documents.delete");
     const [doc] = await tx
-      .select({ id: employeeDocuments.id })
+      .select({ id: employeeDocuments.id, employeeId: employeeDocuments.employeeId })
       .from(employeeDocuments)
       .where(eq(employeeDocuments.id, id))
+      .for("update")
       .limit(1);
 
     if (!doc) {
@@ -295,6 +287,7 @@ export async function deleteEmployeeDocument(actor: MaybeScopedActor, id: number
       });
     }
 
+    await lockHrEmployeeTx(tx, currentActor, doc.employeeId);
     await tx.delete(employeeDocuments).where(eq(employeeDocuments.id, id));
     return { success: true };
   });

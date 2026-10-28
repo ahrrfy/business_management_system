@@ -262,15 +262,16 @@ describe("الحجوزات R-م٣ — الثوابت الحرجة", () => {
     expect(Number(row.fulfilledInvoiceId)).toBe(conv.invoiceId);
   });
 
-  it("التحويل idempotent: إعادة تحويل حجز منفَّذ مرفوضة (لا خصم مخزون مزدوج)", async () => {
+  it("التحويل idempotent: إعادة الحمولة المطابقة تسترد الفاتورة دون خصم مخزون مزدوج", async () => {
     const cid = await mkCustomer("زبون ٢");
     const { variantId, baseUnitId } = await mkProduct("RSV-I", 10);
     const r = await createReservation(
       { branchId: 1, customerId: cid, contactPhone: "07700000011", lines: [{ variantId, productUnitId: baseUnitId, quantity: 3 }] },
       actor,
     );
-    await convertReservationToSale({ reservationId: r.reservationId, payment: null }, actor);
-    await expect(convertReservationToSale({ reservationId: r.reservationId, payment: null }, actor)).rejects.toThrow();
+    const first = await convertReservationToSale({ reservationId: r.reservationId, payment: null }, actor);
+    await expect(convertReservationToSale({ reservationId: r.reservationId, payment: null }, actor))
+      .resolves.toMatchObject({ invoiceId: first.invoiceId, idempotentReplay: true });
     expect(await onHand(variantId)).toBe(7); // خُصم مرّة واحدة (10−3)
   });
 

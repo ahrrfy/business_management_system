@@ -13,6 +13,7 @@ import {
 } from "./accounting/postingEngine";
 import { money, toDbMoney } from "./money";
 import { extractInsertId } from "../lib/insertId";
+import { lockHrEmployeeTx, resolveHrActorTx } from "./hr/resourceScope";
 
 function requireDb() {
   const db = getDb();
@@ -59,22 +60,8 @@ export async function assignEmployeeCustody(
   input: AssignCustodyInput,
 ) {
   return withTx(async (tx) => {
-    const [emp] = await tx
-      .select({ id: employees.id, branchId: employees.branchId, employmentStatus: employees.employmentStatus })
-      .from(employees)
-      .where(eq(employees.id, input.employeeId))
-      .limit(1);
-
-    if (!emp) {
-      throw new TRPCError({
-        code: "NOT_FOUND",
-        message: appErrorMessage({
-          what: "تعذّر تسليم العهدة",
-          why: "الموظف المطلوب غير مسجّل في قاعدة البيانات",
-          doThis: "تحقّق من معرّف الموظف وأعد المحاولة",
-        }),
-      });
-    }
+    const currentActor = await resolveHrActorTx(tx, actor, "hrEnterprise.custody.assign");
+    const emp = await lockHrEmployeeTx(tx, currentActor, input.employeeId);
 
     if (emp.employmentStatus !== "active") {
       throw new TRPCError({
@@ -125,6 +112,7 @@ export async function returnEmployeeCustody(
   input: ReturnCustodyInput,
 ) {
   return withTx(async (tx) => {
+    const currentActor = await resolveHrActorTx(tx, actor, "hrEnterprise.custody.return");
     const [c] = await tx
       .select()
       .from(employeeCustody)
@@ -143,6 +131,7 @@ export async function returnEmployeeCustody(
       });
     }
 
+    const employee = await lockHrEmployeeTx(tx, currentActor, c.employeeId, c.branchId);
     if (c.status !== "HELD") {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -162,7 +151,12 @@ export async function returnEmployeeCustody(
     if (finalStatus === "DAMAGED" || finalStatus === "LOST") {
       const lossAmount = money(input.damageAmount);
       if (lossAmount.gt(0)) {
-        const branchId = c.branchId ?? actor.branchId ?? 1;
+        const branchId = c.branchId ?? employee.branchId;
+        if (branchId == null) throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+          what: "تعذّر تسوية العهدة",
+          why: "لا يوجد فرع موثّق للعهدة أو الموظف",
+          doThis: "حدّد فرع الموظف والعهدة قبل تسجيل التسوية",
+        }) });
         const entryDate = input.actualReturnDate
           ? new Date(`${input.actualReturnDate}T00:00:00Z`)
           : new Date();

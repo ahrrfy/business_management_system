@@ -33,6 +33,7 @@ import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { OutboxReconciliationAction } from "@/components/whatsapp/OutboxReconciliationDialog";
 import { Link, useLocation } from "wouter";
 
 /**
@@ -139,10 +140,26 @@ function WindowBadge({ windowExpiresAt, now }: { windowExpiresAt: Date | string 
 
 /** أَيقونة حالة التَسليم بِجوار وَقت الرَسالة — تُغطّي كِلا المَصدرَين: رَسالة حَقيقية (deliveryStatus)
  *  أو عُنصر زائف مُعلَّق مِن الصَندوق الصادِر (pending). */
-function DeliveryMark({ m, onRetry }: { m: Msg; onRetry: (outboxId: number) => void }) {
+function DeliveryMark({
+  m,
+  onRetry,
+}: {
+  m: Msg;
+  onRetry: (outboxId: number) => void;
+}) {
   // lucide-react لا يَقبل `title` كَمُعامِل SVG مُباشِر (ElementAttributes تَستثنيه) — نَلفّه بِـ
   // <span title> (نَفس نَمط CustomerPicker.tsx: `title="رصيد ذمة العميل"`).
   if (m.pending) {
+    if (m.pending.status === "UNKNOWN")
+      return (
+        <span
+          className="inline-flex flex-wrap items-center gap-2 text-[var(--sem-warn)]"
+          title={m.pending.lastError ?? undefined}
+        >
+          <span>نتيجة الإرسال غير محسومة</span>
+          <OutboxReconciliationAction outboxId={m.pending.outboxId} />
+        </span>
+      );
     if (m.pending.status === "FAILED") {
       return (
         <span className="inline-flex items-center gap-1">
@@ -162,7 +179,13 @@ function DeliveryMark({ m, onRetry }: { m: Msg; onRetry: (outboxId: number) => v
     return (
       // الفرعان حالتان مختلفتان لا صياغتان: SENDING = إرسالٌ جارٍ فعلاً (مفتاح القاموس)،
       // وغيرُه طابورٌ لمّا يُرسَل بعد، ولا مفتاحَ له في ACTION_LABELS — دمجُهما يُضيّع التمييز.
-      <span title={m.pending.status === "SENDING" ? ACTION_LABELS.sending : "قيد الإرسال…"}>
+      <span
+        title={
+          m.pending.status === "SENDING"
+            ? ACTION_LABELS.sending
+            : "قيد الإرسال…"
+        }
+      >
         <Clock aria-hidden className="size-3 opacity-70" />
       </span>
     );
@@ -533,9 +556,29 @@ function CustomerLinkChip({ conv, onLinked }: { conv: Conv; onLinked: () => void
   );
 }
 
-function ConversationDetail({ conv, onChanged, onStartOrder }: { conv: Conv; onChanged: () => void; onStartOrder?: (v: StartOrderFromConversation) => void }) {
+function ConversationDetail({
+  conv,
+  onChanged,
+  onStartOrder,
+}: {
+  conv: Conv;
+  onChanged: () => void;
+  onStartOrder?: (v: StartOrderFromConversation) => void;
+}) {
   const id = Number(conv.id);
-  const messages = trpc.conversations.messages.useQuery({ conversationId: id });
+  const messages = trpc.conversations.messages.useQuery(
+    { conversationId: id },
+    {
+      refetchInterval: (query) =>
+        query.state.data?.some(
+          (message) =>
+            message.pending?.status === "QUEUED" ||
+            message.pending?.status === "SENDING",
+        )
+          ? 15_000
+          : false,
+    },
+  );
   const utils = trpc.useUtils();
   const listRef = useRef<HTMLDivElement | null>(null);
   const now = useNow();
@@ -803,6 +846,7 @@ export default function Inbox({ onStartOrder }: { onStartOrder?: (v: StartOrderF
     () => (selId == null ? null : loaded.find((c) => Number(c.id) === selId) ?? null),
     [loaded, selId],
   );
+  const unresolvedOutbox = list.data?.pages[0]?.unresolvedOutbox;
 
   return (
     <div className="flex flex-col lg:flex-row gap-4 h-[calc(100vh-7rem)]">
@@ -816,6 +860,12 @@ export default function Inbox({ onStartOrder }: { onStartOrder?: (v: StartOrderF
           </h1>
           <Button size="sm" onClick={() => setShowNew(true)}>+ جديدة</Button>
         </div>
+
+        {(unresolvedOutbox?.total ?? 0) > 0 && <details className="rounded border p-2 text-xs">
+          <summary className="cursor-pointer font-bold text-[var(--sem-warn)]">إرسال بنتيجة غير محسومة ({unresolvedOutbox!.total})</summary>
+          <p className="py-2 text-muted-foreground">عرض {unresolvedOutbox!.rows.length} من {unresolvedOutbox!.total} في هذا الفرع. يشمل التنبيهات الآلية؛ بعد التسوية حدّث القائمة لعرض البقية.</p>
+          <div className="max-h-72 overflow-y-auto space-y-2">{unresolvedOutbox!.rows.map((row) => <div key={row.id} className="border-t pt-2 space-y-1"><div>إرسال #{row.id} · {row.templateName ?? "رسالة"}</div><div dir="ltr">{row.toPhoneE164 ?? "—"} · {fmtDateTime(row.createdAt)}</div><OutboxReconciliationAction outboxId={row.id} /></div>)}</div>
+        </details>}
 
         <div className="flex gap-1.5 flex-wrap">
           {FILTERS.map((f) => (

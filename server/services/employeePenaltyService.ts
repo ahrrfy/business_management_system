@@ -6,6 +6,8 @@ import { employeePenalties, employees, payrollRuns } from "../../drizzle/schema"
 import { getDb } from "../db";
 import { withTx, type Actor, type MaybeScopedActor } from "./tx";
 import { money, round2, toDbMoney } from "./money";
+import { canCrossBranches } from "../lib/branchAuthority";
+import { lockHrEmployeeTx, resolveHrActorTx } from "./hr/resourceScope";
 
 function requireDb() {
   const db = getDb();
@@ -44,27 +46,8 @@ export async function createEmployeePenalty(
   input: CreatePenaltyInput,
 ) {
   return withTx(async (tx) => {
-    const [emp] = await tx
-      .select({
-        id: employees.id,
-        branchId: employees.branchId,
-        salary: employees.salary,
-        allowances: employees.allowances,
-      })
-      .from(employees)
-      .where(eq(employees.id, input.employeeId))
-      .limit(1);
-
-    if (!emp) {
-      throw new TRPCError({
-        code: "NOT_FOUND",
-        message: appErrorMessage({
-          what: "تعذّر إصدار القرار الانضباطي",
-          why: "الموظف المطلوب غير مسجّل في قاعدة البيانات",
-          doThis: "تحقّق من معرّف الموظف وأعد المحاولة",
-        }),
-      });
-    }
+    const currentActor = await resolveHrActorTx(tx, actor, "hrEnterprise.penalties.create");
+    const emp = await lockHrEmployeeTx(tx, currentActor, input.employeeId);
 
     let deductionDays = new Decimal(input.deductionDays ?? 0);
     let deductionAmount = money(input.deductionAmount ?? 0);
@@ -116,6 +99,7 @@ export async function approveEmployeePenalty(
   id: number,
 ) {
   return withTx(async (tx) => {
+    const currentActor = await resolveHrActorTx(tx, actor, "hrEnterprise.penalties.approve");
     const [p] = await tx
       .select()
       .from(employeePenalties)
@@ -134,6 +118,7 @@ export async function approveEmployeePenalty(
       });
     }
 
+    await lockHrEmployeeTx(tx, currentActor, p.employeeId, p.branchId);
     if (p.status !== "DRAFT") {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -145,7 +130,7 @@ export async function approveEmployeePenalty(
       });
     }
 
-    if (p.createdById === actor.userId && actor.role !== "admin") {
+    if (p.createdById === currentActor.userId && !canCrossBranches(currentActor)) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: appErrorMessage({
@@ -176,6 +161,7 @@ export async function cancelEmployeePenalty(
   reason: string,
 ) {
   return withTx(async (tx) => {
+    const currentActor = await resolveHrActorTx(tx, actor, "hrEnterprise.penalties.cancel");
     const [p] = await tx
       .select()
       .from(employeePenalties)
@@ -194,6 +180,7 @@ export async function cancelEmployeePenalty(
       });
     }
 
+    await lockHrEmployeeTx(tx, currentActor, p.employeeId, p.branchId);
     if (p.status === "APPLIED") {
       throw new TRPCError({
         code: "BAD_REQUEST",

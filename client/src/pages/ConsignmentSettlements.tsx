@@ -53,6 +53,11 @@ export default function ConsignmentSettlements() {
 
   // طريقة دفع التسوية — الخادم يقبل بطاقة/تحويل أيضاً وكانت الشاشة تُرسل نقدياً دائماً بصمت.
   const [settlementMethod, setSettlementMethod] = useState<"CASH" | "CARD" | "TRANSFER">("CASH");
+  const [settlementReference, setSettlementReference] = useState("");
+  const [settlementCardLastFour, setSettlementCardLastFour] = useState("");
+  const missingPaymentEvidence =
+    (settlementMethod === "TRANSFER" && !settlementReference.trim()) ||
+    (settlementMethod === "CARD" && !/^\d{4}$/.test(settlementCardLastFour));
 
   const balances = trpc.consignments.balancesReport.useQuery(undefined);
   const utils = trpc.useUtils();
@@ -72,18 +77,22 @@ export default function ConsignmentSettlements() {
   );
 
   const settle = trpc.consignments.createSettlement.useMutation({
-    onSuccess: () => {
-      notify.ok("أُنشئت التسوية", "بانتظار اعتماد سند الصرف من مدير آخر (طابور السندات).");
+    onSuccess: (result) => {
+      notify.ok("أُنشئت التسوية", result.approvalStatus === "PENDING_APPROVAL"
+        ? "بانتظار اعتماد سند الصرف من المالك (طابور السندات)."
+        : "سند الصرف معتمد.");
+      setSettlementReference("");
+      setSettlementCardLastFour("");
       utils.consignments.balancesReport.invalidate();
     },
     onError: (e) => notify.err(e),
   });
 
   async function doSettle(consignorId: number, name: string, owed: string) {
-    if (D(owed).lte(0) || branchId == null || needsBranchChoice) return;
+    if (D(owed).lte(0) || branchId == null || needsBranchChoice || missingPaymentEvidence) return;
     const ok = await confirm({
       title: "تسوية مودِع",
-      description: `إنشاء سند صرف ${paymentMethodLabel(settlementMethod)} بمبلغ ${fmt(owed)} د.ع للمودِع «${name}» من فرع «${branchName}». يُنشأ معلَّقاً ويعتمده مدير آخر. متابعة؟`,
+      description: `إنشاء سند صرف ${paymentMethodLabel(settlementMethod)} بمبلغ ${fmt(owed)} د.ع للمودِع «${name}» من فرع «${branchName}». يخضع السند لاعتماد المالك. متابعة؟`,
       confirmText: "إنشاء التسوية",
     });
     if (!ok) return;
@@ -91,6 +100,8 @@ export default function ConsignmentSettlements() {
       consignorId,
       amount: String(owed),
       paymentMethod: settlementMethod,
+      referenceNumber: settlementMethod === "CASH" ? undefined : settlementReference.trim() || undefined,
+      cardLastFour: settlementMethod === "CARD" ? settlementCardLastFour : undefined,
       branchId,
       clientRequestId: crypto.randomUUID(),
     });
@@ -145,7 +156,7 @@ export default function ConsignmentSettlements() {
     <div className="space-y-4">
       <PageHeader
         title="تسويات الأمانة"
-        description="المستحقّ لكل مودِع عن مبيعات بضاعته — تُسوّى بسند صرف يعتمده مدير آخر (فصل المهام)."
+        description="المستحقّ لكل مودِع عن مبيعات بضاعته — تُسوّى بسند صرف يخضع لاعتماد المالك."
       />
 
       <Card>
@@ -173,11 +184,27 @@ export default function ConsignmentSettlements() {
               id="cs-method"
               className="h-9 w-40 border-input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               value={settlementMethod}
-              onValueChange={(next) => setSettlementMethod(next as typeof settlementMethod)}
+              onValueChange={(next) => {
+                setSettlementMethod(next as typeof settlementMethod);
+                setSettlementReference("");
+                setSettlementCardLastFour("");
+              }}
             >
               {SETTLEMENT_METHODS.map((m) => <option key={m} value={m}>{paymentMethodLabel(m)}</option>)}
             </AppSelect>
           </div>
+          {settlementMethod !== "CASH" && (
+            <div className="space-y-1">
+              <Label htmlFor="cs-reference">مرجع العملية{settlementMethod === "TRANSFER" ? " (إلزامي)" : " (اختياري)"}</Label>
+              <Input id="cs-reference" dir="ltr" className="h-9 w-52" value={settlementReference} onChange={(e) => setSettlementReference(e.target.value)} maxLength={120} />
+            </div>
+          )}
+          {settlementMethod === "CARD" && (
+            <div className="space-y-1">
+              <Label htmlFor="cs-card-last-four">آخر أربعة أرقام من البطاقة (إلزامي)</Label>
+              <Input id="cs-card-last-four" dir="ltr" inputMode="numeric" className="h-9 w-40" value={settlementCardLastFour} onChange={(e) => setSettlementCardLastFour(e.target.value.replace(/\D/g, "").slice(0, 4))} maxLength={4} />
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -234,7 +261,7 @@ export default function ConsignmentSettlements() {
                           key: "settle",
                           kind: "pay",
                           label: owed.gt(0) ? "تسوية" : "لا مستحق",
-                          disabled: owed.lte(0) || settle.isPending || needsBranchChoice,
+                          disabled: owed.lte(0) || settle.isPending || needsBranchChoice || missingPaymentEvidence,
                           disabledReason: needsBranchChoice
                             ? "اختر الفرع أولاً من أعلى الصفحة"
                             : owed.lte(0) ? "لا يوجد مبلغ مستحق للتسوية" : "توجد عملية تسوية قيد التنفيذ",

@@ -1,10 +1,12 @@
 // بضاعة الأمانة — ش٢: خدمة سندات الإيداع/السحب/الاستبدال. راجع docs/consignment-design-2026-07-20.md §٢-أ/د.
 // إيداع/سحب/استبدال = حركات مخزون بصفر أثر ماليّ (الالتزام يُلتقَط لحظة البيع في ش٣). ذرّيّ + idempotent.
 import { TRPCError } from "@trpc/server";
+import { createHash } from "node:crypto";
 import { and, asc, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { appErrorMessage } from "@shared/errors";
 import { consignmentNoteLines, consignmentNotes, productUnits, productVariants, products, suppliers } from "../../../drizzle/schema";
-import { getDb } from "../../db";
+import { getDb, type DB, type Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { escLike } from "../../lib/sqlLike";
 import { localDayStart, localNextDayStart } from "../dateRange";
@@ -15,6 +17,7 @@ import { money, round2 } from "../money";
 import { nextConsignmentNumber } from "../numbering";
 import { withTx, type Actor } from "../tx";
 import { flowNotify } from "../whatsapp";
+import { stableJson } from "../accounting/postingEngine";
 
 const AE = {
   entryType: sql`ae.entryType`,
@@ -46,6 +49,48 @@ const norm = (s: string | null | undefined): string | null => {
   return t || null;
 };
 
+function noteRequestHash(input: CreateConsignmentNoteInput, createdBy: number) {
+  const lines = input.lines.map((line) => ({
+    lineDirection: line.lineDirection,
+    variantId: line.variantId,
+    productUnitId: line.productUnitId,
+    // The original unit and submitted quantity identify the command. Replaying
+    // must never reinterpret it using today's mutable conversion or stock.
+    quantity: money(line.quantity).toString(),
+    notes: norm(line.notes),
+  })).sort((a, b) => stableJson(a).localeCompare(stableJson(b)));
+  return createHash("sha256").update(stableJson({
+    noteType: input.noteType, consignorId: input.consignorId,
+    branchId: input.branchId, createdBy, notes: norm(input.notes),
+    attachmentUrl: norm(input.attachmentUrl), lines,
+  }), "utf8").digest("hex");
+}
+
+async function findNoteReplay(db: DB | Tx, input: CreateConsignmentNoteInput, clientRequestId: string, actor: Actor) {
+  const [prior] = await db.select().from(consignmentNotes)
+    .where(eq(consignmentNotes.clientRequestId, clientRequestId)).limit(1);
+  if (!prior) return null;
+  const requestHash = noteRequestHash(input, actor.userId);
+  let savedHash = prior.requestPayloadHash;
+  if (savedHash == null && prior.createdBy != null) {
+    // Legacy notes retain the complete submitted header/line facts. Compare
+    // those facts without changing the old row or consulting live products.
+    const lines = await db.select().from(consignmentNoteLines).where(eq(consignmentNoteLines.noteId, prior.id));
+    if (lines.length > 0) savedHash = noteRequestHash({ ...prior, lines }, prior.createdBy);
+  }
+  if (prior.branchId !== input.branchId || prior.createdBy !== actor.userId || savedHash !== requestHash) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذر إعادة طلب سند الأمانة",
+        why: "مفتاح الطلب مستخدم لسند بحمولة أو فرع أو منشئ مختلف، أو لا تتوفر أدلة كافية لمطابقته.",
+        doThis: "أعد إرسال الطلب الأصلي من حساب منشئه، أو استخدم مفتاحاً جديداً لسند جديد.",
+      }),
+    });
+  }
+  return { noteId: prior.id, noteNumber: prior.noteNumber, idempotentReplay: true };
+}
+
 /**
  * إنشاء سند حركة أمانة (ذرّيّ + idempotent + قفل المودِع FOR UPDATE).
  * الحراس: المودِع CONSIGNOR نشِط؛ كل سطر صنفه isConsignment ومودِعه = مودِع السند؛ اتجاه الأسطر يطابق
@@ -60,12 +105,9 @@ export async function createConsignmentNote(input: CreateConsignmentNoteInput, a
     // سباق متزامن على نفس المفتاح: الفائز ملتزم ⇒ اقرأه (نمط createSupplier).
     if (clientRequestId && isDupEntry(e)) {
       const db = getDb();
-      const prior = db
-        ? (await db.select({ id: consignmentNotes.id }).from(consignmentNotes)
-            .where(eq(consignmentNotes.clientRequestId, clientRequestId)).limit(1))[0]
-        : undefined;
+      const prior = db ? await findNoteReplay(db, input, clientRequestId, actor) : null;
       if (prior) {
-        result = { noteId: Number(prior.id), idempotentReplay: true };
+        result = prior;
       } else {
         throw e;
       }
@@ -143,11 +185,10 @@ async function createConsignmentNoteTx(input: CreateConsignmentNoteInput, client
   // + كاشف anomalyWatch D7 لتركّز السحوبات) تبقى فعّالة.
 
   return withTx(async (tx) => {
-    // idempotency: إعادة إرسال بنفس المفتاح ⇒ أعد السند القائم.
+    // Replay the exact committed request before current consignor/unit rules.
     if (clientRequestId) {
-      const prior = (await tx.select({ id: consignmentNotes.id }).from(consignmentNotes)
-        .where(eq(consignmentNotes.clientRequestId, clientRequestId)).limit(1))[0];
-      if (prior) return { noteId: prior.id, idempotentReplay: true };
+      const prior = await findNoteReplay(tx, input, clientRequestId, actor);
+      if (prior) return prior;
     }
 
     // قفل المودِع FOR UPDATE (يتسلسل مع التعطيل/تغيير الربط — منع check-then-act).
@@ -178,6 +219,7 @@ async function createConsignmentNoteTx(input: CreateConsignmentNoteInput, client
       consignorId: input.consignorId,
       branchId: input.branchId,
       clientRequestId,
+      requestPayloadHash: noteRequestHash(input, actor.userId),
       notes: norm(input.notes),
       attachmentUrl: norm(input.attachmentUrl),
       createdBy: actor.userId,

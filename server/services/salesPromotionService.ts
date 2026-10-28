@@ -207,6 +207,7 @@ export interface UpdatePromotionInput {
   priority?: number;
   targets?: PromotionTargetInput[];
   isStoreManaged?: boolean;
+  applicationMode?: "AUTO" | "COUPON";
 }
 
 export async function updatePromotion(
@@ -290,6 +291,7 @@ export async function updatePromotion(
   if (input.minLineAmount !== undefined) patch.minLineAmount = input.minLineAmount ? toDbMoney(input.minLineAmount) : "0.00";
   if (input.priority !== undefined) patch.priority = input.priority;
   if (input.isStoreManaged !== undefined) patch.isStoreManaged = input.isStoreManaged;
+  if (input.applicationMode !== undefined) patch.applicationMode = input.applicationMode;
 
   if (Object.keys(patch).length > 0) {
     await tx.update(promotions).set(patch).where(eq(promotions.id, input.id));

@@ -5,6 +5,7 @@ import "dotenv/config";
 import { drizzle } from "drizzle-orm/mysql2";
 import { migrate } from "drizzle-orm/mysql2/migrator";
 import { createConnection } from "mysql2/promise";
+import { assertConnectionTarget } from "./lib/db-target.mjs";
 
 const url = process.env.DATABASE_URL;
 if (!url) {
@@ -20,6 +21,7 @@ const conn = await createConnection({ uri: url, multipleStatements: true });
 const db = drizzle(conn);
 
 try {
+  await assertConnectionTarget(conn, url, process.env.DB_TARGET_EXPECTED_UUID);
   console.log("→ قراءة journal والتحقّق من الهجرات المُطبَّقة…");
   await migrate(db, { migrationsFolder: "./drizzle/migrations" });
   console.log("✓ كل الهجرات حديثة.");

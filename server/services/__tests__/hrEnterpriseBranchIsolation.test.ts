@@ -75,7 +75,7 @@ async function seedData() {
     jobTitle: "محاسب",
     salary: "1200000.00",
     allowances: "300000.00",
-    annualLeaveBalance: 15,
+    annualLeaveBalance: "15.00",
     isActive: true,
   });
   emp1Id = 1001;
@@ -88,7 +88,7 @@ async function seedData() {
     jobTitle: "كاشير",
     salary: "900000.00",
     allowances: "150000.00",
-    annualLeaveBalance: 20,
+    annualLeaveBalance: "20.00",
     isActive: true,
   });
   emp2Id = 1002;

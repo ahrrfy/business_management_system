@@ -7,7 +7,8 @@ import { and, asc, desc, eq, gt, gte, inArray, like, lt, or, sql, type SQL } fro
 import {
   branchStock, customers, products, productUnits, productVariants, reservationLines, reservations, reservationStock,
 } from "../../drizzle/schema";
-import { positiveMoneyString } from "../lib/schemas";
+import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
+import { previewReservationConversion } from "../services/reservations/convert";
 import { logAudit } from "../services/auditService";
 import { utcDayStart, utcNextDayStart } from "../services/businessDay";
 import { money, round2, toDbMoney } from "../services/money";
@@ -365,11 +366,23 @@ export const reservationsRouter = router({
       return res;
     }),
 
+  previewConversion: reservationsWrite
+    .input(z.object({
+      reservationId: z.number().int().positive(),
+      shiftId: z.number().int().positive().nullish(),
+      payment: z.object({ amount: positiveMoneyString, method: reservationCashPaymentMethod,
+        reference: z.string().trim().max(100).nullish() }).nullish(),
+    }))
+    .query(({ ctx, input }) => previewReservationConversion(input, {
+      userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role,
+    })),
+
   // تحويل الحجز إلى فاتورة بيع (R-م٤): عبر createSale — يخصم المخزون ويحرّر المحجوز المنفَّذ.
   convert: reservationsWrite
     .input(
       z.object({
         reservationId: z.number().int().positive(),
+        pricingConfirmation: z.object({ fingerprint: z.string().regex(/^[a-f0-9]{64}$/), total: nonNegMoneyString }),
         shiftId: z.number().int().positive().nullish(),
         payment: z
           .object({

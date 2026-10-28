@@ -7,6 +7,13 @@ import os from "node:os";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+{
+  const source = fs.readFileSync(path.join(root, "scripts/deploy.mjs"), "utf8");
+  const clientPreparation = source.indexOf("scripts/provision-backup-client.mjs");
+  assert.ok(clientPreparation >= 0 && clientPreparation < source.indexOf('["db:backup"]'),
+    "deployment must provision the pin-capable client before its safety backup");
+}
+
 const {
   cleanupWebCandidate,
   commitWebArtifact,

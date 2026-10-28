@@ -1,0 +1,25 @@
+{
+  "bundle": "digital",
+  "worker": "D:\\business_management_system-worktrees\\audit-fix-digital-1028",
+  "baseline": "fa82f0d5e5ec819b5769720f370a100d7ea81f9f",
+  "integratedAtUtc": "2026-10-28T14:34:36.657Z",
+  "patchSha256": "df71fbe640d09d7e54c349c07de36e5b53bbd32974260c06faa87742a3a6d12d",
+  "files": [
+    {
+      "path": "server/services/digitalCards/reversalService.ts",
+      "sha256": "470f6229000634531e8145015c9ce285c2ce0f2d00ede3db8223cf75e4288e51"
+    },
+    {
+      "path": "server/services/sale/correct.ts",
+      "sha256": "2c9a9a92914e177da589d711a14420f425c0377deaf76dee46a2ded35f7d69c7"
+    },
+    {
+      "path": "server/services/commissions/attribution.ts",
+      "sha256": "7724b63671bc78947841e89e0ebf719f7a0ef58fd69578828e455a077dd483c4"
+    },
+    {
+      "path": "server/services/__tests__/auditDigitalAndCommissionContracts.test.ts",
+      "sha256": "86a68c44a37cf151404284d484393fd2bd7c6a454d08d51975593bed678fe426"
+    }
+  ]
+}

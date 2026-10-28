@@ -1,0 +1,33 @@
+{
+  "bundle": "purchase",
+  "worker": "D:\\business_management_system-worktrees\\audit-fix-purchase-1028",
+  "baseline": "fa82f0d5e5ec819b5769720f370a100d7ea81f9f",
+  "integratedAtUtc": "2026-10-28T14:49:53.649Z",
+  "patchSha256": "ee350c4a02ff4b20c41a7f990f43bef829a75597753a6512ae5ba74e3db7b22b",
+  "files": [
+    {
+      "path": "server/services/exchange/settleSupplier.ts",
+      "sha256": "2faea4f33128852fc14aec32977b69e868df96c97e636a40ddcf4f13aec3f0f3"
+    },
+    {
+      "path": "server/services/exchange/reverse.ts",
+      "sha256": "74872f57146e0c9076974a12bfc435722d9db151498d85069b30c1bde7693594"
+    },
+    {
+      "path": "server/services/exchange/supplierInvoiceSettlement.ts",
+      "sha256": "54201e87f389eddf263481e6e2fe3112bb97014f8815863c2699c8881d44cff4"
+    },
+    {
+      "path": "server/services/purchase/goodsReceipts.ts",
+      "sha256": "8862209c50d3e7658a622a59fa597d59237701f48dfd25761060e5050e7fce97"
+    },
+    {
+      "path": "server/services/__tests__/auditPurchaseFinancialContracts.test.ts",
+      "sha256": "32e3164c40d158e57f253ad97478b1d7a1915eecac0ffa4e78944fb1af7b9bc7"
+    },
+    {
+      "path": "server/services/__tests__/purchaseTenderEvidence.test.ts",
+      "sha256": "f0b64e721d8e7f0ef206b4a7cdb305d292c7a54f28aa2f42b8011ba1e660dafe"
+    }
+  ]
+}

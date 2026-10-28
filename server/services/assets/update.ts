@@ -62,6 +62,9 @@ export async function updateAsset(
     if (asset.status === "disposed") {
       throw new Error("لا يمكن تعديل أصل مُستبعَد");
     }
+    if (asset.status === "retired") {
+      throw new Error("لا يمكن تعديل أصل خارج الخدمة بعد إلغاء الاعتراف به؛ يلزم تصحيح مستند الإخراج أولاً");
+    }
     if (asset.isActive === false) {
       throw new TRPCError({
         code: "CONFLICT",

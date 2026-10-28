@@ -10,6 +10,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useRealtimeEvent } from "@/lib/realtime";
 import { REALTIME_EVENT_TYPES, type HeldOrderUpdatedPayload } from "@shared/realtimeEvents";
 import { notify } from "@/lib/notify";
+import { confirm } from "@/lib/confirm";
 import { fmtDateTime } from "@/lib/date";
 import { fmt, formatQuantity } from "@/lib/money";
 import { exportRows } from "@/lib/export";
@@ -135,6 +136,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
   const [convertAvailabilitySnapshot, setConvertAvailabilitySnapshot] = useState<ReservationAvailabilitySnapshot | null>(null);
   const [convertAvailabilityWarning, setConvertAvailabilityWarning] = useState<string | null>(null);
   const [isConversionBusy, setIsConversionBusy] = useState(false);
+  const [conversionPricing, setConversionPricing] = useState<RouterOutputs["reservations"]["previewConversion"] | null>(null);
   const activeConvertTargetIdRef = useRef<number | null>(null);
   const [cancelTarget, setCancelTarget] = useState<ReservationRow | null>(null);
   const [cancelReason, setCancelReason] = useState("");
@@ -149,6 +151,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
     setConvertReference("");
     setConvertAvailabilitySnapshot(null);
     setConvertAvailabilityWarning(null);
+    setConversionPricing(null);
   }, []);
 
   // أي تغيير فلتر يعيد الترقيم لأول صفحة (وإلا صفحة خارج النطاق ⇒ قائمة فارغة مضللة).
@@ -208,8 +211,11 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
     if (!convertTarget || !convertDetail.data || isConversionBusy) return;
     const closedMessage = reservationConversionClosedMessage(convertDetail.data);
     if (closedMessage) {
+      const originalInvoiceId = convertDetail.data.fulfilledInvoiceId;
+      if (originalInvoiceId) setDetailId(Number(convertDetail.data.id));
       closeConversionDialog();
-      notify.err(closedMessage);
+      if (originalInvoiceId) notify.info(`الحجز منفّذ؛ افتح الفاتورة المرتبطة رقم ${originalInvoiceId} من التفاصيل.`);
+      else notify.err(closedMessage);
       void utils.reservations.list.invalidate();
       return;
     }
@@ -242,7 +248,8 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
   });
   const convert = trpc.reservations.convert.useMutation({
     onSuccess: (r) => {
-      notify.ok(`أُنشئت الفاتورة ${r.invoiceNumber}`);
+      notify.ok(r.idempotentReplay ? `استُردت الفاتورة ${r.invoiceNumber}` : `أُنشئت الفاتورة ${r.invoiceNumber}`);
+      if (r.idempotentReplay) setDetailId(r.reservationId);
       closeConversionDialog();
       utils.reservations.list.invalidate();
     },
@@ -269,6 +276,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
     setConvertReference("");
     setConvertAvailabilitySnapshot(null);
     setConvertAvailabilityWarning(null);
+    setConversionPricing(null);
   }
   async function submitConversion() {
     if (!convertTarget) return;
@@ -305,8 +313,11 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
       }
       const closedMessage = reservationConversionClosedMessage(fresh.data);
       if (closedMessage) {
+        const originalInvoiceId = fresh.data.fulfilledInvoiceId;
+        if (originalInvoiceId) setDetailId(Number(fresh.data.id));
         closeConversionDialog();
-        notify.err(closedMessage);
+        if (originalInvoiceId) notify.info(`الحجز منفّذ؛ افتح الفاتورة المرتبطة رقم ${originalInvoiceId} من التفاصيل.`);
+        else notify.err(closedMessage);
         void utils.reservations.list.invalidate();
         return;
       }
@@ -329,8 +340,25 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
         notify.warn("انخفض المتاح منذ فتح الحوار", "أولوية الحجز محفوظة. راجع التحذير ثم اضغط تأكيد الطلب مرة أخرى.");
         return;
       }
+      const pricing = await utils.reservations.previewConversion.fetch({
+        reservationId: targetId, shiftId: currentShiftId, payment,
+      }, { staleTime: 0 });
+      if (activeConvertTargetIdRef.current !== targetId) return;
+      setConversionPricing(pricing);
+      const accepted = await confirm({
+        variant: "info", title: "تأكيد إجمالي التنفيذ الحالي",
+        description: <span className="block space-y-2 text-sm">
+          {pricing.lines.map((line) => <span className="block" key={line.lineId}>{line.productName} — {line.unitName} × {formatQuantity(line.baseQuantity)}: {fmt(line.unitPrice)} د.ع للوحدة، الإجمالي {fmt(line.lineTotal)} د.ع</span>)}
+          <span className="block font-bold">إجمالي التنفيذ الحالي: {fmt(pricing.total)} د.ع</span>
+          <span className="block">مرجع الحجز: {pricing.referenceTotal == null ? "غير مكتمل" : `${fmt(pricing.referenceTotal)} د.ع`}؛ الفرق: {pricing.difference == null ? "غير محدد" : `${fmt(pricing.difference)} د.ع`}.</span>
+          <span className="block">المبلغ المقبوض الآن: {fmt(payment?.amount ?? "0")} د.ع. أسعار الحجز مرجعية؛ ستصدر الفاتورة بالإجمالي الحالي أعلاه.</span>
+        </span>, confirmText: `تأكيد البيع بقيمة ${fmt(pricing.total)} د.ع`,
+      });
+      if (activeConvertTargetIdRef.current !== targetId) return;
+      if (!accepted) { setIsConversionBusy(false); return; }
       convert.mutate({
         reservationId: targetId,
+        pricingConfirmation: { fingerprint: pricing.fingerprint, total: pricing.total },
         // المضيف الذي يعرف ورديته يمرّر رقماً أو null صريحاً؛ غياب الخاصية يبقي التدفق المستقل
         // (ومن ضمنه PointOfSale المضمّن) على محلّل وردية RETAIL الخادمي.
         shiftId: currentShiftId,
@@ -707,11 +735,16 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
               {convertDetail.isLoading ? (
                 <LoadingState />
               ) : convertDetail.data ? (
-                <ReservationLinesBlock detail={convertDetail.data} />
+                <><p className="text-xs text-muted-foreground">الأسعار التالية مرجع الحجز. راجع معاينة التنفيذ الحالي قبل تأكيد البيع.</p><ReservationLinesBlock detail={convertDetail.data} /></>
               ) : (
                 <p className="text-xs text-muted-foreground">تعذّر تحميل بنود الحجز.</p>
               )}
             </div>
+
+            {conversionPricing ? <div className="rounded-md border p-3 text-sm">
+              <span className="font-bold">إجمالي التنفيذ الحالي: {fmt(conversionPricing.total)} د.ع</span>
+              <p className="text-xs text-muted-foreground">ستُحدّث المعاينة ويُطلب تأكيد هذا المبلغ قبل إصدار الفاتورة.</p>
+            </div> : null}
 
             <div className="space-y-1.5">
               <Label htmlFor="reservation-payment-amount">المبلغ المدفوع الآن (د.ع)</Label>
@@ -784,7 +817,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
               disabled={isConversionBusy || convert.isPending || convertDetail.isFetching || convertAvailabilitySnapshot == null || conversionStockShortages.length > 0}
             >
               <ShoppingCart className="size-4 me-1" aria-hidden />
-              {convert.isPending ? "جارٍ الإتمام…" : isConversionBusy || convertDetail.isFetching ? "جارٍ التحقق…" : "تأكيد الطلب"}
+              {convert.isPending ? "جارٍ الإتمام…" : isConversionBusy || convertDetail.isFetching ? "جارٍ التحقق…" : "معاينة سعر التنفيذ"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -817,6 +850,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
                 <div><span className="text-muted-foreground">أُنشئ: </span><span dir="ltr">{detail.data.createdAt ? fmtDateTime(detail.data.createdAt) : "—"}</span></div>
               </div>
               <ReservationLinesBlock detail={detail.data} />
+              {detail.data.fulfilledInvoiceId ? <a className="block font-bold text-primary underline" href={`/invoices/${detail.data.fulfilledInvoiceId}`}>فتح الفاتورة المرتبطة رقم {detail.data.fulfilledInvoiceId}</a> : null}
               {detail.data.notes && (
                 <p className="text-xs text-muted-foreground">ملاحظات: {detail.data.notes}</p>
               )}

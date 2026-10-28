@@ -27,6 +27,7 @@ import { assertOperationAuthorized } from "../operationAuthorization";
 import type { OperationUser } from "@shared/operationPermissions";
 import { revokeAllNativePushDevicesForUser } from "./nativePushService";
 import { revokeAllSuperAppExpoPushDevicesForUser } from "./superAppPushService";
+import Decimal from "decimal.js";
 
 const COMPANY_SCOPE: CompanyBranchScope = { branchId: null };
 
@@ -95,7 +96,7 @@ export async function listEmployees(filters?: EmployeeFilters, scope: CompanyBra
   const [{ count }] = await db.select({ count: sql<number>`count(*)` }).from(employees).where(where);
 
   return {
-    rows: rows.map((r) => ({ ...r, fullName: fullEmployeeName(r), deviceLinked: Number(r.deviceLinked) === 1 })),
+    rows: rows.map((r) => ({ ...r, annualLeaveBalance: r.annualLeaveBalance == null ? null : Number(r.annualLeaveBalance), sickLeaveBalance: r.sickLeaveBalance == null ? null : Number(r.sickLeaveBalance), fullName: fullEmployeeName(r), deviceLinked: Number(r.deviceLinked) === 1 })),
     total: Number(count),
   };
 }
@@ -129,7 +130,7 @@ export async function getEmployee(id: number, scope: CompanyBranchScope = COMPAN
   // ربوط جهاز الحضور — تُعرَض وتُدار من بطاقة الموظف، ومصدر حقيقتها يبقى hrDeviceUsers
   // (علاقة تحتمل جهازين للفرعين واستبدال جهازٍ تالف، لا حقلاً مكرَّراً على employees).
   const deviceLinks = await listEmployeeDeviceLinks(id, scope);
-  return { ...e, fullName: fullEmployeeName(e), managerName, linkedUser, deviceLinks };
+  return { ...e, annualLeaveBalance: e.annualLeaveBalance == null ? null : Number(e.annualLeaveBalance), sickLeaveBalance: e.sickLeaveBalance == null ? null : Number(e.sickLeaveBalance), fullName: fullEmployeeName(e), managerName, linkedUser, deviceLinks };
 }
 
 /** Mask employee identifiers outside the authenticated branch as NOT_FOUND. */
@@ -204,6 +205,17 @@ export interface EmployeeInput {
 }
 
 function toValues(input: EmployeeInput) {
+  const leaveDays = (value: number | null | undefined) => {
+    const days = new Decimal(value ?? 0);
+    if (!days.isFinite() || days.isNegative() || days.decimalPlaces() > 2 || days.gt("9999999.99")) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+        what: "رصيد الإجازات غير صالح",
+        why: "الرصيد يجب أن يكون موجباً أو صفراً وبمنزلتين عشريتين كحد أقصى",
+        doThis: "صحّح عدد أيام الإجازة وأعد الحفظ",
+      }) });
+    }
+    return days.toFixed(2);
+  };
   return {
     firstName: input.firstName.trim(),
     fatherName: input.fatherName?.trim() || null,
@@ -237,8 +249,8 @@ function toValues(input: EmployeeInput) {
     colorTag: input.colorTag?.trim() || null,
     photoUrl: input.photoUrl || null,
     education: input.education ?? null,
-    annualLeaveBalance: input.annualLeaveBalance ?? 0,
-    sickLeaveBalance: input.sickLeaveBalance ?? 0,
+    annualLeaveBalance: leaveDays(input.annualLeaveBalance),
+    sickLeaveBalance: leaveDays(input.sickLeaveBalance),
   };
 }
 

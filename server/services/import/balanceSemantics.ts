@@ -4,6 +4,7 @@ import { money, round2, toDbMoney } from "../money";
 import { postOpeningEntry as postOpeningEntryShared } from "../openingBalance";
 import type { ImportOptions } from "./types";
 import { norm } from "./helpers";
+import { canonicalPartyKey } from "./partyIdentity";
 
 type PartyBalanceFields = { openingBalance?: string; currency?: "IQD" | "USD" };
 
@@ -47,9 +48,7 @@ async function postOpeningEntry(
 function dupKeyOf(r: { legacyCode?: string; phone?: string; name: string }): string {
   const lc = norm(r.legacyCode)?.toLowerCase();
   if (lc) return `l:${lc}`;
-  const nameKey = r.name.trim().toLowerCase();
-  const phone = norm(r.phone);
-  return phone ? `pn:${phone}|${nameKey}` : `n:${nameKey}`;
+  return `party:${canonicalPartyKey(r)}`;
 }
 
 function dupMessage(r: { legacyCode?: string }): string {

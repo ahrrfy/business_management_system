@@ -236,7 +236,10 @@ export default function GiftsHub() {
   });
   const outbound = trpc.gifts.createOutbound.useMutation({
     onSuccess: (res) => {
-      notify.ok(res.pending ? `الهدية بانتظار اعتماد مدير — ${res.giftNumber}` : `تم منح الهدية — ${res.giftNumber}`);
+      if (res.status === "DELIVERED") notify.ok(`تم منح الهدية — ${res.giftNumber}`);
+      else if (res.status === "PENDING_APPROVAL") notify.ok(`الهدية بانتظار اعتماد مدير — ${res.giftNumber}`);
+      else if (res.status === "CANCELLED") notify.warn(`أُلغي طلب الهدية — ${res.giftNumber}`, "لم تُمنح الهدية. افتح طلباً جديداً إذا أردت منحها.");
+      else notify.warn(`عُكس سند الهدية — ${res.giftNumber}`, "راجع السند الأصلي وحالته قبل إنشاء طلب آخر.");
       backToList();
       // إنجازٌ فوريّ يغيّر مُنفَق الحملة المرتبطة (إن وُجدت) — حدّث الحملات (تدقيق Codex P2) وإلا
       // يبقى منتقي الصادر/جدول الإدارة يعرض رقماً قديماً حتى إعادة جلبٍ عرَضية أخرى.

@@ -356,7 +356,7 @@ export async function decideLeave(
       if (!emp) throw new Error("الموظف غير موجود");
       const isAnnual = lv.leaveType === "سنوية";
       const current = (isAnnual ? emp.annual : emp.sick) ?? 0;
-      if (current < lv.days) {
+      if (new Decimal(current).lt(lv.days)) {
         throw new Error(
           `رصيد إجازة ${lv.leaveType} غير كافٍ (المتاح ${current} يوم، المطلوب ${lv.days})`,
         );
@@ -642,8 +642,8 @@ export async function balances(scopedBranchId?: number | null) {
     colorTag: r.colorTag,
     photoUrl: r.photoUrl,
     department: r.department,
-    annualLeaveBalance: r.annualLeaveBalance ?? 0,
-    sickLeaveBalance: r.sickLeaveBalance ?? 0,
+    annualLeaveBalance: Number(r.annualLeaveBalance ?? 0),
+    sickLeaveBalance: Number(r.sickLeaveBalance ?? 0),
   }));
 }
 
@@ -656,7 +656,7 @@ export async function balances(scopedBranchId?: number | null) {
 export function calculateLeaveEncashment(employee: {
   salary?: string | number | null;
   allowances?: string | number | null;
-  annualLeaveBalance?: number | null;
+  annualLeaveBalance?: string | number | null;
 }): {
   dailyWage: Decimal;
   unusedDays: number;
@@ -666,8 +666,9 @@ export function calculateLeaveEncashment(employee: {
   const allowances = money(employee.allowances ?? 0);
   const grossMonthly = salary.plus(allowances);
   const dailyWage = round2(grossMonthly.div(30));
-  const unusedDays = Math.max(0, Number(employee.annualLeaveBalance ?? 0));
-  const encashmentAmount = round2(dailyWage.times(unusedDays));
+  const balance = Decimal.max(0, new Decimal(employee.annualLeaveBalance ?? 0));
+  const unusedDays = balance.toNumber();
+  const encashmentAmount = round2(dailyWage.times(balance));
 
   return {
     dailyWage,

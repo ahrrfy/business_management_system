@@ -10,7 +10,7 @@ import { ErrorState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
-import { fmtInt } from "@/lib/money";
+import { D, fmt, fmtInt } from "@/lib/money";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 
 type Row = RouterOutputs["leaves"]["balanceReport"]["rows"][number];
@@ -24,7 +24,7 @@ export default function LeaveReport() {
   const rows = q.data?.rows ?? [];
   const totalUsed = rows.reduce((acc, r) => acc + r.usedDays, 0);
   const totalPending = rows.reduce((acc, r) => acc + r.pendingDays, 0);
-  const totalAnnualRemaining = rows.reduce((acc, r) => acc + (r.annualLeaveBalance ?? 0), 0);
+  const totalAnnualRemaining = rows.reduce((acc, r) => acc.plus(D(r.annualLeaveBalance)), D(0)).toNumber();
 
   const kpis: KpiItem[] = rows.length
     ? [
@@ -61,13 +61,13 @@ export default function LeaveReport() {
         id: "annualLeaveBalance",
         header: "الرصيد السنوي المتبقي",
         accessorFn: (r) => Number(r.annualLeaveBalance ?? 0),
-        cell: ({ row }) => <span dir="ltr" className="tabular-nums">{fmtInt(row.original.annualLeaveBalance ?? 0)}</span>,
+        cell: ({ row }) => <span dir="ltr" className="tabular-nums">{fmt(row.original.annualLeaveBalance)}</span>,
       },
       {
         id: "sickLeaveBalance",
         header: "الرصيد المرضي المتبقي",
         accessorFn: (r) => Number(r.sickLeaveBalance ?? 0),
-        cell: ({ row }) => <span dir="ltr" className="tabular-nums">{fmtInt(row.original.sickLeaveBalance ?? 0)}</span>,
+        cell: ({ row }) => <span dir="ltr" className="tabular-nums">{fmt(row.original.sickLeaveBalance)}</span>,
       },
     ],
     [year],

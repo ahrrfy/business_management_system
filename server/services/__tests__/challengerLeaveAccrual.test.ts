@@ -64,7 +64,7 @@ describe("Adversarial Empirical Verification: Leave Accruals & Idempotency (GAP-
         hireDate: "2026-01-01",
         isActive: true,
         employmentStatus: "active",
-        annualLeaveBalance: 10,
+        annualLeaveBalance: "10.00",
       });
 
       // Run 1: Must succeed
@@ -121,7 +121,7 @@ describe("Adversarial Empirical Verification: Leave Accruals & Idempotency (GAP-
         hireDate: "2026-01-01",
         isActive: true,
         employmentStatus: "active",
-        annualLeaveBalance: 5,
+        annualLeaveBalance: "5.00",
       });
 
       // Launch 2 calls concurrently
@@ -172,7 +172,7 @@ describe("Adversarial Empirical Verification: Leave Accruals & Idempotency (GAP-
         hireDate: "2026-01-10",
         isActive: true,
         employmentStatus: "active",
-        annualLeaveBalance: 10,
+        annualLeaveBalance: "10.00",
       });
 
       // 7102: Inactive flag = false -> INELIGIBLE
@@ -184,7 +184,7 @@ describe("Adversarial Empirical Verification: Leave Accruals & Idempotency (GAP-
         hireDate: "2026-01-10",
         isActive: false,
         employmentStatus: "active",
-        annualLeaveBalance: 10,
+        annualLeaveBalance: "10.00",
       });
 
       // 7103: Terminated -> INELIGIBLE
@@ -196,7 +196,7 @@ describe("Adversarial Empirical Verification: Leave Accruals & Idempotency (GAP-
         hireDate: "2026-01-10",
         isActive: true,
         employmentStatus: "terminated",
-        annualLeaveBalance: 10,
+        annualLeaveBalance: "10.00",
       });
 
       // 7104: On Leave (employmentStatus = 'leave') -> INELIGIBLE
@@ -208,7 +208,7 @@ describe("Adversarial Empirical Verification: Leave Accruals & Idempotency (GAP-
         hireDate: "2026-01-10",
         isActive: true,
         employmentStatus: "leave",
-        annualLeaveBalance: 10,
+        annualLeaveBalance: "10.00",
       });
 
       // 7105: Hired next month (2026-08-01 > 2026-07-31) -> INELIGIBLE
@@ -220,7 +220,7 @@ describe("Adversarial Empirical Verification: Leave Accruals & Idempotency (GAP-
         hireDate: "2026-08-01",
         isActive: true,
         employmentStatus: "active",
-        annualLeaveBalance: 10,
+        annualLeaveBalance: "10.00",
       });
 
       // 7106: Boundary case: Hired on EXACT last day of month (2026-07-31) -> ELIGIBLE
@@ -232,7 +232,7 @@ describe("Adversarial Empirical Verification: Leave Accruals & Idempotency (GAP-
         hireDate: "2026-07-31",
         isActive: true,
         employmentStatus: "active",
-        annualLeaveBalance: 0,
+        annualLeaveBalance: "0.00",
       });
 
       const res = await accrueMonthlyLeave(testMonth, actor);
@@ -277,7 +277,7 @@ describe("Adversarial Empirical Verification: Leave Accruals & Idempotency (GAP-
         hireDate: "2024-02-29",
         isActive: true,
         employmentStatus: "active",
-        annualLeaveBalance: 0,
+        annualLeaveBalance: "0.00",
       });
 
       // Hired on Mar 1, 2024 -> INELIGIBLE for 2024-02
@@ -289,7 +289,7 @@ describe("Adversarial Empirical Verification: Leave Accruals & Idempotency (GAP-
         hireDate: "2024-03-01",
         isActive: true,
         employmentStatus: "active",
-        annualLeaveBalance: 0,
+        annualLeaveBalance: "0.00",
       });
 
       const res = await accrueMonthlyLeave(testMonth, actor);
@@ -307,7 +307,7 @@ describe("Adversarial Empirical Verification: Leave Accruals & Idempotency (GAP-
   // 3. Accrual Math, Decimal Precision, and DB Storage Investigation
   // ---------------------------------------------------------------------------
   describe("3. Accrual Math & Precision Investigation", () => {
-    it("computes exactly 20 / 12 = 1.67 days without floating point errors in service return and audit", async () => {
+    it("computes the cumulative August delta without annual rounding drift", async () => {
       const db = getDb();
       if (!db) return;
       const testMonth = "2026-08";
@@ -323,17 +323,16 @@ describe("Adversarial Empirical Verification: Leave Accruals & Idempotency (GAP-
           hireDate: "2026-01-01",
           isActive: true,
           employmentStatus: "active",
-          annualLeaveBalance: 0,
+          annualLeaveBalance: "0.00",
         });
       }
 
       const res = await accrueMonthlyLeave(testMonth, actor);
 
-      // Verify exact math: 20 / 12 = 1.6666... rounded to 2 decimal places = 1.67
-      expect(res.daysPerEmployee).toBe("1.67");
+      // August: round2(20*8/12) - round2(20*7/12) = 13.33 - 11.67.
+      expect(res.daysPerEmployee).toBe("1.66");
       expect(res.employeesAccrued).toBe(3);
-      // 3 * 1.67 = 5.01
-      expect(res.totalDaysAccrued).toBe("5.01");
+      expect(res.totalDaysAccrued).toBe("4.98");
 
       // Verify Audit Log payload
       const [audit] = await db
@@ -356,12 +355,12 @@ describe("Adversarial Empirical Verification: Leave Accruals & Idempotency (GAP-
       const newVal = audit.newValue as any;
       expect(newVal.month).toBe(testMonth);
       expect(newVal.employeesAccrued).toBe(3);
-      expect(newVal.daysPerEmployee).toBe("1.67");
-      expect(newVal.totalDaysAccrued).toBe("5.01");
+      expect(newVal.daysPerEmployee).toBe("1.66");
+      expect(newVal.totalDaysAccrued).toBe("4.98");
       expect(newVal.employeeIds).toEqual(expect.arrayContaining(empIds));
     });
 
-    it("EMPIRICAL FINDING: examines MySQL database column behavior on INT column", async () => {
+    it("persists the same fractional value declared by the accrual event", async () => {
       const db = getDb();
       if (!db) return;
       const testMonth = "2026-10";
@@ -376,18 +375,14 @@ describe("Adversarial Empirical Verification: Leave Accruals & Idempotency (GAP-
         hireDate: "2026-01-01",
         isActive: true,
         employmentStatus: "active",
-        annualLeaveBalance: 0,
+        annualLeaveBalance: "0.00",
       });
 
       await accrueMonthlyLeave(testMonth, actor);
 
       const [emp] = await db.select().from(s.employees).where(eq(s.employees.id, empId));
 
-      // Note: Because drizzle schema defines annualLeaveBalance as `int`,
-      // adding 1.67 to 0 in MySQL produces 2 (MySQL rounds 1.67 to nearest integer).
-      // This is documented as an empirical observation:
-      // While Decimal.js math in leaveAccrual.ts calculates 1.67, MySQL's INT column rounds it.
-      expect(Number(emp.annualLeaveBalance)).toBe(2);
+      expect(emp.annualLeaveBalance).toBe("1.67");
     });
   });
 
@@ -463,12 +458,14 @@ describe("Adversarial Empirical Verification: Leave Accruals & Idempotency (GAP-
     });
 
     it("rejects malformed month formats through tRPC router", async () => {
+      await setupBranchAndClean("2026-01", []);
       const caller = appRouter.createCaller({
         user: {
           id: 1,
           openId: "test-admin-wave2",
           name: "Admin Caller",
           role: "admin",
+          isOwner: true,
           branchId: 101,
         },
         scopedBranchId: 101,

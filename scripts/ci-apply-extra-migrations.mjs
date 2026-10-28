@@ -250,6 +250,8 @@ const EXTRA_MIGRATIONS = [
   // Custody/snapshot tables plus final guest SERVICE and completion lifecycle checks.
   // drizzle-kit does not reliably replace existing named CHECK constraints during db:push.
   "drizzle/migrations/0405_delivery_custody_document_snapshots.sql",
+  // Preserve final outbox enums after earlier WhatsApp reconciliation migrations.
+  "drizzle/migrations/0408_audit_crossmodule_contracts.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without

@@ -1,4 +1,4 @@
-import { and, eq, lte, sql } from "drizzle-orm";
+import { and, eq, inArray, lte, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import Decimal from "decimal.js";
@@ -16,7 +16,7 @@ export interface AccrueMonthlyLeaveResult {
 /**
  * احتساب وتدوير رصيد الإجازات السنوية الشهري لجميع الموظفين المستحقين
  * وفق المادة 67 من قانون العمل العراقي رقم 37 لسنة 2015:
- * (20 يوماً سنوياً = 20 / 12 = 1.67 يوماً لكل شهر خدمة).
+ * الفرق بين الاستحقاق التراكمي المقرب للشهر الحالي والسابق يحفظ 20 يوماً في السنة.
  */
 export async function accrueMonthlyLeave(
   arg1: string | MaybeScopedActor,
@@ -70,13 +70,12 @@ export async function accrueMonthlyLeave(
       });
     }
 
-    // 2. حساب قيمة الاستحقاق الشهري (20 / 12 = 1.67 يوماً)
-    const accrualDays = round2(new Decimal(20).div(12)); // 1.67
-
     // 3. تحديد آخر يوم في الشهر لفحص تاريخ التعيين
     const [yearStr, monthStr] = month.split("-");
     const year = parseInt(yearStr, 10);
     const monthNum = parseInt(monthStr, 10);
+    const accrualDays = round2(new Decimal(20).mul(monthNum).div(12))
+      .minus(round2(new Decimal(20).mul(monthNum - 1).div(12)));
     const lastDayNum = new Date(Date.UTC(year, monthNum, 0)).getUTCDate();
     const monthLastDay = `${month}-${String(lastDayNum).padStart(2, "0")}`;
 
@@ -102,14 +101,10 @@ export async function accrueMonthlyLeave(
       await tx
         .update(employees)
         .set({
-          annualLeaveBalance: sql`${employees.annualLeaveBalance} + ${accrualDays.toString()}`,
+          annualLeaveBalance: sql`COALESCE(${employees.annualLeaveBalance}, 0) + ${accrualDays.toFixed(2)}`,
         })
         .where(
-          and(
-            eq(employees.employmentStatus, "active"),
-            eq(employees.isActive, true),
-            lte(employees.hireDate, monthLastDay),
-          ),
+          inArray(employees.id, eligibleEmployees.map(employee => employee.id)),
         );
     }
 

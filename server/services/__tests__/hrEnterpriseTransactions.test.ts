@@ -68,6 +68,12 @@ async function seedEmp(opts: {
     type: "SALES",
   }).onDuplicateKeyUpdate({ set: { name: opts.branchName ?? "فرع الكرادة" } });
 
+  await db.insert(s.users).values([
+    { id: 1, openId: "hr-tx-admin", name: "Admin", role: "admin", branchId, isActive: true },
+    ...[5, 6, 7, 8].map(id => ({ id, openId: `hr-tx-manager-${id}`, name: "Manager", role: "manager" as const, branchId: 101, isActive: true, permissionsOverride: { hr: "FULL" as const } })),
+    { id: 9, openId: "hr-tx-foreign-manager", name: "Foreign manager", role: "manager", branchId: 102, isActive: true, permissionsOverride: { hr: "FULL" } },
+  ]).onDuplicateKeyUpdate({ set: { isActive: true } });
+
   await db.insert(s.employees).values({
     id: employeeId,
     branchId,
@@ -177,7 +183,7 @@ describe("HR Enterprise Transactions — Atomic Logic & Legal Compliance", () =>
       const result = calculateLeaveEncashment({
         salary: "1200000",
         allowances: "300000",
-        annualLeaveBalance: 10,
+        annualLeaveBalance: "10.00",
       });
 
       expect(result.dailyWage.toNumber()).toBe(50000);
@@ -189,14 +195,14 @@ describe("HR Enterprise Transactions — Atomic Logic & Legal Compliance", () =>
       const resultZero = calculateLeaveEncashment({
         salary: "1000000",
         allowances: "0",
-        annualLeaveBalance: 0,
+        annualLeaveBalance: "0.00",
       });
       expect(resultZero.encashmentAmount.toNumber()).toBe(0);
 
       const resultNeg = calculateLeaveEncashment({
         salary: "1000000",
         allowances: "0",
-        annualLeaveBalance: -2,
+        annualLeaveBalance: "-2.00",
       });
       expect(resultNeg.encashmentAmount.toNumber()).toBe(0);
     });
@@ -205,7 +211,7 @@ describe("HR Enterprise Transactions — Atomic Logic & Legal Compliance", () =>
       const result = calculateLeaveEncashment({
         salary: "0",
         allowances: "0",
-        annualLeaveBalance: 15,
+        annualLeaveBalance: "15.00",
       });
       expect(result.dailyWage.toNumber()).toBe(0);
       expect(result.encashmentAmount.toNumber()).toBe(0);
@@ -747,7 +753,7 @@ describe("HR Enterprise Transactions — Atomic Logic & Legal Compliance", () =>
 
       const res = await requestEmployeeTransfer(creator, {
         employeeId: 9301,
-        toBranchId: 102,
+        toBranchId: 101,
         decisionNumber: "TR-MK-FAIL",
         transferDate: "2026-06-01",
         effectiveDate: "2026-06-01",
@@ -821,7 +827,7 @@ describe("HR Enterprise Transactions — Atomic Logic & Legal Compliance", () =>
         createdById: 1,
       }).onDuplicateKeyUpdate({ set: { status: "APPROVED", effectiveDate: today } });
 
-      const res = await executePendingTransfers();
+      const res = await executePendingTransfers({ userId: 1, role: "admin", branchId: 101 });
       expect(res.executedCount).toBeGreaterThanOrEqual(1);
 
       const [u] = await db.select().from(s.users).where(eq(s.users.id, 9303));
@@ -844,7 +850,7 @@ describe("HR Enterprise Transactions — Atomic Logic & Legal Compliance", () =>
         createdById: 1,
       }).onDuplicateKeyUpdate({ set: { status: "APPROVED", effectiveDate: "2099-01-01" } });
 
-      await executePendingTransfers();
+      await executePendingTransfers({ userId: 1, role: "admin", branchId: 101 });
 
       const [tr] = await db.select().from(s.employeeTransfers).where(eq(s.employeeTransfers.id, 93032));
       expect(tr.status).toBe("APPROVED");

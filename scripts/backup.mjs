@@ -6,7 +6,7 @@
 //                                         # تعدد الشركات: نسخة منفصلة لكل شركة فعّالة (من erp_control)،
 //                                         # عبر استدعاء هذا السكربت نفسه لكل شركة بـBACKUP_TARGET_URL مختلف.
 //
-// المتغيّرات (‎.env): DB_CONTAINER, DB_NAME, DB_ROOT_PW, BACKUP_DIR, BACKUP_OFFSITE_DIR, BACKUP_GPG_PASSPHRASE
+// المتغيّرات (‎.env): DATABASE_URL, DB_CONTAINER, BACKUP_DIR, BACKUP_OFFSITE_DIR, BACKUP_GPG_PASSPHRASE
 // BACKUP_TARGET_URL (يضبطه reset/restore/systemRouter/‎--all-companies): انسخ بالضبط قاعدة DATABASE_URL
 //   على مضيفها ⇒ هدف النسخة = هدف الحذف/الاستعادة دائماً (يمنع نسخ خادم خاطئ ثم تصفير الخادم الحقيقي).
 //
@@ -23,6 +23,8 @@ import { createWriteStream, mkdirSync, statSync, readdirSync, unlinkSync, exists
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { assertDbTarget, targetEnvironment } from "./lib/db-target.mjs";
+import { resolveBackupClient, backupDumpCommand } from "./lib/backup-client.mjs";
 
 // ─── وضع تعدّد الشركات: نسخة منفصلة لكل شركة فعّالة، ثم خروج (لا يُكمل لمنطق قاعدة واحدة) ───
 if (process.argv.includes("--all-companies")) {
@@ -66,7 +68,6 @@ if (process.argv.includes("--all-companies")) {
 }
 
 const container = process.env.DB_CONTAINER ?? "erp-mysql";
-const pw = process.env.DB_ROOT_PW ?? "erp_root_pw";
 const backupDir = process.env.BACKUP_DIR ?? "backups";
 const noRotate = process.argv.includes("--no-rotate");
 
@@ -80,58 +81,34 @@ const noRotate = process.argv.includes("--no-rotate");
 // BACKUP_TARGET_URL, and is harmless for root-operated scheduled backups.
 const COMMON_DUMP = ["--single-transaction", "--routines", "--events", "--no-tablespaces"];
 const SOURCE_DATA_FLAG = "--source-data=2";
-const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "0.0.0.0"]);
-
-function parseMysqlUrl(u) {
-  const m = String(u).match(/^mysql:\/\/([^:]+):([^@]*)@([^:/]+):(\d+)\/([^/?]+)/);
-  return m ? { user: m[1], pass: m[2], host: m[3], port: m[4], db: m[5] } : null;
+let db, dumpCmd, dumpArgs, dumpCleanup, resolvedTarget;
+// Standalone/cron backups follow DATABASE_URL too; never fall back to another server's credentials.
+const targetUrl = process.env.BACKUP_TARGET_URL ?? process.env.DATABASE_URL;
+try {
+  if (!targetUrl)
+    throw new Error(
+      "DATABASE_URL or BACKUP_TARGET_URL is required to identify the backup target",
+    );
+  const selected = await resolveBackupClient(targetUrl, { container });
+  resolvedTarget = selected.target;
+  db = resolvedTarget.db;
+  const dumpFlags =
+    resolvedTarget.user === "root"
+      ? [...COMMON_DUMP, SOURCE_DATA_FLAG]
+      : COMMON_DUMP;
+  const command = backupDumpCommand(selected, [...dumpFlags, db]);
+  dumpCmd = command.command;
+  dumpArgs = command.args;
+  dumpCleanup = command.cleanup;
+} catch (error) {
+  console.error("✗ تعذّر إثبات هدف النسخة:", error?.message ?? error);
+  process.exit(1);
 }
-function hasLocalMysqldump() {
-  try { execFileSync("mysqldump", ["--version"], { stdio: "ignore" }); return true; }
-  catch { return false; }
-}
-
-// تحديد القاعدة الهدف + أمر النسخ. كلمة المرور تمرّ عبر بيئة MYSQL_PWD لا عبر سطر الأوامر —
-// على خادم مشترك `ps aux` يكشف سطور الأوامر لكل المستخدمين (و`docker exec -e VAR` بلا قيمة
-// يسحب القيمة من بيئة عميل docker نفسه فلا تظهر في argv إطلاقاً).
-let db, dumpCmd, dumpArgs, dumpPw;
-const targetUrl = process.env.BACKUP_TARGET_URL;
-if (targetUrl) {
-  const t = parseMysqlUrl(targetUrl);
-  if (!t) { console.error("✗ BACKUP_TARGET_URL غير صالح (متوقّع mysql://user:pass@host:port/db)."); process.exit(1); }
-  db = t.db;
-  // مستخدم الاتصال الفعلي من العنوان — root في النشر الحالي، أو مستخدم شركة مخصّص أقلّ
-  // امتيازاً (تعدد الشركات). --source-data=2 يتطلّب RELOAD (عام لا يُمنَح لمستخدم شركة).
-  const dumpFlags = t.user === "root" ? [...COMMON_DUMP, SOURCE_DATA_FLAG] : COMMON_DUMP;
-  if (hasLocalMysqldump()) {
-    // mysqldump محلي ⇒ نضرب القاعدة الهدف مباشرةً (يعمل لأي مضيف: Docker مربوط، خدمة أصلية، أو بعيد).
-    dumpCmd = "mysqldump";
-    dumpArgs = ["-h", t.host, "-P", t.port, `-u${t.user}`, ...dumpFlags, t.db];
-    dumpPw = t.pass || undefined;
-  } else if (LOCAL_HOSTS.has(t.host)) {
-    // لا mysqldump محلي لكن المضيف محلي = نفس نسخة Docker المربوطة على المنفذ ⇒ docker exec يصيب الخادم نفسه.
-    // -u${t.user} (لا "root" ثابتاً) — تعدد الشركات يستعمل مستخدماً مخصّصاً لكل شركة.
-    dumpCmd = "docker";
-    dumpArgs = ["exec", "-e", "MYSQL_PWD", container, "mysqldump", `-u${t.user}`, ...dumpFlags, t.db];
-    dumpPw = t.pass || pw;
-  } else {
-    console.error(`✗ تعذّر ضمان نسخة آمنة للقاعدة «${t.db}» على المضيف «${t.host}»: لا mysqldump محلي والمضيف ليس Docker محلياً.`);
-    console.error("  ثبّت أدوات mysql client (mysqldump) أو نفّذ من مضيف القاعدة. (أُوقفت العملية لمنع نسخ خادم خاطئ.)");
-    process.exit(1);
-  }
-} else {
-  // السلوك الافتراضي (db:backup المستقل / المهمة المجدولة) عبر Docker بمتغيّرات .env — root
-  // دائماً هنا (لا BACKUP_TARGET_URL) ⇒ --source-data=2 متاح كسلوك المشروع الأصلي بلا تغيير.
-  db = process.env.DB_NAME ?? "erp";
-  dumpCmd = "docker";
-  dumpArgs = ["exec", "-e", "MYSQL_PWD", container, "mysqldump", "-uroot", ...COMMON_DUMP, SOURCE_DATA_FLAG, db];
-  dumpPw = pw;
-}
-
 const ts = new Date().toISOString().replace(/[:.]/g, "-");
 mkdirSync(backupDir, { recursive: true });
 const out = join(backupDir, `${db}-${ts}-${randomUUID().slice(0, 8)}.sql`);
 const partial = `${out}.partial`;
+process.once("exit", () => dumpCleanup?.());
 
 // --single-transaction: لقطة متّسقة بلا قفل الجداول (آمن أثناء التشغيل).
 // بثّ stdout مباشرة إلى الملف ⇒ يصمد لقواعد بأي حجم (لا سقف 512MB في الذاكرة).
@@ -142,7 +119,7 @@ function dumpToFile() {
     sink.write(`-- ALROYA_DB_NEUTRAL_BACKUP:${encodeURIComponent(db)}\n`);
     const child = spawn(dumpCmd, dumpArgs, {
       stdio: ["ignore", "pipe", "pipe"],
-      env: dumpPw ? { ...process.env, MYSQL_PWD: dumpPw } : process.env,
+      env: targetEnvironment(resolvedTarget),
     });
     let stderrTail = "";
     let settled = false;
@@ -176,7 +153,9 @@ function dumpToFile() {
 }
 
 try {
+  await assertDbTarget(resolvedTarget);
   await dumpToFile();
+  dumpCleanup?.();
   const size = statSync(partial).size;
   if (size < 512) {
     throw new Error(`الناتج صغير بشكل مريب (${size} bytes) — قد يكون فشلاً صامتاً`);
@@ -185,6 +164,7 @@ try {
   console.log(`✓ نسخة احتياطية: ${out} (${(size / 1024).toFixed(1)} KB)`);
   console.log(`  للاستعادة الآمنة: أوقف عمال الويب ثم نفّذ pnpm db:restore ${out}`);
 } catch (e) {
+  dumpCleanup?.();
   // لا نُبقي ملفاً جزئياً/فارغاً — يُحسب «أحدث نسخة» لدى بوّابة الهجرة وشاشة الاستعادة.
   try { unlinkSync(partial); } catch { /* غير موجود أصلاً */ }
   try { unlinkSync(out); } catch { /* غير موجود أصلاً */ }

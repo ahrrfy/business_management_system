@@ -10,7 +10,8 @@
  * أي عملية جديدة رغم أنّ بضاعته حقيقية وقائمة.
  */
 import { TRPCError } from "@trpc/server";
-import { and, asc, eq, ne, sql } from "drizzle-orm";
+import { appErrorMessage } from "@shared/errors";
+import { and, asc, eq, ne } from "drizzle-orm";
 import { branches, branchStock, storeSettings } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { extractInsertId } from "../lib/insertId";
@@ -195,18 +196,21 @@ export async function setBranchActive(id: number, isActive: boolean, _actor: Act
         });
       }
 
-      const stockQty = Number(
-        (
-          await tx
-            .select({ n: sql<number>`COALESCE(SUM(${branchStock.quantity}), 0)` })
-            .from(branchStock)
-            .where(eq(branchStock.branchId, id))
-        )[0]?.n ?? 0,
-      );
-      if (stockQty !== 0) {
+      // Quantities of different SKUs cannot offset ownership or backorder obligations.
+      const [nonzeroStock] = await tx
+        .select({ variantId: branchStock.variantId })
+        .from(branchStock)
+        .where(and(eq(branchStock.branchId, id), ne(branchStock.quantity, 0)))
+        .limit(1)
+        .for("update");
+      if (nonzeroStock) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "لا يمكن تعطيل فرع لا يزال يحمل مخزوناً — صفِّر رصيده أو انقله لفرع آخر أولاً.",
+          message: appErrorMessage({
+            what: "تعذّر تعطيل الفرع",
+            why: "لا يزال يحمل مخزوناً أو التزامات توريد لصنف واحد على الأقل",
+            doThis: "عالج رصيد كل صنف بمستنداته أو انقل المخزون لفرع آخر ثم أعد المحاولة",
+          }),
         });
       }
     }

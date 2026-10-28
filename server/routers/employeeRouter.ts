@@ -99,8 +99,8 @@ const employeeInput = z.object({
   colorTag: z.string().trim().max(20).optional(),
   photoUrl: z.string().optional(),
   education: z.array(educationItem).nullish(),
-  annualLeaveBalance: z.number().int().min(0).nullish(),
-  sickLeaveBalance: z.number().int().min(0).nullish(),
+  annualLeaveBalance: z.number().finite().min(0).max(9999999.99).multipleOf(0.01).nullish(),
+  sickLeaveBalance: z.number().finite().min(0).max(9999999.99).multipleOf(0.01).nullish(),
 });
 
 export const employeeRouter = router({

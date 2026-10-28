@@ -25,6 +25,7 @@ import { money, round2, toDbMoney } from "./money";
 import { assertPeriodOpen } from "./periodLockService";
 import { DEFAULT_WORK_SCHEDULE, standardMonthlyHours, type WorkSchedule } from "./hr/attendancePay";
 import { refoldMonthFingerprintAttendance } from "./hrDevices/attendanceFold";
+import type { PayrollWageRow } from "./hr/payrollWageBasis";
 
 /** اسم اليوم العربي من تاريخ "YYYY-MM-DD" (الأحد=0). يُحسب بتقويم UTC ثابت من مكوّنات السلسلة
  *  حتى لا تنزلق التسمية (ومعها سعر الساعة) بمنطقة الخادم الزمنية — تكامل مالي مستقلّ عن TZ. */
@@ -511,6 +512,7 @@ export async function recomputeMonthRates(
     /** عزل الفرع: إعادة التسعير تمسّ صفوفاً ومبالغ ⇒ تُقصَر على فرع الفاعل المُسنَد. */
     scopedBranchId?: number | null;
     skipRunLockCheck?: boolean;
+    projectedWages?: ReadonlyMap<number, PayrollWageRow>;
   },
   existingTx?: Tx,
 ) {
@@ -592,6 +594,7 @@ export async function recomputeMonthRates(
     const rows = await tx
       .select({
         id: attendance.id,
+        employeeId: attendance.employeeId,
         attendanceDate: attendance.attendanceDate,
         checkIn: attendance.checkIn,
         checkOut: attendance.checkOut,
@@ -621,7 +624,10 @@ export async function recomputeMonthRates(
     }
 
     let updated = 0;
-    for (const r of rows) {
+    for (const stored of rows) {
+      const projected = input.projectedWages?.get(stored.employeeId);
+      if (input.projectedWages && !projected) continue;
+      const r = projected ? { ...stored, payType: projected.payType, salary: projected.salary, workSchedule: projected.workSchedule, dayRates: projected.dayRates } : stored;
       const dateStr = toDateStr(r.attendanceDate);
       let nextHours = money(r.hours ?? 0);
       let nextStatus = r.status ?? "PRESENT";
@@ -716,7 +722,7 @@ export async function recomputeMonthRates(
  */
 export async function healAndRefoldMonthAttendance(
   period: string,
-  opts?: { employeeId?: number; scopedBranchId?: number | null },
+  opts?: { employeeId?: number; scopedBranchId?: number | null; projectedWages?: ReadonlyMap<number, PayrollWageRow> },
 ): Promise<{ period: string; refoldedDays: number; cleanedGhostDays: number; updatedRates: number; healedSchedules: number }> {
   const p = String(period).slice(0, 7);
   const db = requireDb();
@@ -743,6 +749,7 @@ export async function healAndRefoldMonthAttendance(
       employeeId: opts?.employeeId,
       scopedBranchId: opts?.scopedBranchId,
       skipRunLockCheck: true,
+      projectedWages: opts?.projectedWages,
     });
     updatedRates = rateRes.updated;
   } catch {

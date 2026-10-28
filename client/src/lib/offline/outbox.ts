@@ -24,6 +24,7 @@ const BACKOFF_MIN_MS = 1_000;
 const BACKOFF_MAX_MS = 60_000;
 const SERVER_ERROR_MAX_ATTEMPTS = 5;
 const SENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const SENDING_LEASE_MS = 5 * 60 * 1000;
 
 export interface OfflineSaleLine {
   variantId: number;
@@ -335,6 +336,62 @@ async function cleanupSent(): Promise<void> {
   }
 }
 
+function leaseExpired(item: OfflineOutboxItem): boolean {
+  return (
+    item.status === "QUEUED" ||
+    !Number.isFinite(item.sendingLeaseUntil) ||
+    !item.sendingLeaseUntil ||
+    item.sendingLeaseUntil <= Date.now()
+  );
+}
+
+async function claimReplay(
+  item: OfflineOutboxItem,
+  parked = false,
+): Promise<OfflineOutboxItem | null> {
+  return offlineDb.transaction("rw", offlineDb.outbox, async () => {
+    const current = await offlineDb.outbox.get(item.clientRequestId);
+    if (!current || current.capturedByUserId !== item.capturedByUserId)
+      return null;
+    if (
+      parked
+        ? current.status !== "PARKED"
+        : !["QUEUED", "SENDING"].includes(current.status) ||
+          !leaseExpired(current)
+    )
+      return null;
+    const claimed = {
+      ...current,
+      status: "SENDING" as const,
+      sendingToken: crypto.randomUUID(),
+      sendingLeaseUntil: Date.now() + SENDING_LEASE_MS,
+    };
+    await offlineDb.outbox.update(current.clientRequestId, claimed);
+    return claimed;
+  });
+}
+
+/** A late response from an expired tab cannot overwrite a newer attempt. */
+async function updateClaimed(
+  item: OfflineOutboxItem,
+  patch: Partial<OfflineOutboxItem>,
+): Promise<void> {
+  await offlineDb.transaction("rw", offlineDb.outbox, async () => {
+    const current = await offlineDb.outbox.get(item.clientRequestId);
+    if (
+      current?.status !== "SENDING" ||
+      current.sendingToken !== item.sendingToken
+    )
+      return;
+    await offlineDb.outbox.update(item.clientRequestId, {
+      ...patch,
+      ...(patch.status && patch.status !== "SENDING"
+        ? { sendingToken: null, sendingLeaseUntil: null }
+        : {}),
+    });
+  });
+}
+
 /** تفريغ الطابور: FIFO، طلب واحد بالطيران. يُستدعى من محفّزات useOutbox أو زرّ «مزامنة الآن». */
 export async function flushOutbox(
   api: ReplaySaleApi | ReplayApiMap,
@@ -352,26 +409,39 @@ export async function flushOutbox(
     // عناصرٌ تخطّيناها لغياب مسار نوعها — تُستثنى من الاختيار كي لا تدور الحلقة عليها أبداً.
     let skippedKinds = 0;
     for (;;) {
-      const queued = await offlineDb.outbox.where("status").equals("QUEUED").sortBy("capturedAt");
-      const { replayable, legacy } = partitionOutboxByIdentity(queued, opts.currentUserId);
+      const queued = (
+        await offlineDb.outbox
+          .where("status")
+          .anyOf("QUEUED", "SENDING")
+          .sortBy("capturedAt")
+      ).filter(leaseExpired);
+      const { replayable, legacy } = partitionOutboxByIdentity(
+        queued,
+        opts.currentUserId,
+      );
       if (legacy.length > 0) {
-        await Promise.all(legacy.map((item) => offlineDb.outbox.update(item.clientRequestId, {
-          status: "PARKED",
-          capturedByUserId: null,
-          lastError: LEGACY_OUTBOX_REVIEW_MESSAGE,
-        })));
+        await Promise.all(
+          legacy.map((item) =>
+            offlineDb.outbox.update(item.clientRequestId, {
+              status: "PARKED",
+              capturedByUserId: null,
+              lastError: LEGACY_OUTBOX_REVIEW_MESSAGE,
+            }),
+          ),
+        );
         notifyOutboxChanged();
       }
-      const next = replayable[skippedKinds];
-      if (!next) break;
-      await offlineDb.outbox.update(next.clientRequestId, { status: "SENDING" });
+      const candidate = replayable[skippedKinds];
+      if (!candidate) break;
+      const next = await claimReplay(candidate);
+      if (!next) continue;
       notifyOutboxChanged();
       // فشل فكّ التشفير (مفتاح جهاز مُتلَف/مُبدَّل) ليس خطأ شبكة — تعليق فوري لا backoff أبدي.
       // اختيار المسار قبل فكّ التشفير: عنصرٌ من نوعٍ لا تملك هذه الشاشة مسارَه لا يُستهلك
       // ولا يُعلَّق — يُترَك في الطابور لتفريغه شاشتُه (أو الشارة العامّة) بلا فقدٍ للنقد.
       const kindApi = apis[next.kind ?? "SALE"];
       if (!kindApi) {
-        await offlineDb.outbox.update(next.clientRequestId, { status: "QUEUED" });
+        await updateClaimed(next, { status: "QUEUED" });
         skippedKinds += 1;
         continue;
       }
@@ -379,13 +449,19 @@ export async function flushOutbox(
       try {
         payload = await readItemPayload(next);
       } catch {
-        await offlineDb.outbox.update(next.clientRequestId, {
+        await updateClaimed(next, {
           status: "PARKED",
-          lastError: "تعذّر فكّ تشفير العنصر محلياً — راجع المدير (مفتاح الجهاز تغيّر؟)",
+          lastError:
+            "تعذّر فكّ تشفير العنصر محلياً — راجع المدير (مفتاح الجهاز تغيّر؟)",
         });
         notifyOutboxChanged();
         continue;
       }
+      const heartbeat = setInterval(() => {
+        void updateClaimed(next, {
+          sendingLeaseUntil: Date.now() + SENDING_LEASE_MS,
+        }).catch(() => {});
+      }, SENDING_LEASE_MS / 3);
       try {
         const res = await kindApi({
           payload,
@@ -393,11 +469,15 @@ export async function flushOutbox(
           offlineReceiptNumber: next.offlineReceiptNumber,
           deviceId,
         });
-        await offlineDb.outbox.update(next.clientRequestId, {
+        await updateClaimed(next, {
           status: "SENT",
           lastError: null,
           // نخزّن الرقم الرسمي على العنصر — درج المزامنة يعرض ربط OFF ↔ INV.
-          ...(res.invoiceNumber ? { resultInvoiceNumber: res.invoiceNumber } as Partial<OfflineOutboxItem> : {}),
+          ...(res.invoiceNumber
+            ? ({
+                resultInvoiceNumber: res.invoiceNumber,
+              } as Partial<OfflineOutboxItem>)
+            : {}),
         });
         flushState.backoffMs = BACKOFF_MIN_MS;
         flushState.needsLogin = false;
@@ -405,36 +485,52 @@ export async function flushOutbox(
       } catch (err) {
         const cls = classifyTrpcError(err);
         if (cls.kind === "transport") {
-          await offlineDb.outbox.update(next.clientRequestId, { status: "QUEUED", lastError: null });
+          await updateClaimed(next, { status: "QUEUED", lastError: null });
           flushState.backoffUntil = Date.now() + flushState.backoffMs;
-          flushState.backoffMs = Math.min(flushState.backoffMs * 2, BACKOFF_MAX_MS);
+          flushState.backoffMs = Math.min(
+            flushState.backoffMs * 2,
+            BACKOFF_MAX_MS,
+          );
           break;
         }
         if (cls.kind === "unauthorized") {
-          await offlineDb.outbox.update(next.clientRequestId, { status: "QUEUED", lastError: null });
+          await updateClaimed(next, { status: "QUEUED", lastError: null });
           flushState.needsLogin = true;
           break;
         }
         if (cls.kind === "server") {
           const attempts = next.attempts + 1;
           if (attempts >= SERVER_ERROR_MAX_ATTEMPTS) {
-            await offlineDb.outbox.update(next.clientRequestId, { status: "PARKED", attempts, lastError: cls.message });
+            await updateClaimed(next, {
+              status: "PARKED",
+              attempts,
+              lastError: cls.message,
+            });
           } else {
-            await offlineDb.outbox.update(next.clientRequestId, { status: "QUEUED", attempts, lastError: cls.message });
+            await updateClaimed(next, {
+              status: "QUEUED",
+              attempts,
+              lastError: cls.message,
+            });
             flushState.backoffUntil = Date.now() + flushState.backoffMs;
-            flushState.backoffMs = Math.min(flushState.backoffMs * 2, BACKOFF_MAX_MS);
+            flushState.backoffMs = Math.min(
+              flushState.backoffMs * 2,
+              BACKOFF_MAX_MS,
+            );
             notifyOutboxChanged();
             break;
           }
         } else {
           // رفض أعمال: يُعلَّق هذا العنصر ويُكمل التفريغ — النقود التالية لا تنتظر قرار مدير.
-          await offlineDb.outbox.update(next.clientRequestId, {
+          await updateClaimed(next, {
             status: "PARKED",
             attempts: next.attempts + 1,
             lastError: cls.message,
           });
         }
         notifyOutboxChanged();
+      } finally {
+        clearInterval(heartbeat);
       }
     }
   } finally {
@@ -498,8 +594,19 @@ export async function listOutboxItems(): Promise<OfflineOutboxItem[]> {
 }
 
 /** إعادة محاولة عنصر معلَّق يدوياً (زر في درج المزامنة) — يعيده للطابور ويفرّغ فوراً. */
-export async function requeueParkedItem(clientRequestId: string): Promise<void> {
-  await offlineDb.outbox.update(clientRequestId, { status: "QUEUED", lastError: null });
+export async function requeueParkedItem(
+  clientRequestId: string,
+): Promise<void> {
+  await offlineDb.transaction("rw", offlineDb.outbox, async () => {
+    const current = await offlineDb.outbox.get(clientRequestId);
+    if (current?.status !== "PARKED") return;
+    await offlineDb.outbox.update(clientRequestId, {
+      status: "QUEUED",
+      lastError: null,
+      sendingToken: null,
+      sendingLeaseUntil: null,
+    });
+  });
   notifyOutboxChanged();
 }
 
@@ -512,14 +619,21 @@ export async function replayParkedWithApproval(
   clientRequestId: string,
   api: ReplaySaleApi | ReplayApiMap,
 ): Promise<{ ok: boolean; error?: string }> {
-  const item = await offlineDb.outbox.get(clientRequestId);
-  if (!item || item.status !== "PARKED") return { ok: false, error: "العنصر لم يعد معلَّقاً" };
+  const parked = await offlineDb.outbox.get(clientRequestId);
+  if (!parked || parked.status !== "PARKED")
+    return { ok: false, error: "العنصر لم يعد معلَّقاً" };
   // نفس اختيار المسار بحسب النوع كما في محرّك التفريغ — لا يُرحَّل عنصرُ استقبالٍ عبر مسار
   // التجزئة لأن الشاشة مرّرت دالةً واحدة.
-  const kindApi = toApiMap(api)[item.kind ?? "SALE"];
+  const kindApi = toApiMap(api)[parked.kind ?? "SALE"];
   if (!kindApi) return { ok: false, error: "هذا النوع لا يُرحَّل من هذه الشاشة — افتح شاشته أو شارة المزامنة العامّة" };
-  await offlineDb.outbox.update(clientRequestId, { status: "SENDING" });
+  const item = await claimReplay(parked, true);
+  if (!item) return { ok: false, error: "العنصر قيد المعالجة في نافذة أخرى" };
   notifyOutboxChanged();
+  const heartbeat = setInterval(() => {
+    void updateClaimed(item, {
+      sendingLeaseUntil: Date.now() + SENDING_LEASE_MS,
+    }).catch(() => {});
+  }, SENDING_LEASE_MS / 3);
   try {
     const deviceId = await getDeviceCode();
     const res = await kindApi({
@@ -528,21 +642,27 @@ export async function replayParkedWithApproval(
       offlineReceiptNumber: item.offlineReceiptNumber,
       deviceId,
     });
-    await offlineDb.outbox.update(clientRequestId, {
+    await updateClaimed(item, {
       status: "SENT",
       lastError: null,
-      ...(res.invoiceNumber ? ({ resultInvoiceNumber: res.invoiceNumber } as Partial<OfflineOutboxItem>) : {}),
+      ...(res.invoiceNumber
+        ? ({
+            resultInvoiceNumber: res.invoiceNumber,
+          } as Partial<OfflineOutboxItem>)
+        : {}),
     });
     notifyOutboxChanged();
     return { ok: true };
   } catch (err) {
     const cls = classifyTrpcError(err);
-    await offlineDb.outbox.update(clientRequestId, {
+    await updateClaimed(item, {
       status: "PARKED",
       attempts: item.attempts + 1,
       lastError: cls.message,
     });
     notifyOutboxChanged();
     return { ok: false, error: cls.message };
+  } finally {
+    clearInterval(heartbeat);
   }
 }

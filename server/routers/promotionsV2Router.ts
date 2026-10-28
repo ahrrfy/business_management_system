@@ -16,6 +16,7 @@ import {
   deactivatePromotion,
   getPromotionWithTargets,
   loadPromotionPerformance,
+  updatePromotion,
 } from "../services/salesPromotionService";
 import { getDb } from "../db";
 import { withTx } from "../services/tx";
@@ -209,7 +210,7 @@ export const promotionsV2Router = router({
     .mutation(async ({ input, ctx }) => {
       const { promotionId, channel, ...patch } = input;
       await withTx(async (tx) => {
-        const promotion = (await tx.select().from(promotions).where(eq(promotions.id, promotionId)).limit(1))[0];
+        const promotion = (await tx.select().from(promotions).where(eq(promotions.id, promotionId)).for("update").limit(1))[0];
         if (!promotion) throw new TRPCError({ code: "NOT_FOUND", message: "العرض غير موجود" });
         if (ctx.user.role !== "admin" && Number(promotion.branchId) !== Number(ctx.user.branchId)) {
           throw new TRPCError({ code: "FORBIDDEN", message: "العرض لا يخص فرعك" });
@@ -222,32 +223,13 @@ export const promotionsV2Router = router({
         if (promotion.type === "AMOUNT" && patch.discountPercent != null) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "عرض المبلغ الثابت لا يقبل تعديل نسبة" });
         }
-        // effectiveFrom/To عمود `date` (mode افتراضي "date") ⇒ القيمة المُعادة من select() كائن
-        // Date حقيقي (مطابقةً لـmapFromDriverValue) — نحوّله لسلسلة YYYY-MM-DD للمقارنة مع مُدخَل ymd.
-        const toYmd = (d: unknown): string => (d instanceof Date ? d.toISOString() : String(d)).slice(0, 10);
-        const nextFrom = patch.effectiveFrom ?? toYmd(promotion.effectiveFrom);
-        const nextTo = patch.effectiveTo !== undefined ? patch.effectiveTo : promotion.effectiveTo != null ? toYmd(promotion.effectiveTo) : null;
-        if (nextTo && nextTo < nextFrom) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "تاريخ الانتهاء أقدم من البدء" });
-        }
-
-        const set: Record<string, unknown> = {};
-        if (patch.name !== undefined) set.name = patch.name.trim();
-        if (patch.description !== undefined) set.description = patch.description?.trim() || null;
-        if (patch.discountPercent !== undefined) set.discountPercent = patch.discountPercent;
-        if (patch.discountAmount !== undefined) set.discountAmount = patch.discountAmount;
-        // new Date(...) لا السلسلة الخام — يطابق نمط الإدراج في createPromotion (عمود `date` mode
-        // افتراضي "date" يتوقّع Date لا string، رغم أنّ درايزل يقبل كليهما وقت الكتابة فعلياً هنا
-        // للاتّساق النوعيّ مع بقية الملف).
-        if (patch.effectiveFrom !== undefined) set.effectiveFrom = new Date(patch.effectiveFrom);
-        if (patch.effectiveTo !== undefined) set.effectiveTo = patch.effectiveTo ? new Date(patch.effectiveTo) : null;
-        if (patch.customerTier !== undefined) set.customerTier = patch.customerTier ?? null;
-        if (patch.minLineAmount !== undefined) set.minLineAmount = patch.minLineAmount;
-        if (patch.priority !== undefined) set.priority = patch.priority;
-        if (patch.applicationMode !== undefined) set.applicationMode = patch.applicationMode;
-        if (channel !== undefined) set.isStoreManaged = channel === "STORE";
-        if (Object.keys(set).length === 0) return;
-        await tx.update(promotions).set(set).where(eq(promotions.id, promotionId));
+        await updatePromotion(tx, {
+          id: promotionId,
+          ...patch,
+          name: patch.name?.trim(),
+          description: patch.description !== undefined ? patch.description?.trim() || null : undefined,
+          isStoreManaged: channel !== undefined ? channel === "STORE" : undefined,
+        }, ctx.user.id);
       });
       await logAudit(ctx, {
         action: "promotion.update",

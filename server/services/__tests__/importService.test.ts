@@ -92,7 +92,7 @@ describe("importCustomers", () => {
     expect(ahmad.defaultPriceTier).toBe("RETAIL");
   });
 
-  it("يتخطّى الموجود بالهاتف دون كتابة مكرّر", async () => {
+  it("يتخطّى الموجود بالاسم والهاتف دون كتابة مكرّر", async () => {
     await importCustomers(
       [{ rowNumber: 1, name: "أحمد", phone: "0770111" }],
       {},
@@ -100,7 +100,7 @@ describe("importCustomers", () => {
     );
     const r = await importCustomers(
       [
-        { rowNumber: 1, name: "أحمد مكرّر", phone: "0770111" },
+        { rowNumber: 1, name: "أحمد", phone: "0770111" },
         { rowNumber: 2, name: "جديد", phone: "0770222" },
       ],
       { onExisting: "skip" },

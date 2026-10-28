@@ -612,6 +612,7 @@ export const consignmentNotes = mysqlTable(
       .references(() => branches.id),
     // idempotency (نمط 0090/0051): UUID لكل فتح نموذج ⇒ إعادة الإرسال تعيد السند نفسه.
     clientRequestId: varchar("clientRequestId", { length: 64 }),
+    requestPayloadHash: varchar("requestPayloadHash", { length: 64 }),
     notes: text("notes"),
     // مرفق صورة السند الموقَّع (إلزاميّ خادمياً للسحب/الاستبدال) — نمط receipts.attachmentUrl (0047).
     attachmentUrl: mediumtext("attachmentUrl"),
@@ -9244,8 +9245,8 @@ export const employees = mysqlTable(
     photoUrl: mediumtext("photoUrl"),
     /** المؤهلات الدراسية: [{degree,major,school,year,gpa}]. */
     education: json("education"),
-    annualLeaveBalance: int("annualLeaveBalance").default(0),
-    sickLeaveBalance: int("sickLeaveBalance").default(0),
+    annualLeaveBalance: decimal("annualLeaveBalance", { precision: 12, scale: 2 }).default("0.00"),
+    sickLeaveBalance: decimal("sickLeaveBalance", { precision: 12, scale: 2 }).default("0.00"),
     terminationDate: date("terminationDate", { mode: "string" }),
     terminationReason: varchar("terminationReason", { length: 255 }),
 
@@ -12321,6 +12322,7 @@ export const employeeContracts = mysqlTable(
       .default("FIXED_TERM")
       .notNull(),
     contractNumber: varchar("contractNumber", { length: 100 }),
+    renewedFromId: bigint("renewedFromId", { mode: "number" }),
     startDate: date("startDate", { mode: "string" }).notNull(),
     endDate: date("endDate", { mode: "string" }),
     probationEndDate: date("probationEndDate", { mode: "string" }),
@@ -12348,6 +12350,12 @@ export const employeeContracts = mysqlTable(
   },
   (t) => ({
     empIdx: index("idx_emp_contract_employee").on(t.employeeId),
+    renewedFromIdx: index("idx_emp_contract_renewed_from").on(t.renewedFromId),
+    renewedFromFk: foreignKey({
+      name: "fk_employee_contract_renewed_from",
+      columns: [t.renewedFromId],
+      foreignColumns: [t.id],
+    }),
     statusIdx: index("idx_emp_contract_status").on(t.status),
     probationIdx: index("idx_emp_contract_probation").on(t.probationEndDate),
     endIdx: index("idx_emp_contract_end").on(t.endDate),
@@ -12992,9 +13000,14 @@ export const waOutbox = mysqlTable(
       "SENT",
       "FAILED",
       "CANCELLED",
+      "UNKNOWN",
     ])
       .default("QUEUED")
       .notNull(),
+    claimToken: varchar("claimToken", { length: 64 }),
+    claimExpiresAt: timestamp("claimExpiresAt"),
+    providerAttemptId: varchar("providerAttemptId", { length: 100 }),
+    providerStartedAt: timestamp("providerStartedAt"),
     attempts: int("attempts").default(0).notNull(),
     nextAttemptAt: timestamp("nextAttemptAt"),
     lastError: varchar("lastError", { length: 500 }),
@@ -13010,6 +13023,8 @@ export const waOutbox = mysqlTable(
   },
   (t) => ({
     dedupeUq: unique("uq_wa_outbox_dedupe").on(t.dedupeKey),
+    providerAttemptUq: unique("uq_wa_outbox_provider_attempt").on(t.providerAttemptId),
+    claimExpiryIdx: index("idx_wa_outbox_claim_expiry").on(t.status, t.claimExpiresAt),
     // الكَنّاس يَنتقي الصُفوف الجاهِزة لِلإرسال/إعادة المُحاولة بِسُرعة (status + وَقت الاِستِحقاق).
     pickIdx: index("idx_wa_outbox_pick").on(t.status, t.nextAttemptAt),
     wamidIdx: index("idx_wa_outbox_wamid").on(t.wamid),
@@ -15930,6 +15945,8 @@ export const waBroadcastRecipients = mysqlTable(
       "READ",
       "FAILED",
       "SKIPPED_OPTOUT",
+      "UNKNOWN",
+      "CANCELLED",
     ])
       .default("PENDING")
       .notNull(),

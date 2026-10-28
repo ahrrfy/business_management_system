@@ -12,8 +12,14 @@
  * Meta) أعلى من الحاجة لمرونة تصحيح إداري فردي.
  */
 import { TRPCError } from "@trpc/server";
-import { eq, isNull, or, sql } from "drizzle-orm";
-import { waBroadcastRecipients, waBroadcasts, waTemplates, type WaTemplate } from "../../../drizzle/schema";
+import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import {
+  waBroadcastRecipients,
+  waBroadcasts,
+  waOutbox,
+  waTemplates,
+  type WaTemplate,
+} from "../../../drizzle/schema";
 import type { DB, Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { type Actor, requireDb, withTx } from "../tx";
@@ -247,17 +253,68 @@ export async function approveBroadcast(broadcastId: number, actor: Actor): Promi
 
 // ── الإيقاف المؤقّت والإلغاء ──────────────────────────────────────────────────────────────────
 
-export async function pauseBroadcast(broadcastId: number, reason: string, actor: Actor): Promise<{ status: "PAUSED" }> {
+async function hasUnsettledOutbox(
+  tx: Tx,
+  broadcastId: number,
+): Promise<boolean> {
+  return (
+    (
+      await tx
+        .select({ id: waOutbox.id })
+        .from(waOutbox)
+        .where(
+          and(
+            eq(waOutbox.campaignId, broadcastId),
+            inArray(waOutbox.status, ["QUEUED", "SENDING", "UNKNOWN"]),
+          ),
+        )
+        .limit(1)
+    ).length > 0
+  );
+}
+
+export async function pauseBroadcast(
+  broadcastId: number,
+  reason: string,
+  actor: Actor,
+): Promise<{ status: "PAUSED" }> {
   return withTx(async (tx) => {
-    const row = (await tx.select().from(waBroadcasts).where(eq(waBroadcasts.id, broadcastId)).for("update").limit(1))[0];
-    if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "البثّ غير موجود" });
-    if (row.broadcastStatus !== "RUNNING") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إيقاف بثّ مؤقّتاً إلا وهو قيد التشغيل" });
+    const row = (
+      await tx
+        .select()
+        .from(waBroadcasts)
+        .where(eq(waBroadcasts.id, broadcastId))
+        .for("update")
+        .limit(1)
+    )[0];
+    if (!row)
+      throw new TRPCError({ code: "NOT_FOUND", message: "البثّ غير موجود" });
+    if (
+      row.broadcastStatus !== "RUNNING" &&
+      !(
+        row.broadcastStatus === "COMPLETED" &&
+        (await hasUnsettledOutbox(tx, broadcastId))
+      )
+    ) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "لا يمكن إيقاف بثّ مؤقّتاً إلا وهو قيد التشغيل",
+      });
     }
-    assertBroadcastBranchAccess(actor, row.branchId == null ? null : Number(row.branchId));
+    assertBroadcastBranchAccess(
+      actor,
+      row.branchId == null ? null : Number(row.branchId),
+    );
     const trimmedReason = reason.trim().slice(0, 200);
-    if (!trimmedReason) throw new TRPCError({ code: "BAD_REQUEST", message: "سبب الإيقاف المؤقّت مطلوب" });
-    await tx.update(waBroadcasts).set({ broadcastStatus: "PAUSED", pausedReason: trimmedReason }).where(eq(waBroadcasts.id, broadcastId));
+    if (!trimmedReason)
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "سبب الإيقاف المؤقّت مطلوب",
+      });
+    await tx
+      .update(waBroadcasts)
+      .set({ broadcastStatus: "PAUSED", pausedReason: trimmedReason })
+      .where(eq(waBroadcasts.id, broadcastId));
     return { status: "PAUSED" as const };
   });
 }
@@ -266,34 +323,133 @@ export async function pauseBroadcast(broadcastId: number, reason: string, actor:
  *  T5.2 `broadcastDispatch.dripRunningBroadcasts`) — يعيده RUNNING فيستكمل التقطير من حيث توقّف
  *  (`waBroadcastRecipients` المتبقّية PENDING/QUEUED لم تُمسّ أثناء الإيقاف). killSwitch مفعّل ⇒
  *  رفض (نمط launchBroadcast/approveBroadcast — لا استئناف إرسال آليّ والمفتاح مطفأ). */
-export async function resumeBroadcast(broadcastId: number, actor: Actor): Promise<{ status: "RUNNING" }> {
+export async function resumeBroadcast(
+  broadcastId: number,
+  actor: Actor,
+): Promise<{ status: "RUNNING" }> {
   const settings = await getWaHubSettings();
   if (settings.killSwitch) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "الإرسال الآلي موقوف (Kill Switch)." });
   }
   return withTx(async (tx) => {
-    const row = (await tx.select().from(waBroadcasts).where(eq(waBroadcasts.id, broadcastId)).for("update").limit(1))[0];
-    if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "البثّ غير موجود" });
-    assertBroadcastBranchAccess(actor, row.branchId == null ? null : Number(row.branchId));
+    const row = (
+      await tx
+        .select()
+        .from(waBroadcasts)
+        .where(eq(waBroadcasts.id, broadcastId))
+        .for("update")
+        .limit(1)
+    )[0];
+    if (!row)
+      throw new TRPCError({ code: "NOT_FOUND", message: "البثّ غير موجود" });
+    assertBroadcastBranchAccess(
+      actor,
+      row.branchId == null ? null : Number(row.branchId),
+    );
     if (row.broadcastStatus !== "PAUSED") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن استئناف بثّ إلا وهو مُوقَّف مؤقّتاً" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "لا يمكن استئناف بثّ إلا وهو مُوقَّف مؤقّتاً",
+      });
     }
-    await tx.update(waBroadcasts).set({ broadcastStatus: "RUNNING", pausedReason: null }).where(eq(waBroadcasts.id, broadcastId));
+    await tx
+      .update(waBroadcasts)
+      .set({ broadcastStatus: "RUNNING", pausedReason: null })
+      .where(eq(waBroadcasts.id, broadcastId));
+    await tx
+      .update(waOutbox)
+      .set({ nextAttemptAt: sql`NOW()`, lastError: null })
+      .where(
+        and(
+          eq(waOutbox.campaignId, broadcastId),
+          eq(waOutbox.status, "QUEUED"),
+          eq(waOutbox.lastError, "WA_CAMPAIGN_PAUSED"),
+        ),
+      );
     return { status: "RUNNING" as const };
   });
 }
 
 const CANCELLABLE_STATUSES = new Set(["DRAFT", "PENDING_APPROVAL", "APPROVED", "RUNNING", "PAUSED"]);
 
-export async function cancelBroadcast(broadcastId: number, actor: Actor): Promise<{ status: "CANCELLED" }> {
+export async function cancelBroadcast(
+  broadcastId: number,
+  actor: Actor,
+): Promise<{ status: "CANCELLED" }> {
   return withTx(async (tx) => {
-    const row = (await tx.select().from(waBroadcasts).where(eq(waBroadcasts.id, broadcastId)).for("update").limit(1))[0];
-    if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "البثّ غير موجود" });
-    if (!CANCELLABLE_STATUSES.has(row.broadcastStatus)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: `لا يمكن إلغاء بثّ بحالة ${row.broadcastStatus}` });
+    const row = (
+      await tx
+        .select()
+        .from(waBroadcasts)
+        .where(eq(waBroadcasts.id, broadcastId))
+        .for("update")
+        .limit(1)
+    )[0];
+    if (!row)
+      throw new TRPCError({ code: "NOT_FOUND", message: "البثّ غير موجود" });
+    if (
+      !CANCELLABLE_STATUSES.has(row.broadcastStatus) &&
+      !(
+        row.broadcastStatus === "COMPLETED" &&
+        (await hasUnsettledOutbox(tx, broadcastId))
+      )
+    ) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `لا يمكن إلغاء بثّ بحالة ${row.broadcastStatus}`,
+      });
     }
-    assertBroadcastBranchAccess(actor, row.branchId == null ? null : Number(row.branchId));
-    await tx.update(waBroadcasts).set({ broadcastStatus: "CANCELLED", completedAt: new Date() }).where(eq(waBroadcasts.id, broadcastId));
+    assertBroadcastBranchAccess(
+      actor,
+      row.branchId == null ? null : Number(row.branchId),
+    );
+    await tx
+      .update(waBroadcasts)
+      .set({ broadcastStatus: "CANCELLED", completedAt: new Date() })
+      .where(eq(waBroadcasts.id, broadcastId));
+    // Already-started or unknown provider attempts retain their evidence and may still finish.
+    const cancellable = await tx
+      .select({ id: waOutbox.id })
+      .from(waOutbox)
+      .where(
+        and(
+          eq(waOutbox.campaignId, broadcastId),
+          or(
+            eq(waOutbox.status, "QUEUED"),
+            and(
+              eq(waOutbox.status, "SENDING"),
+              isNotNull(waOutbox.claimToken),
+              isNull(waOutbox.providerStartedAt),
+            ),
+          ),
+        ),
+      )
+      .for("update");
+    const ids = cancellable.map((r) => r.id);
+    if (ids.length) {
+      await tx
+        .update(waOutbox)
+        .set({
+          status: "CANCELLED",
+          claimToken: null,
+          claimExpiresAt: null,
+          lastError: "أُلغيت الحملة قبل بدء محاولة الإرسال.",
+        })
+        .where(inArray(waOutbox.id, ids));
+      await tx
+        .update(waBroadcastRecipients)
+        .set({ recipientStatus: "CANCELLED", errorCode: "CAMPAIGN_CANCELLED" })
+        .where(inArray(waBroadcastRecipients.outboxId, ids));
+    }
+    await tx
+      .update(waBroadcastRecipients)
+      .set({ recipientStatus: "CANCELLED", errorCode: "CAMPAIGN_CANCELLED" })
+      .where(
+        and(
+          eq(waBroadcastRecipients.broadcastId, broadcastId),
+          eq(waBroadcastRecipients.recipientStatus, "PENDING"),
+        ),
+      );
     return { status: "CANCELLED" as const };
   });
 }
@@ -352,9 +508,20 @@ export async function listBroadcasts(opts: { branchId?: number | null } = {}): P
 export interface BroadcastDetail extends BroadcastListRow {
   /** تجميع حالات المستلمين — فارغ في T5.1 (لا إدراج بعد؛ يمتلئ مع التقطير في T5.2). */
   recipientCounts: Record<string, number>;
+  pendingOutboxCount: number;
+  unresolvedOutboxTotal: number;
+  unresolvedOutbox: Array<{
+    id: number;
+    providerAttemptId: string | null;
+    lastError: string | null;
+  }>;
+  unresolvedRecipientMismatchCount: number;
 }
 
-export async function getBroadcast(id: number, opts: { branchId?: number | null } = {}): Promise<BroadcastDetail | null> {
+export async function getBroadcast(
+  id: number,
+  opts: { branchId?: number | null } = {},
+): Promise<BroadcastDetail | null> {
   const db = requireDb();
   const row = (await db.select().from(waBroadcasts).where(eq(waBroadcasts.id, id)).limit(1))[0];
   if (!row) return null;
@@ -366,7 +533,51 @@ export async function getBroadcast(id: number, opts: { branchId?: number | null 
     .groupBy(waBroadcastRecipients.recipientStatus);
   const recipientCounts: Record<string, number> = {};
   for (const c of counts) recipientCounts[String(c.status)] = Number(c.cnt);
-  return { ...normalizeRow(row), recipientCounts };
+  const pending = (
+    await db
+      .select({
+        count: sql<number>`COUNT(*)`,
+        unknownCount: sql<number>`SUM(${waOutbox.status} = 'UNKNOWN')`,
+      })
+      .from(waOutbox)
+      .where(
+        and(
+          eq(waOutbox.campaignId, id),
+          inArray(waOutbox.status, ["QUEUED", "SENDING", "UNKNOWN"]),
+        ),
+      )
+  )[0];
+  const unresolvedOutbox = await db
+    .select({
+      id: waOutbox.id,
+      providerAttemptId: waOutbox.providerAttemptId,
+      lastError: waOutbox.lastError,
+    })
+    .from(waOutbox)
+    .where(and(eq(waOutbox.campaignId, id), eq(waOutbox.status, "UNKNOWN")))
+    .orderBy(waOutbox.id)
+    .limit(50);
+  const mismatch = (
+    await db
+      .select({ count: sql<number>`COUNT(*)` })
+      .from(waBroadcastRecipients)
+      .leftJoin(waOutbox, eq(waBroadcastRecipients.outboxId, waOutbox.id))
+      .where(
+        and(
+          eq(waBroadcastRecipients.broadcastId, id),
+          eq(waBroadcastRecipients.recipientStatus, "UNKNOWN"),
+          or(isNull(waOutbox.id), sql`${waOutbox.status} <> 'UNKNOWN'`),
+        ),
+      )
+  )[0];
+  return {
+    ...normalizeRow(row),
+    recipientCounts,
+    pendingOutboxCount: Number(pending?.count ?? 0),
+    unresolvedOutboxTotal: Number(pending?.unknownCount ?? 0),
+    unresolvedOutbox,
+    unresolvedRecipientMismatchCount: Number(mismatch?.count ?? 0),
+  };
 }
 
 // ── النتائج (T5.2) — تجميع حالات المستلمين بنسب مئوية، لاستهلاك تقرير الحملات (T5.3/S6) ─────────

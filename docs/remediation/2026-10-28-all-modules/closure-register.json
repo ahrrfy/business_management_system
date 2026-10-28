@@ -1,0 +1,1972 @@
+{
+  "sourceRevision": "356d82a0bed652785765d941dd12ab3a251e27d8",
+  "integratedBase": "057027c6579f2230e14f3b0fca12f850ada1c5c2",
+  "limits": "Original static evidence does not prove production incidents. Implemented is not released. Full suite, exact-head CI and deployment remain separate acceptance gates. No historical business-data repair is included.",
+  "originalRegisterSha256": "7da5ab57dbd904615a2803e8343ca0e270ed7f11467f77aea01bd580bcdeb480",
+  "total": 37,
+  "implemented": 25,
+  "externalOwner": 12,
+  "families": [
+    {
+      "id": "11-F01",
+      "priority": "P1",
+      "title": "تسديد الصيرفة يقبل أمر شراء من فرع آخر ويكتب الدفع في فرع المستخدم",
+      "status": "IMPLEMENTED_REVIEWED_ACCEPTANCE_PENDING",
+      "owner": "session/audit-fixes-20261028",
+      "bundle": "purchase",
+      "focusedTests": "auditPurchaseFinancialContracts",
+      "independentReviewer": "financial_hr_review",
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "11",
+            "confirmation": "confirmed_static"
+          }
+        ],
+        "trigger": "مدير A له treasury.exchange.settle، والمورد S له PO دولاري مرحل بفرع B بمستحق 100$، مع AP كاف ومحفظة ممولة. يمرر PO_B إلى exchange.settle بينما resolveBranchId يثبت A.",
+        "impact": "تزداد paidAmount/paidUsd لأمر B، وينخفض AP العالمي، لكن receipt والقيد و exchangeTransaction تحمل A؛ تنفك علاقة الفرع بين المصدر والدفتر ويصبح عكس/كشف الفرع مضللاً.",
+        "proposedRemedy": "قفل PO ثم assertPurchaseBranch/تطابق branchId الصريح مع فرع العملية والمورد والحالة والنسخة؛ بعد ذلك اعتماد نواة تخصيص الفاتورة نفسها. لا يكفي فلتر واجهة.",
+        "evidence": [
+          {
+            "path": "server/routers/exchangeRouter.ts",
+            "line": 31
+          },
+          {
+            "path": "server/routers/exchangeRouter.ts",
+            "line": 202
+          },
+          {
+            "path": "server/services/exchange/settleSupplier.ts",
+            "line": 73
+          },
+          {
+            "path": "server/services/exchange/settleSupplier.ts",
+            "line": 198
+          },
+          {
+            "path": "server/services/exchange/settleSupplier.ts",
+            "line": 248
+          }
+        ]
+      }
+    },
+    {
+      "id": "17-F01",
+      "priority": "P1",
+      "title": "تعديل تقدير الإهلاك بعد إخراج الأصل من الخدمة يكتب أثراً مالياً على أصل أُلغي الاعتراف به",
+      "status": "IMPLEMENTED_REVIEWED_ACCEPTANCE_PENDING",
+      "owner": "session/audit-fixes-20261028",
+      "bundle": "assets",
+      "focusedTests": "auditAssetJournalConsignment",
+      "independentReviewer": "independent_contract_review",
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "17",
+            "confirmation": "confirmed_static"
+          }
+        ],
+        "trigger": "أصل retired بعد شطب gross والمجمع وخسارة NBV، وله accumulated موجب. يغير assets.update عمره أو تخريده أو طريقته مع بقاء حقائق الاقتناء، فينتج متراكم مختلف.",
+        "impact": "يكتب update قيد DEPR_ADJ بعد أن أزال dispose الأصل ومجمعه. مثال: مجمع 60000 يعاد تقديره 30000 فيكتب عكس إهلاك 30000 على أصل خرج؛ يزيد الربح ويتكون رصيد مجمع دون أصل مقابل.",
+        "proposedRemedy": "حارس حالة نهائية موحد لـ retired/disposed في الكتابات المالية. تصحيح التصرف بمستند عكس مرتبط يعيد gross والمجمع والربح/الخسارة قبل تقدير جديد، مع دليل وصلاحية وفترة.",
+        "evidence": [
+          {
+            "path": "server/services/assets/update.ts",
+            "line": 62
+          },
+          {
+            "path": "server/services/assets/update.ts",
+            "line": 126
+          },
+          {
+            "path": "server/services/assets/update.ts",
+            "line": 147
+          },
+          {
+            "path": "server/services/assets/dispose.ts",
+            "line": 348
+          },
+          {
+            "path": "server/services/assets/dispose.ts",
+            "line": 370
+          },
+          {
+            "path": "client/src/pages/AssetDetail.tsx",
+            "line": 248
+          }
+        ]
+      }
+    },
+    {
+      "id": "26-F1",
+      "priority": "P1",
+      "title": "نقل الموظف وتنفيذه لا يتحققان من نطاق فرع الفاعل",
+      "status": "IMPLEMENTED_REVIEWED_ACCEPTANCE_PENDING",
+      "owner": "session/audit-fixes-20261028",
+      "bundle": "hr",
+      "focusedTests": "auditHrContracts",
+      "independentReviewer": "financial_hr_review",
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "26",
+            "confirmation": "confirmed_static"
+          }
+        ],
+        "trigger": "مدير فرع A مفوض hrEnterprise.transfers.request/approve يرسل employeeId من B، أو يستدعي executePending لتطبيق نقل B المستحق. request لا يقارن الفرع؛ approve لا يقارن from/to/employee بالفاعل؛ executePending يتجاهل actor.",
+        "impact": "كتابة على موظف وحساب خارج الفرع، بما فيها نقل حساب الدخول؛ التفويض للعملية لا يمنح سلطة عبور الفروع.",
+        "proposedRemedy": "عقد مورد موحد داخل المعاملة: قفل الموظف/النقل ثم تحقق المصدر والوجهة وcanCrossBranches، وتقييد كنسة التنفيذ أو حصرها بمشغل نظام. توسيع الحارس نفسه إلى enterprise document/penalty/custody/create-contract write paths التي تقرأ بالمعرف فقط؛ لا يكفي عزل القوائم.",
+        "evidence": [
+          {
+            "path": "server/routers/hrEnterpriseRouter.ts",
+            "line": 14,
+            "sha256": "54904d304eef96303fd04e8289efeb03a4e948f3f759dce72ec1dc2165f19720",
+            "lineText": "const hrRead = branchScopedProcedure.use(requireModule(\"hr\", \"READ\"));"
+          },
+          {
+            "path": "server/routers/hrEnterpriseRouter.ts",
+            "line": 222,
+            "sha256": "54904d304eef96303fd04e8289efeb03a4e948f3f759dce72ec1dc2165f19720",
+            "lineText": "    request: hrWrite"
+          },
+          {
+            "path": "server/services/employeeTransferService.ts",
+            "line": 43,
+            "sha256": "36dbcf4963735520e20b17c31cf639483d54a5c5d66fdcc6a00ba7a5b0d7ebae",
+            "lineText": "      .where(eq(employees.id, input.employeeId))"
+          },
+          {
+            "path": "server/services/employeeTransferService.ts",
+            "line": 105,
+            "sha256": "36dbcf4963735520e20b17c31cf639483d54a5c5d66fdcc6a00ba7a5b0d7ebae",
+            "lineText": "      .where(eq(employeeTransfers.id, id))"
+          },
+          {
+            "path": "server/services/employeeTransferService.ts",
+            "line": 216,
+            "sha256": "36dbcf4963735520e20b17c31cf639483d54a5c5d66fdcc6a00ba7a5b0d7ebae",
+            "lineText": "export async function executePendingTransfers(actor?: MaybeScopedActor) {"
+          },
+          {
+            "path": "server/services/employeeTransferService.ts",
+            "line": 188,
+            "sha256": "36dbcf4963735520e20b17c31cf639483d54a5c5d66fdcc6a00ba7a5b0d7ebae",
+            "lineText": "        branchId: transfer.toBranchId,"
+          },
+          {
+            "path": "server/trpc.ts",
+            "line": 756,
+            "sha256": "b1d24d6a35d07a67f651198e369f45b23bdc4642052dd1d43e47efe0c367b0e4",
+            "lineText": "export const branchScopedProcedure = protectedProcedure.use(({ ctx, next, path }) => {"
+          },
+          {
+            "path": "server/operationAuthorization.ts",
+            "line": 18,
+            "sha256": "d647dacf7284bdb9666825edac5ee5bed2190c9be5130e4644f7390c1002a90e",
+            "lineText": "export function assertOperationAuthorized(user: OperationUser | null | undefined, path: string): void {"
+          }
+        ]
+      }
+    },
+    {
+      "id": "26-F2",
+      "priority": "P1",
+      "title": "تجديد العقد يعتمد نفسه ويغير الأجر قبل تاريخ السريان",
+      "status": "IMPLEMENTED_REVIEWED_ACCEPTANCE_PENDING",
+      "owner": "session/audit-fixes-20261028",
+      "bundle": "hr",
+      "focusedTests": "auditHrContracts",
+      "independentReviewer": "financial_hr_review",
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "26",
+            "confirmation": "confirmed_static"
+          }
+        ],
+        "trigger": "HR غير admin مفوض contracts.renew يجدد عقد ACTIVE في فرعه، يضع basicSalary أعلى وstartDate مستقبلياً. الخدمة تنشئ ACTIVE مع createdById=approvedById للفاعل نفسه ثم تكتب employees.salary فوراً.",
+        "impact": "تجاوز اعتماد الأجر المستقل وتأثير الراتب قبل تاريخ السريان؛ مثلاً 500000->900000 يظهر أساس 900000 في التوليد قبل بدء العقد الجديد.",
+        "proposedRemedy": "التجديد Revision/DRAFT مع maker-checker مستقل، تطبيق الفروق فقط عند effective startDate عبر نواة حزمة الأجر ذاتها؛ منع تفعيل عقد مستقبلي فوراً وربط أثره بتاريخ/مسير قابل للتتبع.",
+        "evidence": [
+          {
+            "path": "server/routers/hrEnterpriseRouter.ts",
+            "line": 157,
+            "sha256": "54904d304eef96303fd04e8289efeb03a4e948f3f759dce72ec1dc2165f19720",
+            "lineText": "    renew: hrWrite"
+          },
+          {
+            "path": "server/services/employeeContractService.ts",
+            "line": 270,
+            "sha256": "aac8bfcd6d60a7d6678f9ed7d0d71a6cbfeb50575c7daff29f42350936334ba3",
+            "lineText": "    const startDate = input.startDate || old.endDate || baghdadToday();"
+          },
+          {
+            "path": "server/services/employeeContractService.ts",
+            "line": 287,
+            "sha256": "aac8bfcd6d60a7d6678f9ed7d0d71a6cbfeb50575c7daff29f42350936334ba3",
+            "lineText": "      status: \"ACTIVE\","
+          },
+          {
+            "path": "server/services/employeeContractService.ts",
+            "line": 299,
+            "sha256": "aac8bfcd6d60a7d6678f9ed7d0d71a6cbfeb50575c7daff29f42350936334ba3",
+            "lineText": "      await tx.update(employees).set(empUpdate).where(eq(employees.id, old.employeeId));"
+          },
+          {
+            "path": "server/services/employeeContractService.ts",
+            "line": 140,
+            "sha256": "aac8bfcd6d60a7d6678f9ed7d0d71a6cbfeb50575c7daff29f42350936334ba3",
+            "lineText": "    if (c.createdById === actor.userId && actor.role !== \"admin\") {"
+          },
+          {
+            "path": "server/services/employeeService.ts",
+            "line": 359,
+            "sha256": "711089fe0837ea22e765e120eb6d98b6d6055fea96b9aeedd96782c542f0428c",
+            "lineText": "    if (changedWage.length && actor && actor.role !== \"admin\") {"
+          }
+        ]
+      }
+    },
+    {
+      "id": "29-F1",
+      "priority": "P1",
+      "title": "تصحيح البيع يبدل إسناد العمولة الأصلي إلى إسناد مباشر للكاشير",
+      "status": "IMPLEMENTED_REVIEWED_ACCEPTANCE_PENDING",
+      "owner": "session/audit-fixes-20261028",
+      "bundle": "digital",
+      "focusedTests": "auditDigitalAndCommissionContracts",
+      "independentReviewer": "independent_contract_review",
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "29",
+            "confirmation": "confirmed_static"
+          }
+        ],
+        "trigger": "إنشاء بيع100000 بفاعل cashier A وإسناد صالح repB modeSPLIT70/30، ثم sales.correct بمدير M مع نفس قيمة البيع وتغيير بند مشروع. correctSale يعكس الأصل ثم يعيد الإنشاء بattributeToUserId=A فقط. النواة تختار DIRECT A100%.",
+        "impact": "حصص الأصل A30000/B70000 تُلغى بالمرتجع، ثم البديل A100000/B0 بدلاً من نفس النسب. عند خطة10% خطية تصبح عمولة A10000/B0 بدلاً من3000/7000، دون تغيير اقتصادي للمبيع. قد يتغير الدور وعد النشاط أيضاً.",
+        "proposedRemedy": "وراثة جميع invoiceAttributions والأدوار والنسب من الأصل داخل نفس tx، وإعادة تخصيص creditedBaseAmount على صافي الجديد مع امتصاص فرق التقريب. استعمال inheritAttributionsForCorrection أو نواة equivalent مع منع إضافة attribution جديدة مكررة من createSaleInTx. حفظ المُصحح في audit فقط. fallback createdBy للفواتير التاريخية بلا إسناد وحدها.",
+        "evidence": [
+          {
+            "path": "server/routers/saleRouter.ts",
+            "line": 1294,
+            "sha256": "c056194282422acb5aa3ee95a87462028b9d7629ecc4d0b5b32d48f9c237546e",
+            "lineText": "          salesRepId: z.number().int().positive().nullish(),"
+          },
+          {
+            "path": "server/routers/saleRouter.ts",
+            "line": 1685,
+            "sha256": "c056194282422acb5aa3ee95a87462028b9d7629ecc4d0b5b32d48f9c237546e",
+            "lineText": "  correct: salesManagerProcedure"
+          },
+          {
+            "path": "server/services/sale/correct.ts",
+            "line": 705,
+            "sha256": "6dc7d26b31be68f1f093f947340a8686a7223800d82f0626fa09dab234c4c96f",
+            "lineText": "    const repost = await createSaleInTx(tx, {"
+          },
+          {
+            "path": "server/services/sale/correct.ts",
+            "line": 742,
+            "sha256": "6dc7d26b31be68f1f093f947340a8686a7223800d82f0626fa09dab234c4c96f",
+            "lineText": "      attributeToUserId: inv.createdBy ?? null,"
+          },
+          {
+            "path": "server/services/sale/create.ts",
+            "line": 1611,
+            "sha256": "9e8f192c598fce088c219709cb94871bf1097dbf2f3e763693bf6d692925879d",
+            "lineText": "  const attributionPlan = resolveSaleAttribution({"
+          },
+          {
+            "path": "server/services/sale/create.ts",
+            "line": 1687,
+            "sha256": "9e8f192c598fce088c219709cb94871bf1097dbf2f3e763693bf6d692925879d",
+            "lineText": "  await recordInvoiceAttributionsInTx(tx, {"
+          },
+          {
+            "path": "server/services/commissions/attribution.ts",
+            "line": 295,
+            "sha256": "f16f0ea0bca96e477f35e8a3a6ed6e60a3912024217e35d1f5cddb2cabbfe0d0",
+            "lineText": "  // 4. حالة وجود بائع صالة عرض (Floor Sales Rep)"
+          },
+          {
+            "path": "server/services/commissions/attribution.ts",
+            "line": 372,
+            "sha256": "f16f0ea0bca96e477f35e8a3a6ed6e60a3912024217e35d1f5cddb2cabbfe0d0",
+            "lineText": "    // DIRECT mode"
+          },
+          {
+            "path": "server/services/commissions/attribution.ts",
+            "line": 445,
+            "sha256": "f16f0ea0bca96e477f35e8a3a6ed6e60a3912024217e35d1f5cddb2cabbfe0d0",
+            "lineText": "export async function inheritAttributionsForCorrection("
+          },
+          {
+            "path": "server/services/commissions/base.ts",
+            "line": 47,
+            "sha256": "04f719c94eacb65c4e13eceb8f906148900d3f2a155c19760ad7f1bbfce5dca0",
+            "lineText": "export async function computeNetSalesByUser("
+          }
+        ]
+      }
+    },
+    {
+      "id": "33-F2",
+      "priority": "P1",
+      "title": "انهيار المتصفح يترك أوامر حديثة في SENDING بلا استعادة",
+      "status": "IMPLEMENTED_REVIEWED_ACCEPTANCE_PENDING",
+      "owner": "session/audit-fixes-20261028",
+      "bundle": "outbox",
+      "focusedTests": "auditOutboxRecovery",
+      "independentReviewer": "independent_contract_review",
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "33",
+            "confirmation": "confirmed_static_client_crash_window"
+          }
+        ],
+        "trigger": "عنصر حديث ذوcapturedByUserId صحيح؛ flush يحفظSENDING ثم تغلق/تعاد صفحة المتصفح قبل إرسال kindApi. IndexedDB يحتفظSENDING، وفي البدء التالي flush يختارQUEUED فقط.",
+        "impact": "عملية نقدية لم تصل الخادم لا ترحل لاحقاً ولا تدخل recovery server، وتبقىجارِ الإرسال وتحسب ضمن سقف الطابور. UI retry متاحPARKED فقط.",
+        "proposedRemedy": "قفل إرسال بlease مستديم يميز جلسة/tab/attempt؛ بعد reload يصالحSENDING المنتهي مع نتيجة المصدر stable key ثم يعيدهQUEUED أوSENT. لا تعتبرSENT بمجرد بدء الإرسال ولا تمح الطابور. دعم tabين مع compare-and-swap/version ونتيجة idempotent.",
+        "evidence": [
+          {
+            "path": "client/src/lib/offline/outbox.ts",
+            "line": 355,
+            "sha256": "29e37f4352d8e3e798e0e758a8cf501740b4510c0464ae309559f7cc3af6d060",
+            "lineText": "      const queued = await offlineDb.outbox.where(\"status\").equals(\"QUEUED\").sortBy(\"capturedAt\");"
+          },
+          {
+            "path": "client/src/lib/offline/outbox.ts",
+            "line": 367,
+            "sha256": "29e37f4352d8e3e798e0e758a8cf501740b4510c0464ae309559f7cc3af6d060",
+            "lineText": "      await offlineDb.outbox.update(next.clientRequestId, { status: \"SENDING\" });"
+          },
+          {
+            "path": "client/src/lib/offline/outbox.ts",
+            "line": 390,
+            "sha256": "29e37f4352d8e3e798e0e758a8cf501740b4510c0464ae309559f7cc3af6d060",
+            "lineText": "        const res = await kindApi({"
+          },
+          {
+            "path": "client/src/lib/offline/db.ts",
+            "line": 110,
+            "sha256": "306f438defbef52625f22ff40a4844c40bf6a196649cd67be1f20299eedb560f",
+            "lineText": "            if ("
+          },
+          {
+            "path": "client/src/components/offline/OfflineOutboxRow.tsx",
+            "line": 73,
+            "sha256": "c26d4ddd967051edb30fa6cc88b1a5ab08983a30c5109f4163247f95c21e0695",
+            "lineText": "      {item.status === \"PARKED\" ? ("
+          }
+        ]
+      }
+    },
+    {
+      "id": "34-F1",
+      "priority": "P1",
+      "title": "اختيار حاوية النسخ والاستعادة قد يختلف عن مضيف ومنفذ الاتصال",
+      "status": "IMPLEMENTED_REVIEWED_ACCEPTANCE_PENDING",
+      "owner": "session/audit-fixes-20261028",
+      "bundle": "platform",
+      "focusedTests": "auditDbTarget / auditImportIdentity",
+      "independentReviewer": "independent_contract_review",
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "34",
+            "confirmation": "confirmed_static_conditional_target_selection"
+          }
+        ],
+        "trigger": "DATABASE_URL يشير إلى خادم B في localhost:3310/erp، وDB_CONTAINER يبقى خادم A على3306 وله erp بنفس بيانات الاتصال. عند غياب mysqldump المحلي ينفذ fallback النسخ عبر docker exec إلى A ويتجاهل المنفذ. الاستعادة الافتراضية دون native تأخذ اسم erp والمستخدم وكلمة المرور فقط وتنفذ DROP/CREATE على A حتى لو كان المضيف في URL بعيداً.",
+        "impact": "يمكن إنشاء نسخة من خادم خاطئ أو تنفيذ استعادة مدمرة على خادم خاطئ. migrate وdb:verify اللاحقان يتبعان DATABASE_URL إلى B، فلا يختبران نفس الخادم الذي استعيد. هذا خلل مشروط في CLI أو فرع fallback للنسخ؛ لم تثبت حادثة حالية.",
+        "proposedRemedy": "وصف هدف موحد مبني على URL مفكوك الترميز للمضيف والمنفذ والقاعدة والمستخدم، مع تحقق هوية الخادم قبل النسخ والاستعادة ونسخة الأمان والهجرة والفحص. لا يسمح docker adapter إلا بعد مطابقة ربط منفذ الحاوية أو هوية الخادم، وإلا رفض مغلق أو native صريح. الاختبار على خادمين بنفس اسم القاعدة وبيانات الاتصال.",
+        "evidence": [
+          {
+            "path": "scripts/backup.mjs",
+            "line": 111,
+            "sha256": "79992f850710f1da4733ffcfb906a54e6e2ac4e62a7ee6f346ae3924b7cfee00",
+            "lineText": "  } else if (LOCAL_HOSTS.has(t.host)) {"
+          },
+          {
+            "path": "scripts/backup.mjs",
+            "line": 115,
+            "sha256": "79992f850710f1da4733ffcfb906a54e6e2ac4e62a7ee6f346ae3924b7cfee00",
+            "lineText": "    dumpArgs = [\"exec\", \"-e\", \"MYSQL_PWD\", container, \"mysqldump\", `-u${t.user}`, ...dumpFlags, t.db];"
+          },
+          {
+            "path": "scripts/restore.mjs",
+            "line": 45,
+            "sha256": "f6f9bb942e9c33b9c971e99156135c469538d352eed8c4dd379da6038b724a96",
+            "lineText": "const url = process.env.DATABASE_URL;"
+          },
+          {
+            "path": "scripts/restore.mjs",
+            "line": 423,
+            "sha256": "f6f9bb942e9c33b9c971e99156135c469538d352eed8c4dd379da6038b724a96",
+            "lineText": "if (!flag(\"--no-backup\")) {"
+          },
+          {
+            "path": "scripts/restore.mjs",
+            "line": 439,
+            "sha256": "f6f9bb942e9c33b9c971e99156135c469538d352eed8c4dd379da6038b724a96",
+            "lineText": "const dropPrefix = Buffer.from(`DROP DATABASE IF EXISTS \\`${targetDb}\\`;\\nCREATE DATABASE \\`${targetDb}\\`;\\nUSE \\`${targetDb}\\`;\\n`);"
+          },
+          {
+            "path": "scripts/restore.mjs",
+            "line": 469,
+            "sha256": "f6f9bb942e9c33b9c971e99156135c469538d352eed8c4dd379da6038b724a96",
+            "lineText": "    // docker exec -i <container> mysql -u<user> (يسحب هوية القاعدة من DATABASE_URL إن توفّرت)"
+          },
+          {
+            "path": "scripts/restore.mjs",
+            "line": 477,
+            "sha256": "f6f9bb942e9c33b9c971e99156135c469538d352eed8c4dd379da6038b724a96",
+            "lineText": "      [\"exec\", \"-i\", \"-e\", \"MYSQL_PWD\", container, \"mysql\", \"--binary-mode=1\", \"--default-character-set=utf8mb4\", `-u${dbUser}`],"
+          },
+          {
+            "path": "scripts/restore.mjs",
+            "line": 486,
+            "sha256": "f6f9bb942e9c33b9c971e99156135c469538d352eed8c4dd379da6038b724a96",
+            "lineText": "  execFileSync(\"pnpm\", [\"db:migrate:apply\"], { stdio: \"inherit\", shell: process.platform === \"win32\", env: process.env });"
+          },
+          {
+            "path": "server/routers/systemRouter.ts",
+            "line": 39,
+            "sha256": "ca1bdbbcfb0963f4f9093c50da26da48d102918d13f4b7605a7c68fb83395271",
+            "lineText": "function assertSingleTenantOnly(action: string) {"
+          }
+        ]
+      }
+    },
+    {
+      "id": "A01",
+      "priority": "P1",
+      "title": "مسار سلة مرتجع الشراء ينفذ أثراً مالياً غير مربوط بمستند مرتجع ويقبل مبلغ العميل ويكرر الأثر",
+      "status": "OPEN_EXTERNAL_OWNER",
+      "owner": "session/procedures-remediation-20261028",
+      "bundle": null,
+      "focusedTests": null,
+      "independentReviewer": null,
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "12",
+            "confirmation": "confirmed_static_with_prior_isolated_reproduction"
+          }
+        ],
+        "trigger": "صنف رصيده 10 وتكلفته 100 د.ع. إرسال كمية 1 ومبلغ تسوية 1,000,000 د.ع. مرتين بالمفتاح نفسه.",
+        "impact": "خفض ذمة ومخزون بقيم غير مترابطة، وتكرار مالي عند إعادة الإرسال، وغياب مستند يمكن تتبعه وعكسه ضمن المرتجعات المحكومة.",
+        "proposedRemedy": null,
+        "evidence": [
+          {
+            "path": "client/src/App.tsx",
+            "line": 457,
+            "needle": "<Route path=\"/purchase-returns/new\">",
+            "sha256": "5e856c0291beba0623e9b670c833753772282cd4f497a7d163b5aff208d9f43d"
+          },
+          {
+            "path": "client/src/components/returns/PurchaseReturnPortal.tsx",
+            "line": 247,
+            "needle": "trpc.returns.executePurchaseReturnCart.useMutation",
+            "sha256": "0020c2e9b09e8156fe0b6d433fd57886a0f7e25201c50d489b67d4c906f8eea0"
+          },
+          {
+            "path": "server/routers/returnRouter.ts",
+            "line": 4725,
+            "needle": "executePurchaseReturnCart: salesManagerProcedure",
+            "sha256": "294c63583ac9d33f6f3d8ed724257c740bf4b5805f5863affbd25f16ae18a605"
+          },
+          {
+            "path": "server/routers/returnRouter.ts",
+            "line": 2585,
+            "needle": "const returnTotalDec = new Decimal(input.settlement.totalAmount);",
+            "sha256": "294c63583ac9d33f6f3d8ed724257c740bf4b5805f5863affbd25f16ae18a605"
+          },
+          {
+            "path": "server/routers/returnRouter.ts",
+            "line": 4925,
+            "needle": "const purchaseReturnSource = {",
+            "sha256": "294c63583ac9d33f6f3d8ed724257c740bf4b5805f5863affbd25f16ae18a605"
+          }
+        ]
+      }
+    },
+    {
+      "id": "A02",
+      "priority": "P1",
+      "title": "نطاق حساب وحوكمة التكلفة يستثني المخزون المملوك بالطريق",
+      "status": "OPEN_EXTERNAL_OWNER",
+      "owner": "session/procedures-remediation-20261028",
+      "bundle": null,
+      "focusedTests": null,
+      "independentReviewer": null,
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "02",
+            "confirmation": "confirmed_static_cross_unit_reused"
+          },
+          {
+            "unit": "03",
+            "confirmation": "confirmed_static_reused"
+          },
+          {
+            "unit": "04",
+            "confirmation": "confirmed_static_cross_unit_reused"
+          },
+          {
+            "unit": "05",
+            "confirmation": "confirmed_static_cross_unit_reused"
+          },
+          {
+            "unit": "10",
+            "confirmation": "confirmed_static"
+          }
+        ],
+        "trigger": "10 وحدات بتكلفة 100، إرسالها كلها بين فرعين، ثم شراء 10 بتكلفة 200 قبل وصول التحويل.",
+        "impact": "اختلاف أصل المخزون عن مصدر تكلفته، وتأثيره على تكلفة المبيعات والأرباح. قد يسمح تعديل التكلفة اليدوي عندما يكون كل الرصيد بالطريق دون قيد يغطي تغير الأصل.",
+        "proposedRemedy": null,
+        "evidence": [
+          {
+            "path": "server/services/purchase/goodsReceipts.ts",
+            "line": 639,
+            "needle": "const stockRows = variantIds.length",
+            "sha256": "00c918071eefb23c971cdd743f5c7ac34682af29269e52e086005033c7d72af1"
+          },
+          {
+            "path": "server/services/purchase/goodsReceipts.ts",
+            "line": 763,
+            "needle": "const oldQty = Decimal.max",
+            "sha256": "00c918071eefb23c971cdd743f5c7ac34682af29269e52e086005033c7d72af1"
+          },
+          {
+            "path": "server/services/inventory/valuation.ts",
+            "line": 105,
+            "needle": "eq(stockTransfers.status, \"IN_TRANSIT\")",
+            "sha256": "b9a5d178dbc1549d8e26d07eacd6bf30636df86fa3e47cdff18a2f98d4f8dfa1"
+          },
+          {
+            "path": "server/services/costRevaluation.ts",
+            "line": 118,
+            "needle": "const stockedRows = rows.filter",
+            "sha256": "0e4a3a99f71277912e88ff827fc89e87a0df9f916953e563b269c31fd7556c64"
+          },
+          {
+            "path": "server/services/transferService.ts",
+            "line": 602,
+            "needle": "movementType: \"TRANSFER_IN\"",
+            "sha256": "e5a0116ccd54caed16398ac9ecb226f56f4ee10e8b6d74b180ee8a7c1e1d698b"
+          }
+        ]
+      }
+    },
+    {
+      "id": "A03",
+      "priority": "P1",
+      "title": "إلغاء مصروف المخزون يعيد الكمية بتكلفة اليوم ويعكس قيمة تاريخية مختلفة",
+      "status": "OPEN_EXTERNAL_OWNER",
+      "owner": "session/procedures-remediation-20261028",
+      "bundle": null,
+      "focusedTests": null,
+      "independentReviewer": null,
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "15",
+            "confirmation": "confirmed_static_with_prior_isolated_reproduction"
+          }
+        ],
+        "trigger": "10 وحدات بتكلفة 1,000؛ صرف 5 بقيمة 5,000؛ إدخال 10 بقيمة 25,000 يجعل الباقي 15 بتكلفة 2,000؛ إلغاء الصرف.",
+        "impact": "تضخيم تقييم المخزون 5,000 د.ع في المثال، مع قيد عكسي تاريخي مختلف.",
+        "proposedRemedy": null,
+        "evidence": [
+          {
+            "path": "server/services/expenseService.ts",
+            "line": 575,
+            "needle": "lineCost: lineCost.toFixed(2)",
+            "sha256": "2efe10e4b3ce4572175ce95c65c42e171c6e48aaa7f0e3f02c1cfcdfcf35f76c"
+          },
+          {
+            "path": "server/services/expenseService.ts",
+            "line": 2185,
+            "needle": "referenceType: \"EXPENSE_CANCEL\"",
+            "sha256": "2efe10e4b3ce4572175ce95c65c42e171c6e48aaa7f0e3f02c1cfcdfcf35f76c"
+          },
+          {
+            "path": "server/services/expenseService.ts",
+            "line": 2199,
+            "needle": "cost: money(exp.amount).neg()",
+            "sha256": "2efe10e4b3ce4572175ce95c65c42e171c6e48aaa7f0e3f02c1cfcdfcf35f76c"
+          },
+          {
+            "path": "server/services/inventoryService.ts",
+            "line": 492,
+            "needle": "export async function applyValuedInboundMovement",
+            "sha256": "9f56799e8cb95e448e1bc0d38f43e5ebff6c52058b80dfbe7cf487872c160079"
+          }
+        ]
+      }
+    },
+    {
+      "id": "A04",
+      "priority": "P1",
+      "title": "خطة الأقساط تفقد التطابق عند التحصيل أو عكس سندها من مسار آخر",
+      "status": "OPEN_EXTERNAL_OWNER",
+      "owner": "session/procedures-remediation-20261028",
+      "bundle": null,
+      "focusedTests": null,
+      "independentReviewer": null,
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "09",
+            "confirmation": "confirmed_static_cross_module"
+          },
+          {
+            "unit": "14",
+            "confirmation": "confirmed_static_cross_module"
+          }
+        ],
+        "trigger": "فاتورة 100,000 وخطة 50,000 + 50,000. بعد القسط الأول، قبض 10,000 من تفاصيل الفاتورة؛ أو اعتماد إلغاء سند القسط الأول.",
+        "impact": "توقف التحصيل والجدولة، أو بقاء قسط معروض مسدداً بعد عكس تحصيله.",
+        "proposedRemedy": null,
+        "evidence": [
+          {
+            "path": "client/src/pages/InvoiceDetail.tsx",
+            "line": 151,
+            "needle": "sales.pay",
+            "sha256": "e962f427b278c47b0ac6e3de167db12ab0f8da9a780f440137f7a05fb41076b7"
+          },
+          {
+            "path": "server/services/sale/payment.ts",
+            "line": 642,
+            "needle": "const newPaid = money(inv.paidAmount).plus(amount)",
+            "sha256": "cc3100cfc49e5def4ef6c30e2d464517f0f307976d14e06289eff8f3332f9bb0"
+          },
+          {
+            "path": "server/services/installment/payment.ts",
+            "line": 342,
+            "needle": "const unpaidSchedule = sumMoney",
+            "sha256": "0890b69bc525817a790eb4cf84ae827612cb05afe6898d3289025465dd4bc037"
+          },
+          {
+            "path": "server/services/installment/plan.ts",
+            "line": 283,
+            "needle": "if (planLines.some((line) => line.status === \"PAID\"))",
+            "sha256": "b938963fd12edc5c0e005f704e51aa8871bcb4e190fb689e9cc2d0151b9f1562"
+          },
+          {
+            "path": "server/services/voucher/approval.ts",
+            "line": 2320,
+            "needle": "reverseCustomerReceiptSettlementTx(tx, Number(cancellationOriginal.id)",
+            "sha256": "f2d75b99e5874ee073784a857ec0d39db135adc9c8115adbb92705e4865b5b33"
+          }
+        ]
+      }
+    },
+    {
+      "id": "A05",
+      "priority": "P1",
+      "title": "طابور الاسترداد قد يثبت POSTED قبل أن تنفذ المعاملة المالية",
+      "status": "OPEN_EXTERNAL_OWNER",
+      "owner": "session/procedures-remediation-20261028",
+      "bundle": null,
+      "focusedTests": null,
+      "independentReviewer": null,
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "33",
+            "confirmation": "confirmed_static_crash_window"
+          }
+        ],
+        "trigger": "استرداد بيع نقدي أوفلاين معلق؛ تتوقف العملية بعد نجاح حجز الصف وقبل إنشاء/إعادة تشغيل البيع.",
+        "impact": "تعطل استرداد بيع قُبض نقده وخرجت بضاعته، أو إظهار حالة نجاح غير مكتملة. المفتاح الأصلي يمنع بيعاً مكرراً لكنه لا يعيد الصف إلى الطابور تلقائياً.",
+        "proposedRemedy": null,
+        "evidence": [
+          {
+            "path": "server/services/offline/recovery.ts",
+            "line": 91,
+            "needle": "eq(offlineRecoveryItems.recoveryStatus, \"PENDING\")",
+            "sha256": "d08b987bf84778032f90592fb80a25e03a38dfeeead33023ed000497fe93e41d"
+          },
+          {
+            "path": "server/services/offline/recovery.ts",
+            "line": 184,
+            "needle": ".set({ recoveryStatus: \"POSTED\"",
+            "sha256": "d08b987bf84778032f90592fb80a25e03a38dfeeead33023ed000497fe93e41d"
+          },
+          {
+            "path": "server/services/offline/recovery.ts",
+            "line": 232,
+            "needle": "result = await replayOfflineSale(",
+            "sha256": "d08b987bf84778032f90592fb80a25e03a38dfeeead33023ed000497fe93e41d"
+          },
+          {
+            "path": "server/services/offline/recovery.ts",
+            "line": 264,
+            "needle": ".set({ invoiceId: result.invoiceId })",
+            "sha256": "d08b987bf84778032f90592fb80a25e03a38dfeeead33023ed000497fe93e41d"
+          }
+        ]
+      }
+    },
+    {
+      "id": "COM20-01",
+      "priority": "P1",
+      "title": "خلط طالبين في دفعة رد خسارة يسمح للمراجع باعتماد طلبه المالي",
+      "status": "IMPLEMENTED_REVIEWED_ACCEPTANCE_PENDING",
+      "owner": "session/audit-fixes-20261028",
+      "bundle": "digital",
+      "focusedTests": "auditDigitalAndCommissionContracts",
+      "independentReviewer": "independent_contract_review",
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "20",
+            "confirmation": "confirmed_static_api_authorization"
+          }
+        ],
+        "trigger": "فاتورة فيها بطاقتان ISSUED ومقبوض مثبت وخزينة كافية. مديرA غير مالك يطلب خسارة للأولى، ومديرB يطلبها للثانية. A يرسل lossRefund على البندين بصلاحية العملية.",
+        "impact": "حجم Set(requesters) يساوي2، فلا يعمل شرط size===1&&has(A). يعتمد A خسارة سطره ويصرفها من الخزينة ضمن الدفعة. الرفض يملك الشرط نفسه. لا حادثة تشغيل مثبتة.",
+        "proposedRemedy": "لغير المالك ارفض إذا requesters.has(actor.userId) بصرف النظر عن حجم المجموعة، أو اجعل القرار وحدة طلب محددة الطالب وتحقق من كل بند. طبق العقد على approve/reject واختبر الدفعة عبر الراوتر.",
+        "evidence": [
+          {
+            "path": "server/routers/digitalCards/reversalRouter.ts",
+            "line": 43
+          },
+          {
+            "path": "server/services/digitalCards/reversalService.ts",
+            "line": 128
+          },
+          {
+            "path": "server/services/digitalCards/reversalService.ts",
+            "line": 599
+          },
+          {
+            "path": "server/services/digitalCards/reversalService.ts",
+            "line": 634
+          },
+          {
+            "path": "server/services/digitalCards/reversalService.ts",
+            "line": 698
+          },
+          {
+            "path": "client/src/components/digitalCards/InvoiceDigitalCards.tsx",
+            "line": 183
+          },
+          {
+            "path": "server/services/authorization/operationAuthority.ts",
+            "line": 212
+          }
+        ]
+      }
+    },
+    {
+      "id": "ROOT-EDIT-01",
+      "priority": "P1",
+      "title": "فقد تعديل موظف آخر بسبب فصل مسودة المحرر عن نسختها أو غياب النسخة",
+      "status": "OPEN_EXTERNAL_OWNER",
+      "owner": "session/procedures-remediation-20261028",
+      "bundle": null,
+      "focusedTests": null,
+      "independentReviewer": null,
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "10",
+            "confirmation": "confirmed_static_cross_module"
+          },
+          {
+            "unit": "23",
+            "confirmation": "مخالفة ثابتة من فحص المصدر لعقد snapshot/version؛ اختبار الواجهة محجوب بسبب @csstools/css-calc قبل تنفيذ أي اختبار (0 اختبارات منفذة)، ولا يوجد إثبات runtime"
+          },
+          {
+            "unit": "25",
+            "confirmation": "مخالفة ثابتة قابلة للوصول؛ لم تنفذ واقعة runtime"
+          }
+        ],
+        "trigger": "A يفتح أمر شغل بسعر100 ونسخة1 ويعدل العنوان فقط؛ B يعدل السعر150 ويصل الخادم لنسخة2؛ refetch يعيد نسخة2 إلى query A، لكن form A يبقى بسعر100؛ الحفظ يرسل السعر100 مع expectedVersion2.",
+        "impact": "حارس النسخة الخادمي ينجح لأن النسخة حديثة رغم أن البيانات قديمة، فيطمس تعديلB بلاCONFLICT. نفس الجذر فيموادأمرالشغل وPurchaseEdit؛ وفيتعديلطلبالمتجر لايرسلAPIنسخةأصل أصلاً، فيطمس العنوان/الهاتف عند حفظ حقل آخر.",
+        "proposedRemedy": "احفظ baseVersion وbaselineData مع إنشاء draft كزوج ثابت. عندrefetch لنفسid: لا تبدلنسخة المسودة صامتاً؛ اعرضتعارضاً/ادمجالحقولغيرالمعدلةبتحققثلاثي،وأرسلpatchللمقصودفقطمعbaseVersionالأصلية. قارنهخادمياًتحتالقفل؛ اطلبنسخةأومرجعhashصريحلكلupdateاقتصادي أوتشغيلييستبدلبيانات. طبقنفسالعقدعلىالتعديلاتالمباشرةوطلباتالاعتماد.",
+        "evidence": [
+          [
+            "client/src/components/workOrders/EditWorkOrderDialog.tsx",
+            "}, [detail.data?.id])"
+          ],
+          [
+            "client/src/components/workOrders/EditWorkOrderDialog.tsx",
+            "expectedVersion: Number(d?.version)"
+          ],
+          [
+            "client/src/components/workOrders/EditWorkOrderDialog.tsx",
+            "baseVersion: Number(d?.version)"
+          ],
+          [
+            "client/src/components/workOrders/WorkOrderMaterialsEditor.tsx",
+            "const [rows, setRows] = useState"
+          ],
+          [
+            "client/src/components/workOrders/WorkOrderMaterialsEditor.tsx",
+            "expectedVersion: version"
+          ],
+          [
+            "client/src/pages/PurchaseEdit.tsx",
+            "if (hydratedRef.current || !po.data) return"
+          ],
+          [
+            "client/src/pages/PurchaseEdit.tsx",
+            "expectedVersion: Number(po.data?.version)"
+          ],
+          [
+            "server/services/workOrder/update.ts",
+            "if (Number(wo.version) !== Number(input.expectedVersion))"
+          ],
+          [
+            "server/routers/storeAdminRouter.ts",
+            "update:"
+          ],
+          [
+            "server/services/storeAdmin/orderFulfillmentService.ts",
+            "export async function updateOnlineOrder"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "11-F02",
+      "priority": "P2",
+      "title": "تسديد الصيرفة لا يخصص دفعة للفاتورة الرسمية أو يقفل بوابتها",
+      "status": "IMPLEMENTED_REVIEWED_ACCEPTANCE_PENDING",
+      "owner": "session/audit-fixes-20261028",
+      "bundle": "purchase",
+      "focusedTests": "auditPurchaseFinancialContracts",
+      "independentReviewer": "financial_hr_review",
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "11",
+            "confirmation": "confirmed_static"
+          }
+        ],
+        "trigger": "PO دولاري جديد CREDIT اعتمد وأنشأ supplierInvoice POSTED/OPEN؛ يسدد 100$ بالكامل عبر ExchangeSettle.",
+        "impact": "AP و PO paid يتغيران بينما supplierPaymentAllocations/book allocations و invoice paymentGate لا تتغير. يظهر PO مدفوعاً والفاتورة مفتوحة؛ قد يحجب المسار الرسمي لاحقاً requiresReview بدلاً من استمرار دورة صحيحة. تكرار دفع أو حادثة إنتاج غير مثبتين.",
+        "proposedRemedy": "تسديد exchange يبني أداة صرف EXCHANGE ثم يدخل نواة supplier payment/allocations نفسها مع rate/carrying/FX؛ العكس يرجع التخصيص والبوابة و PO و AP ذرياً.",
+        "evidence": [
+          {
+            "path": "server/services/exchange/settleSupplier.ts",
+            "line": 198
+          },
+          {
+            "path": "server/services/exchange/settleSupplier.ts",
+            "line": 267
+          },
+          {
+            "path": "server/services/purchase/supplierPayments.ts",
+            "line": 785
+          },
+          {
+            "path": "server/services/purchase/supplierPayments.ts",
+            "line": 464
+          },
+          {
+            "path": "server/services/purchase/supplierBookSettlement.ts",
+            "line": 728
+          }
+        ]
+      }
+    },
+    {
+      "id": "12-F03",
+      "priority": "P2",
+      "title": "عكس GRN الكامل يستعمل تكلفة وحدة مقربة بدل القيمة الأصلية المتبقية",
+      "status": "IMPLEMENTED_REVIEWED_ACCEPTANCE_PENDING",
+      "owner": "session/audit-fixes-20261028",
+      "bundle": "purchase",
+      "focusedTests": "auditPurchaseFinancialContracts",
+      "independentReviewer": "financial_hr_review",
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "12",
+            "confirmation": "confirmed_static"
+          }
+        ],
+        "trigger": "GRN3 وحدات بصافي 1.00 وتكلفة وحدة محفوظة 0.33؛ بعد عكس فاتورة المورد وخلو المطابقة الحية يعكس 3 في فترة مفتوحة.",
+        "impact": "grniAmount=0.99 بدل 1.00؛ إذن الاستلام REVERSED وكميته كلها خرجت لكن يبقى 0.01 GRNI ولا يتطابق receivedNet المعكوس مع مصدره. لا حادثة runtime مثبتة.",
+        "proposedRemedy": "توزيع cumulativeQuantityCurrencyDelta/الباقي على netAmount الأصلي مثل USD، واستخدام قيمة المصدر المتبقية عند آخر كمية، مع فصل carrying inventory عن GRNI.",
+        "evidence": [
+          {
+            "path": "server/services/purchase/goodsReceipts.ts",
+            "line": 677
+          },
+          {
+            "path": "server/services/purchase/goodsReceipts.ts",
+            "line": 701
+          },
+          {
+            "path": "server/services/purchase/goodsReceipts.ts",
+            "line": 1358
+          },
+          {
+            "path": "server/services/purchase/goodsReceipts.ts",
+            "line": 1431
+          }
+        ]
+      }
+    },
+    {
+      "id": "16-F01",
+      "priority": "P2",
+      "title": "إعادة مفتاح قيد يدوي ترجع القيد القديم دون مقارنة الحمولة أو الفرع",
+      "status": "IMPLEMENTED_REVIEWED_ACCEPTANCE_PENDING",
+      "owner": "session/audit-fixes-20261028",
+      "bundle": "assets",
+      "focusedTests": "auditAssetJournalConsignment",
+      "independentReviewer": "independent_contract_review",
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "16",
+            "confirmation": "confirmed_static"
+          }
+        ],
+        "trigger": "قيد 100 بمفتاح K يلتزم؛ يعاد K بقيد 200 أو تاريخ أو حساب أو طرف مختلف، أو من فرع آخر مخول بقيد يدوي يعرف المفتاح.",
+        "impact": "ترجع هوية ومبلغ القيد الأول دون قيد جديد أو CONFLICT. قد يظهر نجاح لا يطابق الطلب، وقد يكشف المعرف والمبلغ لفرع آخر عند معرفة المفتاح. لا أثر مكرر مثبت.",
+        "proposedRemedy": "بصمة canonical للمبلغ والسطور والأبعاد والتاريخ والفرع والمنشئ، ثم مقارنة replay بالهوية المخولة والحمولة. كل اختلاف مؤثر CONFLICT. إلزام المفتاح أو سياسة صريحة لغيابه.",
+        "evidence": [
+          {
+            "path": "server/services/accounting/manualJournalService.ts",
+            "line": 154
+          },
+          {
+            "path": "server/services/accounting/manualJournalService.ts",
+            "line": 172
+          },
+          {
+            "path": "server/services/accounting/manualJournalService.ts",
+            "line": 374
+          },
+          {
+            "path": "server/routers/accountsRouter.ts",
+            "line": 87
+          }
+        ]
+      }
+    },
+    {
+      "id": "17-F02",
+      "priority": "P2",
+      "title": "لوحة الأصول تضم القيمة الدفترية للأصل المشطوب ضمن live",
+      "status": "IMPLEMENTED_REVIEWED_ACCEPTANCE_PENDING",
+      "owner": "session/audit-fixes-20261028",
+      "bundle": "assets",
+      "focusedTests": "auditAssetJournalConsignment",
+      "independentReviewer": "independent_contract_review",
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "17",
+            "confirmation": "confirmed_static"
+          }
+        ],
+        "trigger": "أصل تكلفة 100000 ومجمع 20000؛ إخراج retired يثبت خسارة 80000 وإلغاء اعتراف، ثم يطلب assets.dashboard.",
+        "impact": "live يشمل retired ويجمع bookValue المجمدة بتاريخ التصرف، فتبقى 80000 في KPI والتوزيع رغم خروجها من الدفتر والتقرير المالي العام. عرض السجل التاريخي صحيح، وتصنيفه أصلاً جارياً غير متسق.",
+        "proposedRemedy": "فصل التاريخ من مؤشرات الأصول المعترف بها؛ active/maintenance لقيمة الحيازة الجارية، وقسم تاريخي واضح للمشطوب والمستبعد وتكلفته وخسارته.",
+        "evidence": [
+          {
+            "path": "server/services/assets/reports.ts",
+            "line": 14
+          },
+          {
+            "path": "server/services/assets/reports.ts",
+            "line": 19
+          },
+          {
+            "path": "server/services/assets/queries.ts",
+            "line": 98
+          },
+          {
+            "path": "server/services/assets/depreciation.ts",
+            "line": 119
+          },
+          {
+            "path": "server/services/reportsFinancialService.ts",
+            "line": 1339
+          }
+        ]
+      }
+    },
+    {
+      "id": "18-F01",
+      "priority": "P2",
+      "title": "مفتاح سند الأمانة يعيد سنداً سابقاً دون مقارنة الكمية أو المودع أو الفرع",
+      "status": "IMPLEMENTED_REVIEWED_ACCEPTANCE_PENDING",
+      "owner": "session/audit-fixes-20261028",
+      "bundle": "assets",
+      "focusedTests": "auditAssetJournalConsignment",
+      "independentReviewer": "independent_contract_review",
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "18",
+            "confirmation": "confirmed_static"
+          }
+        ],
+        "trigger": "سند DEPOSIT بكمية 1 ومفتاح K يلتزم؛ يعاد المفتاح بكمية 10 أو مودع أو فرع مختلف صحيح ومخول في الطلب الجديد.",
+        "impact": "يرجع idempotentReplay:true ونفس noteId دون الحركة الجديدة أو CONFLICT، فيظهر نجاح لا يطابق الطلب. معرفة مفتاح فرع آخر قد تعيد معرفه قبل فحص نطاق السند المخزن؛ get للتفاصيل يبقى محروساً.",
+        "proposedRemedy": "حفظ بصمة canonical تشمل الفرع والنوع والمودع والأسطر بوحدة الأساس والفاعل، ومقارنتها قبل replay وبعد ER_DUP_ENTRY. إلزام المفتاح للطلب القابل لإعادة المحاولة.",
+        "evidence": [
+          {
+            "path": "server/services/consignment/noteService.ts",
+            "line": 61
+          },
+          {
+            "path": "server/services/consignment/noteService.ts",
+            "line": 147
+          },
+          {
+            "path": "server/services/consignment/noteService.ts",
+            "line": 155
+          },
+          {
+            "path": "server/routers/consignmentRouter.ts",
+            "line": 196
+          }
+        ]
+      }
+    },
+    {
+      "id": "18-F02",
+      "priority": "P2",
+      "title": "طريقتا بطاقة وتحويل في تسوية الأمانة غير قابلتين للنجاح من عقد الواجهة",
+      "status": "IMPLEMENTED_REVIEWED_ACCEPTANCE_PENDING",
+      "owner": "session/audit-fixes-20261028",
+      "bundle": "assets",
+      "focusedTests": "auditAssetJournalConsignment",
+      "independentReviewer": "independent_contract_review",
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "18",
+            "confirmation": "confirmed_static"
+          }
+        ],
+        "trigger": "مودع له AP موجب؛ اختيار CARD أو TRANSFER في ConsignmentSettlements ثم إنشاء تسوية صحيحة.",
+        "impact": "createSettlement لا يقبل أو يمرر referenceNumber أو cardLastFour. createVoucher يرفض TRANSFER بلا مرجع و CARD بلا آخر 4 أرقام. CASH يبقى متاحاً؛ لا أدعي تعطل كل التسويات.",
+        "proposedRemedy": "إضافة حقول دليل الأداة للواجهة و schema والتحويل إلى VoucherInput، مع تحقق واحد من العقد. لا آخر 4 أو مرجع مصطنعان. تعرض حالة الاعتماد من النتيجة الفعلية.",
+        "evidence": [
+          {
+            "path": "client/src/pages/ConsignmentSettlements.tsx",
+            "line": 26
+          },
+          {
+            "path": "client/src/pages/ConsignmentSettlements.tsx",
+            "line": 90
+          },
+          {
+            "path": "server/routers/consignmentRouter.ts",
+            "line": 156
+          },
+          {
+            "path": "server/routers/consignmentRouter.ts",
+            "line": 171
+          },
+          {
+            "path": "server/services/voucher/create.ts",
+            "line": 695
+          },
+          {
+            "path": "server/services/voucher/create.ts",
+            "line": 703
+          }
+        ]
+      }
+    },
+    {
+      "id": "26-F3",
+      "priority": "P2",
+      "title": "استحقاق الإجازة الكسري يكتب في عمود أعداد صحيحة",
+      "status": "IMPLEMENTED_REVIEWED_ACCEPTANCE_PENDING",
+      "owner": "session/audit-fixes-20261028",
+      "bundle": "hr",
+      "focusedTests": "auditHrContracts",
+      "independentReviewer": "financial_hr_review",
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "26",
+            "confirmation": "confirmed_static_schema_contract"
+          }
+        ],
+        "trigger": "leaves.accrueMonth يحسب 20/12 مقرباً 1.67 ويضيفه إلى employees.annualLeaveBalance المعرّف int.",
+        "impact": "رصيد التخزين لا يستطيع تمثيل القيمة المعلنة 1.67؛ سجل التدقيق يعلن كسراً بينما الحقل صحيح. القيمة النهائية الدقيقة تتطلب تشغيل MySQL، ولم ندعِ قياسها. على 12 شهراً حتى 1.67 دون نوع صحيح=20.04 بدلاً من20.",
+        "proposedRemedy": "رصيد أيام Decimal مع سياسة دقة ورصيد متراكم يحفظ إجمالي20 السنوي، أو وحدات صحيحة أصغر (دقائق/أجزاء يوم) مع قيد شهري مستقل. توحيد مخطط المدخل/التقرير وحساب التعويض.",
+        "evidence": [
+          {
+            "path": "server/services/hr/leaveAccrual.ts",
+            "line": 74,
+            "sha256": "79ef111ffb60fd347eec5d2f960c81f0767ab5c0e131c4cca3388ab5869f673a",
+            "lineText": "    const accrualDays = round2(new Decimal(20).div(12)); // 1.67"
+          },
+          {
+            "path": "server/services/hr/leaveAccrual.ts",
+            "line": 105,
+            "sha256": "79ef111ffb60fd347eec5d2f960c81f0767ab5c0e131c4cca3388ab5869f673a",
+            "lineText": "          annualLeaveBalance: sql`${employees.annualLeaveBalance} + ${accrualDays.toString()}`,"
+          },
+          {
+            "path": "drizzle/schema.ts",
+            "line": 9247,
+            "sha256": "fbf3c35bc4792445dd0b6db496ff7c1672d453663f721b13ff7db5a60a259245",
+            "lineText": "    annualLeaveBalance: int(\"annualLeaveBalance\").default(0),"
+          },
+          {
+            "path": "server/services/__tests__/challengerLeaveAccrual.test.ts",
+            "line": 73,
+            "sha256": "1cff2c12862e89e15f35b0122e1ae7f2becfa76d74fa6b006b046b74a86d830b",
+            "lineText": "      expect(res1.employeesAccrued).toBe(1);"
+          }
+        ]
+      }
+    },
+    {
+      "id": "30-P2-PROMOTION-UPDATE",
+      "priority": "P2",
+      "title": "تعديل العرض يتجاوز نواة التحقق من نطاق الخصم التي يطبقها الإنشاء",
+      "status": "IMPLEMENTED_REVIEWED_ACCEPTANCE_PENDING",
+      "owner": "session/audit-fixes-20261028",
+      "bundle": "commerce",
+      "focusedTests": "auditCommerceControls",
+      "independentReviewer": "independent_contract_review",
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "30",
+            "confirmation": "اختلاف ثابت في عقد API؛ القيم المقترحة لم تنفذ على قاعدة"
+          }
+        ],
+        "trigger": "مستخدم campaignsManager مخول يرسل salesPromotions.update على عرض PERCENT قائم بقيمة discountPercent='200.00' أو'0.00'؛ regex يقبلها ويكتب الراوتر القيمة مباشرة. الإنشاء وخدمة updatePromotion يرفضانها.",
+        "impact": "حفظ سياسة لا تنتمي للنطاق المعلن 0<percent<=100؛ resolver يقص200% إلى سعر الوحدة (100% فعلياً) ويتجاهل0%، بدلاً من رفض خطأ الإدخال. لا يعني ذلك خصماً سالباً أو غير محدود، ولا نثبت عملية بيع متضررة.",
+        "proposedRemedy": "تفويض update العام إلى نواة updatePromotion القائمة مع دمج patch الحالي وتطبيق assertShape/assertDates تحت قفل الصف؛ نفس الحدود خادمياً لكل قناة إدارة؛ اختبار عدم تغير الصف عند رفض200/0.",
+        "evidence": [
+          {
+            "path": "client/src/pages/Offers.tsx",
+            "line": 116
+          },
+          {
+            "path": "client/src/pages/Offers.tsx",
+            "line": 170
+          },
+          {
+            "path": "server/routers/promotionsV2Router.ts",
+            "line": 25
+          },
+          {
+            "path": "server/routers/promotionsV2Router.ts",
+            "line": 189
+          },
+          {
+            "path": "server/routers/promotionsV2Router.ts",
+            "line": 237
+          },
+          {
+            "path": "server/routers/promotionsV2Router.ts",
+            "line": 250
+          },
+          {
+            "path": "server/services/salesPromotionService.ts",
+            "line": 78
+          },
+          {
+            "path": "server/services/salesPromotionService.ts",
+            "line": 245
+          },
+          {
+            "path": "server/services/salesPromotionService.ts",
+            "line": 527
+          },
+          {
+            "path": "drizzle/schema.ts",
+            "line": 2557
+          }
+        ]
+      }
+    },
+    {
+      "id": "31-P2-BROADCAST-ELIGIBILITY",
+      "priority": "P2",
+      "title": "أهلية البث لا تُراجع بعد دخول الطابور عند انسحاب العميل أو إلغاء الحملة",
+      "status": "IMPLEMENTED_REVIEWED_ACCEPTANCE_PENDING",
+      "owner": "session/audit-fixes-20261028",
+      "bundle": "outbox",
+      "focusedTests": "auditOutboxRecovery",
+      "independentReviewer": "independent_contract_review",
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "31",
+            "confirmation": "مخالفة ثابتة بين queue وهوية المصدر وحالته عند send؛ لم ينفذ Graph"
+          }
+        ],
+        "trigger": "A: يدخل عميل OPTED_IN الطابور ثم ينسحب قبل dispatch/retry. B: توقف أو تلغى حملة لها waOutbox QUEUED. يبقى الصف مؤهلاً للالتقاط في الحالتين.",
+        "impact": "A: enqueue البث لا يمرر customerId، فتخزنه النواة NULL ويتخطى final consent guard، ويمكن بدء طلب خارجي بعد الرفض. B: pause/cancel يغيران broadcast فقط ولا يقرأ processClaimedRow حالته، فيمضي queued/retry رغم قرار الإيقاف. لا ادعاء وصول فعلي أو مبلغ خسارة.",
+        "proposedRemedy": "ربط outbox بالـrecipient/customer ومنشأ broadcast بعقد إلزامي؛ إعادة فحص OPTED_IN وحالة الحملة المسموحة قبل كل I/O. cancel يلغي غير المرسل ويزامن المستلم، وpause يعلقه بلا استهلاك. صف SENDING يحتاج مصيراً مختلفاً لاحتمال نتيجة مجهولة. تُربط الصفوف القديمة من recipient دون تخمين هاتف.",
+        "evidence": [
+          {
+            "path": "server/services/whatsapp/broadcastDispatch.ts",
+            "line": 171
+          },
+          {
+            "path": "server/services/whatsapp/broadcastDispatch.ts",
+            "line": 193
+          },
+          {
+            "path": "server/services/whatsapp/broadcastDispatch.ts",
+            "line": 202
+          },
+          {
+            "path": "server/services/whatsapp/outboxService.ts",
+            "line": 113
+          },
+          {
+            "path": "server/services/whatsapp/outboxService.ts",
+            "line": 468
+          },
+          {
+            "path": "server/services/whatsapp/outboxService.ts",
+            "line": 585
+          },
+          {
+            "path": "server/services/whatsapp/broadcastService.ts",
+            "line": 260
+          },
+          {
+            "path": "server/services/whatsapp/broadcastService.ts",
+            "line": 296
+          },
+          {
+            "path": "server/services/whatsapp/outboxSweeper.ts",
+            "line": 80
+          }
+        ]
+      }
+    },
+    {
+      "id": "31-P2-WA-STALE-SENDING",
+      "priority": "P2",
+      "title": "انهيار العملية بعد claim يترك واتساب في SENDING بلا مسار استعادة",
+      "status": "IMPLEMENTED_REVIEWED_ACCEPTANCE_PENDING",
+      "owner": "session/audit-fixes-20261028",
+      "bundle": "outbox",
+      "focusedTests": "auditOutboxRecovery",
+      "independentReviewer": "independent_contract_review",
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "31",
+            "confirmation": "تتبع ثابت لمسار claim/restart؛ لم تُقتل عملية أو ترسل رسالة"
+          }
+        ],
+        "trigger": "يلتزم claim لصف QUEUED ويجعله SENDING؛ تموت العملية قبل I/O أو قبل حفظ نتيجة Graph. بعد إعادة التشغيل يبقى الصف SENDING دون wamid محفوظ.",
+        "impact": "تتوقف الرسالة أو جلب الوسائط، ويبقى مستلم الحملة معلقاً؛ لا يلتقطه sweeper ولا يسمح retrySend بإعادته. إذا قبل المزود المحاولة قبل الانهيار تكون النتيجة مجهولة للنظام، ولا يثبت عدم إرسالها.",
+        "proposedRemedy": "lease وattempt token ووقت claim مع مسار استعادة معلن. محاولة لم تبدأ الشبكة تُعاد بهوية ثابتة؛ إرسال غير محسوم يصبح UNKNOWN ويصالح مع مرجع المزود أو بقرار مراجعة مبني على دليل. لا يُعاد كل SENDING قديم عميانياً إلى QUEUED.",
+        "evidence": [
+          {
+            "path": "server/services/whatsapp/outboxService.ts",
+            "line": 607
+          },
+          {
+            "path": "server/services/whatsapp/outboxService.ts",
+            "line": 626
+          },
+          {
+            "path": "server/services/whatsapp/outboxSweeper.ts",
+            "line": 26
+          },
+          {
+            "path": "server/services/whatsapp/outboxSweeper.ts",
+            "line": 33
+          },
+          {
+            "path": "server/services/whatsapp/outboxSweeper.ts",
+            "line": 44
+          },
+          {
+            "path": "server/services/whatsapp/outboxService.ts",
+            "line": 151
+          },
+          {
+            "path": "server/routers/conversationRouter.ts",
+            "line": 481
+          },
+          {
+            "path": "server/services/whatsapp/webhookProcessor.ts",
+            "line": 448
+          },
+          {
+            "path": "client/src/pages/Inbox.tsx",
+            "line": 163
+          }
+        ]
+      }
+    },
+    {
+      "id": "34-F2",
+      "priority": "P2",
+      "title": "الاستيراد يطابق هوية العميل أو المورد بالهاتف المشترك وحده",
+      "status": "IMPLEMENTED_REVIEWED_ACCEPTANCE_PENDING",
+      "owner": "session/audit-fixes-20261028",
+      "bundle": "platform",
+      "focusedTests": "auditDbTarget / auditImportIdentity",
+      "independentReviewer": "independent_contract_review",
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "34",
+            "confirmation": "confirmed_static_identity_collision"
+          }
+        ],
+        "trigger": "طرفان مشروعان لهما الهاتف نفسه واسمان مختلفان، دون legacyCode يحدد مصدر الصف. إزالة التكرار داخل الدفعة تقبل الهاتف والاسم، لكن مطابقة الموجود تبني Map من الهاتف إلى ID واحد، وتختار بالرقم وحده. update قد يكتب legacyCode أو العنوان أو الملاحظات أو سقف الائتمان لصف A على سجل B؛ وskip قد يتجاهل طرفاً جديداً بسبب الهاتف المشترك.",
+        "impact": "فقد هوية الاستيراد أو توجيه التواصل والسقف الائتماني إلى طرف خاطئ. الرصيد الافتتاحي للموجود محجوب، لذلك لا ندعي استبدال currentBalance. تثبيت legacyCode خاطئ يجعل المطابقة الخاطئة تستمر لاحقاً.",
+        "proposedRemedy": "مطابقة مؤكدة بـlegacyCode أولاً، ثم الهاتف والاسم المطبع أو معرف راجعه المستخدم صراحة. حفظ جميع المرشحين بدلاً من Map آخر فائز. رفض AMBIGUOUS قبل الكتابة، وعرض partyId والاسم ومصدر المطابقة في المعاينة، مع ربط مستقر للصف والقرار.",
+        "evidence": [
+          {
+            "path": "server/services/import/balanceSemantics.ts",
+            "line": 42,
+            "sha256": "e2ca9db94139b2fcebfdd539b49ac5ccbdf2d41fe1f48c644735ae9a08ce6074",
+            "lineText": "// مفتاح التكرار داخل الدفعة (§٥.٢/§٤.٣.٤-ب): legacyCode إن وُجد ← (الهاتف+الاسم) ← الاسم."
+          },
+          {
+            "path": "server/services/import/customers.ts",
+            "line": 52,
+            "sha256": "92d5469c58fd567c01135558d44d06fe8b3e9a277c285dc022c6b315164f4a7d",
+            "lineText": "  if (phones.length) {"
+          },
+          {
+            "path": "server/services/import/customers.ts",
+            "line": 76,
+            "sha256": "92d5469c58fd567c01135558d44d06fe8b3e9a277c285dc022c6b315164f4a7d",
+            "lineText": "    const existingId ="
+          },
+          {
+            "path": "server/services/import/customers.ts",
+            "line": 139,
+            "sha256": "92d5469c58fd567c01135558d44d06fe8b3e9a277c285dc022c6b315164f4a7d",
+            "lineText": "        if (row.creditLimit) patch.creditLimit = toDbMoney(row.creditLimit);"
+          },
+          {
+            "path": "server/services/import/customers.ts",
+            "line": 141,
+            "sha256": "92d5469c58fd567c01135558d44d06fe8b3e9a277c285dc022c6b315164f4a7d",
+            "lineText": "        if (norm(row.legacyCode) != null) patch.legacyCode = norm(row.legacyCode);"
+          },
+          {
+            "path": "server/services/import/suppliers.ts",
+            "line": 50,
+            "sha256": "fc206dda38d5d4feadec76e0c20ecea94921c548692824c49b0dc7c198ea61d1",
+            "lineText": "  if (phones.length) {"
+          },
+          {
+            "path": "server/services/import/suppliers.ts",
+            "line": 73,
+            "sha256": "fc206dda38d5d4feadec76e0c20ecea94921c548692824c49b0dc7c198ea61d1",
+            "lineText": "    const existingId ="
+          }
+        ]
+      }
+    },
+    {
+      "id": "A06",
+      "priority": "P2",
+      "title": "تقريب صرف الرواتب يصفر الاستحقاق الأصلي بمبلغ دفع مختلف دون قيد فرق مصنف",
+      "status": "OPEN_EXTERNAL_OWNER",
+      "owner": "session/procedures-remediation-20261028",
+      "bundle": null,
+      "focusedTests": null,
+      "independentReviewer": null,
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "28",
+            "confirmation": "confirmed_static_with_prior_snapshot_evidence"
+          }
+        ],
+        "trigger": "استحقاق 100,100 د.ع يصرف CASH بعد التقريب إلى 100,000؛ أو تقريب صاعد.",
+        "impact": "عدم تطابق الاستحقاق والإبراء والنقد. يلزم تبويب فرق التقريب أو إبقاء المتبقي بحسب سياسة معتمدة؛ النص في الملاحظات لا يسوي دفتر الالتزامات.",
+        "proposedRemedy": null,
+        "evidence": [
+          {
+            "path": "server/services/payroll/settlement.ts",
+            "line": 361,
+            "needle": "? rawAmount.div(250).toDecimalPlaces",
+            "sha256": "bcf489bcd62a6af23dc7a5d78495ac7c639bc491d74b5862c7e37d556c9d260f"
+          },
+          {
+            "path": "server/services/payroll/settlement.ts",
+            "line": 460,
+            "needle": "const posting = payrollSettlementPosting({",
+            "sha256": "bcf489bcd62a6af23dc7a5d78495ac7c639bc491d74b5862c7e37d556c9d260f"
+          },
+          {
+            "path": "server/services/payroll/settlement.ts",
+            "line": 496,
+            "needle": "amount: toDbMoney(obligation.remainingAmount)",
+            "sha256": "bcf489bcd62a6af23dc7a5d78495ac7c639bc491d74b5862c7e37d556c9d260f"
+          },
+          {
+            "path": "server/services/payroll/settlement.ts",
+            "line": 503,
+            "needle": ".set({ remainingAmount: \"0.00\", status: \"SETTLED\" })",
+            "sha256": "bcf489bcd62a6af23dc7a5d78495ac7c639bc491d74b5862c7e37d556c9d260f"
+          },
+          {
+            "path": "server/services/payroll/accounting.ts",
+            "line": 161,
+            "needle": "signedPostingLines(debit, credit, input.amount)",
+            "sha256": "2f4db9da60fee4f2270ed956454133d44a84837736f31ad98d540d09ed95d222"
+          }
+        ]
+      }
+    },
+    {
+      "id": "A07",
+      "priority": "P2",
+      "title": "مصروف SALARY المباشر يتعارض مع سياسة ملف ترحيله عند تفعيل الدفتر المزدوج",
+      "status": "OPEN_EXTERNAL_OWNER",
+      "owner": "session/procedures-remediation-20261028",
+      "bundle": null,
+      "focusedTests": null,
+      "independentReviewer": null,
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "15",
+            "confirmation": "confirmed_static_conditional_on_ACTIVE"
+          }
+        ],
+        "trigger": "مصروف راتب مباشر من مصدر ممول مع وضع الدفتر ACTIVE.",
+        "impact": "تعطل إجراء مشروع في الواجهة عند تفعيل الدفتر؛ OFF لا يظهر العيب.",
+        "proposedRemedy": null,
+        "evidence": [
+          {
+            "path": "server/services/expenseService.ts",
+            "line": 97,
+            "needle": "case \"SALARY\":",
+            "sha256": "2efe10e4b3ce4572175ce95c65c42e171c6e48aaa7f0e3f02c1cfcdfcf35f76c"
+          },
+          {
+            "path": "server/services/expenseService.ts",
+            "line": 150,
+            "needle": "? \"PAYMENT_OUT_SALARY\"",
+            "sha256": "2efe10e4b3ce4572175ce95c65c42e171c6e48aaa7f0e3f02c1cfcdfcf35f76c"
+          },
+          {
+            "path": "server/services/accounting/postingEngine.ts",
+            "line": 1383,
+            "needle": "PAYMENT_OUT_SALARY: profilePolicy(",
+            "sha256": "41987c2c46729b962ba35d478d5bee49e05506afd24044c934bfa58972789607"
+          },
+          {
+            "path": "server/services/ledgerService.ts",
+            "line": 211,
+            "needle": "if (runtime.mode === \"ACTIVE\") throw error;",
+            "sha256": "028bdfd1c716633af0f5ffe2373015e7b88d9132dba3799daa5ad71134b6cb3e"
+          }
+        ]
+      }
+    },
+    {
+      "id": "A08",
+      "priority": "P2",
+      "title": "تصدير تقرير المبيعات يحسب ربح المرتجع من تكلفة الفاتورة الأصلية",
+      "status": "OPEN_EXTERNAL_OWNER",
+      "owner": "session/procedures-remediation-20261028",
+      "bundle": null,
+      "focusedTests": null,
+      "independentReviewer": null,
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "32",
+            "confirmation": "confirmed_static_reused"
+          }
+        ],
+        "trigger": "بيع 100,000 بتكلفة 60,000، ثم مرتجع كامل مع إعادة كل البضاعة للمخزون.",
+        "impact": "ربح مضلل في ملف التصدير واختلاف عن التحليل المحاسبي، خصوصاً عند اتخاذ قرار من الملف.",
+        "proposedRemedy": null,
+        "evidence": [
+          {
+            "path": "client/src/pages/SalesReport.tsx",
+            "line": 605,
+            "needle": "D(r.total).minus(D(r.returnedTotal ?? \"0\")).minus(D(r.costTotal)).toNumber()",
+            "sha256": "c487d253858b4cb207936bd2ec2cf9d532e14a4cd480580029910adb7faa400b"
+          },
+          {
+            "path": "server/routers/reportsRouter.ts",
+            "line": 559,
+            "needle": "costTotal: invoices.costTotal",
+            "sha256": "07eb282185209b07d10f77ac6408ccefdcacae9be8c8d5a3751fa2e13dfe4251"
+          },
+          {
+            "path": "server/services/returnService.ts",
+            "line": 2922,
+            "needle": "returnedTotal: toDbMoney(newReturnedTotal)",
+            "sha256": "8ab767a53f08759899feb3f78f735971cb5449aed5e4100ec6182d0a7653be8e"
+          },
+          {
+            "path": "server/services/reports/salesAnalytics.ts",
+            "line": 40,
+            "needle": "WHEN COALESCE(ii.returnedRestockedBaseQuantity, 0) >= ii.baseQuantity THEN 0",
+            "sha256": "622fc14051312dbf2804e9d317d7088f9f1fd73455b494ecd4dd5982f587b8da"
+          }
+        ]
+      }
+    },
+    {
+      "id": "A09",
+      "priority": "P2",
+      "title": "رأس المطلوب توريده قد يعرض صفراً مع وجود صنف غير مغطى",
+      "status": "OPEN_EXTERNAL_OWNER",
+      "owner": "session/procedures-remediation-20261028",
+      "bundle": null,
+      "focusedTests": null,
+      "independentReviewer": null,
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "03",
+            "confirmation": "database_reproduction_in_prior_same_sha_audit"
+          }
+        ],
+        "trigger": "A=-10 وله مسودتا شراء كل منهما 10، وB=-10 بلا شراء.",
+        "impact": "قد يتوقف طلب بضاعة مستحقة لعميل اعتماداً على إجمالي خاطئ.",
+        "proposedRemedy": null,
+        "evidence": [
+          {
+            "path": "server/services/inventory/backorderShortfall.ts",
+            "line": 200,
+            "needle": "netNeededBase: Math.max(0, shortfallBase - onOrderBase)",
+            "sha256": "76cf5f8be32000cb9c24210ff4cc696b2a290f47634bcb9b430b94daeaec7308"
+          },
+          {
+            "path": "server/services/inventory/backorderShortfall.ts",
+            "line": 222,
+            "needle": "pending: sql<string>`COALESCE(SUM(LEAST",
+            "sha256": "76cf5f8be32000cb9c24210ff4cc696b2a290f47634bcb9b430b94daeaec7308"
+          },
+          {
+            "path": "server/services/inventory/backorderShortfall.ts",
+            "line": 242,
+            "needle": "totalNetNeededBase: Math.max(0, totalShortfall - totalPending)",
+            "sha256": "76cf5f8be32000cb9c24210ff4cc696b2a290f47634bcb9b430b94daeaec7308"
+          },
+          {
+            "path": "client/src/pages/BackorderShortfall.tsx",
+            "line": 167,
+            "needle": "totalNetNeededBase",
+            "sha256": "9a02f8b9afef2b34f49c68a45b475f81aa5d7b88f50af3773f6dd1608f28daf5"
+          }
+        ]
+      }
+    },
+    {
+      "id": "A10",
+      "priority": "P2",
+      "title": "مرتجعات الشراء الجزئية لا تمتص باقي تقريب قيمة المصدر عند آخر كمية",
+      "status": "OPEN_EXTERNAL_OWNER",
+      "owner": "session/procedures-remediation-20261028",
+      "bundle": null,
+      "focusedTests": null,
+      "independentReviewer": null,
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "12",
+            "confirmation": "confirmed_static_with_prior_function_execution"
+          }
+        ],
+        "trigger": "سطر مصدر 3 وحدات بقيمة 1.00 أو 1.01 د.ع، وإرجاع وحدة في كل مرة.",
+        "impact": "فرق ذمة وتقريب متراكم، أو تجاوز حق المورد بعكس مالي زائد؛ المثال صغير لإظهار العيب بدقة.",
+        "proposedRemedy": null,
+        "evidence": [
+          {
+            "path": "server/services/purchase/returnGovernance.ts",
+            "line": 177,
+            "needle": "export function proportionalReturnAmount",
+            "sha256": "0751c793c2cbc2bd1cb133ee1e42765bb1059a2da434aad9ede6cbd5ca608d18"
+          },
+          {
+            "path": "server/services/purchase/returnGovernance.ts",
+            "line": 595,
+            "needle": "const lineNet = proportionalReturnAmount(invoiceLine.netAmount",
+            "sha256": "0751c793c2cbc2bd1cb133ee1e42765bb1059a2da434aad9ede6cbd5ca608d18"
+          },
+          {
+            "path": "server/services/purchase/returnGovernance.ts",
+            "line": 872,
+            "needle": "const net = round2(request.requestedNetAmount)",
+            "sha256": "0751c793c2cbc2bd1cb133ee1e42765bb1059a2da434aad9ede6cbd5ca608d18"
+          },
+          {
+            "path": "server/services/purchase/returnGovernance.ts",
+            "line": 191,
+            "needle": "export function reversalAmountWithFinalResidual",
+            "sha256": "0751c793c2cbc2bd1cb133ee1e42765bb1059a2da434aad9ede6cbd5ca608d18"
+          }
+        ]
+      }
+    },
+    {
+      "id": "COM07-01",
+      "priority": "P2",
+      "title": "طلب الرد غير النقدي المرتبط بفاتورة بيع يغيب من صندوق مطلوب مني الآن",
+      "status": "OPEN_EXTERNAL_OWNER",
+      "owner": "session/procedures-remediation-20261028",
+      "bundle": null,
+      "focusedTests": null,
+      "independentReviewer": null,
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "07",
+            "confirmation": "confirmed_static_conditional_api_path"
+          }
+        ],
+        "trigger": "مالك نشط ينفذ عبر returns.create المتوافق القديم مرتجعاً على فاتورة عميل مسجل قُبضت TRANSFER100,000، مقدار رد10,000 ضمن قيمة المرتجع ورصيد الطريقة. refund.method=TRANSFER يقبل العقد ويولد سنداً PENDING/PENDING_APPROVAL مع invoiceId. لا تدع أن الواجهة العادية تقدم TRANSFER؛ هي تعرض CASH/CARD فقط.",
+        "impact": "مالك يعتمد على MyWork لا يرى طلب الصرف ويحتاج اكتشافه يدوياً في السندات؛ الرصيد الدائن والرد المؤجل يبقيان مفتوحين إلى صرفه. لا حادثة تشغيل مثبتة ولا ادعاء فقد نقد أو انسداد مطلق.",
+        "proposedRemedy": "أضف مصدر قرار مخصص لرد البيع أو استثناء ضيق على treasury.voucher لصفوف SALE_CUSTOMER_REFUND الصحيحة مع حفظ الفرع والمالك ومرجع التنفيذ اللازم؛ اختبر ظهور الصف مرة واحدة واختفاءه بعد قرار يعيد استخدام approveVoucher، مع فصل أي رد مكونات يحتاج إجراءه المتخصص.",
+        "evidence": [
+          {
+            "path": "server/routers/returnRouter.ts",
+            "line": 392
+          },
+          {
+            "path": "server/services/returns/refundCaps.ts",
+            "line": 35
+          },
+          {
+            "path": "server/services/returnService.ts",
+            "line": 2808
+          },
+          {
+            "path": "server/services/returnService.ts",
+            "line": 2838
+          },
+          {
+            "path": "server/services/decisions/sources/treasury.ts",
+            "line": 122
+          },
+          {
+            "path": "server/services/decisions/sources/treasury.ts",
+            "line": 125
+          },
+          {
+            "path": "server/services/decisions/sources/sales.ts",
+            "line": 543
+          },
+          {
+            "path": "server/services/decisions/index.ts",
+            "line": 38
+          },
+          {
+            "path": "server/services/voucher/queries.ts",
+            "line": 143
+          },
+          {
+            "path": "server/services/voucher/approval.ts",
+            "line": 2402
+          }
+        ]
+      }
+    },
+    {
+      "id": "COM09-02",
+      "priority": "P2",
+      "title": "بحث وتصفية خطط الأقساط يتوقفان عند أحدث200 خطة",
+      "status": "IMPLEMENTED_REVIEWED_ACCEPTANCE_PENDING",
+      "owner": "session/audit-fixes-20261028",
+      "bundle": "commerce",
+      "focusedTests": "auditCommerceControls",
+      "independentReviewer": "independent_contract_review",
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "09",
+            "confirmation": "confirmed_static_volume_condition"
+          }
+        ],
+        "trigger": "يوجد201 خطة في الفرع والحالة المحددين. الخطة الأقدم في المرتبة201 لها رقم أو اسم أو تاريخ مميز؛ يبحث المستخدم بذلك القيد في InstallmentPlans.",
+        "impact": "list يجلب أحدث200 ثم يفلتر محلياً ويعيد صفراً أو نتيجة ناقصة مع hasMore=false. التصدير بنفس الفلاتر يستعمل المصدر الناقص. التفاصيل بالرقم والقائمة بلا q/date تبقيان مخرجين بديلين.",
+        "proposedRemedy": "ادفع q/from/to إلى SQL مع pagination على النتيجة المفلترة، واستعمل المصدر نفسه للتصدير؛ اختبر أقدم مطابقة بعد200 ونطاق الفرع.",
+        "evidence": [
+          {
+            "path": "server/routers/installmentRouter.ts",
+            "line": 339
+          },
+          {
+            "path": "server/routers/installmentRouter.ts",
+            "line": 359
+          },
+          {
+            "path": "server/services/installment/queries.ts",
+            "line": 9
+          },
+          {
+            "path": "server/services/installment/queries.ts",
+            "line": 29
+          },
+          {
+            "path": "client/src/pages/InstallmentPlans.tsx",
+            "line": 101
+          },
+          {
+            "path": "client/src/pages/InstallmentPlans.tsx",
+            "line": 296
+          }
+        ]
+      }
+    },
+    {
+      "id": "COM19-01",
+      "priority": "P2",
+      "title": "تحويل الحجز يؤكد إجمالياً مرجعياً دون عرض سعر التنفيذ الحالي",
+      "status": "IMPLEMENTED_REVIEWED_ACCEPTANCE_PENDING",
+      "owner": "session/audit-fixes-20261028",
+      "bundle": "commerce",
+      "focusedTests": "auditCommerceControls",
+      "independentReviewer": "independent_contract_review",
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "19",
+            "confirmation": "confirmed_static_confirmation_preview_gap"
+          }
+        ],
+        "trigger": "حجز درزن بسعر مرجعي12,000، ثم تغير سعر الأساس من1,000 إلى2,000. حوار تحويل الحجز يعرض12,000، بينما خدمة التحويل تبيع12 وحدة أساس بسعر اليوم24,000. عميل مسجل بسقف يسمح بالفرق يدفع12,000 كما في الحوار، فتنشأ فاتورة جزئية.",
+        "impact": "فجوة معاينة وموافقة على المبلغ: الفاتورة والدين الجديد قد يختلفان عن الإجمالي الظاهر وقت التأكيد. النص يعلن أن سعر الحجز مرجعي، لذلك لا نصنفها نقض سعر مضمون؛ المطلوب معاينة حالية قبل الالتزام أو بيان فرق واضح. للعميل النقدي فقط قد يحدث رفض بدلاً من نشوء الدين.",
+        "proposedRemedy": "اعرض تسعير التنفيذ الحالي ووحدته وإجماليه والفرق عن المرجع قبل التأكيد، واربطه ببصمة تعاد داخل commit. إذا قررت سياسة العمل تثبيت سعر الحجز، فحوّله صراحة إلى وحدة البيع مع تفويضه؛ لا نختر سياسة السعر ضمن التدقيق.",
+        "evidence": [
+          {
+            "path": "server/services/reservations/convert.ts",
+            "line": 108
+          },
+          {
+            "path": "server/services/reservations/convert.ts",
+            "line": 151
+          },
+          {
+            "path": "server/routers/reservationsRouter.ts",
+            "line": 227
+          },
+          {
+            "path": "client/src/pages/ReservationsHub.tsx",
+            "line": 704
+          },
+          {
+            "path": "client/src/pages/ReservationsHub.tsx",
+            "line": 798
+          },
+          {
+            "path": "client/src/pages/ReservationsHub.tsx",
+            "line": 908
+          },
+          {
+            "path": "client/src/pages/ReservationsHub.tsx",
+            "line": 935
+          }
+        ]
+      }
+    },
+    {
+      "id": "COM19-02",
+      "priority": "P2",
+      "title": "تحويل الحجز يرفض استرداد نتيجة API سبق أن التزمت قبل ضياع الرد",
+      "status": "IMPLEMENTED_REVIEWED_ACCEPTANCE_PENDING",
+      "owner": "session/audit-fixes-20261028",
+      "bundle": "commerce",
+      "focusedTests": "auditCommerceControls",
+      "independentReviewer": "independent_contract_review",
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "19",
+            "confirmation": "confirmed_static_recovery_order"
+          }
+        ],
+        "trigger": "تلتزم معاملة التحويل ويصبح الحجز FULFILLED مع fulfilledInvoiceId، ثم تضيع الاستجابة. يعاد طلب API بنفس reservationId وحمولة الدفع لاسترداد نتيجته.",
+        "impact": "الخدمة ترفض الحالة قبل الوصول إلى idempotency البيع، فلا تعيد نتيجة التحويل الملتزم رغم حفظ رابط الفاتورة. لا ينشئ المسار فاتورتين. زر الويب العادي يعيد قراءة الحجز قبل الإرسال وقد يغلقه برسالة راجع الحجز؛ لذلك لا ندعي أن ضغط الزر وحده يولد نفياً كاذباً للإنشاء.",
+        "proposedRemedy": "أعد الفاتورة الأصلية عند طلب استرداد مطابق بعد فحص الفرع وبصمة الدفع، أو قدم إجراء resolveConversion صريحاً للعميل. اختلاف الحمولة أو الرابط المكسور CONFLICT مع مرجع الأصل. حافظ على فحص الواجهة الحالي وأضف عرض الرابط الملتزم بدلاً من الاكتفاء بإغلاق الحوار.",
+        "evidence": [
+          {
+            "path": "server/services/reservations/convert.ts",
+            "line": 59
+          },
+          {
+            "path": "server/services/reservations/convert.ts",
+            "line": 156
+          },
+          {
+            "path": "server/services/reservations/convert.ts",
+            "line": 175
+          },
+          {
+            "path": "client/src/pages/ReservationsHub.tsx",
+            "line": 250
+          },
+          {
+            "path": "server/services/__tests__/reservations.test.ts",
+            "line": 272
+          },
+          {
+            "path": "client/src/pages/ReservationsHub.tsx",
+            "line": 300
+          },
+          {
+            "path": "client/src/lib/reservationConversionGuard.ts",
+            "line": 105
+          },
+          {
+            "path": "client/src/main.tsx",
+            "line": 140
+          }
+        ]
+      }
+    },
+    {
+      "id": "COM20-02",
+      "priority": "P2",
+      "title": "طلب ورفض رد خسارة رقمي لا يتحققان من فرع الفاتورة",
+      "status": "IMPLEMENTED_REVIEWED_ACCEPTANCE_PENDING",
+      "owner": "session/audit-fixes-20261028",
+      "bundle": "digital",
+      "focusedTests": "auditDigitalAndCommissionContracts",
+      "independentReviewer": "independent_contract_review",
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "20",
+            "confirmation": "confirmed_static_cross_branch_api"
+          }
+        ],
+        "trigger": "مدير فرعA بصلاحية digital_cards FULL يعرف invoiceId/detailIds صحيحة لفرعB؛ يطلب رد خسارة على ISSUED، أو يرفض طلباً معلقاً أنشأه شخص آخر فيB.",
+        "impact": "تُجمد بنودB إلى LOSS_REFUND_PENDING أو يمحى طلبها دون سلطة الفرع. التنفيذ المالي نفسه يحرس الفرع عبر prelockCashReversal؛ لا ادعاء صرف نقدB من هذا الخلل.",
+        "proposedRemedy": "اقرأ واقفل رأس الفاتورة وافرض سلطة الفرع قبل طلب أو رفض البنود، بترتيب قفل متسق. أعد استعمال حارس مستند مشترك دون قفل خزينة غير لازم لطلب صفري الأثر.",
+        "evidence": [
+          {
+            "path": "server/routers/digitalCards/reversalRouter.ts",
+            "line": 31
+          },
+          {
+            "path": "server/routers/digitalCards/reversalRouter.ts",
+            "line": 54
+          },
+          {
+            "path": "server/services/digitalCards/reversalService.ts",
+            "line": 128
+          },
+          {
+            "path": "server/services/digitalCards/reversalService.ts",
+            "line": 595
+          },
+          {
+            "path": "server/services/digitalCards/reversalService.ts",
+            "line": 631
+          },
+          {
+            "path": "server/services/digitalCards/reversalService.ts",
+            "line": 72
+          },
+          {
+            "path": "server/trpc.ts",
+            "line": 786
+          },
+          {
+            "path": "server/services/authorization/operationAuthority.ts",
+            "line": 194
+          }
+        ]
+      }
+    },
+    {
+      "id": "COM21-01",
+      "priority": "P2",
+      "title": "إعادة إنشاء طلب هدية أُلغي تعرضه كهدية منجزة",
+      "status": "IMPLEMENTED_REVIEWED_ACCEPTANCE_PENDING",
+      "owner": "session/audit-fixes-20261028",
+      "bundle": "commerce",
+      "focusedTests": "auditCommerceControls",
+      "independentReviewer": "independent_contract_review",
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "21",
+            "confirmation": "confirmed_static_replay_state"
+          }
+        ],
+        "trigger": "موظف ينشئ OUT ينتظر اعتماداً؛ تلتزم المعاملة ويضيع الرد. مدير يلغي الطلب قبل استئناف الموظف. يعيد الموظف نفس clientRequestId والحمولة.",
+        "impact": "replay يجد السند CANCELLED لكنه يحول حالته إلى DELIVERED وpending=false. GiftsHub يعرض «تم منح الهدية» ويفرغ النموذج رغم أن المخزون والقيد لم يتحركا. لا أثر مالي مزدوج في هذا المثال؛ العيب نتيجة حالة مضللة.",
+        "proposedRemedy": "أعد الحالة الحقيقية بعائد مميز يشمل CANCELLED/REVERSED أو CONFLICT مفسر مع رابط السند. لا تستنتج DELIVERED من كل غير PENDING. اجعل الواجهة تعرض نتيجة الاستئناف دون نفي أو إثبات تنفيذ مخالف للأصل.",
+        "evidence": [
+          {
+            "path": "server/services/gifts/outbound.ts",
+            "line": 253
+          },
+          {
+            "path": "server/services/gifts/outbound.ts",
+            "line": 261
+          },
+          {
+            "path": "server/services/gifts/outbound.ts",
+            "line": 570
+          },
+          {
+            "path": "client/src/pages/GiftsHub.tsx",
+            "line": 224
+          },
+          {
+            "path": "client/src/pages/GiftsHub.tsx",
+            "line": 239
+          }
+        ]
+      }
+    },
+    {
+      "id": "ROOT-BRANCH-01",
+      "priority": "P2",
+      "title": "تعطيل الفرع يجمع أرصدة أصناف مختلفة فيخفي رصيداً موجباً والتزاماً سالباً",
+      "status": "IMPLEMENTED_REVIEWED_ACCEPTANCE_PENDING",
+      "owner": "session/audit-fixes-20261028",
+      "bundle": "branch",
+      "focusedTests": "branchAuditRemediation",
+      "independentReviewer": "independent_contract_review",
+      "originalAudit": {
+        "confirmation": [
+          {
+            "unit": "01",
+            "confirmation": "reproduced_on_isolated_mysql"
+          }
+        ],
+        "trigger": "فرع ثان غير فرع تسليم المتجر، به A=+10 وB=-10 (B يباع بالطلب)، مع بقاء فرع رئيسي نشط.",
+        "impact": "setBranchActive يرى SUM(quantity)=0 ويعطل الفرع مع بقاء الصنفين، فيخالف حارسه التشغيلي؛ لم تتغير كمية أو قيمة ولم نثبت خسارة نقدية.",
+        "proposedRemedy": "استعمل EXISTS لأي رصيد غير صفري عندvariant×branch؛ أضف فحص الالتزامات بالطريق والمستندات المفتوحة بحسب سياسة إقفال الفرع، واسمح بمسار تصفية حقيقي دون تصفير مصطنع.",
+        "evidence": [
+          {
+            "path": "server/services/branchService.ts",
+            "line": 201,
+            "needle": "COALESCE(SUM(${branchStock.quantity}), 0)",
+            "sha256": "80c1d224d3ea6cd5a87320d319e113c43dc8bfc99017e041aa1b0ebfd34c7ea4"
+          },
+          {
+            "path": "server/services/branchService.ts",
+            "line": 214,
+            "needle": "await tx.update(branches).set({ isActive })",
+            "sha256": "80c1d224d3ea6cd5a87320d319e113c43dc8bfc99017e041aa1b0ebfd34c7ea4"
+          }
+        ]
+      }
+    }
+  ]
+}

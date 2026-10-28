@@ -99,6 +99,7 @@ jobs:
           - 3306:3306
         options: >-
           --tmpfs /var/lib/mysql:rw,noexec,nosuid,size=1g
+          --label alroya.backup-client.mysql80-smoke=1
           --health-cmd="mysqladmin ping -h localhost -uroot"
           --health-interval=10s --health-timeout=5s --health-retries=10
     env:
@@ -162,6 +163,16 @@ jobs:
           # المتعقَّبة فتمرّ المقارنة الصارمة كاذبةً.
           test "$ran" -gt 0
           test "$((ran * 100))" -lt "$((total * 25))"
+
+      - name: تحقق عميل النسخ المثبت مع خادم MySQL 8.0 الفعلي
+        if: ${{ matrix.shard == 1 }}
+        env:
+          RUN_BACKUP_MYSQL80_SMOKE: "1"
+          BACKUP_SMOKE_CONTAINER: ${{ job.services.mysql.id }}
+          BACKUP_SMOKE_DATABASE_URL: mysql://root@127.0.0.1:3306/erp_backup_client_80_smoke_test
+        run: |
+          node scripts/provision-backup-client.mjs --isolated --pull
+          node --test scripts/lib/backup-client.mysql80.test.mjs
 
   # يعمل بالتوازي مع شرائح الاختبار: كان وضعه بعدها يضيف ٥-٧ دقائق كاملة إلى المسار
   # الحرج لكل PR ناجح، مع أن عمله مستقل تماماً عن نتائج Vitest.

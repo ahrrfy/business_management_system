@@ -26,6 +26,14 @@ async function seedEmp(opts: {
     type: "SALES",
   }).onDuplicateKeyUpdate({ set: { name: opts.branchName ?? "فرع التحدي التجريبي" } });
 
+  await db.insert(s.users).values({
+    id: 1,
+    openId: "challenger-wave5-admin",
+    role: "admin",
+    branchId,
+    isActive: true,
+  }).onDuplicateKeyUpdate({ set: { role: "admin", branchId, isActive: true } });
+
   await db.insert(s.employees).values({
     id: employeeId,
     branchId,

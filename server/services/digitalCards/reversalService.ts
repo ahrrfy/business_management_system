@@ -17,7 +17,7 @@
  * كلتاهما مديريّة وتُسجَّل في التدقيق، وكلتاهما ذرّية: إمّا الكلّ أو لا شيء.
  */
 import { TRPCError } from "@trpc/server";
-import { assertServiceOperationTx, type ServiceOperationActor } from "../authorization/operationAuthority";
+import { assertServiceOperationTx, loadOperationUserTx, type ServiceOperationActor, type StoredOperationSnapshot } from "../authorization/operationAuthority";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
 import {
@@ -141,6 +141,24 @@ async function lockDetails(
     });
   }
   return rows;
+}
+
+/** Non-financial decisions use the same invoice → details order as execution. */
+async function lockLossRefundInvoice(
+  tx: Tx,
+  invoiceId: number,
+  authority: StoredOperationSnapshot,
+): Promise<void> {
+  const [invoice] = await tx.select({ branchId: invoices.branchId })
+    .from(invoices).where(eq(invoices.id, invoiceId)).for("update").limit(1);
+  if (!invoice) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
+  if (authority.role !== "admin" && Number(invoice.branchId) !== Number(authority.branchId)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({
+      what: "تعذّر البتّ في ردّ الخسارة",
+      why: "الفاتورة تخصّ فرعاً آخر",
+      doThis: "اطلب المعالجة من إدارة فرع الفاتورة أو الإدارة المركزية",
+    }) });
+  }
 }
 
 type LockedInvoiceHeader = {
@@ -596,6 +614,8 @@ export async function requestLossRefund(
   const reason = input.reason.trim();
   if (reason.length < 3) throw new TRPCError({ code: "BAD_REQUEST", message: "اكتب سبباً واضحاً لردّ الخسارة" });
 
+  const authority = await loadOperationUserTx(tx, actor.userId);
+  await lockLossRefundInvoice(tx, input.invoiceId, authority);
   const details = await lockDetails(tx, input.invoiceId, input.detailIds);
   const sell = sumMoney(details.map((d) => d.sellPriceSnapshot));
   const share = sumMoney(details.map((d) => d.providerShareSnapshot));
@@ -629,9 +649,11 @@ export async function rejectLossRefund(
   actor: Actor & ServiceOperationActor,
 ): Promise<{ invoiceId: number; rejected: number }> {
   await assertServiceOperationTx(tx, actor, "digitalCards.reversal.rejectLossRefund");
+  const authority = await loadOperationUserTx(tx, actor.userId);
+  await lockLossRefundInvoice(tx, input.invoiceId, authority);
   const details = await lockDetails(tx, input.invoiceId, input.detailIds, "LOSS_REFUND_PENDING");
   const requesters = new Set(details.map((d) => Number(d.lossRefundRequestedBy)));
-  if (requesters.size === 1 && requesters.has(actor.userId) && !actor.isOwner) {
+  if (requesters.has(actor.userId) && !authority.isOwner) {
     throw new TRPCError({ code: "FORBIDDEN", message: "لا يبتّ في الطلب من قدّمه — يلزم مديرٌ آخر" });
   }
 
@@ -667,6 +689,7 @@ export async function lossRefund(
   actor: Actor & ServiceOperationActor,
 ): Promise<{ invoiceId: number; reversed: number; refunded: string; loss: string; outcome: ReversalOutcome }> {
   await assertServiceOperationTx(tx, actor, "digitalCards.reversal.lossRefund");
+  const authority = await loadOperationUserTx(tx, actor.userId);
 
   const prelocked = await prelockCashReversal(tx, input, actor, false);
 
@@ -696,7 +719,7 @@ export async function lossRefund(
   const details = await lockDetails(tx, input.invoiceId, input.detailIds, "LOSS_REFUND_PENDING");
   // فصل المهام: المُعتمِد ≠ الطالب. مالك النظام وحده مستثنى بصفته المرجع النهائي.
   const requesters = new Set(details.map((d) => Number(d.lossRefundRequestedBy)));
-  if (requesters.size === 1 && requesters.has(actor.userId) && !actor.isOwner) {
+  if (requesters.has(actor.userId) && !authority.isOwner) {
     throw new TRPCError({ code: "FORBIDDEN", message: "لا يعتمد ردّ الخسارة من طلبه — يلزم مديرٌ آخر" });
   }
   const reason = details[0]?.lossRefundReason ?? "";

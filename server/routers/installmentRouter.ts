@@ -7,7 +7,6 @@
 // treasuryManagerReadProcedure. عزل الفروع بنمط voucherRouter حرفياً: غير الأدمن المُسنَد
 // لفرع يُقيَّد بفرعه قراءةً وكتابةً؛ admin (أو مدير بلا فرع) يعبُر.
 import { TRPCError } from "@trpc/server";
-import { like } from "drizzle-orm";
 import { z } from "zod";
 import { logAudit } from "../services/auditService";
 import {
@@ -20,9 +19,6 @@ import {
   payLine,
 } from "../services/installmentService";
 import { listPendingInstallmentExternalPayments } from "../services/installment/payment";
-import { installmentLines } from "../../drizzle/schema";
-import { requireDb } from "../services/tx";
-import { escLike } from "../lib/sqlLike";
 import {
   confirmExternalPaymentAttempt,
   initiateExternalPaymentAttempt,
@@ -296,12 +292,7 @@ export const installmentRouter = router({
       return res;
     }),
 
-  /** قائمة الخطط بفلاتر — عزل فرع بنمط voucherRouter.list.
-   *  `q` (رقم خطة/رقم صك) و`from`/`to` (مدى تاريخ الإنشاء) غير مدعومَين في listPlans (خدمة
-   *  installmentService.ts خارج نطاق هذه الشريحة) — عند طلبهما نجلب صفحة واسعة (٢٠٠ = سقف الخدمة
-   *  الأقصى) بنفس فلاتر الفرع/العميل/الحالة القائمة، نُصفّي فوقها هنا، ثم نُرقّم يدوياً. أثرٌ جانبيّ
-   *  مقصود: بحثٌ محدود بأوّل ٢٠٠ خطة مطابقة للفلاتر الأساسية (كافٍ لحجم العمل الحاليّ؛ يتطلّب امتداد
-   *  listPlans لحجمٍ أكبر). بلا q/from/to السلوك مطابق تماماً للسابق (تفويض مباشر لـlistPlans). */
+  /** قائمة الخطط: كل الفلاتر في SQL قبل الصفحة المحدودة، بنفس مصدر التصدير. */
   list: treasuryManagerReadProcedure
     .use(requireAtomicPermission("treasury.installment.view"))
     .input(
@@ -321,42 +312,7 @@ export const installmentRouter = router({
     .query(async ({ input, ctx }) => {
       const restrict = restrictionFor(ctx.user);
       const branchId = restrict ?? input?.branchId;
-      const customerId = input?.customerId;
-      const status = input?.status;
-      const q = input?.q?.trim();
-      const from = input?.from;
-      const to = input?.to;
-      const limit = input?.limit ?? 50;
-      const offset = input?.offset ?? 0;
-
-      if (!q && !from && !to) {
-        return listPlans({ branchId, customerId, status, limit, offset });
-      }
-
-      const superset = await listPlans({ branchId, customerId, status, limit: 200, offset: 0 });
-      let rows = superset.rows;
-
-      if (q) {
-        const db = requireDb();
-        const lineMatches = await db
-          .select({ planId: installmentLines.planId })
-          .from(installmentLines)
-          .where(like(installmentLines.checkNumber, `%${escLike(q)}%`))
-          .limit(500);
-        const matchedPlanIds = new Set(lineMatches.map((l) => Number(l.planId)));
-        const qLower = q.toLowerCase();
-        rows = rows.filter(
-          (r) =>
-            matchedPlanIds.has(r.id) ||
-            String(r.id).includes(q) ||
-            r.customerName?.toLowerCase().includes(qLower),
-        );
-      }
-      if (from) rows = rows.filter((r) => new Date(r.createdAt).toISOString().slice(0, 10) >= from);
-      if (to) rows = rows.filter((r) => new Date(r.createdAt).toISOString().slice(0, 10) <= to);
-
-      const page = rows.slice(offset, offset + limit);
-      return { rows: page, hasMore: offset + limit < rows.length };
+      return listPlans({ ...input, branchId });
     }),
 
   /** تفاصيل خطة بأقساطها — عزل فرع بنمط voucherRouter.get (داخل الخدمة). */

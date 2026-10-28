@@ -36,7 +36,7 @@ describe("Leave Accrual Service (Article 67 Iraqi Labor Law)", () => {
       hireDate: "2026-01-01",
       isActive: true,
       employmentStatus: "active",
-      annualLeaveBalance: 10,
+      annualLeaveBalance: "10.00",
     });
 
     // موظف نشط 2: مستحق (عُين في 15 آب)
@@ -48,7 +48,7 @@ describe("Leave Accrual Service (Article 67 Iraqi Labor Law)", () => {
       hireDate: "2026-08-15",
       isActive: true,
       employmentStatus: "active",
-      annualLeaveBalance: 0,
+      annualLeaveBalance: "0.00",
     });
 
     // موظف غير نشط: مفصول (لا يستحق)
@@ -60,7 +60,7 @@ describe("Leave Accrual Service (Article 67 Iraqi Labor Law)", () => {
       hireDate: "2025-01-01",
       isActive: false,
       employmentStatus: "terminated",
-      annualLeaveBalance: 5,
+      annualLeaveBalance: "5.00",
     });
 
     // موظف تعيين مستقبلي: بعد نهاية شهر أيلول (لا يستحق لشهر 9)
@@ -72,7 +72,7 @@ describe("Leave Accrual Service (Article 67 Iraqi Labor Law)", () => {
       hireDate: "2026-10-01",
       isActive: true,
       employmentStatus: "active",
-      annualLeaveBalance: 0,
+      annualLeaveBalance: "0.00",
     });
 
     // تنفيذ التدوير لشهر 2026-09

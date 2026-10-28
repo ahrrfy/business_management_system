@@ -63,6 +63,9 @@ export interface ListPlansFilter {
   branchId?: number | null;
   customerId?: number | null;
   status?: PlanStatus | null;
+  q?: string;
+  from?: string;
+  to?: string;
   limit?: number;
   offset?: number;
 }

@@ -2477,7 +2477,10 @@ async function deploy(expectedHead) {
         runPreflight(provisional, releaseTools),
       );
 
-      step("4/12 إنشاء نسخة احتياطية", () => run("pnpm", ["db:backup"]));
+      step("4/12 تجهيز عميل النسخ ثم إنشاء نسخة احتياطية", () => {
+        run(process.execPath, ["scripts/provision-backup-client.mjs", "--pull"]);
+        run("pnpm", ["db:backup"]);
+      });
       step("5/12 تطبيق الهجرات الآمنة وإصلاح الاستقبال والتوصيل", () => {
         run("pnpm", ["db:migrate:safe"]);
         run("node", [
