@@ -111,7 +111,8 @@ export async function getARAging(opts: { branchId?: number; limit?: number | nul
   );
   const branchFilter = opts.branchId ? sql`AND i.branchId = ${opts.branchId}` : sql``;
   // بطاقة العميل currentBalance على مستوى الشركة. عند تقرير فرع نعيد بناء رصيده من
-  // القيود ذات المصدر الفرعي، مع fallback لمتبقي الفواتير للبيانات التاريخية السابقة للدفتر.
+  // القيود ذات المصدر الفرعي. عند غياب الدفتر لا تتجاوز الفواتير القديمة الرصيد
+  // الدفتري الموجب للشركة؛ لا نعيد ديناً سُدد ولم تُحدّث تخصيصاته القديمة بعد.
   const branchBalanceJoin = opts.branchId
     ? sql`LEFT JOIN (
         SELECT ae.customerId,
@@ -133,7 +134,7 @@ export async function getARAging(opts: { branchId?: number; limit?: number | nul
       ) cb ON cb.customerId = c.id`
     : sql``;
   const currentBalanceExpr = opts.branchId
-    ? sql`COALESCE(cb.balance, COALESCE(SUM(${openBalance}), 0))`
+    ? sql`COALESCE(cb.balance, GREATEST(LEAST(c.currentBalance, COALESCE(SUM(${openBalance}), 0)), 0))`
     : sql`c.currentBalance`;
   const branchGroup = opts.branchId ? sql`, cb.balance` : sql``;
   const balanceHaving = opts.branchId

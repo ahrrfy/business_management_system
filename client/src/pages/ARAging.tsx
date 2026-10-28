@@ -11,7 +11,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { FilterField } from "@/components/list";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { exportRows } from "@/lib/export";
-import { buildAgingOutput, AGING_OUTPUT_BUCKETS as BUCKETS } from "@/lib/agingOutput";
+import { AR_AGING_LEGACY_BASIS, buildAgingOutput, AGING_OUTPUT_BUCKETS as BUCKETS } from "@/lib/agingOutput";
 import { printARAging } from "@/lib/printing/printTemplates";
 import { D, fmt as fmtMoney, fmtAr } from "@/lib/money";
 import { CustomerDossierDrawer } from "@/components/crm/CustomerDossierDrawer";
@@ -366,6 +366,7 @@ export default function ARAging() {
         }
       />
 
+      <p className="text-xs text-muted-foreground">{AR_AGING_LEGACY_BASIS}</p>
       <Card>
         <CardContent className="flex flex-wrap items-end gap-2.5 p-2.5">
           {canCrossBranches && (

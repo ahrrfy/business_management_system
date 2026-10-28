@@ -581,11 +581,18 @@ describe("cash-nonnegative-core — دلالة REVERSED موحّدة", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-08-16T22:30:00.000Z"));
     try {
-      await createVoucher({
+      const created = await createVoucher({
         voucherType: "RECEIPT", branchId: 1, amount: "100.00", paymentMethod: "CASH",
         partyType: "SUPPLIER", partyId: 1, description: "قبض قرب منتصف الليل",
         clientRequestId: "treasury-utc-day-boundary",
       }, admin);
+
+      // Date fake timers do not move MySQL CURRENT_TIMESTAMP. Align the cash-event
+      // fixture with the simulated instant; voucherDate alone is not cash timing.
+      const [receipt] = await db().select().from(s.receipts).where(eq(s.receipts.id, created.receiptId));
+      expect(receipt.voucherDate!.toISOString().slice(0, 10)).toBe("2026-08-16");
+      await db().update(s.receipts).set({ createdAt: new Date(), executedAt: new Date() })
+        .where(eq(s.receipts.id, created.receiptId));
 
       expect(await getCashFlow({ branchId: 1, from: "2026-08-16", to: "2026-08-16" })).toMatchObject({
         totalIn: "100.00", totalOut: "0.00", net: "100.00",

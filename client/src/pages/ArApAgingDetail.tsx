@@ -7,6 +7,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { Link, useLocation } from "wouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
+import { AR_AGING_LEGACY_BASIS } from "@/lib/agingOutput";
 import { Card, CardContent } from "@/components/ui/card";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { DataTable } from "@/components/data-table/DataTable";
@@ -153,6 +154,7 @@ export default function ArApAgingDetail() {
     exportRows(rows, {
       filename: `تفصيل-أعمار-${isAR ? "الذمم-المدينة" : "الذمم-الدائنة"}`,
       meta: [
+        ...(isAR ? [{ label: "أساس الرصيد القديم", value: AR_AGING_LEGACY_BASIS }] : []),
         { label: "أساس العرض", value: "صافي الأعمار بعد التخصيصات المعتمدة وخصم الأرصدة غير المخصصة عرضيًا وفق FIFO؛ لا تعديل على المستندات" },
         { label: "أرصدة غير مخصصة مخصومة عرضيًا", value: fmtAr(totals?.unallocatedCredit ?? "0") },
       ],
@@ -171,7 +173,7 @@ export default function ArApAgingDetail() {
   function onPrint() {
     printReportDoc({
       title: isAR ? "تفصيل أعمار الذمم المدينة" : "تفصيل أعمار الذمم الدائنة",
-      note: "الصافي بعد التخصيصات المعتمدة وخصم الأرصدة غير المخصصة من الأقدم عرضيًا وفق منهج الملخص. لا ينشئ هذا الكشف تخصيصًا أو سندًا.",
+      note: `الصافي بعد التخصيصات المعتمدة وخصم الأرصدة غير المخصصة من الأقدم عرضيًا وفق منهج الملخص. لا ينشئ هذا الكشف تخصيصًا أو سندًا. ${isAR ? AR_AGING_LEGACY_BASIS : ""}`,
       headerExtra: [
         { label: "النوع", value: SIDE_LABEL[side] },
         { label: "الفرع", value: branchLabel },
@@ -209,7 +211,7 @@ export default function ArApAgingDetail() {
     <ReportShell
       title="تفصيل أعمار الذمم"
       description="كل مستندٍ مستحقّ منفرداً (فاتورة/أمر شراء) بعدد أيّام تأخّره وشريحته العمرية ومتبقّيه."
-      note="التخصيصات المعتمدة محفوظة. الأرصدة غير المخصصة تُخصم عرضيًا من الأقدم وفق منهج الملخص، وتظهر منفصلة؛ لا يغيّر عرض التقرير رصيد فاتورة أو ينشئ تخصيصًا أو سندًا."
+      note={`التخصيصات المعتمدة محفوظة. الأرصدة غير المخصصة تُخصم عرضيًا من الأقدم وفق منهج الملخص، وتظهر منفصلة؛ لا يغيّر عرض التقرير رصيد فاتورة أو ينشئ تخصيصًا أو سندًا. ${isAR ? AR_AGING_LEGACY_BASIS : ""}`}
       kpis={kpis}
       onExport={onExport}
       onPrint={onPrint}

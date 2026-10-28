@@ -137,7 +137,7 @@ export async function getAPAging(
         AND ${isSupplierApLedgerEntrySql(AE, { includeOpening: false })}
       GROUP BY ae.purchaseOrderId
     ) gl ON gl.purchaseOrderId = po.id
-    WHERE s.isActive = TRUE
+    -- Disabling a supplier does not extinguish an outstanding payable or advance.
     GROUP BY s.id, s.name, s.phone
     -- currentBalance <> 0 (لا > 0): يُظهر أيضاً الرصيد المدين للمورّد (دفعة مقدّمة «لنا عليه»/رصيد
     -- افتتاحيّ) فلا يختفي أيّ طرفٍ له رصيدٌ غير صفريّ من «الذمم». الموجب دائن، السالب مدين (unbucketed موقَّع).

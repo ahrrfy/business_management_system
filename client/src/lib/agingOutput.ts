@@ -1,6 +1,8 @@
 import type { ExportColumn } from "./export";
 import { D } from "./money";
 
+export const AR_AGING_LEGACY_BASIS = "عند غياب دفتر الفرع للمستندات القديمة، يُعرض تقدير محافظ محدود برصيد الشركة الموجب؛ لا يثبت تخصيصًا أو نقل رصيد بين الفروع. الرصيد الافتتاحي وغير المفوتر خارج دلاء الأعمار.";
+
 export const AGING_OUTPUT_BUCKETS = [
   { key: "d0_30", label: "0–30 يوم" },
   { key: "d31_60", label: "31–60 يوم" },
@@ -38,6 +40,7 @@ export function buildAgingOutput<T extends AgingOutputRow>(
 ) {
   const isAR = options.kind === "AR";
   const meta: Meta[] = [{ label: "الفرع", value: options.branchName }];
+  if (isAR) meta.push({ label: "أساس الرصيد القديم", value: AR_AGING_LEGACY_BASIS });
   if (options.selected) meta.push({ label: "النطاق", value: "الصفوف المحددة" });
   if (options.query.trim())
     meta.push({ label: "البحث", value: options.query.trim() });

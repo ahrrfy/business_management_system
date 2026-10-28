@@ -227,6 +227,18 @@ describe("owned full-source supplier book settlement", () => {
     expect(detail.rows).toMatchObject([{ id: 1, unpaid: "40.00" }]);
     expect(await originals()).toEqual(before);
     expect(await db().select().from(s.supplierBookSettlementAllocations)).toEqual(allocationRows);
+
+    await db().update(s.suppliers).set({ isActive: false }).where(eq(s.suppliers.id, 1));
+    const inactiveBefore = await originals();
+    for (const branchId of [1, undefined]) {
+      const inactiveSummary = await getAPAging({ branchId });
+      const inactiveDetail = await getArApAgingDetail({ side: "AP", branchId });
+      expect(inactiveSummary.find(row => row.supplierId === 1)?.unpaidTotal).toBe("40.00");
+      expect(inactiveDetail.totals).toMatchObject({ unpaid: "40.00", unallocatedCredit: "0.00" });
+      expect(inactiveDetail.rows).toMatchObject([{ id: 1, unpaid: "40.00" }]);
+    }
+    expect(await originals()).toEqual(inactiveBefore);
+    expect(await db().select().from(s.supplierBookSettlementAllocations)).toEqual(allocationRows);
   });
   it("replays maximum accepted scope request keys within the persisted audit width", async () => {
     await fixture();
