@@ -3,8 +3,11 @@ import { Router } from "wouter";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   PurchasePaymentEvidence,
+  purchasePaymentEvidencePrintMeta,
   purchasePaymentEvidencePrintText,
 } from "@/components/purchases/PurchasePaymentEvidence";
+import { docMeta } from "@/lib/printing/docHtml";
+import { buildPurchaseInvoiceV2Html } from "@/lib/printing/printTemplatesV2";
 import { beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import * as s from "../../../drizzle/schema";
@@ -210,6 +213,64 @@ async function bookAllocation(targetOrderId = 1) {
   return { id, sourceId, allocationId, invoiceId };
 }
 
+const exchangeActor = {
+  userId: 7,
+  branchId: 1,
+  role: "manager",
+  isOwner: true,
+};
+async function exchangeSettlement() {
+  await db()
+    .update(s.suppliers)
+    .set({ currentBalance: "100", currentBalanceUsd: "1" })
+    .where(eq(s.suppliers.id, 1));
+  await db()
+    .update(s.purchaseOrders)
+    .set({ agreedCurrency: "USD", usdTotal: "1", agreedRate: "100" })
+    .where(eq(s.purchaseOrders.id, 1));
+  const house = await createExchangeHouse(
+    { name: "Evidence exchange" },
+    exchangeActor,
+  );
+  return settleSupplierViaExchange(
+    {
+      exchangeHouseId: house.id,
+      branchId: 1,
+      supplierId: 1,
+      purchaseOrderId: 1,
+      currency: "IQD",
+      walletAmount: "100",
+      settledUsd: "1",
+      confirmNegative: true,
+    },
+    exchangeActor,
+  );
+}
+
+/** The two purchase print paths consume meta sections and invoice payment text. */
+function renderedPaymentEvidence(
+  rows: Awaited<ReturnType<typeof loadPurchasePaymentEvidence>>,
+) {
+  const evidence = { tender: null, paymentReceipts: rows };
+  return [
+    docMeta(purchasePaymentEvidencePrintMeta(evidence)),
+    buildPurchaseInvoiceV2Html({
+      invoiceNumber: "EVIDENCE-PO-1",
+      invoiceDate: "2026-01-02",
+      paymentMethod: purchasePaymentEvidencePrintText(evidence),
+      items: [],
+      subtotal: "100.00",
+      total: "100.00",
+    }),
+    renderToStaticMarkup(
+      React.createElement(Router, {
+        ssrPath: "/",
+        children: React.createElement(PurchasePaymentEvidence, evidence),
+      }),
+    ),
+  ];
+}
+
 describe("purchase receipt evidence projection", () => {
   it("scopes a prior source with more than500 other purchase allocations before the evidence bound", async () => {
     const prior = await bookAllocation();
@@ -279,43 +340,16 @@ describe("purchase receipt evidence projection", () => {
   });
 
   it("projects the real PO-linked exchange OUT and its verified reversal IN without writing evidence", async () => {
-    const actor = { userId: 7, branchId: 1, role: "manager", isOwner: true };
-    const reverser = { ...actor, userId: 8 };
-    await db()
-      .insert(s.users)
-      .values({
-        id: 8,
-        openId: "evidence-reverser",
-        name: "Reverser",
-        role: "manager",
-        branchId: 1,
-        isOwner: true,
-      });
-    await db()
-      .update(s.suppliers)
-      .set({ currentBalance: "100", currentBalanceUsd: "1" })
-      .where(eq(s.suppliers.id, 1));
-    await db()
-      .update(s.purchaseOrders)
-      .set({ agreedCurrency: "USD", usdTotal: "1", agreedRate: "100" })
-      .where(eq(s.purchaseOrders.id, 1));
-    const house = await createExchangeHouse(
-      { name: "Evidence exchange" },
-      actor,
-    );
-    const settled = await settleSupplierViaExchange(
-      {
-        exchangeHouseId: house.id,
-        branchId: 1,
-        supplierId: 1,
-        purchaseOrderId: 1,
-        currency: "IQD",
-        walletAmount: "100",
-        settledUsd: "1",
-        confirmNegative: true,
-      },
-      actor,
-    );
+    const reverser = { ...exchangeActor, userId: 8 };
+    await db().insert(s.users).values({
+      id: 8,
+      openId: "evidence-reverser",
+      name: "Reverser",
+      role: "manager",
+      branchId: 1,
+      isOwner: true,
+    });
+    const settled = await exchangeSettlement();
     const before = await db().select().from(s.receipts);
     const projected = await loadPurchasePaymentEvidence(db(), order, null);
     expect(projected).toHaveLength(1);
@@ -328,6 +362,14 @@ describe("purchase receipt evidence projection", () => {
       referenceNumber: settled.txnNumber,
       status: "COMPLETED",
     });
+    for (const html of renderedPaymentEvidence(projected)) {
+      expect(html).toContain(`صرف ${settled.voucherNumber}`);
+      expect(html).toContain(settled.txnNumber);
+      expect(html).toContain("صيرفة");
+      expect(html).toContain("100");
+      expect(html).not.toContain("استرداد");
+      expect(html).not.toContain("لا توجد سندات سداد");
+    }
     expect(await db().select().from(s.receipts)).toEqual(before);
     await reverseExchangeTransaction(settled.txnId, reverser);
     const afterReverse = await db().select().from(s.receipts);
@@ -347,6 +389,14 @@ describe("purchase receipt evidence projection", () => {
       referenceNumber: `REV-EX-${settled.txnNumber}`,
       status: "COMPLETED",
     });
+    for (const html of renderedPaymentEvidence(reversed)) {
+      expect(html).toContain(`صرف ${settled.voucherNumber} (معكوس)`);
+      expect(html).toContain(
+        `استرداد ${reversed[1]!.voucherNumber ?? `#${reversed[1]!.id}`}`,
+      );
+      expect(html).toContain(`REV-EX-${settled.txnNumber}`);
+      expect(html).not.toContain("لا توجد سندات سداد");
+    }
     expect(await db().select().from(s.receipts)).toEqual(afterReverse);
     await db()
       .update(s.receipts)
@@ -356,6 +406,32 @@ describe("purchase receipt evidence projection", () => {
       loadPurchasePaymentEvidence(db(), order, null),
     ).rejects.toThrow(/عكس الصيرفة/);
   });
+  it("rejects an IN receipt linked by EXCHANGE_SETTLE instead of reporting it as payment", async () => {
+    const settled = await exchangeSettlement();
+    await db()
+      .update(s.receipts)
+      .set({ direction: "IN" })
+      .where(eq(s.receipts.id, settled.receiptId!));
+    await expect(
+      loadPurchasePaymentEvidence(db(), order, null),
+    ).rejects.toThrow(/اتجاهه أو قيمته/);
+  });
+  it.each([
+    { partyId: 2 },
+    { branchId: 2 },
+    { approvalStatus: "PENDING_APPROVAL" as const },
+    { status: "PENDING" as const },
+  ])(
+    "excludes exchange receipts outside approved supplier evidence: %j",
+    async (change) => {
+      const settled = await exchangeSettlement();
+      await db()
+        .update(s.receipts)
+        .set(change)
+        .where(eq(s.receipts.id, settled.receiptId!));
+      expect(await loadPurchasePaymentEvidence(db(), order, null)).toEqual([]);
+    },
+  );
   it("returns original card receipt and PO-linked refund history in deterministic order", async () => {
     const original = await receipt({ status: "REVERSED" });
     const refund = await receipt({ direction: "IN", amount: "25.00" });
