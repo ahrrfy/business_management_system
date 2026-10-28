@@ -52,8 +52,8 @@ export interface OperationPermission {
   supportsRecordScope?: boolean;
 }
 
-export const OPERATION_PERMISSIONS: readonly OperationPermission[] =
-  GENERATED_OPERATION_PERMISSIONS as readonly OperationPermission[];
+const CASHIER_PROMOTED_LIFECYCLE_PATHS = new Set<string>(["delivery.fulfillment.aftercare.approve","delivery.fulfillment.aftercare.approveSettlement","delivery.fulfillment.aftercare.cancel","delivery.fulfillment.aftercare.cancelExecution","delivery.fulfillment.aftercare.confirm","delivery.fulfillment.aftercare.declareReturn","delivery.fulfillment.aftercare.dispatch","delivery.fulfillment.aftercare.payFee","delivery.fulfillment.aftercare.prepare","delivery.fulfillment.aftercare.resolve","delivery.fulfillment.aftercare.rightsConfirmRefund","delivery.fulfillment.aftercare.rightsPost","delivery.fulfillment.aftercare.settlementPost","delivery.fulfillment.aftercare.settlementPreview","delivery.fulfillment.aftercare.settlementRequest","delivery.fulfillment.aftercare.settlementWithdraw","delivery.fulfillment.charges.approve","delivery.fulfillment.charges.complete","delivery.fulfillment.charges.refund","delivery.fulfillment.charges.refundCourierExcess","delivery.fulfillment.charges.refundExcess","delivery.recoverWriteOff","storeAdmin.orders.dispatch","workOrders.assign","workOrders.update"]); export const OPERATION_PERMISSIONS: readonly OperationPermission[] =
+  (GENERATED_OPERATION_PERMISSIONS as readonly OperationPermission[]).map((op) => CASHIER_PROMOTED_LIFECYCLE_PATHS.has(op.path) && !op.roles.includes("cashier") ? { ...op, roles: ["cashier", ...op.roles] } : op);
 
 const operationByPath = new Map<string, OperationPermission>();
 const operationByKey = new Map<string, OperationPermission>();
@@ -325,6 +325,34 @@ const COMPANY_FINANCE_DOMAINS = new Set([
   "supplierPayments",
 ]);
 
+/**
+ * Order-lifecycle record scopes granted at BRANCH level to cashier profiles so a
+ * cashier can print, inspect, advance, and settle colleague/online/reception orders
+ * in the same branch without opening personal shifts, expenses, or digital-card intents.
+ */
+export const CASHIER_BRANCH_LIFECYCLE_SCOPE_PATHS = new Set<string>([
+  "documentDelivery.downloadPdf",
+  "documentDelivery.readiness",
+  "documentDelivery.sendWhatsAppPdf",
+  "invoicePrinting.requestPrint",
+  "invoicePrinting.requestReprint",
+  "sales.get",
+  "sales.lineInsights",
+  "sales.list",
+  "sales.listPage",
+  "sales.listSummary",
+  "sales.lookupForCorrection",
+  "sales.reissue",
+  "sales.salespeople",
+  "salesControl.requestExchange",
+  "workOrders.cancellationRefundStatus",
+  "workOrders.counts",
+  "workOrders.list",
+  "workOrders.markReady",
+  "workOrders.setKanbanState",
+  "workOrders.start",
+]);
+
 export function legacyOperationPolicy(
   role: string,
   resolvedLegacyModules: PermissionMap,
@@ -353,7 +381,12 @@ export function legacyOperationPolicy(
       legacyAllowed(role, resolvedLegacyModules, override, operation);
     if (operation.supportsRecordScope === true) {
       recordScopes[operation.key] =
-        role === "admin" || role === "manager" ? "BRANCH" : "OWN";
+        role === "admin" ||
+        role === "manager" ||
+        (role === "cashier" &&
+          CASHIER_BRANCH_LIFECYCLE_SCOPE_PATHS.has(operation.path))
+          ? "BRANCH"
+          : "OWN";
     }
   }
   const seesCost =
@@ -498,6 +531,7 @@ export function resolveOperationPolicy(
     "delivery.dispatchByBarcode",
     "delivery.dispatchInvoice",
     "delivery.dispatch",
+    "storeAdmin.orders.dispatch",
     "delivery.cancelAssignment",
     "delivery.reassignConsignment",
     "delivery.declareReturn",
@@ -523,6 +557,7 @@ export function resolveOperationPolicy(
           "delivery.dispatchByBarcode",
           "delivery.dispatchInvoice",
           "delivery.dispatch",
+          "storeAdmin.orders.dispatch",
           "delivery.fulfillment.requests.release",
           "delivery.fulfillment.aftercare.dispatch",
         ],

@@ -4,6 +4,7 @@
 // ليس إيصال دفع» في الرأس والذيل، و**منعٌ بنيويّ** لسطرَي «مدفوع» و«الفكّة» (لا وجود لهما
 // في الشكل أصلاً). printReceipt نفسه يرفض أرقام DRF- (الحارس المرافق).
 import { printDoc } from "./print";
+import type { PrintWindowOptions } from "./brand";
 import { D, round2 } from "@/lib/money";
 import { fmtQty } from "@shared/quantityFormat";
 
@@ -31,7 +32,7 @@ export interface DepositReceiptData {
   cashierName?: string | null;
 }
 
-export async function printDepositReceipt(d: DepositReceiptData) {
+export async function printDepositReceipt(d: DepositReceiptData, options?: PrintWindowOptions) {
   // ٨/٨ (طلب المالك: أوضح وأسمك): الرقم الأهمّ للزبون هو **العربون المقبوض الآن** — يُجعَل آخر
   // إجماليّ ليأخذ الخطّ الأكبر البارز (٤٤px) في الراسم؛ وقيمة الطلب/المقبوض/المتبقّي سياقٌ أصغر.
   // «المتبقّي» يُضاف شفافيةً (طلب المالك: لا يتساءل الزبون) — قيمة الطلب ناقص إجمالي المقبوض.
@@ -58,10 +59,10 @@ export async function printDepositReceipt(d: DepositReceiptData) {
       { label: "العربون المقبوض الآن", value: d.amount },
     ],
     footer: "يُستردّ العربون بطريقة قبضه حصراً وبهذا السند — احتفظ به حتى استلام الطلب.",
-  });
+  }, options);
 }
 
-export async function printDraftTicket(d: DraftTicketData) {
+export async function printDraftTicket(d: DraftTicketData, options?: PrintWindowOptions) {
   return printDoc({
     kind: "receipt",
     title: "مسوّدة طلب — غير محاسَبة",
@@ -79,5 +80,5 @@ export async function printDraftTicket(d: DraftTicketData) {
       d.notes?.trim() || null,
       "طلبٌ غير محاسَب — ليس إيصال دفع. الأسعار تقديرية حتى التثبيت.",
     ].filter(Boolean).join("\n"),
-  });
+  }, options);
 }

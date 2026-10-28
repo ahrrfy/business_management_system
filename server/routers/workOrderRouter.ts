@@ -1682,7 +1682,7 @@ export const workOrderRouter = router({
    * ويشترط `role === "print_operator"` حرفياً بينما الأدوار تُحلّ عبر `permissionsOverride`،
    * وبلا سببٍ عند النقل بعد بدء التنفيذ، وبلا `oldValue` فلا يُعرف مِمَّن نُقل الأمر.
    */
-  assign: workordersManagerProcedure
+  assign: workordersCashierProcedure
     .input(
       z.object({
         workOrderId: z.number().int().positive(),
@@ -2175,7 +2175,7 @@ export const workOrderRouter = router({
       return res;
     }),
 
-  update: workordersManagerProcedure
+  update: workordersCashierProcedure
     .input(
       z.object({
         workOrderId: z.number().int().positive(),

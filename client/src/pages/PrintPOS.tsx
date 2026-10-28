@@ -8,24 +8,15 @@ import { confirm } from "@/lib/confirm";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { fmtDate, fmtDateTime, fmtTime } from "@/lib/date";
 import { D, roundCashIQD, formatIqd } from "@/lib/money";
-import {
-  printShiftOpen, openCashDrawer, isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter,
-  getServerBridgeStatus, serverPrintTest,
-} from "@/lib/printing/print";
-import { printShippingLabel } from "@/lib/printing/shippingLabel";
+import { printShiftOpen, openCashDrawer, isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter, getServerBridgeStatus, serverPrintTest } from "@/lib/printing/print";
+import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
+import { preopenShippingLabelWindow, printShippingLabel, resolveShippingLabelPaymentState } from "@/lib/printing/shippingLabel";
 import { isCustomPriceSku } from "@/lib/printServices";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { useOfflineCatalogSync } from "@/lib/offline/catalogSync";
 import { cachePrintServices, readCachedPrintServices } from "@/lib/offline/printServicesCache";
-import {
-  allocateOfflineReceiptNumber,
-  assertCanCapture,
-  enqueueOfflineItem,
-  getDeviceCode,
-  isOfflineSaleEnabled,
-  type OfflinePrintSalePayload,
-} from "@/lib/offline/outbox";
+import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineItem, getDeviceCode, isOfflineSaleEnabled, type OfflinePrintSalePayload } from "@/lib/offline/outbox";
 import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -515,10 +506,11 @@ export default function PrintPOS() {
       // الثابت يجعل الترحيل idempotent لو كان الطلب قد وصل الخادم فعلاً قبل انقطاع الردّ.
       if (code == null) {
         void captureOfflinePrintSale(pendingRef.current?.isCredit === false).then((captured) => {
-          if (!captured) setMessage({ kind: "err", text: e.message });
-        });
+          if (!captured) { releaseReservedPrintWindow(); setMessage({ kind: "err", text: e.message }); }
+        }).catch(() => { releaseReservedPrintWindow(); setMessage({ kind: "err", text: e.message }); });
         return;
       }
+      releaseReservedPrintWindow();
       // بوّابات الاعتماد على هذه القناة ترمي FORBIDDEN لا PRECONDITION_FAILED (بيعٌ تحت التكلفة،
       // وانحرافُ السعر اليدويّ H6) ⇒ مطابقةُ الرمز وحدها كانت تُظهر خطأً جامداً بلا حوارِ موافقة،
       // فيعجز كاشير الطباعة عن إتمام بيعٍ مشروعٍ باعتماد مدير. نطابق العبارة الجامعة كما في POS.
@@ -655,7 +647,7 @@ export default function PrintPOS() {
         shiftQ.refetch(),
       ]);
     },
-    onError: (e) => setMessage({ kind: "err", text: e.message || "فشل تعديل الطلب المحجوز" }),
+    onError: (e) => { releaseReservedPrintWindow(); setMessage({ kind: "err", text: e.message || "فشل تعديل الطلب المحجوز" }); },
   });
 
   function handleEditHeldOrder(order: HeldSaleOrder) {
@@ -749,6 +741,8 @@ export default function PrintPOS() {
    * يخصمها بـallowNegative أصلاً، فالاستهلاك يبقى متعقَّباً حتى لو نفدت المادة دفترياً.
    */
   async function captureOfflinePrintSale(forceFullPayment: boolean): Promise<boolean> {
+    let readyToPrint = false;
+    try {
     if (checkoutExtraTotal(tab.extraCharges).gt(0)) {
       setMessage({
         kind: "err",
@@ -840,10 +834,12 @@ export default function PrintPOS() {
       kind: "ok",
       text: `بيع دون اتصال — إيصال مؤقّت ${receiptNumber}. الرقم الرسميّ يصدر تلقائياً عند عودة الاتصال.`,
     });
+    readyToPrint = true;
     void printAuthorizedReceipt(rec).then((printed) => {
       if (!printed.ok) setMessage({ kind: "err", text: `حُفظ الإيصال المؤقت ${receiptNumber}، لكن حجب المتصفح نافذة الطباعة` });
-    }).catch(() => { /* فشل الطابعة لا يُلغي التقاطاً التزم محلياً */ });
+    }).catch(() => { releaseReservedPrintWindow(); /* فشل الطابعة لا يُلغي التقاطاً التزم محلياً */ });
     return true;
+    } finally { if (!readyToPrint) releaseReservedPrintWindow(); }
   }
 
   function submit(forceFullPayment: boolean, approval?: ManagerApprovalInput, isReservation?: boolean) {
@@ -852,7 +848,7 @@ export default function PrintPOS() {
       return;
     }
     if (!shift || !cart.length || sale.isPending || correctSaleMut.isPending) return;
-    setMessage(null);
+    reservePrintWindow(); setMessage(null);
 
     // إذا كانت هناك فاتورة محجوزة قيد التعديل
     if (tab.editingInvoice) {
@@ -885,29 +881,16 @@ export default function PrintPOS() {
     }
 
     if (offline) {
-      if (isReservation || isSplitPayment) {
-        setMessage({ kind: "err", text: "الدفع عند الاستلام والبيع الآجل والدفع المقسّم يتطلّب الاتصال بالخادم." });
-        return;
-      }
+      if (isReservation || isSplitPayment) { releaseReservedPrintWindow(); setMessage({ kind: "err", text: "الدفع عند الاستلام والبيع الآجل والدفع المقسّم يتطلّب الاتصال بالخادم." }); return; }
       void captureOfflinePrintSale(forceFullPayment);
       return;
     }
 
     if (isSplitPayment) {
-      if (!splitLegsValid) {
-        setMessage({ kind: "err", text: splitNonCashOverpay ? "مجموع الدفعات غير النقدية يتجاوز إجمالي الفاتورة." : "أكمل مبالغ الدفعات وثبّت مراجع الدفعات غير النقدية أولاً." });
-        return;
-      }
-      const splitSub = buildPrintSplitSubmitPayload({
-        cart, splitLegs, total, isReservation: Boolean(isReservation),
-        customerName: selectedCustomer?.name ?? (tab.contactName || undefined),
-      });
-      if (isReservation && tab.customerId == null && !tab.contactName.trim() && !tab.contactPhone.trim()) {
-        setMessage({ kind: "err", text: "الدفع عند الاستلام يتطلّب تحديد عميل مسجل أو إدخال اسم/هاتف الزبون." }); return;
-      }
-      if (!isReservation && splitSub.isCredit && tab.customerId == null) {
-        setMessage({ kind: "err", text: "البيع الآجل يتطلّب اختيار عميل مسجّل ذو ذمة وحساب." }); return;
-      }
+      if (!splitLegsValid) { releaseReservedPrintWindow(); setMessage({ kind: "err", text: splitNonCashOverpay ? "مجموع الدفعات غير النقدية يتجاوز إجمالي الفاتورة." : "أكمل مبالغ الدفعات وثبّت مراجع الدفعات غير النقدية أولاً." }); return; }
+      const splitSub = buildPrintSplitSubmitPayload({ cart, splitLegs, total, isReservation: Boolean(isReservation), customerName: selectedCustomer?.name ?? (tab.contactName || undefined) });
+      if (isReservation && tab.customerId == null && !tab.contactName.trim() && !tab.contactPhone.trim()) { releaseReservedPrintWindow(); setMessage({ kind: "err", text: "الدفع عند الاستلام يتطلّب تحديد عميل مسجل أو إدخال اسم/هاتف الزبون." }); return; }
+      if (!isReservation && splitSub.isCredit && tab.customerId == null) { releaseReservedPrintWindow(); setMessage({ kind: "err", text: "البيع الآجل يتطلّب اختيار عميل مسجّل ذو ذمة وحساب." }); return; }
       pendingRef.current = {...splitSub.pendingSnapshot,tabId:tab.id};
       sale.mutate({
         ...checkoutExtraPayload(tab.extraCharges),
@@ -926,22 +909,15 @@ export default function PrintPOS() {
     // Quick pay means full payment, not a forced change of the selected method to CASH.
     const method: PaymentMethod = tab.method;
     const confirmedForAmount = forceFullPayment ? externalFullPaymentConfirmed : externalPaymentConfirmed;
-    if (method !== "CASH" && !confirmedForAmount && !isReservation) {
-      setMessage({ kind: "err", text: "أدخل مرجع العملية وثبّت نجاح الدفع لدى المزوّد للمبلغ الحالي قبل الإتمام." });
-      return;
-    }
+    if (method !== "CASH" && !confirmedForAmount && !isReservation) { releaseReservedPrintWindow(); setMessage({ kind: "err", text: "أدخل مرجع العملية وثبّت نجاح الدفع لدى المزوّد للمبلغ الحالي قبل الإتمام." }); return; }
     const cashTotal = method === "CASH" ? riqd(total) : total;
     const paid = forceFullPayment ? cashTotal : Number(tab.payInput || 0);
     const isCredit = !forceFullPayment && !isReservation && paid < cashTotal;
 
     if (isReservation) {
-      if (tab.customerId == null && !tab.contactName.trim() && !tab.contactPhone.trim()) {
-        setMessage({ kind: "err", text: "الدفع عند الاستلام يتطلّب تحديد عميل مسجل أو إدخال اسم/هاتف الزبون." });
-        return;
-      }
+      if (tab.customerId == null && !tab.contactName.trim() && !tab.contactPhone.trim()) { releaseReservedPrintWindow(); setMessage({ kind: "err", text: "الدفع عند الاستلام يتطلّب تحديد عميل مسجل أو إدخال اسم/هاتف الزبون." }); return; }
     } else if (isCredit && tab.customerId == null) {
-      setMessage({ kind: "err", text: "البيع الآجل يتطلّب اختيار عميل مسجّل ذو ذمة وحساب." });
-      return;
+      releaseReservedPrintWindow(); setMessage({ kind: "err", text: "البيع الآجل يتطلّب اختيار عميل مسجّل ذو ذمة وحساب." }); return;
     }
 
     const cashFull = method === "CASH" && !isCredit && !isReservation;
@@ -1003,15 +979,12 @@ export default function PrintPOS() {
         );
       }
       void printShiftOpen({
-        shiftId:        res.shiftId,
-        openingBalance: Number(opening || 0),
-        cashierName:    me.data?.name ?? "كاشير",
-        branchName:     (branches.data ?? []).find((b) => Number(b.id) === branchId)?.name ?? `فرع #${branchId}`,
-        openedAt:       new Date(),
-        departmentName: "خدمات طباعة",
-      });
+        shiftId: res.shiftId, openingBalance: Number(opening || 0), cashierName: me.data?.name ?? "كاشير",
+        branchName: (branches.data ?? []).find((b) => Number(b.id) === branchId)?.name ?? `فرع #${branchId}`,
+        openedAt: new Date(), departmentName: "خدمات طباعة",
+      }).finally(() => releaseReservedPrintWindow());
     },
-    onError: (e) => setMessage({ kind: "err", text: e.message }),
+    onError: (e) => { releaseReservedPrintWindow(); setMessage({ kind: "err", text: e.message }); },
   });
 
 
@@ -1125,7 +1098,7 @@ export default function PrintPOS() {
               )}
             </button>
           )}
-          <button disabled={openShift.isPending || needsBranchChoice} onClick={() => openShift.mutate({ branchId, openingBalance: opening || "0", shiftType: "PRINT_SERVICES" })}
+          <button disabled={openShift.isPending || needsBranchChoice} onClick={() => { reservePrintWindow(); openShift.mutate({ branchId, openingBalance: opening || "0", shiftType: "PRINT_SERVICES" }); }}
             style={{ width: "100%", height: 52, background: openShift.isPending || needsBranchChoice ? C.muted : C.primary, color: openShift.isPending || needsBranchChoice ? C.mutedFg : C.primaryFg, border: "none", borderRadius: 10, fontFamily: "inherit", fontSize: 15, fontWeight: 800, cursor: openShift.isPending || needsBranchChoice ? "not-allowed" : "pointer" }}>
             {openShift.isPending ? "جارٍ الفتح…" : needsBranchChoice ? "اختر الفرع أولاً" : "فتح الوردية"}
           </button>
@@ -1310,11 +1283,13 @@ export default function PrintPOS() {
             setTimeout(() => searchRef.current?.focus(), 0);
           }}
           onPrint={() => {
+            reservePrintWindow();
             void printAuthorizedReceipt(receipt, true).then((printed) => {
               if (!printed.ok) setMessage({ kind: "err", text: "تم الإصدار ولكن فشلت الطباعة الحرارية." });
             }).catch((error) => setMessage({ kind: "err", text: error instanceof Error ? error.message : "فشلت الطباعة" }));
           }}
           onPrintLabel={() => {
+            const win = preopenShippingLabelWindow();
             const origin = typeof window !== "undefined" ? window.location.origin : "";
             const orderRef = receipt.invoiceNumber || receipt.num || "";
             const deliveryFee = receipt.delivery?.fee ? String(receipt.delivery.fee) : null;
@@ -1327,12 +1302,12 @@ export default function PrintPOS() {
               addressText: receipt.delivery?.address ?? null,
               total: String(receipt.total),
               subtotal: receipt.subtotal != null ? String(receipt.subtotal) : String(receipt.total),
-              shippingFee: deliveryFee && Number(deliveryFee) > 0 ? deliveryFee : null,
+              shippingFee: deliveryFee && Number(deliveryFee) > 0 ? deliveryFee : null, paymentState: resolveShippingLabelPaymentState(Math.max(0, receipt.total - receipt.received)), isReprint: true,
               qrUrl: orderRef && origin ? `${origin}/verify?ref=${encodeURIComponent(orderRef)}` : null,
               items: receipt.lines.map((line) => ({ productName: line.name, unitName: line.unit, quantity: String(line.qty) })),
-              });
+              }, { into: win });
               return result.ok ? { ok: true, via: "browser" } : { ok: false, via: "browser", reason: "popup-blocked" };
-            }).then((r) => { if (!r.ok) setMessage({ kind: "err", text: "فشل طباعة الليبل" }); }).catch((error) => notify.err(error));
+            }).then((r) => { if (!r.ok) setMessage({ kind: "err", text: "فشل طباعة الليبل" }); }).catch((error) => { try { win?.close(); } catch { /* noop */ } notify.err(error); });
           }}
         />
       )}

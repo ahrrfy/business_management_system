@@ -18,6 +18,9 @@ import { CompanyStatementScanQueue } from "@/components/delivery/CompanyStatemen
 import { shipmentStatementCandidates, type CompanyStatementQueueCandidate } from "@/components/delivery/companyStatementQueue";
 import { companyStatementPartyTransition } from "@/components/delivery/statementDraft";
 import { printRemittanceReceipt } from "@/components/delivery/printRemittanceReceipt";
+import { printCompanyStatementReceipt } from "@/lib/printing/printCompanyStatementReceipt";
+import { preopenDocumentWindow } from "@/lib/printing/print";
+import { printAssignmentCancelReceipt, printDeliveryFeePaymentReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { D, fmt , moneyInput } from "@/lib/money";
@@ -156,17 +159,45 @@ export function DeliverySettleTab() {
     utils.delivery.remittances.invalidate();
   };
 
+  const stmtWinRef = useRef<{ win: Window | null; count: number } | null>(null);
+  const remitWinRef = useRef<Window | null>(null);
+  const feeWinRef = useRef<Window | null>(null);
+  const retWinRef = useRef<{ win: Window | null; row: OpenConsignment | undefined; consignmentId: number } | null>(null);
+
   const companyStatement = trpc.delivery.recordCompanyStatement.useMutation({
     onSuccess: (r) => {
+      const snap = stmtWinRef.current;
+      stmtWinRef.current = null;
       const proofNote = r.remittanceNumber ? `سند التوريد ${r.remittanceNumber} — صافٍ ${fmt(r.netRemitted)} د.ع` : "كشف إثبات محض — لا سند توريد";
       notify.ok(`سُجِّل كشف الشركة ${r.statementNumber}`, `${proofNote}${r.deliveriesConfirmed > 0 ? ` · أثبت تسليم ${r.deliveriesConfirmed} طرداً` : ""}`);
+      const pName = obligations.data?.find((p) => String(p.partyId) === partyId)?.name ?? "شركة التوصيل";
+      void printCompanyStatementReceipt(
+        {
+          companyName: pName,
+          statementNumber: r.statementNumber,
+          remittanceNumber: r.remittanceNumber,
+          deliveriesConfirmed: r.deliveriesConfirmed,
+          statementConsignmentCount: snap?.count,
+          collectedTotal: r.collectedTotal,
+          deductionsTotal: statementDeductions ? String(statementDeductions) : "0.00",
+          netRemitted: r.netRemitted,
+          notes: statementNotes.trim() || null,
+        },
+        snap?.win ? { into: snap.win } : undefined,
+      );
       resetAfterSettle();
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => {
+      try { stmtWinRef.current?.win?.close(); } catch { /* noop */ }
+      stmtWinRef.current = null;
+      notify.err(e);
+    },
   });
 
   const remit = trpc.delivery.recordRemittance.useMutation({
     onSuccess: (r) => {
+      const win = remitWinRef.current;
+      remitWinRef.current = null;
       const commissionNote = r.courierCommissionAmount != null
         ? ` · عمولة القاعدة ${fmt(r.courierCommissionAmount)} (فرقٌ ${fmt(D(r.feesTotal).minus(D(r.courierCommissionAmount)).toFixed(2))})`
           : "";
@@ -175,22 +206,64 @@ export function DeliverySettleTab() {
         `${r.remittanceNumber} — صافٍ ${fmt(r.netRemitted)} د.ع${D(r.shortfallTotal).gt(0) ? ` (عجز ${fmt(r.shortfallTotal)})` : ""}${commissionNote}`,
       );
       const pName = obligations.data?.find((p) => String(p.partyId) === partyId)?.name ?? "";
-      printRemittanceReceipt(pName, r);
+      printRemittanceReceipt(pName, r, win ? { into: win } : undefined);
       resetAfterSettle();
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => {
+      try { remitWinRef.current?.close(); } catch { /* noop */ }
+      remitWinRef.current = null;
+      notify.err(e);
+    },
   });
 
   const payPartyFees = trpc.delivery.payPartyFees.useMutation({
     onSuccess: (r) => {
+      const win = feeWinRef.current;
+      feeWinRef.current = null;
       notify.ok(`صُرفت ${r.count} أجرة`, `المجموع ${fmt(r.paidTotal)} د.ع — بسند واحد`);
+      const pName = obligations.data?.find((p) => String(p.partyId) === partyId)?.name ?? "جهة التوصيل";
+      void printDeliveryFeePaymentReceipt(
+        {
+          voucherNumber: `PF-${partyId}-${Date.now()}`,
+          partyName: pName,
+          amount: r.paidTotal,
+          paymentMethod: "CASH",
+          cashierName: me.data?.name ?? null,
+          shiftId: currentShift.data?.id ?? null,
+          notes: `صرف أجور ${r.count} إرسالية`,
+        },
+        win ? { into: win } : undefined,
+      );
       void utils.delivery.invalidate();
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => {
+      try { feeWinRef.current?.close(); } catch { /* noop */ }
+      feeWinRef.current = null;
+      notify.err(e);
+    },
   });
 
   const ret = trpc.delivery.returnConsignment.useMutation({
-    onSuccess: (_, variables) => { notify.ok("أُرجعت الإرسالية"); setReturnTarget(null);
+    onSuccess: (_, variables) => {
+      const snap = retWinRef.current;
+      retWinRef.current = null;
+      notify.ok("أُرجعت الإرسالية");
+      if (snap) {
+        void printAssignmentCancelReceipt(
+          {
+            action: "cancelAssignment",
+            consignmentNumber: snap.row?.consignmentNumber ?? String(snap.consignmentId),
+            sourceRef: snap.row?.orderNumber ?? snap.row?.invoiceNumber ?? null,
+            partyName: obligations.data?.find((p) => String(p.partyId) === partyId)?.name ?? null,
+            recipientName: snap.row?.recipientName ?? snap.row?.customerName ?? null,
+            codAmount: snap.row?.codAmount ?? "0",
+            reason: "استلام مرتجع إرسالية من شاشة التسوية",
+            cashierName: me.data?.name ?? null,
+          },
+          snap.win ? { into: snap.win } : undefined,
+        );
+      }
+      setReturnTarget(null);
       setRows((current) => {
         const next = { ...current };
         delete next[variables.consignmentId];
@@ -199,8 +272,13 @@ export function DeliverySettleTab() {
       setStatementQueueIds((current) =>
         current.filter((id) => id !== variables.consignmentId),
       );
-      void utils.delivery.invalidate(); },
-    onError: (e) => notify.err(e),
+      void utils.delivery.invalidate();
+    },
+    onError: (e) => {
+      try { retWinRef.current?.win?.close(); } catch { /* noop */ }
+      retWinRef.current = null;
+      notify.err(e);
+    },
   });
 
   draftBusyRef.current =
@@ -304,6 +382,7 @@ export function DeliverySettleTab() {
     });
     if (!ok) return;
     if (statementMode) {
+      stmtWinRef.current = { win: preopenDocumentWindow(), count: validLines.length };
       companyStatement.mutate({
         partyId: Number(partyId),
         statementNumber: statementNumber.trim(),
@@ -316,6 +395,7 @@ export function DeliverySettleTab() {
       });
       return;
     }
+    remitWinRef.current = preopenDocumentWindow();
     remit.mutate({
       partyId: Number(partyId),
       lines: validLines,
@@ -395,6 +475,7 @@ export function DeliverySettleTab() {
                       confirmText: "صرف",
                     });
                     if (!ok || !currentShift.data?.id) return;
+                    feeWinRef.current = preopenDocumentWindow();
                     payPartyFees.mutate({ partyId: Number(partyId), shiftId: currentShift.data.id, clientRequestId: crypto.randomUUID() });
                   }}
                 >
@@ -575,8 +656,10 @@ export function DeliverySettleTab() {
         pending={ret.isPending}
         onClose={() => setReturnTarget(null)}
         onConfirm={({ consignmentId, refundShiftId }) => {
+          const row = list.find((c) => Number(c.id) === Number(consignmentId));
+          retWinRef.current = { win: preopenDocumentWindow(), row, consignmentId };
           ret.mutate({ consignmentId, clientRequestId: crypto.randomUUID(), refundShiftId });
-          }}
+        }}
       />
 
       <ConsignmentTimelineDrawer consignmentId={drawerId} onClose={() => setDrawerId(null)} />

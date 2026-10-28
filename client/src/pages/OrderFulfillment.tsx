@@ -61,8 +61,11 @@ import { Input } from "@/components/ui/input";
 import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { preopenShippingLabelWindow, printShippingLabel } from "@/lib/printing/shippingLabel";
+import { preopenDocumentWindow, printDoc } from "@/lib/printing/print";
+import { useWorkflowDocumentPrinter } from "@/hooks/useWorkflowDocumentPrinter";
+import { printOrderCancellationReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
-import { printOnlineOrderPreparationA4, printOnlineOrderThermal, printOnlineOrderInvoiceA4 } from "@/lib/printing/onlineOrder";
+import { buildOnlineOrderThermalDoc, printOnlineOrderPreparationA4, printOnlineOrderThermal, printOnlineOrderInvoiceA4 } from "@/lib/printing/onlineOrder";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { storefrontUrl } from "@/lib/siteHosts";
 import { useRealtimeEvent } from "@/lib/realtime";
@@ -173,10 +176,14 @@ export default function OrderFulfillment() {
   );
 
   const me = trpc.auth.me.useQuery();
-  // الإرسال مديريّ فقط — يعكس storeManagerProcedure خادمياً (admin يعبُر داخل moduleAccessAllowed).
-  const canDispatch =
-    !!me.data?.role &&
-    moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "store", "FULL", ["manager"]);
+  const workflowPrinter = useWorkflowDocumentPrinter(dispatchTarget?.branchId ?? me.data?.branchId);
+  const dispatchWinsRef = useRef<{ pack: Window | null; label: Window | null; branchId: number | null } | null>(null);
+  const cancelSnapRef = useRef<{ win: Window | null; orderNumber: string; customerName?: string | null; customerPhone?: string | null } | null>(null);
+  const canDispatch = lifecycleActionAllowed(
+    me.data,
+    "storeAdmin.orders.dispatch",
+    !!me.data?.role && moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "store", "FULL", ["cashier", "manager"]),
+  );
   const canReadDeliveryTimeline = lifecycleActionAllowed(me.data, "delivery.consignmentTimeline", !!me.data?.role
     && hasModuleAccess(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "store", "READ"));
   const canCheckDuplicates = !!me.data?.role && canCheckReceptionDuplicates(
@@ -237,20 +244,52 @@ export default function OrderFulfillment() {
     },
   );
   const setStatusM = trpc.storeAdmin.orders.setStatus.useMutation({
-    onSuccess: (res) => {
+    onMutate: (input) => {
+      if (input.status === "CANCELLED" && cancelTarget) {
+        cancelSnapRef.current = { win: preopenDocumentWindow(), orderNumber: cancelTarget.orderNumber, customerName: cancelTarget.customerName, customerPhone: cancelTarget.customerPhone };
+      } else {
+        cancelSnapRef.current = null;
+      }
+    },
+    onSuccess: (res, input) => {
+      const snap = cancelSnapRef.current; cancelSnapRef.current = null;
       notify.ok(`تم تحديث الطلب إلى «${orderStatusLabel(res.to)}»`);
       setCancelTarget(null);
       void utils.storeAdmin.orders.invalidate();
+      if (res.to === "CANCELLED" && snap) {
+        void printOrderCancellationReceipt({
+          documentNumber: snap.orderNumber, orderKind: "ONLINE_ORDER", customerName: snap.customerName, customerPhone: snap.customerPhone,
+          refundedAmount: "0", reason: input.cancelReason ?? null, cashierName: me.data?.name ?? null,
+        }, { into: snap.win });
+      } else if (snap?.win && !snap.win.closed) snap.win.close();
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => {
+      const snap = cancelSnapRef.current; cancelSnapRef.current = null;
+      if (snap?.win && !snap.win.closed) snap.win.close();
+      notify.err(e);
+    },
   });
   const dispatchM = trpc.storeAdmin.orders.dispatch.useMutation({
+    onMutate: () => {
+      dispatchWinsRef.current = { pack: preopenDocumentWindow(), label: preopenShippingLabelWindow(), branchId: dispatchTarget?.branchId ?? me.data?.branchId ?? null };
+    },
     onSuccess: (res) => {
+      const wins = dispatchWinsRef.current; dispatchWinsRef.current = null;
       notify.ok(`تم إنشاء الفاتورة ${res.invoiceNumber} وإسناد الطلب للمندوب`);
       setDispatchTarget(null);
       void utils.storeAdmin.orders.invalidate();
+      if (res.consignmentId && wins?.branchId) {
+        void workflowPrinter.printShipmentAndLabel(res.consignmentId, wins.pack, wins.label, wins.branchId);
+      } else {
+        void printDualDocuments(res.orderId, wins ? { pack: wins.pack, label: wins.label } : undefined);
+      }
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => {
+      const wins = dispatchWinsRef.current; dispatchWinsRef.current = null;
+      if (wins?.pack && !wins.pack.closed) wins.pack.close();
+      if (wins?.label && !wins.label.closed) wins.label.close();
+      notify.err(e);
+    },
   });
   const claimM = trpc.storeAdmin.orders.claim.useMutation({
     onSuccess: () => {
@@ -753,6 +792,7 @@ export default function OrderFulfillment() {
   }
 
   async function printThermal(id: number) {
+    reservePrintWindow("width=420,height=760");
     setPrintingId(id);
     try {
       const d = await utils.storeAdmin.orders.detail.fetch({ id });
@@ -760,20 +800,22 @@ export default function OrderFulfillment() {
       await printOnlineOrderThermal(d);
       notify.ok("أُرسل الطلب إلى طابعة الإيصالات");
     } catch (e) { notify.err(e); }
-    finally { setPrintingId(null); }
+    finally { releaseReservedPrintWindow(); setPrintingId(null); }
   }
 
-  async function printDualDocuments(id: number) {
+  async function printDualDocuments(id: number, preopened?: { pack: Window | null; label: Window | null }) {
+    if (!preopened) reservePrintWindow("width=420,height=760");
+    const labelWin = preopened ? preopened.label : preopenShippingLabelWindow();
     setPrintingId(id);
-    const labelWin = preopenShippingLabelWindow();
     try {
       const d = await utils.storeAdmin.orders.detail.fetch({ id });
-      if (!d) { labelWin?.close(); notify.err("تعذّر جلب تفاصيل الطلب"); return; }
-      await printOnlineOrderThermal(d);
+      if (!d) { preopened?.pack?.close(); labelWin?.close(); notify.err("تعذّر جلب تفاصيل الطلب"); return; }
+      if (preopened) await printDoc(buildOnlineOrderThermalDoc(d), { into: preopened.pack });
+      else await printOnlineOrderThermal(d);
       const res = await printShippingLabel(toShippingLabelPayload(d), { into: labelWin });
       notify.ok(res.ok ? "تم إرسال الإيصال الحراري وفتح ملصق الشحن" : "أُرسل الإيصال الحراري — تحقّق من مانع النوافذ للملصق");
-    } catch (e) { labelWin?.close(); notify.err(e); }
-    finally { setPrintingId(null); }
+    } catch (e) { preopened?.pack?.close(); labelWin?.close(); notify.err(e); }
+    finally { if (!preopened) releaseReservedPrintWindow(); setPrintingId(null); }
   }
 
   async function printPreparationA4(id: number, reviewed = false) {

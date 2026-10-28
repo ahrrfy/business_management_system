@@ -1,6 +1,6 @@
 import { deliverySourceView } from "@shared/deliverySource";
 import { DeliverySourceLink } from "./DeliverySourceLink";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -30,6 +30,10 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { fmtDate } from "@/lib/date";
 import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
+import { useWorkflowDocumentPrinter } from "@/hooks/useWorkflowDocumentPrinter";
+import { preopenDocumentWindow } from "@/lib/printing/print";
+import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
+import { printAssignmentCancelReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 type PartyRow = RouterOutputs["delivery"]["listParties"][number];
 type ConsignmentRow = RouterOutputs["delivery"]["consignments"]["rows"][number];
 export type OrderState =
@@ -94,23 +98,125 @@ export function ConsignmentsTab({
     ...filters,
     cursor: cursors[page],
   });
+  const me = trpc.auth.me.useQuery();
   const members = trpc.delivery.partyMembers.useQuery({ partyId });
   const utils = trpc.useUtils();
-  const reassignM = trpc.delivery.reassignConsignment.useMutation({
+  const workflowPrinter = useWorkflowDocumentPrinter(
+    party.branchId ?? q.data?.scopedBranchId ?? me.data?.branchId,
+  );
+  const reassignPrintRef = useRef<{
+    pack: Window | null;
+    label: Window | null;
+    consignmentId: number;
+    branchId: number | null;
+  } | null>(null);
+  const returnPrintRef = useRef<{
+    win: Window | null;
+    row: ConsignmentRow | undefined;
+    consignmentId: number;
+    branchId: number | null;
+  } | null>(null);
+  const rawReassignM = trpc.delivery.reassignConsignment.useMutation({
     onSuccess: () => {
+      const snap = reassignPrintRef.current;
+      reassignPrintRef.current = null;
       notify.ok("تم تحديث إسناد الطرد");
       void utils.delivery.consignments.invalidate({ partyId });
+      if (snap) {
+        if (snap.branchId) {
+          void workflowPrinter.printShipmentAndLabel(
+            snap.consignmentId,
+            snap.pack,
+            snap.label,
+            snap.branchId,
+          );
+        } else {
+          try { snap.pack?.close(); } catch { /* noop */ }
+          try { snap.label?.close(); } catch { /* noop */ }
+        }
+      }
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => {
+      const snap = reassignPrintRef.current;
+      reassignPrintRef.current = null;
+      try { snap?.pack?.close(); } catch { /* noop */ }
+      try { snap?.label?.close(); } catch { /* noop */ }
+      notify.err(e);
+    },
   });
   const list = q.data?.rows ?? [];
+  const reassignM = {
+    isPending: rawReassignM.isPending,
+    mutate: (input: Parameters<typeof rawReassignM.mutate>[0]) => {
+      const row =
+        list.find((item) => Number(item.id) === Number(input.consignmentId)) ??
+        selected.get(input.consignmentId);
+      const targetBranch =
+        (row as { branchId?: number | null } | undefined)?.branchId ??
+        party.branchId ??
+        q.data?.scopedBranchId ??
+        me.data?.branchId ??
+        null;
+      reassignPrintRef.current = {
+        pack: preopenDocumentWindow(),
+        label: preopenShippingLabelWindow(),
+        consignmentId: input.consignmentId,
+        branchId: targetBranch,
+      };
+      rawReassignM.mutate(input);
+    },
+  };
   const receiveReturn = trpc.delivery.returnConsignment.useMutation({
     onSuccess: () => {
+      const snap = returnPrintRef.current;
+      returnPrintRef.current = null;
       setReturnTarget(null);
       refresh();
       notify.ok("تم استلام المرتجع");
+      if (snap) {
+        void (async () => {
+          if (snap.branchId) {
+            const docs = await utils.delivery.documents.list
+              .fetch({
+                sourceType: "SHIPMENT",
+                sourceId: snap.consignmentId,
+                branchId: snap.branchId,
+              })
+              .catch(() => []);
+            if (docs.some((d) => d.documentType === "PHYSICAL_RETURN_RECEIPT")) {
+              await workflowPrinter.printLatestByType(
+                snap.consignmentId,
+                "PHYSICAL_RETURN_RECEIPT",
+                snap.win,
+                snap.branchId,
+              );
+              return;
+            }
+          }
+          await printAssignmentCancelReceipt(
+            {
+              action: "cancelAssignment",
+              consignmentNumber:
+                snap.row?.consignmentNumber ?? String(snap.consignmentId),
+              sourceRef: snap.row ? deliverySourceView(snap.row).reference : null,
+              partyName: party.name,
+              recipientName:
+                snap.row?.recipientName ?? snap.row?.customerName ?? null,
+              codAmount: snap.row?.remainingDue ?? snap.row?.codAmount ?? "0",
+              reason: "استلام مرتجع شحنة في الفرع",
+              cashierName: me.data?.name ?? null,
+            },
+            ...(snap.win ? [{ into: snap.win }] : []),
+          );
+        })();
+      }
     },
-    onError: (error) => notify.err(error),
+    onError: (error) => {
+      const snap = returnPrintRef.current;
+      returnPrintRef.current = null;
+      try { snap?.win?.close(); } catch { /* noop */ }
+      notify.err(error);
+    },
   });
   const refresh = () => {
     void utils.delivery.consignments.invalidate({ partyId });
@@ -401,13 +507,28 @@ export function ConsignmentsTab({
         target={returnTarget}
         pending={receiveReturn.isPending}
         onClose={() => setReturnTarget(null)}
-        onConfirm={({ consignmentId, refundShiftId }) =>
+        onConfirm={({ consignmentId, refundShiftId }) => {
+          const row =
+            list.find((item) => Number(item.id) === Number(consignmentId)) ??
+            selected.get(consignmentId);
+          const targetBranch =
+            (row as { branchId?: number | null } | undefined)?.branchId ??
+            party.branchId ??
+            q.data?.scopedBranchId ??
+            me.data?.branchId ??
+            null;
+          returnPrintRef.current = {
+            win: preopenDocumentWindow("width=420,height=760"),
+            row,
+            consignmentId,
+            branchId: targetBranch,
+          };
           receiveReturn.mutate({
             consignmentId,
             refundShiftId,
             clientRequestId: crypto.randomUUID(),
-          })
-        }
+          });
+        }}
       />
 
       {collectConsignmentTarget && (

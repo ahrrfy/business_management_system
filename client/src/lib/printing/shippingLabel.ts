@@ -1,10 +1,9 @@
 /**
- * ملصق شحن بقياسٍ يحدّده المستخدم (الافتراضي ٨٠×١٢٠مم) — يُلصَق على الطرد قبل تسليمه للمندوب.
+ * ملصق شحن بقياسٍ يحدّده المستخدم (الافتراضي 80×120مم) — يُلصَق على الطرد قبل تسليمه للمندوب.
  *
  * يُطبع على طابعة ملصقات (Zebra/Xprinter عبر تعريف Windows) أو أي طابعة/PDF عبر نافذة المتصفّح
- * (`@page{size:<w>mm <h>mm}`). تصميم متّجه مباشر (HTML + SVG، بلا نقطية) مبنيّ على لوحة مرجعية
- * بعرض 100مم تُحجَّم موحَّداً بمعامل `عرض/100` (transform: scale) ⇒ نفس التسلسل البصري بأي قياس
- * وبحدّة كاملة (المتجهات تُحجَّم بلا فقد). فرق نسبة الارتفاع يمتصّه شريط الباركود المرن (flex:1).
+ * (`@page{size:<w>mm <h>mm}`). تصميم متّجه مباشر (HTML + SVG، بلا نقطية) بأبعاد مباشرة مطابقة
+ * للملصق في الطولي (80×120، 100×150)، العرضي (120×80)، والمدمج (80×50).
  *
  * التسلسل الهرميّ (فلسفة الملصق التجاريّ): **المستلِم** أبرز كتلة (المندوب يحتاجه)، ثم **مبلغ COD**
  * بصندوقٍ ضخم (الأهمّ ماليّاً)، ثم **باركود Code128 + QR** لرقم الطلب (مسحٌ ⇒ ربط الطرد بالطلب بلا
@@ -12,6 +11,7 @@
  */
 import { governorateById } from "@shared/governorates";
 import { fmtDate as formatDate } from "../date";
+import { D, moneyInput, round2 } from "../money";
 import { code128Svg } from "./barcode";
 import { qrCodeSvg } from "./qr";
 import { CAIRO_FONT, CO, esc, fmt, logoUrl } from "./brand";
@@ -106,18 +106,19 @@ export async function shippingLabelHtml(
 ): Promise<string> {
   const w = size.widthMm;
   const h = size.heightMm;
-  const s = w / 100;
-  const innerH = (h / s).toFixed(3);
+  const isCompact = h <= 60;
+  const isLandscape = !isCompact && w > h;
   const govName = o.governorate
     ? (governorateById(o.governorate)?.name ?? o.governorate)
     : "";
   let barcode = "";
   try {
-    barcode = code128Svg(o.barcodeValue || o.orderNumber, {
+    const bcVal = o.barcodeValue === undefined ? o.orderNumber : (o.barcodeValue ?? "");
+    if (bcVal.trim() && bcVal.trim() !== "—") barcode = code128Svg(bcVal.trim(), {
       moduleWidth: 2,
-      height: 45,
+      height: isCompact ? 38 : 45,
       showText: false,
-      fitToBox: true,
+      fitToBox: !isCompact,
     }).svg;
   } catch {
     barcode = "";
@@ -131,10 +132,10 @@ export async function shippingLabelHtml(
     qr = "";
   }
 
-  const itemCount = o.items.reduce(
-    (sum, it) => sum + (Number(it.quantity) || 0),
-    0,
-  );
+  const safeItems = Array.isArray(o.items) ? o.items : [];
+  const itemCount = round2(
+    safeItems.reduce((sum, it) => sum.plus(moneyInput(it.quantity)), D(0)),
+  ).toNumber();
   const isPrepaid = o.paymentState === "PREPAID";
   const totalKnown = o.total != null;
   const dueAmountText = isPrepaid
@@ -155,8 +156,6 @@ export async function shippingLabelHtml(
       ? "تحصيل نقدي إلزامي قبل تسليم الطرد"
       : "تحقق من المطالبة الحالية قبل التسليم";
   const logo = logoUrl();
-  const isCompact = h <= 60;
-  const isLandscape = !isCompact && w > h;
 
   // حساب سعة الأصناف ديناميكياً حسب الارتفاع المتاح لمنع تجاوز صفحة واحدة
   let maxItems = 2;
@@ -170,8 +169,8 @@ export async function shippingLabelHtml(
     maxItems = 4;
   }
 
-  const displayItems = o.items.slice(0, maxItems);
-  const remainingCount = o.items.length - maxItems;
+  const displayItems = safeItems.slice(0, maxItems);
+  const remainingCount = safeItems.length - maxItems;
 
   const itemsRows =
     displayItems
@@ -237,6 +236,7 @@ export async function shippingLabelHtml(
     table.grid th,table.grid td{border:1px solid #000;padding:0.5mm 0.8mm;vertical-align:middle;page-break-inside:avoid !important;break-inside:avoid !important}
     .mono-logo{width:7.5mm;height:7.5mm;object-fit:contain;filter:grayscale(100%) contrast(1000%)}
     .bc-svg svg{width:100%;height:7mm;max-height:7.5mm;display:block}
+    .bc-compact-svg svg{max-width:100%;width:auto;height:5.8mm;max-height:6.2mm;display:block;margin:0 auto}
     .qr-svg svg{width:100%;height:100%;display:block}
 
     @media print{
@@ -276,7 +276,7 @@ export async function shippingLabelHtml(
       <tr>
         <td style="width:58%;border-left:1.5px solid #000;padding:0.6mm 0.8mm;">
           <div style="display:flex;align-items:center;gap:1mm;">
-            <img src="${logo}" class="mono-logo" alt="" onerror="this.style.display='none'">
+            <img src="${esc(logo)}" class="mono-logo" alt="" onerror="this.style.display='none'">
             <div>
               <div style="font-weight:900;font-size:8.5pt;line-height:1.1;">${esc(CO.short)}</div>
               <div style="font-weight:700;font-size:6pt;line-height:1.15;">${esc(CO.address)}</div>
@@ -373,10 +373,14 @@ export async function shippingLabelHtml(
     <!-- 6. كود QR للملاحة، بيانات الشحن، وتوقيع الاستلام -->
     <table class="grid" style="border-top:none;">
       <tr>
-        <td style="width:16mm;border-left:1.5px solid #000;padding:0.5mm;text-align:center;vertical-align:middle;">
-          ${qr ? `<div class="qr-svg" style="width:13mm;height:13mm;margin:0 auto;">${qr}</div>` : ""}
+        ${
+          qr
+            ? `<td style="width:16mm;border-left:1.5px solid #000;padding:0.5mm;text-align:center;vertical-align:middle;">
+          <div class="qr-svg" style="width:13mm;height:13mm;margin:0 auto;">${qr}</div>
           <div style="font-size:5pt;font-weight:900;margin-top:0.2mm;">${hasMap ? "خرائط Google" : "تتبع الشحنة"}</div>
-        </td>
+        </td>`
+            : ""
+        }
         <td style="border-left:1.5px solid #000;padding:0.5mm 0.8mm;vertical-align:top;font-size:6.2pt;line-height:1.2;">
           <div><b>تاريخ الإسناد:</b> ${esc(fmtDate(o.createdAt))}</div>
           ${o.printedAt ? `<div><b>تاريخ الطباعة:</b> ${esc(fmtDate(o.printedAt))}</div>` : ""}
@@ -401,7 +405,7 @@ export async function shippingLabelHtml(
           <tr>
             <td style="width:58%;border-left:1.5px solid #000;padding:0.8mm;">
               <div style="display:flex;align-items:center;gap:1mm;">
-                <img src="${logo}" class="mono-logo" alt="" onerror="this.style.display='none'">
+                <img src="${esc(logo)}" class="mono-logo" alt="" onerror="this.style.display='none'">
                 <div>
                   <div style="font-weight:900;font-size:8.5pt;line-height:1.1;">${esc(CO.short)}</div>
                   <div style="font-weight:700;font-size:6pt;line-height:1.15;">${esc(CO.address)}</div>
@@ -495,10 +499,14 @@ export async function shippingLabelHtml(
 
         <table class="grid" style="border-top:none;margin-top:0.8mm;">
           <tr>
-            <td style="width:17mm;border-left:1.5px solid #000;padding:0.6mm;text-align:center;vertical-align:middle;">
-              ${qr ? `<div class="qr-svg" style="width:14mm;height:14mm;margin:0 auto;">${qr}</div>` : ""}
+            ${
+              qr
+                ? `<td style="width:17mm;border-left:1.5px solid #000;padding:0.6mm;text-align:center;vertical-align:middle;">
+              <div class="qr-svg" style="width:14mm;height:14mm;margin:0 auto;">${qr}</div>
               <div style="font-size:5.5pt;font-weight:900;">${hasMap ? "خرائط Google" : "تتبع الشحنة"}</div>
-            </td>
+            </td>`
+                : ""
+            }
             <td style="border-left:1.5px solid #000;padding:0.8mm;vertical-align:top;font-size:6.5pt;line-height:1.25;">
               <div><b>تاريخ الإسناد:</b> ${esc(fmtDate(o.createdAt))}</div>
               ${o.printedAt ? `<div><b>تاريخ الطباعة:</b> ${esc(fmtDate(o.printedAt))}</div>` : ""}
@@ -515,42 +523,42 @@ export async function shippingLabelHtml(
     </div>
   `;
 
-  // 3. تخطيط ملصق الطرود الصغير المدمج (80×50)
+  // 3. تخطيط ملصق الطرود الصغير المدمج (80×50) — ميزانية ارتفاع داخلي صارمة <= 44مم
   const compactHtml = `
-    <!-- الترويسة والمحافظة -->
-    <table class="grid" style="border-bottom:1.5px solid #000;">
+    <!-- الترويسة والمحافظة (~6.8مم) -->
+    <table class="grid" style="border-bottom:1.5px solid #000;table-layout:fixed;">
       <tr>
-        <td style="width:62%;border-left:1.5px solid #000;padding:0.6mm 0.8mm;">
-          <div style="display:flex;align-items:center;gap:1mm;">
-            <img src="${logo}" class="mono-logo" alt="" style="width:6.5mm;height:6.5mm;" onerror="this.style.display='none'">
-            <div>
-              <div style="font-weight:900;font-size:8pt;line-height:1;">${esc(CO.short)}</div>
-              <div style="font-weight:700;font-size:5.8pt;line-height:1.1;">${esc(CO.phones[1]?.n ?? CO.phones[0]?.n ?? "")}</div>
+        <td style="width:62%;border-left:1.5px solid #000;padding:0.4mm 0.7mm;">
+          <div style="display:flex;align-items:center;gap:0.8mm;">
+            <img src="${esc(logo)}" class="mono-logo" alt="" style="width:5.5mm;height:5.5mm;flex-shrink:0;" onerror="this.style.display='none'">
+            <div style="min-width:0;overflow:hidden;">
+              <div style="font-weight:900;font-size:7.8pt;line-height:1.05;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(CO.short)}</div>
+              <div style="font-weight:800;font-size:5.6pt;line-height:1.05;direction:ltr;text-align:right;">${esc(CO.phones[1]?.n ?? CO.phones[0]?.n ?? "")}</div>
             </div>
           </div>
         </td>
-        <td style="width:38%;text-align:center;background:#000;color:#fff;padding:0.6mm;">
-          <div style="font-size:5.5pt;font-weight:800;line-height:1;">وجهة الشحنة</div>
-          <div style="font-size:11pt;font-weight:900;line-height:1.1;">${esc(govName || "بغداد")}</div>
+        <td style="width:38%;text-align:center;background:#000;color:#fff;padding:0.4mm 0.6mm;">
+          <div style="font-size:5.2pt;font-weight:800;line-height:1;">وجهة الشحنة</div>
+          <div style="font-size:10.5pt;font-weight:900;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(govName || "بغداد")}</div>
         </td>
       </tr>
     </table>
 
-    <!-- المستلم والهاتف والعنوان -->
-    <table class="grid" style="border-top:none;border-bottom:1.5px solid #000;">
+    <!-- المستلم والهاتف والعنوان المختصر (~10-12مم) -->
+    <table class="grid" style="border-top:none;border-bottom:1.5px solid #000;table-layout:fixed;">
       <tr>
-        <td style="padding:0.8mm;">
-          <div style="display:flex;justify-content:space-between;align-items:center;">
-            <span style="font-weight:900;font-size:9.5pt;">${esc(o.customerName ?? "عميل")}</span>
-            <span style="font-weight:900;font-size:11pt;direction:ltr;font-variant-numeric:tabular-nums;">${esc(o.customerPhone || "")}</span>
+        <td style="padding:0.5mm 0.8mm;">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:1mm;">
+            <span style="font-weight:900;font-size:9pt;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:56%;">${esc(o.customerName ?? "عميل")}</span>
+            <span style="font-weight:900;font-size:10.5pt;line-height:1.15;direction:ltr;font-variant-numeric:tabular-nums;white-space:nowrap;">${esc(o.customerPhone || "")}</span>
           </div>
-          <div style="font-size:6.8pt;font-weight:800;line-height:1.15;margin-top:0.2mm;max-height:2.3em;overflow:hidden;">
+          <div style="font-size:6.6pt;font-weight:800;line-height:1.15;margin-top:0.2mm;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
             <b>العنوان:</b> ${esc(o.addressText || "—")}
           </div>
           ${
             o.notes
               ? `
-          <div style="font-size:6pt;font-weight:900;line-height:1.1;border-top:1px dashed #000;padding-top:0.2mm;margin-top:0.2mm;max-height:2.2em;overflow:hidden;">
+          <div style="font-size:5.8pt;font-weight:900;line-height:1.1;border-top:1px dashed #000;padding-top:0.15mm;margin-top:0.15mm;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
             <b>ملاحظة:</b> ${esc(o.notes)}
           </div>
           `
@@ -560,22 +568,30 @@ export async function shippingLabelHtml(
       </tr>
     </table>
 
-    <!-- المبلغ والباركود والكيو آر في شبكة ثلاثية -->
-    <table class="grid" style="border-top:none;">
+    <!-- الصف الأول: التحصيل المالي + QR (إن وُجد) | الصف الثاني: باركود بعرض كامل بدون تشويه -->
+    <table class="grid" style="border-top:none;table-layout:fixed;">
       <tr>
-        <td style="width:36%;border-left:1.5px solid #000;padding:0.6mm 0.8mm;text-align:center;vertical-align:middle;background:${isPrepaid ? "#000" : "#fff"};color:${isPrepaid ? "#fff" : "#000"};">
-          <div style="font-size:5.8pt;font-weight:800;">${isPrepaid ? "مدفوع مسبقاً" : totalKnown ? "المطلوب عند الاستلام" : "المبلغ غير متاح"}</div>
-          <div style="font-size:12.5pt;font-weight:900;direction:ltr;font-variant-numeric:tabular-nums;line-height:1;">
+        <td ${qr ? "" : 'colspan="2"'} style="${qr ? "border-left:1.5px solid #000;" : ""}padding:0.5mm 0.8mm;text-align:right;vertical-align:middle;background:${isPrepaid ? "#000" : "#fff"};color:${isPrepaid ? "#fff" : "#000"};">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;gap:1mm;">
+            <span style="font-size:6pt;font-weight:900;">${isPrepaid ? "مدفوع مسبقاً (PREPAID)" : totalKnown ? "المطلوب عند الاستلام (COD)" : "المبلغ غير متاح"}</span>
+            <span style="font-size:5.6pt;font-weight:800;white-space:nowrap;">${esc(o.deliveryPartyName || "توصيل")} • ${itemCount} قطعة</span>
+          </div>
+          <div style="font-size:12.5pt;font-weight:900;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;line-height:1.05;margin-top:0.2mm;">
             ${dueAmountText} ${totalKnown || isPrepaid ? '<span style="font-size:7pt;">د.ع</span>' : ""}
           </div>
-          ${totalWords ? `<div style="font-size:5.2pt;font-weight:900;margin-top:0.2mm;">${totalWords}</div>` : ""}
         </td>
-        <td style="border-left:1.5px solid #000;padding:0.4mm 0.6mm;text-align:center;vertical-align:middle;">
-          ${barcode ? `<div class="bc-svg" style="height:6.5mm;">${barcode}</div>` : ""}
-          <div style="font-size:6.8pt;font-weight:900;letter-spacing:0.5px;">#${esc(o.orderNumber)}</div>
-        </td>
-        <td style="width:13mm;padding:0.4mm;text-align:center;vertical-align:middle;">
-          ${qr ? `<div class="qr-svg" style="width:11mm;height:11mm;margin:0 auto;">${qr}</div>` : ""}
+        ${
+          qr
+            ? `<td style="width:13.5mm;padding:0.35mm;text-align:center;vertical-align:middle;">
+          <div class="qr-svg" style="width:12mm;height:12mm;margin:0 auto;">${qr}</div>
+        </td>`
+            : ""
+        }
+      </tr>
+      <tr>
+        <td colspan="2" style="border-top:1.5px solid #000;padding:0.4mm 0.6mm;text-align:center;vertical-align:middle;">
+          ${barcode ? `<div class="bc-compact-svg">${barcode}</div>` : ""}
+          <div style="font-size:6.8pt;font-weight:900;letter-spacing:0.5px;line-height:1.1;margin-top:0.2mm;font-variant-numeric:tabular-nums;">#${esc(o.orderNumber)}${o.isReprint ? " [ إعادة طباعة ]" : ""}</div>
         </td>
       </tr>
     </table>
@@ -634,7 +650,7 @@ export function preopenShippingLabelWindow(
 }
 
 /** يطبع ملصق شحن عبر نافذة المتصفّح (طابعة الملصقات بتعريف Windows أو PDF) بالقياس المُمرَّر،
- *  أو بالقياس المحفوظ في الإعداد المشترك (الافتراضي ٨٠×١٢٠مم) إن لم يُمرَّر.
+ *  أو بالقياس المحفوظ في الإعداد المشترك (الافتراضي 80×120مم) إن لم يُمرَّر.
  *  تُفتَح النافذة **قبل** بناء المحتوى (متزامنة مع إيماءة النقر عند النداء المباشر منها)؛
  *  وعند النداء بعد await (كتأكيد الإرسال) مرّر نافذةً سبق فتحها عبر `into` من `preopenShippingLabelWindow`.
  *  يعيد `{ ok }` — false إن حُجبت النافذة المنبثقة (ليُبلَّغ المستخدم). */

@@ -20,6 +20,8 @@ import { formatZReportAsText } from "@/lib/copy/formatters";
 import { fmtDateTime } from "@/lib/date";
 import { D, fmt, formatIqd } from "@/lib/money";
 import { notify } from "@/lib/notify";
+import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
+import { printCashDropReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 import { printShiftClose } from "@/lib/printing/print";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
@@ -36,7 +38,7 @@ import {
   Receipt,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearch } from "wouter";
 import { ACTION_LABELS } from "@shared/actionLabels";
 
@@ -213,8 +215,26 @@ export default function Shifts() {
     isMatched: closeDiff == null ? null : !closeHasVariance,
   });
 
+  const closingSnapRef = useRef<{ shiftId: number; row: Row | null; report: RouterOutputs["shifts"]["report"] | undefined; counted: string } | null>(null);
   const closeShiftM = trpc.shifts.close.useMutation({
     onSuccess: async (result) => {
+      const snap = closingSnapRef.current; closingSnapRef.current = null;
+      const sId = "shiftId" in result && typeof result.shiftId === "number" ? result.shiftId : (snap?.shiftId ?? 0);
+      const rep = snap?.report; const row = snap?.row;
+      if (sId > 0) {
+        void printShiftClose({
+          shiftId: sId, openedAt: row?.openedAt ?? rep?.shift?.openedAt ?? null, closedAt: new Date(),
+          cashierName: row?.userName ?? me.data?.name ?? `#${sId}`, branchName: branchName(row?.branchId),
+          departmentName: row?.shiftType ? SHIFT_TYPE_LABEL[row.shiftType] ?? row.shiftType : undefined,
+          openingBalance: "openingBalance" in result && result.openingBalance != null ? String(result.openingBalance) : String(row?.openingBalance ?? rep?.shift?.openingBalance ?? "0"),
+          invoiceCount: rep?.invoiceCount ?? 0, salesTotal: rep?.salesTotal ?? "0",
+          payments: (rep?.payments ?? []).map((p) => ({ method: p.method, direction: p.direction as "IN" | "OUT", count: Number(p.count), total: p.total })),
+          expectedCash: "expectedCash" in result && result.expectedCash != null ? String(result.expectedCash) : (rep?.expectedCash ?? "0"),
+          countedCash: "countedCash" in result && result.countedCash != null ? String(result.countedCash) : (snap?.counted ?? "0"),
+          variance: "variance" in result && result.variance != null ? String(result.variance) : "0",
+          treasuryReturn: !("legacyNegativeRemediation" in result) && result.treasuryReturn ? { amount: result.countedCash, referenceNumber: result.treasuryReturn.handoverNumber } : null,
+        }).catch(() => {}).finally(() => releaseReservedPrintWindow());
+      } else { releaseReservedPrintWindow(); }
       notify.ok(
         "legacyNegativeRemediation" in result
           ? "مُوّلت الوردية من الخزنة بالقيمة الدقيقة، وصُفّرت وأُغلقت"
@@ -231,7 +251,7 @@ export default function Shifts() {
       setLegacyClientRequestId("");
       await utils.shifts.list.invalidate();
     },
-    onError: (e) => notify.errBig(e),
+    onError: (e) => { closingSnapRef.current = null; releaseReservedPrintWindow(); notify.errBig(e); },
   });
 
   const fundingRow = rows.find((r) => r.id === fundingShiftId) ?? null;
@@ -263,6 +283,10 @@ export default function Shifts() {
   });
   const respondFundingM = trpc.shifts.respondFunding.useMutation({
     onSuccess: async (result) => {
+      if (result.status === "COMPLETED") {
+        const bId = "branchId" in result && typeof result.branchId === "number" ? result.branchId : rows.find((r) => r.id === result.shiftId)?.branchId;
+        void printCashDropReceipt({ dropNumber: result.referenceNumber, shiftId: result.shiftId, amount: result.amount, destinationLabel: "تمويل مستلم في عهدة الدرج", branchName: bId != null ? branchName(bId) : undefined, cashierName: me.data?.name, reason: `سند استلام تمويل عهدة — ${result.evidenceNote}` }).catch(() => {}).finally(() => releaseReservedPrintWindow());
+      } else { releaseReservedPrintWindow(); }
       notify.ok(
         result.status === "COMPLETED"
           ? `ثُبّت استلام ${fmt(result.amount)} د.ع في الوردية #${result.shiftId}`
@@ -275,7 +299,7 @@ export default function Shifts() {
         utils.shifts.list.invalidate(),
       ]);
     },
-    onError: (error) => notify.errBig(error),
+    onError: (error) => { releaseReservedPrintWindow(); notify.errBig(error); },
   });
   const cancelFundingM = trpc.shifts.cancelFunding.useMutation({
     onSuccess: async () => {
@@ -317,6 +341,7 @@ export default function Shifts() {
   }
 
   async function reprintZ(shiftId: number) {
+    reservePrintWindow();
     setPrinting(shiftId);
     try {
       const rep = await utils.shifts.report.fetch({ shiftId });
@@ -382,6 +407,7 @@ export default function Shifts() {
     } catch (e) {
       notify.err(e);
     } finally {
+      releaseReservedPrintWindow();
       setPrinting(null);
     }
   }
@@ -554,12 +580,13 @@ export default function Shifts() {
                   <Button
                     size="sm"
                     disabled={respondFundingM.isPending}
-                    onClick={() =>
+                    onClick={() => {
+                      reservePrintWindow();
                       respondFundingM.mutate({
                         requestReceiptId: request.requestReceiptId,
                         decision: "ACCEPT",
-                      })
-                    }
+                      });
+                    }}
                   >
                     <Check aria-hidden className="size-4" />
                     استلمت النقد
@@ -1151,6 +1178,8 @@ export default function Shifts() {
           varianceReasonCode,
           varianceReason,
         }) => {
+          closingSnapRef.current = { shiftId: sId, row: closingRow, report: closeReportQ.data, counted: isNeg ? "0" : counted };
+          reservePrintWindow();
           if (isNeg) {
             closeShiftM.mutate({
               shiftId: sId,

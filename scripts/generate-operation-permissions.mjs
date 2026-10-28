@@ -706,6 +706,10 @@ const SERVICE_RECORD_SCOPE_PATHS = new Set([
   "digitalCards.sales.getIntent",
   "digitalCards.sales.finalize",
   "digitalCards.sales.recover",
+  "salesControl.requestExchange",
+  "documentDelivery.readiness",
+  "documentDelivery.downloadPdf",
+  "documentDelivery.sendWhatsAppPdf",
 ]);
 const STAGE_OVERRIDES = {
   "sales.create": "EXECUTION",

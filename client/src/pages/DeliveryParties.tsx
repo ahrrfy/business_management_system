@@ -1,5 +1,7 @@
 import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { preopenDocumentWindow } from "@/lib/printing/print";
+import { printShortfallSettlementVoucher } from "@/lib/printing/cashierLifecycleReceipts";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { ShieldCheck, Truck, XCircle } from "lucide-react";
 import { ErrorState } from "@/components/PageState";
@@ -215,11 +217,37 @@ function CreatePartyDialog({ onClose, onDone }: { onClose: () => void; onDone: (
 }
 
 function SettleDialog({ party, onClose, onDone }: { party: Party; onClose: () => void; onDone: () => void }) {
+  const me = trpc.auth.me.useQuery();
   const [amount, setAmount] = useState(String(Number(party.currentBalance ?? 0)));
   // IDEMPOTENCY (تدقيق ٢/٧): مفتاح ثابت لكل جلسة حوار (لا UUID جديد لكل نقرة) ⇒ النقر المزدوج
   // يُعاد كـreplay على الخادم بدل تسجيل تسويتين نقديّتين.
   const [reqId] = useState(() => crypto.randomUUID());
-  const m = trpc.delivery.settle.useMutation({ onSuccess: () => { notify.ok("سُجِّلت التسوية"); onDone(); }, onError: (e) => notify.err(e) });
+  const winRef = useRef<Window | null>(null);
+  const m = trpc.delivery.settle.useMutation({
+    onSuccess: () => {
+      const win = winRef.current;
+      winRef.current = null;
+      notify.ok("سُجِّلت التسوية");
+      void printShortfallSettlementVoucher(
+        {
+          kind: "SETTLE_SHORTFALL",
+          voucherNumber: `SET-${party.id}-${reqId.slice(0, 8)}`,
+          partyName: party.name,
+          amount,
+          actionType: "تسوية عهدة سائبة",
+          paymentMethod: "CASH",
+          cashierName: me.data?.name ?? null,
+        },
+        win ? { into: win } : undefined,
+      );
+      onDone();
+    },
+    onError: (e) => {
+      try { winRef.current?.close(); } catch { /* noop */ }
+      winRef.current = null;
+      notify.err(e);
+    },
+  });
   return (
     <Modal title={`تسوية عهدة «${party.name}»`} onClose={onClose}>
       <p className="mb-2 text-sm text-muted-foreground">العهدة الحالية: <span dir="ltr" className="font-bold tabular-nums">{fmt(party.currentBalance)} د.ع</span>. يدفع المندوب نقداً (يدخل درج وردية مفتوحة).</p>
@@ -234,7 +262,7 @@ function SettleDialog({ party, onClose, onDone }: { party: Party; onClose: () =>
       <MoneyInput value={amount} onChange={setAmount} className="mb-4 h-11 text-end text-lg font-bold tabular-nums" ariaLabel="مبلغ التسديد" />
       <div className="flex gap-2.5">
         <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>
-        <Button className="flex-1" disabled={m.isPending || !/^\d+(\.\d{1,2})?$/.test(amount) || Number(amount) <= 0} onClick={() => m.mutate({ partyId: party.id, amount, clientRequestId: reqId })}>{m.isPending ? ACTION_LABELS.saving : "تسجيل التسوية"}</Button>
+        <Button className="flex-1" disabled={m.isPending || !/^\d+(\.\d{1,2})?$/.test(amount) || Number(amount) <= 0} onClick={() => { winRef.current = preopenDocumentWindow(); m.mutate({ partyId: party.id, amount, clientRequestId: reqId }); }}>{m.isPending ? ACTION_LABELS.saving : "تسجيل التسوية"}</Button>
       </div>
     </Modal>
   );
@@ -335,9 +363,33 @@ function WriteOffApprovalQueue({ userId, onChanged }: { userId: number; onChange
   const canReject = lifecycleActionAllowed(me.data, "delivery.rejectWriteOffRequest", true);
   const pending = trpc.delivery.listWriteOffRequests.useQuery({ status: "PENDING" });
   const [rejectReasons, setRejectReasons] = useState<Record<number, string>>({});
+  const approveSnapRef = useRef<{ win: Window | null; row: { id: number | string; partyName: string; amount: string; reason: string } } | null>(null);
   const approve = trpc.delivery.approveWriteOffRequest.useMutation({
-    onSuccess: () => { notify.ok("اعتُمد طلب الشطب وطُبّق الأثر ذرّياً"); onChanged(); },
-    onError: (e) => notify.err(e),
+    onSuccess: () => {
+      const snap = approveSnapRef.current;
+      approveSnapRef.current = null;
+      notify.ok("اعتُمد طلب الشطب وطُبّق الأثر ذرّياً");
+      if (snap) {
+        void printShortfallSettlementVoucher(
+          {
+            kind: "SETTLE_SHORTFALL",
+            voucherNumber: `WO-${snap.row.id}`,
+            partyName: snap.row.partyName,
+            amount: snap.row.amount,
+            actionType: "اعتماد شطب عجز",
+            cashierName: me.data?.name ?? null,
+            reason: snap.row.reason,
+          },
+          snap.win ? { into: snap.win } : undefined,
+        );
+      }
+      onChanged();
+    },
+    onError: (e) => {
+      try { approveSnapRef.current?.win?.close(); } catch { /* noop */ }
+      approveSnapRef.current = null;
+      notify.err(e);
+    },
   });
   const reject = trpc.delivery.rejectWriteOffRequest.useMutation({
     onSuccess: () => { notify.ok("رُفض طلب الشطب بلا أثر مالي"); onChanged(); },
@@ -392,11 +444,17 @@ function WriteOffApprovalQueue({ userId, onChanged }: { userId: number; onChange
                         description: `سيُطبّق الشطب بقيمة ${fmt(row.amount)} د.ع الآن داخل معاملة واحدة بعد إعادة مطابقة النسخة وفصل المهام.`,
                         confirmText: "اعتماد وتطبيق",
                       });
-                      if (ok) approve.mutate({
-                        id: Number(row.id),
-                        expectedVersion: Number(row.basePartyVersion),
-                        decisionKey: `writeoff-approve-${row.id}-${userId}`,
-                      });
+                      if (ok) {
+                        approveSnapRef.current = {
+                          win: preopenDocumentWindow(),
+                          row: { id: row.id, partyName: row.partyName, amount: row.amount, reason: row.reason },
+                        };
+                        approve.mutate({
+                          id: Number(row.id),
+                          expectedVersion: Number(row.basePartyVersion),
+                          decisionKey: `writeoff-approve-${row.id}-${userId}`,
+                        });
+                      }
                     }}
                   >
                     <ShieldCheck className="size-4" aria-hidden /> اعتماد

@@ -55,6 +55,11 @@ import { CartTable } from "@/components/reception/CartTable";
 import { PaymentPanel } from "@/components/reception/PaymentPanel";
 import { ReceiptOverlay } from "@/components/reception/ReceiptOverlay";
 import { triggerReceptionShippingLabel } from "@/components/reception/receptionShippingLabel";
+import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
+import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
+import { digitalCheckoutReceiptLines } from "@/lib/printing/digitalReceiptLines";
+import { fmtDate, fmtDateTime, fmtTime } from "@/lib/date";
+import { type Receipt } from "@/components/pos/posShared";
 import type { DeliveryDepartureData } from "@/components/delivery/DeliveryDepartureOverlay";
 import { buildReceptionDepartureData } from "@/components/reception/receptionDepartureHelper";
 import { ManagerApprovalDialog, type ManagerApprovalInput } from "@/components/reception/ManagerApprovalDialog";
@@ -98,7 +103,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
   const [, navigate] = useLocation();
   const pageSearch = useSearch();
   const me = trpc.auth.me.useQuery();
-  const { printAuthorizedReceiptData, printAuthorizedDocument } = useInvoiceReceiptPrinter(me.data, me.data?.id);
+  const { printAuthorizedReceipt, printAuthorizedReceiptData, printAuthorizedDocument } = useInvoiceReceiptPrinter(me.data, me.data?.id);
   const canAction = (path: string) => receptionOperationAllowed(me.data, path);
   const canActionRef = useRef(canAction); canActionRef.current = canAction;
   function requireAction(path: string) { if (!canActionRef.current(path)) throw new Error("هذه العملية غير مفوضة لحسابك"); }
@@ -147,9 +152,9 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
         cashierName: me.data?.name ?? "موظف الخدمة",
         branchName,
         openedAt: new Date(),
-      });
+      }).finally(() => releaseReservedPrintWindow());
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => { releaseReservedPrintWindow(); notify.err(e); },
   });
 
 
@@ -229,7 +234,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
   const [cardsOpen, setCardsOpen] = useState(false);
   const [fulfillIntentId, setFulfillIntentId] = useState<number | null>(null);
   const [digitalFinalizeError, setDigitalFinalizeError] = useState<string | null>(null);
-  const digitalCheckoutRef = useRef<{ appliedPaidD: import("decimal.js").Decimal; customerId: number | null } | null>(null);
+  const digitalCheckoutRef = useRef<{ appliedPaidD: import("decimal.js").Decimal; customerId: number | null; customerName: string | null; shiftId: number } | null>(null);
   const resetScreen = () => {
     draftResumeEpochRef.current += 1; if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
     draftSyncQueueRef.current?.reset(); setDraftTransitionPending(false); setDraftPromotionPending(false); setDraftPromotionShiftId(null); setWorkspaceSafetyBlocked(false); setDraftRestoreRecovery(null); setDetachedRecoveryPending(false);
@@ -248,15 +253,28 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
   const prepareIntent = trpc.digitalCards.sales.prepare.useMutation();
   const finalizeSale = trpc.digitalCards.sales.finalize.useMutation({
     onMutate: () => setDigitalFinalizeError(null),
-    onSuccess: () => {
+    onSuccess: (r) => {
+      const checkout = digitalCheckoutRef.current;
+      const now = new Date();
+      const received = checkout ? round2(checkout.appliedPaidD).toNumber() : D(r.total).toNumber();
+      const totalNum = D(r.total).toNumber();
+      const rec: Receipt = {
+        invoiceNumber: r.invoiceNumber, invoiceId: r.invoiceId, date: fmtDateTime(now), printDate: fmtDate(now), printTime: fmtTime(now),
+        cashierName: me.data?.name ?? undefined, shiftId: checkout?.shiftId ?? shift?.id ?? null, customerName: checkout?.customerName ?? undefined,
+        lines: digitalCheckoutReceiptLines(r.receiptLines), total: totalNum, received,
+        change: received > totalNum ? D(received).minus(totalNum).toNumber() : 0, credit: 0, method: "CASH", isCredit: false, digitalDetails: r.printDetails,
+      };
       setFulfillIntentId(null);
       digitalCheckoutRef.current = null;
       notify.ok("تم إتمام الطلب والبطاقات الرقمية واعتماد الفاتورة");
+      void printAuthorizedReceipt(rec).then((printed) => {
+        if (!printed.ok) notify.warn("تعذّرت الطباعة التلقائية", "حجب المتصفح نافذة الطباعة — الفاتورة محفوظة ويمكن إعادة طباعتها.");
+      }).catch(() => notify.warn("الفاتورة محفوظة؛ تعذّرت الطباعة التلقائية"));
       void utils.sales.list.invalidate();
       void utils.shifts.current.invalidate();
       resetAfterCommittedWorkspace();
     },
-    onError: (err) => setDigitalFinalizeError(err.message),
+    onError: (err) => { releaseReservedPrintWindow(); setDigitalFinalizeError(err.message); },
   });
 
   const [printerReady, setPrinterReady] = useState(isPaired());
@@ -687,10 +705,14 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
         setSubmitting(false);
         return;
       }
-      await captureOfflineReception(hadActiveDraftAtSubmit);
+      reservePrintWindow();
+      if (!(await captureOfflineReception(hadActiveDraftAtSubmit))) releaseReservedPrintWindow();
       setSubmitting(false);
       return;
     }
+
+    reservePrintWindow();
+    const receptionLabelWin = orderDelivery && !routeDeliveryToWO ? preopenShippingLabelWindow() : null;
 
     // هوية العميل: في البيع النقدي العابر اختياري، وفي التخصيص أو عند إدخال هاتف صحيح يُربط بالعميل
     let customerId: number | null = customer.customerId ?? null;
@@ -699,6 +721,8 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
         customerId = await ensureCustomerId();
       } catch (e: unknown) {
         if (hasCustomLines || deferred || isReserve) {
+          releaseReservedPrintWindow();
+          try { receptionLabelWin?.close(); } catch { /* noop */ }
           setSubmitting(false);
           notify.err(e instanceof Error ? e.message : "تعذّر حفظ العميل");
           return;
@@ -707,6 +731,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
     }
 
     let checkoutCommitted = false;
+    let builtDeparture: DeliveryDepartureData | null = null;
     try {
       const printedAt = new Date();
       const receiptPhone = receptionPhone;
@@ -723,6 +748,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
       // computeInvoiceTotals، فينتج نفس الرقم بالضبط ⇒ توزيعُ المدفوع لا يُخطئ التخصيص.
       const { directCheckoutPayload, deliveryPayload, saleAmount, printAmount, checkoutPaymentMode, hasCarrierInvoice } = buildReceptionCheckoutPayload({ payments: splitPayments ?? (extraChargeAmount.gt(0)?[{amount:inputPaidD.toFixed(2),method:method as "CASH"|"CARD"|"TRANSFER"|"WALLET",externalPaymentAttemptId:feePayment.tender?.externalPaymentAttemptId,externalPaymentDeviceId:feePayment.tender?.externalPaymentDeviceId}]:undefined), checkoutCharges, heldDelivery: D(heldDelivery).toFixed(2), deliveryFeeTender:heldDelivery>0?feePayment.tender:null, branchId, cashRoundActive, effectiveGrandD, regularSumRawD, invoiceDiscountAmountD, mixedRoundApplied, mixedCarrier, mixedDeltaAppliedD, printLines, customWithDeposits, effectiveWoDelivery, method, paymentReference, channel, channelHandle, receptionPhone, regularLines, orderDelivery, hasGrandShortfall, isReserve, hasDirectShortfall, deferred, customer, shift, customerId, customerName, receiptPhone, appliedPaidD, orderFeeHeldD, routeDeliveryToWO, opts, mgrCredsRef, reqIdRef, effectiveTier, couponCode });
       if (digitalLines.length > 0) {
+        try { receptionLabelWin?.close(); } catch { /* noop */ }
         const prepared = await prepareIntent.mutateAsync({
           branchId,
           shiftId: shift.id,
@@ -742,7 +768,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
           })),
           lines: digitalLines.map((line) => toDigitalPrepareLine(line.digital!)),
         });
-        digitalCheckoutRef.current = { appliedPaidD, customerId };
+        digitalCheckoutRef.current = { appliedPaidD, customerId, customerName, shiftId: shift.id };
         setDigitalFinalizeError(null);
         setFulfillIntentId(prepared.intentId);
         return;
@@ -817,9 +843,10 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
           );
           void utils.delivery.invalidate();
           const pObj = (partiesQ.data ?? []).find((p) => Number(p.id) === Number(orderDelivery.partyId));
-          setDeliveryDeparture(buildReceptionDepartureData({
+          builtDeparture = buildReceptionDepartureData({
             dispatched, result, cart, customerName, receiptPhone, orderDelivery, courierPhone: pObj?.phone,
-          }));
+          });
+          setDeliveryDeparture(builtDeparture);
         } else if (routeDeliveryToWO) {
           // ٨/٨ — أمر شغلٍ خالص: التوصيل مُثبَّتٌ على الأمر نفسه (لا إرسالية الآن — يُسنَد
           // للمندوب من طابور الطلبات عند الجاهزية). نجاحٌ لا تحذير («وكأنه غير موجود» سابقاً).
@@ -847,7 +874,15 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
       // نجاح الحفظ لا يُلغى إذا تعذّرت الطابعة. نحاول المسارات بالترتيب الموحّد:
       // جسر الخادم ← WebUSB ← نافذة طباعة المتصفح، ثم نُفرغ السلة دائماً.
       await presentReceptionCheckout({ receiptsToPrint, printAuthorizedReceiptData, workOrdersToPrint, invoiceId, createdWoIds, isReserve, result, setLastSale, effectiveGrandD, printedChange, printedCredit, checkoutPaymentMode, setShowReceiptOverlay, resetAfterCommittedWorkspace, utils });
+      releaseReservedPrintWindow();
+      if (builtDeparture) {
+        const autoSummary: LastSaleSummary = { invoiceNumbers: [result.regularSale?.invoiceNumber, result.printSale?.invoiceNumber].filter(Boolean) as string[], workOrderNumbers: result.workOrders.map((o) => o.orderNumber).filter(Boolean), totalStr: round2(effectiveGrandD).toFixed(2), changeStr: printedChange, creditStr: printedCredit, paymentMode: checkoutPaymentMode, receipts: receiptsToPrint, workOrders: workOrdersToPrint, printFailures: 0 };
+        const renderAutoLabel = async () => { const lblRes = await triggerReceptionShippingLabel(autoSummary, builtDeparture, receiptPhone, { into: receptionLabelWin, isReprint: false }); return lblRes.ok ? { ok: true as const, via: "browser" as const } : { ok: false as const, via: "browser" as const, reason: "popup-blocked" as const }; };
+        if (!workOrdersToPrint.length && invoiceId) void printAuthorizedDocument(invoiceId, "SHIPPING_LABEL", false, renderAutoLabel).catch(() => {});
+        else void renderAutoLabel().catch(() => {});
+      } else { try { receptionLabelWin?.close(); } catch { /* noop */ } }
     } catch (e: unknown) {
+      try { receptionLabelWin?.close(); } catch { /* noop */ }
       // الاستقبال (٨/٨): حاصر البيع بالسالب في وضع الافتتاح — الصنف غير مجرود (رصيد سالب) وطلبٌ
       // بتوصيل COD. أثناء الافتتاح السالب يعني «لم يُعدّ» لا «نافد»، والمندوب يحمل الصنف الموجود
       // فعلياً. نعرض تأكيداً صريحاً (توفّر فيزيائيّ) مرّةً واحدة ثم نعيد بنفس opts + العلم.
@@ -856,6 +891,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
         && (errMsg.includes("المخزون غير كافٍ") || errMsg.includes("البيع بالسالب"))
         && errMsg.includes("الافتتاح");
       if (isOpeningNegativeBlock) {
+        releaseReservedPrintWindow();
         setSubmitting(false);
         const ok = await confirm({
           variant: "warning",
@@ -874,6 +910,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
       if (isTransportFailure && !extraChargeAmount.gt(0) && (await captureOfflineReception())) {
         return;
       }
+      releaseReservedPrintWindow();
       // لا توجد حالة التزام جزئي. عند غياب رد الشبكة قد تكون المعاملة كلها التزمت أو كلها
       // تراجعت؛ المفتاح الثابت يجعل إعادة الإرسال تستعيد النتيجة بلا تكرار.
       //
@@ -925,19 +962,24 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
         notify.warn("لا عملية سابقة لإعادة طباعتها");
         return;
       }
+      reservePrintWindow();
       void (async () => {
-        let failures = 0;
-        for (const r of lastSale.receipts) {
-          try {
-            const printed = await printAuthorizedReceiptData(r, true);
-            if (!printed.ok) failures += 1;
-          } catch { failures += 1; }
+        try {
+          let failures = 0;
+          for (const r of lastSale.receipts) {
+            try {
+              const printed = await printAuthorizedReceiptData(r, true);
+              if (!printed.ok) failures += 1;
+            } catch { failures += 1; }
+          }
+          for (const w of lastSale.workOrders) {
+            try { await printWorkOrderReceipt(w); } catch { failures += 1; }
+          }
+          if (failures > 0) notify.err(`تعذّرت طباعة ${failures} مستند`);
+          else notify.ok("أُعيدت طباعة مستندات آخر عملية");
+        } finally {
+          releaseReservedPrintWindow();
         }
-        for (const w of lastSale.workOrders) {
-          try { await printWorkOrderReceipt(w); } catch { failures += 1; }
-        }
-        if (failures > 0) notify.err(`تعذّرت طباعة ${failures} مستند`);
-        else notify.ok("أُعيدت طباعة مستندات آخر عملية");
       })();
     };
   });
@@ -965,7 +1007,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
   // بوّابة وردية خدمة العملاء: لا عمل بلا وردية RECEPTION مفتوحة (درج/رصيد افتتاحي مستقلّ).
   if (!shift) {
     return (
-      <ReceptionOpenShift branchId={branchId} opening={opening} setOpening={setOpening} bridge={bridge} connectPrinter={connectPrinter} printerReady={printerReady} canAction={canAction} openShiftM={openShiftM} canActionRef={canActionRef} />
+      <ReceptionOpenShift branchId={branchId} opening={opening} setOpening={setOpening} bridge={bridge} connectPrinter={connectPrinter} printerReady={printerReady} canAction={canAction} openShiftM={{ isPending: openShiftM.isPending, mutate: (input) => { reservePrintWindow(); openShiftM.mutate(input); } }} canActionRef={canActionRef} />
     );
   }
 
@@ -1127,7 +1169,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
       {customerContextId != null && <Contact360Panel kind="customer" id={customerContextId} onClose={() => setCustomerContextId(null)} onOpenContact={(kind, id) => { if (kind === "customer") setCustomerContextId(id); }} />}
 
       {/* ش١ (§٨.٦) — نافذة الإيصال بعد الإتمام */}
-      {showReceiptOverlay && lastSale && <ReceiptOverlay lastSale={lastSale} deliveryDeparture={deliveryDeparture} onCloseDeliveryDeparture={() => setDeliveryDeparture(null)} onReprint={() => reprintLastRef.current?.()} onReprintLabel={() => { const render = async () => { const result = await triggerReceptionShippingLabel(lastSale, deliveryDeparture, customer.phone); return result.ok ? { ok: true as const, via: "browser" as const } : { ok: false as const, via: "browser" as const, reason: "popup-blocked" as const }; }; if (!lastSale.workOrders.length) void printAuthorizedDocument(lastSale.receipts[0]?.invoiceId ?? 0, "SHIPPING_LABEL", true, render).catch((error) => notify.err(error)); else void render(); }} onClose={() => setShowReceiptOverlay(false)} />}
+      {showReceiptOverlay && lastSale && <ReceiptOverlay lastSale={lastSale} deliveryDeparture={deliveryDeparture} onCloseDeliveryDeparture={() => setDeliveryDeparture(null)} onReprint={() => reprintLastRef.current?.()} onReprintLabel={() => { const render = async () => { const result = await triggerReceptionShippingLabel(lastSale, deliveryDeparture, customer.phone, { isReprint: true }); return result.ok ? { ok: true as const, via: "browser" as const } : { ok: false as const, via: "browser" as const, reason: "popup-blocked" as const }; }; if (!lastSale.workOrders.length) void printAuthorizedDocument(lastSale.receipts[0]?.invoiceId ?? 0, "SHIPPING_LABEL", true, render).catch((error) => notify.err(error)); else void render(); }} onClose={() => setShowReceiptOverlay(false)} />}
 
       {/* م٦ — اعتماد المدير للخصم >١٠٪ */}
       {approvalAsk && <ManagerApprovalDialog pct={approvalAsk.pct} onCancel={() => setApprovalAsk(null)} onApprove={(appr) => { mgrCredsRef.current = appr; setLineDiscount(approvalAsk.lineKey, approvalAsk.pct); setApprovalAsk(null); notify.ok(`خصم ${approvalAsk.pct}٪ بانتظار اعتماد المدير عند التثبيت`, "تُفحص بيانات المدير خادمياً لحظة إتمام الطلب"); }} />}
@@ -1147,7 +1189,7 @@ function ReceptionWorkspace({ branchId }: { branchId: number }) {
         intentId={fulfillIntentId}
         finalizing={finalizeSale.isPending}
         finalizeError={digitalFinalizeError}
-        onClose={() => { setFulfillIntentId(null); digitalCheckoutRef.current = null; }}
+        onClose={() => { releaseReservedPrintWindow(); setFulfillIntentId(null); digitalCheckoutRef.current = null; }}
         onAllExecuted={(id: number) => {
           if (!canActionRef.current("digitalCards.sales.finalize")) { notify.err("تثبيت البيع الرقمي غير مفوض لحسابك"); return; }
           if (!finalizeSale.isPending && digitalCheckoutRef.current) finalizeSale.mutate({

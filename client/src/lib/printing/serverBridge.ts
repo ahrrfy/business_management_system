@@ -3,7 +3,11 @@
 import { screenAttributionHeaders } from "@/lib/screenAttribution";
 import { createErpTrpcClient } from "@/lib/trpcClient";
 
-const utils = createErpTrpcClient();
+let lazyClient: ReturnType<typeof createErpTrpcClient> | null = null;
+function getBridgeClient() {
+  lazyClient ??= createErpTrpcClient();
+  return lazyClient;
+}
 
 let cachedEnabled: boolean | null = null;
 let lastStatusCheck = 0;
@@ -66,7 +70,7 @@ export async function getServerBridgeStatus(): Promise<{
 
 /** إرسال بايتات ESC/POS للخادم ليطبعها. يرمي عند الفشل (ليتراجع المتّصِل للبديل). */
 export async function sendRawToServer(bytes: Uint8Array): Promise<void> {
-  await utils.invoicePrinting.authorizeBridge.query();
+  const trpc = getBridgeClient(); await trpc.invoicePrinting.authorizeBridge.query();
   const res = await fetch("/api/print/raw", {
     method: "POST",
     credentials: "include",
@@ -95,7 +99,7 @@ export async function serverPrintTest(): Promise<{
   error?: string;
 }> {
   try {
-    await utils.invoicePrinting.authorizeBridge.query();
+    const trpc = getBridgeClient(); await trpc.invoicePrinting.authorizeBridge.query();
     const res = await fetch("/api/print/test", {
       method: "POST",
       credentials: "include",

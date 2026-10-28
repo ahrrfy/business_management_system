@@ -197,7 +197,7 @@ export const fulfillmentAftercareRouter = router({
     .mutation(async ({ input, ctx }) =>
       createAftercareCase(input, await resolveAftercareActor(ctx.user, input)),
     ),
-  approve: deliveryManagerProcedure
+  approve: deliveryCashierProcedure
     .input(identity)
     .mutation(async ({ input, ctx }) =>
       approveAftercareCase(
@@ -208,7 +208,7 @@ export const fulfillmentAftercareRouter = router({
         }),
       ),
     ),
-  prepare: deliveryManagerProcedure
+  prepare: deliveryCashierProcedure
     .input(
       identity.extend({
         recipientName: z.string().trim().min(2).max(255),
@@ -240,7 +240,7 @@ export const fulfillmentAftercareRouter = router({
         }),
       ),
     ),
-  dispatch: deliveryManagerProcedure
+  dispatch: deliveryCashierProcedure
     .input(
       identity.extend({
         partyId: id,
@@ -257,7 +257,7 @@ export const fulfillmentAftercareRouter = router({
         }),
       ),
     ),
-  confirm: deliveryManagerProcedure
+  confirm: deliveryCashierProcedure
     .input(
       identity.extend({
         proof: text,
@@ -274,7 +274,7 @@ export const fulfillmentAftercareRouter = router({
         }),
       ),
     ),
-  payFee: deliveryManagerProcedure
+  payFee: deliveryCashierProcedure
     .input(
       identity.extend({
         amount: positiveMoneyString,
@@ -291,7 +291,7 @@ export const fulfillmentAftercareRouter = router({
         }),
       ),
     ),
-  cancel: deliveryManagerProcedure
+  cancel: deliveryCashierProcedure
     .input(identity.extend({ reason: text }))
     .mutation(async ({ input, ctx }) =>
       cancelAftercareCase(
@@ -302,7 +302,7 @@ export const fulfillmentAftercareRouter = router({
         }),
       ),
     ),
-  cancelExecution: deliveryManagerProcedure
+  cancelExecution: deliveryCashierProcedure
     .input(
       identity.extend({ reason: text, physicalHeldConfirmed: z.boolean() }),
     )
@@ -315,7 +315,7 @@ export const fulfillmentAftercareRouter = router({
         }),
       ),
     ),
-  declareReturn: deliveryManagerProcedure
+  declareReturn: deliveryCashierProcedure
     .input(identity.extend({ reason: text }))
     .mutation(async ({ input, ctx }) =>
       declareAftercareExecutionReturn(
@@ -326,7 +326,7 @@ export const fulfillmentAftercareRouter = router({
         }),
       ),
     ),
-  settlementPreview: deliveryManagerProcedure
+  settlementPreview: deliveryCashierProcedure
     .input(settlementInput)
     .query(async ({ input, ctx }) =>
       previewAftercareSettlement(
@@ -337,7 +337,7 @@ export const fulfillmentAftercareRouter = router({
         }),
       ),
     ),
-  settlementRequest: deliveryManagerProcedure
+  settlementRequest: deliveryCashierProcedure
     .input(
       settlementInput.extend({
         previewHash: z.string().length(64),
@@ -353,7 +353,7 @@ export const fulfillmentAftercareRouter = router({
         }),
       ),
     ),
-  approveSettlement: deliveryManagerProcedure
+  approveSettlement: deliveryCashierProcedure
     .input(identity)
     .mutation(async ({ input, ctx }) =>
       approveAftercareSettlement(
@@ -364,7 +364,7 @@ export const fulfillmentAftercareRouter = router({
         }),
       ),
     ),
-  settlementPost: deliveryManagerProcedure
+  settlementPost: deliveryCashierProcedure
     .input(identity)
     .mutation(async ({ input, ctx }) =>
       postAftercareSettlement(
@@ -375,7 +375,7 @@ export const fulfillmentAftercareRouter = router({
         }),
       ),
     ),
-  settlementWithdraw: deliveryManagerProcedure
+  settlementWithdraw: deliveryCashierProcedure
     .input(identity.extend({ reason: text }))
     .mutation(async ({ input, ctx }) =>
       withdrawAftercareSettlement(
@@ -394,7 +394,7 @@ export const fulfillmentAftercareRouter = router({
         await resolveAftercareActor(ctx.user, input),
       ),
     ),
-  rightsPost: deliveryManagerProcedure
+  rightsPost: deliveryCashierProcedure
     .input(
       z.object({
         branchId: id.optional(),
@@ -408,7 +408,7 @@ export const fulfillmentAftercareRouter = router({
     .mutation(async ({ input, ctx }) =>
       postComponentRights(input, await resolveAftercareActor(ctx.user, input)),
     ),
-  rightsConfirmRefund: deliveryManagerProcedure
+  rightsConfirmRefund: deliveryCashierProcedure
     .input(
       z.object({
         receiptId: id,
@@ -423,7 +423,7 @@ export const fulfillmentAftercareRouter = router({
         await resolveAftercareActor(ctx.user, input),
       ),
     ),
-  resolve: deliveryManagerProcedure
+  resolve: deliveryCashierProcedure
     .input(identity.extend({ resolution: text }))
     .mutation(async ({ input, ctx }) =>
       resolveAftercareCase(

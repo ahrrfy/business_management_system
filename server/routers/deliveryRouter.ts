@@ -1454,7 +1454,7 @@ export const deliveryRouter = router({
       return { requeued: (res as unknown as { affectedRows?: number }).affectedRows ?? 0 };
     }),
 
-  recoverWriteOff: storeManagerProcedure
+  recoverWriteOff: deliveryCashierProcedure
     .input(
       z.object({
         partyId: z.number().int().positive(),

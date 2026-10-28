@@ -10,13 +10,26 @@ import {
 } from "@shared/operationPermissions";
 import { buildBrandedReceipt, type Receipt } from "@/components/pos/posShared";
 
+function fallbackInvoicePrintMutation() {
+  return {
+    isPending: false,
+    mutate: () => {},
+    mutateAsync: async () => ({} as never),
+  };
+}
+
 export function useInvoiceReceiptPrinter(
   user: RouterOutputs["auth"]["me"] | undefined,
   offlineUserId: number | null | undefined,
 ) {
-  const requestPrint = trpc.invoicePrinting.requestPrint.useMutation();
-  const requestReprint = trpc.invoicePrinting.requestReprint.useMutation();
+  const requestPrint = (
+    trpc.invoicePrinting?.requestPrint?.useMutation ?? fallbackInvoicePrintMutation
+  )();
+  const requestReprint = (
+    trpc.invoicePrinting?.requestReprint?.useMutation ?? fallbackInvoicePrintMutation
+  )();
   const receiptPrinting = useRef(false);
+  const inFlight = useRef(new Set<string>());
   useEffect(() => {
     if (!user) return;
     void setMeta(
@@ -26,9 +39,13 @@ export function useInvoiceReceiptPrinter(
   }, [user]);
 
   async function printAuthorizedDocument(invoiceId: number, purpose: InvoicePrintPurpose, reprint: boolean, render: () => Promise<PrintResult>) {
-    if (receiptPrinting.current)
+    const lockKey = `${invoiceId}:${purpose}`;
+    if (inFlight.current.has(lockKey) || (purpose === "THERMAL" && receiptPrinting.current)) {
+      if (purpose === "THERMAL") releaseReservedPrintWindow();
       return { ok: false as const, via: "browser" as const };
-    receiptPrinting.current = true;
+    }
+    inFlight.current.add(lockKey);
+    if (purpose === "THERMAL") receiptPrinting.current = true;
     try {
       const attempt = invoiceId > 0 && user
         ? beginInvoicePrintAttempt(user.id, invoiceId, purpose, reprint,
@@ -73,8 +90,9 @@ export function useInvoiceReceiptPrinter(
       if (result.ok && attempt) completeInvoicePrintAttempt(attempt);
       return result;
     } finally {
-      releaseReservedPrintWindow();
-      receiptPrinting.current = false;
+      if (purpose !== "SHIPPING_LABEL") releaseReservedPrintWindow();
+      inFlight.current.delete(lockKey);
+      if (purpose === "THERMAL") receiptPrinting.current = false;
     }
   }
   function printAuthorizedReceiptData(rec: ReceiptBrowserData, reprint = false) {

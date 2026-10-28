@@ -88,7 +88,10 @@ export function assertInvoicePrintScope(
     } else if (
       actor.scopedOwnerId != null &&
       invoice.createdBy !== actor.scopedOwnerId &&
-      invoice.workOrderCreatedBy !== actor.scopedOwnerId
+      invoice.workOrderCreatedBy !== actor.scopedOwnerId &&
+      purpose !== "SHIPPING_LABEL" &&
+      purpose !== "WAREHOUSE" &&
+      invoice.sourceType !== "ONLINE"
     ) {
       deny("الفاتورة ليست من سجلاتك المسموح طباعتها");
     }

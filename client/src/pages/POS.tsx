@@ -10,6 +10,8 @@ import { notify, errMsg } from "@/lib/notify";
 import { D, round2 } from "@/lib/money";
 import { usePOSShiftOpening } from "@/hooks/usePOSShiftOpening";
 import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
+import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
+import { printPosDeliveryShippingLabel, printCashDropReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 import { useInvoiceReceiptPrinter } from "@/hooks/useInvoiceReceiptPrinter";
 import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 import { useMediaQuery } from "@/hooks/useMobile";
@@ -83,7 +85,7 @@ export default function POS() {
   // ش٥ — إقلاع دون اتصال: هوية الجهاز وورديته من آخر جلسة أونلاين معلومة
   const [pickedBranch, setPickedBranch] = useState<number | null>(null);
   const { offlineBoot, offlineSaleOn } = usePOSOfflineBoot(me.data);
-  const { printAuthorizedReceipt, receiptPrinting } = useInvoiceReceiptPrinter(me.data, offlineBoot?.userId);
+  const { printAuthorizedReceipt, printAuthorizedDocument, receiptPrinting } = useInvoiceReceiptPrinter(me.data, offlineBoot?.userId);
   const branchId = me.data?.branchId ?? offlineBoot?.branchId ?? pickedBranch ?? 1;
   const activeBranchName = (branches.data ?? []).find((branch) => Number(branch.id) === branchId)?.name ?? `فرع #${branchId}`;
   const isElevatedRole = me.data?.role === "admin" || me.data?.role === "manager";
@@ -95,15 +97,15 @@ export default function POS() {
   const shiftQ = trpc.shifts.current.useQuery({ branchId, shiftType: "RETAIL" });
   // العهدة لا تصل إلى الدرج بمجرد طلب المالك. نظهرها في محطة الكاشير نفسها كي
   // يؤكد الاستلام الفعلي، بدل الاعتماد على رابط إداري مخفي عن تنقله.
-  const fundingRequestsQ = trpc.shifts.fundingRequests.useQuery(undefined, {
-    enabled: me.data != null && !offline,
-  });
+  const fundingRequestsQ = trpc.shifts.fundingRequests.useQuery(undefined, { enabled: me.data != null && !offline });
   const acceptFundingM = trpc.shifts.respondFunding.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (res) => {
+      if (res.status === "COMPLETED") void printCashDropReceipt({ dropNumber: res.referenceNumber, shiftId: res.shiftId, amount: res.amount, destinationLabel: "تمويل مستلم في عهدة الدرج", branchName: activeBranchName, cashierName: me.data?.name, reason: `سند استلام تمويل عهدة — ${res.evidenceNote}` }).catch(() => {}).finally(() => releaseReservedPrintWindow());
+      else releaseReservedPrintWindow();
       notify.ok("أضيفت العهدة إلى الدرج بعد تأكيد الاستلام");
       await Promise.all([fundingRequestsQ.refetch(), shiftQ.refetch()]);
     },
-    onError: (error) => notify.errBig(error),
+    onError: (error) => { releaseReservedPrintWindow(); notify.errBig(error); },
   });
   // ش٥: وردية بديلة للإقلاع الأوفلايني — آخر وردية مفتوحة معلومة على هذا الجهاز. تُفعِّل مسارات
   // الالتقاط فقط (الإغلاق/التقرير أونلاينيان، والخادم يتحقق من الوردية فعلياً عند الترحيل).
@@ -573,10 +575,12 @@ export default function POS() {
     total: number; received: number; change: number; credit: number;
     isCredit: boolean; method: string; methodCode?: string;
     paymentLegs?: Receipt["paymentLegs"];
-    customerName?: string; cashierName?: string;
-    /** م١ PR-B: كتلة التوصيل للإيصال (تُلتقط لحظة الإرسال). */
+    customerName?: string; customerPhone?: string | null; cashierName?: string;
+    /** م١ PR-B: كتلة التوصيل للإيصال + بيانات الليبل (تُلتقط لحظة الإرسال). */
     delivery?: Receipt["delivery"];
+    labelMeta?: { governorate?: string | null; recipientName?: string | null; recipientPhone?: string | null; externalTrackingRef?: string | null } | null;
   } | null>(null);
+  const saleLabelWinRef = useRef<Window | null>(null);
 
   const sale = trpc.sales.create.useMutation({
     onSuccess: async (r, submitted) => {
@@ -623,20 +627,16 @@ export default function POS() {
       // فرّغ التبويب المُباع تحديداً (لا التبويب النشط الحالي) وجدّد مفتاحه للبيع التالي.
       patchTab(ctx.tabId, { extraCharges: undefined, cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId(), paymentRef: "", externalPayment: null, paymentLegs: [], dueDate: "", invoiceDiscountPct: "", delivery: null });
 
+      const lblWin = saleLabelWinRef.current; saleLabelWinRef.current = null;
+      if (alignedRec.delivery || alignedRec.consignmentNumber) void printPosDeliveryShippingLabel({ ...alignedRec, customerPhone: ctx.customerPhone, delivery: alignedRec.delivery ? { ...alignedRec.delivery, ...ctx.labelMeta } : null }, printAuthorizedDocument, lblWin, false).catch(() => {});
+      else { try { lblWin?.close(); } catch { /* noop */ } }
       try {
       const printed = await printAuthorizedReceipt(alignedRec);
-      if (!printed.ok) {
-        notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
-      } else if (printed.via === "server") {
-        notify.ok("تمت الطباعة المباشرة", `فاتورة ${r.invoiceNumber} أُرسلت إلى طابعة الكاشير`);
-      } else if (printed.via === "thermal") {
-        notify.ok("تمت الطباعة الحرارية", `فاتورة ${r.invoiceNumber} أُرسلت إلى الطابعة المربوطة`);
-      } else {
-        notify.warn("الطابعة المباشرة غير متاحة", "افتُتحت نافذة الطباعة؛ اربط طابعة الكاشير من رمز الطابعة لتعمل مباشرة لاحقاً");
-      }
-      } catch (cause) {
-        notify.warn("الفاتورة محفوظة؛ تعذّرت الطباعة", errMsg(cause));
-      }
+      if (!printed.ok) notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
+      else if (printed.via === "server") notify.ok("تمت الطباعة المباشرة", `فاتورة ${r.invoiceNumber} أُرسلت إلى طابعة الكاشير`);
+      else if (printed.via === "thermal") notify.ok("تمت الطباعة الحرارية", `فاتورة ${r.invoiceNumber} أُرسلت إلى الطابعة المربوطة`);
+      else notify.warn("الطابعة المباشرة غير متاحة", "افتُتحت نافذة الطباعة؛ اربط طابعة الكاشير من رمز الطابعة لتعمل مباشرة لاحقاً");
+      } catch (cause) { notify.warn("الفاتورة محفوظة؛ تعذّرت الطباعة", errMsg(cause)); }
       await Promise.all([
         utils.catalog.posList.invalidate(),
         utils.catalog.stockByUnitIds.invalidate(),
@@ -646,22 +646,15 @@ export default function POS() {
       setCreditPrompt(null); setMgrEmail(""); setMgrPwd(""); setSaleError(null);
     },
     onError: (e) => {
-      releaseReservedPrintWindow();
-      const errData = e.data as unknown as
-        | { code?: string; httpStatus?: number } | null | undefined;
+      try { saleLabelWinRef.current?.close(); } catch { /* noop */ } saleLabelWinRef.current = null;
+      const errData = e.data as unknown as { code?: string; httpStatus?: number } | null | undefined;
       const code = errData?.code;
-      const offlineCapturable = !!shift &&
-        cart.length > 0 &&
-        !cart.some((c) => c.digital) &&
-        !isSplitPayment &&
-        activeTab.method === "CASH" &&
-        !isCredit &&
-        !activeTab.couponCode && !deliveryBlocksOfflineCapture(activeTab.delivery);
+      const offlineCapturable = !!shift && cart.length > 0 && !cart.some((c) => c.digital) && !isSplitPayment && activeTab.method === "CASH" && !isCredit && !activeTab.couponCode && !deliveryBlocksOfflineCapture(activeTab.delivery);
       if (!code || (errData?.httpStatus === 503 && offlineCapturable)) {
-        saleCtxRef.current = null;
-        void captureOfflineSale();
-        return;
+        if (!offlineCapturable) releaseReservedPrintWindow();
+        saleCtxRef.current = null; void captureOfflineSale(); return;
       }
+      releaseReservedPrintWindow();
       if (code === "PRECONDITION_FAILED" || (e.message && (e.message.includes("حدّ الائتمان") || e.message.includes("بأقل من التكلفة") || e.message.includes("موافقة مدير"))))
         setCreditPrompt(e.message);
       else { notify.errBig(e); setSaleError(e.message); }
@@ -806,11 +799,12 @@ export default function POS() {
       method: snap.method,
       methodCode: snap.effectiveMethodCode,
       paymentLegs: snap.paymentLegs,
-      customerName: selectedCustomer?.name,
+      customerName: selectedCustomer?.name, customerPhone: activeTab.delivery?.customerPhone || selectedCustomer?.phone || null,
       cashierName: me.data?.name ?? offlineBoot?.name ?? undefined,
       delivery: activeTab.delivery && deliveryPayload
         ? { partyName: activeTab.delivery.partyName, fee: deliveryPayload.fee, feeCollection: deliveryPayload.feeCollection, address: deliveryPayload.address ?? null }
         : null,
+      labelMeta: deliveryPayload ? { governorate: deliveryPayload.governorate ?? null, recipientName: deliveryPayload.recipientName ?? null, recipientPhone: deliveryPayload.recipientPhone ?? null, externalTrackingRef: deliveryPayload.externalTrackingRef ?? null } : null,
     };
   }
 
@@ -819,6 +813,8 @@ export default function POS() {
   // سيستعمله أونلاين، يُطبع إيصال مؤقّت OFF-... بنفس التصميم، ويُرحَّل تلقائياً عند عودة
   // الاتصال عبر offline.replaySale (idempotent — لا ازدواج حتى مع بيعٍ نصف-ناجح قبل القطع).
   async function captureOfflineSale() {
+    let readyToPrint = false;
+    try {
     if (checkoutExtraTotal(activeTab.extraCharges).gt(0)) {
       notify.err("قبض الأجور يتطلب اتصالاً بالخادم؛ احتُفظ بالمسودة وإثبات الدفع لإعادة المحاولة بنفس المرجع"); return;
     }
@@ -900,7 +896,8 @@ export default function POS() {
     notify.ok(`بيع دون اتصال — إيصال مؤقّت ${receiptNumber}`, "الرقم الرسمي يصدر تلقائياً عند عودة الاتصال (شارة المزامنة أسفل الشاشة)");
     patchTab(ctx.tabId, {
       extraCharges: undefined,
-      cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId(), paymentRef: "", externalPayment: null, dueDate: "", invoiceDiscountPct: "", delivery: null });
+      cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, clientRequestId: newClientRequestId(), paymentRef: "", externalPayment: null, dueDate: "", invoiceDiscountPct: "", delivery: null });
+    readyToPrint = true;
     try {
     const printed = await printAuthorizedReceipt(rec);
     if (!printed.ok) {
@@ -911,6 +908,7 @@ export default function POS() {
     } catch (cause) {
       notify.warn("البيع المؤقت محفوظ؛ تعذّرت طباعة الإيصال", errMsg(cause));
     }
+    } catch (cause) { notify.errBig(errMsg(cause)); } finally { if (!readyToPrint) releaseReservedPrintWindow(); }
   }
 
   async function submitSale(approval?: ManagerApprovalInput) {
@@ -948,12 +946,12 @@ export default function POS() {
         notify.errBig("أثناء انقطاع الاتصال: البيع النقدي الكامل فقط — الدفع المقسّم يتطلّب اتصالاً بالخادم.");
         return;
       }
-      void captureOfflineSale();
+      reservePrintWindow(); void captureOfflineSale();
       return;
     }
     // §٩: التقريب النقدي IQD يُحسب على الخادم للبيع النقدي الكامل (يُسجَّل ADJUST لفرق التقريب).
     saleCtxRef.current = captureSaleCtx();
-    reservePrintWindow();
+    reservePrintWindow(); if (deliveryPayload) saleLabelWinRef.current = preopenShippingLabelWindow();
     const splitLegs = activeTab.paymentLegs ?? [];
     const deviceId = isSplitPayment
       ? (splitLegs.find((l) => l.method !== "CASH")?.externalPayment?.deviceId ?? (await getDeviceCode().catch(() => undefined)))
@@ -1023,10 +1021,7 @@ export default function POS() {
       return;
     }
     // ش٣ أوفلاين: الدفع السريع نقدي كامل بطبيعته ⇒ مؤهَّل للالتقاط المحلي مباشرة.
-    if (offline) {
-      void captureOfflineSale();
-      return;
-    }
+    if (offline) { reservePrintWindow(); void captureOfflineSale(); return; }
     // الدفع السريع = دفع كامل بطبيعته، لكن مبلغاً سالباً ظاهراً في الحقل يُرفض صراحةً (لا تجاهل صامت).
     if (activeTab.payInput.trim() !== "" && D(activeTab.payInput).lt(0)) {
       notify.err("المبلغ المقبوض لا يكون سالباً — صحّح المبلغ أو امسح الحقل للدفع الكامل.");
@@ -1222,15 +1217,8 @@ export default function POS() {
       />
 
       <POSFundingBanner
-        C={C}
-        posFundingRequests={posFundingRequests}
-        isPending={acceptFundingM.isPending}
-        onAccept={(requestReceiptId) =>
-          acceptFundingM.mutate({
-            requestReceiptId,
-            decision: "ACCEPT",
-          })
-        }
+        C={C} posFundingRequests={posFundingRequests} isPending={acceptFundingM.isPending}
+        onAccept={(requestReceiptId) => { reservePrintWindow(); acceptFundingM.mutate({ requestReceiptId, decision: "ACCEPT" }); }}
       />
 
       {/* Tab Bar */}
@@ -1351,10 +1339,9 @@ export default function POS() {
         onPrintReceipt={() => {
           if (!receipt || receiptPrinting.current) return;
           reservePrintWindow();
-          void printAuthorizedReceipt(receipt, true).then((printed) => {
-            if (!printed.ok) notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
-          }).catch((error) => notify.err(error));
+          void printAuthorizedReceipt(receipt, true).then((printed) => { if (!printed.ok) notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة"); }).catch((error) => notify.err(error));
         }}
+        onPrintLabel={receipt && (receipt.delivery || receipt.consignmentNumber) ? () => void printPosDeliveryShippingLabel({ ...receipt, customerPhone: selectedCustomer?.phone ?? null }, printAuthorizedDocument, undefined, true).catch((error) => notify.err(error)) : undefined}
         shifting={shifting}
         shift={shift}
         branchId={branchId}

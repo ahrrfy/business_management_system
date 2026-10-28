@@ -6,9 +6,9 @@ import { ShipmentDetailsPanel } from "./ShipmentDetailsPanel";
 
 const state = vi.hoisted(() => ({ invoiceId: 0 }));
 vi.mock("@/lib/trpc", () => {
-  const mutation = { useMutation: () => ({ isPending: false, mutate: vi.fn() }) };
-  return { trpc: { auth: { me: { useQuery: () => ({ data: { id: 1, role: "admin" } }) } }, useUtils: () => ({}),
-    delivery: { listParties: { useQuery: () => ({ data: [] }) }, staffConfirm: mutation, cancelAssignment: mutation,
+  const mutation = { useMutation: () => ({ isPending: false, mutate: vi.fn(), mutateAsync: vi.fn(async () => ({})) }) };
+  return { trpc: { auth: { me: { useQuery: () => ({ data: { id: 1, role: "admin" } }) } }, useUtils: () => ({ delivery: { invalidate: vi.fn(), documents: { invalidate: vi.fn() } }, sales: { invalidate: vi.fn() }, workOrders: { invalidate: vi.fn() } }), invoicePrinting: { requestPrint: mutation, requestReprint: mutation },
+    delivery: { listParties: { useQuery: () => ({ data: [] }) }, documents: { prepareShipmentPrintBundle: mutation, requestPrint: mutation, completePrint: mutation }, staffConfirm: mutation, cancelAssignment: mutation,
       returnConsignment: mutation, staffMarkFailed: mutation, reassignConsignment: mutation, declareReturn: mutation } } };
 });
 vi.mock("./InvoiceDispatchDialog", () => ({ InvoiceDispatchDialog: ({ invoice }: { invoice: { id: number } | null }) => {

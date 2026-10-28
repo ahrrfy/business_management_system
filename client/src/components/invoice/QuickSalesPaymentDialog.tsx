@@ -16,6 +16,8 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { D, fmt, moneyInput, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
+import { preopenDocumentWindow } from "@/lib/printing/print";
+import { printInvoicePaymentReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 import { trpc } from "@/lib/trpc";
 import { paymentMethodCompact } from "@shared/terms";
 import { getDeviceCode } from "@/lib/offline/outbox";
@@ -116,9 +118,32 @@ export function QuickSalesPaymentDialog({
     (externalAttempt?.confirmed === true &&
       externalAttempt.fingerprint === externalFingerprint);
 
+  const payWinRef = useRef<Window | null>(null);
+  function closePayWin() {
+    try { payWinRef.current?.close(); } catch { /* noop */ }
+    payWinRef.current = null;
+  }
   const pay = trpc.sales.pay.useMutation({
     onSuccess: async (r) => {
+      const win = payWinRef.current;
+      payWinRef.current = null;
       notify.ok("تم تسجيل الدفعة بنجاح", `الحالة الحالية: ${invoiceStatusLabel(r.status)}`);
+      const remAfter = round2(D(effectiveRemaining).minus(D(normalizedPayAmount)));
+      void printInvoicePaymentReceipt(
+        {
+          invoiceNumber,
+          customerName: inv?.customerName ?? customerName ?? null,
+          customerPhone: (inv as { contactPhone?: string | null } | undefined)?.contactPhone ?? null,
+          invoiceTotal: total.toFixed(2),
+          paidBefore: paid.toFixed(2),
+          amountPaid: normalizedPayAmount,
+          remainingAfter: (remAfter.gt(0) ? remAfter : D(0)).toFixed(2),
+          paymentMethod: method,
+          reference: reference.trim() || null,
+          cashierName: null,
+        },
+        win ? { into: win } : undefined,
+      );
       await Promise.all([
         utils.sales.get.invalidate({ invoiceId }),
         utils.sales.list.invalidate(),
@@ -129,6 +154,7 @@ export function QuickSalesPaymentDialog({
       onClose();
     },
     onError: (e) => {
+      closePayWin();
       notify.err("تعذّر تسجيل الدفعة", e.message);
     },
   });
@@ -139,19 +165,34 @@ export function QuickSalesPaymentDialog({
   const cannotClose = isBusy || (hasInFlightAttempt && !pay.isSuccess);
 
   async function confirmExternalPayment() {
+    if (!payWinRef.current) payWinRef.current = preopenDocumentWindow();
     let currentLiveRemaining = D(liveRemaining);
     if (isInvoiceRefreshing || !inv) {
+      closePayWin();
       notify.err("تحديث الفاتورة", "يرجى الانتظار حتى اكتمال تحميل أحدث بيانات الفاتورة.");
       return;
     }
     if (isInvoiceDead) {
+      closePayWin();
       notify.err("فاتورة مقفلة", "لا يمكن تسجيل دفعة على فاتورة ملغاة أو مرتجعة أو مستبدلة.");
+      return;
+    }
+    const trimmedRef = reference.trim();
+    if (!trimmedRef) {
+      closePayWin();
+      notify.err("مرجع العملية مطلوب", "أدخل رقم إشعار جهاز الدفع أو الحوالة أولاً.");
+      return;
+    }
+    if (!parsedAmount.gt(0)) {
+      closePayWin();
+      notify.err("المبلغ مطلوب", "أدخل مبلغ الدفعة قبل تأكيد العملية الخارجية.");
       return;
     }
     try {
       const fresh = await utils.sales.get.fetch({ invoiceId });
       if (fresh) {
         if (isDeadInvoiceStatus(fresh.status)) {
+          closePayWin();
           notify.err("فاتورة مقفلة", "لا يمكن تسجيل دفعة على فاتورة ملغاة أو مرتجعة أو مستبدلة.");
           return;
         }
@@ -161,20 +202,13 @@ export function QuickSalesPaymentDialog({
       // الاعتماد على الحالة المحلية إذا تعذّر الاستعلام
     }
     if (currentLiveRemaining.lte(0)) {
+      closePayWin();
       notify.err("الفاتورة مسددة", "تم سداد كامل رصيد الفاتورة بالفعل.");
       return;
     }
     if (parsedAmount.gt(currentLiveRemaining)) {
+      closePayWin();
       notify.err("تجاوز الرصيد المحدث", `الرصيد المتبقي الفعلي هو ${fmt(currentLiveRemaining.toFixed(2))} د.ع.`);
-      return;
-    }
-    const trimmedRef = reference.trim();
-    if (!trimmedRef) {
-      notify.err("مرجع العملية مطلوب", "أدخل رقم إشعار جهاز الدفع أو الحوالة أولاً.");
-      return;
-    }
-    if (!parsedAmount.gt(0)) {
-      notify.err("المبلغ مطلوب", "أدخل مبلغ الدفعة قبل تأكيد العملية الخارجية.");
       return;
     }
     try {
@@ -225,6 +259,7 @@ export function QuickSalesPaymentDialog({
       });
       notify.ok("تأكّد الدفع الخارجي", `ثُبّت المرجع ${trimmedRef} وجاري ترحيل الدفعة...`);
       // دمج التأكيد والاستهلاك في تدفق موحد يمنع تباعد الحالتين
+      if (!payWinRef.current) payWinRef.current = preopenDocumentWindow();
       pay.mutate({
         invoiceId,
         amount: normalizedPayAmount,
@@ -235,6 +270,7 @@ export function QuickSalesPaymentDialog({
         externalPaymentDeviceId: deviceId,
       });
     } catch (err) {
+      closePayWin();
       notify.err(err instanceof Error ? err.message : "تعذّر تأكيد الدفع الخارجي");
     }
   }
@@ -274,11 +310,13 @@ export function QuickSalesPaymentDialog({
         return;
       }
       if (!externalConfirmed) {
+        payWinRef.current = preopenDocumentWindow();
         await confirmExternalPayment();
         return;
       }
     }
 
+    payWinRef.current = preopenDocumentWindow();
     pay.mutate({
       invoiceId,
       amount: normalizedPayAmount,

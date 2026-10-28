@@ -58,8 +58,11 @@ import { PARTY_EXPOSURE_LABEL_AR } from "@shared/partyExposure";
 import { DELIVERY_TERMS as DT } from "@shared/deliveryTerminology";
 import { filterOperationalRows } from "@/lib/deliveryOperations";
 import { cn } from "@/lib/utils";
+import { DeliveryManifestButton } from "@/components/delivery/DeliveryManifestButton";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
-import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
+import { buildDeliveryManifestDoc, printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
+import { preopenDocumentWindow, printDoc } from "@/lib/printing/print";
+import { printAssignmentCancelReceipt, printInvoicePaymentReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 import { useRealtimeEvent } from "@/lib/realtime";
 import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 import { buildCourierAssignmentMessage, buildCustomerDispatchMessage, buildWorkOrderStatusMessage, openWhatsApp } from "@/lib/whatsapp";
@@ -255,16 +258,70 @@ function InTransitTab() {
     utils.delivery.readyForDispatch.invalidate();
     utils.workOrders.list.invalidate();
   };
+  const handoverPrintRef = useRef<{ win: Window | null; rows: TransitRow[] } | null>(null);
+  const declarePrintRef = useRef<{ win: Window | null; row: InTransitRow; reason: string } | null>(null);
+  const returnPrintRef = useRef<{ win: Window | null; row: InTransitRow | undefined; consignmentId: number } | null>(null);
+  const confirmPrintRef = useRef<{ win: Window | null; row: InTransitRow; collectedAmount: string; reference: string } | null>(null);
+  const flushConfirmPrint = () => {
+    const snap = confirmPrintRef.current;
+    confirmPrintRef.current = null;
+    if (!snap) return;
+    const rem = D(snap.row.codDue ?? 0).minus(snap.collectedAmount || 0);
+    void printInvoicePaymentReceipt(
+      {
+        invoiceNumber: snap.row.invoiceNumber ?? snap.row.orderNumber ?? snap.row.consignmentNumber ?? String(snap.row.id),
+        customerName: snap.row.recipientName ?? snap.row.customerName ?? null,
+        customerPhone: snap.row.recipientPhone ?? null,
+        invoiceTotal: snap.row.codAmount,
+        amountPaid: snap.collectedAmount,
+        remainingAfter: rem.lt(0) ? "0.00" : rem.toFixed(2),
+        paymentMethod: "CASH",
+        reference: snap.reference,
+        cashierName: me.data?.name ?? null,
+      },
+      ...(snap.win ? [{ into: snap.win }] : []),
+    );
+  };
+
   const staffHandover = trpc.delivery.staffHandover.useMutation({
     onSuccess: (r, variables) => {
+      const snap = handoverPrintRef.current;
+      handoverPrintRef.current = null;
       if (r.skipped.length) notify.warn(`خرج ${r.moved} طرداً؛ لم يخرج ${r.skipped.length}`, r.skipped.map((item) => `#${item.consignmentId}: ${item.reason}`).join(" · "));
       else notify.ok("خرجت الطرود مع المندوب", `أُخرج ${r.moved} طرداً`);
       const skippedIds = new Set(r.skipped.map((item) => item.consignmentId));
       const movedIds = new Set(variables.consignmentIds.filter((id) => !skippedIds.has(id)));
+      const movedRows = (snap?.rows ?? []).filter((row) => movedIds.has(Number(row.id)));
+      if (movedRows.length > 0) {
+        const partyLabel = Array.from(new Set(movedRows.map((row) => row.partyName || "جهة توصيل"))).join(" / ");
+        void printDoc(
+          buildDeliveryManifestDoc(
+            { name: partyLabel },
+            movedRows.map((p) => ({
+              consignmentNumber: p.consignmentNumber,
+              invoiceNumber: p.invoiceNumber,
+              orderNumber: p.orderNumber ?? null,
+              recipientName: p.recipientName ?? p.customerName ?? null,
+              recipientPhone: p.recipientPhone ?? null,
+              address: p.address ?? null,
+              codAmount: p.codDue,
+              deliveryFee: (p as { deliveryFee?: string | null }).deliveryFee ?? null,
+            })),
+            { cashierName: me.data?.name ?? null },
+          ),
+          snap?.win ? { into: snap.win } : undefined,
+        );
+      } else {
+        try { snap?.win?.close(); } catch { /* noop */ }
+      }
       setSelectedIds((previous) => new Set(Array.from(previous).filter((id) => !movedIds.has(id))));
       invalidateAll();
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => {
+      try { handoverPrintRef.current?.win?.close(); } catch { /* noop */ }
+      handoverPrintRef.current = null;
+      notify.err(e);
+    },
   });
   const staffMarkFailed = trpc.delivery.staffMarkFailed.useMutation({
     onSuccess: () => { notify.ok("وُسم متعذّر التسليم"); invalidateAll(); },
@@ -272,23 +329,69 @@ function InTransitTab() {
   });
   const declareReturn = trpc.delivery.declareReturn.useMutation({
     onSuccess: (res) => {
+      const snap = declarePrintRef.current;
+      declarePrintRef.current = null;
       notify.ok("سُجّل رجوعٌ مُعلَن", `تحرّر تحصيلٌ متوقّع ${fmt(res.releasedExposure ?? "0")} د.ع — والبضاعة تنتظر الاستلام والفحص`);
+      if (snap) {
+        void printAssignmentCancelReceipt(
+          {
+            action: "declareReturn",
+            consignmentNumber: snap.row.consignmentNumber ?? String(snap.row.id),
+            sourceRef: snap.row.orderNumber ?? snap.row.invoiceNumber ?? null,
+            partyName: snap.row.partyName ?? null,
+            recipientName: snap.row.recipientName ?? snap.row.customerName ?? null,
+            codAmount: snap.row.codDue,
+            reason: snap.reason,
+            cashierName: me.data?.name ?? null,
+          },
+          snap.win ? { into: snap.win } : undefined,
+        );
+      }
       setDeclareTarget(null);
       invalidateAll();
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => {
+      try { declarePrintRef.current?.win?.close(); } catch { /* noop */ }
+      declarePrintRef.current = null;
+      notify.err(e);
+    },
   });
   const returnCn = trpc.delivery.returnConsignment.useMutation({
-    onSuccess: () => { notify.ok("رجع الطرد للمكتبة", "عُكس البيع كاملاً: المخزون والفاتورة وذمّة العميل وعهدة المندوب."); setReturnTarget(null); invalidateAll(); },
-    onError: (e) => notify.err(e),
+    onSuccess: () => {
+      const snap = returnPrintRef.current;
+      returnPrintRef.current = null;
+      notify.ok("رجع الطرد للمكتبة", "عُكس البيع كاملاً: المخزون والفاتورة وذمّة العميل وعهدة المندوب.");
+      if (snap) {
+        void printAssignmentCancelReceipt(
+          {
+            action: "cancelAssignment",
+            consignmentNumber: snap.row?.consignmentNumber ?? String(snap.consignmentId),
+            sourceRef: snap.row?.orderNumber ?? snap.row?.invoiceNumber ?? null,
+            partyName: snap.row?.partyName ?? null,
+            recipientName: snap.row?.recipientName ?? snap.row?.customerName ?? null,
+            codAmount: snap.row?.codDue ?? "0",
+            reason: "استلام مرتجع شحنة وعكس البيع في الفرع",
+            cashierName: me.data?.name ?? null,
+          },
+          snap.win ? { into: snap.win } : undefined,
+        );
+      }
+      setReturnTarget(null);
+      invalidateAll();
+    },
+    onError: (e) => {
+      try { returnPrintRef.current?.win?.close(); } catch { /* noop */ }
+      returnPrintRef.current = null;
+      notify.err(e);
+    },
   });
   const manualProof = trpc.delivery.manualProof.useMutation({
-    onSuccess: () => { notify.ok("سُجّل إثبات التسليم اليدويّ", "أُثبت التسليم بالسلطة الاستثنائية — مُوثَّق في سجلّ التدقيق."); invalidateAll(); setManualProofTarget(null); },
-    onError: (e) => notify.err(e),
+    onSuccess: () => { flushConfirmPrint(); notify.ok("سُجّل إثبات التسليم اليدويّ", "أُثبت التسليم بالسلطة الاستثنائية — مُوثَّق في سجلّ التدقيق."); invalidateAll(); setManualProofTarget(null); },
+    onError: (e) => { try { confirmPrintRef.current?.win?.close(); } catch { /* noop */ } confirmPrintRef.current = null; notify.err(e); },
   });
   const staffConfirm = trpc.delivery.staffConfirm.useMutation({
-    onSuccess: () => { notify.ok("تم التسليم", "سُجّل تأكيدُك بالمُسلَّم من المندوب — والنقد صار بذمّته حتى تسويته."); invalidateAll(); setStaffConfirmTarget(null); },
-    onError: (e) => notify.err(e),
+    onSuccess: () => { flushConfirmPrint(); notify.ok("تم التسليم", "سُجّل تأكيدُك بالمُسلَّم من المندوب — والنقد صار بذمّته حتى تسويته."); invalidateAll(); setStaffConfirmTarget(null); },
+    onError: (e) => { try { confirmPrintRef.current?.win?.close(); } catch { /* noop */ } confirmPrintRef.current = null; notify.err(e); },
   });
 
   // ── Filtering ──
@@ -374,6 +477,8 @@ function InTransitTab() {
       confirmText: "خرجت الطرود",
     });
     if (!ok) return;
+    const targetRows = selectedList.filter((r) => r.viewKey === "ASSIGNED" || r.viewKey === "AWAITING_STATEMENT");
+    handoverPrintRef.current = { win: preopenDocumentWindow(), rows: targetRows };
     staffHandover.mutate({ consignmentIds: ids, clientRequestId: crypto.randomUUID() });
   }
 
@@ -386,6 +491,8 @@ function InTransitTab() {
       confirmText: "خرج",
     });
     if (!ok) return;
+    const targetRow = list.find((r) => Number(r.id) === id);
+    handoverPrintRef.current = { win: preopenDocumentWindow(), rows: targetRow ? [targetRow] : [] };
     staffHandover.mutate({ consignmentIds: [id], clientRequestId: crypto.randomUUID() });
   }
 
@@ -755,6 +862,16 @@ function InTransitTab() {
               <Send aria-hidden className="size-3.5" /> خرج مع المندوب ({selectedList.filter((r) => r.viewKey === "ASSIGNED" || r.viewKey === "AWAITING_STATEMENT").length})
             </Button>
           )}
+          {(() => {
+            const pIds = Array.from(new Set(selectedList.map((r) => Number(r.partyId)).filter(Boolean)));
+            return pIds.length === 1 ? (
+              <DeliveryManifestButton
+                partyId={pIds[0]!}
+                partyName={selectedList[0]?.partyName ?? "جهة توصيل"}
+                onlyConsignmentIds={selectedList.map((r) => Number(r.id))}
+              />
+            ) : null;
+          })()}
           <Button
             size="sm"
             variant="outline"
@@ -854,6 +971,7 @@ function InTransitTab() {
           pending={declareReturn.isPending}
           onCancel={() => setDeclareTarget(null)}
           onConfirm={(reason, statementNumber) => {
+            declarePrintRef.current = { win: preopenDocumentWindow(), row: declareTarget, reason };
             declareReturn.mutate({
               consignmentId: declareTarget.id,
               reason,
@@ -870,6 +988,8 @@ function InTransitTab() {
         pending={returnCn.isPending}
         onClose={() => setReturnTarget(null)}
         onConfirm={({ consignmentId, refundShiftId }) => {
+          const row = rowsWithView.find((x) => Number(x.id) === Number(consignmentId));
+          returnPrintRef.current = { win: preopenDocumentWindow(), row, consignmentId };
           returnCn.mutate({ consignmentId, clientRequestId: crypto.randomUUID(), refundShiftId });
         }}
       />
@@ -881,6 +1001,7 @@ function InTransitTab() {
           pending={staffConfirm.isPending}
           onCancel={() => setStaffConfirmTarget(null)}
           onConfirm={(collectedAmount, evidence, shortfallReason) => {
+            confirmPrintRef.current = { win: preopenDocumentWindow(), row: staffConfirmTarget, collectedAmount, reference: evidence };
             staffConfirm.mutate({
               consignmentId: staffConfirmTarget.id,
               collectedAmount,
@@ -901,6 +1022,7 @@ function InTransitTab() {
           pending={manualProof.isPending}
           onCancel={() => setManualProofTarget(null)}
           onConfirm={(collectedAmount, evidence) => {
+            confirmPrintRef.current = { win: preopenDocumentWindow(), row: manualProofTarget, collectedAmount, reference: evidence };
             manualProof.mutate({
               consignmentId: manualProofTarget.id,
               collectedAmount,

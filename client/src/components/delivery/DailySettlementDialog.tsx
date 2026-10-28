@@ -20,6 +20,7 @@ import { ACTION_LABELS } from "@shared/actionLabels";
 import { DELIVERY_TERMS } from "@shared/deliveryTerminology";
 import { SHORTFALL_REASON_DESCRIPTION_AR, type ShortfallReason } from "@shared/shortfallReason";
 import { printRemittanceReceipt } from "./printRemittanceReceipt";
+import { preopenDocumentWindow } from "@/lib/printing/print";
 import {
   SHORTFALL_OPTIONS,
   buildSettleDailyPayload,
@@ -97,11 +98,25 @@ export function DailySettlementDialog({ party, open, onOpenChange, preview, prev
     }
     const payload = buildSettleDailyPayload(preview, verdict, reason, shiftType, clientRequestId, notes);
     if (!payload) return;
+    const settleWin = preopenDocumentWindow();
     setPending(true);
     setServerError(null);
     try {
-      setResult(await onSettle(payload));
+      const settled = await onSettle(payload);
+      setResult(settled);
+      printRemittanceReceipt(
+        party?.name ?? "جهة التوصيل",
+        {
+          remittanceNumber: settled.remittanceNumber || `DR-${settled.remittanceId}`,
+          collectedTotal: settled.collectedTotal || preview.expectedCash || "0.00",
+          feesTotal: settled.feesTotal || preview.feeDue || "0.00",
+          netRemitted: settled.netRemitted || counted || preview.net || "0.00",
+          shortfallTotal: settled.shortfallTotal ?? "0.00",
+        },
+        settleWin ? { into: settleWin } : undefined,
+      );
     } catch (error: unknown) {
+      try { settleWin?.close(); } catch { /* noop */ }
       setServerError(error instanceof Error ? error.message : String(error));
     } finally {
       setPending(false);
@@ -136,13 +151,18 @@ export function DailySettlementDialog({ party, open, onOpenChange, preview, prev
                   size="sm"
                   className="gap-1.5 text-xs font-semibold"
                   onClick={() => {
-                    printRemittanceReceipt(party?.name ?? "جهة التوصيل", {
-                      remittanceNumber: result.remittanceNumber || `DR-${result.remittanceId}`,
-                      collectedTotal: result.collectedTotal || preview?.expectedCash || "0.00",
-                      feesTotal: result.feesTotal || preview?.feeDue || "0.00",
-                      netRemitted: result.netRemitted || counted || (preview?.net ?? "0.00"),
-                      shortfallTotal: result.shortfallTotal ?? "0.00",
-                    });
+                    const win = preopenDocumentWindow();
+                    printRemittanceReceipt(
+                      party?.name ?? "جهة التوصيل",
+                      {
+                        remittanceNumber: result.remittanceNumber || `DR-${result.remittanceId}`,
+                        collectedTotal: result.collectedTotal || preview?.expectedCash || "0.00",
+                        feesTotal: result.feesTotal || preview?.feeDue || "0.00",
+                        netRemitted: result.netRemitted || counted || (preview?.net ?? "0.00"),
+                        shortfallTotal: result.shortfallTotal ?? "0.00",
+                      },
+                      ...(win ? [{ into: win }] : []),
+                    );
                   }}
                 >
                   <Printer aria-hidden className="size-3.5" />
@@ -228,13 +248,18 @@ export function DailySettlementDialog({ party, open, onOpenChange, preview, prev
                   variant="default"
                   className="gap-1.5"
                   onClick={() => {
-                    printRemittanceReceipt(party?.name ?? "جهة التوصيل", {
-                      remittanceNumber: `DR-${result.remittanceId}`,
-                      collectedTotal: preview?.expectedCash ?? "0.00",
-                      feesTotal: preview?.feeDue ?? "0.00",
-                      netRemitted: counted || (preview?.net ?? "0.00"),
-                      shortfallTotal: result.shortfallTotal ?? "0.00",
-                    });
+                    const win = preopenDocumentWindow();
+                    printRemittanceReceipt(
+                      party?.name ?? "جهة التوصيل",
+                      {
+                        remittanceNumber: result.remittanceNumber || `DR-${result.remittanceId}`,
+                        collectedTotal: result.collectedTotal || preview?.expectedCash || "0.00",
+                        feesTotal: result.feesTotal || preview?.feeDue || "0.00",
+                        netRemitted: result.netRemitted || counted || (preview?.net ?? "0.00"),
+                        shortfallTotal: result.shortfallTotal ?? "0.00",
+                      },
+                      ...(win ? [{ into: win }] : []),
+                    );
                   }}
                 >
                   <Printer aria-hidden className="size-4" />

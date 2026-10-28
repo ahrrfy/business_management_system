@@ -21,7 +21,8 @@ import {
 import { confirm } from "@/lib/confirm";
 import { D, fmt, formatQuantity } from "@/lib/money";
 import { notify } from "@/lib/notify";
-import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
+import { preopenDocumentWindow, releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
+import { printOrderCancellationReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
 import { printReceipt } from "@/lib/printing/print";
 import { beginInvoicePrintAttempt, completeInvoicePrintAttempt, hasPendingFirstInvoicePrint } from "@/lib/printing/invoicePrintAttempt";
@@ -294,6 +295,8 @@ export default function SalesControlApprovals() {
   const [lastApprovedInvoice, setLastApprovedInvoice] = useState<NonNullable<RouterOutputs["sales"]["get"]> | null>(null);
   const [lastApprovedPrintStatus, setLastApprovedPrintStatus] = useState<"printing" | "printed" | "browser" | "failed">("printing");
   const approvalPrintReservation = useRef<number | null>(null);
+  const approvalLabelWinRef = useRef<Window | null>(null);
+  const approvalCancelWinRef = useRef<Window | null>(null);
   const claimCorrectionPayment = trpc.salesControl.claimCorrectionPayment.useMutation();
   const releaseCorrectionPaymentClaim = trpc.salesControl.releaseCorrectionPaymentClaim.useMutation();
 
@@ -307,7 +310,10 @@ export default function SalesControlApprovals() {
     knownInvoice?: NonNullable<RouterOutputs["sales"]["get"]>,
     isFirstPrint = false,
   ): Promise<"printed" | "browser" | "failed"> {
-    if (printingInvoiceId != null) return "failed";
+    if (printingInvoiceId != null) {
+      if (windowReserved) releaseReservedPrintWindow();
+      return "failed";
+    }
     setPrintingInvoiceId(invoiceId);
     try {
       const invoice = knownInvoice ?? await utils.sales.get.fetch({ invoiceId });
@@ -323,6 +329,7 @@ export default function SalesControlApprovals() {
       const printed = await printReceipt(invoiceToReceipt(invoice), { openDrawer: false });
       if (printed.ok) completeInvoicePrintAttempt(attempt);
       if (!printed.ok) {
+        if (windowReserved) releaseReservedPrintWindow();
         notify.warn(
           "تم التصحيح وحُفظت الفاتورة البديلة",
           "حجب المتصفح نافذة الطباعة؛ اسمح بالنوافذ المنبثقة ثم اضغط «طباعة البديلة».",
@@ -425,6 +432,67 @@ export default function SalesControlApprovals() {
           !result.replayed,
         );
         if (replacement) setLastApprovedPrintStatus(printStatus);
+        const labelWin = approvalLabelWinRef.current;
+        approvalLabelWinRef.current = null;
+        const hasDeliveryOnReplacement =
+          replacement != null &&
+          (Boolean(replacement.deliveryAddress?.trim()) ||
+            replacement.deliveryFree === true ||
+            D(String(replacement.deliveryFee ?? 0)).gt(0) ||
+            D(String(replacement.deliveryWaivedAmount ?? 0)).gt(0));
+        if (hasDeliveryOnReplacement && replacement && me.data) {
+          try {
+            const labelAttempt = beginInvoicePrintAttempt(
+              me.data.id,
+              correctedInvoiceId,
+              "SHIPPING_LABEL",
+              Boolean(result.replayed),
+              canFirstPrint,
+            );
+            await (labelAttempt.mode === "PRINT" ? requestPrint : requestReprint).mutateAsync({
+              invoiceId: correctedInvoiceId,
+              requestId: labelAttempt.requestId,
+              purpose: "SHIPPING_LABEL",
+            });
+            const labelPrinted = await printShippingLabel(
+              invoiceToShippingLabel(replacement),
+              labelWin ? { into: labelWin } : undefined,
+            );
+            if (labelPrinted.ok) completeInvoicePrintAttempt(labelAttempt);
+          } catch {
+            try { labelWin?.close(); } catch { /* ignore */ }
+          }
+        } else if (labelWin) {
+          try { labelWin.close(); } catch { /* ignore */ }
+        }
+      } else if (
+        result.request.requestType === "SALES_CANCEL" ||
+        result.request.requestType === "SALES_RETURN"
+      ) {
+        const cancelWin = approvalCancelWinRef.current;
+        approvalCancelWinRef.current = null;
+        const reqPayload = result.request.payload as
+          | { refund?: { amount?: string; method?: string }; expectedRefund?: string; refundPaymentMethod?: string }
+          | undefined;
+        void printOrderCancellationReceipt(
+          {
+            documentNumber:
+              (result.request as { invoiceNumber?: string | null }).invoiceNumber ??
+              `#${result.request.invoiceId}`,
+            orderKind: "INVOICE",
+            refundedAmount:
+              reqPayload?.refund?.amount ?? reqPayload?.expectedRefund ?? null,
+            refundMethod:
+              reqPayload?.refund?.method ?? reqPayload?.refundPaymentMethod ?? null,
+            reason:
+              result.request.reason ??
+              (result.request.requestType === "SALES_RETURN"
+                ? "اعتماد مرتجع مبيعات"
+                : "اعتماد إلغاء فاتورة"),
+            cashierName: me.data?.name ?? null,
+          },
+          cancelWin ? { into: cancelWin } : undefined,
+        ).catch(() => {});
       } else if (approvalPrintReservation.current != null) {
         approvalPrintReservation.current = null;
         releaseReservedPrintWindow();
@@ -440,6 +508,10 @@ export default function SalesControlApprovals() {
         approvalPrintReservation.current = null;
         releaseReservedPrintWindow();
       }
+      try { approvalLabelWinRef.current?.close(); } catch { /* ignore */ }
+      approvalLabelWinRef.current = null;
+      try { approvalCancelWinRef.current?.close(); } catch { /* ignore */ }
+      approvalCancelWinRef.current = null;
       setError(cause.message);
       setMessage("");
       try {
@@ -531,6 +603,31 @@ export default function SalesControlApprovals() {
           ...(deviceId != null ? { deviceId } : {}),
         }
       : null;
+    const origCached = request?.invoiceId != null
+      ? utils.sales.get.getData({ invoiceId: Number(request.invoiceId) })
+      : undefined;
+    const reqPayload = request?.payload as {
+      deliveryAddress?: string | null;
+      deliveryFee?: string | number | null;
+      deliveryFree?: boolean | null;
+      deliveryWaivedAmount?: string | number | null;
+    } | undefined;
+    const needsLabelWin =
+      (type === "SALES_REISSUE" || type === "SALES_EXCHANGE") &&
+      (Boolean(reqPayload?.deliveryAddress?.trim()) ||
+        Boolean(origCached?.deliveryAddress?.trim()) ||
+        reqPayload?.deliveryFree === true ||
+        D(String(reqPayload?.deliveryFee ?? 0)).gt(0) ||
+        D(String(reqPayload?.deliveryWaivedAmount ?? 0)).gt(0));
+    const preLabelWin = needsLabelWin ? preopenShippingLabelWindow() : null;
+    const preReserved =
+      type === "SALES_REISSUE" || type === "SALES_EXCHANGE"
+        ? reservePrintWindow()
+        : false;
+    const preCancelWin =
+      type === "SALES_CANCEL" || type === "SALES_RETURN"
+        ? preopenDocumentWindow("width=420,height=760")
+        : null;
     if (!(await confirm({
       variant: "danger",
       title: `اعتماد ${SALES_CONTROL_TYPE_LABELS[type]}`,
@@ -541,9 +638,15 @@ export default function SalesControlApprovals() {
       } لا يمكن للطالب أو منشئ الفاتورة اعتمادها.`,
       confirmText: "اعتماد وتنفيذ",
       ...(type === "SALES_REISSUE" || type === "SALES_EXCHANGE" ? {} : { requireText: invoiceNumber }),
-    }))) return;
+    }))) {
+      try { preLabelWin?.close(); } catch { /* ignore */ }
+      try { preCancelWin?.close(); } catch { /* ignore */ }
+      if (preReserved) releaseReservedPrintWindow();
+      return;
+    }
     if (type === "SALES_REISSUE" || type === "SALES_EXCHANGE") {
-      if (reservePrintWindow()) {
+      approvalLabelWinRef.current = preLabelWin;
+      if (preReserved) {
         approvalPrintReservation.current = requestId;
       } else {
         approvalPrintReservation.current = null;
@@ -552,6 +655,8 @@ export default function SalesControlApprovals() {
           "حجب المتصفح نافذة الطباعة؛ ستتمكن من إعادة طباعتها من بطاقة النجاح.",
         );
       }
+    } else if (type === "SALES_CANCEL" || type === "SALES_RETURN") {
+      approvalCancelWinRef.current = preCancelWin;
     }
     approve.mutate(cashRouting ? { requestId, cashRouting } : { requestId });
   }

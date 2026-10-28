@@ -159,6 +159,9 @@ export const CASHIER_NAV_PATHS: readonly string[] = Object.freeze([
   "/returns",
   "/work-orders",
   "/delivery",
+  "/store-admin",
+  "/crm",
+  "/inventory",
   // ٢٠/٨: `assignStudioTask` يقبل أيّ موظّفٍ يملك `productStudio:FULL` — بمنحٍ صريح ولو كان
   // دورُه القالبيّ `cashier`؛ وشاشةُ الاستوديو تقبله كذلك. القائمة وحدها كانت تحجب المدخل.
   "/catalog/image-studio",

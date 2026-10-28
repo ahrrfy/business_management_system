@@ -14,7 +14,7 @@ export function receiptHeaderHtml(
     .receipt-barcode{text-align:center;margin:1mm 0}
     .receipt-barcode svg{max-width:100%;height:7mm}
   </style><header>
-    <div class="receipt-brand"><img src="${logoUrl()}" alt="" onerror="this.style.display='none'">
+    <div class="receipt-brand"><img src="${esc(logoUrl())}" alt="" onerror="this.style.display='none'">
       <div><b style="font-size:12px">${esc(CO.short || CO.sub)}</b><div style="font-size:9px">${esc(CO.subtitle)}</div><div style="font-size:8px">${esc(CO.name)}</div></div>
     </div>
     <div class="receipt-barcode">${barcode}</div>

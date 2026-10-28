@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import {
   Clock,
   Phone,
@@ -39,6 +39,8 @@ import { InvoiceDispatchDialog, type DispatchableInvoice } from "@/components/de
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { getDeviceCode } from "@/lib/offline/outbox";
 import { useInvoiceReceiptPrinter } from "@/hooks/useInvoiceReceiptPrinter";
+import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
+import { printOrderCancellationReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 import { type Receipt } from "@/components/pos/posShared";
 
 export interface HeldSaleOrder {
@@ -138,16 +140,40 @@ export function HeldOrdersDrawer({
     },
   );
 
+  const cancelCtxRef = useRef<HeldSaleOrder | null>(null);
+  const collectCtxRef = useRef<HeldSaleOrder | null>(null);
+
   const cancelMut = trpc.printPos.cancelHeldSale.useMutation({
-    onSuccess: (res) => {
+    onSuccess: (res, vars) => {
+      const order = cancelCtxRef.current ?? selectedForCancel;
+      cancelCtxRef.current = null;
       notify.ok(
         "تم إلغاء الطلب بنجاح",
         Number(res.refundAmount) > 0 ? `تم استرداد عربون بقيمة ${fmt(res.refundAmount)} د.ع` : undefined,
       );
+      if (order) {
+        void printOrderCancellationReceipt({
+          documentNumber: order.invoiceNumber,
+          orderKind: "INVOICE",
+          customerName: order.customerDisplayName,
+          customerPhone: order.customerDisplayPhone || null,
+          originalTotal: order.total,
+          refundedAmount: res.refundAmount,
+          refundMethod: Number(res.refundAmount) > 0 ? vars.refundPaymentMethod : null,
+          reason: vars.reason,
+          cashierName: cashierName ?? me.data?.name ?? null,
+        }).catch(() => {}).finally(() => releaseReservedPrintWindow());
+      } else {
+        releaseReservedPrintWindow();
+      }
       setSelectedForCancel(null);
       void utils.printPos.listHeldSales.invalidate();
     },
-    onError: (e) => notify.err(e.message, "تعذّر إلغاء الطلب"),
+    onError: (e) => {
+      cancelCtxRef.current = null;
+      releaseReservedPrintWindow();
+      notify.err(e.message, "تعذّر إلغاء الطلب");
+    },
   });
 
   const initiateExternal = trpc.sales.initiateExternalPayment.useMutation();
@@ -155,30 +181,32 @@ export function HeldOrdersDrawer({
 
   const collectMut = trpc.reception.collectOnInvoice.useMutation({
     onSuccess: async (_, vars) => {
+      const order = collectCtxRef.current ?? selectedForCollect;
+      collectCtxRef.current = null;
       notify.ok("تم تحصيل المتبقي وتسليم الفاتورة بنجاح");
-      if (selectedForCollect) {
+      if (order) {
         // طباعة إيصال التسليم المكتمل
         try {
           const now = new Date();
           const rec: Receipt = {
-            invoiceId: selectedForCollect.id,
-            invoiceNumber: selectedForCollect.invoiceNumber,
-            num: selectedForCollect.invoiceNumber,
+            invoiceId: order.id,
+            invoiceNumber: order.invoiceNumber,
+            num: order.invoiceNumber,
             date: fmtDateTime(now),
             printDate: fmtDate(now),
             printTime: fmtTime(now),
             cashierName: cashierName ?? undefined,
-            customerName: selectedForCollect.customerDisplayName,
+            customerName: order.customerDisplayName,
             shiftId: shiftId ?? null,
-            lines: selectedForCollect.lines.map((l) => ({
+            lines: order.lines.map((l) => ({
               name: l.itemNameSnapshot || "خدمة طباعة",
               unit: "خدمة",
               qty: Number(l.quantity),
               price: Number(l.unitPrice),
               total: Number(l.total),
             })),
-            subtotal: Number(selectedForCollect.total),
-            total: Number(selectedForCollect.total),
+            subtotal: Number(order.total),
+            total: Number(order.total),
             received: Number(vars.amount),
             change: 0,
             credit: 0,
@@ -188,15 +216,21 @@ export function HeldOrdersDrawer({
           };
           await printAuthorizedReceipt(rec, true);
         } catch {
-          // خطأ طباعة لا يُبطل التحصيل
+          releaseReservedPrintWindow();
         }
+      } else {
+        releaseReservedPrintWindow();
       }
       setSelectedForCollect(null);
       setPaymentRef("");
       setExternalAttempt(null);
       await utils.printPos.listHeldSales.invalidate();
     },
-    onError: (e) => notify.err(e.message, "تعذّر تحصيل الفاتورة"),
+    onError: (e) => {
+      collectCtxRef.current = null;
+      releaseReservedPrintWindow();
+      notify.err(e.message, "تعذّر تحصيل الفاتورة");
+    },
   });
 
   const orders = useMemo(() => {
@@ -227,6 +261,8 @@ export function HeldOrdersDrawer({
       return;
     }
 
+    cancelCtxRef.current = selectedForCancel;
+    reservePrintWindow();
     cancelMut.mutate({
       invoiceId: selectedForCancel.id,
       reason: cancelReason.trim() || "إلغاء بطلب من الزبون في كاشير الطباعة",
@@ -279,6 +315,8 @@ export function HeldOrdersDrawer({
       return;
     }
 
+    collectCtxRef.current = selectedForCollect;
+    reservePrintWindow();
     collectMut.mutate({
       invoiceId: selectedForCollect.id,
       amount: selectedForCollect.remainingAmount,

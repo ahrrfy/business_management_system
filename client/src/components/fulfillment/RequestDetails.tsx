@@ -15,6 +15,9 @@ import { notify } from "@/lib/notify";
 import { newClientRequestId } from "@/lib/countQueue";
 import { confirm } from "@/lib/confirm";
 import { deliveryDriverOptions, requiresDeliveryDriver } from "@/components/delivery/driverOptions";
+import { useWorkflowDocumentPrinter } from "@/hooks/useWorkflowDocumentPrinter";
+import { preopenDocumentWindow } from "@/lib/printing/print";
+import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 import {
   fulfillmentRequestStatusLabel,
   fulfillmentChargeCategoryLabel,
@@ -127,32 +130,51 @@ export function RequestDetails({
     setPartial(false);
     setKey(newClientRequestId());
   }, [request.id, request.version]);
-  const success = () => {
+  const workflowPrinter = useWorkflowDocumentPrinter(request.branchId);
+  const releaseWinsRef = useRef<{ pack: Window | null; label: Window | null } | null>(null);
+  const closeReleaseWins = () => {
+    const wins = releaseWinsRef.current; releaseWinsRef.current = null;
+    if (wins?.pack && !wins.pack.closed) wins.pack.close();
+    if (wins?.label && !wins.label.closed) wins.label.close();
+  };
+  const success = (result?: unknown) => {
+    const wins = releaseWinsRef.current; releaseWinsRef.current = null;
     remember(null);
+    const consignmentId =
+      result && typeof result === "object" && "consignmentId" in result && typeof (result as { consignmentId?: unknown }).consignmentId === "number"
+        ? (result as { consignmentId: number }).consignmentId
+        : null;
+    if (consignmentId) {
+      void workflowPrinter.printShipmentAndLabel(consignmentId, wins?.pack ?? null, wins?.label ?? null, request.branchId);
+    } else {
+      if (wins?.pack && !wins.pack.closed) wins.pack.close();
+      if (wins?.label && !wins.label.closed) wins.label.close();
+    }
     if (!mounted.current) return;
     setKey(newClientRequestId());
     notify.ok("تم تحديث طلب التوصيل");
     onChanged();
   };
   const failure = (error: unknown) => {
+    closeReleaseWins();
     const code = (error as { data?: { code?: string } } | null)?.data?.code;
     if (code && definitiveErrors.has(code)) remember(null);
     if (mounted.current) notify.err(error);
   };
   const ready = trpc.delivery.fulfillment.requests.ready.useMutation({
-    onSuccess: success,
+    onSuccess: () => success(),
     onError: failure,
   });
   const cancel = trpc.delivery.fulfillment.requests.cancel.useMutation({
-    onSuccess: success,
+    onSuccess: () => success(),
     onError: failure,
   });
   const release = trpc.delivery.fulfillment.requests.release.useMutation({
-    onSuccess: success,
+    onSuccess: (res) => success(res),
     onError: failure,
   });
   const reassign = trpc.delivery.fulfillment.requests.reassign.useMutation({
-    onSuccess: success,
+    onSuccess: (res) => success(res),
     onError: failure,
   });
   const mutating =
@@ -162,6 +184,9 @@ export function RequestDetails({
     reassign.isPending;
   const busy = mutating || confirming || pendingAction != null;
   const run = (action: RequestAction) => {
+    if (action.kind === "release" || action.kind === "reassign") {
+      releaseWinsRef.current = { pack: preopenDocumentWindow(), label: preopenShippingLabelWindow() };
+    }
     if (action.kind === "ready") ready.mutate(action.input);
     else if (action.kind === "release") release.mutate(action.input);
     else if (action.kind === "cancel") cancel.mutate(action.input);

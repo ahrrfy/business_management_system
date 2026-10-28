@@ -26,6 +26,8 @@ import { confirm } from "@/lib/confirm";
 import { useSearch } from "wouter";
 import { ReceptionDuplicateAlert } from "@/components/reception/ReceptionDuplicateAlert";
 import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
+import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
+import { printOrderCancellationReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 
 type DraftItem = RouterOutputs["reception"]["draftList"]["rows"][number];
@@ -343,6 +345,7 @@ export function DraftDetailsModal({
   isElevated?: boolean;
 }) {
   const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery();
   const draftQ = trpc.reception.draftGet.useQuery({ draftId });
   const paymentsQ = trpc.reception.paymentsOf.useQuery({ draftId });
 
@@ -352,8 +355,21 @@ export function DraftDetailsModal({
   const [managerApprovalAsk, setManagerApprovalAsk] = useState<RefundVars | null>(null);
 
   const refundM = trpc.reception.refundDeposit.useMutation({
-    onSuccess: () => {
+    onSuccess: (_, vars) => {
+      const origPayment = (paymentsQ.data?.rows ?? []).find((row) => Number(row.id) === Number(vars.paymentId));
+      const d = draftQ.data;
       notify.ok("تم رد العربون بنجاح وتسجيل الإيصال");
+      void printOrderCancellationReceipt({
+        documentNumber: d?.draftNumber ?? `DRF-${draftId}`,
+        orderKind: "مسودة طلب استقبال",
+        customerName: d?.contactName ?? null,
+        customerPhone: d?.contactPhone ?? null,
+        originalTotal: d?.total ?? null,
+        refundedAmount: vars.amount,
+        refundMethod: origPayment?.method === "TELECOM" ? "CASH" : (origPayment?.method ?? "CASH"),
+        reason: vars.reason,
+        cashierName: me.data?.name ?? null,
+      }).catch(() => {}).finally(() => releaseReservedPrintWindow());
       setRefundPaymentId(null);
       setRefundAmount("");
       setRefundReason("");
@@ -364,6 +380,7 @@ export function DraftDetailsModal({
       onActionSuccess();
     },
     onError: (e, variables) => {
+      releaseReservedPrintWindow();
       const code = (e as { data?: { code?: string } }).data?.code;
       if (code === "FORBIDDEN" && /(?:اعتماد|موافقة) (?:ال)?مدير/.test(e.message)) {
         setManagerApprovalAsk(variables);
@@ -374,13 +391,24 @@ export function DraftDetailsModal({
   });
 
   const cancelM = trpc.reception.draftCancel.useMutation({
-    onSuccess: () => {
+    onSuccess: (_, vars) => {
+      const d = draftQ.data;
       notify.ok("أُلغيت المسودة بنجاح");
+      void printOrderCancellationReceipt({
+        documentNumber: d?.draftNumber ?? `DRF-${draftId}`,
+        orderKind: "مسودة طلب استقبال",
+        customerName: d?.contactName ?? null,
+        customerPhone: d?.contactPhone ?? null,
+        originalTotal: d?.total ?? null,
+        refundedAmount: "0.00",
+        reason: vars.reason,
+        cashierName: me.data?.name ?? null,
+      }).catch(() => {}).finally(() => releaseReservedPrintWindow());
       void utils.reception.draftList.invalidate();
       onActionSuccess();
       onClose();
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => { releaseReservedPrintWindow(); notify.err(e); },
   });
 
   const draft = draftQ.data;
@@ -399,6 +427,7 @@ export function DraftDetailsModal({
     });
     if (!ok) return;
 
+    reservePrintWindow();
     cancelM.mutate({
       draftId: draft.id,
       version: draft.version,
@@ -416,6 +445,7 @@ export function DraftDetailsModal({
       return;
     }
 
+    reservePrintWindow();
     refundM.mutate({
       paymentId,
       amount: refundAmount,
@@ -672,6 +702,7 @@ export function DraftDetailsModal({
           onApprove={(approval) => {
             const variables = managerApprovalAsk;
             setManagerApprovalAsk(null);
+            reservePrintWindow();
             refundM.mutate({ ...variables, managerApproval: approval });
           }}
         />

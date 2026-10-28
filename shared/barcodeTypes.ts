@@ -24,6 +24,7 @@ export type DocType =
   | "QUO"
   | "CUST"
   | "ORD"
+  | "CN"
   | "FR"
   | "AE"
   | "CHG";
@@ -36,6 +37,7 @@ export const DOC_TYPE_AR: Record<DocType, string> = {
   QUO: "عرض سعر",
   CUST: "ملف عميل",
   ORD: "طلب متجر إلكتروني",
+  CN: "إرسالية توصيل",
   FR: "طلب تجهيز وتوصيل",
   AE: "دفعة معالجة فعلية",
   CHG: "مستند أجور",

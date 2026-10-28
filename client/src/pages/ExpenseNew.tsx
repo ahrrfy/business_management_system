@@ -22,7 +22,9 @@ import {
   EXPENSE_BUCKET_LABEL,
   type ExpenseBucket,
 } from "@shared/expenseCategories";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { preopenDocumentWindow } from "@/lib/printing/brand";
+import { printDrawerExpenseReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
 import { canViewOperationData } from "@shared/operationPermissions";
 import { moduleAccessAllowed } from "@shared/permissions";
@@ -266,8 +268,36 @@ export default function ExpenseNew() {
     if (!openShift.isLoading && !openShift.data) setCashSource("TREASURY");
   }, [effectiveBranch, openShift.data, openShift.isLoading]);
 
+  const expWinRef = useRef<Window | null>(null);
   const create = trpc.expenses.create.useMutation({
-    onSuccess: async (result) => {
+    onSuccess: async (result, vars) => {
+      const win = expWinRef.current;
+      expWinRef.current = null;
+      const isPendingApproval =
+        "status" in result && result.status === "PENDING_APPROVAL";
+      if (!isPendingApproval && vars.source !== "STOCK") {
+        void printDrawerExpenseReceipt(
+          {
+            expenseNumber:
+              "id" in result && result.id
+                ? `EXP-${result.id}`
+                : (vars.referenceNumber ?? "EXP"),
+            categoryName: selectedCategory?.name ?? category,
+            payeeName: vars.payee ?? null,
+            amount: vars.amount ?? 0,
+            paymentMethod: vars.paymentMethod,
+            shiftId: vars.shiftId ?? null,
+            branchName:
+              branches.data?.find((b) => Number(b.id) === Number(vars.branchId))
+                ?.name ?? null,
+            cashierName: me.data?.name ?? null,
+            description: vars.description ?? null,
+          },
+          win ? { into: win } : undefined,
+        ).catch(() => {});
+      } else if (win) {
+        try { win.close(); } catch { /* ignore */ }
+      }
       setClientRequestId(crypto.randomUUID());
       await utils.expenses.list.invalidate();
       notify.ok(
@@ -282,6 +312,8 @@ export default function ExpenseNew() {
       navigate("/expenses");
     },
     onError: (e) => {
+      try { expWinRef.current?.close(); } catch { /* ignore */ }
+      expWinRef.current = null;
       setError(e.message);
       notify.err(e);
     },
@@ -375,6 +407,9 @@ export default function ExpenseNew() {
       if (!ok) return;
     }
 
+    if (executionMode !== "PENDING_OWNER_APPROVAL") {
+      expWinRef.current = preopenDocumentWindow("width=420,height=760");
+    }
     create.mutate({
       branchId: Number(effectiveBranch),
       shiftId:

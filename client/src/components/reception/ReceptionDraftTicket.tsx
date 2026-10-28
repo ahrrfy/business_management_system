@@ -2,6 +2,7 @@ import { notify } from "@/lib/notify";
 import { fmtDate } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
 import { printDraftTicket } from "@/lib/printing/draftTicket";
+import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
 import { lineTotal } from "@/components/reception/cartMath";
 export interface ReceptionDraftTicketInput {
   utils: ReturnType<typeof trpc.useUtils>;
@@ -10,6 +11,7 @@ export async function ReceptionDraftTicket(
   { utils }: ReceptionDraftTicketInput,
   draftId: number,
 ) {
+  reservePrintWindow();
   try {
     const d = await utils.reception.draftGet.fetch(
       { draftId },
@@ -30,5 +32,7 @@ export async function ReceptionDraftTicket(
     });
   } catch (e) {
     notify.err(e, "تعذّرت طباعة تذكرة المسوّدة");
+  } finally {
+    releaseReservedPrintWindow();
   }
 }

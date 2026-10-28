@@ -9,6 +9,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
+import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
+import { printOrderCancellationReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 import { trpc, type RouterInputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { notify } from "@/lib/notify";
@@ -37,6 +39,7 @@ export default function DraftPaymentsDialog({
   /** بعد ردٍّ ناجح — يمرّر صافي المحتجز الجديد لتحديث الشاشة الأم. */
   onChanged: (heldNet: string) => void;
 }) {
+  const me = trpc.auth.me.useQuery();
   const q = trpc.reception.paymentsOf.useQuery({ draftId }, { staleTime: 0 });
   const [refundFor, setRefundFor] = useState<number | null>(null);
   const [refundMethodFor, setRefundMethodFor] = useState<string | null>(null);
@@ -59,8 +62,17 @@ export default function DraftPaymentsDialog({
   const needShiftPick = cashRefundOpen && drawerShifts.length > 1;
 
   const refundM = trpc.reception.refundDeposit.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (_, vars) => {
+      const origRow = (q.data?.rows ?? []).find((row) => Number(row.id) === Number(vars.paymentId));
       notify.ok("رُدَّ المبلغ", "والسند مسجَّل — رصيد زين يُردّ نقداً من الدرج، وغيره بطريقة قبضه");
+      void printOrderCancellationReceipt({
+        documentNumber: draftNumber,
+        orderKind: "مسودة طلب استقبال",
+        refundedAmount: vars.amount,
+        refundMethod: origRow?.method === "TELECOM" ? "CASH" : (origRow?.method ? String(origRow.method) : "CASH"),
+        reason: vars.reason,
+        cashierName: me.data?.name ?? null,
+      }).catch(() => {}).finally(() => releaseReservedPrintWindow());
       setRefundFor(null);
       setRefundMethodFor(null);
       setAmount("");
@@ -72,6 +84,7 @@ export default function DraftPaymentsDialog({
       onChanged(String(fresh.data?.heldNet ?? "0.00"));
     },
     onError: (e, vars) => {
+      releaseReservedPrintWindow();
       // ردّ نقديّ عابر للوردية يلزمه مدير: نطلب اعتماده ونعيد المحاولة بدل رسالة خطأ عابرة.
       // (نميّزه عن FORBIDDEN عزل الفرع بوسم الرسالة «اعتماد مدير».)
       const code = (e as { data?: { code?: string } }).data?.code;
@@ -174,15 +187,16 @@ export default function DraftPaymentsDialog({
                         <Button
                           size="sm" className="h-7 flex-1 text-[10px]"
                           disabled={refundM.isPending || D(amount || 0).lte(0) || D(amount || 0).gt(remaining) || reason.trim().length < 5 || (needShiftPick && refundShiftId == null)}
-                          onClick={() =>
+                          onClick={() => {
+                            reservePrintWindow();
                             refundM.mutate({
                               paymentId: Number(r.id),
                               amount: D(amount).toFixed(2),
                               reason: reason.trim(),
                               refundShiftId: refundShiftId ?? undefined,
                               clientRequestId,
-                            })
-                          }
+                            });
+                          }}
                         >
                           {refundM.isPending
                             ? "جارٍ الردّ…"
@@ -212,6 +226,7 @@ export default function DraftPaymentsDialog({
           onApprove={(approval) => {
             const vars = mgrAsk;
             setMgrAsk(null);
+            reservePrintWindow();
             refundM.mutate({ ...vars, managerApproval: approval });
           }}
         />

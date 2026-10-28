@@ -30,7 +30,9 @@ import { confirm } from "@/lib/confirm";
 import { printInvoiceA4 } from "@/lib/printing/printTemplates";
 import { printWarehouseSlipV2 } from "@/lib/printing/printTemplatesV2";
 import { printReceipt } from "@/lib/printing/print";
-import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
+import { reservePrintWindow, releaseReservedPrintWindow, preopenDocumentWindow } from "@/lib/printing/brand";
+import { printInvoicePaymentReceipt, printOrderCancellationReceipt } from "@/lib/printing/cashierLifecycleReceipts";
+import { useWorkflowDocumentPrinter } from "@/hooks/useWorkflowDocumentPrinter";
 import { useInvoiceActionPermissions } from "@/hooks/useInvoiceActionPermissions";
 import { beginInvoicePrintAttempt, completeInvoicePrintAttempt, hasPendingFirstInvoicePrint, type InvoicePrintPurpose } from "@/lib/printing/invoicePrintAttempt";
 import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
@@ -48,7 +50,7 @@ import { InvoiceDispatchDialog } from "@/components/delivery/InvoiceDispatchDial
 import { FulfillmentSourceActions } from "@/components/fulfillment/FulfillmentSourceActions";
 import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeliveryAssignmentDialog";
 import ReverseDeliveryRequestDialog from "@/components/workorder/ReverseDeliveryRequestDialog";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useParams, useSearch } from "wouter";
 import {
   ChevronDown,
@@ -131,6 +133,9 @@ export default function InvoiceDetail() {
   const [cancelReason, setCancelReason] = useState("");
   const [cancelConfirmText, setCancelConfirmText] = useState("");
   const [cancelRequestId, setCancelRequestId] = useState(() => crypto.randomUUID());
+  const workflowPrinter = useWorkflowDocumentPrinter(inv.data?.branchId);
+  const actionPrintWinRef = useRef<Window | null>(null);
+  const lastPaySnapRef = useRef<{ amount: string; method: string; reference?: string; remainingAfter: string } | null>(null);
 
   // Default the payment amount to remaining balance once data loads.
   useEffect(() => {
@@ -150,20 +155,14 @@ export default function InvoiceDetail() {
 
   const pay = trpc.sales.pay.useMutation({
     onSuccess: async (r) => {
-      setDone(`تم تسجيل الدفعة. الحالة: ${invoiceStatusLabel(r.status)}. ${"notice" in r ? r.notice : ""}`);
-      setError("");
-      await Promise.all([
-        utils.sales.get.invalidate({ invoiceId }),
-        utils.sales.list.invalidate(),
-      ]);
-      setClientRequestId(crypto.randomUUID()); // مفتاح جديد للدفعة التالية
-      setExternalAttempt(null);
-      setPayReference("");
+      const win = actionPrintWinRef.current; actionPrintWinRef.current = null; const snap = lastPaySnapRef.current; lastPaySnapRef.current = null;
+      if (inv.data && snap) void printInvoicePaymentReceipt({ receiptNumber: (r as { receiptNumber?: string | null }).receiptNumber ?? null, invoiceNumber: inv.data.invoiceNumber, customerName: inv.data.customerName, customerPhone: inv.data.customerPhone, invoiceTotal: inv.data.total, paidBefore: inv.data.paidAmount, amountPaid: snap.amount, remainingAfter: snap.remainingAfter, paymentMethod: snap.method, reference: snap.reference, cashierName: me.data?.name ?? null }, { into: win }).catch(() => {});
+      else { try { win?.close(); } catch { /* noop */ } }
+      setDone(`تم تسجيل الدفعة. الحالة: ${invoiceStatusLabel(r.status)}. ${"notice" in r ? r.notice : ""}`); setError("");
+      await Promise.all([utils.sales.get.invalidate({ invoiceId }), utils.sales.list.invalidate()]);
+      setClientRequestId(crypto.randomUUID()); setExternalAttempt(null); setPayReference("");
     },
-    onError: (e) => {
-      setError(e.message);
-      setDone("");
-    },
+    onError: (e) => { try { actionPrintWinRef.current?.close(); } catch { /* noop */ } actionPrintWinRef.current = null; lastPaySnapRef.current = null; setError(e.message); setDone(""); },
   });
 
   const initiateExternal = trpc.sales.initiateExternalPayment.useMutation();
@@ -180,10 +179,10 @@ export default function InvoiceDetail() {
               : "تم إلغاء الفاتورة وتسوية آثارها بلا صرف نقد."
           : `أُرسل طلب الإلغاء #${r.requestId} للاعتماد — لم يتغير المخزون أو المال بعد.`,
       );
-      setError("");
-      setCancelOpen(false);
-      setCancelReason("");
-      setCancelConfirmText("");
+      const win = actionPrintWinRef.current; actionPrintWinRef.current = null;
+      if (r.mode === "EXECUTED" && inv.data) void printOrderCancellationReceipt({ documentNumber: inv.data.invoiceNumber, orderKind: "INVOICE", customerName: inv.data.customerName, customerPhone: inv.data.customerPhone, originalTotal: inv.data.total, refundedAmount: Number(r.refundAmount ?? 0) > 0 ? r.refundAmount : (r.pendingRefundAmount ?? "0"), refundMethod: cancelMethod, reason: cancelReason, cashierName: me.data?.name ?? null }, { into: win }).catch(() => {});
+      else { try { win?.close(); } catch { /* noop */ } }
+      setError(""); setCancelOpen(false); setCancelReason(""); setCancelConfirmText("");
       await Promise.all(
         r.mode === "EXECUTED"
           ? [
@@ -194,17 +193,19 @@ export default function InvoiceDetail() {
       );
       setCancelRequestId(crypto.randomUUID());
     },
-    onError: (e) => { setError(e.message); setDone(""); },
+    onError: (e) => { try { actionPrintWinRef.current?.close(); } catch { /* noop */ } actionPrintWinRef.current = null; setError(e.message); setDone(""); },
   });
 
   const cancelUnpaidCod = trpc.sales.cancelUnpaidCod.useMutation({
     onSuccess: async () => {
+      const win = actionPrintWinRef.current; actionPrintWinRef.current = null;
+      if (inv.data) void printOrderCancellationReceipt({ documentNumber: inv.data.invoiceNumber, orderKind: "INVOICE", customerName: inv.data.customerName, customerPhone: inv.data.customerPhone, originalTotal: inv.data.total, refundedAmount: "0", reason: cancelReason, cashierName: me.data?.name ?? null }, { into: win }).catch(() => {});
       setDone("تم إلغاء فاتورة الدفع عند الاستلام وتسوية آثارها بلا صرف نقدي.");
       setError(""); setCancelOpen(false); setCancelReason(""); setCancelConfirmText("");
       await Promise.all([utils.sales.get.invalidate({ invoiceId }), invalidateFinancialQueries(queryClient, inv.data?.branchId)]);
       setCancelRequestId(crypto.randomUUID());
     },
-    onError: (e) => { setError(e.message); setDone(""); },
+    onError: (e) => { try { actionPrintWinRef.current?.close(); } catch { /* noop */ } actionPrintWinRef.current = null; setError(e.message); setDone(""); },
   });
 
   // #28 (تدقيق التثبيت): تسجيل الدفعة = salesCashierProcedure(["cashier","manager"],"sales","FULL").
@@ -273,8 +274,7 @@ export default function InvoiceDetail() {
     );
   const data = inv.data;
   const canPrintShippingLabel = !["CANCELLED", "RETURNED", "SUPERSEDED"].includes(data.status)
-    && (data.consignmentId == null || data.consignmentStatus === "CANCELLED")
-    && !["SHIPPED", "DELIVERED", "CANCELLED"].includes(data.onlineOrderStatus ?? "");
+    && !["DELIVERED", "CANCELLED"].includes(data.onlineOrderStatus ?? "");
   // #1: المتبقّي الحقيقي = total − returnedTotal − paidAmount (يمنع التحصيل الزائد بعد مرتجع جزئي).
   const remaining = round2(
     D(data.total)
@@ -474,6 +474,7 @@ export default function InvoiceDetail() {
       notify.warn("تعذّر فتح ليبل الشحن", "اسمح بالنوافذ المنبثقة ثم أعد المحاولة.");
       return;
     }
+    if (data.consignmentId != null && data.consignmentStatus !== "CANCELLED") { setPrintingShippingLabel(true); void workflowPrinter.printLabel(data.consignmentId, labelWindow).finally(() => setPrintingShippingLabel(false)); return; }
     setPrintingShippingLabel(true);
     void authorizePrintAttempt("SHIPPING_LABEL")
       .then(async (attempt) => {
@@ -574,8 +575,8 @@ export default function InvoiceDetail() {
       }))
     )
       return;
-    pay.mutate({
-      invoiceId,
+    lastPaySnapRef.current = { amount: amt.toFixed(2), method: payMethod, reference: payMethod === "CASH" ? undefined : payReference.trim(), remainingAfter: round2(remaining.minus(amt)).toFixed(2) }; actionPrintWinRef.current = preopenDocumentWindow();
+    pay.mutate({ invoiceId,
       amount: amt.toFixed(2),
       method: payMethod,
       reference: payMethod === "CASH" ? undefined : payReference.trim(),
@@ -1220,6 +1221,7 @@ export default function InvoiceDetail() {
               disabled={cancellationPending || cancelConfirmText.trim() !== data.invoiceNumber || cancelReason.trim().length < 3}
               onClick={() => {
                 if (cancelConfirmText.trim() !== data.invoiceNumber) return;
+                actionPrintWinRef.current = preopenDocumentWindow();
                 if (useLimitedCancellation) {
                   cancelUnpaidCod.mutate({ invoiceId, reason: cancelReason.trim(), clientRequestId: cancelRequestId });
                   return;

@@ -1,4 +1,4 @@
-import { D } from "@/lib/money";
+import { D, moneyInput } from "@/lib/money";
 import { invoicePrintAmounts } from "./receiptLayoutInvoiceAmounts";
 import { fmt } from "./brand";
 import { isCardPaymentMethod } from "./cardBrandLogos";
@@ -9,7 +9,9 @@ import {
   RECEIPT_WIDTH as W,
   receiptPair,
   receiptRule,
+  receiptTextLines,
 } from "./receiptLayout";
+import { formatArabicMoneyWords } from "./tafqit";
 export function drawReceiptTotals(
   ctx: CanvasRenderingContext2D,
   d: ReceiptBrowserData,
@@ -32,14 +34,14 @@ export function drawReceiptTotals(
     y = receiptPair(ctx, y, label, value, strong);
   };
   totRow("المجموع:", fmt(d.subtotal));
-  if (Number(d.discount ?? 0) > 0) totRow("الخصم:", `-${fmt(d.discount)}`);
-  if (Number(d.tax ?? 0) > 0) totRow("الضريبة:", fmt(d.tax));
+  if (moneyInput(d.discount).gt(0)) totRow("الخصم:", `-${fmt(d.discount)}`);
+  if (moneyInput(d.tax).gt(0)) totRow("الضريبة:", fmt(d.tax));
   // تقريب نقديّ IQD (٢٢/٨) — إفصاحٌ عن تعديل التقريب كي يطابق حساب الإيصال إجماليه المطبوع:
   // (المجموع − الخصم + الضريبة ± التقريب = الإجمالي). قبل هذا كان المطبوع 2,800 − 280 = 2,500
   // بينما الحساب 2,520، والفارقُ −20 مخفيّ. يظهر بإشارته (+/−) صراحةً.
-  if (d.cashRounding != null && Number(d.cashRounding) !== 0) {
-    const val = Number(d.cashRounding);
-    totRow("تقريب نقديّ:", `${val > 0 ? "+" : ""}${fmt(d.cashRounding)}`);
+  if (d.cashRounding != null && !moneyInput(d.cashRounding).isZero()) {
+    const val = moneyInput(d.cashRounding);
+    totRow("تقريب نقديّ:", `${val.gt(0) ? "+" : ""}${fmt(d.cashRounding)}`);
   }
 
   if (D(facts.returnedTotal).gt(0))
@@ -49,15 +51,26 @@ export function drawReceiptTotals(
 
   y += 2;
   receiptRule(ctx, y);
-  y += 30;
+  y += 26;
   ctx.font = "900 32px Cairo, sans-serif";
   ctx.textAlign = "right";
   ctx.fillText(revised ? "الإجمالي الأصلي:" : "الإجمالي:", W - PAD, y);
   ctx.textAlign = "left";
   ctx.fillText(`${fmt(d.total)} د.ع`, PAD, y);
-  y += 14;
+  if (!facts.dead) {
+    ctx.font = "700 17px Cairo, sans-serif";
+    ctx.textAlign = "center";
+    for (const wordLine of receiptTextLines(
+      ctx,
+      formatArabicMoneyWords(revised ? facts.currentTotal : d.total),
+    )) {
+      y += 20;
+      ctx.fillText(wordLine, W / 2, y);
+    }
+  }
+  y += 8;
   receiptRule(ctx, y);
-  y += 26;
+  y += 22;
 
   const cardImg = assets.card;
   if (d.paymentMethod) {
@@ -105,7 +118,7 @@ export function drawReceiptTotals(
   }
   if (d.paid != null) totRow("المدفوع:", fmt(d.paid), true);
   if (d.change != null) totRow("الباقي:", fmt(d.change), true);
-  if (Number(d.heldDeposits ?? 0) > 0)
+  if (moneyInput(d.heldDeposits).gt(0))
     totRow("عربون محتجز:", fmt(d.heldDeposits), true);
   // G3: «متبقٍّ (آجل)» — سطرٌ خاصّ بارز مع خطٍّ متقطّع أعلاه، أكبر خطاً من بقيّة الإجماليات.
   if (D(facts.remainingAmount).gt(0)) {

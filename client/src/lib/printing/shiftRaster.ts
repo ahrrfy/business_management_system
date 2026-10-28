@@ -8,6 +8,7 @@ import { paymentMethodTerm } from "@shared/terms";
 // مرفوعة (THRESHOLD) لتسمين الخطوط فيظهر الإيصال غامقاً واضحاً لا باهتاً.
 import { imageDataToRaster, type Raster } from "./escpos";
 import { fmtDate, fmtDateTime } from "../date";
+import { moneyInput, round2 } from "../money";
 import { CO, RECEIPT_PHONES, fmt, logoUrl } from "./brand";
 import type { ShiftOpenData, ShiftCloseData } from "./printTemplates";
 import { CARD_BRAND_LOGO_URL, isCardPaymentMethod } from "./cardBrandLogos";
@@ -323,7 +324,7 @@ export async function shiftCloseToCanvas(
   if (typeof document === "undefined") return null;
   await ensureFonts();
 
-  const payList = d.payments.filter((p) => Number(p.total) !== 0);
+  const payList = d.payments.filter((p) => !moneyInput(p.total).isZero());
   const estH = 2200 + payList.length * 48;
   const canvas = document.createElement("canvas");
   canvas.width = W; canvas.height = estH;
@@ -340,13 +341,14 @@ export async function shiftCloseToCanvas(
   const closedStr = fmtDateTime(d.closedAt);
   const duration  = calcDuration(d.openedAt, d.closedAt);
 
-  const discounts = Number(d.discountsTotal ?? 0);
-  const returns   = Number(d.returnsTotal ?? 0);
-  const netSales  = Number(d.salesTotal) - discounts - returns;
+  const discounts = round2(moneyInput(d.discountsTotal));
+  const returns   = round2(moneyInput(d.returnsTotal));
+  const netSales  = round2(moneyInput(d.salesTotal).minus(discounts).minus(returns));
 
-  const varNum   = Number(d.variance);
-  const varLabel = varNum === 0 ? "مطابق تماماً ✓" : varNum > 0 ? "الفرق — زيادة" : "الفرق — عجز";
-  const varVal   = varNum === 0 ? "صفر" : `${varNum > 0 ? "+" : "−"} ${fmt(Math.abs(varNum))} د.ع`;
+  const varDec    = round2(moneyInput(d.variance));
+  const varIsZero = varDec.isZero();
+  const varLabel  = varIsZero ? "مطابق تماماً" : varDec.gt(0) ? "الفرق — زيادة" : "الفرق — عجز";
+  const varVal    = varIsZero ? "صفر" : `${varDec.gt(0) ? "+" : "−"} ${fmt(varDec.abs().toFixed(2))} د.ع`;
 
   let y = PAD;
   y = await drawHeader(ctx, y);
@@ -373,10 +375,10 @@ export async function shiftCloseToCanvas(
   };
   bigRow("عدد الفواتير", `${d.invoiceCount} فاتورة`);
   bigRow("إجمالي المبيعات", `${fmt(d.salesTotal)} د.ع`);
-  if (discounts > 0) bigRow("إجمالي الخصومات", `${fmt(discounts)} د.ع`);
-  if (returns > 0) bigRow("المرتجعات", `${fmt(returns)} د.ع`);
+  if (discounts.gt(0)) bigRow("إجمالي الخصومات", `${fmt(discounts.toFixed(2))} د.ع`);
+  if (returns.gt(0)) bigRow("المرتجعات", `${fmt(returns.toFixed(2))} د.ع`);
   // ش٤ (I14): إفصاح عرابين الطلبات غير المُثبَّتة — يفسّر نقداً في الدرج بلا فاتورة.
-  if (Number(d.heldDepositsCount ?? 0) > 0) {
+  if (moneyInput(d.heldDepositsCount).gt(0)) {
     bigRow(`عرابين طلبات لم تُثبَّت (${d.heldDepositsCount})`, `${fmt(d.heldDepositsTotal ?? 0)} د.ع`);
   }
 
@@ -385,7 +387,7 @@ export async function shiftCloseToCanvas(
   invertedBlock(ctx, y, netH);
   ctx.fillStyle = "#fff";
   ctx.font = "900 26px Cairo, sans-serif"; ctx.textAlign = "right"; ctx.fillText("صافي المبيعات", W - PAD - 12, y + 37);
-  ctx.font = "900 28px Cairo, sans-serif"; ctx.textAlign = "left"; ctx.fillText(`${fmt(netSales)} د.ع`, PAD + 12, y + 37);
+  ctx.font = "900 28px Cairo, sans-serif"; ctx.textAlign = "left"; ctx.fillText(`${fmt(netSales.toFixed(2))} د.ع`, PAD + 12, y + 37);
   ctx.fillStyle = "#000";
   y += netH + 14;
 
@@ -447,12 +449,12 @@ export async function shiftCloseToCanvas(
   y += ccH + 16;
 
   // الفرق — كتلة معكوسة
-  const vH = varNum !== 0 ? 96 : 72;
+  const vH = !varIsZero ? 96 : 72;
   invertedBlock(ctx, y, vH);
   ctx.fillStyle = "#fff"; ctx.textAlign = "right";
-  ctx.font = "900 26px Cairo, sans-serif"; ctx.fillText(varLabel, W - PAD - 12, y + (varNum !== 0 ? 40 : 47));
-  if (varNum !== 0) { ctx.font = "600 18px Cairo, sans-serif"; ctx.fillText("يتطلّب مراجعة المشرف", W - PAD - 12, y + 70); }
-  ctx.textAlign = "left"; ctx.font = "900 34px Cairo, sans-serif"; ctx.fillText(varVal, PAD + 12, y + (varNum !== 0 ? 58 : 49));
+  ctx.font = "900 26px Cairo, sans-serif"; ctx.fillText(varLabel, W - PAD - 12, y + (!varIsZero ? 40 : 47));
+  if (!varIsZero) { ctx.font = "600 18px Cairo, sans-serif"; ctx.fillText("يتطلّب مراجعة المشرف", W - PAD - 12, y + 70); }
+  ctx.textAlign = "left"; ctx.font = "900 34px Cairo, sans-serif"; ctx.fillText(varVal, PAD + 12, y + (!varIsZero ? 58 : 49));
   ctx.fillStyle = "#000";
   y += vH + 16;
 

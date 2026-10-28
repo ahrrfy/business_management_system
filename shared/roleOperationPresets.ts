@@ -1,4 +1,5 @@
 import {
+  CASHIER_BRANCH_LIFECYCLE_SCOPE_PATHS,
   OPERATION_PERMISSIONS,
   getOperationPermission,
   legacyOperationPolicy,
@@ -15,7 +16,7 @@ import {
 
 export const ROLE_DAILY_OPERATION_PATHS: Readonly<Record<string, readonly string[]>> = {
   cashier: [
-    "shifts.current", "shifts.open", "catalog.posList", "sales.create", "sales.cancel",
+    "shifts.current", "shifts.open", "catalog.posList", "sales.create", "sales.cancel", "printPos.cancelHeldSale",
     "returns.create", "returns.withdrawRequest", "returns.executeSalesReturnCart", "returns.getOpenRefundDrawers",
     "returns.getInvoice", "returns.inspectInvoiceForReturn", "returns.lookupItemForReturn",
     "returns.universalScan", "returns.forensicTrace", "returns.shifts",
@@ -31,7 +32,7 @@ export const ROLE_DAILY_OPERATION_PATHS: Readonly<Record<string, readonly string
     "invoicePrinting.requestPrint", "invoicePrinting.requestReprint", "shifts.close",
   ],
   print_cashier: [
-    "shifts.current", "shifts.open", "printPos.createSale", "sales.cancel", "returns.create", "returns.withdrawRequest",
+    "shifts.current", "shifts.open", "printPos.createSale", "printPos.cancelHeldSale", "sales.cancel", "returns.create", "returns.withdrawRequest",
     "returns.executeSalesReturnCart", "returns.getOpenRefundDrawers", "returns.getInvoice",
     "returns.inspectInvoiceForReturn", "returns.lookupItemForReturn",
     "returns.universalScan", "returns.forensicTrace", "returns.shifts",
@@ -132,6 +133,7 @@ export function buildDefaultRoleOperationPolicy(
   // role allowlist (for example cashier -> salesControl.approve).
   const policy = legacyOperationPolicy(baseRole, modules);
   const grants = { ...policy.grants };
+  const recordScopes = { ...(policy.recordScopes ?? {}) };
   const profileModule = DAILY_PROFILE_MODULE[roleKey];
   const profileDefaults =
     SECTION_CASHIER_ROLES.find((role) => role.key === roleKey)?.permissions ??
@@ -169,6 +171,12 @@ export function buildDefaultRoleOperationPolicy(
     for (const operation of OPERATION_PERMISSIONS) {
       if (!operation.delegable) continue;
       if (
+        operation.supportsRecordScope === true &&
+        CASHIER_BRANCH_LIFECYCLE_SCOPE_PATHS.has(operation.path)
+      ) {
+        recordScopes[operation.key] = "BRANCH";
+      }
+      if (
         operation.path.startsWith("purchases.") ||
         operation.path.startsWith("purchaseReturns.") ||
         operation.path.startsWith("supplierPayments.") ||
@@ -181,6 +189,7 @@ export function buildDefaultRoleOperationPolicy(
   return {
     ...policy,
     grants,
+    recordScopes,
     dataVisibility: CASHIER_PROFILE_KEYS.has(roleKey)
       ? { purchaseCost: false, profitMargin: false }
       : policy.dataVisibility,

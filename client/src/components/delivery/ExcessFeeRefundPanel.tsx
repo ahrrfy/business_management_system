@@ -9,6 +9,8 @@ import {
   type ManagerApprovalInput,
 } from "@/components/reception/ManagerApprovalDialog";
 import { fmt } from "@/lib/money";
+import { preopenDocumentWindow } from "@/lib/printing/brand";
+import { printDeliveryFeeRefundReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 import { paymentMethodCompact } from "@shared/terms";
 
 export function ExcessFeeRefundPanel({
@@ -50,6 +52,10 @@ export function ExcessFeeRefundPanel({
     if (!source) return;
     setError(null);
     setManager(false);
+    const win =
+      source.receipt.method === "CASH"
+        ? preopenDocumentWindow("width=420,height=760")
+        : null;
     try {
       const result = await request.mutateAsync({
         branchId,
@@ -62,9 +68,22 @@ export function ExcessFeeRefundPanel({
         refundShiftId: selectedShift,
         managerApproval: approval,
       });
+      if (source.receipt.method === "CASH") {
+        void printDeliveryFeeRefundReceipt(
+          {
+            refundNumber: `RFD-${result.receiptId}`,
+            sourceRef: detail?.number ?? lookup,
+            amount: source.amount,
+            paymentMethod: source.receipt.method,
+            reason,
+          },
+          { into: win },
+        ).catch(() => {});
+      }
       setReceiptId(result.receiptId);
       await onChanged();
     } catch (e) {
+      try { win?.close(); } catch { /* ignore */ }
       setError(e instanceof Error ? e.message : "تعذّر رد الأجرة الزائدة");
     }
   }

@@ -35,6 +35,11 @@ import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { cn } from "@/lib/utils";
 import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
 import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
+import { useInvoiceReceiptPrinter } from "@/hooks/useInvoiceReceiptPrinter";
+import { useInvoiceActionPermissions } from "@/hooks/useInvoiceActionPermissions";
+import { preopenDocumentWindow, printReceipt } from "@/lib/printing/print";
+import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
+import { printInvoicePaymentReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 
 const PAYMENT_METHODS = [
   { v: "CASH", label: "نقدي", icon: Banknote },
@@ -73,6 +78,29 @@ export default function ReceptionHandoverPage() {
 
   const me = trpc.auth.me.useQuery();
   const branchId = me.data?.branchId;
+  const { printAuthorizedDocument } = useInvoiceReceiptPrinter(me.data, me.data?.id);
+  const printHandoverInvoice = useCallback(async (invoiceId: number, reprint: boolean, win: Window | null) => {
+    try {
+      const inv = await utils.sales.get.fetch({ invoiceId });
+      if (!inv) { try { win?.close(); } catch { /* noop */ } return; }
+      await printAuthorizedDocument(invoiceId, "THERMAL", reprint, () => printReceipt(invoiceToReceipt(inv), { into: win }));
+    } catch { try { win?.close(); } catch { /* noop */ } }
+  }, [utils.sales.get, printAuthorizedDocument]);
+  const { canReprint } = useInvoiceActionPermissions(me.data);
+  const deliverPrintRef = useRef<{
+    win: Window | null;
+    order: ScannedOrder;
+    amountPaid: string;
+    method: string;
+    reference: string | null;
+  } | null>(null);
+  const collectPrintRef = useRef<{
+    win: Window | null;
+    order: ScannedOrder;
+    amountPaid: string;
+    method: string;
+    reference: string | null;
+  } | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
   const shiftQ = trpc.shifts.current.useQuery(
     { branchId: branchId!, shiftType: "RECEPTION" },
@@ -168,8 +196,33 @@ export default function ReceptionHandoverPage() {
   // ─── تسليم ────────────────────────────────────────────────────────────────
 
   const deliverMut = trpc.workOrders.deliver.useMutation({
-    onSuccess: () => {
-      notify.ok("تمّ تسليم طلب #" + (scanned?.orderNumber ?? ""));
+    onSuccess: (res) => {
+      const snap = deliverPrintRef.current;
+      deliverPrintRef.current = null;
+      notify.ok("تمّ تسليم طلب #" + (scanned?.orderNumber ?? snap?.order.orderNumber ?? ""));
+      if (snap) {
+        const invId = Number((res as { invoiceId?: number } | null)?.invoiceId ?? 0);
+        if (invId > 0) {
+          void printHandoverInvoice(invId, false, snap.win);
+        } else {
+          const remAfter = round2(D(snap.order.salePrice).minus(D(snap.order.deposit ?? "0")).minus(D(snap.amountPaid)));
+          void printInvoicePaymentReceipt(
+            {
+              invoiceNumber: (res as { invoiceNumber?: string } | null)?.invoiceNumber ?? snap.order.orderNumber,
+              customerName: snap.order.customerName,
+              customerPhone: snap.order.customerPhone,
+              invoiceTotal: snap.order.salePrice,
+              paidBefore: snap.order.deposit ?? "0",
+              amountPaid: snap.amountPaid,
+              remainingAfter: (remAfter.gt(0) ? remAfter : D(0)).toFixed(2),
+              paymentMethod: snap.method,
+              reference: snap.reference,
+              cashierName: me.data?.name ?? null,
+            },
+            snap.win ? { into: snap.win } : undefined,
+          );
+        }
+      }
       setScanned(null);
       setMethod("CASH");
       setReference("");
@@ -178,12 +231,35 @@ export default function ReceptionHandoverPage() {
       void shiftQ.refetch();
       inputRef.current?.focus();
     },
-    onError: (e) => notify.err(e, "تعذّر التسليم"),
+    onError: (e) => {
+      try { deliverPrintRef.current?.win?.close(); } catch { /* noop */ }
+      deliverPrintRef.current = null;
+      notify.err(e, "تعذّر التسليم");
+    },
   });
 
   const collectInvoiceMut = trpc.reception.collectOnInvoice.useMutation({
     onSuccess: () => {
-      notify.ok("تمّ تحصيل الفاتورة #" + (scanned?.orderNumber ?? "") + " وتسليمها بنجاح");
+      const snap = collectPrintRef.current;
+      collectPrintRef.current = null;
+      notify.ok("تمّ تحصيل الفاتورة #" + (scanned?.orderNumber ?? snap?.order.orderNumber ?? "") + " وتسليمها بنجاح");
+      if (snap) {
+        void printInvoicePaymentReceipt(
+          {
+            invoiceNumber: snap.order.orderNumber,
+            customerName: snap.order.customerName,
+            customerPhone: snap.order.customerPhone,
+            invoiceTotal: snap.order.salePrice,
+            paidBefore: snap.order.deposit ?? "0",
+            amountPaid: snap.amountPaid,
+            remainingAfter: "0.00",
+            paymentMethod: snap.method,
+            reference: snap.reference,
+            cashierName: me.data?.name ?? null,
+          },
+          snap.win ? { into: snap.win } : undefined,
+        );
+      }
       setScanned(null);
       setMethod("CASH");
       setReference("");
@@ -192,7 +268,11 @@ export default function ReceptionHandoverPage() {
       void shiftQ.refetch();
       inputRef.current?.focus();
     },
-    onError: (e) => notify.err(e, "تعذّر تحصيل الفاتورة"),
+    onError: (e) => {
+      try { collectPrintRef.current?.win?.close(); } catch { /* noop */ }
+      collectPrintRef.current = null;
+      notify.err(e, "تعذّر تحصيل الفاتورة");
+    },
   });
 
   const remaining = scanned
@@ -298,6 +378,13 @@ export default function ReceptionHandoverPage() {
 
     if (scanned.kind === "invoice") {
       if (remainingVal.gt(0)) {
+        collectPrintRef.current = {
+          win: preopenDocumentWindow(),
+          order: scanned,
+          amountPaid: remainingVal.toFixed(2),
+          method,
+          reference: method !== "CASH" ? reference.trim() : null,
+        };
         collectInvoiceMut.mutate({
           invoiceId: scanned.id,
           amount: remainingVal.toFixed(2),
@@ -312,6 +399,8 @@ export default function ReceptionHandoverPage() {
           clientRequestId: crypto.randomUUID(),
         });
       } else {
+        const win = preopenDocumentWindow();
+        void printHandoverInvoice(scanned.id, canReprint, win);
         notify.ok("الفاتورة مدفوعة مسبقاً — تم التسليم بنجاح");
         setScanned(null);
         setMethod("CASH");
@@ -322,6 +411,13 @@ export default function ReceptionHandoverPage() {
         inputRef.current?.focus();
       }
     } else {
+      deliverPrintRef.current = {
+        win: preopenDocumentWindow(),
+        order: scanned,
+        amountPaid: remainingVal.gt(0) ? remainingVal.toFixed(2) : "0.00",
+        method,
+        reference: method !== "CASH" ? reference.trim() : null,
+      };
       deliverMut.mutate({
         workOrderId: scanned.id,
         payment: remainingVal.gt(0)
@@ -645,6 +741,13 @@ export default function ReceptionHandoverPage() {
                 onCancel={() => setShowDebtApproval(false)}
                 onApprove={(approval) => {
                   setShowDebtApproval(false);
+                  deliverPrintRef.current = {
+                    win: preopenDocumentWindow(),
+                    order: scanned,
+                    amountPaid: "0.00",
+                    method: "CASH",
+                    reference: null,
+                  };
                   deliverMut.mutate({
                     workOrderId: scanned.id,
                     addToCustomerDebt: true,

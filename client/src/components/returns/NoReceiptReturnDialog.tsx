@@ -18,6 +18,8 @@ import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { notify } from "@/lib/notify";
 import { D, fmt, formatQuantity } from "@/lib/money";
 import { printReportDoc } from "@/lib/printing/reportDoc";
+import { preopenDocumentWindow } from "@/lib/printing/print";
+import { printSalesReturnReceipt } from "./printThermalReturnReceipt";
 import { playReadyBeep } from "@/lib/notifyBeep";
 import { trpc } from "@/lib/trpc";
 import {
@@ -301,14 +303,41 @@ export function NoReceiptReturnDialog({
     }
   };
 
+  const printWinRef = useRef<Window | null>(null);
+
   // طفرة التنفيذ الخلفي
   const executeMutation = trpc.returns.executeNoReceiptOrExchange.useMutation({
     onSuccess: (res) => {
+      const win = printWinRef.current;
+      printWinRef.current = null;
       notify.ok(
         mode === "DIRECT_EXCHANGE"
           ? `تم تنفيذ الاستبدال المباشر بنجاح برمز ${res.voucherCode}`
           : `تم اعتماد الإرجاع وتوليد قسيمة الرصيد برمز ${res.voucherCode}`
       );
+      void printSalesReturnReceipt(
+        {
+          returnNumber: res.voucherCode,
+          customerName: res.customerName || "زبون عابر",
+          customerPhone: res.customerPhone,
+          disposition: returnItems.every((i) => i.disposition === "SCRAP")
+            ? "DAMAGED"
+            : "RESTOCK",
+          method:
+            mode === "DIRECT_EXCHANGE" && customerOwes
+              ? paymentMethod
+              : "STORE_CREDIT",
+          totalAmount: res.returnTotal,
+          payoutAmount: "0.00",
+          items: returnItems.map((i) => ({
+            name: i.productName,
+            quantity: i.quantity,
+            unitPrice: i.unitPrice,
+            barcode: i.barcode,
+          })),
+        },
+        ...(win ? [{ into: win }] : []),
+      ).catch(() => {});
       setIssuedDoc({
         voucherCode: res.voucherCode,
         mode: res.mode,
@@ -324,7 +353,11 @@ export function NoReceiptReturnDialog({
       });
       onSuccess?.();
     },
-    onError: (err) => notify.err(err.message),
+    onError: (err) => {
+      try { printWinRef.current?.close(); } catch { /* noop */ }
+      printWinRef.current = null;
+      notify.err(err.message);
+    },
   });
 
   const handleSubmit = async () => {
@@ -338,6 +371,7 @@ export function NoReceiptReturnDialog({
       return;
     }
 
+    printWinRef.current = preopenDocumentWindow("width=420,height=760");
     executeMutation.mutate({
       mode,
       returnItems: returnItems.map((i) => ({

@@ -6,6 +6,7 @@
 import { fmtDate } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { D, formatIqd } from "@/lib/money";
+import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
 import { printShiftClose } from "@/lib/printing/print";
 import { readShiftOutboxSummary, subscribeOutbox } from "@/lib/offline/outbox";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -95,7 +96,7 @@ export function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, br
               referenceNumber: r.treasuryReturn.handoverNumber,
             }
           : null,
-      });
+      }).catch(() => {}).finally(() => releaseReservedPrintWindow());
       if (r.treasuryReturn) {
         notify.ok(
           `أُغلقت الوردية ورُحّل ${formatIqd(r.countedCash)} إلى الخزينة تلقائياً`,
@@ -105,7 +106,7 @@ export function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, br
       await utils.shifts.current.invalidate();
       onClosed();
     },
-    onError: (e) => notify.errBig(e),
+    onError: (e) => { releaseReservedPrintWindow(); notify.errBig(e); },
   });
 
   const [varianceReasonCode, setVarianceReasonCode] = useState<ShiftVarianceCode | "">("");
@@ -340,13 +341,17 @@ export function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, br
               </button>
               <button
                 disabled={closeDisabled}
-                onClick={() => shift && closeShift.mutate({
-                  shiftId: shift.id,
-                  countedCash: counted,
-                  varianceReasonCode: hasVariance && varianceReasonCode ? (varianceReasonCode as ShiftVarianceCode) : undefined,
-                  varianceReason: hasVariance && varianceReason.trim() ? varianceReason.trim() : undefined,
-                  managerApprovedByUserId: hasVariance && !isElevatedRole && managerApprovedByUserId ? Number(managerApprovedByUserId) : undefined,
-                })}
+                onClick={() => {
+                  if (!shift) return;
+                  reservePrintWindow();
+                  closeShift.mutate({
+                    shiftId: shift.id,
+                    countedCash: counted,
+                    varianceReasonCode: hasVariance && varianceReasonCode ? (varianceReasonCode as ShiftVarianceCode) : undefined,
+                    varianceReason: hasVariance && varianceReason.trim() ? varianceReason.trim() : undefined,
+                    managerApprovedByUserId: hasVariance && !isElevatedRole && managerApprovedByUserId ? Number(managerApprovedByUserId) : undefined,
+                  });
+                }}
                 style={{ flex: 1, height: 46, background: closeDisabled ? C.muted : C.danger, color: closeDisabled ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: closeDisabled ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>
                 {closeLabel}
               </button>

@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_SHIPPING_LABEL_SIZE,
+  SHIPPING_LABEL_PRESETS,
   parseShippingLabelSize,
   shippingLabelSizeKey,
 } from "./shippingLabelSize";
 import { shippingLabelHtml } from "./shippingLabel";
 
 describe("قياس ملصق الشحن", () => {
-  it("الافتراضي ٨٠×١٢٠مم (قرار المالك ١٣/٧)", () => {
+  it("الافتراضي 80×120مم (قرار المالك 13/7)", () => {
     expect(DEFAULT_SHIPPING_LABEL_SIZE).toEqual({ widthMm: 80, heightMm: 120 });
   });
 
@@ -27,10 +28,27 @@ describe("قياس ملصق الشحن", () => {
     expect(parseShippingLabelSize("80x120x40")).toBeNull();
   });
 
-  it("يرفض القياس الأفقي (ارتفاع < عرض) — يقصّ التذييل (Codex P2 على PR #185)، ويقبل المربّع", () => {
-    expect(parseShippingLabelSize("250x40")).toBeNull(); // أفقي مسطّح — كان يمرّ ويُقتصّ
-    expect(parseShippingLabelSize("120x80")).toBeNull(); // مقلوب
+  it("يرفض القياس الأفقي العشوائي ويقبل المقاسين المعتمدين (120x80 و80x50) والمربّع", () => {
+    expect(parseShippingLabelSize("250x40")).toBeNull(); // أفقي مسطّح غير معتمد
+    expect(parseShippingLabelSize("150x60")).toBeNull(); // أفقي عشوائي غير معتمد
+    expect(parseShippingLabelSize("120x80")).toEqual({ widthMm: 120, heightMm: 80 }); // عرضي معتمد
+    expect(parseShippingLabelSize("80x50")).toEqual({ widthMm: 80, heightMm: 50 }); // مدمج معتمد
     expect(parseShippingLabelSize("100x100")).toEqual({ widthMm: 100, heightMm: 100 }); // مربّع مُثبَت
+  });
+
+  it("يعرّف القوالب الستة بأرقام لاتينية 0-9 حصراً", () => {
+    expect(SHIPPING_LABEL_PRESETS.map((p) => p.key)).toEqual([
+      "80x120",
+      "100x150",
+      "120x80",
+      "80x50",
+      "100x100",
+      "80x100",
+    ]);
+    for (const preset of SHIPPING_LABEL_PRESETS) {
+      expect(preset.label).not.toMatch(/[٠-٩]/);
+      expect(parseShippingLabelSize(preset.key)).toEqual(preset.size);
+    }
   });
 
   it("مفتاح التخزين ذهاب-إياب", () => {
@@ -52,7 +70,7 @@ describe("HTML ملصق الشحن بقياس متغيّر", () => {
     items: [{ productName: "دفتر A4", unitName: "درزن", quantity: "2" }],
   };
 
-  it("الافتراضي (٨٠×١٢٠): @page بالقياس الصحيح وحاوية بأبعاد مباشرة", async () => {
+  it("الافتراضي (80×120): @page بالقياس الصحيح وحاوية بأبعاد مباشرة", async () => {
     const html = await shippingLabelHtml(order);
     expect(html).toContain("@page{size:80mm 120mm;margin:0mm !important}");
     expect(html).toContain("width:80mm");
@@ -61,18 +79,45 @@ describe("HTML ملصق الشحن بقياس متغيّر", () => {
     expect(html).toContain("lbl-container");
   });
 
-  it("قياس 4×6 (١٠٠×١٥٠): أبعاد حاوية مطابقة", async () => {
+  it("قياس 4×6 (100×150): أبعاد حاوية مطابقة", async () => {
     const html = await shippingLabelHtml(order, { widthMm: 100, heightMm: 150 });
     expect(html).toContain("@page{size:100mm 150mm;margin:0mm !important}");
     expect(html).toContain("width:100mm");
     expect(html).toContain("height:150mm");
   });
 
-  it("قياس مخصّص بنسبة مختلفة (١٠٠×١٠٠): الحاوية تتكيّف", async () => {
-    const html = await shippingLabelHtml(order, { widthMm: 100, heightMm: 100 });
-    expect(html).toContain("@page{size:100mm 100mm;margin:0mm !important}");
-    expect(html).toContain("width:100mm");
-    expect(html).toContain("height:100mm");
+  it("قياس عرضي (120×80) ومخصّص مربّع (100×100): الحاوية تتكيّف", async () => {
+    const htmlLandscape = await shippingLabelHtml(order, { widthMm: 120, heightMm: 80 });
+    expect(htmlLandscape).toContain("@page{size:120mm 80mm;margin:0mm !important}");
+    expect(htmlLandscape).toContain("grid-template-columns:1fr 1fr");
+
+    const htmlSquare = await shippingLabelHtml(order, { widthMm: 100, heightMm: 100 });
+    expect(htmlSquare).toContain("@page{size:100mm 100mm;margin:0mm !important}");
+    expect(htmlSquare).toContain("width:100mm");
+    expect(htmlSquare).toContain("height:100mm");
+  });
+
+  it("القياس المدمج (80×50): باركود بعرض صف كامل دون تشويه ودون تفقيط مطوّل", async () => {
+    const htmlCompact = await shippingLabelHtml(
+      { ...order, qrUrl: "https://alarabiya.online/verify?ref=ON-2026-000123" },
+      { widthMm: 80, heightMm: 50 },
+    );
+    expect(htmlCompact).toContain("@page{size:80mm 50mm;margin:0mm !important}");
+    expect(htmlCompact).toContain('colspan="2"');
+    expect(htmlCompact).toContain("bc-compact-svg");
+    expect(htmlCompact).not.toContain('preserveAspectRatio="none"');
+    expect(htmlCompact).not.toContain("خمسة وأربعون ألف");
+  });
+
+  it("يخفي خلية QR وعبارة تتبع الشحنة عند غياب هدف QR", async () => {
+    const noQrOrder = { ...order, orderNumber: "CN-2026-000999", qrUrl: null };
+    const htmlPortrait = await shippingLabelHtml(noQrOrder, { widthMm: 80, heightMm: 120 });
+    expect(htmlPortrait).not.toContain("تتبع الشحنة");
+    expect(htmlPortrait).not.toContain('class="qr-svg"');
+
+    const htmlLandscape = await shippingLabelHtml(noQrOrder, { widthMm: 120, heightMm: 80 });
+    expect(htmlLandscape).not.toContain("تتبع الشحنة");
+    expect(htmlLandscape).not.toContain('class="qr-svg"');
   });
 
   it("مضمون الملصق ثابت بأي قياس: مستلِم/COD/باركود/محتويات", async () => {
