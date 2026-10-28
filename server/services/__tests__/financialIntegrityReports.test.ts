@@ -517,6 +517,42 @@ describe.sequential("سلامة مصادر التقارير المالية", () 
     expect(current).toMatchObject({ inventory: "150.00", totalAssets: "150.00", inventoryValuation: { source: "LIVE", value: "150.00" } });
   });
 
+  it("يقرأ COGS الأمانة من الدليل أو التكلفة الأصلية دون هدايا أو شراء عادي أو تعديل التاريخ", async () => {
+    await db().insert(s.suppliers).values({ id: 1, name: "consignor" });
+    await db().insert(s.invoices).values([2,3,4].map(id=>({ id, invoiceNumber: `CONSIG-${id}`, sourceType: "POS" as const, branchId: 1, subtotal: "100.00", total: "100.00" })));
+    const paid = { roleDebits: { COGS: "70.00", GIFTS_PROMO: "30.00" }, roleCredits: { CONSIGNMENT_PAYABLE: "100.00" } };
+    const original = createPostingIntentEvidence(createPostingIntent("PURCHASE_CONSIGNMENT", "PURCHASE", [debitLine("COGS","70.00"),debitLine("GIFTS_PROMO","30.00"),creditLine("CONSIGNMENT_PAYABLE","100.00")], paid), { ...paid, amount: "100.00" });
+    const date = new Date("2026-07-15");
+    await db().insert(s.accountingEntries).values([
+      { entryType: "SALE", branchId: 1, invoiceId: 2, amount: "100.00", revenue: "100.00", cost: "20.00", entryDate: date },
+      { entryType: "PURCHASE", branchId: 1, supplierId: 1, amount: "100.00", cost: "70.00", ...original, entryDate: date },
+      { entryType: "PURCHASE", branchId: 1, supplierId: 1, invoiceId: 2, amount: "20.00", cost: "0.00", dedupeKey: "CONSIG:2:1", entryDate: date },
+      { entryType: "PURCHASE", branchId: 1, supplierId: 1, amount: "900.00", cost: "900.00", entryDate: date },
+      { entryType: "PURCHASE", branchId: 1, supplierId: 1, amount: "5.00", cost: "5.00", postingProfile: "PURCHASE_CONSIGNMENT_SHORTAGE", entryDate: date },
+      { entryType: "PURCHASE", branchId: 1, supplierId: 1, amount: "5.00", cost: "5.00", dedupeKey: "CONSIG:STK:7:1", entryDate: date },
+      { entryType: "PURCHASE", branchId: 1, supplierId: 1, amount: "6.00", cost: "6.00", dedupeKey: "CONSIG:TRANSFER_SHORT:7:1", entryDate: date },
+    ]);
+    const period = { from: "2026-07-15", to: "2026-07-15", branchId: 1 };
+    expect((await getProfitAndLoss(period)).current).toMatchObject({ revenue: "100.00", cogs: "90.00", grossProfit: "10.00" });
+    const reversal = { roleDebits: { CONSIGNMENT_PAYABLE: "100.00" }, roleCredits: { COGS: "70.00", GIFTS_PROMO: "30.00" } };
+    const reversed = createPostingIntentEvidence(createPostingIntent("PURCHASE_CONSIGNMENT", "PURCHASE", [debitLine("CONSIGNMENT_PAYABLE","100.00"),creditLine("COGS","70.00"),creditLine("GIFTS_PROMO","30.00")], reversal), { ...reversal, amount: "-100.00" });
+    await db().insert(s.accountingEntries).values([
+      { entryType: "PURCHASE", branchId: 1, supplierId: 1, amount: "-100.00", cost: "0.00", ...reversed, entryDate: date },
+      { entryType: "PURCHASE", branchId: 1, supplierId: 1, invoiceId: 3, amount: "50.00", cost: "40.00", dedupeKey: "CONSIG:3:1", entryDate: date },
+      { entryType: "PURCHASE", branchId: 1, supplierId: 1, invoiceId: 3, amount: "-50.00", cost: "0.00", dedupeKey: "CONSIG:DELIVERY_RETURN:3:1", entryDate: date },
+      { entryType: "PURCHASE", branchId: 1, supplierId: 1, invoiceId: 4, amount: "10.00", cost: "0.00", dedupeKey: "CONSIG:4:1", notes: "استحقاق أمانة؛ COGS مبسّط=0.00؛ هدايا=10.00", entryDate: date },
+      { entryType: "PURCHASE", branchId: 1, supplierId: 1, invoiceId: 4, amount: "-10.00", cost: "0.00", dedupeKey: "CONSIG:DELIVERY_RETURN:4:1", entryDate: date },
+      { entryType: "PURCHASE", branchId: 1, supplierId: 1, amount: "-10.00", cost: "-10.00", notes: "عكس استحقاق أمانة — مرتجع", entryDate: date },
+      { entryType: "PURCHASE", branchId: 1, supplierId: 1, amount: "10.00", cost: "10.00", notes: "استحقاق تلف مرتجع أمانة", entryDate: date },
+    ]);
+    const before=await db().select().from(s.accountingEntries);
+    expect((await getProfitAndLoss(period)).current.cogs).toBe("20.00");
+    expect((await getProfitAndLoss({ ...period, from: "2026-07-16", to: "2026-07-16" })).current.cogs).toBe("0.00");
+    expect(await db().select().from(s.accountingEntries)).toEqual(before);
+    await db().insert(s.accountingEntries).values({ entryType: "PURCHASE", branchId: 1, supplierId: 1, invoiceId: 2, amount: "-20.00", cost: "0.00", dedupeKey: "CONSIG:DELIVERY_RETURN:2:1", entryDate: date });
+    await expect(getProfitAndLoss(period)).rejects.toThrow("تعذر إثبات تكلفة عكس الأمانة");
+  });
+
   it("يفصل التحويل الداخلي عن حركة وسائل الدفع ويؤرخ القبض بالتنفيذ دون تكرار وصلات الدفتر", async () => {
     await db().insert(s.receipts).values([
       { id: 30, branchId: 1, direction: "OUT", amount: "100.00", paymentMethod: "CASH", cashBucket: "TREASURY", referenceNumber: "INTERNAL-30", createdAt: new Date("2026-07-31T20:00:00Z") },

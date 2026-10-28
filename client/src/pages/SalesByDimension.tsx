@@ -46,6 +46,7 @@ export default function SalesByDimension() {
   // المحصَّل/المتبقّي خاصيّتا فاتورة — لا معنى لهما في بُعد الصنف (الخادم يعيدهما صفرين).
   const showPaidCols = dimension !== "product";
   const showSalesAuditCols = dimension !== "product";
+  const reportBasis = "مجمل الربح قبل الضريبة وبعد الخصم والمرتجع، والتوصيل مستقل، دون مصروفات التشغيل. تكلفة الأشغال هي المواد المثبتة وليست الأجور التقديرية. بُعد الصنف لا يشمل فواتير الأشغال التي لا تحمل أصنافًا.";
 
   const kpis: KpiItem[] = totals
     ? [
@@ -170,7 +171,7 @@ export default function SalesByDimension() {
       title: `المبيعات حسب ${dimLabel}`,
       meta: [
         { label: "الفترة", value: periodLabel },
-        { label: "أساس الربحية", value: "صافي البضاعة قبل الضريبة وبعد الخصم والمرتجع، دون مصروفات التشغيل" },
+        { label: "أساس الربحية", value: reportBasis },
         { label: "إيراد التوصيل المستقل", value: fmtAr(totals?.deliveryRevenue ?? "0") },
       ],
       columns: [
@@ -206,7 +207,7 @@ export default function SalesByDimension() {
         { label: "المحور", value: dimLabel },
         { label: "إيراد التوصيل المستقل", value: fmtAr(totals?.deliveryRevenue ?? "0") },
       ],
-      note: "مجمل ربح البضاعة قبل الضريبة وبعد الخصم والمرتجع؛ التوصيل مستقل، ولا تشمل الربحية مصروفات التشغيل.",
+      note: reportBasis,
       columns: [
         { key: "label", label: dimLabel },
         { key: "invoices", label: "عدد الفواتير", align: "left" },
@@ -266,7 +267,7 @@ export default function SalesByDimension() {
     <ReportShell
       title="المبيعات حسب بُعد"
       description="أداء موظفي المبيعات أو أي محور آخر: الفواتير والخصومات والمرتجعات وصافي المبيعات والتكلفة والربح."
-      note="الربحية لصافي البضاعة قبل الضريبة وبعد الخصم والمرتجع، والتوصيل إفصاح مستقل. المحصّل والمتبقي يخصان إجمالي الفاتورة، ولا يشمل الربح مصروفات التشغيل."
+      note={`${reportBasis} المحصّل والمتبقي يخصان إجمالي الفاتورة.`}
       kpis={kpis}
       onExport={onExport}
       onPrint={onPrint}

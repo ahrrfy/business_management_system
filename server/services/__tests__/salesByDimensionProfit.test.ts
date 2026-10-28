@@ -208,6 +208,26 @@ describe("salesByDimension — بُعد الصنف والربحية", () => {
     });
   });
 
+  it("تكلفة الأشغال من قيد المواد المثبت لا من صفر السطر أو أجور الرأس التحليلية", async () => {
+    await seedInvoice({ id: 115, customerId: 10, items: [{ variantId: 1, qty: 1, unitPrice: "2000", unitCost: "1700" }] });
+    await db().update(s.invoices).set({ sourceType: "WORKORDER" }).where(sql`${s.invoices.id}=115`);
+    await db().update(s.invoiceItems).set({ lineCost: "0.00" }).where(sql`${s.invoiceItems.invoiceId}=115`);
+    await db().insert(s.accountingEntries).values({ entryType: "SALE", branchId: 1, invoiceId: 115, revenue: "2000.00", cost: "1000.00", amount: "2000.00", entryDate: new Date(TODAY) });
+    for (const dimension of ["product", "customer", "branch", "cashier", "paymentMethod"] as const) {
+      expect((await getSalesByDimension({ from: TODAY, to: TODAY, dimension })).totals).toMatchObject({ cost: "1000.00", profit: "1000.00" });
+    }
+    expect((await getSalesRegister({ from: TODAY, to: TODAY })).totals.cost).toBe("1000.00");
+    expect((await getTopProducts({ from: TODAY, to: TODAY }))[0].cost).toBe("1000.00");
+    expect((await getProfitByCategory({ from: TODAY, to: TODAY }))[0].cost).toBe("1000.00");
+    await db().update(s.accountingEntries).set({ cost: "0.00" }).where(sql`${s.accountingEntries.invoiceId}=115`);
+    expect((await getSalesByDimension({ from: TODAY, to: TODAY, dimension: "product" })).totals.cost).toBe("0.00");
+    await db().update(s.accountingEntries).set({ cost: "1000.00" }).where(sql`${s.accountingEntries.invoiceId}=115`);
+    await db().insert(s.accountingEntries).values({ entryType: "RETURN", branchId: 1, invoiceId: 115, cost: "-1000.00", revenue: "-2000.00", amount: "-2000.00", entryDate: new Date(TODAY) });
+    await db().update(s.invoices).set({ status: "RETURNED", returnedTotal: "2000.00" }).where(sql`${s.invoices.id}=115`);
+    for (const dimension of ["product", "customer", "branch", "cashier", "paymentMethod"] as const)
+      expect((await getSalesByDimension({ from: TODAY, to: TODAY, dimension })).totals).toMatchObject({ cost: "0.00", profit: "0.00" });
+  });
+
   it("عزل الفرع في بُعد الصنف", async () => {
     await seedInvoice({ id: 107, customerId: 10, branchId: 1, items: [{ variantId: 1, qty: 1, unitPrice: "250", unitCost: "100" }] });
     await seedInvoice({ id: 108, customerId: 10, branchId: 2, items: [{ variantId: 1, qty: 9, unitPrice: "250", unitCost: "100" }] });
@@ -238,6 +258,16 @@ describe("salesByDimension — بُعد الصنف والربحية", () => {
     expect((await getAbcAnalysis({ from: TODAY, to: TODAY })).totals.revenue).toBe("2.99");
     const categories = await getProfitByCategory({ from: TODAY, to: TODAY });
     expect(categories.reduce((sum, row) => sum.plus(row.revenue), money(0)).toFixed(2)).toBe("2.99");
+  });
+
+  it("لا يحوّل مرتجعاً جزئياً يساوي الإجمالي المقرّب لأسفل إلى مرتجع كامل", async () => {
+    await seedInvoice({ id: 114, customerId: 10, items: [{ variantId: 1, qty: 11, unitPrice: "100", unitCost: "60", restockedReturn: 10 }] });
+    await db().update(s.invoices).set({ total: "1000.00", cashRoundingAdjustment: "-100.00", returnedTotal: "1000.00", status: "PARTIALLY_PAID" }).where(sql`${s.invoices.id}=114`);
+    await db().update(s.invoiceItems).set({ returnedBaseQuantity: 10 }).where(sql`${s.invoiceItems.invoiceId}=114`);
+    for (const dimension of ["product", "customer", "branch", "cashier", "paymentMethod"] as const) {
+      const result=await getSalesByDimension({ from: TODAY, to: TODAY, dimension });
+      expect(result.totals).toMatchObject({ revenue: "100.00", grossSales: "1100.00", returns: "1000.00", cost: "60.00", profit: "40.00" });
+    }
   });
 
   it("يفصل الضريبة والتوصيل ويخصم المرتجع الجزئي مع خصم الرأس دون ازدواج", async () => {

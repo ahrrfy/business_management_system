@@ -9,6 +9,7 @@ import { createConsignmentNote, consignmentBalancesReport, consignmentMarginsRep
 import { getInventoryValuation } from "../reportsInventoryService";
 import { createSale } from "../saleService";
 import { returnSale } from "../returnService";
+import { getProfitAndLoss } from "../reportsFinancialService";
 
 /** بضاعة الأمانة — ش٤: الأمانة خارج تقييم أصول المكتبة (تُعرَض سطراً منفصلاً) + تقرير الأرصدة + الهوامش. §١١. */
 const actor = { userId: 1, branchId: 1 };
@@ -103,6 +104,10 @@ describe("بضاعة الأمانة ش٤ — تقرير الهوامش", () => {
     expect(r.marginPct).toBe("20.00");
     expect(rep.totals.libraryMargin).toBe("3000.00");
     expect(rep.totals.soldValue).toBe("15000.00");
+    const before = await db().select().from(s.accountingEntries);
+    expect((await getProfitAndLoss({ from: "2000-01-01", to: "2099-12-31" })).current)
+      .toMatchObject({ revenue: "15000.00", cogs: "12000.00", grossProfit: "3000.00" });
+    expect(await db().select().from(s.accountingEntries)).toEqual(before);
   });
 
   it("الهامش صافٍ من المرتجعات: بيع 3 ثم إرجاع 1 ⇒ صافي 2 (إيراد 10000 − حصة 8000 = هامش 2000)", async () => {
@@ -130,6 +135,17 @@ describe("بضاعة الأمانة ش٤ — تقرير الهوامش", () => {
     expect(r.consignorShare).toBe("8000.00"); // 4000 × 2
     expect(r.libraryMargin).toBe("2000.00");
     expect(r.marginPct).toBe("20.00");
+    expect((await getProfitAndLoss({ from: "2000-01-01", to: "2099-12-31" })).current)
+      .toMatchObject({ revenue: "10000.00", cogs: "8000.00", grossProfit: "2000.00" });
+    await returnSale({ invoiceId: sale.invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
+      resolution: { kind: "IMMEDIATE_REFUND", method: "CASH", amount: "5000", shiftId,
+        reason: "تالف أمانة لا يسقط تكلفة الحصة المستحقة للمودع", disposition: "DAMAGED" },
+    }, actor);
+    const unchanged = await db().select().from(s.accountingEntries);
+    expect((await getProfitAndLoss({ from: "2000-01-01", to: "2099-12-31" })).current)
+      .toMatchObject({ revenue: "5000.00", cogs: "8000.00", grossProfit: "-3000.00" });
+    expect(await db().select().from(s.accountingEntries)).toEqual(unchanged);
   });
 
   it("فلتر التاريخ: نطاقٌ منقضٍ لا يشمل البيع ⇒ صفر صفوف وإجماليات صفرية", async () => {
