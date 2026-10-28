@@ -26,7 +26,7 @@ export interface TreasuryReportMethodLine {
   in: string;
   out: string;
   net: string;
-  settlement: "DRAWER" | "NON_CASH";
+  settlement: "DRAWER" | "TREASURY" | "UNASSIGNED" | "NON_CASH";
 }
 
 export interface TreasuryReportData {
@@ -37,6 +37,7 @@ export interface TreasuryReportData {
   totalIn: string;
   totalOut: string;
   net: string;
+  cashNet?: string;
   shiftsCount: number;
   totalCounted: string;
   totalVariance: string;
@@ -58,12 +59,13 @@ export function printTreasuryReportA4(d: TreasuryReportData): boolean {
 
   const cards = infoCards([
     {
-      title: "حركة النقد",
+      title: "حركة وسائل الدفع",
       variant: "green",
       fields: [
         { label: "المقبوضات", value: fmt(d.totalIn) },
         { label: "المدفوعات", value: fmt(d.totalOut) },
-        { label: "صافي الصندوق", value: fmt(d.net) },
+        { label: "صافي حركة الوسائل", value: fmt(d.net) },
+        ...(d.cashNet == null ? [] : [{ label: "صافي حركة النقد", value: fmt(d.cashNet) }]),
       ],
     },
     {
@@ -87,7 +89,7 @@ export function printTreasuryReportA4(d: TreasuryReportData): boolean {
     ],
     d.methods.map((m) => ({
       label: m.label,
-      settlement: m.settlement === "DRAWER" ? "درج الكاشير" : "إلكتروني / خارج الدرج",
+      settlement: m.settlement === "DRAWER" ? "درج الكاشير" : m.settlement === "TREASURY" ? "خزينة الفرع" : m.settlement === "UNASSIGNED" ? "نقد غير منسوب — يحتاج مراجعة" : "إلكتروني / خارج الدرج",
       in: fmt(m.in),
       out: fmt(m.out),
       net: fmt(m.net),
@@ -105,7 +107,7 @@ export function printTreasuryReportA4(d: TreasuryReportData): boolean {
     },
   );
 
-  const grand = grandTotalBar("صافي الصندوق", fmt(d.net), { big: true });
+  const grand = grandTotalBar("صافي حركة الوسائل", fmt(d.net), { big: true });
 
   const varianceTone = D(d.totalVariance).isZero()
     ? { text: "الورديات مطابقة بلا فروقات نقدية.", color: "#0D6B52", bg: "#F0FDF4" }

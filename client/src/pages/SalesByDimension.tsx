@@ -50,6 +50,7 @@ export default function SalesByDimension() {
   const kpis: KpiItem[] = totals
     ? [
         { label: "إجمالي المبيعات", value: fmtAr(totals.grossSales), tone: "info" },
+        { label: "إيراد التوصيل (مستقل عن البضاعة)", value: fmtAr(totals.deliveryRevenue), tone: "info" },
         ...(showSalesAuditCols
           ? [
               { label: "الخصومات", value: fmtAr(totals.discounts), tone: "warning" as const },
@@ -166,6 +167,12 @@ export default function SalesByDimension() {
   function onExport() {
     exportRows(rows, {
       filename: `المبيعات-حسب-${dimLabel}-${period.from}-${period.to}`,
+      title: `المبيعات حسب ${dimLabel}`,
+      meta: [
+        { label: "الفترة", value: periodLabel },
+        { label: "أساس الربحية", value: "صافي البضاعة قبل الضريبة وبعد الخصم والمرتجع، دون مصروفات التشغيل" },
+        { label: "إيراد التوصيل المستقل", value: fmtAr(totals?.deliveryRevenue ?? "0") },
+      ],
       columns: [
         { key: "label", header: dimLabel },
         { key: "invoices", header: "عدد الفواتير", map: (r) => r.invoices },
@@ -197,7 +204,9 @@ export default function SalesByDimension() {
         { label: "الفترة", value: periodLabel },
         { label: "الفرع", value: branchId ? (branches.data?.find((b) => b.id === branchId)?.name ?? String(branchId)) : "الكل" },
         { label: "المحور", value: dimLabel },
+        { label: "إيراد التوصيل المستقل", value: fmtAr(totals?.deliveryRevenue ?? "0") },
       ],
+      note: "مجمل ربح البضاعة قبل الضريبة وبعد الخصم والمرتجع؛ التوصيل مستقل، ولا تشمل الربحية مصروفات التشغيل.",
       columns: [
         { key: "label", label: dimLabel },
         { key: "invoices", label: "عدد الفواتير", align: "left" },
@@ -257,6 +266,7 @@ export default function SalesByDimension() {
     <ReportShell
       title="المبيعات حسب بُعد"
       description="أداء موظفي المبيعات أو أي محور آخر: الفواتير والخصومات والمرتجعات وصافي المبيعات والتكلفة والربح."
+      note="الربحية لصافي البضاعة قبل الضريبة وبعد الخصم والمرتجع، والتوصيل إفصاح مستقل. المحصّل والمتبقي يخصان إجمالي الفاتورة، ولا يشمل الربح مصروفات التشغيل."
       kpis={kpis}
       onExport={onExport}
       onPrint={onPrint}

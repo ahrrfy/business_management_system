@@ -18,7 +18,7 @@ import { money, toDbMoney } from "../money";
 import { plSnapshot } from "../reportsFinancialService";
 import { getPurchasesReport } from "../reportsPurchasesService";
 import { getTreasurySummary } from "../reportsTreasuryService";
-import { getARAging } from "./arAging";
+import { getARAging, historicalInvoicePresentSql } from "./arAging";
 import { getAPAging } from "./apAging";
 
 function rowsOf(res: unknown): any[] {
@@ -103,7 +103,8 @@ export async function getMonthlyClosePack(input: MonthlyClosePackInput): Promise
         CAST(COALESCE(SUM(total), 0) AS CHAR) AS total
       FROM invoices
       WHERE invoiceDate >= ${lower} AND invoiceDate < ${upper}
-        AND invoiceStatus NOT IN ('CANCELLED')
+        -- Keep posted originals and their dated RETURN together, including later cancellations.
+        AND (${historicalInvoicePresentSql()})
         ${branchCond}
     `),
     plSnapshot(from, to, branchId),

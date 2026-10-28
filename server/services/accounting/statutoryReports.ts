@@ -8,6 +8,7 @@ import { getDb, type DB, type Tx } from "../../db";
 import { money, toDbMoney } from "../money";
 import { getVerifiedStatutoryProfileDetails } from "./statutoryAccounting";
 import { appErrorMessage } from "@shared/errors";
+import { financialActivityJournalSql } from "../reports/financialJournal";
 import {
   type FinancialCellProvenancePayload,
   type ProvenanceDocumentRef,
@@ -143,8 +144,8 @@ export async function getStatutoryTrialBalance(input: {
         sp.version AS profileVersion,
         sa.code,
         sa.name,
-        sa.type,
-        sa.normalBalance,
+        CASE WHEN jl.role = 'INVENTORY_REVALUATION' THEN 'EQUITY' ELSE sa.type END AS type,
+        CASE WHEN jl.role = 'INVENTORY_REVALUATION' THEN 'CREDIT' ELSE sa.normalBalance END AS normalBalance,
         CAST(COALESCE(SUM(jl.debit), 0) AS CHAR) AS debit,
         CAST(COALESCE(SUM(jl.credit), 0) AS CHAR) AS credit
       FROM journalLines jl
@@ -156,7 +157,9 @@ export async function getStatutoryTrialBalance(input: {
         ${snapshotProfilePredicate(input.profileId, input.profileScope, Number(context.profile.id))}
         ${cyclePredicate(context.cycleId)}
         ${branchPredicate(input.branchId)}
-      GROUP BY sp.id, sp.version, sp.effectiveFrom, sa.id, sa.code, sa.name, sa.type, sa.normalBalance, sa.sortOrder
+      GROUP BY sp.id, sp.version, sp.effectiveFrom, sa.id, sa.code, sa.name, sa.type, sa.normalBalance, sa.sortOrder,
+        CASE WHEN jl.role = 'INVENTORY_REVALUATION' THEN 'EQUITY' ELSE sa.type END,
+        CASE WHEN jl.role = 'INVENTORY_REVALUATION' THEN 'CREDIT' ELSE sa.normalBalance END
       HAVING debit <> 0 OR credit <> 0
       ORDER BY sp.effectiveFrom, sp.version, sa.sortOrder, sa.code
     `),
@@ -299,6 +302,8 @@ export async function getStatutoryIncomeStatement(input: {
       INNER JOIN statutoryAccounts sa ON sa.id = jl.statutoryAccountId
       INNER JOIN statutoryAccountingProfiles sp ON sp.id = jl.statutoryProfileId
       WHERE sa.type IN ('REVENUE', 'EXPENSE')
+        AND jl.role <> 'INVENTORY_REVALUATION'
+        ${financialActivityJournalSql()}
         AND je.entryDate >= ${input.from}
         AND je.entryDate <= ${input.to}
         ${snapshotProfilePredicate(input.profileId, input.profileScope, Number(context.profile.id))}
@@ -369,8 +374,8 @@ export async function getStatutoryBalanceSheet(input: {
         sp.version AS profileVersion,
         sa.code,
         sa.name,
-        sa.type,
-        sa.normalBalance,
+        CASE WHEN jl.role = 'INVENTORY_REVALUATION' THEN 'EQUITY' ELSE sa.type END AS type,
+        CASE WHEN jl.role = 'INVENTORY_REVALUATION' THEN 'CREDIT' ELSE sa.normalBalance END AS normalBalance,
         CAST(COALESCE(SUM(jl.debit), 0) AS CHAR) AS debit,
         CAST(COALESCE(SUM(jl.credit), 0) AS CHAR) AS credit
       FROM journalLines jl
@@ -381,7 +386,9 @@ export async function getStatutoryBalanceSheet(input: {
         ${snapshotProfilePredicate(input.profileId, input.profileScope, Number(context.profile.id))}
         ${cyclePredicate(context.cycleId)}
         ${branchPredicate(input.branchId)}
-      GROUP BY sp.id, sp.version, sp.effectiveFrom, sa.id, sa.code, sa.name, sa.type, sa.normalBalance, sa.sortOrder
+      GROUP BY sp.id, sp.version, sp.effectiveFrom, sa.id, sa.code, sa.name, sa.type, sa.normalBalance, sa.sortOrder,
+        CASE WHEN jl.role = 'INVENTORY_REVALUATION' THEN 'EQUITY' ELSE sa.type END,
+        CASE WHEN jl.role = 'INVENTORY_REVALUATION' THEN 'CREDIT' ELSE sa.normalBalance END
       HAVING debit <> 0 OR credit <> 0
       ORDER BY sp.effectiveFrom, sp.version, sa.type, sa.sortOrder, sa.code
     `),

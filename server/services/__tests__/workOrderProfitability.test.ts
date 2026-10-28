@@ -451,6 +451,22 @@ describe("workOrderProfitability — النطاق والفلاتر", () => {
 });
 
 describe("workOrderProfitability — الإجماليات والترقيم", () => {
+  it("يصل إلى الصف بعد سقف المسح القديم ويجمع كامل الفترة مع تقريب العمالة لكل أمر", async () => {
+    const count = 20_001;
+    for (let start = 0; start < count; start += 1000) {
+      await db().insert(s.workOrders).values(Array.from({ length: Math.min(1000, count - start) }, (_, index) => ({
+        orderNumber: `WO-FULL-${start + index}`, title: "Historic delivered job", branchId: 1,
+        status: "DELIVERED" as const, salePrice: "1.01", materialsCost: "0.01", laborCost: "0.02",
+        workSeconds: 119, deliveredAt: D_JUN10,
+      })));
+    }
+    const result = await workOrderProfitability({ ...RANGE, branchId: 1, laborRatePerHour: "111.11", limit: 1, offset: 20_000 });
+    expect(result.rows).toHaveLength(1);
+    expect(result.totalCount).toBe(count);
+    expect(result.rows[0].laborCost).toBe("3.67");
+    expect(result.totals).toMatchObject({ count, revenue: "20201.01", materialsCost: "200.01", quotedLaborCost: "400.02", hours: "600.03", laborCost: "73403.67", profit: "-53402.67" });
+  });
+
   it("الإجماليات = مجموع الصفوف بدقّة decimal (قيم بكسور سنت)", async () => {
     await makeDeliveredWO({
       salePrice: "100.10",

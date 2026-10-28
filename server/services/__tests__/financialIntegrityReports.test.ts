@@ -7,6 +7,8 @@ import { getCashFlow, getFinancialPosition, getProfitAndLoss } from "../reportsF
 import { getSalesRegister } from "../reportsSalesService";
 import { getCustomerStatement } from "../reportsService";
 import { getARAging } from "../reports/arAging";
+import { createPostingIntent, createPostingIntentEvidence, debitLine, creditLine } from "../accounting/postingEngine";
+import { encodeSystemPaymentRequest } from "../voucher/create";
 
 function db() {
   const d = getDb();
@@ -15,6 +17,7 @@ function db() {
 }
 
 const TABLES = [
+  "inventoryValuationSnapshots", "financialPeriods", "expenses", "voucherCategories",
   "journalLines", "journalEntries", "doubleEntrySettings",
   "employeeAdvanceRepaymentAllocations", "employeeAdvanceRepaymentRequests",
   "terminationAdvanceAllocations", "advanceSettlements", "employeeAdvances", "employeeTerminations",
@@ -457,4 +460,77 @@ describe.sequential("سلامة مصادر التقارير المالية", () 
     expect(pl.current.totalExpenses).toBe("75.00");
     expect(pl.current.netProfit).toBe("-75.00");
   });
+  it("يفصل سحب المالك ورد المرتجع وتسوية المصروف ويحفظ دور السند المختوم رغم تغيير الفئة", async () => {
+    await db().insert(s.voucherCategories).values([
+      { id: 1, name: "مالك", direction: "OUT", postingRole: "OWNER_CURRENT" },
+      { id: 2, name: "إيجار", direction: "OUT", postingRole: "RENT" },
+    ]);
+    await db().insert(s.receipts).values([
+      { id: 10, branchId: 1, direction: "OUT", amount: "10.00", paymentMethod: "CASH", partyType: "OTHER" },
+      { id: 11, branchId: 1, direction: "OUT", amount: "100.00", paymentMethod: "CASH", partyType: "OTHER", voucherNumber: "OWNER-11", voucherCategoryId: 1 },
+      { id: 12, branchId: 1, direction: "OUT", amount: "20.00", paymentMethod: "CASH", partyType: "OTHER" },
+      { id: 13, branchId: 1, direction: "OUT", amount: "5.00", paymentMethod: "CASH", partyType: "OTHER", voucherNumber: "RENT-13", voucherCategoryId: 2 },
+      { id: 14, branchId: 1, direction: "OUT", amount: "7.00", paymentMethod: "CASH", partyType: "OTHER", voucherNumber: "HISTORIC-14", voucherCategoryId: 1 },
+    ]);
+    await db().insert(s.expenses).values({ branchId: 1, expenseDate: new Date("2026-07-15"), category: "TRANSPORT", amount: "10.00", description: "نقل معترف به", receiptId: 10, createdBy: 1 });
+    const components = { roleDebits: { RENT: "7.00" }, roleCredits: { CASH: "7.00" } };
+    const evidence = createPostingIntentEvidence(createPostingIntent("PAYMENT_OUT_CATEGORY", "PAYMENT_OUT", [debitLine("RENT", "7.00"), creditLine("CASH", "7.00")], components), { ...components, amount: "7.00" });
+    await db().insert(s.accountingEntries).values([
+      { entryType: "SALE", branchId: 1, revenue: "100.00", cost: "60.00", profit: "40.00", amount: "100.00", entryDate: new Date("2026-07-15") },
+      { entryType: "RETURN", branchId: 1, receiptId: 12, revenue: "-20.00", cost: "-12.00", profit: "-8.00", amount: "-20.00", entryDate: new Date("2026-07-15") },
+      ...[[10,"10.00"],[11,"100.00"],[12,"20.00"],[13,"5.00"]].map(([id,amount]) => ({ entryType: "PAYMENT_OUT" as const, branchId: 1, receiptId: Number(id), amount: String(amount), entryDate: new Date("2026-07-15") })),
+      { entryType: "PAYMENT_OUT", branchId: 1, receiptId: 14, amount: "7.00", entryDate: new Date("2026-07-15"), ...evidence },
+    ]);
+    const pl = (await getProfitAndLoss({ from: "2026-07-01", to: "2026-07-31" })).current;
+    expect(pl).toMatchObject({ revenue: "80.00", cogs: "48.00", grossProfit: "32.00", totalExpenses: "22.00", netProfit: "10.00" });
+  });
+
+  it("يبقي مصروف السند الأصلي في تاريخه ويطرح التعويض المعتمد في تاريخ العكس", async () => {
+    await db().insert(s.voucherCategories).values({ id: 1, name: "إيجار", direction: "OUT", postingRole: "RENT" });
+    await db().insert(s.receipts).values([
+      { id: 20, branchId: 1, direction: "OUT", amount: "100.00", paymentMethod: "CASH", partyType: "OTHER", voucherNumber: "RENT-20", voucherCategoryId: 1, status: "REVERSED" },
+      { id: 21, branchId: 1, direction: "IN", amount: "100.00", paymentMethod: "CASH", partyType: "OTHER", voucherNumber: "CANCEL-21", voucherCategoryId: 1, referenceNumber: "CANCEL-VCH-20", internalNote: encodeSystemPaymentRequest({ kind: "VOUCHER_CANCELLATION", originalReceiptId: 20, originalCreatorId: 1, originalDirection: "OUT", originalPaymentMethod: "CASH", originalCategoryId: 1, originalReferenceNumber: null, originalCheckNumber: null, originalCardLastFour: null, priorCancellationReceiptId: null, reissueReason: null, attempt: 1 }) },
+    ]);
+    await db().insert(s.accountingEntries).values([
+      { entryType: "PAYMENT_OUT", branchId: 1, receiptId: 20, amount: "100.00", entryDate: new Date("2026-07-30") },
+      { entryType: "PAYMENT_IN", branchId: 1, receiptId: 21, amount: "100.00", entryDate: new Date("2026-08-02") },
+    ]);
+    expect((await getProfitAndLoss({ from: "2026-07-01", to: "2026-07-31" })).current.totalExpenses).toBe("100.00");
+    expect((await getProfitAndLoss({ from: "2026-08-01", to: "2026-08-31" })).current.totalExpenses).toBe("-100.00");
+    expect((await getProfitAndLoss({ from: "2026-07-01", to: "2026-08-31" })).current.totalExpenses).toBe("0.00");
+  });
+
+  it("يستعمل قيمة لقطة المخزون ومصدرها نفسه في مجموع أصول الفرع", async () => {
+    await db().insert(s.products).values({ id: 1, name: "منتج" });
+    await db().insert(s.productVariants).values({ id: 1, productId: 1, sku: "SNAP", costPrice: "50.00" });
+    await db().insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 3 });
+    await db().insert(s.financialPeriods).values([
+      { id: 899, cutoffDate: "2026-07-31", lockedBy: 1, status: "ARCHIVED" },
+      { id: 900, cutoffDate: "2026-07-31", lockedBy: 1, status: "LOCKED" },
+    ]);
+    await db().insert(s.branches).values({ id: 2, name: "SECOND", code: "SECOND", type: "SALES" });
+    await db().insert(s.inventoryValuationSnapshots).values({ periodLockId: 899, cutoffDate: "2026-07-31", scopeKey: "COMPANY", totalValue: "999.00", stockValue: "999.00", inTransitValue: "0.00", branchesJson: JSON.stringify([{ branchId: 1, value: "999.00" }]), capturedBy: 1 });
+    await db().insert(s.inventoryValuationSnapshots).values({ periodLockId: 900, cutoffDate: "2026-07-31", scopeKey: "COMPANY", totalValue: "300.00", stockValue: "300.00", inTransitValue: "0.00", branchesJson: JSON.stringify([{ branchId: 1, value: "100.00" }, { branchId: 2, value: "200.00" }]), capturedBy: 1 });
+    const historical = await getFinancialPosition({ asOf: "2026-07-31", branchId: 1, verify: false });
+    expect(historical).toMatchObject({ inventory: "100.00", totalAssets: "100.00", inventoryValuation: { source: "SNAPSHOT", value: "100.00", branchId: 1, cutoffDate: "2026-07-31" } });
+    const current = await getFinancialPosition({ branchId: 1, verify: false });
+    expect(current).toMatchObject({ inventory: "150.00", totalAssets: "150.00", inventoryValuation: { source: "LIVE", value: "150.00" } });
+  });
+
+  it("يفصل التحويل الداخلي عن حركة وسائل الدفع ويؤرخ القبض بالتنفيذ دون تكرار وصلات الدفتر", async () => {
+    await db().insert(s.receipts).values([
+      { id: 30, branchId: 1, direction: "OUT", amount: "100.00", paymentMethod: "CASH", cashBucket: "TREASURY", referenceNumber: "INTERNAL-30", createdAt: new Date("2026-07-31T20:00:00Z") },
+      { id: 31, branchId: 1, direction: "IN", amount: "100.00", paymentMethod: "CASH", cashBucket: "DRAWER", referenceNumber: "INTERNAL-30", createdAt: new Date("2026-07-31T20:00:00Z") },
+      { id: 32, branchId: 1, direction: "IN", amount: "25.00", paymentMethod: "CASH", createdAt: new Date("2026-07-31T23:00:00Z"), executedAt: new Date("2026-08-01T01:00:00Z") },
+    ]);
+    await db().insert(s.accountingEntries).values([
+      { entryType: "SHIFT_FLOAT_OUT", branchId: 1, receiptId: 30, amount: "100.00", entryDate: new Date("2026-07-31") },
+      { entryType: "PAYMENT_IN", branchId: 1, receiptId: 32, amount: "25.00", entryDate: new Date("2026-07-31") },
+      { entryType: "PAYMENT_IN", branchId: 1, receiptId: 32, amount: "25.00", entryDate: new Date("2026-07-31") },
+    ]);
+    const july = await getCashFlow({ from: "2026-07-31", to: "2026-07-31" });
+    expect(july).toMatchObject({ purpose: "PAYMENT_MOVEMENTS", totalIn: "0.00", totalOut: "0.00", internal: { totalIn: "100.00", totalOut: "100.00", net: "0.00" } });
+    expect(await getCashFlow({ from: "2026-08-01", to: "2026-08-01" })).toMatchObject({ totalIn: "25.00", net: "25.00" });
+  });
+
 });

@@ -1,4 +1,4 @@
-// قائمة التدفّقات النقدية المبسّطة (أساس نقدي مباشر) — مقبوضات/مدفوعات حسب طريقة الدفع.
+// كشف حركة وسائل الدفع — حركة خارجية وتحويلات عهدة داخلية بتاريخ التنفيذ الفعلي.
 // عرض + Excel + طباعة A4. ⚠️ أساس نقدي: من المقبوضات المكتملة (receipts COMPLETED) لا الاستحقاق.
 import { useMemo, useState } from "react";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -54,40 +54,50 @@ const cashFlowColumns: ColumnDef<CashFlowLine, unknown>[] = [
   },
 ];
 
-const NOTE = "أساس نقدي مباشر: من المقبوضات/المدفوعات المكتملة (لا أساس الاستحقاق). النقد حسب الفرع المحدّد.";
+const NOTE = "كشف حركة وسائل الدفع المعتمدة بتاريخ تحقق النقد (UTC)، مع فصل التحويلات بين الخزينة والأدراج والفروع. إجماليات المقبوضات والمدفوعات تخص الحركة الخارجية؛ الداخلية مفصلة مستقلة، وقد يختلف توقيت طرفيها أو يكون افتتاح الدرج مثبتًا بعهدة ضمنية. المخرج كشف حركة حسب وسيلة الدفع.";
 
 export default function CashFlow() {
   const [period, setPeriod] = useState<PeriodValue>(DEFAULT_PERIOD);
   const [branchId, setBranchId] = useState<number | "">("");
   const branches = trpc.branches.list.useQuery();
   const q = trpc.reports.cashFlow.useQuery({ from: period.from, to: period.to, branchId: branchId ? Number(branchId) : undefined });
-  const cf = q.data;
+  const cf = q.isError ? undefined : q.data;
 
   const kpis: KpiItem[] = cf
     ? [
-        { label: "المقبوضات", value: fmtAr(cf.totalIn), tone: "positive" },
-        { label: "المدفوعات", value: fmtAr(cf.totalOut), tone: "negative" },
-        { label: "صافي التدفّق", value: fmtAr(cf.net), tone: D(cf.net).gte(0) ? "positive" : "negative" },
+        { label: "المقبوضات الخارجية", value: fmtAr(cf.totalIn), tone: "positive" },
+        { label: "المدفوعات الخارجية", value: fmtAr(cf.totalOut), tone: "negative" },
+        { label: "صافي الحركة الخارجية", value: fmtAr(cf.net), tone: D(cf.net).gte(0) ? "positive" : "negative" },
       ]
     : [];
 
   const flat = useMemo<CashFlowLine[]>(() => {
     if (!cf) return [];
     return [
-      { label: "المقبوضات (داخل)", amount: "" },
+      { label: "المقبوضات الخارجية", amount: "" },
       ...cf.inflows.map((l) => ({ label: `— ${l.label}`, amount: l.amount })),
       { label: "إجمالي المقبوضات", amount: cf.totalIn },
-      { label: "المدفوعات (خارج)", amount: "" },
+      { label: "المدفوعات الخارجية", amount: "" },
       ...cf.outflows.map((l) => ({ label: `— ${l.label}`, amount: l.amount, neg: true })),
       { label: "إجمالي المدفوعات", amount: cf.totalOut, neg: true },
-      { label: "صافي التدفّق النقدي", amount: cf.net },
+      { label: "صافي الحركة الخارجية", amount: cf.net },
+      { label: "الحركات الداخلية بين حسابات النقد والعهد", amount: "" },
+      ...cf.internal.inflows.map((l) => ({ label: `— داخل: ${l.label}`, amount: l.amount })),
+      ...cf.internal.outflows.map((l) => ({ label: `— خارج: ${l.label}`, amount: l.amount, neg: true })),
+      { label: "إجمالي الداخل الداخلي", amount: cf.internal.totalIn },
+      { label: "إجمالي الخارج الداخلي", amount: cf.internal.totalOut, neg: true },
+      { label: "صافي الحركة الداخلية", amount: cf.internal.net },
     ];
   }, [cf]);
 
   const branchLabel = branchId ? (branches.data?.find((b) => b.id === branchId)?.name ?? String(branchId)) : "الكل";
 
   function onExport() {
-    exportRows(flat, {
+    exportRows([
+      { label: `الفترة: ${period.from} — ${period.to} | الفرع: ${branchLabel}`, amount: "" },
+      { label: NOTE, amount: "" },
+      ...flat,
+    ], {
       filename: `التدفّق-النقدي-${period.from}-${period.to}`,
       columns: [
         { key: "label", header: "البند" },
@@ -99,7 +109,7 @@ export default function CashFlow() {
   function onPrint() {
     if (!cf) return;
     printReportDoc({
-      title: "قائمة التدفّقات النقدية",
+      title: "كشف حركة وسائل الدفع",
       headerExtra: [
         { label: "الفترة", value: `${period.from} — ${period.to}` },
         { label: "الفرع", value: branchLabel },
@@ -111,14 +121,14 @@ export default function CashFlow() {
       ],
       rows: flat.map((r) => ({ label: r.label, amount: r.amount === "" ? "" : (r.neg ? `(${fmtAr(r.amount)})` : fmtAr(r.amount)) })),
       showIndex: false,
-      summary: [{ label: "صافي التدفّق النقدي", value: fmtAr(cf.net), large: true, bold: true }],
+      summary: [{ label: "صافي الحركة الخارجية", value: fmtAr(cf.net), large: true, bold: true }],
     });
   }
 
   return (
     <ReportShell
-      title="قائمة التدفّقات النقدية"
-      description="مقبوضات/مدفوعات حسب طريقة الدفع (أساس نقدي)."
+      title="كشف حركة وسائل الدفع"
+      description="حركة خارجية وتحويلات داخلية منفصلة حسب وسيلة الدفع ووقت التنفيذ."
       note={NOTE}
       kpis={kpis}
       onExport={onExport}

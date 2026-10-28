@@ -15,13 +15,13 @@ import { money, toDbMoney } from "./money";
 import { VOIDED_INVOICE_STATUSES } from "@shared/invoiceStatus";
 import { openBalanceExpr } from "@shared/predicates/openBalance";
 import {
-  componentRightsRawRevenueSql,
   componentRightsRawCostSql,
+  invoiceLineReportProjectionSql,
+  reportInvoiceDeliveryRevenueSql,
+  reportInvoiceGoodsRevenueSql, reportInvoiceOriginalGoodsRevenueSql,
 } from "./fulfillment/componentRightsReportSql";
 
-const rightsLineRevenueSql = componentRightsRawRevenueSql(
-  sql`CASE WHEN ii.baseQuantity > 0 THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity ELSE ii.total END`,
-);
+const rightsLineRevenueSql = sql`rp.revenue`;
 const rightsLineCostSql = componentRightsRawCostSql(
   sql`CASE WHEN ii.baseQuantity <= 0 THEN ii.lineCost WHEN ii.returnedRestockedBaseQuantity >= ii.baseQuantity THEN 0 ELSE ii.lineCost - ROUND(ii.lineCost * ii.returnedRestockedBaseQuantity / ii.baseQuantity, 2) END`,
 );
@@ -130,12 +130,13 @@ export async function getSalesRegister(opts: {
   // المُرتجَعة تبقى عمداً: بيعٌ وقع ثمّ أُرجِع، صافيه صفرٌ عبر returnedTotal ويظهر في عمود «المرتجعات».
   // S2 (٢٩/٦/٢٦): نطاق قابل للفهرسة [from، nextDay(to)) بدل DATE(i.invoiceDate) (غير قابل للفهرسة كان
   // يفرض مسح كل الفواتير). يحتاج فهرساً مُغطّياً بترتيب (التاريخ ثم الحالة) — هجرة 0032. نفس نتيجة الحدّين الشاملين.
-  const where = sql`
+  const invoiceWhere = sql`
     i.invoiceDate >= ${`${opts.from} 00:00:00`} AND i.invoiceDate < ${`${nextDayStr(opts.to)} 00:00:00`}
     AND i.invoiceStatus NOT IN ${VOIDED_STATUS_SQL}
     ${branchCond}
-    ${qCond}
   `;
+  const where = sql`${invoiceWhere} ${qCond}`;
+  const projection = invoiceLineReportProjectionSql(invoiceWhere);
 
   // الربح للسطر: الإيراد المتبقي − (lineCost − الحصة التراكمية المُعادة، مقربة مرة واحدة).
   // (التكلفة تطرح المُعاد للمخزون فقط؛ التالف يبقى خسارةً مطابِقةً للدفتر).
@@ -158,6 +159,7 @@ export async function getSalesRegister(opts: {
         CAST((${rightsLineRevenueSql}) - (${rightsLineCostSql}) AS CHAR) AS profit
       FROM invoiceItems ii
       JOIN invoices i ON i.id = ii.invoiceId
+      JOIN (${projection}) rp ON rp.id = ii.id
       JOIN productVariants pv ON pv.id = ii.variantId
       JOIN products p ON p.id = pv.productId
       LEFT JOIN customers c ON c.id = i.customerId
@@ -182,6 +184,7 @@ export async function getSalesRegister(opts: {
           ELSE ii.quantity END), 0) AS CHAR) AS qty
       FROM invoiceItems ii
       JOIN invoices i ON i.id = ii.invoiceId
+      JOIN (${projection}) rp ON rp.id = ii.id
       WHERE ${where}
     `),
   )[0] ?? { cnt: 0, revenue: "0", cost: "0", profit: "0", qty: "0" };
@@ -223,6 +226,8 @@ export interface SalesByDimensionRow {
   profit: string;
   /** هامش الربح % = الربح ÷ الإيراد × ١٠٠ (نصّ بمنزلتين). */
   marginPct: string;
+  /** Invoice-level delivery revenue is not assigned to a product. */
+  deliveryRevenue?: string;
 }
 
 export interface SalesByDimensionResult {
@@ -239,6 +244,7 @@ export interface SalesByDimensionResult {
     cost: string;
     profit: string;
     marginPct: string;
+    deliveryRevenue: string;
   };
 }
 
@@ -255,7 +261,7 @@ export async function getSalesByDimension(opts: {
   dimension: SalesDimension;
 }): Promise<SalesByDimensionResult> {
   const db = getDb();
-  if (!db) return { rows: [], totals: { invoices: 0, revenue: "0", grossSales: "0", discounts: "0", returns: "0", netSales: "0", paid: "0", unpaid: "0", cost: "0", profit: "0", marginPct: "0.00" } };
+  if (!db) return { rows: [], totals: { invoices: 0, revenue: "0", grossSales: "0", discounts: "0", returns: "0", netSales: "0", paid: "0", unpaid: "0", cost: "0", profit: "0", marginPct: "0.00", deliveryRevenue: "0.00" } };
 
   // اختيار محور التجميع + التسمية + الانضمام المطلوب (إن وُجِد).
   // المفتاح key نصّي دائماً (للتمييز في الواجهة)؛ التسمية label معروضة (تتراجع للمفتاح عند NULL).
@@ -305,6 +311,7 @@ export async function getSalesByDimension(opts: {
   //  • paid/unpaid لا معنى لهما على مستوى الصنف (خاصيّة فاتورة) ⇒ صفران، والواجهة تخفيهما.
   //  • invoices = عدد الفواتير المميَّزة التي ظهر فيها الصنف.
   if (opts.dimension === "product") {
+    const projection = invoiceLineReportProjectionSql(where);
     const rows = rowsOf(
       await db.execute(sql`
         SELECT
@@ -314,23 +321,28 @@ export async function getSalesByDimension(opts: {
           -- #reports-1 (تدقيق التثبيت): مرآة إصلاح getTopProducts — الإيراد يُصافى بالمرتجعات
           -- تناسبياً (guard على baseQuantity=0 للخدمات) ⇒ يتّسق مع تبويب المنتجات على نفس الشاشة.
           CAST(COALESCE(SUM(${rightsLineRevenueSql}), 0) AS CHAR) AS revenue,
-          CAST(COALESCE(SUM(${rightsLineRevenueSql}), 0) AS CHAR) AS grossSales,
-          CAST(0 AS CHAR) AS discounts,
-          CAST(0 AS CHAR) AS returns,
+          CAST(COALESCE(SUM(ii.total), 0) AS CHAR) AS grossSales,
+          CAST(COALESCE(SUM(ii.total - rp.originalRevenue), 0) AS CHAR) AS discounts,
+          CAST(COALESCE(SUM(rp.originalRevenue - rp.revenue), 0) AS CHAR) AS returns,
           CAST(COALESCE(SUM(${rightsLineRevenueSql}), 0) AS CHAR) AS netSales,
           CAST(0 AS CHAR) AS paid,
           CAST(0 AS CHAR) AS unpaid,
           CAST(COALESCE(SUM(${rightsLineCostSql}), 0) AS CHAR) AS cost
         FROM invoiceItems ii
         JOIN invoices i ON i.id = ii.invoiceId
+        JOIN (${projection}) rp ON rp.id = ii.id
         JOIN productVariants pv ON pv.id = ii.variantId
         JOIN products p ON p.id = pv.productId
         WHERE ${where}
         GROUP BY p.id, p.name
-        ORDER BY SUM(ii.total) DESC
+        ORDER BY SUM(${rightsLineRevenueSql}) DESC
       `),
     );
-    return summarizeDimensionRows(rows);
+    const delivery = rowsOf(await db.execute(sql`
+      SELECT CAST(COALESCE(SUM(${reportInvoiceDeliveryRevenueSql()}), 0) AS CHAR) AS amount
+      FROM invoices i WHERE ${where}
+    `))[0];
+    return summarizeDimensionRows(rows, money(delivery?.amount ?? 0));
   }
 
   // أبعاد العميل/الفرع/الكاشير تتبع لقطة الفاتورة، لكن تكلفة الفاتورة تُعاد بناؤها
@@ -342,11 +354,12 @@ export async function getSalesByDimension(opts: {
         CAST(COALESCE(${groupKey}, '') AS CHAR) AS \`key\`,
         ${labelExpr} AS label,
         COUNT(*) AS invoices,
-        CAST(COALESCE(SUM(i.total - i.returnedTotal), 0) AS CHAR) AS revenue,
-        CAST(COALESCE(SUM(i.total + i.discountAmount), 0) AS CHAR) AS grossSales,
+        CAST(COALESCE(SUM(${reportInvoiceGoodsRevenueSql()}), 0) AS CHAR) AS revenue,
+        CAST(COALESCE(SUM((${reportInvoiceOriginalGoodsRevenueSql()}) + i.discountAmount), 0) AS CHAR) AS grossSales,
         CAST(COALESCE(SUM(i.discountAmount), 0) AS CHAR) AS discounts,
-        CAST(COALESCE(SUM(i.returnedTotal), 0) AS CHAR) AS returns,
-        CAST(COALESCE(SUM(i.total - i.returnedTotal), 0) AS CHAR) AS netSales,
+        CAST(COALESCE(SUM((${reportInvoiceOriginalGoodsRevenueSql()}) - (${reportInvoiceGoodsRevenueSql()})), 0) AS CHAR) AS returns,
+        CAST(COALESCE(SUM(${reportInvoiceGoodsRevenueSql()}), 0) AS CHAR) AS netSales,
+        CAST(COALESCE(SUM(${reportInvoiceDeliveryRevenueSql()}), 0) AS CHAR) AS deliveryRevenue,
         CAST(COALESCE(SUM(i.paidAmount), 0) AS CHAR) AS paid,
         -- «غير المدفوع» سؤالٌ تحصيليّ ⇒ وضع COLLECTIBLE (مقصوص) — نفسُ الشكل القائم حرفياً.
         -- ⚠️ والقصُّ هنا ليس تجميلاً: فلترُ هذا التقرير يستبعد المُبطَلة وحدها ويُبقي RETURNED
@@ -365,14 +378,14 @@ export async function getSalesByDimension(opts: {
       ${joinClause}
       WHERE ${where}
       GROUP BY ${groupKey}${groupLabel ? sql`, label` : sql``}
-      ORDER BY SUM(i.total - i.returnedTotal) DESC
+      ORDER BY SUM(${reportInvoiceGoodsRevenueSql()}) DESC
     `),
   );
   return summarizeDimensionRows(rows);
 }
 
 /** تحويل صفوف SQL الخام لصفوف النتيجة + إجماليات decimal (مشترك بين مسار الفواتير ومسار الأصناف). */
-function summarizeDimensionRows(rows: any[]): SalesByDimensionResult {
+function summarizeDimensionRows(rows: any[], unassignedDelivery?: ReturnType<typeof money>): SalesByDimensionResult {
 
   let invCount = 0;
   let revenue = money(0);
@@ -383,6 +396,7 @@ function summarizeDimensionRows(rows: any[]): SalesByDimensionResult {
   let paid = money(0);
   let unpaid = money(0);
   let cost = money(0);
+  let delivery = money(0);
   const out: SalesByDimensionRow[] = rows.map((r) => {
     const rev = money(r.revenue ?? 0);
     const gross = money(r.grossSales ?? r.revenue ?? 0);
@@ -392,6 +406,7 @@ function summarizeDimensionRows(rows: any[]): SalesByDimensionResult {
     const pd = money(r.paid ?? 0);
     const up = money(r.unpaid ?? 0);
     const cs = money(r.cost ?? 0);
+    const deliveryAmount = money(r.deliveryRevenue ?? 0);
     const profit = rev.sub(cs);
     const cnt = Number(r.invoices ?? 0);
     invCount += cnt;
@@ -403,6 +418,7 @@ function summarizeDimensionRows(rows: any[]): SalesByDimensionResult {
     paid = paid.add(pd);
     unpaid = unpaid.add(up);
     cost = cost.add(cs);
+    delivery = delivery.add(deliveryAmount);
     return {
       key: String(r.key ?? ""),
       label: String(r.label ?? "—"),
@@ -417,6 +433,7 @@ function summarizeDimensionRows(rows: any[]): SalesByDimensionResult {
       cost: toDbMoney(cs),
       profit: toDbMoney(profit),
       marginPct: marginOf(profit, rev),
+      deliveryRevenue: toDbMoney(deliveryAmount),
     };
   });
 
@@ -435,6 +452,7 @@ function summarizeDimensionRows(rows: any[]): SalesByDimensionResult {
       cost: toDbMoney(cost),
       profit: toDbMoney(totalProfit),
       marginPct: marginOf(totalProfit, revenue),
+      deliveryRevenue: toDbMoney(unassignedDelivery ?? delivery),
     },
   };
 }

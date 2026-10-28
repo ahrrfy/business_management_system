@@ -7,13 +7,17 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { withTx } from "../tx";
 import { setStock } from "../inventoryService";
-import { getNegativeStock } from "../reportsInventoryOpsService";
+import { getNegativeStock, getDeadStockValue, getReorderRisk, getStocktakeVariance } from "../reportsInventoryOpsService";
 import { reconcileInventory } from "../reconcileService";
 
 const DAY_MS = 86_400_000;
 
 const TABLES = [
   "openingModeSettings",
+  "stocktakeDecisions",
+  "stocktakeSessions",
+  "invoiceItems",
+  "invoices",
   "inventoryMovements",
   "branchStock",
   "categories",
@@ -116,6 +120,56 @@ describe("تقرير السوالب — reports.negativeStock", () => {
       setStock(tx, { variantId: 1, branchId: 1, targetQuantity: 12, referenceType: "OPENING", createdBy: 1 }),
     );
     expect((await getNegativeStock({})).summary.count).toBe(0);
+  });
+
+  it("إجمالي الانكشاف والعدد وبلا تكلفة يشملان كامل الفرع خارج حد الصفوف", async () => {
+    await db().insert(s.branchStock).values([
+      { variantId: 1, branchId: 1, quantity: -4 },
+      { variantId: 2, branchId: 1, quantity: -2, openedAt: new Date() },
+      { variantId: 1, branchId: 2, quantity: -7 },
+    ]);
+    const result = await getNegativeStock({ branchId: 1, limit: 1 });
+    expect(result.rows).toHaveLength(1);
+    expect(result.summary).toEqual({ count: 2, totalNegValue: "3000.00", missingCostCount: 1, unopenedCount: 1 });
+  });
+
+  it("الراكد وخطر النفاد يحسبان ملخص كامل النطاق مع حد عرض أصغر", async () => {
+    await db().insert(s.branchStock).values([
+      { variantId: 1, branchId: 1, quantity: 2 },
+      { variantId: 2, branchId: 1, quantity: 3 },
+      { variantId: 1, branchId: 2, quantity: 90 },
+    ]);
+    const dead = await getDeadStockValue({ branchId: 1, limit: 1 });
+    expect(dead.rows).toHaveLength(1);
+    expect(dead.summary).toEqual({ count: 2, totalValue: "1500.00" });
+    await db().update(s.productVariants).set({ minStock: 10 });
+    await db().insert(s.invoices).values({ id: 1, branchId: 1, invoiceNumber: "INV-OPS-RISK", sourceType: "POS", subtotal: "200.00", total: "200.00", status: "PAID", invoiceDate: new Date() });
+    await db().insert(s.invoiceItems).values([
+      { invoiceId: 1, variantId: 1, quantity: "1", baseQuantity: 1, unitPrice: "100", unitCost: "50", total: "100" },
+      { invoiceId: 1, variantId: 2, quantity: "1", baseQuantity: 1, unitPrice: "100", unitCost: "50", total: "100" },
+    ]);
+    const risk = await getReorderRisk({ branchId: 1, limit: 1 });
+    expect(risk.rows).toHaveLength(1);
+    expect(risk.summary.count).toBe(2);
+    await db().update(s.invoices).set({ status: "SUPERSEDED" }).where(eq(s.invoices.id, 1));
+    expect((await getReorderRisk({ branchId: 1 })).summary.count).toBe(0);
+    expect((await getDeadStockValue({ branchId: 1 })).summary.count).toBe(2);
+  });
+
+  it("صافي وقيمة فروقات الجرد يجمعان كل المستندات المطابقة دون الصفحة", async () => {
+    const approvedAt = new Date("2026-10-28T10:00:00Z");
+    await db().insert(s.stocktakeSessions).values([
+      { id: 1, code: "STK-OPS-1", name: "MAIN", branchId: 1, scopeType: "FULL", status: "APPROVED", approvedAt },
+      { id: 2, code: "STK-OPS-2", name: "OTHER", branchId: 2, scopeType: "FULL", status: "APPROVED", approvedAt },
+    ]);
+    await db().insert(s.stocktakeDecisions).values([
+      { sessionId: 1, variantId: 1, action: "ADJUST", diffQty: -1, value: "-750.25" },
+      { sessionId: 1, variantId: 2, action: "ADJUST", diffQty: 1, value: "125.15" },
+      { sessionId: 2, variantId: 1, action: "ADJUST", diffQty: 1, value: "1000.00" },
+    ]);
+    const result = await getStocktakeVariance({ branchId: 1, from: "2026-10-28", to: "2026-10-28", limit: 1 });
+    expect(result.rows).toHaveLength(1);
+    expect(result.summary).toEqual({ count: 2, netValue: "-625.10", absValue: "875.40" });
   });
 });
 

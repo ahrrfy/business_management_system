@@ -304,7 +304,8 @@ export async function getTrialBalance(input: {
       id: Number(account.id),
       code: account.code,
       name: account.name,
-      type: account.type as AccountType,
+      // Presentation follows the sealed role; preserve every original debit/credit movement.
+      type: role === "INVENTORY_REVALUATION" ? "EQUITY" : account.type as AccountType,
       systemRole: role,
       isUnmappedAccount: false,
     });

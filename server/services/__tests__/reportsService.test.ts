@@ -20,6 +20,9 @@ import {
   getTopProducts,
 } from "../reportsService";
 import { getFinancialPosition } from "../reportsFinancialService";
+import { getArApAgingDetail } from "../reportsAgingDetailService";
+import { getCreditExposure } from "../reportsCreditExposureService";
+import { fulfillmentCharges } from "../../../drizzle/fulfillmentSchema";
 import { money } from "../money";
 import {
   createWorkOrder,
@@ -632,4 +635,46 @@ describe("FIN-05: عرابين أوامر الشغل غير المُسلَّمة
     // الأمر CANCELLED + العربون مُسترَدّ (receipt OUT) ⇒ لا التزام معلّق.
     expect(after.customerAdvances).toBe("0.00");
   });
+});
+
+describe("consistent aging documents and credit classification", () => {
+  it("keeps a zero credit limit distinct from unlimited credit with existing debt", async () => {
+    await db().insert(s.customers).values([
+      { id: 5001, name: "نقدي عليه رصيد سابق", creditLimit: "0.00", currentBalance: "100.00" },
+      { id: 5002, name: "بلا سقف", creditLimit: null, currentBalance: "100.00" },
+    ]);
+    const report = await getCreditExposure();
+    expect(report.rows.find(row => row.customerId === 5001)).toMatchObject({ overLimit: true, overLimitAmount: "100.00", risk: "high" });
+    expect(report.rows.find(row => row.customerId === 5002)).toMatchObject({ overLimit: false, creditLimit: null });
+  });
+
+  it("includes fulfillment claims in summary and detail without a synthetic invoice or receipt", async () => {
+    await db().insert(s.customers).values({ id: 5003, name: "عميل أجور", currentBalance: "100.00" });
+    await db().insert(fulfillmentCharges).values({ id: 5003, branchId: 1, customerId: 5003,
+      category: "SERVICE", status: "APPROVED", description: "مطالبة تجهيز", amount: "100.00",
+      clientRequestId: "AGING-CHARGE-5003", sourceHash: "c".repeat(64),
+      approvedAt: new Date("2020-01-01T00:00:00Z"), createdBy: 1, approvedBy: 2 });
+    await db().insert(s.accountingEntries).values({ entryType: "ADJUST", branchId: 1, customerId: 5003,
+      amount: "100.00", dedupeKey: "FULFILLMENT_CHARGE_ACCRUAL:5003", entryDate: new Date("2020-01-01T00:00:00Z") });
+    const before = { invoices: await db().select().from(s.invoices), receipts: await db().select().from(s.receipts) };
+    const summary = await getARAging({ branchId: 1 });
+    const detail = await getArApAgingDetail({ side: "AR", branchId: 1 });
+    expect(detail.totals.unpaid).toBe("100.00");
+    expect(detail.totals.unpaid).toBe(summary[0].unpaidTotal);
+    expect(detail.rows).toMatchObject([{ id: 5003, documentType: "FULFILLMENT_CHARGE", unpaid: "100.00" }]);
+    expect(await db().select().from(s.invoices)).toEqual(before.invoices);
+    expect(await db().select().from(s.receipts)).toEqual(before.receipts);
+  });
+
+  it("لا يتحول الدين بعد سقف ملخص الواجهة إلى رصيد دائن وهمي في التفصيل", async () => {
+    const count = 10_001;
+    for (let start = 0; start < count; start += 1000) {
+      const ids = Array.from({ length: Math.min(1000, count - start) }, (_, index) => 20_000 + start + index);
+      await db().insert(s.customers).values(ids.map(id => ({ id, name: `عميل نطاق ${id}`, currentBalance: "100.00" })));
+      await db().insert(s.invoices).values(ids.map(id => ({ invoiceNumber: `AGING-SCOPE-${id}`, sourceType: "POS" as const, branchId: 1, customerId: id, subtotal: "100.00", total: "100.00", paidAmount: "0.00", status: "PENDING" as const, createdBy: 1 })));
+    }
+    const detail = await getArApAgingDetail({ side: "AR", branchId: 1 });
+    expect(detail.rows).toHaveLength(count);
+    expect(detail.totals).toMatchObject({ unpaid: "1000100.00", documentUnpaid: "1000100.00", unallocatedCredit: "0.00" });
+  }, 120_000);
 });

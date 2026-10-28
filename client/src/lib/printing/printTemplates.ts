@@ -461,6 +461,8 @@ export function printWorkOrder(d: WorkOrderPrintData): void {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export interface CustomerStmtPrintData {
+  scopeLabel?: string;
+  companyCurrentBalance?: string | number;
   customerName: string;
   customerCode?: string | null;
   customerPhone?: string | null;
@@ -491,6 +493,8 @@ export function printCustomerStmt(d: CustomerStmtPrintData): boolean {
   const periodLabel = [d.fromDate, d.toDate].filter(Boolean).join(' — ') || '—';
   return printStatementV2({
     partyKind: 'customer',
+    scopeLabel: d.scopeLabel,
+    companyCurrentBalance: d.companyCurrentBalance,
     partyName: d.customerName,
     partyPhone: d.customerPhone,
     periodLabel,

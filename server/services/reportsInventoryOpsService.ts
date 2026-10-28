@@ -8,6 +8,9 @@
 import { sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { money, toDbMoney } from "./money";
+import { VOIDED_INVOICE_STATUSES } from "@shared/invoiceStatus";
+
+const VOIDED_STATUS_SQL = sql`(${sql.join(VOIDED_INVOICE_STATUSES.map((status) => sql`${status}`), sql`, `)})`;
 
 function rowsOf(res: unknown): any[] {
   const data = (res as any)?.[0] ?? res;
@@ -47,8 +50,7 @@ export async function getDeadStockValue(
   const branchStk = opts.branchId ? sql`AND bs.branchId = ${opts.branchId}` : sql``;
   const branchSale = opts.branchId ? sql`AND i.branchId = ${opts.branchId}` : sql``;
 
-  const raw = rowsOf(
-    await db.execute(sql`
+  const scope = sql`
       SELECT
         v.id AS variantId,
         p.name AS productName,
@@ -69,19 +71,20 @@ export async function getDeadStockValue(
       LEFT JOIN (
         SELECT ii.variantId, MAX(i.invoiceDate) AS lastSale
         FROM invoiceItems ii
-        JOIN invoices i ON i.id = ii.invoiceId AND i.invoiceStatus NOT IN ('CANCELLED', 'RETURNED') ${branchSale}
+        JOIN invoices i ON i.id = ii.invoiceId AND i.invoiceStatus NOT IN ${VOIDED_STATUS_SQL} ${branchSale}
+        WHERE ii.baseQuantity > COALESCE(ii.returnedBaseQuantity, 0)
         GROUP BY ii.variantId
       ) sa ON sa.variantId = v.id
       WHERE v.isActive = TRUE AND COALESCE(stk.qty, 0) > 0
         AND (sa.lastSale IS NULL OR DATEDIFF(UTC_DATE(), DATE(sa.lastSale)) >= ${sinceDays})
-      ORDER BY (COALESCE(stk.qty, 0) * v.costPrice) DESC
-      LIMIT ${limit}
-    `),
-  );
+  `;
+  const raw = rowsOf(await db.execute(sql`${scope} ORDER BY (COALESCE(stk.qty, 0) * v.costPrice) DESC, v.id ASC LIMIT ${limit}`));
+  const summary = rowsOf(await db.execute(sql`
+    SELECT COUNT(*) AS count, CAST(COALESCE(SUM(CAST(scoped.stockValue AS DECIMAL(30,6))), 0) AS CHAR) AS totalValue
+    FROM (${scope}) scoped
+  `))[0] ?? {};
 
-  let totalValue = money(0);
   const rows: DeadStockRow[] = raw.map((r) => {
-    totalValue = totalValue.add(money(r.stockValue ?? 0));
     return {
       variantId: Number(r.variantId),
       productName: String(r.productName ?? ""),
@@ -95,7 +98,7 @@ export async function getDeadStockValue(
     };
   });
 
-  return { rows, summary: { count: rows.length, totalValue: toDbMoney(totalValue) } };
+  return { rows, summary: { count: Number(summary.count ?? 0), totalValue: toDbMoney(money(summary.totalValue ?? 0)) } };
 }
 
 /* ============================ خطر النفاد (مبيعات عالية + مخزون منخفض) ============================ */
@@ -128,8 +131,7 @@ export async function getReorderRisk(
   const branchStk = opts.branchId ? sql`AND bs.branchId = ${opts.branchId}` : sql``;
   const branchSale = opts.branchId ? sql`AND i.branchId = ${opts.branchId}` : sql``;
 
-  const raw = rowsOf(
-    await db.execute(sql`
+  const scope = sql`
       SELECT
         v.id AS variantId,
         p.name AS productName,
@@ -149,17 +151,16 @@ export async function getReorderRisk(
         SELECT ii.variantId, SUM(ii.baseQuantity - ii.returnedBaseQuantity) AS qty
         FROM invoiceItems ii
         JOIN invoices i ON i.id = ii.invoiceId
-          AND i.invoiceStatus NOT IN ('CANCELLED', 'RETURNED')
+          AND i.invoiceStatus NOT IN ${VOIDED_STATUS_SQL}
           AND i.invoiceDate >= DATE_SUB(UTC_DATE(), INTERVAL ${sinceDays} DAY) ${branchSale}
         GROUP BY ii.variantId
         HAVING qty > 0
       ) sold ON sold.variantId = v.id
       WHERE v.isActive = TRUE
         AND COALESCE(stk.qty, 0) <= GREATEST(COALESCE(v.minStock, 0), COALESCE(v.reorderPoint, 0))
-      ORDER BY sold.qty DESC
-      LIMIT ${limit}
-    `),
-  );
+  `;
+  const raw = rowsOf(await db.execute(sql`${scope} ORDER BY sold.qty DESC, v.id ASC LIMIT ${limit}`));
+  const summary = rowsOf(await db.execute(sql`SELECT COUNT(*) AS count FROM (${scope}) scoped`))[0] ?? {};
 
   const rows: ReorderRiskRow[] = raw.map((r) => {
     const stock = Number(r.qtyInStock ?? 0);
@@ -178,7 +179,7 @@ export async function getReorderRisk(
     };
   });
 
-  return { rows, summary: { count: rows.length } };
+  return { rows, summary: { count: Number(summary.count ?? 0) } };
 }
 
 /* ============================ فروقات الجرد المعتمدة ============================ */
@@ -220,8 +221,7 @@ export async function getStocktakeVariance(
   const fromCond = opts.from ? sql`AND s.approvedAt >= ${opts.from + " 00:00:00"}` : sql``;
   const toCond = opts.to ? sql`AND s.approvedAt <= ${opts.to + " 23:59:59"}` : sql``;
 
-  const raw = rowsOf(
-    await db.execute(sql`
+  const scope = sql`
       SELECT
         s.id AS sessionId,
         s.code AS sessionCode,
@@ -241,17 +241,17 @@ export async function getStocktakeVariance(
       LEFT JOIN users u ON u.id = s.approvedBy
       WHERE d.action = 'ADJUST' AND d.diffQty IS NOT NULL AND d.diffQty <> 0
         ${branchCond} ${fromCond} ${toCond}
-      ORDER BY s.approvedAt DESC, ABS(COALESCE(d.value, 0)) DESC
-      LIMIT ${limit}
-    `),
-  );
+  `;
+  const raw = rowsOf(await db.execute(sql`${scope} ORDER BY s.approvedAt DESC, ABS(COALESCE(d.value, 0)) DESC, d.id DESC LIMIT ${limit}`));
+  const summary = rowsOf(await db.execute(sql`
+    SELECT COUNT(*) AS count,
+      CAST(COALESCE(SUM(CAST(scoped.value AS DECIMAL(15,2))), 0) AS CHAR) AS netValue,
+      CAST(COALESCE(SUM(ABS(CAST(scoped.value AS DECIMAL(15,2)))), 0) AS CHAR) AS absValue
+    FROM (${scope}) scoped
+  `))[0] ?? {};
 
-  let net = money(0);
-  let abs = money(0);
   const rows: StocktakeVarianceRow[] = raw.map((r) => {
     const v = money(r.value ?? 0);
-    net = net.add(v);
-    abs = abs.add(v.abs());
     return {
       sessionId: Number(r.sessionId),
       sessionCode: String(r.sessionCode ?? ""),
@@ -266,7 +266,7 @@ export async function getStocktakeVariance(
     };
   });
 
-  return { rows, summary: { count: rows.length, netValue: toDbMoney(net), absValue: toDbMoney(abs) } };
+  return { rows, summary: { count: Number(summary.count ?? 0), netValue: toDbMoney(money(summary.netValue ?? 0)), absValue: toDbMoney(money(summary.absValue ?? 0)) } };
 }
 
 /* ============================ السوالب — أرصدة تحت الصفر (وضع الافتتاح) ============================ */
@@ -349,15 +349,20 @@ export async function getNegativeStock(
     `),
   );
 
-  let totalNegValue = money(0);
-  let missingCostCount = 0;
-  let unopenedCount = 0;
+  const summary = rowsOf(await db.execute(sql`
+    SELECT COUNT(*) AS count,
+      CAST(COALESCE(SUM(ABS(bs.quantity) * v.costPrice), 0) AS CHAR) AS totalNegValue,
+      COALESCE(SUM(CASE WHEN v.costPrice <= 0 THEN 1 ELSE 0 END), 0) AS missingCostCount,
+      COALESCE(SUM(CASE WHEN bs.openedAt IS NULL THEN 1 ELSE 0 END), 0) AS unopenedCount
+    FROM branchStock bs
+    JOIN branches b ON b.id = bs.branchId
+    JOIN productVariants v ON v.id = bs.variantId
+    JOIN products p ON p.id = v.productId
+    WHERE bs.quantity < 0 ${branchCond}
+  `))[0] ?? {};
   const rows: NegativeStockRow[] = raw.map((r) => {
     const costMissing = money(r.costPrice ?? 0).lte(0);
-    if (costMissing) missingCostCount++;
     const opened = Number(r.opened ?? 0) === 1;
-    if (!opened) unopenedCount++;
-    totalNegValue = totalNegValue.add(money(r.negValue ?? 0));
     return {
       variantId: Number(r.variantId),
       branchId: Number(r.branchId),
@@ -377,6 +382,11 @@ export async function getNegativeStock(
 
   return {
     rows,
-    summary: { count: rows.length, totalNegValue: toDbMoney(totalNegValue), missingCostCount, unopenedCount },
+    summary: {
+      count: Number(summary.count ?? 0),
+      totalNegValue: toDbMoney(money(summary.totalNegValue ?? 0)),
+      missingCostCount: Number(summary.missingCostCount ?? 0),
+      unopenedCount: Number(summary.unopenedCount ?? 0),
+    },
   };
 }

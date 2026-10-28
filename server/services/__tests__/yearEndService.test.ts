@@ -16,6 +16,7 @@ import { requestMonthClose } from "../reports/monthCloseRequest";
 import { verifyMonthCloseCertificate } from "../reports/monthCloseCertificate";
 import { withTx } from "../tx";
 import { closeYear } from "../yearEndService";
+import { getProfitAndLoss } from "../reportsFinancialService";
 import { approveYearEndReopen, requestYearEndReopen } from "../yearEndService";
 import { truncateTables } from "./__testUtils__";
 
@@ -307,6 +308,27 @@ async function expectNoClosingEffects() {
 beforeEach(reset);
 
 describe("الإقفال السنوي الرسمي من اليومية المزدوجة", () => {
+  it.each([20, -20])("يبقي تسوية تقييم المخزون %s خارج قيد إقفال نتيجة السنة", async (delta) => {
+    const gain = delta > 0;
+    const components: PostingSourceComponents = gain
+      ? { roleDebits: { INVENTORY: "20.00" }, roleCredits: { INVENTORY_REVALUATION: "20.00" } }
+      : { roleDebits: { INVENTORY_REVALUATION: "20.00" }, roleCredits: { INVENTORY: "20.00" } };
+    await withTx((tx) => postEntry(tx, {
+      entryType: "ADJUST", branchId: 1, amount: money(0), cost: money(-delta), profit: money(delta),
+      dedupeKey: `COST_REVAL:YEAR:${delta}`, entryDate: new Date(`${YEAR}-06-17T00:00:00Z`),
+      postingIntent: createPostingIntent(gain ? "ADJUST_INVENTORY_REVALUATION_GAIN" : "ADJUST_INVENTORY_REVALUATION_LOSS", "ADJUST", gain
+        ? [debitLine("INVENTORY", "20.00"), creditLine("INVENTORY_REVALUATION", "20.00")]
+        : [debitLine("INVENTORY_REVALUATION", "20.00"), creditLine("INVENTORY", "20.00")], components),
+      postingSourceComponents: components,
+    }));
+    const { id } = await pendingRequest();
+    const result = await withTx((tx) => closeYear(tx, { year: YEAR, requestId: id, closedBy: ADMIN }));
+    expect(result).toMatchObject({ totalRevenue: "1000.00", totalCogs: "600.00", totalExpenses: "100.00", netProfit: "300.00" });
+    const [closing] = await db().select().from(s.journalEntries).where(eq(s.journalEntries.postingProfile, "ADJUST_YEAR_CLOSE"));
+    const lines = await db().select().from(s.journalLines).where(eq(s.journalLines.journalId, closing.id));
+    expect(lines.some((line) => line.role === "INVENTORY_REVALUATION")).toBe(false);
+  });
+
   it("يرفض الإقفال بلا طلب ديسمبر معلّق ولا ينشئ قيداً أو قفلاً", async () => {
     await expect(
       withTx((tx) =>
@@ -473,6 +495,10 @@ describe("الإقفال السنوي الرسمي من اليومية المز�
       totalCogs: "600.00",
       totalExpenses: "100.00",
       netProfit: "300.00",
+    });
+    // Closing preserves the historical income statement instead of zeroing its result.
+    expect((await getProfitAndLoss({ from: `${YEAR}-01-01`, to: `${YEAR}-12-31` })).current).toMatchObject({
+      revenue: "1000.00", cogs: "600.00", totalExpenses: "100.00", netProfit: "300.00",
     });
     expect(result.certificateId).toBeGreaterThan(0);
     expect(result.certificateNumber).toBe("MC-2025-12-R01");

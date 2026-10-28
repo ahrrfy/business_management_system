@@ -66,6 +66,8 @@ export function ReportShell({
         backHref={backHref ?? undefined}
         backLabel="مركز التقارير"
         variant="workspace"
+        className="flex-wrap sm:flex-nowrap [&>div:first-child]:basis-full sm:[&>div:first-child]:basis-auto [&_h1]:shrink"
+        actionsClassName="max-sm:min-w-0 max-sm:flex-wrap"
         actions={
           <>
             {note && (

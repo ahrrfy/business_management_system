@@ -2,7 +2,13 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { comparativeRange, PeriodFilter, presetRange } from "../PeriodFilter";
+import {
+  comparativeRange,
+  DEFAULT_PERIOD,
+  PeriodFilter,
+  presetRange,
+  ymd,
+} from "../PeriodFilter";
 import {
   REPORT_COMPARE_LABELS,
   REPORT_PERIOD_LABELS,
@@ -45,14 +51,48 @@ describe("report comparison boundaries", () => {
     });
   });
   it("keeps last-month and quarter presets intact", () => {
-    expect(presetRange("lastMonth", new Date(2024, 2, 15))).toEqual({
+    expect(presetRange("lastMonth", new Date("2024-03-15T00:00:00Z"))).toEqual({
       from: "2024-02-01",
       to: "2024-02-29",
     });
-    expect(presetRange("qtd", new Date(2026, 9, 24))).toEqual({
+    expect(presetRange("qtd", new Date("2026-10-24T00:00:00Z"))).toEqual({
       from: "2026-10-01",
       to: "2026-10-24",
     });
+  });
+  it("keeps Baghdad midnight on the same UTC accounting day as the ledger", () => {
+    const baghdadAfterMidnight = new Date("2026-11-01T00:30:00+03:00");
+    expect(ymd(baghdadAfterMidnight)).toBe("2026-10-31");
+    expect(presetRange("today", baghdadAfterMidnight)).toEqual({
+      from: "2026-10-31",
+      to: "2026-10-31",
+    });
+    expect(presetRange("mtd", baghdadAfterMidnight)).toEqual({
+      from: "2026-10-01",
+      to: "2026-10-31",
+    });
+  });
+  it("captures a fresh default when another report mounts after UTC month rollover", () => {
+    vi.useFakeTimers();
+    const host = document.createElement("div");
+    const firstRoot = createRoot(host);
+    function DefaultConsumer() {
+      const [period] = React.useState(DEFAULT_PERIOD);
+      return (
+        <span>
+          {period.from} / {period.to}
+        </span>
+      );
+    }
+    vi.setSystemTime(new Date("2026-10-31T23:59:00Z"));
+    act(() => firstRoot.render(<DefaultConsumer />));
+    expect(host.textContent).toBe("2026-10-01 / 2026-10-31");
+    act(() => firstRoot.unmount());
+    vi.setSystemTime(new Date("2026-11-01T00:01:00Z"));
+    const nextRoot = createRoot(host);
+    act(() => nextRoot.render(<DefaultConsumer />));
+    expect(host.textContent).toBe("2026-11-01 / 2026-11-01");
+    act(() => nextRoot.unmount());
   });
   it("renders the canonical vocabulary and preserves controlled date edits", () => {
     const host = document.createElement("div");

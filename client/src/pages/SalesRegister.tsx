@@ -144,7 +144,7 @@ export default function SalesRegister() {
         { label: "عدد البنود", value: total },
         { label: "إجمالي الإيراد", value: fmtAr(totals.revenue), tone: "info" },
         { label: "إجمالي التكلفة", value: fmtAr(totals.cost), tone: "warning" },
-        { label: "صافي الربح", value: fmtAr(totals.profit), tone: Number(totals.profit) < 0 ? "negative" : "positive" },
+        { label: "مجمل ربح البضاعة", value: fmtAr(totals.profit), tone: Number(totals.profit) < 0 ? "negative" : "positive" },
       ]
     : [];
 
@@ -240,7 +240,7 @@ export default function SalesRegister() {
           ? [
               { label: "إجمالي الإيراد", value: fmtAr(totals.revenue) },
               { label: "إجمالي التكلفة", value: fmtAr(totals.cost) },
-              { label: "صافي الربح", value: fmtAr(totals.profit), large: true, bold: true },
+              { label: "مجمل ربح البضاعة", value: fmtAr(totals.profit), large: true, bold: true },
             ]
           : undefined,
       });

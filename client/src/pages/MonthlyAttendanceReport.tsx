@@ -15,6 +15,8 @@ import { PageHeader } from "@/components/PageHeader";
 
 
 import { exportRows } from "@/lib/export";
+import { toExcelMoney } from "@/lib/payrollAccrual";
+import { monthlyAttendanceExportRows } from "@/lib/reportFinancialPresentation";
 import { iqd } from "@/lib/hr/ui";
 import { printMonthlyAttendance } from "@/lib/printing/printMonthlyAttendance";
 import { trpc } from "@/lib/trpc";
@@ -198,7 +200,7 @@ export default function MonthlyAttendanceReport() {
               variant="outline"
               size="sm"
               disabled={!d || d.rows.length === 0}
-              onClick={() => d && exportRows(d.rows as any[], {
+              onClick={() => d && exportRows(monthlyAttendanceExportRows(d.rows), {
                 filename: `تقرير الحضور الشهريّ ${d.period}`,
                 title: `تقرير الحضور الشهريّ — ${monthLabel(d.period)}`,
                 meta: [
@@ -241,7 +243,7 @@ export default function MonthlyAttendanceReport() {
                   },
                   { key: "reviewDays", header: "أيام بانتظار مراجعة" },
                 ],
-                totalsRow: { totalDue: Number(d.totals.totalDue), overtimeHours: Number(d.totals.overtimeHours), absentDays: d.totals.absentDays },
+                totalsRow: { totalDue: toExcelMoney(d.totals.totalDue), overtimeHours: Number(d.totals.overtimeHours), absentDays: d.totals.absentDays },
               })}
             >
               <FileSpreadsheet aria-hidden className="size-3.5" /> تصدير Excel

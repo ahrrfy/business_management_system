@@ -189,12 +189,12 @@ type Tab = "invoices" | "top" | "slow" | "category";
 export default function SalesReport() {
   const [tab, setTab] = useState<Tab>("invoices");
   // فلاتر محفوظة في querystring (useUrlFilters) — تعيش مع فتح التفاصيل والرجوع وتُشارَك رابطاً.
-  // التواريخ عبر PeriodFilter الموحّد بصيغة ymd **محلية** (كان toISOString يُرجع يوم أمس UTC
-  // قبل ٣ فجراً بتوقيت العراق فينزاح النطاق الافتراضي يوماً كاملاً).
+  // يلتقط يوم المحاسبة UTC عند فتح التقرير؛ فلاتر الرابط الصريحة تبقى مقدّمة عليه.
+  const [initialPeriod] = useState(DEFAULT_PERIOD);
   const [f, setF, resetF] = useUrlFilters({
-    from: DEFAULT_PERIOD.from,
-    to: DEFAULT_PERIOD.to,
-    preset: DEFAULT_PERIOD.preset as string,
+    from: initialPeriod.from,
+    to: initialPeriod.to,
+    preset: initialPeriod.preset as string,
     branch: "",
     source: "",
     status: "",

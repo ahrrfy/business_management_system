@@ -182,6 +182,8 @@ export function formatQuotationAsWhatsApp(q: QuotationCopyData): string {
 // ─────────────────────────────────────────────
 
 export interface StatementCopyData {
+  scopeLabel?: string;
+  companyCurrentBalance?: string | number;
   entityName: string;
   entityType: "customer" | "supplier";
   lines: Array<{
@@ -204,6 +206,9 @@ export function formatStatementAsWhatsApp(s: StatementCopyData): string {
   L.push(COMPANY_NAME);
   L.push(SEP);
 
+  if (s.scopeLabel) L.push(`نطاق الكشف: ${s.scopeLabel}`);
+  if (s.companyCurrentBalance != null) L.push(`رصيد الشركة الحالي (كل الفروع): ${fmtAr(s.companyCurrentBalance)} د.ع`);
+
   if (s.lines.length === 0) {
     L.push("لا تَوجَد حَرَكات.");
   } else {
@@ -221,7 +226,9 @@ export function formatStatementAsWhatsApp(s: StatementCopyData): string {
   const bal = Number(s.closingBalance);
   const abs = fmtAr(Math.abs(bal));
   let closing: string;
-  if (bal === 0) {
+  if (s.scopeLabel) {
+    closing = `*رصيد حركة نطاق الكشف: ${fmtAr(s.closingBalance)} د.ع — لا يُضاف إلى رصيد الشركة.*`;
+  } else if (bal === 0) {
     closing = "*الحِساب مُسَوّى — لا رَصيد مُستَحَقّ.*";
   } else if (isCustomer) {
     closing = bal > 0

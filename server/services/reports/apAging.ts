@@ -77,7 +77,7 @@ export interface APAgingRow {
  * CONFIRMED/RECEIVED حيث total > paidAmount = مستحق.
  */
 export async function getAPAging(
-  opts: { branchId?: number; limit?: number } = {},
+  opts: { branchId?: number; limit?: number | null } = {},
 ): Promise<APAgingRow[]> {
   const db = getDb();
   if (!db) return [];
@@ -143,7 +143,7 @@ export async function getAPAging(
     -- افتتاحيّ) فلا يختفي أيّ طرفٍ له رصيدٌ غير صفريّ من «الذمم». الموجب دائن، السالب مدين (unbucketed موقَّع).
     HAVING unpaidTotal > 0 OR currentBalance <> 0
     ORDER BY unpaidTotal DESC, currentBalance DESC
-    LIMIT ${limit}
+    ${opts.limit === null ? sql`` : sql`LIMIT ${limit}`}
   `);
   const data = (rows as any)[0] ?? rows;
   if (!Array.isArray(data)) return [];

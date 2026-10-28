@@ -14,7 +14,7 @@
  * ⚠️ لا تعديلَ للقطةٍ مكتوبة: أيّ تصحيحٍ يستلزم إلغاءَ إقفال الفترة (revision جديد) — لقطةٌ
  * جديدة تُنسَخ للفترة الجديدة، والقديمة تبقى للسجلّ التدقيقيّ.
  */
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, isNull, or } from "drizzle-orm";
 import {
   financialPeriods,
   inventoryValuationSnapshots,
@@ -126,16 +126,20 @@ export async function readValuationAt(
   cutoffDate: string,
   branchId?: number | null,
 ): Promise<HistoricalValuation> {
-  const [snap] = await tx
-    .select()
+  const [record] = await tx
+    .select({ snap: inventoryValuationSnapshots })
     .from(inventoryValuationSnapshots)
+    .leftJoin(financialPeriods, eq(financialPeriods.id, inventoryValuationSnapshots.periodLockId))
     .where(
       and(
         eq(inventoryValuationSnapshots.cutoffDate, cutoffDate),
         eq(inventoryValuationSnapshots.scopeKey, "COMPANY"),
+        or(isNull(inventoryValuationSnapshots.periodLockId), eq(financialPeriods.status, "LOCKED")),
       ),
     )
+    .orderBy(desc(inventoryValuationSnapshots.capturedAt), desc(inventoryValuationSnapshots.id))
     .limit(1);
+  const snap = record?.snap;
   if (snap) {
     const branches = snap.branchesJson
       ? (JSON.parse(snap.branchesJson) as SnapshotBranch[])

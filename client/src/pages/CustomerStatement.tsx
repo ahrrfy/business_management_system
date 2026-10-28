@@ -471,18 +471,28 @@ export default function CustomerStatement() {
 
   // حُمولة نَسخ الكَشف بِثَلاث صِيَغ (نَصّ مُلَخَّص / واتساب مُفَصَّل / TSV لِلَصق في Excel).
   // تُبنى مَرّة واحِدة على دَفتَر الحَرَكات المُجمَّع لِضَمان اتِّساق المَجاميع مَع الطِباعة والتَصدير.
+  const reportScopeLabel = stmt.data?.summary.scopedBranchId ? `الفرع #${stmt.data.summary.scopedBranchId}` : "الشركة (كل الفروع)";
+  const reportScopeMeta = stmt.data ? [
+    { label: "نطاق الكشف", value: reportScopeLabel },
+    { label: "الفترة", value: `${from || "البداية"} — ${to || "الآن"}` },
+    { label: "رصيد الشركة الحالي (كل الفروع)", value: fmt(stmt.data.summary.companyCurrentBalance) },
+  ] : [];
   const copyPayload = useMemo(() => {
     if (!stmt.data || !ledger) return { plain: "", whatsapp: "", tsv: "" };
     const d = stmt.data;
     const plain = buildStatementMessage({
       entityName: d.customer.name,
       entityType: "customer",
-      currentBalance: d.summary.currentBalance,
+      currentBalance: d.summary.companyCurrentBalance,
+      scopeLabel: reportScopeLabel,
+      scopedBalance: d.summary.scopedBranchId ? d.summary.currentBalance : undefined,
       totalSales: d.summary.totalSales,
       totalPaid: d.summary.totalPaid,
       unpaid: d.summary.unpaid,
     });
     const whatsapp = formatStatementAsWhatsApp({
+      scopeLabel: reportScopeLabel,
+      companyCurrentBalance: d.summary.companyCurrentBalance,
       entityName: d.customer.name,
       entityType: "customer",
       lines: ledger.txs.map((r) => ({
@@ -495,7 +505,7 @@ export default function CustomerStatement() {
       closingBalance: statementClosingBalance(from, to, ledger.closingBalance, d.summary.currentBalance),
       asOfDate: to || undefined,
     });
-    const tsv = formatTableAsTSV(
+    const tsv = `${reportScopeLabel}\nرصيد الشركة الحالي (كل الفروع): ${fmt(d.summary.companyCurrentBalance)}\n` + formatTableAsTSV(
       ["التاريخ", "المرجع", "البيان", "المنفذ", "مدين", "دائن", "الرصيد"],
       ledger.txs.map((r) => ({
         "التاريخ": r.date,
@@ -508,7 +518,7 @@ export default function CustomerStatement() {
       })),
     );
     return { plain, whatsapp, tsv };
-  }, [stmt.data, ledger, from, to]);
+  }, [stmt.data, ledger, from, to, reportScopeLabel]);
 
   // يفتح نافذة الطباعة (المتصفّح: «حفظ كـ PDF») اعتماداً على دفتر الحركات المُجمَّع.
   const printStatement = async () => {
@@ -528,6 +538,8 @@ export default function CustomerStatement() {
           transactions: txs,
           totalDebit: totDebit, totalCredit: totCredit,
           openingBalance: d.summary.openingBalance,
+          scopeLabel: reportScopeLabel,
+          companyCurrentBalance: d.summary.companyCurrentBalance,
           currentBalance: d.summary.currentBalance,
           closingBalance: statementClosingBalance(from, to, closingBalance, d.summary.currentBalance),
           printedByName: audit.actorName,
@@ -559,6 +571,7 @@ export default function CustomerStatement() {
                 onClick={() =>
                   exportRows(ledger?.txs ?? [], {
                     filename: `كشف-حساب-${stmt.data!.customer.name}`,
+                    meta: reportScopeMeta,
                     columns: [
                       { key: "date", header: "التاريخ" },
                       { key: "ref", header: "المرجع" },
@@ -583,6 +596,7 @@ export default function CustomerStatement() {
                   exportRows(ledger?.txs ?? [], {
                     filename: `كشف-حساب-${stmt.data!.customer.name}`,
                     format: "csv",
+                    meta: reportScopeMeta,
                     title: `كشف حساب عميل — ${stmt.data!.customer.name}`,
                     columns: [
                       { key: "date", header: "التاريخ" },
@@ -611,14 +625,7 @@ export default function CustomerStatement() {
             {stmt.data && (
               <WhatsAppShare
                 phone={stmt.data.customer.phone}
-                message={buildStatementMessage({
-                  entityName: stmt.data.customer.name,
-                  entityType: "customer",
-                  currentBalance: stmt.data.summary.currentBalance,
-                  totalSales: stmt.data.summary.totalSales,
-                  totalPaid: stmt.data.summary.totalPaid,
-                  unpaid: stmt.data.summary.unpaid,
-                })}
+                message={copyPayload.plain}
                 label="إرسال كشف الحساب"
               />
             )}
@@ -712,7 +719,10 @@ export default function CustomerStatement() {
                     label="رصيد غير مفوتر — يشمل الافتتاحي المستورد"
                     value={D(stmt.data.summary.currentBalance).minus(D(stmt.data.summary.unpaid)).toFixed(2)}
                   />
-                  <StatBalance label="الرصيد الحالي" value={stmt.data.summary.currentBalance} />
+                  <StatBalance label={stmt.data.summary.scopedBranchId == null ? "الرصيد الحالي" : "رصيد الفرع الحالي"} value={stmt.data.summary.currentBalance} />
+                  {stmt.data.summary.scopedBranchId != null && (
+                    <StatBalance label="رصيد الشركة عبر الفروع" value={stmt.data.summary.companyCurrentBalance} />
+                  )}
                 </div>
                 {/* ش٤ (I11): سطر إفصاح العرابين المحتجزة — مالٌ مقبوضٌ بإيصالٍ لم يُطبَّق على فاتورةٍ
                     ولا يمسّ الرصيد الجاري؛ بدونه يسأل العميل «أين عربوني؟» والكشف صامت. */}
@@ -730,7 +740,7 @@ export default function CustomerStatement() {
             entityName={stmt.data.customer.name}
             entityType="customer"
             phone={stmt.data.customer.phone}
-            currentBalance={stmt.data.summary.currentBalance}
+            currentBalance={stmt.data.summary.companyCurrentBalance}
             onPdf={printStatement}
           />
 

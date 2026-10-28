@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, ne, or, sql, type SQLWrapper } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, sql, type SQLWrapper } from "drizzle-orm";
 import Decimal from "decimal.js";
 import { alias } from "drizzle-orm/mysql-core";
 import { openBalanceExpr, openBalanceOf } from "@shared/predicates/openBalance";
@@ -44,8 +44,35 @@ function invoiceCorrectionArMovement(
 
 /** Real tender can include a customer liability; only claim allocations change AR. */
 function customerReceiptArAmount() {
-  return sql<string>`COALESCE((SELECT SUM(fcp.amount) FROM fulfillmentChargePayments fcp
-    WHERE fcp.receiptId = ${receipts.id} AND fcp.kind IN ('COLLECTION','REFUND')), ${receipts.amount})`;
+  return sql<string>`CASE WHEN EXISTS (SELECT 1 FROM accountingEntries receiptEffect
+    WHERE receiptEffect.receiptId = ${receipts.id} AND
+      (receiptEffect.dedupeKey LIKE 'FULFILLMENT_COURIER_EXCESS:%'
+        OR receiptEffect.dedupeKey LIKE 'FULFILLMENT_CHARGE_EXCESS_REFUND:%')) THEN 0
+    ELSE COALESCE((SELECT SUM(fcp.amount) FROM fulfillmentChargePayments fcp
+      WHERE fcp.receiptId = ${receipts.id} AND fcp.kind IN ('COLLECTION','REFUND')), ${receipts.amount}) END`;
+}
+
+/** A cancelled posted sale and its dated reversal are separate historical movements. */
+export function historicalInvoicePresentSql() {
+  return sql`${invoices.status} <> 'CANCELLED' OR EXISTS (
+    SELECT 1 FROM accountingEntries history
+    WHERE history.invoiceId = ${invoices.id} AND history.entryType IN ('SALE','RETURN')
+  )`;
+}
+
+function historicalInvoiceAmount() {
+  return sql<string>`CASE WHEN (${historicalInvoicePresentSql()}) THEN ${invoices.total} ELSE 0 END`;
+}
+
+/** Shared document population for AR summary and drilldown; UNION prevents multiplying payments. */
+export function arAgingDocumentsSql() {
+  return sql`SELECT id,customerId,branchId,total,paidAmount,returnedTotal,invoiceStatus,dueDate,invoiceDate,
+      invoiceNumber AS number,'INVOICE' AS documentType
+    FROM invoices
+    UNION ALL
+    SELECT id,customerId,branchId,amount,paidAmount,0,'PENDING',NULL,approvedAt,
+      CONCAT('CHARGE-',id),'FULFILLMENT_CHARGE'
+    FROM fulfillmentCharges WHERE status='APPROVED' AND amount > paidAmount`;
 }
 
 export interface ARAgingRow {
@@ -69,7 +96,7 @@ export interface ARAgingRow {
  *  تُعمَّر الدلاء من **تاريخ الاستحقاق إن وُجد** (`COALESCE(dueDate, invoiceDate)`): فالبيع الآجل
  *  للشركات/الدوائر يُعمَّر من موعد استحقاقه الحقيقي، والفواتير بلا استحقاق تبقى على تاريخ الفاتورة
  *  (متوافق رجعياً). */
-export async function getARAging(opts: { branchId?: number; limit?: number } = {}): Promise<ARAgingRow[]> {
+export async function getARAging(opts: { branchId?: number; limit?: number | null } = {}): Promise<ARAgingRow[]> {
   const db = getDb();
   if (!db) return [];
   // مسند «الرصيد المفتوح» من مصدره الواحد (`@shared/predicates/openBalance`) بدل كتابته بيدٍ
@@ -106,7 +133,7 @@ export async function getARAging(opts: { branchId?: number; limit?: number } = {
       ) cb ON cb.customerId = c.id`
     : sql``;
   const currentBalanceExpr = opts.branchId
-    ? sql`CASE WHEN c.currentBalance <= 0 THEN c.currentBalance ELSE COALESCE(cb.balance, COALESCE(SUM(${openBalance}), 0)) END`
+    ? sql`COALESCE(cb.balance, COALESCE(SUM(${openBalance}), 0))`
     : sql`c.currentBalance`;
   const branchGroup = opts.branchId ? sql`, cb.balance` : sql``;
   const balanceHaving = opts.branchId
@@ -136,10 +163,7 @@ export async function getARAging(opts: { branchId?: number; limit?: number } = {
       DATE_FORMAT(MIN(CASE WHEN i.invoiceStatus IN ('PENDING','PARTIALLY_PAID') THEN DATE(COALESCE(i.dueDate, i.invoiceDate)) END), '%Y-%m-%d') AS oldestInvoiceDate
     FROM customers c
     LEFT JOIN (
-      SELECT customerId,branchId,total,paidAmount,returnedTotal,invoiceStatus,dueDate,invoiceDate FROM invoices
-      UNION ALL
-      SELECT customerId,branchId,amount,paidAmount,0,'PENDING',NULL,approvedAt FROM fulfillmentCharges
-        WHERE status='APPROVED' AND amount > paidAmount
+      ${arAgingDocumentsSql()}
     ) i
       ON i.customerId = c.id
       AND i.invoiceStatus IN ('PENDING', 'PARTIALLY_PAID')
@@ -150,7 +174,7 @@ export async function getARAging(opts: { branchId?: number; limit?: number } = {
     -- غير صفري؛ وفي نطاق الفرع لا نُدخل رصيد بطاقة العميل العمومي غير القابل للتوزيع.
     HAVING ${balanceHaving}
     ORDER BY unpaidTotal DESC, c.currentBalance DESC
-    LIMIT ${limit}
+    ${opts.limit === null ? sql`` : sql`LIMIT ${limit}`}
   `);
   const data = (rows as any)[0] ?? rows;
   if (!Array.isArray(data)) return [];
@@ -253,6 +277,8 @@ export interface CustomerStatementInvoice {
   invoiceDate: Date;
   dueDate: Date | null;
   total: string;
+  /** Original posted obligation used only by the chronological statement. */
+  ledgerTotal: string;
   /** Current obligation; original total remains immutable statement evidence. */
   currentTotal: string;
   remainingAmount: string;
@@ -296,6 +322,8 @@ export interface CustomerStatementResult {
     totalPaid: string;
     unpaid: string;
     currentBalance: string;
+    companyCurrentBalance: string;
+    scopedBranchId: number | null;
     /** الرصيد المُرحَّل: قيد OPENING المستورد + (مع from) كل النشاط السابق للفترة. */
     openingBalance: string;
     /** ش٤ (I11): صافي عرابين المسوّدات المحتجزة (غير المطبَّقة على فاتورة) — سطر إفصاح. */
@@ -337,7 +365,7 @@ function customerPaymentLink(customerId: number) {
  *               approvalStatus=APPROVED و status ∈ {COMPLETED، REVERSED} — انظر payRow/F5).
  * كل الجمع بدقّة decimal (§٥).
  */
-async function customerOpeningBalance(customerId: number, from?: string, to?: string) {
+async function customerOpeningBalance(customerId: number, from?: string, to?: string, branchId?: number, allActivity = false) {
   const db = getDb()!;
   // ب-١ (١٦/٨): تصحيح الرصيد الافتتاحيّ صار **قيد فرقٍ مؤرَّخاً** لا تعديلاً للأصل. لذا
   // «الافتتاحيّ كما في تاريخ س» = مجموع قيود OPENING **حتى س** لا مجموعها كلّها: تصحيحٌ وقع
@@ -352,19 +380,20 @@ async function customerOpeningBalance(customerId: number, from?: string, to?: st
       and(
         eq(accountingEntries.entryType, "OPENING"),
         eq(accountingEntries.customerId, customerId),
+        branchId ? eq(accountingEntries.branchId, branchId) : undefined,
         openingBeforeTs ? sql`${accountingEntries.entryDate} < ${openingBeforeTs}` : undefined,
       ),
     );
   let opening = money(openRow[0]?.v ?? 0);
-  if (!fromTs) return opening;
+  if (!fromTs && !allActivity) return opening;
   const invRow = await db
-    .select({ v: sql<string>`COALESCE(SUM(CAST(${invoices.total} AS DECIMAL(15,2))), 0)` })
+    .select({ v: sql<string>`COALESCE(SUM(CAST(${historicalInvoiceAmount()} AS DECIMAL(15,2))), 0)` })
     .from(invoices)
     .where(
       and(
         eq(invoices.customerId, customerId),
-        ne(invoices.status, "CANCELLED"),
-        sql`${invoices.invoiceDate} < ${fromTs}`
+        branchId ? eq(invoices.branchId, branchId) : undefined,
+        fromTs ? sql`${invoices.invoiceDate} < ${fromTs}` : undefined
       )
     );
   const payRow = await db
@@ -376,13 +405,14 @@ async function customerOpeningBalance(customerId: number, from?: string, to?: st
     .where(
       and(
         customerPaymentLink(customerId),
+        branchId ? eq(receipts.branchId, branchId) : undefined,
         // F5 (تدقيق ٢/٧): الإيصالات التي أثّرت فعلاً على currentBalance (مرّت عبر adjustCustomerBalance) =
         //   approvalStatus=APPROVED و status ∈ (COMPLETED للنشطة + REVERSED للأصل المُعتمَد ثم الملغى، ليوازن
         //   تعويضَه COMPLETED فيصير أثر السند الملغى صفراً). المعلّق/المرفوض (approvalStatus≠APPROVED) لم يمسّ
         //   الرصيد ⇒ يُستبعَد. (سابقاً: COMPLETED فقط ⇒ الأصل REVERSED يُستبعَد بينما تعويضه يُحتسَب = ساق واحدة.)
         sql`${receipts.status} IN ('COMPLETED','REVERSED')`,
         eq(receipts.approvalStatus, "APPROVED"),
-        sql`${receipts.createdAt} < ${fromTs}`
+        fromTs ? sql`${receipts.createdAt} < ${fromTs}` : undefined
       )
     );
   // AR-OPENING-RETURN (تدقيق ٢/٧): الرصيد المُرحَّل كان يجمع كامل total الفاتورة (الفاتورة المُرتجَعة
@@ -398,7 +428,8 @@ async function customerOpeningBalance(customerId: number, from?: string, to?: st
         eq(accountingEntries.entryType, "RETURN"),
         eq(accountingEntries.customerId, customerId),
         isNull(accountingEntries.supplierId),
-        sql`${accountingEntries.entryDate} < ${from}`
+        branchId ? eq(accountingEntries.branchId, branchId) : undefined,
+        from ? sql`${accountingEntries.entryDate} < ${from}` : undefined
       )
     );
   // COD-COURIER (مراجعة عدائية ١٢/٧ + ٩/٨): تحصيلات المندوب تسدّد الذمّة دون أن يلتقطها payRow:
@@ -417,15 +448,17 @@ async function customerOpeningBalance(customerId: number, from?: string, to?: st
       and(
         eq(accountingEntries.entryType, "PAYMENT_IN"),
         eq(accountingEntries.customerId, customerId),
+        branchId ? eq(accountingEntries.branchId, branchId) : undefined,
         sql`(${accountingEntries.invoiceId} IS NOT NULL OR ${accountingEntries.dedupeKey} LIKE 'FULFILLMENT_CHARGE_CUSTODY:%')`,
         sql`${codReceipts.invoiceId} IS NULL`,
-        sql`${accountingEntries.entryDate} < ${fromTs}`
+        fromTs ? sql`${accountingEntries.entryDate} < ${fromTs}` : undefined
       )
     );
   const correctionRow = await db.select({ v: sql<string>`COALESCE(SUM(${accountingEntries.amount}), 0)` })
     .from(accountingEntries).where(and(
       eq(accountingEntries.customerId, customerId), invoiceCorrectionArMovement(),
-      sql`${accountingEntries.entryDate} < ${fromTs}`,
+      branchId ? eq(accountingEntries.branchId, branchId) : undefined,
+      fromTs ? sql`${accountingEntries.entryDate} < ${fromTs}` : undefined,
     ));
   return opening
     .plus(money(invRow[0]?.v ?? 0))
@@ -468,6 +501,7 @@ export async function getCustomerStatement(
       invoiceDate: invoices.invoiceDate,
       dueDate: invoices.dueDate,
       total: invoices.total,
+      ledgerTotal: historicalInvoiceAmount(),
       paidAmount: invoices.paidAmount,
       returnedTotal: invoices.returnedTotal,
       status: invoices.status,
@@ -487,6 +521,7 @@ export async function getCustomerStatement(
   // الدفعات تُفلتَر على تاريخها هي (createdAt) لا على فواتيرها: دفعةٌ داخل الفترة على
   // فاتورة أقدم منها يجب أن تظهر — هذا جوهر الدلالة المحاسبية للكشف بفترة.
   const payConds = [customerPaymentLink(customerId)];
+  if (branchId) payConds.push(eq(receipts.branchId, branchId));
   // لا تدخل الحركة إلا إذا أثرت مالياً فعلاً. السند المعلّق/المرفوض لا قيد له،
   // وREVERSED يبقى ليتصافي مع الإيصال التعويضي.
   payConds.push(eq(receipts.approvalStatus, "APPROVED"));
@@ -526,6 +561,7 @@ export async function getCustomerStatement(
     sql`(${accountingEntries.invoiceId} IS NOT NULL OR ${accountingEntries.dedupeKey} LIKE 'FULFILLMENT_CHARGE_CUSTODY:%')`,
     sql`${codStmtReceipts.invoiceId} IS NULL`,
   ];
+  if (branchId) codPayConds.push(eq(accountingEntries.branchId, branchId));
   if (from) codPayConds.push(sql`${accountingEntries.entryDate} >= ${`${from} 00:00:00`}`);
   if (to) codPayConds.push(sql`${accountingEntries.entryDate} < ${`${nextDayStr(to)} 00:00:00`}`);
   const codPayments = await db
@@ -596,6 +632,7 @@ export async function getCustomerStatement(
     eq(accountingEntries.entryType, "OPENING"),
     eq(accountingEntries.customerId, customerId),
   ];
+  if (branchId) openingMoveConds.push(eq(accountingEntries.branchId, branchId));
   if (from) openingMoveConds.push(sql`${accountingEntries.entryDate} >= ${`${from} 00:00:00`}`);
   if (to) openingMoveConds.push(sql`${accountingEntries.entryDate} < ${`${nextDayStr(to)} 00:00:00`}`);
   // بلا فترة: المُرحَّل يشمل كلّ القيود أصلاً ⇒ لا نُكرّرها حركةً.
@@ -613,7 +650,10 @@ export async function getCustomerStatement(
         .where(and(...openingMoveConds))
     : [];
 
-  const openingBalance = await customerOpeningBalance(customerId, from, to);
+  const openingBalance = await customerOpeningBalance(customerId, from, to, branchId);
+  const currentBalance = branchId
+    ? await customerOpeningBalance(customerId, undefined, undefined, branchId, true)
+    : money(c.currentBalance ?? 0);
   const chargeConds=[eq(fulfillmentCharges.customerId,customerId),inArray(fulfillmentCharges.status,["APPROVED","COMPLETED"])];
   if(branchId)chargeConds.push(eq(fulfillmentCharges.branchId,branchId));
   if(from)chargeConds.push(sql`${fulfillmentCharges.approvedAt} >= ${`${from} 00:00:00`}`);
@@ -638,7 +678,9 @@ export async function getCustomerStatement(
       status: orderPayments.status,
     })
     .from(orderPayments)
-    .where(and(eq(orderPayments.customerId, customerId), sql`${orderPayments.kind} IN ('COLLECTION','REFUND')`));
+    .where(and(eq(orderPayments.customerId, customerId),
+      branchId ? eq(orderPayments.branchId, branchId) : undefined,
+      sql`${orderPayments.kind} IN ('COLLECTION','REFUND')`));
   let heldDeposits = money(0);
   const heldCollectionIds = new Set<number>();
   for (const r of heldRows) {
@@ -896,6 +938,7 @@ export async function getCustomerStatement(
         invoiceDate: i.invoiceDate,
         dueDate: i.dueDate,
         total: String(i.total),
+        ledgerTotal: toDbMoney(money(i.ledgerTotal)),
         currentTotal: toDbMoney(currentTotalOf(i)),
         remainingAmount: isDeadInvoiceStatus(i.status) ? "0.00" : toDbMoney(openBalanceOf(i, "COLLECTIBLE")),
         paidAmount: String(i.paidAmount),
@@ -1015,7 +1058,9 @@ export async function getCustomerStatement(
       totalSales: toDbMoney(totalSales),
       totalPaid: toDbMoney(totalPaid),
       unpaid: toDbMoney(unpaid),
-      currentBalance: String(c.currentBalance ?? "0"),
+      currentBalance: toDbMoney(currentBalance),
+      companyCurrentBalance: String(c.currentBalance ?? "0"),
+      scopedBranchId: branchId ?? null,
       openingBalance: toDbMoney(openingBalance),
       heldDepositsTotal: toDbMoney(heldDeposits),
     },

@@ -46,8 +46,8 @@ export interface TreasuryMethodLine {
   out: string;
   /** صافي الحركة للطريقة نفسها؛ موجب = تحصيل أكثر من الصرف. */
   net: string;
-  /** النقد وحده هو ما يُفترض وجوده فعلياً في درج الكاشير. */
-  settlement: "DRAWER" | "NON_CASH";
+  /** مكان عهدة الحركة؛ طريقة CASH وحدها لا تحدد الدرج. */
+  settlement: "DRAWER" | "TREASURY" | "UNASSIGNED" | "NON_CASH";
 }
 
 export interface TreasuryShiftLine {
@@ -66,6 +66,8 @@ export interface TreasuryShiftLine {
 }
 
 export interface TreasurySummaryResult {
+  /** صافي النقد المعروض، وليس الرصيد المتاح للصرف. */
+  cashNet: string;
   period: { from: string; to: string };
   methods: TreasuryMethodLine[];
   totalIn: string;
@@ -88,6 +90,7 @@ export async function getTreasurySummary(opts: {
 }): Promise<TreasurySummaryResult> {
   const db = getDb();
   const base: TreasurySummaryResult = {
+    cashNet: "0",
     period: { from: opts.from, to: opts.to },
     methods: [],
     totalIn: "0",
@@ -101,6 +104,7 @@ export async function getTreasurySummary(opts: {
   const recRows = rowsOf(
     await db.execute(sql`
       SELECT r.direction AS direction, r.paymentMethod AS method,
+             CASE WHEN r.paymentMethod = 'CASH' THEN COALESCE(r.cashBucket, 'UNASSIGNED') ELSE 'NON_CASH' END AS settlement,
              CAST(COALESCE(SUM(r.amount), 0) AS CHAR) AS amount
       FROM receipts r
       WHERE r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
@@ -136,32 +140,37 @@ export async function getTreasurySummary(opts: {
           )
         )
         ${opts.branchId ? sql`AND r.branchId = ${opts.branchId}` : sql``}
-      GROUP BY r.direction, r.paymentMethod
+      GROUP BY r.direction, r.paymentMethod, settlement
     `),
   );
 
   // اجمع IN/OUT لكل طريقة في صفّ واحد. حافظ على ترتيب الظهور.
-  const methodMap = new Map<string, { in: ReturnType<typeof money>; out: ReturnType<typeof money> }>();
+  const methodMap = new Map<string, { method: string; settlement: TreasuryMethodLine["settlement"]; in: ReturnType<typeof money>; out: ReturnType<typeof money> }>();
   let totalIn = money(0);
   let totalOut = money(0);
+  let cashNet = money(0);
   for (const r of recRows) {
-    const key = String(r.method);
+    const method = String(r.method);
+    const settlement: TreasuryMethodLine["settlement"] = method !== "CASH" ? "NON_CASH"
+      : r.settlement === "DRAWER" || r.settlement === "TREASURY" ? r.settlement : "UNASSIGNED";
+    const key = method === "CASH" && settlement !== "DRAWER" ? `${method}_${settlement}` : method;
     const amt = money(r.amount ?? 0);
-    if (!methodMap.has(key)) methodMap.set(key, { in: money(0), out: money(0) });
+    if (!methodMap.has(key)) methodMap.set(key, { method, settlement, in: money(0), out: money(0) });
     const slot = methodMap.get(key)!;
     if (r.direction === "IN") { slot.in = slot.in.add(amt); totalIn = totalIn.add(amt); }
     else { slot.out = slot.out.add(amt); totalOut = totalOut.add(amt); }
+    if (method === "CASH") cashNet = r.direction === "IN" ? cashNet.plus(amt) : cashNet.minus(amt);
   }
 
   const methods: TreasuryMethodLine[] = Array.from(methodMap.entries()).map(([key, v]) => ({
     key,
-    label: PAY_METHOD_AR[key] ?? key,
+    label: PAY_METHOD_AR[v.method] ?? v.method,
     in: toDbMoney(v.in),
     out: toDbMoney(v.out),
     net: toDbMoney(v.in.minus(v.out)),
     // البطاقة والتحويل والمحفظة تحصيلات صحيحة، لكن لا تدخل درج الكاشير ولا يجوز
     // مطالبة الموظف بها عند الإغلاق. نُظهر هذا صراحةً في التقرير.
-    settlement: key === "CASH" ? "DRAWER" : "NON_CASH",
+    settlement: v.settlement,
   }));
 
   // (ب) فروقات الورديات في الفترة (حسب openedAt). variance/countedCash قد تكون NULL لوردية مفتوحة.
@@ -223,6 +232,7 @@ export async function getTreasurySummary(opts: {
     totalIn: toDbMoney(totalIn),
     totalOut: toDbMoney(totalOut),
     net: toDbMoney(totalIn.sub(totalOut)),
+    cashNet: toDbMoney(cashNet),
     shifts: {
       count: Number(sh.cnt ?? 0),
       shownCount: shiftRows.length,

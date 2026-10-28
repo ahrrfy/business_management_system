@@ -92,7 +92,7 @@ export default function ProfitabilityReport() {
 
   const branches = trpc.branches.list.useQuery();
 
-  // كل مصدر يُفعَّل فقط حين يُختار بُعده (enabled) ⇒ استدعاء واحد فعّال.
+  // Product/category rows keep their own source; invoice totals also disclose unassigned delivery.
   const products = trpc.reports.topProducts.useQuery(
     { ...range, by, orderDir, limit: PRODUCT_LIMIT },
     { enabled: dim === "product", staleTime: 60_000 },
@@ -109,26 +109,28 @@ export default function ProfitabilityReport() {
       from: period.from,
       to: period.to,
       branchId: branchArg,
-      dimension: dim === "product" || dim === "category" ? "customer" : dim,
+      dimension: dim === "product" || dim === "category" ? "branch" : dim,
     },
-    { enabled: dim !== "product" && dim !== "category", staleTime: 60_000 },
+    { staleTime: 60_000 },
   );
 
   const loading =
     (dim === "product" && products.isLoading) ||
     (dim === "category" && categories.isLoading) ||
-    (dim !== "product" && dim !== "category" && byDim.isLoading);
+    byDim.isLoading;
 
   const error =
     (dim === "product" && products.isError) ||
     (dim === "category" && categories.isError) ||
-    (dim !== "product" && dim !== "category" && byDim.isError);
+    byDim.isError;
 
   function refetchActive() {
-    if (dim === "product") return products.refetch();
-    if (dim === "category") return categories.refetch();
+    if (dim === "product") return Promise.all([products.refetch(), byDim.refetch()]);
+    if (dim === "category") return Promise.all([categories.refetch(), byDim.refetch()]);
     return byDim.refetch();
   }
+  const deliveryRevenue = byDim.data?.totals.deliveryRevenue ?? "0.00";
+  const revenueBasis = "إيراد البضاعة قبل الضريبة وبعد خصم الفاتورة والمرتجعات. الربح المعروض مجمل ربح البضاعة قبل المصروفات التشغيلية؛ إيراد التوصيل إفصاح مستقل ولا يُنسب إلى منتج.";
 
   const subLabel =
     dim === "product" ? "الكمية" : dim === "category" ? "المنتجات" : "الفواتير";
@@ -338,7 +340,7 @@ export default function ProfitabilityReport() {
         { label: "الإيراد", value: formatIqd(totals.revenue), tone: "info" },
         { label: "التكلفة", value: formatIqd(totals.cost) },
         {
-          label: "صافي الربح",
+          label: "مجمل ربح البضاعة",
           value: formatIqd(totals.profit),
           tone: Number(totals.profit) < 0 ? "negative" : "positive",
         },
@@ -350,6 +352,7 @@ export default function ProfitabilityReport() {
             ? `${fmtAr(erosionCount)} بند بهامش ضعيف`
             : undefined,
         },
+        { label: "إيراد توصيل غير منسوب لمنتج", value: formatIqd(deliveryRevenue), tone: "info", hint: "لكامل الفترة والفرع، خارج هامش البضاعة" },
       ]
     : [];
 
@@ -364,6 +367,8 @@ export default function ProfitabilityReport() {
       meta: [
         { label: "الفترة", value: `${period.from} — ${period.to}` },
         { label: "الفرع", value: branchLabel },
+        { label: "أساس التقرير", value: revenueBasis },
+        { label: "إيراد توصيل غير منسوب لمنتج", value: formatIqd(deliveryRevenue) },
       ],
       columns: [
         { key: "label", header: DIM_LABEL[dim] },
@@ -410,6 +415,7 @@ export default function ProfitabilityReport() {
         { label: "الفرع", value: branchLabel },
         { label: "كما في", value: fmtDate(new Date()) },
       ],
+      note: revenueBasis,
       columns: [
         { key: "label", label: DIM_LABEL[dim] },
         { key: "sub", label: subLabel, align: "left" },
@@ -430,11 +436,12 @@ export default function ProfitabilityReport() {
         { label: "الإيراد", value: formatIqd(totals.revenue) },
         { label: "التكلفة", value: formatIqd(totals.cost) },
         {
-          label: "صافي الربح",
+          label: "مجمل ربح البضاعة",
           value: formatIqd(totals.profit),
           large: true,
           bold: true,
         },
+        { label: "إيراد توصيل غير منسوب لمنتج", value: formatIqd(deliveryRevenue) },
       ],
     });
   }
@@ -442,11 +449,11 @@ export default function ProfitabilityReport() {
   return (
     <ReportShell
       title="تحليل الربحية الحقيقي"
-      description="أين المال الحقيقي — ربح وهامش حسب المنتج/الفئة/العميل/الفرع/الكاشير، مع كشف تآكل الهامش."
+      description="إيراد البضاعة ومجمل ربحها قبل المصروفات، حسب المنتج/الفئة/العميل/الفرع/الكاشير."
       note={
         productsTruncated
-          ? `تُعرض أعلى ${fmtInt(PRODUCT_LIMIT)} منتجاً فقط — قد توجد منتجات إضافية لم تظهر. ضيّق الفترة أو استعمل بُعداً آخر لرؤية بقية الكتالوج.`
-          : undefined
+          ? `${revenueBasis} تُعرض أعلى ${fmtInt(PRODUCT_LIMIT)} منتجاً فقط؛ إجماليات البضاعة للمنتجات المعروضة. ضيّق الفترة أو استعمل بُعداً آخر لرؤية بقية الكتالوج.`
+          : revenueBasis
       }
       kpis={kpis}
       onExport={onExport}

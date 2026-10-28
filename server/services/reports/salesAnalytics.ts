@@ -11,18 +11,19 @@ import { sql } from "drizzle-orm";
 import { getDb } from "../../db";
 import { money, toDbMoney } from "../money";
 import {
-  componentRightsRawRevenueSql,
   componentRightsRawCostSql,
+  invoiceLineReportProjectionSql,
 } from "../fulfillment/componentRightsReportSql";
+import { VOIDED_INVOICE_STATUSES } from "@shared/invoiceStatus";
+
+const VOIDED_STATUS_SQL = sql`(${sql.join(VOIDED_INVOICE_STATUSES.map((status) => sql`${status}`), sql`, `)})`;
 
 // مصدر واحد لصيغ Top Products وProfit by Category كي لا تنجرف التقارير عن بعضها:
 // - الإيراد يتبع ما بقي مع العميل، سواء كانت الفاتورة جزئية المرتجع أم RETURNED بالكامل.
 // - COGS يُعكس فقط للوحدات التي عادت فعلاً للمخزون؛ المرتجع التالف لا يعكس تكلفته.
 // GREATEST يحمي التقرير من عدّاد تاريخي منجرف من إنتاج قيمة سالبة، ولا يغيّر أي قيد دفتر.
 const netBaseQuantitySql = sql`GREATEST(ii.baseQuantity - COALESCE(ii.returnedBaseQuantity, 0), 0)`;
-const netLineRevenueSql =
-  componentRightsRawRevenueSql(sql`CASE WHEN ii.baseQuantity > 0
-  THEN ii.total * ${netBaseQuantitySql} / ii.baseQuantity ELSE ii.total END`);
+const netLineRevenueSql = sql`rp.revenue`;
 
 // صمام أمان ذاتي (Self-Healing Line Cost):
 // إن كان lineCost مشوهاً أو متضخماً بأكثر من 1.5 ضعف حاصل ضرب (unitCost * baseQuantity)
@@ -98,6 +99,8 @@ export async function getTopProducts(
   const fromFilter = opts.from ? sql`AND i.invoiceDate >= ${opts.from + " 00:00:00"}` : sql``;
   const toFilter = opts.to ? sql`AND i.invoiceDate <= ${opts.to + " 23:59:59"}` : sql``;
   const branchFilter = opts.branchId ? sql`AND i.branchId = ${opts.branchId}` : sql``;
+  const where = sql`i.invoiceStatus NOT IN ${VOIDED_STATUS_SQL} ${fromFilter} ${toFilter} ${branchFilter}`;
+  const projection = invoiceLineReportProjectionSql(where);
 
   const rows = await db.execute(sql`
     SELECT
@@ -117,13 +120,11 @@ export async function getTopProducts(
       COUNT(DISTINCT ii.invoiceId) AS invoicesCount
     FROM invoiceItems ii
     INNER JOIN invoices i ON i.id = ii.invoiceId
+    INNER JOIN (${projection}) rp ON rp.id = ii.id
     INNER JOIN productVariants v ON v.id = ii.variantId
     INNER JOIN products p ON p.id = v.productId
     LEFT JOIN categories c ON c.id = p.categoryId
-    WHERE i.invoiceStatus NOT IN ('CANCELLED', 'SUPERSEDED')
-      ${fromFilter}
-      ${toFilter}
-      ${branchFilter}
+    WHERE ${where}
     GROUP BY p.id, p.name, c.name
     -- المرتجع الكامل التالف: qty/revenue = 0 لكن COGS باقٍ، فيجب أن يظهر كخسارة.
     -- المرتجع الكامل المعاد للمخزون صفر الأثر اقتصادياً، فلا يزاحم المبيعات في ترتيب «الأكثر».
@@ -201,10 +202,9 @@ export async function getSlowMovers(
       FROM productVariants v
       JOIN invoiceItems ii ON ii.variantId = v.id
       JOIN invoices i ON i.id = ii.invoiceId
-        AND i.invoiceStatus NOT IN ('CANCELLED', 'RETURNED')
-        AND i.invoiceDate >= DATE_SUB(UTC_DATE(), INTERVAL ${sinceDays} DAY)
+        AND i.invoiceStatus NOT IN ${VOIDED_STATUS_SQL}
         ${branchSalesFilter}
-      WHERE v.isActive = TRUE
+      WHERE v.isActive = TRUE AND ii.baseQuantity > COALESCE(ii.returnedBaseQuantity, 0)
       GROUP BY v.productId
     ) sa ON sa.pid = p.id
     WHERE p.isActive = TRUE
@@ -242,6 +242,8 @@ export async function getProfitByCategory(opts: SalesAnalyticsFilters = {}): Pro
   const fromFilter = opts.from ? sql`AND i.invoiceDate >= ${opts.from + " 00:00:00"}` : sql``;
   const toFilter = opts.to ? sql`AND i.invoiceDate <= ${opts.to + " 23:59:59"}` : sql``;
   const branchFilter = opts.branchId ? sql`AND i.branchId = ${opts.branchId}` : sql``;
+  const where = sql`i.invoiceStatus NOT IN ${VOIDED_STATUS_SQL} ${fromFilter} ${toFilter} ${branchFilter}`;
+  const projection = invoiceLineReportProjectionSql(where);
 
   const rows = await db.execute(sql`
     SELECT
@@ -257,13 +259,11 @@ export async function getProfitByCategory(opts: SalesAnalyticsFilters = {}): Pro
       COUNT(*) AS itemsCount
     FROM invoiceItems ii
     INNER JOIN invoices i ON i.id = ii.invoiceId
+    INNER JOIN (${projection}) rp ON rp.id = ii.id
     INNER JOIN productVariants v ON v.id = ii.variantId
     INNER JOIN products p ON p.id = v.productId
     LEFT JOIN categories c ON c.id = p.categoryId
-    WHERE i.invoiceStatus NOT IN ('CANCELLED', 'SUPERSEDED')
-      ${fromFilter}
-      ${toFilter}
-      ${branchFilter}
+    WHERE ${where}
     GROUP BY p.categoryId, c.name
     ORDER BY SUM(${netLineRevenueSql}) DESC
   `);

@@ -15,10 +15,14 @@
 //   - المتبقّي/أمر AP لا يستعمل ذلك المسند أصلاً: مصدرُه رصيدُ دفتر الأستاذ لكلّ أمر
 //     (`gl.balance` المصفّى من `accountingEntries`) لأنّ `purchaseOrders` بلا `returnedTotal`.
 //     (كان هذا السطر يقول `GREATEST(total - paidAmount, 0)` وهو وصفٌ متقادمٌ للشيفرة أدناه.)
-import { sql } from "drizzle-orm";
+import { and, inArray, sql } from "drizzle-orm";
 import { openBalanceExpr } from "@shared/predicates/openBalance";
 import { getDb } from "../db";
 import { money, toDbMoney } from "./money";
+import { purchaseOrders } from "../../drizzle/schema";
+import { getARAging, arAgingDocumentsSql } from "./reports/arAging";
+import { getAPAging } from "./reports/apAging";
+import { loadPurchaseSettlements } from "./purchase/settlementProjection";
 import {
   isSupplierApLedgerEntrySql,
   isSupplierApRecognitionSql,
@@ -51,6 +55,7 @@ export interface AgingDetailRow {
   daysOverdue: number;
   bucket: AgingBucket;
   unpaid: string;
+  documentType: "INVOICE" | "FULFILLMENT_CHARGE" | "PURCHASE_ORDER";
 }
 
 export interface AgingDetailResult {
@@ -62,6 +67,9 @@ export interface AgingDetailResult {
     d31_60: string;
     d61_90: string;
     d91p: string;
+    /** Display-only FIFO offsets; source invoice balances and BOOK allocations are unchanged. */
+    unallocatedCredit: string;
+    documentUnpaid: string;
   };
 }
 
@@ -85,7 +93,7 @@ export async function getArApAgingDetail(opts: {
 }): Promise<AgingDetailResult> {
   const empty: AgingDetailResult = {
     rows: [],
-    totals: { count: 0, unpaid: "0", d0_30: "0", d31_60: "0", d61_90: "0", d91p: "0" },
+    totals: { count: 0, unpaid: "0", d0_30: "0", d31_60: "0", d61_90: "0", d91p: "0", unallocatedCredit: "0", documentUnpaid: "0" },
   };
   const db = getDb();
   if (!db) return empty;
@@ -104,13 +112,15 @@ export async function getArApAgingDetail(opts: {
         await db.execute(sql`
           SELECT
             i.id AS id,
-            i.invoiceNumber AS number,
+            i.number AS number,
+            i.customerId AS partyId,
+            i.documentType AS documentType,
             c.name AS partyName,
             DATE_FORMAT(i.invoiceDate, '%Y-%m-%d') AS date,
             DATE_FORMAT(i.dueDate, '%Y-%m-%d') AS dueDate,
             DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) AS daysOverdue,
             CAST(${openBalance} AS CHAR) AS unpaid
-          FROM invoices i
+          FROM (${arAgingDocumentsSql()}) i
           LEFT JOIN customers c ON c.id = i.customerId
           WHERE i.invoiceStatus IN ('PENDING', 'PARTIALLY_PAID')
             AND ${openBalance} > 0
@@ -123,6 +133,8 @@ export async function getArApAgingDetail(opts: {
           SELECT
             po.id AS id,
             po.poNumber AS number,
+            po.supplierId AS partyId,
+            'PURCHASE_ORDER' AS documentType,
             s.name AS partyName,
             DATE_FORMAT(gl.recognitionDate, '%Y-%m-%d') AS date,
             NULL AS dueDate,
@@ -147,6 +159,56 @@ export async function getArApAgingDetail(opts: {
         `),
       );
 
+  // BOOK allocations deliberately preserve original ledger rows. Read the same
+  // settlement projection used by AP summary rather than inventing new payments.
+  if (!isAR && raw.length) {
+    const orders = await db.select().from(purchaseOrders).where(and(
+      inArray(purchaseOrders.id, raw.map(r => Number(r.id))),
+      sql`EXISTS (SELECT 1 FROM supplierBookSettlementSources book
+        WHERE book.supplierId = ${purchaseOrders.supplierId}
+          ${branchId ? sql`AND book.branchId = ${branchId}` : sql``})`,
+    ));
+    const projection = await loadPurchaseSettlements(db, orders);
+    for (const row of raw) {
+      const settled = projection.get(Number(row.id));
+      if (settled) row.unpaid = settled.remainingAmountIqd;
+    }
+  }
+
+  // Summary owns the existing net/FIFO presentation of unallocated credits.
+  // Cap each party/bucket to that same view, preserving document identity and
+  // removing the oldest amounts first. This changes reporting only, not allocation.
+  const summaries = isAR
+    ? await getARAging({ branchId, limit: null })
+    : await getAPAging({ branchId, limit: null });
+  const caps = new Map(summaries.map(row => [
+    "customerId" in row ? row.customerId : row.supplierId,
+    row,
+  ]));
+  const documentUnpaid = raw.reduce((sum, row) => sum.plus(money(row.unpaid)), money(0));
+  const grouped = new Map<string, typeof raw>();
+  for (const row of raw) {
+    const key = `${row.partyId}:${bucketOf(Number(row.daysOverdue ?? 0))}`;
+    const list = grouped.get(key) ?? [];
+    list.push(row);
+    grouped.set(key, list);
+  }
+  for (const rows of Array.from(grouped.values())) {
+    const first = rows[0];
+    const summary = caps.get(Number(first.partyId));
+    const bucket = bucketOf(Number(first.daysOverdue ?? 0));
+    const field = bucket === "0-30" ? "d0_30" : bucket === "31-60" ? "d31_60" : bucket === "61-90" ? "d61_90" : "d91p";
+    const cap = money(summary?.[field] ?? 0);
+    let excess = rows.reduce((total, row) => total.plus(money(row.unpaid)), money(0)).minus(cap);
+    for (const row of rows) {
+      if (excess.lte(0)) break;
+      const amount = money(row.unpaid);
+      const deduction = amount.lessThan(excess) ? amount : excess;
+      row.unpaid = toDbMoney(amount.minus(deduction));
+      excess = excess.minus(deduction);
+    }
+  }
+
   // أموال بدقّة decimal.js (§٥) — لا Number/parseFloat على المال.
   let totalUnpaid = money(0);
   let d0_30 = money(0);
@@ -154,7 +216,7 @@ export async function getArApAgingDetail(opts: {
   let d61_90 = money(0);
   let d91p = money(0);
 
-  const rows: AgingDetailRow[] = raw.map((r) => {
+  const rows: AgingDetailRow[] = raw.filter(r => money(r.unpaid).gt(0)).map((r) => {
     const daysOverdue = Number(r.daysOverdue ?? 0);
     const bucket = bucketOf(daysOverdue);
     const unpaid = money(r.unpaid ?? 0);
@@ -172,6 +234,7 @@ export async function getArApAgingDetail(opts: {
       daysOverdue,
       bucket,
       unpaid: toDbMoney(unpaid),
+      documentType: r.documentType as AgingDetailRow["documentType"],
     };
   });
 
@@ -184,6 +247,8 @@ export async function getArApAgingDetail(opts: {
       d31_60: toDbMoney(d31_60),
       d61_90: toDbMoney(d61_90),
       d91p: toDbMoney(d91p),
+      documentUnpaid: toDbMoney(documentUnpaid),
+      unallocatedCredit: toDbMoney(documentUnpaid.minus(totalUnpaid)),
     },
   };
 }

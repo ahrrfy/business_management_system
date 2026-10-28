@@ -889,6 +889,8 @@ export function printWorkOrderV2(d: WorkOrderV2Data): boolean {
 // ═════════════════════════════════════════════════════════════════════════════
 
 export interface StatementV2Data {
+  scopeLabel?: string;
+  companyCurrentBalance?: string | number;
   /** «customer» = رصيد ختامي مستحق «لنا»، «supplier» = مستحق «علينا». يُغيّر أسماء الحقول. */
   partyKind: 'customer' | 'supplier';
   partyName: string;
@@ -931,6 +933,7 @@ export function printStatementV2(d: StatementV2Data): boolean {
     subtitle: 'بيان تفصيلي — يوضح محتوى كل فاتورة وسند مرتبط بالحركة',
     fields: [
       { label: 'الفترة', value: d.periodLabel },
+      ...(d.scopeLabel ? [{ label: 'نطاق الكشف', value: d.scopeLabel }] : []),
       ...(d.printedByName ? [{ label: 'طالب الطباعة', value: d.printedByName }] : []),
       ...(d.printRequestedAt ? [{ label: 'وقت طلب الطباعة', value: d.printRequestedAt }] : []),
     ],
@@ -950,6 +953,7 @@ export function printStatementV2(d: StatementV2Data): boolean {
       variant: 'gray',
       fields: [
         { label: 'الرصيد السابق', value: fmtIQD(d.openingBalance) },
+        ...(d.companyCurrentBalance != null ? [{ label: 'رصيد الشركة الحالي (كل الفروع)', value: fmtIQD(d.companyCurrentBalance) }] : []),
         ...(d.currentBalance != null ? [{ label: 'الرصيد الحالي', value: fmtIQD(d.currentBalance) }] : []),
         { label: 'عدد الحركات', value: String(d.transactionsCount) },
       ],

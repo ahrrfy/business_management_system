@@ -11,7 +11,18 @@ vi.mock("./brand", async () => {
 
 import { openPrintWindow } from "./brand";
 import { buildBrandedReceipt } from "@/components/pos/posShared";
-import { printBrowserReceipt, printShiftCloseBrowser, printInvoiceA4, printARAging, printAPAging } from "./printTemplates";
+import { printBrowserReceipt, printShiftCloseBrowser, printInvoiceA4, printARAging, printAPAging, printCustomerStmt } from "./printTemplates";
+
+describe("customer statement scope", () => {
+  it("يحفظ نطاق الفرع ورصيد الشركة منفصلين في PDF", () => {
+    vi.mocked(openPrintWindow).mockClear();
+    printCustomerStmt({ customerName: "عميل", scopeLabel: "الفرع #1", companyCurrentBalance: "0.00", currentBalance: "100.00", openingBalance: "0.00", closingBalance: "100.00", totalDebit: "100.00", totalCredit: "0.00", transactions: [] });
+    const text = new JSDOM(vi.mocked(openPrintWindow).mock.calls[0]?.[0] ?? "").window.document.body.textContent ?? "";
+    expect(text).toContain("الفرع #1");
+    expect(text).toContain("رصيد الشركة الحالي (كل الفروع)");
+    expect(text).toContain("100");
+  });
+});
 import { printSalesReportV2 } from "./printTemplatesV2";
 import { docToHtml, resolveQrUrl } from "./render";
 import * as qrModule from "./qr";
