@@ -19,6 +19,8 @@ export {
   enqueueOutbox,
   getActiveWaIntegration,
   hasAnyActiveWaIntegration,
+  retryOutbox,
+  getUnknownOutboxForBranch,
 } from "./outboxService";
 export type { ActiveWaIntegration, EnqueueOutboxInput } from "./outboxService";
 

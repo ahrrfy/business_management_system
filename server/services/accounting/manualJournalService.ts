@@ -84,6 +84,16 @@ export interface ManualJournalDetail {
   }>;
 }
 
+function canonicalRequestLines(lines: ManualJournalLineInput[]) {
+  return lines.map((line) => ({
+    accountId: line.accountId,
+    debit: toDbMoney(line.debit),
+    credit: toDbMoney(line.credit),
+    customerId: line.customerId ?? null,
+    supplierId: line.supplierId ?? null,
+  })).sort((a, b) => stableJson(a).localeCompare(stableJson(b)));
+}
+
 /**
  * إنشاء قيد يومية يدوي متوازن وفق الأصول المحاسبية الصارمة:
  * 1. فحص الفترة المالية المقفلة.
@@ -151,12 +161,22 @@ export async function createManualJournal(
     });
   }
 
+  const rawBranchId = input.branchId !== undefined ? input.branchId : actor.branchId;
+  const effectiveBranchId =
+    rawBranchId != null && rawBranchId > 0 ? rawBranchId : null;
+
   // 1. فحص الإعادة المطابقة (Idempotency) في حال تكرار الطلب بنفس clientRequestId
   if (input.clientRequestId) {
     const existing = await tx
       .select({
         id: accountingEntries.id,
         amount: accountingEntries.amount,
+        branchId: accountingEntries.branchId,
+        createdBy: accountingEntries.createdBy,
+        entryDate: accountingEntries.entryDate,
+        notes: accountingEntries.notes,
+        postingIntentJson: accountingEntries.postingIntentJson,
+        postingIntentHash: accountingEntries.postingIntentHash,
       })
       .from(accountingEntries)
       .where(eq(accountingEntries.dedupeKey, `MANUAL_JOURNAL:${input.clientRequestId}`))
@@ -164,19 +184,55 @@ export async function createManualJournal(
 
     if (existing.length > 0) {
       const existingEntry = existing[0];
+      // Compare only committed request facts. Current account/period state must
+      // not prevent recovery of the same command after a lost response.
+      let matchingRequest = false;
+      try {
+        const intent = (typeof existingEntry.postingIntentJson === "string"
+          ? JSON.parse(existingEntry.postingIntentJson)
+          : existingEntry.postingIntentJson) as { lines?: ManualJournalLineInput[] } | null;
+        matchingRequest =
+          intent != null && Array.isArray(intent.lines) &&
+          createHash("sha256").update(stableJson(intent), "utf8").digest("hex") === existingEntry.postingIntentHash &&
+          existingEntry.branchId === effectiveBranchId &&
+          existingEntry.createdBy === actor.userId &&
+          existingEntry.entryDate.toISOString().slice(0, 10) === input.entryDate &&
+          existingEntry.notes === `قيد يدوي: ${notes}` &&
+          stableJson(canonicalRequestLines(intent.lines)) === stableJson(canonicalRequestLines(input.lines));
+      } catch {
+        // Missing/malformed legacy evidence cannot prove an identical request.
+      }
+      if (!matchingRequest) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذر إعادة طلب قيد اليومية",
+            why: "مفتاح الطلب مستخدم لقيد بحمولة أو فرع أو منشئ مختلف، أو لا تتوفر أدلة كافية لمطابقته.",
+            doThis: "أعد إرسال الطلب الأصلي من حساب منشئه، أو استخدم مفتاحاً جديداً لقيد جديد.",
+          }),
+        });
+      }
       const existingJournal = await tx
-        .select({ id: journalEntries.id })
+        .select({ id: journalEntries.id, status: journalEntries.status })
         .from(journalEntries)
         .where(eq(journalEntries.entryId, existingEntry.id))
         .limit(1);
 
-      if (existingJournal.length > 0) {
+      if (existingJournal[0]?.status === "POSTED") {
         return {
           journalId: existingJournal[0].id,
           entryId: existingEntry.id,
           amount: String(existingEntry.amount ?? "0.00"),
         };
       }
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذر تأكيد قيد اليومية السابق",
+          why: "مفتاح الطلب موجود دون قيد يومية مُرحّل مطابق.",
+          doThis: "راجع المحاسب لفحص دليل القيد السابق قبل إعادة الطلب.",
+        }),
+      });
     }
   }
 
@@ -372,9 +428,6 @@ export async function createManualJournal(
     });
   }
 
-  const rawBranchId = input.branchId !== undefined ? input.branchId : actor.branchId;
-  const effectiveBranchId =
-    rawBranchId != null && rawBranchId > 0 ? rawBranchId : null;
   const runtime = await getDoubleEntryRuntime(tx);
 
   // 5. بناء نية الترحيل المعيارية والتوقيع المشفر (Evidence Hash)

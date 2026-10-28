@@ -56,6 +56,8 @@ import { loadRefundCaps } from "../returns/refundCaps";
 import { type Actor } from "../tx";
 import { extractInsertId } from "../../lib/insertId";
 import { createSaleInTx } from "./create";
+import { inheritAttributionsForCorrection } from "../commissions/attribution";
+import { userNameSnapshot } from "../userSnapshot";
 import { mixedAwarePaymentMethod } from "./payment";
 import type { PriceTier } from "../pricing";
 import type { SaleLineInput } from "./types";
@@ -735,10 +737,8 @@ export async function correctSaleInTx(
       ...(deliveryAmendment
         ? { codDispatchPending: true, paymentMode: "COD" as const }
         : {}),
-      // نسبةُ البيع تبقى للبائع الأصليّ لا للمدير المصحِّح: وعاء العمولة يُجمَّع بـ
-      // `invoices.createdBy` (commissions/base.ts) وقيدُ RETURN العكسيّ يُخصَم من الأصليّ ⇒
-      // بلا هذا السطر كان تصحيحُ سطرٍ واحد ينقل بيعاً كاملاً من وعاء الكاشير إلى وعاء المدير.
-      // هويّة المصحِّح محفوظةٌ في auditLogs (`sale.correctReissue`) — وهي موضعها الصحيح.
+      // حفظ منشئ البيع الأصلي؛ خطة المشاركين والأدوار تُورَّث كاملةً بعد الإنشاء أدناه.
+      // هويّة المصحِّح محفوظةٌ في auditLogs (`sale.correctReissue`).
       attributeToUserId: inv.createdBy ?? null,
       creditApproved: input.creditApproved,
       creditApprovalId: input.creditApprovalId,
@@ -748,6 +748,30 @@ export async function correctSaleInTx(
     }, actor,
     );
     const newId = repost.invoiceId;
+    // نفس وعاء createSaleInTx: الصافي التجاري، دون الهدايا أو الضريبة أو الشحن.
+    const [replacement] = await tx.select({
+      subtotal: invoices.subtotal,
+      discountAmount: invoices.discountAmount,
+    }).from(invoices).where(eq(invoices.id, newId)).for("update").limit(1);
+    const attribution = await inheritAttributionsForCorrection(tx, {
+      originalInvoiceId: input.originalInvoiceId,
+      newInvoiceId: newId,
+      branchId: Number(inv.branchId),
+      newBaseAmount: money(replacement!.subtotal).minus(replacement!.discountAmount),
+      fallbackUserId: inv.createdBy,
+      originalPrimaryUserId: inv.salesRepId,
+      originalAttributionMode: inv.attributionMode,
+    });
+    await tx.update(invoices).set({
+      createdBy: inv.createdBy,
+      salesRepId: attribution?.primaryUserId ?? null,
+      attributionMode: attribution?.attributionMode ?? inv.attributionMode,
+      salespersonNameSnapshot: attribution == null
+        ? inv.salespersonNameSnapshot
+        : inv.salesRepId === attribution.primaryUserId && inv.salespersonNameSnapshot != null
+          ? inv.salespersonNameSnapshot
+          : await userNameSnapshot(tx, attribution.primaryUserId),
+    }).where(eq(invoices.id, newId));
     const newTotal = round2(money(repost.total));
     if (allocatedAmount.gt(0)) {
       const cashRefund = input.overpayHandling === "CASH_REFUND";

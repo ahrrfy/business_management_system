@@ -4,7 +4,7 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
-import { accountingEntries, exchangeHouses, exchangeTransactions, purchaseOrders, receipts, suppliers } from "../../../drizzle/schema";
+import { accountingEntries, exchangeHouses, exchangeTransactions, purchaseOrders, receipts, suppliers, supplierBookSettlementSources } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { adjustSupplierBalance, adjustSupplierBalanceUsd, postEntry } from "../ledgerService";
 import {
@@ -304,10 +304,15 @@ export async function reverseExchangeTransaction(
         });
       }
     }
-    // تسوية جديدة تقفل branch→supplier→PO→house. العكس يجب أن يتبع الترتيب نفسه؛ قفل txn/house
+    // تسوية جديدة تقفل branch→PO→supplier→invoice→house. العكس يتبع الترتيب نفسه؛ قفل txn/house
     // أولاً ثم العودة إلى المورد يصنع دورةً مع تسوية متزامنة. المعاينة تحدد الحسابات بلا قفل،
     // ثم نعيد مطابقة الهويات بعد قفل العملية نفسها.
     if (previewTxn?.type === "SETTLE" && previewTxn.supplierId != null) {
+      if (previewTxn.purchaseOrderId != null) {
+        const [po] = await tx.select({ id: purchaseOrders.id }).from(purchaseOrders)
+          .where(eq(purchaseOrders.id, Number(previewTxn.purchaseOrderId))).for("update").limit(1);
+        if (!po) throw new TRPCError({ code: "CONFLICT", message: "فاتورة تسوية الصيرفة غير موجودة" });
+      }
       const [supplier] = await tx
         .select({ id: suppliers.id })
         .from(suppliers)
@@ -315,15 +320,6 @@ export async function reverseExchangeTransaction(
         .for("update")
         .limit(1);
       if (!supplier) throw new TRPCError({ code: "CONFLICT", message: "مورد التسوية غير موجود" });
-      if (previewTxn.purchaseOrderId != null) {
-        const [po] = await tx
-          .select({ id: purchaseOrders.id })
-          .from(purchaseOrders)
-          .where(eq(purchaseOrders.id, Number(previewTxn.purchaseOrderId)))
-          .for("update")
-          .limit(1);
-        if (!po) throw new TRPCError({ code: "CONFLICT", message: "فاتورة تسوية الصيرفة غير موجودة" });
-      }
     }
     const lockedHouse = previewTxn ? await lockHouse(tx, Number(previewTxn.exchangeHouseId)) : null;
     const [txn] = await tx.select().from(exchangeTransactions).where(eq(exchangeTransactions.id, txnId)).for("update").limit(1);
@@ -396,6 +392,8 @@ export async function reverseExchangeTransaction(
       await deriveForeignCashUsdPosition(tx, houseId, Number(txn.branchId), txnId);
     }
 
+    const [bookSource] = await tx.select({ id: supplierBookSettlementSources.id }).from(supplierBookSettlementSources)
+      .where(eq(supplierBookSettlementSources.sourceExchangeTransactionId, txnId)).for("share").limit(1);
     await unapplySupplierBookSettlementSourceTx(tx, {
       sourceExchangeTransactionId: txnId,
       reversalKey: `EXCHANGE_REVERSE:${txnId}`,
@@ -409,8 +407,9 @@ export async function reverseExchangeTransaction(
       const carryingIqd = money(txn.settledIqd).gt(0) ? money(txn.settledIqd) : money(txn.iqdAmount);
       const settledUsd = money(txn.settledUsd);
       await adjustSupplierBalance(tx, Number(txn.supplierId), carryingIqd);
-      if (settledUsd.gt(0)) await adjustSupplierBalanceUsd(tx, Number(txn.supplierId), settledUsd);
-      if (txn.purchaseOrderId != null) {
+      // BOOK unapply owns currency restoration and PO cache refresh; AP is restored here once.
+      if (settledUsd.gt(0) && !bookSource) await adjustSupplierBalanceUsd(tx, Number(txn.supplierId), settledUsd);
+      if (txn.purchaseOrderId != null && !bookSource) {
         const [po] = await tx.select().from(purchaseOrders)
           .where(eq(purchaseOrders.id, Number(txn.purchaseOrderId))).for("update").limit(1);
         if (po) {

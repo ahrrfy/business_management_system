@@ -37,6 +37,7 @@ import { formatIqd } from "@/lib/money";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { OutboxReconciliationAction } from "@/components/whatsapp/OutboxReconciliationDialog";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { DataTable } from "@/components/data-table/DataTable";
@@ -83,18 +84,57 @@ const BROADCAST_STATUS_META: Record<string, { label: string; className: string }
   APPROVED: { label: "معتمدة", className: "bg-[var(--sem-info-bg)] text-[var(--sem-info)] border-[var(--sem-info)]/30" },
   RUNNING: { label: "قيد التشغيل", className: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-[var(--sem-pos)]/30" },
   PAUSED: { label: "موقوفة مؤقتاً", className: "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] border-[var(--sem-warn)]/30" },
-  COMPLETED: { label: "مكتملة", className: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-[var(--sem-pos)]/30" },
+  COMPLETED: { label: "اكتمل تجهيز الإرسال", className: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-[var(--sem-pos)]/30" },
   CANCELLED: { label: "ملغاة", className: "bg-muted text-muted-foreground border-border" },
 };
 
-const RECIPIENT_STATUS_META: Record<string, { label: string; className: string }> = {
-  PENDING: { label: "قيد الانتظار", className: "bg-muted text-muted-foreground border-border" },
-  QUEUED: { label: "بالطابور", className: "bg-[var(--sem-info-bg)] text-[var(--sem-info)] border-[var(--sem-info)]/30" },
-  SENT: { label: "أُرسلت", className: "bg-[var(--sem-info-bg)] text-[var(--sem-info)] border-[var(--sem-info)]/30" },
-  DELIVERED: { label: "وصلت", className: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-[var(--sem-pos)]/30" },
-  READ: { label: "قُرئت", className: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-[var(--sem-pos)]/30" },
-  FAILED: { label: "فشلت", className: "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)] border-[var(--sem-neg)]/30" },
-  SKIPPED_OPTOUT: { label: "تخطّي (غير موافق)", className: "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] border-[var(--sem-warn)]/30" },
+const RECIPIENT_STATUS_META: Record<
+  string,
+  { label: string; className: string }
+> = {
+  PENDING: {
+    label: "قيد الانتظار",
+    className: "bg-muted text-muted-foreground border-border",
+  },
+  QUEUED: {
+    label: "بالطابور",
+    className:
+      "bg-[var(--sem-info-bg)] text-[var(--sem-info)] border-[var(--sem-info)]/30",
+  },
+  SENT: {
+    label: "أُرسلت",
+    className:
+      "bg-[var(--sem-info-bg)] text-[var(--sem-info)] border-[var(--sem-info)]/30",
+  },
+  DELIVERED: {
+    label: "وصلت",
+    className:
+      "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-[var(--sem-pos)]/30",
+  },
+  READ: {
+    label: "قُرئت",
+    className:
+      "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-[var(--sem-pos)]/30",
+  },
+  FAILED: {
+    label: "فشلت",
+    className:
+      "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)] border-[var(--sem-neg)]/30",
+  },
+  UNKNOWN: {
+    label: "نتيجة غير محسومة",
+    className:
+      "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] border-[var(--sem-warn)]/30",
+  },
+  CANCELLED: {
+    label: "أُلغيت",
+    className: "bg-muted text-muted-foreground border-border",
+  },
+  SKIPPED_OPTOUT: {
+    label: "تخطّي (غير موافق)",
+    className:
+      "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] border-[var(--sem-warn)]/30",
+  },
 };
 
 const CANCELLABLE_STATUSES = new Set(["DRAFT", "PENDING_APPROVAL", "APPROVED", "RUNNING", "PAUSED"]);
@@ -692,7 +732,17 @@ function BroadcastDetailDialog({
   onClose: () => void;
 }) {
   const utils = trpc.useUtils();
-  const detailQ = trpc.broadcasts.get.useQuery({ broadcastId });
+  const detailQ = trpc.broadcasts.get.useQuery(
+    { broadcastId },
+    {
+      refetchInterval: (query) =>
+        query.state.data &&
+        query.state.data.pendingOutboxCount >
+          query.state.data.unresolvedOutboxTotal
+          ? 15_000
+          : false,
+    },
+  );
 
   const invalidateAll = async () => {
     await Promise.all([
@@ -759,56 +809,106 @@ function BroadcastDetailDialog({
   const nameOf = (uid: number | null) => (uid == null ? "—" : usersMap.get(uid) ?? (myId === uid ? "أنت" : `مستخدم #${uid}`));
 
   return (
-    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+    <Dialog
+      open
+      onOpenChange={(o) => {
+        if (!o) onClose();
+      }}
+    >
       <DialogContent className="sm:max-w-3xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 flex-wrap">
             {d.name} <StatusBadge status={d.broadcastStatus} />
           </DialogTitle>
-          {d.pausedReason && <DialogDescription>سبب الإيقاف: {d.pausedReason}</DialogDescription>}
+          {d.pausedReason && (
+            <DialogDescription>سبب الإيقاف: {d.pausedReason}</DialogDescription>
+          )}
         </DialogHeader>
 
         <div className="grid sm:grid-cols-2 gap-2 text-sm">
           <InfoRow label="الجمهور" value={fmtCount(d.audienceCount)} />
           <InfoRow label="الكلفة التقديرية" value={formatIqd(d.costEstimate)} />
-          <InfoRow label="القالب" value={templatesMap.get(d.templateId) ?? `قالب #${d.templateId}`} />
-          <InfoRow label="الفرع" value={d.branchId == null ? "كل الفروع" : branchesMap.get(d.branchId) ?? `فرع #${d.branchId}`} />
+          <InfoRow
+            label="القالب"
+            value={templatesMap.get(d.templateId) ?? `قالب #${d.templateId}`}
+          />
+          <InfoRow
+            label="الفرع"
+            value={
+              d.branchId == null
+                ? "كل الفروع"
+                : (branchesMap.get(d.branchId) ?? `فرع #${d.branchId}`)
+            }
+          />
           <InfoRow label="أنشأها" value={nameOf(d.createdBy)} />
           <InfoRow label="أُنشئت" value={fmtDateTime(d.createdAt)} />
-          {d.approvedBy != null && <InfoRow label="اعتمدها" value={nameOf(d.approvedBy)} />}
-          {d.scheduledAt && <InfoRow label="مجدولة لـ" value={fmtDateTime(d.scheduledAt)} />}
-          {d.startedAt && <InfoRow label="بدأت" value={fmtDateTime(d.startedAt)} />}
-          {d.completedAt && <InfoRow label="اكتملت" value={fmtDateTime(d.completedAt)} />}
+          {d.approvedBy != null && (
+            <InfoRow label="اعتمدها" value={nameOf(d.approvedBy)} />
+          )}
+          {d.scheduledAt && (
+            <InfoRow label="مجدولة لـ" value={fmtDateTime(d.scheduledAt)} />
+          )}
+          {d.startedAt && (
+            <InfoRow label="بدأت" value={fmtDateTime(d.startedAt)} />
+          )}
+          {d.completedAt && (
+            <InfoRow label="اكتملت" value={fmtDateTime(d.completedAt)} />
+          )}
         </div>
 
         {canManage && (
           <div className="flex flex-wrap items-center gap-2 border-t pt-3">
-            {(d.broadcastStatus === "DRAFT" || d.broadcastStatus === "APPROVED") && (
-              <Button size="sm" disabled={launch.isPending} onClick={() => launch.mutate({ broadcastId })}>
-                <Play aria-hidden className="size-3.5" /> {launch.isPending ? "جارٍ…" : "إطلاق"}
+            {(d.broadcastStatus === "DRAFT" ||
+              d.broadcastStatus === "APPROVED") && (
+              <Button
+                size="sm"
+                disabled={launch.isPending}
+                onClick={() => launch.mutate({ broadcastId })}
+              >
+                <Play aria-hidden className="size-3.5" />{" "}
+                {launch.isPending ? "جارٍ…" : "إطلاق"}
               </Button>
             )}
             {d.broadcastStatus === "PENDING_APPROVAL" && (
               <Button
                 size="sm"
                 disabled={approve.isPending || isSelfCreator}
-                title={isSelfCreator ? "لا يجوز اعتماد بثٍّ أنشأتَه بنفسك (فصل المهام)" : undefined}
+                title={
+                  isSelfCreator
+                    ? "لا يجوز اعتماد بثٍّ أنشأتَه بنفسك (فصل المهام)"
+                    : undefined
+                }
                 onClick={() => approve.mutate({ broadcastId })}
               >
-                <CheckCircle2 aria-hidden className="size-3.5" /> {approve.isPending ? "جارٍ…" : "اعتماد وإطلاق"}
+                <CheckCircle2 aria-hidden className="size-3.5" />{" "}
+                {approve.isPending ? "جارٍ…" : "اعتماد وإطلاق"}
               </Button>
             )}
-            {d.broadcastStatus === "RUNNING" && (
-              <Button size="sm" variant="outline" onClick={() => setShowPause(true)}>
+            {(d.broadcastStatus === "RUNNING" ||
+              (d.broadcastStatus === "COMPLETED" &&
+                d.pendingOutboxCount > 0)) && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setShowPause(true)}
+              >
                 <Pause aria-hidden className="size-3.5" /> إيقاف مؤقت
               </Button>
             )}
             {d.broadcastStatus === "PAUSED" && (
-              <Button size="sm" variant="outline" disabled={resume.isPending} onClick={() => resume.mutate({ broadcastId })}>
-                <RotateCcw aria-hidden className="size-3.5" /> {resume.isPending ? "جارٍ…" : "استئناف"}
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={resume.isPending}
+                onClick={() => resume.mutate({ broadcastId })}
+              >
+                <RotateCcw aria-hidden className="size-3.5" />{" "}
+                {resume.isPending ? "جارٍ…" : "استئناف"}
               </Button>
             )}
-            {CANCELLABLE_STATUSES.has(d.broadcastStatus) && (
+            {(CANCELLABLE_STATUSES.has(d.broadcastStatus) ||
+              (d.broadcastStatus === "COMPLETED" &&
+                d.pendingOutboxCount > 0)) && (
               <Button
                 size="sm"
                 variant="destructive"
@@ -817,7 +917,8 @@ function BroadcastDetailDialog({
                   const ok = await confirm({
                     variant: "danger",
                     title: "إلغاء الحملة",
-                    description: "إلغاء هذه الحملة نهائياً؟ لا يمكن التراجع.",
+                    description:
+                      "إلغاء بقية الحملة نهائياً؟ المحاولات التي بدأت قد تكتمل، والنتائج غير المحسومة تحتاج تسوية. لا يمكن التراجع.",
                     confirmText: "إلغاء الحملة",
                   });
                   if (ok) cancel.mutate({ broadcastId });
@@ -831,20 +932,39 @@ function BroadcastDetailDialog({
 
         {isSelfCreator && d.broadcastStatus === "PENDING_APPROVAL" && (
           <p className="text-xs text-[var(--sem-warn)] flex items-center gap-1.5">
-            <ShieldAlert aria-hidden className="size-3.5" /> أنت منشئ هذه الحملة — يلزم اعتمادها من مديرٍ آخر (فصل المهام، بلا استثناء).
+            <ShieldAlert aria-hidden className="size-3.5" /> أنت منشئ هذه الحملة
+            — يلزم اعتمادها من مديرٍ آخر (فصل المهام، بلا استثناء).
           </p>
         )}
 
         {showPause && (
           <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
-            <label className="text-xs text-muted-foreground">سبب الإيقاف المؤقت<span className="text-destructive"> *</span></label>
-            <Input value={pauseReason} onChange={(e) => setPauseReason(e.target.value)} placeholder="مثال: مراجعة محتوى القالب…" maxLength={200} />
+            <label className="text-xs text-muted-foreground">
+              سبب الإيقاف المؤقت<span className="text-destructive"> *</span>
+            </label>
+            <Input
+              value={pauseReason}
+              onChange={(e) => setPauseReason(e.target.value)}
+              placeholder="مثال: مراجعة محتوى القالب…"
+              maxLength={200}
+            />
             <div className="flex justify-end gap-2">
-              <Button variant="outline" size="sm" onClick={() => { setShowPause(false); setPauseReason(""); }}>تراجع</Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setShowPause(false);
+                  setPauseReason("");
+                }}
+              >
+                تراجع
+              </Button>
               <Button
                 size="sm"
                 disabled={pauseReason.trim().length < 1 || pause.isPending}
-                onClick={() => pause.mutate({ broadcastId, reason: pauseReason.trim() })}
+                onClick={() =>
+                  pause.mutate({ broadcastId, reason: pauseReason.trim() })
+                }
               >
                 {pause.isPending ? "جارٍ…" : "تأكيد الإيقاف"}
               </Button>
@@ -852,10 +972,43 @@ function BroadcastDetailDialog({
           </div>
         )}
 
+        {d.unresolvedOutboxTotal > 0 && (
+          <div className="border-t pt-3 space-y-2">
+            <h4 className="font-bold text-sm text-[var(--sem-warn)]">
+              نتائج تحتاج مراجعة المزود
+            </h4>
+            <p className="text-xs text-muted-foreground">
+              عرض {d.unresolvedOutbox.length} من {d.unresolvedOutboxTotal}. بعد
+              تسوية المعروض تظهر النتائج التالية عند التحديث.
+            </p>
+            {d.unresolvedOutbox.map((row) => (
+              <div
+                key={row.id}
+                className="flex flex-wrap items-center justify-between gap-2 rounded border p-2 text-xs"
+              >
+                <span>
+                  إرسال #{row.id}
+                  <span dir="ltr" className="block text-muted-foreground">
+                    {row.providerAttemptId ?? "محاولة قديمة بلا معرّف"}
+                  </span>
+                </span>
+                <OutboxReconciliationAction outboxId={row.id} />
+              </div>
+            ))}
+          </div>
+        )}
+        {d.unresolvedRecipientMismatchCount > 0 && (
+          <p className="text-sm text-[var(--sem-warn)]">
+            هناك {d.unresolvedRecipientMismatchCount} نتيجة مستلم لا تطابق سجل
+            الصادر. يلزم فحص سجل التدقيق قبل تسويتها.
+          </p>
+        )}
         <ResultsSection broadcastId={broadcastId} />
 
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>إغلاق</Button>
+          <Button variant="outline" onClick={onClose}>
+            إغلاق
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

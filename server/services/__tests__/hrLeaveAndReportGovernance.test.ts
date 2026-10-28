@@ -37,7 +37,7 @@ beforeEach(async () => {
     { id: 3, openId: "b", name: "الموارد البشرية", role: "manager", loginMethod: "local" },
   ]);
   await d.insert(s.employees).values([
-    { id: 1, firstName: "أحمد", lastName: "الجبوري", payType: "monthly", salary: "900000", allowances: "0", annualLeaveBalance: 30, employmentStatus: "active", isActive: true, branchId: 1, userId: 2, hireDate: "2025-01-01" },
+    { id: 1, firstName: "أحمد", lastName: "الجبوري", payType: "monthly", salary: "900000", allowances: "0", annualLeaveBalance: "30.00", employmentStatus: "active", isActive: true, branchId: 1, userId: 2, hireDate: "2025-01-01" },
     { id: 2, firstName: "زينب", lastName: "الربيعي", payType: "hourly", dayRates: { الأحد: 5000, الاثنين: 5000, الثلاثاء: 5000, الأربعاء: 5000, الخميس: 5000, الجمعة: 7500, السبت: 5000 }, employmentStatus: "active", isActive: true, branchId: 1, hireDate: "2025-01-01" },
   ]);
 });
@@ -70,7 +70,7 @@ describe("حارس المسيّر المُقفَل على الإجازات (ن١
     const r = await decideLeave(Number(lv!.id), "approved", HR);
     expect(r!.status).toBe("approved");
     const [emp] = await db().select().from(s.employees).where(eq(s.employees.id, 1));
-    expect(emp.annualLeaveBalance).toBe(27);
+    expect(emp.annualLeaveBalance).toBe("27.00");
   });
 
   it("ن٤) ولا تُلغى إجازةٌ في شهرٍ صار مقفلاً بعد اعتمادها", async () => {
@@ -86,11 +86,11 @@ describe("فصل المهام على إلغاء الإجازة (ن٣)", () => {
     const lv = await createLeave({ employeeId: 1, leaveType: "سنوية", fromDate: "2026-09-10", toDate: "2026-09-19", days: 10 });
     await decideLeave(Number(lv!.id), "approved", HR);
     const [before] = await db().select().from(s.employees).where(eq(s.employees.id, 1));
-    expect(before.annualLeaveBalance).toBe(24);
+    expect(before.annualLeaveBalance).toBe("24.00");
 
     await expect(cancelLeave(Number(lv!.id), SELF)).rejects.toThrow(/إجازتك بنفسك/);
     const [after] = await db().select().from(s.employees).where(eq(s.employees.id, 1));
-    expect(after.annualLeaveBalance).toBe(24); // الرصيد لم يُستردّ
+    expect(after.annualLeaveBalance).toBe("24.00"); // الرصيد لم يُستردّ
   });
 
   it("ومُقرِّرٌ آخر يُلغيها فيستردّ الرصيد", async () => {
@@ -98,7 +98,7 @@ describe("فصل المهام على إلغاء الإجازة (ن٣)", () => {
     await decideLeave(Number(lv!.id), "approved", HR);
     await cancelLeave(Number(lv!.id), HR);
     const [after] = await db().select().from(s.employees).where(eq(s.employees.id, 1));
-    expect(after.annualLeaveBalance).toBe(30);
+    expect(after.annualLeaveBalance).toBe("30.00");
   });
 });
 

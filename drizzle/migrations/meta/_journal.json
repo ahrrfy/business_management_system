@@ -2584,6 +2584,13 @@
 			"when": 1788148865000,
 			"tag": "0407_loyalty_ledger_multi_reverse",
 			"breakpoints": true
+		},
+		{
+			"idx": 408,
+			"version": "5",
+			"when": 1788148866000,
+			"tag": "0408_audit_crossmodule_contracts",
+			"breakpoints": true
 		}
 	]
 }

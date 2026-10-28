@@ -16,7 +16,14 @@ import {
 } from "../services/conversationService";
 // الاستهلاك الخارجي لِمَركَز واتساب الأَعمال يَمُرّ عَبر البِرميل `services/whatsapp` حَصراً (تَعليق
 // index.ts) — لا اِستيراد مُباشر مِن outboxService/sendService داخِل هَذا الراوتر.
-import { dispatchOutboxRow, enqueueAndDispatch, getActiveWaIntegration, getUsableTemplate } from "../services/whatsapp";
+import {
+  dispatchOutboxRow,
+  enqueueAndDispatch,
+  getActiveWaIntegration,
+  getUsableTemplate,
+  retryOutbox,
+  getUnknownOutboxForBranch,
+} from "../services/whatsapp";
 
 const channelEnum = z.enum(["WHATSAPP", "INSTAGRAM", "TIKTOK", "STORE", "PHONE", "WALK_IN", "OTHER"]);
 
@@ -92,13 +99,14 @@ export const conversationRouter = router({
     }).optional())
     .query(async ({ input, ctx }) => {
       const db = getDb();
-      if (!db) return { rows: [], nextCursor: null };
+      if (!db) return { rows: [], nextCursor: null, unresolvedOutbox: null };
       const effectiveBranchId = ctx.scopedBranchId ?? input?.branchId;
       if (effectiveBranchId == null) {
         // أَدمن بَلا فَلتر فَرع ⇒ يَلزمه تَحديد branchId صَراحة.
         throw new TRPCError({ code: "BAD_REQUEST", message: "حَدّد branchId للقائمة" });
       }
 
+      const unresolvedOutbox = input?.cursor ? null : await getUnknownOutboxForBranch(effectiveBranchId);
       const filter = input?.filter ?? "all";
       const conds: (SQL | undefined)[] = [eq(conversations.branchId, effectiveBranchId)];
       if (filter === "archived") conds.push(eq(conversations.status, "ARCHIVED"));
@@ -165,7 +173,7 @@ export const conversationRouter = router({
       const nextCursor = hasMore && last
         ? { lastMessageAt: last.lastMessageAt ? last.lastMessageAt.toISOString() : null, id: Number(last.id) }
         : null;
-      if (page.length === 0) return { rows: [], nextCursor: null };
+      if (page.length === 0) return { rows: [], nextCursor: null, unresolvedOutbox };
 
       // apiActive: كل صُفوف القائمة تَتبَع effectiveBranchId نَفسه (فَرع واحِد لِكُلّ نِداء list)
       // ⇒ فَحص واحِد يَكفي بَدل استعلام لِكُلّ مُحادثة.
@@ -197,6 +205,7 @@ export const conversationRouter = router({
           };
         }),
         nextCursor,
+        unresolvedOutbox,
       };
     }),
 
@@ -247,15 +256,29 @@ export const conversationRouter = router({
           createdAt: waOutbox.createdAt,
         })
         .from(waOutbox)
-        .where(and(
-          eq(waOutbox.conversationId, input.conversationId),
-          inArray(waOutbox.kind, ["SESSION_TEXT", "TEMPLATE"]),
-          inArray(waOutbox.status, ["QUEUED", "SENDING", "FAILED"]),
-        ))
+        .where(
+          and(
+            eq(waOutbox.conversationId, input.conversationId),
+            inArray(waOutbox.kind, ["SESSION_TEXT", "TEMPLATE", "MEDIA"]),
+            inArray(waOutbox.status, [
+              "QUEUED",
+              "SENDING",
+              "FAILED",
+              "UNKNOWN",
+            ]),
+          ),
+        )
         .orderBy(waOutbox.createdAt);
 
       const merged = [
-        ...real.map((r) => ({ ...r, pending: null as null | { outboxId: number; status: string; lastError: string | null } })),
+        ...real.map((r) => ({
+          ...r,
+          pending: null as null | {
+            outboxId: number;
+            status: string;
+            lastError: string | null;
+          },
+        })),
         ...pendingRows.map((p) => ({
           // مُعَرّف سالِب — لا يَتقاطِع أَبداً مَع bigint autoincrement الحَقيقي (دائماً > 0)، بَديل
           // مِفتاح React مُستقرّ بَلا استعارة نِطاق مُعَرّفات الرَسائل الحَقيقية.
@@ -266,22 +289,52 @@ export const conversationRouter = router({
           body:
             p.kind === "TEMPLATE"
               ? `قالب: ${p.templateName ?? ""}`
-              : String((p.payloadJson as { text?: string } | null)?.text ?? ""),
+              : p.kind === "MEDIA"
+                ? String(
+                    (
+                      p.payloadJson as {
+                        document?: { caption?: string; filename?: string };
+                      } | null
+                    )?.document?.caption ??
+                      (
+                        p.payloadJson as {
+                          document?: { filename?: string };
+                        } | null
+                      )?.document?.filename ??
+                      "مستند PDF",
+                  )
+                : String(
+                    (p.payloadJson as { text?: string } | null)?.text ?? "",
+                  ),
           mediaUrl: null as string | null,
           mediaType: null as string | null,
           authorUserId: null as number | null,
           authorName: null as string | null,
-          deliveryStatus: null as "PENDING" | "SENT" | "DELIVERED" | "READ" | "FAILED" | null,
+          deliveryStatus: null as
+            | "PENDING"
+            | "SENT"
+            | "DELIVERED"
+            | "READ"
+            | "FAILED"
+            | null,
           statusUpdatedAt: null as Date | null,
           errorCode: null as string | null,
           origin: null as "API" | "PHONE_APP" | "SYSTEM" | null,
-          templateName: p.kind === "TEMPLATE" ? p.templateName : (null as string | null),
+          templateName:
+            p.kind === "TEMPLATE" ? p.templateName : (null as string | null),
           createdAt: p.createdAt,
-          pending: { outboxId: Number(p.outboxId), status: p.status, lastError: p.lastError },
+          pending: {
+            outboxId: Number(p.outboxId),
+            status: p.status,
+            lastError: p.lastError,
+          },
         })),
       ];
 
-      return merged.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      return merged.sort(
+        (a, b) =>
+          new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+      );
     }),
 
   /** إنشاء/upsert مُحادثة (إدخال يَدوي مِن الكاشير: اتصال هاتفي، حُضوري، ...). */
@@ -456,10 +509,26 @@ export const conversationRouter = router({
 
   /** إعادة مُحاولة إرسال صَفّ صَندوق صادِر فاشِل (زِرّ «أَعِد المُحاولة» في الوارِد). */
   retrySend: channelsWrite
-    .input(z.object({ outboxId: z.number().int().positive() }))
+    .input(
+      z.object({
+        outboxId: z.number().int().positive(),
+        reconciliation: z
+          .object({
+            outcome: z.enum(["ACCEPTED", "NOT_SENT"]),
+            reason: z.string().trim().min(10).max(500),
+            evidence: z.string().trim().min(10).max(1000),
+            wamid: z.string().trim().max(200).optional(),
+          })
+          .optional(),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البَيانات غَير مُتاحة" });
+      if (!db)
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "قاعدة البَيانات غَير مُتاحة",
+        });
       const row = (
         await db
           .select({
@@ -467,32 +536,51 @@ export const conversationRouter = router({
             status: waOutbox.status,
             kind: waOutbox.kind,
             conversationId: waOutbox.conversationId,
+            branchId: waOutbox.branchId,
           })
           .from(waOutbox)
           .where(eq(waOutbox.id, input.outboxId))
           .limit(1)
       )[0];
       // TEMPLATE مُتاحة لِلإعادة أَيضاً (T4.3 — مُنتَقي القَوالِب في الوارِد يَستَعمِل نَفس زِرّ الإعادة).
-      if (!row || !["SESSION_TEXT", "TEMPLATE"].includes(row.kind) || row.conversationId == null) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "لا يوجَد صَفّ إرسال بِهَذا المُعَرّف" });
+      if (!row || !["SESSION_TEXT", "TEMPLATE", "MEDIA"].includes(row.kind)) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "لا يوجَد صَفّ إرسال بِهَذا المُعَرّف",
+        });
       }
       // عَزل الفُروع: صَفّ الصَندوق الصادِر يُنسَب لِفَرع مُحادثته — نَفس نَمط الرَسائل.
-      await assertConversationBranch(Number(row.conversationId), deriveScopedBranchId(ctx.user));
-      if (row.status !== "FAILED") {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُمكن إعادة مُحاولة إرسالٍ لَيس بِحالة فَشل" });
-      }
-      await db
-        .update(waOutbox)
-        .set({ status: "QUEUED", attempts: 0, nextAttemptAt: sql`NOW()`, lastError: null })
-        .where(eq(waOutbox.id, input.outboxId));
+      if (row.conversationId != null)
+        await assertConversationBranch(
+          Number(row.conversationId),
+          deriveScopedBranchId(ctx.user),
+        );
+      const result = await retryOutbox(
+        input.outboxId,
+        {
+          userId: Number(ctx.user.id),
+          branchId:
+            ctx.user.branchId == null ? null : Number(ctx.user.branchId),
+          role: ctx.user.role,
+        },
+        input.reconciliation,
+      );
       // مُحاولة فَورية غَير مُتزامِنة — نَفس نَمط enqueueAndDispatch (outboxService.ts): لا نَنتظر
       // النَتيجة، الكَنّاس يَلتَقط أَي فَشل خِلال دَقيقة عَلى أَي حال.
-      setImmediate(() => {
-        void dispatchOutboxRow(input.outboxId).catch((e) => {
-          logger.error({ err: e, outboxId: input.outboxId }, "wa-outbox: retrySend immediate dispatch attempt failed");
+      if (!input.reconciliation)
+        setImmediate(() => {
+          void dispatchOutboxRow(input.outboxId).catch((e) => {
+            logger.error(
+              { err: e, outboxId: input.outboxId },
+              "wa-outbox: retrySend immediate dispatch attempt failed",
+            );
+          });
         });
-      });
-      return { outboxId: input.outboxId, ok: true as const };
+      return {
+        outboxId: input.outboxId,
+        ok: true as const,
+        status: result.status,
+      };
     }),
 
   /** تَصفير عَدّاد غَير المَقروء. */

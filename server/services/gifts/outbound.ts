@@ -44,7 +44,7 @@ export interface CreateOutboundGiftInput {
 export interface OutboundGiftResult {
   giftVoucherId: number;
   giftNumber: string;
-  status: "PENDING_APPROVAL" | "DELIVERED";
+  status: "PENDING_APPROVAL" | "DELIVERED" | "CANCELLED" | "REVERSED";
   totalCost: string;
   pending: boolean;
 }
@@ -258,8 +258,14 @@ export async function createOutboundGift(input: CreateOutboundGiftInput, actor: 
         .from(giftVouchers)
         .where(eq(giftVouchers.id, replayId))
         .limit(1))[0];
-      const status = (ex?.st === "PENDING_APPROVAL" ? "PENDING_APPROVAL" : "DELIVERED") as "PENDING_APPROVAL" | "DELIVERED";
-      return { giftVoucherId: replayId, giftNumber: ex?.n ?? "", status, totalCost: String(ex?.tc ?? "0"), pending: status === "PENDING_APPROVAL" };
+      if (!ex || !["PENDING_APPROVAL", "DELIVERED", "CANCELLED", "REVERSED"].includes(ex.st)) {
+        throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+          what: "تعذّر استرداد نتيجة طلب الهدية", why: "السند الأصلي غير موجود أو حالته لا تطابق عملية الإهداء",
+          doThis: "افتح قائمة الهدايا وراجع السند الأصلي قبل إنشاء طلب آخر",
+        }) });
+      }
+      const status = ex.st as OutboundGiftResult["status"];
+      return { giftVoucherId: replayId, giftNumber: ex.n, status, totalCost: String(ex.tc), pending: status === "PENDING_APPROVAL" };
     }
 
     const converted = await convertLines(tx, input.lines);

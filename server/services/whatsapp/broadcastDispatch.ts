@@ -96,23 +96,43 @@ async function ensureRecipientsSeeded(broadcast: WaBroadcast): Promise<void> {
     // إدراج مزدوج لو استُدعيت الدالة لنفس الحملة من دورتَي كنّاس متداخلتين؛ ويضمن أن «هل يوجد صفّ؟»
     // والإدراج الكامل يريان لقطة بيانات واحدة متّسقة.
     const lockedBroadcast = (
-      await tx.select({ id: waBroadcasts.id }).from(waBroadcasts).where(eq(waBroadcasts.id, broadcast.id)).for("update").limit(1)
+      await tx
+        .select({ id: waBroadcasts.id, status: waBroadcasts.broadcastStatus })
+        .from(waBroadcasts)
+        .where(eq(waBroadcasts.id, broadcast.id))
+        .for("update")
+        .limit(1)
     )[0];
-    if (!lockedBroadcast) return; // حُذفت الحملة بين الفحص والقفل (سباق نادر جداً) — لا شيء لفعله.
+    if (!lockedBroadcast || lockedBroadcast.status !== "RUNNING") return;
 
     const already = (
-      await tx.select({ id: waBroadcastRecipients.id }).from(waBroadcastRecipients).where(eq(waBroadcastRecipients.broadcastId, broadcast.id)).limit(1)
+      await tx
+        .select({ id: waBroadcastRecipients.id })
+        .from(waBroadcastRecipients)
+        .where(eq(waBroadcastRecipients.broadcastId, broadcast.id))
+        .limit(1)
     )[0];
     if (already) return;
 
     // 🔴 القاعدة الذهبية: فرض requireOptIn=true حتماً — يطغى على أي قيمة مخزَّنة في segmentJson.
-    const criteria: SegmentCriteria = { ...(broadcast.segmentJson as SegmentCriteria), requireOptIn: true };
+    const criteria: SegmentCriteria = {
+      ...(broadcast.segmentJson as SegmentCriteria),
+      requireOptIn: true,
+    };
     // نطلب حدّاً واحداً أكبر من MAX_BROADCAST_RECIPIENTS لنكتشف التجاوز فعلياً (لا اقتطاع صامت).
-    let recipients = await resolveSegmentList(criteria, { limit: MAX_BROADCAST_RECIPIENTS + 1 }, tx);
+    let recipients = await resolveSegmentList(
+      criteria,
+      { limit: MAX_BROADCAST_RECIPIENTS + 1 },
+      tx,
+    );
     if (recipients.length === 0) return;
     if (recipients.length > MAX_BROADCAST_RECIPIENTS) {
       logger.error(
-        { broadcastId: broadcast.id, resolvedCount: recipients.length, cap: MAX_BROADCAST_RECIPIENTS },
+        {
+          broadcastId: broadcast.id,
+          resolvedCount: recipients.length,
+          cap: MAX_BROADCAST_RECIPIENTS,
+        },
         "wa-broadcast: الجمهور المؤهَّل يتجاوز الحدّ الأقصى المدعوم للإدراج الذرّي — يُقتطَع إلى الحدّ (راجع الحملة يدوياً)",
       );
       recipients = recipients.slice(0, MAX_BROADCAST_RECIPIENTS);
@@ -165,44 +185,82 @@ function buildBodyParams(varsMap: Record<string, string> | null | undefined, cus
 
 // ── التقطير المقنَّن: التقاط دفعة + إعادة فحص opt-out + enqueue ─────────────────────────────────
 
-async function throttleAndEnqueue(broadcast: WaBroadcast, sendingBranchId: number, templateName: string): Promise<void> {
+async function throttleAndEnqueue(
+  broadcast: WaBroadcast,
+  sendingBranchId: number,
+  templateName: string,
+): Promise<void> {
   const throttle = Math.max(1, Number(broadcast.throttlePerMinute) || 10);
   await withTx(async (tx) => {
+    const current = (
+      await tx
+        .select({ status: waBroadcasts.broadcastStatus })
+        .from(waBroadcasts)
+        .where(eq(waBroadcasts.id, broadcast.id))
+        .for("update")
+        .limit(1)
+    )[0];
+    if (current?.status !== "RUNNING") return;
     const claimed = await tx
-      .select({ id: waBroadcastRecipients.id, customerId: waBroadcastRecipients.customerId, phoneE164: waBroadcastRecipients.phoneE164 })
+      .select({
+        id: waBroadcastRecipients.id,
+        customerId: waBroadcastRecipients.customerId,
+        phoneE164: waBroadcastRecipients.phoneE164,
+      })
       .from(waBroadcastRecipients)
-      .where(and(eq(waBroadcastRecipients.broadcastId, broadcast.id), eq(waBroadcastRecipients.recipientStatus, "PENDING")))
+      .where(
+        and(
+          eq(waBroadcastRecipients.broadcastId, broadcast.id),
+          eq(waBroadcastRecipients.recipientStatus, "PENDING"),
+        ),
+      )
       .orderBy(asc(waBroadcastRecipients.id))
       .limit(throttle)
       .for("update", { skipLocked: true });
     if (claimed.length === 0) return;
 
-    const customerIds = claimed.map((r) => (r.customerId != null ? Number(r.customerId) : null)).filter((id): id is number => id != null);
+    const customerIds = claimed
+      .map((r) => (r.customerId != null ? Number(r.customerId) : null))
+      .filter((id): id is number => id != null);
     const custRows = customerIds.length
       ? await tx
-          .select({ id: customers.id, waConsent: customers.waConsent, name: customers.name, currentBalance: customers.currentBalance, phone: customers.phone })
+          .select({
+            id: customers.id,
+            waConsent: customers.waConsent,
+            name: customers.name,
+            currentBalance: customers.currentBalance,
+            phone: customers.phone,
+          })
           .from(customers)
           .where(inArray(customers.id, customerIds))
       : [];
     const custMap = new Map(custRows.map((c) => [Number(c.id), c]));
 
     for (const r of claimed) {
-      const cust = r.customerId != null ? custMap.get(Number(r.customerId)) : undefined;
+      const cust =
+        r.customerId != null ? custMap.get(Number(r.customerId)) : undefined;
       // 🔴 القاعدة الذهبية عند كل مرحلة — لا الإدراج فقط: عميل صار OPTED_OUT (أو حُذف/لم يعُد
       // معروفاً) بعد إدراج صفّه PENDING يُستبعَد الآن حتماً — «انسحاب منتصف الحملة يُحترَم».
       if (!cust || cust.waConsent !== "OPTED_IN") {
-        await tx.update(waBroadcastRecipients).set({ recipientStatus: "SKIPPED_OPTOUT" }).where(eq(waBroadcastRecipients.id, r.id));
+        await tx
+          .update(waBroadcastRecipients)
+          .set({ recipientStatus: "SKIPPED_OPTOUT" })
+          .where(eq(waBroadcastRecipients.id, r.id));
         continue;
       }
-      const bodyParams = buildBodyParams(broadcast.varsMapJson as Record<string, string> | null, {
-        name: cust.name,
-        currentBalance: cust.currentBalance,
-        phone: cust.phone,
-      });
+      const bodyParams = buildBodyParams(
+        broadcast.varsMapJson as Record<string, string> | null,
+        {
+          name: cust.name,
+          currentBalance: cust.currentBalance,
+          phone: cust.phone,
+        },
+      );
       const { id: outboxId } = await enqueueOutbox(
         {
           dedupeKey: `BC:${broadcast.id}:${r.id}`,
           branchId: sendingBranchId,
+          customerId: r.customerId,
           toPhoneE164: r.phoneE164,
           kind: "TEMPLATE",
           payloadJson: { bodyParams },
@@ -212,7 +270,10 @@ async function throttleAndEnqueue(broadcast: WaBroadcast, sendingBranchId: numbe
         },
         tx,
       );
-      await tx.update(waBroadcastRecipients).set({ recipientStatus: "QUEUED", outboxId }).where(eq(waBroadcastRecipients.id, r.id));
+      await tx
+        .update(waBroadcastRecipients)
+        .set({ recipientStatus: "QUEUED", outboxId })
+        .where(eq(waBroadcastRecipients.id, r.id));
     }
   });
 }

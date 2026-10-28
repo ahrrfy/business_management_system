@@ -45,6 +45,9 @@ export interface OfflineOutboxItem {
   status: "QUEUED" | "SENDING" | "SENT" | "PARKED";
   attempts: number;
   lastError: string | null;
+  /** IndexedDB transaction owns this attempt across tabs; expiry permits crash recovery. */
+  sendingToken?: string | null;
+  sendingLeaseUntil?: number | null;
   /** إجمالي الفاتورة نصاً decimal — لصمّام سقف قيمة الطابور. */
   total: string;
   /** الرقم الرسمي INV بعد الترحيل الناجح — درج المزامنة يعرض ربط OFF ↔ INV. */

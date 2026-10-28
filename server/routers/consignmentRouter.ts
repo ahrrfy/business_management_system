@@ -161,6 +161,8 @@ export const consignmentRouter = router({
       // **القبض** وحدها، وهذا الزود يستدعي `createVoucher` بـPAYMENT ⇒ كان سند صرفٍ بالصك
       // يُنشأ فعلاً عبر tRPC مباشرةً، بينما راوتر السندات العام يمنعه (`creatableMethod`).
       paymentMethod: z.enum(["CASH", "CARD", "TRANSFER"]).default("CASH"),
+      referenceNumber: z.string().max(120).nullish(),
+      cardLastFour: z.string().regex(/^\d{4}$/, "أدخل آخر أربعة أرقام من البطاقة").nullish(),
       branchId: z.number().int().positive(),
       clientRequestId: z.string().min(8).max(64),
       description: z.string().max(500).optional(),
@@ -169,6 +171,8 @@ export const consignmentRouter = router({
       const branchId = canCrossBranches(ctx.user) ? input.branchId : (ctx.user.branchId ?? input.branchId);
       const res = await createVoucher({
         voucherType: "PAYMENT", branchId, amount: input.amount, paymentMethod: input.paymentMethod,
+        referenceNumber: input.referenceNumber,
+        cardLastFour: input.cardLastFour,
         partyType: "SUPPLIER", partyId: input.consignorId,
         clientRequestId: input.clientRequestId,
         description: input.description?.trim() || "تسوية بضاعة أمانة",

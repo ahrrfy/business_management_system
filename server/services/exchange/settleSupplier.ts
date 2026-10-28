@@ -15,6 +15,9 @@ import { lockBranchMonthCloseGate } from "../reports/monthCloseGate";
 import { lockHouse, nextTxnNumber, toDbRate } from "./helpers";
 import { calculateSignedUsdMovement, persistSignedUsdControl } from "./reverse";
 import { postExchangeControlReclassification } from "./controlClassification";
+import { assertPurchaseBranch } from "../purchase/internal";
+import { appErrorMessage } from "@shared/errors";
+import { applyExchangeInvoiceSettlementTx, prepareExchangeInvoiceSettlementTx } from "./supplierInvoiceSettlement";
 
 export interface SettleSupplierInput {
   exchangeHouseId: number;
@@ -44,10 +47,12 @@ export async function settleSupplierViaExchange(
   actor: Actor,
 ): Promise<{ txnId: number; txnNumber: string; fxDiff: string; receiptId: number | null; voucherNumber: string | null }> {
   return withTx(async (tx) => {
+    assertPurchaseBranch({ branchId: input.branchId }, actor);
     if (input.clientRequestId) {
       const existing = await findIdempotentRefId(tx, "exchange.settle", input.clientRequestId);
       if (existing != null) {
         const t = (await tx.select().from(exchangeTransactions).where(eq(exchangeTransactions.id, existing)).limit(1))[0];
+        if (t?.branchId != null) assertPurchaseBranch({ branchId: Number(t.branchId) }, actor);
         const receipt = t?.receiptId
           ? (await tx.select().from(receipts).where(eq(receipts.id, Number(t.receiptId))).limit(1))[0]
           : null;
@@ -62,16 +67,26 @@ export async function settleSupplierViaExchange(
     if (commission.isNegative()) throw new TRPCError({ code: "BAD_REQUEST", message: "العمولة لا تكون سالبة" });
 
     // كل كاتب مالي في الفرع يبدأ ببوابة الفرع: تمنع سباق إقفال الشهر، وتوحّد
-    // ترتيب الأقفال مع اعتماد سند المورد (branch→supplier→PO→house).
+    // ترتيب الأقفال مع تخصيص المورد (branch→PO→supplier→invoice→house).
     await lockBranchMonthCloseGate(tx, input.branchId);
-    const supplier = (await tx.select().from(suppliers).where(eq(suppliers.id, input.supplierId)).for("update").limit(1))[0];
-    if (!supplier) throw new TRPCError({ code: "BAD_REQUEST", message: "المورد غير موجود" });
-
     let purchaseOrder: typeof purchaseOrders.$inferSelect | null = null;
     if (input.purchaseOrderId != null) {
       purchaseOrder = (await tx.select().from(purchaseOrders)
         .where(eq(purchaseOrders.id, input.purchaseOrderId)).for("update").limit(1))[0] ?? null;
       if (!purchaseOrder) throw new TRPCError({ code: "NOT_FOUND", message: "فاتورة الشراء غير موجودة" });
+      assertPurchaseBranch(purchaseOrder, actor);
+      if (Number(purchaseOrder.branchId) !== input.branchId) {
+        throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({
+          what: "تعذر تسديد أمر الشراء عبر الصيرفة", why: "فرع أمر الشراء لا يطابق فرع عملية التسديد",
+          doThis: "اختر فرع أمر الشراء نفسه قبل تسجيل التسديد",
+        }) });
+      }
+      if (!["CONFIRMED", "RECEIVED"].includes(purchaseOrder.status)) {
+        throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+          what: "تعذر تسديد أمر الشراء عبر الصيرفة", why: "أمر الشراء ليس معتمداً أو مستلماً",
+          doThis: "أكمل اعتماد واستلام أمر الشراء وفاتورة المورد قبل التسديد",
+        }) });
+      }
       if (Number(purchaseOrder.supplierId) !== input.supplierId) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "فاتورة الشراء لا تخص المورد المحدد" });
       }
@@ -92,6 +107,12 @@ export async function settleSupplierViaExchange(
       }
       settledIqd = round2(settledUsd.times(money(purchaseOrder.agreedRate)));
     }
+    const supplier = (await tx.select().from(suppliers).where(eq(suppliers.id, input.supplierId)).for("update").limit(1))[0];
+    if (!supplier) throw new TRPCError({ code: "BAD_REQUEST", message: "المورد غير موجود" });
+    const invoiceSettlement = await prepareExchangeInvoiceSettlementTx(tx, {
+      order: purchaseOrder, supplier, settledIqd: toDbMoney(settledIqd), settledUsd: toDbMoney(settledUsd),
+    }, actor);
+    if (invoiceSettlement) settledIqd = money(invoiceSettlement.amountIqd);
     if (settledIqd.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "الدين المُسوّى يجب أن يكون موجباً" });
     if (settledIqd.gt(money(supplier.currentBalance))) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "قيمة التسديد تتجاوز رصيد المورد الدفتري" });
@@ -195,7 +216,7 @@ export async function settleSupplierViaExchange(
     if (settledUsd.gt(0)) {
       await adjustSupplierBalanceUsd(tx, input.supplierId, settledUsd.negated());
     }
-    if (purchaseOrder) {
+    if (purchaseOrder && !invoiceSettlement) {
       await tx.update(purchaseOrders)
         .set({
           paidAmount: toDbMoney(money(purchaseOrder.paidAmount).plus(settledIqd)),
@@ -283,6 +304,12 @@ export async function settleSupplierViaExchange(
         settleComponents,
       ),
     });
+
+    if (invoiceSettlement) {
+      await applyExchangeInvoiceSettlementTx(tx, invoiceSettlement, {
+        txnId, receiptId, entryDedupeKey: `EXSET:${txnNumber}`,
+      }, actor);
+    }
 
     // فرق الصرف المحقَّق (amount موقَّع، معزول عن إيراد البيع).
     if (!fxDiff.isZero()) {

@@ -11,7 +11,7 @@ import { listAssets } from "./queries";
 export async function dashboard(scope: CompanyBranchScope) {
   const all = await listAssets({ includeDisposed: true }, scope);
   const correctedAcquisitions = all.filter((a) => a.recognitionStatus === "CORRECTED");
-  const live = all.filter((a) => a.recognitionStatus !== "CORRECTED" && (a.status === "active" || a.status === "maintenance" || a.status === "retired"));
+  const live = all.filter((a) => a.recognitionStatus !== "CORRECTED" && (a.status === "active" || a.status === "maintenance"));
 
   const totalAssets = live.length;
   // FA-05 (§٥): جمع قيم الشراء عبر decimal لا Number/float.

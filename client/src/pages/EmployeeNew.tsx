@@ -729,8 +729,8 @@ export default function EmployeeNew() {
       <Card>
         <CardHeader><CardTitle className="text-base">أرصدة الإجازات (أيام)</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div className="space-y-1"><Label htmlFor="alb">رصيد الإجازة السنوية</Label><Input id="alb" dir="ltr" inputMode="numeric" value={form.annualLeaveBalance} onChange={(e) => set({ annualLeaveBalance: e.target.value.replace(/\D/g, "") })} /></div>
-          <div className="space-y-1"><Label htmlFor="slb">رصيد الإجازة المرضية</Label><Input id="slb" dir="ltr" inputMode="numeric" value={form.sickLeaveBalance} onChange={(e) => set({ sickLeaveBalance: e.target.value.replace(/\D/g, "") })} /></div>
+          <div className="space-y-1"><Label htmlFor="alb">رصيد الإجازة السنوية</Label><Input id="alb" dir="ltr" inputMode="decimal" value={form.annualLeaveBalance} onChange={(e) => { if (/^\d*(\.\d{0,2})?$/.test(e.target.value)) set({ annualLeaveBalance: e.target.value }); }} /></div>
+          <div className="space-y-1"><Label htmlFor="slb">رصيد الإجازة المرضية</Label><Input id="slb" dir="ltr" inputMode="decimal" value={form.sickLeaveBalance} onChange={(e) => { if (/^\d*(\.\d{0,2})?$/.test(e.target.value)) set({ sickLeaveBalance: e.target.value }); }} /></div>
         </CardContent>
       </Card>
       </div>

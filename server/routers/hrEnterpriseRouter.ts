@@ -170,8 +170,8 @@ export const hrEnterpriseRouter = router({
       .mutation(({ input, ctx }) => contractSvc.renewEmployeeContract(toActor(ctx), input)),
 
     terminate: hrWrite
-      .input(z.object({ id: z.number().int().positive(), reason: z.string().nullish() }))
-      .mutation(({ input, ctx }) => contractSvc.terminateEmployeeContract(toActor(ctx), input.id, input.reason)),
+      .input(z.object({ id: z.number().int().positive(), reason: z.string().nullish(), cancelScheduledOnly: z.boolean().optional() }))
+      .mutation(({ input, ctx }) => contractSvc.terminateEmployeeContract(toActor(ctx), input.id, input.reason, input.cancelScheduledOnly)),
 
     probationAlerts: hrRead
       .input(z.object({ withinDays: z.number().int().min(1).max(90).optional() }).optional())

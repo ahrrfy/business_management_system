@@ -5,6 +5,8 @@ import { branches, employeeTransfers, employees, users } from "../../drizzle/sch
 import { getDb, type Tx } from "../db";
 import { withTx, type Actor, type MaybeScopedActor } from "./tx";
 import { baghdadToday } from "./businessDay";
+import { canCrossBranches } from "../lib/branchAuthority";
+import { assertHrBranch, lockHrEmployeeTx, resolveHrActorTx } from "./hr/resourceScope";
 
 function requireDb() {
   const db = getDb();
@@ -32,27 +34,9 @@ export async function requestEmployeeTransfer(
   input: RequestTransferInput,
 ) {
   return withTx(async (tx) => {
-    const [emp] = await tx
-      .select({
-        id: employees.id,
-        branchId: employees.branchId,
-        department: employees.department,
-        position: employees.position,
-      })
-      .from(employees)
-      .where(eq(employees.id, input.employeeId))
-      .limit(1);
-
-    if (!emp) {
-      throw new TRPCError({
-        code: "NOT_FOUND",
-        message: appErrorMessage({
-          what: "تعذّر تسجيل أمر النقل",
-          why: "الموظف المطلوب غير مسجّل في قاعدة البيانات",
-          doThis: "تحقّق من معرّف الموظف وأعد المحاولة",
-        }),
-      });
-    }
+    const currentActor = await resolveHrActorTx(tx, actor, "hrEnterprise.transfers.request");
+    const emp = await lockHrEmployeeTx(tx, currentActor, input.employeeId);
+    assertHrBranch(currentActor, input.toBranchId ?? emp.branchId);
 
     if (input.toBranchId) {
       const [br] = await tx
@@ -99,10 +83,12 @@ export async function approveEmployeeTransfer(
   id: number,
 ) {
   return withTx(async (tx) => {
+    const currentActor = await resolveHrActorTx(tx, actor, "hrEnterprise.transfers.approve");
     const [tr] = await tx
       .select()
       .from(employeeTransfers)
       .where(eq(employeeTransfers.id, id))
+      .for("update")
       .limit(1);
 
     if (!tr) {
@@ -116,6 +102,9 @@ export async function approveEmployeeTransfer(
       });
     }
 
+    await lockHrEmployeeTx(tx, currentActor, tr.employeeId, tr.fromBranchId);
+    assertHrBranch(currentActor, tr.toBranchId);
+
     if (tr.status !== "PENDING") {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -127,7 +116,7 @@ export async function approveEmployeeTransfer(
       });
     }
 
-    if (tr.createdById === actor.userId && actor.role !== "admin") {
+    if (tr.createdById === currentActor.userId && !canCrossBranches(currentActor)) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: appErrorMessage({
@@ -169,17 +158,26 @@ export async function executeTransferInTx(
   transfer: {
     id: number;
     employeeId: number;
+    fromBranchId?: number | null;
     toBranchId?: number | null;
     toDepartment?: string | null;
     toPosition?: string | null;
   },
 ) {
   const [emp] = await tx
-    .select({ id: employees.id, userId: employees.userId })
+    .select({ id: employees.id, userId: employees.userId, branchId: employees.branchId })
     .from(employees)
     .where(eq(employees.id, transfer.employeeId))
     .for("update")
     .limit(1);
+
+  if (!emp || (transfer.fromBranchId !== undefined && emp.branchId !== transfer.fromBranchId)) {
+    throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+      what: "تعذّر تنفيذ أمر النقل",
+      why: "تغيّر فرع الموظف منذ إصدار القرار أو لم يعد الموظف موجوداً",
+      doThis: "راجع بطاقة الموظف وأصدر قرار نقل يطابق فرعه الحالي",
+    }) });
+  }
 
   if (emp) {
     await tx
@@ -214,7 +212,13 @@ export async function executeTransferInTx(
  * GAP-08: أوامر النقل المستقبلية المعتمدة (APPROVED) تُنفّذ عند حلول تاريخ السريان.
  */
 export async function executePendingTransfers(actor?: MaybeScopedActor) {
+  if (!actor) throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({
+    what: "تعذّر تنفيذ أوامر النقل",
+    why: "لم يتم تحديد حساب مخوّل لتنفيذ الأوامر المستحقة",
+    doThis: "نفّذ الإجراء من حساب الموارد البشرية المخوّل",
+  }) });
   return withTx(async (tx) => {
+    const currentActor = await resolveHrActorTx(tx, actor, "hrEnterprise.transfers.executePending");
     const today = baghdadToday();
     const pendingApproved = await tx
       .select()
@@ -223,12 +227,18 @@ export async function executePendingTransfers(actor?: MaybeScopedActor) {
         and(
           eq(employeeTransfers.status, "APPROVED"),
           sql`${employeeTransfers.effectiveDate} <= ${today}`,
+          ...(canCrossBranches(currentActor) ? [] : [
+            eq(employeeTransfers.fromBranchId, currentActor.branchId ?? 0),
+            eq(employeeTransfers.toBranchId, currentActor.branchId ?? 0),
+          ]),
         ),
       )
       .for("update");
 
     let executedCount = 0;
     for (const tr of pendingApproved) {
+      await lockHrEmployeeTx(tx, currentActor, tr.employeeId, tr.fromBranchId);
+      assertHrBranch(currentActor, tr.toBranchId);
       await executeTransferInTx(tx, tr);
       executedCount++;
     }

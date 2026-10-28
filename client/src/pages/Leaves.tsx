@@ -124,14 +124,14 @@ export default function Leaves() {
     {
       id: "annual",
       header: "سنوية",
-      accessorFn: (b) => b.annualLeaveBalance,
+      accessorFn: (b) => Number(b.annualLeaveBalance ?? 0),
       meta: { kind: "number", align: "center" },
       cell: ({ row }) => row.original.annualLeaveBalance,
     },
     {
       id: "sick",
       header: "مرضية",
-      accessorFn: (b) => b.sickLeaveBalance,
+      accessorFn: (b) => Number(b.sickLeaveBalance ?? 0),
       meta: { kind: "number", align: "center" },
       cell: ({ row }) => row.original.sickLeaveBalance,
     },

@@ -1,0 +1,61 @@
+{
+  "bundle": "commerce",
+  "worker": "D:\\business_management_system-worktrees\\audit-fix-commerce-1028",
+  "baseline": "fa82f0d5e5ec819b5769720f370a100d7ea81f9f",
+  "integratedAtUtc": "2026-10-28T14:49:54.296Z",
+  "patchSha256": "4f4d8ac3e2ff3e5b85fe97c009c1e709bfaaa6ec5a6a0eab5198ba2eb64892da",
+  "files": [
+    {
+      "path": "client/src/pages/GiftsHub.tsx",
+      "sha256": "b540f63b295f25d25fc72099e76ed2ea9419502399bd5dcc39b7b6ba41702e03"
+    },
+    {
+      "path": "client/src/pages/ReservationsHub.tsx",
+      "sha256": "bc3fd2c32215e16372b087ab3e661f3679d29c0876b9738a545363101ec10294"
+    },
+    {
+      "path": "client/src/pages/__tests__/auditCommerceUi.test.tsx",
+      "sha256": "c536adf699568fea811891f831c5583f680621e80ad355a86f174fb986bcba95"
+    },
+    {
+      "path": "server/routers/installmentRouter.ts",
+      "sha256": "978421b04d54cd004945db878dcb13c8f80b1e6154f23ebb6cef69ba736ef27d"
+    },
+    {
+      "path": "server/routers/promotionsV2Router.ts",
+      "sha256": "86d0b74bfd782be099bf26b048a67e7a68335b1bcf304bafdde0ac53d6a2d9da"
+    },
+    {
+      "path": "server/routers/reservationsRouter.ts",
+      "sha256": "20c1ac109b7a470bc0a694868638808fbb6c9a3f36cb707d4a403451ca65585a"
+    },
+    {
+      "path": "server/services/installment/queries.ts",
+      "sha256": "354024f86c43027051a7ec41aa8aab3d84daae2610ce146716d4b9df0aed0a5c"
+    },
+    {
+      "path": "server/services/installment/types.ts",
+      "sha256": "f6e047d6dac175a2b9eaaaf81251b1a7d978040e5965aa85323d6123109110d8"
+    },
+    {
+      "path": "server/services/reservations/convert.ts",
+      "sha256": "fe170467edc675d20beb69a05239bed2696ee2926bd72c8b45b0e2850de1406b"
+    },
+    {
+      "path": "server/services/gifts/outbound.ts",
+      "sha256": "0b7fdd52e7c81f22400a1f10b26e64a7c37ab5cf976003c589e3fe445c8b6536"
+    },
+    {
+      "path": "server/services/salesPromotionService.ts",
+      "sha256": "bf30d2eecc2b2354b9fb0b030c63b8d66b5dfce88036a6ebf4ba021af5f66065"
+    },
+    {
+      "path": "server/services/__tests__/auditCommerceControls.test.ts",
+      "sha256": "30c6a90bd7a6d3520d0b3f8d6f93804fbe2c56051c985422f74c04bb1934181a"
+    },
+    {
+      "path": "server/services/__tests__/reservations.test.ts",
+      "sha256": "aaf37f682ea61657d057471eab51098dbc940982c8893c0f13736e162f642664"
+    }
+  ]
+}

@@ -1,9 +1,11 @@
 // قوائم واستعلامات القراءة: صفحات الخطط + تفاصيل خطة + طابور التحصيل القريب الاستحقاق.
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, exists, gte, inArray, lt, lte, or, sql } from "drizzle-orm";
 import { customers, installmentLines, installmentPlans, receipts } from "../../../drizzle/schema";
 import { toDateStr, toDbMoney } from "../money";
 import { requireDb } from "../tx";
+import { escLike } from "../../lib/sqlLike";
+import { utcDayStart, utcNextDayStart } from "../businessDay";
 import { assertPlanBranch, type BranchRestriction, type InstallmentKind, type ListPlansFilter, type PlanStatus } from "./types";
 
 export async function listPlans(filter: ListPlansFilter) {
@@ -15,6 +17,20 @@ export async function listPlans(filter: ListPlansFilter) {
   if (filter.branchId != null) wheres.push(eq(installmentPlans.branchId, filter.branchId));
   if (filter.customerId != null) wheres.push(eq(installmentPlans.customerId, filter.customerId));
   if (filter.status) wheres.push(eq(installmentPlans.status, filter.status));
+  if (filter.from) wheres.push(gte(installmentPlans.createdAt, utcDayStart(filter.from)));
+  if (filter.to) wheres.push(lt(installmentPlans.createdAt, utcNextDayStart(filter.to)));
+  const q = filter.q?.trim();
+  if (q) {
+    const pattern = `%${escLike(q)}%`;
+    wheres.push(or(
+      sql`CAST(${installmentPlans.id} AS CHAR) LIKE ${pattern} ESCAPE '!'`,
+      sql`${customers.name} LIKE ${pattern} ESCAPE '!'`,
+      exists(db.select({ id: installmentLines.id }).from(installmentLines).where(and(
+        eq(installmentLines.planId, installmentPlans.id),
+        sql`${installmentLines.checkNumber} LIKE ${pattern} ESCAPE '!'`,
+      ))),
+    ));
+  }
 
   // limit+1 ⇒ hasMore بلا COUNT (نمط حملة الأداء).
   const rows = await db

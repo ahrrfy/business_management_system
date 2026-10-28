@@ -88,8 +88,8 @@ export default function AssetEdit() {
   if (q.isLoading) return <div className="p-10 text-center text-muted-foreground">{ACTION_LABELS.loading}</div>;
   if (q.error) return <div className="p-10 text-center text-destructive">تعذّر تحميل الأصل: {q.error.message}</div>;
   if (!q.data) return <div className="p-10 text-center text-muted-foreground">الأصل غير موجود. <Link href="/assets/register" className="text-primary">رجوع للسجلّ</Link></div>;
-  if (q.data.status === "disposed") {
-    return <div className="p-10 text-center text-muted-foreground">لا يمكن تعديل أصل مُستبعَد. <Link href={`/assets/${id}`} className="text-primary">رجوع للأصل</Link></div>;
+  if (q.data.status === "disposed" || q.data.status === "retired") {
+    return <div className="p-10 text-center text-muted-foreground">لا يمكن تعديل أصل مُستبعَد أو خارج الخدمة بعد إلغاء الاعتراف به. <Link href={`/assets/${id}`} className="text-primary">رجوع للأصل</Link></div>;
   }
 
   function submit() {

@@ -1,0 +1,93 @@
+{
+  "bundle": "hr",
+  "worker": "D:\\business_management_system-worktrees\\audit-fix-hr-1028",
+  "baseline": "fa82f0d5e5ec819b5769720f370a100d7ea81f9f",
+  "integratedAtUtc": "2026-10-28T15:33:39.426Z",
+  "patchSha256": "547aaccb1518064176923cc1b4af56487c2753e10fd0ae262cc8990a77a4ad6f",
+  "files": [
+    {
+      "path": "client/src/components/hr/EmployeeContractsTab.tsx",
+      "sha256": "2fcc81c3817211f4f741e27e0e6081d3c7496741119146b1177b8226d5a8d212"
+    },
+    {
+      "path": "client/src/components/hr/EmployeeEnterpriseOperationsTab.tsx",
+      "sha256": "ffd78841c1d58333a3cde61ea39977e30bb09f44895aff22a715286fa8ce98e4"
+    },
+    {
+      "path": "client/src/pages/EmployeeNew.tsx",
+      "sha256": "fdcbc33eeda8d57778a280ee662ccdeed518c82344091a4e2783503578fa88c7"
+    },
+    {
+      "path": "client/src/pages/LeaveReport.tsx",
+      "sha256": "80bcc6e663fd3e286402816bdba469785954008c17e41c6a4adc23c06150468d"
+    },
+    {
+      "path": "client/src/pages/Leaves.tsx",
+      "sha256": "9fc3168d4c46e99adf91414a34478654ab629d30a55d519eb286573fb54c69e9"
+    },
+    {
+      "path": "server/routers/employeeRouter.ts",
+      "sha256": "2d918226a16d4d42f3c2a53a1a720ba61e9c8fbd5fe1faf4d03f4636fb29afc2"
+    },
+    {
+      "path": "server/routers/hrEnterpriseRouter.ts",
+      "sha256": "581e8fab469a31d8735e317b70cf5dee5d5992514dba8a4d7ab33ba5e7556bcd"
+    },
+    {
+      "path": "server/services/__tests__/auditHrContracts.test.ts",
+      "sha256": "a3fd7a1dcf11db59be178e249f222998fdec77db55b608089c869910319ee708"
+    },
+    {
+      "path": "server/services/__tests__/challengerLeaveAccrual.test.ts",
+      "sha256": "c5c8aeb4bcba5df8501251cdc070f3296fccd3dd856ee066581c0afea95554dc"
+    },
+    {
+      "path": "server/services/__tests__/hrEnterpriseTransactions.test.ts",
+      "sha256": "270df30b052f188ee2c1551e57ad3f861df8c41296398278589d791002bd75e6"
+    },
+    {
+      "path": "server/services/attendanceService.ts",
+      "sha256": "5892cce8e0d31829a653a9afebd94542847b9188c9b38a5dd95cd9ade16fa8fd"
+    },
+    {
+      "path": "server/services/employeeContractService.ts",
+      "sha256": "c221bf9082f95f5432c2a9bf675bb06388a6b8992bfa3b7819cf1dc8b6bdabf5"
+    },
+    {
+      "path": "server/services/employeeCustodyService.ts",
+      "sha256": "b3e16a6139fa0cce41ee495b512320b3bdd75eee02e19742a0da22881408f8c6"
+    },
+    {
+      "path": "server/services/employeeDocumentService.ts",
+      "sha256": "2d5f17f966b0f86671220df2f8e4445da9673fb9dbeeafc6f6de9a8cc27ac0a0"
+    },
+    {
+      "path": "server/services/employeePenaltyService.ts",
+      "sha256": "6599306d8c43360d7ea66456b169c8d026169d4ceda047615ce98b95f32556a0"
+    },
+    {
+      "path": "server/services/employeeService.ts",
+      "sha256": "f24212a11b131757f560badd3319271ee7b76bd337a3a279cb911c8ca5762b9a"
+    },
+    {
+      "path": "server/services/employeeTransferService.ts",
+      "sha256": "dedbe1a97878042619cea3cb3e5e483cad09b22f1d90a7721f2463af531011cb"
+    },
+    {
+      "path": "server/services/hr/leaveAccrual.ts",
+      "sha256": "961a7c3d909d522ffa53552e7b1494a9fc50c786d1040beafddf39dfc7dacc7a"
+    },
+    {
+      "path": "server/services/hr/payrollWageBasis.ts",
+      "sha256": "0ebe03346709bf3afa68e015349fbe80b5b7f715a6f06bb5b6061e6789a06b8e"
+    },
+    {
+      "path": "server/services/hr/resourceScope.ts",
+      "sha256": "1e586804acaf5bcdb6f6e5ab1485f8528427a20ef45e999ffc56a509099a0203"
+    },
+    {
+      "path": "server/services/leaveService.ts",
+      "sha256": "62d73830f1a3e720de993e311e5992ea8a906ec7d9e18845baf411733c920015"
+    }
+  ]
+}

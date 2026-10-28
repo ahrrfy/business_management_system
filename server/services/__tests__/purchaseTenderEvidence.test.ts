@@ -228,6 +228,13 @@ async function exchangeSettlement() {
     .update(s.purchaseOrders)
     .set({ agreedCurrency: "USD", usdTotal: "1", agreedRate: "100" })
     .where(eq(s.purchaseOrders.id, 1));
+  // A historical PO-only settlement still needs its original AP source; a
+  // manually set supplier balance alone cannot prove this invoice is payable.
+  await db().insert(s.accountingEntries).values({
+    entryType: "PURCHASE", purchaseOrderId: 1, branchId: 1, supplierId: 1,
+    amount: "100.00", entryDate: new Date("2026-01-02T00:00:00Z"),
+    dedupeKey: "EVIDENCE-LEGACY-PURCHASE", createdBy: 7,
+  });
   const house = await createExchangeHouse(
     { name: "Evidence exchange" },
     exchangeActor,

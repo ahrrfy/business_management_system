@@ -1,0 +1,45 @@
+{
+  "bundle": "assets",
+  "worker": "D:\\business_management_system-worktrees\\audit-fix-assets-1028",
+  "baseline": "fa82f0d5e5ec819b5769720f370a100d7ea81f9f",
+  "integratedAtUtc": "2026-10-28T14:34:36.121Z",
+  "patchSha256": "7dfe06523574c26c8272a184cc10ba46ed80ef311524ca7d7d4556c2af37872b",
+  "files": [
+    {
+      "path": "client/src/pages/AssetDetail.tsx",
+      "sha256": "165ab61610b3f6f092d074e622f8ad75ce20dfd79536d2e5439477c8f20ce36b"
+    },
+    {
+      "path": "client/src/pages/AssetEdit.tsx",
+      "sha256": "334c2d56b96bb77d391ee44ca4761789bf49e8918d21303e143b0dc1dd2b3ee2"
+    },
+    {
+      "path": "client/src/pages/ConsignmentSettlements.tsx",
+      "sha256": "1a9881d7e0218f19f1f57bb0441b7a8633badd3df2116b9a7334fed2b84d940b"
+    },
+    {
+      "path": "server/routers/consignmentRouter.ts",
+      "sha256": "34eb4da27b0fea7cbf87cf36eeb8f8febae561b51ab83be33afcb1329e85fca8"
+    },
+    {
+      "path": "server/services/__tests__/auditAssetJournalConsignment.test.ts",
+      "sha256": "2a7e2f13f2e3d04c5268197d3d16a66e690fa1722a5b370d6c350c594cc86434"
+    },
+    {
+      "path": "server/services/accounting/manualJournalService.ts",
+      "sha256": "69341a3a0c71783d85e804ed4160b335b68deeb20008aeab028711cbd3ec6f87"
+    },
+    {
+      "path": "server/services/assets/reports.ts",
+      "sha256": "805ac3538982e510614a8cb6194262000d88f0013e8d8336abc260c7ae203bfa"
+    },
+    {
+      "path": "server/services/assets/update.ts",
+      "sha256": "d34a044093782482b62f1dddfec96fdbfece26d80badeba9b97b7a47c11009b1"
+    },
+    {
+      "path": "server/services/consignment/noteService.ts",
+      "sha256": "e856a11fd66876107c5e43076c9fc2a22e36c7c742d19751521a3f6216363de2"
+    }
+  ]
+}

@@ -29,7 +29,7 @@ export function EmployeeEnterpriseOperationsTab({
   branchId?: number;
   basicSalary?: string | number | null;
   allowances?: string | number | null;
-  annualLeaveBalance?: number | null;
+  annualLeaveBalance?: string | number | null;
   currentUserId?: number;
 }) {
   const { can } = useCatalogPeopleOperationAccess();

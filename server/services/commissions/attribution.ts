@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
-import { eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import type { Tx } from "../../db";
 import {
   invoiceAttributions,
@@ -53,6 +53,7 @@ export interface ResolvedAttributionLine {
   attributionMode: AttributionMode;
   sharePct: string; // decimal(5,4), e.g. "0.7000"
   creditedBaseAmount: string; // decimal(15,2), e.g. "70000.00"
+  teamPoolId?: number | null;
 }
 
 export interface ResolvedAttributionPlan {
@@ -424,7 +425,7 @@ export async function recordInvoiceAttributionsInTx(
       attributionMode: l.attributionMode as never,
       sharePct: l.sharePct,
       creditedBaseAmount: l.creditedBaseAmount,
-      teamPoolId: params.teamPoolId ?? null,
+      teamPoolId: l.teamPoolId ?? params.teamPoolId ?? null,
     })),
   );
 }
@@ -449,35 +450,49 @@ export async function inheritAttributionsForCorrection(
     newInvoiceId: number;
     branchId: number;
     newBaseAmount: string | Decimal;
-    fallbackUserId: number;
+    fallbackUserId: number | null;
+    originalPrimaryUserId?: number | null;
+    originalAttributionMode?: AttributionMode;
   },
-): Promise<void> {
-  const originalAttributions = await getInvoiceAttributions(
-    tx,
-    params.originalInvoiceId,
-  );
+): Promise<ResolvedAttributionPlan | null> {
+  const originalAttributions = await tx
+    .select()
+    .from(invoiceAttributions)
+    .where(eq(invoiceAttributions.invoiceId, params.originalInvoiceId))
+    .orderBy(asc(invoiceAttributions.id))
+    .for("share");
   const baseD = round2(money(params.newBaseAmount));
 
-  if (!originalAttributions || originalAttributions.length === 0) {
+  // createSaleInTx has already written its default plan. Replace it atomically;
+  // retaining either set alongside the inherited rows would multiply commissions.
+  await tx
+    .delete(invoiceAttributions)
+    .where(eq(invoiceAttributions.invoiceId, params.newInvoiceId));
+
+  if (originalAttributions.length === 0) {
+    // Canonical legacy invoices may have no known seller. Keep that absence;
+    // the correcting actor is execution evidence, never a substitute beneficiary.
+    if (params.fallbackUserId == null) return null;
     // فاتورة تاريخية بلا إسناد: الاعتماد على المستخدم الموروث كـ DIRECT
+    const plan: ResolvedAttributionPlan = {
+      primaryUserId: params.fallbackUserId,
+      attributionMode: "DIRECT",
+      lines: [
+        {
+          userId: params.fallbackUserId,
+          role: "CASHIER",
+          attributionMode: "DIRECT",
+          sharePct: "1.0000",
+          creditedBaseAmount: toDbMoney(baseD),
+        },
+      ],
+    };
     await recordInvoiceAttributionsInTx(tx, {
       branchId: params.branchId,
       invoiceId: params.newInvoiceId,
-      plan: {
-        primaryUserId: params.fallbackUserId,
-        attributionMode: "DIRECT",
-        lines: [
-          {
-            userId: params.fallbackUserId,
-            role: "CASHIER",
-            attributionMode: "DIRECT",
-            sharePct: "1.0000",
-            creditedBaseAmount: toDbMoney(baseD),
-          },
-        ],
-      },
+      plan,
     });
-    return;
+    return plan;
   }
 
   // إعادة تطبيق نفس نسب التقسيم الأصلية على إجمالي الفاتورة المصححة
@@ -500,6 +515,7 @@ export async function inheritAttributionsForCorrection(
       attributionMode: attr.attributionMode as AttributionMode,
       sharePct: pct.toFixed(4),
       creditedBaseAmount: toDbMoney(credited),
+      teamPoolId: attr.teamPoolId,
     });
   });
 
@@ -510,15 +526,19 @@ export async function inheritAttributionsForCorrection(
     );
   }
 
+  const originalPrimary = lines.find(line => line.userId === params.originalPrimaryUserId);
+  const plan: ResolvedAttributionPlan = {
+    primaryUserId: originalPrimary?.userId ?? lines[maxShareIdx].userId,
+    attributionMode:
+      params.originalAttributionMode ??
+      (originalAttributions[0].attributionMode as AttributionMode) ??
+      "DIRECT",
+    lines,
+  };
   await recordInvoiceAttributionsInTx(tx, {
     branchId: params.branchId,
     invoiceId: params.newInvoiceId,
-    plan: {
-      primaryUserId: lines[maxShareIdx]?.userId ?? params.fallbackUserId,
-      attributionMode:
-        (originalAttributions[0].attributionMode as AttributionMode) ??
-        "DIRECT",
-      lines,
-    },
+    plan,
   });
+  return plan;
 }

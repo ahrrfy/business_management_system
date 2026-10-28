@@ -31,6 +31,8 @@ export interface SendFailure {
   classification: GraphErrorClassification;
   code: number | null;
   detail: string;
+  /** No proof of provider rejection: automatic resend may duplicate delivery. */
+  outcomeUnknown?: boolean;
 }
 export type SendResult = SendSuccess | SendFailure;
 
@@ -105,21 +107,40 @@ async function postMessage(
   payload: Record<string, unknown>,
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<SendResult> {
-  const res = await graphFetch(integration, `/${integration.phoneNumberId}/messages`, { method: "POST", body: payload }, fetchImpl);
+  const res = await graphFetch(
+    integration,
+    `/${integration.phoneNumberId}/messages`,
+    { method: "POST", body: payload },
+    fetchImpl,
+  );
   if (res.ok) {
-    const wamid = (res.body as { messages?: Array<{ id?: unknown }> } | null)?.messages?.[0]?.id;
+    const wamid = (res.body as { messages?: Array<{ id?: unknown }> } | null)
+      ?.messages?.[0]?.id;
     if (typeof wamid !== "string" || !wamid) {
       return {
         ok: false,
         classification: "permanent",
         code: null,
-        detail: "استجابة واتساب لا تحوي معرّف رسالة (wamid) رغم نجاح الطلب ظاهرياً.",
+        detail:
+          "استجابة واتساب لا تحوي معرّف رسالة (wamid) رغم نجاح الطلب ظاهرياً.",
+        outcomeUnknown: true,
       };
     }
     return { ok: true, wamid };
   }
   const info = classifyGraphError(res.status, res.body);
-  return { ok: false, classification: info.classification, code: info.code, detail: info.detail };
+  const explicitRejection = (
+    res.body as { error?: { message?: unknown; code?: unknown } } | null
+  )?.error;
+  return {
+    ok: false,
+    classification: info.classification,
+    code: info.code,
+    detail: info.detail,
+    ...(res.status === 0 || (res.status >= 500 && !explicitRejection)
+      ? { outcomeUnknown: true }
+      : {}),
+  };
 }
 
 /** رفع ملف إلى استضافة Meta المؤقتة وإرجاع media_id صالح للإرسال. */

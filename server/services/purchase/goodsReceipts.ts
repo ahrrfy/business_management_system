@@ -1315,6 +1315,11 @@ export async function decideGoodsReceiptReversal(
     const costByVariant = new Map(
       variantRows.map((row) => [Number(row.id), money(row.costPrice)]),
     );
+    // Historical partials may differ from a rounded cumulative share. Consume
+    // the actual remaining original GRNI, using the locked source trail.
+    const priorReversalItems = await tx.select().from(goodsReceiptReversalItems)
+      .where(inArray(goodsReceiptReversalItems.goodsReceiptItemId, requestedItems.map((row) => Number(row.receiptItem.id))))
+      .orderBy(asc(goodsReceiptReversalItems.id)).for("share");
     const reversalNumber = await nextDocumentNumber(
       tx,
       goodsReceiptReversals,
@@ -1324,6 +1329,19 @@ export async function decideGoodsReceiptReversal(
     );
     const financialItems = requestedItems.map((row) => {
       const quantity = Number(row.requestItem.baseQuantity);
+      const prior = priorReversalItems.filter((item) => Number(item.goodsReceiptItemId) === Number(row.receiptItem.id));
+      const priorQuantity = prior.reduce((sum, item) => sum + Number(item.baseQuantity), 0);
+      const priorAmount = prior.reduce((sum, item) => sum.plus(item.netAmount), money(0));
+      const original = round2(cumulativeQuantityCurrencyDelta(
+        row.receiptItem.netAmount, Number(row.receiptItem.acceptedBaseQuantity), 0, priorQuantity + quantity,
+      ).minus(priorAmount));
+      if (priorQuantity !== Number(row.receiptItem.reversedBaseQuantity) || original.lt(0)) {
+        throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+          what: "تعذر حساب القيمة الأصلية المتبقية لعكس الاستلام",
+          why: "كمية أو قيمة العكس السابق لا تطابق مستند الاستلام ومبالغه المثبتة",
+          doThis: "راجع مستندات العكس السابقة وقضية نزاهة الشراء قبل اعتماد عكس جديد",
+        }) });
+      }
       const usdAmount =
         row.receiptItem.usdAmount == null
           ? null
@@ -1333,16 +1351,17 @@ export async function decideGoodsReceiptReversal(
               Number(row.receiptItem.reversedBaseQuantity),
               quantity,
             );
-      return { row, quantity, usdAmount };
+      return { row, quantity, usdAmount, original };
     });
     const reversalCanonical = stableCanonical({
       requestId: input.requestId,
       receiptId: receipt.id,
       decisionHash,
-      items: financialItems.map(({ row, quantity, usdAmount }) => ({
+      items: financialItems.map(({ row, quantity, usdAmount, original }) => ({
         goodsReceiptItemId: row.receiptItem.id,
         baseQuantity: quantity,
         usdAmount: usdAmount == null ? null : toDbMoney(usdAmount),
+        netAmount: toDbMoney(original),
       })),
     });
     let grniAmount = money(0);
@@ -1364,10 +1383,7 @@ export async function decideGoodsReceiptReversal(
       postedBy: actor.userId,
     });
     const reversalId = extractInsertId(reversalInsert);
-    for (const { row, quantity, usdAmount } of financialItems) {
-      const original = round2(
-        money(row.receiptItem.unitCostIqd).times(quantity),
-      );
+    for (const { row, quantity, usdAmount, original } of financialItems) {
       const carrying = round2(
         (
           costByVariant.get(Number(row.receiptItem.variantId)) ?? money(0)

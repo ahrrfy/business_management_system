@@ -1,0 +1,61 @@
+{
+  "bundle": "platform",
+  "worker": "D:\\business_management_system-worktrees\\audit-fix-platform-1028",
+  "baseline": "fa82f0d5e5ec819b5769720f370a100d7ea81f9f",
+  "integratedAtUtc": "2026-10-28T15:00:24.690Z",
+  "patchSha256": "2cb8bcc879e086323cdaaf4d8a5dea4696cbbed35a318ff263d6a34e4d8f742b",
+  "files": [
+    {
+      "path": "scripts/backup.mjs",
+      "sha256": "92dc39494c098f90a63bda161f5d9efcec8cb7315b6ad52b96db73b3db547878"
+    },
+    {
+      "path": "scripts/restore.mjs",
+      "sha256": "7099bbd0998effc66d8b2aab79c1cbb2668c1ed0bacd1edcd08963b9af651092"
+    },
+    {
+      "path": "scripts/db-migrate-apply.mjs",
+      "sha256": "a9295c5cf0a193203de4255129c3aabd7de8ef217cfb04c48dd3e6e3c69496b5"
+    },
+    {
+      "path": "scripts/db-verify-schema.mjs",
+      "sha256": "06f01347cfddf50b77e152e23f94964974a0a796e1f1157cf133065e199d8da0"
+    },
+    {
+      "path": "scripts/lib/db-target.mjs",
+      "sha256": "f00c05d771ecaf47665b6f4eb81746046bee146e088e7fffb86f67f51fa9daea"
+    },
+    {
+      "path": "scripts/lib/db-target.test.mjs",
+      "sha256": "d41edfc9302d41de51fb8f62ae6e3b6d346f91dc307371c655b59b116bcfbd8d"
+    },
+    {
+      "path": "server/services/import/partyIdentity.ts",
+      "sha256": "4479ebc1b30daf11a8fe9bef04fb821781965ae196434370350c3beb22050842"
+    },
+    {
+      "path": "server/services/import/balanceSemantics.ts",
+      "sha256": "8a762df8269d5f810cfb7c323cfbdabd4379ffc64dee99bd2e03341c722f5b41"
+    },
+    {
+      "path": "server/services/import/customers.ts",
+      "sha256": "a4c29d2e807d4d80b1cb81ad077ed39d512f99a9c4b9f3c061c48e50e07c68b5"
+    },
+    {
+      "path": "server/services/import/suppliers.ts",
+      "sha256": "d46e50f971e3664eba887f0a62275c6e3c127dba5d79084f65b50301a5ea5459"
+    },
+    {
+      "path": "server/services/__tests__/auditImportIdentity.test.ts",
+      "sha256": "4ed04979aba97d412e1fac19f6d3149179674a3bce820763a745a6bdc3a79fc8"
+    },
+    {
+      "path": "server/services/__tests__/auditDbTarget.test.ts",
+      "sha256": "6f972e34477287e25b28e304d68189dc10fa4a448da33b30c4ae57010d795dcc"
+    },
+    {
+      "path": "server/services/__tests__/importService.test.ts",
+      "sha256": "7109a77c31ebedd8dfc4383034bd3acff196613fb79a46cd0f6d5c8987929b67"
+    }
+  ]
+}

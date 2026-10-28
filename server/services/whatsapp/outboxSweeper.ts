@@ -11,7 +11,12 @@ import { isBackgroundOperationActive, runAcrossActiveTenants } from "../../tenan
 import { withTx } from "../tx";
 import { dripRunningBroadcasts } from "./broadcastDispatch";
 import { getWaHubSettings } from "./flowNotify";
-import { dispatchClaimedRow, hasAnyActiveWaIntegration } from "./outboxService";
+import {
+  dispatchClaimedRow,
+  hasAnyActiveWaIntegration,
+  outboxClaimValues,
+  recoverStaleOutboxClaims,
+} from "./outboxService";
 import { retryFailedWaEvents } from "./webhookProcessor";
 
 const BATCH_LIMIT = 25;
@@ -23,25 +28,37 @@ const OUTBOUND_INSPECTION_LIMIT = 100;
 /** يلتقط دفعة الصفوف المستحقّة (QUEUED + الموعد حان) بقفل SKIP LOCKED — يمنع تضارب مع dispatchOutboxRow
  *  المباشر المتزامن (كلاهما يمرّ عبر SELECT...FOR UPDATE فلا يفوز بصفٍّ إلا كاتب واحد؛ SKIP LOCKED
  *  هنا يمنع كذلك دورتَي كنّاس متراكبتين من الانتظار على قفل بعضهما بلا فائدة). */
-async function claimDueBatch(limit: number, lane: "MEDIA_FETCH" | "OUTBOUND"): Promise<number[]> {
+async function claimDueBatch(
+  limit: number,
+  lane: "MEDIA_FETCH" | "OUTBOUND",
+): Promise<number[]> {
   if (limit <= 0) return [];
   return withTx(async (tx) => {
     const rows = await tx
       .select({ id: waOutbox.id })
       .from(waOutbox)
-      .where(and(
-        eq(waOutbox.status, "QUEUED"),
-        or(isNull(waOutbox.nextAttemptAt), lte(waOutbox.nextAttemptAt, sql`NOW()`)),
-        lane === "MEDIA_FETCH"
-          ? eq(waOutbox.kind, "MEDIA_FETCH")
-          : ne(waOutbox.kind, "MEDIA_FETCH"),
-      ))
+      .where(
+        and(
+          eq(waOutbox.status, "QUEUED"),
+          or(
+            isNull(waOutbox.nextAttemptAt),
+            lte(waOutbox.nextAttemptAt, sql`NOW()`),
+          ),
+          lane === "MEDIA_FETCH"
+            ? eq(waOutbox.kind, "MEDIA_FETCH")
+            : ne(waOutbox.kind, "MEDIA_FETCH"),
+        ),
+      )
       .orderBy(asc(waOutbox.id))
       .limit(limit)
       .for("update", { skipLocked: true });
     if (rows.length === 0) return [];
     const ids = rows.map((r) => Number(r.id));
-    await tx.update(waOutbox).set({ status: "SENDING" }).where(inArray(waOutbox.id, ids));
+    for (const id of ids)
+      await tx
+        .update(waOutbox)
+        .set(outboxClaimValues())
+        .where(eq(waOutbox.id, id));
     return ids;
   });
 }
@@ -53,9 +70,13 @@ export interface WaOutboxSweepResult {
 /** دورة كنس واحدة — تُستعمل من cron ومن الاختبار مباشرة (بلا انتظار مؤقّت دقيقة). */
 export async function sweepWaOutboxOnce(): Promise<WaOutboxSweepResult> {
   if (!isBackgroundOperationActive("whatsapp_outbox")) {
-    const runs = await runAcrossActiveTenants("whatsapp_outbox", sweepWaOutboxOnce);
+    const runs = await runAcrossActiveTenants(
+      "whatsapp_outbox",
+      sweepWaOutboxOnce,
+    );
     return { claimed: runs.reduce((sum, run) => sum + run.claimed, 0) };
   }
+  await recoverStaleOutboxClaims();
   if (!(await hasAnyActiveWaIntegration())) return { claimed: 0 };
   // Kill Switch = تجميد **الصادر الآلي** فوراً بالكامل — يشمل التقاط الكنّاس نفسه لصفوف outbox
   // القائمة (بثّ مُقطَّر مسبقاً، مجدولة scheduledAt، أو إعادات محاولة FAILED→QUEUED)، لا فقط توليد
@@ -73,14 +94,23 @@ export async function sweepWaOutboxOnce(): Promise<WaOutboxSweepResult> {
   let outboundIds: number[] = [];
   if (!killSwitchOn) {
     // إعداد مركز واتساب حدّ شامل للصادر الآلي؛ سقف 25 يحمي دورة العامل حتى لو ضُبطت قيمة أكبر.
-    const throttle = Math.max(1, Math.min(BATCH_LIMIT, Number(settings.throttlePerMinute) || 1));
+    const throttle = Math.max(
+      1,
+      Math.min(BATCH_LIMIT, Number(settings.throttlePerMinute) || 1),
+    );
     const remainingCapacity = Math.max(0, BATCH_LIMIT - mediaIds.length);
     const sendLimit = Math.min(throttle, remainingCapacity);
     let consumedSendQuota = 0;
     let inspected = 0;
-    while (consumedSendQuota < sendLimit && inspected < OUTBOUND_INSPECTION_LIMIT) {
+    while (
+      consumedSendQuota < sendLimit &&
+      inspected < OUTBOUND_INSPECTION_LIMIT
+    ) {
       const ids = await claimDueBatch(
-        Math.min(sendLimit - consumedSendQuota, OUTBOUND_INSPECTION_LIMIT - inspected),
+        Math.min(
+          sendLimit - consumedSendQuota,
+          OUTBOUND_INSPECTION_LIMIT - inspected,
+        ),
         "OUTBOUND",
       );
       if (ids.length === 0) break;
@@ -106,7 +136,10 @@ export async function sweepWaOutboxOnce(): Promise<WaOutboxSweepResult> {
     try {
       await dripRunningBroadcasts();
     } catch (e) {
-      logger.error({ err: e }, "wa-outbox sweep: dripRunningBroadcasts threw — تُجوهل (لا تُفشل النبضة)");
+      logger.error(
+        { err: e },
+        "wa-outbox sweep: dripRunningBroadcasts threw — تُجوهل (لا تُفشل النبضة)",
+      );
     }
   }
   return { claimed: mediaIds.length + outboundIds.length };

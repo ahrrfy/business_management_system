@@ -245,7 +245,7 @@ export default function AssetDetail() {
             </div>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            {a.status !== "disposed" && can("assets.update") && <Link href={`/assets/${id}/edit`}><Button variant="outline" size="sm">تعديل</Button></Link>}
+            {a.status !== "disposed" && a.status !== "retired" && can("assets.update") && <Link href={`/assets/${id}/edit`}><Button variant="outline" size="sm">تعديل</Button></Link>}
             {a.settlementStatus === "PAYABLE_UNSETTLED" && <Button variant="outline" size="sm" disabled={!can("assets.requestSupplierSettlement") || (requestSupplierSettlement.isPending)} onClick={() => requestSupplierSettlement.mutate({ assetId: id, clientRequestId: supplierSettlementRequestId })}>طلب سداد ذمة المورد</Button>}
             {canRequestCorrection && <Button variant="outline" size="sm" className="text-destructive" onClick={() => setOpenCorrection(true)}>طلب تصحيح الاقتناء</Button>}
             {canReclassifyToOpening && (

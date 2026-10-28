@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { createInterface } from "node:readline";
 import { acquireMaintenanceLock } from "./lib/maintenance-lock.mjs";
+import { parseDbTarget, resolveDbTarget, assertDbTarget, mysqlCommand, targetEnvironment } from "./lib/db-target.mjs";
 
 const argv = process.argv.slice(2);
 const flag = (f) => argv.includes(f);
@@ -44,8 +45,10 @@ if (!/MySQL dump|CREATE TABLE|INSERT INTO|CREATE DATABASE/i.test(head)) {
 
 const url = process.env.DATABASE_URL;
 if (!url) fail("DATABASE_URL غير مضبوط في .env.");
-const dbName = (String(url).match(/\/([^/?]+)(\?.*)?$/) || [])[1];
-const targetDb = dbName ? decodeURIComponent(dbName) : "";
+let parsedTarget;
+try { parsedTarget = parseDbTarget(url); } catch (error) { fail(error.message); }
+const dbName = parsedTarget.db;
+const targetDb = dbName;
 if (!/^[A-Za-z0-9_$-]+$/.test(targetDb)) fail("اسم القاعدة في DATABASE_URL غير صالح للاستعادة الآمنة.");
 
 const DANGEROUS_SQL_PATTERN = new RegExp(
@@ -419,16 +422,35 @@ try {
 }
 process.once("exit", () => releaseMaintenanceLock?.());
 
+let resolvedTarget;
+try {
+  resolvedTarget = await resolveDbTarget(url, {
+    adapter:
+      flag("--native") || process.env.DB_NATIVE === "1" ? "native" : "docker",
+    // Recovering a deleted schema cannot take a safety backup of that schema.
+    // The existing explicit --no-backup acknowledgement is required.
+    allowMissingDatabase: flag("--no-backup"),
+  });
+} catch (error) {
+  fail(`تعذّر إثبات هدف الاستعادة: ${error?.message ?? error}`);
+}
+const resolvedEnvironment = targetEnvironment(resolvedTarget);
 // ── نسخة أمان للحالة الراهنة قبل الكتابة فوقها ──
 if (!flag("--no-backup")) {
   console.log(`• نسخة أمان للحالة الراهنة لـ«${dbName}» قبل الاستعادة…`);
   try {
-    execFileSync(process.execPath, [join("scripts", "backup.mjs"), "--no-rotate"], {
-      stdio: "inherit",
-      env: { ...process.env, BACKUP_TARGET_URL: url },
-    });
+    execFileSync(
+      process.execPath,
+      [join("scripts", "backup.mjs"), "--no-rotate"],
+      {
+        stdio: "inherit",
+        env: resolvedEnvironment,
+      },
+    );
   } catch {
-    fail("فشلت نسخة الأمان ⇒ أوقفتُ الاستعادة. أصلح النسخ أو مرّر --no-backup صراحةً.");
+    fail(
+      "فشلت نسخة الأمان ⇒ أوقفتُ الاستعادة. أصلح النسخ أو مرّر --no-backup صراحةً.",
+    );
   }
 }
 
@@ -436,57 +458,109 @@ if (!flag("--no-backup")) {
 // BC-05: الاستعادة يجب أن تُطابق النسخة تماماً ⇒ نُسقط القاعدة أولاً، وإلا تنجو جداول/صفوف أُنشئت
 // بعد تاريخ النسخة (mysqldump --add-drop-table يُسقط جداول النسخة فقط لا الجداول الأحدث منها).
 // النسخ تُنشأ بـ--databases فتُعيد إنشاء القاعدة بترميزها الأصلي. نسخة الأمان أعلاه تحمي الحالة الراهنة.
-const dropPrefix = Buffer.from(`DROP DATABASE IF EXISTS \`${targetDb}\`;\nCREATE DATABASE \`${targetDb}\`;\nUSE \`${targetDb}\`;\n`);
+const dropPrefix = Buffer.from(
+  `DROP DATABASE IF EXISTS \`${targetDb}\`;\nCREATE DATABASE \`${targetDb}\`;\nUSE \`${targetDb}\`;\n`,
+);
 
 async function streamInto(command, args, env) {
-  const child = spawn(command, args, { stdio: ["pipe", "inherit", "inherit"], env });
+  const child = spawn(command, args, {
+    stdio: ["pipe", "pipe", "inherit"],
+    env,
+  });
   const exited = new Promise((resolve, reject) => {
     child.once("error", reject);
     child.once("exit", (code, signal) => {
       if (code === 0) resolve();
-      else reject(new Error(`${command} exited with ${code ?? signal ?? "unknown"}`));
+      else
+        reject(
+          new Error(`${command} exited with ${code ?? signal ?? "unknown"}`),
+        );
     });
   });
-  if (dropPrefix) child.stdin.write(dropPrefix);
-  // لا نقرأ ملف SQL كاملاً في RAM: دفق بضغط رجعي إلى mysql/docker. هذا يبقي الذاكرة
-  // ثابتة حتى عند حد الرفع 200MB ويمنع تجميد/قتل عامل الاستعادة بسبب Buffer مزدوج.
-  await Promise.all([pipeline(createReadStream(file), child.stdin), exited]);
+  // Read UUID on this exact connection before sending any destructive SQL. Disable
+  // mysql auto-reconnect below so a later disconnect cannot switch server silently.
+  let timer;
+  const identity = new Promise((resolve, reject) => {
+    let output = "";
+    child.stdout.on("data", (chunk) => {
+      output += chunk.toString();
+      if (output.length > 4096)
+        reject(new Error("DB_TARGET_IDENTITY_MISMATCH"));
+      const newline = output.indexOf("\n");
+      if (newline >= 0) {
+        const actual = output.slice(0, newline).trim();
+        const prefix = `ALROYA_TARGET_IDENTITY:${resolvedTarget.serverUuid}:`;
+        if (actual !== `${prefix}${targetDb}` && !(resolvedTarget.allowMissingDatabase && actual === prefix)) {
+          reject(new Error("DB_TARGET_IDENTITY_MISMATCH"));
+        } else resolve();
+      }
+    });
+    timer = setTimeout(
+      () => reject(new Error("DB_TARGET_IDENTITY_UNAVAILABLE")),
+      10000,
+    );
+  });
+  try {
+    const databaseIdentity = resolvedTarget.allowMissingDatabase
+      ? `COALESCE((SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE BINARY SCHEMA_NAME = BINARY '${targetDb}'), '')`
+      : "DATABASE()";
+    child.stdin.write(`SELECT CONCAT('ALROYA_TARGET_IDENTITY:', @@server_uuid, ':', ${databaseIdentity});\n`);
+    await Promise.race([
+      identity,
+      exited.then(() => {
+        throw new Error("DB_TARGET_IDENTITY_UNAVAILABLE");
+      }),
+    ]);
+    clearTimeout(timer);
+    child.stdout.removeAllListeners("data");
+    child.stdout.resume();
+    if (dropPrefix) child.stdin.write(dropPrefix);
+    // Constant-memory streaming with backpressure, including large uploaded dumps.
+    await Promise.all([pipeline(createReadStream(file), child.stdin), exited]);
+  } catch (error) {
+    child.kill();
+    await exited.catch(() => {});
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 console.log(`• استعادة «${dbName}» من ${file}…`);
 try {
-  if (flag("--native") || process.env.DB_NATIVE === "1") {
-    // عميل mysql محلي (خدمة Windows أصلية): mysql -h host -P port -u user -ppass < file
-    const m = String(url).match(/^mysql:\/\/([^:]+):([^@]*)@([^:/]+):(\d+)\//);
-    if (!m) fail("تعذّر تفكيك DATABASE_URL للوضع الأصلي (--native).");
-    const [, user, pass, host, port] = m;
-    // --binary-mode يعطّل أوامر عميل mysql الموجودة داخل ملفات الإدخال (مثل \! / system).
-    // من دونها يستطيع ملف خبيث تنفيذ أوامر نظام بحساب خدمة التطبيق قبل أن يصل SQL للخادم.
-    const args = ["--binary-mode=1", "--default-character-set=utf8mb4", "-h", host, "-P", port, "-u", user];
-    // BC-04: كلمة المرور عبر MYSQL_PWD لا `-p` على سطر الأوامر (يُكشَف في `ps` على خادم مشترك).
-    await streamInto("mysql", args, pass ? { ...process.env, MYSQL_PWD: pass } : process.env);
-  } else {
-    // docker exec -i <container> mysql -u<user> (يسحب هوية القاعدة من DATABASE_URL إن توفّرت)
-    // BC-04: كلمة المرور عبر MYSQL_PWD (docker exec -e VAR بلا قيمة يسحبها من بيئة عميل docker) لا سطر الأوامر.
-    const parsedCreds = String(url).match(/^mysql:\/\/([^:]+):([^@]*)@/);
-    const dbUser = parsedCreds?.[1] ? decodeURIComponent(parsedCreds[1]) : (process.env.DB_USER ?? "root");
-    const container = process.env.DB_CONTAINER ?? "erp-mysql";
-    const pw = parsedCreds?.[2] ? decodeURIComponent(parsedCreds[2]) : (process.env.DB_ROOT_PW ?? "erp_root_pw");
-    await streamInto(
-      "docker",
-      ["exec", "-i", "-e", "MYSQL_PWD", container, "mysql", "--binary-mode=1", "--default-character-set=utf8mb4", `-u${dbUser}`],
-      { ...process.env, MYSQL_PWD: pw },
-    );
-  }
+  await assertDbTarget(resolvedTarget);
+  const command = mysqlCommand(resolvedTarget, "mysql", [
+    "--binary-mode=1",
+    "--default-character-set=utf8mb4",
+    "--batch",
+    "--skip-column-names",
+    "--unbuffered",
+    "--skip-reconnect",
+    ...(resolvedTarget.allowMissingDatabase ? [] : [targetDb]),
+  ]);
+  await streamInto(command.command, command.args, resolvedEnvironment);
 } catch (e) {
   fail(`فشلت الاستعادة: ${e?.message ?? e}`);
 }
 
 try {
-  execFileSync("pnpm", ["db:migrate:apply"], { stdio: "inherit", shell: process.platform === "win32", env: process.env });
-  execFileSync("pnpm", ["db:verify"], { stdio: "inherit", shell: process.platform === "win32", env: process.env });
+  await assertDbTarget(resolvedTarget, { requireDatabase: true });
+  execFileSync("pnpm", ["db:migrate:apply"], {
+    stdio: "inherit",
+    shell: process.platform === "win32",
+    env: resolvedEnvironment,
+  });
+  await assertDbTarget(resolvedTarget, { requireDatabase: true });
+  execFileSync("pnpm", ["db:verify"], {
+    stdio: "inherit",
+    shell: process.platform === "win32",
+    env: resolvedEnvironment,
+  });
+  await assertDbTarget(resolvedTarget, { requireDatabase: true });
 } catch (error) {
-  fail(`اكتمل الاستيراد لكن فشلت هجرة/مراجعة المخطط: ${error?.message ?? error}`);
+  fail(
+    `اكتمل الاستيراد لكن فشلت هجرة/مراجعة المخطط: ${error?.message ?? error}`,
+  );
 }
 
 releaseMaintenanceLock?.();

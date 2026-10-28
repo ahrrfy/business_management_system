@@ -31,6 +31,8 @@ import { money, round2, toDbMoney } from "../money";
 import { computeLegalComponents, getPayrollLegalSettings } from "../payrollLegalService";
 import { assertPeriodOpen } from "../periodLockService";
 import { applyDuePromotions } from "../promotionService";
+import { applyDueEmployeeContracts } from "../employeeContractService";
+import { projectPayrollWageBasisTx } from "../hr/payrollWageBasis";
 import { type Actor, requireDb, withTx } from "../tx";
 import { baghdadToday } from "../businessDay";
 import { assertPeriod, capPenaltyDeduction, computeNet, countDaysWithin, expandSpans, recomputeRunTotals } from "./helpers";
@@ -57,6 +59,8 @@ export async function generatePayroll(period: string, actor: Actor) {
   }
 
   const db = requireDb();
+  const [year, month] = p.split("-").map(Number);
+  const periodEndYmd = new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
   const [preExists] = await db
     .select({ id: payrollRuns.id })
     .from(payrollRuns)
@@ -64,12 +68,34 @@ export async function generatePayroll(period: string, actor: Actor) {
     .limit(1);
   if (!preExists) {
     await assertPeriodOpen(db as never, new Date(`${p}-01`));
+    // Reject an unprovable historical wage before independent attendance healing can write rates.
+    const preflightWages = await withTx(async (tx) => {
+      const covered = await tx.select({ employeeId: employeeTerminations.employeeId })
+        .from(employeeTerminations).where(and(
+          eq(employeeTerminations.status, "completed"),
+          isNotNull(employeeTerminations.recognizedAt),
+          isNull(employeeTerminations.recognitionReversedAt),
+          sql`DATE_FORMAT(${employeeTerminations.lastDay}, '%Y-%m') = ${p}`,
+        ));
+      const coveredIds = new Set(covered.map((row) => Number(row.employeeId)));
+      const wageRows = (await tx.select({
+        id: employees.id, payType: employees.payType, salary: employees.salary,
+        allowances: employees.allowances, workSchedule: employees.workSchedule,
+        dayRates: employees.dayRates, attendanceExempt: employees.attendanceExempt,
+      }).from(employees).where(and(
+        sql`(${employees.hireDate} IS NULL OR ${employees.hireDate} <= ${periodEndYmd})`,
+        sql`(${employees.terminationDate} IS NULL OR ${employees.terminationDate} >= ${`${p}-01`})`,
+        sql`(${employees.employmentStatus} <> 'terminated' OR ${employees.terminationDate} IS NOT NULL)`,
+      ))).filter((row) => !coveredIds.has(Number(row.id)));
+      const projected = await projectPayrollWageBasisTx(tx, wageRows, periodEndYmd);
+      return new Map(projected.map((row) => [row.id, row]));
+    });
     // طيّ كافة البصمات المعلقة وتصحيح وطيّ سجلات الشهر قبل توليد المسيّر:
     // يضمن دمج جميع البصمات الحديثة (بما فيها البصمات العابرة لمنتصف الليل) وإزالة الخصومات التراكمية القديمة.
     await processPendingFolds().catch((err) => {
       logger.warn({ err }, "payroll: تعذّر استكمال طيّ البصمات المعلقة قبل التوليد");
     });
-    await healAndRefoldMonthAttendance(p).catch((err) => {
+    await healAndRefoldMonthAttendance(p, { projectedWages: preflightWages }).catch((err) => {
       logger.warn({ err }, "payroll: تعذّر استكمال تصحيح وطيّ سجلات الحضور قبل التوليد");
     });
   }
@@ -87,8 +113,6 @@ export async function generatePayroll(period: string, actor: Actor) {
     // كنسة الترقيات المستحقّة (تدقيق ١٧/٧): تُطبّق الترقيات المعتمَدة المؤجَّلة (effectiveDate مستقبليّ
     // عند الاعتماد) التي بلغ تاريخُها آخرَ يوم في فترة المسيّر — **قبل** قراءة الرواتب أدناه ⇒ تسري
     // الزيادة في شهرها. (لا أثر إن لم توجد ترقياتٌ مستحقّة.)
-    const [py, pm] = p.split("-").map(Number);
-    const periodEndYmd = new Date(Date.UTC(py, pm, 0)).toISOString().slice(0, 10);
     const recognizedTerminationWages = await tx
       .select({
         terminationId: employeeTerminations.id,
@@ -110,6 +134,7 @@ export async function generatePayroll(period: string, actor: Actor) {
     const terminationCoveredEmployeeIds = new Set(
       recognizedTerminationWages.map((row) => Number(row.employeeId)),
     );
+    await applyDueEmployeeContracts(tx, periodEndYmd);
     await applyDuePromotions(tx, periodEndYmd);
 
     // كل الموظفين غير منتهي الخدمة (نشطون + في إجازة).
@@ -239,8 +264,12 @@ export async function generatePayroll(period: string, actor: Actor) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يوجد موظفون لتوليد مسيّر لهم" });
     }
 
-    // GAP-16: تحديث أجور الساعات لشهر الاستحقاق قبل تجميع الحضور لضمان تطبيق أحدث ملف أجر
-    await recomputeMonthRates({ period: p, skipRunLockCheck: true }, tx);
+    const projected = await projectPayrollWageBasisTx(tx, emps.filter((employee) => !zeroGrossIds.has(Number(employee.id))), periodEndYmd);
+    const projectedWages = new Map(projected.map((employee) => [employee.id, employee]));
+    const effectiveEmployees = emps.map((employee) => projectedWages.get(employee.id) ?? employee);
+    emps.splice(0, emps.length, ...effectiveEmployees);
+    // Attendance and the payroll lines must use the same period-specific wage basis.
+    await recomputeMonthRates({ period: p, skipRunLockCheck: true, projectedWages }, tx);
 
     // مجاميع حضور الشهر لموظفي الساعة (amount + hours) — مطابقة بادئة YYYY-MM على عمود التاريخ.
     // تصفية على status IN ('PRESENT','LATE') كحارس عميق: حتى لو دخل أمر مالي صفّ ABSENT/LEAVE

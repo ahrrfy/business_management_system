@@ -9,6 +9,7 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { assertConnectionTarget } from "./lib/db-target.mjs";
 
 const META_DIR = "./drizzle/migrations/meta";
 const REQUIRED_EXPENSE_STATUSES = [
@@ -706,6 +707,7 @@ const conn = await createConnection(url);
 const dbName = new URL(url).pathname.replace(/^\//, "");
 
 try {
+  await assertConnectionTarget(conn, url, process.env.DB_TARGET_EXPECTED_UUID);
   const [rows] = await conn.query(
     "SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ?",
     [dbName],

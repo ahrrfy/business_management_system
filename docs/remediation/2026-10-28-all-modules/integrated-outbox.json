@@ -1,0 +1,65 @@
+{
+  "bundle": "outbox",
+  "worker": "D:\\business_management_system-worktrees\\audit-fix-outbox-1028",
+  "baseline": "fa82f0d5e5ec819b5769720f370a100d7ea81f9f",
+  "integratedAtUtc": "2026-10-28T15:19:21.770Z",
+  "patchSha256": "397f2de2a1b05f79885484fa5564375325d1e0048c55c8689f05e702c994bbf6",
+  "files": [
+    {
+      "path": "client/src/lib/offline/db.ts",
+      "sha256": "5b658b5ba296e2f31687dbeec1ecf13d3e4ccc6dc8c3200970fa5eda6004401b"
+    },
+    {
+      "path": "client/src/lib/offline/outbox.ts",
+      "sha256": "03c563daf09122b34b56a2d84578bd78af5929e3fdda38386d97107724909fda"
+    },
+    {
+      "path": "client/src/lib/offline/outbox.test.ts",
+      "sha256": "ad8ccdb109d22170930156263042e7a235b6d3a644c4a772f0b1ab83d8771780"
+    },
+    {
+      "path": "client/src/pages/Inbox.tsx",
+      "sha256": "324629ca4b952959e37c9d684e413f4b379c864e35671636ed28aa607104a15c"
+    },
+    {
+      "path": "client/src/pages/WaBroadcasts.tsx",
+      "sha256": "0369b7e97d2b95bd24c2150babffa77f702a9d7cab22672913668eb730391118"
+    },
+    {
+      "path": "client/src/components/whatsapp/OutboxReconciliationDialog.tsx",
+      "sha256": "25b9b1eefbdb679237e442c900016bd7ebc1a7732dd506626368fb9d97cfe8b7"
+    },
+    {
+      "path": "server/routers/conversationRouter.ts",
+      "sha256": "24fc801d87f1404526b8ad9bdc3a3ccc657741cd43bb2c57d8a6a4f446f1fefe"
+    },
+    {
+      "path": "server/services/whatsapp/outboxService.ts",
+      "sha256": "c6bf677fbe6be8ddcabb6ee0aae5c10426cc4f016abae0455522b930ea45123e"
+    },
+    {
+      "path": "server/services/whatsapp/outboxSweeper.ts",
+      "sha256": "f2a7c94248a7dba111e5c22579ffdc72e276483985a8fd0485aef884360d698f"
+    },
+    {
+      "path": "server/services/whatsapp/broadcastDispatch.ts",
+      "sha256": "f1d0b015ee12c0e14156d9df3ea3c378a2bf5ae1e8e89dcb1c6b39774aec3b45"
+    },
+    {
+      "path": "server/services/whatsapp/broadcastService.ts",
+      "sha256": "f8938627f2e405ea5e8ce023727180d428f17bcb427ad8e5f2c68acff92e39c2"
+    },
+    {
+      "path": "server/services/whatsapp/sendService.ts",
+      "sha256": "80beb19577e70430d3c39d21c5da97398ad756a5087f05f965b9a8f5939ccf8b"
+    },
+    {
+      "path": "server/services/whatsapp/index.ts",
+      "sha256": "c935a01a6ea767ecd03c87570f1dbe5dd4010bec47577c823ae63d108dafb60d"
+    },
+    {
+      "path": "server/services/__tests__/auditOutboxRecovery.test.ts",
+      "sha256": "ac4d8f74d2b6f7b35b87aeab86665c63d10240632ac516f961cd2f851464f5ae"
+    }
+  ]
+}
