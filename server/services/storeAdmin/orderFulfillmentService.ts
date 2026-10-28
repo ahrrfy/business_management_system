@@ -8,12 +8,14 @@
  */
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
+import { mysqlCodeFrom } from "@shared/errorMap.ar";
 import { and, asc, desc, eq, gte, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import {
   bundleComponents,
   couponPrograms,
   couponReservations,
   customers,
+  deliveryConsignments,
   deliveryParties,
   deliveryPricingRules,
   deliveryZones,
@@ -33,7 +35,8 @@ import {
 import { alias } from "drizzle-orm/mysql-core";
 import { getDb, type DB } from "../../db";
 import { money, round2 } from "../money";
-import { withTx } from "../tx";
+import { withTx, type MaybeScopedActor } from "../tx";
+import { canCrossBranches } from "../../lib/branchAuthority";
 import { decodeDataUrl, orderCustomizationAssetUrl, productImageUrl } from "../../imageRoute";
 import { onlineOrderLabelToken } from "../barcodeService";
 import {
@@ -89,6 +92,8 @@ export interface OnlineOrderRow {
   customerPhone: string | null;
   governorate: string | null;
   total: string;
+  /** المبلغ الحالي عند الباب؛ total يبقى قيمة الطلب الأصلية للمستندات. */
+  amountDueAtDoor?: string;
   couponCode: string | null;
   couponDiscount: string;
   deliveryFee: string;
@@ -111,6 +116,11 @@ export interface OnlineOrderRow {
   contactStatus: "NOT_CONTACTED" | "WHATSAPP_SENT" | "CALLED_CONFIRMED" | "NO_ANSWER" | "RETRY";
   contactNotes: string | null;
 }
+
+const onlineOrderAmountDueAtDoor = sql<string>`CASE WHEN ${invoices.id} IS NULL
+  THEN ${onlineOrders.total}
+  ELSE GREATEST(${invoices.total} - COALESCE(${invoices.returnedTotal}, 0) - COALESCE(${invoices.paidAmount}, 0), 0)
+    + CASE WHEN ${onlineOrders.deliveryFree} THEN 0 ELSE ${onlineOrders.shippingCost} END END`;
 
 /** قائمة طلبات المتجر (اختياري: فلترة حالة/مدى تاريخ + تحميل صفحات إضافية بالمؤشّر) — مقيّدة
  *  بالفرع لغير المرتفعين. **يبقى النوع المُعاد مصفوفة مسطّحة** (لا {rows,hasMore}) — يستهلكها أيضاً
@@ -164,6 +174,7 @@ export async function listOnlineOrders(opts: {
       customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
       governorate: onlineOrders.governorate,
       total: onlineOrders.total,
+      amountDueAtDoor: onlineOrderAmountDueAtDoor,
       couponCode: onlineOrders.couponCode,
       couponDiscount: onlineOrders.couponDiscount,
       deliveryFee: onlineOrders.shippingCost,
@@ -187,6 +198,7 @@ export async function listOnlineOrders(opts: {
       itemCount: sql<number>`(SELECT COUNT(*) FROM ${onlineOrderItems} WHERE ${onlineOrderItems.onlineOrderId} = ${onlineOrders.id})`,
     })
     .from(onlineOrders)
+    .leftJoin(invoices, eq(onlineOrders.invoiceId, invoices.id))
     .leftJoin(customers, eq(onlineOrders.customerId, customers.id))
     .leftJoin(claimedUsers, eq(onlineOrders.claimedByUserId, claimedUsers.id))
     .leftJoin(preparedUsers, eq(onlineOrders.preparedByUserId, preparedUsers.id))
@@ -205,6 +217,7 @@ export async function listOnlineOrders(opts: {
     customerPhone: r.customerPhone ?? null,
     governorate: r.governorate ?? null,
     total: String(r.total),
+    amountDueAtDoor: money(r.amountDueAtDoor).toFixed(2),
     couponCode: r.couponCode ?? null,
     couponDiscount: String(r.couponDiscount ?? "0"),
     deliveryFee: String(r.deliveryFee),
@@ -498,6 +511,7 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
         deliveryPartyName: deliveryParties.name,
         cancelReason: onlineOrders.cancelReason,
         total: onlineOrders.total,
+        amountDueAtDoor: onlineOrderAmountDueAtDoor,
         couponCode: onlineOrders.couponCode,
         couponDiscount: onlineOrders.couponDiscount,
         pricingBenefitType: onlineOrders.pricingBenefitType,
@@ -517,6 +531,7 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
         customerNotes: onlineOrders.customerNotes,
       })
       .from(onlineOrders)
+      .leftJoin(invoices, eq(onlineOrders.invoiceId, invoices.id))
       .leftJoin(customers, eq(onlineOrders.customerId, customers.id))
       .leftJoin(deliveryParties, eq(onlineOrders.deliveryPartyId, deliveryParties.id))
       .leftJoin(claimedUsers, eq(onlineOrders.claimedByUserId, claimedUsers.id))
@@ -605,6 +620,7 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
     labelToken: onlineOrderLabelToken(order.orderNumber),
     cancelReason: order.cancelReason ?? null,
     total: String(order.total),
+    amountDueAtDoor: money(order.amountDueAtDoor).toFixed(2),
     couponCode: order.couponCode ?? null,
     couponDiscount: String(order.couponDiscount ?? "0"),
     pricingBenefitType: (order.pricingBenefitType as StorefrontPricingBenefitType | null) ?? "NONE",
@@ -755,7 +771,48 @@ export async function setOnlineOrderStatus(
         status: input.status,
       });
     }
+    if (input.status === "DELIVERED") {
+      // آخر قفل نطاق قبل COMMIT: NOWAIT لا يضيف انتظار order -> parcel إلى مسارات
+      // المندوب المتعاكسة. أي رفض يرجع الحالة والنقاط والإشعار معاً؛ لا عمل نطاق بعده.
+      const parcel = (await tx
+        .select({ parcelStatus: deliveryConsignments.parcelStatus })
+        .from(deliveryConsignments)
+        .where(and(
+          eq(deliveryConsignments.branchId, Number(order.branchId)),
+          order.invoiceId != null
+            ? eq(deliveryConsignments.invoiceId, Number(order.invoiceId))
+            : and(
+                eq(deliveryConsignments.sourceType, "ONLINE_ORDER"),
+                eq(deliveryConsignments.sourceId, input.id),
+              ),
+        ))
+        .orderBy(desc(deliveryConsignments.id))
+        .for("update", { noWait: true })
+        .limit(1))[0];
+      if ((parcel || order.deliveryPartyId != null) && parcel?.parcelStatus !== "DELIVERED") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر إنهاء الطلب كمُسلّم",
+            why: "لم يثبت تسليم الطرد المرتبط بالطلب فعلياً، ولو كانت الفاتورة مدفوعة",
+            doThis: "ثبّت تسليم الإرسالية عبر «توصيلاتي» أو مسار إثبات التسليم ثم أعد المحاولة",
+          }),
+        });
+      }
+    }
     return { id: input.id, from, to: input.status };
+  }).catch((error: unknown) => {
+    if (mysqlCodeFrom(error) !== "ER_LOCK_NOWAIT") throw error;
+    // withTx تراجع أولاً: لا نلتقط انشغال الإثبات داخل المعاملة ولا نلتزم بأثر جزئي.
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر تثبيت تسليم الطلب الآن",
+        why: "إرسالية الطلب قيد تحديث متزامن؛ لم يُحفظ تغيير الحالة أو النقاط أو الإشعار",
+        doThis: "حدّث الطلب وانتظر اكتمال تحديث الإرسالية ثم أعد المحاولة",
+      }),
+      cause: error,
+    });
   });
 }
 
@@ -2285,11 +2342,25 @@ export async function getOnlineOrderLeaderboard(scopedBranchId: number | null): 
  */
 export async function autoAssignRoundRobinOnlineOrders(
   input: { scopedBranchId: number | null },
-  actor: { userId: number; role?: string }
+  actor: MaybeScopedActor
 ): Promise<{
   assignedCount: number;
   assignments: Array<{ orderId: number; orderNumber: string; assignedToUserId: number; assignedToName: string }>;
 }> {
+  let scopedBranchId = input.scopedBranchId;
+  if (!canCrossBranches(actor)) {
+    if (actor.branchId == null || (scopedBranchId != null && scopedBranchId !== actor.branchId)) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر توزيع طلبات الفرع",
+          why: "الفرع المطلوب خارج نطاق حسابك أو لا يوجد فرع مُسنَد لحسابك",
+          doThis: "وزّع طلبات فرعك المُسنَد أو راجع مسؤول النظام لتعيين الفرع الصحيح",
+        }),
+      });
+    }
+    scopedBranchId = actor.branchId;
+  }
   const db = getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
 
@@ -2300,8 +2371,8 @@ export async function autoAssignRoundRobinOnlineOrders(
       sql`${onlineOrders.claimedByUserId} IS NULL`,
       sql`COALESCE(\`onlineOrders\`.\`reservationExpiresAt\`, DATE_ADD(\`onlineOrders\`.\`orderDate\`, INTERVAL 24 HOUR)) > CURRENT_TIMESTAMP(3)`,
     ];
-    if (input.scopedBranchId != null) {
-      baseConds.push(eq(onlineOrders.branchId, input.scopedBranchId));
+    if (scopedBranchId != null) {
+      baseConds.push(eq(onlineOrders.branchId, scopedBranchId));
     }
 
     const unassignedOrders = await tx
@@ -2327,8 +2398,8 @@ export async function autoAssignRoundRobinOnlineOrders(
       eq(shifts.status, "OPEN"),
       eq(users.isActive, true),
     ];
-    if (input.scopedBranchId != null) {
-      shiftConds.push(eq(shifts.branchId, input.scopedBranchId));
+    if (scopedBranchId != null) {
+      shiftConds.push(eq(shifts.branchId, scopedBranchId));
     }
     const eligibleStaff = await tx
       .select({

@@ -31,11 +31,12 @@ import { openShift } from "../shiftService";
 import { withTx } from "../tx";
 import { assertCreditLimit } from "../../lib/credit";
 import { idempotencyHash } from "../idempotency";
+import { listReadyForDispatch } from "../delivery/queries";
 
 const TABLES = [
   "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries", "deliveryRemittanceLines",
   "deliveryRemittances", "deliveryConsignments", "deliveryPartyMembers", "deliveryParties",
-  "orderPayments", "idempotencyKeys", "auditLogs", "accountingEntries", "receipts",
+  "onlineOrders", "orderPayments", "idempotencyKeys", "auditLogs", "accountingEntries", "receipts",
   "workOrderMaterials", "workOrders", "invoiceItems", "invoices",
   "inventoryMovements", "branchStock", "productPrices", "productUnits", "productVariants",
   "products", "shifts", "customers", "branches", "users",
@@ -129,6 +130,32 @@ const DELIVERY = {
 beforeEach(async () => {
   await reset();
   await seed();
+});
+
+describe("online ready delivery amounts", () => {
+  it.each([false, true])("separates goods from the saved carrier fee (free=%s)", async deliveryFree => {
+    await db().insert(s.onlineOrders).values({
+      id: 501, orderNumber: "ORD-READY-501", customerId: NEW_CUSTOMER, branchId: 1,
+      subtotal: "40000.00", shippingCost: deliveryFree ? "0.00" : "5000.00",
+      total: deliveryFree ? "40000.00" : "45000.00", deliveryFree,
+      deliveryWaivedAmount: deliveryFree ? "5000.00" : "0.00", status: "CONFIRMED",
+    });
+    const rows = await listReadyForDispatch(1);
+    const ready = rows.find(row => row.orderNumber === "ORD-READY-501");
+    expect(ready).toMatchObject({ id: 501, sourceType: "ONLINE_ORDER", salePrice: "40000.00", deliveryCost: "5000.00", deliveryFeeCollection: deliveryFree ? "SHOP" : "COURIER" });
+  });
+  it("uses the current linked invoice and its saved payment on cancelled-assignment redispatch", async () => {
+    await db().insert(s.invoices).values({ id: 601, invoiceNumber: "INV-READY-601", sourceType: "ONLINE", sourceId: "ready-501", branchId: 1, customerId: NEW_CUSTOMER, subtotal: "40000.00", total: "40000.00", returnedTotal: "10000.00", paidAmount: "30000.00", status: "PAID" });
+    await db().insert(s.onlineOrders).values({ id: 501, orderNumber: "ORD-READY-501", customerId: NEW_CUSTOMER, branchId: 1, invoiceId: 601, subtotal: "40000.00", shippingCost: "5000.00", total: "45000.00", status: "PROCESSING", deliveryPartyId: null });
+    const ready = (await listReadyForDispatch(1)).find(row => row.orderNumber === "ORD-READY-501");
+    expect(ready).toMatchObject({ salePrice: "30000.00", deposit: "30000.00", deliveryCost: "5000.00", deliveryFeeCollection: "COURIER" });
+    expect(await invoiceCount()).toBe(1);
+  });
+  it.each(["CANCELLED", "RETURNED", "SUPERSEDED"] as const)("excludes a ready order linked to a %s invoice", async status => {
+    await db().insert(s.invoices).values({ id: 601, invoiceNumber: "INV-READY-601", sourceType: "ONLINE", sourceId: "ready-501", branchId: 1, customerId: NEW_CUSTOMER, subtotal: "40000.00", total: "40000.00", paidAmount: "0.00", status });
+    await db().insert(s.onlineOrders).values({ id: 501, orderNumber: "ORD-READY-501", customerId: NEW_CUSTOMER, branchId: 1, invoiceId: 601, subtotal: "40000.00", shippingCost: "5000.00", total: "45000.00", status: "PROCESSING" });
+    expect((await listReadyForDispatch(1)).some(row => row.orderNumber === "ORD-READY-501")).toBe(false);
+  });
 });
 
 describe("sales.create + delivery — الإسناد في معاملة البيع نفسها", () => {

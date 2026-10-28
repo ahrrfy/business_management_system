@@ -64,6 +64,7 @@ import {
 } from "./returnReceipt";
 
 import { workflowDispatchNativePaths } from "./nativeAuthority";
+import { onlineOrderDispatchSnapshotTx } from "../../storeAdmin/onlineOrderTracking";
 
 type SourceRef = { kind: WorkflowSourceKind; id: number };
 type CurrentUser = Awaited<ReturnType<typeof loadOperationUserTx>>;
@@ -1752,6 +1753,7 @@ export async function loadWorkflowPreviewTx(
       branchId,
       canonicalKey,
       version: idempotencyHash({
+        onlineOrderSnapshot: online ? await onlineOrderDispatchSnapshotTx(tx, online, lock ? "nowait" : false) : undefined,
         source: {
           kind: ref.kind,
           id: ref.id,

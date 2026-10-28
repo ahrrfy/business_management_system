@@ -3,7 +3,7 @@ import type { DeliverySourceReference } from "@shared/deliverySource";
 // ملف صفحة (DeliveryHub.tsx) فيَجرّ استيرادها من ReceptionOrderQueue.tsx حزمة DeliveryHub كاملةً
 // (~8ك مضغوطة) لشاشة استقبال عالية التردّد رغم استعمالها دالتين فقط. هنا: مكتبة طباعة صرفة، بلا React.
 import { notify } from "@/lib/notify";
-import { fmt } from "@/lib/money";
+import { D, fmt, positiveDiff } from "@/lib/money";
 import { printDoc, type PrintDoc } from "@/lib/printing/print";
 import { printShippingLabel } from "@/lib/printing/shippingLabel";
 import {
@@ -56,6 +56,9 @@ export function printDeliverySlip(
     codAmount: string;
     deliveryFee: string;
     feeCollection?: string | null;
+    recipientName?: string | null;
+    recipientPhone?: string | null;
+    deliveryAddress?: string | null;
     externalTrackingRef?: string | null;
     dispatchedAt?: Date | string | null;
   },
@@ -72,17 +75,17 @@ export function printDeliverySlip(
             : "invoice";
   void printDeliveryDispatchSlipAsync({
     ...r,
-    orderNumber: r.invoiceNumber ?? order.orderNumber,
+    orderNumber: order.orderNumber,
     orderKind,
     partyName: party?.name ?? "",
-    recipientName: order.customerName ?? "",
-    recipientPhone: order.customerPhone ?? "",
-    deliveryAddress: order.deliveryAddress ?? "",
+    recipientName: r.recipientName ?? order.customerName ?? "",
+    recipientPhone: r.recipientPhone ?? order.customerPhone ?? "",
+    deliveryAddress: r.deliveryAddress ?? order.deliveryAddress ?? "",
     salePrice: order.salePrice,
     deposit: order.deposit,
     title: order.title,
     items: order.items,
-    feeCollection: (r.feeCollection ?? undefined) as DispatchSlipData["feeCollection"],
+    feeCollection: (r.feeCollection ?? order.deliveryFeeCollection ?? "COURIER") as DispatchSlipData["feeCollection"],
     qrUrl: order.qrUrl,
     notes: r.externalTrackingRef
       ? `مرجع شركة التوصيل: ${r.externalTrackingRef}`
@@ -202,13 +205,13 @@ export async function printReadyOrderLabel(
     into?: Window | null;
   },
 ) {
-  const cod = opts?.cod ?? String(Math.max(0, Number(order.salePrice) - Number(order.deposit ?? 0)));
+  const cod = opts?.cod ?? positiveDiff(order.salePrice, order.deposit).toFixed(2);
   // Slice F (٢٩/٨/٢٦): «الكلي للعميل» على الملصق — COURIER يقبض COD + الأجرة، الآخران COD وحده.
   // الملصق مصدرُ الحقيقة البصريّ للمندوب عند التسليم؛ رقمٌ مختلفٌ عمّا في يد الزبون = خلاف.
   const feeCollection = order.deliveryFeeCollection ?? "COURIER";
-  const feeD = Number(order.deliveryCost ?? 0);
-  const totalDue = feeCollection === "COURIER" && feeD > 0
-    ? String(Number(cod) + feeD)
+  const feeD = D(order.deliveryCost);
+  const totalDue = feeCollection === "COURIER" && feeD.isPositive()
+    ? D(cod).plus(feeD).toFixed(2)
     : cod;
   const res = await printShippingLabel(
     {

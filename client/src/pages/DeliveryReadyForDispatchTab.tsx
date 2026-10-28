@@ -17,7 +17,8 @@ import {
 } from "@/components/delivery/DeliveryDepartureOverlay";
 import { notify } from "@/lib/notify";
 import { playReadyBeep } from "@/lib/notifyBeep";
-import { fmt } from "@/lib/money";
+import { D, fmt, positiveDiff } from "@/lib/money";
+import type { DeliverySourceReference } from "@shared/deliverySource";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useOperationPermission } from "@/hooks/useOperationPermission";
 import { filterOperationalRows } from "@/lib/deliveryOperations";
@@ -106,7 +107,7 @@ export function DeliveryReadyForDispatchTab() {
                     customerPhone: dispatchedOrder!.deliveryPhone ?? dispatchedOrder!.customerPhone,
                     deliveryAddress: dispatchedOrder!.deliveryAddress,
                     codAmount: r.codAmount,
-                    deliveryFee: variables.deliveryFee ?? "0",
+                    deliveryFee: r.deliveryFee,
                     feeCollection: dispatchedOrder!.deliveryFeeCollection ?? "COURIER",
                   }),
                 );
@@ -139,7 +140,7 @@ export function DeliveryReadyForDispatchTab() {
                     courierName: dispatchedParty.name,
                     courierPhone: dispatchedParty.phone,
                     codAmount: r.codAmount,
-                    deliveryFee: variables.deliveryFee ?? "0",
+                    deliveryFee: r.deliveryFee,
                     feeCollection: dispatchedOrder.deliveryFeeCollection ?? "COURIER",
                   }),
                 );
@@ -215,16 +216,16 @@ export function DeliveryReadyForDispatchTab() {
       {
         id: "deposit",
         header: "العربون",
-        accessorFn: (o) => (Number(o.deposit ?? 0) > 0 ? fmt(o.deposit) : "—"),
+        accessorFn: (o) => (D(o.deposit).isPositive() ? fmt(o.deposit) : "—"),
         meta: { kind: "money" },
-        cell: ({ row }) => <span className="text-money-positive">{Number(row.original.deposit ?? 0) > 0 ? fmt(row.original.deposit) : "—"}</span>,
+        cell: ({ row }) => <span className="text-money-positive">{D(row.original.deposit).isPositive() ? fmt(row.original.deposit) : "—"}</span>,
       },
       {
         id: "cod",
         header: "مبلغ التحصيل (COD)",
-        accessorFn: (o) => fmt(String(Math.max(0, Number(o.salePrice) - Number(o.deposit ?? 0)))),
+        accessorFn: (o) => fmt(positiveDiff(o.salePrice, o.deposit).toFixed(2)),
         meta: { kind: "money" },
-        cell: ({ row }) => <span className="font-bold">{fmt(String(Math.max(0, Number(row.original.salePrice) - Number(row.original.deposit ?? 0))))}</span>,
+        cell: ({ row }) => <span className="font-bold">{fmt(positiveDiff(row.original.salePrice, row.original.deposit).toFixed(2))}</span>,
       },
       {
         id: "actions",
@@ -233,7 +234,7 @@ export function DeliveryReadyForDispatchTab() {
         meta: { kind: "actions" },
         cell: ({ row }) => {
           const o = row.original;
-          const cod = Math.max(0, Number(o.salePrice) - Number(o.deposit ?? 0));
+          const cod = positiveDiff(o.salePrice, o.deposit).toFixed(2);
           return (
             <RowActions
               mode="inline"
@@ -371,17 +372,23 @@ export function DeliveryReadyForDispatchTab() {
             const party = (parties.data ?? []).find((p) => p.id === partyId);
             const labelWin = preopenShippingLabelWindow();
             try {
-              let r: {
+              let r: DeliverySourceReference & {
                 consignmentNumber: string;
                 codAmount: string;
                 invoiceNumber?: string | null;
                 deliveryFee: string;
+                feeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
+                recipientName?: string | null;
+                recipientPhone?: string | null;
+                deliveryAddress?: string | null;
               };
               if (ord.sourceType === "ONLINE_ORDER") {
                 const res = await dispatchByBarcodeMutation.mutateAsync({
                   barcode: ord.orderNumber,
                   partyId,
                   deliveryFee: fee || undefined,
+                  recipientName: recipientName || undefined,
+                  recipientPhone: recipientPhone || undefined,
                   deliveryAddress: deliveryAddress || ord.deliveryAddress || undefined,
                   notes: notes || undefined,
                   assignedUserId,
@@ -389,10 +396,9 @@ export function DeliveryReadyForDispatchTab() {
                   clientRequestId: crypto.randomUUID(),
                 });
                 r = {
-                  consignmentNumber: res.consignmentNumber,
-                  codAmount: res.codAmount,
-                  invoiceNumber: res.invoiceNumber ?? res.sourceNumber,
-                  deliveryFee: res.deliveryFee,
+                  ...res,
+                  sourceType: res.sourceType,
+                  invoiceNumber: res.invoiceNumber,
                 };
               } else {
                 r = await dispatch.mutateAsync({
@@ -408,20 +414,28 @@ export function DeliveryReadyForDispatchTab() {
                   externalTrackingRef: externalTrackingRef || undefined,
                 });
               }
-              void printReadyOrderLabel(ord, { partyName: party?.name ?? null, trackingNumber: r.consignmentNumber, cod: r.codAmount, externalTrackingRef: externalTrackingRef || undefined, into: labelWin });
-              printDeliverySlip(ord, party, { ...r, invoiceNumber: r.invoiceNumber ?? ord.orderNumber, externalTrackingRef: externalTrackingRef || undefined });
+              const dispatchedOrder = {
+                ...ord,
+                customerName: "recipientName" in r ? r.recipientName ?? null : (recipientName || ord.customerName),
+                customerPhone: "recipientPhone" in r ? r.recipientPhone ?? null : (recipientPhone || ord.deliveryPhone || ord.customerPhone),
+                deliveryAddress: "deliveryAddress" in r ? r.deliveryAddress ?? null : (deliveryAddress || ord.deliveryAddress),
+                deliveryCost: r.deliveryFee,
+                deliveryFeeCollection: r.feeCollection ?? ord.deliveryFeeCollection ?? "COURIER",
+              };
+              void printReadyOrderLabel(dispatchedOrder, { partyName: party?.name ?? null, trackingNumber: r.consignmentNumber, cod: r.codAmount, externalTrackingRef: externalTrackingRef || undefined, into: labelWin });
+              printDeliverySlip(dispatchedOrder, party, { ...r, sourceType: r.sourceType ?? ord.sourceType, sourceId: r.sourceId ?? ord.id, feeCollection: dispatchedOrder.deliveryFeeCollection, externalTrackingRef: externalTrackingRef || undefined });
               setDepartureData({
                 consignmentNumber: r.consignmentNumber,
                 orderNumber: ord.orderNumber,
                 title: ord.title,
-                customerName: recipientName || ord.customerName,
-                customerPhone: recipientPhone || ord.deliveryPhone || ord.customerPhone,
-                deliveryAddress: deliveryAddress || ord.deliveryAddress,
+                customerName: dispatchedOrder.customerName,
+                customerPhone: dispatchedOrder.customerPhone,
+                deliveryAddress: dispatchedOrder.deliveryAddress,
                 courierName: party?.name ?? "المندوب",
                 courierPhone: party?.phone,
                 codAmount: r.codAmount,
-                deliveryFee: fee,
-                feeCollection: ord.deliveryFeeCollection ?? "COURIER",
+                deliveryFee: r.deliveryFee,
+                feeCollection: dispatchedOrder.deliveryFeeCollection,
               });
             } catch {
               labelWin?.close();

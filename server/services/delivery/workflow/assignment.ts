@@ -1,4 +1,5 @@
 import { and, eq, inArray } from "drizzle-orm";
+import { mysqlCodeFrom } from "@shared/errorMap.ar";
 import {
   aftercareExecutions,
   fulfillmentRequests,
@@ -34,7 +35,7 @@ import {
   returnCarrierRightsTx,
 } from "./returnReceipt";
 import { dispatchInvoiceInTx } from "../dispatchInvoice";
-import { deliveryConsignments } from "../../../../drizzle/schema";
+import { deliveryConsignments, onlineOrders } from "../../../../drizzle/schema";
 import { appendDeliveryEvent } from "../lifecycle";
 import { money } from "../../money";
 import { listDeliveryDocumentSnapshotsTx } from "../documentSnapshots";
@@ -58,6 +59,7 @@ export async function mutateWorkflowAssignment(
 ) {
   return retryOnDup(() =>
     withTx(async (tx) => {
+      let pendingOnlineUpdate: { id: number; invoiceId: number; branchId: number; partyId: number } | undefined;
       const auth = await currentWorkflowActorTx(tx, actor, input.branchId);
       const preview = await loadWorkflowPreviewTx(
         tx,
@@ -393,6 +395,17 @@ export async function mutateWorkflowAssignment(
               throw fulfillmentError(
                 "المصدر الملغى يحتاج مساره الأصلي لإعادة الإسناد",
               );
+            // Resolve from the authoritative invoice link, never from the scanned namespace.
+            const [onlineOrder] = invoiceIds.length === 1 && members.length === 1
+              ? await tx.select().from(onlineOrders).where(and(
+                  eq(onlineOrders.invoiceId, invoiceIds[0]!),
+                  eq(onlineOrders.branchId, leader.branchId),
+                )).limit(1)
+              : [];
+            if (onlineOrder && (onlineOrder.status === "CANCELLED" || onlineOrder.status === "DELIVERED"))
+              throw fulfillmentError("طلب المتجر مغلق؛ راجع حالته قبل إعادة الإسناد", "CONFLICT");
+            if (leader.sourceType === "ONLINE_ORDER" && (!onlineOrder || onlineOrder.id !== leader.sourceId))
+              throw fulfillmentError("ارتباط إرسالية المتجر غير متسق؛ راجع الطلب الأصلي", "CONFLICT");
             const dispatchInput = {
               invoiceId: leader.invoiceId!,
               invoiceIds,
@@ -405,6 +418,11 @@ export async function mutateWorkflowAssignment(
               recipientName: leader.recipientName,
               recipientPhone: leader.recipientPhone,
               deliveryAddress: leader.deliveryAddress,
+              notes: leader.notes,
+              governorate: leader.governorate,
+              latitude: leader.latitude,
+              longitude: leader.longitude,
+              onlineOrderId: onlineOrder?.id,
             };
             if (invoiceIds.length === 1 && members.length === 1)
               await dispatchInvoiceInTx(tx, dispatchInput, auth.actor, {
@@ -414,6 +432,9 @@ export async function mutateWorkflowAssignment(
               await dispatchInvoiceShipmentInTx(tx, dispatchInput, auth.actor, {
                 heldReturnReissue,
               });
+            if (onlineOrder) pendingOnlineUpdate = {
+              id: onlineOrder.id, invoiceId: leader.invoiceId!, branchId: leader.branchId, partyId,
+            };
           }
         } else {
           // Existing parcel reassignment preserves all source sale/custody/fee identities.
@@ -432,7 +453,7 @@ export async function mutateWorkflowAssignment(
         }
       }
       await recordFulfillmentMutationTx(tx, context, consignmentId);
-      return {
+      const result = {
         consignmentId,
         idempotentReplay: false,
         documentSnapshotIds: (
@@ -443,6 +464,25 @@ export async function mutateWorkflowAssignment(
           })
         ).map((row) => row.id),
       };
+      // Terminal domain lock: source dispatch owns order before parcel, so never wait
+      // for that backwards edge while this transaction owns the parcel. All parcel,
+      // document and replay writes above roll back if the current order is busy.
+      if (pendingOnlineUpdate) {
+        const [currentOrder] = await tx.select().from(onlineOrders)
+          .where(eq(onlineOrders.id, pendingOnlineUpdate.id))
+          .for("update", { noWait: true }).limit(1);
+        if (!currentOrder || currentOrder.invoiceId !== pendingOnlineUpdate.invoiceId
+          || currentOrder.branchId !== pendingOnlineUpdate.branchId
+          || !["CONFIRMED", "PROCESSING", "SHIPPED"].includes(currentOrder.status))
+          throw fulfillmentError("تغير ارتباط طلب المتجر أو أُغلق أثناء إعادة الإسناد؛ حدّث المعاينة", "CONFLICT");
+        await tx.update(onlineOrders).set({ status: "SHIPPED", deliveryPartyId: pendingOnlineUpdate.partyId })
+          .where(eq(onlineOrders.id, currentOrder.id));
+      }
+      return result;
     }),
-  );
+  ).catch((error: unknown) => {
+    if (mysqlCodeFrom(error) === "ER_LOCK_NOWAIT")
+      throw fulfillmentError("طلب المتجر قيد إجراء آخر الآن؛ لم تُحفظ إعادة الإسناد، حدّث المعاينة وأعد المحاولة", "CONFLICT");
+    throw error;
+  });
 }

@@ -8,7 +8,8 @@ import { shipmentFeeDeliveryProvenExpr } from "./shipments";
 // لذلك قائمة «المفتوح للتوريد» تقبل branchId وتعرض فقط طرود ذلك الفرع. أما السجل الإداري العام
 // للجهة فيبقى عابراً للفروع لمن يملك صلاحية رؤيتها، وتبقى كل حركة موسومة بفرعها.
 import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
-import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, notInArray, or, sql } from "drizzle-orm";
+import { DEAD_INVOICE_STATUSES } from "@shared/invoiceStatus";
 import { accountingEntries, customers, deliveryConsignments, deliveryEvents, deliveryLedgerEntries, deliveryParties, deliveryRemittanceLines, deliveryRemittances, deliveryShipmentMembers, invoices, onlineOrders, users, workOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money, round2 } from "../money";
@@ -213,8 +214,8 @@ export async function listReadyForDispatch(branchId: number | null) {
       orderNumber: onlineOrders.orderNumber,
       title: sql<string>`CONCAT('طلب متجر #', ${onlineOrders.orderNumber})`,
       quantity: sql<number>`1`,
-      salePrice: onlineOrders.total,
-      deposit: sql<string>`'0.00'`,
+      salePrice: sql<string>`GREATEST(COALESCE(${invoices.total} - ${invoices.returnedTotal}, ${onlineOrders.total} - ${onlineOrders.shippingCost}), 0)`,
+      deposit: sql<string>`COALESCE(${invoices.paidAmount}, 0.00)`,
       branchId: onlineOrders.branchId,
       customerId: onlineOrders.customerId,
       customerName: customers.name,
@@ -229,7 +230,11 @@ export async function listReadyForDispatch(branchId: number | null) {
     })
     .from(onlineOrders)
     .leftJoin(customers, eq(onlineOrders.customerId, customers.id))
-    .where(and(...onlineConds))
+    .leftJoin(invoices, eq(onlineOrders.invoiceId, invoices.id))
+    .where(and(...onlineConds, or(
+      isNull(onlineOrders.invoiceId),
+      and(isNotNull(invoices.id), notInArray(invoices.status, [...DEAD_INVOICE_STATUSES])),
+    )))
     .orderBy(desc(onlineOrders.id));
 
   return [...woRows, ...onlineRows];

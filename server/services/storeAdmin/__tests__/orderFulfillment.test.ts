@@ -24,9 +24,12 @@ import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../../drizzle/schema";
 import { getDb } from "../../../db";
+import { storeAdminRouter } from "../../../routers/storeAdminRouter";
 import {
   autoAssignRoundRobinOnlineOrders,
   claimOnlineOrder,
+  getOnlineOrder,
+  listOnlineOrders,
   markOnlineOrderPrepared,
   reviveAndConfirmOnlineOrder,
   setOnlineOrderStatus,
@@ -93,6 +96,15 @@ async function getOrder(id: number) {
 
 beforeEach(async () => {
   await truncateTables([
+    "couponReservations",
+    "coupons",
+    "couponPrograms",
+    "loyaltyLedgerEntries",
+    "loyaltyAccounts",
+    "loyaltyPrograms",
+    "deliveryConsignments",
+    "deliveryParties",
+    "invoices",
     "storefrontPushDeliveries",
     "storefrontPushCampaigns",
     "storefrontPushDevices",
@@ -122,6 +134,151 @@ beforeEach(async () => {
       { id: 4, openId: "user_manager", name: "مدير الفرع", username: "manager_test", email: "manager@test.com", passwordHash: "h", role: "manager", branchId: 1 },
     ])
     .onDuplicateKeyUpdate({ set: { name: sql`values(\`name\`)` } });
+});
+
+async function seedPrepaidDelivery() {
+  const orderId = await seedOrder("SHIPPED");
+  await db().insert(s.deliveryParties).values({ id: 1, name: "شركة التوصيل", partyType: "COMPANY" });
+  await db().insert(s.invoices).values({
+    id: 1, invoiceNumber: "INV-PREPAID", branchId: 1, customerId: 1,
+    subtotal: "100.00", total: "100.00", paidAmount: "100.00", status: "PAID", sourceType: "ONLINE",
+  });
+  await db().update(s.onlineOrders).set({ invoiceId: 1, deliveryPartyId: 1 }).where(eq(s.onlineOrders.id, orderId));
+  // Redispatch keeps the existing invoice identity even when its source is INVOICE.
+  await db().insert(s.deliveryConsignments).values({
+    id: 1, consignmentNumber: "CN-PREPAID", branchId: 1, partyId: 1, invoiceId: 1,
+    sourceType: "INVOICE", sourceId: 1, codAmount: "0.00", parcelStatus: "OUT_FOR_DELIVERY",
+    moneyStatus: "SETTLED", status: "DISPATCHED",
+  });
+  await db().insert(s.loyaltyPrograms).values({ name: "نقاط التسليم", status: "ACTIVE", pointsPerIqd: "1.000000" });
+  await db().insert(s.storefrontPushDevices).values({
+    customerId: 1, tokenHash: "b".repeat(64), tokenCiphertext: "encrypted-test-token",
+    platform: "ANDROID", appVersion: "1.0.0", transactionalOptIn: true,
+  });
+  return orderId;
+}
+
+describe("setOnlineOrderStatus — physical delivery authority", () => {
+  it.each([false, true])("reads fee-only prepaid due after cancellation and redispatch (free shipping=%s)", async (deliveryFree) => {
+    const id = await seedPrepaidDelivery();
+    await db().update(s.invoices).set({ subtotal: "40000.00", total: "40000.00", paidAmount: "40000.00" }).where(eq(s.invoices.id, 1));
+    await db().update(s.onlineOrders).set({ subtotal: "40000.00", total: "45000.00", shippingCost: "5000.00", deliveryFree }).where(eq(s.onlineOrders.id, id));
+    for (const parcelStatus of ["CANCELLED", "OUT_FOR_DELIVERY"] as const) {
+      await db().update(s.deliveryConsignments).set({ parcelStatus }).where(eq(s.deliveryConsignments.id, 1));
+      await db().update(s.onlineOrders).set({ status: parcelStatus === "CANCELLED" ? "PROCESSING" : "SHIPPED" }).where(eq(s.onlineOrders.id, id));
+      const detail = await getOnlineOrder(id, 1);
+      const [row] = await listOnlineOrders({ scopedBranchId: 1 });
+      expect(detail?.amountDueAtDoor).toBe(deliveryFree ? "0.00" : "5000.00");
+      expect(row.amountDueAtDoor).toBe(detail?.amountDueAtDoor);
+      expect(detail?.total).toBe("45000.00");
+      expect(row.total).toBe("45000.00");
+    }
+  });
+
+  it("keeps unbilled order total as due without adding shipping twice", async () => {
+    const id = await seedOrder();
+    await db().update(s.onlineOrders).set({ subtotal: "40000.00", total: "45000.00", shippingCost: "5000.00" }).where(eq(s.onlineOrders.id, id));
+    expect((await getOnlineOrder(id, 1))?.amountDueAtDoor).toBe("45000.00");
+    expect((await listOnlineOrders({ scopedBranchId: 1 }))[0].amountDueAtDoor).toBe("45000.00");
+  });
+
+  it("deducts current payments and returns and clamps overpayment before adding customer shipping", async () => {
+    const id = await seedPrepaidDelivery();
+    await db().update(s.onlineOrders).set({ shippingCost: "5000.00" }).where(eq(s.onlineOrders.id, id));
+    for (const [paidAmount, expected] of [["10000.00", "30000.00"], ["40000.00", "5000.00"]]) {
+      await db().update(s.invoices).set({ total: "40000.00", returnedTotal: "5000.00", paidAmount }).where(eq(s.invoices.id, 1));
+      expect((await getOnlineOrder(id, 1))?.amountDueAtDoor).toBe(expected);
+      expect((await listOnlineOrders({ scopedBranchId: 1 }))[0].amountDueAtDoor).toBe(expected);
+    }
+  });
+
+  it("rejects prepaid COD-zero redispatch before physical delivery without loyalty or delivered push", async () => {
+    const id = await seedPrepaidDelivery();
+
+    await expect(setOnlineOrderStatus({ id, status: "DELIVERED", scopedBranchId: 1 }, 1))
+      .rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect((await getOrder(id)).status).toBe("SHIPPED");
+    expect(await db().select().from(s.loyaltyLedgerEntries)).toHaveLength(0);
+    expect(await db().select().from(s.storefrontPushCampaigns)).toHaveLength(0);
+    expect(await db().select().from(s.storefrontPushDeliveries)).toHaveLength(0);
+  });
+
+  it("accepts locked delivered proof and repeats without duplicate loyalty or push", async () => {
+    const id = await seedPrepaidDelivery();
+    await db().update(s.deliveryConsignments).set({ parcelStatus: "DELIVERED" }).where(eq(s.deliveryConsignments.id, 1));
+    await setOnlineOrderStatus({ id, status: "DELIVERED", scopedBranchId: 1 }, 1);
+    await setOnlineOrderStatus({ id, status: "DELIVERED", scopedBranchId: 1 }, 1);
+    expect((await getOrder(id)).status).toBe("DELIVERED");
+    const ledger = await db().select().from(s.loyaltyLedgerEntries);
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0].entryType).toBe("ORDER_EARN");
+    expect(await db().select().from(s.storefrontPushCampaigns)).toHaveLength(1);
+    expect(await db().select().from(s.storefrontPushDeliveries)).toHaveLength(1);
+  });
+
+  it("rolls back promptly on an occupied parcel and releases the order for the parcel writer", async () => {
+    const id = await seedPrepaidDelivery();
+    await db().update(s.deliveryConsignments).set({ parcelStatus: "DELIVERED" }).where(eq(s.deliveryConsignments.id, 1));
+    let pending: Promise<unknown> | undefined;
+    let observed: unknown;
+    const timedOut = Symbol("proof waited on parcel");
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    await db().transaction(async (parcelWriter) => {
+      // A real independent connection holds the parcel, as courier/assignment writers do.
+      await parcelWriter.select({ id: s.deliveryConsignments.id }).from(s.deliveryConsignments)
+        .where(eq(s.deliveryConsignments.id, 1)).for("update");
+      pending = setOnlineOrderStatus({ id, status: "DELIVERED", scopedBranchId: 1 }, 1)
+        .catch((error: unknown) => error);
+      try {
+        observed = await Promise.race([
+          pending,
+          new Promise((resolve) => { timeout = setTimeout(() => resolve(timedOut), 3000); }),
+        ]);
+      } finally {
+        if (timeout) clearTimeout(timeout);
+      }
+      if (observed !== timedOut) {
+        // The failed service must already have released its order lock while our parcel
+        // lock is still held. NOWAIT also makes a retained order lock fail immediately.
+        const [order] = await parcelWriter.select().from(s.onlineOrders)
+          .where(eq(s.onlineOrders.id, id)).for("update", { noWait: true });
+        expect(order.status).toBe("SHIPPED");
+        await parcelWriter.update(s.onlineOrders).set({ contactNotes: "parcel writer progressed" })
+          .where(eq(s.onlineOrders.id, id));
+      }
+    });
+    // Even the old blocking implementation is drained after releasing the fixture lock,
+    // preventing an orphan service transaction from contaminating the next test.
+    await pending;
+    expect(observed).not.toBe(timedOut);
+    expect(observed).toMatchObject({ code: "CONFLICT" });
+    expect((await getOrder(id)).status).toBe("SHIPPED");
+    expect((await getOrder(id)).contactNotes).toBe("parcel writer progressed");
+    expect(await db().select().from(s.loyaltyAccounts)).toHaveLength(0);
+    expect(await db().select().from(s.loyaltyLedgerEntries)).toHaveLength(0);
+    expect(await db().select().from(s.storefrontPushCampaigns)).toHaveLength(0);
+    expect(await db().select().from(s.storefrontPushDeliveries)).toHaveLength(0);
+    await setOnlineOrderStatus({ id, status: "DELIVERED", scopedBranchId: 1 }, 1);
+    expect((await getOrder(id)).status).toBe("DELIVERED");
+    expect(await db().select().from(s.loyaltyLedgerEntries)).toHaveLength(1);
+    expect(await db().select().from(s.storefrontPushCampaigns)).toHaveLength(1);
+  });
+
+  it("rejects a delivery-linked order with missing consignment proof", async () => {
+    const id = await seedPrepaidDelivery();
+    await db().delete(s.deliveryConsignments);
+    await expect(setOnlineOrderStatus({ id, status: "DELIVERED", scopedBranchId: 1 }, 1))
+      .rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect((await getOrder(id)).status).toBe("SHIPPED");
+  });
+
+  it("uses linked parcel proof even when the order delivery-party header is absent", async () => {
+    const id = await seedPrepaidDelivery();
+    await db().update(s.onlineOrders).set({ deliveryPartyId: null }).where(eq(s.onlineOrders.id, id));
+    await expect(setOnlineOrderStatus({ id, status: "DELIVERED", scopedBranchId: 1 }, 1))
+      .rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect((await getOrder(id)).status).toBe("SHIPPED");
+  });
 });
 
 describe("setOnlineOrderStatus — سبب الإلغاء + مرحلة التجهيز", () => {
@@ -699,6 +856,91 @@ describe("reviveAndConfirmOnlineOrder — إحياء الطلبات منتهية
 });
 
 describe("autoAssignRoundRobinOnlineOrders — توزيع الورديات الذكي وموازنة العبء الفعلي", () => {
+  async function seedOtherBranchOrderWithCoupon() {
+    await db().insert(s.branches).values({ id: 2, name: "الفرع الآخر", code: "OTHER", type: "SALES" })
+      .onDuplicateKeyUpdate({ set: { name: "الفرع الآخر" } });
+    await db().insert(s.shifts).values({ branchId: 2, userId: 3, openingBalance: "0", status: "OPEN", shiftType: "RETAIL", openGuard: "3:2:RETAIL" });
+    const id = await seedOrder("PENDING");
+    await db().update(s.onlineOrders).set({ branchId: 2 }).where(eq(s.onlineOrders.id, id));
+    await db().insert(s.promotions).values({ id: 50, name: "عرض", type: "PERCENT", discountPercent: "10.00", scope: "ALL", effectiveFrom: new Date("2026-01-01") });
+    await db().insert(s.couponPrograms).values({ id: 50, promotionId: 50, name: "قسيمة", status: "ACTIVE", branchId: 2, validFrom: new Date("2026-01-01"), createdBy: 1 });
+    await db().insert(s.coupons).values({ id: 50, programId: 50, code: "SCOPE50", codeHash: "5".repeat(64) });
+    await db().insert(s.couponReservations).values({
+      couponId: 50, programId: 50, onlineOrderId: id, customerId: 1, branchId: 2,
+      discountAmount: "10.00", expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+    return id;
+  }
+
+  it.each(["manager", "cashier"])("rejects cross-branch %s before any order or coupon mutation", async (role) => {
+    const id = await seedOtherBranchOrderWithCoupon();
+    const beforeOrder = await getOrder(id);
+    const beforeCoupon = await db().select().from(s.couponReservations);
+    await expect(autoAssignRoundRobinOnlineOrders({ scopedBranchId: 2 }, { userId: 4, branchId: 1, role }))
+      .rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(await getOrder(id)).toEqual(beforeOrder);
+    expect(await db().select().from(s.couponReservations)).toEqual(beforeCoupon);
+    expect(await db().select().from(s.storefrontPushCampaigns)).toHaveLength(0);
+  });
+
+  it.each(["manager", "cashier"] as const)("rejects branch override through the %s router caller without mutations", async (role) => {
+    const id = await seedOtherBranchOrderWithCoupon();
+    const [user] = await db().select().from(s.users).where(eq(s.users.id, 4));
+    const caller = storeAdminRouter.createCaller({
+      req: { headers: {}, ip: "127.0.0.1" }, res: {}, sessionId: null,
+      user: { ...user, role, permissionsOverride: { store: "FULL" } },
+    } as never);
+    const beforeOrder = await getOrder(id);
+    const beforeCoupon = await db().select().from(s.couponReservations);
+    await expect(caller.orders.autoAssignRoundRobin({ branchId: 2 }))
+      .rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(await getOrder(id)).toEqual(beforeOrder);
+    expect(await db().select().from(s.couponReservations)).toEqual(beforeCoupon);
+  });
+
+  it("accepts the manager router caller for its assigned branch", async () => {
+    const id = await seedOrder("PENDING");
+    await db().insert(s.shifts).values({ branchId: 1, userId: 2, openingBalance: "0", status: "OPEN", shiftType: "RETAIL", openGuard: "2:1:RETAIL" });
+    const [user] = await db().select().from(s.users).where(eq(s.users.id, 4));
+    const caller = storeAdminRouter.createCaller({
+      req: { headers: {}, ip: "127.0.0.1" }, res: {}, sessionId: null,
+      user: { ...user, permissionsOverride: { store: "FULL" } },
+    } as never);
+    const result = await caller.orders.autoAssignRoundRobin({ branchId: 1 });
+    expect(result.assignments.map((row) => row.orderId)).toEqual([id]);
+    expect((await getOrder(id)).status).toBe("CONFIRMED");
+  });
+
+  it("derives missing scope from the actor branch and leaves other branch coupons untouched", async () => {
+    const otherId = await seedOtherBranchOrderWithCoupon();
+    await db().insert(s.shifts).values({ branchId: 1, userId: 2, openingBalance: "0", status: "OPEN", shiftType: "RETAIL", openGuard: "2:1:RETAIL" });
+    const ownId = await seedOrder("PENDING");
+    const beforeCoupon = await db().select().from(s.couponReservations);
+    const result = await autoAssignRoundRobinOnlineOrders({ scopedBranchId: null }, { userId: 4, branchId: 1, role: "manager" });
+    expect(result.assignments.map((row) => row.orderId)).toEqual([ownId]);
+    expect((await getOrder(ownId)).status).toBe("CONFIRMED");
+    expect((await getOrder(otherId)).status).toBe("PENDING");
+    expect(await db().select().from(s.couponReservations)).toEqual(beforeCoupon);
+  });
+
+  it.each([
+    { userId: 1, branchId: 1, role: "admin" },
+    { userId: 4, branchId: 1, role: "manager", isOwner: true },
+  ])("preserves authorized cross-branch assignment for $role / owner=$isOwner", async (actor) => {
+    const id = await seedOtherBranchOrderWithCoupon();
+    const result = await autoAssignRoundRobinOnlineOrders({ scopedBranchId: 2 }, actor);
+    expect(result.assignments.map((row) => row.orderId)).toEqual([id]);
+    expect((await getOrder(id)).status).toBe("CONFIRMED");
+    expect((await db().select().from(s.couponReservations))[0].expiresAt).toBeNull();
+  });
+
+  it("rejects an unassigned branch actor even when an input scope is supplied", async () => {
+    const id = await seedOtherBranchOrderWithCoupon();
+    await expect(autoAssignRoundRobinOnlineOrders({ scopedBranchId: 2 }, { userId: 4, branchId: null, role: "manager" }))
+      .rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect((await getOrder(id)).status).toBe("PENDING");
+  });
+
   it("يسند الطلبات حصراً للموظفين أصحاب الورديات المفتوحة (Shift-Aware)", async () => {
     // موظف 2 لديه وردية مفتوحة
     await db().insert(s.shifts).values({
@@ -725,7 +967,7 @@ describe("autoAssignRoundRobinOnlineOrders — توزيع الورديات ال�
 
     const res = await autoAssignRoundRobinOnlineOrders(
       { scopedBranchId: 1 },
-      { userId: 1, role: "admin" }
+      { userId: 1, branchId: 1, role: "admin" }
     );
 
     expect(res.assignedCount).toBe(2);
@@ -772,7 +1014,7 @@ describe("autoAssignRoundRobinOnlineOrders — توزيع الورديات ال�
 
     const res = await autoAssignRoundRobinOnlineOrders(
       { scopedBranchId: 1 },
-      { userId: 1, role: "admin" }
+      { userId: 1, branchId: 1, role: "admin" }
     );
 
     expect(res.assignedCount).toBe(1);
@@ -806,7 +1048,7 @@ describe("autoAssignRoundRobinOnlineOrders — توزيع الورديات ال�
     // تشغيل التوزيع الآلي على مستوى النظام (scopedBranchId = null)
     const res = await autoAssignRoundRobinOnlineOrders(
       { scopedBranchId: null },
-      { userId: 1, role: "admin" }
+      { userId: 1, branchId: 1, role: "admin" }
     );
 
     // الطلب في فرع 2 لا يجب أن يُسند لموظف فرع 1

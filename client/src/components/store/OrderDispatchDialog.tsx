@@ -17,6 +17,7 @@ export type DispatchOrder = {
   branchId: number;
   orderNumber: string;
   total: string;
+  amountDueAtDoor?: string;
   customerName: string | null;
   deliveryFree?: boolean;
   deliveryWaivedAmount?: string;
@@ -45,6 +46,7 @@ export function OrderDispatchDialog({
   const driverChoices = deliveryDriverOptions(selectedParty, order.branchId);
   const requiresDriver = requiresDeliveryDriver(selectedParty);
   const invalidDriver = assignedUserId !== "" && !driverChoices.some(driver => driver.userId === Number(assignedUserId));
+  const amountDueAtDoor = order.amountDueAtDoor ?? order.total;
 
   return (
     <Dialog
@@ -84,33 +86,29 @@ export function OrderDispatchDialog({
             </div>
             <p className="text-muted-foreground">
               يُحصّل المندوب{" "}
-              <b className="text-foreground">{money(order.total)} د.ع</b> فقط
+              <b className="text-foreground">{money(amountDueAtDoor)} د.ع</b> فقط
               عند التسليم (COD) من{" "}
               {order.customerName ? (
                 <b className="text-foreground">{order.customerName}</b>
               ) : (
                 "العميل"
               )}{" "}
-              (قيمة البضاعة كاملةً). لا يدفع الزبون أي أجرة توصيل؛ وتُستحق أجرة
+              (المتبقي من قيمة البضاعة). لا يدفع الزبون أي أجرة توصيل؛ وتُستحق أجرة
               التوصيل للمندوب على عاتق المكتبة وتُسوّى دفترياً.
             </p>
           </div>
         ) : (
           <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
-            {/* ١٠/٨ تمرير كامل: order.total (بضاعة+شحن) = ما يُحصّله المندوب عند الباب، لا «قيمة
-                الفاتورة/الذمّة» — الفاتورة وذمّة العميل تُنشآن بقيمة البضاعة فقط، وأجرة التوصيل
-                يقبضها المندوب من الزبون ويحتفظ بها (خارج الفاتورة). لا تُلصِق الرقم بـ«فاتورة». */}
             يُحصّل المندوب{" "}
-            <b className="text-foreground">{money(order.total)} د.ع</b> عند
+            <b className="text-foreground">{money(amountDueAtDoor)} د.ع</b> عند
             التسليم (COD) من{" "}
             {order.customerName ? (
               <b className="text-foreground">{order.customerName}</b>
             ) : (
               "العميل"
             )}
-            : قيمة البضاعة تُنشأ فاتورةً على ذمّته ويورّدها للمكتبة، وأجرة
-            التوصيل يحتفظ بها المندوب. يُخصم المخزون ثم يُسند الطلب للمندوب
-            المُختار.
+            : المتبقي غير المسدد من قيمة البضاعة وأجرة التوصيل. تُستخدم
+            الفاتورة القائمة عند إعادة الإسناد، ويحتفظ المندوب بأجرة التوصيل.
           </p>
         )}
 

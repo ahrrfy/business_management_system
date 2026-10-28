@@ -26,6 +26,8 @@ import { money } from "../money";
 import { stripDocPrefix } from "@shared/documentNumber";
 import { consumeReservedCoupon, lockCouponForSale, prelockCouponForOnlineDispatch } from "../couponService";
 import { enqueueStorefrontOrderStatusPush } from "./storefrontPushCampaignService";
+import { onlineOrderDispatchSnapshotTx } from "./onlineOrderTracking";
+import { findFulfillmentReplayTx, recordFulfillmentMutationTx, fulfillmentError, type FulfillmentMutationContext } from "../fulfillment/core";
 
 export interface DispatchOnlineOrderInput {
   onlineOrderId: number;
@@ -34,6 +36,11 @@ export interface DispatchOnlineOrderInput {
   deliveryAddress?: string | null;
   notes?: string | null;
   assignedUserId?: number | null;
+  recipientName?: string | null;
+  recipientPhone?: string | null;
+  deliveryFee?: string | null;
+  expectedOrderSnapshot?: string;
+  workflowMutation?: FulfillmentMutationContext;
 }
 
 export interface DispatchOnlineOrderResult {
@@ -138,6 +145,26 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
     if ((cur.customerId == null ? null : Number(cur.customerId)) !== expectedCustomerId) {
       throw new TRPCError({ code: "CONFLICT", message: "تغيّر عميل الطلب أثناء الإرسال — أعد المحاولة" });
     }
+    if (input.workflowMutation) {
+      const replay = await findFulfillmentReplayTx(tx, input.workflowMutation);
+      if (replay) {
+        const [parcel] = await tx.select().from(deliveryConsignments).where(eq(deliveryConsignments.id, replay)).limit(1);
+        const [invoice] = parcel?.invoiceId ? await tx.select().from(invoices).where(eq(invoices.id, parcel.invoiceId)).limit(1) : [];
+        if (!parcel || !invoice || cur.invoiceId !== invoice.id) throw fulfillmentError("تعذر استعادة إرسالية الطلب المرتبطة", "CONFLICT");
+        return { cancelled: false as const, result: {
+          orderId: cur.id, invoiceId: invoice.id, invoiceNumber: invoice.invoiceNumber,
+          consignmentId: parcel.id, consignmentNumber: parcel.consignmentNumber,
+          partyId: parcel.partyId, total: invoice.total, alreadyDispatched: true,
+        } };
+      }
+    }
+    if (input.expectedOrderSnapshot != null && input.expectedOrderSnapshot !== await onlineOrderDispatchSnapshotTx(tx, cur, true)) {
+      throw fulfillmentError("تغير طلب المتجر منذ المعاينة؛ حدّث البنود والعنوان قبل الإرسال", "CONFLICT");
+    }
+    const deliveryFee = cur.deliveryFree === true ? String(cur.deliveryWaivedAmount ?? "0") : String(cur.shippingCost ?? "0");
+    if (input.deliveryFee != null && !money(input.deliveryFee).eq(deliveryFee)) {
+      throw fulfillmentError("أجرة طلب المتجر محفوظة على الطلب؛ حدّث المعاينة قبل الإرسال", "CONFLICT");
+    }
     if (cur.status === "CANCELLED") return { cancelled: true as const, invoiceId: cur.invoiceId != null ? Number(cur.invoiceId) : null };
     if ((cur.status === "SHIPPED" || cur.status === "DELIVERED") && cur.invoiceId) {
       // Read a candidate only: locking here would invert courier's parcel -> order lock order.
@@ -153,7 +180,7 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
       const inv = (await tx.select({ n: invoices.invoiceNumber, t: invoices.total }).from(invoices).where(eq(invoices.id, Number(cur.invoiceId))).limit(1))[0];
       return {
         cancelled: false as const,
-        result: { orderId: Number(cur.id), invoiceId: Number(cur.invoiceId), invoiceNumber: inv?.n ?? "", partyId: Number(cur.deliveryPartyId), total: String(inv?.t ?? "0"), alreadyDispatched: true },
+        result: { orderId: Number(cur.id), invoiceId: Number(cur.invoiceId), invoiceNumber: inv?.n ?? "", partyId: Number(cur.deliveryPartyId), consignmentId: previousAssignment?.id, consignmentNumber: previousAssignment?.consignmentNumber, total: String(inv?.t ?? "0"), alreadyDispatched: true },
       };
       }
     }
@@ -288,11 +315,11 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
       invoiceId,
       partyId: input.partyId,
       assignedUserId: input.assignedUserId,
+      recipientName: input.recipientName,
+      recipientPhone: input.recipientPhone,
       // الشحن المجاني = الزبون يدفع صفراً، لكن المندوب يستحق الأجرة الفعلية على المكتبة.
       // غير المجاني يبقى تمريراً مباشراً: الزبون يدفعها للمندوب ولا تدخل invoice.total.
-      deliveryFee: cur.deliveryFree === true
-        ? String(cur.deliveryWaivedAmount ?? "0")
-        : String(cur.shippingCost ?? "0"),
+      deliveryFee,
       feeCollection: cur.deliveryFree === true ? "SHOP" : "COURIER",
       deliveryAddress: input.deliveryAddress ?? cur.shippingAddress ?? null,
       notes: input.notes ?? null,
@@ -314,6 +341,7 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
       customerId: cur.customerId == null ? null : Number(cur.customerId),
       status: "SHIPPED",
     });
+    if (input.workflowMutation) await recordFulfillmentMutationTx(tx, input.workflowMutation, dispatchRes.consignmentId);
     return {
       cancelled: false as const,
       result: {
