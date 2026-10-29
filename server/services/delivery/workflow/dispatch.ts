@@ -484,6 +484,8 @@ export async function dispatchWorkflowBatch(
             auth.current,
             input.branchId,
             true,
+            "dispatch",
+            input.collectCreditOnDelivery === true,
           ),
         );
       const branchId = previews[0]!.source.branchId;
@@ -854,6 +856,9 @@ async function dispatchOnlineSingleton(
         source,
         auth.current,
         input.branchId,
+        false,
+        "dispatch",
+        input.collectCreditOnDelivery === true,
       );
       const onlinePaths = workflowDispatchNativePaths("onlineOrder");
       const chosenOnlinePath =

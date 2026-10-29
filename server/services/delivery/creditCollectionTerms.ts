@@ -1,5 +1,7 @@
-import { and, desc, eq, sql } from "drizzle-orm";
-import { deliveryConsignments, deliveryEvents } from "../../../drizzle/schema";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
+import { deliveryConsignments, deliveryEvents, invoices } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { appendDeliveryEvent } from "./lifecycle";
 
@@ -18,6 +20,24 @@ export async function creditCollectionChoiceTx(tx: Tx, consignmentId: number): P
   const payload = event?.payload;
   return payload != null && typeof payload === "object" && "collectCreditOnDelivery" in payload
     && payload.collectCreditOnDelivery === true;
+}
+
+/** Reassigning the carrier preserves the accepted instruction; it cannot silently choose again. */
+export async function preservedCreditCollectionChoiceTx(tx: Tx,
+  members: Array<{ id: number; invoiceId: number | null }>): Promise<boolean> {
+  const ids = members.flatMap(row => row.invoiceId == null ? [] : [row.invoiceId]);
+  if (!ids.length) return false;
+  const creditRows = await tx.select({ id: invoices.id }).from(invoices)
+    .where(and(inArray(invoices.id, ids), eq(invoices.paymentMode, "CREDIT"))).for("share");
+  const creditIds = new Set(creditRows.map(row => row.id));
+  const choices = new Set<boolean>();
+  for (const member of members) if (member.invoiceId != null && creditIds.has(member.invoiceId))
+    choices.add(await creditCollectionChoiceTx(tx, member.id));
+  if (choices.size > 1) throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+    what: "تعذرت إعادة إسناد الشحنة", why: "مستندات الآجل تحمل تعليمات تحصيل مختلفة",
+    doThis: "راجع تعليمات المستندات الأصلية قبل إعادة الإسناد؛ لم تتغير مطالبة أي عميل أو مندوب",
+  }) });
+  return choices.has(true);
 }
 
 export async function recordCreditCollectionChoiceTx(tx: Tx, input: {

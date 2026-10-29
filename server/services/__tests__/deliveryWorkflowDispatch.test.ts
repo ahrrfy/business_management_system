@@ -1189,3 +1189,26 @@ describe("native driver assignment guards", () => {
     );
   }
 });
+
+
+describe("credit choice quoted workflow dispatch",()=>{
+  it.each([true,false])("commits the exact previewed %s instruction and replays without payment",async(collectCreditOnDelivery)=>{
+    await db().update(s.invoices).set({paymentMode:'CREDIT',paidAmount:'5000',status:'PARTIALLY_PAID'}).where(eq(s.invoices.id,1));
+    await db().update(s.customers).set({currentBalance:'5000'}).where(eq(s.customers.id,1));
+    const initial=await input();
+    const quote=await previewWorkflowBatch({sources:initial.sources,branchId:1,deliveryFee:'5000',feeCollection:'COURIER',collectCreditOnDelivery},actor);
+    expect(quote.summary).toMatchObject({goodsCodAmount:collectCreditOnDelivery?'5000.00':'0.00',codAmount:collectCreditOnDelivery?'10000.00':'5000.00'});
+    expect(quote.sources.some(row=>row.money.creditRemainingAmount==='5000.00')).toBe(true);
+    const payload={...initial,deliveryFee:'5000',collectCreditOnDelivery,
+      sources:quote.sources.map(({source})=>({kind:source.kind,id:source.id,expectedVersion:source.version})),
+      clientRequestId:'workflow-credit-choice-'+String(collectCreditOnDelivery)};
+    const before=await noDuplicateEffects();
+    const sent=await dispatchWorkflowBatch(payload,actor);
+    expect(await noDuplicateEffects()).toEqual(before);
+    const members=await db().select().from(s.deliveryConsignments);
+    expect(members.find(row=>row.invoiceId===1)?.codAmount).toBe(collectCreditOnDelivery?'5000.00':'0.00');
+    expect((await db().select().from(s.customers))[0].currentBalance).toBe('5000.00');
+    expect(await dispatchWorkflowBatch(payload,actor)).toMatchObject({consignmentId:sent.consignmentId,idempotentReplay:true});
+    expect(await noDuplicateEffects()).toEqual(before);
+  });
+});

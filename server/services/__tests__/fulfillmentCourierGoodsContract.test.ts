@@ -1,5 +1,7 @@
+import { fulfillmentRequestsRouter } from "../../routers/fulfillmentRequestsRouter";
+import { listShipmentInvoiceCandidates } from "../delivery/shipments";
 import { reassignDeliveryConsignment } from "../delivery/parties";
-import { creditCollectionChoiceTx } from "../delivery/creditCollectionTerms";
+import { preservedCreditCollectionChoiceTx, creditCollectionChoiceTx } from "../delivery/creditCollectionTerms";
 import { withTx } from "../tx";
 import { beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
@@ -152,8 +154,11 @@ async function dispatchGoods(
     );
     chargeId = charge.id;
   }
+  const releaseParser = fulfillmentRequestsRouter._def.procedures.release._def.inputs[0] as {
+    parse(input: unknown): Parameters<typeof releaseFulfillmentRequest>[0];
+  };
   const sent = await releaseFulfillmentRequest(
-    {
+    releaseParser.parse({
       assignedUserId: 3,
       collectCreditOnDelivery: options.collectCreditOnDelivery,
       id: request.id,
@@ -162,7 +167,7 @@ async function dispatchGoods(
       ...(options.company
         ? { externalTrackingRef: key() }
         : {}),
-    },
+    }),
     admin,
   );
   const [cn] = await db()
@@ -595,6 +600,7 @@ describe("explicit credit collection instruction", () => {
     const {cn, chargeId} = await dispatchGoods({ credit: true, charge: true, collectCreditOnDelivery: true });
     expect(cn.codAmount).toBe("12000.00");
     expect(await withTx(tx => creditCollectionChoiceTx(tx, cn.id))).toBe(true);
+    expect(await withTx(tx => preservedCreditCollectionChoiceTx(tx, [cn]))).toBe(true);
     await acknowledge(cn);
     await confirmConsignmentDelivery({consignmentId:cn.id,clientRequestId:key()},driver);
     expect((await db().select().from(s.invoices))[0].paidAmount).toBe("10000.00");
@@ -661,4 +667,13 @@ describe("explicit credit collection instruction", () => {
     await db().update(s.deliveryConsignments).set({parcelStatus:"OUT_FOR_DELIVERY",counterSettledAmount:"1000"}).where(eq(s.deliveryConsignments.id,cn.id));
     await expect(reassignDeliveryConsignment(input,admin)).rejects.toThrow(/بدأ/);
   });
+});
+
+
+it("returns real CREDIT terms for the candidate anchor and grouped invoice choice",async()=>{
+  await db().insert(s.invoices).values([1,2].map(id=>({id,invoiceNumber:'CREDIT-CANDIDATE-'+id,sourceType:'POS' as const,branchId:1,customerId:1,
+    total:'5000',subtotal:'5000',paidAmount:'0',status:'PENDING' as const,paymentMode:'CREDIT' as const,createdBy:1})));
+  const result=await listShipmentInvoiceCandidates(1,admin);
+  expect(result.anchor).toMatchObject({id:1,paymentMode:'CREDIT'});
+  expect(result.candidates.find(row=>row.id===2)).toMatchObject({id:2,paymentMode:'CREDIT'});
 });

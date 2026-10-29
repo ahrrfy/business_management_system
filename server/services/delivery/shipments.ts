@@ -936,6 +936,7 @@ export async function listShipmentInvoiceCandidates(
     branchId: invoices.branchId,
     invoiceId: invoices.id,
     invoiceNumber: invoices.invoiceNumber,
+    paymentMode: invoices.paymentMode,
     total: invoices.total,
     paidAmount: invoices.paidAmount,
     returnedTotal: invoices.returnedTotal,
