@@ -6,10 +6,12 @@ import type ExcelJS from "exceljs";
 import type { RouterOutputs } from "@/lib/trpc";
 import SalesReport from "../SalesReport";
 import { printSalesReportV2 } from "@/lib/printing/printTemplatesV2";
+import { notify } from "@/lib/notify";
 
 type Row = RouterOutputs["reports"]["salesReport"]["rows"][number];
 const mock = vi.hoisted(() => ({ role: "admin", loadingIdentity: false, rows: [] as any[], nextRows: [] as any[],
-  fetch: vi.fn(), columns: [] as any[], printed: "", workbook: null as ExcelJS.Workbook | null, saved: false }));
+  fetch: vi.fn(), columns: [] as any[], printed: "", workbook: null as ExcelJS.Workbook | null,
+  downloadCompleted: null as Promise<void> | null }));
 vi.mock("@/lib/trpc", () => ({ trpc: {
   auth: { me: { useQuery: () => ({ data: mock.loadingIdentity ? undefined : { role: mock.role } }) } },
   branches: { list: { useQuery: () => ({ data: [] }) } }, sales: { salespeople: { useQuery: () => ({ data: [] }) } },
@@ -48,16 +50,28 @@ let root: Root, container: HTMLDivElement;
 beforeEach(() => {
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
   vi.clearAllMocks(); mock.role = "admin"; mock.loadingIdentity = false; mock.rows = [row()]; mock.nextRows = [];
-  mock.workbook = null; mock.printed = ""; mock.saved = false;
+  mock.workbook = null; mock.printed = "";
   mock.fetch.mockImplementation(async () => ({ rows: [...mock.rows, ...mock.nextRows], nextCursor: null }));
   vi.stubGlobal("React", React);
-  URL.createObjectURL = vi.fn(() => { mock.saved = true; return "blob:report"; }); URL.revokeObjectURL = vi.fn();
+  URL.createObjectURL = vi.fn(() => "blob:report");
+  mock.downloadCompleted = new Promise<void>((resolve, reject) => {
+    URL.revokeObjectURL = vi.fn(() => resolve());
+    vi.mocked(notify.err).mockImplementation(error => { reject(error); return ""; });
+  });
   vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 async function render() { await act(async () => root.render(<SalesReport />)); }
 async function click(text: string) { const b = Array.from(container.querySelectorAll("button")).find(b => b.textContent === text)!; expect(b).toBeTruthy(); await act(async () => b.click()); }
+async function exportExcel() {
+  // exportRows returns void; await the download after real XLSX serialization, bounded by the test timeout.
+  // Subscribe before React finishes flushing the click so export errors reject with their original cause.
+  await Promise.all([click("تصدير Excel"), mock.downloadCompleted]);
+  expect(URL.createObjectURL).toHaveBeenCalledOnce();
+  expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledOnce();
+  expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:report");
+}
 function workbookColumn(header: string) {
   const sheet = mock.workbook!.worksheets[0]!;
   const col = (sheet.getRow(1).values as unknown[]).findIndex(value => value === header);
@@ -128,7 +142,7 @@ it("table, print and actual workbook preserve the same server cents", async () =
   expect(container.querySelector("tbody")!.textContent).toContain("0.67");
   await click("طباعة / PDF");
   expect(printedCell("صافي تكلفة المبيعات")).toBe("0.67"); expect(printedCell("الربح")).toBe("1.33");
-  await click("تصدير Excel"); await vi.waitFor(() => expect(mock.saved).toBe(true));
+  await exportExcel();
   expect(workbookColumn("صافي تكلفة المبيعات")).toBe(0.67); expect(workbookColumn("الربح")).toBe(1.33);
   const sheet = mock.workbook!.worksheets[0]!;
   const col = (sheet.getRow(1).values as unknown[]).findIndex(value => value === "الربح");
@@ -137,7 +151,7 @@ it("table, print and actual workbook preserve the same server cents", async () =
 
 it("actual Excel handler writes canonical server profit instead of original-cost arithmetic", async () => {
   await render();
-  await click("تصدير Excel"); await vi.waitFor(() => expect(mock.saved).toBe(true));
+  await exportExcel();
   expect(workbookColumn("الربح")).toBe(0);
   expect(workbookColumn("صافي الإيراد")).toBe(0);
   expect(workbookColumn("صافي تكلفة المبيعات")).toBe(0);
@@ -149,13 +163,13 @@ it.each(["auditor", "loading"])("hides all cost/profit table, print and Excel fi
   expect(mock.columns.map(c => c.accessorKey)).not.toEqual(expect.arrayContaining(["costTotal"]));
   expect(mock.columns.some(c => ["costTotal", "netCOGS", "profit"].includes(c.accessorKey))).toBe(false);
   await click("طباعة / PDF"); expect(mock.printed).not.toContain("تكلفة"); expect(mock.printed).not.toContain("الربح");
-  await click("تصدير Excel"); await vi.waitFor(() => expect(mock.saved).toBe(true));
+  await exportExcel();
   expect(mock.workbook!.worksheets[0]!.getRow(1).values).not.toEqual(expect.arrayContaining(["صافي تكلفة المبيعات", "الربح"]));
 });
 
 it("full export retains each later page's canonical server loss", async () => {
   mock.nextRows = [{ ...row(2), netCOGS: "60000.00", profit: "-60000.00" }];
-  await render(); await click("تصدير Excel"); await vi.waitFor(() => expect(mock.saved).toBe(true));
+  await render(); await exportExcel();
   expect(mock.fetch).toHaveBeenCalledWith(expect.objectContaining({ limit: 5000, from: "2026-10-01" }));
   const sheet = mock.workbook!.worksheets[0]!;
   const col = (sheet.getRow(1).values as unknown[]).findIndex(value => value === "الربح");
