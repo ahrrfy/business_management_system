@@ -27,6 +27,7 @@ import { deliveryDriverOptions, requiresDeliveryDriver } from "./driverOptions";
 import { useWorkflowDocumentPrinter } from "@/hooks/useWorkflowDocumentPrinter";
 import { preopenDocumentWindow } from "@/lib/printing/print";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
+import { CreditCollectionChoice } from "./CreditCollectionChoice";
 
 export interface DispatchableInvoice {
   id: number;
@@ -35,6 +36,7 @@ export interface DispatchableInvoice {
   total: string | number;
   paidAmount?: string | number | null;
   returnedTotal?: string | number | null;
+  paymentMode?: string | null;
   customerName?: string | null;
   customerPhone?: string | null;
   deliveryAddress?: string | null;
@@ -68,6 +70,7 @@ export function InvoiceDispatchDialog({
   const [externalTrackingRef, setExternalTrackingRef] = useState("");
   const feeValid = /^(?:\d+|\d*\.\d{1,2})$/.test(fee);
   const [invoiceIds, setInvoiceIds] = useState<number[]>([]);
+  const [collectCreditOnDelivery, setCollectCreditOnDelivery] = useState<boolean>();
   const request = useRef({ fingerprint: "", key: crypto.randomUUID() });
   const candidatesQ = trpc.delivery.invoiceCandidates.useQuery(
     { invoiceId: invoice?.id ?? 0 },
@@ -101,6 +104,13 @@ export function InvoiceDispatchDialog({
       new Decimal(0),
     );
   }, [availableInvoices, invoiceIds]);
+  const creditRemaining = availableInvoices.filter((row) => invoiceIds.includes(row.id) && "paymentMode" in row && row.paymentMode === "CREDIT").reduce(
+    (sum, row) => sum.plus(Decimal.max(0, new Decimal(row.total || 0).minus(row.paidAmount || 0).minus(row.returnedTotal || 0))), new Decimal(0),
+  );
+  const creditChoiceRequired = creditRemaining.gt(0);
+  const otherGoods = remaining.minus(creditRemaining);
+  const courierGoods = otherGoods.plus(collectCreditOnDelivery === true ? creditRemaining : 0);
+  useEffect(() => { setCollectCreditOnDelivery(undefined); }, [open, invoice?.id, invoiceIds.join(",")]);
 
   /**
    * ش٥: الخادم يرفض إرسالَ فاتورةٍ لطلبٍ إخوتُه لم يجهزوا. لا نُظهر خانةَ إقرارٍ **مسبقاً**
@@ -151,7 +161,8 @@ export function InvoiceDispatchDialog({
   });
 
   const submit = (partialDispatchConfirmed?: boolean) => {
-    if (!invoice || !feeValid || (requiresDriver && !assignedUserId) || invalidDriver) return;
+    if (!invoice || !candidatesQ.data || !feeValid || (requiresDriver && !assignedUserId) || invalidDriver) return;
+    if (creditChoiceRequired && collectCreditOnDelivery == null) { notify.err("اختر طريقة تحصيل الرصيد الآجل"); return; }
     if (party?.partyType === "COMPANY" && !externalTrackingRef.trim()) {
       notify.err("رقم بوليصة شركة التوصيل مطلوب", "امسح الباركود المطبوع على البوليصة قبل الإسناد.");
       return;
@@ -162,6 +173,7 @@ export function InvoiceDispatchDialog({
       partyId: Number(partyId),
       deliveryFee: new Decimal(fee || 0).toDecimalPlaces(2).toFixed(2),
       feeCollection,
+      ...(creditChoiceRequired ? { collectCreditOnDelivery } : {}),
       recipientName: name.trim(),
       recipientPhone: phone.trim(),
       deliveryAddress: address.trim(),
@@ -343,7 +355,8 @@ export function InvoiceDispatchDialog({
               {feeCollection === "COUNTER" && <p className="text-xs text-muted-foreground">أدخل الأجرة المقبوضة سابقاً؛ تُطابق مع إيصالها ولا تُقبض مرة ثانية.</p>}
             </div>
           </div>
-          <div className="rounded-md border bg-muted/35 p-2 text-xs leading-6 text-muted-foreground">
+          {creditChoiceRequired && <CreditCollectionChoice creditAmount={creditRemaining.toFixed(2)} otherGoodsAmount={otherGoods.toFixed(2)} fee={fee} feeCollection={feeCollection} value={collectCreditOnDelivery} onChange={setCollectCreditOnDelivery} disabled={dispatch.isPending} />}
+          {!creditChoiceRequired && <div className="rounded-md border bg-muted/35 p-2 text-xs leading-6 text-muted-foreground">
             {remaining.isZero() ? (
               <>
                 الفاتورة <strong className="text-[var(--sem-pos)]">مدفوعة مسبقاً بالكامل</strong> (متبقي البضاعة: 0 د.ع).
@@ -367,7 +380,7 @@ export function InvoiceDispatchDialog({
                 )}
               </>
             )}
-          </div>
+          </div>}
         </div>
 
         {partialNotice && (
@@ -397,7 +410,7 @@ export function InvoiceDispatchDialog({
                 customerPhone: phone || invoice.customerPhone,
                 deliveryAddress: address || invoice.deliveryAddress,
                 courierName: party?.name,
-                codAmount: remaining.toFixed(2),
+                codAmount: courierGoods.toFixed(2),
                 deliveryFee: fee,
                 feeCollection: feeCollection,
               }}
@@ -419,8 +432,10 @@ export function InvoiceDispatchDialog({
           <AnimatedDeliveryButton
             disabled={
               !invoice ||
+              !candidatesQ.data ||
               !feeValid ||
               !partyId ||
+              (creditChoiceRequired && collectCreditOnDelivery == null) ||
               !name.trim() ||
               !phone.trim() ||
               !address.trim() ||

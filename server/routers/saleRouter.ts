@@ -1,4 +1,4 @@
-import { INVOICE_CHANNELS } from "@shared/invoiceChannel";
+import { INVOICE_CHANNELS } from "@shared/invoiceChannel"; import { consignmentCreditCollectionSql } from "../services/delivery/creditCollectionTerms";
 import {
   checkoutChargesFields,
   chargeOnlyCheckoutSchema,
@@ -1994,7 +1994,7 @@ export const saleRouter = router({
               deviceId: invoices.posDeviceId,
               // التوصيل (٩/٨): شارة «توصيل — بيد فلان» وفلترها في شاشة الفواتير. صفّ واحد كحدّ
               // أقصى لكل فاتورة (uq_consignment_invoice) ⇒ لا مضاعفة صفوف.
-              consignmentCodAmount: deliveryConsignments.codAmount,
+              consignmentCodAmount: deliveryConsignments.codAmount, collectCreditOnDelivery: consignmentCreditCollectionSql,
               consignmentId: deliveryConsignments.id,
               consignmentParcelStatus: deliveryConsignments.parcelStatus,
               // ١٠/٨ — قناة المتجر بلا إرسالية: المرجع = رقم الطلب، والحالة تُشتقّ من الطلب المُسنَد.
@@ -2111,7 +2111,7 @@ export const saleRouter = router({
               correctedByInvoiceId: invoices.correctedByInvoiceId,
               deviceId: invoices.posDeviceId,
               // التوصيل (٩/٨) — مرآة list حرفياً (نفس الشروط تتطلّب نفس الـjoin).
-              consignmentCodAmount: deliveryConsignments.codAmount,
+              consignmentCodAmount: deliveryConsignments.codAmount, collectCreditOnDelivery: consignmentCreditCollectionSql,
               consignmentId: deliveryConsignments.id,
               consignmentParcelStatus: deliveryConsignments.parcelStatus,
               // ١٠/٨ — قناة المتجر بلا إرسالية: المرجع = رقم الطلب، والحالة تُشتقّ من الطلب المُسنَد.
@@ -2342,7 +2342,7 @@ export const saleRouter = router({
             courierFeeCollection: sql<
               "COURIER" | "COUNTER" | "SHOP" | null
             >`COALESCE(${deliveryConsignments.feeCollection}, CASE WHEN ${onlineOrders.deliveryPartyId} IS NOT NULL THEN 'COURIER' END)`,
-            consignmentCodAmount: deliveryConsignments.codAmount,
+            consignmentCodAmount: deliveryConsignments.codAmount, collectCreditOnDelivery: consignmentCreditCollectionSql,
             consignmentId: deliveryConsignments.id,
             consignmentNumber: deliveryConsignments.consignmentNumber,
             consignmentParcelStatus: deliveryConsignments.parcelStatus,

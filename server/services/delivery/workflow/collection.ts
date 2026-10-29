@@ -1,3 +1,4 @@
+import { creditCollectionChoiceTx } from "../creditCollectionTerms";
 import { eq } from "drizzle-orm";
 import { invoices } from "../../../../drizzle/schema";
 import type { WorkflowDispatchSource } from "../../../../shared/deliveryWorkflow";
@@ -133,7 +134,7 @@ export function confirmWorkflowDelivery(
         const charges = await loadAssignedChargeClaimsTx(tx, row.id);
         claims.push({
           row,
-          due: round2(assignedGoodsCodDue(invoice).plus(charges.remaining)),
+          due: round2(assignedGoodsCodDue(invoice, await creditCollectionChoiceTx(tx, row.id)).plus(charges.remaining)),
         });
       }
       const totalDue = round2(

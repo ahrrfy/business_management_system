@@ -1,3 +1,4 @@
+import { creditCollectionChoiceTx } from "./creditCollectionTerms";
 // السداد الكاونتريّ على إرسالية **ثبت تسليمُها** — يفكّ فخّ «متبقٍّ بلا مدخل نقدي» (٢٢/٨).
 //
 // السياق: طردٌ وصل العميل فعلاً (كشف شركةٍ بتحصيلٍ جزئيّ، أو ختمُ تسليمٍ مستنديّ) ثم جاء
@@ -140,8 +141,8 @@ export async function registerCounterCollectionTx(
       .from(invoices)
       .where(eq(invoices.id, input.invoiceId))
       .limit(1);
-    // Approved credit debt was never courier goods COD; paying it cannot release a charge claim.
-    if (invoice?.paymentMode === "CREDIT") return null;
+    // Unassigned credit cannot release courier claims; explicit credit goods assignment can.
+    if (invoice?.paymentMode === "CREDIT" && !await creditCollectionChoiceTx(tx, cn.id)) return null;
   }
   if (fulfillment) {
     const ids =

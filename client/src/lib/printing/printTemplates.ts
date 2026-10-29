@@ -146,6 +146,7 @@ export interface InvoicePrintData {
   barcodePlacement?: 'beside' | 'below';
   /** نمط الدفع (PREPAID/COD/CREDIT) — يميّز فواتير الدفع عند الاستلام عن الفواتير الآجلة. */
   paymentMode?: string | null;
+  collectCreditOnDelivery?: boolean | null;
   /** تفصيل دفعات الفاتورة عند تعدّد طرق الدفع (MIXED) */
   paymentLegs?: Array<{
     method: string;
@@ -1018,6 +1019,7 @@ export interface ReceiptBrowserData {
   status?: string | null;
   /** نمط الدفع (PREPAID/COD/CREDIT) — للتمييز بين المتبقي الآجل والمطلوب عند الاستلام (COD) */
   paymentMode?: string | null;
+  collectCreditOnDelivery?: boolean | null;
   /** طريقة الدفع كنصّ جاهز للعرض (نقدي/بطاقة/تحويل/محفظة/صك/مختلطة) — تظهر في كتلة الإجماليات */
   paymentMethod?: string | null;
   /** تفصيل دفعات الفاتورة عند تعدّد طرق الدفع (MIXED) */

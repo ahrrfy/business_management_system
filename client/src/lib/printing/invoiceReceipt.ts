@@ -23,6 +23,7 @@ export interface InvoiceReceiptSource {
   status?: string | null;
   paymentMethod?: string | null;
   paymentMode?: string | null;
+  collectCreditOnDelivery?: boolean | null;
   correctionAudit?: {
     originalInvoiceNumber: string;
     requestedBy?: number | null;
@@ -73,7 +74,7 @@ export function invoiceToReceipt(d: InvoiceReceiptSource): ReceiptBrowserData {
   const paid = D(d.paidAmount ?? 0);
   const amounts = invoicePrintAmounts(d);
   const credit = D(amounts.remainingAmount);
-  const isCod = d.paymentMode === "COD";
+  const isCod = d.paymentMode === "COD" || d.collectCreditOnDelivery === true;
   const paymentMethodDisplay = d.paymentMethod
     ? paymentMethodLabel(d.paymentMethod)
     : (isCod && credit.gt(0))
@@ -134,6 +135,7 @@ export function invoiceToReceipt(d: InvoiceReceiptSource): ReceiptBrowserData {
     paid: paid.toString(),
     credit: credit.gt(0) ? credit.toString() : null,
     paymentMode: d.paymentMode ?? null,
+    collectCreditOnDelivery: d.collectCreditOnDelivery,
     paymentMethod: paymentMethodDisplay,
     ...(derivedLegs && derivedLegs.length > 1 ? { paymentLegs: derivedLegs } : {}),
     revision: d.correctionAudit ? {

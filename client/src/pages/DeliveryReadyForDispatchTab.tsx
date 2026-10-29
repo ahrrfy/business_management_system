@@ -360,7 +360,7 @@ export function DeliveryReadyForDispatchTab() {
           parties={parties.data ?? []}
           pending={dispatch.isPending || dispatchByBarcodeMutation.isPending}
           onClose={() => setTarget(null)}
-          onConfirm={async ({ partyId, fee, recipientName, recipientPhone, deliveryAddress, notes, assignedUserId, externalTrackingRef }) => {
+          onConfirm={async ({ partyId, fee, recipientName, recipientPhone, deliveryAddress, notes, assignedUserId, externalTrackingRef, collectCreditOnDelivery }) => {
             const ord = target!;
             if (
               ord.sourceType === "ONLINE_ORDER"
@@ -413,6 +413,7 @@ export function DeliveryReadyForDispatchTab() {
                   notes: notes || undefined,
                   clientRequestId: crypto.randomUUID(),
                   assignedUserId,
+                  collectCreditOnDelivery,
                   externalTrackingRef: externalTrackingRef || undefined,
                 });
               }

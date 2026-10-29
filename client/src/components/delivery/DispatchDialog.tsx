@@ -12,6 +12,7 @@ import { D, fmt, moneyInput, positiveDiff } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import type { RouterOutputs } from "@/lib/trpc";
 import { deliveryDriverOptions, requiresDeliveryDriver } from "./driverOptions";
+import { CreditCollectionChoice } from "./CreditCollectionChoice";
 
 /** الحقول التي يحتاجها الحوار فقط — DeliveryHub (delivery.readyForDispatch) وطابور الاستقبال
  *  (workOrders.list) كلاهما يُطابق هذا الشكل بنيوياً بلا تحويل. */
@@ -25,6 +26,7 @@ export interface DispatchableOrder {
   customerPhone?: string | null;
   salePrice: string;
   deposit?: string | null;
+  paymentMode?: string | null;
   deliveryAddress?: string | null;
   deliveryPhone?: string | null;
   /** مَن يقبض الأجرة (Slice B، ٢٩/٨/٢٦): يحدّد ما يدفعه الزبون للمندوب صراحةً في المُلخّص. */
@@ -45,6 +47,7 @@ export interface DispatchConfirmArgs {
   assignedUserId?: number;
   /** رقم التتبع / المرجع الخارجي من شركة التوصيل (إلزامي للشركات). */
   externalTrackingRef?: string;
+  collectCreditOnDelivery?: boolean;
 }
 
 /**
@@ -72,6 +75,7 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
   const [notes, setNotes] = useState("");
   const [assignedUserId, setAssignedUserId] = useState("");
   const [externalTrackingRef, setExternalTrackingRef] = useState("");
+  const [collectCreditOnDelivery, setCollectCreditOnDelivery] = useState<boolean>();
   const selectedParty = parties.find((p) => String(p.id) === partyId);
   const driverChoices = order?.branchId != null ? deliveryDriverOptions(selectedParty, order.branchId) : [];
   const requiresDriver = requiresDeliveryDriver(selectedParty);
@@ -88,13 +92,16 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
       setNotes(order.notes?.trim() || "");
       setAssignedUserId("");
       setExternalTrackingRef("");
+      setCollectCreditOnDelivery(undefined);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [order?.id, order?.sourceType]);
 
   if (!order) return null;
   const fixedOnlineFee = order.sourceType === "ONLINE_ORDER";
-  const cod = positiveDiff(order.salePrice, order.deposit);
+  const remaining = positiveDiff(order.salePrice, order.deposit);
+  const creditChoiceRequired = order.paymentMode === "CREDIT" && remaining.gt(0);
+  const cod = creditChoiceRequired && collectCreditOnDelivery !== true ? D(0) : remaining;
   const feeNum = moneyInput(fee).isPositive() ? moneyInput(fee) : D(0);
   const feeCollection = order.deliveryFeeCollection ?? "COURIER";
   // «الكلي الذي سيدفعه العميل للمندوب» — تغيَّر بمَن قبض الأجرة (بلاغ المالك ٢٨/٨/٢٦):
@@ -118,6 +125,7 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
   // النافذة نفسها هي حوار التأكيد (تعرض الجهة والمبالغ و«لا رجعة» صراحةً) ⇒ لا نفتح حوار تأكيد
   // ثانياً فوقها (نمط DeliveryHub الأصلي — راجع تعليقه التاريخي هناك).
   const submit = () => {
+    if (creditChoiceRequired && collectCreditOnDelivery == null) { notify.err("اختر طريقة تحصيل الرصيد الآجل"); return; }
     if (!partyId) { notify.err("اختر جهة التوصيل"); return; }
     if ((requiresDriver && !assignedUserId) || invalidDriver) { notify.err("اختر مندوباً موظفاً نشطاً من فرع الطلب صراحةً"); return; }
     if (selectedParty?.partyType === "COMPANY" && !externalTrackingRef.trim()) {
@@ -133,6 +141,7 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
       notes: notes.trim() || undefined,
       assignedUserId: assignedUserId ? Number(assignedUserId) : undefined,
       externalTrackingRef: selectedParty?.partyType === "COMPANY" && externalTrackingRef.trim() ? externalTrackingRef.trim() : undefined,
+      ...(creditChoiceRequired ? { collectCreditOnDelivery } : {}),
     });
   };
 
@@ -274,6 +283,7 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
             هذه الجهة بلا حساب بوابة؛ سيُسجَّل الإسناد إدارياً لكنها لن ترى الطلب في «توصيلاتي» حتى تربط حساباً بها.
           </p>
         )}
+        {creditChoiceRequired && <div className="mb-3"><CreditCollectionChoice creditAmount={remaining.toFixed(2)} fee={fee} feeCollection={feeCollection} value={collectCreditOnDelivery} onChange={setCollectCreditOnDelivery} disabled={pending} /></div>}
         <div className="mb-3 flex justify-end">
           <WhatsAppStageActionsMenu
             data={{
@@ -293,7 +303,7 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
         </div>
         <p className="mb-4 flex items-start gap-1.5 text-xs text-destructive">
           <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0" />
-          <span>ستُصدَر فاتورة وتُسجَّل {fmt(String(cod))} د.ع ذمّةً على «{selectedParty?.name ?? "المندوب"}». لا رجعة.</span>
+          <span>ستُسنَد مطالبة بضاعة بقيمة {fmt(String(cod))} د.ع إلى «{selectedParty?.name ?? "المندوب"}». لا يُثبت الإسناد قبض المبلغ من العميل.</span>
         </p>
         <div className="flex gap-2.5">
           <Button variant="outline" className="flex-1" onClick={onClose} disabled={pending}>إلغاء</Button>
@@ -301,7 +311,7 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
             variant="destructive"
             className="flex-1"
             onClick={submit}
-            disabled={pending || !partyId || (requiresDriver && !assignedUserId) || invalidDriver || (selectedParty?.partyType === "COMPANY" && !externalTrackingRef.trim())}
+            disabled={pending || !partyId || (creditChoiceRequired && collectCreditOnDelivery == null) || (requiresDriver && !assignedUserId) || invalidDriver || (selectedParty?.partyType === "COMPANY" && !externalTrackingRef.trim())}
             isDispatching={pending}
             label="تأكيد التسليم للمندوب"
           />

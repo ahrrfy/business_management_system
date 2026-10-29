@@ -412,7 +412,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
         parties={(parties.data ?? []) as DispatchParty[]}
         pending={dispatch.isPending}
         onClose={() => setDispatchTarget(null)}
-        onConfirm={async ({ partyId, fee, recipientName, recipientPhone, deliveryAddress, notes, assignedUserId, externalTrackingRef }) => {
+        onConfirm={async ({ partyId, fee, recipientName, recipientPhone, deliveryAddress, notes, assignedUserId, externalTrackingRef, collectCreditOnDelivery }) => {
           if (!canDispatch || !canReadParties) return;
           const ord = dispatchTarget!;
           const party = (parties.data ?? []).find((p) => p.id === partyId);
@@ -431,6 +431,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
               clientRequestId: crypto.randomUUID(),
               assignedUserId,
               externalTrackingRef,
+              collectCreditOnDelivery,
             });
             void printReadyOrderLabel(ord, { partyName: party?.name ?? null, trackingNumber: r.consignmentNumber, cod: r.codAmount, externalTrackingRef, into: labelWin });
             if (slipWin) printDeliverySlip(ord, party, { ...r, externalTrackingRef }, { into: slipWin });

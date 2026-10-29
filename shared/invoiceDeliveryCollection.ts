@@ -4,12 +4,13 @@ import { isDeadInvoiceStatus } from "./invoiceStatus";
 interface InvoiceDeliveryCollectionInput {
   remainingAmount: string | number;
   paymentMode?: string | null;
+  collectCreditOnDelivery?: boolean | null;
   fee?: string | number | null;
   feeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
   status?: string | null;
 }
 
-/** Customer credit remains payable to the shop; it was never assigned as courier COD. */
+/** Payment terms and the operator's courier collection instruction are separate. */
 export function invoiceDeliveryCollection(
   input: InvoiceDeliveryCollectionInput,
 ) {
@@ -17,7 +18,7 @@ export function invoiceDeliveryCollection(
   const remaining = dead
     ? new Decimal(0)
     : Decimal.max(0, input.remainingAmount);
-  const credit = input.paymentMode === "CREDIT";
+  const credit = input.paymentMode === "CREDIT" && !input.collectCreditOnDelivery;
   const goods = credit ? new Decimal(0) : remaining;
   const fee =
     !dead && input.feeCollection === "COURIER"
@@ -35,13 +36,14 @@ export function invoiceDeliveryCollection(
 
 export function isInvoiceCodInTransit(input: {
   paymentMode?: string | null;
+  collectCreditOnDelivery?: boolean | null;
   consignmentStatus?: string | null;
   status?: string | null;
   consignmentCodAmount?: string | number | null;
 }) {
   return (
     !isDeadInvoiceStatus(input.status) &&
-    input.paymentMode !== "CREDIT" &&
+    (input.paymentMode !== "CREDIT" || input.collectCreditOnDelivery === true) &&
     (input.paymentMode === "COD" || input.paymentMode == null || new Decimal(input.consignmentCodAmount ?? 0).gt(0)) &&
     (input.consignmentStatus === "DISPATCHED" ||
       input.consignmentStatus === "PARTIAL")

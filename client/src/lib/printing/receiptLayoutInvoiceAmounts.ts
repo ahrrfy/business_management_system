@@ -11,6 +11,7 @@ export interface InvoicePrintAmountsInput {
   remainingAmount?: PrintMoney;
   status?: string | null;
   paymentMode?: string | null;
+  collectCreditOnDelivery?: boolean | null;
   customerBalance?: PrintMoney;
   customerBalanceBefore?: PrintMoney;
   customerBalanceAfter?: PrintMoney;
@@ -43,11 +44,12 @@ export function invoicePrintAmounts(data: InvoicePrintAmountsInput) {
     data.customerBalanceBefore != null
       ? round2(D(data.customerBalanceBefore))
       : (after?.minus(remaining) ?? null);
-  const cod = data.paymentMode === "COD";
+  const cod = data.paymentMode === "COD" || data.collectCreditOnDelivery === true;
   const paid = D(data.paidAmount ?? 0).gt(0);
   const collection = invoiceDeliveryCollection({
     remainingAmount: remaining.toFixed(2),
     paymentMode: data.paymentMode,
+    collectCreditOnDelivery: data.collectCreditOnDelivery,
     status: data.status,
   });
   return {

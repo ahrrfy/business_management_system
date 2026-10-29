@@ -120,6 +120,13 @@ describe("compact 80mm receipt", () => {
     const content = fixture.text.map((entry) => entry.value).join(" ");
     for (const value of ["NEXT-AUDIT01", "5%", "الحد الأدنى10000", "حتى31/10/2026"]) expect(content).toContain(value);
   });
+  it("prints selected CREDIT courier collection at10000 including the fee",async()=>{
+    const fixture=canvasFixture();
+    await receiptToCanvas({...sale,total:"35000",subtotal:"35000",paid:"30000",credit:"5000",paymentMode:"CREDIT",collectCreditOnDelivery:true,
+      delivery:{partyName:"ناقل",fee:"5000",feeCollection:"COURIER"}});
+    const content=fixture.text.map(entry=>entry.value).join(" ");
+    expect(content).toContain("10,000");expect(content).not.toContain("رصيد البضاعة آجل؛ لا يحصله المندوب");
+  });
   it.each(["COURIER", "COUNTER", "SHOP"] as const)("keeps credit goods outside raster collection with %s fees", async (feeCollection) => {
     const fixture = canvasFixture();
     await receiptToCanvas({ ...sale, total: "35000", subtotal: "35000", paid: "30000", credit: "5000", paymentMode: "CREDIT",

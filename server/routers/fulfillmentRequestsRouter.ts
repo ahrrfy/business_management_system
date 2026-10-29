@@ -61,7 +61,7 @@ export const fulfillmentRequestsRouter = router({
         consignmentId: id,
         partyId: id.optional(),
         externalTrackingRef: z.string().max(100).optional(),
-        assignedUserId: id.optional(),
+        assignedUserId: id.optional(), collectCreditOnDelivery: z.boolean().optional(),
       }),
     )
     .mutation(({ input, ctx }) =>

@@ -1,3 +1,4 @@
+import { recordCreditCollectionChoiceTx } from "./creditCollectionTerms";
 // ٥/٨ — إسناد **فاتورةٍ قائمة** للتوصيل (لا أمر شغل).
 //
 // الفجوة التي يعالجها: مسار الإرسال الوحيد كان dispatchToDelivery المفتاحُ فيه workOrderId، وهو
@@ -115,6 +116,7 @@ export async function loadInvoiceDeliveryFeeHeldTx(
 export interface DispatchInvoiceInput {
   invoiceId: number;
   partyId: number;
+  collectCreditOnDelivery?: boolean;
   deliveryFee?: string | null;
   /** مَن يقبض الأجرة (تمريرٌ لا إيراد): COURIER افتراضاً. COUNTER يعني أنّها في الدرج الآن. */
   feeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
@@ -241,6 +243,7 @@ export async function dispatchInvoiceInTx(
       });
     }
     const payloadHash = idempotencyHash({
+    ...(input.collectCreditOnDelivery === true ? { collectCreditOnDelivery: true } : {}),
       invoiceId: Number(input.invoiceId),
       partyId: Number(input.partyId),
       deliveryFee:
@@ -604,7 +607,7 @@ export async function dispatchInvoiceInTx(
         code: "BAD_REQUEST",
         message: "الفاتورة مدفوعةٌ بأكثر من قيمتها — راجعها قبل الإسناد",
       });
-    const codAmount = inv.paymentMode === "CREDIT" ? money(0) : remaining;
+    const codAmount = inv.paymentMode === "CREDIT" && input.collectCreditOnDelivery !== true ? money(0) : remaining;
     if (input.fulfillmentRequestId != null) {
       const [request] = await tx
         .select()
@@ -787,6 +790,10 @@ export async function dispatchInvoiceInTx(
       });
     }
 
+    if (inv.paymentMode === "CREDIT") await recordCreditCollectionChoiceTx(tx, {
+      consignmentId, collectCreditOnDelivery: input.collectCreditOnDelivery === true, actorUserId: actor.userId,
+      eventKey: `CN:${consignmentId}:CREDIT_TERMS:ASSIGN:${input.clientRequestId ?? dispatchedAt.getTime()}`,
+    });
     const assignmentEventKey = already
       ? `CN:${consignmentId}:ASSIGNMENT_REACTIVATED:${input.clientRequestId ?? dispatchedAt.getTime()}`
       : `CN:${consignmentId}:OUT_FOR_DELIVERY`;

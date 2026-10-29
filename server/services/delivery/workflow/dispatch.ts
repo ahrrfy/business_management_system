@@ -156,6 +156,7 @@ export async function previewWorkflowBatch(
     sources: WorkflowDispatchSource[];
     branchId?: number;
     deliveryFee?: string;
+    collectCreditOnDelivery?: boolean;
     feeCollection?: "COURIER" | "COUNTER" | "SHOP";
   },
   actor: Actor,
@@ -167,7 +168,7 @@ export async function previewWorkflowBatch(
       const previews = [];
       for (const source of input.sources)
         previews.push(
-          await loadWorkflowPreviewTx(tx, source, auth.current, input.branchId),
+          await loadWorkflowPreviewTx(tx, source, auth.current, input.branchId, false, "dispatch", input.collectCreditOnDelivery),
         );
       const result = batchPreview(previews);
       if (input.deliveryFee != null) {
@@ -813,6 +814,7 @@ export async function dispatchWorkflowBatch(
           id: request.id,
           expectedVersion: request.version,
           clientRequestId: `${input.clientRequestId}:release`,
+          collectCreditOnDelivery: input.collectCreditOnDelivery,
           assignedUserId: input.assignedUserId,
           externalTrackingRef: input.externalTrackingRef,
         },

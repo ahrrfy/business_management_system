@@ -23,6 +23,7 @@ const pending = z.object({
   branchId: z.number().int().positive().optional(),
   partyId: z.number().int().positive(),
   assignedUserId: z.number().int().positive().optional(),
+  collectCreditOnDelivery: z.boolean().optional(),
   deliveryFee: money,
   feeCollection: z.enum(["COURIER", "COUNTER", "SHOP"]),
   recipientName: z.string().max(255),
@@ -76,6 +77,7 @@ const schema = z.object({
   deliveryFee: money,
   feeCollection: z.enum(["COURIER", "COUNTER", "SHOP"]),
   tracking: z.string().max(100),
+  collectCreditOnDelivery: z.boolean().optional(),
   notes: z.string().max(2000),
   pending: pending.nullable(),
   lastCommitted: committed.nullable().default(null),
@@ -162,7 +164,7 @@ export function appendDispatchDraftCode(
     draft.codes.length >= 30
   )
     return draft;
-  return { ...draft, codes: [...draft.codes, code] };
+  return { ...draft, codes: [...draft.codes, code], collectCreditOnDelivery: undefined };
 }
 
 export function commitDispatchDraft(
@@ -182,6 +184,7 @@ export function commitDispatchDraft(
     notes: "",
     deliveryFee: "0",
     feeCollection: "COURIER",
+    collectCreditOnDelivery: undefined,
     lastCommitted: { branchId, result, partyName },
   };
 }

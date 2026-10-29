@@ -650,6 +650,7 @@ export async function releaseFulfillmentRequestInTx(
     subsequentFeeCollection?: "COURIER" | "COUNTER" | "SHOP";
     externalTrackingRef?: string;
     assignedUserId?: number;
+    collectCreditOnDelivery?: boolean;
   },
   actor: Actor,
   compositionAuthority?: WorkflowRequestCompositionAuthority,
@@ -845,6 +846,7 @@ export async function releaseFulfillmentRequestInTx(
           partialDispatchConfirmed: partial,
           externalTrackingRef: input.externalTrackingRef,
           assignedUserId: input.assignedUserId,
+          collectCreditOnDelivery: input.collectCreditOnDelivery,
           notes: request.notes,
         },
         actor,

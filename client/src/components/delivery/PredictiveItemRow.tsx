@@ -13,7 +13,10 @@ import type { RouterOutputs } from "@/lib/trpc";
 import { D, fmt } from "@/lib/money";
 import { cn } from "@/lib/utils";
 
-export type PredictiveItem = RouterOutputs["delivery"]["predictiveSearch"][number];
+export type PredictiveItem = RouterOutputs["delivery"]["predictiveSearch"][number] & {
+  collectCreditOnDelivery?: boolean;
+  returnDeclaredAt?: Date | string | null;
+};
 
 const PARCEL_STATUS_MAP: Record<string, { label: string; variant: "default" | "secondary" | "outline" | "destructive" }> = {
   ASSIGNED: { label: "قيد الإسناد", variant: "outline" },
@@ -41,6 +44,15 @@ export const PredictiveItemRow = React.memo(function PredictiveItemRow({
 }: PredictiveItemRowProps) {
   const statusMeta = PARCEL_STATUS_MAP[item.parcelStatus] ?? { label: item.parcelStatus, variant: "outline" };
   const isCompany = item.partyType === "COMPANY";
+  const collectsCredit = item.collectCreditOnDelivery === true;
+  const customerGoodsDue = item.invoicePaymentMode === "CREDIT" && !collectsCredit ? D(0) : D(item.invoiceRemainingAmount ?? item.remainingAmount);
+  const beforeDelivery = ["DISPATCHED", "PARTIAL"].includes(item.status)
+    && ["ASSIGNED", "ACCEPTED", "PICKED_UP", "OUT_FOR_DELIVERY", "FAILED"].includes(item.parcelStatus)
+    && item.returnDeclaredAt == null;
+  // Classified request claims may also contain service charges; do not present
+  // the invoice balance alone as their complete collection amount.
+  const showAtDoor = beforeDelivery && item.fulfillmentRequestId == null && item.sourceType !== "AFTERCARE_EXECUTION";
+  const customerAtDoor = customerGoodsDue.plus(item.feeCollection === "COURIER" ? D(item.deliveryFee) : 0);
 
   return (
     <div
@@ -174,7 +186,8 @@ export const PredictiveItemRow = React.memo(function PredictiveItemRow({
         <div className="text-end">
           <span className="text-muted-foreground me-1">التزام الجهة (COD):</span>
           <strong className="text-foreground font-mono font-bold">{fmt(item.remainingAmount)} د.ع</strong>
-          {item.invoicePaymentMode === "CREDIT" && item.invoiceRemainingAmount != null && <div className="text-muted-foreground">رصيد آجل على العميل: <strong className="text-foreground">{fmt(item.invoiceRemainingAmount)} د.ع</strong></div>}
+          {showAtDoor && <div className="text-muted-foreground">المطلوب عند الاستلام: <strong data-testid="predictive-at-door" className="text-foreground">{fmt(customerAtDoor.toFixed(2))} د.ع</strong></div>}
+          {item.invoicePaymentMode === "CREDIT" && !collectsCredit && D(item.invoiceRemainingAmount).gt(0) && <div className="text-muted-foreground">رصيد آجل على العميل: <strong className="text-foreground">{fmt(item.invoiceRemainingAmount)} د.ع</strong></div>}
           {item.feeCollection === "COURIER" && D(item.deliveryFee).gt(0) && <div className="text-muted-foreground">أجرة المندوب من العميل: {fmt(item.deliveryFee)} د.ع</div>}
           {D(item.cashInCourierCustody).gt(0) && <div className="text-muted-foreground">نقد بعهدة الجهة: <strong className="text-foreground">{fmt(item.cashInCourierCustody)} د.ع</strong></div>}
           {D(item.shortfallAssigned).gt(0) && <div className="text-muted-foreground">عجز مثبت على الجهة: <strong className="text-foreground">{fmt(item.shortfallAssigned)} د.ع</strong></div>}

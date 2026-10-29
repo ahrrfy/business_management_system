@@ -1,3 +1,4 @@
+import { recordCreditCollectionChoiceTx } from "./creditCollectionTerms";
 import { loadWorkOrderDepositReceiptSet } from "../workOrder/depositReceiptSet";
 import { mixedAwarePaymentMethod } from "../sale/payment";
 import {
@@ -80,6 +81,7 @@ import { createShipmentDispatchDocumentSnapshotsTx } from "./documentSnapshots";
 export interface DispatchInput {
   workOrderId: number;
   partyId: number;
+  collectCreditOnDelivery?: boolean;
   deliveryFee?: string | null;
   recipientName?: string | null;
   recipientPhone?: string | null;
@@ -228,6 +230,7 @@ async function runWorkOrderDispatchTx(
     input.externalTrackingRef,
   );
   const payloadHash = idempotencyHash({
+    ...(input.collectCreditOnDelivery === true ? { collectCreditOnDelivery: true } : {}),
     workOrderId: Number(input.workOrderId),
     partyId: Number(input.partyId),
     deliveryFee:
@@ -359,7 +362,7 @@ async function runWorkOrderDispatchTx(
   // codAmount لـPREPAID كسر ٤ اختبارات (deliveryFeePassthrough + pr495ReviewFixes).
   //
   // الدلالة المصحَّحة (تطابق CLAUDE.md «لا دينار يضيع بصمت»):
-  //   • CREDIT ⇒ codAmount = 0 (اتّفق مع العميل على ذمّة — لا يُطلب من المندوب تحصيل).
+  //   • CREDIT بلا اختيار التحصيل مع المندوب ⇒ codAmount = 0؛ ومع الاختيار الصريح يحمل المتبقي.
   //   • COD/PREPAID/غياب ⇒ codAmount = salePrice − deposit (المتبقّي، السلوك التاريخيّ).
   //     PREPAID لا تعني «دُفع كاملاً» بل «سُدِّد ما دُفع لحظة الإنشاء» — يبقى المتبقّي COD.
   //
@@ -371,7 +374,7 @@ async function runWorkOrderDispatchTx(
     | "COD"
     | "CREDIT";
   let codAmount =
-    woPaymentMode === "CREDIT"
+    woPaymentMode === "CREDIT" && input.collectCreditOnDelivery !== true
       ? round2(money(0))
       : round2(salePrice.minus(depositPaid));
   const fee = round2(money(input.deliveryFee ?? party.defaultFee ?? "0"));
@@ -528,9 +531,9 @@ async function runWorkOrderDispatchTx(
      * `salePrice − deposit` يطلب من المندوب تحصيلَ مبلغٍ **مسدَّدٍ سلفاً** — ثمّ يفشل
      * تأكيدُ التسليم على فحص متبقّي الفاتورة، فيعلق الطرد بلا مخرج.
      */
-    // Codex #854 P1 — بتصحيح CI (٢٩/٨/٢٦): CREDIT ⇒ 0 (ذمّة معتَمدة، لا تحصيل). PREPAID/COD/غياب
+    // Codex #854 P1 — بتصحيح CI (٢٩/٨/٢٦): CREDIT بلا اختيار تحصيل ⇒ 0؛ ومع الاختيار الصريح أو PREPAID/COD/غياب
     // ⇒ متبقّي الفاتورة الفعليّ (السلوك التاريخيّ) — إعادةُ الإسناد لا تُحوِّل الاتفاق الأصلي.
-    if (woPaymentMode === "CREDIT") {
+    if (woPaymentMode === "CREDIT" && input.collectCreditOnDelivery !== true) {
       codAmount = round2(money(0));
     } else {
       codAmount = round2(
@@ -696,8 +699,8 @@ async function runWorkOrderDispatchTx(
       createdBy: sellerUserId,
       createdByNameSnapshot: salespersonNameSnapshot,
     });
-    if (wo.customerId != null && codAmount.gt(0)) {
-      await adjustCustomerBalance(tx, Number(wo.customerId), codAmount);
+    if (wo.customerId != null && salePrice.gt(depositPaid)) {
+      await adjustCustomerBalance(tx, Number(wo.customerId), round2(salePrice.minus(depositPaid)));
     }
 
     // ربط إيصال العربون بالفاتورة (كان workOrderId-only) — append-only على القيد كـdeliverWorkOrder.
@@ -867,6 +870,10 @@ async function runWorkOrderDispatchTx(
     ? Number(reusableCn.id)
     : extractInsertId(cnRes!);
 
+  if (woPaymentMode === "CREDIT") await recordCreditCollectionChoiceTx(tx, {
+    consignmentId, collectCreditOnDelivery: input.collectCreditOnDelivery === true, actorUserId: actor.userId,
+    eventKey: `CN:${consignmentId}:CREDIT_TERMS:ASSIGN:${input.clientRequestId ?? dispatchedAt.getTime()}`,
+  });
   const assignmentEventKey = reusableCn
     ? `CN:${consignmentId}:ASSIGNMENT_REACTIVATED:${input.clientRequestId ?? dispatchedAt.getTime()}`
     : `CN:${consignmentId}:OUT_FOR_DELIVERY`;

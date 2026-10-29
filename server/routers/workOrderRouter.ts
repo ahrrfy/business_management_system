@@ -937,7 +937,7 @@ export const workOrderRouter = router({
           laborCost: workOrders.laborCost,
           salePrice: workOrders.salePrice,
           deposit: workOrders.deposit,
-          paymentMethod: workOrders.paymentMethod,
+          paymentMethod: workOrders.paymentMethod, paymentMode: workOrders.paymentMode,
           paymentReference: workOrders.paymentReference,
           paymentReceiptUrl: workOrders.paymentReceiptUrl,
           dueDate: workOrders.dueDate,

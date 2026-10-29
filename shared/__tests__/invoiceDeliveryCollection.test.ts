@@ -5,6 +5,15 @@ import {
 } from "../invoiceDeliveryCollection";
 
 describe("invoice delivery collection policy", () => {
+  it("collects CREDIT goods only when the operator explicitly assigns them to the courier", () => {
+    expect(invoiceDeliveryCollection({ paymentMode: "CREDIT", collectCreditOnDelivery: true,
+      remainingAmount: "5000", fee: "5000", feeCollection: "COURIER" })).toEqual({
+        goodsDue: "5000.00", creditDue: "0.00", feeDue: "5000.00", atDoorDue: "10000.00",
+      });
+    expect(isInvoiceCodInTransit({ paymentMode: "CREDIT", collectCreditOnDelivery: true,
+      consignmentStatus: "DISPATCHED", consignmentCodAmount: "5000" })).toBe(true);
+  });
+
   it("keeps credit debt separate from the courier fee (invoice 101567)", () => {
     expect(
       invoiceDeliveryCollection({

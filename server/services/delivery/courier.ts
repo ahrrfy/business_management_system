@@ -1,3 +1,4 @@
+import { creditCollectionChoiceTx } from "./creditCollectionTerms";
 // courier — شاشة المندوب/الشركة الذاتية «توصيلاتي» لكل الإرساليات الموحدة.
 //
 // الإسناد ينشئ deliveryConsignment لمصدر أمر شغل أو فاتورة أو طلب متجر. هنا ينتقل الطرد
@@ -1480,7 +1481,7 @@ export async function confirmConsignmentDelivery(
             .limit(1)
         : [];
     const classifiedDue = classifiedClaims.remaining.plus(
-      assignedGoodsCodDue(classifiedInvoice),
+      assignedGoodsCodDue(classifiedInvoice, await creditCollectionChoiceTx(tx, cn.id)),
     );
     if (
       classified &&

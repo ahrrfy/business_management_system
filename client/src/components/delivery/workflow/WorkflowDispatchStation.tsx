@@ -25,7 +25,8 @@ import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
-import { fmt } from "@/lib/money";
+import { D, fmt } from "@/lib/money";
+import { CreditCollectionChoice } from "../CreditCollectionChoice";
 import { useWorkflowDocumentPrinter } from "@/hooks/useWorkflowDocumentPrinter";
 import { preopenDocumentWindow } from "@/lib/printing/print";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
@@ -119,6 +120,7 @@ export function WorkflowDispatchStation({
       branchId,
       deliveryFee: draft.deliveryFee,
       feeCollection: draft.feeCollection,
+      ...(draft.collectCreditOnDelivery == null ? {} : { collectCreditOnDelivery: draft.collectCreditOnDelivery }),
     },
     { enabled: references.length > 0 && pendingScans === 0 && !frozen },
   );
@@ -126,6 +128,12 @@ export function WorkflowDispatchStation({
     rows.length === 1 && rows[0].preview.source.kind === "aftercareExecution";
   const blocked = batch.data?.blockedReasons ?? [];
   const summary = batch.data?.summary;
+  const creditAmount = (batch.data?.sources ?? rows.map((row) => row.preview)).reduce((sum, preview) => sum.plus(
+    "creditRemainingAmount" in preview.money ? String(preview.money.creditRemainingAmount ?? "0")
+      : preview.money.paymentMode === "CREDIT" ? preview.money.remainingAmount : "0",
+  ), D(0));
+  const creditChoiceRequired = creditAmount.gt(0);
+  const otherCollection = D(summary?.codAmount).minus(draft.feeCollection === "COURIER" ? draft.deliveryFee : 0).minus(draft.collectCreditOnDelivery === true ? creditAmount : 0);
   const unresolvedCodes = draft.codes.filter(
     (code) => !rows.some((row) => row.raw === code),
   );
@@ -165,7 +173,7 @@ export function WorkflowDispatchStation({
       setRows(next);
       if (pruneCodes) {
         queuedCodes.current = new Set(next.map((row) => row.raw));
-        persistDraft((old) => ({ ...old, codes: next.map((row) => row.raw) }));
+        persistDraft((old) => ({ ...old, codes: next.map((row) => row.raw), collectCreditOnDelivery: undefined }));
       }
     },
     [persistDraft],
@@ -444,6 +452,10 @@ export function WorkflowDispatchStation({
         setMessage("اختر جهة التوصيل صراحة قبل التأكيد");
         return;
       }
+      if (creditChoiceRequired && draft.collectCreditOnDelivery == null) {
+        setMessage("اختر تحصيل الرصيد الآجل مع المندوب أو إبقاءه على حساب العميل");
+        return;
+      }
       if (needsDriver && !draft.driverId) {
         setMessage("اختر الموظف المندوب المرتبط بالجهة");
         return;
@@ -489,6 +501,7 @@ export function WorkflowDispatchStation({
         deliveryAddress: snapshot.address.trim(),
         deliveryFee: snapshot.deliveryFee,
         feeCollection: aftercare ? "SHOP" : snapshot.feeCollection,
+        ...(creditChoiceRequired ? { collectCreditOnDelivery: snapshot.collectCreditOnDelivery } : {}),
         externalTrackingRef: snapshot.tracking.trim() || undefined,
         notes: snapshot.notes.trim() || undefined,
         clientRequestId: crypto.randomUUID(),
@@ -754,6 +767,7 @@ export function WorkflowDispatchStation({
             ))}
           </div>
         )}
+        {creditChoiceRequired && <CreditCollectionChoice creditAmount={creditAmount.toFixed(2)} otherGoodsAmount={(otherCollection.gt(0) ? otherCollection : D(0)).toFixed(2)} fee={draft.deliveryFee} feeCollection={draft.feeCollection} value={draft.collectCreditOnDelivery} onChange={(value) => change("collectCreditOnDelivery", value)} disabled={formFrozen} />}
         {summary && (
           <div className="grid grid-cols-2 gap-2 rounded-md bg-muted/40 p-3 text-sm sm:grid-cols-4">
             <div>
@@ -971,6 +985,7 @@ export function WorkflowDispatchStation({
                 batch.isFetching ||
                 !batch.data ||
                 blocked.length > 0 ||
+                (creditChoiceRequired && draft.collectCreditOnDelivery == null) ||
                 !selectedParty))
           }
           onClick={() => void submit()}

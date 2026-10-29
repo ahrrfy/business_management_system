@@ -1,3 +1,6 @@
+import { reassignDeliveryConsignment } from "../delivery/parties";
+import { creditCollectionChoiceTx } from "../delivery/creditCollectionTerms";
+import { withTx } from "../tx";
 import { beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import * as s from "../../../drizzle/schema";
@@ -84,6 +87,7 @@ async function dispatchGoods(
     credit?: boolean;
     charge?: boolean;
     company?: boolean;
+    collectCreditOnDelivery?: boolean;
   } = {},
 ) {
   const customerId = options.anonymous ? null : 1;
@@ -151,6 +155,7 @@ async function dispatchGoods(
   const sent = await releaseFulfillmentRequest(
     {
       assignedUserId: 3,
+      collectCreditOnDelivery: options.collectCreditOnDelivery,
       id: request.id,
       expectedVersion: request.version,
       clientRequestId: key(),
@@ -581,5 +586,79 @@ describe("fulfillment courier goods COD contract", () => {
     expect(
       (await db().select().from(s.receipts)).map((receipt) => receipt.amount),
     ).toEqual(["10000.00"]);
+  });
+});
+
+
+describe("explicit credit collection instruction", () => {
+  it("collects CREDIT goods and service charges separately only when selected", async () => {
+    const {cn, chargeId} = await dispatchGoods({ credit: true, charge: true, collectCreditOnDelivery: true });
+    expect(cn.codAmount).toBe("12000.00");
+    expect(await withTx(tx => creditCollectionChoiceTx(tx, cn.id))).toBe(true);
+    await acknowledge(cn);
+    await confirmConsignmentDelivery({consignmentId:cn.id,clientRequestId:key()},driver);
+    expect((await db().select().from(s.invoices))[0].paidAmount).toBe("10000.00");
+    expect((await db().select().from(s.customers))[0].currentBalance).toBe("0.00");
+    expect((await db().select().from(fulfillmentCharges)).find(x=>x.id===chargeId)?.paidAmount).toBe("2000.00");
+    expect((await db().select().from(s.deliveryParties))[0].currentBalance).toBe("12000.00");
+    const paymentsBefore=(await db().select().from(s.accountingEntries)).filter(x=>x.entryType==="PAYMENT_IN");
+    await remitAndReplay(cn.id,"12000");
+    expect((await db().select().from(s.accountingEntries)).filter(x=>x.entryType==="PAYMENT_IN")).toEqual(paymentsBefore);
+  });
+
+  async function pendingCredit() {
+    await db().update(s.customers).set({currentBalance:"5000"}).where(eq(s.customers.id,1));
+    await db().insert(s.invoices).values({id:1,invoiceNumber:"101567",sourceType:"POS",branchId:1,customerId:1,
+      shiftId:1,total:"35000",subtotal:"35000",paidAmount:"30000",paymentMode:"CREDIT",status:"PARTIALLY_PAID",createdBy:2});
+    const sent=await dispatchInvoiceToDelivery({invoiceId:1,partyId:1,assignedUserId:3,deliveryFee:"5000",feeCollection:"COURIER",
+      collectCreditOnDelivery:false,recipientName:"عميل الاختبار",recipientPhone:"07701234567",deliveryAddress:"بغداد",clientRequestId:key()},admin);
+    const cn=(await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id,sent.consignmentId)))[0];
+    return {cn,input:{partyId:1,consignmentId:cn.id,collectCreditOnDelivery:true,expectedClaimVersion:cn.codClaimVersion,
+      collectionReason:"تحصيل متبقي الفاتورة مع المندوب حسب طلب العميل",clientRequestId:key()}};
+  }
+
+  it("changes invoice101567 to goods5000 plus fee5000 without posting a payment; delivery and remittance settle once", async () => {
+    const {cn,input}=await pendingCredit(); const before=await goodsSnapshot();
+    const changed=await reassignDeliveryConsignment(input,admin);
+    expect(changed.documentSnapshotIds.length).toBeGreaterThan(0);
+    expect(await goodsSnapshot()).toEqual(before);
+    const current=(await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id,cn.id)))[0];
+    expect(current).toMatchObject({codAmount:"5000.00",deliveryFee:"5000.00",feeCollection:"COURIER",codClaimVersion:cn.codClaimVersion+1,
+      courierAckClaimVersion:0,settledAt:null,parcelStatus:cn.parcelStatus,assignedUserId:cn.assignedUserId});
+    expect((await db().select().from(s.deliveryParties))[0].currentBalance).toBe("0.00");
+    await db().update(s.deliveryParties).set({isActive:false}).where(eq(s.deliveryParties.id,1));
+    expect(await reassignDeliveryConsignment(input,admin)).toMatchObject({replay:true});
+    await db().update(s.deliveryParties).set({isActive:true}).where(eq(s.deliveryParties.id,1));
+    await expect(reassignDeliveryConsignment({...input,collectCreditOnDelivery:false},admin)).rejects.toThrow();
+    await expect(reassignDeliveryConsignment({...input,clientRequestId:key()},admin)).rejects.toThrow(/نسخة/);
+    await acknowledge(current);
+    await confirmConsignmentDelivery({consignmentId:cn.id,clientRequestId:key()},driver);
+    expect((await db().select().from(s.invoices))[0]).toMatchObject({paidAmount:"35000.00",paymentMode:"CREDIT"});
+    expect((await db().select().from(s.customers))[0].currentBalance).toBe("0.00");
+    const payments=(await db().select().from(s.accountingEntries)).filter(x=>x.entryType==="PAYMENT_IN");
+    expect(payments).toHaveLength(1);expect(payments[0].amount).toBe("5000.00");
+    await remitAndReplay(cn.id,"5000");
+    expect((await db().select().from(s.accountingEntries)).filter(x=>x.entryType==="PAYMENT_IN")).toEqual(payments);
+    expect(await reassignDeliveryConsignment(input,admin)).toMatchObject({replay:true});
+  });
+
+  it("can retain credit on the customer before collection while releasing only the future courier exposure",async()=>{
+    const {cn,input}=await pendingCredit();await reassignDeliveryConsignment(input,admin);
+    const before=await goodsSnapshot();
+    await reassignDeliveryConsignment({...input,collectCreditOnDelivery:false,expectedClaimVersion:cn.codClaimVersion+1,clientRequestId:key()},admin);
+    expect(await goodsSnapshot()).toEqual(before);
+    const row=(await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id,cn.id)))[0];
+    expect(row).toMatchObject({codAmount:"0.00",moneyStatus:"NOT_APPLICABLE",deliveryFee:"5000.00"});
+    expect(await withTx(tx=>creditCollectionChoiceTx(tx,cn.id))).toBe(false);
+    expect((await db().select().from(s.deliveryLedgerEntries)).filter(x=>x.entryType==="COD_RELEASED")).toMatchObject([{amount:"5000.00"}]);
+  });
+
+  it("rejects another branch, delivered parcels and any existing financial collection",async()=>{
+    const {cn,input}=await pendingCredit();
+    await expect(reassignDeliveryConsignment(input,{...cashier,branchId:2})).rejects.toThrow(/نطاق/);
+    await db().update(s.deliveryConsignments).set({parcelStatus:"DELIVERED"}).where(eq(s.deliveryConsignments.id,cn.id));
+    await expect(reassignDeliveryConsignment(input,admin)).rejects.toThrow(/بدأ/);
+    await db().update(s.deliveryConsignments).set({parcelStatus:"OUT_FOR_DELIVERY",counterSettledAmount:"1000"}).where(eq(s.deliveryConsignments.id,cn.id));
+    await expect(reassignDeliveryConsignment(input,admin)).rejects.toThrow(/بدأ/);
   });
 });
