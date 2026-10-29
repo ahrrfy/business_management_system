@@ -148,6 +148,8 @@ describe("وصول الكاشير الكامل لدورة حياة الطلب و
 
     // فصل المهام (SoD) والمشتريات والحسابات الختامية والتكلفة تظل محجوبة عن الكاشير القالبي
     expect(operationDecision(cashierActor, "salesControl.approve").allowed).toBe(false);
+    expect(operationDecision(cashierActor, "delivery.fulfillment.aftercare.approve").allowed).toBe(false);
+    expect(operationDecision(cashierActor, "delivery.fulfillment.aftercare.approveSettlement").allowed).toBe(false);
     expect(operationDecision(cashierActor, "purchases.createOrder").allowed).toBe(false);
     expect(operationDecision(cashierActor, "accounts.tree").allowed).toBe(false);
     expect(defaultCashierPolicy.dataVisibility).toEqual({

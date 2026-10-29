@@ -197,7 +197,7 @@ export const fulfillmentAftercareRouter = router({
     .mutation(async ({ input, ctx }) =>
       createAftercareCase(input, await resolveAftercareActor(ctx.user, input)),
     ),
-  approve: deliveryCashierProcedure
+  approve: deliveryManagerProcedure
     .input(identity)
     .mutation(async ({ input, ctx }) =>
       approveAftercareCase(
@@ -353,7 +353,7 @@ export const fulfillmentAftercareRouter = router({
         }),
       ),
     ),
-  approveSettlement: deliveryCashierProcedure
+  approveSettlement: deliveryManagerProcedure
     .input(identity)
     .mutation(async ({ input, ctx }) =>
       approveAftercareSettlement(

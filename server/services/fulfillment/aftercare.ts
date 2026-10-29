@@ -133,7 +133,7 @@ export async function aftercarePermissionTx(
         current.persistedPermissionsOverride,
         "store",
         read ? "READ" : "FULL",
-        ["cashier", "manager"],
+        ["approve", "approveSettlement"].includes(action) ? ["manager"] : ["cashier", "manager"],
       ),
   );
 }
