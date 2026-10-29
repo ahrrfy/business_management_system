@@ -349,6 +349,7 @@ export async function createFinalShipmentDispatchDocumentSnapshotsTx(
     clientRequestId: string;
     operationId: string;
     eventOccurredAt?: Date;
+    claimChangeEventId?: number;
   },
   actor: DeliveryTxActor,
 ) {
@@ -408,7 +409,7 @@ export async function createFinalShipmentDispatchDocumentSnapshotsTx(
     (sum, invoice) => sum.plus(money(invoice.paidAmount ?? "0")),
     money(0),
   );
-  const eventKey = `${input.operationId}:${input.clientRequestId}:${leader.id}`;
+  const eventKey = `${input.operationId}:${input.clientRequestId}:${leader.id}${input.claimChangeEventId == null ? "" : ":CLAIM"}`;
   return createShipmentDispatchDocumentSnapshotsTx(tx, {
     consignmentId: Number(leader.id),
     branchId: Number(leader.branchId),
@@ -422,9 +423,11 @@ export async function createFinalShipmentDispatchDocumentSnapshotsTx(
       operationId: `${input.operationId}:${input.clientRequestId}`,
       eventOccurredAt: (input.eventOccurredAt ?? leader.dispatchedAt).toISOString(),
       evidence: {
-        mode: "COMMITTED_DISPATCH_EVENT",
+        mode: input.claimChangeEventId == null ? "COMMITTED_DISPATCH_EVENT" : "COMMITTED_CLAIM_CHANGE_EVENT",
+        ...(input.claimChangeEventId == null ? {} : { eventId: input.claimChangeEventId }),
         eventKey,
         unavailableFields: [],
+        ...(input.claimChangeEventId == null ? {} : { notice: "تعديل مطالبة التحصيل؛ يحفظ الإسناد الأصلي ولا يثبت تسليم طرود أو قبضاً أو توريداً جديداً." }),
       },
       shipment: {
         consignmentId: Number(leader.id),
