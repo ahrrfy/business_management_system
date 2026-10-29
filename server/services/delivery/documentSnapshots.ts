@@ -1215,24 +1215,26 @@ export async function createRecordedShipmentDocumentTx(
 
 /** A claim amendment is its own immutable print event, never a new parcel assignment. */
 async function currentClaimChangeDocumentIdsTx(tx: Tx, input: { consignmentId: number; branchId: number }) {
-  const [event] = await tx.select().from(deliveryEvents).where(and(
-    eq(deliveryEvents.consignmentId, input.consignmentId), eq(deliveryEvents.eventType, "COD_CLAIM_CHANGED")))
-    .orderBy(desc(deliveryEvents.occurredAt), desc(deliveryEvents.id)).limit(1);
-  const claim = eventPayload(event?.payload);
-  if (!event || typeof claim?.collectCreditOnDelivery !== "boolean" || claim.partyId == null) return null;
+  // Lock before reading the latest event: a concurrent amendment may be committing while print preparation waits.
   const [source] = await tx.select().from(deliveryConsignments).where(and(
     eq(deliveryConsignments.id, input.consignmentId), eq(deliveryConsignments.branchId, input.branchId)))
     .for("update").limit(1);
-  if (!source || source.partyId !== Number(claim.partyId) || source.sourceType !== claim.sourceType ||
+  if (!source) return null;
+  const [event] = await tx.select().from(deliveryEvents).where(and(
+    eq(deliveryEvents.consignmentId, input.consignmentId), eq(deliveryEvents.eventType, "COD_CLAIM_CHANGED")))
+    .orderBy(desc(deliveryEvents.occurredAt), desc(deliveryEvents.id)).for("share").limit(1);
+  const claim = eventPayload(event?.payload);
+  if (!event || typeof claim?.collectCreditOnDelivery !== "boolean" || claim.partyId == null) return null;
+  if (source.partyId !== Number(claim.partyId) || source.sourceType !== claim.sourceType ||
       source.sourceId !== Number(claim.sourceId)) return null;
   const assignments = await tx.select().from(deliveryEvents).where(and(
-    eq(deliveryEvents.consignmentId, input.consignmentId), inArray(deliveryEvents.eventType, [...assignmentEventTypes])));
+    eq(deliveryEvents.consignmentId, input.consignmentId), inArray(deliveryEvents.eventType, [...assignmentEventTypes]))).for("share");
   if (assignments.some(row => isAssignmentEvent(row) && (row.occurredAt > event.occurredAt ||
     (row.occurredAt.getTime() === event.occurredAt.getTime() && row.id > event.id)))) return null;
   const documents = await tx.select().from(deliveryDocumentSnapshots).where(and(
     eq(deliveryDocumentSnapshots.sourceType, "SHIPMENT"), eq(deliveryDocumentSnapshots.sourceId, input.consignmentId),
     eq(deliveryDocumentSnapshots.branchId, input.branchId), eq(deliveryDocumentSnapshots.eventKey, event.eventKey),
-    inArray(deliveryDocumentSnapshots.documentType, ["DISPATCH_SLIP", "SHIPPING_LABEL", "DELIVERY_MANIFEST"])));
+    inArray(deliveryDocumentSnapshots.documentType, ["DISPATCH_SLIP", "SHIPPING_LABEL", "DELIVERY_MANIFEST"]))).for("share");
   const complete = ["DISPATCH_SLIP", "SHIPPING_LABEL", "DELIVERY_MANIFEST"].every(type => documents.some(row => {
     if (row.documentType !== type || row.createdBy !== event.actorUserId ||
       timestampSecond(row.eventOccurredAt) !== timestampSecond(event.occurredAt)) return false;
@@ -1382,6 +1384,7 @@ export async function prepareShipmentWorkflowDocumentsTx(
     sourceType: "SHIPMENT",
     sourceId: input.consignmentId,
     branchId: input.branchId,
+    currentRead: true,
   });
   return documents.sort(
     (a, b) =>
@@ -1566,9 +1569,10 @@ export async function listDeliveryDocumentSnapshotsTx(
     sourceType: DeliveryDocumentSourceType;
     sourceId: number;
     branchId: number;
+    currentRead?: boolean;
   },
 ) {
-  const snapshots = await tx
+  const snapshotQuery = tx
     .select()
     .from(deliveryDocumentSnapshots)
     .where(
@@ -1583,8 +1587,9 @@ export async function listDeliveryDocumentSnapshotsTx(
       desc(deliveryDocumentSnapshots.eventOccurredAt),
       desc(deliveryDocumentSnapshots.id),
     );
+  const snapshots = input.currentRead ? await snapshotQuery.for("share") : await snapshotQuery;
   if (!snapshots.length) return [];
-  const prints = await tx
+  const printQuery = tx
     .select()
     .from(deliveryDocumentPrints)
     .where(
@@ -1594,6 +1599,7 @@ export async function listDeliveryDocumentSnapshotsTx(
       ),
     )
     .orderBy(desc(deliveryDocumentPrints.requestedAt));
+  const prints = input.currentRead ? await printQuery.for("share") : await printQuery;
   return snapshots.map((snapshot) => ({
     ...snapshot,
     printHistory: prints.filter(

@@ -712,6 +712,24 @@ describe("explicit credit collection instruction", () => {
     expect(await goodsSnapshot()).toEqual(economicBefore);
   });
 
+  it("prepares the latest committed claim even when its read transaction began before the amendment",async()=>{
+    const {cn,input}=await pendingCredit();await reassignDeliveryConsignment(input,admin);
+    let readerReady!:()=>void;const ready=new Promise<void>(resolve=>{readerReady=resolve;});
+    let resumeReader!:()=>void;const resume=new Promise<void>(resolve=>{resumeReader=resolve;});
+    const reading=db().transaction(async tx=>{
+      await tx.select().from(s.deliveryEvents); // Deliberately establish an older repeatable-read snapshot.
+      readerReady();await resume;
+      return prepareShipmentWorkflowDocumentsTx(tx,{consignmentId:cn.id,branchId:1});
+    },{isolationLevel:"repeatable read"});
+    await ready;
+    let latest:Awaited<ReturnType<typeof reassignDeliveryConsignment>>;
+    try{latest=await reassignDeliveryConsignment({...input,collectCreditOnDelivery:false,expectedClaimVersion:cn.codClaimVersion+1,clientRequestId:key()},admin);}
+    finally{resumeReader();}
+    const documents=await reading;
+    expect(documents.slice(0,3).map(row=>row.id).sort((a,b)=>a-b)).toEqual([...latest.documentSnapshotIds].sort((a,b)=>a-b));
+    expect(documents.find(row=>row.documentType==="DISPATCH_SLIP")?.payload).toMatchObject({money:{codAmount:"0.00",deliveryFee:"5000.00"}});
+  });
+
   it("rejects another branch, delivered parcels and any existing financial collection",async()=>{
     const {cn,input}=await pendingCredit();
     await expect(reassignDeliveryConsignment(input,{...cashier,branchId:2})).rejects.toThrow(/نطاق/);
