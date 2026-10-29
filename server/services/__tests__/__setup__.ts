@@ -18,7 +18,7 @@
  * **فشل صريح لا مُبتلَع:** أي إخفاق DELETE يَرمي باسم الجدول بدل الابتلاع الصامت الذي يُخفي التراكم.
  */
 import mysql from "mysql2/promise";
-import { afterAll, afterEach } from "vitest";
+import { afterAll, afterEach, beforeAll } from "vitest";
 import { closeDb } from "../../db";
 
 // يُشغَّل كـsetupFile قبل شيفرة كل ملف اختبار (وقبل التقاط ORIGINAL_KEY فيه): يضمن وجود مفتاح
@@ -27,7 +27,8 @@ import { closeDb } from "../../db";
 // نصّاً لا يُحذف) لكل ملف لاحق يحتاجه ولا يضبطه بنفسه (broadcastDispatch/waTemplates ⇒ فشل CI).
 // `??=` يحترم قيمة CI/‎.env الصريحة إن وُجدت. قيمة اختبار حرفية منخفضة العشوائية عمداً (نمط
 // BARCODE_SECRET أعلاه في vitest.config.ts) كي لا يعلّمها GitGuardian كسرٍّ حقيقيّ.
-process.env.INTEGRATIONS_ENCRYPTION_KEY ??= "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+process.env.INTEGRATIONS_ENCRYPTION_KEY ??=
+  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 // M9 (تدقيق ٣/٨): إلزام 2FA الخادميّ للمدير/المشرف يُحجب أي إجراءٍ عبر البوّابات لدورٍ مُلزَمٍ لم
 // يُفعّل 2FA. بذور الاختبار تُنشئ admin/manager بلا 2FA (والتشفير مضبوط أعلاه ⇒ isCryptoReady=true)
@@ -45,14 +46,18 @@ const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
  * alone is not enough: the target must also be local and must not use MySQL's
  * production-default port unless the caller opted in explicitly.
  */
-function assertSafeCleanupTarget(rawUrl: string | undefined): string | undefined {
+export function assertSafeCleanupTarget(
+  rawUrl: string | undefined,
+): string | undefined {
   if (!rawUrl) return undefined;
 
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
   } catch {
-    throw new Error("__setup__: refusing cleanup because DATABASE_URL is not a valid URL");
+    throw new Error(
+      "__setup__: refusing cleanup because DATABASE_URL is not a valid URL",
+    );
   }
 
   const host = parsed.hostname.toLowerCase();
@@ -60,7 +65,9 @@ function assertSafeCleanupTarget(rawUrl: string | undefined): string | undefined
   const port = parsed.port ? Number(parsed.port) : 3306;
 
   if (!LOOPBACK_HOSTS.has(host)) {
-    throw new Error(`__setup__: refusing cleanup on non-loopback database host ${host || "<empty>"}`);
+    throw new Error(
+      `__setup__: refusing cleanup on non-loopback database host ${host || "<empty>"}`,
+    );
   }
   if (!databaseName || !/test/i.test(databaseName)) {
     throw new Error(
@@ -124,7 +131,9 @@ async function discoverTables(conn: mysql.Connection): Promise<string[]> {
   const tables = rows.map((r) => r.name as string).filter((n) => !SKIP.has(n));
   // فشل-سريع: قاعدة اختبار بصفر جداول ⇒ مخطّط غير مُهيَّأ (نسي pnpm db:push) — لا نمضي صامتاً.
   if (!tables.length) {
-    throw new Error("__setup__: zero tables discovered — DATABASE() empty or schema not pushed; aborting to avoid silent isolation failure");
+    throw new Error(
+      "__setup__: zero tables discovered — DATABASE() empty or schema not pushed; aborting to avoid silent isolation failure",
+    );
   }
   cachedTables = tables;
   return tables;
@@ -143,14 +152,23 @@ async function discoverDeleteTriggeredTables(
 }
 
 /** Empty immutable tables need no DDL; populated ones still require the guarded TRUNCATE path. */
-export async function populatedTestTables(conn: mysql.Connection, tables: string[]) {
+export async function populatedTestTables(
+  conn: mysql.Connection,
+  tables: string[],
+) {
   if (!tables.length) return [];
-  const [rows] = await conn.query<mysql.RowDataPacket[]>(tables.map(table =>
-    `SELECT ${conn.escape(table)} AS name WHERE EXISTS (SELECT 1 FROM \`${table.replace(/`/g, "``")}\` LIMIT 1)`,
-  ).join(" UNION ALL "));
+  const [rows] = await conn.query<mysql.RowDataPacket[]>(
+    tables
+      .map(
+        (table) =>
+          `SELECT ${conn.escape(table)} AS name WHERE EXISTS (SELECT 1 FROM \`${table.replace(/`/g, "``")}\` LIMIT 1)`,
+      )
+      .join(" UNION ALL "),
+  );
   const known = new Set(tables);
-  if (rows.some(row => !known.has(row.name))) throw new Error("Unknown table in test cleanup snapshot");
-  return rows.map(row => row.name as string);
+  if (rows.some((row) => !known.has(row.name)))
+    throw new Error("Unknown table in test cleanup snapshot");
+  return rows.map((row) => row.name as string);
 }
 
 export async function clearTestTable(
@@ -161,7 +179,9 @@ export async function clearTestTable(
 ) {
   if (deleteProtected) {
     if (!alreadyProvedPopulated) {
-      const [existing] = await conn.query<mysql.RowDataPacket[]>(`SELECT 1 FROM \`${table}\` LIMIT 1`);
+      const [existing] = await conn.query<mysql.RowDataPacket[]>(
+        `SELECT 1 FROM \`${table}\` LIMIT 1`,
+      );
       if (existing.length === 0) return;
     }
     await conn.query(`TRUNCATE TABLE \`${table}\``);
@@ -194,48 +214,71 @@ export async function readSnapshotWithReconnect(
   throw new Error("__setup__: unreachable cleanup snapshot retry");
 }
 
-if (process.env.VITEST_UNIT_SUITE !== "1") {
-  afterEach(async () => {
-    if (!TEST_DB_URL) return;
-    const { conn, populated, deleteTriggeredTables } =
-      await readSnapshotWithReconnect(TEST_DB_URL);
+/** Only complete harness cleanup may call this; it verifies every application table is empty. */
+export async function bootstrapEmptyInventoryProjection(
+  conn: mysql.Connection,
+  rawUrl: string,
+): Promise<void> {
+  assertSafeCleanupTarget(rawUrl);
+  const [rows] = await conn.query<mysql.RowDataPacket[]>(
+    "SELECT TABLE_NAME AS name FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'",
+  );
+  const tables = rows
+    .map((row) => String(row.name))
+    .filter((name) => !SKIP.has(name));
+  if (
+    !tables.includes("inventoryProjectionState") ||
+    !tables.includes("productVariants")
+  )
+    throw new Error("Test projection schema missing");
+  if ((await populatedTestTables(conn, tables)).length)
+    throw new Error(
+      "Refusing projection bootstrap: complete test database is not empty",
+    );
+  await conn.query(
+    "INSERT INTO inventoryProjectionState (id, readyVersion) VALUES (1, 1)",
+  );
+}
 
-    if (populated.length === 0) {
-      setSocketRef(conn, false);
-      if (process.env.CONTROL_DATABASE_URL) {
-        await closeDb();
-      }
-      return;
-    }
+export async function cleanCompleteTestDatabase() {
+  if (!TEST_DB_URL) return;
+  const { conn, populated, deleteTriggeredTables } =
+    await readSnapshotWithReconnect(TEST_DB_URL);
 
-    try {
-      await conn.query("SET FOREIGN_KEY_CHECKS = 0");
-      // One exact existence snapshot avoids hundreds of empty DELETE round trips per pure unit test.
-      for (const t of populated) {
-        // جداول الأثر غير القابل للمحو تحرس DELETE بتريغر مقصود في الإنتاج. تنظيف الاختبار وحده
-        // يستعمل TRUNCATE عليها (مع تعطيل FK) كي لا نضع منفذ bypass داخل التريغر الإنتاجي.
-        // بقية الجداول تبقى على DELETE للأسباب الموثقة أعلى الملف.
-        try {
-          await clearTestTable(conn, t, deleteTriggeredTables.has(t), true);
-        } catch (e: unknown) {
-          const msg = e instanceof Error ? e.message : String(e);
-          const operation = deleteTriggeredTables.has(t) ? "TRUNCATE TABLE" : "DELETE FROM";
-          throw new Error(`__setup__ cleanup: ${operation} ${t} failed: ${msg}`);
-        }
+  try {
+    await conn.query("SET FOREIGN_KEY_CHECKS = 0");
+    // One exact existence snapshot avoids hundreds of empty DELETE round trips per pure unit test.
+    for (const t of populated) {
+      // جداول الأثر غير القابل للمحو تحرس DELETE بتريغر مقصود في الإنتاج. تنظيف الاختبار وحده
+      // يستعمل TRUNCATE عليها (مع تعطيل FK) كي لا نضع منفذ bypass داخل التريغر الإنتاجي.
+      // بقية الجداول تبقى على DELETE للأسباب الموثقة أعلى الملف.
+      try {
+        await clearTestTable(conn, t, deleteTriggeredTables.has(t), true);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        const operation = deleteTriggeredTables.has(t)
+          ? "TRUNCATE TABLE"
+          : "DELETE FROM";
+        throw new Error(`__setup__ cleanup: ${operation} ${t} failed: ${msg}`);
       }
-      await conn.query("SET FOREIGN_KEY_CHECKS = 1");
-      setSocketRef(conn, false);
-    } catch (err) {
-      await closeCleanupConn();
-      await closeDb();
-      throw err;
     }
-    // أعد ضبط تجمّع Drizzle: الحذف مع FK_CHECKS=0 يَزيد نسخة metadata للجداول ⇒ العبارات المُهيَّأة
-    // المُخبَّأة على اتصالات التجمّع تَبيت ⇒ ER_TABLE_DEF_CHANGED متقطّع في reset/seed الملف التالي.
-    // الإغلاق يُجبر getDb() التالي على تجمّع جديد بعبارات نظيفة (نفس نمط truncateTables) ⇒ عزل موثوق.
+    await conn.query("SET FOREIGN_KEY_CHECKS = 1");
+    await bootstrapEmptyInventoryProjection(conn, TEST_DB_URL);
+    setSocketRef(conn, false);
+  } catch (err) {
+    await closeCleanupConn();
     await closeDb();
-  });
+    throw err;
+  }
+  // أعد ضبط تجمّع Drizzle: الحذف مع FK_CHECKS=0 يَزيد نسخة metadata للجداول ⇒ العبارات المُهيَّأة
+  // المُخبَّأة على اتصالات التجمّع تَبيت ⇒ ER_TABLE_DEF_CHANGED متقطّع في reset/seed الملف التالي.
+  // الإغلاق يُجبر getDb() التالي على تجمّع جديد بعبارات نظيفة (نفس نمط truncateTables) ⇒ عزل موثوق.
+  await closeDb();
+}
 
+if (process.env.VITEST_UNIT_SUITE !== "1") {
+  beforeAll(cleanCompleteTestDatabase);
+  afterEach(cleanCompleteTestDatabase);
   afterAll(async () => {
     await closeCleanupConn();
     if (TEST_DB_URL) {

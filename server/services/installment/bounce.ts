@@ -1,7 +1,7 @@
 // ارتجاع شيك (bounceCheck) — عكسٌ محاسبيّ متماثل مع تحصيل القسط (AR-BOUNCE).
 import { TRPCError } from "@trpc/server";
 import { and, eq } from "drizzle-orm";
-import { installmentLines, installmentPlans, receipts } from "../../../drizzle/schema";
+import { installmentLines, installmentPlans, invoices, receipts } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import {
   createPostingIntent,
@@ -9,7 +9,9 @@ import {
 } from "../accounting/postingEngine";
 import { adjustCustomerBalance, postEntry } from "../ledgerService";
 import { money, toDbMoney } from "../money";
-import { type Actor, withTx } from "../tx";
+import { requireDb, type Actor, withTx } from "../tx";
+import { lockInstallmentPlanTx, installmentConflict, adoptProvenLegacyPlanTx, assertInstallmentScopeTx } from "./receiptAllocations";
+import { allocateVoucherToInvoiceTx } from "../voucher/invoiceAllocation";
 import { assertNonPhysicalOutReceipt } from "../cash/cashAvailability";
 import { assertPlanBranch, type BranchRestriction } from "./types";
 
@@ -43,18 +45,21 @@ export async function bounceCheck(
   actor: Actor,
   restrictToBranchId: BranchRestriction = null,
 ): Promise<{ lineId: number; reversed: boolean }> {
+  const [preview] = await requireDb().select({ planId: installmentPlans.id, invoiceId: installmentPlans.invoiceId }).from(installmentLines)
+    .innerJoin(installmentPlans, eq(installmentPlans.id, installmentLines.planId)).where(eq(installmentLines.id, input.lineId));
+  if (!preview || preview.invoiceId == null) installmentConflict("الخطة التاريخية تحتاج مطابقة ربط الفاتورة");
   return withTx(async (tx) => {
-    const row = (
-      await tx
-        .select({ line: installmentLines, plan: installmentPlans })
-        .from(installmentLines)
-        .innerJoin(installmentPlans, eq(installmentLines.planId, installmentPlans.id))
-        .where(eq(installmentLines.id, input.lineId))
-        .for("update")
-        .limit(1)
-    )[0];
+    const [invoice] = await tx.select().from(invoices).where(eq(invoices.id, preview.invoiceId!)).for("update");
+    if (invoice) await adoptProvenLegacyPlanTx(tx, invoice, preview.planId);
+    const state = await lockInstallmentPlanTx(tx, preview.planId);
+    const target = state?.lines.find(line => line.id === input.lineId);
+    const row = state && target ? { line: target, plan: state.plan } : null;
     if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "القسط غير موجود" });
+    if (!invoice || row.plan.invoiceId !== invoice.id || row.plan.customerId !== invoice.customerId || row.plan.branchId !== invoice.branchId)
+      installmentConflict("تغير مصدر القسط");
     assertPlanBranch(Number(row.plan.branchId), restrictToBranchId);
+    await assertInstallmentScopeTx(tx, state!, invoice);
+    if (row.line.pendingAllocationClaimId != null) installmentConflict("للقسط سند بانتظار الاعتماد");
     if (row.line.kind !== "CHECK") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "الارتجاع للشيكات فقط — هذا القسط نقدي" });
     }
@@ -63,7 +68,7 @@ export async function bounceCheck(
     }
 
     let reversed = false;
-    if (row.line.status === "PAID" && row.line.receiptId != null) {
+    if ((row.line.status === "PAID" || row.line.paid.gt(0)) && row.line.receiptId != null) {
       const [rec] = await tx
         .select()
         .from(receipts)
@@ -82,6 +87,14 @@ export async function bounceCheck(
           message: "لا يمكن ارتداد القسط: التحصيل الفعلي لم يكن بشيك",
         });
       }
+      if (rec.partyType !== "CUSTOMER" || rec.partyId !== row.plan.customerId || rec.branchId !== row.plan.branchId)
+        installmentConflict("سند الشيك لا يطابق العميل والفرع");
+      const reversedIds = new Set(state!.lines.flatMap(line => line.allocations.map(a => a.reversesAllocationId)));
+      const allocated = state!.lines.flatMap(line => line.allocations).filter(a => a.sourceReceiptId === rec.id && money(a.amount).gt(0));
+      if (allocated.some(a => reversedIds.has(a.id))) installmentConflict("سند الشيك معكوس بالفعل");
+      const allocatedAmount = allocated.reduce((sum, a) => sum.plus(a.amount), money(0));
+      if (rec.invoiceId != null && (rec.invoiceId !== invoice.id || !allocatedAmount.eq(rec.amount)))
+        installmentConflict("ربط الشيك التاريخي غير مثبت في سجل التخصيص؛ يلزم تصحيح موثق");
       if (rec.status === "COMPLETED") {
         const amount = money(rec.amount);
         const branchId = rec.branchId != null ? Number(rec.branchId) : Number(row.plan.branchId);
@@ -127,13 +140,11 @@ export async function bounceCheck(
         });
         // استعادة AR: التحصيل خفّض currentBalance بمقدار amount ⇒ نعيدها بإضافة +amount.
         await adjustCustomerBalance(tx, Number(row.plan.customerId), amount);
+        if (allocatedAmount.gt(0)) await allocateVoucherToInvoiceTx(tx, { invoiceId: invoice.id, amount: allocatedAmount,
+          direction: "OUT", installmentEffect: { sourceReceiptId: rec.id, effectReceiptId: compReceiptId,
+            effectKey: `BOUNCE:${compReceiptId}`, reverseSourceReceiptId: rec.id } });
         reversed = true;
       }
-      // تماثُل الارتداد مع التحصيل: لا نمسّ invoices.paidAmount هنا. تحصيل القسط يمرّ عبر createVoucher
-      // (سند «على الحساب») فيخفّض customers.currentBalance فقط ولا يزيد invoices.paidAmount أبداً — الذمّة
-      // تُتابَع على مستوى العميل لا الفاتورة (راجع arRemindersService). كان العكس يطرح rec.amount من
-      // paidAmount التي لم يَزِدها التحصيل قطّ ⇒ يمحو دفعاتٍ مباشرةً مشروعةً على الفاتورة (عربون/سداد مباشر)
-      // ويقلب حالتها خطأً. الاستعادة الصحيحة والمتماثلة جرت أعلاه: adjustCustomerBalance(+amount) فقط.
     } else if (row.line.status === "PAID") {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
@@ -141,20 +152,19 @@ export async function bounceCheck(
       });
     }
 
-    // مفتاح محاولة التحصيل السابقة immutable. payLine يشتق محاولة A<n> جديدة مرتبطة
-    // بالسند السابق عند BOUNCED؛ حذف المفتاح القديم يسمح لمحاولة شبكة متأخرة بإحياء أثره.
+    // Keep the original receipt and permanent request identity after the inverse.
 
     await tx
       .update(installmentLines)
       .set({
         status: "BOUNCED",
-        receiptId: null,
         paidAt: null,
         note: input.note?.trim() ? input.note.trim().slice(0, 255) : row.line.note,
       })
       .where(eq(installmentLines.id, input.lineId));
     // خطة مكتملة سابقاً؟ نُعيدها لـACTIVE لأن هناك قسطاً مرتدّاً يحتاج تحصيلاً جديداً.
-    if (row.plan.status === "COMPLETED") {
+    if (row.plan.status === "COMPLETED" && !["CANCELLED", "RETURNED", "SUPERSEDED"].includes(invoice.status)
+      && money(invoice.total).minus(invoice.returnedTotal).minus(invoice.paidAmount).eq(state!.lines.reduce((sum, line) => sum.plus(line.remaining), money(0)))) {
       await tx.update(installmentPlans).set({ status: "ACTIVE" }).where(eq(installmentPlans.id, Number(row.plan.id)));
     }
     return { lineId: input.lineId, reversed };

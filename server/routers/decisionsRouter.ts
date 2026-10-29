@@ -10,6 +10,8 @@
  * الإنفاذُ النهائيّ خادميٌّ في الخدمة: بوّابةُ المصدر ثمّ حرّاسُ دالّة الحسم الأصلية.
  */
 import { z } from "zod";
+import { sourceCursorSchema } from "../services/decisions/scan";
+import { pageCursorSchema } from "../services/decisions/paging";
 import { DECISION_ACTIONS } from "@shared/decisionRegistry";
 import { canCrossBranches } from "@shared/predicates";
 import type { PermissionMap } from "@shared/permissions";
@@ -38,7 +40,9 @@ export const decisionsRouter = router({
           branchId: z.number().int().positive().optional(),
           minAgeHours: z.number().min(0).max(24 * 365).optional(),
           limit: z.number().int().min(1).max(500).optional(),
-        })
+          pageCursor: pageCursorSchema.optional(),
+          sourceCursor: sourceCursorSchema.optional(),
+        }).strict()
         .optional(),
     )
     .query(({ ctx, input }) => listDecisionInbox(decisionActorFromUser(ctx.user), input ?? {})),

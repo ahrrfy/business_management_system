@@ -15,7 +15,6 @@ import { Printer } from "lucide-react";
 import {
   OBLIGATION_KIND_LABEL,
   payrollStatusLabel,
-  settledObligationAmount,
   shortHash,
   summarizeObligations,
   toExcelMoney,
@@ -92,19 +91,12 @@ export default function PayrollReport() {
   );
   const outstanding = summarizeObligations(obligations.filter((row) => row.status === "OPEN" || row.status === "PARTIAL"));
   const accruedRows = rows.filter((row) => row.status === "approved" || row.status === "paid");
-  const netPaidByRun = useMemo(() => new Map(rows.map((run) => [
-    Number(run.id),
-    settledObligationAmount(
-      obligations.filter((obligation) => Number(obligation.runId) === Number(run.id)),
-      "SALARY_NET",
-      Number(run.revisionNo),
-    ),
-  ])), [obligations, rows]);
+  const netPaidByRun = useMemo(() => new Map(rows.map((run) => [Number(run.id), run.totalActualSalaryPaid])), [rows]);
   const netPaid = round2(rows.reduce(
     (total, row) => total.plus(D(netPaidByRun.get(Number(row.id)) ?? 0)),
     D(0),
   )).toFixed(2);
-  const runsWithPayment = rows.filter((row) => D(netPaidByRun.get(Number(row.id)) ?? 0).gt(0)).length;
+  const runsWithPayment = rows.filter((row) => row.salarySettlementCount > 0).length;
   const totals = {
     runs: rows.length,
     accruedRuns: accruedRows.length,
@@ -148,8 +140,35 @@ export default function PayrollReport() {
     { id: "party", header: "الموظف/الجهة", accessorFn: ledgerParty },
     { id: "direction", header: "الاتجاه", accessorFn: ledgerDirection },
     { id: "amount", header: "المبلغ", accessorFn: (row) => row.amount, sortingFn: (a, b, id) => D(a.getValue<string>(id)).comparedTo(D(b.getValue<string>(id))), cell: ({ row }) => <span dir="ltr" className="tabular-nums font-medium">{fmtAr(row.original.amount)}</span> },
+    {
+        id: "settlement",
+        header: "تسوية المستحق",
+        accessorFn: (row) => row.classification,
+        cell: ({ row }) => (
+          <div className="text-xs">
+            <div>
+              {row.original.entitlementSettled == null
+                ? "فرق تاريخي غير مصنف"
+                : `المستحق: ${fmtAr(row.original.entitlementSettled)}`}
+            </div>
+            {row.original.signedDifference != null && (
+              <div>فرق التقريب: {fmtAr(row.original.signedDifference)}</div>
+            )}
+            <div>
+              {row.original.classification === "ROUNDING_DIFF"
+                ? "فروق التقريب المعتمدة"
+                : row.original.classification === "EXACT"
+                  ? "مطابق"
+                  : "تاريخي"}
+              {row.original.evidenceVersion
+                ? ` / V${row.original.evidenceVersion}`
+                : ""}
+            </div>
+          </div>
+        ),
+      },
     { id: "date", header: "التاريخ الفعلي", accessorFn: (row) => ledgerDate(row.paymentDate), cell: ({ row }) => <span dir="ltr" className="tabular-nums">{ledgerDate(row.original.paymentDate)}</span> },
-    { id: "document", header: "المستند/الحدث", accessorFn: (row) => `REC-${row.receiptId} / EV-${row.eventId}`, cell: ({ row }) => <div className="font-mono text-[11px]" dir="ltr"><div>REC-{row.original.receiptId}</div><div>EV-{row.original.eventId}{row.original.reversalOfId ? ` ← EV-${row.original.reversalOfId}` : ""}</div></div> },
+    { id: "document", header: "المستند/الحدث", accessorFn: (row) => `${row.receiptId == null ? "تسوية بلا إيصال" : `REC-${row.receiptId}`} / EV-${row.eventId}`, cell: ({ row }) => <div className="font-mono text-[11px]" dir="ltr"><div>{row.original.receiptId == null ? "تسوية بلا إيصال" : `REC-${row.original.receiptId}`}</div><div>EV-{row.original.eventId}{row.original.reversalOfId ? ` ← EV-${row.original.reversalOfId}` : ""}</div></div> },
     { id: "method", header: "الطريقة/المرجع", accessorFn: (row) => `${row.method} ${row.referenceNumber ?? ""}`, cell: ({ row }) => <div><div>{row.original.method}</div><div className="text-muted-foreground" dir="ltr">{row.original.referenceNumber || "—"}</div></div> },
     { id: "actor", header: "المنفذ", accessorFn: (row) => row.createdByName ?? `USER-${row.createdBy}`, cell: ({ row }) => <div><div>{row.original.createdByName ?? "مستخدم"}</div><div className="text-muted-foreground" dir="ltr">USER-{row.original.createdBy}</div></div> },
     { id: "state", header: "الأثر", accessorFn: (row) => row.active ? "نافذ" : "معكوس", cell: ({ row }) => <span className={`rounded-full px-2 py-0.5 text-[11px] ${row.original.active ? "badge-status-active" : "badge-status-cancelled"}`}>{row.original.active ? "نافذ" : "معكوس بإعادة لاحقة"}</span> },
@@ -181,7 +200,7 @@ export default function PayrollReport() {
       direction: ledgerDirection(row),
       amount: toExcelMoney(row.amount),
       paymentDate: ledgerDate(row.paymentDate),
-      receiptId: `REC-${row.receiptId}`,
+      receiptId: row.receiptId == null ? "تسوية بلا إيصال" : `REC-${row.receiptId}`,
       eventId: `EV-${row.eventId}`,
       reversalOf: row.reversalOfId ? `EV-${row.reversalOfId}` : "",
       method: row.method,
@@ -276,7 +295,7 @@ export default function PayrollReport() {
         direction: ledgerDirection(row),
         amount: `${fmtAr(D(row.amount).abs().toFixed(2))} د.ع`,
         date: ledgerDate(row.paymentDate),
-        document: `REC-${row.receiptId} / EV-${row.eventId}${row.reversalOfId ? ` ← EV-${row.reversalOfId}` : ""}`,
+        document: `${row.receiptId == null ? "تسوية بلا إيصال" : `REC-${row.receiptId}`} / EV-${row.eventId}${row.reversalOfId ? ` ← EV-${row.reversalOfId}` : ""}`,
         method: `${row.method}${row.referenceNumber ? ` / ${row.referenceNumber}` : ""}`,
         actor: `${row.createdByName ?? "مستخدم"} / USER-${row.createdBy}`,
         state: row.active ? "نافذ" : "معكوس بإعادة لاحقة",

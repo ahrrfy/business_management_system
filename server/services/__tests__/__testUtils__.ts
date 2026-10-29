@@ -13,8 +13,14 @@
  */
 import mysql from "mysql2/promise";
 import { closeDb } from "../../db";
+import {
+  assertSafeCleanupTarget,
+  bootstrapEmptyInventoryProjection,
+} from "./__setup__";
 
-export async function truncateTables(tables: readonly string[] | string[]): Promise<void> {
+export async function truncateTables(
+  tables: readonly string[] | string[],
+): Promise<void> {
   const url = process.env.DATABASE_URL;
   if (!url) return;
   const conn = await mysql.createConnection(url);
@@ -44,7 +50,7 @@ export async function truncateTables(tables: readonly string[] | string[]): Prom
 }
 
 export async function truncateAllTables(): Promise<void> {
-  const url = process.env.DATABASE_URL;
+  const url = assertSafeCleanupTarget(process.env.DATABASE_URL);
   if (!url) return;
   const conn = await mysql.createConnection(url);
   try {
@@ -52,7 +58,9 @@ export async function truncateAllTables(): Promise<void> {
       "SELECT TABLE_NAME AS name FROM information_schema.TABLES " +
         "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'",
     );
-    const tables = rows.map((r) => r.name as string).filter((n) => n !== "__drizzle_migrations");
+    const tables = rows
+      .map((r) => r.name as string)
+      .filter((n) => n !== "__drizzle_migrations");
     await conn.execute("SET FOREIGN_KEY_CHECKS = 0");
     for (const t of tables) {
       try {
@@ -67,6 +75,7 @@ export async function truncateAllTables(): Promise<void> {
       }
     }
     await conn.execute("SET FOREIGN_KEY_CHECKS = 1");
+    await bootstrapEmptyInventoryProjection(conn, url);
   } finally {
     await conn.end();
   }

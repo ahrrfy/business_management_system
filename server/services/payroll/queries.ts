@@ -13,17 +13,81 @@ import {
   users,
 } from "../../../drizzle/schema";
 import { requireDb } from "../tx";
-import { toDateStr } from "../money";
+import { money, toDateStr } from "../money";
+import {
+  assertSalaryReceiptEvidence,
+  readSalarySettlementEvidence,
+} from "./settlementEvidence";
 
 export async function listRuns() {
   const db = requireDb();
-  const rows = await db.select().from(payrollRuns).orderBy(desc(payrollRuns.period), desc(payrollRuns.id));
-  return rows;
+  const rows = await db
+    .select()
+    .from(payrollRuns)
+    .orderBy(desc(payrollRuns.period), desc(payrollRuns.id));
+  const payments = await db
+    .select({
+      event: payrollAccountingEvents,
+      amount: accountingEntries.amount,
+      receiptAmount: receipts.amount,
+      receipt: receipts,
+      receiptStatus: receipts.status,
+    })
+    .from(payrollAccountingEvents)
+    .innerJoin(
+      payrollRuns,
+      and(
+        eq(payrollAccountingEvents.runId, payrollRuns.id),
+        eq(payrollAccountingEvents.revisionNo, payrollRuns.revisionNo),
+      ),
+    )
+    .innerJoin(
+      accountingEntries,
+      eq(payrollAccountingEvents.accountingEntryId, accountingEntries.id),
+    )
+    .leftJoin(receipts, eq(payrollAccountingEvents.receiptId, receipts.id))
+    .where(
+      and(
+        eq(payrollAccountingEvents.eventKind, "SALARY_PAYMENT"),
+        sql`NOT EXISTS (SELECT 1 FROM payrollAccountingEvents reversed WHERE reversed.reversalOfId = ${payrollAccountingEvents.id})`,
+      ),
+    );
+  return rows.map((run) => {
+    const active = payments
+      .filter((row) => row.event.runId === run.id)
+      .filter((row) => {
+        const evidence = readSalarySettlementEvidence(
+          row.event.settlementEvidence,
+          row.event.sourceHash,
+        );
+        assertSalaryReceiptEvidence(evidence, {
+          event: row.event,
+          receipt: row.receipt,
+          entryAmount: row.amount,
+          reversed: false,
+        });
+        return (
+          row.receiptStatus === "COMPLETED" ||
+          (row.event.receiptId == null && evidence != null)
+        );
+      });
+    return {
+      ...run,
+      totalActualSalaryPaid: active
+        .reduce((sum, row) => sum.plus(money(row.amount)), money(0))
+        .toFixed(2),
+      salarySettlementCount: active.length,
+    };
+  });
 }
 
 export async function getRun(id: number) {
   const db = requireDb();
-  const [run] = await db.select().from(payrollRuns).where(eq(payrollRuns.id, id)).limit(1);
+  const [run] = await db
+    .select()
+    .from(payrollRuns)
+    .where(eq(payrollRuns.id, id))
+    .limit(1);
   if (!run) return null;
   const items = await db
     .select({
@@ -55,6 +119,12 @@ export async function getRun(id: number) {
     .orderBy(payrollAccountingEvents.revisionNo, payrollAccountingEvents.id);
   const salaryPayments = await db
     .select({
+      event: payrollAccountingEvents,
+      obligation: payrollObligations,
+      receipt: receipts,
+      settlementEvidence: payrollAccountingEvents.settlementEvidence,
+      sourceHash: payrollAccountingEvents.sourceHash,
+      occurredAt: payrollAccountingEvents.occurredAt,
       employeeId: payrollObligations.employeeId,
       obligationId: payrollAccountingEvents.obligationId,
       eventId: payrollAccountingEvents.id,
@@ -71,7 +141,7 @@ export async function getRun(id: number) {
       payrollObligations,
       eq(payrollAccountingEvents.obligationId, payrollObligations.id),
     )
-    .innerJoin(receipts, eq(payrollAccountingEvents.receiptId, receipts.id))
+    .leftJoin(receipts, eq(payrollAccountingEvents.receiptId, receipts.id))
     .where(
       and(
         eq(payrollAccountingEvents.runId, id),
@@ -83,7 +153,8 @@ export async function getRun(id: number) {
     accountingEvents
       .filter(
         (event) =>
-          event.eventKind === "SALARY_PAYMENT_RETURN" && event.reversalOfId != null,
+          event.eventKind === "SALARY_PAYMENT_RETURN" &&
+          event.reversalOfId != null,
       )
       .map((event) => Number(event.reversalOfId)),
   );
@@ -92,20 +163,44 @@ export async function getRun(id: number) {
     items: items.map((it) => ({ ...it, employeeName: fullEmployeeName(it) })),
     obligations,
     accountingEvents,
-    employeePaymentSnapshots: salaryPayments.map((payment) => ({
-      employeeId: payment.employeeId == null ? null : Number(payment.employeeId),
-      obligationId: Number(payment.obligationId),
-      eventId: Number(payment.eventId),
-      revisionNo: Number(payment.revisionNo),
-      active:
-        payment.receiptStatus === "COMPLETED" &&
-        !reversedPaymentIds.has(Number(payment.eventId)),
-      amount: payment.amount,
-      paymentDate: payment.paymentDate,
-      paymentMethod: payment.paymentMethod,
-      referenceNumber: payment.referenceNumber,
-      receiptId: Number(payment.receiptId),
-    })),
+    employeePaymentSnapshots: salaryPayments.map((payment) => {
+      const evidence = readSalarySettlementEvidence(
+        payment.settlementEvidence,
+        payment.sourceHash,
+      );
+      assertSalaryReceiptEvidence(evidence, {
+        event: payment.event,
+        receipt: payment.receipt,
+        obligation: payment.obligation,
+        reversed: reversedPaymentIds.has(payment.eventId),
+      });
+      if (!payment.receiptId && !evidence)
+        throw new Error("دليل تسوية الراتب بلا إيصال مفقود");
+      return {
+        employeeId:
+          payment.employeeId == null ? null : Number(payment.employeeId),
+        obligationId: Number(payment.obligationId),
+        eventId: Number(payment.eventId),
+        revisionNo: Number(payment.revisionNo),
+        active:
+          (payment.receiptStatus === "COMPLETED" ||
+            (!payment.receiptId && evidence != null)) &&
+          !reversedPaymentIds.has(Number(payment.eventId)),
+        amount: evidence?.actualPayout ?? payment.amount!,
+        entitlementSettled: evidence?.entitlementSettled ?? null,
+        signedDifference: evidence?.signedDifference ?? null,
+        classification: evidence?.classification ?? "LEGACY_UNCLASSIFIED",
+        evidenceVersion: evidence?.version ?? null,
+        paymentDate: evidence
+          ? new Date(`${evidence.paymentYmd}T00:00:00.000Z`)
+          : (payment.paymentDate ?? payment.occurredAt),
+        paymentMethod: evidence?.method ?? payment.paymentMethod!,
+        referenceNumber: evidence
+          ? evidence.referenceNumber
+          : payment.referenceNumber,
+        receiptId: payment.receiptId == null ? null : Number(payment.receiptId),
+      };
+    }),
   };
 }
 
@@ -122,11 +217,16 @@ export async function getPayrollFinancialLedger(input?: { period?: string }) {
   const filters = [
     inArray(payrollAccountingEvents.eventKind, [...FINANCIAL_MOVEMENT_KINDS]),
     input?.period
-      ? sql`DATE_FORMAT(COALESCE(${receipts.voucherDate}, ${receipts.createdAt}), '%Y-%m') = ${input.period}`
+      ? sql`DATE_FORMAT(COALESCE(${receipts.voucherDate}, ${receipts.createdAt}, ${payrollAccountingEvents.occurredAt}), '%Y-%m') = ${input.period}`
       : undefined,
   ].filter(Boolean) as ReturnType<typeof eq>[];
   const rows = await db
     .select({
+      event: payrollAccountingEvents,
+      obligation: payrollObligations,
+      receipt: receipts,
+      settlementEvidence: payrollAccountingEvents.settlementEvidence,
+      sourceHash: payrollAccountingEvents.sourceHash,
       movementType: payrollAccountingEvents.eventKind,
       runId: payrollAccountingEvents.runId,
       runPeriod: payrollRuns.period,
@@ -141,6 +241,7 @@ export async function getPayrollFinancialLedger(input?: { period?: string }) {
       eventId: payrollAccountingEvents.id,
       reversalOfId: payrollAccountingEvents.reversalOfId,
       amount: accountingEntries.amount,
+      receiptAmount: receipts.amount,
       paymentDate: receipts.voucherDate,
       receiptCreatedAt: receipts.createdAt,
       paymentMethod: receipts.paymentMethod,
@@ -156,7 +257,7 @@ export async function getPayrollFinancialLedger(input?: { period?: string }) {
       accountingEntries,
       eq(payrollAccountingEvents.accountingEntryId, accountingEntries.id),
     )
-    .innerJoin(receipts, eq(payrollAccountingEvents.receiptId, receipts.id))
+    .leftJoin(receipts, eq(payrollAccountingEvents.receiptId, receipts.id))
     .leftJoin(
       payrollObligations,
       eq(payrollAccountingEvents.obligationId, payrollObligations.id),
@@ -165,7 +266,10 @@ export async function getPayrollFinancialLedger(input?: { period?: string }) {
     .leftJoin(payrollRuns, eq(payrollAccountingEvents.runId, payrollRuns.id))
     .leftJoin(
       payrollRemittanceRequests,
-      eq(payrollAccountingEvents.remittanceRequestId, payrollRemittanceRequests.id),
+      eq(
+        payrollAccountingEvents.remittanceRequestId,
+        payrollRemittanceRequests.id,
+      ),
     )
     .leftJoin(users, eq(payrollAccountingEvents.createdBy, users.id))
     .where(and(...filters))
@@ -185,13 +289,27 @@ export async function getPayrollFinancialLedger(input?: { period?: string }) {
       .map((row) => Number(row.reversalOfId)),
   );
   return rows.map((row) => {
-    const paymentDate = row.paymentDate ?? row.receiptCreatedAt;
+    const evidence = readSalarySettlementEvidence(
+      row.settlementEvidence,
+      row.sourceHash,
+    );
+    assertSalaryReceiptEvidence(evidence, {
+      event: row.event,
+      receipt: row.receipt,
+      obligation: row.obligation,
+      entryAmount: row.amount,
+      reversed: reversedIds.has(row.eventId),
+    });
+    const paymentDate = evidence
+      ? new Date(`${evidence.paymentYmd}T00:00:00.000Z`)
+      : (row.paymentDate ?? row.receiptCreatedAt ?? row.occurredAt);
     const isOutgoing =
       row.movementType === "SALARY_PAYMENT" ||
       row.movementType === "TAX_REMITTANCE" ||
       row.movementType === "SOCIAL_SECURITY_REMITTANCE";
     return {
-      movementType: row.movementType as (typeof FINANCIAL_MOVEMENT_KINDS)[number],
+      movementType:
+        row.movementType as (typeof FINANCIAL_MOVEMENT_KINDS)[number],
       runId: row.runId == null ? null : Number(row.runId),
       period: row.runPeriod ?? toDateStr(new Date(paymentDate)).slice(0, 7),
       employeeId: row.employeeId == null ? null : Number(row.employeeId),
@@ -205,19 +323,28 @@ export async function getPayrollFinancialLedger(input?: { period?: string }) {
               lastName: row.employeeLastName,
             }),
       remittanceRequestId:
-        row.remittanceRequestId == null ? null : Number(row.remittanceRequestId),
+        row.remittanceRequestId == null
+          ? null
+          : Number(row.remittanceRequestId),
       remittanceKind: row.remittanceKind,
       authorityName: row.authorityName,
       eventId: Number(row.eventId),
       reversalOfId: row.reversalOfId == null ? null : Number(row.reversalOfId),
       active:
-        row.receiptStatus === "COMPLETED" &&
+        (row.receiptStatus === "COMPLETED" ||
+          (row.receiptId == null && evidence != null)) &&
         (!isOutgoing || !reversedIds.has(Number(row.eventId))),
-      amount: row.amount,
+      amount: evidence?.actualPayout ?? row.amount,
+      entitlementSettled: evidence?.entitlementSettled ?? null,
+      signedDifference: evidence?.signedDifference ?? null,
+      classification: evidence?.classification ?? "LEGACY_UNCLASSIFIED",
+      evidenceVersion: evidence?.version ?? null,
       paymentDate,
-      method: row.paymentMethod,
-      referenceNumber: row.referenceNumber,
-      receiptId: Number(row.receiptId),
+      method: evidence?.method ?? row.paymentMethod,
+      referenceNumber: evidence
+        ? evidence.referenceNumber
+        : row.referenceNumber,
+      receiptId: row.receiptId == null ? null : Number(row.receiptId),
       createdBy: Number(row.createdBy),
       createdByName: row.createdByName,
       occurredAt: row.occurredAt,

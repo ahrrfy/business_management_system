@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -225,7 +226,73 @@ describe("عقدُ الوصل — لا يبلغ البوّابةَ فاعلٌ ل
    * واحدٌ لا غير: `resolveApprovalActor(tx, actor)` — تقرأ `users.isOwner` و`isActive` داخل
    * المعاملة نفسها، فلا راوترَ ينسى ولا حمولةَ طلبٍ تدّعي.
    */
-  const CALL = "assertApprover({";
+  function approvalSites(src: string, file: string) {
+    const source = ts.createSourceFile(file, src, ts.ScriptTarget.Latest, true);
+    const imports = new Map<string, string>();
+    for (const statement of source.statements) {
+      if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)
+        || !/(?:approval\/ownerGate|\.\/ownerGate)$/.test(statement.moduleSpecifier.text)) continue;
+      const bindings = statement.importClause?.namedBindings;
+      if (bindings && ts.isNamedImports(bindings)) for (const binding of bindings.elements) {
+        imports.set(binding.name.text, (binding.propertyName ?? binding.name).text);
+      }
+    }
+    function resolved(expression: ts.Expression, call: ts.Node, seen = new Set<ts.Node>()): boolean {
+      if (seen.has(expression)) return false;
+      seen = new Set(Array.from(seen).concat(expression));
+      if (ts.isParenthesizedExpression(expression) || ts.isAwaitExpression(expression))
+        return resolved(expression.expression, call, seen);
+      if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.EqualsToken)
+        return resolved(expression.right, call, seen);
+      if (ts.isCallExpression(expression)) {
+        let callee: ts.Expression = expression.expression;
+        while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+        if (ts.isArrowFunction(callee) || ts.isFunctionExpression(callee)) {
+          if (!ts.isBlock(callee.body)) return resolved(callee.body, callee, seen);
+          const returns: ts.ReturnStatement[] = [];
+          const visitReturns = (node: ts.Node) => {
+            if (ts.isFunctionLike(node)) return;
+            if (ts.isReturnStatement(node)) returns.push(node);
+            else ts.forEachChild(node, visitReturns);
+          };
+          ts.forEachChild(callee.body, visitReturns);
+          return returns.length > 0 && returns.every(node => node.expression && resolved(node.expression, node, seen));
+        }
+        return ts.isIdentifier(callee) && imports.get(callee.text) === "resolveApprovalActor"
+          && expression.arguments[0]?.getText(source) === "tx"
+          && expression.arguments[1]?.getText(source) === "actor";
+      }
+      if (!ts.isIdentifier(expression)) return false;
+      // Only a preceding immutable binding in this callback's lexical scope is proof.
+      // A resolver in another branch/function, or a mutable/forged binding, is not.
+      for (let scope: ts.Node | undefined = call.parent; scope; scope = scope.parent) {
+        if (ts.isBlock(scope)) {
+          for (const statement of scope.statements) {
+            if (!ts.isVariableStatement(statement)) continue;
+            const declaration = statement.declarationList.declarations.find(d => ts.isIdentifier(d.name) && d.name.text === expression.text);
+            if (declaration) return statement.getStart(source) < call.getStart(source)
+              && Boolean(statement.declarationList.flags & ts.NodeFlags.Const)
+              && Boolean(declaration.initializer && resolved(declaration.initializer, call, seen));
+          }
+        }
+        if (ts.isFunctionLike(scope)) break;
+      }
+      return false;
+    }
+    const sites: Array<{ file: string; snippet: string; resolved: boolean }> = [];
+    const visit = (node: ts.Node) => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
+        && imports.get(node.expression.text) === "assertApprover") {
+        const input = node.arguments[0];
+        const actor = input && ts.isObjectLiteralExpression(input)
+          ? input.properties.find(p => ts.isPropertyAssignment(p) && p.name.getText(source) === "actor") : undefined;
+        sites.push({ file, snippet: node.getText(source), resolved: Boolean(actor && ts.isPropertyAssignment(actor) && resolved(actor.initializer, node)) });
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    return sites;
+  }
 
   function serviceFiles(dir: string): string[] {
     const out: string[] = [];
@@ -242,17 +309,13 @@ describe("عقدُ الوصل — لا يبلغ البوّابةَ فاعلٌ ل
   }
 
   const ROOT = join(__dirname, "..");
-  const sites: Array<{ file: string; snippet: string }> = [];
+  const sites: ReturnType<typeof approvalSites> = [];
   for (const file of serviceFiles(ROOT)) {
     const src = readFileSync(file, "utf8");
     // ⚠️ قيدٌ ضروريّ: `inventory/adjustmentApproval.ts` فيه دالّةٌ **محلّية** بالاسم نفسه
     // وتوقيعٍ مختلف تماماً. بلا هذا الشرط يُنذر الاختبارُ كذباً على شيفرةٍ لا علاقة لها.
     if (!/from "[^"]*approval\/ownerGate"/.test(src) && !/from "\.\/ownerGate"/.test(src)) continue;
-    let at = src.indexOf(CALL);
-    while (at !== -1) {
-      sites.push({ file: file.slice(ROOT.length + 1).split("\\").join("/"), snippet: src.slice(at, at + 260) });
-      at = src.indexOf(CALL, at + 1);
-    }
+    sites.push(...approvalSites(src, file.slice(ROOT.length + 1).split("\\").join("/")));
   }
 
   it("تُوجد مواضعُ وصلٍ فعلاً — وإلّا كان الاختبار أخضرَ على الفراغ", () => {
@@ -260,8 +323,24 @@ describe("عقدُ الوصل — لا يبلغ البوّابةَ فاعلٌ ل
   });
 
   it("⭐ كلُّ موضعٍ يمرّ بـresolveApprovalActor — لا فاعلَ خامّ ولا حسمٌ يدويّ", () => {
-    const offenders = sites.filter((s) => !s.snippet.includes("resolveApprovalActor("));
+    const offenders = sites.filter((s) => !s.resolved);
     expect(offenders.map((o) => `${o.file}: ${o.snippet.slice(0, 90)}`)).toEqual([]);
+  });
+
+  it("يتتبع الربط الثابت نفسه ويرفض إثباتا غير متعلق أو مزورا أو خارج النطاق", () => {
+    const scan = (body: string) => approvalSites(`import { assertApprover, resolveApprovalActor } from "./ownerGate"; async function run(tx, actor) { ${body} }`, "control.ts").map(s => s.resolved);
+    expect(scan("const approved = await resolveApprovalActor(tx, actor); assertApprover({ actor: approved });")).toEqual([true]);
+    expect(scan("assertApprover({ actor: await resolveApprovalActor(tx, actor) });")).toEqual([true]);
+    expect(scan("assertApprover({ actor: await (async () => { const approved = await resolveApprovalActor(tx, actor); return approved; })() });")).toEqual([true]);
+    for (const body of [
+      "const unrelated = await resolveApprovalActor(tx, actor); assertApprover({ actor });",
+      "const approved = { ...actor, isOwner: actor.isOwner === true }; assertApprover({ actor: approved });",
+      "if (true) { const approved = await resolveApprovalActor(tx, actor); } assertApprover({ actor: approved });",
+      "assertApprover({ actor: approved }); const approved = await resolveApprovalActor(tx, actor);",
+      "let approved = await resolveApprovalActor(tx, actor); approved = actor; assertApprover({ actor: approved });",
+      "const approved = await resolveApprovalActor(otherTx, actor); assertApprover({ actor: approved });",
+      "assertApprover({ actor: await (async () => { const approved = await resolveApprovalActor(tx, actor); if (actor.isOwner) return actor; return approved; })() });",
+    ]) expect(scan(body), body).toEqual([false]);
   });
 
   it("ولا يُحسَم بـ`=== true` يدوياً — يُرضي النوعَ ويُعيد العطب", () => {

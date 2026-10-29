@@ -163,7 +163,9 @@ export async function notifyApprovalPendingByReceipt(
           family: "APPROVAL",
           title,
           body,
-          route: WEB_APPROVAL_ROUTE,
+          route: projection.voucherNumber && !projection.internalNote?.startsWith("WORK_ORDER_CUSTOMER_REFUND:") && !projection.internalNote?.startsWith("COMPONENT_REFUND_PENDING:")
+            ? `/treasury?tab=vouchers&voucherId=${receiptId}`
+            : WEB_APPROVAL_ROUTE,
           eventKey: computeEventKey(receiptId, "pending", recipientId),
           entityType: "receipt",
           entityId: receiptId,

@@ -252,6 +252,12 @@ const EXTRA_MIGRATIONS = [
   "drizzle/migrations/0405_delivery_custody_document_snapshots.sql",
   // Preserve final outbox enums after earlier WhatsApp reconciliation migrations.
   "drizzle/migrations/0408_audit_crossmodule_contracts.sql",
+  // Seed the disabled singleton after db:push; activation remains a separate guarded operation.
+  "drizzle/migrations/0410_inventory_economic_projection.sql",
+  // Restore exception source shapes and immutable valuation proof after older return checks.
+  "drizzle/migrations/0411_purchase_return_owner_exception.sql",
+  // Immutable receipt allocation history and current inverse validation.
+  "drizzle/migrations/0412_installment_receipt_allocations.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without

@@ -1102,10 +1102,10 @@ async function scan(
             reasons.add("ACTIVE_INVOICE_RESERVATION");
           if (
             returns.some(
-              (row) => row.invoiceId === invoice.id || invoicePos.has(row.poId),
+              (row) => row.invoiceId === invoice.id || (row.poId != null && invoicePos.has(row.poId)),
             ) ||
             returnRequests.some(
-              (row) => row.invoiceId === invoice.id || invoicePos.has(row.poId),
+              (row) => row.invoiceId === invoice.id || (row.poId != null && invoicePos.has(row.poId)),
             )
           )
             reasons.add("RETURN_OR_RETURN_REQUEST");

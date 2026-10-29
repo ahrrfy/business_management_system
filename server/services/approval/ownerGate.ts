@@ -59,12 +59,14 @@ export type ResolvedApprovalActor = { isOwner: boolean };
 export async function resolveApprovalActor(
   tx: Tx,
   actor: Actor,
+  options?: { current: boolean },
 ): Promise<Actor & ResolvedApprovalActor> {
-  const [row] = await tx
+  const query = tx
     .select({ isOwner: users.isOwner, isActive: users.isActive })
     .from(users)
     .where(eq(users.id, actor.userId))
     .limit(1);
+  const [row] = await (options?.current ? query.for("share") : query);
   return { ...actor, isOwner: row?.isActive === true && row.isOwner === true };
 }
 
@@ -175,7 +177,10 @@ export function assertApprover(args: {
   if (actorIsOwner(args.actor)) return;
   throw new TRPCError({
     code: "FORBIDDEN",
-    message: ownerApprovalRequiredMessage({ trigger: args.trigger, subject: args.subject }),
+    message: ownerApprovalRequiredMessage({
+      trigger: args.trigger,
+      subject: args.subject,
+    }),
   });
 }
 

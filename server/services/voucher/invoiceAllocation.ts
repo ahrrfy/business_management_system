@@ -7,14 +7,16 @@ import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { eq, sql } from "drizzle-orm";
 import type Decimal from "decimal.js";
-import { invoices } from "../../../drizzle/schema";
+import { invoices, installmentPlans } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { isDeadInvoice } from "@shared/predicates";
 import { computeInvoiceStatus } from "../ledgerService";
 import { money, toDbMoney } from "../money";
 import { mixedAwarePaymentMethod } from "../sale/payment";
+import { applyInstallmentReceiptEffectTx, lockInstallmentPlanTx, type InstallmentReceiptEffect } from "../installment/receiptAllocations";
 
 export interface VoucherInvoiceAllocationInput {
+  installmentEffect?: InstallmentReceiptEffect;
   invoiceId: number;
   /** مبلغ السند (موجب دائماً). */
   amount: Decimal;
@@ -146,6 +148,14 @@ export async function allocateVoucherToInvoiceTx(
     }
   }
 
+  if (isCredit && input.gracefulSettledInvoice && input.installmentEffect?.selectedLineId != null) {
+    const [plan] = await tx.select({ id: installmentPlans.id }).from(installmentPlans)
+      .where(eq(installmentPlans.activeInvoiceGuard, inv.id)).for("share");
+    const state = plan ? await lockInstallmentPlanTx(tx, plan.id, true) : null;
+    const line = state?.lines.find(row => row.id === input.installmentEffect!.selectedLineId);
+    if (!line || input.amount.gt(line.remaining))
+      return { paidAmount: inv.paidAmount, status: inv.status, allocated: false, unallocatedReason: "EXCEEDS_REMAINING" };
+  }
   const newPaid = isCredit ? paid.plus(input.amount) : paid.minus(input.amount);
   /**
    * ⭐ **المستند الميت يبقى ميتاً** (تدقيق ١/٩/٢٦).
@@ -177,5 +187,6 @@ export async function allocateVoucherToInvoiceTx(
     })
     .where(eq(invoices.id, input.invoiceId));
 
+  if (input.installmentEffect) await applyInstallmentReceiptEffectTx(tx, inv, input.amount, input.installmentEffect);
   return { paidAmount: toDbMoney(newPaid), status, allocated: true };
 }

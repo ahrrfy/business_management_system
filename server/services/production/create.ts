@@ -1,3 +1,4 @@
+import { lockEconomicInventoryScope, readEconomicVariant, readEconomicOwnedPositions } from "../inventory/economicOwnership";
 // إنشاء مستند إنتاج: يستهلك المدخلات ويُنتج المخرجات ذرّياً + يُحدّث كلفة المخرجات (بلا قيد محاسبي).
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
@@ -23,7 +24,7 @@ import {
   signedPostingLines,
 } from "../accounting/postingEngine";
 import { money, round2 } from "../money";
-import { syncBundlesContainingComponents } from "../bundleService";
+import { lockProductionInventoryScope, syncProductionBundleCosts } from "./bundleCostScope";
 import { type Actor, withTx } from "../tx";
 import { spoilageSplit } from "./calc";
 import { nextProductionNumber, resolveLine, resolveRunPlan } from "./helpers";
@@ -434,62 +435,10 @@ async function lockAndValidateProductionVariants(
   const allVariantIds = Array.from(
     new Set(inLines.concat(outLines).map((line) => line.variantId)),
   ).sort((a, b) => a - b);
-  const refs = await tx
-    .select({ id: productVariants.id, productId: productVariants.productId })
-    .from(productVariants)
-    .where(inArray(productVariants.id, allVariantIds))
-    .orderBy(asc(productVariants.id));
-  const refByVariant = new Map(
-    refs.map((row) => [Number(row.id), Number(row.productId)]),
-  );
-  const missingBeforeLock = allVariantIds.filter(
-    (variantId) => !refByVariant.has(variantId),
-  );
-  if (missingBeforeLock.length) {
-    throw new TRPCError({
-      code: "NOT_FOUND",
-      message: appErrorMessage({
-        what: `تعذّر العثور على الصنف #${missingBeforeLock[0]}`,
-        why: "المعرّف يشير إلى متغيّر منتج محذوف أو غير موجود",
-        doThis: "أعد اختيار الصنف من قائمة المنتجات (قد يكون حُذف أو دُمج)",
-      }),
-    });
-  }
-
-  const productIds = Array.from(new Set(refByVariant.values())).sort(
-    (a, b) => a - b,
-  );
-  const lockedProducts = await tx
-    .select({
-      id: products.id,
-      name: products.name,
-      isActive: products.isActive,
-      isService: products.isService,
-      isBundle: products.isBundle,
-      isConsignment: products.isConsignment,
-    })
-    .from(products)
-    .where(inArray(products.id, productIds))
-    .orderBy(asc(products.id))
-    .for("update");
-  const productById = new Map(
-    lockedProducts.map((product) => [Number(product.id), product]),
-  );
-
-  const lockedVariants = await tx
-    .select({
-      id: productVariants.id,
-      productId: productVariants.productId,
-      isActive: productVariants.isActive,
-      costPrice: productVariants.costPrice,
-    })
-    .from(productVariants)
-    .where(inArray(productVariants.id, allVariantIds))
-    .orderBy(asc(productVariants.id))
-    .for("update");
-  const variantById = new Map(
-    lockedVariants.map((variant) => [Number(variant.id), variant]),
-  );
+  const scope = await lockProductionInventoryScope(tx, allVariantIds, outLines.map(line => line.variantId));
+  const lockedVariants = [];
+  for (const id of allVariantIds) lockedVariants.push(await readEconomicVariant(tx, scope, id));
+  const variantById = new Map(lockedVariants.map(v => [v.id, v]));
   const outputIds = new Set(outLines.map((line) => line.variantId));
 
   for (const variantId of allVariantIds) {
@@ -504,29 +453,7 @@ async function lockAndValidateProductionVariants(
         }),
       });
     }
-    const expectedProductId = refByVariant.get(variantId)!;
-    const actualProductId = Number(variant.productId);
-    if (actualProductId !== expectedProductId) {
-      throw new TRPCError({
-        code: "CONFLICT",
-        message: appErrorMessage({
-          what: "تغيّر ربط الصنف أثناء تجهيز أمر الإنتاج",
-          why: `نُقل المتغيّر #${variantId} إلى منتج آخر قبل تثبيت الأقفال`,
-          doThis: "حدّث الصفحة ثم أعد المحاولة",
-        }),
-      });
-    }
-    const product = productById.get(actualProductId);
-    if (!product) {
-      throw new TRPCError({
-        code: "CONFLICT",
-        message: appErrorMessage({
-          what: "تغيّر المنتج أثناء تجهيز أمر الإنتاج",
-          why: `لم يعد منتج المتغيّر #${variantId} مطابقاً للقفل المأخوذ`,
-          doThis: "حدّث الصفحة ثم أعد المحاولة",
-        }),
-      });
-    }
+    const product = variant.product;
 
     const role = outputIds.has(variantId) ? "مخرج الإنتاج" : "مدخل الإنتاج";
     const label = product.name || `#${variantId}`;
@@ -713,6 +640,7 @@ async function consumeInputs(
 ): Promise<Decimal> {
   inLines.sort((a, b) => a.variantId - b.variantId);
 
+  const scope = await lockEconomicInventoryScope(tx, inLines.map(l => l.variantId));
   let materialsCost = new Decimal(0);
   for (const l of inLines) {
     const unitCost = round2(money(lockedVariantCosts.get(l.variantId) ?? "0"));
@@ -729,6 +657,7 @@ async function consumeInputs(
       lineCost: lineCost.toFixed(2),
     });
     await applyMovement(tx, {
+      economicScope: scope,
       variantId: l.variantId,
       branchId,
       baseQuantity: l.baseQuantity,
@@ -812,35 +741,7 @@ async function produceOutputs(
     }
   }
 
-  // اقفل صفوف رصيد المخرجات ثم اقرأ SUM العالمي **قبل** أي إدخال (مطابقة purchaseService).
-  const outVarList = Array.from(new Set(outLines.map((l) => l.variantId)));
-  await ensureBranchStockRows(tx, outVarList, branchId);
-  const lockedStockRows = await tx
-    .select({
-      variantId: branchStock.variantId,
-      branchId: branchStock.branchId,
-      quantity: branchStock.quantity,
-    })
-    .from(branchStock)
-    .where(inArray(branchStock.variantId, outVarList))
-    .orderBy(asc(branchStock.variantId), asc(branchStock.branchId))
-    .for("update");
-  // اجمع نفس الصفوف التي قُرئت قراءةً قافلةً. SELECT SUM عادي بعد الانتظار قد
-  // يرجع لقطة RR قديمة لا الرصيد الذي ثبّته القفل للتو.
-  const stockMap = new Map<number, Decimal>();
-  for (const row of lockedStockRows) {
-    const variantId = Number(row.variantId);
-    stockMap.set(
-      variantId,
-      (stockMap.get(variantId) ?? new Decimal(0)).plus(row.quantity ?? 0),
-    );
-  }
-  const costMap = new Map(
-    outVarList.map((variantId) => [
-      variantId,
-      lockedVariantCosts.get(variantId) ?? "0",
-    ]),
-  );
+  const scope = await lockEconomicInventoryScope(tx, outLines.map(l => l.variantId));
 
   let running = new Decimal(0);
   for (let j = 0; j < outLines.length; j++) {
@@ -858,11 +759,12 @@ async function produceOutputs(
     const costPerBase = round2(allocatedCost.div(l.baseQuantity));
 
     // WAVG على كلفة المخرَج: الرصيد العالمي القائم **قبل** هذا الإدخال.
-    const existingQty = Decimal.max(stockMap.get(l.variantId) ?? new Decimal(0), 0);
-    const oldCost = money(costMap.get(l.variantId) ?? "0");
+    const current = await readEconomicOwnedPositions(tx, scope, l.variantId);
+    const existingQty = Decimal.max(current.positions.reduce((sum, p) => sum.plus(p.ownedQuantity), new Decimal(0)), 0);
+    const oldCost = money(current.variant.costPrice ?? "0");
     const recvQty = new Decimal(l.baseQuantity);
     const denom = existingQty.plus(recvQty);
-    const newCost = denom.lte(0) || oldCost.lte(0)
+    const newCost = denom.lte(0)
       ? costPerBase
       : round2(existingQty.times(oldCost).plus(recvQty.times(costPerBase)).div(denom));
 
@@ -879,6 +781,7 @@ async function produceOutputs(
       manualSharePct: l.manualSharePct,
     });
     await applyMovement(tx, {
+      economicScope: scope,
       variantId: l.variantId,
       branchId,
       baseQuantity: l.baseQuantity,
@@ -891,12 +794,11 @@ async function produceOutputs(
     await tx.update(productVariants).set({ costPrice: newCost.toFixed(2) }).where(eq(productVariants.id, l.variantId));
 
     // حدّث الخريطتين تسلسلياً للصنف المكرّر في نفس المستند.
-    stockMap.set(l.variantId, denom);
-    costMap.set(l.variantId, newCost.toFixed(2));
+
   }
   // مزامنة تكلفة أيّ بكجات تحتوي على هذه المخرجات (تُتخطى في التشغيل التجميعي)
   if (!options?.skipBundleSync) {
-    await syncBundlesContainingComponents(
+    await syncProductionBundleCosts(
       tx,
       outLines.map((l) => l.variantId),
     );

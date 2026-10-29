@@ -344,7 +344,7 @@ export default function Payroll() {
     if (!run) return null;
     const payment = activePaymentByEmployee.get(Number(item.employeeId)) ?? null;
     const statusLabel = payment
-      ? "مدفوع"
+      ? D(payment.amount).isZero() ? "تسوية تقريب بلا صرف نقدي" : "مدفوع"
       : D(item.net).isZero() && (run.status === "approved" || run.status === "paid")
         ? "مسدد بلا حركة نقدية"
         : run.status === "draft" ? "مسوّدة" : "مستحق غير مدفوع";
@@ -381,6 +381,11 @@ export default function Payroll() {
       note: item.note,
       paidAt: item.id === slip?.id ? paymentYmd(slipPayment?.paymentDate) : paymentYmd(payment?.paymentDate),
       paidAmount: payment?.amount ?? null,
+      entitlementSettled: payment?.entitlementSettled ?? null,
+      signedDifference: payment?.signedDifference ?? null,
+      settlementClassification: payment?.classification ?? null,
+      settlementEventId: payment?.eventId ?? null,
+      settlementEvidenceVersion: payment?.evidenceVersion ?? null,
       paymentMethod: payment ? (paymentMethodTerm(payment.paymentMethod)?.prose ?? payment.paymentMethod) : null,
       paymentReference: payment?.referenceNumber ?? null,
       receiptId: payment?.receiptId ?? null,

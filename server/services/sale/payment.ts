@@ -34,6 +34,8 @@ import { prelockInvoiceCounterCollectionTx } from "../delivery/guards";
 import { registerCounterCollectionTx } from "../delivery/counterCollection";
 import { retryOnDeadlock } from "../../lib/retryDeadlock";
 
+import { applyInstallmentReceiptEffectTx } from "../installment/receiptAllocations";
+
 export interface PaymentSettlementLegInput {
   amount: string;
   method: PaymentMethod;
@@ -576,6 +578,7 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
 
         const receiptIds: number[] = [];
         let nextPaymentMethod: string | null = inv.paymentMethod ?? null;
+        let installmentPaidBefore = money(inv.paidAmount);
         for (let idx = 0; idx < legs.length; idx++) {
           const leg = legs[idx]!;
           const legAmount = money(leg.amount);
@@ -597,6 +600,9 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
             createdBy: actor.userId,
           });
           const legReceiptId = extractInsertId(rRes);
+          await applyInstallmentReceiptEffectTx(tx, { ...inv, paidAmount: toDbMoney(installmentPaidBefore) }, legAmount,
+            { sourceReceiptId: legReceiptId, effectReceiptId: legReceiptId, effectKey: `SALE:${legReceiptId}` });
+          installmentPaidBefore = installmentPaidBefore.plus(legAmount);
           receiptIds.push(legReceiptId);
           nextPaymentMethod = mixedAwarePaymentMethod(
             nextPaymentMethod,

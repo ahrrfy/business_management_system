@@ -193,7 +193,7 @@ export default function InstallmentPlans() {
         isLoading={due.isLoading}
         days={dueSoonDays}
         onDaysChange={setDueSoonDays}
-        onPay={(r) => setPayTarget({ lineId: r.lineId, branchId: r.branchId, seq: r.seq, amount: r.amount, kind: r.kind, checkNumber: r.checkNumber })}
+        onPay={(r) => setPayTarget({ lineId: r.lineId, branchId: r.branchId, seq: r.seq, amount: r.remainingAmount, kind: r.kind, checkNumber: r.checkNumber })}
         onOpenDossier={setDossierCustomerId}
       />
 
@@ -383,7 +383,7 @@ export default function InstallmentPlans() {
         <PlanDetailDialog
           planId={detailPlanId}
           onClose={() => setDetailPlanId(null)}
-          onPay={(l, planBranchId) => setPayTarget({ lineId: l.id, branchId: planBranchId, seq: l.seq, amount: l.amount, kind: l.kind, checkNumber: l.checkNumber })}
+          onPay={(l, planBranchId) => setPayTarget({ lineId: l.id, branchId: planBranchId, seq: l.seq, amount: l.remainingAmount, kind: l.kind, checkNumber: l.checkNumber })}
           onChanged={invalidateAll}
           onOpenDossier={setDossierCustomerId}
         />
@@ -842,7 +842,8 @@ function PayLineDialog({
 
   const pay = trpc.installments.pay.useMutation({
     onSuccess: async (r) => {
-      if (r.status === "PENDING_APPROVAL") {
+      if (r.status === "UNALLOCATED") { notify.info("السند منفذ على حساب العميل؛ لم يخصص للقسط"); }
+      else if (r.status === "PENDING_APPROVAL") {
         notify.ok(
           `أُنشئ السند ${r.voucherNumber} بانتظار اعتماد مدير ثانٍ`,
           "القسط يبقى معلَّقاً حتى الاعتماد — بعد الاعتماد من شاشة السندات أعد «سداد» لوسمه مسدَّداً.",

@@ -1,3 +1,4 @@
+import { lockEconomicInventoryScope, readEconomicVariant } from "./inventory/economicOwnership";
 import { TRPCError } from "@trpc/server";
 import { assertOperationAuthorityTx } from "./authorization/operationAuthority";
 import { appErrorMessage } from "@shared/errors";
@@ -35,7 +36,7 @@ import { computeProvenanceReconciliation } from "@shared/financialProvenance";
 import { localDayStart } from "./dateRange";
 import { getDb, type Tx } from "../db";
 import { escLike } from "../lib/sqlLike";
-import { applyMovement, convertToBaseQuantity } from "./inventoryService";
+import { applyMovement, applyValuedInboundMovement, convertToBaseQuantity } from "./inventoryService";
 import { lockInventoryVariants } from "./inventory/stockLock";
 import {
   checkIdempotency,
@@ -144,11 +145,7 @@ export function cashExpensePostingIntent(
     cashBucket,
   );
   return createPostingIntent(
-    reverse
-      ? "PAYMENT_IN_OTHER"
-      : category === "SALARY"
-        ? "PAYMENT_OUT_SALARY"
-        : "PAYMENT_OUT_EXPENSE",
+    reverse ? "PAYMENT_IN_OTHER" : "PAYMENT_OUT_EXPENSE",
     entryType,
     signedPostingLines(
       expenseRole(category),
@@ -2176,17 +2173,29 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
         .from(expenseStockItems)
         .where(eq(expenseStockItems.expenseId, expenseId));
       items.sort((a: any, b: any) => Number(a.variantId) - Number(b.variantId));
+      const variantIds = Array.from(new Set(items.map((item) => Number(item.variantId))));
+      const scope = await lockEconomicInventoryScope(tx, variantIds);
+      const consignmentIds = new Set<number>();
+      for (const id of variantIds) {
+        const variant = await readEconomicVariant(tx, scope, id);
+        if (variant.product.isConsignment) consignmentIds.add(id);
+      }
       for (const it of items) {
-        await applyMovement(tx, {
+        const movement = {
+          economicScope: scope,
           variantId: Number(it.variantId),
           branchId: Number(exp.branchId),
           baseQuantity: Number(it.baseQuantity),
-          movementType: "IN",
+          historicalValue: it.lineCost,
+          movementType: "IN" as const,
           referenceType: "EXPENSE_CANCEL",
           referenceId: expenseId,
           documentNumber: (exp.referenceNumber?.trim() || `EXP-${expenseId}`).slice(0, 100),
           createdBy: actor.userId,
-        });
+        };
+        // Consignment cost is the consignor's share, not our owned WAVG.
+        if (consignmentIds.has(Number(it.variantId))) await applyMovement(tx, movement);
+        else await applyValuedInboundMovement(tx, movement);
       }
       await tx
         .update(expenses)

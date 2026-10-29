@@ -25,9 +25,7 @@ export const positiveRateString = z
   .regex(/^\d+(\.\d{1,4})?$/, "سعر صرف موجب غير صالح")
   .refine((s) => /[1-9]/.test(s), "سعر الصرف يجب أن يكون موجباً");
 
-export const nonNegMoneyString = z
-  .string()
-  .regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح (غير سالب، منزلتان كحدّ أقصى)");
+export { nonNegMoneyString } from "../../shared/moneySchemas";
 
 /**
  * **سعر وحدة بعملة المستند** — غير سالب، حتى `MAX_PRICE_DECIMALS` (٤) منزلة.

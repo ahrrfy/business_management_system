@@ -14,7 +14,7 @@ import { INVOICE_FILTER_METHODS, METHOD_LABEL, paymentMethodLabel, type InvoiceF
 import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 import { printSalesReportV2 } from "@/lib/printing/printTemplatesV2";
 import { D, fmtAr, formatQuantity } from "@/lib/money";
-import { canSeeCost } from "@shared/permissions";
+import { canViewOperationData } from "@shared/operationPermissions";
 import { INVOICE_STATUSES, invoiceStatusLabel, isDeadInvoiceStatus, type InvoiceStatus } from "@shared/invoiceStatus";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -171,12 +171,27 @@ const invoiceColumns: ColumnDef<ReportRow, unknown>[] = [
   },
   {
     accessorKey: "costTotal",
-    header: "التكلفة المسجلة",
+    header: "التكلفة الأصلية (تاريخية)",
     cell: (c) => <span className="tabular-nums text-muted-foreground" dir="ltr">{fmt(c.getValue() as string)}</span>,
+  },
+  {
+    accessorKey: "netRevenue",
+    header: "صافي الإيراد",
+    cell: (c) => <span className="tabular-nums" dir="ltr">{fmt(c.getValue() as string)}</span>,
+  },
+  {
+    accessorKey: "netCOGS",
+    header: "صافي تكلفة المبيعات",
+    cell: (c) => <span className="tabular-nums" dir="ltr">{fmt(c.getValue() as string)}</span>,
+  },
+  {
+    accessorKey: "profit",
+    header: "الربح",
+    cell: (c) => <span className="tabular-nums" dir="ltr">{fmt(c.getValue() as string)}</span>,
   },
 ];
 
-const INVOICE_COST_COLUMNS = new Set(["costTotal"]);
+const INVOICE_COST_COLUMNS = new Set(["costTotal", "netCOGS", "profit"]);
 
 /** حالات الفاتورة المتاحة في فلتر التقرير — مرآة enum الخادم عبر المصدر المشترك.
  *  `SUPERSEDED` كانت مفقودةً هنا ⇒ لا سبيل لحصر الفواتير المُصحَّحة من التقرير. */
@@ -206,7 +221,7 @@ export default function SalesReport() {
   const [sinceDays, setSinceDays] = useState(90);
 
   const me = trpc.auth.me.useQuery();
-  const showCost = me.data ? canSeeCost(me.data.role) : true;
+  const showCost = !!me.data && canViewOperationData(me.data, "purchaseCost") && canViewOperationData(me.data, "profitMargin");
   const branches = trpc.branches.list.useQuery();
   // موظفو المبيعات الذين لديهم فواتير (نفس مصدر فلتر شاشة الفواتير) — بلا كشف دليل المستخدمين.
   const salespeople = trpc.sales.salespeople.useQuery(undefined, { retry: false });
@@ -452,7 +467,7 @@ function InvoicesTab({
   const utils = trpc.useUtils();
   const [exporting, setExporting] = useState(false);
   const visibleInvoiceColumns = useMemo(
-    () => showCost ? invoiceColumns : invoiceColumns.filter((c) => !INVOICE_COST_COLUMNS.has(c.id ?? "")),
+    () => showCost ? invoiceColumns : invoiceColumns.filter((c) => !INVOICE_COST_COLUMNS.has(c.id ?? ("accessorKey" in c ? String(c.accessorKey) : ""))),
     [showCost],
   );
 
@@ -545,7 +560,10 @@ function InvoicesTab({
                     paid: r.paidAmount,
                     returned: r.returnedTotal,
                     remaining: invoiceRemaining(r).toString(),
-                    cost: showCost ? r.costTotal : undefined,
+                    cost: showCost ? r.costTotal ?? undefined : undefined,
+                    netRevenue: r.netRevenue,
+                    netCOGS: showCost ? r.netCOGS ?? undefined : undefined,
+                    profit: showCost ? r.profit ?? undefined : undefined,
                     status: invoiceStatusLabel(r.status),
                     // الأحمر (#8A1F11 = BRAND.alert) للمستند **الميت** وحده (ملغاة/مرتجعة/مستبدلة).
                     // كان كل ما ليس PAID/PARTIALLY_PAID يُطبَع أحمر ⇒ فاتورةٌ آجلة سليمة (PENDING/CONFIRMED)
@@ -595,14 +613,25 @@ function InvoicesTab({
                       { key: "paidAmount", header: "المدفوع", map: (r) => Number(r.paidAmount) },
                       { key: "returnedTotal", header: "المرتجع", map: (r) => Number(r.returnedTotal) },
                       { key: "remaining" as const, header: "المتبقي", map: (r: ReportRow) => invoiceRemaining(r).toNumber() },
+                      { key: "netRevenue", header: "صافي الإيراد", money: true, moneyPrecision: 2, map: (r: ReportRow) => D(r.netRevenue).toNumber() },
                       ...(showCost ? [{
                         key: "costTotal" as const,
-                        header: "التكلفة",
-                        map: (r: ReportRow) => Number(r.costTotal),
+                        header: "التكلفة الأصلية (تاريخية)",
+                        money: true,
+                        moneyPrecision: 2 as const,
+                        map: (r: ReportRow) => r.costTotal == null ? null : D(r.costTotal).toNumber(),
+                      }, {
+                        key: "netCOGS" as const,
+                        header: "صافي تكلفة المبيعات",
+                        money: true,
+                        moneyPrecision: 2 as const,
+                        map: (r: ReportRow) => r.netCOGS == null ? null : D(r.netCOGS).toNumber(),
                       }, {
                         key: "profit" as const,
                         header: "الربح",
-                        map: (r: ReportRow) => D(r.total).minus(D(r.returnedTotal ?? "0")).minus(D(r.costTotal)).toNumber(),
+                        money: true,
+                        moneyPrecision: 2 as const,
+                        map: (r: ReportRow) => r.profit == null ? null : D(r.profit).toNumber(),
                       }] : []),
                       { key: "status", header: "الحالة", map: (r) => invoiceStatusLabel(r.status) },
                     ],

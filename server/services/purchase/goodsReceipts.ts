@@ -1,3 +1,5 @@
+import { applyValuedInboundMovement } from "../inventoryService";
+import { lockEconomicInventoryScope, readEconomicVariant } from "../inventory/economicOwnership";
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, asc, desc, eq, inArray, like, sql } from "drizzle-orm";
@@ -621,48 +623,7 @@ export async function createGoodsReceiptInTx(
     const variantIds = work
       .filter(({ line }) => line.acceptedBaseQuantity > 0)
       .map(({ item }) => Number(item.variantId));
-    await lockInventoryVariants(tx, variantIds);
-    await ensureBranchStockRows(tx, variantIds, Number(po.branchId));
-    if (variantIds.length) {
-      await tx
-        .select({ id: branchStock.id })
-        .from(branchStock)
-        .where(
-          inArray(
-            branchStock.variantId,
-            Array.from(new Set(variantIds)).sort((a, b) => a - b),
-          ),
-        )
-        .orderBy(asc(branchStock.variantId), asc(branchStock.branchId))
-        .for("update");
-    }
-    const stockRows = variantIds.length
-      ? await tx
-          .select({
-            variantId: branchStock.variantId,
-            quantity: sql<string>`COALESCE(SUM(${branchStock.quantity}),0)`,
-          })
-          .from(branchStock)
-          .where(inArray(branchStock.variantId, variantIds))
-          .groupBy(branchStock.variantId)
-      : [];
-    const variantRows = variantIds.length
-      ? await tx
-          .select({
-            id: productVariants.id,
-            costPrice: productVariants.costPrice,
-          })
-          .from(productVariants)
-          .where(inArray(productVariants.id, variantIds))
-          .orderBy(asc(productVariants.id))
-          .for("update")
-      : [];
-    const qtyByVariant = new Map(
-      stockRows.map((row) => [Number(row.variantId), money(row.quantity)]),
-    );
-    const costByVariant = new Map(
-      variantRows.map((row) => [Number(row.id), money(row.costPrice)]),
-    );
+    await lockEconomicInventoryScope(tx, variantIds);
 
     let usdTotal = money(0);
     const prepared = work.map(
@@ -760,19 +721,8 @@ export async function createGoodsReceiptInTx(
       const goodsReceiptItemId = Number(insertedItems[index]!.id);
       if (accepted > 0) {
         const variantId = Number(item.variantId);
-        const oldQty = Decimal.max(qtyByVariant.get(variantId) ?? money(0), 0);
-        const oldCost = costByVariant.get(variantId) ?? money(0);
-        const denominator = oldQty.plus(accepted);
-        const newCost =
-          denominator.lte(0) || oldCost.lte(0)
-            ? unitCost
-            : round2(
-                oldQty
-                  .times(oldCost)
-                  .plus(unitCost.times(accepted))
-                  .dividedBy(denominator),
-              );
-        const movement = await applyMovement(tx, {
+        const movement = await applyValuedInboundMovement(tx, {
+          historicalValue: lineNet,
           variantId,
           branchId: Number(po.branchId),
           baseQuantity: accepted,
@@ -798,10 +748,6 @@ export async function createGoodsReceiptInTx(
           .set({ inventoryMovementId: movement.movementId })
           .where(eq(goodsReceiptItems.id, goodsReceiptItemId));
         await tx
-          .update(productVariants)
-          .set({ costPrice: toDbMoney(newCost) })
-          .where(eq(productVariants.id, variantId));
-        await tx
           .update(purchaseOrderItems)
           .set({
             receivedBaseQuantity: sql`${purchaseOrderItems.receivedBaseQuantity} + ${accepted}`,
@@ -813,8 +759,7 @@ export async function createGoodsReceiptInTx(
                 }),
           })
           .where(eq(purchaseOrderItems.id, Number(item.id)));
-        qtyByVariant.set(variantId, denominator);
-        costByVariant.set(variantId, newCost);
+
         netTotal = netTotal.plus(lineNet);
       }
     }
@@ -1305,16 +1250,9 @@ export async function decideGoodsReceiptReversal(
     const variantIds = requestedItems.map((row) =>
       Number(row.receiptItem.variantId),
     );
-    await lockInventoryVariants(tx, variantIds);
-    const variantRows = await tx
-      .select({ id: productVariants.id, costPrice: productVariants.costPrice })
-      .from(productVariants)
-      .where(inArray(productVariants.id, variantIds))
-      .orderBy(asc(productVariants.id))
-      .for("update");
-    const costByVariant = new Map(
-      variantRows.map((row) => [Number(row.id), money(row.costPrice)]),
-    );
+    const scope = await lockEconomicInventoryScope(tx, variantIds);
+    const costByVariant = new Map<number, Decimal>();
+    for (const id of variantIds) costByVariant.set(id, money((await readEconomicVariant(tx, scope, id)).costPrice));
     // Historical partials may differ from a rounded cumulative share. Consume
     // the actual remaining original GRNI, using the locked source trail.
     const priorReversalItems = await tx.select().from(goodsReceiptReversalItems)

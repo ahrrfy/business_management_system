@@ -1,8 +1,10 @@
+import { appErrorMessage } from "@shared/errors";
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
   accountingEntries,
+  accounts,
   payrollAccountingEvents,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
@@ -18,9 +20,11 @@ import {
   type PostingSourceComponents,
 } from "../accounting/postingEngine";
 import { postEntry, type EntryType } from "../ledgerService";
+import { getDoubleEntryRuntime } from "../accounting/journalStore";
 import { money, round2, toDbMoney } from "../money";
 import { payrollHash, type PayrollBreakdown } from "./helpers";
 import type { PayrollPaymentMethod } from "./types";
+import type { SalarySettlementEvidence } from "./settlementEvidence";
 
 export type PayrollEventKind =
   | "ACCRUAL"
@@ -120,6 +124,7 @@ export function payrollSettlementPosting(input: {
   paymentMethod: PayrollPaymentMethod;
   amount: Decimal;
   cashBucket?: "TREASURY" | "DRAWER" | null;
+  entitlementAmount?: Decimal;
 }): {
   profile: PostingProfile;
   entryType: Extract<EntryType, "PAYMENT_OUT" | "PAYMENT_IN">;
@@ -145,6 +150,58 @@ export function payrollSettlementPosting(input: {
         : input.kind === "INCOME_TAX"
           ? "PAYMENT_IN_PAYROLL_TAX_RETURN"
           : "PAYMENT_IN_PAYROLL_SS_RETURN";
+  if (input.kind === "SALARY" && input.entitlementAmount != null) {
+    const entitlement = round2(input.entitlementAmount);
+    const actual = round2(input.amount);
+    const difference = actual.minus(entitlement);
+    if (
+      !entitlement.gt(0) ||
+      actual.isNegative() ||
+      (input.paymentMethod !== "CASH" && !difference.isZero()) ||
+      (input.direction === "OUT" &&
+        input.paymentMethod === "CASH" &&
+        !actual.eq(
+          entitlement
+            .div(250)
+            .toDecimalPlaces(0, Decimal.ROUND_HALF_UP)
+            .mul(250),
+        ))
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "مبالغ تسوية الراتب لا تطابق المستحق والتقريب المعتمد.",
+          why: "دليل المصدر المحفوظ لا يحقق عقد تسوية الراتب",
+          doThis: "راجع الحدث والتخصيص الأصليين مع المحاسب قبل إعادة المحاولة",
+        }),
+      });
+    }
+    const debits: Partial<Record<AccountRole, Decimal>> = {
+      [liability]: entitlement,
+    };
+    const credits: Partial<Record<AccountRole, Decimal>> = { [asset]: actual };
+    if (difference.gt(0)) debits.ROUNDING_DIFF = difference;
+    if (difference.lt(0)) credits.ROUNDING_DIFF = difference.abs();
+    const source =
+      input.direction === "OUT"
+        ? sourceComponents(debits, credits)
+        : sourceComponents(credits, debits);
+    const entryType = input.direction === "OUT" ? "PAYMENT_OUT" : "PAYMENT_IN";
+    const lines = Object.entries(source.roleDebits ?? {})
+      .filter(([, value]) => money(value).gt(0))
+      .map(([role, value]) => debitLine(role as AccountRole, value))
+      .concat(
+        Object.entries(source.roleCredits ?? {})
+          .filter(([, value]) => money(value).gt(0))
+          .map(([role, value]) => creditLine(role as AccountRole, value)),
+      );
+    return {
+      profile,
+      entryType,
+      source,
+      intent: createPostingIntent(profile, entryType, lines, source),
+    };
+  }
   const debit = input.direction === "OUT" ? liability : asset;
   const credit = input.direction === "OUT" ? asset : liability;
   const source = sourceComponents(
@@ -179,6 +236,7 @@ export async function postPayrollAccountingEvent(
     reversalOfId?: number | null;
     sourceKey: string;
     sourceHashPayload: unknown;
+    settlementEvidence?: SalarySettlementEvidence | null;
     occurredAt: Date;
     actorUserId: number;
     entryType: Extract<EntryType, "ADJUST" | "PAYMENT_OUT" | "PAYMENT_IN">;
@@ -189,6 +247,45 @@ export async function postPayrollAccountingEvent(
     notes: string;
   },
 ): Promise<{ accountingEntryId: number; eventId: number; sourceHash: string }> {
+  if (
+    input.settlementEvidence &&
+    payrollHash(input.settlementEvidence) !==
+      payrollHash(input.sourceHashPayload)
+  ) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "بصمة تسوية الراتب لا تطابق دليل الحدث.",
+        why: "دليل المصدر المحفوظ لا يحقق عقد تسوية الراتب",
+        doThis: "راجع الحدث والتخصيص الأصليين مع المحاسب قبل إعادة المحاولة",
+      }),
+    });
+  }
+  if (
+    input.settlementEvidence?.classification === "ROUNDING_DIFF" &&
+    (await getDoubleEntryRuntime(tx)).mode === "ACTIVE"
+  ) {
+    const [roundingAccount] = await tx
+      .select({ id: accounts.id })
+      .from(accounts)
+      .where(
+        and(
+          eq(accounts.systemRole, "ROUNDING_DIFF"),
+          eq(accounts.isActive, true),
+        ),
+      )
+      .for("share")
+      .limit(1);
+    if (!roundingAccount)
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذّر تسوية فرق تقريب الراتب",
+          why: "حساب فروق التقريب المعتمد غير مربوط بحساب تشغيلي فعّال",
+          doThis: "اطلب من المحاسب اعتماد ربط ROUNDING_DIFF ثم أعد المحاولة",
+        }),
+      });
+  }
   await postEntry(tx, {
     entryType: input.entryType,
     branchId: input.branchId,
@@ -230,6 +327,7 @@ export async function postPayrollAccountingEvent(
     reversalOfId: input.reversalOfId ?? null,
     sourceKey: input.sourceKey,
     sourceHash,
+    settlementEvidence: input.settlementEvidence ?? null,
     occurredAt: input.occurredAt,
     createdBy: input.actorUserId,
   });

@@ -671,6 +671,52 @@ function isTransientSharingError(error) {
   return process.platform === "win32" && WINDOWS_TRANSIENT.has(error?.code);
 }
 
+// Retry only the filesystem operation that Windows sharing temporarily denies.
+// Keep this below the 2s in-flight temporary witness; unknown/permanent failures
+// still propagate, and POSIX retains its single-attempt behavior.
+const INTENT_SHARING_RETRY_MS = 500;
+function retryIntentMutation(action) {
+  const deadline = process.hrtime.bigint() + BigInt(INTENT_SHARING_RETRY_MS) * 1_000_000n;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return action();
+    } catch (error) {
+      const remaining = Number(deadline - process.hrtime.bigint()) / 1_000_000;
+      if (!isTransientSharingError(error) || remaining <= 0) throw error;
+      intentWait(Math.min(5 * attempt, 25, remaining));
+    }
+  }
+}
+
+function sameIntentOwner(actual, expected) {
+  return actual.namespace === expected.namespace &&
+    actual.token === expected.token &&
+    actual.createdNs === expected.createdNs &&
+    actual.pids.length === expected.pids.length &&
+    actual.pids.every((pid, index) => pid === expected.pids[index]);
+}
+
+function assertIntentOwner(file, expected, requireDead = false) {
+  const actual = readIntentRecord(file, expected.namespace);
+  if (!sameIntentOwner(actual, expected) ||
+      (requireDead && (actual.held !== expected.held || actual.pids.some(intentProcessIsAlive)))) {
+    throw new Error("HR_BRIDGE_LOCK_INTENT_OWNERSHIP_CHANGED");
+  }
+}
+
+function removeIntentRecord(file, expected, requireDead = false) {
+  try {
+    retryIntentMutation(() => {
+      // A sharing wait can outlive the owner snapshot. Never delete a record
+      // that changed identity or whose previously dead PID is now alive.
+      assertIntentOwner(file, expected, requireDead);
+      fs.unlinkSync(file);
+    });
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+}
+
 function readIntentRecord(file, namespace) {
   const stat = fs.lstatSync(file);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 16 * 1024) {
@@ -751,27 +797,22 @@ function writeIntentRecord(file, record, replace = false) {
     // إنشاءٌ: نحفظ دلالة «لا تدُس اسماً قائماً» — الرابطُ الصلب يفشل بـEEXIST ذرّياً،
     // ثمّ نُزيل المؤقّت. (rename يدوس صامتاً، وهو ما لا نريده في مسار الإنشاء.)
     try {
-      fs.linkSync(temporary, file);
+      retryIntentMutation(() => fs.linkSync(temporary, file));
     } finally {
-      try { fs.unlinkSync(temporary); } catch (error) {
-        if (error?.code !== "ENOENT") throw error;
-      }
+      removeIntentRecord(temporary, record);
     }
     return;
   }
   // على لينكس `rename` ذرّيّةٌ ولا تفشل لمشاركةٍ قطّ ⇒ محاولةٌ واحدة. وعلى ويندوز قد تردّ
   // `EPERM` لأنّ ماسحاً متزامناً يفتح الوجهة — عابرٌ يزول بمحاولةٍ ثانية.
-  for (let attempt = 1; ; attempt += 1) {
-    try {
+  try {
+    retryIntentMutation(() => {
+      assertIntentOwner(file, record);
       fs.renameSync(temporary, file);
-      return;
-    } catch (error) {
-      if (attempt >= 5 || !isTransientSharingError(error)) {
-        try { fs.unlinkSync(temporary); } catch { /* المؤقّت لا يُخلَّف وراءنا */ }
-        throw error;
-      }
-      intentWait(5 * attempt);
-    }
+    });
+  } catch (error) {
+    try { removeIntentRecord(temporary, record); } catch { /* Preserve unproved ownership. */ }
+    throw error;
   }
 }
 
@@ -852,11 +893,7 @@ function scanIntentRecords(directory, namespace, ownFile) {
     if (record.pids.some(intentProcessIsAlive)) {
       live.push({ file, record });
     } else if (file !== ownFile) {
-      try {
-        fs.unlinkSync(file);
-      } catch (error) {
-        if (error?.code !== "ENOENT") throw error;
-      }
+      removeIntentRecord(file, record, true);
     }
   }
   return { live, vanished, names };
@@ -977,7 +1014,7 @@ function acquireRuntimeIntentLock(projectRoot, namespace) {
     }
   } catch (error) {
     try {
-      fs.unlinkSync(file);
+      removeIntentRecord(file, record);
       fsyncIntentDirectory(directory);
     } catch (cleanupError) {
       if (cleanupError?.code !== "ENOENT") throw cleanupError;
@@ -996,7 +1033,7 @@ function acquireRuntimeIntentLock(projectRoot, namespace) {
     try {
       const existing = readIntentRecord(file, namespace);
       if (existing.token === token) {
-        fs.unlinkSync(file);
+        removeIntentRecord(file, record);
         fsyncIntentDirectory(directory);
       }
     } catch {

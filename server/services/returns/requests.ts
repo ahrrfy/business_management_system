@@ -15,6 +15,7 @@
  *    الطلب والاعتماد — وإلّا اعتُمد طلبٌ بُني على حالةٍ لم تعد قائمة فانعكس البيع مرّتين.
  *  ④ **المُعتمِد ≠ المُنشئ ومُنشئ الفاتورة** بلا استثناءٍ إداريّ؛ الصلاحية لا تلغي فصل المهام.
  */
+import { scanAfter } from "../decisions/scan";
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { invoiceItems, invoices, returnRequests, salesControlRequests, users,
@@ -201,6 +202,7 @@ async function insertReturnRequestTx(
 
 /** قائمة الطلبات — للمدير (كلّ فرعه) وللموظّف (طلباته وحدها). */
 export async function listReturnRequests(opts: {
+  scan?: import("../decisions/scan").ScanPosition | null;
   branchId: number | null;
   status?: "PENDING_APPROVAL" | "APPROVED" | "REJECTED";
   createdBy?: number | null;
@@ -212,6 +214,8 @@ export async function listReturnRequests(opts: {
   if (opts.branchId != null) conds.push(eq(returnRequests.branchId, opts.branchId));
   if (opts.status) conds.push(eq(returnRequests.status, opts.status));
   if (opts.createdBy != null) conds.push(eq(returnRequests.createdBy, opts.createdBy));
+  const scan = scanAfter(returnRequests.id, opts.scan);
+  if (scan) conds.push(scan);
   return d
     .select({
       id: returnRequests.id,

@@ -217,22 +217,32 @@ export async function listBackorderShortfall(
     .where(where);
 
   // المرتقب عبر كل النطاق (لا الصفحة) كي يطابق «الصافي المطلوب» في الرأس مجموعَ الصفوف كلّها.
+  const pendingByPosition = db
+    .select({
+      variantId: purchaseOrderItems.variantId,
+      branchId: purchaseOrders.branchId,
+      pending: sql<string>`SUM(GREATEST(${purchaseOrderItems.baseQuantity} - COALESCE(${purchaseOrderItems.receivedBaseQuantity}, 0), 0))`.as("pending"),
+    })
+    .from(purchaseOrderItems)
+    .innerJoin(purchaseOrders, eq(purchaseOrders.id, purchaseOrderItems.purchaseOrderId))
+    .where(inArray(purchaseOrders.status, [...OPEN_PO_STATUSES]))
+    .groupBy(purchaseOrderItems.variantId, purchaseOrders.branchId)
+    .as("pendingByPosition");
   const [pendingAll] = await db
     .select({
-      pending: sql<string>`COALESCE(SUM(LEAST(GREATEST(${purchaseOrderItems.baseQuantity} - COALESCE(${purchaseOrderItems.receivedBaseQuantity}, 0), 0), -${branchStock.quantity})), 0)`,
+      pending: sql<string>`COALESCE(SUM(LEAST(${pendingByPosition.pending}, -${branchStock.quantity})), 0)`,
     })
     .from(branchStock)
     .innerJoin(productVariants, eq(productVariants.id, branchStock.variantId))
     .innerJoin(products, eq(products.id, productVariants.productId))
-    .innerJoin(purchaseOrderItems, eq(purchaseOrderItems.variantId, branchStock.variantId))
     .innerJoin(
-      purchaseOrders,
+      pendingByPosition,
       and(
-        eq(purchaseOrders.id, purchaseOrderItems.purchaseOrderId),
-        eq(purchaseOrders.branchId, branchStock.branchId),
+        eq(pendingByPosition.variantId, branchStock.variantId),
+        eq(pendingByPosition.branchId, branchStock.branchId),
       ),
     )
-    .where(and(where, inArray(purchaseOrders.status, [...OPEN_PO_STATUSES])));
+    .where(where);
 
   const totalShortfall = Number(totals?.shortfall ?? 0);
   const totalPending = Number(pendingAll?.pending ?? 0);

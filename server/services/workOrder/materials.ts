@@ -1,3 +1,4 @@
+import { lockEconomicInventoryScope, readEconomicVariant } from "../inventory/economicOwnership";
 /**
  * تحرير **بنود** أمر الشغل (المواد) — إضافةً وحذفاً وتغييرَ كمّية، قبل التسليم.
  *
@@ -150,6 +151,7 @@ export async function setWorkOrderMaterialsInTx(
     const touchedIds = Array.from(
       new Set(Array.from(currentQty.keys()).concat(Array.from(desiredQty.keys()))),
     ).sort((a, b) => a - b);
+    const scope = await lockEconomicInventoryScope(tx, touchedIds);
     const added: SetWorkOrderMaterialsResult["added"] = [];
     const removed: SetWorkOrderMaterialsResult["removed"] = [];
     const changed: SetWorkOrderMaterialsResult["changed"] = [];
@@ -222,8 +224,9 @@ export async function setWorkOrderMaterialsInTx(
       : [];
     const checkVariantIds: number[] = [];
     for (const vid of (consumed ? touchedIds : desiredIds)) {
-      const isService = await isServiceVariant(tx, vid);
-      const isBundle = await isBundleVariant(tx, vid);
+      const current = await readEconomicVariant(tx, scope, vid);
+      const isService = current.product.isService;
+      const isBundle = current.product.isBundle;
       if (isService || isBundle) {
         if ((desiredQty.get(vid) ?? 0) > 0) {
           checkVariantIds.push(vid);
@@ -236,7 +239,7 @@ export async function setWorkOrderMaterialsInTx(
       tx,
       checkVariantIds,
       "مادة أمر الشغل",
-      { allowInactiveVariantIds: reducedIds },
+      { allowInactiveVariantIds: reducedIds, economicScope: scope },
     );
 
     // ✅ idempotency طبيعيّة: نفس القائمة مرّتين ⇒ فرقٌ صفر ⇒ خروجٌ نظيف بلا حركةٍ ولا قيد.
@@ -287,6 +290,7 @@ export async function setWorkOrderMaterialsInTx(
           const issuedValue = round2(issueUnitCost.times(delta));
           costDelta = costDelta.plus(issuedValue);
           await applyMovement(tx, {
+          economicScope: scope,
             variantId: vid,
             branchId: Number(wo.branchId),
             baseQuantity: delta,

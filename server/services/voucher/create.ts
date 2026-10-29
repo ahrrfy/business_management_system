@@ -494,6 +494,8 @@ export async function createVoucherTx(
   input: VoucherInput,
   actor: Actor,
   options?: {
+    installmentTarget?: { lineId: number; effectKey: string };
+    prelockedCashRoute?: { shiftId: number | null; cashBucket: "DRAWER" | "TREASURY" };
     systemRequest?: SystemPaymentRequest;
     /** يؤجل اعتماد المالك حتى تربط الوحدة الأم السند بمصدره داخل المعاملة نفسها. */
     deferOwnerAutoApproval?: boolean;
@@ -1021,7 +1023,7 @@ export async function createVoucherTx(
   let cashBucket: "DRAWER" | "TREASURY" | null = null;
   if (!needsApproval) {
     if (input.paymentMethod === "CASH") {
-      const g = await shiftIdForCashTx(tx, actor, input.branchId, "سند نقدي");
+      const g = options?.prelockedCashRoute ?? await shiftIdForCashTx(tx, actor, input.branchId, "سند نقدي");
       shiftId = g.shiftId;
       cashBucket = g.cashBucket;
     } else {
@@ -1155,6 +1157,9 @@ export async function createVoucherTx(
         paymentMethod: input.paymentMethod,
         voucherBranchId: input.branchId,
         allowInterBranchClearing: options?.allowInterBranchClearing,
+        installmentEffect: direction === "IN" ? { sourceReceiptId: receiptId, effectReceiptId: receiptId,
+          effectKey: options?.installmentTarget?.effectKey ?? `VOUCHER:${receiptId}`,
+          selectedLineId: options?.installmentTarget?.lineId } : undefined,
       });
     }
 

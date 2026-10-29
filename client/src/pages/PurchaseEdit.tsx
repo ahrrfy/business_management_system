@@ -11,7 +11,7 @@
  * الأهليّة يحسمها الخادم (لا استلام، لا دفعة، حالة غير نهائية) — والشاشة تعرض السبب بدل نموذجٍ
  * يقود إلى رفضٍ حتميّ بعد جهد إدخال.
  */
-import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import React, { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { invalidateFinancialQueries } from "@/lib/realtime/financialQueries";
 import { Link, useLocation, useParams } from "wouter";
@@ -246,6 +246,7 @@ export default function PurchaseEdit() {
   const [bulkOpen, setBulkOpen] = useState(false);
   /** بصمة اللقطة المحفوظة — مقارنتها بالبصمة الحالية تُعطي «هل تغيّر شيء؟» بلا أعلامٍ متسلسلة. */
   const [baseline, setBaseline] = useState<string | null>(null);
+  const [baselineOrder, setBaselineOrder] = useState<PurchaseOrderData | null>(null);
 
   const totals = useMemo(() => calcTotals(state.items, state), [state]);
 
@@ -281,23 +282,23 @@ export default function PurchaseEdit() {
   );
 
   const tenderState = usePurchaseTenderState({
-    branchId: Number(po.data?.branchId ?? state.branchId),
+    branchId: Number(baselineOrder?.branchId ?? state.branchId),
     enabled: state.paymentTerms === "CASH" && state.currency === "IQD",
     context: "edit",
     supplierId: state.entityId,
     total: docTotals.total,
     isCreator:
-      po.data != null &&
+      baselineOrder != null &&
       me.data != null &&
-      Number(po.data.createdBy) === Number(me.data.id),
+      Number(baselineOrder.createdBy) === Number(me.data.id),
   });
 
   // تحميل الأمر في المحرّر **مرّةً واحدة**: إعادةُ الحقن عند كل إعادة جلبٍ (invalidate/refocus)
   // كانت ستطمس تعديلاً جارياً بلا إنذار.
-  const hydratedRef = useRef(false);
-  useEffect(() => {
-    if (hydratedRef.current || !po.data) return;
-    hydratedRef.current = true;
+  function hydrate() {
+    if (!po.data || po.data.id !== purchaseOrderId) return;
+    setBaselineOrder(po.data);
+    setRevisionReason("");
     const next = stateFromOrder(po.data, Number(po.data.branchId));
     const ship = D(po.data.shippingCost ?? 0).gt(0)
       ? String(po.data.shippingCost)
@@ -327,7 +328,11 @@ export default function PurchaseEdit() {
         po.data.tender == null,
       ),
     );
-  }, [po.data]);
+  }
+  useEffect(() => {
+    if (baselineOrder?.id !== purchaseOrderId) hydrate();
+  }, [purchaseOrderId, po.data]); // eslint-disable-line react-hooks/exhaustive-deps
+  const stale = !!baselineOrder && po.data?.id === baselineOrder.id && po.data.version !== baselineOrder.version;
 
   // حارس فقدان البيانات: نشِطٌ فقط بعد الحقن وعند اختلافٍ فعليّ عن اللقطة المحفوظة.
   const fingerprint = useMemo(
@@ -528,6 +533,7 @@ export default function PurchaseEdit() {
   }
 
   async function handleSubmit() {
+    if (!baselineOrder || baselineOrder.id !== purchaseOrderId) return;
     if (!canLifecycleOperation(me.data, "purchases.updateOrder", true))
       return notify.err("تعديل أمر الشراء غير مفوض لهذا الحساب.");
     if (update.isPending) return;
@@ -538,7 +544,7 @@ export default function PurchaseEdit() {
     }
     const ok = await confirm({
       title: "تأكيد تعديل أمر الشراء",
-      description: `سيتم حفظ التعديلات على أمر الشراء ${po.data?.poNumber ?? `#${purchaseOrderId}`} وتحديث البنود والقيمة الإجمالية (${fmtAr(docTotals.total)} ${state.currency === "USD" ? "$" : "د.ع"}).`,
+      description: `سيتم حفظ التعديلات على أمر الشراء ${baselineOrder.poNumber} وتحديث البنود والقيمة الإجمالية (${fmtAr(docTotals.total)} ${state.currency === "USD" ? "$" : "د.ع"}).`,
       confirmText: "تأكيد وحفظ التعديلات",
       cancelText: "تراجع",
     });
@@ -552,7 +558,7 @@ export default function PurchaseEdit() {
 
     update.mutate({
       purchaseOrderId,
-      expectedVersion: Number(po.data?.version),
+      expectedVersion: Number(baselineOrder.version),
       revisionReason: revisionReason.trim(),
       supplierId: state.entityId!,
       settlementType: state.paymentTerms === "CASH" ? "CASH" : "CREDIT",
@@ -591,7 +597,7 @@ export default function PurchaseEdit() {
         : "ACCRUAL",
       shippingShiftId:
         landed.hasLanded && shippingFundingSource === "DRAWER"
-          ? (po.data?.shippingFundingShiftId ?? undefined)
+          ? (baselineOrder.shippingFundingShiftId ?? undefined)
           : undefined,
       items: state.items.map((l) => ({
         variantId: l.variantId,
@@ -619,7 +625,7 @@ export default function PurchaseEdit() {
    * الأمر لا تحمل الرصيد (تعليقُه في مكانه) ⇒ طباعتُه تُثبِّت صفراً كاذباً في ورقةٍ تُسلَّم.
    */
   function printOrder() {
-    const data = po.data;
+    const data = baselineOrder;
     if (!data) return;
     // Finding 3: السعر يُعتمد من l.price المحفوظ والمعروض (انظر printPurchaseOrderDoc)
     printPurchaseOrderDoc({
@@ -741,7 +747,8 @@ export default function PurchaseEdit() {
     );
   }
 
-  const order = po.data;
+  if (!baselineOrder || baselineOrder.id !== purchaseOrderId) return <LoadingState />;
+  const order = baselineOrder;
   const received = order.items.some((it) => (it.receivedBaseQuantity ?? 0) > 0);
   const terminal = order.status === "RECEIVED" || order.status === "CANCELLED";
   const confirmed = order.status === "CONFIRMED";
@@ -788,6 +795,12 @@ export default function PurchaseEdit() {
 
   return (
     <div ref={containerRef} dir="rtl" className="flex flex-col gap-3">
+      {stale && <div role="alert" className="rounded-md border p-3 text-sm">
+        تغيّر هذا الأمر لدى مستخدم آخر. مدخلاتك محفوظة ومرتبطة بالنسخة الأصلية؛ راجع الأحدث قبل الحفظ.
+        <button type="button" className="rounded-md border px-3 py-2" disabled={update.isPending} onClick={async () => {
+          if (await confirm({ title: "تحميل النسخة الأحدث", description: "ستُلغى تعديلاتك الحالية ويُحمّل أمر الشراء الأحدث كاملاً.", confirmText: "تحميل الأحدث" })) hydrate();
+        }}>تحميل الأحدث وإلغاء تعديلاتي</button>
+      </div>}
       <PageHeader
         title={
           <span className="flex items-center gap-2">
@@ -870,8 +883,8 @@ export default function PurchaseEdit() {
             shippingFundingSource={shippingFundingSource}
             onShippingFundingSourceChange={setShippingFundingSource}
             paymentRecorded={
-              po.data?.shippingFundingSource === "DRAWER" &&
-              po.data.shippingPayment?.hasRecordedPayment === true
+              baselineOrder.shippingFundingSource === "DRAWER" &&
+              baselineOrder.shippingPayment?.hasRecordedPayment === true
             }
             landed={landed}
             showOptionalBadge

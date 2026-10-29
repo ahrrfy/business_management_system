@@ -6,6 +6,7 @@ import { withdrawSupplierVoucherSettlementTx } from "./supplierSettlement";
 import { asc, eq, inArray } from "drizzle-orm";
 import {
   accountingEntries,
+  invoices,
   purchaseOrders,
   receipts,
   shifts,
@@ -32,6 +33,9 @@ import {
   assertPurchaseUsdSettlementMaterializedTx,
   repairLegacyPurchaseUsdSettlementReceiptTx,
 } from "../purchase/usdSettlement";
+
+import { pendingInstallmentTargetTx } from "../installment/receiptClaims";
+import { assertInstallmentReceiptNotReversedTx } from "../installment/receiptAllocations";
 
 export interface CancelVoucherResult {
   receiptId: number;
@@ -110,6 +114,10 @@ export async function cancelVoucher(
         cashBucket: previewBucket,
         shiftId: preview.shiftId != null ? Number(preview.shiftId) : null,
       });
+    }
+    if (preview.invoiceId != null && preview.partyType === "CUSTOMER" && preview.status !== "REVERSED") {
+      await tx.select({ id: invoices.id }).from(invoices).where(eq(invoices.id, preview.invoiceId)).for("update");
+      await assertInstallmentReceiptNotReversedTx(tx, preview.invoiceId, receiptId);
     }
     // اعتماد طلب الإلغاء يقفل الطلب والأصل بترتيب id. يجب أن يسلك إنشاء/إعادة
     // طلب الإلغاء الترتيب نفسه، وإلا انعكس R1→R2 مقابل R2→R1 لغير النقد.
@@ -263,6 +271,7 @@ export async function cancelVoucher(
       r.approvalStatus === "PENDING_APPROVAL" ||
       r.approvalStatus === "REJECTED"
     ) {
+      await pendingInstallmentTargetTx(tx, r.invoiceId, r, true);
       await tx
         .update(receipts)
         .set({ status: "REVERSED" })

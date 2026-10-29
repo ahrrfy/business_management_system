@@ -31,6 +31,8 @@ import {
   printDueSoonReport,
   printPlanScheduleReport,
 } from "@/components/installments/installmentReportPrint";
+import type { PlanDetail } from "@/components/installments/installmentTypes";
+import type { ReportDocInput } from "@/lib/printing/reportDoc";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../../../");
 const CUSTOMER_STATEMENT_FILE = path.join(
@@ -88,7 +90,7 @@ describe("Milestone 5 Challenger: Receivables & Collections Wing", () => {
   describe("1. Governance & Repository Invariants", () => {
     it("has ZERO raw emojis in all Wing 4 source files", () => {
       // Basic emoji regex covering common unicode emoji ranges
-      const emojiRegex = /[\u{1F300}-\u{1F6FF}\u{1F900}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/u;
+      const emojiRegex = new RegExp(String.raw`[\u{1F300}-\u{1F6FF}\u{1F900}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]`, "u");
 
       for (const filePath of WING_FILES) {
         const content = fs.readFileSync(filePath, "utf-8");
@@ -319,13 +321,15 @@ describe("Milestone 5 Challenger: Receivables & Collections Wing", () => {
               planId: 101,
               lineId: 201,
               branchId: 1,
-              branchName: "الفرع الرئيسي",
               customerId: 501,
               customerName: "عميل تجريبي",
               customerPhone: "07701234567",
               seq: 1,
               dueDate: "2026-10-20",
               amount: "150000",
+              paidAmount: "0", remainingAmount: "150000", paymentHistory: [],
+              reconciliationRequired: false, pendingApproval: false,
+              invoiceNetPaidAmount: "0", invoiceRemainingAmount: "150000", bankName: null,
               kind: "CASH",
               checkNumber: null,
               daysOverdue: 0,
@@ -340,9 +344,9 @@ describe("Milestone 5 Challenger: Receivables & Collections Wing", () => {
     });
 
     it("printPlanScheduleReport generates valid schedule document structure", () => {
-      let printedTitle = "";
-      const fakePrint = (input: { title: string }) => {
-        printedTitle = input.title;
+      const documents: ReportDocInput[] = [];
+      const fakePrint = (input: (typeof documents)[number]) => {
+        documents.push(input);
         return true;
       };
 
@@ -350,13 +354,22 @@ describe("Milestone 5 Challenger: Receivables & Collections Wing", () => {
         printPlanScheduleReport(
           {
             id: 101,
+            customerId: 12,
+            branchId: 1,
+            invoiceId: 501,
+            activeInvoiceGuard: 501,
+            createdBy: 8,
+            updatedAt: new Date("2026-10-01T12:00:00Z"),
+            notes: null,
             customerName: "عميل تجريبي",
             customerPhone: "07701234567",
-            totalAmount: "1000000",
+            totalAmount: "600000",
             downPayment: "200000",
-            paidAmount: "400000",
+            invoiceNetPaidAmount: "400000",
+            invoiceRemainingAmount: "200000",
+            reconciliationRequired: false,
             status: "ACTIVE",
-            createdAt: "2026-09-01T10:00:00Z",
+            createdAt: new Date("2026-09-01T10:00:00Z"),
             lines: [
               {
                 id: 1,
@@ -367,10 +380,16 @@ describe("Milestone 5 Challenger: Receivables & Collections Wing", () => {
                 kind: "CASH",
                 checkNumber: null,
                 status: "PAID",
-                paidAt: "2026-10-01T12:00:00Z",
-                receiptVoucherId: 55,
-                bouncedAt: null,
-                bounceReason: null,
+                paidAt: new Date("2026-10-01T12:00:00Z"),
+                receiptId: 55,
+                receiptPaymentMethod: "CASH",
+                bankName: null,
+                createdAt: new Date("2026-09-01T10:00:00Z"),
+                paidAmount: "200000",
+                remainingAmount: "0",
+                reconciliationRequired: false,
+                pendingApproval: false,
+                paymentHistory: [{ id: 71, receiptId: 55, voucherNumber: "RCPT-55", paymentMethod: "CASH", amount: "200000", effectAmount: "200000", createdAt: new Date("2026-10-01T12:00:00Z"), reversed: false }],
                 note: null,
               },
               {
@@ -383,18 +402,30 @@ describe("Milestone 5 Challenger: Receivables & Collections Wing", () => {
                 checkNumber: null,
                 status: "PENDING",
                 paidAt: null,
-                receiptVoucherId: null,
-                bouncedAt: null,
-                bounceReason: null,
+                receiptId: null,
+                receiptPaymentMethod: null,
+                bankName: null,
+                createdAt: new Date("2026-09-01T10:00:00Z"),
+                paidAmount: "0",
+                remainingAmount: "200000",
+                reconciliationRequired: false,
+                pendingApproval: false,
+                paymentHistory: [],
                 note: null,
               },
             ],
-          },
+          } satisfies PlanDetail,
           fakePrint,
         );
       }).not.toThrow();
 
-      expect(printedTitle).toContain("جدول سداد خطة الأقساط");
+      const doc = documents[0];
+      expect(doc.title).toContain("جدول سداد خطة الأقساط");
+      expect(doc.headerExtra).toContainEqual({ label: "صافي المدفوع بالفاتورة", value: "400,000" });
+      expect(doc.headerExtra).toContainEqual({ label: "المتبقي الفعلي بالفاتورة", value: "200,000" });
+      expect(doc.rows[0]).toMatchObject({ paid: "200,000", remaining: "0", receipts: "#RCPT-55: 200,000" });
+      expect(doc.rows[1]).toMatchObject({ paid: "0", remaining: "200,000", receipts: "—" });
+      expect(doc.summary).toContainEqual(expect.objectContaining({ label: "المتبقي بالأقساط", value: "200,000 د.ع" }));
     });
   });
 
@@ -610,13 +641,15 @@ describe("Milestone 5 Challenger: Receivables & Collections Wing", () => {
               planId: 10,
               lineId: 20,
               branchId: 1,
-              branchName: "الفرع الرئيسي",
               customerId: 30,
               customerName: "عميل تجاري",
               customerPhone: null,
               seq: 2,
               dueDate: "2026-10-01",
               amount: "500000",
+              paidAmount: "0", remainingAmount: "500000", paymentHistory: [],
+              reconciliationRequired: false, pendingApproval: false,
+              invoiceNetPaidAmount: "0", invoiceRemainingAmount: "1000000", bankName: null,
               kind: "CHECK",
               checkNumber: "CHK-9988",
               daysOverdue: 10,
@@ -625,13 +658,15 @@ describe("Milestone 5 Challenger: Receivables & Collections Wing", () => {
               planId: 10,
               lineId: 21,
               branchId: 1,
-              branchName: "الفرع الرئيسي",
               customerId: 30,
               customerName: "عميل تجاري",
               customerPhone: "07701234567",
               seq: 3,
               dueDate: "2026-11-01",
               amount: "500000",
+              paidAmount: "0", remainingAmount: "500000", paymentHistory: [],
+              reconciliationRequired: false, pendingApproval: false,
+              invoiceNetPaidAmount: "0", invoiceRemainingAmount: "1000000", bankName: null,
               kind: "CASH",
               checkNumber: null,
               daysOverdue: 0,
@@ -660,9 +695,11 @@ describe("Milestone 5 Challenger: Receivables & Collections Wing", () => {
             customerPhone: null,
             totalAmount: "0",
             downPayment: "0",
-            paidAmount: "0",
-            status: "DRAFT",
-            createdAt: "2026-10-01",
+            customerId: 30, branchId: 1, invoiceId: null, activeInvoiceGuard: null,
+            notes: null, createdBy: 8,
+            invoiceNetPaidAmount: null, invoiceRemainingAmount: null, reconciliationRequired: true,
+            status: "CANCELLED",
+            createdAt: new Date("2026-10-01"), updatedAt: new Date("2026-10-01"),
             lines: [],
           },
           testPrint,

@@ -1022,6 +1022,10 @@ export const productVariants = mysqlTable(
     costPrice: decimal("costPrice", { precision: 15, scale: 2 })
       .default("0")
       .notNull(),
+    // الكمية بالطريق بحسب فرع المصدر؛ NULL تعني أن التهيئة المحروسة لم تكتمل.
+    transitBaseBySourceBranch: json("transitBaseBySourceBranch")
+      .$type<Record<string, string> | null>()
+      .default(sql`(JSON_OBJECT())`),
     minStock: int("minStock").default(0),
     reorderPoint: int("reorderPoint").default(0),
     // هدف مخزون موسم المدارس (بالوحدة الأساس، عبر كل الفروع) — تجهيز ذروة أيلول. هجرة 0098.
@@ -1039,6 +1043,20 @@ export const productVariants = mysqlTable(
 
 export type ProductVariant = typeof productVariants.$inferSelect;
 export type InsertProductVariant = typeof productVariants.$inferInsert;
+
+/** حاجز تفعيل إسقاط المخزون؛ لا تنشئه أو تصلحه معاملات الأعمال. */
+export const inventoryProjectionState = mysqlTable(
+  "inventoryProjectionState",
+  {
+    id: tinyint("id").primaryKey(),
+    readyVersion: int("readyVersion").default(0).notNull(),
+    activatedCommit: varchar("activatedCommit", { length: 40 }),
+    activatedAt: timestamp("activatedAt"),
+  },
+  (table) => ({
+    singleton: check("chk_inventory_projection_singleton", sql`${table.id} = 1`),
+  }),
+);
 
 /** وحدات القياس للمتغيّر (قطعة/درزن/كرتون) بمعامل تحويل وباركود مستقل. */
 export const productUnits = mysqlTable(
@@ -6742,7 +6760,7 @@ export const purchaseReturns = mysqlTable(
     clientRequestId: varchar("clientRequestId", { length: 80 })
       .notNull()
       .unique(),
-    origin: mysqlEnum("origin", ["NATIVE", "LEGACY"])
+    origin: mysqlEnum("origin", ["NATIVE", "LEGACY", "OWNER_EXCEPTION"])
       .default("NATIVE")
       .notNull(),
     status: mysqlEnum("status", [
@@ -6761,7 +6779,6 @@ export const purchaseReturns = mysqlTable(
       () => supplierInvoiceMatchRuns.id,
     ),
     purchaseOrderId: bigint("purchaseOrderId", { mode: "number" })
-      .notNull()
       .references(() => purchaseOrders.id),
     supplierId: bigint("supplierId", { mode: "number" })
       .notNull()
@@ -6804,6 +6821,8 @@ export const purchaseReturns = mysqlTable(
     reason: varchar("reason", { length: 500 }),
     payloadCanonical: mediumtext("payloadCanonical"),
     payloadHash: char("payloadHash", { length: 64 }),
+    executionEvidence: json("executionEvidence"),
+    executionEvidenceHash: char("executionEvidenceHash", { length: 64 }),
     evidenceType: mysqlEnum("evidenceType", [
       "RETURN_NOTE",
       "SUPPLIER_ACKNOWLEDGEMENT",
@@ -6840,7 +6859,13 @@ export const purchaseReturns = mysqlTable(
     ),
     nativeSourceShape: check(
       "chk_purchase_return_native_source",
-      sql`${table.origin} = 'LEGACY' OR (${table.requestId} IS NOT NULL AND ${table.supplierInvoiceId} IS NOT NULL AND ${table.matchRunId} IS NOT NULL AND ${table.payloadCanonical} IS NOT NULL AND ${table.payloadHash} IS NOT NULL AND ${table.evidenceType} IS NOT NULL AND ${table.evidenceReference} IS NOT NULL AND ${table.postedBy} IS NOT NULL AND ${table.postedAt} IS NOT NULL)`,
+      sql`(${table.origin} = 'LEGACY' AND ${table.purchaseOrderId} IS NOT NULL) OR (${table.origin} = 'NATIVE' AND ${table.purchaseOrderId} IS NOT NULL AND ${table.requestId} IS NOT NULL AND ${table.supplierInvoiceId} IS NOT NULL AND ${table.matchRunId} IS NOT NULL AND ${table.payloadCanonical} IS NOT NULL AND ${table.payloadHash} IS NOT NULL AND ${table.evidenceType} IS NOT NULL AND ${table.evidenceReference} IS NOT NULL AND ${table.postedBy} IS NOT NULL AND ${table.postedAt} IS NOT NULL) OR (${table.origin} = 'OWNER_EXCEPTION' AND ${table.purchaseOrderId} IS NULL AND ${table.supplierInvoiceId} IS NULL AND ${table.matchRunId} IS NULL AND ${table.requestId} IS NOT NULL AND ${table.payloadCanonical} IS NOT NULL AND ${table.payloadHash} IS NOT NULL AND ${table.evidenceType} IS NOT NULL AND ${table.evidenceReference} IS NOT NULL AND ${table.postedBy} IS NOT NULL AND ${table.postedAt} IS NOT NULL)`,
+    ),
+    // 0411 triggers require execution proof when an exception receives its real entry.
+    // MySQL forbids CHECKs on accountingEntryId because its FK uses ON DELETE SET NULL.
+    executionEvidenceShape: check(
+      "chk_purchase_return_execution_evidence",
+      sql`(${table.executionEvidence} IS NULL AND ${table.executionEvidenceHash} IS NULL) OR (${table.executionEvidence} IS NOT NULL AND ${table.executionEvidenceHash} IS NOT NULL AND JSON_TYPE(${table.executionEvidence}) = 'OBJECT' AND COALESCE(JSON_EXTRACT(${table.executionEvidence}, '$.version') = 1, FALSE) AND REGEXP_LIKE(${table.executionEvidenceHash}, '^[0-9a-f]{64}$', 'c'))`,
     ),
     amountShape: check(
       "chk_purchase_return_amounts",
@@ -6861,7 +6886,6 @@ export const purchaseReturnItems = mysqlTable(
       .notNull()
       .references(() => purchaseReturns.id, { onDelete: "cascade" }),
     purchaseOrderItemId: bigint("purchaseOrderItemId", { mode: "number" })
-      .notNull()
       .references(() => purchaseOrderItems.id),
     supplierInvoiceLineId: bigint("supplierInvoiceLineId", {
       mode: "number",
@@ -6883,6 +6907,8 @@ export const purchaseReturnItems = mysqlTable(
     inventoryMovementId: bigint("inventoryMovementId", { mode: "number" })
       .unique("uq_purchase_return_inventory_movement")
       .references(() => inventoryMovements.id),
+    valuationEvidence: json("valuationEvidence"),
+    valuationEvidenceHash: char("valuationEvidenceHash", { length: 64 }),
     productNameSnapshot: varchar("productNameSnapshot", {
       length: 255,
     }).notNull(),
@@ -6914,6 +6940,10 @@ export const purchaseReturnItems = mysqlTable(
       "chk_purchase_return_item_source",
       sql`(${table.supplierInvoiceLineId} IS NULL AND ${table.goodsReceiptItemId} IS NULL AND ${table.matchAllocationId} IS NULL) OR (${table.supplierInvoiceLineId} IS NOT NULL AND ${table.goodsReceiptItemId} IS NOT NULL AND ${table.matchAllocationId} IS NOT NULL)`,
     ),
+    valuationEvidenceShape: check(
+      "chk_purchase_return_item_valuation",
+      sql`(${table.valuationEvidence} IS NULL AND ${table.valuationEvidenceHash} IS NULL) OR (${table.valuationEvidence} IS NOT NULL AND ${table.valuationEvidenceHash} IS NOT NULL AND JSON_TYPE(${table.valuationEvidence}) = 'OBJECT' AND COALESCE(JSON_EXTRACT(${table.valuationEvidence}, '$.version') = 1 AND JSON_UNQUOTE(JSON_EXTRACT(${table.valuationEvidence}, '$.basis')) = 'LOCKED_WAVG', FALSE) AND REGEXP_LIKE(${table.valuationEvidenceHash}, '^[0-9a-f]{64}$', 'c'))`,
+    ),
     amountShape: check(
       "chk_purchase_return_item_amounts",
       sql`${table.quantity} > 0 AND ${table.baseQuantity} > 0 AND ${table.unitPrice} >= 0 AND ${table.lineTotal} >= 0`,
@@ -6932,13 +6962,15 @@ export const purchaseReturnRequests = mysqlTable(
     requestKey: varchar("requestKey", { length: 120 })
       .notNull()
       .unique("uq_purchase_return_request_key"),
-    supplierInvoiceId: bigint("supplierInvoiceId", { mode: "number" })
+    sourceKind: mysqlEnum("sourceKind", ["SOURCE_BOUND", "OWNER_EXCEPTION"])
+      .default("SOURCE_BOUND")
       .notNull(),
+    exceptionEvidenceKey: char("exceptionEvidenceKey", { length: 64 })
+      .unique("uq_purchase_return_exception_evidence"),
+    supplierInvoiceId: bigint("supplierInvoiceId", { mode: "number" }),
     matchRunId: bigint("matchRunId", { mode: "number" })
-      .notNull()
       .references(() => supplierInvoiceMatchRuns.id),
     purchaseOrderId: bigint("purchaseOrderId", { mode: "number" })
-      .notNull()
       .references(() => purchaseOrders.id),
     supplierId: bigint("supplierId", { mode: "number" })
       .notNull()
@@ -6946,7 +6978,7 @@ export const purchaseReturnRequests = mysqlTable(
     branchId: bigint("branchId", { mode: "number" })
       .notNull()
       .references(() => branches.id),
-    baseInvoiceVersion: int("baseInvoiceVersion").notNull(),
+    baseInvoiceVersion: int("baseInvoiceVersion"),
     settlement: mysqlEnum("settlement", ["CREDIT", "CASH"])
       .default("CREDIT")
       .notNull(),
@@ -7017,6 +7049,10 @@ export const purchaseReturnRequests = mysqlTable(
       table.supplierInvoiceId,
       table.evidenceHash,
     ),
+    sourceShape: check(
+      "chk_purchase_return_request_source",
+      sql`(${table.sourceKind} = 'SOURCE_BOUND' AND ${table.supplierInvoiceId} IS NOT NULL AND ${table.matchRunId} IS NOT NULL AND ${table.purchaseOrderId} IS NOT NULL AND ${table.baseInvoiceVersion} IS NOT NULL AND ${table.baseInvoiceVersion} > 0 AND ${table.exceptionEvidenceKey} IS NULL) OR (${table.sourceKind} = 'OWNER_EXCEPTION' AND ${table.supplierInvoiceId} IS NULL AND ${table.matchRunId} IS NULL AND ${table.purchaseOrderId} IS NULL AND ${table.baseInvoiceVersion} IS NULL AND ${table.exceptionEvidenceKey} IS NOT NULL AND REGEXP_LIKE(${table.exceptionEvidenceKey}, '^[0-9a-f]{64}$', 'c'))`,
+    ),
     amountShape: check(
       "chk_purchase_return_request_amounts",
       sql`${table.requestedNetAmount} >= 0 AND ${table.requestedTaxAmount} >= 0 AND ${table.requestedTotalAmount} = ${table.requestedNetAmount} + ${table.requestedTaxAmount}`,
@@ -7042,14 +7078,10 @@ export const purchaseReturnRequestItems = mysqlTable(
     requestId: bigint("requestId", { mode: "number" })
       .notNull(),
     lineNo: int("lineNo").notNull(),
-    supplierInvoiceLineId: bigint("supplierInvoiceLineId", { mode: "number" })
-      .notNull(),
-    goodsReceiptItemId: bigint("goodsReceiptItemId", { mode: "number" })
-      .notNull(),
-    matchAllocationId: bigint("matchAllocationId", { mode: "number" })
-      .notNull(),
-    purchaseOrderItemId: bigint("purchaseOrderItemId", { mode: "number" })
-      .notNull(),
+    supplierInvoiceLineId: bigint("supplierInvoiceLineId", { mode: "number" }),
+    goodsReceiptItemId: bigint("goodsReceiptItemId", { mode: "number" }),
+    matchAllocationId: bigint("matchAllocationId", { mode: "number" }),
+    purchaseOrderItemId: bigint("purchaseOrderItemId", { mode: "number" }),
     variantId: bigint("variantId", { mode: "number" })
       .notNull()
       .references(() => productVariants.id),
@@ -7106,6 +7138,10 @@ export const purchaseReturnRequestItems = mysqlTable(
       columns: [table.purchaseOrderItemId],
       foreignColumns: [purchaseOrderItems.id],
     }),
+    sourceShape: check(
+      "chk_purchase_return_request_item_source",
+      sql`(${table.supplierInvoiceLineId} IS NULL AND ${table.goodsReceiptItemId} IS NULL AND ${table.matchAllocationId} IS NULL AND ${table.purchaseOrderItemId} IS NULL) OR (${table.supplierInvoiceLineId} IS NOT NULL AND ${table.goodsReceiptItemId} IS NOT NULL AND ${table.matchAllocationId} IS NOT NULL AND ${table.purchaseOrderItemId} IS NOT NULL)`,
+    ),
     shape: check(
       "chk_purchase_return_request_item_shape",
       sql`${table.lineNo} > 0 AND ${table.requestedBaseQuantity} > 0 AND ${table.unitPriceIqd} >= 0 AND ${table.netAmount} >= 0 AND ${table.taxAmount} >= 0 AND ${table.totalAmount} = ${table.netAmount} + ${table.taxAmount}`,
@@ -7234,7 +7270,6 @@ export const purchaseReturnReversals = mysqlTable(
       .notNull()
       .references(() => purchaseReturns.id),
     supplierInvoiceId: bigint("supplierInvoiceId", { mode: "number" })
-      .notNull()
       .references(() => supplierInvoices.id),
     supplierId: bigint("supplierId", { mode: "number" })
       .notNull()
@@ -7302,6 +7337,8 @@ export const purchaseReturnReversalItems = mysqlTable(
     inventoryMovementId: bigint("inventoryMovementId", { mode: "number" })
       .notNull()
       .unique("uq_purchase_return_reversal_movement"),
+    valuationEvidence: json("valuationEvidence"),
+    valuationEvidenceHash: char("valuationEvidenceHash", { length: 64 }),
   },
   (table) => ({
     reversalItemUq: unique("uq_purchase_return_reversal_item").on(
@@ -7323,6 +7360,10 @@ export const purchaseReturnReversalItems = mysqlTable(
       columns: [table.inventoryMovementId],
       foreignColumns: [inventoryMovements.id],
     }),
+    valuationEvidenceShape: check(
+      "chk_purchase_return_reversal_valuation",
+      sql`(${table.valuationEvidence} IS NULL AND ${table.valuationEvidenceHash} IS NULL) OR (${table.valuationEvidence} IS NOT NULL AND ${table.valuationEvidenceHash} IS NOT NULL AND JSON_TYPE(${table.valuationEvidence}) = 'OBJECT' AND COALESCE(JSON_EXTRACT(${table.valuationEvidence}, '$.version') = 1 AND JSON_UNQUOTE(JSON_EXTRACT(${table.valuationEvidence}, '$.basis')) = 'SAVED_RETURN', FALSE) AND REGEXP_LIKE(${table.valuationEvidenceHash}, '^[0-9a-f]{64}$', 'c'))`,
+    ),
     shape: check(
       "chk_purchase_return_reversal_item_shape",
       sql`${table.baseQuantity} > 0 AND ${table.netAmount} >= 0 AND ${table.taxAmount} >= 0 AND ${table.totalAmount} = ${table.netAmount} + ${table.taxAmount}`,
@@ -11183,6 +11224,8 @@ export const payrollAccountingEvents = mysqlTable(
     reversalOfId: bigint("reversalOfId", { mode: "number" }),
     sourceKey: varchar("sourceKey", { length: 191 }).notNull(),
     sourceHash: char("sourceHash", { length: 64 }).notNull(),
+    /** Versioned salary settlement evidence; null preserves unclassified legacy events. */
+    settlementEvidence: json("settlementEvidence"),
     occurredAt: timestamp("occurredAt").notNull(),
     createdBy: int("createdBy")
       .notNull()
@@ -15333,6 +15376,11 @@ export const installmentPlans = mysqlTable(
 );
 export type InstallmentPlan = typeof installmentPlans.$inferSelect;
 
+// Explicit return type breaks the line-head/history FK inference cycle.
+function installmentAllocationHistoryId(): AnyMySqlColumn {
+  return installmentReceiptAllocations.id;
+}
+
 /** قسط مفرد داخل خطة — نقدي أو شيك آجل (رقم الشيك + المصرف). السداد يربط سند القبض الفعلي. */
 export const installmentLines = mysqlTable(
   "installmentLines",
@@ -15351,6 +15399,10 @@ export const installmentLines = mysqlTable(
       .default("PENDING")
       .notNull(),
     receiptId: bigint("receiptId", { mode: "number" }),
+    /** Current immutable allocation chain; legacy rows require proven adoption. */
+    allocationHeadId: bigint("allocationHeadId", { mode: "number" }),
+    allocationHistoryReady: boolean("allocationHistoryReady").default(false).notNull(),
+    pendingAllocationClaimId: bigint("pendingAllocationClaimId", { mode: "number" }),
     paidAt: timestamp("paidAt"),
     note: varchar("note", { length: 255 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -15358,9 +15410,52 @@ export const installmentLines = mysqlTable(
   (t) => ({
     planIdx: index("idx_instline_plan").on(t.planId),
     dueStatusIdx: index("idx_instline_due_status").on(t.dueDate, t.status),
+    allocationHeadFk: foreignKey({
+      name: "fk_instline_allocation_head",
+      columns: [t.allocationHeadId],
+      foreignColumns: [installmentAllocationHistoryId()],
+    }).onDelete("restrict"),
+    pendingAllocationClaimFk: foreignKey({
+      name: "fk_instline_pending_allocation_claim",
+      columns: [t.pendingAllocationClaimId],
+      foreignColumns: [idempotencyKeys.id],
+    }).onDelete("restrict"),
   }),
 );
 export type InstallmentLine = typeof installmentLines.$inferSelect;
+
+/** Allocation evidence only: the original receipt owns cash, AR and GL effects. */
+export const installmentReceiptAllocations = mysqlTable(
+  "installmentReceiptAllocations",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    invoiceId: bigint("invoiceId", { mode: "number" }).notNull(),
+    lineId: bigint("lineId", { mode: "number" }).notNull(),
+    sourceReceiptId: bigint("sourceReceiptId", { mode: "number" }).notNull(),
+    effectReceiptId: bigint("effectReceiptId", { mode: "number" }).notNull(),
+    effectKey: varchar("effectKey", { length: 191 }).notNull(),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    reversesAllocationId: bigint("reversesAllocationId", { mode: "number" }),
+    previousAllocationId: bigint("previousAllocationId", { mode: "number" }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    effectLineUq: unique("uq_ira_effect_line").on(t.effectKey, t.lineId),
+    reverseUq: unique("uq_ira_reverse").on(t.reversesAllocationId),
+    previousUq: unique("uq_ira_previous").on(t.previousAllocationId),
+    invoiceIdx: index("idx_ira_invoice").on(t.invoiceId),
+    lineIdx: index("idx_ira_line").on(t.lineId),
+    sourceReceiptIdx: index("idx_ira_source_receipt").on(t.sourceReceiptId),
+    effectReceiptIdx: index("idx_ira_effect_receipt").on(t.effectReceiptId),
+    invoiceFk: foreignKey({ name: "fk_ira_invoice", columns: [t.invoiceId], foreignColumns: [invoices.id] }).onDelete("restrict"),
+    lineFk: foreignKey({ name: "fk_ira_line", columns: [t.lineId], foreignColumns: [installmentLines.id] }).onDelete("restrict"),
+    sourceReceiptFk: foreignKey({ name: "fk_ira_source_receipt", columns: [t.sourceReceiptId], foreignColumns: [receipts.id] }).onDelete("restrict"),
+    effectReceiptFk: foreignKey({ name: "fk_ira_effect_receipt", columns: [t.effectReceiptId], foreignColumns: [receipts.id] }).onDelete("restrict"),
+    reverseFk: foreignKey({ name: "fk_ira_reverse", columns: [t.reversesAllocationId], foreignColumns: [t.id] }).onDelete("restrict"),
+    previousFk: foreignKey({ name: "fk_ira_previous", columns: [t.previousAllocationId], foreignColumns: [t.id] }).onDelete("restrict"),
+    amountShape: check("chk_ira_signed_amount", sql`${t.amount} <> 0 AND (${t.reversesAllocationId} IS NOT NULL OR ${t.amount} > 0)`),
+  }),
+);
 
 /* ============================ بند 12ب (٧/٧): التسعير التعاقدي لعميل ============================ */
 

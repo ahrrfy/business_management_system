@@ -192,7 +192,7 @@ describe("I7: البكج وحدة تشغيلية في التحويل", () => {
     expect(await stockOf(4, 1)).toBe(0);
   });
 
-  it("إلغاء سند بكج يبقى مسار تعافٍ آمناً عند فقدان لقطة المكوّنات", async () => {
+  it("يرفض إلغاء سند بكج عند فقدان لقطة المكوّنات دون تخمين تاريخ أو تغيير مخزون", async () => {
     const admin = appRouter.createCaller(makeCtx(await userById(1)));
     const created = await admin.inventory.transferBatch({
       fromBranchId: 1,
@@ -204,10 +204,10 @@ describe("I7: البكج وحدة تشغيلية في التحويل", () => {
     await db()
       .delete(s.stockTransferLineBundleComponents)
       .where(eq(s.stockTransferLineBundleComponents.transferLineId, Number(doc.lines[0].id)));
-    await admin.inventory.transferCancel({ transferId: created.transferId });
+    await expect(admin.inventory.transferCancel({ transferId: created.transferId })).rejects.toThrow(/لقطة مكوّنات/);
 
-    expect(await stockOf(1, 1)).toBe(20);
-    expect(await stockOf(2, 1)).toBe(10);
+    expect(await stockOf(1, 1)).toBe(14);
+    expect(await stockOf(2, 1)).toBe(8);
     expect(await stockOf(4, 1)).toBe(0);
   });
 

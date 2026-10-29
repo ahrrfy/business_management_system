@@ -1,0 +1,22 @@
+/** Actual list screens for bounded source adapters. Detail ID placeholders are never continuation URLs. */
+export const DECISION_SOURCE_CONTINUATIONS: Readonly<Record<string, string>> = {
+  "purchase.order.control": "/purchases?tab=approvals",
+  "purchase.requisition.control": "/purchases?tab=requisitions",
+  "purchase.integrity.resolution": "/purchases?tab=integrity",
+  "supplier.payment.refund": "/purchases?tab=supplier-payments",
+  "inventory.adjustment": "/inventory?tab=stock",
+  "inventory.costRevaluation": "/inventory?tab=stock",
+  "inventory.costWave": "/inventory?tab=cost-waves",
+  "treasury.voucher": "/treasury?tab=vouchers",
+  expense: "/treasury?tab=expenses",
+  "expense.accrualCorrection": "/treasury?tab=expenses",
+  "cash.variance": "/treasury?tab=cash-variance",
+  "sales.control": "/invoices?tab=controls",
+  "sales.returnRequest": "/returns",
+  "delivery.codWriteOff": "/delivery?tab=parties",
+  "hr.leave": "/hr?tab=leaves",
+  "commissions.run": "/hr?tab=commission-runs",
+  "closing.monthClose": "/closing?tab=period",
+  "closing.yearEndReopen": "/closing?tab=yearend",
+  "gifts.request": "/gifts",
+};

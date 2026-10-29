@@ -1,3 +1,4 @@
+import { lockEconomicInventoryScope, readEconomicOwnedPositions } from "../inventory/economicOwnership";
 // استلام أمر الشراء (جزئي/كامل): WAVG بسعر المورّد وحده، تراكم الضريبة،
 // قيد PURCHASE + AP للآجل أو clearing للنقدي، واستحقاق شحن عند الاستلام، وطلبات تسوية معلّقة لا تُنفَّذ إلا بعد اعتماد المالك.
 import { TRPCError } from "@trpc/server";
@@ -621,42 +622,7 @@ async function receivePurchaseInTx(
     }
   }
 
-  // mutex المتغيّرات قبل أي صف فرع؛ يمنع تجزئة نطاق الفروع بين استلام وإعادة تقييم.
-  await lockInventoryVariants(tx, variantIds);
-  await ensureBranchStockRows(tx, variantIds, Number(po.branchId));
-
-  // قفل صفوف branchStock للمتغيّرات المعنية قبل قراءة الـSUM:
-  // يَسَلْسِل receive مع أي sale متزامن على نفس المتغيّرات (تلك تأخذ قفلاً على نفس الصفوف
-  // عبر applyMovement). بدون هذا القفل، يمكن لـsale متزامن أن يُغيّر الكميات بين قراءة
-  // الـSUM وكتابة costPrice ⇒ WAVG محسوب على رصيد قديم. القفل لا يمنع INSERT جديد، لكن
-  // branchStock للـvariant موجود إذ بدونه لا يوجد sale (يعمل applyMovement على ضمان الصفّ).
-  await tx
-    .select({ id: branchStock.id })
-    .from(branchStock)
-    .where(inArray(branchStock.variantId, variantIds))
-    .orderBy(branchStock.variantId)
-    .for("update");
-
-  // Read existing stock per variant (sum across all branches) AFTER the row lock.
-  const stockRows = await tx
-    .select({
-      variantId: branchStock.variantId,
-      totalQty: sql<string>`COALESCE(SUM(${branchStock.quantity}), 0)`,
-    })
-    .from(branchStock)
-    .where(inArray(branchStock.variantId, variantIds))
-    .groupBy(branchStock.variantId);
-  const stockMap = new Map(
-    stockRows.map((s) => [Number(s.variantId), s.totalQty]),
-  );
-
-  // Lock all variants for update in one query (deterministic order = ascending variantId).
-  const variantRows = await tx
-    .select({ id: productVariants.id, cost: productVariants.costPrice })
-    .from(productVariants)
-    .where(inArray(productVariants.id, variantIds))
-    .for("update");
-  const costMap = new Map(variantRows.map((v) => [Number(v.id), v.cost]));
+  const scope = await lockEconomicInventoryScope(tx, variantIds);
 
   let receivedNet = new Decimal(0);
   let receivedUsd = new Decimal(0);
@@ -677,16 +643,14 @@ async function receivePurchaseInTx(
 
     // WAVG (المتوسّط المرجّح): المخزون القائم + التكلفة القديمة مُقرآن قبل الحلقة.
     // التكلفة صفة عالمية للصنف ⇒ الوزن بإجمالي الأساس عبر الفروع.
-    const existingQty = Decimal.max(
-      new Decimal(stockMap.get(Number(item.variantId)) ?? "0"),
-      0,
-    );
-    const oldCost = money(costMap.get(Number(item.variantId)) ?? "0");
+    const current = await readEconomicOwnedPositions(tx, scope, Number(item.variantId));
+    const existingQty = Decimal.max(current.positions.reduce((sum, p) => sum.plus(p.ownedQuantity), new Decimal(0)), 0);
+    const oldCost = money(current.variant.costPrice ?? "0");
     const recvQty = new Decimal(line.receivedBaseQuantity);
     const denom = existingQty.plus(recvQty);
-    // لا مخزون قائم (أو تكلفة قديمة صفر) ⇒ المتوسّط = تكلفة الشراء الحالية (المُرسمَلة).
+    // الكمية المملوكة ذات التكلفة الصفرية تبقى في المقام؛ قيمة الصفر ليست غياب مخزون.
     const newCost =
-      denom.lte(0) || oldCost.lte(0)
+      current.variant.product.isConsignment ? oldCost : denom.lte(0)
         ? round2(capCostPerBase)
         : round2(
             existingQty
@@ -696,6 +660,7 @@ async function receivePurchaseInTx(
           );
 
     await applyMovement(tx, {
+          economicScope: scope,
       variantId: Number(item.variantId),
       branchId: Number(po.branchId),
       baseQuantity: line.receivedBaseQuantity,
@@ -721,8 +686,7 @@ async function receivePurchaseInTx(
 
     // حدّث الخريطتين بعد كل سطر ليُحسب المتوسّط المرجّح تسلسلياً لو تكرّر الصنف نفسه في أمر الشراء
     // (سطران لنفس المتغيّر) — وإلّا فالسطر الثاني يتجاهل كمية/تكلفة الأول ويطمس نتيجته.
-    stockMap.set(Number(item.variantId), denom.toString());
-    costMap.set(Number(item.variantId), newCost.toFixed(2));
+
 
     // Ledger/AP value derives from the stored line total (proportional to received).
     // مع عمود receivedNet المخزّن لتتبّع التراكم: عند الاستلام المُكمِل للكمية

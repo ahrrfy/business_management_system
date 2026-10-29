@@ -5,10 +5,78 @@ import {
   closeCleanupConn,
   populatedTestTables,
   readSnapshotWithReconnect,
+  bootstrapEmptyInventoryProjection,
+  assertSafeCleanupTarget,
 } from "./__setup__";
 
 describe("test database isolation without empty-table DDL", () => {
+  it("rejects unsafe targets before complete cleanup or bootstrap", () => {
+    vi.stubEnv("ALLOW_TEST_DB_PORT_3306", "0");
+    for (const url of [
+      "mysql://root@remote.test:3310/erp_test",
+      "mysql://root@127.0.0.1:3310/erp",
+      "mysql://root@127.0.0.1:3306/erp_test",
+    ])
+      expect(() => assertSafeCleanupTarget(url)).toThrow(/refusing cleanup/);
+  });
+  it("never bootstraps READY over an existing marker or any populated business table", async () => {
+    for (const name of ["inventoryProjectionState", "productVariants"]) {
+      const query = vi
+        .fn()
+        .mockResolvedValueOnce([
+          [{ name: "inventoryProjectionState" }, { name: "productVariants" }],
+          [],
+        ])
+        .mockResolvedValueOnce([[{ name }], []]);
+      await expect(
+        bootstrapEmptyInventoryProjection(
+          {
+            query,
+            escape: (value: string) => `'${value}'`,
+          } as unknown as mysql.Connection,
+          "mysql://root@127.0.0.1:3310/erp_test",
+        ),
+      ).rejects.toThrow(/not empty/);
+      expect(
+        query.mock.calls.some((call) => String(call[0]).startsWith("INSERT")),
+      ).toBe(false);
+    }
+  });
+  it("initializes the marker only after exact whole-database emptiness verification", async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce([
+        [
+          { name: "inventoryProjectionState" },
+          { name: "productVariants" },
+          { name: "receipts" },
+        ],
+        [],
+      ])
+      .mockResolvedValueOnce([[], []])
+      .mockResolvedValueOnce([{}, []]);
+    await bootstrapEmptyInventoryProjection(
+      {
+        query,
+        escape: (value: string) => `'${value}'`,
+      } as unknown as mysql.Connection,
+      "mysql://root@127.0.0.1:3310/erp_test",
+    );
+    expect(query.mock.calls[1][0]).toContain("FROM `receipts`");
+    expect(query.mock.calls[2][0]).toBe(
+      "INSERT INTO inventoryProjectionState (id, readyVersion) VALUES (1, 1)",
+    );
+    await clearTestTable(
+      { query } as unknown as mysql.Connection,
+      "inventoryProjectionState",
+      false,
+    );
+    expect(query.mock.calls[3][0]).toBe(
+      "DELETE FROM `inventoryProjectionState`",
+    );
+  });
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await closeCleanupConn();
   });
 
@@ -117,7 +185,9 @@ describe("test database isolation without empty-table DDL", () => {
       .mockResolvedValueOnce([[{ name: "customers" }], []])
       .mockResolvedValueOnce([[], []])
       .mockResolvedValueOnce([[], []])
-      .mockRejectedValueOnce(new Error("Connection lost: The server closed the connection."));
+      .mockRejectedValueOnce(
+        new Error("Connection lost: The server closed the connection."),
+      );
     const freshEnd = vi.fn().mockResolvedValue(undefined);
     const freshQuery = vi
       .fn()
@@ -137,11 +207,17 @@ describe("test database isolation without empty-table DDL", () => {
         end: freshEnd,
       } as unknown as mysql.Connection);
 
-    const first = await readSnapshotWithReconnect("mysql://root@127.0.0.1:3310/erp_unit_test", createConnection);
+    const first = await readSnapshotWithReconnect(
+      "mysql://root@127.0.0.1:3310/erp_unit_test",
+      createConnection,
+    );
     expect(first.populated).toEqual([]);
     expect(createConnection).toHaveBeenCalledTimes(1);
 
-    const second = await readSnapshotWithReconnect("mysql://root@127.0.0.1:3310/erp_unit_test", createConnection);
+    const second = await readSnapshotWithReconnect(
+      "mysql://root@127.0.0.1:3310/erp_unit_test",
+      createConnection,
+    );
     expect(second.populated).toEqual(["customers"]);
     expect(staleEnd).toHaveBeenCalledOnce();
     expect(createConnection).toHaveBeenCalledTimes(2);

@@ -11,11 +11,23 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { tmpdir, userInfo } from "node:os";
 import { createServer as createNetServer } from "node:net";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
+import { assertActivationRecoveryAllowed, readActivationJournal, activeInventoryManifest, JOURNAL_NAME } from "./lib/inventory-activation-journal.mjs";
+const hashFile = file => createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+
+function inventoryJournalFile() {
+  return path.join(process.env.PM2_HOME || path.join(process.env.HOME || userInfo().homedir, ".pm2"), JOURNAL_NAME);
+}
+function assertInventoryRestartTarget(script) {
+  const journal = assertActivationRecoveryAllowed(inventoryJournalFile(), { allowReleased: true });
+  const active = activeInventoryManifest(journal);
+  if (active && !active.artifacts.some(a => a.script === path.resolve(script) && hashFile(a.bundle) === a.hash && hashFile(a.script) === a.scriptHash)) throw codedError("INVENTORY_INCOMPATIBLE_RESTART_REFUSED");
+}
 
 const PROJECT_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -33,6 +45,7 @@ const WEB_ACTIVATION_JOURNAL = "web-activation-pending.json";
 const VITE_DISABLE_DOTENV_ENV_KEY = "ERP_VITE_DISABLE_DOTENV";
 const VITE_DISABLE_DOTENV_ENV_VALUE = "1";
 const WEB_FORBIDDEN_ENVIRONMENT_KEYS = Object.freeze([
+  "ERP_INVENTORY_CONTROL_DATABASE_URL",
   "DB_ROOT_PW",
   "DB_CONTAINER",
   "DB_APP_PW",
@@ -627,6 +640,7 @@ export function cleanupWebCandidate(candidate) {
 }
 
 export function rollbackWebArtifact(snapshot, operations) {
+  assertActivationRecoveryAllowed(inventoryJournalFile());
   const roots = validateWebArtifactSnapshot(snapshot);
   if (
     typeof operations?.reload !== "function" ||
@@ -665,6 +679,7 @@ export function commitWebArtifact(snapshot) {
 export function recoverPendingWebActivation(projectRoot, operations) {
   const snapshot = pendingWebActivationSnapshot(projectRoot);
   if (!snapshot) return null;
+  assertActivationRecoveryAllowed(inventoryJournalFile());
   if (
     typeof operations?.reload !== "function" ||
     typeof operations?.health !== "function"
@@ -1371,19 +1386,21 @@ function acquirePrePullLock(directoryOverride = null) {
   return Object.freeze({ token, inherited: false, release });
 }
 
-function synchronizeAndMaybeReexec(syncLock) {
-  const args = process.argv.slice(2);
+export function synchronizeAndMaybeReexec(syncLock, {
+  args = process.argv.slice(2), repository = assertRepository, execute = run,
+  spawnChild = spawnSync, exit = code => process.exit(code),
+} = {}) {
   if (args.length === 0) {
-    const before = assertRepository().head;
-    run("git", ["pull", "--ff-only", "origin", "main"], {
+    const before = repository().head;
+    execute("git", ["pull", "--ff-only", "origin", "main"], {
       timeoutMs: 60_000,
     });
-    const afterState = assertRepository();
+    const afterState = repository();
     if (afterState.head !== afterState.remote) {
       throw new Error("DEPLOY_HEAD_NOT_ORIGIN_MAIN");
     }
     if (afterState.head !== before) {
-      const child = spawnSync(
+      const child = spawnChild(
         process.execPath,
         [DEPLOY_SCRIPT, "--after-pull", afterState.head],
         {
@@ -1398,7 +1415,7 @@ function synchronizeAndMaybeReexec(syncLock) {
       );
       if (child.error) throw child.error;
       syncLock.release();
-      process.exit(child.status ?? 1);
+      exit(child.status ?? 1);
     }
     return afterState.head;
   }
@@ -1406,7 +1423,7 @@ function synchronizeAndMaybeReexec(syncLock) {
   if (args.length !== 2 || args[0] !== "--after-pull" || !SHA.test(args[1])) {
     throw new Error("DEPLOY_ARGUMENTS_INVALID");
   }
-  const state = assertRepository(args[1]);
+  const state = repository(args[1]);
   if (state.head !== state.remote) {
     throw new Error("DEPLOY_HEAD_NOT_ORIGIN_MAIN");
   }
@@ -1797,6 +1814,7 @@ export function normalizeSentryBuildEnvironment(environment) {
 }
 
 function reloadWebProcess() {
+  assertActivationRecoveryAllowed(inventoryJournalFile());
   run(
     "pm2",
     ["reload", "ecosystem.config.cjs", "--only", "erp-server", "--update-env"],
@@ -1949,6 +1967,7 @@ function makeActivationOperations(
     },
     start(descriptor) {
       const release = releaseTools.validateRelease(PROJECT_ROOT, descriptor.id);
+      assertInventoryRestartTarget(release.bootstrapPath);
       const policy = releaseTools.loadReleasePolicy(
         PROJECT_ROOT,
         descriptor.id,
@@ -2417,10 +2436,14 @@ async function deploy(expectedHead) {
         timeoutMs: 5 * 60_000,
       }),
     );
+    const { executeInventoryDeployment } = await import("./lib/inventory-activation-host.mjs");
+    const { resolveDbTarget } = await import("./lib/db-target.mjs");
     const dotenvModule = await import("dotenv");
     const parsedDeploymentEnvironment = readDeploymentEnvironmentFile(
       dotenvModule.config,
     );
+    const pinnedDeploymentTarget = await resolveDbTarget(parsedDeploymentEnvironment.DATABASE_URL, { adapter: "native" });
+    process.env.DB_TARGET_EXPECTED_UUID = pinnedDeploymentTarget.serverUuid;
     const deploymentEnvironment = normalizeBridgeDeploymentEnvironment(
       policy,
       parsedDeploymentEnvironment,
@@ -2437,6 +2460,7 @@ async function deploy(expectedHead) {
     let committed = null;
     let smokeStarted = false;
     let webSwapped = false;
+    let inventoryStarted = false;
     try {
       step("2/12 بناء مرشح الويب المعزول ثم حفظ الإصدار السابق", () => {
         webCandidate = prepareWebCandidate(PROJECT_ROOT, {
@@ -2519,15 +2543,45 @@ async function deploy(expectedHead) {
         },
       );
 
-      step("9/12 تبديل حزمة الويب ذرياً ثم إعادة تحميل الخادم", () => {
-        try {
-          installWebCandidate(webArtifact, webCandidate);
-        } finally {
-          // rename may have committed the link before a later fsync surfaced
-          // an I/O error. Inspect durable state so rollback is never skipped.
-          webSwapped = isWebCandidateActive(webArtifact);
+      await step("9/12 تفعيل المخزون تحت حاجز العمليات والإقلاع", async () => {
+        const require = createRequire(import.meta.url);
+        const app = require(path.join(PROJECT_ROOT, "ecosystem.config.cjs")).apps.find(a => a.name === "erp-server");
+        const count = Number(app.instances);
+        if (!Number.isSafeInteger(count) || count < 1 || count > 32) throw codedError("INVENTORY_WEB_INSTANCE_COUNT_UNSUPPORTED");
+        const bundle = path.join(webArtifact.candidatePath, "index.js");
+        const bundleHash = hashFile(path.join(webCandidate.distPath, "index.js"));
+        const artifacts = [{ name: "erp-server", script: bundle, bundle, hash: bundleHash, scriptHash: bundleHash, instances: count }];
+        const priorJournal = readActivationJournal(inventoryJournalFile());
+        const priorActive = activeInventoryManifest(priorJournal);
+        const priorArtifacts = priorActive ? [...priorActive.artifacts] : [{ name: "erp-server", script: path.join(PROJECT_ROOT, ".runtime/web-current/index.js"), bundle: path.join(webArtifact.previousPath, "index.js"), hash: hashFile(path.join(webArtifact.previousPath, "index.js")), scriptHash: hashFile(path.join(webArtifact.previousPath, "index.js")), instances: pm2Rows().filter(r => r.name === "erp-server").length }];
+        const bridge = releaseTools.validateRelease(PROJECT_ROOT, candidate.id);
+        if (candidate.mode === "enabled") artifacts.push({ name: BRIDGE_PROCESS_NAME, script: bridge.bootstrapPath, bundle: bridge.artifactPath, hash: hashFile(bridge.artifactPath), scriptHash: hashFile(bridge.bootstrapPath), instances: 1 });
+        if (committed?.mode === "enabled" && !priorActive) {
+          const previousBridge = releaseTools.validateRelease(PROJECT_ROOT, committed.id);
+          priorArtifacts.push({ name: BRIDGE_PROCESS_NAME, script: previousBridge.bootstrapPath, bundle: previousBridge.artifactPath, hash: hashFile(previousBridge.artifactPath), scriptHash: hashFile(previousBridge.bootstrapPath), instances: 1 });
         }
-        reloadWebProcess();
+        inventoryStarted = true;
+        await executeInventoryDeployment({
+          projectRoot: PROJECT_ROOT,
+          pm2Home: path.dirname(inventoryJournalFile()),
+          environment: parsedDeploymentEnvironment,
+          commit: expectedHead,
+          expectedServerUuid: pinnedDeploymentTarget.serverUuid,
+          artifacts,
+          priorArtifacts,
+          candidateWebApp: { ...app, script: bundle, cwd: PROJECT_ROOT, instances: count, filter_env: [...app.filter_env, "ERP_INVENTORY_CONTROL_DATABASE_URL"], env: { ...app.env, ERP_INVENTORY_CONTROL_DATABASE_URL: "", DATABASE_URL: parsedDeploymentEnvironment.DATABASE_URL } },
+          bridgeConfigPath: candidate.mode === "enabled" ? bridge.pm2ConfigPath : null,
+          installCandidate: async () => {
+            try { installWebCandidate(webArtifact, webCandidate); }
+            finally { webSwapped = isWebCandidateActive(webArtifact); }
+          },
+          restoreArtifact: async () => {
+            replaceWebCurrentLink(webArtifact.activeLinkPath, webArtifact.previousPath, webArtifact.runtimeRoot);
+            clearWebActivationJournal(webArtifact);
+          },
+        });
+        commitWebArtifact(webArtifact);
+        verifyInternalWebHealth(webHealthEnvironment);
       });
 
       smokeStarted = true;
@@ -2542,6 +2596,9 @@ async function deploy(expectedHead) {
         commitWebArtifact(webArtifact);
       });
     } catch (candidateError) {
+      // The fence alone owns rollback/invalidation. After RELEASED, business
+      // writes may exist: a later smoke failure must never revive old binaries.
+      if (inventoryStarted) throw candidateError;
       const activationPending =
         webArtifact && hasPendingWebActivation(webArtifact.projectRoot);
       if (!webArtifact || (!webSwapped && !activationPending)) {
@@ -2635,6 +2692,7 @@ async function deploy(expectedHead) {
 }
 
 async function recoverBeforePull() {
+  assertActivationRecoveryAllowed(inventoryJournalFile());
   const [
     { default: policy },
     releaseModule,
@@ -2712,6 +2770,7 @@ async function main() {
   assertDeploymentNodeRuntime();
   const releaseSyncLock = acquirePrePullLock();
   try {
+    assertActivationRecoveryAllowed(inventoryJournalFile(), { allowReleased: true });
     await recoverPendingWebActivationBeforePull();
     const baseline = assertBridgeBaselineBeforePull();
     if (baseline?.pending || baseline?.reconcile) {

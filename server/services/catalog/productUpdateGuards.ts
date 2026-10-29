@@ -1,3 +1,4 @@
+import { assertEconomicInventoryReady, lockEconomicInventoryScope } from "../inventory/economicOwnership";
 /**
  * ═══ حرّاسُ تعديل المنتج المشتركة (م٦ — علاجُ D5 في مقياس الاحتكاك) ═══
  *
@@ -75,6 +76,7 @@ export function productNotFoundError(productId: number): TRPCError {
  * القافلة لا تُثبّت لقطة، فتُسلسِل التعديلَين عند الباب ويرى الثاني ما التزمه الأوّل.
  */
 export async function loadProductForUpdateOrThrow(tx: Tx, productId: number): Promise<ProductRow> {
+  await assertEconomicInventoryReady(tx);
   const p = (await tx.select().from(products).where(eq(products.id, productId)).limit(1).for("update"))[0];
   if (!p) throw productNotFoundError(productId);
   return p;
@@ -154,7 +156,7 @@ export async function lockVariantsForUpdate(
   tx: Tx,
   variantIds: readonly number[],
 ): Promise<void> {
-  await lockInventoryVariants(tx, Array.from(variantIds));
+  await lockEconomicInventoryScope(tx, variantIds);
   await assertNoActiveDigitalInventoryBinding(
     tx,
     variantIds,

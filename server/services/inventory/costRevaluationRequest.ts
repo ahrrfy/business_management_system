@@ -1,3 +1,4 @@
+import { lockEconomicInventoryScope, readEconomicVariant } from "./economicOwnership";
 /**
  * إعادة تقييم تكلفة المخزون — المسار المحكوم لتصحيح `productVariants.costPrice`.
  *
@@ -27,6 +28,7 @@
  * ⚠️ **التكلفة عمودٌ على المتغيّر لا على الفرع** — إعادة تقييمها تمسّ رصيد **كل** الفروع.
  * لذلك لا يطلبها مديرُ فرعٍ إلّا إن كان الرصيد محصوراً في فرعه (`assertBranchAuthority`).
  */
+import { scanAfter } from "../decisions/scan";
 import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
 import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import { costRevaluationApprovalTrigger } from "@shared/approvalTriggers";
@@ -139,20 +141,9 @@ export async function requestCostRevaluation(
   }
 
   const result = await withTx(async (tx) => {
-    const v = (
-      await tx
-        .select({
-          id: productVariants.id,
-          costPrice: productVariants.costPrice,
-          sku: productVariants.sku,
-          isConsignment: products.isConsignment,
-        })
-        .from(productVariants)
-        .innerJoin(products, eq(products.id, productVariants.productId))
-        .where(eq(productVariants.id, input.variantId))
-        .for("update")
-        .limit(1)
-    )[0];
+    const scope = await lockEconomicInventoryScope(tx, [input.variantId]);
+    const variant = await readEconomicVariant(tx, scope, input.variantId);
+    const v = { ...variant, isConsignment: variant.product.isConsignment };
     if (!v) {
       throw new TRPCError({
         code: "NOT_FOUND",
@@ -176,7 +167,7 @@ export async function requestCostRevaluation(
       });
     }
     // مرآة حرّاس تسوية المخزون: لا نُنشئ طلباً يستحيل اعتماده.
-    if (await isBundleVariant(tx, input.variantId)) {
+    if (variant.product.isBundle) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
@@ -186,7 +177,7 @@ export async function requestCostRevaluation(
         }),
       });
     }
-    if (await isServiceVariant(tx, input.variantId)) {
+    if (variant.product.isService) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
@@ -514,13 +505,15 @@ export interface CostRevaluationRow {
  */
 export async function listCostRevaluations(
   /** `order: "ASC"` = الأقدم أوّلاً لصندوق القرارات — القصّ بالأحدث يُسقط أكثر الطلبات تأخّراً. */
-  filter: { status?: "PENDING_APPROVAL" | "APPROVED" | "REJECTED"; branchId?: number | null; limit?: number; order?: "ASC" | "DESC" },
+  filter: { status?: "PENDING_APPROVAL" | "APPROVED" | "REJECTED"; branchId?: number | null; limit?: number; order?: "ASC" | "DESC"; scan?: import("../decisions/scan").ScanPosition | null },
   _actor: Actor,
 ): Promise<CostRevaluationRow[]> {
   return withTx(async (tx) => {
     const conds = [];
     if (filter.status) conds.push(eq(costRevaluationRequests.status, filter.status));
     if (filter.branchId != null) conds.push(eq(costRevaluationRequests.branchId, filter.branchId));
+    const scan = scanAfter(costRevaluationRequests.id, filter.scan);
+    if (scan) conds.push(scan);
     const rows = await tx
       .select({
         id: costRevaluationRequests.id,
@@ -592,14 +585,9 @@ export async function getCostRevaluationPreview(
   totalQuantity: number;
 }> {
   return withTx(async (tx) => {
-    const v = (
-      await tx
-        .select({ costPrice: productVariants.costPrice, isConsignment: products.isConsignment })
-        .from(productVariants)
-        .innerJoin(products, eq(products.id, productVariants.productId))
-        .where(eq(productVariants.id, variantId))
-        .limit(1)
-    )[0];
+    const scope = await lockEconomicInventoryScope(tx, [variantId]);
+    const variant = await readEconomicVariant(tx, scope, variantId);
+    const v = { costPrice: variant.costPrice, isConsignment: variant.product.isConsignment };
     if (!v) {
       throw new TRPCError({
         code: "NOT_FOUND",

@@ -49,7 +49,7 @@ export interface PayLineInput {
 
 export interface PayLineResult {
   /** PAID = سُدِّد وأثّر مالياً؛ PENDING_APPROVAL = السند بانتظار اعتماد مدير ثانٍ والقسط باقٍ PENDING. */
-  status: "PAID" | "PENDING_APPROVAL";
+  status: "PAID" | "PENDING_APPROVAL" | "UNALLOCATED";
   receiptId: number;
   voucherNumber: string;
   /** true إن اكتملت كل أقساط الخطة بعد هذا السداد. */

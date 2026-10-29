@@ -1,3 +1,4 @@
+import { readEconomicVariant, type EconomicInventoryScope } from "./economicOwnership";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { asc, inArray } from "drizzle-orm";
@@ -16,6 +17,7 @@ export interface StockedOwnedMaterialOptions {
    * يسمح بالخمول فقط لعكس استهلاك تاريخي؛ حراس service/bundle/consignment تبقى صارمة.
    */
   allowInactiveVariantIds?: readonly number[];
+  economicScope?: EconomicInventoryScope;
 }
 
 /**
@@ -32,13 +34,17 @@ export async function assertStockedOwnedMaterials(
 ): Promise<Map<number, StockedOwnedMaterial>> {
   const ids = Array.from(new Set(variantIds.map(Number))).sort((a, b) => a - b);
   if (!ids.length) return new Map();
+  const scopedVariants = options.economicScope ? [] as Awaited<ReturnType<typeof readEconomicVariant>>[] : null;
+  if (scopedVariants && options.economicScope) {
+    for (const id of ids) scopedVariants.push(await readEconomicVariant(tx, options.economicScope, id));
+  }
   const allowInactive = new Set(
     (options.allowInactiveVariantIds ?? []).map(Number),
   );
 
   // قفل الكتالوج الحاكم: products أولاً ثم productVariants، وكلاهما تصاعدي.
   // القراءة التمهيدية لا تقرر الأهلية؛ تستخرج الربط فقط، ثم نطابقه بعد current reads.
-  const refs = await tx
+  const refs = scopedVariants ? scopedVariants.map(v => ({ id: v.id, productId: v.productId })) : await tx
     .select({
       id: productVariants.id,
       productId: productVariants.productId,
@@ -64,7 +70,7 @@ export async function assertStockedOwnedMaterials(
   const productIds = Array.from(new Set(refByVariant.values())).sort(
     (a, b) => a - b,
   );
-  const lockedProducts = await tx
+  const lockedProducts = scopedVariants ? scopedVariants.map(v => v.product) : await tx
     .select({
       id: products.id,
       name: products.name,
@@ -81,7 +87,7 @@ export async function assertStockedOwnedMaterials(
     lockedProducts.map((product) => [Number(product.id), product]),
   );
 
-  const lockedVariants = await tx
+  const lockedVariants = scopedVariants ?? await tx
     .select({
       id: productVariants.id,
       productId: productVariants.productId,

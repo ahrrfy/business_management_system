@@ -21,6 +21,7 @@ import {
   getWIPReport,
 } from "../services/reportsService";
 import { getTodaySalesComposition } from "../services/reports/todaySales";
+import { loadSalesInvoiceProjection } from "../services/reports/salesInvoiceProjection";
 import {
   getFinancialReconciliationDetails,
   toFinancialReconciliationSummary,
@@ -95,6 +96,7 @@ import {
   adminProcedure,
   settingsAdminProcedure,
   canViewReports,
+  canSeeCostForUser,
   protectedProcedure,
   reportViewerProcedure,
   router,
@@ -601,8 +603,19 @@ export const reportsRouter = router({
       const nextCursor =
         rows.length === input.limit && lastRow ? lastRow.id : null;
 
+      const projection = await loadSalesInvoiceProjection(rows.map(row => row.id));
+      const showCost = canSeeCostForUser(ctx.user);
+      const projectedRows = rows.map(row => {
+        const net = projection.get(row.id);
+        if (!net) throw new Error("Sales report invoice projection missing");
+        return { ...row, netRevenue: net.netRevenue,
+          costTotal: showCost ? row.costTotal : null,
+          netCOGS: showCost ? net.netCOGS : null,
+          profit: showCost ? net.profit : null };
+      });
+
       return {
-        rows,
+        rows: projectedRows,
         nextCursor,
         totals: {
           count: totals.count,

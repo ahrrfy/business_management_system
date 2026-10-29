@@ -15,14 +15,22 @@
 //  - نقدي فقط (قرار مالك): طريقة الدفع CASH إلزاماً — الآجل يتطلب اتصالاً (رصيد العميل
 //    وسقفه لا يُقيَّمان بأمانة من نسخة محلية قديمة).
 
-import type { Actor } from "../tx";
-import { createSale } from "../sale/create";
-import type { CreateSaleInput, CreateSaleResult, SaleLineInput } from "../sale/types";
+import { enqueuePostCommit, withTx, type Actor } from "../tx";
+import { createSaleInTx, notifySaleCustomerAfterCommit } from "../sale/create";
+import type {
+  CreateSaleInput,
+  CreateSaleResult,
+  SaleLineInput,
+} from "../sale/types";
 import { assertCaptureWindow, assertCashOnly } from "./captureWindow";
+import { assertOfflineReplayNotDiscardedTx } from "./replayStatus";
 
 // أُعيد تصدير العتبتين للتوافق مع المستوردين القائمين (الاختبارات/الوثائق) — مصدرهما الآن
 // captureWindow.ts المشترك بين كلّ أنواع الكاشير، فلا تنجرف نسختان.
-export { OFFLINE_CAPTURE_MAX_AGE_MS, OFFLINE_CAPTURE_FUTURE_TOLERANCE_MS } from "./captureWindow";
+export {
+  OFFLINE_CAPTURE_MAX_AGE_MS,
+  OFFLINE_CAPTURE_FUTURE_TOLERANCE_MS,
+} from "./captureWindow";
 
 export interface ReplayOfflineSaleInput {
   branchId: number;
@@ -51,36 +59,51 @@ export async function replayOfflineSale(
   actor: Actor,
   options?: { skipCaptureWindow?: boolean; attributeToUserId?: number | null },
 ): Promise<CreateSaleResult> {
+  const saleInput = offlineSaleInput(input, options);
+  return withTx(async (tx) => {
+    await assertOfflineReplayNotDiscardedTx(tx, input.clientRequestId);
+    const result = await createSaleInTx(tx, saleInput, actor);
+    enqueuePostCommit(tx, () =>
+      notifySaleCustomerAfterCommit(saleInput, result),
+    );
+    return result;
+  });
+}
+
+/** Shared capture validation/mapping for standalone replay and atomic recovery. */
+export function offlineSaleInput(
+  input: ReplayOfflineSaleInput,
+  options?: { skipCaptureWindow?: boolean; attributeToUserId?: number | null },
+): CreateSaleInput {
   // نافذة الالتقاط ونقديّة الدفع — حرّاسٌ مشتركة (captureWindow.ts) لا نسخةٌ محليّة.
   // `skipCaptureWindow` لمسار استرداد المدير وحده (offline/recovery.ts): عمرُ العنصر هو **سببُ**
   // وجوده في الطابور أصلاً، وقد راجعه إنسانٌ الآن. أمّا حارس الوردية المفتوحة فيبقى نافذاً
   // داخل createSale — الإقفال حدٌّ محاسبيّ لا يُكتب بأثر رجعيّ بأيّ حال.
-  const capturedAt = assertCaptureWindow(input.capturedAt, { allowAged: options?.skipCaptureWindow });
+  const capturedAt = assertCaptureWindow(input.capturedAt, {
+    allowAged: options?.skipCaptureWindow,
+  });
   assertCashOnly(input.payment.method);
 
-  return createSale(
-    {
-      branchId: input.branchId,
-      shiftId: input.shiftId ?? null,
-      customerId: input.customerId ?? null,
-      priceTier: input.priceTier ?? null,
-      sourceType: "POS",
-      lines: input.lines,
-      invoiceDiscount: input.invoiceDiscount ?? null,
-      payment: input.payment,
-      clientRequestId: input.clientRequestId,
-      notes: input.notes ?? null,
-      cashRoundIQD: input.cashRoundIQD ?? false,
-      offlineCapture: {
-        capturedAt,
-        offlineReceiptNumber: input.offlineReceiptNumber,
-        deviceId: input.deviceId ?? null,
-      },
-      allowNegativeStock: true,
-      priceOverrideApproved: input.priceOverrideApproved ?? false,
-      // يُمرَّر من مسار استرداد المدير فقط، من submittedByUserId الخادمي لا من payload العميل.
-      attributeToUserId: options?.attributeToUserId ?? null,
+  return {
+    branchId: input.branchId,
+    shiftId: input.shiftId ?? null,
+    customerId: input.customerId ?? null,
+    priceTier: input.priceTier ?? null,
+    sourceType: "POS",
+    lines: input.lines,
+    invoiceDiscount: input.invoiceDiscount ?? null,
+    payment: input.payment,
+    clientRequestId: input.clientRequestId,
+    notes: input.notes ?? null,
+    cashRoundIQD: input.cashRoundIQD ?? false,
+    offlineCapture: {
+      capturedAt,
+      offlineReceiptNumber: input.offlineReceiptNumber,
+      deviceId: input.deviceId ?? null,
     },
-    actor,
-  );
+    allowNegativeStock: true,
+    priceOverrideApproved: input.priceOverrideApproved ?? false,
+    // يُمرَّر من مسار استرداد المدير فقط، من submittedByUserId الخادمي لا من payload العميل.
+    attributeToUserId: options?.attributeToUserId ?? null,
+  };
 }

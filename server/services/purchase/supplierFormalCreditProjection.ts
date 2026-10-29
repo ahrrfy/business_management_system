@@ -163,6 +163,7 @@ export async function loadSupplierFormalCreditTotals(
       and(
         inArray(purchaseReturns.supplierId, supplierIds),
         eq(purchaseReturns.settlement, "CREDIT"),
+        sql`${purchaseReturns.origin} <> 'OWNER_EXCEPTION'`,
       ),
     )
     .orderBy(asc(purchaseReturns.id))
@@ -332,14 +333,14 @@ export function supplierFormalCreditTotalsSql(invoiceId: SQLWrapper) {
   const direct = directCreditSql(id);
   const ownCap = sql`COALESCE((SELECT GREATEST(fcown.totalAmount-(${direct}),0) FROM supplierInvoices fcown WHERE fcown.id=${id}),0)`;
   const priorCap = sql`COALESCE((SELECT SUM(GREATEST(fci.totalAmount-(${directCreditSql(sql`fci.id`)}),0)) FROM supplierInvoices fci INNER JOIN ${linksSql} fct ON fct.invoiceId=fci.id INNER JOIN ${linksSql} fcl ON fcl.poId=fct.poId AND fcl.invoiceId=${id} INNER JOIN supplierInvoices fcown ON fcown.id=${id} WHERE fci.id<${id} AND fci.supplierId=fcown.supplierId AND fci.branchId=fcown.branchId AND fci.status='POSTED' AND fci.draftState<>'VOIDED' AND fci.liabilityClass IN ('NATIVE_AP','LEGACY_AP','LEGACY_UNKNOWN')),0)`;
-  const rawPoCredit = sql`COALESCE((SELECT SUM(${net}) FROM purchaseReturns fpr WHERE fpr.settlement='CREDIT' AND fpr.supplierInvoiceId IS NULL AND ${linked} AND ${scope} AND ${unique}),0)`;
+  const rawPoCredit = sql`COALESCE((SELECT SUM(${net}) FROM purchaseReturns fpr WHERE fpr.settlement='CREDIT' AND fpr.supplierInvoiceId IS NULL AND fpr.origin<>'OWNER_EXCEPTION' AND ${linked} AND ${scope} AND ${unique}),0)`;
   const poAlloc = sql`CASE WHEN ${ownerActiveAp} THEN LEAST(GREATEST((${rawPoCredit})-(${priorCap}),0),${ownCap}) ELSE 0 END`;
   const poCapTotal = sql`COALESCE((SELECT SUM(GREATEST(fci.totalAmount-(${directCreditSql(sql`fci.id`)}),0)) FROM supplierInvoices fci INNER JOIN ${linksSql} fct ON fct.invoiceId=fci.id WHERE fct.poId=fpr.purchaseOrderId AND fci.supplierId=fpr.supplierId AND fci.branchId=fpr.branchId AND fci.status='POSTED' AND fci.draftState<>'VOIDED' AND fci.liabilityClass IN ('NATIVE_AP','LEGACY_AP','LEGACY_UNKNOWN')),0)`;
-  const poCreditTotal = sql`COALESCE((SELECT SUM(${netReturnSql("fpr2")}) FROM purchaseReturns fpr2 WHERE fpr2.settlement='CREDIT' AND fpr2.supplierInvoiceId IS NULL AND fpr2.purchaseOrderId=fpr.purchaseOrderId AND fpr2.supplierId=fpr.supplierId AND fpr2.branchId=fpr.branchId),0)`;
+  const poCreditTotal = sql`COALESCE((SELECT SUM(${netReturnSql("fpr2")}) FROM purchaseReturns fpr2 WHERE fpr2.settlement='CREDIT' AND fpr2.supplierInvoiceId IS NULL AND fpr2.origin<>'OWNER_EXCEPTION' AND fpr2.purchaseOrderId=fpr.purchaseOrderId AND fpr2.supplierId=fpr.supplierId AND fpr2.branchId=fpr.branchId),0)`;
   return {
     amount: sql<string>`(${direct})+(${poAlloc})`,
     eligible: sql<boolean>`NOT EXISTS (SELECT 1 FROM purchaseReturns fpr WHERE fpr.settlement='CREDIT' AND fpr.supplierInvoiceId=${id} AND ${net}>0 AND NOT (${scope}))
       AND (${direct})<=COALESCE((SELECT fcown.totalAmount FROM supplierInvoices fcown WHERE fcown.id=${id}),0)
-      AND NOT EXISTS (SELECT 1 FROM purchaseReturns fpr WHERE fpr.settlement='CREDIT' AND fpr.supplierInvoiceId IS NULL AND ${linked} AND ${net}>0 AND (NOT (${unique}) OR NOT (${scope}) OR (${poCreditTotal})>(${poCapTotal})))`,
+      AND NOT EXISTS (SELECT 1 FROM purchaseReturns fpr WHERE fpr.settlement='CREDIT' AND fpr.supplierInvoiceId IS NULL AND fpr.origin<>'OWNER_EXCEPTION' AND ${linked} AND ${net}>0 AND (NOT (${unique}) OR NOT (${scope}) OR (${poCreditTotal})>(${poCapTotal})))`,
   };
 }

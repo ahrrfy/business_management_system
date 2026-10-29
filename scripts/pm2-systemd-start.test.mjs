@@ -195,6 +195,8 @@ function fixture() {
   assert.doesNotMatch(helper, /from\s+["']\.\.?\//u);
   assert.doesNotMatch(helper, /\/home\/deploy\/erp/u);
   assert.doesNotMatch(helper, /hr-bridge-runtime-policy/u);
+  assert.ok(helper.indexOf("assertInventoryResurrection(PM2_HOME)") < helper.indexOf("const daemon = await reconcilePm2ForSystemd("),
+    "durable ERP activation interlock must run before PM2 resurrection");
 
   const docs = fs.readFileSync(
     path.join(PROJECT_ROOT, "docs/deployment-vps.md"),

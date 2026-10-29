@@ -4,6 +4,7 @@
 // اعتماد ثنائيّ بلا عتبة. لا آلية اعتماد للمخزون (بخلاف السندات النقدية) ⇒ آلية جديدة: يُنشئ الطلبُ صفّاً
 // معلَّقاً في `stockAdjustmentRequests` **بلا تغيير مخزون**، ويعتمده مديرٌ آخر (SOD-04: المُعتمِد ≠ المُنشئ
 // إلا admin) فيُطبَّق `setStock` + قيد ADJUST (نفس منطق المسار المباشر السابق). الرفض بلا أثر.
+import { scanAfter } from "../decisions/scan";
 import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
 import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import { stockAdjustmentApprovalTrigger } from "@shared/approvalTriggers";
@@ -554,6 +555,7 @@ export async function rejectStockAdjustment(id: number, actor: Actor, reason: st
 
 /** قائمة طلبات التسوية (اسم الصنف + المُنشئ + الرصيد الحاليّ) — معزولةٌ بالفرع، مرتَّبة بالأحدث. */
 export async function listStockAdjustmentRequests(scope: {
+  scan?: import("../decisions/scan").ScanPosition | null;
   branchId?: number | null;
   status?: "PENDING_APPROVAL" | "APPROVED" | "REJECTED";
   /** `ASC` = الأقدم أوّلاً لصندوق القرارات — القصّ (500) بالأحدث يُسقط أكثر الطلبات تأخّراً. */
@@ -564,6 +566,8 @@ export async function listStockAdjustmentRequests(scope: {
   const conds = [];
   if (scope.branchId != null) conds.push(eq(stockAdjustmentRequests.branchId, scope.branchId));
   if (scope.status) conds.push(eq(stockAdjustmentRequests.status, scope.status));
+  const scan = scanAfter(stockAdjustmentRequests.id, scope.scan);
+  if (scan) conds.push(scan);
   const rows = await db
     .select({
       id: stockAdjustmentRequests.id,

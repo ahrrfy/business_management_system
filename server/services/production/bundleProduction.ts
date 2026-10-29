@@ -1,3 +1,4 @@
+import { lockProductionInventoryScope, syncProductionBundleCosts } from "./bundleCostScope";
 import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
@@ -26,7 +27,6 @@ import {
   type ProduceBundleComponentsResult,
 } from "../../../shared/bundleProductionTypes";
 import type { MaterialSubstitutionItem } from "../../../shared/recipeSubstitutionTypes";
-import { loadBundleUnitCosts, syncBundlesContainingComponents } from "../bundleService";
 import { loadVariantAvailability } from "../catalog/variantAvailability";
 import { ensureBranchStockRows } from "../inventoryService";
 import { money, round2, toDateStr } from "../money";
@@ -838,35 +838,8 @@ export async function produceBundleComponents(
       substituteVariantIds: subVariantIds,
     });
 
-    const variantProdRows = await tx
-      .select({ id: productVariants.id, productId: productVariants.productId })
-      .from(productVariants)
-      .where(inArray(productVariants.id, allVariantIdsToLock))
-      .orderBy(asc(productVariants.id));
-
-    const allProductIdsToLock = sortLockIds(
-      variantProdRows.map((r) => Number(r.productId))
-    );
-
-    // ١. قفل المنتجات تصاعدياً
-    if (allProductIdsToLock.length > 0) {
-      await tx
-        .select({ id: products.id })
-        .from(products)
-        .where(inArray(products.id, allProductIdsToLock))
-        .orderBy(asc(products.id))
-        .for("update");
-    }
-
-    // ٢. قفل المتغيرات تصاعدياً
+    await lockProductionInventoryScope(tx, allVariantIdsToLock, sortedBatches.map(b => b.variantId));
     if (allVariantIdsToLock.length > 0) {
-      await tx
-        .select({ id: productVariants.id })
-        .from(productVariants)
-        .where(inArray(productVariants.id, allVariantIdsToLock))
-        .orderBy(asc(productVariants.id))
-        .for("update");
-
       // ٣. ضمان وقفل أرصدة الفرع تصاعدياً (variantId ASC, branchId ASC)
       await ensureBranchStockRows(tx, allVariantIdsToLock, input.branchId);
       await tx
@@ -972,10 +945,9 @@ export async function produceBundleComponents(
     }
 
     // ④ مزامنة ختامية موحدة لكافة البكجات المتأثرة
-    await syncBundlesContainingComponents(tx, variantIds);
+    const costMap = await syncProductionBundleCosts(tx, variantIds);
 
     // ⑤ قراءة التكلفة المحدثة للبكج الناتج
-    const costMap = await loadBundleUnitCosts(tx, [input.bundleVariantId]);
     const updatedBundleUnitCost = costMap.get(input.bundleVariantId) ?? "0.00";
 
     return {
