@@ -53,6 +53,7 @@ describe("dependency security coverage", () => {
     expect(overrides["fast-uri"]).toBe("3.1.9");
     expect(overrides["undici"]).toBe("6.29.1");
     expect(overrides["@grpc/grpc-js"]).toBe("1.13.6");
+    expect(overrides["re2js"]).toBe("2.8.7");
     expect(overrides["brace-expansion@1.1.18"]).toBe("1.1.21");
     expect(overrides["brace-expansion@2.1.4"]).toBe("2.1.7");
     expect(overrides["brace-expansion@5.0.9"]).toBe("5.0.12");
