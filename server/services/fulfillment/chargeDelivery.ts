@@ -1,3 +1,4 @@
+import { creditCollectionChoiceTx } from "../delivery/creditCollectionTerms";
 import Decimal from "decimal.js";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
@@ -60,7 +61,7 @@ function chargeIds(payload: unknown): number[] {
   );
 }
 
-/** Match dispatch: CREDIT goods remain customer debt, outside courier COD. */
+/** Match the saved assignment instruction; CREDIT alone never decides courier collection. */
 export function assignedGoodsCodDue(
   invoice:
     | Pick<
@@ -68,8 +69,9 @@ export function assignedGoodsCodDue(
         "paymentMode" | "total" | "returnedTotal" | "paidAmount"
       >
     | undefined,
+  collectCreditOnDelivery = false,
 ) {
-  return invoice && invoice.paymentMode !== "CREDIT"
+  return invoice && (invoice.paymentMode !== "CREDIT" || collectCreditOnDelivery)
     ? Decimal.max(
         0,
         money(invoice.total)
@@ -312,7 +314,7 @@ export async function collectAssignedConsignmentClaimsTx(
       invoice.branchId !== cn.branchId)
   )
     throw fulfillmentError("الفاتورة الأصلية غير قابلة للتحصيل");
-  const goods = assignedGoodsCodDue(invoice);
+  const goods = assignedGoodsCodDue(invoice, await creditCollectionChoiceTx(tx, cn.id));
   const actual = money(input.actualAmount),
     due = goods.plus(assigned.remaining);
   if (!actual.isFinite() || actual.lt(0))

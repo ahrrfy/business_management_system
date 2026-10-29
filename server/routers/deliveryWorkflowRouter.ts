@@ -100,7 +100,7 @@ export const deliveryWorkflowRouter = router({
       z.object({
         sources: z.array(source).min(1).max(30),
         branchId,
-        deliveryFee: nonNegMoneyString.optional(),
+        deliveryFee: nonNegMoneyString.optional(), collectCreditOnDelivery: z.boolean().optional(),
         feeCollection: z.enum(["COURIER", "COUNTER", "SHOP"]).optional(),
       }),
     )
@@ -112,7 +112,7 @@ export const deliveryWorkflowRouter = router({
         branchId,
         partyId: z.number().int().positive(),
         assignedUserId: z.number().int().positive().optional(),
-        deliveryFee: nonNegMoneyString,
+        deliveryFee: nonNegMoneyString, collectCreditOnDelivery: z.boolean().optional(),
         feeCollection: z.enum(["COURIER", "COUNTER", "SHOP"]),
         recipientName: z.string().trim().min(2).max(255),
         recipientPhone: z.string().trim().min(5).max(32),

@@ -20,6 +20,7 @@ export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
     remainingAmount: d.remainingAmount ?? d.credit,
     status: d.status,
     paymentMode: d.paymentMode,
+    collectCreditOnDelivery: d.collectCreditOnDelivery,
   });
   const revised =
     D(facts.returnedTotal).gt(0) || !D(facts.currentTotal).eq(D(d.total));
@@ -206,7 +207,7 @@ export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
       ${d.paid != null ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">المبلغ المدفوع</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.paid)}</td></tr>` : ""}
       ${d.change != null ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">المبلغ المتبقي (الفكة)</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.change)}</td></tr>` : ""}
       ${moneyInput(d.heldDeposits).gt(0) ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">عربون محتجز</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.heldDeposits)}</td></tr>` : ""}
-      ${D(facts.remainingAmount).gt(0) ? `<tr style="border:2px solid #000;"><td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;">${d.paymentMode === "COD" ? "المطلوب عند الاستلام (COD)" : "متبقٍّ (حساب آجل)"}</td><td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(facts.remainingAmount)} د.ع</td></tr>` : ""}
+      ${D(facts.remainingAmount).gt(0) ? `<tr style="border:2px solid #000;"><td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;">${(d.paymentMode === "COD" || d.collectCreditOnDelivery === true) ? "المطلوب عند الاستلام (COD)" : "متبقٍّ (حساب آجل)"}</td><td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(facts.remainingAmount)} د.ع</td></tr>` : ""}
     </tbody>
   </table>
 

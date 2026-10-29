@@ -1,3 +1,4 @@
+import { preservedCreditCollectionChoiceTx } from "../delivery/creditCollectionTerms";
 import { and, eq, inArray } from "drizzle-orm";
 import {
   fulfillmentRequestItems,
@@ -650,6 +651,7 @@ export async function releaseFulfillmentRequestInTx(
     subsequentFeeCollection?: "COURIER" | "COUNTER" | "SHOP";
     externalTrackingRef?: string;
     assignedUserId?: number;
+    collectCreditOnDelivery?: boolean;
   },
   actor: Actor,
   compositionAuthority?: WorkflowRequestCompositionAuthority,
@@ -845,6 +847,7 @@ export async function releaseFulfillmentRequestInTx(
           partialDispatchConfirmed: partial,
           externalTrackingRef: input.externalTrackingRef,
           assignedUserId: input.assignedUserId,
+          collectCreditOnDelivery: input.collectCreditOnDelivery,
           notes: request.notes,
         },
         actor,
@@ -1072,6 +1075,7 @@ export async function reassignFulfillmentRequestInTx(
           invoiceIds,
           fulfillmentRequestId: request.id,
           partyId,
+          collectCreditOnDelivery: await preservedCreditCollectionChoiceTx(tx, members),
           deliveryFee: leader.deliveryFee,
           feeCollection: leader.feeCollection,
           recipientName: request.recipientName,

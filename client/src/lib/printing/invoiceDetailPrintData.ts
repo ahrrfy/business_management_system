@@ -13,7 +13,7 @@ type PrintSource = Pick<SavedInvoice, 'invoiceNumber' | 'subtotal' | 'total' | '
     'customerId' | 'customerBalance' | 'salespersonName' | 'paymentMethod' | 'paymentMode' |
     'payments' | 'discountAmount' | 'taxAmount' | 'taxRatePercent' | 'paidAmount' | 'returnedTotal' |
     'qrPayload' | 'deliveryFee' | 'deliveryFree' | 'deliveryWaivedAmount' | 'courierName' |
-    'courierFee' | 'courierFeeCollection' | 'consignmentStatus'>> & {
+    'courierFee' | 'courierFeeCollection' | 'consignmentStatus' | 'collectCreditOnDelivery'>> & {
       items: (Pick<SavedItem, 'quantity' | 'unitPrice' | 'total'> &
         Partial<Pick<SavedItem, 'productName' | 'variantName' | 'color' | 'size' | 'variantKind' |
           'sku' | 'unitName' | 'isGift' | 'barcode'>>)[];
@@ -52,6 +52,7 @@ export function invoiceDetailPrintData(data: PrintSource, companyTaxId: string |
       paymentMethod: paymentMethodLabel(data.paymentMethod),
       paymentLegs,
       paymentMode: data.paymentMode,
+    collectCreditOnDelivery: data.collectCreditOnDelivery,
       subtotal: data.subtotal,
       discountAmount: data.discountAmount,
       taxAmount: data.taxAmount,

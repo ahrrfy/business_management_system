@@ -26,6 +26,7 @@ export function drawReceiptTotals(
     remainingAmount: d.remainingAmount ?? d.credit,
     status: d.status,
     paymentMode: d.paymentMode,
+    collectCreditOnDelivery: d.collectCreditOnDelivery,
   });
   const revised =
     D(facts.returnedTotal).gt(0) || !D(facts.currentTotal).eq(D(d.total));
@@ -127,7 +128,7 @@ export function drawReceiptTotals(
     y += 30;
     ctx.font = "900 26px Cairo, sans-serif";
     const creditLabel =
-      d.paymentMode === "COD" ? "المطلوب عند الاستلام (COD):" : "متبقٍّ (آجل):";
+      (d.paymentMode === "COD" || d.collectCreditOnDelivery === true) ? "المطلوب عند الاستلام (COD):" : "متبقٍّ (آجل):";
     ctx.textAlign = "right";
     ctx.fillText(creditLabel, W - PAD, y);
     ctx.textAlign = "left";

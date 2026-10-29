@@ -119,6 +119,30 @@ describe("current invoice and carrier obligations", () => {
     expect(host.textContent).toContain("أجرة المندوب من العميل");
   });
 
+  it.each(["server", "local"])("shows selected credit collection as 5000 goods plus 5000 fee from %s data", (source) => {
+    const row = { ...candidate, codAmount: "5000", remainingAmount: "5000", invoicePaymentMode: "CREDIT", invoiceRemainingAmount: "5000", collectCreditOnDelivery: true, deliveryFee: "5000", feeCollection: "COURIER" };
+    if (source === "server") state.rows = [row];
+    act(() => root.render(<PredictiveConsignmentSearchInput localCandidates={source === "local" ? [row] : undefined} onSelect={vi.fn()} />));
+    act(() => state.change!("101567"));
+    expect(host.textContent).not.toContain("رصيد آجل على العميل");
+    expect(host.querySelector('[data-testid="predictive-at-door"]')?.textContent).toBe("10,000 د.ع");
+  });
+  it("does not ask the customer to pay courier cash again after delivery", () => {
+    state.rows = [{ ...candidate, parcelStatus: "DELIVERED", remainingAmount: "5000", invoicePaymentMode: "CREDIT", invoiceRemainingAmount: "0", collectCreditOnDelivery: true, cashInCourierCustody: "5000", deliveryFee: "5000", feeCollection: "COURIER" }];
+    act(() => root.render(<PredictiveConsignmentSearchInput onSelect={vi.fn()} />));
+    act(() => state.change!("101567"));
+    expect(host.querySelector('[data-testid="predictive-at-door"]')).toBeNull();
+    expect(host.textContent).not.toContain("رصيد آجل على العميل");
+    expect(host.textContent).toContain("نقد بعهدة الجهة");
+  });
+  it("does not display an at-door demand after a declared return", () => {
+    state.rows = [{ ...candidate, invoicePaymentMode: "CREDIT", invoiceRemainingAmount: "5000", collectCreditOnDelivery: true, returnDeclaredAt: "2026-10-29T14:00:00Z", deliveryFee: "5000", feeCollection: "COURIER" }];
+    act(() => root.render(<PredictiveConsignmentSearchInput onSelect={vi.fn()} />));
+    act(() => state.change!("101567"));
+    expect(host.querySelector('[data-testid="predictive-at-door"]')).toBeNull();
+    expect(host.textContent).not.toContain("رصيد آجل على العميل");
+  });
+
   it("does not relabel a credit invoice as COD or add the full invoice to the delivery demand", () => {
     const data = {
       invoiceNumber: "101567",

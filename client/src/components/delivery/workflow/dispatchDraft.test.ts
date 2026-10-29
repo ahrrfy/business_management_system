@@ -48,6 +48,16 @@ const result: WorkflowDispatchBatchResult = {
 };
 
 describe("barcode dispatch draft and committed recovery", () => {
+  it.each([true, false])("preserves the explicit credit instruction %s in a pending retry and clears it for new sources", collectCreditOnDelivery => {
+    const command = { ...pending, collectCreditOnDelivery };
+    const draft = { ...emptyDispatchDraft(), collectCreditOnDelivery, codes: ["WO-17"], pending: command };
+    const recovered = parseDispatchDraft(JSON.stringify(draft), 2)!;
+    expect(recovered.pending).toEqual(command);
+    expect(recovered.collectCreditOnDelivery).toBe(collectCreditOnDelivery);
+    const committed = commitDispatchDraft(recovered, result, 2, "الجهة");
+    expect(committed.collectCreditOnDelivery).toBeUndefined();
+    expect(appendDispatchDraftCode({ ...committed, collectCreditOnDelivery }, "WO-18").collectCreditOnDelivery).toBeUndefined();
+  });
   it("keeps unresolved FIFO codes durable across StrictMode cleanup and effect replay", () => {
     const first = appendDispatchDraftCode(emptyDispatchDraft(), "INV-10001");
     const second = appendDispatchDraftCode(first, "WO-10002");

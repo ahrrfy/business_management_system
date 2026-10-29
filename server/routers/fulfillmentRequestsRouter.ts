@@ -132,7 +132,7 @@ export const fulfillmentRequestsRouter = router({
           .enum(["COURIER", "COUNTER", "SHOP"])
           .optional(),
         externalTrackingRef: z.string().max(160).optional(),
-        assignedUserId: id.optional(),
+        assignedUserId: id.optional(), collectCreditOnDelivery: z.boolean().optional(),
       }),
     )
     .mutation(({ input, ctx }) =>

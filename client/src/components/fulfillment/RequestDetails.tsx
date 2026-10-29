@@ -10,7 +10,8 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { Checkbox } from "@/components/ui/checkbox";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { SubmitButton } from "@/components/ui/SubmitButton";
-import { fmtAr } from "@/lib/money";
+import { D, fmtAr } from "@/lib/money";
+import { CreditCollectionChoice } from "@/components/delivery/CreditCollectionChoice";
 import { notify } from "@/lib/notify";
 import { newClientRequestId } from "@/lib/countQueue";
 import { confirm } from "@/lib/confirm";
@@ -69,6 +70,7 @@ export function RequestDetails({
   const [reason, setReason] = useState("");
   const [key, setKey] = useState(newClientRequestId);
   const [driverId, setDriverId] = useState("");
+  const [collectCreditOnDelivery, setCollectCreditOnDelivery] = useState<boolean>();
   const [reassignPartyId, setReassignPartyId] = useState("");
   const [reassignDriverId, setReassignDriverId] = useState("");
   const [reassignTracking, setReassignTracking] = useState("");
@@ -128,6 +130,7 @@ export function RequestDetails({
     if (pendingRef.current) return;
     setSelected(detail.remainingItems.filter((r) => r.ready).map((r) => r.id));
     setPartial(false);
+    setCollectCreditOnDelivery(undefined);
     setKey(newClientRequestId());
   }, [request.id, request.version]);
   const workflowPrinter = useWorkflowDocumentPrinter(request.branchId);
@@ -202,6 +205,10 @@ export function RequestDetails({
     expectedVersion: request.version,
     clientRequestId: key,
   };
+  const selectedItems = detail.remainingItems.filter((item) => selected.includes(item.id));
+  const creditAmount = selectedItems.reduce((sum, item) => sum.plus(item.paymentMode === "CREDIT" ? item.remainingAmount : 0), D(0));
+  const creditChoiceRequired = creditAmount.gt(0);
+  const otherCollection = selectedItems.reduce((sum, item) => sum.plus(item.paymentMode === "CREDIT" ? 0 : item.remainingAmount), D(detail.totals.chargeRemaining));
   const columns: ColumnDef<Item, unknown>[] = [
     {
       id: "selection",
@@ -223,6 +230,7 @@ export function RequestDetails({
                   : s.filter((id) => id !== row.original.id),
               );
               setKey(newClientRequestId());
+              setCollectCreditOnDelivery(undefined);
             }}
           />
         ),
@@ -281,6 +289,7 @@ export function RequestDetails({
     },
   ];
   const blockedReasons = [
+    creditChoiceRequired && collectCreditOnDelivery == null ? "اختر طريقة تحصيل الرصيد الآجل مع المندوب أو إبقاءه على حساب العميل" : null,
     !request.partyId ? "حدد جهة التوصيل من تعديل الطلب قبل الإرسال" : null,
     parties.isPending ? "انتظر اكتمال بيانات جهة التوصيل" : null,
     parties.error?.message ?? null,
@@ -389,7 +398,7 @@ export function RequestDetails({
       </div>
       <DataTable columns={columns} data={detail.items} searchable={false} />
       <p className="text-sm text-muted-foreground">
-        متبقي الفواتير القابل للتحصيل بالتوصيل قبل إضافة الأجور:{" "}
+        تحصيل الفواتير دون الأرصدة الآجلة؛ تُحدد تعليمات الآجل عند إرسال الدفعة:{" "}
         <LiveValue
           value={detail.totals.invoiceCodRemaining}
           identity={request.id}
@@ -575,6 +584,7 @@ export function RequestDetails({
             غير الجاهز يؤخر الإرسال الكامل.
           </p>
           <p className="text-sm">جهة التوصيل: {party?.name ?? "غير محددة"}</p>
+          {creditChoiceRequired && <CreditCollectionChoice creditAmount={creditAmount.toFixed(2)} otherGoodsAmount={otherCollection.toFixed(2)} fee={request.status === "PARTIALLY_RELEASED" ? fee : request.deliveryFee} feeCollection={request.status === "PARTIALLY_RELEASED" ? rail : request.feeCollection} value={collectCreditOnDelivery} onChange={(value) => { setCollectCreditOnDelivery(value); setKey(newClientRequestId()); }} disabled={busy} />}
           {needsDriver && (
             <label className="block space-y-1 text-sm">
               الموظف المندوب
@@ -689,6 +699,7 @@ export function RequestDetails({
                   kind: "release",
                   input: {
                     ...identity,
+                    ...(creditChoiceRequired ? { collectCreditOnDelivery } : {}),
                     itemIds: selected.length ? selected : undefined,
                     partialReleaseConfirmed: partial,
                     futureFeeDecision: partial ? decision : undefined,

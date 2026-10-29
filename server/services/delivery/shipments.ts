@@ -272,6 +272,7 @@ async function shipmentDetailsTx(
     .select({
       id: invoices.id,
       invoiceNumber: invoices.invoiceNumber,
+    paymentMode: invoices.paymentMode,
       total: invoices.total,
       paidAmount: invoices.paidAmount,
       returnedTotal: invoices.returnedTotal,
@@ -347,6 +348,7 @@ export async function createFinalShipmentDispatchDocumentSnapshotsTx(
     consignmentId: number;
     clientRequestId: string;
     operationId: string;
+    eventOccurredAt?: Date;
   },
   actor: DeliveryTxActor,
 ) {
@@ -413,12 +415,12 @@ export async function createFinalShipmentDispatchDocumentSnapshotsTx(
     shiftId:
       invoiceRows[0]?.shiftId == null ? null : Number(invoiceRows[0].shiftId),
     eventKey,
-    eventOccurredAt: leader.dispatchedAt,
+    eventOccurredAt: (input.eventOccurredAt ?? leader.dispatchedAt),
     createdBy: actor.userId,
     payload: {
       schemaVersion: 1,
       operationId: `${input.operationId}:${input.clientRequestId}`,
-      eventOccurredAt: leader.dispatchedAt.toISOString(),
+      eventOccurredAt: (input.eventOccurredAt ?? leader.dispatchedAt).toISOString(),
       evidence: {
         mode: "COMMITTED_DISPATCH_EVENT",
         eventKey,
@@ -555,6 +557,7 @@ export async function dispatchInvoiceShipmentInTx(
       "أسند طلب المتجر من شاشة طلبات المتجر",
     );
   const hash = idempotencyHash({
+    ...(input.collectCreditOnDelivery === true ? { collectCreditOnDelivery: true } : {}),
     invoiceId: input.invoiceId,
     invoiceIds: ids,
     partyId: input.partyId,
@@ -933,6 +936,7 @@ export async function listShipmentInvoiceCandidates(
     branchId: invoices.branchId,
     invoiceId: invoices.id,
     invoiceNumber: invoices.invoiceNumber,
+    paymentMode: invoices.paymentMode,
     total: invoices.total,
     paidAmount: invoices.paidAmount,
     returnedTotal: invoices.returnedTotal,

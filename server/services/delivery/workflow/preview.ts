@@ -1,3 +1,4 @@
+import { creditCollectionChoiceTx } from "../creditCollectionTerms";
 import { and, desc, eq, inArray, ne, or, sql, type SQL } from "drizzle-orm";
 import {
   customers,
@@ -284,6 +285,7 @@ export async function loadWorkflowPreviewTx(
   requestedBranchId?: number,
   lock = false,
   selectedStation: WorkflowStation = "dispatch",
+  collectCreditOnDelivery = false,
 ): Promise<WorkflowScanPreview> {
   let invoice: typeof invoices.$inferSelect | undefined;
   let order: typeof workOrders.$inferSelect | undefined;
@@ -443,6 +445,7 @@ export async function loadWorkflowPreviewTx(
       requestedBranchId,
       lock,
       selectedStation,
+      collectCreditOnDelivery,
     );
     return {
       ...grouped,
@@ -745,11 +748,13 @@ export async function loadWorkflowPreviewTx(
     .map((r) => r.id);
   const paymentMode =
     invoice?.paymentMode ?? order?.paymentMode ?? (online ? "COD" : null);
+  let creditRemaining = paymentMode === "CREDIT" ? positive(total.minus(paid)) : money(0);
   let cod =
-    execution || paymentMode === "CREDIT"
+    execution || (paymentMode === "CREDIT" && !collectCreditOnDelivery)
       ? money(0)
       : positive(total.minus(paid));
   if (cn) {
+    creditRemaining = money(0);
     cod = money(0);
     serviceCharges = money(0);
     if (invoiceIds.length && !execution) {
@@ -761,7 +766,8 @@ export async function loadWorkflowPreviewTx(
         member.invoiceId == null
           ? undefined
           : await readInvoice(member.invoiceId);
-      cod = cod.plus(assignedGoodsCodDue(row));
+      cod = cod.plus(assignedGoodsCodDue(row, await creditCollectionChoiceTx(tx, member.id)));
+      if (row?.paymentMode === "CREDIT") creditRemaining = creditRemaining.plus(positive(money(row.total).minus(row.returnedTotal).minus(row.paidAmount)));
       if (row && !execution) {
         total = total.plus(positive(money(row.total).minus(row.returnedTotal)));
         paid = paid.plus(row.paidAmount);
@@ -771,11 +777,13 @@ export async function loadWorkflowPreviewTx(
     }
   }
   if (request && !cn) {
+    creditRemaining = money(0);
     cod = money(0);
     for (const item of requestItems) {
       const invId = item.invoiceId ?? item.materializedInvoiceId;
       const row = invId == null ? undefined : await readInvoice(invId);
-      if (row && row.paymentMode !== "CREDIT")
+      if (row?.paymentMode === "CREDIT") creditRemaining = creditRemaining.plus(positive(money(row.total).minus(row.returnedTotal).minus(row.paidAmount)));
+      if (row && (row.paymentMode !== "CREDIT" || collectCreditOnDelivery))
         cod = cod.plus(
           positive(
             money(row.total).minus(row.returnedTotal).minus(row.paidAmount),
@@ -789,7 +797,8 @@ export async function loadWorkflowPreviewTx(
             .where(eq(workOrders.id, item.workOrderId))
             .limit(1)
         )[0];
-        if (wo && wo.paymentMode !== "CREDIT")
+        if (wo?.paymentMode === "CREDIT") creditRemaining = creditRemaining.plus(positive(money(wo.salePrice).minus(wo.deposit ?? "0")));
+        if (wo && (wo.paymentMode !== "CREDIT" || collectCreditOnDelivery))
           cod = cod.plus(
             positive(money(wo.salePrice).minus(wo.deposit ?? "0")),
           );
@@ -899,6 +908,7 @@ export async function loadWorkflowPreviewTx(
       order?.deliveryFeeCollection ??
       (held.gt(0) ? "COUNTER" : "COURIER"),
     paymentMode,
+    creditRemainingAmount: workflowMoney(creditRemaining),
     heldReceipts: heldRows,
     pendingRefundReceiptIds,
   };

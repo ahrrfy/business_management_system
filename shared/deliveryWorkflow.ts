@@ -107,6 +107,7 @@ export interface WorkflowScanPreview {
     deliveryFee: string;
     feeCollection: "COURIER" | "COUNTER" | "SHOP";
     paymentMode: "PREPAID" | "COD" | "CREDIT" | null;
+    creditRemainingAmount?: string;
     heldReceipts: {
       id: number;
       amount: string;
@@ -227,6 +228,7 @@ export interface WorkflowDispatchSource {
   expectedVersion: string;
 }
 export interface WorkflowDispatchBatchInput {
+  collectCreditOnDelivery?: boolean;
   sources: WorkflowDispatchSource[];
   branchId?: number;
   partyId: number;

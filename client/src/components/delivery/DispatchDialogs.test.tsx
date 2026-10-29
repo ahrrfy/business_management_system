@@ -7,15 +7,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DispatchDialog, type DispatchParty } from "./DispatchDialog";
 import { OrderDispatchDialog } from "../store/OrderDispatchDialog";
 import { DeliveryReadyForDispatchTab } from "@/pages/DeliveryReadyForDispatchTab";
+import { InvoiceDispatchDialog } from "./InvoiceDispatchDialog";
+import { CreditCollectionTermsEditor } from "./CreditCollectionTermsEditor";
 
-const mocks = vi.hoisted(() => ({ parties: [] as unknown[], ready: [] as unknown[], notify: vi.fn(), barcode: vi.fn(), label: vi.fn(), slip: vi.fn(), departure: vi.fn(), readyContact: vi.fn() }));
+const mocks = vi.hoisted(() => ({ parties: [] as unknown[], ready: [] as unknown[], candidates: undefined as unknown, notify: vi.fn(), barcode: vi.fn(), label: vi.fn(), slip: vi.fn(), departure: vi.fn(), readyContact: vi.fn(), invoiceDispatch: vi.fn(), reassign: vi.fn() }));
 vi.mock("@/lib/trpc", () => ({ trpc: {
-  useUtils: () => ({}),
+  useUtils: () => ({ sales: { invalidate: vi.fn() }, delivery: { invalidate: vi.fn() } }),
   auth: { me: { useQuery: () => ({ data: null }) } },
   delivery: {
     readyForDispatch: { useQuery: () => ({ data: mocks.ready }) },
     listParties: { useQuery: () => ({ data: mocks.parties }) },
     dispatch: { useMutation: () => ({ isPending: false }) },
+    dispatchInvoice: { useMutation: () => ({ isPending: false, mutate: mocks.invoiceDispatch }) },
+    invoiceCandidates: { useQuery: () => ({ data: mocks.candidates, isLoading: false }) },
+    reassignConsignment: { useMutation: () => ({ isPending: false, mutate: mocks.reassign }) },
     dispatchByBarcode: { useMutation: () => ({ isPending: false, mutateAsync: mocks.barcode }) },
   },
   storeAdmin: { orders: { parties: { useQuery: () => ({ data: mocks.parties }) } } },
@@ -28,7 +33,10 @@ vi.mock("@/lib/printing/shippingLabel", () => ({ preopenShippingLabelWindow: () 
 vi.mock("@/components/data-table/DataTable", () => ({ DataTable: ({ columns, data }: any) => <div>{data.map((original: any) => <div key={original.id}>{columns.find((c: any) => c.id === "actions").cell({ row: { original } })}</div>)}</div> }));
 vi.mock("@/components/list", () => ({ RowActions: ({ actions, contact }: any) => { mocks.readyContact(contact); return <div>{actions.map((a: any) => <button key={a.key} onClick={a.onSelect}>{a.label}</button>)}</div>; } }));
 vi.mock("@/components/ui/AppSelect", () => ({ AppSelect: ({ children, onValueChange, ...props }: any) => <select {...props} onChange={e => onValueChange(e.target.value)}>{children}</select> }));
-vi.mock("@/components/ui/dialog", () => ({ useDialogComposition: () => null, Dialog: ({ children }: any) => <div>{children}</div>, DialogContent: ({ children }: any) => <div>{children}</div>, DialogHeader: ({ children }: any) => <div>{children}</div>, DialogTitle: ({ children }: any) => <div>{children}</div> }));
+vi.mock("@/components/ui/dialog", () => ({ useDialogComposition: () => null, Dialog: ({ children }: any) => <div>{children}</div>, DialogContent: ({ children }: any) => <div>{children}</div>, DialogHeader: ({ children }: any) => <div>{children}</div>, DialogTitle: ({ children }: any) => <div>{children}</div>, DialogDescription: ({ children }: any) => <p>{children}</p>, DialogFooter: ({ children }: any) => <div>{children}</div> }));
+vi.mock("@/components/fulfillment/FulfillmentSourceActions", () => ({ FulfillmentSourceActions: () => null }));
+vi.mock("@/hooks/useWorkflowDocumentPrinter", () => ({ useWorkflowDocumentPrinter: () => ({ printShipmentAndLabel: vi.fn() }) }));
+vi.mock("@/lib/printing/print", () => ({ preopenDocumentWindow: () => null }));
 vi.mock("@/components/delivery/AnimatedDeliveryButton", () => ({ AnimatedDeliveryButton: ({ label, isDispatching: _pending, ...props }: any) => <button {...props}>{label}</button> }));
 vi.mock("@/components/delivery/WhatsAppStageActionsMenu", () => ({ WhatsAppStageActionsMenu: () => null }));
 vi.mock("@/components/form/IntlPhoneInput", () => ({ IntlPhoneInput: ({ value, onChange, ariaLabel }: any) => <input aria-label={ariaLabel} value={value} onChange={e => onChange(e.target.value)} /> }));
@@ -58,9 +66,87 @@ beforeEach(() => {
   Object.assign(globalThis, { React, IS_REACT_ACT_ENVIRONMENT: true });
   mocks.parties = [internal, company]; vi.clearAllMocks();
   mocks.ready = [];
+  mocks.candidates = undefined;
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); });
+
+describe("credit delivery collection choice", () => {
+  const creditOrder = { ...order, paymentMode: "CREDIT", salePrice: "35000", deposit: "30000", deliveryCost: "5000" };
+  function renderCredit(id = creditOrder.id, onConfirm = vi.fn()) {
+    act(() => root.render(<DispatchDialog order={{ ...creditOrder, id }} parties={[{ ...internal, defaultFee: "5000" }] as DispatchParty[]} pending={false} onClose={vi.fn()} onConfirm={onConfirm} />));
+    return onConfirm;
+  }
+  function prepareCredit() {
+    chooseParty("workorder", "1");
+    select(host.querySelector<HTMLSelectElement>('select[aria-label="المندوب الموظف المحدد"]')!, "7");
+  }
+  it.each([["collect", true, "10,000"], ["account", false, "5,000"]] as const)("requires an explicit %s decision and forwards its actual meaning", (choice, collect, expected) => {
+    const onConfirm = renderCredit(); prepareCredit();
+    expect(confirmButton().disabled).toBe(true);
+    const picker = host.querySelector<HTMLSelectElement>('select[aria-label="تحصيل الرصيد الآجل مع المندوب"]')!;
+    expect(picker).not.toBeNull();
+    select(picker, choice);
+    expect(host.querySelector('[data-testid="credit-at-door"]')!.textContent).toBe(`${expected} د.ع`);
+    expect(host.querySelector('[data-testid="credit-goods-due"]')!.textContent).toBe(collect ? "5,000 د.ع" : "0 د.ع");
+    expect(confirmButton().disabled).toBe(false);
+    act(() => confirmButton().click());
+    expect(onConfirm).toHaveBeenCalledWith(expect.objectContaining({ collectCreditOnDelivery: collect, fee: "5000.00" }));
+  });
+  it("clears the prior invoice decision when opening another order", () => {
+    renderCredit(); prepareCredit();
+    select(host.querySelector<HTMLSelectElement>('select[aria-label="تحصيل الرصيد الآجل مع المندوب"]')!, "collect");
+    renderCredit(99); prepareCredit();
+    expect(host.querySelector<HTMLSelectElement>('select[aria-label="تحصيل الرصيد الآجل مع المندوب"]')!.value).toBe("");
+    expect(confirmButton().disabled).toBe(true);
+  });
+});
+
+describe("credit invoice dispatch and current claim amendment", () => {
+  const invoice = { id: 29218, invoiceNumber: "101567", branchId: 3, total: "35000", paidAmount: "30000", paymentMode: "CREDIT", customerName: "ليلى", customerPhone: "07701234567", deliveryAddress: "النجف" };
+  function typeInput(input: HTMLInputElement, value: string) {
+    act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value); input.dispatchEvent(new Event("input", { bubbles: true })); });
+  }
+  it.each([["collect", true, "10,000"], ["account", false, "5,000"]] as const)("sends the %s invoice instruction with the displayed at-door amount", (choice, collect, expected) => {
+    mocks.parties = [{ ...company, defaultFee: "5000" }];
+    mocks.candidates = { anchor: invoice, candidates: [], requiredInvoiceIds: [], retainedDispatch: null };
+    act(() => root.render(<InvoiceDispatchDialog invoice={invoice} open onOpenChange={vi.fn()} />));
+    select(host.querySelector<HTMLSelectElement>('select[aria-label="جهة التوصيل"]')!, "2");
+    typeInput(host.querySelector<HTMLInputElement>('#invoice-dispatch-tracking')!, "WAYBILL-101567");
+    expect(confirmButton().disabled).toBe(true);
+    select(host.querySelector<HTMLSelectElement>('select[aria-label="تحصيل الرصيد الآجل مع المندوب"]')!, choice);
+    expect(host.querySelector('[data-testid="credit-at-door"]')!.textContent).toBe(`${expected} د.ع`);
+    expect(host.querySelector('[data-testid="credit-goods-due"]')!.textContent).toBe(collect ? "5,000 د.ع" : "0 د.ع");
+    act(() => confirmButton().click());
+    expect(mocks.invoiceDispatch).toHaveBeenCalledWith(expect.objectContaining({ invoiceId: 29218, collectCreditOnDelivery: collect, deliveryFee: "5000.00" }));
+  });
+  it("amends the current claim using its reviewed version and reason without a driver change", () => {
+    const consignment = { id: 1461, partyId: 2, status: "DISPATCHED", parcelStatus: "OUT_FOR_DELIVERY", invoicePaymentMode: "CREDIT", invoiceRemainingAmount: "5000", deliveryFee: "5000", feeCollection: "COURIER", collectedAmount: "0", counterSettledAmount: "0", codClaimVersion: 3, collectCreditOnDelivery: false };
+    const renderEditor = (version: number) => act(() => root.render(<CreditCollectionTermsEditor consignment={{ ...consignment, codClaimVersion: version }} canEdit />));
+    renderEditor(3);
+    act(() => host.querySelector<HTMLButtonElement>('button')!.click());
+    const save = () => Array.from(host.querySelectorAll('button')).find((button) => button.textContent === "حفظ تعليمات التحصيل")!;
+    select(host.querySelector<HTMLSelectElement>('select[aria-label="تحصيل الرصيد الآجل مع المندوب"]')!, "collect");
+    expect(save().disabled).toBe(true);
+    typeInput(host.querySelector<HTMLInputElement>('input[aria-label="سبب تعديل تحصيل الآجل"]')!, "العميل يسدد المتبقي للمندوب");
+    expect(host.querySelector('[data-testid="credit-at-door"]')!.textContent).toBe("10,000 د.ع");
+    act(() => save().click());
+    expect(mocks.reassign).toHaveBeenCalledWith(expect.objectContaining({ consignmentId: 1461, partyId: 2, expectedClaimVersion: 3, collectCreditOnDelivery: true, collectionReason: "العميل يسدد المتبقي للمندوب" }));
+    expect(mocks.reassign.mock.calls[0][0]).not.toHaveProperty("assignedUserId");
+    renderEditor(4);
+    expect(host.querySelector('select[aria-label="تحصيل الرصيد الآجل مع المندوب"]')).toBeNull();
+    act(() => host.querySelector<HTMLButtonElement>('button')!.click());
+    expect(host.querySelector<HTMLSelectElement>('select[aria-label="تحصيل الرصيد الآجل مع المندوب"]')!.value).toBe("");
+    expect(host.querySelector<HTMLInputElement>('input[aria-label="سبب تعديل تحصيل الآجل"]')!.value).toBe("");
+  });
+  it.each(["group", "request"])("explains why an existing %s claim cannot be amended independently", (kind) => {
+    const consignment = { id: 1461, partyId: 2, status: "DISPATCHED", parcelStatus: "OUT_FOR_DELIVERY", invoicePaymentMode: "CREDIT", invoiceRemainingAmount: "5000", deliveryFee: "5000", feeCollection: "COURIER", collectedAmount: "0", codClaimVersion: 3, ...(kind === "request" ? { fulfillmentRequestId: 44 } : {}) };
+    act(() => root.render(<CreditCollectionTermsEditor consignment={consignment} canEdit grouped={kind === "group"} />));
+    expect(host.textContent).toContain("متاح للإرسالية المفردة فقط");
+    expect(host.querySelector('button')).toBeNull();
+    expect(mocks.reassign).not.toHaveBeenCalled();
+  });
+});
 
 describe("online ready dispatch money", () => {
   it.each([false, true])("direct-store redispatch displays only the persisted remainder (free=%s)", deliveryFree => {

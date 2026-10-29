@@ -1160,6 +1160,7 @@ export default function WorkOrderDetail() {
           customerPhone: data.customerPhone,
           salePrice: data.salePrice,
           deposit: data.deposit,
+          paymentMode: data.paymentMode,
           deliveryAddress: data.deliveryAddress,
           deliveryPhone: data.deliveryPhone,
           deliveryCost: data.deliveryCost,
@@ -1176,7 +1177,7 @@ export default function WorkOrderDetail() {
          * ولا يطبع يترك الموظّف بطردٍ مُسنَدٍ بلا مستند — فيبحث عن شاشةٍ أخرى ليطبع يدوياً،
          * وهو نقيضُ تقليل النقرات. نفسُ الدالّتين المشتركتين، بلا ازدواج منطق.
          */
-        onConfirm={async ({ partyId, fee, recipientName, recipientPhone, deliveryAddress, notes, assignedUserId, externalTrackingRef }) => {
+        onConfirm={async ({ partyId, fee, recipientName, recipientPhone, deliveryAddress, notes, assignedUserId, externalTrackingRef, collectCreditOnDelivery }) => {
           const party = (dispatchParties.data ?? []).find((p) => Number(p.id) === partyId);
           const labelWin = preopenShippingLabelWindow(), slipWin = preopenDocumentWindow();
           try {
@@ -1191,6 +1192,7 @@ export default function WorkOrderDetail() {
               clientRequestId: dispatchRequestIdRef.current ?? (dispatchRequestIdRef.current = newClientRequestId()),
               assignedUserId,
               externalTrackingRef,
+              collectCreditOnDelivery,
             });
             const printable = {
               orderNumber: data.orderNumber,

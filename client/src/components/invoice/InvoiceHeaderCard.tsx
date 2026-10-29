@@ -26,7 +26,7 @@ export function InvoiceHeaderCard({
 }: InvoiceHeaderCardProps) {
   const hasDiscount = D(data.discountAmount ?? "0").gt(0);
   const hasTax = D(data.taxAmount ?? "0").gt(0);
-  const collection = invoiceDeliveryCollection({ remainingAmount: remaining.toFixed(2), paymentMode: data.paymentMode, fee: data.courierFee, feeCollection: data.courierFeeCollection, status: data.status });
+  const collection = invoiceDeliveryCollection({ remainingAmount: remaining.toFixed(2), paymentMode: data.paymentMode, collectCreditOnDelivery: data.collectCreditOnDelivery, fee: data.courierFee, feeCollection: data.courierFeeCollection, status: data.status });
 
   return (
     <Card>
@@ -34,7 +34,7 @@ export function InvoiceHeaderCard({
         <CardTitle className="text-base flex items-center justify-between gap-2">
           <CopyInline value={data.invoiceNumber} />
           <div className="flex items-center gap-2">
-            {data.paymentMode === "CREDIT" ? (
+            {data.paymentMode === "CREDIT" && !data.collectCreditOnDelivery ? (
               <span className="text-xs rounded-full px-2.5 py-0.5 font-semibold badge-stock-low">آجل — على حساب العميل</span>
             ) : isInvoiceCodInTransit(data) ? (
               <span
@@ -172,7 +172,7 @@ export function InvoiceHeaderCard({
                 </div>
                 {D(collection.atDoorDue).gt(0) && (
                   <div className="mt-1.5 flex items-center justify-between border-t border-[var(--sem-warn)]/30 pt-1.5 font-black text-[var(--sem-warn)]">
-                    <span>المطلوب عند التسليم{data.paymentMode === "CREDIT" ? " (أجرة التوصيل فقط)" : " شاملاً التوصيل"}</span>
+                    <span>المطلوب عند التسليم{data.paymentMode === "CREDIT" && !data.collectCreditOnDelivery ? " (أجرة التوصيل فقط)" : " شاملاً التوصيل"}</span>
                     <span className="tabular-nums" dir="ltr">
                       {fmt(collection.atDoorDue)}
                     </span>

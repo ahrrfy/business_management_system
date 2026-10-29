@@ -1,3 +1,4 @@
+import { consignmentCreditCollectionSql } from "./creditCollectionTerms";
 import { consignmentFeeDueSql, createFeeWithholdingQuote } from "./fees";
 import { physicalReturnReceiptExistsSql } from "./workflow/returnReceipt";
 import { remittanceCashReceivedSql } from "./remittanceCash";
@@ -185,6 +186,7 @@ export async function listReadyForDispatch(branchId: number | null) {
       customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
       deliveryAddress: workOrders.deliveryAddress,
       deliveryPhone: workOrders.deliveryPhone,
+      paymentMode: workOrders.paymentMode,
       hasDelivery: workOrders.hasDelivery,
       dueDate: workOrders.dueDate,
       deliveryFeeCollection: workOrders.deliveryFeeCollection,
@@ -908,6 +910,10 @@ export async function getConsignmentTimeline(consignmentId: number) {
         parcelStatus: deliveryConsignments.parcelStatus,
         moneyStatus: deliveryConsignments.moneyStatus,
         codAmount: deliveryConsignments.codAmount,
+        codClaimVersion: deliveryConsignments.codClaimVersion,
+        collectCreditOnDelivery: consignmentCreditCollectionSql,
+        invoicePaymentMode: invoices.paymentMode,
+        invoiceRemainingAmount: openBalanceExpr({ total: invoices.total, paidAmount: invoices.paidAmount, returnedTotal: invoices.returnedTotal }),
         collectedAmount: deliveryConsignments.collectedAmount,
         counterSettledAmount: deliveryConsignments.counterSettledAmount,
         deliveryFee: deliveryConsignments.deliveryFee,
@@ -1288,6 +1294,8 @@ export interface PredictiveConsignmentItem {
   remainingAmount: string;
   /** Current customer debt and actual courier custody are different obligations. */
   invoicePaymentMode?: string | null;
+  collectCreditOnDelivery?: boolean;
+  returnDeclaredAt?: Date | string | null;
   invoiceRemainingAmount?: string | null;
   deliveryFee?: string | null;
   feeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
@@ -1376,6 +1384,8 @@ export async function predictiveSearchConsignments(
     .select({
       searchScore: search.score,
       invoicePaymentMode: invoices.paymentMode,
+      collectCreditOnDelivery: consignmentCreditCollectionSql,
+      returnDeclaredAt: deliveryConsignments.returnDeclaredAt,
       invoiceRemainingAmount: sql<string | null>`CASE WHEN ${invoices.status} IN ('CANCELLED','RETURNED','SUPERSEDED') THEN 0 ELSE ${openBalanceExpr({ total: invoices.total, paidAmount: invoices.paidAmount, returnedTotal: invoices.returnedTotal })} END`,
       deliveryFee: deliveryConsignments.deliveryFee,
       feeCollection: deliveryConsignments.feeCollection,
@@ -1506,6 +1516,8 @@ export async function predictiveSearchConsignments(
       counterSettledAmount: String(r.counterSettledAmount ?? "0.00"),
       remainingAmount: remaining,
       invoicePaymentMode: r.invoicePaymentMode,
+      collectCreditOnDelivery: r.collectCreditOnDelivery,
+      returnDeclaredAt: r.returnDeclaredAt,
       invoiceRemainingAmount: r.invoiceRemainingAmount == null ? null : round2(money(r.invoiceRemainingAmount)).toFixed(2),
       deliveryFee: r.deliveryFee,
       feeCollection: r.feeCollection,

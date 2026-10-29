@@ -11,6 +11,15 @@ describe("credit invoice delivery collection", () => {
     paymentMode: "CREDIT", courierName: "ناقل", courierFee: "5000.00", items: [],
   };
 
+  it("prints invoice101567 goods5000 plus fee5000 when credit collection is explicitly selected",()=>{
+    const input={...creditInvoice,collectCreditOnDelivery:true,courierFeeCollection:"COURIER" as const};
+    expect(invoicePrintAmounts(input)).toMatchObject({courierGoodsDue:"5000.00",creditDue:"0.00"});
+    for(const html of [buildBrowserReceiptHtml(invoiceToReceipt(input)),buildSalesInvoiceV2Html({...input,courierDelivery:{partyName:"ناقل",fee:"5000.00",feeCollection:"COURIER"}})]) {
+      expect(html).toContain("10,000");expect(html).not.toContain("رصيد البضاعة آجل؛ لا يحصله المندوب");
+      expect(html).not.toContain("أجرة التوصيل فقط");
+    }
+  });
+
   it("keeps the customer debt outside courier goods collection", () => {
     expect(invoicePrintAmounts(creditInvoice)).toMatchObject({
       remainingAmount: "5000.00", courierGoodsDue: "0.00", creditDue: "5000.00",

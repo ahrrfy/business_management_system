@@ -156,6 +156,7 @@ export async function previewWorkflowBatch(
     sources: WorkflowDispatchSource[];
     branchId?: number;
     deliveryFee?: string;
+    collectCreditOnDelivery?: boolean;
     feeCollection?: "COURIER" | "COUNTER" | "SHOP";
   },
   actor: Actor,
@@ -167,7 +168,7 @@ export async function previewWorkflowBatch(
       const previews = [];
       for (const source of input.sources)
         previews.push(
-          await loadWorkflowPreviewTx(tx, source, auth.current, input.branchId),
+          await loadWorkflowPreviewTx(tx, source, auth.current, input.branchId, false, "dispatch", input.collectCreditOnDelivery),
         );
       const result = batchPreview(previews);
       if (input.deliveryFee != null) {
@@ -483,6 +484,8 @@ export async function dispatchWorkflowBatch(
             auth.current,
             input.branchId,
             true,
+            "dispatch",
+            input.collectCreditOnDelivery === true,
           ),
         );
       const branchId = previews[0]!.source.branchId;
@@ -813,6 +816,7 @@ export async function dispatchWorkflowBatch(
           id: request.id,
           expectedVersion: request.version,
           clientRequestId: `${input.clientRequestId}:release`,
+          collectCreditOnDelivery: input.collectCreditOnDelivery,
           assignedUserId: input.assignedUserId,
           externalTrackingRef: input.externalTrackingRef,
         },
@@ -852,6 +856,9 @@ async function dispatchOnlineSingleton(
         source,
         auth.current,
         input.branchId,
+        false,
+        "dispatch",
+        input.collectCreditOnDelivery === true,
       );
       const onlinePaths = workflowDispatchNativePaths("onlineOrder");
       const chosenOnlinePath =

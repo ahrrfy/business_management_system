@@ -11,6 +11,7 @@ export interface InvoiceShippingLabelSource {
   paidAmount?: string | number | null;
   returnedTotal?: string | number | null;
   paymentMode?: string | null;
+  collectCreditOnDelivery?: boolean | null;
   status?: string | null;
   customerName?: string | null;
   customerPhone?: string | null;
@@ -38,6 +39,7 @@ export function invoiceToShippingLabel(invoice: InvoiceShippingLabelSource): Shi
   const collection = invoiceDeliveryCollection({
     remainingAmount: facts.remainingAmount,
     paymentMode: invoice.paymentMode,
+    collectCreditOnDelivery: invoice.collectCreditOnDelivery,
     status: invoice.status,
     fee: invoice.courierFee,
     feeCollection: invoice.courierFeeCollection,

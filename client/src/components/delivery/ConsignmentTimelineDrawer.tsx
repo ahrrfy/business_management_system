@@ -30,6 +30,7 @@ import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/p
 import { deliveryEventLabel, deliveryEventSourceLabel } from "@shared/deliveryEventType";
 import { deliveryLedgerEntryLabel, deliveryLedgerEntrySign } from "@shared/deliveryLedgerEntryType";
 import { ShipmentDetailsPanel } from "./ShipmentDetailsPanel";
+import { CreditCollectionTermsEditor } from "./CreditCollectionTermsEditor";
 
 /** لون النقطة الزمنية بحسب نوع الحدث — يقود العين للأخطر. */
 function eventDot(eventType: string): string {
@@ -84,6 +85,7 @@ export function ConsignmentTimelineDrawer({ consignmentId, onClose }: Consignmen
       "FULL",
       ["cashier", "manager"],
     ));
+  const canEditCollection = lifecycleActionAllowed(me.data, "delivery.reassignConsignment", !!me.data && moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "store", "FULL", ["cashier", "manager"]));
   const q = trpc.delivery.consignmentTimeline.useQuery(
     { consignmentId: consignmentId ?? 0 },
     { enabled: isOpen },
@@ -137,6 +139,7 @@ export function ConsignmentTimelineDrawer({ consignmentId, onClose }: Consignmen
         ) : (
           <div className="space-y-6 px-4 pb-6">
             {q.data.shipment && q.data.shipment.memberCount > 1 && <ShipmentDetailsPanel key={q.data.shipment.leaderConsignmentId} shipment={q.data.shipment} />}
+            <CreditCollectionTermsEditor consignment={cn_} canEdit={canEditCollection} grouped={(q.data.shipment?.memberCount ?? 1) > 1} collectionStarted={q.data.ledger.some((entry) => ["COD_COLLECTED", "COD_REMITTED", "SHORTFALL_ASSIGNED", "SHORTFALL_SETTLED", "COD_WRITTEN_OFF"].includes(entry.entryType))} />
             {/* بيانات المستلم والعنوان */}
             <section>
               <h3 className="mb-2 text-xs font-black text-muted-foreground">المستلم والعنوان</h3>

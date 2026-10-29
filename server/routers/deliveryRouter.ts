@@ -231,12 +231,12 @@ export const deliveryRouter = router({
       wholeShipment: z.boolean().optional(),
       partyId: z.number().int().positive(),
       consignmentId: z.number().int().positive(),
-      assignedUserId: z.number().int().positive().nullish(),
+      assignedUserId: z.number().int().positive().nullish(), collectCreditOnDelivery: z.boolean().optional(), expectedClaimVersion: z.number().int().positive().optional(), collectionReason: z.string().trim().min(3).max(1000).optional(),
       clientRequestId: z.string().trim().min(8).max(100),
     }))
     .mutation(async ({ input, ctx }) => {
       await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
-      const res = await retryOnDeadlock(async () => input.wholeShipment
+      const res = await retryOnDeadlock(async () => input.wholeShipment && input.collectCreditOnDelivery == null
         ? reassignShipmentDriver({ ...input, assignedUserId: input.assignedUserId ?? null }, actorOf(ctx))
         : reassignDeliveryConsignment(input, actorOf(ctx)));
       await logAudit(ctx, { action: "delivery.consignment.reassign", entityType: "deliveryConsignment", entityId: input.consignmentId, newValue: { partyId: input.partyId, assignedUserId: input.assignedUserId ?? null } });
@@ -632,7 +632,7 @@ export const deliveryRouter = router({
         recipientPhone: z.string().max(20).nullish(),
         deliveryAddress: z.string().max(1000).nullish(),
         clientRequestId: z.string().trim().min(8).max(64),
-        assignedUserId: z.number().int().positive().nullish(),
+        assignedUserId: z.number().int().positive().nullish(), collectCreditOnDelivery: z.boolean().optional(),
         /** إقرارُ إخراج جزءٍ من طلبٍ إخوتُه لم يجهزوا (ش٥) — يفشل مغلقاً بدونه. */
         partialDispatchConfirmed: z.boolean().optional(),
         /** رقم التتبع / المرجع الخارجي — إلزامي للشركات وتفرضه الخدمة خادمياً. */
@@ -671,7 +671,7 @@ export const deliveryRouter = router({
         recipientPhone: z.string().max(20).nullish(),
         deliveryAddress: z.string().max(1000).nullish(),
         clientRequestId: z.string().trim().min(8).max(64),
-        assignedUserId: z.number().int().positive().nullish(),
+        assignedUserId: z.number().int().positive().nullish(), collectCreditOnDelivery: z.boolean().optional(),
         /** إقرارُ إرسال جزءٍ من طلبٍ إخوتُه لم يجهزوا (ش٥) — يفشل مغلقاً بدونه. */
         partialDispatchConfirmed: z.boolean().optional(),
         /** رقم التتبع / المرجع الخارجي من شركة التوصيل (اختياري). */
@@ -704,7 +704,7 @@ export const deliveryRouter = router({
         barcode: z.string().trim().min(1).max(200),
         partyId: z.number().int().positive(),
         deliveryFee: moneyStr.nullish(),
-        assignedUserId: z.number().int().positive().nullish(),
+        assignedUserId: z.number().int().positive().nullish(), collectCreditOnDelivery: z.boolean().optional(),
         externalTrackingRef: z.string().trim().max(100).nullish(),
         clientRequestId: z.string().trim().min(8).max(64),
         partialDispatchConfirmed: z.boolean().optional(),

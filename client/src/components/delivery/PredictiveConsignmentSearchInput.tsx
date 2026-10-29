@@ -185,6 +185,8 @@ export function PredictiveConsignmentSearchInput({
             fulfillmentRequestId: row.fulfillmentRequestId,
             aftercareExecutionId: row.aftercareExecutionId,
             invoicePaymentMode: row.invoicePaymentMode,
+            collectCreditOnDelivery: row.collectCreditOnDelivery,
+            returnDeclaredAt: row.returnDeclaredAt,
             invoiceRemainingAmount: row.invoiceRemainingAmount,
             deliveryFee: row.deliveryFee,
             feeCollection: row.feeCollection,

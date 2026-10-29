@@ -106,8 +106,8 @@ const deliveryCell = (r: Pick<Row, "consignmentStatus" | "deliveryPartyName" | "
   r.consignmentStatus ? `${CONSIGNMENT_STATUS[r.consignmentStatus]?.label ?? r.consignmentStatus} — ${r.deliveryPartyName ?? ""}${r.consignmentNumber ? ` (${r.consignmentNumber})` : ""}` : "";
 // Shipping state cannot turn approved customer credit into a courier collection obligation.
 const codInTransit = isInvoiceCodInTransit;
-const paymentLabel = (r: Pick<Row, "consignmentStatus" | "consignmentCodAmount" | "paymentMode" | "paymentMethod" | "paidAmount" | "status">) =>
-  r.paymentMode === "CREDIT" ? `آجل — على حساب العميل${D(r.paidAmount).gt(0) ? ` · دفعة ${paymentMethodLabel(r.paymentMethod)}` : ""}`
+const paymentLabel = (r: Pick<Row, "consignmentStatus" | "consignmentCodAmount" | "paymentMode" | "collectCreditOnDelivery" | "paymentMethod" | "paidAmount" | "status">) =>
+  r.paymentMode === "CREDIT" && !r.collectCreditOnDelivery ? `آجل — على حساب العميل${D(r.paidAmount).gt(0) ? ` · دفعة ${paymentMethodLabel(r.paymentMethod)}` : ""}`
     : codInTransit(r) ? (D(r.paidAmount).gt(0) ? `عند الاستلام (COD) — عربون ${paymentMethodLabel(r.paymentMethod)}` : "عند الاستلام (COD)") : paymentMethodLabel(r.paymentMethod);
 
 const INVOICE_EXPORT_COLUMNS: ExportColumn<Row>[] = [
@@ -627,7 +627,7 @@ export default function Invoices() {
           const depositDue = isDepositDue(r);
           return (
             <div className="flex flex-col items-start gap-1">
-              {r.paymentMode === "CREDIT" ? (
+              {r.paymentMode === "CREDIT" && !r.collectCreditOnDelivery ? (
                 <span className="inline-block rounded-full px-2 py-0.5 text-xs font-semibold badge-stock-low">آجل — على حساب العميل</span>
               ) : codInTransit(r) ? (
                 <span className="inline-block rounded-full px-2 py-0.5 text-xs font-semibold badge-stock-low">عند الاستلام (COD)</span>
@@ -636,7 +636,7 @@ export default function Invoices() {
               ) : (
                 <span className="text-muted-foreground text-xs">—</span>
               )}
-              {depositDue && <span className="inline-block rounded-full px-1.5 py-0.5 text-[10px] font-bold badge-stock-low">{r.paymentMode === "CREDIT" ? "دفعة مسبقة — متبقٍ آجل" : "عربون — متبقٍ للتحصيل"}</span>}
+              {depositDue && <span className="inline-block rounded-full px-1.5 py-0.5 text-[10px] font-bold badge-stock-low">{r.paymentMode === "CREDIT" && !r.collectCreditOnDelivery ? "دفعة مسبقة — متبقٍ آجل" : "عربون — متبقٍ للتحصيل"}</span>}
               {r.paymentMode === "CREDIT" && D(r.paidAmount).gt(0) && r.paymentMethod && <span className="text-[10px] text-muted-foreground">الدفعة: {paymentMethodLabel(r.paymentMethod)}</span>}
               {codInTransit(r) && D(r.paidAmount).gt(0) && r.paymentMethod && (
                 <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">عربون: {r.paymentMethod === "CARD" && <CardBrandLogos size="xs" />}{paymentMethodLabel(r.paymentMethod)}</span>

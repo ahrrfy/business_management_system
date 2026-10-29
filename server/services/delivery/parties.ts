@@ -1,3 +1,4 @@
+import { changeCreditCollection } from "./creditCollection";
 // CRUD جهات التوصيل.
 import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
 import { TRPCError } from "@trpc/server";
@@ -783,11 +784,15 @@ export async function reassignDeliveryConsignment(
     consignmentId: number;
     assignedUserId?: number | null;
     clientRequestId: string;
+    collectCreditOnDelivery?: boolean;
+    expectedClaimVersion?: number;
+    collectionReason?: string;
   },
   actor: DeliveryActor,
   existingTx?: Tx,
   options: { shipmentMember?: boolean } = {},
 ) {
+  if (input.collectCreditOnDelivery != null) return changeCreditCollection(input, actor, existingTx);
   const payloadHash = idempotencyHash({
     partyId: Number(input.partyId),
     consignmentId: Number(input.consignmentId),

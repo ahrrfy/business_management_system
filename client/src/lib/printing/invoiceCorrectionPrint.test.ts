@@ -166,3 +166,12 @@ describe("طباعة الفاتورة المعدلة", () => {
     });
   });
 });
+
+
+it("prints CREDIT shipping label at10000 only for the explicit courier instruction",async()=>{
+  const label=invoiceToShippingLabel({invoiceNumber:"101567",invoiceDate:"2026-10-24T17:25:00Z",paymentMode:"CREDIT",collectCreditOnDelivery:true,
+    total:"35000",paidAmount:"30000",courierFee:"5000",courierFeeCollection:"COURIER",items:[]});
+  expect(label).toMatchObject({total:"10000.00",paymentState:"COD"});
+  expect(await shippingLabelHtml(label,{widthMm:80,heightMm:50})).toContain("10,000");
+  expect(label.creditAmount).toBeUndefined();
+});

@@ -1,3 +1,4 @@
+import { preservedCreditCollectionChoiceTx } from "../creditCollectionTerms";
 import { and, eq, inArray } from "drizzle-orm";
 import { mysqlCodeFrom } from "@shared/errorMap.ar";
 import {
@@ -416,6 +417,7 @@ export async function mutateWorkflowAssignment(
               invoiceId: leader.invoiceId!,
               invoiceIds,
               partyId,
+              collectCreditOnDelivery: await preservedCreditCollectionChoiceTx(tx, members),
               assignedUserId: input.assignedUserId,
               externalTrackingRef: input.externalTrackingRef,
               clientRequestId: input.clientRequestId,
