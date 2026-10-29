@@ -110,6 +110,7 @@ export interface ShortfallSettlementVoucherData {
 export function buildShortfallSettlementDoc(data: ShortfallSettlementVoucherData): PrintDoc {
   const amt = D(data.amount ?? 0).toFixed(2);
   const isRecover = data.kind === "RECOVER_WRITEOFF";
+  const hasPaidNow = D(amt).gt(0);
   const ref = data.voucherNumber?.trim() || null;
   return {
     kind: "receipt",
@@ -120,7 +121,7 @@ export function buildShortfallSettlementDoc(data: ShortfallSettlementVoucherData
       ref ? `رقم السند: ${ref}` : "",
       `جهة التوصيل: ${data.partyName}`,
       data.actionType ? `نوع التسوية: ${data.actionType}` : "",
-      data.paymentMethod ? `طريقة الدفع: ${paymentMethodLabel(data.paymentMethod)}` : "",
+      hasPaidNow && data.paymentMethod ? `طريقة الدفع: ${paymentMethodLabel(data.paymentMethod)}` : "",
       data.branchName ? `الفرع: ${data.branchName}` : "",
       data.shiftId != null ? `الوردية: ${data.shiftId}` : "",
       data.cashierName ? `أمين الصندوق: ${data.cashierName}` : "",
@@ -305,7 +306,12 @@ export interface OrderCancellationReceiptData {
   customerName?: string | null;
   customerPhone?: string | null;
   originalTotal?: string | number | null;
+  isReturn?: boolean;
+  returnedGoodsValue?: string | number | null;
+  accountSettlementAmount?: string | number | null;
   refundedAmount?: string | number | null;
+  pendingRefundAmount?: string | number | null;
+  pendingRefundRef?: string | null;
   refundMethod?: string | null;
   reason?: string | null;
   branchName?: string | null;
@@ -316,6 +322,11 @@ export interface OrderCancellationReceiptData {
 export function buildOrderCancellationDoc(data: OrderCancellationReceiptData): PrintDoc {
   const refunded = D(data.refundedAmount ?? 0).toFixed(2);
   const hasCashRefund = D(refunded).gt(0);
+  const pendingRefund = D(data.pendingRefundAmount ?? 0).toFixed(2);
+  const hasPendingRefund = D(pendingRefund).gt(0);
+  const returnedGoods = data.returnedGoodsValue != null ? D(data.returnedGoodsValue).toFixed(2) : null;
+  const accountSettled = data.accountSettlementAmount != null ? D(data.accountSettlementAmount).toFixed(2) : null;
+  const hasAccountSettled = accountSettled != null && D(accountSettled).gt(0);
   const orig = data.originalTotal != null ? D(data.originalTotal).toFixed(2) : null;
   const kindLabel =
     data.orderKind === "WORK_ORDER"
@@ -326,25 +337,43 @@ export function buildOrderCancellationDoc(data: OrderCancellationReceiptData): P
   return {
     kind: "receipt",
     includeBrandHeader: true,
-    title: "إيصال إلغاء واسترداد مستحقات",
+    title: data.isReturn
+      ? "إيصال مرتجع وتسوية مستحقات"
+      : hasPendingRefund && !hasCashRefund
+        ? "إشعار إلغاء وطلب استرداد معلّق"
+        : "إيصال إلغاء واسترداد مستحقات",
     subtitle: `${kindLabel} — ${data.documentNumber}`,
     meta: [
       `رقم المستند: ${data.documentNumber}`,
       `نوع المستند: ${kindLabel}`,
       data.customerName ? `العميل: ${data.customerName}` : "",
       data.customerPhone ? `هاتف العميل: ${data.customerPhone}` : "",
-      data.refundMethod ? `طريقة الاسترداد: ${paymentMethodLabel(data.refundMethod)}` : "",
+      hasCashRefund && data.refundMethod
+        ? `طريقة الاسترداد: ${paymentMethodLabel(data.refundMethod)}`
+        : hasPendingRefund && data.refundMethod
+          ? `طريقة الاسترداد المطلوبة: ${paymentMethodLabel(data.refundMethod)}`
+          : "",
+      data.pendingRefundRef?.trim() ? `مرجع طلب الصرف المعلّق: ${data.pendingRefundRef.trim()}` : "",
       data.branchName ? `الفرع: ${data.branchName}` : "",
       data.cashierName ? `الكاشير: ${data.cashierName}` : "",
       `وقت الإلغاء: ${stamp(data.cancelledAt)}`,
       data.reason?.trim() ? `سبب الإلغاء: ${data.reason.trim()}` : "",
     ].filter(Boolean),
     totals: [
-      ...(orig != null ? [{ label: "قيمة المستند الملغى", value: moneyText(orig) }] : []),
+      ...(orig != null ? [{ label: data.isReturn ? "قيمة الفاتورة الأصلية" : "قيمة المستند الملغى", value: moneyText(orig) }] : []),
+      ...(returnedGoods != null ? [{ label: "قيمة البضاعة المرتجعة", value: moneyText(returnedGoods) }] : []),
+      ...(hasAccountSettled ? [{ label: "تسوية ذمة / رصيد العميل", value: moneyText(accountSettled!) }] : []),
       ...(hasCashRefund ? [{ label: "تفقيط المسترد", value: formatArabicMoneyWords(refunded) }] : []),
       { label: "المبلغ المسترد للعميل", value: moneyText(refunded) },
+      ...(hasPendingRefund
+        ? [{ label: "مبلغ استرداد معلّق (بانتظار الاعتماد)", value: moneyText(pendingRefund) }]
+        : []),
     ],
-    footer: "تم إلغاء المستند أصولياً وتسوية أثره المالي والمخزني.\nتوقيع المستلم: ________________________",
+    footer: hasCashRefund
+      ? "تمت العملية أصولياً وتسليم المبلغ المسترد أعلاه للمستلم.\nتوقيع المستلم: ________________________"
+      : hasPendingRefund
+        ? "تمت العملية وأُنشئ طلب استرداد معلّق بانتظار الاعتماد — لم يُصرف مبلغ بموجب هذا الإشعار."
+        : "تمت العملية أصولياً وتسوية أثرها المالي والمخزني بلا صرف نقدي.",
     barcodeSet: safeCode128(data.documentNumber, `إلغاء ${data.documentNumber}`),
   };
 }
@@ -354,6 +383,44 @@ export function printOrderCancellationReceipt(
   options?: PrintWindowOptions,
 ): Promise<PrintResult> {
   return printDoc(buildOrderCancellationDoc(data), options);
+}
+
+export function buildExecutedReturnReceiptPayload(params: {
+  documentNumber: string;
+  customerName?: string | null;
+  customerPhone?: string | null;
+  originalTotal?: string | number | null;
+  returnedTotal?: string | number | null;
+  requestedRefundAmount?: string | number | null;
+  refundMethod?: string | null;
+  pendingRefundAmount?: string | number | null;
+  pendingRefundVoucherNumber?: string | null;
+  reason?: string | null;
+  cashierName?: string | null;
+}): OrderCancellationReceiptData {
+  const goodsVal = D(params.returnedTotal ?? 0);
+  const requested = D(params.requestedRefundAmount ?? 0);
+  const pending = D(params.pendingRefundAmount ?? 0);
+  const rawCompleted = requested.minus(pending);
+  const completed = rawCompleted.gt(0) ? rawCompleted : D(0);
+  const rawAccountSettled = goodsVal.minus(completed).minus(pending.gt(0) ? pending : D(0));
+  const accountSettled = rawAccountSettled.gt(0) ? rawAccountSettled : D(0);
+  return {
+    isReturn: true,
+    documentNumber: params.documentNumber,
+    orderKind: "INVOICE",
+    customerName: params.customerName ?? null,
+    customerPhone: params.customerPhone ?? null,
+    originalTotal: params.originalTotal ?? null,
+    returnedGoodsValue: goodsVal.toFixed(2),
+    accountSettlementAmount: accountSettled.gt(0) ? accountSettled.toFixed(2) : null,
+    refundedAmount: completed.toFixed(2),
+    pendingRefundAmount: pending.gt(0) ? pending.toFixed(2) : null,
+    pendingRefundRef: params.pendingRefundVoucherNumber ?? null,
+    refundMethod: params.refundMethod ?? null,
+    reason: params.reason ?? null,
+    cashierName: params.cashierName ?? null,
+  };
 }
 
 export interface InvoicePaymentReceiptData {
@@ -374,22 +441,28 @@ export interface InvoicePaymentReceiptData {
 
 export function buildInvoicePaymentDoc(data: InvoicePaymentReceiptData): PrintDoc {
   const paid = D(data.amountPaid ?? 0).toFixed(2);
+  const hasPaidNow = D(paid).gt(0);
+  const hasRemaining = data.remainingAfter != null && D(data.remainingAfter).gt(0);
   const code = data.receiptNumber?.trim() || data.invoiceNumber.trim();
   return {
     kind: "receipt",
     includeBrandHeader: true,
-    title: "إيصال قبض دفعة فاتورة",
+    title: hasPaidNow
+      ? "إيصال قبض دفعة فاتورة"
+      : hasRemaining
+        ? "إيصال تسليم طلب (آجل)"
+        : "إيصال تسليم طلب مسدّد مسبقاً",
     subtitle: `فاتورة ${data.invoiceNumber}`,
     meta: [
       data.receiptNumber ? `رقم إيصال القبض: ${data.receiptNumber}` : "",
       `رقم الفاتورة: ${data.invoiceNumber}`,
       data.customerName ? `العميل: ${data.customerName}` : "",
       data.customerPhone ? `هاتف العميل: ${data.customerPhone}` : "",
-      data.paymentMethod ? `طريقة الدفع: ${paymentMethodLabel(data.paymentMethod)}` : "",
+      hasPaidNow && data.paymentMethod ? `طريقة الدفع: ${paymentMethodLabel(data.paymentMethod)}` : "",
       data.reference?.trim() ? `مرجع الحركة: ${data.reference.trim()}` : "",
       data.branchName ? `الفرع: ${data.branchName}` : "",
       data.cashierName ? `الكاشير: ${data.cashierName}` : "",
-      `وقت القبض: ${stamp(data.paidAt)}`,
+      `${hasPaidNow ? "وقت القبض" : "وقت التسليم"}: ${stamp(data.paidAt)}`,
     ].filter(Boolean),
     totals: [
       ...(data.invoiceTotal != null
@@ -401,7 +474,7 @@ export function buildInvoicePaymentDoc(data: InvoicePaymentReceiptData): PrintDo
       ...(data.remainingAfter != null
         ? [{ label: "المتبقي بعد الدفعة", value: moneyText(data.remainingAfter) }]
         : []),
-      { label: "تفقيط الدفعة", value: formatArabicMoneyWords(paid) },
+      ...(hasPaidNow ? [{ label: "تفقيط الدفعة", value: formatArabicMoneyWords(paid) }] : []),
       { label: "المبلغ المقبوض الآن", value: moneyText(paid) },
     ],
     footer: "شكراً لتعاملكم مع المكتبة العربية.",

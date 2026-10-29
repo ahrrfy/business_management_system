@@ -180,7 +180,7 @@ export default function InvoiceDetail() {
           : `أُرسل طلب الإلغاء #${r.requestId} للاعتماد — لم يتغير المخزون أو المال بعد.`,
       );
       const win = actionPrintWinRef.current; actionPrintWinRef.current = null;
-      if (r.mode === "EXECUTED" && inv.data) void printOrderCancellationReceipt({ documentNumber: inv.data.invoiceNumber, orderKind: "INVOICE", customerName: inv.data.customerName, customerPhone: inv.data.customerPhone, originalTotal: inv.data.total, refundedAmount: Number(r.refundAmount ?? 0) > 0 ? r.refundAmount : (r.pendingRefundAmount ?? "0"), refundMethod: cancelMethod, reason: cancelReason, cashierName: me.data?.name ?? null }, { into: win }).catch(() => {});
+      if (r.mode === "EXECUTED" && inv.data) void printOrderCancellationReceipt({ documentNumber: inv.data.invoiceNumber, orderKind: "INVOICE", customerName: inv.data.customerName, customerPhone: inv.data.customerPhone, originalTotal: inv.data.total, refundedAmount: r.refundAmount ?? "0", pendingRefundAmount: r.pendingRefundAmount ?? "0", pendingRefundRef: r.refundVoucherNumber ?? null, refundMethod: cancelMethod, reason: cancelReason, cashierName: me.data?.name ?? null }, { into: win }).catch(() => {});
       else { try { win?.close(); } catch { /* noop */ } }
       setError(""); setCancelOpen(false); setCancelReason(""); setCancelConfirmText("");
       await Promise.all(

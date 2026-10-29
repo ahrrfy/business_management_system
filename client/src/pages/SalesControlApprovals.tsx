@@ -22,7 +22,7 @@ import { confirm } from "@/lib/confirm";
 import { D, fmt, formatQuantity } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { preopenDocumentWindow, releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
-import { printOrderCancellationReceipt } from "@/lib/printing/cashierLifecycleReceipts";
+import { buildExecutedReturnReceiptPayload, printOrderCancellationReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
 import { printReceipt } from "@/lib/printing/print";
 import { beginInvoicePrintAttempt, completeInvoicePrintAttempt, hasPendingFirstInvoicePrint } from "@/lib/printing/invoicePrintAttempt";
@@ -472,8 +472,8 @@ export default function SalesControlApprovals() {
         const cancelWin = approvalCancelWinRef.current;
         approvalCancelWinRef.current = null;
         const reqPayload = result.request.payload as
-          | { refund?: { amount?: string; method?: string }; expectedRefund?: string; refundPaymentMethod?: string }
-          | undefined;
+          | { refund?: { amount?: string; method?: string }; resolution?: { amount?: string; method?: string }; expectedRefund?: string; refundPaymentMethod?: string }
+          | undefined; const eff = (result as { effect?: { returnedTotal?: string; refundAmount?: string; pendingRefundAmount?: string; pendingRefundVoucherNumber?: string | null; refundVoucherNumber?: string | null } }).effect;
         void printOrderCancellationReceipt(
           {
             documentNumber:
@@ -481,9 +481,9 @@ export default function SalesControlApprovals() {
               `#${result.request.invoiceId}`,
             orderKind: "INVOICE",
             refundedAmount:
-              reqPayload?.refund?.amount ?? reqPayload?.expectedRefund ?? null,
+              result.request.requestType === "SALES_RETURN" ? buildExecutedReturnReceiptPayload({ documentNumber: "#", returnedTotal: eff?.returnedTotal ?? "0", requestedRefundAmount: reqPayload?.refund?.amount ?? reqPayload?.resolution?.amount ?? "0", pendingRefundAmount: eff?.pendingRefundAmount ?? "0" }).refundedAmount : (eff?.refundAmount ?? (D(eff?.pendingRefundAmount ?? 0).gt(0) ? "0" : (reqPayload?.expectedRefund ?? "0"))), isReturn: result.request.requestType === "SALES_RETURN", returnedGoodsValue: result.request.requestType === "SALES_RETURN" ? (eff?.returnedTotal ?? null) : null, accountSettlementAmount: result.request.requestType === "SALES_RETURN" ? buildExecutedReturnReceiptPayload({ documentNumber: "#", returnedTotal: eff?.returnedTotal ?? "0", requestedRefundAmount: reqPayload?.refund?.amount ?? reqPayload?.resolution?.amount ?? "0", pendingRefundAmount: eff?.pendingRefundAmount ?? "0" }).accountSettlementAmount : null, pendingRefundAmount: eff?.pendingRefundAmount ?? null, pendingRefundRef: eff?.pendingRefundVoucherNumber ?? eff?.refundVoucherNumber ?? null,
             refundMethod:
-              reqPayload?.refund?.method ?? reqPayload?.refundPaymentMethod ?? null,
+              reqPayload?.refund?.method ?? reqPayload?.resolution?.method ?? reqPayload?.refundPaymentMethod ?? null,
             reason:
               result.request.reason ??
               (result.request.requestType === "SALES_RETURN"

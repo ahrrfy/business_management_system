@@ -79,5 +79,5 @@ export function triggerReceptionShippingLabel(
     isReprint: options?.isReprint,
     qrUrl,
     items,
-  }, options ? { into: options.into } : undefined);
+  }, options && "into" in options ? { into: options.into } : undefined);
 }

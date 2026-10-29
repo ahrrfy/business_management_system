@@ -14,7 +14,8 @@ vi.mock("../brand", async () => {
   };
 });
 
-import { esc, fmt, openPrintWindow } from "../brand";
+import { esc, fmt, fmtC, openPrintWindow } from "../brand";
+import { triggerReceptionShippingLabel } from "@/components/reception/receptionShippingLabel";
 import { docToHtml } from "../render";
 import { shippingLabelHtml } from "../shippingLabel";
 import { parseShippingLabelSize } from "../shippingLabelSize";
@@ -24,6 +25,7 @@ import {
   buildDeliveryFeePaymentDoc,
   buildDeliveryFeeRefundDoc,
   buildDrawerExpenseDoc,
+  buildExecutedReturnReceiptPayload,
   buildInvoicePaymentDoc,
   buildOrderCancellationDoc,
   buildOverageRefundDoc,
@@ -359,6 +361,86 @@ describe("Cashier Lifecycle Thermal 80mm & Shipping Label Suite", () => {
   it("يحصّن دوال الهروب وتنسيق المبالغ من علامات التنصيص المفردة وقيم NaN", () => {
     expect(esc("O'Reilly & <script>")).toBe("O&#39;Reilly &amp; &lt;script&gt;");
     expect(fmt("not-a-number")).toBe("—");
-    expect(fmt("12500.5")).not.toContain("NaN");
+    expect(fmt("12500.5")).toBe("12,500.5");
+    expect(fmt("0.001")).toBe("0.001");
+    expect(fmt("0.0005")).toBe("0.0005");
+    expect(fmtC("12.345")).toBe("12.35 د.ع");
+  });
+
+  it("يفصل الاسترداد المعلّق عن المكتمل وتسوية الذمة وتسليم المدفوع مسبقاً ويعيد طباعة الملصق بلا into", async () => {
+    const pendingCancelHtml = await docToHtml(
+      buildOrderCancellationDoc({
+        documentNumber: "INV-2026-991",
+        orderKind: "INVOICE",
+        originalTotal: "60000",
+        refundedAmount: "0",
+        pendingRefundAmount: "60000",
+        pendingRefundRef: "VCH-771",
+        refundMethod: "TRANSFER",
+        reason: "إلغاء بانتظار اعتماد الصرف",
+      }),
+    );
+    expect(pendingCancelHtml).toContain("إشعار إلغاء وطلب استرداد معلّق");
+    expect(pendingCancelHtml).toContain("مبلغ استرداد معلّق (بانتظار الاعتماد)");
+    expect(pendingCancelHtml).toContain("VCH-771");
+    expect(pendingCancelHtml).not.toContain("توقيع المستلم");
+
+    const partialRefundPayload = buildExecutedReturnReceiptPayload({
+      documentNumber: "INV-2026-992",
+      originalTotal: "80000",
+      returnedTotal: "50000",
+      requestedRefundAmount: "30000",
+      refundMethod: "CASH",
+      pendingRefundAmount: "0",
+    });
+    expect(partialRefundPayload.returnedGoodsValue).toBe("50000.00");
+    expect(partialRefundPayload.accountSettlementAmount).toBe("20000.00");
+    expect(partialRefundPayload.refundedAmount).toBe("30000.00");
+    const returnHtml = await docToHtml(buildOrderCancellationDoc(partialRefundPayload));
+    expect(returnHtml).toContain("إيصال مرتجع وتسوية مستحقات");
+    expect(returnHtml).toContain("قيمة البضاعة المرتجعة");
+    expect(returnHtml).toContain("تسوية ذمة / رصيد العميل");
+
+    const prepaidHandoverHtml = await docToHtml(
+      buildInvoicePaymentDoc({
+        invoiceNumber: "INV-2026-993",
+        invoiceTotal: "40000",
+        paidBefore: "40000",
+        amountPaid: "0.00",
+        remainingAfter: "0.00",
+      }),
+    );
+    expect(prepaidHandoverHtml).toContain("إيصال تسليم طلب مسدّد مسبقاً");
+    expect(prepaidHandoverHtml).not.toContain("تفقيط الدفعة");
+
+    const fakePopup = {
+      closed: false,
+      close: vi.fn(),
+      focus: vi.fn(),
+      document: { open: vi.fn(), write: vi.fn(), close: vi.fn() },
+    } as unknown as Window;
+    const origOpen = globalThis.window?.open;
+    if (globalThis.window) {
+      globalThis.window.open = vi.fn(() => fakePopup) as unknown as typeof window.open;
+    }
+    try {
+      const reprintRes = await triggerReceptionShippingLabel(
+        {
+          receipts: [{ invoiceId: 11, receiptNumber: "INV-11", total: 25000, items: [] }] as never,
+          workOrders: [],
+          grandTotal: 25000,
+          received: 25000,
+          change: 0,
+        } as never,
+        null,
+        "07701112222",
+        { isReprint: true },
+      );
+      if (globalThis.window) {
+        expect(reprintRes.ok).toBe(true);
+      }
+    } finally {
+      if (globalThis.window && origOpen) globalThis.window.open = origOpen;
+    }
   });
 });

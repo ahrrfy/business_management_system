@@ -232,9 +232,9 @@ export default function WorkOrderDetail() {
   });
   const deliver = trpc.workOrders.deliver.useMutation({
     onSuccess: async (r) => {
-      const win = deliverWinRef.current; deliverWinRef.current = null;
+      const win = deliverWinRef.current; deliverWinRef.current = null; const paidBefore = D(wo.data?.deposit ?? 0); const paidNow = payAmount && D(payAmount).gt(0) ? D(payAmount) : D(0); const remAfter = D(wo.data?.salePrice ?? 0).minus(paidBefore).minus(paidNow);
       setDone(`تم التسليم. فاتورة ${r.invoiceNumber} (${r.status}).`);
-      void printInvoicePaymentReceipt({ invoiceNumber: r.invoiceNumber, customerName: wo.data?.customerName, customerPhone: wo.data?.customerPhone, invoiceTotal: wo.data?.salePrice, amountPaid: payAmount && D(payAmount).gt(0) ? D(payAmount).toFixed(2) : (wo.data?.deposit ?? "0"), paymentMethod: payMethod, cashierName: me.data?.name }, win ? { into: win } : undefined).catch(() => { try { win?.close(); } catch { /* noop */ } });
+      void printInvoicePaymentReceipt({ invoiceNumber: r.invoiceNumber, customerName: wo.data?.customerName, customerPhone: wo.data?.customerPhone, invoiceTotal: wo.data?.salePrice, paidBefore: paidBefore.toFixed(2), amountPaid: paidNow.toFixed(2), remainingAfter: (remAfter.gt(0) ? remAfter : D(0)).toFixed(2), paymentMethod: paidNow.gt(0) ? payMethod : null, reference: paidNow.gt(0) && payMethod !== "CASH" ? (payReference.trim() || null) : null, cashierName: me.data?.name }, win ? { into: win } : undefined).catch(() => { try { win?.close(); } catch { /* noop */ } });
       setPartialDispatchMessage(""); deliverRequestIdRef.current = null; setAwaitingOwnerRefund(false); setError("");
       await refresh();
     },
@@ -299,7 +299,7 @@ export default function WorkOrderDetail() {
     onSuccess: async (result, vars) => {
       const win = cancelWinRef.current; cancelWinRef.current = null;
       const notice = cancellationRefundNotice(result.pendingRefundReceiptIds, result.replayed);
-      void printOrderCancellationReceipt({ documentNumber: wo.data?.orderNumber ?? `#${workOrderId}`, orderKind: "WORK_ORDER", customerName: wo.data?.customerName, customerPhone: wo.data?.customerPhone, originalTotal: wo.data?.salePrice, refundedAmount: wo.data?.deposit, refundMethod: vars.refundRail ?? "CASH", reason: vars.reason, cashierName: me.data?.name }, win ? { into: win } : undefined).catch(() => { try { win?.close(); } catch { /* noop */ } });
+      void printOrderCancellationReceipt({ documentNumber: wo.data?.orderNumber ?? `#${workOrderId}`, orderKind: "WORK_ORDER", customerName: wo.data?.customerName, customerPhone: wo.data?.customerPhone, originalTotal: wo.data?.salePrice, refundedAmount: notice.awaitingOwner ? "0" : (wo.data?.deposit ?? "0"), pendingRefundAmount: notice.awaitingOwner ? (wo.data?.deposit ?? "0") : "0", pendingRefundRef: notice.awaitingOwner && result.pendingRefundReceiptIds?.length ? `#${result.pendingRefundReceiptIds.join(", #")}` : null, refundMethod: vars.refundRail ?? "CASH", reason: vars.reason, cashierName: me.data?.name }, win ? { into: win } : undefined).catch(() => { try { win?.close(); } catch { /* noop */ } });
       setDone(`${notice.title} — ${notice.description}`); setAwaitingOwnerRefund(notice.awaitingOwner);
       setCancelOutcomeUncertain(false); setError(""); forgetCancelAttempt();
       await refresh();

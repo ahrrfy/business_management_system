@@ -132,8 +132,25 @@ function drawImage(
 ): Promise<void> {
   return new Promise((resolve) => {
     const img = new Image();
+    if (/^https?:\/\//i.test(src)) img.crossOrigin = "anonymous";
     const timer = setTimeout(resolve, 250);
-    img.onload = () => { clearTimeout(timer); ctx.drawImage(img, x, y, w, h); resolve(); };
+    img.onload = () => {
+      clearTimeout(timer);
+      try {
+        if (!/^data:/i.test(src) && typeof document !== "undefined") {
+          const probe = document.createElement("canvas");
+          probe.width = 1;
+          probe.height = 1;
+          const probeCtx = probe.getContext("2d");
+          if (probeCtx) {
+            probeCtx.drawImage(img, 0, 0, 1, 1);
+            probeCtx.getImageData(0, 0, 1, 1);
+          }
+        }
+        ctx.drawImage(img, x, y, w, h);
+      } catch { /* تخطي آمن عند غياب ترويسة CORS لمنع تلويث Canvas الرئيسي */ }
+      resolve();
+    };
     img.onerror = () => { clearTimeout(timer); resolve(); }; // تدهور سلس — لا يُوقف الطباعة
     img.src = src;
   });

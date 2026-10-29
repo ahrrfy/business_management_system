@@ -245,9 +245,9 @@ export default function WorkOrders() {
         customerPhone: snap && "customerPhone" in snap ? snap.customerPhone : null,
         invoiceTotal: saleTotal,
         paidBefore: paidBefore.toFixed(2),
-        amountPaid: vars.payment?.amount ? paidNow.toFixed(2) : paidBefore.toFixed(2),
+        amountPaid: paidNow.toFixed(2),
         remainingAfter: (remAfter.gt(0) ? remAfter : D(0)).toFixed(2),
-        paymentMethod: vars.payment?.method ?? "CASH",
+        paymentMethod: paidNow.gt(0) ? (vars.payment?.method ?? "CASH") : null,
         reference: vars.payment?.reference ?? null,
         cashierName: me.data?.name ?? null,
       }).catch(() => {}).finally(() => releaseReservedPrintWindow());
@@ -350,9 +350,9 @@ export default function WorkOrders() {
             customerPhone: target.customerPhone ?? null,
             invoiceTotal: target.salePrice,
             paidBefore: D(target.deposit ?? 0).toFixed(2),
-            amountPaid: D(target.deposit ?? target.salePrice ?? 0).toFixed(2),
+            amountPaid: "0.00",
             remainingAfter: "0.00",
-            paymentMethod: "CASH",
+            paymentMethod: null,
             cashierName: me.data?.name ?? null,
           }).catch(() => {}).finally(() => releaseReservedPrintWindow());
         } else {

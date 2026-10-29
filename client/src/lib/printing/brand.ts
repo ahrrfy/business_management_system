@@ -161,18 +161,31 @@ export const fmt = (n: string | number | null | undefined): string => {
   const trimmed = String(n).trim();
   if (trimmed === "") return "—";
   try {
-    if (!new Decimal(trimmed).isFinite()) return "—";
+    if (!new Decimal(trimmed.replace(/,/g, "")).isFinite()) return "—";
   } catch {
     return "—";
   }
-  return round2(moneyInput(trimmed))
-    .toNumber()
-    .toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  const d = new Decimal(trimmed.replace(/,/g, "")).toDecimalPlaces(4, Decimal.ROUND_HALF_UP);
+  const [intPart, fracPart] = d.toFixed(4).split(".");
+  const sign = intPart.startsWith("-") ? "-" : "";
+  const grouped = (sign ? intPart.slice(1) : intPart).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const cleanFrac = (fracPart ?? "").replace(/0+$/, "");
+  return cleanFrac ? `${sign}${grouped}.${cleanFrac}` : `${sign}${grouped}`;
+
+
 };
 
 /** Format currency in IQD */
 export const fmtC = (n: string | number | null | undefined): string => {
-  const f = fmt(n);
+  if (n == null || (typeof n === "number" && !Number.isFinite(n))) return "—";
+  const trimmed = String(n).trim();
+  if (trimmed === "") return "—";
+  try {
+    if (!new Decimal(trimmed.replace(/,/g, "")).isFinite()) return "—";
+  } catch {
+    return "—";
+  }
+  const f = fmt(round2(moneyInput(trimmed)).toFixed(2));
   return f === "—" ? "—" : `${f} د.ع`;
 };
 

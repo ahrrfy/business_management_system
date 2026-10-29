@@ -11,7 +11,7 @@ import {
 import { notify } from "@/lib/notify";
 import { invalidateFinancialQueries } from "@/lib/realtime/financialQueries";
 import { preopenDocumentWindow } from "@/lib/printing/print";
-import { printOrderCancellationReceipt } from "@/lib/printing/cashierLifecycleReceipts";
+import { buildExecutedReturnReceiptPayload, printOrderCancellationReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 import { ReturnComposerProps } from "./returnComposerTypes";
 import type { useReturnComposerState } from "./useReturnComposerState";
 import type { useReturnComposerSettlement } from "./useReturnComposerSettlement";
@@ -65,7 +65,7 @@ export function useReturnComposerMutations(
 
   // اعتماد طلبٍ قائم — يشارك نفس معالجات النجاح/الخطأ (سلوكٌ واحد للمستخدم).
   const rawApprove = trpc.returns.approveRequest.useMutation({
-    onSuccess: async (res) => {
+    onSuccess: async (res, vars) => {
       const win = printWinRef.current;
       printWinRef.current = null;
       setDone("اعتُمد الطلب ونُفِّذ المرتجع.");
@@ -75,13 +75,29 @@ export function useReturnComposerMutations(
       setClientRequestId(crypto.randomUUID());
       void printOrderCancellationReceipt(
         {
-          documentNumber: inv?.invoiceNumber ?? `#${inv?.id ?? ""}`,
-          orderKind: "INVOICE",
-          customerName: inv?.customerName ?? null,
-          originalTotal: inv?.total ?? null,
-          refundedAmount: String(res.returnedTotal ?? "0"),
-          reason: pending?.reason ?? "مرتجع مبيعات معتمد",
-          cashierName: (me.data as { name?: string | null } | undefined)?.name ?? null,
+
+
+
+
+          ...buildExecutedReturnReceiptPayload({
+  
+  
+  
+            documentNumber: inv?.invoiceNumber ?? `#${inv?.id ?? ""}`,
+            customerName: inv?.customerName ?? null,
+            originalTotal: inv?.total ?? null,
+            returnedTotal: res.returnedTotal ?? "0",
+            requestedRefundAmount: vars.refund?.amount ?? vars.resolution?.amount ?? "0",
+            refundMethod: vars.refund?.method ?? vars.resolution?.method ?? null,
+            pendingRefundAmount: res.pendingRefundAmount ?? "0",
+            pendingRefundVoucherNumber: res.pendingRefundVoucherNumber ?? null,
+            reason: pending?.reason ?? "مرتجع مبيعات معتمد",
+            cashierName: (me.data as { name?: string | null } | undefined)?.name ?? null,
+  
+  
+          }),
+
+
         },
         ...(win ? [{ into: win }] : []),
       ).catch(() => {});
@@ -196,7 +212,7 @@ export function useReturnComposerMutations(
       branchId: inv?.branchId,
       isOwner: me.data?.isOwner === true,
     }),
-    onSuccess: async (res) => {
+    onSuccess: async (res, vars) => {
       const win = printWinRef.current;
       printWinRef.current = null;
       /**
@@ -225,13 +241,28 @@ export function useReturnComposerMutations(
       if (isExecuted) {
         void printOrderCancellationReceipt(
           {
-            documentNumber: inv?.invoiceNumber ?? `#${inv?.id ?? ""}`,
-            orderKind: "INVOICE",
-            customerName: inv?.customerName ?? null,
-            originalTotal: inv?.total ?? null,
-            refundedAmount: "returnedTotal" in res ? String(res.returnedTotal ?? "0") : null,
-            reason: "مرتجع مبيعات منفذ فوراً",
-            cashierName: (me.data as { name?: string | null } | undefined)?.name ?? null,
+  
+  
+  
+  
+            ...buildExecutedReturnReceiptPayload({
+    
+    
+    
+              documentNumber: inv?.invoiceNumber ?? `#${inv?.id ?? ""}`,
+              customerName: inv?.customerName ?? null,
+              originalTotal: inv?.total ?? null,
+              returnedTotal: "returnedTotal" in res ? (res.returnedTotal ?? "0") : "0",
+              requestedRefundAmount: vars.refund?.amount ?? vars.resolution?.amount ?? "0",
+              refundMethod: vars.refund?.method ?? vars.resolution?.method ?? null,
+              pendingRefundAmount: "pendingRefundAmount" in res ? (res.pendingRefundAmount ?? "0") : "0",
+              pendingRefundVoucherNumber: "pendingRefundVoucherNumber" in res ? (res.pendingRefundVoucherNumber ?? null) : null,
+              reason: vars.reason ?? vars.resolution?.reason ?? "مرتجع مبيعات منفذ فوراً",
+              cashierName: (me.data as { name?: string | null } | undefined)?.name ?? null,
+    
+            }),
+
+  
           },
           ...(win ? [{ into: win }] : []),
         ).catch(() => {});
