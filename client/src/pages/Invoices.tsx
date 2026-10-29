@@ -20,6 +20,7 @@ import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printInvoiceA4 } from "@/lib/printing/printTemplates";
 import { printReceipt } from "@/lib/printing/print";
+import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
 import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
 import { allocateLineTax, derivePaymentTerms } from "@/components/invoice";
 import { variantDisplayName } from "@shared/variantDisplay";
@@ -367,20 +368,19 @@ export default function Invoices() {
 
   // طباعة A4 من القائمة: نجلب التفاصيل (sales.get) ثم نطبع بنفس قالب شاشة الفاتورة.
   async function printA4(invoiceId: number) {
-    if (!salesOperationAllowed(me.data, "sales.get", true) || !salesOperationAllowed(me.data, "invoicePrinting.requestPrint", true)) return notify.warn("طباعة الفاتورة غير مفوّضة لحسابك.");
+    if (!salesOperationAllowed(me.data, "sales.get", true) || !salesOperationAllowed(me.data, "invoicePrinting.requestPrint", true) || !me.data) return notify.warn("طباعة الفاتورة غير مفوّضة لحسابك.");
+    reservePrintWindow();
     try {
       const d = await utils.sales.get.fetch({ invoiceId });
-      if (!d) {
-        notify.err("تعذّر جلب الفاتورة");
-        return;
-      }
-      if (!me.data) return;
+      if (!d) { notify.err("تعذّر جلب الفاتورة"); return; }
       const attempt = beginInvoicePrintAttempt(me.data.id, invoiceId, "A4", false);
       await utils.client.invoicePrinting.requestPrint.mutate({ invoiceId, requestId: attempt.requestId, purpose: "A4" });
       const opened = await printInvoiceA4(invoiceDetailPrintData(d, taxSettings.data?.taxRegistrationNumber ?? null));
       if (opened) completeInvoicePrintAttempt(attempt);
     } catch (e) {
       notify.err(e);
+    } finally {
+      releaseReservedPrintWindow();
     }
   }
 
@@ -389,31 +389,24 @@ export default function Invoices() {
 
   async function reprintThermal(invoiceId: number) {
     if (!salesOperationAllowed(me.data, "sales.get", true) || !canRetryThermal(invoiceId)) return notify.warn("إعادة طباعة الفاتورة غير مفوّضة لحسابك.");
-    if (printingReceiptId != null) return;
+    if (printingReceiptId != null || !me.data) return;
+    reservePrintWindow();
     setPrintingReceiptId(invoiceId);
     try {
-      if (!me.data) return;
       const attempt = beginInvoicePrintAttempt(me.data.id, invoiceId, "THERMAL", true, salesOperationAllowed(me.data, "invoicePrinting.requestPrint", true));
       await utils.client.invoicePrinting[attempt.mode === "PRINT" ? "requestPrint" : "requestReprint"].mutate({ invoiceId, requestId: attempt.requestId, purpose: "THERMAL" });
       const d = await utils.sales.get.fetch({ invoiceId });
-      if (!d) {
-        notify.err("تعذّر جلب الفاتورة");
-        return;
-      }
+      if (!d) { notify.err("تعذّر جلب الفاتورة"); return; }
       const result = await printReceipt(invoiceToReceipt(d));
       if (result.ok) completeInvoicePrintAttempt(attempt);
-      if (!result.ok) {
-        notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
-      } else if (result.via === "server") {
-        notify.ok("تمت إعادة الطباعة", `أُرسلت الفاتورة ${d.invoiceNumber} إلى طابعة الكاشير`);
-      } else if (result.via === "thermal") {
-        notify.ok("تمت إعادة الطباعة الحرارية", `أُرسلت الفاتورة ${d.invoiceNumber} إلى الطابعة المربوطة`);
-      } else {
-        notify.warn("الطابعة المباشرة غير متاحة", "افتُتحت نافذة الطباعة الحرارية البديلة");
-      }
+      if (!result.ok) notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
+      else if (result.via === "server") notify.ok("تمت إعادة الطباعة", `أُرسلت الفاتورة ${d.invoiceNumber} إلى طابعة الكاشير`);
+      else if (result.via === "thermal") notify.ok("تمت إعادة الطباعة الحرارية", `أُرسلت الفاتورة ${d.invoiceNumber} إلى الطابعة المربوطة`);
+      else notify.warn("الطابعة المباشرة غير متاحة", "افتُتحت نافذة الطباعة الحرارية البديلة");
     } catch (e) {
       notify.err(e);
     } finally {
+      releaseReservedPrintWindow();
       setPrintingReceiptId(null);
     }
   }

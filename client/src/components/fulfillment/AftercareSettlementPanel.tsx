@@ -12,6 +12,9 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { D, fmt } from "@/lib/money";
 import { paymentMethodCompact } from "@shared/terms";
 import { confirm } from "@/lib/confirm";
+import { preopenDocumentWindow } from "@/lib/printing/brand";
+import { printOverageRefundReceipt } from "@/lib/printing/cashierLifecycleReceipts";
+import { useWorkflowDocumentPrinter } from "@/hooks/useWorkflowDocumentPrinter";
 import { WorkflowPrintActions } from "@/components/delivery/workflow/WorkflowPrintActions";
 
 type Api = RouterInputs["delivery"]["fulfillment"]["aftercare"];
@@ -26,6 +29,7 @@ export function AftercareSettlementPanel({
   onChange: () => Promise<void>;
 }) {
   const me = trpc.auth.me.useQuery();
+  const workflowPrinter = useWorkflowDocumentPrinter(data.case.branchId);
   const canRequest = useOperationPermission(
     "delivery.fulfillment.aftercare.settlementRequest",
   ).allowed;
@@ -138,20 +142,21 @@ export function AftercareSettlementPanel({
       enabled: false,
       retry: false,
     });
-  async function execute<T extends object>(
+  async function execute<T extends object, R = unknown>(
     operation: string,
     value: T,
-    mutate: (input: T & { clientRequestId: string }) => Promise<unknown>,
-  ) {
+    mutate: (input: T & { clientRequestId: string }) => Promise<R>,
+  ): Promise<R | undefined> {
     const fingerprint = `${operation}:${JSON.stringify(value)}`;
     const key = keys.current.get(fingerprint) ?? crypto.randomUUID();
     keys.current.set(fingerprint, key);
     setPending(true);
     setError("");
     try {
-      await mutate({ ...value, clientRequestId: key });
+      const out = await mutate({ ...value, clientRequestId: key });
       keys.current.delete(fingerprint);
       await onChange();
+      return out;
     } catch (cause) {
       setError(
         cause instanceof Error
@@ -230,16 +235,26 @@ export function AftercareSettlementPanel({
                 <SubmitButton
                   type="button"
                   pending={pending}
-                  onClick={() =>
-                    void execute(
+                  onClick={async () => {
+                    const settleWin = preopenDocumentWindow("width=420,height=760");
+                    const out = await execute(
                       "settlementPost",
                       {
                         id: settlement.id,
                         expectedVersion: settlement.version,
                       },
                       post.mutateAsync,
-                    )
-                  }
+                    );
+                    if (out) {
+                      void workflowPrinter.printAftercareSettlement(
+                        settlement.id,
+                        settleWin,
+                        data.case.branchId,
+                      );
+                    } else {
+                      try { settleWin?.close(); } catch { /* ignore */ }
+                    }
+                  }}
                 >
                   ترحيل الاستلام والتسوية الفعليين
                 </SubmitButton>
@@ -638,14 +653,28 @@ function AftercareOriginalRights({
                         const key =
                           keys.current.get(fingerprint) ?? crypto.randomUUID();
                         keys.current.set(fingerprint, key);
+                        const rfdWin = preopenDocumentWindow("width=420,height=760");
                         try {
                           await confirmRefund.mutateAsync({
                             ...payload,
                             clientRequestId: key,
                           });
                           keys.current.delete(fingerprint);
+                          void printOverageRefundReceipt(
+                            {
+                              refundNumber: refund.voucherNumber ?? `RFD-${refund.receiptId}`,
+                              sourceRef: `تسوية معالجة #${settlementId}`,
+                              beneficiaryRole: "CUSTOMER",
+                              amount: refund.amount,
+                              paymentMethod: refund.method,
+                              cashierName: me.data?.name ?? null,
+                              notes: `إثبات رد على الرافد الأصلي — مرجع: ${payload.reference}`,
+                            },
+                            { into: rfdWin },
+                          ).catch(() => {});
                           await refresh();
                         } catch (cause) {
+                          try { rfdWin?.close(); } catch { /* ignore */ }
                           setError(
                             cause instanceof Error
                               ? cause.message
@@ -672,12 +701,26 @@ function AftercareOriginalRights({
                           }))
                         )
                           return;
+                        const rfdWin = preopenDocumentWindow("width=420,height=760");
                         try {
                           await approveRefund.mutateAsync({
                             receiptId: refund.receiptId,
                           });
+                          void printOverageRefundReceipt(
+                            {
+                              refundNumber: refund.voucherNumber ?? `RFD-${refund.receiptId}`,
+                              sourceRef: `تسوية معالجة #${settlementId}`,
+                              beneficiaryRole: "CUSTOMER",
+                              amount: refund.amount,
+                              paymentMethod: refund.method,
+                              cashierName: me.data?.name ?? null,
+                              notes: "تنفيذ سند رد حق الأصل",
+                            },
+                            { into: rfdWin },
+                          ).catch(() => {});
                           await refresh();
                         } catch (cause) {
+                          try { rfdWin?.close(); } catch { /* ignore */ }
                           setError(
                             cause instanceof Error
                               ? cause.message
@@ -837,14 +880,35 @@ function AftercareOriginalRights({
                   const key =
                     keys.current.get(fingerprint) ?? crypto.randomUUID();
                   keys.current.set(fingerprint, key);
+                  const rfdWin = refunds.length
+                    ? preopenDocumentWindow("width=420,height=760")
+                    : null;
                   try {
                     await post.mutateAsync({
                       ...payload,
                       clientRequestId: key,
                     });
                     keys.current.delete(fingerprint);
+                    if (refunds.length) {
+                      const totalRefunded = refunds
+                        .reduce((acc, r) => acc.plus(D(r.amount)), D(0))
+                        .toFixed(2);
+                      void printOverageRefundReceipt(
+                        {
+                          sourceRef: `تسوية معالجة #${settlementId} — حق #${rightIndex}`,
+                          beneficiaryRole: "CUSTOMER",
+                          amount: totalRefunded,
+                          paymentMethod:
+                            refunds.length === 1 ? refunds[0].method : "متعدد",
+                          cashierName: me.data?.name ?? null,
+                          notes: "تنفيذ مرتجع حق الأصل وتثبيت روافد الرد",
+                        },
+                        { into: rfdWin },
+                      ).catch(() => {});
+                    }
                     await refresh();
                   } catch (cause) {
+                    try { rfdWin?.close(); } catch { /* ignore */ }
                     setError(
                       cause instanceof Error
                         ? cause.message

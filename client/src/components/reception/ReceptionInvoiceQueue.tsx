@@ -8,7 +8,7 @@
 //
 // محاسبياً: الإسناد لا يُنشئ فاتورةً ثانية ولا يمسّ قيد SALE؛ والتسديد يمرّ بـprocessPayment
 // نفسها بحصرٍ بنيويّ (وردية إنشاء الفاتورة RECEPTION) — §٩.٢.
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   Banknote,
   FileText,
@@ -42,6 +42,9 @@ import { receptionInvoiceActions, receptionOperationAllowed } from "@/lib/recept
 import { hasPendingFirstInvoicePrint } from "@/lib/printing/invoicePrintAttempt";
 import { invoiceDetailPrintData } from "@/lib/printing/invoiceDetailPrintData";
 import { printInvoiceA4 } from "@/lib/printing/printTemplates";
+import { preopenDocumentWindow } from "@/lib/printing/print";
+import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
+import { printInvoicePaymentReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { fmtDate, fmtDateTime } from "@/lib/date";
@@ -137,6 +140,7 @@ export function ReceptionInvoiceQueue({
   /** إعادة الطباعة تتبع نطاق قراءة الفرع لا الملكية (§٨.٥): قراءةٌ محضة من لقطة الفاتورة. */
   async function reprintThermal(row: Row) {
     if (printingId != null || !actions.canReadInvoice || !canRetryThermal(Number(row.id))) return;
+    reservePrintWindow();
     setPrintingId(Number(row.id));
     try {
       const d = await utils.sales.get.fetch({ invoiceId: Number(row.id) });
@@ -150,12 +154,14 @@ export function ReceptionInvoiceQueue({
     } catch (e) {
       notify.err(e);
     } finally {
+      releaseReservedPrintWindow();
       setPrintingId(null);
     }
   }
 
   async function printA4(row: Row) {
     if (!actions.canReadInvoice || (!canFirstPrint && !canReprint)) return;
+    reservePrintWindow();
     try {
       const d = await utils.sales.get.fetch({ invoiceId: Number(row.id) });
       if (!d) { notify.err("تعذّر جلب الفاتورة"); return; }
@@ -164,6 +170,8 @@ export function ReceptionInvoiceQueue({
           ? { ok: true, via: "browser" } : { ok: false, via: "browser", reason: "popup-blocked" });
     } catch (e) {
       notify.err(e);
+    } finally {
+      releaseReservedPrintWindow();
     }
   }
 
@@ -390,6 +398,7 @@ export function ReceptionInvoiceQueue({
             customerName: dispatchTarget.customerName ?? dispatchTarget.contactName,
             customerPhone: dispatchTarget.customerPhone ?? dispatchTarget.contactPhone ?? dispatchTarget.deliveryPhone,
             deliveryAddress: dispatchTarget.deliveryAddress,
+            branchId,
           }}
           onOpenChange={(open) => { if (!open) setDispatchTarget(null); }}
           onCompleted={() => {
@@ -445,8 +454,11 @@ function CollectPaymentDialog({
     confirmed: boolean;
   } | null>(null);
 
+  const payWinRef = useRef<Window | null>(null);
   const collect = trpc.reception.collectOnInvoice.useMutation({
     onSuccess: (r) => {
+      const win = payWinRef.current;
+      payWinRef.current = null;
       notify.ok(
         `سُدِّدت دفعة على ${row.invoiceNumber}`,
         "notice" in r && r.notice ? r.notice : method === "CASH" && r.collectedIntoShiftId
@@ -455,9 +467,31 @@ function CollectPaymentDialog({
             ? `سُجِّلت على ورديتك #${r.collectedIntoShiftId} — لا تدخل درج النقد`
             : undefined,
       );
+      const paidNow = round2(D(amount || "0")).toFixed(2);
+      const remAfter = round2(D(remaining).minus(D(paidNow)));
+      void printInvoicePaymentReceipt(
+        {
+          invoiceNumber: row.invoiceNumber,
+          customerName: row.customerName ?? row.contactName ?? null,
+          customerPhone: row.customerPhone ?? row.contactPhone ?? null,
+          invoiceTotal: row.total,
+          paidBefore: D(row.paidAmount ?? 0).toFixed(2),
+          amountPaid: paidNow,
+          remainingAfter: (remAfter.gt(0) ? remAfter : D(0)).toFixed(2),
+          paymentMethod: method,
+          reference: method !== "CASH" ? reference.trim() || null : null,
+          branchName,
+          cashierName: me.data?.name ?? null,
+        },
+        win ? { into: win } : undefined,
+      );
       onDone();
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => {
+      try { payWinRef.current?.close(); } catch { /* noop */ }
+      payWinRef.current = null;
+      notify.err(e);
+    },
   });
 
   const initiateExternal = trpc.sales.initiateExternalPayment.useMutation();
@@ -648,7 +682,8 @@ function CollectPaymentDialog({
             disabled={!actions.canCollect || collect.isPending || D(amount || 0).lte(0) || (needRef && !reference.trim()) ||
               !externalConfirmed ||
               (method === "TELECOM" && !telecomConfirmed)}
-            onClick={() =>
+            onClick={() => {
+              payWinRef.current = preopenDocumentWindow();
               collect.mutate({
                 invoiceId: Number(row.id),
                 amount: round2(D(amount)).toFixed(2),
@@ -663,8 +698,8 @@ function CollectPaymentDialog({
                         externalAttempt?.deviceId ?? undefined,
                     }),
                 clientRequestId,
-              })
-            }
+              });
+            }}
           >
             {collect.isPending ? "جارٍ التسديد…" : "تأكيد التسديد"}
           </Button>

@@ -3,9 +3,9 @@ import type { DeliverySourceReference } from "@shared/deliverySource";
 // ملف صفحة (DeliveryHub.tsx) فيَجرّ استيرادها من ReceptionOrderQueue.tsx حزمة DeliveryHub كاملةً
 // (~8ك مضغوطة) لشاشة استقبال عالية التردّد رغم استعمالها دالتين فقط. هنا: مكتبة طباعة صرفة، بلا React.
 import { notify } from "@/lib/notify";
-import { D, fmt, positiveDiff } from "@/lib/money";
-import { printDoc, type PrintDoc } from "@/lib/printing/print";
-import { printShippingLabel } from "@/lib/printing/shippingLabel";
+import { D, fmt, moneyInput, positiveDiff, round2 } from "@/lib/money";
+import { printDoc, type PrintDoc, type PrintWindowOptions } from "@/lib/printing/print";
+import { printShippingLabel, resolveShippingLabelPaymentState } from "@/lib/printing/shippingLabel";
 import {
   printDeliveryDispatchSlipAsync,
   type DispatchSlipData,
@@ -30,6 +30,7 @@ export interface LabelPrintableOrder {
   customerName: string | null;
   customerPhone: string | null;
   deliveryAddress: string | null;
+  governorate?: string | null;
   /** Slice F (٢٩/٨/٢٦): بلاغ المالك «يعرف الزبون الكلي شاملاً التوصيل» — الملصقُ الذي يرافق
    *  الطرد يجب أن يعرض الإجماليّ الذي سيدفعه الزبون للمندوب: COD + الأجرة (COURIER) أو COD وحده. */
   deliveryCost?: string | null;
@@ -62,6 +63,7 @@ export function printDeliverySlip(
     externalTrackingRef?: string | null;
     dispatchedAt?: Date | string | null;
   },
+  options?: PrintWindowOptions,
 ) {
   const orderKind: DispatchSlipData["orderKind"] =
     r.sourceType === "AFTERCARE_EXECUTION"
@@ -90,7 +92,7 @@ export function printDeliverySlip(
     notes: r.externalTrackingRef
       ? `مرجع شركة التوصيل: ${r.externalTrackingRef}`
       : undefined,
-  }).then((result) => {
+  }, options).then((result) => {
     if (!result.ok) notify.err("تم الإسناد؛ الطباعة محجوبة، أعد الطباعة");
   }).catch((error) => {
     console.warn("[delivery-slip] فشلت الطباعة بعد نجاح الإسناد:", error);
@@ -129,8 +131,8 @@ export function buildDeliveryManifestDoc(
   context: DeliveryManifestContext = {},
   now = new Date(),
 ): PrintDoc {
-  const totalCod = parcels.reduce((s, p) => s + Number(p.codAmount ?? 0), 0);
-  const totalFee = parcels.reduce((s, p) => s + Number(p.deliveryFee ?? 0), 0);
+  const totalCod = round2(parcels.reduce((s, p) => s.plus(moneyInput(p.codAmount)), D(0)));
+  const totalFee = round2(parcels.reduce((s, p) => s.plus(moneyInput(p.deliveryFee)), D(0)));
   const snapshot = createDeliveryDocumentSnapshot({
     documentType: "HANDOVER_MANIFEST",
     payload: { party, parcels: [...parcels], ...context },
@@ -168,8 +170,8 @@ export function buildDeliveryManifestDoc(
       total: `COD ${fmt(p.codAmount ?? "0")} · أجرة ${fmt(p.deliveryFee ?? "0")}`,
     })),
     totals: [
-      { label: "مجموع COD المتوقَّع", value: `${fmt(String(totalCod))} د.ع` },
-      { label: "مجموع الأجور", value: `${fmt(String(totalFee))} د.ع` },
+      { label: "مجموع COD المتوقَّع", value: `${fmt(totalCod.toFixed(2))} د.ع` },
+      { label: "مجموع الأجور", value: `${fmt(totalFee.toFixed(2))} د.ع` },
     ],
     footer:
       "أُقرّ باستلامي الطرود المذكورة أعلاه بعددها ومبالغها للتوصيل والتحصيل.\n"
@@ -191,7 +193,7 @@ export function printDeliveryManifest(
   );
 }
 
-/** ملصق شحن للطرد (بالقياس المحفوظ — الافتراضي ٨٠×١٢٠مم): قبل الإرسال برقم الأمر، وبعده
+/** ملصق شحن للطرد (بالقياس المحفوظ — الافتراضي 80×120مم): قبل الإرسال برقم الأمر، وبعده
  *  برقم الإرسالية واسم الجهة (نفس ملصق طلبات المتجر — تكامل وظيفي واحد). */
 export async function printReadyOrderLabel(
   order: LabelPrintableOrder,
@@ -209,25 +211,34 @@ export async function printReadyOrderLabel(
   // Slice F (٢٩/٨/٢٦): «الكلي للعميل» على الملصق — COURIER يقبض COD + الأجرة، الآخران COD وحده.
   // الملصق مصدرُ الحقيقة البصريّ للمندوب عند التسليم؛ رقمٌ مختلفٌ عمّا في يد الزبون = خلاف.
   const feeCollection = order.deliveryFeeCollection ?? "COURIER";
-  const feeD = D(order.deliveryCost);
-  const totalDue = feeCollection === "COURIER" && feeD.isPositive()
-    ? D(cod).plus(feeD).toFixed(2)
-    : cod;
+  const feeD = round2(moneyInput(order.deliveryCost));
+  const totalDueDec = feeCollection === "COURIER" && feeD.isPositive()
+    ? round2(moneyInput(cod).plus(feeD))
+    : round2(moneyInput(cod));
+  const totalDue = totalDueDec.toFixed(2);
   const res = await printShippingLabel(
     {
       orderNumber: opts?.trackingNumber ?? order.orderNumber,
       customerName: order.customerName,
       customerPhone: order.customerPhone,
-      governorate: null,
+      governorate: order.governorate ?? null,
       addressText: order.deliveryAddress,
       total: totalDue,
+      paymentState: resolveShippingLabelPaymentState(totalDueDec.toNumber()),
       deliveryPartyName: opts?.partyName ?? null,
       externalTrackingRef: opts?.externalTrackingRef ?? null,
       qrUrl: order.qrUrl ?? null,
       createdAt: opts?.eventAt ?? new Date(),
       printedAt: new Date(),
       isReprint: opts?.isReprint,
-      items: [{ productName: order.title, unitName: "", quantity: String(order.quantity ?? 1) }],
+      items:
+        order.items && order.items.length > 0
+          ? order.items.map((item) => ({
+              productName: item.productName ?? item.name ?? item.title ?? order.title,
+              unitName: "",
+              quantity: String(item.quantity ?? 1),
+            }))
+          : [{ productName: order.title, unitName: "", quantity: String(order.quantity ?? 1) }],
     },
     opts && "into" in opts ? { into: opts.into } : undefined,
   );

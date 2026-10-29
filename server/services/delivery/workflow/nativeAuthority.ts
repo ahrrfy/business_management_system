@@ -17,5 +17,5 @@ export function workflowDispatchNativePaths(
     ];
   if (kind === "invoice")
     return ["delivery.dispatchInvoice", "delivery.dispatchByBarcode"];
-  return ["delivery.dispatchByBarcode"];
+  return ["delivery.dispatchByBarcode", "storeAdmin.orders.dispatch"];
 }

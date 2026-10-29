@@ -4,7 +4,9 @@ import { PageHeader } from "@/components/PageHeader";
 import CancelWorkOrderDialog from "@/components/workorder/CancelWorkOrderDialog";
 import { DispatchDialog } from "@/components/delivery/DispatchDialog";
 import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
-import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
+import { preopenShippingLabelWindow, printShippingLabel } from "@/lib/printing/shippingLabel";
+import { preopenDocumentWindow } from "@/lib/printing/brand";
+import { printDeliveryFeeRefundReceipt, printInvoicePaymentReceipt, printOrderCancellationReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 import DesignFileCard from "@/components/workorder/DesignFileCard";
 import ReverseDeliveryRequestDialog from "@/components/workorder/ReverseDeliveryRequestDialog";
 import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
@@ -26,7 +28,6 @@ import { variantDescriptor, variantDisplayName } from "@shared/variantDisplay";
 import { trpc, type RouterInputs } from "@/lib/trpc";
 import { printWorkOrder } from "@/lib/printing/printTemplates";
 import { printWorkOrderReceipt } from "@/lib/printing/print";
-import { printShippingLabel } from "@/lib/printing/shippingLabel";
 import { notify } from "@/lib/notify";
 import { openWhatsApp, buildWorkOrderStatusMessage } from "@/lib/whatsapp";
 import { Printer, MessageCircle, Truck, CheckCircle2, Clock } from "lucide-react";
@@ -60,13 +61,8 @@ const PRIORITY_LABEL: Record<string, string> = { LOW: "منخفض", NORMAL: "ع�
 
 
 type CancelInput = RouterInputs["workOrders"]["cancel"];
-type CancelControlInput = Extract<
-  RouterInputs["workOrders"]["requestControl"],
-  { requestType: "CANCEL" }
->;
-type PendingCancelAttempt =
-  | { kind: "DIRECT"; input: CancelInput }
-  | { kind: "CONTROL_REQUEST"; input: CancelControlInput };
+type CancelControlInput = Extract<RouterInputs["workOrders"]["requestControl"], { requestType: "CANCEL" }>;
+type PendingCancelAttempt = { kind: "DIRECT"; input: CancelInput } | { kind: "CONTROL_REQUEST"; input: CancelControlInput };
 
 /** حقل وصفي: عنوان صغير + قيمة (محمي ضد الاقتطاع غير المقصود). */
 function Field({ label, children, truncate = false }: { label: string; children: ReactNode; truncate?: boolean }) {
@@ -102,23 +98,10 @@ export default function WorkOrderDetail() {
   );
   const qs = useSearch();
   const {
-    showCost,
-    role,
-    permissions,
-    canClaimWorkOrder,
-    canReleaseWorkOrder,
-    canStartWorkOrder,
-    canMarkReady,
-    canDeliverWorkOrder,
-    canSetDesign,
-    canSetDeliveryMethod,
-    canSetMaterials,
-    canReadControlPreflight,
-    canRequestCancel,
-    canDispatchDelivery,
-    canRequestCommercialControl,
-    canCancelDirectly,
-    canOpenCancellation,
+    showCost, role, permissions, canClaimWorkOrder, canReleaseWorkOrder, canStartWorkOrder,
+    canMarkReady, canDeliverWorkOrder, canSetDesign, canSetDeliveryMethod, canSetMaterials,
+    canReadControlPreflight, canRequestCancel, canDispatchDelivery, canRequestCommercialControl,
+    canCancelDirectly, canOpenCancellation,
   } = workOrderDetailOperationAccess(me.data);
   const controlPreflight = trpc.workOrders.controlPreflight.useQuery(
     { workOrderId },
@@ -140,6 +123,10 @@ export default function WorkOrderDetail() {
   const [deliveryAddToDebt, setDeliveryAddToDebt] = useState(false);
   const [partialDispatchMessage, setPartialDispatchMessage] = useState("");
   const deliverRequestIdRef = useRef<string | null>(null);
+  const deliverWinRef = useRef<Window | null>(null);
+  const setDeliveryWinRef = useRef<Window | null>(null);
+  const cancelWinRef = useRef<Window | null>(null);
+  const closeWin = (ref: { current: Window | null }) => { try { ref.current?.close(); } catch { /* noop */ } ref.current = null; };
   const cancelAttemptRef = useRef<PendingCancelAttempt | null>(null);
   const cancelAttemptStorageKey = `work-order-cancel-attempt:${workOrderId}`;
   const rememberCancelAttempt = (attempt: PendingCancelAttempt) => {
@@ -245,20 +232,16 @@ export default function WorkOrderDetail() {
   });
   const deliver = trpc.workOrders.deliver.useMutation({
     onSuccess: async (r) => {
+      const win = deliverWinRef.current; deliverWinRef.current = null; const paidBefore = D(wo.data?.deposit ?? 0); const paidNow = payAmount && D(payAmount).gt(0) ? D(payAmount) : D(0); const remAfter = D(wo.data?.salePrice ?? 0).minus(paidBefore).minus(paidNow);
       setDone(`تم التسليم. فاتورة ${r.invoiceNumber} (${r.status}).`);
-      setPartialDispatchMessage("");
-      deliverRequestIdRef.current = null;
-      setAwaitingOwnerRefund(false);
-      setError("");
+      void printInvoicePaymentReceipt({ invoiceNumber: r.invoiceNumber, customerName: wo.data?.customerName, customerPhone: wo.data?.customerPhone, invoiceTotal: wo.data?.salePrice, paidBefore: paidBefore.toFixed(2), amountPaid: paidNow.toFixed(2), remainingAfter: (remAfter.gt(0) ? remAfter : D(0)).toFixed(2), paymentMethod: paidNow.gt(0) ? payMethod : null, reference: paidNow.gt(0) && payMethod !== "CASH" ? (payReference.trim() || null) : null, cashierName: me.data?.name }, win ? { into: win } : undefined).catch(() => { try { win?.close(); } catch { /* noop */ } });
+      setPartialDispatchMessage(""); deliverRequestIdRef.current = null; setAwaitingOwnerRefund(false); setError("");
       await refresh();
     },
     onError: (e) => {
+      closeWin(deliverWinRef);
       // حارس الطلب الجامع: لا يتحول الرفض إلى طريق مسدود؛ الإقرار الجزئي إجراءٌ منفصل وصريح.
-      if (isPartialDispatchRejection(e)) {
-        setPartialDispatchMessage(e.message);
-        setError("");
-        return;
-      }
+      if (isPartialDispatchRejection(e)) { setPartialDispatchMessage(e.message); setError(""); return; }
       setError(e.message);
     },
   });
@@ -303,26 +286,26 @@ export default function WorkOrderDetail() {
   const [reclassifyOpen, setReclassifyOpen] = useState(false);
   const setDeliveryMethodMut = trpc.workOrders.setDeliveryMethod.useMutation({
     onSuccess: async (r) => {
-      notify.ok(
-        "حُدِّثت طريقة التسليم",
-        Number(r.refundedFee) > 0 ? `رُدّت أمانة الأجرة ${fmtAr(r.refundedFee)} د.ع نقداً للزبون` : undefined,
-      );
+      const win = setDeliveryWinRef.current; setDeliveryWinRef.current = null;
+      notify.ok("حُدِّثت طريقة التسليم", Number(r.refundedFee) > 0 ? `رُدّت أمانة الأجرة ${fmtAr(r.refundedFee)} د.ع نقداً للزبون` : undefined);
+      if (D(r.refundedFee ?? 0).gt(0)) void printDeliveryFeeRefundReceipt({ sourceRef: wo.data?.orderNumber ?? `#${workOrderId}`, customerName: wo.data?.customerName, customerPhone: wo.data?.customerPhone, amount: r.refundedFee, paymentMethod: "CASH", cashierName: me.data?.name, reason: "تحويل أمر الشغل إلى استلام مباشر" }, win ? { into: win } : undefined).catch(() => { try { win?.close(); } catch { /* noop */ } });
+      else { try { win?.close(); } catch { /* noop */ } }
       setReclassifyOpen(false);
       await refresh();
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => { closeWin(setDeliveryWinRef); notify.err(e); },
   });
   const cancel = trpc.workOrders.cancel.useMutation({
-    onSuccess: async (result) => {
+    onSuccess: async (result, vars) => {
+      const win = cancelWinRef.current; cancelWinRef.current = null;
       const notice = cancellationRefundNotice(result.pendingRefundReceiptIds, result.replayed);
-      setDone(`${notice.title} — ${notice.description}`);
-      setAwaitingOwnerRefund(notice.awaitingOwner);
-      setCancelOutcomeUncertain(false);
-      setError("");
-      forgetCancelAttempt();
+      void printOrderCancellationReceipt({ documentNumber: wo.data?.orderNumber ?? `#${workOrderId}`, orderKind: "WORK_ORDER", customerName: wo.data?.customerName, customerPhone: wo.data?.customerPhone, originalTotal: wo.data?.salePrice, refundedAmount: notice.awaitingOwner ? "0" : (wo.data?.deposit ?? "0"), pendingRefundAmount: notice.awaitingOwner ? (wo.data?.deposit ?? "0") : "0", pendingRefundRef: notice.awaitingOwner && result.pendingRefundReceiptIds?.length ? `#${result.pendingRefundReceiptIds.join(", #")}` : null, refundMethod: vars.refundRail ?? "CASH", reason: vars.reason, cashierName: me.data?.name }, win ? { into: win } : undefined).catch(() => { try { win?.close(); } catch { /* noop */ } });
+      setDone(`${notice.title} — ${notice.description}`); setAwaitingOwnerRefund(notice.awaitingOwner);
+      setCancelOutcomeUncertain(false); setError(""); forgetCancelAttempt();
       await refresh();
     },
     onError: async (mutationError) => {
+      closeWin(cancelWinRef);
       const [refundCheck, orderCheck] = await Promise.all([
         cancellationRefundStatus.refetch(),
         wo.refetch(),
@@ -958,7 +941,7 @@ export default function WorkOrderDetail() {
             size="sm"
             className="mt-2"
             disabled={deliver.isPending}
-            onClick={() => deliver.mutate({
+            onClick={() => { deliverWinRef.current = preopenDocumentWindow(); deliver.mutate({
               workOrderId,
               clientRequestId: deliverRequestIdRef.current ?? (deliverRequestIdRef.current = newClientRequestId()),
               partialDispatchConfirmed: true,
@@ -967,7 +950,7 @@ export default function WorkOrderDetail() {
                 : {}),
               addToCustomerDebt: deliveryAddToDebt,
               managerApproval: deliveryMgrApproval ?? undefined,
-            })}
+            }); }}
           >
             {deliver.isPending ? "جارٍ التنفيذ…" : "أقرّ التسليم الجزئي"}
           </Button>
@@ -988,7 +971,7 @@ export default function WorkOrderDetail() {
                   setError("تعذّر استعادة حمولة المحاولة السابقة كاملةً؛ حدّث الصفحة وتحقق من حالة الأمر قبل أي إجراء.");
                   return;
                 }
-                if (attempt.kind === "DIRECT") cancel.mutate(attempt.input);
+                if (attempt.kind === "DIRECT") { cancelWinRef.current = preopenDocumentWindow(); cancel.mutate(attempt.input); }
                 else requestControl.mutate(attempt.input);
               }}
             >
@@ -1099,6 +1082,7 @@ export default function WorkOrderDetail() {
                 confirmText: "تسليم وإصدار فاتورة",
                 requireText: "تسليم",
               }))) return;
+              deliverWinRef.current = preopenDocumentWindow();
               deliver.mutate({
                 workOrderId,
                 clientRequestId: deliverRequestIdRef.current ?? (deliverRequestIdRef.current = newClientRequestId()),
@@ -1163,7 +1147,7 @@ export default function WorkOrderDetail() {
         } : null}
         pending={setDeliveryMethodMut.isPending}
         onClose={() => setReclassifyOpen(false)}
-        onConfirm={(payload) => setDeliveryMethodMut.mutate({ workOrderId, ...payload })}
+        onConfirm={(payload) => { setDeliveryWinRef.current = preopenDocumentWindow(); setDeliveryMethodMut.mutate({ workOrderId, ...payload }); }}
       />
 
       <DispatchDialog
@@ -1194,7 +1178,7 @@ export default function WorkOrderDetail() {
          */
         onConfirm={async ({ partyId, fee, recipientName, recipientPhone, deliveryAddress, notes, assignedUserId, externalTrackingRef }) => {
           const party = (dispatchParties.data ?? []).find((p) => Number(p.id) === partyId);
-          const labelWin = preopenShippingLabelWindow();
+          const labelWin = preopenShippingLabelWindow(), slipWin = preopenDocumentWindow();
           try {
             const r = await dispatchMut.mutateAsync({
               workOrderId,
@@ -1227,10 +1211,10 @@ export default function WorkOrderDetail() {
               externalTrackingRef,
               into: labelWin,
             });
-            printDeliverySlip(printable, party, { ...r, externalTrackingRef });
+            printDeliverySlip(printable, party, { ...r, externalTrackingRef }, { into: slipWin });
           } catch {
             // فشلُ الإسناد يُبلَّغ من `onError`؛ هنا نغلق نافذةً فُتحت لمستندٍ لن يوجد.
-            labelWin?.close();
+            labelWin?.close(); slipWin?.close();
           }
         }}
       />
@@ -1312,6 +1296,7 @@ export default function WorkOrderDetail() {
           const attempt: PendingCancelAttempt = { kind: "DIRECT", input };
           rememberCancelAttempt(attempt);
           setCancelOpen(false);
+          cancelWinRef.current = preopenDocumentWindow();
           cancel.mutate(input);
         }}
       />

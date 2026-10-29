@@ -1,5 +1,7 @@
 import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { preopenDocumentWindow } from "@/lib/printing/print";
+import { printShortfallSettlementVoucher } from "@/lib/printing/cashierLifecycleReceipts";
 import { Banknote, Truck, Wallet, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -613,12 +615,33 @@ function SettingsTab({ party, canManage, canRecover, onChanged }: { party: Party
   // مفتاح idempotency ثابت أثناء المحاولة الواحدة، **يتجدّد بعد كل نجاح** — استردادٌ ثانٍ
   // بنفس المبلغ (دفعتان متساويتان) كان يُبتلع replay صامتاً بتوست نجاحٍ كاذب (مراجعة ٩/٨).
   const [recoverReqId, setRecoverReqId] = useState(() => crypto.randomUUID());
+  const recoverWinRef = useRef<Window | null>(null);
   const recover = trpc.delivery.recoverWriteOff.useMutation({
     onSuccess: (r) => {
-      notify.ok("سُجِّل الاسترداد", `دخل الدرج ${fmt((r as { recovered?: string }).recovered ?? recoverAmount)} د.ع وعُكست الخسارة`);
+      const win = recoverWinRef.current;
+      recoverWinRef.current = null;
+      const recAmt = (r as { recovered?: string }).recovered ?? recoverAmount;
+      notify.ok("سُجِّل الاسترداد", `دخل الدرج ${fmt(recAmt)} د.ع وعُكست الخسارة`);
+      void printShortfallSettlementVoucher(
+        {
+          kind: "RECOVER_WRITEOFF",
+          voucherNumber: `RWO-${party.id}-${recoverReqId.slice(0, 8)}`,
+          partyName: party.name,
+          amount: recAmt,
+          actionType: "استرداد عجز مشطوب",
+          paymentMethod: "CASH",
+          cashierName: me.data?.name ?? null,
+          reason: recoverNotes || null,
+        },
+        win ? { into: win } : undefined,
+      );
       setRecoverAmount(""); setRecoverNotes(""); setRecoverReqId(crypto.randomUUID()); onChanged();
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => {
+      try { recoverWinRef.current?.close(); } catch { /* noop */ }
+      recoverWinRef.current = null;
+      notify.err(e);
+    },
   });
 
   if (!form) return <div className="p-8 text-center text-muted-foreground">{ACTION_LABELS.loading}</div>;
@@ -713,7 +736,7 @@ function SettingsTab({ party, canManage, canRecover, onChanged }: { party: Party
           <Button
             className="mt-3 w-full"
             disabled={recover.isPending || !moneyOk(recoverAmount) || Number(recoverAmount) <= 0}
-            onClick={() => recover.mutate({ partyId: party.id, amount: recoverAmount, notes: recoverNotes || null, clientRequestId: recoverReqId })}
+            onClick={() => { recoverWinRef.current = preopenDocumentWindow(); recover.mutate({ partyId: party.id, amount: recoverAmount, notes: recoverNotes || null, clientRequestId: recoverReqId }); }}
           >{recover.isPending ? "جارٍ…" : "تسجيل الاسترداد"}</Button>
         </div>
       )}

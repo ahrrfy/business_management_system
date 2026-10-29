@@ -16,6 +16,9 @@ import { confirm } from "@/lib/confirm";
 import { trpc } from "@/lib/trpc";
 import { ACTION_LABELS as L } from "@shared/actionLabels";
 import { WorkflowPrintActions } from "./workflow/WorkflowPrintActions";
+import { useWorkflowDocumentPrinter } from "@/hooks/useWorkflowDocumentPrinter";
+import { preopenDocumentWindow } from "@/lib/printing/print";
+import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 
 export interface ScannedOrderForCancellation {
   id: number;
@@ -81,6 +84,7 @@ export function CancelDeliveryAssignmentSection({
   const [preview, setPreview] = useState<WorkflowScanPreview | null>(null);
   const [completed, setCompleted] = useState<{
     label: string;
+    action: "cancelAssignment" | "declareReturn" | "reassign";
     branchId: number;
     source: { kind: WorkflowScanPreview["source"]["kind"]; id: number };
     consignmentId: number;
@@ -113,6 +117,7 @@ export function CancelDeliveryAssignmentSection({
   const internalDriverRequired =
     target?.partyType === "INDIVIDUAL" &&
     (target.userId != null || drivers.length > 0);
+  const workflowPrinter = useWorkflowDocumentPrinter(preview?.source.branchId ?? completed?.branchId ?? branchId);
   const busyRef = useRef(false);
   const mutation = trpc.delivery.workflow.assignment.useMutation({
     onError: (error) =>
@@ -272,6 +277,8 @@ export function CancelDeliveryAssignmentSection({
     const signature = JSON.stringify(payload);
     if (retryIdentity.current?.signature !== signature)
       retryIdentity.current = { signature, key: crypto.randomUUID() };
+    const packWin = preopenDocumentWindow();
+    const labelWin = mode === "reassign" ? preopenShippingLabelWindow() : null;
     let committed = false;
     try {
       const result = await mutation.mutateAsync({
@@ -281,12 +288,18 @@ export function CancelDeliveryAssignmentSection({
       committed = true;
       setCompleted({
         label,
+        action: mode,
         branchId: preview.source.branchId,
         source: { kind: preview.source.kind, id: preview.source.id },
         consignmentId: result.consignmentId,
       });
       retryIdentity.current = null;
       notify.ok(`تم ${label}`);
+      if (mode === "reassign") {
+        void workflowPrinter.printShipmentAndLabel(result.consignmentId, packWin, labelWin, preview.source.branchId);
+      } else {
+        void workflowPrinter.printLatestByType(result.consignmentId, "PHYSICAL_RETURN_RECEIPT", packWin, preview.source.branchId);
+      }
       if (mode === "cancelAssignment")
         onAssignmentCancelled?.(
           preview.source.number,
@@ -309,6 +322,10 @@ export function CancelDeliveryAssignmentSection({
       setReason("");
       setPhysicalHeld(false);
     } catch {
+      if (!committed) {
+        if (packWin && !packWin.closed) packWin.close();
+        if (labelWin && !labelWin.closed) labelWin.close();
+      }
       if (committed)
         notify.warn(
           "تم الإجراء وحفظ مستنداته؛ تعذر تحديث المعاينة فقط",
@@ -348,7 +365,7 @@ export function CancelDeliveryAssignmentSection({
             branchId={completed.branchId}
             source={completed.source}
             consignmentId={completed.consignmentId}
-            mode="cancel"
+            mode={completed.action === "reassign" ? "dispatch" : "cancel"}
           />
         </Card>
       )}

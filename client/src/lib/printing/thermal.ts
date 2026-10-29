@@ -8,7 +8,7 @@
 //
 // **عزل الدورين (مهمّ للكاشير):** مع وجود طابعتين مُصرَّح بهما على نفس الأصل، إعادة الربط
 // الصامتة **تُلزِم مطابقة الجهاز المحفوظ** متى وُجد محفوظ (لكلا الدورين) لئلا يخطف دورٌ طابعة
-// الآخر (مثلاً إيصالٌ يُطبع على طابعة الملصقات ٥٨مم). بلا محفوظ: الإيصالات تربط أوّل جهاز
+// الآخر (مثلاً إيصالٌ يُطبع على طابعة الملصقات 58مم). بلا محفوظ: الإيصالات تربط أوّل جهاز
 // صالح (سلوك أوّل ربط)، والملصقات لا تربط شيئاً تلقائياً (تتطلّب ربطاً يدوياً). ولا نطمس
 // المعرّف المحفوظ في إعادة الربط (نحفظ فقط عند الربط اليدوي pairPrinter).
 //
@@ -33,6 +33,18 @@ const LS_KEY: Record<PrinterRole, string> = {
   receipt: "thermalPrinter.default",
   label: "thermalPrinter.label",
 };
+
+/** طابور متسلسل يمنع تداخل حزم USB (transferOut / claimInterface) عند النقر المتزامن. */
+let usbMutex: Promise<void> = Promise.resolve();
+
+function runUsbExclusive<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = usbMutex;
+  let release!: () => void;
+  usbMutex = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return prev.then(fn, fn).finally(() => release());
+}
 
 export function isWebUsbSupported(): boolean {
   return typeof navigator !== "undefined" && !!(navigator as any).usb;
@@ -129,34 +141,28 @@ export async function pairPrinter(role: PrinterRole = "receipt"): Promise<boolea
   }
   ensureDisconnectListener();
   const usb = (navigator as any).usb;
+  // requestDevice يجب أن يُستدعى مباشرةً ضمن إيماءة المستخدم قبل انتظار أي طابور غير متزامن
   const dev = await usb.requestDevice({ filters: [] });
-  // امنع ربط نفس الجهاز الفيزيائي لدورين (يتشاركان مقبضاً واحداً ⇒ فساد متبادل).
-  if (claimedByOtherRole(role, dev)) {
-    throw new Error("هذا الجهاز مربوط أصلاً بدور الطابعة الأخرى — اختر طابعة مختلفة لكل دور.");
-  }
-  let ok = false;
-  try {
-    ok = await claimDevice(role, dev);
-  } catch {
-    throw new Error("تعذّر فتح الطابعة (قد تكون مستخدَمة من تطبيق آخر أو تحتاج تعريف WinUSB عبر Zadig).");
-  }
-  if (!ok) {
-    throw new Error("لم يُعثر على منفذ طباعة USB مناسب على هذا الجهاز");
-  }
-  rememberDevice(role, dev);
-  return true;
+  return runUsbExclusive(async () => {
+    // امنع ربط نفس الجهاز الفيزيائي لدورين (يتشاركان مقبضاً واحداً ⇒ فساد متبادل).
+    if (claimedByOtherRole(role, dev)) {
+      throw new Error("هذا الجهاز مربوط أصلاً بدور الطابعة الأخرى — اختر طابعة مختلفة لكل دور.");
+    }
+    let ok = false;
+    try {
+      ok = await claimDevice(role, dev);
+    } catch {
+      throw new Error("تعذّر فتح الطابعة (قد تكون مستخدَمة من تطبيق آخر أو تحتاج تعريف WinUSB عبر Zadig).");
+    }
+    if (!ok) {
+      throw new Error("لم يُعثر على منفذ طباعة USB مناسب على هذا الجهاز");
+    }
+    rememberDevice(role, dev);
+    return true;
+  });
 }
 
-/**
- * إعادة ربط صامتة بلا نافذة اختيار:
- * - متى وُجد جهاز محفوظ للدور: يُفحص أولاً لمطابقته وربطه فوراً.
- * - بالنسبة لدور الإيصالات ("receipt"): إن لم يتطابق الجهاز المحفوظ (مثلاً تم استبدال الطابعة بموديل حراري آخر
- *   أو توصيل طابعة حرارية جديدة مثل POS-80 / Rongta / Xprinter / Epson عبر Zadig WinUSB):
- *   يتم فحص باقي الأجهزة المصرّح بها في المتصفّح (التي لم تُحجز لدور الملصقات) وربط أول جهاز صالح وتثبيته.
- * - بالنسبة لدور الملصقات ("label"): يُلزم مطابقة الجهاز المحفوظ لئلا يطبع ملصقات 50مم على ورق إيصالات 80مم.
- * يُرجِع false بهدوء إن لم يتوفر جهاز مناسب — لا يرمي.
- */
-export async function tryReconnectPrinter(role: PrinterRole = "receipt"): Promise<boolean> {
+async function tryReconnectPrinterUnlocked(role: PrinterRole): Promise<boolean> {
   if (!isWebUsbSupported()) return false;
   if (isPaired(role)) return true;
   ensureDisconnectListener();
@@ -210,7 +216,18 @@ export async function tryReconnectPrinter(role: PrinterRole = "receipt"): Promis
   return false;
 }
 
-export async function sendBytes(bytes: Uint8Array, role: PrinterRole = "receipt"): Promise<void> {
+/**
+ * إعادة ربط صامتة بلا نافذة اختيار (متسلسلة عبر طابور USB لمنع التداخل):
+ * - متى وُجد جهاز محفوظ للدور: يُفحص أولاً لمطابقته وربطه فوراً.
+ * - بالنسبة لدور الإيصالات ("receipt"): إن لم يتطابق الجهاز المحفوظ، يتم فحص باقي الأجهزة المصرّح بها غير المحجوزة.
+ * - بالنسبة لدور الملصقات ("label"): يُلزم مطابقة الجهاز المحفوظ لئلا يطبع ملصقات 50مم على ورق إيصالات 80مم.
+ * يُرجِع false بهدوء إن لم يتوفر جهاز مناسب — لا يرمي.
+ */
+export function tryReconnectPrinter(role: PrinterRole = "receipt"): Promise<boolean> {
+  return runUsbExclusive(() => tryReconnectPrinterUnlocked(role));
+}
+
+async function sendBytesUnlocked(bytes: Uint8Array, role: PrinterRole): Promise<void> {
   const s = slots[role];
   if (!s.device || s.endpointOut == null) throw new Error("لا توجد طابعة حرارية مربوطة");
   try {
@@ -220,4 +237,8 @@ export async function sendBytes(bytes: Uint8Array, role: PrinterRole = "receipt"
     resetSlotsForDevice(s.device);
     throw e;
   }
+}
+
+export function sendBytes(bytes: Uint8Array, role: PrinterRole = "receipt"): Promise<void> {
+  return runUsbExclusive(() => sendBytesUnlocked(bytes, role));
 }

@@ -15,6 +15,7 @@ import { invalidateFinancialQueries } from "@/lib/realtime/financialQueries";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { trpc } from "@/lib/trpc";
+import { preopenDocumentWindow } from "@/lib/printing/brand";
 import {
   printSalesReturnReceipt,
   type PrintSalesReturnData,
@@ -127,7 +128,8 @@ export function useSalesReturnSubmission(
       return;
     }
     if (pendingReturn) {
-      await submitSalesReturn(pendingReturn);
+      const docWin = preopenDocumentWindow("width=420,height=760");
+      await submitSalesReturn(pendingReturn, docWin);
       return;
     }
     if (invoiceStateBlockReason) {
@@ -248,6 +250,7 @@ export function useSalesReturnSubmission(
       variant: "info",
     });
     if (!ok) return;
+    const docWin = preopenDocumentWindow("width=420,height=760");
 
     await submitSalesReturn({
       clientRequestId,
@@ -280,10 +283,14 @@ export function useSalesReturnSubmission(
         reference: salesCardRef.trim() || undefined,
       },
       reason: salesReason.trim() || undefined,
-    });
+    }, docWin);
   };
 
-  async function submitSalesReturn(submission: ReturnSubmission) {
+  async function submitSalesReturn(submission: ReturnSubmission, docWin?: Window | null) {
+    const targetWin =
+      docWin !== undefined
+        ? docWin
+        : preopenDocumentWindow("width=420,height=760");
     try {
       const res = await salesReturnMutation.mutateAsync(submission);
       setPendingReturn(null);
@@ -305,7 +312,8 @@ export function useSalesReturnSubmission(
         debtOffsetAmount: res.debtOffsetAmount,
       };
 
-      void printSalesReturnReceipt(printData);
+      if (targetWin) void printSalesReturnReceipt(printData, { into: targetWin });
+      else void printSalesReturnReceipt(printData);
       onReturnSuccess(printData);
       setClientRequestId(crypto.randomUUID());
 
@@ -323,6 +331,7 @@ export function useSalesReturnSubmission(
         inspectedInvoice?.branchId ?? activeBranchId,
       );
     } catch (e: any) {
+      try { targetWin?.close(); } catch { /* ignore */ }
       // A lost reply may follow a committed return. Replay the exact submitted
       // intent before validating a new cart against the now-updated invoice.
       if (

@@ -7,6 +7,8 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
+import { preopenDocumentWindow } from "@/lib/printing/brand";
+import { printDeliveryFeeRefundReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 import { paymentMethodCompact } from "@shared/terms";
 import { ExcessFeeRefundPanel } from "./ExcessFeeRefundPanel";
 
@@ -45,6 +47,7 @@ export function DeliveryPaymentRefunds({ branchId }: { branchId: number }) {
   }
   async function execute(row: Row) {
     setError(null);
+    const win = preopenDocumentWindow("width=420,height=760");
     try {
       if (row.workOrderId != null)
         await approveWorkOrder.mutateAsync({
@@ -58,9 +61,25 @@ export function DeliveryPaymentRefunds({ branchId }: { branchId: number }) {
           providerReference: references[row.id] ?? "",
           clientRequestId: `refund-${row.id}`,
         });
+      void printDeliveryFeeRefundReceipt(
+        {
+          refundNumber: `RFD-${row.id}`,
+          sourceRef: row.invoiceId
+            ? `فاتورة #${row.invoiceId}`
+            : row.workOrderId
+              ? `أمر شغل #${row.workOrderId}`
+              : `إيصال #${row.id}`,
+          amount: row.amount,
+          paymentMethod: row.method,
+          cashierName: me.data?.name ?? null,
+          reason: `إثبات استرداد خارجي — مرجع: ${references[row.id] ?? ""}`,
+        },
+        { into: win },
+      ).catch(() => {});
       await q.refetch();
       notify.ok("ثُبت تنفيذ الاسترداد الخارجي");
     } catch (e) {
+      try { win?.close(); } catch { /* ignore */ }
       setError(e instanceof Error ? e.message : "تعذّر اعتماد الاسترداد");
     }
   }

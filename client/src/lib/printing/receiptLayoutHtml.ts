@@ -1,4 +1,4 @@
-import { D } from "@/lib/money";
+import { D, moneyInput } from "@/lib/money";
 import { invoicePrintAmounts } from "./receiptLayoutInvoiceAmounts";
 import { esc, fmt } from "./brand";
 import { fmtQty } from "@shared/quantityFormat";
@@ -142,6 +142,8 @@ export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
       })()
     : "";
 
+  const cashRoundingVal = d.cashRounding != null ? moneyInput(d.cashRounding) : null;
+
   const body = `<div class="compact-receipt" style="width:72mm;max-width:100%;margin:0 auto;overflow-wrap:anywhere">
 
   ${receiptHeaderHtml(d, barSvg)}
@@ -176,25 +178,29 @@ export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
   <table style="width:100%;font-size:11px;border-collapse:collapse;border:1.5px solid #000;margin:2mm 0;color:#000;">
     <tbody>
       <tr><td style="width:55%;font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">المجموع</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.subtotal)}</td></tr>
-      ${Number(d.discount ?? 0) > 0 ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">الخصم</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">-${fmt(d.discount)}</td></tr>` : ""}
-      ${Number(d.tax ?? 0) > 0 ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">الضريبة</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.tax)}</td></tr>` : ""}
-      ${d.cashRounding != null && Number(d.cashRounding) !== 0 ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">تقريب نقدي</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${Number(d.cashRounding) > 0 ? "+" : ""}${fmt(d.cashRounding)}</td></tr>` : ""}
+      ${moneyInput(d.discount).gt(0) ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">الخصم</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">-${fmt(d.discount)}</td></tr>` : ""}
+      ${moneyInput(d.tax).gt(0) ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">الضريبة</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.tax)}</td></tr>` : ""}
+      ${cashRoundingVal && !cashRoundingVal.isZero() ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">تقريب نقدي</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${cashRoundingVal.gt(0) ? "+" : ""}${fmt(d.cashRounding)}</td></tr>` : ""}
       ${D(facts.returnedTotal).gt(0) ? `<tr><td style="border:1px solid #000;padding:1mm 1.5mm;">المرتجع</td><td dir="ltr" style="border:1px solid #000;padding:1mm 1.5mm;">${fmt(facts.returnedTotal)}</td></tr>` : ""}
       ${revised ? `<tr><td style="border:1px solid #000;padding:1mm 1.5mm;">القيمة الحالية للفاتورة</td><td dir="ltr" style="border:1px solid #000;padding:1mm 1.5mm;">${fmt(facts.currentTotal)}</td></tr>` : ""}
       <tr style="background:#000;color:#fff;font-weight:900;">
         <td style="border:1px solid #000;padding:1.5mm;font-size:13px;">${revised ? "الإجمالي الأصلي" : "الإجمالي النهائي"}</td>
         <td style="border:1px solid #000;padding:1.5mm;direction:ltr;text-align:left;font-size:15px;font-variant-numeric:tabular-nums;white-space:nowrap;">${fmt(d.total)} د.ع</td>
       </tr>
-      <tr>
+      ${
+        facts.dead
+          ? ""
+          : `<tr>
         <td colspan="2" style="text-align:center;font-weight:900;font-size:10px;padding:1.2mm;border:1px solid #000;">
-          ${formatArabicMoneyWords(d.total)}
+          ${formatArabicMoneyWords(revised ? facts.currentTotal : d.total)}
         </td>
-      </tr>
+      </tr>`
+      }
       ${d.paymentMethod ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">طريقة الدفع</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">${formatPaymentMethodPrintHtml(d.paymentMethod, esc, { heightPx: 14 })}</td></tr>` : ""}
       ${d.paymentLegs && d.paymentLegs.length > 1 ? d.paymentLegs.map((leg) => `<tr><td style="font-weight:800;border:1px solid #000;padding:0.8mm 1.5mm;font-size:10.5px;">• ${formatPaymentMethodPrintHtml(`${leg.method}${leg.reference ? ` (${leg.reference})` : ""}`, esc, { heightPx: 12 })}</td><td style="font-weight:900;border:1px solid #000;padding:0.8mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;font-size:10.5px;">${fmt(leg.amount)}</td></tr>`).join("") : ""}
       ${d.paid != null ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">المبلغ المدفوع</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.paid)}</td></tr>` : ""}
       ${d.change != null ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">المبلغ المتبقي (الفكة)</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.change)}</td></tr>` : ""}
-      ${Number(d.heldDeposits ?? 0) > 0 ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">عربون محتجز</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.heldDeposits)}</td></tr>` : ""}
+      ${moneyInput(d.heldDeposits).gt(0) ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">عربون محتجز</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.heldDeposits)}</td></tr>` : ""}
       ${D(facts.remainingAmount).gt(0) ? `<tr style="border:2px solid #000;"><td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;">${d.paymentMode === "COD" ? "المطلوب عند الاستلام (COD)" : "متبقٍّ (حساب آجل)"}</td><td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(facts.remainingAmount)} د.ع</td></tr>` : ""}
     </tbody>
   </table>

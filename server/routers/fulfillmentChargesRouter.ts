@@ -123,10 +123,10 @@ export const fulfillmentChargesRouter = router({
     .mutation(({ ctx, input }) =>
       createFulfillmentCharge(input, actor(ctx, input.branchId)),
     ),
-  approve: deliveryManagerProcedure
+  approve: deliveryCashierProcedure
     .input(transition)
     .mutation(({ ctx, input }) => approveFulfillmentCharge(input, actor(ctx))),
-  complete: deliveryManagerProcedure
+  complete: deliveryCashierProcedure
     .input(
       transition.extend({
         evidence: z.string().trim().min(5).max(2000),
@@ -146,7 +146,7 @@ export const fulfillmentChargesRouter = router({
     .mutation(({ ctx, input }) =>
       collectFulfillmentCharges(input, actor(ctx, input.branchId)),
     ),
-  refund: deliveryManagerProcedure
+  refund: deliveryCashierProcedure
     .input(
       transition.extend({
         originalPaymentId: id,
@@ -156,7 +156,7 @@ export const fulfillmentChargesRouter = router({
       }),
     )
     .mutation(({ ctx, input }) => refundFulfillmentCharge(input, actor(ctx))),
-  refundExcess: deliveryManagerProcedure
+  refundExcess: deliveryCashierProcedure
     .input(
       transition.extend({
         originalReceiptId: id,
@@ -173,7 +173,7 @@ export const fulfillmentChargesRouter = router({
     .mutation(({ ctx, input }) =>
       settleFulfillmentChargePayee(input, actor(ctx)),
     ),
-  refundCourierExcess: deliveryManagerProcedure
+  refundCourierExcess: deliveryCashierProcedure
     .input(
       z
         .object({

@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { confirm } from "@/lib/confirm";
 import { D, fmt } from "@/lib/money";
 import { trpc, type RouterInputs } from "@/lib/trpc";
@@ -9,6 +10,8 @@ import {
 } from "@/lib/offline/outbox";
 import { notify } from "@/lib/notify";
 import { invalidateFinancialQueries } from "@/lib/realtime/financialQueries";
+import { preopenDocumentWindow } from "@/lib/printing/print";
+import { buildExecutedReturnReceiptPayload, printOrderCancellationReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 import { ReturnComposerProps } from "./returnComposerTypes";
 import type { useReturnComposerState } from "./useReturnComposerState";
 import type { useReturnComposerSettlement } from "./useReturnComposerSettlement";
@@ -48,22 +51,75 @@ export function useReturnComposerMutations(
     onDone,
   } = ctx;
 
+  const printWinRef = useRef<Window | null>(null);
+  function closePrintWin() {
+    try {
+      if (printWinRef.current && !printWinRef.current.closed) {
+        printWinRef.current.close();
+      }
+    } catch {
+      /* noop */
+    }
+    printWinRef.current = null;
+  }
+
   // اعتماد طلبٍ قائم — يشارك نفس معالجات النجاح/الخطأ (سلوكٌ واحد للمستخدم).
-  const approve = trpc.returns.approveRequest.useMutation({
-    onSuccess: async (res) => {
+  const rawApprove = trpc.returns.approveRequest.useMutation({
+    onSuccess: async (res, vars) => {
+      const win = printWinRef.current;
+      printWinRef.current = null;
       setDone("اعتُمد الطلب ونُفِّذ المرتجع.");
       setQty({});
       setManualAmount(null);
       setReason("");
       setClientRequestId(crypto.randomUUID());
+      void printOrderCancellationReceipt(
+        {
+
+
+
+
+          ...buildExecutedReturnReceiptPayload({
+  
+  
+  
+            documentNumber: inv?.invoiceNumber ?? `#${inv?.id ?? ""}`,
+            customerName: inv?.customerName ?? null,
+            originalTotal: inv?.total ?? null,
+            returnedTotal: res.returnedTotal ?? "0",
+            requestedRefundAmount: vars.refund?.amount ?? vars.resolution?.amount ?? "0",
+            refundMethod: vars.refund?.method ?? vars.resolution?.method ?? null,
+            pendingRefundAmount: res.pendingRefundAmount ?? "0",
+            pendingRefundVoucherNumber: res.pendingRefundVoucherNumber ?? null,
+            reason: pending?.reason ?? "مرتجع مبيعات معتمد",
+            cashierName: (me.data as { name?: string | null } | undefined)?.name ?? null,
+  
+  
+          }),
+
+
+        },
+        ...(win ? [{ into: win }] : []),
+      ).catch(() => {});
       await invalidateFinancialQueries(queryClient, inv?.branchId);
       onDone?.({
         fullyReturned: !!res.fullyReturned,
         returnedTotal: String(res.returnedTotal ?? "0"),
       });
     },
-    onError: (e) => setError(e.message),
+    onError: (e) => {
+      closePrintWin();
+      setError(e.message);
+    },
   });
+  const approve: typeof rawApprove = {
+    ...rawApprove,
+    mutate: (input, opts) => {
+      closePrintWin();
+      printWinRef.current = preopenDocumentWindow("width=420,height=760");
+      rawApprove.mutate(input, opts);
+    },
+  };
 
   /**
    * ⭐ **التقاطُ مرتجعٍ نقديّ عند فشل النقل فعلاً** (تدقيق ١/٩/٢٦ — البند الرابع).
@@ -151,12 +207,14 @@ export function useReturnComposerMutations(
     return true;
   }
 
-  const create = trpc.returns.create.useMutation({
+  const rawCreate = trpc.returns.create.useMutation({
     onMutate: () => ({
       branchId: inv?.branchId,
       isOwner: me.data?.isOwner === true,
     }),
-    onSuccess: async (res) => {
+    onSuccess: async (res, vars) => {
+      const win = printWinRef.current;
+      printWinRef.current = null;
       /**
        * العائدُ نوعٌ مُميَّزٌ بـ`mode` (قرار المالك ١/٩/٢٦): المالكُ يُنفَّذ مرتجعُه فوراً،
        * وغيرُه يُرسل طلباً. الشاشة تقول أيَّهما وقع — لا نصّاً واحداً يصف الحالتين.
@@ -181,14 +239,44 @@ export function useReturnComposerMutations(
       setClientRequestId(crypto.randomUUID());
       await invalidateFinancialQueries(queryClient, inv?.branchId);
       if (isExecuted) {
+        void printOrderCancellationReceipt(
+          {
+  
+  
+  
+  
+            ...buildExecutedReturnReceiptPayload({
+    
+    
+    
+              documentNumber: inv?.invoiceNumber ?? `#${inv?.id ?? ""}`,
+              customerName: inv?.customerName ?? null,
+              originalTotal: inv?.total ?? null,
+              returnedTotal: "returnedTotal" in res ? (res.returnedTotal ?? "0") : "0",
+              requestedRefundAmount: vars.refund?.amount ?? vars.resolution?.amount ?? "0",
+              refundMethod: vars.refund?.method ?? vars.resolution?.method ?? null,
+              pendingRefundAmount: "pendingRefundAmount" in res ? (res.pendingRefundAmount ?? "0") : "0",
+              pendingRefundVoucherNumber: "pendingRefundVoucherNumber" in res ? (res.pendingRefundVoucherNumber ?? null) : null,
+              reason: vars.reason ?? vars.resolution?.reason ?? "مرتجع مبيعات منفذ فوراً",
+              cashierName: (me.data as { name?: string | null } | undefined)?.name ?? null,
+    
+            }),
+
+  
+          },
+          ...(win ? [{ into: win }] : []),
+        ).catch(() => {});
         onDone?.({
           fullyReturned: "fullyReturned" in res ? !!res.fullyReturned : false,
           returnedTotal:
             "returnedTotal" in res ? String(res.returnedTotal ?? "0") : "0",
         });
+      } else {
+        try { win?.close(); } catch { /* noop */ }
       }
     },
     onError: (e, submission, snapshot) => {
+      closePrintWin();
       // انقطاعُ الشبكة ≠ رفضُ أعمال: الأوّل يُلتقَط، والثاني يُعرَض. الخلطُ بينهما يبتلع
       // رفضاً مشروعاً في طابورٍ أو يُفقد نقداً خرج فعلاً.
       const isTransport =
@@ -204,6 +292,16 @@ export function useReturnComposerMutations(
       setError(e.message);
     },
   });
+  const create: typeof rawCreate = {
+    ...rawCreate,
+    mutate: (submission, opts) => {
+      closePrintWin();
+      if (me.data?.isOwner === true || submission.directExecution === true) {
+        printWinRef.current = preopenDocumentWindow("width=420,height=760");
+      }
+      rawCreate.mutate(submission, opts);
+    },
+  };
 
   async function afterWithdrawal() {
     // Withdrawal starts a new intent; never reuse the bound key of the withdrawn request.

@@ -1,6 +1,7 @@
-import { D, fmt, fmtQty } from "@/lib/money";
+import { D, fmt, fmtQty, round2 } from "@/lib/money";
 import { fmtDateTime } from "@/lib/date";
 import { printDoc, type PrintDoc } from "@/lib/printing/print";
+import type { PrintWindowOptions } from "@/lib/printing/brand";
 import type { PrintItemBlock } from "@/lib/printing/render";
 
 export interface PrintSalesReturnData {
@@ -42,7 +43,7 @@ export interface PrintPurchaseReturnData {
 /**
  * طباعة إيصال مرتجع مبيعات حراري فوري
  */
-export async function printSalesReturnReceipt(data: PrintSalesReturnData) {
+export async function printSalesReturnReceipt(data: PrintSalesReturnData, options?: PrintWindowOptions) {
   const methodLabel =
     data.noCashNoAccount ? "تخفيض المتبقي على الفاتورة — بلا استرداد مالي" : data.method === "CASH"
       ? "استرداد نقدي"
@@ -66,7 +67,7 @@ export async function printSalesReturnReceipt(data: PrintSalesReturnData) {
   const itemBlocks: PrintItemBlock[] = data.items.map((i) => ({
     name: i.name,
     quantityPrice: `${fmtQty(i.quantity)} × ${fmt(i.unitPrice)} د.ع`,
-    total: `${fmt(String(Number(i.quantity) * Number(i.unitPrice)))} د.ع`,
+    total: `${fmt(round2(D(i.quantity).times(D(i.unitPrice))).toFixed(2))} د.ع`,
   }));
 
   const totals = [
@@ -92,13 +93,13 @@ export async function printSalesReturnReceipt(data: PrintSalesReturnData) {
     footer: "شكراً لتعاملكم معنا — نظام إدارة أعمال الرؤية العربية",
   };
 
-  return printDoc(doc);
+  return printDoc(doc, options);
 }
 
 /**
  * طباعة سند إرجاع مشتريات للمورد
  */
-export async function printPurchaseReturnVoucher(data: PrintPurchaseReturnData) {
+export async function printPurchaseReturnVoucher(data: PrintPurchaseReturnData, options?: PrintWindowOptions) {
   const methodLabel =
     data.method === "CREDIT_OFFSET"
       ? "معادلة ذمم (خصم من رصيد المورد)"
@@ -116,7 +117,7 @@ export async function printPurchaseReturnVoucher(data: PrintPurchaseReturnData) 
   const itemBlocks: PrintItemBlock[] = data.items.map((i) => ({
     name: i.name,
     quantityPrice: `${fmtQty(i.quantity)} × ${fmt(i.unitCost)} د.ع`,
-    total: `${fmt(String(Number(i.quantity) * Number(i.unitCost)))} د.ع`,
+    total: `${fmt(round2(D(i.quantity).times(D(i.unitCost))).toFixed(2))} د.ع`,
   }));
 
   const totals = [
@@ -139,5 +140,5 @@ export async function printPurchaseReturnVoucher(data: PrintPurchaseReturnData) 
     footer: "سند رسمي صادر من قسم المشتريات والمخازن — الرؤية العربية",
   };
 
-  return printDoc(doc);
+  return printDoc(doc, options);
 }

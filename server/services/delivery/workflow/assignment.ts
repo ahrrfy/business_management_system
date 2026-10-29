@@ -37,8 +37,12 @@ import {
 import { dispatchInvoiceInTx } from "../dispatchInvoice";
 import { deliveryConsignments, onlineOrders } from "../../../../drizzle/schema";
 import { appendDeliveryEvent } from "../lifecycle";
-import { money } from "../../money";
-import { listDeliveryDocumentSnapshotsTx } from "../documentSnapshots";
+import { money, round2 } from "../../money";
+import {
+  createRecordedShipmentDocumentTx,
+  listDeliveryDocumentSnapshotsTx,
+  type WorkflowDocumentBody,
+} from "../documentSnapshots";
 import { physicalHandoverConsignmentIdsTx } from "../handoverEvidence";
 
 export interface WorkflowAssignmentInput {
@@ -119,6 +123,7 @@ export async function mutateWorkflowAssignment(
         throw fulfillmentError(
           "المصدر ليس له إرسالية حالية؛ امسح باركود الشحنة القائمة",
         );
+      let effectiveConsignmentId = consignmentId;
       if (input.reason.trim().length < 3)
         throw fulfillmentError("سبب الإجراء مطلوب");
       const members = await loadShipmentMembersTx(tx, consignmentId, {
@@ -373,7 +378,7 @@ export async function mutateWorkflowAssignment(
                   chargeIds: charges.map((row) => row.id),
                 });
             }
-            await reassignFulfillmentRequestInTx(
+            const reassignedRequest = await reassignFulfillmentRequestInTx(
               tx,
               {
                 id: request.id,
@@ -387,6 +392,7 @@ export async function mutateWorkflowAssignment(
               auth.actor,
               { heldReturnReissue, compositionAuthority },
             );
+            effectiveConsignmentId = reassignedRequest.consignmentId;
           } else {
             const invoiceIds = members.flatMap((c) =>
               c.invoiceId == null ? [] : [c.invoiceId],
@@ -424,14 +430,23 @@ export async function mutateWorkflowAssignment(
               longitude: leader.longitude,
               onlineOrderId: onlineOrder?.id,
             };
-            if (invoiceIds.length === 1 && members.length === 1)
-              await dispatchInvoiceInTx(tx, dispatchInput, auth.actor, {
-                heldReturnReissue,
-              });
-            else
-              await dispatchInvoiceShipmentInTx(tx, dispatchInput, auth.actor, {
-                heldReturnReissue,
-              });
+            if (invoiceIds.length === 1 && members.length === 1) {
+              const dispatchedSingle = await dispatchInvoiceInTx(
+                tx,
+                dispatchInput,
+                auth.actor,
+                { heldReturnReissue },
+              );
+              effectiveConsignmentId = dispatchedSingle.consignmentId;
+            } else {
+              const dispatchedGroup = await dispatchInvoiceShipmentInTx(
+                tx,
+                dispatchInput,
+                auth.actor,
+                { heldReturnReissue },
+              );
+              effectiveConsignmentId = dispatchedGroup.consignmentId;
+            }
             if (onlineOrder) pendingOnlineUpdate = {
               id: onlineOrder.id, invoiceId: leader.invoiceId!, branchId: leader.branchId, partyId,
             };
@@ -452,14 +467,85 @@ export async function mutateWorkflowAssignment(
             );
         }
       }
-      await recordFulfillmentMutationTx(tx, context, consignmentId);
+      if (input.action === "cancelAssignment" || input.action === "declareReturn") {
+        const docLeader = members.find((c) => c.id === consignmentId) ?? members[0];
+        if (docLeader) {
+          const targetMembers =
+            operationalMembers.length > 0 ? operationalMembers : members;
+          const totalCod = round2(
+            targetMembers.reduce(
+              (sum, m) => sum.plus(money(m.codAmount)),
+              money(0),
+            ),
+          );
+          const formattedCod = `${totalCod.toNumber().toLocaleString("ar-IQ-u-nu-latn")} د.ع`;
+          const docEventKey = `CN:${docLeader.id}:${input.action === "cancelAssignment" ? "WORKFLOW_CANCEL_ASSIGNMENT_RECEIPT" : "WORKFLOW_DECLARE_RETURN_RECEIPT"}:${input.clientRequestId}`;
+          const docBody: WorkflowDocumentBody = {
+            title:
+              input.action === "cancelAssignment"
+                ? "محضر إلغاء إسناد شحنة"
+                : "محضر إعلان رجوع شحنة",
+            documentNumber: docLeader.consignmentNumber,
+            rows: [
+              { label: "رقم الإرسالية", value: docLeader.consignmentNumber },
+              ...(targetMembers.length > 1
+                ? [
+                    {
+                      label: "الإرساليات المشمولة",
+                      value: String(targetMembers.length),
+                    },
+                  ]
+                : []),
+              {
+                label: "المصدر",
+                value: `${docLeader.sourceType} #${docLeader.sourceId}`,
+              },
+              {
+                label: "المستلم",
+                value: docLeader.recipientName ?? "غير مسجل",
+              },
+              { label: "السبب المثبت", value: input.reason.trim() },
+            ],
+            totals: [
+              {
+                label: "مطالبة الطرد عند الإجراء",
+                value: formattedCod,
+              },
+            ],
+            notice:
+              input.action === "cancelAssignment"
+                ? "يثبت إلغاء إسناد الطرد وعودته لعهدة الفرع قبل خروج المندوب. لا يلغي الفاتورة التجارية ولا يرد نقداً للعميل."
+                : "يثبت إعلان رجوع الطرد بانتظار الاستلام والفحص المادي في محطة المرتجع.",
+          };
+          await appendDeliveryEvent(tx, {
+            eventKey: docEventKey,
+            consignmentId: docLeader.id,
+            eventType: "WORKFLOW_PHYSICAL_RETURN_RECEIPT",
+            actorUserId: auth.actor.userId,
+            payload: {
+              branchId: preview.source.branchId,
+              leaderConsignmentId: effectiveConsignmentId,
+              documentType: "PHYSICAL_RETURN_RECEIPT",
+              document: docBody,
+              metadataOnly: true,
+            },
+          });
+          await createRecordedShipmentDocumentTx(tx, {
+            consignmentId: effectiveConsignmentId,
+            branchId: preview.source.branchId,
+            eventKey: docEventKey,
+            documentType: "PHYSICAL_RETURN_RECEIPT",
+          });
+        }
+      }
+      await recordFulfillmentMutationTx(tx, context, effectiveConsignmentId);
       const result = {
-        consignmentId,
+        consignmentId: effectiveConsignmentId,
         idempotentReplay: false,
         documentSnapshotIds: (
           await listDeliveryDocumentSnapshotsTx(tx, {
             sourceType: "SHIPMENT",
-            sourceId: consignmentId,
+            sourceId: effectiveConsignmentId,
             branchId: preview.source.branchId,
           })
         ).map((row) => row.id),

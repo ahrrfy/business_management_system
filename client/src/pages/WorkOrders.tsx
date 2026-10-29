@@ -16,7 +16,13 @@ import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey 
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { exportRows } from "@/lib/export";
-import { fmtAr, fmtInt, D, toAccessibleMoney } from "@/lib/money";
+import { fmtAr, fmtInt, D, positiveDiff, toAccessibleMoney } from "@/lib/money";
+import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
+import { printDoc } from "@/lib/printing/print";
+import { printInvoicePaymentReceipt } from "@/lib/printing/cashierLifecycleReceipts";
+import { printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
+import { printDeliveryDispatchSlipAsync } from "@/lib/printing/printDeliveryDispatchSlip";
+import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 
 
 
@@ -153,6 +159,8 @@ export default function WorkOrders() {
 
   const colRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const dragRef = useRef<{ order: WO; startX: number; startY: number; ox: number; oy: number; moved: boolean } | null>(null);
+  const deliverSnapRef = useRef<WO | DeliverTarget | null>(null);
+  const autoClearSnapRef = useRef<{ single?: WO; candidates: WO[]; labelWin: Window | null } | null>(null);
 
   // فلاتر خادمية مشتركة بين القائمتين والعدّادات والتصدير — بناء واحد فلا تنحرف الأرقام عن الجدول.
   const customerFilterId = Number(f.customerId);
@@ -223,8 +231,30 @@ export default function WorkOrders() {
     onError: (e) => { notify.err(e); invalidateAll(); },
   });
   const deliver = trpc.workOrders.deliver.useMutation({
-    onSuccess: (r) => { notify.ok("تم التسليم", `صدرت فاتورة ${r.invoiceNumber} تلقائياً.`); setDeliverOrder(null); invalidateAll(); },
-    onError: (e) => { notify.err(e); invalidateAll(); },
+    onSuccess: (r, vars) => {
+      const snap = deliverSnapRef.current ?? all.find((o) => o.id === vars.workOrderId) ?? deliverOrder;
+      deliverSnapRef.current = null;
+      const saleTotal = snap?.salePrice ?? "0";
+      const paidBefore = D(snap?.deposit ?? 0);
+      const paidNow = vars.payment?.amount ? D(vars.payment.amount) : D(0);
+      const remAfter = D(saleTotal).minus(paidBefore).minus(paidNow);
+      notify.ok("تم التسليم", `صدرت فاتورة ${r.invoiceNumber} تلقائياً.`);
+      void printInvoicePaymentReceipt({
+        invoiceNumber: r.invoiceNumber,
+        customerName: snap && "customerName" in snap ? snap.customerName : null,
+        customerPhone: snap && "customerPhone" in snap ? snap.customerPhone : null,
+        invoiceTotal: saleTotal,
+        paidBefore: paidBefore.toFixed(2),
+        amountPaid: paidNow.toFixed(2),
+        remainingAfter: (remAfter.gt(0) ? remAfter : D(0)).toFixed(2),
+        paymentMethod: paidNow.gt(0) ? (vars.payment?.method ?? "CASH") : null,
+        reference: vars.payment?.reference ?? null,
+        cashierName: me.data?.name ?? null,
+      }).catch(() => {}).finally(() => releaseReservedPrintWindow());
+      setDeliverOrder(null);
+      invalidateAll();
+    },
+    onError: (e) => { deliverSnapRef.current = null; releaseReservedPrintWindow(); notify.err(e); invalidateAll(); },
   });
   const assign = trpc.workOrders.assign.useMutation({
     onSuccess: () => { notify.ok("تم تحديث الإسناد"); invalidateAll(); },
@@ -256,27 +286,120 @@ export default function WorkOrders() {
   const activeBranchId = canCrossBranches && f.branch !== "all" ? Number(f.branch) : undefined;
 
   const autoClearReady = trpc.workOrders.autoClearReady.useMutation({
-    onSuccess: (res) => {
+    onSuccess: async (res, vars) => {
+      const snap = autoClearSnapRef.current;
+      autoClearSnapRef.current = null;
+      const closeLabel = () => { try { snap?.labelWin?.close(); } catch { /* noop */ } };
       if (res.clearedCount > 0) {
-        notify.ok(
-          "تم التصريف التلقائي",
-          `تم تصريف ${fmtInt(res.clearedCount)} طلب (${fmtInt(res.dispatchedCount)} إرسال للتوصيل، ${fmtInt(res.deliveredCount)} تسليم مباشر).`,
-        );
+        if (!vars?.workOrderId) {
+          notify.ok(
+            "تم التصريف التلقائي",
+            `تم تصريف ${fmtInt(res.clearedCount)} طلب (${fmtInt(res.dispatchedCount)} إرسال للتوصيل، ${fmtInt(res.deliveredCount)} تسليم مباشر).`,
+          );
+        }
+        const target = snap?.single ?? (res.clearedCount === 1 && snap?.candidates.length === 1 ? snap.candidates[0] : undefined);
+        if (target && res.dispatchedCount === 1 && res.deliveredCount === 0) {
+          const freshRows = await utils.workOrders.list.fetch({ statuses: [...ACTIVE_STATUSES, "DELIVERED"], limit: 100, ...serverFilters }).catch(() => [] as WO[]);
+          const updated = freshRows.find((o) => o.id === target.id) ?? target;
+          const cod = positiveDiff(updated.salePrice, updated.deposit ?? 0).toFixed(2);
+          const cnNum = (updated as { consignmentNumber?: string | null }).consignmentNumber ?? updated.orderNumber;
+          const printable = {
+            orderNumber: updated.orderNumber,
+            title: updated.title,
+            quantity: Number(updated.quantity ?? 1),
+            salePrice: updated.salePrice,
+            deposit: updated.deposit ?? null,
+            customerName: updated.customerName ?? null,
+            customerPhone: updated.customerPhone ?? null,
+            deliveryAddress: updated.deliveryAddress ?? null,
+            deliveryCost: updated.deliveryCost ?? null,
+            deliveryFeeCollection: (updated as { deliveryFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null }).deliveryFeeCollection ?? null,
+          };
+          if (snap?.labelWin) {
+            void printReadyOrderLabel(printable, {
+              partyName: updated.deliveryPartyName ?? null,
+              trackingNumber: cnNum,
+              cod,
+              into: snap.labelWin,
+            }).catch(() => closeLabel());
+          }
+          void printDeliveryDispatchSlipAsync({
+            sourceType: "WORK_ORDER",
+            workOrderId: updated.id,
+            consignmentNumber: cnNum,
+            orderNumber: updated.orderNumber,
+            orderKind: "workOrder",
+            partyName: updated.deliveryPartyName ?? "مندوب التوصيل",
+            recipientName: updated.customerName ?? "",
+            recipientPhone: updated.customerPhone ?? "",
+            deliveryAddress: updated.deliveryAddress ?? "",
+            salePrice: updated.salePrice,
+            deposit: updated.deposit ?? null,
+            codAmount: cod,
+            deliveryFee: String(updated.deliveryCost ?? "0"),
+            feeCollection: (updated as { deliveryFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null }).deliveryFeeCollection ?? "COURIER",
+            title: updated.title,
+          }).catch(() => {}).finally(() => releaseReservedPrintWindow());
+        } else if (target && res.deliveredCount === 1 && res.dispatchedCount === 0) {
+          closeLabel();
+          const det = await utils.workOrders.get.fetch({ workOrderId: target.id }).catch(() => null);
+          const invNum = (det as { invoiceNumber?: string | null } | null)?.invoiceNumber ?? (det?.invoiceId ? `INV-${det.invoiceId}` : target.orderNumber);
+          void printInvoicePaymentReceipt({
+            invoiceNumber: invNum,
+            customerName: target.customerName ?? null,
+            customerPhone: target.customerPhone ?? null,
+            invoiceTotal: target.salePrice,
+            paidBefore: D(target.deposit ?? 0).toFixed(2),
+            amountPaid: "0.00",
+            remainingAfter: "0.00",
+            paymentMethod: null,
+            cashierName: me.data?.name ?? null,
+          }).catch(() => {}).finally(() => releaseReservedPrintWindow());
+        } else {
+          closeLabel();
+          void printDoc({
+            kind: "receipt",
+            includeBrandHeader: true,
+            title: "بيان التصريف التلقائي للطلبات الجاهزة",
+            subtitle: `إجمالي المصرف: ${res.clearedCount} طلب`,
+            meta: [
+              me.data?.name ? `الموظف: ${me.data.name}` : "",
+              `مرسل للتوصيل: ${res.dispatchedCount}`,
+              `تسليم مباشر (مدفوع مسبقاً): ${res.deliveredCount}`,
+            ].filter(Boolean),
+            totals: [
+              { label: "إرسالات التوصيل", value: String(res.dispatchedCount) },
+              { label: "التسليم المباشر", value: String(res.deliveredCount) },
+              { label: "إجمالي الطلبات المصرفة", value: String(res.clearedCount) },
+            ],
+            footer: "تم التصريف التلقائي للطلبات الجاهزة المؤهلة.",
+          }).catch(() => {}).finally(() => releaseReservedPrintWindow());
+        }
       } else {
-        notify.warn(
-          "لا توجد طلبات مؤهلة للتصريف",
-          "التصريف التلقائي للتوصيل يتطلب مندوباً فردياً نشطاً؛ شركة التوصيل تُسنَد من شاشة التوصيل بعد مسح البوليصة. والاستلام المباشر يتطلب دفع كامل المبلغ مقدماً.",
-        );
+        closeLabel();
+        releaseReservedPrintWindow();
+        if (!vars?.workOrderId) {
+          notify.warn(
+            "لا توجد طلبات مؤهلة للتصريف",
+            "التصريف التلقائي للتوصيل يتطلب مندوباً فردياً نشطاً؛ شركة التوصيل تُسنَد من شاشة التوصيل بعد مسح البوليصة. والاستلام المباشر يتطلب دفع كامل المبلغ مقدماً.",
+          );
+        }
       }
       invalidateAll();
     },
     onError: (e) => {
+      try { autoClearSnapRef.current?.labelWin?.close(); } catch { /* noop */ }
+      autoClearSnapRef.current = null;
+      releaseReservedPrintWindow();
       notify.err(e);
       invalidateAll();
     },
   });
 
   const onQuickDispatch = (order: WO) => {
+    const labelWin = order.hasDelivery ? preopenShippingLabelWindow() : null;
+    reservePrintWindow();
+    autoClearSnapRef.current = { single: order, candidates: [order], labelWin };
     autoClearReady.mutate(
       { workOrderId: order.id, branchId: order.branchId },
       {
@@ -292,6 +415,8 @@ export default function WorkOrders() {
   };
 
   const onQuickDeliver = (order: WO) => {
+    deliverSnapRef.current = order;
+    reservePrintWindow();
     deliver.mutate({
       workOrderId: order.id,
       clientRequestId: newClientRequestId(),
@@ -982,7 +1107,12 @@ export default function WorkOrders() {
                         <div className="mt-1.5">
                           <button
                             type="button"
-                            onClick={() => autoClearReady.mutate({ branchId: activeBranchId })}
+                            onClick={() => {
+                              const labelWin = list.length === 1 && list[0]?.hasDelivery ? preopenShippingLabelWindow() : null;
+                              reservePrintWindow();
+                              autoClearSnapRef.current = { single: list.length === 1 ? list[0] : undefined, candidates: list, labelWin };
+                              autoClearReady.mutate({ branchId: activeBranchId });
+                            }}
                             disabled={autoClearReady.isPending}
                             className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-bold rounded-md bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos-hover)] active:scale-95 transition-all shadow-xs cursor-pointer disabled:opacity-50"
                             title="تصريف تلقائي للمدفوع ومندوب التوصيل الفردي؛ الشركة تتطلب مسح البوليصة من شاشة التوصيل"
@@ -1100,6 +1230,8 @@ export default function WorkOrders() {
         onConfirm={async (payment, extra) => {
           if (!deliverOrder) return;
           if (!(await confirm({ variant: "danger", title: "تسليم الأمر وإصدار الفاتورة", description: `تسليم «${deliverOrder.title}» (${deliverOrder.orderNumber}) يُصدر فاتورة نهائية بمبلغ ${fmtAr(deliverOrder.salePrice)} د.ع ويحدّث المخزون والذمم — لا رجعة فيه. اكتب «تسليم» للتأكيد.`, confirmText: "تسليم وإصدار الفاتورة", cancelText: "تراجع", requireText: "تسليم" }))) return;
+          deliverSnapRef.current = all.find((o) => o.id === deliverOrder.id) ?? deliverOrder;
+          reservePrintWindow();
           deliver.mutate({
             workOrderId: deliverOrder.id,
             payment,

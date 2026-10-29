@@ -6,6 +6,11 @@ import { ReturnComposer } from "@/components/returns/ReturnComposer";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { notify } from "@/lib/notify";
+import { preopenDocumentWindow } from "@/lib/printing/brand";
+import {
+  printAssignmentCancelReceipt,
+  printOrderCancellationReceipt,
+} from "@/lib/printing/cashierLifecycleReceipts";
 import { workflowSourceBarcode } from "./navigation";
 import { Input } from "@/components/ui/input";
 import { operationDecision } from "@shared/operationPermissions";
@@ -246,11 +251,13 @@ export function WorkflowCommercialReturn({
         await refreshKnown(snapshot);
         return;
       }
+      const printWin = preopenDocumentWindow("width=420,height=760");
       try {
         if (snapshot.version === 2 && snapshot.route === "BARCODE")
           await barcodeReturn.mutateAsync(snapshot.input);
         else await nativeReturn.mutateAsync(snapshot.input);
       } catch (error) {
+        try { printWin?.close(); } catch { /* ignore */ }
         if (!replay && definitiveWorkflowReturnRejection(error)) {
           const rejected = { ...snapshot, phase: "REJECTED" as const };
           persist(rejected);
@@ -280,6 +287,30 @@ export function WorkflowCommercialReturn({
       }
       const committed = { ...snapshot, phase: "COMMITTED" as const };
       persist(committed);
+      if (sourceOnlyRequest) {
+        void printAssignmentCancelReceipt(
+          {
+            action: "declareReturn",
+            consignmentNumber: preview.printSource.number,
+            sourceRef: preview.source.number,
+            recipientName: preview.recipient.name,
+            codAmount: preview.money.codAmount,
+            reason: snapshot.input.returnReason,
+          },
+          { into: printWin },
+        ).catch(() => {});
+      } else {
+        void printOrderCancellationReceipt(
+          {
+            documentNumber: preview.source.number,
+            orderKind: preview.source.kind === "workOrder" ? "WORK_ORDER" : "INVOICE",
+            customerName: preview.recipient.name,
+            refundedAmount: preview.money.codAmount,
+            reason: snapshot.input.returnReason,
+          },
+          { into: printWin },
+        ).catch(() => {});
+      }
       if (mounted.current) {
         setRecovery({ state: "SAVED", snapshot: committed });
         notify.ok(

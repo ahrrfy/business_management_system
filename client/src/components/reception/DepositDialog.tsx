@@ -15,6 +15,7 @@ import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { notify } from "@/lib/notify";
 import { printDepositReceipt } from "@/lib/printing/draftTicket";
+import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
 import { INBOUND_TELECOM_DISABLED_MESSAGE } from "@shared/inboundPaymentPolicy";
 import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
@@ -89,10 +90,10 @@ export default function DepositDialog({
         collectedTotal: String(r.collectedTotal),
         orderTotal,
         cashierName,
-      }).catch(() => notify.warn("تعذّرت طباعة سند القبض", "العملية مسجّلة — أعد الطباعة من سجلّ العرابين"));
+      }).catch(() => notify.warn("تعذّرت طباعة سند القبض", "العملية مسجّلة — أعد الطباعة من سجلّ العرابين")).finally(() => releaseReservedPrintWindow());
       onClose();
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => { releaseReservedPrintWindow(); notify.err(e); },
   });
 
   const needRef = method !== "CASH";
@@ -206,7 +207,8 @@ export default function DepositDialog({
           <Button
             className="flex-1"
             disabled={collect.isPending || amountD.lte(0) || exceeds || (needRef && !reference.trim()) || (method === "TELECOM" && !telecomConfirmed)}
-            onClick={() =>
+            onClick={() => {
+              reservePrintWindow();
               collect.mutate({
                 draftId,
                 amount: round2(amountD).toFixed(2),
@@ -214,8 +216,8 @@ export default function DepositDialog({
                 reference: needRef ? reference.trim() : undefined,
                 telecomSenderPhone: method === "TELECOM" && senderPhone.trim() ? senderPhone.trim() : undefined,
                 clientRequestId,
-              })
-            }
+              });
+            }}
           >
             {collect.isPending ? "جارٍ القبض…" : "قبض وطباعة سند"}
           </Button>

@@ -79,6 +79,8 @@ import {
 } from "../fulfillment/chargeQueries";
 import {
   approveFulfillmentCharge,
+  collectFulfillmentCharges,
+  completeFulfillmentCharge,
   createFulfillmentCharge,
   settleFulfillmentChargePayee,
 } from "../fulfillment/charges";
@@ -88,6 +90,8 @@ const reads = {
   "operation.delivery.fulfillment.charges.get": true,
   "operation.delivery.fulfillment.charges.create": true,
   "operation.delivery.fulfillment.charges.approve": true,
+  "operation.delivery.fulfillment.charges.complete": true,
+  "operation.delivery.fulfillment.charges.collect": true,
   "operation.delivery.fulfillment.charges.settlePayee": true,
 };
 const hiddenPolicy: OperationPolicy = {
@@ -309,5 +313,41 @@ describe("fulfillment charge cost response authority", () => {
         actor,
       ),
     ).resolves.toEqual({ receiptId: 99 });
+  });
+  it.each(["cashier", "manager"])(
+    "blocks blind completion of outsourced charges with externalCost > 0, including replay, for %s",
+    async (role) => {
+      const actor = current(role, { policy: hiddenPolicy });
+      state.replay = 99;
+      await expect(
+        completeFulfillmentCharge(
+          {
+            id: 7,
+            expectedVersion: 3,
+            clientRequestId: "replay-complete-blind",
+            evidence: "إثبات تنفيذ خارجي",
+          },
+          actor,
+        ),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      expect(state.tx!.insert).not.toHaveBeenCalled();
+      expect(state.tx!.update).not.toHaveBeenCalled();
+    },
+  );
+  it("blocks cashier direct TREASURY cash collection even when charges.collect is granted", async () => {
+    const actor = current("cashier", { policy: hiddenPolicy });
+    await expect(
+      collectFulfillmentCharges(
+        {
+          branchId: 1,
+          clientRequestId: "cashier-treasury-collect-denied",
+          allocations: [{ chargeId: 7, expectedVersion: 3, amount: "1000" }],
+          amount: "1000",
+          tender: { method: "CASH", cashBucket: "TREASURY" },
+        },
+        actor,
+      ),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(state.tx!.insert).not.toHaveBeenCalled();
   });
 });

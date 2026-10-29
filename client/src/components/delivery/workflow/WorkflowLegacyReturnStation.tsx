@@ -29,6 +29,8 @@ import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { newClientRequestId } from "@/lib/countQueue";
+import { preopenDocumentWindow } from "@/lib/printing/print";
+import { printOrderCancellationReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 
 export interface WorkflowLegacyReturnSource {
   id: number;
@@ -216,14 +218,58 @@ function LegacyReturnContext({
     );
     onClear();
   }
+  const cancelPrintRef = useRef<{
+    win: Window | null;
+    orderKind: "WORK_ORDER" | "ONLINE_ORDER";
+    documentNumber: string;
+    customerName: string | null;
+    customerPhone: string | null;
+    originalTotal: string | null;
+    refundedAmount: string | null;
+    refundMethod?: string | null;
+    reason: string | null;
+  } | null>(null);
+  function closeCancelPrintWindow() {
+    try {
+      if (cancelPrintRef.current?.win && !cancelPrintRef.current.win.closed) {
+        cancelPrintRef.current.win.close();
+      }
+    } catch {
+      /* noop */
+    }
+    cancelPrintRef.current = null;
+  }
+  function flushCancelPrint() {
+    const snap = cancelPrintRef.current;
+    cancelPrintRef.current = null;
+    if (!snap) return;
+    void printOrderCancellationReceipt(
+      {
+        documentNumber: snap.documentNumber,
+        orderKind: snap.orderKind,
+        customerName: snap.customerName,
+        customerPhone: snap.customerPhone,
+        originalTotal: snap.originalTotal,
+        refundedAmount: snap.refundedAmount,
+        refundMethod: snap.refundMethod,
+        reason: snap.reason,
+        cashierName: me.data?.name ?? null,
+      },
+      ...(snap.win ? [{ into: snap.win }] : []),
+    ).catch(() => {});
+  }
   function failed(error: unknown) {
+    closeCancelPrintWindow();
     const code = (error as { data?: { code?: string } } | null)?.data?.code;
     if (code && definitive.has(code)) remember(null);
     else if (mounted.current) setCancelOpen(false);
     if (mounted.current) notify.err(error);
   }
   const cancel = trpc.workOrders.cancel.useMutation({
-    onSuccess: () => completed(),
+    onSuccess: () => {
+      flushCancelPrint();
+      completed();
+    },
     onError: failed,
   });
   const requestControl = trpc.workOrders.requestControl.useMutation({
@@ -231,12 +277,17 @@ function LegacyReturnContext({
     onError: failed,
   });
   const cancelOnline = trpc.storeAdmin.orders.setStatus.useMutation({
-    onSuccess: () => completed(),
+    onSuccess: (res) => {
+      if (res.to === "CANCELLED") flushCancelPrint();
+      else closeCancelPrintWindow();
+      completed();
+    },
     onError: (error) => {
       if (
         error.data?.code === "FORBIDDEN" &&
         /اعتماد المشرف المباشر/.test(error.message)
       ) {
+        closeCancelPrintWindow();
         remember(null);
         if (mounted.current) setApprovalOpen(true);
       } else failed(error);
@@ -248,10 +299,43 @@ function LegacyReturnContext({
     cancelOnline.isPending ||
     retrying;
   const frozen = mutating || pending != null;
-  function run(action: PendingAction) {
-    if (action.kind === "DIRECT") cancel.mutate(action.input);
-    else if (action.kind === "CONTROL") requestControl.mutate(action.input);
-    else cancelOnline.mutate(action.input);
+  function run(action: PendingAction, existingWin?: Window | null) {
+    if (action.kind === "DIRECT") {
+      closeCancelPrintWindow();
+      cancelPrintRef.current = {
+        win: existingWin !== undefined ? existingWin : preopenDocumentWindow(),
+        orderKind: "WORK_ORDER",
+        documentNumber:
+          order.data?.orderNumber ??
+          source?.orderNumber ??
+          `#${action.input.workOrderId}`,
+        customerName: order.data?.customerName ?? source?.customerName ?? null,
+        customerPhone:
+          order.data?.customerPhone ?? source?.customerPhone ?? null,
+        originalTotal: order.data?.salePrice ?? source?.salePrice ?? null,
+        refundedAmount: order.data?.deposit ?? source?.deposit ?? "0",
+        refundMethod: action.input.refundRail ?? "CASH",
+        reason: action.input.reason ?? null,
+      };
+      cancel.mutate(action.input);
+    } else if (action.kind === "CONTROL") {
+      requestControl.mutate(action.input);
+    } else {
+      closeCancelPrintWindow();
+      if (action.input.status === "CANCELLED") {
+        cancelPrintRef.current = {
+          win: existingWin !== undefined ? existingWin : preopenDocumentWindow(),
+          orderKind: "ONLINE_ORDER",
+          documentNumber: source?.orderNumber ?? `#${action.input.id}`,
+          customerName: source?.customerName ?? null,
+          customerPhone: source?.customerPhone ?? null,
+          originalTotal: source?.salePrice ?? null,
+          refundedAmount: "0",
+          reason: action.input.cancelReason ?? null,
+        };
+      }
+      cancelOnline.mutate(action.input);
+    }
   }
   async function recover() {
     const action = pendingRef.current;
@@ -260,15 +344,36 @@ function LegacyReturnContext({
       run(action);
       return;
     }
+    const win =
+      action.input.status === "CANCELLED" ? preopenDocumentWindow() : null;
     setRetrying(true);
     try {
       const current = await utils.storeAdmin.orders.detail.fetch({
         id: action.input.id,
       });
-      if (!mounted.current) return;
-      if (current?.status === "CANCELLED") completed();
-      else run(action);
+      if (!mounted.current) {
+        try { win?.close(); } catch { /* noop */ }
+        return;
+      }
+      if (current?.status === "CANCELLED") {
+        cancelPrintRef.current = {
+          win,
+          orderKind: "ONLINE_ORDER",
+          documentNumber:
+            current.orderNumber ?? source?.orderNumber ?? `#${action.input.id}`,
+          customerName: current.customerName ?? source?.customerName ?? null,
+          customerPhone: current.customerPhone ?? source?.customerPhone ?? null,
+          originalTotal: current.total ?? source?.salePrice ?? null,
+          refundedAmount: "0",
+          reason: action.input.cancelReason ?? null,
+        };
+        flushCancelPrint();
+        completed();
+      } else {
+        run(action, win);
+      }
     } catch (error) {
+      try { win?.close(); } catch { /* noop */ }
       if (mounted.current) notify.err(error);
     } finally {
       if (mounted.current) setRetrying(false);

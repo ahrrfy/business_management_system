@@ -361,11 +361,23 @@ export function WorkflowDispatchStation({
     ignoreInputFields: true,
   });
 
-  async function printResult(result: Pick<WorkflowDispatchBatchResult, "consignmentId">, window?: Window | null) {
-    await documentPrinter.printShipment(result.consignmentId, window ?? null);
+  async function printResult(
+    result: Pick<WorkflowDispatchBatchResult, "consignmentId">,
+    packWindow?: Window | null,
+    labelWindow?: Window | null,
+  ) {
+    await documentPrinter.printShipmentAndLabel(
+      result.consignmentId,
+      packWindow ?? null,
+      labelWindow ?? null,
+    );
   }
 
-  async function send(pending: WorkflowDispatchBatchInput, printWindow?: Window | null) {
+  async function send(
+    pending: WorkflowDispatchBatchInput,
+    packWindow?: Window | null,
+    labelWindow?: Window | null,
+  ) {
     persistDraft((old) => ({ ...old, pending }));
     try {
       const result = await dispatch.mutateAsync(pending);
@@ -387,13 +399,14 @@ export function WorkflowDispatchStation({
       void utils.delivery.invalidate();
       void utils.workOrders.invalidate();
       setPrintMessage("تم الإسناد؛ مطبوعاته متاحة دون إعادة الإسناد");
-      if (printWindow !== undefined) {
+      if (packWindow !== undefined || labelWindow !== undefined) {
         // الاستعادة idempotent قد تعني أن الخادم ثبّت الإسناد ثم انقطع الرد
         // قبل الطباعة. الطباعة أثر مستقل وآمن، لذلك تُستعاد من نفس النتيجة.
-        await printResult(result, printWindow);
+        await printResult(result, packWindow, labelWindow);
       }
     } catch (error) {
-      if (printWindow && !printWindow.closed) printWindow.close();
+      if (packWindow && !packWindow.closed) packWindow.close();
+      if (labelWindow && !labelWindow.closed) labelWindow.close();
       const code = (error as { data?: { code?: string } }).data?.code;
       if (code && definitiveErrors.has(code)) {
         restored.current = null;
@@ -413,7 +426,9 @@ export function WorkflowDispatchStation({
     submitLock.current = true;
     try {
       if (draftRef.current.pending) {
-        await send(draftRef.current.pending);
+        const packWin = preopenDocumentWindow();
+        const labelWin = preopenShippingLabelWindow();
+        await send(draftRef.current.pending, packWin, labelWin);
         return;
       }
       if (
@@ -456,7 +471,8 @@ export function WorkflowDispatchStation({
       });
       if (!ok || !mounted.current || currentGeneration !== generation.current)
         return;
-      const printWindow = preopenDocumentWindow();
+      const packWindow = preopenDocumentWindow();
+      const labelWindow = preopenShippingLabelWindow();
       await send({
         sources: quote.sources.map(({ source }) => ({
           kind: source.kind,
@@ -476,7 +492,7 @@ export function WorkflowDispatchStation({
         externalTrackingRef: snapshot.tracking.trim() || undefined,
         notes: snapshot.notes.trim() || undefined,
         clientRequestId: crypto.randomUUID(),
-      }, printWindow);
+      }, packWindow, labelWindow);
     } finally {
       submitLock.current = false;
       if (mounted.current) setConfirming(false);
@@ -519,8 +535,9 @@ export function WorkflowDispatchStation({
           void refreshRows();
         }}
         onPrintConsignment={(id) => {
-          const labelWindow = preopenDocumentWindow();
-          void printResult({ consignmentId: id }, labelWindow);
+          const packWindow = preopenDocumentWindow();
+          const labelWindow = preopenShippingLabelWindow();
+          void printResult({ consignmentId: id }, packWindow, labelWindow);
         }}
       />
     );
@@ -539,8 +556,9 @@ export function WorkflowDispatchStation({
               className="ms-auto gap-1"
               disabled={printing}
               onClick={() => {
-                const labelWindow = preopenDocumentWindow();
-                void printResult(committed, labelWindow);
+                const packWindow = preopenDocumentWindow();
+                const labelWindow = preopenShippingLabelWindow();
+                void printResult(committed, packWindow, labelWindow);
               }}
             >
               <Printer className="size-4" aria-hidden />
@@ -646,9 +664,11 @@ export function WorkflowDispatchStation({
                     disabled={printing || formFrozen}
                     onClick={() => {
                       if (!preview.relations.consignmentId) return;
-                      const labelWindow = preopenDocumentWindow();
+                      const packWindow = preopenDocumentWindow();
+                      const labelWindow = preopenShippingLabelWindow();
                       void printResult(
                         { consignmentId: preview.relations.consignmentId },
+                        packWindow,
                         labelWindow,
                       );
                     }}

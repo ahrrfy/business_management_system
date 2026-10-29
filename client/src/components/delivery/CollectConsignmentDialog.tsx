@@ -30,6 +30,7 @@ import { trpc, type RouterInputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { D, fmt } from "@/lib/money";
 import { printRemittanceReceipt } from "@/components/delivery/printRemittanceReceipt";
+import { preopenDocumentWindow } from "@/lib/printing/print";
 import {
   SHORTFALL_REASONS,
   SHORTFALL_REASON_LABEL_AR,
@@ -209,11 +210,15 @@ export function CollectConsignmentDialog({
 
   // A committed remittance can disappear from the live obligations before its response arrives.
   // Recovery must replay this exact payload/key, without delivery confirmation or fresh amounts.
+  const remitWinRef = useRef<Window | null>(null);
   const submitRemittance = async (submitted: SubmittedRemittance) => {
     if (remittanceInFlight.current) return;
     remittanceInFlight.current = true;
     setSubmittingRemittance(true);
     setSubmittedRemittance(submitted);
+    if (!remitWinRef.current) remitWinRef.current = preopenDocumentWindow();
+    const remitWin = remitWinRef.current;
+    remitWinRef.current = null;
     try {
       const res = await recordRemittance.mutateAsync(submitted.payload);
       notify.ok(
@@ -223,7 +228,8 @@ export function CollectConsignmentDialog({
         }`,
       );
       try {
-        printRemittanceReceipt(submitted.partyLabel, res);
+        if (remitWin) printRemittanceReceipt(submitted.partyLabel, res, { into: remitWin });
+        else printRemittanceReceipt(submitted.partyLabel, res);
       } catch {
         // Printing does not change the acknowledged financial result.
       }
@@ -239,6 +245,7 @@ export function CollectConsignmentDialog({
         utils.workOrders.invalidate(),
       ]).catch(() => {});
     } catch (err: unknown) {
+      try { remitWin?.close(); } catch { /* noop */ }
       const status = (err as { data?: { httpStatus?: number } } | null)?.data?.httpStatus;
       // A definite rejection permits correction; timeouts/transport/5xx keep the original intent.
       if (status != null && status >= 400 && status < 500 && status !== 408 && status !== 499) {
@@ -271,6 +278,7 @@ export function CollectConsignmentDialog({
       return;
     }
 
+    remitWinRef.current = preopenDocumentWindow();
     try {
       // 1. إذا كان الطرد الفردي غير مسلّم وطُلب تأكيد تسليمه أولاً:
       if (settleScope === "SINGLE" && currentConsignment && confirmDeliveryFirst && currentConsignment.parcelStatus !== "DELIVERED") {
@@ -298,6 +306,8 @@ export function CollectConsignmentDialog({
       } else {
         // في حالة التصفية الشاملة لكافة طرود الجهة
         if (remittableRows.length === 0) {
+          try { remitWinRef.current?.close(); } catch { /* noop */ }
+          remitWinRef.current = null;
           notify.err("لا توجد طرود مسلّمة بانتظار التوريد لهذه الجهة");
           return;
         }
@@ -349,6 +359,8 @@ export function CollectConsignmentDialog({
         clientRequestId,
       }, partyLabel: consignment?.partyName ?? partyName ?? "جهة التوصيل" });
     } catch (err: unknown) {
+      try { remitWinRef.current?.close(); } catch { /* noop */ }
+      remitWinRef.current = null;
       notify.err(err);
     }
   };

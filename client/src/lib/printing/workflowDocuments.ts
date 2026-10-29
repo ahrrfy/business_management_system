@@ -1,5 +1,5 @@
 import type { PrintDoc, PrintResult } from "./print";
-import { esc } from "./brand";
+import { esc, fmt } from "./brand";
 import type { DispatchSlipData } from "./printDeliveryDispatchSlip";
 import { fmtDateTime } from "@/lib/date";
 import type { WorkflowDocumentType } from "@shared/deliveryWorkflow";
@@ -60,7 +60,11 @@ export function workflowEventDocument(snapshot: WorkflowDocumentSnapshot): Print
   return { kind: "zreport", title: payload.title, subtitle: payload.documentNumber ?? snapshot.documentNumber,
     meta: [`وقت العملية: ${fmtDateTime(snapshot.eventOccurredAt)}`, `وقت الطباعة: ${fmtDateTime(new Date())}`,
       snapshot.printHistory.some((attempt) => attempt.status === "SENT") ? "نسخة معاد طباعتها — من محطة سير العمل" : "نسخة من المستند المثبت"],
-    columns: ["البيان", "القيمة"], rows: payload.rows.map((row) => [row.label, row.value]), totals: payload.totals,
+    columns: ["البيان", "القيمة"], rows: payload.rows.map((row) => [row.label, row.value]),
+    totals: payload.totals?.map((total) => ({
+      label: total.label,
+      value: /^-?\d+(\.\d+)?$/.test(total.value.trim()) ? `${fmt(total.value.trim())} د.ع` : total.value,
+    })),
     footer: payload.notice ?? "طباعة المستند لا تنشئ بيعاً أو قبضاً أو حركة مخزون.",
     barcodeSet: { barcode128: payload.documentNumber ?? snapshot.documentNumber, qrPayload: "", displayLabel: payload.documentNumber ?? snapshot.documentNumber },
   };

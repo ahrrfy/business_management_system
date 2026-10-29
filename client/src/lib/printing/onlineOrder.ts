@@ -1,7 +1,8 @@
 import { printDoc } from "./print";
 import { fmtQty } from "@shared/quantityFormat";
-import { CAIRO_FONT, CO, esc, fmt, openPrintWindow, logoUrl } from "./brand";
+import { CAIRO_FONT, CO, esc, fmt, openPrintWindow, type PrintWindowOptions } from "./brand";
 import { fmtDateTime } from "../date";
+import { moneyInput } from "../money";
 import { formatArabicMoneyWords } from "./tafqit";
 import { code128Svg } from "./barcode";
 import { docBarcode } from "@shared/documentNumber";
@@ -127,7 +128,7 @@ export function buildOnlineOrderThermalDoc(d: OnlineOrderPrintData) {
       {
         label: "أجرة التوصيل",
         value: d.deliveryFree
-          ? (Number(d.deliveryWaivedAmount ?? 0) > 0
+          ? (moneyInput(d.deliveryWaivedAmount).gt(0)
             ? `مجاناً (وفرت ${fmt(d.deliveryWaivedAmount)} د.ع)`
             : "مجاناً")
           : `${fmt(d.deliveryFee)} د.ع`,
@@ -147,8 +148,11 @@ export function buildOnlineOrderThermalDoc(d: OnlineOrderPrintData) {
 }
 
 /** إيصال حراري موجز للطلب، مناسب للمراجعة السريعة أو إرفاقه بالطرد. */
-export async function printOnlineOrderThermal(d: OnlineOrderPrintData): Promise<void> {
-  await printDoc(buildOnlineOrderThermalDoc(d));
+export async function printOnlineOrderThermal(
+  d: OnlineOrderPrintData,
+  options?: PrintWindowOptions,
+): Promise<void> {
+  await printDoc(buildOnlineOrderThermalDoc(d), options);
 }
 
 export function buildOnlineOrderPreparationA4Html(d: OnlineOrderPrintData): string {
@@ -226,7 +230,7 @@ export function buildOnlineOrderInvoicePrintData(d: OnlineOrderPrintData): Invoi
       };
     }),
     subtotal: d.subtotal,
-    discountAmount: discountVal && Number(discountVal) > 0 ? String(discountVal) : undefined,
+    discountAmount: discountVal && moneyInput(discountVal).gt(0) ? String(discountVal) : undefined,
     deliveryFee: d.deliveryFee,
     deliveryFree: d.deliveryFree,
     deliveryWaivedAmount: d.deliveryWaivedAmount,
@@ -242,4 +246,3 @@ export function buildOnlineOrderInvoicePrintData(d: OnlineOrderPrintData): Invoi
 export async function printOnlineOrderInvoiceA4(d: OnlineOrderPrintData): Promise<void> {
   await printInvoiceA4(buildOnlineOrderInvoicePrintData(d));
 }
-

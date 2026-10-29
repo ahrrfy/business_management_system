@@ -31,7 +31,7 @@ import { withTx, type Actor } from "../tx";
 import { money, toDbMoney } from "../money";
 import { logAuditTx } from "../auditService";
 import { reserveExternalRefundConfirmationTx } from "../externalRefundConfirmation";
-import { assertOperationAuthorityTx } from "../authorization/operationAuthority";
+import { assertOperationAuthorityTx, loadOperationUserTx } from "../authorization/operationAuthority";
 import {
   adjustCustomerBalance,
   adjustDeliveryBalance,
@@ -370,17 +370,19 @@ export function createFulfillmentCharge(
 export function approveFulfillmentCharge(input: Transition, actor: Actor) {
   return retryOnDup(() =>
     withTx(async (tx) => {
-      await assertChargeOperationTx(tx, actor, "approve", true);
-      if (!(await fulfillmentCostVisibleTx(tx, actor)))
+      await assertChargeOperationTx(tx, actor, "approve");
+      const row = await loadFulfillmentChargeTx(tx, input.id, actor, {
+        lock: true,
+      });
+      const costVisible = await fulfillmentCostVisibleTx(tx, actor);
+      if (money(row.externalCost).gt(0) && !costVisible)
         throw fulfillmentError(
           "اعتماد الأجر يتطلب صلاحية عرض التكلفة والربح الحالية",
           "FORBIDDEN",
         );
-      const row = await loadFulfillmentChargeTx(tx, input.id, actor, {
-        lock: true,
-      });
       const ctx = context("approve", input, actor, row.branchId);
-      if (await findFulfillmentReplayTx(tx, ctx)) return row;
+      if (await findFulfillmentReplayTx(tx, ctx))
+        return projectFulfillmentChargeCost(row, costVisible);
       assertFulfillmentVersion(row, input.expectedVersion);
       if (row.status !== "DRAFT")
         throw fulfillmentError("مستند الأجر ليس مسودة قابلة للاعتماد");
@@ -498,7 +500,10 @@ export function approveFulfillmentCharge(input: Transition, actor: Actor) {
         .where(eq(fulfillmentCharges.id, row.id));
       await recordFulfillmentMutationTx(tx, ctx, row.id);
       await audit(tx, actor, "approve", row, { approvedBy: actor.userId });
-      return loadFulfillmentChargeTx(tx, row.id, actor);
+      return projectFulfillmentChargeCost(
+        await loadFulfillmentChargeTx(tx, row.id, actor),
+        costVisible,
+      );
     }),
   );
 }
@@ -509,13 +514,22 @@ export function completeFulfillmentCharge(
 ) {
   return retryOnDup(() =>
     withTx(async (tx) => {
-      await assertChargeOperationTx(tx, actor, "complete", true);
+      await assertChargeOperationTx(tx, actor, "complete");
       const row = await loadFulfillmentChargeTx(tx, input.id, actor, {
           lock: true,
         }),
-        ctx = context("complete", input, actor, row.branchId);
+        costVisible = await fulfillmentCostVisibleTx(tx, actor);
+      if (money(row.externalCost).gt(0) && !costVisible)
+        throw fulfillmentError(
+          "إكمال الخدمة الخارجية وترحيل تكلفتها يتطلب صلاحية عرض التكلفة والربح الحالية",
+          "FORBIDDEN",
+        );
+      const ctx = context("complete", input, actor, row.branchId);
       if (await findFulfillmentReplayTx(tx, ctx))
-        return loadFulfillmentChargeTx(tx, row.id, actor);
+        return projectFulfillmentChargeCost(
+          await loadFulfillmentChargeTx(tx, row.id, actor),
+          costVisible,
+        );
       assertFulfillmentVersion(row, input.expectedVersion);
       const evidence = input.evidence.trim();
       if (
@@ -589,7 +603,10 @@ export function completeFulfillmentCharge(
         evidence,
         legacyPostedAt: row.legacyPostedAt,
       });
-      return loadFulfillmentChargeTx(tx, row.id, actor);
+      return projectFulfillmentChargeCost(
+        await loadFulfillmentChargeTx(tx, row.id, actor),
+        costVisible,
+      );
     }),
   );
 }
@@ -604,13 +621,27 @@ async function lockTenderTx(
 ) {
   const bucket =
     tender.method === "CASH" ? (tender.cashBucket ?? "DRAWER") : null;
-  if (bucket === "TREASURY")
+  if (bucket === "TREASURY") {
+    const current = await loadOperationUserTx(tx, actor.userId);
+    if (
+      !current ||
+      (!current.isOwner &&
+        current.role !== "admin" &&
+        current.role !== "manager" &&
+        current.role !== "accountant")
+    ) {
+      throw fulfillmentError(
+        "التعامل المباشر مع الخزينة الرئيسية يتطلب صلاحية خزينة أو إدارة؛ استخدم درج ورديتك المفتوح",
+        "FORBIDDEN",
+      );
+    }
     await assertChargeOperationTx(
       tx,
       actor,
       direction === "OUT" ? "settlePayee" : "collect",
       true,
     );
+  }
   if (bucket === "DRAWER") {
     const [shift] = await tx
       .select()
@@ -1174,7 +1205,7 @@ export function refundFulfillmentCharge(
 ) {
   return retryOnDup(() =>
     withTx(async (tx) => {
-      await assertChargeOperationTx(tx, actor, "refund", true);
+      await assertChargeOperationTx(tx, actor, "refund");
       const row = await loadFulfillmentChargeTx(tx, input.id, actor, {
           lock: true,
         }),
@@ -1400,7 +1431,7 @@ export function refundFulfillmentChargeExcess(
 ) {
   return retryOnDup(() =>
     withTx(async (tx) => {
-      await assertChargeOperationTx(tx, actor, "refundExcess", true);
+      await assertChargeOperationTx(tx, actor, "refundExcess");
       const row = await loadFulfillmentChargeTx(tx, input.id, actor, {
           lock: true,
         }),
@@ -1560,7 +1591,7 @@ export function refundFulfillmentCourierExcess(
 ) {
   return retryOnDup(() =>
     withTx(async (tx) => {
-      await assertChargeOperationTx(tx, actor, "refundCourierExcess", true);
+      await assertChargeOperationTx(tx, actor, "refundCourierExcess");
       if ((input.id == null) === (input.fulfillmentRequestId == null))
         throw fulfillmentError("حدد مصدر رد واحداً: أجر أو طلب توصيل حقيقي");
       const charge =

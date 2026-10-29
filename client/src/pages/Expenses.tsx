@@ -19,7 +19,8 @@ import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
 import { expenseOperationAccess } from "@/lib/expenseOperationAccess";
 import type { RoleKey } from "@shared/permissions";
 import { AlertTriangle, Ban, CircleCheck, CircleDollarSign, Landmark, Layers3, Loader2, Printer, ShieldAlert, WalletCards } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { preopenDocumentWindow } from "@/lib/printing/brand";
 import { Link } from "wouter";
 import { expenseStatusFromSearch, isExpenseFinanciallyPrintable } from "@/lib/expenseUiPolicy";
 import { ExpenseMobileCard } from "@/components/expenses/ExpenseMobileCard";
@@ -504,9 +505,21 @@ export default function Expenses() {
     },
     onError: (error) => notify.err(error),
   });
+  const execWinRef = useRef<{ win: Window | null; row: ExpenseRow | null }>({
+    win: null,
+    row: null,
+  });
   const executeFromOwnDrawer =
     trpc.expenses.executeFromOwnDrawer.useMutation({
       onSuccess: async (_result, variables) => {
+        const { win, row } = execWinRef.current;
+        execWinRef.current = { win: null, row: null };
+        if (row) {
+          void printExpenseReceipt(
+            { ...row, status: "ACTIVE" } as ExpenseRow,
+            win ? { into: win } : undefined,
+          ).catch(() => {});
+        }
         await Promise.all([
           utils.expenses.list.invalidate(),
           utils.expenses.trace.invalidate({ expenseId: variables.expenseId }),
@@ -514,6 +527,8 @@ export default function Expenses() {
         notify.ok("تم صرف المصروف من درج وردية المنشئ وتسجيل المنفذ الفعلي");
       },
       onError: (error) => {
+        try { execWinRef.current.win?.close(); } catch { /* ignore */ }
+        execWinRef.current = { win: null, row: null };
         const detail = /رصيد|سيولة|غير كاف/.test(error.message)
           ? `${error.message} موّل الوردية من تبويب الورديات أو نفّذ الدفع مباشرة من الخزينة.`
           : error.message;
@@ -522,6 +537,14 @@ export default function Expenses() {
     });
   const executeManaged = trpc.expenses.executeManaged.useMutation({
     onSuccess: async (_result, variables) => {
+      const { win, row } = execWinRef.current;
+      execWinRef.current = { win: null, row: null };
+      if (row) {
+        void printExpenseReceipt(
+          { ...row, status: "ACTIVE" } as ExpenseRow,
+          win ? { into: win } : undefined,
+        ).catch(() => {});
+      }
       await Promise.all([
         utils.expenses.list.invalidate(),
         utils.expenses.trace.invalidate({ expenseId: variables.expenseId }),
@@ -532,7 +555,11 @@ export default function Expenses() {
           : "تم تنفيذ طريقة الدفع وتسجيل المنفذ الفعلي",
       );
     },
-    onError: (error) => notify.err(error),
+    onError: (error) => {
+      try { execWinRef.current.win?.close(); } catch { /* ignore */ }
+      execWinRef.current = { win: null, row: null };
+      notify.err(error);
+    },
   });
   function actionsFor(r: ExpenseRow) {
     const approvedAwaitingExecution = isApprovedAwaitingExecution(r);
@@ -592,6 +619,7 @@ export default function Expenses() {
               }))
             )
               return;
+            execWinRef.current = { win: preopenDocumentWindow("width=420,height=760"), row: r };
             executeFromOwnDrawer.mutate({ expenseId: Number(r.id) });
           })(),
       },
@@ -635,6 +663,7 @@ export default function Expenses() {
               }))
             )
               return;
+            execWinRef.current = { win: preopenDocumentWindow("width=420,height=760"), row: r };
             executeManaged.mutate({ expenseId: Number(r.id), source });
           })(),
       },

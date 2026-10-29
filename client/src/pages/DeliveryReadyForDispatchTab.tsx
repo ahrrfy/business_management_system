@@ -23,6 +23,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useOperationPermission } from "@/hooks/useOperationPermission";
 import { filterOperationalRows } from "@/lib/deliveryOperations";
 import { cn } from "@/lib/utils";
+import { preopenDocumentWindow } from "@/lib/printing/print";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 import {
   printDeliverySlip,
@@ -371,6 +372,7 @@ export function DeliveryReadyForDispatchTab() {
             }
             const party = (parties.data ?? []).find((p) => p.id === partyId);
             const labelWin = preopenShippingLabelWindow();
+            const slipWin = preopenDocumentWindow();
             try {
               let r: DeliverySourceReference & {
                 consignmentNumber: string;
@@ -423,7 +425,7 @@ export function DeliveryReadyForDispatchTab() {
                 deliveryFeeCollection: r.feeCollection ?? ord.deliveryFeeCollection ?? "COURIER",
               };
               void printReadyOrderLabel(dispatchedOrder, { partyName: party?.name ?? null, trackingNumber: r.consignmentNumber, cod: r.codAmount, externalTrackingRef: externalTrackingRef || undefined, into: labelWin });
-              printDeliverySlip(dispatchedOrder, party, { ...r, sourceType: r.sourceType ?? ord.sourceType, sourceId: r.sourceId ?? ord.id, feeCollection: dispatchedOrder.deliveryFeeCollection, externalTrackingRef: externalTrackingRef || undefined });
+              printDeliverySlip(dispatchedOrder, party, { ...r, sourceType: r.sourceType ?? ord.sourceType, sourceId: r.sourceId ?? ord.id, feeCollection: dispatchedOrder.deliveryFeeCollection, externalTrackingRef: externalTrackingRef || undefined }, ...(slipWin ? [{ into: slipWin }] : []));
               setDepartureData({
                 consignmentNumber: r.consignmentNumber,
                 orderNumber: ord.orderNumber,
@@ -439,6 +441,7 @@ export function DeliveryReadyForDispatchTab() {
               });
             } catch {
               labelWin?.close();
+              slipWin?.close();
             }
           }}
         />

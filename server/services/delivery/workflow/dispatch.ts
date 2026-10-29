@@ -853,10 +853,15 @@ async function dispatchOnlineSingleton(
         auth.current,
         input.branchId,
       );
+      const onlinePaths = workflowDispatchNativePaths("onlineOrder");
+      const chosenOnlinePath =
+        onlinePaths.find(
+          (candidate) => operationDecision(auth.current, candidate).allowed,
+        ) ?? onlinePaths[0]!;
       await assertOperationAuthorityTx(
         tx,
         auth.actor,
-        "delivery.dispatchByBarcode",
+        chosenOnlinePath,
         (current) =>
           current.isOwner === true ||
           current.resolvedPermissions?.store === "FULL",

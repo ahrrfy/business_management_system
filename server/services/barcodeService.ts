@@ -21,6 +21,7 @@ import {
   invoices,
   workOrders,
   purchaseOrders,
+  deliveryConsignments,
   customers,
   suppliers,
 } from "../../drizzle/schema";
@@ -302,6 +303,51 @@ async function lookupPurchaseOrderByCode(db: AppDatabase, cleanCode: string): Pr
   return null;
 }
 
+async function lookupConsignmentByCode(db: AppDatabase, cleanCode: string): Promise<VerifyResult | null> {
+  const stripped = stripDocPrefix(cleanCode);
+  const conditions = [
+    eq(deliveryConsignments.consignmentNumber, cleanCode),
+    eq(deliveryConsignments.consignmentNumber, `CN-${cleanCode}`),
+  ];
+  if (stripped !== cleanCode) {
+    conditions.push(eq(deliveryConsignments.consignmentNumber, stripped));
+    conditions.push(eq(deliveryConsignments.consignmentNumber, `CN-${stripped}`));
+  }
+  if (/^CN-/i.test(cleanCode)) {
+    conditions.push(eq(deliveryConsignments.consignmentNumber, cleanCode.slice(3)));
+  }
+
+  const rows = await db
+    .select({
+      consignmentNumber: deliveryConsignments.consignmentNumber,
+      dispatchedAt: deliveryConsignments.dispatchedAt,
+      codAmount: deliveryConsignments.codAmount,
+      branchId: deliveryConsignments.branchId,
+      status: deliveryConsignments.status,
+      recipientName: deliveryConsignments.recipientName,
+      customerName: customers.name,
+    })
+    .from(deliveryConsignments)
+    .leftJoin(customers, eq(deliveryConsignments.endCustomerId, customers.id))
+    .where(or(...conditions))
+    .limit(1);
+
+  if (rows && rows.length > 0) {
+    const row = rows[0];
+    return {
+      valid: true,
+      docType: "CN",
+      number: row.consignmentNumber,
+      date: toIsoDate(row.dispatchedAt),
+      amount: String(row.codAmount),
+      branchId: row.branchId !== null && row.branchId !== undefined ? Number(row.branchId) : undefined,
+      status: row.status ?? undefined,
+      customerName: row.recipientName || row.customerName || undefined,
+    };
+  }
+  return null;
+}
+
 /**
  * المحرك المزدوج للتحقق (Dual Verification Engine):
  * 1. المسار السريع: التحقق بالـ HMAC التشفيري (بدون استعلام DB — فوري وصالح دون اتصال).
@@ -365,6 +411,12 @@ export async function verifyPayload(qrPayload: string): Promise<VerifyResult> {
         if (res) return res;
       }
 
+      // د-2) إرساليات التوصيل (مثل CN-1-20260806-00012)
+      if (/^CN-/i.test(cleanCode)) {
+        const res = await lookupConsignmentByCode(db, cleanCode);
+        if (res) return res;
+      }
+
       // هـ) معرّفات عددية أو نصوص بلا بادئة معروفة: فحص حسب الأولوية
       const invRes = await lookupInvoiceByCode(db, cleanCode);
       if (invRes) return invRes;
@@ -377,6 +429,9 @@ export async function verifyPayload(qrPayload: string): Promise<VerifyResult> {
 
       const poRes = await lookupPurchaseOrderByCode(db, cleanCode);
       if (poRes) return poRes;
+
+      const cnRes = await lookupConsignmentByCode(db, cleanCode);
+      if (cnRes) return cnRes;
     } catch {
       // أي خطأ استعلام في DB يُعيد valid: false بأمان
       return { valid: false };

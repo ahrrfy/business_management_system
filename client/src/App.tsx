@@ -537,7 +537,7 @@ export default function App() {
       <Route path="/hr/promotions"><Redirect to="/hr?tab=promotions" /></Route>
       {/* أُدمجت في وحدة الخزينة (TreasuryHub) — إعادة توجيه تَحفظ الروابط القديمة */}
       <Route path="/expenses"><Redirect to="/treasury?tab=expenses" /></Route>
-      <Route path="/expenses/new"><Shell><RequireRole operations={["expenses.create"]} roles={["admin","manager","accountant"]} module="treasury" level="FULL"><ExpenseNew /></RequireRole></Shell></Route>
+      <Route path="/expenses/new"><Shell><RequireRole operations={["expenses.create"]} roles={["admin","manager","accountant","cashier"]} module="expenses" level="FULL"><ExpenseNew /></RequireRole></Shell></Route>
       <Route path="/vouchers"><Redirect to="/treasury?tab=vouchers" /></Route>
       <Route path="/vouchers/receipt/new"><Shell><RequireRole operations={["vouchers.create"]} roles={["admin","manager","accountant"]} module="treasury" level="FULL"><VoucherReceiptNew /></RequireRole></Shell></Route>
       <Route path="/vouchers/payment/new"><Shell><RequireRole operations={["vouchers.create"]} roles={["admin","manager","accountant"]} module="treasury" level="FULL"><VoucherPaymentNew /></RequireRole></Shell></Route>

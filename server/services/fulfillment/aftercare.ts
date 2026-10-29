@@ -18,6 +18,7 @@ import type {
   AftercareDisposition,
   FulfillmentMutationIdentity,
 } from "../../../shared/fulfillment";
+import { moduleAccessAllowed } from "../../../shared/permissions";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { canonicalIraqiMobile } from "../../lib/phone";
@@ -118,14 +119,22 @@ export async function aftercarePermissionTx(
   actor: Actor,
   action: string,
 ) {
+  const read = ["get", "list", "settlementPreview", "rightsPreview"].includes(
+    action,
+  );
   await assertOperationAuthorityTx(
     tx,
     actor,
     path(action),
     (current) =>
-      current.role === "admin" ||
-      current.role === "manager" ||
-      (action === "create" && current.role === "cashier"),
+      current.isOwner === true ||
+      moduleAccessAllowed(
+        current.role ?? "",
+        current.persistedPermissionsOverride,
+        "store",
+        read ? "READ" : "FULL",
+        ["approve", "approveSettlement"].includes(action) ? ["manager"] : ["cashier", "manager"],
+      ),
   );
 }
 const permission = aftercarePermissionTx;
@@ -1025,10 +1034,7 @@ export function aftercareStaffResultRoleAllowed(
   return (
     role === "admin" ||
     role === "manager" ||
-    (role === "cashier" &&
-      !["delivery.manualProof", "delivery.recordCompanyStatement"].includes(
-        operationPath,
-      )) ||
+    (role === "cashier" && operationPath !== "delivery.manualProof") ||
     (role === "warehouse" &&
       ["delivery.returnConsignment", "delivery.returnByBarcode"].includes(
         operationPath,

@@ -1,5 +1,5 @@
 import { EscPos, type Raster } from "./escpos";
-import type { PrintWindowOptions } from "./brand";
+import { releaseReservedPrintWindow, type PrintWindowOptions } from "./brand";
 import { docToHtml, docToRaster, printHtml, type PrintDoc } from "./render";
 import { isPaired, sendBytes, tryReconnectPrinter, isWebUsbSupported } from "./thermal";
 import { isServerBridgeEnabled, sendRawToServer } from "./serverBridge";
@@ -32,7 +32,11 @@ export type PrintResult =
 
 function closeUnusedPrintWindow(options?: PrintWindowOptions): void {
   try {
-    if (options?.into && !options.into.closed) options.into.close();
+    if (options && "into" in options) {
+      if (options.into && !options.into.closed) options.into.close();
+    } else {
+      releaseReservedPrintWindow();
+    }
   } catch { /* Hardware success must survive a window already closed by the user. */ }
 }
 
@@ -250,6 +254,7 @@ export async function printLabel(
  */
 export async function printWorkOrderReceipt(
   d: WorkOrderReceiptData,
+  options?: PrintWindowOptions,
 ): Promise<{ via: "server" | "thermal" | "browser" }> {
   // إعادة ربط صامتة لطابعة الإيصالات إن لم تكن مربوطة في الذاكرة (مثلاً الطباعة من لوحة
   // طلبات خدمة العملاء أو تفاصيلها بلا فتح الكاشير أوّلاً) ⇒ تجربة الكاشير نفسها: WebUSB صامت
@@ -265,6 +270,7 @@ export async function printWorkOrderReceipt(
       if (await isServerBridgeEnabled()) {
         try {
           await sendRawToServer(bytes);
+          closeUnusedPrintWindow(options);
           return { via: "server" };
         } catch (e) {
           console.warn("[print] فشل جسر الخادم (WO)، نتراجع للبديل:", e);
@@ -273,6 +279,7 @@ export async function printWorkOrderReceipt(
       if (isPaired()) {
         try {
           await sendBytes(bytes);
+          closeUnusedPrintWindow(options);
           return { via: "thermal" };
         } catch (e) {
           console.warn("[print] فشل WebUSB (WO)، نتراجع لنافذة المتصفّح:", e);
@@ -280,7 +287,7 @@ export async function printWorkOrderReceipt(
       }
     }
   }
-  printBrowserWorkOrderReceipt(d);
+  printBrowserWorkOrderReceipt(d, options);
   return { via: "browser" };
 }
 
@@ -296,6 +303,7 @@ export type { ShiftOpenData, ShiftCloseData };
 async function printShiftRaster(
   buildRaster: () => Promise<Raster | null>,
   browserFallback: () => void,
+  options?: PrintWindowOptions,
 ): Promise<{ via: "server" | "thermal" | "browser" }> {
   // إعادة ربط صامتة لطابعة الإيصالات إن لم تكن مربوطة (مطابق لـ printWorkOrderReceipt).
   if (!isPaired() && isWebUsbSupported()) {
@@ -307,12 +315,18 @@ async function printShiftRaster(
     if (raster) {
       const bytes = new EscPos().init().raster(raster).feed(3).cut().bytes();
       if (await isServerBridgeEnabled()) {
-        try { await sendRawToServer(bytes); return { via: "server" }; }
-        catch (e) { console.warn("[print] فشل جسر الخادم (وردية)، نتراجع للبديل:", e); }
+        try {
+          await sendRawToServer(bytes);
+          closeUnusedPrintWindow(options);
+          return { via: "server" };
+        } catch (e) { console.warn("[print] فشل جسر الخادم (وردية)، نتراجع للبديل:", e); }
       }
       if (isPaired()) {
-        try { await sendBytes(bytes); return { via: "thermal" }; }
-        catch (e) { console.warn("[print] فشل WebUSB (وردية)، نتراجع لنافذة المتصفّح:", e); }
+        try {
+          await sendBytes(bytes);
+          closeUnusedPrintWindow(options);
+          return { via: "thermal" };
+        } catch (e) { console.warn("[print] فشل WebUSB (وردية)، نتراجع لنافذة المتصفّح:", e); }
       }
     }
   }
@@ -320,10 +334,16 @@ async function printShiftRaster(
   return { via: "browser" };
 }
 
-export function printShiftOpen(d: ShiftOpenData): Promise<{ via: "server" | "thermal" | "browser" }> {
-  return printShiftRaster(() => shiftOpenToRaster(d), () => printShiftOpenBrowser(d));
+export function printShiftOpen(
+  d: ShiftOpenData,
+  options?: PrintWindowOptions,
+): Promise<{ via: "server" | "thermal" | "browser" }> {
+  return printShiftRaster(() => shiftOpenToRaster(d), () => printShiftOpenBrowser(d, options), options);
 }
 
-export function printShiftClose(d: ShiftCloseData): Promise<{ via: "server" | "thermal" | "browser" }> {
-  return printShiftRaster(() => shiftCloseToRaster(d), () => printShiftCloseBrowser(d));
+export function printShiftClose(
+  d: ShiftCloseData,
+  options?: PrintWindowOptions,
+): Promise<{ via: "server" | "thermal" | "browser" }> {
+  return printShiftRaster(() => shiftCloseToRaster(d), () => printShiftCloseBrowser(d, options), options);
 }

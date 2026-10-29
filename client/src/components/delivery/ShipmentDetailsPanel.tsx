@@ -16,6 +16,10 @@ import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { InvoiceDispatchDialog } from "./InvoiceDispatchDialog";
 import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
+import { useWorkflowDocumentPrinter } from "@/hooks/useWorkflowDocumentPrinter";
+import { preopenDocumentWindow } from "@/lib/printing/print";
+import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
+import { printAssignmentCancelReceipt, printInvoicePaymentReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 
 type Shipment = NonNullable<RouterOutputs["delivery"]["consignmentTimeline"]["shipment"]>;
 const ACTIONS = [
@@ -56,13 +60,45 @@ export function ShipmentDetailsPanel({ shipment }: { shipment: Shipment }) {
     && (item.value === "confirm" || item.value === "driver" || unpaidToParty));
   const partiesQ = trpc.delivery.listParties.useQuery({ activeOnly: true }, { enabled: action === "driver", staleTime: 60_000 });
   const drivers = partiesQ.data?.find((party) => party.id === leader.partyId)?.drivers ?? [];
+  const workflowPrinter = useWorkflowDocumentPrinter(Number(leader.branchId));
+  const actionWinsRef = useRef<{ kind: string; pack: Window | null; label: Window | null; amount: string; reason: string } | null>(null);
+  const closeActionWins = () => {
+    const wins = actionWinsRef.current; actionWinsRef.current = null;
+    if (wins?.pack && !wins.pack.closed) wins.pack.close();
+    if (wins?.label && !wins.label.closed) wins.label.close();
+  };
   const onSuccess = async () => {
+    const wins = actionWinsRef.current; actionWinsRef.current = null;
     notify.ok("تم تحديث الشحنة بكامل فواتيرها");
+    if (wins) {
+      if (wins.kind === "driver") {
+        void workflowPrinter.printShipmentAndLabel(shipment.leaderConsignmentId, wins.pack, wins.label, Number(leader.branchId));
+      } else if (wins.kind === "confirm") {
+        void printInvoicePaymentReceipt({
+          invoiceNumber: shipment.consignmentNumber,
+          customerName: leader.recipientName,
+          customerPhone: leader.recipientPhone,
+          amountPaid: new Decimal(wins.amount || 0).toFixed(2),
+          reference: operational.map((m) => m.invoiceNumber).join("، ") || null,
+          cashierName: me.data?.name ?? null,
+        }, { into: wins.pack });
+      } else if (wins.kind === "cancel" || wins.kind === "declare" || wins.kind === "return") {
+        void printAssignmentCancelReceipt({
+          action: wins.kind === "declare" ? "declareReturn" : "cancelAssignment",
+          consignmentNumber: shipment.consignmentNumber,
+          sourceRef: operational.map((m) => m.invoiceNumber).join("، ") || shipment.consignmentNumber,
+          recipientName: leader.recipientName,
+          codAmount: shipment.remainingAmount,
+          reason: wins.reason,
+          cashierName: me.data?.name ?? null,
+        }, { into: wins.pack });
+      } else if (wins.pack && !wins.pack.closed) wins.pack.close();
+    }
     setAction(""); setReason(""); setPhysicalHeld(false);
     request.current = { fingerprint: "", key: crypto.randomUUID() };
     await Promise.all([utils.delivery.invalidate(), utils.sales.invalidate(), utils.reception.invalidate()]);
   };
-  const options = { onSuccess, onError: (error: { message: string }) => notify.err(error.message) };
+  const options = { onSuccess, onError: (error: { message: string }) => { closeActionWins(); notify.err(error.message); } };
   const confirmMutation = trpc.delivery.staffConfirm.useMutation(options);
   const cancelMutation = trpc.delivery.cancelAssignment.useMutation(options);
   const returnMutation = trpc.delivery.returnConsignment.useMutation(options);
@@ -86,6 +122,13 @@ export function ShipmentDetailsPanel({ shipment }: { shipment: Shipment }) {
     })) return;
     const fingerprint = JSON.stringify({ action, reason, amount, shortfallReason, driver, physicalHeld, shift: rail?.selection?.refundShiftId });
     if (request.current.fingerprint !== fingerprint) request.current = { fingerprint, key: crypto.randomUUID() };
+    actionWinsRef.current = action === "fail" ? null : {
+      kind: action,
+      pack: preopenDocumentWindow(),
+      label: action === "driver" ? preopenShippingLabelWindow() : null,
+      amount,
+      reason: reason.trim(),
+    };
     const base = { consignmentId: shipment.leaderConsignmentId, wholeShipment: true, clientRequestId: request.current.key };
     if (action === "confirm") confirmMutation.mutate({ ...base, collectedAmount: new Decimal(amount).toFixed(2), evidence: reason.trim(), ...(short ? { shortfallReason } : {}) });
     if (action === "cancel") cancelMutation.mutate({ ...base, reason: reason.trim(), physicalHeldConfirmed: true });
@@ -110,7 +153,7 @@ export function ShipmentDetailsPanel({ shipment }: { shipment: Shipment }) {
       <p className="text-xs leading-6 text-muted-foreground">{returnDeclared ? "قيمة الفواتير بانتظار استلام المرتجع" : "المتبقي لتحصيل الشحنة"}: <b className="text-foreground">{fmt(remaining.toFixed(2))} د.ع</b> · أجرة الشحنة مرة واحدة: {fmt(shipment.deliveryFee)} د.ع · البوليصة: <span dir="ltr">{leader.externalTrackingRef ?? "—"}</span></p>
       {returnDeclared && open && <p className="text-sm text-muted-foreground">أُعلن رجوع الشحنة وتوقف توقع تحصيلها. بعد وصولها وفحصها نفّذ «استلام وإرجاع الشحنة كاملة» لإعادة المخزون ومعالجة الفواتير.</p>}
       {cancelled && lifecycleActionAllowed(me.data, "delivery.dispatchInvoice", legacy) && <Button size="sm" variant="outline" onClick={() => setRedispatchOpen(true)}>إعادة إسناد الشحنة كاملة</Button>}
-      <InvoiceDispatchDialog invoice={redispatchOpen && redispatchAnchor ? { id: Number(redispatchAnchor.invoiceId), invoiceNumber: redispatchAnchor.invoiceNumber, total: redispatchAnchor.codAmount, customerName: leader.recipientName, customerPhone: leader.recipientPhone, deliveryAddress: leader.deliveryAddress } : null} open={redispatchOpen} onOpenChange={setRedispatchOpen} />
+      <InvoiceDispatchDialog invoice={redispatchOpen && redispatchAnchor ? { id: Number(redispatchAnchor.invoiceId), invoiceNumber: redispatchAnchor.invoiceNumber, branchId: Number(leader.branchId), total: redispatchAnchor.codAmount, customerName: leader.recipientName, customerPhone: leader.recipientPhone, deliveryAddress: leader.deliveryAddress } : null} open={redispatchOpen} onOpenChange={setRedispatchOpen} />
       {actions.length > 0 && <AppSelect aria-label="إجراء على كامل الشحنة" value={action} disabled={pending} onValueChange={(value) => {
         setAction(value); setReason(""); setAmount(remaining.toFixed(2)); setShortfallReason(""); setRail(null); setPhysicalHeld(false); setDriver(leader.assignedUserId ? String(leader.assignedUserId) : "");
       }}><option value="">إجراء على كامل الشحنة…</option>{actions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</AppSelect>}

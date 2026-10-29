@@ -15,6 +15,7 @@ import type { PrintWindowOptions } from "./brand";
 import { fmtQty } from '@shared/quantityFormat';
 import { variantDisplayName } from "@shared/variantDisplay";
 import { fmtDate, fmtDateTime } from '../date';
+import { D, moneyInput, positiveDiff, round2 } from "../money";
 import {
   wrapA4Doc, wrapReceiptDoc,
   docHeader, docMeta, docTable, docSummary, docFooter, agingSummaryBars,
@@ -75,7 +76,7 @@ function inferStatementTypeLabel(description: string, debit: string | number | n
   if (s.includes('شراء')) return { label: 'شراء', color: '#8A1F11' };
   if (s.includes('دفعة')) return { label: 'دفعة', color: B.green };
   // fallback: السلوك القديم لبيانات لا تحمل كلمات مفتاحية معروفة.
-  return Number(debit ?? 0) > 0 ? { label: 'فاتورة', color: '#8A1F11' } : { label: 'سند', color: B.green };
+  return moneyInput(debit).gt(0) ? { label: 'فاتورة', color: '#8A1F11' } : { label: 'سند', color: B.green };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -372,7 +373,7 @@ export function printPO(d: POPrintData): void {
 
   const summaryItems = [
     { label: 'المجموع الفرعي', value: fmtC(d.subtotal) },
-    ...(Number(d.taxAmount ?? 0) > 0 ? [{ label: 'ضريبة القيمة المضافة', value: fmtC(d.taxAmount) }] : []),
+    ...(moneyInput(d.taxAmount).gt(0) ? [{ label: 'ضريبة القيمة المضافة', value: fmtC(d.taxAmount) }] : []),
     { label: 'الإجمالي', value: fmtC(d.total), bold: true, large: true },
   ];
 
@@ -621,7 +622,7 @@ export interface SupplierStmtPrintData {
 
 export function printSupplierStmt(d: SupplierStmtPrintData): boolean {
   // hifi-redesign (٥/٧/٢٦): يحوَّل إلى printStatementV2 (النوع = "supplier").
-  // ⚠️ الرصيد المُمرَّر هنا (openingBalance/balance/closingBalance) موقَّع فعلاً بنفس اصطلاح
+  // الرصيد المُمرَّر هنا (openingBalance/balance/closingBalance) موقَّع فعلاً بنفس اصطلاح
   // suppliers.currentBalance (موجب="علينا له")، مطابقاً لبناء ledger في SupplierStatement.tsx
   // (bal = bal.plus(credit).minus(debit)). لا نُطبِّق Math.abs هنا — printStatementV2 يحسب
   // الاتجاه (لنا/علينا) من الإشارة نفسها ويَعرض القيمة المطلقة بجانبه، فتُحفَظ دلالة رصيد
@@ -634,7 +635,7 @@ export function printSupplierStmt(d: SupplierStmtPrintData): boolean {
     periodLabel,
     printedByName: d.printedByName,
     printRequestedAt: d.printRequestedAt,
-    openingBalance: Number(d.openingBalance ?? 0),
+    openingBalance: round2(moneyInput(d.openingBalance)).toNumber(),
     currentBalance: d.currentBalance ?? null,
     transactionsCount: d.transactions.length,
     transactions: d.transactions.map((t) => {
@@ -647,7 +648,7 @@ export function printSupplierStmt(d: SupplierStmtPrintData): boolean {
         description: t.description,
         debit: t.debit ?? null,
         credit: t.credit ?? null,
-        balance: Number(t.balance),
+        balance: round2(moneyInput(t.balance)).toNumber(),
         typeLabel: label,
         typeColor: color,
         details: [
@@ -663,7 +664,7 @@ export function printSupplierStmt(d: SupplierStmtPrintData): boolean {
     }),
     totalDebit: d.totalDebit,
     totalCredit: d.totalCredit,
-    closingBalance: Number(d.closingBalance),
+    closingBalance: round2(moneyInput(d.closingBalance)).toNumber(),
     settings: COMPANY_SETTINGS,
   });
 }
@@ -690,16 +691,21 @@ export function printARAging(d: ARAgingPrintData): void {
     { key: 'unbucketed', label: 'غير مفوتر/افتتاحي', width: '22mm', align: 'left' as const },
     { key: 'balance', label: 'الرصيد الحالي', width: '20mm', align: 'left' as const, bold: true },
   ];
-  const rows = d.rows.map(r => ({
-    name: r.name,
-    d0_30: r.d0_30 ? fmt(r.d0_30) : '—',
-    d31_60: r.d31_60 ? fmt(r.d31_60) : '—',
-    d61_90: r.d61_90 ? fmt(r.d61_90) : '—',
-    d91p: r.d91p ? fmt(r.d91p) : '—',
-    unpaid: fmt(r.unpaidTotal),
-    unbucketed: r.unbucketed != null ? (r.unbucketed !== 0 ? fmt(r.unbucketed) : '—') : (r.currentBalance - r.unpaidTotal !== 0 ? fmt(r.currentBalance - r.unpaidTotal) : '—'),
-    balance: fmt(r.currentBalance),
-  }));
+  const rows = d.rows.map(r => {
+    const unbucketedDec = r.unbucketed != null
+      ? round2(D(r.unbucketed))
+      : round2(D(r.currentBalance).minus(D(r.unpaidTotal)));
+    return {
+      name: r.name,
+      d0_30: r.d0_30 ? fmt(r.d0_30) : '—',
+      d31_60: r.d31_60 ? fmt(r.d31_60) : '—',
+      d61_90: r.d61_90 ? fmt(r.d61_90) : '—',
+      d91p: r.d91p ? fmt(r.d91p) : '—',
+      unpaid: fmt(r.unpaidTotal),
+      unbucketed: !unbucketedDec.isZero() ? fmt(unbucketedDec.toFixed(2)) : '—',
+      balance: fmt(r.currentBalance),
+    };
+  });
 
   const t = d.totals;
   const pcts = [
@@ -709,7 +715,9 @@ export function printARAging(d: ARAgingPrintData): void {
     { label: '>90', val: t.d91p, color: '#DC2626' },
   ];
 
-  const unbucketedTotal = t.unbucketed ?? (t.currentBalance - t.unpaidTotal);
+  const unbucketedTotal = t.unbucketed != null
+    ? round2(D(t.unbucketed)).toFixed(2)
+    : round2(D(t.currentBalance).minus(D(t.unpaidTotal))).toFixed(2);
   const totalsRow = `<div style="display:flex;background:${B.green};color:#fff;border-radius:0 0 4px 4px;
     padding:2.5mm 3mm;font-size:10px;font-weight:700;margin-top:-4mm;margin-bottom:4mm;">
     <span style="flex:1;">الإجمالي</span>
@@ -755,16 +763,21 @@ export function printAPAging(d: APAgingPrintData): void {
     { key: 'unbucketed', label: 'غير مفوتر/افتتاحي', width: '22mm', align: 'left' as const },
     { key: 'balance', label: 'الرصيد', width: '20mm', align: 'left' as const, bold: true },
   ];
-  const rows = d.rows.map(r => ({
-    name: r.name,
-    d0_30: r.d0_30 ? fmt(r.d0_30) : '—',
-    d31_60: r.d31_60 ? fmt(r.d31_60) : '—',
-    d61_90: r.d61_90 ? fmt(r.d61_90) : '—',
-    d91p: r.d91p ? fmt(r.d91p) : '—',
-    unpaid: fmt(r.unpaidTotal),
-    unbucketed: r.unbucketed != null ? (r.unbucketed !== 0 ? fmt(r.unbucketed) : '—') : (r.currentBalance - r.unpaidTotal !== 0 ? fmt(r.currentBalance - r.unpaidTotal) : '—'),
-    balance: fmt(r.currentBalance),
-  }));
+  const rows = d.rows.map(r => {
+    const unbucketedDec = r.unbucketed != null
+      ? round2(D(r.unbucketed))
+      : round2(D(r.currentBalance).minus(D(r.unpaidTotal)));
+    return {
+      name: r.name,
+      d0_30: r.d0_30 ? fmt(r.d0_30) : '—',
+      d31_60: r.d31_60 ? fmt(r.d31_60) : '—',
+      d61_90: r.d61_90 ? fmt(r.d61_90) : '—',
+      d91p: r.d91p ? fmt(r.d91p) : '—',
+      unpaid: fmt(r.unpaidTotal),
+      unbucketed: !unbucketedDec.isZero() ? fmt(unbucketedDec.toFixed(2)) : '—',
+      balance: fmt(r.currentBalance),
+    };
+  });
 
   const t = d.totals;
   const pcts = [
@@ -774,7 +787,9 @@ export function printAPAging(d: APAgingPrintData): void {
     { label: '>90', val: t.d91p, color: '#DC2626' },
   ];
 
-  const unbucketedTotal = t.unbucketed ?? (t.currentBalance - t.unpaidTotal);
+  const unbucketedTotal = t.unbucketed != null
+    ? round2(D(t.unbucketed)).toFixed(2)
+    : round2(D(t.currentBalance).minus(D(t.unpaidTotal))).toFixed(2);
   const totalsRow = `<div style="display:flex;background:#DC2626;color:#fff;border-radius:0 0 4px 4px;
     padding:2.5mm 3mm;font-size:10px;font-weight:700;margin-top:-4mm;margin-bottom:4mm;">
     <span style="flex:1;">الإجمالي</span>
@@ -856,7 +871,7 @@ export interface ProductionDocData {
   newCost?: string | number | null;
 }
 
-const pctStr = (frac: number) => `${Math.round(Number(frac) * 100 * 10) / 10}`.replace(/\.0$/, '') + '%';
+const pctStr = (frac: number) => `${D(frac ?? 0).times(100).toDecimalPlaces(1).toString()}`.replace(/\.0$/, '') + '%';
 
 /** أمر تشغيل (قبل الترحيل: مخطّط + فراغات) أو مستند إنتاج (بعده: أرقام فعلية + WAVG + الهدر). */
 export function printProductionDoc(d: ProductionDocData, mode: 'order' | 'document'): void {
@@ -891,7 +906,7 @@ export function printProductionDoc(d: ProductionDocData, mode: 'order' | 'docume
     sku: i.sku ?? '',
     per: fmt(i.perUnit),
     total: fmt(i.consumed),
-    avail: i.short ? '✗ ناقص' : '✓ متوفّر',
+    avail: i.short ? 'ناقص' : 'متوفّر',
   }));
   const materialsTotalRow = `<div style="display:flex;justify-content:space-between;background:${B.bg};
     border:1px solid ${B.border};border-top:none;border-radius:0 0 4px 4px;padding:2.5mm 3mm;
@@ -911,13 +926,13 @@ export function printProductionDoc(d: ProductionDocData, mode: 'order' | 'docume
     { l: 'التالف (هدر)', v: isOrder ? blank : fmt(d.scrap ?? 0) },
     { l: 'الهدر المعياري المسموح', v: `${pctStr(d.wasteStdPct)} (${fmt(d.normalAllow)} وحدة)` },
     ...(!isOrder && d.yieldPct != null ? [{ l: 'الإنتاجية المحقّقة', v: pctStr(d.yieldPct) }] : []),
-    ...(!isOrder && Number(d.abnormalUnits ?? 0) > 0 ? [{ l: 'هدر غير طبيعي', v: `${fmt(d.abnormalUnits ?? 0)} وحدة`, bad: true }] : []),
+    ...(!isOrder && moneyInput(d.abnormalUnits).gt(0) ? [{ l: 'هدر غير طبيعي', v: `${fmt(d.abnormalUnits ?? 0)} وحدة`, bad: true }] : []),
   ]);
   const costKv = kv([
     { l: 'كلفة المواد', v: fmtC(d.materialsCost) },
     { l: 'العمالة', v: fmtC(d.laborCost) },
     { l: 'الكلفة الكلية للتشغيل', v: fmtC(d.totalCost) },
-    ...(!isOrder && Number(d.abnormalLoss ?? 0) > 0 ? [{ l: 'خسارة هدر غير طبيعي', v: `− ${fmtC(d.abnormalLoss ?? 0)}`, bad: true }] : []),
+    ...(!isOrder && moneyInput(d.abnormalLoss).gt(0) ? [{ l: 'خسارة هدر غير طبيعي', v: `− ${fmtC(d.abnormalLoss ?? 0)}`, bad: true }] : []),
     { l: isOrder ? 'كلفة الوحدة التقديرية' : 'كلفة الوحدة السليمة', v: fmtC(d.unitCost) },
     ...(!isOrder && d.newCost != null ? [{ l: 'كلفة المنتج بعد WAVG', v: fmtC(d.newCost) }] : []),
   ]);
@@ -1054,7 +1069,7 @@ export function printBrowserReceipt(d: ReceiptBrowserData, options?: PrintWindow
 import type { WorkOrderReceiptData } from './workOrderRaster';
 
 
-export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData): void {
+export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData, options?: PrintWindowOptions): void {
   const logo = logoUrl();
   const machineBarcode = docBarcode("WO", d.orderNumber);
 
@@ -1108,7 +1123,7 @@ export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData): void {
   </style>
 
   <div style="text-align:center;margin-bottom:3mm;">
-    ${logo ? `<img src="${logo}" style="height:40px;margin-bottom:1.5mm;" onerror="this.style.display='none'">` : ''}
+    ${logo ? `<img src="${esc(logo)}" style="height:40px;margin-bottom:1.5mm;" onerror="this.style.display='none'">` : ''}
     <div style="font-size:14px;font-weight:900;">${esc(CO.short || CO.sub)}</div>
     <div style="font-size:11px;font-weight:800;">${esc(CO.subtitle)}</div>
   </div>
@@ -1155,14 +1170,14 @@ export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData): void {
         <td style="border:1px solid #000;padding:1.5mm;font-size:12px;font-weight:900;">الإجمالي</td>
         <td style="border:1px solid #000;padding:1.5mm;direction:ltr;text-align:left;font-size:13px;font-weight:900;font-variant-numeric:tabular-nums;white-space:nowrap;">${fmtC(d.total)}</td>
       </tr>
-      ${d.paidUpfront != null && Number(d.paidUpfront) > 0 ? `
+      ${d.paidUpfront != null && moneyInput(d.paidUpfront).gt(0) ? `
       <tr>
         <td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">مدفوع مقدماً</td>
         <td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmtC(d.paidUpfront)}</td>
       </tr>
       <tr style="border:2px solid #000;">
         <td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;">المتبقّي عند الاستلام</td>
-        <td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmtC(d.balanceDue ?? Math.max(0, Number(d.total) - Number(d.paidUpfront)))}</td>
+        <td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmtC(d.balanceDue ?? positiveDiff(d.total, d.paidUpfront).toFixed(2))}</td>
       </tr>` : ''}
     </tbody>
   </table>
@@ -1183,7 +1198,11 @@ export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData): void {
   </table>
   <div style="text-align:center;font-size:8.5px;color:#555;margin-top:1.5mm;">بغداد — العامرية / شارع العمل الشعبي</div>`;
 
-  openPrintWindow(wrapReceiptDoc(`طلب خدمة ${d.orderNumber}`, body), 'width=380,height=750');
+  if (options) {
+    openPrintWindow(wrapReceiptDoc(`طلب خدمة ${d.orderNumber}`, body), 'width=380,height=750', options);
+  } else {
+    openPrintWindow(wrapReceiptDoc(`طلب خدمة ${d.orderNumber}`, body), 'width=380,height=750');
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1301,7 +1320,7 @@ export function buildShiftOpenHtml(d: ShiftOpenData): string {
   const body = `
   <!-- رأس الشركة -->
   <div style="text-align:center;padding:2mm 0;">
-    <img src="${logo}" style="width:40px;height:40px;object-fit:contain;margin-bottom:2px;filter:grayscale(100%) contrast(1000%);"
+    <img src="${esc(logo)}" style="width:40px;height:40px;object-fit:contain;margin-bottom:2px;filter:grayscale(100%) contrast(1000%);"
          alt="" onerror="this.style.display='none'">
     <div style="font-size:17px;font-weight:900;color:#000;">${esc(CO.short || CO.sub)}</div>
     <div style="font-size:12px;font-weight:900;margin-top:1px;color:#000;">${esc(CO.subtitle)}</div>
@@ -1370,8 +1389,12 @@ export function buildShiftOpenHtml(d: ShiftOpenData): string {
   return wrapReceiptDoc(`فتح الوردية #${d.shiftId}`, body);
 }
 
-export function printShiftOpenBrowser(d: ShiftOpenData): void {
-  openPrintWindow(buildShiftOpenHtml(d), 'width=380,height=720');
+export function printShiftOpenBrowser(d: ShiftOpenData, options?: PrintWindowOptions): void {
+  if (options) {
+    openPrintWindow(buildShiftOpenHtml(d), 'width=380,height=720', options);
+  } else {
+    openPrintWindow(buildShiftOpenHtml(d), 'width=380,height=720');
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1436,7 +1459,7 @@ export function buildShiftCloseHtml(d: ShiftCloseData): string {
 
   // جدول طرق الدفع
   const payRows = d.payments
-    .filter(p => Number(p.total) !== 0)
+    .filter(p => !moneyInput(p.total).isZero())
     .map(p => {
       const label  = `${paymentMethodTerm(p.method)?.compact ?? p.method} ${p.direction === 'IN' ? 'وارد' : 'صادر'}`;
       const amtStr = p.direction === 'OUT' ? `( ${fmt(p.total)} )` : fmt(p.total);
@@ -1451,14 +1474,15 @@ export function buildShiftCloseHtml(d: ShiftCloseData): string {
     }).join('');
 
   // حساب صافي المبيعات
-  const discounts = Number(d.discountsTotal ?? 0);
-  const returns   = Number(d.returnsTotal   ?? 0);
-  const netSales  = Number(d.salesTotal) - discounts - returns;
+  const discounts = round2(moneyInput(d.discountsTotal));
+  const returns   = round2(moneyInput(d.returnsTotal));
+  const netSales  = round2(moneyInput(d.salesTotal).minus(discounts).minus(returns));
 
   // الفرق: label + قيمة
-  const varNum   = Number(d.variance);
-  const varLabel = varNum === 0 ? 'مطابق تماماً ✓' : varNum > 0 ? 'الفرق — زيادة نقدية' : 'الفرق — عجز بالصندوق';
-  const varVal   = varNum === 0 ? '0 د.ع' : `${varNum > 0 ? '+' : '−'} ${fmt(Math.abs(varNum))} د.ع`;
+  const varDec    = round2(moneyInput(d.variance));
+  const varIsZero = varDec.isZero();
+  const varLabel  = varIsZero ? 'مطابق تماماً' : varDec.gt(0) ? 'الفرق — زيادة نقدية' : 'الفرق — عجز بالصندوق';
+  const varVal    = varIsZero ? '0 د.ع' : `${varDec.gt(0) ? '+' : '−'} ${fmt(varDec.abs().toFixed(2))} د.ع`;
 
   const phones = RECEIPT_PHONES.slice(0, 2)
     .map(p => `<div>${esc(p.l)}: <strong>${esc(p.n)}</strong></div>`)
@@ -1467,7 +1491,7 @@ export function buildShiftCloseHtml(d: ShiftCloseData): string {
   const body = `
   <!-- رأس الشركة -->
   <div style="text-align:center;padding:2mm 0;">
-    <img src="${logo}" style="width:40px;height:40px;object-fit:contain;margin-bottom:2px;filter:grayscale(100%) contrast(1000%);"
+    <img src="${esc(logo)}" style="width:40px;height:40px;object-fit:contain;margin-bottom:2px;filter:grayscale(100%) contrast(1000%);"
          alt="" onerror="this.style.display='none'">
     <div style="font-size:17px;font-weight:900;color:#000;">${esc(CO.short || CO.sub)}</div>
     <div style="font-size:12px;font-weight:900;margin-top:1px;color:#000;">${esc(CO.subtitle)}</div>
@@ -1493,16 +1517,16 @@ export function buildShiftCloseHtml(d: ShiftCloseData): string {
     <tbody>
       <tr><td style="width:55%;font-weight:900;border:1px solid #000;padding:1mm 1.5mm;font-size:11px;">عدد الفواتير</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;font-size:12px;">${d.invoiceCount} فاتورة</td></tr>
       <tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;font-size:11px;">إجمالي المبيعات</td><td style="font-weight:900;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;border:1px solid #000;padding:1mm 1.5mm;font-size:12.5px;">${fmt(d.salesTotal)} د.ع</td></tr>
-      ${discounts > 0 ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;font-size:11px;">إجمالي الخصومات</td><td style="font-weight:900;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;border:1px solid #000;padding:1mm 1.5mm;font-size:12px;">-${fmt(discounts)} د.ع</td></tr>` : ''}
-      ${returns > 0 ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;font-size:11px;">المرتجعات</td><td style="font-weight:900;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;border:1px solid #000;padding:1mm 1.5mm;font-size:12px;">-${fmt(returns)} د.ع</td></tr>` : ''}
-      ${Number(d.heldDepositsCount ?? 0) > 0 ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;font-size:11px;">عرابين محجوزة (${d.heldDepositsCount})</td><td style="font-weight:900;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;border:1px solid #000;padding:1mm 1.5mm;font-size:12px;">${fmt(d.heldDepositsTotal ?? 0)} د.ع</td></tr>` : ''}
+      ${discounts.gt(0) ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;font-size:11px;">إجمالي الخصومات</td><td style="font-weight:900;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;border:1px solid #000;padding:1mm 1.5mm;font-size:12px;">-${fmt(discounts.toFixed(2))} د.ع</td></tr>` : ''}
+      ${returns.gt(0) ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;font-size:11px;">المرتجعات</td><td style="font-weight:900;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;border:1px solid #000;padding:1mm 1.5mm;font-size:12px;">-${fmt(returns.toFixed(2))} د.ع</td></tr>` : ''}
+      ${moneyInput(d.heldDepositsCount).gt(0) ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;font-size:11px;">عرابين محجوزة (${d.heldDepositsCount})</td><td style="font-weight:900;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;border:1px solid #000;padding:1mm 1.5mm;font-size:12px;">${fmt(d.heldDepositsTotal ?? 0)} د.ع</td></tr>` : ''}
       <tr style="background:#000;color:#fff;font-weight:900;">
         <td style="border:1px solid #000;padding:1.5mm;font-size:12.5px;">صافي المبيعات</td>
-        <td style="border:1px solid #000;padding:1.5mm;direction:ltr;text-align:left;font-size:14.5px;font-variant-numeric:tabular-nums;white-space:nowrap;">${fmt(netSales)} د.ع</td>
+        <td style="border:1px solid #000;padding:1.5mm;direction:ltr;text-align:left;font-size:14.5px;font-variant-numeric:tabular-nums;white-space:nowrap;">${fmt(netSales.toFixed(2))} د.ع</td>
       </tr>
       <tr>
         <td colspan="2" style="text-align:center;font-weight:900;font-size:10px;padding:1.2mm;border:1px solid #000;">
-          ${formatArabicMoneyWords(netSales)}
+          ${formatArabicMoneyWords(netSales.toFixed(2))}
         </td>
       </tr>
     </tbody>
@@ -1578,6 +1602,10 @@ export function buildShiftCloseHtml(d: ShiftCloseData): string {
   return wrapShiftReceiptDoc(`إغلاق الوردية #${d.shiftId}`, body);
 }
 
-export function printShiftCloseBrowser(d: ShiftCloseData): void {
-  openPrintWindow(buildShiftCloseHtml(d), 'width=380,height=920');
+export function printShiftCloseBrowser(d: ShiftCloseData, options?: PrintWindowOptions): void {
+  if (options) {
+    openPrintWindow(buildShiftCloseHtml(d), 'width=380,height=920', options);
+  } else {
+    openPrintWindow(buildShiftCloseHtml(d), 'width=380,height=920');
+  }
 }

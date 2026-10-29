@@ -7,6 +7,8 @@ import { notify } from "@/lib/notify";
 import { D, round2 } from "@/lib/money";
 import { newClientRequestId } from "@/lib/countQueue";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { preopenDocumentWindow } from "@/lib/printing/brand";
+import { printCashDropReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 
 /** الحدّ الأدنى من رموز ألوان الكاشير (متوافق بنيوياً مع POS_COLORS/LIGHT). */
 export interface PosTokens {
@@ -36,6 +38,7 @@ export function CashDropDialog({
   // مفتاح idempotency ثابتٌ لكل فتحةِ نافذة ⇒ إعادةُ المحاولة بعد فقد الردّ لا تُكرّر السحب.
   const [clientRequestId] = useState(() => newClientRequestId());
   const amountRef = useRef<HTMLInputElement>(null);
+  const dropWinRef = useRef<Window | null>(null);
   const utils = trpc.useUtils();
 
   const recipientsQ = trpc.shifts.handoverRecipients.useQuery();
@@ -45,13 +48,32 @@ export function CashDropDialog({
   }, []);
 
   const drop = trpc.shifts.cashDrop.useMutation({
-    onSuccess: (r) => {
+    onSuccess: (r, vars) => {
+      const win = dropWinRef.current;
+      dropWinRef.current = null;
+      const recipientName =
+        (recipientsQ.data ?? []).find((x) => x.id === vars.dropTo)?.name ??
+        `#${vars.dropTo}`;
+      void printCashDropReceipt(
+        {
+          dropNumber: r.dropNumber,
+          shiftId,
+          amount: vars.amount,
+          destinationLabel: `تسليم إلى: ${recipientName}`,
+          reason: vars.notes ?? null,
+        },
+        { into: win },
+      ).catch(() => {});
       notify.ok(`تمّ السحب — سند ${r.dropNumber}`, `المتبقّي في الدرج: ${r.drawerAfter} د.ع`);
       void utils.shifts.report.invalidate();
       onDone?.();
       onClose();
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => {
+      try { dropWinRef.current?.close(); } catch { /* ignore */ }
+      dropWinRef.current = null;
+      notify.err(e);
+    },
   });
 
   // تحليلٌ دفاعيّ: مدخلٌ مشوَّه (مثل «1..») لا يجب أن يرمي عند الرسم فيسقط في حدّ الخطأ.
@@ -61,6 +83,7 @@ export function CashDropDialog({
 
   function submit() {
     if (!valid || !amt || dropTo == null || drop.isPending) return;
+    dropWinRef.current = preopenDocumentWindow("width=420,height=760");
     drop.mutate({
       shiftId,
       amount: round2(amt).toFixed(2),

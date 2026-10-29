@@ -21,6 +21,9 @@ import { LiveCelebrationOverlay } from "@/components/commission/LiveCelebrationO
 import { ReclassifyDeliveryDialog } from "@/components/workorder/ReclassifyDeliveryDialog";
 import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
+import { preopenDocumentWindow, printReceipt } from "@/lib/printing/print";
+import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
+import { printDeliveryFeeRefundReceipt, printInvoicePaymentReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { playReadyBeep } from "@/lib/notifyBeep";
@@ -214,15 +217,54 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
     },
     onError: (e) => notify.err(e),
   });
+  const pickupPrintRef = useRef<{ win: Window | null; row: QueueRow; payment?: PickupPayment } | null>(null);
+  const reclassifyPrintRef = useRef<{ win: Window | null; row: QueueRow } | null>(null);
+
   const deliver = trpc.workOrders.deliver.useMutation({
     onSuccess: (r) => {
+      const snap = pickupPrintRef.current;
+      pickupPrintRef.current = null;
       notify.ok("تم التسليم", `فاتورة ${r.invoiceNumber}`);
+      if (snap) {
+        void (async () => {
+          const invId = Number((r as { invoiceId?: number } | null)?.invoiceId ?? 0);
+          const fetchInv = (utils as { sales?: { get?: { fetch?: (arg: { invoiceId: number }) => Promise<unknown> } } }).sales?.get?.fetch;
+          if (invId > 0 && fetchInv) {
+            try {
+              const inv = await fetchInv({ invoiceId: invId });
+              if (inv) {
+                await printReceipt(invoiceToReceipt(inv as never), snap.win ? { into: snap.win } : undefined);
+                return;
+              }
+            } catch { /* fallback below */ }
+          }
+          const paidNow = snap.payment?.amount ?? "0.00";
+          const remAfter = round2(D(snap.row.salePrice).minus(D(snap.row.deposit ?? "0")).minus(D(paidNow)));
+          await printInvoicePaymentReceipt(
+            {
+              invoiceNumber: r.invoiceNumber,
+              customerName: snap.row.customerName,
+              customerPhone: snap.row.customerPhone,
+              invoiceTotal: snap.row.salePrice,
+              paidBefore: snap.row.deposit ?? "0",
+              amountPaid: paidNow,
+              remainingAfter: (remAfter.gt(0) ? remAfter : D(0)).toFixed(2),
+              paymentMethod: snap.payment?.method ?? "CASH",
+              reference: snap.payment?.reference ?? null,
+              cashierName: me.data?.name ?? null,
+            },
+            snap.win ? { into: snap.win } : undefined,
+          );
+        })();
+      }
       pickupKeyRef.current = null; // rotate for next attempt
       setPickupTarget(null);
       setPartialPickup(null);
       invalidateAll();
     },
     onError: (e, vars) => {
+      try { pickupPrintRef.current?.win?.close(); } catch { /* noop */ }
+      pickupPrintRef.current = null;
       if (isPartialDispatchRejection(e) && pickupTarget) {
         // يعيد استخدام نفس المفتاح كي تبقى محاولةُ الاعتراف الجزئيّ داخل بصمة الأصل الواحدة.
         setPartialPickup({ row: pickupTarget, payment: vars.payment, message: e.message, clientRequestId: vars.clientRequestId ?? ensurePickupKey() });
@@ -233,12 +275,34 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
   });
   const setDeliveryMethod = trpc.workOrders.setDeliveryMethod.useMutation({
     onSuccess: (r) => {
+      const snap = reclassifyPrintRef.current;
+      reclassifyPrintRef.current = null;
       notify.ok("حُدِّثت طريقة التسليم", Number(r.refundedFee) > 0 ? `رُدّت أمانة الأجرة ${fmt(r.refundedFee)} د.ع نقداً للزبون` : undefined);
+      if (snap) {
+        if (Number(r.refundedFee) > 0) {
+          void printDeliveryFeeRefundReceipt(
+            {
+              sourceRef: snap.row.orderNumber,
+              customerName: snap.row.customerName,
+              customerPhone: snap.row.customerPhone,
+              amount: String(r.refundedFee),
+              paymentMethod: "CASH",
+              cashierName: me.data?.name ?? null,
+              reason: "تحويل طريقة التسليم إلى استلام مباشر من الفرع",
+            },
+            snap.win ? { into: snap.win } : undefined,
+          );
+        } else {
+          try { snap.win?.close(); } catch { /* noop */ }
+        }
+      }
       setReclassifyTarget(null);
       setReclassifyMgrAsk(null);
       invalidateAll();
     },
     onError: (e, vars) => {
+      try { reclassifyPrintRef.current?.win?.close(); } catch { /* noop */ }
+      reclassifyPrintRef.current = null;
       // ردّ أمانةٍ نقديّة عبر ورديةٍ أخرى/بعد الإغلاق يلزمه مدير: نطلب اعتماده ونعيد المحاولة
       // بدل رسالة خطأ عابرة (نميّزه عن FORBIDDEN عزل الفرع بوسم الرسالة «اعتماد مدير»).
       const code = (e as { data?: { code?: string } }).data?.code;
@@ -354,6 +418,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
           const party = (parties.data ?? []).find((p) => p.id === partyId);
           // نافذة الملصق تُفتح متزامنةً مع نقرة التأكيد (قبل await الإرسال) — نمط DeliveryHub بالضبط.
           const labelWin = preopenShippingLabelWindow();
+          const slipWin = preopenDocumentWindow();
           try {
             const r = await dispatch.mutateAsync({
               workOrderId: ord.id,
@@ -368,7 +433,8 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
               externalTrackingRef,
             });
             void printReadyOrderLabel(ord, { partyName: party?.name ?? null, trackingNumber: r.consignmentNumber, cod: r.codAmount, externalTrackingRef, into: labelWin });
-            printDeliverySlip(ord, party, { ...r, externalTrackingRef });
+            if (slipWin) printDeliverySlip(ord, party, { ...r, externalTrackingRef }, { into: slipWin });
+            else printDeliverySlip(ord, party, { ...r, externalTrackingRef });
             setDepartureData({
               consignmentNumber: r.consignmentNumber,
               orderNumber: ord.orderNumber,
@@ -384,6 +450,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
             });
           } catch {
             labelWin?.close();
+            slipWin?.close();
           }
         }}
       />
@@ -404,6 +471,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
         onConfirm={(payment, extra) => {
           if (!canFulfill) return;
           const ord = pickupTarget!;
+          pickupPrintRef.current = { win: preopenDocumentWindow(), row: ord, payment };
           deliver.mutate({
             workOrderId: ord.id,
             payment,
@@ -420,6 +488,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
         onClose={() => { setPartialPickup(null); setPickupTarget(null); }}
         onConfirm={() => {
           if (!partialPickup || !canFulfill) return;
+          pickupPrintRef.current = { win: preopenDocumentWindow(), row: partialPickup.row, payment: partialPickup.payment };
           deliver.mutate({
             workOrderId: partialPickup.row.id,
             payment: partialPickup.payment,
@@ -436,6 +505,9 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
         onConfirm={(payload) => {
           if (!canReclassify) return;
           const ord = reclassifyTarget!;
+          if (!payload.hasDelivery) {
+            reclassifyPrintRef.current = { win: preopenDocumentWindow(), row: ord };
+          }
           setDeliveryMethod.mutate({ workOrderId: ord.id, ...payload });
         }}
       />
@@ -448,6 +520,10 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
           onApprove={(approval) => {
             if (!canReclassify) return;
             const vars = reclassifyMgrAsk;
+            if (!vars.hasDelivery) {
+              const targetRow = rows.find((x) => Number(x.id) === Number(vars.workOrderId));
+              if (targetRow) reclassifyPrintRef.current = { win: preopenDocumentWindow(), row: targetRow };
+            }
             setReclassifyMgrAsk(null);
             setDeliveryMethod.mutate({ ...vars, managerApproval: approval });
           }}

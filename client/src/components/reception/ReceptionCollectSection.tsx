@@ -36,6 +36,7 @@ import {
   type RemittanceReceiptData,
 } from "@/components/delivery/printRemittanceReceipt";
 import { preopenDocumentWindow } from "@/lib/printing/print";
+import { printInvoicePaymentReceipt, type InvoicePaymentReceiptData } from "@/lib/printing/cashierLifecycleReceipts";
 import { WorkflowPrintActions } from "@/components/delivery/workflow/WorkflowPrintActions";
 import {
   printCompanyStatementReceiptAsync,
@@ -266,6 +267,9 @@ export function ReceptionCollectSection({
   const [isSearchingCollect, setIsSearchingCollect] = useState(false);
   const remittanceRetry = useRef<FinancialRetry | null>(null);
   const statementRetry = useRef<FinancialRetry | null>(null);
+  const me = trpc.auth.me.useQuery();
+  const staffConfirmPrintContext = useRef<{ data: InvoicePaymentReceiptData; window: Window | null } | null>(null);
+  const workflowConfirmPrintContext = useRef<{ data: InvoicePaymentReceiptData; window: Window | null } | null>(null);
   const remittancePrintContext = useRef<{
     partyName: string;
     branchId: number;
@@ -472,27 +476,49 @@ export function ReceptionCollectSection({
 
   const staffConfirmMut = trpc.delivery.staffConfirm.useMutation({
     onSuccess: () => {
+      const ctx = staffConfirmPrintContext.current;
+      staffConfirmPrintContext.current = null;
       notify.ok(
         "تم إثبات تسليم الطرد للزبون",
         "أصبح المبلغ بعهدة المندوب وجاهزاً للتوريد للدرج.",
       );
+      if (ctx) {
+        void printInvoicePaymentReceipt(ctx.data, { into: ctx.window }).catch(() => {
+          try { if (ctx.window && !ctx.window.closed) ctx.window.close(); } catch { /* noop */ }
+        });
+      }
       void obligationsQ.refetch();
       void openConsQ.refetch();
       void utils.delivery.invalidate();
     },
-    onError: (e) => notify.err(e, "تعذّر تأكيد التسليم"),
+    onError: (e) => {
+      const win = staffConfirmPrintContext.current?.window;
+      staffConfirmPrintContext.current = null;
+      try { if (win && !win.closed) win.close(); } catch { /* noop */ }
+      notify.err(e, "تعذّر تأكيد التسليم");
+    },
   });
 
   const workflowConfirmMut = trpc.delivery.workflow.confirmDelivery.useMutation(
     {
       onSuccess: () => {
+        const ctx = workflowConfirmPrintContext.current;
+        workflowConfirmPrintContext.current = null;
         notify.ok(
           "ثبت تسليم الشحنة ومطالبتها الحالية؛ توريد النقد إجراء مستقل",
         );
+        if (ctx) {
+          void printInvoicePaymentReceipt(ctx.data, { into: ctx.window }).catch(() => {
+            try { if (ctx.window && !ctx.window.closed) ctx.window.close(); } catch { /* noop */ }
+          });
+        }
         void obligationsQ.refetch();
         void openConsQ.refetch();
       },
       onError: (error) => {
+        const win = workflowConfirmPrintContext.current?.window;
+        workflowConfirmPrintContext.current = null;
+        try { if (win && !win.closed) win.close(); } catch { /* noop */ }
         acceptedGroups.current.clear();
         notify.err(error, "تعذر إثبات التسليم؛ أعد المحاولة بنفس المسح");
       },
@@ -731,6 +757,23 @@ export function ReceptionCollectSection({
     });
     if (!ok || generation !== scanSequence.current) return;
 
+    const rPhone = (row as { customerPhone?: string | null; recipientPhone?: string | null }).customerPhone
+      ?? (row as { recipientPhone?: string | null }).recipientPhone ?? null;
+    staffConfirmPrintContext.current = {
+      data: {
+        receiptNumber: row.consignmentNumber,
+        invoiceNumber: deliverySourceView(row).reference || row.consignmentNumber,
+        customerName: row.customerName ?? null,
+        customerPhone: rPhone,
+        invoiceTotal: row.codAmount ?? remaining.toFixed(2),
+        amountPaid: remaining.toFixed(2),
+        remainingAfter: "0.00",
+        paymentMethod: "CASH",
+        reference: `إثبات تسليم طرد ${row.consignmentNumber}${selectedParty?.name ? ` — ${selectedParty.name}` : ""}`,
+        cashierName: me.data?.name ?? null,
+      },
+      window: preopenDocumentWindow("width=380,height=700"),
+    };
     staffConfirmMut.mutate({
       consignmentId: row.id,
       collectedAmount: remaining.toFixed(2),
@@ -1195,6 +1238,23 @@ export function ReceptionCollectSection({
                       signature,
                       key: crypto.randomUUID(),
                     };
+                  const pvw = pendingCustomerCollection.preview;
+                  const remAfter = round2(D(pvw.money.codAmount).minus(D(collectedAmount)));
+                  workflowConfirmPrintContext.current = {
+                    data: {
+                      receiptNumber: pvw.summaries.parcel.shipmentNumber ?? pvw.printSource.number,
+                      invoiceNumber: pvw.printSource.number,
+                      customerName: pvw.recipient.name,
+                      customerPhone: pvw.recipient.phone,
+                      invoiceTotal: pvw.money.codAmount,
+                      amountPaid: collectedAmount,
+                      remainingAfter: remAfter.gt(0) ? remAfter.toFixed(2) : "0.00",
+                      paymentMethod: "CASH",
+                      reference: `إثبات تسليم وتحصيل COD${pendingCustomerCollection.partyName ? ` — ${pendingCustomerCollection.partyName}` : ""}${shortfallReason ? ` (${SHORTFALL_REASON_LABEL_AR[shortfallReason]})` : ""}`,
+                      cashierName: me.data?.name ?? null,
+                    },
+                    window: preopenDocumentWindow("width=380,height=700"),
+                  };
                   workflowConfirmMut.mutate(
                     {
                       source: {

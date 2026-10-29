@@ -146,7 +146,7 @@ describe.each<Station>(["workorder", "store"])("%s dispatch uses explicit source
 it("preserves the explicit driver across the online-order caller, validated router and native dispatch bridge", () => {
   const read = (file: string) => readFileSync(path.resolve(file), "utf8");
   const router = read("server/routers/storeAdminRouter.ts");
-  const dispatch = router.slice(router.indexOf("dispatch: storeManagerProcedure"));
+  const dispatch = router.slice(router.indexOf("dispatch: deliveryCashierProcedure"));
   expect(dispatch).toContain("assignedUserId: z.number().int().positive().nullish()");
   expect(dispatch).toContain("assignedUserId: input.assignedUserId ?? null");
   const caller = read("client/src/pages/OrderFulfillment.tsx");

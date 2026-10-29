@@ -12,6 +12,8 @@ import { confirm } from "@/lib/confirm";
 import { fmt, moneyInput } from "@/lib/money";
 import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
+import { preopenDocumentWindow } from "@/lib/printing/print";
+import { printOverageRefundReceipt } from "@/lib/printing/cashierLifecycleReceipts";
 
 type Api = RouterInputs["delivery"]["fulfillment"]["charges"];
 type Row =
@@ -117,17 +119,34 @@ function ChargeExcessRefundWorkspaceContent({
         me.data.permissionsOverride as PermissionMap | null,
         "store",
         "FULL",
-        ["manager"],
+        ["cashier", "manager"],
       ),
   );
   const disabled = refund.isPending || !!pending;
-  async function execute(command: Refund) {
+  async function execute(command: Refund, docWin?: Window | null) {
+    const targetWin = docWin ?? preopenDocumentWindow();
     setError("");
     setReceiptId(null);
     setPending(command);
     localStorage.setItem(scope, JSON.stringify(command));
     try {
       const result = await refund.mutateAsync(command);
+      void printOverageRefundReceipt(
+        {
+          refundNumber: `RCP-${result.receiptId}`,
+          sourceRef:
+            source?.consignmentNumber ??
+            source?.requestNumber ??
+            `REQ-${command.fulfillmentRequestId ?? ""}`,
+          beneficiaryName: source?.customerName ?? null,
+          beneficiaryRole: "CUSTOMER",
+          amount: command.amount,
+          paymentMethod: command.tender.method,
+          cashierName: me.data?.name ?? null,
+          notes: command.reason,
+        },
+        targetWin ? { into: targetWin } : undefined,
+      );
       localStorage.removeItem(scope);
       setPending(null);
       setReceiptId(result.receiptId);
@@ -138,6 +157,7 @@ function ChargeExcessRefundWorkspaceContent({
         utils.delivery.fulfillment.requests.invalidate(),
       ]);
     } catch (e) {
+      try { targetWin?.close(); } catch { /* noop */ }
       setError(
         e instanceof Error
           ? e.message
@@ -151,7 +171,7 @@ function ChargeExcessRefundWorkspaceContent({
       return;
     }
     if (!canRefund) {
-      setError("رد الأمانة يحتاج صلاحية إدارية");
+      setError("لا تملك صلاحية رد الأمانة");
       return;
     }
     if (

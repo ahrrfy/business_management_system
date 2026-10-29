@@ -22,6 +22,12 @@ import {
   type FulfillmentChargeCategory,
 } from "@shared/fulfillment";
 import { paymentMethodCompact } from "@shared/terms";
+import { preopenDocumentWindow } from "@/lib/printing/print";
+import {
+  printDrawerExpenseReceipt,
+  printInvoicePaymentReceipt,
+  printOverageRefundReceipt,
+} from "@/lib/printing/cashierLifecycleReceipts";
 
 type ChargeApiInput = RouterInputs["delivery"]["fulfillment"]["charges"];
 type ChargeApiOutput = RouterOutputs["delivery"]["fulfillment"]["charges"];
@@ -163,15 +169,7 @@ function ChargesWorkspaceContent({
           me.data.permissionsOverride as PermissionMap | null,
           "store",
           "FULL",
-          [
-            "approve",
-            "complete",
-            "refund",
-            "refundExcess",
-            "refundCourierExcess",
-          ].includes(op)
-            ? ["manager"]
-            : ["cashier", "manager"],
+          ["cashier", "manager"],
         ),
     );
   const [search, setSearch] = useState(""),
@@ -201,7 +199,12 @@ function ChargesWorkspaceContent({
     [method, setMethod] = useState<"CASH" | "CARD" | "TRANSFER" | "WALLET">(
       "CASH",
     );
-  const [bucket, setBucket] = useState<"DRAWER" | "TREASURY">("DRAWER"),
+  const canUseTreasuryBucket = Boolean(
+      me.data &&
+        (me.data.isOwner ||
+          ["admin", "owner", "manager", "accountant"].includes(me.data.role)),
+    ),
+    [bucket, setBucket] = useState<"DRAWER" | "TREASURY">("DRAWER"),
     [shift, setShift] = useState(""),
     [reference, setReference] = useState(""),
     [reason, setReason] = useState(""),
@@ -240,6 +243,9 @@ function ChargesWorkspaceContent({
     const timer = setTimeout(() => setLookupDebounced(lookupSearch), 220);
     return () => clearTimeout(timer);
   }, [lookupSearch]);
+  useEffect(() => {
+    if (!canUseTreasuryBucket && bucket === "TREASURY") setBucket("DRAWER");
+  }, [canUseTreasuryBucket, bucket]);
   useEffect(() => {
     setSelected(initialChargeId ?? null);
     setProof(null);
@@ -369,7 +375,9 @@ function ChargesWorkspaceContent({
   async function refresh() {
     await utils.delivery.fulfillment.charges.invalidate();
   }
-  async function execute(command: Command) {
+  async function execute(command: Command, docWin?: Window | null) {
+    const needsPrint = ["collect", "refund", "refundExcess", "refundCourierExcess", "settlePayee", "remitCourier"].includes(command.action);
+    const targetWin = needsPrint ? (docWin ?? preopenDocumentWindow()) : null;
     setBusy(true);
     setError("");
     setNotice("");
@@ -423,6 +431,64 @@ function ChargesWorkspaceContent({
           await mutations.remitCourier.mutateAsync(command.input);
           break;
       }
+      if (command.action === "collect") {
+        void printInvoicePaymentReceipt(
+          {
+            invoiceNumber: `CHG-${row?.id ?? command.input.allocations[0]?.chargeId ?? ""}`,
+            customerName: row?.payeeName ?? null,
+            amountPaid: command.input.amount,
+            paymentMethod: command.input.tender.method,
+            reference: command.input.tender.reference ?? null,
+            cashierName: me.data?.name ?? null,
+          },
+          targetWin ? { into: targetWin } : undefined,
+        );
+      } else if (
+        command.action === "refund" ||
+        command.action === "refundExcess" ||
+        command.action === "refundCourierExcess"
+      ) {
+        void printOverageRefundReceipt(
+          {
+            sourceRef: `CHG-${row?.id ?? ("id" in command.input && command.input.id ? command.input.id : "")}`,
+            beneficiaryName: row?.payeeName ?? null,
+            beneficiaryRole: command.action === "refundCourierExcess" ? "CARRIER" : "CUSTOMER",
+            amount: command.input.amount,
+            paymentMethod: "tender" in command.input ? command.input.tender.method : method,
+            cashierName: me.data?.name ?? null,
+            notes: command.input.reason,
+          },
+          targetWin ? { into: targetWin } : undefined,
+        );
+      } else if (command.action === "settlePayee") {
+        void printDrawerExpenseReceipt(
+          {
+            expenseNumber: `CHG-PAY-${command.input.id}`,
+            categoryName: row ? fulfillmentChargeCategoryLabel[row.category] : "رسوم تنفيذ",
+            payeeName: row?.payeeName ?? null,
+            amount: command.input.amount,
+            paymentMethod: command.input.tender.method,
+            shiftId: command.input.tender.shiftId ?? null,
+            cashierName: me.data?.name ?? null,
+            description: row?.description ?? null,
+          },
+          targetWin ? { into: targetWin } : undefined,
+        );
+      } else if (command.action === "remitCourier") {
+        void printInvoicePaymentReceipt(
+          {
+            invoiceNumber: `CHG-REM-${command.input.id}`,
+            customerName: row?.payeeName ?? null,
+            amountPaid: command.input.amount,
+            paymentMethod: command.input.tender.method,
+            reference: command.input.tender.reference ?? "توريد عهدة ناقل",
+            cashierName: me.data?.name ?? null,
+          },
+          targetWin ? { into: targetWin } : undefined,
+        );
+      } else {
+        try { targetWin?.close(); } catch { /* noop */ }
+      }
       localStorage.removeItem(`${scope}:pending`);
       setPending(null);
       setProof(null);
@@ -430,6 +496,7 @@ function ChargesWorkspaceContent({
       setNotice("تم تثبيت الإجراء وإعادة قراءة الأرصدة");
       await refresh();
     } catch (e) {
+      try { targetWin?.close(); } catch { /* noop */ }
       setError(
         e instanceof Error
           ? e.message
@@ -1310,9 +1377,11 @@ function ChargesWorkspaceContent({
                           disabled={disabled}
                         >
                           <option value="DRAWER">درج ورديتي</option>
-                          <option value="TREASURY">
-                            الخزينة — صلاحية إدارية
-                          </option>
+                          {canUseTreasuryBucket && (
+                            <option value="TREASURY">
+                              الخزينة — صلاحية إدارية
+                            </option>
+                          )}
                         </AppSelect>
                       </Field>
                       {bucket === "DRAWER" && (

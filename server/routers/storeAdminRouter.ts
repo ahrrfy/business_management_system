@@ -12,7 +12,7 @@ import { canCrossBranches } from "../lib/branchAuthority";
 import { managerApprovalSchema } from "@shared/managerApproval";
 import { verifyManagerApproval } from "./saleRouter";
 import { logAudit } from "../services/auditService";
-import { router, storeFulfillProcedure, storeManagerProcedure, storeReadProcedure } from "../trpc";
+import { deliveryCashierProcedure, router, storeFulfillProcedure, storeManagerProcedure, storeReadProcedure } from "../trpc";
 import {
   autoAssignRoundRobinOnlineOrders,
   claimOnlineOrder,
@@ -422,7 +422,7 @@ const ordersRouter = router({
 
   /** إرسال طلب مؤكَّد ⇒ فاتورة (خصم مخزون + قيد) + إسناد لجهة توصيل، مع إبقاء حدّ
    *  ائتمان العميل نافذاً ومنع الموافقة الذاتية من مُنفّذ الإرسال. */
-  dispatch: storeManagerProcedure
+  dispatch: deliveryCashierProcedure
     .input(z.object({
       id: z.number().int().positive(),
       partyId: z.number().int().positive(),

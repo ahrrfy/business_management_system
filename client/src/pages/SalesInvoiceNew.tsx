@@ -52,8 +52,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
-import { releaseReservedPrintWindow, reservePrintWindow,
-} from "@/lib/printing/brand";
+import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
+import { useInvoiceReceiptPrinter } from "@/hooks/useInvoiceReceiptPrinter";
+import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
+import { invoiceToShippingLabel } from "@/lib/printing/invoiceShippingLabel";
+import { printReceipt } from "@/lib/printing/print";
+import { preopenShippingLabelWindow, printShippingLabel } from "@/lib/printing/shippingLabel";
 import { DigitalCardsPickerDialog, type DigitalBasketCapture } from "@/components/pos/DigitalCardsPickerDialog";
 import { DigitalFulfillmentDialog } from "@/components/pos/DigitalFulfillmentDialog";
 import { captureDigitalInvoiceBasketItems, resolveDigitalInvoiceSettlement, toDigitalPrepareLine, toDigitalPrepareRegularLine, validateDigitalInvoiceCheckout } from "@/components/pos/digitalBasket";
@@ -325,8 +329,14 @@ export default function SalesInvoice() {
 
   // idempotency: مفتاح ثابت لكل محاولة إنشاء (يُجدَّد بعد كل حفظ ناجح / RESET).
   const [clientRequestId, setClientRequestId] = useInvoicePaymentSession(me.data?.id);
+  const { printAuthorizedDocument } = useInvoiceReceiptPrinter(me.data, me.data?.id);
   const printAfterSaveRef = useRef(false);
   const shareAfterSaveRef = useRef(false);
+  const correctionLabelWinRef = useRef<Window | null>(null);
+  const closeCorrectionLabelWin = () => {
+    try { correctionLabelWinRef.current?.close(); } catch { /* noop */ }
+    correctionLabelWinRef.current = null;
+  };
 
   const [bulkOpen, setBulkOpen] = useState(false);
   const [cardsOpen, setCardsOpen] = useState(false);
@@ -458,7 +468,7 @@ export default function SalesInvoice() {
       bypassUnsavedGuard();
       navigate(`/invoices/${id}${printAfterSave ? "?print=1" : shareAfterSave ? "?share=1" : ""}`);
     },
-    onError: (e) => setDigitalFinalizeError(e.message),
+    onError: (e) => { releaseReservedPrintWindow(); setDigitalFinalizeError(e.message); },
   });
 
   /* ─── mutation ─────────────────────────────────────────────────── */
@@ -496,17 +506,36 @@ export default function SalesInvoice() {
   // إعادة الإصدار تبدأ بطلب صفر الأثر؛ مراجعٌ مستقل ينفّذ العكس+الإصدار ذرّياً من طابور التحكم.
   // المالك النشط استثناء: الخادم ينفّذ طلبه فوراً (status=APPROVED) ⇒ ننتقل للفاتورة البديلة.
   async function finishOwnerCorrection(resultInvoiceId: number | null | undefined): Promise<boolean> {
-    if (resultInvoiceId == null || !(Number(resultInvoiceId) > 0)) return false;
+    const invId = Number(resultInvoiceId);
+    if (resultInvoiceId == null || !(invId > 0)) return false;
+    const labelWin = correctionLabelWinRef.current;
+    correctionLabelWinRef.current = null;
     await invalidateFinancialQueries(queryClient, original.data?.branchId);
+    try {
+      const replacement = await utils.sales.get.fetch({ invoiceId: invId });
+      if (replacement) {
+        await printAuthorizedDocument(invId, "THERMAL", false, () =>
+          printReceipt(invoiceToReceipt(replacement), { openDrawer: false }),
+        );
+        const hasDelivery = Boolean(replacement.deliveryAddress?.trim()) || replacement.deliveryFree === true || D(String(replacement.deliveryFee ?? 0)).gt(0) || D(String(replacement.deliveryWaivedAmount ?? 0)).gt(0);
+        if (hasDelivery) {
+          await printAuthorizedDocument(invId, "SHIPPING_LABEL", false, async () => {
+            const res = await printShippingLabel(invoiceToShippingLabel(replacement), labelWin ? { into: labelWin } : undefined);
+            return res.ok ? { ok: true as const, via: "browser" as const } : { ok: false as const, via: "browser" as const, reason: "popup-blocked" as const };
+          });
+        } else { try { labelWin?.close(); } catch { /* noop */ } }
+      } else { releaseReservedPrintWindow(); try { labelWin?.close(); } catch { /* noop */ } }
+    } catch { releaseReservedPrintWindow(); try { labelWin?.close(); } catch { /* noop */ } }
     notify.ok("نُفّذ التصحيح", "عُكس الأصل وصدرت الفاتورة البديلة وسوّيت الأموال في معاملة واحدة.");
     setCreditPrompt(null); setMgrEmail(""); setMgrPwd("");
     bypassUnsavedGuard();
-    navigate(`/invoices/${Number(resultInvoiceId)}`);
+    navigate(`/invoices/${invId}`);
     return true;
   }
   const reissue = trpc.sales.reissue.useMutation({
     onSuccess: async (r) => {
       if (r.status === "APPROVED" && await finishOwnerCorrection(r.resultInvoiceId)) return;
+      closeCorrectionLabelWin(); releaseReservedPrintWindow();
       utils.salesControl.list.invalidate();
       notify.ok(
         "أُرسل طلب إعادة الإصدار",
@@ -521,6 +550,7 @@ export default function SalesInvoice() {
   const exchange = trpc.salesControl.requestExchange.useMutation({
     onSuccess: async (result) => {
       if (result.status === "APPROVED" && await finishOwnerCorrection("resultInvoiceId" in result ? (result.resultInvoiceId as number | null) : null)) return;
+      closeCorrectionLabelWin(); releaseReservedPrintWindow();
       utils.salesControl.list.invalidate();
       notify.ok(
         "أُرسل طلب الاستبدال",
@@ -534,10 +564,12 @@ export default function SalesInvoice() {
   });
 
   function handleCorrectionError(error: { message?: string }) {
+    closeCorrectionLabelWin(); releaseReservedPrintWindow();
     if (error.message && (error.message.includes("حدّ الائتمان") || error.message.includes("بأقل من التكلفة") || error.message.includes("موافقة مدير"))) {
       setCreditPrompt(error.message);
       return;
     }
+    printAfterSaveRef.current = false; shareAfterSaveRef.current = false;
     notify.err(error);
   }
 
@@ -766,10 +798,11 @@ export default function SalesInvoice() {
   }
 
   function startDigitalFulfillment(approval?: Approval) {
-    if (!currentShift.data) return notify.warn("يلزم فتح وردية في فرع الفاتورة قبل بيع الكروت والاشتراكات.");
+    if (!currentShift.data) { releaseReservedPrintWindow(); printAfterSaveRef.current = false; shareAfterSaveRef.current = false; return notify.warn("يلزم فتح وردية في فرع الفاتورة قبل بيع الكروت والاشتراكات."); }
     const regular = state.items.filter((c) => !c.digital);
     const digitalLines = state.items.filter((c) => c.digital);
-    if (!digitalLines.length) return; const settlement = resolveDigitalInvoiceSettlement({ paymentTerms: state.paymentTerms, paymentMethod: state.paymentMethod, paidTotal: computePaidStr() });
+    if (!digitalLines.length) { releaseReservedPrintWindow(); printAfterSaveRef.current = false; shareAfterSaveRef.current = false; return; }
+    const settlement = resolveDigitalInvoiceSettlement({ paymentTerms: state.paymentTerms, paymentMethod: state.paymentMethod, paidTotal: computePaidStr() });
     const payload = buildPayload(approval); const { managerApproval, ...sourcePayload } = payload;
     prepareIntent.mutate({
       branchId: Number(state.branchId), shiftId: currentShift.data.id, clientRequestId,
@@ -792,8 +825,10 @@ export default function SalesInvoice() {
   }
 
   function finalizeDigitalIntent(id: number) {
-    if (!salesOperationAllowed(me.data, "digitalCards.sales.finalize", true)) return notify.warn("إتمام الفاتورة الرقمية غير مفوّض لحسابك.");
-    const settlement = resolveDigitalInvoiceSettlement({ paymentTerms: state.paymentTerms, paymentMethod: state.paymentMethod, paidTotal: computePaidStr() }); if (finalizeSale.isPending) return; finalizeSale.mutate({
+    if (!salesOperationAllowed(me.data, "digitalCards.sales.finalize", true)) { releaseReservedPrintWindow(); printAfterSaveRef.current = false; shareAfterSaveRef.current = false; return notify.warn("إتمام الفاتورة الرقمية غير مفوّض لحسابك."); }
+    const settlement = resolveDigitalInvoiceSettlement({ paymentTerms: state.paymentTerms, paymentMethod: state.paymentMethod, paidTotal: computePaidStr() }); if (finalizeSale.isPending) return;
+    if (printAfterSaveRef.current) reservePrintWindow();
+    finalizeSale.mutate({
       intentId: id, clientRequestId, paymentAmount: settlement.paymentAmount,
       paymentMethod: settlement.paymentMethod,
       customerId: state.entityId ?? undefined,
@@ -806,24 +841,29 @@ export default function SalesInvoice() {
     try {
       err = validate();
     } catch {
-      releaseReservedPrintWindow();
-      printAfterSaveRef.current = false;
-      shareAfterSaveRef.current = false;
+      closeCorrectionLabelWin(); releaseReservedPrintWindow();
+      printAfterSaveRef.current = false; shareAfterSaveRef.current = false;
       notify.warn("قيمة مالية غير صالحة — صحّح حقول المبالغ قبل الحفظ.");
       return;
     }
     if (err) {
-      releaseReservedPrintWindow();
-      printAfterSaveRef.current = false;
-      shareAfterSaveRef.current = false;
+      closeCorrectionLabelWin(); releaseReservedPrintWindow();
+      printAfterSaveRef.current = false; shareAfterSaveRef.current = false;
       notify.warn(err);
       return;
     }
     try {
       if (isCorrection) {
         const cErr = validateCorrection();
-        if (cErr) { notify.warn(cErr); return; }
+        if (cErr) { closeCorrectionLabelWin(); releaseReservedPrintWindow(); printAfterSaveRef.current = false; shareAfterSaveRef.current = false; notify.warn(cErr); return; }
         const correction = buildCorrectionPayload(approval);
+        closeCorrectionLabelWin();
+        if (ownerExecutes && !requestReview) {
+          reservePrintWindow();
+          if (state.shippingFree || D(totals.shipping).gt(0) || Boolean(original.data?.deliveryAddress?.trim())) {
+            correctionLabelWinRef.current = preopenShippingLabelWindow();
+          }
+        }
         if (correctionKind === "EXCHANGE") {
           const {
             originalInvoiceId,
@@ -850,7 +890,7 @@ export default function SalesInvoice() {
         }
       }
     } catch {
-      releaseReservedPrintWindow();
+      closeCorrectionLabelWin(); releaseReservedPrintWindow();
       printAfterSaveRef.current = false;
       shareAfterSaveRef.current = false;
       notify.warn("قيمة مالية غير صالحة — صحّح حقول المبالغ قبل الحفظ.");
@@ -881,15 +921,14 @@ export default function SalesInvoice() {
 
   function closeApprovalPrompt() {
     setCreditPrompt(null);
-    if (printAfterSaveRef.current) {
-      releaseReservedPrintWindow();
-      printAfterSaveRef.current = false;
-    }
+    closeCorrectionLabelWin();
+    releaseReservedPrintWindow();
+    printAfterSaveRef.current = false;
     shareAfterSaveRef.current = false;
   }
 
   function handleAction(action: InvoiceActionKind) {
-    if (!availableActions.includes(action)) return notify.warn("هذه العملية غير مفوّضة لحسابك.");
+    if (!availableActions.includes(action)) { releaseReservedPrintWindow(); return notify.warn("هذه العملية غير مفوّضة لحسابك."); }
     switch (action) {
       case "save":
         releaseReservedPrintWindow();
@@ -1330,7 +1369,7 @@ export default function SalesInvoice() {
       </Dialog>
 
       <DigitalFulfillmentDialog intentId={digitalIntentId} finalizing={finalizeSale.isPending} finalizeError={digitalFinalizeError}
-        onClose={() => { setDigitalIntentId(null); setDigitalFinalizeError(null); }}
+        onClose={() => { releaseReservedPrintWindow(); printAfterSaveRef.current = false; shareAfterSaveRef.current = false; setDigitalIntentId(null); setDigitalFinalizeError(null); }}
         onAllExecuted={finalizeDigitalIntent}
       />
     </div>

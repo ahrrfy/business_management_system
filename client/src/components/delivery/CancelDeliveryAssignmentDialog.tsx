@@ -1,4 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useWorkflowDocumentPrinter } from "@/hooks/useWorkflowDocumentPrinter";
+import { preopenDocumentWindow } from "@/lib/printing/print";
 import { Ban } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
@@ -64,13 +66,23 @@ export function CancelDeliveryAssignmentDialog({
     setClientRequestId(crypto.randomUUID());
   }, [open, consignment?.id]);
 
+  const workflowPrinter = useWorkflowDocumentPrinter(preview.data?.source.branchId ?? branchId);
+  const docWinRef = useRef<{ win: Window | null; branchId: number | null } | null>(null);
+
   const cancel = trpc.delivery.workflow.assignment.useMutation({
-    onSuccess: async (_result, input) => {
+    onSuccess: async (result, input) => {
+      const pending = docWinRef.current; docWinRef.current = null;
       notify.ok(
         input.action === "declareReturn"
           ? "سُجل إعلان رجوع الطرد"
           : "أُلغي إسناد التوصيل",
         "لم يثبت بهذا الإجراء استلام بضاعة أو رد مال؛ تابع الاستلام والفحص من محطته عند الرجوع.",
+      );
+      void workflowPrinter.printLatestByType(
+        result.consignmentId,
+        "PHYSICAL_RETURN_RECEIPT",
+        pending?.win ?? null,
+        pending?.branchId ?? input.branchId,
       );
       await Promise.all([
         utils.delivery.invalidate(),
@@ -82,7 +94,11 @@ export function CancelDeliveryAssignmentDialog({
       onOpenChange(false);
       onCompleted?.();
     },
-    onError: (error) => notify.err(error),
+    onError: (error) => {
+      const pending = docWinRef.current; docWinRef.current = null;
+      if (pending?.win && !pending.win.closed) pending.win.close();
+      notify.err(error);
+    },
   });
 
   return (
@@ -158,8 +174,9 @@ export function CancelDeliveryAssignmentDialog({
             <Button
               variant="outline"
               disabled={reason.trim().length < 3 || cancel.isPending}
-              onClick={() =>
-                preview.data &&
+              onClick={() => {
+                if (!preview.data) return;
+                docWinRef.current = { win: preopenDocumentWindow(), branchId: preview.data.source.branchId };
                 cancel.mutate({
                   source: {
                     kind: preview.data.source.kind,
@@ -170,8 +187,8 @@ export function CancelDeliveryAssignmentDialog({
                   action: "declareReturn",
                   reason: reason.trim(),
                   clientRequestId: `${clientRequestId}:declare`,
-                })
-              }
+                });
+              }}
             >
               إعلان الرجوع دون إثبات استلام
             </Button>
@@ -185,8 +202,9 @@ export function CancelDeliveryAssignmentDialog({
               cancel.isPending ||
               !physicalHeld
             }
-            onClick={() =>
-              preview.data &&
+            onClick={() => {
+              if (!preview.data) return;
+              docWinRef.current = { win: preopenDocumentWindow(), branchId: preview.data.source.branchId };
               cancel.mutate({
                 source: {
                   kind: preview.data.source.kind,
@@ -198,8 +216,8 @@ export function CancelDeliveryAssignmentDialog({
                 reason: reason.trim(),
                 clientRequestId,
                 physicalHeldConfirmed: physicalHeld,
-              })
-            }
+              });
+            }}
           >
             {cancel.isPending ? L.cancelling : "إلغاء الإسناد وتحرير الطلب"}
           </Button>

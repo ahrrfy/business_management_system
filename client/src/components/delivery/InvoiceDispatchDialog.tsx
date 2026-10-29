@@ -24,6 +24,9 @@ import { fmt, moneyInput } from "@/lib/money";
 import { Checkbox } from "@/components/ui/checkbox";
 import { FulfillmentSourceActions } from "@/components/fulfillment/FulfillmentSourceActions";
 import { deliveryDriverOptions, requiresDeliveryDriver } from "./driverOptions";
+import { useWorkflowDocumentPrinter } from "@/hooks/useWorkflowDocumentPrinter";
+import { preopenDocumentWindow } from "@/lib/printing/print";
+import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 
 export interface DispatchableInvoice {
   id: number;
@@ -105,14 +108,28 @@ export function InvoiceDispatchDialog({
    * صريحاً بجوارها. الحمولة لا تحمل العَلَم إلّا بعد أن يقرأ الموظّف ماذا يترك خلفه.
    */
   const [partialNotice, setPartialNotice] = useState<string | null>(null);
+  const workflowPrinter = useWorkflowDocumentPrinter(driverBranchId ?? 0);
+  const dispatchWinsRef = useRef<{ pack: Window | null; label: Window | null; branchId: number } | null>(null);
 
   const dispatch = trpc.delivery.dispatchInvoice.useMutation({
     onSuccess: async (result) => {
+      const wins = dispatchWinsRef.current; dispatchWinsRef.current = null;
       setPartialNotice(null);
       notify.ok(
         invoiceIds.length > 1 ? "تم إسناد الفواتير في شحنة واحدة" : "تم إسناد الفاتورة للتوصيل",
         `الإرسالية ${result.consignmentNumber}`,
       );
+      if (result.consignmentId && (wins?.branchId || driverBranchId)) {
+        void workflowPrinter.printShipmentAndLabel(
+          result.consignmentId,
+          wins?.pack ?? null,
+          wins?.label ?? null,
+          wins?.branchId || driverBranchId || 0,
+        );
+      } else {
+        if (wins?.pack && !wins.pack.closed) wins.pack.close();
+        if (wins?.label && !wins.label.closed) wins.label.close();
+      }
       await Promise.all([
         utils.sales.list.invalidate(),
         utils.sales.listPage.invalidate(),
@@ -122,6 +139,9 @@ export function InvoiceDispatchDialog({
       onCompleted?.();
     },
     onError: (error) => {
+      const wins = dispatchWinsRef.current; dispatchWinsRef.current = null;
+      if (wins?.pack && !wins.pack.closed) wins.pack.close();
+      if (wins?.label && !wins.label.closed) wins.label.close();
       if (isPartialDispatchRejection(error)) {
         setPartialNotice(error.message);
         return;
@@ -151,6 +171,11 @@ export function InvoiceDispatchDialog({
     };
     const fingerprint = JSON.stringify(payload);
     if (request.current.fingerprint !== fingerprint) request.current = { fingerprint, key: crypto.randomUUID() };
+    dispatchWinsRef.current = {
+      pack: preopenDocumentWindow(),
+      label: preopenShippingLabelWindow(),
+      branchId: driverBranchId ?? 0,
+    };
     dispatch.mutate({ ...payload, clientRequestId: request.current.key });
   };
 

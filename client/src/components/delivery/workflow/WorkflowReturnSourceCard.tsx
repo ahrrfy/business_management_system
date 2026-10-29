@@ -10,6 +10,9 @@ import { fmt } from "@/lib/money";
 import { confirm } from "@/lib/confirm";
 import type { WorkflowScanPreview } from "@shared/deliveryWorkflow";
 import { workflowSourceBarcode } from "./navigation";
+import { preopenDocumentWindow } from "@/lib/printing/brand";
+import { printAssignmentCancelReceipt } from "@/lib/printing/cashierLifecycleReceipts";
+import { useWorkflowDocumentPrinter } from "@/hooks/useWorkflowDocumentPrinter";
 import { WorkflowPrintActions } from "./WorkflowPrintActions";
 import {
   WorkflowCommercialReturn,
@@ -71,6 +74,7 @@ function WorkflowReturnSourceCardContent({
   onWorkOrderReturn,
 }: Props & { actorId: number }) {
   const utils = trpc.useUtils();
+  const workflowPrinter = useWorkflowDocumentPrinter(branchId);
   const scope: WorkflowReturnScope = {
     actorId,
     branchId,
@@ -365,6 +369,7 @@ function WorkflowReturnSourceCardContent({
         }
         setRecovery({ state: "SAVED", snapshot });
       }
+      const printWin = preopenDocumentWindow("width=420,height=760");
       // Only this catch classifies a mutation reply. Refresh/storage failures cannot undo success.
       try {
         if (snapshot.command.action === "declare")
@@ -378,6 +383,7 @@ function WorkflowReturnSourceCardContent({
             });
         }
       } catch (error) {
+        try { printWin?.close(); } catch { /* ignore */ }
         if (!recovering && definitiveWorkflowReturnRejection(error)) {
           const rejected = { ...snapshot, phase: "REJECTED" as const };
           persist(rejected);
@@ -411,6 +417,43 @@ function WorkflowReturnSourceCardContent({
       }
       const committed = { ...snapshot, phase: "COMMITTED" as const };
       persist(committed);
+      if (snapshot.command.action === "declare") {
+        void printAssignmentCancelReceipt(
+          {
+            action: "declareReturn",
+            consignmentNumber: current.printSource.number,
+            sourceRef: current.source.number,
+            recipientName: current.recipient.name,
+            codAmount: current.money.codAmount,
+            reason: snapshot.command.input.reason,
+          },
+          { into: printWin },
+        ).catch(() => {});
+      } else {
+        const targetConsignmentId =
+          current.relations.consignmentId ??
+          snapshot.command.input.receivedConsignmentIds?.[0];
+        if (targetConsignmentId != null) {
+          void workflowPrinter.printLatestByType(
+            targetConsignmentId,
+            "PHYSICAL_RETURN_RECEIPT",
+            printWin,
+            branchId,
+          );
+        } else {
+          void printAssignmentCancelReceipt(
+            {
+              action: "declareReturn",
+              consignmentNumber: current.printSource.number,
+              sourceRef: current.source.number,
+              recipientName: current.recipient.name,
+              codAmount: current.money.codAmount,
+              reason: snapshot.command.input.evidence,
+            },
+            { into: printWin },
+          ).catch(() => {});
+        }
+      }
       if (mounted.current) {
         setRecovery({ state: "SAVED", snapshot: committed });
         notify.ok(

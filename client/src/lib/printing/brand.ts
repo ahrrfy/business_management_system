@@ -1,11 +1,13 @@
 // ثوابت العلامة التجارية لمكتبة العربية — مشتركة بين كل قوالب الطباعة
 // المصدر البصري: تسليم «مطبوعات مكتبة العربية» ٥/٧/٢٦ (README + dc.html) — عالية الدقة.
+import Decimal from "decimal.js";
 import {
   COMPANY_IDENTITY,
   resolveCompanyIdentity,
   type CompanyIdentityData,
   type CompanyIdentityPhone,
 } from "@shared/companyIdentity";
+import { moneyInput, round2 } from "../money";
 
 /**
  * علامة الألوان — قيم HEX نهائية من تسليم التصميم (README).
@@ -146,28 +148,65 @@ export const RECEIPT_PHONES: readonly CompanyIdentityPhone[] = new Proxy(
 /** HTML-escape helper */
 export const esc = (s: unknown): string =>
   String(s ?? "").replace(
-    /[&<>"]/g,
+    /[&<>"']/g,
     (c) =>
-      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] as string,
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
+        c
+      ] as string,
   );
 
-/** Format number with English locale (comma-separated) */
-export const fmt = (n: string | number | null | undefined): string =>
-  n == null || n === "" ? "—" : Number(n).toLocaleString("en-US");
+/** Format number with English locale (comma-separated, decimal.js safe) */
+export const fmt = (n: string | number | null | undefined): string => {
+  if (n == null || (typeof n === "number" && !Number.isFinite(n))) return "—";
+  const trimmed = String(n).trim();
+  if (trimmed === "") return "—";
+  try {
+    if (!new Decimal(trimmed.replace(/,/g, "")).isFinite()) return "—";
+  } catch {
+    return "—";
+  }
+  const d = new Decimal(trimmed.replace(/,/g, "")).toDecimalPlaces(4, Decimal.ROUND_HALF_UP);
+  const [intPart, fracPart] = d.toFixed(4).split(".");
+  const sign = intPart.startsWith("-") ? "-" : "";
+  const grouped = (sign ? intPart.slice(1) : intPart).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const cleanFrac = (fracPart ?? "").replace(/0+$/, "");
+  return cleanFrac ? `${sign}${grouped}.${cleanFrac}` : `${sign}${grouped}`;
+
+
+};
 
 /** Format currency in IQD */
-export const fmtC = (n: string | number | null | undefined): string =>
-  n == null || n === "" ? "—" : `${fmt(n)} د.ع`;
-
-/** Absolute logo URL for use in print windows (prefers dynamic profile logo if configured) */
-export function logoUrl(): string {
-  const dynamicLogo = getCompanyIdentity().logoUrl;
-  if (dynamicLogo && dynamicLogo.trim()) {
-    return dynamicLogo.trim();
+export const fmtC = (n: string | number | null | undefined): string => {
+  if (n == null || (typeof n === "number" && !Number.isFinite(n))) return "—";
+  const trimmed = String(n).trim();
+  if (trimmed === "") return "—";
+  try {
+    if (!new Decimal(trimmed.replace(/,/g, "")).isFinite()) return "—";
+  } catch {
+    return "—";
   }
-  return typeof window !== "undefined"
-    ? `${window.location.origin}/logo.png`
-    : "/logo.png";
+  const f = fmt(round2(moneyInput(trimmed)).toFixed(2));
+  return f === "—" ? "—" : `${f} د.ع`;
+};
+
+/** Absolute logo URL for use in print windows (prefers dynamic profile logo if configured and safe) */
+export function logoUrl(): string {
+  const fallback =
+    typeof window !== "undefined" && /^https?:\/\//i.test(window.location?.origin ?? "")
+      ? `${window.location.origin}/logo.png`
+      : "/logo.png";
+  const dynamicLogo = getCompanyIdentity().logoUrl;
+  if (dynamicLogo) {
+    const u = dynamicLogo.trim();
+    if (
+      (u.startsWith("/") && !u.startsWith("//")) ||
+      /^https?:\/\//i.test(u) ||
+      /^data:image\//i.test(u)
+    ) {
+      return u;
+    }
+  }
+  return fallback;
 }
 
 /** Open a print window with given HTML. يعيد false إن حُجبت النافذة المنبثقة (ليُبلَّغ المستخدم). */

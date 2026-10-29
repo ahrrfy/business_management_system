@@ -26,7 +26,16 @@ import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { confirm } from "@/lib/confirm";
+import { preopenDocumentWindow } from "@/lib/printing/brand";
+import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 import { printLabel } from "@/lib/printing/print";
+import {
+  printAftercarePrepareLabel,
+  printAssignmentCancelReceipt,
+  printDeliveryFeePaymentReceipt,
+  printInvoicePaymentReceipt,
+} from "@/lib/printing/cashierLifecycleReceipts";
+import { useWorkflowDocumentPrinter } from "@/hooks/useWorkflowDocumentPrinter";
 import { WorkflowPrintActions } from "@/components/delivery/workflow/WorkflowPrintActions";
 import { AftercareSettlementPanel } from "./AftercareSettlementPanel";
 import type { AftercareStationProps } from "./AftercareStation";
@@ -51,20 +60,21 @@ function useAftercareActions(refresh: () => Promise<unknown>) {
   const keys = useRef(new Map<string, string>());
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
-  async function run<T extends object>(
+  async function run<T extends object, R = unknown>(
     operation: string,
     payload: T,
-    mutate: (input: T & { clientRequestId: string }) => Promise<unknown>,
-  ) {
+    mutate: (input: T & { clientRequestId: string }) => Promise<R>,
+  ): Promise<R | undefined> {
     const fingerprint = `${operation}:${JSON.stringify(payload)}`;
     const key = keys.current.get(fingerprint) ?? crypto.randomUUID();
     keys.current.set(fingerprint, key);
     setPending(true);
     setError("");
     try {
-      await mutate({ ...payload, clientRequestId: key });
+      const out = await mutate({ ...payload, clientRequestId: key });
       keys.current.delete(fingerprint);
       await refresh();
+      return out;
     } catch (cause) {
       setError(
         cause instanceof Error
@@ -1008,8 +1018,9 @@ function PrepareAftercare({
                 "يصرف البديل والخامات مرة واحدة بالتكلفة الحالية. المبيع الموجود بعهدتنا يثبت دون حركة مخزون جديدة.",
               variant: "warning",
             })
-          )
-            await action.run(
+          ) {
+            const labelWin = preopenShippingLabelWindow();
+            const prepRes = await action.run(
               "prepare",
               {
                 id: data.case.id,
@@ -1023,6 +1034,34 @@ function PrepareAftercare({
               },
               prepare.mutateAsync,
             );
+            if (prepRes) {
+              const execId =
+                (prepRes as { executionId?: number; id?: number }).executionId ??
+                (prepRes as { id?: number }).id ??
+                data.case.id;
+              void printAftercarePrepareLabel(
+                {
+                  executionId: execId,
+                  caseNumber: data.case.caseNumber,
+                  customerName: name,
+                  customerPhone: phone,
+                  addressText: address,
+                  notes: data.case.reason,
+                  items: lines.map((l) => {
+                    const parent = data.lines.find((dl) => dl.id === l.aftercareLineId);
+                    return {
+                      productName: parent?.productName ?? `سطر #${l.aftercareLineId}`,
+                      unitName: "",
+                      quantity: String(l.baseQuantity),
+                    };
+                  }),
+                },
+                { into: labelWin },
+              ).catch(() => {});
+            } else {
+              try { labelWin?.close(); } catch { /* ignore */ }
+            }
+          }
         }}
       >
         <PackageCheck className="size-4" />
@@ -1087,6 +1126,7 @@ function AftercareExecution({
     "delivery.fulfillment.aftercare.declareReturn",
   ).allowed;
   const action = useAftercareActions(onChange);
+  const workflowPrinter = useWorkflowDocumentPrinter(execution.branchId);
   const identity = { id: execution.id, expectedVersion: execution.version };
   const selectedParty = parties.data?.find(
     (party) => String(party.id) === partyId,
@@ -1257,8 +1297,10 @@ function AftercareExecution({
               (requiresDriver && !assignedUserId) ||
               parties.isLoading
             }
-            onClick={() =>
-              void action.run(
+            onClick={async () => {
+              const packWin = preopenDocumentWindow();
+              const labelWin = preopenShippingLabelWindow();
+              const dispRes = await action.run(
                 "dispatch",
                 {
                   ...identity,
@@ -1269,8 +1311,22 @@ function AftercareExecution({
                   externalTrackingRef: tracking || undefined,
                 },
                 dispatch.mutateAsync,
-              )
-            }
+              );
+              const cid =
+                (dispRes as { consignmentId?: number | null } | undefined)?.consignmentId ??
+                execution.consignmentId;
+              if (dispRes && cid) {
+                void workflowPrinter.printShipmentAndLabel(
+                  cid,
+                  packWin,
+                  labelWin,
+                  execution.branchId,
+                );
+              } else {
+                try { packWin?.close(); } catch { /* ignore */ }
+                try { labelWin?.close(); } catch { /* ignore */ }
+              }
+            }}
           >
             <Truck className="size-4" />
             إرسال دون تحصيل
@@ -1299,8 +1355,9 @@ function AftercareExecution({
               variant="outline"
               pending={action.pending}
               disabled={!shopHeld || proof.trim().length < 3}
-              onClick={() =>
-                void action.run(
+              onClick={async () => {
+                const win = preopenDocumentWindow("width=420,height=760");
+                const out = await action.run(
                   "cancelExecution",
                   {
                     ...identity,
@@ -1308,8 +1365,24 @@ function AftercareExecution({
                     physicalHeldConfirmed: shopHeld,
                   },
                   cancelExecution.mutateAsync,
-                )
-              }
+                );
+                if (out) {
+                  void printAssignmentCancelReceipt(
+                    {
+                      action: "cancelAssignment",
+                      consignmentNumber: execution.consignmentNumber ?? execution.barcode,
+                      sourceRef: execution.caseNumber,
+                      partyName: execution.partyName ?? null,
+                      recipientName: execution.recipientName,
+                      codAmount: "0",
+                      reason: proof,
+                    },
+                    { into: win },
+                  ).catch(() => {});
+                } else {
+                  try { win?.close(); } catch { /* ignore */ }
+                }
+              }}
             >
               إلغاء قبل الاستلام مع حفظ العهدة والتاريخ
             </SubmitButton>
@@ -1343,13 +1416,30 @@ function AftercareExecution({
               variant="outline"
               pending={action.pending}
               disabled={proof.trim().length < 3}
-              onClick={() =>
-                void action.run(
+              onClick={async () => {
+                const win = preopenDocumentWindow("width=420,height=760");
+                const out = await action.run(
                   "declareReturn",
                   { ...identity, reason: proof },
                   declareReturn.mutateAsync,
-                )
-              }
+                );
+                if (out) {
+                  void printAssignmentCancelReceipt(
+                    {
+                      action: "declareReturn",
+                      consignmentNumber: execution.consignmentNumber ?? execution.barcode,
+                      sourceRef: execution.caseNumber,
+                      partyName: execution.partyName ?? null,
+                      recipientName: execution.recipientName,
+                      codAmount: "0",
+                      reason: proof,
+                    },
+                    { into: win },
+                  ).catch(() => {});
+                } else {
+                  try { win?.close(); } catch { /* ignore */ }
+                }
+              }}
             >
               إعلان رجوع العهدة دون إثبات استلامها
             </SubmitButton>
@@ -1383,12 +1473,45 @@ function AftercareExecution({
                       : "تحقق من دليل النتيجة. فشل التوصيل يبقي العهدة وحق الصرف مستهلكاً.",
                   variant: "warning",
                 })
-              )
-                await action.run(
+              ) {
+                const win =
+                  result === "DELIVERED" ||
+                  (result === "RETURNED" && execution.consignmentId)
+                    ? preopenDocumentWindow("width=420,height=760")
+                    : null;
+                const out = await action.run(
                   "confirm",
                   { ...identity, result, proof, feeEarned },
                   confirmDelivery.mutateAsync,
                 );
+                if (out && result === "RETURNED" && execution.consignmentId) {
+                  void workflowPrinter.printLatestByType(
+                    execution.consignmentId,
+                    "PHYSICAL_RETURN_RECEIPT",
+                    win,
+                    execution.branchId,
+                  );
+                } else if (out && result === "DELIVERED") {
+                  void printInvoicePaymentReceipt(
+                    {
+                      invoiceNumber: execution.caseNumber,
+                      receiptNumber:
+                        execution.consignmentNumber ?? execution.barcode,
+                      customerName: execution.recipientName ?? null,
+                      customerPhone: execution.recipientPhone ?? null,
+                      invoiceTotal: "0",
+                      amountPaid: "0",
+                      remainingAfter: "0",
+                      reference:
+                        proof.trim() ||
+                        `تسليم دفعة معالجة ${execution.caseNumber}`,
+                    },
+                    ...(win ? [{ into: win }] : []),
+                  ).catch(() => {});
+                } else {
+                  try { win?.close(); } catch { /* ignore */ }
+                }
+              }
             }}
           >
             <RotateCcw className="size-4" />
@@ -1432,8 +1555,9 @@ function AftercareExecution({
                     "صرف نقدي فعلي من المصدر المحدد لتسديد الالتزام السابق دون مصروف ثانٍ.",
                   variant: "warning",
                 })
-              )
-                await action.run(
+              ) {
+                const feeWin = preopenDocumentWindow("width=420,height=760");
+                const out = await action.run(
                   "payFee",
                   {
                     ...identity,
@@ -1444,6 +1568,25 @@ function AftercareExecution({
                   },
                   payFee.mutateAsync,
                 );
+                if (out) {
+                  void printDeliveryFeePaymentReceipt(
+                    {
+                      partyName: execution.partyName ?? "ناقل التوصيل",
+                      amount: payAmount,
+                      paymentMethod: "CASH",
+                      consignmentNumbers: [
+                        execution.consignmentNumber ?? execution.barcode,
+                      ],
+                      shiftId:
+                        cashBucket === "DRAWER" ? Number(shiftId) : null,
+                      notes: `دفعة معالجة ${execution.caseNumber}`,
+                    },
+                    { into: feeWin },
+                  ).catch(() => {});
+                } else {
+                  try { feeWin?.close(); } catch { /* ignore */ }
+                }
+              }
             }}
           >
             صرف الأجرة بسند

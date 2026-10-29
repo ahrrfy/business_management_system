@@ -132,8 +132,26 @@ function drawImage(
 ): Promise<void> {
   return new Promise((resolve) => {
     const img = new Image();
-    img.onload = () => { ctx.drawImage(img, x, y, w, h); resolve(); };
-    img.onerror = () => resolve(); // تدهور سلس — لا يُوقف الطباعة
+    if (/^https?:\/\//i.test(src)) img.crossOrigin = "anonymous";
+    const timer = setTimeout(resolve, 250);
+    img.onload = () => {
+      clearTimeout(timer);
+      try {
+        if (!/^data:/i.test(src) && typeof document !== "undefined") {
+          const probe = document.createElement("canvas");
+          probe.width = 1;
+          probe.height = 1;
+          const probeCtx = probe.getContext("2d");
+          if (probeCtx) {
+            probeCtx.drawImage(img, 0, 0, 1, 1);
+            probeCtx.getImageData(0, 0, 1, 1);
+          }
+        }
+        ctx.drawImage(img, x, y, w, h);
+      } catch { /* تخطي آمن عند غياب ترويسة CORS لمنع تلويث Canvas الرئيسي */ }
+      resolve();
+    };
+    img.onerror = () => { clearTimeout(timer); resolve(); }; // تدهور سلس — لا يُوقف الطباعة
     img.src = src;
   });
 }
@@ -149,7 +167,7 @@ function drawImage(
 export async function docToHtml(doc: PrintDoc): Promise<string> {
   const brandHeaderHtml = doc.includeBrandHeader
     ? `<header style="text-align:center;padding:2px 0 6px;border-bottom:2px solid #000;margin-bottom:6px">
-        <img src="${logoUrl()}" style="width:44px;height:44px;object-fit:contain;margin-bottom:2px;filter:grayscale(100%) contrast(1000%)" alt="" onerror="this.style.display='none'">
+        <img src="${esc(logoUrl())}" style="width:44px;height:44px;object-fit:contain;margin-bottom:2px;filter:grayscale(100%) contrast(1000%)" alt="" onerror="this.style.display='none'">
         <div style="font-size:17px;font-weight:900;line-height:1.15;color:#000">${esc(CO.short)}</div>
         <div style="font-size:12px;font-weight:800;color:#000;margin-top:1px">${esc(CO.subtitle)}</div>
         <div style="font-size:9.5px;font-weight:800;color:#000;margin-top:2px;line-height:1.3">${esc(CO.name)}<br>${esc(CO.address)}</div>
@@ -263,12 +281,16 @@ export async function docToHtml(doc: PrintDoc): Promise<string> {
   let barcodeSection = "";
   if (doc.barcodeSet) {
     const hasVerifiedQr = Boolean(doc.barcodeSet.qrPayload.trim());
-    const [qrSvg, bc128Result] = await Promise.all([
-      hasVerifiedQr
-        ? qrCodeSvg(resolveQrUrl(doc.barcodeSet.qrPayload), { size: 100, margin: 1 })
-        : Promise.resolve(""),
-      Promise.resolve(code128Svg(doc.barcodeSet.barcode128, { moduleWidth: 1.5, height: 38, showText: true })),
-    ]);
+    const qrSvg = hasVerifiedQr
+      ? await qrCodeSvg(resolveQrUrl(doc.barcodeSet.qrPayload), { size: 100, margin: 1 }).catch(() => "")
+      : "";
+    let bc128Html = "";
+    try {
+      const bc128Result = code128Svg(doc.barcodeSet.barcode128, { moduleWidth: 1.5, height: 38, showText: true });
+      bc128Html = `<div class="bc-128">${bc128Result.svg}</div>`;
+    } catch {
+      bc128Html = `<div class="bc-128" style="font-family:monospace;font-weight:900;font-size:11px;direction:ltr">${esc(doc.barcodeSet.barcode128)}</div>`;
+    }
     const labelHtml = doc.barcodeSet.displayLabel
       .split("\n")
       .map((l) => `<span>${esc(l)}</span>`)
@@ -276,16 +298,16 @@ export async function docToHtml(doc: PrintDoc): Promise<string> {
     barcodeSection = `<div class="bc-wrap">
       ${qrSvg ? `<div class="bc-qr">${qrSvg}</div>` : ""}
       <p class="bc-lbl">${labelHtml}</p>
-      <div class="bc-128">${bc128Result.svg}</div>
+      ${bc128Html}
     </div>`;
   }
 
   return `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>${esc(doc.title)}</title>
 ${CAIRO_FONT}
 <style>
-@page{size:80mm auto;margin:2mm}
+@page{size:80mm auto;margin:0}
 *,*::before,*::after{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}
-body{font-family:'Cairo',sans-serif;width:72mm;max-width:72mm;margin:0 auto;font-size:11.5px;color:#000;line-height:1.4;direction:rtl;word-break:normal;overflow-wrap:normal;background:#fff}
+body{font-family:'Cairo',sans-serif;width:80mm;max-width:80mm;margin:0;padding:2mm;box-sizing:border-box;font-size:11.5px;color:#000;line-height:1.4;direction:rtl;word-break:normal;overflow-wrap:normal;background:#fff}
 table.receipt-grid{width:100%;border-collapse:collapse;border:1.5px solid #000;margin:3px 0;table-layout:fixed}
 table.receipt-grid th{border:1px solid #000;font-size:11.5px;font-weight:900;padding:3px 2px;background:#000;color:#fff}
 table.receipt-grid td{padding:3px 2px;font-size:11px;font-weight:800;vertical-align:top;border:1px solid #000}
@@ -344,6 +366,18 @@ export async function docToRaster(doc: PrintDoc, widthPx = 576): Promise<Raster 
     ctx!.font = font;
     return wrapMeasuredText(ctx!, text, maxWidth, maxLines);
   };
+  const BRAND_LOGO_SIZE = 72;
+  const brandShortLines = doc.includeBrandHeader ? measured("900 34px Cairo, sans-serif", CO.short, contentWidth, 1) : [];
+  const brandSubLines = doc.includeBrandHeader ? measured("800 24px Cairo, sans-serif", CO.subtitle, contentWidth, 2) : [];
+  const brandInfoLines = doc.includeBrandHeader
+    ? [
+        ...measured("700 20px Cairo, sans-serif", CO.name, contentWidth, 2),
+        ...measured("700 20px Cairo, sans-serif", CO.address, contentWidth, 2),
+      ]
+    : [];
+  const brandHeaderHeight = doc.includeBrandHeader
+    ? BRAND_LOGO_SIZE + 8 + brandShortLines.length * 40 + brandSubLines.length * 30 + brandInfoLines.length * 26 + 14
+    : 0;
   const titleLines = measured(TITLE_FONT, doc.title, contentWidth, 2);
   const subtitleLines = doc.subtitle ? measured(META_FONT, doc.subtitle, contentWidth, 3) : [];
   const metaLines = doc.meta.map((line) => measured(META_FONT, line, contentWidth));
@@ -387,9 +421,22 @@ export async function docToRaster(doc: PrintDoc, widthPx = 576): Promise<Raster 
     total: measured(ITEM_DETAIL_FONT, item.total, lastColumnWidth),
   }));
   const totalLayouts = (doc.totals ?? []).map((total, index, all) => {
+    const isTafqit = total.label.includes("كتابة") || total.label.trim() === "فقط" || total.label.includes("تفقيط");
+    if (isTafqit) {
+      const font = "800 24px Cairo, sans-serif";
+      const lineHeight = 32;
+      return {
+        isTafqit: true,
+        font,
+        lineHeight,
+        label: [] as string[],
+        value: measured(font, total.value, contentWidth, 3),
+      };
+    }
     const font = index === all.length - 1 ? "900 44px Cairo, sans-serif" : HEADER_FONT;
     const lineHeight = index === all.length - 1 ? 48 : HEADER_LINE;
     return {
+      isTafqit: false,
       font,
       lineHeight,
       label: measured(font, total.label, firstColumnWidth, 2),
@@ -430,7 +477,7 @@ export async function docToRaster(doc: PrintDoc, widthPx = 576): Promise<Raster 
     ? 10 + (hasVerifiedQr ? 144 + 6 : 0) + barcodeLabelLines.length * 18 + 6 + (fittedBarcode?.height ?? 0)
     : 0;
   const height = Math.ceil(
-    RASTER_PAD * 2 + titleLines.length * TITLE_LINE + subtitleLines.length * META_LINE
+    RASTER_PAD * 2 + brandHeaderHeight + titleLines.length * TITLE_LINE + subtitleLines.length * META_LINE
       + metaLines.reduce((sum, lines) => sum + lines.length * META_LINE, 0)
       + headingHeight + rowsHeight + itemsHeight + totalsHeight
       + (footerLines.length ? 10 + footerLines.length * FOOTER_LINE : 0)
@@ -496,6 +543,18 @@ export async function docToRaster(doc: PrintDoc, widthPx = 576): Promise<Raster 
     y += 6;
   };
 
+  if (doc.includeBrandHeader) {
+    try {
+      await drawImage(ctx, logoUrl(), (widthPx - BRAND_LOGO_SIZE) / 2, y, BRAND_LOGO_SIZE, BRAND_LOGO_SIZE);
+    } catch { /* تدهور سلس */ }
+    y += BRAND_LOGO_SIZE + 8;
+    drawLines(brandShortLines, "900 34px Cairo, sans-serif", 40, widthPx / 2, "center");
+    drawLines(brandSubLines, "800 24px Cairo, sans-serif", 30, widthPx / 2, "center");
+    drawLines(brandInfoLines, "700 20px Cairo, sans-serif", 26, widthPx / 2, "center");
+    ctx.fillRect(left, y + 6, contentWidth, 3);
+    y += 14;
+  }
+
   drawLines(titleLines, TITLE_FONT, TITLE_LINE, widthPx / 2, "center");
   drawLines(subtitleLines, META_FONT, META_LINE, widthPx / 2, "center");
   for (const lines of metaLines) drawLines(lines, META_FONT, META_LINE, widthPx / 2, "center");
@@ -516,7 +575,11 @@ export async function docToRaster(doc: PrintDoc, widthPx = 576): Promise<Raster 
     dashedRule();
   }
   for (const total of totalLayouts) {
-    drawColumns(total.label, total.value, total.font, total.lineHeight);
+    if (total.isTafqit) {
+      drawLines(total.value, total.font, total.lineHeight, widthPx / 2, "center");
+    } else {
+      drawColumns(total.label, total.value, total.font, total.lineHeight);
+    }
     y += 4;
   }
   if (footerLines.length) {

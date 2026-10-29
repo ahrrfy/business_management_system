@@ -7,6 +7,7 @@ import { fmt, formatIqd } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
+import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
 import { printShiftClose } from "@/lib/printing/print";
 import {
   SHIFT_VARIANCE_CODES,
@@ -85,7 +86,7 @@ export function ReceptionShiftCloseDialog({
               referenceNumber: r.treasuryReturn.handoverNumber,
             }
           : null,
-      });
+      }).catch(() => {}).finally(() => releaseReservedPrintWindow());
       if (r.treasuryReturn) {
         notify.ok(
           `أُغلقت الوردية ورُحّل ${formatIqd(r.countedCash)} إلى الخزينة تلقائياً`,
@@ -95,7 +96,7 @@ export function ReceptionShiftCloseDialog({
       onClose();
       await utils.shifts.current.invalidate();
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => { releaseReservedPrintWindow(); notify.err(e); },
   });
 
   // رقم الخادم نفسه الذي يفرضه closeShift (DRAWER فقط)؛ لا نعيد تركيب المعادلة من تقرير طرق الدفع.
@@ -298,15 +299,16 @@ export function ReceptionShiftCloseDialog({
               <Button
                 className="flex-1"
                 disabled={!counted || closeShiftM.isPending || (hasRecVariance && !canCloseWithVariance)}
-                onClick={() =>
+                onClick={() => {
+                  reservePrintWindow();
                   closeShiftM.mutate({
                     shiftId: shift.id,
                     countedCash: counted,
                     varianceReasonCode: hasRecVariance && varianceReasonCode ? (varianceReasonCode as ShiftVarianceCode) : undefined,
                     varianceReason: hasRecVariance && varianceReason.trim() ? varianceReason.trim() : undefined,
                     managerApprovedByUserId: hasRecVariance && !isElevatedRole && managerApprovedByUserId ? Number(managerApprovedByUserId) : undefined,
-                  })
-                }
+                  });
+                }}
               >
                 {closeShiftM.isPending
                   ? "جارٍ الإنهاء…"

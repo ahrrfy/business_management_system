@@ -10,6 +10,7 @@ export interface POSOverlaysProps {
   receipt: Receipt | null;
   onDismissReceipt: () => void;
   onPrintReceipt: () => void;
+  onPrintLabel?: () => void;
   shifting: boolean;
   shift: ShiftData | null | undefined;
   branchId: number;
@@ -34,6 +35,7 @@ export function POSOverlays({
   receipt,
   onDismissReceipt,
   onPrintReceipt,
+  onPrintLabel,
   shifting,
   shift,
   branchId,
@@ -60,6 +62,7 @@ export function POSOverlays({
           receipt={receipt}
           onDismiss={onDismissReceipt}
           onPrint={onPrintReceipt}
+          onPrintLabel={onPrintLabel}
         />
       )}
       {shifting && (

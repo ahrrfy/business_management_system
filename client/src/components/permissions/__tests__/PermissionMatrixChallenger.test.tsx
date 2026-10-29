@@ -376,7 +376,7 @@ describe("Challenger 2 Empirical Verification: M3 UI Ergonomics, Search, Table &
       // Cashier role, but with ONE custom override in delivery domain
       const customMap: AtomicPermissionsMap = {
         ...ROLE_DEFAULT_ATOMIC_PERMISSIONS.cashier,
-        "delivery.dispatch.create": true, // custom grant in delivery domain
+        "delivery.shortfall.write_off": true, // custom grant in delivery domain
       };
 
       act(() => {
