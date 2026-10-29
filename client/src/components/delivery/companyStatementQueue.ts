@@ -23,6 +23,11 @@ export interface CompanyStatementQueueCandidate extends DeliverySourceReference 
   collectedAmount: string | number;
   counterSettledAmount?: string | number | null;
   shortfallAssigned?: string | number | null;
+  remainingDue?: string | number | null;
+  codDue?: string | number | null;
+  status?: string | null;
+  consignmentStatus?: string | null;
+  returnDeclaredAt?: Date | string | null;
 }
 
 export function shipmentStatementCandidates<T extends CompanyStatementQueueCandidate>(candidates: readonly T[], consignmentId: number): T[] {
@@ -34,6 +39,10 @@ export function shipmentStatementCandidates<T extends CompanyStatementQueueCandi
 
 export function statementQueueRemaining(candidate: CompanyStatementQueueCandidate) {
   if (candidate.sourceType === "AFTERCARE_EXECUTION") return D(0);
+  const status = candidate.consignmentStatus ?? candidate.status;
+  if (candidate.returnDeclaredAt != null || (status != null && !["DISPATCHED", "PARTIAL"].includes(status))) return D(0);
+  const serverDue = candidate.remainingDue ?? candidate.codDue;
+  if (serverDue != null) return round2(D(serverDue)).clamp(0, Infinity);
   const remaining = round2(
     D(candidate.codAmount)
       .minus(D(candidate.collectedAmount))

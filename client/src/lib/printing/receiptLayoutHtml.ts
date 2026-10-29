@@ -86,7 +86,8 @@ export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
             : shop
               ? "على المكتبة — مجاناً للزبون"
               : "يقبضها المندوب من الزبون";
-        const remainingMerchandise = D(facts.remainingAmount);
+        const remainingMerchandise = D(facts.courierGoodsDue);
+        const hasCredit = D(facts.creditDue).gt(0);
         const courierFee = dl.feeCollection === "COURIER" ? fee : D(0);
         const totalToCollect = remainingMerchandise.plus(courierFee);
 
@@ -96,8 +97,8 @@ export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
         } else if (totalToCollect.isZero()) {
           customerDueRow = `
         <tr style="background:#000;color:#fff;font-weight:900;">
-          <td style="border:1px solid #000;padding:1.2mm 1.5mm;">المطلوب من الزبون</td>
-          <td style="border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">0 د.ع (مدفوع بالكامل)</td>
+          <td style="border:1px solid #000;padding:1.2mm 1.5mm;">${hasCredit ? "المطلوب عند الاستلام" : "المطلوب من الزبون"}</td>
+          <td style="border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">0 د.ع${hasCredit ? "" : " (مدفوع بالكامل)"}</td>
         </tr>`;
         } else if (remainingMerchandise.isZero() && courierFee.gt(0)) {
           customerDueRow = `
@@ -107,7 +108,7 @@ export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
         </tr>
         <tr>
           <td colspan="2" style="border:1px solid #000;padding:1mm 1.5mm;text-align:center;font-weight:800;font-size:10px;background:#f5f5f5;">
-            البضاعة مدفوعة مسبقاً بالكامل
+            ${hasCredit ? "رصيد البضاعة آجل؛ لا يحصله المندوب" : "البضاعة مدفوعة مسبقاً بالكامل"}
           </td>
         </tr>`;
         } else if (courierFee.gt(0)) {
@@ -127,6 +128,10 @@ export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
           <td style="border:1px solid #000;padding:1.2mm 1.5mm;">يدفع الزبون (متبقي البضاعة)</td>
           <td style="border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(remainingMerchandise.toFixed(2))} د.ع</td>
         </tr>`;
+        }
+
+        if (hasCredit && courierFee.isZero()) {
+          customerDueRow += `<tr><td colspan="2" style="border:1px solid #000;padding:1mm 1.5mm;text-align:center;font-weight:800;font-size:10px;">رصيد البضاعة آجل؛ لا يحصله المندوب</td></tr>`;
         }
 
         return `

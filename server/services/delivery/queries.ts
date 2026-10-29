@@ -20,7 +20,7 @@ import { computePartyExposure,
 import { deliveryCashSource } from "./cashSource";
 import { loadScopedPartyExposureInputsTx } from "./scopedExposure";
 import { getDeliveryFinancialSummary } from "./lifecycle";
-import { consignmentShortfallAssignedSql } from "./openParcelPredicates";
+import { consignmentOpenCodDueSql, consignmentShortfallAssignedSql } from "./openParcelPredicates";
 import { deliverySearchSql } from "./readSearch";
 import { deliveryReportDates } from "./reportDates";
 import { currentOnlineOrderStatus, latestOnlineOrderConsignmentId } from "../storeAdmin/onlineOrderTracking";
@@ -412,7 +412,7 @@ export async function listInTransitConsignments(branchId: number | null, partyId
        * بـ`COD_RELEASED` لحظةَ الإعلان، فإبقاؤه هنا يُضخّم «تعرّض التحصيل» في الشاشة
        * بمبلغٍ لم يعد مطلوباً — وتناقض الشاشةُ الدفترَ ورسالةَ التأكيد نفسها.
        */
-      codDue: sql<string>`CASE WHEN ${deliveryConsignments.returnDeclaredAt} IS NOT NULL THEN 0 ELSE GREATEST(CAST(${deliveryConsignments.codAmount} AS DECIMAL(15,2)) - CAST(${deliveryConsignments.collectedAmount} AS DECIMAL(15,2)) - CAST(${deliveryConsignments.counterSettledAmount} AS DECIMAL(15,2)), 0) END`,
+      codDue: consignmentOpenCodDueSql,
       recipientName: deliveryConsignments.recipientName,
       recipientPhone: deliveryConsignments.recipientPhone,
       customerPhone: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.recipientPhone}, ''), NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone2}, ''))`,
@@ -484,7 +484,7 @@ export async function listConsignmentsForParty(partyId: number, openOnly = false
       ),
     );
   // Terminal closures retain original COD history without an open settlement obligation.
-  const remainingDueSql = sql<string>`CASE WHEN ${deliveryConsignments.status} IN ('DISPATCHED','PARTIAL') THEN GREATEST(${deliveryConsignments.codAmount} - ${deliveryConsignments.collectedAmount} - ${deliveryConsignments.counterSettledAmount} - ${consignmentShortfallAssignedSql}, 0) ELSE 0 END`;
+  const remainingDueSql = consignmentOpenCodDueSql;
   const live = inArray(deliveryConsignments.status, ["DISPATCHED", "PARTIAL"]);
   const custody = sql<string>`(SELECT COALESCE(SUM(CASE WHEN dle.entryType = 'COD_COLLECTED' THEN dle.amount WHEN dle.entryType IN ('COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF') THEN -dle.amount ELSE 0 END), 0) FROM deliveryLedgerEntries dle WHERE dle.consignmentId = deliveryConsignments.id AND ${effectiveDeliveryLedgerEntrySql("dle")})`;
   switch (page.state) {
@@ -1286,6 +1286,13 @@ export interface PredictiveConsignmentItem {
   collectedAmount: string;
   counterSettledAmount: string;
   remainingAmount: string;
+  /** Current customer debt and actual courier custody are different obligations. */
+  invoicePaymentMode?: string | null;
+  invoiceRemainingAmount?: string | null;
+  deliveryFee?: string | null;
+  feeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
+  cashInCourierCustody?: string | null;
+  shortfallAssigned?: string;
   matchedOn: (
     | "PHONE" | "CUSTOMER_NAME" | "INVOICE_NUMBER" | "CONSIGNMENT_NUMBER" | "ADDRESS" | "ORDER_NUMBER")[];
   score: number;
@@ -1368,6 +1375,12 @@ export async function predictiveSearchConsignments(
   const rows = await db
     .select({
       searchScore: search.score,
+      invoicePaymentMode: invoices.paymentMode,
+      invoiceRemainingAmount: sql<string | null>`CASE WHEN ${invoices.status} IN ('CANCELLED','RETURNED','SUPERSEDED') THEN 0 ELSE ${openBalanceExpr({ total: invoices.total, paidAmount: invoices.paidAmount, returnedTotal: invoices.returnedTotal })} END`,
+      deliveryFee: deliveryConsignments.deliveryFee,
+      feeCollection: deliveryConsignments.feeCollection,
+      remainingAmount: consignmentOpenCodDueSql,
+      cashInCourierCustody: sql<string>`GREATEST((SELECT COALESCE(SUM(CASE WHEN dle.entryType = 'COD_COLLECTED' THEN dle.amount WHEN dle.entryType IN ('COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF') THEN -dle.amount ELSE 0 END), 0) FROM deliveryLedgerEntries dle WHERE dle.consignmentId = deliveryConsignments.id AND ${effectiveDeliveryLedgerEntrySql("dle")}), 0)`,
       searchRecipientPhone: deliveryConsignments.recipientPhone,
       searchDeliveryPhone: workOrders.deliveryPhone,
       searchContactPhone: workOrders.contactPhone,
@@ -1464,12 +1477,7 @@ export async function predictiveSearchConsignments(
     // Preserve the existing coarse score contract; full shared relevance ranks in SQL.
     const relevance = Number(r.searchScore);
     const score = relevance >= 800 ? 0 : relevance >= 300 ? 1 : 2;
-    const cod = money(r.codAmount ?? "0");
-    const collected = money(r.collectedAmount ?? "0");
-    const counterSettled = money(r.counterSettledAmount ?? "0");
-    const shortfall = money(r.shortfallAssigned ?? "0");
-    const netRemaining = cod.minus(collected).minus(counterSettled).minus(shortfall);
-    const remaining = netRemaining.isNegative() ? "0.00" : round2(netRemaining).toFixed(2);
+    const remaining = round2(money(r.remainingAmount)).toFixed(2);
 
     return {
       id: Number(r.id),
@@ -1497,6 +1505,12 @@ export async function predictiveSearchConsignments(
       collectedAmount: String(r.collectedAmount ?? "0.00"),
       counterSettledAmount: String(r.counterSettledAmount ?? "0.00"),
       remainingAmount: remaining,
+      invoicePaymentMode: r.invoicePaymentMode,
+      invoiceRemainingAmount: r.invoiceRemainingAmount == null ? null : round2(money(r.invoiceRemainingAmount)).toFixed(2),
+      deliveryFee: r.deliveryFee,
+      feeCollection: r.feeCollection,
+      cashInCourierCustody: round2(money(r.cashInCourierCustody)).toFixed(2),
+      shortfallAssigned: round2(money(r.shortfallAssigned)).toFixed(2),
       matchedOn: (matchedOn.length > 0 ? matchedOn : ["CONSIGNMENT_NUMBER"]) as (
         | "PHONE" | "CUSTOMER_NAME" | "INVOICE_NUMBER" | "CONSIGNMENT_NUMBER" | "ADDRESS" | "ORDER_NUMBER")[],
       score,

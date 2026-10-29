@@ -19,6 +19,15 @@ const candidate = (id: number, tracking: string): CompanyStatementQueueCandidate
 });
 
 describe("طابور كشف شركة التوصيل بالباركود", () => {
+  it("uses the server's current due instead of rebuilding a historical COD claim", () => {
+    expect(statementQueueRemaining({ ...candidate(1, "1"), remainingDue: "1250.10" }).toFixed(2)).toBe("1250.10");
+  });
+  it.each(["DELIVERED", "WRITTEN_OFF", "RETURNED", "CANCELLED"])("does not demand historical COD on a %s closure", (status) => {
+    expect(statementQueueRemaining({ ...candidate(1, "1"), status }).toFixed(2)).toBe("0.00");
+  });
+  it("does not demand return-declared exposure again", () => {
+    expect(statementQueueRemaining({ ...candidate(1, "1"), returnDeclaredAt: new Date() }).toFixed(2)).toBe("0.00");
+  });
   it("selects every invoice in a shipment without including an unrelated parcel", () => {
     const rows = [{ ...candidate(1, "PKG1"), shipmentLeaderConsignmentId: 1 },
       { ...candidate(2, ""), shipmentLeaderConsignmentId: 1 }, candidate(3, "PKG3")];

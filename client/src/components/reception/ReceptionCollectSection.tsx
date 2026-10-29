@@ -433,15 +433,7 @@ export function ReceptionCollectSection({
   const remittableTotal = remittableRows.reduce((sum, r) => {
     const due = r.physicalReturnReceived
       ? Number(r.cashInCourierCustody)
-      : Math.max(
-          0,
-          Number(r.codAmount ?? 0) -
-            Number(r.collectedAmount ?? 0) -
-            Number(
-              (r as { counterSettledAmount?: string | number })
-                .counterSettledAmount ?? 0,
-            ),
-        );
+      : statementQueueRemaining(r).toNumber();
     return sum + due;
   }, 0);
 
@@ -733,15 +725,7 @@ export function ReceptionCollectSection({
       );
       return;
     }
-    const remaining = Math.max(
-      0,
-      Number(row.codAmount ?? 0) -
-        Number(row.collectedAmount ?? 0) -
-        Number(
-          (row as { counterSettledAmount?: string | number })
-            .counterSettledAmount ?? 0,
-        ),
-    );
+    const remaining = statementQueueRemaining(row).toNumber();
     const ok = await confirm({
       title: "تأكيد تسليم الطرد للزبون",
       description: [
@@ -804,21 +788,9 @@ export function ReceptionCollectSection({
     const lines: { consignmentId: number; collectedAmount: string }[] = [];
     for (const row of remittableRows) {
       if (remaining.lte(0)) break;
-      const due = D(
-        String(
-          row.physicalReturnReceived
-            ? Number(row.cashInCourierCustody)
-            : Math.max(
-                0,
-                Number(row.codAmount ?? 0) -
-                  Number(row.collectedAmount ?? 0) -
-                  Number(
-                    (row as { counterSettledAmount?: string | number })
-                      .counterSettledAmount ?? 0,
-                  ),
-              ),
-        ),
-      );
+      const due = row.physicalReturnReceived
+        ? D(row.cashInCourierCustody)
+        : statementQueueRemaining(row);
       if (due.lte(0)) continue;
       const take = round2(remaining.gte(due) ? due : remaining);
       lines.push({ consignmentId: row.id, collectedAmount: take.toFixed(2) });
@@ -1982,7 +1954,7 @@ export function ReceptionCollectSection({
                     ) : (
                       <div className="space-y-2">
                         {displayedOpenRows.map((row) => {
-                          const cod = Number(row.codAmount ?? 0);
+                          const cod = statementQueueRemaining(row);
                           const isDelivered = row.parcelStatus === "DELIVERED";
                           const isInTransit = !isDelivered;
                           const r = row as {
@@ -2054,7 +2026,7 @@ export function ReceptionCollectSection({
                                   <span>
                                     المطلوب (COD):{" "}
                                     <strong className="text-foreground tabular-nums">
-                                      {fmt(String(cod))} د.ع
+                                      {fmt(cod.toFixed(2))} د.ع
                                     </strong>
                                   </span>
                                 </div>

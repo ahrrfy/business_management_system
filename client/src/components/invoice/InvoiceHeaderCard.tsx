@@ -1,4 +1,5 @@
 import { Link } from "wouter";
+import { invoiceDeliveryCollection, isInvoiceCodInTransit } from "@shared/invoiceDeliveryCollection";
 import { Truck } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -25,6 +26,7 @@ export function InvoiceHeaderCard({
 }: InvoiceHeaderCardProps) {
   const hasDiscount = D(data.discountAmount ?? "0").gt(0);
   const hasTax = D(data.taxAmount ?? "0").gt(0);
+  const collection = invoiceDeliveryCollection({ remainingAmount: remaining.toFixed(2), paymentMode: data.paymentMode, fee: data.courierFee, feeCollection: data.courierFeeCollection, status: data.status });
 
   return (
     <Card>
@@ -32,8 +34,9 @@ export function InvoiceHeaderCard({
         <CardTitle className="text-base flex items-center justify-between gap-2">
           <CopyInline value={data.invoiceNumber} />
           <div className="flex items-center gap-2">
-            {/* بالطريق مع المندوب ⇒ الحقيقة «عند الاستلام» لا طريقة السلة المخزَّنة */}
-            {data.consignmentStatus === "DISPATCHED" || data.consignmentStatus === "PARTIAL" ? (
+            {data.paymentMode === "CREDIT" ? (
+              <span className="text-xs rounded-full px-2.5 py-0.5 font-semibold badge-stock-low">آجل — على حساب العميل</span>
+            ) : isInvoiceCodInTransit(data) ? (
               <span
                 className="text-xs rounded-full px-2.5 py-0.5 font-semibold badge-stock-low"
                 title={
@@ -167,18 +170,15 @@ export function InvoiceHeaderCard({
                   </span>
                   <span className="font-black tabular-nums text-[var(--sem-warn)]" dir="ltr">{fmt(data.courierFee)}</span>
                 </div>
-                {data.courierFeeCollection !== "SHOP" && (
+                {D(collection.atDoorDue).gt(0) && (
                   <div className="mt-1.5 flex items-center justify-between border-t border-[var(--sem-warn)]/30 pt-1.5 font-black text-[var(--sem-warn)]">
-                    <span>المجموع النهائي (يدفعه الزبون شاملاً التوصيل)</span>
+                    <span>المطلوب عند التسليم{data.paymentMode === "CREDIT" ? " (أجرة التوصيل فقط)" : " شاملاً التوصيل"}</span>
                     <span className="tabular-nums" dir="ltr">
-                      {fmt(
-                        round2(
-                          D(data.total).plus(D(data.courierFee ?? 0)),
-                        ).toFixed(2),
-                      )}
+                      {fmt(collection.atDoorDue)}
                     </span>
                   </div>
                 )}
+                {D(collection.creditDue).gt(0) && <div className="mt-1 text-xs">رصيد آجل على العميل: {fmt(collection.creditDue)} د.ع — خارج تحصيل المندوب</div>}
               </div>
             )}
             {data.consignmentNumber && data.consignmentStatus !== "CANCELLED" && (

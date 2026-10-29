@@ -35,6 +35,13 @@ export const consignmentShortfallAssignedSql = sql<string>`(SELECT COALESCE(SUM(
     AND ${effectiveDeliveryLedgerEntrySql("dle")}
     AND dle.entryType IN ('SHORTFALL_ASSIGNED','SHORTFALL_SETTLED'))`;
 
+/** Open carrier exposure, distinct from both customer credit and cash already in custody. */
+export const consignmentOpenCodDueSql = sql<string>`CASE
+  WHEN ${deliveryConsignments.status} IN ('DISPATCHED','PARTIAL') AND ${deliveryConsignments.returnDeclaredAt} IS NULL
+  THEN GREATEST(${deliveryConsignments.codAmount} - ${deliveryConsignments.collectedAmount}
+    - ${deliveryConsignments.counterSettledAmount} - ${consignmentShortfallAssignedSql}, 0)
+  ELSE 0 END`;
+
 /** نفس المعنى لطردٍ واحدٍ داخل معاملة (حلقة التوريد تقرأ الطرود واحداً واحداً تحت القفل). */
 export async function shortfallAssignedForConsignmentTx(tx: Tx, consignmentId: number): Promise<Decimal> {
   const row = (

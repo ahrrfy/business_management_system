@@ -267,6 +267,74 @@ describe("G4 — استرداد عجز مشطوب", () => {
   });
 });
 
+describe("G3-LIVE — الشطب لا يعيد مطالبة الكاونتر أو عجز الجهة", () => {
+  async function partlyCollected(reqId: string, assignShortfall: boolean) {
+    const shift = await openReception();
+    const delivery = await dispatchedCreditInvoice(shift.shiftId, reqId);
+    const [cn] = await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, delivery.consignmentId));
+    expect(cn.fulfillmentRequestId).toBeNull();
+    for (const toStatus of ["ACCEPTED", "PICKED_UP", "OUT_FOR_DELIVERY"] as const) {
+      await transitionConsignmentParcel({ consignmentId: delivery.consignmentId, toStatus, clientRequestId: `${reqId}-${toStatus}` }, { userId: 3 });
+    }
+    await confirmConsignmentDelivery({
+      consignmentId: delivery.consignmentId,
+      clientRequestId: `${reqId}-delivered`,
+      statementWitness: {
+        partyId: 1, statementNumber: `${reqId}-statement`, kind: "COMPANY_STATEMENT", collectedAmount: "6000.00",
+        ...(assignShortfall ? { shortfallReason: "OTHER" } : {}),
+      },
+    }, CASHIER);
+    return { ...delivery, shiftId: shift.shiftId };
+  }
+
+  it("يشطب النقد الباقي للإرسالية القديمة بعد قبض الكاونتر دون تسديد الفاتورة أو تسجيل خسارة مرتين", async () => {
+    const { invoiceId, consignmentId, shiftId } = await partlyCollected("g3-live-counter", false);
+    await processPayment({ invoiceId, amount: "4000.00", method: "CASH", shiftId, clientRequestId: "g3-live-counter-pay" }, CASHIER);
+    const [before] = await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, consignmentId));
+    expect(before.counterSettledAmount).toBe("4000.00");
+    expect(await partyBalance()).toBe("6000.00");
+    const paymentsBefore = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PAYMENT_IN"));
+    const input = { branchId: 1, partyId: 1, amount: "6000.00", reason: "فقد النقد الفعلي دون دفعة الكاونتر", consignmentId, clientRequestId: "g3-live-counter-writeoff", ...WRITE_OFF_EVIDENCE };
+    await writeOffDeliveryShortfall(input, OWNER);
+    await writeOffDeliveryShortfall(input, OWNER);
+    const [invoice] = await db().select().from(s.invoices).where(eq(s.invoices.id, invoiceId));
+    const [customer] = await db().select().from(s.customers).where(eq(s.customers.id, 1));
+    const ledger = await db().select().from(s.deliveryLedgerEntries).where(eq(s.deliveryLedgerEntries.consignmentId, consignmentId));
+    const losses = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "DELIVERY_WRITEOFF"));
+    expect(invoice.paidAmount).toBe("10000.00");
+    expect(customer.currentBalance).toBe("0.00");
+    expect(await partyBalance()).toBe("0.00");
+    expect(ledger.filter((row) => row.entryType === "COD_WRITTEN_OFF").map((row) => row.amount)).toEqual(["6000.00"]);
+    expect(losses).toHaveLength(1);
+    expect(losses[0]).toMatchObject({ amount: "6000.00", cost: "6000.00", profit: "-6000.00" });
+    expect(await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PAYMENT_IN"))).toHaveLength(paymentsBefore.length);
+  });
+
+  it("يبقي العجز المثبت ديناً مستقلاً ولا يشطبه ثانية ضمن النقد المفقود", async () => {
+    const { invoiceId, consignmentId } = await partlyCollected("g3-live-shortfall", true);
+    expect(await partyBalance()).toBe("10000.00");
+    const input = { branchId: 1, partyId: 1, amount: "6000.00", reason: "فقد النقد وحده والعجز يبقى على الجهة", consignmentId, clientRequestId: "g3-live-shortfall-writeoff", ...WRITE_OFF_EVIDENCE };
+    await expect(writeOffDeliveryShortfall({ ...input, amount: "10000.00", clientRequestId: "g3-live-shortfall-double" }, OWNER)).rejects.toThrow(/بكامل متبقّيها/);
+    expect(await partyBalance()).toBe("10000.00");
+    await writeOffDeliveryShortfall(input, OWNER);
+    await writeOffDeliveryShortfall(input, OWNER);
+    const [invoice] = await db().select().from(s.invoices).where(eq(s.invoices.id, invoiceId));
+    const [customer] = await db().select().from(s.customers).where(eq(s.customers.id, 1));
+    const ledger = await db().select().from(s.deliveryLedgerEntries).where(eq(s.deliveryLedgerEntries.consignmentId, consignmentId));
+    const losses = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "DELIVERY_WRITEOFF"));
+    expect(invoice.paidAmount).toBe("10000.00");
+    expect(customer.currentBalance).toBe("0.00");
+    expect(await partyBalance()).toBe("4000.00");
+    expect(ledger.filter((row) => row.entryType === "SHORTFALL_ASSIGNED").map((row) => row.amount)).toEqual(["4000.00"]);
+    expect(ledger.some((row) => row.entryType === "SHORTFALL_SETTLED")).toBe(false);
+    expect(ledger.filter((row) => row.entryType === "COD_WRITTEN_OFF").map((row) => row.amount)).toEqual(["6000.00"]);
+    expect(losses).toHaveLength(1);
+    expect(losses[0]).toMatchObject({ amount: "6000.00", cost: "6000.00", profit: "-6000.00" });
+    await expect(writeOffDeliveryShortfall({ ...input, amount: "4000.00", clientRequestId: "g3-live-shortfall-again" }, OWNER)).rejects.toThrow(/بعد إغلاقها المالي/);
+    expect(await partyBalance()).toBe("4000.00");
+  });
+});
+
 describe("G3-SOD — سلطة الشطب وفصل سلسلة عهدة COD", () => {
   it("لا يكفي manager/store FULL، ولا يمر شطب المالك بلا إثبات", async () => {
     await expect(writeOffDeliveryShortfall(

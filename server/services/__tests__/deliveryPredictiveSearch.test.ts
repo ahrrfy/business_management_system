@@ -11,11 +11,11 @@
  * 7. التحقق من عزل الفروع (branchId) والجهات (partyId)
  * 8. حظر الاستعلامات الأقل من حرفين أو رقمين
  */
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { predictiveSearchConsignments } from "../delivery/queries";
+import { listInTransitConsignments, listConsignmentsForParty, predictiveSearchConsignments } from "../delivery/queries";
 
 const TABLES = [
   "deliveryEvents",
@@ -345,6 +345,44 @@ async function seed() {
 }
 
 describe("predictiveSearchConsignments — محرك البحث التنبؤي الذكي للطرود", () => {
+  it("exposes credit debt separately from the courier obligation", async () => {
+    await db().update(s.invoices).set({ paymentMode: "CREDIT", paidAmount: "20000.00" }).where(eq(s.invoices.id, 205));
+    await db().update(s.deliveryConsignments).set({ codAmount: "0.00" }).where(eq(s.deliveryConsignments.id, 99));
+    const row = (await predictiveSearchConsignments("0099", { branchId: 1 })).find(r => r.id === 99);
+    expect(row).toMatchObject({ remainingAmount: "0.00", invoicePaymentMode: "CREDIT", invoiceRemainingAmount: "5000.00", deliveryFee: "6000.00" });
+  });
+
+  it("uses the same shortfall-adjusted due for transit, search and company statement", async () => {
+    await db().insert(s.deliveryLedgerEntries).values({ eventKey: "predictive:shortfall", partyId: 1, branchId: 1, consignmentId: 88, entryType: "SHORTFALL_ASSIGNED", amount: "4000.00", createdBy: 1 });
+    const search = (await predictiveSearchConsignments("0088", { branchId: 1 })).find(r => r.id === 88);
+    const transit = (await listInTransitConsignments(1, 1)).rows.find(r => r.id === 88);
+    const statement = (await listConsignmentsForParty(1, false, {}, 1)).rows.find(r => r.id === 88);
+    expect(search?.remainingAmount).toBe("11000.00");
+    expect(String(transit?.codDue)).toBe("11000.00");
+    expect(String(statement?.remainingDue)).toBe("11000.00");
+  });
+
+  it("does not revive historical COD after write-off", async () => {
+    await db().update(s.deliveryConsignments).set({ status: "WRITTEN_OFF", parcelStatus: "DELIVERED" }).where(eq(s.deliveryConsignments.id, 88));
+    const row = (await predictiveSearchConsignments("0088", { branchId: 1 })).find(r => r.id === 88);
+    expect(row?.remainingAmount).toBe("0.00");
+  });
+
+  it("releases return-declared exposure without erasing cash in courier custody", async () => {
+    await db().update(s.deliveryConsignments).set({ returnDeclaredAt: new Date() }).where(eq(s.deliveryConsignments.id, 88));
+    await db().insert(s.deliveryLedgerEntries).values({ eventKey: "predictive:cash", partyId: 1, branchId: 1, consignmentId: 88, entryType: "COD_COLLECTED", amount: "5000.00", createdBy: 1 });
+    const row = (await predictiveSearchConsignments("0088", { branchId: 1 })).find(r => r.id === 88);
+    expect(row).toMatchObject({ remainingAmount: "0.00", cashInCourierCustody: "5000.00" });
+    const statement = (await listConsignmentsForParty(1, false, {}, 1)).rows.find(r => r.id === 88);
+    expect(String(statement?.remainingDue)).toBe("0.00");
+  });
+
+  it("retains unremitted custody after the customer's invoice is fully paid", async () => {
+    await db().update(s.invoices).set({ paidAmount: "15000.00", status: "PAID" }).where(eq(s.invoices.id, 104));
+    await db().insert(s.deliveryLedgerEntries).values({ eventKey: "predictive:unremitted", partyId: 1, branchId: 1, consignmentId: 88, entryType: "COD_COLLECTED", amount: "15000.00", createdBy: 1 });
+    const row = (await predictiveSearchConsignments("0088", { branchId: 1 })).find(r => r.id === 88);
+    expect(row).toMatchObject({ remainingAmount: "15000.00", invoiceRemainingAmount: "0.00", cashInCourierCustody: "15000.00" });
+  });
   beforeEach(async () => {
     await reset();
     await seed();

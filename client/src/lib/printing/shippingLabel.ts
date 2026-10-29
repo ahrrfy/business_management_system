@@ -50,7 +50,9 @@ export interface ShippingLabelData {
   /** المبلغ المدفوع مسبقاً (عربون/دفعة أولى). */
   paidAmount?: string | null;
   /** الفاتورة المدفوعة بالكامل تُوسَم مدفوعة ولا تطلب من المندوب تحصيل صفرٍ «نقداً». */
-  paymentState?: "COD" | "PREPAID";
+  paymentState?: "COD" | "PREPAID" | "CREDIT" | "CLOSED";
+  /** Customer debt payable to the shop, outside the amount collected at the door. */
+  creditAmount?: string | null;
   deliveryPartyName?: string | null;
   /** رقم التتبع أو مرجع إيصال شركة التوصيل (اختياري). */
   externalTrackingRef?: string | null;
@@ -137,6 +139,9 @@ export async function shippingLabelHtml(
     safeItems.reduce((sum, it) => sum.plus(moneyInput(it.quantity)), D(0)),
   ).toNumber();
   const isPrepaid = o.paymentState === "PREPAID";
+  const isClosed = o.paymentState === "CLOSED";
+  const isCredit = o.paymentState === "CREDIT";
+  const hasCredit = moneyInput(o.creditAmount).gt(0);
   const totalKnown = o.total != null;
   const dueAmountText = isPrepaid
     ? "0"
@@ -145,16 +150,31 @@ export async function shippingLabelHtml(
       : "غير متاح تاريخياً";
   const totalWords =
     !isPrepaid && totalKnown ? formatArabicMoneyWords(o.total!) : "";
-  const collectionTitle = isPrepaid
-    ? "شحنة مدفوعة مسبقاً (PREPAID)"
-    : totalKnown
-      ? "الدفع عند الاستلام (COD)"
-      : "المبلغ وقت الإسناد غير متاح";
-  const collectionInstruction = isPrepaid
-    ? "لا يُحصَّل أي مبلغ نقدي من المستلم"
-    : totalKnown
-      ? "تحصيل نقدي إلزامي قبل تسليم الطرد"
-      : "تحقق من المطالبة الحالية قبل التسليم";
+  const collectionTitle = isClosed
+    ? "مستند مغلق؛ لا تحصيل"
+    : isCredit
+      ? "بضاعة آجلة (CREDIT)"
+      : isPrepaid
+        ? "شحنة مدفوعة مسبقاً (PREPAID)"
+        : hasCredit && totalKnown
+          ? "المطلوب عند الاستلام (أجرة التوصيل فقط)"
+          : totalKnown
+            ? "الدفع عند الاستلام (COD)"
+            : "المبلغ وقت الإسناد غير متاح";
+  const collectionInstruction = isClosed
+    ? "لا يطلب من المستلم مبلغ لهذا المستند"
+    : isCredit
+      ? "لا يحصّل المندوب رصيد البضاعة"
+      : hasCredit
+        ? "تحصيل أجرة التوصيل فقط"
+        : isPrepaid
+          ? "لا يُحصَّل أي مبلغ نقدي من المستلم"
+          : totalKnown
+            ? "تحصيل نقدي إلزامي قبل تسليم الطرد"
+            : "تحقق من المطالبة الحالية قبل التسليم";
+  const creditNotice = hasCredit
+    ? `<div style="font-size:${isCompact ? "5.3" : "6"}pt;font-weight:800;margin-top:0.2mm;">رصيد البضاعة آجل؛ لا يحصله المندوب: <span dir="ltr">${fmt(o.creditAmount)} د.ع</span></div>`
+    : "";
   const logo = logoUrl();
 
   // حساب سعة الأصناف ديناميكياً حسب الارتفاع المتاح لمنع تجاوز صفحة واحدة
@@ -333,6 +353,7 @@ export async function shippingLabelHtml(
         <td style="width:58%;border-left:1.5px solid #000;padding:0.6mm 0.8mm;background:${isPrepaid ? "#000" : "#fff"};color:${isPrepaid ? "#fff" : "#000"};">
           <div style="font-size:7.5pt;font-weight:900;">${collectionTitle}</div>
           <div style="font-size:6pt;font-weight:800;margin-top:0.2mm;">${collectionInstruction}</div>
+          ${creditNotice}
           ${totalWords ? `<div style="font-size:6.2pt;font-weight:900;margin-top:0.3mm;border-top:1px dashed #000;padding-top:0.2mm;">${totalWords}</div>` : ""}
         </td>
         <td style="width:42%;text-align:center;padding:0.6mm 0.8mm;vertical-align:middle;">
@@ -459,6 +480,7 @@ export async function shippingLabelHtml(
             <td style="width:55%;border-left:1.5px solid #000;padding:0.8mm;background:${isPrepaid ? "#000" : "#fff"};color:${isPrepaid ? "#fff" : "#000"};">
               <div style="font-size:7.5pt;font-weight:900;">${collectionTitle}</div>
               <div style="font-size:6pt;font-weight:800;">${collectionInstruction}</div>
+              ${creditNotice}
               ${totalWords ? `<div style="font-size:6.5pt;font-weight:900;margin-top:0.3mm;border-top:1px dashed #000;">${totalWords}</div>` : ""}
             </td>
             <td style="width:45%;text-align:center;padding:0.8mm;vertical-align:middle;">
@@ -573,12 +595,13 @@ export async function shippingLabelHtml(
       <tr>
         <td ${qr ? "" : 'colspan="2"'} style="${qr ? "border-left:1.5px solid #000;" : ""}padding:0.5mm 0.8mm;text-align:right;vertical-align:middle;background:${isPrepaid ? "#000" : "#fff"};color:${isPrepaid ? "#fff" : "#000"};">
           <div style="display:flex;justify-content:space-between;align-items:baseline;gap:1mm;">
-            <span style="font-size:6pt;font-weight:900;">${isPrepaid ? "مدفوع مسبقاً (PREPAID)" : totalKnown ? "المطلوب عند الاستلام (COD)" : "المبلغ غير متاح"}</span>
+            <span style="font-size:6pt;font-weight:900;">${isClosed ? "مستند مغلق؛ لا تحصيل" : isCredit ? "بضاعة آجلة (CREDIT)" : isPrepaid ? "مدفوع مسبقاً (PREPAID)" : hasCredit && totalKnown ? "أجرة التوصيل فقط" : totalKnown ? "المطلوب عند الاستلام (COD)" : "المبلغ غير متاح"}</span>
             <span style="font-size:5.6pt;font-weight:800;white-space:nowrap;">${esc(o.deliveryPartyName || "توصيل")} • ${itemCount} قطعة</span>
           </div>
           <div style="font-size:12.5pt;font-weight:900;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;line-height:1.05;margin-top:0.2mm;">
             ${dueAmountText} ${totalKnown || isPrepaid ? '<span style="font-size:7pt;">د.ع</span>' : ""}
           </div>
+          ${creditNotice}
         </td>
         ${
           qr

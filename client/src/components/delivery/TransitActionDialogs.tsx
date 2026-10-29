@@ -14,6 +14,7 @@ import {
   type ShortfallReason,
 } from "@shared/shortfallReason";
 import type { RouterOutputs } from "@/lib/trpc";
+import { statementQueueRemaining } from "./companyStatementQueue";
 
 type InTransitRow = RouterOutputs["delivery"]["inTransit"]["rows"][number];
 
@@ -25,7 +26,7 @@ type InTransitRow = RouterOutputs["delivery"]["inTransit"]["rows"][number];
  *   ٢) «مبلغ مختلف» — مبلغ + سبب عجز إلزاميّ من enum.
  */
 export function StaffConfirmDialog({ row, pending, onCancel, onConfirm }: { row: InTransitRow; pending: boolean; onCancel: () => void; onConfirm: (collectedAmount: string, evidence: string, shortfallReason: ShortfallReason | undefined) => void }) {
-  const remaining = Math.max(0, Number(row.codAmount) - Number(row.collectedAmount ?? 0) - Number(row.counterSettledAmount ?? 0));
+  const remaining = statementQueueRemaining(row).toNumber();
   const [mode, setMode] = useState<"exact" | "different">("exact");
   const [amount, setAmount] = useState(String(remaining));
   const [note, setNote] = useState("");
@@ -296,7 +297,7 @@ export function DeclareReturnDialog({ row, pending, onCancel, onConfirm }: { row
 // ───────────────────────── إثبات تسليم يدويّ ─────────────────────────
 
 export function ManualProofDialog({ row, pending, onCancel, onConfirm }: { row: InTransitRow; pending: boolean; onCancel: () => void; onConfirm: (collectedAmount: string, evidence: string) => void }) {
-  const remaining = Math.max(0, Number(row.codAmount) - Number(row.collectedAmount ?? 0) - Number(row.counterSettledAmount ?? 0));
+  const remaining = statementQueueRemaining(row).toNumber();
   const [amount, setAmount] = useState(String(remaining));
   const [evidence, setEvidence] = useState("");
   return (

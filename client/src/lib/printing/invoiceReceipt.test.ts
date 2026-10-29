@@ -1,5 +1,39 @@
 import { describe, expect, it } from "vitest";
 import { invoiceToReceipt } from "./invoiceReceipt";
+import { invoicePrintAmounts } from "./receiptLayoutInvoiceAmounts";
+import { buildBrowserReceiptHtml } from "./receiptLayoutHtml";
+import { buildSalesInvoiceV2Html } from "./printTemplatesV2";
+
+describe("credit invoice delivery collection", () => {
+  const creditInvoice = {
+    invoiceNumber: "101567", invoiceDate: "2026-10-24T17:25:00Z", status: "PARTIALLY_PAID",
+    subtotal: "35000.00", total: "35000.00", paidAmount: "30000.00", returnedTotal: "0.00",
+    paymentMode: "CREDIT", courierName: "ناقل", courierFee: "5000.00", items: [],
+  };
+
+  it("keeps the customer debt outside courier goods collection", () => {
+    expect(invoicePrintAmounts(creditInvoice)).toMatchObject({
+      remainingAmount: "5000.00", courierGoodsDue: "0.00", creditDue: "5000.00",
+    });
+  });
+
+  it.each(["COURIER", "COUNTER", "SHOP"] as const)("preserves credit debt without prepaid claims for %s fee collection", (feeCollection) => {
+    const input = { ...creditInvoice, courierFeeCollection: feeCollection };
+    const htmls = [
+      buildBrowserReceiptHtml(invoiceToReceipt(input)),
+      buildSalesInvoiceV2Html({ ...input, courierDelivery: { partyName: "ناقل", fee: "5000.00", feeCollection } }),
+    ];
+    for (const html of htmls) {
+      expect(html).toContain("5,000");
+      expect(html).toContain("رصيد البضاعة آجل؛ لا يحصله المندوب");
+      expect(html).not.toContain("10,000");
+      expect(html).not.toContain("مدفوع بالكامل");
+      expect(html).not.toContain("مدفوعة مسبقاً");
+      if (feeCollection === "COURIER") expect(html).toContain("أجرة التوصيل فقط");
+      else expect(html).toContain("0 د.ع");
+    }
+  });
+});
 
 describe("invoiceToReceipt", () => {
   const returnedInvoice = {
