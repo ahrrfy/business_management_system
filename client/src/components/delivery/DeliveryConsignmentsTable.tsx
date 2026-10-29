@@ -11,6 +11,7 @@ import {
   DELIVERY_AGE_CLS,
 } from "@shared/deliveryAging";
 import type { ReturnConsignmentTarget } from "./ReturnConsignmentDialog";
+import { statementQueueRemaining } from "./companyStatementQueue";
 
 type OpenConsignment = RouterOutputs["delivery"]["openConsignments"]["rows"][number];
 
@@ -33,14 +34,7 @@ export function DeliveryConsignmentsTable({
   onReturn: (target: ReturnConsignmentTarget) => void;
   onOpenTimeline: (consignmentId: number) => void;
 }) {
-  const remainingOf = (c: OpenConsignment) =>
-    Math.max(
-      0,
-      Number(c.codAmount) -
-        Number(c.collectedAmount) -
-        Number(c.counterSettledAmount ?? "0") -
-        Number(c.shortfallAssigned ?? "0"),
-    );
+  const remainingOf = (c: OpenConsignment) => statementQueueRemaining(c).toNumber();
 
   const isRemittable = (c: OpenConsignment) =>
     c.parcelStatus === "DELIVERED" &&

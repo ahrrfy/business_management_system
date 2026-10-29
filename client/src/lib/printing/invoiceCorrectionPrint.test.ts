@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { invoiceToShippingLabel } from "./invoiceShippingLabel";
 import { invoiceToReceipt } from "./invoiceReceipt";
 import { invoiceDetailPrintData } from "./invoiceDetailPrintData";
+import { shippingLabelHtml } from "./shippingLabel";
 
 describe("طباعة الفاتورة المعدلة", () => {
   const savedInvoice = {
@@ -77,6 +78,50 @@ describe("طباعة الفاتورة المعدلة", () => {
     });
     expect(label.paymentState).toBe("PREPAID");
     expect(label.total).toBe("0.00");
+  });
+
+  it.each(["COURIER", "COUNTER", "SHOP"] as const)("يبقي دين الفاتورة الآجلة خارج تحصيل ليبل الشحن مع أجرة %s", (feeCollection) => {
+    const label = invoiceToShippingLabel({
+      invoiceNumber: "101567", invoiceDate: "2026-10-24T17:25:00Z", paymentMode: "CREDIT",
+      total: "35000", paidAmount: "30000", courierFee: "5000", courierFeeCollection: feeCollection, items: [],
+    });
+    expect(label.total).toBe(feeCollection === "COURIER" ? "5000.00" : "0.00");
+    expect(label.paymentState).toBe(feeCollection === "COURIER" ? "COD" : "CREDIT");
+    expect(label.creditAmount).toBe("5000.00");
+  });
+
+  it.each(["CANCELLED", "RETURNED", "SUPERSEDED"])("لا يطلب ليبل الشحن تحصيل بضائع أو أجرة لفاتورة %s", async (status) => {
+    const label = invoiceToShippingLabel({
+      invoiceNumber: "INV-DEAD", invoiceDate: "2026-10-24T17:25:00Z", status, paymentMode: "COD",
+      total: "35000", paidAmount: "30000", courierFee: "5000", courierFeeCollection: "COURIER", items: [],
+    });
+    expect(label.total).toBe("0.00");
+    expect(label.paymentState).toBe("CLOSED");
+    const html = await shippingLabelHtml(label);
+    expect(html).toContain("مستند مغلق؛ لا تحصيل");
+    expect(html).not.toContain("مدفوعة مسبقاً");
+    expect(html).not.toContain("تحصيل نقدي إلزامي");
+  });
+
+  it.each([
+    { widthMm: 80, heightMm: 120 },
+    { widthMm: 120, heightMm: 80 },
+    { widthMm: 80, heightMm: 50 },
+  ])("يفصل تحصيل الأجرة عن الحساب الآجل في ليبل $widthMm × $heightMm", async (size) => {
+    for (const courierCollectsFee of [true, false]) {
+      const label = invoiceToShippingLabel({
+        invoiceNumber: "101567", invoiceDate: "2026-10-24T17:25:00Z", paymentMode: "CREDIT",
+        total: "35000", paidAmount: "30000", courierFee: "5000", courierFeeCollection: courierCollectsFee ? "COURIER" : "COUNTER", items: [],
+      });
+      const html = await shippingLabelHtml(label, size);
+      expect(html).toContain("رصيد البضاعة آجل؛ لا يحصله المندوب");
+      expect(html).toContain("5,000");
+      expect(html).not.toContain("PREPAID");
+      expect(html).not.toContain("10,000");
+      expect(html).not.toContain("تحصيل نقدي إلزامي");
+      if (courierCollectsFee) expect(html).toContain("أجرة التوصيل فقط");
+      else expect(html).toContain("بضاعة آجلة");
+    }
   });
 
   it("لا يكرر بادئة INV في باركود الفواتير التاريخية", () => {

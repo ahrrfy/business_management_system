@@ -10,7 +10,7 @@ import {
   User,
 } from "lucide-react";
 import type { RouterOutputs } from "@/lib/trpc";
-import { fmt } from "@/lib/money";
+import { D, fmt } from "@/lib/money";
 import { cn } from "@/lib/utils";
 
 export type PredictiveItem = RouterOutputs["delivery"]["predictiveSearch"][number];
@@ -172,8 +172,12 @@ export const PredictiveItemRow = React.memo(function PredictiveItemRow({
         </div>
 
         <div className="text-end">
-          <span className="text-muted-foreground me-1">المطلوب (COD):</span>
+          <span className="text-muted-foreground me-1">التزام الجهة (COD):</span>
           <strong className="text-foreground font-mono font-bold">{fmt(item.remainingAmount)} د.ع</strong>
+          {item.invoicePaymentMode === "CREDIT" && item.invoiceRemainingAmount != null && <div className="text-muted-foreground">رصيد آجل على العميل: <strong className="text-foreground">{fmt(item.invoiceRemainingAmount)} د.ع</strong></div>}
+          {item.feeCollection === "COURIER" && D(item.deliveryFee).gt(0) && <div className="text-muted-foreground">أجرة المندوب من العميل: {fmt(item.deliveryFee)} د.ع</div>}
+          {D(item.cashInCourierCustody).gt(0) && <div className="text-muted-foreground">نقد بعهدة الجهة: <strong className="text-foreground">{fmt(item.cashInCourierCustody)} د.ع</strong></div>}
+          {D(item.shortfallAssigned).gt(0) && <div className="text-muted-foreground">عجز مثبت على الجهة: <strong className="text-foreground">{fmt(item.shortfallAssigned)} د.ع</strong></div>}
         </div>
       </div>
     </div>

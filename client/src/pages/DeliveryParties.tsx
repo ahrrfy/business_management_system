@@ -22,6 +22,7 @@ import DeliveryPartyDetail from "@/pages/DeliveryPartyDetail";
 import { PartyBoardSection } from "@/components/delivery/PartyBoardSection";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { statementQueueRemaining } from "@/components/delivery/companyStatementQueue";
 
 type Party = RouterOutputs["delivery"]["listParties"][number];
 
@@ -291,7 +292,7 @@ function WriteOffDialog({ party, onClose, onDone }: { party: Party; onClose: () 
   }, [open.hasNextPage, open.isFetchingNextPage, open.fetchNextPage]);
   const openRows = (open.data?.pages ?? []).flatMap((p) => p.rows);
   const chosen = openRows.find((c) => String(c.id) === consignmentId) ?? null;
-  const chosenRemaining = chosen ? Math.max(0, Number(chosen.codAmount) - Number(chosen.collectedAmount)) : null;
+  const chosenRemaining = chosen ? statementQueueRemaining(chosen) : null;
   // IDEMPOTENCY (تدقيق ٢/٧): مفتاح ثابت لكل جلسة حوار — النقر المزدوج لا يشطب العجز مرّتين.
   const [reqId] = useState(() => crypto.randomUUID());
   const m = trpc.delivery.writeOff.useMutation({ onSuccess: () => { notify.ok("أُرسل طلب الشطب بانتظار اعتماد مستقل"); onDone(); }, onError: (e) => notify.err(e) });
@@ -328,7 +329,7 @@ function WriteOffDialog({ party, onClose, onDone }: { party: Party; onClose: () 
         <option value="">عهدة سائبة (غير مرتبطة بإرسالية مفتوحة)</option>
         {openRows.map((c) => (
           <option key={c.id} value={String(c.id)}>
-            إرسالية {c.consignmentNumber} — {c.invoiceNumber ?? ""} — متبقٍّ {fmt(String(Math.max(0, Number(c.codAmount) - Number(c.collectedAmount))))} د.ع
+            إرسالية {c.consignmentNumber} — {c.invoiceNumber ?? ""} — متبقٍّ {fmt(statementQueueRemaining(c).toFixed(2))} د.ع
           </option>
         ))}
       </AppSelect>

@@ -1,4 +1,5 @@
 import { invoiceDetailPrintData } from "@/lib/printing/invoiceDetailPrintData";
+import { isInvoiceCodInTransit } from "@shared/invoiceDeliveryCollection";
 import { deriveInvoiceChannel, invoiceChannelLabel, invoiceChannelOptions } from "@shared/invoiceChannel";
 import InvoiceChannelBadge from "@/components/InvoiceChannelBadge";
 import { CopyInline } from "@/components/CopyButton";
@@ -103,12 +104,11 @@ const custName = (n: string | null | undefined) => n ?? "عميل نقدي";
 // ١٠/٨: المفتاح consignmentStatus (موحَّد خادمياً) — يشمل طلبات المتجر المُسنَدة بلا إرسالية.
 const deliveryCell = (r: Pick<Row, "consignmentStatus" | "deliveryPartyName" | "consignmentNumber">) =>
   r.consignmentStatus ? `${CONSIGNMENT_STATUS[r.consignmentStatus]?.label ?? r.consignmentStatus} — ${r.deliveryPartyName ?? ""}${r.consignmentNumber ? ` (${r.consignmentNumber})` : ""}` : "";
-// إرساليةٌ بالطريق ⇒ طريقة الدفع الحقيقية «عند الاستلام» لا ما اختير للسلة لحظة التثبيت
-// (بلاغ المالك ١٠/٨: فاتورة توصيلٍ لم يُقبض منها فلس كانت تعرض «نقدي» — المخزَّن هو طريقة
-// قبض العربون/التحصيل اللاحق، والعرض يجب أن يصدُق عن المتبقّي بيد المندوب).
-const codInTransit = (r: Pick<Row, "consignmentStatus">) => r.consignmentStatus === "DISPATCHED" || r.consignmentStatus === "PARTIAL";
-const paymentLabel = (r: Pick<Row, "consignmentStatus" | "paymentMethod" | "paidAmount">) =>
-  codInTransit(r) ? (D(r.paidAmount).gt(0) ? `عند الاستلام (COD) — عربون ${paymentMethodLabel(r.paymentMethod)}` : "عند الاستلام (COD)") : paymentMethodLabel(r.paymentMethod);
+// Shipping state cannot turn approved customer credit into a courier collection obligation.
+const codInTransit = isInvoiceCodInTransit;
+const paymentLabel = (r: Pick<Row, "consignmentStatus" | "consignmentCodAmount" | "paymentMode" | "paymentMethod" | "paidAmount" | "status">) =>
+  r.paymentMode === "CREDIT" ? `آجل — على حساب العميل${D(r.paidAmount).gt(0) ? ` · دفعة ${paymentMethodLabel(r.paymentMethod)}` : ""}`
+    : codInTransit(r) ? (D(r.paidAmount).gt(0) ? `عند الاستلام (COD) — عربون ${paymentMethodLabel(r.paymentMethod)}` : "عند الاستلام (COD)") : paymentMethodLabel(r.paymentMethod);
 
 const INVOICE_EXPORT_COLUMNS: ExportColumn<Row>[] = [
   { key: "invoiceNumber", header: "رقم الفاتورة" },
@@ -627,14 +627,17 @@ export default function Invoices() {
           const depositDue = isDepositDue(r);
           return (
             <div className="flex flex-col items-start gap-1">
-              {codInTransit(r) ? (
+              {r.paymentMode === "CREDIT" ? (
+                <span className="inline-block rounded-full px-2 py-0.5 text-xs font-semibold badge-stock-low">آجل — على حساب العميل</span>
+              ) : codInTransit(r) ? (
                 <span className="inline-block rounded-full px-2 py-0.5 text-xs font-semibold badge-stock-low">عند الاستلام (COD)</span>
               ) : r.paymentMethod ? (
                 <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ${paymentMethodClass(r.paymentMethod)}`}>{r.paymentMethod === "CARD" && <CardBrandLogos size="xs" />}{paymentMethodLabel(r.paymentMethod)}</span>
               ) : (
                 <span className="text-muted-foreground text-xs">—</span>
               )}
-              {depositDue && <span className="inline-block rounded-full px-1.5 py-0.5 text-[10px] font-bold badge-stock-low">عربون — متبقٍ للتحصيل</span>}
+              {depositDue && <span className="inline-block rounded-full px-1.5 py-0.5 text-[10px] font-bold badge-stock-low">{r.paymentMode === "CREDIT" ? "دفعة مسبقة — متبقٍ آجل" : "عربون — متبقٍ للتحصيل"}</span>}
+              {r.paymentMode === "CREDIT" && D(r.paidAmount).gt(0) && r.paymentMethod && <span className="text-[10px] text-muted-foreground">الدفعة: {paymentMethodLabel(r.paymentMethod)}</span>}
               {codInTransit(r) && D(r.paidAmount).gt(0) && r.paymentMethod && (
                 <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">عربون: {r.paymentMethod === "CARD" && <CardBrandLogos size="xs" />}{paymentMethodLabel(r.paymentMethod)}</span>
               )}

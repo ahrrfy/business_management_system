@@ -35,6 +35,8 @@ export function salesInvoiceTotals(
 ): string {
   const facts = invoicePrintAmounts(data);
   const remaining = D(facts.remainingAmount);
+  const courierGoodsDue = D(facts.courierGoodsDue);
+  const hasCredit = D(facts.creditDue).gt(0);
   const returned = D(facts.returnedTotal);
   const after = facts.balanceAfter == null ? null : D(facts.balanceAfter);
   const courier = data.courierDelivery;
@@ -111,33 +113,38 @@ export function salesInvoiceTotals(
             ...(facts.dead
               ? []
               : courier.feeCollection === "COURIER"
-                ? remaining.isZero()
+                ? courierGoodsDue.isZero()
                   ? [
                       {
                         label:
-                          "المطلوب من الزبون (أجرة التوصيل فقط — البضاعة مدفوعة مسبقاً)",
+                          hasCredit
+                            ? "المطلوب عند الاستلام (أجرة التوصيل فقط)"
+                            : "المطلوب من الزبون (أجرة التوصيل فقط — البضاعة مدفوعة مسبقاً)",
                         value: money(courier.fee),
                       },
                     ]
                   : [
                       {
                         label: "المجموع النهائي (يدفعه الزبون شاملاً التوصيل)",
-                        value: money(remaining.plus(fee).toFixed(2)),
+                        value: money(courierGoodsDue.plus(fee).toFixed(2)),
                       },
                     ]
-                : remaining.gt(0)
+                : courierGoodsDue.gt(0)
                   ? [
                       {
                         label: "المطلوب من الزبون (متبقي الفاتورة)",
-                        value: money(facts.remainingAmount),
+                        value: money(facts.courierGoodsDue),
                       },
                     ]
                   : [
                       {
-                        label: "المطلوب من الزبون",
-                        value: "0 د.ع (مدفوع بالكامل)",
+                        label: hasCredit ? "المطلوب عند الاستلام" : "المطلوب من الزبون",
+                        value: hasCredit ? "0 د.ع" : "0 د.ع (مدفوع بالكامل)",
                       },
                     ]),
+            ...(hasCredit
+              ? [{ label: "رصيد البضاعة آجل؛ لا يحصله المندوب", value: money(facts.creditDue) }]
+              : []),
           ]
         : []),
     ],
@@ -152,7 +159,7 @@ export function salesInvoiceTotals(
         ? { label: "المدفوع", value: money(data.paidAmount) }
         : null,
     remaining: remaining.gt(0)
-      ? { label: "المتبقّي", value: money(facts.remainingAmount) }
+      ? { label: hasCredit ? "المتبقّي (حساب آجل)" : "المتبقّي", value: money(facts.remainingAmount) }
       : null,
     balance: after
       ? {

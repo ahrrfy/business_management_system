@@ -11,6 +11,7 @@
  * 7. معايير سهولة الوصول WAI-ARIA Combobox كاملة وصفر إيموجي.
  */
 import * as React from "react";
+import { statementQueueRemaining } from "./companyStatementQueue";
 import { Loader2, Search, X } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -111,6 +112,7 @@ export function PredictiveConsignmentSearchInput({
     // ١. تصفية المرشحين المحليين فورياً (إذا وُجدوا)
     if (localCandidates && localCandidates.length > 0) {
       for (const row of localCandidates) {
+        if (partyId != null && row.partyId != null && Number(row.partyId) !== Number(partyId)) continue;
         const phone = toAsciiDigits(String(row.customerPhone ?? row.recipientPhone ?? ""));
         const name = String(row.customerName ?? row.recipientName ?? "");
         const normName = normalizeArabic(name);
@@ -154,11 +156,7 @@ export function PredictiveConsignmentSearchInput({
         }
 
         if (matched) {
-          const cod = Number(row.codAmount ?? 0);
-          const collected = Number(row.collectedAmount ?? 0);
-          const counter = Number(row.counterSettledAmount ?? 0);
-          const shortfall = Number(row.shortfallAssigned ?? 0);
-          const remaining = Math.max(0, cod - collected - counter - shortfall);
+          const remaining = statementQueueRemaining(row);
 
           const item: PredictiveItem = {
             id: Number(row.id),
@@ -182,6 +180,16 @@ export function PredictiveConsignmentSearchInput({
             collectedAmount: String(row.collectedAmount ?? "0.00"),
             counterSettledAmount: String(row.counterSettledAmount ?? "0.00"),
             remainingAmount: remaining.toFixed(2),
+            sourceType: row.sourceType,
+            sourceId: row.sourceId,
+            fulfillmentRequestId: row.fulfillmentRequestId,
+            aftercareExecutionId: row.aftercareExecutionId,
+            invoicePaymentMode: row.invoicePaymentMode,
+            invoiceRemainingAmount: row.invoiceRemainingAmount,
+            deliveryFee: row.deliveryFee,
+            feeCollection: row.feeCollection,
+            cashInCourierCustody: row.cashInCourierCustody,
+            shortfallAssigned: row.shortfallAssigned,
             matchedOn: matchedOn.length > 0 ? matchedOn : ["CONSIGNMENT_NUMBER"],
             score: 1,
           };
@@ -191,16 +199,14 @@ export function PredictiveConsignmentSearchInput({
     }
 
     // ٢. دمج نتائج الخادم
-    if (serverQuery.data && serverQuery.data.length > 0) {
+    if (debouncedQuery.trim() === rawTrimmed && serverQuery.data && serverQuery.data.length > 0) {
       for (const item of serverQuery.data) {
-        if (!map.has(item.id)) {
-          map.set(item.id, item);
-        }
+        map.set(item.id, item);
       }
     }
 
     return Array.from(map.values()).sort((a, b) => (a.score ?? 2) - (b.score ?? 2) || b.id - a.id);
-  }, [searchTerm, localCandidates, serverQuery.data, partyId]);
+  }, [searchTerm, debouncedQuery, localCandidates, serverQuery.data, partyId]);
 
   // التحكم بظهور القائمة
   React.useEffect(() => {

@@ -1,5 +1,6 @@
 import { D, round2 } from "@/lib/money";
 import { invoiceStatusLabel, isDeadInvoiceStatus } from "@shared/invoiceStatus";
+import { invoiceDeliveryCollection } from "@shared/invoiceDeliveryCollection";
 
 type PrintMoney = string | number | null;
 export interface InvoicePrintAmountsInput {
@@ -44,11 +45,18 @@ export function invoicePrintAmounts(data: InvoicePrintAmountsInput) {
       : (after?.minus(remaining) ?? null);
   const cod = data.paymentMode === "COD";
   const paid = D(data.paidAmount ?? 0).gt(0);
+  const collection = invoiceDeliveryCollection({
+    remainingAmount: remaining.toFixed(2),
+    paymentMode: data.paymentMode,
+    status: data.status,
+  });
   return {
     dead,
     currentTotal: current.toFixed(2),
     returnedTotal: returned.toFixed(2),
     remainingAmount: remaining.toFixed(2),
+    courierGoodsDue: collection.goodsDue,
+    creditDue: collection.creditDue,
     balanceAfter: after?.toFixed(2) ?? null,
     balanceBefore: before?.toFixed(2) ?? null,
     statusLabel: dead

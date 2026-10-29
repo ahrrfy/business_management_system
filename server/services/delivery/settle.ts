@@ -42,6 +42,7 @@ import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { withTx } from "../tx";
 import { partyCashInHandTx } from "./cashSource";
 import { consignmentBackedBalance } from "./guards";
+import { shortfallAssignedForConsignmentTx } from "./openParcelPredicates";
 import {
   appendDeliveryEvent,
   appendDeliveryLedgerEntry,
@@ -670,12 +671,16 @@ export async function writeOffDeliveryShortfallInTx(
       });
     }
     await assertWriteOffSegregation(tx, input, actor, cn);
+    // The party and consignment are locked above. Counter receipts and assigned
+    // shortfalls are separate settlements, not courier cash to write off again.
     const remaining = round2(
-      money(cn.codAmount)
-        .minus(money(cn.collectedAmount))
-        .minus(
-          cn.fulfillmentRequestId != null ? money(cn.counterSettledAmount) : 0,
-        ),
+      Decimal.max(
+        money(cn.codAmount)
+          .minus(money(cn.collectedAmount))
+          .minus(money(cn.counterSettledAmount))
+          .minus(await shortfallAssignedForConsignmentTx(tx, Number(cn.id))),
+        0,
+      ),
     );
     if (!amount.eq(remaining)) {
       throw new TRPCError({

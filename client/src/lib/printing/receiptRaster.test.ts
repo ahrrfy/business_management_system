@@ -120,6 +120,20 @@ describe("compact 80mm receipt", () => {
     const content = fixture.text.map((entry) => entry.value).join(" ");
     for (const value of ["NEXT-AUDIT01", "5%", "الحد الأدنى10000", "حتى31/10/2026"]) expect(content).toContain(value);
   });
+  it.each(["COURIER", "COUNTER", "SHOP"] as const)("keeps credit goods outside raster collection with %s fees", async (feeCollection) => {
+    const fixture = canvasFixture();
+    await receiptToCanvas({ ...sale, total: "35000", subtotal: "35000", paid: "30000", credit: "5000", paymentMode: "CREDIT",
+      delivery: { partyName: "ناقل", fee: "5000", feeCollection } });
+    const content = fixture.text.map((entry) => entry.value).join(" ");
+    expect(content).toContain("متبقٍّ (آجل)");
+    expect(content).toContain("5,000 د.ع");
+    expect(content).toContain("رصيد البضاعة آجل؛ لا يحصله المندوب");
+    expect(content).not.toContain("10,000");
+    expect(content).not.toContain("مدفوع بالكامل");
+    expect(content).not.toContain("مدفوعة مسبقاً");
+    if (feeCollection === "COURIER") expect(content).toContain("أجرة التوصيل فقط");
+    else expect(content).toContain("0 د.ع");
+  });
   it("collects only the current merchandise debt plus courier fee after a partial return", async () => {
     const fixture = canvasFixture();
     await receiptToCanvas({ ...sale, total: "100000", subtotal: "100000", paid: "10000", credit: "50000", returnedTotal: "40000", currentTotal: "60000", remainingAmount: "50000",

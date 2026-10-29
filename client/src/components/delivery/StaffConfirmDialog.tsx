@@ -13,6 +13,7 @@ import {
   type ShortfallReason,
 } from "@shared/shortfallReason";
 import type { RouterOutputs } from "@/lib/trpc";
+import { statementQueueRemaining } from "./companyStatementQueue";
 
 export type InTransitRow = RouterOutputs["delivery"]["inTransit"]["rows"][number];
 
@@ -33,12 +34,7 @@ export function StaffConfirmDialog({
   onCancel,
   onConfirm,
 }: StaffConfirmDialogProps) {
-  const remaining = Math.max(
-    0,
-    Number(row.codAmount) -
-      Number(row.collectedAmount ?? 0) -
-      Number(row.counterSettledAmount ?? 0),
-  );
+  const remaining = statementQueueRemaining(row).toNumber();
   const [mode, setMode] = useState<"exact" | "different">("exact");
   const [amount, setAmount] = useState(String(remaining));
   const [note, setNote] = useState("");

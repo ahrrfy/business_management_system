@@ -164,7 +164,8 @@ export function drawReceiptTotals(
       true,
     );
 
-    const remainingMerchandise = D(facts.remainingAmount);
+    const remainingMerchandise = D(facts.courierGoodsDue);
+    const hasCredit = D(facts.creditDue).gt(0);
     const courierFee = dl.feeCollection === "COURIER" ? fee : D(0);
     const totalToCollect = remainingMerchandise.plus(courierFee);
 
@@ -172,9 +173,9 @@ export function drawReceiptTotals(
       if (totalToCollect.isZero()) {
         ctx.font = "900 23px Cairo, sans-serif";
         ctx.textAlign = "right";
-        ctx.fillText("المطلوب من الزبون:", W - PAD, y);
+        ctx.fillText(hasCredit ? "المطلوب عند الاستلام:" : "المطلوب من الزبون:", W - PAD, y);
         ctx.textAlign = "left";
-        ctx.fillText("0 د.ع (مدفوع بالكامل)", PAD, y);
+        ctx.fillText(hasCredit ? "0 د.ع" : "0 د.ع (مدفوع بالكامل)", PAD, y);
         y += 32;
       } else if (remainingMerchandise.isZero() && courierFee.gt(0)) {
         ctx.font = "900 23px Cairo, sans-serif";
@@ -185,7 +186,7 @@ export function drawReceiptTotals(
         y += 28;
         ctx.font = "700 17px Cairo, sans-serif";
         ctx.textAlign = "center";
-        ctx.fillText("البضاعة مدفوعة مسبقاً بالكامل", W / 2, y);
+        ctx.fillText(hasCredit ? "رصيد البضاعة آجل؛ لا يحصله المندوب" : "البضاعة مدفوعة مسبقاً بالكامل", W / 2, y);
         y += 26;
       } else if (courierFee.gt(0)) {
         ctx.font = "900 24px Cairo, sans-serif";
@@ -209,6 +210,12 @@ export function drawReceiptTotals(
         ctx.textAlign = "left";
         ctx.fillText(`${fmt(remainingMerchandise.toFixed(2))} د.ع`, PAD, y);
         y += 32;
+      }
+      if (hasCredit && courierFee.isZero()) {
+        ctx.font = "700 17px Cairo, sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("رصيد البضاعة آجل؛ لا يحصله المندوب", W / 2, y);
+        y += 26;
       }
     }
   }
