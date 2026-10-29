@@ -65,7 +65,7 @@ export interface ShipmentDispatchDocumentPayload {
   operationId: string;
   eventOccurredAt: string;
   evidence: {
-    mode: "COMMITTED_DISPATCH_EVENT" | "HISTORICAL_ORIGINAL_EVIDENCE";
+    mode: "COMMITTED_DISPATCH_EVENT" | "HISTORICAL_ORIGINAL_EVIDENCE" | "COMMITTED_CLAIM_CHANGE_EVENT";
     eventId?: number;
     eventKey: string;
     unavailableFields: string[];
@@ -151,7 +151,7 @@ function shipmentManifest(
 ): GenericWorkflowDocumentPayload {
   return {
     schemaVersion: 1,
-    title: "محضر تسليم طرود لجهة التوصيل",
+    title: payload.evidence.mode === "COMMITTED_CLAIM_CHANGE_EVENT" ? "تعديل مطالبة التحصيل" : "محضر تسليم طرود لجهة التوصيل",
     documentNumber: payload.shipment.consignmentNumber,
     eventOccurredAt: payload.eventOccurredAt,
     rows: [
@@ -171,7 +171,7 @@ function shipmentManifest(
         ? []
         : [
             {
-              label: "مطالبة العميل عند الإسناد",
+              label: payload.evidence.mode === "COMMITTED_CLAIM_CHANGE_EVENT" ? "مطالبة البضاعة بعد التعديل" : "مطالبة العميل عند الإسناد",
               value: payload.money.codAmount,
             },
           ]),
@@ -349,6 +349,35 @@ export async function createShipmentDispatchDocumentSnapshotsTx(
 
   let payload = input.payload;
   let eventOccurredAt = input.eventOccurredAt;
+  if (payload.evidence.mode === "COMMITTED_CLAIM_CHANGE_EVENT") {
+    const [event] = await tx.select().from(deliveryEvents).where(and(
+      eq(deliveryEvents.id, payload.evidence.eventId ?? 0),
+      eq(deliveryEvents.consignmentId, input.consignmentId),
+      eq(deliveryEvents.eventKey, input.eventKey),
+      eq(deliveryEvents.eventType, "COD_CLAIM_CHANGED"))).limit(1);
+    const [source] = await tx.select().from(deliveryConsignments).where(and(
+      eq(deliveryConsignments.id, input.consignmentId),
+      eq(deliveryConsignments.branchId, input.branchId))).for("share").limit(1);
+    const claim = eventPayload(event?.payload);
+    if (!event || !source || event.actorUserId !== input.createdBy ||
+      typeof claim?.collectCreditOnDelivery !== "boolean" ||
+      Number(claim.partyId) !== source.partyId || claim.sourceType !== source.sourceType ||
+      Number(claim.sourceId) !== source.sourceId || Number(claim.invoiceId) !== source.invoiceId ||
+      Number(claim.claimVersion) !== source.codClaimVersion ||
+      !money(String(claim.after ?? "-1")).eq(source.codAmount) ||
+      !money(String(claim.deliveryFee ?? "-1")).eq(source.deliveryFee) || claim.feeCollection !== source.feeCollection ||
+      payload.shipment.partyId !== source.partyId || payload.shipment.sourceType !== source.sourceType ||
+      payload.shipment.sourceId !== source.sourceId || payload.shipment.members.length !== 1 ||
+      payload.shipment.members[0]?.id !== source.id || payload.shipment.members[0]?.invoiceId !== source.invoiceId ||
+      payload.shipment.members[0]?.sourceType !== source.sourceType || payload.shipment.members[0]?.sourceId !== source.sourceId ||
+      payload.party.id !== source.partyId || payload.invoiceIds.length !== 1 || payload.invoiceIds[0] !== source.invoiceId ||
+      payload.invoices.length !== 1 || payload.invoices[0]?.id !== source.invoiceId ||
+      !money(payload.money.codAmount ?? "-1").eq(source.codAmount) ||
+      !money(payload.money.deliveryFee ?? "-1").eq(source.deliveryFee) || payload.money.feeCollection !== source.feeCollection)
+      throw fulfillmentError("حدث تعديل المطالبة لا يثبت المصدر والممثل والنسخة والمبالغ الحالية", "CONFLICT");
+    eventOccurredAt = event.occurredAt;
+    payload = { ...payload, eventOccurredAt: eventOccurredAt.toISOString() };
+  }
   if (
     payload.evidence.mode === "COMMITTED_DISPATCH_EVENT" &&
     payload.evidence.eventId == null
@@ -1184,13 +1213,53 @@ export async function createRecordedShipmentDocumentTx(
   return Number(created.snapshot.id);
 }
 
+/** A claim amendment is its own immutable print event, never a new parcel assignment. */
+async function currentClaimChangeDocumentIdsTx(tx: Tx, input: { consignmentId: number; branchId: number }) {
+  const [event] = await tx.select().from(deliveryEvents).where(and(
+    eq(deliveryEvents.consignmentId, input.consignmentId), eq(deliveryEvents.eventType, "COD_CLAIM_CHANGED")))
+    .orderBy(desc(deliveryEvents.occurredAt), desc(deliveryEvents.id)).limit(1);
+  const claim = eventPayload(event?.payload);
+  if (!event || typeof claim?.collectCreditOnDelivery !== "boolean" || claim.partyId == null) return null;
+  const [source] = await tx.select().from(deliveryConsignments).where(and(
+    eq(deliveryConsignments.id, input.consignmentId), eq(deliveryConsignments.branchId, input.branchId)))
+    .for("update").limit(1);
+  if (!source || source.partyId !== Number(claim.partyId) || source.sourceType !== claim.sourceType ||
+      source.sourceId !== Number(claim.sourceId)) return null;
+  const assignments = await tx.select().from(deliveryEvents).where(and(
+    eq(deliveryEvents.consignmentId, input.consignmentId), inArray(deliveryEvents.eventType, [...assignmentEventTypes])));
+  if (assignments.some(row => isAssignmentEvent(row) && (row.occurredAt > event.occurredAt ||
+    (row.occurredAt.getTime() === event.occurredAt.getTime() && row.id > event.id)))) return null;
+  const documents = await tx.select().from(deliveryDocumentSnapshots).where(and(
+    eq(deliveryDocumentSnapshots.sourceType, "SHIPMENT"), eq(deliveryDocumentSnapshots.sourceId, input.consignmentId),
+    eq(deliveryDocumentSnapshots.branchId, input.branchId), eq(deliveryDocumentSnapshots.eventKey, event.eventKey),
+    inArray(deliveryDocumentSnapshots.documentType, ["DISPATCH_SLIP", "SHIPPING_LABEL", "DELIVERY_MANIFEST"])));
+  const complete = ["DISPATCH_SLIP", "SHIPPING_LABEL", "DELIVERY_MANIFEST"].every(type => documents.some(row => {
+    if (row.documentType !== type || row.createdBy !== event.actorUserId ||
+      timestampSecond(row.eventOccurredAt) !== timestampSecond(event.occurredAt)) return false;
+    if (type === "DELIVERY_MANIFEST") return true;
+    const payload = eventPayload(row.payload);
+    const evidence = eventPayload(payload?.evidence);
+    const shipment = eventPayload(payload?.shipment);
+    const frozenMoney = eventPayload(payload?.money);
+    return evidence?.mode === "COMMITTED_CLAIM_CHANGE_EVENT" && evidence.eventId === event.id &&
+      evidence.eventKey === event.eventKey && Number(shipment?.consignmentId) === source.id &&
+      Number(shipment?.partyId) === source.partyId && shipment?.sourceType === source.sourceType &&
+      Number(shipment?.sourceId) === source.sourceId &&
+      money(String(frozenMoney?.codAmount ?? "-1")).eq(String(claim.after)) &&
+      money(String(frozenMoney?.deliveryFee ?? "-1")).eq(String(claim.deliveryFee)) &&
+      frozenMoney?.feeCollection === claim.feeCollection;
+  }));
+  if (!complete) throw fulfillmentError("حزمة تعديل مطالبة التحصيل غير مكتملة أو لا تطابق حدثها المحفوظ", "CONFLICT");
+  return documents.map(row => Number(row.id));
+}
+
 /** Prepare metadata-only pages for a real shipment and its persisted financial documents. */
 export async function prepareShipmentWorkflowDocumentsTx(
   tx: Tx,
   input: { consignmentId: number; branchId: number },
 ) {
   const assignmentSnapshotIds = new Set(
-    await bootstrapHistoricalShipmentDocumentSnapshotsTx(tx, input),
+    (await currentClaimChangeDocumentIdsTx(tx, input)) ?? await bootstrapHistoricalShipmentDocumentSnapshotsTx(tx, input),
   );
   const grouped = await tx
     .select({ id: deliveryShipmentMembers.consignmentId })

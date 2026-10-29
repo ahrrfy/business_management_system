@@ -1,5 +1,5 @@
 import { fulfillmentRequestsRouter } from "../../routers/fulfillmentRequestsRouter";
-import { listShipmentInvoiceCandidates } from "../delivery/shipments";
+import { createFinalShipmentDispatchDocumentSnapshotsTx, listShipmentInvoiceCandidates } from "../delivery/shipments";
 import { reassignDeliveryConsignment } from "../delivery/parties";
 import { preservedCreditCollectionChoiceTx, creditCollectionChoiceTx } from "../delivery/creditCollectionTerms";
 import { withTx } from "../tx";
@@ -9,7 +9,9 @@ import * as s from "../../../drizzle/schema";
 import {
   fulfillmentCharges,
   fulfillmentChargePayments,
+  deliveryDocumentSnapshots,
 } from "../../../drizzle/fulfillmentSchema";
+import { createShipmentDispatchDocumentSnapshotsTx, prepareShipmentWorkflowDocumentsTx, type ShipmentDispatchDocumentPayload } from "../delivery/documentSnapshots";
 import { getDb } from "../../db";
 import {
   createFulfillmentRequest,
@@ -612,12 +614,12 @@ describe("explicit credit collection instruction", () => {
     expect((await db().select().from(s.accountingEntries)).filter(x=>x.entryType==="PAYMENT_IN")).toEqual(paymentsBefore);
   });
 
-  async function pendingCredit() {
+  async function pendingCredit(dispatchedBy = admin) {
     await db().update(s.customers).set({currentBalance:"5000"}).where(eq(s.customers.id,1));
     await db().insert(s.invoices).values({id:1,invoiceNumber:"101567",sourceType:"POS",branchId:1,customerId:1,
       shiftId:1,total:"35000",subtotal:"35000",paidAmount:"30000",paymentMode:"CREDIT",status:"PARTIALLY_PAID",createdBy:2});
     const sent=await dispatchInvoiceToDelivery({invoiceId:1,partyId:1,assignedUserId:3,deliveryFee:"5000",feeCollection:"COURIER",
-      collectCreditOnDelivery:false,recipientName:"عميل الاختبار",recipientPhone:"07701234567",deliveryAddress:"بغداد",clientRequestId:key()},admin);
+      collectCreditOnDelivery:false,recipientName:"عميل الاختبار",recipientPhone:"07701234567",deliveryAddress:"بغداد",clientRequestId:key()},dispatchedBy);
     const cn=(await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id,sent.consignmentId)))[0];
     return {cn,input:{partyId:1,consignmentId:cn.id,collectCreditOnDelivery:true,expectedClaimVersion:cn.codClaimVersion,
       collectionReason:"تحصيل متبقي الفاتورة مع المندوب حسب طلب العميل",clientRequestId:key()}};
@@ -657,6 +659,57 @@ describe("explicit credit collection instruction", () => {
     expect(row).toMatchObject({codAmount:"0.00",moneyStatus:"NOT_APPLICABLE",deliveryFee:"5000.00"});
     expect(await withTx(tx=>creditCollectionChoiceTx(tx,cn.id))).toBe(false);
     expect((await db().select().from(s.deliveryLedgerEntries)).filter(x=>x.entryType==="COD_RELEASED")).toMatchObject([{amount:"5000.00"}]);
+  });
+
+  it.each([false,true])("prints the current claim amendment by a different actor; legacy assignment=%s",async(legacy)=>{
+    await db().update(s.users).set({role:"admin"}).where(eq(s.users.id,2));
+    const {cn,input}=await pendingCredit({...admin,userId:2});
+    const originalDocuments=await db().select().from(deliveryDocumentSnapshots);
+    const assignment=(await db().select().from(s.deliveryEvents)).find(e=>e.eventType==="OUT_FOR_DELIVERY")!;
+    if(legacy) await db().update(s.deliveryEvents).set({payload:{}}).where(eq(s.deliveryEvents.id,assignment.id));
+    const economicBefore=await goodsSnapshot();
+    const changed=await reassignDeliveryConsignment(input,admin);
+    const documents=await withTx(tx=>prepareShipmentWorkflowDocumentsTx(tx,{consignmentId:cn.id,branchId:1}));
+    const claim=(await db().select().from(s.deliveryEvents)).find(e=>e.eventKey.endsWith(":CLAIM"))!;
+    const current=documents.filter(d=>changed.documentSnapshotIds.includes(d.id));
+    expect(current).toHaveLength(3);
+    expect(documents.slice(0,3).map(d=>d.id).sort((a,b)=>a-b)).toEqual([...changed.documentSnapshotIds].sort((a,b)=>a-b));
+    expect(current.every(d=>d.createdBy===1&&d.eventKey===claim.eventKey&&d.eventOccurredAt.getTime()===claim.occurredAt.getTime())).toBe(true);
+    expect(current.find(d=>d.documentType==="DISPATCH_SLIP")?.payload).toMatchObject({
+      evidence:{mode:"COMMITTED_CLAIM_CHANGE_EVENT",eventId:claim.id},money:{codAmount:"5000.00",deliveryFee:"5000.00"}});
+    expect(current.find(d=>d.documentType==="DELIVERY_MANIFEST")?.payload).toMatchObject({title:"تعديل مطالبة التحصيل"});
+    expect((await db().select().from(deliveryDocumentSnapshots)).filter(d=>originalDocuments.some(o=>o.id===d.id))).toEqual(originalDocuments);
+    expect(await goodsSnapshot()).toEqual(economicBefore);
+    expect(await reassignDeliveryConsignment(input,admin)).toMatchObject({replay:true,documentSnapshotIds:changed.documentSnapshotIds});
+    // A later assignment can share the same MySQL event second. Its persisted ID disambiguates it.
+    await db().insert(s.deliveryEvents).values({consignmentId:cn.id,eventKey:key(),eventType:"REASSIGNED",actorUserId:2,occurredAt:claim.occurredAt,
+      payload:{partyId:cn.partyId,sourceType:cn.sourceType,sourceId:cn.sourceId}});
+    const later=await withTx(tx=>createFinalShipmentDispatchDocumentSnapshotsTx(tx,{consignmentId:cn.id,clientRequestId:key(),operationId:"REASSIGNED",eventOccurredAt:claim.occurredAt},{...admin,userId:2}));
+    const preparedAgain=await withTx(tx=>prepareShipmentWorkflowDocumentsTx(tx,{consignmentId:cn.id,branchId:1}));
+    expect(preparedAgain.slice(0,3).map(row=>row.id).sort((a,b)=>a-b)).toEqual([...later].sort((a,b)=>a-b));
+    expect(await goodsSnapshot()).toEqual(economicBefore);
+  });
+
+  it("rejects forged amendment identity or money and refuses an incomplete saved print pack",async()=>{
+    const {cn,input}=await pendingCredit();
+    const changed=await reassignDeliveryConsignment(input,admin);
+    const rows=await db().select().from(deliveryDocumentSnapshots);
+    const slip=rows.find(row=>changed.documentSnapshotIds.includes(row.id)&&row.documentType==="DISPATCH_SLIP")!;
+    const payload=slip.payload as ShipmentDispatchDocumentPayload;
+    const base={consignmentId:cn.id,branchId:1,eventKey:slip.eventKey,eventOccurredAt:slip.eventOccurredAt,createdBy:1,payload};
+    const economicBefore=await goodsSnapshot();
+    for(const invalid of [
+      {...base,createdBy:2},
+      {...base,payload:{...payload,invoiceIds:[999]}},
+      {...base,payload:{...payload,money:{...payload.money,codAmount:"1.00"}}},
+      {...base,payload:{...payload,evidence:{...payload.evidence,eventId:999999}}},
+    ]) await expect(withTx(tx=>createShipmentDispatchDocumentSnapshotsTx(tx,invalid))).rejects.toThrow(/حدث تعديل المطالبة/);
+    const label=rows.find(row=>changed.documentSnapshotIds.includes(row.id)&&row.documentType==="SHIPPING_LABEL")!;
+    await db().delete(deliveryDocumentSnapshots).where(eq(deliveryDocumentSnapshots.id,label.id));
+    const documentsBefore=await db().select().from(deliveryDocumentSnapshots);
+    await expect(withTx(tx=>prepareShipmentWorkflowDocumentsTx(tx,{consignmentId:cn.id,branchId:1}))).rejects.toThrow(/غير مكتملة/);
+    expect(await db().select().from(deliveryDocumentSnapshots)).toEqual(documentsBefore);
+    expect(await goodsSnapshot()).toEqual(economicBefore);
   });
 
   it("rejects another branch, delivered parcels and any existing financial collection",async()=>{

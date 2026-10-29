@@ -27,7 +27,7 @@ export interface DispatchDocumentPayload {
   recipient: { name: string | null; phone: string | null; address: string | null; governorate: string | null };
   money: { codAmount: string | null; deliveryFee: string | null; feeCollection: "COURIER" | "COUNTER" | "SHOP" | null; currentTotal: string | null; paidAmount: string | null };
   invoices: Array<{ id: number; invoiceNumber: string; total: string | null }>;
-  evidence?: { notice?: string };
+  evidence?: { notice?: string; mode?: string };
 }
 export function dispatchDocumentPayload(snapshot: WorkflowDocumentSnapshot): DispatchDocumentPayload {
   const payload = snapshot.payload as Partial<DispatchDocumentPayload> | null;
@@ -42,6 +42,7 @@ export function dispatchDocumentData(snapshot: WorkflowDocumentSnapshot): Dispat
     sourceType: payload.shipment.sourceType as DispatchSlipData["sourceType"], sourceId: payload.shipment.sourceId,
     fulfillmentRequestId: payload.shipment.fulfillmentRequestId, invoiceId: invoice?.id ?? null, invoiceNumber: invoice?.invoiceNumber ?? null,
     consignmentNumber: payload.shipment.consignmentNumber,
+    title: payload.evidence?.mode === "COMMITTED_CLAIM_CHANGE_EVENT" ? "تعديل مطالبة التحصيل" : undefined,
     orderNumber: payload.invoices.map((item) => item.invoiceNumber).join("، ") || payload.shipment.consignmentNumber,
     orderKind: payload.shipment.sourceType === "AFTERCARE_EXECUTION" ? "aftercare" : undefined,
     partyName: payload.party.name, recipientName: payload.recipient.name ?? "", recipientPhone: payload.recipient.phone ?? "",
