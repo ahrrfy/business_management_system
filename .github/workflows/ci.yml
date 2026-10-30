@@ -19,6 +19,34 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # No dependencies, database, real backup, or production secrets are required.
+  backup-safety:
+    needs: scope
+    if: ${{ needs.scope.outputs.heavy == 'true' }}
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+      - name: Backup publication and isolated restore guards (real synthetic GPG)
+        shell: pwsh
+        run: |
+          $env:BACKUP_TEST_GPG = 'C:\Program Files\Git\usr\bin\gpg.exe'
+          $env:BACKUP_TEST_GPG_MSYS = '1'
+          if (-not (Test-Path -LiteralPath $env:BACKUP_TEST_GPG)) { throw 'GPG is required; skipping is forbidden in CI' }
+          node --test scripts/backup-recovery-safety.test.mjs scripts/isolated-local-restore.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Offsite interruption and integrity contracts (PowerShell 7)
+        shell: pwsh
+        run: ./scripts/test-offsite-integrity.ps1
+      - name: Offsite interruption and integrity contracts (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./scripts/test-offsite-integrity.ps1
+
   # المسار السريع محصورٌ عمداً في PR توثيقي خالص. أي push إلى main، أو ملف غير معروف،
   # أو فشل في التصنيف يعود fail-closed إلى الحزمة الكاملة. لا نستخدم paths-ignore لأنّه
   # قد يترك الفحص المطلوب Pending إلى الأبد؛ بوابة check-test-build تصدر نتيجة دائماً.
@@ -416,12 +444,21 @@ jobs:
   # اسم الفحص محميّ في إعدادات main؛ يبقى ثابتاً كبوابة تجميع سريعة تصدر فشلاً صريحاً
   # بدل skipped إذا فشلت أو أُلغيت أي شريحة أو وظيفة الجودة.
   check-test-build:
-    needs: [scope, test-shards, quality-build]
+    needs: [scope, test-shards, quality-build, backup-safety]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
+      - name: Require backup safety on every non-documentation change
+        env:
+          HEAVY: ${{ needs.scope.outputs.heavy }}
+          BACKUP_SAFETY_RESULT: ${{ needs.backup-safety.result }}
+        run: |
+          if [ "$HEAVY" != "false" ] && [ "$BACKUP_SAFETY_RESULT" != "success" ]; then
+            echo 'Backup safety failed, was cancelled, or was unexpectedly skipped.'
+            exit 1
+          fi
       - name: تأكيد نجاح الاختبارات والجودة والبناء
         env:
           HEAVY: ${{ needs.scope.outputs.heavy }}

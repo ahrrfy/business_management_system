@@ -17,9 +17,11 @@ param(
   [string]$SiteUrl = "https://srv1548487.hstgr.cloud/healthz",
   [string]$BackupDir = "$env:USERPROFILE\erp-vps-backups",
   [int]$MaxAgeHours = 26,
-  [int]$KeepLogLines = 400
+  [int]$KeepLogLines = 400,
+  [switch]$NoToast
 )
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'lib/offsite-integrity.ps1')
 $logFile = Join-Path $BackupDir "health-check.log"
 New-Item -ItemType Directory -Force $BackupDir | Out-Null
 $failures = @()
@@ -35,36 +37,33 @@ try {
 }
 
 # -- Check 2: offsite backup freshness ----------------------------------------
-$newest = Get-ChildItem $BackupDir -Filter *.sql.gpg -ErrorAction SilentlyContinue |
-  Sort-Object Name -Descending | Select-Object -First 1
-if (-not $newest) {
-  $failures += "no *.sql.gpg files in $BackupDir - pull layer never ran here"
-} else {
-  # Prefer the UTC stamp embedded in the name (authoritative: when the dump was TAKEN,
-  # not when it was copied); fall back to file mtime if the name does not parse.
-  $m = [regex]::Match($newest.Name, "\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}")
-  if ($m.Success) {
-    $stampUtc = [datetime]::ParseExact($m.Value, "yyyy-MM-dd'T'HH-mm-ss", $null)
-    $ageH = ((Get-Date).ToUniversalTime() - $stampUtc).TotalHours
-  } else {
-    $ageH = ((Get-Date) - $newest.LastWriteTime).TotalHours
-  }
-  if ($ageH -gt $MaxAgeHours) {
-    $failures += ("newest offsite backup {0} is {1:N1}h old (> {2}h) - nightly backup on the VPS or the daily pull task is BROKEN" -f $newest.Name, $ageH, $MaxAgeHours)
-  }
+$lock = $null
+try {
+  if ($MaxAgeHours -le 0) { throw 'Invalid age limit' }
+  $lock = Open-BackupLock $BackupDir
+  $newest = Get-ChildItem -LiteralPath $BackupDir -Filter *.sql.gpg -File |
+    Sort-Object Name -Descending | Select-Object -First 1
+  if (-not $newest) { throw 'No encrypted offsite backup found' }
+  $manifest = Read-BackupManifest (Get-Content -LiteralPath "$($newest.FullName).manifest.json" -Raw) $newest.Name
+  Assert-BackupIntegrity $newest.FullName $manifest
+  $ageH = Get-BackupAgeHours $newest.Name
+  if ($ageH -gt $MaxAgeHours) { throw 'Newest integrity-verified backup is stale' }
+} catch {
+  $failures += "offsite integrity/freshness failed: $($_.Exception.Message)"
+} finally {
+  if ($null -ne $lock) { $lock.Dispose() }
 }
-
 # -- Report --------------------------------------------------------------------
 $stamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
 if ($failures.Count -eq 0) {
-  Add-Content -Path $logFile -Value "$stamp OK  site + backup fresh"
-  Write-Host "OK: site up, offsite backup fresh."
+  Add-Content -Path $logFile -Value "$stamp OK  site + backup integrity/freshness (restore not verified)"
+  Write-Host "OK: site up, offsite backup integrity/freshness verified; restore verification is separate."
 } else {
   $msg = $failures -join "; "
   Add-Content -Path $logFile -Value "$stamp FAIL $msg"
   Write-Host "FAIL: $msg"
   # Toast notification so a human actually SEES it (log files rot unread).
-  try {
+  if (-not $NoToast) { try {
     [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
     $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
     $texts = $xml.GetElementsByTagName("text")
@@ -74,7 +73,7 @@ if ($failures.Count -eq 0) {
     [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("AlRoya ERP Monitor").Show($toast)
   } catch {
     Write-Host "(toast unavailable: $($_.Exception.Message))"
-  }
+  } }
 }
 
 # -- Log rotation (keep the tail; the log grows one line per day) ---------------
