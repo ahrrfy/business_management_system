@@ -444,6 +444,73 @@ export function parseCodexReviewState(prComments = []) {
   return latest;
 }
 
+// Native reviews must come from the complete GraphQL connection, never a
+// truncated `gh pr view --json reviews` list or a comment claiming approval.
+function completeReviewConnectionNodes(payload, field) {
+  const pages = Array.isArray(payload) ? payload.flat(Infinity) : [payload];
+  if (pages.length === 0) return null;
+  const nodes = [];
+  let totalCount;
+  for (const [index, page] of pages.entries()) {
+    const connection = page?.data?.repository?.pullRequest?.[field];
+    if (
+      page?.errors?.length ||
+      !connection ||
+      !Array.isArray(connection.nodes) ||
+      !Number.isSafeInteger(connection.totalCount) ||
+      connection.totalCount < 0 ||
+      (totalCount !== undefined && connection.totalCount !== totalCount) ||
+      connection.pageInfo?.hasNextPage !== index < pages.length - 1 ||
+      (index < pages.length - 1 && !connection.pageInfo?.endCursor)
+    )
+      return null;
+    totalCount = connection.totalCount;
+    nodes.push(...connection.nodes);
+  }
+  const ids = nodes.map((node) => node?.id);
+  if (
+    nodes.length !== totalCount ||
+    ids.some((id) => typeof id !== "string" || !id) ||
+    new Set(ids).size !== ids.length
+  )
+    return null;
+  return nodes;
+}
+
+function parseNativeCodexReviewState(reviews) {
+  const trusted = reviews.filter((review) =>
+    TRUSTED_CODEX_BOT_LOGINS.has(
+      String(review?.author?.login ?? "").toLowerCase(),
+    ),
+  );
+  if (trusted.length === 0) return null;
+  const pending = trusted.find((review) => review.state === "PENDING");
+  if (pending)
+    return { state: "running", sha: pending.commit?.oid, source: "native" };
+  if (
+    trusted.some(
+      (review) =>
+        !Number.isFinite(parseIsoTimestampMs(review.submittedAt)) ||
+        !Number.isSafeInteger(review.databaseId),
+    )
+  )
+    return { state: "invalid" };
+  const latest = [...trusted].sort(
+    (a, b) =>
+      parseIsoTimestampMs(b.submittedAt) - parseIsoTimestampMs(a.submittedAt) ||
+      b.databaseId - a.databaseId,
+  )[0];
+  return {
+    source: "native",
+    sha: latest.commit?.oid,
+    state: ["APPROVED", "COMMENTED"].includes(latest.state)
+      ? "completed"
+      : ["CHANGES_REQUESTED", "DISMISSED"].includes(latest.state)
+        ? "failed"
+        : "invalid",
+  };
+}
+
 function normalizeReviewThreadEntry(entry) {
   if (!entry || typeof entry !== "object") return null;
   const firstComment = Array.isArray(entry?.comments?.nodes)
@@ -677,7 +744,35 @@ export function evaluatePrMergeReadiness({
     }
   }
 
-  const codexState = parseCodexReviewState(commentsPayload);
+  let codexState = parseCodexReviewState(commentsPayload);
+  // Explicit marker state remains authoritative, including stale/failing state.
+  if (codexState === null && prView.nativeReviews != null) {
+    const nativeReviews = completeReviewConnectionNodes(
+      prView.nativeReviews,
+      "reviews",
+    );
+    if (nativeReviews === null) {
+      return {
+        ready: false,
+        code: "PR_NATIVE_REVIEWS_PAGINATION_INCOMPLETE",
+        reason:
+          "بيانات مراجعات GitHub الأصلية غير مكتملة أو تالفة؛ يجب جلب جميع الصفحات قبل الدمج.",
+        ...unaddressedExtras,
+      };
+    }
+    if (
+      completeReviewConnectionNodes(threadsPayload, "reviewThreads") === null
+    ) {
+      return {
+        ready: false,
+        code: "PR_REVIEW_THREADS_PAGINATION_INCOMPLETE",
+        reason:
+          "يلزم إثبات جلب جميع خيوط المراجعة قبل اعتماد مراجعة Codex الأصلية.",
+        ...unaddressedExtras,
+      };
+    }
+    codexState = parseNativeCodexReviewState(nativeReviews);
+  }
   if (codexState === null) {
     if (unresolved.length > 0) {
       return {
@@ -736,8 +831,10 @@ export function evaluatePrMergeReadiness({
       ...unaddressedExtras,
     };
   }
-  const staleCodexEntry = selectedCodex.entries.find(
-    (e) => !doesCodexShaMatchHead(e.sha, headRefOid),
+  const staleCodexEntry = selectedCodex.entries.find((e) =>
+    codexState.source === "native"
+      ? !/^[a-f0-9]{40}$/.test(e.sha ?? "") || e.sha !== headRefOid
+      : !doesCodexShaMatchHead(e.sha, headRefOid),
   );
   if (staleCodexEntry) {
     const staleShaLabel = staleCodexEntry.sha
@@ -2886,6 +2983,7 @@ query($owner: String!, $name: String!, $pr: Int!, $endCursor: String) {
         login
       }
       reviewThreads(first: 100, after: $endCursor) {
+        totalCount
         pageInfo {
           hasNextPage
           endCursor
@@ -2970,6 +3068,47 @@ function fetchAllIssueComments(prNumber) {
   ]);
 }
 
+const NATIVE_REVIEWS_QUERY = `
+query($owner: String!, $name: String!, $pr: Int!, $endCursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $pr) {
+      reviews(first: 100, after: $endCursor) {
+        totalCount
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          id
+          databaseId
+          state
+          submittedAt
+          author { login }
+          commit { oid }
+        }
+      }
+    }
+  }
+}
+`.trim();
+
+function fetchAllNativeReviews(prNumber) {
+  return captureJson("gh", [
+    "api",
+    "graphql",
+    "--paginate",
+    "--slurp",
+    "-F",
+    "owner=ahrrfy",
+    "-F",
+    "name=business_management_system",
+    "-F",
+    `pr=${Number(prNumber)}`,
+    "-f",
+    `query=${NATIVE_REVIEWS_QUERY}`,
+  ]);
+}
+
 const POST_MERGE_PR_STATE_QUERY = `
 query($owner: String!, $name: String!, $pr: Int!) {
   repository(owner: $owner, name: $name) {
@@ -3034,6 +3173,9 @@ function fetchPrStateAndThreads(prArg) {
   const prView = captureJson("gh", viewArgs);
   prView.baseRefName = String(prView?.baseRefName ?? "");
   prView.comments = fetchAllIssueComments(prView.number);
+  if (parseCodexReviewState(prView.comments) === null) {
+    prView.nativeReviews = fetchAllNativeReviews(prView.number);
+  }
   const reviewThreads = fetchAllReviewThreads(prView.number);
   const prMeta = Array.isArray(reviewThreads)
     ? reviewThreads[0]?.data?.repository?.pullRequest

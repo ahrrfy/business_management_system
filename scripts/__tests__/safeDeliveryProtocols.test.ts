@@ -24,6 +24,247 @@ import {
 
 const root = process.cwd();
 
+describe("native Codex review compatibility", () => {
+  const head = "1234567890abcdef1234567890abcdef12345678";
+  const nativeReview = (overrides = {}) => ({
+    id: "PRR_1",
+    databaseId: 1,
+    author: { login: "chatgpt-codex-connector[bot]" },
+    commit: { oid: head },
+    state: "COMMENTED",
+    submittedAt: "2026-10-30T10:00:00Z",
+    ...overrides,
+  });
+  const page = (field: string, nodes: unknown[], overrides = {}) => ({
+    data: {
+      repository: {
+        pullRequest: {
+          [field]: {
+            totalCount: nodes.length,
+            nodes,
+            pageInfo: { hasNextPage: false, endCursor: "last" },
+            ...overrides,
+          },
+        },
+      },
+    },
+  });
+  const base = () => ({
+    number: 1601,
+    state: "OPEN",
+    baseRefName: "main",
+    mergeable: "MERGEABLE",
+    headRefOid: head,
+    comments: [],
+    statusCheckRollup: ["audit", "authz-guard", "check-test-build"].map(
+      (name) => ({ name, status: "COMPLETED", conclusion: "SUCCESS" }),
+    ),
+    nativeReviews: [page("reviews", [nativeReview()])],
+  });
+  const evaluate = (prOverrides = {}, threads = [page("reviewThreads", [])]) =>
+    evaluatePrMergeReadiness({
+      prView: { ...base(), ...prOverrides },
+      reviewThreads: threads,
+    });
+
+  it.each(["COMMENTED", "APPROVED"])(
+    "accepts a submitted trusted %s review at the exact head without a private marker",
+    (state) => {
+      expect(
+        evaluate({
+          nativeReviews: [page("reviews", [nativeReview({ state })])],
+        }),
+      ).toMatchObject({ ready: true, headRefOid: head });
+    },
+  );
+
+  it.each([
+    ["missing", []],
+    ["wrong author", [nativeReview({ author: { login: "human" } })]],
+    ["pending", [nativeReview({ state: "PENDING", submittedAt: null })]],
+    ["dismissed", [nativeReview({ state: "DISMISSED" })]],
+    ["changes requested", [nativeReview({ state: "CHANGES_REQUESTED" })]],
+    ["unknown state", [nativeReview({ state: "SUCCESS" })]],
+    ["unsubmitted", [nativeReview({ submittedAt: null })]],
+    ["missing commit", [nativeReview({ commit: null })]],
+    ["stale head", [nativeReview({ commit: { oid: "a".repeat(40) } })]],
+    ["abbreviated head", [nativeReview({ commit: { oid: head.slice(0, 9) } })]],
+  ])("rejects %s native reviews", (_name, reviews) => {
+    expect(
+      evaluate({ nativeReviews: [page("reviews", reviews as unknown[])] })
+        .ready,
+    ).toBe(false);
+  });
+
+  it("never uses body text or REST-shaped objects as native proof", () => {
+    expect(
+      evaluate({
+        nativeReviews: [
+          {
+            user: { login: "chatgpt-codex-connector[bot]" },
+            commit_id: head,
+            state: "APPROVED",
+            submitted_at: "2026-10-30T10:00:00Z",
+          },
+        ],
+        comments: [
+          { author: { login: "human" }, body: "Codex approved " + head },
+        ],
+      }).ready,
+    ).toBe(false);
+  });
+
+  it("selects the latest submitted bot review independently of array order", () => {
+    const newer = nativeReview({
+      id: "PRR_2",
+      databaseId: 2,
+      state: "CHANGES_REQUESTED",
+      submittedAt: "2026-10-30T11:00:00Z",
+    });
+    expect(
+      evaluate({ nativeReviews: [page("reviews", [newer, nativeReview()])] })
+        .ready,
+    ).toBe(false);
+    expect(
+      evaluate({ nativeReviews: [page("reviews", [nativeReview(), newer])] })
+        .ready,
+    ).toBe(false);
+    expect(
+      evaluate({
+        nativeReviews: [
+          page("reviews", [
+            newer,
+            nativeReview({
+              id: "PRR_3",
+              databaseId: 3,
+              state: "APPROVED",
+              submittedAt: "2026-10-30T12:00:00Z",
+            }),
+          ]),
+        ],
+      }).ready,
+    ).toBe(true);
+  });
+
+  it("uses review IDs to order simultaneous submissions and blocks an active rerun", () => {
+    const rejected = nativeReview({
+      id: "PRR_2",
+      databaseId: 2,
+      state: "CHANGES_REQUESTED",
+    });
+    expect(
+      evaluate({ nativeReviews: [page("reviews", [rejected, nativeReview()])] })
+        .ready,
+    ).toBe(false);
+    const accepted = nativeReview({
+      id: "PRR_3",
+      databaseId: 3,
+      state: "APPROVED",
+    });
+    expect(
+      evaluate({ nativeReviews: [page("reviews", [accepted, rejected])] })
+        .ready,
+    ).toBe(true);
+    const pending = nativeReview({
+      id: "PRR_4",
+      databaseId: 4,
+      state: "PENDING",
+      submittedAt: null,
+    });
+    expect(
+      evaluate({ nativeReviews: [page("reviews", [pending, accepted])] }).code,
+    ).toBe("PR_CODEX_REVIEW_RUNNING");
+  });
+
+  it("collects every native review page and rejects truncation or duplicated pages", () => {
+    const older = nativeReview({
+      id: "PRR_0",
+      databaseId: 0,
+      commit: { oid: "a".repeat(40) },
+      submittedAt: "2026-10-29T10:00:00Z",
+    });
+    const first = page("reviews", [older], {
+      totalCount: 2,
+      pageInfo: { hasNextPage: true, endCursor: "first" },
+    });
+    const last = page("reviews", [nativeReview()], { totalCount: 2 });
+    expect(evaluate({ nativeReviews: [first, last] }).ready).toBe(true);
+    for (const nativeReviews of [
+      [first],
+      [last],
+      [first, first, last],
+      [page("reviews", [nativeReview()], { pageInfo: {} })],
+      [{ ...last, errors: [{ message: "partial result" }] }],
+    ]) {
+      expect(evaluate({ nativeReviews }).ready).toBe(false);
+    }
+  });
+
+  it.each(["running", "failed", "invalid", "completed"])(
+    "does not override an explicit %s marker with native success",
+    (state) => {
+      const comments = [
+        {
+          author: { login: "chatgpt-codex-connector" },
+          body: `<!-- codex-review-state:v1 ${JSON.stringify({ state, sha: "a".repeat(40) })} -->`,
+        },
+      ];
+      expect(evaluate({ comments }).ready).toBe(false);
+    },
+  );
+
+  it("requires complete resolved review threads and preserves all existing gates", () => {
+    expect(evaluate({}, []).ready).toBe(false);
+    expect(
+      evaluate({}, [page("reviewThreads", [], { totalCount: 1 })]).ready,
+    ).toBe(false);
+    expect(
+      evaluate({}, [page("reviewThreads", [{ id: "T", isResolved: false }])])
+        .code,
+    ).toBe("PR_UNADDRESSED_REVIEW_COMMENTS");
+    expect(
+      evaluate({}, [page("reviewThreads", [{ id: "T", isResolved: true }])])
+        .ready,
+    ).toBe(true);
+    for (const prOverrides of [
+      { baseRefName: "other" },
+      { mergeStateStatus: "BEHIND" },
+      { reviewDecision: "CHANGES_REQUESTED" },
+      { reviewDecision: "REVIEW_REQUIRED" },
+      { statusCheckRollup: [] },
+      {
+        statusCheckRollup: base().statusCheckRollup.map((c) => ({
+          ...c,
+          conclusion: "FAILURE",
+        })),
+      },
+    ])
+      expect(evaluate(prOverrides).ready).toBe(false);
+  });
+
+  it("blocks unresolved threads on later pages regardless of author or outdated status", () => {
+    const first = page("reviewThreads", [{ id: "T1", isResolved: true }], {
+      totalCount: 2,
+      pageInfo: { hasNextPage: true, endCursor: "first" },
+    });
+    const last = page(
+      "reviewThreads",
+      [
+        {
+          id: "T2",
+          isResolved: false,
+          isOutdated: true,
+          author: { login: "other-reviewer" },
+        },
+      ],
+      { totalCount: 2 },
+    );
+    expect(evaluate({}, [first, last]).code).toBe(
+      "PR_UNADDRESSED_REVIEW_COMMENTS",
+    );
+  });
+});
+
 describe("بروتوكولات الدفع الآمن والدمج الآمن والنشر الآمن", () => {
   it("يفعّل خطاف .husky/pre-push ويفحص الالتزامات المدفوعة فعلياً ويغلق آلياً عند غياب origin/main أو عدم تطابق شجرة العمل", () => {
     const prePushPath = resolve(root, ".husky/pre-push");
