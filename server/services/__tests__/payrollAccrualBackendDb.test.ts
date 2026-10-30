@@ -1,9 +1,13 @@
 import { and, eq, sql } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { MySql2PreparedQuery } from "drizzle-orm/mysql2/session";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
-import { toDateStr } from "../money";
+import { money, toDateStr } from "../money";
+import { POSTING_POLICY_HASH } from "../accounting/postingEngine";
+import { readSalarySettlementEvidence } from "../payroll/settlementEvidence";
+import { payrollHash } from "../payroll/helpers";
 import { PAYROLL_LEGAL_DEFAULTS } from "../payrollLegalService";
 import { approveRun as approveCommissionRun } from "../commissions/runs";
 import { withTx } from "../tx";
@@ -20,6 +24,7 @@ import {
   generatePayroll,
   getPayrollFinancialLedger,
   getRun,
+  listRuns,
   listStatutoryObligationSummary,
   payRemittanceRequest,
   payRun,
@@ -82,12 +87,43 @@ async function seedBase() {
     { id: 2, name: "المبيعات", code: "SALES", type: "SALES" },
   ]);
   await runner.insert(s.users).values([
-    { id: 1, openId: "payroll-maker", role: "admin", branchId: 1, isOwner: true },
-    { id: 2, openId: "payroll-checker", role: "manager", branchId: 1, isOwner: true },
-    { id: 3, openId: "payroll-payer", role: "manager", branchId: 1, isOwner: true },
-    { id: 4, openId: "payroll-return-checker", role: "manager", branchId: 1, isOwner: true },
+    {
+      id: 1,
+      openId: "payroll-maker",
+      role: "admin",
+      branchId: 1,
+      isOwner: true,
+    },
+    {
+      id: 2,
+      openId: "payroll-checker",
+      role: "manager",
+      branchId: 1,
+      isOwner: true,
+    },
+    {
+      id: 3,
+      openId: "payroll-payer",
+      role: "manager",
+      branchId: 1,
+      isOwner: true,
+    },
+    {
+      id: 4,
+      openId: "payroll-return-checker",
+      role: "manager",
+      branchId: 1,
+      isOwner: true,
+    },
     { id: 5, openId: "payroll-hr-full", role: "manager", branchId: 1 },
-    { id: 6, openId: "payroll-inactive-owner", role: "manager", branchId: 1, isOwner: true, isActive: false },
+    {
+      id: 6,
+      openId: "payroll-inactive-owner",
+      role: "manager",
+      branchId: 1,
+      isOwner: true,
+      isActive: false,
+    },
   ]);
   await runner.insert(s.receipts).values({
     branchId: 1,
@@ -251,6 +287,559 @@ beforeEach(async () => {
 });
 
 describe("payroll accrual lifecycle — DB invariants", () => {
+  it("A06 repair rejects a paid retry whose run lock follows a real salary return", async () => {
+    const runId = await seedDraft();
+    await approveRun(runId, CHECKER);
+    const paid = await payRun(runId, PAYER, { paymentDate: "2026-08-01" });
+    const original = paid.employeePaymentSnapshots![0];
+    let returnLocked!: () => void;
+    let releaseReturn!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      returnLocked = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseReturn = resolve;
+    });
+    const execute = MySql2PreparedQuery.prototype.execute;
+    let paused = false;
+    let sawPaidPreview = false;
+    let sawRetryLock = false;
+    const spy = vi
+      .spyOn(MySql2PreparedQuery.prototype, "execute")
+      .mockImplementation(async function (
+        this: typeof MySql2PreparedQuery.prototype,
+        values,
+      ) {
+        const query = (this as unknown as { query: { sql: string } }).query.sql;
+        if (
+          paused &&
+          query.includes("from `payrollRuns`") &&
+          query.includes("for update")
+        ) {
+          sawRetryLock = true;
+          releaseReturn();
+        }
+        const result = await execute.call(this, values);
+        if (
+          !paused &&
+          query.includes("from `payrollAccountingEvents`") &&
+          query.includes("inner join `payrollRuns`") &&
+          query.includes("for update")
+        ) {
+          paused = true;
+          returnLocked();
+          await release;
+        } else if (
+          paused &&
+          query.includes("from `payrollRuns`") &&
+          !query.includes("for update")
+        ) {
+          sawPaidPreview = result[0]?.status === "paid";
+        }
+        return result;
+      });
+    try {
+      const returned = returnSalaryPayment(
+        {
+          accountingEventId: original.eventId,
+          returnedAt: "2026-08-02",
+          reason: "إعادة راتب أثناء إعادة المحاولة",
+        },
+        RETURN_CHECKER,
+      );
+      await locked;
+      const retry = payRun(runId, PAYER, { paymentDate: "2026-08-01" });
+      await expect(retry).rejects.toMatchObject({ code: "CONFLICT" });
+      await returned;
+      expect(sawPaidPreview && sawRetryLock).toBe(true);
+    } finally {
+      releaseReturn();
+      spy.mockRestore();
+    }
+    const reopened = await getRun(runId);
+    expect(reopened?.status).toBe("approved");
+    expect(
+      reopened?.accountingEvents.filter(
+        (event) => event.eventKind === "SALARY_PAYMENT",
+      ),
+    ).toHaveLength(1);
+    await expect(
+      payRun(runId, PAYER, { paymentDate: "2026-08-03" }),
+    ).resolves.toMatchObject({ replayed: false, status: "paid" });
+  });
+
+  it("A06 repair rejects mutable receipt proof in every reader and return", async () => {
+    const runId = await seedDraft();
+    await approveRun(runId, CHECKER);
+    const paid = await payRun(runId, PAYER, {
+      paymentMethod: "TRANSFER",
+      referenceNumber: "FROZEN-TRANSFER",
+      paymentDate: "2026-08-01",
+    });
+    const payment = paid.employeePaymentSnapshots![0];
+    const [receipt] = await db()
+      .select()
+      .from(s.receipts)
+      .where(eq(s.receipts.id, payment.receiptId!));
+    const shiftId = extractInsertId(
+      await db()
+        .insert(s.shifts)
+        .values({ branchId: 1, userId: PAYER.userId, status: "CLOSED" }),
+    );
+    const changes: Partial<typeof s.receipts.$inferInsert>[] = [
+      { voucherDate: new Date("2026-08-02T00:00:00Z") },
+      { paymentMethod: "WALLET" },
+      { referenceNumber: "OTHER-REFERENCE" },
+      { cashBucket: "TREASURY" },
+      { shiftId },
+      { branchId: 2 },
+      { direction: "IN" },
+      { approvalStatus: "PENDING_APPROVAL" },
+      { status: "PENDING" },
+    ];
+    for (const change of changes) {
+      await db()
+        .update(s.receipts)
+        .set(change)
+        .where(eq(s.receipts.id, receipt.id));
+      await expect(getRun(runId)).rejects.toMatchObject({ code: "CONFLICT" });
+      await expect(getPayrollFinancialLedger()).rejects.toMatchObject({
+        code: "CONFLICT",
+      });
+      await expect(listRuns()).rejects.toMatchObject({ code: "CONFLICT" });
+      await expect(
+        returnSalaryPayment(
+          {
+            accountingEventId: payment.eventId,
+            returnedAt: "2026-08-03",
+            reason: "اختبار سلامة دليل الصرف",
+          },
+          RETURN_CHECKER,
+        ),
+      ).rejects.toMatchObject({ code: "CONFLICT" });
+      await db()
+        .update(s.receipts)
+        .set({
+          voucherDate: receipt.voucherDate,
+          paymentMethod: receipt.paymentMethod,
+          referenceNumber: receipt.referenceNumber,
+          cashBucket: receipt.cashBucket,
+          shiftId: receipt.shiftId,
+          branchId: receipt.branchId,
+          direction: receipt.direction,
+          approvalStatus: receipt.approvalStatus,
+          status: receipt.status,
+        })
+        .where(eq(s.receipts.id, receipt.id));
+    }
+    // SQL timestamp precision and time of day do not change the frozen payment day.
+    await db()
+      .update(s.receipts)
+      .set({ voucherDate: new Date("2026-08-01T13:14:15.123Z") })
+      .where(eq(s.receipts.id, receipt.id));
+    const view = await getRun(runId);
+    expect(
+      toDateStr(new Date(view!.employeePaymentSnapshots[0].paymentDate!)),
+    ).toBe("2026-08-01");
+    const returnInput = {
+      accountingEventId: payment.eventId,
+      returnedAt: "2026-08-03",
+      reason: "اختبار سلامة دليل الإعادة",
+    };
+    const returned = await returnSalaryPayment(returnInput, RETURN_CHECKER);
+    if (!("receiptId" in returned) || returned.receiptId == null)
+      throw new Error("Expected new return receipt");
+    const [returnReceipt] = await db()
+      .select()
+      .from(s.receipts)
+      .where(eq(s.receipts.id, returned.receiptId!));
+    await db()
+      .update(s.receipts)
+      .set({ referenceNumber: "TAMPERED-RETURN" })
+      .where(eq(s.receipts.id, returnReceipt.id));
+    await expect(getPayrollFinancialLedger()).rejects.toMatchObject({
+      code: "CONFLICT",
+    });
+    await expect(
+      returnSalaryPayment(returnInput, RETURN_CHECKER),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    await db()
+      .update(s.receipts)
+      .set({ referenceNumber: returnReceipt.referenceNumber })
+      .where(eq(s.receipts.id, returnReceipt.id));
+    await expect(
+      returnSalaryPayment(returnInput, RETURN_CHECKER),
+    ).resolves.toMatchObject({ replayed: true });
+  });
+
+  it("A06 repair checks an earlier active batch independently of the latest retry contract", async () => {
+    const runId = await seedTwoEmployeeDraft();
+    await approveRun(runId, CHECKER);
+    const first = await payRun(runId, PAYER, { paymentDate: "2026-08-01" });
+    const [a, b] = first.employeePaymentSnapshots!;
+    await returnSalaryPayment(
+      {
+        accountingEventId: a.eventId,
+        returnedAt: "2026-08-02",
+        reason: "إعادة جزئية مثبتة",
+      },
+      RETURN_CHECKER,
+    );
+    await payRun(runId, PAYER, { paymentDate: "2026-08-03" });
+    await expect(
+      payRun(runId, PAYER, { paymentDate: "2026-08-03" }),
+    ).resolves.toMatchObject({ replayed: true });
+    await db()
+      .update(s.receipts)
+      .set({ status: "PENDING" })
+      .where(eq(s.receipts.id, b.receiptId!));
+    await expect(
+      payRun(runId, PAYER, { paymentDate: "2026-08-03" }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    await db()
+      .update(s.receipts)
+      .set({ status: "COMPLETED" })
+      .where(eq(s.receipts.id, b.receiptId!));
+    const [reversal] = await db()
+      .select()
+      .from(s.payrollObligationAllocations)
+      .where(eq(s.payrollObligationAllocations.direction, "REVERSE"));
+    await db()
+      .update(s.payrollObligationAllocations)
+      .set({ amount: "1.00" })
+      .where(eq(s.payrollObligationAllocations.id, reversal.id));
+    await expect(
+      payRun(runId, PAYER, { paymentDate: "2026-08-03" }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("A06 fails ACTIVE rounding without its approved account and rolls back every settlement effect", async () => {
+    const runner = db();
+    const runId = await seedDraft();
+    await approveRun(runId, CHECKER);
+    await runner.insert(s.accounts).values([
+      {
+        code: "A06-L",
+        name: "رواتب مستحقة",
+        type: "LIABILITY",
+        systemRole: "ACCRUED_SALARY",
+      },
+      {
+        code: "A06-C",
+        name: "خزينة",
+        type: "ASSET",
+        systemRole: "TREASURY_CASH",
+      },
+    ]);
+    await runner
+      .update(s.doubleEntrySettings)
+      .set({
+        mode: "ACTIVE",
+        shadowCycleId: "A06",
+        shadowOpeningHash: "a".repeat(64),
+        policyApprovalReference: "A06-APPROVED",
+        policyApprovalPolicyHash: POSTING_POLICY_HASH,
+        policyApprovalCycleId: "A06",
+        policyApprovalOpeningHash: "a".repeat(64),
+        policyAccountantName: "المحاسب",
+        policyApprovedAt: new Date(),
+        policyApprovedBy: CHECKER.userId,
+      })
+      .where(eq(s.doubleEntrySettings.id, 1));
+    await expect(
+      payRun(runId, PAYER, {
+        paymentMethod: "CASH",
+        paymentDate: "2026-08-01",
+      }),
+    ).rejects.toThrow();
+    expect(await runner.select().from(s.receipts)).toHaveLength(1);
+    expect(
+      await runner.select().from(s.payrollObligationAllocations),
+    ).toHaveLength(0);
+    expect(
+      await runner
+        .select()
+        .from(s.payrollAccountingEvents)
+        .where(eq(s.payrollAccountingEvents.eventKind, "SALARY_PAYMENT")),
+    ).toHaveLength(0);
+    expect((await getRun(runId))!.status).toBe("approved");
+  });
+  it("A06 retains legacy hash and reverses only historical two-leg actual cash without inventing rounding", async () => {
+    const runner = db();
+    const runId = await seedDraft();
+    await approveRun(runId, CHECKER);
+    const paid = await payRun(runId, PAYER, {
+      paymentMethod: "CASH",
+      paymentDate: "2026-08-01",
+    });
+    const payment = paid.employeePaymentSnapshots![0];
+    const [obligation] = await runner
+      .select()
+      .from(s.payrollObligations)
+      .where(eq(s.payrollObligations.id, payment.obligationId));
+    await runner
+      .update(s.payrollAccountingEvents)
+      .set({
+        settlementEvidence: null,
+        sourceHash: payrollHash({
+          kind: "SALARY_PAYMENT",
+          obligationSourceKey: obligation.sourceKey,
+          amount: payment.amount,
+          method: "CASH",
+          referenceNumber: null,
+          paymentYmd: "2026-08-01",
+        }),
+      })
+      .where(eq(s.payrollAccountingEvents.id, payment.eventId));
+    expect(
+      (await getRun(runId))!.employeePaymentSnapshots[0].classification,
+    ).toBe("LEGACY_UNCLASSIFIED");
+    await expect(
+      payRun(runId, PAYER, {
+        paymentMethod: "CASH",
+        paymentDate: "2026-08-01",
+      }),
+    ).resolves.toMatchObject({ replayed: true });
+    const returned = await returnSalaryPayment(
+      {
+        accountingEventId: payment.eventId,
+        returnedAt: "2026-08-02",
+        reason: "عكس أصل تاريخي مثبت",
+      },
+      RETURN_CHECKER,
+    );
+    const [event] = await runner
+      .select()
+      .from(s.payrollAccountingEvents)
+      .where(eq(s.payrollAccountingEvents.id, returned.eventId));
+    expect(event.settlementEvidence).toBeNull();
+    const [receipt] = await runner
+      .select()
+      .from(s.receipts)
+      .where(eq(s.receipts.id, returned.receiptId!));
+    expect(receipt.amount).toBe(payment.amount);
+    const [restored] = await runner
+      .select()
+      .from(s.payrollObligations)
+      .where(eq(s.payrollObligations.id, payment.obligationId));
+    expect(restored.remainingAmount).toBe("900.00");
+    const transfer = {
+      paymentMethod: "TRANSFER" as const,
+      paymentDate: "2026-08-03",
+      referenceNumber: "A06-EXACT-TRANSFER",
+    };
+    const repaid = await payRun(runId, PAYER, transfer);
+    expect(
+      repaid.employeePaymentSnapshots!.find((row) => row.active),
+    ).toMatchObject({
+      amount: "900.00",
+      signedDifference: "0.00",
+      classification: "EXACT",
+    });
+    await expect(
+      payRun(runId, PAYER, {
+        ...transfer,
+        referenceNumber: "DIFFERENT-REFERENCE",
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+  it.each([
+    ["100100.00", "100000.00", "-100.00", "ACTIVE"],
+    ["100150.00", "100250.00", "100.00", "ACTIVE"],
+    ["124.99", "0.00", "-124.99", "ACTIVE"],
+    ["125.00", "250.00", "125.00", "OFF"],
+  ] as const)(
+    "A06 settles, reads, retries, returns and repays %s/%s in %s",
+    async (entitlement, actual, difference, mode) => {
+      const runner = db();
+      const runId = await seedDraft();
+      const gross = money(entitlement).plus(100).toFixed(2);
+      await runner
+        .update(s.payrollRuns)
+        .set({ totalGross: gross, totalNet: entitlement })
+        .where(eq(s.payrollRuns.id, runId));
+      await runner
+        .update(s.payrollItems)
+        .set({ gross, net: entitlement })
+        .where(eq(s.payrollItems.runId, runId));
+      await runner.update(s.receipts).set({ amount: "1000000.00" });
+      await approveRun(runId, CHECKER);
+      if (mode === "ACTIVE") {
+        await runner.insert(s.accounts).values([
+          {
+            code: "A06-L",
+            name: "رواتب مستحقة",
+            type: "LIABILITY",
+            systemRole: "ACCRUED_SALARY",
+          },
+          {
+            code: "A06-C",
+            name: "خزينة",
+            type: "ASSET",
+            systemRole: "TREASURY_CASH",
+          },
+          {
+            code: "A06-R",
+            name: "فروق تقريب",
+            type: "EXPENSE",
+            systemRole: "ROUNDING_DIFF",
+          },
+        ]);
+        await runner
+          .update(s.doubleEntrySettings)
+          .set({
+            mode: "ACTIVE",
+            shadowCycleId: "A06",
+            shadowOpeningHash: "a".repeat(64),
+            policyApprovalReference: "A06-APPROVED",
+            policyApprovalPolicyHash: POSTING_POLICY_HASH,
+            policyApprovalCycleId: "A06",
+            policyApprovalOpeningHash: "a".repeat(64),
+            policyAccountantName: "المحاسب",
+            policyApprovedAt: new Date(),
+            policyApprovedBy: CHECKER.userId,
+          })
+          .where(eq(s.doubleEntrySettings.id, 1));
+      }
+      const payment = {
+        paymentMethod: "CASH" as const,
+        paymentDate: "2026-08-01",
+      };
+      const paid = await payRun(runId, PAYER, payment);
+      const snapshot = paid.employeePaymentSnapshots!.find(
+        (row) => row.active,
+      )!;
+      expect(snapshot).toMatchObject({
+        amount: actual,
+        entitlementSettled: entitlement,
+        signedDifference: difference,
+        evidenceVersion: 2,
+      });
+      expect(snapshot.receiptId == null).toBe(actual === "0.00");
+      expect((await listRuns()).find((row) => row.id === runId)).toMatchObject({
+        totalActualSalaryPaid: actual,
+        salarySettlementCount: 1,
+      });
+      const [event] = await runner
+        .select()
+        .from(s.payrollAccountingEvents)
+        .where(eq(s.payrollAccountingEvents.id, snapshot.eventId));
+      const evidence = readSalarySettlementEvidence(
+        event.settlementEvidence,
+        event.sourceHash,
+      )!;
+      expect(evidence.components.roleDebits.ACCRUED_SALARY).toBe(entitlement);
+      const lines = await runner
+        .select()
+        .from(s.journalLines)
+        .innerJoin(
+          s.journalEntries,
+          eq(s.journalLines.journalId, s.journalEntries.id),
+        )
+        .where(eq(s.journalEntries.entryId, event.accountingEntryId));
+      if (mode === "ACTIVE") {
+        expect(
+          lines.find((row) => row.journalLines.role === "ACCRUED_SALARY")
+            ?.journalLines.debit,
+        ).toBe(entitlement);
+        expect(
+          lines.filter((row) => row.journalLines.role === "TREASURY_CASH"),
+        ).toHaveLength(actual === "0.00" ? 0 : 1);
+      }
+      expect(
+        (await getPayrollFinancialLedger({ period: "2026-08" })).find(
+          (row) => row.eventId === snapshot.eventId,
+        ),
+      ).toMatchObject({
+        active: true,
+        amount: actual,
+        receiptId: snapshot.receiptId,
+      });
+      // Retry proves original scope before current cash balance/mapping validation.
+      await runner
+        .update(s.receipts)
+        .set({ amount: "0.00" })
+        .where(eq(s.receipts.referenceNumber, "PAYROLL-TEST-FUND"));
+      await expect(payRun(runId, PAYER, payment)).resolves.toMatchObject({
+        replayed: true,
+      });
+      await expect(
+        payRun(runId, PAYER, {
+          ...payment,
+          cashBucket: "DRAWER",
+          shiftId: 999,
+        }),
+      ).rejects.toMatchObject({ code: "CONFLICT" });
+      await expect(
+        payRun(runId, PAYER, { ...payment, paymentDate: "2026-08-02" }),
+      ).rejects.toMatchObject({ code: "CONFLICT" });
+      const returned = await returnSalaryPayment(
+        {
+          accountingEventId: snapshot.eventId,
+          returnedAt: "2026-08-02",
+          reason: "إعادة تسوية مثبتة",
+        },
+        RETURN_CHECKER,
+      );
+      expect(returned.receiptId == null).toBe(actual === "0.00");
+      const [obligation] = await runner
+        .select()
+        .from(s.payrollObligations)
+        .where(eq(s.payrollObligations.id, snapshot.obligationId));
+      expect(obligation.remainingAmount).toBe(entitlement);
+      const [returnEvent] = await runner
+        .select()
+        .from(s.payrollAccountingEvents)
+        .where(eq(s.payrollAccountingEvents.id, returned.eventId));
+      const returnedEvidence = readSalarySettlementEvidence(
+        returnEvent.settlementEvidence,
+        returnEvent.sourceHash,
+      )!;
+      expect(returnedEvidence.components.roleCredits.ACCRUED_SALARY).toBe(
+        entitlement,
+      );
+      await expect(
+        returnSalaryPayment(
+          {
+            accountingEventId: snapshot.eventId,
+            returnedAt: "2026-08-02",
+            reason: "إعادة تسوية مثبتة",
+          },
+          RETURN_CHECKER,
+        ),
+      ).resolves.toMatchObject({ replayed: true });
+      await runner
+        .update(s.receipts)
+        .set({ amount: "1000000.00" })
+        .where(eq(s.receipts.referenceNumber, "PAYROLL-TEST-FUND"));
+      const repaid = await payRun(runId, PAYER, {
+        ...payment,
+        paymentDate: "2026-08-03",
+      });
+      expect(
+        repaid.employeePaymentSnapshots!.filter((row) => row.active),
+      ).toHaveLength(1);
+      const [newEvent] = await runner
+        .select()
+        .from(s.payrollAccountingEvents)
+        .where(
+          eq(
+            s.payrollAccountingEvents.id,
+            repaid.employeePaymentSnapshots!.find((row) => row.active)!.eventId,
+          ),
+        );
+      expect(newEvent.sourceKey).toContain(":r1");
+      await runner
+        .update(s.payrollObligationAllocations)
+        .set({ amount: "1.00" })
+        .where(
+          eq(s.payrollObligationAllocations.accountingEventId, newEvent.id),
+        );
+      await expect(
+        payRun(runId, PAYER, { ...payment, paymentDate: "2026-08-03" }),
+      ).rejects.toMatchObject({ code: "CONFLICT" });
+    },
+  );
   it("serializes approve/pay retries and preserves append-only approval/reopen evidence", async () => {
     const runner = db();
     const runId = await seedDraft();
@@ -271,27 +860,40 @@ describe("payroll accrual lifecycle — DB invariants", () => {
       .set({ receiptId: 900 })
       .where(eq(s.employeeAdvances.id, 20));
 
-    await Promise.all([
-      approveRun(runId, CHECKER),
-      approveRun(runId, CHECKER),
-    ]);
+    await Promise.all([approveRun(runId, CHECKER), approveRun(runId, CHECKER)]);
 
     const obligations = await runner
       .select()
       .from(s.payrollObligations)
       .where(eq(s.payrollObligations.runId, runId));
     expect(obligations).toHaveLength(4);
-    expect(Object.fromEntries(obligations.map((row) => [row.kind, row.originalAmount]))).toEqual({
+    expect(
+      Object.fromEntries(
+        obligations.map((row) => [row.kind, row.originalAmount]),
+      ),
+    ).toEqual({
       SALARY_NET: "900.00",
       INCOME_TAX: "50.00",
       SOCIAL_SECURITY: "200.00",
       EOS_PROVISION: "40.00",
     });
-    const statutorySummary = await listStatutoryObligationSummary({ branchId: 1 });
+    const statutorySummary = await listStatutoryObligationSummary({
+      branchId: 1,
+    });
     expect(statutorySummary).toEqual(
       expect.arrayContaining([
-        { kind: "INCOME_TAX", branchIdSnapshot: 1, remainingAmount: "50.00", openCount: 1 },
-        { kind: "SOCIAL_SECURITY", branchIdSnapshot: 1, remainingAmount: "200.00", openCount: 1 },
+        {
+          kind: "INCOME_TAX",
+          branchIdSnapshot: 1,
+          remainingAmount: "50.00",
+          openCount: 1,
+        },
+        {
+          kind: "SOCIAL_SECURITY",
+          branchIdSnapshot: 1,
+          remainingAmount: "200.00",
+          openCount: 1,
+        },
       ]),
     );
     expect(Object.keys(statutorySummary[0]).sort()).toEqual([
@@ -323,8 +925,14 @@ describe("payroll accrual lifecycle — DB invariants", () => {
       .set({ branchId: 2 })
       .where(eq(s.employees.id, 10));
     await Promise.all([
-      payRun(runId, PAYER, { paymentMethod: "CASH", paymentDate: "2026-08-01" }),
-      payRun(runId, PAYER, { paymentMethod: "CASH", paymentDate: "2026-08-01" }),
+      payRun(runId, PAYER, {
+        paymentMethod: "CASH",
+        paymentDate: "2026-08-01",
+      }),
+      payRun(runId, PAYER, {
+        paymentMethod: "CASH",
+        paymentDate: "2026-08-01",
+      }),
     ]);
 
     const salaryEvents = await runner
@@ -350,7 +958,11 @@ describe("payroll accrual lifecycle — DB invariants", () => {
     });
 
     await returnSalaryPayment(
-      { accountingEventId: Number(salaryEvents[0].id), returnedAt: "2026-08-02", reason: "إعادة المبلغ من الموظف" },
+      {
+        accountingEventId: Number(salaryEvents[0].id),
+        returnedAt: "2026-08-02",
+        reason: "إعادة المبلغ من الموظف",
+      },
       RETURN_CHECKER,
     );
     const reopenVsCancellation = await Promise.allSettled([
@@ -365,16 +977,23 @@ describe("payroll accrual lifecycle — DB invariants", () => {
         await cancelLockedEmployeeAdvanceTx(tx, locked);
       }),
     ]);
-    expect(reopenVsCancellation.filter((result) => result.status === "fulfilled")).toHaveLength(1);
-    expect(reopenVsCancellation.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(
+      reopenVsCancellation.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    expect(
+      reopenVsCancellation.filter((result) => result.status === "rejected"),
+    ).toHaveLength(1);
     for (const result of reopenVsCancellation) {
       if (result.status === "rejected") {
         expect(String(result.reason)).not.toMatch(/ER_LOCK_DEADLOCK|deadlock/i);
       }
     }
-    const reopenedResult = reopenVsCancellation.find((result) => result.status === "fulfilled");
+    const reopenedResult = reopenVsCancellation.find(
+      (result) => result.status === "fulfilled",
+    );
     expect(reopenedResult?.status).toBe("fulfilled");
-    const reopened = reopenedResult?.status === "fulfilled" ? reopenedResult.value : null;
+    const reopened =
+      reopenedResult?.status === "fulfilled" ? reopenedResult.value : null;
     expect(reopened).toMatchObject({ status: "draft", revisionNo: 1 });
 
     const events = await runner
@@ -416,7 +1035,9 @@ describe("payroll accrual lifecycle — DB invariants", () => {
       code: "FORBIDDEN",
     });
 
-    await expect(cancelRun(runId, MAKER, "إعادة مراجعة ذاتية")).resolves.toMatchObject({
+    await expect(
+      cancelRun(runId, MAKER, "إعادة مراجعة ذاتية"),
+    ).resolves.toMatchObject({
       status: "draft",
       revisionNo: 1,
     });
@@ -436,9 +1057,14 @@ describe("payroll accrual lifecycle — DB invariants", () => {
     expect(outcomes[1].status).toBe("fulfilled");
     if (outcomes[0].status === "rejected") {
       expect(outcomes[0].reason).toMatchObject({ code: "BAD_REQUEST" });
-      expect(String(outcomes[0].reason?.message ?? "")).not.toContain("DEADLOCK");
+      expect(String(outcomes[0].reason?.message ?? "")).not.toContain(
+        "DEADLOCK",
+      );
     }
-    const [run] = await runner.select().from(s.payrollRuns).where(eq(s.payrollRuns.id, runId));
+    const [run] = await runner
+      .select()
+      .from(s.payrollRuns)
+      .where(eq(s.payrollRuns.id, runId));
     expect(run.status).toBe("approved");
   });
 
@@ -447,29 +1073,49 @@ describe("payroll accrual lifecycle — DB invariants", () => {
     const runId = await seedDraft();
     let policyLocked!: () => void;
     let releasePolicy!: () => void;
-    const locked = new Promise<void>((resolve) => { policyLocked = resolve; });
-    const release = new Promise<void>((resolve) => { releasePolicy = resolve; });
+    const locked = new Promise<void>((resolve) => {
+      policyLocked = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releasePolicy = resolve;
+    });
     const updater = withTx(async (tx) => {
-      await tx.insert(s.payrollLegalSettings).values({ id: 1 })
+      await tx
+        .insert(s.payrollLegalSettings)
+        .values({ id: 1 })
         .onDuplicateKeyUpdate({ set: { id: 1 } });
-      await tx.select().from(s.payrollLegalSettings)
-        .where(eq(s.payrollLegalSettings.id, 1)).for("update").limit(1);
+      await tx
+        .select()
+        .from(s.payrollLegalSettings)
+        .where(eq(s.payrollLegalSettings.id, 1))
+        .for("update")
+        .limit(1);
       policyLocked();
       await release;
-      await tx.update(s.payrollLegalSettings).set({
-        incomeTaxEnabled: true,
-        incomeTaxBrackets: [{ upTo: null, rate: "10" }],
-        updatedBy: CHECKER.userId,
-      }).where(eq(s.payrollLegalSettings.id, 1));
+      await tx
+        .update(s.payrollLegalSettings)
+        .set({
+          incomeTaxEnabled: true,
+          incomeTaxBrackets: [{ upTo: null, rate: "10" }],
+          updatedBy: CHECKER.userId,
+        })
+        .where(eq(s.payrollLegalSettings.id, 1));
     });
     await locked;
     const approval = approveRun(runId, CHECKER);
     releasePolicy();
     await updater;
-    await expect(approval).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
-    const [run] = await runner.select().from(s.payrollRuns).where(eq(s.payrollRuns.id, runId));
+    await expect(approval).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+    });
+    const [run] = await runner
+      .select()
+      .from(s.payrollRuns)
+      .where(eq(s.payrollRuns.id, runId));
     expect(run.status).toBe("draft");
-    expect(await runner.select().from(s.payrollAccountingEvents)).toHaveLength(0);
+    expect(await runner.select().from(s.payrollAccountingEvents)).toHaveLength(
+      0,
+    );
   });
 
   it("serializes commission approval with payroll approval so exactly one financial state wins", async () => {
@@ -487,19 +1133,31 @@ describe("payroll accrual lifecycle — DB invariants", () => {
       approveRun(runId, CHECKER),
       approveCommissionRun(90, CHECKER),
     ]);
-    expect(raced.filter((result) => result.status === "fulfilled")).toHaveLength(1);
-    expect(raced.filter((result) => result.status === "rejected")).toHaveLength(1);
-    const [payroll] = await runner.select().from(s.payrollRuns).where(eq(s.payrollRuns.id, runId));
-    const [commission] = await runner.select().from(s.commissionRuns).where(eq(s.commissionRuns.id, 90));
+    expect(
+      raced.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    expect(raced.filter((result) => result.status === "rejected")).toHaveLength(
+      1,
+    );
+    const [payroll] = await runner
+      .select()
+      .from(s.payrollRuns)
+      .where(eq(s.payrollRuns.id, runId));
+    const [commission] = await runner
+      .select()
+      .from(s.commissionRuns)
+      .where(eq(s.commissionRuns.id, 90));
     expect(
       (payroll.status === "approved" && commission.status === "draft") ||
-      (payroll.status === "draft" && commission.status === "approved"),
+        (payroll.status === "draft" && commission.status === "approved"),
     ).toBe(true);
   });
 
   it("serializes commission approval with payroll generation without deadlock or silent capture", async () => {
     const runner = db();
-    await runner.insert(s.commissionPlans).values({ id: 91, name: "Race commission" });
+    await runner
+      .insert(s.commissionPlans)
+      .values({ id: 91, name: "Race commission" });
     await runner.insert(s.commissionRuns).values({
       id: 91,
       period: "2026-07",
@@ -520,12 +1178,23 @@ describe("payroll accrual lifecycle — DB invariants", () => {
       approveCommissionRun(91, CHECKER),
     ]);
     expect(raced.every((result) => result.status === "fulfilled")).toBe(true);
-    const [run] = await runner.select().from(s.payrollRuns).where(eq(s.payrollRuns.period, "2026-07"));
-    const [commission] = await runner.select().from(s.commissionRuns).where(eq(s.commissionRuns.id, 91));
-    const [item] = await runner.select().from(s.payrollItems).where(and(
-      eq(s.payrollItems.runId, Number(run.id)),
-      eq(s.payrollItems.employeeId, 10),
-    ));
+    const [run] = await runner
+      .select()
+      .from(s.payrollRuns)
+      .where(eq(s.payrollRuns.period, "2026-07"));
+    const [commission] = await runner
+      .select()
+      .from(s.commissionRuns)
+      .where(eq(s.commissionRuns.id, 91));
+    const [item] = await runner
+      .select()
+      .from(s.payrollItems)
+      .where(
+        and(
+          eq(s.payrollItems.runId, Number(run.id)),
+          eq(s.payrollItems.employeeId, 10),
+        ),
+      );
     expect(commission.status).toBe("approved");
     if (commission.payrollRunId == null) {
       expect(item.commission).toBe("0.00");
@@ -540,7 +1209,10 @@ describe("payroll accrual lifecycle — DB invariants", () => {
     const runId = await seedDraft();
     await approveRun(runId, CHECKER);
     const [firstAccrual] = await runner
-      .select({ amount: s.accountingEntries.amount, entryDate: s.accountingEntries.entryDate })
+      .select({
+        amount: s.accountingEntries.amount,
+        entryDate: s.accountingEntries.entryDate,
+      })
       .from(s.payrollAccountingEvents)
       .innerJoin(
         s.accountingEntries,
@@ -557,7 +1229,10 @@ describe("payroll accrual lifecycle — DB invariants", () => {
     await cancelRun(runId, CHECKER, "تصحيح داخل فترة الاستحقاق");
     await approveRun(runId, CHECKER);
     const economicEntries = await runner
-      .select({ amount: s.accountingEntries.amount, entryDate: s.accountingEntries.entryDate })
+      .select({
+        amount: s.accountingEntries.amount,
+        entryDate: s.accountingEntries.entryDate,
+      })
       .from(s.payrollAccountingEvents)
       .innerJoin(
         s.accountingEntries,
@@ -570,14 +1245,12 @@ describe("payroll accrual lifecycle — DB invariants", () => {
         ),
       );
     expect(economicEntries).toHaveLength(3);
-    expect(economicEntries.map((entry) => toDateStr(new Date(entry.entryDate)))).toEqual([
-      "2026-07-31",
-      "2026-07-31",
-      "2026-07-31",
-    ]);
-    expect(economicEntries.reduce((sum, entry) => sum + Number(entry.amount), 0)).toBe(
-      Number(firstAccrual.amount),
-    );
+    expect(
+      economicEntries.map((entry) => toDateStr(new Date(entry.entryDate))),
+    ).toEqual(["2026-07-31", "2026-07-31", "2026-07-31"]);
+    expect(
+      economicEntries.reduce((sum, entry) => sum + Number(entry.amount), 0),
+    ).toBe(Number(firstAccrual.amount));
   });
 
   it("rejects reopening a locked accrual month without any mutation", async () => {
@@ -594,10 +1267,15 @@ describe("payroll accrual lifecycle — DB invariants", () => {
       lockedBy: CHECKER.userId,
     });
 
-    await expect(cancelRun(runId, CHECKER, "محاولة فتح فترة مقفلة")).rejects.toMatchObject({
+    await expect(
+      cancelRun(runId, CHECKER, "محاولة فتح فترة مقفلة"),
+    ).rejects.toMatchObject({
       code: "FORBIDDEN",
     });
-    const [run] = await runner.select().from(s.payrollRuns).where(eq(s.payrollRuns.id, runId));
+    const [run] = await runner
+      .select()
+      .from(s.payrollRuns)
+      .where(eq(s.payrollRuns.id, runId));
     expect(run.status).toBe("approved");
     const afterEvents = await runner
       .select({ id: s.payrollAccountingEvents.id })
@@ -654,7 +1332,9 @@ describe("payroll accrual lifecycle — DB invariants", () => {
     const run = await generatePayroll("2026-07", MAKER);
     expect(run?.items.map((item) => Number(item.employeeId))).toEqual([11]);
     expect(run?.notes).toContain('"earnedGrossWages":"0.00"');
-    await expect(approveRun(Number(run?.id), CHECKER)).resolves.toMatchObject({ status: "approved" });
+    await expect(approveRun(Number(run?.id), CHECKER)).resolves.toMatchObject({
+      status: "approved",
+    });
     const employeeTenObligations = await runner
       .select()
       .from(s.payrollObligations)
@@ -686,7 +1366,9 @@ describe("payroll accrual lifecycle — DB invariants", () => {
 
   it("keeps approved commission as a zero-base payroll item beside recognized termination wages", async () => {
     const runner = db();
-    await runner.delete(s.employeeAdvances).where(eq(s.employeeAdvances.employeeId, 10));
+    await runner
+      .delete(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.employeeId, 10));
     await runner.insert(s.employeeTerminations).values({
       employeeId: 10,
       terminationType: "استقالة",
@@ -727,7 +1409,11 @@ describe("payroll accrual lifecycle — DB invariants", () => {
 
     const run = await generatePayroll("2026-07", MAKER);
     const covered = run?.items.find((item) => Number(item.employeeId) === 10);
-    expect(covered).toMatchObject({ gross: "0.00", commission: "100.00", net: "100.00" });
+    expect(covered).toMatchObject({
+      gross: "0.00",
+      commission: "100.00",
+      net: "100.00",
+    });
     expect(run?.totalCommission).toBe("100.00");
     await approveRun(Number(run?.id), CHECKER);
     const [commissionObligation] = await runner
@@ -774,7 +1460,9 @@ describe("payroll accrual lifecycle — DB invariants", () => {
         ),
       );
     expect(firstPayments).toHaveLength(2);
-    const employeeA = firstPayments.find((row) => Number(row.employeeId) === 10);
+    const employeeA = firstPayments.find(
+      (row) => Number(row.employeeId) === 10,
+    );
     expect(employeeA).toBeDefined();
 
     const salaryReturnInput = {
@@ -782,17 +1470,28 @@ describe("payroll accrual lifecycle — DB invariants", () => {
       returnedAt: "2026-08-02",
       reason: "إعادة جزئية مثبتة",
     };
-    await expect(returnSalaryPayment(salaryReturnInput, RETURN_CHECKER)).resolves.toMatchObject({ replayed: false });
-    await expect(returnSalaryPayment(salaryReturnInput, RETURN_CHECKER)).resolves.toMatchObject({ replayed: true });
     await expect(
-      returnSalaryPayment({ ...salaryReturnInput, reason: "سبب مختلف عن الإعادة المثبتة" }, RETURN_CHECKER),
+      returnSalaryPayment(salaryReturnInput, RETURN_CHECKER),
+    ).resolves.toMatchObject({ replayed: false });
+    await expect(
+      returnSalaryPayment(salaryReturnInput, RETURN_CHECKER),
+    ).resolves.toMatchObject({ replayed: true });
+    await expect(
+      returnSalaryPayment(
+        { ...salaryReturnInput, reason: "سبب مختلف عن الإعادة المثبتة" },
+        RETURN_CHECKER,
+      ),
     ).rejects.toMatchObject({ code: "CONFLICT" });
 
     const [afterReturn] = await runner
       .select()
       .from(s.payrollRuns)
       .where(eq(s.payrollRuns.id, runId));
-    expect(afterReturn).toMatchObject({ status: "approved", paidAt: null, paidBy: null });
+    expect(afterReturn).toMatchObject({
+      status: "approved",
+      paidAt: null,
+      paidBy: null,
+    });
     const returnedObligations = await runner
       .select()
       .from(s.payrollObligations)
@@ -804,7 +1503,10 @@ describe("payroll accrual lifecycle — DB invariants", () => {
       );
     expect(
       Object.fromEntries(
-        returnedObligations.map((row) => [Number(row.employeeId), `${row.remainingAmount}:${row.status}`]),
+        returnedObligations.map((row) => [
+          Number(row.employeeId),
+          `${row.remainingAmount}:${row.status}`,
+        ]),
       ),
     ).toEqual({ 10: "750.00:OPEN", 11: "0.00:SETTLED" });
     const returnedView = await getRun(runId);
@@ -817,14 +1519,30 @@ describe("payroll accrual lifecycle — DB invariants", () => {
       })),
     ).toEqual(
       expect.arrayContaining([
-        { employeeId: 10, amount: "750.00", paymentDate: "2026-08-01", active: false },
-        { employeeId: 11, amount: "250.00", paymentDate: "2026-08-01", active: true },
+        {
+          employeeId: 10,
+          amount: "750.00",
+          paymentDate: "2026-08-01",
+          active: false,
+        },
+        {
+          employeeId: 11,
+          amount: "250.00",
+          paymentDate: "2026-08-01",
+          active: true,
+        },
       ]),
     );
 
     await Promise.all([
-      payRun(runId, PAYER, { paymentMethod: "CASH", paymentDate: "2026-08-03" }),
-      payRun(runId, PAYER, { paymentMethod: "CASH", paymentDate: "2026-08-03" }),
+      payRun(runId, PAYER, {
+        paymentMethod: "CASH",
+        paymentDate: "2026-08-03",
+      }),
+      payRun(runId, PAYER, {
+        paymentMethod: "CASH",
+        paymentDate: "2026-08-03",
+      }),
     ]);
 
     const finalPayments = await runner
@@ -845,14 +1563,25 @@ describe("payroll accrual lifecycle — DB invariants", () => {
         ),
       );
     expect(finalPayments).toHaveLength(3);
-    expect(finalPayments.filter((row) => Number(row.employeeId) === 10)).toHaveLength(2);
-    expect(finalPayments.filter((row) => Number(row.employeeId) === 11)).toHaveLength(1);
+    expect(
+      finalPayments.filter((row) => Number(row.employeeId) === 10),
+    ).toHaveLength(2);
+    expect(
+      finalPayments.filter((row) => Number(row.employeeId) === 11),
+    ).toHaveLength(1);
     expect(new Set(finalPayments.map((row) => row.sourceKey)).size).toBe(3);
     await expect(
-      payRun(runId, PAYER, { paymentMethod: "CASH", paymentDate: "2026-08-03" }),
+      payRun(runId, PAYER, {
+        paymentMethod: "CASH",
+        paymentDate: "2026-08-03",
+      }),
     ).resolves.toMatchObject({ replayed: true });
     await expect(
-      payRun(runId, PAYER, { paymentMethod: "TRANSFER", paymentDate: "2026-08-03", referenceNumber: "DIFFERENT-RETRY" }),
+      payRun(runId, PAYER, {
+        paymentMethod: "TRANSFER",
+        paymentDate: "2026-08-03",
+        referenceNumber: "DIFFERENT-RETRY",
+      }),
     ).rejects.toMatchObject({ code: "CONFLICT" });
 
     const finalObligations = await runner
@@ -864,7 +1593,11 @@ describe("payroll accrual lifecycle — DB invariants", () => {
           eq(s.payrollObligations.kind, "SALARY_NET"),
         ),
       );
-    expect(finalObligations.every((row) => row.remainingAmount === "0.00" && row.status === "SETTLED")).toBe(true);
+    expect(
+      finalObligations.every(
+        (row) => row.remainingAmount === "0.00" && row.status === "SETTLED",
+      ),
+    ).toBe(true);
     const [paidRun] = await runner
       .select()
       .from(s.payrollRuns)
@@ -873,11 +1606,13 @@ describe("payroll accrual lifecycle — DB invariants", () => {
     expect(paidRun.paidAt).not.toBeNull();
     const paidView = await getRun(runId);
     expect(
-      paidView!.employeePaymentSnapshots.filter((payment) => payment.active).map((payment) => ({
-        employeeId: payment.employeeId,
-        amount: payment.amount,
-        paymentDate: toDateStr(new Date(payment.paymentDate!)),
-      })),
+      paidView!.employeePaymentSnapshots
+        .filter((payment) => payment.active)
+        .map((payment) => ({
+          employeeId: payment.employeeId,
+          amount: payment.amount,
+          paymentDate: toDateStr(new Date(payment.paymentDate!)),
+        })),
     ).toEqual(
       expect.arrayContaining([
         { employeeId: 10, amount: "750.00", paymentDate: "2026-08-03" },
@@ -898,10 +1633,15 @@ describe("payroll accrual lifecycle — DB invariants", () => {
       ),
     ).toHaveLength(1);
     expect(
-      salaryMovements.find((row) => row.movementType === "SALARY_PAYMENT_RETURN"),
+      salaryMovements.find(
+        (row) => row.movementType === "SALARY_PAYMENT_RETURN",
+      ),
     ).toMatchObject({ active: true, amount: "750.00" });
 
-    await payRun(runId, PAYER, { paymentMethod: "CASH", paymentDate: "2026-08-03" });
+    await payRun(runId, PAYER, {
+      paymentMethod: "CASH",
+      paymentDate: "2026-08-03",
+    });
     const repeatedPayments = await runner
       .select({ id: s.payrollAccountingEvents.id })
       .from(s.payrollAccountingEvents)
@@ -929,7 +1669,8 @@ describe("payroll accrual lifecycle — DB invariants", () => {
       amount: "50.00",
       authorityName: "الهيئة العامة للضرائب",
       referenceNumber: "TAX-2026-07",
-      supportingDocumentUrl: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlA+uQAAAAASUVORK5CYII=",
+      supportingDocumentUrl:
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlA+uQAAAAASUVORK5CYII=",
       clientRequestId: "tax-remittance-idempotent",
     };
 
@@ -941,10 +1682,18 @@ describe("payroll accrual lifecycle — DB invariants", () => {
     expect(duplicate.filter((row) => row.replayed)).toHaveLength(1);
 
     const competing = await Promise.allSettled([
-      createRemittanceRequest({ ...base, clientRequestId: "tax-competing-a" }, MAKER),
-      createRemittanceRequest({ ...base, clientRequestId: "tax-competing-b" }, MAKER),
+      createRemittanceRequest(
+        { ...base, clientRequestId: "tax-competing-a" },
+        MAKER,
+      ),
+      createRemittanceRequest(
+        { ...base, clientRequestId: "tax-competing-b" },
+        MAKER,
+      ),
     ]);
-    expect(competing.filter((row) => row.status === "rejected")).toHaveLength(2);
+    expect(competing.filter((row) => row.status === "rejected")).toHaveLength(
+      2,
+    );
 
     const requestId = Number(duplicate[0].id);
     await approveRemittanceRequest(requestId, CHECKER);
@@ -961,29 +1710,36 @@ describe("payroll accrual lifecycle — DB invariants", () => {
     expect(createDuringPay[0].status).toBe("fulfilled");
     expect(createDuringPay[1].status).toBe("rejected");
     await expect(
-      payRemittanceRequest({ requestId, paymentMethod: "CASH", paymentDate: "2026-08-01" }, PAYER),
+      payRemittanceRequest(
+        { requestId, paymentMethod: "CASH", paymentDate: "2026-08-01" },
+        PAYER,
+      ),
     ).resolves.toMatchObject({ replayed: true });
     await expect(
-      payRemittanceRequest({ requestId, paymentMethod: "TRANSFER", paymentDate: "2026-08-01", referenceNumber: "DIFFERENT-RETRY" }, PAYER),
+      payRemittanceRequest(
+        {
+          requestId,
+          paymentMethod: "TRANSFER",
+          paymentDate: "2026-08-01",
+          referenceNumber: "DIFFERENT-RETRY",
+        },
+        PAYER,
+      ),
     ).rejects.toMatchObject({ code: "CONFLICT" });
-    await returnRemittance(
-      requestId,
-      "إعادة فعلية من الهيئة",
-      RETURN_CHECKER,
-      { returnedAt: "2026-08-02" },
-    );
-    await expect(returnRemittance(
-      requestId,
-      "إعادة فعلية من الهيئة",
-      RETURN_CHECKER,
-      { returnedAt: "2026-08-02" },
-    )).resolves.toMatchObject({ replayed: true });
-    await expect(returnRemittance(
-      requestId,
-      "إعادة فعلية من الهيئة",
-      RETURN_CHECKER,
-      { returnedAt: "2026-08-03", referenceNumber: "DIFFERENT-RETURN" },
-    )).rejects.toMatchObject({ code: "CONFLICT" });
+    await returnRemittance(requestId, "إعادة فعلية من الهيئة", RETURN_CHECKER, {
+      returnedAt: "2026-08-02",
+    });
+    await expect(
+      returnRemittance(requestId, "إعادة فعلية من الهيئة", RETURN_CHECKER, {
+        returnedAt: "2026-08-02",
+      }),
+    ).resolves.toMatchObject({ replayed: true });
+    await expect(
+      returnRemittance(requestId, "إعادة فعلية من الهيئة", RETURN_CHECKER, {
+        returnedAt: "2026-08-03",
+        referenceNumber: "DIFFERENT-RETURN",
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
 
     const [request] = await runner
       .select()
@@ -1008,7 +1764,9 @@ describe("payroll accrual lifecycle — DB invariants", () => {
       "REMITTANCE_RETURN",
       "TAX_REMITTANCE",
     ]);
-    const remittanceLedger = await getPayrollFinancialLedger({ period: "2026-08" });
+    const remittanceLedger = await getPayrollFinancialLedger({
+      period: "2026-08",
+    });
     const requestMovements = remittanceLedger.filter(
       (row) => row.remittanceRequestId === requestId,
     );
@@ -1020,7 +1778,10 @@ describe("payroll accrual lifecycle — DB invariants", () => {
           active: false,
           authorityName: "الهيئة العامة للضرائب",
         }),
-        expect.objectContaining({ movementType: "REMITTANCE_RETURN", active: true }),
+        expect.objectContaining({
+          movementType: "REMITTANCE_RETURN",
+          active: true,
+        }),
       ]),
     );
   });
@@ -1035,7 +1796,8 @@ describe("payroll accrual lifecycle — DB invariants", () => {
         requestedAmount: "10.00",
         authorityName: "الضريبة",
         referenceNumber: "DECIDED-APPROVED",
-        supportingDocumentUrl: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlA+uQAAAAASUVORK5CYII=",
+        supportingDocumentUrl:
+          "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlA+uQAAAAASUVORK5CYII=",
         status: "APPROVED",
         sourceKey: "PAYROLL:REMIT-REQ:decided-approved",
         createdBy: MAKER.userId,
@@ -1049,7 +1811,8 @@ describe("payroll accrual lifecycle — DB invariants", () => {
         requestedAmount: "10.00",
         authorityName: "الضمان",
         referenceNumber: "DECIDED-REJECTED",
-        supportingDocumentUrl: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlA+uQAAAAASUVORK5CYII=",
+        supportingDocumentUrl:
+          "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlA+uQAAAAASUVORK5CYII=",
         status: "REJECTED",
         sourceKey: "PAYROLL:REMIT-REQ:decided-rejected",
         createdBy: MAKER.userId,
@@ -1058,7 +1821,9 @@ describe("payroll accrual lifecycle — DB invariants", () => {
         rejectionReason: "مرجع غير صحيح",
       },
     ]);
-    await expect(approveRemittanceRequest(70, NON_OWNER_HR)).rejects.toMatchObject({
+    await expect(
+      approveRemittanceRequest(70, NON_OWNER_HR),
+    ).rejects.toMatchObject({
       code: "FORBIDDEN",
     });
     await expect(
@@ -1079,18 +1844,28 @@ describe("payroll zero-net classified lifecycle", () => {
     const runId = await seedZeroNetStatutoryDraft();
     const receiptsBefore = await runner.select().from(s.receipts);
 
-    await expect(approveRun(runId, CHECKER)).resolves.toMatchObject({ status: "approved" });
+    await expect(approveRun(runId, CHECKER)).resolves.toMatchObject({
+      status: "approved",
+    });
 
     const obligations = await runner
       .select()
       .from(s.payrollObligations)
       .where(eq(s.payrollObligations.runId, runId));
-    expect(obligations.map((row) => [row.kind, row.originalAmount, row.remainingAmount, row.status]).sort())
-      .toEqual([
-        ["EOS_PROVISION", "50.00", "50.00", "OPEN"],
-        ["INCOME_TAX", "200.00", "200.00", "OPEN"],
-        ["SOCIAL_SECURITY", "400.00", "400.00", "OPEN"],
-      ]);
+    expect(
+      obligations
+        .map((row) => [
+          row.kind,
+          row.originalAmount,
+          row.remainingAmount,
+          row.status,
+        ])
+        .sort(),
+    ).toEqual([
+      ["EOS_PROVISION", "50.00", "50.00", "OPEN"],
+      ["INCOME_TAX", "200.00", "200.00", "OPEN"],
+      ["SOCIAL_SECURITY", "400.00", "400.00", "OPEN"],
+    ]);
 
     const [accrual] = await runner
       .select()
@@ -1106,35 +1881,58 @@ describe("payroll zero-net classified lifecycle", () => {
     const applied = await runner
       .select()
       .from(s.advanceSettlements)
-      .where(and(
-        eq(s.advanceSettlements.runId, runId),
-        eq(s.advanceSettlements.direction, "APPLY"),
-      ));
+      .where(
+        and(
+          eq(s.advanceSettlements.runId, runId),
+          eq(s.advanceSettlements.direction, "APPLY"),
+        ),
+      );
     expect(applied).toHaveLength(1);
-    expect(applied[0]).toMatchObject({ advanceId: 20, amount: "500.00", reversalOfId: null });
+    expect(applied[0]).toMatchObject({
+      advanceId: 20,
+      amount: "500.00",
+      reversalOfId: null,
+    });
     const [advanceAfterApproval] = await runner
       .select()
       .from(s.employeeAdvances)
       .where(eq(s.employeeAdvances.id, 20));
-    expect(advanceAfterApproval).toMatchObject({ remaining: "0.00", status: "SETTLED" });
-    expect(await runner.select().from(s.receipts)).toHaveLength(receiptsBefore.length);
+    expect(advanceAfterApproval).toMatchObject({
+      remaining: "0.00",
+      status: "SETTLED",
+    });
+    expect(await runner.select().from(s.receipts)).toHaveLength(
+      receiptsBefore.length,
+    );
 
     const paid = await payRun(runId, PAYER, {
       paymentMethod: "CASH",
       paymentDate: "2026-08-01",
     });
-    expect(paid).toMatchObject({ status: "paid", paidBy: PAYER.userId, replayed: false });
+    expect(paid).toMatchObject({
+      status: "paid",
+      paidBy: PAYER.userId,
+      replayed: false,
+    });
     expect(paid.paidAt).not.toBeNull();
-    expect(await runner.select().from(s.receipts)).toHaveLength(receiptsBefore.length);
-    expect(await runner
-      .select()
-      .from(s.payrollAccountingEvents)
-      .where(and(
-        eq(s.payrollAccountingEvents.runId, runId),
-        eq(s.payrollAccountingEvents.eventKind, "SALARY_PAYMENT"),
-      ))).toHaveLength(0);
+    expect(await runner.select().from(s.receipts)).toHaveLength(
+      receiptsBefore.length,
+    );
+    expect(
+      await runner
+        .select()
+        .from(s.payrollAccountingEvents)
+        .where(
+          and(
+            eq(s.payrollAccountingEvents.runId, runId),
+            eq(s.payrollAccountingEvents.eventKind, "SALARY_PAYMENT"),
+          ),
+        ),
+    ).toHaveLength(0);
 
-    await expect(cancelRun(runId, CHECKER, "عكس مسير صفري بعد تدقيق الالتزامات")).resolves.toMatchObject({
+    await expect(
+      cancelRun(runId, CHECKER, "عكس مسير صفري بعد تدقيق الالتزامات"),
+    ).resolves.toMatchObject({
       status: "draft",
       revisionNo: 1,
     });
@@ -1142,14 +1940,19 @@ describe("payroll zero-net classified lifecycle", () => {
       .select()
       .from(s.payrollObligations)
       .where(eq(s.payrollObligations.runId, runId));
-    expect(reversedObligations.every((row) => row.status === "REVERSED" && row.remainingAmount === "0.00"))
-      .toBe(true);
+    expect(
+      reversedObligations.every(
+        (row) => row.status === "REVERSED" && row.remainingAmount === "0.00",
+      ),
+    ).toBe(true);
     const settlements = await runner
       .select()
       .from(s.advanceSettlements)
       .where(eq(s.advanceSettlements.runId, runId))
       .orderBy(s.advanceSettlements.id);
-    expect(settlements.map((row) => [row.direction, row.amount, row.reversalOfId])).toEqual([
+    expect(
+      settlements.map((row) => [row.direction, row.amount, row.reversalOfId]),
+    ).toEqual([
       ["APPLY", "500.00", null],
       ["REVERSE", "500.00", Number(settlements[0].id)],
     ]);
@@ -1157,12 +1960,17 @@ describe("payroll zero-net classified lifecycle", () => {
       .select()
       .from(s.employeeAdvances)
       .where(eq(s.employeeAdvances.id, 20));
-    expect(advanceAfterReopen).toMatchObject({ remaining: "500.00", status: "ACTIVE" });
+    expect(advanceAfterReopen).toMatchObject({
+      remaining: "500.00",
+      status: "ACTIVE",
+    });
 
     const [reversal] = await runner
       .select()
       .from(s.accountingEntries)
-      .where(eq(s.accountingEntries.dedupeKey, `PAYROLL:ACCRUAL-REV:${runId}:0:1`));
+      .where(
+        eq(s.accountingEntries.dedupeKey, `PAYROLL:ACCRUAL-REV:${runId}:0:1`),
+      );
     expect(reversal).toMatchObject({
       entryType: "ADJUST",
       postingProfile: null,
@@ -1171,6 +1979,8 @@ describe("payroll zero-net classified lifecycle", () => {
       receiptId: null,
     });
     expect(toDateStr(new Date(reversal.entryDate))).toBe("2026-07-31");
-    expect(await runner.select().from(s.receipts)).toHaveLength(receiptsBefore.length);
+    expect(await runner.select().from(s.receipts)).toHaveLength(
+      receiptsBefore.length,
+    );
   });
 });

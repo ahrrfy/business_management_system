@@ -30,6 +30,7 @@ export default tseslint.config(
       "client/public/**",
       // سكربتات الورشة تُنفَّذ في سياقٍ يسمح بـ على المستوى الأعلى.
       ".claude/**",
+      ".superpowers/**",
       "**/*.test.ts",
       "**/*.test.tsx",
       "**/__tests__/**",

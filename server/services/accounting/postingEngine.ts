@@ -1284,14 +1284,16 @@ export const PROFILE_POLICIES = Object.freeze({
   ),
   PAYMENT_IN_PAYROLL_NET_RETURN: profilePolicy(
     "PAYMENT_IN",
-    CASH_ASSETS,
-    ["ACCRUED_SALARY"],
+    [...CASH_ASSETS, "ROUNDING_DIFF"],
+    ["ACCRUED_SALARY", "ROUNDING_DIFF"],
     {
       reversible: false,
+      requiredDebitRoles: [...CASH_ASSETS, "ROUNDING_DIFF"],
+      requiredCreditRoles: ["ACCRUED_SALARY"],
       sourceAssertions: [
         sourceAssertion("amount", "DEBIT_MINUS_CREDIT", CASH_ASSETS),
       ],
-      requireRoleComponents: [...CASH_ASSETS, "ACCRUED_SALARY"],
+      requireRoleComponents: [...CASH_ASSETS, "ACCRUED_SALARY", "ROUNDING_DIFF"],
     },
   ),
   PAYMENT_IN_PAYROLL_TAX_RETURN: profilePolicy(
@@ -1393,14 +1395,16 @@ export const PROFILE_POLICIES = Object.freeze({
   ),
   PAYMENT_OUT_PAYROLL_NET: profilePolicy(
     "PAYMENT_OUT",
-    ["ACCRUED_SALARY"],
-    CASH_ASSETS,
+    ["ACCRUED_SALARY", "ROUNDING_DIFF"],
+    [...CASH_ASSETS, "ROUNDING_DIFF"],
     {
       reversible: false,
+      requiredDebitRoles: ["ACCRUED_SALARY"],
+      requiredCreditRoles: [...CASH_ASSETS, "ROUNDING_DIFF"],
       sourceAssertions: [
         sourceAssertion("amount", "CREDIT_MINUS_DEBIT", CASH_ASSETS),
       ],
-      requireRoleComponents: ["ACCRUED_SALARY", ...CASH_ASSETS],
+      requireRoleComponents: ["ACCRUED_SALARY", ...CASH_ASSETS, "ROUNDING_DIFF"],
     },
   ),
   PAYMENT_OUT_PAYROLL_TAX_REMIT: profilePolicy(
