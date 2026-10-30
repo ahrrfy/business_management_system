@@ -23,6 +23,15 @@ const hashFile = file => createHash("sha256").update(fs.readFileSync(file)).dige
 function inventoryJournalFile() {
   return path.join(process.env.PM2_HOME || path.join(process.env.HOME || userInfo().homedir, ".pm2"), JOURNAL_NAME);
 }
+export function assertInventoryPrePullReconciliationAllowed(
+  file,
+  { hasPendingBridgeRecovery = false } = {},
+) {
+  return assertActivationRecoveryAllowed(file, {
+    allowReleased: !hasPendingBridgeRecovery,
+  });
+}
+
 function assertInventoryRestartTarget(script) {
   const journal = assertActivationRecoveryAllowed(inventoryJournalFile(), { allowReleased: true });
   const active = activeInventoryManifest(journal);
@@ -2353,9 +2362,35 @@ function step(label, action) {
   return action();
 }
 
-function reconcileCommittedBridge(descriptor, releaseTools, pm2Contract) {
+export function reconcileCommittedBridge(
+  descriptor,
+  releaseTools,
+  pm2Contract,
+  { journalFile = inventoryJournalFile(), createOperations = makeActivationOperations } = {},
+) {
+  const active = activeInventoryManifest(
+    assertInventoryPrePullReconciliationAllowed(journalFile),
+  );
+  if (active) {
+    const bridge = active.artifacts.find(artifact => artifact.name === BRIDGE_PROCESS_NAME);
+    if (
+      (descriptor?.mode === "enabled") !== Boolean(bridge) ||
+      (descriptor && (!/^[a-f0-9]{64}$/.test(descriptor.id || "") ||
+        !["enabled", "disabled"].includes(descriptor.mode)))
+    ) throw codedError("INVENTORY_BRIDGE_RECONCILIATION_MISMATCH");
+    if (bridge) {
+      const release = releaseTools.validateRelease(PROJECT_ROOT, descriptor.id);
+      if (
+        release.id !== descriptor.id || release.mode !== "enabled" || bridge.instances !== 1 ||
+        path.resolve(release.bootstrapPath) !== path.resolve(bridge.script) ||
+        path.resolve(release.artifactPath) !== path.resolve(bridge.bundle) ||
+        hashFile(release.bootstrapPath) !== bridge.scriptHash ||
+        hashFile(release.artifactPath) !== bridge.hash
+      ) throw codedError("INVENTORY_BRIDGE_RECONCILIATION_MISMATCH");
+    }
+  }
   if (!descriptor) return;
-  const operations = makeActivationOperations(
+  const operations = createOperations(
     descriptor.id,
     releaseTools,
     pm2Contract,
@@ -2692,7 +2727,7 @@ async function deploy(expectedHead) {
 }
 
 async function recoverBeforePull() {
-  assertActivationRecoveryAllowed(inventoryJournalFile());
+  assertInventoryPrePullReconciliationAllowed(inventoryJournalFile());
   const [
     { default: policy },
     releaseModule,
@@ -2712,6 +2747,9 @@ async function recoverBeforePull() {
   try {
     const state = releaseTools.readState(PROJECT_ROOT);
     if (state.pending) {
+      assertInventoryPrePullReconciliationAllowed(inventoryJournalFile(), {
+        hasPendingBridgeRecovery: true,
+      });
       const operations = makeActivationOperations(
         state.pending.candidate.id,
         releaseTools,

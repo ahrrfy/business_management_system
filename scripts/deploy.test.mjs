@@ -30,6 +30,8 @@ const {
   rollbackWebArtifact,
   snapshotWebArtifact,
   assertRemoteCiGreenForDeploy,
+  assertInventoryPrePullReconciliationAllowed,
+  reconcileCommittedBridge,
   evaluateDeployCiCheckRuns,
   verifyRollbackWebArtifactCompatibility,
 } = await import("./deploy.mjs");
@@ -1213,6 +1215,133 @@ try {
       }),
     (err) => err?.code === "DEPLOY_CI_NOT_GREEN",
   );
+}
+
+{
+  const { writeActivationJournal } = await import("./lib/inventory-activation-journal.mjs");
+  const temporaryRoot = fs.realpathSync(os.tmpdir());
+  const journalRoot = fs.mkdtempSync(path.join(temporaryRoot, "erp-inventory-prepull-"));
+  fs.chmodSync(journalRoot, 0o700);
+  const file = path.join(journalRoot, "activation.json");
+  const released = () => {
+    const journal = {
+      version: 1,
+      id: "12345678-1234-1234-1234-123456789abc",
+      phase: "RELEASED",
+      nonce: "a".repeat(64),
+      commit: "b".repeat(40),
+      database: "erp_prepull_fixture",
+      serverUuid: "prepull-fixture-server",
+      artifacts: [{
+        name: "erp-server",
+        script: path.join(journalRoot, "index.js"),
+        bundle: path.join(journalRoot, "index.js"),
+        hash: "c".repeat(64),
+        scriptHash: "c".repeat(64),
+        instances: 2,
+      }],
+    };
+    journal.active = {
+      readyVersion: 1,
+      activationId: journal.id,
+      commit: journal.commit,
+      projectionCommit: journal.commit,
+      database: journal.database,
+      serverUuid: journal.serverUuid,
+      artifacts: journal.artifacts,
+    };
+    return journal;
+  };
+  try {
+    assert.equal(assertInventoryPrePullReconciliationAllowed(file), null);
+    const journal = released();
+    writeActivationJournal(file, journal);
+    assert.deepEqual(assertInventoryPrePullReconciliationAllowed(file), journal);
+    assert.throws(
+      () => assertInventoryPrePullReconciliationAllowed(file, { hasPendingBridgeRecovery: true }),
+      /INVENTORY_ACTIVATION_RECOVERY_REQUIRED:RELEASED/,
+    );
+    for (const phase of ["PREPARED", "LOCKED", "QUIESCENT", "READY", "CANDIDATES", "PRE_RELEASE", "ROLLBACK_READY", "FATAL"]) {
+      writeActivationJournal(file, { ...released(), phase });
+      assert.throws(() => assertInventoryPrePullReconciliationAllowed(file),
+        new RegExp(`INVENTORY_ACTIVATION_RECOVERY_REQUIRED:${phase}`));
+    }
+    for (const mutate of [
+      j => { j.active.commit = "d".repeat(40); },
+      j => { j.active.database = "another_database"; },
+      j => { j.active.serverUuid = "another_server"; },
+      j => { j.active.artifacts = [{ ...j.artifacts[0], hash: "d".repeat(64) }]; },
+      j => { delete j.artifacts[0].scriptHash; },
+    ]) {
+      const invalid = released();
+      mutate(invalid);
+      writeActivationJournal(file, invalid);
+      assert.throws(() => assertInventoryPrePullReconciliationAllowed(file), /INVENTORY_ACTIVE_MANIFEST_INVALID/);
+    }
+    const { createHash } = await import("node:crypto");
+    const bridgeRelease = {
+      id: "e".repeat(64),
+      mode: "enabled",
+      bootstrapPath: path.join(journalRoot, "new-bridge-bootstrap.cjs"),
+      artifactPath: path.join(journalRoot, "new-bridge.cjs"),
+    };
+    fs.writeFileSync(bridgeRelease.bootstrapPath, "approved bootstrap\n");
+    fs.writeFileSync(bridgeRelease.artifactPath, "approved bridge\n");
+    const bridgeJournal = released();
+    bridgeJournal.artifacts.push({
+      name: "erp-hr-bridge",
+      script: bridgeRelease.bootstrapPath,
+      bundle: bridgeRelease.artifactPath,
+      scriptHash: createHash("sha256").update(fs.readFileSync(bridgeRelease.bootstrapPath)).digest("hex"),
+      hash: createHash("sha256").update(fs.readFileSync(bridgeRelease.artifactPath)).digest("hex"),
+      instances: 1,
+    });
+    const priorId = "f".repeat(64);
+    const releaseTools = {
+      validateRelease(_root, id) {
+        return id === bridgeRelease.id ? bridgeRelease : {
+          id,
+          mode: "enabled",
+          bootstrapPath: path.join(journalRoot, "prior-bootstrap.cjs"),
+          artifactPath: path.join(journalRoot, "prior-bridge.cjs"),
+        };
+      },
+    };
+    function reconciliationAttempt(descriptor, expected) {
+      const operations = [];
+      assert.throws(() => reconcileCommittedBridge(descriptor, releaseTools, null, {
+        journalFile: file,
+        createOperations() {
+          operations.push("create");
+          throw new Error("FIXTURE_COMPATIBLE_RECONCILIATION");
+        },
+      }), expected);
+      return operations;
+    }
+    writeActivationJournal(file, bridgeJournal);
+    for (const stale of [{ id: priorId, mode: "disabled" }, { id: priorId, mode: "enabled" }, null]) {
+      assert.deepEqual(reconciliationAttempt(stale, /INVENTORY_BRIDGE_RECONCILIATION_MISMATCH/), []);
+    }
+    assert.deepEqual(reconciliationAttempt({ id: bridgeRelease.id, mode: "enabled" },
+      /FIXTURE_COMPATIBLE_RECONCILIATION/), ["create"]);
+    fs.writeFileSync(bridgeRelease.bootstrapPath, "tampered bootstrap\n");
+    assert.deepEqual(reconciliationAttempt({ id: bridgeRelease.id, mode: "enabled" },
+      /INVENTORY_BRIDGE_RECONCILIATION_MISMATCH/), []);
+    writeActivationJournal(file, released());
+    assert.deepEqual(reconciliationAttempt({ id: priorId, mode: "enabled" },
+      /INVENTORY_BRIDGE_RECONCILIATION_MISMATCH/), []);
+    assert.deepEqual(reconciliationAttempt({ id: priorId, mode: "disabled" },
+      /FIXTURE_COMPATIBLE_RECONCILIATION/), ["create"]);
+    const rolledBack = { ...released(), phase: "ROLLED_BACK", initialReadyVersion: 0, active: null };
+    writeActivationJournal(file, rolledBack);
+    assert.deepEqual(assertInventoryPrePullReconciliationAllowed(file), rolledBack);
+    assert.deepEqual(assertInventoryPrePullReconciliationAllowed(file, { hasPendingBridgeRecovery: true }), rolledBack);
+  } finally {
+    const resolved = fs.realpathSync(journalRoot);
+    assert.equal(path.dirname(resolved), temporaryRoot);
+    assert.ok(path.basename(resolved).startsWith("erp-inventory-prepull-"));
+    fs.rmSync(resolved, { recursive: true, force: true });
+  }
 }
 
 console.log("deployment storefront-readiness contract test: OK");
