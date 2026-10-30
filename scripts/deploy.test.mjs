@@ -24,6 +24,7 @@ const {
   normalizeWebHealthEnvironment,
   normalizeSentryBuildEnvironment,
   normalizeViteBuildEnvironment,
+  normalizeInventoryControlEnvironment,
   prepareWebCandidate,
   pruneWebArtifactSnapshots,
   recoverPendingWebActivation,
@@ -46,6 +47,90 @@ const {
   VITE_DISABLE_DOTENV_ENV_KEY,
   VITE_DISABLE_DOTENV_ENV_VALUE,
 } = await import("./vite-build-contract.mjs");
+
+{
+  assert.equal(typeof normalizeInventoryControlEnvironment, "function",
+    "inventory backup credentials require an explicit isolated controller environment helper");
+  const flag = "ERP_INVENTORY_CONTROL_USE_BACKUP_CREDENTIALS";
+  const controlKey = "ERP_INVENTORY_CONTROL_DATABASE_URL";
+  const applicationUrl = "mysql://erp_app:fake-app-password@127.0.0.1:3307/erp";
+  const password = "fake-root-%2F /?@:#+&=éء!";
+  const base = Object.freeze({ DATABASE_URL: applicationUrl, DB_ROOT_PW: password });
+  const processBefore = JSON.stringify(process.env);
+  for (const environment of [base, Object.freeze({ ...base, [flag]: "0" }),
+    Object.freeze({ ...base, [controlKey]: "mysql://explicit-controller:fake@127.0.0.1:3307/erp" })]) {
+    const output = normalizeInventoryControlEnvironment(environment);
+    assert.notEqual(output, environment, "default and explicit-control paths must also clone");
+    assert.deepEqual(output, environment, "without opt-in, existing credentials and fallback remain unchanged");
+  }
+  const input = Object.freeze({ ...base, [flag]: "1", DB_NAME: "other", DB_PORT: "9999" });
+  const output = normalizeInventoryControlEnvironment(input);
+  assert.equal(output.DATABASE_URL, applicationUrl);
+  assert.equal(input[controlKey], undefined);
+  assert.equal(output[flag], "1");
+  const derived = new URL(output[controlKey]);
+  assert.equal(derived.username, "root");
+  assert.equal(decodeURIComponent(derived.password), password);
+  assert.equal(derived.hostname, "127.0.0.1");
+  assert.equal(derived.port, "3307");
+  assert.equal(derived.pathname, "/erp");
+  assert.equal(JSON.stringify(process.env) === processBefore, true,
+    "controller credential derivation must not mutate process.env");
+  assert.deepEqual(normalizeViteBuildEnvironment(output), {}, "root URL must not reach Vite");
+  assert.deepEqual(normalizeSentryBuildEnvironment(output), {}, "root URL must not reach source-map upload");
+  assert.deepEqual(normalizeWebHealthEnvironment(output), {
+    PORT: "3000", REQUIRE_INTERNAL_PROXY_SECRET: "0",
+  }, "root URL must not reach web probes");
+  const buildCalls = [];
+  defaultWebCandidateOperations(root, output, {
+    parentEnvironment: output,
+    execFileSync(command, args, options) { buildCalls.push({ command, args, environment: options.env }); },
+  }).build(root);
+  assert.equal(buildCalls.length, 1);
+  for (const key of [flag, controlKey, "DB_ROOT_PW", "DATABASE_URL"]) {
+    assert.equal(key in buildCalls[0].environment, false, `the actual build child must exclude ${key}`);
+  }
+  const policy = (await import("./hr-bridge-runtime-policy.cjs")).default;
+  const createBridge = (await import("./hr-bridge-pm2-app.cjs")).default;
+  for (const key of [flag, controlKey, "DB_ROOT_PW"]) {
+    assert.equal(policy.allowedEnvironmentKeys.includes(key), false);
+  }
+  assert.throws(() => createBridge({ projectRoot: root, script: "/fake-bridge.cjs", policy,
+    deploymentEnvironment: { ...output, NODE_ENV: "production", TZ: "UTC", HR_BRIDGE_LOAD_DOTENV: "0" },
+  }), /HR_BRIDGE_PM2_ENVIRONMENT_INVALID/, "controller credentials must be refused by the actual HR app factory");
+  for (const bad of ["", "true", "yes", "01", " 1", "1\n", 1, true]) {
+    assert.throws(() => normalizeInventoryControlEnvironment({ ...base, [flag]: bad }),
+      /INVENTORY_BACKUP_CONTROL_FLAG_INVALID/);
+  }
+  for (const bad of [undefined, "", " "]) {
+    assert.throws(() => normalizeInventoryControlEnvironment({ ...input, DB_ROOT_PW: bad }),
+      /INVENTORY_BACKUP_CONTROL_PASSWORD_REQUIRED/);
+  }
+  assert.throws(() => normalizeInventoryControlEnvironment({ ...input, [controlKey]: "mysql://explicit:fake@127.0.0.1:3307/erp" }),
+    /INVENTORY_BACKUP_CONTROL_CONFIGURATION_AMBIGUOUS/);
+  assert.throws(() => normalizeInventoryControlEnvironment({ ...input, CONTROL_DATABASE_URL: "mysql://tenant:fake@127.0.0.1/control" }),
+    /INVENTORY_MULTI_DATABASE_CLASSIFICATION_REQUIRED/);
+  for (const unsafe of [
+    "mysql://erp_app:fake@localhost:3307/erp",
+    "mysql://erp_app:fake@remote.example:3307/erp",
+    "mysql://erp_app:fake@127.1:3307/erp",
+    "mysql://erp_app:fake@127.0.0.1:3307/erp?host=remote.example",
+    "mysql://erp_app:fake@127.0.0.1:3307/erp?socketPath=/tmp/mysql.sock",
+    "mysql://erp_app:fake@127.0.0.1:3307/erp?charset=utf8mb4",
+    "mysql://erp_app:fake@127.0.0.1:3307/erp#fragment",
+    "mysql://erp_app:fake@127.0.0.1:3307/erp#",
+    "mysql://erp_app:fake@127.0.0.1:3307/",
+    "mysql://erp_app:fake@127.0.0.1:3307/erp%2Fother",
+    "https://erp_app:fake@127.0.0.1:3307/erp",
+    "invalid-fake-target",
+  ]) {
+    assert.throws(() => normalizeInventoryControlEnvironment({ ...input, DATABASE_URL: unsafe }),
+      error => error.code === "INVENTORY_BACKUP_CONTROL_TARGET_INVALID" &&
+        !error.message.includes(password) && !error.message.includes(unsafe));
+  }
+  const ipv6 = normalizeInventoryControlEnvironment({ ...input, DATABASE_URL: "mysql://app:fake@[::1]:3307/erp" });
+  assert.equal(new URL(ipv6[controlKey]).hostname, "[::1]");
+}
 
 {
   assert.equal(
@@ -358,6 +443,25 @@ const swapIndex = deploySource.indexOf(
   "installWebCandidate(webArtifact, webCandidate)",
 );
 const fenceIndex = deploySource.indexOf("await executeInventoryDeployment({");
+const inventoryCall = deploySource.slice(fenceIndex, deploySource.indexOf("settleReleasedInventoryBridgeBaseline(releaseTools);", fenceIndex));
+assert.match(inventoryCall,
+  /environment:\s*normalizeInventoryControlEnvironment\(parsedDeploymentEnvironment\)/,
+  "only the actual inventory host invocation may receive the derived controller clone");
+assert.equal([...deploySource.matchAll(/\bnormalizeInventoryControlEnvironment\(/g)].length, 2,
+  "the credential helper must have exactly one production call site plus its declaration");
+assert.match(inventoryCall,
+  /ERP_INVENTORY_CONTROL_DATABASE_URL:\s*""[\s\S]*DATABASE_URL:\s*parsedDeploymentEnvironment\.DATABASE_URL/,
+  "the actual PM2 candidate receives the application URL and an explicitly empty controller URL");
+assert.match(inventoryCall, /filter_env:[\s\S]*"ERP_INVENTORY_CONTROL_USE_BACKUP_CREDENTIALS"/,
+  "the actual PM2 candidate must filter the controller-only opt-in from inherited environment");
+assert.match(inventoryCall, /ERP_INVENTORY_CONTROL_USE_BACKUP_CREDENTIALS:\s*""/,
+  "the actual PM2 candidate must shadow a dotenv-visible opt-in with an empty value");
+const controlHelperSource = deploySource.slice(
+  deploySource.indexOf("export function normalizeInventoryControlEnvironment"),
+  deploySource.indexOf("function readWebHealthEnvironment"),
+);
+assert.doesNotMatch(controlHelperSource, /console\.|writeFile|process\.env|spawn\(|execFile/,
+  "derivation must not write credentials, log them, mutate process.env, or spawn a child");
 const smokeIndex = deploySource.indexOf(
   "verify-nginx-storefront-readiness.mjs",
 );
@@ -461,6 +565,7 @@ assert.doesNotMatch(
   "the isolated rollback probe must not inherit privileged or preload environment keys",
 );
 for (const key of [
+  "ERP_INVENTORY_CONTROL_USE_BACKUP_CREDENTIALS",
   "DB_ROOT_PW",
   "DB_CONTAINER",
   "DB_APP_PW",
