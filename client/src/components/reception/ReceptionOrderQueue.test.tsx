@@ -28,6 +28,7 @@ vi.mock("@/lib/trpc", () => ({
       },
       deliver: { useMutation: mutation },
       setDeliveryMethod: { useMutation: mutation },
+      autoClearReady: { useMutation: mutation },
     },
     delivery: {
       listParties: {
@@ -41,7 +42,6 @@ vi.mock("@/lib/trpc", () => ({
       },
       dispatch: { useMutation: mutation },
     },
-    storeAdmin: { orders: { autoAssignRoundRobin: { useMutation: mutation } } },
   },
 }));
 vi.mock("@/lib/realtime", () => ({ useRealtimeEvent: () => undefined }));
@@ -111,6 +111,20 @@ vi.mock("@/components/delivery/CollectConsignmentDialog", () => ({
 vi.mock("@/components/delivery/CancelDeliveryAssignmentDialog", () => ({
   CancelDeliveryAssignmentDialog: () => null,
 }));
+vi.mock("@/components/ui/dialog", () => ({
+  Dialog: ({ open, children }: { open?: boolean; children?: React.ReactNode }) =>
+    open ? React.createElement("div", { "data-dialog": "open" }, children) : null,
+  DialogContent: ({ children }: { children?: React.ReactNode }) =>
+    React.createElement("div", {}, children),
+  DialogHeader: ({ children }: { children?: React.ReactNode }) =>
+    React.createElement("div", {}, children),
+  DialogTitle: ({ children }: { children?: React.ReactNode }) =>
+    React.createElement("div", {}, children),
+  DialogDescription: ({ children }: { children?: React.ReactNode }) =>
+    React.createElement("div", {}, children),
+  DialogFooter: ({ children }: { children?: React.ReactNode }) =>
+    React.createElement("div", {}, children),
+}));
 vi.mock("@/lib/printing/deliveryDocs", () => ({
   printDeliverySlip: vi.fn(),
   printReadyOrderLabel: vi.fn(),
@@ -138,7 +152,10 @@ const readyRow = {
   consignmentStatus: null,
   parcelStatus: null,
 };
-const queue = () => renderToStaticMarkup(<ReceptionOrderQueue branchId={4} />);
+const queue = (initialShelfAuditMode = false) =>
+  renderToStaticMarkup(
+    <ReceptionOrderQueue branchId={4} initialShelfAuditMode={initialShelfAuditMode} />,
+  );
 const delivery = (parcelStatus = "ASSIGNED", role = "manager") =>
   renderToStaticMarkup(
     <WorkOrderDeliverySection
@@ -220,6 +237,48 @@ describe("reception queue independent action grants", () => {
     const html = queue();
     expect(html).not.toContain('data-action="pickup"');
     expect(html).not.toContain('data-action="dispatch"');
+  });
+});
+
+describe("shelf audit mode governance", () => {
+  const paidPickupRow = {
+    ...readyRow,
+    id: 31,
+    orderNumber: "WO31",
+    title: "مطبوع مدفوع",
+    salePrice: "5000",
+    deposit: "5000",
+    hasDelivery: false,
+  };
+
+  it("hides shelf audit toggle and controls from cashier even with eligible paid ready orders", () => {
+    state.user = { role: "cashier" };
+    state.rows = [paidPickupRow];
+    const html = queue(true);
+    expect(html).not.toMatch(/جرد الرفّ/);
+    expect(html).not.toContain('type="checkbox"');
+    expect(html).not.toMatch(/توزيع إجباري عادل/);
+  });
+
+  it("shows shelf audit toggle for manager without any select-all button and renders per-order checkboxes only for eligible rows", () => {
+    state.user = { role: "manager" };
+    state.rows = [
+      paidPickupRow,
+      { ...readyRow, id: 32, orderNumber: "WO32", deposit: "1000", salePrice: "5000" },
+      { ...readyRow, id: 33, orderNumber: "WO33", deposit: "5000", salePrice: "5000", hasDelivery: true },
+    ];
+    const closedHtml = queue(false);
+    expect(closedHtml).toContain("جرد الرفّ");
+    expect(closedHtml).not.toMatch(/تحديد الكل/);
+    expect(closedHtml).not.toMatch(/توزيع إجباري عادل/);
+
+    const activeHtml = queue(true);
+    expect(activeHtml).toContain("تحديد فردي يدوي بعد مراجعة الرفّ — لا يوجد تحديد للكل");
+    expect(activeHtml).toContain("تصفية المحدّد كجرد رفّ");
+    expect(activeHtml).not.toMatch(/تحديد الكل/);
+    expect(activeHtml).toContain("WO31");
+    const checkboxMatches = activeHtml.match(/type="checkbox"/g) ?? [];
+    expect(checkboxMatches).toHaveLength(1);
   });
 });
 

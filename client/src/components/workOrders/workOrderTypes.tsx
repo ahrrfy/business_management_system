@@ -1,7 +1,7 @@
 import type React from "react";
 import { type WorkOrderStatus, WO_NEXT_STATUS, WO_STAGE_INDEX, workOrderStatusHue, workOrderStatusLabel, workOrderTimelineLabel } from "@shared/workOrderStatus";
 import { isKanbanStateApplicable, isWorkOrderKanbanState, nextKanbanStateInCycle, workOrderKanbanDotCls, workOrderKanbanStateLabel, type WorkOrderKanbanState } from "@shared/workOrderKanban";
-import { CheckCircle2, ChevronRight, Package } from "lucide-react";
+import { CheckCircle2, ChevronRight } from "lucide-react";
 import type { RouterOutputs } from "@/lib/trpc";
 import { fmtAr, fmtInt, formatQuantity, D, positiveDiff, round2 } from "@/lib/money";
 import { fmtDate, fmtDateTime, toDate } from "@/lib/date";
@@ -39,7 +39,7 @@ export const STATUSES: { key: Status; label: string; hint: string; hue: number }
 export const ADV_LABEL: Record<string, React.ReactNode> = {
   IN_PROGRESS: (<><ChevronRight aria-hidden className="size-4 inline-block align-text-bottom me-1" /> بدء التنفيذ (خصم المواد)</>),
   READY: (<><CheckCircle2 aria-hidden className="size-4 inline-block align-text-bottom me-1" /> وضع علامة: جاهز</>),
-  DELIVERED: (<><Package aria-hidden className="size-4 inline-block align-text-bottom me-1" /> تسليم وإصدار فاتورة</>),
+
 };
 
 export type ColKey = "INBOX" | "CLAIMED" | "IN_PROGRESS" | "READY";

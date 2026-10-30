@@ -17,9 +17,8 @@ import {
   Wallet,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { D, fmt, round2 } from "@/lib/money";
+import { D, fmt, fmtInt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { confirm } from "@/lib/confirm";
@@ -49,6 +48,18 @@ const PAYMENT_METHODS = [
 ] as const;
 type ReceptionHandoverMethod = (typeof PAYMENT_METHODS)[number]["v"];
 
+interface SiblingWorkOrder {
+  id: number;
+  orderNumber: string;
+  title: string;
+  status: string;
+  salePrice: string;
+  deposit: string | null;
+  hasDelivery: boolean;
+  customerName: string | null;
+  customerPhone: string | null;
+}
+
 interface ScannedOrder {
   id: number;
   kind?: "workOrder" | "invoice" | "onlineOrder";
@@ -60,8 +71,22 @@ interface ScannedOrder {
   deposit: string | null;
 }
 
+function siblingToScanned(item: SiblingWorkOrder, fallbackCustomer?: { name?: string | null; phone?: string | null }): ScannedOrder {
+  return {
+    id: item.id,
+    kind: "workOrder",
+    orderNumber: item.orderNumber,
+    title: item.title,
+    customerName: item.customerName ?? fallbackCustomer?.name ?? null,
+    customerPhone: item.customerPhone ?? fallbackCustomer?.phone ?? null,
+    salePrice: item.salePrice,
+    deposit: item.deposit,
+  };
+}
+
 export default function ReceptionHandoverPage() {
   const [scanned, setScanned] = useState<ScannedOrder | null>(null);
+  const [siblingOrders, setSiblingOrders] = useState<SiblingWorkOrder[]>([]);
   const [manualInput, setManualInput] = useState("");
   const [method, setMethod] = useState<ReceptionHandoverMethod>("CASH");
   const [reference, setReference] = useState("");
@@ -111,6 +136,12 @@ export default function ReceptionHandoverPage() {
   const initiateExternal = trpc.sales.initiateExternalPayment.useMutation();
   const confirmExternal = trpc.sales.confirmExternalPayment.useMutation();
 
+  const resetPaymentFields = useCallback(() => {
+    setMethod("CASH");
+    setReference("");
+    setExternalAttempt(null);
+  }, []);
+
   // ─── مسح الباركود ────────────────────────────────────────────────────────
 
   const lookupOrder = useCallback(
@@ -118,12 +149,16 @@ export default function ReceptionHandoverPage() {
       const orderNumber = resolveOrderLookupBarcode(raw);
       if (!orderNumber) return;
       try {
-        const wo = await utils.workOrders.getByNumber.fetch({ orderNumber });
-        if (!wo) { notify.err("طلب أو فاتورة غير موجودة: " + orderNumber); return; }
+        const fetched = await utils.workOrders.getByNumber.fetch({ orderNumber });
+        if (!fetched) { notify.err("طلب أو فاتورة غير موجودة: " + orderNumber); return; }
+        const wo = fetched as typeof fetched & { siblingWorkOrders?: SiblingWorkOrder[] };
+        const readyPickupSiblings = (wo.siblingWorkOrders ?? []).filter((s) => s.status === "READY" && !s.hasDelivery);
+
         if (wo.kind === "workOrder") {
           if (wo.status === "DELIVERED") {
             if (wo.linkedInvoice?.isUnsettled) {
               notify.info(`الطلب #${wo.orderNumber} مسلّم مسبقاً وله متبقٍ غير مستحصل (${fmt(wo.linkedInvoice.remaining)} د.ع) على فاتورة #${wo.linkedInvoice.invoiceNumber}. تم تحويل الشاشة لتحصيله الآن.`);
+              setSiblingOrders(readyPickupSiblings);
               setScanned({
                 id: wo.linkedInvoice.id,
                 kind: "invoice",
@@ -135,18 +170,52 @@ export default function ReceptionHandoverPage() {
                 deposit: wo.linkedInvoice.paidAmount,
               });
               setManualInput("");
-              setMethod("CASH");
-              setReference("");
-              setExternalAttempt(null);
+              resetPaymentFields();
+              return;
+            }
+            if (readyPickupSiblings.length > 0) {
+              const firstReady = readyPickupSiblings[0]!;
+              setSiblingOrders(readyPickupSiblings);
+              setScanned(siblingToScanned(firstReady, { name: wo.customerName, phone: wo.customerPhone }));
+              setManualInput("");
+              resetPaymentFields();
               return;
             }
             notify.info("الطلب " + wo.orderNumber + " مُسلَّم مسبقاً ومسدد بالكامل");
             return;
           }
           if (wo.status !== "READY") {
+            if (readyPickupSiblings.length > 0) {
+              const firstReady = readyPickupSiblings[0]!;
+              notify.info(`البند #${wo.orderNumber} حالته ${wo.status} — فُتح البند الجاهز #${firstReady.orderNumber} ضمن نفس الوصل.`);
+              setSiblingOrders(readyPickupSiblings);
+              setScanned(siblingToScanned(firstReady, { name: wo.customerName, phone: wo.customerPhone }));
+              setManualInput("");
+              resetPaymentFields();
+              return;
+            }
             notify.warn("الطلب غير جاهز للتسليم — حالته: " + wo.status);
             return;
           }
+
+          const selfAsSibling: SiblingWorkOrder = {
+            id: wo.id,
+            orderNumber: wo.orderNumber,
+            title: wo.title,
+            status: wo.status,
+            salePrice: wo.salePrice,
+            deposit: wo.deposit,
+            hasDelivery: Boolean((wo as { hasDelivery?: boolean }).hasDelivery),
+            customerName: wo.customerName,
+            customerPhone: wo.customerPhone,
+          };
+          const mergedSiblings = !selfAsSibling.hasDelivery
+            ? [
+                selfAsSibling,
+                ...readyPickupSiblings.filter((s) => s.id !== selfAsSibling.id),
+              ]
+            : readyPickupSiblings;
+          setSiblingOrders(mergedSiblings);
         } else if (wo.kind === "invoice") {
           if (wo.status === "CANCELLED") {
             notify.err("هذه الفاتورة ملغاة ولا يمكن تسليمها");
@@ -156,14 +225,26 @@ export default function ReceptionHandoverPage() {
             notify.err("هذه الفاتورة مرتجعة بالكامل ولا يمكن تسليمها");
             return;
           }
-          if (wo.status === "PAID") {
-            const rem = round2(D(wo.salePrice).minus(D(wo.deposit ?? "0")));
-            if (rem.lte(0)) {
+          const rem = round2(D(wo.salePrice).minus(D(wo.deposit ?? "0")));
+          if (rem.lte(0)) {
+            if (readyPickupSiblings.length > 0) {
+              const firstReady = readyPickupSiblings[0]!;
+              setSiblingOrders(readyPickupSiblings);
+              setScanned(siblingToScanned(firstReady, { name: wo.customerName, phone: wo.customerPhone }));
+              setManualInput("");
+              resetPaymentFields();
+              return;
+            }
+            if (wo.status === "PAID") {
               notify.info("الفاتورة " + wo.orderNumber + " مسددة بالكامل مسبقاً ومسلّمة");
               return;
             }
           }
+          setSiblingOrders(readyPickupSiblings);
+        } else {
+          setSiblingOrders([]);
         }
+
         setScanned({
           id: wo.id,
           kind: wo.kind ?? "workOrder",
@@ -175,14 +256,12 @@ export default function ReceptionHandoverPage() {
           deposit: wo.deposit,
         });
         setManualInput("");
-        setMethod("CASH");
-        setReference("");
-        setExternalAttempt(null);
+        resetPaymentFields();
       } catch (e) {
         notify.err(e, "تعذّر جلب الطلب");
       }
     },
-    [utils],
+    [utils, resetPaymentFields],
   );
 
   useBarcodeScanner(
@@ -195,11 +274,37 @@ export default function ReceptionHandoverPage() {
 
   // ─── تسليم ────────────────────────────────────────────────────────────────
 
+  const advanceOrClearAfterHandover = useCallback(
+    (deliveredWorkOrderId: number | null, successTitle: string) => {
+      const nextSiblings =
+        deliveredWorkOrderId != null
+          ? siblingOrders.filter((s) => s.id !== deliveredWorkOrderId)
+          : siblingOrders;
+      setSiblingOrders(nextSiblings);
+      resetPaymentFields();
+      void utils.workOrders.invalidate();
+      void shiftQ.refetch();
+
+      if (nextSiblings.length > 0) {
+        const nextItem = nextSiblings[0]!;
+        notify.ok(
+          successTitle,
+          `انتقل تلقائياً إلى البند الجاهز التالي #${nextItem.orderNumber}`,
+        );
+        setScanned(siblingToScanned(nextItem));
+      } else {
+        notify.ok(successTitle);
+        setScanned(null);
+        inputRef.current?.focus();
+      }
+    },
+    [siblingOrders, resetPaymentFields, utils.workOrders, shiftQ],
+  );
+
   const deliverMut = trpc.workOrders.deliver.useMutation({
     onSuccess: (res) => {
       const snap = deliverPrintRef.current;
       deliverPrintRef.current = null;
-      notify.ok("تمّ تسليم طلب #" + (scanned?.orderNumber ?? snap?.order.orderNumber ?? ""));
       if (snap) {
         const invId = Number((res as { invoiceId?: number } | null)?.invoiceId ?? 0);
         if (invId > 0) {
@@ -223,13 +328,16 @@ export default function ReceptionHandoverPage() {
           );
         }
       }
-      setScanned(null);
-      setMethod("CASH");
-      setReference("");
-      setExternalAttempt(null);
-      void utils.workOrders.invalidate();
-      void shiftQ.refetch();
-      inputRef.current?.focus();
+      const deliveredId =
+        scanned?.kind === "workOrder"
+          ? scanned.id
+          : snap?.order.kind === "workOrder"
+            ? snap.order.id
+            : null;
+      advanceOrClearAfterHandover(
+        deliveredId,
+        "تمّ تسليم طلب #" + (scanned?.orderNumber ?? snap?.order.orderNumber ?? ""),
+      );
     },
     onError: (e) => {
       try { deliverPrintRef.current?.win?.close(); } catch { /* noop */ }
@@ -242,7 +350,6 @@ export default function ReceptionHandoverPage() {
     onSuccess: () => {
       const snap = collectPrintRef.current;
       collectPrintRef.current = null;
-      notify.ok("تمّ تحصيل الفاتورة #" + (scanned?.orderNumber ?? snap?.order.orderNumber ?? "") + " وتسليمها بنجاح");
       if (snap) {
         void printInvoicePaymentReceipt(
           {
@@ -260,13 +367,10 @@ export default function ReceptionHandoverPage() {
           snap.win ? { into: snap.win } : undefined,
         );
       }
-      setScanned(null);
-      setMethod("CASH");
-      setReference("");
-      setExternalAttempt(null);
-      void utils.workOrders.invalidate();
-      void shiftQ.refetch();
-      inputRef.current?.focus();
+      advanceOrClearAfterHandover(
+        null,
+        "تمّ تحصيل الفاتورة #" + (scanned?.orderNumber ?? snap?.order.orderNumber ?? "") + " وتسليمها بنجاح",
+      );
     },
     onError: (e) => {
       try { collectPrintRef.current?.win?.close(); } catch { /* noop */ }
@@ -279,6 +383,7 @@ export default function ReceptionHandoverPage() {
     ? round2(D(scanned.salePrice).minus(D(scanned.deposit ?? "0")))
     : null;
   const remainingDue = remaining && remaining.gt(0) ? remaining : null;
+  const needsShift = remainingDue !== null;
   const needRef = method !== "CASH";
   const normalizedAmount = remainingDue ? remainingDue.toFixed(2) : "0.00";
   const effectiveBranchId = shift?.branchId ?? branchId ?? null;
@@ -344,8 +449,12 @@ export default function ReceptionHandoverPage() {
   }
 
   async function handleHandover() {
-    if (!scanned || !shift) return;
+    if (!scanned) return;
     const remainingVal = round2(D(scanned.salePrice).minus(D(scanned.deposit ?? "0")));
+    if (remainingVal.gt(0) && !shift) {
+      notify.err("لا توجد وردية استقبال مفتوحة لتحصيل المبلغ المتبقي");
+      return;
+    }
     const docLabel = scanned.kind === "invoice" ? "الفاتورة" : "الطلب";
     const payLabel = method === "CASH" ? "نقداً" : `بـ${paymentMethodLabel(method)}`;
 
@@ -401,14 +510,7 @@ export default function ReceptionHandoverPage() {
       } else {
         const win = preopenDocumentWindow();
         void printHandoverInvoice(scanned.id, canReprint, win);
-        notify.ok("الفاتورة مدفوعة مسبقاً — تم التسليم بنجاح");
-        setScanned(null);
-        setMethod("CASH");
-        setReference("");
-        setExternalAttempt(null);
-        void utils.workOrders.invalidate();
-        void shiftQ.refetch();
-        inputRef.current?.focus();
+        advanceOrClearAfterHandover(null, "الفاتورة مدفوعة مسبقاً — تم التسليم بنجاح");
       }
     } else {
       deliverPrintRef.current = {
@@ -470,7 +572,7 @@ export default function ReceptionHandoverPage() {
                 امسح باركود الطلب الجاهز
               </p>
               <p className="mt-2 text-sm text-muted-foreground">
-                وجّه الماسح نحو تذكرة الطلب أو أدخل الرقم يدوياً
+                وجّه الماسح نحو تذكرة الطلب أو الوصل الموحّد أو أدخل الرقم يدوياً
               </p>
               <div className="mt-6 flex gap-2">
                 <UnifiedSearchInput
@@ -481,7 +583,7 @@ export default function ReceptionHandoverPage() {
                   onSubmit={(val: string) => {
                     if (val.trim()) void lookupOrder(val.trim());
                   }}
-                  placeholder="رقم الطلب (Enter للبحث)"
+                  placeholder="رقم الطلب أو الوصل (Enter للبحث)"
                   className="flex-1 h-12 text-center text-base font-bold"
                   dir="ltr"
                   barcode={true}
@@ -500,9 +602,9 @@ export default function ReceptionHandoverPage() {
             </div>
 
             {!shift && (
-              <div className="mt-4 rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-center">
-                <p className="text-sm font-bold text-destructive">
-                  لا وردية استقبال مفتوحة — افتح وردية أولاً
+              <div className="mt-4 rounded-xl border border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)] p-4 text-center">
+                <p className="text-sm font-bold text-[var(--sem-warn)]">
+                  لا وردية استقبال مفتوحة — يمكنك تسليم الطلبات المدفوعة مسبقاً، أما تحصيل المتبقي فيتطلب فتح وردية أولاً
                 </p>
               </div>
             )}
@@ -511,7 +613,45 @@ export default function ReceptionHandoverPage() {
 
         {/* بطاقة الطلب الممسوح */}
         {scanned && (
-          <div className="w-full max-w-lg">
+          <div className="w-full max-w-lg space-y-3">
+            {siblingOrders.length > 1 && (
+              <Card className="gap-2 p-3 py-3 shadow-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-extrabold text-foreground">
+                    بنود جاهزة ضمن نفس الوصل:
+                  </span>
+                  <Badge variant="secondary" className="text-xs">
+                    {fmtInt(siblingOrders.length)} بنود
+                  </Badge>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {siblingOrders.map((item) => {
+                    const active = scanned.kind === "workOrder" && scanned.id === item.id;
+                    return (
+                      <Button
+                        key={item.id}
+                        type="button"
+                        size="sm"
+                        variant={active ? "default" : "outline"}
+                        className="h-8 gap-1.5 text-xs font-bold"
+                        onClick={() => {
+                          setScanned(siblingToScanned(item));
+                          resetPaymentFields();
+                        }}
+                      >
+                        <span dir="ltr">#{item.orderNumber}</span>
+                        {item.title && (
+                          <span className="max-w-36 truncate font-normal opacity-90">
+                            — {item.title}
+                          </span>
+                        )}
+                      </Button>
+                    );
+                  })}
+                </div>
+              </Card>
+            )}
+
             <Card className="overflow-hidden gap-0 py-0 shadow-md">
 
               {/* رأس البطاقة */}
@@ -538,10 +678,9 @@ export default function ReceptionHandoverPage() {
                   size="sm"
                   onClick={() => {
                     setScanned(null);
+                    setSiblingOrders([]);
                     setManualInput("");
-                    setMethod("CASH");
-                    setReference("");
-                    setExternalAttempt(null);
+                    resetPaymentFields();
                   }}
                 >
                   مسح آخر
@@ -582,7 +721,7 @@ export default function ReceptionHandoverPage() {
                 </div>
 
                 {/* اختيار طريقة الدفع عند وجود مبلغ متبقٍ */}
-                {remaining && remaining.gt(0) && (
+                {remainingDue && (
                   <div className="space-y-3 rounded-xl border bg-background p-4">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-bold text-muted-foreground">
@@ -679,20 +818,20 @@ export default function ReceptionHandoverPage() {
                 {/* مؤشر المبلغ المتبقي */}
                 <div
                   className={
-                    remaining && remaining.gt(0)
+                    remainingDue
                       ? "rounded-xl border-2 border-amber-300 bg-amber-50 p-4"
                       : "rounded-xl border-2 border-green-300 bg-green-50 p-4"
                   }
                 >
                   <div className="flex items-center justify-between">
                     <span className="text-sm font-bold">
-                      {remaining && remaining.gt(0)
+                      {remainingDue
                         ? `يُحصَّل الآن (${paymentMethodLabel(method)}):`
                         : "مدفوع بالكامل مسبقاً"}
                     </span>
-                    {remaining && remaining.gt(0) && (
+                    {remainingDue && (
                       <span className="text-2xl font-extrabold tabular-nums text-amber-700">
-                        {fmt(remaining.toFixed(2))} د.ع
+                        {fmt(remainingDue.toFixed(2))} د.ع
                       </span>
                     )}
                   </div>
@@ -705,21 +844,21 @@ export default function ReceptionHandoverPage() {
                   disabled={
                     deliverMut.isPending ||
                     collectInvoiceMut.isPending ||
-                    !shift ||
-                    Boolean(remaining?.gt(0) && method !== "CASH" && scanned.kind === "invoice" && !externalConfirmed) ||
-                    Boolean(remaining?.gt(0) && method !== "CASH" && !reference.trim())
+                    (needsShift && !shift) ||
+                    Boolean(remainingDue && method !== "CASH" && scanned.kind === "invoice" && !externalConfirmed) ||
+                    Boolean(remainingDue && method !== "CASH" && !reference.trim())
                   }
                 >
                   {deliverMut.isPending || collectInvoiceMut.isPending
                     ? "جارٍ التسليم والتحصيل…"
-                    : !shift
+                    : needsShift && !shift
                     ? "افتح وردية استقبال أولاً"
-                    : remaining && remaining.gt(0)
-                    ? `سلّم وحصّل ${fmt(remaining.toFixed(2))} د.ع (${paymentMethodLabel(method)})`
+                    : remainingDue
+                    ? `سلّم وحصّل ${fmt(remainingDue.toFixed(2))} د.ع (${paymentMethodLabel(method)})`
                     : "تسليم (مدفوع كاملاً)"}
                 </Button>
 
-                {remaining && remaining.gt(0) && scanned.kind === "workOrder" && (
+                {remainingDue && scanned.kind === "workOrder" && (
                   <Button
                     type="button"
                     variant="outline"
@@ -727,17 +866,17 @@ export default function ReceptionHandoverPage() {
                     onClick={() => setShowDebtApproval(true)}
                     disabled={deliverMut.isPending || !shift}
                   >
-                    إضافة المتبقي ({fmt(remaining.toFixed(2))} د.ع) لذمة العميل (اعتماد مسؤول)
+                    إضافة المتبقي ({fmt(remainingDue.toFixed(2))} د.ع) لذمة العميل (اعتماد مسؤول)
                   </Button>
                 )}
               </div>
             </Card>
 
-            {showDebtApproval && remaining && (
+            {showDebtApproval && remainingDue && (
               <ManagerApprovalDialog
                 zIndexClass="z-[110]"
                 title="اعتماد مدير — إضافة متبقي طلب لذمة العميل"
-                description={`تسليم الطلب #${scanned.orderNumber} مع بقاء ${fmt(remaining.toFixed(2))} د.ع غير مستحصلة يتطلب موافقة المدير لتحويلها إلى ذمة العميل.`}
+                description={`تسليم الطلب #${scanned.orderNumber} مع بقاء ${fmt(remainingDue.toFixed(2))} د.ع غير مستحصلة يتطلب موافقة المدير لتحويلها إلى ذمة العميل.`}
                 onCancel={() => setShowDebtApproval(false)}
                 onApprove={(approval) => {
                   setShowDebtApproval(false);

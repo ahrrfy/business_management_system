@@ -357,10 +357,15 @@ function InTransitTab() {
     },
   });
   const returnCn = trpc.delivery.returnConsignment.useMutation({
-    onSuccess: () => {
+    onSuccess: (_res, variables) => {
       const snap = returnPrintRef.current;
       returnPrintRef.current = null;
-      notify.ok("رجع الطرد للمكتبة", "عُكس البيع كاملاً: المخزون والفاتورة وذمّة العميل وعهدة المندوب.");
+      const returnedToReady = (variables as { workOrderDisposition?: string }).workOrderDisposition === "RETURN_TO_READY";
+      if (returnedToReady) {
+        notify.ok("أُعيد أمر الشغل إلى «جاهز للتسليم»", "فُكّت عهدة المندوب وبقي أمر الشغل حيّاً في الاستقبال لإعادة الشحن أو التسليم المباشر.");
+      } else {
+        notify.ok("رجع الطرد للمكتبة", "عُكس البيع كاملاً: المخزون والفاتورة وذمّة العميل وعهدة المندوب.");
+      }
       if (snap) {
         void printAssignmentCancelReceipt(
           {
@@ -370,7 +375,9 @@ function InTransitTab() {
             partyName: snap.row?.partyName ?? null,
             recipientName: snap.row?.recipientName ?? snap.row?.customerName ?? null,
             codAmount: snap.row?.codDue ?? "0",
-            reason: "استلام مرتجع شحنة وعكس البيع في الفرع",
+            reason: returnedToReady
+              ? "استلام مرتجع شحنة وإعادة أمر الشغل إلى جاهز للتسليم في الفرع"
+              : "استلام مرتجع شحنة وعكس البيع في الفرع",
             cashierName: me.data?.name ?? null,
           },
           snap.win ? { into: snap.win } : undefined,
@@ -507,6 +514,8 @@ function InTransitTab() {
     setReturnTarget({
       consignmentId: r.id,
       label: `الإرسالية ${r.consignmentNumber ?? r.id}`,
+      workOrderId: r.workOrderId ?? null,
+      isWorkOrder: r.workOrderId != null || r.sourceType === "WORK_ORDER",
     });
   }
 
@@ -987,10 +996,15 @@ function InTransitTab() {
         target={returnTarget}
         pending={returnCn.isPending}
         onClose={() => setReturnTarget(null)}
-        onConfirm={({ consignmentId, refundShiftId }) => {
+        onConfirm={({ consignmentId, refundShiftId, workOrderDisposition }) => {
           const row = rowsWithView.find((x) => Number(x.id) === Number(consignmentId));
           returnPrintRef.current = { win: preopenDocumentWindow(), row, consignmentId };
-          returnCn.mutate({ consignmentId, clientRequestId: crypto.randomUUID(), refundShiftId });
+          returnCn.mutate({
+            consignmentId,
+            clientRequestId: crypto.randomUUID(),
+            refundShiftId,
+            ...(workOrderDisposition ? { workOrderDisposition } : {}),
+          });
         }}
       />
 
