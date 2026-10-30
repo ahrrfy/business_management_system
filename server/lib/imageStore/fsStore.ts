@@ -31,9 +31,28 @@ export class FsImageStore implements ImageStore {
     if (existing.exists) return { key, bytes: existing.bytes ?? body.length, existed: true };
     await fs.mkdir(path.dirname(full), { recursive: true });
     const tmp = `${full}.tmp-${randomUUID()}`;
-    await fs.writeFile(tmp, body);
-    await fs.rename(tmp, full); // ذرّيّ داخل نفس نظام الملفات
-    return { key, bytes: body.length, existed: false };
+    try {
+      await fs.writeFile(tmp, body);
+      try {
+        await fs.rename(tmp, full); // ذرّيّ داخل نفس نظام الملفات
+      } catch (error) {
+        // Windows can reject rename when another put has just published this key.
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "EPERM" || code === "EEXIST") {
+          const published = await fs.readFile(full).catch(() => null);
+          if (published?.equals(body)) return { key, bytes: body.length, existed: true };
+        }
+        throw error;
+      }
+      return { key, bytes: body.length, existed: false };
+    } finally {
+      await fs.rm(tmp, { force: true }).catch(error => {
+        // Cleanup must not replace the publication result or its original error.
+        process.emitWarning(`FsImageStore: temporary file cleanup failed: ${tmp}: ${String(error)}`, {
+          code: "IMAGE_STORE_TEMP_CLEANUP_FAILED",
+        });
+      });
+    }
   }
 
   async head(key: string): Promise<ObjectHead> {
