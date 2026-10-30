@@ -19,6 +19,7 @@ import { assertNoLiveConsignment, assertWorkOrderBranch, loadWorkOrder, workOrde
 import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
 import { logAuditTx } from "../auditService";
 import { recordWorkOrderEvent } from "../workOrderEvents";
+import { closeWorkOrderDirectHandoverCustodyTx } from "../delivery/custody";
 import { assertSiblingsReady } from "./siblings";
 import type { PaymentMethod } from "./types";
 import { userNameSnapshot } from "../userSnapshot";
@@ -195,12 +196,6 @@ export async function deliverWorkOrderInTx(
 
       const remainingAfterPay = round2(existingRemaining.minus(paidNow));
       const woPaymentMode = (wo.paymentMode ?? "PREPAID") as CodPaymentMode;
-      if (requiresFullPaymentAtHandover(woPaymentMode, !!wo.hasDelivery) && remainingAfterPay.gt(0)) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: COD_PICKUP_PAYMENT_ERROR_AR(remainingAfterPay.toFixed(2)),
-        });
-      }
       const isElevated = actor.role === "manager" || actor.role === "admin";
       const effectiveCustomerId =
         existingInv.customerId != null
@@ -218,6 +213,12 @@ export async function deliverWorkOrderInTx(
               why: `يوجد متبقٍ غير مدفوع بقيمة ${remainingAfterPay.toFixed(2)} د.ع على الفاتورة ${existingInv.invoiceNumber}`,
               doThis: "حصّل كامل المبلغ المتبقي عند التسليم أو فعّل خيار البيع الآجل باعتماد المدير",
             }),
+          });
+        }
+        if (requiresFullPaymentAtHandover(woPaymentMode, !!wo.hasDelivery)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: COD_PICKUP_PAYMENT_ERROR_AR(remainingAfterPay.toFixed(2)),
           });
         }
         if (effectiveCustomerId == null) {
@@ -424,6 +425,16 @@ export async function deliverWorkOrderInTx(
         actorUserId: actor.userId,
         branchId: Number(wo.branchId),
         seq: Number(existingInv.id),
+      });
+
+      await closeWorkOrderDirectHandoverCustodyTx(tx, {
+        workOrderId: Number(wo.id),
+        branchId: Number(wo.branchId),
+        invoiceId: Number(existingInv.id),
+        actorUserId: actor.userId,
+        operationId:
+          input.clientRequestId ??
+          `workOrder.deliver:${wo.id}:v${Number(wo.version ?? 0)}`,
       });
 
       await logAuditTx(

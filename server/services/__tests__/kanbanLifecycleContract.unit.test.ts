@@ -157,6 +157,12 @@ describe("دستور دورة حياة الكانبان وتصريف أوامر 
       expect(custodyServiceCode).toMatch(
         /workOrderDisposition\s*===\s*["']RETURN_TO_READY["'][\s\S]{0,300}toState:\s*["']PREPARED_HELD["']/,
       );
+      expect(
+        matchingLines(returnsServiceCode, "DLV-FEE-WO-").length,
+      ).toBeGreaterThanOrEqual(2);
+      expect(
+        matchingLines(returnsServiceCode, "requestNoncashWorkOrderFeeRefundTx").length,
+      ).toBeGreaterThanOrEqual(2);
     });
   });
 
@@ -190,6 +196,15 @@ describe("دستور دورة حياة الكانبان وتصريف أوامر 
         deliverCode.match(/(?:\.|\b)insert\(receipts\)/g)?.length ?? 0;
       expect(receiptInserts).toBe(2);
       expect(gateTestRaw).toContain('"workOrder/deliver.ts": 2,');
+      expect(
+        matchingLines(deliverCode, "closeWorkOrderDirectHandoverCustodyTx").length,
+      ).toBeGreaterThanOrEqual(2);
+      const debtPreconditionIdx = deliverCode.indexOf("!input.addToCustomerDebt");
+      const codReusedInvoiceIdx = deliverCode.indexOf(
+        "requiresFullPaymentAtHandover(woPaymentMode",
+      );
+      expect(debtPreconditionIdx).toBeGreaterThan(0);
+      expect(codReusedInvoiceIdx).toBeGreaterThan(debtPreconditionIdx);
     });
   });
 

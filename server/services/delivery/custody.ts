@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, or } from "drizzle-orm";
 import {
   deliveryConsignments,
   deliveryEvents,
@@ -1185,4 +1185,86 @@ export async function repairDeliveryCustodyFromRecordedEventsTx(
     transitioned += result.transitioned;
   }
   return { initialized, transitioned, custodyEventCount: events.length };
+}
+
+/**
+ * يُغلق عهدة المخرج المادي لأمر شغل أُعيد سابقاً من التوصيل إلى «جاهز للتسليم» (PREPARED_HELD)
+ * ثم تحوّل إلى استلام مباشر وسُلِّم للعميل في المكتبة (CUSTOMER_DELIVERED).
+ */
+export async function closeWorkOrderDirectHandoverCustodyTx(
+  tx: Tx,
+  input: {
+    workOrderId: number;
+    branchId: number;
+    invoiceId: number;
+    actorUserId: number | null;
+    operationId: string;
+  },
+) {
+  const cns = await tx
+    .select({ id: deliveryConsignments.id })
+    .from(deliveryConsignments)
+    .where(
+      and(
+        eq(deliveryConsignments.workOrderId, input.workOrderId),
+        eq(deliveryConsignments.branchId, input.branchId),
+      ),
+    )
+    .for("share");
+  const cnIds = cns.map((c) => Number(c.id));
+  const rows = await tx
+    .select()
+    .from(deliveryCustodyItems)
+    .where(
+      and(
+        eq(deliveryCustodyItems.branchId, input.branchId),
+        cnIds.length
+          ? or(
+              inArray(deliveryCustodyItems.consignmentId, cnIds),
+              and(
+                eq(deliveryCustodyItems.sourceType, "WORK_ORDER"),
+                eq(deliveryCustodyItems.sourceId, input.workOrderId),
+              ),
+            )
+          : and(
+              eq(deliveryCustodyItems.sourceType, "WORK_ORDER"),
+              eq(deliveryCustodyItems.sourceId, input.workOrderId),
+            ),
+      ),
+    )
+    .for("update");
+  const openStates: DeliveryCustodyState[] = [
+    "PREPARED_HELD",
+    "CUSTOMER_OWNED_HELD",
+    "RETURNED_PENDING_INSPECTION",
+  ];
+  let transitioned = 0;
+  for (const original of [...rows].sort(
+    (a, b) => Number(a.id) - Number(b.id),
+  )) {
+    let row = original;
+    for (const fromState of openStates) {
+      const baseQuantity = quantities(row)[fromState];
+      if (baseQuantity <= 0) continue;
+      const result = await transitionDeliveryCustodyTx(tx, {
+        custodyItemId: Number(row.id),
+        expectedVersion: Number(row.version),
+        fromState,
+        toState: "CUSTOMER_DELIVERED",
+        baseQuantity,
+        operationId: input.operationId,
+        eventKey: `CUSTODY:WO_DIRECT_HANDOVER:${input.operationId}:I:${row.id}:${fromState}:CUSTOMER_DELIVERED`,
+        eventType: "WORK_ORDER_DIRECT_HANDOVER",
+        evidence: {
+          workOrderId: input.workOrderId,
+          invoiceId: input.invoiceId,
+          sourceLineKey: row.sourceLineKey,
+        },
+        actorUserId: input.actorUserId,
+      });
+      row = result.item;
+      transitioned += result.replay ? 0 : 1;
+    }
+  }
+  return { transitioned };
 }
