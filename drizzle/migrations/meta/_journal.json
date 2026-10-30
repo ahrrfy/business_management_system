@@ -2619,6 +2619,13 @@
 			"when": 1788148870000,
 			"tag": "0412_installment_receipt_allocations",
 			"breakpoints": true
+		},
+		{
+			"idx": 413,
+			"version": "5",
+			"when": 1788148871000,
+			"tag": "0413_branch_stock_natural_primary",
+			"breakpoints": true
 		}
 	]
 }

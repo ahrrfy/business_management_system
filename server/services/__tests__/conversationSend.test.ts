@@ -7,7 +7,7 @@
  * ضربة شبكة حقيقية أثناء المحاولة الفورية غير المتزامنة (enqueueAndDispatch/dispatchOutboxRow
  * تُجدوَل عبر setImmediate ولا تُنتظَر من الراوتر) وتُبقي حالة waOutbox متوقَّعة (500 دائماً ⇒
  * retryable ⇒ الصفّ يبقى QUEUED لو التقطه الكنّاس الفوري قبل تأكيدنا، لا SENT أبداً ⇒ لا صفّ رسالة
- * حقيقي يظهر خلسة). كل اختبار يلمس outbox ينتظر مهلة قصيرة في نهايته ليستقرّ أي إرسال فوري خلفي
+ * حقيقي يظهر خلسة). كل اختبار يلمس outbox ينتظر اكتمال الإرسال الخلفي فعلياً داخل finally وقبل استعادة fetch
  * قبل انتقال afterEach (`__setup__.ts`) لتفريغ الجداول — يمنع تسرّب استعلام معلَّق لملف الاختبار
  * التالي.
  */
@@ -20,6 +20,7 @@ import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { appRouter } from "../../routers";
 import { __resetKeyCacheForTests, encryptSecret } from "../cryptoService";
+import { drainPendingOutboxDispatches } from "../whatsapp/outboxService";
 
 function db() {
   const d = getDb();
@@ -97,11 +98,6 @@ function failureResponder(): typeof fetch {
       status: 500,
       headers: { "content-type": "application/json" },
     })) as typeof fetch;
-}
-
-/** يمنح أي محاولة إرسال فورية خلفية (setImmediate) فرصةً للاستقرار قبل نهاية الاختبار. */
-async function settleBackgroundDispatch(): Promise<void> {
-  await new Promise((r) => setTimeout(r, 150));
 }
 
 beforeEach(async () => {
@@ -183,9 +179,12 @@ describe("sendMessage — إعادة توصيل عبر الصندوق الصاد
       const msgs = await db().select().from(s.conversationMessages).where(eq(s.conversationMessages.conversationId, convId));
       expect(msgs).toHaveLength(0); // لا إدراج فوري — يُدرَج فقط عند نجاح الإرسال الفعلي.
     } finally {
-      spy.mockRestore();
+      try {
+        await drainPendingOutboxDispatches();
+      } finally {
+        spy.mockRestore();
+      }
     }
-    await settleBackgroundDispatch();
   });
 
   it("٣) تكامل ACTIVE + نافذة مغلقة ⇒ TRPCError برسالة تحوي «قالب»، بلا outbox ولا رسالة", async () => {
@@ -231,9 +230,12 @@ describe("sendMessage — إعادة توصيل عبر الصندوق الصاد
       expect(rows).toHaveLength(1);
       expect(rows[0].dedupeKey).toBe(`CHAT:${convId}:dup-click`);
     } finally {
-      spy.mockRestore();
+      try {
+        await drainPendingOutboxDispatches();
+      } finally {
+        spy.mockRestore();
+      }
     }
-    await settleBackgroundDispatch();
   });
 });
 
@@ -301,9 +303,53 @@ describe("retrySend", () => {
       expect(row.attempts).toBe(0);
       expect(row.lastError).toBeNull();
     } finally {
-      spy.mockRestore();
+      try {
+        await drainPendingOutboxDispatches();
+      } finally {
+        spy.mockRestore();
+      }
     }
-    await settleBackgroundDispatch();
+  });
+
+  it("drains actual retrySend dispatch through a held provider response", async () => {
+    await seedActiveIntegration(1);
+    const convId = await seedConversation({ branchId: 1, hoursAgo: 1 });
+    const outboxId = await seedOutboxRow("FAILED", convId, 1);
+    const entered = Promise.withResolvers<void>();
+    const response = Promise.withResolvers<Response>();
+    let providerCalls = 0;
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+      providerCalls++;
+      entered.resolve();
+      return response.promise;
+    });
+    let pendingDrain: Promise<void> | undefined;
+    let drained = false;
+    try {
+      const result = await caller("cashier", 1, 2).conversations.retrySend({ outboxId });
+      expect(result).toMatchObject({ outboxId, ok: true });
+      pendingDrain = drainPendingOutboxDispatches().then(() => { drained = true; });
+      await entered.promise;
+      expect(drained).toBe(false);
+      const [sending] = await db().select().from(s.waOutbox).where(eq(s.waOutbox.id, outboxId));
+      expect(sending.status).toBe("SENDING");
+    } finally {
+      response.resolve(new Response(JSON.stringify({ error: { message: "Internal error" } }), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      }));
+      try {
+        await pendingDrain;
+        await drainPendingOutboxDispatches();
+      } finally {
+        spy.mockRestore();
+      }
+    }
+    expect(drained).toBe(true);
+    const [settled] = await db().select().from(s.waOutbox).where(eq(s.waOutbox.id, outboxId));
+    expect(settled.status).toBe("QUEUED");
+    expect(settled.attempts).toBe(1);
+    expect(providerCalls).toBe(1);
   });
 
   it("على SENT ⇒ يُرفَض", async () => {
@@ -359,9 +405,12 @@ describe("sendTemplate — T4.3 (منتقي القوالب في الوارد)", 
       expect(row.dedupeKey).toBe(`CHATTPL:${convId}:tpl-click-1`);
       expect(row.conversationId).toBe(convId);
     } finally {
-      spy.mockRestore();
+      try {
+        await drainPendingOutboxDispatches();
+      } finally {
+        spy.mockRestore();
+      }
     }
-    await settleBackgroundDispatch();
   });
 
   it("٣) نافذة مغلقة (٢٥ساعة) ⇒ القوالب مُعفاة، تُقيَّد رغم إغلاق النافذة (بخلاف sendMessage)", async () => {
@@ -378,9 +427,12 @@ describe("sendTemplate — T4.3 (منتقي القوالب في الوارد)", 
       });
       expect(result).toMatchObject({ queued: true });
     } finally {
-      spy.mockRestore();
+      try {
+        await drainPendingOutboxDispatches();
+      } finally {
+        spy.mockRestore();
+      }
     }
-    await settleBackgroundDispatch();
   });
 
   it("٤) عدد متغيّرات غير مطابق ⇒ BAD_REQUEST، بلا outbox", async () => {
@@ -437,9 +489,12 @@ describe("sendTemplate — T4.3 (منتقي القوالب في الوارد)", 
       const rows = await db().select().from(s.waOutbox).where(eq(s.waOutbox.conversationId, convId));
       expect(rows).toHaveLength(1);
     } finally {
-      spy.mockRestore();
+      try {
+        await drainPendingOutboxDispatches();
+      } finally {
+        spy.mockRestore();
+      }
     }
-    await settleBackgroundDispatch();
   });
 
   it("٧) محادثة فَرع آخر ⇒ يُرفَض (عزل الفروع، IDOR)", async () => {
@@ -470,9 +525,12 @@ describe("sendTemplate — T4.3 (منتقي القوالب في الوارد)", 
       });
       outboxId = (result as { outboxId: number }).outboxId;
     } finally {
-      spy.mockRestore();
+      try {
+        await drainPendingOutboxDispatches();
+      } finally {
+        spy.mockRestore();
+      }
     }
-    await settleBackgroundDispatch();
 
     // بعد استقرار الإرسال الخلفي الفاشل (500 retryable) الصفّ يبقى QUEUED (لم يبلغ ٦ محاولات بعد) —
     // pendingRows تشمل QUEUED/SENDING/FAILED كلها ⇒ يظهر كفقاعة مُعلَّقة بغضّ النظر عن أيّهما بالضبط.
@@ -490,8 +548,11 @@ describe("sendTemplate — T4.3 (منتقي القوالب في الوارد)", 
       const retryResult = await caller("cashier", 1, 2).conversations.retrySend({ outboxId });
       expect(retryResult).toMatchObject({ outboxId, ok: true });
     } finally {
-      retrySpy.mockRestore();
+      try {
+        await drainPendingOutboxDispatches();
+      } finally {
+        retrySpy.mockRestore();
+      }
     }
-    await settleBackgroundDispatch();
   });
 });

@@ -6,6 +6,8 @@ import os from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
+// @ts-expect-error Test-only raw ESM metadata fixture; no production bypass.
+import { mockInstalledHelperOwner } from "../../../scripts/lib/installed-helper-fixture.mjs";
 import { awaitInventoryActivationRelease } from "../../config/inventoryActivationBoot";
 import { closeDb } from "../../db";
 import { closeCleanupConn } from "./__setup__";
@@ -482,6 +484,7 @@ it("actual Linux ownership adapter prevents native B READY for a late orphan wit
     projectRoot = path.join(temp, "erp"),
     pm2Home = path.join(temp, "pm2");
   const helper = path.join(temp, "helper.mjs");
+  const helperOwner = mockInstalledHelperOwner(helper);
   try {
     for (const dir of [
       procRoot,
@@ -627,6 +630,7 @@ it("actual Linux ownership adapter prevents native B READY for a late orphan wit
     await gate.assertLocked();
     await gate.release();
   } finally {
+    helperOwner.restore();
     await f.finish();
     if (fs.existsSync(helper)) fs.chmodSync(helper, 0o600);
     fs.rmSync(temp, { recursive: true });

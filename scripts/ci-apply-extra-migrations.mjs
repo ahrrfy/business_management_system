@@ -258,6 +258,9 @@ const EXTRA_MIGRATIONS = [
   "drizzle/migrations/0411_purchase_return_owner_exception.sql",
   // Immutable receipt allocation history and current inverse validation.
   "drizzle/migrations/0412_installment_receipt_allocations.sql",
+  // drizzle-kit cannot express INVISIBLE: preserve ID uniqueness without
+  // offering a covering scan that locks unrelated stock identities.
+  "drizzle/migrations/0413_branch_stock_natural_primary.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without

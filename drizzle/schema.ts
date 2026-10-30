@@ -1427,7 +1427,7 @@ export type InsertPriceChangeLog = typeof priceChangeLog.$inferInsert;
 export const branchStock = mysqlTable(
   "branchStock",
   {
-    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    id: bigint("id", { mode: "number" }).autoincrement().notNull(),
     variantId: bigint("variantId", { mode: "number" })
       .notNull()
       .references(() => productVariants.id, { onDelete: "cascade" }),
@@ -1447,10 +1447,11 @@ export const branchStock = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   (table) => ({
-    variantBranchUq: unique("uq_stock_variant_branch").on(
-      table.variantId,
-      table.branchId,
-    ),
+    // 0413: cluster stock by its real identity; keep stable generated IDs.
+    // Managed SQL makes uq_stock_id INVISIBLE: a covering ID scan can lock
+    // unrelated stock rows. drizzle-kit cannot express index visibility.
+    variantBranchPk: primaryKey({ columns: [table.variantId, table.branchId] }),
+    idUq: unique("uq_stock_id").on(table.id),
     branchIdx: index("idx_stock_branch").on(table.branchId),
     // S1 (٢٩/٦/٢٦): تنبيهات نقص المخزون (branchId+quantity) وكشف الجرد المتقادم (branchId+lastCountedAt). هجرة 0031.
     branchQtyIdx: index("idx_stock_branch_qty").on(

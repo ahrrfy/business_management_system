@@ -97,11 +97,15 @@ jobs:
           MYSQL_DATABASE: erp_test
         ports:
           - 3306:3306
+        # TCP waits for the final server (the init server skips networking).
+        # Disable its scheduler before healthy; avoid probe sessions during the
+        # strict activation census: 24h exceeds this job's 180-minute ceiling.
         options: >-
           --tmpfs /var/lib/mysql:rw,noexec,nosuid,size=1g
           --label alroya.backup-client.mysql80-smoke=1
-          --health-cmd="mysqladmin ping -h localhost -uroot"
-          --health-interval=10s --health-timeout=5s --health-retries=10
+          --health-cmd="mysql --protocol=TCP -h 127.0.0.1 -uroot -e 'SET GLOBAL event_scheduler=OFF; SELECT 1'"
+          --health-start-interval=1s --health-start-period=90s
+          --health-interval=24h --health-timeout=5s --health-retries=10
     env:
       DATABASE_URL: mysql://root@127.0.0.1:3306/erp_test
       TEST_DATABASE_URL: mysql://root@127.0.0.1:3306/erp_test

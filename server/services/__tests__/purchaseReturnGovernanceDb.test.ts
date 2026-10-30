@@ -522,6 +522,7 @@ describe("A10 cumulative source entitlement", () => {
     const resume = Promise.withResolvers<void>();
     const execute = MySql2PreparedQuery.prototype.execute;
     let reached = 0;
+    let completedStockEnsures = 0;
     const spy = vi
       .spyOn(MySql2PreparedQuery.prototype, "execute")
       .mockImplementation(async function (
@@ -529,10 +530,17 @@ describe("A10 cumulative source entitlement", () => {
         values,
       ) {
         const query = (this as unknown as { query: { sql: string } }).query.sql;
-        if (query.startsWith("insert into `branchStock`") && reached < 2) {
+        const stockWrite =
+          query.startsWith("insert into `branchStock`") ||
+          (query.includes("from `branchStock`") &&
+            query.includes("for update"));
+        if (stockWrite && reached < 2) {
           reached++;
-          if (reached === 2) resume.resolve();
+          const result = await execute.call(this, values);
+          completedStockEnsures++;
+          if (completedStockEnsures === 2) resume.resolve();
           await resume.promise;
+          return result;
         }
         return execute.call(this, values);
       });
@@ -646,7 +654,11 @@ describe("A10 cumulative source entitlement", () => {
       ) {
         const query = (this as unknown as { query: { sql: string } }).query.sql;
         // Pause after the real economic scope and before the stock/metadata writes.
-        if (!paused && query.startsWith("insert into `branchStock`")) {
+        if (
+          !paused &&
+          query.includes("from `branchStock`") &&
+          query.includes("for update")
+        ) {
           paused = true;
           scopeHeld.resolve();
           await resume.promise;
@@ -849,7 +861,11 @@ describe("A10 cumulative source entitlement", () => {
         values,
       ) {
         const query = (this as unknown as { query: { sql: string } }).query.sql;
-        if (!paused && query.startsWith("insert into `branchStock`")) {
+        if (
+          !paused &&
+          query.includes("from `branchStock`") &&
+          query.includes("for update")
+        ) {
           paused = true;
           held.resolve();
           await resume.promise;

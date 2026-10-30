@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
+import { mockInstalledHelperOwner } from "./installed-helper-fixture.mjs";
 import {
   assertWorkerAttestations,
   classifyErpProcesses,
@@ -216,6 +217,7 @@ for (const scenario of [
       projectRoot = path.join(temp, "erp"),
       pm2Home = path.join(temp, "pm2");
     const helper = path.join(temp, "installed.mjs");
+    const helperOwner = mockInstalledHelperOwner(helper);
     try {
       for (const d of [
         procRoot,
@@ -399,6 +401,30 @@ for (const scenario of [
           };
         },
       });
+      if (scenario === "normal") {
+        const rejectsUntrustedHelper = () =>
+          assert.rejects(op.preflight(), /INSTALLED_BOOT_INTERLOCK_REQUIRED/);
+        helperOwner.setOwner(1000);
+        await rejectsUntrustedHelper();
+        helperOwner.setOwner(0);
+        assert.equal(fs.lstatSync(projectRoot).uid, process.getuid?.() ?? 0);
+        fs.chmodSync(helper, 0o644);
+        fs.writeFileSync(helper, "tampered-helper");
+        await rejectsUntrustedHelper();
+        fs.writeFileSync(helper, "trusted-helper");
+        if (process.platform === "linux") {
+          fs.chmodSync(helper, 0o466);
+          await rejectsUntrustedHelper();
+          fs.chmodSync(helper, 0o444);
+          const realHelper = `${helper}.real`;
+          fs.renameSync(helper, realHelper);
+          fs.symlinkSync(realHelper, helper);
+          await rejectsUntrustedHelper();
+          fs.unlinkSync(helper);
+          fs.renameSync(realHelper, helper);
+        }
+        fs.chmodSync(helper, 0o444);
+      }
       if (scenario.startsWith("compatible-prior")) {
         const priorArtifacts = live
           .filter((r) => r !== unrelated)
@@ -516,6 +542,7 @@ for (const scenario of [
       assert.deepEqual(live, [unrelated]);
       assert.ok(!calls.some((c) => c.includes("kill") || c.includes("90")));
     } finally {
+      helperOwner.restore();
       if (fs.existsSync(helper)) fs.chmodSync(helper, 0o600);
       fs.rmSync(temp, { recursive: true });
     }
