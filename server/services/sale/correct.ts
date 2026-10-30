@@ -33,6 +33,8 @@ import {
   digitalSaleDetails,
   externalPaymentAttempts,
   invoiceItems,
+  invoiceItemBundleComponents,
+  invoiceItemServiceMaterials,
   invoices,
   onlineOrders,
   products,
@@ -50,6 +52,9 @@ import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { adjustCustomerBalance, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { returnSaleInTx } from "../returnService";
+import { lockEconomicInventoryScope, readEconomicVariant } from "../inventory/economicOwnership";
+import { getBundleDefinitions, bundleDefinitionsFingerprint } from "../bundleService";
+import { discoverServiceRecipeDefinitions, serviceRecipeDefinitionsFingerprint } from "../serviceRecipeConsumption";
 import { reverseOnlineOrderLoyaltyPoints } from "../storeAdmin/loyaltyService";
 import { openShiftIdTx, resolveBranchCashShiftTx } from "../shiftService";
 import { loadRefundCaps } from "../returns/refundCaps";
@@ -646,6 +651,41 @@ export async function correctSaleInTx(
     const items = await tx.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, input.originalInvoiceId));
     if (!items.length) throw new TRPCError({ code: "BAD_REQUEST", message: "الفاتورة بلا بنودٍ لتصحيحها",
       });
+    // Reserve both legs before reversal takes variant locks. Reposting requires product X locks.
+    const itemIds = items.map(item => Number(item.id));
+    const savedComponents = await tx.select({ id: invoiceItemBundleComponents.componentVariantId })
+      .from(invoiceItemBundleComponents).where(inArray(invoiceItemBundleComponents.invoiceItemId, itemIds));
+    const savedMaterials = await tx.select({ id: invoiceItemServiceMaterials.materialVariantId })
+      .from(invoiceItemServiceMaterials).where(inArray(invoiceItemServiceMaterials.invoiceItemId, itemIds));
+    const replacementIds = Array.from(new Set(input.lines.map(line => line.variantId)));
+    const replacementKinds = replacementIds.length ? await tx.select({ id: productVariants.id,
+      isBundle: products.isBundle, isService: products.isService })
+      .from(productVariants).innerJoin(products, eq(products.id, productVariants.productId))
+      .where(inArray(productVariants.id, replacementIds)) : [];
+    const bundleIds = replacementKinds.filter(row => row.isBundle).map(row => row.id);
+    const serviceIds = replacementKinds.filter(row => !row.isBundle && row.isService).map(row => row.id);
+    const discoveredBundles = await getBundleDefinitions(tx, bundleIds);
+    const discoveredServices = await discoverServiceRecipeDefinitions(tx, serviceIds);
+    const scope = await lockEconomicInventoryScope(tx, [
+      ...items.map(item => Number(item.variantId)), ...savedComponents.map(row => row.id),
+      ...savedMaterials.map(row => row.id), ...replacementIds,
+      ...Array.from(discoveredBundles.values()).flatMap(rows => rows.map(row => row.componentVariantId)),
+      ...Array.from(discoveredServices.values()).flatMap(definition => definition.lines.map(line => line.inputVariantId)),
+    ], { productLock: "update" });
+    const definitionChanged = () => new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+      what: "تعذّر تثبيت نطاق أصناف التصحيح", why: "تغيّر تصنيف المنتج أو تعريف مكوّناته أثناء انتظار الأقفال",
+      doThis: "حدّث الفاتورة وتعريفات الأصناف ثم أعد محاولة التصحيح",
+    }) });
+    for (const discovered of replacementKinds) {
+      const current = await readEconomicVariant(tx, scope, discovered.id);
+      if (current.product.isBundle !== discovered.isBundle || current.product.isService !== discovered.isService)
+        throw definitionChanged();
+    }
+    const currentBundles = await getBundleDefinitions(tx, bundleIds, { lock: true });
+    const currentServices = await discoverServiceRecipeDefinitions(tx, serviceIds, { lock: true });
+    if (bundleDefinitionsFingerprint(discoveredBundles) !== bundleDefinitionsFingerprint(currentBundles) ||
+      serviceRecipeDefinitionsFingerprint(discoveredServices) !== serviceRecipeDefinitionsFingerprint(currentServices))
+      throw definitionChanged();
     // ١٨/٨ — رُفع حارسُ «لا تُعكس فاتورة خدمة»: علّته زالت من جذرها. كان يُرفَض لأنّ العكس
     // يكتب حركة مخزونٍ لصنفٍ بلا رصيد (مخزونٌ وهميّ)؛ والآن `returnSaleInTx` يتخطّى
     // `applyMovement` لأصناف الخدمة صراحةً فالعكس ماليٌّ بحت. أثرُ الرفع: **فواتير خدمات

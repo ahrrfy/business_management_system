@@ -742,6 +742,7 @@ export async function executeInventoryDeployment(options) {
       artifacts,
       priorArtifacts,
       priorActive,
+      bridgeBaseline: options.bridgeBaseline,
     };
     const operations = createLinuxActivationOperations({
       ...options,

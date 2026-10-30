@@ -23,6 +23,15 @@ const hashFile = file => createHash("sha256").update(fs.readFileSync(file)).dige
 function inventoryJournalFile() {
   return path.join(process.env.PM2_HOME || path.join(process.env.HOME || userInfo().homedir, ".pm2"), JOURNAL_NAME);
 }
+export function assertInventoryPrePullReconciliationAllowed(
+  file,
+  { hasPendingBridgeRecovery = false } = {},
+) {
+  return assertActivationRecoveryAllowed(file, {
+    allowReleased: !hasPendingBridgeRecovery,
+  });
+}
+
 function assertInventoryRestartTarget(script) {
   const journal = assertActivationRecoveryAllowed(inventoryJournalFile(), { allowReleased: true });
   const active = activeInventoryManifest(journal);
@@ -639,6 +648,40 @@ export function cleanupWebCandidate(candidate) {
   fsyncDirectory(roots.candidatesRoot);
 }
 
+export function restoreInventoryWebArtifact(snapshot, priorJournal) {
+  const { releasesRoot } = validateWebArtifactSnapshot(snapshot);
+  if (priorJournal && !["RELEASED", "ROLLED_BACK"].includes(priorJournal.phase)) {
+    throw codedError("INVENTORY_WEB_ROLLBACK_TARGET_INVALID");
+  }
+  const active = activeInventoryManifest(priorJournal);
+  let target = snapshot.previousPath;
+  if (active) {
+    const web = active.artifacts.find(artifact => artifact.name === "erp-server");
+    const parts = path.relative(releasesRoot, web.bundle).split(path.sep);
+    if (
+      parts.length !== 3 ||
+      !WEB_ARTIFACT_ID.test(parts[0]) ||
+      !["candidate", "previous"].includes(parts[1]) ||
+      parts[2] !== "index.js" ||
+      web.bundle !== path.join(releasesRoot, ...parts) ||
+      web.script !== web.bundle
+    ) {
+      throw codedError("INVENTORY_WEB_ROLLBACK_TARGET_INVALID");
+    }
+    assertPlainDirectory(path.join(releasesRoot, parts[0]), "INVENTORY_WEB_ROLLBACK_TARGET_INVALID");
+    target = path.dirname(web.bundle);
+    assertWebArtifactReady(target, "INVENTORY_WEB_ROLLBACK_TARGET_INVALID");
+    const actualHash = hashFile(web.bundle);
+    if (actualHash !== web.hash || actualHash !== web.scriptHash) {
+      throw codedError("INVENTORY_WEB_ROLLBACK_TARGET_INVALID");
+    }
+  }
+  // PM2 and the retained inventory manifest still name the original immutable
+  // artifact. Restore that same target so retention continues to protect it.
+  replaceWebCurrentLink(snapshot.activeLinkPath, target, snapshot.runtimeRoot);
+  clearWebActivationJournal(snapshot);
+}
+
 export function rollbackWebArtifact(snapshot, operations) {
   assertActivationRecoveryAllowed(inventoryJournalFile());
   const roots = validateWebArtifactSnapshot(snapshot);
@@ -674,6 +717,25 @@ export function commitWebArtifact(snapshot) {
   }
   clearWebActivationJournal(snapshot);
   return snapshot;
+}
+
+export function finalizeReleasedInventoryWebArtifact(
+  projectRoot,
+  { journalFile = inventoryJournalFile() } = {},
+) {
+  const snapshot = pendingWebActivationSnapshot(projectRoot);
+  if (!snapshot) return false;
+  const journal = assertInventoryPrePullReconciliationAllowed(journalFile);
+  if (journal?.phase !== "RELEASED") return false;
+  const web = activeInventoryManifest(journal).artifacts.find(artifact => artifact.name === "erp-server");
+  const bundle = path.join(snapshot.candidatePath, "index.js");
+  if (!isWebCandidateActive(snapshot) || web.script !== bundle || web.bundle !== bundle ||
+    hashFile(bundle) !== web.hash || hashFile(bundle) !== web.scriptHash) {
+    throw codedError("INVENTORY_WEB_RELEASE_RECONCILIATION_MISMATCH");
+  }
+  // RELEASED authorizes current candidates only. Never run legacy rollback here.
+  commitWebArtifact(snapshot);
+  return true;
 }
 
 export function recoverPendingWebActivation(projectRoot, operations) {
@@ -1118,6 +1180,7 @@ function assertBridgeBaselineBeforePull() {
     }
     if (state.pending) return { pending: true };
   }
+  if (hasReleasedInventoryBridgeBaseline()) return { pending: false, reconcile: true };
   const allRows = pm2Rows();
   const dumpRows = readPm2DumpRowsBeforePull();
   const rows = allRows.filter((row) => row?.name === BRIDGE_PROCESS_NAME);
@@ -2353,9 +2416,83 @@ function step(label, action) {
   return action();
 }
 
-function reconcileCommittedBridge(descriptor, releaseTools, pm2Contract) {
+export function hasReleasedInventoryBridgeBaseline(journalFile = inventoryJournalFile()) {
+  const journal = assertInventoryPrePullReconciliationAllowed(journalFile);
+  return journal?.phase === "RELEASED" && journal.bridgeBaseline !== undefined;
+}
+
+export function settleReleasedInventoryBridgeBaseline(
+  releaseTools,
+  { projectRoot = PROJECT_ROOT, journalFile = inventoryJournalFile() } = {},
+) {
+  const journal = assertInventoryPrePullReconciliationAllowed(journalFile);
+  const state = releaseTools.readState(projectRoot);
+  if (journal?.phase !== "RELEASED" || journal.bridgeBaseline === undefined) return state.current;
+  const proof = journal.bridgeBaseline;
+  if (!proof || !Object.hasOwn(proof, "prior") || !Object.hasOwn(proof, "candidateSourceCommit")) {
+    throw codedError("INVENTORY_BRIDGE_RECONCILIATION_MISMATCH");
+  }
+  const candidate = releaseTools.normalizeDescriptor(proof.candidate);
+  const prior = proof.prior === null ? null : releaseTools.normalizeDescriptor(proof.prior);
+  const matches = (left, right) => left?.id === right?.id && left?.mode === right?.mode;
+  if (state.pending || (!matches(state.current, prior) && !matches(state.current, candidate))) {
+    throw codedError("INVENTORY_BRIDGE_RECONCILIATION_MISMATCH");
+  }
+  const verify = (descriptor, artifacts) => {
+    if (!Array.isArray(artifacts)) throw codedError("INVENTORY_BRIDGE_RECONCILIATION_MISMATCH");
+    const bridges = artifacts.filter(artifact => artifact.name === BRIDGE_PROCESS_NAME);
+    if (bridges.length !== (descriptor?.mode === "enabled" ? 1 : 0)) {
+      throw codedError("INVENTORY_BRIDGE_RECONCILIATION_MISMATCH");
+    }
+    if (!descriptor) return null;
+    const release = releaseTools.validateRelease(projectRoot, descriptor.id);
+    const bridge = bridges[0];
+    if (release.id !== descriptor.id || release.mode !== descriptor.mode || (bridge && (
+      bridge.instances !== 1 || release.bootstrapPath !== bridge.script || release.artifactPath !== bridge.bundle ||
+      hashFile(release.bootstrapPath) !== bridge.scriptHash || hashFile(release.artifactPath) !== bridge.hash
+    ))) throw codedError("INVENTORY_BRIDGE_RECONCILIATION_MISMATCH");
+    return release;
+  };
+  const release = verify(candidate, activeInventoryManifest(journal).artifacts);
+  verify(prior, journal.priorArtifacts);
+  // Content-addressed releases may be reused across web commits. Bind the
+  // prepared release's own source commit, rather than guessing it from latest.
+  if (release.sourceCommit !== proof.candidateSourceCommit) {
+    throw codedError("INVENTORY_BRIDGE_RECONCILIATION_MISMATCH");
+  }
+  releaseTools.commitInventoryBaseline(projectRoot, candidate, prior);
+  return candidate;
+}
+
+export function reconcileCommittedBridge(
+  descriptor,
+  releaseTools,
+  pm2Contract,
+  { journalFile = inventoryJournalFile(), createOperations = makeActivationOperations } = {},
+) {
+  const active = activeInventoryManifest(
+    assertInventoryPrePullReconciliationAllowed(journalFile),
+  );
+  if (active) {
+    const bridge = active.artifacts.find(artifact => artifact.name === BRIDGE_PROCESS_NAME);
+    if (
+      (descriptor?.mode === "enabled") !== Boolean(bridge) ||
+      (descriptor && (!/^[a-f0-9]{64}$/.test(descriptor.id || "") ||
+        !["enabled", "disabled"].includes(descriptor.mode)))
+    ) throw codedError("INVENTORY_BRIDGE_RECONCILIATION_MISMATCH");
+    if (bridge) {
+      const release = releaseTools.validateRelease(PROJECT_ROOT, descriptor.id);
+      if (
+        release.id !== descriptor.id || release.mode !== "enabled" || bridge.instances !== 1 ||
+        path.resolve(release.bootstrapPath) !== path.resolve(bridge.script) ||
+        path.resolve(release.artifactPath) !== path.resolve(bridge.bundle) ||
+        hashFile(release.bootstrapPath) !== bridge.scriptHash ||
+        hashFile(release.artifactPath) !== bridge.hash
+      ) throw codedError("INVENTORY_BRIDGE_RECONCILIATION_MISMATCH");
+    }
+  }
   if (!descriptor) return;
-  const operations = makeActivationOperations(
+  const operations = createOperations(
     descriptor.id,
     releaseTools,
     pm2Contract,
@@ -2411,6 +2548,7 @@ async function deploy(expectedHead) {
   );
   const releaseLock = releaseTools.acquireDeploymentLock(PROJECT_ROOT);
   try {
+    settleReleasedInventoryBridgeBaseline(releaseTools);
     const initialState = releaseTools.readState(PROJECT_ROOT);
     if (initialState.pending) {
       step("استعادة آخر إصدار ملتزم بعد نشر منقطع", () => {
@@ -2569,6 +2707,7 @@ async function deploy(expectedHead) {
           expectedServerUuid: pinnedDeploymentTarget.serverUuid,
           artifacts,
           priorArtifacts,
+          bridgeBaseline: { candidate, prior: committed, candidateSourceCommit: bridge.sourceCommit },
           candidateWebApp: { ...app, script: bundle, cwd: PROJECT_ROOT, instances: count, filter_env: [...app.filter_env, "ERP_INVENTORY_CONTROL_DATABASE_URL"], env: { ...app.env, ERP_INVENTORY_CONTROL_DATABASE_URL: "", DATABASE_URL: parsedDeploymentEnvironment.DATABASE_URL } },
           bridgeConfigPath: candidate.mode === "enabled" ? bridge.pm2ConfigPath : null,
           installCandidate: async () => {
@@ -2576,10 +2715,10 @@ async function deploy(expectedHead) {
             finally { webSwapped = isWebCandidateActive(webArtifact); }
           },
           restoreArtifact: async () => {
-            replaceWebCurrentLink(webArtifact.activeLinkPath, webArtifact.previousPath, webArtifact.runtimeRoot);
-            clearWebActivationJournal(webArtifact);
+            restoreInventoryWebArtifact(webArtifact, priorJournal);
           },
         });
+        settleReleasedInventoryBridgeBaseline(releaseTools);
         commitWebArtifact(webArtifact);
         verifyInternalWebHealth(webHealthEnvironment);
       });
@@ -2657,20 +2796,9 @@ async function deploy(expectedHead) {
       ]),
     );
 
-    step("11/12 تفعيل إصدار الجسر والتحقق والحفظ الذري", () => {
-      const operations = makeActivationOperations(
-        candidate.id,
-        releaseTools,
-        pm2Contract,
-        [committed?.id].filter(Boolean),
-      );
-      activation.activateBridgeRelease(
-        PROJECT_ROOT,
-        candidate,
-        operations,
-        releaseTools,
-      );
-    });
+    step("11/12 تثبيت خط أساس الجسر المفعّل تحت الحاجز", () =>
+      settleReleasedInventoryBridgeBaseline(releaseTools),
+    );
     const retention = releaseTools.pruneBridgeReleasesAfterCommit(
       PROJECT_ROOT,
       { committedCandidateId: candidate.id, keepRecent: 2 },
@@ -2692,7 +2820,7 @@ async function deploy(expectedHead) {
 }
 
 async function recoverBeforePull() {
-  assertActivationRecoveryAllowed(inventoryJournalFile());
+  assertInventoryPrePullReconciliationAllowed(inventoryJournalFile());
   const [
     { default: policy },
     releaseModule,
@@ -2710,8 +2838,12 @@ async function recoverBeforePull() {
   assertPm2Version(policy.pm2Version);
   const unlock = releaseTools.acquireDeploymentLock(PROJECT_ROOT);
   try {
+    settleReleasedInventoryBridgeBaseline(releaseTools);
     const state = releaseTools.readState(PROJECT_ROOT);
     if (state.pending) {
+      assertInventoryPrePullReconciliationAllowed(inventoryJournalFile(), {
+        hasPendingBridgeRecovery: true,
+      });
       const operations = makeActivationOperations(
         state.pending.candidate.id,
         releaseTools,
@@ -2733,6 +2865,7 @@ async function recoverBeforePull() {
 
 async function recoverPendingWebActivationBeforePull() {
   if (!hasPendingWebActivation(PROJECT_ROOT)) return;
+  if (finalizeReleasedInventoryWebArtifact(PROJECT_ROOT)) return;
   const dotenvModule = await import("dotenv");
   const webHealthEnvironment = readWebHealthEnvironment(dotenvModule.config);
   recoverPendingWebActivation(PROJECT_ROOT, {
