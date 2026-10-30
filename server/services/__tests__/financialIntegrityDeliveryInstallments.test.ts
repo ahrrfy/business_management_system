@@ -11,7 +11,7 @@ import { returnSale } from "../returnService";
 const actor = { userId: 1, branchId: 1, role: "admin" };
 const TABLES = [
   "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries", "deliveryRemittanceLines", "deliveryPartyMembers",
-  "idempotencyKeys", "accountingEntries", "receipts", "deliveryConsignments",
+  "installmentReceiptAllocations", "idempotencyKeys", "accountingEntries", "receipts", "deliveryConsignments",
   "deliveryRemittances", "deliveryParties", "installmentLines", "installmentPlans",
   "invoices", "shifts", "customers", "branches", "users",
 ];
@@ -158,7 +158,7 @@ describe("حوكمة مصدر الأقساط والشيكات", () => {
     await expect(bounceCheck({ lineId: Number(line.id) }, actor)).rejects.toThrow(/لم يكن بشيك/);
   });
 
-  it("يمنع إلغاء خطة لها سند تحصيل معتمد ولو بقي السطر PENDING", async () => {
+  it.each(["APPROVED", "PENDING_APPROVAL", "REJECTED"] as const)("يمنع إلغاء خطة لها سند غير مطابق للسجل (%s) ولو بقي السطر PENDING", async approvalStatus => {
     await db().insert(s.invoices).values({
       id: 12, invoiceNumber: "FIH-INST-12", sourceType: "POS", branchId: 1, customerId: 1,
       subtotal: "100.00", total: "100.00", paidAmount: "0.00", status: "PENDING",
@@ -170,10 +170,26 @@ describe("حوكمة مصدر الأقساط والشيكات", () => {
     const line = (await getPlan(planId)).lines[0];
     const inserted = await db().insert(s.receipts).values({
       branchId: 1, direction: "IN", amount: "100.00", paymentMethod: "CHECK",
-      status: "COMPLETED", approvalStatus: "APPROVED", partyType: "CUSTOMER", partyId: 1, createdBy: 1,
+      // REJECTED deliberately has no invoice identity: it is not a proven rejected claim.
+      status: approvalStatus === "APPROVED" ? "COMPLETED" : approvalStatus === "REJECTED" ? "FAILED" : "PENDING",
+      approvalStatus, partyType: "CUSTOMER", partyId: 1, createdBy: 1,
     });
     const receiptId = extractInsertId(inserted);
     await db().update(s.installmentLines).set({ receiptId }).where(eq(s.installmentLines.id, Number(line.id)));
-    await expect(cancelPlan({ planId, clientRequestId: crypto.randomUUID() }, actor)).rejects.toThrow(/سند تحصيل معتمد/);
+    const snapshot = async () => ({
+      plans: await db().select().from(s.installmentPlans),
+      lines: await db().select().from(s.installmentLines),
+      receipts: await db().select().from(s.receipts),
+      invoices: await db().select().from(s.invoices),
+      customers: await db().select().from(s.customers),
+      entries: await db().select().from(s.accountingEntries),
+      allocations: await db().select().from(s.installmentReceiptAllocations),
+      keys: await db().select().from(s.idempotencyKeys),
+    });
+    const before = await snapshot();
+    await expect(cancelPlan({ planId, clientRequestId: crypto.randomUUID() }, actor)).rejects.toThrow(
+      approvalStatus === "APPROVED" ? /سند تحصيل معتمد/ : /مطابقة موثقة/,
+    );
+    expect(await snapshot()).toEqual(before);
   });
 });

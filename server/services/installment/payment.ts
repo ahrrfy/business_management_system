@@ -3,6 +3,8 @@ import { TRPCError } from "@trpc/server";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import {
   customers,
+  idempotencyKeys,
+  receipts,
   externalPaymentAttempts,
   installmentLines,
   installmentPlans,
@@ -10,9 +12,19 @@ import {
   users,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
-import { findIdempotentRefId } from "../idempotency";
+import { idempotencyHash, recordIdempotencyKey } from "../idempotency";
+import { shiftIdForCashTx } from "../shiftService";
+import { lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
+import {
+  installmentConflict,
+  lockInstallmentPlanTx,
+  installmentLineViews,
+  installmentPlanViews,
+  assertInstallmentScopeTx,
+} from "./receiptAllocations";
+import { saveInstallmentReceiptClaimTx } from "./receiptClaims";
 import { assertInboundPaymentMethodEnabled } from "../inboundPaymentPolicy";
-import { money, sumMoney, toDbMoney } from "../money";
+import { money, toDbMoney } from "../money";
 import {
   assertExternalPaymentReplay,
   consumeConfirmedExternalPaymentAttemptTx,
@@ -132,6 +144,26 @@ export async function listPendingInstallmentExternalPayments(
   const detailByLine = new Map(
     details.map((detail) => [Number(detail.lineId), detail]),
   );
+  const planIds = Array.from(new Set(details.map((row) => row.planId)));
+  const plans = planIds.length
+    ? await db
+        .select()
+        .from(installmentPlans)
+        .where(inArray(installmentPlans.id, planIds))
+    : [];
+  const actualLines = planIds.length
+    ? await db
+        .select()
+        .from(installmentLines)
+        .where(inArray(installmentLines.planId, planIds))
+    : [];
+  const actualViews = await installmentLineViews(db, actualLines);
+  const scopeViews = await installmentPlanViews(
+    db,
+    plans,
+    actualLines,
+    actualViews,
+  );
   const creatorIds = Array.from(
     new Set(scoped.map(({ attempt }) => Number(attempt.createdBy))),
   );
@@ -155,7 +187,11 @@ export async function listPendingInstallmentExternalPayments(
     if (
       attempt.accountReference !== expectedAccount ||
       Number(detail.branchId) !== Number(attempt.branchId) ||
-      !money(detail.lineAmount).eq(money(attempt.amount)) ||
+      actualViews.get(lineId)?.reconciliationRequired ||
+      scopeViews.get(detail.planId)?.reconciliationRequired ||
+      !money(actualViews.get(lineId)?.remainingAmount ?? "0").eq(
+        money(attempt.amount),
+      ) ||
       detail.lineStatus === "PAID" ||
       detail.lineStatus === "CANCELLED" ||
       detail.planStatus !== "ACTIVE"
@@ -165,34 +201,35 @@ export async function listPendingInstallmentExternalPayments(
     const createdBy = Number(attempt.createdBy);
     const confirmedBy =
       attempt.confirmedBy == null ? null : Number(attempt.confirmedBy);
-    return [{
-      attemptId: Number(attempt.id),
-      lineId,
-      lineSeq: Number(detail.lineSeq),
-      dueDate: detail.dueDate,
-      planId: Number(detail.planId),
-      invoiceId: Number(detail.invoiceId),
-      invoiceNumber: detail.invoiceNumber,
-      customerId: Number(detail.customerId),
-      customerName: detail.customerName,
-      branchId: Number(detail.branchId),
-      amount: attempt.amount,
-      paymentMethod: attempt.paymentMethod,
-      reference: attempt.externalReference,
-      deviceId: attempt.deviceId,
-      state: attempt.state as "INITIATED" | "CONFIRMED",
-      createdBy,
-      createdByName: creatorById.get(createdBy) ?? `#${createdBy}`,
-      confirmedBy,
-      createdAt: attempt.createdAt,
-      confirmedAt: attempt.confirmedAt,
-      canConfirm:
-        attempt.state === "INITIATED" && createdBy !== actor.userId,
-      canSettle:
-        attempt.state === "CONFIRMED" &&
-        confirmedBy === actor.userId &&
-        createdBy !== actor.userId,
-    }];
+    return [
+      {
+        attemptId: Number(attempt.id),
+        lineId,
+        lineSeq: Number(detail.lineSeq),
+        dueDate: detail.dueDate,
+        planId: Number(detail.planId),
+        invoiceId: Number(detail.invoiceId),
+        invoiceNumber: detail.invoiceNumber,
+        customerId: Number(detail.customerId),
+        customerName: detail.customerName,
+        branchId: Number(detail.branchId),
+        amount: attempt.amount,
+        paymentMethod: attempt.paymentMethod,
+        reference: attempt.externalReference,
+        deviceId: attempt.deviceId,
+        state: attempt.state as "INITIATED" | "CONFIRMED",
+        createdBy,
+        createdByName: creatorById.get(createdBy) ?? `#${createdBy}`,
+        confirmedBy,
+        createdAt: attempt.createdAt,
+        confirmedAt: attempt.confirmedAt,
+        canConfirm: attempt.state === "INITIATED" && createdBy !== actor.userId,
+        canSettle:
+          attempt.state === "CONFIRMED" &&
+          confirmedBy === actor.userId &&
+          createdBy !== actor.userId,
+      },
+    ];
   });
 }
 
@@ -200,6 +237,28 @@ export async function listPendingInstallmentExternalPayments(
  * لا إيصال يسبق وسم القسط بعد الآن: إثبات المزوّد، createVoucherTx، التخصيص،
  * وPAID/COMPLETED كلها داخل المعاملة نفسها. أي throw يعكسها جميعاً.
  */
+class RestartInstallmentTransaction extends Error {}
+function requestHash(
+  input: PayLineInput,
+  actor: Actor,
+  receipt: typeof receipts.$inferSelect,
+) {
+  return idempotencyHash({
+    lineId: input.lineId,
+    actorId: actor.userId,
+    actorBranch: actor.branchId ?? null,
+    amount: toDbMoney(receipt.amount),
+    actualShiftId: receipt.shiftId,
+    actualCashBucket: receipt.cashBucket,
+    paymentMethod: input.paymentMethod ?? "CASH",
+    note: input.note?.trim() || null,
+    referenceNumber: input.referenceNumber?.trim() || null,
+    cardLastFour: input.cardLastFour?.trim() || null,
+    attachmentUrl: input.attachmentUrl?.trim() || null,
+    externalPaymentAttemptId: input.externalPaymentAttemptId ?? null,
+    deviceId: input.deviceId?.trim() || null,
+  });
+}
 export async function payLine(
   input: PayLineInput,
   actor: Actor,
@@ -207,331 +266,261 @@ export async function payLine(
 ): Promise<PayLineResult> {
   const method: CollectionMethod = input.paymentMethod ?? "CASH";
   assertInboundPaymentMethodEnabled(method);
-  const clientRequestId = input.clientRequestId.trim();
-  if (!clientRequestId || clientRequestId.length > 36) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: "معرّف محاولة السداد غير صالح",
-    });
-  }
+  const request = input.clientRequestId.trim();
+  if (!request || request.length > 36)
+    installmentConflict("معرّف محاولة السداد غير صالح");
   if (
     method === "CASH" &&
     (input.externalPaymentAttemptId != null || input.deviceId?.trim())
-  ) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: "السداد النقدي لا يحمل محاولة دفع خارجية",
-    });
-  }
-  if (method !== "CASH") {
-    if (input.externalPaymentAttemptId == null || !input.deviceId?.trim()) {
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: "أكّد الدفع الخارجي من جهاز التحصيل قبل سداد القسط",
-      });
-    }
-    if (method === "CARD" && !/^\d{4}$/.test(input.cardLastFour?.trim() ?? "")) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: "آخر ٤ من البطاقة إلزامي لطريقة الدفع «بطاقة» (٤ أرقام)",
-      });
-    }
-  }
-
-  // تحديد مفاتيح القفل يسبق المعاملة: القراءة المتسقة داخل معاملة MySQL قبل انتظار
-  // invoice FOR UPDATE تُجمّد snapshot قديمة، فتمنع exact replay من رؤية مفتاح السند
-  // الذي التزم به الطلب الفائز. القيم هنا إرشادية فقط وتُعاد مطابقتها بعد الأقفال.
-  const preview = (
-    await requireDb()
-      .select({
-        planId: installmentPlans.id,
-        invoiceId: installmentPlans.invoiceId,
-        branchId: installmentPlans.branchId,
-        lineAmount: installmentLines.amount,
-      })
+  )
+    installmentConflict("السداد النقدي لا يحمل محاولة دفع خارجية");
+  if (
+    method !== "CASH" &&
+    (!input.externalPaymentAttemptId || !input.deviceId?.trim())
+  )
+    installmentConflict("أكّد الدفع الخارجي من جهاز التحصيل قبل سداد القسط");
+  if (method === "CARD" && !/^\d{4}$/.test(input.cardLastFour?.trim() ?? ""))
+    installmentConflict("آخر ٤ من البطاقة إلزامي لطريقة الدفع «بطاقة» (٤ أرقام)");
+  const requestKey = `${input.lineId}:${request}`;
+  const execute = async (
+    tx: Tx,
+    replayOnly = false,
+  ): Promise<PayLineResult> => {
+    const [key] = await tx
+      .select()
+      .from(idempotencyKeys)
+      .where(
+        and(
+          eq(idempotencyKeys.operation, "installment.pay"),
+          eq(idempotencyKeys.clientRequestId, requestKey),
+        ),
+      );
+    const [preview] = await tx
+      .select({ line: installmentLines, plan: installmentPlans })
       .from(installmentLines)
-      .innerJoin(installmentPlans, eq(installmentLines.planId, installmentPlans.id))
-      .where(eq(installmentLines.id, input.lineId))
-      .limit(1)
-  )[0];
-  if (!preview) throw new TRPCError({ code: "NOT_FOUND", message: "القسط غير موجود" });
-  assertPlanBranch(Number(preview.branchId), restrictToBranchId);
-  if (preview.invoiceId == null) {
-    throw new TRPCError({
-      code: "PRECONDITION_FAILED",
-      message: "الخطة التاريخية غير مرتبطة بفاتورة؛ اربطها أو أعد جدولتها قبل التحصيل",
-    });
-  }
-
-  const execute = async (tx: Tx, allowExternalConsume: boolean): Promise<PayLineResult> => {
-    const invoiceId = Number(preview.invoiceId);
-    const requestKey = voucherRequestKey(Number(input.lineId), clientRequestId);
-
-    const settleLocked = async (
-      externalAttempt: LockedExternalPaymentAttempt | null,
-    ): Promise<PayLineResult> => {
-      if (externalAttempt) assertExternalEvidenceMatches(input, externalAttempt);
-
-      const inv = (
-        await tx
-          .select()
-          .from(invoices)
-          .where(eq(invoices.id, invoiceId))
-          .for("update")
-          .limit(1)
-      )[0];
-      if (!inv) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "فاتورة الخطة مفقودة؛ أوقف التحصيل وراجع التدقيق",
-        });
-      }
-
-      const plan = (
-        await tx
-          .select()
-          .from(installmentPlans)
-          .where(eq(installmentPlans.id, Number(preview.planId)))
-          .for("update")
-          .limit(1)
-      )[0];
-      if (!plan) throw new TRPCError({ code: "NOT_FOUND", message: "الخطة غير موجودة" });
-      assertPlanBranch(Number(plan.branchId), restrictToBranchId);
-      if (
-        Number(plan.invoiceId) !== Number(inv.id) ||
-        Number(plan.branchId) !== Number(inv.branchId) ||
-        Number(plan.customerId) !== Number(inv.customerId)
-      ) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "ربط الخطة بالفاتورة/العميل/الفرع غير متسق؛ أوقف التحصيل وراجع التدقيق",
-        });
-      }
-
-      // قفل كل الأسطر يجعل دفعتين متزامنتين لخطة واحدة متسلسلتين ويثبّت مجموع المتبقي.
-      const lines = await tx
-        .select()
-        .from(installmentLines)
-        .where(eq(installmentLines.planId, Number(plan.id)))
-        .for("update");
-      const line = lines.find((row) => Number(row.id) === Number(input.lineId));
-      if (!line) throw new TRPCError({ code: "NOT_FOUND", message: "القسط غير موجود" });
-      if (!money(line.amount).eq(money(preview.lineAmount))) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "تغيّر مبلغ القسط بعد بدء محاولة التحصيل؛ حدّث الصفحة وأعد المحاولة",
-        });
-      }
-
-      const existingReceiptId = await findIdempotentRefId(
+      .innerJoin(
+        installmentPlans,
+        eq(installmentPlans.id, installmentLines.planId),
+      )
+      .where(eq(installmentLines.id, input.lineId));
+    if (!preview || preview.plan.invoiceId == null)
+      installmentConflict("الخطة التاريخية غير مرتبطة بفاتورة؛ راجع المطابقة");
+    assertPlanBranch(preview.plan.branchId, restrictToBranchId);
+    const invoiceId = preview.plan.invoiceId;
+    const [saved] = key
+      ? await tx.select().from(receipts).where(eq(receipts.id, key.refId))
+      : [];
+    if (key && (!saved || key.payloadHash !== requestHash(input, actor, saved)))
+      installmentConflict(
+        "تعارض idempotency: معرّف السداد محفوظ بحمولة مختلفة",
+      );
+    if (!key && replayOnly) throw new RestartInstallmentTransaction();
+    // Saved identity wins before today's drawer and remaining amount.
+    let cashRoute: Awaited<ReturnType<typeof shiftIdForCashTx>> | undefined;
+    if (!key && method === "CASH") {
+      cashRoute = await shiftIdForCashTx(
         tx,
-        "voucher.create",
-        requestKey,
+        actor,
+        preview.plan.branchId,
+        "تحصيل قسط",
       );
-      const planWasCompleted = plan.status === "COMPLETED";
-      if (line.status === "PAID" && existingReceiptId == null) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "هذا القسط مسدَّد بالفعل" });
+      await lockMaterializedCashReceiptSourceForWrite(tx, {
+        ...cashRoute,
+        branchId: preview.plan.branchId,
+        paymentMethod: "CASH",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+      });
+    }
+    const binding = (amount: string): ExternalPaymentBindingInput => ({
+      branchId: preview.plan.branchId,
+      channel: "SALES_COLLECTION",
+      method,
+      amount,
+      attemptId: input.externalPaymentAttemptId,
+      deviceId: input.deviceId?.trim() || null,
+      verificationPolicy: "INDEPENDENT_APPROVAL",
+      businessBinding: { type: "INSTALLMENT_LINE", id: input.lineId },
+    });
+    const settle = async (
+      attempt: LockedExternalPaymentAttempt | null,
+    ): Promise<PayLineResult> => {
+      if (attempt) assertExternalEvidenceMatches(input, attempt);
+      const [inv] = await tx
+        .select()
+        .from(invoices)
+        .where(eq(invoices.id, invoiceId))
+        .for("update");
+      const state = await lockInstallmentPlanTx(tx, preview.plan.id);
+      if (
+        !inv ||
+        !state ||
+        state.plan.invoiceId !== inv.id ||
+        state.plan.customerId !== inv.customerId ||
+        state.plan.branchId !== inv.branchId
+      )
+        installmentConflict("تغير ربط الخطة بالفاتورة");
+      assertPlanBranch(state.plan.branchId, restrictToBranchId);
+      const line = state.lines.find((row) => row.id === input.lineId);
+      if (!line) installmentConflict("سطر القسط مفقود");
+      if (key && saved) {
+        const originals = line.allocations.filter(
+          (row) => row.effectReceiptId === saved.id && money(row.amount).gt(0),
+        );
+        const reversed = new Set(
+          line.allocations.map((row) => row.reversesAllocationId),
+        );
+        if (
+          originals.some((row) => reversed.has(row.id)) ||
+          saved.status === "REVERSED" ||
+          saved.status === "FAILED" ||
+          saved.approvalStatus === "REJECTED"
+        )
+          installmentConflict(
+            "محاولة التحصيل الأصلية معكوسة أو مرفوضة؛ استخدم طلباً جديداً",
+          );
+        if (method !== "CASH")
+          await assertExternalPaymentReplay(
+            tx,
+            invoiceId,
+            binding(saved.amount),
+            actor,
+            saved.id,
+          );
+        return {
+          receiptId: saved.id,
+          voucherNumber: saved.voucherNumber ?? String(saved.id),
+          status:
+            saved.approvalStatus !== "APPROVED"
+              ? "PENDING_APPROVAL"
+              : originals.length
+                ? "PAID"
+                : "UNALLOCATED",
+          planCompleted: state.plan.status === "COMPLETED",
+        };
       }
-      if (line.status === "CANCELLED") {
-        throw new TRPCError({ code: "CONFLICT", message: "هذا القسط ملغى — لا يمكن سداده" });
-      }
-      if (line.status !== "PAID" && plan.status !== "ACTIVE") {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "الخطة غير نشطة — لا يمكن سداد أقساطها" });
-      }
-
-      const unpaidSchedule = sumMoney(
-        lines
-          .filter((row) => row.status === "PENDING" || row.status === "BOUNCED")
-          .map((row) => row.amount),
-      );
-      const liveOutstanding = money(inv.total)
-        .minus(money(inv.returnedTotal ?? "0"))
-        .minus(money(inv.paidAmount ?? "0"));
-      if (!liveOutstanding.eq(unpaidSchedule)) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message:
-            `رصيد الفاتورة الحي (${toDbMoney(liveOutstanding)}) لا يطابق أقساط الخطة المتبقية ` +
-            `(${toDbMoney(unpaidSchedule)}). أوقف التحصيل وأعد الجدولة محكوماً.`,
-        });
-      }
-
-      const scheduledCheckInfo =
-        line.kind === "CHECK"
-          ? ` (مجدول تاريخياً بصك رقم ${line.checkNumber ?? "—"}${line.bankName ? ` — ${line.bankName}` : ""})`
-          : "";
-      const description = `تحصيل القسط رقم ${line.seq} من خطة الأقساط #${plan.id}${scheduledCheckInfo}`;
-      const externalReference = externalAttempt?.externalReference.trim() || null;
+      if (
+        line.allocationHeadId !== preview.line.allocationHeadId ||
+        line.pendingAllocationClaimId !==
+          preview.line.pendingAllocationClaimId ||
+        line.receiptId !== preview.line.receiptId
+      )
+        throw new RestartInstallmentTransaction();
+      if (line.pendingAllocationClaimId != null)
+        installmentConflict("للقسط سند بانتظار الاعتماد");
+      if (
+        state.plan.status !== "ACTIVE" ||
+        line.status === "CANCELLED" ||
+        line.remaining.lte(0)
+      )
+        installmentConflict("هذا القسط مسدَّد بالفعل أو الخطة غير نشطة");
+      await assertInstallmentScopeTx(tx, state, inv);
+      const outstanding = money(inv.total)
+        .minus(inv.returnedTotal)
+        .minus(inv.paidAmount);
+      if (
+        !outstanding.eq(
+          state.lines.reduce((sum, row) => sum.plus(row.remaining), money(0)),
+        )
+      )
+        installmentConflict("رصيد الفاتورة الحي لا يطابق أقساط الخطة المتبقية");
+      if (attempt && !money(attempt.amount).eq(line.remaining))
+        installmentConflict("الدفع الخارجي لا يطابق متبقي القسط الحالي");
       const voucher = await createVoucherTx(
         tx,
         {
           voucherType: "RECEIPT",
-          branchId: Number(plan.branchId),
-          amount: toDbMoney(line.amount),
+          branchId: state.plan.branchId,
+          amount: toDbMoney(line.remaining),
           paymentMethod: method,
           partyType: "CUSTOMER",
-          partyId: Number(plan.customerId),
-          description,
-          referenceNumber: externalReference,
-          cardLastFour: method === "CARD" ? input.cardLastFour?.trim() || null : null,
-          checkNumber: undefined,
+          partyId: state.plan.customerId,
+          description: `تحصيل القسط رقم ${line.seq} من خطة الأقساط #${state.plan.id}`,
+          referenceNumber: attempt?.externalReference.trim() || null,
+          cardLastFour:
+            method === "CARD" ? input.cardLastFour?.trim() || null : null,
           voucherCategoryId: null,
-          invoiceId: Number(plan.invoiceId),
+          invoiceId,
           attachmentUrl: input.attachmentUrl ?? null,
-          internalNote: JSON.stringify({
-            kind: "INSTALLMENT_PAYMENT",
-            planId: Number(plan.id),
-            lineId: Number(line.id),
-            clientRequestId,
-            externalPaymentAttemptId:
-              externalAttempt == null ? null : Number(externalAttempt.id),
-            operatorNote: input.note?.trim() || null,
-          }),
-          clientRequestId: requestKey,
+          internalNote: input.note?.trim() || null,
+          clientRequestId: voucherRequestKey(input.lineId, request),
         },
         actor,
+        {
+          installmentTarget: {
+            lineId: line.id,
+            effectKey: `INSTALLMENT:${requestKey}`,
+          },
+          prelockedCashRoute: cashRoute,
+        },
       );
-
-      if (line.status === "PAID") {
-        if (Number(line.receiptId) !== Number(voucher.receiptId)) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: "القسط سُدِّد بسند آخر؛ حدّث الشاشة",
-          });
-        }
-        return {
-          status: "PAID",
-          receiptId: voucher.receiptId,
-          voucherNumber: voucher.voucherNumber,
-          planCompleted: planWasCompleted,
-        };
-      }
-      if (voucher.approvalStatus !== "APPROVED") {
-        await tx
-          .update(installmentLines)
-          .set({
-            receiptId: voucher.receiptId,
-            note: `سند قبض ${voucher.voucherNumber} بانتظار الاعتماد`.slice(0, 255),
-          })
-          .where(eq(installmentLines.id, Number(line.id)));
-        return {
-          status: "PENDING_APPROVAL",
-          receiptId: voucher.receiptId,
-          voucherNumber: voucher.voucherNumber,
-          planCompleted: false,
-        };
-      }
-
-      await tx
-        .update(installmentLines)
-        .set({
-          status: "PAID",
-          receiptId: voucher.receiptId,
-          paidAt: new Date(),
-          note: input.note?.trim() ? input.note.trim().slice(0, 255) : line.note,
-        })
-        .where(eq(installmentLines.id, Number(line.id)));
-
-      const remaining = lines.filter(
-        (row) =>
-          Number(row.id) !== Number(line.id) &&
-          (row.status === "PENDING" || row.status === "BOUNCED"),
+      const [receipt] = await tx
+        .select()
+        .from(receipts)
+        .where(eq(receipts.id, voucher.receiptId));
+      if (!receipt) installmentConflict("سند التحصيل مفقود");
+      await saveInstallmentReceiptClaimTx(
+        tx,
+        line.id,
+        state.plan,
+        receipt,
+        voucher.approvalStatus !== "APPROVED",
       );
-      const planCompleted = remaining.length === 0;
-      if (planCompleted) {
-        await tx
-          .update(installmentPlans)
-          .set({ status: "COMPLETED" })
-          .where(
-            and(
-              eq(installmentPlans.id, Number(plan.id)),
-              eq(installmentPlans.status, "ACTIVE"),
-            ),
-          );
-      }
-
+      await recordIdempotencyKey(
+        tx,
+        "installment.pay",
+        requestKey,
+        receipt.id,
+        requestHash(input, actor, receipt),
+      );
+      const current = await lockInstallmentPlanTx(tx, state.plan.id);
       return {
-        status: "PAID",
-        receiptId: voucher.receiptId,
+        receiptId: receipt.id,
         voucherNumber: voucher.voucherNumber,
-        planCompleted,
+        status:
+          voucher.approvalStatus !== "APPROVED" ? "PENDING_APPROVAL" : "PAID",
+        planCompleted: current?.plan.status === "COMPLETED",
       };
     };
-
-    if (method === "CASH") return settleLocked(null);
-
-    const binding: ExternalPaymentBindingInput = {
-      branchId: Number(preview.branchId),
-      channel: "SALES_COLLECTION",
-      method,
-      amount: toDbMoney(preview.lineAmount),
-      attemptId: input.externalPaymentAttemptId,
-      deviceId: input.deviceId?.trim() || null,
-      verificationPolicy: "INDEPENDENT_APPROVAL",
-      businessBinding: { type: "INSTALLMENT_LINE", id: Number(input.lineId) },
-    };
-    const existingReceiptId = await findIdempotentRefId(
-      tx,
-      "voucher.create",
-      requestKey,
-    );
-    if (existingReceiptId != null) {
-      await assertExternalPaymentReplay(
-        tx,
-        invoiceId,
-        binding,
-        actor,
-        existingReceiptId,
-      );
-      const attempt = (
-        await tx
-          .select()
-          .from(externalPaymentAttempts)
-          .where(eq(externalPaymentAttempts.id, Number(input.externalPaymentAttemptId)))
-          .limit(1)
-      )[0];
-      if (!attempt) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "محاولة الدفع المرتبطة بالسند مفقودة؛ راجع التدقيق",
-        });
-      }
-      return settleLocked(attempt);
-    }
-    if (!allowExternalConsume) {
-      throw new TRPCError({
-        code: "CONFLICT",
-        message: "محاولة الدفع مستهلكة ولا تطابق طلب السداد الحالي",
-      });
-    }
-
+    if (key || method === "CASH") return settle(null);
+    const [external] = await tx
+      .select({ amount: externalPaymentAttempts.amount })
+      .from(externalPaymentAttempts)
+      .where(eq(externalPaymentAttempts.id, input.externalPaymentAttemptId!));
+    if (!external) installmentConflict("محاولة الدفع الخارجي مفقودة");
+    const amount = external.amount;
     return consumeConfirmedExternalPaymentAttemptTx(
       tx,
-      binding,
+      binding(amount),
       actor,
       async (attempt) => {
-        const value = await settleLocked(attempt);
+        const value = await settle(attempt);
         return { invoiceId, receiptId: value.receiptId, value };
       },
     );
   };
-
-  try {
-    return await withTx((tx) => execute(tx, true));
-  } catch (error) {
-    // في سباق exact duplicate قد ينتظر الطلب الثاني قفل المحاولة ثم يراها مستهلكة.
-    // بعد التزام الفائز نعيد قراءة مفتاح السند وبصمة المحاولة؛ لا يُقبَل إلا التطابق الكامل.
-    if (
-      method === "CASH" ||
-      !(error instanceof TRPCError) ||
-      error.code !== "CONFLICT"
-    ) {
-      throw error;
-    }
+  let firstError: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      return await withTx((tx) => execute(tx, false));
-    } catch {
+      return await withTx((tx) => execute(tx));
+    } catch (error) {
+      firstError ??= error;
+      if (error instanceof RestartInstallmentTransaction) continue;
+      // A route error can occur before the current-line comparison; retry only saved identity first.
+      try {
+        return await withTx((tx) => execute(tx, true));
+      } catch (replayError) {
+        if (!(replayError instanceof RestartInstallmentTransaction))
+          throw replayError;
+      }
+      const code =
+        (error as { code?: string; cause?: { code?: string } }).cause?.code ??
+        (error as { code?: string }).code;
+      if (code === "ER_DUP_ENTRY" || code === "ER_LOCK_DEADLOCK") continue;
       throw error;
     }
   }
+  if (firstError instanceof RestartInstallmentTransaction)
+    installmentConflict("تغير التحصيل بالتزامن؛ حدّث الخطة وأعد نفس الطلب");
+  throw firstError;
 }

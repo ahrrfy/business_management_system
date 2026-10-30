@@ -18,6 +18,7 @@ import {
   initiateExternalPaymentAttempt,
 } from "../posExternalPayment";
 import { payLine } from "../installment/payment";
+import { createPlan, getPlan } from "../installmentService";
 import { deposit, withdraw } from "../digitalCards/walletOpsService";
 
 const ACTOR = { userId: 1, branchId: 1, role: "admin" } as const;
@@ -34,7 +35,7 @@ async function reset() {
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
   for (const table of [
     "digitalWalletTransactions", "digitalWallets", "digitalProviders",
-    "installmentLines", "installmentPlans",
+    "installmentReceiptAllocations", "installmentLines", "installmentPlans",
     "quotationItems", "quotations",
     "externalPaymentAttempts",
     "idempotencyKeys", "accountingEntries", "receipts",
@@ -181,20 +182,17 @@ describe("تحصيل القسط بطريقة غير نقدية", () => {
       returnedTotal: "0.00",
       status: "PENDING",
     });
-    const planRes = await db().insert(s.installmentPlans).values({
+    const { planId } = await createPlan({
+      clientRequestId: crypto.randomUUID(),
       customerId: 1,
       invoiceId: 90,
-      branchId: 1, totalAmount: "500.00", createdBy: 1,
-    });
-    const planId = Number((planRes as unknown as [{ insertId: number }])[0].insertId,
-    );
-    const lineRes = await db().insert(s.installmentLines).values({
-      planId, seq: 1, dueDate: "2026-09-01", amount: "500.00", kind: "CASH",
-    });
-    return Number((lineRes as unknown as [{ insertId: number }])[0].insertId);
+      branchId: 1, totalAmount: "500.00",
+      lines: [{ dueDate: "2026-09-01", amount: "500.00", kind: "CASH" }],
+    }, ACTOR);
+    return (await getPlan(planId)).lines[0].id;
   }
 
-  async function confirmedCardAttempt(reference: string) {
+  async function confirmedCardAttempt(reference: string, lineId: number) {
     const deviceId = "INSTALLMENT-CARD-TEST";
     const initiated = await initiateExternalPaymentAttempt({
       branchId: 1,
@@ -205,7 +203,7 @@ describe("تحصيل القسط بطريقة غير نقدية", () => {
       requestId: crypto.randomUUID(),
       deviceId,
       verificationPolicy: "INDEPENDENT_APPROVAL",
-      businessBinding: { type: "INSTALLMENT_LINE", id: 1 },
+      businessBinding: { type: "INSTALLMENT_LINE", id: lineId },
     }, ACTOR);
     await confirmExternalPaymentAttempt({
       attemptId: initiated.attemptId,
@@ -213,7 +211,7 @@ describe("تحصيل القسط بطريقة غير نقدية", () => {
       channel: "SALES_COLLECTION",
       deviceId,
       verificationPolicy: "INDEPENDENT_APPROVAL",
-      businessBinding: { type: "INSTALLMENT_LINE", id: 1 },
+      businessBinding: { type: "INSTALLMENT_LINE", id: lineId },
     }, CHECKER);
     return { attemptId: initiated.attemptId, deviceId };
   }
@@ -232,7 +230,7 @@ describe("تحصيل القسط بطريقة غير نقدية", () => {
 
   it("بطاقة بلا آخر ٤ أرقام تُرفض حتى مع وجود مرجع", async () => {
     const lineId = await seedLine();
-    const attempt = await confirmedCardAttempt("AUTH-77");
+    const attempt = await confirmedCardAttempt("AUTH-77", lineId);
     await expect(payLine(
       { lineId, paymentMethod: "CARD", referenceNumber: "AUTH-77",
           clientRequestId: crypto.randomUUID(),
@@ -241,13 +239,16 @@ describe("تحصيل القسط بطريقة غير نقدية", () => {
         },
       ACTOR,
     ),
-    ).rejects.toThrow(/آخر ٤ من البطاقة/);
+    ).rejects.toThrow(/آخر [4٤] من البطاقة/);
     await noMoneyTrail();
+    expect((await db().select().from(s.externalPaymentAttempts).where(eq(s.externalPaymentAttempts.id, attempt.attemptId)))[0].consumedAt).toBeNull();
+    expect((await db().select().from(s.installmentLines).where(eq(s.installmentLines.id, lineId)))[0].status).toBe("PENDING");
+    expect(await db().select().from(s.installmentReceiptAllocations)).toHaveLength(0);
   });
 
   it("بطاقة مؤكدة تُستهلك ذرّياً وexact duplicate لا ينشئ إيصالاً ثانياً", async () => {
     const lineId = await seedLine();
-    const attempt = await confirmedCardAttempt("AUTH-78");
+    const attempt = await confirmedCardAttempt("AUTH-78", lineId);
     const payload = {
       lineId,
       paymentMethod: "CARD" as const,

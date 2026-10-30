@@ -7,6 +7,8 @@ import { assertAdvanceOriginalCancellationTx, restoreSupplierAdvanceRefundTx, pr
 import { readAdvanceRefundEvidence } from "../purchase/advanceRefundEvidence";
 import { logAuditTx } from "../auditService";
 import { allocateVoucherToInvoiceTx } from "./invoiceAllocation";
+import { pendingInstallmentTargetTx } from "../installment/receiptClaims";
+import { assertInstallmentReceiptNotReversedTx } from "../installment/receiptAllocations";
 import { assertNoNativeSupplierDebtForGenericPaymentTx } from "./supplierNativePaymentGuard";
 import { linkedSupplierVoucherRequest, supplierVoucherConflict } from "./supplierPaymentLink";
 import { assertBranchOwnership } from "./helpers";
@@ -30,6 +32,7 @@ import {
   expenses,
   fixedAssets,
   idempotencyKeys,
+  invoices,
   purchaseOrders,
   receipts,
   shifts,
@@ -830,6 +833,14 @@ export async function approveVoucherTx(
       cashBucket: preResolvedCashIn.cashBucket,
       shiftId: preResolvedCashIn.shiftId,
     });
+  }
+  // Match cancellation/bounce ownership: actual cash first, then invoice/plan/lines, then receipts.
+  // Saved APPROVED replay must return its original result even after its source was reversed.
+  if (preview.approvalStatus !== "APPROVED" && cancellationOriginalPreview?.partyType === "CUSTOMER"
+    && cancellationOriginalPreview.invoiceId != null) {
+    await tx.select({ id: invoices.id }).from(invoices)
+      .where(eq(invoices.id, cancellationOriginalPreview.invoiceId)).for("update");
+    await assertInstallmentReceiptNotReversedTx(tx, cancellationOriginalPreview.invoiceId, cancellationOriginalPreview.id, receiptId);
   }
   // قفل مشاركة يكفي لتثبيت isActive/isOwner حتى نهاية المعاملة، ويبقى متوافقاً
   // مع FK createdBy في كتّاب النقد الآخرين. الترتيب الحاكم للنقد: source → user SHARE → receipt.
@@ -2316,6 +2327,7 @@ export async function approveVoucherTx(
     // يتحرّكا معاً**: تقويمُ أحدهما وحده يصنع ABBA بينهما — محاسبٌ يعتمد سنداً معلَّقاً على
     // فاتورة، وكاشيرٌ يسجّل سنداً مباشراً على نفس الفاتورة والعميل في اللحظة ذاتها. وخطرُه
     // غيرُ متكافئ: `createVoucher` محميّ بـ`withMysqlDeadlockRetry` بينما الاعتماد بلا غلاف.
+    const installmentTarget = await pendingInstallmentTargetTx(tx, r.invoiceId, r, true);
     const reversedCustomerAllocation = cancellationOriginal
       ? await reverseCustomerReceiptSettlementTx(tx, Number(cancellationOriginal.id), receiptId, actor)
       : false;
@@ -2328,6 +2340,10 @@ export async function approveVoucherTx(
         voucherBranchId: Number(r.branchId),
         gracefulSettledInvoice: !cancellationOriginal,
         restoreReversedRefund: cancellationOriginal?.direction === "OUT",
+        installmentEffect: cancellationOriginal ? { sourceReceiptId: cancellationOriginal.id, effectReceiptId: receiptId,
+          effectKey: `REVERSE:${receiptId}`, reverseEffectReceiptId: cancellationOriginal.id }
+          : direction === "IN" ? { sourceReceiptId: receiptId, effectReceiptId: receiptId,
+            effectKey: `VOUCHER:${receiptId}`, selectedLineId: installmentTarget } : undefined,
       });
 
       if (!allocation.allocated) {
@@ -2703,6 +2719,7 @@ export async function rejectVoucher(
     const newInternal = systemRequest
       ? r.internalNote
       : (r.internalNote ?? "") + noteSuffix;
+    await pendingInstallmentTargetTx(tx, r.invoiceId, r, true);
     const newDescription = systemRequest
       ? `${r.description ?? "طلب دفع نظامي"}${noteSuffix}`
       : r.description;
