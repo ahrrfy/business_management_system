@@ -136,3 +136,6 @@ try { Get-BackupAgeHours $future | Out-Null } catch { $rejected = $true }
 Assert $rejected 'future backup accepted'
 Assert ((Get-BackupAgeHours 'erp-2020-01-01T00-00-00.sql.gpg') -gt 26) 'old backup must be stale'
 Write-Host "PASS: offsite transfer, retry, receipt, corruption, lock and freshness; evidence retained in $root"
+# GitHub's PowerShell wrapper propagates the last native exit code. The last
+# negative scenario intentionally failed; only reaching this point means success.
+exit 0
