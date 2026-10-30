@@ -33,6 +33,9 @@ const {
   assertRemoteCiGreenForDeploy,
   assertInventoryPrePullReconciliationAllowed,
   reconcileCommittedBridge,
+  settleReleasedInventoryBridgeBaseline,
+  hasReleasedInventoryBridgeBaseline,
+  finalizeReleasedInventoryWebArtifact,
   evaluateDeployCiCheckRuns,
   verifyRollbackWebArtifactCompatibility,
 } = await import("./deploy.mjs");
@@ -401,10 +404,21 @@ assert.ok(
   "an interrupted web activation must recover before git pull or a new snapshot",
 );
 assert.ok(
-  deploySource.indexOf('step("11/12 تفعيل إصدار الجسر والتحقق والحفظ الذري"') >
+  deploySource.indexOf('step("11/12 تثبيت خط أساس الجسر المفعّل تحت الحاجز"') >
     smokeIndex,
   "external storefront smoke must finish before the deployment is committed",
 );
+assert.doesNotMatch(deploySource, /activation\.activateBridgeRelease\(/,
+  "after inventory release, bridge settlement must never run an old-binary rollback transaction");
+assert.match(deploySource, /bridgeBaseline: \{ candidate, prior: committed, candidateSourceCommit: bridge\.sourceCommit \}/);
+assert.match(fs.readFileSync(path.join(root, "scripts/lib/inventory-activation-host.mjs"), "utf8"),
+  /bridgeBaseline: options\.bridgeBaseline/,
+  "the transition proof must be present in the journal before PREPARED is persisted");
+assert.ok(deploySource.indexOf("if (hasReleasedInventoryBridgeBaseline())") <
+  deploySource.indexOf("assertImmutableBaselineOwnsBridge(current, allRows, dumpRows)"),
+  "a released first activation must reach locked reconciliation before legacy adoption checks");
+assert.match(deploySource, /if \(finalizeReleasedInventoryWebArtifact\(PROJECT_ROOT\)\) return;/,
+  "pre-pull web recovery must finalize a proven released candidate without rolling it back");
 assert.match(
   deploySource,
   /verify-nginx-abuse-controls\.mjs/,
@@ -1462,6 +1476,176 @@ try {
     const resolved = fs.realpathSync(project);
     assert.equal(path.dirname(resolved), temporaryRoot);
     assert.ok(path.basename(resolved).startsWith("inventory-rollback-retention-"));
+    fs.rmSync(resolved, { recursive: true, force: true });
+  }
+}
+
+{
+  const { createHash } = await import("node:crypto");
+  const { default: releases } = await import("./hr-bridge-release.cjs");
+  const { runInventoryActivation } = await import("./lib/inventory-activation-fence.mjs");
+  const { writeActivationJournal, readActivationJournal } = await import("./lib/inventory-activation-journal.mjs");
+  const temporaryRoot = fs.realpathSync(os.tmpdir());
+  const fixtureRoot = fs.mkdtempSync(path.join(temporaryRoot, "inventory-bridge-baseline-"));
+  const hash = file => createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  const descriptor = release => release && ({ id: release.id, mode: release.mode });
+  try {
+    for (const [index, [oldMode, newMode]] of [
+      [null, "enabled"], [null, "disabled"], ["enabled", "enabled"],
+      ["enabled", "disabled"], ["disabled", "enabled"], ["disabled", "disabled"],
+    ].entries()) {
+      const project = path.join(fixtureRoot, String(index));
+      fs.mkdirSync(path.join(project, "scripts"), { recursive: true });
+      fs.mkdirSync(path.join(project, "dist"));
+      for (const name of ["hr-bridge-release-worker.mjs", "hr-bridge-runtime-policy.cjs",
+        "hr-bridge-mode.cjs", "hr-bridge-pm2-app.cjs", "hr-bridge-pm2.config.cjs"]) {
+        fs.copyFileSync(path.join(root, "scripts", name), path.join(project, "scripts", name));
+      }
+      const prepare = (mode, contents, sourceCommit) => {
+        fs.writeFileSync(path.join(project, "dist/hr-bridge-worker.cjs"), contents);
+        return releases.prepareRelease(project, {
+          sourceCommit,
+          deploymentEnvironment: { NODE_ENV: "production", HR_DEVICE_BRIDGE: mode === "enabled" ? "1" : "0" },
+        });
+      };
+      const priorRelease = oldMode && prepare(oldMode, "old fixture bridge", "a".repeat(40));
+      const prior = descriptor(priorRelease) || null;
+      if (prior) releases.establishBaseline(project, prior);
+      const candidateRelease = prepare(newMode, "new fixture bridge", "b".repeat(40));
+      const candidate = descriptor(candidateRelease);
+      // Identical bridge content can legitimately be reused for a new web SHA.
+      assert.equal(prepare(newMode, "new fixture bridge", "c".repeat(40)).sourceCommit, "b".repeat(40));
+      fs.mkdirSync(path.join(project, "dist/public"));
+      fs.writeFileSync(path.join(project, "dist/public/index.html"), "old fixture web");
+      fs.writeFileSync(path.join(project, "dist/index.js"), "old fixture web");
+      const snapshot = snapshotWebArtifact(project, { id: `web-${index}-bridge` });
+      const webCandidate = prepareWebCandidate(project, {
+        id: `candidate-${index}-bridge`, expectedSha: "c".repeat(40),
+        operations: {
+          createWorktree(source) { fs.mkdirSync(source); }, linkDependencies() {},
+          build(source) {
+            fs.mkdirSync(path.join(source, "dist/public"), { recursive: true });
+            fs.writeFileSync(path.join(source, "dist/index.js"), "new fixture web");
+            fs.writeFileSync(path.join(source, "dist/public/index.html"), "new fixture web");
+          },
+          removeWorktree(source) { fs.rmSync(source, { recursive: true, force: true }); },
+        },
+      });
+      const web = path.join(snapshot.candidatePath, "index.js");
+      const artifacts = (release, bundle, bundleHash = hash(bundle)) => [{ name: "erp-server", script: bundle, bundle,
+        hash: bundleHash, scriptHash: bundleHash, instances: 1 }, ...(release?.mode === "enabled" ? [{
+        name: "erp-hr-bridge", script: release.bootstrapPath, bundle: release.artifactPath,
+        scriptHash: hash(release.bootstrapPath), hash: hash(release.artifactPath), instances: 1,
+      }] : [])];
+      const journalFile = path.join(project, "inventory-activation.json");
+      const options = { projectRoot: project, journalFile };
+      const initial = {
+        version: 1, id: "12345678-1234-1234-1234-123456789abc", nonce: "a".repeat(64),
+        commit: "c".repeat(40), database: "erp_fixture", serverUuid: "fixture-uuid",
+        artifacts: artifacts(candidateRelease, web, hash(path.join(webCandidate.distPath, "index.js"))),
+        priorArtifacts: artifacts(priorRelease, path.join(snapshot.previousPath, "index.js")),
+        bridgeBaseline: { candidate, prior, candidateSourceCommit: candidateRelease.sourceCommit },
+      };
+      const phases = [];
+      const noop = async () => {};
+      const operations = {
+        preflight: noop, acquireGate: async () => ({ assertLocked: noop, release: noop }),
+        stopOld: noop, assertQuiescent: noop, installCandidate: noop, startCandidates: noop,
+        verifyCandidates: noop, saveCompatibleRestartDefinitions: noop,
+        stopCandidates: noop, restoreArtifact: noop, restartOld: noop,
+      };
+      const run = (overrides = {}) => runInventoryActivation({
+        journal: initial, connectionB: {}, operations: { ...operations, ...overrides },
+        activate: noop, invalidate: noop,
+        persist: journal => { phases.push(journal.phase); writeActivationJournal(journalFile, journal); },
+      });
+      await assert.rejects(run({ verifyCandidates: async () => { throw new Error("FIXTURE_PRE_RELEASE"); } }), /FIXTURE_PRE_RELEASE/);
+      assert.equal(readActivationJournal(journalFile).phase, "ROLLED_BACK");
+      settleReleasedInventoryBridgeBaseline(releases, options);
+      assert.deepEqual(releases.readState(project).current, prior, "rollback must retain the prior descriptor");
+      await run({ installCandidate: async () => { installWebCandidate(snapshot, webCandidate); } });
+      assert.ok(phases.includes("PREPARED"));
+      assert.equal(readActivationJournal(journalFile).phase, "RELEASED");
+      assert.deepEqual(releases.readState(project).current, prior, "crash before settlement retains old disk state");
+      const released = readActivationJournal(journalFile);
+      if (newMode === "enabled" || oldMode === "enabled") {
+        assert.throws(() => reconcileCommittedBridge(prior, {
+          ...releases, validateRelease(_root, id) { return releases.validateRelease(project, id); },
+        }, null, { journalFile, createOperations() { throw new Error("UNSAFE_PM2_OPERATION"); } }),
+        /INVENTORY_BRIDGE_RECONCILIATION_MISMATCH/,
+        "reproduce the released-manifest/old-baseline failure before recovery repairs it");
+      }
+      for (const phase of ["PREPARED", "PRE_RELEASE", "FATAL"]) {
+        writeActivationJournal(journalFile, { ...released, phase });
+        assert.throws(() => settleReleasedInventoryBridgeBaseline(releases, options), /INVENTORY_ACTIVATION_RECOVERY_REQUIRED/);
+        assert.throws(() => finalizeReleasedInventoryWebArtifact(project, options), /INVENTORY_ACTIVATION_RECOVERY_REQUIRED/);
+        assert.equal(hasPendingWebActivation(project), true);
+        assert.deepEqual(releases.readState(project).current, prior);
+      }
+      for (const mutate of [
+        journal => { journal.bridgeBaseline.candidateSourceCommit = "d".repeat(40); },
+        journal => { journal.active.serverUuid = "wrong-server"; },
+        journal => { journal.bridgeBaseline.prior = { id: "f".repeat(64), mode: "disabled" }; },
+        journal => { journal.bridgeBaseline.candidate.mode = newMode === "enabled" ? "disabled" : "enabled"; },
+      ]) {
+        const bad = structuredClone(released);
+        mutate(bad);
+        writeActivationJournal(journalFile, bad);
+        assert.throws(() => settleReleasedInventoryBridgeBaseline(releases, options));
+        assert.deepEqual(releases.readState(project).current, prior);
+      }
+      writeActivationJournal(journalFile, released);
+      // Follow the actual pre-pull order: pending web finalization, baseline
+      // classification (including null prior), then locked descriptor settlement.
+      const mismatchedWeb = structuredClone(released);
+      mismatchedWeb.artifacts[0].hash = "f".repeat(64);
+      mismatchedWeb.active.artifacts[0].hash = "f".repeat(64);
+      writeActivationJournal(journalFile, mismatchedWeb);
+      assert.throws(() => finalizeReleasedInventoryWebArtifact(project, options), /INVENTORY_WEB_RELEASE_RECONCILIATION_MISMATCH/);
+      assert.equal(hasPendingWebActivation(project), true);
+      writeActivationJournal(journalFile, released);
+      assert.equal(finalizeReleasedInventoryWebArtifact(project, options), true);
+      assert.equal(hasPendingWebActivation(project), false);
+      assert.equal(hasReleasedInventoryBridgeBaseline(journalFile), true);
+      assert.throws(() => settleReleasedInventoryBridgeBaseline({ ...releases,
+        commitInventoryBaseline() { throw new Error("FIXTURE_BEFORE_CAS"); },
+      }, options), /FIXTURE_BEFORE_CAS/);
+      assert.deepEqual(releases.readState(project).current, prior);
+      assert.throws(() => settleReleasedInventoryBridgeBaseline({ ...releases,
+        commitInventoryBaseline(...args) {
+          releases.commitInventoryBaseline(...args);
+          throw new Error("FIXTURE_AFTER_CAS");
+        },
+      }, options), /FIXTURE_AFTER_CAS/);
+      const committed = releases.readState(project);
+      assert.deepEqual(committed.current, candidate);
+      assert.deepEqual(committed.previous, prior);
+      assert.equal(committed.pending, null);
+      assert.throws(() => reconcileCommittedBridge(committed.current, {
+        ...releases, validateRelease(_root, id) { return releases.validateRelease(project, id); },
+      }, null, { journalFile, createOperations() { throw new Error("FIXTURE_COMPATIBLE_RECONCILIATION"); } }),
+      /FIXTURE_COMPATIBLE_RECONCILIATION/, "retry must pass the unchanged strict artifact guard");
+      for (const failure of ["internal health", "external smoke", "control request repair"]) {
+        assert.throws(() => {
+          settleReleasedInventoryBridgeBaseline(releases, options);
+          throw new Error(failure);
+        }, new RegExp(failure));
+        assert.deepEqual(settleReleasedInventoryBridgeBaseline(releases, options), candidate);
+        assert.equal(releases.readState(project).generation, committed.generation, "retry must not rewrite or roll back baseline");
+      }
+      const pending = releases.beginActivation(project, candidate);
+      assert.throws(() => settleReleasedInventoryBridgeBaseline(releases, options), /INVENTORY_BRIDGE_RECONCILIATION_MISMATCH/);
+      releases.abortActivation(project, pending.txId);
+      const unrelated = descriptor(prepare("disabled", "unrelated fixture", "e".repeat(40)));
+      releases.commitInventoryBaseline(project, unrelated, candidate);
+      assert.throws(() => settleReleasedInventoryBridgeBaseline(releases, options), /INVENTORY_BRIDGE_RECONCILIATION_MISMATCH/);
+      assert.deepEqual(releases.readState(project).current, unrelated);
+      cleanupWebCandidate(webCandidate);
+    }
+  } finally {
+    const resolved = fs.realpathSync(fixtureRoot);
+    assert.equal(path.dirname(resolved), temporaryRoot);
+    assert.ok(path.basename(resolved).startsWith("inventory-bridge-baseline-"));
     fs.rmSync(resolved, { recursive: true, force: true });
   }
 }
