@@ -37,6 +37,7 @@ const scopes = new WeakMap<
   {
     token: EconomicInventoryScope;
     productByVariant: Map<number, ProductMetadata>;
+    productLock: "share" | "update";
   }
 >();
 function conflict(
@@ -89,6 +90,7 @@ export async function assertEconomicInventoryReady(tx: Tx): Promise<void> {
 export async function lockEconomicInventoryScope(
   tx: Tx,
   variantIds: readonly number[],
+  options: { productLock?: "share" | "update" } = {},
 ): Promise<EconomicInventoryScope> {
   assertFinancialWriterGateHeld(tx);
   const ids = Array.from(new Set(variantIds.map(positiveId))).sort(
@@ -97,6 +99,8 @@ export async function lockEconomicInventoryScope(
   const existing = scopes.get(tx);
   if (existing) {
     validateScope(tx, existing.token, ids);
+    if (options.productLock === "update" && existing.productLock !== "update")
+      throw conflict("لا يمكن ترقية أقفال المنتجات بعد تثبيت نطاق المخزون", "CONFLICT");
     return existing.token;
   }
   if (hasInventoryVariantLocks(tx))
@@ -131,7 +135,7 @@ export async function lockEconomicInventoryScope(
       })
       .from(products)
       .where(eq(products.id, productId))
-      .for("share")
+      .for(options.productLock ?? "share")
       .limit(1);
     if (!row) throw conflict("تغيّر المنتج أثناء تثبيت نطاق الأقفال");
     productById.set(productId, row);
@@ -156,8 +160,16 @@ export async function lockEconomicInventoryScope(
     productByVariant.set(ref.id, product);
   }
   const token = Object.freeze({ variantIds: Object.freeze(ids) });
-  scopes.set(tx, { token, productByVariant });
+  scopes.set(tx, { token, productByVariant, productLock: options.productLock ?? "share" });
   return token;
+}
+/** Reposting may reuse an exclusive scope, but cannot expand or upgrade after variant locks. */
+export function assertEconomicInventoryRepostScope(tx: Tx, variantIds: readonly number[]): void {
+  const existing = scopes.get(tx);
+  if (!existing) return;
+  validateScope(tx, existing.token, variantIds);
+  if (existing.productLock !== "update")
+    throw conflict("يجب تثبيت أقفال المنتجات الحصرية قبل عكس الفاتورة وإعادة إصدارها", "CONFLICT");
 }
 /** Always refresh the locked PK; repeated cost/quantity mutations must see their own writes. */
 export async function readEconomicVariant(
