@@ -1,17 +1,23 @@
 import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Check, Clock, Package, Shuffle, Store, Truck, type LucideIcon } from "lucide-react";
+import { Check, ClipboardCheck, Clock, Package, Store, Truck, type LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState, LoadingState } from "@/components/PageState";
 import { RowActions, type RowAction } from "@/components/list";
 import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
-import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
-import { MoneyInput } from "@/components/form/MoneyInput";
 import { DispatchDialog, type DispatchParty } from "@/components/delivery/DispatchDialog";
 import { DeliveryDepartureOverlay, type DeliveryDepartureData } from "@/components/delivery/DeliveryDepartureOverlay";
 import { MarkPickedUpDialog } from "@/components/delivery/MarkPickedUpDialog";
@@ -24,7 +30,7 @@ import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 import { preopenDocumentWindow, printReceipt } from "@/lib/printing/print";
 import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
 import { printDeliveryFeeRefundReceipt, printInvoicePaymentReceipt } from "@/lib/printing/cashierLifecycleReceipts";
-import { D, fmt, round2 } from "@/lib/money";
+import { D, fmt, fmtInt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { playReadyBeep } from "@/lib/notifyBeep";
 import { trpc, type RouterInputs, type RouterOutputs } from "@/lib/trpc";
@@ -44,6 +50,35 @@ type QueueRow = RouterOutputs["workOrders"]["list"][number];
 type PickupPayment = NonNullable<RouterInputs["workOrders"]["deliver"]["payment"]>;
 type PartialPickup = { row: QueueRow; payment?: PickupPayment; message: string; clientRequestId: string };
 
+interface ShelfAuditSelectionProps {
+  selectedIds: Set<number>;
+  onToggle: (id: number) => void;
+}
+
+const SHELF_AUDIT_CONFIRM_PHRASE = "جرد وتسليم";
+
+type ShelfAuditCandidate = Pick<
+  QueueRow,
+  "status" | "hasDelivery" | "deposit" | "salePrice" | "consignmentStatus" | "parcelStatus"
+> & {
+  effectiveSalePrice?: string;
+  effectiveDeposit?: string | null;
+};
+
+function effectiveRowSalePrice(r: { salePrice: string; effectiveSalePrice?: string }): string {
+  return r.effectiveSalePrice ?? r.salePrice;
+}
+
+function effectiveRowDeposit(r: { deposit: string | null; effectiveDeposit?: string | null }): string | null {
+  return r.effectiveDeposit !== undefined ? r.effectiveDeposit : r.deposit;
+}
+
+export function isShelfAuditEligible(r: ShelfAuditCandidate): boolean {
+  if (r.status !== "READY" || r.hasDelivery) return false;
+  if (deriveWoDeliveryState(r.consignmentStatus, r.parcelStatus) !== "NONE") return false;
+  return D(effectiveRowDeposit(r) ?? "0").gte(D(effectiveRowSalePrice(r)));
+}
+
 // بوابات التوافق القديمة؛ السياسة المحفوظة تفحص مسار كل عملية مستقلاً:
 //   workOrders.deliver / workOrders.setDeliveryMethod ⇐ workordersCashierProcedure (كاشير/مدير + وحدة workorders=FULL).
 //   delivery.dispatch ⇐ بوابة الإسناد القديمة؛ قراءة الجهات تبقى متطلباً مستقلاً للحوار.
@@ -54,12 +89,16 @@ const DISPATCH_GATE: RoleGate = { operations: ["delivery.dispatch"], roles: ["ca
 // صافرة الجاهزيّة استُخرجت إلى @/lib/notifyBeep — تُستعمل هنا وفي DeliveryHub معاً (Slice A، ٢٩/٨/٢٦).
 
 /**
- * اِستقبال (تكامل التوصيل، ٤/٨): طابور طلبات الاستقبال — الفجوة التي أبلغ عنها المالك («بعد إكمال
- * الطلب كيف نحوّله للتوصيل؟ لا يظهر جدول طلبات ولا إسناد لمندوب»). ثلاثة أقسام (جاهزة/قيد التنفيذ/
- * سُلِّمت اليوم)، وكل صفٍّ يحمل إجراءات ديناميكية بحسب حالته وطريقة تسليمه: استلام مباشر، إسناد
- * لمندوب، أو إعادة تصنيف الطريقة (السيناريو الثالث: زبونٌ غيّر رأيه بين الاستلام والتوصيل).
+ * اِستقبال (تكامل التوصيل، ٤/٨): طابور طلبات الاستقبال — ثلاثة أقسام (جاهزة/قيد التنفيذ/سُلِّمت اليوم)،
+ * وكل صفٍّ يحمل إجراءات ديناميكية بحسب حالته وطريقة تسليمه: استلام مباشر، إسناد لمندوب، أو إعادة تصنيف الطريقة.
  */
-export default function ReceptionOrderQueue({ branchId }: { branchId: number }) {
+export default function ReceptionOrderQueue({
+  branchId,
+  initialShelfAuditMode = false,
+}: {
+  branchId: number;
+  initialShelfAuditMode?: boolean;
+}) {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role as RoleKey | undefined;
@@ -79,7 +118,9 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
   const canReclassify = lifecycleActionAllowed(me.data, "workOrders.setDeliveryMethod", legacyCanFulfill);
   const canDispatch = lifecycleActionAllowed(me.data, "delivery.dispatch", legacyCanDispatch);
   const canReadParties = lifecycleActionAllowed(me.data, "delivery.listParties", legacyCanDispatch);
-  const canAutoAssign = lifecycleActionAllowed(me.data, "storeAdmin.orders.autoAssignRoundRobin", true);
+  const isShelfAuditManager =
+    (role === "admin" || role === "manager") &&
+    me.data?.operationPolicy?.grants?.["operation.workOrders.autoClearReady"] !== false;
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
   // تم استبدال الـpolling ببث الأحداث اللحظية عبر SSE (الموجة 2).
@@ -95,20 +136,10 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
   );
   const parties = trpc.delivery.listParties.useQuery({ activeOnly: true }, { enabled: canDispatch && canReadParties });
 
-  const autoAssignM = trpc.storeAdmin.orders.autoAssignRoundRobin.useMutation({
-    onSuccess: (res) => {
-      notify.ok(
-        res.assignedCount > 0
-          ? `تم توزيع ${res.assignedCount} طلبات معلقة بالتناوب الآلي العادل (Round-Robin).`
-          : "لا توجد طلبات معلقة بانتظار التوزيع حالياً."
-      );
-      utils.storeAdmin.orders.list.invalidate();
-      utils.workOrders.list.invalidate();
-    },
-    onError: (err) => {
-      notify.err(err.message || "تعذر إتمام التوزيع التلقائي.");
-    },
-  });
+  const [shelfAuditMode, setShelfAuditMode] = useState<boolean>(initialShelfAuditMode);
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [shelfAuditDialogOpen, setShelfAuditDialogOpen] = useState(false);
+  const [confirmationPhrase, setConfirmationPhrase] = useState("");
 
   useRealtimeEvent<ReceptionQueueUpdatedPayload>(
     REALTIME_EVENT_TYPES.RECEPTION_QUEUE_UPDATED,
@@ -147,11 +178,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
     void active.refetch();
   });
 
-  // كشف READY الجدد بين استعلامَين متتاليَين — يُشعِر الموظّف بجاهزيّة أمر شغل خرج من المطبعة
-  // للتوّ (بلاغ ٢٨/٨/٢٦). يقارن Set<workOrderId> بالسابق: النقلة تفلترها ورشة الطلب لا الاستعلام
-  // (طلبٌ نُقل من IN_PROGRESS إلى READY على الخادم ⇒ يظهر في القائمة نفسها بحالةٍ جديدة).
-  // firstLoad: تحميلٌ أوّل (أو تحديثٌ بعد mutation) لا يُطلق toast — نسجّل الأسسَ فقط. سباق الطلبات
-  // بين تبويبَين: كلٌّ يشتغل بـSet خاصّ (state محلّيّ لمكوّن)، فتنبيهُ الأخيرِ لا يُلغي الأوّل.
+  // كشف READY الجدد بين استعلامَين متتاليَين — يُشعِر الموظّف بجاهزيّة أمر شغل خرج من المطبعة للتوّ.
   const knownReadyRef = useRef<Set<number>>(new Set());
   const firstLoadRef = useRef<boolean>(true);
   useEffect(() => {
@@ -185,10 +212,6 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
 
   const [dispatchTarget, setDispatchTarget] = useState<QueueRow | null>(null);
   const [pickupTarget, setPickupTarget] = useState<QueueRow | null>(null);
-  // مفتاحُ تكرارِ التسليم المباشر (Tier-1 #4، ٢٥/٨) — يُولَّد مرّةً لكلّ (pickupTarget × محاولة)،
-  // فنقرٌ مضاعفٌ قبل عودة الاستجابة الأولى يُرسل نفس المفتاح ⇒ الخادم يُعيد النتيجة الأولى بدل
-  // إنشاء محاولةِ تسليمٍ ثانية. يُصفَّر في `onSuccess`/`onClose` لدورةٍ جديدة. `partialPickup`
-  // يستعيره من `vars.clientRequestId` كي تبقى محاولةُ الاعتراف الجزئيّ ضمن نفس بصمة الأصل.
   const pickupKeyRef = useRef<string | null>(null);
   function ensurePickupKey(): string {
     if (!pickupKeyRef.current) {
@@ -205,9 +228,28 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
   const [departureData, setDepartureData] = useState<DeliveryDepartureData | null>(null);
 
   const invalidateAll = () => {
-    void utils.workOrders.list.invalidate();
-    void utils.workOrders.counts.invalidate();
+    void utils.workOrders?.list?.invalidate?.();
+    void utils.workOrders?.counts?.invalidate?.();
   };
+
+  const shelfAuditM = trpc.workOrders.autoClearReady.useMutation({
+    onSuccess: (res) => {
+      notify.ok(
+        "تمت تصفية جرد الرفّ",
+        `سُلِّم ووُثِّق ${fmtInt(res.deliveredCount)} من أصل ${fmtInt(res.evaluatedCount)} طلب بعد المراجعة الفردية.`,
+      );
+      setShelfAuditDialogOpen(false);
+      setShelfAuditMode(false);
+      setSelectedIds([]);
+      setConfirmationPhrase("");
+      void active.refetch();
+      void deliveredToday.refetch();
+      invalidateAll();
+    },
+    onError: (err) => {
+      notify.err(err, "تعذّر إتمام تصفية جرد الرفّ");
+    },
+  });
 
   const dispatch = trpc.delivery.dispatch.useMutation({
     onSuccess: (r) => {
@@ -239,14 +281,16 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
             } catch { /* fallback below */ }
           }
           const paidNow = snap.payment?.amount ?? "0.00";
-          const remAfter = round2(D(snap.row.salePrice).minus(D(snap.row.deposit ?? "0")).minus(D(paidNow)));
+          const rowSalePrice = effectiveRowSalePrice(snap.row);
+          const rowDeposit = effectiveRowDeposit(snap.row) ?? "0";
+          const remAfter = round2(D(rowSalePrice).minus(D(rowDeposit)).minus(D(paidNow)));
           await printInvoicePaymentReceipt(
             {
               invoiceNumber: r.invoiceNumber,
               customerName: snap.row.customerName,
               customerPhone: snap.row.customerPhone,
-              invoiceTotal: snap.row.salePrice,
-              paidBefore: snap.row.deposit ?? "0",
+              invoiceTotal: rowSalePrice,
+              paidBefore: rowDeposit,
               amountPaid: paidNow,
               remainingAfter: (remAfter.gt(0) ? remAfter : D(0)).toFixed(2),
               paymentMethod: snap.payment?.method ?? "CASH",
@@ -257,7 +301,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
           );
         })();
       }
-      pickupKeyRef.current = null; // rotate for next attempt
+      pickupKeyRef.current = null;
       setPickupTarget(null);
       setPartialPickup(null);
       invalidateAll();
@@ -266,7 +310,6 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
       try { pickupPrintRef.current?.win?.close(); } catch { /* noop */ }
       pickupPrintRef.current = null;
       if (isPartialDispatchRejection(e) && pickupTarget) {
-        // يعيد استخدام نفس المفتاح كي تبقى محاولةُ الاعتراف الجزئيّ داخل بصمة الأصل الواحدة.
         setPartialPickup({ row: pickupTarget, payment: vars.payment, message: e.message, clientRequestId: vars.clientRequestId ?? ensurePickupKey() });
         return;
       }
@@ -314,6 +357,36 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
     },
   });
 
+  const rows = active.data ?? [];
+  const readyRows = useMemo(() => rows.filter((r) => r.status === "READY"), [rows]);
+  const inProgressRows = useMemo(() => rows.filter((r) => r.status !== "READY"), [rows]);
+  const deliveredRows = deliveredToday.data ?? [];
+
+  const eligibleShelfRows = useMemo(() => readyRows.filter(isShelfAuditEligible), [readyRows]);
+  const eligibleIdSet = useMemo(() => new Set(eligibleShelfRows.map((r) => Number(r.id))), [eligibleShelfRows]);
+  const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const selectedShelfRows = useMemo(
+    () => eligibleShelfRows.filter((r) => selectedIdSet.has(Number(r.id))),
+    [eligibleShelfRows, selectedIdSet],
+  );
+
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      const next = prev.filter((id) => eligibleIdSet.has(id));
+      return next.length === prev.length ? prev : next;
+    });
+    if (shelfAuditMode && !active.isLoading && eligibleShelfRows.length === 0) {
+      setShelfAuditMode(false);
+      setShelfAuditDialogOpen(false);
+      setConfirmationPhrase("");
+    }
+  }, [eligibleIdSet, eligibleShelfRows.length, shelfAuditMode, active.isLoading]);
+
+  const toggleShelfAuditId = (id: number) => {
+    if (!eligibleIdSet.has(id)) return;
+    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+
   if (me.isLoading) return <LoadingState message="جارٍ التحقق من صلاحيات طابور الطلبات…" />;
   if (me.isError) {
     return <ErrorState message="تعذّر التحقق من صلاحيات طابور الطلبات." onRetry={() => { void me.refetch(); }} />;
@@ -327,10 +400,8 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
     );
   }
 
-  const rows = active.data ?? [];
-  const readyRows = rows.filter((r) => r.status === "READY");
-  const inProgressRows = rows.filter((r) => r.status !== "READY");
-  const deliveredRows = deliveredToday.data ?? [];
+  const shelfAuditActive = isShelfAuditManager && shelfAuditMode && eligibleShelfRows.length > 0;
+  const phraseExactMatch = confirmationPhrase === SHELF_AUDIT_CONFIRM_PHRASE;
 
   return (
     <div className="mx-auto max-w-5xl space-y-4 pb-8">
@@ -342,18 +413,57 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
           <h1 className="font-extrabold">طابور الطلبات والتوصيل</h1>
           <p className="text-xs text-muted-foreground">من الاستلام حتى التسليم — استلام مباشر أو إسناد لمندوب/شركة توصيل.</p>
         </div>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={!canAutoAssign || autoAssignM.isPending}
-          onClick={() => autoAssignM.mutate({ branchId })}
-          className="gap-2 text-xs font-bold shrink-0"
-        >
-          <Shuffle className="size-3.5" />
-          <span>توزيع إجباري عادل (Round-Robin)</span>
-        </Button>
+        {isShelfAuditManager && eligibleShelfRows.length > 0 && (
+          <Button
+            type="button"
+            variant={shelfAuditActive ? "default" : "outline"}
+            size="sm"
+            aria-pressed={shelfAuditActive}
+            onClick={() => {
+              setShelfAuditMode((prev) => {
+                const next = !prev;
+                if (!next) {
+                  setSelectedIds([]);
+                  setShelfAuditDialogOpen(false);
+                  setConfirmationPhrase("");
+                }
+                return next;
+              });
+            }}
+            className="gap-2 text-xs font-bold shrink-0"
+          >
+            <ClipboardCheck aria-hidden className="size-3.5" />
+            <span>جرد الرفّ ({fmtInt(eligibleShelfRows.length)})</span>
+          </Button>
+        )}
       </div>
+
+      {shelfAuditActive && (
+        <div className="flex flex-col gap-2 rounded-xl border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="space-y-0.5">
+            <div className="text-xs font-extrabold text-[var(--sem-warn)]">
+              وضع جرد الرفّ — المحدّد: {fmtInt(selectedIds.length)} من {fmtInt(eligibleShelfRows.length)} طلب مؤهل
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              تحديد فردي يدوي بعد مراجعة الرفّ — لا يوجد تحديد للكل
+            </p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <Button
+              type="button"
+              size="sm"
+              disabled={selectedIds.length === 0 || shelfAuditM.isPending}
+              onClick={() => {
+                setConfirmationPhrase("");
+                setShelfAuditDialogOpen(true);
+              }}
+              className="text-xs font-bold"
+            >
+              تصفية المحدّد كجرد رفّ ({fmtInt(selectedIds.length)})
+            </Button>
+          </div>
+        </div>
+      )}
 
       {canDispatch && parties.isLoading && (
         <LoadingState message="جارٍ تحميل جهات التوصيل…" className="rounded-xl border p-4" />
@@ -382,6 +492,11 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
             onDispatch={setDispatchTarget}
             onPickup={setPickupTarget}
             onReclassify={setReclassifyTarget}
+            shelfAudit={
+              shelfAuditActive
+                ? { selectedIds: selectedIdSet, onToggle: toggleShelfAuditId }
+                : undefined
+            }
           />
           <QueueSection
             title="قيد الاستلام/التنفيذ"
@@ -392,8 +507,6 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
             canReclassify={canReclassify}
             onReclassify={setReclassifyTarget}
           />
-          {/* ش١ (٥/٨): طابور الفواتير صار **ورشةً مستقلّة** بتبويبها الخاص في المحطة (فلاتر
-              وترقيم وتسديد وإعادة طباعة) — لم يعد مضمَّناً هنا؛ هذا التبويب للطلبات (أوامر الشغل). */}
           <QueueSection
             title="سُلِّمت اليوم"
             icon={Check}
@@ -407,6 +520,83 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
         </>
       )}
 
+      <Dialog
+        open={shelfAuditDialogOpen}
+        onOpenChange={(open) => {
+          if (!open && !shelfAuditM.isPending) {
+            setShelfAuditDialogOpen(false);
+            setConfirmationPhrase("");
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-lg" dir="rtl">
+          <DialogHeader>
+            <DialogTitle>تأكيد تصفية جرد الرفّ ({fmtInt(selectedShelfRows.length)} طلب)</DialogTitle>
+            <DialogDescription>
+              راجع الطلبات المختارة أدناه بعد التحقق الفعلي من عدم وجودها على رفّ الاستقبال. هذه العملية توثّق سجل تدقيق باسمك وتُغلق الطلبات المختارة المدفوعة مسبقاً.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-1">
+            <ul className="max-h-48 divide-y overflow-y-auto rounded-lg border bg-muted/30 text-xs">
+              {selectedShelfRows.map((ord) => (
+                <li key={ord.id} className="flex items-center justify-between gap-2 px-3 py-2">
+                  <div className="min-w-0">
+                    <span className="font-extrabold" dir="ltr">#{ord.orderNumber}</span>
+                    <span className="mx-1.5 text-muted-foreground">—</span>
+                    <span className="font-semibold">{ord.title}</span>
+                    <div className="text-[11px] text-muted-foreground">
+                      {ord.customerName ?? "عميل نقدي"}
+                    </div>
+                  </div>
+                  <span className="shrink-0 font-bold tabular-nums" dir="ltr">
+                    {fmt(effectiveRowSalePrice(ord))} د.ع
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <div className="space-y-1.5">
+              <Label htmlFor="shelf-audit-phrase" className="text-xs font-bold">
+                اكتب عبارة التأكيد <span className="text-destructive">«{SHELF_AUDIT_CONFIRM_PHRASE}»</span> حرفياً للمتابعة:
+              </Label>
+              <Input
+                id="shelf-audit-phrase"
+                value={confirmationPhrase}
+                onChange={(e) => setConfirmationPhrase(e.target.value)}
+                placeholder={SHELF_AUDIT_CONFIRM_PHRASE}
+                autoComplete="off"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={shelfAuditM.isPending}
+              onClick={() => {
+                setShelfAuditDialogOpen(false);
+                setConfirmationPhrase("");
+              }}
+            >
+              تراجع
+            </Button>
+            <Button
+              type="button"
+              disabled={!phraseExactMatch || selectedShelfRows.length === 0 || shelfAuditM.isPending}
+              onClick={() => {
+                if (!phraseExactMatch || selectedShelfRows.length === 0) return;
+                shelfAuditM.mutate({
+                  workOrderIds: selectedShelfRows.map((r) => Number(r.id)),
+                  confirmationPhrase,
+                  branchId,
+                });
+              }}
+            >
+              {shelfAuditM.isPending ? "جارٍ التصفية…" : "تأكيد جرد وتسليم"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <DispatchDialog
         order={dispatchTarget}
         parties={(parties.data ?? []) as DispatchParty[]}
@@ -416,7 +606,6 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
           if (!canDispatch || !canReadParties) return;
           const ord = dispatchTarget!;
           const party = (parties.data ?? []).find((p) => p.id === partyId);
-          // نافذة الملصق تُفتح متزامنةً مع نقرة التأكيد (قبل await الإرسال) — نمط DeliveryHub بالضبط.
           const labelWin = preopenShippingLabelWindow();
           const slipWin = preopenDocumentWindow();
           try {
@@ -463,10 +652,10 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
       />
 
       <MarkPickedUpDialog
-        order={pickupTarget}
+        order={pickupTarget ? { ...pickupTarget, salePrice: effectiveRowSalePrice(pickupTarget), deposit: effectiveRowDeposit(pickupTarget) } : null}
         pending={deliver.isPending}
         onClose={() => {
-          pickupKeyRef.current = null; // إغلاق قبل المحاولة = دورةٌ جديدة عند فتحٍ لاحق
+          pickupKeyRef.current = null;
           setPickupTarget(null);
         }}
         onConfirm={(payment, extra) => {
@@ -535,7 +724,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
 }
 
 // ───────────────────────── قسم القائمة ─────────────────────────
-function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, canReclassify = false, canDispatch = false, partiesReady = true, loading = false, error = false, onRetry, onDispatch, onPickup, onReclassify }: {
+function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, canReclassify = false, canDispatch = false, partiesReady = true, loading = false, error = false, onRetry, onDispatch, onPickup, onReclassify, shelfAudit }: {
   title: string;
   icon: LucideIcon;
   rows: QueueRow[];
@@ -550,6 +739,7 @@ function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, canRecl
   onDispatch?: (r: QueueRow) => void;
   onPickup?: (r: QueueRow) => void;
   onReclassify?: (r: QueueRow) => void;
+  shelfAudit?: ShelfAuditSelectionProps;
 }) {
   const groups = groupQueueRows(rows);
   return (
@@ -568,7 +758,7 @@ function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, canRecl
       ) : (
         <ul className="divide-y">
           {groups.map((group) => group.draftId == null ? (
-            <QueueRowItem key={group.rows[0]!.id} row={group.rows[0]!} canFulfill={canFulfill} canReclassify={canReclassify} canDispatch={canDispatch} partiesReady={partiesReady} onDispatch={onDispatch} onPickup={onPickup} onReclassify={onReclassify} />
+            <QueueRowItem key={group.rows[0]!.id} row={group.rows[0]!} canFulfill={canFulfill} canReclassify={canReclassify} canDispatch={canDispatch} partiesReady={partiesReady} onDispatch={onDispatch} onPickup={onPickup} onReclassify={onReclassify} shelfAudit={shelfAudit} />
           ) : (
             <li key={`draft-${group.draftId}`}>
               <div className="flex flex-wrap items-center gap-2 bg-muted/30 px-3 py-1.5 text-xs">
@@ -579,7 +769,7 @@ function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, canRecl
                 {group.readyCount < group.totalCount && <span className="text-muted-foreground">لا يُسلَّم الجزء الجاهز إلا بإقرار صريح</span>}
               </div>
               <ul className="divide-y">
-                {group.rows.map((r: QueueRow) => <QueueRowItem key={r.id} row={r} canFulfill={canFulfill} canReclassify={canReclassify} canDispatch={canDispatch} partiesReady={partiesReady} onDispatch={onDispatch} onPickup={onPickup} onReclassify={onReclassify} />)}
+                {group.rows.map((r: QueueRow) => <QueueRowItem key={r.id} row={r} canFulfill={canFulfill} canReclassify={canReclassify} canDispatch={canDispatch} partiesReady={partiesReady} onDispatch={onDispatch} onPickup={onPickup} onReclassify={onReclassify} shelfAudit={shelfAudit} />)}
               </ul>
             </li>
           ))}
@@ -607,7 +797,7 @@ function groupQueueRows(rows: QueueRow[]) {
   return Array.from(groups.values());
 }
 
-function QueueRowItem({ row: r, canFulfill, canReclassify, canDispatch, partiesReady, onDispatch, onPickup, onReclassify }: {
+function QueueRowItem({ row: r, canFulfill, canReclassify, canDispatch, partiesReady, onDispatch, onPickup, onReclassify, shelfAudit }: {
   row: QueueRow;
   canFulfill: boolean;
   canReclassify: boolean;
@@ -616,19 +806,16 @@ function QueueRowItem({ row: r, canFulfill, canReclassify, canDispatch, partiesR
   onDispatch?: (r: QueueRow) => void;
   onPickup?: (r: QueueRow) => void;
   onReclassify?: (r: QueueRow) => void;
+  shelfAudit?: ShelfAuditSelectionProps;
 }) {
   const isReady = r.status === "READY";
   const isFinal = r.status === "DELIVERED" || r.status === "CANCELLED";
-  // Slice 5 (٢٨/٨/٢٦): عمرُ الحالة الحاليّة — يظهر شارةً بجانب الحالة. Polling كل ١٥ث في هذا
-  // الطابور يُحدِّث القيمة تلقائياً بلا حاجة لـsetInterval محلّيّ. الحقول تأتي من workOrders.list
-  // (workStartedAt/workSeconds مُضافان في Slice 5). الحسابُ على العميل (لا استعلام إضافيّ).
   const ageMin = computeStateAgeMinutes(r as never);
   const ageLevel = slaLevel(r.status, ageMin);
   const deliveryState = deriveWoDeliveryState(r.consignmentStatus, r.parcelStatus);
   const hasLiveConsignment = deliveryState !== "NONE";
+  const canCheckForShelfAudit = !!shelfAudit && isShelfAuditEligible(r);
   const actions: RowAction[] = [];
-  // زرّ الإسناد كان يظهر لأيّ READY+توصيل **بلا فحص إرسالية قائمة** ⇒ النقر على طلبٍ مُسنَد
-  // أصلاً يصطدم بقيدٍ فريد برسالةٍ غامضة. الآن تحلّ محلّه شارةُ حالته (أدناه).
   if (isReady && r.hasDelivery && !hasLiveConsignment && onDispatch) {
     actions.push({
       key: "dispatch",
@@ -652,6 +839,15 @@ function QueueRowItem({ row: r, canFulfill, canReclassify, canDispatch, partiesR
 
   return (
     <li className="flex flex-wrap items-center gap-2.5 px-3 py-2">
+      {canCheckForShelfAudit && (
+        <input
+          type="checkbox"
+          className="size-4 shrink-0 cursor-pointer accent-primary"
+          checked={shelfAudit.selectedIds.has(Number(r.id))}
+          onChange={() => shelfAudit.onToggle(Number(r.id))}
+          aria-label={`تحديد الطلب ${r.orderNumber} (${r.title}) ضمن جرد الرفّ`}
+        />
+      )}
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-1.5">
           <span className={cn("rounded px-1.5 py-0.5 text-[11px] font-bold", workOrderStatusBadgeCls(r.status))}>{workOrderStatusLabel(r.status)}</span>
@@ -673,7 +869,6 @@ function QueueRowItem({ row: r, canFulfill, canReclassify, canDispatch, partiesR
               <Store aria-hidden className="size-3" /> استلام مباشر
             </span>
           )}
-          {/* حالة الطرد صراحةً بدل «قيد التوصيل» العامّة: «مُسنَد لم يخرج» ≠ «بالطريق» ≠ «تعذّر». */}
           {hasLiveConsignment ? (
             <a
               href="/delivery?tab=transit"
@@ -697,20 +892,19 @@ function QueueRowItem({ row: r, canFulfill, canReclassify, canDispatch, partiesR
           {r.hasDelivery && r.deliveryAddress ? ` · ${r.deliveryAddress}` : ""}
         </p>
       </div>
-      {/* إصلاح (٧/٨، طلب مالك): العربون المقبوض عند إنشاء الطلب كان يُجلَب في الاستعلام
-          (workOrders.deposit) ولا يُعرَض — الموظّف يفتح تفاصيل الطلب ليعرف كم دُفع/تبقّى.
-          الحقل ثابتٌ منذ الإنشاء (لا مسارَ تعديلٍ لاحقٍ عليه في الكود — التحقّق قبل العرض)،
-          فعرضه هنا مباشرةً آمنٌ ودقيق. */}
       <div className="text-left shrink-0 text-xs" dir="ltr">
-        <div className="text-sm font-bold tabular-nums">{fmt(r.salePrice)} د.ع</div>
-        {D(r.deposit ?? "0").gt(0) && (
-          <div className="mt-0.5 space-y-0.5 text-[10px] font-semibold">
-            <div className="text-money-positive">عربون: {fmt(r.deposit ?? "0")}</div>
-            <div className="text-[var(--sem-warn)]">
-              متبقّي: {fmt(round2(D(r.salePrice).minus(D(r.deposit ?? "0"))).toFixed(2))}
+        <div className="text-sm font-bold tabular-nums">{fmt(effectiveRowSalePrice(r))} د.ع</div>
+        {D(effectiveRowDeposit(r) ?? "0").gt(0) && (() => {
+          const rem = round2(D(effectiveRowSalePrice(r)).minus(D(effectiveRowDeposit(r) ?? "0")));
+          return (
+            <div className="mt-0.5 space-y-0.5 text-[10px] font-semibold">
+              <div className="text-money-positive">عربون: {fmt(effectiveRowDeposit(r) ?? "0")}</div>
+              <div className="text-[var(--sem-warn)]">
+                متبقّي: {fmt((rem.gt(0) ? rem : D(0)).toFixed(2))}
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
       </div>
       <RowActions actions={actions} />
     </li>
@@ -733,6 +927,3 @@ function PartialPickupConfirmDialog({ state, pending, onClose, onConfirm }: { st
     </div>
   );
 }
-
-// حوار إعادة التصنيف استُخرِج إلى @/components/workorder/ReclassifyDeliveryDialog (Slice C، ٢٩/٨/٢٦)
-// — يُستعمَل هنا وفي WorkOrderDetail معاً.
