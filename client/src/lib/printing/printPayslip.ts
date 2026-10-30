@@ -58,6 +58,11 @@ export interface PayslipData {
   note?: string | null;
   paidAt?: string | null;
   paidAmount?: string | null;
+  entitlementSettled?: string | null;
+  signedDifference?: string | null;
+  settlementClassification?: string | null;
+  settlementEventId?: number | null;
+  settlementEvidenceVersion?: number | null;
   paymentMethod?: string | null;
   paymentReference?: string | null;
   receiptId?: number | null;
@@ -81,6 +86,7 @@ function line(label: string, value: string | null | undefined, kind: "earn" | "d
  * يولّد محتوى صفحة HTML لقسيمة راتب الموظف الواحدة، متضمناً الرأس والبطاقات والجدول والتواقيع.
  */
 export function renderPayslipHtml(d: PayslipData): string {
+  const zeroSettlement = d.paidAmount != null && D(d.paidAmount).isZero() && d.settlementEvidenceVersion === 2;
   const header = pageHeader(
     {
       title: "كشف راتب",
@@ -90,7 +96,7 @@ export function renderPayslipHtml(d: PayslipData): string {
         { label: "رقم المسيّر", value: `PR-${d.runId}` },
         ...(d.revisionNo != null ? [{ label: "المراجعة", value: `R${d.revisionNo}` }] : []),
         ...(d.accrualDate ? [{ label: "تاريخ الاستحقاق", value: d.accrualDate }] : []),
-        ...(d.paidAt ? [{ label: "تاريخ الصرف الفعلي", value: d.paidAt }] : []),
+        ...(d.paidAt ? [{ label: zeroSettlement ? "تاريخ التسوية" : "تاريخ الصرف الفعلي", value: d.paidAt }] : []),
         ...(d.receiptId ? [{ label: "مستند الصرف", value: `REC-${d.receiptId}` }] : []),
       ],
       badge: {
@@ -179,6 +185,54 @@ export function renderPayslipHtml(d: PayslipData): string {
   const grand = grandTotalBar("صافي المستحقّ", fmt(d.net), { big: true });
   const tafqit = tafqitLine(formatArabicMoneyWords(d.net));
 
+  const settlement =
+    d.paidAmount != null
+      ? infoCards([
+          {
+            title: zeroSettlement
+              ? "تسوية تقريب بلا صرف نقدي"
+              : "تسوية المستحق والصرف الفعلي",
+            variant: "gray",
+            fields: [
+              ...(d.entitlementSettled != null
+                ? [
+                    {
+                      label: "المستحق المسوّى",
+                      value: `${fmt(d.entitlementSettled)} د.ع`,
+                    },
+                  ]
+                : []),
+              { label: "المدفوع فعلياً", value: `${fmt(d.paidAmount)} د.ع` },
+              ...(d.signedDifference != null
+                ? [
+                    {
+                      label: "فرق التقريب (المدفوع − المستحق)",
+                      value: `${D(d.signedDifference).gt(0) ? "+" : ""}${fmt(d.signedDifference)} د.ع`,
+                    },
+                  ]
+                : []),
+              {
+                label: "التصنيف",
+                value:
+                  d.settlementClassification === "ROUNDING_DIFF"
+                    ? "حساب فروق التقريب المعتمد"
+                    : d.settlementClassification === "EXACT"
+                      ? "تسوية مطابقة"
+                      : "فرق تاريخي غير مصنف",
+              },
+              ...(d.settlementEventId != null
+                ? [
+                    {
+                      label: "حدث التسوية",
+                      value: `EV-${d.settlementEventId} / V${d.settlementEvidenceVersion ?? "legacy"}`,
+                    },
+                  ]
+                : []),
+            ],
+          },
+        ])
+      : "";
+
   const employerLiabilities = D(d.socialSecurityEmployer ?? 0).gt(0) || D(d.endOfServiceAccrual ?? 0).gt(0)
     ? `<div style="margin-top:8px;padding:8px 14px;border:1px solid #CBD5E1;border-radius:4px;background:#F8FAFC">
         <div style="font-size:10.75px;font-weight:800;color:#334155;margin-bottom:4px">التزامات على الشركة — لا تُخصم من الموظف</div>
@@ -194,7 +248,7 @@ export function renderPayslipHtml(d: PayslipData): string {
   </div>`;
 
   const signatures = `<div style="margin-top:30px;display:flex;justify-content:space-between;gap:24px">
-    ${[d.paidAt ? "الموظف (استلمت)" : "الموظف (اطلعت)", "المحاسب", "المدير المفوَّض"]
+    ${[d.paidAt && !zeroSettlement ? "الموظف (استلمت)" : "الموظف (اطلعت)", "المحاسب", "المدير المفوَّض"]
       .map(
         (l) => `<div style="flex:1;text-align:center">
           <div style="height:34px"></div>
@@ -203,9 +257,9 @@ export function renderPayslipHtml(d: PayslipData): string {
       )
       .join("")}
   </div>
-  <div style="margin-top:10px;font-size:9.75px;color:#8B8E89">هذا الكشف بيان احتساب واستحقاق — لا يثبت قبض الموظف ما لم تظهر حالة «مدفوع» وتاريخ الصرف.</div>`;
+  <div style="margin-top:10px;font-size:9.75px;color:#8B8E89">${zeroSettlement ? "تسوية المستحق بفرق التقريب؛ لم يقع صرف نقدي ولا يوجد إيصال صرف." : "هذا الكشف بيان احتساب واستحقاق — لا يثبت قبض الموظف ما لم تظهر حالة «مدفوع» وتاريخ الصرف."}</div>`;
 
-  return `${pageBodyOpen()}${header}${cards}${table}${noteBox}${grand}${tafqit}${employerLiabilities}${audit}${signatures}${pageBodyClose()}${pageFooter(
+  return `${pageBodyOpen()}${header}${cards}${table}${noteBox}${grand}${tafqit}${settlement}${employerLiabilities}${audit}${signatures}${pageBodyClose()}${pageFooter(
     d.settings,
     { rightText: `REF PR-${d.runId}/${d.period}/EMP-${d.employeeId}` },
   )}`;

@@ -11183,6 +11183,8 @@ export const payrollAccountingEvents = mysqlTable(
     reversalOfId: bigint("reversalOfId", { mode: "number" }),
     sourceKey: varchar("sourceKey", { length: 191 }).notNull(),
     sourceHash: char("sourceHash", { length: 64 }).notNull(),
+    /** Versioned salary settlement evidence; null preserves unclassified legacy events. */
+    settlementEvidence: json("settlementEvidence"),
     occurredAt: timestamp("occurredAt").notNull(),
     createdBy: int("createdBy")
       .notNull()

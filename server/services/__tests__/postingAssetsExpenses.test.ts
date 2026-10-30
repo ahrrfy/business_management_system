@@ -157,9 +157,15 @@ describe("posting intents — الأصول والمصروفات والرواتب
       false,
       "DRAWER",
     );
-    expect(salary?.profile).toBe("PAYMENT_OUT_SALARY");
+    expect(salary.profile).toBe("PAYMENT_OUT_EXPENSE");
     expect(net(salary!.lines, "SALARIES")).toBe("800000.00");
     expect(net(salary!.lines, "CASH")).toBe("-800000.00");
+    expect(() =>
+      validatePostingIntentAgainstSource(salary, {
+        amount: money("800000"),
+        ...salary.sourceComponents,
+      }),
+    ).not.toThrow();
 
     const reversal = cashExpensePostingIntent(
       "SALARY",
@@ -171,6 +177,12 @@ describe("posting intents — الأصول والمصروفات والرواتب
     expect(reversal?.profile).toBe("PAYMENT_IN_OTHER");
     expect(net(reversal!.lines, "SALARIES")).toBe("-800000.00");
     expect(net(reversal!.lines, "CASH")).toBe("800000.00");
+    expect(() =>
+      validatePostingIntentAgainstSource(reversal, {
+        amount: money("800000"),
+        ...reversal.sourceComponents,
+      }),
+    ).not.toThrow();
   });
 
   it("يرحّل WALLET إلى أصل المحفظة المخصص ولا يخمّنه نقداً أو بنكاً", () => {

@@ -63,13 +63,61 @@ function isPostEntryCall(
   checker: ts.TypeChecker,
   call: ts.CallExpression,
 ): boolean {
-  const symbol = resolvedSymbol(checker, call.expression);
+  const expression = unwrapExpression(call.expression);
+  const symbol = resolvedSymbol(
+    checker,
+    ts.isElementAccessExpression(expression)
+      ? expression.argumentExpression
+      : expression,
+  );
   if (!symbol || symbol.getName() !== "postEntry") return false;
   return (symbol.declarations ?? []).some((declaration) =>
     normalizedPath(declaration.getSourceFile().fileName).endsWith(
       LEDGER_SERVICE_SUFFIX,
     ),
   );
+}
+
+/** Resolve only import/export aliases once, then verify each candidate's symbol.
+ * Global names conservatively cover re-export chains, nested namespaces and
+ * local namespace aliases without resolving unrelated call-expression types.
+ */
+function producerCandidateNames(
+  program: ts.Program,
+  checker: ts.TypeChecker,
+): Set<string> {
+  const names = new Set(["postEntry", "default"]);
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isImportSpecifier(node) ||
+      ts.isExportSpecifier(node) ||
+      ts.isImportClause(node) ||
+      ts.isImportEqualsDeclaration(node)
+    ) {
+      if (
+        node.name &&
+        resolvedSymbol(checker, node.name)?.getName() === "postEntry"
+      ) {
+        names.add(node.name.text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  for (const source of program.getSourceFiles()) visit(source);
+  return names;
+}
+function isProducerCandidate(
+  call: ts.CallExpression,
+  names: Set<string>,
+): boolean {
+  const expression = unwrapExpression(call.expression);
+  return ts.isIdentifier(expression)
+    ? names.has(expression.text)
+    : ts.isPropertyAccessExpression(expression)
+      ? names.has(expression.name.text)
+      : ts.isElementAccessExpression(expression) &&
+        ts.isStringLiteralLike(expression.argumentExpression) &&
+        names.has(expression.argumentExpression.text);
 }
 
 function propertyExpression(
@@ -124,7 +172,7 @@ function finiteStringValues(
     const whenTrue = finiteStringValues(checker, current.whenTrue);
     const whenFalse = finiteStringValues(checker, current.whenFalse);
     if (!whenTrue || !whenFalse) return null;
-    return new Set([...whenTrue, ...whenFalse]);
+    return new Set(Array.from(whenTrue).concat(Array.from(whenFalse)));
   }
 
   const type = checker.getTypeAtLocation(current);
@@ -154,7 +202,7 @@ function directReturnExpressions(body: ts.ConciseBody): ts.Expression[] {
 
 function mergeProfiles(parts: ProfileResolution[]): ProfileResolution {
   return {
-    profiles: new Set(parts.flatMap((part) => [...part.profiles])),
+    profiles: new Set(parts.flatMap((part) => Array.from(part.profiles))),
     resolved: parts.length > 0 && parts.every((part) => part.resolved),
   };
 }
@@ -250,7 +298,7 @@ function formatFailures(failures: ProducerFailure[]): string {
     .join("\n");
 }
 
-function collectProducerFailures(): ProducerFailure[] {
+function createProducerProgram(): ts.Program {
   const configPath = ts.findConfigFile(
     PROJECT_ROOT,
     ts.sys.fileExists,
@@ -269,7 +317,7 @@ function collectProducerFailures(): ProducerFailure[] {
     path.dirname(configPath),
   );
   const serverRoot = `${normalizedPath(PROJECT_ROOT)}/server/`;
-  const program = ts.createProgram({
+  return ts.createProgram({
     // The guard is repo-wide for server producers. Client roots add no
     // postEntry call-sites and roughly double Program construction time.
     rootNames: parsed.fileNames.filter((fileName) =>
@@ -277,8 +325,21 @@ function collectProducerFailures(): ProducerFailure[] {
     ),
     options: parsed.options,
   });
+}
+
+function collectProducerFailures(
+  fixtureProgram?: ts.Program,
+): ProducerFailure[] {
+  const started = performance.now();
+  const program = fixtureProgram ?? createProducerProgram();
+  const serverRoot = `${normalizedPath(PROJECT_ROOT)}/server/`;
   const checker = program.getTypeChecker();
+  const names = producerCandidateNames(program, checker);
+  const constructed = performance.now();
   const failures: ProducerFailure[] = [];
+  let calls = 0,
+    candidates = 0,
+    producers = 0;
 
   for (const sourceFile of program.getSourceFiles()) {
     const fileName = normalizedPath(sourceFile.fileName);
@@ -292,10 +353,24 @@ function collectProducerFailures(): ProducerFailure[] {
     }
 
     const visit = (node: ts.Node): void => {
-      if (!ts.isCallExpression(node) || !isPostEntryCall(checker, node)) {
+      if (!ts.isCallExpression(node)) {
         ts.forEachChild(node, visit);
         return;
       }
+      calls++;
+      const candidate = isProducerCandidate(node, names);
+      if (process.env.POSTING_COVERAGE_VERIFY_CANDIDATES === "1") {
+        if (isPostEntryCall(checker, node) && !candidate)
+          throw new Error(
+            `Producer excluded: ${sourceFile.fileName}:${node.getStart(sourceFile)}`,
+          );
+      }
+      if (candidate) candidates++;
+      if (!candidate || !isPostEntryCall(checker, node)) {
+        ts.forEachChild(node, visit);
+        return;
+      }
+      producers++;
       const location = locationOf(sourceFile, node);
       const input = node.arguments[1];
       if (!input || !ts.isObjectLiteralExpression(unwrapExpression(input))) {
@@ -341,7 +416,7 @@ function collectProducerFailures(): ProducerFailure[] {
       }
 
       const profileResolution = profilesForIntent(checker, intent);
-      for (const profile of profileResolution.profiles) {
+      for (const profile of Array.from(profileResolution.profiles)) {
         if (!(profile in PROFILE_POLICIES)) {
           failures.push({
             ...location,
@@ -357,7 +432,7 @@ function collectProducerFailures(): ProducerFailure[] {
         const everyResolvedProfileRequiresComponents =
           profileResolution.resolved &&
           profileResolution.profiles.size > 0 &&
-          [...profileResolution.profiles].every(
+          Array.from(profileResolution.profiles).every(
             (profile) =>
               profile in PROFILE_POLICIES &&
               PROFILE_POLICIES[profile as PostingProfile].requireRoleComponents
@@ -403,7 +478,9 @@ function collectProducerFailures(): ProducerFailure[] {
               "postingSourceComponents is absent and the helper's profile set cannot be proven",
           });
         } else {
-          const requiringComponents = [...profileResolution.profiles].filter(
+          const requiringComponents = Array.from(
+            profileResolution.profiles,
+          ).filter(
             (profile): profile is PostingProfile =>
               profile in PROFILE_POLICIES &&
               PROFILE_POLICIES[profile as PostingProfile].requireRoleComponents
@@ -431,8 +508,8 @@ function collectProducerFailures(): ProducerFailure[] {
         profileResolution.resolved &&
         profileResolution.profiles.size === 1
       ) {
-        const [profile] = [...profileResolution.profiles];
-        const [actual] = [...entryTypes];
+        const [profile] = Array.from(profileResolution.profiles);
+        const [actual] = Array.from(entryTypes);
         if (profile in PROFILE_POLICIES) {
           const expected =
             PROFILE_POLICIES[profile as PostingProfile].entryType;
@@ -449,6 +526,17 @@ function collectProducerFailures(): ProducerFailure[] {
     visit(sourceFile);
   }
 
+  if (process.env.POSTING_COVERAGE_PROFILE === "1")
+    console.info(
+      JSON.stringify({
+        programMs: Math.round(constructed - started),
+        scanMs: Math.round(performance.now() - constructed),
+        calls,
+        candidates,
+        producers,
+        exhaustive: process.env.POSTING_COVERAGE_VERIFY_CANDIDATES === "1",
+      }),
+    );
   return failures.sort(
     (left, right) =>
       left.file.localeCompare(right.file) ||
@@ -457,13 +545,140 @@ function collectProducerFailures(): ProducerFailure[] {
   );
 }
 
-describe("canonical double-entry producer coverage", () => {
-  it(
-    "keeps every postEntry producer explicit, non-optional, and independently sourced",
-    () => {
-      const failures = collectProducerFailures();
-      expect(formatFailures(failures), formatFailures(failures)).toBe("");
-    },
-    120_000,
+function createAliasFixture(): ts.Program {
+  const ledger = path.join(PROJECT_ROOT, "server/services/ledgerService.ts");
+  const barrel = path.join(PROJECT_ROOT, "server/services/coverage-barrel.ts");
+  const caller = path.join(PROJECT_ROOT, "server/services/coverage-caller.ts");
+  const chain = path.join(PROJECT_ROOT, "server/services/coverage-chain.ts");
+  const impostor = path.join(
+    PROJECT_ROOT,
+    "server/services/coverage-impostor.ts",
   );
+  const sources = new Map([
+    [
+      normalizedPath(ledger),
+      "export function postEntry(...args: unknown[]) {}",
+    ],
+    [
+      normalizedPath(barrel),
+      'export { postEntry as forward, postEntry as default } from "./ledgerService";',
+    ],
+    [
+      normalizedPath(chain),
+      `export { forward as relay } from "./coverage-barrel";
+        export * from "./coverage-barrel";
+        export * as nested from "./coverage-barrel";
+        import * as ledger from "./ledgerService";
+        export namespace scoped { export import routed = ledger.postEntry; }`,
+    ],
+    [
+      normalizedPath(impostor),
+      "export function forward(...args: unknown[]) {}",
+    ],
+    [
+      normalizedPath(caller),
+      `import { postEntry, postEntry as renamed } from "./ledgerService";
+        import { forward } from "./coverage-barrel";
+        import * as ledger from "./ledgerService";
+        import * as barrel from "./coverage-barrel";
+        import * as chain from "./coverage-chain";
+        import * as impostor from "./coverage-impostor";
+        import defaultProducer from "./coverage-barrel";
+        import importedAlias = barrel.forward;
+        postEntry(); renamed(); forward(); ledger.postEntry(); ledger["postEntry"]();
+        const tx = {};
+        barrel.forward(tx, {}); barrel["forward"](tx, {});
+        chain.relay(tx, {}); chain["relay"](tx, {});
+        chain.forward(tx, {}); chain.nested.forward(tx, {});
+        const alias = chain.nested;
+        alias.forward(tx, {}); alias["forward"](tx, {});
+        chain.scoped.routed(tx, {}); chain.scoped["routed"](tx, {});
+        barrel.default(tx, {}); defaultProducer(tx, {}); importedAlias(tx, {});
+        function createPostingIntent(profile: string) { return { profile }; }
+        barrel.forward(tx, { postingIntent: createPostingIntent("AFTERCARE_ISSUE_RETURN") });
+        impostor.forward(tx, {}); impostor["forward"](tx, {});
+        function unrelated() { function postEntry() {} postEntry(); } unrelated();`,
+    ],
+  ]);
+  const options: ts.CompilerOptions = {
+    noLib: true,
+    module: ts.ModuleKind.CommonJS,
+    moduleResolution: ts.ModuleResolutionKind.Node10,
+  };
+  const host = ts.createCompilerHost(options);
+  host.fileExists = (file) => sources.has(normalizedPath(file));
+  host.readFile = (file) => sources.get(normalizedPath(file));
+  host.getSourceFile = (file, languageVersion) => {
+    const text = sources.get(normalizedPath(file));
+    return text == null
+      ? undefined
+      : ts.createSourceFile(file, text, languageVersion, true);
+  };
+  return ts.createProgram(
+    [caller, barrel, chain, impostor, ledger],
+    options,
+    host,
+  );
+}
+
+describe("canonical double-entry producer coverage", () => {
+  it("retains direct, renamed, re-exported and namespace producers while rejecting same-name impostors", () => {
+    const program = createAliasFixture();
+    const checker = program.getTypeChecker();
+    const source = program.getSourceFile(
+      path.join(PROJECT_ROOT, "server/services/coverage-caller.ts"),
+    )!;
+    const names = producerCandidateNames(program, checker);
+    const canonical: string[] = [],
+      optimized: string[] = [];
+    const visit = (node: ts.Node) => {
+      if (ts.isCallExpression(node)) {
+        if (isPostEntryCall(checker, node))
+          canonical.push(node.getText(source));
+        if (isProducerCandidate(node, names) && isPostEntryCall(checker, node))
+          optimized.push(node.getText(source));
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    expect(canonical).toEqual([
+      "postEntry()",
+      "renamed()",
+      "forward()",
+      "ledger.postEntry()",
+      'ledger["postEntry"]()',
+      "barrel.forward(tx, {})",
+      'barrel["forward"](tx, {})',
+      "chain.relay(tx, {})",
+      'chain["relay"](tx, {})',
+      "chain.forward(tx, {})",
+      "chain.nested.forward(tx, {})",
+      "alias.forward(tx, {})",
+      'alias["forward"](tx, {})',
+      "chain.scoped.routed(tx, {})",
+      'chain.scoped["routed"](tx, {})',
+      "barrel.default(tx, {})",
+      "defaultProducer(tx, {})",
+      "importedAlias(tx, {})",
+      'barrel.forward(tx, { postingIntent: createPostingIntent("AFTERCARE_ISSUE_RETURN") })',
+    ]);
+    expect(optimized).toEqual(canonical);
+  });
+  it("reports existing posting policy failures for renamed namespace producers", () => {
+    const failures = collectProducerFailures(createAliasFixture());
+    expect(
+      failures.filter((failure) => failure.code === "POSTING_INTENT_MISSING"),
+    ).toHaveLength(13);
+    expect(
+      failures.filter((failure) => failure.code === "POSTING_SOURCE_MISSING"),
+    ).toHaveLength(1);
+    expect(
+      failures.filter((failure) => failure.code === "POSTING_SOURCE_MISSING")[0]
+        ?.detail,
+    ).toBe("AFTERCARE_ISSUE_RETURN");
+  });
+  it("keeps every postEntry producer explicit, non-optional, and independently sourced", () => {
+    const failures = collectProducerFailures();
+    expect(formatFailures(failures), formatFailures(failures)).toBe("");
+  }, 120_000);
 });
