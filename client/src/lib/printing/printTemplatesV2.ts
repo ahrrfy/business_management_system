@@ -538,6 +538,9 @@ export interface SalesReportV2Data {
     returned?: string | number;
     remaining: string | number;
     cost?: string | number;
+    netRevenue?: string | number;
+    netCOGS?: string | number;
+    profit?: string | number;
     /** حالة كنصّ عربي: «مسدَّدة»، «جزئية»، «آجلة». */
     status: string;
     /** لون شارة الحالة (`#0D6B52`/`#92400E`/`#8A1F11`). */
@@ -572,19 +575,15 @@ export function printSalesReportV2(d: SalesReportV2Data): boolean {
   </div>`;
 
   const cols: DocTableCol[] = [
-    { key: 'num', label: 'رقم الفاتورة', width: 108, size: 9.25 },
-    { key: 'date', label: 'التاريخ', width: 68, size: 9.25 },
-    { key: 'customer', label: 'العميل', width: 105, size: 9.25 },
-    { key: 'branch', label: 'الفرع', width: 72, size: 9.25 },
-    { key: 'salesperson', label: 'الكاشير / البائع', width: 88, size: 9.25 },
-    { key: 'shift', label: 'الوردية', width: 44, size: 9.25 },
-    { key: 'payment', label: 'الدفع', width: 68, size: 9.25, rawHtml: true },
-    { key: 'total', label: 'الإجمالي', width: 70, size: 9.25 },
-    { key: 'returned', label: 'المرتجع', width: 62, color: B.alert, size: 9.25 },
-    { key: 'paid', label: 'المدفوع', width: 70, size: 9.25 },
-    { key: 'remaining', label: 'المتبقّي', width: 66, color: B.alert, size: 9.25 },
-    ...(d.rows.some((r) => r.cost !== undefined) ? [{ key: 'cost', label: 'التكلفة', width: 66, size: 9.25 } satisfies DocTableCol] : []),
-    { key: 'status', label: 'الحالة', width: 58, size: 9.25 },
+    { key: 'num', label: 'رقم الفاتورة', width: 130 },
+    { key: 'total', label: 'الإجمالي', width: 110 },
+    { key: 'returned', label: 'المرتجع', width: 110, color: B.alert },
+    { key: 'paid', label: 'المدفوع', width: 110 },
+    { key: 'remaining', label: 'المتبقّي', width: 110, color: B.alert },
+    ...(d.rows.some((r) => r.cost !== undefined) ? [{ key: 'cost', label: 'التكلفة الأصلية (تاريخية)', width: 110 } satisfies DocTableCol] : []),
+    ...(d.rows.some((r) => r.netRevenue !== undefined) ? [{ key: 'netRevenueAmount', label: 'صافي الإيراد', width: 110 } satisfies DocTableCol] : []),
+    ...(d.rows.some((r) => r.netCOGS !== undefined) ? [{ key: 'netCOGSAmount', label: 'صافي تكلفة المبيعات', width: 110 } satisfies DocTableCol] : []),
+    ...(d.rows.some((r) => r.profit !== undefined) ? [{ key: 'profitAmount', label: 'الربح', width: 110 } satisfies DocTableCol] : []),
   ];
   const rows = d.rows.map((r) => ({
     num: r.invoiceNumber,
@@ -599,33 +598,37 @@ export function printSalesReportV2(d: SalesReportV2Data): boolean {
     paid: fmtIQD(r.paid),
     remaining: fmtIQD(r.remaining),
     cost: r.cost === undefined ? '' : fmtIQD(r.cost),
+    netRevenueAmount: r.netRevenue === undefined ? '' : fmt(r.netRevenue),
+    netCOGSAmount: r.netCOGS === undefined ? '' : fmt(r.netCOGS),
+    profitAmount: r.profit === undefined ? '' : fmt(r.profit),
     status: r.status,
   }));
 
-  // نبني الجدول ثم نُعدّل خلايا الحالة يدوياً لأنها ملوّنة حسب الحالة
-  // (docTableV2 لا يدعم لوناً مختلفاً لكل صف على نفس العمود)
-  // الملخّص المالي الكامل ظاهر في البطاقات أعلى التقرير. لا نكرر صف إجماليات داخل
-  // الجدول الغني لأن أعمدة المرتجع/التكلفة تقع بين حقول المال وقد تسبب محاذاة مضللة.
-  let table = docTableV2(cols, rows, { indexWidth: 24 });
-
-  // استبدال لون الحالة سطراً-بسطر بعد التوليد (الشرح: لكل صف tbody، خليّة الحالة الأخيرة تحمل status).
-  d.rows.forEach((r, i) => {
+  // Keep full signed decimal(15,2) amounts readable at the existing 9.25px Cairo size.
+  // Metadata occupies an immediately linked wrapping row instead of squeezing money.
+  // Maximum width: 24 + 130 + 8×110 = 1034px inside the 1035px A4 landscape table.
+  const headCell = (label: string, width: number) => `<th style="vertical-align:middle;padding:7px 8px;text-align:center;font-size:11.5px;font-weight:800;color:#fff;border:1.5px solid rgba(255,255,255,.5);letter-spacing:.2px;width:${width}px">${esc(label)}</th>`;
+  const tableRows = d.rows.map((r, i) => {
+    const bg = i % 2 === 0 ? '#fff' : B.zebra;
     const statusColor = r.statusColor ?? (r.status === 'مسدَّدة' ? B.green : r.status === 'جزئية' ? B.orange : B.alert);
-    // تُبدَّل خلية الحالة بأخرى بلون مناسب. البحث بمُعرِّف السطر بعيد؛ الأنسب: نبني صفوف الجدول يدوياً.
-    // نستبدل النَصّ الأخير `>${r.status}</td>` بلمرّة الأولى في الجدول (ترتيب الصفوف مُحفَظ).
-    const marker = `>${esc(r.status)}</td>`;
-    const idx = table.indexOf(marker);
-    if (idx >= 0) {
-      // نستبدل خلية الحالة كاملةً بأخرى بلون مخصّص. للأمانة: نبحث عن بداية <td> السابق لهذا marker.
-      const tdStart = table.lastIndexOf('<td', idx);
-      const tdEndSearch = table.indexOf('</td>', idx);
-      if (tdStart >= 0 && tdEndSearch >= 0) {
-        const bg = i % 2 === 0 ? '#fff' : B.zebra;
-        const replacement = `<td style="vertical-align:middle;padding:7px 8px;text-align:center;font-size:9.75px;font-weight:800;color:${statusColor};background:${bg};border:1.5px solid ${B.borderDk}">${esc(r.status)}</td>`;
-        table = table.slice(0, tdStart) + replacement + table.slice(tdEndSearch + '</td>'.length);
-      }
-    }
-  });
+    const cell = (value: string, numeric = false, color = '#000') => `<td style="vertical-align:middle;padding:6px;text-align:center;font-size:9.25px;color:${color};font-weight:${numeric ? 800 : 700};border:1.5px solid ${B.borderDk};${numeric ? 'direction:ltr;unicode-bidi:isolate;white-space:nowrap;font-variant-numeric:tabular-nums;' : 'overflow-wrap:anywhere;'}">${esc(value)}</td>`;
+    const metadata = [
+      ['التاريخ', esc(rows[i].date)], ['العميل', esc(rows[i].customer)],
+      ['الفرع', esc(rows[i].branch)], ['الكاشير / البائع', esc(rows[i].salesperson)],
+      ['الوردية', esc(rows[i].shift)], ['الدفع', rows[i].payment],
+      ['الحالة', `<span style="color:${statusColor};font-weight:800">${esc(rows[i].status)}</span>`],
+    ].map(([label, value]) => `<span style="max-width:100%;overflow-wrap:anywhere"><strong>${label}:</strong> ${value}</span>`).join('');
+    return `<tbody style="background:${bg};break-inside:avoid">
+      <tr data-sales-financial>${cell(String(i + 1))}${cols.map(c => cell(rows[i][c.key as keyof typeof rows[number]], c.key !== 'num', c.color)).join('')}</tr>
+      <tr><td colspan="${cols.length + 1}" style="padding:6px 10px;border:1.5px solid ${B.borderDk};font-size:9.25px;font-weight:700;line-height:1.7;text-align:right"><div data-sales-metadata style="display:flex;flex-wrap:wrap;column-gap:16px;row-gap:4px">${metadata}</div></td></tr>
+    </tbody>`;
+  }).join('');
+  const table = `<div style="margin-top:13px;border:2px solid ${B.ink};border-radius:4px">
+    <table style="width:100%;border-collapse:collapse;table-layout:fixed">
+      <thead><tr style="background:${B.greenDark}">${headCell('م', 24)}${cols.map(c => headCell(c.label, c.width!)).join('')}</tr></thead>
+      ${tableRows || '<tbody></tbody>'}
+    </table>
+  </div>`;
 
   const note = `<div style="margin-top:10px;font-size:9.75px;color:${B.textFaint}">مُولَّد آلياً من مركز التقارير · لا يتطلّب توقيعاً — للاستخدام الداخلي</div>`;
 

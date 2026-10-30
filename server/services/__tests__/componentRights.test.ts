@@ -9,6 +9,8 @@ import {
 } from "../../../drizzle/fulfillmentSchema";
 import { componentRightsAdjustments } from "../../../drizzle/fulfillmentRightsSchema";
 import { getDb } from "../../db";
+import { reportsRouter } from "../../routers/reportsRouter";
+import type { TrpcContext } from "../../context";
 import { applyMovement } from "../inventoryService";
 import { withTx } from "../tx";
 import {
@@ -314,6 +316,12 @@ describe("source-linked original component rights", () => {
     const register = await getSalesRegister({ from: date, to: date });
     expect(register.totals.revenue).toBe("8000.00");
     expect(register.totals.cost).toBe("500.00");
+    const invoiceReport = await reportsRouter.createCaller({
+      req: { headers: {} }, res: {},
+      user: { id: actor.userId, role: actor.role, branchId: actor.branchId, isActive: true },
+    } as TrpcContext).salesReport({});
+    expect(invoiceReport.rows[0]).toMatchObject({ id: 1, costTotal: "600.00",
+      netRevenue: "8000.00", netCOGS: "500.00", profit: "7500.00" });
     await withTx((tx) => assertComponentRightsClosedTx(tx, 1));
   });
 
