@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly bounded ERP download cache maintenance
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=10m
+Persistent=true
+Unit=erp-housekeeping.service
+
+[Install]
+WantedBy=timers.target

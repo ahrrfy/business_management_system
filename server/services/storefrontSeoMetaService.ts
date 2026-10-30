@@ -5,6 +5,7 @@ import { getDb } from "../db";
 import { storefrontProduct } from "./storefrontService";
 import { listStorefrontProductReviews } from "./storefrontProductReviewService";
 import { isPublicStorefrontHost } from "../middleware/publicStorefrontHost";
+import { serializeJsonForHtml } from "../lib/jsonForHtml";
 
 function escapeHtml(str: string): string {
   return str
@@ -515,12 +516,12 @@ export async function injectStorefrontSeoMeta(
   // JSON-LD structured data
   if (meta.jsonLd && meta.jsonLd.length > 0) {
     for (const schema of meta.jsonLd) {
-      extraTags.push(`  <script type="application/ld+json">\n${JSON.stringify(schema, null, 2)}\n  </script>`);
+      extraTags.push(`  <script type="application/ld+json">\n${serializeJsonForHtml(schema)}\n  </script>`);
     }
   }
 
   if (extraTags.length > 0) {
-    result = result.replace("</head>", `${extraTags.join("\n")}\n  </head>`);
+    result = result.replace("</head>", () => `${extraTags.join("\n")}\n  </head>`);
   }
 
   return result;

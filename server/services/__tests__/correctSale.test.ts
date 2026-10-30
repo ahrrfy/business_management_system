@@ -7,13 +7,18 @@
  * قبضاً/استرداداً جديداً؛ والرفوضات وidempotency والربط ثنائيّ الاتجاه محروسة هنا.
  */
 import { and, eq, sql } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import mysql from "mysql2/promise";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { appRouter } from "../../routers";
 import { createSale } from "../saleService";
 import { returnSale } from "../returnService";
 import { correctSale } from "../sale/correct";
+import * as saleCreate from "../sale/create";
+import { withTx } from "../tx";
+import { applyValuedInboundMovement } from "../inventoryService";
+import { assertIsolatedActivationTestTarget } from "./activationTestTarget";
 import { processPayment } from "../sale/payment";
 import { getTodayNetSales } from "../reports/todaySales";
 import { money } from "../money";
@@ -30,6 +35,7 @@ const TABLES = [
   "auditLogs", "idempotencyKeys", "accountingEntries", "receipts", "inventoryMovements",
   "productionRecipeLines", "productionRecipes",
   "invoiceItemServiceMaterials",
+  "invoiceItemBundleComponents", "bundleComponents",
   "invoiceItems", "invoices", "branchStock", "productPrices", "productUnits",
   "productVariants", "products", "shifts", "customers", "branches", "users",
 ];
@@ -138,6 +144,112 @@ const line = (qty: number) => ({ variantId: 1, productUnitId: 1, quantity: Strin
 
 describe("correctSale — تصحيح الفاتورة (عكس + إعادة ترحيل)", () => {
   beforeEach(async () => { await reset(); });
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each([1, 2])("correction serializes valued inbound for original/replacement variant %s without product upgrade deadlock", async variantId => {
+    await seed({ withCustomer: true });
+    await db().insert(s.products).values({ id: 2, name: "بديل" });
+    await db().insert(s.productVariants).values({ id: 2, productId: 2, sku: "REPLACEMENT", costPrice: "600.00" });
+    await db().insert(s.productUnits).values({ id: 2, variantId: 2, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true });
+    await db().insert(s.productPrices).values({ productUnitId: 2, priceTier: "RETAIL", price: "1000.00" });
+    await db().insert(s.branchStock).values({ variantId: 2, branchId: 1, quantity: 10 });
+    const sale = await creditSale(2);
+    const input = { originalInvoiceId: sale.invoiceId, customerId: 1,
+      lines: [{ variantId, productUnitId: variantId, quantity: "2" }], clientRequestId: `correction-overlap-${variantId}` };
+    const raw = process.env.DATABASE_URL!;
+    assertIsolatedActivationTestTarget(raw);
+    const observer = await mysql.createConnection(raw);
+    let resume!: () => void, reached!: () => void;
+    const paused = new Promise<void>(resolve => { resume = resolve; });
+    const atRepost = new Promise<void>(resolve => { reached = resolve; });
+    const realCreate = saleCreate.createSaleInTx;
+    vi.spyOn(saleCreate, "createSaleInTx").mockImplementationOnce(async (...args) => {
+      reached();
+      await paused;
+      return realCreate(...args);
+    });
+    const correction = correctSale(input, admin);
+    const correctionOutcome = Promise.allSettled([correction]);
+    let inbound: Promise<unknown> | undefined;
+    try {
+      await Promise.race([atRepost, correction.then(() => { throw new Error("Correction did not reach repost"); })]);
+      let inboundId!: number, connected!: () => void;
+      const inboundConnected = new Promise<void>(resolve => { connected = resolve; });
+      inbound = withTx(async tx => {
+        const result = await tx.execute(sql`SELECT CONNECTION_ID() id`) as any;
+        inboundId = Number(result[0][0].id);
+        connected();
+        return applyValuedInboundMovement(tx, { variantId, branchId: 1, baseQuantity: 1,
+          historicalValue: "600", movementType: "RETURN", referenceType: "RETURN", createdBy: 1 });
+      });
+      const outcomes = Promise.allSettled([correction, inbound]);
+      await inboundConnected;
+      let waitingTable: string | undefined;
+      const deadline = Date.now() + 5000;
+      do {
+        const [waits] = await observer.query<mysql.RowDataPacket[]>(
+          `SELECT l.OBJECT_NAME FROM performance_schema.data_lock_waits w
+           JOIN performance_schema.threads t ON t.THREAD_ID=w.REQUESTING_THREAD_ID
+           JOIN performance_schema.data_locks l ON l.ENGINE_LOCK_ID=w.REQUESTING_ENGINE_LOCK_ID AND l.ENGINE=w.ENGINE
+           WHERE t.PROCESSLIST_ID=? AND l.OBJECT_SCHEMA=DATABASE()`, [inboundId]);
+        if (waits.length) { waitingTable = String(waits[0].OBJECT_NAME); break; }
+        await new Promise(resolve => setTimeout(resolve, 10));
+      } while (Date.now() < deadline);
+      resume();
+      const results = await outcomes;
+      expect(results.map(result => result.status), results.map(result => result.status === "rejected"
+        ? String(result.reason?.cause?.message ?? result.reason) : "ok").join("\n"))
+        .toEqual(["fulfilled", "fulfilled"]);
+      expect(waitingTable).toBe("products");
+      const corrected = await correction;
+      expect((await getInvoice(sale.invoiceId)).status).toBe("SUPERSEDED");
+      expect(await getStock(1, 1)).toBe(variantId === 1 ? 9 : 10);
+      expect(await getStock(2, 1)).toBe(variantId === 2 ? 9 : 10);
+      expect(await db().select().from(s.receipts)).toHaveLength(0);
+      const entries = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.invoiceId, sale.invoiceId));
+      expect(entries.reduce((sum, row) => sum + Number(row.cost), 0)).toBe(0);
+      const movementCount = (await db().select().from(s.inventoryMovements)).length;
+      expect(await correctSale(input, admin)).toMatchObject({ correctedInvoiceId: corrected.correctedInvoiceId, idempotentReplay: true });
+      expect(await db().select().from(s.inventoryMovements)).toHaveLength(movementCount);
+    } finally {
+      resume();
+      await correctionOutcome;
+      if (inbound) await Promise.allSettled([inbound]);
+      await observer.end();
+    }
+  });
+
+  it.each(["bundle", "service"] as const)("correction locks saved %s components and different current replacement materials", async kind => {
+    await seed({ withCustomer: true });
+    if (kind === "service") await seedServiceRecipe();
+    else {
+      await db().insert(s.products).values({ id: 2, name: "بكج", isBundle: true });
+      await db().insert(s.productVariants).values({ id: 2, productId: 2, sku: "BUNDLE", costPrice: "0.00" });
+      await db().insert(s.productUnits).values({ id: 2, variantId: 2, unitName: "بكج", conversionFactor: "1", isBaseUnit: true });
+      await db().insert(s.productPrices).values({ productUnitId: 2, priceTier: "RETAIL", price: "2000.00" });
+      await db().insert(s.bundleComponents).values({ bundleVariantId: 2, componentVariantId: 1, componentBaseQuantity: 2 });
+    }
+    await db().insert(s.products).values({ id: 3, name: "مادة بديلة" });
+    await db().insert(s.productVariants).values({ id: 3, productId: 3, sku: "NEW-MATERIAL", costPrice: "900.00" });
+    await db().insert(s.productUnits).values({ id: 3, variantId: 3, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true });
+    await db().insert(s.branchStock).values({ variantId: 3, branchId: 1, quantity: 10 });
+    const sale = await createSale({ branchId: 1, customerId: 1, sourceType: "ORDER",
+      lines: [{ variantId: 2, productUnitId: 2, quantity: "2" }] }, admin);
+    expect(await getStock(1, 1)).toBe(6);
+    if (kind === "service") await db().update(s.productionRecipeLines)
+      .set({ inputVariantId: 3, qtyPerOutputBase: "1.0000" }).where(eq(s.productionRecipeLines.recipeId, 1));
+    else await db().update(s.bundleComponents).set({ componentVariantId: 3, componentBaseQuantity: 1 })
+      .where(eq(s.bundleComponents.bundleVariantId, 2));
+    const corrected = await correctSale({ originalInvoiceId: sale.invoiceId, customerId: 1,
+      lines: [{ variantId: 2, productUnitId: 2, quantity: "1" }] }, admin);
+    expect(await getStock(1, 1)).toBe(10);
+    expect(await getStock(3, 1)).toBe(9);
+    const originalEntries = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.invoiceId, sale.invoiceId));
+    expect(originalEntries.reduce((sum, row) => sum + Number(row.cost), 0)).toBe(0);
+    const replacementEntries = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.invoiceId, corrected.correctedInvoiceId));
+    expect(replacementEntries.reduce((sum, row) => sum + Number(row.cost), 0)).toBe(900);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+  });
 
   // ⭐ قرار المالك (١٧/٨/٢٦): **المقبوض يُنتقل للفاتورة المصحّحة كما هو**. كان هنا حظرٌ شاملٌ
   //    لأي فاتورةٍ عليها مقبوضات — وأثرُه عملياً أنّ كل فاتورة استقبالٍ عليها عربون لا تُعدَّل أبداً.

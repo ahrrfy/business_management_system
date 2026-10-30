@@ -29,10 +29,13 @@ client/src/pages (٢٧٢ صفحة، wouter + TanStack Query)
 
 ## ٣. التشغيل (Windows + PowerShell)
 ```
-docker start erp-mysql            # حاوية MySQL (mysql:8, root/erp_root_pw, منفذ 3306, قاعدة erp)
+# جهّز حاوية تطوير محلية معزولة وعنوانها ومتغيّري devInventoryContainer وdevInventoryServerUuid
+# وفق docs/local-inventory-init.md قبل تنفيذ الأوامر التالية.
 pnpm install
 pnpm db:push                      # هجرة المخطط (محروسة بـ scripts/db-push-guard.mjs)
-CONFIRM_SAMPLE_DATA_SEED=1 pnpm seed   # admin + فرعان + منتجات عيّنة (idempotent) — التأكيد إلزاميّ
+$env:CONFIRM_SAMPLE_DATA_SEED = "1"
+pnpm seed                         # admin + فرعان + منتجات عيّنة (idempotent) — التأكيد إلزاميّ
+pnpm db:dev:inventory:init --container $devInventoryContainer --server-uuid $devInventoryServerUuid --confirm-local-development
 pnpm dev                          # http://localhost:3000
 pnpm check                        # فحص الأنواع (tsc --noEmit)
 pnpm check:guards                 # حزمة الحرّاس (٤٩ حارساً) — بوّابة ما قبل الدفع (§٣.١)
