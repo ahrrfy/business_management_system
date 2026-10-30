@@ -45,6 +45,7 @@ import {
 import { GIFT_APPROVAL_THRESHOLD } from "../gifts/outbound";
 import { applyMovement, convertToBaseQuantity } from "../inventoryService";
 import { lockInventoryVariants } from "../inventory/stockLock";
+import { assertEconomicInventoryRepostScope } from "../inventory/economicOwnership";
 import { assertStockedOwnedMaterials } from "../inventory/materialEligibility";
 import { resolveContractPrices } from "../contractPriceService";
 import {
@@ -622,6 +623,7 @@ export async function createSaleInTx(
   // نقفل صفوف المنتجات نفسها قبل اتخاذ أي قرار نوع/تفعيل. قفل المتغيّرات وحده لا يمنع
   // تعديل isService/isBundle/isActive المتزامن، وكان يسمح بأن يُسعّر السطر كخدمة ثم يُخصم
   // كبضاعة (أو العكس). القراءة القفلية هنا هي المصدر الحاكم لكل التصنيفات التالية.
+  assertEconomicInventoryRepostScope(tx, fullScopeVariantIds);
   const lineProductIds = Array.from(
     new Set(scopeRefs.map((row) => Number(row.productId))),
   ).sort((a, b) => a - b);
