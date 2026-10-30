@@ -47,7 +47,8 @@ export function changeCreditCollection(input: CreditCollectionChange, actor: Del
     const replay = await checkIdempotency(tx, operation, input.clientRequestId, hash, { requireStoredHash: true });
     if (replay != null) return { consignmentId: cn.id, replay: true as const,
       documentSnapshotIds: (await listDeliveryDocumentSnapshotsTx(tx, { sourceType: "SHIPMENT", sourceId: cn.id,
-        branchId: cn.branchId })).filter(row => row.eventKey === eventKey).map(row => row.id) };
+        branchId: cn.branchId })).filter(row => row.eventKey === `${eventKey}:CLAIM` || row.eventKey === eventKey)
+          .map(row => row.id).sort((a,b) => a-b) };
     if (!party.isActive) reject("جهة التوصيل معطلة؛ لا يمكن تكليفها بتحصيل جديد");
     await assertStandaloneConsignmentTx(tx, cn.id, "تعديل تحصيل الآجل", { currentRead: true });
     if (cn.fulfillmentRequestId != null || cn.aftercareExecutionId != null)
@@ -76,6 +77,7 @@ export function changeCreditCollection(input: CreditCollectionChange, actor: Del
     const delta = round2(target.minus(cn.codAmount));
     if (delta.gt(0)) await assertFloatLimitTx(tx, party, delta);
     const version = cn.codClaimVersion + 1;
+    let claimChangeEventId: number | undefined;
     if (previous !== input.collectCreditOnDelivery) {
       if (!delta.isZero()) await appendDeliveryLedgerEntry(tx, { eventKey: `${eventKey}:EXPOSURE`, consignmentId: cn.id,
         partyId: cn.partyId, branchId: cn.branchId, entryType: delta.gt(0) ? "COD_ASSIGNED" : "COD_RELEASED",
@@ -86,8 +88,10 @@ export function changeCreditCollection(input: CreditCollectionChange, actor: Del
         settledAt: target.gt(0) ? null : cn.settledAt ?? new Date() }).where(eq(deliveryConsignments.id, cn.id));
       await recordCreditCollectionChoiceTx(tx, { consignmentId: cn.id, collectCreditOnDelivery: input.collectCreditOnDelivery,
         actorUserId: actor.userId, eventKey: `${eventKey}:TERMS`, reason: input.collectionReason!.trim(), claimVersion: version });
-      await appendDeliveryEvent(tx, { eventKey: `${eventKey}:CLAIM`, consignmentId: cn.id,
+      claimChangeEventId = await appendDeliveryEvent(tx, { eventKey: `${eventKey}:CLAIM`, consignmentId: cn.id,
         eventType: "COD_CLAIM_CHANGED", actorUserId: actor.userId, payload: { claimVersion: version, ackRequired: true,
+          partyId: cn.partyId, sourceType: cn.sourceType, sourceId: cn.sourceId, invoiceId: cn.invoiceId,
+          deliveryFee: cn.deliveryFee, feeCollection: cn.feeCollection,
           before: toDbMoney(money(cn.codAmount)), after: toDbMoney(target), collectCreditOnDelivery: input.collectCreditOnDelivery } });
       await logAuditTx(tx, actor, { action: "delivery.creditCollectionTerms", entityType: "deliveryConsignment", entityId: cn.id,
         branchId: cn.branchId, oldValue: { collectCreditOnDelivery: previous, codAmount: cn.codAmount, claimVersion: cn.codClaimVersion },
@@ -95,7 +99,8 @@ export function changeCreditCollection(input: CreditCollectionChange, actor: Del
           reason: input.collectionReason!.trim() } });
     }
     const snapshots = previous === input.collectCreditOnDelivery ? [] : await createFinalShipmentDispatchDocumentSnapshotsTx(tx,
-      { consignmentId: cn.id, clientRequestId: input.clientRequestId, operationId: "CREDIT_COLLECTION", eventOccurredAt: new Date() }, actor);
+      { consignmentId: cn.id, clientRequestId: input.clientRequestId, operationId: "CREDIT_COLLECTION",
+        eventOccurredAt: new Date(), claimChangeEventId }, actor);
     await recordIdempotencyKey(tx, operation, input.clientRequestId, cn.id, hash);
     return { consignmentId: cn.id, replay: false as const, documentSnapshotIds: snapshots };
   };

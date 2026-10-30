@@ -144,11 +144,7 @@ export function cashExpensePostingIntent(
     cashBucket,
   );
   return createPostingIntent(
-    reverse
-      ? "PAYMENT_IN_OTHER"
-      : category === "SALARY"
-        ? "PAYMENT_OUT_SALARY"
-        : "PAYMENT_OUT_EXPENSE",
+    reverse ? "PAYMENT_IN_OTHER" : "PAYMENT_OUT_EXPENSE",
     entryType,
     signedPostingLines(
       expenseRole(category),

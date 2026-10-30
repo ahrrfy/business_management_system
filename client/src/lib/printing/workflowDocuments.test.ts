@@ -1,11 +1,19 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
-import { runWorkflowPrintPack, workflowPrintPackHtml, type WorkflowPrintJob } from "./workflowDocuments";
+import { dispatchDocumentData, runWorkflowPrintPack, workflowPrintPackHtml, type WorkflowPrintJob } from "./workflowDocuments";
 
 function job(title: string, silent: WorkflowPrintJob["silent"]): WorkflowPrintJob {
   return { title, silent, html: async () => `<html><head><style>body{width:80mm}</style></head><body>${title}<script>window.print()</script></body></html>`, complete: vi.fn(async () => {}) };
 }
 describe("workflow print pack transport boundaries", () => {
+  it("labels an amended collection claim with its actual event and amounts", () => {
+    const data=dispatchDocumentData({id:1,documentType:"DISPATCH_SLIP",documentNumber:"CLAIM-1",eventOccurredAt:"2026-10-30T00:00:00Z",printHistory:[],
+      payload:{shipment:{consignmentId:1,consignmentNumber:"CN-1",fulfillmentRequestId:null,sourceType:"INVOICE",sourceId:1},party:{id:1,name:"الجهة"},
+        recipient:{name:"العميل",phone:null,address:null,governorate:null},invoices:[{id:1,invoiceNumber:"101567",total:"35000.00"}],
+        evidence:{mode:"COMMITTED_CLAIM_CHANGE_EVENT",notice:"تعديل مطالبة؛ لا قبض جديد"},
+        money:{codAmount:"5000.00",deliveryFee:"5000.00",feeCollection:"COURIER",currentTotal:"35000.00",paidAmount:"30000.00"}}});
+    expect(data).toMatchObject({title:"تعديل مطالبة التحصيل",codAmount:"5000.00",deliveryFee:"5000.00",notes:"تعديل مطالبة؛ لا قبض جديد",dispatchedAt:"2026-10-30T00:00:00Z"});
+  });
   it("previews only documents not already submitted to the thermal printer", async () => {
     const first = job("فاتورة A", async () => ({ ok: true, via: "thermal" }));
     const second = job("بوليصة B", async () => ({ ok: false, via: "browser", reason: "popup-blocked" }));

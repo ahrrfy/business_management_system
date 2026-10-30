@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { renderPayslipHtml } from "../../../client/src/lib/printing/printPayslip";
 import Decimal from "decimal.js";
 import { createPostingIntentEvidence } from "../accounting/postingEngine";
 import {
@@ -37,6 +38,123 @@ function item(overrides: Record<string, unknown> = {}) {
 }
 
 describe("payroll accrual backend contract", () => {
+  it("prints frozen actual and zero settlement evidence without a cash acknowledgement", () => {
+    const data = {
+      runId: 1,
+      period: "2026-07",
+      statusLabel: "تسوية تقريب بلا صرف نقدي",
+      employeeName: "موظف",
+      employeeId: 1,
+      payTypeLabel: "شهري",
+      gross: "124.99",
+      overtime: "0",
+      commission: "0",
+      deductions: "0",
+      net: "124.99",
+      paidAt: "2026-08-01",
+      paidAmount: "0.00",
+      entitlementSettled: "124.99",
+      signedDifference: "-124.99",
+      settlementClassification: "ROUNDING_DIFF",
+      settlementEventId: 2,
+      settlementEvidenceVersion: 2,
+      receiptId: null,
+    };
+    const html = renderPayslipHtml(data);
+    expect(html).toContain("تسوية تقريب بلا صرف نقدي");
+    expect(html).toContain("124.99");
+    expect(html).toContain("المدفوع فعلياً");
+    expect(html).not.toContain("استلمت");
+    expect(html).not.toContain("REC-");
+    expect(
+      renderPayslipHtml({
+        ...data,
+        paidAmount: "250.00",
+        settlementClassification: "LEGACY_UNCLASSIFIED",
+        settlementEvidenceVersion: undefined,
+        signedDifference: null,
+      }),
+    ).toContain("فرق تاريخي غير مصنف");
+  });
+  it.each(["CASH", "TRANSFER", "CARD", "WALLET"] as const)(
+    "leaves exact %s payments free of rounding legs",
+    (paymentMethod) => {
+      const amount = new Decimal(
+        paymentMethod === "CASH" ? "100000" : "100100",
+      );
+      const posting = payrollSettlementPosting({
+        kind: "SALARY",
+        direction: "OUT",
+        paymentMethod,
+        amount,
+        entitlementAmount: amount,
+      });
+      expect(posting.intent.lines).toHaveLength(2);
+      expect(posting.source.roleDebits?.ROUNDING_DIFF).toBeUndefined();
+      expect(posting.source.roleCredits?.ROUNDING_DIFF).toBeUndefined();
+      expect(() =>
+        payrollSettlementPosting({
+          kind: "SALARY",
+          direction: "OUT",
+          paymentMethod: "TRANSFER",
+          amount: new Decimal(100000),
+          entitlementAmount: new Decimal(100100),
+        }),
+      ).toThrow();
+    },
+  );
+  it.each([
+    ["100100", "100000", "-100.00"],
+    ["100150", "100250", "100.00"],
+    ["124.99", "0", "-124.99"],
+    ["125", "250", "125.00"],
+  ])(
+    "settles original liability %s against actual cash %s",
+    (entitlement, actual, delta) => {
+      const out = payrollSettlementPosting({
+        kind: "SALARY",
+        direction: "OUT",
+        paymentMethod: "CASH",
+        amount: new Decimal(actual),
+        entitlementAmount: new Decimal(entitlement),
+      });
+      expect(out.source.roleDebits?.ACCRUED_SALARY).toBe(
+        new Decimal(entitlement).toFixed(2),
+      );
+      expect(
+        new Decimal(out.source.roleDebits?.ROUNDING_DIFF ?? 0)
+          .minus(out.source.roleCredits?.ROUNDING_DIFF ?? 0)
+          .toFixed(2),
+      ).toBe(delta);
+      expect(
+        out.intent.lines.filter((line) => line.role === "TREASURY_CASH"),
+      ).toHaveLength(actual === "0" ? 0 : 1);
+      expect(() =>
+        createPostingIntentEvidence(out.intent, {
+          amount: actual,
+          ...out.source,
+        }),
+      ).not.toThrow();
+      const back = payrollSettlementPosting({
+        kind: "SALARY",
+        direction: "IN",
+        paymentMethod: "CASH",
+        amount: new Decimal(actual),
+        entitlementAmount: new Decimal(entitlement),
+      });
+      expect(back.source.roleCredits?.ACCRUED_SALARY).toBe(
+        new Decimal(entitlement).toFixed(2),
+      );
+      expect(back.source.roleDebits).toEqual(out.source.roleCredits);
+      expect(back.source.roleCredits).toEqual(out.source.roleDebits);
+      expect(() =>
+        createPostingIntentEvidence(back.intent, {
+          amount: actual,
+          ...back.source,
+        }),
+      ).not.toThrow();
+    },
+  );
   it("classifies every dinar and computes E/N/employer expense exactly", () => {
     const value = payrollBreakdown(item());
     expect(value.wageReduction.toFixed(2)).toBe("20000.00");
