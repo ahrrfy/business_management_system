@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getTableName } from "drizzle-orm";
+import type { Tx } from "../../db";
 import type { TrpcContext } from "../../context";
 const state = vi.hoisted(() => ({
   rows: [] as unknown[][],
   period: vi.fn(),
+  domainReads: [] as string[],
+  insertions: [] as string[],
   postEntry: vi.fn(async () => 777),
   adjustCustomerBalance: vi.fn(async () => undefined),
   adjustSupplierBalance: vi.fn(async () => undefined),
@@ -11,6 +14,22 @@ const state = vi.hoisted(() => ({
 }));
 vi.mock("../../services/tx", () => ({
   withTx: async (run: (tx: unknown) => Promise<unknown>) => {
+    // Route and transaction checks share one persisted actor, independently of
+    // domain result ordering; the real scope assertion below owns the decision.
+    const authorityRows = state.rows.filter((rows) =>
+      rows.some(
+        (row) =>
+          typeof row === "object" && row != null && "customRoleId" in row,
+      ),
+    );
+    const current = authorityRows
+      .flat()
+      .find(
+        (row) => typeof row === "object" && row != null && "isActive" in row,
+      );
+    const domainRows = state.rows.filter(
+      (rows) => !authorityRows.includes(rows),
+    );
     let offset = 0;
     const tx = {
       select: () => {
@@ -20,9 +39,18 @@ vi.mock("../../services/tx", () => ({
             // These posting fixtures have no live approval intents. Keep those
             // added safety reads separate from the original business rows.
             const name = getTableName(table);
-            rows = name === "returnRequests" || name === "salesControlRequests"
-              ? []
-              : state.rows[offset++] ?? [];
+            if (name !== "users" && name !== "roles")
+              state.domainReads.push(name);
+            rows =
+              name === "users"
+                ? current
+                  ? [current]
+                  : []
+                : name === "returnRequests" ||
+                    name === "salesControlRequests" ||
+                    name === "purchaseReturnRequests"
+                  ? []
+                  : (domainRows[offset++] ?? []);
             return query;
           },
           innerJoin: () => query,
@@ -41,7 +69,8 @@ vi.mock("../../services/tx", () => ({
       // No receipt, deposit application, remittance, or custody in these fixtures.
       // Actual source-paid/custody behavior is covered by the DB router suites.
       execute: async () => [[]],
-      insert: () => {
+      insert: (table: Parameters<typeof getTableName>[0]) => {
+        state.insertions.push(getTableName(table));
         const ins = {
           values: () => ins,
           onDuplicateKeyUpdate: async () => [{ insertId: 901 }],
@@ -60,6 +89,9 @@ vi.mock("../../services/tx", () => ({
         }),
       }),
     };
+    const { assertExecutionAuthoritiesTx } =
+      await import("../../services/authorization/operationExecutionScope");
+    await assertExecutionAuthoritiesTx(tx as unknown as Tx);
     return run(tx);
   },
 }));
@@ -67,7 +99,8 @@ vi.mock("../../services/periodLockService", () => ({
   assertPeriodOpen: state.period,
 }));
 vi.mock("../../services/ledgerService", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../services/ledgerService")>();
+  const actual =
+    await importOriginal<typeof import("../../services/ledgerService")>();
   return {
     ...actual,
     postEntry: state.postEntry,
@@ -88,19 +121,29 @@ vi.mock("../../services/auditService", () => ({
 }));
 vi.mock("../../realtime/financialRefresh", () => ({
   scheduleFinancialRefresh: vi.fn(),
-  withFinancialRefreshScope: async <T>(work: () => Promise<T>) => ({ value: await work(), scheduled: false }),
+  withFinancialRefreshScope: async <T>(work: () => Promise<T>) => ({
+    value: await work(),
+    scheduled: false,
+  }),
 }));
 import { router } from "../../trpc";
 import { returnRouter } from "../returnRouter";
 const api = router({ returns: returnRouter });
 const payload = {
   supplierId: 9,
+  reference: "SUPPLIER-RETURN-ACK",
+  evidenceType: "SUPPLIER_ACKNOWLEDGEMENT" as const,
+  reason: "اتفاق موثق على إعادة البضاعة",
+  clientRequestId: "cost-authority-test",
   items: [{ variantId: 1, productName: "صنف", quantity: 1, unitCost: "100" }],
   settlement: { method: "CREDIT_OFFSET" as const, totalAmount: "100" },
 };
 const policy = (cost: boolean, execute = true) => ({
   version: 1 as const,
-  grants: { "operation.returns.executePurchaseReturnCart": execute },
+  grants: {
+    "operation.returns.executePurchaseReturnCart": execute,
+    "operation.purchaseReturnGovernance.requestReturn": true,
+  },
   dataVisibility: { purchaseCost: cost, profitMargin: cost },
 });
 const ctx = {
@@ -124,6 +167,8 @@ beforeEach(() => {
   state.adjustCustomerBalance.mockClear();
   state.adjustSupplierBalance.mockClear();
   state.updates = [];
+  state.domainReads = [];
+  state.insertions = [];
 });
 describe("purchase-return fresh transaction authority", () => {
   it.each([
@@ -152,6 +197,10 @@ describe("purchase-return fresh transaction authority", () => {
         api.createCaller(ctx).returns.executePurchaseReturnCart(payload),
       ).rejects.toMatchObject({ code: "FORBIDDEN" });
       expect(state.period).not.toHaveBeenCalled();
+      expect(state.domainReads).toEqual([]);
+      expect(state.insertions).toEqual([]);
+      expect(state.updates).toEqual([]);
+      expect(state.postEntry).not.toHaveBeenCalled();
     },
   );
   it("reaches the supplier check only while both persisted permissions remain allowed", async () => {
@@ -174,10 +223,12 @@ describe("purchase-return fresh transaction authority", () => {
     await expect(
       api.createCaller(ctx).returns.executePurchaseReturnCart(payload),
     ).rejects.toMatchObject({
-      code: "NOT_FOUND",
-      message: expect.stringContaining("المورد غير موجود"),
+      code: "CONFLICT",
+      message: expect.stringContaining("المورد غير نشط"),
     });
-    expect(state.period).toHaveBeenCalledOnce();
+    expect(state.period).not.toHaveBeenCalled();
+    expect(state.domainReads).toContain("suppliers");
+    expect(state.insertions).toEqual([]);
   });
   it("rejects clearing a canonical policy when the current legacy role cannot execute the action", async () => {
     state.rows = [
@@ -236,10 +287,10 @@ describe("purchase-return fresh transaction authority", () => {
             .createCaller(managerCtx)
             .returns.executePurchaseReturnCart(payload),
         ).rejects.toMatchObject({
-          code: "NOT_FOUND",
-          message: expect.stringContaining("المورد غير موجود"),
+          code: "CONFLICT",
+          message: expect.stringContaining("المورد غير نشط"),
         });
-        expect(state.period).toHaveBeenCalledOnce();
+        expect(state.period).not.toHaveBeenCalled();
       } else {
         await expect(
           api
@@ -270,7 +321,9 @@ describe("purchase-return fresh transaction authority", () => {
       },
     } as unknown as TrpcContext;
     await expect(
-      api.createCaller(cashierCtx).returns.getOpenRefundDrawers({ branchId: 2 }),
+      api
+        .createCaller(cashierCtx)
+        .returns.getOpenRefundDrawers({ branchId: 2 }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
@@ -403,7 +456,9 @@ describe("purchase-return fresh transaction authority", () => {
       }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
-      message: expect.stringContaining("لا يمكن إرجاع الفاتورة كلياً أو جزئياً"),
+      message: expect.stringContaining(
+        "لا يمكن إرجاع الفاتورة كلياً أو جزئياً",
+      ),
     });
     expect(state.period).toHaveBeenCalledTimes(2);
     expect(state.period).toHaveBeenNthCalledWith(
@@ -488,7 +543,15 @@ describe("purchase-return fresh transaction authority", () => {
         },
       ], // invoiceItems
       [], // digitalSaleDetails
-      [{ id: 3, variantId: 2, unitName: "خدمة", conversionFactor: "1", factor: "1" }], // resolveReturnBaseQuantity productUnits
+      [
+        {
+          id: 3,
+          variantId: 2,
+          unitName: "خدمة",
+          conversionFactor: "1",
+          factor: "1",
+        },
+      ], // resolveReturnBaseQuantity productUnits
       [{ variantId: 2, isService: true, isBundle: false }], // classifyVariants
       [], // consignByVariant
       [{ id: 2, costPrice: "5.00" }], // variantCostRows
@@ -532,7 +595,9 @@ describe("purchase-return fresh transaction authority", () => {
         2,
       ),
     ).toBe("0.00");
-    expect(state.updates[0]).not.toHaveProperty("returnedRestockedBaseQuantity");
+    expect(state.updates[0]).not.toHaveProperty(
+      "returnedRestockedBaseQuantity",
+    );
   });
 
   it("allocates walk-in stocked return revenue to SALES_STATIONERY and selects RETURN_SALE_INVENTORY", async () => {
@@ -573,7 +638,15 @@ describe("purchase-return fresh transaction authority", () => {
       [{ variantId: 2, isService: false, isBundle: false }], // classifyVariants
       [], // consignByVariant
       [{ id: 2, costPrice: "5.00" }], // variantCostRows
-      [{ id: 3, variantId: 2, unitName: "قطعة", conversionFactor: "1", factor: "1" }], // resolveReturnBaseQuantity productUnits
+      [
+        {
+          id: 3,
+          variantId: 2,
+          unitName: "قطعة",
+          conversionFactor: "1",
+          factor: "1",
+        },
+      ], // resolveReturnBaseQuantity productUnits
       [{ id: 9, variantId: 2, branchId: 2, quantity: 10 }], // applyMovement branchStock lock
     ];
     const result = await api
@@ -598,7 +671,8 @@ describe("purchase-return fresh transaction authority", () => {
       });
     expect(result.ok).toBe(true);
     const returnCall = state.postEntry.mock.calls.find(
-      (call: unknown[]) => (call[1] as Record<string, any>)?.entryType === "RETURN",
+      (call: unknown[]) =>
+        (call[1] as Record<string, any>)?.entryType === "RETURN",
     );
     expect(returnCall).toBeDefined();
     const [, postedPayload] = returnCall as unknown as [
@@ -855,7 +929,15 @@ describe("purchase-return fresh transaction authority", () => {
         },
       ], // invoiceItems
       [], // digitalSaleDetails
-      [{ id: 3, variantId: 2, unitName: "خدمة", conversionFactor: "1", factor: "1" }], // resolveReturnBaseQuantity
+      [
+        {
+          id: 3,
+          variantId: 2,
+          unitName: "خدمة",
+          conversionFactor: "1",
+          factor: "1",
+        },
+      ], // resolveReturnBaseQuantity
       [{ variantId: 2, isService: true, isBundle: false }], // classifyVariants
       [], // consignByVariant
       [{ id: 2, costPrice: "0.00" }], // variantCostRows
@@ -948,8 +1030,24 @@ describe("purchase-return fresh transaction authority", () => {
         },
       ], // invoiceItems
       [], // digitalSaleDetails
-      [{ id: 3, variantId: 2, unitName: "خدمة", conversionFactor: "1", factor: "1" }], // resolveReturnBaseQuantity item 1
-      [{ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", factor: "1" }], // resolveReturnBaseQuantity item 2
+      [
+        {
+          id: 3,
+          variantId: 2,
+          unitName: "خدمة",
+          conversionFactor: "1",
+          factor: "1",
+        },
+      ], // resolveReturnBaseQuantity item 1
+      [
+        {
+          id: 1,
+          variantId: 1,
+          unitName: "قطعة",
+          conversionFactor: "1",
+          factor: "1",
+        },
+      ], // resolveReturnBaseQuantity item 2
       [
         { variantId: 2, isService: true, isBundle: false },
         { variantId: 1, isService: false, isBundle: false },
@@ -1112,9 +1210,33 @@ describe("purchase-return fresh transaction authority", () => {
         },
       ], // invoiceItems
       [], // digitalSaleDetails
-      [{ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", factor: "1" }], // resolveReturnBaseQuantity item 601
-      [{ id: 3, variantId: 2, unitName: "خدمة", conversionFactor: "1", factor: "1" }], // resolveReturnBaseQuantity item 602
-      [{ id: 5, variantId: 5, unitName: "نسخة", conversionFactor: "1", factor: "1" }], // resolveReturnBaseQuantity item 603
+      [
+        {
+          id: 1,
+          variantId: 1,
+          unitName: "قطعة",
+          conversionFactor: "1",
+          factor: "1",
+        },
+      ], // resolveReturnBaseQuantity item 601
+      [
+        {
+          id: 3,
+          variantId: 2,
+          unitName: "خدمة",
+          conversionFactor: "1",
+          factor: "1",
+        },
+      ], // resolveReturnBaseQuantity item 602
+      [
+        {
+          id: 5,
+          variantId: 5,
+          unitName: "نسخة",
+          conversionFactor: "1",
+          factor: "1",
+        },
+      ], // resolveReturnBaseQuantity item 603
       [
         { variantId: 1, isService: false, isBundle: false },
         { variantId: 2, isService: true, isBundle: false },
@@ -1208,7 +1330,11 @@ describe("purchase-return fresh transaction authority", () => {
     expect(consignPayload.profit.toFixed(2)).toBe("20.00");
     expect(state.adjustSupplierBalance).toHaveBeenCalledOnce();
     const [, cIdArg, deltaArg] = state.adjustSupplierBalance.mock
-      .calls[0] as unknown as [unknown, number, { toFixed: (n: number) => string }];
+      .calls[0] as unknown as [
+      unknown,
+      number,
+      { toFixed: (n: number) => string },
+    ];
     expect(cIdArg).toBe(77);
     expect(deltaArg.toFixed(2)).toBe("-20.00");
   });

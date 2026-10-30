@@ -429,6 +429,7 @@ export const UNIQUE_AR: Record<string, UniqueInfo> = {
   uq_purchase_return_pending: { msg: "يوجد طلب مرتجع معلّق للمصدر نفسه." },
   uq_purchase_return_decision: { msg: "قرار طلب مرتجع الشراء مسجل مسبقاً — أعد تحميل نتيجته." },
   uq_purchase_return_request_evidence: { msg: "دليل المرتجع نفسه مرتبط بهذه الفاتورة مسبقاً." },
+  uq_purchase_return_exception_evidence: { msg: "دليل استثناء مرتجع المورد مسجل مسبقاً — افتح طلب الاستثناء القائم وراجع نتيجته." },
   uq_ira_effect_line: { msg: "أثر السند مخصص لهذا القسط مسبقاً — حدّث كشف الأقساط وراجع التخصيص القائم." },
   uq_ira_previous: { msg: "تخصيص القسط له متابعة مسجلة مسبقاً — حدّث الكشف واستعمل آخر تخصيص في السلسلة." },
   uq_ira_reverse: { msg: "تخصيص القسط معكوس مسبقاً — حدّث الكشف وراجع سند العكس القائم." },
