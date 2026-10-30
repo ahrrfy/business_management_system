@@ -3109,7 +3109,7 @@ async function decidePurchaseReturnReversalAuthorized(
           "RETURN_PURCHASE_INVENTORY",
           "RETURN",
           [
-            debitLine("INVENTORY", inventory),
+            ...(inventory.gt(0) ? [debitLine("INVENTORY", inventory)] : []),
             ...(tax.gt(0) ? [debitLine("TAX_PAYABLE", tax)] : []),
             ...(variance.lt(0)
               ? [debitLine("PURCHASE_PRICE_VARIANCE", variance.abs())]

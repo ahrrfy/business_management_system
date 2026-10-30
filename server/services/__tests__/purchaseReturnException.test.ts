@@ -119,7 +119,7 @@ describe("governed owner exception cart", () => {
   });
 
   it.each(["ACTIVE", "OFF"] as const)(
-    "returns zero-cost stock at positive agreed value with double entry %s",
+    "returns and reverses zero-cost stock at positive agreed value with double entry %s",
     async (mode) => {
       await db()
         .update(s.productVariants)
@@ -213,6 +213,114 @@ describe("governed owner exception cart", () => {
           : [],
       );
       expect(lines).toHaveLength(mode === "ACTIVE" ? 2 : 0);
+      const [returned] = await db().select().from(s.purchaseReturns);
+      const [item] = await db().select().from(s.purchaseReturnItems);
+      const reversalInput = {
+        purchaseReturnId: returned.id,
+        expectedReturnVersion: returned.version,
+        requestKey: randomUUID(),
+        evidenceType: "SUPPLIER_ACKNOWLEDGEMENT" as const,
+        evidenceReference: "ZERO-COST-REVERSAL",
+        reason: "إلغاء الاتفاق وإعادة المخزون بقيمته المحفوظة",
+        lines: [{ purchaseReturnItemId: item.id, baseQuantity: 1 }],
+      };
+      const requester = { userId: 2, branchId: 1, role: "manager" };
+      const pending = await requestPurchaseReturnReversal(
+        reversalInput,
+        requester,
+      );
+      expect(pending.status).toBe("PENDING");
+      expect(await db().select().from(s.purchaseReturnReversals)).toHaveLength(
+        0,
+      );
+      expect((await db().select().from(s.branchStock))[0].quantity).toBe(9);
+      expect((await db().select().from(s.suppliers))[0].currentBalance).toBe(
+        "-150.00",
+      );
+      const decision = {
+        requestId: pending.requestId,
+        decisionKey: randomUUID(),
+        action: "APPROVE" as const,
+        reviewReason: "اعتماد إعادة المخزون بقيمة المصدر",
+      };
+      await expect(
+        caller(true).purchaseReturnGovernance.decideReversal(decision),
+      ).resolves.toMatchObject({ status: "APPROVED", idempotent: false });
+      await expect(
+        caller(true).purchaseReturnGovernance.decideReversal(decision),
+      ).resolves.toMatchObject({ status: "APPROVED", idempotent: true });
+      await expect(
+        requestPurchaseReturnReversal(reversalInput, requester),
+      ).resolves.toMatchObject({
+        requestId: pending.requestId,
+        status: "APPROVED",
+        idempotent: true,
+      });
+      expect(
+        await db().select().from(s.purchaseReturnReversalRequests),
+      ).toHaveLength(1);
+      expect(await db().select().from(s.purchaseReturnReversals)).toHaveLength(
+        1,
+      );
+      const reversalItems = await db()
+        .select()
+        .from(s.purchaseReturnReversalItems);
+      expect(reversalItems).toHaveLength(1);
+      expect(reversalItems[0].valuationEvidence).toMatchObject({
+        basis: "SAVED_RETURN",
+        purchaseReturnItemId: item.id,
+        originalValuationHash: item.valuationEvidenceHash,
+        baseQuantity: 1,
+        inventoryAmount: "0.00",
+        netAmount: "150.00",
+        varianceAmount: "-150.00",
+      });
+      expect((await db().select().from(s.purchaseReturns))[0].status).toBe(
+        "REVERSED",
+      );
+      expect(await db().select().from(s.inventoryMovements)).toHaveLength(2);
+      const entries = await db().select().from(s.accountingEntries);
+      expect(entries).toHaveLength(2);
+      expect(entries).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ amount: "-150.00", cost: "0.00" }),
+          expect.objectContaining({ amount: "150.00", cost: "0.00" }),
+        ]),
+      );
+      expect(await db().select().from(s.receipts)).toHaveLength(0);
+      expect((await db().select().from(s.branchStock))[0].quantity).toBe(10);
+      expect((await db().select().from(s.productVariants))[0]).toMatchObject({
+        costPrice: "0.00",
+        transitBaseBySourceBranch: {},
+      });
+      expect((await db().select().from(s.suppliers))[0].currentBalance).toBe(
+        "0.00",
+      );
+      const journals = await db().select().from(s.journalEntries);
+      expect(journals).toHaveLength(mode === "ACTIVE" ? 2 : 0);
+      const allLines = await db().select().from(s.journalLines);
+      expect(allLines).toHaveLength(mode === "ACTIVE" ? 4 : 0);
+      for (const journal of journals) {
+        expect(journal.status).toBe("POSTED");
+        const journalLines = allLines.filter(
+          (line) => line.journalId === journal.id,
+        );
+        expect(journalLines).toHaveLength(2);
+        expect(journalLines.map((line) => line.debit).sort()).toEqual([
+          "0.00",
+          "150.00",
+        ]);
+        expect(journalLines.map((line) => line.credit).sort()).toEqual([
+          "0.00",
+          "150.00",
+        ]);
+      }
+      for (const role of ["AP", "PURCHASE_PRICE_VARIANCE"]) {
+        const roleLines = allLines.filter((line) => line.role === role);
+        expect(roleLines.map((line) => line.debit).sort()).toEqual(
+          roleLines.map((line) => line.credit).sort(),
+        );
+      }
     },
   );
 
