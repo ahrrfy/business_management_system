@@ -76,7 +76,7 @@ export const currentOnlineOrderStatus = sql<string>`CASE WHEN ${onlineOrders.sta
 
 /** Bounded batch read: never one HTTP/DB request per table row. Internal facts stay in staff APIs. */
 export async function loadOnlineOrderLifecycles(
-  db: DB,
+  db: DB | Tx,
   orderIds: number[],
 ): Promise<Map<number, OnlineOrderLifecycle>> {
   if (orderIds.length === 0) return new Map();

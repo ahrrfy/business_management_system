@@ -370,6 +370,9 @@ const ordersRouter = router({
     .input(
       z.object({
         id: z.number().int().positive(),
+        baselineFingerprint: z
+          .string({ error: "نسخة نموذج التعديل غير متاحة؛ حدّث الصفحة وأعد فتح الطلب ثم حاول الحفظ" })
+          .regex(/^[a-f0-9]{64}$/, "حدّث الصفحة وأعد فتح نموذج الطلب قبل الحفظ"),
         customerName: z.string().trim().min(1).max(255).nullish(),
         customerPhone: z.string().trim().min(5).max(30).nullish(),
         shippingAddress: z.string().trim().max(1000).nullish(),
@@ -390,6 +393,7 @@ const ordersRouter = router({
       const res = await updateOnlineOrder(
         {
           id: input.id,
+          baselineFingerprint: input.baselineFingerprint,
           scopedBranchId,
           customerName: input.customerName,
           customerPhone: input.customerPhone,
