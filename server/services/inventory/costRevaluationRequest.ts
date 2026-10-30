@@ -28,6 +28,7 @@ import { lockEconomicInventoryScope, readEconomicVariant } from "./economicOwner
  * ⚠️ **التكلفة عمودٌ على المتغيّر لا على الفرع** — إعادة تقييمها تمسّ رصيد **كل** الفروع.
  * لذلك لا يطلبها مديرُ فرعٍ إلّا إن كان الرصيد محصوراً في فرعه (`assertBranchAuthority`).
  */
+import { scanAfter } from "../decisions/scan";
 import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
 import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import { costRevaluationApprovalTrigger } from "@shared/approvalTriggers";
@@ -504,13 +505,15 @@ export interface CostRevaluationRow {
  */
 export async function listCostRevaluations(
   /** `order: "ASC"` = الأقدم أوّلاً لصندوق القرارات — القصّ بالأحدث يُسقط أكثر الطلبات تأخّراً. */
-  filter: { status?: "PENDING_APPROVAL" | "APPROVED" | "REJECTED"; branchId?: number | null; limit?: number; order?: "ASC" | "DESC" },
+  filter: { status?: "PENDING_APPROVAL" | "APPROVED" | "REJECTED"; branchId?: number | null; limit?: number; order?: "ASC" | "DESC"; scan?: import("../decisions/scan").ScanPosition | null },
   _actor: Actor,
 ): Promise<CostRevaluationRow[]> {
   return withTx(async (tx) => {
     const conds = [];
     if (filter.status) conds.push(eq(costRevaluationRequests.status, filter.status));
     if (filter.branchId != null) conds.push(eq(costRevaluationRequests.branchId, filter.branchId));
+    const scan = scanAfter(costRevaluationRequests.id, filter.scan);
+    if (scan) conds.push(scan);
     const rows = await tx
       .select({
         id: costRevaluationRequests.id,

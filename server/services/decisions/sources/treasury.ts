@@ -5,6 +5,7 @@
  * لكنّ `approveVoucher` نفسها ترفض غيرَ المالك («اعتماد السندات محصور بحساب مالك نشط»)؛
  * فالمصدر يعلن `OWNER` — إظهارُ صفٍّ يرفضه الخادم حتماً أسوأ من إخفائه.
  */
+import { reportScan, scanAfter, scanPosition } from "../scan";
 import { and, eq, inArray, isNotNull, isNull, notExists, sql } from "drizzle-orm";
 import { cashVarianceApprovalTrigger, voucherApprovalTrigger } from "@shared/approvalTriggers";
 import { CASH_VARIANCE_REASON_LABELS } from "@shared/cashVariance";
@@ -40,6 +41,7 @@ import { requireDb } from "../../tx";
 import { approveVoucher, rejectVoucher } from "../../voucher/approval";
 import { parseSystemPaymentRequest } from "../../voucher/create";
 import { serviceActor } from "../gate";
+import { sourceAuthorityPasses } from "../authority";
 import { buildRow, decided, defaultMessage, itemLabel } from "../rows";
 import type { DecisionSource } from "../types";
 import {
@@ -82,7 +84,8 @@ async function categoryNames(db: Db, categoryIds: number[]): Promise<Map<number,
 
 /**
  * [`voucherRouter.ts:153`](../../../routers/voucherRouter.ts) ⇐ `approveVoucher`/`rejectVoucher`.
- * الشروط مرآةُ `superApp.approvalInbox`: معلَّقٌ، ليس مصروفاً، ليس مربوطاً بفاتورة، وله رقمُ سند
+ * Ordinary vouchers can link an invoice. Explicit domain ownership excludes separate workflows.
+ * الشروط: معلَّقٌ، ليس مصروفاً، وله رقمُ سند
  * (بلا رقمٍ ترفضه الخدمة بـ«السند غير موجود»).
  */
 export const voucherSource: DecisionSource = {
@@ -120,15 +123,18 @@ export const voucherSource: DecisionSource = {
       .where(
         and(
           eq(receipts.status, "PENDING"),
+          scanAfter(receipts.id, scanPosition(scope), receipts.createdAt),
           eq(receipts.approvalStatus, "PENDING_APPROVAL"),
           isNotNull(receipts.voucherNumber),
-          isNull(receipts.invoiceId),
+          sql`(${receipts.internalNote} IS NULL OR (${receipts.internalNote} NOT LIKE 'WORK_ORDER_CUSTOMER_REFUND:%' AND ${receipts.internalNote} NOT LIKE 'COMPONENT_REFUND_PENDING:%'))`,
           notExists(db.select({ id: expenses.id }).from(expenses).where(eq(expenses.receiptId, receipts.id))),
           branchId == null ? undefined : eq(receipts.branchId, branchId),
         ),
       )
-      .orderBy(sql`${receipts.createdAt} ASC`)
-      .limit(200);
+      .orderBy(sql`${receipts.createdAt} ASC`, sql`${receipts.id} ASC`)
+      .limit(201);
+
+    reportScan(scope, rows, 201, { time: row => row.createdAt });
 
     const names = await branchNames(db, ids(rows.map((r) => r.branchId)));
 
@@ -569,6 +575,7 @@ export const expenseSource: DecisionSource = {
       .where(
         and(
           eq(expenses.status, "PENDING_APPROVAL"),
+          scanAfter(expenses.id, scanPosition(scope), expenses.createdAt),
           eq(expenses.source, "CASH"),
           eq(receipts.direction, "OUT"),
           eq(receipts.status, "PENDING"),
@@ -585,8 +592,9 @@ export const expenseSource: DecisionSource = {
           branchId == null ? undefined : eq(expenses.branchId, branchId),
         ),
       )
-      .orderBy(sql`${expenses.createdAt} ASC`)
+      .orderBy(sql`${expenses.createdAt} ASC`, sql`${expenses.id} ASC`)
       .limit(200);
+    reportScan(scope, rows, 200, { time: row => row.createdAt });
     const names = await branchNames(db, ids(rows.map((r) => r.branchId)));
     return rows.map((r) => {
       const categoryLabel = r.expenseCategoryName?.trim() || expenseBucketLabel(r.category);
@@ -695,9 +703,11 @@ export const accrualCorrectionSource: DecisionSource = {
       })
       .from(accrualCorrectionRequests)
       .innerJoin(accrualObligations, eq(accrualObligations.id, accrualCorrectionRequests.obligationId))
-      .where(and(eq(accrualCorrectionRequests.status, "PENDING"), branchId == null ? undefined : eq(accrualObligations.branchId, branchId)))
-      .orderBy(sql`${accrualCorrectionRequests.requestedAt} ASC`)
+      .where(and(eq(accrualCorrectionRequests.status, "PENDING"), branchId == null ? undefined : eq(accrualObligations.branchId, branchId),
+        scanAfter(accrualCorrectionRequests.id, scanPosition(scope), accrualCorrectionRequests.requestedAt)))
+      .orderBy(sql`${accrualCorrectionRequests.requestedAt} ASC`, sql`${accrualCorrectionRequests.id} ASC`)
       .limit(200);
+    reportScan(scope, rows, 200, { time: row => row.requestedAt });
     const [names, people] = await Promise.all([branchNames(db, ids(rows.map((r) => r.branchId))), userNames(db, ids(rows.map((r) => r.requestedBy)))]);
     return rows.map((r) => {
       const operationalContext: DecisionOperationalContext = {
@@ -781,7 +791,16 @@ export const cashVarianceSource: DecisionSource = {
     const all = actor.role === "admin" ? await branchIdsFor(db, actor, scope) : [];
     const branchIds = serviceBranchScopedIds(actor, scope.branchIds, all);
     if (!branchIds.length) return [];
-    const pages = await Promise.all(branchIds.map((b) => listCashVarianceCases({ branchId: b, status: "PROPOSED", limit: 100 }, a)));
+    const reviewOperation = sourceAuthorityPasses(cashVarianceSource, actor, "APPROVE")
+      ? "treasury.cashVariance.approve" : "treasury.cashVariance.reject";
+    const pages = await Promise.all(branchIds.map(async b => {
+      const position = scanPosition(scope, b);
+      if (position === null) return { rows: [] };
+      const page = await listCashVarianceCases({ branchId: b, status: "PROPOSED", limit: 100, reviewOperation,
+        cursor: position ? { id: position.id, createdAt: new Date(position.at!) } : undefined }, a);
+      reportScan(scope, page.rows, 100, { partition: b, hasMore: page.hasMore, time: row => row.createdAt });
+      return page;
+    }));
     const rows = pages.flatMap((p) => p.rows);
     const [names, people] = await Promise.all([
       branchNames(db, ids(rows.map((r) => r.branchId))),

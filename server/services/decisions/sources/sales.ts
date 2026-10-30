@@ -1,10 +1,12 @@
 /**
  * مصادرُ المبيعات وأوامر الشغل: ضبطُ البيع، طلباتُ المرتجع، ضبطُ أمر الشغل، ردُّ عربون الإلغاء.
  */
+import { reportScan, scanPosition } from "../scan";
 import { TRPCError } from "@trpc/server";
 import { and, eq, inArray } from "drizzle-orm";
 import { decisionSpec, decisionSubkindLabel, type DecisionSummaryItem } from "@shared/decisionRegistry";
 import { appErrorMessage } from "@shared/errors";
+import { hasOperationPolicy } from "@shared/operationPermissions";
 import { SALES_CONTROL_TYPE_LABELS, type SalesControlType } from "@shared/salesControl";
 import { salesControlFacts, type SalesControlFactsType } from "@shared/salesControlFacts";
 import {
@@ -27,6 +29,7 @@ import { requireDb } from "../../tx";
 import { approveWorkOrderCancellationRefund, listPendingWorkOrderCancellationRefunds } from "../../workOrder/cancel";
 import { approveWorkOrderControlRequest, listPendingWorkOrderControls, rejectWorkOrderControlRequest } from "../../workOrder/controlRequests";
 import { serviceActor } from "../gate";
+import { sourceAuthorityPasses } from "../authority";
 import { buildRow, decided, defaultMessage, itemLabel, outcomeFor, statusOf } from "../rows";
 import type { DecisionSource } from "../types";
 import { branchNames, customerNames, freshnessFrom, ids, scopeBranch, sodHidden, userNames, variantLabels, type Db } from "./common";
@@ -128,7 +131,9 @@ export const salesControlSource: DecisionSource = {
   supportedActions: ["APPROVE", "REJECT"],
   async list(actor, scope) {
     const db = requireDb();
-    const raw = await listSalesControlRequests(serviceActor(actor), { status: "PENDING", order: "ASC" });
+    const reviewer = serviceActor({ ...actor, operationPath: sourceAuthorityPasses(salesControlSource, actor, "APPROVE") ? "salesControl.approve" : "salesControl.reject" });
+    const raw = await listSalesControlRequests({ ...reviewer, reviewAuthority: reviewer.operationAuthority, operationPolicyEnabled: actor.operationUser != null && hasOperationPolicy(actor.operationUser) }, { status: "PENDING", order: "ASC", scan: scanPosition(scope) });
+    reportScan(scope, raw, 300);
     const rows = raw.filter((r) => (scope.branchIds ? scope.branchIds.includes(Number(r.branchId)) : true));
     if (!rows.length) return [];
     const invoiceIds = ids(rows.map((r) => r.invoiceId));
@@ -266,7 +271,8 @@ export const returnRequestSource: DecisionSource = {
     const branchId = scopeBranch(actor, scope);
     if (branchId === "NONE") return [];
     const db = requireDb();
-    const rows = await listReturnRequests({ branchId, status: "PENDING_APPROVAL", order: "ASC" });
+    const rows = await listReturnRequests({ branchId, status: "PENDING_APPROVAL", order: "ASC", scan: scanPosition(scope) });
+    reportScan(scope, rows, 200);
     if (!rows.length) return [];
 
     const invoiceIds = ids(rows.map((r) => r.invoiceId));

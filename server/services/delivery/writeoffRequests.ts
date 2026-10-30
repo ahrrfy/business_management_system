@@ -1,3 +1,4 @@
+import { scanAfter } from "../decisions/scan";
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq } from "drizzle-orm";
 import {
@@ -598,7 +599,7 @@ export async function rejectDeliveryCodWriteOff(
 export async function listDeliveryCodWriteOffRequests(
   actor: DeliveryWriteOffReviewActor,
   /** `order: "ASC"` = الأقدم أوّلاً لصندوق القرارات — القصّ (300) بالأحدث يُسقط أكثر الطلبات تأخّراً. */
-  options?: { status?: "PENDING" | "APPROVED" | "REJECTED" | "STALE"; branchId?: number | null; order?: "ASC" | "DESC" },
+  options?: { status?: "PENDING" | "APPROVED" | "REJECTED" | "STALE"; branchId?: number | null; order?: "ASC" | "DESC"; scan?: import("../decisions/scan").ScanPosition | null },
 ) {
   assertReviewWriteOffAuthority(actor);
   if (options?.branchId != null) assertBranch(Number(options.branchId), actor);
@@ -634,6 +635,7 @@ export async function listDeliveryCodWriteOffRequests(
     .innerJoin(users, eq(users.id, deliveryCodWriteOffRequests.requestedBy))
     .where(and(
       options?.status ? eq(deliveryCodWriteOffRequests.status, options.status) : undefined,
+      scanAfter(deliveryCodWriteOffRequests.id, options?.scan),
       effectiveBranchId != null ? eq(deliveryCodWriteOffRequests.branchId, effectiveBranchId) : undefined,
     ))
     .orderBy(options?.order === "ASC" ? asc(deliveryCodWriteOffRequests.id) : desc(deliveryCodWriteOffRequests.id))

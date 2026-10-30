@@ -1,3 +1,4 @@
+import { scanAfter } from "../decisions/scan";
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, lt } from "drizzle-orm";
 import {
@@ -942,7 +943,7 @@ export async function listPendingPurchaseOrderControls(
    * `order: "ASC"` = الأقدم أوّلاً (صندوق القرارات): القصّ بالأحدث يُسقط أكثر الطلبات
    * تأخّراً بالضبط حين يكثر المعلَّق (Codex على #1004). المؤشّر `cursor` يخصّ النزول فقط.
    */
-  page: { limit: number; cursor?: number | null; order?: "ASC" | "DESC" },
+  page: { limit: number; cursor?: number | null; order?: "ASC" | "DESC"; scan?: import("../decisions/scan").ScanPosition | null },
 ) {
   const db = requireDb();
   const branchCondition =
@@ -982,6 +983,7 @@ export async function listPendingPurchaseOrderControls(
     .where(
       and(
         eq(purchaseOrderControlRequests.status, "PENDING"),
+        scanAfter(purchaseOrderControlRequests.id, page.scan),
         branchCondition,
         page.cursor == null
           ? undefined

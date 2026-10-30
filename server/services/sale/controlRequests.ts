@@ -1,3 +1,4 @@
+import { scanAfter } from "../decisions/scan";
 import { TRPCError } from "@trpc/server";
 import { hasOperationPolicy, operationDecision } from "@shared/operationPermissions";
 import { resolvePermissions, type PermissionMap, type RoleKey } from "@shared/permissions";
@@ -1592,6 +1593,7 @@ export async function withdrawSalesControlRequest(
 export async function listSalesControlRequests(
   actor: SalesControlActor,
   options?: {
+    scan?: import("../decisions/scan").ScanPosition | null;
     status?: "PENDING" | "APPROVED" | "REJECTED" | "STALE" | "WITHDRAWN";
     mine?: boolean;
     /**
@@ -1607,6 +1609,7 @@ export async function listSalesControlRequests(
   const canReview = actor.operationPolicyEnabled ? delegatedReviewer : actor.role === "admin" || actor.role === "manager";
   const mineOnly = options?.mine === true || !canReview;
   const where = and(
+    scanAfter(salesControlRequests.id, options?.scan),
     options?.status ? eq(salesControlRequests.status, options.status) : undefined,
     actor.role === "admin" ? undefined : eq(salesControlRequests.branchId, actor.branchId),
     mineOnly ? eq(salesControlRequests.requestedBy, actor.userId) : undefined,
