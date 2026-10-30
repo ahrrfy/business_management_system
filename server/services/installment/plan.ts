@@ -7,6 +7,7 @@ import {
   installmentLines,
   installmentPlans,
   invoices,
+  receipts,
 } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import {
@@ -279,6 +280,21 @@ export async function cancelPlan(
     await assertInstallmentScopeTx(tx, state, currentInvoice);
     if (state.lines.some(line => line.paid.gt(0))) installmentConflict("لا يمكن إلغاء خطة سُدِّد منها قسط — ألغِ السندات أولاً");
     if (state.lines.some(line => line.pendingAllocationClaimId != null)) installmentConflict("لا يمكن إلغاء خطة لها سند في انتظار الاعتماد");
+    // A legacy pointer is evidence to reconcile, never proof of a zero balance.
+    // Existing allocation history already proves full inverses. A rejected pending
+    // receipt is terminal and has no money effect; it may legitimately keep its pointer.
+    for (const line of state.lines) {
+      if (line.receiptId == null || line.allocations.some(row => row.effectReceiptId === line.receiptId)) continue;
+      const [receipt] = await tx.select().from(receipts).where(eq(receipts.id, line.receiptId));
+      if (receipt?.status === "COMPLETED" && receipt.approvalStatus === "APPROVED") {
+        installmentConflict("لا يمكن إلغاء خطة لها سند تحصيل معتمد غير مطابق لسجل التخصيص؛ يلزم مطابقة السند الأصلي");
+      }
+      if (!receipt || receipt.approvalStatus !== "REJECTED" || receipt.status !== "FAILED" ||
+        receipt.invoiceId !== state.plan.invoiceId || receipt.branchId !== state.plan.branchId ||
+        receipt.partyType !== "CUSTOMER" || receipt.partyId !== state.plan.customerId || receipt.direction !== "IN") {
+        installmentConflict("سند القسط المرتبط يحتاج مطابقة موثقة قبل الإلغاء");
+      }
+    }
     const reason = normalizedReason;
     await tx
       .update(installmentPlans)

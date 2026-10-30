@@ -280,7 +280,7 @@ export async function payLine(
   )
     installmentConflict("أكّد الدفع الخارجي من جهاز التحصيل قبل سداد القسط");
   if (method === "CARD" && !/^\d{4}$/.test(input.cardLastFour?.trim() ?? ""))
-    installmentConflict("آخر أربعة أرقام للبطاقة إلزامية");
+    installmentConflict("آخر ٤ من البطاقة إلزامي لطريقة الدفع «بطاقة» (٤ أرقام)");
   const requestKey = `${input.lineId}:${request}`;
   const execute = async (
     tx: Tx,

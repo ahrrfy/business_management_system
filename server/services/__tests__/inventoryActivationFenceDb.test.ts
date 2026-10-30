@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 import { awaitInventoryActivationRelease } from "../../config/inventoryActivationBoot";
 import { closeDb } from "../../db";
 import { closeCleanupConn } from "./__setup__";
+import { assertIsolatedActivationTestTarget } from "./activationTestTarget";
 import {
   acquireInventoryGate,
   runInventoryActivation,
@@ -38,13 +39,7 @@ const assertInventoryResurrection = (pm2Home: string) =>
 
 async function fixture() {
   const raw = process.env.DATABASE_URL!;
-  const u = new URL(raw);
-  if (
-    !/^(127\.0\.0\.1|localhost)$/.test(u.hostname) ||
-    !u.pathname.endsWith("_test") ||
-    u.port === "3306"
-  )
-    throw new Error("ISOLATED_ACTIVATION_TEST_DATABASE_REQUIRED");
+  assertIsolatedActivationTestTarget(raw);
   await closeDb();
   await closeCleanupConn();
   const connections: Connection[] = [];

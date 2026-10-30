@@ -4711,7 +4711,7 @@ export const returnRouter = router({
             }),
           };
         },
-        { gate: "NONE" },
+        { gate: "FINANCIAL_WRITER" },
       );
     });
     }),

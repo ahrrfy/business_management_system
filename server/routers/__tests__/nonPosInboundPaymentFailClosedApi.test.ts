@@ -6,6 +6,7 @@ import { getDb } from "../../db";
 import { appRouter } from "../../routers";
 import { truncateTables } from "../../services/__tests__/__testUtils__";
 import { INBOUND_TELECOM_DISABLED_MESSAGE } from "@shared/inboundPaymentPolicy";
+import { createPlan, getPlan } from "../../services/installmentService";
 
 /** الطرق المرفوضة بنيوياً في منافذ القبض غير البيعيّة: رصيد زين (مساره البطاقات الرقمية) والصكوك (قرار مالك). */
 const API_REJECTED = ["TELECOM", "CHECK"] as const;
@@ -22,6 +23,7 @@ const TABLES = [
   "accountingEntries",
   "externalPaymentAttempts",
   "receipts",
+  "installmentReceiptAllocations",
   "installmentLines",
   "installmentPlans",
   "invoiceItems",
@@ -39,6 +41,15 @@ function db() {
   const value = getDb();
   if (!value) throw new Error("DATABASE_URL not set for tests");
   return value;
+}
+
+async function createCollectionLine(invoiceId: number) {
+  const { planId } = await createPlan({
+    clientRequestId: crypto.randomUUID(),
+    customerId: 1, invoiceId, branchId: 1, totalAmount: "40.00",
+    lines: [{ dueDate: "2026-08-15", amount: "40.00", kind: "CASH" }],
+  }, { userId: 1, branchId: 1, role: "admin" });
+  return (await getPlan(planId)).lines[0].id;
 }
 
 function context(role: (typeof API_ROLES)[number], id: number): TrpcContext {
@@ -216,22 +227,7 @@ describe.sequential("سياسة القبض خارج نقاط البيع على �
       returnedTotal: "0.00",
       status: "PENDING",
     });
-    const planRes = await db().insert(s.installmentPlans).values({
-      customerId: 1,
-      invoiceId: 103,
-      branchId: 1,
-      totalAmount: "40.00",
-      createdBy: 1,
-    });
-    const planId = Number((planRes as unknown as [{ insertId: number }])[0].insertId);
-    const lineRes = await db().insert(s.installmentLines).values({
-      planId,
-      seq: 1,
-      dueDate: "2026-08-15",
-      amount: "40.00",
-      kind: "CASH",
-    });
-    const lineId = Number((lineRes as unknown as [{ insertId: number }])[0].insertId);
+    const lineId = await createCollectionLine(103);
     const maker = appRouter.createCaller(context("manager", 2));
     const checker = appRouter.createCaller(context("admin", 1));
     const deviceId = "INSTALLMENT-API-DEVICE";
@@ -338,22 +334,7 @@ describe.sequential("سياسة القبض خارج نقاط البيع على �
       customerId: 1, subtotal: "40.00", total: "40.00", paidAmount: "0.00", status: "PENDING",
     });
 
-    const planRes = await db().insert(s.installmentPlans).values({
-      customerId: 1,
-      invoiceId: 102,
-      branchId: 1,
-      totalAmount: "40.00",
-      createdBy: 1,
-    });
-    const planId = Number((planRes as unknown as [{ insertId: number }])[0].insertId);
-    const lineRes = await db().insert(s.installmentLines).values({
-      planId,
-      seq: 1,
-      dueDate: "2026-08-15",
-      amount: "40.00",
-      kind: "CASH",
-    });
-    const lineId = Number((lineRes as unknown as [{ insertId: number }])[0].insertId);
+    const lineId = await createCollectionLine(102);
     const paid = await caller.installments.pay({ lineId, clientRequestId: crypto.randomUUID() });
     expect(paid.status).toBe("PAID");
     const [installmentAudit] = await db()

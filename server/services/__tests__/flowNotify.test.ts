@@ -34,12 +34,13 @@ import {
   isOutsideBusinessHours,
 } from "../whatsapp/flowNotify";
 import { persistWaEvent, processWaEvent } from "../whatsapp/webhookProcessor";
+import { drainPendingOutboxDispatches } from "../whatsapp/outboxService";
 
 vi.mock("../whatsapp", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../whatsapp")>();
   return { ...actual, flowNotify: vi.fn(actual.flowNotify) };
 });
-// eslint-disable-next-line import/order -- يجب أن يأتي بعد vi.mock (مرفوع تلقائياً فوقه على أي حال).
+// يجب أن يأتي بعد vi.mock (مرفوع تلقائياً فوقه على أي حال).
 import { flowNotify as flowNotifyMocked } from "../whatsapp";
 
 function db() {
@@ -113,10 +114,8 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  // يُصرِّف أي محاولة إرسال خلفية معلَّقة (enqueueAndDispatch يُشغّل dispatchOutboxRow عبر
-  // setImmediate بلا انتظار) **قبل** أن يُفرِّغ __setup__.ts العالمي كل الجداول — وقاية من سباق
-  // تحديث/إدراج خلفيّ متأخّر يضرب صفوفاً حُذفت للتوّ، ومن استعمال fetch بعد استرجاعه.
-  await new Promise((resolve) => setImmediate(resolve));
+  // Wait for SQL/provider/finalization completion before global cleanup and fetch restoration.
+  await drainPendingOutboxDispatches();
   fetchSpy?.mockRestore();
 });
 
@@ -130,6 +129,49 @@ afterAll(() => {
 describe("flowNotify — الحارس المشترك", () => {
   beforeEach(async () => {
     await seedBranchAndUser();
+  });
+
+  it.each([false, true])("drains actual dispatch through a held provider response (atomic=%s)", async (atomic) => {
+    await setWaHubSettings({ flowOrderReady: true });
+    await seedActiveIntegration();
+    await seedTemplate("order_ready");
+    const entered = Promise.withResolvers<void>();
+    const response = Promise.withResolvers<Response>();
+    fetchSpy!.mockImplementationOnce(() => {
+      entered.resolve();
+      return response.promise;
+    });
+    const result = await flowNotifyReal({
+      flowKey: "flowOrderReady",
+      branchId: 1,
+      toPhoneE164: "+9647701234567",
+      templateName: "order_ready",
+      bodyParams: ["أحمد", "WO-DRAIN"],
+      dedupeKey: `T42-DRAIN-${atomic}`,
+      ...(atomic ? { finalEligibilityCheck: async () => true } : {}),
+    });
+    let drained = false;
+    const pendingDrain = drainPendingOutboxDispatches().then(() => { drained = true; });
+    try {
+      expect(result).toMatchObject({ queued: true });
+      // Drain starts before setImmediate; the real dispatcher must reach Graph without finishing.
+      await entered.promise;
+      expect(drained).toBe(false);
+      const [sending] = await db().select().from(s.waOutbox);
+      expect(sending.status).toBe("SENDING");
+    } finally {
+      response.resolve(new Response(JSON.stringify({ messages: [{ id: "wamid.DRAIN" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }));
+      await pendingDrain;
+    }
+    expect(drained).toBe(true);
+    const [sent] = await db().select().from(s.waOutbox);
+    expect(sent.status).toBe("SENT");
+    expect(sent.wamid).toBe("wamid.DRAIN");
+    expect(sent.claimExpiresAt).toBeNull();
+    expect(fetchSpy).toHaveBeenCalledOnce();
   });
 
   it("killSwitch=true ⇒ skip kill_switch (حتى بلا تكامل/قالب)", async () => {

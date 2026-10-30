@@ -1,5 +1,6 @@
 import type mysql from "mysql2/promise";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { assertIsolatedActivationTestTarget } from "./activationTestTarget";
 import {
   clearTestTable,
   closeCleanupConn,
@@ -8,6 +9,37 @@ import {
   bootstrapEmptyInventoryProjection,
   assertSafeCleanupTarget,
 } from "./__setup__";
+
+describe("activation fixture target admission without SQL connections", () => {
+  const ci = { CI: "true", GITHUB_ACTIONS: "true", ALLOW_TEST_DB_PORT_3306: "1" };
+  it.each(["3306", ""])("admits isolated GitHub CI erp_test on port %s", (port) => {
+    const url = `mysql://root@127.0.0.1${port ? `:${port}` : ""}/erp_test`;
+    expect(() => assertIsolatedActivationTestTarget(url, ci)).not.toThrow();
+  });
+  it("retains the isolated local non-default target", () => {
+    expect(() => assertIsolatedActivationTestTarget("mysql://root@127.0.0.1:33318/erp_procedures_remediation_20261028_test", {})).not.toThrow();
+  });
+  const rejectedTargets: Array<[string, string, NodeJS.ProcessEnv]> = [
+    ["local explicit default", "mysql://root@127.0.0.1:3306/erp_test", {}],
+    ["local implicit default", "mysql://root@127.0.0.1/erp_test", {}],
+    ["local opt-in alone", "mysql://root@127.0.0.1:3306/erp_test", { ALLOW_TEST_DB_PORT_3306: "1" }],
+    ["CI missing", "mysql://root@127.0.0.1:3306/erp_test", { ...ci, CI: undefined }],
+    ["GitHub identity missing", "mysql://root@127.0.0.1:3306/erp_test", { ...ci, GITHUB_ACTIONS: undefined }],
+    ["opt-in missing", "mysql://root@127.0.0.1:3306/erp_test", { ...ci, ALLOW_TEST_DB_PORT_3306: undefined }],
+    ["opt-in false", "mysql://root@127.0.0.1/erp_test", { ...ci, ALLOW_TEST_DB_PORT_3306: "0" }],
+    ["CI false", "mysql://root@127.0.0.1:3306/erp_test", { ...ci, CI: "false" }],
+    ["remote host", "mysql://root@remote.test:3306/erp_test", ci],
+    ["remote non-default", "mysql://root@remote.test:33318/erp_test", ci],
+    ["production database", "mysql://root@127.0.0.1:3306/erp", ci],
+    ["other test database on default port", "mysql://root@127.0.0.1:3306/erp_snapshot_test", ci],
+    ["non-test local database", "mysql://root@127.0.0.1:33318/erp", ci],
+    ["wrong protocol", "http://127.0.0.1:33318/erp_test", ci],
+    ["malformed URL", "not a URL", ci],
+  ];
+  it.each(rejectedTargets)("rejects %s", (_name, url, env) => {
+    expect(() => assertIsolatedActivationTestTarget(url, env)).toThrow(/ISOLATED_ACTIVATION_TEST_DATABASE_REQUIRED/);
+  });
+});
 
 describe("test database isolation without empty-table DDL", () => {
   it("rejects unsafe targets before complete cleanup or bootstrap", () => {

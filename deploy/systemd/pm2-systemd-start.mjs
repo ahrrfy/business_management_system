@@ -20,8 +20,32 @@ const EXPECTED_PM2_VERSION = "7.0.3";
 // Standalone root-owned helper: only reads bounded JSON/bytes, never imports or
 // executes deploy-owned source before deciding whether ERP resurrection is safe.
 export function assertInventoryResurrection(pm2Home) {
-  const dump = path.join(pm2Home, "dump.pm2");
-  const dumpStat = fs.lstatSync(dump);
+  // PM2 7.0.3 resurrect falls back to dump.pm2.bak when the primary is absent.
+  // A ping-only daemon and a fresh boot legitimately have neither file. Check
+  // the fallback too; missing primary alone must not bypass ERP admission.
+  let dump;
+  let dumpStat;
+  for (const name of ["dump.pm2", "dump.pm2.bak"]) {
+    const candidate = path.join(pm2Home, name);
+    try {
+      dumpStat = fs.lstatSync(candidate);
+      dump = candidate;
+      break;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
+  if (!dump) {
+    // Missing dumps do not prove an existing daemon is ERP-free once durable
+    // activation intent exists. Only a never-activated empty home may boot.
+    try {
+      fs.lstatSync(path.join(pm2Home, "erp-inventory-activation.json"));
+    } catch (error) {
+      if (error?.code === "ENOENT") return;
+      throw error;
+    }
+    throw codedError("INVENTORY_BOOT_RECOVERY_REQUIRED");
+  }
   if (!dumpStat.isFile() || dumpStat.isSymbolicLink() || dumpStat.size > 4 * 1024 * 1024) throw codedError("INVENTORY_BOOT_DUMP_UNTRUSTED");
   const rows = JSON.parse(fs.readFileSync(dump, "utf8"));
   if (!Array.isArray(rows)) throw codedError("INVENTORY_BOOT_DUMP_INVALID");
@@ -30,8 +54,13 @@ export function assertInventoryResurrection(pm2Home) {
   const file = path.join(pm2Home, "erp-inventory-activation.json");
   // Legacy pre-activation installations have no intent yet. Once activation
   // starts, the fsynced journal is retained permanently, including rollback.
-  if (!fs.existsSync(file)) return;
-  const s = fs.lstatSync(file);
+  let s;
+  try {
+    s = fs.lstatSync(file);
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
   if (!s.isFile() || s.isSymbolicLink() || s.size > 65536 || (process.platform !== "win32" && (s.mode & 0o777) !== 0o600)) throw codedError("INVENTORY_BOOT_JOURNAL_UNTRUSTED");
   const journal = JSON.parse(fs.readFileSync(file, "utf8"));
   if (journal.version !== 1 || !["READY", "CANDIDATES", "PRE_RELEASE", "RELEASED", "ROLLED_BACK"].includes(journal.phase)) throw codedError("INVENTORY_BOOT_RECOVERY_REQUIRED");
