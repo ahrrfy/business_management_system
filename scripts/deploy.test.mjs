@@ -28,6 +28,7 @@ const {
   pruneWebArtifactSnapshots,
   recoverPendingWebActivation,
   rollbackWebArtifact,
+  restoreInventoryWebArtifact,
   snapshotWebArtifact,
   assertRemoteCiGreenForDeploy,
   assertInventoryPrePullReconciliationAllowed,
@@ -390,6 +391,8 @@ assert.ok(
 );
 assert.match(deploySource, /if \(inventoryStarted\) throw candidateError;/,
   "the activation state machine exclusively owns safe invalidation/rollback");
+assert.match(deploySource, /restoreInventoryWebArtifact\(webArtifact, priorJournal\)/,
+  "the inventory rollback callback must restore the manifest's original immutable target");
 assert.ok(
   deploySource.indexOf("await recoverPendingWebActivationBeforePull();") <
     deploySource.indexOf(
@@ -1340,6 +1343,125 @@ try {
     const resolved = fs.realpathSync(journalRoot);
     assert.equal(path.dirname(resolved), temporaryRoot);
     assert.ok(path.basename(resolved).startsWith("erp-inventory-prepull-"));
+    fs.rmSync(resolved, { recursive: true, force: true });
+  }
+}
+
+{
+  const { createHash } = await import("node:crypto");
+  const { writeActivationJournal, readActivationJournal, activeInventoryManifest } =
+    await import("./lib/inventory-activation-journal.mjs");
+  const temporaryRoot = fs.realpathSync(os.tmpdir());
+  const project = fs.mkdtempSync(path.join(temporaryRoot, "inventory-rollback-retention-"));
+  const file = path.join(project, "inventory-activation.json");
+  const hash = file => createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  try {
+    fs.mkdirSync(path.join(project, "dist/public"), { recursive: true });
+    fs.writeFileSync(path.join(project, "dist/index.js"), "legacy-server");
+    fs.writeFileSync(path.join(project, "dist/public/index.html"), "legacy-client");
+    const makeCandidate = (id, projectRoot = project) => prepareWebCandidate(projectRoot, {
+      id,
+      expectedSha: "a".repeat(40),
+      operations: {
+        createWorktree: source => fs.mkdirSync(source, { recursive: true }),
+        linkDependencies() {},
+        build(source) {
+          fs.mkdirSync(path.join(source, "dist/public"), { recursive: true });
+          fs.writeFileSync(path.join(source, "dist/index.js"), "activated-server");
+          fs.writeFileSync(path.join(source, "dist/public/index.html"), "activated-client");
+        },
+        removeWorktree: source => fs.rmSync(source, { recursive: true, force: true }),
+      },
+    });
+    const candidate = makeCandidate("candidate-retention");
+    const original = snapshotWebArtifact(project, { id: "web-100-original" });
+    installWebCandidate(original, candidate);
+    commitWebArtifact(original);
+    fs.utimesSync(original.releaseDirectory, new Date(1000), new Date(1000));
+    const bundle = path.join(original.candidatePath, "index.js");
+    const artifact = { name: "erp-server", script: bundle, bundle,
+      hash: hash(bundle), scriptHash: hash(bundle), instances: 2 };
+    const journal = { version: 1, phase: "RELEASED",
+      id: "12345678-1234-1234-1234-123456789abc", nonce: "a".repeat(64),
+      commit: "b".repeat(40), database: "erp_retention_fixture", serverUuid: "fixture",
+      artifacts: [artifact] };
+    journal.active = { readyVersion: 1, activationId: journal.id, commit: journal.commit,
+      projectionCommit: journal.commit, database: journal.database,
+      serverUuid: journal.serverUuid, artifacts: journal.artifacts };
+    writeActivationJournal(file, journal);
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const snapshot = snapshotWebArtifact(project, { id: `web-${200 + attempt}-failed` });
+      fs.utimesSync(snapshot.releaseDirectory, new Date(2000 + attempt), new Date(2000 + attempt));
+      pruneWebArtifactSnapshots(project, { keepRecent: 3, protectedIds: [snapshot.id] });
+      const prior = readActivationJournal(file);
+      const replacement = makeCandidate(`candidate-failed-${attempt}`);
+      installWebCandidate(snapshot, replacement);
+      // The inventory controller invokes this callback after candidate failure.
+      restoreInventoryWebArtifact(snapshot, prior);
+      writeActivationJournal(file, { ...journal, phase: "ROLLED_BACK", initialReadyVersion: 1,
+        priorArtifacts: journal.artifacts, active: journal.active });
+      pruneWebArtifactSnapshots(project, { keepRecent: 3, protectedIds: [snapshot.id] });
+      cleanupWebCandidate(replacement);
+    }
+    assert.equal(fs.existsSync(bundle), true,
+      "repeated failed replacements must preserve the original PM2/manifest artifact");
+    assert.equal(hash(bundle), artifact.hash);
+    assert.deepEqual(activeInventoryManifest(readActivationJournal(file)), journal.active);
+    assert.equal(fs.realpathSync(original.activeLinkPath), fs.realpathSync(original.candidatePath));
+    assert.equal(fs.readdirSync(original.releasesRoot).length, 3,
+      "retention must remain bounded while preserving the original active release");
+    assert.equal(fs.existsSync(path.join(original.releasesRoot, "web-200-failed")), false);
+    const rejected = snapshotWebArtifact(project, { id: "web-300-invalid-target" });
+    const replacement = makeCandidate("candidate-invalid-target");
+    installWebCandidate(rejected, replacement);
+    const withArtifact = artifact => ({ ...journal, artifacts: [artifact],
+      active: { ...journal.active, artifacts: [artifact] } });
+    const alias = path.join(original.releasesRoot, "web-symlink");
+    fs.symlinkSync(original.releaseDirectory, alias, process.platform === "win32" ? "junction" : "dir");
+    for (const invalid of [
+      { ...journal, phase: "FATAL" },
+      { ...journal, active: { ...journal.active, commit: "c".repeat(40) } },
+      withArtifact({ ...artifact, hash: "0".repeat(64) }),
+      withArtifact({ ...artifact, scriptHash: "0".repeat(64) }),
+      withArtifact({ ...artifact, script: path.join(rejected.candidatePath, "index.js") }),
+      withArtifact({ ...artifact, script: path.join(project, "outside/index.js"),
+        bundle: path.join(project, "outside/index.js") }),
+      withArtifact({ ...artifact, script: path.join(alias, "candidate/index.js"),
+        bundle: path.join(alias, "candidate/index.js") }),
+    ]) {
+      assert.throws(() => restoreInventoryWebArtifact(rejected, invalid),
+        /INVENTORY_(WEB_ROLLBACK_TARGET|ACTIVE_MANIFEST)_INVALID/);
+      assert.equal(fs.realpathSync(rejected.activeLinkPath), fs.realpathSync(rejected.candidatePath),
+        "invalid manifest must not redirect the active link");
+      assert.equal(hasPendingWebActivation(project), true,
+        "invalid rollback target must retain the recovery journal");
+    }
+    fs.unlinkSync(alias);
+    restoreInventoryWebArtifact(rejected, readActivationJournal(file));
+    assert.equal(hasPendingWebActivation(project), false);
+    assert.equal(fs.realpathSync(rejected.activeLinkPath), fs.realpathSync(original.candidatePath));
+    cleanupWebCandidate(replacement);
+
+    const legacy = path.join(project, "legacy-project");
+    fs.mkdirSync(path.join(legacy, "dist/public"), { recursive: true });
+    fs.writeFileSync(path.join(legacy, "dist/index.js"), "legacy-server");
+    fs.writeFileSync(path.join(legacy, "dist/public/index.html"), "legacy-client");
+    for (const [index, prior] of [null,
+      { ...journal, phase: "ROLLED_BACK", initialReadyVersion: 0, active: null }].entries()) {
+      const snapshot = snapshotWebArtifact(legacy, { id: `web-legacy-${index}` });
+      const candidate = makeCandidate(`candidate-legacy-${index}`, legacy);
+      installWebCandidate(snapshot, candidate);
+      restoreInventoryWebArtifact(snapshot, prior);
+      assert.equal(fs.realpathSync(snapshot.activeLinkPath), fs.realpathSync(snapshot.previousPath));
+      assert.equal(fs.readFileSync(path.join(snapshot.previousPath, "index.js"), "utf8"), "legacy-server");
+      assert.equal(hasPendingWebActivation(legacy), false);
+      cleanupWebCandidate(candidate);
+    }
+    cleanupWebCandidate(candidate);
+  } finally {
+    const resolved = fs.realpathSync(project);
+    assert.equal(path.dirname(resolved), temporaryRoot);
+    assert.ok(path.basename(resolved).startsWith("inventory-rollback-retention-"));
     fs.rmSync(resolved, { recursive: true, force: true });
   }
 }

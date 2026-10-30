@@ -648,6 +648,40 @@ export function cleanupWebCandidate(candidate) {
   fsyncDirectory(roots.candidatesRoot);
 }
 
+export function restoreInventoryWebArtifact(snapshot, priorJournal) {
+  const { releasesRoot } = validateWebArtifactSnapshot(snapshot);
+  if (priorJournal && !["RELEASED", "ROLLED_BACK"].includes(priorJournal.phase)) {
+    throw codedError("INVENTORY_WEB_ROLLBACK_TARGET_INVALID");
+  }
+  const active = activeInventoryManifest(priorJournal);
+  let target = snapshot.previousPath;
+  if (active) {
+    const web = active.artifacts.find(artifact => artifact.name === "erp-server");
+    const parts = path.relative(releasesRoot, web.bundle).split(path.sep);
+    if (
+      parts.length !== 3 ||
+      !WEB_ARTIFACT_ID.test(parts[0]) ||
+      !["candidate", "previous"].includes(parts[1]) ||
+      parts[2] !== "index.js" ||
+      web.bundle !== path.join(releasesRoot, ...parts) ||
+      web.script !== web.bundle
+    ) {
+      throw codedError("INVENTORY_WEB_ROLLBACK_TARGET_INVALID");
+    }
+    assertPlainDirectory(path.join(releasesRoot, parts[0]), "INVENTORY_WEB_ROLLBACK_TARGET_INVALID");
+    target = path.dirname(web.bundle);
+    assertWebArtifactReady(target, "INVENTORY_WEB_ROLLBACK_TARGET_INVALID");
+    const actualHash = hashFile(web.bundle);
+    if (actualHash !== web.hash || actualHash !== web.scriptHash) {
+      throw codedError("INVENTORY_WEB_ROLLBACK_TARGET_INVALID");
+    }
+  }
+  // PM2 and the retained inventory manifest still name the original immutable
+  // artifact. Restore that same target so retention continues to protect it.
+  replaceWebCurrentLink(snapshot.activeLinkPath, target, snapshot.runtimeRoot);
+  clearWebActivationJournal(snapshot);
+}
+
 export function rollbackWebArtifact(snapshot, operations) {
   assertActivationRecoveryAllowed(inventoryJournalFile());
   const roots = validateWebArtifactSnapshot(snapshot);
@@ -2611,8 +2645,7 @@ async function deploy(expectedHead) {
             finally { webSwapped = isWebCandidateActive(webArtifact); }
           },
           restoreArtifact: async () => {
-            replaceWebCurrentLink(webArtifact.activeLinkPath, webArtifact.previousPath, webArtifact.runtimeRoot);
-            clearWebActivationJournal(webArtifact);
+            restoreInventoryWebArtifact(webArtifact, priorJournal);
           },
         });
         commitWebArtifact(webArtifact);
