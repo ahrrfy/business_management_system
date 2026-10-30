@@ -82,6 +82,140 @@ const proposal = () => ({
   clientRequestId: randomUUID(),
 });
 describe("governed owner exception cart", () => {
+  it("definitively rejects reused evidence on a new key and accepts corrected evidence on that same key", async () => {
+    const input = proposal();
+    const api = caller(true).returns;
+    await expect(api.executePurchaseReturnCart(input)).resolves.toMatchObject({
+      mode: "EXECUTED",
+    });
+    const duplicate = { ...input, clientRequestId: randomUUID() };
+    await expect(
+      api.executePurchaseReturnCart(duplicate),
+    ).resolves.toMatchObject({ mode: "INVALID_PROPOSAL" });
+    expect(await db().select().from(s.purchaseReturnRequests)).toHaveLength(1);
+    expect(await db().select().from(s.purchaseReturns)).toHaveLength(1);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(1);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(1);
+    expect((await db().select().from(s.branchStock))[0].quantity).toBe(9);
+    expect((await db().select().from(s.suppliers))[0].currentBalance).toBe(
+      "-150.00",
+    );
+    const corrected = { ...duplicate, reference: `ACK-${randomUUID()}` };
+    const posted = await api.executePurchaseReturnCart(corrected);
+    expect(posted.mode).toBe("EXECUTED");
+    if (posted.mode !== "EXECUTED") throw new Error("Expected executed return");
+    await expect(
+      api.executePurchaseReturnCart(corrected),
+    ).resolves.toMatchObject({ mode: "EXECUTED", requestId: posted.requestId });
+    expect(await db().select().from(s.purchaseReturnRequests)).toHaveLength(2);
+    expect(await db().select().from(s.purchaseReturns)).toHaveLength(2);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(2);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(2);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect((await db().select().from(s.branchStock))[0].quantity).toBe(8);
+    expect((await db().select().from(s.suppliers))[0].currentBalance).toBe(
+      "-300.00",
+    );
+  });
+
+  it.each(["ACTIVE", "OFF"] as const)(
+    "returns zero-cost stock at positive agreed value with double entry %s",
+    async (mode) => {
+      await db()
+        .update(s.productVariants)
+        .set({ costPrice: "0.00" })
+        .where(eq(s.productVariants.id, 1));
+      await db()
+        .insert(s.accounts)
+        .values([
+          { code: "ZERO-AP", name: "AP", type: "LIABILITY", systemRole: "AP" },
+          {
+            code: "ZERO-STOCK",
+            name: "Inventory",
+            type: "ASSET",
+            systemRole: "INVENTORY",
+          },
+          {
+            code: "ZERO-VARIANCE",
+            name: "Variance",
+            type: "EXPENSE",
+            systemRole: "PURCHASE_PRICE_VARIANCE",
+          },
+        ]);
+      if (mode === "ACTIVE")
+        await db()
+          .insert(s.doubleEntrySettings)
+          .values({
+            id: 1,
+            mode,
+            shadowCycleId: "zero-cost-active",
+            shadowOpeningHash: "a".repeat(64),
+            policyApprovalReference: "ZERO-APPROVAL",
+            policyApprovalPolicyHash: POSTING_POLICY_HASH,
+            policyApprovalCycleId: "zero-cost-active",
+            policyApprovalOpeningHash: "a".repeat(64),
+            policyAccountantName: "Test accountant",
+            policyApprovedAt: new Date(),
+            policyApprovedBy: 1,
+          });
+      const input = proposal();
+      const api = caller(true).returns;
+      const posted = await api.executePurchaseReturnCart(input);
+      expect(posted.mode).toBe("EXECUTED");
+      if (posted.mode !== "EXECUTED")
+        throw new Error("Expected executed return");
+      await expect(api.executePurchaseReturnCart(input)).resolves.toMatchObject(
+        { mode: "EXECUTED", requestId: posted.requestId },
+      );
+      expect(await db().select().from(s.purchaseReturnRequests)).toHaveLength(
+        1,
+      );
+      expect(await db().select().from(s.purchaseReturns)).toHaveLength(1);
+      expect(await db().select().from(s.inventoryMovements)).toHaveLength(1);
+      expect(await db().select().from(s.accountingEntries)).toHaveLength(1);
+      expect((await db().select().from(s.accountingEntries))[0]).toMatchObject({
+        amount: "-150.00",
+        cost: "0.00",
+      });
+      expect(await db().select().from(s.receipts)).toHaveLength(0);
+      expect((await db().select().from(s.branchStock))[0].quantity).toBe(9);
+      expect((await db().select().from(s.productVariants))[0]).toMatchObject({
+        costPrice: "0.00",
+        transitBaseBySourceBranch: {},
+      });
+      expect((await db().select().from(s.suppliers))[0].currentBalance).toBe(
+        "-150.00",
+      );
+      expect(
+        (await db().select().from(s.purchaseReturnItems))[0].valuationEvidence,
+      ).toMatchObject({
+        inventoryAmount: "0.00",
+        netAmount: "150.00",
+        varianceAmount: "-150.00",
+      });
+      const lines = await db()
+        .select({
+          role: s.journalLines.role,
+          debit: s.journalLines.debit,
+          credit: s.journalLines.credit,
+        })
+        .from(s.journalLines);
+      expect(lines).toEqual(
+        mode === "ACTIVE"
+          ? expect.arrayContaining([
+              { role: "AP", debit: "150.00", credit: "0.00" },
+              {
+                role: "PURCHASE_PRICE_VARIANCE",
+                debit: "0.00",
+                credit: "150.00",
+              },
+            ])
+          : [],
+      );
+      expect(lines).toHaveLength(mode === "ACTIVE" ? 2 : 0);
+    },
+  );
+
   it("direct approval holds current authority until its blocked supplier write commits", async () => {
     const pending =
       await caller().returns.executePurchaseReturnCart(proposal());

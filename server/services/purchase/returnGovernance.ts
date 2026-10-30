@@ -2042,7 +2042,9 @@ async function decidePurchaseReturnAuthorized(
           ...(variance.gt(0)
             ? [debitLine("PURCHASE_PRICE_VARIANCE", variance)]
             : []),
-          creditLine("INVENTORY", inventoryBook),
+          ...(inventoryBook.gt(0)
+            ? [creditLine("INVENTORY", inventoryBook)]
+            : []),
           ...(tax.gt(0) ? [creditLine("TAX_PAYABLE", tax)] : []),
           ...(variance.lt(0)
             ? [creditLine("PURCHASE_PRICE_VARIANCE", variance.abs())]
