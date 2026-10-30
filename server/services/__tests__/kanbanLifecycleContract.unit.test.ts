@@ -4,7 +4,9 @@ import { describe, expect, it } from "vitest";
 import {
   extractUnifiedReceiptBaseCode,
   pickSiblingFallbackTarget,
+  resolveHandoverBarcodeTarget,
   resolveWorkOrderHandoverFinancials,
+  UNIFIED_RECEIPT_SIBLING_MATCH_RANK,
   type SiblingWorkOrderItem,
 } from "../workOrder/kanbanQueries";
 
@@ -264,6 +266,39 @@ describe("دستور دورة حياة الكانبان وتصريف أوامر 
         kind: "WORK_ORDER",
         id: 103,
       });
+
+      // يفضّل أشقاء الوصل الموحّد (رتبة 60) على تطابق معرّف قاعدة البيانات الموروث (رتبة 10)
+      expect(
+        resolveHandoverBarcodeTarget(
+          "103757",
+          "NUMERIC",
+          [{ kind: "INVOICE", id: 103757, matchRank: 10 }],
+          siblings,
+        ),
+      ).toEqual({
+        kind: "WORK_ORDER",
+        id: 103,
+        matchRank: UNIFIED_RECEIPT_SIBLING_MATCH_RANK,
+      });
+
+      // يحفظ أسبقية التطابق الصريح لرقم المستند (رتبة 100) على أشقاء الوصل الموحّد
+      expect(
+        resolveHandoverBarcodeTarget(
+          "103757-1",
+          "REFERENCE",
+          [{ kind: "WORK_ORDER", id: 101, matchRank: 100 }],
+          siblings,
+        ),
+      ).toEqual({
+        kind: "WORK_ORDER",
+        id: 101,
+        matchRank: 100,
+      });
+
+      // يحترم عزل النطاق فلا يخلط بادئة فاتورة صريحة (INV-) بأشقاء أوامر الشغل
+      expect(
+        resolveHandoverBarcodeTarget("INV-103757", "INVOICE", [], siblings),
+      ).toBeNull();
     });
 
     it("يعتمد resolveWorkOrderHandoverFinancials أرصدة الفاتورة القائمة الفعّالة ويتجاهل الفواتير الميتة", () => {

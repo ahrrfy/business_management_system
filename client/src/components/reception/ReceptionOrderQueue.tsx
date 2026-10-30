@@ -57,10 +57,26 @@ interface ShelfAuditSelectionProps {
 
 const SHELF_AUDIT_CONFIRM_PHRASE = "جرد وتسليم";
 
-export function isShelfAuditEligible(r: Pick<QueueRow, "status" | "hasDelivery" | "deposit" | "salePrice" | "consignmentStatus" | "parcelStatus">): boolean {
+type ShelfAuditCandidate = Pick<
+  QueueRow,
+  "status" | "hasDelivery" | "deposit" | "salePrice" | "consignmentStatus" | "parcelStatus"
+> & {
+  effectiveSalePrice?: string;
+  effectiveDeposit?: string | null;
+};
+
+function effectiveRowSalePrice(r: { salePrice: string; effectiveSalePrice?: string }): string {
+  return r.effectiveSalePrice ?? r.salePrice;
+}
+
+function effectiveRowDeposit(r: { deposit: string | null; effectiveDeposit?: string | null }): string | null {
+  return r.effectiveDeposit !== undefined ? r.effectiveDeposit : r.deposit;
+}
+
+export function isShelfAuditEligible(r: ShelfAuditCandidate): boolean {
   if (r.status !== "READY" || r.hasDelivery) return false;
   if (deriveWoDeliveryState(r.consignmentStatus, r.parcelStatus) !== "NONE") return false;
-  return D(r.deposit ?? "0").gte(D(r.salePrice));
+  return D(effectiveRowDeposit(r) ?? "0").gte(D(effectiveRowSalePrice(r)));
 }
 
 // بوابات التوافق القديمة؛ السياسة المحفوظة تفحص مسار كل عملية مستقلاً:
@@ -265,14 +281,16 @@ export default function ReceptionOrderQueue({
             } catch { /* fallback below */ }
           }
           const paidNow = snap.payment?.amount ?? "0.00";
-          const remAfter = round2(D(snap.row.salePrice).minus(D(snap.row.deposit ?? "0")).minus(D(paidNow)));
+          const rowSalePrice = effectiveRowSalePrice(snap.row);
+          const rowDeposit = effectiveRowDeposit(snap.row) ?? "0";
+          const remAfter = round2(D(rowSalePrice).minus(D(rowDeposit)).minus(D(paidNow)));
           await printInvoicePaymentReceipt(
             {
               invoiceNumber: r.invoiceNumber,
               customerName: snap.row.customerName,
               customerPhone: snap.row.customerPhone,
-              invoiceTotal: snap.row.salePrice,
-              paidBefore: snap.row.deposit ?? "0",
+              invoiceTotal: rowSalePrice,
+              paidBefore: rowDeposit,
               amountPaid: paidNow,
               remainingAfter: (remAfter.gt(0) ? remAfter : D(0)).toFixed(2),
               paymentMethod: snap.payment?.method ?? "CASH",
@@ -531,7 +549,7 @@ export default function ReceptionOrderQueue({
                     </div>
                   </div>
                   <span className="shrink-0 font-bold tabular-nums" dir="ltr">
-                    {fmt(ord.salePrice)} د.ع
+                    {fmt(effectiveRowSalePrice(ord))} د.ع
                   </span>
                 </li>
               ))}
@@ -634,7 +652,7 @@ export default function ReceptionOrderQueue({
       />
 
       <MarkPickedUpDialog
-        order={pickupTarget}
+        order={pickupTarget ? { ...pickupTarget, salePrice: effectiveRowSalePrice(pickupTarget), deposit: effectiveRowDeposit(pickupTarget) } : null}
         pending={deliver.isPending}
         onClose={() => {
           pickupKeyRef.current = null;
@@ -875,15 +893,18 @@ function QueueRowItem({ row: r, canFulfill, canReclassify, canDispatch, partiesR
         </p>
       </div>
       <div className="text-left shrink-0 text-xs" dir="ltr">
-        <div className="text-sm font-bold tabular-nums">{fmt(r.salePrice)} د.ع</div>
-        {D(r.deposit ?? "0").gt(0) && (
-          <div className="mt-0.5 space-y-0.5 text-[10px] font-semibold">
-            <div className="text-money-positive">عربون: {fmt(r.deposit ?? "0")}</div>
-            <div className="text-[var(--sem-warn)]">
-              متبقّي: {fmt(round2(D(r.salePrice).minus(D(r.deposit ?? "0"))).toFixed(2))}
+        <div className="text-sm font-bold tabular-nums">{fmt(effectiveRowSalePrice(r))} د.ع</div>
+        {D(effectiveRowDeposit(r) ?? "0").gt(0) && (() => {
+          const rem = round2(D(effectiveRowSalePrice(r)).minus(D(effectiveRowDeposit(r) ?? "0")));
+          return (
+            <div className="mt-0.5 space-y-0.5 text-[10px] font-semibold">
+              <div className="text-money-positive">عربون: {fmt(effectiveRowDeposit(r) ?? "0")}</div>
+              <div className="text-[var(--sem-warn)]">
+                متبقّي: {fmt((rem.gt(0) ? rem : D(0)).toFixed(2))}
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
       </div>
       <RowActions actions={actions} />
     </li>

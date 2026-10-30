@@ -52,14 +52,14 @@ import { verifyManagerApproval } from "./saleRouter";
 import { managerApprovalSchema } from "@shared/managerApproval";
 import { reassignWorkOrder, releaseWorkOrder } from "../services/workOrder/lifecycle";
 import { setWorkOrderKanbanState } from "../services/workOrder/kanbanState";
-import { activeWorkOrderConsignmentJoinCondition, excludeDispatchedReadySql, findSiblingWorkOrdersByBaseCode, pickSiblingFallbackTarget, resolveWorkOrderHandoverFinancials } from "../services/workOrder/kanbanQueries";
+import { activeWorkOrderConsignmentJoinCondition, excludeDispatchedReadySql, findSiblingWorkOrdersByBaseCode, loadWorkOrderListEffectiveFinancials, resolveHandoverBarcodeTarget, resolveWorkOrderHandoverFinancials } from "../services/workOrder/kanbanQueries";
 import { shelfAuditDeliverWorkOrders } from "../services/workOrder/shelfAudit";
 import {
   collapseLinkedDeliveryBarcodeCandidates,
   namespaceAllowsTarget,
   prepareDeliveryBarcodeLookup,
   resolveActiveInvoiceCandidates,
-  resolveUniqueDeliveryBarcodeTarget,
+  // حسمُ التعارض وترتيب أشقاء الوصل الموحّد يمرّ عبر resolveHandoverBarcodeTarget.
 } from "../services/delivery/barcodeLookupPolicy";
 import { WO_KANBAN_STATES } from "@shared/workOrderKanban"; import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
 import { nextActionTerminalReason } from "@shared/nextAction";
@@ -723,7 +723,7 @@ export const workOrderRouter = router({
           priority: workOrders.priority,
           receptionChannel: workOrders.receptionChannel,
           salePrice: workOrders.salePrice,
-          deposit: workOrders.deposit,
+          deposit: workOrders.deposit, invoiceId: workOrders.invoiceId,
           dueDate: workOrders.dueDate,
           createdAt: workOrders.createdAt,
           // SLA age (Slice 5، ٢٨/٨/٢٦): يُحسَب على العميل من هذه الحقول عبر
@@ -794,9 +794,9 @@ export const workOrderRouter = router({
         }
       }
       // §٧ defense-in-depth: معلومة الإرسالية/الجهة تُحجب عمّن لا يرى «store» READ (نفس بوّابة DeliveryHub).
-      const seeDelivery = canSeeDeliveryForUser(ctx.user);
+      const financialsById = await loadWorkOrderListEffectiveFinancials(rows); const seeDelivery = canSeeDeliveryForUser(ctx.user);
       return rows.map((r) => ({
-        ...r,
+        ...r, ...(financialsById.get(Number(r.id)) ?? { effectiveSalePrice: String(r.salePrice), effectiveDeposit: r.deposit }),
         thumbnailUrl: thumbs.get(Number(r.id)) ?? null,
         consignmentId: seeDelivery ? r.consignmentId : null,
         consignmentStatus: seeDelivery ? r.consignmentStatus : null,
@@ -1302,13 +1302,13 @@ export const workOrderRouter = router({
       );
 
       const siblingWorkOrders = await findSiblingWorkOrdersByBaseCode(input.orderNumber, branchFilter);
-      const selectedTarget = resolveUniqueDeliveryBarcodeTarget(code, collapseLinkedDeliveryBarcodeCandidates({
+      const selectedTarget = resolveHandoverBarcodeTarget(code, namespace, collapseLinkedDeliveryBarcodeCandidates({
         namespace,
         workOrders: workOrderCandidates,
         invoices: invoiceCandidates,
         onlineOrders: onlineOrderCandidates,
         consignments: consignmentSources, mapConsignmentToSource: true,
-      })) ?? pickSiblingFallbackTarget(siblingWorkOrders);
+      }), siblingWorkOrders);
 
       const [row] = await db
         .select({
@@ -1321,7 +1321,7 @@ export const workOrderRouter = router({
           customerId: workOrders.customerId,
           customerName: customers.name,
           customerPhone: sql<string | null>`COALESCE(NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''))`,
-          deliveryAddress: workOrders.deliveryAddress,
+          hasDelivery: workOrders.hasDelivery, deliveryAddress: workOrders.deliveryAddress,
           deliveryPhone: workOrders.deliveryPhone,
           deliveryCost: workOrders.deliveryCost,
           deliveryFeeCollection: workOrders.deliveryFeeCollection,

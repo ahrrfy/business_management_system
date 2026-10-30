@@ -1,9 +1,15 @@
-import { and, asc, eq, like, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, inArray, like, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { stripDocPrefix } from "@shared/documentNumber";
 import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
 import { customers, deliveryConsignments, invoices, workOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { prepareDeliveryBarcodeLookup } from "../delivery/barcodeLookupPolicy";
+import {
+  namespaceAllowsTarget,
+  prepareDeliveryBarcodeLookup,
+  resolveUniqueDeliveryBarcodeTarget,
+  type DeliveryBarcodeNamespace,
+  type DeliveryBarcodeTarget,
+} from "../delivery/barcodeLookupPolicy";
 import { money, round2 } from "../money";
 
 export type WorkOrderStatus = typeof workOrders.$inferSelect["status"];
@@ -61,6 +67,84 @@ export function resolveWorkOrderHandoverFinancials(
     salePrice: String(wo.salePrice),
     deposit: wo.deposit != null ? String(wo.deposit) : null,
   };
+}
+
+export interface WorkOrderEffectiveFinancials {
+  effectiveSalePrice: string;
+  effectiveDeposit: string | null;
+}
+
+/**
+ * يرفق بكل صفّ من صفوف قائمة أوامر الشغل الإجمالي الفعّال والمبلغ المسدَّد فعلياً
+ * باعتماد أرصدة الفاتورة القائمة المرتبطة (إن وُجدت ولم تكن ميتة) باستعلام دفعي واحد بلا N+1،
+ * ليتطابق فحص الأهلية والعرض في طابور الاستقبال وجرد الرفّ مع حارس الخدمة الخادمية.
+ */
+export async function loadWorkOrderListEffectiveFinancials(
+  rows: ReadonlyArray<{
+    id: number;
+    salePrice: string;
+    deposit: string | null;
+    invoiceId?: number | null;
+  }>,
+): Promise<Map<number, WorkOrderEffectiveFinancials>> {
+  const result = new Map<number, WorkOrderEffectiveFinancials>();
+  if (rows.length === 0) return result;
+
+  const invoiceIds = Array.from(
+    new Set(
+      rows
+        .map((r) => (r.invoiceId != null ? Number(r.invoiceId) : 0))
+        .filter((id) => Number.isSafeInteger(id) && id > 0),
+    ),
+  );
+
+  const invoiceById = new Map<
+    number,
+    {
+      status: string | null;
+      total: string | null;
+      returnedTotal: string | null;
+      paidAmount: string | null;
+    }
+  >();
+
+  if (invoiceIds.length > 0) {
+    const db = getDb();
+    if (db) {
+      const invRows = await db
+        .select({
+          id: invoices.id,
+          status: invoices.status,
+          total: invoices.total,
+          returnedTotal: invoices.returnedTotal,
+          paidAmount: invoices.paidAmount,
+        })
+        .from(invoices)
+        .where(inArray(invoices.id, invoiceIds));
+      for (const inv of invRows) {
+        invoiceById.set(Number(inv.id), inv);
+      }
+    }
+  }
+
+  for (const r of rows) {
+    const inv =
+      r.invoiceId != null ? (invoiceById.get(Number(r.invoiceId)) ?? null) : null;
+    const resolved = resolveWorkOrderHandoverFinancials(
+      {
+        salePrice: String(r.salePrice),
+        deposit: r.deposit != null ? String(r.deposit) : null,
+        invoiceId: r.invoiceId ?? null,
+      },
+      inv,
+    );
+    result.set(Number(r.id), {
+      effectiveSalePrice: resolved.salePrice,
+      effectiveDeposit: resolved.deposit,
+    });
+  }
+
+  return result;
 }
 
 /**
@@ -136,7 +220,11 @@ export async function findSiblingWorkOrdersByBaseCode(
   code: string,
   branchFilter: number | null,
 ): Promise<SiblingWorkOrderItem[]> {
-  const baseCode = extractUnifiedReceiptBaseCode(code);
+  const trimmed = String(code ?? "").trim();
+  if (!trimmed) return [];
+  const lookup = prepareDeliveryBarcodeLookup(trimmed);
+  if (!namespaceAllowsTarget(lookup.namespace, "WORK_ORDER")) return [];
+  const baseCode = extractUnifiedReceiptBaseCode(trimmed);
   if (!baseCode) return [];
 
   const db = getDb();
@@ -221,4 +309,30 @@ export function pickSiblingFallbackTarget(
     siblingWorkOrders.find((item) => item.status === "READY" && !item.hasDelivery) ??
     siblingWorkOrders[0]!;
   return { kind: "WORK_ORDER", id: chosen.id };
+}
+
+/**
+ * رتبة مطابقة أشقاء الوصل الموحّد (`103757` ⇐ `103757-1`, `103757-2`):
+ * أدنى من التطابق الصريح لرقم المستند (100 / 80)، وأعلى من المرجع الخارجي (50..25)
+ * ومن معرّف قاعدة البيانات الرقمي الموروث (10..5) حتى لا يفتح المسح فاتورة أو طلباً لا صلة له.
+ */
+export const UNIFIED_RECEIPT_SIBLING_MATCH_RANK = 60;
+
+export function resolveHandoverBarcodeTarget(
+  code: string,
+  namespace: DeliveryBarcodeNamespace,
+  collapsedCandidates: readonly DeliveryBarcodeTarget[],
+  siblingWorkOrders: readonly SiblingWorkOrderItem[],
+): DeliveryBarcodeTarget | null {
+  const candidates: DeliveryBarcodeTarget[] = [...collapsedCandidates];
+  if (namespaceAllowsTarget(namespace, "WORK_ORDER")) {
+    const siblingTarget = pickSiblingFallbackTarget(siblingWorkOrders);
+    if (siblingTarget) {
+      candidates.push({
+        ...siblingTarget,
+        matchRank: UNIFIED_RECEIPT_SIBLING_MATCH_RANK,
+      });
+    }
+  }
+  return resolveUniqueDeliveryBarcodeTarget(code, candidates);
 }

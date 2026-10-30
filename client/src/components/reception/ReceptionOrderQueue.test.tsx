@@ -280,6 +280,45 @@ describe("shelf audit mode governance", () => {
     const checkboxMatches = activeHtml.match(/type="checkbox"/g) ?? [];
     expect(checkboxMatches).toHaveLength(1);
   });
+
+  it("treats returned/cancelled-dispatch orders settled on their linked invoice as eligible for shelf audit", () => {
+    state.user = { role: "manager" };
+    state.rows = [
+      {
+        ...readyRow,
+        id: 34,
+        orderNumber: "WO34",
+        title: "طلب مسدد عبر الفاتورة المرتبطة",
+        salePrice: "5000",
+        deposit: "0",
+        effectiveSalePrice: "5000.00",
+        effectiveDeposit: "5000.00",
+        hasDelivery: false,
+        consignmentStatus: "RETURNED",
+        parcelStatus: "RETURNED",
+      },
+      {
+        ...readyRow,
+        id: 35,
+        orderNumber: "WO35",
+        title: "طلب متبقٍ على الفاتورة المرتبطة",
+        salePrice: "5000",
+        deposit: "5000",
+        effectiveSalePrice: "5000.00",
+        effectiveDeposit: "2000.00",
+        hasDelivery: false,
+      },
+    ];
+
+    const closedHtml = queue(false);
+    expect(closedHtml).toContain("جرد الرفّ (1)");
+
+    const activeHtml = queue(true);
+    expect(activeHtml).toContain("WO34");
+    const checkboxMatches = activeHtml.match(/type="checkbox"/g) ?? [];
+    expect(checkboxMatches).toHaveLength(1);
+    expect(activeHtml).toContain('aria-label="تحديد الطلب WO34 (طلب مسدد عبر الفاتورة المرتبطة) ضمن جرد الرفّ"');
+  });
 });
 
 describe("work-order delivery section", () => {
