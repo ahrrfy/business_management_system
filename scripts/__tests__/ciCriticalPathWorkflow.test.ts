@@ -85,7 +85,8 @@ describe("CI critical-path policy", () => {
   it("يبقي الفحص المحمي بوابة تجميع خفيفة لا تعيد العمل", () => {
     const gate = jobBlock("check-test-build");
 
-    expect(gate).toContain("needs: [scope, test-shards, quality-build]");
+    expect(gate).toContain("needs: [scope, test-shards, quality-build, backup-safety]");
+    expect(gate).toContain("needs.backup-safety.result");
     expect(gate).toContain("needs.scope.outputs.heavy");
     expect(gate).toContain("needs.test-shards.result");
     expect(gate).toContain("needs.quality-build.result");
