@@ -422,6 +422,9 @@ pnpm db:verify
 
 **الطريقة المعتمدة: أمر نشر مُدار واحد** (`scripts/deploy.mjs`). بعد دمج التغييرات على `main` وخُضرة CI، شغّله بهوية `deploy` نفسها التي تملك `pm2-deploy.service`:
 
+قبل تشغيل الأمر لأول نشر للمخزون أو عند تغيّر helper/drop-in، أكمل تهيئة العقد الجذري
+الموثقة أدناه، وتحقق مجدداً أن `origin/main` يساوي الإصدار الأخضر المحدّد.
+
 ```bash
 ssh root@<الخادم>
 sudo -iu deploy bash -lc 'cd /home/deploy/erp && pnpm prod:deploy'
@@ -429,21 +432,25 @@ sudo -iu deploy bash -lc 'cd /home/deploy/erp && pnpm prod:deploy'
 
 > **PM2 خاص بكل مستخدم.** السكربت يرفض `root` أو `HOME/PM2_HOME` غير المطابق لـ`deploy`، كي لا يُنشئ daemon ثانياً يبدو فارغاً أو ينازع الخدمة الحقيقية على المنفذ.
 
-**مرة واحدة بعد إدخال عقد PID أعلاه أو عند تغيّر helper/drop-in:** بعد نجاح `prod:deploy` ثبّت
-الملفين في مسارين root-owned. ⛔ لا تشغّل `sudo node /home/deploy/erp/...`؛ فهذا يحوّل تعديل
-ملفات deploy إلى تنفيذ root. مصدر النسخ قابل للكتابة لـdeploy، لذلك لا يكفي `install source final`:
-ثبّت أولاً في ملف مؤقت root-owned على filesystem الهدف، قارنه بقيمة SHA-256 المنشورة في
-summary وظيفة `check-test-build` الخضراء على **push إلى main** للإصدار نفسه، ثم استخدم `mv -T`
-الذري. لا تأخذ القيم من تشغيل PR ذي merge ref ولا من checkout الخادم. هذه الأوامر لا تستدعي
-start/stop/restart:
+**قبل أول نشر للمخزون، وعند تغيّر helper/drop-in:** بعد نجاح جميع فحوص **push إلى main**
+للإصدار المحدّد، ثبّت العقد الجذري قبل `prod:deploy`. استخرج الملفين من commit الإصدار دون
+تبديل checkout الخادم، وقارنهما ببصمات summary وظيفة `quality-build` لذلك التشغيل نفسه.
+⛔ لا تشغّل `sudo node /home/deploy/erp/...`؛ فهذا يحوّل تعديل ملفات deploy إلى تنفيذ root.
+ثبّت أولاً في ملف مؤقت root-owned على filesystem الهدف، ثم استخدم `mv -T` الذري.
+لا تأخذ القيم المتوقعة من PR أو checkout الخادم أو حساب محلي. التثبيت و`daemon-reload`
+لا يشغّلان PM2؛ تبنّي PID أدناه إجراء منفصل:
 
 ```bash
+set -euo pipefail
 cd /home/deploy/erp
 release_sha='<CI_GREEN_RELEASE_SHA>'
 helper_sha256='<RELEASE_PM2_HELPER_SHA256>'
 dropin_sha256='<RELEASE_PM2_DROPIN_SHA256>'
-test "$(git rev-parse HEAD)" = "$release_sha"
-case "$release_sha$helper_sha256$dropin_sha256" in *'<'*|'') echo 'release hashes are not pinned' >&2; exit 1;; esac
+[[ "$release_sha" =~ ^[0-9a-f]{40}$ ]]
+[[ "$helper_sha256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$dropin_sha256" =~ ^[0-9a-f]{64}$ ]]
+sudo -u deploy -- /usr/bin/git -C /home/deploy/erp fetch --no-tags origin main
+test "$(sudo -u deploy -- /usr/bin/git -C /home/deploy/erp rev-parse refs/remotes/origin/main)" = "$release_sha"
 
 sudo /usr/bin/install -d -o root -g root -m 0755 /usr/local/libexec/erp
 sudo /usr/bin/install -d -o root -g root -m 0755 /etc/systemd/system/pm2-deploy.service.d
@@ -464,10 +471,12 @@ helper_tmp="$(sudo /usr/bin/mktemp /usr/local/libexec/erp/.pm2-systemd-start.mjs
 dropin_tmp="$(sudo /usr/bin/mktemp /etc/systemd/system/pm2-deploy.service.d/.20-pidfile-reconcile.conf.XXXXXX)"
 cleanup_pm2_contract_tmp() { sudo /usr/bin/rm -f -- "$helper_tmp" "$dropin_tmp"; }
 trap cleanup_pm2_contract_tmp EXIT HUP INT TERM
-sudo /usr/bin/install -o root -g root -m 0755 deploy/systemd/pm2-systemd-start.mjs "$helper_tmp"
-sudo /usr/bin/install -o root -g root -m 0644 deploy/systemd/pm2-deploy.service.d/20-pidfile-reconcile.conf "$dropin_tmp"
+sudo -u deploy -- /usr/bin/git -C /home/deploy/erp show "${release_sha}:deploy/systemd/pm2-systemd-start.mjs" | sudo /usr/bin/tee "$helper_tmp" >/dev/null
+sudo -u deploy -- /usr/bin/git -C /home/deploy/erp show "${release_sha}:deploy/systemd/pm2-deploy.service.d/20-pidfile-reconcile.conf" | sudo /usr/bin/tee "$dropin_tmp" >/dev/null
 printf '%s  %s\n' "$helper_sha256" "$helper_tmp" | sudo /usr/bin/sha256sum -c -
 printf '%s  %s\n' "$dropin_sha256" "$dropin_tmp" | sudo /usr/bin/sha256sum -c -
+sudo /usr/bin/chmod 0755 "$helper_tmp"
+sudo /usr/bin/chmod 0644 "$dropin_tmp"
 sudo /usr/bin/mv -Tf -- "$helper_tmp" /usr/local/libexec/erp/pm2-systemd-start.mjs
 sudo /usr/bin/mv -Tf -- "$dropin_tmp" /etc/systemd/system/pm2-deploy.service.d/20-pidfile-reconcile.conf
 trap - EXIT HUP INT TERM
@@ -475,7 +484,11 @@ sudo /usr/bin/systemctl daemon-reload
 sudo /usr/bin/systemd-analyze verify pm2-deploy.service
 test "$(stat -c '%U:%G:%a' /usr/local/libexec/erp/pm2-systemd-start.mjs)" = root:root:755
 test "$(stat -c '%U:%G:%a' /etc/systemd/system/pm2-deploy.service.d/20-pidfile-reconcile.conf)" = root:root:644
+```
 
+**تبنّي PID عند الحاجة فقط، بعد اكتمال النشر:** ليس جزءاً من تهيئة أول نشر للمخزون.
+
+```bash
 # إن كان daemon يعمل والوحدة failed/inactive: inspect الموثوق يقرأ /proc فقط ولا ينشئ daemon.
 before="$(sudo /opt/alroya-erp/node-v24.22.1-linux-x64/bin/node /usr/local/libexec/erp/pm2-systemd-start.mjs --inspect)"
 before_pid="${before%% *}"
@@ -493,10 +506,11 @@ sudo -iu deploy pm2 status
 ```
 
 كل محاولة تنشئ `$backup_dir` جديداً بـ`mktemp -d` ولا تعيد استعمال backup سابقاً. إذا فشل
-`systemd-analyze verify` أو أي تحقق **قبل** `systemctl start`، أعد النسختين السابقتين ذرياً من
+`systemd-analyze verify` أو أي تحقق **قبل بدء تفعيل المخزون وقبل** `systemctl start`، أعد النسختين السابقتين ذرياً من
 ذلك المسار الفريد (أو احذف الهدف الذي يحمل marker ‏`*.absent`)، ثم نفّذ
 `systemctl daemon-reload` و`systemd-analyze verify` مجدداً. لا تنفّذ rollback بعد نجاح
 `start` وثبات PID إلا إذا ثبت انحراف العقد؛ فالعملية الحية لم تُقتل أو تُستبدل أصلاً.
+بعد بدء تفعيل المخزون لا تستعد مساعد إقلاع قديماً يفتقد الحاجز؛ عالج الانحراف مع إبقاء الحاجز فعّالاً.
 
 ⛔ لا تستعمل `systemctl restart/stop` ولا `pm2 kill/update` لإصلاح تبنّي PID وحده؛ تلك الأوامر تغيّر
 العمليات الحيّة بينما المطلوب تبنّي الـdaemon القائم فقط. عند الإقلاع النظيف لا يوجد `before`
