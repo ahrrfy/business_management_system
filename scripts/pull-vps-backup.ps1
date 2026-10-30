@@ -36,58 +36,62 @@ param(
   [int]$KeepLocal = 14
 )
 $ErrorActionPreference = "Stop"
-New-Item -ItemType Directory -Force $LocalDir | Out-Null
-
-# Modern scp (SFTP since OpenSSH 9) does not expand $() remotely => ask ssh for the file list first.
-$remoteList = ssh $SshHost "ls -1 $RemoteDir/*.sql.gpg 2>/dev/null"
-$remoteNames = @("$remoteList" -split "`n" | ForEach-Object { ($_.Trim() -split "/")[-1] } | Where-Object { $_ })
-if ($remoteNames.Count -eq 0) {
-  Write-Error "No .sql.gpg files on the server - check BACKUP_GPG_PASSPHRASE and the nightly backup cron."
-  exit 1
+. (Join-Path $PSScriptRoot 'lib/offsite-integrity.ps1')
+if ($SshHost -notmatch '^[A-Za-z0-9][A-Za-z0-9_.@-]*$' -or
+    $RemoteDir -notmatch '^/[A-Za-z0-9_./-]+$' -or $RemoteDir -match '(^|/)\.\.(/|$)' -or $MaxAgeHours -le 0) {
+  throw 'Unsafe host, remote directory or age limit'
 }
-
-# Newest by embedded UTC stamp (timestamped names sort lexically = chronologically).
-$name = ($remoteNames | Sort-Object -Descending | Select-Object -First 1)
-
-# 1) CRITICAL PATH: secure the NEWEST backup first (the whole point of the offsite pull).
-$newestLocal = Join-Path $LocalDir $name
-if (-not (Test-Path $newestLocal)) {
-  scp "${SshHost}:$RemoteDir/$name" "$newestLocal"
-  if (-not (Test-Path $newestLocal)) { Write-Error "Pull failed - $name did not arrive."; exit 1 }
-}
-
-# 2) FRESHNESS GATE on the newest (UTC stamp from backup.mjs). Older than $MaxAgeHours means
-#    the nightly backup on the server itself is broken - fail loudly so the health check alerts.
-$m = [regex]::Match($name, "\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}")
-if ($m.Success) {
-  $stampUtc = [datetime]::ParseExact($m.Value, "yyyy-MM-dd'T'HH-mm-ss", $null)
-  $ageH = ((Get-Date).ToUniversalTime() - $stampUtc).TotalHours
-  if ($ageH -gt $MaxAgeHours) {
-    Write-Error ("Newest server backup is {0:N1}h old (> {1}) - nightly backup on the VPS is BROKEN! Check logs/backup.log there." -f $ageH, $MaxAgeHours)
-    exit 1
+New-Item -ItemType Directory -Force -Path $LocalDir | Out-Null
+$lock = Open-BackupLock $LocalDir
+try {
+  $remoteList = @(ssh -o BatchMode=yes -o ConnectTimeout=15 $SshHost "ls -1 '$RemoteDir/'*.sql.gpg 2>/dev/null")
+  if ($LASTEXITCODE -ne 0) { throw 'Remote backup listing failed' }
+  $remoteNames = @($remoteList | ForEach-Object { ($_.Trim() -split '/')[-1] } | Where-Object { $_ } | Sort-Object -Unique -Descending)
+  if (-not $remoteNames.Count) { throw 'No encrypted backups found' }
+  foreach ($name in $remoteNames) { Assert-BackupName $name }
+  $age = Get-BackupAgeHours $remoteNames[0]
+  if ($age -gt $MaxAgeHours) { throw 'Newest server backup is stale' }
+  $verified = 0
+  foreach ($name in $remoteNames) {
+    try {
+      # A manifest is the source publication marker. Never trust legacy existence alone.
+      $json = @(ssh -o BatchMode=yes -o ConnectTimeout=15 $SshHost "cat '$RemoteDir/$name.manifest.json'") -join "`n"
+      if ($LASTEXITCODE -ne 0) { throw 'Source manifest missing or unreadable' }
+      $manifest = Read-BackupManifest $json $name
+      $local = Join-Path $LocalDir $name
+      $receipt = "$local.manifest.json"
+      $valid = $false
+      if (Test-Path -LiteralPath $local) {
+        try { Assert-BackupIntegrity $local $manifest; $valid = $true } catch { $valid = $false }
+      }
+      if (-not $valid) {
+        $partial = "$local.$([guid]::NewGuid().ToString('N')).partial"
+        scp -o BatchMode=yes -o ConnectTimeout=15 "${SshHost}:$RemoteDir/$name" $partial
+        if ($LASTEXITCODE -ne 0) { throw 'Transfer failed; incomplete file is not a published backup' }
+        Assert-BackupIntegrity $partial $manifest
+        # Keep the unverified original as evidence. Never overwrite or delete it.
+        if (Test-Path -LiteralPath $local) { [IO.File]::Move($local, "$local.unverified-$([guid]::NewGuid().ToString('N'))") }
+        [IO.File]::Move($partial, $local)
+      }
+      # Recheck the immutable source marker before publishing the local receipt.
+      $afterJson = @(ssh -o BatchMode=yes -o ConnectTimeout=15 $SshHost "cat '$RemoteDir/$name.manifest.json'") -join "`n"
+      if ($LASTEXITCODE -ne 0) { throw 'Could not recheck source publication' }
+      $after = Read-BackupManifest $afterJson $name
+      if ($after.sha256 -cne $manifest.sha256 -or $after.size -ne $manifest.size) { throw 'Source publication changed' }
+      $pendingReceipt = "$receipt.$([guid]::NewGuid().ToString('N')).partial"
+      [IO.File]::WriteAllText($pendingReceipt, $json, (New-Object Text.UTF8Encoding($false)))
+      if (Test-Path -LiteralPath $receipt) { [IO.File]::Move($receipt, "$receipt.previous-$([guid]::NewGuid().ToString('N'))") }
+      [IO.File]::Move($pendingReceipt, $receipt)
+      $verified++
+    } catch {
+      if ($name -ceq $remoteNames[0]) { throw }
+      Write-Warning "Backfill deferred: $name ($($_.Exception.Message))"
+    }
   }
+  Write-Host "OK: newest integrity verified; $verified backup(s) verified. Restore verification is separate."
+  # KeepLocal retained for invocation compatibility. No pruning without a proven recovery set.
+  Write-Host 'Retention paused; no existing files deleted.'
+} finally {
+  $lock.Dispose()
 }
-
-# 3) MIRROR / BACKFILL (best-effort): pull any OTHER retained server backups we do not hold yet.
-#    A day missed while this machine was off/asleep would otherwise never reach the offsite copy
-#    and would rotate off the server (7/4/3) => a permanent hole in disaster recovery. Non-fatal:
-#    the newest is already secured above, so a transient scp miss here just retries next run.
-$backfilled = 0
-foreach ($bn in $remoteNames) {
-  $lp = Join-Path $LocalDir $bn
-  if (Test-Path $lp) { continue }
-  scp "${SshHost}:$RemoteDir/$bn" "$lp"
-  if (Test-Path $lp) { $backfilled++ } else { Write-Host "  (backfill deferred - transient miss: $bn)" }
-}
-
-if ($m.Success) {
-  Write-Host ("OK: newest {0} ({1:N1}h old); {2} older backup(s) backfilled into {3}" -f $name, $ageH, $backfilled, $LocalDir)
-} else {
-  Write-Host ("OK: newest {0}; {1} older backup(s) backfilled into {2} (timestamp unparsed)" -f $name, $backfilled, $LocalDir)
-}
-
-# Local rotation: keep the newest $KeepLocal files (names are timestamped => name sort = time sort).
-Get-ChildItem $LocalDir -Filter *.sql.gpg |
-  Sort-Object Name -Descending |
-  Select-Object -Skip $KeepLocal |
-  Remove-Item -Force
+exit 0

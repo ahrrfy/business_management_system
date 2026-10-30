@@ -482,12 +482,7 @@ function ensureStateDurable(projectRoot) {
   assertSafeDirectory(root, "HR_BRIDGE_RUNTIME_DIRECTORY_INVALID");
   const file = statePath(projectRoot);
   assertRegularFile(file, "HR_BRIDGE_RELEASE_STATE_INVALID");
-  const fd = fs.openSync(file, "r");
-  try {
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
-  }
+  fsyncFile(file);
   fsyncDirectory(root);
 }
 
@@ -621,6 +616,29 @@ function commitActivation(projectRoot, txId) {
     previous: sameDescriptor(state.current, descriptor)
       ? state.previous
       : state.current,
+    pending: null,
+  }));
+}
+
+// The inventory controller already verified and saved the running candidates.
+// Its RELEASED journal authorizes this metadata-only compare-and-swap; there is
+// deliberately no bridge activation transaction that could restart the prior.
+function commitInventoryBaseline(projectRoot, candidate, prior) {
+  const descriptor = normalizeDescriptor(candidate);
+  const expected = prior == null ? null : normalizeDescriptor(prior);
+  assertDescriptorMatchesRelease(projectRoot, descriptor, "HR_BRIDGE_RELEASE_CANDIDATE_MODE_MISMATCH");
+  const state = readState(projectRoot);
+  if (state.pending) throw new Error("HR_BRIDGE_RELEASE_TRANSACTION_PENDING");
+  if (sameDescriptor(state.current, descriptor)) {
+    ensureStateDurable(projectRoot);
+    return;
+  }
+  if (!sameDescriptor(state.current, expected)) {
+    throw new Error("INVENTORY_BRIDGE_RECONCILIATION_MISMATCH");
+  }
+  writeState(projectRoot, withStateChange(state, {
+    current: descriptor,
+    previous: state.current,
     pending: null,
   }));
 }
@@ -1162,6 +1180,7 @@ module.exports = Object.freeze({
   abortActivation,
   beginActivation,
   commitActivation,
+  commitInventoryBaseline,
   ensureStateDurable,
   establishBaseline,
   loadReleaseEnvironment,
