@@ -1,3 +1,5 @@
+import { readEconomicOwnedPositions } from "../inventory/economicOwnership";
+import { lockProductionInventoryScope, syncProductionBundleCosts } from "./bundleCostScope";
 // إلغاء مستند إنتاج: يعكس المخرجات (OUT) ثم المدخلات (IN)، ويفك مساهمة دفعة الإنتاج من WAVG.
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
@@ -26,10 +28,8 @@ export async function cancelProduction(productionOrderId: number, actor: Actor &
     const lines = await tx.select().from(productionLines).where(eq(productionLines.productionOrderId, productionOrderId));
     const outs = lines.filter((l: any) => l.direction === "OUTPUT").sort((a: any, b: any) => Number(a.variantId) - Number(b.variantId));
     const ins = lines.filter((l: any) => l.direction === "INPUT").sort((a: any, b: any) => Number(a.variantId) - Number(b.variantId));
-    const allVariantIds = await lockInventoryVariants(
-      tx,
-      outs.concat(ins).map((line: any) => Number(line.variantId)),
-    );
+    const allVariantIds = Array.from(new Set(outs.concat(ins).map(line => Number(line.variantId)))).sort((a, b) => a - b);
+    const scope = await lockProductionInventoryScope(tx, allVariantIds, allVariantIds);
     // نقفل **كل** أرصدة الأصناف مرةً واحدة وبالترتيب الحاكم. هذا يخدم غرضين معاً:
     //  1) يمنع عكس ترتيب الأقفال حين تكون بعض المدخلات أصغر معرّفاً من المخرجات؛
     //  2) يجعل كمية WAVG أدناه مشتقةً من Current Read المقفلة نفسها، لا من SUM بلقطة RR قديمة.
@@ -65,23 +65,12 @@ export async function cancelProduction(productionOrderId: number, actor: Actor &
     }
     const outVariantIds = Array.from(byVariant.keys()).sort((a, b) => a - b);
     const qtyMap = new Map<number, Decimal>();
-    for (const row of lockedStockRows) {
-      const variantId = Number(row.variantId);
-      if (!byVariant.has(variantId)) continue;
-      qtyMap.set(
-        variantId,
-        (qtyMap.get(variantId) ?? new Decimal(0)).plus(row.quantity ?? 0),
-      );
+    const currentCost = new Map<number, Decimal>();
+    for (const id of outVariantIds) {
+      const current = await readEconomicOwnedPositions(tx, scope, id);
+      qtyMap.set(id, current.positions.reduce((sum, p) => sum.plus(p.ownedQuantity), new Decimal(0)));
+      currentCost.set(id, money(current.variant.costPrice ?? "0"));
     }
-    const costRows = outVariantIds.length
-      ? await tx
-          .select({ id: productVariants.id, costPrice: productVariants.costPrice })
-          .from(productVariants)
-          .where(inArray(productVariants.id, outVariantIds))
-          .orderBy(asc(productVariants.id))
-          .for("update")
-      : [];
-    const currentCost = new Map(costRows.map((row) => [Number(row.id), money(row.costPrice ?? "0")]));
     const restoredCosts = new Map<number, Decimal>();
     for (const [variantId, produced] of Array.from(byVariant.entries())) {
       const currentQty = qtyMap.get(variantId) ?? new Decimal(0);
@@ -106,6 +95,7 @@ export async function cancelProduction(productionOrderId: number, actor: Actor &
     // اعكس المخرجات أولاً (سحب المنتَج) — قد يرمي CONFLICT إن بِيع/استُهلك ⇒ يمنع الإلغاء بحقّ.
     for (const l of outs) {
       await applyMovement(tx, {
+          economicScope: scope,
         variantId: Number(l.variantId),
         branchId: Number(po.branchId),
         baseQuantity: l.baseQuantity,
@@ -165,6 +155,7 @@ export async function cancelProduction(productionOrderId: number, actor: Actor &
       });
     }
 
+    await syncProductionBundleCosts(tx, allVariantIds);
     await tx.update(productionOrders).set({ status: "CANCELLED" }).where(eq(productionOrders.id, productionOrderId));
     return { productionOrderId, status: "CANCELLED" as const };
   });

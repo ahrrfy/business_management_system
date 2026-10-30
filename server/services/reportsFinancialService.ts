@@ -1317,14 +1317,14 @@ export async function getFinancialPosition(
           JOIN productVariants pv2 ON pv2.id = COALESCE(stlbc.componentVariantId, stl.variantId)
           JOIN products p2 ON p2.id = pv2.productId
           WHERE st.transferStatus = 'IN_TRANSIT'
-            AND p2.isConsignment = false
+            AND p2.isConsignment = false AND p2.isService = false AND p2.isBundle = false
             ${bId ? sql`AND st.fromBranchId = ${bId}` : sql``}
         ), 0)
     AS CHAR) AS v
     FROM branchStock bs
       JOIN productVariants pv ON pv.id = bs.variantId
       JOIN products p ON p.id = pv.productId
-    WHERE p.isConsignment = false ${bId ? sql`AND bs.branchId = ${bId}` : sql``}
+    WHERE p.isConsignment = false AND p.isService = false AND p.isBundle = false ${bId ? sql`AND bs.branchId = ${bId}` : sql``}
   `),
   )[0] ?? { v: "0" };
 

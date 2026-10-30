@@ -97,6 +97,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "node scripts/db-push-guard.mjs",
+    "db:dev:inventory:init": "node scripts/dev-inventory-init.mjs",
     "seed": "cross-env NODE_ENV=development SEED_MODE=sample TZ=UTC tsx server/seed.ts",
     "seed:demo-channels": "cross-env NODE_ENV=development TZ=UTC tsx scripts/demo-seed-channels.ts",
     "seed:prod": "cross-env NODE_ENV=production SEED_MODE=prod TZ=UTC tsx server/seed.ts",

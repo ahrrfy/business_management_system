@@ -5,8 +5,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 
 import {
+  assertInventoryResurrection,
   buildResurrectCommand,
   parseDeployAccount,
   reconcilePm2ForSystemd,
@@ -47,6 +49,136 @@ function fixture() {
   fs.mkdirSync(pm2Home, { recursive: true, mode: 0o700 });
   fs.mkdirSync(path.dirname(pidFile), { recursive: true, mode: 0o755 });
   return { root, procRoot, pm2Home, pidFile };
+}
+
+{
+  const f = fixture();
+  try {
+    // Both states occur in the real Linux contract: ping-only adoption and a
+    // fresh boot with no PM2 home. PM2 has no saved workload to resurrect.
+    assert.doesNotThrow(() => assertInventoryResurrection(f.pm2Home));
+    assert.doesNotThrow(() =>
+      assertInventoryResurrection(path.join(f.root, "not-created")),
+    );
+
+    const dump = path.join(f.pm2Home, "dump.pm2");
+    const backup = `${dump}.bak`;
+    const journalPath = path.join(f.pm2Home, "erp-inventory-activation.json");
+    const script = path.join(f.root, "approved.cjs");
+    fs.writeFileSync(script, "approved ERP artifact");
+    const hash = createHash("sha256").update(fs.readFileSync(script)).digest("hex");
+    const journal = {
+      version: 1,
+      phase: "READY",
+      artifacts: [
+        { name: "erp-server", script, bundle: script, hash, scriptHash: hash, instances: 1 },
+      ],
+    };
+    const saveJournal = (value) =>
+      fs.writeFileSync(journalPath, JSON.stringify(value), { mode: 0o600 });
+    const saveBackup = (pm_exec_path) => fs.writeFileSync(
+      backup,
+      JSON.stringify([{ name: "erp-server", pm_exec_path }]),
+    );
+    saveBackup(script);
+    // Genuine legacy absence remains allowed, but existsSync also reports false
+    // for a retained dangling link. Use a real junction on Windows (no elevation).
+    assert.doesNotThrow(() => assertInventoryResurrection(f.pm2Home));
+    fs.symlinkSync(
+      path.join(f.root, "missing-journal-target"),
+      journalPath,
+      process.platform === "win32" ? "junction" : "file",
+    );
+    assert.equal(fs.existsSync(journalPath), false);
+    assert.equal(fs.lstatSync(journalPath).isSymbolicLink(), true);
+    assert.throws(
+      () => assertInventoryResurrection(f.pm2Home),
+      /INVENTORY_BOOT_JOURNAL_UNTRUSTED/,
+    );
+    fs.unlinkSync(journalPath);
+    fs.mkdirSync(journalPath);
+    assert.throws(
+      () => assertInventoryResurrection(f.pm2Home),
+      /INVENTORY_BOOT_JOURNAL_UNTRUSTED/,
+    );
+    fs.rmdirSync(journalPath);
+    fs.writeFileSync(journalPath, "{", { mode: 0o600 });
+    assert.throws(() => assertInventoryResurrection(f.pm2Home), SyntaxError);
+    fs.unlinkSync(journalPath);
+    // Do not turn uncertain journal metadata into legacy absence. These errors
+    // cannot be induced portably with filesystem permissions on Windows.
+    const lstatSync = fs.lstatSync;
+    try {
+      for (const code of ["EACCES", "EIO"]) {
+        const failure = Object.assign(new Error(code), { code });
+        fs.lstatSync = (file, ...args) => {
+          if (file === journalPath) throw failure;
+          return lstatSync(file, ...args);
+        };
+        assert.throws(() => assertInventoryResurrection(f.pm2Home), failure);
+      }
+    } finally {
+      fs.lstatSync = lstatSync;
+    }
+    saveJournal(journal);
+    assert.doesNotThrow(() => assertInventoryResurrection(f.pm2Home));
+    saveJournal({ ...journal, phase: "FATAL" });
+    assert.throws(
+      () => assertInventoryResurrection(f.pm2Home),
+      /INVENTORY_BOOT_RECOVERY_REQUIRED/,
+    );
+    saveJournal(journal);
+    saveBackup(path.join(f.root, "stale.cjs"));
+    assert.throws(
+      () => assertInventoryResurrection(f.pm2Home),
+      /INVENTORY_BOOT_ARTIFACT_MISMATCH/,
+    );
+    saveBackup(script);
+    fs.writeFileSync(script, "tampered ERP artifact");
+    assert.throws(
+      () => assertInventoryResurrection(f.pm2Home),
+      /INVENTORY_BOOT_ARTIFACT_MISMATCH/,
+    );
+    fs.writeFileSync(backup, "{");
+    assert.throws(() => assertInventoryResurrection(f.pm2Home), SyntaxError);
+    fs.writeFileSync(backup, "{}");
+    assert.throws(
+      () => assertInventoryResurrection(f.pm2Home),
+      /INVENTORY_BOOT_DUMP_INVALID/,
+    );
+    fs.unlinkSync(backup);
+    fs.mkdirSync(backup);
+    assert.throws(
+      () => assertInventoryResurrection(f.pm2Home),
+      /INVENTORY_BOOT_DUMP_UNTRUSTED/,
+    );
+    fs.rmdirSync(backup);
+    // A broken primary must fail closed rather than silently allowing PM2's
+    // fallback; a valid primary takes precedence over a hostile backup.
+    fs.writeFileSync(dump, "{");
+    saveBackup(script);
+    assert.throws(() => assertInventoryResurrection(f.pm2Home), SyntaxError);
+    fs.writeFileSync(dump, "[]");
+    assert.doesNotThrow(() => assertInventoryResurrection(f.pm2Home));
+    fs.unlinkSync(dump);
+    fs.unlinkSync(backup);
+    for (const phase of ["PRE_RELEASE", "READY", "RELEASED"]) {
+      saveJournal({ ...journal, phase });
+      assert.throws(
+        () => assertInventoryResurrection(f.pm2Home),
+        /INVENTORY_BOOT_RECOVERY_REQUIRED/,
+      );
+    }
+    fs.writeFileSync(journalPath, "{");
+    assert.throws(
+      () => assertInventoryResurrection(f.pm2Home),
+      /INVENTORY_BOOT_RECOVERY_REQUIRED/,
+    );
+    fs.unlinkSync(journalPath);
+    assert.doesNotThrow(() => assertInventoryResurrection(f.pm2Home));
+  } finally {
+    fs.rmSync(f.root, { recursive: true, force: true });
+  }
 }
 
 {
@@ -195,6 +327,8 @@ function fixture() {
   assert.doesNotMatch(helper, /from\s+["']\.\.?\//u);
   assert.doesNotMatch(helper, /\/home\/deploy\/erp/u);
   assert.doesNotMatch(helper, /hr-bridge-runtime-policy/u);
+  assert.ok(helper.indexOf("assertInventoryResurrection(PM2_HOME)") < helper.indexOf("const daemon = await reconcilePm2ForSystemd("),
+    "durable ERP activation interlock must run before PM2 resurrection");
 
   const docs = fs.readFileSync(
     path.join(PROJECT_ROOT, "docs/deployment-vps.md"),

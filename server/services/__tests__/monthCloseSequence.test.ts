@@ -1,6 +1,30 @@
 import { readFileSync } from "node:fs";
 import { getTableConfig } from "drizzle-orm/mysql-core";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { Tx } from "../../db";
+const transactionProbe = vi.hoisted(() => ({ events: [] as string[], gateError: false, authorityError: false }));
+vi.mock("../../db", () => ({ getDb: () => ({ transaction: async (fn: (tx: Tx) => Promise<unknown>) => {
+  transactionProbe.events.push("begin");
+  const result = await fn({} as Tx);
+  transactionProbe.events.push("commit");
+  return result;
+} }) }));
+vi.mock("../reports/monthCloseGate", () => ({
+  lockFinancialPostingGate: async () => {
+    transactionProbe.events.push("writer");
+    if (transactionProbe.gateError) throw new Error("gate rejected");
+  },
+  lockCompanyMonthCloseGate: async () => { transactionProbe.events.push("exclusive"); },
+  isMonthCloseGateMissing: () => false,
+  ensureFinancialPostingGate: vi.fn(),
+}));
+// Keep the real async dispatch scope and withTx; substitute only stored authority I/O.
+vi.mock("../authorization/operationAuthority", () => ({ assertOperationAuthorityTx: async () => {
+  transactionProbe.events.push("authority");
+  if (transactionProbe.authorityError) throw new Error("authority rejected");
+} }));
+import { withGovernanceTx, withTx, assertFinancialWriterGateHeld } from "../tx";
+import { withOperationAuthority } from "../authorization/operationExecutionScope";
 import {
   monthCloseCertificates,
   monthCloseEvents,
@@ -30,6 +54,11 @@ function chunk(datasetCode: string, chunkNo = 1, rows = [{ id: 1 }]) {
 }
 
 describe("month-close canonical sequence contract", () => {
+  beforeEach(() => {
+    transactionProbe.events = [];
+    transactionProbe.gateError = false;
+    transactionProbe.authorityError = false;
+  });
   it("orders object keys recursively and produces a stable SHA-256 seal", () => {
     const left = canonicalCloseJson({
       z: [{ b: "2", a: "1" }],
@@ -148,15 +177,35 @@ describe("month-close canonical sequence contract", () => {
     );
   });
 
-  it("acquires the global financial gate before domain work and uses exclusive governance entry", () => {
-    const txSource = readFileSync("server/services/tx.ts", "utf8");
-    const writerGateAt = txSource.indexOf("await lockFinancialPostingGate(tx)");
-    const callbackAt = txSource.indexOf("return fn(tx)");
-    expect(writerGateAt).toBeGreaterThan(-1);
-    expect(callbackAt).toBeGreaterThan(writerGateAt);
-    expect(txSource).toContain(
-      'const gate = options.gate ?? "FINANCIAL_WRITER"',
-    );
+  it("acquires the default financial gate before real scoped authority and domain work", async () => {
+    await expect(withOperationAuthority({ actor: { userId: 7 }, path: "purchases.decideControl", legacyAllowed: () => true },
+      () => withTx(async tx => {
+        assertFinancialWriterGateHeld(tx);
+        transactionProbe.events.push("domain");
+        return "done";
+      }))).resolves.toBe("done");
+    expect(transactionProbe.events).toEqual(["begin", "writer", "authority", "domain", "commit"]);
+  });
+
+  it("uses the exclusive gate at governance entry without taking a writer gate", async () => {
+    await withGovernanceTx(async tx => {
+      assertFinancialWriterGateHeld(tx);
+      transactionProbe.events.push("domain");
+    });
+    expect(transactionProbe.events).toEqual(["begin", "exclusive", "domain", "commit"]);
+  });
+
+  it.each(["gate", "authority"] as const)("does not enter the domain when %s fails", async failure => {
+    transactionProbe.gateError = failure === "gate";
+    transactionProbe.authorityError = failure === "authority";
+    const domain = vi.fn(async () => "forbidden");
+    await expect(withOperationAuthority({ actor: { userId: 7 }, path: "purchases.decideControl", legacyAllowed: () => true },
+      () => withTx(domain))).rejects.toThrow(`${failure} rejected`);
+    expect(domain).not.toHaveBeenCalled();
+    expect(transactionProbe.events).toEqual(failure === "gate" ? ["begin", "writer"] : ["begin", "writer", "authority"]);
+  });
+
+  it("routes close governance exclusively and retains explicit writer entries", () => {
 
     const yearRouter = readFileSync("server/routers/yearEndRouter.ts", "utf8");
     const periodRouter = readFileSync(

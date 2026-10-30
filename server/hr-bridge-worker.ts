@@ -4,7 +4,9 @@
  * هذا الملف entrypoint مستقل يُجمَّع إلى dist/hr-bridge-worker.cjs. جميع الاستيرادات
  * ثابتة، لذلك توجد نسخة واحدة فقط من registry وDB داخل العملية ولا يوجد runtime TS loader.
  */
-import { closeDb } from "./db";
+import { closeDb, getDb } from "./db";
+import { sql } from "drizzle-orm";
+import { awaitInventoryActivationRelease } from "./config/inventoryActivationBoot";
 import { logger } from "./logger";
 import policy from "../scripts/hr-bridge-runtime-policy.cjs";
 import { assertEnabledDeviceIdentityReadiness } from "./services/hrDevices/readiness";
@@ -32,6 +34,9 @@ export interface HrBridgeWorkerOptions {
   listenTimeoutMs: number;
   shutdownTimeoutMs: number;
   onReady: () => void;
+  artifactPath?: string;
+  onActivationHold?: () => void;
+  onActivationRelease?: () => void;
 }
 
 function withTimeout<T>(
@@ -98,6 +103,20 @@ export async function runHrBridgeWorker(
   if (!options.preflightOnly) {
     assertManagedEnvironmentIsolated();
     checkpoint("HR_BRIDGE_ENVIRONMENT_OK");
+    if (process.env.NODE_ENV === "production" && !options.artifactPath) throw new Error("INVENTORY_BRIDGE_ARTIFACT_REQUIRED");
+    await awaitInventoryActivationRelease({
+      name: "erp-hr-bridge",
+      bundle: options.artifactPath ?? process.argv[1],
+      onHold: options.onActivationHold,
+      onRelease: options.onActivationRelease,
+      readIdentity: async () => {
+        const db = getDb();
+        if (!db) throw new Error("INVENTORY_BOOT_DATABASE_MISSING");
+        const [rows] = await db.execute(sql`SELECT DATABASE() AS databaseName, @@server_uuid AS serverUuid`);
+        const row = (rows as unknown as Array<{ databaseName: string; serverUuid: string }>)[0];
+        return { database: row.databaseName, serverUuid: row.serverUuid };
+      },
+    });
   }
 
   checkpoint("HR_BRIDGE_DB_CHECK_START");

@@ -1,3 +1,4 @@
+import { lockEconomicInventoryScope, readEconomicOwnedPositions } from "./economicOwnership";
 /**
  * النواة المالية المشتركة لإعادة تقييم التكلفة (طلب مفرد أو موجة جماعية).
  *
@@ -55,18 +56,10 @@ export async function loadBranchQuantitySnapshot(
   tx: Tx,
   variantId: number,
 ): Promise<BranchQuantitySnapshot[]> {
-  const base = tx
-    .select({ branchId: branchStock.branchId, quantity: branchStock.quantity })
-    .from(branchStock)
-    .where(eq(branchStock.variantId, variantId));
-  const rows = await base;
-  return rows
-    .map((row) => ({
-      branchId: Number(row.branchId),
-      quantity: Number(row.quantity ?? 0),
-    }))
-    .filter((row) => row.quantity !== 0)
-    .sort((a, b) => a.branchId - b.branchId);
+  const scope = await lockEconomicInventoryScope(tx, [variantId]);
+  const { positions } = await readEconomicOwnedPositions(tx, scope, variantId);
+  return positions.map(p => ({ branchId: p.branchId, quantity: p.ownedQuantity })).filter(p => p.quantity !== 0);
+
 }
 
 export function totalBranchQuantity(rows: BranchQuantitySnapshot[]): number {
@@ -149,41 +142,13 @@ export async function lockAndCheckCostRevaluationSnapshots(
   if (inputs.length === 0) return [];
   const ordered = [...inputs].sort((a, b) => a.variantId - b.variantId);
   const variantIds = ordered.map((row) => row.variantId);
-  const variants = await tx
-    .select({
-      id: productVariants.id,
-      costPrice: productVariants.costPrice,
-      productActive: products.isActive,
-      variantActive: productVariants.isActive,
-      isConsignment: products.isConsignment,
-      isBundle: products.isBundle,
-      isService: products.isService,
-    })
-    .from(productVariants)
-    .innerJoin(products, eq(products.id, productVariants.productId))
-    .where(inArray(productVariants.id, variantIds))
-    .orderBy(asc(productVariants.id))
-    .for("update");
-  const stockRows = await tx
-    .select({
-      variantId: branchStock.variantId,
-      branchId: branchStock.branchId,
-      quantity: branchStock.quantity,
-    })
-    .from(branchStock)
-    .where(inArray(branchStock.variantId, variantIds))
-    .orderBy(asc(branchStock.variantId), asc(branchStock.branchId))
-    .for("update");
-
-  const variantById = new Map(variants.map((row) => [Number(row.id), row]));
+  const scope = await lockEconomicInventoryScope(tx, variantIds);
+  const variantById = new Map<number, { costPrice: string | null; productActive: boolean; variantActive: boolean; isConsignment: boolean; isBundle: boolean; isService: boolean }>();
   const stockByVariant = new Map<number, BranchQuantitySnapshot[]>();
-  for (const row of stockRows) {
-    const variantId = Number(row.variantId);
-    const quantity = Number(row.quantity ?? 0);
-    if (quantity === 0) continue;
-    const list = stockByVariant.get(variantId) ?? [];
-    list.push({ branchId: Number(row.branchId), quantity });
-    stockByVariant.set(variantId, list);
+  for (const id of variantIds) {
+    const { variant, positions } = await readEconomicOwnedPositions(tx, scope, id);
+    variantById.set(id, { costPrice: variant.costPrice, productActive: variant.product.isActive === true, variantActive: variant.isActive === true, isConsignment: variant.product.isConsignment, isBundle: variant.product.isBundle, isService: variant.product.isService });
+    stockByVariant.set(id, positions.map(p => ({ branchId: p.branchId, quantity: p.ownedQuantity })).filter(p => p.quantity !== 0));
   }
 
   return ordered.map((input): CostRevaluationSnapshotCheck => {

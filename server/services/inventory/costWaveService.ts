@@ -1,3 +1,5 @@
+import { parseTransitProjection } from "./transitProjection";
+import { lockEconomicInventoryScope, readEconomicVariant } from "./economicOwnership";
 /**
  * موجات التكلفة: مستند جماعيّ بمعاينة موقّعة، اعتمادين مستقلين، وتطبيق مالي ذري.
  * لا توجد هنا «موافقة إدارية استثنائية»: المنشئ لا يعتمد ولو كان admin، والمعتمدان مختلفان.
@@ -491,6 +493,7 @@ async function computeCostWave(
       size: productVariants.size,
       sku: productVariants.sku,
       oldCost: productVariants.costPrice,
+      transit: productVariants.transitBaseBySourceBranch,
       categoryName: categories.name,
       productActive: products.isActive,
       variantActive: productVariants.isActive,
@@ -504,7 +507,7 @@ async function computeCostWave(
     .where(and(...conditions))
     .orderBy(asc(productVariants.id))
     .limit(COST_WAVE_MAX_ITEMS + 1);
-  const raw = lock ? await baseQuery.for("update") : await baseQuery;
+  let raw = await baseQuery;
   if (raw.length > COST_WAVE_MAX_ITEMS) {
     throw new TRPCError({
       code: "PAYLOAD_TOO_LARGE",
@@ -516,6 +519,15 @@ async function computeCostWave(
     });
   }
   const variantIds = raw.map((row) => Number(row.variantId));
+  if (lock) {
+    const scope = await lockEconomicInventoryScope(tx, variantIds);
+    const current = [];
+    for (const row of raw) {
+      const v = await readEconomicVariant(tx, scope, row.variantId);
+      current.push({ ...row, productId: v.product.id, productName: v.product.name, oldCost: v.costPrice, transit: v.transitBaseBySourceBranch, productActive: v.product.isActive, variantActive: v.isActive, isService: v.product.isService, isBundle: v.product.isBundle, isConsignment: v.product.isConsignment });
+    }
+    raw = current;
+  }
   const stockBase = variantIds.length
     ? tx
         .select({
@@ -529,7 +541,7 @@ async function computeCostWave(
     : null;
   const stock = stockBase
     ? lock
-      ? await stockBase.for("update")
+      ? await stockBase.for("share")
       : await stockBase
     : [];
   const stockByVariant = new Map<number, BranchQuantitySnapshot[]>();
@@ -540,6 +552,21 @@ async function computeCostWave(
     const list = stockByVariant.get(variantId) ?? [];
     list.push({ branchId: Number(row.branchId), quantity });
     stockByVariant.set(variantId, list);
+  }
+
+  // Read-only preview uses the same initialized quantity projection in its RR snapshot;
+  // submit recomputes from current point-locked variants and shelves above.
+  for (const row of raw) {
+    if (row.isConsignment || row.isService || row.isBundle) {
+      stockByVariant.set(row.variantId, []);
+      continue;
+    }
+    const positions = new Map((stockByVariant.get(row.variantId) ?? []).map(p => [p.branchId, p.quantity]));
+    for (const [branch, qty] of Object.entries(parseTransitProjection(row.transit))) {
+      const branchId = Number(branch);
+      positions.set(branchId, (positions.get(branchId) ?? 0) + Number(qty));
+    }
+    stockByVariant.set(row.variantId, Array.from(positions, ([branchId, quantity]) => ({ branchId, quantity })).filter(p => p.quantity !== 0).sort((a,b) => a.branchId-b.branchId));
   }
 
   const pendingRequestIds = new Set<number>();

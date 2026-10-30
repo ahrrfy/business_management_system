@@ -1,3 +1,4 @@
+import { lockEconomicInventoryScope, readEconomicVariant } from "../../inventory/economicOwnership";
 /**
  * منفّذ مخزون فاتورة البيع — **بنداً بند**، والحركةُ الماديّة مجمَّعةً بترتيب الأقفال.
  *
@@ -32,6 +33,15 @@ import { invoiceContext, writeInventoryState, type ReversedLine } from "./invoic
 
 export const invoiceInventoryExecutor: EffectExecutor = async (tx, effects, run) => {
   const ctx = await invoiceContext(tx, run);
+  const savedPhysical = ctx.items.length ? await tx.select({ id: invoiceItemBundleComponents.componentVariantId }).from(invoiceItemBundleComponents).where(inArray(invoiceItemBundleComponents.invoiceItemId, ctx.items.map(i => Number(i.id)))) : [];
+  const scope = await lockEconomicInventoryScope(tx, ctx.items.map(i => Number(i.variantId)).concat(savedPhysical.map(p => p.id)));
+  for (const id of Array.from(new Set(ctx.items.map(i => Number(i.variantId))))) {
+    const current = await readEconomicVariant(tx, scope, id);
+    ctx.kindByVariant.set(id, current.product.isService ? "SERVICE" : current.product.isBundle ? "BUNDLE" : "STOCKED");
+    ctx.consignByVariant.delete(id); ctx.digitalVariants.delete(id);
+    if (current.product.isConsignment && current.product.consignorId != null) ctx.consignByVariant.set(id, current.product.consignorId);
+    if (current.product.productType === "DIGITAL_CARD") ctx.digitalVariants.add(id);
+  }
   const restock = run.decisions.restock !== false;
   const flavor = run.decisions.flavor ?? "CANCEL";
   const itemById = new Map(ctx.items.map((i) => [Number(i.id), i]));

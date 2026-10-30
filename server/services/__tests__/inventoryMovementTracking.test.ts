@@ -19,6 +19,7 @@ import { and, eq, sql } from "drizzle-orm";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { withTx, type Actor } from "../tx";
+import { lockEconomicInventoryScope } from "../inventory/economicOwnership";
 import {
   applyMovement,
   applyValuedInboundMovement,
@@ -266,6 +267,7 @@ describe("Empirical Challenger — Milestone 2 Inventory Movement Tracking & Ato
     const workOrderId = 1001;
 
     await withTx(async (tx) => {
+      await lockEconomicInventoryScope(tx, [2, 3]);
       // 1. Setup work order
       await tx.insert(s.workOrders).values({
         id: workOrderId,

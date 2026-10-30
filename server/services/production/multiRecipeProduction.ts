@@ -1,3 +1,4 @@
+import { lockProductionInventoryScope, syncProductionBundleCosts } from "./bundleCostScope";
 import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
@@ -22,7 +23,6 @@ import type {
   RecipeRequirementMaterialLineDto,
 } from "../../../shared/multiRecipeProductionTypes";
 import type { MaterialSubstitutionItem } from "../../../shared/recipeSubstitutionTypes";
-import { syncBundlesContainingComponents } from "../bundleService";
 import { loadVariantAvailability } from "../catalog/variantAvailability";
 import { ensureBranchStockRows } from "../inventoryService";
 import { money, round2, toDateStr } from "../money";
@@ -771,35 +771,8 @@ export async function produceMultiRecipeBatches(
       ])
     ).sort((a, b) => a - b);
 
-    const variantProdRows = await tx
-      .select({ id: productVariants.id, productId: productVariants.productId })
-      .from(productVariants)
-      .where(inArray(productVariants.id, allVariantIdsToLock))
-      .orderBy(asc(productVariants.id));
-
-    const allProductIdsToLock = Array.from(
-      new Set(variantProdRows.map((r) => Number(r.productId)))
-    ).sort((a, b) => a - b);
-
-    // ١. قفل المنتجات تصاعدياً
-    if (allProductIdsToLock.length > 0) {
-      await tx
-        .select({ id: products.id })
-        .from(products)
-        .where(inArray(products.id, allProductIdsToLock))
-        .orderBy(asc(products.id))
-        .for("update");
-    }
-
-    // ٢. قفل المتغيرات تصاعدياً
+    await lockProductionInventoryScope(tx, allVariantIdsToLock, sortedBatches.map(b => recipeMap.get(b.recipeId)!.outputVariantId));
     if (allVariantIdsToLock.length > 0) {
-      await tx
-        .select({ id: productVariants.id })
-        .from(productVariants)
-        .where(inArray(productVariants.id, allVariantIdsToLock))
-        .orderBy(asc(productVariants.id))
-        .for("update");
-
       // ٣. ضمان وقفل أرصدة الفرع تصاعدياً (variantId ASC, branchId ASC)
       await ensureBranchStockRows(tx, allVariantIdsToLock, input.branchId);
       await tx
@@ -898,7 +871,7 @@ export async function produceMultiRecipeBatches(
 
     // ④ مزامنة ختامية موحدة لكافة البكجات التي تستخدم أي من هذه المخرجات
     const distinctOutputVariantIds = Array.from(new Set(affectedOutputVariantIds));
-    await syncBundlesContainingComponents(tx, distinctOutputVariantIds);
+    await syncProductionBundleCosts(tx, distinctOutputVariantIds);
 
     return {
       multiRecipeDocGroupRef,

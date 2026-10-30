@@ -247,7 +247,7 @@ async function loadOnlineAllocatedBase(
       inArray(onlineOrderItems.variantId, variantIds),
     ))
     .orderBy(asc(onlineOrderItems.variantId), asc(onlineOrderItems.id));
-  const directRows = options.lock ? await directQuery.for("update") : await directQuery;
+  const directRows = options.lock ? await directQuery.for("share") : await directQuery;
   for (const row of directRows) {
     const variantId = Number(row.variantId);
     result.set(variantId, (result.get(variantId) ?? 0) + Math.max(0, Number(row.baseQuantity)));
@@ -273,7 +273,7 @@ async function loadOnlineAllocatedBase(
       inArray(bundleComponents.componentVariantId, variantIds),
     ))
     .orderBy(asc(bundleComponents.componentVariantId), asc(onlineOrderItems.id));
-  const bundleRows = options.lock ? await bundleQuery.for("update") : await bundleQuery;
+  const bundleRows = options.lock ? await bundleQuery.for("share") : await bundleQuery;
   for (const row of bundleRows) {
     const variantId = Number(row.componentVariantId);
     const allocated = Math.max(0, Number(row.baseQuantity)) * Math.max(0, Number(row.componentBaseQuantity));
@@ -318,7 +318,9 @@ export async function loadVariantAvailability(
     .orderBy(asc(productVariants.id));
   // productVariants المضمون الوجود هو mutex الحاكم، بترتيب id؛ بعده فقط تُقفل أرصدة
   // الفروع في مسارات الحركة/WAVG. القراءة القافلة Current Read.
-  const directRows = options.lock ? await directQuery.for("update") : await directQuery;
+  // Keep joined metadata shared: upgrading products after the variant mutex
+  // deadlocks with an economic writer holding product S while waiting for variant X.
+  const directRows = options.lock ? await directQuery.for("share") : await directQuery;
   const onlineAllocated = await loadOnlineAllocatedBase(db, branchId, ids, options);
 
   const result = new Map<number, VariantAvailability>();

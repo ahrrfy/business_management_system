@@ -8,6 +8,7 @@ const sentryEnabled = initSentry();
 // بيئة عملية الإطلاق حتى لو لم نضع المفتاح في env الخاص بالتطبيق، لذا نمسحه داخل
 // العامل نفسه. تبقى أدوات CLI/عامل provisioning عمليات مستقلة تقرأ .env مباشرةً.
 if (process.env.NODE_ENV === "production") delete process.env.DB_ROOT_PW;
+if (process.env.NODE_ENV === "production") delete process.env.ERP_INVENTORY_CONTROL_DATABASE_URL;
 
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { sql } from "drizzle-orm";
@@ -91,6 +92,7 @@ import { selfHealDivergedProductChannelLabels } from "./services/catalog/product
 import { assertImageStoreStartupConfiguration } from "./lib/imageStore";
 import { assertStorefrontOrderingReadiness } from "./services/storefrontTurnstile";
 import { STOREFRONT_TURNSTILE_SCRIPT_ORIGIN } from "@shared/storefrontTurnstile";
+import { awaitInventoryActivationRelease } from "./config/inventoryActivationBoot";
 
 function isPortAvailable(port: number, host?: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -148,6 +150,17 @@ async function startServer() {
 
   // Validate the complete tenant/control connection budget before opening the HTTP port.
   if (isMultiTenantModeActive()) validateTenantConnectionBudget();
+  await awaitInventoryActivationRelease({
+    name: "erp-server",
+    bundle: process.argv[1],
+    readIdentity: async () => {
+      const db = getDb();
+      if (!db) throw new Error("INVENTORY_BOOT_DATABASE_MISSING");
+      const [rows] = await db.execute(sql`SELECT DATABASE() AS databaseName, @@server_uuid AS serverUuid`);
+      const row = (rows as unknown as Array<{ databaseName: string; serverUuid: string }>)[0];
+      return { database: row.databaseName, serverUuid: row.serverUuid };
+    },
+  });
   void sweepStaleRestoreArtifacts()
     .then(
       (removed) =>

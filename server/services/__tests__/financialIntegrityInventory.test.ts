@@ -8,8 +8,13 @@ import { createRecipe } from "../recipeService";
 import { createStockTransfer, receiveStockTransfer } from "../transferService";
 import { withTx } from "../tx";
 import { createWorkOrder } from "../workOrder/create";
+import { requestCostRevaluation, approveCostRevaluation } from "../inventory/costRevaluationRequest";
+import { readInventoryValuation } from "../inventory/valuation";
+import { lockEconomicInventoryScope, readEconomicOwnedPositions } from "../inventory/economicOwnership";
+import { updateProduct } from "../catalog/productUpdate";
 
 const TABLES = [
+  "journalLines", "journalEntries", "doubleEntrySettings", "costRevaluationRequests", "receipts", "suppliers",
   "auditLogs", "accountingEntries", "stockAdjustmentRequests", "stockTransferLineBundleComponents", "stockTransferLines", "stockTransfers",
   "productionLines", "productionOrders", "productionRecipeLines", "productionRecipes",
   "workOrderMaterials", "workOrders", "idempotencyKeys", "inventoryMovements", "branchStock",
@@ -186,14 +191,33 @@ describe("حواجز سلامة المخزون والتكلفة", () => {
       .rejects.toThrow(/تغيّرت تكلفة/);
   });
 
-  it("يقيّم عجز التحويل بلقطة تكلفة الإرسال لا WAVG اللاحقة", async () => {
+  it("عجز المملوك يستهلك القيمة الدفترية الحالية بعد إعادة تقييم معتمدة تشمل بالطريق", async () => {
+    const maker = { userId: 1, role: "admin", branchId: 1 };
+    await db().insert(s.users).values({ id: 4, openId: "revaluation-reviewer", name: "مراجع", role: "manager", branchId: 1 });
+    await db().insert(s.doubleEntrySettings).values({ id: 1, mode: "SHADOW", shadowCycleId: "transfer-carrying-value" });
+    expect((await withTx(tx => readInventoryValuation(tx))).total).toBe("1200.00");
     const sent = await withTx((tx) => createStockTransfer(tx, {
       fromBranchId: 1,
       toBranchId: 2,
       items: [{ variantId: 1, baseQuantity: 5 }],
       createdBy: 1,
     }));
-    await db().update(s.productVariants).set({ costPrice: "99.00" }).where(eq(s.productVariants.id, 1));
+    const owned = await withTx(async tx => readEconomicOwnedPositions(tx, await lockEconomicInventoryScope(tx, [1]), 1));
+    expect(owned.positions).toEqual([{ variantId: 1, branchId: 1, shelfQuantity: 95, inTransitQuantity: 5, ownedQuantity: 100 }]);
+    const request = await requestCostRevaluation({ variantId: 1, newCost: "99.00", purpose: "CORRECTION", reason: "تصحيح تكلفة المصدر بمستند معتمد" }, maker);
+    expect(request.expectedQuantity).toBe(100);
+    expect(request.expectedValueDelta).toBe("8900.00");
+    const approved = await approveCostRevaluation(request.requestId, { userId: 4, role: "manager", branchId: 1 });
+    expect(approved.totalValueDelta).toBe("8900.00");
+    const [revaluation] = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.dedupeKey, `COST_REVAL:${request.requestId}:1`));
+    expect(revaluation.branchId).toBe(1);
+    const [revaluationJournal] = await db().select().from(s.journalEntries).where(eq(s.journalEntries.entryId, revaluation.id));
+    expect(revaluationJournal.status).toBe("POSTED");
+    const revaluationLines = await db().select().from(s.journalLines).where(eq(s.journalLines.journalId, revaluationJournal.id));
+    expect(revaluationLines.map(line => [line.role, line.debit, line.credit]).sort()).toEqual([
+      ["INVENTORY", "8900.00", "0.00"], ["INVENTORY_REVALUATION", "0.00", "8900.00"],
+    ]);
+    expect(await withTx(tx => readInventoryValuation(tx))).toMatchObject({ total: "10100.00", inTransitTotal: "495.00" });
     const lines = await db().select().from(s.stockTransferLines).where(eq(s.stockTransferLines.transferId, sent.transferId));
     await withTx((tx) => receiveStockTransfer(tx, {
       transferId: sent.transferId,
@@ -202,7 +226,43 @@ describe("حواجز سلامة المخزون والتكلفة", () => {
     }));
     const loss = (await db().select().from(s.accountingEntries)
       .where(eq(s.accountingEntries.dedupeKey, `TRANSFER_LOSS:${sent.transferId}`)))[0];
+    expect(loss.cost).toBe("99.00");
+    expect(loss.branchId).toBe(1);
+    expect(await withTx(tx => readInventoryValuation(tx))).toMatchObject({ total: "10001.00", inTransitTotal: "0.00" });
+    const [journal] = await db().select().from(s.journalEntries).where(eq(s.journalEntries.entryId, loss.id));
+    expect(journal.status).toBe("POSTED");
+    const journalLines = await db().select().from(s.journalLines).where(eq(s.journalLines.journalId, journal.id));
+    expect(journalLines.map(line => [line.role, line.debit, line.credit]).sort()).toEqual([
+      ["INVENTORY", "0.00", "99.00"], ["LOSSES", "99.00", "0.00"],
+    ]);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(2);
+  });
+
+  it("عجز الأمانة يحفظ حصة الإرسال رغم تعديل الحصة لاحقاً ولا يمس أصل المخزون", async () => {
+    const maker = { userId: 1, role: "admin", branchId: 1 };
+    await db().insert(s.suppliers).values({ id: 7, name: "المودع", currentBalance: "0.00" });
+    await db().update(s.products).set({ isConsignment: true, consignorId: 7 }).where(eq(s.products.id, 1));
+    await db().insert(s.doubleEntrySettings).values({ id: 1, mode: "SHADOW", shadowCycleId: "transfer-consignor-source" });
+    const before = await withTx(tx => readInventoryValuation(tx));
+    const sent = await withTx(tx => createStockTransfer(tx, { fromBranchId: 1, toBranchId: 2, items: [{ variantId: 1, baseQuantity: 5 }], createdBy: 1 }));
+    await updateProduct({ productId: 1, name: "مادة", variants: [{ id: 1, sku: "MAT", costPrice: "99.00", costChangeReason: "تعديل حصة المودع باتفاق جديد", units: [{ id: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true }] }] }, maker);
+    expect((await db().select().from(s.productVariants).where(eq(s.productVariants.id, 1)))[0].costPrice).toBe("99.00");
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    const [line] = await db().select().from(s.stockTransferLines).where(eq(s.stockTransferLines.transferId, sent.transferId));
+    await withTx(tx => receiveStockTransfer(tx, { transferId: sent.transferId, lines: [{ lineId: line.id, quantityReceived: 4, note: "وحدة مفقودة" }], actor: maker }));
+    const [loss] = await db().select().from(s.accountingEntries);
+    expect(loss.dedupeKey).toBe(`CONSIG:TRANSFER_SHORT:${sent.transferId}:7`);
     expect(loss.cost).toBe("10.00");
+    expect((await db().select().from(s.suppliers).where(eq(s.suppliers.id, 7)))[0].currentBalance).toBe("10.00");
+    const [journal] = await db().select().from(s.journalEntries).where(eq(s.journalEntries.entryId, loss.id));
+    expect(journal.status).toBe("POSTED");
+    const journalLines = await db().select().from(s.journalLines).where(eq(s.journalLines.journalId, journal.id));
+    expect(journalLines.map(line => [line.role, line.debit, line.credit]).sort()).toEqual([
+      ["CONSIGNMENT_PAYABLE", "0.00", "10.00"], ["LOSSES", "10.00", "0.00"],
+    ]);
+    expect((await withTx(tx => readInventoryValuation(tx))).total).toBe(before.total);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
   });
 
   it("لا يسمح للكاشير بإدخال تكلفة عمالة لأمر الشغل", async () => {

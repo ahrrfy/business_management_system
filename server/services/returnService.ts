@@ -1,3 +1,4 @@
+import { lockEconomicInventoryScope, readEconomicVariant } from "./inventory/economicOwnership";
 import { effectiveDeliveryLedgerEntrySql } from "./delivery/legacyLedger";
 import { reverseOnlineOrderLoyaltyPoints } from "./storeAdmin/loyaltyService";
 import { TRPCError } from "@trpc/server";
@@ -1371,6 +1372,9 @@ export async function returnSaleInTx(
     .from(invoiceItems)
     .where(eq(invoiceItems.invoiceId, input.invoiceId))
     .for("update");
+  const savedPhysical = items.length ? await tx.select({ id: invoiceItemBundleComponents.componentVariantId }).from(invoiceItemBundleComponents).where(inArray(invoiceItemBundleComponents.invoiceItemId, items.map(i => Number(i.id)))) : [];
+  const savedMaterials = input.internalCorrectionReversal && items.length ? await tx.select({ id: invoiceItemServiceMaterials.materialVariantId }).from(invoiceItemServiceMaterials).where(inArray(invoiceItemServiceMaterials.invoiceItemId, items.map(i => Number(i.id)))) : [];
+  const economicScope = await lockEconomicInventoryScope(tx, items.map(i => Number(i.variantId)).concat(savedPhysical.map(p => p.id), savedMaterials.map(p => p.id)));
   const itemById = new Map(items.map((i) => [Number(i.id), i]));
   const rights = await tx
     .select()
@@ -1767,7 +1771,11 @@ export async function returnSaleInTx(
   const returnedVariantIds = Array.from(
     new Set(items.map((item) => Number(item.variantId))),
   );
-  const kindByVariant = await classifyVariants(tx, returnedVariantIds);
+  const kindByVariant = new Map<number, "STOCKED" | "BUNDLE" | "SERVICE">();
+  for (const id of returnedVariantIds) {
+    const current = await readEconomicVariant(tx, economicScope, id);
+    kindByVariant.set(id, current.product.isService ? "SERVICE" : current.product.isBundle ? "BUNDLE" : "STOCKED");
+  }
   // خريطة (invoiceItemId ⇒ صفوف المكوّنات المحفوظة) — قراءة واحدة بلا N+1.
   const bundleItemIds = work
     .filter((w) => kindByVariant.get(Number(w.item.variantId)) === "BUNDLE")
@@ -2245,21 +2253,12 @@ export async function returnSaleInTx(
     new Set(work.map((w) => Number(w.item.variantId))),
   );
   if (returnVariantIds.length) {
-    const crows = await tx
-      .select({
-        vid: productVariants.id,
-        isConsign: products.isConsignment,
-        cId: products.consignorId,
-        productType: products.productType,
-      })
-      .from(productVariants)
-      .innerJoin(products, eq(productVariants.productId, products.id))
-      .where(inArray(productVariants.id, returnVariantIds));
-    for (const row of crows) {
-      if (row.isConsign && row.cId != null)
-        consignByVariant.set(Number(row.vid), Number(row.cId));
-      if (row.productType === "DIGITAL_CARD")
-        digitalVariants.add(Number(row.vid));
+    for (const id of returnVariantIds) {
+      const { product } = await readEconomicVariant(tx, economicScope, id);
+      if (product.isConsignment && product.consignorId != null)
+        consignByVariant.set(id, product.consignorId);
+      if (product.productType === "DIGITAL_CARD")
+        digitalVariants.add(id);
     }
   }
   const byConsignor = new Map<number, { paid: Decimal; gift: Decimal }>();

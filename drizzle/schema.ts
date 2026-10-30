@@ -1022,6 +1022,10 @@ export const productVariants = mysqlTable(
     costPrice: decimal("costPrice", { precision: 15, scale: 2 })
       .default("0")
       .notNull(),
+    // الكمية بالطريق بحسب فرع المصدر؛ NULL تعني أن التهيئة المحروسة لم تكتمل.
+    transitBaseBySourceBranch: json("transitBaseBySourceBranch")
+      .$type<Record<string, string> | null>()
+      .default(sql`(JSON_OBJECT())`),
     minStock: int("minStock").default(0),
     reorderPoint: int("reorderPoint").default(0),
     // هدف مخزون موسم المدارس (بالوحدة الأساس، عبر كل الفروع) — تجهيز ذروة أيلول. هجرة 0098.
@@ -1039,6 +1043,20 @@ export const productVariants = mysqlTable(
 
 export type ProductVariant = typeof productVariants.$inferSelect;
 export type InsertProductVariant = typeof productVariants.$inferInsert;
+
+/** حاجز تفعيل إسقاط المخزون؛ لا تنشئه أو تصلحه معاملات الأعمال. */
+export const inventoryProjectionState = mysqlTable(
+  "inventoryProjectionState",
+  {
+    id: tinyint("id").primaryKey(),
+    readyVersion: int("readyVersion").default(0).notNull(),
+    activatedCommit: varchar("activatedCommit", { length: 40 }),
+    activatedAt: timestamp("activatedAt"),
+  },
+  (table) => ({
+    singleton: check("chk_inventory_projection_singleton", sql`${table.id} = 1`),
+  }),
+);
 
 /** وحدات القياس للمتغيّر (قطعة/درزن/كرتون) بمعامل تحويل وباركود مستقل. */
 export const productUnits = mysqlTable(

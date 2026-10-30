@@ -1,3 +1,4 @@
+import { lockEconomicInventoryScope } from "../inventory/economicOwnership";
 import Decimal from "decimal.js";
 import { eq, inArray } from "drizzle-orm";
 import {
@@ -619,7 +620,7 @@ export async function postAftercareSettlement(
         "تغيّرت أدلة التسوية المعتمدة؛ لم يرحّل أي أثر",
         "CONFLICT",
       );
-    await lockInventoryVariants(
+    await lockEconomicInventoryScope(
       tx,
       data.projected.flatMap((line) =>
         line.variantId && line.usableBaseQuantity && line.originalMovementId
