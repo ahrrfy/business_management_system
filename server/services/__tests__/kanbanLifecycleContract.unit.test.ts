@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   extractUnifiedReceiptBaseCode,
   pickSiblingFallbackTarget,
+  resolveWorkOrderHandoverFinancials,
   type SiblingWorkOrderItem,
 } from "../workOrder/kanbanQueries";
 
@@ -62,7 +63,7 @@ describe("دستور دورة حياة الكانبان وتصريف أوامر 
     });
   });
 
-  describe("٢. حوكمة «جرد الرفّ» في طابور الاستقبال (ReceptionOrderQueue.tsx)", () => {
+  describe("٢. حوكمة «جرد الرفّ» الذري في طابور الاستقبال (ReceptionOrderQueue.tsx و shelfAudit.ts)", () => {
     it("يمنع التوزيع الآلي لمتجر الأونلاين ويلزم عبارة التأكيد الصريحة «جرد وتسليم» بلا زر تحديد الكل", () => {
       const receptionCode = executableSource(
         "client/src/components/reception/ReceptionOrderQueue.tsx",
@@ -77,9 +78,26 @@ describe("دستور دورة حياة الكانبان وتصريف أوامر 
       );
       expect(matchingLines(receptionCode, "تحديد الكل")).toEqual([]);
     });
+
+    it("ينفّذ shelfAudit.ts تسليم الدفعة وسجل التدقيق workOrder.shelfAuditDeliver ذرياً داخل معاملة واحدة (withTx + deliverWorkOrderInTx + logAuditTx)", () => {
+      const shelfAuditCode = executableSource(
+        "server/services/workOrder/shelfAudit.ts",
+      );
+
+      expect(matchingLines(shelfAuditCode, "withTx").length).toBeGreaterThan(0);
+      expect(
+        matchingLines(shelfAuditCode, "deliverWorkOrderInTx").length,
+      ).toBeGreaterThan(0);
+      expect(
+        matchingLines(shelfAuditCode, "logAuditTx").length,
+      ).toBeGreaterThan(0);
+      expect(
+        matchingLines(shelfAuditCode, "workOrder.shelfAuditDeliver").length,
+      ).toBeGreaterThan(0);
+    });
   });
 
-  describe("٣. حوكمة المسار العكسي للتوصيل (ReturnConsignmentDialog.tsx و DeliveryHub.tsx و returns.ts)", () => {
+  describe("٣. حوكمة المسار العكسي للتوصيل والعهدة المادية (ReturnConsignmentDialog.tsx و DeliveryHub.tsx و returns.ts و custody.ts)", () => {
     it("يخيّر ReturnConsignmentDialog.tsx الموظف بين RETURN_TO_READY و CANCEL_FINAL لأوامر الشغل ولا يحجب إعادة الجاهزية بعربون البضاعة", () => {
       const dialogCode = executableSource(
         "client/src/components/delivery/ReturnConsignmentDialog.tsx",
@@ -119,9 +137,12 @@ describe("دستور دورة حياة الكانبان وتصريف أوامر 
       ).toBeGreaterThan(0);
     });
 
-    it("يدعم server/services/delivery/returns.ts مسارَي RETURN_TO_READY و CANCEL_FINAL لأوامر الشغل", () => {
+    it("يدعم returns.ts و custody.ts إعادة الطرد إلى READY ونقل العهدة المادية من CARRIER_CUSTODY إلى PREPARED_HELD", () => {
       const returnsServiceCode = executableSource(
         "server/services/delivery/returns.ts",
+      );
+      const custodyServiceCode = executableSource(
+        "server/services/delivery/custody.ts",
       );
 
       expect(
@@ -130,10 +151,16 @@ describe("دستور دورة حياة الكانبان وتصريف أوامر 
       expect(
         matchingLines(returnsServiceCode, "CANCEL_FINAL").length,
       ).toBeGreaterThan(0);
+      expect(
+        matchingLines(custodyServiceCode, "RETURN_TO_READY").length,
+      ).toBeGreaterThan(0);
+      expect(custodyServiceCode).toMatch(
+        /workOrderDisposition\s*===\s*["']RETURN_TO_READY["'][\s\S]{0,300}toState:\s*["']PREPARED_HELD["']/,
+      );
     });
   });
 
-  describe("٤. خلوّ الراوتر من الإسناد العشوائي للمندوب (workOrderRouter.ts)", () => {
+  describe("٤. خلوّ الراوتر من الإسناد العشوائي للمندوب وحرّاس تسليم الفاتورة المعاد استعمالها (workOrderRouter.ts و deliver.ts)", () => {
     it("لا يحوي workOrderRouter.ts إسناد autoclear-dispatch- ولا اختيار مندوب INDIVIDUAL عشوائي بـ limit(1)", () => {
       const routerCode = executableSource("server/routers/workOrderRouter.ts");
 
@@ -142,9 +169,31 @@ describe("دستور دورة حياة الكانبان وتصريف أوامر 
         /partyType,\s*["']INDIVIDUAL["'][\s\S]{0,160}\.limit\(\s*1\s*\)/,
       );
     });
+
+    it("يطبّق deliver.ts حارس الدفع الكامل لـ COD عند الاستلام المباشر في فرعَي الفاتورة القائمة والجديدة ويتطابق مع جرد كتّاب الإيصالات", () => {
+      const deliverCode = executableSource(
+        "server/services/workOrder/deliver.ts",
+      );
+      const gateTestRaw = readFileSync(
+        path.resolve(
+          process.cwd(),
+          "server/services/__tests__/cashDayClosedWriteGate.test.ts",
+        ),
+        "utf8",
+      );
+
+      expect(
+        matchingLines(deliverCode, "requiresFullPaymentAtHandover").length,
+      ).toBeGreaterThanOrEqual(3); // الاستيراد + فرع الفاتورة القائمة + فرع الفاتورة الجديدة
+
+      const receiptInserts =
+        deliverCode.match(/(?:\.|\b)insert\(receipts\)/g)?.length ?? 0;
+      expect(receiptInserts).toBe(2);
+      expect(gateTestRaw).toContain('"workOrder/deliver.ts": 2,');
+    });
   });
 
-  describe("٥. حسم باركود الوصل الموحّد للأوامر الشقيقة (kanbanQueries.ts)", () => {
+  describe("٥. حسم باركود الوصل الموحّد وأرصدة الفاتورة المرتبطة للأوامر الشقيقة (kanbanQueries.ts و ReceptionHandoverPage.tsx)", () => {
     it("يستخرج الرقم الأساسي للوصل الموحّد من الرموز البسيطة والمركّبة ويرفض محارف البدل", () => {
       expect(extractUnifiedReceiptBaseCode("103757")).toBe("103757");
       expect(extractUnifiedReceiptBaseCode("WO-103757")).toBe("103757");
@@ -200,6 +249,69 @@ describe("دستور دورة حياة الكانبان وتصريف أوامر 
         kind: "WORK_ORDER",
         id: 103,
       });
+    });
+
+    it("يعتمد resolveWorkOrderHandoverFinancials أرصدة الفاتورة القائمة الفعّالة ويتجاهل الفواتير الميتة", () => {
+      // فاتورة قائمة قُبض عليها لاحقاً بعد إلغاء الإسناد
+      expect(
+        resolveWorkOrderHandoverFinancials(
+          { salePrice: "50000.00", deposit: "10000.00", invoiceId: 77 },
+          {
+            status: "PAID",
+            total: "50000.00",
+            returnedTotal: "0.00",
+            paidAmount: "50000.00",
+          },
+        ),
+      ).toEqual({ salePrice: "50000.00", deposit: "50000.00" });
+
+      // فاتورة قائمة مسدّدة جزئياً مع مرتجع جزئي
+      expect(
+        resolveWorkOrderHandoverFinancials(
+          { salePrice: "50000.00", deposit: "10000.00", invoiceId: 78 },
+          {
+            status: "PARTIALLY_PAID",
+            total: "50000.00",
+            returnedTotal: "5000.00",
+            paidAmount: "25000.00",
+          },
+        ),
+      ).toEqual({ salePrice: "45000.00", deposit: "25000.00" });
+
+      // فاتورة ميتة (CANCELLED / RETURNED / SUPERSEDED) ترجع لحقول أمر الشغل
+      for (const deadStatus of ["CANCELLED", "RETURNED", "SUPERSEDED"]) {
+        expect(
+          resolveWorkOrderHandoverFinancials(
+            { salePrice: "30000.00", deposit: "5000.00", invoiceId: 79 },
+            {
+              status: deadStatus,
+              total: "30000.00",
+              returnedTotal: "0.00",
+              paidAmount: "30000.00",
+            },
+          ),
+        ).toEqual({ salePrice: "30000.00", deposit: "5000.00" });
+      }
+    });
+
+    it("يحدّد ReceptionHandoverPage.tsx البند المُسلَّم من vars.workOrderId ويعطّل أزرار التبديل أثناء التنفيذ", () => {
+      const handoverCode = executableSource(
+        "client/src/pages/reception/ReceptionHandoverPage.tsx",
+      );
+
+      expect(
+        matchingLines(handoverCode, "const deliveredId = vars.workOrderId")
+          .length,
+      ).toBe(1);
+      expect(
+        matchingLines(
+          handoverCode,
+          "disabled={deliverMut.isPending || collectInvoiceMut.isPending}",
+        ).length,
+      ).toBeGreaterThanOrEqual(2);
+      expect(
+        matchingLines(handoverCode, "wo.linkedInvoice.paidAmount").length,
+      ).toBeGreaterThanOrEqual(2);
     });
   });
 });

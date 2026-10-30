@@ -52,7 +52,7 @@ import { verifyManagerApproval } from "./saleRouter";
 import { managerApprovalSchema } from "@shared/managerApproval";
 import { reassignWorkOrder, releaseWorkOrder } from "../services/workOrder/lifecycle";
 import { setWorkOrderKanbanState } from "../services/workOrder/kanbanState";
-import { activeWorkOrderConsignmentJoinCondition, excludeDispatchedReadySql, findSiblingWorkOrdersByBaseCode, pickSiblingFallbackTarget } from "../services/workOrder/kanbanQueries";
+import { activeWorkOrderConsignmentJoinCondition, excludeDispatchedReadySql, findSiblingWorkOrdersByBaseCode, pickSiblingFallbackTarget, resolveWorkOrderHandoverFinancials } from "../services/workOrder/kanbanQueries";
 import { shelfAuditDeliverWorkOrders } from "../services/workOrder/shelfAudit";
 import {
   collapseLinkedDeliveryBarcodeCandidates,
@@ -61,7 +61,7 @@ import {
   resolveActiveInvoiceCandidates,
   resolveUniqueDeliveryBarcodeTarget,
 } from "../services/delivery/barcodeLookupPolicy";
-import { WO_KANBAN_STATES } from "@shared/workOrderKanban";
+import { WO_KANBAN_STATES } from "@shared/workOrderKanban"; import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
 import { nextActionTerminalReason } from "@shared/nextAction";
 import { deriveWorkOrderNextActionFromRow } from "../services/nextActionDerivation";
 import { setWorkOrderDesign } from "../services/workOrder/design";
@@ -1380,6 +1380,7 @@ export const workOrderRouter = router({
               id: invoices.id,
               invoiceNumber: invoices.invoiceNumber,
               total: invoices.total,
+              returnedTotal: invoices.returnedTotal,
               paidAmount: invoices.paidAmount,
               status: invoices.status,
             })
@@ -1387,16 +1388,15 @@ export const workOrderRouter = router({
             .where(eq(invoices.id, Number(row.invoiceId)))
             .limit(1);
 
-          if (invRow && invRow.status !== "CANCELLED" && invRow.status !== "RETURNED") {
-            const invTotal = money(invRow.total);
-            const invPaid = money(invRow.paidAmount ?? "0");
-            const rem = round2(invTotal.minus(invPaid));
+          if (invRow && !isDeadInvoiceStatus(invRow.status)) {
+            const fin = resolveWorkOrderHandoverFinancials({ salePrice: invRow.total, deposit: "0", invoiceId: Number(invRow.id) }, invRow);
+            const rem = round2(money(fin.salePrice).minus(money(fin.deposit ?? "0")));
             linkedInvoice = {
               id: Number(invRow.id),
               invoiceNumber: invRow.invoiceNumber,
-              total: String(invRow.total),
-              paidAmount: String(invRow.paidAmount ?? "0"),
-              remaining: rem.toFixed(2),
+              total: fin.salePrice,
+              paidAmount: fin.deposit ?? "0.00",
+              remaining: (rem.gt(0) ? rem : money(0)).toFixed(2),
               isUnsettled: rem.gt(0),
             };
           }

@@ -13,6 +13,7 @@ import { money, round2, toDbMoney } from "../money";
 import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import { readOpeningWindowState } from "../openingModeService";
 import { appliedCollectionsForWorkOrder, linkSoleTargetCollectionsToInvoice } from "../deposits";
+import type { Tx } from "../../db";
 import { type Actor, withTx } from "../tx";
 import { assertNoLiveConsignment, assertWorkOrderBranch, loadWorkOrder, workOrderInvoiceSourceId, resolveDeliveryInvoiceNumber } from "./helpers";
 import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
@@ -50,11 +51,24 @@ export interface DeliverWorkOrderInput {
   enforceDebtApproval?: boolean;
 }
 
-/** READY → DELIVERED: create invoice (sourceType=WORKORDER) + optional payment + SALE entry + AR adjust. */
-export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Actor & { role?: string }) {
+export type DeliverWorkOrderTxResult = {
+  workOrderId: number;
+  invoiceId: number;
+  invoiceNumber: string;
+  status: string;
+  branchId: number;
+  idempotentReplay?: true;
+};
+
+/** READY → DELIVERED داخل معاملة خارجية قائمة (يُستخدَم في التسليم الفردي وجرد الرفّ الذري). */
+export async function deliverWorkOrderInTx(
+  tx: Tx,
+  input: DeliverWorkOrderInput,
+  actor: Actor & { role?: string },
+): Promise<DeliverWorkOrderTxResult> {
   // دفعة التسليم قبضٌ ذاتي من الموظف؛ نرفض غير النقدي قبل فحص idempotency وقفل الأمر.
   if (input.payment) assertPosPaymentMethodEnabled(input.payment.method);
-  const result = await withTx(async (tx) => {
+  {
     const requestFingerprint = input.clientRequestId ? idempotencyHash(input) : null;
     // Idempotency: double-click / network-retry ⇒ return the already-created invoice.
     if (input.clientRequestId) {
@@ -180,6 +194,13 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
       }
 
       const remainingAfterPay = round2(existingRemaining.minus(paidNow));
+      const woPaymentMode = (wo.paymentMode ?? "PREPAID") as CodPaymentMode;
+      if (requiresFullPaymentAtHandover(woPaymentMode, !!wo.hasDelivery) && remainingAfterPay.gt(0)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: COD_PICKUP_PAYMENT_ERROR_AR(remainingAfterPay.toFixed(2)),
+        });
+      }
       const isElevated = actor.role === "manager" || actor.role === "admin";
       const effectiveCustomerId =
         existingInv.customerId != null
@@ -266,7 +287,6 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
           input.addToCustomerDebt && (isElevated || input.managerOverrideByUserId != null),
         );
         if (!hasCreditOverride) {
-          const woPaymentMode = (wo.paymentMode ?? "PREPAID") as CodPaymentMode;
           await assertCreditLimit(
             tx,
             effectiveCustomerId,
@@ -874,35 +894,46 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
       status,
       branchId: Number(wo.branchId),
     };
-  });
-
-  if (!result.idempotentReplay) {
-    try {
-      publishRealtimeEvent<WorkOrderStatusChangedPayload>(
-        REALTIME_EVENT_TYPES.WORK_ORDER_STATUS_CHANGED,
-        {
-          workOrderId: result.workOrderId,
-          branchId: result.branchId,
-          previousStatus: "READY",
-          newStatus: "DELIVERED",
-          updatedBy: actor.userId,
-        },
-        { branchId: result.branchId },
-      );
-      publishRealtimeEvent<ReceptionQueueUpdatedPayload>(
-        REALTIME_EVENT_TYPES.RECEPTION_QUEUE_UPDATED,
-        {
-          orderId: result.workOrderId,
-          branchId: result.branchId,
-          status: "DELIVERED",
-          readyForPickup: false,
-        },
-        { branchId: result.branchId },
-      );
-    } catch {
-      // fail-safe
-    }
   }
+}
+
+export function publishWorkOrderDeliveredRealtime(
+  result: Pick<DeliverWorkOrderTxResult, "workOrderId" | "branchId" | "idempotentReplay">,
+  actorUserId: number,
+): void {
+  if (result.idempotentReplay) return;
+  try {
+    publishRealtimeEvent<WorkOrderStatusChangedPayload>(
+      REALTIME_EVENT_TYPES.WORK_ORDER_STATUS_CHANGED,
+      {
+        workOrderId: result.workOrderId,
+        branchId: result.branchId,
+        previousStatus: "READY",
+        newStatus: "DELIVERED",
+        updatedBy: actorUserId,
+      },
+      { branchId: result.branchId },
+    );
+    publishRealtimeEvent<ReceptionQueueUpdatedPayload>(
+      REALTIME_EVENT_TYPES.RECEPTION_QUEUE_UPDATED,
+      {
+        orderId: result.workOrderId,
+        branchId: result.branchId,
+        status: "DELIVERED",
+        readyForPickup: false,
+      },
+      { branchId: result.branchId },
+    );
+  } catch {
+    // fail-safe
+  }
+}
+
+/** READY → DELIVERED: create invoice (sourceType=WORKORDER) + optional payment + SALE entry + AR adjust. */
+export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Actor & { role?: string }) {
+  if (input.payment) assertPosPaymentMethodEnabled(input.payment.method);
+  const result = await withTx((tx) => deliverWorkOrderInTx(tx, input, actor));
+  publishWorkOrderDeliveredRealtime(result, actor.userId);
 
   return {
     workOrderId: result.workOrderId,

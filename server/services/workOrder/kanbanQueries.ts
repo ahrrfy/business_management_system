@@ -1,8 +1,10 @@
 import { and, asc, eq, like, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { stripDocPrefix } from "@shared/documentNumber";
-import { customers, deliveryConsignments, workOrders } from "../../../drizzle/schema";
+import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
+import { customers, deliveryConsignments, invoices, workOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { prepareDeliveryBarcodeLookup } from "../delivery/barcodeLookupPolicy";
+import { money, round2 } from "../money";
 
 export type WorkOrderStatus = typeof workOrders.$inferSelect["status"];
 
@@ -16,6 +18,49 @@ export interface SiblingWorkOrderItem {
   hasDelivery: boolean;
   customerName: string | null;
   customerPhone: string | null;
+}
+
+/**
+ * يستنتج الإجمالي الفعّال والمبلغ المسدَّد فعلياً لأمر شغل عند التسليم المباشر:
+ * إذا كان لأمر الشغل فاتورة قائمة غير ميتة (مُنشأة عند إسناد سابق أُلغي أو أُرجع الطرد منه)،
+ * تكون أرصدة الفاتورة الحالية (الإجمالي ناقص المرتجع، والمدفوع الفعلي) هي مصدر الحقيقة المحاسبي
+ * حتى لا يفشل التسليم بسبب تحصيل لاحق جرى على الفاتورة خارج حقل workOrders.deposit.
+ */
+export function resolveWorkOrderHandoverFinancials(
+  wo: {
+    salePrice: string;
+    deposit: string | null;
+    invoiceId?: number | null;
+  },
+  linkedInvoice?: {
+    status: string | null;
+    total: string | null;
+    returnedTotal?: string | null;
+    paidAmount?: string | null;
+  } | null,
+): { salePrice: string; deposit: string | null } {
+  if (
+    wo.invoiceId != null &&
+    linkedInvoice != null &&
+    linkedInvoice.status != null &&
+    !isDeadInvoiceStatus(linkedInvoice.status)
+  ) {
+    const netTotal = round2(
+      money(linkedInvoice.total ?? wo.salePrice).minus(
+        money(linkedInvoice.returnedTotal ?? "0"),
+      ),
+    );
+    const effectiveTotal = netTotal.gt(0) ? netTotal : money(0);
+    const effectivePaid = round2(money(linkedInvoice.paidAmount ?? "0"));
+    return {
+      salePrice: effectiveTotal.toFixed(2),
+      deposit: effectivePaid.toFixed(2),
+    };
+  }
+  return {
+    salePrice: String(wo.salePrice),
+    deposit: wo.deposit != null ? String(wo.deposit) : null,
+  };
 }
 
 /**
@@ -105,12 +150,18 @@ export async function findSiblingWorkOrdersByBaseCode(
       status: workOrders.status,
       salePrice: workOrders.salePrice,
       deposit: workOrders.deposit,
+      invoiceId: workOrders.invoiceId,
+      invoiceStatus: invoices.status,
+      invoiceTotal: invoices.total,
+      invoiceReturnedTotal: invoices.returnedTotal,
+      invoicePaidAmount: invoices.paidAmount,
       hasDelivery: workOrders.hasDelivery,
       customerName: sql<string | null>`COALESCE(NULLIF(${customers.name}, ''), NULLIF(${workOrders.contactName}, ''))`,
       customerPhone: sql<string | null>`COALESCE(NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${workOrders.contactPhone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''))`,
     })
     .from(workOrders)
     .leftJoin(customers, eq(workOrders.customerId, customers.id))
+    .leftJoin(invoices, eq(workOrders.invoiceId, invoices.id))
     .where(
       and(
         or(
@@ -128,17 +179,34 @@ export async function findSiblingWorkOrdersByBaseCode(
     )
     .orderBy(asc(workOrders.id));
 
-  return rows.map((r) => ({
-    id: Number(r.id),
-    orderNumber: r.orderNumber,
-    title: r.title,
-    status: r.status,
-    salePrice: String(r.salePrice),
-    deposit: r.deposit != null ? String(r.deposit) : null,
-    hasDelivery: Boolean(r.hasDelivery),
-    customerName: r.customerName ?? null,
-    customerPhone: r.customerPhone ?? null,
-  }));
+  return rows.map((r) => {
+    const financials = resolveWorkOrderHandoverFinancials(
+      {
+        salePrice: String(r.salePrice),
+        deposit: r.deposit != null ? String(r.deposit) : null,
+        invoiceId: r.invoiceId != null ? Number(r.invoiceId) : null,
+      },
+      r.invoiceStatus != null
+        ? {
+            status: r.invoiceStatus,
+            total: r.invoiceTotal,
+            returnedTotal: r.invoiceReturnedTotal,
+            paidAmount: r.invoicePaidAmount,
+          }
+        : null,
+    );
+    return {
+      id: Number(r.id),
+      orderNumber: r.orderNumber,
+      title: r.title,
+      status: r.status,
+      salePrice: financials.salePrice,
+      deposit: financials.deposit,
+      hasDelivery: Boolean(r.hasDelivery),
+      customerName: r.customerName ?? null,
+      customerPhone: r.customerPhone ?? null,
+    };
+  });
 }
 
 /**

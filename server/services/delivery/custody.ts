@@ -1049,14 +1049,11 @@ function custodyRuleForEvent(eventType: string): CustodyLifecycleRule | null {
   return null;
 }
 
-export async function applyDeliveryCustodyEventTx(
+async function applyCustodyLifecycleRuleTx(
   tx: Tx,
   input: DeliveryCustodyLifecycleEvent,
+  rule: CustodyLifecycleRule,
 ) {
-  if (COMMERCIAL_RETURN_EVENT_TYPES.has(input.eventType))
-    return reconcileCommercialReturnCustodyTx(tx, input);
-  const rule = custodyRuleForEvent(input.eventType);
-  if (!rule) return { initialized: 0, transitioned: 0 };
   const actorUserId = input.actorUserId ?? null;
   const rows = await initializeConsignmentCustodyTx(tx, {
     consignmentId: input.consignmentId,
@@ -1103,6 +1100,32 @@ export async function applyDeliveryCustodyEventTx(
     );
   }
   return { initialized: rows.length, transitioned };
+}
+
+export async function applyDeliveryCustodyEventTx(
+  tx: Tx,
+  input: DeliveryCustodyLifecycleEvent,
+) {
+  // إرجاع طرد أمر شغل إلى «جاهز للتسليم» (RETURN_TO_READY) يعيد المخرج المادي إلى عهدة المكتبة
+  // الجاهزة للإسناد أو التسليم المباشر (PREPARED_HELD) دون عكس البيع التجاري.
+  if (
+    input.eventType === "RETURNED" &&
+    input.payload?.workOrderDisposition === "RETURN_TO_READY"
+  ) {
+    return applyCustodyLifecycleRuleTx(tx, input, {
+      fromStates: [
+        "CARRIER_CUSTODY",
+        "RETURNED_PENDING_INSPECTION",
+        "CUSTOMER_OWNED_HELD",
+      ],
+      toState: "PREPARED_HELD",
+    });
+  }
+  if (COMMERCIAL_RETURN_EVENT_TYPES.has(input.eventType))
+    return reconcileCommercialReturnCustodyTx(tx, input);
+  const rule = custodyRuleForEvent(input.eventType);
+  if (!rule) return { initialized: 0, transitioned: 0 };
+  return applyCustodyLifecycleRuleTx(tx, input, rule);
 }
 
 const RECORDED_CUSTODY_EVENT_TYPES = [

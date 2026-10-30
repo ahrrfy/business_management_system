@@ -198,13 +198,19 @@ export default function ReceptionHandoverPage() {
             return;
           }
 
+          const effectiveWoSalePrice = wo.linkedInvoice
+            ? wo.linkedInvoice.total
+            : wo.salePrice;
+          const effectiveWoDeposit = wo.linkedInvoice
+            ? wo.linkedInvoice.paidAmount
+            : wo.deposit;
           const selfAsSibling: SiblingWorkOrder = {
             id: wo.id,
             orderNumber: wo.orderNumber,
             title: wo.title,
             status: wo.status,
-            salePrice: wo.salePrice,
-            deposit: wo.deposit,
+            salePrice: effectiveWoSalePrice,
+            deposit: effectiveWoDeposit,
             hasDelivery: Boolean((wo as { hasDelivery?: boolean }).hasDelivery),
             customerName: wo.customerName,
             customerPhone: wo.customerPhone,
@@ -216,6 +222,19 @@ export default function ReceptionHandoverPage() {
               ]
             : readyPickupSiblings;
           setSiblingOrders(mergedSiblings);
+          setScanned({
+            id: wo.id,
+            kind: "workOrder",
+            orderNumber: wo.orderNumber,
+            title: wo.title,
+            customerName: wo.customerName,
+            customerPhone: wo.customerPhone,
+            salePrice: effectiveWoSalePrice,
+            deposit: effectiveWoDeposit,
+          });
+          setManualInput("");
+          resetPaymentFields();
+          return;
         } else if (wo.kind === "invoice") {
           if (wo.status === "CANCELLED") {
             notify.err("هذه الفاتورة ملغاة ولا يمكن تسليمها");
@@ -285,7 +304,15 @@ export default function ReceptionHandoverPage() {
       void utils.workOrders.invalidate();
       void shiftQ.refetch();
 
-      if (nextSiblings.length > 0) {
+      const switchedToOtherReadySibling =
+        deliveredWorkOrderId != null &&
+        scanned?.kind === "workOrder" &&
+        scanned.id !== deliveredWorkOrderId &&
+        nextSiblings.some((s) => s.id === scanned.id);
+
+      if (switchedToOtherReadySibling) {
+        notify.ok(successTitle);
+      } else if (nextSiblings.length > 0) {
         const nextItem = nextSiblings[0]!;
         notify.ok(
           successTitle,
@@ -298,11 +325,11 @@ export default function ReceptionHandoverPage() {
         inputRef.current?.focus();
       }
     },
-    [siblingOrders, resetPaymentFields, utils.workOrders, shiftQ],
+    [siblingOrders, scanned, resetPaymentFields, utils.workOrders, shiftQ],
   );
 
   const deliverMut = trpc.workOrders.deliver.useMutation({
-    onSuccess: (res) => {
+    onSuccess: (res, vars) => {
       const snap = deliverPrintRef.current;
       deliverPrintRef.current = null;
       if (snap) {
@@ -328,15 +355,16 @@ export default function ReceptionHandoverPage() {
           );
         }
       }
-      const deliveredId =
-        scanned?.kind === "workOrder"
-          ? scanned.id
-          : snap?.order.kind === "workOrder"
-            ? snap.order.id
-            : null;
+      const deliveredId = vars.workOrderId;
+      const deliveredOrderNumber =
+        snap?.order.orderNumber ??
+        siblingOrders.find((s) => s.id === vars.workOrderId)?.orderNumber ??
+        (scanned?.kind === "workOrder" && scanned.id === vars.workOrderId
+          ? scanned.orderNumber
+          : String(vars.workOrderId));
       advanceOrClearAfterHandover(
         deliveredId,
-        "تمّ تسليم طلب #" + (scanned?.orderNumber ?? snap?.order.orderNumber ?? ""),
+        "تمّ تسليم طلب #" + deliveredOrderNumber,
       );
     },
     onError: (e) => {
@@ -369,7 +397,7 @@ export default function ReceptionHandoverPage() {
       }
       advanceOrClearAfterHandover(
         null,
-        "تمّ تحصيل الفاتورة #" + (scanned?.orderNumber ?? snap?.order.orderNumber ?? "") + " وتسليمها بنجاح",
+        "تمّ تحصيل الفاتورة #" + (snap?.order.orderNumber ?? scanned?.orderNumber ?? "") + " وتسليمها بنجاح",
       );
     },
     onError: (e) => {
@@ -634,6 +662,7 @@ export default function ReceptionHandoverPage() {
                         size="sm"
                         variant={active ? "default" : "outline"}
                         className="h-8 gap-1.5 text-xs font-bold"
+                        disabled={deliverMut.isPending || collectInvoiceMut.isPending}
                         onClick={() => {
                           setScanned(siblingToScanned(item));
                           resetPaymentFields();
@@ -676,6 +705,7 @@ export default function ReceptionHandoverPage() {
                 <Button
                   variant="ghost"
                   size="sm"
+                  disabled={deliverMut.isPending || collectInvoiceMut.isPending}
                   onClick={() => {
                     setScanned(null);
                     setSiblingOrders([]);
