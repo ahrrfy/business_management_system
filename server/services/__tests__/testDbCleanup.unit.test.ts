@@ -1,14 +1,114 @@
 import type mysql from "mysql2/promise";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { assertIsolatedActivationTestTarget } from "./activationTestTarget";
 import {
   clearTestTable,
   closeCleanupConn,
   populatedTestTables,
   readSnapshotWithReconnect,
+  bootstrapEmptyInventoryProjection,
+  assertSafeCleanupTarget,
 } from "./__setup__";
 
+describe("activation fixture target admission without SQL connections", () => {
+  const ci = { CI: "true", GITHUB_ACTIONS: "true", ALLOW_TEST_DB_PORT_3306: "1" };
+  it.each(["3306", ""])("admits isolated GitHub CI erp_test on port %s", (port) => {
+    const url = `mysql://root@127.0.0.1${port ? `:${port}` : ""}/erp_test`;
+    expect(() => assertIsolatedActivationTestTarget(url, ci)).not.toThrow();
+  });
+  it("retains the isolated local non-default target", () => {
+    expect(() => assertIsolatedActivationTestTarget("mysql://root@127.0.0.1:33318/erp_procedures_remediation_20261028_test", {})).not.toThrow();
+  });
+  const rejectedTargets: Array<[string, string, NodeJS.ProcessEnv]> = [
+    ["local explicit default", "mysql://root@127.0.0.1:3306/erp_test", {}],
+    ["local implicit default", "mysql://root@127.0.0.1/erp_test", {}],
+    ["local opt-in alone", "mysql://root@127.0.0.1:3306/erp_test", { ALLOW_TEST_DB_PORT_3306: "1" }],
+    ["CI missing", "mysql://root@127.0.0.1:3306/erp_test", { ...ci, CI: undefined }],
+    ["GitHub identity missing", "mysql://root@127.0.0.1:3306/erp_test", { ...ci, GITHUB_ACTIONS: undefined }],
+    ["opt-in missing", "mysql://root@127.0.0.1:3306/erp_test", { ...ci, ALLOW_TEST_DB_PORT_3306: undefined }],
+    ["opt-in false", "mysql://root@127.0.0.1/erp_test", { ...ci, ALLOW_TEST_DB_PORT_3306: "0" }],
+    ["CI false", "mysql://root@127.0.0.1:3306/erp_test", { ...ci, CI: "false" }],
+    ["remote host", "mysql://root@remote.test:3306/erp_test", ci],
+    ["remote non-default", "mysql://root@remote.test:33318/erp_test", ci],
+    ["production database", "mysql://root@127.0.0.1:3306/erp", ci],
+    ["other test database on default port", "mysql://root@127.0.0.1:3306/erp_snapshot_test", ci],
+    ["non-test local database", "mysql://root@127.0.0.1:33318/erp", ci],
+    ["wrong protocol", "http://127.0.0.1:33318/erp_test", ci],
+    ["malformed URL", "not a URL", ci],
+  ];
+  it.each(rejectedTargets)("rejects %s", (_name, url, env) => {
+    expect(() => assertIsolatedActivationTestTarget(url, env)).toThrow(/ISOLATED_ACTIVATION_TEST_DATABASE_REQUIRED/);
+  });
+});
+
 describe("test database isolation without empty-table DDL", () => {
+  it("rejects unsafe targets before complete cleanup or bootstrap", () => {
+    vi.stubEnv("ALLOW_TEST_DB_PORT_3306", "0");
+    for (const url of [
+      "mysql://root@remote.test:3310/erp_test",
+      "mysql://root@127.0.0.1:3310/erp",
+      "mysql://root@127.0.0.1:3306/erp_test",
+    ])
+      expect(() => assertSafeCleanupTarget(url)).toThrow(/refusing cleanup/);
+  });
+  it("never bootstraps READY over an existing marker or any populated business table", async () => {
+    for (const name of ["inventoryProjectionState", "productVariants"]) {
+      const query = vi
+        .fn()
+        .mockResolvedValueOnce([
+          [{ name: "inventoryProjectionState" }, { name: "productVariants" }],
+          [],
+        ])
+        .mockResolvedValueOnce([[{ name }], []]);
+      await expect(
+        bootstrapEmptyInventoryProjection(
+          {
+            query,
+            escape: (value: string) => `'${value}'`,
+          } as unknown as mysql.Connection,
+          "mysql://root@127.0.0.1:3310/erp_test",
+        ),
+      ).rejects.toThrow(/not empty/);
+      expect(
+        query.mock.calls.some((call) => String(call[0]).startsWith("INSERT")),
+      ).toBe(false);
+    }
+  });
+  it("initializes the marker only after exact whole-database emptiness verification", async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce([
+        [
+          { name: "inventoryProjectionState" },
+          { name: "productVariants" },
+          { name: "receipts" },
+        ],
+        [],
+      ])
+      .mockResolvedValueOnce([[], []])
+      .mockResolvedValueOnce([{}, []]);
+    await bootstrapEmptyInventoryProjection(
+      {
+        query,
+        escape: (value: string) => `'${value}'`,
+      } as unknown as mysql.Connection,
+      "mysql://root@127.0.0.1:3310/erp_test",
+    );
+    expect(query.mock.calls[1][0]).toContain("FROM `receipts`");
+    expect(query.mock.calls[2][0]).toBe(
+      "INSERT INTO inventoryProjectionState (id, readyVersion) VALUES (1, 1)",
+    );
+    await clearTestTable(
+      { query } as unknown as mysql.Connection,
+      "inventoryProjectionState",
+      false,
+    );
+    expect(query.mock.calls[3][0]).toBe(
+      "DELETE FROM `inventoryProjectionState`",
+    );
+  });
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await closeCleanupConn();
   });
 
@@ -117,7 +217,9 @@ describe("test database isolation without empty-table DDL", () => {
       .mockResolvedValueOnce([[{ name: "customers" }], []])
       .mockResolvedValueOnce([[], []])
       .mockResolvedValueOnce([[], []])
-      .mockRejectedValueOnce(new Error("Connection lost: The server closed the connection."));
+      .mockRejectedValueOnce(
+        new Error("Connection lost: The server closed the connection."),
+      );
     const freshEnd = vi.fn().mockResolvedValue(undefined);
     const freshQuery = vi
       .fn()
@@ -137,11 +239,17 @@ describe("test database isolation without empty-table DDL", () => {
         end: freshEnd,
       } as unknown as mysql.Connection);
 
-    const first = await readSnapshotWithReconnect("mysql://root@127.0.0.1:3310/erp_unit_test", createConnection);
+    const first = await readSnapshotWithReconnect(
+      "mysql://root@127.0.0.1:3310/erp_unit_test",
+      createConnection,
+    );
     expect(first.populated).toEqual([]);
     expect(createConnection).toHaveBeenCalledTimes(1);
 
-    const second = await readSnapshotWithReconnect("mysql://root@127.0.0.1:3310/erp_unit_test", createConnection);
+    const second = await readSnapshotWithReconnect(
+      "mysql://root@127.0.0.1:3310/erp_unit_test",
+      createConnection,
+    );
     expect(second.populated).toEqual(["customers"]);
     expect(staleEnd).toHaveBeenCalledOnce();
     expect(createConnection).toHaveBeenCalledTimes(2);

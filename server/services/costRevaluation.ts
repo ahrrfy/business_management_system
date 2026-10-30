@@ -1,3 +1,4 @@
+import { lockEconomicInventoryScope, readEconomicOwnedPositions } from "./inventory/economicOwnership";
 import Decimal from "decimal.js";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
@@ -55,27 +56,10 @@ export async function postCostRevaluation(
 ): Promise<void> {
   const delta = money(newCost ?? 0).minus(money(oldCost ?? 0));
 
-  // productVariant هو mutex الحاكم لكل حركة/WAVG؛ بعده نقفل نطاق أرصدة الصنف كله.
-  const pv = (
-    await tx
-      .select({
-        costPrice: productVariants.costPrice,
-        isConsignment: products.isConsignment,
-      })
-      .from(productVariants)
-      .innerJoin(products, eq(products.id, productVariants.productId))
-      .where(eq(productVariants.id, variantId))
-      .for("update")
-      .limit(1)
-  )[0];
-  if (!pv) {
-    throw new TRPCError({ code: "NOT_FOUND", message: "المتغيّر غير موجود" });
-  }
-  const rows = await tx
-    .select({ branchId: branchStock.branchId, quantity: branchStock.quantity })
-    .from(branchStock)
-    .where(eq(branchStock.variantId, variantId))
-    .for("update");
+  const scope = await lockEconomicInventoryScope(tx, [variantId]);
+  const current = await readEconomicOwnedPositions(tx, scope, variantId);
+  const pv = { costPrice: current.variant.costPrice, isConsignment: current.variant.product.isConsignment };
+  const rows = current.positions.map(p => ({ branchId: p.branchId, quantity: p.ownedQuantity }));
 
   const expectedOldCost = money(oldCost ?? 0);
   const liveCost = money(pv.costPrice ?? 0);

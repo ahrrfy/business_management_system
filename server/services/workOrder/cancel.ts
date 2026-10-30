@@ -1,3 +1,4 @@
+import { lockEconomicInventoryScope, readEconomicVariant } from "../inventory/economicOwnership";
 import { loadWorkOrderDepositReceiptSet } from "./depositReceiptSet";
 // إلغاء أمر شغل: يعيد المواد المُستهلَكة للمخزون ويسترد العربون المقبوض (إن وُجد).
 import { TRPCError } from "@trpc/server";
@@ -452,23 +453,15 @@ export async function cancelWorkOrderInTx(
 
       let returnedCost = money(0);
       const variantIds = Array.from(new Set(mats.map((m) => Number(m.variantId)))).sort((a, b) => a - b);
+      const scope = await lockEconomicInventoryScope(tx, variantIds);
       const nonStockVariants = new Set<number>();
       for (const vid of variantIds) {
-        if ((await isServiceVariant(tx, vid)) || (await isBundleVariant(tx, vid))) {
+        const current = await readEconomicVariant(tx, scope, vid);
+        if (current.product.isService || current.product.isBundle) {
           nonStockVariants.add(vid);
         }
       }
 
-      await lockInventoryVariants(
-        tx,
-        mats
-          .filter((material) => {
-            const vid = Number(material.variantId);
-            if (nonStockVariants.has(vid)) return false;
-            return (decisions.get(Number(material.id))?.returnBase ?? Number(material.baseQuantity)) > 0;
-          })
-          .map((material) => Number(material.variantId)),
-      );
       const returnedByVariant = new Map<number, { quantity: number; value: Decimal }>();
       for (const m of mats) {
         const variantId = Number(m.variantId);

@@ -351,7 +351,7 @@ const candidateIndex = deploySource.indexOf("prepareWebCandidate(PROJECT_ROOT");
 const swapIndex = deploySource.indexOf(
   "installWebCandidate(webArtifact, webCandidate)",
 );
-const reloadIndex = deploySource.indexOf("reloadWebProcess();", swapIndex);
+const fenceIndex = deploySource.indexOf("await executeInventoryDeployment({");
 const smokeIndex = deploySource.indexOf(
   "verify-nginx-storefront-readiness.mjs",
 );
@@ -369,23 +369,25 @@ assert.ok(
   "web must build in an isolated candidate after locked dependencies exist",
 );
 assert.ok(
-  swapIndex > candidateIndex && reloadIndex > swapIndex,
-  "candidate directory must swap atomically immediately before reload",
+  swapIndex > candidateIndex && fenceIndex > candidateIndex && fenceIndex < swapIndex,
+  "candidate swap must run only inside the inventory activation fence",
 );
 assert.ok(
   rollbackWebPreflightIndex > schemaVerifyIndex &&
     rollbackWebPreflightIndex < swapIndex,
   "the previous web release must pass a real schema/API preflight after migrations and before any live swap",
 );
-assert.ok(reloadIndex >= 0, "deployment must reload the web process");
+assert.ok(fenceIndex >= 0, "deployment must use the process and database fence");
 assert.ok(
-  smokeIndex > reloadIndex,
-  "external storefront smoke must run after the web reload",
+  smokeIndex > fenceIndex,
+  "external storefront smoke must run after the fenced activation",
 );
 assert.ok(
-  webCommitIndex > smokeIndex,
-  "the durable web activation journal must commit only after external smoke succeeds",
+  webCommitIndex > fenceIndex && webCommitIndex < smokeIndex,
+  "after the fence releases, smoke failure must not resurrect a prior binary",
 );
+assert.match(deploySource, /if \(inventoryStarted\) throw candidateError;/,
+  "the activation state machine exclusively owns safe invalidation/rollback");
 assert.ok(
   deploySource.indexOf("await recoverPendingWebActivationBeforePull();") <
     deploySource.indexOf(

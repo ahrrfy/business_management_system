@@ -37,6 +37,20 @@ describe("CI critical-path policy", () => {
       "--shard=${{ matrix.shard }}/${{ matrix.total }}",
     );
     expect(testShards).toContain("--tmpfs /var/lib/mysql");
+    // TCP cannot reach MySQL's temporary --skip-networking init server. The
+    // first successful authenticated final-server probe disables its scheduler;
+    // subsequent probes must not race the strict all-foreground session census.
+    expect(testShards).toContain(
+      '--health-cmd="mysql --protocol=TCP -h 127.0.0.1 -uroot -e \'SET GLOBAL event_scheduler=OFF; SELECT 1\'"',
+    );
+    expect(testShards).toContain("--health-start-interval=1s");
+    expect(testShards).toContain("--health-start-period=90s");
+    expect(testShards).toContain("--health-retries=10");
+    const jobMinutes = Number(testShards.match(/timeout-minutes: (\d+)/)?.[1]);
+    const healthHours = Number(testShards.match(/--health-interval=(\d+)h/)?.[1]);
+    expect(jobMinutes).toBeGreaterThan(0);
+    expect(healthHours * 60).toBeGreaterThan(jobMinutes);
+    expect(testShards).not.toContain("mysqladmin ping");
   });
 
   it("يتجاوز العمل الثقيل فقط عند اقتصار PR على التوثيق", () => {

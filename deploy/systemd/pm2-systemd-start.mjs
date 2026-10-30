@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -17,6 +17,76 @@ const PID_DIRECTORY = "/run/erp-pm2";
 const PID_FILE = "/run/erp-pm2/pm2-deploy.pid";
 const INSTALLED_HELPER = "/usr/local/libexec/erp/pm2-systemd-start.mjs";
 const EXPECTED_PM2_VERSION = "7.0.3";
+// Standalone root-owned helper: only reads bounded JSON/bytes, never imports or
+// executes deploy-owned source before deciding whether ERP resurrection is safe.
+export function assertInventoryResurrection(pm2Home) {
+  // PM2 7.0.3 resurrect falls back to dump.pm2.bak when the primary is absent.
+  // A ping-only daemon and a fresh boot legitimately have neither file. Check
+  // the fallback too; missing primary alone must not bypass ERP admission.
+  let dump;
+  let dumpStat;
+  for (const name of ["dump.pm2", "dump.pm2.bak"]) {
+    const candidate = path.join(pm2Home, name);
+    try {
+      dumpStat = fs.lstatSync(candidate);
+      dump = candidate;
+      break;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
+  if (!dump) {
+    // Missing dumps do not prove an existing daemon is ERP-free once durable
+    // activation intent exists. Only a never-activated empty home may boot.
+    try {
+      fs.lstatSync(path.join(pm2Home, "erp-inventory-activation.json"));
+    } catch (error) {
+      if (error?.code === "ENOENT") return;
+      throw error;
+    }
+    throw codedError("INVENTORY_BOOT_RECOVERY_REQUIRED");
+  }
+  if (!dumpStat.isFile() || dumpStat.isSymbolicLink() || dumpStat.size > 4 * 1024 * 1024) throw codedError("INVENTORY_BOOT_DUMP_UNTRUSTED");
+  const rows = JSON.parse(fs.readFileSync(dump, "utf8"));
+  if (!Array.isArray(rows)) throw codedError("INVENTORY_BOOT_DUMP_INVALID");
+  const erp = rows.filter(r => ["erp-server", "erp-hr-bridge", "erp-provision-worker"].includes(r.name));
+  if (!erp.length) return; // Unrelated applications may still resurrect.
+  const file = path.join(pm2Home, "erp-inventory-activation.json");
+  // Legacy pre-activation installations have no intent yet. Once activation
+  // starts, the fsynced journal is retained permanently, including rollback.
+  let s;
+  try {
+    s = fs.lstatSync(file);
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  if (!s.isFile() || s.isSymbolicLink() || s.size > 65536 || (process.platform !== "win32" && (s.mode & 0o777) !== 0o600)) throw codedError("INVENTORY_BOOT_JOURNAL_UNTRUSTED");
+  const journal = JSON.parse(fs.readFileSync(file, "utf8"));
+  if (journal.version !== 1 || !["READY", "CANDIDATES", "PRE_RELEASE", "RELEASED", "ROLLED_BACK"].includes(journal.phase)) throw codedError("INVENTORY_BOOT_RECOVERY_REQUIRED");
+  const artifacts = journal.phase === "ROLLED_BACK" ? journal.priorArtifacts : journal.artifacts;
+  if (["RELEASED", "ROLLED_BACK"].includes(journal.phase) &&
+      !(journal.phase === "ROLLED_BACK" && journal.initialReadyVersion === 0 && journal.active === null)) {
+    const active = journal.active;
+    if (!active || active.readyVersion !== 1 ||
+        (journal.phase === "ROLLED_BACK" && journal.initialReadyVersion !== 1) ||
+        (journal.phase === "RELEASED" && (active.activationId !== journal.id || active.commit !== journal.commit)) || active.database !== journal.database || active.serverUuid !== journal.serverUuid ||
+        !/^[a-f0-9-]{36}$/.test(active.activationId) || !/^[a-f0-9]{40}$/.test(active.commit) ||
+        !/^[a-f0-9]{40}$/.test(active.projectionCommit) || JSON.stringify(active.artifacts) !== JSON.stringify(artifacts))
+      throw codedError("INVENTORY_BOOT_ACTIVE_MANIFEST_INVALID");
+  }
+  if (!Array.isArray(artifacts) || !artifacts.some(a => a.name === "erp-server") ||
+      new Set(artifacts.map(a => a.name)).size !== artifacts.length ||
+      artifacts.some(a => !["erp-server", "erp-hr-bridge"].includes(a.name) || !Number.isSafeInteger(a.instances) || a.instances < 1))
+    throw codedError("INVENTORY_BOOT_ARTIFACT_SET_MISMATCH");
+  if (!Array.isArray(artifacts) || artifacts.reduce((n, a) => n + a.instances, 0) !== erp.length) throw codedError("INVENTORY_BOOT_ARTIFACT_SET_MISMATCH");
+  for (const a of artifacts) {
+    if (!path.isAbsolute(a.script) || !path.isAbsolute(a.bundle) || !/^[a-f0-9]{64}$/.test(a.hash) || !/^[a-f0-9]{64}$/.test(a.scriptHash)) throw codedError("INVENTORY_BOOT_ARTIFACT_INVALID");
+    const matching = erp.filter(r => r.name === a.name && path.resolve(r.pm_exec_path) === a.script);
+    const hash = f => createHash("sha256").update(fs.readFileSync(f)).digest("hex");
+    if (matching.length !== a.instances || hash(a.bundle) !== a.hash || hash(a.script) !== a.scriptHash) throw codedError("INVENTORY_BOOT_ARTIFACT_MISMATCH");
+  }
+}
 const DEPLOY_PATH =
   "/opt/alroya-erp/node-v24.22.1-linux-x64/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
@@ -314,6 +384,7 @@ async function main() {
   assertTrustedRootPath(SETPRIV_BIN);
   assertTrustedRootPath(PM2_BIN);
   ensurePidDirectory();
+  assertInventoryResurrection(PM2_HOME);
 
   const daemon = await reconcilePm2ForSystemd({
     pm2Home: PM2_HOME,

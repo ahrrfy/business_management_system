@@ -4,7 +4,6 @@ import { and, desc, eq, inArray, isNull, like, lt, or, sql, type SQL } from "dri
 import { nanoid } from "nanoid";
 import { channelIntegrations, conversationMessages, conversations, customers, users, waOutbox } from "../../drizzle/schema";
 import { getDb } from "../db";
-import { logger } from "../logger";
 import { branchScopedProcedure, cashierProcedure, requireModule, router } from "../trpc";
 import { logAudit } from "../services/auditService";
 import {
@@ -17,7 +16,7 @@ import {
 // الاستهلاك الخارجي لِمَركَز واتساب الأَعمال يَمُرّ عَبر البِرميل `services/whatsapp` حَصراً (تَعليق
 // index.ts) — لا اِستيراد مُباشر مِن outboxService/sendService داخِل هَذا الراوتر.
 import {
-  dispatchOutboxRow,
+  scheduleOutboxDispatch,
   enqueueAndDispatch,
   getActiveWaIntegration,
   getUsableTemplate,
@@ -568,14 +567,7 @@ export const conversationRouter = router({
       // مُحاولة فَورية غَير مُتزامِنة — نَفس نَمط enqueueAndDispatch (outboxService.ts): لا نَنتظر
       // النَتيجة، الكَنّاس يَلتَقط أَي فَشل خِلال دَقيقة عَلى أَي حال.
       if (!input.reconciliation)
-        setImmediate(() => {
-          void dispatchOutboxRow(input.outboxId).catch((e) => {
-            logger.error(
-              { err: e, outboxId: input.outboxId },
-              "wa-outbox: retrySend immediate dispatch attempt failed",
-            );
-          });
-        });
+        scheduleOutboxDispatch(input.outboxId);
       return {
         outboxId: input.outboxId,
         ok: true as const,

@@ -70,7 +70,7 @@ function expectCode(code, action) {
   assert.throws(action, (error) => error?.message === code);
 }
 
-async function verifyConcurrentIntentLock(namespace) {
+async function verifyConcurrentIntentLock(namespace, sharingFault = "") {
   const root = fs.mkdtempSync(
     path.join(os.tmpdir(), `hr-bridge-${namespace}-lock-race-`),
   );
@@ -100,8 +100,24 @@ async function verifyConcurrentIntentLock(namespace) {
     const childSource = String.raw`
 const fs = require("node:fs");
 const tools = require(process.argv[1]);
-const [root, namespace, gate, winner, blocked] = process.argv.slice(2);
+const [root, namespace, gate, winner, blocked, sharingFault] = process.argv.slice(2);
 const wait = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+// Inject sharing failures into real child processes; winner/blocked ownership
+// remains proved by native filesystem operations, including the wx winner file.
+if (sharingFault) {
+  const method = sharingFault === "rename" ? "renameSync" : "unlinkSync";
+  const original = fs[method];
+  let started;
+  fs[method] = function (...args) {
+    if (sharingFault === "rename" || String(args[0]).endsWith("2147483647-00000000-0000-4000-8000-000000000001.json")) {
+      started ??= Date.now();
+      if (Date.now() - started < 120) {
+        throw Object.assign(new Error("CONTROLLED_WINDOWS_SHARING"), { code: "EPERM" });
+      }
+    }
+    return original.apply(this, args);
+  };
+}
 fs.writeFileSync(gate + "." + process.pid + ".ready", "ready\n", { flag: "wx" });
 while (!fs.existsSync(gate)) wait(10);
 try {
@@ -135,6 +151,7 @@ try {
           gate,
           winner,
           blocked,
+          sharingFault,
         ],
         { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
       ),
@@ -167,7 +184,7 @@ try {
       || results.filter((r) => /WINNER/.test(r.stdout)).length !== 1
       || results.filter((r) => /BLOCKED/.test(r.stdout)).length !== 1;
     if (failed) {
-      console.error(`\n✗ سباق قفل «${namespace}» — تشخيصُ الأطفال:`);
+      console.error(`\n✗ سباق قفل «${namespace}${sharingFault ? `:${sharingFault}` : ""}» — تشخيصُ الأطفال:`);
       results.forEach((r, index) => {
         console.error(`  طفل ${index}: exit=${r.status} stdout=${JSON.stringify(r.stdout.trim())}`);
         const lines = String(r.stderr).split("\n").filter(Boolean).slice(0, 8);
@@ -179,6 +196,212 @@ try {
     assert.equal(results.filter((result) => /WINNER/.test(result.stdout)).length, 1);
     assert.equal(results.filter((result) => /BLOCKED/.test(result.stdout)).length, 1);
   } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function verifyIntentFilesystemFailures() {
+  const root = fs.mkdtempSync(
+    path.join(os.tmpdir(), "hr-bridge-intent-fs-faults-"),
+  );
+  const directory = path.join(releaseTools.runtimeRoot(root), "deploy-locks");
+  const token = "00000000-0000-4000-8000-000000000001";
+  const dead = path.join(directory, `2147483647-${token}.json`);
+  const deadRecord = {
+    version: 1,
+    namespace: "deploy",
+    token,
+    createdNs: "1",
+    held: true,
+    pids: [2_147_483_647],
+  };
+  const originals = Object.fromEntries(
+    ["linkSync", "renameSync", "unlinkSync", "readFileSync"].map((name) => [
+      name,
+      fs[name],
+    ]),
+  );
+  const denied = () =>
+    Object.assign(new Error("CONTROLLED_WINDOWS_SHARING"), { code: "EPERM" });
+  const restore = () => Object.assign(fs, originals);
+  const reset = () => {
+    restore();
+    fs.rmSync(directory, { recursive: true, force: true });
+    fs.mkdirSync(directory, { recursive: true });
+  };
+  try {
+    for (const mode of [
+      "publish",
+      "temporary-cleanup",
+      "owner-release",
+      "loser-cleanup",
+    ]) {
+      reset();
+      let unlock;
+      if (mode === "owner-release")
+        unlock = releaseTools.acquireRuntimeIntentLock(root, "deploy");
+      let foreign;
+      if (mode === "loser-cleanup") {
+        foreign = path.join(directory, `${process.pid}-${token}.json`);
+        fs.writeFileSync(
+          foreign,
+          JSON.stringify({ ...deadRecord, pids: [process.pid] }),
+        );
+      }
+      const method = mode === "publish" ? "linkSync" : "unlinkSync";
+      let started;
+      let deniedCount = 0;
+      fs[method] = function (...args) {
+        const file = String(args[0]);
+        const matches =
+          mode === "publish" ||
+          (mode === "temporary-cleanup"
+            ? file.includes(".tmp-")
+            : file.endsWith(".json") && file !== foreign);
+        if (matches) {
+          started ??= Date.now();
+          if (Date.now() - started < 120) {
+            deniedCount++;
+            throw Object.assign(denied(), {
+              code: ["EPERM", "EBUSY", "EACCES"][(deniedCount - 1) % 3],
+            });
+          }
+        }
+        return originals[method].apply(this, args);
+      };
+      if (mode === "owner-release") unlock();
+      else if (mode === "loser-cleanup")
+        expectCode("HR_BRIDGE_DEPLOY_ALREADY_RUNNING", () =>
+          releaseTools.acquireRuntimeIntentLock(root, "deploy"),
+        );
+      else releaseTools.acquireRuntimeIntentLock(root, "deploy")();
+      assert.ok(
+        deniedCount > 1 && Date.now() - started >= 120,
+        `${mode} must outlast the old 50ms sharing retry window`,
+      );
+      restore();
+      assert.deepEqual(
+        fs.readdirSync(directory),
+        foreign ? [path.basename(foreign)] : [],
+      );
+    }
+    for (const mode of [
+      "permanent-rename",
+      "permanent-dead-unlink",
+      "unreadable-live",
+      "owner-changed",
+      "dead-became-live",
+      "unknown-error",
+      "unknown-record",
+    ]) {
+      reset();
+      let preserved;
+      if (mode === "unknown-record") {
+        preserved = path.join(directory, "unknown.json");
+        fs.writeFileSync(preserved, "unrecognized");
+      } else if (
+        [
+          "permanent-dead-unlink",
+          "owner-changed",
+          "dead-became-live",
+          "unreadable-live",
+        ].includes(mode)
+      ) {
+        preserved =
+          mode === "unreadable-live"
+            ? path.join(directory, `${process.pid}-${token}.json`)
+            : dead;
+        fs.writeFileSync(
+          preserved,
+          JSON.stringify(
+            mode === "unreadable-live"
+              ? { ...deadRecord, pids: [process.pid] }
+              : deadRecord,
+          ),
+        );
+      }
+      const before = preserved ? fs.readFileSync(preserved, "utf8") : null;
+      const method =
+        mode === "unreadable-live"
+          ? "readFileSync"
+          : ["permanent-rename", "unknown-error"].includes(mode)
+            ? "renameSync"
+            : "unlinkSync";
+      let changed = false;
+      let deniedCount = 0;
+      const originalKill = process.kill;
+      fs[method] = function (...args) {
+        if (method === "renameSync" || String(args[0]) === preserved) {
+          deniedCount++;
+          if (mode === "owner-changed" && !changed) {
+            changed = true;
+            fs.writeFileSync(
+              dead,
+              JSON.stringify({ ...deadRecord, createdNs: "2" }),
+            );
+          }
+          if (mode === "dead-became-live" && !changed) {
+            changed = true;
+            process.kill = function (pid, signal) {
+              if (pid === 2_147_483_647) return true;
+              return originalKill.call(this, pid, signal);
+            };
+          }
+          throw Object.assign(denied(), {
+            code: mode === "unknown-error" ? "EIO" : "EPERM",
+          });
+        }
+        return originals[method].apply(this, args);
+      };
+      const expected = ["owner-changed", "dead-became-live"].includes(mode)
+        ? "HR_BRIDGE_LOCK_INTENT_OWNERSHIP_CHANGED"
+        : mode === "unknown-record"
+          ? "HR_BRIDGE_LOCK_INTENT_INVALID"
+          : null;
+      const started = Date.now();
+      try {
+        assert.throws(
+          () => releaseTools.acquireRuntimeIntentLock(root, "deploy"),
+          (error) =>
+            expected
+              ? error?.message === expected
+              : error?.code === (mode === "unknown-error" ? "EIO" : "EPERM"),
+        );
+      } finally {
+        process.kill = originalKill;
+        restore();
+      }
+      assert.ok(
+        Date.now() - started < 2_000,
+        `${mode} must remain bounded below the temporary witness age`,
+      );
+      if (mode === "unknown-error") assert.equal(deniedCount, 1);
+      if (preserved)
+        assert.equal(
+          fs.readFileSync(preserved, "utf8"),
+          mode === "owner-changed"
+            ? JSON.stringify({ ...deadRecord, createdNs: "2" })
+            : before,
+          `${mode} must preserve the unproved/foreign record`,
+        );
+      else assert.deepEqual(fs.readdirSync(directory), []);
+    }
+    reset();
+    let collision;
+    fs.linkSync = function (temporary, file) {
+      collision = file;
+      fs.writeFileSync(file, "foreign-owner", { flag: "wx" });
+      return originals.linkSync(temporary, file);
+    };
+    assert.throws(
+      () => releaseTools.acquireRuntimeIntentLock(root, "deploy"),
+      (error) => error?.code === "EEXIST",
+    );
+    restore();
+    assert.equal(fs.readFileSync(collision, "utf8"), "foreign-owner");
+    assert.deepEqual(fs.readdirSync(directory), [path.basename(collision)]);
+  } finally {
+    restore();
     fs.rmSync(root, { recursive: true, force: true });
   }
 }
@@ -631,6 +854,14 @@ try {
   await verifyConcurrentIntentLock("sync");
   verifyHeldIntentHasPriority("deploy");
   verifyHeldIntentHasPriority("sync");
+  if (process.platform === "win32") {
+    verifyIntentFilesystemFailures();
+    for (const namespace of ["deploy", "sync"]) {
+      await verifyConcurrentIntentLock(namespace, "rename");
+      await verifyConcurrentIntentLock(namespace, "dead-unlink");
+    }
+    process.stdout.write("hr bridge Windows intent filesystem selftest: 12 fault cases + 4 concurrent races passed\n");
+  }
 
   const retentionRoot = fs.mkdtempSync(
     path.join(os.tmpdir(), "hr-bridge-retention-selftest-"),

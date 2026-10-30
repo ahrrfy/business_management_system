@@ -1,3 +1,4 @@
+import { lockEconomicInventoryScope, readEconomicVariant } from "../inventory/economicOwnership";
 import { returnFulfillmentRequestConsignmentTx } from "../fulfillment/requestSources";
 import { routeAftercareDeliveryResultTx } from "../fulfillment/aftercareDelivery";
 import { loadRefundCaps } from "../returns/refundCaps";
@@ -443,7 +444,16 @@ export async function returnConsignment(
       .where(eq(invoiceItems.invoiceId, Number(cn.invoiceId)));
 
     const itemVariantIds = Array.from(new Set(items.map((item) => Number(item.variantId))));
-    const kindByVariant = await classifyVariants(tx, itemVariantIds);
+    const savedPhysical = items.length ? await tx.select({ id: invoiceItemBundleComponents.componentVariantId }).from(invoiceItemBundleComponents).where(inArray(invoiceItemBundleComponents.invoiceItemId, items.map(i => Number(i.id)))) : [];
+    const scope = await lockEconomicInventoryScope(tx, itemVariantIds.concat(savedPhysical.map(p => p.id)));
+    const kindByVariant = new Map<number, "STOCKED" | "BUNDLE" | "SERVICE">();
+    for (const id of itemVariantIds) {
+      const current = await readEconomicVariant(tx, scope, id);
+      kindByVariant.set(id, current.product.isService ? "SERVICE" : current.product.isBundle ? "BUNDLE" : "STOCKED");
+      for (const item of items.filter(i => Number(i.variantId) === id)) {
+        item.isService = current.product.isService; item.isConsignment = current.product.isConsignment; item.consignorId = current.product.consignorId; item.productType = current.product.productType;
+      }
+    }
     const bundleItemIds = items
       .filter((item) => kindByVariant.get(Number(item.variantId)) === "BUNDLE")
       .map((item) => Number(item.id));

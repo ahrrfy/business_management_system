@@ -252,6 +252,7 @@ const EXTRA_MIGRATIONS = [
   "drizzle/migrations/0405_delivery_custody_document_snapshots.sql",
   // Preserve final outbox enums after earlier WhatsApp reconciliation migrations.
   "drizzle/migrations/0408_audit_crossmodule_contracts.sql",
+  "drizzle/migrations/0410_inventory_economic_projection.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without

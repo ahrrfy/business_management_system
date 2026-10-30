@@ -1,3 +1,4 @@
+import { lockEconomicInventoryScope, readEconomicOwnedPositions, readEconomicVariant, type EconomicInventoryScope } from "./inventory/economicOwnership";
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, asc, eq, sql } from "drizzle-orm";
@@ -128,6 +129,8 @@ export function signedMoveQty(
 }
 
 export interface ApplyMovementArgs {
+  /** Internal capability for current scoped classification; never accepted by routers. */
+  economicScope?: EconomicInventoryScope;
   variantId: number;
   branchId: number;
   baseQuantity: number; // positive integer, in base units
@@ -186,6 +189,7 @@ export interface ApplyMovementResult {
 }
 
 export interface ApplyValuedInboundMovementArgs {
+  stampOpened?: boolean;
   variantId: number;
   branchId: number;
   baseQuantity: number;
@@ -206,7 +210,7 @@ export interface ApplyValuedInboundMovementResult extends ApplyMovementResult {
   previousCost: string;
   newCost: string;
   historicalValue: string;
-  /** إجمالي الرصيد العالمي المقفَل قبل الإدخال؛ قد يكون سالباً لصنف «يُباع بالطلب». */
+  /** إجمالي المملوك المقفَل قبل الإدخال: الرفوف + الطريق المنسوب للمصدر؛ قد يكون سالباً. */
   previousGlobalQuantity: string;
 }
 
@@ -258,12 +262,15 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
       }),
     });
   }
+  const economicProduct = a.economicScope
+    ? (await readEconomicVariant(tx, a.economicScope, a.variantId)).product
+    : undefined;
   await lockInventoryVariants(tx, [a.variantId]);
 
   // مُنتج خِدمي: لا تَتبُّع مَخزون. التَحويل بين الفُروع مَمنوع منطقياً (الخَدمة لا تُحَوَّل
   // كَأنها بِضاعة). البَيع/الشِراء/المُرتجَع/التَسوية: نَخرج بِنَتيجة اصطناعية بِلا حركة ولا
   // كِتابة على branchStock. الإيراد/التَكلفة يَستمرّ عَبر مَسارات أخرى (saleService، COGS).
-  if (await isServiceVariant(tx, a.variantId)) {
+  if (economicProduct ? economicProduct.isService : await isServiceVariant(tx, a.variantId)) {
     if (a.movementType === "TRANSFER_IN" || a.movementType === "TRANSFER_OUT") {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -279,7 +286,7 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
 
   // bundles: البكج بلا branchStock — يجب أن يُوسَّع لمكوّناته قبل الوصول لهنا (sale/create.ts + returnService).
   // أي استدعاء مباشر خطأ برمجيّ (شراء بكج، تحويل بكج، جرد بكج) — نمنعه صراحةً برسالةٍ تدلّ على السبب.
-  if (await isBundleVariant(tx, a.variantId)) {
+  if (economicProduct ? economicProduct.isBundle : await isBundleVariant(tx, a.variantId)) {
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: appErrorMessage({
@@ -480,14 +487,9 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
  * فيعيد كميةً وقيمةً معاً؛ زيادة الكمية وحدها تُضخّم قيمة المخزون بسعر اليوم وتترك فرق WIP
  * بلا مقابل داخل الأصل.
  *
- * ترتيب الأقفال حاكم ومشترك مع الشراء والإنتاج:
- *   1) mutex المتغيّر (`productVariants`)،
- *   2) ضمان صفّ الفرع الهدف،
- *   3) **كل** أرصدة المتغيّر تصاعدياً بالفرع (WAVG عالمي)،
- *   4) الحركة ثم تحديث `costPrice` داخل المعاملة نفسها.
- *
- * تُجمع الكمية من الصفوف التي أعادها `SELECT ... FOR UPDATE` نفسه. لا يلي القفلَ `SUM`
- * متّسقٌ عادياً؛ ففي MySQL REPEATABLE READ قد يقرأ ذلك الـSUM لقطةً أقدم من الصفوف المقفلة.
+ * يثبت المستدعي نطاق العملية الكامل: الجاهزية ثم المنتجات ثم mutex الأصناف.
+ * يُعاد استعمال النطاق هنا مع قراءة حالية لكل إدخال؛ الوزن هو الرفوف + الطريق،
+ * بينما تظل إتاحة الصرف المادي من الرف وحده. لا SUM بلقطة RR قديمة ولا توسع متأخر.
  */
 export async function applyValuedInboundMovement(
   tx: Tx,
@@ -515,8 +517,9 @@ export async function applyValuedInboundMovement(
     });
   }
 
-  await lockInventoryVariants(tx, [a.variantId]);
-  if (await isServiceVariant(tx, a.variantId)) {
+  const scope = await lockEconomicInventoryScope(tx, [a.variantId]);
+  const { variant, positions } = await readEconomicOwnedPositions(tx, scope, a.variantId);
+  if (variant.product.isService) {
     throw new TRPCError({
       code: "CONFLICT",
       message: appErrorMessage({
@@ -526,7 +529,7 @@ export async function applyValuedInboundMovement(
       }),
     });
   }
-  if (await isBundleVariant(tx, a.variantId)) {
+  if (variant.product.isBundle) {
     throw new TRPCError({
       code: "CONFLICT",
       message: appErrorMessage({
@@ -537,48 +540,17 @@ export async function applyValuedInboundMovement(
     });
   }
 
-  await ensureBranchStockRows(tx, [a.variantId], a.branchId);
-  const lockedStockRows = await tx
-    .select({
-      branchId: branchStock.branchId,
-      quantity: branchStock.quantity,
-    })
-    .from(branchStock)
-    .where(eq(branchStock.variantId, a.variantId))
-    .orderBy(asc(branchStock.branchId))
-    .for("update");
-  const previousGlobalQuantity = lockedStockRows.reduce(
-    (sum, row) => sum.plus(row.quantity ?? 0),
-    new Decimal(0),
+  const previousGlobalQuantity = positions.reduce(
+    (sum, row) => sum.plus(row.ownedQuantity), new Decimal(0),
   );
-
-  // Current read تحت mutex الصنف؛ `.for("update")` يمنع لقطة RR قديمة لو كانت هذه أول قراءة
-  // متّسقة في المعاملة، ويجعل الكمية والتكلفة من اللحظة المقفلة ذاتها.
-  const variant = (
-    await tx
-      .select({ costPrice: productVariants.costPrice })
-      .from(productVariants)
-      .where(eq(productVariants.id, a.variantId))
-      .for("update")
-      .limit(1)
-  )[0];
-  if (!variant) {
-    throw new TRPCError({
-      code: "NOT_FOUND",
-      message: appErrorMessage({
-        what: "تعذّر إدخال المخزون بقيمته التاريخية",
-        why: `متغيّر المنتج رقم ${a.variantId} لم يعد موجوداً`,
-        doThis: "راجع المستند الأصلي وسجل المنتج قبل إعادة المحاولة",
-      }),
-    });
-  }
-
   const previousCost = round2(money(variant.costPrice ?? "0"));
   // سياسة WAVG الحالية تعامل الرصيد العالمي السالب كالتزام توريد لا كقيمة أصل سالبة؛
   // لذلك لا يشارك السالب في البسط أو المقام، تماماً كما في استلام الشراء والإنتاج.
   const carryingQuantity = Decimal.max(previousGlobalQuantity, 0);
   const denominator = carryingQuantity.plus(a.baseQuantity);
-  const newCost = denominator.lte(0)
+  const newCost = variant.product.isConsignment
+    ? previousCost
+    : denominator.lte(0)
     ? round2(historicalValue.div(a.baseQuantity))
     : round2(
         carryingQuantity
@@ -588,6 +560,7 @@ export async function applyValuedInboundMovement(
       );
 
   const movement = await applyMovement(tx, {
+    economicScope: scope,
     variantId: a.variantId,
     branchId: a.branchId,
     baseQuantity: a.baseQuantity,
@@ -597,6 +570,7 @@ export async function applyValuedInboundMovement(
     documentNumber: a.documentNumber,
     notes: a.notes,
     createdBy: a.createdBy,
+    stampOpened: a.stampOpened,
   });
   await tx
     .update(productVariants)

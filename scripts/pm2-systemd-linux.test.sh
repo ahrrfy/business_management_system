@@ -148,6 +148,8 @@ systemd-run --unit="${SEED_UNIT}" --property=User=deploy --property=Type=oneshot
   --setenv=PM2_HOME=/home/deploy/.pm2 \
   /opt/alroya-erp/node-v24.22.1-linux-x64/bin/node "${PM2_BIN}" ping >/dev/null
 systemctl is-active --quiet "${SEED_UNIT}"
+[[ ! -e /home/deploy/.pm2/dump.pm2 && ! -e /home/deploy/.pm2/dump.pm2.bak ]]
+[[ ! -e /home/deploy/.pm2/erp-inventory-activation.json ]]
 existing_pid="$(cat /home/deploy/.pm2/pm2.pid)"
 existing_start="$(proc_start_time "${existing_pid}")"
 grep -Fq "/system.slice/${SEED_UNIT}" "/proc/${existing_pid}/cgroup"

@@ -72,7 +72,7 @@ export async function readInventoryValuation(tx: Tx): Promise<InventoryValuation
     .from(branchStock)
     .innerJoin(productVariants, eq(productVariants.id, branchStock.variantId))
     .innerJoin(products, eq(products.id, productVariants.productId))
-    .where(and(eq(products.isConsignment, false)))
+    .where(and(eq(products.isConsignment, false), eq(products.isService, false), eq(products.isBundle, false)))
     .groupBy(branchStock.branchId);
 
   // ⭐ P1-#1: الحمل بالطريق مجمَّعاً بفرعِ المصدر — نفس شرط الأمانة (isConsignment=false) كي يبقى
@@ -102,7 +102,7 @@ export async function readInventoryValuation(tx: Tx): Promise<InventoryValuation
       sql`${productVariants.id} = COALESCE(${stockTransferLineBundleComponents.componentVariantId}, ${stockTransferLines.variantId})`,
     )
     .innerJoin(products, eq(products.id, productVariants.productId))
-    .where(and(eq(stockTransfers.status, "IN_TRANSIT"), eq(products.isConsignment, false)))
+    .where(and(eq(stockTransfers.status, "IN_TRANSIT"), eq(products.isConsignment, false), eq(products.isService, false), eq(products.isBundle, false)))
     .groupBy(stockTransfers.fromBranchId);
   const inTransitByBranch = new Map<number, ReturnType<typeof money>>();
   let inTransitTotal = money(0);

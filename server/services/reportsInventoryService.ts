@@ -72,7 +72,7 @@ export async function getInventoryValuation(
       JOIN productVariants pv ON pv.id = bs.variantId
       JOIN products p ON p.id = pv.productId
       LEFT JOIN categories c ON c.id = p.categoryId
-      WHERE p.isConsignment = false ${branchCond}
+      WHERE p.isConsignment = false AND p.isService = false AND p.isBundle = false ${branchCond}
       GROUP BY c.id, c.name
       ORDER BY SUM(bs.quantity * pv.costPrice) DESC
     `),
@@ -96,7 +96,7 @@ export async function getInventoryValuation(
       FROM branchStock bs
       JOIN productVariants pv ON pv.id = bs.variantId
       JOIN products p ON p.id = pv.productId
-      WHERE p.isConsignment = false ${branchCond}
+      WHERE p.isConsignment = false AND p.isService = false AND p.isBundle = false ${branchCond}
     `),
   )[0] ?? { items: 0, totalQty: 0, totalValue: "0" };
 
@@ -135,7 +135,7 @@ export async function getInventoryValuation(
       LEFT JOIN stockTransferLineBundleComponents stlbc ON stlbc.transferLineId = stl.id
       JOIN productVariants pv ON pv.id = COALESCE(stlbc.componentVariantId, stl.variantId)
       JOIN products p ON p.id = pv.productId
-      WHERE st.transferStatus = 'IN_TRANSIT' AND p.isConsignment = false ${inTransitBranchCond}
+      WHERE st.transferStatus = 'IN_TRANSIT' AND p.isConsignment = false AND p.isService = false AND p.isBundle = false ${inTransitBranchCond}
     `),
   )[0] ?? { items: 0, totalQty: 0, totalValue: "0" };
 

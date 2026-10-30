@@ -1,3 +1,4 @@
+import { lockEconomicInventoryScope, readEconomicVariant, readEconomicOwnedPositions } from "../inventory/economicOwnership";
 // G-م١: استلام بضاعة مجّانية من مورّد (هدية واردة). صفر تكلفة ⇒ **تخفيف WAVG** (نمط purchaseService:
 // المتوسّط الجديد = القيمة الدفترية القديمة ÷ الكمية بعد الإضافة، لأنّ المجّاني يضيف قيمةً صفراً)، **بلا قيد
 // PURCHASE ولا دين للمورّد**. الوحدة تُحوَّل لوحدة الأساس؛ يُرفَض البكج/الخدميّ (لا مخزون ذاتيّ). ذرّيّ تحت قفل.
@@ -57,12 +58,14 @@ export async function receiveInboundGift(input: ReceiveInboundGiftInput, actor: 
     }
 
     // حوّل كل سطر لوحدة الأساس + امنع البكج/الخدميّ (لا رصيد branchStock ذاتيّ لهما).
+    const scope = await lockEconomicInventoryScope(tx, input.lines.map(l => l.variantId));
     const converted: Array<{ variantId: number; productUnitId: number; quantity: string; baseQuantity: number; refSalePrice: string | null }> = [];
     for (const ln of input.lines) {
-      if (await isBundleVariant(tx, ln.variantId)) {
+      const current = await readEconomicVariant(tx, scope, ln.variantId);
+      if (current.product.isBundle) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "لا تُستلَم هدية لمنتج بكج (مركّب) — استلم مكوّناته المخزونية." });
       }
-      if (await isServiceVariant(tx, ln.variantId)) {
+      if (current.product.isService) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "لا تُستلَم هدية لمنتج خدميّ (بلا مخزون)." });
       }
       const conv = await convertToBaseQuantity(tx, ln.productUnitId, ln.quantity, ln.variantId);
@@ -101,43 +104,21 @@ export async function receiveInboundGift(input: ReceiveInboundGiftInput, actor: 
     // القابل للبيع فقط يدخل مخزون البيع ويخفّف WAVG. غير القابل للبيع (استخدام داخليّ/عيّنة) يُوثَّق
     // بالسند وأسطره فقط — بلا حركة مخزون ولا مسّ WAVG (لا يُضخّم مخزون البيع ولا يخفّف كلفته).
     if (sellable) {
-      // ضمان صفّ الرصيد + قفله قبل قراءة الـSUM (يمنع سباق المتغيّر الجديد + يوحّد ترتيب القفل — تدقيق Codex P1).
-      await ensureAndLockBranchStock(tx, variantIds, input.branchId);
-      // WAVG عالمي: بعد mutex المتغيّرات نقفل أرصدتها في **كل** الفروع، لا فرع الهدية فقط.
-      await tx
-        .select({ id: branchStock.id })
-        .from(branchStock)
-        .where(inArray(branchStock.variantId, variantIds))
-        .orderBy(asc(branchStock.variantId), asc(branchStock.branchId))
-        .for("update");
-      // إجمالي المخزون لكل صنف عبر كل الفروع (WAVG صفة عالمية للصنف ⇒ الوزن بالإجمالي).
-      const stockRows = await tx
-        .select({ variantId: branchStock.variantId, totalQty: sql<string>`COALESCE(SUM(${branchStock.quantity}), 0)` })
-        .from(branchStock)
-        .where(inArray(branchStock.variantId, variantIds))
-        .groupBy(branchStock.variantId);
-      const stockMap = new Map<number, string>(stockRows.map((r) => [Number(r.variantId), String(r.totalQty)]));
-      // قفل صفوف المتغيّرات وقراءة تكلفتها (ترتيب تصاعديّ حتميّ).
-      const variantRows = await tx
-        .select({ id: productVariants.id, cost: productVariants.costPrice })
-        .from(productVariants)
-        .where(inArray(productVariants.id, variantIds))
-        .for("update");
-      const costMap = new Map<number, string>(variantRows.map((v) => [Number(v.id), String(v.cost ?? "0")]));
-
       // كمية كل صنف (قد تتكرّر عبر أسطر بوحدات مختلفة) لحساب المتوسّط المخفَّف مرّة واحدة.
       const qtyByVariant = new Map<number, number>();
       for (const c of converted) qtyByVariant.set(c.variantId, (qtyByVariant.get(c.variantId) ?? 0) + c.baseQuantity);
 
       for (const variantId of variantIds) {
         const freeQty = qtyByVariant.get(variantId)!;
-        const existingRaw = money(stockMap.get(variantId) ?? "0");
+        const current = await readEconomicOwnedPositions(tx, scope, variantId);
+        const existingRaw = current.positions.reduce((sum, p) => sum.plus(p.ownedQuantity), money(0));
         const existingQty = existingRaw.lt(0) ? money(0) : existingRaw; // الرصيد السالب (وضع الافتتاح) لا يرفع المتوسّط
-        const oldCost = money(costMap.get(variantId) ?? "0");
+        const oldCost = money(current.variant.costPrice ?? "0");
         const denom = existingQty.plus(freeQty);
         // تخفيف WAVG: المجّاني يضيف قيمةً صفراً ⇒ المتوسّط الجديد = القيمة القديمة ÷ الكمية بعد الإضافة.
-        const newCost = denom.lte(0) || oldCost.lte(0) ? round2(money(0)) : round2(existingQty.times(oldCost).dividedBy(denom));
+        const newCost = current.variant.product.isConsignment ? oldCost : denom.lte(0) || oldCost.lte(0) ? round2(money(0)) : round2(existingQty.times(oldCost).dividedBy(denom));
         await applyMovement(tx, {
+          economicScope: scope,
           variantId,
           branchId: input.branchId,
           baseQuantity: freeQty,

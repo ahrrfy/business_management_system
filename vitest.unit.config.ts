@@ -8,6 +8,8 @@ export const UNIT_TEST_FILES: string[] = [
       "client/src/components/delivery/PredictiveConsignmentSearchInput.test.tsx",
       "client/src/lib/offline/outbox.test.ts",
       "client/src/pages/__tests__/auditCommerceUi.test.tsx",
+      "server/services/__tests__/inventoryProjectionActivationScript.unit.test.ts",
+      "server/services/__tests__/inventoryActivationFenceScript.unit.test.ts",
       "client/src/components/vouchers/__tests__/voucherDeepLink.test.tsx",
       "client/src/components/vouchers/__tests__/voucherAdvanceRefund.test.tsx",
       "client/src/pages/__tests__/purchaseTenderUi.test.tsx",

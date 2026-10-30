@@ -2598,6 +2598,13 @@
 			"when": 1788148867000,
 			"tag": "0409_payroll_settlement_evidence",
 			"breakpoints": true
+		},
+		{
+			"idx": 410,
+			"version": "5",
+			"when": 1788148868000,
+			"tag": "0410_inventory_economic_projection",
+			"breakpoints": true
 		}
 	]
 }

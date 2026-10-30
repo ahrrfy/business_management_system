@@ -1,3 +1,4 @@
+import { lockEconomicInventoryScope, readEconomicVariant } from "./economicOwnership";
 /**
  * إعادة تقييم تكلفة المخزون — المسار المحكوم لتصحيح `productVariants.costPrice`.
  *
@@ -139,20 +140,9 @@ export async function requestCostRevaluation(
   }
 
   const result = await withTx(async (tx) => {
-    const v = (
-      await tx
-        .select({
-          id: productVariants.id,
-          costPrice: productVariants.costPrice,
-          sku: productVariants.sku,
-          isConsignment: products.isConsignment,
-        })
-        .from(productVariants)
-        .innerJoin(products, eq(products.id, productVariants.productId))
-        .where(eq(productVariants.id, input.variantId))
-        .for("update")
-        .limit(1)
-    )[0];
+    const scope = await lockEconomicInventoryScope(tx, [input.variantId]);
+    const variant = await readEconomicVariant(tx, scope, input.variantId);
+    const v = { ...variant, isConsignment: variant.product.isConsignment };
     if (!v) {
       throw new TRPCError({
         code: "NOT_FOUND",
@@ -176,7 +166,7 @@ export async function requestCostRevaluation(
       });
     }
     // مرآة حرّاس تسوية المخزون: لا نُنشئ طلباً يستحيل اعتماده.
-    if (await isBundleVariant(tx, input.variantId)) {
+    if (variant.product.isBundle) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
@@ -186,7 +176,7 @@ export async function requestCostRevaluation(
         }),
       });
     }
-    if (await isServiceVariant(tx, input.variantId)) {
+    if (variant.product.isService) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
@@ -592,14 +582,9 @@ export async function getCostRevaluationPreview(
   totalQuantity: number;
 }> {
   return withTx(async (tx) => {
-    const v = (
-      await tx
-        .select({ costPrice: productVariants.costPrice, isConsignment: products.isConsignment })
-        .from(productVariants)
-        .innerJoin(products, eq(products.id, productVariants.productId))
-        .where(eq(productVariants.id, variantId))
-        .limit(1)
-    )[0];
+    const scope = await lockEconomicInventoryScope(tx, [variantId]);
+    const variant = await readEconomicVariant(tx, scope, variantId);
+    const v = { costPrice: variant.costPrice, isConsignment: variant.product.isConsignment };
     if (!v) {
       throw new TRPCError({
         code: "NOT_FOUND",

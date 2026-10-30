@@ -189,6 +189,7 @@ export async function assertOperationAuthorityTx(
   path: string,
   legacyAllowed: boolean | ((current: StoredOperationSnapshot) => boolean),
   authority?: ServiceOperationAuthority,
+  options?: { assertCurrent?: (current: StoredOperationSnapshot) => void },
 ): Promise<boolean> {
   if (authority && !hasServiceOperationAuthority(authority, actor.userId, path)) throw forbiddenOperation();
   const current = await loadOperationUserTx(tx, actor.userId);
@@ -202,6 +203,7 @@ export async function assertOperationAuthorityTx(
       doThis: "حدّث الصفحة وأعد المحاولة بالدور والفرع الحاليين",
     }) });
   }
+  options?.assertCurrent?.(current);
   const canonical = storedCanonicalOperationAllowed(current, path);
   const allowed = canonical ?? (typeof legacyAllowed === "function" ? legacyAllowed(current) : legacyAllowed);
   if (!allowed) throw forbiddenOperation();

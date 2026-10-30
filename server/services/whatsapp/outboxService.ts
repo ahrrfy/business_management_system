@@ -178,12 +178,33 @@ export async function enqueueOutbox(input: EnqueueOutboxInput, tx?: Tx): Promise
 /** enqueue ثم محاولة إرسال فورية غير متزامنة (لا تنتظر النتيجة — الكنّاس يلتقط أي فشل خلال دقيقة). */
 export async function enqueueAndDispatch(input: EnqueueOutboxInput): Promise<EnqueueOutboxResult> {
   const res = await enqueueOutbox(input);
-  setImmediate(() => {
-    void dispatchOutboxRow(res.id).catch((e) => {
-      logger.error({ err: e, outboxId: res.id }, "wa-outbox: immediate dispatch attempt failed");
-    });
-  });
+  scheduleOutboxDispatch(res.id);
   return res;
+}
+
+const pendingImmediateDispatches = new Set<Promise<void>>();
+
+/** Register before scheduling; completion includes the actual dispatch and error logging. */
+export function scheduleOutboxDispatch(
+  id: number,
+  context: "wa-outbox" | "flowNotify" = "wa-outbox",
+): void {
+  let start!: () => void;
+  const scheduled = new Promise<void>((resolve) => { start = resolve; });
+  const task = scheduled.then(() => dispatchOutboxRow(id)).catch((err) => {
+    logger.error({ err, outboxId: id }, `${context}: immediate dispatch attempt failed`);
+  });
+  pendingImmediateDispatches.add(task);
+  const remove = () => { pendingImmediateDispatches.delete(task); };
+  // Both handlers consume rejection, including an unexpected logging failure.
+  void task.then(remove, remove);
+  setImmediate(start);
+}
+
+/** Await scheduled and running attempts, including attempts added while draining. */
+export async function drainPendingOutboxDispatches(): Promise<void> {
+  while (pendingImmediateDispatches.size)
+    await Promise.allSettled(Array.from(pendingImmediateDispatches));
 }
 
 // ── تكامل واتساب النشط ───────────────────────────────────────────────────────

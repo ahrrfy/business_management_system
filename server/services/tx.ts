@@ -7,6 +7,7 @@ import {
   lockFinancialPostingGate,
 } from "./reports/monthCloseGate";
 import type { OperationalCaps } from "@shared/atomicPermissions";
+import { assertExecutionAuthoritiesTx } from "./authorization/operationExecutionScope";
 
 /** Resolve the DB or throw a uniform tRPC error when DATABASE_URL is unset. */
 export function requireDb(): DB {
@@ -21,6 +22,18 @@ export function requireDb(): DB {
 }
 
 export type TransactionGate = "FINANCIAL_WRITER" | "GOVERNANCE" | "NONE";
+
+const financialWriterGateTransactions = new WeakSet<Tx>();
+
+/** دليل بوابة حقيقية عند دخول المعاملة، وليس استنتاجاً من نوع المستخدم. */
+export function assertFinancialWriterGateHeld(tx: Tx): void {
+  if (!financialWriterGateTransactions.has(tx)) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "يلزم تنفيذ تعديل المخزون داخل معاملة محروسة بالبوابة المالية",
+    });
+  }
+}
 
 /**
  * Hooks queued during a Tx that must fire **after** the transaction commits.
@@ -87,7 +100,13 @@ export async function withTx<T>(
     const gate = options.gate ?? "FINANCIAL_WRITER";
     if (gate === "GOVERNANCE") await lockCompanyMonthCloseGate(tx);
     else if (gate === "FINANCIAL_WRITER") await lockFinancialPostingGate(tx);
-    return fn(tx);
+    if (gate !== "NONE") financialWriterGateTransactions.add(tx);
+    try {
+      await assertExecutionAuthoritiesTx(tx);
+      return await fn(tx);
+    } finally {
+      financialWriterGateTransactions.delete(tx);
+    }
   });
 
   try {

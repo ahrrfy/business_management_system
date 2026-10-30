@@ -23,7 +23,7 @@ import type { Tx } from "../../db";
 import { logger } from "../../logger";
 import { requireDb, withTx } from "../tx";
 import {
-  dispatchOutboxRow,
+  scheduleOutboxDispatch,
   enqueueAndDispatch,
   enqueueOutbox,
   getActiveWaIntegration,
@@ -261,11 +261,7 @@ export async function flowNotify(input: FlowNotifyInput): Promise<FlowNotifyResu
 
     // المسار العادي يطلق الإرسال داخل enqueueAndDispatch. المسار الذرّي الفوري ينتظر commit أولاً.
     if (input.finalEligibilityCheck && dispatchImmediately) {
-      setImmediate(() => {
-        void dispatchOutboxRow(res.id).catch((e) => {
-          logger.error({ err: e, outboxId: res.id }, "flowNotify: immediate dispatch attempt failed");
-        });
-      });
+      scheduleOutboxDispatch(res.id, "flowNotify");
     }
     return { queued: true, outboxId: res.id, isNew: res.isNew };
   } catch (e) {

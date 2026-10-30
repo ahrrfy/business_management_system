@@ -216,7 +216,7 @@ function checkpoint(phase, details = {}) {
 checkpoint("HR_BRIDGE_BOOT", { mode: preflightOnly ? "preflight" : "runtime" });
 
 // يجب أن يبقى referenced كي يقتل import/startup غير المتزامن إذا لم يكتمل.
-const startupWatchdog = setTimeout(() => {
+let startupWatchdog = setTimeout(() => {
   checkpoint("HR_BRIDGE_STARTUP_TIMEOUT", {
     timeoutMs: policy.startupTimeoutMs,
   });
@@ -319,6 +319,17 @@ try {
   const result = await runHrBridgeWorker({
     bootId,
     preflightOnly,
+    artifactPath,
+    onActivationHold: () => {
+      clearTimeout(startupWatchdog);
+      // PM2 transport readiness is not application readiness. The controller
+      // verifies the private held attestation; device ingress remains closed.
+      if (typeof process.send === "function") process.send("ready");
+      checkpoint("HR_BRIDGE_INVENTORY_HELD");
+    },
+    onActivationRelease: () => {
+      startupWatchdog = setTimeout(() => process.exit(1), policy.startupTimeoutMs);
+    },
     databaseTimeoutMs: policy.databaseReadinessTimeoutMs,
     listenTimeoutMs: policy.tcpListenTimeoutMs,
     shutdownTimeoutMs: policy.shutdownTimeoutMs,

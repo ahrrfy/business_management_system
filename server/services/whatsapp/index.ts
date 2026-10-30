@@ -15,6 +15,7 @@ export type { GraphErrorClassification, GraphErrorInfo, SendFailure, SendResult,
 export {
   dispatchClaimedRow,
   dispatchOutboxRow,
+  scheduleOutboxDispatch,
   enqueueAndDispatch,
   enqueueOutbox,
   getActiveWaIntegration,
