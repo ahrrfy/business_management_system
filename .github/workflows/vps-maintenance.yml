@@ -1,0 +1,33 @@
+name: VPS maintenance safety
+
+on:
+  pull_request:
+    paths:
+      - scripts/vps-maintenance.mjs
+      - scripts/__tests__/vpsMaintenance.test.mjs
+      - server/services/backupDownloadService.ts
+      - deploy/maintenance/**
+      - .github/workflows/vps-maintenance.yml
+  push:
+    branches: [main]
+    paths:
+      - scripts/vps-maintenance.mjs
+      - scripts/__tests__/vpsMaintenance.test.mjs
+      - server/services/backupDownloadService.ts
+      - deploy/maintenance/**
+      - .github/workflows/vps-maintenance.yml
+
+permissions:
+  contents: read
+
+jobs:
+  maintenance-safety:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24.22.1"
+      - run: node --test scripts/__tests__/vpsMaintenance.test.mjs
+      - run: systemd-analyze verify deploy/maintenance/erp-housekeeping.service deploy/maintenance/erp-housekeeping.timer
