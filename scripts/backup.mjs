@@ -1,6 +1,6 @@
-// نسخ احتياطي لقاعدة البيانات عبر mysqldump (بثّ مباشر إلى ملف — لا تخزين في الذاكرة)، ثم تدوير.
+// نسخ احتياطي بثّي ثم نشر مشفّر متحقق؛ التدوير معلّق حتى إثبات مجموعة استعادة كاملة.
 // الاستخدام:
-//   pnpm db:backup                        # نسخة + تدوير + تشفير gpg مرافق (إن ضُبطت العبارة) + نسخة خارجية
+//   pnpm db:backup                        # نسخة + تشفير متحقق (إن ضُبطت العبارة) + نسخة خارجية، بلا حذف
 //   node scripts/backup.mjs --no-rotate   # نسخة فقط (نسخ أمان داخلية قبل reset/restore) — بلا تدوير ولا تشفير
 //   node scripts/backup.mjs --all-companies [--no-rotate]
 //                                         # تعدد الشركات: نسخة منفصلة لكل شركة فعّالة (من erp_control)،
@@ -18,8 +18,9 @@
 // dotenv ضروري هنا: cron على الخادم يشغّل ببيئة فارغة — بدونها تسقط كلمة المرور للقيمة
 // الافتراضية ويفشل النسخ كل ليلة بصمت (مُثبت في المراجعة العدائية ٢٠٢٦/٠٦/١٠).
 import "dotenv/config";
+import { publishEncryptedBackup, mirrorPublishedBackup } from "./lib/backup-publication.mjs";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
-import { createWriteStream, mkdirSync, statSync, readdirSync, unlinkSync, existsSync, renameSync } from "node:fs";
+import { createWriteStream, mkdirSync, statSync, unlinkSync, renameSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -198,47 +199,36 @@ try {
 }
 
 if (!noRotate) {
-  // تدوير النسخ + نسخ خارجي محلي (BACKUP_OFFSITE_DIR).
-  try {
-    execFileSync(process.execPath, [join("scripts", "backup-rotate.mjs")], { stdio: "inherit" });
-  } catch {
-    // التدوير ليس حرجاً بقدر وجود النسخة — لا نُفشل العملية كلّها إن تعثّر.
-    console.error("⚠ تعذّر تدوير النسخ القديمة (النسخة الحالية محفوظة).");
-  }
-
-  // تشفير مرافق للدفع/السحب الخارجي: <ملف>.sql.gpg (AES256 متماثل). الملف المحلي .sql يبقى كما هو
-  // (واجهة الاستعادة داخل النظام تقبل .sql فقط). بدون العبارة السرّية لا تُفتح النسخة الخارجية.
-  // العبارة تمرّ عبر stdin (--passphrase-fd 0) — لا تظهر في ps.
+  // Retention is deliberately paused until a complete recovery set is verified.
+  // Do not call backup-rotate here: it deletes files before offsite publication.
   const passphrase = process.env.BACKUP_GPG_PASSPHRASE;
+  const offsite = process.env.BACKUP_OFFSITE_DIR;
+  if (offsite && !passphrase) {
+    console.error("BACKUP_OFFSITE_REQUIRES_ENCRYPTION: local SQL preserved; no plaintext export");
+    process.exit(1);
+  }
   if (passphrase) {
-    const enc = `${out}.gpg`;
-    const r = spawnSync(
-      "gpg",
-      ["--batch", "--yes", "--pinentry-mode", "loopback", "--passphrase-fd", "0", "--symmetric", "--cipher-algo", "AES256", "-o", enc, out],
-      { input: passphrase }
-    );
-    if (r.status === 0 && existsSync(enc)) {
-      console.log(`✓ نسخة مشفّرة للدفع الخارجي: ${enc}`);
-    } else {
-      // التشفير مضبوط صراحةً ⇒ فشله ليس تحذيراً بل عطل في سلسلة الحماية الخارجية — نُفشل بصوت عالٍ
-      // كي يلتقطه cron/الشاشة، مع إبقاء النسخة المحلية سليمة.
-      const err = (r.stderr?.toString() ?? r.error?.message ?? "").split("\n").filter(Boolean).slice(-2).join(" | ");
-      console.error(`✗ BACKUP_GPG_PASSPHRASE مضبوطة لكن التشفير فشل${err ? `: ${err}` : ""} — النسخة المحلية ${out} سليمة، ولا ملف خارجي مشفّر.`);
+    try {
+      let revision = null;
+      try { revision = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(); } catch { /* recorded as unknown */ }
+      await publishEncryptedBackup({
+        sqlFile: out,
+        sourceRevision: revision,
+        encrypt(partialFile) {
+          const result = spawnSync("gpg", ["--batch", "--pinentry-mode", "loopback", "--passphrase-fd", "0",
+            "--symmetric", "--cipher-algo", "AES256", "-o", partialFile, out], { input: passphrase });
+          if (result.status !== 0 || result.error) throw new Error("BACKUP_ENCRYPTION_FAILED");
+        },
+      });
+      if (offsite) await mirrorPublishedBackup(`${out}.gpg`, offsite);
+      console.log(`Verified encrypted publication: ${out}.gpg (integrity only; restore not yet verified)`);
+    } catch (error) {
+      console.error(`Encrypted publication failed: ${error.message}; local SQL preserved`);
       process.exit(1);
     }
   }
-
-  // تنظيف الملفات المشفّرة اليتيمة: قرينها .sql حذفه التدوير ⇒ تُحذف معه (لا تراكم أبدياً).
-  try {
-    for (const name of readdirSync(backupDir)) {
-      if (!name.endsWith(".sql.gpg")) continue;
-      if (!existsSync(join(backupDir, name.slice(0, -4)))) {
-        unlinkSync(join(backupDir, name));
-      }
-    }
-  } catch { /* التنظيف تحسيني — لا يُفشل النسخ */ }
+  console.log("Retention paused: no existing backup or recovery evidence removed.");
 }
-
 // تحذير إن كان حجم النسخة صغيراً بشكل غير متوقّع (مؤشّر فقد بيانات).
 try {
   const size = statSync(out).size;
