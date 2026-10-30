@@ -74,16 +74,6 @@ export function resolveReturnConsignmentGate(args: {
   const isReturnToReady = isWorkOrder && disposition === "RETURN_TO_READY";
   const refundShiftId = rail?.selection?.refundShiftId;
 
-  if (isReturnToReady) {
-    return {
-      isReturnToReady: true,
-      blockReason: null,
-      notReady: Boolean(rail?.loading),
-      refundShiftId,
-      workOrderDisposition: "RETURN_TO_READY",
-    };
-  }
-
   const missingDrawerShift =
     rail != null &&
     rail.needsCash &&
@@ -95,17 +85,19 @@ export function resolveReturnConsignmentGate(args: {
       ? null
       : (rail.blockReason ??
         (missingDrawerShift
-          ? "اختر درج الاسترداد النقدي أو افتح وردية قبل الإلغاء النهائي."
+          ? isReturnToReady
+            ? "اختر درج الاسترداد النقدي أو افتح وردية لردّ أمانة أجرة التوصيل المحتجزة."
+            : "اختر درج الاسترداد النقدي أو افتح وردية قبل الإلغاء النهائي."
           : null));
 
   const notReady = rail == null || rail.loading || rail.error != null;
 
   return {
-    isReturnToReady: false,
+    isReturnToReady,
     blockReason,
     notReady,
     refundShiftId,
-    workOrderDisposition: isWorkOrder ? "CANCEL_FINAL" : undefined,
+    workOrderDisposition: isWorkOrder ? disposition : undefined,
   };
 }
 
@@ -291,13 +283,13 @@ function ReturnConsignmentDialogBody({
             context={{
               sourceDocType: "CONSIGNMENT_RETURN",
               sourceDocId: target.consignmentId,
+              ...(isWorkOrder ? { workOrderDisposition: disposition } : {}),
             }}
             mode="embedded"
-            requestOnly={gate.isReturnToReady}
             onStateChange={setRail}
             drawerHint={
               gate.isReturnToReady
-                ? "اختياري: لا يُردّ عربون البضاعة هنا — يُستعمل الدرج المفتوح فقط إن وُجدت أمانة أجرة توصيل محتجزة."
+                ? "توجد أمانة أجرة توصيل نقدية محتجزة على هذا الطلب — اختر الدرج المفتوح الذي يخرج منه ردُّها (لا يُردّ عربون البضاعة هنا)."
                 : "قُبض على هذا الطرد نقدٌ — من هذا الدرج يخرج ردُّه."
             }
             submitting={pending}

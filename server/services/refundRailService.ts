@@ -228,7 +228,10 @@ const DISPATCHERS = {
   WORKORDER_REVERSE_DELIVERY: (tx, ctx, exposeCash) =>
     workOrderRefundPreflight(tx, ctx.sourceDocId, "REVERSE_DELIVERY", { exposeCash }),
   CONSIGNMENT_RETURN: (tx, ctx, exposeCash) =>
-    consignmentReturnPreflight(tx, ctx.sourceDocId, { exposeCash }),
+    consignmentReturnPreflight(tx, ctx.sourceDocId, {
+      exposeCash,
+      workOrderDisposition: ctx.workOrderDisposition,
+    }),
   SALE_RETURN: (tx, ctx, exposeCash, actor) =>
     saleReturnPreflight(tx, ctx, exposeCash, actor),
 } as const satisfies Record<RefundSourceDocType, Dispatcher>;

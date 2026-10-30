@@ -122,11 +122,22 @@ describe("دستور دورة حياة الكانبان وتصريف أوامر 
         matchingLines(dialogCode, 'role="radiogroup"').length,
       ).toBeGreaterThan(0);
       expect(
-        matchingLines(dialogCode, "requestOnly={gate.isReturnToReady}").length,
+        matchingLines(dialogCode, "workOrderDisposition: disposition").length,
       ).toBeGreaterThan(0);
       expect(
         matchingLines(dialogCode, "workOrderDisposition").length,
       ).toBeGreaterThan(0);
+
+      const preflightCode = executableSource(
+        "server/services/workOrder/refundPreflight.ts",
+      );
+      expect(
+        matchingLines(preflightCode, "DLV-FEE-WO-").length,
+      ).toBeGreaterThanOrEqual(1);
+      expect(
+        matchingLines(preflightCode, 'opts.workOrderDisposition === "RETURN_TO_READY"')
+          .length,
+      ).toBeGreaterThanOrEqual(1);
     });
 
     it("يمرر DeliveryHub.tsx هوية أمر الشغل وخيار workOrderDisposition إلى returnConsignment", () => {
