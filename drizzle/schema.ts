@@ -15353,6 +15353,11 @@ export const installmentPlans = mysqlTable(
 );
 export type InstallmentPlan = typeof installmentPlans.$inferSelect;
 
+// Explicit return type breaks the line-head/history FK inference cycle.
+function installmentAllocationHistoryId(): AnyMySqlColumn {
+  return installmentReceiptAllocations.id;
+}
+
 /** قسط مفرد داخل خطة — نقدي أو شيك آجل (رقم الشيك + المصرف). السداد يربط سند القبض الفعلي. */
 export const installmentLines = mysqlTable(
   "installmentLines",
@@ -15371,6 +15376,10 @@ export const installmentLines = mysqlTable(
       .default("PENDING")
       .notNull(),
     receiptId: bigint("receiptId", { mode: "number" }),
+    /** Current immutable allocation chain; legacy rows require proven adoption. */
+    allocationHeadId: bigint("allocationHeadId", { mode: "number" }),
+    allocationHistoryReady: boolean("allocationHistoryReady").default(false).notNull(),
+    pendingAllocationClaimId: bigint("pendingAllocationClaimId", { mode: "number" }),
     paidAt: timestamp("paidAt"),
     note: varchar("note", { length: 255 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -15378,9 +15387,52 @@ export const installmentLines = mysqlTable(
   (t) => ({
     planIdx: index("idx_instline_plan").on(t.planId),
     dueStatusIdx: index("idx_instline_due_status").on(t.dueDate, t.status),
+    allocationHeadFk: foreignKey({
+      name: "fk_instline_allocation_head",
+      columns: [t.allocationHeadId],
+      foreignColumns: [installmentAllocationHistoryId()],
+    }).onDelete("restrict"),
+    pendingAllocationClaimFk: foreignKey({
+      name: "fk_instline_pending_allocation_claim",
+      columns: [t.pendingAllocationClaimId],
+      foreignColumns: [idempotencyKeys.id],
+    }).onDelete("restrict"),
   }),
 );
 export type InstallmentLine = typeof installmentLines.$inferSelect;
+
+/** Allocation evidence only: the original receipt owns cash, AR and GL effects. */
+export const installmentReceiptAllocations = mysqlTable(
+  "installmentReceiptAllocations",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    invoiceId: bigint("invoiceId", { mode: "number" }).notNull(),
+    lineId: bigint("lineId", { mode: "number" }).notNull(),
+    sourceReceiptId: bigint("sourceReceiptId", { mode: "number" }).notNull(),
+    effectReceiptId: bigint("effectReceiptId", { mode: "number" }).notNull(),
+    effectKey: varchar("effectKey", { length: 191 }).notNull(),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    reversesAllocationId: bigint("reversesAllocationId", { mode: "number" }),
+    previousAllocationId: bigint("previousAllocationId", { mode: "number" }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    effectLineUq: unique("uq_ira_effect_line").on(t.effectKey, t.lineId),
+    reverseUq: unique("uq_ira_reverse").on(t.reversesAllocationId),
+    previousUq: unique("uq_ira_previous").on(t.previousAllocationId),
+    invoiceIdx: index("idx_ira_invoice").on(t.invoiceId),
+    lineIdx: index("idx_ira_line").on(t.lineId),
+    sourceReceiptIdx: index("idx_ira_source_receipt").on(t.sourceReceiptId),
+    effectReceiptIdx: index("idx_ira_effect_receipt").on(t.effectReceiptId),
+    invoiceFk: foreignKey({ name: "fk_ira_invoice", columns: [t.invoiceId], foreignColumns: [invoices.id] }).onDelete("restrict"),
+    lineFk: foreignKey({ name: "fk_ira_line", columns: [t.lineId], foreignColumns: [installmentLines.id] }).onDelete("restrict"),
+    sourceReceiptFk: foreignKey({ name: "fk_ira_source_receipt", columns: [t.sourceReceiptId], foreignColumns: [receipts.id] }).onDelete("restrict"),
+    effectReceiptFk: foreignKey({ name: "fk_ira_effect_receipt", columns: [t.effectReceiptId], foreignColumns: [receipts.id] }).onDelete("restrict"),
+    reverseFk: foreignKey({ name: "fk_ira_reverse", columns: [t.reversesAllocationId], foreignColumns: [t.id] }).onDelete("restrict"),
+    previousFk: foreignKey({ name: "fk_ira_previous", columns: [t.previousAllocationId], foreignColumns: [t.id] }).onDelete("restrict"),
+    amountShape: check("chk_ira_signed_amount", sql`${t.amount} <> 0 AND (${t.reversesAllocationId} IS NOT NULL OR ${t.amount} > 0)`),
+  }),
+);
 
 /* ============================ بند 12ب (٧/٧): التسعير التعاقدي لعميل ============================ */
 

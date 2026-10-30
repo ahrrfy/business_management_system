@@ -116,7 +116,14 @@ export function DueSoonSection({
                         <span className="text-xs text-muted-foreground">في الموعد</span>
                       )}
                     </TableCell>
-                    <TableCell className="text-left font-bold tabular-nums" dir="ltr">{fmt(r.amount)}</TableCell>
+                    <TableCell className="text-left tabular-nums" dir="rtl">
+                      <div>المتبقي حسب السجل الموثق: {fmt(r.remainingAmount)}</div>
+                      <div className="text-xs">المحصّل الموثق للقسط: {fmt(r.paidAmount)}</div>
+                      <div className="text-xs">صافي المدفوع بالفاتورة: {r.invoiceNetPaidAmount == null ? "—" : fmt(r.invoiceNetPaidAmount)}</div>
+                      <div className="text-xs">المتبقي بالفاتورة: {r.invoiceRemainingAmount == null ? "—" : fmt(r.invoiceRemainingAmount)}</div>
+                      {r.reconciliationRequired && <div className="text-xs text-[var(--sem-warn)]">تحتاج مطابقة</div>}
+                      {r.pendingApproval && <div className="text-xs">بانتظار اعتماد السند</div>}
+                    </TableCell>
                     <TableCell className="text-center text-xs">
                       {r.kind === "CHECK" ? (
                         <span className="inline-flex items-center gap-1">
@@ -137,10 +144,16 @@ export function DueSoonSection({
                             entityLabel: "قسط",
                             reference: `${r.planId}-${r.seq}`,
                             partyName: r.customerName,
-                            title: `القسط المستحق: ${fmt(r.amount)} د.ع`,
+                            title: r.reconciliationRequired || r.pendingApproval
+                              ? `متابعة القسط — المتبقي حسب السجل الموثق: ${fmt(r.remainingAmount)} د.ع`
+                              : `القسط المستحق: ${fmt(r.remainingAmount)} د.ع`,
                             dueAt: r.dueDate,
-                            status: r.daysOverdue > 0 ? `متأخر ${r.daysOverdue} يوماً` : "قريب الاستحقاق",
-                            nextAction: "يرجى تأكيد موعد السداد.",
+                            status: [r.reconciliationRequired ? "تحتاج مطابقة السندات" : null,
+                              r.pendingApproval ? "بانتظار اعتماد السند" : null].filter(Boolean).join(" — ")
+                              || (r.daysOverdue > 0 ? `متأخر ${r.daysOverdue} يوماً` : "قريب الاستحقاق"),
+                            nextAction: r.reconciliationRequired ? "يرجى مطابقة السندات قبل تحديد مبلغ السداد."
+                              : r.pendingApproval ? "يرجى متابعة اعتماد السند المسجل؛ لا يلزم سداد جديد قبل حسمه."
+                              : "يرجى تأكيد موعد السداد.",
                           }),
                           gate: { module: "treasury", level: "READ" },
                         }}
@@ -150,6 +163,7 @@ export function DueSoonSection({
                           label: "سداد",
                           icon: CircleDollarSign,
                           onSelect: () => onPay(r),
+                            hidden: r.reconciliationRequired || r.pendingApproval,
                           gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
                         }]}
                       />

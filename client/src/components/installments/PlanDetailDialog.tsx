@@ -13,6 +13,7 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { RowActions } from "@/components/list";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { useOperationPermission } from "@/hooks/useOperationPermission";
 import {
   Dialog,
   DialogContent,
@@ -44,6 +45,15 @@ export function PlanDetailDialog({
   onOpenDossier,
 }: PlanDetailDialogProps) {
   const plan = trpc.installments.get.useQuery({ planId });
+  const adoptionAllowed = useOperationPermission("installments.adoptLegacyHistory").allowed;
+  const adopt = trpc.installments.adoptLegacyHistory.useMutation({
+    onSuccess: async () => {
+      notify.ok("تمت مطابقة السجل التاريخي مع السندات الأصلية");
+      await plan.refetch();
+      await onChanged();
+    },
+    onError: e => notify.err(e.message),
+  });
   const [bounceTarget, setBounceTarget] = useState<PlanLine | null>(null);
   const [bounceNote, setBounceNote] = useState("");
   const [cancelOpen, setCancelOpen] = useState(false);
@@ -71,7 +81,7 @@ export function PlanDetailDialog({
   });
 
   const p = plan.data;
-  const hasPaid = (p?.lines ?? []).some((l) => l.status === "PAID");
+  const hasPaid = (p?.lines ?? []).some((l) => D(l.paidAmount).gt(0) || l.pendingApproval || l.reconciliationRequired);
 
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
@@ -125,13 +135,23 @@ export function PlanDetailDialog({
               {p.notes && <span className="text-xs text-muted-foreground">{p.notes}</span>}
             </div>
 
+            <p className="text-sm">صافي المدفوع على الفاتورة: {fmt(p.invoiceNetPaidAmount ?? "0")} د.ع — مبالغ الجدول أدناه هي التحصيل الموثق لهذه الخطة.</p>
+            {p.reconciliationRequired && <p role="alert" className="text-sm text-[var(--sem-warn)]">تحتاج الخطة مطابقة السندات مع الفاتورة. التحصيل والإلغاء والارتجاع متوقفة حتى تسوية الاختلاف.</p>}
+            {p.reconciliationRequired && p.status !== "CANCELLED" && adoptionAllowed && (
+              <div className="space-y-1">
+                <Button variant="outline" disabled={adopt.isPending} onClick={() => adopt.mutate({ planId })}>
+                  {adopt.isPending ? ACTION_LABELS.processing : "مطابقة السجل التاريخي"}
+                </Button>
+                <p className="text-xs text-muted-foreground">يُثبت السندات الأصلية المطابقة فقط، دون قبض أو صرف جديد. يبقى التاريخ غير المثبت بحاجة إلى مراجعة.</p>
+              </div>
+            )}
             <ScrollTableShell maxHeightClass="max-h-80">
               <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead className="text-center">#</TableHead>
                     <TableHead className="text-center">الاستحقاق</TableHead>
-                    <TableHead className="text-left">المبلغ</TableHead>
+                    <TableHead className="text-left">المجدول</TableHead><TableHead className="text-left">المحصّل الموثق</TableHead><TableHead className="text-left">المتبقي</TableHead>
                     <TableHead className="text-center">النوع</TableHead>
                     <TableHead className="text-center">الحالة</TableHead>
                     <TableHead className="text-right">ملاحظة/سند</TableHead>
@@ -143,13 +163,14 @@ export function PlanDetailDialog({
                     <TableRow key={l.id}>
                       <TableCell className="text-center tabular-nums">{l.seq}</TableCell>
                       <TableCell className="text-center text-xs tabular-nums" dir="ltr">{l.dueDate}</TableCell>
-                      <TableCell className="text-left font-semibold tabular-nums" dir="ltr">{fmt(l.amount)}</TableCell>
+                      <TableCell className="text-left font-semibold tabular-nums" dir="ltr">{fmt(l.amount)}</TableCell><TableCell className="text-left tabular-nums" dir="ltr">{fmt(l.paidAmount)}</TableCell><TableCell className="text-left tabular-nums" dir="ltr">{fmt(l.remainingAmount)}</TableCell>
                       <TableCell className="text-center text-xs">
                         {l.kind === "CHECK" ? `صك ${l.checkNumber ?? ""}${l.bankName ? ` — ${l.bankName}` : ""}` : "نقدي"}
                       </TableCell>
                       <TableCell className="text-center"><StatusBadge map={LINE_STATUS_AR} value={l.status} /></TableCell>
                       <TableCell className="text-right text-xs text-muted-foreground">
-                        {l.receiptId != null && <span className="tabular-nums">سند #{l.receiptId}</span>}
+                        {l.reconciliationRequired && <div>تحتاج مطابقة السندات التاريخية</div>}{l.pendingApproval && <div>بانتظار اعتماد السند</div>}
+                        {l.paymentHistory.map(payment => <div key={payment.id} dir="rtl">سند #{payment.voucherNumber ?? payment.receiptId} — <span dir="ltr">{fmt(payment.effectAmount)}</span>{payment.reversed ? " — معكوس" : ""}</div>)}
                         {l.receiptId != null && l.note ? " — " : ""}
                         {l.note ?? ""}
                       </TableCell>
@@ -176,7 +197,7 @@ export function PlanDetailDialog({
                               kind: "pay",
                               label: "سداد",
                               icon: CircleDollarSign,
-                              hidden: p.status !== "ACTIVE" || (l.status !== "PENDING" && l.status !== "BOUNCED"),
+                              hidden: p.status !== "ACTIVE" || l.reconciliationRequired || l.pendingApproval || D(l.remainingAmount).lte(0),
                               onSelect: () => onPay(l, Number(p.branchId)),
                               gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
                             },
@@ -187,7 +208,7 @@ export function PlanDetailDialog({
                               icon: Undo2,
                               variant: "destructive",
                               hidden:
-                                p.status === "CANCELLED"
+                                p.status === "CANCELLED" || l.reconciliationRequired || l.pendingApproval
                                 || l.kind !== "CHECK"
                                 || (l.status !== "PENDING" && !(l.status === "PAID" && l.receiptPaymentMethod === "CHECK")),
                               onSelect: () => setBounceTarget(l),
@@ -227,8 +248,8 @@ export function PlanDetailDialog({
             <DialogHeader>
               <DialogTitle>ارتجاع صك — القسط رقم {bounceTarget?.seq}</DialogTitle>
               <DialogDescription>
-                {bounceTarget?.status === "PAID"
-                  ? "الصك مُحصَّل — سيُصدَر إيصال صرف معاكس (خزينة) ويُستعاد رصيد العميل بمقدار القسط، ثم يُوسم «صك مرتجع» قابلاً للسداد لاحقاً."
+                {D(bounceTarget?.paidAmount ?? "0").gt(0)
+                  ? "الصك مُحصَّل — سيُصدَر إيصال صرف معاكس (خزينة) ويُستعاد رصيد العميل بمقدار سند الشيك الفعلي، ثم يُوسم «صك مرتجع» قابلاً للسداد لاحقاً."
                   : "يُوسم القسط «صك مرتجع» بلا أي حركة مالية (الصك لم يُحصَّل أصلاً)، ويبقى قابلاً للسداد لاحقاً."}
               </DialogDescription>
             </DialogHeader>

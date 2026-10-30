@@ -151,9 +151,10 @@ export function PlansTable({
                 />
                 مدفوع {p.paidLines} من {p.totalLines}
               </span>
-              {D(p.paidAmount).gt(0) && (
+              {(
                 <div className="mt-0.5 text-[11px] text-muted-foreground tabular-nums" dir="ltr">
-                  {fmt(p.paidAmount)}
+                  الموثق {fmt(p.paidAmount)} — المتبقي {fmt(p.remainingAmount)}{p.reconciliationRequired ? " — تحتاج مطابقة" : ""}
+                  <div dir="rtl">صافي المدفوع بالفاتورة: {p.invoiceNetPaidAmount == null ? "—" : fmt(p.invoiceNetPaidAmount)} — المتبقي بالفاتورة: {p.invoiceRemainingAmount == null ? "—" : fmt(p.invoiceRemainingAmount)}</div>
                 </div>
               )}
             </div>

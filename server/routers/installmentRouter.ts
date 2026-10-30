@@ -19,6 +19,7 @@ import {
   payLine,
 } from "../services/installmentService";
 import { listPendingInstallmentExternalPayments } from "../services/installment/payment";
+import { adoptLegacyHistory } from "../services/installment/legacyAdoption";
 import {
   confirmExternalPaymentAttempt,
   initiateExternalPaymentAttempt,
@@ -43,6 +44,13 @@ function restrictionFor(user: CtxUser): number | null {
 }
 
 export const installmentRouter = router({
+  /** Recover only provable legacy evidence; no monetary effect. */
+  adoptLegacyHistory: treasuryManagerProcedure
+    .use(requireAtomicPermission("treasury.installment.edit"))
+    .input(z.object({ planId: z.number().int().positive() }))
+    .mutation(({ input, ctx }) => adoptLegacyHistory(input.planId, {
+      userId: ctx.user.id, role: ctx.user.role, branchId: Number(ctx.user.branchId ?? 0),
+    }, restrictionFor(ctx.user))),
   /** طابور فرعي لمحاولات التحصيل التي تحتاج موظفاً مستقلاً للتأكيد والسداد. */
   pendingExternalPayments: treasuryManagerReadProcedure
     .use(requireAtomicPermission("treasury.installment.view"))

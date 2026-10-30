@@ -305,6 +305,7 @@ const STAGES = [
   ],
 ];
 const EXACT_LABELS = {
+  "installments.adoptLegacyHistory": "مطابقة سجل التحصيل المثبت لخطة أقساط قديمة",
   "delivery.documents.prepareShipmentPrintBundle": "تجهيز حزمة طباعة الشحنة",
   "sales.checkoutCharges": "قبض أجور إضافية في كاشير التجزئة",
   "sales.checkoutChargeOptions": "عرض الأجور المعتمدة القابلة للقبض في التجزئة",

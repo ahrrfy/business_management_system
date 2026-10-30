@@ -213,6 +213,7 @@ export async function adoptHistoricalCustomerReceiptTx(
       await allocateVoucherToInvoiceTx(tx, {
         invoiceId: p.invoiceId,
         amount: money(p.applyAmount),
+        installmentEffect: { sourceReceiptId: receiptId, effectReceiptId: receiptId, effectKey: `ADOPT:${receiptId}:${p.invoiceId}` },
         direction: "IN",
         paymentMethod: r.paymentMethod,
         voucherBranchId: r.branchId,
@@ -370,6 +371,7 @@ export async function settleCustomerReceiptTx(
     await allocateVoucherToInvoiceTx(tx, {
       invoiceId: part.invoiceId,
       amount: money(part.amount),
+      installmentEffect: { sourceReceiptId: receiptId, effectReceiptId: receiptId, effectKey: `FIFO:${receiptId}:${part.invoiceId}` },
       direction: "IN",
       paymentMethod: r.paymentMethod,
       voucherBranchId: r.branchId,
@@ -439,6 +441,8 @@ export async function applyCustomerReceiptCreditTx(
       direction: "IN",
       paymentMethod: r.paymentMethod,
       voucherBranchId: h.branchId,
+      installmentEffect: { sourceReceiptId: r.id, effectReceiptId: r.id,
+        effectKey: `CREDIT:${h.id}:${invoiceId}:${toDbMoney(h.unallocatedAmount)}:${toDbMoney(part)}` },
     });
     await addAllocationTx(tx, h.id, invoiceId, part);
     await tx
@@ -628,6 +632,8 @@ export async function reverseCustomerReceiptSettlementTx(
       invoiceId: a.invoiceId,
       amount: money(a.amount),
       direction: "OUT",
+      installmentEffect: { sourceReceiptId: originalId, effectReceiptId: counterId, effectKey: `REVERSE:${counterId}`,
+        reverseSourceReceiptId: originalId },
     });
   }
   await tx

@@ -1,10 +1,9 @@
 // دورة حياة خطة الأقساط: الإنشاء (createPlan) والإلغاء بلا أي قسط مسدَّد (cancelPlan).
 import { TRPCError } from "@trpc/server";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import {
   branches,
   customers,
-  idempotencyKeys,
   installmentLines,
   installmentPlans,
   invoices,
@@ -20,6 +19,8 @@ import { money, sumMoney, toDbMoney } from "../money";
 import { invoiceRemaining } from "@shared/predicates";
 import { requireDb, type Actor, withTx } from "../tx";
 import { assertPlanBranch, type BranchRestriction, type CreatePlanInput, YMD_RE } from "./types";
+
+import { lockInstallmentPlanTx, installmentConflict, installmentScopeHash, assertInstallmentScopeTx } from "./receiptAllocations";
 
 /* ============================ إنشاء خطة ============================ */
 
@@ -182,6 +183,7 @@ export async function createPlan(input: CreatePlanInput, actor: Actor): Promise<
       createdBy: actor.userId,
     });
     const planId = extractInsertId(planRes);
+    await recordIdempotencyKey(tx, "installment.scope", String(planId), inv.id, installmentScopeHash(inv));
 
     await tx.insert(installmentLines).values(
       input.lines.map((ln, i) => ({
@@ -193,6 +195,7 @@ export async function createPlan(input: CreatePlanInput, actor: Actor): Promise<
         checkNumber: ln.kind === "CHECK" ? (ln.checkNumber?.trim() ?? null) : (ln.checkNumber?.trim() || null),
         bankName: ln.bankName?.trim() || null,
         status: "PENDING" as const,
+        allocationHistoryReady: true, allocationHeadId: null, pendingAllocationClaimId: null,
       })),
     );
     await recordIdempotencyKey(
@@ -230,15 +233,17 @@ export async function cancelPlan(
   )[0];
   if (!preview) throw new TRPCError({ code: "NOT_FOUND", message: "الخطة غير موجودة" });
   return withTx(async (tx) => {
+    let currentInvoice: typeof invoices.$inferSelect | undefined;
     if (preview.invoiceId != null) {
       const invoice = (
         await tx
-          .select({ id: invoices.id })
+          .select()
           .from(invoices)
           .where(eq(invoices.id, Number(preview.invoiceId)))
           .for("update")
           .limit(1)
       )[0];
+      currentInvoice = invoice;
       if (!invoice) {
         throw new TRPCError({ code: "CONFLICT", message: "فاتورة الخطة مفقودة؛ أوقف الإلغاء وراجع التدقيق" });
       }
@@ -269,82 +274,25 @@ export async function cancelPlan(
     if (plan.status !== "ACTIVE") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "الخطة ليست نشطة — لا يمكن إلغاؤها" });
     }
-    // Current locking read بعد invoice→plan: يرى أي سداد التزم قبل حصولنا على القفل،
-    // ويمنع سداداً جديداً حتى يُحسم الإلغاء.
-    const planLines = await tx
-      .select({
-        id: installmentLines.id,
-        status: installmentLines.status,
-        receiptId: installmentLines.receiptId,
-      })
-      .from(installmentLines)
-      .where(eq(installmentLines.planId, input.planId))
-      .for("update");
-    if (planLines.some((line) => line.status === "PAID")) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: "لا يمكن إلغاء خطة سُدِّد منها قسط — ألغِ السندات أولاً من شاشة السندات إن لزم",
-      });
-    }
-    const directReceiptIds = planLines
-      .map((line) => line.receiptId != null ? Number(line.receiptId) : null)
-      .filter((id): id is number => id != null);
-    const requestIds = planLines.map((line) => `instpay-${Number(line.id)}`);
-    const keyRows = requestIds.length
-      ? await tx
-          .select({ refId: idempotencyKeys.refId })
-          .from(idempotencyKeys)
-          .where(
-            and(
-              eq(idempotencyKeys.operation, "voucher.create"),
-              inArray(idempotencyKeys.clientRequestId, requestIds),
-            ),
-          )
-      : [];
-    const receiptIds = Array.from(new Set([
-      ...directReceiptIds,
-      ...keyRows.map((row) => Number(row.refId)),
-    ]));
-    if (receiptIds.length > 0) {
-      const approved = (
-        await tx
-          .select({ n: sql<number>`COUNT(*)` })
-          .from(receipts)
-          .where(
-            and(
-              inArray(receipts.id, receiptIds),
-              eq(receipts.approvalStatus, "APPROVED"),
-              eq(receipts.status, "COMPLETED"),
-            ),
-          )
-      )[0];
-      if (Number(approved?.n ?? 0) > 0) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: "لا يمكن إلغاء خطة لها سند تحصيل معتمد؛ زامن السداد أو اعكس السند أولاً",
-        });
+    const state = await lockInstallmentPlanTx(tx, input.planId);
+    if (!state) installmentConflict("الخطة التاريخية تحتاج مطابقة قبل الإلغاء");
+    if (!currentInvoice) installmentConflict("فاتورة الخطة مفقودة");
+    await assertInstallmentScopeTx(tx, state, currentInvoice);
+    if (state.lines.some(line => line.paid.gt(0))) installmentConflict("لا يمكن إلغاء خطة سُدِّد منها قسط — ألغِ السندات أولاً");
+    if (state.lines.some(line => line.pendingAllocationClaimId != null)) installmentConflict("لا يمكن إلغاء خطة لها سند في انتظار الاعتماد");
+    // A legacy pointer is evidence to reconcile, never proof of a zero balance.
+    // Existing allocation history already proves full inverses. A rejected pending
+    // receipt is terminal and has no money effect; it may legitimately keep its pointer.
+    for (const line of state.lines) {
+      if (line.receiptId == null || line.allocations.some(row => row.effectReceiptId === line.receiptId)) continue;
+      const [receipt] = await tx.select().from(receipts).where(eq(receipts.id, line.receiptId));
+      if (receipt?.status === "COMPLETED" && receipt.approvalStatus === "APPROVED") {
+        installmentConflict("لا يمكن إلغاء خطة لها سند تحصيل معتمد غير مطابق لسجل التخصيص؛ يلزم مطابقة السند الأصلي");
       }
-      // المسار و-٢ (١٧/٨): الحارس كان يفحص **المعتمَد المنجَز** فقط، فسندُ تحصيلٍ ما زال في
-      // طابور الاعتماد يبقى يتيماً بعد إلغاء خطته: يعتمده مديرٌ لاحقاً فيُقيَّد نقدٌ على خطةٍ
-      // ملغاة (والمعتمِد لا يرى في الطابور أنّ خطتها أُلغيت). لا نُلغيه هنا ضمناً — إلغاء
-      // مستندٍ ماليّ قرارُ صاحبه لا أثرٌ جانبيّ لعمليةٍ أخرى — بل نوقف الإلغاء ونسمّي المطلوب.
-      const pending = (
-        await tx
-          .select({ n: sql<number>`COUNT(*)` })
-          .from(receipts)
-          .where(
-            and(
-              inArray(receipts.id, receiptIds),
-              eq(receipts.approvalStatus, "PENDING_APPROVAL"),
-              sql`${receipts.status} <> 'REVERSED'`,
-            ),
-          )
-      )[0];
-      if (Number(pending?.n ?? 0) > 0) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: "لا يمكن إلغاء خطة لها سند تحصيل في انتظار الاعتماد؛ ارفض السند أو ألغِه أولاً",
-        });
+      if (!receipt || receipt.approvalStatus !== "REJECTED" || receipt.status !== "FAILED" ||
+        receipt.invoiceId !== state.plan.invoiceId || receipt.branchId !== state.plan.branchId ||
+        receipt.partyType !== "CUSTOMER" || receipt.partyId !== state.plan.customerId || receipt.direction !== "IN") {
+        installmentConflict("سند القسط المرتبط يحتاج مطابقة موثقة قبل الإلغاء");
       }
     }
     const reason = normalizedReason;

@@ -2605,6 +2605,13 @@
 			"when": 1788148868000,
 			"tag": "0410_inventory_economic_projection",
 			"breakpoints": true
+		},
+		{
+			"idx": 414,
+			"version": "5",
+			"when": 1788148872000,
+			"tag": "0414_installment_receipt_allocations",
+			"breakpoints": true
 		}
 	]
 }
