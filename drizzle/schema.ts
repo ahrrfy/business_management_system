@@ -7284,7 +7284,6 @@ export const purchaseReturnReversals = mysqlTable(
       .notNull(),
     totalAmount: decimal("totalAmount", { precision: 15, scale: 2 }).notNull(),
     accountingEntryId: bigint("accountingEntryId", { mode: "number" })
-      .notNull()
       .unique("uq_purchase_return_reversal_entry"),
     cashRepaymentReceiptId: bigint("cashRepaymentReceiptId", { mode: "number" })
       .unique("uq_purchase_return_reversal_receipt")

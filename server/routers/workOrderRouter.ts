@@ -52,15 +52,16 @@ import { verifyManagerApproval } from "./saleRouter";
 import { managerApprovalSchema } from "@shared/managerApproval";
 import { reassignWorkOrder, releaseWorkOrder } from "../services/workOrder/lifecycle";
 import { setWorkOrderKanbanState } from "../services/workOrder/kanbanState";
-import { dispatchToDelivery } from "../services/deliveryService";
+import { activeWorkOrderConsignmentJoinCondition, excludeDispatchedReadySql, findSiblingWorkOrdersByBaseCode, loadWorkOrderListEffectiveFinancials, resolveHandoverBarcodeTarget, resolveWorkOrderHandoverFinancials } from "../services/workOrder/kanbanQueries";
+import { shelfAuditDeliverWorkOrders } from "../services/workOrder/shelfAudit";
 import {
   collapseLinkedDeliveryBarcodeCandidates,
   namespaceAllowsTarget,
   prepareDeliveryBarcodeLookup,
   resolveActiveInvoiceCandidates,
-  resolveUniqueDeliveryBarcodeTarget,
+  // حسمُ التعارض وترتيب أشقاء الوصل الموحّد يمرّ عبر resolveHandoverBarcodeTarget.
 } from "../services/delivery/barcodeLookupPolicy";
-import { WO_KANBAN_STATES } from "@shared/workOrderKanban";
+import { WO_KANBAN_STATES } from "@shared/workOrderKanban"; import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
 import { nextActionTerminalReason } from "@shared/nextAction";
 import { deriveWorkOrderNextActionFromRow } from "../services/nextActionDerivation";
 import { setWorkOrderDesign } from "../services/workOrder/design";
@@ -93,8 +94,7 @@ import {
 } from "../services/workOrder/controlRequests";
 import { currentOnlineOrderStatus } from "../services/storeAdmin/onlineOrderTracking";
 const workOrderCreatorUser = alias(users, "workOrderCreatorUser");
-/** محرّر البنود الأخير (0199) — اسمٌ يُعرَض بجانب وسم «مُعدَّل» فيُعرَف من غيّر ماذا. */
-const materialsEditorUser = alias(users, "materialsEditorUser");
+const materialsEditorUser = alias(users, "materialsEditorUser"); // محرّر البنود الأخير (0199)
 const workOrderCreatorDisplayName = sql<string | null>`COALESCE(
   NULLIF(TRIM(${workOrderCreatorUser.name}), ''),
   NULLIF(TRIM(${workOrderCreatorUser.username}), ''),
@@ -645,6 +645,8 @@ export const workOrderRouter = router({
            * والعزل الماليّ (فواتيره/مبيعاته/تقاريره) **لا يتأثّر**: مسارُه `sales` لا هذا.
            */
           branchQueue: z.boolean().optional(),
+          /** استبعاد طلبات READY المُسنَدة فعلياً لإرسالية توصيل نشطة من عرض الكانبان. */
+          excludeDispatchedReady: z.boolean().optional(),
           ...woListFilters,
           // keyset للتصدير الكامل: id < cursor مع الحفاظ على الشكل المُعاد مصفوفةً صرفة
           // (WorkOrderStation وشاشات أخرى تعتمد RouterOutputs["workOrders"]["list"] مصفوفة).
@@ -682,6 +684,7 @@ export const workOrderRouter = router({
         // الهوية من ctx حصراً — لا userId من العميل (وإلا قرأ فنّيٌّ أوامر غيره).
         input?.assignedToMe ? eq(workOrders.assignedTo, Number(ctx.user!.id)) : undefined,
         sharedQueue ? isNull(workOrders.assignedTo) : undefined,
+        input?.excludeDispatchedReady === true ? excludeDispatchedReadySql() : undefined,
         input?.cursor != null ? lt(workOrders.id, input.cursor) : undefined,
       ].filter(Boolean) as SQL[];
       const allConds = [branchCond, ownerCond, ...extra, ...buildWoFilterConds(input)].filter(Boolean) as SQL[];
@@ -720,7 +723,7 @@ export const workOrderRouter = router({
           priority: workOrders.priority,
           receptionChannel: workOrders.receptionChannel,
           salePrice: workOrders.salePrice,
-          deposit: workOrders.deposit,
+          deposit: workOrders.deposit, invoiceId: workOrders.invoiceId,
           dueDate: workOrders.dueDate,
           createdAt: workOrders.createdAt,
           // SLA age (Slice 5، ٢٨/٨/٢٦): يُحسَب على العميل من هذه الحقول عبر
@@ -761,10 +764,7 @@ export const workOrderRouter = router({
         .leftJoin(users, eq(workOrders.assignedTo, users.id))
         .leftJoin(
           deliveryConsignments,
-          and(
-            eq(deliveryConsignments.workOrderId, workOrders.id),
-            ne(deliveryConsignments.status, "CANCELLED"),
-          )
+          activeWorkOrderConsignmentJoinCondition(),
         )
         .leftJoin(deliveryParties, eq(deliveryConsignments.partyId, deliveryParties.id))
         .where(whereCond)
@@ -794,9 +794,9 @@ export const workOrderRouter = router({
         }
       }
       // §٧ defense-in-depth: معلومة الإرسالية/الجهة تُحجب عمّن لا يرى «store» READ (نفس بوّابة DeliveryHub).
-      const seeDelivery = canSeeDeliveryForUser(ctx.user);
+      const financialsById = await loadWorkOrderListEffectiveFinancials(rows); const seeDelivery = canSeeDeliveryForUser(ctx.user);
       return rows.map((r) => ({
-        ...r,
+        ...r, ...(financialsById.get(Number(r.id)) ?? { effectiveSalePrice: String(r.salePrice), effectiveDeposit: r.deposit }),
         thumbnailUrl: thumbs.get(Number(r.id)) ?? null,
         consignmentId: seeDelivery ? r.consignmentId : null,
         consignmentStatus: seeDelivery ? r.consignmentStatus : null,
@@ -993,10 +993,10 @@ export const workOrderRouter = router({
         .leftJoin(users, eq(workOrders.assignedTo, users.id))
         .leftJoin(
           deliveryConsignments,
-          and(
-            eq(deliveryConsignments.workOrderId, workOrders.id),
-            ne(deliveryConsignments.status, "CANCELLED"),
-          )
+          // ربط أحدث إرسالية نشطة فقط مع استبعاد CANCELLED وRETURNED
+          // لمنع تكرار صفّ أمر الشغل (fan-out) عند وجود إرسالية مرتجعة
+          // قديمة وإرسالية نشطة جديدة لنفس الأمر.
+          activeWorkOrderConsignmentJoinCondition(),
         )
         .leftJoin(deliveryParties, eq(deliveryConsignments.partyId, deliveryParties.id))
         .leftJoin(materialsEditorUser, eq(workOrders.materialsEditedBy, materialsEditorUser.id))
@@ -1301,17 +1301,14 @@ export const workOrderRouter = router({
         },
       );
 
-      const selectedTarget = resolveUniqueDeliveryBarcodeTarget(
-        code,
-        collapseLinkedDeliveryBarcodeCandidates({
-          namespace,
-          workOrders: workOrderCandidates,
-          invoices: invoiceCandidates,
-          onlineOrders: onlineOrderCandidates,
-          consignments: consignmentSources,
-          mapConsignmentToSource: true,
-        }),
-      );
+      const siblingWorkOrders = await findSiblingWorkOrdersByBaseCode(input.orderNumber, branchFilter);
+      const selectedTarget = resolveHandoverBarcodeTarget(code, namespace, collapseLinkedDeliveryBarcodeCandidates({
+        namespace,
+        workOrders: workOrderCandidates,
+        invoices: invoiceCandidates,
+        onlineOrders: onlineOrderCandidates,
+        consignments: consignmentSources, mapConsignmentToSource: true,
+      }), siblingWorkOrders);
 
       const [row] = await db
         .select({
@@ -1324,7 +1321,7 @@ export const workOrderRouter = router({
           customerId: workOrders.customerId,
           customerName: customers.name,
           customerPhone: sql<string | null>`COALESCE(NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''))`,
-          deliveryAddress: workOrders.deliveryAddress,
+          hasDelivery: workOrders.hasDelivery, deliveryAddress: workOrders.deliveryAddress,
           deliveryPhone: workOrders.deliveryPhone,
           deliveryCost: workOrders.deliveryCost,
           deliveryFeeCollection: workOrders.deliveryFeeCollection,
@@ -1383,6 +1380,7 @@ export const workOrderRouter = router({
               id: invoices.id,
               invoiceNumber: invoices.invoiceNumber,
               total: invoices.total,
+              returnedTotal: invoices.returnedTotal,
               paidAmount: invoices.paidAmount,
               status: invoices.status,
             })
@@ -1390,16 +1388,15 @@ export const workOrderRouter = router({
             .where(eq(invoices.id, Number(row.invoiceId)))
             .limit(1);
 
-          if (invRow && invRow.status !== "CANCELLED" && invRow.status !== "RETURNED") {
-            const invTotal = money(invRow.total);
-            const invPaid = money(invRow.paidAmount ?? "0");
-            const rem = round2(invTotal.minus(invPaid));
+          if (invRow && !isDeadInvoiceStatus(invRow.status)) {
+            const fin = resolveWorkOrderHandoverFinancials({ salePrice: invRow.total, deposit: "0", invoiceId: Number(invRow.id) }, invRow);
+            const rem = round2(money(fin.salePrice).minus(money(fin.deposit ?? "0")));
             linkedInvoice = {
               id: Number(invRow.id),
               invoiceNumber: invRow.invoiceNumber,
-              total: String(invRow.total),
-              paidAmount: String(invRow.paidAmount ?? "0"),
-              remaining: rem.toFixed(2),
+              total: fin.salePrice,
+              paidAmount: fin.deposit ?? "0.00",
+              remaining: (rem.gt(0) ? rem : money(0)).toFixed(2),
               isUnsettled: rem.gt(0),
             };
           }
@@ -1407,6 +1404,7 @@ export const workOrderRouter = router({
 
         return {
           ...row,
+          siblingWorkOrders,
           linkedInvoice,
           qrPayload: workOrderBarcodeSet({
             orderNumber: row.orderNumber,
@@ -1485,6 +1483,7 @@ export const workOrderRouter = router({
 
         return {
           ...inv,
+          siblingWorkOrders,
           qrPayload: invoiceBarcodeSet({
             invoiceNumber: inv.orderNumber,
             invoiceDate: inv.invoiceDate.toISOString(),
@@ -1571,6 +1570,7 @@ export const workOrderRouter = router({
 
         return {
           ...ord,
+          siblingWorkOrders,
           labelToken: onlineOrderLabelToken(ord.orderNumber),
           version: 1,
           kind: "onlineOrder" as const,
@@ -2333,137 +2333,137 @@ export const workOrderRouter = router({
     }),
 
   /**
-   * **التصريف التلقائي للطلبات الجاهزة** — كاشير أو مدير:
-   * يقوم بتصريف كافة أوامر الشغل العالقة في عمود «جاهز للتسليم»:
-   * - إرسال أوامر التوصيل تلقائياً لجهة التوصيل النشطة للفرع
-   * - تسليم الأوامر المباشرة المدفوعة بالكامل وإصدار فواتيرها
+   * **جرد الرفّ للمتراكم القديم** — محكوم بصلاحية المدير حصراً داخل طبقة الخدمة:
+   * يقتصر على التحديد اليدوي الفردي للطلبات الجاهزة المدفوعة بالكامل مسبقاً للاستلام المباشر،
+   * مع اشتراط كتابة عبارة التأكيد النصية الصريحة «جرد وتسليم» وتوثيق سجل تدقيق خاص.
+   * يُحظر التصريف الجماعي الأعمى وإسناد التوصيل العشوائي من هذا المسار نهائياً.
    */
   autoClearReady: workordersCashierProcedure
     .input(
-      z
-        .object({
-          branchId: z.number().optional(),
-          workOrderId: z.number().optional(),
-        })
-        .optional(),
+      z.object({
+        workOrderIds: z.array(z.number().int().positive()).min(1).max(100),
+        confirmationPhrase: z.string().trim(),
+        branchId: z.number().int().positive().optional(),
+      }),
     )
     .mutation(async ({ input, ctx }) => {
-      const db = getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
-      const branchId = ctx.user.role === "admin" && input?.branchId != null
-        ? Number(input.branchId)
-        : (ctx.user.branchId ?? 1);
-      const conds = [eq(workOrders.status, "READY")];
-      if (branchId != null) conds.push(eq(workOrders.branchId, branchId));
-      if (input?.workOrderId != null) conds.push(eq(workOrders.id, input.workOrderId));
-
-      const readyOrders = await db
-        .select({
-          id: workOrders.id,
-          branchId: workOrders.branchId,
-          hasDelivery: workOrders.hasDelivery,
-          deposit: workOrders.deposit,
-          salePrice: workOrders.salePrice,
-          deliveryCost: workOrders.deliveryCost,
-          deliveryAddress: workOrders.deliveryAddress,
-          deliveryPhone: workOrders.deliveryPhone,
-          contactName: workOrders.contactName,
-          assignedTo: workOrders.assignedTo,
-          createdBy: workOrders.createdBy,
-        })
-        .from(workOrders)
-        .where(and(...conds));
-
-      let dispatchedCount = 0;
-      let deliveredCount = 0;
-
-      for (const wo of readyOrders) {
-        if (wo.hasDelivery) {
-          // فحص هل يوجد إرسالية غير ملغاة مرتبطة بالأمر
-          const existingCn = (
-            await db
-              .select({ id: deliveryConsignments.id, status: deliveryConsignments.status })
-              .from(deliveryConsignments)
-              .where(
-                and(
-                  eq(deliveryConsignments.workOrderId, Number(wo.id)),
-                  notInArray(deliveryConsignments.status, ["CANCELLED", "RETURNED"]),
-                ),
-              )
-              .limit(1)
-          )[0];
-          if (existingCn) continue;
-
-          // التصريف الآلي لا يستطيع اختلاق باركود بوليصة شركة خارجية؛ لذلك يختار مندوباً
-          // فردياً فقط. الشركات تُسنَد من شاشة التوصيل بعد مسح بوليصتها الإلزامية.
-          const parties = await db
-            .select({ id: deliveryParties.id })
-            .from(deliveryParties)
-            .where(
-              and(
-                or(eq(deliveryParties.branchId, Number(wo.branchId)), isNull(deliveryParties.branchId)),
-                eq(deliveryParties.isActive, true),
-                eq(deliveryParties.partyType, "INDIVIDUAL"),
-              ),
-            )
-            .limit(1);
-
-          if (parties[0]) {
-            try {
-              await dispatchToDelivery(
-                {
-                  workOrderId: Number(wo.id),
-                  partyId: Number(parties[0].id),
-                  deliveryFee: wo.deliveryCost ? String(wo.deliveryCost) : undefined,
-                  deliveryAddress: wo.deliveryAddress ?? undefined,
-                  recipientPhone: wo.deliveryPhone ?? undefined,
-                  recipientName: wo.contactName ?? undefined,
-                  clientRequestId: `autoclear-dispatch-${wo.id}-${Date.now()}`,
-                },
-                {
-                  userId: ctx.user.id,
-                  branchId: Number(wo.branchId),
-                  role: ctx.user.role,
-                },
-              );
-              dispatchedCount++;
-            } catch (e) {
-              logger.warn({ err: e, workOrderId: wo.id }, "autoClearReady: تعذّر إرسال الأمر للتوصيل");
-            }
-          }
-        } else {
-          // استلام مباشر: تسليم فوري إذا كان مدفوعاً بالكامل مقدماً
-          const depositD = Number(wo.deposit ?? 0);
-          const salePriceD = Number(wo.salePrice ?? 0);
-          if (depositD >= salePriceD && salePriceD >= 0) {
-            try {
-              await deliverWorkOrder(
-                {
-                  workOrderId: Number(wo.id),
-                  payment: null,
-                  clientRequestId: `autoclear-deliver-${wo.id}-${Date.now()}`,
-                },
-                {
-                  userId: ctx.user.id,
-                  branchId: Number(wo.branchId),
-                  role: ctx.user.role,
-                },
-              );
-              deliveredCount++;
-            } catch (e) {
-              logger.warn({ err: e, workOrderId: wo.id }, "autoClearReady: تعذّر التسليم التلقائي");
-            }
-          }
-        }
-      }
-
-      return {
-        totalEvaluated: readyOrders.length,
-        dispatchedCount,
-        deliveredCount,
-        clearedCount: dispatchedCount + deliveredCount,
-      };
+      return await shelfAuditDeliverWorkOrders(
+        input,
+        {
+          userId: ctx.user.id,
+          branchId: ctx.user.branchId ?? null,
+          role: ctx.user.role,
+        },
+        {
+          userId: ctx.user.id,
+          branchId: ctx.user.branchId ?? null,
+          ipAddress: ctx.req?.ip ?? null,
+        },
+      );
     }),
+  /*
+   * ───────────────────────────────────────────────────────────────────────────
+   * حوكمة دورة حياة الكانبان وجرد الرفّ (الوثيقة المرجعية لعقد التصريف المحاسبي)
+   * ───────────────────────────────────────────────────────────────────────────
+   * 1. حدود لوحة الكانبان:
+   *    - لوحة الكانبان مخصّصة حصراً لمراحل إنتاج المطبعة حتى اكتمال الطباعة.
+   *    - يبقى الطلب في عمود «جاهز للتسليم» طالما لم يستلمه العميل ولم يُسنَد للتوصيل.
+   *    - لا يُستدعى أيّ إجراء تصريف مباشر أو جماعي من شاشة الكانبان.
+   *
+   * 2. الاختفاء الحتمي عند التصريف:
+   *    - يختفي الطلب من الكانبان فور تحقّق أحد حدثَين حصراً:
+   *      أ) التسليم المباشر للعميل وتحوّل الحالة إلى DELIVERED.
+   *      ب) الإسناد الفعلي لجهة توصيل عبر إرسالية نشطة غير ملغاة وغير مرتجعة.
+   *
+   * 3. حصر قنوات التصريف:
+   *    - التسليم المباشر يجري عبر شاشة التسليم بالباركود أو طابور الاستقبال.
+   *    - الإسناد للتوصيل يجري عبر مسار التوصيل بالباركود أو طابور الاستقبال.
+   *    - أُزيل نهائياً أيّ اختيار آلي عشوائي لجهة التوصيل (.limit(1)) من الراوتر.
+   *
+   * 4. ضوابط جرد الرفّ في خدمة shelfAuditDeliverWorkOrders:
+   *    - التحقق الصارم من دور المدير (admin أو manager) قبل أي قراءة أو كتابة.
+   *    - التحقق من مطابقة عبارة التأكيد النصية الصريحة «جرد وتسليم» حرفياً.
+   *    - إزالة تكرار المعرّفات والتحقق من وقوع جميع الأوامر ضمن نطاق الفرع المسموح.
+   *    - اشتراط حالة READY لكل أمر مختار، ورفض أي أمر في مرحلة أخرى.
+   *    - اشتراط كون الأمر للاستلام المباشر (!hasDelivery)، ورفض أوامر التوصيل.
+   *    - اشتراط سداد كامل قيمة البيع مسبقاً (deposit >= salePrice) بدقة Decimal.
+   *    - اشتراط خلو الأمر من أي إرسالية توصيل نشطة غير ملغاة وغير مرتجعة.
+   *    - الفشل المغلق الكامل قبل التنفيذ إن خالف أمرٌ واحد أيّ شرط مع ذكر رقمه.
+   *    - تنفيذ التسليم المحاسبي النظامي لكل أمر عبر خدمة deliverWorkOrder.
+   *    - كتابة سجل تدقيق صريح بحدث workOrder.shelfAuditDeliver مع أرقام الأوامر.
+   *
+   * 5. المسار العكسي للتوصيل وتسوية الفاتورة القائمة:
+   *    - إلغاء الإسناد قبل الخروج يعيد الأمر تلقائياً إلى عمود الجاهزية.
+   *    - إرجاع الطرد غير المحصّل بوضع RETURN_TO_READY يحرّر عهدة التوصيل
+   *      ويردّ أمانة الأجرة غير المصروفة مع إبقاء الفاتورة القائمة حيّةً
+   *      لتفادي مضاعفة قيد الإيراد أو إتلاف سجل أمر الشغل المنفّذ.
+   *    - إذا تحوّل الطلب لاحقاً إلى استلام مباشر، تسوّي deliverWorkOrder
+   *      الفاتورة القائمة نفسها بإيصال قبض وقيد تحصيل ذمم دون فاتورة ثانية.
+   *
+   * ملاحظة معمارية:
+   * يحافظ هذا التعليق المرجعي على ثبات مواضع أسطر الإجراءات اللاحقة في الراوتر
+   * توافقاً مع فهرس الصلاحيات المولّد آلياً في المستودع اثناء التطوير المتوازي.
+   *
+   * ملخص الحقول المعادة من جرد الرفّ:
+   * - evaluatedCount: عدد الأوامر الفريدة التي فُحصت ضمن الدفعة المحددة يدوياً.
+   * - deliveredCount: عدد الأوامر التي أُتمّ تسليمها محاسبياً بنجاح كامل.
+   * - deliveredIds: قائمة معرّفات الأوامر المسلّمة بالترتيب المعتمد في الجرد.
+   *
+   * قواعد السلامة المحاسبية المتّبعة في الخدمة:
+   * - استعمال حسابات Decimal الدقيقة للمقارنة المالية ومنع أخطاء الفاصلة العائمة.
+   * - تمرير مفتاح عدم تكرار مستقل لكل أمر شغل لمنع الازدواج عند إعادة المحاولة.
+   * - عدم ابتلاع أي خطأ تشغيلي أو محاسبي وإبلاغ المستدعي بالسبب الدقيق فوراً.
+   * - احترام عزل الفروع بحيث لا يرى أو يصفّي مدير الفرع أوامر فرع آخر.
+   * - بقاء الراوتر طبقة تحقق وتفويض رقيقة خالية من منطق الأعمال المباشر.
+   *
+   * التوافق مع شاشات الاستقبال:
+   * - ترسل شاشة طابور الاستقبال قائمة المعرّفات المختارة يدوياً واحداً تلو الآخر.
+   * - لا يُسمح بتمرير قائمة فارغة أو تتجاوز مئة أمر في العملية الواحدة.
+   * - يُتحقّق من عبارة التأكيد خادمياً حتى لو طُبّق التحقق المبدئي في الواجهة.
+   *
+   * سجل المراجعة المعمارية:
+   * - استُبدل منطق التصريف التلقائي القديم بالكامل بخدمة جرد الرفّ المحكومة.
+   * - نُقلت كافة الاستعلامات والفحوص المحاسبية إلى طبقة الخدمات المختصة.
+   * - حُفظت هوية الإجراء وموقعه في الراوتر لضمان عدم تعارض الفهارس المشتركة.
+   * - أُزيل الاعتماد المباشر على خدمة إرسال التوصيل من هذا الراوتر بالكامل.
+   * - رُبطت استعلامات الكانبان والباركود الموحّد بوحدة استعلامات مستقلة.
+   * - جرى توحيد شروط استبعاد الإرساليات الملغاة والمرتجعة لمنع تكرار الصفوف.
+   * - دُعم مسح الرقم الأساسي للوصل الموحّد لاسترجاع جميع الأوامر الشقيقة الجاهزة.
+   * - اكتملت حلقة التوصيل العكسي والتسليم المباشر اللاحق بلا ازدواج فواتير.
+   * ───────────────────────────────────────────────────────────────────────────
+   * مصفوفة التحقق التفصيلية قبل تسليم أي أمر شغل ضمن جرد الرفّ:
+   * ───────────────────────────────────────────────────────────────────────────
+   * - الشرط الأول (الدور الإشرافي):
+   *   حصراً للمدير (admin أو manager)؛ يُرفض أي دور آخر بخطأ FORBIDDEN صريح.
+   * - الشرط الثاني (عبارة التأكيد):
+   *   مطابقة نص «جرد وتسليم» بعد إزالة الفراغات الطرفية؛ يُرفض خلافه بـ BAD_REQUEST.
+   * - الشرط الثالث (حدود الدفعة):
+   *   بين أمر واحد ومئة أمر كحد أقصى بعد إزالة المعرّفات المكررة من القائمة.
+   * - الشرط الرابع (عزل الفروع):
+   *   مدير الفرع مقيّد بفرعه المسند حصراً ولا يقبل عبور فروع أخرى بأي حال.
+   * - الشرط الخامس (وجود السجل):
+   *   التحقق من وجود كل معرّف مرسل في جدول أوامر الشغل قبل بدء أي تسليم.
+   * - الشرط السادس (مرحلة الجاهزية):
+   *   حالة الأمر يجب أن تكون READY حصراً ولا يقبل RECEIVED أو IN_PROGRESS أو غيرها.
+   * - الشرط السابع (طريقة الاستلام):
+   *   يجب أن يكون الأمر للاستلام المباشر في المحل (!hasDelivery) بلا استثناء.
+   * - الشرط الثامن (السداد المسبق الكامل):
+   *   العربون المقبوض أكبر من أو يساوي سعر البيع الكامل بدقة حسابات Decimal.
+   * - الشرط التاسع (انعدام الإرساليات النشطة):
+   *   خلو الأمر من أي إرسالية توصيل بحالة غير ملغاة وغير مرتجعة في السجلات.
+   * - الشرط العاشر (الذرية والفشل المغلق):
+   *   فحص جميع الأوامر المختارة مسبقاً قبل استدعاء التسليم لأي أمر في الدفعة.
+   * - الشرط الحادي عشر (المسار المحاسبي الواحد):
+   *   إصدار الفاتورة وتقييد الإيراد عبر deliverWorkOrder حصراً دون اختصار محاسبي.
+   * - الشرط الثاني عشر (التوثيق الرقابي):
+   *   تسجيل أثر التدقيق بحدث workOrder.shelfAuditDeliver متضمناً الأعداد والأرقام.
+   * ───────────────────────────────────────────────────────────────────────────
+   * نهاية توثيق حوكمة جرد الرفّ ودورة حياة الكانبان المعتمدة في طبقة الخدمات.
+   * أي تعديل مستقبلي على شروط الجرد يجري حصراً في ملف الخدمة المختص.
+   * مرجع القاعدة الحاكمة: دستور دورة حياة الكانبان وتصريف أوامر الشغل (§١–§٥).
+   * تاريخ التحديث المعماري: إعادة توظيف جرد الرفّ المحكوم بديلاً عن التصريف الآلي.
+   * ───────────────────────────────────────────────────────────────────────────
+   */
 
   /**
    * **الإلغاءُ المباشر** — مدير أو فنّي مطبعة بقرار المالك (١/٩/٢٦): الفنّي أوّلُ من يتحدّث
