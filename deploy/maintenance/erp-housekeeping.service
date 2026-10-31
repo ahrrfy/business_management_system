@@ -1,0 +1,30 @@
+[Unit]
+Description=Expire ERP backup download cache safely
+
+[Service]
+Type=oneshot
+User=deploy
+Group=deploy
+UMask=0077
+RuntimeDirectory=erp-housekeeping
+RuntimeDirectoryMode=0700
+ExecStart=/usr/bin/flock -n -E 75 /run/erp-housekeeping/cleanup.lock /opt/alroya-erp/node-v24.22.1-linux-x64/bin/node /usr/local/libexec/erp/vps-maintenance.mjs --apply
+SuccessExitStatus=75
+TimeoutStartSec=120
+Nice=19
+IOSchedulingClass=idle
+CPUQuota=10%
+MemoryMax=128M
+TasksMax=16
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/deploy/erp/backups/.download-cache
+PrivateTmp=true
+PrivateNetwork=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+CapabilityBoundingSet=
+RestrictSUIDSGID=true
+
