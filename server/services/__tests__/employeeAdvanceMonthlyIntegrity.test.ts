@@ -6,7 +6,7 @@ import { baghdadToday } from "../businessDay";
 import {
   listAdvances,
   suggestDeductionsForPeriod,
-} from "../advances/advancesService";
+} from "../advances";
 
 function db() {
   const value = getDb();

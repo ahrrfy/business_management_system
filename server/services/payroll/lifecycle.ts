@@ -99,11 +99,23 @@ export async function approveRun(id: number, actor: Actor) {
       .orderBy(employeeSpotBonuses.id)
       .for("update")
       .limit(1);
+    // التوليد يلتقط العقوبات لموظفي بنود المسير فقط؛ ذمم الموظفين المستبعدين
+    // تبقى معلّقة بمصادرها ولا تعطل اعتماد رواتب موظفين آخرين.
+    const penaltyScope = await tx
+      .select({ employeeId: payrollItems.employeeId })
+      .from(payrollItems)
+      .where(eq(payrollItems.runId, id))
+      .orderBy(payrollItems.id)
+      .for("share");
     const [uncapturedPenalty] = await tx
       .select({ id: employeePenalties.id })
       .from(employeePenalties)
       .where(
         and(
+          inArray(
+            employeePenalties.employeeId,
+            penaltyScope.map((item) => Number(item.employeeId)),
+          ),
           eq(employeePenalties.status, "APPROVED"),
           isNull(employeePenalties.payrollRunId),
           sql`${employeePenalties.deductionAmount} > 0`,

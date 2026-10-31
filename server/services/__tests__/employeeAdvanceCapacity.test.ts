@@ -109,6 +109,58 @@ beforeEach(async () => {
 });
 
 describe("employee advance earned-capacity contract", () => {
+  it("يبقي المكافأة المعتمدة ضمن الحد بعد التقاطها في مسودة الراتب", async () => {
+    await seedAttendance({ date: "2030-06-05", amount: "300.00" });
+    await db()
+      .insert(s.employeeSpotBonuses)
+      .values({
+        employeeId: EMPLOYEE_ID,
+        branchId: BRANCH_ID,
+        amount: "100.00",
+        reason: "مكافأة معتمدة تلتقطها مسودة الراتب",
+        disbursementType: "PAYROLL_ADDITION",
+        status: "APPROVED",
+        createdById: ACTOR.userId,
+        approvedById: ACTOR.userId,
+        approvedAt: new Date("2030-06-06T12:00:00.000Z"),
+      });
+    const input = {
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: FIXED_PERIOD,
+      asOf: FIXED_AS_OF,
+    };
+    const beforeDraft = await getEmployeeAdvanceCapacity(input);
+    expect(beforeDraft.maxAvailable).toBe("324.00");
+    await db().insert(s.payrollRuns).values({
+      id: 1,
+      period: FIXED_PERIOD,
+      status: "draft",
+      createdBy: ACTOR.userId,
+      employeeCount: 1,
+      totalGross: "400.00",
+      totalDeductions: "76.00",
+      totalNet: "324.00",
+    });
+    await db().insert(s.payrollItems).values({
+      runId: 1,
+      employeeId: EMPLOYEE_ID,
+      payType: "hourly",
+      gross: "400.00",
+      deductions: "76.00",
+      socialSecurityEmployee: "40.00",
+      incomeTax: "36.00",
+      net: "324.00",
+    });
+    await db()
+      .update(s.employeeSpotBonuses)
+      .set({ payrollRunId: 1 })
+      .where(eq(s.employeeSpotBonuses.employeeId, EMPLOYEE_ID));
+    const afterDraft = await getEmployeeAdvanceCapacity(input);
+    expect(afterDraft.approvedAdditions).toBe("100.00");
+    expect(afterDraft.maxAvailable).toBe(beforeDraft.maxAvailable);
+  });
+
   it("يرفض الموظف المعطّل حتى لو بقيت حالته الوظيفية active", async () => {
     await db()
       .update(s.employees)

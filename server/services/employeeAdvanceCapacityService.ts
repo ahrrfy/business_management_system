@@ -174,7 +174,12 @@ export async function getEmployeeAdvanceCapacityTx(
         eq(employeeSpotBonuses.employeeId, options.employeeId),
         eq(employeeSpotBonuses.status, "APPROVED"),
         eq(employeeSpotBonuses.disbursementType, "PAYROLL_ADDITION"),
-        isNull(employeeSpotBonuses.payrollRunId),
+        or(
+          isNull(employeeSpotBonuses.payrollRunId),
+          run?.status === "draft"
+            ? eq(employeeSpotBonuses.payrollRunId, Number(run.id))
+            : undefined,
+        ),
         sql`DATE_FORMAT(CONVERT_TZ(${employeeSpotBonuses.approvedAt}, '+00:00', '+03:00'), '%Y-%m') = ${period}`,
       ),
     );
