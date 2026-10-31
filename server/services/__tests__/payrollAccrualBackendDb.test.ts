@@ -161,6 +161,7 @@ async function seedBase() {
     amount: "500.00",
     remaining: "500.00",
     monthlyDeduction: "100.00",
+    sourceType: "OTHER_DEDUCTION",
     status: "ACTIVE",
     createdBy: 1,
   });
@@ -210,6 +211,8 @@ async function seedDraft(period = "2026-07") {
 
 async function seedTwoEmployeeDraft(period = "2026-07") {
   const runner = db();
+  // هذا السيناريو يختبر دفع موظفين وإعادة أحد الدفعين فقط، بلا دين موظف جانبي.
+  await runner.delete(s.employeeAdvances).where(eq(s.employeeAdvances.id, 20));
   const legalPolicy = buildPayrollLegalPolicyEvidence(PAYROLL_LEGAL_DEFAULTS);
   const inserted = await runner.insert(s.payrollRuns).values({
     period,
@@ -246,6 +249,11 @@ async function seedTwoEmployeeDraft(period = "2026-07") {
 
 async function seedZeroNetStatutoryDraft(period = "2026-07") {
   const runner = db();
+  // الاستقطاع الآخر في هذا السيناريو 500 كي يبقى الصافي صفراً بعد المزامنة عند الاعتماد.
+  await runner
+    .update(s.employeeAdvances)
+    .set({ monthlyDeduction: "500.00" })
+    .where(eq(s.employeeAdvances.id, 20));
   const legalPolicy = buildPayrollLegalPolicyEvidence(PAYROLL_LEGAL_DEFAULTS);
   const inserted = await runner.insert(s.payrollRuns).values({
     period,
@@ -1839,9 +1847,13 @@ describe("payroll accrual lifecycle — DB invariants", () => {
 });
 
 describe("payroll zero-net classified lifecycle", () => {
-  it("accrues statutory and advance effects without cash and reverses them exactly", async () => {
+  it("يسوّي القسط التاريخي غير المصنف بلا نقد ويعكسه بدقة", async () => {
     const runner = db();
     const runId = await seedZeroNetStatutoryDraft();
+    await runner
+      .update(s.employeeAdvances)
+      .set({ sourceType: "LEGACY_UNCLASSIFIED", payrollPeriod: null })
+      .where(eq(s.employeeAdvances.id, 20));
     const receiptsBefore = await runner.select().from(s.receipts);
 
     await expect(approveRun(runId, CHECKER)).resolves.toMatchObject({

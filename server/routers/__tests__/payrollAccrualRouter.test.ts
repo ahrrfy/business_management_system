@@ -22,6 +22,24 @@ const advanceMocks = vi.hoisted(() => ({
   approveAdvanceRepaymentRequest: vi.fn(async () => ({ id: 1, replayed: true })),
 }));
 vi.mock("../../services/advances", () => advanceMocks);
+const capacityMocks = vi.hoisted(() => ({
+  getEmployeeAdvanceCapacity: vi.fn(async () => ({
+    employeeId: 10,
+    branchId: 2,
+    period: "2026-10",
+    asOf: "2026-10-31",
+    earnedCompensation: "1000.00",
+    approvedAdditions: "0.00",
+    mandatoryDeductions: "0.00",
+    existingSalaryAdvances: "0.00",
+    otherEmployeeDeductions: "0.00",
+    reservedRequests: "0.00",
+    maxAvailable: "1000.00",
+    blocked: false,
+    blockers: [],
+  })),
+}));
+vi.mock("../../services/employeeAdvanceCapacityService", () => capacityMocks);
 import { payrollRouter } from "../payrollRouter";
 
 function blockedCaller() {
@@ -211,7 +229,13 @@ describe("payroll accrual router authority", () => {
     expect(advanceMocks.listAdvanceRepaymentRequests).toHaveBeenLastCalledWith({ branchId: 2 });
     await branchHr.advanceBalance({ employeeId: 10 });
     expect(advanceMocks.employeeBalance).toHaveBeenLastCalledWith(10, 2);
-    await expect(branchHr.approveAdvanceRepayment({ id: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(capacityMocks.getEmployeeAdvanceCapacity).toHaveBeenLastCalledWith({
+      employeeId: 10,
+      scopedBranchId: 2,
+    });
+    await expect(
+      branchHr.approveAdvanceRepayment({ id: 1 }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     await expect(ownerHrFullCaller().approveAdvanceRepayment({ id: 1 })).resolves.toMatchObject({ replayed: true });
     expect(advanceMocks.approveAdvanceRepaymentRequest).toHaveBeenCalledWith(1, expect.objectContaining({ userId: 94, isOwner: true }));

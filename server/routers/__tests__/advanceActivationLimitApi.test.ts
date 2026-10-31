@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import type { TrpcContext } from "../../context";
@@ -32,6 +32,7 @@ beforeEach(async () => {
     "accountingEntries",
     "receipts",
     "advanceSettlements",
+    "employeeLoanRequests",
     "employeeAdvances",
     "employees",
     "voucherCategories",
@@ -66,53 +67,49 @@ beforeEach(async () => {
 });
 
 describe("advance limit through payroll/voucher API", () => {
-  // قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — عنوانُ الاختبار أُصلح تبعاً (لم يعد
-  // يثبت SOD؛ ذلك مغطًّى في treasuryApprovalWiring.test.ts وvoucherPro.test.ts وغيرهما).
-  // هنا يبقى المُعتمِد approver (لا maker) عمداً كي يظلّ first/second معلَّقين معاً حتى لحظة
-  // السباق الفعليّ — وهو جوهر ما يقيسه هذا الاختبار.
-  it("يمنع سباق اعتماد طلبين من تجاوز السقف عبر الحد العام", async () => {
+  it("يحجز الطلب المعلق من الحد الشهري بلا سند أو أثر نقدي", async () => {
     const maker = appRouter.createCaller(context(await user(1)));
-    const approver = appRouter.createCaller(context(await user(2)));
     const first = await maker.payroll.advanceGrant({
       employeeId: 1,
       branchId: 1,
       amount: "600000.00",
       clientRequestId: "advance-api-limit-a",
     });
-    const second = await maker.payroll.advanceGrant({
-      employeeId: 1,
-      branchId: 1,
+    expect(first.status).toBe("PENDING");
+    await expect(
+      maker.payroll.advanceGrant({
+        employeeId: 1,
+        branchId: 1,
+        amount: "600000.00",
+        clientRequestId: "advance-api-limit-b",
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    const [requests, active, outReceipts, entries, audits] = await Promise.all([
+      db().select().from(s.employeeLoanRequests),
+      db()
+        .select()
+        .from(s.employeeAdvances)
+        .where(eq(s.employeeAdvances.status, "ACTIVE")),
+      db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT")),
+      db()
+        .select()
+        .from(s.accountingEntries)
+        .where(eq(s.accountingEntries.entryType, "PAYMENT_OUT")),
+      db()
+        .select()
+        .from(s.auditLogs)
+        .where(eq(s.auditLogs.action, "payroll.advanceGrant")),
+    ]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      id: Number(first.id),
+      status: "PENDING",
       amount: "600000.00",
-      clientRequestId: "advance-api-limit-b",
     });
-    expect(first.status).toBe("PENDING_APPROVAL");
-    expect(second.status).toBe("PENDING_APPROVAL");
-
-    const results = await Promise.allSettled([
-      approver.vouchers.approve({ receiptId: Number(first.receiptId) }),
-      approver.vouchers.approve({ receiptId: Number(second.receiptId) }),
-    ]);
-    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
-    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
-
-    const [active, approved, pending, entries, audits] = await Promise.all([
-      db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.status, "ACTIVE")),
-      db().select().from(s.receipts).where(and(
-        eq(s.receipts.direction, "OUT"),
-        eq(s.receipts.approvalStatus, "APPROVED"),
-      )),
-      db().select().from(s.receipts).where(and(
-        eq(s.receipts.direction, "OUT"),
-        eq(s.receipts.approvalStatus, "PENDING_APPROVAL"),
-      )),
-      db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PAYMENT_OUT")),
-      db().select().from(s.auditLogs).where(eq(s.auditLogs.action, "voucher.approve")),
-    ]);
-    expect(active).toHaveLength(1);
-    expect(active[0].remaining).toBe("600000.00");
-    expect(approved).toHaveLength(1);
-    expect(pending).toHaveLength(1);
-    expect(entries).toHaveLength(1);
+    expect(active).toHaveLength(0);
+    expect(outReceipts).toHaveLength(0);
+    expect(entries).toHaveLength(0);
     expect(audits).toHaveLength(1);
   });
 });

@@ -203,6 +203,7 @@ export async function generatePayroll(period: string, actor: Actor) {
           eq(employeeSpotBonuses.status, "APPROVED"),
           eq(employeeSpotBonuses.disbursementType, "PAYROLL_ADDITION"),
           isNull(employeeSpotBonuses.payrollRunId),
+          sql`DATE_FORMAT(CONVERT_TZ(${employeeSpotBonuses.approvedAt}, '+00:00', '+03:00'), '%Y-%m') = ${p}`,
         ),
       )
       .for("update");
@@ -389,27 +390,33 @@ export async function generatePayroll(period: string, actor: Actor) {
 
     // advances (بند 12ج، ٧/٧): اقتراح استقطاع السلف من أقدم سلفة نشطة لكل موظف —
     // يُملأ advanceDeduction ويدخل **ضمن** deductions (لا فوقها) فيَنقص net تلقائياً.
-    const advanceByEmp = await suggestDeductionsTx(tx, emps.map((e) => Number(e.id)));
+    const advanceByEmp = await suggestDeductionsTx(
+      tx,
+      emps.map((e) => Number(e.id)),
+      p,
+    );
 
     // استقطاعات العقوبات والإنذارات الانضباطية المعتمدة غير المطبقة:
     const empIds = emps.map((e) => Number(e.id));
-    const approvedPenalties = empIds.length > 0
-      ? await tx
-          .select({
-            id: employeePenalties.id,
-            employeeId: employeePenalties.employeeId,
-            deductionAmount: employeePenalties.deductionAmount,
-          })
-          .from(employeePenalties)
-          .where(
-            and(
-              inArray(employeePenalties.employeeId, empIds),
-              eq(employeePenalties.status, "APPROVED"),
-              isNull(employeePenalties.payrollRunId),
-              sql`${employeePenalties.deductionAmount} > 0`,
-            ),
-          )
-      : [];
+    const approvedPenalties =
+      empIds.length > 0
+        ? await tx
+            .select({
+              id: employeePenalties.id,
+              employeeId: employeePenalties.employeeId,
+              deductionAmount: employeePenalties.deductionAmount,
+            })
+            .from(employeePenalties)
+            .where(
+              and(
+                inArray(employeePenalties.employeeId, empIds),
+                eq(employeePenalties.status, "APPROVED"),
+                isNull(employeePenalties.payrollRunId),
+                sql`${employeePenalties.deductionAmount} > 0`,
+                sql`DATE_FORMAT(${employeePenalties.decisionDate}, '%Y-%m') = ${p}`,
+              ),
+            )
+        : [];
     const penaltiesByEmp = new Map<number, { total: Decimal; ids: number[] }>();
     for (const pen of approvedPenalties) {
       const empId = Number(pen.employeeId);

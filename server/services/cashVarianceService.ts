@@ -1187,6 +1187,8 @@ export async function approveCashVarianceCase(
         amount: plan.adjustmentAmount,
         remaining: plan.adjustmentAmount,
         monthlyDeduction: null,
+        sourceType: "OTHER_DEDUCTION",
+        payrollPeriod: null,
         status: "ACTIVE",
         receiptId: adjustmentReceiptId,
         note: `ذمة عجز نقد — قضية #${row.id} — ${row.sourceReference}`.slice(0, 255),

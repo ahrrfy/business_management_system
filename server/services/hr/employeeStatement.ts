@@ -203,6 +203,13 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     throw new Error("هذا الموظف من فرعٍ آخر — لا صلاحية لك على كشف حضوره");
   }
 
+  // نافذة عمله داخل الشهر. employmentEndOverride هو حد «حتى اليوم» في حاسبة السلفة؛
+  // يجب أن يقيّد صفوف الحضور نفسها لا أيام الجدول فقط، وإلا دخل حضور مستقبلي مؤرخ مسبقاً.
+  const employmentStart = emp.hireDate && emp.hireDate > monthStart ? String(emp.hireDate) : monthStart;
+  const employmentEnd = [monthEnd, emp.terminationDate ? String(emp.terminationDate) : null, input.employmentEndOverride || null]
+    .filter((d): d is string => !!d)
+    .reduce((a, b) => (b < a ? b : a));
+
   const selectAttRows = () =>
     db
       .select({
@@ -221,8 +228,8 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
       .where(
         and(
           eq(attendance.employeeId, input.employeeId),
-          gte(attendance.attendanceDate, monthStart),
-          lte(attendance.attendanceDate, monthEnd),
+          gte(attendance.attendanceDate, employmentStart),
+          lte(attendance.attendanceDate, employmentEnd),
         ),
       );
 
@@ -249,14 +256,6 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
       ? (emp.workSchedule as WorkSchedule)
       : DEFAULT_WORK_SCHEDULE;
   const hasOwnSchedule = !!(emp.workSchedule && typeof emp.workSchedule === "object");
-
-  // نافذة عمله داخل الشهر (تعيين/فصل في منتصفه).
-  const employmentStart = emp.hireDate && emp.hireDate > monthStart ? String(emp.hireDate) : monthStart;
-  // أصغرُ الحدود الثلاثة: نهاية الشهر · تاريخ الإنهاء المسجَّل · الحدّ الصريح المُمرَّر.
-  const hardEnd = [monthEnd, emp.terminationDate ? String(emp.terminationDate) : null, input.employmentEndOverride || null]
-    .filter((d): d is string => !!d)
-    .reduce((a, b) => (b < a ? b : a));
-  const employmentEnd = hardEnd;
 
   // مجموع ما سُجّل فعلياً في الحضور — أساس أجر الموظف الساعيّ في المسيّر.
   let actualPaid = 0;
@@ -431,7 +430,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
      */
     expectedEarnedGrossWages:
       dueBasis === "attendance"
-        ? round2(money(amountDue).plus(money(emp.allowances ?? 0))).toFixed(2)
+        ? round2(money(amountDue).plus(round2(money(emp.allowances ?? 0).times(ratio)))).toFixed(2)
         : amountDue,
     /**
      * لقطةُ الشهر المصروف (ق٣) — `null` ما لم يُعتمد مسيّرُه. وجودُها يعني أن `amountDue`

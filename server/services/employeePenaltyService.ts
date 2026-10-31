@@ -100,20 +100,54 @@ export async function approveEmployeePenalty(
 ) {
   return withTx(async (tx) => {
     const currentActor = await resolveHrActorTx(tx, actor, "hrEnterprise.penalties.approve");
-    const [p] = await tx
+    const [preview] = await tx
       .select()
       .from(employeePenalties)
       .where(eq(employeePenalties.id, id))
-      .limit(1)
-      .for("update");
+      .limit(1);
 
-    if (!p) {
+    if (!preview) {
       throw new TRPCError({
         code: "NOT_FOUND",
         message: appErrorMessage({
           what: "تعذّر اعتماد العقوبة",
           why: "سجل العقوبة المطلوب غير موجود في سجلات الموظف",
           doThis: "تحقّق من رقم القرار من جدول العقوبات وأعد المحاولة",
+        }),
+      });
+    }
+    const penaltyPeriod = String(preview.decisionDate).slice(0, 7);
+    const [existingRun] = await tx
+      .select({ id: payrollRuns.id, status: payrollRuns.status })
+      .from(payrollRuns)
+      .where(eq(payrollRuns.period, penaltyPeriod))
+      .for("update")
+      .limit(1);
+    if (existingRun) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "لا يمكن اعتماد العقوبة بعد إنشاء مسيّر الشهر",
+          why: `يوجد مسيّر ${existingRun.status} لشهر القرار ${penaltyPeriod} ولن تُلتقط العقوبة في لقطته الحالية`,
+          doThis: existingRun.status === "draft"
+            ? "احذف المسودة غير المعتمدة، اعتمد العقوبة، ثم ولّد المسيّر من جديد"
+            : "استخدم مسار تصحيح الرواتب الموثق ولا تضف الاستقطاع إلى لقطة معتمدة بصمت",
+        }),
+      });
+    }
+    const [p] = await tx
+      .select()
+      .from(employeePenalties)
+      .where(eq(employeePenalties.id, id))
+      .for("update")
+      .limit(1);
+    if (!p || p.status !== preview.status) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "لم يكتمل اعتماد العقوبة",
+          why: "تغيّرت العقوبة أثناء الاعتماد",
+          doThis: "حدّث بطاقة الموظف وراجع الحالة والمبلغ قبل إعادة الاعتماد",
         }),
       });
     }

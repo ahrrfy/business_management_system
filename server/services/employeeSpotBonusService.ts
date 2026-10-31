@@ -5,6 +5,7 @@ import { fullEmployeeName } from "@shared/hr";
 import {
   employeeSpotBonuses,
   employees,
+  payrollRuns,
   receipts,
   shifts,
   users,
@@ -25,6 +26,7 @@ import {
   assertApprovedTreasuryOutAvailable,
   authorizeExternalTreasuryDisbursement,
 } from "./cash/cashAvailability";
+import { baghdadToday } from "./businessDay";
 
 function requireDb() {
   const db = getDb();
@@ -111,19 +113,56 @@ export async function approveSpotBonus(
   id: number,
 ) {
   return withTx(async (tx) => {
-    const [b] = await tx
+    const [preview] = await tx
       .select()
       .from(employeeSpotBonuses)
       .where(eq(employeeSpotBonuses.id, id))
       .limit(1);
 
-    if (!b) {
+    if (!preview) {
       throw new TRPCError({
         code: "NOT_FOUND",
         message: appErrorMessage({
           what: "تعذّر اعتماد المكافأة",
           why: "سجل المكافأة المطلوب غير موجود",
           doThis: "تحقّق من رقم المكافأة من الجدول وأعد المحاولة",
+        }),
+      });
+    }
+    if (preview.disbursementType === "PAYROLL_ADDITION") {
+      const period = baghdadToday().slice(0, 7);
+      const [existingRun] = await tx
+        .select({ id: payrollRuns.id, status: payrollRuns.status })
+        .from(payrollRuns)
+        .where(eq(payrollRuns.period, period))
+        .for("update")
+        .limit(1);
+      if (existingRun) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "لا يمكن اعتماد إضافة راتب بعد إنشاء مسيّر الشهر",
+            why: `يوجد مسيّر ${existingRun.status} لشهر ${period} ولن يلتقط المكافأة في لقطته الحالية`,
+            doThis: existingRun.status === "draft"
+              ? "احذف المسودة غير المعتمدة، اعتمد المكافأة، ثم ولّد المسيّر من جديد"
+              : "استخدم مسار تصحيح الرواتب الموثق ولا تغيّر لقطة معتمدة بصمت",
+          }),
+        });
+      }
+    }
+    const [b] = await tx
+      .select()
+      .from(employeeSpotBonuses)
+      .where(eq(employeeSpotBonuses.id, id))
+      .for("update")
+      .limit(1);
+    if (!b || b.status !== preview.status) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "لم يكتمل اعتماد المكافأة",
+          why: "تغيّرت المكافأة أثناء الاعتماد",
+          doThis: "حدّث بطاقة الموظف وراجع الحالة والمبلغ قبل إعادة الاعتماد",
         }),
       });
     }

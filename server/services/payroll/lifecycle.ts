@@ -22,6 +22,7 @@ import { getRun } from "./queries";
 import { assertPayrollActiveOwnerChecker } from "./settlement";
 import { decodeTerminationWageCoverage } from "./terminationCoverage";
 import { assertCommissionArtifactReadyForPayrollTx } from "../commissions/payrollReadiness";
+import { syncAllAdvancesForDraftRunTx } from "./syncAdvances";
 
 /** اعتماد الاستحقاق الشهري؛ لا نقد ولا إيصال في هذه المرحلة. */
 export async function approveRun(id: number, actor: Actor) {
@@ -84,7 +85,67 @@ export async function approveRun(id: number, actor: Actor) {
         message: `تشغيلة عمولات معتمدة (#${uncaptured.id}) لشهر ${uncaptured.period} غير ملتقطة — أعد توليد المسيّر.`,
       });
     }
-    const runToApprove = run;
+    const [uncapturedBonus] = await tx
+      .select({ id: employeeSpotBonuses.id })
+      .from(employeeSpotBonuses)
+      .where(
+        and(
+          eq(employeeSpotBonuses.status, "APPROVED"),
+          eq(employeeSpotBonuses.disbursementType, "PAYROLL_ADDITION"),
+          isNull(employeeSpotBonuses.payrollRunId),
+          sql`DATE_FORMAT(CONVERT_TZ(${employeeSpotBonuses.approvedAt}, '+00:00', '+03:00'), '%Y-%m') = ${run.period}`,
+        ),
+      )
+      .orderBy(employeeSpotBonuses.id)
+      .for("update")
+      .limit(1);
+    const [uncapturedPenalty] = await tx
+      .select({ id: employeePenalties.id })
+      .from(employeePenalties)
+      .where(
+        and(
+          eq(employeePenalties.status, "APPROVED"),
+          isNull(employeePenalties.payrollRunId),
+          sql`${employeePenalties.deductionAmount} > 0`,
+          sql`DATE_FORMAT(${employeePenalties.decisionDate}, '%Y-%m') = ${run.period}`,
+        ),
+      )
+      .orderBy(employeePenalties.id)
+      .for("update")
+      .limit(1);
+    if (uncapturedBonus || uncapturedPenalty) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "لا يمكن اعتماد مسيّر لا يلتقط كل إضافات واستقطاعات الموظفين",
+          why: [
+            uncapturedBonus ? `مكافأة #${uncapturedBonus.id}` : null,
+            uncapturedPenalty ? `عقوبة #${uncapturedPenalty.id}` : null,
+          ]
+            .filter(Boolean)
+            .join(" و "),
+          doThis:
+            "احذف المسودة غير المعتمدة، ثم ولّد المسيّر مجدداً لالتقاط القيم قبل الاعتماد",
+        }),
+      });
+    }
+    // آخر بوابة قبل تجميد اللقطة: التقط كل سلف الشهر وأزل أي خصم أُلغي من المسودة.
+    await syncAllAdvancesForDraftRunTx(tx, id);
+    const [runToApprove] = await tx
+      .select()
+      .from(payrollRuns)
+      .where(eq(payrollRuns.id, id))
+      .limit(1);
+    if (!runToApprove || runToApprove.status !== "draft") {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد مسيّر الرواتب",
+          why: "تغيّرت حالة المسيّر أثناء مزامنة سلف الشهر",
+          doThis: "حدّث شاشة المسيّر وراجع حالته قبل إعادة المحاولة",
+        }),
+      });
+    }
 
     const items = await tx
       .select({
@@ -303,14 +364,8 @@ export async function cancelRun(
       actorUserId: actor.userId,
       occurredAt: new Date(),
     });
-    await tx
-      .update(employeePenalties)
-      .set({ payrollRunId: null, status: "APPROVED" })
-      .where(eq(employeePenalties.payrollRunId, id));
-    await tx
-      .update(employeeSpotBonuses)
-      .set({ payrollRunId: null })
-      .where(eq(employeeSpotBonuses.payrollRunId, id));
+    // إعادة الفتح لا تعيد توليد البنود؛ إبقاء المصادر مربوطة يمنع التقاط المكافأة/العقوبة
+    // مرة ثانية في مسيّر لاحق، ويجعل إعادة الاعتماد/الدفع تسوّي المصدر نفسه.
     await tx
       .update(payrollRuns)
       .set({

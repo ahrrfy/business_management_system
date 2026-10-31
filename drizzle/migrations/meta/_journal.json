@@ -2619,6 +2619,20 @@
 			"when": 1788148873000,
 			"tag": "0415_branch_stock_natural_primary",
 			"breakpoints": true
+		},
+		{
+			"idx": 417,
+			"version": "5",
+			"when": 1788148875000,
+			"tag": "0417_employee_advances_monthly_integrity_20261030",
+			"breakpoints": true
+		},
+		{
+			"idx": 418,
+			"version": "5",
+			"when": 1788148876000,
+			"tag": "0418_employee_advances_legacy_classification_20261030",
+			"breakpoints": true
 		}
 	]
 }

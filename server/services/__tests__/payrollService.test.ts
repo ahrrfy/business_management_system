@@ -502,7 +502,7 @@ describe("payrollService: GAP-03 Spot bonuses inclusion in payroll run", () => {
       status: "APPROVED",
       createdById: 2,
       approvedById: 1,
-      approvedAt: new Date(),
+      approvedAt: new Date("2026-08-15T12:00:00.000Z"),
     });
     const bonusId = Number(ins.insertId);
 

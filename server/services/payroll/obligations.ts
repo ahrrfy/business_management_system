@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, or } from "drizzle-orm";
+import { appErrorMessage } from "@shared/errors";
 import {
   accountingEntries,
   advanceSettlements,
@@ -135,6 +136,7 @@ async function settleItemAdvanceTx(
     revisionNo: number;
     itemId: number;
     employeeId: number;
+    payrollPeriod: string;
     amount: Decimal;
     actorUserId: number;
     occurredAt: Date;
@@ -149,6 +151,18 @@ async function settleItemAdvanceTx(
       and(
         eq(employeeAdvances.employeeId, input.employeeId),
         eq(employeeAdvances.status, "ACTIVE"),
+        or(
+          and(
+            eq(employeeAdvances.sourceType, "SALARY_ADVANCE"),
+            eq(employeeAdvances.payrollPeriod, input.payrollPeriod),
+          ),
+          // احتفظ بقسط التاريخ كما خُزّن سابقاً دون ادعاء نوعه أو شهره؛ وحدها
+          // SALARY_ADVANCE تخضع لقاعدة الخصم الكامل في شهر موثّق.
+          inArray(employeeAdvances.sourceType, [
+            "OTHER_DEDUCTION",
+            "LEGACY_UNCLASSIFIED",
+          ]),
+        ),
       ),
     )
     .orderBy(asc(employeeAdvances.id))
@@ -166,7 +180,12 @@ async function settleItemAdvanceTx(
     if (left.lte(0)) break;
     const rem = currentRemaining.get(Number(advance.id)) ?? money(0);
     if (rem.lte(0)) continue;
-    const installment = advance.monthlyDeduction != null ? money(advance.monthlyDeduction) : rem;
+    const installment =
+      advance.sourceType === "SALARY_ADVANCE"
+        ? rem
+        : advance.monthlyDeduction != null
+          ? money(advance.monthlyDeduction)
+          : rem;
     const due = round2(Decimal.min(installment, rem));
     const take = round2(Decimal.min(due, left));
     if (take.lte(0)) continue;
@@ -358,9 +377,41 @@ export async function approvePayrollAccrualTx(
       revisionNo,
       itemId: Number(item.row.id),
       employeeId: Number(item.row.employeeId),
+      payrollPeriod: input.run.period,
       amount: item.breakdown.advance,
       actorUserId: input.actorUserId,
       occurredAt: input.approvedAt,
+    });
+  }
+
+  const [unsettledMonthlyAdvance] = await tx
+    .select({
+      id: employeeAdvances.id,
+      employeeId: employeeAdvances.employeeId,
+      remaining: employeeAdvances.remaining,
+    })
+    .from(employeeAdvances)
+    .where(
+      and(
+        eq(employeeAdvances.sourceType, "SALARY_ADVANCE"),
+        eq(employeeAdvances.payrollPeriod, input.run.period),
+        eq(employeeAdvances.status, "ACTIVE"),
+      ),
+    )
+    .orderBy(asc(employeeAdvances.id))
+    .for("update")
+    .limit(1);
+  if (unsettledMonthlyAdvance) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "لا يمكن اعتماد مسيّر الرواتب",
+        why:
+          `بقيت سلفة الشهر ${input.run.period} للموظف #${unsettledMonthlyAdvance.employeeId} ` +
+          `برصيد ${unsettledMonthlyAdvance.remaining} د.ع؛ يمنع ترحيلها للشهر التالي`,
+        doThis:
+          "سجّل إعادة المبلغ نقداً أو صحّح الحضور/المكافآت والاستقطاعات ثم أعد توليد المسيّر",
+      }),
     });
   }
 
@@ -697,11 +748,8 @@ export async function reopenPayrollAccrualTx(
         ),
       );
   }
-  // GAP-17: تحرير العقوبات المربوطة بالمسير وإعادتها لحالة APPROVED لتلتقطها إعادة التوليد
-  await tx
-    .update(employeePenalties)
-    .set({ payrollRunId: null, status: "APPROVED" })
-    .where(eq(employeePenalties.payrollRunId, runId));
+  // لا نفك ربط العقوبات هنا: بنود المسيّر تبقى كما هي عند إعادة الفتح، وفك المصدر
+  // يجعل مسيّراً لاحقاً يلتقط العقوبة نفسها ثانيةً بينما قيمتها باقية في هذا البند.
   const nextRevision = revisionNo + 1;
   await tx
     .update(payrollItems)

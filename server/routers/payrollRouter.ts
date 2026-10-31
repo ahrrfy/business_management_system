@@ -21,6 +21,8 @@ import { nonNegMoneyString, percentString, positiveMoneyString } from "../lib/sc
 import { isDupEntry } from "@shared/errorMap.ar";
 import { appErrorMessage } from "@shared/errors";
 import { requireDb } from "../services/tx";
+import * as loanSvc from "../services/employeeLoanService";
+import { getEmployeeAdvanceCapacity } from "../services/employeeAdvanceCapacityService";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
 const hrWrite = protectedProcedure.use(requireModule("hr", "FULL"));
@@ -536,7 +538,22 @@ export const payrollRouter = router({
         .object({
           employeeId: z.number().int().positive().optional(),
           branchId: z.number().int().positive().optional(),
-          status: z.enum(["ACTIVE", "SETTLED", "CANCELLED", "PENDING_APPROVAL"]).optional(),
+          period: z
+            .string()
+            .regex(/^\d{4}-(0[1-9]|1[0-2])$/)
+            .optional(),
+          status: z
+            .enum([
+              "ACTIVE",
+              "SETTLED",
+              "CANCELLED",
+              "PENDING_APPROVAL",
+              "APPROVED",
+              "REJECTED",
+              "EXPIRED",
+              "LEGACY_UNCLASSIFIED",
+            ])
+            .optional(),
         })
         .optional(),
     )
@@ -547,10 +564,17 @@ export const payrollRouter = router({
 
   advanceBalance: hrRead
     .input(z.object({ employeeId: z.number().int().positive() }))
-    .query(({ input, ctx }) => adv.employeeBalance(input.employeeId, scopedPayrollBranch(ctx.user))),
-
-  /** عَتبة السندات (اعتماد) لواجهة المنح — بوّابة hr (بوّابة الخزينة لا تلزم للاطلاع عليها). */
-  advanceThresholds: hrRead.query(() => adv.advanceThresholds()),
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedPayrollBranch(ctx.user);
+      const [balance, capacity] = await Promise.all([
+        adv.employeeBalance(input.employeeId, branchId),
+        getEmployeeAdvanceCapacity({
+          employeeId: input.employeeId,
+          scopedBranchId: branchId,
+        }),
+      ]);
+      return { ...balance, capacity };
+    }),
 
   advanceRepaymentRequests: hrRead
     .input(z.object({
@@ -672,12 +696,30 @@ export const payrollRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await adv.grantAdvance(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0, role: ctx.user.role });
+      const res = await loanSvc.requestEmployeeLoan(
+        {
+          userId: ctx.user.id,
+          branchId: scopedPayrollBranch(ctx.user) ?? null,
+          role: ctx.user.role,
+          isOwner: ctx.user.isOwner,
+        },
+        {
+          employeeId: input.employeeId,
+          amount: input.amount,
+          reason: input.note,
+          clientRequestId: input.clientRequestId,
+        },
+      );
       await logAudit(ctx, {
         action: "payroll.advanceGrant",
-        entityType: "employeeAdvance",
+        entityType: "employeeLoanRequest",
         entityId: res?.id != null ? Number(res.id) : undefined,
-        newValue: { employeeId: input.employeeId, amount: input.amount, monthlyDeduction: input.monthlyDeduction ?? null, voucherNumber: res?.voucherNumber },
+        newValue: {
+          employeeId: input.employeeId,
+          amount: input.amount,
+          payrollPeriod: res.payrollPeriod,
+          financialEffect: "NONE_UNTIL_DISBURSEMENT",
+        },
       });
       return res;
     }),

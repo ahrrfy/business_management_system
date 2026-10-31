@@ -189,6 +189,8 @@ export async function returnEmployeeCustody(
           branchId,
           amount: toDbMoney(lossAmount),
           remaining: toDbMoney(lossAmount),
+          sourceType: "OTHER_DEDUCTION",
+          payrollPeriod: null,
           status: "ACTIVE",
           note: `استقطاع تعويض عهدة ${finalStatus === "DAMAGED" ? "تالفة" : "مفقودة"}: ${c.itemName} (#${c.id})`,
           createdBy: actor.userId,

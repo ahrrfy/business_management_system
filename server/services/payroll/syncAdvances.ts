@@ -13,7 +13,11 @@ import { suggestDeductionsTx } from "../advances";
  */
 export async function syncAllAdvancesForDraftRunTx(tx: Tx, runId: number): Promise<boolean> {
   const [run] = await tx
-    .select({ id: payrollRuns.id, status: payrollRuns.status })
+    .select({
+      id: payrollRuns.id,
+      status: payrollRuns.status,
+      period: payrollRuns.period,
+    })
     .from(payrollRuns)
     .where(eq(payrollRuns.id, runId))
     .for("update")
@@ -30,7 +34,7 @@ export async function syncAllAdvancesForDraftRunTx(tx: Tx, runId: number): Promi
   if (items.length === 0) return false;
 
   const employeeIds = items.map((i) => Number(i.employeeId));
-  const advanceMap = await suggestDeductionsTx(tx, employeeIds);
+  const advanceMap = await suggestDeductionsTx(tx, employeeIds, run.period);
 
   let hasChanges = false;
 
@@ -57,9 +61,8 @@ export async function syncAllAdvancesForDraftRunTx(tx: Tx, runId: number): Promi
 
     const newAdvanceDeduction = round2(Decimal.min(suggestedAdvance, absorbableWage));
 
-    // مزامنة بالزيادة فقط: التقاط السلف النشطة المضافة/غير المشمولة تلقائياً
-    // وإن نقص الرصيد (إلغاء سلفة) يُترك ليرمي CONFLICT صريحاً عند الاعتماد منعاً للتعديل الصامت
-    if (newAdvanceDeduction.gt(oldAdvance)) {
+    // المسودة إسقاط قابل لإعادة الحساب؛ يجب أن تعكس المصدر بالزيادة والنقصان معاً.
+    if (!newAdvanceDeduction.eq(oldAdvance)) {
       const newDeductions = round2(
         newAdvanceDeduction.plus(statutoryDeduction).plus(wageReduction).plus(manualExtraDeduction),
       );
@@ -97,6 +100,7 @@ export async function syncAllAdvancesForDraftRunTx(tx: Tx, runId: number): Promi
 export async function autoSyncEmployeeAdvanceToDraftPayrollTx(
   tx: Tx,
   employeeId: number,
+  payrollPeriod?: string,
 ): Promise<void> {
   const draftItems = await tx
     .select({
@@ -110,20 +114,29 @@ export async function autoSyncEmployeeAdvanceToDraftPayrollTx(
       advanceDeduction: payrollItems.advanceDeduction,
       socialSecurityEmployee: payrollItems.socialSecurityEmployee,
       incomeTax: payrollItems.incomeTax,
+      period: payrollRuns.period,
     })
     .from(payrollItems)
     .innerJoin(payrollRuns, eq(payrollItems.runId, payrollRuns.id))
-    .where(and(eq(payrollItems.employeeId, employeeId), eq(payrollRuns.status, "draft")))
+    .where(
+      and(
+        eq(payrollItems.employeeId, employeeId),
+        eq(payrollRuns.status, "draft"),
+        payrollPeriod != null
+          ? eq(payrollRuns.period, payrollPeriod)
+          : undefined,
+      ),
+    )
     .for("update");
 
   if (draftItems.length === 0) return;
 
-  const advanceMap = await suggestDeductionsTx(tx, [employeeId]);
-  const suggestedAdvance = advanceMap.get(employeeId)?.suggested ?? new Decimal(0);
-
   const affectedRuns = new Set<number>();
 
   for (const item of draftItems) {
+    const advanceMap = await suggestDeductionsTx(tx, [employeeId], item.period);
+    const suggestedAdvance =
+      advanceMap.get(employeeId)?.suggested ?? new Decimal(0);
     const statutoryDeduction = round2(
       money(item.socialSecurityEmployee).plus(money(item.incomeTax)),
     );
@@ -143,7 +156,7 @@ export async function autoSyncEmployeeAdvanceToDraftPayrollTx(
 
     const newAdvanceDeduction = round2(Decimal.min(suggestedAdvance, absorbableWage));
 
-    if (newAdvanceDeduction.gt(oldAdvance)) {
+    if (!newAdvanceDeduction.eq(oldAdvance)) {
       const newDeductions = round2(
         newAdvanceDeduction.plus(statutoryDeduction).plus(wageReduction).plus(manualExtraDeduction),
       );

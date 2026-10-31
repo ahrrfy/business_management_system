@@ -59,6 +59,7 @@ beforeEach(async () => {
     referenceNumber: "TEST-TREASURY-FUND",
     createdBy: 2,
   });
+  await d.insert(s.shifts).values({ id: 901, branchId: 1, userId: 2, openingBalance: "100000000.00", status: "OPEN", shiftType: "RETAIL", openGuard: "1:2:RETAIL" });
 });
 
 describe("financial integrity — payroll", () => {
@@ -181,6 +182,6 @@ describe("financial integrity — advances", () => {
     receipts = await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"));
     expect(advances).toHaveLength(1);
     expect(receipts).toHaveLength(1);
-    expect(receipts[0]).toMatchObject({ status: "COMPLETED", approvalStatus: "APPROVED", cashBucket: "TREASURY" });
+    expect(receipts[0]).toMatchObject({ status: "COMPLETED", approvalStatus: "APPROVED", cashBucket: "DRAWER" });
   });
 });
