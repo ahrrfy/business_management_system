@@ -27,6 +27,7 @@ import { confirm } from "@/lib/confirm";
 import { currentBaghdadMonth } from "@/lib/businessMonth";
 import { fmtDate } from "@/lib/date";
 import { iqd } from "@/lib/hr/ui";
+import { D, fmtAr, moneyInput } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ArrowRightLeft, Award, Calculator, Coins, Plus } from "lucide-react";
@@ -77,6 +78,7 @@ export function EmployeeEnterpriseOperationsTab({
   const utils = trpc.useUtils();
   const [loanPeriod, setLoanPeriod] = useState(() => currentBaghdadMonth());
   const [subTab, setSubTab] = useState("loans");
+  const [openLoan, setOpenLoan] = useState(false);
 
   // Queries
   const loansQ = trpc.payroll.advancesList.useQuery(
@@ -85,7 +87,10 @@ export function EmployeeEnterpriseOperationsTab({
   );
   const advanceCapacityQ = trpc.payroll.advanceBalance.useQuery(
     { employeeId },
-    { enabled: can("payroll.advanceBalance") },
+    {
+      enabled: can("payroll.advanceBalance") && openLoan,
+      staleTime: 0,
+    },
   );
   const transfersQ = trpc.hrEnterprise.transfers.list.useQuery(
     { employeeId },
@@ -101,7 +106,6 @@ export function EmployeeEnterpriseOperationsTab({
   );
 
   // Modal Dialogs
-  const [openLoan, setOpenLoan] = useState(false);
   const [openTransfer, setOpenTransfer] = useState(false);
   const [openSpotBonus, setOpenSpotBonus] = useState(false);
 
@@ -110,6 +114,12 @@ export function EmployeeEnterpriseOperationsTab({
   const [loanReason, setLoanReason] = useState("");
   const loanRequestIdRef = useRef(crypto.randomUUID());
   const effectiveUserId = currentUserId ?? me.data?.id;
+  const advanceCapacity = advanceCapacityQ.data?.capacity;
+  const loanMaxAvailable = D(advanceCapacity?.maxAvailable ?? 0);
+  const loanAmountValue = moneyInput(loanAmount);
+  const loanAmountValid = loanAmount.trim() !== "" && loanAmountValue.gt(0);
+  const loanOverAvailable =
+    loanAmountValid && loanAmountValue.gt(loanMaxAvailable);
 
   useEffect(() => {
     setOpenLoan(false);
@@ -813,22 +823,30 @@ export function EmployeeEnterpriseOperationsTab({
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              if (!loanAmount || Number(loanAmount) <= 0) {
+              if (!loanAmountValid) {
                 notify.err("يرجى إدخال مبلغ سلفة صحيح");
                 return;
               }
-              const maximum = Number(
-                advanceCapacityQ.data?.capacity.maxAvailable ?? 0,
-              );
-              if (Number(loanAmount) > maximum) {
+              if (
+                advanceCapacityQ.isLoading ||
+                advanceCapacityQ.isFetching ||
+                advanceCapacityQ.isError ||
+                !advanceCapacity ||
+                advanceCapacity.blocked ||
+                !loanMaxAvailable.gt(0)
+              ) {
+                notify.err("الحد المتاح غير جاهز لطلب سلفة جديدة");
+                return;
+              }
+              if (loanOverAvailable) {
                 notify.err(
-                  `المبلغ يتجاوز الحد المتاح للموظف (${iqd(maximum)})`,
+                  `المبلغ يتجاوز الحد المتاح للموظف (${fmtAr(advanceCapacity.maxAvailable)})`,
                 );
                 return;
               }
               createLoanMut.mutate({
                 employeeId,
-                amount: loanAmount,
+                amount: loanAmountValue.toFixed(2),
                 reason: loanReason.trim() || undefined,
                 clientRequestId: loanRequestIdRef.current,
               });
@@ -846,14 +864,10 @@ export function EmployeeEnterpriseOperationsTab({
                   value={loanAmount}
                   onChange={setLoanAmount}
                   decimals={0}
-                  max={Number(
-                    advanceCapacityQ.data?.capacity.maxAvailable ?? 0,
-                  )}
+                  max={advanceCapacity?.maxAvailable}
                   expectedRange={{
                     min: 1,
-                    max: Number(
-                      advanceCapacityQ.data?.capacity.maxAvailable ?? 0,
-                    ),
+                    max: loanMaxAvailable.toNumber(),
                   }}
                 />
               </div>
@@ -862,34 +876,34 @@ export function EmployeeEnterpriseOperationsTab({
                 <div className="flex justify-between gap-3">
                   <span>الحد الأعلى المتاح حتى اليوم:</span>
                   <span className="font-bold tabular-nums" dir="ltr">
-                    {iqd(advanceCapacityQ.data?.capacity.maxAvailable ?? 0)}
+                    {fmtAr(advanceCapacity?.maxAvailable ?? 0)}
                   </span>
                 </div>
                 {advanceCapacityQ.data?.capacity && (
                   <dl className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 border-t pt-2 text-muted-foreground">
                     <dt>الأجر المؤكد حتى اليوم</dt>
                     <dd dir="ltr">
-                      {iqd(advanceCapacityQ.data.capacity.earnedCompensation)}
+                      {fmtAr(advanceCapacityQ.data.capacity.earnedCompensation)}
                     </dd>
                     <dt>إضافات معتمدة</dt>
                     <dd dir="ltr">
-                      + {iqd(advanceCapacityQ.data.capacity.approvedAdditions)}
+                      + {fmtAr(advanceCapacityQ.data.capacity.approvedAdditions)}
                     </dd>
                     <dt>استقطاعات إلزامية</dt>
                     <dd dir="ltr">
-                      − {iqd(advanceCapacityQ.data.capacity.mandatoryDeductions)}
+                      − {fmtAr(advanceCapacityQ.data.capacity.mandatoryDeductions)}
                     </dd>
                     <dt>سلف راتبية مصروفة لهذا الشهر</dt>
                     <dd dir="ltr">
-                      − {iqd(advanceCapacityQ.data.capacity.existingSalaryAdvances)}
+                      − {fmtAr(advanceCapacityQ.data.capacity.existingSalaryAdvances)}
                     </dd>
                     <dt>ذمم أخرى وتاريخية محجوزة لحين المطابقة</dt>
                     <dd dir="ltr">
-                      − {iqd(advanceCapacityQ.data.capacity.otherEmployeeDeductions)}
+                      − {fmtAr(advanceCapacityQ.data.capacity.otherEmployeeDeductions)}
                     </dd>
                     <dt>طلبات هذا الشهر المحجوزة</dt>
                     <dd dir="ltr">
-                      − {iqd(advanceCapacityQ.data.capacity.reservedRequests)}
+                      − {fmtAr(advanceCapacityQ.data.capacity.reservedRequests)}
                     </dd>
                   </dl>
                 )}
@@ -943,7 +957,13 @@ export function EmployeeEnterpriseOperationsTab({
                   !can("hrEnterprise.loans.request") ||
                   createLoanMut.isPending ||
                   advanceCapacityQ.isLoading ||
-                  Number(advanceCapacityQ.data?.capacity.maxAvailable ?? 0) <= 0
+                  advanceCapacityQ.isFetching ||
+                  advanceCapacityQ.isError ||
+                  !advanceCapacity ||
+                  advanceCapacity.blocked ||
+                  !loanMaxAvailable.gt(0) ||
+                  !loanAmountValid ||
+                  loanOverAvailable
                 }
               >
                 {createLoanMut.isPending ? "جاري الإرسال..." : "إرسال الطلب"}

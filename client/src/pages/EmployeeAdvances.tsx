@@ -27,7 +27,7 @@ import { fmtDate } from "@/lib/date";
 import { EmpAvatar, iqd } from "@/lib/hr/ui";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { D } from "@/lib/money";
+import { D, fmtAr, moneyInput } from "@/lib/money";
 import {
   moduleAccessAllowed,
   type PermissionMap,
@@ -641,12 +641,17 @@ function GrantDialog({
 
   const balQ = trpc.payroll.advanceBalance.useQuery(
     { employeeId: Number(employeeId) },
-    { enabled: can("payroll.advanceBalance") && open && !!employeeId },
+    {
+      enabled: can("payroll.advanceBalance") && open && !!employeeId,
+      staleTime: 0,
+    },
   );
 
   const capacity = balQ.data?.capacity;
   const maxAvailable = D(capacity?.maxAvailable ?? 0);
-  const overAvailable = D(amount || 0).gt(maxAvailable);
+  const amountValue = moneyInput(amount);
+  const amountValid = amount.trim() !== "" && amountValue.gt(0);
+  const overAvailable = amountValid && amountValue.gt(maxAvailable);
 
   // مفتاح ثابت لكل محاولة طلب؛ إعادة الإرسال تعيد الطلب نفسه بلا تكرار.
   const reqIdRef = useRef<string>(crypto.randomUUID());
@@ -668,11 +673,12 @@ function GrantDialog({
   const canSave =
     !!employeeId &&
     !!selected?.branchId &&
-    !!amount &&
-    D(amount || 0).gt(0) &&
+    amountValid &&
     !overAvailable &&
     maxAvailable.gt(0) &&
     !capacity?.blocked &&
+    !balQ.isFetching &&
+    !balQ.isError &&
     !grantM.isPending;
 
   return (
@@ -715,21 +721,21 @@ function GrantDialog({
               <div className="mt-2 rounded border bg-muted/30 p-2 text-xs space-y-1">
                 <div className="flex justify-between gap-3">
                   <span>الحد المتاح حتى {capacity.asOf}</span>
-                  <strong dir="ltr">{iqd(capacity.maxAvailable)}</strong>
+                  <strong dir="ltr">{fmtAr(capacity.maxAvailable)}</strong>
                 </div>
                 <dl className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 border-t pt-2 text-muted-foreground">
                   <dt>الأجر المؤكد حتى اليوم</dt>
-                  <dd dir="ltr">{iqd(capacity.earnedCompensation)}</dd>
+                  <dd dir="ltr">{fmtAr(capacity.earnedCompensation)}</dd>
                   <dt>إضافات معتمدة</dt>
-                  <dd dir="ltr">+ {iqd(capacity.approvedAdditions)}</dd>
+                  <dd dir="ltr">+ {fmtAr(capacity.approvedAdditions)}</dd>
                   <dt>استقطاعات إلزامية</dt>
-                  <dd dir="ltr">− {iqd(capacity.mandatoryDeductions)}</dd>
+                  <dd dir="ltr">− {fmtAr(capacity.mandatoryDeductions)}</dd>
                   <dt>سلف راتبية مصروفة لهذا الشهر</dt>
-                  <dd dir="ltr">− {iqd(capacity.existingSalaryAdvances)}</dd>
+                  <dd dir="ltr">− {fmtAr(capacity.existingSalaryAdvances)}</dd>
                   <dt>ذمم أخرى وتاريخية محجوزة لحين المطابقة</dt>
-                  <dd dir="ltr">− {iqd(capacity.otherEmployeeDeductions)}</dd>
+                  <dd dir="ltr">− {fmtAr(capacity.otherEmployeeDeductions)}</dd>
                   <dt>طلبات هذا الشهر المحجوزة</dt>
-                  <dd dir="ltr">− {iqd(capacity.reservedRequests)}</dd>
+                  <dd dir="ltr">− {fmtAr(capacity.reservedRequests)}</dd>
                 </dl>
                 {capacity.excludedAttendanceDates.length > 0 && (
                   <p className="text-[var(--sem-warn)]" role="status">
@@ -766,7 +772,7 @@ function GrantDialog({
               decimals={0}
               placeholder="0"
               ariaLabel="مبلغ السلفة"
-              max={maxAvailable.toNumber()}
+              max={capacity?.maxAvailable}
               expectedRange={{ min: 1, max: maxAvailable.toNumber() }}
             />
             <p className="text-xs text-muted-foreground mt-1">
@@ -776,7 +782,7 @@ function GrantDialog({
             </p>
             {overAvailable && (
               <p className="text-xs text-money-negative mt-1" role="alert">
-                المبلغ يتجاوز الحد المتاح ({iqd(capacity?.maxAvailable ?? 0)}{" "}
+                المبلغ يتجاوز الحد المتاح ({fmtAr(capacity?.maxAvailable ?? 0)}{" "}
                 د.ع).
               </p>
             )}
@@ -803,10 +809,21 @@ function GrantDialog({
                 );
                 return;
               }
+              if (
+                !amountValid ||
+                overAvailable ||
+                !capacity ||
+                capacity.blocked ||
+                balQ.isFetching ||
+                balQ.isError ||
+                !maxAvailable.gt(0)
+              ) {
+                return;
+              }
               grantM.mutate({
                 employeeId: Number(selected.id),
                 branchId: Number(selected.branchId),
-                amount: D(amount).toFixed(2),
+                amount: amountValue.toFixed(2),
                 note: note.trim() || null,
                 clientRequestId: reqIdRef.current,
               });

@@ -7,6 +7,7 @@ import { extractInsertId } from "../../lib/insertId";
 import { money, toDateStr } from "../money";
 import { POSTING_POLICY_HASH } from "../accounting/postingEngine";
 import { readSalarySettlementEvidence } from "../payroll/settlementEvidence";
+import { approvePayrollAccrualTx } from "../payroll/obligations";
 import { payrollHash } from "../payroll/helpers";
 import { PAYROLL_LEGAL_DEFAULTS } from "../payrollLegalService";
 import { approveRun as approveCommissionRun } from "../commissions/runs";
@@ -2757,13 +2758,76 @@ describe("payroll accrual lifecycle — DB invariants", () => {
 });
 
 describe("payroll zero-net classified lifecycle", () => {
-  it("يسوّي القسط التاريخي غير المصنف بلا نقد ويعكسه بدقة", async () => {
+  it("يرفض ترحيل خصم قديم غير مصنف ويرجع كل الآثار المالية", async () => {
     const runner = db();
     const runId = await seedZeroNetStatutoryDraft();
     await runner
       .update(s.employeeAdvances)
       .set({ sourceType: "LEGACY_UNCLASSIFIED", payrollPeriod: null })
       .where(eq(s.employeeAdvances.id, 20));
+    const [run] = await runner
+      .select()
+      .from(s.payrollRuns)
+      .where(eq(s.payrollRuns.id, runId));
+    const items = await runner
+      .select()
+      .from(s.payrollItems)
+      .where(eq(s.payrollItems.runId, runId));
+    const before = {
+      run,
+      items,
+      advance: await runner
+        .select()
+        .from(s.employeeAdvances)
+        .where(eq(s.employeeAdvances.id, 20)),
+      receipts: await runner.select().from(s.receipts),
+    };
+
+    await expect(
+      withTx((tx) =>
+        approvePayrollAccrualTx(tx, {
+          run,
+          items: items.map((item) => ({ ...item, currentBranchId: 1 })),
+          actorUserId: CHECKER.userId,
+          approvedAt: new Date("2026-08-01T12:00:00.000Z"),
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message:
+        "استقطاع السلفة يفوق الرصيد النشط وقت اعتماد المسيّر — أعد المسيّر لمسودة وحدّثه.",
+    });
+
+    expect(
+      await runner
+        .select()
+        .from(s.payrollRuns)
+        .where(eq(s.payrollRuns.id, runId)),
+    ).toEqual([before.run]);
+    expect(
+      await runner
+        .select()
+        .from(s.payrollItems)
+        .where(eq(s.payrollItems.runId, runId)),
+    ).toEqual(before.items);
+    expect(
+      await runner
+        .select()
+        .from(s.employeeAdvances)
+        .where(eq(s.employeeAdvances.id, 20)),
+    ).toEqual(before.advance);
+    expect(await runner.select().from(s.advanceSettlements)).toHaveLength(0);
+    expect(await runner.select().from(s.payrollObligations)).toHaveLength(0);
+    expect(await runner.select().from(s.payrollAccountingEvents)).toHaveLength(0);
+    expect(await runner.select().from(s.accountingEntries)).toHaveLength(0);
+    expect(await runner.select().from(s.journalEntries)).toHaveLength(0);
+    expect(await runner.select().from(s.journalLines)).toHaveLength(0);
+    expect(await runner.select().from(s.receipts)).toEqual(before.receipts);
+  });
+
+  it("يسوّي قسط OTHER_DEDUCTION المصنف بلا نقد ويعكسه بدقة", async () => {
+    const runner = db();
+    const runId = await seedZeroNetStatutoryDraft();
     const receiptsBefore = await runner.select().from(s.receipts);
 
     await expect(approveRun(runId, CHECKER)).resolves.toMatchObject({
