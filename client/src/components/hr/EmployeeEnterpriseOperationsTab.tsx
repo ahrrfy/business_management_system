@@ -357,7 +357,12 @@ export function EmployeeEnterpriseOperationsTab({
                                       "LEGACY_UNCLASSIFIED"
                                     ? "تاريخية غير مصنفة — محجوبة حتى المراجعة"
                                     : loan.status === "ACTIVE"
-                                      ? "مصروفة — تخصم كاملة هذا الشهر"
+                                      ? loan.sourceType === "SALARY_ADVANCE"
+                                        ? "مصروفة — تخصم كاملة هذا الشهر"
+                                        : loan.sourceType ===
+                                            "LEGACY_UNCLASSIFIED"
+                                          ? "مصروفة تاريخياً — يلزم مطابقة المصدر والشهر"
+                                          : "ذمة أخرى — وفق الاستقطاع المعتمد"
                                       : loan.status === "SETTLED"
                                         ? "مُسوّاة مع الراتب"
                                         : loan.status === "CANCELLED"
