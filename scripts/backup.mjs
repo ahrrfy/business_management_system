@@ -19,6 +19,7 @@
 // الافتراضية ويفشل النسخ كل ليلة بصمت (مُثبت في المراجعة العدائية ٢٠٢٦/٠٦/١٠).
 import "dotenv/config";
 import { publishEncryptedBackup, mirrorPublishedBackup } from "./lib/backup-publication.mjs";
+import { encryptBackupWithOwnedAgent } from "./lib/backup-gpg.mjs";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { createWriteStream, mkdirSync, statSync, unlinkSync, renameSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -215,15 +216,14 @@ if (!noRotate) {
         sqlFile: out,
         sourceRevision: revision,
         encrypt(partialFile) {
-          const result = spawnSync("gpg", ["--batch", "--pinentry-mode", "loopback", "--passphrase-fd", "0",
-            "--symmetric", "--cipher-algo", "AES256", "-o", partialFile, out], { input: passphrase });
-          if (result.status !== 0 || result.error) throw new Error("BACKUP_ENCRYPTION_FAILED");
+          return encryptBackupWithOwnedAgent({ sqlFile: out, partialFile, passphrase });
         },
       });
       if (offsite) await mirrorPublishedBackup(`${out}.gpg`, offsite);
       console.log(`Verified encrypted publication: ${out}.gpg (integrity only; restore not yet verified)`);
     } catch (error) {
       console.error(`Encrypted publication failed: ${error.message}; local SQL preserved`);
+      if (error.diagnosticHome) console.error(`Owned GPG diagnostic home preserved: ${error.diagnosticHome}`);
       process.exit(1);
     }
   }
