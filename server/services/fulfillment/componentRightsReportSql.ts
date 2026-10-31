@@ -42,6 +42,10 @@ export const componentRightsRawCostSql = (ordinary: SQL) =>
     ordinary,
   });
 
+/** Gifts and their reversals belong to GIFT_OUT, outside paid-sales COGS. */
+export const reportPaidLineCostSql = (ordinary: SQL) =>
+  sql`CASE WHEN COALESCE(ii.isGift, 0) = 0 THEN ${componentRightsRawCostSql(ordinary)} ELSE 0 END`;
+
 /** Reporting only: delivery remains an invoice-level revenue, never a product margin. */
 export function reportInvoiceDeliveryRevenueSql(): SQL {
   return sql`CASE WHEN i.invoiceStatus = 'RETURNED' THEN 0
