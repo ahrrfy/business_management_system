@@ -55,6 +55,108 @@ beforeEach(async () => {
 });
 
 describe("سلامة السلف الشهرية", () => {
+  it("يجمع الفلتر التاريخي السلف غير المصنفة المثبتة والطلبات غير المحسومة فقط", async () => {
+    const current = baghdadToday().slice(0, 7);
+    const previous = previousPeriod(current);
+    const advance = (
+      amount: string,
+      sourceType: "SALARY_ADVANCE" | "OTHER_DEDUCTION" | "LEGACY_UNCLASSIFIED",
+      payrollPeriod: string | null,
+      status: "ACTIVE" | "SETTLED" = "ACTIVE",
+      employeeId = 10,
+      branchId = 1,
+    ) => ({
+      employeeId,
+      branchId,
+      amount,
+      remaining: status === "SETTLED" ? "0.00" : amount,
+      sourceType,
+      payrollPeriod,
+      status,
+      createdBy: 1,
+    });
+    await db().insert(s.branches).values({
+      id: 2,
+      name: "فرع خارج النطاق",
+      code: "OTHER",
+      type: "SALES",
+    });
+    await db().insert(s.employees).values({
+      id: 20,
+      branchId: 2,
+      firstName: "موظف",
+      lastName: "خارج النطاق",
+      payType: "monthly",
+      salary: "1000000.00",
+      employmentStatus: "active",
+    });
+    await db()
+      .insert(s.employeeAdvances)
+      .values([
+        advance("1000.00", "LEGACY_UNCLASSIFIED", null),
+        advance("2000.00", "LEGACY_UNCLASSIFIED", null, "SETTLED"),
+        advance("3000.00", "SALARY_ADVANCE", current),
+        advance("4000.00", "OTHER_DEDUCTION", null),
+        advance("7000.00", "SALARY_ADVANCE", previous),
+        advance("5000.00", "LEGACY_UNCLASSIFIED", null, "ACTIVE", 20, 2),
+      ]);
+    await db().insert(s.employeeLoanRequests).values({
+      employeeId: 10,
+      branchId: 1,
+      amount: "6000.00",
+      monthlyDeduction: "6000.00",
+      payrollPeriod: null,
+      status: "PENDING",
+      createdById: 1,
+    });
+
+    const rows = await listAdvances({
+      employeeId: 10,
+      branchId: 1,
+      period: current,
+      status: "LEGACY_UNCLASSIFIED",
+    });
+    const materialized = rows.filter((row) => row.financiallyDisbursed);
+    const unresolved = rows.find((row) => !row.financiallyDisbursed);
+
+    expect(rows).toHaveLength(3);
+    expect(materialized.map((row) => row.status).sort()).toEqual([
+      "ACTIVE",
+      "SETTLED",
+    ]);
+    expect(materialized.map((row) => row.workflowStatus).sort()).toEqual([
+      "ACTIVE",
+      "SETTLED",
+    ]);
+    expect(
+      materialized.every((row) => row.sourceType === "LEGACY_UNCLASSIFIED"),
+    ).toBe(true);
+    expect(unresolved).toMatchObject({
+      amount: "6000.00",
+      status: "LEGACY_UNCLASSIFIED",
+      workflowStatus: "LEGACY_UNCLASSIFIED",
+      financiallyDisbursed: false,
+    });
+    expect(
+      rows.every((row) => row.employeeId === 10 && row.branchId === 1),
+    ).toBe(true);
+    expect(
+      rows.some(
+        (row) =>
+          row.financiallyDisbursed &&
+          (row.sourceType === "SALARY_ADVANCE" ||
+            row.sourceType === "OTHER_DEDUCTION"),
+      ),
+    ).toBe(false);
+    const previousRows = await listAdvances({
+      employeeId: 10,
+      branchId: 1,
+      period: previous,
+      status: "LEGACY_UNCLASSIFIED",
+    });
+    expect(previousRows).toEqual([]);
+  });
+
   it("يحفظ حالات الرفض والإلغاء التاريخية ولا يعرضها كطلبات غير مصنفة قابلة للإلغاء", async () => {
     await db()
       .insert(s.employeeLoanRequests)

@@ -985,6 +985,160 @@ describe("employee advance earned-capacity contract", () => {
     expect(await db().select().from(s.employeeLoanRequests)).toHaveLength(0);
   });
 
+  it("يسقف العقوبة من الأجر القابل للاستيعاب ويبقي السعة ثابتة بعد التقاطها في المسودة", async () => {
+    const connection = db();
+    await connection
+      .update(s.payrollLegalSettings)
+      .set({ socialSecurityEnabled: false, incomeTaxEnabled: false })
+      .where(eq(s.payrollLegalSettings.id, 1));
+    await seedAttendance({ date: "2030-06-05", amount: "1000.00" });
+    const [penalty] = await connection.insert(s.employeePenalties).values({
+      employeeId: EMPLOYEE_ID,
+      branchId: BRANCH_ID,
+      penaltyType: "SALARY_DEDUCTION",
+      decisionNumber: "CAP-PENALTY-ARTICLE-57",
+      decisionDate: "2030-06-06",
+      reason: "عقوبة أعلى من السقف القانوني",
+      deductionAmount: "200.00",
+      status: "APPROVED",
+      createdById: ACTOR.userId,
+      approvedById: ACTOR.userId,
+    });
+    const input = {
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: FIXED_PERIOD,
+      asOf: FIXED_AS_OF,
+    };
+
+    const beforeDraft = await getEmployeeAdvanceCapacity(input);
+    // 10% من 1000 = 100؛ المبلغ الاسمي 200 لا يخفض السعة إلى 800.
+    expect(beforeDraft).toMatchObject({
+      earnedCompensation: "1000.00",
+      mandatoryDeductions: "100.00",
+      maxAvailable: "900.00",
+    });
+
+    await connection.insert(s.payrollRuns).values({
+      id: 1,
+      period: FIXED_PERIOD,
+      status: "draft",
+      createdBy: ACTOR.userId,
+      employeeCount: 1,
+      totalGross: "1000.00",
+      totalDeductions: "100.00",
+      totalNet: "900.00",
+    });
+    await connection.insert(s.payrollItems).values({
+      id: 1,
+      runId: 1,
+      employeeId: EMPLOYEE_ID,
+      payType: "hourly",
+      gross: "1000.00",
+      deductions: "100.00",
+      wageReduction: "100.00",
+      net: "900.00",
+    });
+    await connection
+      .update(s.employeePenalties)
+      .set({ status: "APPLIED", payrollRunId: 1 })
+      .where(eq(s.employeePenalties.id, penalty.insertId));
+
+    const afterDraft = await getEmployeeAdvanceCapacity(input);
+    expect(afterDraft).toMatchObject({
+      mandatoryDeductions: beforeDraft.mandatoryDeductions,
+      maxAvailable: beforeDraft.maxAvailable,
+    });
+
+    // بعد APPLIED تكون لقطة المسودة هي الحقيقة: لا تعاد إضافة العقوبة الاسمية،
+    // ويضيّق/يوسّع تعديل المالك السعة بقدر صافي المسودة الفعلي.
+    await updateItem(1, { deductions: "0.00" }, ACTOR);
+    expect(await getEmployeeAdvanceCapacity(input)).toMatchObject({
+      mandatoryDeductions: "0.00",
+      maxAvailable: "1000.00",
+    });
+    await updateItem(1, { deductions: "200.00" }, ACTOR);
+    expect(await getEmployeeAdvanceCapacity(input)).toMatchObject({
+      mandatoryDeductions: "200.00",
+      maxAvailable: "800.00",
+    });
+  });
+
+  it("يحسب سقف العقوبة بعد الإجازة والقانوني مع المكافأة والعمولة", async () => {
+    const connection = db();
+    await connection
+      .update(s.employees)
+      .set({
+        payType: "monthly",
+        attendanceExempt: true,
+        salary: "1000.00",
+      })
+      .where(eq(s.employees.id, EMPLOYEE_ID));
+    await seedUnpaidLeave("2030-06-01", "2030-06-02", 2);
+    await connection.insert(s.employeeSpotBonuses).values({
+      employeeId: EMPLOYEE_ID,
+      branchId: BRANCH_ID,
+      amount: "100.00",
+      reason: "مكافأة ضمن وعاء العقوبة",
+      disbursementType: "PAYROLL_ADDITION",
+      status: "APPROVED",
+      createdById: ACTOR.userId,
+      approvedById: ACTOR.userId,
+      approvedAt: new Date("2030-06-06T12:00:00.000Z"),
+    });
+    await connection.insert(s.commissionPlans).values({
+      id: 40,
+      name: "خطة عمولة سقف العقوبة",
+      createdBy: ACTOR.userId,
+    });
+    await connection.insert(s.commissionRuns).values({
+      id: 41,
+      period: FIXED_PERIOD,
+      status: "approved",
+      employeeCount: 1,
+      totalCommission: "50.00",
+      createdBy: ACTOR.userId,
+      approvedBy: ACTOR.userId,
+      approvedAt: new Date("2030-06-15T12:00:00.000Z"),
+    });
+    await connection.insert(s.commissionRunLines).values({
+      runId: 41,
+      employeeId: EMPLOYEE_ID,
+      userId: ACTOR.userId,
+      branchId: BRANCH_ID,
+      planId: 40,
+      commissionAmount: "50.00",
+    });
+    await connection.insert(s.employeePenalties).values({
+      employeeId: EMPLOYEE_ID,
+      branchId: BRANCH_ID,
+      penaltyType: "SALARY_DEDUCTION",
+      decisionNumber: "CAP-PENALTY-COMPONENTS",
+      decisionDate: "2030-06-06",
+      reason: "عقوبة تختبر الوعاء المركب",
+      deductionAmount: "200.00",
+      status: "APPROVED",
+      createdById: ACTOR.userId,
+      approvedById: ACTOR.userId,
+    });
+
+    const capacity = await getEmployeeAdvanceCapacity({
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: FIXED_PERIOD,
+      asOf: "2030-06-30",
+    });
+
+    // الراتب المكتسب 933.34 + المكافأة 100 + العمولة 50 - القانوني 196.33
+    // = 887.01 قابل للاستيعاب؛ سقف العقوبة 88.70، والمتاح 798.31.
+    expect(capacity).toMatchObject({
+      earnedCompensation: "933.34",
+      approvedAdditions: "150.00",
+      mandatoryDeductions: "285.03",
+      maxAvailable: "798.31",
+    });
+  });
+
   it("يبني الحد من الأجر المكتسب والإضافات المعتمدة بعد القانوني والعقوبات والاستقطاعات الأخرى", async () => {
     const connection = db();
     await seedAttendance({ date: "2030-06-05", amount: "300.00" });
@@ -1053,16 +1207,16 @@ describe("employee advance earned-capacity contract", () => {
       asOf: FIXED_AS_OF,
     });
 
-    // 300 earned + 100 bonus - (40 social security + 36 tax + 50 penalty)
-    // - 30 other employee deduction = 244 available.
+    // 300 earned + 100 bonus - (40 social security + 36 tax)
+    // - Article 57 penalty cap (10% × 324 = 32.40) - 30 other = 261.60.
     expect(capacity).toMatchObject({
       earnedCompensation: "300.00",
       approvedAdditions: "100.00",
-      mandatoryDeductions: "126.00",
+      mandatoryDeductions: "108.40",
       otherEmployeeDeductions: "30.00",
       existingSalaryAdvances: "0.00",
       reservedRequests: "0.00",
-      maxAvailable: "244.00",
+      maxAvailable: "261.60",
       blocked: false,
       blockers: [],
     });

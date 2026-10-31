@@ -22,7 +22,7 @@ import {
   getPayrollLegalSettings,
   getPayrollLegalSettingsForUpdate,
 } from "./payrollLegalService";
-import { countDaysWithin } from "./payroll/helpers";
+import { capPenaltyDeduction, countDaysWithin } from "./payroll/helpers";
 import { assertPeriodOpen } from "./periodLockService";
 import { withTx } from "./tx";
 
@@ -334,7 +334,7 @@ export async function getEmployeeAdvanceCapacityTx(
   const penaltyRows = options.lock
     ? await currentFinancialRead(penaltyQuery.for("share", { noWait: true }))
     : await penaltyQuery;
-  const penalties = round2(
+  const rawPenalties = round2(
     penaltyRows.reduce((sum, row) => sum.plus(money(row.amount)), ZERO),
   );
   const legalSettings = options.lock
@@ -365,6 +365,23 @@ export async function getEmployeeAdvanceCapacityTx(
   // من المكافأة يُحجز هنا كي يبقى العقد الحسابي ظاهراً ولا تتحول المكافأة إلى سلفة متاحة.
   const requiredBeforeDraft = round2(
     legalDeductions.plus(spotBonusLeaveDeduction),
+  );
+  // يطابق generatePayroll: سقف العقوبة 10% من الأجر القابل للاستيعاب بعد الإجازة
+  // والاستقطاعات القانونية، مع بقاء العمولة والإضافي والمكافأة غير المستهلكة ضمن الوعاء.
+  const penaltyAbsorbableWage = Decimal.max(
+    0,
+    round2(
+      money(statement.livePayrollComponents.gross)
+        .plus(approvedSpotBonuses)
+        .plus(money(statement.livePayrollComponents.overtime))
+        .plus(approvedCommissions)
+        .minus(earnedLeaveDeduction)
+        .minus(legalDeductions),
+    ),
+  );
+  const unappliedPenaltyDeduction = capPenaltyDeduction(
+    penaltyAbsorbableWage,
+    rawPenalties,
   );
 
   const draftItemQuery = tx
@@ -406,10 +423,12 @@ export async function getEmployeeAdvanceCapacityTx(
         ),
       )
     : ZERO;
-  // خصومات المسودة قد تحتوي القانوني والعقوبات التي رُبطت بها. العقوبات الجديدة غير
-  // المربوطة تُضاف فوق الأكبر من المسودة/القانوني، لا تدخل max فتضيع من الحجز.
+  // خصومات المسودة قد تحتوي القانوني والعقوبات التي رُبطت بها وصارت APPLIED، لذلك لا
+  // يعيدها الاستعلام أعلاه. العقوبة APPROVED غير المربوطة تُضاف فوق الأكبر من المسودة/القانوني.
   const mandatoryDeductions = round2(
-    Decimal.max(requiredBeforeDraft, draftNonAdvance).plus(penalties),
+    Decimal.max(requiredBeforeDraft, draftNonAdvance).plus(
+      unappliedPenaltyDeduction,
+    ),
   );
 
   let advanceQuery = tx

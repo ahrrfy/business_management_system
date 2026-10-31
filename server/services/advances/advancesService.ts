@@ -133,10 +133,14 @@ export async function listAdvances(filters?: ListAdvancesFilters) {
   if (filters?.branchId != null)
     conds.push(eq(employeeAdvances.branchId, filters.branchId));
   const materializedStatuses = ["ACTIVE", "SETTLED", "CANCELLED"] as const;
+  const wantsLegacyUnclassified = filters?.status === "LEGACY_UNCLASSIFIED";
   const wantsMaterialized =
     !filters?.status ||
+    wantsLegacyUnclassified ||
     (materializedStatuses as readonly string[]).includes(filters.status);
-  if (
+  if (wantsLegacyUnclassified) {
+    conds.push(eq(employeeAdvances.sourceType, "LEGACY_UNCLASSIFIED"));
+  } else if (
     filters?.status &&
     (materializedStatuses as readonly string[]).includes(filters.status)
   ) {
@@ -419,7 +423,13 @@ export async function listAdvances(filters?: ListAdvancesFilters) {
     financiallyDisbursed: true,
   }));
   const allRows = [...requestRows, ...pendingRows, ...materializedRows].filter(
-    (row) => !filters?.status || row.status === filters.status,
+    (row) =>
+      !filters?.status ||
+      (filters.status === "LEGACY_UNCLASSIFIED"
+        ? row.status === "LEGACY_UNCLASSIFIED" ||
+          (row.financiallyDisbursed &&
+            row.sourceType === "LEGACY_UNCLASSIFIED")
+        : row.status === filters.status),
   );
   return allRows.map((r) => ({
     ...r,
