@@ -115,6 +115,30 @@ function rateForDay(
   return rateForDayDetailed(emp, dateStr).rate;
 }
 
+/**
+ * الإسقاط النقدي النقي نفسه الذي تكتبه إعادة تسعير الحضور.
+ *
+ * يتقدّم سعر ملف الموظف الحالي بعد تقريبه إلى خانتين، ثم تسقط القراءة إلى السعر
+ * المخزن فقط إن لم يعد للملف سعر موجب. تقريب المبلغ إلى الدينار جزءٌ من العقد؛ لذلك
+ * يستهلك حد السلفة هذه الدالة ولا يعيد تركيب الصيغة في قارئ آخر.
+ */
+export function projectAttendanceWage(input: {
+  employee: { dayRates?: unknown; workSchedule?: unknown; salary?: unknown; payType?: string | null };
+  date: string;
+  hours: string | number | Decimal | null | undefined;
+  storedHourlyRate: string | number | Decimal | null | undefined;
+  status: string | null | undefined;
+}): { rate: Decimal; amount: Decimal } {
+  const computedRate = round2(money(rateForDay(input.employee, input.date)));
+  const storedRate = money(input.storedHourlyRate ?? 0);
+  const rate = computedRate.gt(0) ? computedRate : storedRate.gt(0) ? storedRate : computedRate;
+  const paid = input.status === "PRESENT" || input.status === "LATE";
+  const amount = paid
+    ? round2(money(input.hours ?? 0).times(rate)).toDecimalPlaces(0)
+    : money(0);
+  return { rate, amount };
+}
+
 export interface AttendanceFilters {
   /**
    * عزل الفرع (قرار المالك ١٢/٨): `null` = يعبُر كلَّ الفروع (أدمن/مالك)، ورقمٌ = مقيَّدٌ
@@ -686,15 +710,13 @@ export async function recomputeMonthRates(
         }
       }
 
-      const computedRate = round2(money(rateForDay(r, dateStr)));
-      const rate = computedRate.gt(0)
-        ? computedRate
-        : money(r.hourlyRate ?? 0).gt(0)
-          ? money(r.hourlyRate!)
-          : computedRate;
-      // ABSENT/LEAVE بلا أجرٍ مهما كان السعر (نفس قاعدة recordAttendance).
-      const paid = nextStatus === "PRESENT" || nextStatus === "LATE";
-      const amount = paid ? round2(nextHours.times(rate)).toDecimalPlaces(0) : money(0);
+      const { rate, amount } = projectAttendanceWage({
+        employee: r,
+        date: dateStr,
+        hours: nextHours,
+        storedHourlyRate: r.hourlyRate,
+        status: nextStatus,
+      });
       if (!healedMeta && money(r.hourlyRate ?? 0).eq(rate) && money(r.amount ?? 0).eq(amount)) continue;
       await tx
         .update(attendance)

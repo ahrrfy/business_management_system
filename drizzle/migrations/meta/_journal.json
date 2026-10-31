@@ -2647,6 +2647,13 @@
 			"when": 1788148879000,
 			"tag": "0421_employee_advances_legacy_classification_20261031",
 			"breakpoints": true
+		},
+		{
+			"idx": 422,
+			"version": "5",
+			"when": 1788148880000,
+			"tag": "0422_employee_advance_historical_recovery_20261031",
+			"breakpoints": true
 		}
 	]
 }

@@ -24,6 +24,7 @@ import { decodeTerminationWageCoverage } from "./terminationCoverage";
 import { assertCommissionArtifactReadyForPayrollTx } from "../commissions/payrollReadiness";
 import { syncAllAdvancesForDraftRunTx } from "./syncAdvances";
 import {
+  assertNoLegacyUnclassifiedAdvanceTx,
   assertPayrollEmployeeMembershipStable,
   lockPayrollEmployeesTx,
   payrollEmployeeMembership,
@@ -118,6 +119,11 @@ export async function approveRun(id: number, actor: Actor) {
     }
     await assertCommissionArtifactReadyForPayrollTx(tx, run.period);
     if (run.status === "approved") return true;
+    await assertNoLegacyUnclassifiedAdvanceTx(
+      tx,
+      lockedEmployees,
+      "اعتماد مسيّر الرواتب",
+    );
     const [uncaptured] = await tx
       .select({ id: commissionRuns.id, period: commissionRuns.period })
       .from(commissionRuns)

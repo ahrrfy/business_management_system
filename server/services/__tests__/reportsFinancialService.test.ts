@@ -7,6 +7,10 @@ const payrollSlice = financial.slice(
   financial.indexOf("const pr = rowsOf("),
   financial.indexOf("const sl = rowsOf("),
 );
+const employeeAdvanceSlice = financial.slice(
+  financial.indexOf("const employeeAdvanceCycleId"),
+  financial.indexOf("const interbranchRow"),
+);
 
 describe("P&L payroll accrual source contract", () => {
   it("يقرأ أحداث الاستحقاق وأثر تسوية نهاية الخدمة وعكوسهما فقط في الوضع المشتق", () => {
@@ -58,6 +62,22 @@ describe("P&L payroll accrual source contract", () => {
     expect(financial).toContain("aset.advanceSettlementDirection = 'APPLY'");
     expect(financial).toContain("taa.terminationAdvanceDirection = 'APPLY'");
     expect(financial).toContain(".add(employeeAdvanceReceivable)");
+  });
+
+  it("يعيد عرض إقرار الاسترداد من حد الفترة نفسه بلا اختلاق تاريخ قبض", () => {
+    expect(employeeAdvanceSlice).toContain("FROM employeeAdvanceHistoricalRecoveries ahr");
+    expect(employeeAdvanceSlice).toContain(
+      "ahr.historicalAdvanceRecoveryDirection = 'APPLY'",
+    );
+    expect(employeeAdvanceSlice).toContain(
+      "CONCAT(ahr.priorToPeriod, '-01') <= ${asOf}",
+    );
+    expect(employeeAdvanceSlice).toContain("AND ahr.branchId = ${bId}");
+    expect(employeeAdvanceSlice).toContain("asOf && !employeeAdvanceCycleId");
+    expect(employeeAdvanceSlice).toContain(
+      "employeeAdvanceRow?.balance ?? 0).sub(",
+    );
+    expect(employeeAdvanceSlice).not.toContain("ahr.createdAt");
   });
 
   it("لا يعيد الرواتب إلى الأساس النقدي عبر PAYMENT_OUT", () => {

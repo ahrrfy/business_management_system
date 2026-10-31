@@ -10,6 +10,7 @@ import {
   getEmployeeAdvanceCapacityTx,
   type EmployeeAdvanceCapacity,
 } from "../employeeAdvanceCapacityService";
+import { arabicDayName, projectAttendanceWage, recordAttendance } from "../attendanceService";
 import { getEmployeeStatement } from "../hr/employeeStatement";
 import { approveEmployeePenalty } from "../employeePenaltyService";
 import { disburseEmployeeLoan, requestEmployeeLoan } from "../employeeLoanService";
@@ -23,6 +24,24 @@ const FIXED_PERIOD = "2030-06";
 const FIXED_AS_OF = "2030-06-15";
 const TODAY = baghdadToday();
 const CURRENT_PERIOD = TODAY.slice(0, 7);
+const ALL_DAYS_TEN = {
+  الأحد: { hours: 8, rate: 10 },
+  الاثنين: { hours: 8, rate: 10 },
+  الثلاثاء: { hours: 8, rate: 10 },
+  الأربعاء: { hours: 8, rate: 10 },
+  الخميس: { hours: 8, rate: 10 },
+  الجمعة: { hours: 8, rate: 10 },
+  السبت: { hours: 8, rate: 10 },
+};
+const ALL_DAY_RATES_ONE = {
+  الأحد: 1,
+  الاثنين: 1,
+  الثلاثاء: 1,
+  الأربعاء: 1,
+  الخميس: 1,
+  الجمعة: 1,
+  السبت: 1,
+};
 
 function db() {
   const connection = getDb();
@@ -43,8 +62,33 @@ async function seedAttendance(input: {
   status?: "PRESENT" | "ABSENT" | "LATE" | "LEAVE";
   hours?: string;
   amount: string;
+  hourlyRate?: string;
+  /** سعر ملف الموظف الحالي؛ يجعل fixture الساعي canonical بدلاً من الثقة في amount المخزن. */
+  currentHourlyRate?: string;
+  source?: "manual" | "fingerprint";
+  needsReview?: boolean;
+  reviewReason?: string | null;
+  notes?: string | null;
+  checkIn?: Date | null;
+  checkOut?: Date | null;
 }) {
-  await db()
+  const connection = db();
+  if (input.currentHourlyRate != null) {
+    const [employee] = await connection
+      .select({ dayRates: s.employees.dayRates })
+      .from(s.employees)
+      .where(eq(s.employees.id, EMPLOYEE_ID))
+      .limit(1);
+    const dayRates = employee?.dayRates && typeof employee.dayRates === "object"
+      ? { ...(employee.dayRates as Record<string, number>) }
+      : {};
+    dayRates[arabicDayName(input.date)] = Number(input.currentHourlyRate);
+    await connection
+      .update(s.employees)
+      .set({ dayRates })
+      .where(eq(s.employees.id, EMPLOYEE_ID));
+  }
+  await connection
     .insert(s.attendance)
     .values({
       employeeId: EMPLOYEE_ID,
@@ -52,10 +96,30 @@ async function seedAttendance(input: {
       attendanceDate: input.date,
       status: input.status ?? "PRESENT",
       hours: input.hours ?? "8.00",
-      hourlyRate: "1.00",
+      hourlyRate: input.hourlyRate ?? input.currentHourlyRate ?? "1.00",
       amount: input.amount,
-      source: "manual",
-      needsReview: false,
+      source: input.source ?? "manual",
+      needsReview: input.needsReview ?? false,
+      reviewReason: input.reviewReason ?? null,
+      notes: input.notes ?? null,
+      checkIn: input.checkIn ?? null,
+      checkOut: input.checkOut ?? null,
+    });
+}
+
+async function seedPaidLeave(fromDate: string, toDate: string, days: number) {
+  await db()
+    .insert(s.leaveRequests)
+    .values({
+      employeeId: EMPLOYEE_ID,
+      leaveType: "إجازة مدفوعة",
+      paid: true,
+      fromDate,
+      toDate,
+      days,
+      status: "approved",
+      decidedBy: ACTOR.userId,
+      decidedAt: new Date(`${fromDate}T12:00:00.000Z`),
     });
 }
 
@@ -73,6 +137,30 @@ async function seedUnpaidLeave(fromDate: string, toDate: string, days: number) {
       decidedBy: ACTOR.userId,
       decidedAt: new Date(`${fromDate}T12:00:00.000Z`),
     });
+}
+
+async function prepareAttendanceBasedMonthlyCapacity() {
+  const connection = db();
+  await connection
+    .update(s.employees)
+    .set({
+      payType: "monthly",
+      attendanceExempt: false,
+      salary: "2400.00",
+      workSchedule: ALL_DAYS_TEN,
+    })
+    .where(eq(s.employees.id, EMPLOYEE_ID));
+  await connection
+    .update(s.payrollLegalSettings)
+    .set({ socialSecurityEnabled: false, incomeTaxEnabled: false })
+    .where(eq(s.payrollLegalSettings.id, 1));
+  await connection.insert(s.hrAttendanceSettings).values({
+    id: 1,
+    attendancePayEnabled: true,
+    attendancePayFrom: "2030-06-01",
+    maxDailyHours: "12.00",
+    updatedBy: ACTOR.userId,
+  });
 }
 
 async function currentCapacity(): Promise<EmployeeAdvanceCapacity> {
@@ -205,6 +293,7 @@ beforeEach(async () => {
     payType: "hourly",
     salary: "3000.00",
     allowances: "0.00",
+    dayRates: ALL_DAY_RATES_ONE,
     hireDate: "2020-01-01",
     employmentStatus: "active",
   });
@@ -721,7 +810,7 @@ describe("employee advance earned-capacity contract", () => {
   });
 
   it("يصفّر السعة إذا كانت المسودة بلا تعويض أو بلا بند للموظف", async () => {
-    await seedAttendance({ date: TODAY, amount: "1000.00" });
+    await seedAttendance({ date: TODAY, amount: "1000.00", currentHourlyRate: "125.00" });
     await db().insert(s.payrollRuns).values({
       id: 1,
       period: CURRENT_PERIOD,
@@ -758,7 +847,7 @@ describe("employee advance earned-capacity contract", () => {
   });
 
   it("يرى العقوبة المعتمدة التي التزمت أثناء انتظار صرف السلفة لقفل الموظف", async () => {
-    await seedAttendance({ date: TODAY, amount: "1000.00" });
+    await seedAttendance({ date: TODAY, amount: "1000.00", currentHourlyRate: "125.00" });
     const loanId = await seedDisbursementCase("750.00", "penalty-after-preview");
     const [penalty] = await db().insert(s.employeePenalties).values({
       employeeId: EMPLOYEE_ID,
@@ -808,7 +897,7 @@ describe("employee advance earned-capacity contract", () => {
   }, 15_000);
 
   it("يفشل مغلقاً بلا أثر جزئي عندما يكون مصدر مالي مقفولاً", async () => {
-    await seedAttendance({ date: TODAY, amount: "1000.00" });
+    await seedAttendance({ date: TODAY, amount: "1000.00", currentHourlyRate: "125.00" });
     const loanId = await seedDisbursementCase("100.00", "locked-penalty-source");
     const [penalty] = await db().insert(s.employeePenalties).values({
       employeeId: EMPLOYEE_ID,
@@ -987,7 +1076,7 @@ describe("employee advance earned-capacity contract", () => {
   }, 15_000);
 
   it("يبقي المكافأة المعتمدة ضمن الحد بعد التقاطها في مسودة الراتب", async () => {
-    await seedAttendance({ date: "2030-06-05", amount: "300.00" });
+    await seedAttendance({ date: "2030-06-05", amount: "300.00", currentHourlyRate: "37.50" });
     await db()
       .insert(s.employeeSpotBonuses)
       .values({
@@ -1103,7 +1192,7 @@ describe("employee advance earned-capacity contract", () => {
       .update(s.payrollLegalSettings)
       .set({ socialSecurityEnabled: false, incomeTaxEnabled: false })
       .where(eq(s.payrollLegalSettings.id, 1));
-    await seedAttendance({ date: "2030-06-05", amount: "1000.00" });
+    await seedAttendance({ date: "2030-06-05", amount: "1000.00", currentHourlyRate: "125.00" });
     const [penalty] = await connection.insert(s.employeePenalties).values({
       employeeId: EMPLOYEE_ID,
       branchId: BRANCH_ID,
@@ -1182,7 +1271,7 @@ describe("employee advance earned-capacity contract", () => {
       .update(s.payrollLegalSettings)
       .set({ socialSecurityEnabled: false, incomeTaxEnabled: false })
       .where(eq(s.payrollLegalSettings.id, 1));
-    await seedAttendance({ date: "2030-06-05", amount: "1000.00" });
+    await seedAttendance({ date: "2030-06-05", amount: "1000.00", currentHourlyRate: "125.00" });
     await connection.insert(s.employeePenalties).values([
       {
         employeeId: EMPLOYEE_ID,
@@ -1301,7 +1390,7 @@ describe("employee advance earned-capacity contract", () => {
 
   it("يدخل المكافأة القديمة والإرثية غير الملتقطة في السعة ولا يعجّل المستقبلية", async () => {
     const connection = db();
-    await seedAttendance({ date: "2030-06-05", amount: "300.00" });
+    await seedAttendance({ date: "2030-06-05", amount: "300.00", currentHourlyRate: "37.50" });
     await connection.insert(s.employeeSpotBonuses).values([
       {
         employeeId: EMPLOYEE_ID,
@@ -1357,7 +1446,7 @@ describe("employee advance earned-capacity contract", () => {
 
   it("يبني الحد من الأجر المكتسب والإضافات المعتمدة بعد القانوني والعقوبات والاستقطاعات الأخرى", async () => {
     const connection = db();
-    await seedAttendance({ date: "2030-06-05", amount: "300.00" });
+    await seedAttendance({ date: "2030-06-05", amount: "300.00", currentHourlyRate: "37.50" });
     await connection.insert(s.employeeSpotBonuses).values({
       employeeId: EMPLOYEE_ID,
       branchId: BRANCH_ID,
@@ -1439,7 +1528,7 @@ describe("employee advance earned-capacity contract", () => {
   });
 
   it("لا يحتسب الغياب أو الحضور المؤرخ بعد asOf ضمن الأجر المكتسب", async () => {
-    await seedAttendance({ date: "2030-06-05", amount: "300.00" });
+    await seedAttendance({ date: "2030-06-05", amount: "300.00", currentHourlyRate: "37.50" });
     const baseline = await getEmployeeAdvanceCapacity({
       employeeId: EMPLOYEE_ID,
       scopedBranchId: BRANCH_ID,
@@ -1453,7 +1542,7 @@ describe("employee advance earned-capacity contract", () => {
       status: "ABSENT",
       amount: "999.00",
     });
-    await seedAttendance({ date: "2030-06-20", amount: "700.00" });
+    await seedAttendance({ date: "2030-06-20", amount: "700.00", currentHourlyRate: "87.50" });
 
     const atCutoff = await getEmployeeAdvanceCapacity({
       employeeId: EMPLOYEE_ID,
@@ -1474,8 +1563,472 @@ describe("employee advance earned-capacity contract", () => {
     expect(afterFutureAttendance.maxAvailable).toBe("810.00");
   });
 
+  it("يستبعد اليوم المفتوح كله من الأجر والقانوني وسقف العقوبة دون تصفير الأيام المغلقة", async () => {
+    const connection = db();
+    await connection
+      .update(s.employees)
+      .set({
+        payType: "monthly",
+        attendanceExempt: false,
+        salary: "2400.00",
+        workSchedule: ALL_DAYS_TEN,
+      })
+      .where(eq(s.employees.id, EMPLOYEE_ID));
+    await connection.insert(s.hrAttendanceSettings).values({
+      id: 1,
+      attendancePayEnabled: true,
+      attendancePayFrom: "2030-06-01",
+      updatedBy: ACTOR.userId,
+    });
+    await seedAttendance({ date: "2030-06-05", amount: "80.00", hourlyRate: "10.00" });
+    await seedAttendance({
+      date: "2030-06-06",
+      amount: "80.00",
+      hourlyRate: "10.00",
+      source: "fingerprint",
+      needsReview: true,
+      reviewReason: "فترة دوام مفتوحة",
+      checkIn: new Date("2030-06-06T08:00:00.000Z"),
+      checkOut: null,
+    });
+    await connection.insert(s.employeePenalties).values({
+      employeeId: EMPLOYEE_ID,
+      branchId: BRANCH_ID,
+      penaltyType: "SALARY_DEDUCTION",
+      decisionNumber: "CAP-CONFIRMED-OPEN-DAY",
+      decisionDate: "2030-06-06",
+      reason: "اختبار سقف العقوبة من الأجر المؤكد",
+      deductionAmount: "100.00",
+      status: "APPROVED",
+      createdById: ACTOR.userId,
+      approvedById: ACTOR.userId,
+    });
+
+    const capacity = await getEmployeeAdvanceCapacity({
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: FIXED_PERIOD,
+      asOf: FIXED_AS_OF,
+    });
+
+    // 80 مؤكدة - (8 ضمان + 7.20 ضريبة) - سقف عقوبة 10% × 64.80 = 6.48.
+    expect(capacity).toMatchObject({
+      earnedCompensation: "80.00",
+      mandatoryDeductions: "21.68",
+      maxAvailable: "58.32",
+      blocked: false,
+      blockers: [],
+      excludedAttendanceDates: ["2030-06-06"],
+    });
+    expect(capacity.warnings).toHaveLength(1);
+  });
+
+  it("يحتسب 8 ساعات من سجل الكاتب ذي الاستراحة 60 دقيقة بدل رفض طول الفترة الخام", async () => {
+    await prepareAttendanceBasedMonthlyCapacity();
+    await recordAttendance({
+      employeeId: EMPLOYEE_ID,
+      attendanceDate: "2030-06-05",
+      hours: 8,
+      checkIn: "08:00",
+      checkOut: "17:00",
+      breakMinutes: 60,
+      source: "manual",
+      scopedBranchId: BRANCH_ID,
+    });
+
+    const capacity = await getEmployeeAdvanceCapacity({
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: FIXED_PERIOD,
+      asOf: FIXED_AS_OF,
+    });
+
+    expect(capacity).toMatchObject({
+      earnedCompensation: "80.00",
+      mandatoryDeductions: "0.00",
+      maxAvailable: "80.00",
+      excludedAttendanceDates: [],
+      warnings: [],
+    });
+  });
+
+  it("يحتسب 12 ساعة مقصوصة معتمدة من سجل الكاتب ولا يعيد فرض طول 14 ساعة", async () => {
+    await prepareAttendanceBasedMonthlyCapacity();
+    await recordAttendance({
+      employeeId: EMPLOYEE_ID,
+      attendanceDate: "2030-06-05",
+      hours: 12,
+      checkIn: "08:00",
+      checkOut: "22:00",
+      source: "fingerprint",
+      needsReview: false,
+      reviewReason: "قُصّت عند سقف 12 ساعة",
+      scopedBranchId: BRANCH_ID,
+    });
+
+    const capacity = await getEmployeeAdvanceCapacity({
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: FIXED_PERIOD,
+      asOf: FIXED_AS_OF,
+    });
+
+    expect(capacity).toMatchObject({
+      earnedCompensation: "140.00",
+      mandatoryDeductions: "0.00",
+      maxAvailable: "140.00",
+      excludedAttendanceDates: [],
+      warnings: [],
+    });
+  });
+
+  it("يبقي تناقض ساعات الفترات المتعددة مستبعداً من الائتمان المؤكد", async () => {
+    await prepareAttendanceBasedMonthlyCapacity();
+    await recordAttendance({
+      employeeId: EMPLOYEE_ID,
+      attendanceDate: "2030-06-05",
+      hours: 8,
+      sessions: [
+        { checkIn: "08:00", checkOut: "12:00" },
+        { checkIn: "16:00", checkOut: "20:00" },
+      ],
+      source: "manual",
+      scopedBranchId: BRANCH_ID,
+    });
+    // الكاتب يمنع التناقض ابتداءً؛ نحاكي انجراف سجل تاريخي بعد كتابة صحيحة للتحقق من fail-closed.
+    await db()
+      .update(s.attendance)
+      .set({ hours: "7.00" })
+      .where(eq(s.attendance.employeeId, EMPLOYEE_ID));
+
+    const capacity = await getEmployeeAdvanceCapacity({
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: FIXED_PERIOD,
+      asOf: FIXED_AS_OF,
+    });
+
+    expect(capacity).toMatchObject({
+      earnedCompensation: "0.00",
+      mandatoryDeductions: "0.00",
+      maxAvailable: "0.00",
+      excludedAttendanceDates: ["2030-06-05"],
+    });
+    expect(capacity.warnings).toHaveLength(1);
+  });
+
+  it("يبقي الإجازة المدفوعة استحقاقاً مؤكداً ولو حمل يومها بصمة مفتوحة مستبعدة", async () => {
+    const connection = db();
+    await connection
+      .update(s.employees)
+      .set({
+        payType: "monthly",
+        attendanceExempt: false,
+        salary: "2400.00",
+        workSchedule: ALL_DAYS_TEN,
+      })
+      .where(eq(s.employees.id, EMPLOYEE_ID));
+    await connection
+      .update(s.payrollLegalSettings)
+      .set({ socialSecurityEnabled: false, incomeTaxEnabled: false })
+      .where(eq(s.payrollLegalSettings.id, 1));
+    await connection.insert(s.hrAttendanceSettings).values({
+      id: 1,
+      attendancePayEnabled: true,
+      attendancePayFrom: "2030-06-01",
+      updatedBy: ACTOR.userId,
+    });
+    await seedPaidLeave("2030-06-05", "2030-06-05", 1);
+    await seedAttendance({
+      date: "2030-06-05",
+      amount: "80.00",
+      hourlyRate: "10.00",
+      source: "fingerprint",
+      needsReview: true,
+      reviewReason: "فترة دوام مفتوحة",
+      checkIn: new Date("2030-06-05T08:00:00.000Z"),
+      checkOut: null,
+    });
+
+    const capacity = await getEmployeeAdvanceCapacity({
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: FIXED_PERIOD,
+      asOf: "2030-06-05",
+    });
+
+    expect(capacity).toMatchObject({
+      earnedCompensation: "80.00",
+      mandatoryDeductions: "0.00",
+      maxAvailable: "80.00",
+      blocked: false,
+      excludedAttendanceDates: ["2030-06-05"],
+    });
+  });
+
+  it("يحتسب الفترات المتعددة المغلقة ويستبعد اليوم ذي الفترة الثانية المفتوحة", async () => {
+    const connection = db();
+    await connection
+      .update(s.employees)
+      .set({
+        payType: "monthly",
+        attendanceExempt: false,
+        salary: "2400.00",
+        workSchedule: ALL_DAYS_TEN,
+      })
+      .where(eq(s.employees.id, EMPLOYEE_ID));
+    await connection
+      .update(s.payrollLegalSettings)
+      .set({ socialSecurityEnabled: false, incomeTaxEnabled: false })
+      .where(eq(s.payrollLegalSettings.id, 1));
+    await connection.insert(s.hrAttendanceSettings).values({
+      id: 1,
+      attendancePayEnabled: true,
+      attendancePayFrom: "2030-06-01",
+      updatedBy: ACTOR.userId,
+    });
+    await seedAttendance({
+      date: "2030-06-05",
+      amount: "80.00",
+      hourlyRate: "10.00",
+      source: "fingerprint",
+      checkIn: new Date("2030-06-05T08:00:00.000Z"),
+      checkOut: new Date("2030-06-05T17:00:00.000Z"),
+      notes: "[فترات الدوام: 08:00→12:00، 13:00→17:00 | استراحة/زمنية: 60 دقيقة]",
+    });
+    await seedAttendance({
+      date: "2030-06-06",
+      hours: "4.00",
+      amount: "40.00",
+      hourlyRate: "10.00",
+      source: "fingerprint",
+      checkIn: new Date("2030-06-06T08:00:00.000Z"),
+      checkOut: new Date("2030-06-06T12:00:00.000Z"),
+      notes: "[فترات الدوام: 08:00→12:00، 13:00→؟ | استراحة/زمنية: 60 دقيقة]",
+    });
+
+    const capacity = await getEmployeeAdvanceCapacity({
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: FIXED_PERIOD,
+      asOf: FIXED_AS_OF,
+    });
+
+    expect(capacity).toMatchObject({
+      earnedCompensation: "80.00",
+      maxAvailable: "80.00",
+      blocked: false,
+      excludedAttendanceDates: ["2030-06-06"],
+    });
+  });
+
+  it("يقبل وسم الفترة الواحدة الصحيح ويستبعد الوسم المشوه أو المختلط", async () => {
+    const connection = db();
+    await connection
+      .update(s.employees)
+      .set({
+        payType: "monthly",
+        attendanceExempt: false,
+        salary: "2400.00",
+        workSchedule: ALL_DAYS_TEN,
+      })
+      .where(eq(s.employees.id, EMPLOYEE_ID));
+    await connection
+      .update(s.payrollLegalSettings)
+      .set({ socialSecurityEnabled: false, incomeTaxEnabled: false })
+      .where(eq(s.payrollLegalSettings.id, 1));
+    await connection.insert(s.hrAttendanceSettings).values({
+      id: 1,
+      attendancePayEnabled: true,
+      attendancePayFrom: "2030-06-01",
+      updatedBy: ACTOR.userId,
+    });
+    await seedAttendance({
+      date: "2030-06-05",
+      amount: "80.00",
+      hourlyRate: "10.00",
+      source: "fingerprint",
+      checkIn: new Date("2030-06-05T08:00:00.000Z"),
+      checkOut: new Date("2030-06-05T16:00:00.000Z"),
+      notes: "[فترات الدوام: 08:00→16:00]",
+    });
+    await seedAttendance({
+      date: "2030-06-06",
+      hours: "4.00",
+      amount: "40.00",
+      hourlyRate: "10.00",
+      source: "fingerprint",
+      checkIn: new Date("2030-06-06T08:00:00.000Z"),
+      checkOut: new Date("2030-06-06T12:00:00.000Z"),
+      notes: "[فترات الدوام: غير صالح]",
+    });
+    await seedAttendance({
+      date: "2030-06-07",
+      hours: "4.00",
+      amount: "40.00",
+      hourlyRate: "10.00",
+      source: "fingerprint",
+      checkIn: new Date("2030-06-07T08:00:00.000Z"),
+      checkOut: new Date("2030-06-07T12:00:00.000Z"),
+      notes: "[فترات الدوام: 08:00→12:00، غير صالح]",
+    });
+
+    const capacity = await getEmployeeAdvanceCapacity({
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: FIXED_PERIOD,
+      asOf: FIXED_AS_OF,
+    });
+
+    expect(capacity).toMatchObject({
+      earnedCompensation: "80.00",
+      maxAvailable: "80.00",
+      blocked: false,
+      excludedAttendanceDates: ["2030-06-06", "2030-06-07"],
+    });
+    expect(capacity.warnings).toHaveLength(1);
+  });
+
+  it("يثبت تعويض الشهر القصير عند نهايته فقط في الإسقاط المؤكد", async () => {
+    const connection = db();
+    await connection
+      .update(s.employees)
+      .set({
+        payType: "monthly",
+        attendanceExempt: false,
+        salary: "2400.00",
+        workSchedule: ALL_DAYS_TEN,
+      })
+      .where(eq(s.employees.id, EMPLOYEE_ID));
+    await connection.insert(s.hrAttendanceSettings).values({
+      id: 1,
+      attendancePayEnabled: true,
+      attendancePayFrom: "2030-02-01",
+      updatedBy: ACTOR.userId,
+    });
+    await seedAttendance({ date: "2030-02-01", amount: "80.00", hourlyRate: "10.00" });
+
+    const beforeEnd = await getEmployeeStatement({
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: "2030-02",
+      employmentEndOverride: "2030-02-27",
+      confirmedAttendanceOnly: true,
+    });
+    const atEnd = await getEmployeeStatement({
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: "2030-02",
+      employmentEndOverride: "2030-02-28",
+      confirmedAttendanceOnly: true,
+    });
+
+    expect(beforeEnd?.confirmedPayrollComponents).toMatchObject({ gross: "80.00", overtime: "0.00" });
+    // شباط 28 يوماً: 16 ساعة تعويض × 10، ولا تُمنح قبل نهاية الشهر.
+    expect(atEnd?.confirmedPayrollComponents).toMatchObject({ gross: "240.00", overtime: "0.00" });
+    expect(beforeEnd?.amountDue).toBe("80.00");
+    expect(atEnd?.amountDue).toBe("240.00");
+  });
+
+  it("يعيد إسقاط مبلغ الساعي اليدوي بلا أوقات من السعر الحالي ولا يثق بالمبلغ المخزن", async () => {
+    await seedAttendance({
+      date: "2030-06-05",
+      hours: "8.00",
+      amount: "500.00",
+      hourlyRate: "1.00",
+      currentHourlyRate: "125.00",
+      source: "manual",
+    });
+    const statement = await getEmployeeStatement({
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: FIXED_PERIOD,
+      employmentEndOverride: FIXED_AS_OF,
+      confirmedAttendanceOnly: true,
+    });
+    // الكشف المعتاد يبقى على اللقطة المخزنة؛ إسقاط القرار المالي وحده يعيد التسعير.
+    expect(statement?.amountDue).toBe("500.00");
+    expect(statement?.confirmedPayrollComponents).toMatchObject({
+      basic: "1000.00",
+      gross: "1000.00",
+      overtime: "0.00",
+    });
+    expect(statement?.excludedAttendanceDates).toEqual([]);
+
+    const capacity = await getEmployeeAdvanceCapacity({
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: FIXED_PERIOD,
+      asOf: FIXED_AS_OF,
+    });
+    expect(capacity).toMatchObject({
+      earnedCompensation: "1000.00",
+      mandatoryDeductions: "190.00",
+      maxAvailable: "810.00",
+      blocked: false,
+    });
+  });
+
+  it("يطابق projector تقريب إعادة التسعير وسقوطها إلى السعر المخزن للساعات المقصوصة", () => {
+    const current = projectAttendanceWage({
+      employee: { payType: "hourly", dayRates: { الأربعاء: 41.666 } },
+      date: "2030-06-05",
+      // هذه لقطة الساعات بعد سقف الكاتب؛ projector لا يعيد اختراع سقف مختلف.
+      hours: "12.00",
+      storedHourlyRate: "1.00",
+      status: "PRESENT",
+    });
+    expect(current.rate.toFixed(2)).toBe("41.67");
+    expect(current.amount.toFixed(2)).toBe("500.00");
+
+    const fallback = projectAttendanceWage({
+      employee: { payType: "hourly", dayRates: null },
+      date: "2030-06-05",
+      hours: "12.00",
+      storedHourlyRate: "41.67",
+      status: "PRESENT",
+    });
+    expect(fallback.rate.toFixed(2)).toBe("41.67");
+    expect(fallback.amount.toFixed(2)).toBe("500.00");
+  });
+
+  it.each([
+    { label: "المعفى", attendanceExempt: true },
+    { label: "الثابت مع تعطيل أجر الحضور", attendanceExempt: false },
+  ])("يبقي أجر $label ولا يعرض تحذير حضور لا يؤثر في الحد", async ({ attendanceExempt }) => {
+    await db()
+      .update(s.employees)
+      .set({ payType: "monthly", attendanceExempt, salary: "3000.00" })
+      .where(eq(s.employees.id, EMPLOYEE_ID));
+    await seedAttendance({
+      date: "2030-06-05",
+      amount: "8.00",
+      source: "fingerprint",
+      needsReview: true,
+      reviewReason: "فترة دوام مفتوحة",
+      checkIn: new Date("2030-06-05T08:00:00.000Z"),
+      checkOut: null,
+    });
+
+    const capacity = await getEmployeeAdvanceCapacity({
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: FIXED_PERIOD,
+      asOf: FIXED_AS_OF,
+    });
+
+    expect(capacity).toMatchObject({
+      earnedCompensation: "1500.00",
+      mandatoryDeductions: "285.00",
+      maxAvailable: "1215.00",
+      blocked: false,
+      excludedAttendanceDates: [],
+      warnings: [],
+    });
+  });
+
   it("يحجب سلفة راتبية غير مسواة من شهر سابق طلباً شهرياً جديداً", async () => {
-    await seedAttendance({ date: TODAY, amount: "1000.00" });
+    await seedAttendance({ date: TODAY, amount: "1000.00", currentHourlyRate: "125.00" });
     const oldPeriod = previousPeriod(CURRENT_PERIOD);
     await db().insert(s.employeeAdvances).values({
       employeeId: EMPLOYEE_ID,
@@ -1506,7 +2059,7 @@ describe("employee advance earned-capacity contract", () => {
   });
 
   it("يحجب طلباً تاريخياً بلا فترة قبل إنشاء طلب سلفة جديد", async () => {
-    await seedAttendance({ date: TODAY, amount: "1000.00" });
+    await seedAttendance({ date: TODAY, amount: "1000.00", currentHourlyRate: "125.00" });
     await db().insert(s.employeeLoanRequests).values({
       employeeId: EMPLOYEE_ID,
       branchId: BRANCH_ID,
@@ -1536,7 +2089,7 @@ describe("employee advance earned-capacity contract", () => {
   });
 
   it("يرفض المبلغ الأعلى من maxAvailable بلا إنشاء طلب", async () => {
-    await seedAttendance({ date: TODAY, amount: "1000.00" });
+    await seedAttendance({ date: TODAY, amount: "1000.00", currentHourlyRate: "125.00" });
     const capacity = await currentCapacity();
     expect(capacity).toMatchObject({
       earnedCompensation: "1000.00",

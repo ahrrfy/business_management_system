@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
-import { asc, inArray } from "drizzle-orm";
-import { employees } from "../../../drizzle/schema";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { employeeAdvances, employees } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 
 export type PayrollEmployeeMember = {
@@ -78,6 +78,51 @@ export async function lockPayrollEmployeesTx(
     throw conflict(operation);
   }
   return new Map(locked.map((employee) => [Number(employee.id), employee]));
+}
+
+/**
+ * A legacy balance has no proven payroll month, so it must never be silently
+ * removed from a draft or paid from an already-approved snapshot. Callers must
+ * first lock the complete payroll employee membership in ascending id order.
+ */
+export async function assertNoLegacyUnclassifiedAdvanceTx(
+  tx: Tx,
+  lockedEmployees: ReadonlyMap<number, LockedPayrollEmployee>,
+  operation: string,
+): Promise<void> {
+  const employeeIds = Array.from(lockedEmployees.keys()).sort(
+    (left, right) => left - right,
+  );
+  if (employeeIds.length === 0) return;
+
+  const blocked = await tx
+    .select({
+      id: employeeAdvances.id,
+      employeeId: employeeAdvances.employeeId,
+      remaining: employeeAdvances.remaining,
+    })
+    .from(employeeAdvances)
+    .where(
+      and(
+        inArray(employeeAdvances.employeeId, employeeIds),
+        eq(employeeAdvances.status, "ACTIVE"),
+        eq(employeeAdvances.sourceType, "LEGACY_UNCLASSIFIED"),
+        sql`${employeeAdvances.remaining} > 0`,
+      ),
+    )
+    .orderBy(asc(employeeAdvances.id))
+    .for("update");
+  const [first] = blocked;
+  if (!first) return;
+  throw new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message: appErrorMessage({
+      what: `لا يمكن ${operation} مع وجود سلفة تاريخية غير مصنفة`,
+      why: `السلفة #${first.id} للموظف #${first.employeeId} ما زالت نشطة برصيد ${first.remaining} د.ع ولا تحمل شهراً مثبتاً للخصم`,
+      doThis:
+        "أكمل المطابقة اليدوية للسلفة بمصدرها الصحيح أو أثبت تسويتها التاريخية، ثم أعد المحاولة",
+    }),
+  });
 }
 
 /**

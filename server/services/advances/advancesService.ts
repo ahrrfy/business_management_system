@@ -6,7 +6,7 @@
  * ========================================================================== */
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import { fullEmployeeName } from "@shared/hr";
 import { appErrorMessage } from "@shared/errors";
 import { levelSatisfies } from "@shared/permissions";
@@ -14,6 +14,7 @@ import { voucherApprovalTrigger } from "@shared/approvalTriggers";
 import {
   advanceSettlements,
   branches,
+  employeeAdvanceHistoricalRecoveries,
   employeeAdvanceRepaymentAllocations,
   employeeAdvances,
   employeeLoanRequests,
@@ -151,12 +152,18 @@ export async function listAdvances(filters?: ListAdvancesFilters) {
       ),
     );
   }
-  if (filters?.period)
+  if (filters?.period && !wantsLegacyUnclassified)
     conds.push(
       filters.period === currentPeriod
         ? or(
             eq(employeeAdvances.payrollPeriod, filters.period),
-            isNull(employeeAdvances.payrollPeriod),
+            // A settled unclassified record stays in the explicit historical
+            // view; it must not reappear in every new month's salary table.
+            and(
+              isNull(employeeAdvances.payrollPeriod),
+              eq(employeeAdvances.status, "ACTIVE"),
+              gt(employeeAdvances.remaining, "0.00"),
+            ),
           )
         : eq(employeeAdvances.payrollPeriod, filters.period),
     );
@@ -198,7 +205,7 @@ export async function listAdvances(filters?: ListAdvancesFilters) {
   // 2. طلبات السلف المعلّقة في receipts بانتظار الاعتماد — تظهر حتى لا تضيع السلف صمتاً
   const pendingRows: AdvanceProjection[] = [];
   if (
-    (!filters?.period || filters.period === currentPeriod) &&
+    (!filters?.period || filters.period === currentPeriod || wantsLegacyUnclassified) &&
     (!filters?.status ||
       filters.status === "PENDING_APPROVAL" ||
       filters.status === "LEGACY_UNCLASSIFIED")
@@ -314,7 +321,7 @@ export async function listAdvances(filters?: ListAdvancesFilters) {
       filters?.branchId != null
         ? eq(employeeLoanRequests.branchId, filters.branchId)
         : undefined,
-      filters?.period
+      filters?.period && !wantsLegacyUnclassified
         ? filters.period === currentPeriod
           ? or(
               eq(employeeLoanRequests.payrollPeriod, filters.period),
@@ -839,7 +846,21 @@ async function assertNoAdvanceRecoveryHistoryTx(
       .for("update")
       .limit(1)
   )[0];
-  if (settlement || repaymentAllocation || terminationAllocation) {
+  const historicalRecovery = (
+    await tx
+      .select({ id: employeeAdvanceHistoricalRecoveries.id })
+      .from(employeeAdvanceHistoricalRecoveries)
+      .where(eq(employeeAdvanceHistoricalRecoveries.advanceId, advanceId))
+      .orderBy(asc(employeeAdvanceHistoricalRecoveries.id))
+      .for("update")
+      .limit(1)
+  )[0];
+  if (
+    settlement ||
+    repaymentAllocation ||
+    terminationAllocation ||
+    historicalRecovery
+  ) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message: appErrorMessage({
@@ -999,8 +1020,9 @@ export interface SuggestedDeduction {
 }
 
 /**
- * اقتراح استقطاع الشهر لكل موظف من **جميع** سلفه النشطة:
- * suggested = مجموع min(monthlyDeduction ?? remaining، remaining) لجميع سلف الموظف النشطة.
+ * اقتراح استقطاع الشهر لكل موظف من السلف المؤهلة وحدها:
+ * SALARY_ADVANCE لشهر المسيّر، وOTHER_DEDUCTION بقسطه المخزن. الديون
+ * LEGACY_UNCLASSIFIED تبقى خارج الراتب حتى تُطابق بمصدر موثّق.
  * يُستدعى داخل معاملة توليد المسيّر ومزامنة المسودة قبل الاعتماد.
  */
 export async function suggestDeductionsTx(
@@ -1024,6 +1046,7 @@ export async function suggestDeductionsTx(
     const empId = Number(adv.employeeId);
     const remaining = money(adv.remaining);
     if (remaining.lte(0)) continue;
+    if (adv.sourceType === "LEGACY_UNCLASSIFIED") continue;
     if (
       adv.sourceType === "SALARY_ADVANCE" &&
       payrollPeriod != null &&
@@ -1068,8 +1091,9 @@ export async function suggestDeductionsForPeriod(
 /* ─────────────────────────── تسوية عند صرف المسيّر ─────────────────────────── */
 
 /**
- * تُستدعى من payRun داخل معاملة الدفع: لكل بند advanceDeduction > 0 تُنقص أرصدة سلف
- * الموظف النشطة بتوزيع عادل على الأقساط الشهرية ثم الأقدم أولاً؛ بلوغ الصفر ⇒ SETTLED.
+ * مسار توافق قديم بلا مستهلك إنتاجي حالياً. يستبعد الدين التاريخي غير المصنف دفاعياً،
+ * لكنه لا يحمل payrollPeriod؛ لذلك لا يُعاد وصله بدفع الرواتب قبل إضافة شهر موثّق
+ * وتطبيق أهلية SALARY_ADVANCE المطابقة للمسار الاستحقاقي الحالي.
  */
 export async function settleAdvancesOnPayTx(
   tx: Tx,
@@ -1082,7 +1106,11 @@ export async function settleAdvancesOnPayTx(
     const advs = await tx
       .select()
       .from(employeeAdvances)
-      .where(and(eq(employeeAdvances.employeeId, item.employeeId), eq(employeeAdvances.status, "ACTIVE")))
+      .where(and(
+        eq(employeeAdvances.employeeId, item.employeeId),
+        eq(employeeAdvances.status, "ACTIVE"),
+        inArray(employeeAdvances.sourceType, ["SALARY_ADVANCE", "OTHER_DEDUCTION"]),
+      ))
       .orderBy(asc(employeeAdvances.id))
       .for("update");
 

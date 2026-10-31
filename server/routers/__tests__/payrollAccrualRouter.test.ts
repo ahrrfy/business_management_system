@@ -270,6 +270,8 @@ describe("payroll accrual router authority", () => {
           maxAvailable: "0.00",
           blocked: true,
           blockers: [expect.stringContaining("ليس على رأس العمل")],
+          warnings: [],
+          excludedAttendanceDates: [],
         },
       });
       expect(result.capacity.period).toBe(result.capacity.asOf.slice(0, 7));

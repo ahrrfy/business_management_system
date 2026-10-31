@@ -91,7 +91,15 @@ async function drainPostCommitHooks(tx: Tx): Promise<void> {
  */
 export async function withTx<T>(
   fn: (tx: Tx) => Promise<T>,
-  options: { gate?: TransactionGate } = {},
+  options: {
+    gate?: TransactionGate;
+    /**
+     * Legacy application flows bootstrap a missing singleton gate before retrying.
+     * Audited target-pinned tooling can disable that durable out-of-transaction
+     * write and fail closed instead.
+     */
+    bootstrapMissingGate?: boolean;
+  } = {},
 ): Promise<T> {
   const database = requireDb();
   let capturedTx: Tx | null = null;
@@ -117,7 +125,12 @@ export async function withTx<T>(
   } catch (error) {
     // Rollback happened — discard any queued hooks silently.
     if (capturedTx) postCommitHooksByTx.delete(capturedTx);
-    if (!isMonthCloseGateMissing(error)) throw error;
+    if (
+      !isMonthCloseGateMissing(error) ||
+      options.bootstrapMissingGate === false
+    ) {
+      throw error;
+    }
     // الفشل وقع قبل callback، لذلك الإعادة آمنة ولا تكرر أي أثر أعمال.
     await ensureFinancialPostingGate(database);
     capturedTx = null;
