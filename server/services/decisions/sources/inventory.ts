@@ -2,18 +2,23 @@
  * مصادرُ المخزون: تسويةُ الرصيد وإعادةُ تقييم التكلفة — بوّابة `inventoryManagerProcedure`
  * (`moduleProcedure(["manager"], "inventory", "FULL")`)، والحسمُ بدوالّ الخدمة نفسها.
  */
-import { eq } from "drizzle-orm";
+import { reportScan, scanAfter, scanPosition } from "../scan";
+import { and, asc, eq, ne, notExists } from "drizzle-orm";
 import { costRevaluationApprovalTrigger, stockAdjustmentApprovalTrigger } from "@shared/approvalTriggers";
 import {
   COST_WAVE_MIN_REASON_LENGTH,
+  COST_WAVE_REQUIRED_APPROVALS,
   COST_WAVE_PURPOSE_LABELS,
   COST_WAVE_RULE_LABELS,
 } from "@shared/costWave";
 import { decisionSubkindLabel } from "@shared/decisionRegistry";
+import { canViewOperationData } from "@shared/operationPermissions";
 import {
   costRevaluationRequests,
   costUpdateWaves,
+  costUpdateWaveApprovals,
   stockAdjustmentRequests,
+  users,
 } from "../../../../drizzle/schema";
 import {
   approveStockAdjustment,
@@ -27,7 +32,6 @@ import {
 } from "../../inventory/costRevaluationRequest";
 import {
   approveCostWave,
-  listCostWaves,
   rejectCostWave,
 } from "../../inventory/costWaveService";
 import { requireDb } from "../../tx";
@@ -49,7 +53,8 @@ export const stockAdjustmentSource: DecisionSource = {
   async list(actor, scope) {
     const branchId = scopeBranch(actor, scope);
     if (branchId === "NONE") return [];
-    const rows = await listStockAdjustmentRequests({ branchId, status: "PENDING_APPROVAL", order: "ASC" });
+    const rows = await listStockAdjustmentRequests({ branchId, status: "PENDING_APPROVAL", order: "ASC", scan: scanPosition(scope) });
+    reportScan(scope, rows, 500);
     const names = await branchNames(requireDb(), ids(rows.map((r) => r.branchId)));
     return rows
       .filter((r) => !sodHidden({ blocked: [r.createdBy], actor, adminExempt: true, trigger: "ERASE_EFFECT" }))
@@ -133,9 +138,13 @@ export const costRevaluationSource: DecisionSource = {
   gate: { type: "MODULE", moduleKey: "inventory", roles: ["manager"] },
   supportedActions: ["APPROVE", "REJECT"],
   async list(actor, scope) {
+    const visibility = actor.operationUser ?? actor;
+    if (!canViewOperationData(visibility, "purchaseCost") ||
+        !canViewOperationData(visibility, "profitMargin")) return [];
     const branchId = scopeBranch(actor, scope);
     if (branchId === "NONE") return [];
-    const rows = await listCostRevaluations({ status: "PENDING_APPROVAL", branchId, limit: 200, order: "ASC" }, serviceActor(actor));
+    const rows = await listCostRevaluations({ status: "PENDING_APPROVAL", branchId, limit: 200, order: "ASC", scan: scanPosition(scope) }, serviceActor(actor));
+    reportScan(scope, rows, 200);
     const variants = await variantLabels(requireDb(), ids(rows.map((r) => r.variantId)));
     return rows
       .filter((r) => !sodHidden({ blocked: [r.createdBy], actor, adminExempt: true, trigger: "ERASE_EFFECT" }))
@@ -208,14 +217,26 @@ export const costWaveSource: DecisionSource = {
   gate: { type: "MODULE", moduleKey: "inventory", roles: ["manager"] },
   supportedActions: ["APPROVE", "REJECT"],
   async list(actor, scope) {
+    const visibility = actor.operationUser ?? actor;
+    if (!canViewOperationData(visibility, "purchaseCost") ||
+        !canViewOperationData(visibility, "profitMargin")) return [];
     const scopedBranch = scopeBranch(actor, scope);
     if (scopedBranch === "NONE") return [];
-    const page = await listCostWaves(
-      { view: "AWAITING_MINE", branchId: scopedBranch ?? undefined, limit: 100 },
-      serviceActor(actor),
-    );
-    const names = await branchNames(requireDb(), ids(page.rows.map((row) => row.branchId)));
-    return page.rows.map((row) =>
+    // The inbox grants the selected decision, not the unrelated inventory.costWaves read RPC.
+    // Mirror AWAITING_MINE identity/branch exclusions before the bounded source sample.
+    const db = requireDb();
+    const candidates = await db.select({ wave: costUpdateWaves, createdByName: users.name })
+      .from(costUpdateWaves).leftJoin(users, eq(users.id, costUpdateWaves.createdBy))
+      .where(and(eq(costUpdateWaves.status, "PENDING_APPROVAL"), ne(costUpdateWaves.createdBy, actor.userId),
+        scanAfter(costUpdateWaves.id, scanPosition(scope)),
+        scopedBranch == null ? undefined : eq(costUpdateWaves.branchId, scopedBranch),
+        actor.crossBranch ? undefined : eq(costUpdateWaves.isCrossBranch, false),
+        notExists(db.select({ id: costUpdateWaveApprovals.id }).from(costUpdateWaveApprovals).where(and(eq(costUpdateWaveApprovals.waveId, costUpdateWaves.id), eq(costUpdateWaveApprovals.approverId, actor.userId)))),
+      )).orderBy(asc(costUpdateWaves.id)).limit(101);
+    reportScan(scope, candidates.map(row => row.wave), 101);
+    const rows = candidates.map(({ wave, createdByName }) => ({ ...wave, createdByName, requiredApprovals: COST_WAVE_REQUIRED_APPROVALS }));
+    const names = await branchNames(db, ids(rows.map((row) => row.branchId)));
+    return rows.map((row) =>
       buildRow(
         {
           kind: "inventory.costWave.approve",

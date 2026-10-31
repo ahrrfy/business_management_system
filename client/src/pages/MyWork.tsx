@@ -36,7 +36,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { fmtDateTime } from "@/lib/date";
 import { fmtInt } from "@/lib/money";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useRealtimeEvent } from "@/lib/realtime";
 import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 import { ACTION_LABELS } from "@shared/actionLabels";
@@ -193,9 +193,16 @@ export default function MyWork() {
   const [kind, setKind] = useState("");
   const [branchId, setBranchId] = useState("");
   const [minAge, setMinAge] = useState("0");
+  type InboxPageCursor = NonNullable<RouterOutputs["decisions"]["inbox"]["nextPageCursor"]>;
+  const [pageCursor, setPageCursor] = useState<InboxPageCursor>();
+  const [pageHistory, setPageHistory] = useState<Array<InboxPageCursor | undefined>>([]);
+  const [pageNumber, setPageNumber] = useState(1);
+  const [sourceCursor, setSourceCursor] = useState<RouterOutputs["decisions"]["inbox"]["truncatedSources"][number]["cursor"]>();
   const [breachedOnly, setBreachedOnly] = useState(false);
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [decided, setDecided] = useState<DecidedRow[]>([]);
+  function resetPages() { setPageCursor(undefined); setPageHistory([]); setPageNumber(1); }
+  useEffect(() => { resetPages(); setSourceCursor(undefined); }, [kind, branchId, minAge]);
 
   const branches = trpc.branches.list.useQuery(undefined, {
     enabled: decisionsActive,
@@ -203,8 +210,13 @@ export default function MyWork() {
   const inbox = trpc.decisions.inbox.useQuery(
     {
       branchId: branchId ? Number(branchId) : undefined,
+      kind: kind || undefined,
       minAgeHours: Number(minAge) > 0 ? Number(minAge) : undefined,
       limit: 200,
+      pageCursor: pageCursor?.branchId === (branchId ? Number(branchId) : null) && pageCursor?.kind === (kind || null) &&
+        pageCursor?.minAgeHours === (Number(minAge) > 0 ? Number(minAge) : null) ? pageCursor : undefined,
+      sourceCursor: sourceCursor?.branchId === (branchId ? Number(branchId) : null) && sourceCursor?.kind === (kind || null) &&
+        sourceCursor?.minAgeHours === (Number(minAge) > 0 ? Number(minAge) : null) ? sourceCursor : undefined,
     },
     { enabled: decisionsActive, staleTime: 15_000 },
   );
@@ -287,9 +299,11 @@ export default function MyWork() {
     [inbox.data?.rows, decidedKeys],
   );
   const total = inbox.data?.total ?? 0;
+  const totalIsExact = inbox.data?.totalIsExact ?? true;
+  const truncatedSources = inbox.data?.truncatedSources ?? [];
   const failed = inbox.data?.failedSources ?? [];
   // الخادمُ قصَّ الطابورَ (أكثر من الحدّ) — لا مجرّدُ تصفيةٍ محلّية.
-  const loadedCapped = total > (inbox.data?.rows?.length ?? 0);
+  const loadedCapped = inbox.data?.hasMore || pageNumber > 1;
   // عدّادُ كلّ نوعٍ له معلَّقٌ الآن — لا كلَّ السجلّ (نوعٌ بلا صفوفٍ لا شريحةَ له).
   const kindCounts = useMemo(() => {
     const m = new Map<string, { title: string; count: number }>();
@@ -488,11 +502,15 @@ export default function MyWork() {
               قرارات تنتظرني
               {total > 0 && (
                 <span className="rounded-full bg-[var(--sem-warn-bg)] px-2 py-0.5 text-2xs font-extrabold text-[var(--sem-warn)]">
-                  {total}
+                  {inbox.data?.scanPage ? `${total} في دفعة المصدر` : totalIsExact ? total : `على الأقل ${total}`}
                 </span>
               )}
             </h2>
             <div className="ms-auto flex flex-wrap items-center gap-2">
+              <AppSelect className="h-8 min-w-28 text-xs" value={kind} onValueChange={setKind} aria-label="نوع القرار">
+                <option value="">كل الأنواع</option>
+                {inbox.data?.kinds.filter(value => !value.endsWith(".reject")).map(value => <option key={value} value={value}>{decisionSpec(value)?.title ?? value}</option>)}
+              </AppSelect>
               {(branches.data?.length ?? 0) > 1 && (
                 <AppSelect
                   className="h-8 min-w-28 text-xs"
@@ -593,6 +611,20 @@ export default function MyWork() {
             </Card>
           )}
 
+          {truncatedSources.length > 0 && (
+            <Card>
+              <CardContent className="space-y-1 py-3 text-2xs text-[var(--sem-warn)]">
+                <p className="font-bold">بعض المصادر بلغت حد التحميل؛ العدد المعروض حد أدنى وقد توجد طلبات أخرى، حتى إن لم تظهر صفوف مؤهلة في هذه الدفعة.</p>
+                {truncatedSources.map(source => (
+                  <p key={source.key}><Button size="sm" variant="outline" disabled={!source.cursor || inbox.isFetching || inbox.data?.nextPageCursor != null}
+                    onClick={() => { setSourceCursor(source.cursor); resetPages(); }}>متابعة {source.title} في الصندوق</Button></p>
+                ))}
+              </CardContent>
+            </Card>
+          )}
+
+          {(sourceCursor || pageNumber > 1) && <Button size="sm" variant="outline" onClick={() => { setSourceCursor(undefined); resetPages(); }}>العودة إلى بداية الصندوق</Button>}
+
           {inbox.isLoading && (
             <Card>
               <CardContent className="py-8 text-center text-sm text-muted-foreground">
@@ -623,10 +655,10 @@ export default function MyWork() {
                   className="mx-auto mb-2 size-8 text-[var(--sem-pos)]"
                 />
                 <p className="text-sm font-bold">
-                  {hasFilters ? "لا قرارات مطابقة للفلاتر" : "لا قرارات معلّقة"}
+                  {!totalIsExact ? "لا صفوف في الدفعة المحملة" : hasFilters ? "لا قرارات مطابقة للفلاتر" : "لا قرارات معلّقة"}
                 </p>
                 <p className="mt-1 text-2xs text-muted-foreground">
-                  {hasFilters
+                  {inbox.data?.scanPage && !inbox.data.hasMore && !inbox.data.failedSources.length ? "انتهت قراءة هذا المصدر. ارجع إلى بداية الصندوق لتحديث جميع الطلبات." : !totalIsExact ? "تابع المصادر الموضحة أعلاه أو غيّر الفرع والنوع للوصول إلى الطلبات الأخرى." : hasFilters
                     ? "أزِل فلتراً أو وسّعه لترى الباقي."
                     : gatedKinds === 0
                       ? "دورك لا يملك بوّابة اعتمادٍ على أيّ نوعٍ موصول بالصندوق."
@@ -662,10 +694,17 @@ export default function MyWork() {
             />
           ))}
           {loadedCapped && (
-            <p className="text-center text-2xs text-muted-foreground">
-              حُمِّل {inbox.data?.rows?.length ?? 0} من {total} — احسم ما يظهر
-              ليظهر الباقي.
-            </p>
+            <div className="flex flex-wrap items-center justify-center gap-2 text-2xs text-muted-foreground">
+              <span>صفحة {pageNumber} · {inbox.data?.rows?.length ?? 0} طلب · {totalIsExact ? total : `عدد لا يقل عن ${total}`} في نافذة القراءة الحالية</span>
+              <Button size="sm" variant="outline" disabled={pageHistory.length === 0 || inbox.isFetching} onClick={() => {
+                setPageCursor(pageHistory.at(-1)); setPageHistory(history => history.slice(0, -1)); setPageNumber(number => number - 1);
+              }}>السابق</Button>
+              <Button size="sm" variant="outline" disabled={!inbox.data?.nextPageCursor || inbox.isFetching} onClick={() => {
+                if (!inbox.data?.nextPageCursor) return;
+                setPageHistory(history => [...history, pageCursor].slice(-20));
+                setPageCursor(inbox.data.nextPageCursor); setPageNumber(number => number + 1);
+              }}>التالي</Button>
+            </div>
           )}
         </section>
       )}

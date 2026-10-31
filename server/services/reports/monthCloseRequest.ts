@@ -10,6 +10,7 @@
 //  ٢) **الفحص يُعاد حيّاً عند الاعتماد** ولا يُصدَّق `readinessSnapshot` المخزَّن (هو للتدقيق فقط):
 //     قد تُفتَح وردية بين الطلب والاعتماد. نفس منطق اللقطة التفاؤلية في stockAdjustmentRequests.
 //  ٣) **الطالب ≠ المعتمِد** (فصل مهام، نمط النظام المعتمَد).
+import { scanAfter } from "../decisions/scan";
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq } from "drizzle-orm";
 import {
@@ -460,7 +461,7 @@ export async function rejectMonthClose(
 export async function listMonthCloseRequests(
   tx: Tx,
   /** `order: "ASC"` = الأقدم أوّلاً لصندوق القرارات — القصّ (100) بالأحدث يُسقط أكثر الطلبات تأخّراً. */
-  opts?: { pendingOnly?: boolean; order?: "ASC" | "DESC" },
+  opts?: { pendingOnly?: boolean; order?: "ASC" | "DESC"; scan?: import("../decisions/scan").ScanPosition | null },
 ): Promise<MonthCloseRequestRow[]> {
   const requester = { id: users.id, name: users.name };
   const rows = await tx
@@ -484,11 +485,11 @@ export async function listMonthCloseRequests(
       eq(financialPeriods.id, monthCloseRequests.lockedPeriodId),
     )
     .where(
-      opts?.pendingOnly
+      and(scanAfter(monthCloseRequests.id, opts?.scan, monthCloseRequests.requestedAt), opts?.pendingOnly
         ? eq(monthCloseRequests.status, "PENDING_APPROVAL")
-        : undefined,
+        : undefined),
     )
-    .orderBy(opts?.order === "ASC" ? asc(monthCloseRequests.requestedAt) : desc(monthCloseRequests.requestedAt))
+    .orderBy(opts?.order === "ASC" ? asc(monthCloseRequests.requestedAt) : desc(monthCloseRequests.requestedAt), opts?.order === "ASC" ? asc(monthCloseRequests.id) : desc(monthCloseRequests.id))
     .limit(100);
 
   return rows.map((r) => ({

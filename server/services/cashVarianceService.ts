@@ -1363,6 +1363,8 @@ export async function rejectCashVarianceCase(
 
 export async function listCashVarianceCases(
   input: {
+    /** Internal pending-review projection; checks the actual decision operation instead of the list operation. */
+    reviewOperation?: "treasury.cashVariance.approve" | "treasury.cashVariance.reject";
     branchId?: number;
     status?: CashVarianceEventType;
     limit?: number;
@@ -1371,7 +1373,7 @@ export async function listCashVarianceCases(
   actor: Actor,
 ) {
   return withTx(async (tx) => {
-    await assertCashVarianceOperation(tx, actor, "treasury.cashVariance.list");
+    await assertCashVarianceOperation(tx, actor, input.reviewOperation ?? "treasury.cashVariance.list");
     const branchId = input.branchId ?? actor.branchId;
     assertBranchScope(actor, branchId);
     const runner = tx;
@@ -1385,9 +1387,9 @@ export async function listCashVarianceCases(
       .as("cashVarianceLatestVersions");
     const baseWhere = and(
       eq(cashVarianceCases.branchId, branchId),
-      input.status ? eq(cashVarianceCaseEvents.eventType, input.status) : undefined,
+      input.reviewOperation ? eq(cashVarianceCaseEvents.eventType, "PROPOSED") : input.status ? eq(cashVarianceCaseEvents.eventType, input.status) : undefined,
     );
-    const oldestFirst = input.status === "PROPOSED";
+    const oldestFirst = !!input.reviewOperation || input.status === "PROPOSED";
     const cursorWhere = input.cursor == null
       ? undefined
       : oldestFirst

@@ -1,3 +1,4 @@
+import { scanAfter } from "../decisions/scan";
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import {
@@ -492,7 +493,7 @@ export async function listCommissionRunApprovalRequests(
   actor: Actor,
   readableScope: number | null,
   /** `order: "ASC"` = الأقدم أوّلاً لصندوق القرارات — القصّ (300) بالأحدث يُسقط أكثر الطلبات تأخّراً. */
-  options?: { status?: "PENDING" | "APPROVED" | "REJECTED" | "STALE"; runId?: number; order?: "ASC" | "DESC" },
+  options?: { status?: "PENDING" | "APPROVED" | "REJECTED" | "STALE"; runId?: number; order?: "ASC" | "DESC"; scan?: import("../decisions/scan").ScanPosition | null },
 ) {
   void actor;
   const db = requireDb();
@@ -518,6 +519,7 @@ export async function listCommissionRunApprovalRequests(
     .innerJoin(users, eq(users.id, commissionRunApprovalRequests.requestedBy))
     .where(and(
       options?.status ? eq(commissionRunApprovalRequests.status, options.status) : undefined,
+      scanAfter(commissionRunApprovalRequests.id, options?.scan),
       options?.runId ? eq(commissionRunApprovalRequests.runId, options.runId) : undefined,
       readableScope == null
         ? undefined

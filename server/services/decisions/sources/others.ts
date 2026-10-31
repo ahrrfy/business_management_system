@@ -1,6 +1,7 @@
 /**
  * مصادرُ التوصيل والموارد البشرية والعمولات والإقفال والهدايا — كلٌّ ببوّابة راوتره وخدمته.
  */
+import { reportScan, scanAfter, scanPosition } from "../scan";
 import { TRPCError } from "@trpc/server";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { decisionSubkindLabel, type DecisionSummaryItem } from "@shared/decisionRegistry";
@@ -29,7 +30,7 @@ import { approveAdvanceRepaymentRequest, listAdvanceRepaymentRequests, rejectAdv
 import { approveRemittanceRequest, listRemittanceRequests, rejectRemittanceRequest } from "../../payroll/remittance";
 import { approveMonthClose, listMonthCloseRequests, rejectMonthClose } from "../../reports/monthCloseRequest";
 import { requireDb, withGovernanceTx, withTx } from "../../tx";
-import { approveYearEndReopen, listYearEndReopenRequests, rejectYearEndReopen } from "../../yearEndService";
+import { approveYearEndReopen, rejectYearEndReopen } from "../../yearEndService";
 import { scopedBranchIdFor, serviceActor } from "../gate";
 import { buildRow, decided, decisionKeyFor, defaultMessage, itemLabel, outcomeFor, statusOf } from "../rows";
 import type { DecisionSource } from "../types";
@@ -50,7 +51,8 @@ export const codWriteOffSource: DecisionSource = {
   async list(actor, scope) {
     const branchId = scopeBranch(actor, scope);
     if (branchId === "NONE") return [];
-    const rows = await listDeliveryCodWriteOffRequests({ ...serviceActor(actor), reviewAuthorized: true }, { status: "PENDING", branchId, order: "ASC" });
+    const rows = await listDeliveryCodWriteOffRequests({ ...serviceActor(actor), reviewAuthorized: true }, { status: "PENDING", branchId, order: "ASC", scan: scanPosition(scope) });
+    reportScan(scope, rows, 300);
     const branches = await branchNames(requireDb(), ids(rows.map((r) => r.branchId)));
     return rows
       .filter((r) => !sodHidden({ blocked: [r.requestedBy], actor, trigger: "MONEY_OUT" }))
@@ -133,10 +135,13 @@ export const leaveSource: DecisionSource = {
       })
       .from(leaveRequests)
       .innerJoin(employees, eq(leaveRequests.employeeId, employees.id))
-      .where(and(eq(leaveRequests.status, "pending"), branchId == null ? undefined : eq(employees.branchId, branchId)))
+      .where(and(eq(leaveRequests.status, "pending"), branchId == null ? undefined : eq(employees.branchId, branchId),
+        scanAfter(leaveRequests.id, scanPosition(scope), leaveRequests.requestedAt),
+        sodHidden({ blocked: [actor.userId], actor, trigger: "ERASE_EFFECT" }) ? sql`(${employees.userId} IS NULL OR ${employees.userId} <> ${actor.userId})` : undefined))
       // الأقدمُ أوّلاً: القصّ بالأحدث كان يُسقط أكثر الطلبات تأخّراً بالضبط حين يكثر المعلَّق.
       .orderBy(asc(leaveRequests.requestedAt), asc(leaveRequests.id))
       .limit(200);
+    reportScan(scope, rows, 200, { time: row => row.requestedAt });
     const branches = await branchNames(db, ids(rows.map((r) => r.employeeBranchId)));
     return rows
       .filter((r) => !sodHidden({ blocked: [r.employeeUserId], actor, trigger: "ERASE_EFFECT" }))
@@ -310,7 +315,8 @@ export const commissionRunSource: DecisionSource = {
       return [];
     }
     if (companyScope != null) return []; // مراجعةُ الاعتماد سلطةُ شركة — مدير الفرع لا يراها هنا.
-    const rows = await listCommissionRunApprovalRequests(serviceActor(actor), null, { status: "PENDING", order: "ASC" });
+    const rows = await listCommissionRunApprovalRequests(serviceActor(actor), null, { status: "PENDING", order: "ASC", scan: scanPosition(scope) });
+    reportScan(scope, rows, 300);
     const db = requireDb();
     const runs = rows.length ? await db.select({ id: commissionRuns.id, totalCommission: commissionRuns.totalCommission, employeeCount: commissionRuns.employeeCount }).from(commissionRuns).where(inArray(commissionRuns.id, ids(rows.map((r) => r.runId)))) : [];
     const runById = new Map(runs.map((x) => [Number(x.id), x]));
@@ -369,7 +375,8 @@ export const monthCloseSource: DecisionSource = {
   supportedActions: ["APPROVE", "REJECT"],
   async list(actor, scope) {
     if (scope.branchIds) return []; // قرارٌ شركيّ — لا فرعَ له، فمرشَّحُ الفرع يستبعده بصدق.
-    const rows = await withTx((tx) => listMonthCloseRequests(tx, { pendingOnly: true, order: "ASC" }), { gate: "NONE" });
+    const rows = await withTx((tx) => listMonthCloseRequests(tx, { pendingOnly: true, order: "ASC", scan: scanPosition(scope) }), { gate: "NONE" });
+    reportScan(scope, rows, 100, { time: row => row.requestedAt });
     return rows
       .filter((r) => !sodHidden({ blocked: [r.requestedBy], actor, trigger: "ERASE_EFFECT" }))
       .map((r) =>
@@ -413,7 +420,13 @@ export const yearEndReopenSource: DecisionSource = {
   supportedActions: ["APPROVE", "REJECT"],
   async list(actor, scope) {
     if (scope.branchIds) return [];
-    const rows = await withTx((tx) => listYearEndReopenRequests(tx, { pendingOnly: true, order: "ASC" }), { gate: "NONE" });
+    // Same pending/ID ordering as listYearEndReopenRequests; decision authority is checked by the inbox.
+    const candidates = await requireDb().select({ request: yearEndReopenRequests, requestedByName: users.name })
+      .from(yearEndReopenRequests).leftJoin(users, eq(users.id, yearEndReopenRequests.requestedBy))
+      .where(and(eq(yearEndReopenRequests.status, "PENDING_APPROVAL"), scanAfter(yearEndReopenRequests.id, scanPosition(scope))))
+      .orderBy(asc(yearEndReopenRequests.id)).limit(200);
+    const rows = candidates.map(row => ({ ...row.request, requestedByName: row.requestedByName ?? "مستخدم" }));
+    reportScan(scope, rows, 200);
     return rows
       .filter((r) => !sodHidden({ blocked: [r.requestedBy], actor, trigger: "ERASE_EFFECT" }))
       .map((r) =>
@@ -470,7 +483,6 @@ export const giftSource: DecisionSource = {
   async list(actor, scope) {
     const branchId = scopeBranch(actor, scope);
     if (branchId === "NONE") return [];
-    if (actor.role !== "admin" && actor.role !== "manager") return [];
     const db = requireDb();
     const rows = await db
       .select({
@@ -487,10 +499,13 @@ export const giftSource: DecisionSource = {
       })
       .from(giftVouchers)
       .leftJoin(users, eq(users.id, giftVouchers.createdBy))
-      .where(and(eq(giftVouchers.status, "PENDING_APPROVAL"), eq(giftVouchers.direction, "OUT"), branchId == null ? undefined : eq(giftVouchers.branchId, branchId)))
+      .where(and(eq(giftVouchers.status, "PENDING_APPROVAL"), eq(giftVouchers.direction, "OUT"), branchId == null ? undefined : eq(giftVouchers.branchId, branchId),
+        scanAfter(giftVouchers.id, scanPosition(scope), giftVouchers.createdAt),
+        sodHidden({ blocked: [actor.userId], actor, adminExempt: true, trigger: "MONEY_OUT" }) ? sql`(${giftVouchers.createdBy} IS NULL OR ${giftVouchers.createdBy} <> ${actor.userId})` : undefined))
       // الأقدمُ أوّلاً قبل القصّ — الأحدثُ أوّلاً كان يُسقط أكثر الطلبات تأخّراً.
       .orderBy(asc(giftVouchers.createdAt), asc(giftVouchers.id))
       .limit(200);
+    reportScan(scope, rows, 200, { time: row => row.createdAt });
     if (!rows.length) return [];
     const lines = await db
       .select({

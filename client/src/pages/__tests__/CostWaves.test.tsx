@@ -1,5 +1,30 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { MySqlDialect } from "drizzle-orm/mysql-core";
+import type { SQL } from "drizzle-orm";
+import { costUpdateWaves } from "../../../../drizzle/schema";
+import { COST_WAVE_MIN_REASON_LENGTH } from "@shared/costWave";
+import type { DecisionActor } from "../../../../server/services/decisions/types";
+const queryProbe = vi.hoisted(() => ({ events: [] as string[], predicate: undefined as SQL | undefined, limit: 0 }));
+vi.mock("../../../../server/services/tx", () => ({ requireDb: () => ({ select: () => {
+  let waves = false;
+  const query = {
+    from(table: unknown) { waves = table === costUpdateWaves; return query; },
+    leftJoin() { return query; },
+    where(predicate: SQL) { if (waves) { queryProbe.events.push("where"); queryProbe.predicate = predicate; } return query; },
+    orderBy() { return query; },
+    limit(limit: number) { queryProbe.events.push("limit"); queryProbe.limit = limit; return query; },
+    then(resolve: (value: unknown[]) => unknown) { return Promise.resolve(waves ? [{ wave: {
+      id: 42, name: "مراجعة تكلفة", branchId: 7, createdBy: 8, purpose: "CORRECTION", ruleType: "SET_COST",
+      approvalCount: 0, expectedValueDelta: "10.00", createdAt: new Date("2026-10-01"),
+    }, createdByName: "المُنشئ" }] : [{ id: 7, name: "الفرع" }]).then(resolve); },
+  };
+  return query;
+} }) }));
+vi.mock("../../../../server/services/inventory/adjustmentApproval", () => ({ approveStockAdjustment: vi.fn(), listStockAdjustmentRequests: vi.fn(), rejectStockAdjustment: vi.fn() }));
+vi.mock("../../../../server/services/inventory/costRevaluationRequest", () => ({ approveCostRevaluation: vi.fn(), listCostRevaluations: vi.fn(), rejectCostRevaluation: vi.fn() }));
+vi.mock("../../../../server/services/inventory/costWaveService", () => ({ approveCostWave: vi.fn(), rejectCostWave: vi.fn() }));
+import { costWaveSource } from "../../../../server/services/decisions/sources/inventory";
 import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import { stocktakeOperationAccess } from "@/lib/stocktakeOperationAccess";
 import type { OperationUser } from "@shared/operationPermissions";
@@ -24,13 +49,6 @@ const hub = readFileSync(
 );
 const contract = readFileSync(
   new URL("../../../../shared/costWave.ts", import.meta.url),
-  "utf8",
-);
-const decisionSource = readFileSync(
-  new URL(
-    "../../../../server/services/decisions/sources/inventory.ts",
-    import.meta.url,
-  ),
   "utf8",
 );
 
@@ -134,10 +152,28 @@ describe("عقد واجهة موجات التكلفة", () => {
     expect(detail).toContain('setRejectionReason("")');
   });
 
-  it("يرشح صندوق القرار في قاعدة البيانات ويفرض فتح التفاصيل قبل الاعتماد", () => {
-    expect(decisionSource).toContain("branchId: scopedBranch ?? undefined");
-    expect(decisionSource).toContain("approveBlockedReason");
-    expect(decisionSource).toContain("COST_WAVE_MIN_REASON_LENGTH");
+  it("يرشح الفرع والمراجعين قبل حد الصفحة ويعيد قيد مراجعة التفاصيل", async () => {
+    queryProbe.events = [];
+    const actor: DecisionActor = { userId: 9, role: "manager", branchId: 7, crossBranch: false, isOwner: false, permissionsOverride: null };
+    const reportScan = vi.fn();
+    const rows = await costWaveSource.list(actor, { now: new Date("2026-10-30"), branchIds: null, scanPositions: { all: { id: 20 } }, reportScan });
+    const query = new MySqlDialect().sqlToQuery(queryProbe.predicate!);
+    expect(queryProbe.events).toEqual(["where", "limit"]);
+    expect(queryProbe.limit).toBe(101);
+    expect(query.sql).toContain("`costUpdateWaves`.`branchId` = ?");
+    expect(query.sql).toContain("`costUpdateWaves`.`id` > ?");
+    expect(query.sql).toContain("`costUpdateWaves`.`createdBy` <> ?");
+    expect(query.sql).toContain("not exists");
+    expect(query.params).toContain(7);
+    expect(query.params).toContain(20);
+    expect(rows[0].approveBlockedReason).toContain("من شاشة التفاصيل فقط");
+    expect(rows[0].reasonMinLength).toBe(COST_WAVE_MIN_REASON_LENGTH);
+    expect(rows[0].href).toContain("42");
+    expect(reportScan).toHaveBeenCalledWith("all", null);
+
+    queryProbe.events = [];
+    expect(await costWaveSource.list({ ...actor, branchId: null }, { now: new Date(), branchIds: null })).toEqual([]);
+    expect(queryProbe.events).toEqual([]);
   });
 
   it("يشرح الاعتمادين والتطبيق الذري قبل الإرسال والاعتماد النهائي", () => {

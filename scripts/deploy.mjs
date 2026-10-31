@@ -55,6 +55,7 @@ const VITE_DISABLE_DOTENV_ENV_KEY = "ERP_VITE_DISABLE_DOTENV";
 const VITE_DISABLE_DOTENV_ENV_VALUE = "1";
 const WEB_FORBIDDEN_ENVIRONMENT_KEYS = Object.freeze([
   "ERP_INVENTORY_CONTROL_DATABASE_URL",
+  "ERP_INVENTORY_CONTROL_USE_BACKUP_CREDENTIALS",
   "DB_ROOT_PW",
   "DB_CONTAINER",
   "DB_APP_PW",
@@ -1817,6 +1818,50 @@ function normalizeBridgeDeploymentEnvironment(policy, parsed) {
   return environment;
 }
 
+/** Controller-only credentials: callers must pass this clone only to the inventory host. */
+export function normalizeInventoryControlEnvironment(environment) {
+  const flag = environment.ERP_INVENTORY_CONTROL_USE_BACKUP_CREDENTIALS ?? "0";
+  if (flag !== "0" && flag !== "1") {
+    throw codedError("INVENTORY_BACKUP_CONTROL_FLAG_INVALID");
+  }
+  if (flag === "0") return { ...environment };
+  if (
+    environment.ERP_INVENTORY_CONTROL_DATABASE_URL != null &&
+    environment.ERP_INVENTORY_CONTROL_DATABASE_URL !== ""
+  ) {
+    throw codedError("INVENTORY_BACKUP_CONTROL_CONFIGURATION_AMBIGUOUS");
+  }
+  if (environment.CONTROL_DATABASE_URL) {
+    throw codedError("INVENTORY_MULTI_DATABASE_CLASSIFICATION_REQUIRED");
+  }
+  const password = environment.DB_ROOT_PW;
+  if (typeof password !== "string" || !password.trim()) {
+    throw codedError("INVENTORY_BACKUP_CONTROL_PASSWORD_REQUIRED");
+  }
+  let url;
+  try {
+    const raw = environment.DATABASE_URL;
+    if (typeof raw !== "string") throw new Error();
+    url = new URL(raw);
+    const database = decodeURIComponent(url.pathname.slice(1));
+    if (
+      url.protocol !== "mysql:" || !url.username ||
+      !["127.0.0.1", "[::1]"].includes(url.hostname) ||
+      url.port === "0" || raw.includes("?") || raw.includes("#") ||
+      !/^[A-Za-z0-9_$-]+$/.test(database)
+    ) throw new Error();
+  } catch {
+    throw codedError("INVENTORY_BACKUP_CONTROL_TARGET_INVALID");
+  }
+  try {
+    url.username = "root";
+    url.password = encodeURIComponent(password);
+  } catch {
+    throw codedError("INVENTORY_BACKUP_CONTROL_CREDENTIAL_INVALID");
+  }
+  return { ...environment, ERP_INVENTORY_CONTROL_DATABASE_URL: url.toString() };
+}
+
 function readWebHealthEnvironment(dotenvConfig) {
   const parsed = readDeploymentEnvironmentFile(dotenvConfig);
   return normalizeWebHealthEnvironment(parsed);
@@ -2702,13 +2747,13 @@ async function deploy(expectedHead) {
         await executeInventoryDeployment({
           projectRoot: PROJECT_ROOT,
           pm2Home: path.dirname(inventoryJournalFile()),
-          environment: parsedDeploymentEnvironment,
+          environment: normalizeInventoryControlEnvironment(parsedDeploymentEnvironment),
           commit: expectedHead,
           expectedServerUuid: pinnedDeploymentTarget.serverUuid,
           artifacts,
           priorArtifacts,
           bridgeBaseline: { candidate, prior: committed, candidateSourceCommit: bridge.sourceCommit },
-          candidateWebApp: { ...app, script: bundle, cwd: PROJECT_ROOT, instances: count, filter_env: [...app.filter_env, "ERP_INVENTORY_CONTROL_DATABASE_URL"], env: { ...app.env, ERP_INVENTORY_CONTROL_DATABASE_URL: "", DATABASE_URL: parsedDeploymentEnvironment.DATABASE_URL } },
+          candidateWebApp: { ...app, script: bundle, cwd: PROJECT_ROOT, instances: count, filter_env: [...app.filter_env, "ERP_INVENTORY_CONTROL_DATABASE_URL", "ERP_INVENTORY_CONTROL_USE_BACKUP_CREDENTIALS"], env: { ...app.env, ERP_INVENTORY_CONTROL_DATABASE_URL: "", ERP_INVENTORY_CONTROL_USE_BACKUP_CREDENTIALS: "", DATABASE_URL: parsedDeploymentEnvironment.DATABASE_URL } },
           bridgeConfigPath: candidate.mode === "enabled" ? bridge.pm2ConfigPath : null,
           installCandidate: async () => {
             try { installWebCandidate(webArtifact, webCandidate); }

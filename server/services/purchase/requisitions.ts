@@ -1,3 +1,4 @@
+import { scanAfter } from "../decisions/scan";
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, like, lt, sql } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
@@ -1447,7 +1448,7 @@ export async function getPurchaseRequisition(
 export async function listPendingPurchaseRequisitionControls(
   actor: Actor,
   /** `order: "ASC"` = الأقدم أوّلاً لصندوق القرارات (القصّ بالأحدث يُسقط أكثر الطلبات تأخّراً). */
-  page: { limit: number; cursor?: number | null; order?: "ASC" | "DESC" },
+  page: { limit: number; cursor?: number | null; order?: "ASC" | "DESC"; scan?: import("../decisions/scan").ScanPosition | null },
 ) {
   const branchCondition =
     actor.role === "admin"
@@ -1482,6 +1483,7 @@ export async function listPendingPurchaseRequisitionControls(
     .where(
       and(
         eq(purchaseRequisitionControlRequests.status, "PENDING"),
+        scanAfter(purchaseRequisitionControlRequests.id, page.scan),
         branchCondition,
         page.cursor == null
           ? undefined
