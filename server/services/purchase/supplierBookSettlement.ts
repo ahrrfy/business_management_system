@@ -1,4 +1,8 @@
-import { validExecutionEvidence } from "./returnEvidence";
+import {
+  readReversalValuation,
+  readValuation,
+  validExecutionEvidence,
+} from "./returnEvidence";
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
@@ -7,6 +11,7 @@ import {
   auditLogs,
   exchangeTransactions,
   goodsReceiptItems,
+  inventoryMovements,
   legacySupplierInvoiceSettlements,
   purchaseOrderControlRequests,
   purchaseOrderItems,
@@ -15,6 +20,9 @@ import {
   purchaseOrders,
   purchaseIntegrityCases,
   purchaseReturnRequests,
+  purchaseReturnItems,
+  purchaseReturnReversalItems,
+  purchaseReturnReversalRequests,
   purchaseReturnReversals,
   purchaseReturns,
   receipts,
@@ -668,6 +676,49 @@ async function loadContext(
         )
         .orderBy(asc(allocations.id))
     : [];
+  const physicalReversals = reversed.filter(
+    (row) => row.accountingEntryId == null,
+  );
+  const physicalRequests = physicalReversals.length
+    ? await tx
+        .select()
+        .from(purchaseReturnReversalRequests)
+        .where(
+          inArray(
+            purchaseReturnReversalRequests.id,
+            physicalReversals.map((row) => row.requestId),
+          ),
+        )
+    : [];
+  const physicalItems = physicalReversals.length
+    ? await tx
+        .select({
+          item: purchaseReturnReversalItems,
+          original: purchaseReturnItems,
+          movement: inventoryMovements,
+        })
+        .from(purchaseReturnReversalItems)
+        .leftJoin(
+          purchaseReturnItems,
+          eq(
+            purchaseReturnItems.id,
+            purchaseReturnReversalItems.purchaseReturnItemId,
+          ),
+        )
+        .leftJoin(
+          inventoryMovements,
+          eq(
+            inventoryMovements.id,
+            purchaseReturnReversalItems.inventoryMovementId,
+          ),
+        )
+        .where(
+          inArray(
+            purchaseReturnReversalItems.reversalId,
+            physicalReversals.map((row) => row.id),
+          ),
+        )
+    : [];
   function exceptionCredit(returned: (typeof formal)[number]) {
     const request = exceptionRequests.find((r) => r.id === returned.requestId);
     const entry = entries.find((e) => e.id === returned.accountingEntryId);
@@ -700,6 +751,91 @@ async function loadContext(
     )
       fail("مصدر رصيد الاستثناء لا يطابق مستنده واعتماده الفعلي");
     for (const r of reversalRows) {
+      if (r.accountingEntryId == null) {
+        const approval = physicalRequests.find((row) => row.id === r.requestId);
+        const rows = physicalItems.filter(
+          (row) => row.item.reversalId === r.id,
+        );
+        const requested: unknown = JSON.parse(r.payloadCanonical).lines;
+        if (
+          r.supplierId !== returned.supplierId ||
+          r.branchId !== returned.branchId ||
+          r.supplierInvoiceId != null ||
+          r.cashRepaymentReceiptId != null ||
+          ![r.netAmount, r.taxAmount, r.totalAmount].every((value) =>
+            money(value).isZero(),
+          ) ||
+          sha256(r.payloadCanonical) !== r.payloadHash ||
+          approval?.status !== "APPROVED" ||
+          approval.purchaseReturnId !== returned.id ||
+          approval.branchId !== returned.branchId ||
+          approval.payloadHash !== r.payloadHash ||
+          approval.payloadCanonical !== r.payloadCanonical ||
+          approval.appliedAt == null ||
+          approval.reviewedBy !== r.postedBy ||
+          approval.reviewedAt == null ||
+          approval.decisionKey == null ||
+          approval.decisionHash == null ||
+          !rows.length ||
+          !Array.isArray(requested) ||
+          requested.length !== rows.length ||
+          new Set(requested.map((line) => line.purchaseReturnItemId)).size !==
+            rows.length ||
+          !requested.every((line) =>
+            rows.some(
+              (row) =>
+                row.item.purchaseReturnItemId === line.purchaseReturnItemId &&
+                row.item.baseQuantity === line.baseQuantity,
+            ),
+          )
+        )
+          fail("عكس المخزون الصفري غير مثبت بمصدره واعتماده");
+        for (const { item, original, movement } of rows) {
+          if (
+            !original ||
+            original.purchaseReturnId !== returned.id ||
+            !movement ||
+            movement.variantId !== original.variantId ||
+            movement.branchId !== returned.branchId ||
+            movement.referenceType !== "PURCHASE_RETURN_REVERSAL" ||
+            movement.referenceId !== r.id ||
+            movement.movementType !== "IN" ||
+            movement.quantity !== item.baseQuantity ||
+            movement.signedDelta !== item.baseQuantity ||
+            ![item.netAmount, item.taxAmount, item.totalAmount].every((value) =>
+              money(value).isZero(),
+            )
+          )
+            fail("حركة عكس المخزون الصفري لا تطابق دليلها");
+          const originalValue = readValuation(
+            original.valuationEvidence,
+            original.valuationEvidenceHash,
+            {
+              variantId: original.variantId,
+              branchId: returned.branchId,
+              baseQuantity: original.baseQuantity,
+            },
+          );
+          if (!money(originalValue.inventoryAmount).isZero() || !money(originalValue.inventoryUnitCost).isZero())
+            fail("عكس المخزون بلا قيد لا يطابق قيمة المخزون الأصلية");
+          const saved = readReversalValuation(
+            item.valuationEvidence,
+            item.valuationEvidenceHash,
+            original.id,
+            original.valuationEvidenceHash!,
+            item.baseQuantity,
+          );
+          if (
+            ![
+              saved.inventoryAmount,
+              saved.netAmount,
+              saved.varianceAmount,
+            ].every((value) => money(value).isZero())
+          )
+            fail("عكس المخزون بلا قيد يجب أن يكون صفري القيمة بالكامل");
+        }
+        continue;
+      }
       const e = entries.find((e) => e.id === r.accountingEntryId);
       if (
         !e ||

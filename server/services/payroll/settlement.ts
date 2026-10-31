@@ -4,7 +4,6 @@ import Decimal from "decimal.js";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { fullEmployeeName } from "@shared/hr";
 import {
-  employees,
   employeeSpotBonuses,
   payrollAccountingEvents,
   payrollObligationAllocations,
@@ -43,6 +42,11 @@ import type {
   PayrollReturnInput,
 } from "./types";
 import { assertCommissionArtifactReadyForPayrollTx } from "../commissions/payrollReadiness";
+import {
+  assertPayrollEmployeeMembershipStable,
+  lockPayrollEmployeesTx,
+  payrollEmployeeMembership,
+} from "./employeeLocks";
 
 const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -429,7 +433,7 @@ export async function payRun(
   );
   const paymentYmd = actualDate(payment.paymentDate, "تاريخ الدفع");
   const replayed = await withTx(async (tx) => {
-    // ترتيب d83 الحاكم: خزائن الفروع (كلها بترتيب ثابت) → المالك SHARE → رأس المسيّر → الالتزامات.
+    // ترتيب d83 الحاكم: مصدر النقد → المالك SHARE → الموظفون تصاعدياً → رأس المسيّر → الالتزامات.
     const [preview] = await tx
       .select()
       .from(payrollRuns)
@@ -474,6 +478,8 @@ export async function payRun(
     }
     const previewObligations = await tx
       .select({
+        id: payrollObligations.id,
+        employeeId: payrollObligations.employeeId,
         branchId: payrollObligations.branchIdSnapshot,
         remainingAmount: payrollObligations.remainingAmount,
       })
@@ -582,6 +588,13 @@ export async function payRun(
       );
     }
 
+    const obligationMembershipPreview =
+      payrollEmployeeMembership(previewObligations);
+    const lockedEmployees = await lockPayrollEmployeesTx(
+      tx,
+      obligationMembershipPreview,
+      "دفع مسيّر الرواتب",
+    );
     const [run] = await tx
       .select()
       .from(payrollRuns)
@@ -615,16 +628,9 @@ export async function payRun(
         message: "تاريخ الدفع لا يسبق تاريخ استحقاق المسيّر.",
       });
     }
-    const obligations = await tx
-      .select({
-        obligation: payrollObligations,
-        firstName: employees.firstName,
-        fatherName: employees.fatherName,
-        grandfatherName: employees.grandfatherName,
-        lastName: employees.lastName,
-      })
+    const currentObligations = await tx
+      .select()
       .from(payrollObligations)
-      .leftJoin(employees, eq(payrollObligations.employeeId, employees.id))
       .where(
         and(
           eq(payrollObligations.runId, id),
@@ -637,6 +643,22 @@ export async function payRun(
         asc(payrollObligations.id),
       )
       .for("update");
+    assertPayrollEmployeeMembershipStable(
+      obligationMembershipPreview,
+      payrollEmployeeMembership(currentObligations),
+      lockedEmployees,
+      "دفع مسيّر الرواتب",
+    );
+    const obligations = currentObligations.map((obligation) => {
+      const employee = lockedEmployees.get(Number(obligation.employeeId));
+      return {
+        obligation,
+        firstName: employee?.firstName ?? null,
+        fatherName: employee?.fatherName ?? null,
+        grandfatherName: employee?.grandfatherName ?? null,
+        lastName: employee?.lastName ?? null,
+      };
+    });
     const originalTotal = obligations.reduce(
       (sum, row) => sum.plus(money(row.obligation.originalAmount)),
       money(0),

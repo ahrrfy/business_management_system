@@ -12,14 +12,106 @@
  *
  * ⇒ أيّ مفتاح ضبطٍ تشغيليّ يُقرأ في مسار الويب يجب أن يظهر في كتلة `env` لتطبيق erp-server.
  */
-import { readFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { tmpdir } from "node:os";
+import { createHash, randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { buildSync } from "esbuild";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 const ecosystem = readFileSync(
   path.resolve(process.cwd(), "ecosystem.config.cjs"),
   "utf8",
 );
+
+function webBootCall(legacyArgv: boolean) {
+  const file = path.resolve("server/index.ts");
+  const source = readFileSync(file, "utf8");
+  const ast = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+  const calls: ts.CallExpression[] = [];
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "awaitInventoryActivationRelease") calls.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(ast);
+  expect(calls).toHaveLength(1);
+  const call = calls[0];
+  const options = call.arguments[0];
+  if (!ts.isObjectLiteralExpression(options)) throw new Error("WEB_BOOT_OPTIONS_NOT_LITERAL");
+  const properties = options.properties.filter(ts.isPropertyAssignment);
+  const identity = properties.find(property => property.name.getText(ast) === "readIdentity")!;
+  const bundle = properties.find(property => property.name.getText(ast) === "bundle")!;
+  const start = call.getStart(ast);
+  const edits = [{ node: identity.initializer, text: 'async () => ({ database: "erp_synthetic_boot", serverUuid: "synthetic-server-uuid" })' }];
+  if (legacyArgv) edits.push({ node: bundle.initializer, text: "process.argv[1]" });
+  let text = call.getText(ast);
+  for (const edit of edits.sort((a, b) => b.node.getStart(ast) - a.node.getStart(ast))) {
+    text = text.slice(0, edit.node.getStart(ast) - start) + edit.text + text.slice(edit.node.getEnd() - start);
+  }
+  return text;
+}
+
+function runWebBootFixture({ legacyArgv = false, wrongHash = false } = {}) {
+  const directory = mkdtempSync(path.join(tmpdir(), "erp-web-entry-"));
+  chmodSync(directory, 0o700);
+  const home = path.join(directory, "home");
+  mkdirSync(path.join(home, ".pm2"), { recursive: true, mode: 0o700 });
+  writeFileSync(path.join(directory, "package.json"), '{"type":"module"}\n');
+  const bundle = path.join(directory, "index.js");
+  buildSync({
+    stdin: { contents: `import { fileURLToPath } from "node:url";
+import { awaitInventoryActivationRelease } from ${JSON.stringify(path.resolve("server/config/inventoryActivationBoot.ts"))};
+await ${webBootCall(legacyArgv)};
+console.log(JSON.stringify({ bundle: fileURLToPath(import.meta.url), argv: process.argv[1], released: true }));`, resolveDir: process.cwd(), loader: "ts" },
+    platform: "node", target: "node24", format: "esm", bundle: true, outfile: bundle,
+  });
+  const hash = wrongHash ? "0".repeat(64) : createHash("sha256").update(readFileSync(bundle)).digest("hex");
+  const artifacts = [{ name: "erp-server", bundle, script: bundle, hash, scriptHash: hash, instances: 1 }];
+  const id = randomUUID();
+  const commit = "a".repeat(40);
+  writeFileSync(path.join(home, ".pm2", "erp-inventory-activation.json"), JSON.stringify({
+    version: 1, id, nonce: "b".repeat(64), commit, phase: "RELEASED", database: "erp_synthetic_boot", serverUuid: "synthetic-server-uuid", artifacts,
+    active: { activationId: id, commit, projectionCommit: commit, readyVersion: 1, database: "erp_synthetic_boot", serverUuid: "synthetic-server-uuid", artifacts },
+  }), { mode: 0o600 });
+  const wrapper = path.join(directory, "ProcessContainer.cjs");
+  writeFileSync(wrapper, 'const { pathToFileURL } = require("node:url"); import(pathToFileURL(process.argv[2]).href).catch(error => { console.error(error.message); process.exitCode = 1; });\n');
+  const environment = Object.fromEntries(Object.entries({ PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: process.env.TEMP, TMP: process.env.TMP,
+    NODE_ENV: "production", HOME: home, USERPROFILE: home }).filter(([, value]) => value !== undefined));
+  const result = spawnSync(process.execPath, [wrapper, bundle], { encoding: "utf8", timeout: 10000, cwd: directory, env: environment });
+  return { bundle, wrapper, result };
+}
+
+describe("compiled web entry inventory artifact identity", () => {
+  it("uses the production ESM build contract", () => {
+    const pkg = JSON.parse(readFileSync(path.resolve("package.json"), "utf8"));
+    expect(pkg.type).toBe("module");
+    const command = (pkg.scripts.build as string).split("&&").find(part => /esbuild server\/index\.ts\b/.test(part));
+    expect(command).toMatch(/--format=esm\b/);
+    expect(command).toMatch(/--target=node24\b/);
+  });
+
+  it("boots the actual compiled entry when argv points at a cluster wrapper", () => {
+    const { bundle, wrapper, result } = runWebBootFixture();
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout.trim())).toEqual({ bundle, argv: wrapper, released: true });
+  });
+
+  it("reproduces the old argv identity failure through the real boot fence", () => {
+    const { result } = runWebBootFixture({ legacyArgv: true });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("INVENTORY_BOOT_ARTIFACT_MISMATCH");
+  });
+
+  it("still refuses a wrong artifact hash before releasing boot", () => {
+    const { result } = runWebBootFixture({ wrongHash: true });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("INVENTORY_BOOT_ARTIFACT_MISMATCH");
+    expect(result.stdout).not.toContain('"released":true');
+  });
+});
 
 /** كتلة `env` لتطبيق erp-server وحدها (لا كتل التطبيقات الأخرى). */
 function webEnvBlock(): string {

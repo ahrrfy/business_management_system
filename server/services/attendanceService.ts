@@ -964,18 +964,19 @@ export async function recordAttendance(input: RecordAttendanceInput) {
     if (input.actor && input.actor.role !== "admin" && emp.userId != null && Number(emp.userId) === Number(input.actor.userId)) {
       throw new Error("لا تسجّل حضور نفسك — يلزم أن يُدخِله مستخدمٌ آخر (فصل المهام).");
     }
-    // حارس المسيّر المُقفَل (تدقيق ١٧/٧): لا تسجيل/تعديل حضور لشهرٍ مسيّرُه معتمد/مدفوع — الحضور
-    // أساسُ حساب المسيّر (ساعات/غياب/إجازة)، وتغييره بعد الاعتماد يُفسد مسيّراً مُلتزَماً مالياً
-    // (المدفوع قُيّد PAYMENT_OUT فعلاً). التصحيح يمرّ بإلغاء اعتماد المسيّر أولاً (revertRun).
+    // أي مسيّر قائم يجمّد مصدر الحضور الذي بُنيت منه بنوده. السماح بتعديل الحضور مع مسودة
+    // يجعل approveRun يعتمد رقماً قديماً؛ احذف المسودة الأولى قبل التصحيح. المعادة من اعتماد
+    // سابق تبقى محفوظة للأثر التدقيقي ولا تقبل تغيير المصدر بصمت.
     const period = String(input.attendanceDate).slice(0, 7); // YYYY-MM
     const [lockedRun] = await tx
       .select({ id: payrollRuns.id, status: payrollRuns.status })
       .from(payrollRuns)
-      .where(and(eq(payrollRuns.period, period), inArray(payrollRuns.status, ["approved", "paid"])))
+      .where(and(eq(payrollRuns.period, period), inArray(payrollRuns.status, ["draft", "approved", "paid"])))
       .limit(1);
     if (lockedRun) {
+      const label = lockedRun.status === "paid" ? "مدفوع" : lockedRun.status === "approved" ? "معتمَد" : "مسودّة";
       throw new Error(
-        `لا يمكن تسجيل الحضور: مسيّر رواتب شهر ${period} ${lockedRun.status === "paid" ? "مدفوع" : "معتمَد"} — ألغِ اعتماد المسيّر أولاً للتعديل`,
+        `لا يمكن تسجيل الحضور: يوجد مسيّر رواتب ${label} لشهر ${period} بُني على بيانات الحضور الحالية — احذف المسودة غير المعتمدة قبل التصحيح أو استخدم مسار تصحيح الرواتب الموثق`,
       );
     }
     /*

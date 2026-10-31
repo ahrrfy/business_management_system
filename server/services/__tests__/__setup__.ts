@@ -214,6 +214,76 @@ export async function readSnapshotWithReconnect(
   throw new Error("__setup__: unreachable cleanup snapshot retry");
 }
 
+export class NonEmptyTestDatabaseError extends Error {
+  constructor(readonly populatedTables: string[]) {
+    super(
+      `Refusing projection bootstrap: complete test database is not empty (${populatedTables.join(", ")})`,
+    );
+    this.name = "NonEmptyTestDatabaseError";
+  }
+}
+
+interface LateCleanupRetryOptions {
+  bootstrap: () => Promise<void>;
+  drain: () => Promise<void>;
+  clearLateTables: (tables: string[]) => Promise<void>;
+  maxRetries?: number;
+}
+
+/**
+ * A background best-effort writer may commit after the cleanup snapshot. Retry
+ * only that exceptional path; the final bootstrap attempt remains the
+ * independent whole-database invariant and fails closed after the cap.
+ */
+export async function retryLateTestCleanup({
+  bootstrap,
+  drain,
+  clearLateTables,
+  maxRetries = 3,
+}: LateCleanupRetryOptions): Promise<void> {
+  if (!Number.isInteger(maxRetries) || maxRetries < 0) {
+    throw new Error("__setup__: maxRetries must be a non-negative integer");
+  }
+  for (let retry = 0; ; retry++) {
+    try {
+      await bootstrap();
+      return;
+    } catch (error) {
+      if (!(error instanceof NonEmptyTestDatabaseError) || retry >= maxRetries) {
+        throw error;
+      }
+      await drain();
+      await clearLateTables(error.populatedTables);
+    }
+  }
+}
+
+async function clearPopulatedSnapshot(
+  conn: mysql.Connection,
+  populated: string[],
+  deleteTriggeredTables: Set<string>,
+): Promise<void> {
+  for (const table of populated) {
+    // جداول الأثر غير القابل للمحو تحرس DELETE بتريغر مقصود في الإنتاج. تنظيف الاختبار وحده
+    // يستعمل TRUNCATE عليها (مع تعطيل FK) كي لا نضع منفذ bypass داخل التريغر الإنتاجي.
+    // بقية الجداول تبقى على DELETE للأسباب الموثقة أعلى الملف.
+    try {
+      await clearTestTable(
+        conn,
+        table,
+        deleteTriggeredTables.has(table),
+        true,
+      );
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      const operation = deleteTriggeredTables.has(table)
+        ? "TRUNCATE TABLE"
+        : "DELETE FROM";
+      throw new Error(`__setup__ cleanup: ${operation} ${table} failed: ${message}`);
+    }
+  }
+}
+
 /** Only complete harness cleanup may call this; it verifies every application table is empty. */
 export async function bootstrapEmptyInventoryProjection(
   conn: mysql.Connection,
@@ -231,10 +301,9 @@ export async function bootstrapEmptyInventoryProjection(
     !tables.includes("productVariants")
   )
     throw new Error("Test projection schema missing");
-  if ((await populatedTestTables(conn, tables)).length)
-    throw new Error(
-      "Refusing projection bootstrap: complete test database is not empty",
-    );
+  const populated = await populatedTestTables(conn, tables);
+  if (populated.length)
+    throw new NonEmptyTestDatabaseError(populated);
   await conn.query(
     "INSERT INTO inventoryProjectionState (id, readyVersion) VALUES (1, 1)",
   );
@@ -242,28 +311,27 @@ export async function bootstrapEmptyInventoryProjection(
 
 export async function cleanCompleteTestDatabase() {
   if (!TEST_DB_URL) return;
+  // Drain the application pool before taking the point-in-time snapshot. Best-effort
+  // notifications are intentionally detached from request completion and otherwise
+  // can commit a row while the dedicated cleanup connection is deleting the snapshot.
+  await closeDb();
   const { conn, populated, deleteTriggeredTables } =
     await readSnapshotWithReconnect(TEST_DB_URL);
 
   try {
     await conn.query("SET FOREIGN_KEY_CHECKS = 0");
     // One exact existence snapshot avoids hundreds of empty DELETE round trips per pure unit test.
-    for (const t of populated) {
-      // جداول الأثر غير القابل للمحو تحرس DELETE بتريغر مقصود في الإنتاج. تنظيف الاختبار وحده
-      // يستعمل TRUNCATE عليها (مع تعطيل FK) كي لا نضع منفذ bypass داخل التريغر الإنتاجي.
-      // بقية الجداول تبقى على DELETE للأسباب الموثقة أعلى الملف.
-      try {
-        await clearTestTable(conn, t, deleteTriggeredTables.has(t), true);
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        const operation = deleteTriggeredTables.has(t)
-          ? "TRUNCATE TABLE"
-          : "DELETE FROM";
-        throw new Error(`__setup__ cleanup: ${operation} ${t} failed: ${msg}`);
-      }
-    }
+    await clearPopulatedSnapshot(conn, populated, deleteTriggeredTables);
     await conn.query("SET FOREIGN_KEY_CHECKS = 1");
-    await bootstrapEmptyInventoryProjection(conn, TEST_DB_URL);
+    await retryLateTestCleanup({
+      bootstrap: () => bootstrapEmptyInventoryProjection(conn, TEST_DB_URL),
+      drain: closeDb,
+      clearLateTables: async (lateTables) => {
+        await conn.query("SET FOREIGN_KEY_CHECKS = 0");
+        await clearPopulatedSnapshot(conn, lateTables, deleteTriggeredTables);
+        await conn.query("SET FOREIGN_KEY_CHECKS = 1");
+      },
+    });
     setSocketRef(conn, false);
   } catch (err) {
     await closeCleanupConn();

@@ -131,7 +131,7 @@ beforeEach(async () => {
     firstName: "حسن",
     lastName: "التميمي",
     payType: "monthly",
-    salary: "1000000.00",
+    salary: "31000000.00",
     allowances: "0.00",
     isActive: true,
   });
@@ -146,6 +146,7 @@ beforeEach(async () => {
     referenceNumber: "ADVANCE-CANCEL-TREASURY-FUND",
     createdBy: 2,
   });
+  await db().insert(s.shifts).values({ id: 901, branchId: 1, userId: 2, openingBalance: "1000000.00", status: "OPEN", shiftType: "RETAIL", openGuard: "1:2:RETAIL" });
 });
 
 describe("employee advance voucher cancellation", () => {

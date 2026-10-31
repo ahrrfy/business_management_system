@@ -53,7 +53,7 @@ beforeEach(async () => {
   ]);
   await d.insert(s.employees).values([
     { id: 1, firstName: "أحمد", lastName: "الجبوري", payType: "monthly", salary: "900000", employmentStatus: "active", isActive: true, branchId: 1, userId: 2, hireDate: "2026-01-01" },
-    { id: 2, firstName: "زينب", lastName: "الربيعي", payType: "monthly", salary: "800000", employmentStatus: "active", isActive: true, branchId: 1, hireDate: "2026-01-01" },
+    { id: 2, firstName: "زينب", lastName: "الربيعي", payType: "monthly", salary: "31000000", employmentStatus: "active", isActive: true, branchId: 1, hireDate: "2026-01-01" },
   ]);
   await d.insert(s.receipts).values({
     branchId: 1,
@@ -66,6 +66,7 @@ beforeEach(async () => {
     referenceNumber: "TEST-TREASURY-FUND",
     createdBy: 9,
   });
+  await d.insert(s.shifts).values({ id: 901, branchId: 1, userId: 9, openingBalance: "10000000.00", status: "OPEN", shiftType: "RETAIL", openGuard: "1:9:RETAIL" });
   await d.insert(s.hrFingerprintDevices).values({ id: 10, name: "جهاز الرئيسي", serialNumber: "SNTERM1", protocol: "AIFACE_WS", enabled: true, branchId: 1 });
   await d.insert(s.hrDeviceUsers).values({ deviceId: 10, enrollId: 7, name: "احمد", employeeId: 1, effectiveFrom: "2026-01-01" });
 });

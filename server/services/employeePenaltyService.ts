@@ -2,7 +2,7 @@ import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import Decimal from "decimal.js";
-import { employeePenalties, employees, payrollRuns } from "../../drizzle/schema";
+import { employeePenalties, payrollRuns } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { withTx, type Actor, type MaybeScopedActor } from "./tx";
 import { money, round2, toDbMoney } from "./money";
@@ -13,6 +13,45 @@ function requireDb() {
   const db = getDb();
   if (!db) throw new Error("DATABASE_URL not set");
   return db;
+}
+
+function isNowaitSourceConflict(error: unknown): boolean {
+  let current: unknown = error;
+  for (
+    let depth = 0;
+    depth < 5 && current && typeof current === "object";
+    depth += 1
+  ) {
+    const value = current as {
+      code?: unknown;
+      errno?: unknown;
+      cause?: unknown;
+    };
+    if (value.code === "ER_LOCK_NOWAIT" || Number(value.errno) === 3572)
+      return true;
+    current = value.cause;
+  }
+  return false;
+}
+
+async function currentPenaltySourceLock<T>(
+  lock: PromiseLike<T>,
+  action: "اعتماد" | "إلغاء",
+): Promise<T> {
+  try {
+    return await lock;
+  } catch (error) {
+    if (!isNowaitSourceConflict(error)) throw error;
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: `لم يكتمل ${action} العقوبة`,
+        why: "هناك عملية رواتب أخرى تثبّت حالياً مسيّر الشهر أو سجل العقوبة نفسه",
+        doThis:
+          "انتظر اكتمال العملية الجارية، حدّث بطاقة الموظف، ثم أعد المحاولة",
+      }),
+    });
+  }
 }
 
 export type PenaltyType =
@@ -100,14 +139,13 @@ export async function approveEmployeePenalty(
 ) {
   return withTx(async (tx) => {
     const currentActor = await resolveHrActorTx(tx, actor, "hrEnterprise.penalties.approve");
-    const [p] = await tx
+    const [preview] = await tx
       .select()
       .from(employeePenalties)
       .where(eq(employeePenalties.id, id))
-      .limit(1)
-      .for("update");
+      .limit(1);
 
-    if (!p) {
+    if (!preview) {
       throw new TRPCError({
         code: "NOT_FOUND",
         message: appErrorMessage({
@@ -117,8 +155,64 @@ export async function approveEmployeePenalty(
         }),
       });
     }
+    // نفس قفل التجميع في السلف والمسيّر: الموظف قبل رأس الشهر ثم القرار.
+    await lockHrEmployeeTx(tx, currentActor, preview.employeeId, preview.branchId);
+    const penaltyPeriod = String(preview.decisionDate).slice(0, 7);
+    const [existingRun] = money(preview.deductionAmount).gt(0)
+      ? await currentPenaltySourceLock(
+          tx
+            .select({ id: payrollRuns.id, status: payrollRuns.status })
+            .from(payrollRuns)
+            .where(eq(payrollRuns.period, penaltyPeriod))
+            .for("update", { noWait: true })
+            .limit(1),
+          "اعتماد",
+        )
+      : [];
+    if (existingRun) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "لا يمكن اعتماد العقوبة بعد إنشاء مسيّر الشهر",
+          why: `يوجد مسيّر ${existingRun.status} لشهر القرار ${penaltyPeriod} ولن تُلتقط العقوبة في لقطته الحالية`,
+          doThis: existingRun.status === "draft"
+            ? "احذف المسودة غير المعتمدة، اعتمد العقوبة، ثم ولّد المسيّر من جديد"
+            : "استخدم مسار تصحيح الرواتب الموثق ولا تضف الاستقطاع إلى لقطة معتمدة بصمت",
+        }),
+      });
+    }
+    const [p] = await currentPenaltySourceLock(
+      tx
+        .select()
+        .from(employeePenalties)
+        .where(eq(employeePenalties.id, id))
+        .for("update", { noWait: true })
+        .limit(1),
+      "اعتماد",
+    );
+    if (
+      !p ||
+      p.status !== preview.status ||
+      p.employeeId !== preview.employeeId ||
+      p.branchId !== preview.branchId ||
+      p.penaltyType !== preview.penaltyType ||
+      p.decisionNumber !== preview.decisionNumber ||
+      String(p.decisionDate) !== String(preview.decisionDate) ||
+      p.reason !== preview.reason ||
+      !money(p.deductionDays).eq(money(preview.deductionDays)) ||
+      !money(p.deductionAmount).eq(money(preview.deductionAmount)) ||
+      p.payrollRunId !== preview.payrollRunId
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "لم يكتمل اعتماد العقوبة",
+          why: "تغيّرت العقوبة أثناء الاعتماد",
+          doThis: "حدّث بطاقة الموظف وراجع الحالة والمبلغ قبل إعادة الاعتماد",
+        }),
+      });
+    }
 
-    await lockHrEmployeeTx(tx, currentActor, p.employeeId, p.branchId);
     if (p.status !== "DRAFT") {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -162,14 +256,13 @@ export async function cancelEmployeePenalty(
 ) {
   return withTx(async (tx) => {
     const currentActor = await resolveHrActorTx(tx, actor, "hrEnterprise.penalties.cancel");
-    const [p] = await tx
+    const [preview] = await tx
       .select()
       .from(employeePenalties)
       .where(eq(employeePenalties.id, id))
-      .limit(1)
-      .for("update");
+      .limit(1);
 
-    if (!p) {
+    if (!preview) {
       throw new TRPCError({
         code: "NOT_FOUND",
         message: appErrorMessage({
@@ -180,14 +273,62 @@ export async function cancelEmployeePenalty(
       });
     }
 
-    await lockHrEmployeeTx(tx, currentActor, p.employeeId, p.branchId);
-    if (p.status === "APPLIED") {
+    // الموظف ثم رأس المسيّر ثم المصدر؛ NOWAIT يمنع الانتظار العكسي أمام التوليد.
+    await lockHrEmployeeTx(tx, currentActor, preview.employeeId, preview.branchId);
+    if (money(preview.deductionAmount).gt(0) || preview.payrollRunId != null) {
+      const runPredicate =
+        preview.payrollRunId != null
+          ? eq(payrollRuns.id, preview.payrollRunId)
+          : eq(payrollRuns.period, String(preview.decisionDate).slice(0, 7));
+      await currentPenaltySourceLock(
+        tx
+          .select({ id: payrollRuns.id })
+          .from(payrollRuns)
+          .where(runPredicate)
+          .for("update", { noWait: true })
+          .limit(1),
+        "إلغاء",
+      );
+    }
+    const [p] = await currentPenaltySourceLock(
+      tx
+        .select()
+        .from(employeePenalties)
+        .where(eq(employeePenalties.id, id))
+        .for("update", { noWait: true })
+        .limit(1),
+      "إلغاء",
+    );
+    if (
+      !p ||
+      p.status !== preview.status ||
+      p.employeeId !== preview.employeeId ||
+      p.branchId !== preview.branchId ||
+      p.penaltyType !== preview.penaltyType ||
+      p.decisionNumber !== preview.decisionNumber ||
+      String(p.decisionDate) !== String(preview.decisionDate) ||
+      p.reason !== preview.reason ||
+      !money(p.deductionDays).eq(money(preview.deductionDays)) ||
+      !money(p.deductionAmount).eq(money(preview.deductionAmount)) ||
+      p.payrollRunId !== preview.payrollRunId
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "لم يكتمل إلغاء العقوبة",
+          why: "تغيّرت العقوبة أو صلتها بمسيّر الرواتب أثناء الإلغاء",
+          doThis: "حدّث بطاقة الموظف وراجع الحالة والمبلغ قبل إعادة الإلغاء",
+        }),
+      });
+    }
+    if (p.status === "APPLIED" || p.payrollRunId != null) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
           what: "لا يمكن إلغاء العقوبة",
           why: "تم تطبيق استقطاع هذه العقوبة بالفعل ضمن مسيّر رواتب معتمد",
-          doThis: "إذا كان هناك خطأ، يلزم إصدار مكافأة تعويضية أو تسوية مالية لاحقة",
+          doThis:
+            "إذا كان هناك خطأ، يلزم إصدار مكافأة تعويضية أو تسوية مالية لاحقة",
         }),
       });
     }

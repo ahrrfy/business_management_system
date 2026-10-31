@@ -8,9 +8,10 @@
  */
 import Decimal from "decimal.js";
 import { and, eq, sql } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { MySql2PreparedQuery } from "drizzle-orm/mysql2/session";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../drizzle/schema";
-import { getDb } from "../../db";
+import { getDb, getPool } from "../../db";
 import { createEmployee } from "../employeeService";
 import {
   IRAQI_LABOR_LAW_ARTICLE_57_PENALTY_CAP_RATIO,
@@ -20,6 +21,12 @@ import {
   payrollBreakdown,
 } from "../payroll/helpers";
 import { generatePayroll } from "../payrollService";
+import {
+  approveEmployeePenalty,
+  cancelEmployeePenalty,
+  createEmployeePenalty,
+} from "../employeePenaltyService";
+import { withTx } from "../tx";
 
 const TABLES = [
   "accountingEntries",
@@ -41,6 +48,55 @@ function db() {
   const d = getDb();
   if (!d) throw new Error("DATABASE_URL not set for tests");
   return d;
+}
+
+function pauseNextEmployeeForUpdate() {
+  const execute = MySql2PreparedQuery.prototype.execute;
+  let locked!: () => void;
+  let release!: () => void;
+  let paused = false;
+  const lockReached = new Promise<void>((resolve) => {
+    locked = resolve;
+  });
+  const mayContinue = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const spy = vi
+    .spyOn(MySql2PreparedQuery.prototype, "execute")
+    .mockImplementation(async function (
+      this: typeof MySql2PreparedQuery.prototype,
+      values,
+    ) {
+      const query = (this as unknown as { query: { sql: string } }).query.sql;
+      const result = await execute.call(this, values);
+      if (
+        !paused &&
+        query.includes("from `employees`") &&
+        query.includes("for update")
+      ) {
+        paused = true;
+        locked();
+        await mayContinue;
+      }
+      return result;
+    });
+  return { lockReached, release, restore: () => spy.mockRestore() };
+}
+
+async function waitForEmployeeLockWait(): Promise<void> {
+  for (let attempt = 0; attempt < 150; attempt += 1) {
+    const [rows] = await getPool().query(
+      `SELECT COUNT(*) AS n
+         FROM performance_schema.data_lock_waits w
+         JOIN performance_schema.data_locks requested
+           ON requested.ENGINE_LOCK_ID = w.REQUESTING_ENGINE_LOCK_ID
+        WHERE requested.OBJECT_SCHEMA = DATABASE()
+          AND requested.OBJECT_NAME = 'employees'`,
+    );
+    if (Number((rows as Array<{ n: number }>)[0]?.n ?? 0) > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("لم يصل اختبار العقوبة إلى انتظار قفل الموظف المتوقع");
 }
 
 async function resetDb() {
@@ -231,6 +287,225 @@ describe("Payroll Generation & Approval with Penalties — Integration DB Tests"
     await resetDb();
     await seedBaseData();
   });
+
+  it.each(["draft", "approved", "paid"] as const)(
+    "approves nonfinancial disciplinary records while payroll is %s",
+    async (status) => {
+      const employee = await createEmployee({
+        firstName: "موظف",
+        lastName: "بقرار انضباطي دون استقطاع",
+        payType: "monthly",
+        salary: "1000000",
+        branchId: 1,
+      });
+      if (!employee) throw new Error("Expected employee fixture");
+      await db().insert(s.payrollRuns).values({
+        id: 1000, period: "2026-06", status, createdBy: 1,
+      });
+      const actor = { userId: 1, role: "admin", branchId: 1 };
+      for (const penaltyType of ["ATTENTION", "WARNING", "SUSPENSION", "DISMISSAL"] as const) {
+        const penalty = await createEmployeePenalty(actor, {
+          employeeId: employee.id,
+          penaltyType,
+          decisionNumber: `NONFIN-${status}-${penaltyType}`,
+          decisionDate: "2026-06-15",
+          reason: "قرار انضباطي لا يغير استحقاق الراتب",
+          deductionDays: 1,
+          deductionAmount: "50000.00",
+        });
+        await expect(approveEmployeePenalty(actor, penalty.id)).resolves.toMatchObject({ status: "APPROVED" });
+      }
+      const rows = await db().select().from(s.employeePenalties);
+      expect(rows).toHaveLength(4);
+      expect(rows.every(row => row.status === "APPROVED" && row.deductionAmount === "0.00")).toBe(true);
+      const [run] = await db().select().from(s.payrollRuns).where(eq(s.payrollRuns.id, 1000));
+      expect(run.status).toBe(status);
+      expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+      expect(await db().select().from(s.receipts)).toHaveLength(1);
+    },
+  );
+
+  it.each(["draft", "approved", "paid"] as const)(
+    "still rejects a new monetary penalty while payroll is %s",
+    async (status) => {
+      const employee = await createEmployee({
+        firstName: "موظف",
+        lastName: "باستقطاع مالي لاحق للمسير",
+        payType: "monthly",
+        salary: "1000000",
+        branchId: 1,
+      });
+      if (!employee) throw new Error("Expected employee fixture");
+      const actor = { userId: 1, role: "admin", branchId: 1 };
+      const penalty = await createEmployeePenalty(actor, {
+        employeeId: employee.id,
+        penaltyType: "SALARY_DEDUCTION",
+        decisionNumber: `FIN-${status}`,
+        decisionDate: "2026-06-15",
+        reason: "استقطاع مالي لم تلتقطه لقطة المسير",
+        deductionAmount: "50000.00",
+      });
+      await db().insert(s.payrollRuns).values({
+        id: 1000, period: "2026-06", status, createdBy: 1,
+      });
+      await expect(approveEmployeePenalty(actor, penalty.id)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+      const [row] = await db().select().from(s.employeePenalties).where(eq(s.employeePenalties.id, penalty.id));
+      expect(row.status).toBe("DRAFT");
+      expect(row.approvedById).toBeNull();
+    },
+  );
+
+  it("serializes approval and cancellation on the employee lock without a deadlock", async () => {
+    const employee = await createEmployee({
+      firstName: "موظف",
+      lastName: "سباق اعتماد وإلغاء العقوبة",
+      payType: "monthly",
+      salary: "1000000",
+      branchId: 1,
+    });
+    if (!employee) throw new Error("Expected employee fixture");
+    const actor = { userId: 1, role: "admin", branchId: 1 };
+    const originalReason = "استقطاع قيد مراجعة متزامنة";
+    const penalty = await createEmployeePenalty(actor, {
+      employeeId: employee.id,
+      penaltyType: "SALARY_DEDUCTION",
+      decisionNumber: "PEN-APPROVE-CANCEL-RACE",
+      decisionDate: "2026-06-15",
+      reason: originalReason,
+      deductionAmount: "50000.00",
+    });
+
+    const barrier = pauseNextEmployeeForUpdate();
+    let approval: ReturnType<typeof approveEmployeePenalty> | undefined;
+    let cancellation: ReturnType<typeof cancelEmployeePenalty> | undefined;
+    try {
+      approval = approveEmployeePenalty(actor, penalty.id);
+      await barrier.lockReached;
+      cancellation = cancelEmployeePenalty(actor, penalty.id, "إلغاء متزامن");
+      await waitForEmployeeLockWait();
+      barrier.release();
+
+      const [approved, cancelled] = await Promise.allSettled([
+        approval,
+        cancellation,
+      ]);
+      expect(approved).toMatchObject({
+        status: "fulfilled",
+        value: { status: "APPROVED" },
+      });
+      expect(cancelled).toMatchObject({
+        status: "rejected",
+        reason: { code: "CONFLICT" },
+      });
+      if (cancelled.status === "rejected") {
+        expect(String(cancelled.reason)).not.toContain("ER_LOCK_DEADLOCK");
+      }
+    } finally {
+      barrier.release();
+      await Promise.allSettled(
+        [approval, cancellation].filter(Boolean) as Promise<unknown>[],
+      );
+      barrier.restore();
+    }
+
+    const [stored] = await db()
+      .select()
+      .from(s.employeePenalties)
+      .where(eq(s.employeePenalties.id, penalty.id));
+    expect(stored).toMatchObject({
+      status: "APPROVED",
+      approvedById: actor.userId,
+      payrollRunId: null,
+      reason: originalReason,
+    });
+    expect(await db().select().from(s.payrollRuns)).toHaveLength(0);
+    expect(await db().select().from(s.payrollItems)).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    expect(await db().select().from(s.receipts)).toHaveLength(1);
+  }, 15_000);
+
+  it("maps a busy payroll source lock to CONFLICT and rolls cancellation back", async () => {
+    const employee = await createEmployee({
+      firstName: "موظف",
+      lastName: "مصدر عقوبة مقفول",
+      payType: "monthly",
+      salary: "1000000",
+      branchId: 1,
+    });
+    if (!employee) throw new Error("Expected employee fixture");
+    const actor = { userId: 1, role: "admin", branchId: 1 };
+    const penalty = await createEmployeePenalty(actor, {
+      employeeId: employee.id,
+      penaltyType: "SALARY_DEDUCTION",
+      decisionNumber: "PEN-BUSY-RUN",
+      decisionDate: "2026-07-15",
+      reason: "استقطاع لا يجوز إلغاؤه فوق مصدر مشغول",
+      deductionAmount: "50000.00",
+    });
+    const [runResult] = await db().insert(s.payrollRuns).values({
+      period: "2026-07",
+      status: "draft",
+      createdBy: actor.userId,
+    });
+    let locked!: () => void;
+    let release!: () => void;
+    const lockReached = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    const mayContinue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const holder = withTx(async (tx) => {
+      await tx
+        .select({ id: s.payrollRuns.id })
+        .from(s.payrollRuns)
+        .where(eq(s.payrollRuns.id, runResult.insertId))
+        .for("update")
+        .limit(1);
+      locked();
+      await mayContinue;
+    });
+    await lockReached;
+
+    const cancellation = cancelEmployeePenalty(
+      actor,
+      penalty.id,
+      "إلغاء أثناء قفل المسيّر",
+    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const outcome = await Promise.race([
+        cancellation.then(
+          (value) => ({ status: "fulfilled" as const, value }),
+          (reason: unknown) => ({ status: "rejected" as const, reason }),
+        ),
+        new Promise<{ status: "timeout" }>((resolve) => {
+          timer = setTimeout(() => resolve({ status: "timeout" }), 2_000);
+        }),
+      ]);
+      expect(outcome).toMatchObject({
+        status: "rejected",
+        reason: { code: "CONFLICT" },
+      });
+    } finally {
+      if (timer) clearTimeout(timer);
+      release();
+      await Promise.allSettled([holder, cancellation]);
+    }
+
+    const [stored] = await db()
+      .select()
+      .from(s.employeePenalties)
+      .where(eq(s.employeePenalties.id, penalty.id));
+    expect(stored).toMatchObject({
+      status: "DRAFT",
+      approvedById: null,
+      payrollRunId: null,
+    });
+    expect(await db().select().from(s.payrollItems)).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    expect(await db().select().from(s.receipts)).toHaveLength(1);
+  }, 15_000);
 
   it("successfully generates and auto-approves payroll for an employee with penalty within 10% cap", async () => {
     const emp = await createEmployee({

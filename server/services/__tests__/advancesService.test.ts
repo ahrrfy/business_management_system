@@ -4,15 +4,15 @@
  *  - المنح: سند صرف OUT حقيقي في receipts (خزينة) + قيد PAYMENT_OUT + سلفة ACTIVE بـremaining=amount.
  *  - قرار Maker-Checker الموثَّق: مبلغ يبلغ عتبة الاعتماد الثنائي يُرفض قبل إنشاء أي شيء.
  *  - التوليد: advanceDeduction يُملأ ضمن deductions (لا فوقها) وnet ينقص.
- *  - الدفع: يُنقص remaining، وSETTLED عند الصفر؛ monthlyDeduction يقسّط عبر شهرين؛
- *    سقف الخصم = remaining؛ عكس ثم إعادة دفع لا يخصم مرّتين (تسوية أول دفع فقط).
+ *  - الدفع: يجمع سلف الراتب في شهرها ويستقطعها كاملة بلا ترحيل؛ عكس ثم إعادة دفع
+ *    لا يخصم مرّتين، والدين الآخر وحده يحتفظ بعقده المستقل.
  *  - التحرير: الاستقطاع اليدوي لا يهبط دون جزء السلفة المولَّد.
  *  - الإلغاء: قبل أي خصم فقط؛ بعد خصم يُرفض. (السند الأصلي لا يُعكَس آلياً — شأن الخزينة.)
  *  - تعدّد السلف: الأقدم أولاً، واحدة تلو الأخرى.
  * (عزل الفرع: المسيّر مركزي لكل الشركة بلا عزل فرع في payrollService — لا اختبار عزل هنا عمداً.)
  */
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { baghdadToday } from "../businessDay";
@@ -24,6 +24,7 @@ import {
   suggestDeductionsForPeriod,
   type GrantAdvanceInput,
 } from "../advances";
+import { assignEmployeeCustody, returnEmployeeCustody } from "../employeeCustodyService";
 import { createEmployee } from "../employeeService";
 import { approveRun, cancelRun, generatePayroll, getRun, payRun, returnSalaryPayment, updateItem } from "../payrollService";
 import { approveVoucher } from "../voucherService";
@@ -32,6 +33,9 @@ const ACTOR = { userId: 1, branchId: 1, role: "admin" };
 // SOD: المُعتمِد/الدافع يجب أن يختلف عن المُولِّد.
 const APPROVER = { userId: 2, branchId: 1, role: "manager" };
 const RETURN_APPROVER = { userId: 3, branchId: 1, role: "manager" };
+const CURRENT_PERIOD = baghdadToday().slice(0, 7);
+const [TEST_YEAR, TEST_MONTH] = CURRENT_PERIOD.split("-").map(Number);
+const TEST_MONTH_END = new Date(Date.UTC(TEST_YEAR, TEST_MONTH, 0, 12));
 let requestSeq = 0;
 async function grantAdvance(
   input: Omit<GrantAdvanceInput, "clientRequestId"> & { clientRequestId?: string },
@@ -52,8 +56,11 @@ const TABLES = [
   "receipts",
   "shifts",
   "idempotencyKeys",
+  "employeeAdvanceRepaymentAllocations",
+  "terminationAdvanceAllocations",
   "advanceSettlements",
   "employeeAdvances",
+  "employeeCustody",
   "payrollItems",
   "payrollRuns",
   "attendance",
@@ -85,6 +92,7 @@ async function seedBase() {
     { id: 2, openId: "t-approver", name: "مدقّق", role: "manager", branchId: 1, isOwner: true },
     { id: 3, openId: "t-return-approver", name: "مالك مستقل للإعادة", role: "manager", branchId: 1, isOwner: true },
   ]);
+  await d.insert(s.shifts).values({ id: 901, branchId: 1, userId: 2, openingBalance: "100000000.00", status: "OPEN", shiftType: "RETAIL", openGuard: "1:2:RETAIL" });
   await d.insert(s.receipts).values({
     branchId: 1, shiftId: null, cashBucket: "TREASURY", direction: "IN",
     amount: "100000000.00", paymentMethod: "CASH", status: "COMPLETED",
@@ -92,14 +100,32 @@ async function seedBase() {
   });
 }
 beforeEach(async () => {
+  vi.setSystemTime(TEST_MONTH_END);
   requestSeq = 0;
   await reset();
   await seedBase();
 });
+afterAll(() => vi.useRealTimers());
 
 async function seedEmployee(salary = "1000000") {
   const e = await createEmployee({ firstName: "علي", lastName: "العبيدي", payType: "monthly", salary, allowances: "0", branchId: 1 });
   return e!;
+}
+
+async function createCustodyDeduction(employeeId: number, amount = "120000") {
+  const custody = await assignEmployeeCustody(ACTOR, {
+    employeeId,
+    itemType: "DEVICE",
+    itemName: `قارئ باركود للاختبار ${++requestSeq}`,
+    handoverDate: baghdadToday(),
+  });
+  return returnEmployeeCustody(ACTOR, {
+    id: Number(custody.id),
+    actualReturnDate: baghdadToday(),
+    status: "LOST",
+    damageAmount: amount,
+    returnNotes: "تعويض مثبت من مسار العهدة الحقيقي",
+  });
 }
 
 /** دورة توليد→اعتماد→دفع لشهر معيّن، تعيد المسيّر المدفوع. */
@@ -145,7 +171,7 @@ describe("advancesService — المنح", () => {
     const [r] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(adv.receiptId)));
     expect(r.direction).toBe("OUT");
     expect(Number(r.amount)).toBe(300000);
-    expect(r.cashBucket).toBe("TREASURY");
+    expect(r.cashBucket).toBe("DRAWER");
     expect(r.status).toBe("COMPLETED");
     expect(r.description).toContain("سلفة موظف");
 
@@ -219,45 +245,49 @@ describe("advancesService — دمج الرواتب (توليد → دفع → �
     const emp = await seedEmployee("1000000");
     await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "300000", monthlyDeduction: "100000", attachmentUrl: "https://files.example/receipt.jpg" }, ACTOR);
 
-    const run = await generatePayroll("2026-06", ACTOR);
+    const run = await generatePayroll(CURRENT_PERIOD, ACTOR);
     const item = run!.items[0];
-    expect(Number(item.advanceDeduction)).toBe(100000);
-    expect(Number(item.deductions)).toBe(100000); // ضمنها لا فوقها
-    expect(Number(item.net)).toBe(900000);
-    expect(Number(run!.totalDeductions)).toBe(100000);
-    expect(Number(run!.totalNet)).toBe(900000);
+    expect(Number(item.advanceDeduction)).toBe(300000);
+    expect(Number(item.deductions)).toBe(300000); // ضمنها لا فوقها
+    expect(Number(item.net)).toBe(700000);
+    expect(Number(run!.totalDeductions)).toBe(300000);
+    expect(Number(run!.totalNet)).toBe(700000);
   });
 
-  it("الدفع يُنقص remaining؛ التقسيط الشهري عبر شهرين حتى SETTLED عند الصفر", async () => {
+  it("الدفع يصفّر سلفة الراتب كاملة في شهرها ويحوّلها إلى SETTLED", async () => {
     const emp = await seedEmployee();
-    const adv = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "200000", monthlyDeduction: "100000" }, ACTOR);
+    const adv = await grantAdvance(
+      {
+        employeeId: emp.id,
+        branchId: 1,
+        amount: "200000",
+        monthlyDeduction: "100000",
+      },
+      ACTOR,
+    );
 
-    // شهورٌ ماضية: توليد مسيّر لشهرٍ لم يبدأ صار مرفوضاً (حارس الترقيات المؤجَّلة).
-    await fullPayCycle("2026-04");
-    let [row] = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.id, Number(adv.id)));
-    expect(Number(row.remaining)).toBe(100000);
-    expect(row.status).toBe("ACTIVE");
-
-    await fullPayCycle("2026-05");
-    [row] = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.id, Number(adv.id)));
+    const paid = await fullPayCycle(CURRENT_PERIOD);
+    expect(Number(paid!.items[0].advanceDeduction)).toBe(200000);
+    const [row] = await db()
+      .select()
+      .from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.id, Number(adv.id)));
     expect(Number(row.remaining)).toBe(0);
     expect(row.status).toBe("SETTLED");
-
-    // الشهر الثالث: لا استقطاع سلفة بعد التسوية.
-    const run3 = await generatePayroll("2026-06", ACTOR);
-    expect(Number(run3!.items[0].advanceDeduction)).toBe(0);
-    expect(Number(run3!.items[0].net)).toBe(1000000);
   });
 
   it("سقف الخصم = remaining (الشهر الأخير يخصم البقية فقط)", async () => {
     const emp = await seedEmployee();
     const adv = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "150000", monthlyDeduction: "100000" }, ACTOR);
 
-    await fullPayCycle("2026-06"); // خصم 100,000 ⇒ بقي 50,000
-    const run2 = await generatePayroll("2026-07", ACTOR);
-    expect(Number(run2!.items[0].advanceDeduction)).toBe(50000); // min(100000, 50000)
-    await approveRun(run2!.id, APPROVER);
-    await payRun(run2!.id, APPROVER);
+    await db()
+      .update(s.employeeAdvances)
+      .set({ remaining: "50000.00" })
+      .where(eq(s.employeeAdvances.id, Number(adv.id)));
+    const run = await generatePayroll(CURRENT_PERIOD, ACTOR);
+    expect(Number(run!.items[0].advanceDeduction)).toBe(50000);
+    await approveRun(run!.id, APPROVER);
+    await payRun(run!.id, APPROVER);
 
     const [row] = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.id, Number(adv.id)));
     expect(Number(row.remaining)).toBe(0);
@@ -270,7 +300,7 @@ describe("advancesService — دمج الرواتب (توليد → دفع → �
     const suggestion = await suggestDeductionsForPeriod([emp.id]);
     expect(Number(suggestion[emp.id]?.suggested)).toBe(250000);
 
-    const paid = await fullPayCycle("2026-06");
+    const paid = await fullPayCycle(CURRENT_PERIOD);
     expect(Number(paid!.items[0].advanceDeduction)).toBe(250000);
     expect(Number(paid!.items[0].net)).toBe(750000);
     const [row] = await db().select().from(s.employeeAdvances);
@@ -279,8 +309,17 @@ describe("advancesService — دمج الرواتب (توليد → دفع → �
 
   it("قيد الدفع PAYMENT_OUT بصافي البند بعد خصم السلفة (النقد الخارج فعلاً)", async () => {
     const emp = await seedEmployee();
-    await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "300000", monthlyDeduction: "100000", attachmentUrl: "https://files.example/receipt.jpg" }, ACTOR);
-    const run = await generatePayroll("2026-06", ACTOR);
+    await grantAdvance(
+      {
+        employeeId: emp.id,
+        branchId: 1,
+        amount: "300000",
+        monthlyDeduction: "100000",
+        attachmentUrl: "https://files.example/receipt.jpg",
+      },
+      ACTOR,
+    );
+    const run = await generatePayroll(CURRENT_PERIOD, ACTOR);
     await approveRun(run!.id, APPROVER);
     await payRun(run!.id, APPROVER);
 
@@ -288,18 +327,30 @@ describe("advancesService — دمج الرواتب (توليد → دفع → �
       .select()
       .from(s.accountingEntries)
       .where(eq(s.accountingEntries.dedupeKey, `PAYROLL:${run!.id}:${emp.id}`));
-    expect(Number(entry.amount)).toBe(900000); // 1,000,000 − 100,000
+    expect(Number(entry.amount)).toBe(700000); // 1,000,000 − 300,000
   });
 
   it("عكس مسيّر مدفوع ثم إعادة دفعه لا يخصم السلفة مرّتين (تسوية أول دفع فقط)", async () => {
     const emp = await seedEmployee();
-    const adv = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "300000", monthlyDeduction: "100000", attachmentUrl: "https://files.example/receipt.jpg" }, ACTOR);
-    const run = await generatePayroll("2026-06", ACTOR);
+    const adv = await grantAdvance(
+      {
+        employeeId: emp.id,
+        branchId: 1,
+        amount: "300000",
+        monthlyDeduction: "100000",
+        attachmentUrl: "https://files.example/receipt.jpg",
+      },
+      ACTOR,
+    );
+    const run = await generatePayroll(CURRENT_PERIOD, ACTOR);
     await approveRun(run!.id, APPROVER);
     await payRun(run!.id, APPROVER);
 
-    let [row] = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.id, Number(adv.id)));
-    expect(Number(row.remaining)).toBe(200000);
+    let [row] = await db()
+      .select()
+      .from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.id, Number(adv.id)));
+    expect(Number(row.remaining)).toBe(0);
 
     await returnPaidSalary(run!.id);
     await cancelRun(run!.id, APPROVER); // إعادة الفتح تعكس استحقاق السلفة append-only.
@@ -311,9 +362,12 @@ describe("advancesService — دمج الرواتب (توليد → دفع → �
       paymentMethod: "CASH",
       paymentDate: baghdadToday(),
     });
-    [row] = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.id, Number(adv.id)));
-    expect(Number(row.remaining)).toBe(200000);
-    expect(row.status).toBe("ACTIVE");
+    [row] = await db()
+      .select()
+      .from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.id, Number(adv.id)));
+    expect(Number(row.remaining)).toBe(0);
+    expect(row.status).toBe("SETTLED");
     const salaryPaymentKeys = await db()
       .select({ dedupeKey: s.accountingEntries.dedupeKey })
       .from(s.accountingEntries)
@@ -331,13 +385,25 @@ describe("advancesService — دمج الرواتب (توليد → دفع → �
 
   it("إعادة فتح مسيّر مدفوع تستعيد رصيد السلفة وتحفظ تاريخ التسوية append-only", async () => {
     const emp = await seedEmployee();
-    const adv = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "300000", monthlyDeduction: "100000", attachmentUrl: "https://files.example/receipt.jpg" }, ACTOR);
-    // دفع مسيّر يونيو ⇒ خُصمت ١٠٠ألف (المتبقّي ٢٠٠ألف)، وسُجِّلت تسوية مربوطة بالمسيّر.
-    const run1 = await generatePayroll("2026-06", ACTOR);
+    const adv = await grantAdvance(
+      {
+        employeeId: emp.id,
+        branchId: 1,
+        amount: "300000",
+        monthlyDeduction: "100000",
+        attachmentUrl: "https://files.example/receipt.jpg",
+      },
+      ACTOR,
+    );
+    // دفع مسيّر الشهر ⇒ خُصمت السلفة كاملة، وسُجِّلت تسوية مربوطة بالمسيّر.
+    const run1 = await generatePayroll(CURRENT_PERIOD, ACTOR);
     await approveRun(run1!.id, APPROVER);
     await payRun(run1!.id, APPROVER);
-    let [row] = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.id, Number(adv.id)));
-    expect(Number(row.remaining)).toBe(200000);
+    let [row] = await db()
+      .select()
+      .from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.id, Number(adv.id)));
+    expect(Number(row.remaining)).toBe(0);
     expect(await db().select().from(s.advanceSettlements)).toHaveLength(1);
 
     await returnPaidSalary(run1!.id);
@@ -354,87 +420,88 @@ describe("advancesService — دمج الرواتب (توليد → دفع → �
       paymentMethod: "CASH",
       paymentDate: baghdadToday(),
     });
-    [row] = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.id, Number(adv.id)));
-    expect(Number(row.remaining)).toBe(200000);
+    [row] = await db()
+      .select()
+      .from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.id, Number(adv.id)));
+    expect(Number(row.remaining)).toBe(0);
   });
 
   it("تحرير البند لا يُهبط الاستقطاع دون جزء السلفة المولَّد، ويقبل الزيادة فوقه", async () => {
     const emp = await seedEmployee();
-    await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "300000", monthlyDeduction: "100000", attachmentUrl: "https://files.example/receipt.jpg" }, ACTOR);
-    const run = await generatePayroll("2026-06", ACTOR);
+    await grantAdvance(
+      {
+        employeeId: emp.id,
+        branchId: 1,
+        amount: "300000",
+        monthlyDeduction: "100000",
+        attachmentUrl: "https://files.example/receipt.jpg",
+      },
+      ACTOR,
+    );
+    const run = await generatePayroll(CURRENT_PERIOD, ACTOR);
     const item = run!.items[0];
 
-    await expect(updateItem(Number(item.id), { deductions: "50000" })).rejects.toThrow(/لا يقلّ/);
+    await expect(
+      updateItem(Number(item.id), { deductions: "250000" }),
+    ).rejects.toThrow(/لا يقلّ/);
 
     // زيادة فوق جزء السلفة (غياب/جزاء إضافي) تُقبل وnet يعاد حسابه.
-    const updated = await updateItem(Number(item.id), { deductions: "120000" });
+    const updated = await updateItem(Number(item.id), { deductions: "320000" });
     const uItem = updated!.items[0];
-    expect(Number(uItem.deductions)).toBe(120000);
-    expect(Number(uItem.advanceDeduction)).toBe(100000); // ثابت كما وُلّد
-    expect(Number(uItem.net)).toBe(880000);
+    expect(Number(uItem.deductions)).toBe(320000);
+    expect(Number(uItem.advanceDeduction)).toBe(300000); // ثابت كما وُلّد
+    expect(Number(uItem.net)).toBe(680000);
   });
 
-  // ── سقف السلامة المالية: السلفة لا تُسوَّى إلا بمقدار الأجر المُقتطَع فعلاً ──────────────
-  // (خطأ سابق: سلفةٌ تفوق الأجر تُنتج net سالباً فيُتخطّى صرفُها النقديّ، لكن التسوية كانت تشطب
-  //  **كامل** السلفة ⇒ خسارة نقدية للشركة. الإصلاح يقصّ الاستقطاع عند الأجر المتاح.)
-  it("سلفة تفوق الراتب (بلا خصم شهري) تُقصّ عند الأجر ⇒ net=0، وتُسوَّى بالمُقتطَع فقط لا بكامل السلفة", async () => {
-    // راتب 300,000 وسلفة 600,000 بلا خصم شهري ⇒ الاقتراح الخام = كامل المتبقّي (600,000) > الراتب.
+  it("يرفض اعتماد مسيّر لا يستطيع تصفير سلفة راتب شهره ولا يسويها جزئياً", async () => {
     const emp = await seedEmployee("300000");
-    const adv = await grantAdvance(
-      { employeeId: emp.id, branchId: 1, amount: "600000", attachmentUrl: "https://files.example/r.jpg" },
-      ACTOR,
-    );
-    // موظف آخر موجب الصافي كي يتجاوز المسيّرُ بوّابةَ «الصافي الكلّي > 0» عند الاعتماد (بند emp صافيه صفر).
-    await createEmployee({ firstName: "حسن", lastName: "الجبوري", payType: "monthly", salary: "1000000", allowances: "0", branchId: 1 });
-
-    const run = await generatePayroll("2026-06", ACTOR);
-    const item = run!.items.find((i) => Number(i.employeeId) === emp.id)!;
-    // قبل الإصلاح: advanceDeduction=600000 وnet=-300000. بعده: مقصوص عند الراتب.
-    expect(Number(item.advanceDeduction)).toBe(300000);
-    expect(Number(item.deductions)).toBe(300000);
-    expect(Number(item.net)).toBe(0);
-
-    await approveRun(run!.id, APPROVER);
-    await payRun(run!.id, APPROVER);
-
-    // التسوية بمقدار المُقتطَع فعلاً (300,000) لا كامل السلفة ⇒ لا شطب 300,000 بلا مقابل نقديّ.
-    const [row] = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.id, Number(adv.id)));
-    expect(Number(row.remaining)).toBe(300000); // 600000 − 300000 (لا صفر!)
-    expect(row.status).toBe("ACTIVE"); // لم تُسوَّ بالكامل
-
-    // لا قيد صرف نقديّ للموظف (net=0) — ومع ذلك نقصت سلفته بالأجر المُقتطَع: لا خسارة ولا شطب مجّانيّ.
-    const empPay = await db()
+    const [advance] = await db()
+      .insert(s.employeeAdvances)
+      .values({
+        employeeId: emp.id,
+        branchId: 1,
+        amount: "600000.00",
+        remaining: "600000.00",
+        monthlyDeduction: "600000.00",
+        sourceType: "SALARY_ADVANCE",
+        payrollPeriod: CURRENT_PERIOD,
+        status: "ACTIVE",
+        createdBy: ACTOR.userId,
+      })
+      .$returningId();
+    const run = await generatePayroll(CURRENT_PERIOD, ACTOR);
+    await expect(approveRun(run!.id, APPROVER)).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+    });
+    const [row] = await db()
       .select()
-      .from(s.accountingEntries)
-      .where(eq(s.accountingEntries.dedupeKey, `PAYROLL:${run!.id}:${emp.id}`));
-    expect(empPay.length).toBe(0);
+      .from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.id, Number(advance.id)));
+    expect(row.remaining).toBe("600000.00");
+    expect(row.status).toBe("ACTIVE");
   });
 
-  it("سلفة تفوق الراتب تُستردّ بالأجر شهراً بعد شهر حتى SETTLED — المجموع = السلفة كاملةً (لا شطب مبكّر ولا ضياع)", async () => {
-    const emp = await seedEmployee("300000");
-    const adv = await grantAdvance(
-      { employeeId: emp.id, branchId: 1, amount: "600000", attachmentUrl: "https://files.example/r.jpg" },
-      ACTOR,
-    );
-    await createEmployee({ firstName: "حسن", lastName: "الجبوري", payType: "monthly", salary: "1000000", allowances: "0", branchId: 1 });
-
-    // الشهر ١: يُخصم 300,000 (الراتب) ⇒ يبقى 300,000، ACTIVE.
-    let run = await generatePayroll("2026-06", ACTOR);
-    await approveRun(run!.id, APPROVER);
-    await payRun(run!.id, APPROVER);
-    let [row] = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.id, Number(adv.id)));
-    expect(Number(row.remaining)).toBe(300000);
-    expect(row.status).toBe("ACTIVE");
-
-    // الشهر ٢: يُخصم الباقي 300,000 ⇒ SETTLED. المُستردّ الكلّي = 600,000 = السلفة (لا ضياع للشركة).
-    run = await generatePayroll("2026-07", ACTOR);
-    const item2 = run!.items.find((i) => Number(i.employeeId) === emp.id)!;
-    expect(Number(item2.advanceDeduction)).toBe(300000);
-    await approveRun(run!.id, APPROVER);
-    await payRun(run!.id, APPROVER);
-    [row] = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.id, Number(adv.id)));
-    expect(Number(row.remaining)).toBe(0);
-    expect(row.status).toBe("SETTLED");
+  it("لا يحمل سلفة راتب مؤرخة لشهر سابق إلى مسيّر الشهر الجاري", async () => {
+    const emp = await seedEmployee();
+    const [year, month] = CURRENT_PERIOD.split("-").map(Number);
+    const previous = new Date(Date.UTC(year, month - 2, 1))
+      .toISOString()
+      .slice(0, 7);
+    await db().insert(s.employeeAdvances).values({
+      employeeId: emp.id,
+      branchId: 1,
+      amount: "100000.00",
+      remaining: "100000.00",
+      monthlyDeduction: "100000.00",
+      sourceType: "SALARY_ADVANCE",
+      payrollPeriod: previous,
+      status: "ACTIVE",
+      createdBy: ACTOR.userId,
+    });
+    const run = await generatePayroll(CURRENT_PERIOD, ACTOR);
+    expect(Number(run!.items[0].advanceDeduction)).toBe(0);
+    expect(Number(run!.items[0].net)).toBe(1000000);
   });
 });
 
@@ -454,43 +521,211 @@ describe("advancesService — الإلغاء وتعدّد السلف", () => {
     expect(res.status).toBe("CANCELLED");
 
     // سلفة خُصم منها ⇒ الإلغاء مرفوض حتى لو عُكس سندها.
-    const a2 = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "200000", monthlyDeduction: "100000" }, ACTOR);
-    await fullPayCycle("2026-06");
-    await db().update(s.receipts).set({ status: "REVERSED" }).where(eq(s.receipts.id, Number(a2.receiptId)));
-    await expect(cancelAdvance({ advanceId: Number(a2.id), reason: "متأخر" }, ACTOR)).rejects.toThrow(/خُصم/);
+    const a2 = await grantAdvance(
+      {
+        employeeId: emp.id,
+        branchId: 1,
+        amount: "200000",
+        monthlyDeduction: "100000",
+      },
+      ACTOR,
+    );
+    await fullPayCycle(CURRENT_PERIOD);
+    await db()
+      .update(s.receipts)
+      .set({ status: "REVERSED" })
+      .where(eq(s.receipts.id, Number(a2.receiptId)));
+    await expect(
+      cancelAdvance({ advanceId: Number(a2.id), reason: "متأخر" }, ACTOR),
+    ).rejects.toThrow(/نشطة|خُصم/);
   });
 
-  it("السلفة الملغاة قبل الدفع لا تُخصم، ودفعُ مسيّرٍ وُلّد قبل إلغائها يُرفض باتّساق (CONFLICT)", async () => {
+  it("يلغي استقطاع عهدة غير نقدي بلا اختلاق سند أو عكس قيد الخسارة", async () => {
+    const employee = await seedEmployee();
+    const loss = await createCustodyDeduction(employee.id);
+    expect(loss.advanceId).toBeTypeOf("number");
+    expect(loss.accountingEntryId).toBeTypeOf("number");
+
+    const receiptsBefore = await db().select({ id: s.receipts.id }).from(s.receipts);
+    const entriesBefore = await db().select({ id: s.accountingEntries.id }).from(s.accountingEntries);
+    const [sourceEntryBefore] = await db().select().from(s.accountingEntries)
+      .where(eq(s.accountingEntries.id, Number(loss.accountingEntryId)));
+
+    const cancelled = await cancelAdvance(
+      { advanceId: Number(loss.advanceId), reason: "اعتماد إعفاء الموظف من التعويض" },
+      ACTOR,
+    );
+    expect(cancelled).toMatchObject({
+      status: "CANCELLED",
+      receiptId: null,
+      voucherNotice: expect.stringContaining("بلا حركة نقد أو مخزون"),
+    });
+
+    const [advanceAfter] = await db().select().from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.id, Number(loss.advanceId)));
+    const [custodyAfter] = await db().select().from(s.employeeCustody)
+      .where(eq(s.employeeCustody.id, Number(loss.id)));
+    const [sourceEntryAfter] = await db().select().from(s.accountingEntries)
+      .where(eq(s.accountingEntries.id, Number(loss.accountingEntryId)));
+    expect(advanceAfter.status).toBe("CANCELLED");
+    expect(advanceAfter.note).toContain("إلغاء استقطاع غير نقدي");
+    expect(custodyAfter.status).toBe("LOST");
+    expect(sourceEntryAfter).toMatchObject({
+      id: sourceEntryBefore.id,
+      entryType: "ADJUST",
+      dedupeKey: `CUSTODY_LOSS:${loss.id}`,
+      amount: sourceEntryBefore.amount,
+    });
+    expect(await db().select({ id: s.receipts.id }).from(s.receipts)).toHaveLength(receiptsBefore.length);
+    expect(await db().select({ id: s.accountingEntries.id }).from(s.accountingEntries)).toHaveLength(entriesBefore.length);
+
+    await expect(cancelAdvance({ advanceId: Number(loss.advanceId) }, ACTOR))
+      .rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(await db().select({ id: s.receipts.id }).from(s.receipts)).toHaveLength(receiptsBefore.length);
+    expect(await db().select({ id: s.accountingEntries.id }).from(s.accountingEntries)).toHaveLength(entriesBefore.length);
+  });
+
+  it("يرفض السلفة النقدية أو التاريخية بلا رابط سند يثبت عودة النقد", async () => {
+    const employee = await seedEmployee();
+    const inserted = await db().insert(s.employeeAdvances).values([
+      {
+        employeeId: employee.id, branchId: 1, amount: "100000.00", remaining: "100000.00",
+        sourceType: "SALARY_ADVANCE", payrollPeriod: CURRENT_PERIOD, status: "ACTIVE",
+        receiptId: null, createdBy: ACTOR.userId,
+      },
+      {
+        employeeId: employee.id, branchId: 1, amount: "20000.00", remaining: "20000.00",
+        sourceType: "LEGACY_UNCLASSIFIED", payrollPeriod: null, status: "ACTIVE",
+        receiptId: null, createdBy: ACTOR.userId,
+      },
+    ]).$returningId();
+
+    await expect(cancelAdvance({ advanceId: Number(inserted[0].id) }, ACTOR))
+      .rejects.toMatchObject({ code: "CONFLICT", message: expect.stringContaining("رابط سند الصرف مفقود") });
+    await expect(cancelAdvance({ advanceId: Number(inserted[1].id) }, ACTOR))
+      .rejects.toMatchObject({ code: "CONFLICT", message: expect.stringContaining("رابط سند الصرف مفقود") });
+
+    const stillActive = await db().select({ status: s.employeeAdvances.status })
+      .from(s.employeeAdvances)
+      .where(inArray(s.employeeAdvances.id, inserted.map((row) => Number(row.id))));
+    expect(stillActive.every((row) => row.status === "ACTIVE")).toBe(true);
+  });
+
+  it("يقبل السجل التاريخي أو الاستقطاع المرتبط بعد عكس سند صرفه الفعلي", async () => {
+    const employee = await seedEmployee();
+    const historicalSources = ["LEGACY_UNCLASSIFIED", "OTHER_DEDUCTION"] as const;
+
+    for (const sourceType of historicalSources) {
+      const advance = await grantAdvance(
+        { employeeId: employee.id, branchId: 1, amount: "40000" },
+        ACTOR,
+      );
+      await db().update(s.employeeAdvances)
+        .set({ sourceType, payrollPeriod: null })
+        .where(eq(s.employeeAdvances.id, Number(advance.id)));
+
+      await expect(cancelAdvance({ advanceId: Number(advance.id) }, ACTOR))
+        .rejects.toThrow(/سند صرفها ما زال سارياً/);
+      await db().update(s.receipts)
+        .set({ status: "REVERSED" })
+        .where(eq(s.receipts.id, Number(advance.receiptId)));
+
+      const cancelled = await cancelAdvance(
+        { advanceId: Number(advance.id), reason: "تصحيح سجل تاريخي موثق" },
+        ACTOR,
+      );
+      expect(cancelled).toMatchObject({
+        status: "CANCELLED",
+        receiptId: Number(advance.receiptId),
+        voucherNotice: expect.stringContaining("بعد عكس سند صرفها"),
+      });
+      const [stored] = await db().select().from(s.employeeAdvances)
+        .where(eq(s.employeeAdvances.id, Number(advance.id)));
+      expect(stored.status).toBe("CANCELLED");
+      expect(stored.note).not.toContain("إلغاء استقطاع غير نقدي");
+    }
+  });
+
+  it("يرفض إلغاء استقطاع عهدة استُوفي جزئياً أو أُعيد رصيده بعد العكس", async () => {
+    const employee = await seedEmployee();
+    const loss = await createCustodyDeduction(employee.id);
+    await db().update(s.employeeAdvances).set({ monthlyDeduction: "50000.00" })
+      .where(eq(s.employeeAdvances.id, Number(loss.advanceId)));
+
+    const paidRun = await fullPayCycle(CURRENT_PERIOD);
+    const [partiallyRecovered] = await db().select().from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.id, Number(loss.advanceId)));
+    expect(partiallyRecovered).toMatchObject({ status: "ACTIVE", remaining: "70000.00" });
+    await expect(cancelAdvance({ advanceId: Number(loss.advanceId) }, ACTOR))
+      .rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("خُصم منها فعلاً") });
+
+    await returnPaidSalary(Number(paidRun!.id));
+    await cancelRun(Number(paidRun!.id), APPROVER);
+    const [restored] = await db().select().from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.id, Number(loss.advanceId)));
+    expect(restored).toMatchObject({ status: "ACTIVE", remaining: "120000.00" });
+    const history = await db().select({ direction: s.advanceSettlements.direction })
+      .from(s.advanceSettlements)
+      .where(eq(s.advanceSettlements.advanceId, Number(loss.advanceId)));
+    expect(history.map((row) => row.direction).sort()).toEqual(["APPLY", "REVERSE"]);
+
+    await expect(cancelAdvance({ advanceId: Number(loss.advanceId) }, ACTOR))
+      .rejects.toMatchObject({
+        code: "PRECONDITION_FAILED",
+        message: expect.stringContaining("بعد استعمالها"),
+      });
+    const [afterRejectedCancel] = await db().select().from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.id, Number(loss.advanceId)));
+    expect(afterRejectedCancel).toMatchObject({ status: "ACTIVE", remaining: "120000.00" });
+  });
+
+  it("السلفة الملغاة قبل الاعتماد تُزامن إلى خصم صفر ولا تنتقل إلى الراتب", async () => {
     const emp = await seedEmployee();
-    const adv = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "100000" }, ACTOR);
-    const run = await generatePayroll("2026-06", ACTOR); // advanceDeduction=100000
+    const adv = await grantAdvance(
+      { employeeId: emp.id, branchId: 1, amount: "100000" },
+      ACTOR,
+    );
+    const run = await generatePayroll(CURRENT_PERIOD, ACTOR); // advanceDeduction=100000
     // الإلغاء يشترط عكس السند أولاً (النقد يعود ثم يسقط الالتزام).
     await db().update(s.receipts).set({ status: "REVERSED" }).where(eq(s.receipts.id, Number(adv.receiptId)));
     await cancelAdvance({ advanceId: Number(adv.id) }, ACTOR);
-    await expect(approveRun(run!.id, APPROVER)).rejects.toMatchObject({ code: "CONFLICT" });
+    const approved = await approveRun(Number(run!.id), APPROVER);
+    expect(approved.status).toBe("approved");
+    expect(Number(approved.items?.[0]?.advanceDeduction)).toBe(0);
   });
 
-  it("تعدّد السلف: استقطاع عادل لجميع السلف النشطة (أصل الأولى + قسط الثانية) بلا ضياع للمال", async () => {
+  it("تعدّد السلف: يجمع كل سلف الشهر ويصفّرها معاً بلا إغفال", async () => {
     const emp = await seedEmployee();
-    const a1 = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "100000" }, ACTOR);
-    const a2 = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "200000", monthlyDeduction: "50000" }, ACTOR);
+    const a1 = await grantAdvance(
+      { employeeId: emp.id, branchId: 1, amount: "100000" },
+      ACTOR,
+    );
+    const a2 = await grantAdvance(
+      {
+        employeeId: emp.id,
+        branchId: 1,
+        amount: "200000",
+        monthlyDeduction: "50000",
+      },
+      ACTOR,
+    );
 
-    // الشهر الأول: تُستقطع السلفة الأولى بالكامل (100,000) مع قسط السلفة الثانية (50,000) = 150,000 د.ع
-    const paidRun = await fullPayCycle("2026-06");
-    expect(Number(paidRun!.items[0].advanceDeduction)).toBe(150000);
-    const [r1] = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.id, Number(a1.id)));
-    const [r2] = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.id, Number(a2.id)));
+    const paidRun = await fullPayCycle(CURRENT_PERIOD);
+    expect(Number(paidRun!.items[0].advanceDeduction)).toBe(300000);
+    const [r1] = await db()
+      .select()
+      .from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.id, Number(a1.id)));
+    const [r2] = await db()
+      .select()
+      .from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.id, Number(a2.id)));
     expect(r1.status).toBe("SETTLED");
-    expect(Number(r2.remaining)).toBe(150000); // خُصم قسط 50,000 من السلفة الثانية
-
-    // الشهر الثاني: يستمر استقطاع قسط السلفة الثانية (50000).
-    const run2 = await generatePayroll("2026-07", ACTOR);
-    expect(Number(run2!.items[0].advanceDeduction)).toBe(50000);
-
-    const list = await listAdvances({ employeeId: emp.id, status: "ACTIVE" });
-    expect(list.length).toBe(1);
-    expect(Number(list[0].id)).toBe(Number(a2.id));
-    expect(list[0].voucherNumber).toMatch(/^PV-/);
+    expect(r2.status).toBe("SETTLED");
+    expect(Number(r2.remaining)).toBe(0);
+    expect(
+      await listAdvances({ employeeId: emp.id, status: "ACTIVE" }),
+    ).toHaveLength(0);
   });
 
   it("تعدّد السلف القصيرة (4 سلف نقدية لموظف واحد): تُستقطع وتُسوّى كلّها دفعة واحدة بلا إغفال", async () => {
@@ -501,7 +736,7 @@ describe("advancesService — الإلغاء وتعدّد السلف", () => {
     const a3 = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "10000" }, ACTOR);
     const a4 = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "15000" }, ACTOR);
 
-    const paidRun = await fullPayCycle("2026-06");
+    const paidRun = await fullPayCycle(CURRENT_PERIOD);
     expect(Number(paidRun!.items[0].advanceDeduction)).toBe(100000);
     expect(Number(paidRun!.items[0].net)).toBe(900000); // راتب 1,000,000 - 100,000 سلف
 
@@ -518,7 +753,7 @@ describe("advancesService — الإلغاء وتعدّد السلف", () => {
   it("السلفة الممنوحة بعد توليد مسودة المسيّر تُزامن تلقائياً وتُستقطع بالكامل عند الاعتماد", async () => {
     const emp = await seedEmployee();
     // 1. توليد مسودة مسيّر قبل منح السلفة
-    const draftRun = await generatePayroll("2026-06", ACTOR);
+    const draftRun = await generatePayroll(CURRENT_PERIOD, ACTOR);
     expect(Number(draftRun!.items[0].advanceDeduction)).toBe(0);
     expect(Number(draftRun!.items[0].net)).toBe(1000000);
 
@@ -540,7 +775,84 @@ describe("advancesService — الإلغاء وتعدّد السلف", () => {
     expect(Number(row.remaining)).toBe(0);
   });
 
-  it("طلبات السلف بانتظار الاعتماد تظهر في listAdvances مع شارة PENDING_APPROVAL ولا تختفي", async () => {
+  it("يمنع اعتماد المسيّر إذا لم يعد صافي الشهر يكفي لتصفير سلفته ولا يرحّل الباقي", async () => {
+    const emp = await seedEmployee("1000000");
+    const period = baghdadToday().slice(0, 7);
+    const [advance] = await db()
+      .insert(s.employeeAdvances)
+      .values({
+        employeeId: emp.id,
+        branchId: 1,
+        amount: "2000000.00",
+        remaining: "2000000.00",
+        monthlyDeduction: "2000000.00",
+        sourceType: "SALARY_ADVANCE",
+        payrollPeriod: period,
+        status: "ACTIVE",
+        createdBy: ACTOR.userId,
+      })
+      .$returningId();
+    const draft = await generatePayroll(period, ACTOR);
+    const draftRunId = Number(draft!.id);
+    const draftAdvanceDeduction = Number(draft!.items?.[0]?.advanceDeduction);
+    expect(draftAdvanceDeduction).toBeGreaterThan(0);
+    expect(draftAdvanceDeduction).toBeLessThan(2000000);
+
+    await expect(approveRun(draftRunId, APPROVER)).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+    });
+    const [storedAdvance] = await db()
+      .select()
+      .from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.id, Number(advance.id)));
+    const [storedRun] = await db()
+      .select()
+      .from(s.payrollRuns)
+      .where(eq(s.payrollRuns.id, draftRunId));
+    expect(storedAdvance.status).toBe("ACTIVE");
+    expect(storedAdvance.remaining).toBe("2000000.00");
+    expect(storedRun.status).toBe("draft");
+  });
+
+  it("يسوّي كل سلف الشهر وحدها ويعيد أرصدة الشهر والتاريخ عند عكس المسيّر", async () => {
+    const employee = await seedEmployee();
+    const [year, month] = CURRENT_PERIOD.split("-").map(Number);
+    const previous = new Date(Date.UTC(year, month - 2, 1)).toISOString().slice(0, 7);
+    const inserts = await db().insert(s.employeeAdvances).values([
+      { employeeId: employee.id, branchId: 1, amount: "50000.00", remaining: "50000.00", monthlyDeduction: "5000.00", sourceType: "SALARY_ADVANCE", payrollPeriod: CURRENT_PERIOD, createdBy: 1 },
+      { employeeId: employee.id, branchId: 1, amount: "25000.00", remaining: "25000.00", monthlyDeduction: "5000.00", sourceType: "SALARY_ADVANCE", payrollPeriod: CURRENT_PERIOD, createdBy: 1 },
+      { employeeId: employee.id, branchId: 1, amount: "40000.00", remaining: "40000.00", monthlyDeduction: "5000.00", sourceType: "SALARY_ADVANCE", payrollPeriod: previous, createdBy: 1 },
+      { employeeId: employee.id, branchId: 1, amount: "30000.00", remaining: "30000.00", monthlyDeduction: "10000.00", sourceType: "OTHER_DEDUCTION", payrollPeriod: null, createdBy: 1 },
+      { employeeId: employee.id, branchId: 1, amount: "20000.00", remaining: "20000.00", monthlyDeduction: "5000.00", sourceType: "LEGACY_UNCLASSIFIED", payrollPeriod: null, createdBy: 1 },
+    ]).$returningId();
+    const ids = inserts.map((row) => Number(row.id));
+    const balances = async () => (await db().select().from(s.employeeAdvances)
+      .where(inArray(s.employeeAdvances.id, ids)).orderBy(s.employeeAdvances.id))
+      .map((row) => [row.remaining, row.status]);
+    const run = await generatePayroll(CURRENT_PERIOD, ACTOR);
+    expect(run!.items[0].advanceDeduction).toBe("90000.00");
+    await approveRun(run!.id, APPROVER);
+    await payRun(run!.id, APPROVER);
+    expect(await balances()).toEqual([
+      ["0.00", "SETTLED"], ["0.00", "SETTLED"], ["40000.00", "ACTIVE"],
+      ["20000.00", "ACTIVE"], ["15000.00", "ACTIVE"],
+    ]);
+    const applied = await db().select().from(s.advanceSettlements)
+      .where(eq(s.advanceSettlements.runId, run!.id));
+    expect(applied).toHaveLength(4);
+    expect(applied.some((row) => Number(row.advanceId) === ids[2])).toBe(false);
+    await returnPaidSalary(run!.id);
+    await cancelRun(run!.id, APPROVER);
+    expect(await balances()).toEqual([
+      ["50000.00", "ACTIVE"], ["25000.00", "ACTIVE"], ["40000.00", "ACTIVE"],
+      ["30000.00", "ACTIVE"], ["20000.00", "ACTIVE"],
+    ]);
+    const reversed = await db().select().from(s.advanceSettlements)
+      .where(eq(s.advanceSettlements.runId, run!.id));
+    expect(reversed.filter((row) => row.direction === "REVERSE")).toHaveLength(4);
+  });
+
+  it("سندات الطلب القديمة غير المصنفة تظهر صراحة ولا تختفي أو تُنسب إلى شهر مفترض", async () => {
     const emp = await seedEmployee();
     // إنشاء طلب سلفة مباشرة دون اعتماد السند ليبقى في PENDING_APPROVAL
     const requested = await grantAdvanceService(
@@ -551,10 +863,12 @@ describe("advancesService — الإلغاء وتعدّد السلف", () => {
 
     const list = await listAdvances({ employeeId: emp.id });
     expect(list.length).toBeGreaterThanOrEqual(1);
-    const pending = list.find((item) => item.status === "PENDING_APPROVAL");
+    const pending = list.find((item) => item.status === "LEGACY_UNCLASSIFIED");
     expect(pending).toBeDefined();
     expect(Number(pending!.amount)).toBe(60000);
     expect(pending!.employeeId).toBe(emp.id);
     expect(pending!.voucherNumber).toMatch(/^PV-/);
+    expect(pending!.workflowStatus).toBe("LEGACY_VOUCHER_PENDING");
+    expect(pending!.financiallyDisbursed).toBe(false);
   });
 });

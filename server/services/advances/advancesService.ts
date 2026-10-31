@@ -1,29 +1,28 @@
 /* ============================================================================
- * خدمة سلف الموظفين — وحدة الموارد البشرية (server/services/advancesService.ts) — بند 12ج (٧/٧)
- *
- * الدورة المالية:
- *  - grantAdvance: سند صرف حقيقي (OUT من الخزينة عبر createVoucher القائمة — فئة «رواتب»)
- *    ثم صفّ سلفة ACTIVE بـremaining = amount مربوط بالسند (receiptId).
- *  - suggestDeductions: لكل موظف بسلفة ACTIVE يُقترح استقطاع الشهر من **أقدم** سلفة نشطة:
- *    suggested = min(monthlyDeduction ?? remaining، remaining) — سلفة واحدة تلو الأخرى حتى تسويتها.
- *  - settleAdvancesOnPayTx (يستدعيها payRun): تُنقص remaining بالأقدم أولاً بمقدار
- *    payrollItems.advanceDeduction المصروف فعلاً؛ بلوغ الصفر ⇒ SETTLED.
- *  - cancelAdvance: فقط قبل أي خصم (remaining == amount) ⇒ CANCELLED. **لا يعكس سند الصرف
- *    الأصلي آلياً** — النقد خرج فعلاً من الخزينة وإرجاعه شأن أمين الخزينة (إلغاء السند من
- *    شاشة السندات بقواعد فصل المهام هناك). الرسالة للمستخدم توثّق ذلك.
- *
- * قرار Maker-Checker (موثَّق): سند بمبلغ ≥ getApprovalThreshold() يُسجَّل PENDING_APPROVAL
- * **بلا أثر مالي** حتى اعتماد مدير ثانٍ. سلفة ACTIVE تعني خصماً تلقائياً من الرواتب، وتفعيلها
- * على سندٍ لم يُصرَف نقده بعد يخصم راتباً عن نقدٍ لم يخرج (وقد يُرفَض السند لاحقاً بلا أثر على
- * السلفة — لا خطّاف لدينا في مسار الاعتماد ولا حالة «معلّقة» في المخطط). لذا **نرفض المنح
- * بمبلغ يبلغ العتبة برسالة صريحة** قبل إنشاء أي شيء — الطريق الأمين للمبالغ الكبيرة: سند صرف
- * من شاشة السندات (يمرّ بالاعتماد الثنائي) ثم خصم يدوي، أو تقسيم السلفة، أو رفع العتبة بقرار مالك.
+ * مصدر القراءة والتسوية الموحد لسلف الموظفين.
+ * الطلب والمراجعة صفرَا الأثر؛ الصرف وحده ينشئ سند DRAWER وسلفة SALARY_ADVANCE لشهر بغداد
+ * الجاري. السلفة الراتبية تُخصم كاملةً في شهرها، أما الديون التاريخية غير المصنفة فتبقى
+ * منفصلة بلا افتراض رجعي حتى تُطابق بدليل مصدر.
  * ========================================================================== */
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { fullEmployeeName } from "@shared/hr";
-import { advanceSettlements, branches, employeeAdvances, employees, idempotencyKeys, receipts, voucherCategories } from "../../../drizzle/schema";
+import { appErrorMessage } from "@shared/errors";
+import { levelSatisfies } from "@shared/permissions";
+import { voucherApprovalTrigger } from "@shared/approvalTriggers";
+import {
+  advanceSettlements,
+  branches,
+  employeeAdvanceRepaymentAllocations,
+  employeeAdvances,
+  employeeLoanRequests,
+  employees,
+  idempotencyKeys,
+  receipts,
+  terminationAdvanceAllocations,
+  voucherCategories,
+} from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { money, round2, toDbMoney } from "../money";
@@ -33,9 +32,30 @@ import {
   createVoucherTx,
   employeeAdvanceReference,
   employeeAdvanceSourceHash,
+  parseSystemPaymentRequest,
   type SystemPaymentRequest,
 } from "../voucher/create";
 import { autoSyncEmployeeAdvanceToDraftPayrollTx } from "../payroll/syncAdvances";
+import { baghdadToday } from "../businessDay";
+import {
+  assertAdvanceWithinCapacity,
+  getEmployeeAdvanceCapacityTx,
+} from "../employeeAdvanceCapacityService";
+import { canCrossBranches } from "../../lib/branchAuthority";
+import {
+  assertOperationAuthorityTx,
+  type StoredOperationSnapshot,
+} from "../authorization/operationAuthority";
+import { planApproval, resolveApprovalActor } from "../approval/ownerGate";
+import { requireOpenShiftIdTx } from "../shiftService";
+import { lockCashSourceForUpdate } from "../cash/cashAvailability";
+
+function currentHrWriteAllowed(current: StoredOperationSnapshot): boolean {
+  return (
+    current.isOwner === true ||
+    levelSatisfies(current.resolvedPermissions?.hr, "FULL")
+  );
+}
 
 export * from "../payroll/advanceRepayment";
 
@@ -50,52 +70,139 @@ export function advanceThresholds() {
 export interface ListAdvancesFilters {
   employeeId?: number;
   branchId?: number;
-  status?: "ACTIVE" | "SETTLED" | "CANCELLED" | "PENDING_APPROVAL";
+  period?: string;
+  status?:
+    | "ACTIVE"
+    | "SETTLED"
+    | "CANCELLED"
+    | "PENDING_APPROVAL"
+    | "APPROVED"
+    | "REJECTED"
+    | "EXPIRED"
+    | "LEGACY_UNCLASSIFIED";
+}
+
+export interface AdvanceProjection {
+  id: number;
+  requestId: number | null;
+  employeeId: number;
+  branchId: number;
+  amount: string;
+  remaining: string;
+  monthlyDeduction: string | null;
+  sourceType: "SALARY_ADVANCE" | "OTHER_DEDUCTION" | "LEGACY_UNCLASSIFIED";
+  payrollPeriod: string | null;
+  status:
+    | "ACTIVE"
+    | "SETTLED"
+    | "CANCELLED"
+    | "PENDING_APPROVAL"
+    | "APPROVED"
+    | "REJECTED"
+    | "EXPIRED"
+    | "LEGACY_UNCLASSIFIED";
+  workflowStatus: string;
+  financiallyDisbursed: boolean;
+  receiptId: number | null;
+  note: string | null;
+  createdBy: number | null;
+  grantedAt: Date;
+  firstName: string | null;
+  fatherName: string | null;
+  grandfatherName: string | null;
+  lastName: string | null;
+  position: string | null;
+  employmentStatus: string | null;
+  branchName: string | null;
+  voucherNumber: string | null;
+  employeeName?: string;
 }
 
 export async function listAdvances(filters?: ListAdvancesFilters) {
   const db = requireDb();
-  if (filters?.branchId != null && (!Number.isInteger(filters.branchId) || filters.branchId <= 0)) {
+  const currentPeriod = baghdadToday().slice(0, 7);
+  if (
+    filters?.branchId != null &&
+    (!Number.isInteger(filters.branchId) || filters.branchId <= 0)
+  ) {
     throw new TRPCError({ code: "FORBIDDEN", message: "نطاق الفرع مطلوب." });
   }
   const conds = [];
-  if (filters?.employeeId) conds.push(eq(employeeAdvances.employeeId, filters.employeeId));
-  if (filters?.branchId != null) conds.push(eq(employeeAdvances.branchId, filters.branchId));
-  if (filters?.status && filters.status !== "PENDING_APPROVAL") conds.push(eq(employeeAdvances.status, filters.status));
+  if (filters?.employeeId)
+    conds.push(eq(employeeAdvances.employeeId, filters.employeeId));
+  if (filters?.branchId != null)
+    conds.push(eq(employeeAdvances.branchId, filters.branchId));
+  const materializedStatuses = ["ACTIVE", "SETTLED", "CANCELLED"] as const;
+  const wantsLegacyUnclassified = filters?.status === "LEGACY_UNCLASSIFIED";
+  const wantsMaterialized =
+    !filters?.status ||
+    wantsLegacyUnclassified ||
+    (materializedStatuses as readonly string[]).includes(filters.status);
+  if (wantsLegacyUnclassified) {
+    conds.push(eq(employeeAdvances.sourceType, "LEGACY_UNCLASSIFIED"));
+  } else if (
+    filters?.status &&
+    (materializedStatuses as readonly string[]).includes(filters.status)
+  ) {
+    conds.push(
+      eq(
+        employeeAdvances.status,
+        filters.status as (typeof materializedStatuses)[number],
+      ),
+    );
+  }
+  if (filters?.period)
+    conds.push(
+      filters.period === currentPeriod
+        ? or(
+            eq(employeeAdvances.payrollPeriod, filters.period),
+            isNull(employeeAdvances.payrollPeriod),
+          )
+        : eq(employeeAdvances.payrollPeriod, filters.period),
+    );
 
   // 1. السلف المثبتة في جدول employeeAdvances
-  const rows = filters?.status === "PENDING_APPROVAL" ? [] : await db
-    .select({
-      id: employeeAdvances.id,
-      employeeId: employeeAdvances.employeeId,
-      branchId: employeeAdvances.branchId,
-      amount: employeeAdvances.amount,
-      remaining: employeeAdvances.remaining,
-      monthlyDeduction: employeeAdvances.monthlyDeduction,
-      status: employeeAdvances.status,
-      receiptId: employeeAdvances.receiptId,
-      note: employeeAdvances.note,
-      createdBy: employeeAdvances.createdBy,
-      grantedAt: employeeAdvances.grantedAt,
-      firstName: employees.firstName,
-      fatherName: employees.fatherName,
-      grandfatherName: employees.grandfatherName,
-      lastName: employees.lastName,
-      position: employees.position,
-      employmentStatus: employees.employmentStatus,
-      branchName: branches.name,
-      voucherNumber: receipts.voucherNumber,
-    })
-    .from(employeeAdvances)
-    .leftJoin(employees, eq(employeeAdvances.employeeId, employees.id))
-    .leftJoin(branches, eq(employeeAdvances.branchId, branches.id))
-    .leftJoin(receipts, eq(employeeAdvances.receiptId, receipts.id))
-    .where(conds.length ? and(...conds) : undefined)
-    .orderBy(desc(employeeAdvances.id));
+  const rows = !wantsMaterialized
+    ? []
+    : await db
+        .select({
+          id: employeeAdvances.id,
+          employeeId: employeeAdvances.employeeId,
+          branchId: employeeAdvances.branchId,
+          amount: employeeAdvances.amount,
+          remaining: employeeAdvances.remaining,
+          monthlyDeduction: employeeAdvances.monthlyDeduction,
+          sourceType: employeeAdvances.sourceType,
+          payrollPeriod: employeeAdvances.payrollPeriod,
+          status: employeeAdvances.status,
+          receiptId: employeeAdvances.receiptId,
+          note: employeeAdvances.note,
+          createdBy: employeeAdvances.createdBy,
+          grantedAt: employeeAdvances.grantedAt,
+          firstName: employees.firstName,
+          fatherName: employees.fatherName,
+          grandfatherName: employees.grandfatherName,
+          lastName: employees.lastName,
+          position: employees.position,
+          employmentStatus: employees.employmentStatus,
+          branchName: branches.name,
+          voucherNumber: receipts.voucherNumber,
+        })
+        .from(employeeAdvances)
+        .leftJoin(employees, eq(employeeAdvances.employeeId, employees.id))
+        .leftJoin(branches, eq(employeeAdvances.branchId, branches.id))
+        .leftJoin(receipts, eq(employeeAdvances.receiptId, receipts.id))
+        .where(conds.length ? and(...conds) : undefined)
+        .orderBy(desc(employeeAdvances.id));
 
   // 2. طلبات السلف المعلّقة في receipts بانتظار الاعتماد — تظهر حتى لا تضيع السلف صمتاً
-  const pendingRows: typeof rows = [];
-  if (!filters?.status || filters.status === "ACTIVE" || filters.status === "PENDING_APPROVAL") {
+  const pendingRows: AdvanceProjection[] = [];
+  if (
+    (!filters?.period || filters.period === currentPeriod) &&
+    (!filters?.status ||
+      filters.status === "PENDING_APPROVAL" ||
+      filters.status === "LEGACY_UNCLASSIFIED")
+  ) {
     const pendingReceipts = await db
       .select({
         id: receipts.id,
@@ -123,22 +230,19 @@ export async function listAdvances(filters?: ListAdvancesFilters) {
       let reqEmployeeId: number | null = null;
       let reqMonthly: string | null = null;
       let reqNote: string | null = null;
-      try {
-        if (pr.internalNote) {
-          const parsed = JSON.parse(pr.internalNote);
-          if (parsed && typeof parsed === "object") {
-            reqEmployeeId = parsed.employeeId ? Number(parsed.employeeId) : null;
-            reqMonthly = parsed.monthlyDeduction ? String(parsed.monthlyDeduction) : null;
-            reqNote = parsed.note ? String(parsed.note) : null;
-          }
-        }
-      } catch {
+      const parsed = parseSystemPaymentRequest(pr.internalNote);
+      if (parsed?.kind === "EMPLOYEE_ADVANCE") {
+        reqEmployeeId = Number(parsed.employeeId);
+        reqMonthly = parsed.monthlyDeduction;
+        reqNote = parsed.note;
+      } else {
         const match = pr.referenceNumber?.match(/^EMP-ADV-(\d+)-/);
         if (match) reqEmployeeId = Number(match[1]);
       }
 
       if (!reqEmployeeId) continue;
       if (filters?.employeeId && reqEmployeeId !== filters.employeeId) continue;
+      if (pr.branchId == null) continue;
 
       const [emp] = await db
         .select({
@@ -158,12 +262,17 @@ export async function listAdvances(filters?: ListAdvancesFilters) {
         employeeId: reqEmployeeId,
         branchId: Number(pr.branchId ?? 1),
         amount: String(pr.amount),
-        remaining: String(pr.amount),
+        remaining: "0.00",
         monthlyDeduction: reqMonthly,
-        status: "PENDING_APPROVAL" as never,
+        sourceType: "SALARY_ADVANCE",
+        payrollPeriod: null,
+        status: "LEGACY_UNCLASSIFIED",
+        workflowStatus: "LEGACY_VOUCHER_PENDING",
+        financiallyDisbursed: false,
+        requestId: null,
         receiptId: Number(pr.id),
         note: reqNote,
-        createdBy: pr.createdBy ?? 0,
+        createdBy: pr.createdBy,
         grantedAt: pr.createdAt,
         firstName: emp?.firstName ?? null,
         fatherName: emp?.fatherName ?? null,
@@ -177,8 +286,155 @@ export async function listAdvances(filters?: ListAdvancesFilters) {
     }
   }
 
-  const allRows = [...pendingRows, ...rows];
-  return allRows.map((r) => ({ ...r, employeeName: fullEmployeeName(r) }));
+  // 3. مسار الطلب الموحد: كل الحالات غير المصروفة تبقى في التاريخ؛ القديمة تُعرض
+  // EXPIRED/LEGACY_UNCLASSIFIED بدلاً من الاختفاء أو إمكان صرفها في شهر لاحق.
+  const requestRows: AdvanceProjection[] = [];
+  const requestStatuses = [
+    "PENDING_APPROVAL",
+    "APPROVED",
+    "REJECTED",
+    "CANCELLED",
+    "EXPIRED",
+    "LEGACY_UNCLASSIFIED",
+  ] as const;
+  if (
+    !filters?.status ||
+    (requestStatuses as readonly string[]).includes(filters.status)
+  ) {
+    const loanConditions = [
+      inArray(employeeLoanRequests.status, [
+        "PENDING",
+        "APPROVED",
+        "REJECTED",
+        "CANCELLED",
+      ]),
+      filters?.employeeId
+        ? eq(employeeLoanRequests.employeeId, filters.employeeId)
+        : undefined,
+      filters?.branchId != null
+        ? eq(employeeLoanRequests.branchId, filters.branchId)
+        : undefined,
+      filters?.period
+        ? filters.period === currentPeriod
+          ? or(
+              eq(employeeLoanRequests.payrollPeriod, filters.period),
+              isNull(employeeLoanRequests.payrollPeriod),
+            )
+          : eq(employeeLoanRequests.payrollPeriod, filters.period)
+        : undefined,
+    ];
+    const requests = await db
+      .select({
+        id: employeeLoanRequests.id,
+        employeeId: employeeLoanRequests.employeeId,
+        branchId: employeeLoanRequests.branchId,
+        amount: employeeLoanRequests.amount,
+        monthlyDeduction: employeeLoanRequests.monthlyDeduction,
+        payrollPeriod: employeeLoanRequests.payrollPeriod,
+        reason: employeeLoanRequests.reason,
+        rejectionReason: employeeLoanRequests.rejectionReason,
+        status: employeeLoanRequests.status,
+        createdById: employeeLoanRequests.createdById,
+        createdAt: employeeLoanRequests.createdAt,
+        firstName: employees.firstName,
+        fatherName: employees.fatherName,
+        grandfatherName: employees.grandfatherName,
+        lastName: employees.lastName,
+        position: employees.position,
+        employmentStatus: employees.employmentStatus,
+        branchName: branches.name,
+      })
+      .from(employeeLoanRequests)
+      .leftJoin(employees, eq(employeeLoanRequests.employeeId, employees.id))
+      .leftJoin(branches, eq(employeeLoanRequests.branchId, branches.id))
+      .where(and(...loanConditions))
+      .orderBy(desc(employeeLoanRequests.id));
+    for (const request of requests) {
+      const legacyUnclassified =
+        request.payrollPeriod == null &&
+        (request.status === "PENDING" || request.status === "APPROVED");
+      const expired =
+        request.payrollPeriod != null &&
+        request.payrollPeriod < currentPeriod &&
+        (request.status === "PENDING" || request.status === "APPROVED");
+      const projectedStatus: AdvanceProjection["status"] = legacyUnclassified
+        ? "LEGACY_UNCLASSIFIED"
+        : expired
+          ? "EXPIRED"
+          : request.status === "PENDING"
+            ? "PENDING_APPROVAL"
+            : request.status === "APPROVED"
+              ? "APPROVED"
+              : request.status === "REJECTED"
+                ? "REJECTED"
+                : "CANCELLED";
+      const workflowStatus = legacyUnclassified
+        ? "LEGACY_UNCLASSIFIED"
+        : expired
+          ? "EXPIRED"
+          : request.status;
+      requestRows.push({
+        id: Number(request.id),
+        requestId: Number(request.id),
+        employeeId: Number(request.employeeId),
+        branchId: Number(request.branchId),
+        amount: String(request.amount),
+        remaining: "0.00",
+        monthlyDeduction: String(request.amount),
+        sourceType: "SALARY_ADVANCE",
+        payrollPeriod: request.payrollPeriod,
+        status: projectedStatus,
+        workflowStatus,
+        financiallyDisbursed: false,
+        receiptId: null,
+        note:
+          request.rejectionReason == null
+            ? request.reason
+            : [request.reason, request.rejectionReason]
+                .filter(Boolean)
+                .join(" — "),
+        createdBy: request.createdById,
+        grantedAt: request.createdAt,
+        firstName: request.firstName,
+        fatherName: request.fatherName,
+        grandfatherName: request.grandfatherName,
+        lastName: request.lastName,
+        position: request.position,
+        employmentStatus: request.employmentStatus,
+        branchName: request.branchName,
+        voucherNumber: null,
+      });
+    }
+  }
+
+  const materializedRows: AdvanceProjection[] = rows.map((row) => ({
+    ...row,
+    id: Number(row.id),
+    employeeId: Number(row.employeeId),
+    branchId: Number(row.branchId),
+    amount: String(row.amount),
+    remaining: String(row.remaining),
+    monthlyDeduction:
+      row.monthlyDeduction == null ? null : String(row.monthlyDeduction),
+    receiptId: row.receiptId == null ? null : Number(row.receiptId),
+    createdBy: row.createdBy == null ? null : Number(row.createdBy),
+    requestId: null,
+    workflowStatus: row.status,
+    financiallyDisbursed: true,
+  }));
+  const allRows = [...requestRows, ...pendingRows, ...materializedRows].filter(
+    (row) =>
+      !filters?.status ||
+      (filters.status === "LEGACY_UNCLASSIFIED"
+        ? row.status === "LEGACY_UNCLASSIFIED" ||
+          (row.financiallyDisbursed &&
+            row.sourceType === "LEGACY_UNCLASSIFIED")
+        : row.status === filters.status),
+  );
+  return allRows.map((r) => ({
+    ...r,
+    employeeName: fullEmployeeName(r),
+  }));
 }
 
 /** رصيد السلف المتبقّي على موظف = مجموع remaining لسلفه النشطة. */
@@ -292,21 +548,42 @@ export async function assertEmployeeAdvanceVoucherRequestTx(
     });
   }
 
-  const [emp] = await tx
-    .select()
-    .from(employees)
-    .where(eq(employees.id, request.employeeId))
-    .for("update")
-    .limit(1);
-  if (!emp) throw new TRPCError({ code: "NOT_FOUND", message: "موظف طلب السلفة غير موجود" });
-  if (!emp.isActive || emp.employmentStatus === "terminated") {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن اعتماد سلفة لموظف معطّل أو منتهي الخدمة" });
-  }
-  if (emp.branchId != null && Number(emp.branchId) !== request.branchId) {
-    throw new TRPCError({ code: "CONFLICT", message: "فرع موظف السلفة لا يطابق لقطة الطلب الموثقة" });
-  }
-  if (emp.userId != null && Number(emp.userId) === Number(receipt.createdBy)) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز للموظف إنشاء طلب سلفة لنفسه" });
+  let emp: typeof employees.$inferSelect | null = null;
+  // الأهلية الحالية تخص إنشاء/تفعيل السلفة فقط. عند العكس نعتمد سلسلة المصدر
+  // الموثقة والسلفة المادية؛ نقل الموظف أو إنهاء خدمته لاحقاً لا يجوز أن يحبس النقد.
+  if (!options?.requireMaterialized) {
+    [emp] = await tx
+      .select()
+      .from(employees)
+      .where(eq(employees.id, request.employeeId))
+      .for("update")
+      .limit(1);
+    if (!emp)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: "موظف طلب السلفة غير موجود",
+      });
+    if (!emp.isActive || emp.employmentStatus === "terminated") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "لا يمكن اعتماد سلفة لموظف معطّل أو منتهي الخدمة",
+      });
+    }
+    if (emp.branchId != null && Number(emp.branchId) !== request.branchId) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "فرع موظف السلفة لا يطابق لقطة الطلب الموثقة",
+      });
+    }
+    if (
+      emp.userId != null &&
+      Number(emp.userId) === Number(receipt.createdBy)
+    ) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "لا يجوز للموظف إنشاء طلب سلفة لنفسه",
+      });
+    }
   }
 
   let materialized: typeof employeeAdvances.$inferSelect | null = null;
@@ -369,21 +646,34 @@ export async function activateAdvanceForApprovedVoucherTx(
   if (existing) return Number(existing.id);
 
   const amount = money(request.expectedAmount);
-  const monthly = request.monthlyDeduction == null ? null : money(request.monthlyDeduction);
+  const period = baghdadToday().slice(0, 7);
   await assertAdvanceOutstandingLimitTx(tx, request.employeeId, amount);
+  const capacity = await getEmployeeAdvanceCapacityTx(tx, {
+    employeeId: request.employeeId,
+    scopedBranchId: request.branchId,
+    period,
+    lock: true,
+  });
+  assertAdvanceWithinCapacity(amount, capacity);
   const result = await tx.insert(employeeAdvances).values({
     employeeId: request.employeeId,
     branchId: request.branchId,
     amount: toDbMoney(amount),
     remaining: toDbMoney(amount),
-    monthlyDeduction: monthly == null ? null : toDbMoney(monthly),
+    monthlyDeduction: toDbMoney(amount),
+    sourceType: "SALARY_ADVANCE",
+    payrollPeriod: period,
     status: "ACTIVE",
     receiptId: receipt.id,
     note: request.note,
     createdBy: receipt.createdBy!,
   });
   const advanceId = extractInsertId(result);
-  await autoSyncEmployeeAdvanceToDraftPayrollTx(tx, request.employeeId);
+  await autoSyncEmployeeAdvanceToDraftPayrollTx(
+    tx,
+    request.employeeId,
+    period,
+  );
   return advanceId;
 }
 
@@ -400,7 +690,48 @@ export async function grantAdvance(input: GrantAdvanceInput, actor: Actor) {
   }
 
   return withTx(async (tx) => {
-    const [emp] = await tx.select().from(employees).where(eq(employees.id, input.employeeId)).for("update").limit(1);
+    const resolvedActor = await resolveApprovalActor(tx, actor);
+    const ownerAutoApproves =
+      resolvedActor.isOwner &&
+      planApproval({
+        actor: resolvedActor,
+        trigger: voucherApprovalTrigger("OUT", "EMPLOYEE_ADVANCE"),
+      }).executeNow;
+    if (ownerAutoApproves) {
+      const [existingVoucherKey] = await tx
+        .select({ refId: idempotencyKeys.refId })
+        .from(idempotencyKeys)
+        .where(
+          and(
+            eq(idempotencyKeys.operation, "voucher.create"),
+            eq(
+              idempotencyKeys.clientRequestId,
+              `ADVANCE:${input.clientRequestId}`,
+            ),
+          ),
+        )
+        .limit(1);
+      if (!existingVoucherKey) {
+        // مسار المالك وحده سينفّذ الصرف الآن: درج المنفّذ يسبق أقفال الفرع/الموظف.
+        // الطلب المعلّق وreplay الملتزم لا يحتاجان وردية جديدة ولا أثراً نقدياً جديداً.
+        const shiftId = await requireOpenShiftIdTx(
+          tx,
+          resolvedActor.userId,
+          input.branchId,
+          "صرف سلفة موظف من درج المنفّذ",
+        );
+        await lockCashSourceForUpdate(tx, {
+          branchId: input.branchId,
+          cashBucket: "DRAWER",
+          shiftId,
+        });
+      }
+    }
+
+    // لقطة أهلية واسم لطلبٍ صفر الأثر فقط؛ لا نقفل الموظف قبل درج الصرف.
+    // عند اعتماد المالك يعيد activateAdvanceForApprovedVoucherTx التحقق ويقفل الموظف
+    // بعد أن يكون مسار الاعتماد قد قفل مصدر النقد/الوردية بالترتيب الحاكم.
+    const [emp] = await tx.select().from(employees).where(eq(employees.id, input.employeeId)).limit(1);
     if (!emp) throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير موجود" });
     if (!emp.isActive || emp.employmentStatus === "terminated") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا تُمنح سلفة لموظف معطَّل أو منتهي الخدمة" });
@@ -476,7 +807,57 @@ export async function grantAdvance(input: GrantAdvanceInput, actor: Actor) {
 /* ─────────────────────────── إلغاء سلفة ─────────────────────────── */
 
 /**
- * إلغاء سلفة — فقط قبل أي خصم (remaining == amount) **وبعد عكس سند صرفها**.
+ * A restored balance is not an untouched balance: APPLY/REVERSE rows are an
+ * immutable recovery history. Lock every recovery ledger in the same order as
+ * voucher cancellation before deciding that direct cancellation is safe.
+ */
+async function assertNoAdvanceRecoveryHistoryTx(
+  tx: Tx,
+  advanceId: number,
+): Promise<void> {
+  const settlement = (
+    await tx
+      .select({ id: advanceSettlements.id })
+      .from(advanceSettlements)
+      .where(eq(advanceSettlements.advanceId, advanceId))
+      .for("update")
+      .limit(1)
+  )[0];
+  const repaymentAllocation = (
+    await tx
+      .select({ id: employeeAdvanceRepaymentAllocations.id })
+      .from(employeeAdvanceRepaymentAllocations)
+      .where(eq(employeeAdvanceRepaymentAllocations.advanceId, advanceId))
+      .for("update")
+      .limit(1)
+  )[0];
+  const terminationAllocation = (
+    await tx
+      .select({ id: terminationAdvanceAllocations.id })
+      .from(terminationAdvanceAllocations)
+      .where(eq(terminationAdvanceAllocations.advanceId, advanceId))
+      .for("update")
+      .limit(1)
+  )[0];
+  if (settlement || repaymentAllocation || terminationAllocation) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "لا يمكن إلغاء السلفة بعد استعمالها أو تسويتها كلياً أو جزئياً",
+        why: "توجد قيود استيفاء مرتبطة بالسلفة، حتى إن أُعيد رصيدها بعد العكس",
+        doThis: "راجع قيود الاستيفاء المرتبطة وصحّح الالتزام عبر مسار تسوية موثّق يحفظ تاريخ الاسترداد",
+      }),
+    });
+  }
+}
+
+/**
+ * إلغاء التزام موظف غير مستعمل، بحسب مصدره:
+ * - SALARY_ADVANCE: بعد عكس/رفض سند الصرف وإثبات عودة النقد فقط.
+ * - OTHER_DEDUCTION بلا سند: إسقاط الاستقطاع التشغيلي وحده؛ يبقى قيد المصدر
+ *   (مثل خسارة العهدة) وحالة العهدة كما هما، ولا تُنشأ حركة نقد أو مخزون.
+ * - كل سجل مرتبط بسند، بصرف النظر عن تصنيفه التاريخي: يمرّ بحارس عكس/رفض
+ *   السند نفسه. التصنيف الخشن لا يلغي دليلاً نقدياً صالحاً ولا يستبدله.
  *
  * ⚠️ لماذا يُشترط عكس السند أولاً (ثغرة حرجة كانت مفتوحة): إلغاء السلفة يمحو التزام
  * السداد (لا تُخصم من الرواتب بعدها)، بينما النقد خرج فعلاً من الخزينة لحظة المنح.
@@ -489,13 +870,57 @@ export async function grantAdvance(input: GrantAdvanceInput, actor: Actor) {
  */
 export async function cancelAdvance(input: { advanceId: number; reason?: string | null }, actor: Actor) {
   return withTx(async (tx) => {
-    const [adv] = await tx.select().from(employeeAdvances).where(eq(employeeAdvances.id, input.advanceId)).for("update").limit(1);
-    if (!adv) throw new TRPCError({ code: "NOT_FOUND", message: "السلفة غير موجودة" });
-    if (adv.status !== "ACTIVE") throw new TRPCError({ code: "BAD_REQUEST", message: "تُلغى السلف النشطة فقط" });
+    await assertOperationAuthorityTx(
+      tx,
+      actor,
+      "payroll.advanceCancel",
+      currentHrWriteAllowed,
+    );
+    const scopedCondition = canCrossBranches(actor)
+      ? eq(employeeAdvances.id, input.advanceId)
+      : and(
+          eq(employeeAdvances.id, input.advanceId),
+          eq(employeeAdvances.branchId, actor.branchId),
+        );
+    const [adv] = await tx
+      .select()
+      .from(employeeAdvances)
+      .where(scopedCondition)
+      .for("update")
+      .limit(1);
+    if (!adv)
+      throw new TRPCError({ code: "NOT_FOUND", message: "السلفة غير موجودة" });
+    if (adv.status !== "ACTIVE")
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "تُلغى السلف النشطة فقط",
+      });
     if (!money(adv.remaining).eq(money(adv.amount))) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا تُلغى سلفة خُصم منها فعلاً — بقيّتها تُخصم من الرواتب القادمة حتى التسوية" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message:
+          "لا تُلغى سلفة خُصم منها فعلاً — بقيّتها تُخصم من الرواتب القادمة حتى التسوية",
+      });
     }
-    if (adv.receiptId != null) {
+    await assertNoAdvanceRecoveryHistoryTx(tx, Number(adv.id));
+
+    const isNoncashWaiver =
+      adv.sourceType === "OTHER_DEDUCTION" && adv.receiptId == null;
+    let voucherNotice: string;
+    if (isNoncashWaiver) {
+      voucherNotice =
+        "أُلغي الاستقطاع غير النقدي بلا حركة نقد أو مخزون؛ بقي أثر المصدر وقيده محفوظين.";
+    } else {
+      if (adv.receiptId == null) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "لا يمكن إلغاء السلفة",
+            why: "رابط سند الصرف مفقود، لذلك لا يمكن إثبات عودة النقد",
+            doThis: "نفّذ مطابقة مالية لسند الصرف قبل إعادة الإلغاء",
+          }),
+        });
+      }
       const [rc] = await tx
         .select({ status: receipts.status, voucherNumber: receipts.voucherNumber, approvalStatus: receipts.approvalStatus })
         .from(receipts)
@@ -503,23 +928,65 @@ export async function cancelAdvance(input: { advanceId: number; reason?: string 
         .for("update")
         .limit(1);
       // REVERSED = عُكس السند وعاد النقد. REJECTED = لم يُصرف أصلاً. ما عداهما ⇒ النقد بالخارج.
-      const cashReturned = rc == null || rc.status === "REVERSED" || rc.approvalStatus === "REJECTED";
+      if (!rc) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "لا يمكن إلغاء السلفة",
+            why: "سند الصرف المرتبط غير موجود",
+            doThis: "نفّذ مطابقة مالية للسلفة وسندها قبل إعادة الإلغاء",
+          }),
+        });
+      }
+      const cashReturned =
+        rc.status === "REVERSED" || rc.approvalStatus === "REJECTED";
       if (!cashReturned) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: `لا تُلغى السلفة وسند صرفها ما زال سارياً — النقد خرج من الخزينة، وإلغاء السلفة وحده يمحو التزام السداد. ألغِ السند ${rc.voucherNumber ?? ""} من شاشة السندات أولاً (يمرّ بفصل المهام) ثم أعد الإلغاء.`.trim(),
         });
       }
+      voucherNotice =
+        "أُلغيت السلفة بعد عكس سند صرفها — لا نقد خارج الخزينة بلا التزام.";
     }
     const reason = input.reason?.trim();
-    const note = [adv.note, reason ? `إلغاء: ${reason}` : "أُلغيت"].filter(Boolean).join(" — ").slice(0, 255);
-    await tx.update(employeeAdvances).set({ status: "CANCELLED", note }).where(eq(employeeAdvances.id, input.advanceId));
-    void actor;
+    const cancellationNote =
+      isNoncashWaiver
+        ? reason
+          ? `إلغاء استقطاع غير نقدي: ${reason}`
+          : "أُلغي الاستقطاع غير النقدي"
+        : reason
+          ? `إلغاء: ${reason}`
+          : "أُلغيت";
+    const note = [adv.note, cancellationNote]
+      .filter(Boolean)
+      .join(" — ")
+      .slice(0, 255);
+    const [cancelled] = await tx
+      .update(employeeAdvances)
+      .set({ status: "CANCELLED", note })
+      .where(
+        and(
+          scopedCondition,
+          eq(employeeAdvances.status, "ACTIVE"),
+          eq(employeeAdvances.remaining, adv.remaining),
+        ),
+      );
+    if (cancelled.affectedRows !== 1) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "لم يكتمل إلغاء السلفة",
+          why: "تغيّرت السلفة أثناء الإلغاء",
+          doThis: "حدّث الصفحة وأعد مطابقة الرصيد وسند الصرف",
+        }),
+      });
+    }
     return {
       id: input.advanceId,
       status: "CANCELLED" as const,
       receiptId: adv.receiptId != null ? Number(adv.receiptId) : null,
-      voucherNotice: "أُلغيت السلفة بعد عكس سند صرفها — لا نقد خارج الخزينة بلا التزام.",
+      voucherNotice,
     };
   });
 }
@@ -536,20 +1003,41 @@ export interface SuggestedDeduction {
  * suggested = مجموع min(monthlyDeduction ?? remaining، remaining) لجميع سلف الموظف النشطة.
  * يُستدعى داخل معاملة توليد المسيّر ومزامنة المسودة قبل الاعتماد.
  */
-export async function suggestDeductionsTx(tx: Tx, employeeIds: number[]): Promise<Map<number, SuggestedDeduction>> {
+export async function suggestDeductionsTx(
+  tx: Tx,
+  employeeIds: number[],
+  payrollPeriod?: string,
+  options: { lockCurrent?: boolean } = {},
+): Promise<Map<number, SuggestedDeduction>> {
   const out = new Map<number, SuggestedDeduction>();
-  if (employeeIds.length === 0) return out;
-  const rows = await tx
+  const scopedEmployeeIds = Array.from(new Set(employeeIds.map(Number))).sort(
+    (left, right) => left - right,
+  );
+  if (scopedEmployeeIds.length === 0) return out;
+  const query = tx
     .select()
     .from(employeeAdvances)
-    .where(and(inArray(employeeAdvances.employeeId, employeeIds), eq(employeeAdvances.status, "ACTIVE")))
+    .where(and(inArray(employeeAdvances.employeeId, scopedEmployeeIds), eq(employeeAdvances.status, "ACTIVE")))
     .orderBy(asc(employeeAdvances.id));
+  const rows = options.lockCurrent ? await query.for("update") : await query;
   for (const adv of rows) {
     const empId = Number(adv.employeeId);
     const remaining = money(adv.remaining);
     if (remaining.lte(0)) continue;
-    const monthly = adv.monthlyDeduction != null ? money(adv.monthlyDeduction) : null;
-    const dueForThisAdv = round2(Decimal.min(monthly ?? remaining, remaining));
+    if (
+      adv.sourceType === "SALARY_ADVANCE" &&
+      payrollPeriod != null &&
+      adv.payrollPeriod !== payrollPeriod
+    ) {
+      continue;
+    }
+    const monthly =
+      adv.sourceType === "SALARY_ADVANCE"
+        ? remaining
+        : adv.monthlyDeduction != null
+          ? money(adv.monthlyDeduction)
+          : remaining;
+    const dueForThisAdv = round2(Decimal.min(monthly, remaining));
     if (dueForThisAdv.lte(0)) continue;
 
     const existing = out.get(empId);
@@ -563,9 +1051,12 @@ export async function suggestDeductionsTx(tx: Tx, employeeIds: number[]): Promis
 }
 
 /** نسخة عامة (خارج معاملة) — للاستعلام من الراوتر/الواجهة. */
-export async function suggestDeductionsForPeriod(employeeIds: number[]): Promise<Record<number, { advanceId: number; suggested: string }>> {
+export async function suggestDeductionsForPeriod(
+  employeeIds: number[],
+  payrollPeriod?: string,
+): Promise<Record<number, { advanceId: number; suggested: string }>> {
   return withTx(async (tx) => {
-    const map = await suggestDeductionsTx(tx, employeeIds);
+    const map = await suggestDeductionsTx(tx, employeeIds, payrollPeriod);
     const out: Record<number, { advanceId: number; suggested: string }> = {};
     map.forEach((v, empId) => {
       out[empId] = { advanceId: v.advanceId, suggested: toDbMoney(v.suggested) };
@@ -684,4 +1175,3 @@ export async function restoreAdvanceSettlementsTx(tx: Tx, runId: number): Promis
   }
   await tx.delete(advanceSettlements).where(eq(advanceSettlements.runId, runId));
 }
-

@@ -1,35 +1,29 @@
 import { useEffect } from "react";
 import { Link } from "wouter";
 import {
-  AlertTriangle,
-  ArrowRight,
   Calendar,
   CheckCircle2,
-  ChevronRight,
   Clock,
-  FileText,
   Package,
   Pencil,
   Printer,
   Receipt,
-  Rows3,
+  Store,
   Timer,
   Truck,
-  Wrench,
   X,
 } from "lucide-react";
 import { computeOrderLifecycleTiming } from "@shared/workOrderTimer";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { ErrorState, LoadingState } from "@/components/PageState";
-import { WhatsAppIcon, WhatsAppShare } from "@/components/WhatsAppShare";
+import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { ChannelBadge } from "@/components/ChannelBadge";
 import { printWorkOrder } from "@/lib/printing/printTemplates";
 import { printWorkOrderReceipt } from "@/lib/printing/print";
 import { CopyInline } from "@/components/CopyButton";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
-import { formatQuantity } from "@/lib/money";
-import { fmtAr, fmtInt, D, positiveDiff } from "@/lib/money";
+import { formatQuantity, fmtAr, fmtInt } from "@/lib/money";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
 import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
@@ -43,33 +37,46 @@ import {
   workOrderTimelineLabel,
 } from "@shared/workOrderStatus";
 import {
-  type WO,
   type Detail,
   type Status,
-  type ColKey,
   STATUSES,
   ADV_LABEL,
   PRIORITIES,
   dueInfo,
   progressOf,
   workOrderCardLabel,
-  avatarHue,
-  initials,
   workOrderContactMessage,
-  printWoFromCard,
-  printWoThermalFromCard,
   printWoShippingLabel,
 } from "./workOrderTypes";
 
 export function WorkOrderPreviewDrawer({
-  id, onClose, isManager, canRequestControl, canRequestCancel, canDeliver, onAdvance, onCancel, onDeliver, onAssign, onEdit, onOpenCustomer, onClaim, onRelease, busy,
+  id,
+  onClose,
+  isManager,
+  canRequestControl,
+  canRequestCancel,
+  canDeliver,
+  onAdvance,
+  onCancel,
+  onAssign,
+  onEdit,
+  onOpenCustomer,
+  onClaim,
+  onRelease,
+  busy,
 }: {
-  id: number; onClose: () => void; isManager: boolean; canRequestControl: boolean;
+  id: number;
+  onClose: () => void;
+  isManager: boolean;
+  canRequestControl: boolean;
   /** طلبُ الإلغاء أوسعُ من التعديل التجاريّ: يشمل فنّي المطبعة (قرار المالك ١/٩/٢٦). */
-  canRequestCancel: boolean; canDeliver: boolean;
-  onAdvance: (id: number, to: Status) => void; onCancel: (d: Detail) => void;
-  onDeliver: (d: Detail) => void; onAssign: (id: number, staffId: number | null) => void;
-  onEdit: (id: number) => void; busy: boolean;
+  canRequestCancel: boolean;
+  canDeliver: boolean;
+  onAdvance: (id: number, to: Status) => void;
+  onCancel: (d: Detail) => void;
+  onAssign: (id: number, staffId: number | null) => void;
+  onEdit: (id: number) => void;
+  busy: boolean;
   onOpenCustomer?: (customerId: number) => void;
   onClaim?: (id: number) => void;
   onRelease?: (id: number) => void;
@@ -345,15 +352,50 @@ export function WorkOrderPreviewDrawer({
                   أعد إلى الطابور
                 </button>
               )}
-              {next === ("DELIVERED" as ColKey) && d.hasDelivery && canLifecycleOperation(me.data, "delivery.dispatch", canDeliver) ? (
-                <Link href="/delivery" className="wob-btn wob-btn-primary" style={{ flex: 1 }}>
-                  <Truck aria-hidden className="size-4 inline-block align-text-bottom me-1" /> إسناد للتوصيل
-                </Link>
-              ) : next ? canLifecycleOperation(me.data, next === "IN_PROGRESS" ? "workOrders.start" : next === "READY" ? "workOrders.markReady" : "workOrders.deliver", next !== "DELIVERED" || canDeliver) && (
-                <button className="wob-btn wob-btn-primary" style={{ flex: 1 }} disabled={busy}
-                  onClick={() => (next === ("DELIVERED" as ColKey) ? onDeliver(d) : onAdvance(d.id, next))}>{ADV_LABEL[next]}</button>
+              {d.status === "READY" ? (
+                canLifecycleOperation(
+                  me.data,
+                  d.hasDelivery ? "delivery.dispatch" : "workOrders.deliver",
+                  canDeliver,
+                ) ? (
+                  <Link href={d.hasDelivery ? "/reception/workflow" : "/reception/handover"} className="wob-btn wob-btn-primary" style={{ flex: 1, justifyContent: "center" }}>
+                    {d.hasDelivery ? (
+                      <>
+                        <Truck aria-hidden className="size-4 inline-block align-text-bottom me-1" /> فتح في الإسناد والتوصيل
+                      </>
+                    ) : (
+                      <>
+                        <Store aria-hidden className="size-4 inline-block align-text-bottom me-1" /> فتح في التسليم المباشر
+                      </>
+                    )}
+                  </Link>
+                ) : (
+                  <span
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg border bg-muted/60 px-3 py-1.5 text-xs font-semibold text-muted-foreground"
+                    style={{ flex: 1 }}
+                  >
+                    <CheckCircle2 aria-hidden className="size-4 shrink-0 text-[var(--sem-pos)]" /> جاهز في الاستقبال
+                  </span>
+                )
+              ) : (next === "IN_PROGRESS" || next === "READY") ? (
+                canLifecycleOperation(
+                  me.data,
+                  next === "IN_PROGRESS" ? "workOrders.start" : "workOrders.markReady",
+                  true,
+                ) && (
+                  <button
+                    className="wob-btn wob-btn-primary"
+                    style={{ flex: 1 }}
+                    disabled={busy}
+                    onClick={() => onAdvance(d.id, next)}
+                  >
+                    {ADV_LABEL[next]}
+                  </button>
+                )
               ) : (
-                <button className="wob-btn wob-btn-ghost" disabled style={{ flex: 1, opacity: 0.6 }}><CheckCircle2 aria-hidden className="size-4 inline-block align-text-bottom me-1" /> اكتمل الأمر</button>
+                <button className="wob-btn wob-btn-ghost" disabled style={{ flex: 1, opacity: 0.6 }}>
+                  <CheckCircle2 aria-hidden className="size-4 inline-block align-text-bottom me-1" /> اكتمل الأمر
+                </button>
               )}
               {canRequestControl && d.status !== "DELIVERED" && d.status !== "CANCELLED" && (
                 <button className="wob-btn wob-btn-ghost" disabled={busy} onClick={() => onEdit(d.id)}>
