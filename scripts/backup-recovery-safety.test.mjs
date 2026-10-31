@@ -6,7 +6,85 @@ import { tmpdir } from "node:os";
 import { join, basename, dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { publishEncryptedBackup, mirrorPublishedBackup, fingerprint } from "./lib/backup-publication.mjs";
-import { encryptBackupWithOwnedAgent } from "./lib/backup-gpg.mjs";
+import { createAgentProcessProbe, encryptBackupWithOwnedAgent } from "./lib/backup-gpg.mjs";
+
+function linuxProbeFixture() {
+  const state = { processState: "S", startTime: "100", uid: "1001", signalError: null, readError: null, malformed: false, statReads: 0, race: false, exitWhileReading: false };
+  const probe = createAgentProcessProbe({ platform: "linux",
+    signal(pid) { assert.equal(pid, 4242); if (state.signalError) throw Object.assign(new Error("synthetic signal failure"), { code: state.signalError }); },
+    readProc(file) {
+      if (state.exitWhileReading) { state.signalError = "ESRCH"; throw Object.assign(new Error("synthetic exit"), { code: "ENOENT" }); }
+      if (state.readError) throw Object.assign(new Error("synthetic proc failure"), { code: state.readError });
+      if (file.endsWith("/stat")) {
+        state.statReads++;
+        if (state.malformed) return "4242 (gpg-agent) S 0";
+        const fields = Array(20).fill("0");
+        fields[0] = state.processState;
+        fields[19] = state.race && state.statReads % 2 === 0 ? "200" : state.startTime;
+        return `4242 (gpg-agent) ${fields.join(" ")}\n`;
+      }
+      assert.equal(file, "/proc/4242/status");
+      return `Name:\tgpg-agent\nPid:\t4242\nUid:\t${state.uid}\t${state.uid}\t${state.uid}\t${state.uid}\n`;
+    },
+  });
+  return { state, probe };
+}
+
+for (const terminal of ["Z", "X"]) test(`Linux process probe accepts same-identity ${terminal} after observing a live agent`, () => {
+  const { state, probe } = linuxProbeFixture();
+  assert.equal(probe(4242), true);
+  state.processState = terminal;
+  assert.equal(probe(4242), false);
+});
+
+for (const changed of ["startTime", "uid"]) test(`Linux process probe rejects ${changed} reuse even for a terminal PID`, () => {
+  const { state, probe } = linuxProbeFixture();
+  assert.equal(probe(4242), true);
+  state[changed] = "2002";
+  state.processState = "Z";
+  assert.throws(() => probe(4242), /BACKUP_GPG_PID_IDENTITY_CHANGED/);
+});
+
+for (const scenario of ["EACCES", "ENOENT", "EPERM", "malformed", "race", "initial-zombie"]) test(`Linux process probe fails closed for ${scenario}`, () => {
+  const { state, probe } = linuxProbeFixture();
+  if (scenario !== "initial-zombie") assert.equal(probe(4242), true);
+  if (scenario === "EACCES" || scenario === "ENOENT") state.readError = scenario;
+  if (scenario === "EPERM") state.signalError = scenario;
+  if (scenario === "malformed") state.malformed = true;
+  if (scenario === "race") state.race = true;
+  if (scenario === "initial-zombie") state.processState = "Z";
+  assert.throws(() => probe(4242), /BACKUP_GPG_PID_PROBE_FAILED/);
+});
+
+test("Linux process probe accepts ESRCH and keeps identity state private to its invocation", () => {
+  const first = linuxProbeFixture();
+  assert.equal(first.probe(4242), true);
+  first.state.signalError = "ESRCH";
+  assert.equal(first.probe(4242), false);
+  const second = linuxProbeFixture();
+  second.state.startTime = "999";
+  second.state.uid = "2002";
+  assert.equal(second.probe(4242), true);
+});
+
+test("Linux process probe confirms ESRCH after proc disappears during observation", () => {
+  const { state, probe } = linuxProbeFixture();
+  assert.equal(probe(4242), true);
+  state.exitWhileReading = true;
+  assert.equal(probe(4242), false);
+});
+
+test("non-Linux process probe preserves native PID liveness without reading proc", () => {
+  let code;
+  const probe = createAgentProcessProbe({ platform: "win32", readProc() { assert.fail("Windows must not read proc"); }, signal() {
+    if (code) throw Object.assign(new Error("synthetic signal failure"), { code });
+  } });
+  assert.equal(probe(4242), true);
+  code = "ESRCH";
+  assert.equal(probe(4242), false);
+  code = "EPERM";
+  assert.throws(() => probe(4242), /BACKUP_GPG_PID_PROBE_FAILED/);
+});
 
 test("the real backup encrypt callback owns its GPG agent before publication", async () => {
   const source = await readFile(new URL("./backup.mjs", import.meta.url), "utf8");
@@ -200,6 +278,7 @@ test("actual GPG AES256 encrypt, offsite copy, decrypt and wrong-key rejection o
     { input: passphrase, maxBuffer: 1024 * 1024, env: isolatedEnv(isolated) });
   let ownedHome;
   let ownedPid;
+  const ownedProbe = createAgentProcessProbe();
   try {
   // Another private home/agent must survive the backup helper unchanged.
   await writeFile(join(home, "preserve-marker"), "unrelated home stays intact");
@@ -210,6 +289,7 @@ test("actual GPG AES256 encrypt, offsite copy, decrypt and wrong-key rejection o
     return encryptBackupWithOwnedAgent({ sqlFile, partialFile, passphrase: "synthetic-test-key-only", gpg, msys,
       run(command, args, options) {
         ownedHome = options.env.GNUPGHOME;
+        if (args.includes("--symmetric")) assert.equal(ownedProbe(ownedPid), true);
         const result = spawnSync(command, args, options);
         if (basename(command) === "ps.exe" && result.status === 0) ownedPid = Number(result.stdout.trim().split(/\r?\n/)[1].trim().split(/\s+/)[3]);
         if (!msys && args.includes("GETINFO pid")) ownedPid = Number(result.stdout.match(/^D (\d+)\r?$/m)?.[1]);
@@ -218,7 +298,7 @@ test("actual GPG AES256 encrypt, offsite copy, decrypt and wrong-key rejection o
     });
   } });
   assert.equal(existsSync(ownedHome), false);
-  assert.throws(() => process.kill(ownedPid, 0), error => error.code === "ESRCH");
+  assert.equal(ownedProbe(ownedPid), false);
   const otherAfter = control(connectAgent, ["--no-autostart", "GETINFO pid", "/bye"]);
   assert.equal(otherAfter.status, 0);
   assert.equal(otherAfter.stdout, otherBefore.stdout);
