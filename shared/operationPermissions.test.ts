@@ -244,6 +244,36 @@ describe("actual access preview", () => {
 });
 
 describe("operation policies", () => {
+  it.each([true, false])("reads the removed payroll threshold key without breaking cashier policies (%s)", (removedGrant) => {
+    const old: OperationPolicy = {
+      ...policy({
+        "operation.sales.create": true,
+        "operation.returns.create": false,
+        "operation.payroll.advanceThresholds": removedGrant,
+      }),
+      recordScopes: {
+        "operation.sales.create": "OWN",
+        "operation.payroll.advanceThresholds": "BRANCH",
+      },
+      dataVisibility: { purchaseCost: false, profitMargin: false },
+    };
+    const original = structuredClone(old);
+    const expected = {
+      ...policy({ "operation.sales.create": true, "operation.returns.create": false }),
+      recordScopes: { "operation.sales.create": "OWN" },
+      dataVisibility: { purchaseCost: false, profitMargin: false },
+    };
+    expect(getOperationPermission("payroll.advanceThresholds")).toBeUndefined();
+    expect(storedOperationPolicySchema.parse(old)).toEqual(expected);
+    expect(operationPolicySchema.parse(old)).toEqual(expected);
+    expect(old).toEqual(original);
+    expect(operationDecision({ role: "cashier", roleOperationPolicy: old }, "payroll.advanceThresholds").allowed).toBe(false);
+    expect(storedOperationPolicySchema.safeParse({
+      ...old,
+      grants: { ...old.grants, "operation.unknown.path": true },
+    }).success).toBe(false);
+  });
+
   it("reads reclassified stored authority without granting it or weakening policy writes", () => {
     for (const protectedGrant of [true, false]) {
       const old: OperationPolicy = {
