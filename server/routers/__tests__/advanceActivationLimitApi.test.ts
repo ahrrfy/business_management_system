@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../drizzle/schema";
 import type { TrpcContext } from "../../context";
 import { getDb } from "../../db";
@@ -27,6 +27,10 @@ async function user(id: number) {
 }
 
 beforeEach(async () => {
+  // Exercise reservation against a known earned balance, independently of the
+  // real calendar day. Keep real I/O timers for database and background work.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-10-30T09:00:00.000Z"));
   await truncateTables([
     "auditLogs",
     "accountingEntries",
@@ -52,6 +56,7 @@ beforeEach(async () => {
     payType: "monthly",
     salary: "1000000.00",
     allowances: "0.00",
+    hireDate: "2026-10-01",
   });
   await db().insert(s.receipts).values({
     branchId: 1,
@@ -66,6 +71,8 @@ beforeEach(async () => {
   });
 });
 
+afterEach(() => vi.useRealTimers());
+
 describe("advance limit through payroll/voucher API", () => {
   it("يحجز الطلب المعلق من الحد الشهري بلا سند أو أثر نقدي", async () => {
     const maker = appRouter.createCaller(context(await user(1)));
@@ -75,7 +82,7 @@ describe("advance limit through payroll/voucher API", () => {
       amount: "600000.00",
       clientRequestId: "advance-api-limit-a",
     });
-    expect(first.status).toBe("PENDING");
+    expect(first).toMatchObject({ status: "PENDING", payrollPeriod: "2026-10" });
     await expect(
       maker.payroll.advanceGrant({
         employeeId: 1,
