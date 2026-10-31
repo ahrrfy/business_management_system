@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, lstatSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { chmodSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
@@ -7,9 +7,54 @@ const fail = (code) => Object.assign(new Error(code), { code });
 const positivePid = value => /^\d+$/.test(String(value)) && Number.isSafeInteger(Number(value)) && Number(value) > 0;
 const msysPath = value => value.replace(/^([A-Za-z]):[\\/]/, (_, drive) => `/${drive.toLowerCase()}/`).replaceAll("\\", "/");
 
-function processAlive(pid) {
-  try { process.kill(pid, 0); return true; }
-  catch (error) { if (error.code === "ESRCH") return false; throw fail("BACKUP_GPG_PID_PROBE_FAILED"); }
+// Each backup pins its own Linux kernel identity. Signal 0 alone also sees zombies.
+export function createAgentProcessProbe({ platform = process.platform, signal = pid => process.kill(pid, 0), readProc = readFileSync } = {}) {
+  const identities = new Map();
+  const exists = pid => {
+    try { signal(pid); return true; }
+    catch (error) { if (error.code === "ESRCH") return false; throw fail("BACKUP_GPG_PID_PROBE_FAILED"); }
+  };
+  const statIdentity = (raw, pid) => {
+    const open = raw.indexOf(" (");
+    const close = raw.lastIndexOf(")");
+    const fields = raw.slice(close + 2).trim().split(/\s+/);
+    // stat field 22 (starttime) is index 19 after the parenthesized comm field.
+    if (open < 1 || close <= open || raw[close + 1] !== " " || raw.slice(0, open) !== String(pid) ||
+        fields.length < 20 || !/^[RSDTtZXxKWPI]$/.test(fields[0]) || !/^\d+$/.test(fields[19]))
+      throw fail("BACKUP_GPG_PID_PROBE_FAILED");
+    return { state: fields[0], startTime: fields[19] };
+  };
+  const linuxIdentity = pid => {
+    const before = statIdentity(readProc(`/proc/${pid}/stat`, "utf8"), pid);
+    const status = readProc(`/proc/${pid}/status`, "utf8");
+    const pids = [...status.matchAll(/^Pid:[ \t]+(\d+)[ \t]*\r?$/gm)];
+    const uids = [...status.matchAll(/^Uid:[ \t]+(\d+)[ \t]+(\d+)[ \t]+(\d+)[ \t]+(\d+)[ \t]*\r?$/gm)];
+    const after = statIdentity(readProc(`/proc/${pid}/stat`, "utf8"), pid);
+    if (pids.length !== 1 || Number(pids[0][1]) !== pid || uids.length !== 1 || before.startTime !== after.startTime ||
+        uids[0].slice(1).some(uid => !Number.isSafeInteger(Number(uid)) || Number(uid) > 0xffffffff) ||
+        (/[ZX]/.test(before.state) && !/[ZX]/.test(after.state))) throw fail("BACKUP_GPG_PID_PROBE_FAILED");
+    return { ...after, uid: uids[0].slice(1).map(Number).join(":") };
+  };
+  return pid => {
+    if (!positivePid(pid)) throw fail("BACKUP_GPG_PID_PROBE_FAILED");
+    if (!exists(pid)) return false;
+    if (platform !== "linux") return true;
+    let current;
+    try { current = linuxIdentity(pid); }
+    catch (error) {
+      // A disappearing proc entry alone is ambiguous; confirm kernel absence.
+      if (["ENOENT", "ESRCH"].includes(error.code) && !exists(pid)) return false;
+      throw fail("BACKUP_GPG_PID_PROBE_FAILED");
+    }
+    const known = identities.get(pid);
+    if (known && (known.startTime !== current.startTime || known.uid !== current.uid)) throw fail("BACKUP_GPG_PID_IDENTITY_CHANGED");
+    const terminated = current.state === "Z" || current.state === "X";
+    if (!known) {
+      if (terminated) throw fail("BACKUP_GPG_PID_PROBE_FAILED");
+      identities.set(pid, current);
+    }
+    return !terminated;
+  };
 }
 
 // Deliberately exclude ERP/database credentials and inherited agent/socket settings.
@@ -36,7 +81,7 @@ function assertOwnedHome(home, base, identity) {
 
 export async function encryptBackupWithOwnedAgent({
   sqlFile, partialFile, passphrase, gpg = "gpg", gpgconf = "gpgconf", connectAgent = "gpg-connect-agent",
-  msys = false, environment = process.env, run = spawnSync, alive = processAlive,
+  msys = false, environment = process.env, run = spawnSync, alive = createAgentProcessProbe(),
   wait = ms => new Promise(resolveWait => setTimeout(resolveWait, ms)), now = Date.now, shutdownTimeoutMs = 5000,
 }) {
   const base = realpathSync(tmpdir());
