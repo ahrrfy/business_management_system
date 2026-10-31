@@ -489,7 +489,11 @@ export function createLinuxActivationOperations({
         if (identity?.uid === uid) permitted.push(identity);
       }
       descendants(permitted, inventory);
-      permitted.push(...inventory.filter((p) => ancestors.has(p.pid)));
+      // The ownership census covers this service UID; sudo/SSH ancestors of
+      // another UID are not exemptions and may deny access to cwd/exe.
+      permitted.push(
+        ...inventory.filter((p) => p.uid === uid && ancestors.has(p.pid)),
+      );
       // Descendant expansion above must never make ERP children exempt via the
       // PM2 daemon/control ancestry: remove every already-owned ERP identity.
       allowedProcesses = permitted
