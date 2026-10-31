@@ -8,14 +8,14 @@ import {
   applyHistoricalAdvanceRecoveriesTx,
   historicalAdvanceRecoveryApplySourceHash,
   historicalAdvanceRecoveryReverseSourceHash,
+  lockUntouchedEmployeeAdvanceForCancellationTx,
   parseHistoricalAdvanceRecoveryApplyPlan,
   reverseHistoricalAdvanceRecoveries,
   type HistoricalAdvanceRecoveryApplyPlan,
   type HistoricalAdvanceRecoveryApplyPlanBase,
   type HistoricalAdvanceRecoveryReversePlan,
   type HistoricalAdvanceRecoveryReversePlanBase,
-} from "../advances/historicalAdvanceRecovery";
-import { lockUntouchedEmployeeAdvanceForCancellationTx } from "../advances/employeeAdvanceCancellation";
+} from "../advances";
 import { sumMoney, toDbMoney } from "../money";
 import { withTx } from "../tx";
 

@@ -12,7 +12,7 @@ import {
   historicalAdvanceRecoveryApplySourceHash,
   type HistoricalAdvanceRecoveryApplyPlan,
   type HistoricalAdvanceRecoveryApplyPlanBase,
-} from "../advances/historicalAdvanceRecovery";
+} from "../advances";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const CLI_PATH = fileURLToPath(

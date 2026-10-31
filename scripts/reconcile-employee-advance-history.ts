@@ -7,7 +7,7 @@ import {
   applyHistoricalAdvanceRecoveriesTx,
   parseHistoricalAdvanceRecoveryApplyPlan,
   type HistoricalAdvanceRecoveryResult,
-} from "../server/services/advances/historicalAdvanceRecovery";
+} from "../server/services/advances";
 import { requireDb, withTx, type Actor } from "../server/services/tx";
 
 // Internal owner tooling. Review never opens a DB; dry-run rolls back the entire

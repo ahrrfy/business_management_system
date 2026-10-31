@@ -10,7 +10,7 @@ import {
   getEmployeeAdvanceCapacityTx,
   type EmployeeAdvanceCapacity,
 } from "../employeeAdvanceCapacityService";
-import { arabicDayName, projectAttendanceWage } from "../attendanceService";
+import { arabicDayName, projectAttendanceWage, recordAttendance } from "../attendanceService";
 import { getEmployeeStatement } from "../hr/employeeStatement";
 import { approveEmployeePenalty } from "../employeePenaltyService";
 import { disburseEmployeeLoan, requestEmployeeLoan } from "../employeeLoanService";
@@ -137,6 +137,30 @@ async function seedUnpaidLeave(fromDate: string, toDate: string, days: number) {
       decidedBy: ACTOR.userId,
       decidedAt: new Date(`${fromDate}T12:00:00.000Z`),
     });
+}
+
+async function prepareAttendanceBasedMonthlyCapacity() {
+  const connection = db();
+  await connection
+    .update(s.employees)
+    .set({
+      payType: "monthly",
+      attendanceExempt: false,
+      salary: "2400.00",
+      workSchedule: ALL_DAYS_TEN,
+    })
+    .where(eq(s.employees.id, EMPLOYEE_ID));
+  await connection
+    .update(s.payrollLegalSettings)
+    .set({ socialSecurityEnabled: false, incomeTaxEnabled: false })
+    .where(eq(s.payrollLegalSettings.id, 1));
+  await connection.insert(s.hrAttendanceSettings).values({
+    id: 1,
+    attendancePayEnabled: true,
+    attendancePayFrom: "2030-06-01",
+    maxDailyHours: "12.00",
+    updatedBy: ACTOR.userId,
+  });
 }
 
 async function currentCapacity(): Promise<EmployeeAdvanceCapacity> {
@@ -1595,6 +1619,100 @@ describe("employee advance earned-capacity contract", () => {
       blocked: false,
       blockers: [],
       excludedAttendanceDates: ["2030-06-06"],
+    });
+    expect(capacity.warnings).toHaveLength(1);
+  });
+
+  it("يحتسب 8 ساعات من سجل الكاتب ذي الاستراحة 60 دقيقة بدل رفض طول الفترة الخام", async () => {
+    await prepareAttendanceBasedMonthlyCapacity();
+    await recordAttendance({
+      employeeId: EMPLOYEE_ID,
+      attendanceDate: "2030-06-05",
+      hours: 8,
+      checkIn: "08:00",
+      checkOut: "17:00",
+      breakMinutes: 60,
+      source: "manual",
+      scopedBranchId: BRANCH_ID,
+    });
+
+    const capacity = await getEmployeeAdvanceCapacity({
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: FIXED_PERIOD,
+      asOf: FIXED_AS_OF,
+    });
+
+    expect(capacity).toMatchObject({
+      earnedCompensation: "80.00",
+      mandatoryDeductions: "0.00",
+      maxAvailable: "80.00",
+      excludedAttendanceDates: [],
+      warnings: [],
+    });
+  });
+
+  it("يحتسب 12 ساعة مقصوصة معتمدة من سجل الكاتب ولا يعيد فرض طول 14 ساعة", async () => {
+    await prepareAttendanceBasedMonthlyCapacity();
+    await recordAttendance({
+      employeeId: EMPLOYEE_ID,
+      attendanceDate: "2030-06-05",
+      hours: 12,
+      checkIn: "08:00",
+      checkOut: "22:00",
+      source: "fingerprint",
+      needsReview: false,
+      reviewReason: "قُصّت عند سقف 12 ساعة",
+      scopedBranchId: BRANCH_ID,
+    });
+
+    const capacity = await getEmployeeAdvanceCapacity({
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: FIXED_PERIOD,
+      asOf: FIXED_AS_OF,
+    });
+
+    expect(capacity).toMatchObject({
+      earnedCompensation: "140.00",
+      mandatoryDeductions: "0.00",
+      maxAvailable: "140.00",
+      excludedAttendanceDates: [],
+      warnings: [],
+    });
+  });
+
+  it("يبقي تناقض ساعات الفترات المتعددة مستبعداً من الائتمان المؤكد", async () => {
+    await prepareAttendanceBasedMonthlyCapacity();
+    await recordAttendance({
+      employeeId: EMPLOYEE_ID,
+      attendanceDate: "2030-06-05",
+      hours: 8,
+      sessions: [
+        { checkIn: "08:00", checkOut: "12:00" },
+        { checkIn: "16:00", checkOut: "20:00" },
+      ],
+      source: "manual",
+      scopedBranchId: BRANCH_ID,
+    });
+    // الكاتب يمنع التناقض ابتداءً؛ نحاكي انجراف سجل تاريخي بعد كتابة صحيحة للتحقق من fail-closed.
+    await db()
+      .update(s.attendance)
+      .set({ hours: "7.00" })
+      .where(eq(s.attendance.employeeId, EMPLOYEE_ID));
+
+    const capacity = await getEmployeeAdvanceCapacity({
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: FIXED_PERIOD,
+      asOf: FIXED_AS_OF,
+    });
+
+    expect(capacity).toMatchObject({
+      earnedCompensation: "0.00",
+      mandatoryDeductions: "0.00",
+      maxAvailable: "0.00",
+      excludedAttendanceDates: ["2030-06-05"],
     });
     expect(capacity.warnings).toHaveLength(1);
   });

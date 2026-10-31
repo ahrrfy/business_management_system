@@ -12,7 +12,7 @@ import {
   type HistoricalAdvanceRecoveryApplyPlanBase,
   type HistoricalAdvanceRecoveryReversePlan,
   type HistoricalAdvanceRecoveryReversePlanBase,
-} from "../advances/historicalAdvanceRecovery";
+} from "../advances";
 import { getFinancialPosition } from "../reportsFinancialService";
 
 const OWNER = { userId: 1, branchId: 1, role: "admin" };

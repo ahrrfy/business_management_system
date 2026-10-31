@@ -26,6 +26,7 @@ import {
 } from "../../../drizzle/schema";
 import { fullEmployeeName } from "@shared/hr";
 import {
+  attendanceHoursViolation,
   computeSessionsSummary,
   hasMalformedAttendanceSessionsTag,
   hasUnclosedAttendancePunch,
@@ -357,17 +358,33 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
           })),
         );
         const malformedSessionsTag = hasMalformedAttendanceSessionsTag(r.notes);
-        const sessionHoursMismatch =
-          details.sessions.length > 0 &&
+        const declaredSplitHoursMismatch =
+          details.hasMultipleSessions &&
           details.grossHours > 0 &&
           Math.abs(summary.totalHours - details.grossHours) > HOURS_SPAN_TOLERANCE;
+        const singleSession = !details.hasMultipleSessions ? details.sessions[0] : null;
+        const singleSessionViolation = singleSession
+          ? attendanceHoursViolation({
+              checkIn: singleSession.checkIn,
+              checkOut: singleSession.checkOut,
+              crossMidnight: singleSession.crossMidnight,
+              hours: details.grossHours,
+              isPaidStatus: true,
+              breakMinutes: details.breakMinutes,
+            })
+          : null;
         const reasonCodes = new Set<string>();
         if (hasUnclosedAttendancePunch(r) || details.hasOpenSession || summary.hasOpenSession) {
           reasonCodes.add("OPEN_SESSION");
         }
         if (r.needsReview) reasonCodes.add("NEEDS_REVIEW");
         if (rowNeedsLegacyHealing(r)) reasonCodes.add("LEGACY_HEALING");
-        if (summary.violation || malformedSessionsTag || sessionHoursMismatch) {
+        if (
+          summary.violation ||
+          malformedSessionsTag ||
+          declaredSplitHoursMismatch ||
+          singleSessionViolation
+        ) {
           reasonCodes.add("SESSION_CONTRADICTION");
         }
 
