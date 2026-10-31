@@ -19,7 +19,11 @@ it("keeps web source maps available offline without retaining them in every work
       arg === "server/index.ts" ? fixture : arg.startsWith("--outfile=") ? `--outfile=${output}` : arg,
     );
     const require = createRequire(import.meta.url);
-    const built = spawnSync(process.execPath, [require.resolve("esbuild/bin/esbuild"), ...args], {
+    // pnpm can replace this entry with an ELF executable on POSIX; Windows
+    // keeps esbuild's JavaScript launcher.
+    const cli = require.resolve("esbuild/bin/esbuild");
+    const built = spawnSync(process.platform === "win32" ? process.execPath : cli,
+      process.platform === "win32" ? [cli, ...args] : args, {
       cwd: directory, encoding: "utf8", timeout: 10_000,
     });
     expect(built.status, built.stderr).toBe(0);
