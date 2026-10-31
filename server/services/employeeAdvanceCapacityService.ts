@@ -322,22 +322,31 @@ export async function getEmployeeAdvanceCapacityTx(
     legalDeductions.plus(spotBonusLeaveDeduction),
   );
 
-  const [draftItem] =
-    run?.status === "draft"
-      ? await tx
-          .select({
-            deductions: payrollItems.deductions,
-            advanceDeduction: payrollItems.advanceDeduction,
-          })
-          .from(payrollItems)
-          .where(
-            and(
-              eq(payrollItems.runId, Number(run.id)),
-              eq(payrollItems.employeeId, options.employeeId),
-            ),
-          )
-          .limit(1)
-      : [];
+  const draftItemQuery = tx
+    .select({
+      gross: payrollItems.gross,
+      overtime: payrollItems.overtime,
+      commission: payrollItems.commission,
+      deductions: payrollItems.deductions,
+      advanceDeduction: payrollItems.advanceDeduction,
+    })
+    .from(payrollItems)
+    .where(
+      and(
+        eq(payrollItems.runId, Number(run?.id ?? 0)),
+        eq(payrollItems.employeeId, options.employeeId),
+      ),
+    );
+  const draftItemRows =
+    run?.status !== "draft"
+      ? []
+      : options.lock
+        ? await draftItemQuery.for("update").limit(1)
+        : await draftItemQuery.limit(1);
+  const draftItem = draftItemRows[0];
+  if (run?.status === "draft" && draftItem == null) {
+    blockers.push("الموظف غير مشمول بمسودة راتب هذا الشهر؛ أعد توليد المسودة لتضمينه قبل طلب أو صرف سلفة");
+  }
   const draftNonAdvance = draftItem
     ? Decimal.max(
         0,
@@ -453,13 +462,40 @@ export async function getEmployeeAdvanceCapacityTx(
       .minus(mandatoryDeductions)
       .minus(otherEmployeeDeductions),
   );
+  const earnedAvailable = Decimal.max(
+    0,
+    preAdvanceNet.minus(existingSalaryAdvances).minus(reservedRequests),
+  );
+  /*
+   * تعديل المالك للإضافي/الاستقطاع يغيّر ما تستطيع المسودة استيعابه فعلاً. نبني سقفاً
+   * مستقلاً من تعويض المسودة المعدّل، ثم نطرح الاستقطاعات غير الخاصة بالسلفة ومصادر
+   * الديون الحالية مرة واحدة. advanceDeduction يُستعمل فقط لفصل بقية deductions؛
+   * فالديون تُقرأ من مصادرها الحالية أدناه ولا تُعاقَب مرتين.
+   */
+  const draftAvailable =
+    run?.status !== "draft"
+      ? null
+      : draftItem == null
+        ? ZERO
+        : Decimal.max(
+            0,
+            round2(
+              money(draftItem.gross)
+                .plus(money(draftItem.overtime))
+                .plus(money(draftItem.commission))
+                .minus(wageLeaveDeduction)
+                .minus(mandatoryDeductions)
+                .minus(existingSalaryAdvances)
+                .minus(otherEmployeeDeductions)
+                .minus(reservedRequests),
+            ),
+          );
   const maxAvailable = blockers.length
     ? ZERO
     : round2(
-        Decimal.max(
-          0,
-          preAdvanceNet.minus(existingSalaryAdvances).minus(reservedRequests),
-        ),
+        draftAvailable == null
+          ? earnedAvailable
+          : Decimal.min(earnedAvailable, draftAvailable),
       );
 
   return {

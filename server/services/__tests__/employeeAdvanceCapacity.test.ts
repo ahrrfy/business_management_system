@@ -10,6 +10,7 @@ import {
 } from "../employeeAdvanceCapacityService";
 import { getEmployeeStatement } from "../hr/employeeStatement";
 import { requestEmployeeLoan } from "../employeeLoanService";
+import { updateItem } from "../payrollService";
 import type { Actor } from "../tx";
 
 const EMPLOYEE_ID = 10;
@@ -477,6 +478,178 @@ describe("employee advance earned-capacity contract", () => {
       mandatoryDeductions: beforeDraft.mandatoryDeductions,
       maxAvailable: beforeDraft.maxAvailable,
     });
+  });
+
+  it("يقص السعة عند تعويض المسودة المعدل دون توسيع الأجر أو تكرار خصم الديون", async () => {
+    const connection = db();
+    const schedule = Object.fromEntries(
+      [
+        "الأحد",
+        "الاثنين",
+        "الثلاثاء",
+        "الأربعاء",
+        "الخميس",
+        "الجمعة",
+        "السبت",
+      ].map((day) => [day, { hours: 8, rate: 100 }]),
+    );
+    await connection
+      .update(s.employees)
+      .set({
+        payType: "monthly",
+        attendanceExempt: false,
+        workSchedule: schedule,
+      })
+      .where(eq(s.employees.id, EMPLOYEE_ID));
+    await connection.insert(s.hrAttendanceSettings).values({
+      id: 1,
+      attendancePayEnabled: true,
+      attendancePayFrom: `${CURRENT_PERIOD}-01`,
+      maxDailyHours: "12.00",
+      updatedBy: ACTOR.userId,
+    });
+    // 8 × 100 أساس، و4 × 100 × 1.5 إضافي = 1400 مكتسب حتى اليوم.
+    await seedAttendance({ date: TODAY, hours: "12.00", amount: "1400.00" });
+    await connection.insert(s.employeeAdvances).values([
+      {
+        employeeId: EMPLOYEE_ID,
+        branchId: BRANCH_ID,
+        amount: "100.00",
+        remaining: "100.00",
+        monthlyDeduction: "100.00",
+        sourceType: "SALARY_ADVANCE",
+        payrollPeriod: CURRENT_PERIOD,
+        status: "ACTIVE",
+        createdBy: ACTOR.userId,
+      },
+      {
+        employeeId: EMPLOYEE_ID,
+        branchId: BRANCH_ID,
+        amount: "50.00",
+        remaining: "50.00",
+        monthlyDeduction: "50.00",
+        sourceType: "OTHER_DEDUCTION",
+        payrollPeriod: null,
+        status: "ACTIVE",
+        createdBy: ACTOR.userId,
+      },
+    ]);
+    await connection.insert(s.payrollRuns).values({
+      id: 1,
+      period: CURRENT_PERIOD,
+      status: "draft",
+      createdBy: ACTOR.userId,
+      employeeCount: 1,
+      totalGross: "800.00",
+      totalOvertime: "600.00",
+      totalDeductions: "302.00",
+      totalNet: "1098.00",
+    });
+    await connection.insert(s.payrollItems).values({
+      id: 1,
+      runId: 1,
+      employeeId: EMPLOYEE_ID,
+      payType: "monthly",
+      gross: "800.00",
+      overtime: "600.00",
+      deductions: "302.00",
+      advanceDeduction: "150.00",
+      socialSecurityEmployee: "80.00",
+      incomeTax: "72.00",
+      net: "1098.00",
+    });
+    const input = {
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: CURRENT_PERIOD,
+      asOf: TODAY,
+    };
+
+    // 1400 - قانوني 152 - سلفة 100 - استقطاع آخر 50 = 1098؛ advanceDeduction لا يخصم ثانية.
+    expect(await getEmployeeAdvanceCapacity(input)).toMatchObject({
+      earnedCompensation: "1400.00",
+      mandatoryDeductions: "152.00",
+      existingSalaryAdvances: "100.00",
+      otherEmployeeDeductions: "50.00",
+      maxAvailable: "1098.00",
+    });
+
+    await updateItem(1, { overtime: "0.00" }, ACTOR);
+    expect((await getEmployeeAdvanceCapacity(input)).maxAvailable).toBe(
+      "498.00",
+    );
+
+    // رفع المسودة لا يوسّع سقف الأجر المكتسب الحي.
+    await updateItem(1, { overtime: "1000.00" }, ACTOR);
+    expect((await getEmployeeAdvanceCapacity(input)).maxAvailable).toBe(
+      "1098.00",
+    );
+
+    // خصم يدوي 200 فوق القانونية/الديون يخفض السقفين مرة واحدة.
+    await updateItem(1, { overtime: "600.00", deductions: "502.00" }, ACTOR);
+    expect((await getEmployeeAdvanceCapacity(input)).maxAvailable).toBe(
+      "898.00",
+    );
+
+    await updateItem(1, { overtime: "0.00", deductions: "302.00" }, ACTOR);
+    await connection.insert(s.employeeLoanRequests).values({
+      employeeId: EMPLOYEE_ID,
+      branchId: BRANCH_ID,
+      amount: "25.00",
+      installmentsCount: 1,
+      monthlyDeduction: "25.00",
+      payrollPeriod: CURRENT_PERIOD,
+      clientRequestId: "existing-edited-draft-reservation",
+      status: "PENDING",
+      createdById: ACTOR.userId,
+    });
+    expect((await getEmployeeAdvanceCapacity(input)).maxAvailable).toBe(
+      "473.00",
+    );
+    await expect(
+      requestEmployeeLoan(ACTOR, {
+        employeeId: EMPLOYEE_ID,
+        amount: "473.01",
+        clientRequestId: "edited-draft-over-capacity",
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
+
+  it("يصفّر السعة إذا كانت المسودة بلا تعويض أو بلا بند للموظف", async () => {
+    await seedAttendance({ date: TODAY, amount: "1000.00" });
+    await db().insert(s.payrollRuns).values({
+      id: 1,
+      period: CURRENT_PERIOD,
+      status: "draft",
+      createdBy: ACTOR.userId,
+      employeeCount: 0,
+      totalGross: "0.00",
+      totalDeductions: "0.00",
+      totalNet: "0.00",
+    });
+    const input = {
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: CURRENT_PERIOD,
+      asOf: TODAY,
+    };
+
+    expect(await getEmployeeAdvanceCapacity(input)).toMatchObject({
+      maxAvailable: "0.00",
+      blocked: true,
+      blockers: [expect.stringContaining("غير مشمول بمسودة")],
+    });
+    await db().insert(s.payrollItems).values({
+      runId: 1,
+      employeeId: EMPLOYEE_ID,
+      payType: "hourly",
+      gross: "0.00",
+      overtime: "0.00",
+      commission: "0.00",
+      deductions: "0.00",
+      net: "0.00",
+    });
+    expect((await getEmployeeAdvanceCapacity(input)).maxAvailable).toBe("0.00");
   });
 
   it("يبقي المكافأة المعتمدة ضمن الحد بعد التقاطها في مسودة الراتب", async () => {
