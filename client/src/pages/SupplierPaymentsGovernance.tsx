@@ -150,13 +150,14 @@ export default function SupplierPaymentsGovernance() {
   );
 
   async function invalidateAll() {
-    await Promise.all([
+    const results = await Promise.allSettled([
       utils.supplierPayments.paymentSources.invalidate(),
       utils.supplierPayments.refundSources.invalidate(),
       utils.supplierPayments.pendingPayments.invalidate(),
       utils.supplierPayments.pendingRefunds.invalidate(),
       utils.purchaseIntegrity.monthCloseBlockers.invalidate(),
     ]);
+    if (results.some(result => result.status === "rejected")) notify.err("العملية مسجلة", "تعذّر تحديث بعض القوائم؛ حدّث الصفحة دون إنشاء طلب بديل.");
   }
   const requestPayment = trpc.supplierPayments.requestPayment.useMutation({
     onSuccess: async () => {

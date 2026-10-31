@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { HandCoins, RotateCcw } from "lucide-react";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -27,6 +27,8 @@ import { newGovernanceKey } from "./purchaseGovernanceUiPolicy";
 import { trpc } from "@/lib/trpc";
 import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import { shiftTypeLabel } from "@/lib/labels";
+import { notify } from "@/lib/notify";
+import { financialIntentScopeKey, isDefinitiveIntentRejection, loadFinancialIntent, reserveFinancialIntent, resolveFinancialIntent, type FinancialIntent, type FinancialIntentScope } from "@/lib/persistedFinancialIntent";
 
 type Method = "CASH" | "CARD" | "TRANSFER" | "WALLET";
 type PaymentEvidence =
@@ -177,6 +179,28 @@ export function SupplierPaymentsGovernanceWorkspace({
   onRetryPendingRefunds: () => void;
 }) {
   const me = trpc.auth.me.useQuery();
+  type SupplierCommand = { mode: "PAYMENT"; input: Parameters<typeof onRequestPayment>[0] } | { mode: "REFUND"; input: Parameters<typeof onRequestRefund>[0] };
+  const intentScope: FinancialIntentScope | null = me.data?.id && branchId > 0
+    ? { companyId: me.data.companyId ?? null, userId: me.data.id, branchId, operation: "SUPPLIER_SETTLEMENT", target: "workspace" } : null;
+  const scopeKey = intentScope ? financialIntentScopeKey(intentScope) : "";
+  const scopeRef = useRef(scopeKey); scopeRef.current = scopeKey;
+  const sendingRef = useRef(false);
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const [loadedScope, setLoadedScope] = useState("");
+  const [intentReadError, setIntentReadError] = useState("");
+  const [pendingSlot, setPendingSlot] = useState<{ scopeKey: string; intent: FinancialIntent<SupplierCommand> } | null>(null);
+  const pendingIntent = pendingSlot?.scopeKey === scopeKey ? pendingSlot.intent : null;
+  useEffect(() => {
+    if (!intentScope) return;
+    let cancelled = false;
+    setIntentReadError("");
+    void loadFinancialIntent<SupplierCommand>(intentScope).then(saved => {
+      if (cancelled) return;
+      setPendingSlot(saved ? { scopeKey, intent: saved } : null);
+      setLoadedScope(scopeKey);
+    }).catch(() => { if (!cancelled) setIntentReadError("تعذّرت قراءة محاولة المورد المحفوظة؛ أعد فتح الشاشة دون مسح التخزين المحلي."); });
+    return () => { cancelled = true; };
+  }, [scopeKey]);
   const canRequestPayment = canLifecycleOperation(me.data, "supplierPayments.requestPayment", true);
   const canRequestRefund = canLifecycleOperation(me.data, "supplierPayments.requestRefund", true);
   const [mode, setMode] = useState<"PAYMENT" | "REFUND" | null>(null);
@@ -327,6 +351,7 @@ export function SupplierPaymentsGovernanceWorkspace({
   }
 
   async function submitRequest() {
+    if (sendingRef.current || pendingIntent || !intentScope || loadedScope !== scopeKey || intentReadError) return;
     if (mode === "PAYMENT" ? !canRequestPayment : !canRequestRefund) return;
     if (!valid) return;
     if (
@@ -343,7 +368,7 @@ export function SupplierPaymentsGovernanceWorkspace({
         groupInvoices.map((row) => [row.supplierInvoiceId, row]),
       );
       try {
-        await onRequestPayment({
+        const sent = await sendSupplierCommand({ mode: "PAYMENT", input: {
           supplierId: selectedGroup.supplierId,
           branchId,
           requestKey: newGovernanceKey(
@@ -371,8 +396,8 @@ export function SupplierPaymentsGovernanceWorkspace({
             amount: entry.amount,
             currencyAmount: entry.currencyAmount,
           })),
-        });
-        reset();
+        } });
+        if (sent) reset();
       } catch {
         // يبقى الحوار مفتوحاً ويعرض مالك mutation الخطأ.
       }
@@ -380,7 +405,7 @@ export function SupplierPaymentsGovernanceWorkspace({
     }
     if (mode === "REFUND" && selectedRefund) {
       try {
-        await onRequestRefund({
+        const sent = await sendSupplierCommand({ mode: "REFUND", input: {
           supplierPaymentId: selectedRefund.supplierPaymentId,
           expectedPaymentVersion: selectedRefund.paymentVersion,
           requestKey: newGovernanceKey(
@@ -407,12 +432,43 @@ export function SupplierPaymentsGovernanceWorkspace({
             amount: entry.amount,
             currencyAmount: entry.currencyAmount,
           })),
-        });
-        reset();
+        } });
+        if (sent) reset();
       } catch {
         // يبقى الحوار مفتوحاً ويعرض مالك mutation الخطأ.
       }
     }
+  }
+
+  async function sendSupplierCommand(proposal?: SupplierCommand, recovery?: FinancialIntent<SupplierCommand>): Promise<boolean> {
+    if (sendingRef.current || !intentScope || loadedScope !== scopeKey || intentReadError) return false;
+    const command = recovery?.payload ?? proposal;
+    if (!command) return false;
+    sendingRef.current = true; setRecoveryBusy(true);
+    const capturedScope = intentScope;
+    let saved: FinancialIntent<SupplierCommand> | null = null;
+    let dispatched = false;
+    let rejected = false;
+    try {
+      const proposed = recovery ?? { id: command.input.requestKey, createdAt: new Date().toISOString(), payload: command };
+      saved = await reserveFinancialIntent(capturedScope, proposed);
+      if (financialIntentScopeKey(capturedScope) !== scopeRef.current) throw new Error("تغيّرت هوية الجلسة.");
+      setPendingSlot({ scopeKey, intent: saved });
+      if (saved.id !== proposed.id) { notify.err("توجد محاولة محفوظة", "استرد نتيجة الطلب السابق قبل إنشاء طلب جديد."); return false; }
+      dispatched = true;
+      if (saved.payload.mode === "PAYMENT") await onRequestPayment(saved.payload.input);
+      else await onRequestRefund(saved.payload.input);
+      if (await resolveFinancialIntent(capturedScope, saved.id)) {
+        if (financialIntentScopeKey(capturedScope) === scopeRef.current) setPendingSlot(null);
+      }
+      return financialIntentScopeKey(capturedScope) === scopeRef.current;
+    } catch (error) {
+      if (saved && dispatched && !recovery && isDefinitiveIntentRejection(error)) {
+        try { if (await resolveFinancialIntent(capturedScope, saved.id)) { rejected = true; if (financialIntentScopeKey(capturedScope) === scopeRef.current) setPendingSlot(null); } } catch { /* Preserve unresolved intent. */ }
+      }
+      notify.err("تعذّر إكمال الطلب", rejected ? "رفض الخادم الطلب قبل تسجيله؛ راجع المدخلات ثم أعد المحاولة." : dispatched ? "احتفظنا بالمفتاح والحمولة؛ استخدم استرداد الطلب السابق دون إنشاء طلب بديل." : "تعذّر حفظ هوية الطلب؛ لم يُرسل طلب جديد.");
+      return false;
+    } finally { sendingRef.current = false; setRecoveryBusy(false); }
   }
 
   const invoiceRows =
@@ -434,7 +490,7 @@ export function SupplierPaymentsGovernanceWorkspace({
                 type="button"
                 size="sm"
                 onClick={() => setMode("PAYMENT")}
-                disabled={!canRequestPayment}
+                disabled={!canRequestPayment || !!pendingIntent || recoveryBusy || loadedScope !== scopeKey || !!intentReadError}
               >
                 طلب سداد
               </Button>
@@ -443,7 +499,7 @@ export function SupplierPaymentsGovernanceWorkspace({
                 size="sm"
                 variant="outline"
                 onClick={() => setMode("REFUND")}
-                disabled={!canRequestRefund}
+                disabled={!canRequestRefund || !!pendingIntent || recoveryBusy || loadedScope !== scopeKey || !!intentReadError}
               >
                 طلب استرداد دفعة
               </Button>
@@ -461,6 +517,11 @@ export function SupplierPaymentsGovernanceWorkspace({
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
+          {intentReadError && <p role="alert" className="text-sm text-destructive">{intentReadError}</p>}
+          {pendingIntent && <div role="status" className="space-y-2 rounded-md border p-3 text-sm">
+            <p>توجد محاولة {pendingIntent.payload.mode === "PAYMENT" ? "سداد" : "استرداد دفعة"} محفوظة. استرد نتيجتها بالمفتاح والتخصيصات الأصلية.</p>
+            <Button type="button" disabled={requestPending || recoveryBusy} onClick={() => { void sendSupplierCommand(undefined, pendingIntent).then(done => { if (done) reset(); }); }}>استرداد طلب المورد السابق</Button>
+          </div>}
           <GovernanceRequestNotice>
             السداد أو الاسترداد المعلّق لا يغيّر الذمة ولا يخرج أو يدخل نقداً.
             التنفيذ يبدأ فقط بعد اعتماد مستقل.
@@ -548,7 +609,7 @@ export function SupplierPaymentsGovernanceWorkspace({
               ولا يُطبّق عند الإرسال.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4">
+          <fieldset disabled={!!pendingIntent || recoveryBusy || requestPending} className="space-y-4">
             {mode === "PAYMENT" ? (
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="space-y-2">
@@ -834,7 +895,7 @@ export function SupplierPaymentsGovernanceWorkspace({
                 onChange={(event) => setReason(event.target.value)}
               />
             </div>
-          </div>
+          </fieldset>
           <DialogFooter>
             <Button
               type="button"
@@ -848,7 +909,7 @@ export function SupplierPaymentsGovernanceWorkspace({
               type="button"
               pending={requestPending}
               pendingText={ACTION_LABELS.sending}
-              disabled={!valid}
+              disabled={!valid || !!pendingIntent || recoveryBusy || loadedScope !== scopeKey || !!intentReadError}
               onClick={() => void submitRequest()}
             >
               إرسال للاعتماد

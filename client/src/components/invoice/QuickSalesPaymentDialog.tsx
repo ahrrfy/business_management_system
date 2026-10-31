@@ -24,6 +24,7 @@ import { getDeviceCode } from "@/lib/offline/outbox";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
 import { invoiceStatusLabel, isDeadInvoiceStatus } from "@shared/invoiceStatus";
 import { invoiceRemaining } from "@shared/predicates/invoiceRemaining";
+import { financialIntentScopeKey, isDefinitiveIntentRejection, loadFinancialIntent, reserveFinancialIntent, resolveFinancialIntent, type FinancialIntent, type FinancialIntentScope } from "@/lib/persistedFinancialIntent";
 
 import {
   INBOUND_ENABLED_PAYMENT_METHODS,
@@ -32,6 +33,12 @@ import {
 
 type Method = InboundEnabledPaymentMethod;
 const METHODS: readonly Method[] = INBOUND_ENABLED_PAYMENT_METHODS;
+type PaymentCommand = {
+  invoiceId: number; amount: string; method: Method; reference?: string;
+  clientRequestId: string; externalPaymentAttemptId?: number | null;
+  externalPaymentDeviceId?: string | null;
+};
+type PaymentSnapshot = { command: PaymentCommand; receipt: Parameters<typeof printInvoicePaymentReceipt>[0] };
 
 export interface QuickSalesPaymentDialogProps {
   open: boolean;
@@ -59,6 +66,7 @@ export function QuickSalesPaymentDialog({
   onSuccess,
 }: QuickSalesPaymentDialogProps) {
   const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery(undefined, { enabled: open });
   const invoiceQuery = trpc.sales.get.useQuery(
     { invoiceId: invoiceId ?? 0 },
     { enabled: open && invoiceId > 0 },
@@ -75,7 +83,38 @@ export function QuickSalesPaymentDialog({
   const [amount, setAmount] = useState(effectiveRemaining);
   const [method, setMethod] = useState<Method>("CASH");
   const [reference, setReference] = useState("");
-  const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
+  const [clientRequestId, setClientRequestId] = useState<string>(() => crypto.randomUUID());
+  const intentScope: FinancialIntentScope | null = me.data?.id && branchId > 0 && invoiceId > 0
+    ? { companyId: me.data.companyId ?? null, userId: me.data.id, branchId, operation: "SALES_PAYMENT", target: `invoice:${invoiceId}` }
+    : null;
+  const scopeKey = intentScope ? financialIntentScopeKey(intentScope) : "";
+  const scopeRef = useRef(scopeKey);
+  scopeRef.current = scopeKey;
+  const [pendingSlot, setPendingSlot] = useState<{ scopeKey: string; intent: FinancialIntent<PaymentSnapshot> } | null>(null);
+  const pendingIntent = pendingSlot?.scopeKey === scopeKey ? pendingSlot.intent : null;
+  const [loadedScope, setLoadedScope] = useState("");
+  const [intentReadError, setIntentReadError] = useState("");
+  const sendingRef = useRef(false);
+  const activeIntentRef = useRef<{ scope: FinancialIntentScope; intent: FinancialIntent<PaymentSnapshot>; recovery: boolean } | null>(null);
+  useEffect(() => {
+    if (!open || !intentScope) return;
+    let cancelled = false;
+    setIntentReadError("");
+    void loadFinancialIntent<PaymentSnapshot>(intentScope).then(saved => {
+      if (cancelled) return;
+      setPendingSlot(saved ? { scopeKey, intent: saved } : null);
+      if (saved) {
+        setAmount(saved.payload.command.amount);
+        setMethod(saved.payload.command.method);
+        setReference(saved.payload.command.reference ?? "");
+        setClientRequestId(saved.id);
+      }
+      setLoadedScope(scopeKey);
+    }).catch(() => {
+      if (!cancelled) setIntentReadError("تعذّرت قراءة محاولة الدفع المحفوظة؛ أعد فتح الشاشة دون مسح التخزين المحلي.");
+    });
+    return () => { cancelled = true; };
+  }, [open, scopeKey]);
   const [externalAttempt, setExternalAttempt] = useState<{
     attemptId?: number | null;
     requestId: string;
@@ -98,13 +137,13 @@ export function QuickSalesPaymentDialog({
 
   const prevRemainingRef = useRef(effectiveRemaining);
   useEffect(() => {
-    if (open && !externalAttempt) {
+    if (open && !externalAttempt && !pendingIntent) {
       if (amount === prevRemainingRef.current) {
         setAmount(effectiveRemaining);
       }
     }
     prevRemainingRef.current = effectiveRemaining;
-  }, [open, effectiveRemaining, externalAttempt, amount]);
+  }, [open, effectiveRemaining, externalAttempt, amount, pendingIntent]);
 
   const initiateExternal = trpc.sales.initiateExternalPayment.useMutation();
   const confirmExternal = trpc.sales.confirmExternalPayment.useMutation();
@@ -123,38 +162,58 @@ export function QuickSalesPaymentDialog({
     try { payWinRef.current?.close(); } catch { /* noop */ }
     payWinRef.current = null;
   }
+  function clearDisplayedIntent(scope: FinancialIntentScope, id: string) {
+    const key = financialIntentScopeKey(scope);
+    setPendingSlot(slot => slot?.scopeKey === key && slot.intent.id === id ? null : slot);
+  }
   const pay = trpc.sales.pay.useMutation({
     onSuccess: async (r) => {
+      const active = activeIntentRef.current;
       const win = payWinRef.current;
       payWinRef.current = null;
+      if (!active) { sendingRef.current = false; return; }
+      try {
+        if (await resolveFinancialIntent(active.scope, active.intent.id)) clearDisplayedIntent(active.scope, active.intent.id);
+      } catch {
+        notify.err("تم تسجيل الدفعة", "تعذّر إغلاق سجل الاسترداد المحلي؛ احتفظ بالمحاولة الأصلية دون إنشاء دفعة بديلة.");
+      }
+      if (financialIntentScopeKey(active.scope) !== scopeRef.current) {
+        try { win?.close(); } catch { /* noop */ }
+        sendingRef.current = false;
+        activeIntentRef.current = null;
+        return;
+      }
       notify.ok("تم تسجيل الدفعة بنجاح", `الحالة الحالية: ${invoiceStatusLabel(r.status)}`);
-      const remAfter = round2(D(effectiveRemaining).minus(D(normalizedPayAmount)));
       void printInvoicePaymentReceipt(
-        {
-          invoiceNumber,
-          customerName: inv?.customerName ?? customerName ?? null,
-          customerPhone: (inv as { contactPhone?: string | null } | undefined)?.contactPhone ?? null,
-          invoiceTotal: total.toFixed(2),
-          paidBefore: paid.toFixed(2),
-          amountPaid: normalizedPayAmount,
-          remainingAfter: (remAfter.gt(0) ? remAfter : D(0)).toFixed(2),
-          paymentMethod: method,
-          reference: reference.trim() || null,
-          cashierName: null,
-        },
+        active.intent.payload.receipt,
         win ? { into: win } : undefined,
-      );
-      await Promise.all([
+      ).catch(() => notify.err("الدفعة مسجلة", "تعذّرت طباعة الإيصال؛ أعد طباعته من الفاتورة دون دفع جديد."));
+      const refreshed = await Promise.allSettled([
         utils.sales.get.invalidate({ invoiceId }),
         utils.sales.list.invalidate(),
         utils.sales.listPage.invalidate(),
         utils.sales.listSummary.invalidate(),
       ]);
-      onSuccess?.();
+      if (refreshed.some(result => result.status === "rejected")) notify.err("الدفعة مسجلة", "تعذّر تحديث بعض القوائم؛ حدّث الصفحة دون إعادة الدفع.");
+      sendingRef.current = false;
+      activeIntentRef.current = null;
+      try { await onSuccess?.(); } catch { /* The payment has already succeeded. */ }
       onClose();
     },
-    onError: (e) => {
+    onError: async (e) => {
       closePayWin();
+      const active = activeIntentRef.current;
+      // A rejection of a recovery attempt cannot disprove the original commit.
+      if (active && !active.recovery && isDefinitiveIntentRejection(e)) {
+        try {
+          if (await resolveFinancialIntent(active.scope, active.intent.id)) {
+            clearDisplayedIntent(active.scope, active.intent.id);
+            if (financialIntentScopeKey(active.scope) === scopeRef.current) setClientRequestId(crypto.randomUUID());
+          }
+        } catch { /* Preserve the unresolved envelope. */ }
+      }
+      sendingRef.current = false;
+      activeIntentRef.current = null;
       notify.err("تعذّر تسجيل الدفعة", e.message);
     },
   });
@@ -162,7 +221,41 @@ export function QuickSalesPaymentDialog({
   const isInvoiceRefreshing = invoiceQuery.isLoading || invoiceQuery.isFetching;
   const isBusy = pay.isPending || initiateExternal.isPending || confirmExternal.isPending;
   const hasInFlightAttempt = externalAttempt != null;
-  const cannotClose = isBusy || (hasInFlightAttempt && !pay.isSuccess);
+  const cannotClose = isBusy || (hasInFlightAttempt && !pay.isSuccess && !pendingIntent);
+
+  async function submitPaymentCommand(command: PaymentCommand, recovery?: FinancialIntent<PaymentSnapshot>) {
+    if (sendingRef.current || !intentScope || loadedScope !== scopeKey || intentReadError) return;
+    sendingRef.current = true;
+    const capturedScope = intentScope;
+    try {
+      const remaining = D(effectiveRemaining).minus(D(command.amount));
+      const proposed: FinancialIntent<PaymentSnapshot> = recovery ?? {
+        id: command.clientRequestId, createdAt: new Date().toISOString(),
+        payload: { command, receipt: {
+          invoiceNumber, customerName: inv?.customerName ?? customerName ?? null,
+          customerPhone: (inv as { contactPhone?: string | null } | undefined)?.contactPhone ?? null,
+          invoiceTotal: total.toFixed(2), paidBefore: paid.toFixed(2), amountPaid: command.amount,
+          remainingAfter: (remaining.gt(0) ? remaining : D(0)).toFixed(2), paymentMethod: command.method,
+          reference: command.reference ?? null, cashierName: null,
+        } },
+      };
+      const saved = await reserveFinancialIntent(capturedScope, proposed);
+      if (financialIntentScopeKey(capturedScope) !== scopeRef.current) throw new Error("تغيّرت هوية الجلسة؛ أعد فتح الشاشة بحساب صاحب المحاولة.");
+      setPendingSlot({ scopeKey, intent: saved });
+      if (saved.id !== proposed.id) {
+        closePayWin();
+        sendingRef.current = false;
+        notify.err("توجد محاولة محفوظة", "استرد نتيجة المحاولة السابقة قبل إنشاء دفعة جديدة.");
+        return;
+      }
+      activeIntentRef.current = { scope: capturedScope, intent: saved, recovery: !!recovery };
+      pay.mutate(saved.payload.command);
+    } catch {
+      closePayWin();
+      sendingRef.current = false;
+      notify.err("لم تُرسل دفعة جديدة", "تعذّر حفظ هوية محاولة الدفع؛ تحقق من التخزين المحلي ثم أعد المحاولة.");
+    }
+  }
 
   async function confirmExternalPayment() {
     if (!payWinRef.current) payWinRef.current = preopenDocumentWindow();
@@ -260,7 +353,7 @@ export function QuickSalesPaymentDialog({
       notify.ok("تأكّد الدفع الخارجي", `ثُبّت المرجع ${trimmedRef} وجاري ترحيل الدفعة...`);
       // دمج التأكيد والاستهلاك في تدفق موحد يمنع تباعد الحالتين
       if (!payWinRef.current) payWinRef.current = preopenDocumentWindow();
-      pay.mutate({
+      await submitPaymentCommand({
         invoiceId,
         amount: normalizedPayAmount,
         method,
@@ -277,6 +370,12 @@ export function QuickSalesPaymentDialog({
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (sendingRef.current || !intentScope || loadedScope !== scopeKey || intentReadError) return;
+    if (pendingIntent) {
+      payWinRef.current = preopenDocumentWindow();
+      await submitPaymentCommand(pendingIntent.payload.command, pendingIntent);
+      return;
+    }
     if (!isPosPaymentMethodEnabled(method)) {
       notify.err("طريقة دفع معطلة", posPaymentRejectionMessage(method));
       return;
@@ -317,7 +416,7 @@ export function QuickSalesPaymentDialog({
     }
 
     payWinRef.current = preopenDocumentWindow();
-    pay.mutate({
+    await submitPaymentCommand({
       invoiceId,
       amount: normalizedPayAmount,
       method,
@@ -383,7 +482,7 @@ export function QuickSalesPaymentDialog({
               <Label htmlFor="sales-pay-method" className="text-xs">طريقة القبض</Label>
               <AppSelect
                 value={method}
-                disabled={cannotClose || isInvoiceDead}
+                disabled={cannotClose || isInvoiceDead || !!pendingIntent}
                 onValueChange={(v) => {
                   if (cannotClose) return;
                   setMethod(v as Method);
@@ -405,7 +504,7 @@ export function QuickSalesPaymentDialog({
                 id="sales-pay-amount"
                 value={amount}
                 onChange={setAmount}
-                disabled={cannotClose || isInvoiceDead}
+                disabled={cannotClose || isInvoiceDead || !!pendingIntent}
                 placeholder="0.00"
                 ariaLabel="المبلغ المقبوض"
                 className="font-mono text-sm"
@@ -413,7 +512,7 @@ export function QuickSalesPaymentDialog({
             </div>
           </div>
 
-          {method !== "CASH" && !isInvoiceDead ? (
+          {method !== "CASH" && !isInvoiceDead && !pendingIntent ? (
             <div className="rounded-md border bg-card p-2.5">
               <PaymentReferenceField
                 value={reference}
@@ -439,6 +538,8 @@ export function QuickSalesPaymentDialog({
             </div>
           ) : null}
 
+          {intentReadError && <p role="alert" className="text-sm text-destructive">{intentReadError}</p>}
+          {pendingIntent && <p role="status" className="text-sm text-muted-foreground">توجد محاولة دفع محفوظة. استرد نتيجتها بالمبلغ والمفتاح الأصليين قبل تسجيل دفعة أخرى.</p>}
           <DialogFooter className="gap-2 sm:gap-0 pt-2 border-t">
             <Button
               type="button"
@@ -453,15 +554,14 @@ export function QuickSalesPaymentDialog({
               pending={pay.isPending}
               size="sm"
               disabled={
-                !parsedAmount.gt(0) ||
-                (method !== "CASH" && !externalConfirmed) ||
                 isBusy ||
-                isInvoiceRefreshing ||
-                isInvoiceDead ||
-                (inv != null && D(liveRemaining).lte(0))
+                !intentScope ||
+                loadedScope !== scopeKey ||
+                !!intentReadError ||
+                (!pendingIntent && (!parsedAmount.gt(0) || (method !== "CASH" && !externalConfirmed) || isInvoiceRefreshing || isInvoiceDead || (inv != null && D(liveRemaining).lte(0))))
               }
             >
-              تسجيل وترحيل الدفعة
+              {pendingIntent ? "استرداد محاولة الدفعة السابقة" : "تسجيل وترحيل الدفعة"}
             </SubmitButton>
           </DialogFooter>
         </form>

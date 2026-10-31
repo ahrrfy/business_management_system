@@ -30,6 +30,15 @@ export type StorefrontPushKind = "MARKETING" | "TRANSACTIONAL";
 export class StorefrontPushValidationError extends Error {}
 export class StorefrontPushConflictError extends Error {}
 
+/** Explicit retirement switch; missing configuration preserves existing deployments. */
+function storefrontMobilePushEnabled(): boolean {
+  return (process.env.STOREFRONT_MOBILE_PUSH_ENABLED ?? "1") === "1";
+}
+
+function assertStorefrontMobilePushEnabled(): void {
+  if (!storefrontMobilePushEnabled()) throw new StorefrontPushValidationError("إشعارات تطبيق المتجر متوقفة؛ تبقى الحملات السابقة محفوظة دون إرسال جديد.");
+}
+
 interface CampaignRow extends RowDataPacket {
   id: number;
   name: string;
@@ -90,6 +99,7 @@ export async function registerStorefrontPushDevice(input: {
   /** هوية موثوقة حُلّت من جلسة العميل خادمياً؛ لا تُقبل مباشرةً من التطبيق. */
   customerId?: number;
 }) {
+  assertStorefrontMobilePushEnabled();
   const token = validateExpoPushToken(input.expoPushToken);
   const appVersion = text(input.appVersion, "إصدار التطبيق", 64);
   if (input.platform !== "IOS" && input.platform !== "ANDROID") throw new StorefrontPushValidationError("منصة الجهاز غير صالحة.");
@@ -142,7 +152,8 @@ const ORDER_STATUS_PUSH_COPY: Record<StorefrontOrderPushStatus, { title: string;
 export async function enqueueStorefrontOrderStatusPush(
   tx: Tx,
   input: { orderId: number; orderNumber: string; customerId: number | null; status: StorefrontOrderPushStatus },
-): Promise<{ campaignId: number; recipientCount: number }> {
+): Promise<{ campaignId: number | null; recipientCount: number }> {
+  if (!storefrontMobilePushEnabled()) return { campaignId: null, recipientCount: 0 };
   const copy = ORDER_STATUS_PUSH_COPY[input.status];
   const eventKey = `storefront-order:${input.orderId}:status:${input.status}`;
   const title = text(copy.title, "عنوان إشعار الطلب", 80);
@@ -210,6 +221,7 @@ export async function createStorefrontPushCampaign(input: {
   destination: string;
   throttlePerMinute: number;
 }, createdBy: number) {
+  assertStorefrontMobilePushEnabled();
   const name = text(input.name, "اسم الحملة", 160);
   const title = text(input.title, "عنوان الحملة", 80);
   const body = text(input.body, "نص الحملة", 180);
@@ -227,6 +239,7 @@ export async function createStorefrontPushCampaign(input: {
 }
 
 export async function approveStorefrontPushCampaign(campaignId: number, approvedBy: number) {
+  assertStorefrontMobilePushEnabled();
   const [result] = await requirePool().execute<ResultSetHeader>(
     "UPDATE storefrontPushCampaigns SET status = 'APPROVED', approvedBy = ? WHERE id = ? AND status = 'DRAFT'",
     [approvedBy, campaignId],
@@ -236,6 +249,7 @@ export async function approveStorefrontPushCampaign(campaignId: number, approved
 }
 
 export async function scheduleStorefrontPushCampaign(campaignId: number, scheduledAt: Date) {
+  assertStorefrontMobilePushEnabled();
   if (Number.isNaN(scheduledAt.getTime())) throw new StorefrontPushValidationError("موعد الحملة غير صالح.");
   const [result] = await requirePool().execute<ResultSetHeader>(
     "UPDATE storefrontPushCampaigns SET status = 'SCHEDULED', scheduledAt = ? WHERE id = ? AND status = 'APPROVED'",
@@ -256,6 +270,7 @@ export async function cancelStorefrontPushCampaign(campaignId: number) {
 
 /** ينقل الحملات المعتمدة المستحقة إلى صندوق التسليم بشكل ذري، مع تصفية الموافقة الخادمية فقط. */
 export async function queueDueStorefrontPushCampaigns(limit = 8): Promise<number> {
+  if (!storefrontMobilePushEnabled()) return 0;
   const connection = await requirePool().getConnection();
   try {
     await connection.beginTransaction();
@@ -434,6 +449,7 @@ export async function runStorefrontPushDeliveryBatch(
   limit = STOREFRONT_PUSH_WORKER_LIMITS.batchSize,
   options: { shouldStop?: () => boolean } = {},
 ) {
+  if (!storefrontMobilePushEnabled()) return { queuedCampaigns: 0, claimed: 0, sent: 0, retried: 0, gone: 0, failed: 0, errored: 0 };
   const queuedCampaigns = await queueDueStorefrontPushCampaigns();
   const boundedLimit = Math.max(1, Math.min(Math.trunc(limit) || STOREFRONT_PUSH_WORKER_LIMITS.batchSize, 100));
   const summary = { queuedCampaigns, claimed: 0, sent: 0, retried: 0, gone: 0, failed: 0, errored: 0 };
@@ -545,7 +561,7 @@ export function createStorefrontPushWorkerRuntime(options: {
 let workerRuntime: StorefrontPushWorkerRuntime | null = null;
 
 export function startStorefrontPushCampaignWorker(): boolean {
-  if (process.env.NODE_ENV === "test" || workerRuntime) return false;
+  if (!storefrontMobilePushEnabled() || process.env.NODE_ENV === "test" || workerRuntime) return false;
   const runtime = createStorefrontPushWorkerRuntime({
     intervalMs: STOREFRONT_PUSH_WORKER_LIMITS.intervalMs,
     // إزاحة نصف دورة عن عامل native push الذي يدق كل 5ث أيضاً، مع إبقاء stop الرشيق مسؤولاً

@@ -24,6 +24,7 @@ import { CardBrandLogos } from "@/components/ui/CardBrandLogos";
 import { QuickSalesPaymentDialog } from "./QuickSalesPaymentDialog";
 import { hasModuleAccess } from "@shared/permissions";
 import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
+import { financialIntentScopeKey, loadFinancialIntent, type FinancialIntentScope } from "@/lib/persistedFinancialIntent";
 
 export interface InvoiceDetailDrawerProps {
   invoiceId: number | null;
@@ -91,6 +92,24 @@ export function InvoiceDetailDrawer({
     remaining.gt(0);
 
   const [payOpen, setPayOpen] = useState(false);
+  const paymentScope: FinancialIntentScope | null = me.data?.id && inv && Number(inv.branchId) > 0
+    ? { companyId: me.data.companyId ?? null, userId: me.data.id, branchId: Number(inv.branchId), operation: "SALES_PAYMENT", target: `invoice:${inv.id}` } : null;
+  const paymentScopeKey = paymentScope ? financialIntentScopeKey(paymentScope) : "";
+  const [recoveryEntry, setRecoveryEntry] = useState({ key: "", pending: false, error: "" });
+  const hasRecovery = recoveryEntry.key === paymentScopeKey && recoveryEntry.pending;
+  useEffect(() => {
+    setPayOpen(false);
+  }, [paymentScopeKey]);
+  useEffect(() => {
+    if (!isOpen || !paymentScope) return;
+    let cancelled = false;
+    void loadFinancialIntent(paymentScope).then(saved => {
+      if (!cancelled) setRecoveryEntry({ key: paymentScopeKey, pending: saved != null, error: "" });
+    }).catch(() => {
+      if (!cancelled) setRecoveryEntry({ key: paymentScopeKey, pending: false, error: "تعذّرت قراءة محاولة التحصيل المحفوظة؛ أعد فتح الفاتورة دون مسح التخزين المحلي." });
+    });
+    return () => { cancelled = true; };
+  }, [isOpen, paymentScopeKey, inv?.paidAmount, inv?.status]);
 
   async function openCurrentInvoice() {
     if (!inv?.correctedByInvoiceId || openingCurrent) return;
@@ -283,10 +302,10 @@ export function InvoiceDetailDrawer({
             {/* الإجراءات الموضعية المباشرة */}
             <div className="pt-2 border-t flex flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap items-center gap-2">
-                {canPay ? (
+                {canPay || hasRecovery ? (
                   <Button size="sm" variant="outline" onClick={() => setPayOpen(true)}>
                     <HandCoins aria-hidden className="size-4 text-primary" />
-                    تسديد دفعة
+                    {hasRecovery ? "استرداد دفعة سابقة" : "تسديد دفعة"}
                   </Button>
                 ) : null}
                 {canReturn && onOpenReturn ? (
@@ -324,7 +343,8 @@ export function InvoiceDetailDrawer({
               </Button>
             </div>
 
-            {canPay ? (
+            {recoveryEntry.key === paymentScopeKey && recoveryEntry.error && <p role="alert" className="text-sm text-destructive">{recoveryEntry.error}</p>}
+            {canPay || hasRecovery ? (
               <QuickSalesPaymentDialog
                 open={payOpen}
                 onClose={() => setPayOpen(false)}
@@ -336,6 +356,8 @@ export function InvoiceDetailDrawer({
                 paidAmount={inv.paidAmount}
                 branchId={Number(inv.branchId)}
                 onSuccess={() => {
+                  setRecoveryEntry(current => current.key === paymentScopeKey
+                    ? { key: paymentScopeKey, pending: false, error: "" } : current);
                   void q.refetch();
                 }}
               />
