@@ -4,7 +4,12 @@ import {
   getOperationPermission,
   operationDecision,
 } from "@shared/operationPermissions";
-const inboxState = vi.hoisted(() => ({ current: vi.fn(), db: vi.fn() }));
+const inboxState = vi.hoisted(() => ({
+  current: vi.fn(),
+  db: vi.fn(),
+  tx: vi.fn(),
+  reads: [] as string[],
+}));
 vi.mock("../authorization/operationAuthority", async (importOriginal) => ({
   ...(await importOriginal<
     typeof import("../authorization/operationAuthority")
@@ -13,7 +18,8 @@ vi.mock("../authorization/operationAuthority", async (importOriginal) => ({
 }));
 vi.mock("../tx", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../tx")>()),
-  withTx: async (run: (tx: never) => Promise<unknown>) => run({} as never),
+  withTx: async (run: (tx: never) => Promise<unknown>) =>
+    run(inboxState.tx() as never),
   requireDb: inboxState.db,
 }));
 import { storedOperationUser } from "../authorization/operationAuthority";
@@ -45,152 +51,189 @@ const source = (key: string, gate: DecisionSource["gate"]): DecisionSource => ({
   },
 });
 
-describe("cost-wave inbox data visibility", () => {
-  const now = new Date("2026-10-31T00:00:00Z");
-  const wave = {
-    id: 91,
-    name: "Sensitive cost correction",
-    purpose: "CORRECTION",
-    ruleType: "SET_COST",
-    changeValue: "125.00",
-    expectedValueDelta: "250.00",
-    inventoryValueBefore: "1000.00",
-    inventoryValueAfter: "1250.00",
-    branchId: 1,
-    createdBy: 7,
-    createdAt: now,
-    itemCount: 1,
-    skippedCount: 0,
-    expectedQuantity: 10,
-    approvalCount: 0,
-    reason: "Saved cost evidence",
-  };
-  beforeEach(() => {
-    inboxState.current.mockReset();
-    inboxState.db.mockReset();
-    inboxState.db.mockImplementation(() => ({
-      select: () => {
-        let tableName = "";
-        const query = {
-          from: (table: Parameters<typeof getTableName>[0]) => {
-            tableName = getTableName(table);
-            return query;
-          },
-          leftJoin: () => query,
-          where: () => query,
-          orderBy: () => query,
-          limit: () => query,
-          then: (resolve: (rows: unknown[]) => unknown) =>
-            Promise.resolve(
-              tableName === "costUpdateWaves"
-                ? [{ wave, createdByName: "Maker" }]
-                : tableName === "branches"
-                  ? [{ id: 1, name: "Branch" }]
-                  : [],
-            ).then(resolve),
-        };
-        return query;
-      },
-    }));
-  });
-  function reviewer(
-    action: "APPROVE" | "REJECT" | null,
-    purchaseCost: boolean,
-    profitMargin: boolean,
-    owner = false,
-  ) {
-    const current = storedOperationUser({
-      id: actor.userId,
-      role: "manager",
-      isActive: true,
-      isOwner: owner,
-      customRoleId: null,
+describe.each(["costWave", "costRevaluation"] as const)(
+  "%s inbox data visibility",
+  (kind) => {
+    const operation = kind === "costWave" ? "CostWave" : "CostRevaluation";
+    const listPath =
+      kind === "costWave"
+        ? "inventory.costWaves"
+        : "inventory.costRevaluations";
+    const now = new Date("2026-10-31T00:00:00Z");
+    const wave = {
+      id: 91,
+      name: "Sensitive cost correction",
+      purpose: "CORRECTION",
+      ruleType: "SET_COST",
+      changeValue: "125.00",
+      expectedValueDelta: "250.00",
+      inventoryValueBefore: "1000.00",
+      inventoryValueAfter: "1250.00",
       branchId: 1,
-      permissionsOverride: { inventory: "NONE" },
-      operationPolicy: {
-        version: 1,
-        grants: {
-          "operation.inventory.approveCostWave": action === "APPROVE",
-          "operation.inventory.rejectCostWave": action === "REJECT",
-          "operation.inventory.costWaves": false,
+      createdBy: 7,
+      createdAt: now,
+      itemCount: 1,
+      skippedCount: 0,
+      expectedQuantity: 10,
+      approvalCount: 0,
+      reason: "Saved cost evidence",
+    };
+    const revaluation = {
+      ...wave,
+      variantId: 5,
+      productName: "Sensitive item",
+      oldCost: "100.00",
+      newCost: "125.00",
+      status: "PENDING_APPROVAL",
+    };
+    beforeEach(() => {
+      inboxState.current.mockReset();
+      inboxState.db.mockReset();
+      inboxState.tx.mockReset();
+      inboxState.reads = [];
+      const db = {
+        select: () => {
+          let tableName = "";
+          const query = {
+            from: (table: Parameters<typeof getTableName>[0]) => {
+              tableName = getTableName(table);
+              inboxState.reads.push(tableName);
+              return query;
+            },
+            innerJoin: () => query,
+            leftJoin: () => query,
+            where: () => query,
+            orderBy: () => query,
+            limit: () => query,
+            then: (resolve: (rows: unknown[]) => unknown) =>
+              Promise.resolve(
+                tableName === "costUpdateWaves"
+                  ? [{ wave, createdByName: "Maker" }]
+                  : tableName === "costRevaluationRequests"
+                    ? [revaluation]
+                    : tableName === "branches"
+                      ? [{ id: 1, name: "Branch" }]
+                      : [],
+              ).then(resolve),
+          };
+          return query;
         },
-        dataVisibility: { purchaseCost, profitMargin: purchaseCost },
-      },
+      };
+      inboxState.db.mockReturnValue(db);
+      inboxState.tx.mockReturnValue(db);
     });
-    // Persisted policies require equal flags. Exercise each resolved snapshot
-    // field independently so changing the projection guard from OR to AND fails.
-    return purchaseCost === profitMargin
-      ? current
-      : {
-          ...current,
-          resolvedOperationPolicy: {
-            ...current.resolvedOperationPolicy!,
-            dataVisibility: { purchaseCost, profitMargin },
+    function reviewer(
+      action: "APPROVE" | "REJECT" | null,
+      purchaseCost: boolean,
+      profitMargin: boolean,
+      owner = false,
+    ) {
+      const current = storedOperationUser({
+        id: actor.userId,
+        role: "manager",
+        isActive: true,
+        isOwner: owner,
+        customRoleId: null,
+        branchId: 1,
+        permissionsOverride: { inventory: "NONE" },
+        operationPolicy: {
+          version: 1,
+          grants: {
+            [`operation.inventory.approve${operation}`]: action === "APPROVE",
+            [`operation.inventory.reject${operation}`]: action === "REJECT",
+            [`operation.${listPath}`]: false,
           },
-        };
-  }
-  const inbox = () =>
-    listDecisionInbox(actor, { kind: "inventory.costWave.approve", now });
-  it.each([
-    ["APPROVE", false, false],
-    ["REJECT", false, false],
-    ["APPROVE", false, true],
-    ["APPROVE", true, false],
-    ["REJECT", false, true],
-    ["REJECT", true, false],
-  ] as const)(
-    "withholds all wave fields for %s with cost=%s profit=%s",
-    async (action, cost, profit) => {
-      inboxState.current.mockResolvedValue(reviewer(action, cost, profit));
-      const result = await inbox();
-      expect(result.rows).toEqual([]);
-      expect(result.total).toBe(0);
-      expect(result.truncatedSources).toEqual([]);
-      expect(result.failedSources).toEqual([]);
+          dataVisibility: { purchaseCost, profitMargin: purchaseCost },
+        },
+      });
+      // Persisted policies require equal flags. Exercise each resolved snapshot
+      // field independently so changing the projection guard from OR to AND fails.
+      return purchaseCost === profitMargin
+        ? current
+        : {
+            ...current,
+            resolvedOperationPolicy: {
+              ...current.resolvedOperationPolicy!,
+              dataVisibility: { purchaseCost, profitMargin },
+            },
+          };
+    }
+    const inbox = () =>
+      listDecisionInbox(actor, { kind: `inventory.${kind}.approve`, now });
+    it.each([
+      ["APPROVE", false, false],
+      ["REJECT", false, false],
+      ["APPROVE", false, true],
+      ["APPROVE", true, false],
+      ["REJECT", false, true],
+      ["REJECT", true, false],
+    ] as const)(
+      "withholds all cost fields for %s with cost=%s profit=%s",
+      async (action, cost, profit) => {
+        inboxState.current.mockResolvedValue(reviewer(action, cost, profit));
+        const result = await inbox();
+        expect(result.rows).toEqual([]);
+        expect(result.total).toBe(0);
+        expect(result.truncatedSources).toEqual([]);
+        expect(result.failedSources).toEqual([]);
+        expect(inboxState.db).not.toHaveBeenCalled();
+        expect(inboxState.reads).toEqual([]);
+      },
+    );
+    it.each(["APPROVE", "REJECT"] as const)(
+      "retains cost-visible %s discovery without the list grant",
+      async (action) => {
+        const currentUser = reviewer(action, true, true);
+        expect(operationDecision(currentUser, listPath).allowed).toBe(false);
+        inboxState.current.mockResolvedValue(currentUser);
+        const result = await inbox();
+        expect(result.failedSources).toEqual([]);
+        expect(result.rows).toHaveLength(1);
+        expect(result.rows[0]).toMatchObject({
+          id: wave.id,
+          title: expect.stringContaining(
+            kind === "costWave" ? wave.name : revaluation.productName,
+          ),
+          amount: wave.expectedValueDelta,
+          reason: wave.reason,
+          allowedActions: [action],
+          summaryItems: expect.arrayContaining(
+            kind === "costWave"
+              ? [
+                  expect.objectContaining({ qty: wave.changeValue }),
+                  expect.objectContaining({
+                    unitPrice: wave.inventoryValueBefore,
+                  }),
+                  expect.objectContaining({
+                    unitPrice: wave.inventoryValueAfter,
+                  }),
+                ]
+              : [
+                  expect.objectContaining({ unitPrice: revaluation.oldCost }),
+                  expect.objectContaining({ unitPrice: revaluation.newCost }),
+                ],
+          ),
+        });
+      },
+    );
+    it("does not discover cost documents from cost visibility alone", async () => {
+      inboxState.current.mockResolvedValue(reviewer(null, true, true));
+      expect((await inbox()).rows).toEqual([]);
       expect(inboxState.db).not.toHaveBeenCalled();
-    },
-  );
-  it.each(["APPROVE", "REJECT"] as const)(
-    "retains cost-visible %s discovery without the list grant",
-    async (action) => {
-      const currentUser = reviewer(action, true, true);
-      expect(
-        operationDecision(currentUser, "inventory.costWaves").allowed,
-      ).toBe(false);
-      inboxState.current.mockResolvedValue(currentUser);
+      expect(inboxState.reads).toEqual([]);
+    });
+    it("preserves owner discovery despite explicit visibility and action denials", async () => {
+      inboxState.current.mockResolvedValue(reviewer(null, false, false, true));
       const result = await inbox();
       expect(result.failedSources).toEqual([]);
       expect(result.rows).toHaveLength(1);
       expect(result.rows[0]).toMatchObject({
-        id: wave.id,
-        title: `موجة تكلفة · ${wave.name}`,
         amount: wave.expectedValueDelta,
-        reason: wave.reason,
-        allowedActions: [action],
-        summaryItems: expect.arrayContaining([
-          expect.objectContaining({ qty: wave.changeValue }),
-          expect.objectContaining({ unitPrice: wave.inventoryValueBefore }),
-          expect.objectContaining({ unitPrice: wave.inventoryValueAfter }),
-        ]),
+        allowedActions: ["APPROVE", "REJECT"],
       });
-    },
-  );
-  it("does not discover waves from cost visibility alone", async () => {
-    inboxState.current.mockResolvedValue(reviewer(null, true, true));
-    expect((await inbox()).rows).toEqual([]);
-    expect(inboxState.db).not.toHaveBeenCalled();
-  });
-  it("preserves owner discovery despite explicit visibility and action denials", async () => {
-    inboxState.current.mockResolvedValue(reviewer(null, false, false, true));
-    const result = await inbox();
-    expect(result.failedSources).toEqual([]);
-    expect(result.rows).toHaveLength(1);
-    expect(result.rows[0]).toMatchObject({
-      amount: wave.expectedValueDelta,
-      allowedActions: ["APPROVE", "REJECT"],
     });
-  });
-});
+  },
+);
 function current(
   grants: Record<string, boolean>,
   overrides: Record<string, "NONE" | "FULL"> = {},

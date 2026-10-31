@@ -138,6 +138,9 @@ export const costRevaluationSource: DecisionSource = {
   gate: { type: "MODULE", moduleKey: "inventory", roles: ["manager"] },
   supportedActions: ["APPROVE", "REJECT"],
   async list(actor, scope) {
+    const visibility = actor.operationUser ?? actor;
+    if (!canViewOperationData(visibility, "purchaseCost") ||
+        !canViewOperationData(visibility, "profitMargin")) return [];
     const branchId = scopeBranch(actor, scope);
     if (branchId === "NONE") return [];
     const rows = await listCostRevaluations({ status: "PENDING_APPROVAL", branchId, limit: 200, order: "ASC", scan: scanPosition(scope) }, serviceActor(actor));
