@@ -2035,7 +2035,9 @@ async function decidePurchaseReturnAuthorized(
       dedupeKey,
       notes: request.reason,
       postingIntent: createPostingIntent(
-        "RETURN_PURCHASE_INVENTORY",
+        exception && inventoryBook.isZero() && tax.isZero() && total.gt(0)
+          ? "RETURN_PURCHASE_ZERO_BOOK"
+          : "RETURN_PURCHASE_INVENTORY",
         "RETURN",
         [
           debitLine("AP", total),
@@ -3106,7 +3108,12 @@ async function decidePurchaseReturnReversalAuthorized(
         dedupeKey,
         notes: request.reason,
         postingIntent: createPostingIntent(
-          "RETURN_PURCHASE_INVENTORY",
+          purchaseReturn.origin === "OWNER_EXCEPTION" &&
+            inventory.isZero() &&
+            tax.isZero() &&
+            total.gt(0)
+            ? "RETURN_PURCHASE_ZERO_BOOK"
+            : "RETURN_PURCHASE_INVENTORY",
           "RETURN",
           [
             ...(inventory.gt(0) ? [debitLine("INVENTORY", inventory)] : []),

@@ -213,6 +213,12 @@ describe("governed owner exception cart", () => {
           : [],
       );
       expect(lines).toHaveLength(mode === "ACTIVE" ? 2 : 0);
+      // Later receipts/revaluation may change current WAVG. Reversal must add
+      // back the saved zero value, preserving the remaining 9 * 100 book value.
+      await db()
+        .update(s.productVariants)
+        .set({ costPrice: "100.00" })
+        .where(eq(s.productVariants.id, 1));
       const [returned] = await db().select().from(s.purchaseReturns);
       const [item] = await db().select().from(s.purchaseReturnItems);
       const reversalInput = {
@@ -290,7 +296,7 @@ describe("governed owner exception cart", () => {
       expect(await db().select().from(s.receipts)).toHaveLength(0);
       expect((await db().select().from(s.branchStock))[0].quantity).toBe(10);
       expect((await db().select().from(s.productVariants))[0]).toMatchObject({
-        costPrice: "0.00",
+        costPrice: "90.00",
         transitBaseBySourceBranch: {},
       });
       expect((await db().select().from(s.suppliers))[0].currentBalance).toBe(
@@ -298,8 +304,13 @@ describe("governed owner exception cart", () => {
       );
       const journals = await db().select().from(s.journalEntries);
       expect(journals).toHaveLength(mode === "ACTIVE" ? 2 : 0);
+      if (mode === "ACTIVE") {
+        for (const entry of entries)
+          expect(entry.postingProfile).toBe("RETURN_PURCHASE_ZERO_BOOK");
+      }
       const allLines = await db().select().from(s.journalLines);
       expect(allLines).toHaveLength(mode === "ACTIVE" ? 4 : 0);
+      expect(allLines.some((line) => line.role === "INVENTORY")).toBe(false);
       for (const journal of journals) {
         expect(journal.status).toBe("POSTED");
         const journalLines = allLines.filter(
