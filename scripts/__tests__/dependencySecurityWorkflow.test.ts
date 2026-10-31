@@ -40,6 +40,8 @@ describe("dependency security coverage", () => {
     expect(rootOverrides["proxy-addr@<2.0.8"]).toBe("2.0.8");
     expect(rootOverrides["source-map-js@<1.2.2"]).toBe("1.2.2");
     expect(rootOverrides["qs@<6.16.1"]).toBe("6.16.1");
+    expect(rootOverrides["glob@>=9.0.0 <14.0.2"]).toBe("14.0.2");
+    expect(rootOverrides["minimatch@>=9.0.0 <11.0.1"]).toBe("11.0.1");
 
     const packageJson = JSON.parse(
       read("expo/customer-store-mobile/package.json"),
@@ -62,6 +64,9 @@ describe("dependency security coverage", () => {
     expect(overrides["source-map-js"]).toBe("1.2.2");
     expect(overrides["shell-quote"]).toBe("^1.12.0");
     expect(overrides["http-cache-semantics"]).toBe("4.3.0");
+    expect(overrides["node-forge"]).toBe("1.4.1");
+    expect(overrides["glob@>=9.0.0 <14.0.2"]).toBe("14.0.2");
+    expect(overrides["minimatch@>=9.0.0 <11.0.1"]).toBe("11.0.1");
 
     const superappPackageJson = JSON.parse(
       read("expo/superapp-mobile/package.json"),
@@ -79,11 +84,15 @@ describe("dependency security coverage", () => {
     expect(superappOverrides["compression"]).toBe("1.8.2");
     expect(superappOverrides["source-map-js"]).toBe("1.2.2");
     expect(superappOverrides["shell-quote"]).toBe("^1.12.0");
+    expect(superappOverrides["node-forge"]).toBe("1.4.1");
+    expect(superappOverrides["glob@>=9.0.0 <14.0.2"]).toBe("14.0.2");
+    expect(superappOverrides["minimatch@>=9.0.0 <11.0.1"]).toBe("11.0.1");
 
     const osvConfig = read("osv-scanner.toml");
     expect(osvConfig).toContain('id = "GHSA-86w9-cpqp-85rv"');
     expect(osvConfig).toContain('id = "GHSA-vfj7-8cjw-p6xm"');
     expect(osvConfig).toContain('id = "GHSA-hp3w-g68c-fv3c"');
+    expect(osvConfig).toContain('id = "GHSA-g3hv-75wg-m249"');
     expect(osvConfig).toContain('reason = "');
   });
 
@@ -111,6 +120,45 @@ describe("dependency security coverage", () => {
       expect(consumers[0]?.startsWith(expectedParent)).toBe(true);
       const manifest = JSON.parse(read(lock.replace("pnpm-lock.yaml", "package.json")));
       expect(manifest.dependencies?.deepmerge).toBeUndefined();
+    }
+  });
+
+  it("يرقي كل مستهلكي node-forge وglob>=9 وminimatch>=9 ويقصر استثناء minimatch على مستهلكي CJS القدامى", () => {
+    const allowedLegacyMinimatchPrefixes = [
+      "@eslint/config-array@",
+      "@eslint/eslintrc@",
+      "eslint@",
+      "eslint-plugin-import@",
+      "eslint-plugin-react@",
+      "filelist@1.0.6",
+      "glob@7.2.3",
+      "readdir-glob@1.1.3",
+      "test-exclude@6.0.0",
+    ];
+    for (const lock of [
+      "pnpm-lock.yaml",
+      "expo/customer-store-mobile/pnpm-lock.yaml",
+      "expo/superapp-mobile/pnpm-lock.yaml",
+    ]) {
+      let parent = "";
+      for (const line of read(lock).replaceAll("\r\n", "\n").split("\n")) {
+        if (/^  \S/.test(line)) parent = line.trim().replace(/^['"]/, "");
+        const nodeForge = /^      node-forge:\s*(.+)$/.exec(line)?.[1]?.trim();
+        if (nodeForge) expect(nodeForge).toBe("1.4.1");
+        const globVer = /^      glob:\s*(.+)$/.exec(line)?.[1]?.trim();
+        if (globVer && !globVer.startsWith("7.")) {
+          expect(globVer.startsWith("14.0.2")).toBe(true);
+        }
+        const mmVer = /^      minimatch:\s*(.+)$/.exec(line)?.[1]?.trim();
+        if (mmVer && mmVer !== "11.0.1") {
+          expect(["3.1.5", "5.1.9"]).toContain(mmVer);
+          expect(
+            allowedLegacyMinimatchPrefixes.some((p) => parent.startsWith(p)),
+          ).toBe(true);
+        }
+      }
+      const manifest = JSON.parse(read(lock.replace("pnpm-lock.yaml", "package.json")));
+      expect(manifest.dependencies?.minimatch).toBeUndefined();
     }
   });
 });

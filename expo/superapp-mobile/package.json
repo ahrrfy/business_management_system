@@ -86,7 +86,10 @@
       "metro-source-map": "0.83.8",
       "metro-symbolicate": "0.83.8",
       "metro-transform-plugins": "0.83.8",
-      "metro-transform-worker": "0.83.8"
+      "metro-transform-worker": "0.83.8",
+      "node-forge": "1.4.1",
+      "glob@>=9.0.0 <14.0.2": "14.0.2",
+      "minimatch@>=9.0.0 <11.0.1": "11.0.1"
     },
     "patchedDependencies": {
       "@expo/cli@54.0.27": "patches/@expo__cli@54.0.27.patch"

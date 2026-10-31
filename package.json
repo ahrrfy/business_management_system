@@ -299,9 +299,11 @@
       "postcss-selector-parser@<7.1.6": "7.1.6",
       "proxy-addr@<2.0.8": "2.0.8",
       "source-map-js@<1.2.2": "1.2.2",
-      "@eslint/config-array>minimatch": "^10.2.6",
+      "@eslint/config-array>minimatch": "11.0.1",
       "@imgly/background-removal>zod": "4.6.6",
-      "body-parser@<1.20.9": "1.20.9"
+      "body-parser@<1.20.9": "1.20.9",
+      "glob@>=9.0.0 <14.0.2": "14.0.2",
+      "minimatch@>=9.0.0 <11.0.1": "11.0.1"
     },
     "patchedDependencies": {
       "@imgly/background-removal@1.7.0": "patches/@imgly__background-removal@1.7.0.patch"

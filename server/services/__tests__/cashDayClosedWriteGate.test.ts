@@ -77,7 +77,7 @@ const RECEIPT_INSERT_INVENTORY: Readonly<Record<string, number>> = {
   "voucher/create.ts": 1,
   "workOrder/cancel.ts": 3,
   "workOrder/create.ts": 1,
-  "workOrder/deliver.ts": 1,
+  "workOrder/deliver.ts": 2,
   "workOrder/deliveryFeeRefund.ts": 2,
 };
 
