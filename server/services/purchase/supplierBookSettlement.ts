@@ -1,3 +1,8 @@
+import {
+  readReversalValuation,
+  readValuation,
+  validExecutionEvidence,
+} from "./returnEvidence";
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
@@ -6,6 +11,7 @@ import {
   auditLogs,
   exchangeTransactions,
   goodsReceiptItems,
+  inventoryMovements,
   legacySupplierInvoiceSettlements,
   purchaseOrderControlRequests,
   purchaseOrderItems,
@@ -14,6 +20,9 @@ import {
   purchaseOrders,
   purchaseIntegrityCases,
   purchaseReturnRequests,
+  purchaseReturnItems,
+  purchaseReturnReversalItems,
+  purchaseReturnReversalRequests,
   purchaseReturnReversals,
   purchaseReturns,
   receipts,
@@ -44,6 +53,7 @@ import { sha256, stableCanonical } from "./grniAccounting";
 import { loadPurchaseSettlements } from "./settlementProjection";
 import {
   isPurchaseAdvanceSnapshot,
+  isExceptionReturnCreditSnapshot,
   loadSupplierBookInvoiceTotals,
   purchaseAdvanceAvailableAmount,
 } from "./supplierBookProjection";
@@ -98,6 +108,7 @@ export type BookTarget = {
   snapshot: unknown;
 };
 export type BookSource = {
+  retainedSourceId?: number;
   entryId: number;
   receiptId: number | null;
   exchangeId: number | null;
@@ -114,7 +125,10 @@ export type BookAllocation = {
   targetSnapshot: string;
   targetHash: string;
 };
-type PlannedSource = BookSource & { allocations: BookAllocation[] };
+type PlannedSource = BookSource & {
+  allocations: BookAllocation[];
+  unallocatedAmount: string;
+};
 type ContextOptions = {
   futurePayment?: {
     amount: string;
@@ -207,14 +221,29 @@ export function buildSupplierBookFifo(
     } else
       for (const target of state) {
         if (left.isZero()) break;
-        if (target.date > source.date || !target.remaining.gt(0)) continue;
+        if (
+          (!isExceptionReturnCreditSnapshot(canonical(source.snapshot)) &&
+            target.date > source.date) ||
+          !target.remaining.gt(0)
+        )
+          continue;
         assign(target, Decimal.min(left, target.remaining));
       }
-    if (!left.isZero())
+    if (
+      !left.isZero() &&
+      !(
+        source.kind === "CREDIT" &&
+        isExceptionReturnCreditSnapshot(canonical(source.snapshot))
+      )
+    )
       fail(
         `المصدر ${source.entryId} يضم رصيداً غير قابل للتخصيص بالكامل؛ لا يجوز اختلاق فاتورة له`,
       );
-    planned.push({ ...source, allocations: assigned });
+    planned.push({
+      ...source,
+      allocations: assigned,
+      unallocatedAmount: toDbMoney(left),
+    });
   }
   return {
     sources: planned,
@@ -622,6 +651,210 @@ async function loadContext(
       snapshot: { openingEntry: entry },
     });
   }
+  const exceptionRequests = formal.some((r) => r.origin === "OWNER_EXCEPTION")
+    ? await tx
+        .select()
+        .from(purchaseReturnRequests)
+        .where(
+          inArray(
+            purchaseReturnRequests.id,
+            formal
+              .filter((r) => r.origin === "OWNER_EXCEPTION")
+              .flatMap((r) => (r.requestId == null ? [] : [r.requestId])),
+          ),
+        )
+    : [];
+  const exceptionAllocations = bookSources.length
+    ? await tx
+        .select()
+        .from(allocations)
+        .where(
+          inArray(
+            allocations.sourceId,
+            bookSources.map((s) => s.id),
+          ),
+        )
+        .orderBy(asc(allocations.id))
+    : [];
+  const physicalReversals = reversed.filter(
+    (row) => row.accountingEntryId == null,
+  );
+  const physicalRequests = physicalReversals.length
+    ? await tx
+        .select()
+        .from(purchaseReturnReversalRequests)
+        .where(
+          inArray(
+            purchaseReturnReversalRequests.id,
+            physicalReversals.map((row) => row.requestId),
+          ),
+        )
+    : [];
+  const physicalItems = physicalReversals.length
+    ? await tx
+        .select({
+          item: purchaseReturnReversalItems,
+          original: purchaseReturnItems,
+          movement: inventoryMovements,
+        })
+        .from(purchaseReturnReversalItems)
+        .leftJoin(
+          purchaseReturnItems,
+          eq(
+            purchaseReturnItems.id,
+            purchaseReturnReversalItems.purchaseReturnItemId,
+          ),
+        )
+        .leftJoin(
+          inventoryMovements,
+          eq(
+            inventoryMovements.id,
+            purchaseReturnReversalItems.inventoryMovementId,
+          ),
+        )
+        .where(
+          inArray(
+            purchaseReturnReversalItems.reversalId,
+            physicalReversals.map((row) => row.id),
+          ),
+        )
+    : [];
+  function exceptionCredit(returned: (typeof formal)[number]) {
+    const request = exceptionRequests.find((r) => r.id === returned.requestId);
+    const entry = entries.find((e) => e.id === returned.accountingEntryId);
+    const reversalRows = reversed.filter(
+      (r) => r.purchaseReturnId === returned.id,
+    );
+    if (
+      returned.origin !== "OWNER_EXCEPTION" ||
+      returned.settlement !== "CREDIT" ||
+      returned.supplierInvoiceId != null ||
+      returned.purchaseOrderId != null ||
+      returned.matchRunId != null ||
+      returned.supplierId !== input.supplierId ||
+      returned.branchId !== input.branchId ||
+      !validExecutionEvidence(returned) ||
+      request?.status !== "APPROVED" ||
+      request.sourceKind !== "OWNER_EXCEPTION" ||
+      request.supplierId !== returned.supplierId ||
+      request.branchId !== returned.branchId ||
+      request.payloadHash !== returned.payloadHash ||
+      sha256(request.payloadCanonical) !== request.payloadHash ||
+      !entry ||
+      entry.entryType !== "RETURN" ||
+      entry.receiptId != null ||
+      entry.purchaseOrderId != null ||
+      entry.supplierId !== returned.supplierId ||
+      entry.branchId !== returned.branchId ||
+      entry.dedupeKey !== `PURCHASE_RETURN:${returned.id}` ||
+      !money(entry.amount).eq(money(returned.totalAmount).negated())
+    )
+      fail("مصدر رصيد الاستثناء لا يطابق مستنده واعتماده الفعلي");
+    for (const r of reversalRows) {
+      if (r.accountingEntryId == null) {
+        const approval = physicalRequests.find((row) => row.id === r.requestId);
+        const rows = physicalItems.filter(
+          (row) => row.item.reversalId === r.id,
+        );
+        const requested: unknown = JSON.parse(r.payloadCanonical).lines;
+        if (
+          r.supplierId !== returned.supplierId ||
+          r.branchId !== returned.branchId ||
+          r.supplierInvoiceId != null ||
+          r.cashRepaymentReceiptId != null ||
+          ![r.netAmount, r.taxAmount, r.totalAmount].every((value) =>
+            money(value).isZero(),
+          ) ||
+          sha256(r.payloadCanonical) !== r.payloadHash ||
+          approval?.status !== "APPROVED" ||
+          approval.purchaseReturnId !== returned.id ||
+          approval.branchId !== returned.branchId ||
+          approval.payloadHash !== r.payloadHash ||
+          approval.payloadCanonical !== r.payloadCanonical ||
+          approval.appliedAt == null ||
+          approval.reviewedBy !== r.postedBy ||
+          approval.reviewedAt == null ||
+          approval.decisionKey == null ||
+          approval.decisionHash == null ||
+          !rows.length ||
+          !Array.isArray(requested) ||
+          requested.length !== rows.length ||
+          new Set(requested.map((line) => line.purchaseReturnItemId)).size !==
+            rows.length ||
+          !requested.every((line) =>
+            rows.some(
+              (row) =>
+                row.item.purchaseReturnItemId === line.purchaseReturnItemId &&
+                row.item.baseQuantity === line.baseQuantity,
+            ),
+          )
+        )
+          fail("عكس المخزون الصفري غير مثبت بمصدره واعتماده");
+        for (const { item, original, movement } of rows) {
+          if (
+            !original ||
+            original.purchaseReturnId !== returned.id ||
+            !movement ||
+            movement.variantId !== original.variantId ||
+            movement.branchId !== returned.branchId ||
+            movement.referenceType !== "PURCHASE_RETURN_REVERSAL" ||
+            movement.referenceId !== r.id ||
+            movement.movementType !== "IN" ||
+            movement.quantity !== item.baseQuantity ||
+            movement.signedDelta !== item.baseQuantity ||
+            ![item.netAmount, item.taxAmount, item.totalAmount].every((value) =>
+              money(value).isZero(),
+            )
+          )
+            fail("حركة عكس المخزون الصفري لا تطابق دليلها");
+          const originalValue = readValuation(
+            original.valuationEvidence,
+            original.valuationEvidenceHash,
+            {
+              variantId: original.variantId,
+              branchId: returned.branchId,
+              baseQuantity: original.baseQuantity,
+            },
+          );
+          if (!money(originalValue.inventoryAmount).isZero() || !money(originalValue.inventoryUnitCost).isZero())
+            fail("عكس المخزون بلا قيد لا يطابق قيمة المخزون الأصلية");
+          const saved = readReversalValuation(
+            item.valuationEvidence,
+            item.valuationEvidenceHash,
+            original.id,
+            original.valuationEvidenceHash!,
+            item.baseQuantity,
+          );
+          if (
+            ![
+              saved.inventoryAmount,
+              saved.netAmount,
+              saved.varianceAmount,
+            ].every((value) => money(value).isZero())
+          )
+            fail("عكس المخزون بلا قيد يجب أن يكون صفري القيمة بالكامل");
+        }
+        continue;
+      }
+      const e = entries.find((e) => e.id === r.accountingEntryId);
+      if (
+        !e ||
+        e.entryType !== "RETURN" ||
+        e.supplierId !== returned.supplierId ||
+        e.branchId !== returned.branchId ||
+        e.purchaseOrderId != null ||
+        e.dedupeKey !== `PURCHASE_RETURN_REVERSAL_REQUEST:${r.requestId}` ||
+        !money(e.amount).eq(r.totalAmount) ||
+        sha256(r.payloadCanonical) !== r.payloadHash
+      )
+        fail("عكس رصيد الاستثناء غير مثبت بقيده الفعلي");
+    }
+    const available = money(returned.creditOffsetAmount).minus(
+      reversalRows.reduce((s, r) => s.plus(r.totalAmount), money(0)),
+    );
+    if (available.lt(0)) fail("عكوس الاستثناء تتجاوز أصل الرصيد");
+    return { entry, request, returned, reversals: reversalRows, available };
+  }
   const candidate: BookSource[] = [];
   for (const entry of entries) {
     if (
@@ -648,6 +881,31 @@ async function loadContext(
       )
     )
       continue;
+    const exceptionReturn = formal.find(
+      (r) => r.accountingEntryId === entry.id && r.origin === "OWNER_EXCEPTION",
+    );
+    if (exceptionReturn) {
+      if (exceptionReturn.settlement !== "CREDIT") continue;
+      const proof = exceptionCredit(exceptionReturn);
+      if (proof.available.gt(0))
+        candidate.push({
+          entryId: entry.id,
+          receiptId: null,
+          exchangeId: null,
+          kind: "CREDIT",
+          date: day(entry.entryDate),
+          amount: toDbMoney(proof.available),
+          snapshot: {
+            purpose: "OWNER_EXCEPTION_RETURN_CREDIT",
+            version: 1,
+            entry: proof.entry,
+            returned: proof.returned,
+            request: proof.request,
+            reversals: proof.reversals,
+          },
+        });
+      continue;
+    }
     if (
       entry.entryType === "RETURN" &&
       money(entry.amount).lt(0) &&
@@ -749,6 +1007,41 @@ async function loadContext(
       snapshot: { entry, receipt, exchange: exchange[0] ?? null },
     });
   }
+  for (const source of bookSources.filter((s) =>
+    isExceptionReturnCreditSnapshot(s.sourceSnapshot),
+  )) {
+    if (
+      source.kind !== "CREDIT" ||
+      sha256(source.sourceSnapshot) !== source.sourceHash
+    )
+      fail("تلفت هوية رصيد الاستثناء الدفتري");
+    const snapshot = JSON.parse(source.sourceSnapshot);
+    const returned = formal.find((r) => r.id === snapshot.returned.id);
+    if (!returned) fail("مستند رصيد الاستثناء غير موجود");
+    const proof = exceptionCredit(returned);
+    if (
+      source.sourceAccountingEntryId !== proof.entry.id ||
+      source.supplierId !== returned.supplierId ||
+      source.branchId !== returned.branchId ||
+      !money(source.amount).minus(source.reversedAmount).eq(proof.available)
+    )
+      fail("رصيد الاستثناء الدفتري لا يطابق العكوس الفعلية");
+    const rows = exceptionAllocations.filter((a) => a.sourceId === source.id);
+    if (rows.some((a) => sha256(a.targetSnapshot) !== a.targetHash))
+      fail("تلفت بصمة تخصيص رصيد الاستثناء");
+    const available = purchaseAdvanceAvailableAmount(source, rows);
+    if (money(available).gt(0))
+      candidate.push({
+        retainedSourceId: source.id,
+        entryId: source.sourceAccountingEntryId,
+        receiptId: null,
+        exchangeId: null,
+        kind: "CREDIT",
+        date: day(source.adoptedAt),
+        amount: available,
+        snapshot,
+      });
+  }
   if (options.futurePayment)
     candidate.push({
       entryId: PREVIEW_SOURCE_ID,
@@ -813,6 +1106,12 @@ async function loadContext(
   if (
     !money(plan.remaining)
       .minus(unusedAdvances)
+      .minus(
+        plan.sources.reduce(
+          (sum, s) => sum.plus(s.unallocatedAmount),
+          money(0),
+        ),
+      )
       .eq(
         money(supplier.currentBalance).minus(
           options.futurePayment?.amount ?? 0,
@@ -868,6 +1167,7 @@ async function loadContext(
     native,
     legacy,
     bookSources,
+    exceptionAllocations,
     plan,
     classify: classify.map((i) => i.id),
   });
@@ -1384,38 +1684,74 @@ async function adoptSupplierBookSettlementInTx(
   const touched = new Set<number>();
   for (const source of c.sources) {
     const snapshot = canonical(source.snapshot);
-    const sourceId = extractInsertId(
-      await tx.insert(sources).values({
-        supplierId: input.supplierId,
-        branchId: input.branchId,
-        sourceAccountingEntryId: source.entryId,
-        sourceReceiptId: source.receiptId,
-        sourceExchangeTransactionId: source.exchangeId,
-        kind: source.kind,
-        amount: source.amount,
-        sourceSnapshot: snapshot,
-        sourceHash: sha256(snapshot),
-        planHash: c.planHash,
-        adoptionKey: `${input.requestKey}:${source.entryId}`,
-        adoptedBy: owner.id,
-        reversalHistory: "[]",
-      }),
-    );
+    const sourceId =
+      source.retainedSourceId ??
+      extractInsertId(
+        await tx.insert(sources).values({
+          supplierId: input.supplierId,
+          branchId: input.branchId,
+          sourceAccountingEntryId: source.entryId,
+          sourceReceiptId: source.receiptId,
+          sourceExchangeTransactionId: source.exchangeId,
+          kind: source.kind,
+          amount: source.amount,
+          sourceSnapshot: snapshot,
+          sourceHash: sha256(snapshot),
+          planHash: c.planHash,
+          adoptionKey: `${input.requestKey}:${source.entryId}`,
+          adoptedBy: owner.id,
+          reversalHistory: "[]",
+        }),
+      );
     sourceIds.push(sourceId);
-    await tx.insert(allocations).values(
-      source.allocations.map((a) => {
-        if (a.supplierInvoiceId) touched.add(a.supplierInvoiceId);
-        return {
-          sourceId,
-          supplierInvoiceId: a.supplierInvoiceId,
-          openingEntryId: a.openingEntryId,
-          allocatedAmount: a.amount,
-          allocatedCurrencyAmount: a.currencyAmount,
-          targetSnapshot: a.targetSnapshot,
-          targetHash: a.targetHash,
-        };
-      }),
-    );
+    if (source.retainedSourceId)
+      await tx
+        .update(sources)
+        .set({ version: sql`${sources.version}+1` })
+        .where(eq(sources.id, sourceId));
+    for (const a of source.allocations) {
+      if (a.supplierInvoiceId) touched.add(a.supplierInvoiceId);
+      const [prior] = source.retainedSourceId
+        ? await tx
+            .select()
+            .from(allocations)
+            .where(
+              and(
+                eq(allocations.sourceId, sourceId),
+                a.supplierInvoiceId != null
+                  ? eq(allocations.supplierInvoiceId, a.supplierInvoiceId)
+                  : eq(allocations.openingEntryId, a.openingEntryId!),
+              ),
+            )
+            .for("update")
+        : [];
+      if (prior) {
+        if (sha256(prior.targetSnapshot) !== prior.targetHash)
+          fail("تلف دليل التخصيص السابق");
+        await tx
+          .update(allocations)
+          .set({
+            allocatedAmount: toDbMoney(
+              money(prior.allocatedAmount).plus(a.amount),
+            ),
+            allocatedCurrencyAmount: toDbMoney(
+              money(prior.allocatedCurrencyAmount).plus(a.currencyAmount),
+            ),
+          })
+          .where(eq(allocations.id, prior.id));
+      } else
+        await tx
+          .insert(allocations)
+          .values({
+            sourceId,
+            supplierInvoiceId: a.supplierInvoiceId,
+            openingEntryId: a.openingEntryId,
+            allocatedAmount: a.amount,
+            allocatedCurrencyAmount: a.currencyAmount,
+            targetSnapshot: a.targetSnapshot,
+            targetHash: a.targetHash,
+          });
+    }
   }
   for (const invoice of c.classify) touched.add(invoice.id);
   await refreshTargets(tx, Array.from(touched));
@@ -1693,7 +2029,10 @@ export async function unapplySupplierBookSettlementSourceTx(
     .where(eq(allocations.sourceId, source.id))
     .orderBy(asc(allocations.id))
     .for("update");
-  const advance = isPurchaseAdvanceSnapshot(source.sourceSnapshot);
+  const advance =
+    isPurchaseAdvanceSnapshot(source.sourceSnapshot) ||
+    (source.kind === "CREDIT" &&
+      isExceptionReturnCreditSnapshot(source.sourceSnapshot));
   const unusedAdvance = advance
     ? money(purchaseAdvanceAvailableAmount(source, rows))
     : money(0);

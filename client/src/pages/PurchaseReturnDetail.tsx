@@ -6,7 +6,10 @@ import { fmtDateTime } from "@/lib/date";
 import { fmt, formatQuantity } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printReportDoc } from "@/lib/printing/reportDoc";
-import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
+import {
+  releaseReservedPrintWindow,
+  reservePrintWindow,
+} from "@/lib/printing/brand";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { usePrintAudit } from "@/hooks/usePrintAudit";
 import { DataTable } from "@/components/data-table/DataTable";
@@ -37,7 +40,9 @@ const returnItemColumns: ColumnDef<ReturnItemRow, unknown>[] = [
       return (
         <span className="font-medium">
           {row.original.productNameSnapshot}
-          {desc ? <span className="text-muted-foreground font-normal"> — {desc}</span> : null}
+          {desc ? (
+            <span className="text-muted-foreground font-normal"> — {desc}</span>
+          ) : null}
         </span>
       );
     },
@@ -68,97 +73,200 @@ const returnItemColumns: ColumnDef<ReturnItemRow, unknown>[] = [
     header: "الإجمالي",
     accessorFn: (r) => fmt(r.lineTotal),
     meta: { kind: "money" },
-    cell: ({ row }) => <span className="font-semibold">{fmt(row.original.lineTotal)}</span>,
+    cell: ({ row }) => (
+      <span className="font-semibold">{fmt(row.original.lineTotal)}</span>
+    ),
   },
 ];
 
 export default function PurchaseReturnDetail() {
   const params = useParams<{ id?: string }>();
   const id = Number(params.id);
-  const query = trpc.purchaseReturns.get.useQuery({ id }, { enabled: Number.isInteger(id) && id > 0 });
+  const query = trpc.purchaseReturns.get.useQuery(
+    { id },
+    { enabled: Number.isInteger(id) && id > 0 },
+  );
   const printAudit = usePrintAudit();
   const autoPrinted = useRef(false);
 
   async function printDocument(alreadyReserved = false) {
     const data = query.data;
     if (!data) return;
-    if (!alreadyReserved && !reservePrintWindow()) return notify.err("تعذّر فتح نافذة الطباعة — تحقّق من مانع النوافذ المنبثقة");
+    if (!alreadyReserved && !reservePrintWindow())
+      return notify.err(
+        "تعذّر فتح نافذة الطباعة — تحقّق من مانع النوافذ المنبثقة",
+      );
     try {
-      await printAudit.run({ documentType: "PURCHASE_RETURN", documentId: data.id, branchId: data.branchId, channel: "PDF", open: (audit) => printReportDoc({
-      title: "مستند مرتجع شراء",
-      docNum: data.returnNumber,
-      docDate: fmtDateTime(data.createdAt),
-      headerExtra: [
-        { label: "المورد", value: data.supplierName },
-        { label: "أمر الشراء", value: data.purchaseOrderNumber },
-      ],
-      meta: [{
-        title: "بيانات التثبيت",
-        fields: [
-          { label: "المنفذ", value: data.createdByName },
-          { label: "وقت التنظيم", value: fmtDateTime(data.createdAt) },
-          { label: "طالب الطباعة", value: audit.actorName },
-          { label: "وقت طلب الطباعة", value: fmtDateTime(audit.requestedAt) },
-          { label: "التسوية", value: data.settlement === "CASH" ? "نقدي/ذمة بحسب الدفع المثبت" : "خصم من ذمة المورد" },
-          { label: "الملاحظات", value: data.reason || "—" },
-        ],
-      }],
-      columns: [
-        { key: "product", label: "الصنف" },
-        { key: "unit", label: "الوحدة" },
-        { key: "quantity", label: "الكمية", align: "left" },
-        { key: "unitPrice", label: "السعر", align: "left" },
-        { key: "total", label: "الإجمالي", align: "left" },
-      ],
-      rows: data.items.map((item) => ({
-        product: variantDisplayName({
-          productName: item.productNameSnapshot ?? "—",
-          variantName: item.variantNameSnapshot,
-        }),
-        unit: item.unitNameSnapshot || "—",
-        quantity: item.quantity,
-        unitPrice: fmt(item.unitPrice),
-        total: fmt(item.lineTotal),
-      })),
-      summary: [
-        { label: "الصافي", value: `${fmt(data.netAmount)} د.ع` },
-        { label: "الضريبة", value: `${fmt(data.taxAmount)} د.ع` },
-        { label: "المسترد نقداً", value: `${fmt(data.cashRefundAmount)} د.ع` },
-        { label: "المخصوم من الذمة", value: `${fmt(data.creditOffsetAmount)} د.ع` },
-        { label: "إجمالي المرتجع", value: `${fmt(data.totalAmount)} د.ع`, bold: true, large: true },
-      ],
-      }) });
+      await printAudit.run({
+        documentType: "PURCHASE_RETURN",
+        documentId: data.id,
+        branchId: data.branchId,
+        channel: "PDF",
+        open: (audit) =>
+          printReportDoc({
+            title: "مستند مرتجع شراء",
+            docNum: data.returnNumber,
+            docDate: fmtDateTime(data.createdAt),
+            headerExtra: [
+              { label: "المورد", value: data.supplierName },
+              {
+                label: "المصدر",
+                value:
+                  data.origin === "OWNER_EXCEPTION"
+                    ? "استثناء موثق باعتماد المالك"
+                    : (data.purchaseOrderNumber ?? "مصدر تاريخي"),
+              },
+            ],
+            meta: [
+              {
+                title: "بيانات التثبيت",
+                fields: [
+                  { label: "المنفذ", value: data.createdByName },
+                  { label: "وقت التنظيم", value: fmtDateTime(data.createdAt) },
+                  { label: "طالب الطباعة", value: audit.actorName },
+                  {
+                    label: "وقت طلب الطباعة",
+                    value: fmtDateTime(audit.requestedAt),
+                  },
+                  {
+                    label: "التسوية",
+                    value:
+                      data.settlement === "CASH"
+                        ? "نقدي/ذمة بحسب الدفع المثبت"
+                        : "خصم من ذمة المورد",
+                  },
+                  { label: "الملاحظات", value: data.reason || "—" },
+                  {
+                    label: "دليل المورد",
+                    value: data.evidenceReference || "—",
+                  },
+                ],
+              },
+            ],
+            columns: [
+              { key: "product", label: "الصنف" },
+              { key: "unit", label: "الوحدة" },
+              { key: "quantity", label: "الكمية", align: "left" },
+              { key: "unitPrice", label: "السعر", align: "left" },
+              { key: "total", label: "الإجمالي", align: "left" },
+            ],
+            rows: data.items.map((item) => ({
+              product: variantDisplayName({
+                productName: item.productNameSnapshot ?? "—",
+                variantName: item.variantNameSnapshot,
+              }),
+              unit: item.unitNameSnapshot || "—",
+              quantity: item.quantity,
+              unitPrice: fmt(item.unitPrice),
+              total: fmt(item.lineTotal),
+            })),
+            summary: [
+              { label: "الصافي", value: `${fmt(data.netAmount)} د.ع` },
+              { label: "الضريبة", value: `${fmt(data.taxAmount)} د.ع` },
+              {
+                label: "المسترد نقداً",
+                value: `${fmt(data.cashRefundAmount)} د.ع`,
+              },
+              {
+                label: "المخصوم من الذمة",
+                value: `${fmt(data.creditOffsetAmount)} د.ع`,
+              },
+              {
+                label: "إجمالي المرتجع",
+                value: `${fmt(data.totalAmount)} د.ع`,
+                bold: true,
+                large: true,
+              },
+            ],
+          }),
+      });
     } catch (error) {
       releaseReservedPrintWindow();
-      notify.err(error instanceof Error ? error.message : "تعذّر تسجيل طلب الطباعة");
+      notify.err(
+        error instanceof Error ? error.message : "تعذّر تسجيل طلب الطباعة",
+      );
     }
   }
 
   useEffect(() => {
-    if (!query.data || autoPrinted.current || new URLSearchParams(window.location.search).get("print") !== "1") return;
+    if (
+      !query.data ||
+      autoPrinted.current ||
+      new URLSearchParams(window.location.search).get("print") !== "1"
+    )
+      return;
     autoPrinted.current = true;
     void printDocument(true);
   }, [query.data]);
 
   if (query.isLoading) return <LoadingState />;
-  if (query.isError || !query.data) return <ErrorState message={query.error?.message} onRetry={() => void query.refetch()} />;
+  if (query.isError || !query.data)
+    return (
+      <ErrorState
+        message={query.error?.message}
+        onRetry={() => void query.refetch()}
+      />
+    );
   const data = query.data;
 
   return (
     <div className="space-y-4">
       <PageHeader
         title={`مرتجع شراء ${data.returnNumber}`}
-        actions={<div className="flex gap-2"><Button disabled={printAudit.pending} onClick={() => void printDocument()}><Printer className="size-4" /> طباعة</Button><Link href="/purchases?tab=returns"><Button variant="outline"><ArrowRight className="size-4" /> السجل</Button></Link></div>}
+        actions={
+          <div className="flex gap-2">
+            <Button
+              disabled={printAudit.pending}
+              onClick={() => void printDocument()}
+            >
+              <Printer className="size-4" /> طباعة
+            </Button>
+            <Link href="/purchases?tab=returns">
+              <Button variant="outline">
+                <ArrowRight className="size-4" /> السجل
+              </Button>
+            </Link>
+          </div>
+        }
       />
       <Card>
-        <CardHeader><CardTitle className="text-base">بيانات المستند</CardTitle></CardHeader>
+        <CardHeader>
+          <CardTitle className="text-base">بيانات المستند</CardTitle>
+        </CardHeader>
         <CardContent className="grid gap-3 text-sm md:grid-cols-4">
-          <div><span className="text-muted-foreground">المورد</span><div className="font-semibold">{data.supplierName}</div></div>
-          <div><span className="text-muted-foreground">أمر الشراء</span><div dir="ltr" className="font-semibold">{data.purchaseOrderNumber}</div></div>
-          <div><span className="text-muted-foreground">المنفذ</span><div className="font-semibold">{data.createdByName}</div></div>
-          <div><span className="text-muted-foreground">وقت التنظيم</span><div dir="ltr" className="font-semibold">{fmtDateTime(data.createdAt)}</div></div>
+          <div>
+            <span className="text-muted-foreground">المورد</span>
+            <div className="font-semibold">{data.supplierName}</div>
+          </div>
+          <div>
+            <span className="text-muted-foreground">المصدر</span>
+            <div className="font-semibold">
+              {data.origin === "OWNER_EXCEPTION"
+                ? "استثناء موثق باعتماد المالك"
+                : (data.purchaseOrderNumber ?? "مصدر تاريخي")}
+            </div>
+          </div>
+          <div>
+            <span className="text-muted-foreground">دليل المورد</span>
+            <div>{data.evidenceReference || "—"}</div>
+          </div>
+          <div>
+            <span className="text-muted-foreground">المنفذ</span>
+            <div className="font-semibold">{data.createdByName}</div>
+          </div>
+          <div>
+            <span className="text-muted-foreground">وقت التنظيم</span>
+            <div dir="ltr" className="font-semibold">
+              {fmtDateTime(data.createdAt)}
+            </div>
+          </div>
         </CardContent>
       </Card>
+      <p className="text-sm text-muted-foreground">
+        {data.items.every((item) => item.historicalValueKnown)
+          ? "قيمة المخزون الأصلية موثقة؛ بيانات التكلفة الداخلية محجوبة في هذا العرض."
+          : "بعض البنود بلا دليل تكلفة تاريخية؛ يلزم تدقيقها قبل طلب العكس."}
+      </p>
       <Card>
         <CardContent className="p-0">
           {/* مُضمَّن داخل بطاقة المستند — البنود قائمةٌ قصيرة لا تحتاج بحثاً ولا ترقيماً. */}
@@ -174,9 +282,15 @@ export default function PurchaseReturnDetail() {
         </CardContent>
       </Card>
       <div className="grid gap-2 rounded-md border bg-card p-3 text-sm sm:grid-cols-3">
-        <div>المسترد نقداً: <b dir="ltr">{fmt(data.cashRefundAmount)} د.ع</b></div>
-        <div>المخصوم من الذمة: <b dir="ltr">{fmt(data.creditOffsetAmount)} د.ع</b></div>
-        <div>الإجمالي: <b dir="ltr">{fmt(data.totalAmount)} د.ع</b></div>
+        <div>
+          المسترد نقداً: <b dir="ltr">{fmt(data.cashRefundAmount)} د.ع</b>
+        </div>
+        <div>
+          المخصوم من الذمة: <b dir="ltr">{fmt(data.creditOffsetAmount)} د.ع</b>
+        </div>
+        <div>
+          الإجمالي: <b dir="ltr">{fmt(data.totalAmount)} د.ع</b>
+        </div>
       </div>
     </div>
   );

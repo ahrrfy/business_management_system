@@ -26,6 +26,9 @@ export interface PrintSalesReturnData {
 }
 
 export interface PrintPurchaseReturnData {
+  postedAt?: Date | string | null;
+  approvedBy?: string | null;
+  origin?: "NATIVE" | "LEGACY" | "OWNER_EXCEPTION";
   returnNumber: string;
   supplierName: string;
   supplierPhone?: string | null;
@@ -36,6 +39,7 @@ export interface PrintPurchaseReturnData {
     name: string;
     quantity: number;
     unitCost: string;
+    lineTotal?: string;
     barcode?: string | null;
   }>;
 }
@@ -43,23 +47,31 @@ export interface PrintPurchaseReturnData {
 /**
  * طباعة إيصال مرتجع مبيعات حراري فوري
  */
-export async function printSalesReturnReceipt(data: PrintSalesReturnData, options?: PrintWindowOptions) {
-  const methodLabel =
-    data.noCashNoAccount ? "تخفيض المتبقي على الفاتورة — بلا استرداد مالي" : data.method === "CASH"
+export async function printSalesReturnReceipt(
+  data: PrintSalesReturnData,
+  options?: PrintWindowOptions,
+) {
+  const methodLabel = data.noCashNoAccount
+    ? "تخفيض المتبقي على الفاتورة — بلا استرداد مالي"
+    : data.method === "CASH"
       ? "استرداد نقدي"
       : data.method === "CARD"
-      ? "استرداد بالبطاقة"
-      : data.method === "CREDIT_OFFSET"
-      ? "معادلة ذمم (خصم من حساب العميل الآجل)"
-      : "قسيمة رصيد متجر (Store Credit)";
+        ? "استرداد بالبطاقة"
+        : data.method === "CREDIT_OFFSET"
+          ? "معادلة ذمم (خصم من حساب العميل الآجل)"
+          : "قسيمة رصيد متجر (Store Credit)";
 
   const dispositionLabel =
-    data.disposition === "RESTOCK" ? "إعادة للمخزون (للرف)" : "إتلاف وتسجيل خسارة تلف";
+    data.disposition === "RESTOCK"
+      ? "إعادة للمخزون (للرف)"
+      : "إتلاف وتسجيل خسارة تلف";
 
   const meta = [
     `الزبون: ${data.customerName}`,
     ...(data.customerPhone ? [`الهاتف: ${data.customerPhone}`] : []),
-    ...(data.originalInvoiceNumber ? [`الفاتورة الأصلية: #${data.originalInvoiceNumber}`] : []),
+    ...(data.originalInvoiceNumber
+      ? [`الفاتورة الأصلية: #${data.originalInvoiceNumber}`]
+      : []),
     `الحالة المخزنية: ${dispositionLabel}`,
     `التاريخ: ${fmtDateTime(new Date())}`,
   ];
@@ -72,8 +84,22 @@ export async function printSalesReturnReceipt(data: PrintSalesReturnData, option
 
   const totals = [
     { label: "قيمة المرتجع", value: `${fmt(data.totalAmount)} د.ع` },
-    ...(data.payoutAmount != null ? [{ label: "المبلغ المدفوع للزبون", value: `${fmt(data.payoutAmount)} د.ع` }] : []),
-    ...(data.debtOffsetAmount != null && D(data.debtOffsetAmount).gt(0) ? [{ label: "تخفيض المتبقي على الفاتورة", value: `${fmt(data.debtOffsetAmount)} د.ع` }] : []),
+    ...(data.payoutAmount != null
+      ? [
+          {
+            label: "المبلغ المدفوع للزبون",
+            value: `${fmt(data.payoutAmount)} د.ع`,
+          },
+        ]
+      : []),
+    ...(data.debtOffsetAmount != null && D(data.debtOffsetAmount).gt(0)
+      ? [
+          {
+            label: "تخفيض المتبقي على الفاتورة",
+            value: `${fmt(data.debtOffsetAmount)} د.ع`,
+          },
+        ]
+      : []),
     { label: "طريقة الاسترداد", value: methodLabel },
     ...(data.reference ? [{ label: "رقم المرجع", value: data.reference }] : []),
   ];
@@ -99,29 +125,41 @@ export async function printSalesReturnReceipt(data: PrintSalesReturnData, option
 /**
  * طباعة سند إرجاع مشتريات للمورد
  */
-export async function printPurchaseReturnVoucher(data: PrintPurchaseReturnData, options?: PrintWindowOptions) {
+export async function printPurchaseReturnVoucher(
+  data: PrintPurchaseReturnData,
+  options?: PrintWindowOptions,
+) {
   const methodLabel =
     data.method === "CREDIT_OFFSET"
       ? "معادلة ذمم (خصم من رصيد المورد)"
       : data.method === "CASH_IN"
-      ? "مردود نقدي (قبض نقد من المورد)"
-      : "حوالة / تحويل بنكي";
+        ? "مردود نقدي (قبض نقد من المورد)"
+        : "حوالة / تحويل بنكي";
 
   const meta = [
     `المورد: ${data.supplierName}`,
     ...(data.supplierPhone ? [`هاتف المورد: ${data.supplierPhone}`] : []),
-    ...(data.reference ? [`الرقم المرجعي / الفاتورة: ${data.reference}`] : []),
-    `التاريخ: ${fmtDateTime(new Date())}`,
+    ...(data.reference ? [`مرجع دليل المورد: ${data.reference}`] : []),
+    ...(data.origin === "OWNER_EXCEPTION"
+      ? ["استثناء موثق باعتماد المالك — بلا مصدر شراء مسجل"]
+      : []),
+    ...(data.approvedBy ? [`اعتمد بواسطة: ${data.approvedBy}`] : []),
+    ...(data.postedAt
+      ? [`تاريخ الترحيل: ${fmtDateTime(new Date(data.postedAt))}`]
+      : ["تاريخ الترحيل غير متاح"]),
   ];
 
   const itemBlocks: PrintItemBlock[] = data.items.map((i) => ({
     name: i.name,
     quantityPrice: `${fmtQty(i.quantity)} × ${fmt(i.unitCost)} د.ع`,
-    total: `${fmt(round2(D(i.quantity).times(D(i.unitCost))).toFixed(2))} د.ع`,
+    total: `${fmt(i.lineTotal ?? round2(D(i.quantity).times(D(i.unitCost))).toFixed(2))} د.ع`,
   }));
 
   const totals = [
-    { label: "إجمالي قيمة المرتجع للمورد", value: `${fmt(data.totalAmount)} د.ع` },
+    {
+      label: "إجمالي قيمة المرتجع للمورد",
+      value: `${fmt(data.totalAmount)} د.ع`,
+    },
     { label: "طريقة التسوية", value: methodLabel },
   ];
 

@@ -36,6 +36,21 @@ export function isPurchaseAdvanceSnapshot(snapshot: string): boolean {
   }
 }
 
+/** An owner-approved return remains CREDIT even while it has no invoice target. */
+export function isExceptionReturnCreditSnapshot(snapshot: string): boolean {
+  try {
+    const v = JSON.parse(snapshot);
+    return (
+      v?.purpose === "OWNER_EXCEPTION_RETURN_CREDIT" &&
+      v.version === 1 &&
+      Number.isSafeInteger(v.returned?.id) &&
+      v.returned?.origin === "OWNER_EXCEPTION"
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function purchaseAdvanceAvailableAmount(
   source: { amount: string; reversedAmount: string },
   rows: readonly { allocatedAmount: string; reversedAmount: string }[],
@@ -246,15 +261,16 @@ export async function loadSupplierBookReceiptSettlement(
     .limit(MAX_ROWS + 1);
   assertBounded(rows.length);
   const { sourceSnapshot, ...sourceFields } = source;
-  const unallocatedAmount = isPurchaseAdvanceSnapshot(sourceSnapshot)
-    ? purchaseAdvanceAvailableAmount(
-        source,
-        rows.map((row) => ({
-          allocatedAmount: row.amount,
-          reversedAmount: row.reversedAmount,
-        })),
-      )
-    : "0.00";
+  const unallocatedAmount =
+    isPurchaseAdvanceSnapshot(sourceSnapshot)
+      ? purchaseAdvanceAvailableAmount(
+          source,
+          rows.map((row) => ({
+            allocatedAmount: row.amount,
+            reversedAmount: row.reversedAmount,
+          })),
+        )
+      : "0.00";
   const invoiceIds = rows.flatMap((row) =>
     row.supplierInvoiceId == null ? [] : [Number(row.supplierInvoiceId)],
   );
