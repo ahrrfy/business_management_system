@@ -1,5 +1,5 @@
 import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -28,8 +28,34 @@ import { currentBaghdadMonth } from "@/lib/businessMonth";
 import { fmtDate } from "@/lib/date";
 import { iqd } from "@/lib/hr/ui";
 import { notify } from "@/lib/notify";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ArrowRightLeft, Award, Calculator, Coins, Plus } from "lucide-react";
+
+type AdvanceRow = RouterOutputs["payroll"]["advancesList"][number];
+
+function advanceClassificationLabel(row: AdvanceRow): string {
+  if (!row.financiallyDisbursed) {
+    if (
+      row.status === "LEGACY_UNCLASSIFIED" ||
+      row.workflowStatus === "LEGACY_UNCLASSIFIED" ||
+      !row.payrollPeriod
+    ) {
+      return "طلب تاريخي غير مصنف — لم يُصرف";
+    }
+    return `طلب شهر ${row.payrollPeriod} — لم يُصرف`;
+  }
+  if (row.sourceType === "LEGACY_UNCLASSIFIED") {
+    return "ذمة تاريخية غير مصنفة — لا شهر خصم";
+  }
+  if (row.sourceType === "OTHER_DEDUCTION") {
+    return row.monthlyDeduction != null
+      ? `ذمة أخرى — الاستقطاع المعتمد ${iqd(row.monthlyDeduction)}`
+      : "ذمة أخرى — وفق الاستقطاع المعتمد";
+  }
+  return row.payrollPeriod
+    ? `سلفة راتبية — شهر الخصم ${row.payrollPeriod}`
+    : "سلفة راتبية — شهر الخصم غير محدد";
+}
 
 export function EmployeeEnterpriseOperationsTab({
   employeeId,
@@ -84,6 +110,14 @@ export function EmployeeEnterpriseOperationsTab({
   const [loanReason, setLoanReason] = useState("");
   const loanRequestIdRef = useRef(crypto.randomUUID());
   const effectiveUserId = currentUserId ?? me.data?.id;
+
+  useEffect(() => {
+    setOpenLoan(false);
+    setLoanAmount("");
+    setLoanReason("");
+    setLoanPeriod(currentBaghdadMonth());
+    loanRequestIdRef.current = crypto.randomUUID();
+  }, [employeeId]);
 
   // Transfer State
   const [toBranchId, setToBranchId] = useState<string>("");
@@ -259,8 +293,9 @@ export function EmployeeEnterpriseOperationsTab({
           <TabsContent value="loans" className="space-y-3">
             <div className="flex items-end justify-between gap-3">
               <span className="text-xs text-muted-foreground">
-                السلفة تُخصم كاملة من راتب شهرها. الحد المتاح مبني على الأجر
-                المكتسب فعلياً حتى اليوم بعد الاستقطاعات.
+                السلفة الشهرية المصروفة تُخصم كاملة من راتب شهرها. الذمم
+                التاريخية منفصلة ولا تُعاد كسلفة شهر جديد. الحد المتاح مبني على
+                الأجر المؤكد حتى اليوم بعد الاستقطاعات.
               </span>
               <div className="flex items-end gap-2 shrink-0">
                 <div className="space-y-1">
@@ -317,7 +352,7 @@ export function EmployeeEnterpriseOperationsTab({
                 <TableHeader>
                   <TableRow>
                     <TableHead>مبلغ السلفة</TableHead>
-                    <TableHead>شهر الخصم</TableHead>
+                    <TableHead>التصنيف / شهر الخصم</TableHead>
                     <TableHead>السبب</TableHead>
                     <TableHead>الحالة</TableHead>
                     <TableHead className="w-48">إجراء</TableHead>
@@ -334,11 +369,8 @@ export function EmployeeEnterpriseOperationsTab({
                       >
                         {iqd(loan.amount)}
                       </TableCell>
-                      <TableCell
-                        dir="ltr"
-                        className="text-start tabular-nums text-xs"
-                      >
-                        {loan.payrollPeriod || "—"}
+                      <TableCell className="text-xs text-muted-foreground">
+                        {advanceClassificationLabel(loan)}
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground max-w-[180px] truncate">
                         {loan.note || "—"}
@@ -358,13 +390,15 @@ export function EmployeeEnterpriseOperationsTab({
                                     ? "تاريخية غير مصنفة — محجوبة حتى المراجعة"
                                     : loan.status === "ACTIVE"
                                       ? loan.sourceType === "SALARY_ADVANCE"
-                                        ? "مصروفة — تخصم كاملة هذا الشهر"
+                                        ? loan.payrollPeriod
+                                          ? `مصروفة — تخصم كاملة في شهر ${loan.payrollPeriod}`
+                                          : "مصروفة — شهر الخصم غير محدد"
                                         : loan.sourceType ===
                                             "LEGACY_UNCLASSIFIED"
                                           ? "مصروفة تاريخياً — يلزم مطابقة المصدر والشهر"
                                           : "ذمة أخرى — وفق الاستقطاع المعتمد"
                                       : loan.status === "SETTLED"
-                                        ? "مُسوّاة مع الراتب"
+                                        ? "مُسوّاة بالكامل"
                                         : loan.status === "CANCELLED"
                                           ? "ملغاة"
                                           : loan.workflowStatus}
@@ -824,24 +858,59 @@ export function EmployeeEnterpriseOperationsTab({
                 />
               </div>
 
-              <div
-                className="p-2.5 rounded bg-muted text-xs space-y-1"
-                role={
-                  advanceCapacityQ.data?.capacity.blockers.length
-                    ? "alert"
-                    : undefined
-                }
-              >
+              <div className="p-2.5 rounded bg-muted text-xs space-y-1">
                 <div className="flex justify-between gap-3">
                   <span>الحد الأعلى المتاح حتى اليوم:</span>
                   <span className="font-bold tabular-nums" dir="ltr">
                     {iqd(advanceCapacityQ.data?.capacity.maxAvailable ?? 0)}
                   </span>
                 </div>
+                {advanceCapacityQ.data?.capacity && (
+                  <dl className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 border-t pt-2 text-muted-foreground">
+                    <dt>الأجر المؤكد حتى اليوم</dt>
+                    <dd dir="ltr">
+                      {iqd(advanceCapacityQ.data.capacity.earnedCompensation)}
+                    </dd>
+                    <dt>إضافات معتمدة</dt>
+                    <dd dir="ltr">
+                      + {iqd(advanceCapacityQ.data.capacity.approvedAdditions)}
+                    </dd>
+                    <dt>استقطاعات إلزامية</dt>
+                    <dd dir="ltr">
+                      − {iqd(advanceCapacityQ.data.capacity.mandatoryDeductions)}
+                    </dd>
+                    <dt>سلف راتبية مصروفة لهذا الشهر</dt>
+                    <dd dir="ltr">
+                      − {iqd(advanceCapacityQ.data.capacity.existingSalaryAdvances)}
+                    </dd>
+                    <dt>ذمم أخرى وتاريخية محجوزة لحين المطابقة</dt>
+                    <dd dir="ltr">
+                      − {iqd(advanceCapacityQ.data.capacity.otherEmployeeDeductions)}
+                    </dd>
+                    <dt>طلبات هذا الشهر المحجوزة</dt>
+                    <dd dir="ltr">
+                      − {iqd(advanceCapacityQ.data.capacity.reservedRequests)}
+                    </dd>
+                  </dl>
+                )}
                 <p className="text-muted-foreground">
                   يُعاد التحقق عند الصرف، ويُخصم كامل المبلغ من راتب شهر{" "}
                   {advanceCapacityQ.data?.capacity.period || "الشهر الجاري"}.
                 </p>
+                {!!advanceCapacityQ.data?.capacity.excludedAttendanceDates.length && (
+                  <p className="text-[var(--sem-warn)]" role="status">
+                    استُبعدت مؤقتاً مساهمة الحضور للأيام المفتوحة أو غير المحسومة (
+                    {advanceCapacityQ.data.capacity.excludedAttendanceDates.join(
+                      "، ",
+                    )}
+                    )؛ وتبقى مصادر الأجر المؤكدة الأخرى محسوبة أعلاه.
+                  </p>
+                )}
+                {advanceCapacityQ.data?.capacity.warnings.map((warning) => (
+                  <p key={warning} className="text-[var(--sem-warn)]" role="status">
+                    {warning}
+                  </p>
+                ))}
                 {advanceCapacityQ.data?.capacity.blockers.map((blocker) => (
                   <p key={blocker} className="text-destructive">
                     {blocker}

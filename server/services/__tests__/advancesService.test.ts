@@ -814,7 +814,7 @@ describe("advancesService — الإلغاء وتعدّد السلف", () => {
     expect(storedRun.status).toBe("draft");
   });
 
-  it("يسوّي كل سلف الشهر وحدها ويعيد أرصدة الشهر والتاريخ عند عكس المسيّر", async () => {
+  it("يسوّي سلف الشهر والدين الموثق ويبقي التاريخي غير المصنف خارج الراتب", async () => {
     const employee = await seedEmployee();
     const [year, month] = CURRENT_PERIOD.split("-").map(Number);
     const previous = new Date(Date.UTC(year, month - 2, 1)).toISOString().slice(0, 7);
@@ -823,24 +823,25 @@ describe("advancesService — الإلغاء وتعدّد السلف", () => {
       { employeeId: employee.id, branchId: 1, amount: "25000.00", remaining: "25000.00", monthlyDeduction: "5000.00", sourceType: "SALARY_ADVANCE", payrollPeriod: CURRENT_PERIOD, createdBy: 1 },
       { employeeId: employee.id, branchId: 1, amount: "40000.00", remaining: "40000.00", monthlyDeduction: "5000.00", sourceType: "SALARY_ADVANCE", payrollPeriod: previous, createdBy: 1 },
       { employeeId: employee.id, branchId: 1, amount: "30000.00", remaining: "30000.00", monthlyDeduction: "10000.00", sourceType: "OTHER_DEDUCTION", payrollPeriod: null, createdBy: 1 },
-      { employeeId: employee.id, branchId: 1, amount: "20000.00", remaining: "20000.00", monthlyDeduction: "5000.00", sourceType: "LEGACY_UNCLASSIFIED", payrollPeriod: null, createdBy: 1 },
+      { employeeId: employee.id, branchId: 1, amount: "20000.00", remaining: "20000.00", monthlyDeduction: "5000.00", sourceType: "LEGACY_UNCLASSIFIED", payrollPeriod: null, grantedAt: new Date(`${previous}-15T12:00:00.000Z`), createdBy: 1 },
     ]).$returningId();
     const ids = inserts.map((row) => Number(row.id));
     const balances = async () => (await db().select().from(s.employeeAdvances)
       .where(inArray(s.employeeAdvances.id, ids)).orderBy(s.employeeAdvances.id))
       .map((row) => [row.remaining, row.status]);
     const run = await generatePayroll(CURRENT_PERIOD, ACTOR);
-    expect(run!.items[0].advanceDeduction).toBe("90000.00");
+    expect(run!.items[0].advanceDeduction).toBe("85000.00");
     await approveRun(run!.id, APPROVER);
     await payRun(run!.id, APPROVER);
     expect(await balances()).toEqual([
       ["0.00", "SETTLED"], ["0.00", "SETTLED"], ["40000.00", "ACTIVE"],
-      ["20000.00", "ACTIVE"], ["15000.00", "ACTIVE"],
+      ["20000.00", "ACTIVE"], ["20000.00", "ACTIVE"],
     ]);
     const applied = await db().select().from(s.advanceSettlements)
       .where(eq(s.advanceSettlements.runId, run!.id));
-    expect(applied).toHaveLength(4);
+    expect(applied).toHaveLength(3);
     expect(applied.some((row) => Number(row.advanceId) === ids[2])).toBe(false);
+    expect(applied.some((row) => Number(row.advanceId) === ids[4])).toBe(false);
     await returnPaidSalary(run!.id);
     await cancelRun(run!.id, APPROVER);
     expect(await balances()).toEqual([
@@ -849,7 +850,7 @@ describe("advancesService — الإلغاء وتعدّد السلف", () => {
     ]);
     const reversed = await db().select().from(s.advanceSettlements)
       .where(eq(s.advanceSettlements.runId, run!.id));
-    expect(reversed.filter((row) => row.direction === "REVERSE")).toHaveLength(4);
+    expect(reversed.filter((row) => row.direction === "REVERSE")).toHaveLength(3);
   });
 
   it("سندات الطلب القديمة غير المصنفة تظهر صراحة ولا تختفي أو تُنسب إلى شهر مفترض", async () => {

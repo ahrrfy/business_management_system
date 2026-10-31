@@ -44,6 +44,8 @@ export interface EmployeeAdvanceCapacity {
   maxAvailable: string;
   blocked: boolean;
   blockers: string[];
+  warnings: string[];
+  excludedAttendanceDates: string[];
 }
 
 export interface CapacityOptions {
@@ -214,6 +216,7 @@ export async function getEmployeeAdvanceCapacityTx(
       employeeSnapshot: { ...employee, branchName: null },
       payrollRunSnapshot: run ?? null,
       lockFinancialInputs: options.lock,
+      confirmedAttendanceOnly: true,
     }),
   );
   if (!statement) {
@@ -226,10 +229,21 @@ export async function getEmployeeAdvanceCapacityTx(
       }),
     });
   }
-  if (statement.needsHealing || statement.totals.openDays > 0) {
-    blockers.push("توجد بصمات حضور مفتوحة أو غير محسومة حتى اليوم");
+  if (!statement.confirmedPayrollComponents) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "تعذّر بناء مكونات الأجر المؤكدة لحد السلفة",
+    });
   }
-  const statementEarnedCompensation = money(statement.expectedEarnedGrossWages);
+  blockers.push(...statement.confirmedAttendanceBlockers);
+  const excludedAttendanceDates = statement.excludedAttendanceDates.map((row) => row.date);
+  const warnings = excludedAttendanceDates.length > 0
+    ? [`استُبعدت من الحد أيام حضور غير محسومة: ${excludedAttendanceDates.join("، ")}`]
+    : [];
+  const confirmedPayrollComponents = statement.confirmedPayrollComponents;
+  const statementEarnedCompensation = round2(
+    money(confirmedPayrollComponents.gross).plus(money(confirmedPayrollComponents.overtime)),
+  );
 
   const bonusQuery = tx
     .select({ amount: employeeSpotBonuses.amount })
@@ -300,7 +314,7 @@ export async function getEmployeeAdvanceCapacityTx(
    * نافذة الخدمة حتى asOf، أما مسارا الحضور والساعي فاستبعدا الإجازة من الأجر أصلاً.
    */
   const fixedPayPath =
-    statement.dueBasis === "fixedSalary" || statement.dueBasis === "exempt";
+    statement.liveBasis === "fixedSalary" || statement.liveBasis === "exempt";
   let earnedLeaveDeduction = ZERO;
   if (fixedPayPath) {
     const unpaidLeaves = statement.approvedLeaveSpans.filter(
@@ -369,7 +383,7 @@ export async function getEmployeeAdvanceCapacityTx(
     ? await currentFinancialRead(getPayrollLegalSettingsForUpdate(tx))
     : await getPayrollLegalSettings(tx);
   const legalGrossBeforeLeave = round2(
-    money(statement.livePayrollComponents.gross).plus(approvedSpotBonuses),
+    money(confirmedPayrollComponents.gross).plus(approvedSpotBonuses),
   );
   /*
    * generatePayroll يجعل basic للشهريّ أساس الحضور/الراتب وحده، وgross يضيف
@@ -379,7 +393,7 @@ export async function getEmployeeAdvanceCapacityTx(
    */
   const legalBasicBeforeLeave =
     statement.employee.payType === "monthly"
-      ? money(statement.livePayrollComponents.basic)
+      ? money(confirmedPayrollComponents.basic)
       : legalGrossBeforeLeave;
   const legal = computeLegalComponents(legalSettings, {
     basic: Decimal.max(0, legalBasicBeforeLeave.minus(earnedLeaveDeduction)),
@@ -399,9 +413,9 @@ export async function getEmployeeAdvanceCapacityTx(
   const penaltyAbsorbableWage = Decimal.max(
     0,
     round2(
-      money(statement.livePayrollComponents.gross)
+      money(confirmedPayrollComponents.gross)
         .plus(approvedSpotBonuses)
-        .plus(money(statement.livePayrollComponents.overtime))
+        .plus(money(confirmedPayrollComponents.overtime))
         .plus(approvedCommissions)
         .minus(earnedLeaveDeduction)
         .minus(legalDeductions),
@@ -606,6 +620,8 @@ export async function getEmployeeAdvanceCapacityTx(
     maxAvailable: toDbMoney(maxAvailable),
     blocked: blockers.length > 0,
     blockers: Array.from(new Set(blockers)),
+    warnings,
+    excludedAttendanceDates,
   };
 }
 

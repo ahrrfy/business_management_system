@@ -1748,16 +1748,20 @@ export async function getFinancialPosition(
   const socialSecurityPayable =
     payrollLiabilityByRole.get("SOCIAL_SECURITY_PAYABLE") ?? money(0);
   const eosProvision = payrollLiabilityByRole.get("EOS_PROVISION") ?? money(0);
-  const employeeAdvanceRow =
+  const employeeAdvanceCycleId =
     payrollMode?.cycleId &&
     (payrollMode.mode === "ACTIVE" || payrollMode.mode === "SHADOW")
+      ? payrollMode.cycleId
+      : null;
+  const employeeAdvanceRow =
+    employeeAdvanceCycleId
       ? (rowsOf(
           await db.execute(sql`
         SELECT CAST(COALESCE(SUM(jl.debit - jl.credit), 0) AS CHAR) AS balance
         FROM journalLines jl
         INNER JOIN journalEntries je ON je.id = jl.journalId
         WHERE je.status = 'POSTED'
-          AND je.cycleId = ${payrollMode.cycleId}
+          AND je.cycleId = ${employeeAdvanceCycleId}
           AND jl.role = 'EMPLOYEE_ADVANCES'
           ${bId ? sql`AND je.branchId = ${bId}` : sql``}
           ${asOf ? sql`AND je.entryDate <= ${asOf}` : sql``}
@@ -1803,7 +1807,29 @@ export async function getFinancialPosition(
             ${bId ? sql`AND branchId = ${bId}` : sql``}
         `),
           )[0] as { balance?: string } | undefined);
-  const employeeAdvanceReceivable = money(employeeAdvanceRow?.balance ?? 0);
+  // OWNER_ATTESTATION does not invent a cash/payroll event date. It restates the
+  // receivable from the first day of priorToPeriod onward; dates before that
+  // boundary remain reconstructed only from the genuinely dated allocation books.
+  // REVERSE removes the same restatement from the same boundary, not from createdAt.
+  const historicalAdvanceRestatementRow =
+    asOf && !employeeAdvanceCycleId
+      ? (rowsOf(
+          await db.execute(sql`
+        SELECT CAST(COALESCE(SUM(
+          CASE
+            WHEN ahr.historicalAdvanceRecoveryDirection = 'APPLY' THEN ahr.amount
+            ELSE -ahr.amount
+          END
+        ), 0) AS CHAR) AS netRecovery
+        FROM employeeAdvanceHistoricalRecoveries ahr
+        WHERE CONCAT(ahr.priorToPeriod, '-01') <= ${asOf}
+          ${bId ? sql`AND ahr.branchId = ${bId}` : sql``}
+      `),
+        )[0] as { netRecovery?: string } | undefined)
+      : undefined;
+  const employeeAdvanceReceivable = money(employeeAdvanceRow?.balance ?? 0).sub(
+    historicalAdvanceRestatementRow?.netRecovery ?? 0,
+  );
   const interbranchRow =
     payrollMode?.cycleId &&
     (payrollMode.mode === "ACTIVE" || payrollMode.mode === "SHADOW")

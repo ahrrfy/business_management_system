@@ -15661,6 +15661,82 @@ export const employeeAdvances = mysqlTable(
 );
 
 /**
+ * إثباتٌ append-only لمبلغ سلفة استُرد تاريخياً قبل الفترة المحددة بتأكيد المالك.
+ * لا يُنشئ سنداً أو مسيّر رواتب أو قيد GL؛ والتصحيح يكون بصف REVERSE لا بتعديل الأصل.
+ */
+export const employeeAdvanceHistoricalRecoveries = mysqlTable(
+  "employeeAdvanceHistoricalRecoveries",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    advanceId: bigint("advanceId", { mode: "number" }).notNull(),
+    employeeId: bigint("employeeId", { mode: "number" }).notNull(),
+    branchId: bigint("branchId", { mode: "number" }).notNull(),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    direction: mysqlEnum("historicalAdvanceRecoveryDirection", [
+      "APPLY",
+      "REVERSE",
+    ]).notNull(),
+    reversalOfId: bigint("reversalOfId", { mode: "number" }),
+    sourceKey: varchar("sourceKey", { length: 191 }).notNull(),
+    sourceHash: char("sourceHash", { length: 64 }).notNull(),
+    evidenceKind: mysqlEnum("historicalAdvanceRecoveryEvidenceKind", [
+      "OWNER_ATTESTATION",
+    ]).notNull(),
+    evidenceReference: varchar("evidenceReference", { length: 500 }).notNull(),
+    evidenceHash: char("evidenceHash", { length: 64 }).notNull(),
+    priorToPeriod: varchar("priorToPeriod", { length: 7 }).notNull(),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    sourceUq: unique("uq_advhist_source").on(t.sourceKey),
+    reversalUq: unique("uq_advhist_reverse").on(t.reversalOfId),
+    advanceDirectionIdx: index("idx_advhist_advance_direction_id").on(
+      t.advanceId,
+      t.direction,
+      t.id,
+    ),
+    advanceFk: foreignKey({
+      columns: [t.advanceId],
+      foreignColumns: [employeeAdvances.id],
+      name: "fk_advhist_advance",
+    }).onDelete("no action"),
+    employeeFk: foreignKey({
+      columns: [t.employeeId],
+      foreignColumns: [employees.id],
+      name: "fk_advhist_employee",
+    }).onDelete("no action"),
+    branchFk: foreignKey({
+      columns: [t.branchId],
+      foreignColumns: [branches.id],
+      name: "fk_advhist_branch",
+    }).onDelete("no action"),
+    reversalFk: foreignKey({
+      columns: [t.reversalOfId],
+      foreignColumns: [t.id],
+      name: "fk_advhist_reverse",
+    }).onDelete("no action"),
+    actorFk: foreignKey({
+      columns: [t.createdBy],
+      foreignColumns: [users.id],
+      name: "fk_advhist_actor",
+    }).onDelete("no action"),
+    positiveAmount: check("chk_advhist_positive", sql`${t.amount} > 0`),
+    reversalShape: check(
+      "chk_advhist_reversal_shape",
+      sql`(${t.direction} = 'APPLY' AND ${t.reversalOfId} IS NULL) OR (${t.direction} = 'REVERSE' AND ${t.reversalOfId} IS NOT NULL)`,
+    ),
+    priorPeriodShape: check(
+      "chk_advhist_prior_period",
+      sql`${t.priorToPeriod} REGEXP '^[0-9]{4}-(0[1-9]|1[0-2])$'`,
+    ),
+  }),
+);
+
+export type EmployeeAdvanceHistoricalRecovery =
+  typeof employeeAdvanceHistoricalRecoveries.$inferSelect;
+
+/**
  * تسويات السلف المرتبطة بمسيّر الرواتب (تدقيق ١٧/٧) — لمنع الخصم المضاعف. تُكتب صفٌّ لكل سلفة
  * تُسوّى عند دفع المسيّر (settleAdvancesOnPayTx)؛ وتُستعاد أرصدتها عند **حذف** المسيّر (لا عكسه).
  */

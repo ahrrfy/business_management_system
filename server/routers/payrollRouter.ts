@@ -89,6 +89,8 @@ function blockedAdvanceCapacity(
     maxAvailable: "0.00",
     blocked: true,
     blockers: [error.message],
+    warnings: [],
+    excludedAttendanceDates: [],
   };
 }
 

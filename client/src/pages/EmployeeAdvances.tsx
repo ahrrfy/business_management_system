@@ -54,7 +54,7 @@ const STATUS_CLS: Record<string, string> = {
   PENDING_APPROVAL: "badge-stock-low",
   APPROVED: "badge-status-pending",
   REJECTED: "bg-destructive/10 text-destructive",
-  EXPIRED: "bg-warning/15 text-warning-foreground",
+  EXPIRED: "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]",
   LEGACY_UNCLASSIFIED: "bg-muted text-muted-foreground",
   SETTLED: "badge-status-active",
   CANCELLED: "bg-muted text-muted-foreground",
@@ -76,6 +76,30 @@ const STATUS_TITLE: Record<string, string> = {
 };
 /** صفُّ سلفة موظّف — مشتقٌّ من عقد `payroll.advancesList` فلا ينجرف عن الخادم. */
 type AdvanceRow = RouterOutputs["payroll"]["advancesList"][number];
+
+function advanceClassificationLabel(row: AdvanceRow): string {
+  if (!row.financiallyDisbursed) {
+    if (
+      row.status === "LEGACY_UNCLASSIFIED" ||
+      row.workflowStatus === "LEGACY_UNCLASSIFIED" ||
+      !row.payrollPeriod
+    ) {
+      return "طلب تاريخي غير مصنف — لم يُصرف";
+    }
+    return `طلب شهر ${row.payrollPeriod} — لم يُصرف`;
+  }
+  if (row.sourceType === "LEGACY_UNCLASSIFIED") {
+    return "ذمة تاريخية غير مصنفة — لا شهر خصم";
+  }
+  if (row.sourceType === "OTHER_DEDUCTION") {
+    return row.monthlyDeduction != null
+      ? `ذمة أخرى — الاستقطاع المعتمد ${iqd(row.monthlyDeduction)}`
+      : "ذمة أخرى — وفق الاستقطاع المعتمد";
+  }
+  return row.payrollPeriod
+    ? `سلفة راتبية — شهر الخصم ${row.payrollPeriod}`
+    : "سلفة راتبية — شهر الخصم غير محدد";
+}
 
 function StatusBadge({ status }: { status: string }) {
   return (
@@ -258,12 +282,11 @@ export default function EmployeeAdvances() {
     },
     {
       id: "monthlyDeduction",
-      header: "خصم شهر السلفة",
-      accessorFn: (r) => `${r.payrollPeriod ?? "—"} · ${iqd(r.amount)}`,
-      meta: { kind: "money" },
+      header: "التصنيف / شهر الخصم",
+      accessorFn: advanceClassificationLabel,
       cell: ({ row }) => (
-        <span className="text-muted-foreground">
-          {row.original.payrollPeriod ?? "—"} · {iqd(row.original.amount)}
+        <span className="text-xs text-muted-foreground">
+          {advanceClassificationLabel(row.original)}
         </span>
       ),
     },
@@ -452,8 +475,8 @@ export default function EmployeeAdvances() {
                 },
                 {
                   key: "payrollPeriod",
-                  header: "شهر الخصم",
-                  map: (r) => r.payrollPeriod ?? "",
+                  header: "التصنيف / شهر الخصم",
+                  map: advanceClassificationLabel,
                 },
                 {
                   key: "voucherNumber",
@@ -481,6 +504,7 @@ export default function EmployeeAdvances() {
                     value={period}
                     onChange={(event) => setPeriod(event.target.value)}
                     aria-label="شهر السلف"
+                    disabled={status === "LEGACY_UNCLASSIFIED"}
                   />
                 </FilterField>
                 <FilterField label="الحالة">
@@ -536,6 +560,11 @@ export default function EmployeeAdvances() {
               </div>
             }
           />
+          {status === "LEGACY_UNCLASSIFIED" && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              سجلات تاريخية غير مصنفة من جميع الأشهر؛ تبقى منفصلة عن خصم الراتب حتى المطابقة.
+            </p>
+          )}
           <div className="text-xs text-muted-foreground mt-1">
             {listQ.isLoading
               ? ""
@@ -659,7 +688,14 @@ function GrantDialog({
               id="adv-emp"
               className={`${selectClsSm} w-full h-9`}
               value={employeeId}
-              onValueChange={(next) => setEmployeeId(next)}
+              onValueChange={(next) => {
+                if (next !== employeeId) {
+                  setAmount("");
+                  setNote("");
+                  reqIdRef.current = crypto.randomUUID();
+                }
+                setEmployeeId(next);
+              }}
             >
               <option value="">اختر موظفاً…</option>
               {emps.map((e) => (
@@ -671,8 +707,8 @@ function GrantDialog({
             </AppSelect>
             {!!employeeId && balQ.data && D(balQ.data.balance).gt(0) && (
               <p className="text-xs text-money-negative mt-1">
-                عليه سلف نشطة متبقّيها {iqd(balQ.data.balance)} د.ع (
-                {balQ.data.activeCount} سلفة) — الخصم بالأقدم أولاً.
+                عليه ذمم سلف نشطة متبقّيها {iqd(balQ.data.balance)} د.ع (
+                {balQ.data.activeCount} سجل).
               </p>
             )}
             {!!employeeId && capacity && (
@@ -681,11 +717,32 @@ function GrantDialog({
                   <span>الحد المتاح حتى {capacity.asOf}</span>
                   <strong dir="ltr">{iqd(capacity.maxAvailable)}</strong>
                 </div>
-                <p className="text-muted-foreground">
-                  الأجر المكتسب {iqd(capacity.earnedCompensation)} · الإضافات{" "}
-                  {iqd(capacity.approvedAdditions)} · الاستقطاعات والديون
-                  المحجوزة محسوبة آلياً.
-                </p>
+                <dl className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 border-t pt-2 text-muted-foreground">
+                  <dt>الأجر المؤكد حتى اليوم</dt>
+                  <dd dir="ltr">{iqd(capacity.earnedCompensation)}</dd>
+                  <dt>إضافات معتمدة</dt>
+                  <dd dir="ltr">+ {iqd(capacity.approvedAdditions)}</dd>
+                  <dt>استقطاعات إلزامية</dt>
+                  <dd dir="ltr">− {iqd(capacity.mandatoryDeductions)}</dd>
+                  <dt>سلف راتبية مصروفة لهذا الشهر</dt>
+                  <dd dir="ltr">− {iqd(capacity.existingSalaryAdvances)}</dd>
+                  <dt>ذمم أخرى وتاريخية محجوزة لحين المطابقة</dt>
+                  <dd dir="ltr">− {iqd(capacity.otherEmployeeDeductions)}</dd>
+                  <dt>طلبات هذا الشهر المحجوزة</dt>
+                  <dd dir="ltr">− {iqd(capacity.reservedRequests)}</dd>
+                </dl>
+                {capacity.excludedAttendanceDates.length > 0 && (
+                  <p className="text-[var(--sem-warn)]" role="status">
+                    استُبعدت مؤقتاً مساهمة الحضور للأيام المفتوحة أو غير المحسومة (
+                    {capacity.excludedAttendanceDates.join("، ")})؛ وتبقى مصادر
+                    الأجر المؤكدة الأخرى محسوبة أعلاه.
+                  </p>
+                )}
+                {capacity.warnings.map((warning) => (
+                  <p key={warning} className="text-[var(--sem-warn)]" role="status">
+                    {warning}
+                  </p>
+                ))}
                 {capacity.blockers.map((blocker) => (
                   <p key={blocker} className="text-money-negative" role="alert">
                     {blocker}

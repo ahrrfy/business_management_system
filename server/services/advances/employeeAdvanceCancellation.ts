@@ -1,7 +1,8 @@
 import { TRPCError } from "@trpc/server";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import {
   advanceSettlements,
+  employeeAdvanceHistoricalRecoveries,
   employeeAdvanceRepaymentAllocations,
   employeeAdvances,
   terminationAdvanceAllocations,
@@ -86,7 +87,23 @@ export async function lockUntouchedEmployeeAdvanceForCancellationTx(
       .for("update")
       .limit(1)
   )[0];
-  if (settlement || repaymentAllocation || terminationAllocation) {
+  const historicalRecovery = (
+    await tx
+      .select({ id: employeeAdvanceHistoricalRecoveries.id })
+      .from(employeeAdvanceHistoricalRecoveries)
+      .where(
+        eq(employeeAdvanceHistoricalRecoveries.advanceId, Number(advance.id)),
+      )
+      .orderBy(asc(employeeAdvanceHistoricalRecoveries.id))
+      .for("update")
+      .limit(1)
+  )[0];
+  if (
+    settlement ||
+    repaymentAllocation ||
+    terminationAllocation ||
+    historicalRecovery
+  ) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message: USED_ADVANCE_MESSAGE,

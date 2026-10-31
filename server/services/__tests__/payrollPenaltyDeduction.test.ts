@@ -783,7 +783,9 @@ describe("Payroll Generation & Approval with Penalties — Integration DB Tests"
       branchId: 1,
       amount: "300000.00",
       remaining: "300000.00",
-      monthlyInstallment: "300000.00",
+      monthlyDeduction: "300000.00",
+      sourceType: "SALARY_ADVANCE",
+      payrollPeriod: "2026-09",
       status: "ACTIVE",
       createdBy: 1,
     });

@@ -25,7 +25,13 @@ import {
   payrollRuns,
 } from "../../../drizzle/schema";
 import { fullEmployeeName } from "@shared/hr";
-import { hasUnclosedAttendancePunch, parseAttendanceDayDetails } from "@shared/attendanceHours";
+import {
+  computeSessionsSummary,
+  hasMalformedAttendanceSessionsTag,
+  hasUnclosedAttendancePunch,
+  HOURS_SPAN_TOLERANCE,
+  parseAttendanceDayDetails,
+} from "@shared/attendanceHours";
 import { requireDb } from "../tx";
 import type { Tx } from "../../db";
 
@@ -37,7 +43,7 @@ export type EmployeeStatementPayrollRunSnapshot = Pick<
   "id" | "status" | "revisionNo" | "approvedAt" | "paidAt"
 >;
 import { money, round2 } from "../money";
-import { isLegacyAutoLateDeduction } from "../attendanceService";
+import { isLegacyAutoLateDeduction, projectAttendanceWage } from "../attendanceService";
 import {
   computeAttendancePay,
   daysBetween,
@@ -66,6 +72,11 @@ export interface EmployeeStatementInput {
   payrollRunSnapshot?: EmployeeStatementPayrollRunSnapshot | null;
   /** قراءات حالية fail-closed لمصادر الأجر؛ لا تُفعّل إلا داخل معاملة قرار مالي. */
   lockFinancialInputs?: boolean;
+  /**
+   * يبني إسقاطاً محافظاً مستقلاً لحد السلفة: يستبعد مساهمة صفوف الحضور غير المحسومة،
+   * ولا يغيّر `amountDue` أو لقطة المسيّر أو كشف الموظف المعتاد.
+   */
+  confirmedAttendanceOnly?: boolean;
   /**
    * حدُّ نهايةٍ صريح (YYYY-MM-DD) يقصّ نافذة العمل — لتسوية نهاية الخدمة **قبل** أن يُضبط
    * `employees.terminationDate` (الإنشاء مرحلةٌ سابقة للإكمال). بدونه يُحسب الشهر كاملاً
@@ -262,6 +273,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
         date: attendance.attendanceDate,
         hours: attendance.hours,
         amount: attendance.amount,
+        hourlyRate: attendance.hourlyRate,
         checkIn: attendance.checkIn,
         checkOut: attendance.checkOut,
         status: attendance.status,
@@ -282,8 +294,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
   const attRows = input.lockFinancialInputs
     ? await selectAttRows().for("share", { noWait: true })
     : await selectAttRows();
-  const hasUnhealedLateOrOpen = attRows.some(
-    (r) =>
+  const rowNeedsLegacyHealing = (r: (typeof attRows)[number]) =>
       isLegacyAutoLateDeduction(r, emp.workSchedule) ||
       (r.source === "fingerprint" &&
         ((r.checkIn != null && r.checkOut == null) ||
@@ -293,8 +304,8 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
               (r.checkIn instanceof Date &&
                 r.checkOut instanceof Date &&
                 !String(r.reviewReason ?? "").includes("قُصّت عند سقف") &&
-                (r.checkOut.getTime() - r.checkIn.getTime()) / 3_600_000 - Number(r.hours ?? 0) > 0.08))))),
-  );
+                (r.checkOut.getTime() - r.checkIn.getTime()) / 3_600_000 - Number(r.hours ?? 0) > 0.08)))));
+  const hasUnhealedLateOrOpen = attRows.some(rowNeedsLegacyHealing);
 
   const settingsQuery = db.select().from(hrAttendanceSettings).where(eq(hrAttendanceSettings.id, 1));
   const [settings] = input.lockFinancialInputs
@@ -310,9 +321,13 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
 
   // مجموع ما سُجّل فعلياً في الحضور — أساس أجر الموظف الساعيّ في المسيّر.
   let actualPaid = 0;
+  let confirmedActualPaid = money(0);
   const attendedHoursByDate = new Map<string, ReturnType<typeof money>>();
+  const confirmedAttendedHoursByDate = new Map<string, ReturnType<typeof money>>();
   const openDates = new Set<string>();
   const meta = new Map<string, (typeof attRows)[number]>();
+  const excludedAttendanceDates = new Map<string, Set<string>>();
+  const confirmedAttendanceBlockers: string[] = [];
   for (const r of attRows) {
     const d = String(r.date).slice(0, 10);
     meta.set(d, r);
@@ -321,6 +336,59 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
       actualPaid += Number(r.amount ?? 0);
       // دخولٌ بلا انصراف (أو فترة دوام ثانية مفتوحة) ⇒ يومٌ مفتوح لا غائب.
       if (hasUnclosedAttendancePunch(r)) openDates.add(d);
+
+      if (input.confirmedAttendanceOnly) {
+        const inDate = dateYmdOfTimestamp(r.checkIn) ?? d;
+        const outDate = dateYmdOfTimestamp(r.checkOut);
+        const details = parseAttendanceDayDetails({
+          status: r.status,
+          checkIn: hhmm(r.checkIn),
+          checkOut: hhmm(r.checkOut),
+          crossMidnight: Boolean(outDate && outDate > inDate),
+          storedHours: r.hours,
+          notes: r.notes,
+          reviewReason: r.reviewReason,
+        });
+        const summary = computeSessionsSummary(
+          details.sessions.map((session) => ({
+            checkIn: session.checkIn,
+            checkOut: session.checkOut,
+            crossMidnight: session.crossMidnight,
+          })),
+        );
+        const malformedSessionsTag = hasMalformedAttendanceSessionsTag(r.notes);
+        const sessionHoursMismatch =
+          details.sessions.length > 0 &&
+          details.grossHours > 0 &&
+          Math.abs(summary.totalHours - details.grossHours) > HOURS_SPAN_TOLERANCE;
+        const reasonCodes = new Set<string>();
+        if (hasUnclosedAttendancePunch(r) || details.hasOpenSession || summary.hasOpenSession) {
+          reasonCodes.add("OPEN_SESSION");
+        }
+        if (r.needsReview) reasonCodes.add("NEEDS_REVIEW");
+        if (rowNeedsLegacyHealing(r)) reasonCodes.add("LEGACY_HEALING");
+        if (summary.violation || malformedSessionsTag || sessionHoursMismatch) {
+          reasonCodes.add("SESSION_CONTRADICTION");
+        }
+
+        if (reasonCodes.size > 0) {
+          excludedAttendanceDates.set(d, reasonCodes);
+        } else {
+          confirmedAttendedHoursByDate.set(d, money(r.hours ?? 0));
+          if (emp.payType === "hourly") {
+            const projected = projectAttendanceWage({
+              employee: emp,
+              date: d,
+              hours: r.hours,
+              storedHourlyRate: r.hourlyRate,
+              status: r.status,
+            });
+            confirmedActualPaid = confirmedActualPaid.plus(projected.amount);
+          } else {
+            confirmedActualPaid = confirmedActualPaid.plus(money(r.amount ?? 0));
+          }
+        }
+      }
     }
   }
 
@@ -339,6 +407,8 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     : await leavesQuery;
   const paidSpans = leaves.filter((l) => l.paid).map((l) => ({ from: String(l.fromDate), to: String(l.toDate) }));
   const unpaidSpans = leaves.filter((l) => !l.paid).map((l) => ({ from: String(l.fromDate), to: String(l.toDate) }));
+  const paidLeaveDates = expand(paidSpans, employmentStart, employmentEnd);
+  const unpaidLeaveDates = expand(unpaidSpans, employmentStart, employmentEnd);
 
   const pay = computeAttendancePay({
     salary: money(emp.salary ?? 0),
@@ -349,14 +419,33 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     payType: emp.payType,
     attendedHoursByDate,
     openDates,
-    paidLeaveDates: expand(paidSpans, employmentStart, employmentEnd),
-    unpaidLeaveDates: expand(unpaidSpans, employmentStart, employmentEnd),
+    paidLeaveDates,
+    unpaidLeaveDates,
     // الكشف يعرض الشهر كما يُحتسب فعلياً؛ غياب السريان ⇒ كل الأيام مدفوعة (السلوك نفسه).
     payFrom: settings?.attendancePayFrom ? String(settings.attendancePayFrom) : null,
     monthStart,
     monthEnd,
     maxDailyHours: Number(settings?.maxDailyHours ?? 12),
   });
+  const confirmedPay = input.confirmedAttendanceOnly
+    ? computeAttendancePay({
+        salary: money(emp.salary ?? 0),
+        employmentStart,
+        employmentEnd,
+        schedule,
+        dayRates: (emp.dayRates && typeof emp.dayRates === "object" ? emp.dayRates : null) as Record<string, number> | null,
+        payType: emp.payType,
+        attendedHoursByDate: confirmedAttendedHoursByDate,
+        openDates,
+        // الإجازة المدفوعة/ما قبل سريان الحضور مصدر استحقاق مستقل؛ المستبعد هو مساهمة الحضور فقط.
+        paidLeaveDates,
+        unpaidLeaveDates,
+        payFrom: settings?.attendancePayFrom ? String(settings.attendancePayFrom) : null,
+        monthStart,
+        monthEnd,
+        maxDailyHours: Number(settings?.maxDailyHours ?? 12),
+      })
+    : null;
 
   // نُثري كل يوم بأوقات البصم الفعلية، فترات الدوام والاستراحة/الزمنية، ووسم المراجعة.
   const days = pay.days.map((d) => {
@@ -428,23 +517,27 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
       : attendancePayEnabled
         ? "attendance"
         : "fixedSalary";
+  const confirmedAttendanceAffectsWage = liveBasis === "hourly" || liveBasis === "attendance";
   /*
    * إسقاط بند المسيّر الحيّ من **نفس** نتائج النواة أعلاه. يفصل الإضافي عن gross لأن
    * computeLegalComponents لا يدخله في وعاء الضمان/الضريبة، ويفصل المخصصات عن basic.
    * الاسم `live` مقصود: لقطة المسيّر المعتمد لا تخزّن basic مستقلاً ولا نخترعه منها.
    */
-  const livePayrollComponents = (() => {
+  const payrollComponentsFor = (
+    attendancePay: ReturnType<typeof computeAttendancePay>,
+    hourlyAmount: ReturnType<typeof money>,
+  ) => {
     if (liveBasis === "attendance") {
-      const basic = round2(money(pay.basePay));
+      const basic = round2(money(attendancePay.basePay));
       return {
         basic: basic.toFixed(2),
         allowances: proratedAllowances.toFixed(2),
         gross: round2(basic.plus(proratedAllowances)).toFixed(2),
-        overtime: round2(money(pay.overtimePay)).toFixed(2),
+        overtime: round2(money(attendancePay.overtimePay)).toFixed(2),
       };
     }
     if (liveBasis === "hourly") {
-      const gross = round2(money(actualPaid));
+      const gross = round2(hourlyAmount);
       return {
         basic: gross.toFixed(2),
         allowances: "0.00",
@@ -458,7 +551,11 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
       gross: fixedPay.toFixed(2),
       overtime: "0.00",
     };
-  })();
+  };
+  const livePayrollComponents = payrollComponentsFor(pay, money(actualPaid));
+  const confirmedPayrollComponents = confirmedPay
+    ? payrollComponentsFor(confirmedPay, confirmedActualPaid)
+    : null;
   const liveAmountDue =
     liveBasis === "hourly"
       ? actualPaid.toFixed(2)
@@ -528,6 +625,16 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
         ? amountDue
         : round2(money(livePayrollComponents.gross).plus(money(livePayrollComponents.overtime))).toFixed(2),
     livePayrollComponents,
+    confirmedPayrollComponents,
+    excludedAttendanceDates: input.confirmedAttendanceOnly && confirmedAttendanceAffectsWage
+      ? Array.from(excludedAttendanceDates, ([date, reasonCodes]) => ({
+          date,
+          reasonCodes: Array.from(reasonCodes).sort(),
+        })).sort((a, b) => a.date.localeCompare(b.date))
+      : [],
+    confirmedAttendanceBlockers: input.confirmedAttendanceOnly && confirmedAttendanceAffectsWage
+      ? Array.from(new Set(confirmedAttendanceBlockers))
+      : [],
     /**
      * لقطةُ الشهر المصروف (ق٣) — `null` ما لم يُعتمد مسيّرُه. وجودُها يعني أن `amountDue`
      * أعلاه **مجمَّد** منها لا مشتقٌّ من بيانات اليوم.

@@ -390,7 +390,7 @@ describe("generatePayroll — المكوّنات القانونية (DB)", () =>
     const emp = await createEmployee({ firstName: "كرار", lastName: "البديري", payType: "monthly", salary: "500000", allowances: "0", branchId: 1 });
     // سلفة نشطة برصيدٍ يفوق الأجر، بلا monthlyDeduction ⇒ يُقترَح كامل المتبقّي (600,000).
     await db().insert(s.employeeAdvances).values({
-      employeeId: emp!.id, branchId: 1, amount: "600000", remaining: "600000", monthlyDeduction: null, status: "ACTIVE", createdBy: 1,
+      employeeId: emp!.id, branchId: 1, amount: "600000", remaining: "600000", monthlyDeduction: null, sourceType: "SALARY_ADVANCE", payrollPeriod: "2026-06", status: "ACTIVE", createdBy: 1,
     });
 
     const run = await generatePayroll("2026-06", ACTOR);

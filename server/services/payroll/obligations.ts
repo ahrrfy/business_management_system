@@ -156,12 +156,9 @@ async function settleItemAdvanceTx(
             eq(employeeAdvances.sourceType, "SALARY_ADVANCE"),
             eq(employeeAdvances.payrollPeriod, input.payrollPeriod),
           ),
-          // احتفظ بقسط التاريخ كما خُزّن سابقاً دون ادعاء نوعه أو شهره؛ وحدها
-          // SALARY_ADVANCE تخضع لقاعدة الخصم الكامل في شهر موثّق.
-          inArray(employeeAdvances.sourceType, [
-            "OTHER_DEDUCTION",
-            "LEGACY_UNCLASSIFIED",
-          ]),
+          // الدين الآخر ذو المصدر الموثّق يحتفظ بقسطه المخزن. أما التاريخي غير
+          // المصنف فلا يدخل راتباً حتى تُطابق ذمته بمصدر موثّق.
+          eq(employeeAdvances.sourceType, "OTHER_DEDUCTION"),
         ),
       ),
     )

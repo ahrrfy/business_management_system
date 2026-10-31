@@ -55,6 +55,20 @@ beforeEach(async () => {
 });
 
 describe("سلامة السلف الشهرية", () => {
+  it("يحفظ التاريخ المسوّى في عرضه الصريح ولا يرحّله إلى جدول الشهر الجاري", async () => {
+    const current = baghdadToday().slice(0, 7);
+    const previous = previousPeriod(current);
+    await db().insert(s.employeeAdvances).values([
+      { employeeId: 10, branchId: 1, amount: "50.00", remaining: "50.00", sourceType: "SALARY_ADVANCE", payrollPeriod: current, status: "ACTIVE", createdBy: 1 },
+      { employeeId: 10, branchId: 1, amount: "90.00", remaining: "0.00", sourceType: "LEGACY_UNCLASSIFIED", status: "SETTLED", grantedAt: new Date(`${previous}-15T12:00:00Z`), createdBy: 1 },
+      { employeeId: 10, branchId: 1, amount: "20.00", remaining: "20.00", sourceType: "LEGACY_UNCLASSIFIED", status: "ACTIVE", grantedAt: new Date(`${previous}-16T12:00:00Z`), createdBy: 1 },
+      { employeeId: 10, branchId: 1, amount: "10.00", remaining: "0.00", sourceType: "OTHER_DEDUCTION", status: "SETTLED", grantedAt: new Date(`${previous}-17T12:00:00Z`), createdBy: 1 },
+    ]);
+    const monthly = await listAdvances({ employeeId: 10, period: current });
+    expect(monthly.map((row) => row.amount).sort()).toEqual(["20.00", "50.00"]);
+    const historical = await listAdvances({ employeeId: 10, period: previous, status: "LEGACY_UNCLASSIFIED" });
+    expect(historical.map((row) => row.amount).sort()).toEqual(["20.00", "90.00"]);
+  });
   it("يجمع الفلتر التاريخي السلف غير المصنفة المثبتة والطلبات غير المحسومة فقط", async () => {
     const current = baghdadToday().slice(0, 7);
     const previous = previousPeriod(current);
@@ -154,7 +168,10 @@ describe("سلامة السلف الشهرية", () => {
       period: previous,
       status: "LEGACY_UNCLASSIFIED",
     });
-    expect(previousRows).toEqual([]);
+    // The dedicated historical view is not assigned a payroll month. Its
+    // disabled month field must not hide an unresolved or settled legacy row.
+    expect(previousRows.map((row) => row.id).sort()).toEqual(rows.map((row) => row.id).sort());
+    expect(previousRows.every((row) => row.payrollPeriod === null)).toBe(true);
   });
 
   it("يحفظ حالات الرفض والإلغاء التاريخية ولا يعرضها كطلبات غير مصنفة قابلة للإلغاء", async () => {
@@ -188,7 +205,7 @@ describe("سلامة السلف الشهرية", () => {
     );
   });
 
-  it("يجمع كل سلف الشهر كاملة ولا يلتقط سلفة راتبية من شهر آخر", async () => {
+  it("يجمع سلف الشهر والدين الموثق ويُبقي التاريخي غير المصنف خارج الخصم", async () => {
     const current = baghdadToday().slice(0, 7);
     const previous = previousPeriod(current);
     await db()
@@ -238,12 +255,25 @@ describe("سلامة السلف الشهرية", () => {
           status: "ACTIVE",
           createdBy: 1,
         },
+        {
+          employeeId: 10,
+          branchId: 1,
+          amount: "20000.00",
+          remaining: "20000.00",
+          monthlyDeduction: "5000.00",
+          sourceType: "LEGACY_UNCLASSIFIED",
+          payrollPeriod: null,
+          status: "ACTIVE",
+          createdBy: 1,
+          grantedAt: new Date(`${previous}-15T12:00:00.000Z`),
+        },
       ]);
 
     const currentSuggestion = await suggestDeductionsForPeriod([10], current);
     const previousSuggestion = await suggestDeductionsForPeriod([10], previous);
 
-    // الشهر الجاري: 50k + 25k كاملتين، والدين الآخر يحتفظ بقسطه 10k.
+    // الشهر الجاري: 50k + 25k كاملتين، والدين الآخر الموثق يحتفظ بقسطه 10k.
+    // التاريخي السابق 20k يبقى ظاهراً كذمة، لكنه لا يدخل راتب أي شهر بلا تصنيف موثّق.
     expect(currentSuggestion[10]?.suggested).toBe("85000.00");
     // الشهر السابق لا يلتقط سلف الشهر الجاري: 40k كاملة + 10k دين آخر.
     expect(previousSuggestion[10]?.suggested).toBe("50000.00");
@@ -257,6 +287,7 @@ describe("سلامة السلف الشهرية", () => {
       period: previous,
     });
     expect(currentTable.map((row) => row.amount).sort()).toEqual([
+      "20000.00",
       "25000.00",
       "30000.00",
       "50000.00",

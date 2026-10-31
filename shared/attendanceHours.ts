@@ -121,6 +121,7 @@ const LATE_DEDUCTION_TAG_GLOBAL_RE = /\[تأخير:\s*\d+\s*دقيقة\s*-\s*خ�
 const LATE_DEDUCTION_TAG_CAPTURE_RE = /\[تأخير:\s*\d+\s*دقيقة\s*-\s*خصم\s*(\d+)\s*دقيقة\]/;
 const SESSIONS_TAG_GLOBAL_RE = /\[فترات الدوام:[^\]]+\]\s*/g;
 const SESSIONS_TAG_CAPTURE_RE = /\[فترات الدوام:\s*([^\]|]+?)(?:\s*\|\s*استراحة\/زمنية:\s*(\d+)\s*دقيقة)?\s*\]/;
+const SESSION_TAG_ITEM_RE = /^(\d{1,2}:\d{2})\s*(?:→|->|-)\s*(\d{1,2}:\d{2}|\?|؟)(\(\+1\))?$/;
 const BREAK_TAG_GLOBAL_RE = /\[استراحة\/زمنية:\s*\d+\s*دقيقة\]\s*/g;
 const BREAK_TAG_CAPTURE_RE = /\[استراحة\/زمنية:\s*(\d+)\s*دقيقة\]/;
 const OPEN_THIRD_PUNCH_RE = /بصمة دخول\s+(\d{1,2}:\d{2})\s+بلا انصراف/;
@@ -218,6 +219,51 @@ export interface AttendanceSessionInput {
   checkOut?: string | null;
   crossMidnight?: boolean;
   checkOutNextDay?: boolean;
+}
+
+interface AttendanceSessionsTagRead {
+  present: boolean;
+  valid: boolean;
+  inputs: AttendanceSessionInput[];
+  explicitBreakMinutes: number | null;
+}
+
+/** محلّلٌ واحد لوسم فترات الدوام؛ يبقي parser القديم مرناً، ويمنح القرار المالي تحققاً صارماً. */
+function readAttendanceSessionsTag(notes: string | null | undefined): AttendanceSessionsTagRead {
+  const text = String(notes ?? "");
+  const present = text.includes("[فترات الدوام:");
+  const match = SESSIONS_TAG_CAPTURE_RE.exec(text);
+  if (!match) {
+    return { present, valid: !present, inputs: [], explicitBreakMinutes: null };
+  }
+
+  const rawItems = match[1].split(/[،,]/).map((item) => item.trim());
+  const inputs: AttendanceSessionInput[] = [];
+  let everyItemValid = rawItems.length > 0;
+  for (const item of rawItems) {
+    const parsed = item.length > 0 ? SESSION_TAG_ITEM_RE.exec(item) : null;
+    if (!parsed) {
+      everyItemValid = false;
+      continue;
+    }
+    inputs.push({
+      checkIn: parsed[1],
+      checkOut: parsed[2] === "?" || parsed[2] === "؟" ? null : parsed[2],
+      crossMidnight: Boolean(parsed[3]),
+    });
+  }
+  return {
+    present: true,
+    valid: everyItemValid && inputs.length === rawItems.length,
+    inputs,
+    explicitBreakMinutes: match[2] != null ? Number(match[2]) : null,
+  };
+}
+
+/** وجود وسمٍ غير قابلٍ للتحليل بالكامل يعني أن صفّه لا يصلح لقرار مالي مؤكد. */
+export function hasMalformedAttendanceSessionsTag(notes: string | null | undefined): boolean {
+  const tag = readAttendanceSessionsTag(notes);
+  return tag.present && !tag.valid;
 }
 
 export interface AttendanceSession {
@@ -497,44 +543,27 @@ export function parseAttendanceDayDetails(input: ManualAttendanceEditSource): Pa
       ? Math.round((validStored + lateDeductionMinutes / 60) * 100) / 100
       : 0;
 
-  const sessionsMatch = SESSIONS_TAG_CAPTURE_RE.exec(notesText);
-  if (sessionsMatch) {
-    const rawList = sessionsMatch[1]
-      .split(/[،,]/)
-      .map((part) => part.trim())
-      .filter(Boolean);
-    const parsedInputs: AttendanceSessionInput[] = [];
-    for (const item of rawList) {
-      const m = /^(\d{1,2}:\d{2})\s*(?:→|->|-)\s*(\d{1,2}:\d{2}|\?|؟)(\(\+1\))?$/.exec(item);
-      if (m) {
-        parsedInputs.push({
-          checkIn: m[1],
-          checkOut: m[2] === "?" || m[2] === "؟" ? null : m[2],
-          crossMidnight: Boolean(m[3]),
-        });
-      }
-    }
-    if (parsedInputs.length > 0) {
-      const summary = computeSessionsSummary(parsedInputs);
-      const explicitBreak = sessionsMatch[2] != null ? Number(sessionsMatch[2]) : null;
-      const breakMinutes =
-        explicitBreak != null && Number.isFinite(explicitBreak) && explicitBreak >= 0
-          ? Math.round(explicitBreak)
-          : summary.breakMinutes;
-      const isMulti = summary.sessions.length > 1;
-      return {
-        sessions: summary.sessions,
-        breaks: summary.breaks,
-        breakMinutes,
-        breakHours: (Math.round((breakMinutes / 60) * 100) / 100).toFixed(2),
-        hasMultipleSessions: isMulti,
-        hasOpenSession: isMulti && summary.hasOpenSession,
-        openSessionCheckIn: isMulti ? summary.openSessionCheckIn : null,
-        cleanNotes,
-        grossHours: grossHours > 0 ? grossHours : summary.totalHours,
-        lateDeductionMinutes,
-      };
-    }
+  const sessionsTag = readAttendanceSessionsTag(notesText);
+  if (sessionsTag.inputs.length > 0) {
+    const summary = computeSessionsSummary(sessionsTag.inputs);
+    const explicitBreak = sessionsTag.explicitBreakMinutes;
+    const breakMinutes =
+      explicitBreak != null && Number.isFinite(explicitBreak) && explicitBreak >= 0
+        ? Math.round(explicitBreak)
+        : summary.breakMinutes;
+    const isMulti = summary.sessions.length > 1;
+    return {
+      sessions: summary.sessions,
+      breaks: summary.breaks,
+      breakMinutes,
+      breakHours: (Math.round((breakMinutes / 60) * 100) / 100).toFixed(2),
+      hasMultipleSessions: isMulti,
+      hasOpenSession: isMulti && summary.hasOpenSession,
+      openSessionCheckIn: isMulti ? summary.openSessionCheckIn : null,
+      cleanNotes,
+      grossHours: grossHours > 0 ? grossHours : summary.totalHours,
+      lateDeductionMinutes,
+    };
   }
 
   // استرجاع البصمة الثالثة المفتوحة للسجلات المطويّة القديمة التي تحمل سبب المراجعة دون وسم الفترات
