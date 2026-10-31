@@ -208,8 +208,11 @@ for (const scenario of [
   "late-between-fences",
   "candidate-unattested-child",
   "exec-unrelated",
+  "control-root-ancestor-unreadable",
+  "control-service-ancestor-unreadable",
+  "control-service-ancestor-exec",
 ])
-  test(`actual Linux adapter ownership census: ${scenario}`, async () => {
+  test(`actual Linux adapter ownership census: ${scenario}`, async (t) => {
     const temp = fs.mkdtempSync(
       path.join(os.tmpdir(), "inventory-host-adapter-"),
     );
@@ -232,7 +235,12 @@ for (const scenario of [
         path.join(projectRoot, "deploy/systemd/pm2-systemd-start.mjs"),
         "trusted-helper",
       );
-      const addPid = (pid, startTime = String(pid + 100), parent = 2) => {
+      const addPid = (
+        pid,
+        startTime = String(pid + 100),
+        parent = 2,
+        uid = 1000,
+      ) => {
         const d = path.join(procRoot, String(pid));
         fs.mkdirSync(d, { recursive: true });
         fs.writeFileSync(
@@ -244,13 +252,44 @@ for (const scenario of [
         fs.writeFileSync(path.join(d, "cmdline"), `node-${pid}\0`);
         fs.writeFileSync(
           path.join(d, "status"),
-          "Uid:\t1000\t1000\t1000\t1000\n",
+          `Uid:\t${uid}\t${uid}\t${uid}\t${uid}\n`,
         );
       };
       addPid(2);
       addPid(10);
       addPid(11);
       addPid(90);
+      let rootFingerprintReads = 0;
+      if (scenario.startsWith("control-")) {
+        // A deploy shell above sudo/root must still be classified and rechecked.
+        addPid(process.pid, "control", 901);
+        addPid(901, "service-parent", 902);
+        addPid(902, "root-parent", 903, 0);
+        addPid(903, "service-grandparent", 1);
+        const realpath = fs.realpathSync;
+        t.mock.method(fs, "realpathSync", (file, ...args) => {
+          if (
+            ["cwd", "exe"].some(
+              (name) => file === path.join(procRoot, "902", name),
+            )
+          ) {
+            rootFingerprintReads++;
+            throw Object.assign(new Error("root ancestor inaccessible"), {
+              code: "EACCES",
+              path: file,
+            });
+          }
+          if (
+            scenario === "control-service-ancestor-unreadable" &&
+            file === path.join(procRoot, "903/cwd")
+          )
+            throw Object.assign(new Error("service ancestor inaccessible"), {
+              code: "EACCES",
+              path: file,
+            });
+          return realpath(file, ...args);
+        });
+      }
       fs.writeFileSync(
         path.join(procRoot, "2/cmdline"),
         `PM2 v7.0.3: God Daemon (${pm2Home})\0`,
@@ -468,7 +507,34 @@ for (const scenario of [
           return;
         }
       }
+      if (scenario === "control-service-ancestor-unreadable") {
+        await assert.rejects(
+          op.preflight(),
+          (e) =>
+            e.code === "EACCES" && e.path === path.join(procRoot, "903/cwd"),
+        );
+        assert.equal(rootFingerprintReads, 0);
+        assert.equal(live.length, 3);
+        assert.ok(
+          !calls.some((c) => c.includes("delete") || c.includes("start")),
+        );
+        return;
+      }
       await op.preflight();
+      assert.equal(rootFingerprintReads, 0);
+      if (scenario === "control-service-ancestor-exec") {
+        fs.writeFileSync(
+          path.join(procRoot, "903/cmdline"),
+          "changed-controller-parent\0",
+        );
+        await assert.rejects(op.stopOld(), /UNCLASSIFIED|IDENTITY_CHANGED/);
+        assert.equal(rootFingerprintReads, 0);
+        assert.equal(live.length, 3);
+        assert.ok(
+          !calls.some((c) => c.includes("delete") || c.includes("start")),
+        );
+        return;
+      }
       await op.acquireGate();
       if (scenario === "late-before-stop-child") {
         addPid(88, "188", 10);
@@ -539,6 +605,7 @@ for (const scenario of [
       }
       await op.stopCandidates();
       await op.assertQuiescent();
+      assert.equal(rootFingerprintReads, 0);
       assert.deepEqual(live, [unrelated]);
       assert.ok(!calls.some((c) => c.includes("kill") || c.includes("90")));
     } finally {
