@@ -356,7 +356,9 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
       ? 0
       : Math.floor((Date.parse(`${employmentEnd}T00:00:00Z`) - Date.parse(`${employmentStart}T00:00:00Z`)) / 86_400_000) + 1;
   const ratio = money(activeDays).div(daysInMonth);
-  const fixedPay = round2(money(emp.salary ?? 0).times(ratio).plus(round2(money(emp.allowances ?? 0).times(ratio))));
+  const proratedAllowances = round2(money(emp.allowances ?? 0).times(ratio));
+  const fixedBasicPay = round2(money(emp.salary ?? 0).times(ratio));
+  const fixedPay = round2(money(emp.salary ?? 0).times(ratio).plus(proratedAllowances));
 
   const hourly = emp.payType === "hourly";
   const exempt = !!emp.attendanceExempt;
@@ -372,6 +374,37 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
       : attendancePayEnabled
         ? "attendance"
         : "fixedSalary";
+  /*
+   * إسقاط بند المسيّر الحيّ من **نفس** نتائج النواة أعلاه. يفصل الإضافي عن gross لأن
+   * computeLegalComponents لا يدخله في وعاء الضمان/الضريبة، ويفصل المخصصات عن basic.
+   * الاسم `live` مقصود: لقطة المسيّر المعتمد لا تخزّن basic مستقلاً ولا نخترعه منها.
+   */
+  const livePayrollComponents = (() => {
+    if (liveBasis === "attendance") {
+      const basic = round2(money(pay.basePay));
+      return {
+        basic: basic.toFixed(2),
+        allowances: proratedAllowances.toFixed(2),
+        gross: round2(basic.plus(proratedAllowances)).toFixed(2),
+        overtime: round2(money(pay.overtimePay)).toFixed(2),
+      };
+    }
+    if (liveBasis === "hourly") {
+      const gross = round2(money(actualPaid));
+      return {
+        basic: gross.toFixed(2),
+        allowances: "0.00",
+        gross: gross.toFixed(2),
+        overtime: "0.00",
+      };
+    }
+    return {
+      basic: fixedBasicPay.toFixed(2),
+      allowances: proratedAllowances.toFixed(2),
+      gross: fixedPay.toFixed(2),
+      overtime: "0.00",
+    };
+  })();
   const liveAmountDue =
     liveBasis === "hourly"
       ? actualPaid.toFixed(2)
@@ -429,9 +462,10 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
      * ولولا إضافةُ المخصّصات في المسار الأول لَظهر انحرافٌ كاذبٌ بمقدارها في **كل** تسوية.
      */
     expectedEarnedGrossWages:
-      dueBasis === "attendance"
-        ? round2(money(amountDue).plus(round2(money(emp.allowances ?? 0).times(ratio)))).toFixed(2)
-        : amountDue,
+      dueBasis === "payrollSnapshot"
+        ? amountDue
+        : round2(money(livePayrollComponents.gross).plus(money(livePayrollComponents.overtime))).toFixed(2),
+    livePayrollComponents,
     /**
      * لقطةُ الشهر المصروف (ق٣) — `null` ما لم يُعتمد مسيّرُه. وجودُها يعني أن `amountDue`
      * أعلاه **مجمَّد** منها لا مشتقٌّ من بيانات اليوم.

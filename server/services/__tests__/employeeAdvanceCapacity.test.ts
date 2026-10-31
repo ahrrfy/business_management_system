@@ -8,6 +8,7 @@ import {
   getEmployeeAdvanceCapacity,
   type EmployeeAdvanceCapacity,
 } from "../employeeAdvanceCapacityService";
+import { getEmployeeStatement } from "../hr/employeeStatement";
 import { requestEmployeeLoan } from "../employeeLoanService";
 import type { Actor } from "../tx";
 
@@ -374,6 +375,107 @@ describe("employee advance earned-capacity contract", () => {
       earnedCompensation: "115.38",
       mandatoryDeductions: "21.92",
       maxAvailable: "93.46",
+    });
+  });
+
+  it.each(["basic", "gross"] as const)("يفصل الإضافي عن الوعاء القانوني %s ويبقى ثابتاً بعد المسودة", async (socialSecurityBase) => {
+    const connection = db();
+    const expected = socialSecurityBase === "basic"
+      ? { social: "8.00", tax: "8.20", deductions: "16.20", net: "103.80" }
+      : { social: "9.00", tax: "8.10", deductions: "17.10", net: "102.90" };
+    const schedule = {
+      الأحد: { hours: 8, rate: 10 },
+      الاثنين: { hours: 8, rate: 10 },
+      الثلاثاء: { hours: 8, rate: 10 },
+      الأربعاء: { hours: 8, rate: 10 },
+      الخميس: { hours: 8, rate: 10 },
+      الجمعة: { hours: 8, rate: 10 },
+      السبت: { hours: 8, rate: 10 },
+    };
+    await connection
+      .update(s.employees)
+      .set({
+        payType: "monthly",
+        attendanceExempt: false,
+        allowances: "20.00",
+        workSchedule: schedule,
+      })
+      .where(eq(s.employees.id, EMPLOYEE_ID));
+    await connection
+      .update(s.payrollLegalSettings)
+      .set({ socialSecurityBase })
+      .where(eq(s.payrollLegalSettings.id, 1));
+    await connection.insert(s.hrAttendanceSettings).values({
+      id: 1,
+      attendancePayEnabled: true,
+      attendancePayFrom: "2030-06-01",
+      updatedBy: ACTOR.userId,
+    });
+    // 8 ساعات أساس × 10، وساعتان إضافيتان × 10 × 1.5. المخصص حتى 15/6 = 10.
+    await seedAttendance({
+      date: "2030-06-05",
+      hours: "10.00",
+      amount: "100.00",
+    });
+    const input = {
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: FIXED_PERIOD,
+      asOf: FIXED_AS_OF,
+    };
+
+    const statement = await getEmployeeStatement({
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: FIXED_PERIOD,
+      employmentEndOverride: FIXED_AS_OF,
+    });
+    expect(statement?.livePayrollComponents).toEqual({
+      basic: "80.00",
+      allowances: "10.00",
+      gross: "90.00",
+      overtime: "30.00",
+    });
+
+    const beforeDraft = await getEmployeeAdvanceCapacity(input);
+    // القانون: ضمان 10% من الوعاء المختار، وضريبة 10% من (gross=90 - الضمان).
+    // الإضافي 30 يزيد الأجر المتاح، لكنه لا يضخم basic أو gross القانوني.
+    expect(beforeDraft).toMatchObject({
+      earnedCompensation: "120.00",
+      mandatoryDeductions: expected.deductions,
+      maxAvailable: expected.net,
+    });
+
+    await connection.insert(s.payrollRuns).values({
+      id: 1,
+      period: FIXED_PERIOD,
+      status: "draft",
+      createdBy: ACTOR.userId,
+      employeeCount: 1,
+      totalGross: "90.00",
+      totalOvertime: "30.00",
+      totalDeductions: expected.deductions,
+      totalNet: expected.net,
+    });
+    await connection.insert(s.payrollItems).values({
+      runId: 1,
+      employeeId: EMPLOYEE_ID,
+      payType: "monthly",
+      gross: "90.00",
+      allowances: "10.00",
+      overtime: "30.00",
+      deductions: expected.deductions,
+      socialSecurityEmployee: expected.social,
+      incomeTax: expected.tax,
+      net: expected.net,
+    });
+
+    const afterDraft = await getEmployeeAdvanceCapacity(input);
+    expect(afterDraft).toMatchObject({
+      earnedCompensation: beforeDraft.earnedCompensation,
+      approvedAdditions: beforeDraft.approvedAdditions,
+      mandatoryDeductions: beforeDraft.mandatoryDeductions,
+      maxAvailable: beforeDraft.maxAvailable,
     });
   });
 

@@ -276,9 +276,6 @@ export async function getEmployeeAdvanceCapacityTx(
   const earnedCompensation = round2(
     Decimal.max(0, statementEarnedCompensation.minus(wageLeaveDeduction)),
   );
-  const payableSpotBonuses = round2(
-    Decimal.max(0, approvedSpotBonuses.minus(spotBonusLeaveDeduction)),
-  );
   const approvedAdditions = round2(
     approvedSpotBonuses.plus(approvedCommissions),
   );
@@ -298,12 +295,23 @@ export async function getEmployeeAdvanceCapacityTx(
     penaltyRows.reduce((sum, row) => sum.plus(money(row.amount)), ZERO),
   );
   const legalSettings = await getPayrollLegalSettings(tx);
+  const legalGrossBeforeLeave = round2(
+    money(statement.livePayrollComponents.gross).plus(approvedSpotBonuses),
+  );
+  /*
+   * generatePayroll يجعل basic للشهريّ أساس الحضور/الراتب وحده، وgross يضيف
+   * المخصصات والمكافأة الفورية، بينما overtime والعمولة خارج الوعاء. للساعيّ
+   * gross (ومن ضمنه المكافأة) هو basic أيضاً. خصم الإجازة يُطرح من الوعاءين
+   * بالمقدار نفسه تماماً كما في التوليد.
+   */
+  const legalBasicBeforeLeave =
+    statement.employee.payType === "monthly"
+      ? money(statement.livePayrollComponents.basic)
+      : legalGrossBeforeLeave;
   const legal = computeLegalComponents(legalSettings, {
-    // generatePayroll يضم المكافأة الفورية إلى gross القانوني، بينما العمولة عمود مستقل.
-    // basic يبقى الأجر المكتسب نفسه عند تعذر فصل الراتب الأساس من الكشف.
-    basic: earnedCompensation,
-    gross: round2(earnedCompensation.plus(payableSpotBonuses)),
-    dailyRate: round2(money(employee.salary ?? 0).div(30)),
+    basic: Decimal.max(0, legalBasicBeforeLeave.minus(earnedLeaveDeduction)),
+    gross: Decimal.max(0, legalGrossBeforeLeave.minus(earnedLeaveDeduction)),
+    dailyRate: round2(legalBasicBeforeLeave.div(30)),
   });
   const legalDeductions = round2(
     legal.socialSecurityEmployee.plus(legal.incomeTax),
