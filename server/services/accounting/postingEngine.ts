@@ -153,6 +153,8 @@ export type PostingProfile =
   | "RETURN_SALE_CONSIGNMENT"
   | "RETURN_SALE_MIXED"
   | "RETURN_PURCHASE_INVENTORY"
+  | "RETURN_PURCHASE_ZERO_BOOK"
+  | "RETURN_PURCHASE_ZERO_AGREEMENT"
   | "RETURN_PURCHASE_INVENTORY_CASH_CLEARING"
   | "RETURN_PURCHASE_FIXED_ASSET"
   | "RETURN_PURCHASE_DIGITAL"
@@ -332,6 +334,8 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
     "RETURN_SALE_CONSIGNMENT",
     "RETURN_SALE_MIXED",
     "RETURN_PURCHASE_INVENTORY",
+    "RETURN_PURCHASE_ZERO_BOOK",
+    "RETURN_PURCHASE_ZERO_AGREEMENT",
     "RETURN_PURCHASE_INVENTORY_CASH_CLEARING",
     "RETURN_PURCHASE_FIXED_ASSET",
     "RETURN_PURCHASE_DIGITAL",
@@ -1745,6 +1749,50 @@ export const PROFILE_POLICIES = Object.freeze({
         "INVENTORY",
         "TAX_PAYABLE",
         "PURCHASE_PRICE_VARIANCE",
+      ],
+    },
+  ),
+  // Owned stock with a proven zero carrying value still reverses the supplier
+  // agreement through AP and price variance; inventory has no monetary line.
+  RETURN_PURCHASE_ZERO_BOOK: profilePolicy(
+    "RETURN",
+    ["AP"],
+    ["PURCHASE_PRICE_VARIANCE"],
+    {
+      sourceAssertions: [
+        sourceAssertion("amount", "CREDIT_MINUS_DEBIT", ["AP"]),
+        sourceAssertion("cost", "DEBIT_MINUS_CREDIT", ["INVENTORY"]),
+        sourceAssertion("taxAmount", "DEBIT_MINUS_CREDIT", ["TAX_PAYABLE"]),
+        sourceAssertion("profit", "CREDIT_MINUS_DEBIT", [
+          "PURCHASE_PRICE_VARIANCE",
+        ]),
+      ],
+      requireRoleComponents: [
+        "AP",
+        "PURCHASE_PRICE_VARIANCE",
+        "INVENTORY",
+        "TAX_PAYABLE",
+      ],
+    },
+  ),
+  RETURN_PURCHASE_ZERO_AGREEMENT: profilePolicy(
+    "RETURN",
+    ["INVENTORY"],
+    ["PURCHASE_PRICE_VARIANCE"],
+    {
+      sourceAssertions: [
+        sourceAssertion("amount", "CREDIT_MINUS_DEBIT", ["AP"]),
+        sourceAssertion("taxAmount", "DEBIT_MINUS_CREDIT", ["TAX_PAYABLE"]),
+        sourceAssertion("cost", "DEBIT_MINUS_CREDIT", ["INVENTORY"]),
+        sourceAssertion("profit", "CREDIT_MINUS_DEBIT", [
+          "PURCHASE_PRICE_VARIANCE",
+        ]),
+      ],
+      requireRoleComponents: [
+        "INVENTORY",
+        "PURCHASE_PRICE_VARIANCE",
+        "AP",
+        "TAX_PAYABLE",
       ],
     },
   ),

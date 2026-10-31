@@ -1,6 +1,7 @@
 /**
  * حارس المسيّر المُقفَل على تسجيل الحضور (تدقيق ١٧/٧):
- * لا يُسجَّل/يُعدَّل حضور لشهرٍ مسيّرُه معتمد/مدفوع (يُفسد أساس مسيّر مُلتزَم مالياً). المسودة لا تحجب.
+ * تثبّت المسودة أساس الأجر وحد السلفة؛ تعديل الحضور يستلزم حذف المسودة أولاً.
+ * يبقى شهر المسيّر المعتمد/المدفوع محمياً من تعديل أساس الالتزام المالي.
  */
 import { sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -8,7 +9,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createEmployee } from "../employeeService";
 import { recordAttendance, recomputeMonthRates } from "../attendanceService";
-import { approveRun, generatePayroll, payRun } from "../payrollService";
+import { approveRun, cancelRun, generatePayroll, payRun } from "../payrollService";
 import { lockPeriod } from "../periodLockService";
 
 const ACTOR = { userId: 1, branchId: 1 };
@@ -53,17 +54,29 @@ beforeEach(async () => {
 });
 
 describe("حارس المسيّر المُقفَل على الحضور", () => {
-  it("المسودة لا تحجب الحضور؛ الاعتماد يحجبه لنفس الشهر؛ الشهر الآخر يبقى مسموحاً", async () => {
+  it("يثبت الحضور مع المسودة؛ حذفها يسمح بالتصحيح؛ الاعتماد يحجب الشهر وحده", async () => {
     const emp = await createEmployee({ firstName: "علي", lastName: "العبيدي", payType: "monthly", salary: "900000", allowances: "0", branchId: 1 });
 
-    // مسيّر مسودة لشهر ٢٠٢٦-٠٦ ⇒ تسجيل الحضور ما زال مسموحاً.
-    const run = await generatePayroll("2026-06", ACTOR);
     await expect(
       recordAttendance({ employeeId: emp!.id, attendanceDate: "2026-06-01", hours: "8", status: "PRESENT" }),
     ).resolves.toBeTruthy();
+    const run = await generatePayroll("2026-06", ACTOR);
+    if (run?.id == null) throw new Error("Expected a generated draft payroll");
+    await expect(
+      recordAttendance({ employeeId: emp!.id, attendanceDate: "2026-06-02", hours: "8", status: "PRESENT" }),
+    ).rejects.toThrow(/مسيّر رواتب مسودّة/);
+    await expect(
+      recordAttendance({ employeeId: emp!.id, attendanceDate: "2026-06-01", hours: "6", status: "PRESENT" }),
+    ).rejects.toThrow(/مسيّر رواتب مسودّة/);
+    await expect(cancelRun(run.id, APPROVER)).resolves.toMatchObject({ deleted: true });
+    await expect(
+      recordAttendance({ employeeId: emp!.id, attendanceDate: "2026-06-02", hours: "8", status: "PRESENT" }),
+    ).resolves.toBeTruthy();
+    const regenerated = await generatePayroll("2026-06", ACTOR);
+    if (regenerated?.id == null) throw new Error("Expected a regenerated draft payroll");
 
     // بعد الاعتماد ⇒ يُرفَض تسجيل/تعديل حضور نفس الشهر.
-    await approveRun(run!.id, APPROVER);
+    await approveRun(regenerated.id, APPROVER);
     await expect(
       recordAttendance({ employeeId: emp!.id, attendanceDate: "2026-06-02", hours: "8", status: "PRESENT" }),
     ).rejects.toThrow(/مسيّر رواتب/);
@@ -90,8 +103,8 @@ describe("حارس المسيّر المُقفَل على الحضور", () => {
       referenceNumber: "TEST-ATTENDANCE-GUARD-FUND", createdBy: 2,
     });
 
-    const run = await generatePayroll("2026-06", ACTOR);
     await recordAttendance({ employeeId: emp!.id, attendanceDate: "2026-06-01", hours: "8", status: "PRESENT" });
+    const run = await generatePayroll("2026-06", ACTOR);
     await approveRun(run!.id, APPROVER);
     await payRun(run!.id, APPROVER);
 

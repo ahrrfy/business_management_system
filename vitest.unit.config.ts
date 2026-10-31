@@ -261,6 +261,7 @@ export const UNIT_TEST_FILES: string[] = [
       "client/src/components/reports/__tests__/PeriodFilter.test.tsx",
       "client/src/lib/reportFinancialPresentation.test.ts",
       "client/src/pages/MonthlyClosePack.test.ts",
+      "client/src/lib/businessMonth.test.ts",
       "client/src/pages/PayrollAccrual.test.tsx",
       "client/src/pages/PayrollReport.test.tsx",
       "client/src/pages/PromotionsTermination.test.tsx",

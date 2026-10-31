@@ -1,14 +1,14 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 1490,
+    "trpcTotal": 1491,
     "byKind": {
-      "mutation": 797,
+      "mutation": 798,
       "query": 693
     },
     "byAuthority": {
       "module-gate": 758,
-      "module-map": 496,
+      "module-map": 497,
       "admin": 65,
       "none": 50,
       "raw-role": 33,
@@ -24,12 +24,12 @@
     "bySensitivity": {
       "LOW": 688,
       "MEDIUM": 590,
-      "HIGH": 212
+      "HIGH": 213
     },
     "byModule": {
       "(none)": 199,
       "store": 187,
-      "hr": 136,
+      "hr": 137,
       "reports": 108,
       "treasury": 90,
       "inventory": 83,
@@ -66,9 +66,9 @@
       "workorders|store": 1
     },
     "flagCounts": {
-      "LOCAL_GATE": 252,
-      "SENSITIVE_ACTION": 212,
-      "NO_BRANCH_SCOPE": 178,
+      "LOCAL_GATE": 253,
+      "SENSITIVE_ACTION": 213,
+      "NO_BRANCH_SCOPE": 177,
       "ADMIN_ONLY": 69,
       "RAW_ROLE_GATE": 43,
       "UNAUTHENTICATED": 40,
@@ -80,10 +80,10 @@
     "expressMounts": 15,
     "jobs": 27,
     "routerFiles": 120,
-    "proposedPermissions": 1248,
+    "proposedPermissions": 1249,
     "proposedDomains": {
       "store": 187,
-      "hr": 143,
+      "hr": 144,
       "treasury": 116,
       "reports": 111,
       "inventory": 99,
@@ -11360,7 +11360,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/hrEnterpriseRouter.ts:285"
+      "loc": "server/routers/hrEnterpriseRouter.ts:316"
     },
     {
       "surface": "trpc",
@@ -11379,7 +11379,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/hrEnterpriseRouter.ts:281"
+      "loc": "server/routers/hrEnterpriseRouter.ts:312"
     },
     {
       "surface": "trpc",
@@ -11398,7 +11398,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/hrEnterpriseRouter.ts:302"
+      "loc": "server/routers/hrEnterpriseRouter.ts:333"
     },
     {
       "surface": "trpc",
@@ -11531,7 +11531,26 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/hrEnterpriseRouter.ts:318"
+      "loc": "server/routers/hrEnterpriseRouter.ts:349"
+    },
+    {
+      "surface": "trpc",
+      "router": "hrEnterpriseRouter",
+      "proposedPermission": "hr.loans.void",
+      "name": "loans.cancel",
+      "kind": "mutation",
+      "procedure": "hrWrite",
+      "authority": "module-map",
+      "module": "hr",
+      "level": "FULL",
+      "roles": "",
+      "gateRoles": "",
+      "inheritedAuthority": null,
+      "branch": "scoped",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: cancel",
+      "flags": "LOCAL_GATE|SENSITIVE_ACTION",
+      "loc": "server/routers/hrEnterpriseRouter.ts:288"
     },
     {
       "surface": "trpc",
@@ -11550,7 +11569,26 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/hrEnterpriseRouter.ts:274"
+      "loc": "server/routers/hrEnterpriseRouter.ts:305"
+    },
+    {
+      "surface": "trpc",
+      "router": "hrEnterpriseRouter",
+      "proposedPermission": "hr.loans.disburse_readiness",
+      "name": "loans.disburseReadiness",
+      "kind": "query",
+      "procedure": "hrRead",
+      "authority": "module-map",
+      "module": "hr",
+      "level": "READ",
+      "roles": "",
+      "gateRoles": "",
+      "inheritedAuthority": null,
+      "branch": "scoped",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/hrEnterpriseRouter.ts:299"
     },
     {
       "surface": "trpc",
@@ -11607,7 +11645,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/hrEnterpriseRouter.ts:264"
+      "loc": "server/routers/hrEnterpriseRouter.ts:276"
     },
     {
       "surface": "trpc",
@@ -13944,7 +13982,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:548"
+      "loc": "server/routers/payrollRouter.ts:600"
     },
     {
       "surface": "trpc",
@@ -13963,7 +14001,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/payrollRouter.ts:685"
+      "loc": "server/routers/payrollRouter.ts:765"
     },
     {
       "surface": "trpc",
@@ -13982,7 +14020,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: grant",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/payrollRouter.ts:660"
+      "loc": "server/routers/payrollRouter.ts:722"
     },
     {
       "surface": "trpc",
@@ -14001,7 +14039,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:572"
+      "loc": "server/routers/payrollRouter.ts:634"
     },
     {
       "surface": "trpc",
@@ -14020,7 +14058,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:568"
+      "loc": "server/routers/payrollRouter.ts:630"
     },
     {
       "surface": "trpc",
@@ -14039,7 +14077,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:555"
+      "loc": "server/routers/payrollRouter.ts:617"
     },
     {
       "surface": "trpc",
@@ -14058,26 +14096,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:533"
-    },
-    {
-      "surface": "trpc",
-      "router": "payrollRouter",
-      "proposedPermission": "hr.payroll.advance_thresholds",
-      "name": "advanceThresholds",
-      "kind": "query",
-      "procedure": "hrRead",
-      "authority": "module-map",
-      "module": "hr",
-      "level": "READ",
-      "roles": "",
-      "gateRoles": "",
-      "inheritedAuthority": null,
-      "branch": "none",
-      "sensitivity": "LOW",
-      "sensitivityWhy": "قراءة",
-      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:553"
+      "loc": "server/routers/payrollRouter.ts:570"
     },
     {
       "surface": "trpc",
@@ -14096,7 +14115,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: approve",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/payrollRouter.ts:264"
+      "loc": "server/routers/payrollRouter.ts:301"
     },
     {
       "surface": "trpc",
@@ -14115,7 +14134,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: approve",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/payrollRouter.ts:624"
+      "loc": "server/routers/payrollRouter.ts:686"
     },
     {
       "surface": "trpc",
@@ -14134,7 +14153,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: approve",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/payrollRouter.ts:413"
+      "loc": "server/routers/payrollRouter.ts:450"
     },
     {
       "surface": "trpc",
@@ -14153,7 +14172,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:213"
+      "loc": "server/routers/payrollRouter.ts:250"
     },
     {
       "surface": "trpc",
@@ -14172,7 +14191,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/payrollRouter.ts:305"
+      "loc": "server/routers/payrollRouter.ts:342"
     },
     {
       "surface": "trpc",
@@ -14191,7 +14210,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:183"
+      "loc": "server/routers/payrollRouter.ts:220"
     },
     {
       "surface": "trpc",
@@ -14210,7 +14229,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:381"
+      "loc": "server/routers/payrollRouter.ts:418"
     },
     {
       "surface": "trpc",
@@ -14229,7 +14248,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:173"
+      "loc": "server/routers/payrollRouter.ts:210"
     },
     {
       "surface": "trpc",
@@ -14248,7 +14267,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:224"
+      "loc": "server/routers/payrollRouter.ts:261"
     },
     {
       "surface": "trpc",
@@ -14267,7 +14286,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:164"
+      "loc": "server/routers/payrollRouter.ts:201"
     },
     {
       "surface": "trpc",
@@ -14286,7 +14305,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:478"
+      "loc": "server/routers/payrollRouter.ts:515"
     },
     {
       "surface": "trpc",
@@ -14305,7 +14324,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:162"
+      "loc": "server/routers/payrollRouter.ts:199"
     },
     {
       "surface": "trpc",
@@ -14324,7 +14343,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/payrollRouter.ts:79"
+      "loc": "server/routers/payrollRouter.ts:116"
     },
     {
       "surface": "trpc",
@@ -14343,7 +14362,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|HANDLER_ROLE_CHECK|ADMIN_ONLY",
-      "loc": "server/routers/payrollRouter.ts:343"
+      "loc": "server/routers/payrollRouter.ts:380"
     },
     {
       "surface": "trpc",
@@ -14362,7 +14381,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:278"
+      "loc": "server/routers/payrollRouter.ts:315"
     },
     {
       "surface": "trpc",
@@ -14381,7 +14400,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:439"
+      "loc": "server/routers/payrollRouter.ts:476"
     },
     {
       "surface": "trpc",
@@ -14400,7 +14419,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: reject",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/payrollRouter.ts:642"
+      "loc": "server/routers/payrollRouter.ts:704"
     },
     {
       "surface": "trpc",
@@ -14419,7 +14438,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: reject",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/payrollRouter.ts:426"
+      "loc": "server/routers/payrollRouter.ts:463"
     },
     {
       "surface": "trpc",
@@ -14438,7 +14457,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:368"
+      "loc": "server/routers/payrollRouter.ts:405"
     },
     {
       "surface": "trpc",
@@ -14457,7 +14476,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:584"
+      "loc": "server/routers/payrollRouter.ts:646"
     },
     {
       "surface": "trpc",
@@ -14476,7 +14495,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:606"
+      "loc": "server/routers/payrollRouter.ts:668"
     },
     {
       "surface": "trpc",
@@ -14495,7 +14514,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:457"
+      "loc": "server/routers/payrollRouter.ts:494"
     },
     {
       "surface": "trpc",
@@ -14514,7 +14533,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:320"
+      "loc": "server/routers/payrollRouter.ts:357"
     },
     {
       "surface": "trpc",
@@ -14533,7 +14552,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:361"
+      "loc": "server/routers/payrollRouter.ts:398"
     },
     {
       "surface": "trpc",
@@ -14552,7 +14571,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:169"
+      "loc": "server/routers/payrollRouter.ts:206"
     },
     {
       "surface": "trpc",
@@ -14571,7 +14590,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:243"
+      "loc": "server/routers/payrollRouter.ts:280"
     },
     {
       "surface": "trpc",
@@ -14590,7 +14609,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:483"
+      "loc": "server/routers/payrollRouter.ts:520"
     },
     {
       "surface": "trpc",
@@ -28670,7 +28689,7 @@
       "method": "GET",
       "path": "/healthz",
       "file": "server/index.ts",
-      "line": 463,
+      "line": 464,
       "authority": "public",
       "roles": "public",
       "sensitivity": "LOW",
@@ -28681,7 +28700,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 493,
+      "line": 494,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -28692,7 +28711,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 535,
+      "line": 536,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -28703,7 +28722,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 548,
+      "line": 549,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -28714,7 +28733,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 732,
+      "line": 733,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -28725,7 +28744,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 740,
+      "line": 741,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -28736,7 +28755,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 760,
+      "line": 761,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -28747,7 +28766,7 @@
       "method": "MOUNT",
       "path": "/api/print",
       "file": "server/index.ts",
-      "line": 775,
+      "line": 776,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -28758,7 +28777,7 @@
       "method": "MOUNT",
       "path": "/api/img",
       "file": "server/index.ts",
-      "line": 781,
+      "line": 782,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -28769,7 +28788,7 @@
       "method": "MOUNT",
       "path": "/api/backups",
       "file": "server/index.ts",
-      "line": 798,
+      "line": 799,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -28780,7 +28799,7 @@
       "method": "MOUNT",
       "path": "/api/wa/media",
       "file": "server/index.ts",
-      "line": 802,
+      "line": 803,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -28791,7 +28810,7 @@
       "method": "MOUNT",
       "path": "/api/hr/applicant-cv",
       "file": "server/index.ts",
-      "line": 806,
+      "line": 807,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -28802,7 +28821,7 @@
       "method": "MOUNT",
       "path": "/api/studio",
       "file": "server/index.ts",
-      "line": 811,
+      "line": 812,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -28813,7 +28832,7 @@
       "method": "MOUNT",
       "path": "/api/webhooks",
       "file": "server/index.ts",
-      "line": 835,
+      "line": 836,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -28824,7 +28843,7 @@
       "method": "MOUNT",
       "path": "/api/webhooks/company/:companyCode",
       "file": "server/index.ts",
-      "line": 836,
+      "line": 837,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -28835,7 +28854,7 @@
       "method": "MOUNT",
       "path": "/api/realtime",
       "file": "server/index.ts",
-      "line": 837,
+      "line": 838,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -28856,7 +28875,7 @@
     {
       "kind": "cron",
       "file": "server/index.ts",
-      "line": 961
+      "line": 962
     },
     {
       "kind": "interval",

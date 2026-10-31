@@ -7,7 +7,7 @@ import { createPendingDeliveryRefundTx, deliveryRefundError } from "./paymentRef
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import type Decimal from "decimal.js";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { accountingEntries, deliveryConsignments, deliveryParties, inventoryMovements, invoiceItemBundleComponents, invoiceItems, invoices, onlineOrders, productVariants, products, receipts, workOrderMaterials, workOrders } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
@@ -31,6 +31,7 @@ import type { Tx } from "../../db";
 import { assertStandaloneConsignmentTx } from "./shipments";
 import { physicalReturnReceiptTx } from "./workflow/returnReceipt";
 import { repairDeliveryCustodyFromRecordedEventsTx } from "./custody";
+import { requestNoncashWorkOrderFeeRefundTx } from "../workOrder/deliveryFeeRefund";
 
 /** Existing held-fee refund, shared when the original fee invoice has left a shipment. Caller prelocks cash source then party/CNs. */
 export async function refundHeldDeliveryFeeForReturnTx(
@@ -47,6 +48,7 @@ export async function refundHeldDeliveryFeeForReturnTx(
     tx,
     {
       invoiceId: Number(cn.invoiceId),
+      workOrderId: cn.workOrderId == null ? undefined : Number(cn.workOrderId),
       branchId: Number(cn.branchId),
       consignmentId: Number(cn.id),
       consignmentNumber: cn.consignmentNumber,
@@ -63,6 +65,7 @@ export async function refundHeldInvoiceFeeTx(
   tx: Tx,
   source: {
     invoiceId: number;
+    workOrderId?: number;
     branchId: number;
     consignmentId?: number;
     consignmentNumber?: string;
@@ -78,78 +81,131 @@ export async function refundHeldInvoiceFeeTx(
 ) {
   if (source.invoiceId == null)
     throw deliveryRefundError("مصدر الإرسالية لا يحمل فاتورة؛ استخدم مسار رد مصدر المعالجة المخصص");
-  const heldRef = `DLV-FEE-INV-${Number(source.invoiceId)}`;
-    const feeHeldRows = await tx
-      .select({ id:receipts.id,direction: receipts.direction, amount: receipts.amount, referenceNumber: receipts.referenceNumber,paymentMethod:receipts.paymentMethod })
-      .from(receipts)
-      .where(
+  const invHeldRef = `DLV-FEE-INV-${Number(source.invoiceId)}`;
+  const woHeldRef =
+    source.workOrderId == null
+      ? null
+      : `DLV-FEE-WO-${Number(source.workOrderId)}`;
+  const heldSourceRefs =
+    woHeldRef == null ? [invHeldRef] : [invHeldRef, woHeldRef];
+  const allFeeRefs =
+    source.consignmentNumber == null
+      ? [...heldSourceRefs]
+      : [...heldSourceRefs, source.consignmentNumber];
+  const feeHeldRows = await tx
+    .select({
+      id: receipts.id,
+      direction: receipts.direction,
+      amount: receipts.amount,
+      referenceNumber: receipts.referenceNumber,
+      paymentMethod: receipts.paymentMethod,
+      workOrderId: receipts.workOrderId,
+    })
+    .from(receipts)
+    .where(
       and(
-        eq(receipts.invoiceId, Number(source.invoiceId)),
-        inArray(
-          receipts.referenceNumber,
-          source.consignmentNumber == null
-            ? [heldRef]
-            : [heldRef, source.consignmentNumber],
-        ),
+        source.workOrderId == null
+          ? eq(receipts.invoiceId, Number(source.invoiceId))
+          : or(
+              eq(receipts.invoiceId, Number(source.invoiceId)),
+              eq(receipts.workOrderId, Number(source.workOrderId)),
+            ),
+        inArray(receipts.referenceNumber, allFeeRefs),
         inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]),
         eq(receipts.approvalStatus, "APPROVED"),
       ),
     )
-      // current read after the source mutex: a stale snapshot must never authorize a refund.
-      .for("update");
-    const feeHeldNet = round2(feeHeldRows.reduce(
-      (sum, receipt) => receipt.direction === "IN"
-        ? sum.plus(money(receipt.amount))
-        : sum.minus(money(receipt.amount)),
-      money(0),
-    ));
-    // الإفصاح: أمانةٌ قُبضت فعلاً (وارِدٌ موجب) ثم غادرت الدرج إلى المندوب ⇒ لا التزامَ باقياً
-    // نُحرّره، لكن الكاشير يجب أن يعلم (ردُّها للزبون قرارُ إدارةٍ يُسجَّل مصروفاً).
-    const feeCollected = round2(feeHeldRows.reduce(
-      (sum, receipt) => receipt.direction === "IN" && receipt.referenceNumber === heldRef
+    // current read after the source mutex: a stale snapshot must never authorize a refund.
+    .for("update");
+  const feeHeldNet = round2(feeHeldRows.reduce(
+    (sum, receipt) => receipt.direction === "IN"
+      ? sum.plus(money(receipt.amount))
+      : sum.minus(money(receipt.amount)),
+    money(0),
+  ));
+  // الإفصاح: أمانةٌ قُبضت فعلاً (وارِدٌ موجب) ثم غادرت الدرج إلى المندوب ⇒ لا التزامَ باقياً
+  // نُحرّره، لكن الكاشير يجب أن يعلم (ردُّها للزبون قرارُ إدارةٍ يُسجَّل مصروفاً).
+  const feeCollected = round2(feeHeldRows.reduce(
+    (sum, receipt) =>
+      receipt.direction === "IN" &&
+      heldSourceRefs.includes(String(receipt.referenceNumber ?? ""))
         ? sum.plus(money(receipt.amount))
         : sum,
-      money(0),
-    ));
+    money(0),
+  ));
   const feeAlreadyPaidToCourier =
     source.feeSettledAt != null && feeCollected.gt(0);
-    let pendingFeeRefundReceiptId:number|null=null;
+  let pendingFeeRefundReceiptId: number | null = null;
+  let feeRefunded = false;
   if (feeHeldNet.gt(0) && source.feeSettledAt == null) {
-      const sources=feeHeldRows.filter(r=>r.direction==="IN"&&r.referenceNumber===heldRef);
-      if(sources.length!==1)throw deliveryRefundError("إيصال أمانة الأجرة الأصلي غير محدد؛ راجع مصادر القبض قبل الرد");
+    const sources = feeHeldRows.filter(
+      (r) =>
+        r.direction === "IN" &&
+        heldSourceRefs.includes(String(r.referenceNumber ?? "")),
+    );
+    if (sources.length !== 1)
+      throw deliveryRefundError("إيصال أمانة الأجرة الأصلي غير محدد؛ راجع مصادر القبض قبل الرد");
     const original = sources[0];
+    const isWorkOrderHeldSource =
+      woHeldRef != null && original.referenceNumber === woHeldRef;
     if (original.paymentMethod !== "CASH") {
       if (
-        !["CARD","TRANSFER","WALLET","CHECK"].includes(
+        !["CARD", "TRANSFER", "WALLET", "CHECK"].includes(
           original.paymentMethod,
         )
       )
         throw deliveryRefundError("وسيلة قبض الأجرة القديمة تحتاج مسار تسوية متخصص");
-      const invoice = (
-        await tx.select({customerId:invoices.customerId}).from(invoices).where(eq(invoices.id, Number(source.invoiceId)))
-          .limit(1)
-      )[0];
-      pendingFeeRefundReceiptId = await createPendingDeliveryRefundTx(
-        tx,
-        {
-          ...(source.consignmentId == null
-            ? {
-                invoiceSource: {
-                  invoiceId: source.invoiceId,
-                  branchId: source.branchId,
-                  sourceNumber: source.sourceNumber ?? String(source.invoiceId),
-                },
-              }
-            : { cn: source.consignment! }),
-          kind: "FEE",
-          method: original.paymentMethod as
-            "CARD"|"TRANSFER"|"WALLET"|"CHECK",
-          amount: toDbMoney(feeHeldNet),
-          sourceReceiptIds: [Number(original.id)],
-          customerId:invoice?.customerId??null,
-        },
-        actor,
-      );
+      if (isWorkOrderHeldSource) {
+        const pendingRes = await requestNoncashWorkOrderFeeRefundTx(tx, {
+          workOrderId: Number(source.workOrderId),
+          branchId: Number(source.branchId),
+          actor: {
+            userId: actor.userId,
+            branchId: Number(actor.branchId ?? source.branchId),
+            role: actor.role,
+          },
+          reason:
+            source.reason ??
+            `ردّ أمانة أجرة توصيل — إرجاع ${source.consignmentNumber}`,
+        });
+        await tx
+          .update(receipts)
+          .set({ invoiceId: Number(source.invoiceId) })
+          .where(eq(receipts.id, pendingRes.receiptId));
+        pendingFeeRefundReceiptId = pendingRes.receiptId;
+      } else {
+        const invoice = (
+          await tx
+            .select({ customerId: invoices.customerId })
+            .from(invoices)
+            .where(eq(invoices.id, Number(source.invoiceId)))
+            .limit(1)
+        )[0];
+        pendingFeeRefundReceiptId = await createPendingDeliveryRefundTx(
+          tx,
+          {
+            ...(source.consignmentId == null
+              ? {
+                  invoiceSource: {
+                    invoiceId: source.invoiceId,
+                    branchId: source.branchId,
+                    sourceNumber: source.sourceNumber ?? String(source.invoiceId),
+                  },
+                }
+              : { cn: source.consignment! }),
+            kind: "FEE",
+            method: original.paymentMethod as
+              | "CARD"
+              | "TRANSFER"
+              | "WALLET"
+              | "CHECK",
+            amount: toDbMoney(feeHeldNet),
+            sourceReceiptIds: [Number(original.id)],
+            customerId: invoice?.customerId ?? null,
+          },
+          actor,
+        );
+      }
     } else {
       const feeShift = prelockedReturnShift;
       if (!feeShift) {
@@ -169,13 +225,16 @@ export async function refundHeldInvoiceFeeTx(
         branchId: Number(source.branchId),
         shiftId: feeShift.shiftId,
         invoiceId: Number(source.invoiceId),
+        ...(isWorkOrderHeldSource
+          ? { workOrderId: Number(source.workOrderId) }
+          : {}),
         direction: "OUT",
         amount: toDbMoney(feeHeldNet),
         paymentMethod: "CASH",
         cashBucket: "DRAWER",
         status: "COMPLETED",
         partyType: "OTHER",
-        referenceNumber: `DLV-FEE-INV-${Number(source.invoiceId)}`,
+        referenceNumber: isWorkOrderHeldSource ? woHeldRef! : invHeldRef,
         description:
           source.reason ??
           `ردّ أمانة أجرة توصيل — إرجاع ${source.consignmentNumber}`,
@@ -203,9 +262,10 @@ export async function refundHeldInvoiceFeeTx(
           source.reason ??
           `ردّ أمانة أجرة توصيل — إرجاع ${source.consignmentNumber}`,
       });
+      feeRefunded = true;
     }
   }
-  return { feeAlreadyPaidToCourier,pendingFeeRefundReceiptId };
+  return { feeAlreadyPaidToCourier, pendingFeeRefundReceiptId, feeRefunded };
 }
 
 /** إرجاع إرسالية (البضاعة عادت): عكس SALE + إعادة مخزون + عكس العهدة + رد العربون. مقيَّد بـDISPATCHED (collected==0). */
@@ -220,6 +280,8 @@ export async function returnConsignment(
      * خاطئ» من «تعذّر الوصول» في تقارير المتابعة. غيابه على طردٍ لم يخرج بعد لا يضرّ.
      */
     returnReason?: string | null;
+    /** مصير أمر الشغل عند إرجاع طرد غير محصّل: إعادته لـ READY أو إلغاؤه نهائياً (الافتراضي CANCEL_FINAL). */
+    workOrderDisposition?: "RETURN_TO_READY" | "CANCEL_FINAL" | null;
   },
   existingTx?: Tx,
   options: { shipmentMember?: boolean } = {},
@@ -235,7 +297,12 @@ export async function returnConsignment(
     const requestSource=await returnFulfillmentRequestConsignmentTx(tx,{consignmentId,reason:actor.returnReason??"",clientRequestId:actor.clientRequestId??`request-return:${consignmentId}`},actor);
     if(requestSource.handled)return{consignmentId,reversed:true as const,idempotentReplay:false,invoiceId:null,feeAlreadyPaidToCourier:false,pendingFeeRefundReceiptId:null,pendingGoodsRefundReceiptIds:[] as number[],deliveryFee:"0.00"};
     }
-    const payloadHash = idempotencyHash({ consignmentId, refundShiftId: actor.refundShiftId ?? null });
+    const workOrderDisposition = actor.workOrderDisposition ?? "CANCEL_FINAL";
+    const payloadHash = idempotencyHash(
+      workOrderDisposition === "RETURN_TO_READY"
+        ? { consignmentId, refundShiftId: actor.refundShiftId ?? null, workOrderDisposition: "RETURN_TO_READY" }
+        : { consignmentId, refundShiftId: actor.refundShiftId ?? null },
+    );
     // مراجعة PR #495 (عزل الفرع) — الإرجاع صار `cashierProcedure` بقرار المالك ٦/٨، وبخلاف
     // remit/settle لا يمرّ بـassertPartyInScope في الراوتر (الجهة تُعرَف من الإرسالية لا من
     // المدخل) ⇒ كاشير فرعٍ كان يعكس فاتورة فرعٍ آخر ومخزونَه ويُنقص عهدة مندوبه ويردّ عربوناً
@@ -265,15 +332,20 @@ export async function returnConsignment(
     if (scopedBranch != null && Number(cnPreview.branchId) !== scopedBranch) {
       throw new TRPCError({ code: "FORBIDDEN", message: "الإرسالية تخصّ فرعاً آخر" });
     }
+    const isPreviewReturnToReady =
+      cnPreview.workOrderId != null && workOrderDisposition === "RETURN_TO_READY";
     if (actor.clientRequestId) {
       const existingId = await checkIdempotency(tx, "delivery.return", actor.clientRequestId, payloadHash);
       if (existingId != null) {
         if (Number(existingId) !== Number(consignmentId)) throw new TRPCError({ code: "CONFLICT", message: "مفتاح الإرجاع مرتبط بإرسالية أخرى" });
         await repairDeliveryCustodyFromRecordedEventsTx(tx, consignmentId);
+        if (isPreviewReturnToReady) {
+          return { consignmentId, reversed: false as const, reopenedToReady: true as const, idempotentReplay: true as const };
+        }
         return { consignmentId, reversed: true as const, idempotentReplay: true as const };
       }
     }
-    if (cnPreview.sourceType === "WORK_ORDER") {
+    if (cnPreview.sourceType === "WORK_ORDER" && !isPreviewReturnToReady) {
       const workOrder = cnPreview.workOrderId == null
         ? null
         : (await tx.select({ materialsCost: workOrders.materialsCost, laborCost: workOrders.laborCost, workStartedAt: workOrders.workStartedAt })
@@ -321,10 +393,21 @@ export async function returnConsignment(
         .where(eq(invoices.id, Number(cnPreview.invoiceId))).limit(1)
     )[0];
     if (!invPreview) throw new TRPCError({ code: "NOT_FOUND", message: "فاتورة الإرسالية غير موجودة" });
-    const feeRefs = [`DLV-FEE-INV-${Number(cnPreview.invoiceId)}`, String(cnPreview.consignmentNumber)];
+    const feeRefs = [
+      `DLV-FEE-INV-${Number(cnPreview.invoiceId)}`,
+      ...(cnPreview.workOrderId == null
+        ? []
+        : [`DLV-FEE-WO-${Number(cnPreview.workOrderId)}`]),
+      String(cnPreview.consignmentNumber),
+    ];
     const previewFeeRows = cnPreview.feeSettledAt == null
-      ? await tx.select({ direction: receipts.direction, amount: receipts.amount,paymentMethod:receipts.paymentMethod }).from(receipts).where(and(
-          eq(receipts.invoiceId, Number(cnPreview.invoiceId)),
+      ? await tx.select({ direction: receipts.direction, amount: receipts.amount, paymentMethod: receipts.paymentMethod }).from(receipts).where(and(
+          cnPreview.workOrderId == null
+            ? eq(receipts.invoiceId, Number(cnPreview.invoiceId))
+            : or(
+                eq(receipts.invoiceId, Number(cnPreview.invoiceId)),
+                eq(receipts.workOrderId, Number(cnPreview.workOrderId)),
+              ),
           inArray(receipts.referenceNumber, [...feeRefs]),
           inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]),
           eq(receipts.approvalStatus, "APPROVED"),
@@ -334,7 +417,7 @@ export async function returnConsignment(
       (sum, receipt) => receipt.paymentMethod!=="CASH"?sum:receipt.direction === "IN" ? sum.plus(money(receipt.amount)) : sum.minus(money(receipt.amount)),
       money(0),
     );
-    const previewGoodsCap=money(invPreview.paidAmount).gt(0)?await loadRefundCaps(tx,Number(cnPreview.invoiceId)):null;
+    const previewGoodsCap=!isPreviewReturnToReady&&money(invPreview.paidAmount).gt(0)?await loadRefundCaps(tx,Number(cnPreview.invoiceId)):null;
     const previewNeedsCash = (previewGoodsCap?.netByMethod.get("CASH")??money(0)).gt(0) || previewFeeNet.gt(0);
     let prelockedReturnShift: { shiftId: number; openingBalance: string } | null = null;
     if (previewNeedsCash) {
@@ -367,10 +450,24 @@ export async function returnConsignment(
     ) {
       throw new TRPCError({ code: "CONFLICT", message: "تغيّرت أطراف الإرسالية أثناء الإرجاع؛ أعد المحاولة" });
     }
+    const isReturnToReady = cn.workOrderId != null && workOrderDisposition === "RETURN_TO_READY";
     const replayAfterLock = await checkIdempotency(tx, "delivery.return", actor.clientRequestId, payloadHash);
     if (replayAfterLock != null) {
       await repairDeliveryCustodyFromRecordedEventsTx(tx, consignmentId);
+      if (isReturnToReady) {
+        return { consignmentId, reversed: false as const, reopenedToReady: true as const, idempotentReplay: true as const };
+      }
       return { consignmentId, reversed: true as const, idempotentReplay: true as const };
+    }
+    if (isReturnToReady && money(cn.collectedAmount ?? "0").gt(0)) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "لا يمكن إعادة الطرد إلى جاهز للتسليم وعليه مبلغ محصّل بيد جهة التوصيل؛ استخدم الإرجاع الكامل أو سوِّ التحصيل أولاً",
+          why: `سُجِّل مبلغ محصّل على الإرسالية بقيمة ${money(cn.collectedAmount ?? "0").toFixed(2)} د.ع`,
+          doThis: "سوِّ التحصيل مع جهة التوصيل أولاً أو نفّذ الإرجاع الكامل عند الحاجة",
+        }),
+      });
     }
     if (cn.status !== "DISPATCHED" || cn.moneyStatus === "PARTIAL" || cn.moneyStatus === "SETTLED") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "يُرجَع فقط طرد لم يُحصَّل منه شيء؛ بعد التحصيل استعمل مرتجعات البيع" });
@@ -401,7 +498,10 @@ export async function returnConsignment(
         .set({ parcelStatus: "FAILED", failedAt: new Date(), failureReason: reason.slice(0, 255) })
         .where(eq(deliveryConsignments.id, consignmentId));
       await appendDeliveryEvent(tx, {
-        eventKey: `PARCEL_FAILED:RETURN:${consignmentId}`,
+        eventKey:
+          isReturnToReady && actor.clientRequestId
+            ? `PARCEL_FAILED:RETURN:${consignmentId}:${actor.clientRequestId}`
+            : `PARCEL_FAILED:RETURN:${consignmentId}`,
         consignmentId,
         eventType: "PARCEL_FAILED",
         fromParcelStatus,
@@ -415,6 +515,107 @@ export async function returnConsignment(
     }
     const inv = (await tx.select().from(invoices).where(eq(invoices.id, Number(cn.invoiceId))).for("update").limit(1))[0];
     if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "فاتورة الإرسالية غير موجودة" });
+
+    if (isReturnToReady) {
+      const alreadyReleasedOnDeclaration = cn.returnDeclaredAt != null;
+      const outstanding = round2(money(cn.codAmount).minus(money(cn.collectedAmount)));
+      if (outstanding.gt(0) && !alreadyReleasedOnDeclaration) {
+        const cachedCustody = money(party?.currentBalance ?? "0");
+        const legacyCustody =
+          cn.custodyRecognizedAt == null
+            ? money(0)
+            : round2(outstanding.lt(cachedCustody) ? outstanding : cachedCustody);
+        if (legacyCustody.gt(0)) {
+          await adjustDeliveryBalance(tx, Number(cn.partyId), legacyCustody.neg());
+          await appendDeliveryLedgerEntry(tx, {
+            eventKey: `CN:${consignmentId}:COD_REMITTED:LEGACY_RETURN:${actor.clientRequestId ?? "reopen"}`,
+            partyId: Number(cn.partyId),
+            consignmentId,
+            branchId: Number(cn.branchId),
+            entryType: "COD_REMITTED",
+            amount: toDbMoney(legacyCustody),
+            actorUserId: actor.userId,
+            notes: `عكس عهدة مرحّلة بعد إرجاع ${cn.consignmentNumber} وإعادته لجاهز للتسليم`,
+          });
+        }
+
+        const exposureToRelease = round2(outstanding.minus(legacyCustody));
+        if (exposureToRelease.gt(0)) {
+          await appendDeliveryLedgerEntry(tx, {
+            eventKey: `CN:${consignmentId}:COD_RELEASED:RETURN:${actor.clientRequestId ?? "reopen"}`,
+            partyId: Number(cn.partyId),
+            consignmentId,
+            branchId: Number(cn.branchId),
+            entryType: "COD_RELEASED",
+            amount: toDbMoney(exposureToRelease),
+            actorUserId: actor.userId,
+            notes: `تحرير تحصيل متوقع بعد إرجاع ${cn.consignmentNumber} لإعادة الشحن أو تسليم المحل`,
+          });
+        }
+      }
+
+      const { feeAlreadyPaidToCourier, pendingFeeRefundReceiptId, feeRefunded } =
+        await refundHeldDeliveryFeeForReturnTx(tx, cn, actor, prelockedReturnShift);
+
+      assertConsignmentStatusTransition(cn.status, "RETURNED");
+      const returnedAt = new Date();
+      await tx
+        .update(deliveryConsignments)
+        .set({
+          status: "RETURNED",
+          parcelStatus: "RETURNED",
+          moneyStatus: "CANCELLED",
+          returnedAt,
+          settledAt: returnedAt,
+        })
+        .where(eq(deliveryConsignments.id, consignmentId));
+
+      await tx
+        .update(workOrders)
+        .set({
+          status: "READY",
+          ...(feeRefunded || pendingFeeRefundReceiptId != null
+            ? { deliveryFeeCollection: "COURIER" as const }
+            : {}),
+        })
+        .where(eq(workOrders.id, Number(cn.workOrderId)));
+
+      await appendDeliveryEvent(tx, {
+        eventKey: `CN:${consignmentId}:RETURNED:${actor.clientRequestId ?? "legacy"}`,
+        consignmentId,
+        eventType: "RETURNED",
+        fromParcelStatus: cn.parcelStatus,
+        toParcelStatus: "RETURNED",
+        fromMoneyStatus: cn.moneyStatus,
+        toMoneyStatus: "CANCELLED",
+        actorUserId: actor.userId,
+        payload: {
+          invoiceId: Number(cn.invoiceId),
+          workOrderDisposition: "RETURN_TO_READY",
+        },
+      });
+
+      if (actor.clientRequestId) {
+        await recordIdempotencyKey(
+          tx,
+          "delivery.return",
+          actor.clientRequestId,
+          consignmentId,
+          payloadHash,
+        );
+      }
+
+      return {
+        consignmentId,
+        reversed: false as const,
+        reopenedToReady: true as const,
+        invoiceId: Number(cn.invoiceId),
+        feeAlreadyPaidToCourier,
+        pendingFeeRefundReceiptId,
+        pendingGoodsRefundReceiptIds: [] as number[],
+        deliveryFee: String(cn.deliveryFee ?? "0"),
+      };
+    }
     // تدقيق ٦/٨ (ث٤): حارسٌ متبادل مع شاشة المرتجعات — فاتورةٌ أُرجع منها شيءٌ سلفاً يقيّد هنا
     // RETURN بكامل الإجمالي ويُعيد **كل** البنود للمخزون ⇒ إيرادٌ معكوسٌ مرّتين ومخزونٌ مضاعف.
     if (money(inv.returnedTotal ?? "0").gt(0)) {

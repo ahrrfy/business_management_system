@@ -32,65 +32,143 @@ export * from "./fulfillmentSchema";
 export * from "./fulfillmentRightsSchema";
 
 /** One real customer receipt; allocation never posts cash or AR a second time. */
-export const customerReceiptSettlements = mysqlTable("customerReceiptSettlements", {
-  id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
-  receiptId: bigint("receiptId", { mode: "number" }).notNull(),
-  customerId: bigint("customerId", { mode: "number" }).notNull(),
-  branchId: bigint("branchId", { mode: "number" }).notNull(),
-  amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
-  accountAmount: decimal("accountAmount", { precision: 15, scale: 2 }).notNull(),
-  unallocatedAmount: decimal("unallocatedAmount", { precision: 15, scale: 2 }).notNull(),
-  initialUnallocatedAmount: decimal("initialUnallocatedAmount", { precision: 15, scale: 2 }).notNull(),
-  refundedAmount: decimal("refundedAmount", { precision: 15, scale: 2 }).notNull().default("0"),
-  sourceHash: char("sourceHash", { length: 64 }).notNull(),
-  reversalReceiptId: bigint("reversalReceiptId", { mode: "number" }),
-  createdBy: int("createdBy").notNull(),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-}, t => ({
-  receiptUq: unique("uq_customer_receipt_settlement").on(t.receiptId),
-  reversalUq: unique("uq_customer_receipt_reversal").on(t.reversalReceiptId),
-  partyIdx: index("idx_customer_receipt_scope").on(t.customerId, t.branchId),
-  receiptFk: foreignKey({ name: "fk_crs_receipt", columns: [t.receiptId], foreignColumns: [receipts.id] }),
-  customerFk: foreignKey({ name: "fk_crs_customer", columns: [t.customerId], foreignColumns: [customers.id] }),
-  branchFk: foreignKey({ name: "fk_crs_branch", columns: [t.branchId], foreignColumns: [branches.id] }),
-  reversalFk: foreignKey({ name: "fk_crs_reversal", columns: [t.reversalReceiptId], foreignColumns: [receipts.id] }),
-  actorFk: foreignKey({ name: "fk_crs_actor", columns: [t.createdBy], foreignColumns: [users.id] }),
-  moneyCheck: check("chk_crs_money", sql`${t.amount} > 0 AND ${t.accountAmount} >= 0 AND ${t.unallocatedAmount} >= 0 AND ${t.refundedAmount} >= 0 AND ${t.accountAmount} + ${t.unallocatedAmount} + ${t.refundedAmount} <= ${t.amount}`),
-}));
+export const customerReceiptSettlements = mysqlTable(
+  "customerReceiptSettlements",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    receiptId: bigint("receiptId", { mode: "number" }).notNull(),
+    customerId: bigint("customerId", { mode: "number" }).notNull(),
+    branchId: bigint("branchId", { mode: "number" }).notNull(),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    accountAmount: decimal("accountAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    unallocatedAmount: decimal("unallocatedAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    initialUnallocatedAmount: decimal("initialUnallocatedAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    refundedAmount: decimal("refundedAmount", { precision: 15, scale: 2 })
+      .notNull()
+      .default("0"),
+    sourceHash: char("sourceHash", { length: 64 }).notNull(),
+    reversalReceiptId: bigint("reversalReceiptId", { mode: "number" }),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    receiptUq: unique("uq_customer_receipt_settlement").on(t.receiptId),
+    reversalUq: unique("uq_customer_receipt_reversal").on(t.reversalReceiptId),
+    partyIdx: index("idx_customer_receipt_scope").on(t.customerId, t.branchId),
+    receiptFk: foreignKey({
+      name: "fk_crs_receipt",
+      columns: [t.receiptId],
+      foreignColumns: [receipts.id],
+    }),
+    customerFk: foreignKey({
+      name: "fk_crs_customer",
+      columns: [t.customerId],
+      foreignColumns: [customers.id],
+    }),
+    branchFk: foreignKey({
+      name: "fk_crs_branch",
+      columns: [t.branchId],
+      foreignColumns: [branches.id],
+    }),
+    reversalFk: foreignKey({
+      name: "fk_crs_reversal",
+      columns: [t.reversalReceiptId],
+      foreignColumns: [receipts.id],
+    }),
+    actorFk: foreignKey({
+      name: "fk_crs_actor",
+      columns: [t.createdBy],
+      foreignColumns: [users.id],
+    }),
+    moneyCheck: check(
+      "chk_crs_money",
+      sql`${t.amount} > 0 AND ${t.accountAmount} >= 0 AND ${t.unallocatedAmount} >= 0 AND ${t.refundedAmount} >= 0 AND ${t.accountAmount} + ${t.unallocatedAmount} + ${t.refundedAmount} <= ${t.amount}`,
+    ),
+  }),
+);
 
 /** An actual OUT consumes advance credit; its actual IN cancellation restores it. */
-export const customerReceiptCreditUses = mysqlTable("customerReceiptCreditUses", {
-  id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
-  settlementId: bigint("settlementId", { mode: "number" }).notNull(),
-  receiptId: bigint("receiptId", { mode: "number" }).notNull(),
-  amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
-  reversalReceiptId: bigint("reversalReceiptId", { mode: "number" }),
-}, t => ({
-  sourceUq: unique("uq_customer_credit_use").on(t.settlementId, t.receiptId),
-  receiptIdx: index("idx_customer_credit_use_receipt").on(t.receiptId),
-  sourceFk: foreignKey({ name: "fk_ccu_source", columns: [t.settlementId], foreignColumns: [customerReceiptSettlements.id] }),
-  receiptFk: foreignKey({ name: "fk_ccu_receipt", columns: [t.receiptId], foreignColumns: [receipts.id] }),
-  reversalFk: foreignKey({ name: "fk_ccu_reversal", columns: [t.reversalReceiptId], foreignColumns: [receipts.id] }),
-  moneyCheck: check("chk_ccu_money", sql`${t.amount} > 0`),
-}));
+export const customerReceiptCreditUses = mysqlTable(
+  "customerReceiptCreditUses",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    settlementId: bigint("settlementId", { mode: "number" }).notNull(),
+    receiptId: bigint("receiptId", { mode: "number" }).notNull(),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    reversalReceiptId: bigint("reversalReceiptId", { mode: "number" }),
+  },
+  (t) => ({
+    sourceUq: unique("uq_customer_credit_use").on(t.settlementId, t.receiptId),
+    receiptIdx: index("idx_customer_credit_use_receipt").on(t.receiptId),
+    sourceFk: foreignKey({
+      name: "fk_ccu_source",
+      columns: [t.settlementId],
+      foreignColumns: [customerReceiptSettlements.id],
+    }),
+    receiptFk: foreignKey({
+      name: "fk_ccu_receipt",
+      columns: [t.receiptId],
+      foreignColumns: [receipts.id],
+    }),
+    reversalFk: foreignKey({
+      name: "fk_ccu_reversal",
+      columns: [t.reversalReceiptId],
+      foreignColumns: [receipts.id],
+    }),
+    moneyCheck: check("chk_ccu_money", sql`${t.amount} > 0`),
+  }),
+);
 
 /** Current invoice target plus original target retained across corrections. */
-export const customerReceiptAllocations = mysqlTable("customerReceiptAllocations", {
-  id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
-  settlementId: bigint("settlementId", { mode: "number" }).notNull(),
-  invoiceId: bigint("invoiceId", { mode: "number" }).notNull(),
-  originalInvoiceId: bigint("originalInvoiceId", { mode: "number" }).notNull(),
-  originalAmount: decimal("originalAmount", { precision: 15, scale: 2 }).notNull(),
-  amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-}, t => ({
-  targetUq: unique("uq_customer_receipt_invoice").on(t.settlementId, t.invoiceId),
-  invoiceIdx: index("idx_customer_receipt_invoice").on(t.invoiceId),
-  sourceFk: foreignKey({ name: "fk_cra_source", columns: [t.settlementId], foreignColumns: [customerReceiptSettlements.id] }),
-  invoiceFk: foreignKey({ name: "fk_cra_invoice", columns: [t.invoiceId], foreignColumns: [invoices.id] }),
-  originalFk: foreignKey({ name: "fk_cra_original", columns: [t.originalInvoiceId], foreignColumns: [invoices.id] }),
-  moneyCheck: check("chk_cra_money", sql`${t.amount} >= 0`),
-}));
+export const customerReceiptAllocations = mysqlTable(
+  "customerReceiptAllocations",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    settlementId: bigint("settlementId", { mode: "number" }).notNull(),
+    invoiceId: bigint("invoiceId", { mode: "number" }).notNull(),
+    originalInvoiceId: bigint("originalInvoiceId", {
+      mode: "number",
+    }).notNull(),
+    originalAmount: decimal("originalAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    targetUq: unique("uq_customer_receipt_invoice").on(
+      t.settlementId,
+      t.invoiceId,
+    ),
+    invoiceIdx: index("idx_customer_receipt_invoice").on(t.invoiceId),
+    sourceFk: foreignKey({
+      name: "fk_cra_source",
+      columns: [t.settlementId],
+      foreignColumns: [customerReceiptSettlements.id],
+    }),
+    invoiceFk: foreignKey({
+      name: "fk_cra_invoice",
+      columns: [t.invoiceId],
+      foreignColumns: [invoices.id],
+    }),
+    originalFk: foreignKey({
+      name: "fk_cra_original",
+      columns: [t.originalInvoiceId],
+      foreignColumns: [invoices.id],
+    }),
+    moneyCheck: check("chk_cra_money", sql`${t.amount} >= 0`),
+  }),
+);
 
 /** Raw binary storage for small, validated documents that must travel with DB backups. */
 const mediumblob = customType<{ data: Buffer; driverData: Buffer }>({
@@ -7284,7 +7362,6 @@ export const purchaseReturnReversals = mysqlTable(
       .notNull(),
     totalAmount: decimal("totalAmount", { precision: 15, scale: 2 }).notNull(),
     accountingEntryId: bigint("accountingEntryId", { mode: "number" })
-      .notNull()
       .unique("uq_purchase_return_reversal_entry"),
     cashRepaymentReceiptId: bigint("cashRepaymentReceiptId", { mode: "number" })
       .unique("uq_purchase_return_reversal_receipt")
@@ -12519,8 +12596,14 @@ export const employeeLoanRequests = mysqlTable(
       .references(() => branches.id),
     amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
     installmentsCount: int("installmentsCount").default(1).notNull(),
-    monthlyDeduction: decimal("monthlyDeduction", { precision: 15, scale: 2 })
-      .notNull(),
+    monthlyDeduction: decimal("monthlyDeduction", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    /** شهر الاستحقاق الإلزامي للسلفة. السلف الجديدة تُسدَّد كاملةً في هذا الشهر ولا تُرحَّل. */
+    payrollPeriod: varchar("payrollPeriod", { length: 7 }),
+    /** مفتاح إعادة إرسال من الواجهة؛ nullable فقط للطلبات التاريخية السابقة للهجرة 0417. */
+    clientRequestId: varchar("clientRequestId", { length: 80 }),
     reason: varchar("reason", { length: 255 }),
     status: mysqlEnum("status", [
       "PENDING",
@@ -12540,6 +12623,11 @@ export const employeeLoanRequests = mysqlTable(
       .references(() => users.id),
     reviewedById: int("reviewedById").references(() => users.id),
     reviewedAt: timestamp("reviewedAt"),
+    disbursedById: int("disbursedById").references(() => users.id),
+    disbursedAt: timestamp("disbursedAt"),
+    receiptId: bigint("receiptId", { mode: "number" }).references(
+      () => receipts.id,
+    ),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
@@ -12549,6 +12637,16 @@ export const employeeLoanRequests = mysqlTable(
       t.status,
     ),
     branchIdx: index("idx_emp_loan_req_branch").on(t.branchId),
+    periodStatusIdx: index("idx_emp_loan_req_period_status").on(
+      t.employeeId,
+      t.payrollPeriod,
+      t.status,
+    ),
+    clientRequestUq: unique("uq_emp_loan_req_client").on(t.clientRequestId),
+    payrollPeriodShape: check(
+      "chk_emp_loan_req_period",
+      sql`${t.payrollPeriod} IS NULL OR ${t.payrollPeriod} REGEXP '^[0-9]{4}-(0[1-9]|1[0-2])$'`,
+    ),
   }),
 );
 export type EmployeeLoanRequest = typeof employeeLoanRequests.$inferSelect;
@@ -13995,9 +14093,16 @@ export const deliveryOpeningExclusions = mysqlTable(
     createdBy: int("createdBy").notNull().references(() => users.id),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
-  table => ({
-    positiveAmount: check("chk_delivery_opening_exclusion_amount", sql`${table.openingAmount} > 0`),
-    sourceFk: foreignKey({ name: "fk_delivery_opening_source", columns: [table.ledgerEntryId], foreignColumns: [deliveryLedgerEntries.id] }),
+  (table) => ({
+    positiveAmount: check(
+      "chk_delivery_opening_exclusion_amount",
+      sql`${table.openingAmount} > 0`,
+    ),
+    sourceFk: foreignKey({
+      name: "fk_delivery_opening_source",
+      columns: [table.ledgerEntryId],
+      foreignColumns: [deliveryLedgerEntries.id],
+    }),
   }),
 );
 
@@ -15494,9 +15599,9 @@ export type CustomerContractPrice = typeof customerContractPrices.$inferSelect;
 /* ============================ بند 12ج (٧/٧): سلف الموظفين ============================ */
 
 /**
- * سلفة موظف — تُمنح بسند صرف حقيقي (خزينة OUT عبر createVoucher) ويُخصم رصيدها تلقائياً من
- * تشغيلات الرواتب (payrollItems.advanceDeduction) عند الصرف حتى التسوية. monthlyDeduction=null
- * ⇒ يُخصم أقصى الممكن من كل راتب.
+ * التزام موظف مرتبط بسند صرف. السلفة الراتبية الجديدة تحمل شهرها صراحةً وتُخصم كاملةً
+ * في مسيّر الشهر نفسه؛ الصفوف التاريخية غير المثبت نوعها تبقى LEGACY_UNCLASSIFIED ولا
+ * يعاد تصنيفها زمنياً بلا دليل رابط بالمصدر.
  */
 export const employeeAdvances = mysqlTable(
   "employeeAdvances",
@@ -15511,6 +15616,16 @@ export const employeeAdvances = mysqlTable(
     amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
     remaining: decimal("remaining", { precision: 15, scale: 2 }).notNull(),
     monthlyDeduction: decimal("monthlyDeduction", { precision: 15, scale: 2 }),
+    /** يميّز سلفة الراتب الشهرية عن ديون الموظف الأخرى (عجز درج/عهدة). */
+    sourceType: mysqlEnum("advanceSourceType", [
+      "SALARY_ADVANCE",
+      "OTHER_DEDUCTION",
+      "LEGACY_UNCLASSIFIED",
+    ])
+      .default("LEGACY_UNCLASSIFIED")
+      .notNull(),
+    /** شهر الخصم الكامل للسلفة الراتبية؛ nullable للديون الأخرى والصفوف التاريخية الغامضة. */
+    payrollPeriod: varchar("payrollPeriod", { length: 7 }),
     status: mysqlEnum("advanceStatus", ["ACTIVE", "SETTLED", "CANCELLED"])
       .default("ACTIVE")
       .notNull(),
@@ -15522,6 +15637,26 @@ export const employeeAdvances = mysqlTable(
   },
   (t) => ({
     empStatusIdx: index("idx_advance_emp_status").on(t.employeeId, t.status),
+    empPeriodStatusIdx: index("idx_advance_emp_period_status").on(
+      t.employeeId,
+      t.payrollPeriod,
+      t.status,
+      t.id,
+    ),
+    periodSourceStatusIdx: index("idx_advance_period_source_status").on(
+      t.sourceType,
+      t.payrollPeriod,
+      t.status,
+      t.id,
+    ),
+    payrollPeriodShape: check(
+      "chk_employee_advance_period",
+      sql`${t.payrollPeriod} IS NULL OR ${t.payrollPeriod} REGEXP '^[0-9]{4}-(0[1-9]|1[0-2])$'`,
+    ),
+    sourcePeriodShape: check(
+      "chk_employee_advance_source_period",
+      sql`(${t.sourceType} = 'SALARY_ADVANCE' AND ${t.payrollPeriod} IS NOT NULL) OR (${t.sourceType} IN ('OTHER_DEDUCTION','LEGACY_UNCLASSIFIED') AND ${t.payrollPeriod} IS NULL)`,
+    ),
   }),
 );
 

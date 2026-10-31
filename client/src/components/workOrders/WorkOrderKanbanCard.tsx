@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import type React from "react";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { Calendar, CheckCircle2, ChevronRight, Clock, Package, Printer, Timer, Truck } from "lucide-react";
+import { Calendar, CheckCircle2, ChevronRight, Clock, Package, Printer, Store, Timer, Truck } from "lucide-react";
 import { fmtAr, formatQuantity, toAccessibleMoney } from "@/lib/money";
 import { RowActions } from "@/components/list";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
@@ -43,9 +43,6 @@ export function WorkOrderKanbanCard({
   onOpenCustomer,
   onCycleKanban,
   kanbanBusy,
-  onQuickDeliver,
-  onQuickDispatch,
-  quickActionPending,
   onClaim,
   onRelease,
   claimPending,
@@ -65,15 +62,10 @@ export function WorkOrderKanbanCard({
   /** الموجة ١ — نقر نقطة الكانبان يدور إشارةَ الفنّيّ (NORMAL→READY→BLOCKED→NORMAL). */
   onCycleKanban?: (orderId: number, current: WorkOrderKanbanState) => void;
   kanbanBusy?: boolean;
-  /** تصريف سريع: تسليم فوري للأمر المباشر المدفوع بالكامل */
-  onQuickDeliver?: (o: WO) => void;
-  /** تصريف سريع: إسناد وإرسال للتوصيل */
-  onQuickDispatch?: (o: WO) => void;
-  quickActionPending?: boolean;
   onClaim?: (orderId: number) => void;
   onRelease?: (orderId: number) => void;
   claimPending?: boolean;
-  /** انتقال سريع للمرحلة التالية مباشرة من البطاقة (بدء التنفيذ ← جاهز ← تسليم) */
+  /** انتقال سريع للمرحلة التالية مباشرة من البطاقة (بدء التنفيذ ← جاهز) */
   onAdvance?: (o: WO, to: Status) => void;
   advancePending?: boolean;
 }) {
@@ -328,16 +320,21 @@ export function WorkOrderKanbanCard({
               <CheckCircle2 aria-hidden className="size-3" /> جاهز
             </button>
           )}
-          {!ghost && onAdvance && o.status === "READY" && !o.hasDelivery && Number(o.deposit ?? 0) < Number(o.salePrice) && (
-            <button
-              type="button"
-              className="wob-btn wob-btn-primary h-6 px-2 text-[10.5px]"
-              disabled={advancePending}
-              onClick={() => onAdvance(o, "DELIVERED")}
-              title="تحصيل المبلغ المتبقي وتسليم الأمر"
+          {!ghost && o.status === "READY" && (
+            <span
+              className="inline-flex items-center gap-1 rounded-md border bg-muted/60 px-2 py-0.5 text-[10.5px] font-semibold text-muted-foreground"
+              title={o.hasDelivery ? "يُسنَد للتوصيل من محطة الاستقبال" : "يُسلَّم للعميل من محطة الاستقبال"}
             >
-              <Package aria-hidden className="size-3" /> تسليم
-            </button>
+              {o.hasDelivery ? (
+                <>
+                  <Truck aria-hidden className="size-3" /> توصيل
+                </>
+              ) : (
+                <>
+                  <Store aria-hidden className="size-3" /> استلام من الاستقبال
+                </>
+              )}
+            </span>
           )}
           <WhatsAppShare
             phone={o.customerPhone}
@@ -350,37 +347,6 @@ export function WorkOrderKanbanCard({
           />
         </span>
       </div>
-      {/* تصريف سريع للأوامر الجاهزة */}
-      {!ghost && o.status === "READY" && (
-        <>
-          {onQuickDispatch && o.hasDelivery && (
-            <div className="mt-1.5 pt-1.5 border-t border-[var(--border)]" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
-              <button
-                type="button"
-                className="w-full flex items-center justify-center gap-1 py-1 px-2 rounded-md text-2xs font-bold bg-[var(--sem-warn)] text-background hover:bg-[var(--sem-warn-hover)] shadow-xs active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer"
-                disabled={quickActionPending}
-                onClick={() => onQuickDispatch(o)}
-                title="إسناد وإرسال فوري إلى شركة/مندوب التوصيل"
-              >
-                <Truck aria-hidden className="size-3" /> إرسال للتوصيل
-              </button>
-            </div>
-          )}
-          {onQuickDeliver && !o.hasDelivery && Number(o.deposit ?? 0) >= Number(o.salePrice) && (
-            <div className="mt-1.5 pt-1.5 border-t border-[var(--border)]" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
-              <button
-                type="button"
-                className="w-full flex items-center justify-center gap-1 py-1 px-2 rounded-md text-2xs font-bold bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos-hover)] shadow-xs active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer"
-                disabled={quickActionPending}
-                onClick={() => onQuickDeliver(o)}
-                title="تسليم فوري للأمر وإصدار الفاتورة (مدفوع بالكامل)"
-              >
-                <CheckCircle2 aria-hidden className="size-3" /> تسليم فوري (مدفوع)
-              </button>
-            </div>
-          )}
-        </>
-      )}
       {/* شَريط إسناد inline لعَمود «طابور وارد» فَقط — مَدير فَقط، per README §5.2. */}
       {inboxAssign && staff && !ghost && (
         <div className="wob-inbox-assign" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>

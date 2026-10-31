@@ -2,7 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MySql2PreparedQuery } from "drizzle-orm/mysql2/session";
 import * as s from "../../../drizzle/schema";
-import { getDb } from "../../db";
+import { getDb, getPool } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { money, toDateStr } from "../money";
 import { POSTING_POLICY_HASH } from "../accounting/postingEngine";
@@ -10,9 +10,12 @@ import { readSalarySettlementEvidence } from "../payroll/settlementEvidence";
 import { payrollHash } from "../payroll/helpers";
 import { PAYROLL_LEGAL_DEFAULTS } from "../payrollLegalService";
 import { approveRun as approveCommissionRun } from "../commissions/runs";
+import { disburseEmployeeLoan } from "../employeeLoanService";
+import { cancelEmployeePenalty } from "../employeePenaltyService";
 import { withTx } from "../tx";
 import {
   cancelLockedEmployeeAdvanceTx,
+  grantAdvance,
   lockUntouchedEmployeeAdvanceForCancellationTx,
 } from "../advances";
 import { buildPayrollLegalPolicyEvidence } from "../payroll/legalSnapshot";
@@ -53,14 +56,20 @@ const TABLES = [
   "journalLines",
   "journalEntries",
   "accountingEntries",
+  "idempotencyKeys",
   "receipts",
+  "employeeLoanRequests",
+  "shifts",
   "financialPeriods",
   "payrollItems",
   "payrollRuns",
+  "employeePenalties",
+  "employeeSpotBonuses",
   "employeeAdvances",
   "employeeTerminations",
   "employees",
   "payrollLegalSettings",
+  "documentCounters",
   "branches",
   "users",
 ];
@@ -161,6 +170,7 @@ async function seedBase() {
     amount: "500.00",
     remaining: "500.00",
     monthlyDeduction: "100.00",
+    sourceType: "OTHER_DEDUCTION",
     status: "ACTIVE",
     createdBy: 1,
   });
@@ -210,6 +220,8 @@ async function seedDraft(period = "2026-07") {
 
 async function seedTwoEmployeeDraft(period = "2026-07") {
   const runner = db();
+  // هذا السيناريو يختبر دفع موظفين وإعادة أحد الدفعين فقط، بلا دين موظف جانبي.
+  await runner.delete(s.employeeAdvances).where(eq(s.employeeAdvances.id, 20));
   const legalPolicy = buildPayrollLegalPolicyEvidence(PAYROLL_LEGAL_DEFAULTS);
   const inserted = await runner.insert(s.payrollRuns).values({
     period,
@@ -246,6 +258,11 @@ async function seedTwoEmployeeDraft(period = "2026-07") {
 
 async function seedZeroNetStatutoryDraft(period = "2026-07") {
   const runner = db();
+  // الاستقطاع الآخر في هذا السيناريو 500 كي يبقى الصافي صفراً بعد المزامنة عند الاعتماد.
+  await runner
+    .update(s.employeeAdvances)
+    .set({ monthlyDeduction: "500.00" })
+    .where(eq(s.employeeAdvances.id, 20));
   const legalPolicy = buildPayrollLegalPolicyEvidence(PAYROLL_LEGAL_DEFAULTS);
   const inserted = await runner.insert(s.payrollRuns).values({
     period,
@@ -279,6 +296,95 @@ async function seedZeroNetStatutoryDraft(period = "2026-07") {
     net: "0.00",
   });
   return runId;
+}
+
+const PAYROLL_LOCK_TEST_NOW = new Date("2026-10-31T12:00:00.000Z");
+const PAYROLL_LOCK_TEST_PERIOD = "2026-10";
+
+async function seedPayerShift() {
+  const runner = db();
+  await runner.insert(s.shifts).values({
+    id: 901,
+    branchId: 1,
+    userId: PAYER.userId,
+    openingBalance: "10000.00",
+    status: "OPEN",
+    shiftType: "RETAIL",
+    openGuard: `1:${PAYER.userId}:RETAIL`,
+  });
+}
+
+async function seedApprovedLoanForPayer(key: string) {
+  const runner = db();
+  await seedPayerShift();
+  const inserted = await runner.insert(s.employeeLoanRequests).values({
+    employeeId: 10,
+    branchId: 1,
+    amount: "100.00",
+    installmentsCount: 1,
+    monthlyDeduction: "100.00",
+    payrollPeriod: PAYROLL_LOCK_TEST_PERIOD,
+    clientRequestId: `payroll-lock-${key}`,
+    reason: "اختبار ترتيب أقفال السلفة والمسيّر",
+    status: "APPROVED",
+    createdById: MAKER.userId,
+    reviewedById: CHECKER.userId,
+    reviewedAt: new Date(),
+  });
+  return extractInsertId(inserted);
+}
+
+function pauseNextForUpdate(table: "employees" | "payrollRuns" | "shifts") {
+  const execute = MySql2PreparedQuery.prototype.execute;
+  let locked!: () => void;
+  let release!: () => void;
+  let paused = false;
+  const lockReached = new Promise<void>((resolve) => {
+    locked = resolve;
+  });
+  const mayContinue = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const spy = vi
+    .spyOn(MySql2PreparedQuery.prototype, "execute")
+    .mockImplementation(async function (
+      this: typeof MySql2PreparedQuery.prototype,
+      values,
+    ) {
+      const query = (this as unknown as { query: { sql: string } }).query.sql;
+      const result = await execute.call(this, values);
+      if (
+        !paused &&
+        query.includes(`from \`${table}\``) &&
+        query.includes("for update")
+      ) {
+        paused = true;
+        locked();
+        await mayContinue;
+      }
+      return result;
+    });
+  return {
+    lockReached,
+    release,
+    restore: () => spy.mockRestore(),
+  };
+}
+
+async function waitForPayrollLockWait(): Promise<void> {
+  for (let attempt = 0; attempt < 150; attempt += 1) {
+    const [rows] = await getPool().query(
+      `SELECT COUNT(*) AS n
+         FROM performance_schema.data_lock_waits w
+         JOIN performance_schema.data_locks requested
+           ON requested.ENGINE_LOCK_ID = w.REQUESTING_ENGINE_LOCK_ID
+        WHERE requested.OBJECT_SCHEMA = DATABASE()
+          AND requested.OBJECT_NAME IN ('employees', 'payrollRuns', 'shifts')`,
+    );
+    if (Number((rows as Array<{ n: number }>)[0]?.n ?? 0) > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("لم يصل سباق السلفة/المسيّر إلى انتظار القفل المتوقع");
 }
 
 beforeEach(async () => {
@@ -1054,6 +1160,7 @@ describe("payroll accrual lifecycle — DB invariants", () => {
       updateItem(Number(item.id), { overtime: "120.00" }, MAKER),
       approveRun(runId, CHECKER),
     ]);
+    if (outcomes[1].status === "rejected") throw outcomes[1].reason;
     expect(outcomes[1].status).toBe("fulfilled");
     if (outcomes[0].status === "rejected") {
       expect(outcomes[0].reason).toMatchObject({ code: "BAD_REQUEST" });
@@ -1066,7 +1173,384 @@ describe("payroll accrual lifecycle — DB invariants", () => {
       .from(s.payrollRuns)
       .where(eq(s.payrollRuns.id, runId));
     expect(run.status).toBe("approved");
+    expect(run.totalNet).toBe(outcomes[0].status === "fulfilled" ? "920.00" : "900.00");
   });
+
+  it("rejects a new payroll employee discovered after the ordered employee locks", async () => {
+    const runner = db();
+    const runId = await seedDraft();
+    const barrier = pauseNextForUpdate("employees");
+    const approval = approveRun(runId, CHECKER);
+    try {
+      await barrier.lockReached;
+      await runner.insert(s.payrollItems).values({
+        runId,
+        employeeId: 11,
+        branchIdSnapshot: 1,
+        payType: "monthly",
+        gross: "400.00",
+        net: "400.00",
+      });
+      barrier.release();
+      await expect(approval).rejects.toMatchObject({ code: "CONFLICT" });
+      const [run] = await runner
+        .select()
+        .from(s.payrollRuns)
+        .where(eq(s.payrollRuns.id, runId));
+      expect(run.status).toBe("draft");
+      expect(await runner.select().from(s.payrollObligations)).toHaveLength(0);
+      expect(
+        await runner.select().from(s.payrollAccountingEvents),
+      ).toHaveLength(0);
+      expect(await runner.select().from(s.accountingEntries)).toHaveLength(0);
+    } finally {
+      barrier.release();
+      await Promise.allSettled([approval]);
+      barrier.restore();
+    }
+  });
+
+  it("approves with the advance committed while approval waited for the employee lock", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(PAYROLL_LOCK_TEST_NOW);
+    const runner = db();
+    const runId = await seedDraft(PAYROLL_LOCK_TEST_PERIOD);
+    const loanId = await seedApprovedLoanForPayer("disburse-before-approval");
+    const barrier = pauseNextForUpdate("employees");
+    let disbursement: ReturnType<typeof disburseEmployeeLoan> | undefined;
+    let approval: ReturnType<typeof approveRun> | undefined;
+    try {
+      disbursement = disburseEmployeeLoan(PAYER, loanId);
+      await barrier.lockReached;
+      approval = approveRun(runId, CHECKER);
+      await waitForPayrollLockWait();
+      barrier.release();
+      const [disbursed, approved] = await Promise.allSettled([
+        disbursement,
+        approval,
+      ]);
+      expect(disbursed.status).toBe("fulfilled");
+      expect(approved.status).toBe("fulfilled");
+      for (const outcome of [disbursed, approved]) {
+        if (outcome.status === "rejected") {
+          expect(String(outcome.reason)).not.toMatch(
+            /ER_LOCK_DEADLOCK|deadlock/i,
+          );
+        }
+      }
+
+      const [run] = await runner
+        .select()
+        .from(s.payrollRuns)
+        .where(eq(s.payrollRuns.id, runId));
+      expect(run).toMatchObject({
+        status: "approved",
+        totalDeductions: "350.00",
+        totalNet: "800.00",
+      });
+      const [item] = await runner
+        .select()
+        .from(s.payrollItems)
+        .where(eq(s.payrollItems.runId, runId));
+      expect(item).toMatchObject({
+        advanceDeduction: "200.00",
+        deductions: "350.00",
+        net: "800.00",
+      });
+      expect(
+        await runner
+          .select()
+          .from(s.employeeAdvances)
+          .where(eq(s.employeeAdvances.sourceType, "SALARY_ADVANCE")),
+      ).toHaveLength(1);
+      expect(
+        await runner
+          .select()
+          .from(s.receipts)
+          .where(
+            and(
+              eq(s.receipts.direction, "OUT"),
+              eq(s.receipts.cashBucket, "DRAWER"),
+            ),
+          ),
+      ).toHaveLength(1);
+    } finally {
+      barrier.release();
+      const pending: Promise<unknown>[] = [];
+      if (disbursement) pending.push(disbursement);
+      if (approval) pending.push(approval);
+      await Promise.allSettled(pending);
+      barrier.restore();
+      vi.useRealTimers();
+    }
+  }, 15_000);
+
+  it("orders approval before a concurrent loan disbursement without deadlock or partial loan money", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(PAYROLL_LOCK_TEST_NOW);
+    const runner = db();
+    const runId = await seedDraft(PAYROLL_LOCK_TEST_PERIOD);
+    const loanId = await seedApprovedLoanForPayer("approve-disburse");
+    const barrier = pauseNextForUpdate("payrollRuns");
+    let approval: ReturnType<typeof approveRun> | undefined;
+    let disbursement: ReturnType<typeof disburseEmployeeLoan> | undefined;
+    try {
+      approval = approveRun(runId, CHECKER);
+      await barrier.lockReached;
+      disbursement = disburseEmployeeLoan(PAYER, loanId);
+      await waitForPayrollLockWait();
+      barrier.release();
+      const [approved, disbursed] = await Promise.allSettled([
+        approval,
+        disbursement,
+      ]);
+      expect(approved.status).toBe("fulfilled");
+      expect(disbursed).toMatchObject({
+        status: "rejected",
+        reason: { code: "PRECONDITION_FAILED" },
+      });
+      if (disbursed.status === "rejected") {
+        expect(String(disbursed.reason)).not.toMatch(
+          /ER_LOCK_DEADLOCK|deadlock/i,
+        );
+      }
+
+      const [loan] = await runner
+        .select()
+        .from(s.employeeLoanRequests)
+        .where(eq(s.employeeLoanRequests.id, loanId));
+      expect(loan).toMatchObject({
+        status: "APPROVED",
+        advanceId: null,
+        receiptId: null,
+      });
+      expect(
+        await runner
+          .select()
+          .from(s.employeeAdvances)
+          .where(eq(s.employeeAdvances.sourceType, "SALARY_ADVANCE")),
+      ).toHaveLength(0);
+      expect(
+        await runner
+          .select()
+          .from(s.receipts)
+          .where(
+            and(
+              eq(s.receipts.direction, "OUT"),
+              eq(s.receipts.cashBucket, "DRAWER"),
+            ),
+          ),
+      ).toHaveLength(0);
+      expect(
+        await runner
+          .select()
+          .from(s.accountingEntries)
+          .where(
+            eq(
+              s.accountingEntries.dedupeKey,
+              `EMPLOYEE_LOAN_DISBURSEMENT:${loanId}`,
+            ),
+          ),
+      ).toHaveLength(0);
+      expect(await runner.select().from(s.idempotencyKeys)).toHaveLength(0);
+    } finally {
+      barrier.release();
+      const pending: Promise<unknown>[] = [];
+      if (approval) pending.push(approval);
+      if (disbursement) pending.push(disbursement);
+      await Promise.allSettled(pending);
+      barrier.restore();
+      vi.useRealTimers();
+    }
+  }, 15_000);
+
+  it("orders salary pay before a concurrent loan disbursement and commits only the salary payment", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(PAYROLL_LOCK_TEST_NOW);
+    const runner = db();
+    const runId = await seedDraft(PAYROLL_LOCK_TEST_PERIOD);
+    await approveRun(runId, CHECKER);
+    const loanId = await seedApprovedLoanForPayer("pay-disburse");
+    const barrier = pauseNextForUpdate("payrollRuns");
+    let payment: ReturnType<typeof payRun> | undefined;
+    let disbursement: ReturnType<typeof disburseEmployeeLoan> | undefined;
+    try {
+      payment = payRun(runId, PAYER, {
+        paymentMethod: "CASH",
+        paymentDate: "2026-10-31",
+      });
+      await barrier.lockReached;
+      disbursement = disburseEmployeeLoan(PAYER, loanId);
+      await waitForPayrollLockWait();
+      barrier.release();
+      const [paid, disbursed] = await Promise.allSettled([
+        payment,
+        disbursement,
+      ]);
+      expect(paid.status).toBe("fulfilled");
+      expect(disbursed).toMatchObject({
+        status: "rejected",
+        reason: { code: "PRECONDITION_FAILED" },
+      });
+      if (disbursed.status === "rejected") {
+        expect(String(disbursed.reason)).not.toMatch(
+          /ER_LOCK_DEADLOCK|deadlock/i,
+        );
+      }
+
+      const [run] = await runner
+        .select()
+        .from(s.payrollRuns)
+        .where(eq(s.payrollRuns.id, runId));
+      expect(run.status).toBe("paid");
+      const salaryEvents = await runner
+        .select()
+        .from(s.payrollAccountingEvents)
+        .where(
+          and(
+            eq(s.payrollAccountingEvents.runId, runId),
+            eq(s.payrollAccountingEvents.eventKind, "SALARY_PAYMENT"),
+          ),
+        );
+      expect(salaryEvents).toHaveLength(1);
+      expect(
+        await runner
+          .select()
+          .from(s.receipts)
+          .where(
+            and(
+              eq(s.receipts.direction, "OUT"),
+              eq(s.receipts.cashBucket, "TREASURY"),
+            ),
+          ),
+      ).toHaveLength(1);
+      expect(
+        await runner
+          .select()
+          .from(s.receipts)
+          .where(
+            and(
+              eq(s.receipts.direction, "OUT"),
+              eq(s.receipts.cashBucket, "DRAWER"),
+            ),
+          ),
+      ).toHaveLength(0);
+      expect(
+        await runner
+          .select()
+          .from(s.accountingEntries)
+          .where(
+            eq(
+              s.accountingEntries.dedupeKey,
+              `EMPLOYEE_LOAN_DISBURSEMENT:${loanId}`,
+            ),
+          ),
+      ).toHaveLength(0);
+      expect(
+        await runner
+          .select()
+          .from(s.employeeAdvances)
+          .where(eq(s.employeeAdvances.sourceType, "SALARY_ADVANCE")),
+      ).toHaveLength(0);
+    } finally {
+      barrier.release();
+      const pending: Promise<unknown>[] = [];
+      if (payment) pending.push(payment);
+      if (disbursement) pending.push(disbursement);
+      await Promise.allSettled(pending);
+      barrier.restore();
+      vi.useRealTimers();
+    }
+  }, 15_000);
+
+  it("orders DRAWER salary pay before a legacy owner-auto-approved advance without deadlock or duplicate effects", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(PAYROLL_LOCK_TEST_NOW);
+    const runner = db();
+    const runId = await seedDraft(PAYROLL_LOCK_TEST_PERIOD);
+    await approveRun(runId, CHECKER);
+    await seedPayerShift();
+    const barrier = pauseNextForUpdate("shifts");
+    let payment: ReturnType<typeof payRun> | undefined;
+    let grant: ReturnType<typeof grantAdvance> | undefined;
+    try {
+      payment = payRun(runId, PAYER, {
+        paymentMethod: "CASH",
+        cashBucket: "DRAWER",
+        shiftId: 901,
+        paymentDate: "2026-10-31",
+      });
+      await barrier.lockReached;
+      grant = grantAdvance(
+        {
+          employeeId: 10,
+          branchId: 1,
+          amount: "100.00",
+          monthlyDeduction: "100.00",
+          clientRequestId: "payroll-lock-legacy-grant",
+        },
+        PAYER,
+      );
+      await waitForPayrollLockWait();
+      barrier.release();
+      const [paid, granted] = await Promise.allSettled([payment, grant]);
+      expect(paid.status).toBe("fulfilled");
+      expect(granted).toMatchObject({
+        status: "rejected",
+        reason: { code: "PRECONDITION_FAILED" },
+      });
+      for (const outcome of [paid, granted]) {
+        if (outcome.status === "rejected") {
+          expect(String(outcome.reason)).not.toMatch(
+            /ER_LOCK_DEADLOCK|deadlock/i,
+          );
+        }
+      }
+
+      const [run] = await runner
+        .select()
+        .from(s.payrollRuns)
+        .where(eq(s.payrollRuns.id, runId));
+      expect(run.status).toBe("paid");
+      expect(
+        await runner
+          .select()
+          .from(s.payrollAccountingEvents)
+          .where(
+            and(
+              eq(s.payrollAccountingEvents.runId, runId),
+              eq(s.payrollAccountingEvents.eventKind, "SALARY_PAYMENT"),
+            ),
+          ),
+      ).toHaveLength(1);
+      const drawerPayments = await runner
+        .select()
+        .from(s.receipts)
+        .where(
+          and(
+            eq(s.receipts.direction, "OUT"),
+            eq(s.receipts.cashBucket, "DRAWER"),
+          ),
+        );
+      expect(drawerPayments).toHaveLength(1);
+      expect(drawerPayments[0]?.shiftId).toBe(901);
+      expect(
+        await runner
+          .select()
+          .from(s.employeeAdvances)
+          .where(eq(s.employeeAdvances.sourceType, "SALARY_ADVANCE")),
+      ).toHaveLength(0);
+      expect(await runner.select().from(s.idempotencyKeys)).toHaveLength(0);
+    } finally {
+      barrier.release();
+      const pending: Promise<unknown>[] = [];
+      if (payment) pending.push(payment);
+      if (grant) pending.push(grant);
+      await Promise.allSettled(pending);
+      barrier.restore();
+      vi.useRealTimers();
+    }
+  }, 15_000);
 
   it("serializes legal-policy updates against approval and rejects a stale generated snapshot", async () => {
     const runner = db();
@@ -1203,6 +1687,440 @@ describe("payroll accrual lifecycle — DB invariants", () => {
       expect(item.commission).toBe("100.00");
     }
   });
+
+  it("carries uncaptured historical payroll bonuses once and excludes future approvals", async () => {
+    const runner = db();
+    await runner.insert(s.payrollRuns).values({
+      period: "2026-06",
+      status: "paid",
+      employeeCount: 1,
+      totalGross: "1000.00",
+      totalNet: "1000.00",
+      createdBy: MAKER.userId,
+      approvedBy: CHECKER.userId,
+      approvedAt: new Date("2026-06-30T17:00:00.000Z"),
+      paidBy: PAYER.userId,
+      paidAt: new Date("2026-06-30T18:00:00.000Z"),
+    });
+    await runner.insert(s.employeeSpotBonuses).values([
+      {
+        id: 201,
+        employeeId: 10,
+        branchId: 1,
+        amount: "100.00",
+        reason: "مكافأة اعتمدت بعد دفع مسيّر شهرها",
+        disbursementType: "PAYROLL_ADDITION",
+        status: "APPROVED",
+        createdById: MAKER.userId,
+        approvedById: CHECKER.userId,
+        // 23:30 بغداد في 30 حزيران، وبعد دفع مسيّر حزيران.
+        approvedAt: new Date("2026-06-30T20:30:00.000Z"),
+      },
+      {
+        id: 202,
+        employeeId: 10,
+        branchId: 1,
+        amount: "25.00",
+        reason: "مكافأة إرثية معتمدة بلا وقت اعتماد",
+        disbursementType: "PAYROLL_ADDITION",
+        status: "APPROVED",
+        createdById: MAKER.userId,
+        approvedById: CHECKER.userId,
+        approvedAt: null,
+      },
+      {
+        id: 203,
+        employeeId: 10,
+        branchId: 1,
+        amount: "75.00",
+        reason: "مكافأة شهر مستقبلي لا تُعجّل",
+        disbursementType: "PAYROLL_ADDITION",
+        status: "APPROVED",
+        createdById: MAKER.userId,
+        approvedById: CHECKER.userId,
+        // 00:30 بغداد في 1 آب، فلا تدخل مسيّر تموز.
+        approvedAt: new Date("2026-07-31T21:30:00.000Z"),
+      },
+    ]);
+
+    const staleDraftId = await seedDraft("2026-07");
+    await expect(approveRun(staleDraftId, CHECKER)).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+    });
+    await expect(
+      cancelRun(staleDraftId, MAKER, "إعادة توليد لالتقاط مكافآت معلقة"),
+    ).resolves.toMatchObject({ deleted: true });
+
+    const first = await generatePayroll("2026-07", NON_OWNER_HR);
+    expect(first?.status).toBe("draft");
+    const firstItem = first?.items?.find(
+      (item) => Number(item.employeeId) === 10,
+    );
+    expect(firstItem).toMatchObject({
+      gross: "1125.00",
+      net: "1025.00",
+    });
+    let bonuses = await runner
+      .select({
+        id: s.employeeSpotBonuses.id,
+        runId: s.employeeSpotBonuses.payrollRunId,
+      })
+      .from(s.employeeSpotBonuses)
+      .orderBy(s.employeeSpotBonuses.id);
+    expect(bonuses).toEqual([
+      { id: 201, runId: Number(first?.id) },
+      { id: 202, runId: Number(first?.id) },
+      { id: 203, runId: null },
+    ]);
+
+    await expect(
+      cancelRun(Number(first?.id), MAKER, "إثبات عدم تكرار المكافأة عند إعادة التوليد"),
+    ).resolves.toMatchObject({ deleted: true });
+    const regenerated = await generatePayroll("2026-07", NON_OWNER_HR);
+    expect(regenerated?.status).toBe("draft");
+    const regeneratedItem = regenerated?.items?.find(
+      (item) => Number(item.employeeId) === 10,
+    );
+    expect(regeneratedItem).toMatchObject({
+      gross: "1125.00",
+      net: "1025.00",
+    });
+    bonuses = await runner
+      .select({
+        id: s.employeeSpotBonuses.id,
+        runId: s.employeeSpotBonuses.payrollRunId,
+      })
+      .from(s.employeeSpotBonuses)
+      .orderBy(s.employeeSpotBonuses.id);
+    expect(bonuses).toEqual([
+      { id: 201, runId: Number(regenerated?.id) },
+      { id: 202, runId: Number(regenerated?.id) },
+      { id: 203, runId: null },
+    ]);
+    await expect(
+      approveRun(Number(regenerated?.id), CHECKER),
+    ).resolves.toMatchObject({ status: "approved" });
+  });
+
+  it("leaves historical bonuses for future hires unlinked without blocking the current payroll", async () => {
+    const runner = db();
+    await runner.insert(s.employees).values({
+      id: 12,
+      branchId: 1,
+      firstName: "موظف",
+      lastName: "مستقبلي",
+      payType: "monthly",
+      salary: "800.00",
+      hireDate: "2026-08-01",
+    });
+    await runner.insert(s.employeeSpotBonuses).values({
+      id: 260,
+      employeeId: 12,
+      branchId: 1,
+      amount: "50.00",
+      reason: "مكافأة قديمة لموظف يبدأ بعد فترة المسيّر",
+      disbursementType: "PAYROLL_ADDITION",
+      status: "APPROVED",
+      createdById: MAKER.userId,
+      approvedById: CHECKER.userId,
+      approvedAt: new Date("2026-06-15T12:00:00.000Z"),
+    });
+
+    const july = await generatePayroll("2026-07", NON_OWNER_HR);
+    expect(july?.status).toBe("draft");
+    expect(
+      july?.items?.some((item) => Number(item.employeeId) === 12),
+    ).toBe(false);
+    let [bonus] = await runner
+      .select({
+        status: s.employeeSpotBonuses.status,
+        runId: s.employeeSpotBonuses.payrollRunId,
+      })
+      .from(s.employeeSpotBonuses)
+      .where(eq(s.employeeSpotBonuses.id, 260));
+    expect(bonus).toEqual({ status: "APPROVED", runId: null });
+
+    await expect(
+      approveRun(Number(july?.id), CHECKER),
+    ).resolves.toMatchObject({ status: "approved" });
+    [bonus] = await runner
+      .select({
+        status: s.employeeSpotBonuses.status,
+        runId: s.employeeSpotBonuses.payrollRunId,
+      })
+      .from(s.employeeSpotBonuses)
+      .where(eq(s.employeeSpotBonuses.id, 260));
+    expect(bonus).toEqual({ status: "APPROVED", runId: null });
+  });
+
+  it("fails approval promptly when an eligible payroll bonus is being changed", async () => {
+    const runner = db();
+    const runId = await seedDraft("2026-07");
+    await runner.insert(s.employeeSpotBonuses).values({
+      id: 250,
+      employeeId: 10,
+      branchId: 1,
+      amount: "50.00",
+      reason: "مكافأة معلقة أثناء اعتماد المسيّر",
+      disbursementType: "PAYROLL_ADDITION",
+      status: "APPROVED",
+      createdById: MAKER.userId,
+      approvedById: CHECKER.userId,
+      approvedAt: new Date("2026-07-15T12:00:00.000Z"),
+    });
+    let locked!: () => void;
+    let release!: () => void;
+    const bonusLocked = new Promise<void>((resolve) => { locked = resolve; });
+    const mayCommit = new Promise<void>((resolve) => { release = resolve; });
+    const holder = withTx(async (tx) => {
+      await tx
+        .select({ id: s.employeeSpotBonuses.id })
+        .from(s.employeeSpotBonuses)
+        .where(eq(s.employeeSpotBonuses.id, 250))
+        .for("update")
+        .limit(1);
+      locked();
+      await mayCommit;
+    });
+    await bonusLocked;
+
+    const approval = approveRun(runId, CHECKER);
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const outcome = await Promise.race([
+        approval.then(
+          () => ({ status: "fulfilled" as const }),
+          (reason: unknown) => ({ status: "rejected" as const, reason }),
+        ),
+        new Promise<{ status: "timeout" }>((resolve) => {
+          timeout = setTimeout(() => resolve({ status: "timeout" }), 2_000);
+        }),
+      ]);
+      expect(outcome).toMatchObject({
+        status: "rejected",
+        reason: { code: "CONFLICT" },
+      });
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      release();
+      await holder;
+      await Promise.allSettled([approval]);
+    }
+
+    const [run] = await runner
+      .select({ status: s.payrollRuns.status })
+      .from(s.payrollRuns)
+      .where(eq(s.payrollRuns.id, runId));
+    expect(run?.status).toBe("draft");
+    expect(await runner.select().from(s.payrollAccountingEvents)).toHaveLength(
+      0,
+    );
+    const [bonus] = await runner
+      .select({
+        status: s.employeeSpotBonuses.status,
+        runId: s.employeeSpotBonuses.payrollRunId,
+      })
+      .from(s.employeeSpotBonuses)
+      .where(eq(s.employeeSpotBonuses.id, 250));
+    expect(bonus).toEqual({ status: "APPROVED", runId: null });
+  }, 15_000);
+
+  it("carries and caps an uncaptured historical penalty once while excluding future decisions", async () => {
+    const runner = db();
+    await runner.insert(s.payrollRuns).values({
+      period: "2026-06",
+      status: "paid",
+      employeeCount: 1,
+      totalGross: "1000.00",
+      totalNet: "1000.00",
+      createdBy: MAKER.userId,
+      approvedBy: CHECKER.userId,
+      approvedAt: new Date("2026-06-30T17:00:00.000Z"),
+      paidBy: PAYER.userId,
+      paidAt: new Date("2026-06-30T18:00:00.000Z"),
+    });
+    await runner.insert(s.employeePenalties).values([
+      {
+        id: 301,
+        employeeId: 10,
+        branchId: 1,
+        penaltyType: "SALARY_DEDUCTION",
+        decisionNumber: "HISTORICAL-PENALTY",
+        decisionDate: "2026-06-30",
+        reason: "عقوبة اعتمدت بعد دفع مسيّر شهر القرار",
+        deductionAmount: "250.00",
+        status: "APPROVED",
+        createdById: MAKER.userId,
+        approvedById: CHECKER.userId,
+        approvedAt: new Date("2026-06-30T20:30:00.000Z"),
+      },
+      {
+        id: 302,
+        employeeId: 10,
+        branchId: 1,
+        penaltyType: "SALARY_DEDUCTION",
+        decisionNumber: "FUTURE-PENALTY",
+        decisionDate: "2026-08-01",
+        reason: "قرار شهر مستقبلي لا يُعجّل",
+        deductionAmount: "500.00",
+        status: "APPROVED",
+        createdById: MAKER.userId,
+        approvedById: CHECKER.userId,
+        approvedAt: new Date("2026-07-01T12:00:00.000Z"),
+      },
+    ]);
+
+    const staleDraftId = await seedDraft("2026-07");
+    await expect(approveRun(staleDraftId, CHECKER)).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("عقوبة #301"),
+    });
+    await expect(
+      cancelRun(staleDraftId, MAKER, "إعادة توليد لالتقاط عقوبة معلقة"),
+    ).resolves.toMatchObject({ deleted: true });
+
+    const first = await generatePayroll("2026-07", NON_OWNER_HR);
+    expect(first?.status).toBe("draft");
+    const firstItem = first?.items?.find(
+      (item) => Number(item.employeeId) === 10,
+    );
+    expect(firstItem).toMatchObject({
+      gross: "1000.00",
+      deductions: "200.00",
+      wageReduction: "100.00",
+      advanceDeduction: "100.00",
+      net: "800.00",
+    });
+    let penalties = await runner
+      .select({
+        id: s.employeePenalties.id,
+        status: s.employeePenalties.status,
+        runId: s.employeePenalties.payrollRunId,
+      })
+      .from(s.employeePenalties)
+      .orderBy(s.employeePenalties.id);
+    expect(penalties).toEqual([
+      { id: 301, status: "APPLIED", runId: Number(first?.id) },
+      { id: 302, status: "APPROVED", runId: null },
+    ]);
+
+    await expect(
+      cancelRun(Number(first?.id), MAKER, "إثبات عدم تكرار العقوبة عند إعادة التوليد"),
+    ).resolves.toMatchObject({ deleted: true });
+    const regenerated = await generatePayroll("2026-07", NON_OWNER_HR);
+    expect(regenerated?.status).toBe("draft");
+    const regeneratedItem = regenerated?.items?.find(
+      (item) => Number(item.employeeId) === 10,
+    );
+    expect(regeneratedItem).toMatchObject({
+      gross: "1000.00",
+      deductions: "200.00",
+      wageReduction: "100.00",
+      advanceDeduction: "100.00",
+      net: "800.00",
+    });
+    penalties = await runner
+      .select({
+        id: s.employeePenalties.id,
+        status: s.employeePenalties.status,
+        runId: s.employeePenalties.payrollRunId,
+      })
+      .from(s.employeePenalties)
+      .orderBy(s.employeePenalties.id);
+    expect(penalties).toEqual([
+      { id: 301, status: "APPLIED", runId: Number(regenerated?.id) },
+      { id: 302, status: "APPROVED", runId: null },
+    ]);
+    await expect(
+      approveRun(Number(regenerated?.id), CHECKER),
+    ).resolves.toMatchObject({ status: "approved" });
+  });
+
+  it("rolls back generation when a selected historical penalty is cancelled before capture", async () => {
+    const runner = db();
+    await runner.insert(s.payrollRuns).values({
+      period: "2026-06",
+      status: "paid",
+      employeeCount: 1,
+      totalGross: "1000.00",
+      totalNet: "1000.00",
+      createdBy: MAKER.userId,
+      approvedBy: CHECKER.userId,
+      approvedAt: new Date("2026-06-30T17:00:00.000Z"),
+      paidBy: PAYER.userId,
+      paidAt: new Date("2026-06-30T18:00:00.000Z"),
+    });
+    await runner.insert(s.employeePenalties).values({
+      id: 401,
+      employeeId: 10,
+      branchId: 1,
+      penaltyType: "SALARY_DEDUCTION",
+      decisionNumber: "CANCEL-DURING-GENERATION",
+      decisionDate: "2026-06-30",
+      reason: "عقوبة قديمة تُلغى أثناء توليد الشهر التالي",
+      deductionAmount: "250.00",
+      status: "APPROVED",
+      createdById: MAKER.userId,
+      approvedById: CHECKER.userId,
+      approvedAt: new Date("2026-06-30T20:30:00.000Z"),
+    });
+
+    const execute = MySql2PreparedQuery.prototype.execute;
+    let selected!: () => void;
+    let resume!: () => void;
+    let paused = false;
+    const penaltySelected = new Promise<void>((resolve) => { selected = resolve; });
+    const mayContinue = new Promise<void>((resolve) => { resume = resolve; });
+    const spy = vi
+      .spyOn(MySql2PreparedQuery.prototype, "execute")
+      .mockImplementation(async function (
+        this: typeof MySql2PreparedQuery.prototype,
+        values,
+      ) {
+        const query = (this as unknown as { query: { sql: string } }).query.sql;
+        const result = await execute.call(this, values);
+        if (
+          !paused &&
+          query.includes("from `employeePenalties`") &&
+          !query.includes("for update")
+        ) {
+          paused = true;
+          selected();
+          await mayContinue;
+        }
+        return result;
+      });
+    let generation: ReturnType<typeof generatePayroll> | undefined;
+    try {
+      generation = generatePayroll("2026-07", NON_OWNER_HR);
+      await penaltySelected;
+      await expect(
+        cancelEmployeePenalty(CHECKER, 401, "إلغاء معتمد قبل التقاط المسيّر"),
+      ).resolves.toMatchObject({ status: "CANCELLED" });
+      resume();
+      await expect(generation).rejects.toMatchObject({ code: "CONFLICT" });
+    } finally {
+      resume();
+      await Promise.allSettled([generation].filter(Boolean) as Promise<unknown>[]);
+      spy.mockRestore();
+    }
+
+    const [penalty] = await runner
+      .select({
+        status: s.employeePenalties.status,
+        runId: s.employeePenalties.payrollRunId,
+      })
+      .from(s.employeePenalties)
+      .where(eq(s.employeePenalties.id, 401));
+    expect(penalty).toEqual({ status: "CANCELLED", runId: null });
+    expect(
+      await runner
+        .select({ id: s.payrollRuns.id })
+        .from(s.payrollRuns)
+        .where(eq(s.payrollRuns.period, "2026-07")),
+    ).toHaveLength(0);
+    expect(await runner.select().from(s.payrollItems)).toHaveLength(0);
+  }, 15_000);
 
   it("posts reopen reversal to the original accrual date and reapproval keeps one net July expense", async () => {
     const runner = db();
@@ -1839,9 +2757,13 @@ describe("payroll accrual lifecycle — DB invariants", () => {
 });
 
 describe("payroll zero-net classified lifecycle", () => {
-  it("accrues statutory and advance effects without cash and reverses them exactly", async () => {
+  it("يسوّي القسط التاريخي غير المصنف بلا نقد ويعكسه بدقة", async () => {
     const runner = db();
     const runId = await seedZeroNetStatutoryDraft();
+    await runner
+      .update(s.employeeAdvances)
+      .set({ sourceType: "LEGACY_UNCLASSIFIED", payrollPeriod: null })
+      .where(eq(s.employeeAdvances.id, 20));
     const receiptsBefore = await runner.select().from(s.receipts);
 
     await expect(approveRun(runId, CHECKER)).resolves.toMatchObject({

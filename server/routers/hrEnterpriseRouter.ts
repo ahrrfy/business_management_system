@@ -257,9 +257,21 @@ export const hrEnterpriseRouter = router({
           installmentsCount: z.number().int().min(1).max(60).optional(),
           monthlyDeduction: positiveMoneyString.optional(),
           reason: z.string().trim().max(255).nullish(),
+          clientRequestId: z
+            .string()
+            .trim()
+            .min(8)
+            .max(80)
+            .regex(/^[A-Za-z0-9._:-]+$/),
         }),
       )
-      .mutation(({ input, ctx }) => loanSvc.requestEmployeeLoan(toActor(ctx), input)),
+      .mutation(({ input, ctx }) =>
+        loanSvc.requestEmployeeLoan(
+          toActor(ctx),
+          input,
+          "hrEnterprise.loans.request",
+        ),
+      ),
 
     review: hrWrite
       .input(
@@ -269,7 +281,26 @@ export const hrEnterpriseRouter = router({
           rejectionReason: z.string().trim().max(255).optional(),
         }),
       )
-      .mutation(({ input, ctx }) => loanSvc.reviewEmployeeLoanRequest(toActor(ctx), input)),
+      .mutation(({ input, ctx }) =>
+        loanSvc.reviewEmployeeLoanRequest(toActor(ctx), input),
+      ),
+
+    cancel: hrWrite
+      .input(
+        z.object({
+          id: z.number().int().positive(),
+          reason: z.string().trim().max(255).nullish(),
+        }),
+      )
+      .mutation(({ input, ctx }) =>
+        loanSvc.cancelEmployeeLoanRequest(toActor(ctx), input),
+      ),
+
+    disburseReadiness: hrRead
+      .input(z.object({ id: z.number().int().positive() }))
+      .query(({ input, ctx }) =>
+        loanSvc.getEmployeeLoanDisbursementReadiness(toActor(ctx), input.id),
+      ),
 
     disburse: hrWrite
       .input(z.object({ id: z.number().int().positive() }))
