@@ -1138,6 +1138,7 @@ describe("updateOnlineOrder — إضافة صنف جديد وتحديث الطل
     const res = await updateOnlineOrder(
       {
         id: orderId,
+        baselineFingerprint: (await getOnlineOrder(orderId, null))!.baselineFingerprint,
         scopedBranchId: null,
         governorate: "baghdad",
         items: [
@@ -1191,7 +1192,8 @@ describe("updateOnlineOrder — إضافة صنف جديد وتحديث الطل
     // ١) صنف معطّل ⇒ CONFLICT
     await expect(
       updateOnlineOrder(
-        { id: orderId, scopedBranchId: null, items: [{ productUnitId: 303, quantity: 1 }] },
+        { id: orderId,
+        baselineFingerprint: (await getOnlineOrder(orderId, null))!.baselineFingerprint, scopedBranchId: null, items: [{ productUnitId: 303, quantity: 1 }] },
         1,
       ),
     ).rejects.toMatchObject({ code: "CONFLICT" });
@@ -1199,7 +1201,8 @@ describe("updateOnlineOrder — إضافة صنف جديد وتحديث الطل
     // ٢) وحدة بلا سعر مفرد ⇒ CONFLICT
     await expect(
       updateOnlineOrder(
-        { id: orderId, scopedBranchId: null, items: [{ productUnitId: 304, quantity: 1 }] },
+        { id: orderId,
+        baselineFingerprint: (await getOnlineOrder(orderId, null))!.baselineFingerprint, scopedBranchId: null, items: [{ productUnitId: 304, quantity: 1 }] },
         1,
       ),
     ).rejects.toMatchObject({ code: "CONFLICT" });
@@ -1208,7 +1211,8 @@ describe("updateOnlineOrder — إضافة صنف جديد وتحديث الطل
     await d.insert(s.productPrices).values({ productUnitId: 304, priceTier: "RETAIL", price: "1200.00" });
     await expect(
       updateOnlineOrder(
-        { id: orderId, scopedBranchId: null, items: [{ productUnitId: 304, quantity: 10 }] },
+        { id: orderId,
+        baselineFingerprint: (await getOnlineOrder(orderId, null))!.baselineFingerprint, scopedBranchId: null, items: [{ productUnitId: 304, quantity: 10 }] },
         1,
       ),
     ).rejects.toMatchObject({ code: "CONFLICT" });
@@ -1217,6 +1221,7 @@ describe("updateOnlineOrder — إضافة صنف جديد وتحديث الطل
     const mergedRes = await updateOnlineOrder(
       {
         id: orderId,
+        baselineFingerprint: (await getOnlineOrder(orderId, null))!.baselineFingerprint,
         scopedBranchId: null,
         items: [
           { productUnitId: 304, quantity: 2 },

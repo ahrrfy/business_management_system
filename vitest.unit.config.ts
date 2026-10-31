@@ -10,6 +10,8 @@ export const UNIT_TEST_FILES: string[] = [
       "client/src/lib/offline/outbox.test.ts",
       "client/src/pages/__tests__/auditCommerceUi.test.tsx",
       "server/services/decisions/decisionsRemediation.unit.test.ts",
+      "client/src/components/workOrders/editorBaseline.test.tsx",
+      "client/src/components/store/EditOnlineOrderBaseline.test.tsx",
       "server/services/__tests__/inventoryProjectionActivationScript.unit.test.ts",
       "server/services/__tests__/inventoryActivationFenceScript.unit.test.ts",
       "client/src/components/vouchers/__tests__/voucherDeepLink.test.tsx",

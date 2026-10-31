@@ -571,6 +571,7 @@ describe("Storefront Wave 2 — Customizer Asset Upload, Staff Image Gate, custo
     await updateOnlineOrder(
       {
         id: created.orderId,
+        baselineFingerprint: (await getOnlineOrder(created.orderId, null))!.baselineFingerprint,
         notes: "توصيل بعد الساعة الرابعة عصراً",
         scopedBranchId: null,
       },
@@ -586,6 +587,7 @@ describe("Storefront Wave 2 — Customizer Asset Upload, Staff Image Gate, custo
     await updateOnlineOrder(
       {
         id: created.orderId,
+        baselineFingerprint: (await getOnlineOrder(created.orderId, null))!.baselineFingerprint,
         shippingAddress: "شارع الربيع - حي الجامعة",
         scopedBranchId: null,
       },

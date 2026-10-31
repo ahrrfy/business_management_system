@@ -1,9 +1,11 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { eq, sql } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as s from "../../../../drizzle/schema";
+import * as trackingService from "../onlineOrderTracking";
+import * as transactionService from "../../tx";
 import { getDb } from "../../../db";
 import { appRouter } from "../../../routers";
 import { hashCouponCode } from "../../couponService";
@@ -142,6 +144,129 @@ describe("orderFulfillmentService — transaction safety & admin edit parity", (
     await seedStoreWithDynamicZones();
   });
 
+  it("rejects a stale full form before changing address, quantity, discounts or reservation", async () => {
+    const created = await createOnlineOrder({ customerName: "أحمد", customerPhone: "07701234567", governorate: "baghdad", addressText: "العنوان الأول", lines: [{ productUnitId: 1, quantity: 2 }] });
+    const initial = await getOnlineOrder(created.orderId, 1);
+    const baselineFingerprint = (initial as unknown as { baselineFingerprint: string }).baselineFingerprint;
+    await updateOnlineOrder({ id: created.orderId, scopedBranchId: 1, ...{ baselineFingerprint }, customerPhone: "07709876543", shippingAddress: "عنوان الزميل", items: [{ productUnitId: 1, quantity: 3 }] }, 1);
+    const before = await db().select().from(s.onlineOrders).where(eq(s.onlineOrders.id, created.orderId));
+    const beforeItems = await db().select().from(s.onlineOrderItems).where(eq(s.onlineOrderItems.onlineOrderId, created.orderId));
+    const beforeCustomers = await db().select().from(s.customers).orderBy(s.customers.id);
+    await expect(updateOnlineOrder({ id: created.orderId, scopedBranchId: 1, ...{ baselineFingerprint }, customerPhone: "07701234567", shippingAddress: "العنوان الأول", notes: "ملاحظة من نموذج قديم", items: [{ productUnitId: 1, quantity: 1 }] }, 1)).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await db().select().from(s.onlineOrders).where(eq(s.onlineOrders.id, created.orderId))).toEqual(before);
+    expect(await db().select().from(s.onlineOrderItems).where(eq(s.onlineOrderItems.onlineOrderId, created.orderId))).toEqual(beforeItems);
+    expect(await db().select().from(s.customers).orderBy(s.customers.id)).toEqual(beforeCustomers);
+  });
+
+  it("rejects missing preconditions and same-second stale notes; a refreshed baseline saves", async () => {
+    const created = await createOnlineOrder({ customerName: "أحمد", customerPhone: "07701234567", governorate: "baghdad", addressText: "شارع أول", lines: [{ productUnitId: 1, quantity: 2 }] });
+    const original = (await getOnlineOrder(created.orderId, 1))!;
+    await expect(updateOnlineOrder({ id: created.orderId, scopedBranchId: 1, notes: "قديم" } as never, 1)).rejects.toMatchObject({ code: "CONFLICT" });
+    await updateOnlineOrder({ id: created.orderId, scopedBranchId: 1, baselineFingerprint: original.baselineFingerprint, notes: "تعديل الزميل" }, 1);
+    // Timestamp precision is deliberately irrelevant to concurrency evidence.
+    await db().update(s.onlineOrders).set({ updatedAt: original.createdAt }).where(eq(s.onlineOrders.id, created.orderId));
+    await expect(updateOnlineOrder({ id: created.orderId, scopedBranchId: 1, baselineFingerprint: original.baselineFingerprint, notes: "قديم" }, 1)).rejects.toMatchObject({ code: "CONFLICT" });
+    const current = (await getOnlineOrder(created.orderId, 1))!;
+    expect(current.customerNotes).toBe("تعديل الزميل");
+    await updateOnlineOrder({ id: created.orderId, scopedBranchId: 1, baselineFingerprint: current.baselineFingerprint, notes: "مراجعة جديدة" }, 1);
+    expect((await getOnlineOrder(created.orderId, 1))!.customerNotes).toBe("مراجعة جديدة");
+  });
+
+  it("binds stored item state and preserves branch/lifecycle gates even with a valid token", async () => {
+    const created = await createOnlineOrder({ customerName: "أحمد", customerPhone: "07701234567", governorate: "baghdad", addressText: "شارع أول", lines: [{ productUnitId: 1, quantity: 2 }] });
+    const baselineFingerprint = (await getOnlineOrder(created.orderId, 1))!.baselineFingerprint;
+    await expect(updateOnlineOrder({ id: created.orderId, scopedBranchId: 2, baselineFingerprint, notes: "آخر" }, 1)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await db().update(s.onlineOrderItems).set({ quantity: "3", baseQuantity: 3 }).where(eq(s.onlineOrderItems.onlineOrderId, created.orderId));
+    await expect(updateOnlineOrder({ id: created.orderId, scopedBranchId: 1, baselineFingerprint, items: [{ productUnitId: 1, quantity: 1 }] }, 1)).rejects.toMatchObject({ code: "CONFLICT" });
+    await db().update(s.onlineOrders).set({ status: "SHIPPED" }).where(eq(s.onlineOrders.id, created.orderId));
+    const shipped = (await getOnlineOrder(created.orderId, 1))!;
+    await expect(updateOnlineOrder({ id: created.orderId, scopedBranchId: 1, baselineFingerprint: shipped.baselineFingerprint, notes: "آخر" }, 1)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("uses current child reads even when the transaction already has an old RR snapshot", async () => {
+    const created = await createOnlineOrder({ customerName: "أحمد", customerPhone: "07701234567", governorate: "baghdad", addressText: "شارع أول", lines: [{ productUnitId: 1, quantity: 2 }] });
+    const baselineFingerprint = (await getOnlineOrder(created.orderId, 1))!.baselineFingerprint;
+    let snapshotReady!: () => void;
+    const ready = new Promise<void>((resolve) => { snapshotReady = resolve; });
+    let resume!: () => void;
+    const wait = new Promise<void>((resolve) => { resume = resolve; });
+    const originalWithTx = transactionService.withTx;
+    const seam = vi.spyOn(transactionService, "withTx").mockImplementationOnce((fn, options) => originalWithTx(async (tx) => {
+      await tx.select().from(s.onlineOrderItems).where(eq(s.onlineOrderItems.onlineOrderId, created.orderId));
+      snapshotReady();
+      await wait;
+      return fn(tx);
+    }, options));
+    const stale = updateOnlineOrder({ id: created.orderId, scopedBranchId: 1, baselineFingerprint, notes: "قديم" }, 1);
+    try {
+      await ready;
+      await updateOnlineOrder({ id: created.orderId, scopedBranchId: 1, baselineFingerprint, items: [{ productUnitId: 1, quantity: 3 }] }, 1);
+      resume();
+      await expect(stale).rejects.toMatchObject({ code: "CONFLICT" });
+      expect(Number((await getOnlineOrder(created.orderId, 1))!.items[0]!.quantity)).toBe(3);
+    } finally { resume(); await Promise.allSettled([stale]); seam.mockRestore(); }
+  });
+
+  it("rolls back two concurrent order edits sharing a locked customer, then retries without partial effects", async () => {
+    const create = () => createOnlineOrder({ customerName: "أحمد", customerPhone: "07701234567", governorate: "baghdad", addressText: "شارع أول", lines: [{ productUnitId: 1, quantity: 2 }] });
+    const a = await create(); const b = await create();
+    const initialA = (await getOnlineOrder(a.orderId, 1))!;
+    const initialB = (await getOnlineOrder(b.orderId, 1))!;
+    const [order] = await db().select().from(s.onlineOrders).where(eq(s.onlineOrders.id, a.orderId));
+    const capture = async () => ({
+      orders: await db().select().from(s.onlineOrders).orderBy(s.onlineOrders.id),
+      items: await db().select().from(s.onlineOrderItems).orderBy(s.onlineOrderItems.id),
+      customers: await db().select().from(s.customers).orderBy(s.customers.id),
+      stock: await db().select().from(s.branchStock),
+      coupons: await db().select().from(s.couponReservations),
+      receipts: await db().select().from(s.receipts),
+      entries: await db().select().from(s.accountingEntries),
+    });
+    const before = await capture();
+    let ready!: () => void;
+    const locked = new Promise<void>((resolve) => { ready = resolve; });
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => { release = resolve; });
+    const holder = db().transaction(async (tx) => {
+      await tx.select().from(s.customers).where(eq(s.customers.id, order!.customerId!)).for("update");
+      ready(); await wait;
+    });
+    try {
+      await locked;
+      const results = await Promise.allSettled([a, b].map((created, index) => updateOnlineOrder({ id: created.orderId, scopedBranchId: 1, baselineFingerprint: index === 0 ? initialA.baselineFingerprint : initialB.baselineFingerprint, shippingAddress: "جديد", items: [{ productUnitId: 1, quantity: 3 }] }, 1)));
+      for (const result of results) expect(result).toMatchObject({ status: "rejected", reason: { code: "CONFLICT", message: expect.stringContaining("قيد تحديث متزامن") } });
+      expect(await capture()).toEqual(before);
+    } finally { release(); await holder; }
+    await updateOnlineOrder({ id: a.orderId, scopedBranchId: 1, baselineFingerprint: initialA.baselineFingerprint, notes: "تعديل أول" }, 1);
+    await updateOnlineOrder({ id: b.orderId, scopedBranchId: 1, baselineFingerprint: initialB.baselineFingerprint, notes: "تعديل ثان" }, 1);
+    expect((await getOnlineOrder(a.orderId, 1))!.customerNotes).toBe("تعديل أول");
+    expect((await getOnlineOrder(b.orderId, 1))!.customerNotes).toBe("تعديل ثان");
+  });
+
+  it("returns the fingerprint from the same detail snapshot while another editor commits", async () => {
+    const created = await createOnlineOrder({ customerName: "أحمد", customerPhone: "07701234567", governorate: "baghdad", addressText: "عنوان أول", lines: [{ productUnitId: 1, quantity: 2 }] });
+    const initial = (await getOnlineOrder(created.orderId, 1))!;
+    let ready!: () => void;
+    const captured = new Promise<void>((resolve) => { ready = resolve; });
+    let resume!: () => void;
+    const wait = new Promise<void>((resolve) => { resume = resolve; });
+    const original = trackingService.loadOnlineOrderLifecycles;
+    const seam = vi.spyOn(trackingService, "loadOnlineOrderLifecycles").mockImplementationOnce(async (...args) => {
+      ready(); await wait; return original(...args);
+    });
+    const reading = getOnlineOrder(created.orderId, 1);
+    try {
+      await captured;
+      await updateOnlineOrder({ id: created.orderId, scopedBranchId: 1, baselineFingerprint: initial.baselineFingerprint, shippingAddress: "عنوان ثان", items: [{ productUnitId: 1, quantity: 3 }] }, 1);
+      resume();
+      const frame = (await reading)!;
+      expect(frame.addressText).toBe(initial.addressText);
+      expect(frame.items).toEqual(initial.items);
+      expect(frame.baselineFingerprint).toBe(initial.baselineFingerprint);
+      await expect(updateOnlineOrder({ id: created.orderId, scopedBranchId: 1, baselineFingerprint: frame.baselineFingerprint, notes: "مسودة قديمة" }, 1)).rejects.toMatchObject({ code: "CONFLICT" });
+    } finally { resume(); await reading; seam.mockRestore(); }
+  });
+
   it("contains zero raw sql`COMMIT` or sql`ROLLBACK` statements inside orderFulfillmentService.ts", () => {
     const filePath = path.resolve(
       __dirname,
@@ -172,6 +297,7 @@ describe("orderFulfillmentService — transaction safety & admin edit parity", (
     const editedBaghdad = await updateOnlineOrder(
       {
         id: created.orderId,
+        baselineFingerprint: (await getOnlineOrder(created.orderId, null))!.baselineFingerprint,
         scopedBranchId: 1,
         shippingAddress: "المنصور شارع 16",
       },
@@ -197,6 +323,7 @@ describe("orderFulfillmentService — transaction safety & admin edit parity", (
     const editedBasra = await updateOnlineOrder(
       {
         id: created.orderId,
+        baselineFingerprint: (await getOnlineOrder(created.orderId, null))!.baselineFingerprint,
         scopedBranchId: 1,
         governorate: "basra",
       },
@@ -220,6 +347,7 @@ describe("orderFulfillmentService — transaction safety & admin edit parity", (
     await updateOnlineOrder(
       {
         id: created.orderId,
+        baselineFingerprint: (await getOnlineOrder(created.orderId, null))!.baselineFingerprint,
         scopedBranchId: 1,
         items: [{ productUnitId: 1, quantity: 5 }],
       },
@@ -244,6 +372,7 @@ describe("orderFulfillmentService — transaction safety & admin edit parity", (
     await updateOnlineOrder(
       {
         id: created.orderId,
+        baselineFingerprint: (await getOnlineOrder(created.orderId, null))!.baselineFingerprint,
         scopedBranchId: 1,
         items: [{ productUnitId: 1, quantity: 12 }],
       },
@@ -326,6 +455,7 @@ describe("orderFulfillmentService — transaction safety & admin edit parity", (
       updateOnlineOrder(
         {
           id: created.orderId,
+        baselineFingerprint: (await getOnlineOrder(created.orderId, null))!.baselineFingerprint,
           scopedBranchId: 1,
           customerName: "عميل جديد يجب أن يتراجع",
           customerPhone: newPhoneRaw,
@@ -375,6 +505,7 @@ describe("orderFulfillmentService — transaction safety & admin edit parity", (
       updateOnlineOrder(
         {
           id: orderA.orderId,
+        baselineFingerprint: (await getOnlineOrder(orderA.orderId, null))!.baselineFingerprint,
           scopedBranchId: 1,
           customerName: "عميل موحد",
           customerPhone: sharedTargetPhone,
@@ -384,6 +515,7 @@ describe("orderFulfillmentService — transaction safety & admin edit parity", (
       updateOnlineOrder(
         {
           id: orderB.orderId,
+        baselineFingerprint: (await getOnlineOrder(orderB.orderId, null))!.baselineFingerprint,
           scopedBranchId: 1,
           customerName: "عميل موحد",
           customerPhone: sharedTargetPhone,
@@ -422,10 +554,11 @@ describe("orderFulfillmentService — transaction safety & admin edit parity", (
 
     const distinctNewPhones = ["07708880004", "07708880001", "07708880003", "07708880002"];
     await Promise.all(
-      orders.map((ord, idx) =>
+      orders.map(async (ord, idx) =>
         updateOnlineOrder(
           {
             id: ord.orderId,
+        baselineFingerprint: (await getOnlineOrder(ord.orderId, null))!.baselineFingerprint,
             scopedBranchId: 1,
             customerName: `مستلم محدث ${idx + 1}`,
             customerPhone: distinctNewPhones[idx]!,
@@ -524,6 +657,7 @@ describe("orderFulfillmentService — transaction safety & admin edit parity", (
       updateOnlineOrder(
         {
           id: created.orderId,
+        baselineFingerprint: (await getOnlineOrder(created.orderId, null))!.baselineFingerprint,
           scopedBranchId: 1,
           governorate: "kirkuk",
         },
@@ -559,6 +693,7 @@ describe("orderFulfillmentService — transaction safety & admin edit parity", (
     const caller = await makeAdminCaller();
     const updatedCustom = await caller.storeAdmin.orders.update({
       id: created.orderId,
+      baselineFingerprint: (await getOnlineOrder(created.orderId, null))!.baselineFingerprint,
       governorate: "baghdad-karkh",
       shippingAddress: "حي الجامعة",
       notes: "قرب جامع المأمون",
@@ -587,6 +722,7 @@ describe("orderFulfillmentService — transaction safety & admin edit parity", (
     // Editing street address / item quantity WITHOUT switching governorate must preserve 3,500 fee (not drop to 0)
     const editedSameDeactivatedZone = await caller.storeAdmin.orders.update({
       id: created.orderId,
+      baselineFingerprint: (await getOnlineOrder(created.orderId, null))!.baselineFingerprint,
       shippingAddress: "حي الجامعة محلة 630",
       items: [{ productUnitId: 1, quantity: 3 }], // 13,500 IQD + 3,500 fee = 17,000
     });

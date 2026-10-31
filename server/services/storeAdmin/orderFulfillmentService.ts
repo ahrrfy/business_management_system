@@ -6,6 +6,7 @@
  * (خصم مخزون + قيد دفتر) شريحةٌ لاحقة (convertToInvoice)، حفاظاً على مبدأ «لا دفتر حتى التأكيد المالي».
  * عزل الفرع: القراءة/الكتابة مقيّدة بـscopedBranchId لغير المرتفعين (admin/manager يعبُران).
  */
+import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { mysqlCodeFrom } from "@shared/errorMap.ar";
@@ -33,7 +34,7 @@ import {
   users,
 } from "../../../drizzle/schema";
 import { alias } from "drizzle-orm/mysql-core";
-import { getDb, type DB } from "../../db";
+import { getDb, type DB, type Tx } from "../../db";
 import { money, round2 } from "../money";
 import { withTx, type MaybeScopedActor } from "../tx";
 import { canCrossBranches } from "../../lib/branchAuthority";
@@ -285,6 +286,7 @@ export interface OnlineOrderDetailItem {
   previewAssetUrl?: string | null;
 }
 export interface OnlineOrderDetail extends OnlineOrderRow {
+  baselineFingerprint: string;
   branchId: number;
   addressText: string | null;
   customerNotes: string | null;
@@ -389,7 +391,7 @@ function resolveUpdatedCustomerNotes(
   return existing || null;
 }
 
-async function loadEditableDeliveryZones(db: DB): Promise<EditableDeliveryZoneOption[]> {
+async function loadEditableDeliveryZones(db: DB | Tx): Promise<EditableDeliveryZoneOption[]> {
   const [zoneRows, ruleRows] = await Promise.all([
     db
       .select({
@@ -485,8 +487,10 @@ async function loadEditableDeliveryZones(db: DB): Promise<EditableDeliveryZoneOp
 
 /** تفاصيل طلب (للملصق/العرض) — الطلب + العميل + البنود. */
 export async function getOnlineOrder(id: number, scopedBranchId: number | null): Promise<OnlineOrderDetail | null> {
-  const db = getDb();
-  if (!db) return null;
+  const database = getDb();
+  if (!database) return null;
+  // Every query, including the fingerprint frame, sees one repeatable-read snapshot.
+  return database.transaction(async (db) => {
   const claimedUsers = alias(users, "claimedUsers");
   const preparedUsers = alias(users, "preparedUsers");
   const retailPrices = alias(productPrices, "detailRetailPrices");
@@ -598,7 +602,11 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
   const resolvedCustomerNotes = order.customerNotes?.trim()
     ? order.customerNotes.trim()
     : extractOrderNoteSegment(order.addressText) || null;
+  const [storedOrder] = await db.select().from(onlineOrders).where(eq(onlineOrders.id, id));
+  const storedItems = await db.select().from(onlineOrderItems).where(eq(onlineOrderItems.onlineOrderId, id));
+  const contact = storedOrder.customerId == null ? null : (await db.select().from(customers).where(eq(customers.id, storedOrder.customerId)))[0];
   return {
+    baselineFingerprint: onlineOrderEditFingerprint(storedOrder, storedItems, contact),
     id: Number(order.id),
     orderNumber: order.orderNumber,
     status: order.status,
@@ -667,6 +675,7 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
         : null,
     })),
   };
+  }, { isolationLevel: "repeatable read", accessMode: "read only" });
 }
 
 /** تغيير حالة طلب (بحارس انتقال + عزل فرع). يعيد الحالة السابقة للتدقيق. */
@@ -816,8 +825,26 @@ export async function setOnlineOrderStatus(
   });
 }
 
+/** Canonical persisted frame, independent of query ordering and view-only timestamps. */
+function onlineOrderEditFingerprint(
+  order: typeof onlineOrders.$inferSelect,
+  items: Array<typeof onlineOrderItems.$inferSelect>,
+  customer: typeof customers.$inferSelect | null | undefined,
+): string {
+  const canonical = (value: unknown): unknown => {
+    if (value instanceof Date) return value.toISOString();
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, entry]) => [key, canonical(entry)]));
+    return value;
+  };
+  const { updatedAt: _updatedAt, ...persistedOrder } = order;
+  const contact = customer ? { id: customer.id, name: customer.name, phone: customer.phone, phone2: customer.phone2, phone3: customer.phone3, whatsapp: customer.whatsapp } : null;
+  return createHash("sha256").update(JSON.stringify(canonical({ order: persistedOrder, items: [...items].sort((a, b) => a.id - b.id), contact }))).digest("hex");
+}
+
 export interface UpdateOnlineOrderInput {
   id: number;
+  baselineFingerprint: string;
   scopedBranchId: number | null;
   customerName?: string | null;
   customerPhone?: string | null;
@@ -894,23 +921,25 @@ export async function updateOnlineOrder(
       });
     }
 
+    // Current reads are essential: withTx may already have an older RR read view.
+    // Every membership writer locks this parent first; lock children before effects.
+    const baselineItems = await tx.select().from(onlineOrderItems)
+      .where(eq(onlineOrderItems.onlineOrderId, order.id)).orderBy(asc(onlineOrderItems.id)).for("update");
+    const baselineCustomer = order.customerId == null ? null : (await tx.select().from(customers)
+      .where(eq(customers.id, order.customerId)).for("update", { noWait: true }))[0];
+    if (!input.baselineFingerprint || input.baselineFingerprint !== onlineOrderEditFingerprint(order, baselineItems, baselineCustomer)) {
+      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+        what: "تعذّر حفظ تعديلات الطلب",
+        why: input.baselineFingerprint ? "تغيّرت بيانات الطلب منذ فتح نموذج التعديل؛ احتُفظ بمسودتك" : "نسخة نموذج التعديل غير متاحة",
+        doThis: "راجع أحدث بيانات الطلب ثم أعد تحميلها صراحةً قبل تطبيق تعديلاتك",
+      }) });
+    }
+
     // 4. Resolve or update customer details if provided (CF-05: never mutate shared CRM phone/phone2/phone3 across orders; rebind order to matching/new customer record when phone changes)
     let targetCustomerId: number | undefined = order.customerId != null ? Number(order.customerId) : undefined;
     if (order.customerId != null && (input.customerName != null || input.customerPhone != null)) {
       const currentCustomerId = Number(order.customerId);
-      const [existingCustomer] = await tx
-        .select({
-          id: customers.id,
-          name: customers.name,
-          phone: customers.phone,
-          phone2: customers.phone2,
-          phone3: customers.phone3,
-          whatsapp: customers.whatsapp,
-          clientRequestId: customers.clientRequestId,
-        })
-        .from(customers)
-        .where(eq(customers.id, currentCustomerId))
-        .limit(1);
+      const existingCustomer = baselineCustomer;
 
       const normalizeOrderPhone = (raw: string): string =>
         normalizeIraqPhoneE164(
@@ -1046,7 +1075,7 @@ export async function updateOnlineOrder(
             .from(customers)
             .where(eq(customers.id, matchedCustomer.id))
             .limit(1)
-            .for("update");
+            .for("update", { noWait: true });
           const stillMatches =
             lockedMatched &&
             lockedMatched.deletedAt == null &&
@@ -1358,14 +1387,7 @@ export async function updateOnlineOrder(
 
     // 6. Handle items update if items array provided
     if (input.items !== undefined) {
-      const customizedItem = (await tx
-        .select({ id: onlineOrderItems.id })
-        .from(onlineOrderItems)
-        .where(and(
-          eq(onlineOrderItems.onlineOrderId, Number(order.id)),
-          sql`${onlineOrderItems.customizationSnapshot} is not null`,
-        ))
-        .limit(1))[0];
+      const customizedItem = baselineItems.find((item) => item.customizationSnapshot != null);
       if (customizedItem) {
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -1640,12 +1662,7 @@ export async function updateOnlineOrder(
       };
     } else {
       // Items were not modified, but address/governorate may have changed
-      const existingItems = await tx
-        .select({
-          lineTotal: onlineOrderItems.total,
-        })
-        .from(onlineOrderItems)
-        .where(eq(onlineOrderItems.onlineOrderId, order.id));
+      const existingItems = baselineItems.map((item) => ({ lineTotal: item.total }));
 
       const benefitDiscount = money(order.pricingBenefitDiscount ?? "0");
       const couponMerchDiscount = money(order.couponDiscount ?? "0");
@@ -1721,6 +1738,13 @@ export async function updateOnlineOrder(
         deliveryFee: quoteTotals.deliveryFee,
       };
     }
+  }).catch((error: unknown) => {
+    if (mysqlCodeFrom(error) !== "ER_LOCK_NOWAIT") throw error;
+    throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+      what: "تعذّر حفظ تعديلات الطلب الآن",
+      why: "بيانات العميل قيد تحديث متزامن؛ لم يُحفظ أي تعديل",
+      doThis: "انتظر اكتمال التحديث ثم راجع أحدث بيانات الطلب وأعد المحاولة",
+    }), cause: error });
   });
 }
 

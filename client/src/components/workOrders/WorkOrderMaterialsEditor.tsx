@@ -13,7 +13,7 @@
  * يحرّك المخزون ويُرحَّل قيدَ WIP مُكمِّلاً. الشاشة تقول ذلك صراحةً قبل التأكيد.
  */
 import { Plus, Trash2, TriangleAlert } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -63,18 +63,27 @@ export function WorkOrderMaterialsEditor({
   workOrderId, version, branchId, orderNumber, status, initial, onSaved, onCancel,
 }: WorkOrderMaterialsEditorProps) {
   const me = trpc.auth.me.useQuery();
-  const aggregatedInitial = useMemo(() => aggregateEditableMaterials(initial), [initial]);
+  const [baseline, setBaseline] = useState(() => ({ workOrderId, version, branchId, orderNumber, status, initial: aggregateEditableMaterials(initial) }));
+  const aggregatedInitial = baseline.initial;
   const [rows, setRows] = useState<EditableMaterial[]>(() => aggregateEditableMaterials(initial));
   const [search, setSearch] = useState("");
   const [reason, setReason] = useState("");
   const searchRef = useRef<HTMLInputElement | null>(null);
   const requestKeyRef = useRef<{ fingerprint: string; key: string } | null>(null);
+  function hydrate() {
+    const materials = aggregateEditableMaterials(initial);
+    setBaseline({ workOrderId, version, branchId, orderNumber, status, initial: materials });
+    setRows(materials); setReason(""); setSearch(""); requestKeyRef.current = null;
+  }
+  useEffect(() => { if (baseline.workOrderId !== workOrderId) hydrate(); }, [workOrderId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const stale = baseline.workOrderId === workOrderId && (version !== baseline.version || status !== baseline.status);
 
   // المواد استُهلكت لحظة «بدء التنفيذ» ⇒ التعديل بعدها يحرّك المخزون والدفتر فعلاً.
-  const consumed = status === "IN_PROGRESS" || status === "READY";
+  const consumed = baseline.status === "IN_PROGRESS" || baseline.status === "READY";
+  const locked = baseline.status === "DELIVERED" || baseline.status === "CANCELLED";
 
   const posList = trpc.catalog.posList.useQuery(
-    { branchId, tier: "RETAIL", query: search, limit: 20 },
+    { branchId: baseline.branchId, tier: "RETAIL", query: search, limit: 20 },
     { enabled: search.trim().length >= 2, staleTime: 15_000 },
   );
   const utils = trpc.useUtils();
@@ -134,7 +143,7 @@ export function WorkOrderMaterialsEditor({
     const code = raw.trim();
     if (!code) return;
     try {
-      const exact = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: "RETAIL" });
+      const exact = await utils.catalog.byBarcode.fetch({ barcode: code, branchId: baseline.branchId, tier: "RETAIL" });
       if (exact) {
         addVariant(exact);
         return;
@@ -159,6 +168,7 @@ export function WorkOrderMaterialsEditor({
   }
 
   async function save() {
+    if (baseline.workOrderId !== workOrderId || locked) return;
     if (!canLifecycleOperation(me.data, consumed ? "workOrders.requestControl" : "workOrders.setMaterials", true)) return notify.err("عملية تعديل البنود غير مفوضة لهذا الحساب.");
     if (!diff.length) return notify.info("لا تغييرات لحفظها.");
     const normalizedReason = reason.trim();
@@ -171,7 +181,7 @@ export function WorkOrderMaterialsEditor({
     if (
       !(await confirm({
         variant: consumed ? "danger" : "info",
-        title: `حفظ بنود الأمر ${orderNumber}`,
+        title: `حفظ بنود الأمر ${baseline.orderNumber}`,
         description: consumed
           ? `${lines.join(" · ")}. الأمر قيد التنفيذ والمواد مخصومةٌ سلفاً ⇒ سيُعدَّل المخزون بالفرق ويُسجَّل قيدٌ مُكمِّل. متابعة؟`
           : `${lines.join(" · ")}. لم يبدأ التنفيذ بعد ⇒ لا أثر على المخزون. متابعة؟`,
@@ -181,7 +191,7 @@ export function WorkOrderMaterialsEditor({
 
     const materials = rows.map((r) => ({ variantId: r.variantId, baseQuantity: r.baseQuantity }));
     if (consumed) {
-      const fingerprint = JSON.stringify({ workOrderId, version, normalizedReason, materials });
+      const fingerprint = JSON.stringify({ workOrderId, version: baseline.version, normalizedReason, materials });
       const existing = requestKeyRef.current;
       const requestKey = existing?.fingerprint === fingerprint ? existing.key : newClientRequestId();
       requestKeyRef.current = { fingerprint, key: requestKey };
@@ -189,13 +199,13 @@ export function WorkOrderMaterialsEditor({
         requestType: "MATERIAL_ADJUST",
         requestKey,
         workOrderId,
-        baseVersion: version,
+        baseVersion: baseline.version,
         reason: normalizedReason,
         payload: { materials },
       });
       return;
     }
-    setMaterials.mutate({ workOrderId, expectedVersion: version, reason: normalizedReason, materials });
+    setMaterials.mutate({ workOrderId, expectedVersion: baseline.version, reason: normalizedReason, materials });
   }
 
   return (
@@ -204,6 +214,13 @@ export function WorkOrderMaterialsEditor({
         <CardTitle className="text-base">تعديل بنود الأمر</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
+        {locked && <p role="alert" className="rounded-md border p-3 text-sm">هذا الأمر مُسلَّم أو مُلغى؛ لا يمكن تعديل بنوده.</p>}
+        {stale && <div role="alert" className="rounded-md border p-3 text-sm">
+          تغيّر هذا الأمر لدى مستخدم آخر. مدخلاتك والفروق محفوظة على النسخة الأصلية؛ راجع الأحدث قبل الحفظ.
+          <Button variant="outline" disabled={setMaterials.isPending || requestControl.isPending} onClick={async () => {
+            if (await confirm({ title: "تحميل النسخة الأحدث", description: "ستُلغى تعديلاتك الحالية وتُحمّل البنود والحالة الأحدث معاً.", confirmText: "تحميل الأحدث" })) hydrate();
+          }}>تحميل الأحدث وإلغاء تعديلاتي</Button>
+        </div>}
         {consumed && (
           <div className="badge-stock-low flex items-start gap-2 rounded-md border px-2.5 py-2 text-xs">
             <TriangleAlert aria-hidden className="size-3.5 shrink-0" />
@@ -325,7 +342,7 @@ export function WorkOrderMaterialsEditor({
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <Button onClick={save} disabled={setMaterials.isPending || requestControl.isPending || diff.length === 0 || reason.trim().length < 3}>
+          <Button onClick={save} disabled={locked || setMaterials.isPending || requestControl.isPending || diff.length === 0 || reason.trim().length < 3}>
             {setMaterials.isPending || requestControl.isPending
               ? "جارٍ الحفظ…"
               : consumed ? "إرسال طلب تعديل البنود" : "حفظ البنود"}

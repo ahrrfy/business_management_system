@@ -31,6 +31,7 @@ test("an unresolved database operation destroys its exact connection without rec
 });
 import {
   CAPABILITY,
+  runInventoryActivation,
   writeActivationJournal,
 } from "./inventory-activation-fence.mjs";
 import { assertInventoryResurrection } from "../../deploy/systemd/pm2-systemd-start.mjs";
@@ -211,6 +212,9 @@ for (const scenario of [
   "control-root-ancestor-unreadable",
   "control-service-ancestor-unreadable",
   "control-service-ancestor-exec",
+  "rollback-pid-zero",
+  "rollback-pid-zero-partial",
+  "rollback-pid-zero-orphan",
 ])
   test(`actual Linux adapter ownership census: ${scenario}`, async (t) => {
     const temp = fs.mkdtempSync(
@@ -345,6 +349,8 @@ for (const scenario of [
         },
       ];
       const journal = {
+        version: 1,
+        commit: "b".repeat(40),
         id: "12345678-1234-1234-1234-123456789abc",
         phase: "READY",
         nonce: "a".repeat(64),
@@ -353,6 +359,9 @@ for (const scenario of [
         artifacts,
       };
       const calls = [];
+      const rollbackEvents = [];
+      let readyVersion = 0;
+      let pendingReadyVersion;
       const execute = (command, args) => {
         calls.push([command, ...args]);
         if (command === "systemctl") return helper;
@@ -360,9 +369,10 @@ for (const scenario of [
         if (args[0] === "delete") {
           const selected = live.find((r) => r.pm_id === Number(args[1]));
           assert.ok(selected && selected.name !== "unrelated-app");
-          fs.rmSync(path.join(procRoot, String(selected.pid)), {
-            recursive: true,
-          });
+          if (selected.pid > 0)
+            fs.rmSync(path.join(procRoot, String(selected.pid)), {
+              recursive: true,
+            });
           live = live.filter((r) => r !== selected);
           if (
             (scenario === "late-old-orphan" && selected.pid === 10) ||
@@ -376,12 +386,46 @@ for (const scenario of [
             JSON.stringify(live.map((r) => ({ ...r.pm2_env, name: r.name }))),
           );
         if (args[0] === "start") {
+          if (
+            args[1] ===
+            path.join(
+              projectRoot,
+              ".runtime",
+              `inventory-prior-${journal.id}.json`,
+            )
+          ) {
+            assert.equal(readyVersion, 0);
+            const saved = JSON.parse(
+              fs.readFileSync(
+                path.join(pm2Home, "erp-inventory-activation.json"),
+              ),
+            );
+            assert.equal(saved.phase, "ROLLED_BACK");
+            assert.equal(saved.active, null);
+            rollbackEvents.push("RESTART_OLD");
+            for (const [i, app] of JSON.parse(
+              fs.readFileSync(args[1]),
+            ).apps.entries()) {
+              const pid = 10 + i;
+              addPid(pid, String(pid + 900));
+              live.push(makeRow(app.name, pid, app.script));
+            }
+            return "";
+          }
           const a = artifacts.find((a) => a.name === args.at(-1));
           for (let i = 0; i < a.instances; i++) {
             const pid = a.name === "erp-server" ? 20 + i : 30;
-            addPid(pid);
-            live.push(makeRow(a.name, pid, a.script));
+            const candidate = makeRow(a.name, pid, a.script);
+            if (
+              scenario.startsWith("rollback-pid-zero") &&
+              !(scenario === "rollback-pid-zero-partial" && pid !== 20)
+            ) {
+              candidate.pid = 0;
+              candidate.pm2_env.status = "waiting restart";
+            } else addPid(pid);
+            live.push(candidate);
           }
+          if (scenario === "rollback-pid-zero-orphan") addPid(88, "188", 1);
         }
         return "";
       };
@@ -389,7 +433,9 @@ for (const scenario of [
       const connectionA = {
         on() {},
         beginTransaction: async () => {},
-        commit: async () => {},
+        commit: async () => {
+          rollbackEvents.push("A_COMMIT");
+        },
         query: async (sql) => {
           if (sql.startsWith("SHOW GRANTS"))
             return [[{ grant: "GRANT ALL PRIVILEGES ON *.* TO root" }]];
@@ -405,16 +451,49 @@ for (const scenario of [
           throw new Error(sql);
         },
       };
+      const connectionB = {
+        beginTransaction: async () => {
+          pendingReadyVersion = readyVersion;
+          rollbackEvents.push("B_BEGIN");
+        },
+        commit: async () => {
+          readyVersion = pendingReadyVersion;
+          pendingReadyVersion = undefined;
+          rollbackEvents.push("INVALIDATE_COMMIT");
+        },
+        rollback: async () => {
+          pendingReadyVersion = undefined;
+          rollbackEvents.push("B_ROLLBACK");
+        },
+        query: async (sql) => {
+          if (sql.includes("CONNECTION_ID()")) return [[{ id: 2 }]];
+          if (sql.includes("@@server_uuid"))
+            return [[{ db: "erp_test", serverUuid: "server" }]];
+          if (sql.startsWith("SELECT id FROM inventoryProjectionState"))
+            return [[{ id: 1 }]];
+          if (
+            sql.startsWith("UPDATE inventoryProjectionState SET readyVersion=0")
+          ) {
+            pendingReadyVersion = 0;
+            rollbackEvents.push("INVALIDATE_UPDATE");
+            return [[]];
+          }
+          throw new Error(sql);
+        },
+      };
       const op = createLinuxActivationOperations({
         projectRoot,
         pm2Home,
         journal,
         connectionA,
-        connectionB: { query: async () => [[{ id: 2 }]] },
+        connectionB,
         candidateWebApp: { name: "erp-server" },
         bridgeConfigPath: bridgeConfig,
         installCandidate: async () => {},
-        restoreArtifact: async () => {},
+        restoreArtifact: async () => {
+          assert.equal(readyVersion, 0);
+          rollbackEvents.push("RESTORE_ARTIFACT");
+        },
         execute,
         procRoot,
         uid: 1000,
@@ -440,6 +519,104 @@ for (const scenario of [
           };
         },
       });
+      if (scenario.startsWith("rollback-pid-zero")) {
+        orphan = false;
+        journal.priorArtifacts = live
+          .filter((r) => r !== unrelated)
+          .map((r) => {
+            fs.writeFileSync(r.pm2_env.pm_exec_path, `prior-${r.name}`);
+            const hash = hashFile(r.pm2_env.pm_exec_path);
+            return {
+              name: r.name,
+              script: r.pm2_env.pm_exec_path,
+              bundle: r.pm2_env.pm_exec_path,
+              hash,
+              scriptHash: hash,
+              instances: 1,
+            };
+          });
+        const verify = op.verifyCandidates;
+        op.verifyCandidates = async (current) => {
+          let time = 0;
+          const clock = t.mock.method(Date, "now", () => (time += 31000));
+          try {
+            return await verify(current);
+          } finally {
+            clock.mock.restore();
+          }
+        };
+        let latest;
+        const activate = async (_b, options) => {
+          await options.fence.assertQuiescentAndLocked();
+          readyVersion = 1;
+          rollbackEvents.push("ACTIVATE_COMMIT");
+        };
+        const run = () =>
+          runInventoryActivation({
+            journal,
+            connectionB,
+            operations: op,
+            activate,
+            persist: async (value) => {
+              latest = structuredClone(value);
+              writeActivationJournal(
+                path.join(pm2Home, "erp-inventory-activation.json"),
+                value,
+              );
+              rollbackEvents.push(`PERSIST_${value.phase}`);
+            },
+          }).catch((error) => {
+            if (error instanceof AggregateError)
+              t.diagnostic(error.errors.map((e) => e.message).join(" | "));
+            throw error;
+          });
+        if (scenario === "rollback-pid-zero-orphan") {
+          await assert.rejects(
+            run(),
+            (e) =>
+              e.message === "INVENTORY_ACTIVATION_FATAL" &&
+              e.errors[1].message === "INVENTORY_UNCLASSIFIED_PROCESS",
+          );
+          assert.equal(readyVersion, 1);
+          assert.equal(latest.phase, "FATAL");
+          assert.ok(!rollbackEvents.includes("INVALIDATE_UPDATE"));
+          assert.ok(!rollbackEvents.includes("RESTART_OLD"));
+        } else {
+          await assert.rejects(run(), /INVENTORY_CANDIDATE_PID_MISSING/);
+          assert.equal(readyVersion, 0);
+          assert.equal(latest.phase, "ROLLED_BACK");
+          assert.equal(latest.active, null);
+          assert.deepEqual(
+            rollbackEvents.filter((e) =>
+              [
+                "INVALIDATE_COMMIT",
+                "RESTORE_ARTIFACT",
+                "PERSIST_ROLLBACK_READY",
+                "A_COMMIT",
+                "PERSIST_ROLLED_BACK",
+                "RESTART_OLD",
+              ].includes(e),
+            ),
+            [
+              "INVALIDATE_COMMIT",
+              "RESTORE_ARTIFACT",
+              "PERSIST_ROLLBACK_READY",
+              "A_COMMIT",
+              "PERSIST_ROLLED_BACK",
+              "RESTART_OLD",
+            ],
+          );
+          assert.deepEqual(
+            live
+              .filter((r) => r !== unrelated)
+              .map((r) => r.pm2_env.pm_exec_path),
+            journal.priorArtifacts.map((a) => a.script),
+          );
+        }
+        assert.ok(live.includes(unrelated));
+        assert.ok(!calls.some((c) => c.includes("kill") || c.includes("90")));
+        return;
+      }
       if (scenario === "normal") {
         const rejectsUntrustedHelper = () =>
           assert.rejects(op.preflight(), /INSTALLED_BOOT_INTERLOCK_REQUIRED/);

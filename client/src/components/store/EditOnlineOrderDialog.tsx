@@ -9,6 +9,7 @@ import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { UnifiedProductSearch, type PosProductRow } from "@/components/search/UnifiedProductSearch";
 import { GOVERNORATES, deliveryFeeFor, isBaghdadGovernorate } from "@shared/governorates";
 import { trpc } from "@/lib/trpc";
+import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { fmtInt } from "@/lib/money";
 import { Loader2, Trash2, ShoppingCart, AlertCircle, Package } from "lucide-react";
@@ -233,6 +234,10 @@ export function EditOnlineOrderDialog({
     { enabled: open && orderId != null }
   );
 
+  const [detailFrame, setDetailFrame] = useState<typeof detailQ.data>();
+  const [latestReview, setLatestReview] = useState<typeof detailQ.data>();
+  const [hasConflict, setHasConflict] = useState(false);
+
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [governorate, setGovernorate] = useState("baghdad");
@@ -256,6 +261,9 @@ export function EditOnlineOrderDialog({
     });
     hydratedOrderKeyRef.current = decision.nextHydratedOrderKey;
     if (decision.shouldHydrate && detailQ.data) {
+      setDetailFrame(detailQ.data);
+      setLatestReview(undefined);
+      setHasConflict(false);
       const next = buildInitialEditOnlineOrderFormState(detailQ.data);
       setCustomerName(next.customerName);
       setCustomerPhone(next.customerPhone);
@@ -277,12 +285,15 @@ export function EditOnlineOrderDialog({
       onOpenChange(false);
       onSuccess?.();
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => {
+      if (e.data?.code === "CONFLICT") setHasConflict(true);
+      notify.err(e);
+    },
   });
 
   const zoneOptions = useMemo(
-    () => resolveEditableDeliveryZoneOptions(detailQ.data?.deliveryZones, governorate),
-    [detailQ.data?.deliveryZones, governorate],
+    () => resolveEditableDeliveryZoneOptions(detailFrame?.deliveryZones, governorate),
+    [detailFrame?.deliveryZones, governorate],
   );
 
   const totals = useMemo(
@@ -295,11 +306,11 @@ export function EditOnlineOrderDialog({
         freeShippingThresholdSetting: settingsQ.data?.freeShippingThreshold,
         freeShippingThresholdGovernoratesSetting:
           settingsQ.data?.freeShippingThresholdGovernorates,
-        pricingBenefitDiscount: detailQ.data?.pricingBenefitDiscount,
-        couponDiscount: detailQ.data?.couponDiscount,
-        couponFreeShipping: detailQ.data?.couponFreeShipping,
+        pricingBenefitDiscount: detailFrame?.pricingBenefitDiscount,
+        couponDiscount: detailFrame?.couponDiscount,
+        couponFreeShipping: detailFrame?.couponFreeShipping,
       }),
-    [governorate, zoneOptions, items, itemsModified, settingsQ.data, detailQ.data],
+    [governorate, zoneOptions, items, itemsModified, settingsQ.data, detailFrame],
   );
 
   const {
@@ -311,10 +322,10 @@ export function EditOnlineOrderDialog({
     isFreeDelivery,
     grandTotal,
   } = totals;
-  const hasCoupon = Boolean(detailQ.data?.couponCode);
+  const hasCoupon = Boolean(detailFrame?.couponCode);
   const hasCustomization = items.some((item) => item.hasCustomization);
   const itemsLocked = hasCoupon || hasCustomization;
-  const couponDiscount = Number(detailQ.data?.couponDiscount ?? 0);
+  const couponDiscount = Number(detailFrame?.couponDiscount ?? 0);
 
   function handleQuantityChange(index: number, newQty: number, fromDraft = false) {
     if (!Number.isFinite(newQty) || newQty <= 0) return;
@@ -371,7 +382,7 @@ export function EditOnlineOrderDialog({
       const retailUnitPrice = Number(product.price ?? effectivePriceStr) || unitPrice;
 
       const factor = Math.max(1, Number(product.conversionFactor) || 1);
-      const initialQtyForUnit = (detailQ.data?.items ?? [])
+      const initialQtyForUnit = (detailFrame?.items ?? [])
         .filter((i) => i.productUnitId === product.productUnitId)
         .reduce((acc, i) => acc + (Math.floor(Number(i.quantity)) || 0), 0);
       const freeBase = Math.max(0, Number(product.availableBase ?? product.stockBase ?? 0));
@@ -433,11 +444,11 @@ export function EditOnlineOrderDialog({
         ];
       });
     },
-    [detailQ.data?.items, items],
+    [detailFrame?.items, items],
   );
 
   function handleSave() {
-    if (!orderId) return;
+    if (!orderId || detailFrame?.id !== orderId || !detailFrame.baselineFingerprint || hasConflict) return;
     if (items.length === 0) {
       notify.err("يجب أن يحتوي الطلب على صنف واحد على الأقل");
       return;
@@ -451,6 +462,7 @@ export function EditOnlineOrderDialog({
 
     updateMutation.mutate({
       id: orderId,
+      baselineFingerprint: detailFrame.baselineFingerprint,
       customerName: customerName.trim() || null,
       customerPhone: customerPhone.trim() || null,
       governorate,
@@ -466,8 +478,39 @@ export function EditOnlineOrderDialog({
     });
   }
 
+  async function reviewLatest() {
+    setLatestReview(undefined);
+    try {
+      const result = await detailQ.refetch();
+      if (result.status !== "success" || result.data?.id !== orderId || !result.data.baselineFingerprint) {
+        notify.err("تعذّر تحميل أحدث بيانات الطلب. مسودتك محفوظة؛ أعد المحاولة.");
+        return;
+      }
+      setLatestReview(result.data);
+    } catch {
+      notify.err("تعذّر تحميل أحدث بيانات الطلب. مسودتك محفوظة؛ أعد المحاولة.");
+    }
+  }
+
+  async function reloadReviewedOrder() {
+    if (!latestReview || latestReview.id !== orderId) return;
+    if (!await confirm({ title: "إعادة تحميل بيانات الطلب", description: "ستُستبدل مسودتك بالبيانات التي راجعتها. انسخ أي تعديلات تريد تطبيقها مجدداً قبل المتابعة.", confirmText: "استبدال المسودة", variant: "warning" })) return;
+    const next = buildInitialEditOnlineOrderFormState(latestReview);
+    setDetailFrame(latestReview);
+    setCustomerName(next.customerName);
+    setCustomerPhone(next.customerPhone);
+    setGovernorate(next.governorate);
+    setShippingAddress(next.shippingAddress);
+    setNotes(next.notes);
+    setItems(next.items);
+    setItemsModified(false);
+    setQtyDrafts({});
+    setLatestReview(undefined);
+    setHasConflict(false);
+  }
+
   const isLoading = detailQ.isLoading;
-  const orderBranchId = detailQ.data?.branchId ?? null;
+  const orderBranchId = detailFrame?.branchId ?? null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -475,10 +518,23 @@ export function EditOnlineOrderDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-xl font-bold">
             <Package className="size-5 text-primary" />
-            تعديل طلب المتجر {detailQ.data ? `#${detailQ.data.orderNumber}` : ""}
+            تعديل طلب المتجر {detailFrame ? `#${detailFrame.orderNumber}` : ""}
           </DialogTitle>
         </DialogHeader>
 
+        {hasConflict && (
+          <div role="alert" className="rounded border p-3 space-y-2">
+            <p>تغيّرت بيانات الطلب. مسودتك محفوظة؛ راجع التعديلات الأحدث قبل إعادة المحاولة.</p>
+            <Button variant="outline" onClick={() => void reviewLatest()} disabled={detailQ.isFetching}>مراجعة أحدث بيانات الطلب</Button>
+            {latestReview && <div className="space-y-2 text-sm">
+              <p>البيانات الأحدث: {latestReview.customerName} — {latestReview.customerPhone}</p>
+              <p>{latestReview.governorate} — {latestReview.addressText}</p>
+              <p>{latestReview.customerNotes}</p>
+              <ul>{latestReview.items.map((item) => <li key={item.id}>{item.productName} — {item.quantity} {item.unitName}</li>)}</ul>
+              <Button variant="outline" onClick={() => void reloadReviewedOrder()}>استبدال المسودة بالبيانات الأحدث</Button>
+            </div>}
+          </div>
+        )}
         {isLoading ? (
           <div className="flex h-48 items-center justify-center">
             <Loader2 className="size-8 animate-spin text-muted-foreground" />
@@ -562,7 +618,7 @@ export function EditOnlineOrderDialog({
                 <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400 flex items-start gap-2">
                   <AlertCircle className="size-4 shrink-0 mt-0.5" />
                   <div>
-                    <span className="font-bold">كوبون خصم مفعّل ({detailQ.data?.couponCode}):</span>
+                    <span className="font-bold">كوبون خصم مفعّل ({detailFrame?.couponCode}):</span>
                     <span className="mr-1">
                       حُظر تعديل أصناف السلة لحماية الخصم المحاسبي للكوبون. يمكنك تعديل بيانات المستلم، المحافظة، وملاحظات التوصيل فقط. لتغيير الأصناف، يُرجى إلغاء الطلب وإنشاء طلب جديد.
                     </span>
@@ -728,7 +784,7 @@ export function EditOnlineOrderDialog({
 
               {hasCoupon && couponDiscount > 0 && (
                 <div className="flex justify-between text-emerald-600 dark:text-emerald-400">
-                  <span>كوبون الخصم ({detailQ.data?.couponCode}):</span>
+                  <span>كوبون الخصم ({detailFrame?.couponCode}):</span>
                   <span className="font-semibold">{fmtInt(couponDiscount)} د.ع (مطبّق ومخصوم ضمن البنود)</span>
                 </div>
               )}
@@ -742,7 +798,7 @@ export function EditOnlineOrderDialog({
                 <div className="text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1 mt-1">
                   <AlertCircle className="size-3.5" />
                   {couponShippingFree
-                    ? `شحن مجاني مفعّل عبر الكوبون (${detailQ.data?.couponCode ?? ""})`
+                    ? `شحن مجاني مفعّل عبر الكوبون (${detailFrame?.couponCode ?? ""})`
                     : thresholdFree && freeShippingThreshold != null
                       ? `مؤهل للشحن المجاني (قيمة الأصناف بالمفرد تجاوزت ${fmtInt(freeShippingThreshold)} د.ع)`
                       : "مؤهل للشحن المجاني"}
@@ -764,7 +820,7 @@ export function EditOnlineOrderDialog({
           <Button
             type="button"
             onClick={handleSave}
-            disabled={updateMutation.isPending || isLoading || items.length === 0}
+            disabled={updateMutation.isPending || isLoading || items.length === 0 || hasConflict || !detailFrame?.baselineFingerprint || detailFrame.id !== orderId}
             className="gap-2"
           >
             {updateMutation.isPending && <Loader2 className="size-4 animate-spin" />}
