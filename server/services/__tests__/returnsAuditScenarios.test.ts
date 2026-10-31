@@ -10,13 +10,35 @@
  * ٦) صحة عقود التوجيه الموحدة من الفواتير وأوامر الشراء إلى البوابة المركزية.
  */
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import ts from "typescript";
+import { purchaseReturnCartInputSchema } from "../../../shared/purchaseReturnCartInput";
+const cartProbe = vi.hoisted(() => ({ request: vi.fn(), read: vi.fn() }));
+vi.mock("../purchase/returnGovernance", () => ({ requestPurchaseReturn: cartProbe.request }));
+vi.mock("../purchaseReturnsService", () => ({ getPurchaseReturn: cartProbe.read }));
+import { executeGovernedReturnCart } from "../purchase/returnCart";
 
 const readServer = (rel: string) =>
   readFileSync(new URL(`../../${rel}`, import.meta.url), "utf8");
 
 const readClient = (rel: string) =>
   readFileSync(new URL(`../../../client/src/${rel}`, import.meta.url), "utf8");
+
+function functionSource(file: string, name: string) {
+  const source = ts.createSourceFile(file, readServer(file), ts.ScriptTarget.Latest, true);
+  const fn = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name);
+  if (!fn || !ts.isFunctionDeclaration(fn) || !fn.body) throw new Error(`Missing owner ${file}:${name}`);
+  return fn.body.getText(source);
+}
+const purchaseExecution = functionSource("services/purchase/returnGovernance.ts", "decidePurchaseReturnAuthorized");
+const purchaseRequest = functionSource("services/purchase/returnException.ts", "createExceptionReturnRequest");
+const purchaseCart = functionSource("services/purchase/returnCart.ts", "executeGovernedReturnCart");
+const cartInput = {
+  supplierId: 1, branchId: 2, reference: "supplier-return-note-42", evidenceType: "RETURN_NOTE" as const,
+  items: [{ variantId: 3, productName: "قلم", quantity: 2, unitCost: "5.00" }],
+  settlement: { method: "CASH_IN" as const, totalAmount: "10.00", shiftId: 7 },
+  reason: "إرجاع للمورد", clientRequestId: "cart-42",
+};
 
 describe("١. تدقيق الأثر المالي والمخزني والتسجيل الذري في returnRouter", () => {
   const routerSrc = readServer("routers/returnRouter.ts");
@@ -38,21 +60,55 @@ describe("١. تدقيق الأثر المالي والمخزني والتسجي
     expect(routerSrc).toContain(
       "executePurchaseReturnCart: salesManagerProcedure",
     );
-    expect(routerSrc).toContain(
-      'min(1, "يجب تحديد صنف واحد على الأقل للمرتجع")',
-    );
-    expect(routerSrc).toContain(
-      'z.enum(["CREDIT_OFFSET", "CASH_IN", "CARD_TRANSFER"])',
-    );
-    expect(routerSrc).toContain("adjustSupplierBalance(");
-    expect(routerSrc).toContain('movementType: "OUT"');
-    expect(routerSrc).toContain('referenceType: "PURCHASE_RETURN"');
+    // Test the exact schema consumed by this route, including rejected boundaries.
+    const route = routerSrc.slice(routerSrc.indexOf("executePurchaseReturnCart: salesManagerProcedure"));
+    expect(route).toMatch(/\.input\(purchaseReturnCartInputSchema\)[\s\S]*executeGovernedReturnCart\(input,/);
+    expect(purchaseReturnCartInputSchema.safeParse(cartInput).success).toBe(true);
+    for (const method of ["CREDIT_OFFSET", "CASH_IN", "CARD_TRANSFER"]) {
+      expect(purchaseReturnCartInputSchema.safeParse({ ...cartInput, settlement: { ...cartInput.settlement, method } }).success).toBe(true);
+    }
+    for (const invalid of [{ ...cartInput, items: [] }, { ...cartInput, settlement: { ...cartInput.settlement, method: "UNKNOWN" } },
+      { ...cartInput, items: [{ ...cartInput.items[0], quantity: 0 }] }]) {
+      expect(purchaseReturnCartInputSchema.safeParse(invalid).success).toBe(false);
+    }
+    expect(purchaseExecution).toContain("adjustSupplierBalance(tx");
+    expect(purchaseExecution).toMatch(/applyMovement\(tx,[\s\S]*movementType: "OUT"[\s\S]*referenceType: "PURCHASE_RETURN"/);
   });
 
-  it("يضمن التسجيل في سجل التدقيق الإداري logAudit لكل عملية مرتجع", () => {
+  it("يحفظ تدقيق البيع ودليل طلب وقرار وتنفيذ الشراء المحكم داخل معاملته", () => {
     expect(routerSrc).toContain("logAudit(");
     expect(routerSrc).toContain('action: "sale.return_cart"');
-    expect(routerSrc).toContain('action: "purchase.return_cart"');
+    expect(purchaseCart).toMatch(/await requestPurchaseReturn\([\s\S]*requestKey: input.clientRequestId/);
+    const dispatch = functionSource("services/purchase/returnGovernance.ts", "requestPurchaseReturn");
+    expect(dispatch).toMatch(/input.sourceKind === "OWNER_EXCEPTION"[\s\S]*createExceptionReturnRequest\(input, actor\)[\s\S]*finishReturnRequest\(result, input.reason, actor\)/);
+    expect(purchaseRequest).toContain("withTx(");
+    expect(purchaseRequest).toMatch(/tx.insert\(purchaseReturnRequests\).values\(\{[\s\S]*payloadCanonical: canonical,[\s\S]*payloadHash: hash,[\s\S]*requestedBy: actor.userId/);
+    expect(purchaseExecution).toContain("withTx(");
+    expect(purchaseExecution).toMatch(/const executionEvidence = \{[\s\S]*requestId: request.id,[\s\S]*ownerId: actor.userId,[\s\S]*accountingEntryId,[\s\S]*receiptId: cashReceiptId,/);
+    expect(purchaseExecution).toMatch(/\.update\(purchaseReturns\)\s*\.set\(\{\s*executionEvidence,\s*executionEvidenceHash: evidenceHash\(executionEvidence\)/);
+    expect(purchaseExecution).toMatch(/\.update\(purchaseReturnRequests\)\s*\.set\(\{[\s\S]*reviewedBy: actor.userId,[\s\S]*decisionKey: key,[\s\S]*decisionHash: hash,/);
+    const finish = functionSource("services/purchase/returnGovernance.ts", "finishReturnRequest");
+    expect(finish).toMatch(/request.status === "APPROVED"[\s\S]*eq\(purchaseReturns.requestId, result.requestId\)/);
+    expect(finish).toMatch(/request.status === "APPROVED" && !posted\)\s*returnConflict/);
+    const reader = functionSource("services/purchaseReturnsService.ts", "getPurchaseReturn");
+    expect(reader).toMatch(/\.from\(purchaseReturns\)/);
+    expect(reader).toContain("requestId: purchaseReturns.requestId");
+    expect(reader).toContain("return { ...header, items }");
+  });
+
+  it("يرجع الطلب المنتظر دون مستند تنفيذ، ويقرأ المستند فقط بعد الاعتماد", async () => {
+    cartProbe.request.mockReset(); cartProbe.read.mockReset();
+    const actor = { userId: 4, branchId: 2, role: "manager" };
+    cartProbe.request.mockResolvedValueOnce({ requestId: 42, status: "PENDING", idempotent: false });
+    expect(await executeGovernedReturnCart(cartInput, actor)).toEqual({ mode: "REQUESTED", requestId: 42, status: "PENDING" });
+    expect(cartProbe.read).not.toHaveBeenCalled();
+    expect(cartProbe.request).toHaveBeenLastCalledWith(expect.objectContaining({ sourceKind: "OWNER_EXCEPTION", requestKey: "cart-42", supplierId: 1, branchId: 2,
+      settlement: "CASH", paymentMethod: "CASH", cashRoute: { cashBucket: "DRAWER", shiftId: 7 } }), actor);
+    const document = { id: 73, requestId: 42, postedBy: 4, evidenceReference: cartInput.reference };
+    cartProbe.request.mockResolvedValueOnce({ requestId: 42, status: "APPROVED", purchaseReturnId: 73 });
+    cartProbe.read.mockResolvedValueOnce(document);
+    expect(await executeGovernedReturnCart(cartInput, actor)).toEqual({ mode: "EXECUTED", requestId: 42, purchaseReturnId: 73, document });
+    expect(cartProbe.read).toHaveBeenCalledWith(73, 2);
   });
 });
 
@@ -180,12 +236,11 @@ describe("٥. تدقيق ربط الأدراج النقدية والمطابقة
   });
 
   it("يربط مرتجع المشتريات النقدي بدرج الوردية مع إيصال DRAWER IN وقيد PAYMENT_IN", () => {
-    expect(routerSrc).toContain("recordPurchaseReturnCartReceipt(tx");
-    expect(routerSrc).toContain("PAYMENT_IN_SUPPLIER_REFUND");
-    expect(routerSrc).toContain("roleDebits: { CASH: returnTotalDec }");
-    expect(routerSrc).toContain("roleCredits: { AP: returnTotalDec }");
-    expect(returnServiceSrc).toContain('cashBucket: "DRAWER"');
-    expect(returnServiceSrc).toContain('direction: "IN"');
+    expect(purchaseCart).toMatch(/input.settlement.method === "CASH_IN"\s*\? \{\s*cashBucket: "DRAWER",\s*shiftId: input.settlement.shiftId/);
+    expect(purchaseExecution).toMatch(/tx.insert\(receipts\).values\(\{[\s\S]*cashBucket: cash\?\.cashBucket \?\? null,[\s\S]*direction: "IN"/);
+    expect(purchaseExecution).toMatch(/paymentAssetRole\(\s*request.paymentMethod,\s*cash\?\.cashBucket \?\? null,\s*"IN"/);
+    expect(purchaseExecution).toMatch(/const cashSource = \{\s*roleDebits: \{ \[asset\]: total \},\s*roleCredits: \{ AP: total \}/);
+    expect(purchaseExecution).toMatch(/postEntry\(tx, \{\s*entryType: "PAYMENT_IN",[\s\S]*receiptId: cashReceiptId,[\s\S]*"PAYMENT_IN_SUPPLIER_REFUND"[\s\S]*postingSourceComponents: cashSource/);
   });
 
   it("بوابات المرتجعات SalesReturnPortal وPurchaseReturnPortal تعرض منتقي الأدراج عند اختيار الاسترداد النقدي", () => {

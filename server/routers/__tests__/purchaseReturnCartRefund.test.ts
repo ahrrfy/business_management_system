@@ -12,29 +12,16 @@
  * (debit CARD_BANK / credit AP) يُصافر خفضَ RETURN ⇒ صافي AP صفرٌ على الدفتر والرصيد معاً.
  * راجع ذاكرة purchase-return-cart-money-trail-2026-09-11.
  */
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { TrpcContext } from "../../context";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { returnRouter } from "../returnRouter";
+import { router } from "../../trpc";
+const api = router({ returns: returnRouter });
 import { reconcileSupplierBalances } from "../../services/reconcileService";
-
-const TABLES = [
-  "accountingEntries",
-  "receipts",
-  "idempotencyKeys",
-  "inventoryMovements",
-  "branchStock",
-  "productUnits",
-  "productVariants",
-  "products",
-  "shifts",
-  "auditLogs",
-  "suppliers",
-  "branches",
-  "users",
-];
+import { truncateAllTables } from "../../services/__tests__/__testUtils__";
 
 function db() {
   const value = getDb();
@@ -42,28 +29,36 @@ function db() {
   return value;
 }
 
-async function reset() {
-  await db().execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const table of TABLES) await db().execute(sql.raw(`TRUNCATE TABLE \`${table}\``));
-  await db().execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
-}
-
 async function seed() {
-  await db().insert(s.branches).values({ id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" });
+  await db()
+    .insert(s.branches)
+    .values({ id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" });
   await db().insert(s.users).values({
     id: 1,
     openId: "pr-cart-manager",
     name: "مدير المرتجعات",
-    role: "manager",
+    role: "admin",
     branchId: 1,
     loginMethod: "local",
-    isOwner: false,
+    isOwner: true,
   });
   await db().insert(s.products).values({ id: 1, name: "قلم" });
-  await db().insert(s.productVariants).values({ id: 1, productId: 1, sku: "PEN-1", costPrice: "5.00" });
-  await db().insert(s.productUnits).values({ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true });
-  await db().insert(s.suppliers).values({ id: 1, name: "مورد الاختبار", currentBalance: "0.00" });
-  await db().insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 100 });
+  await db()
+    .insert(s.productVariants)
+    .values({ id: 1, productId: 1, sku: "PEN-1", costPrice: "5.00" });
+  await db().insert(s.productUnits).values({
+    id: 1,
+    variantId: 1,
+    unitName: "قطعة",
+    conversionFactor: "1",
+    isBaseUnit: true,
+  });
+  await db()
+    .insert(s.suppliers)
+    .values({ id: 1, name: "مورد الاختبار", currentBalance: "0.00" });
+  await db()
+    .insert(s.branchStock)
+    .values({ variantId: 1, branchId: 1, quantity: 100 });
   // وردية مفتوحة لمسار CASH_IN (يتطلّب درجاً صريحاً).
   await db().insert(s.shifts).values({
     id: 1,
@@ -78,24 +73,32 @@ async function seed() {
 
 function context(): TrpcContext {
   return {
+    sessionId: null,
+    nativeClientId: null,
+    platformAdmin: null,
     req: { headers: {} } as TrpcContext["req"],
     res: { cookie() {}, clearCookie() {} } as unknown as TrpcContext["res"],
     user: {
       id: 1,
-      role: "manager",
+      role: "admin",
       branchId: 1,
       name: "مدير المرتجعات",
       email: "pr-cart@test.local",
       isActive: true,
-      isOwner: false,
+      isOwner: true,
     } as TrpcContext["user"],
   };
 }
 
-const items = [{ variantId: 1, productName: "قلم", quantity: 60, unitCost: "5.00" }];
+const items = [
+  { variantId: 1, productName: "قلم", quantity: 60, unitCost: "5.00" },
+];
 
 async function supplierBalance(id: number): Promise<string> {
-  const rows = await db().select({ b: s.suppliers.currentBalance }).from(s.suppliers).where(eq(s.suppliers.id, id));
+  const rows = await db()
+    .select({ b: s.suppliers.currentBalance })
+    .from(s.suppliers)
+    .where(eq(s.suppliers.id, id));
   return String(rows[0]?.b ?? "0.00");
 }
 
@@ -103,25 +106,106 @@ async function entriesOfType(entryType: "RETURN" | "PAYMENT_IN") {
   return db()
     .select()
     .from(s.accountingEntries)
-    .where(and(eq(s.accountingEntries.entryType, entryType), eq(s.accountingEntries.supplierId, 1)));
+    .where(
+      and(
+        eq(s.accountingEntries.entryType, entryType),
+        eq(s.accountingEntries.supplierId, 1),
+      ),
+    );
 }
 
 beforeEach(async () => {
-  await reset();
+  await truncateAllTables();
   await seed();
 });
 
 describe("returns.executePurchaseReturnCart — سلامة المسار الماليّ لطرق التسوية", () => {
-  it("⭐ CARD_TRANSFER: إيصال قبضٍ (IN/تحويل بلا درج) + قيد PAYMENT_IN(CARD_BANK) + reconcile نظيف + رصيد صافٍ صفر", async () => {
-    const caller = returnRouter.createCaller(context());
-    const res = await caller.executePurchaseReturnCart({
+  it("rejects live cost visibility revocation despite allowed cart and request operations", async () => {
+    const policy = (visible: boolean) => ({
+      version: 1 as const,
+      grants: {
+        "operation.returns.executePurchaseReturnCart": true,
+        "operation.purchaseReturnGovernance.requestReturn": true,
+      },
+      dataVisibility: { purchaseCost: visible, profitMargin: visible },
+    });
+    await db()
+      .insert(s.users)
+      .values({
+        id: 2,
+        openId: "cart-visibility-manager",
+        role: "manager",
+        branchId: 1,
+        operationPolicy: policy(false),
+      });
+    const stale = context();
+    stale.user = {
+      ...stale.user!,
+      id: 2,
+      role: "manager",
+      isOwner: false,
+      operationPolicyEnabled: true,
+      resolvedOperationPolicy: policy(true),
+    };
+    const input = {
       supplierId: 1,
+      reference: "SUPPLIER-VISIBILITY-ACK",
+      evidenceType: "SUPPLIER_ACKNOWLEDGEMENT" as const,
       items,
-      settlement: { method: "CARD_TRANSFER", totalAmount: "300.00", reference: "TRX-9931" },
+      settlement: { method: "CREDIT_OFFSET" as const, totalAmount: "300.00" },
+      reason: "اتفاق المورد على إعادة المخزون",
+      clientRequestId: "cart-visibility-revocation",
+    };
+    await expect(
+      api.createCaller(stale).returns.executePurchaseReturnCart(input),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    for (const table of [
+      s.purchaseReturnRequests,
+      s.purchaseReturns,
+      s.inventoryMovements,
+      s.receipts,
+      s.accountingEntries,
+    ])
+      expect(await db().select().from(table)).toHaveLength(0);
+    expect((await db().select().from(s.branchStock))[0]!.quantity).toBe(100);
+    expect(await supplierBalance(1)).toBe("0.00");
+    await db()
+      .update(s.users)
+      .set({ operationPolicy: policy(true) })
+      .where(eq(s.users.id, 2));
+    await expect(
+      api.createCaller(stale).returns.executePurchaseReturnCart(input),
+    ).resolves.toMatchObject({ mode: "REQUESTED" });
+    expect(await db().select().from(s.purchaseReturnRequests)).toHaveLength(1);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
+  });
+
+  it("⭐ CARD_TRANSFER: إيصال قبضٍ (IN/تحويل بلا درج) + قيد PAYMENT_IN(CARD_BANK) + reconcile نظيف + رصيد صافٍ صفر", async () => {
+    const caller = api.createCaller(context()).returns;
+    const input = {
+      supplierId: 1,
+      reference: "SUPPLIER-ACK-RETURN",
+      evidenceType: "SUPPLIER_ACKNOWLEDGEMENT" as const,
+      items,
+      settlement: {
+        method: "CARD_TRANSFER" as const,
+        totalAmount: "300.00",
+        reference: "TRX-9931",
+      },
       reason: "استرداد بحوالة بنكية",
       clientRequestId: "pr-cart-transfer-1",
+    };
+    const res = await caller.executePurchaseReturnCart(input);
+    if (res.mode !== "EXECUTED")
+      throw new Error("Expected owner-executed return");
+    expect(res).toMatchObject({
+      mode: "EXECUTED",
+      document: { supplierId: 1 },
     });
-    expect(res.ok).toBe(true);
+    expect(await caller.executePurchaseReturnCart(input)).toMatchObject({
+      mode: "EXECUTED",
+      requestId: res.requestId,
+    });
 
     // (أ) إيصالُ قبضٍ غيرُ نقديّ لا يمسّ الدرج + قيد PAYMENT_IN مربوطٌ به.
     const receipts = await db().select().from(s.receipts);
@@ -149,18 +233,40 @@ describe("returns.executePurchaseReturnCart — سلامة المسار الما
     // (ج) رصيد صافٍ صفر: RETURN(−٣٠٠) يُصافره PAYMENT_IN(+٣٠٠) بلا مسّ currentBalance.
     expect(await supplierBalance(1)).toBe("0.00");
 
-    const stock = await db().select({ q: s.branchStock.quantity }).from(s.branchStock).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1)));
+    const stock = await db()
+      .select({ q: s.branchStock.quantity })
+      .from(s.branchStock)
+      .where(
+        and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1)),
+      );
     expect(Number(stock[0]?.q)).toBe(40);
   });
 
   it("CASH_IN (خطُّ الأساس القائم منذ #1084): إيصال قبضٍ (IN/DRAWER) + PAYMENT_IN + reconcile نظيف", async () => {
-    const caller = returnRouter.createCaller(context());
-    await caller.executePurchaseReturnCart({
+    const caller = api.createCaller(context()).returns;
+    const input = {
       supplierId: 1,
+      reference: "SUPPLIER-ACK-RETURN",
+      evidenceType: "SUPPLIER_ACKNOWLEDGEMENT" as const,
       items,
-      settlement: { method: "CASH_IN", totalAmount: "300.00", shiftId: 1 },
+      settlement: {
+        method: "CASH_IN" as const,
+        totalAmount: "300.00",
+        shiftId: 1,
+      },
       reason: "مردود نقدي",
       clientRequestId: "pr-cart-cashin-1",
+    };
+    const res = await caller.executePurchaseReturnCart(input);
+    if (res.mode !== "EXECUTED")
+      throw new Error("Expected owner-executed return");
+    expect(res).toMatchObject({
+      mode: "EXECUTED",
+      document: { supplierId: 1 },
+    });
+    expect(await caller.executePurchaseReturnCart(input)).toMatchObject({
+      mode: "EXECUTED",
+      requestId: res.requestId,
     });
 
     const receipts = await db().select().from(s.receipts);
@@ -177,13 +283,26 @@ describe("returns.executePurchaseReturnCart — سلامة المسار الما
   });
 
   it("CREDIT_OFFSET: يخصم ذمّة المورد بلا إيصالٍ ولا PAYMENT_IN + reconcile نظيف", async () => {
-    const caller = returnRouter.createCaller(context());
-    await caller.executePurchaseReturnCart({
+    const caller = api.createCaller(context()).returns;
+    const input = {
       supplierId: 1,
+      reference: "SUPPLIER-ACK-RETURN",
+      evidenceType: "SUPPLIER_ACKNOWLEDGEMENT" as const,
       items,
-      settlement: { method: "CREDIT_OFFSET", totalAmount: "300.00" },
+      settlement: { method: "CREDIT_OFFSET" as const, totalAmount: "300.00" },
       reason: "معادلة ذمة",
       clientRequestId: "pr-cart-credit-1",
+    };
+    const res = await caller.executePurchaseReturnCart(input);
+    if (res.mode !== "EXECUTED")
+      throw new Error("Expected owner-executed return");
+    expect(res).toMatchObject({
+      mode: "EXECUTED",
+      document: { supplierId: 1 },
+    });
+    expect(await caller.executePurchaseReturnCart(input)).toMatchObject({
+      mode: "EXECUTED",
+      requestId: res.requestId,
     });
 
     expect(await db().select().from(s.receipts)).toHaveLength(0);

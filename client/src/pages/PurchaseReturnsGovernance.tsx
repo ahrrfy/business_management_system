@@ -67,14 +67,13 @@ export default function PurchaseReturnsGovernance() {
       setPickedBranchId(String(me.data.branchId));
   }, [me.data?.branchId, pickedBranchId]);
 
-  const branchId =
-    canChooseBranch
-      ? pickedBranchId
-        ? Number(pickedBranchId)
-        : null
-      : me.data?.branchId != null
-        ? Number(me.data.branchId)
-        : null;
+  const branchId = canChooseBranch
+    ? pickedBranchId
+      ? Number(pickedBranchId)
+      : null
+    : me.data?.branchId != null
+      ? Number(me.data.branchId)
+      : null;
   const queryBranchId = branchId === null ? 0 : branchId;
   const queryInput = { branchId: queryBranchId, limit: 200 };
   const enabled = branchId != null && branchId > 0;
@@ -144,8 +143,14 @@ export default function PurchaseReturnsGovernance() {
         id: Number(row.id),
         requestedBy: Number(row.requestedBy),
         requestedAt: row.requestedAt,
-        title: "مرتجع فاتورة مورد",
-        reference: `INV-${row.supplierInvoiceId}`,
+        title:
+          row.sourceKind === "OWNER_EXCEPTION"
+            ? "استثناء مرتجع باعتماد المالك"
+            : "مرتجع فاتورة مورد",
+        reference:
+          row.sourceKind === "OWNER_EXCEPTION"
+            ? row.evidenceReference
+            : `INV-${row.supplierInvoiceId}`,
         reason: row.reason,
         amount: `${fmt(row.requestedTotalAmount)} د.ع`,
         evidence: row.evidenceReference,
@@ -307,10 +312,18 @@ export default function PurchaseReturnsGovernance() {
           onRequestReversal={(input) => requestReversal.mutateAsync(input)}
           onDecideReturn={(input) => decideReturn.mutateAsync(input)}
           onDecideReversal={(input) => decideReversal.mutateAsync(input)}
-          pendingReturnLoading={canReadPendingReturns && pendingReturnsQuery.isLoading}
-          pendingReversalLoading={canReadPendingReversals && pendingReversalsQuery.isLoading}
-          pendingReturnError={canReadPendingReturns ? pendingReturnsQuery.error : null}
-          pendingReversalError={canReadPendingReversals ? pendingReversalsQuery.error : null}
+          pendingReturnLoading={
+            canReadPendingReturns && pendingReturnsQuery.isLoading
+          }
+          pendingReversalLoading={
+            canReadPendingReversals && pendingReversalsQuery.isLoading
+          }
+          pendingReturnError={
+            canReadPendingReturns ? pendingReturnsQuery.error : null
+          }
+          pendingReversalError={
+            canReadPendingReversals ? pendingReversalsQuery.error : null
+          }
           onRetryPendingReturns={() => {
             if (canReadPendingReturns) void pendingReturnsQuery.refetch();
           }}

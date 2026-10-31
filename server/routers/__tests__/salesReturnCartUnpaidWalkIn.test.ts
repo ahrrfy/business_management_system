@@ -8,8 +8,10 @@ import { createSale } from "../../services/saleService";
 import { recordStaffDeliveryConfirmation } from "../../services/delivery/companyStatement";
 import { reconcileCustomerBalances } from "../../services/reconcileService";
 import { returnRouter } from "../returnRouter";
+import { router } from "../../trpc";
 import { assertIsolatedActivationTestTarget } from "../../services/__tests__/activationTestTarget";
 
+const api = router({ returns: returnRouter });
 const db = () => getDb()!;
 const cashier = { userId: 2, branchId: 1, role: "cashier" as const };
 const owner = { userId: 1, branchId: 1, role: "admin" as const };
@@ -60,13 +62,13 @@ describe("sales return portal — no cash, no invented customer account", () => 
     const raw = process.env.DATABASE_URL!;
     assertIsolatedActivationTestTarget(raw);
     await db().insert(s.suppliers).values({ id: 1, name: "مورد الاختبار", currentBalance: "0.00" });
-    const admin = returnRouter.createCaller({
+    const admin = api.createCaller({
       req: { headers: {} }, res: {},
       user: { id: 1, role: "admin", branchId: 1, isActive: true, isOwner: true, name: "مالك" },
-    } as TrpcContext);
+    } as TrpcContext).returns;
     const gate = await mysql.createConnection(raw);
     const observer = await mysql.createConnection(raw);
-    let pending: Promise<{ ok: true }> | undefined;
+    let pending: Promise<unknown> | undefined;
     let settled = false;
     try {
       await observer.query("INSERT INTO monthCloseSequence(id) VALUES(1) ON DUPLICATE KEY UPDATE id=id");
@@ -81,6 +83,7 @@ describe("sales return portal — no cash, no invented customer account", () => 
           })
         : admin.executePurchaseReturnCart({
             supplierId: 1,
+            reference: "GATE-SUPPLIER-ACK", evidenceType: "SUPPLIER_ACKNOWLEDGEMENT",
             items: [{ variantId: 1, productUnitId: 1, productName: "دفتر", quantity: 1, unitCost: "500" }],
             settlement: { method: "CREDIT_OFFSET", totalAmount: "500" },
             reason: "مرتجع اختبار البوابة", clientRequestId: "purchase-financial-gate",
@@ -116,7 +119,7 @@ describe("sales return portal — no cash, no invented customer account", () => 
       expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
       expect(await db().select().from(s.receipts)).toHaveLength(0);
       await gate.rollback();
-      await expect(pending).resolves.toMatchObject({ ok: true });
+      await expect(pending).resolves.toMatchObject(route === "no-receipt" ? { ok: true } : { mode: "EXECUTED" });
       expect((await db().select().from(s.branchStock))[0].quantity).toBe(route === "no-receipt" ? 101 : 99);
       expect(await db().select().from(s.inventoryMovements)).toHaveLength(1);
     } finally {

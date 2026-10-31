@@ -1,3 +1,4 @@
+import { validExecutionEvidence } from "./returnEvidence";
 import { and, eq } from "drizzle-orm";
 import {
   accountingEntries,
@@ -75,7 +76,12 @@ export async function isOwnedSupplierIncoming(
     .limit(1);
   if (returned) {
     if (
-      returned.origin !== "NATIVE" ||
+      !["NATIVE", "OWNER_EXCEPTION"].includes(returned.origin) ||
+      (returned.origin === "OWNER_EXCEPTION" &&
+        (returned.purchaseOrderId != null ||
+          returned.supplierInvoiceId != null ||
+          returned.matchRunId != null ||
+          !validExecutionEvidence(returned))) ||
       returned.settlement !== "CASH" ||
       returned.requestId == null ||
       !returned.payloadCanonical ||
@@ -103,6 +109,12 @@ export async function isOwnedSupplierIncoming(
             .limit(1);
     return (
       request?.status === "APPROVED" &&
+      request.sourceKind ===
+        (returned.origin === "OWNER_EXCEPTION"
+          ? "OWNER_EXCEPTION"
+          : "SOURCE_BOUND") &&
+      request.reviewedBy === returned.postedBy &&
+      sha256(request.payloadCanonical) === request.payloadHash &&
       request.supplierId === returned.supplierId &&
       request.branchId === returned.branchId &&
       request.supplierInvoiceId === returned.supplierInvoiceId &&
