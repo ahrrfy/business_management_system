@@ -10,6 +10,7 @@
  * `moduleProcedure(["manager","purchasing"], "purchases", "FULL")` لكلّ شيءٍ عدا سداد المورّد
  * واسترداده (`treasuryManagerProcedure` = `["manager","accountant"]` على `treasury`).
  */
+import { reportScan, scanPosition } from "../scan";
 import { eq, inArray } from "drizzle-orm";
 import { money, round2 } from "../../money";
 import {
@@ -126,7 +127,7 @@ async function lookups(db: Db, args: { suppliers?: Array<number | null | undefin
 /** يجمع صفوفَ دالّةِ سردٍ تأخذ فرعاً واحداً على كلّ فروع النطاق. */
 async function perBranch<T>(db: Db, actor: DecisionActor, scope: DecisionScope, fn: (branchId: number) => Promise<T[]>): Promise<T[]> {
   const branchIds = await branchIdsFor(db, actor, scope);
-  const chunks = await Promise.all(branchIds.map((b) => fn(b)));
+  const chunks = await Promise.all(branchIds.map((b) => scanPosition(scope, b) === null ? [] : fn(b)));
   return chunks.flat();
 }
 
@@ -145,8 +146,9 @@ export const purchaseOrderControlSource: DecisionSource = {
   async list(actor, scope) {
     const db = requireDb();
     // الأقدمُ أوّلاً قبل قصّ الخدمة: الأحدثُ أوّلاً كان يُسقط أكثر الطلبات تأخّراً حين يكثر المعلَّق.
-    const raw = await listPendingPurchaseOrderControls(serviceActor(actor), { limit: LIST_LIMIT, order: "ASC" });
-    const rows = raw.slice(0, LIST_LIMIT).filter((r) => (scope.branchIds ? scope.branchIds.includes(Number(r.branchId)) : true));
+    const raw = await listPendingPurchaseOrderControls(serviceActor(actor), { limit: LIST_LIMIT, order: "ASC", scan: scanPosition(scope) });
+    reportScan(scope, raw, LIST_LIMIT, { hasMore: raw.length > LIST_LIMIT });
+    const rows = raw.filter((r) => (scope.branchIds ? scope.branchIds.includes(Number(r.branchId)) : true));
     if (!rows.length) return [];
     const poIds = ids(rows.map((r) => r.purchaseOrderId));
     const revisionIds = ids(rows.map((r) => r.revisionId));
@@ -337,8 +339,9 @@ export const purchaseRequisitionControlSource: DecisionSource = {
   supportedActions: APPROVE_OR_REJECT,
   async list(actor, scope) {
     const db = requireDb();
-    const raw = await listPendingPurchaseRequisitionControls(serviceActor(actor), { limit: LIST_LIMIT, order: "ASC" });
-    const rows = raw.slice(0, LIST_LIMIT).filter((r) => (scope.branchIds ? scope.branchIds.includes(Number(r.branchId)) : true));
+    const raw = await listPendingPurchaseRequisitionControls(serviceActor(actor), { limit: LIST_LIMIT, order: "ASC", scan: scanPosition(scope) });
+    reportScan(scope, raw, LIST_LIMIT, { hasMore: raw.length > LIST_LIMIT });
+    const rows = raw.filter((r) => (scope.branchIds ? scope.branchIds.includes(Number(r.branchId)) : true));
     if (!rows.length) return [];
     const reqIds = ids(rows.map((r) => r.requisitionId));
     const [items, reqs] = await Promise.all([
@@ -481,7 +484,11 @@ export const purchaseIntegritySource: DecisionSource = {
   supportedActions: APPROVE_OR_REJECT,
   async list(actor, scope) {
     const db = requireDb();
-    const rows = await perBranch(db, actor, scope, (b) => listPurchaseIntegrityCases({ branchId: b, status: "PENDING_RESOLUTION", limit: LIST_LIMIT, order: "ASC" }, serviceActor(actor)));
+    const rows = await perBranch(db, actor, scope, async (b) => {
+      const page = await listPurchaseIntegrityCases({ branchId: b, status: "PENDING_RESOLUTION", limit: LIST_LIMIT, order: "ASC", scan: scanPosition(scope, b) }, serviceActor(actor));
+      reportScan(scope, page, LIST_LIMIT, { partition: b, time: row => row.detectedAt });
+      return page;
+    });
     if (!rows.length) return [];
     const look = await lookups(db, { suppliers: rows.map((r) => r.supplierId), users: rows.map((r) => r.resolutionRequestedBy), branches: rows.map((r) => r.branchId) });
     return rows
@@ -782,7 +789,13 @@ export const supplierPaymentRefundSource: DecisionSource = {
   supportedActions: APPROVE_OR_REJECT,
   async list(actor, scope) {
     const db = requireDb();
-    const pages = await perBranch(db, actor, scope, async (b) => (await listPendingSupplierPaymentRefundRequests({ branchId: b, limit: LIST_LIMIT }, serviceActor(actor))).rows);
+    const pages = await perBranch(db, actor, scope, async (b) => {
+      const position = scanPosition(scope, b);
+      const page = await listPendingSupplierPaymentRefundRequests({ branchId: b, limit: LIST_LIMIT,
+        cursor: position ? { id: position.id, requestedAt: new Date(position.at!) } : undefined }, serviceActor(actor));
+      reportScan(scope, page.rows, LIST_LIMIT, { hasMore: page.hasMore, partition: b, time: row => row.requestedAt });
+      return page.rows;
+    });
     if (!pages.length) return [];
     const payments = await db.select().from(supplierPayments).where(inArray(supplierPayments.id, ids(pages.map((r) => r.supplierPaymentId))));
     const paymentById = new Map(payments.map((p) => [Number(p.id), p]));
@@ -1008,7 +1021,7 @@ export const supplierInvoiceApprovalSource: DecisionSource = {
               ...(r.evidenceReference ? [{ label: `الدليل: ${r.evidenceType ?? ""} — ${r.evidenceReference}` }] : []),
             ],
             reason: r.reason,
-            expectedVersion: Number(r.baseInvoiceVersion),
+            expectedVersion: r.baseInvoiceVersion ?? undefined,
             trigger: supplierInvoiceApprovalTrigger(r.kind, "APPROVE"),
           },
           scope.now,

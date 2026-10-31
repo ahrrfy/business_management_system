@@ -28,6 +28,9 @@ import type { PermissionMap } from "@shared/permissions";
 
 /** الفاعل كما يراه الصندوق — مشتقٌّ في الراوتر من `ctx.user` مرّةً واحدة. */
 export interface DecisionActor {
+  /** Server-loaded current authority; never supplied by RPC input. */
+  operationUser?: import("../authorization/operationAuthority").StoredOperationSnapshot;
+  operationPath?: string;
   userId: number;
   /** الفرع المُسنَد، أو `null` للمالك/الأدمن بلا فرع. */
   branchId: number | null;
@@ -73,8 +76,12 @@ export interface DecideInput {
 
 /** نطاقُ السرد: الفروع التي يراها الفاعل (`null` = كلّ الفروع) ولحظة «الآن». */
 export interface DecisionScope {
+  scanPositions?: Record<string, import("./scan").ScanPosition | null>;
+  reportScan?: (partition: string, next: import("./scan").ScanPosition | null) => void;
   branchIds: number[] | null;
   now: Date;
+  /** Report candidate clipping before any maker-checker or action filtering. */
+  reportLimit?: (candidateCount: number, limit: number, hasMore?: boolean) => void;
 }
 
 /**

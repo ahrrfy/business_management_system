@@ -11,6 +11,7 @@ import { appErrorMessage } from "@shared/errors";
 import { hasModuleAccess, moduleAccessAllowed } from "@shared/permissions";
 import type { Actor } from "../tx";
 import type { DecisionActor, DecisionGate } from "./types";
+import { routeOperationAuthority, type ServiceOperationAuthority } from "../authorization/operationAuthority";
 
 /** هل يعبر الفاعلُ بوّابةَ المصدر؟ مرآةٌ لما ستفعله بوّابةُ الإجراء الأصليّ لو استُدعي مباشرةً. */
 export function gatePasses(gate: DecisionGate, actor: DecisionActor): boolean {
@@ -72,11 +73,14 @@ export function scopedBranchIdFor(actor: DecisionActor): number | null {
 }
 
 /** يحوّل فاعلَ الصندوق إلى `Actor` الخدمات — الفرعُ الغائب يُمرَّر صفراً كما تفعل الراوترات. */
-export function serviceActor(actor: DecisionActor): Actor & { isOwner: boolean; role: string } {
+export function serviceActor(actor: DecisionActor): Actor & { isOwner: boolean; role: string; operationAuthority?: ServiceOperationAuthority } {
   return {
     userId: actor.userId,
     branchId: actor.branchId ?? 0,
     role: actor.role,
     isOwner: actor.isOwner,
+    operationAuthority: actor.operationUser && actor.operationPath
+      ? routeOperationAuthority({ ...actor.operationUser, id: actor.userId }, actor.operationPath)
+      : undefined,
   };
 }
