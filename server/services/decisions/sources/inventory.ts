@@ -12,6 +12,7 @@ import {
   COST_WAVE_RULE_LABELS,
 } from "@shared/costWave";
 import { decisionSubkindLabel } from "@shared/decisionRegistry";
+import { canViewOperationData } from "@shared/operationPermissions";
 import {
   costRevaluationRequests,
   costUpdateWaves,
@@ -213,6 +214,9 @@ export const costWaveSource: DecisionSource = {
   gate: { type: "MODULE", moduleKey: "inventory", roles: ["manager"] },
   supportedActions: ["APPROVE", "REJECT"],
   async list(actor, scope) {
+    const visibility = actor.operationUser ?? actor;
+    if (!canViewOperationData(visibility, "purchaseCost") ||
+        !canViewOperationData(visibility, "profitMargin")) return [];
     const scopedBranch = scopeBranch(actor, scope);
     if (scopedBranch === "NONE") return [];
     // The inbox grants the selected decision, not the unrelated inventory.costWaves read RPC.
