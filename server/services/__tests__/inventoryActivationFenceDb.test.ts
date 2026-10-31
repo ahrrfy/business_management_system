@@ -39,6 +39,36 @@ const assertInventoryResurrection = (pm2Home: string) =>
     { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 10000 },
   );
 
+// mysql2 resolves Connection.end() from Quit.onResult before it writes COM_QUIT.
+// Carry the exact fixture-owned IDs into the next fixture and wait only for those
+// IDs to disappear from both sources used by the production census. Unknown IDs
+// are never waited away or ignored; the strict census below still rejects them.
+const closingFixtureSessionIds = new Set<number>();
+
+async function awaitKnownFixtureSessionsClosed(observer: Connection) {
+  if (closingFixtureSessionIds.size === 0) return;
+  const deadline = Date.now() + 5000;
+  do {
+    const [foreground] = await observer.query<any[]>(
+      "SELECT PROCESSLIST_ID AS id FROM performance_schema.threads WHERE TYPE='FOREGROUND' AND PROCESSLIST_ID IS NOT NULL",
+    );
+    const [transactions] = await observer.query<any[]>(
+      "SELECT trx_mysql_thread_id AS id FROM information_schema.innodb_trx",
+    );
+    const visible = new Set(
+      [...foreground, ...transactions].map((row) => Number(row.id)),
+    );
+    for (const id of Array.from(closingFixtureSessionIds)) {
+      if (!visible.has(id)) closingFixtureSessionIds.delete(id);
+    }
+    if (closingFixtureSessionIds.size === 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  } while (Date.now() < deadline);
+  throw Object.assign(new Error("MYSQL_CLOSED_TEST_SESSION_STILL_VISIBLE"), {
+    sessionIds: Array.from(closingFixtureSessionIds),
+  });
+}
+
 async function fixture() {
   const raw = process.env.DATABASE_URL!;
   assertIsolatedActivationTestTarget(raw);
@@ -52,6 +82,18 @@ async function fixture() {
   };
   const a = await open(),
     b = await open();
+  const finish = async () => {
+    for (const connection of connections) {
+      closingFixtureSessionIds.add(Number(connection.threadId));
+    }
+    await Promise.all(connections.map((c) => c.end().catch(() => {})));
+  };
+  try {
+    await awaitKnownFixtureSessionsClosed(a);
+  } catch (error) {
+    await finish();
+    throw error;
+  }
   await b.query(
     "INSERT INTO monthCloseSequence(id) VALUES(1) ON DUPLICATE KEY UPDATE id=id",
   );
@@ -62,10 +104,25 @@ async function fixture() {
     database: identity.databaseName,
     serverUuid: identity.serverUuid,
   };
-  const finish = async () => {
-    await Promise.all(connections.map((c) => c.end().catch(() => {})));
+  const closeAndAwaitRemoval = async (
+    connection: Connection,
+    observer: Connection,
+  ) => {
+    closingFixtureSessionIds.add(Number(connection.threadId));
+    await connection.end();
+    await awaitKnownFixtureSessionsClosed(observer);
+    const index = connections.indexOf(connection);
+    if (index >= 0) connections.splice(index, 1);
   };
-  return { a, b, open, target, bId: Number(identity.id), finish };
+  return {
+    a,
+    b,
+    open,
+    target,
+    bId: Number(identity.id),
+    finish,
+    closeAndAwaitRemoval,
+  };
 }
 async function observedWait(observer: Connection, id: number) {
   const deadline = Date.now() + 5000;
@@ -149,11 +206,15 @@ it("a remaining sleeping SQL session forbids READY even after its worker would b
   try {
     const gate = await acquireInventoryGate(f.a, f.target);
     const orphan = await f.open();
+    const orphanId = Number(orphan.threadId);
     await orphan.query("SELECT 1");
     await expect(
       assertNoUnownedSessions(f.a, new Set([gate.connectionId, f.bId])),
-    ).rejects.toThrow(/UNOWNED_DATABASE_SESSION/);
-    await orphan.end();
+    ).rejects.toMatchObject({
+      message: "INVENTORY_UNOWNED_DATABASE_SESSION",
+      unownedSessionIds: [orphanId],
+    });
+    await f.closeAndAwaitRemoval(orphan, f.a);
     await assertNoUnownedSessions(f.a, new Set([gate.connectionId, f.bId]));
     await gate.release();
   } finally {
