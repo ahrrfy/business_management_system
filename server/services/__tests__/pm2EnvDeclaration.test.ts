@@ -154,6 +154,7 @@ const REQUIRED_WEB_TUNABLES = [
   // مفاتيح المتجر العام: بعضها مفتاح إطفاء طارئ (STOREFRONT_ORDERING_ENABLED)؛ لو لم يُصرَّح هنا
   // لتجمّد على قيمة أوّل تشغيل فلا يطفئ المتجر وقت الطوارئ مهما عُدِّل .env ونُشر.
   "STOREFRONT_ORDERING_ENABLED",
+  "STOREFRONT_MOBILE_PUSH_ENABLED",
   "STOREFRONT_TURNSTILE_ENABLED",
   "STOREFRONT_RATE_LIMIT_MAX",
   "STOREFRONT_ORDER_RATE_LIMIT_MAX",
@@ -189,6 +190,16 @@ const FORBIDDEN_WEB_ENV_KEYS = [
 ] as const;
 
 describe("عقد تصريح بيئة PM2 لعامل الويب", () => {
+  it.each(["0", "1"])("exports the storefront mobile-push switch %s to every web role", (value) => {
+    const key = "STOREFRONT_MOBILE_PUSH_ENABLED";
+    for (const mode of ["legacy", "split"]) {
+      const apps = evaluate({ WEB_RUNTIME_MODE: mode, WEB_INSTANCES: mode === "split" ? "3" : "2", [key]: value })
+        .filter(app => ["erp-server", "erp-admin", "erp-public"].includes(app.name));
+      expect(apps.length).toBeGreaterThan(0);
+      for (const app of apps) expect(app.env[key]).toBe(value);
+    }
+    expect(evaluate({})[0].env).not.toHaveProperty(key);
+  });
   it("keeps legacy default and creates split1+2 with global membership and fixed role ports", () => {
     expect(evaluate({})[0].name).toBe("erp-server");
     const apps = evaluate({ WEB_RUNTIME_MODE: "split", WEB_INSTANCES: "3" });

@@ -60,6 +60,7 @@ const webTunableKeys = Object.freeze([
   // أوّل `pm2 start` فلا يُطفئ الطلبات وقت الطوارئ مهما عُدِّل `.env` ونُشر. (الأسرارُ — Turnstile/VAPID/
   // BARCODE_SECRET — لا تُدرَج: لا حاجة لتدويرها بنشرٍ عاديّ، ولا نُضاعف نسخها في بيئة PM2.)
   "STOREFRONT_ORDERING_ENABLED",
+  "STOREFRONT_MOBILE_PUSH_ENABLED",
   "STOREFRONT_TURNSTILE_ENABLED",
   "STOREFRONT_RATE_LIMIT_MAX",
   "STOREFRONT_ORDER_RATE_LIMIT_MAX",
