@@ -17,6 +17,7 @@ import {
   type RoleKey,
 } from "./permissions";
 import { GENERATED_OPERATION_PERMISSIONS } from "./operationPermissionCatalog.generated";
+import retiredOperationPolicyKeys from "./operationPermissionRetirements.json";
 import { canCheckReceptionDuplicates } from "./receptionDuplicateOrders";
 
 /** The catalog is generated from real tRPC paths, never from display aliases. */
@@ -99,9 +100,9 @@ const policyShape = z
 
 // Removed routes can remain in saved full policies after their catalog entry is gone.
 // Keep this list explicit: unrelated unknown keys must still fail validation.
-const REMOVED_OPERATION_POLICY_KEYS: ReadonlySet<string> = new Set([
-  "operation.payroll.advanceThresholds",
-]);
+const REMOVED_OPERATION_POLICY_KEYS: ReadonlySet<string> = new Set(
+  retiredOperationPolicyKeys,
+);
 
 function isRetiredOperationPolicyKey(key: string): boolean {
   const operation = getOperationPermission(key);
@@ -164,7 +165,8 @@ export const operationPolicySchema = policyShape
  * Stored full maps can outlive a catalog change that protects an operation.
  * Remove only known nondelegable keys on read; their authority is enforced by
  * operationDecision. Preserve every other grant, denial, scope and visibility
- * setting, and keep unknown/malformed input fail closed. Writes stay strict.
+ * setting, and keep unknown/malformed input fail closed. Unknown and protected
+ * policy writes remain strict.
  */
 export const storedOperationPolicySchema = policyShape
   .transform((policy) => {
