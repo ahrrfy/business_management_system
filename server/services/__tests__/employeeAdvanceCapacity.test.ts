@@ -1,17 +1,19 @@
 import Decimal from "decimal.js";
 import { eq } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { MySql2PreparedQuery } from "drizzle-orm/mysql2/session";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../drizzle/schema";
-import { getDb } from "../../db";
+import { getDb, getPool } from "../../db";
 import { baghdadToday } from "../businessDay";
 import {
   getEmployeeAdvanceCapacity,
   type EmployeeAdvanceCapacity,
 } from "../employeeAdvanceCapacityService";
 import { getEmployeeStatement } from "../hr/employeeStatement";
-import { requestEmployeeLoan } from "../employeeLoanService";
+import { approveEmployeePenalty } from "../employeePenaltyService";
+import { disburseEmployeeLoan, requestEmployeeLoan } from "../employeeLoanService";
 import { updateItem } from "../payrollService";
-import type { Actor } from "../tx";
+import { type Actor, withTx } from "../tx";
 
 const EMPLOYEE_ID = 10;
 const BRANCH_ID = 1;
@@ -79,6 +81,100 @@ async function currentCapacity(): Promise<EmployeeAdvanceCapacity> {
     period: CURRENT_PERIOD,
     asOf: TODAY,
   });
+}
+
+function pauseNextEmployeeForUpdate() {
+  const execute = MySql2PreparedQuery.prototype.execute;
+  let locked!: () => void;
+  let release!: () => void;
+  let paused = false;
+  const lockReached = new Promise<void>((resolve) => { locked = resolve; });
+  const mayContinue = new Promise<void>((resolve) => { release = resolve; });
+  const spy = vi.spyOn(MySql2PreparedQuery.prototype, "execute").mockImplementation(async function (
+    this: typeof MySql2PreparedQuery.prototype,
+    values,
+  ) {
+    const query = (this as unknown as { query: { sql: string } }).query.sql;
+    const result = await execute.call(this, values);
+    if (!paused && query.includes("from `employees`") && query.includes("for update")) {
+      paused = true;
+      locked();
+      await mayContinue;
+    }
+    return result;
+  });
+  return { lockReached, release, restore: () => spy.mockRestore() };
+}
+
+async function waitForEmployeeLockWait(): Promise<void> {
+  for (let attempt = 0; attempt < 150; attempt += 1) {
+    const [rows] = await getPool().query(
+      `SELECT COUNT(*) AS n
+         FROM performance_schema.data_lock_waits w
+         JOIN performance_schema.data_locks requested
+           ON requested.ENGINE_LOCK_ID = w.REQUESTING_ENGINE_LOCK_ID
+        WHERE requested.OBJECT_SCHEMA = DATABASE()
+          AND requested.OBJECT_NAME = 'employees'`,
+    );
+    if (Number((rows as Array<{ n: number }>)[0]?.n ?? 0) > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("لم يصل اختبار السعة إلى انتظار قفل الموظف المتوقع");
+}
+
+async function seedDisbursementCase(amount: string, key: string) {
+  const connection = db();
+  await connection
+    .update(s.users)
+    .set({
+      operationPolicy: {
+        version: 1,
+        grants: {
+          "operation.payroll.advanceGrant": true,
+          "operation.hrEnterprise.loans.disburse": true,
+        },
+      },
+    })
+    .where(eq(s.users.id, ACTOR.userId));
+  await connection.insert(s.users).values({
+    id: 2,
+    openId: `advance-capacity-reviewer-${key}`,
+    name: "مراجع سعة السلفة",
+    role: "manager",
+    branchId: BRANCH_ID,
+    operationPolicy: {
+      version: 1,
+      grants: { "operation.hrEnterprise.penalties.approve": true },
+    },
+  });
+  await connection.insert(s.shifts).values({
+    id: 100,
+    branchId: BRANCH_ID,
+    userId: ACTOR.userId,
+    openingBalance: "100000.00",
+    status: "OPEN",
+    shiftType: "RETAIL",
+    openGuard: `${BRANCH_ID}:${ACTOR.userId}:RETAIL`,
+  });
+  await connection.insert(s.monthCloseSequence).values({
+    id: 1,
+    status: "NEEDS_BOOTSTRAP",
+    version: 0,
+  });
+  const [inserted] = await connection.insert(s.employeeLoanRequests).values({
+    employeeId: EMPLOYEE_ID,
+    branchId: BRANCH_ID,
+    amount,
+    installmentsCount: 1,
+    monthlyDeduction: amount,
+    payrollPeriod: CURRENT_PERIOD,
+    clientRequestId: `capacity-current-read-${key}`,
+    status: "APPROVED",
+    createdById: 2,
+    reviewedById: 2,
+    reviewedAt: new Date(),
+  });
+  return inserted.insertId;
 }
 
 beforeEach(async () => {
@@ -651,6 +747,164 @@ describe("employee advance earned-capacity contract", () => {
     });
     expect((await getEmployeeAdvanceCapacity(input)).maxAvailable).toBe("0.00");
   });
+
+  it("يرى العقوبة المعتمدة التي التزمت أثناء انتظار صرف السلفة لقفل الموظف", async () => {
+    await seedAttendance({ date: TODAY, amount: "1000.00" });
+    const loanId = await seedDisbursementCase("750.00", "penalty-after-preview");
+    const [penalty] = await db().insert(s.employeePenalties).values({
+      employeeId: EMPLOYEE_ID,
+      branchId: BRANCH_ID,
+      penaltyType: "SALARY_DEDUCTION",
+      decisionNumber: "CAP-CURRENT-PENALTY",
+      decisionDate: TODAY,
+      reason: "عقوبة تلتزم أثناء انتظار الصرف",
+      deductionAmount: "100.00",
+      status: "DRAFT",
+      createdById: ACTOR.userId,
+    });
+    const reviewer: Actor = { userId: 2, branchId: BRANCH_ID, role: "manager" };
+    const barrier = pauseNextEmployeeForUpdate();
+    let approval: ReturnType<typeof approveEmployeePenalty> | undefined;
+    let disbursement: ReturnType<typeof disburseEmployeeLoan> | undefined;
+    try {
+      approval = approveEmployeePenalty(reviewer, penalty.insertId);
+      await barrier.lockReached;
+      disbursement = disburseEmployeeLoan(ACTOR, loanId);
+      await waitForEmployeeLockWait();
+      barrier.release();
+      const [approved, disbursed] = await Promise.allSettled([approval, disbursement]);
+      expect(approved.status).toBe("fulfilled");
+      expect(disbursed).toMatchObject({
+        status: "rejected",
+        reason: { code: "PRECONDITION_FAILED" },
+      });
+    } finally {
+      barrier.release();
+      await Promise.allSettled([approval, disbursement].filter(Boolean) as Promise<unknown>[]);
+      barrier.restore();
+    }
+    const [storedPenalty] = await db()
+      .select({ status: s.employeePenalties.status })
+      .from(s.employeePenalties)
+      .where(eq(s.employeePenalties.id, penalty.insertId));
+    const [storedLoan] = await db()
+      .select({ status: s.employeeLoanRequests.status })
+      .from(s.employeeLoanRequests)
+      .where(eq(s.employeeLoanRequests.id, loanId));
+    expect(storedPenalty?.status).toBe("APPROVED");
+    expect(storedLoan?.status).toBe("APPROVED");
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect(await db().select().from(s.employeeAdvances)).toHaveLength(0);
+    expect(await db().select().from(s.idempotencyKeys)).toHaveLength(0);
+  }, 15_000);
+
+  it("يفشل مغلقاً بلا أثر جزئي عندما يكون مصدر مالي مقفولاً", async () => {
+    await seedAttendance({ date: TODAY, amount: "1000.00" });
+    const loanId = await seedDisbursementCase("100.00", "locked-penalty-source");
+    const [penalty] = await db().insert(s.employeePenalties).values({
+      employeeId: EMPLOYEE_ID,
+      branchId: BRANCH_ID,
+      penaltyType: "SALARY_DEDUCTION",
+      decisionNumber: "CAP-LOCKED-PENALTY",
+      decisionDate: TODAY,
+      reason: "مصدر مقفول لا يجوز تجاهله",
+      deductionAmount: "100.00",
+      status: "APPROVED",
+      createdById: 2,
+      approvedById: 2,
+      approvedAt: new Date(),
+    });
+    let locked!: () => void;
+    let release!: () => void;
+    const lockReached = new Promise<void>((resolve) => { locked = resolve; });
+    const mayContinue = new Promise<void>((resolve) => { release = resolve; });
+    const holder = withTx(async (tx) => {
+      await tx
+        .select({ id: s.employeePenalties.id })
+        .from(s.employeePenalties)
+        .where(eq(s.employeePenalties.id, penalty.insertId))
+        .for("update")
+        .limit(1);
+      locked();
+      await mayContinue;
+    });
+    await lockReached;
+    try {
+      await expect(disburseEmployeeLoan(ACTOR, loanId)).rejects.toMatchObject({
+        code: "CONFLICT",
+      });
+    } finally {
+      release();
+      await holder;
+    }
+    const [storedLoan] = await db()
+      .select({ status: s.employeeLoanRequests.status })
+      .from(s.employeeLoanRequests)
+      .where(eq(s.employeeLoanRequests.id, loanId));
+    expect(storedLoan?.status).toBe("APPROVED");
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect(await db().select().from(s.employeeAdvances)).toHaveLength(0);
+    expect(await db().select().from(s.idempotencyKeys)).toHaveLength(0);
+  }, 15_000);
+
+  it("يرى الراتب والإجازة المعتمدة اللذين التزما بعد preview قديم", async () => {
+    await db()
+      .update(s.employees)
+      .set({ payType: "monthly", attendanceExempt: true, salary: "3000.00" })
+      .where(eq(s.employees.id, EMPLOYEE_ID));
+    const barrier = pauseNextEmployeeForUpdate();
+    let writer: Promise<unknown> | undefined;
+    let request: ReturnType<typeof requestEmployeeLoan> | undefined;
+    try {
+      writer = withTx(async (tx) => {
+        await tx
+          .select({ id: s.employees.id })
+          .from(s.employees)
+          .where(eq(s.employees.id, EMPLOYEE_ID))
+          .for("update")
+          .limit(1);
+        await tx
+          .update(s.employees)
+          .set({ salary: "6000.00", allowances: "300.00" })
+          .where(eq(s.employees.id, EMPLOYEE_ID));
+        await tx.insert(s.leaveRequests).values({
+          employeeId: EMPLOYEE_ID,
+          leaveType: "بدون راتب",
+          paid: false,
+          fromDate: `${CURRENT_PERIOD}-01`,
+          toDate: TODAY,
+          days: Number(TODAY.slice(8, 10)),
+          status: "approved",
+          decidedBy: ACTOR.userId,
+          decidedAt: new Date(),
+        });
+      });
+      await barrier.lockReached;
+      request = requestEmployeeLoan(ACTOR, {
+        employeeId: EMPLOYEE_ID,
+        amount: "1.00",
+        clientRequestId: "current-salary-leave-after-preview",
+      });
+      await waitForEmployeeLockWait();
+      barrier.release();
+      const [written, requested] = await Promise.allSettled([writer, request]);
+      expect(written.status).toBe("fulfilled");
+      expect(requested).toMatchObject({
+        status: "rejected",
+        reason: { code: "PRECONDITION_FAILED" },
+      });
+    } finally {
+      barrier.release();
+      await Promise.allSettled([writer, request].filter(Boolean) as Promise<unknown>[]);
+      barrier.restore();
+    }
+    expect(await db().select().from(s.employeeLoanRequests)).toHaveLength(0);
+    const capacity = await currentCapacity();
+    expect(capacity).toMatchObject({
+      earnedCompensation: "0.00",
+      maxAvailable: "0.00",
+    });
+  }, 15_000);
 
   it("يبقي المكافأة المعتمدة ضمن الحد بعد التقاطها في مسودة الراتب", async () => {
     await seedAttendance({ date: "2030-06-05", amount: "300.00" });

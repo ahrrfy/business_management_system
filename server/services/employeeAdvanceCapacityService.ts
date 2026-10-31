@@ -10,7 +10,6 @@ import {
   employeePenalties,
   employees,
   employeeSpotBonuses,
-  leaveRequests,
   payrollItems,
   payrollRuns,
 } from "../../drizzle/schema";
@@ -21,6 +20,7 @@ import { money, round2, toDbMoney } from "./money";
 import {
   computeLegalComponents,
   getPayrollLegalSettings,
+  getPayrollLegalSettingsForUpdate,
 } from "./payrollLegalService";
 import { countDaysWithin } from "./payroll/helpers";
 import { assertPeriodOpen } from "./periodLockService";
@@ -52,6 +52,41 @@ export interface CapacityOptions {
 }
 
 const ZERO = new Decimal(0);
+
+function isNowaitConflict(error: unknown): boolean {
+  let current: unknown = error;
+  for (
+    let depth = 0;
+    depth < 5 && current && typeof current === "object";
+    depth += 1
+  ) {
+    const value = current as {
+      code?: unknown;
+      errno?: unknown;
+      cause?: unknown;
+    };
+    if (value.code === "ER_LOCK_NOWAIT" || Number(value.errno) === 3572)
+      return true;
+    current = value.cause;
+  }
+  return false;
+}
+
+async function currentFinancialRead<T>(read: PromiseLike<T>): Promise<T> {
+  try {
+    return await read;
+  } catch (error) {
+    if (!isNowaitConflict(error)) throw error;
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر تثبيت حد السلفة الآن",
+        why: "يتغيّر حالياً مصدر مالي يدخل في الأجر أو الاستقطاع",
+        doThis: "انتظر اكتمال التعديل ثم أعد احتساب السعة أو الصرف",
+      }),
+    });
+  }
+}
 
 function assertPeriod(value: string): string {
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(value)) {
@@ -88,14 +123,8 @@ export async function getEmployeeAdvanceCapacityTx(
     });
   }
 
-  let employeeQuery = tx
-    .select({
-      id: employees.id,
-      branchId: employees.branchId,
-      isActive: employees.isActive,
-      employmentStatus: employees.employmentStatus,
-      salary: employees.salary,
-    })
+  const employeeQuery = tx
+    .select()
     .from(employees)
     .where(eq(employees.id, options.employeeId));
   const employeeRows = options.lock
@@ -129,8 +158,14 @@ export async function getEmployeeAdvanceCapacityTx(
 
   await assertPeriodOpen(tx, new Date(`${period}-01T12:00:00.000Z`));
 
-  let runQuery = tx
-    .select({ id: payrollRuns.id, status: payrollRuns.status })
+  const runQuery = tx
+    .select({
+      id: payrollRuns.id,
+      status: payrollRuns.status,
+      revisionNo: payrollRuns.revisionNo,
+      approvedAt: payrollRuns.approvedAt,
+      paidAt: payrollRuns.paidAt,
+    })
     .from(payrollRuns)
     .where(eq(payrollRuns.period, period));
   const runRows = options.lock
@@ -146,13 +181,18 @@ export async function getEmployeeAdvanceCapacityTx(
     );
   }
 
-  const statement = await getEmployeeStatement({
-    employeeId: options.employeeId,
-    period,
-    scopedBranchId: options.scopedBranchId,
-    tx,
-    employmentEndOverride: asOf,
-  });
+  const statement = await currentFinancialRead(
+    getEmployeeStatement({
+      employeeId: options.employeeId,
+      period,
+      scopedBranchId: options.scopedBranchId,
+      tx,
+      employmentEndOverride: asOf,
+      employeeSnapshot: { ...employee, branchName: null },
+      payrollRunSnapshot: run ?? null,
+      lockFinancialInputs: options.lock,
+    }),
+  );
   if (!statement) {
     throw new TRPCError({
       code: "NOT_FOUND",
@@ -168,7 +208,7 @@ export async function getEmployeeAdvanceCapacityTx(
   }
   const statementEarnedCompensation = money(statement.expectedEarnedGrossWages);
 
-  const bonusRows = await tx
+  const bonusQuery = tx
     .select({ amount: employeeSpotBonuses.amount })
     .from(employeeSpotBonuses)
     .where(
@@ -185,7 +225,10 @@ export async function getEmployeeAdvanceCapacityTx(
         sql`DATE_FORMAT(CONVERT_TZ(${employeeSpotBonuses.approvedAt}, '+00:00', '+03:00'), '%Y-%m') = ${period}`,
       ),
     );
-  const [commissionRun] = await tx
+  const bonusRows = options.lock
+    ? await currentFinancialRead(bonusQuery.for("share", { noWait: true }))
+    : await bonusQuery;
+  const commissionRunQuery = tx
     .select({ id: commissionRuns.id })
     .from(commissionRuns)
     .where(
@@ -193,18 +236,28 @@ export async function getEmployeeAdvanceCapacityTx(
         eq(commissionRuns.period, period),
         eq(commissionRuns.status, "approved"),
       ),
-    )
-    .limit(1);
+    );
+  const commissionRunRows = options.lock
+    ? await currentFinancialRead(
+        commissionRunQuery.for("share", { noWait: true }).limit(1),
+      )
+    : await commissionRunQuery.limit(1);
+  const commissionRun = commissionRunRows[0];
   const commissionRows = commissionRun
-    ? await tx
-        .select({ amount: commissionRunLines.commissionAmount })
-        .from(commissionRunLines)
-        .where(
-          and(
-            eq(commissionRunLines.runId, Number(commissionRun.id)),
-            eq(commissionRunLines.employeeId, options.employeeId),
-          ),
-        )
+    ? await (() => {
+        const query = tx
+          .select({ amount: commissionRunLines.commissionAmount })
+          .from(commissionRunLines)
+          .where(
+            and(
+              eq(commissionRunLines.runId, Number(commissionRun.id)),
+              eq(commissionRunLines.employeeId, options.employeeId),
+            ),
+          );
+        return options.lock
+          ? currentFinancialRead(query.for("share", { noWait: true }))
+          : query;
+      })()
     : [];
   const approvedSpotBonuses = round2(
     bonusRows.reduce((sum, row) => sum.plus(money(row.amount)), ZERO),
@@ -223,25 +276,12 @@ export async function getEmployeeAdvanceCapacityTx(
     statement.dueBasis === "fixedSalary" || statement.dueBasis === "exempt";
   let earnedLeaveDeduction = ZERO;
   if (fixedPayPath) {
-    const unpaidLeaves = await tx
-      .select({
-        from: leaveRequests.fromDate,
-        to: leaveRequests.toDate,
-      })
-      .from(leaveRequests)
-      .where(
-        and(
-          eq(leaveRequests.employeeId, options.employeeId),
-          eq(leaveRequests.paid, false),
-          eq(leaveRequests.status, "approved"),
-          sql`${leaveRequests.fromDate} <= ${statement.to} AND ${leaveRequests.toDate} >= ${statement.from}`,
-        ),
-      );
+    const unpaidLeaves = (statement.approvedLeaveSpans ?? []).filter(
+      (leave) =>
+        !leave.paid && leave.from <= statement.to && leave.to >= statement.from,
+    );
     const unpaidLeaveDays = countDaysWithin(
-      unpaidLeaves.map((leave) => ({
-        from: String(leave.from),
-        to: String(leave.to),
-      })),
+      unpaidLeaves,
       statement.from,
       statement.to,
     );
@@ -280,7 +320,7 @@ export async function getEmployeeAdvanceCapacityTx(
     approvedSpotBonuses.plus(approvedCommissions),
   );
 
-  const penaltyRows = await tx
+  const penaltyQuery = tx
     .select({ amount: employeePenalties.deductionAmount })
     .from(employeePenalties)
     .where(
@@ -291,10 +331,15 @@ export async function getEmployeeAdvanceCapacityTx(
         sql`DATE_FORMAT(${employeePenalties.decisionDate}, '%Y-%m') = ${period}`,
       ),
     );
+  const penaltyRows = options.lock
+    ? await currentFinancialRead(penaltyQuery.for("share", { noWait: true }))
+    : await penaltyQuery;
   const penalties = round2(
     penaltyRows.reduce((sum, row) => sum.plus(money(row.amount)), ZERO),
   );
-  const legalSettings = await getPayrollLegalSettings(tx);
+  const legalSettings = options.lock
+    ? await currentFinancialRead(getPayrollLegalSettingsForUpdate(tx))
+    : await getPayrollLegalSettings(tx);
   const legalGrossBeforeLeave = round2(
     money(statement.livePayrollComponents.gross).plus(approvedSpotBonuses),
   );
@@ -345,7 +390,9 @@ export async function getEmployeeAdvanceCapacityTx(
         : await draftItemQuery.limit(1);
   const draftItem = draftItemRows[0];
   if (run?.status === "draft" && draftItem == null) {
-    blockers.push("الموظف غير مشمول بمسودة راتب هذا الشهر؛ أعد توليد المسودة لتضمينه قبل طلب أو صرف سلفة");
+    blockers.push(
+      "الموظف غير مشمول بمسودة راتب هذا الشهر؛ أعد توليد المسودة لتضمينه قبل طلب أو صرف سلفة",
+    );
   }
   const draftNonAdvance = draftItem
     ? Decimal.max(

@@ -31,6 +31,11 @@ import type { Tx } from "../../db";
 
 /** قارئٌ موحَّد: اتصالٌ عاديّ أو معاملةٌ جارية — كلاهما يدعم نفس بنّاءات الاستعلام. */
 type Reader = Tx | ReturnType<typeof requireDb>;
+export type EmployeeStatementEmployeeSnapshot = typeof employees.$inferSelect & { branchName: string | null };
+export type EmployeeStatementPayrollRunSnapshot = Pick<
+  typeof payrollRuns.$inferSelect,
+  "id" | "status" | "revisionNo" | "approvedAt" | "paidAt"
+>;
 import { money, round2 } from "../money";
 import { isLegacyAutoLateDeduction } from "../attendanceService";
 import {
@@ -55,6 +60,12 @@ export interface EmployeeStatementInput {
    * المعاملة قد ترى حالةً غير التي ستُثبَّت. غيابه ⇒ القراءة العادية (`requireDb`).
    */
   tx?: Tx;
+  /** مدخلات حية قفلها المستهلك قبل النداء؛ يمنع إعادة قراءة الموظف من RR snapshot قديم. */
+  employeeSnapshot?: EmployeeStatementEmployeeSnapshot;
+  /** رأس الشهر المقفول حالياً، أو null مؤكدة عند غيابه. undefined يبقي سلوك التقارير القديم. */
+  payrollRunSnapshot?: EmployeeStatementPayrollRunSnapshot | null;
+  /** قراءات حالية fail-closed لمصادر الأجر؛ لا تُفعّل إلا داخل معاملة قرار مالي. */
+  lockFinancialInputs?: boolean;
   /**
    * حدُّ نهايةٍ صريح (YYYY-MM-DD) يقصّ نافذة العمل — لتسوية نهاية الخدمة **قبل** أن يُضبط
    * `employees.terminationDate` (الإنشاء مرحلةٌ سابقة للإكمال). بدونه يُحسب الشهر كاملاً
@@ -95,8 +106,16 @@ export type StatementDueBasis = "hourly" | "exempt" | "attendance" | "fixedSalar
  * القديمة مخزَّناً ⇒ نأخذ **بند مراجعة الرأس الحالية**؛ وإن غابت (انجرافُ بيانات) نأخذ
  * أعلى مراجعةٍ موجودة بدل أن نُرجع `null` فيعود الرقم إلى الاشتقاق الحيّ صامتاً.
  */
-async function loadPayrollSnapshot(db: Reader, employeeId: number, period: string) {
-  const [run] = await db
+async function loadPayrollSnapshot(
+  db: Reader,
+  employeeId: number,
+  period: string,
+  options: {
+    runSnapshot?: EmployeeStatementPayrollRunSnapshot | null;
+    lockFinancialInputs?: boolean;
+  } = {},
+) {
+  const runQuery = db
     .select({
       id: payrollRuns.id,
       status: payrollRuns.status,
@@ -105,11 +124,16 @@ async function loadPayrollSnapshot(db: Reader, employeeId: number, period: strin
       paidAt: payrollRuns.paidAt,
     })
     .from(payrollRuns)
-    .where(and(eq(payrollRuns.period, period), inArray(payrollRuns.status, ["approved", "paid"])))
-    .limit(1);
-  if (!run) return null;
+    .where(and(eq(payrollRuns.period, period), inArray(payrollRuns.status, ["approved", "paid"])));
+  const runRows = options.runSnapshot !== undefined
+    ? null
+    : options.lockFinancialInputs
+      ? await runQuery.for("share", { noWait: true }).limit(1)
+      : await runQuery.limit(1);
+  const run = options.runSnapshot !== undefined ? options.runSnapshot : (runRows?.[0] ?? null);
+  if (!run || (run.status !== "approved" && run.status !== "paid")) return null;
 
-  const items = await db
+  const itemQuery = db
     .select({
       revisionNo: payrollItems.revisionNo,
       payType: payrollItems.payType,
@@ -126,6 +150,9 @@ async function loadPayrollSnapshot(db: Reader, employeeId: number, period: strin
     .from(payrollItems)
     .where(and(eq(payrollItems.runId, Number(run.id)), eq(payrollItems.employeeId, employeeId)))
     .orderBy(desc(payrollItems.revisionNo));
+  const items = options.lockFinancialInputs
+    ? await itemQuery.for("share", { noWait: true })
+    : await itemQuery;
   const item = items.find((i) => Number(i.revisionNo) === Number(run.revisionNo)) ?? items[0];
   // موظفٌ خارج المسيّر (عُيّن بعد اعتماده مثلاً) ⇒ لا لقطة له، والاشتقاق الحيّ هو الصحيح.
   if (!item) return null;
@@ -161,6 +188,12 @@ function expand(spans: Array<{ from: string; to: string }>, from: string, to: st
 }
 
 export async function getEmployeeStatement(input: EmployeeStatementInput) {
+  if (
+    input.lockFinancialInputs &&
+    (!input.tx || !input.employeeSnapshot || input.payrollRunSnapshot === undefined)
+  ) {
+    throw new Error("lockFinancialInputs requires tx and prelocked employee/payroll snapshots");
+  }
   const db: Reader = input.tx ?? requireDb();
   const p = input.period;
   const monthStart = `${p}-01`;
@@ -193,7 +226,20 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
       .where(eq(employees.id, input.employeeId))
       .limit(1);
 
-  let [emp] = await selectEmp();
+  let emp: Awaited<ReturnType<typeof selectEmp>>[number] | EmployeeStatementEmployeeSnapshot | undefined;
+  if (input.employeeSnapshot) {
+    // اسم الفرع وصفي فقط؛ لا نقفل branches بعد الموظف لأن كتّاباً قديمين يرتبون branch→employee.
+    const [branch] = input.employeeSnapshot.branchId == null
+      ? []
+      : await db
+          .select({ name: branches.name })
+          .from(branches)
+          .where(eq(branches.id, input.employeeSnapshot.branchId))
+          .limit(1);
+    emp = { ...input.employeeSnapshot, branchName: branch?.name ?? input.employeeSnapshot.branchName };
+  } else {
+    [emp] = await selectEmp();
+  }
   if (!emp) return null;
   /*
    * عزل الفرع: **رفضٌ صريح** لا تصفيةٌ صامتة — الطلب يحمل معرّفاً بعينه، فإعادة `null`
@@ -233,7 +279,9 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
         ),
       );
 
-  const attRows = await selectAttRows();
+  const attRows = input.lockFinancialInputs
+    ? await selectAttRows().for("share", { noWait: true })
+    : await selectAttRows();
   const hasUnhealedLateOrOpen = attRows.some(
     (r) =>
       isLegacyAutoLateDeduction(r, emp.workSchedule) ||
@@ -248,7 +296,10 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
                 (r.checkOut.getTime() - r.checkIn.getTime()) / 3_600_000 - Number(r.hours ?? 0) > 0.08))))),
   );
 
-  const [settings] = await db.select().from(hrAttendanceSettings).where(eq(hrAttendanceSettings.id, 1)).limit(1);
+  const settingsQuery = db.select().from(hrAttendanceSettings).where(eq(hrAttendanceSettings.id, 1));
+  const [settings] = input.lockFinancialInputs
+    ? await settingsQuery.for("share", { noWait: true }).limit(1)
+    : await settingsQuery.limit(1);
   // جدول الموظف وحده — الجدول العامّ أُلغي (0140) لأنه صار مكرّراً بعد دخوله بطاقةَ كل موظف.
   // من لم يُضبط جدولُه بعد يقع على الاحتياطيّ الثابت في الكود ويُنبَّه عليه في الشاشة.
   const schedule: WorkSchedule =
@@ -273,7 +324,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     }
   }
 
-  const leaves = await db
+  const leavesQuery = db
     .select({ paid: leaveRequests.paid, fromDate: leaveRequests.fromDate, toDate: leaveRequests.toDate })
     .from(leaveRequests)
     .where(
@@ -283,6 +334,9 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
         sql`${leaveRequests.fromDate} <= ${monthEnd} AND ${leaveRequests.toDate} >= ${monthStart}`,
       ),
     );
+  const leaves = input.lockFinancialInputs
+    ? await leavesQuery.for("share", { noWait: true })
+    : await leavesQuery;
   const paidSpans = leaves.filter((l) => l.paid).map((l) => ({ from: String(l.fromDate), to: String(l.toDate) }));
   const unpaidSpans = leaves.filter((l) => !l.paid).map((l) => ({ from: String(l.fromDate), to: String(l.toDate) }));
 
@@ -412,7 +466,10 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
         ? round2(money(pay.basePay).plus(money(pay.overtimePay))).toFixed(2)
         : fixedPay.toFixed(2);
 
-  const snapshot = await loadPayrollSnapshot(db, input.employeeId, p);
+  const snapshot = await loadPayrollSnapshot(db, input.employeeId, p, {
+    runSnapshot: input.payrollRunSnapshot,
+    lockFinancialInputs: input.lockFinancialInputs,
+  });
   const dueBasis: StatementDueBasis = snapshot ? "payrollSnapshot" : liveBasis;
   /*
    * الرقم المجمَّد = `gross + overtime` من اللقطة: **الأجر المكتسَب عن الشهر** بنفس معنى
@@ -441,6 +498,13 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     schedule,
     attendancePayEnabled,
     hasOwnSchedule,
+    approvedLeaveSpans: input.lockFinancialInputs
+      ? leaves.map((leave) => ({
+          paid: !!leave.paid,
+          from: String(leave.fromDate),
+          to: String(leave.toDate),
+        }))
+      : undefined,
     /** مجموع `attendance.amount` — ما يدفعه المسيّر للساعيّ فعلاً. */
     actualPaidAmount: actualPaid.toFixed(2),
     /** (الراتب + البدلات) × تناسب أيام العمل — ما يدفعه المسيّر لغير الخاضع للحضور. */
