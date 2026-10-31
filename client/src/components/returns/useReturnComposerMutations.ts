@@ -160,7 +160,7 @@ export function useReturnComposerMutations(
       );
       return false;
     }
-    const gate = await assertCanCapture(D(capturedRefund.amount).toNumber());
+    const gate = await assertCanCapture(D(capturedRefund.amount).toNumber(), "RETURN");
     if (!gate.ok) {
       notify.errBig(gate.reason);
       return false;

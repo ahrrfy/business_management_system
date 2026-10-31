@@ -13,6 +13,7 @@
 // وسقف عمر للكاش المحلي (أسعار أقدم من ٤٨ ساعة ⇒ قراءة فقط بلا بيع).
 
 import { getLastSyncAt } from "./catalogSync";
+import { D } from "../money";
 import { decryptJson, encryptJson, isEncryptedEnvelope, isLegacyZeroIvEnvelope } from "./crypto";
 import { getMeta, offlineDb, setMeta, type OfflineOutboxItem, type OfflineOutboxKind } from "./db";
 import { getOfflineProfile } from "./pinLock";
@@ -171,28 +172,77 @@ function notifyOutboxChanged() {
 
 // ── صمّاما الأمان ────────────────────────────────────────────────────────────
 
+function validatedTotal(value: string | number, allowZero = false) {
+  if (typeof value !== "string" && typeof value !== "number") {
+    throw new Error("Invalid offline total");
+  }
+  const format = allowZero ? /^\d+(?:\.\d+)?$/ : /^\d+(?:\.\d{1,2})?$/;
+  if (typeof value === "string" && !format.test(value)) {
+    throw new Error("Invalid offline total");
+  }
+  const total = D(value);
+  if (!total.isFinite() || total.lt(0) || (!allowZero && total.isZero())) {
+    throw new Error("Invalid offline total");
+  }
+  if (!allowZero && total.decimalPlaces() > 2) throw new Error("Invalid offline total precision");
+  return total;
+}
+
+async function unresolvedIncomingTotal() {
+  const items = await offlineDb.outbox
+    .where("status")
+    .anyOf("QUEUED", "SENDING", "PARKED")
+    .toArray();
+  // RETURN never releases sale capacity; a missing legacy kind means SALE.
+  return items.reduce(
+    (sum, item) => item.kind === "RETURN"
+      ? sum
+      // Older capture allowed zero (discounts/cash rounding). Preserve it without blocking sales.
+      : sum.plus(validatedTotal(item.total, true)),
+    D(0),
+  );
+}
+
 export async function queuedTotalIQD(): Promise<number> {
-  const items = await offlineDb.outbox.where("status").anyOf("QUEUED", "SENDING").toArray();
-  return items.reduce((sum, i) => sum + Number(i.total || 0), 0);
+  // Preserve the display API; admission keeps Decimal throughout. Corrupt exposure fails closed.
+  try {
+    return (await unresolvedIncomingTotal()).toNumber();
+  } catch {
+    return Infinity;
+  }
+}
+
+function isCatalogFresh(lastSync: string | null): boolean {
+  if (!lastSync) return false;
+  const age = Date.now() - new Date(lastSync).getTime();
+  return Number.isFinite(age) && age >= 0 && age <= OFFLINE_CACHE_MAX_AGE_MS;
 }
 
 /** بوّابة قبول بيع أوفلايني جديد — ترفض بسبب صريح يفهمه الكاشير. */
-export async function assertCanCapture(saleTotalIQD: number): Promise<{ ok: true } | { ok: false; reason: string }> {
-  const lastSync = await getLastSyncAt();
-  if (!lastSync || Date.now() - new Date(lastSync).getTime() > OFFLINE_CACHE_MAX_AGE_MS) {
+export async function assertCanCapture(saleTotalIQD: number, kind: OfflineOutboxKind = "SALE"): Promise<{ ok: true } | { ok: false; reason: string }> {
+  try {
+    const total = validatedTotal(saleTotalIQD);
+    const lastSync = await getLastSyncAt();
+    if (!isCatalogFresh(lastSync)) {
+      return {
+        ok: false,
+        reason: "الأسعار المحلية أقدم من ٤٨ ساعة — البيع الأوفلايني متوقف حتى مزامنةٍ ناجحة (القراءة والاستعلام متاحان)",
+      };
+    }
+    const queued = kind === "RETURN" ? D(0) : await unresolvedIncomingTotal();
+    if (kind !== "RETURN" && queued.plus(total).gt(OFFLINE_QUEUE_CAP_IQD)) {
+      return {
+        ok: false,
+        reason: `بلغ طابور المزامنة سقفه (${OFFLINE_QUEUE_CAP_IQD.toLocaleString("en")} د.ع) — أعد الاتصال لتفريغه قبل قبول مبيعات جديدة`,
+      };
+    }
+    return { ok: true };
+  } catch {
     return {
       ok: false,
-      reason: "الأسعار المحلية أقدم من ٤٨ ساعة — البيع الأوفلايني متوقف حتى مزامنةٍ ناجحة (القراءة والاستعلام متاحان)",
+      reason: "تعذّر التحقق من قيمة طابور المزامنة — تحقق من المبلغ والتخزين المحلي قبل قبول مبيعات جديدة",
     };
   }
-  const queued = await queuedTotalIQD();
-  if (queued + saleTotalIQD > OFFLINE_QUEUE_CAP_IQD) {
-    return {
-      ok: false,
-      reason: `بلغ طابور المزامنة سقفه (${OFFLINE_QUEUE_CAP_IQD.toLocaleString("en")} د.ع) — أعد الاتصال لتفريغه قبل قبول مبيعات جديدة`,
-    };
-  }
-  return { ok: true };
 }
 
 // ── الالتقاط ────────────────────────────────────────────────────────────────
@@ -205,6 +255,7 @@ export async function enqueueOfflineItem(args: {
   capturedByUserId?: number;
 }): Promise<boolean> {
   try {
+    const total = validatedTotal(args.total);
     const profile = args.capturedByUserId ? null : await getOfflineProfile();
     const capturedByUserId = Number(args.capturedByUserId ?? profile?.userId ?? 0);
     if (!Number.isInteger(capturedByUserId) || capturedByUserId <= 0) return false;
@@ -224,7 +275,19 @@ export async function enqueueOfflineItem(args: {
       lastError: null,
       total: args.total,
     };
-    await offlineDb.outbox.put(item);
+    // WebCrypto must finish before opening IndexedDB's transaction (otherwise it auto-commits).
+    const lastSync = args.kind === "RETURN" ? null : await getLastSyncAt();
+    const saved = await offlineDb.transaction("rw", offlineDb.outbox, async () => {
+      // An existing command owns its key forever, including SENT/PARKED and active leases.
+      if (await offlineDb.outbox.get(item.clientRequestId)) return false;
+      if (args.kind !== "RETURN") {
+        if (!isCatalogFresh(lastSync)) return false;
+        if ((await unresolvedIncomingTotal()).plus(total).gt(OFFLINE_QUEUE_CAP_IQD)) return false;
+      }
+      await offlineDb.outbox.add(item);
+      return true;
+    });
+    if (!saved) return false;
     notifyOutboxChanged();
     return true;
   } catch {
