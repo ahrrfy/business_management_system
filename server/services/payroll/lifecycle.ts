@@ -29,6 +29,41 @@ import {
   payrollEmployeeMembership,
 } from "./employeeLocks";
 
+function isNowaitConflict(error: unknown): boolean {
+  let current: unknown = error;
+  for (
+    let depth = 0;
+    depth < 5 && current && typeof current === "object";
+    depth += 1
+  ) {
+    const value = current as {
+      code?: unknown;
+      errno?: unknown;
+      cause?: unknown;
+    };
+    if (value.code === "ER_LOCK_NOWAIT" || Number(value.errno) === 3572)
+      return true;
+    current = value.cause;
+  }
+  return false;
+}
+
+async function currentPayrollSourceRead<T>(read: PromiseLike<T>): Promise<T> {
+  try {
+    return await read;
+  } catch (error) {
+    if (!isNowaitConflict(error)) throw error;
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر تثبيت مصادر مسيّر الرواتب الآن",
+        why: "تتغيّر حالياً مكافأة أو عقوبة تدخل في المسيّر",
+        doThis: "انتظر اكتمال التعديل ثم أعد اعتماد المسيّر",
+      }),
+    });
+  }
+}
+
 /** اعتماد الاستحقاق الشهري؛ لا نقد ولا إيصال في هذه المرحلة. */
 export async function approveRun(id: number, actor: Actor) {
   const replayed = await withTx(async (tx) => {
@@ -102,51 +137,58 @@ export async function approveRun(id: number, actor: Actor) {
         message: `تشغيلة عمولات معتمدة (#${uncaptured.id}) لشهر ${uncaptured.period} غير ملتقطة — أعد توليد المسيّر.`,
       });
     }
-    const [uncapturedBonus] = await tx
-      .select({ id: employeeSpotBonuses.id })
-      .from(employeeSpotBonuses)
-      .where(
-        and(
-          eq(employeeSpotBonuses.status, "APPROVED"),
-          eq(employeeSpotBonuses.disbursementType, "PAYROLL_ADDITION"),
-          isNull(employeeSpotBonuses.payrollRunId),
-          // نفس أهلية التوليد: الالتزام القديم/الإرثي غير الملتقط يمنع اعتماد مسودة
-          // لا تحتويه، أما اعتماد شهر مستقبلي فلا يخص مسيّر الفترة الحالية.
-          or(
-            isNull(employeeSpotBonuses.approvedAt),
-            sql`DATE_FORMAT(CONVERT_TZ(${employeeSpotBonuses.approvedAt}, '+00:00', '+03:00'), '%Y-%m') <= ${run.period}`,
-          ),
-        ),
-      )
-      .orderBy(employeeSpotBonuses.id)
-      .for("update")
-      .limit(1);
-    // التوليد يلتقط العقوبات لموظفي بنود المسير فقط؛ ذمم الموظفين المستبعدين
-    // تبقى معلّقة بمصادرها ولا تعطل اعتماد رواتب موظفين آخرين.
-    const penaltyScope = await tx
+    // التوليد يلتقط المكافآت والعقوبات لموظفي بنود المسير فقط؛ ذمم الموظفين
+    // المستبعدين تبقى معلّقة بمصادرها ولا تعطل اعتماد رواتب موظفين آخرين.
+    const sourceScope = await tx
       .select({ employeeId: payrollItems.employeeId })
       .from(payrollItems)
       .where(eq(payrollItems.runId, id))
       .orderBy(payrollItems.id)
       .for("share");
-    const [uncapturedPenalty] = await tx
-      .select({ id: employeePenalties.id })
-      .from(employeePenalties)
-      .where(
-        and(
-          inArray(
-            employeePenalties.employeeId,
-            penaltyScope.map((item) => Number(item.employeeId)),
+    const sourceEmployeeIds = sourceScope.map((item) =>
+      Number(item.employeeId),
+    );
+    const [uncapturedBonus] = await currentPayrollSourceRead(
+      tx
+        .select({ id: employeeSpotBonuses.id })
+        .from(employeeSpotBonuses)
+        .where(
+          and(
+            inArray(employeeSpotBonuses.employeeId, sourceEmployeeIds),
+            eq(employeeSpotBonuses.status, "APPROVED"),
+            eq(employeeSpotBonuses.disbursementType, "PAYROLL_ADDITION"),
+            isNull(employeeSpotBonuses.payrollRunId),
+            // نفس أهلية التوليد: الالتزام القديم/الإرثي غير الملتقط يمنع اعتماد مسودة
+            // لا تحتويه، أما اعتماد شهر مستقبلي فلا يخص مسيّر الفترة الحالية.
+            or(
+              isNull(employeeSpotBonuses.approvedAt),
+              sql`DATE_FORMAT(CONVERT_TZ(${employeeSpotBonuses.approvedAt}, '+00:00', '+03:00'), '%Y-%m') <= ${run.period}`,
+            ),
           ),
-          eq(employeePenalties.status, "APPROVED"),
-          isNull(employeePenalties.payrollRunId),
-          sql`${employeePenalties.deductionAmount} > 0`,
-          sql`DATE_FORMAT(${employeePenalties.decisionDate}, '%Y-%m') = ${run.period}`,
-        ),
-      )
-      .orderBy(employeePenalties.id)
-      .for("update")
-      .limit(1);
+        )
+        .orderBy(employeeSpotBonuses.id)
+        .for("update", { noWait: true })
+        .limit(1),
+    );
+    const [uncapturedPenalty] = await currentPayrollSourceRead(
+      tx
+        .select({ id: employeePenalties.id })
+        .from(employeePenalties)
+        .where(
+          and(
+            inArray(employeePenalties.employeeId, sourceEmployeeIds),
+            eq(employeePenalties.status, "APPROVED"),
+            isNull(employeePenalties.payrollRunId),
+            sql`${employeePenalties.deductionAmount} > 0`,
+            // نفس أهلية التوليد: عقوبة قديمة غير ملتقطة تمنع اعتماد مسودة ناقصة،
+            // أما قرار شهر مستقبلي فلا يخص الفترة الحالية.
+            sql`DATE_FORMAT(${employeePenalties.decisionDate}, '%Y-%m') <= ${run.period}`,
+          ),
+        )
+        .orderBy(employeePenalties.id)
+        .for("update", { noWait: true })
+        .limit(1),
+    );
     if (uncapturedBonus || uncapturedPenalty) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",

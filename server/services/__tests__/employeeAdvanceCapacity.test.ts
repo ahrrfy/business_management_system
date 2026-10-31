@@ -856,6 +856,77 @@ describe("employee advance earned-capacity contract", () => {
     expect(await db().select().from(s.idempotencyKeys)).toHaveLength(0);
   }, 15_000);
 
+  it("يفشل سريعاً إذا كان توليد المسيّر يحتجز رأس الشهر دون دورة أقفال", async () => {
+    let inserted!: () => void;
+    let release!: () => void;
+    const runInserted = new Promise<void>((resolve) => { inserted = resolve; });
+    const mayCommit = new Promise<void>((resolve) => { release = resolve; });
+    const holder = withTx(async (tx) => {
+      await tx.insert(s.payrollRuns).values({
+        period: CURRENT_PERIOD,
+        status: "draft",
+        createdBy: ACTOR.userId,
+      });
+      inserted();
+      await mayCommit;
+    });
+    await runInserted;
+
+    const execute = MySql2PreparedQuery.prototype.execute;
+    const lockOrder: string[] = [];
+    let runLockAttempts = 0;
+    const spy = vi.spyOn(MySql2PreparedQuery.prototype, "execute").mockImplementation(async function (
+      this: typeof MySql2PreparedQuery.prototype,
+      values,
+    ) {
+      const query = (this as unknown as { query: { sql: string } }).query.sql;
+      if (query.includes("from `employees`") && query.includes("for update")) {
+        lockOrder.push("employee");
+      }
+      if (
+        query.includes("from `payrollRuns`") &&
+        query.includes("for update nowait")
+      ) {
+        lockOrder.push("run");
+        runLockAttempts += 1;
+      }
+      return execute.call(this, values);
+    });
+    const capacity = withTx((tx) =>
+      getEmployeeAdvanceCapacityTx(tx, {
+        employeeId: EMPLOYEE_ID,
+        scopedBranchId: BRANCH_ID,
+        period: CURRENT_PERIOD,
+        asOf: TODAY,
+        lock: true,
+      }),
+    );
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const outcome = await Promise.race([
+        capacity.then(
+          () => ({ status: "fulfilled" as const }),
+          (reason: unknown) => ({ status: "rejected" as const, reason }),
+        ),
+        new Promise<{ status: "timeout" }>((resolve) => {
+          timeout = setTimeout(() => resolve({ status: "timeout" }), 2_000);
+        }),
+      ]);
+      expect(outcome).toMatchObject({
+        status: "rejected",
+        reason: { code: "CONFLICT" },
+      });
+      expect(lockOrder.slice(0, 2)).toEqual(["employee", "run"]);
+      expect(runLockAttempts).toBe(1);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      release();
+      await holder;
+      await Promise.allSettled([capacity]);
+      spy.mockRestore();
+    }
+  }, 15_000);
+
   it("يرى الراتب والإجازة المعتمدة اللذين التزما بعد preview قديم", async () => {
     await db()
       .update(s.employees)
@@ -1064,6 +1135,54 @@ describe("employee advance earned-capacity contract", () => {
     });
   });
 
+  it("يحمل العقوبة القديمة غير الملتقطة في السعة ولا يعجّل قرار الشهر المستقبلي", async () => {
+    const connection = db();
+    await connection
+      .update(s.payrollLegalSettings)
+      .set({ socialSecurityEnabled: false, incomeTaxEnabled: false })
+      .where(eq(s.payrollLegalSettings.id, 1));
+    await seedAttendance({ date: "2030-06-05", amount: "1000.00" });
+    await connection.insert(s.employeePenalties).values([
+      {
+        employeeId: EMPLOYEE_ID,
+        branchId: BRANCH_ID,
+        penaltyType: "SALARY_DEDUCTION",
+        decisionNumber: "CAP-HISTORICAL-PENALTY",
+        decisionDate: "2030-05-31",
+        reason: "عقوبة قديمة غير ملتقطة",
+        deductionAmount: "50.00",
+        status: "APPROVED",
+        createdById: ACTOR.userId,
+        approvedById: ACTOR.userId,
+      },
+      {
+        employeeId: EMPLOYEE_ID,
+        branchId: BRANCH_ID,
+        penaltyType: "SALARY_DEDUCTION",
+        decisionNumber: "CAP-FUTURE-PENALTY",
+        decisionDate: "2030-07-01",
+        reason: "قرار شهر مستقبلي لا يدخل مبكراً",
+        deductionAmount: "999.00",
+        status: "APPROVED",
+        createdById: ACTOR.userId,
+        approvedById: ACTOR.userId,
+      },
+    ]);
+
+    const capacity = await getEmployeeAdvanceCapacity({
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: FIXED_PERIOD,
+      asOf: FIXED_AS_OF,
+    });
+
+    expect(capacity).toMatchObject({
+      earnedCompensation: "1000.00",
+      mandatoryDeductions: "50.00",
+      maxAvailable: "950.00",
+    });
+  });
+
   it("يحسب سقف العقوبة بعد الإجازة والقانوني مع المكافأة والعمولة", async () => {
     const connection = db();
     await connection
@@ -1236,9 +1355,9 @@ describe("employee advance earned-capacity contract", () => {
       employeeId: EMPLOYEE_ID,
       branchId: BRANCH_ID,
       penaltyType: "SALARY_DEDUCTION",
-      decisionNumber: "CAP-PENALTY-OLD",
-      decisionDate: "2030-05-20",
-      reason: "عقوبة شهر سابق لا تُرحّل",
+      decisionNumber: "CAP-PENALTY-FUTURE",
+      decisionDate: "2030-07-20",
+      reason: "عقوبة شهر مستقبلي لا تُعجّل",
       deductionAmount: "999.00",
       status: "APPROVED",
       createdById: ACTOR.userId,

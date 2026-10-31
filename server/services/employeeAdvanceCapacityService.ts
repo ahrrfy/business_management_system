@@ -169,7 +169,9 @@ export async function getEmployeeAdvanceCapacityTx(
     .from(payrollRuns)
     .where(eq(payrollRuns.period, period));
   const runRows = options.lock
-    ? await runQuery.for("update").limit(1)
+    ? await currentFinancialRead(
+        runQuery.for("update", { noWait: true }).limit(1),
+      )
     : await runQuery.limit(1);
   const run = runRows[0];
   const blockers: string[] = [];
@@ -332,7 +334,8 @@ export async function getEmployeeAdvanceCapacityTx(
         eq(employeePenalties.employeeId, options.employeeId),
         eq(employeePenalties.status, "APPROVED"),
         isNull(employeePenalties.payrollRunId),
-        sql`DATE_FORMAT(${employeePenalties.decisionDate}, '%Y-%m') = ${period}`,
+        // نفس أهلية التوليد والاعتماد: استرداد العقوبة القديمة دون تعجيل المستقبلية.
+        sql`DATE_FORMAT(${employeePenalties.decisionDate}, '%Y-%m') <= ${period}`,
       ),
     );
   const penaltyRows = options.lock

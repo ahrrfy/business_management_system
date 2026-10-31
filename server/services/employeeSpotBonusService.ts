@@ -34,6 +34,42 @@ function requireDb() {
   return db;
 }
 
+function isNowaitSourceConflict(error: unknown): boolean {
+  let current: unknown = error;
+  for (
+    let depth = 0;
+    depth < 5 && current && typeof current === "object";
+    depth += 1
+  ) {
+    const value = current as {
+      code?: unknown;
+      errno?: unknown;
+      cause?: unknown;
+    };
+    if (value.code === "ER_LOCK_NOWAIT" || Number(value.errno) === 3572)
+      return true;
+    current = value.cause;
+  }
+  return false;
+}
+
+async function currentSpotBonusSourceLock<T>(lock: PromiseLike<T>): Promise<T> {
+  try {
+    return await lock;
+  } catch (error) {
+    if (!isNowaitSourceConflict(error)) throw error;
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "لم يكتمل اعتماد المكافأة",
+        why: "هناك عملية رواتب أخرى تثبّت حالياً مسيّر الشهر أو سجل المكافأة نفسه",
+        doThis:
+          "انتظر اكتمال العملية الجارية، حدّث بطاقة الموظف، ثم أعد المحاولة",
+      }),
+    });
+  }
+}
+
 export type SpotBonusDisbursementType = "CASH_TREASURY" | "PAYROLL_ADDITION";
 export type SpotBonusStatus = "DRAFT" | "APPROVED" | "PAID" | "CANCELLED";
 
@@ -131,12 +167,14 @@ export async function approveSpotBonus(
     }
     if (preview.disbursementType === "PAYROLL_ADDITION") {
       const period = baghdadToday().slice(0, 7);
-      const [existingRun] = await tx
-        .select({ id: payrollRuns.id, status: payrollRuns.status })
-        .from(payrollRuns)
-        .where(eq(payrollRuns.period, period))
-        .for("update")
-        .limit(1);
+      const [existingRun] = await currentSpotBonusSourceLock(
+        tx
+          .select({ id: payrollRuns.id, status: payrollRuns.status })
+          .from(payrollRuns)
+          .where(eq(payrollRuns.period, period))
+          .for("update", { noWait: true })
+          .limit(1),
+      );
       if (existingRun) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
@@ -150,13 +188,25 @@ export async function approveSpotBonus(
         });
       }
     }
-    const [b] = await tx
-      .select()
-      .from(employeeSpotBonuses)
-      .where(eq(employeeSpotBonuses.id, id))
-      .for("update")
-      .limit(1);
-    if (!b || b.status !== preview.status) {
+    const [b] = await currentSpotBonusSourceLock(
+      tx
+        .select()
+        .from(employeeSpotBonuses)
+        .where(eq(employeeSpotBonuses.id, id))
+        .for("update", { noWait: true })
+        .limit(1),
+    );
+    if (
+      !b ||
+      b.status !== preview.status ||
+      b.employeeId !== preview.employeeId ||
+      b.branchId !== preview.branchId ||
+      b.disbursementType !== preview.disbursementType ||
+      !money(b.amount).eq(money(preview.amount)) ||
+      b.reason !== preview.reason ||
+      b.decisionNumber !== preview.decisionNumber ||
+      b.payrollRunId !== preview.payrollRunId
+    ) {
       throw new TRPCError({
         code: "CONFLICT",
         message: appErrorMessage({
