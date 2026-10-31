@@ -38,7 +38,7 @@ jobs:
           $env:BACKUP_TEST_GPG = 'C:\Program Files\Git\usr\bin\gpg.exe'
           $env:BACKUP_TEST_GPG_MSYS = '1'
           if (-not (Test-Path -LiteralPath $env:BACKUP_TEST_GPG)) { throw 'GPG is required; skipping is forbidden in CI' }
-          node --test scripts/backup-recovery-safety.test.mjs scripts/isolated-local-restore.test.mjs
+          node --test scripts/backup-recovery-safety.test.mjs scripts/isolated-local-restore.test.mjs scripts/recovery-closure.test.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Offsite interruption and integrity contracts (PowerShell 7)
         shell: pwsh

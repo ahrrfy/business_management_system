@@ -6,6 +6,7 @@ import { randomBytes, randomUUID, createDecipheriv } from "node:crypto";
 import { resolve, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { fingerprint } from "./lib/backup-publication.mjs";
+import { prepareRecoveryMysql, bootstrapRecoveryAdmin, assertPrivateRecoveryDirectory } from "./lib/recovery-mysql.mjs";
 
 export function assertLocalEndpoint(endpoint) {
   if (!/^(npipe:\/\/\/\/\.\/pipe\/[^\s]+|unix:\/\/\/[^\s]+)$/.test(endpoint)) throw new Error("LOCAL_DOCKER_REQUIRED");
@@ -37,7 +38,8 @@ export async function main(args = process.argv.slice(2)) {
   const source = resolve(value(encrypted ? "--encrypted" : "--sql"));
   if (!source.endsWith(encrypted ? ".sql.gpg" : ".sql") || !(await stat(source)).isFile()) throw new Error("LOCAL_BACKUP_REQUIRED");
   const dir = resolve(value("--evidence"));
-  await mkdir(dir); // Must be new; never overwrite prior evidence.
+  await mkdir(dir, { mode: 0o700 }); // Must be new; never overwrite prior evidence.
+  if (args.includes("--bootstrap-admin")) await assertPrivateRecoveryDirectory(dir);
   // Parse only the explicitly supplied escrow file. Never load its database/host settings.
   const keys = args.includes("--secrets-file")
     ? (await import("dotenv")).parse(await readFile(resolve(value("--secrets-file")))) : {};
@@ -124,6 +126,12 @@ export async function main(args = process.argv.slice(2)) {
       report.rowCounts[table] = Number(sql(`SELECT COUNT(*) FROM \`${table}\``));
     }
     report.migrations = sql("SELECT COUNT(*),MAX(created_at) FROM __drizzle_migrations");
+    if (args.includes("--prepare-mysql")) report.mysqlPreparation = prepareRecoveryMysql(sql, guard);
+    if (args.includes("--bootstrap-admin")) {
+      if (!args.includes("--prepare-mysql")) throw new Error("MYSQL_PREPARATION_REQUIRED");
+      report.recoveryAdmin = await bootstrapRecoveryAdmin(sql, guard, credential =>
+        writeFile(join(dir, "recovery-admin.private.json"), JSON.stringify(credential), { flag: "wx", mode: 0o600 }));
+    }
     const columns = sql("SELECT TABLE_NAME,COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='erp' AND DATA_TYPE IN ('varchar','text','mediumtext','longtext')").split("\n").map(x => x.split("\t"));
     const identifier = s => { if (!/^[A-Za-z0-9_]+$/.test(s)) throw new Error("INVALID_SCHEMA_IDENTIFIER"); return `\`${s}\``; };
     report.secrets = { keyAvailable: !!integrationKey, encryptedRows: 0, verified: 0, failed: 0 };
