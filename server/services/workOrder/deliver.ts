@@ -13,8 +13,13 @@ import { money, round2, toDbMoney } from "../money";
 import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import { readOpeningWindowState } from "../openingModeService";
 import { appliedCollectionsForWorkOrder, linkSoleTargetCollectionsToInvoice } from "../deposits";
+import type { Tx } from "../../db";
 import { type Actor, withTx } from "../tx";
-import { assertWorkOrderBranch, loadWorkOrder, workOrderInvoiceSourceId, resolveDeliveryInvoiceNumber } from "./helpers";
+import { assertNoLiveConsignment, assertWorkOrderBranch, loadWorkOrder, workOrderInvoiceSourceId, resolveDeliveryInvoiceNumber } from "./helpers";
+import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
+import { logAuditTx } from "../auditService";
+import { recordWorkOrderEvent } from "../workOrderEvents";
+import { closeWorkOrderDirectHandoverCustodyTx } from "../delivery/custody";
 import { assertSiblingsReady } from "./siblings";
 import type { PaymentMethod } from "./types";
 import { userNameSnapshot } from "../userSnapshot";
@@ -47,11 +52,24 @@ export interface DeliverWorkOrderInput {
   enforceDebtApproval?: boolean;
 }
 
-/** READY → DELIVERED: create invoice (sourceType=WORKORDER) + optional payment + SALE entry + AR adjust. */
-export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Actor & { role?: string }) {
+export type DeliverWorkOrderTxResult = {
+  workOrderId: number;
+  invoiceId: number;
+  invoiceNumber: string;
+  status: string;
+  branchId: number;
+  idempotentReplay?: true;
+};
+
+/** READY → DELIVERED داخل معاملة خارجية قائمة (يُستخدَم في التسليم الفردي وجرد الرفّ الذري). */
+export async function deliverWorkOrderInTx(
+  tx: Tx,
+  input: DeliverWorkOrderInput,
+  actor: Actor & { role?: string },
+): Promise<DeliverWorkOrderTxResult> {
   // دفعة التسليم قبضٌ ذاتي من الموظف؛ نرفض غير النقدي قبل فحص idempotency وقفل الأمر.
   if (input.payment) assertPosPaymentMethodEnabled(input.payment.method);
-  const result = await withTx(async (tx) => {
+  {
     const requestFingerprint = input.clientRequestId ? idempotencyHash(input) : null;
     // Idempotency: double-click / network-retry ⇒ return the already-created invoice.
     if (input.clientRequestId) {
@@ -71,6 +89,21 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     }
     const wo = await loadWorkOrder(tx, input.workOrderId);
     assertWorkOrderBranch(wo, actor);
+    if (input.clientRequestId) {
+      const replayAfterLock = await checkIdempotency(tx, "workOrder.deliver", input.clientRequestId, requestFingerprint, { forUpdate: true });
+      if (replayAfterLock != null) {
+        const inv = (await tx.select({ invoiceNumber: invoices.invoiceNumber, status: invoices.status })
+          .from(invoices).where(eq(invoices.id, replayAfterLock)).limit(1))[0];
+        return {
+          workOrderId: input.workOrderId,
+          invoiceId: replayAfterLock,
+          invoiceNumber: inv?.invoiceNumber ?? "",
+          status: inv?.status ?? "PENDING",
+          idempotentReplay: true as const,
+          branchId: Number(wo.branchId),
+        };
+      }
+    }
     if (wo.status !== "READY") throw new TRPCError({ code: "BAD_REQUEST", message: "الأمر ليس جاهزاً للتسليم" });
     // (حُذف حارسُ اعتماد التصميم — قرار المالك ١/٩/٢٦؛ التعليل في `lifecycle.startWorkOrder`.)
     // إخوةُ السلّة الواحدة: التسليمُ المباشر مخرجٌ ثالثٌ كان يفلت من حارس الإرسال الجزئيّ،
@@ -90,15 +123,357 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
         message: "هذا الطلب مخصّص للتوصيل — أسنده من «إدارة التوصيل» ولا تستخدم التسليم المباشر",
       });
     }
-    // ١٨/٨: للأمر فاتورةٌ سلفاً (أُرسل للتوصيل ثمّ أُلغي إسنادُه، فبقيت فاتورتُه وقيدُ بيعها
-    // حيَّين وتحوّل إلى استلامٍ مباشر). التسليم هنا كان سيُنشئ **فاتورةً وقيدَ بيعٍ ثانيَين**
-    // لبضاعةٍ واحدة ⇒ إيرادٌ وذمّةٌ مضاعفان. المخرج المشروع: تحصيلُ الفاتورة القائمة من طابور
-    // المحطة، أو استرجاعُ الإرسالية أوّلاً (عكسٌ كامل) ثمّ إعادة البيع.
+    await assertNoLiveConsignment(tx, Number(wo.id), "deliver");
+
+    // معالجة التسليم المباشر لأمر شغل سبق إصدار فاتورته عند الإسناد للتوصيل ثم أُلغي الإسناد
+    // أو أُعيد الطرد إلى READY دون عكس البيع: نسوّي الفاتورة القائمة دون إنشاء فاتورة أو SALE ثانٍ.
     if (wo.invoiceId != null) {
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: "لهذا الطلب فاتورةٌ صادرة سلفاً — حصّلها من طابور الفواتير، أو استرجع إرساليّته أوّلاً ثمّ أعد البيع",
+      const paidNow = money(input.payment?.amount ?? "0");
+      const paymentReference = input.payment?.reference?.trim() || null;
+      if (paidNow.lt(0)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "المبلغ المدفوع لا يمكن أن يكون سالباً",
+            why: `المبلغ المُرسَل (${paidNow.toFixed(2)}) أقل من الصفر`,
+            doThis: "أدخل مبلغاً موجباً أو صفراً عند التسليم",
+          }),
+        });
+      }
+      if (paidNow.gt(0) && input.payment?.method !== "CASH" && !paymentReference) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "مرجع عملية البطاقة/التحويل مطلوب",
+            why: "وسائل الدفع غير النقدية تتطلّب رقم مرجع لإثبات التحصيل",
+            doThis: "أدخل رقم مرجع عملية البطاقة أو التحويل ثم أعد المحاولة",
+          }),
+        });
+      }
+
+      const [existingInv] = await tx
+        .select()
+        .from(invoices)
+        .where(eq(invoices.id, Number(wo.invoiceId)))
+        .for("update")
+        .limit(1);
+      if (!existingInv) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: appErrorMessage({
+            what: "تعذّر تسليم الطلب — الفاتورة المرتبطة غير موجودة",
+            why: `أمر الشغل مرتبط بمعرّف فاتورة (${Number(wo.invoiceId)}) غير موجود في السجلات`,
+            doThis: "راجع سجل الفواتير المرتبطة بالطلب مع المدير قبل إعادة المحاولة",
+          }),
+        });
+      }
+      if (isDeadInvoiceStatus(existingInv.status)) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعذّر التسليم المباشر على فاتورةٌ صادرة سلفاً بحالة منتهية",
+            why: `الفاتورة المرتبطة ${existingInv.invoiceNumber} بحالة ${existingInv.status} (ملغاة أو مرتجعة)`,
+            doThis: "راجع حالة الفاتورة المرتبطة بالطلب قبل محاولة التسليم المباشر",
+          }),
+        });
+      }
+
+      const existingRemaining = round2(
+        money(existingInv.total)
+          .minus(money(existingInv.returnedTotal ?? "0"))
+          .minus(money(existingInv.paidAmount ?? "0")),
+      );
+      if (paidNow.gt(existingRemaining)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: `دفعة التسليم (${paidNow.toFixed(2)}) تتجاوز المتبقي على الفاتورة ${existingInv.invoiceNumber} (${existingRemaining.toFixed(2)})`,
+            why: `إجمالي الفاتورة ${money(existingInv.total).toFixed(2)} والمسدَّد سابقاً ${money(existingInv.paidAmount ?? "0").toFixed(2)}`,
+            doThis: `أدخل مبلغاً لا يتجاوز المتبقي (${existingRemaining.toFixed(2)}) د.ع`,
+          }),
+        });
+      }
+
+      const remainingAfterPay = round2(existingRemaining.minus(paidNow));
+      const woPaymentMode = (wo.paymentMode ?? "PREPAID") as CodPaymentMode;
+      const isElevated = actor.role === "manager" || actor.role === "admin";
+      const effectiveCustomerId =
+        existingInv.customerId != null
+          ? Number(existingInv.customerId)
+          : wo.customerId != null
+            ? Number(wo.customerId)
+            : null;
+
+      if (remainingAfterPay.gt(0)) {
+        if (!input.addToCustomerDebt) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: appErrorMessage({
+              what: "لا يمكن تسليم الطلب بمتبقٍ مالي غير مستحصل — لهذا الطلب فاتورةٌ صادرة سلفاً",
+              why: `يوجد متبقٍ غير مدفوع بقيمة ${remainingAfterPay.toFixed(2)} د.ع على الفاتورة ${existingInv.invoiceNumber}`,
+              doThis: "حصّل كامل المبلغ المتبقي عند التسليم أو فعّل خيار البيع الآجل باعتماد المدير",
+            }),
+          });
+        }
+        if (requiresFullPaymentAtHandover(woPaymentMode, !!wo.hasDelivery)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: COD_PICKUP_PAYMENT_ERROR_AR(remainingAfterPay.toFixed(2)),
+          });
+        }
+        if (effectiveCustomerId == null) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "طلب الخدمة الآجل يتطلب عميلاً محدداً",
+              why: `يتبقّى مبلغ ${remainingAfterPay.toFixed(2)} د.ع ولا يوجد عميل مرتبط بالطلب أو الفاتورة`,
+              doThis: "اربط أمر الشغل بعميل مسجّل أولاً أو حصّل كامل المتبقي عند التسليم",
+            }),
+          });
+        }
+        if (!isElevated && !input.managerOverrideByUserId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "اعتماد المدير مطلوب لإضافة المتبقي لذمة العميل",
+              why: `الموظف الحالي ليس مديراً ويلزم اعتماد مسؤول لإبقاء ${remainingAfterPay.toFixed(2)} د.ع في ذمة العميل`,
+              doThis: "أدخل اعتماد المدير لإتمام التسليم الآجل أو استوفِ كامل المبلغ المتبقي",
+            }),
+          });
+        }
+      }
+
+      const receptionShiftRow = (
+        await tx
+          .select({ id: shifts.id })
+          .from(shifts)
+          .where(
+            and(
+              eq(shifts.userId, actor.userId),
+              eq(shifts.branchId, Number(wo.branchId)),
+              eq(shifts.status, "OPEN"),
+              eq(shifts.shiftType, "RECEPTION"),
+            ),
+          )
+          .for("update")
+          .limit(1)
+      )[0];
+      const deliveryShiftId = receptionShiftRow ? Number(receptionShiftRow.id) : null;
+      if (input.payment?.method === "CASH" && paidNow.gt(0) && deliveryShiftId == null) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعذّر قبض دفعة التسليم نقداً بلا وردية استقبال مفتوحة",
+            why: "لا يجوز إدخال نقد في درج الاستقبال (DRAWER) دون وردية RECEPTION مفتوحة للمستخدم الحالي",
+            doThis: "افتح وردية RECEPTION أولاً ثم أعد تنفيذ التسليم والتحصيل",
+          }),
+        });
+      }
+      await lockMaterializedCashReceiptSourceForWrite(tx, {
+        branchId: Number(wo.branchId),
+        shiftId: deliveryShiftId,
+        cashBucket: input.payment?.method === "CASH" && paidNow.gt(0) ? "DRAWER" : null,
+        paymentMethod: input.payment?.method ?? "CASH",
+        status: paidNow.gt(0) ? "COMPLETED" : "PENDING",
+        approvalStatus: "APPROVED",
       });
+
+      if (
+        existingInv.customerId == null &&
+        effectiveCustomerId != null &&
+        remainingAfterPay.gt(0) &&
+        !(await readOpeningWindowState(tx)).active
+      ) {
+        const hasCreditOverride = Boolean(
+          input.addToCustomerDebt && (isElevated || input.managerOverrideByUserId != null),
+        );
+        if (!hasCreditOverride) {
+          await assertCreditLimit(
+            tx,
+            effectiveCustomerId,
+            remainingAfterPay,
+            Number(wo.branchId),
+            woPaymentMode,
+          );
+        }
+      }
+
+      if (effectiveCustomerId != null) {
+        await tx
+          .select({ id: customers.id })
+          .from(customers)
+          .where(eq(customers.id, effectiveCustomerId))
+          .for("update")
+          .limit(1);
+      }
+
+      const nextPaidAmount = round2(money(existingInv.paidAmount ?? "0").plus(paidNow));
+      const nextInvStatus = computeInvoiceStatus(
+        String(existingInv.total),
+        toDbMoney(nextPaidAmount),
+        String(existingInv.returnedTotal ?? "0"),
+      );
+
+      if (paidNow.gt(0)) {
+        const rRes = await tx.insert(receipts).values({
+          branchId: Number(wo.branchId),
+          shiftId: deliveryShiftId,
+          direction: "IN",
+          amount: toDbMoney(paidNow),
+          paymentMethod: input.payment!.method,
+          cashBucket: input.payment!.method === "CASH" ? "DRAWER" : null,
+          status: "COMPLETED",
+          approvalStatus: "APPROVED",
+          referenceNumber: paymentReference,
+          invoiceId: Number(existingInv.id),
+          createdBy: actor.userId,
+        });
+        const receiptId = extractInsertId(rRes);
+        const paymentRole = paymentAssetRole(
+          input.payment!.method,
+          input.payment!.method === "CASH" ? "DRAWER" : null,
+          "IN",
+        );
+        const paymentPostingSource = {
+          roleDebits: { [paymentRole]: paidNow },
+          roleCredits: { AR: paidNow },
+        };
+        await postEntry(tx, {
+          entryType: "PAYMENT_IN",
+          branchId: Number(wo.branchId),
+          invoiceId: Number(existingInv.id),
+          receiptId,
+          customerId: effectiveCustomerId,
+          amount: paidNow,
+          paymentMethod: input.payment!.method,
+          postingIntent: createPostingIntent(
+            "PAYMENT_IN_CUSTOMER",
+            "PAYMENT_IN",
+            [debitLine(paymentRole, paidNow), creditLine("AR", paidNow)],
+            paymentPostingSource,
+          ),
+          postingSourceComponents: paymentPostingSource,
+        });
+
+        const nextPaymentMethod = mixedAwarePaymentMethod(
+          existingInv.paymentMethod ?? null,
+          input.payment!.method,
+        );
+        await tx
+          .update(invoices)
+          .set({
+            paidAmount: toDbMoney(nextPaidAmount),
+            status: nextInvStatus,
+            paymentMethod: nextPaymentMethod,
+            paymentDate: new Date(),
+            ...(existingInv.customerId == null && effectiveCustomerId != null
+              ? { customerId: effectiveCustomerId }
+              : {}),
+            ...(existingInv.shiftId == null && deliveryShiftId != null
+              ? { shiftId: deliveryShiftId }
+              : {}),
+          })
+          .where(eq(invoices.id, Number(existingInv.id)));
+
+        if (existingInv.customerId != null) {
+          await adjustCustomerBalance(tx, Number(existingInv.customerId), paidNow.neg());
+        } else if (effectiveCustomerId != null && remainingAfterPay.gt(0)) {
+          await adjustCustomerBalance(tx, effectiveCustomerId, remainingAfterPay);
+        }
+      } else if (
+        (existingInv.customerId == null && effectiveCustomerId != null) ||
+        (existingInv.shiftId == null && deliveryShiftId != null)
+      ) {
+        await tx
+          .update(invoices)
+          .set({
+            ...(existingInv.customerId == null && effectiveCustomerId != null
+              ? { customerId: effectiveCustomerId }
+              : {}),
+            ...(existingInv.shiftId == null && deliveryShiftId != null
+              ? { shiftId: deliveryShiftId }
+              : {}),
+          })
+          .where(eq(invoices.id, Number(existingInv.id)));
+        if (existingInv.customerId == null && effectiveCustomerId != null && remainingAfterPay.gt(0)) {
+          await adjustCustomerBalance(tx, effectiveCustomerId, remainingAfterPay);
+        }
+      }
+
+      const deliveredAt = new Date();
+      await tx
+        .update(workOrders)
+        .set({
+          status: "DELIVERED",
+          kanbanState: "NORMAL",
+          blockedReason: null,
+          deliveredAt,
+        })
+        .where(eq(workOrders.id, Number(wo.id)));
+
+      await recordWorkOrderEvent(tx, {
+        workOrderId: Number(wo.id),
+        eventType: "DELIVERED",
+        fromStatus: wo.status,
+        toStatus: "DELIVERED",
+        payload: {
+          invoiceId: Number(existingInv.id),
+          invoiceNumber: existingInv.invoiceNumber,
+          paidNow: toDbMoney(paidNow),
+          reusedPriorInvoice: true,
+        },
+        actorUserId: actor.userId,
+        branchId: Number(wo.branchId),
+        seq: Number(existingInv.id),
+      });
+
+      await closeWorkOrderDirectHandoverCustodyTx(tx, {
+        workOrderId: Number(wo.id),
+        branchId: Number(wo.branchId),
+        invoiceId: Number(existingInv.id),
+        actorUserId: actor.userId,
+        operationId:
+          input.clientRequestId ??
+          `workOrder.deliver:${wo.id}:v${Number(wo.version ?? 0)}`,
+      });
+
+      await logAuditTx(
+        tx,
+        { userId: actor.userId, branchId: Number(wo.branchId) },
+        {
+          action: "workOrder.deliver",
+          entityType: "workOrder",
+          entityId: Number(wo.id),
+          branchId: Number(wo.branchId),
+          oldValue: { status: wo.status, invoiceId: Number(existingInv.id) },
+          newValue: {
+            status: "DELIVERED",
+            invoiceId: Number(existingInv.id),
+            invoiceNumber: existingInv.invoiceNumber,
+            invoiceStatus: nextInvStatus,
+            paidNow: toDbMoney(paidNow),
+            reusedPriorInvoice: true,
+          },
+        },
+      );
+
+      if (input.clientRequestId) {
+        await recordIdempotencyKey(
+          tx,
+          "workOrder.deliver",
+          input.clientRequestId,
+          Number(existingInv.id),
+          requestFingerprint,
+        );
+      }
+
+      return {
+        workOrderId: Number(wo.id),
+        invoiceId: Number(existingInv.id),
+        invoiceNumber: existingInv.invoiceNumber,
+        status: nextInvStatus,
+        branchId: Number(wo.branchId),
+      };
     }
 
     // ─── تصحيح تلقائي ذري للأوامر التاريخية ─────────────────────────────────
@@ -530,35 +905,46 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
       status,
       branchId: Number(wo.branchId),
     };
-  });
-
-  if (!result.idempotentReplay) {
-    try {
-      publishRealtimeEvent<WorkOrderStatusChangedPayload>(
-        REALTIME_EVENT_TYPES.WORK_ORDER_STATUS_CHANGED,
-        {
-          workOrderId: result.workOrderId,
-          branchId: result.branchId,
-          previousStatus: "READY",
-          newStatus: "DELIVERED",
-          updatedBy: actor.userId,
-        },
-        { branchId: result.branchId },
-      );
-      publishRealtimeEvent<ReceptionQueueUpdatedPayload>(
-        REALTIME_EVENT_TYPES.RECEPTION_QUEUE_UPDATED,
-        {
-          orderId: result.workOrderId,
-          branchId: result.branchId,
-          status: "DELIVERED",
-          readyForPickup: false,
-        },
-        { branchId: result.branchId },
-      );
-    } catch {
-      // fail-safe
-    }
   }
+}
+
+export function publishWorkOrderDeliveredRealtime(
+  result: Pick<DeliverWorkOrderTxResult, "workOrderId" | "branchId" | "idempotentReplay">,
+  actorUserId: number,
+): void {
+  if (result.idempotentReplay) return;
+  try {
+    publishRealtimeEvent<WorkOrderStatusChangedPayload>(
+      REALTIME_EVENT_TYPES.WORK_ORDER_STATUS_CHANGED,
+      {
+        workOrderId: result.workOrderId,
+        branchId: result.branchId,
+        previousStatus: "READY",
+        newStatus: "DELIVERED",
+        updatedBy: actorUserId,
+      },
+      { branchId: result.branchId },
+    );
+    publishRealtimeEvent<ReceptionQueueUpdatedPayload>(
+      REALTIME_EVENT_TYPES.RECEPTION_QUEUE_UPDATED,
+      {
+        orderId: result.workOrderId,
+        branchId: result.branchId,
+        status: "DELIVERED",
+        readyForPickup: false,
+      },
+      { branchId: result.branchId },
+    );
+  } catch {
+    // fail-safe
+  }
+}
+
+/** READY → DELIVERED: create invoice (sourceType=WORKORDER) + optional payment + SALE entry + AR adjust. */
+export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Actor & { role?: string }) {
+  if (input.payment) assertPosPaymentMethodEnabled(input.payment.method);
+  const result = await withTx((tx) => deliverWorkOrderInTx(tx, input, actor));
+  publishWorkOrderDeliveredRealtime(result, actor.userId);
 
   return {
     workOrderId: result.workOrderId,

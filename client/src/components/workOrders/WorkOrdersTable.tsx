@@ -6,9 +6,7 @@ import {
   CheckCircle2,
   ChevronRight,
   Clock,
-  Package,
   Pencil,
-  Truck,
 } from "lucide-react";
 import { computeOrderLifecycleTiming } from "@shared/workOrderTimer";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -17,7 +15,7 @@ import { MobileDataCard } from "@/components/ui/MobileDataCard";
 import { RowActions, type RowAction } from "@/components/list";
 import { CopyInline } from "@/components/CopyButton";
 import { ChannelBadge } from "@/components/ChannelBadge";
-import { fmtAr, fmtInt, formatQuantity, D, positiveDiff } from "@/lib/money";
+import { fmtAr, formatQuantity, D, positiveDiff } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import {
   type WorkOrderStatus,
@@ -27,7 +25,6 @@ import {
 import {
   type WO,
   type Status,
-  type ColKey,
   PRIORITIES,
   ADV_LABEL,
   dueInfo,
@@ -43,7 +40,6 @@ export function WorkOrdersTable({
   isManager,
   canRequestControl,
   canRequestCancel,
-  canDeliver,
   onOpen,
   onEdit,
   onAdvance,
@@ -56,7 +52,6 @@ export function WorkOrdersTable({
   isManager: boolean;
   canRequestControl: boolean;
   canRequestCancel: boolean;
-  canDeliver: boolean;
   onOpen: (id: number) => void;
   onEdit: (id: number) => void;
   onAdvance: (order: WO, to: Status) => void;
@@ -230,10 +225,15 @@ export function WorkOrdersTable({
         if (o.status === "RECEIVED" && o.assignedTo != null && Number(o.assignedTo) === Number(me.data?.id) && onRelease) {
           actions.push({ key: "release", kind: "edit", label: "أعد إلى الطابور", onSelect: () => onRelease(o.id) });
         }
-        if (next === ("DELIVERED" as ColKey) && o.hasDelivery && canLifecycleOperation(me.data, "delivery.dispatch", canDeliver)) {
-          actions.push({ key: "dispatch", kind: "approve", label: "إسناد للتوصيل", icon: Truck, href: "/delivery" });
-        } else if (next && canLifecycleOperation(me.data, next === "IN_PROGRESS" ? "workOrders.start" : next === "READY" ? "workOrders.markReady" : "workOrders.deliver", next !== "DELIVERED" || canDeliver)) {
-          actions.push({ key: "advance", kind: next === ("DELIVERED" as ColKey) ? "pay" : "approve", label: ADV_LABEL[next], onSelect: () => onAdvance(o, next) });
+        if (
+          (next === "IN_PROGRESS" || next === "READY") &&
+          canLifecycleOperation(
+            me.data,
+            next === "IN_PROGRESS" ? "workOrders.start" : "workOrders.markReady",
+            true,
+          )
+        ) {
+          actions.push({ key: "advance", kind: "approve", label: ADV_LABEL[next], onSelect: () => onAdvance(o, next) });
         }
         if (canRequestCancel && !isFinal) {
           actions.push({ key: "cancel", kind: "cancel", label: isManager ? "إلغاء الأمر" : "طلب إلغاء الأمر", variant: "destructive", onSelect: () => onCancel(o) });
@@ -254,7 +254,7 @@ export function WorkOrdersTable({
         );
       },
     },
-  ], [me.data, isManager, canRequestControl, canRequestCancel, canDeliver, onOpen, onEdit, onAdvance, onCancel, onClaim, onRelease]);
+  ], [me.data, isManager, canRequestControl, canRequestCancel, onOpen, onEdit, onAdvance, onCancel, onClaim, onRelease]);
 
   const defaultOperation = useMemo(() => ({
     getOperation: (order: WO) => ({
@@ -311,10 +311,15 @@ export function WorkOrdersTable({
             ]}
             onClick={() => onOpen(o.id)}
             primaryAction={
-              next && (next !== "DELIVERED" || canDeliver)
+              (next === "IN_PROGRESS" || next === "READY") &&
+              canLifecycleOperation(
+                me.data,
+                next === "IN_PROGRESS" ? "workOrders.start" : "workOrders.markReady",
+                true,
+              )
                 ? {
-                    label: next === "IN_PROGRESS" ? "بدء التنفيذ" : next === "READY" ? "جاهز" : "تسليم",
-                    icon: next === "READY" ? CheckCircle2 : next === ("DELIVERED" as ColKey) ? Package : ChevronRight,
+                    label: next === "IN_PROGRESS" ? "بدء التنفيذ" : "جاهز",
+                    icon: next === "READY" ? CheckCircle2 : ChevronRight,
                     onClick: () => onAdvance(o, next),
                   }
                 : undefined
