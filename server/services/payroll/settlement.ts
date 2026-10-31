@@ -43,6 +43,7 @@ import type {
 } from "./types";
 import { assertCommissionArtifactReadyForPayrollTx } from "../commissions/payrollReadiness";
 import {
+  assertNoLegacyUnclassifiedAdvanceTx,
   assertPayrollEmployeeMembershipStable,
   lockPayrollEmployeesTx,
   payrollEmployeeMembership,
@@ -693,6 +694,11 @@ export async function payRun(
       );
       return true;
     }
+    await assertNoLegacyUnclassifiedAdvanceTx(
+      tx,
+      lockedEmployees,
+      "صرف مسيّر الرواتب",
+    );
     const byBranch = new Map<number, Decimal>();
     for (const { obligation } of payable) {
       if (obligation.branchIdSnapshot == null) {

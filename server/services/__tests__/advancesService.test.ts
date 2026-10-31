@@ -814,22 +814,43 @@ describe("advancesService — الإلغاء وتعدّد السلف", () => {
     expect(storedRun.status).toBe("draft");
   });
 
-  it("يسوّي سلف الشهر والدين الموثق ويبقي التاريخي غير المصنف خارج الراتب", async () => {
+  it("يسوّي سلف الشهر والدين الموثق ويبقي LEGACY لموظف خارج عضوية المسيّر دون خصم", async () => {
     const employee = await seedEmployee();
     const [year, month] = CURRENT_PERIOD.split("-").map(Number);
     const previous = new Date(Date.UTC(year, month - 2, 1)).toISOString().slice(0, 7);
-    const inserts = await db().insert(s.employeeAdvances).values([
+    const classifiedInserts = await db().insert(s.employeeAdvances).values([
       { employeeId: employee.id, branchId: 1, amount: "50000.00", remaining: "50000.00", monthlyDeduction: "5000.00", sourceType: "SALARY_ADVANCE", payrollPeriod: CURRENT_PERIOD, createdBy: 1 },
       { employeeId: employee.id, branchId: 1, amount: "25000.00", remaining: "25000.00", monthlyDeduction: "5000.00", sourceType: "SALARY_ADVANCE", payrollPeriod: CURRENT_PERIOD, createdBy: 1 },
       { employeeId: employee.id, branchId: 1, amount: "40000.00", remaining: "40000.00", monthlyDeduction: "5000.00", sourceType: "SALARY_ADVANCE", payrollPeriod: previous, createdBy: 1 },
       { employeeId: employee.id, branchId: 1, amount: "30000.00", remaining: "30000.00", monthlyDeduction: "10000.00", sourceType: "OTHER_DEDUCTION", payrollPeriod: null, createdBy: 1 },
-      { employeeId: employee.id, branchId: 1, amount: "20000.00", remaining: "20000.00", monthlyDeduction: "5000.00", sourceType: "LEGACY_UNCLASSIFIED", payrollPeriod: null, grantedAt: new Date(`${previous}-15T12:00:00.000Z`), createdBy: 1 },
     ]).$returningId();
-    const ids = inserts.map((row) => Number(row.id));
+    const run = await generatePayroll(CURRENT_PERIOD, ACTOR);
+    expect(run!.items.map((item) => Number(item.employeeId))).toEqual([
+      Number(employee.id),
+    ]);
+
+    // الموظف أُنشئ بعد تجميد بنود المسير: هو موظف حقيقي نشط، لكنه خارج عضويته صراحةً.
+    const outsideEmployee = await seedEmployee("400000");
+    const [legacyInsert] = await db().insert(s.employeeAdvances).values({
+      employeeId: outsideEmployee.id,
+      branchId: 1,
+      amount: "20000.00",
+      remaining: "20000.00",
+      monthlyDeduction: "5000.00",
+      sourceType: "LEGACY_UNCLASSIFIED",
+      payrollPeriod: null,
+      grantedAt: new Date(`${previous}-15T12:00:00.000Z`),
+      createdBy: 1,
+    }).$returningId();
+    const legacyId = Number(legacyInsert.id);
+    const ids = [
+      ...classifiedInserts.map((row) => Number(row.id)),
+      legacyId,
+    ];
     const balances = async () => (await db().select().from(s.employeeAdvances)
       .where(inArray(s.employeeAdvances.id, ids)).orderBy(s.employeeAdvances.id))
       .map((row) => [row.remaining, row.status]);
-    const run = await generatePayroll(CURRENT_PERIOD, ACTOR);
+    expect(run!.items.some((item) => Number(item.employeeId) === Number(outsideEmployee.id))).toBe(false);
     expect(run!.items[0].advanceDeduction).toBe("85000.00");
     await approveRun(run!.id, APPROVER);
     await payRun(run!.id, APPROVER);
@@ -841,7 +862,15 @@ describe("advancesService — الإلغاء وتعدّد السلف", () => {
       .where(eq(s.advanceSettlements.runId, run!.id));
     expect(applied).toHaveLength(3);
     expect(applied.some((row) => Number(row.advanceId) === ids[2])).toBe(false);
-    expect(applied.some((row) => Number(row.advanceId) === ids[4])).toBe(false);
+    expect(applied.some((row) => Number(row.advanceId) === legacyId)).toBe(false);
+    const [legacyAfterPayment] = await db().select().from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.id, legacyId));
+    expect(legacyAfterPayment).toMatchObject({
+      employeeId: outsideEmployee.id,
+      sourceType: "LEGACY_UNCLASSIFIED",
+      remaining: "20000.00",
+      status: "ACTIVE",
+    });
     await returnPaidSalary(run!.id);
     await cancelRun(run!.id, APPROVER);
     expect(await balances()).toEqual([
@@ -851,6 +880,14 @@ describe("advancesService — الإلغاء وتعدّد السلف", () => {
     const reversed = await db().select().from(s.advanceSettlements)
       .where(eq(s.advanceSettlements.runId, run!.id));
     expect(reversed.filter((row) => row.direction === "REVERSE")).toHaveLength(3);
+    const [legacyAfterCancellation] = await db().select().from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.id, legacyId));
+    expect(legacyAfterCancellation).toMatchObject({
+      employeeId: outsideEmployee.id,
+      sourceType: "LEGACY_UNCLASSIFIED",
+      remaining: "20000.00",
+      status: "ACTIVE",
+    });
   });
 
   it("سندات الطلب القديمة غير المصنفة تظهر صراحة ولا تختفي أو تُنسب إلى شهر مفترض", async () => {

@@ -219,6 +219,102 @@ async function seedDraft(period = "2026-07") {
   return runId;
 }
 
+async function seedSimpleAdvanceDraft(period = "2026-07") {
+  const runner = db();
+  const runId = await seedDraft(period);
+  await runner
+    .update(s.payrollRuns)
+    .set({
+      totalOvertime: "0.00",
+      totalCommission: "0.00",
+      totalDeductions: "100.00",
+      totalNet: "900.00",
+      totalSocialSecurityEmployee: "0.00",
+      totalIncomeTax: "0.00",
+      totalSocialSecurityEmployer: "0.00",
+      totalEndOfServiceAccrual: "0.00",
+    })
+    .where(eq(s.payrollRuns.id, runId));
+  await runner
+    .update(s.payrollItems)
+    .set({
+      overtime: "0.00",
+      commission: "0.00",
+      deductions: "100.00",
+      wageReduction: "0.00",
+      advanceDeduction: "100.00",
+      socialSecurityEmployee: "0.00",
+      incomeTax: "0.00",
+      socialSecurityEmployer: "0.00",
+      endOfServiceAccrual: "0.00",
+      net: "900.00",
+    })
+    .where(eq(s.payrollItems.runId, runId));
+  return runId;
+}
+
+async function insertLegacyAdvance(id: number, employeeId: number) {
+  await db().insert(s.employeeAdvances).values({
+    id,
+    employeeId,
+    branchId: 1,
+    amount: "75.00",
+    remaining: "75.00",
+    monthlyDeduction: "25.00",
+    sourceType: "LEGACY_UNCLASSIFIED",
+    status: "ACTIVE",
+    createdBy: MAKER.userId,
+  });
+}
+
+async function payrollMutationSnapshot(runId: number) {
+  const runner = db();
+  return {
+    runs: await runner
+      .select()
+      .from(s.payrollRuns)
+      .where(eq(s.payrollRuns.id, runId))
+      .orderBy(s.payrollRuns.id),
+    items: await runner
+      .select()
+      .from(s.payrollItems)
+      .where(eq(s.payrollItems.runId, runId))
+      .orderBy(s.payrollItems.id),
+    advances: await runner
+      .select()
+      .from(s.employeeAdvances)
+      .orderBy(s.employeeAdvances.id),
+    settlements: await runner
+      .select()
+      .from(s.advanceSettlements)
+      .orderBy(s.advanceSettlements.id),
+    obligations: await runner
+      .select()
+      .from(s.payrollObligations)
+      .where(eq(s.payrollObligations.runId, runId))
+      .orderBy(s.payrollObligations.id),
+    payrollEvents: await runner
+      .select()
+      .from(s.payrollAccountingEvents)
+      .where(eq(s.payrollAccountingEvents.runId, runId))
+      .orderBy(s.payrollAccountingEvents.id),
+    accountingEntries: await runner
+      .select()
+      .from(s.accountingEntries)
+      .orderBy(s.accountingEntries.id),
+    journalEntries: await runner
+      .select()
+      .from(s.journalEntries)
+      .orderBy(s.journalEntries.id),
+    journalLines: await runner
+      .select()
+      .from(s.journalLines)
+      .orderBy(s.journalLines.id),
+    receipts: await runner.select().from(s.receipts).orderBy(s.receipts.id),
+    auditLogs: await runner.select().from(s.auditLogs).orderBy(s.auditLogs.id),
+  };
+}
+
 async function seedTwoEmployeeDraft(period = "2026-07") {
   const runner = db();
   // هذا السيناريو يختبر دفع موظفين وإعادة أحد الدفعين فقط، بلا دين موظف جانبي.
@@ -2754,6 +2850,116 @@ describe("payroll accrual lifecycle — DB invariants", () => {
     await expect(
       rejectRemittanceRequest(71, "سبب مختلف", CHECKER),
     ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+});
+
+describe("legacy-unclassified payroll fence", () => {
+  it("يرفض اعتماد مثال 1000/100/900 بلا أي أثر دائم", async () => {
+    const runner = db();
+    const runId = await seedSimpleAdvanceDraft();
+    await runner
+      .update(s.employeeAdvances)
+      .set({ sourceType: "LEGACY_UNCLASSIFIED", payrollPeriod: null })
+      .where(eq(s.employeeAdvances.id, 20));
+    const before = await payrollMutationSnapshot(runId);
+
+    await expect(approveRun(runId, CHECKER)).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("المطابقة اليدوية"),
+    });
+
+    expect(await payrollMutationSnapshot(runId)).toEqual(before);
+  });
+
+  it("يبقي إعادة اعتماد المعتمد بلا أثر ثم يمنع صرفه إذا ظهرت سلفة قديمة", async () => {
+    const runId = await seedSimpleAdvanceDraft();
+    await approveRun(runId, CHECKER);
+    await insertLegacyAdvance(21, 10);
+    const before = await payrollMutationSnapshot(runId);
+
+    await expect(approveRun(runId, CHECKER)).resolves.toMatchObject({
+      status: "approved",
+      replayed: true,
+    });
+    expect(await payrollMutationSnapshot(runId)).toEqual(before);
+
+    await expect(
+      payRun(runId, PAYER, {
+        paymentMethod: "CASH",
+        paymentDate: "2026-08-01",
+      }),
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("المطابقة اليدوية"),
+    });
+    expect(await payrollMutationSnapshot(runId)).toEqual(before);
+  });
+
+  it("يمرر اعتماد السلفة المصنفة الطبيعي", async () => {
+    const runner = db();
+    const runId = await seedSimpleAdvanceDraft();
+
+    await expect(approveRun(runId, CHECKER)).resolves.toMatchObject({
+      status: "approved",
+      replayed: false,
+      totalDeductions: "100.00",
+      totalNet: "900.00",
+    });
+    const [advance] = await runner
+      .select()
+      .from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.id, 20));
+    expect(advance).toMatchObject({
+      sourceType: "OTHER_DEDUCTION",
+      remaining: "400.00",
+      status: "ACTIVE",
+    });
+    expect(
+      await runner
+        .select()
+        .from(s.advanceSettlements)
+        .where(eq(s.advanceSettlements.runId, runId)),
+    ).toHaveLength(1);
+  });
+
+  it("لا تحجب سلفة قديمة لموظف خارج عضوية المسيّر", async () => {
+    const runner = db();
+    const runId = await seedSimpleAdvanceDraft();
+    await insertLegacyAdvance(21, 11);
+
+    await expect(approveRun(runId, CHECKER)).resolves.toMatchObject({
+      status: "approved",
+      replayed: false,
+    });
+    const [outsideAdvance] = await runner
+      .select()
+      .from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.id, 21));
+    expect(outsideAdvance).toMatchObject({
+      employeeId: 11,
+      sourceType: "LEGACY_UNCLASSIFIED",
+      remaining: "75.00",
+      status: "ACTIVE",
+    });
+  });
+
+  it("يبقي إعادة صرف المسيّر المدفوع no-op بعد ظهور سلفة قديمة", async () => {
+    const runId = await seedSimpleAdvanceDraft();
+    await approveRun(runId, CHECKER);
+    await payRun(runId, PAYER, {
+      paymentMethod: "CASH",
+      paymentDate: "2026-08-01",
+    });
+    await insertLegacyAdvance(21, 10);
+    const before = await payrollMutationSnapshot(runId);
+
+    await expect(
+      payRun(runId, PAYER, {
+        paymentMethod: "CASH",
+        paymentDate: "2026-08-01",
+      }),
+    ).resolves.toMatchObject({ status: "paid", replayed: true });
+    expect(await payrollMutationSnapshot(runId)).toEqual(before);
   });
 });
 
