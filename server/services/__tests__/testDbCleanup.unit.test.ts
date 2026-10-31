@@ -7,6 +7,8 @@ import {
   populatedTestTables,
   readSnapshotWithReconnect,
   bootstrapEmptyInventoryProjection,
+  NonEmptyTestDatabaseError,
+  retryLateTestCleanup,
   assertSafeCleanupTarget,
 } from "./__setup__";
 
@@ -106,6 +108,54 @@ describe("test database isolation without empty-table DDL", () => {
     expect(query.mock.calls[3][0]).toBe(
       "DELETE FROM `inventoryProjectionState`",
     );
+  });
+  it("drains and clears tables that appear after the initial cleanup snapshot", async () => {
+    const calls: string[] = [];
+    const bootstrap = vi
+      .fn<() => Promise<void>>()
+      .mockImplementationOnce(async () => {
+        calls.push("bootstrap:late");
+        throw new NonEmptyTestDatabaseError([
+          "appNotifications",
+          "webPushOutbox",
+        ]);
+      })
+      .mockImplementationOnce(async () => {
+        calls.push("bootstrap:empty");
+      });
+    const drain = vi.fn(async () => {
+      calls.push("drain");
+    });
+    const clearLateTables = vi.fn(async (tables: string[]) => {
+      calls.push(`clear:${tables.join(",")}`);
+    });
+
+    await retryLateTestCleanup({ bootstrap, drain, clearLateTables });
+
+    expect(calls).toEqual([
+      "bootstrap:late",
+      "drain",
+      "clear:appNotifications,webPushOutbox",
+      "bootstrap:empty",
+    ]);
+    expect(clearLateTables).toHaveBeenCalledExactlyOnceWith([
+      "appNotifications",
+      "webPushOutbox",
+    ]);
+  });
+  it("fails closed when a background writer survives the bounded cleanup retries", async () => {
+    const bootstrap = vi.fn(async () => {
+      throw new NonEmptyTestDatabaseError(["appNotifications"]);
+    });
+    const drain = vi.fn(async () => {});
+    const clearLateTables = vi.fn(async (_tables: string[]) => {});
+
+    await expect(
+      retryLateTestCleanup({ bootstrap, drain, clearLateTables }),
+    ).rejects.toThrow(/not empty \(appNotifications\)/);
+    expect(bootstrap).toHaveBeenCalledTimes(4);
+    expect(drain).toHaveBeenCalledTimes(3);
+    expect(clearLateTables).toHaveBeenCalledTimes(3);
   });
   afterEach(async () => {
     vi.unstubAllEnvs();

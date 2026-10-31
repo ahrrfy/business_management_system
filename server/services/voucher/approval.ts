@@ -52,7 +52,7 @@ import {
 import { appendDeliveryLedgerEntry } from "../delivery/lifecycle";
 import { baghdadToday } from "../businessDay";
 import { money, toDateStr, toDbMoney } from "../money";
-import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
+import { openShiftIdTx, requireOpenShiftIdTx, shiftIdForCashTx } from "../shiftService";
 import {
   assertApprovedTreasuryOutAvailable,
   assertCashOutAvailable,
@@ -631,6 +631,37 @@ export async function approveVoucherTx(
       message: "مرجع نظامي بلا payload موثوق — أوقف الاعتماد وراجع التدقيق",
     });
   }
+  let employeeAdvanceDrawer: number | null = null;
+  if (
+    systemRequestPreview?.kind === "EMPLOYEE_ADVANCE" &&
+    preview.approvalStatus !== "APPROVED"
+  ) {
+    employeeAdvanceDrawer = await requireOpenShiftIdTx(
+      tx,
+      actor.userId,
+      Number(preview.branchId),
+      "صرف سلفة موظف من درج المنفّذ",
+    );
+    if (
+      options?.cashSource &&
+      (options.cashSource.mode !== "DRAWER" ||
+        (options.cashSource.shiftId != null &&
+          options.cashSource.shiftId !== employeeAdvanceDrawer))
+    ) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "مصدر صرف السلفة غير مطابق",
+          why: "سلفة الموظف تُصرف من درج وردية المنفّذ نفسه فقط",
+          doThis: "اختر درج ورديتك المفتوحة في فرع الموظف ثم أعد الصرف",
+        }),
+      });
+    }
+    options = {
+      ...options,
+      cashSource: { mode: "DRAWER", shiftId: employeeAdvanceDrawer },
+    };
+  }
   let cancellationOriginalPreview: typeof preview | null = null;
   let cancellationAttemptIdsPreview: number[] = [];
   if (systemRequestPreview?.kind === "VOUCHER_CANCELLATION") {
@@ -716,6 +747,12 @@ export async function approveVoucherTx(
               ? Number(cancellationOriginalPreview.shiftId)
               : null,
         }
+      : employeeAdvanceDrawer != null
+        ? {
+            branchId: Number(preview.branchId),
+            cashBucket: "DRAWER" as const,
+            shiftId: employeeAdvanceDrawer,
+          }
       : systemRequestPreview?.kind === "PURCHASE_SHIPPING" &&
           systemRequestPreview.fundingSource === "DRAWER"
         ? {

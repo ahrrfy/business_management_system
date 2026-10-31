@@ -10,13 +10,14 @@
 //   م٣) عكس الدفع يعكس القيدين معاً ⇒ صافي أثر الدفتر صفر.
 //   م٤) بلا سلفة: قيدٌ واحدٌ فقط كما كان (صفر انحدار).
 import { and, eq, like, sql } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { approveRun, cancelRun, generatePayroll, payRun } from "../payrollService";
 import { grantAdvance } from "../advances";
 import { approveVoucher } from "../voucher/approval";
 import { truncateTables } from "./__testUtils__";
+import { baghdadToday } from "../businessDay";
 
 function db() {
   const d = getDb();
@@ -26,7 +27,9 @@ function db() {
 
 const MAKER = { userId: 1, branchId: 1, role: "admin" };
 const CHECKER = { userId: 9, branchId: 1, role: "admin" };
-const PERIOD = "2026-06";
+const PERIOD = baghdadToday().slice(0, 7);
+const [TEST_YEAR, TEST_MONTH] = PERIOD.split("-").map(Number);
+const TEST_MONTH_END = new Date(Date.UTC(TEST_YEAR, TEST_MONTH, 0, 12));
 
 /** مصروف الرواتب يُثبت عند الاعتماد بقيد استحقاق ADJUST، لا عند التسوية النقدية. */
 async function payrollExpense(): Promise<number> {
@@ -37,9 +40,9 @@ async function payrollExpense(): Promise<number> {
   return Number(r?.total ?? 0);
 }
 
-/** صافي أثر الخزينة من إيصالات الرواتب (OUT سالب، IN موجب). */
+/** صافي أثر النقد في الدرج والخزينة (OUT سالب، IN موجب). */
 async function treasuryDelta(): Promise<number> {
-  const rows = await db().select().from(s.receipts).where(eq(s.receipts.cashBucket, "TREASURY"));
+  const rows = await db().select().from(s.receipts);
   return rows
     .filter((r) => r.referenceNumber !== "TEST-TREASURY-FUND")
     .reduce((sum, r) => sum + (r.direction === "OUT" ? -Number(r.amount) : Number(r.amount)), 0);
@@ -52,6 +55,7 @@ async function grantAndApproveAdvance(input: Parameters<typeof grantAdvance>[0])
 }
 
 beforeEach(async () => {
+  vi.setSystemTime(TEST_MONTH_END);
   await truncateTables([
     "accountingEntries",
     "payrollItems",
@@ -72,6 +76,7 @@ beforeEach(async () => {
     { id: 1, openId: "a", name: "مُولِّد", role: "admin", loginMethod: "local" },
     { id: 9, openId: "b", name: "معتمِد", role: "admin", loginMethod: "local", isOwner: true },
   ]);
+  await d.insert(s.shifts).values({ id: 901, branchId: 1, userId: 9, openingBalance: "100000000.00", status: "OPEN", shiftType: "RETAIL", openGuard: "1:9:RETAIL" });
   await d.insert(s.receipts).values({
     branchId: 1, direction: "IN", amount: "100000000", paymentMethod: "CASH",
     cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
@@ -82,6 +87,7 @@ beforeEach(async () => {
     employmentStatus: "active", isActive: true, branchId: 1, hireDate: "2025-01-01",
   });
 });
+afterAll(() => vi.useRealTimers());
 
 describe("مصروف الرواتب مع السلف", () => {
   it("م١+م٢) المصروف = الصافي + استرداد السلفة، والخزينة تنقص بالصافي فقط", async () => {

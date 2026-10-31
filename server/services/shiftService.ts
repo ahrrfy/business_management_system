@@ -737,7 +737,7 @@ export async function getShiftReport(shiftId: number) {
       description: receipts.description,
       status: receipts.status,
       approvalStatus: receipts.approvalStatus,
-      createdBy: receipts.createdBy,
+      createdBy: sql<number | null>`COALESCE(${receipts.executedBy}, ${receipts.createdBy})`,
       createdAt: receipts.createdAt,
       createdByName: users.name,
       invoiceNumber: invoices.invoiceNumber,
@@ -745,7 +745,7 @@ export async function getShiftReport(shiftId: number) {
     })
     .from(receipts)
     .leftJoin(invoices, eq(receipts.invoiceId, invoices.id))
-    .leftJoin(users, eq(receipts.createdBy, users.id))
+    .leftJoin(users, eq(users.id, sql<number>`COALESCE(${receipts.executedBy}, ${receipts.createdBy})`))
     .where(eq(receipts.shiftId, shiftId));
 
   // reportsDayCloseService يصنّف المصروف المرتبط عبر expenses.receiptId. نجلب الرابط منفصلاً

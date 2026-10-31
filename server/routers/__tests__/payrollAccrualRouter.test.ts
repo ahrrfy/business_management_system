@@ -1,3 +1,4 @@
+import { TRPCError } from "@trpc/server";
 import { describe, expect, it, vi } from "vitest";
 
 const payrollReadMocks = vi.hoisted(() => ({
@@ -22,6 +23,24 @@ const advanceMocks = vi.hoisted(() => ({
   approveAdvanceRepaymentRequest: vi.fn(async () => ({ id: 1, replayed: true })),
 }));
 vi.mock("../../services/advances", () => advanceMocks);
+const capacityMocks = vi.hoisted(() => ({
+  getEmployeeAdvanceCapacity: vi.fn(async () => ({
+    employeeId: 10,
+    branchId: 2,
+    period: "2026-10",
+    asOf: "2026-10-31",
+    earnedCompensation: "1000.00",
+    approvedAdditions: "0.00",
+    mandatoryDeductions: "0.00",
+    existingSalaryAdvances: "0.00",
+    otherEmployeeDeductions: "0.00",
+    reservedRequests: "0.00",
+    maxAvailable: "1000.00",
+    blocked: false,
+    blockers: [],
+  })),
+}));
+vi.mock("../../services/employeeAdvanceCapacityService", () => capacityMocks);
 import { payrollRouter } from "../payrollRouter";
 
 function blockedCaller() {
@@ -211,10 +230,103 @@ describe("payroll accrual router authority", () => {
     expect(advanceMocks.listAdvanceRepaymentRequests).toHaveBeenLastCalledWith({ branchId: 2 });
     await branchHr.advanceBalance({ employeeId: 10 });
     expect(advanceMocks.employeeBalance).toHaveBeenLastCalledWith(10, 2);
-    await expect(branchHr.approveAdvanceRepayment({ id: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(capacityMocks.getEmployeeAdvanceCapacity).toHaveBeenLastCalledWith({
+      employeeId: 10,
+      scopedBranchId: 2,
+    });
+    await expect(
+      branchHr.approveAdvanceRepayment({ id: 1 }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     await expect(ownerHrFullCaller().approveAdvanceRepayment({ id: 1 })).resolves.toMatchObject({ replayed: true });
     expect(advanceMocks.approveAdvanceRepaymentRequest).toHaveBeenCalledWith(1, expect.objectContaining({ userId: 94, isOwner: true }));
+  });
+
+  it.each(["inactive", "on_leave", "terminated"])(
+    "keeps historical debt readable with grant capacity blocked for a %s employee",
+    async () => {
+      advanceMocks.employeeBalance.mockResolvedValueOnce({
+        employeeId: 10,
+        balance: "125.00",
+        activeCount: 1,
+      });
+      capacityMocks.getEmployeeAdvanceCapacity.mockRejectedValueOnce(
+        new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "السلفة غير متاحة — الموظف ليس على رأس العمل بحالة نشطة — راجع الحالة الوظيفية قبل إنشاء طلب سلفة",
+        }),
+      );
+
+      const result = await nonOwnerHrFullCaller().advanceBalance({ employeeId: 10 });
+
+      expect(result).toMatchObject({
+        employeeId: 10,
+        balance: "125.00",
+        activeCount: 1,
+        capacity: {
+          employeeId: 10,
+          branchId: 2,
+          maxAvailable: "0.00",
+          blocked: true,
+          blockers: [expect.stringContaining("ليس على رأس العمل")],
+        },
+      });
+      expect(result.capacity.period).toBe(result.capacity.asOf.slice(0, 7));
+    },
+  );
+
+  it("keeps historical debt readable when the current financial period is closed", async () => {
+    advanceMocks.employeeBalance.mockResolvedValueOnce({
+      employeeId: 10,
+      balance: "450.00",
+      activeCount: 2,
+    });
+    capacityMocks.getEmployeeAdvanceCapacity.mockRejectedValueOnce(
+      new TRPCError({
+        code: "FORBIDDEN",
+        message:
+          "الفترة المالية مُقفَلة حتى 2026-10-31 — لا يُسمح بقيد بتاريخ 2026-10-01. يلزم فتح الفترة (admin).",
+      }),
+    );
+
+    await expect(
+      nonOwnerHrFullCaller().advanceBalance({ employeeId: 10 }),
+    ).resolves.toMatchObject({
+      balance: "450.00",
+      activeCount: 2,
+      capacity: {
+        maxAvailable: "0.00",
+        blocked: true,
+        blockers: [expect.stringContaining("الفترة المالية مُقفَلة")],
+      },
+    });
+  });
+
+  it("does not turn branch, authorization, or database failures into a blocked capacity", async () => {
+    capacityMocks.getEmployeeAdvanceCapacity.mockRejectedValueOnce(
+      new TRPCError({
+        code: "NOT_FOUND",
+        message: "الموظف غير موجود ضمن نطاق فرعك",
+      }),
+    );
+    await expect(
+      nonOwnerHrFullCaller().advanceBalance({ employeeId: 10 }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    capacityMocks.getEmployeeAdvanceCapacity.mockRejectedValueOnce(
+      new TRPCError({ code: "FORBIDDEN", message: "غير مصرح بهذا الفرع" }),
+    );
+    await expect(
+      nonOwnerHrFullCaller().advanceBalance({ employeeId: 10 }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    capacityMocks.getEmployeeAdvanceCapacity.mockRejectedValueOnce(
+      new Error("capacity database unavailable"),
+    );
+    await expect(
+      nonOwnerHrFullCaller().advanceBalance({ employeeId: 10 }),
+    ).rejects.toThrow("capacity database unavailable");
   });
 
   it("fails closed for every advance read when a non-owner has no branch", async () => {

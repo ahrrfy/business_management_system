@@ -5,6 +5,7 @@ import { fullEmployeeName } from "@shared/hr";
 import {
   employeeSpotBonuses,
   employees,
+  payrollRuns,
   receipts,
   shifts,
   users,
@@ -25,11 +26,48 @@ import {
   assertApprovedTreasuryOutAvailable,
   authorizeExternalTreasuryDisbursement,
 } from "./cash/cashAvailability";
+import { baghdadToday } from "./businessDay";
 
 function requireDb() {
   const db = getDb();
   if (!db) throw new Error("DATABASE_URL not set");
   return db;
+}
+
+function isNowaitSourceConflict(error: unknown): boolean {
+  let current: unknown = error;
+  for (
+    let depth = 0;
+    depth < 5 && current && typeof current === "object";
+    depth += 1
+  ) {
+    const value = current as {
+      code?: unknown;
+      errno?: unknown;
+      cause?: unknown;
+    };
+    if (value.code === "ER_LOCK_NOWAIT" || Number(value.errno) === 3572)
+      return true;
+    current = value.cause;
+  }
+  return false;
+}
+
+async function currentSpotBonusSourceLock<T>(lock: PromiseLike<T>): Promise<T> {
+  try {
+    return await lock;
+  } catch (error) {
+    if (!isNowaitSourceConflict(error)) throw error;
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "لم يكتمل اعتماد المكافأة",
+        why: "هناك عملية رواتب أخرى تثبّت حالياً مسيّر الشهر أو سجل المكافأة نفسه",
+        doThis:
+          "انتظر اكتمال العملية الجارية، حدّث بطاقة الموظف، ثم أعد المحاولة",
+      }),
+    });
+  }
 }
 
 export type SpotBonusDisbursementType = "CASH_TREASURY" | "PAYROLL_ADDITION";
@@ -111,19 +149,70 @@ export async function approveSpotBonus(
   id: number,
 ) {
   return withTx(async (tx) => {
-    const [b] = await tx
+    const [preview] = await tx
       .select()
       .from(employeeSpotBonuses)
       .where(eq(employeeSpotBonuses.id, id))
       .limit(1);
 
-    if (!b) {
+    if (!preview) {
       throw new TRPCError({
         code: "NOT_FOUND",
         message: appErrorMessage({
           what: "تعذّر اعتماد المكافأة",
           why: "سجل المكافأة المطلوب غير موجود",
           doThis: "تحقّق من رقم المكافأة من الجدول وأعد المحاولة",
+        }),
+      });
+    }
+    if (preview.disbursementType === "PAYROLL_ADDITION") {
+      const period = baghdadToday().slice(0, 7);
+      const [existingRun] = await currentSpotBonusSourceLock(
+        tx
+          .select({ id: payrollRuns.id, status: payrollRuns.status })
+          .from(payrollRuns)
+          .where(eq(payrollRuns.period, period))
+          .for("update", { noWait: true })
+          .limit(1),
+      );
+      if (existingRun) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "لا يمكن اعتماد إضافة راتب بعد إنشاء مسيّر الشهر",
+            why: `يوجد مسيّر ${existingRun.status} لشهر ${period} ولن يلتقط المكافأة في لقطته الحالية`,
+            doThis: existingRun.status === "draft"
+              ? "احذف المسودة غير المعتمدة، اعتمد المكافأة، ثم ولّد المسيّر من جديد"
+              : "استخدم مسار تصحيح الرواتب الموثق ولا تغيّر لقطة معتمدة بصمت",
+          }),
+        });
+      }
+    }
+    const [b] = await currentSpotBonusSourceLock(
+      tx
+        .select()
+        .from(employeeSpotBonuses)
+        .where(eq(employeeSpotBonuses.id, id))
+        .for("update", { noWait: true })
+        .limit(1),
+    );
+    if (
+      !b ||
+      b.status !== preview.status ||
+      b.employeeId !== preview.employeeId ||
+      b.branchId !== preview.branchId ||
+      b.disbursementType !== preview.disbursementType ||
+      !money(b.amount).eq(money(preview.amount)) ||
+      b.reason !== preview.reason ||
+      b.decisionNumber !== preview.decisionNumber ||
+      b.payrollRunId !== preview.payrollRunId
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "لم يكتمل اعتماد المكافأة",
+          why: "تغيّرت المكافأة أثناء الاعتماد",
+          doThis: "حدّث بطاقة الموظف وراجع الحالة والمبلغ قبل إعادة الاعتماد",
         }),
       });
     }
