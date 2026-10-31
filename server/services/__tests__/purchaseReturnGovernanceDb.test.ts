@@ -1,4 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { createConnection } from "mysql2/promise";
 import Decimal from "decimal.js";
 import { MySql2PreparedQuery } from "drizzle-orm/mysql2/session";
 import { eq, sql } from "drizzle-orm";
@@ -1632,6 +1634,102 @@ describe("حوكمة عكس مرتجع الشراء — فصل المهام عل
       purchaseReturnVersion: Number(purchaseReturn.version),
     };
   }
+
+  it("upgrades actual old reversal NOT NULL shape with 0419 without changing financial rows, keys or replay", async () => {
+    const target = new URL(process.env.TEST_DATABASE_URL!);
+    expect(process.env.NODE_ENV).toBe("test");
+    expect(process.env.DATABASE_URL === process.env.TEST_DATABASE_URL).toBe(true);
+    expect(["127.0.0.1", "localhost", "::1", "[::1]"]).toContain(target.hostname);
+    const database = decodeURIComponent(target.pathname.slice(1));
+    expect(database.endsWith("_test")).toBe(true);
+    if (!target.port || target.port === "3306") {
+      expect(process.env.ALLOW_TEST_DB_PORT_3306).toBe("1");
+    }
+    const migration = readFileSync(new URL(
+      "../../../drizzle/migrations/0419_purchase_return_physical_only_reversal.sql", import.meta.url,
+    ), "utf8");
+    const oldShape = migration.replace(
+      "MODIFY COLUMN `accountingEntryId` BIGINT NULL",
+      "MODIFY COLUMN `accountingEntryId` BIGINT NOT NULL",
+    );
+    expect(oldShape).not.toBe(migration);
+    const connection = await createConnection(target.toString());
+    try {
+      const [identity] = await connection.query(
+        "SELECT DATABASE() databaseName, @@server_uuid serverUuid, VERSION() version, @@foreign_key_checks fkChecks",
+      );
+      expect(identity).toEqual([expect.objectContaining({
+        databaseName: database, serverUuid: expect.any(String), version: expect.stringMatching(/^8\./), fkChecks: 1,
+      })]);
+      const constraints = async () => {
+        const [foreignKeys] = await connection.query(`
+          SELECT r.CONSTRAINT_NAME, r.UPDATE_RULE, r.DELETE_RULE, k.COLUMN_NAME,
+            k.REFERENCED_TABLE_NAME, k.REFERENCED_COLUMN_NAME
+          FROM information_schema.REFERENTIAL_CONSTRAINTS r
+          JOIN information_schema.KEY_COLUMN_USAGE k
+            ON k.CONSTRAINT_SCHEMA=r.CONSTRAINT_SCHEMA AND k.CONSTRAINT_NAME=r.CONSTRAINT_NAME AND k.TABLE_NAME=r.TABLE_NAME
+          WHERE r.CONSTRAINT_SCHEMA=DATABASE() AND r.TABLE_NAME='purchaseReturnReversals'
+          ORDER BY r.CONSTRAINT_NAME, k.ORDINAL_POSITION`);
+        const [indexes] = await connection.query(`
+          SELECT INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME
+          FROM information_schema.STATISTICS
+          WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='purchaseReturnReversals'
+          ORDER BY INDEX_NAME, SEQ_IN_INDEX`);
+        return { foreignKeys, indexes };
+      };
+      const nullable = async () => {
+        const [rows] = await connection.query(`SELECT IS_NULLABLE
+          FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE()
+          AND TABLE_NAME='purchaseReturnReversals' AND COLUMN_NAME='accountingEntryId'`);
+        return (rows as Array<{ IS_NULLABLE: string }>)[0]!.IS_NULLABLE;
+      };
+      const originalConstraints = await constraints();
+      expect(originalConstraints.foreignKeys).toEqual(expect.arrayContaining([
+        expect.objectContaining({ CONSTRAINT_NAME: "fk_prrev_entry", COLUMN_NAME: "accountingEntryId",
+          REFERENCED_TABLE_NAME: "accountingEntries", REFERENCED_COLUMN_NAME: "id" }),
+      ]));
+      expect(originalConstraints.indexes).toEqual(expect.arrayContaining([
+        expect.objectContaining({ INDEX_NAME: "uq_purchase_return_reversal_entry", NON_UNIQUE: 0, COLUMN_NAME: "accountingEntryId" }),
+      ]));
+      try {
+        await connection.query(oldShape);
+        expect(await nullable()).toBe("NO");
+        expect(await constraints()).toEqual(originalConstraints);
+        const source = await approveFreshReturn();
+        await requestPurchaseReturnReversal({
+          purchaseReturnId: source.purchaseReturnId,
+          expectedReturnVersion: source.purchaseReturnVersion,
+          requestKey: randomUUID(), evidenceType: "SIGNED_APPROVAL",
+          evidenceReference: "0419 native upgrade fixture",
+          reason: "Verify existing positive financial reversal survives the additive migration",
+          lines: [{ purchaseReturnItemId: source.purchaseReturnItemId, baseQuantity: 1 }],
+        }, OWNER);
+        const [reversal] = await db().select().from(s.purchaseReturnReversals);
+        expect(Number(reversal.accountingEntryId)).toBeGreaterThan(0);
+        expect(new Decimal(reversal.totalAmount).gt(0)).toBe(true);
+        const [entry] = await db().select().from(s.accountingEntries)
+          .where(eq(s.accountingEntries.id, reversal.accountingEntryId!));
+        expect(entry).toBeDefined();
+        const rowHash = async () => createHash("sha256").update(JSON.stringify({
+          reversals: await db().select().from(s.purchaseReturnReversals).orderBy(s.purchaseReturnReversals.id),
+          items: await db().select().from(s.purchaseReturnReversalItems).orderBy(s.purchaseReturnReversalItems.id),
+          entries: await db().select().from(s.accountingEntries).orderBy(s.accountingEntries.id),
+        })).digest("hex");
+        const before = await rowHash();
+        for (let attempt = 0; attempt < 2; attempt++) {
+          await connection.query(migration);
+          expect(await nullable()).toBe("YES");
+          expect(await constraints()).toEqual(originalConstraints);
+          expect(await rowHash()).toBe(before);
+        }
+      } finally {
+        // Leave the expected schema even when an old-shape assertion fails.
+        await connection.query(migration);
+      }
+    } finally {
+      await connection.end();
+    }
+  }, 30_000);
 
   it("يرفض اعتماد طالب العكس لطلبه ذاته", async () => {
     const { purchaseReturnId, purchaseReturnItemId, purchaseReturnVersion } =

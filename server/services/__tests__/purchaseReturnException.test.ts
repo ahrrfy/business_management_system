@@ -82,6 +82,589 @@ const proposal = () => ({
   clientRequestId: randomUUID(),
 });
 describe("governed owner exception cart", () => {
+  it.each(["inactive", "consignor", "missing"] as const)(
+    "allows correcting a definitively invalid %s supplier under the same request key",
+    async (kind) => {
+      await db()
+        .insert(s.suppliers)
+        .values({ id: 2, name: "Valid replacement", currentBalance: "0.00" });
+      if (kind === "inactive")
+        await db()
+          .update(s.suppliers)
+          .set({ isActive: false })
+          .where(eq(s.suppliers.id, 1));
+      if (kind === "consignor")
+        await db()
+          .update(s.suppliers)
+          .set({ supplierKind: "CONSIGNOR" })
+          .where(eq(s.suppliers.id, 1));
+      const input = {
+        ...proposal(),
+        supplierId: kind === "missing" ? 99999 : 1,
+      };
+      const api = caller(true).returns;
+      await expect(api.executePurchaseReturnCart(input)).resolves.toMatchObject(
+        { mode: "INVALID_PROPOSAL" },
+      );
+      for (const table of [
+        s.purchaseReturnRequests,
+        s.purchaseReturns,
+        s.inventoryMovements,
+        s.accountingEntries,
+        s.receipts,
+      ])
+        expect(await db().select().from(table)).toHaveLength(0);
+      expect((await db().select().from(s.branchStock))[0].quantity).toBe(10);
+      const corrected = { ...input, supplierId: 2 };
+      const posted = await api.executePurchaseReturnCart(corrected);
+      if (posted.mode !== "EXECUTED")
+        throw new Error("Expected executed return");
+      await db()
+        .update(s.suppliers)
+        .set({ isActive: false })
+        .where(eq(s.suppliers.id, 2));
+      await expect(
+        api.executePurchaseReturnCart(corrected),
+      ).resolves.toMatchObject({
+        mode: "EXECUTED",
+        requestId: posted.requestId,
+      });
+      await expect(
+        api.executePurchaseReturnCart({
+          ...corrected,
+          reason: "Different persisted proposal",
+        }),
+      ).rejects.toMatchObject({ code: "CONFLICT" });
+      expect(await db().select().from(s.purchaseReturnRequests)).toHaveLength(
+        1,
+      );
+      expect(await db().select().from(s.inventoryMovements)).toHaveLength(1);
+      expect(await db().select().from(s.accountingEntries)).toHaveLength(1);
+      expect(
+        (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 2)))[0]
+          .currentBalance,
+      ).toBe("-150.00");
+    },
+  );
+
+  it.each(
+    (["ACTIVE", "OFF"] as const).flatMap((mode) =>
+      (["0.00", "100.00"] as const).flatMap((book) =>
+        (["CREDIT_OFFSET", "CASH_IN"] as const).map((method) => ({
+          mode,
+          book,
+          method,
+        })),
+      ),
+    ),
+  )(
+    "partially reverses a zero-agreement line: $mode / saved $book / $method",
+    async ({ mode, book, method }) => {
+      await db()
+        .update(s.productVariants)
+        .set({ costPrice: book })
+        .where(eq(s.productVariants.id, 1));
+      await db().insert(s.products).values({ id: 2, name: "Paid item" });
+      await db()
+        .insert(s.productVariants)
+        .values({ id: 2, productId: 2, sku: "PAID-2", costPrice: "100.00" });
+      await db()
+        .insert(s.branchStock)
+        .values({ variantId: 2, branchId: 1, quantity: 10 });
+      await db().insert(s.shifts).values({
+        id: 1,
+        branchId: 1,
+        userId: 1,
+        status: "OPEN",
+        openGuard: "ZERO-AGREEMENT",
+      });
+      await db()
+        .insert(s.accounts)
+        .values([
+          { code: "ZA-AP", name: "AP", type: "LIABILITY", systemRole: "AP" },
+          {
+            code: "ZA-STOCK",
+            name: "Inventory",
+            type: "ASSET",
+            systemRole: "INVENTORY",
+          },
+          {
+            code: "ZA-VARIANCE",
+            name: "Variance",
+            type: "EXPENSE",
+            systemRole: "PURCHASE_PRICE_VARIANCE",
+          },
+          { code: "ZA-CASH", name: "Cash", type: "ASSET", systemRole: "CASH" },
+        ]);
+      if (mode === "ACTIVE")
+        await db()
+          .insert(s.doubleEntrySettings)
+          .values({
+            id: 1,
+            mode,
+            shadowCycleId: "zero-agreement",
+            shadowOpeningHash: "a".repeat(64),
+            policyApprovalReference: "ZERO-AGREEMENT",
+            policyApprovalPolicyHash: POSTING_POLICY_HASH,
+            policyApprovalCycleId: "zero-agreement",
+            policyApprovalOpeningHash: "a".repeat(64),
+            policyAccountantName: "Test accountant",
+            policyApprovedAt: new Date(),
+            policyApprovedBy: 1,
+          });
+      const input = {
+        ...proposal(),
+        items: [
+          {
+            variantId: 1,
+            productUnitId: 1,
+            productName: "Free agreement",
+            quantity: 1,
+            unitCost: "0.00",
+          },
+          {
+            variantId: 2,
+            productName: "Paid item",
+            quantity: 1,
+            unitCost: "150.00",
+          },
+        ],
+        settlement: {
+          method,
+          totalAmount: "150.00",
+          ...(method === "CASH_IN" ? { shiftId: 1 } : {}),
+        },
+      };
+      const posted =
+        await caller(true).returns.executePurchaseReturnCart(input);
+      if (posted.mode !== "EXECUTED")
+        throw new Error("Expected executed return");
+      const baselineEntries = await db().select().from(s.accountingEntries);
+      const baselineReceipts = await db().select().from(s.receipts);
+      const baselineJournals = await db().select().from(s.journalEntries);
+      const baselineBalance = (await db().select().from(s.suppliers))[0]
+        .currentBalance;
+      // A zero monetary reversal must not route through a new drawer/treasury.
+      await db()
+        .update(s.shifts)
+        .set({ status: "CLOSED", openGuard: null })
+        .where(eq(s.shifts.id, 1));
+      const [returned] = await db().select().from(s.purchaseReturns);
+      const [item] = await db()
+        .select()
+        .from(s.purchaseReturnItems)
+        .where(eq(s.purchaseReturnItems.variantId, 1));
+      const reversalInput = {
+        purchaseReturnId: returned.id,
+        expectedReturnVersion: returned.version,
+        requestKey: randomUUID(),
+        evidenceType: "SUPPLIER_ACKNOWLEDGEMENT" as const,
+        evidenceReference: "ZERO-AGREEMENT-REVERSAL",
+        reason: "إعادة البند بلا اتفاق مالي",
+        lines: [{ purchaseReturnItemId: item.id, baseQuantity: 1 }],
+      };
+      const requester = { userId: 2, branchId: 1, role: "manager" };
+      const pending = await requestPurchaseReturnReversal(
+        reversalInput,
+        requester,
+      );
+      expect(pending.status).toBe("PENDING");
+      expect(await db().select().from(s.inventoryMovements)).toHaveLength(2);
+      const decision = {
+        requestId: pending.requestId,
+        decisionKey: randomUUID(),
+        action: "APPROVE" as const,
+        reviewReason: "اعتماد عودة البند الصفري",
+      };
+      await expect(
+        caller(true).purchaseReturnGovernance.decideReversal(decision),
+      ).resolves.toMatchObject({ status: "APPROVED", idempotent: false });
+      await expect(
+        caller(true).purchaseReturnGovernance.decideReversal(decision),
+      ).resolves.toMatchObject({ status: "APPROVED", idempotent: true });
+      await expect(
+        requestPurchaseReturnReversal(reversalInput, requester),
+      ).resolves.toMatchObject({
+        requestId: pending.requestId,
+        status: "APPROVED",
+        idempotent: true,
+      });
+      const reversals = await db().select().from(s.purchaseReturnReversals);
+      expect(reversals).toHaveLength(1);
+      expect(reversals[0]).toMatchObject({
+        totalAmount: "0.00",
+        netAmount: "0.00",
+        taxAmount: "0.00",
+        cashRepaymentReceiptId: null,
+      });
+      const reversalItems = await db()
+        .select()
+        .from(s.purchaseReturnReversalItems);
+      expect(reversalItems).toHaveLength(1);
+      expect(reversalItems[0].valuationEvidence).toMatchObject({
+        basis: "SAVED_RETURN",
+        originalValuationHash: item.valuationEvidenceHash,
+        inventoryAmount: book,
+        netAmount: "0.00",
+        varianceAmount: book,
+      });
+      expect((await db().select().from(s.purchaseReturns))[0].status).toBe(
+        "PARTIALLY_REVERSED",
+      );
+      expect(
+        (
+          await db()
+            .select()
+            .from(s.branchStock)
+            .where(eq(s.branchStock.variantId, 1))
+        )[0].quantity,
+      ).toBe(10);
+      expect(
+        (
+          await db()
+            .select()
+            .from(s.branchStock)
+            .where(eq(s.branchStock.variantId, 2))
+        )[0].quantity,
+      ).toBe(9);
+      expect(
+        (
+          await db()
+            .select()
+            .from(s.productVariants)
+            .where(eq(s.productVariants.id, 1))
+        )[0],
+      ).toMatchObject({ costPrice: book, transitBaseBySourceBranch: {} });
+      expect(await db().select().from(s.inventoryMovements)).toHaveLength(3);
+      expect((await db().select().from(s.suppliers))[0].currentBalance).toBe(
+        baselineBalance,
+      );
+      expect(await db().select().from(s.receipts)).toEqual(baselineReceipts);
+      const entries = await db().select().from(s.accountingEntries);
+      expect(entries).toHaveLength(
+        baselineEntries.length + (book === "0.00" ? 0 : 1),
+      );
+      if (book === "0.00") {
+        expect(reversals[0].accountingEntryId).toBeNull();
+        expect(entries).toEqual(baselineEntries);
+      } else {
+        expect(
+          entries.find((row) => row.id === reversals[0].accountingEntryId),
+        ).toMatchObject({
+          entryType: "RETURN",
+          amount: "0.00",
+          cost: "100.00",
+          profit: "100.00",
+          ...(mode === "ACTIVE"
+            ? { postingProfile: "RETURN_PURCHASE_ZERO_AGREEMENT" }
+            : {}),
+        });
+      }
+      const journals = await db().select().from(s.journalEntries);
+      const added = journals.filter(
+        (row) => !baselineJournals.some((prior) => prior.id === row.id),
+      );
+      expect(added).toHaveLength(mode === "ACTIVE" && book !== "0.00" ? 1 : 0);
+      if (added.length) {
+        expect(added[0].status).toBe("POSTED");
+        const lines = await db()
+          .select({
+            role: s.journalLines.role,
+            debit: s.journalLines.debit,
+            credit: s.journalLines.credit,
+          })
+          .from(s.journalLines)
+          .where(eq(s.journalLines.journalId, added[0].id));
+        expect(lines).toHaveLength(2);
+        expect(lines).toEqual(
+          expect.arrayContaining([
+            { role: "INVENTORY", debit: "100.00", credit: "0.00" },
+            {
+              role: "PURCHASE_PRICE_VARIANCE",
+              debit: "0.00",
+              credit: "100.00",
+            },
+          ]),
+        );
+      }
+      if (method === "CREDIT_OFFSET") {
+        const plan = await previewSupplierBookSettlement({
+          supplierId: 1,
+          branchId: 1,
+        });
+        expect(plan.sources).toHaveLength(1);
+        expect(plan.sources[0]).toMatchObject({
+          kind: "CREDIT",
+          unallocatedAmount: "150.00",
+        });
+        if (book === "0.00") {
+          await db()
+            .update(s.inventoryMovements)
+            .set({ referenceId: reversals[0].id + 99999 })
+            .where(
+              eq(s.inventoryMovements.id, reversalItems[0].inventoryMovementId),
+            );
+          await expect(
+            previewSupplierBookSettlement({ supplierId: 1, branchId: 1 }),
+          ).rejects.toThrow();
+        }
+      }
+    },
+  );
+
+  it("definitively rejects reused evidence on a new key and accepts corrected evidence on that same key", async () => {
+    const input = proposal();
+    const api = caller(true).returns;
+    await expect(api.executePurchaseReturnCart(input)).resolves.toMatchObject({
+      mode: "EXECUTED",
+    });
+    const duplicate = { ...input, clientRequestId: randomUUID() };
+    await expect(
+      api.executePurchaseReturnCart(duplicate),
+    ).resolves.toMatchObject({ mode: "INVALID_PROPOSAL" });
+    expect(await db().select().from(s.purchaseReturnRequests)).toHaveLength(1);
+    expect(await db().select().from(s.purchaseReturns)).toHaveLength(1);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(1);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(1);
+    expect((await db().select().from(s.branchStock))[0].quantity).toBe(9);
+    expect((await db().select().from(s.suppliers))[0].currentBalance).toBe(
+      "-150.00",
+    );
+    const corrected = { ...duplicate, reference: `ACK-${randomUUID()}` };
+    const posted = await api.executePurchaseReturnCart(corrected);
+    expect(posted.mode).toBe("EXECUTED");
+    if (posted.mode !== "EXECUTED") throw new Error("Expected executed return");
+    await expect(
+      api.executePurchaseReturnCart(corrected),
+    ).resolves.toMatchObject({ mode: "EXECUTED", requestId: posted.requestId });
+    expect(await db().select().from(s.purchaseReturnRequests)).toHaveLength(2);
+    expect(await db().select().from(s.purchaseReturns)).toHaveLength(2);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(2);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(2);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect((await db().select().from(s.branchStock))[0].quantity).toBe(8);
+    expect((await db().select().from(s.suppliers))[0].currentBalance).toBe(
+      "-300.00",
+    );
+  });
+
+  it.each(["ACTIVE", "OFF"] as const)(
+    "returns and reverses zero-cost stock at positive agreed value with double entry %s",
+    async (mode) => {
+      await db()
+        .update(s.productVariants)
+        .set({ costPrice: "0.00" })
+        .where(eq(s.productVariants.id, 1));
+      await db()
+        .insert(s.accounts)
+        .values([
+          { code: "ZERO-AP", name: "AP", type: "LIABILITY", systemRole: "AP" },
+          {
+            code: "ZERO-STOCK",
+            name: "Inventory",
+            type: "ASSET",
+            systemRole: "INVENTORY",
+          },
+          {
+            code: "ZERO-VARIANCE",
+            name: "Variance",
+            type: "EXPENSE",
+            systemRole: "PURCHASE_PRICE_VARIANCE",
+          },
+        ]);
+      if (mode === "ACTIVE")
+        await db()
+          .insert(s.doubleEntrySettings)
+          .values({
+            id: 1,
+            mode,
+            shadowCycleId: "zero-cost-active",
+            shadowOpeningHash: "a".repeat(64),
+            policyApprovalReference: "ZERO-APPROVAL",
+            policyApprovalPolicyHash: POSTING_POLICY_HASH,
+            policyApprovalCycleId: "zero-cost-active",
+            policyApprovalOpeningHash: "a".repeat(64),
+            policyAccountantName: "Test accountant",
+            policyApprovedAt: new Date(),
+            policyApprovedBy: 1,
+          });
+      const input = proposal();
+      const api = caller(true).returns;
+      const posted = await api.executePurchaseReturnCart(input);
+      expect(posted.mode).toBe("EXECUTED");
+      if (posted.mode !== "EXECUTED")
+        throw new Error("Expected executed return");
+      await expect(api.executePurchaseReturnCart(input)).resolves.toMatchObject(
+        { mode: "EXECUTED", requestId: posted.requestId },
+      );
+      expect(await db().select().from(s.purchaseReturnRequests)).toHaveLength(
+        1,
+      );
+      expect(await db().select().from(s.purchaseReturns)).toHaveLength(1);
+      expect(await db().select().from(s.inventoryMovements)).toHaveLength(1);
+      expect(await db().select().from(s.accountingEntries)).toHaveLength(1);
+      expect((await db().select().from(s.accountingEntries))[0]).toMatchObject({
+        amount: "-150.00",
+        cost: "0.00",
+      });
+      expect(await db().select().from(s.receipts)).toHaveLength(0);
+      expect((await db().select().from(s.branchStock))[0].quantity).toBe(9);
+      expect((await db().select().from(s.productVariants))[0]).toMatchObject({
+        costPrice: "0.00",
+        transitBaseBySourceBranch: {},
+      });
+      expect((await db().select().from(s.suppliers))[0].currentBalance).toBe(
+        "-150.00",
+      );
+      expect(
+        (await db().select().from(s.purchaseReturnItems))[0].valuationEvidence,
+      ).toMatchObject({
+        inventoryAmount: "0.00",
+        netAmount: "150.00",
+        varianceAmount: "-150.00",
+      });
+      const lines = await db()
+        .select({
+          role: s.journalLines.role,
+          debit: s.journalLines.debit,
+          credit: s.journalLines.credit,
+        })
+        .from(s.journalLines);
+      expect(lines).toEqual(
+        mode === "ACTIVE"
+          ? expect.arrayContaining([
+              { role: "AP", debit: "150.00", credit: "0.00" },
+              {
+                role: "PURCHASE_PRICE_VARIANCE",
+                debit: "0.00",
+                credit: "150.00",
+              },
+            ])
+          : [],
+      );
+      expect(lines).toHaveLength(mode === "ACTIVE" ? 2 : 0);
+      // Later receipts/revaluation may change current WAVG. Reversal must add
+      // back the saved zero value, preserving the remaining 9 * 100 book value.
+      await db()
+        .update(s.productVariants)
+        .set({ costPrice: "100.00" })
+        .where(eq(s.productVariants.id, 1));
+      const [returned] = await db().select().from(s.purchaseReturns);
+      const [item] = await db().select().from(s.purchaseReturnItems);
+      const reversalInput = {
+        purchaseReturnId: returned.id,
+        expectedReturnVersion: returned.version,
+        requestKey: randomUUID(),
+        evidenceType: "SUPPLIER_ACKNOWLEDGEMENT" as const,
+        evidenceReference: "ZERO-COST-REVERSAL",
+        reason: "إلغاء الاتفاق وإعادة المخزون بقيمته المحفوظة",
+        lines: [{ purchaseReturnItemId: item.id, baseQuantity: 1 }],
+      };
+      const requester = { userId: 2, branchId: 1, role: "manager" };
+      const pending = await requestPurchaseReturnReversal(
+        reversalInput,
+        requester,
+      );
+      expect(pending.status).toBe("PENDING");
+      expect(await db().select().from(s.purchaseReturnReversals)).toHaveLength(
+        0,
+      );
+      expect((await db().select().from(s.branchStock))[0].quantity).toBe(9);
+      expect((await db().select().from(s.suppliers))[0].currentBalance).toBe(
+        "-150.00",
+      );
+      const decision = {
+        requestId: pending.requestId,
+        decisionKey: randomUUID(),
+        action: "APPROVE" as const,
+        reviewReason: "اعتماد إعادة المخزون بقيمة المصدر",
+      };
+      await expect(
+        caller(true).purchaseReturnGovernance.decideReversal(decision),
+      ).resolves.toMatchObject({ status: "APPROVED", idempotent: false });
+      await expect(
+        caller(true).purchaseReturnGovernance.decideReversal(decision),
+      ).resolves.toMatchObject({ status: "APPROVED", idempotent: true });
+      await expect(
+        requestPurchaseReturnReversal(reversalInput, requester),
+      ).resolves.toMatchObject({
+        requestId: pending.requestId,
+        status: "APPROVED",
+        idempotent: true,
+      });
+      expect(
+        await db().select().from(s.purchaseReturnReversalRequests),
+      ).toHaveLength(1);
+      expect(await db().select().from(s.purchaseReturnReversals)).toHaveLength(
+        1,
+      );
+      const reversalItems = await db()
+        .select()
+        .from(s.purchaseReturnReversalItems);
+      expect(reversalItems).toHaveLength(1);
+      expect(reversalItems[0].valuationEvidence).toMatchObject({
+        basis: "SAVED_RETURN",
+        purchaseReturnItemId: item.id,
+        originalValuationHash: item.valuationEvidenceHash,
+        baseQuantity: 1,
+        inventoryAmount: "0.00",
+        netAmount: "150.00",
+        varianceAmount: "-150.00",
+      });
+      expect((await db().select().from(s.purchaseReturns))[0].status).toBe(
+        "REVERSED",
+      );
+      expect(await db().select().from(s.inventoryMovements)).toHaveLength(2);
+      const entries = await db().select().from(s.accountingEntries);
+      expect(entries).toHaveLength(2);
+      expect(entries).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ amount: "-150.00", cost: "0.00" }),
+          expect.objectContaining({ amount: "150.00", cost: "0.00" }),
+        ]),
+      );
+      expect(await db().select().from(s.receipts)).toHaveLength(0);
+      expect((await db().select().from(s.branchStock))[0].quantity).toBe(10);
+      expect((await db().select().from(s.productVariants))[0]).toMatchObject({
+        costPrice: "90.00",
+        transitBaseBySourceBranch: {},
+      });
+      expect((await db().select().from(s.suppliers))[0].currentBalance).toBe(
+        "0.00",
+      );
+      const journals = await db().select().from(s.journalEntries);
+      expect(journals).toHaveLength(mode === "ACTIVE" ? 2 : 0);
+      if (mode === "ACTIVE") {
+        for (const entry of entries)
+          expect(entry.postingProfile).toBe("RETURN_PURCHASE_ZERO_BOOK");
+      }
+      const allLines = await db().select().from(s.journalLines);
+      expect(allLines).toHaveLength(mode === "ACTIVE" ? 4 : 0);
+      expect(allLines.some((line) => line.role === "INVENTORY")).toBe(false);
+      for (const journal of journals) {
+        expect(journal.status).toBe("POSTED");
+        const journalLines = allLines.filter(
+          (line) => line.journalId === journal.id,
+        );
+        expect(journalLines).toHaveLength(2);
+        expect(journalLines.map((line) => line.debit).sort()).toEqual([
+          "0.00",
+          "150.00",
+        ]);
+        expect(journalLines.map((line) => line.credit).sort()).toEqual([
+          "0.00",
+          "150.00",
+        ]);
+      }
+      for (const role of ["AP", "PURCHASE_PRICE_VARIANCE"]) {
+        const roleLines = allLines.filter((line) => line.role === role);
+        expect(roleLines.map((line) => line.debit).sort()).toEqual(
+          roleLines.map((line) => line.credit).sort(),
+        );
+      }
+    },
+  );
+
   it("direct approval holds current authority until its blocked supplier write commits", async () => {
     const pending =
       await caller().returns.executePurchaseReturnCart(proposal());

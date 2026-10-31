@@ -35,4 +35,13 @@ describe("native consignment refund preflight uses original money rails",()=>{
     await db().update(s.deliveryConsignments).set({feeSettledAt:new Date()}).where(eq(s.deliveryConsignments.id,1));
     expect(await preflight()).toMatchObject({estimatedCashOut:"200.00"});
   });
+  it("includes held CASH work-order fee (DLV-FEE-WO-*) and excludes goods deposit on RETURN_TO_READY",async()=>{
+    await db().insert(s.workOrders).values({id:7,orderNumber:"WO-PF-7",branchId:1,title:"مطبوع",quantity:1,salePrice:"1000",deposit:"1000",invoiceId:1,status:"READY",hasDelivery:true,deliveryFeeCollection:"COUNTER",createdBy:1});
+    await db().update(s.deliveryConsignments).set({workOrderId:7,sourceType:"WORK_ORDER",sourceId:7}).where(eq(s.deliveryConsignments.id,1));
+    await receipt("1000","CASH");
+    expect(await withTx(tx=>consignmentReturnPreflight(tx,1,{exposeCash:true,workOrderDisposition:"RETURN_TO_READY"}))).toMatchObject({needsCashDrawer:false,estimatedCashOut:"0.00",drawers:[]});
+    await withTx(tx=>recordDeliveryFeeHeldInTx(tx,{branchId:1,shiftId:1,workOrderId:7,tender:{method:"CASH"},amount:money("100"),actorUserId:1,description:"WO held fee"}));
+    expect(await withTx(tx=>consignmentReturnPreflight(tx,1,{exposeCash:true,workOrderDisposition:"RETURN_TO_READY"}))).toMatchObject({needsCashDrawer:true,estimatedCashOut:"100.00"});
+    expect(await withTx(tx=>consignmentReturnPreflight(tx,1,{exposeCash:true,workOrderDisposition:"CANCEL_FINAL"}))).toMatchObject({needsCashDrawer:true,estimatedCashOut:"1100.00"});
+  });
 });

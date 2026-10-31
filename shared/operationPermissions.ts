@@ -17,6 +17,7 @@ import {
   type RoleKey,
 } from "./permissions";
 import { GENERATED_OPERATION_PERMISSIONS } from "./operationPermissionCatalog.generated";
+import retiredOperationPolicyKeys from "./operationPermissionRetirements.json";
 import { canCheckReceptionDuplicates } from "./receptionDuplicateOrders";
 
 /** The catalog is generated from real tRPC paths, never from display aliases. */
@@ -97,6 +98,19 @@ const policyShape = z
   })
   .strict();
 
+// Removed routes can remain in saved full policies after their catalog entry is gone.
+// Keep this list explicit: unrelated unknown keys must still fail validation.
+const REMOVED_OPERATION_POLICY_KEYS: ReadonlySet<string> = new Set(
+  retiredOperationPolicyKeys,
+);
+
+function isRetiredOperationPolicyKey(key: string): boolean {
+  const operation = getOperationPermission(key);
+  return operation
+    ? operation.reservedKind === "RETIRED"
+    : REMOVED_OPERATION_POLICY_KEYS.has(key);
+}
+
 /** Reject unknown paths and reserved authority; aliases are migration inputs only. */
 export const operationPolicySchema = policyShape
   .transform((policy) => {
@@ -104,12 +118,12 @@ export const operationPolicySchema = policyShape
     const recordScopes = policy.recordScopes
       ? { ...policy.recordScopes }
       : undefined;
-    // Only explicitly retired catalog paths are safe to remove from persisted full maps.
+    // Only explicitly retired or removed paths are safe to omit from saved full maps.
     for (const key of Object.keys(grants))
-      if (getOperationPermission(key)?.reservedKind === "RETIRED")
+      if (isRetiredOperationPolicyKey(key))
         delete grants[key];
     for (const key of Object.keys(recordScopes ?? {}))
-      if (getOperationPermission(key)?.reservedKind === "RETIRED")
+      if (isRetiredOperationPolicyKey(key))
         delete recordScopes![key];
     return { ...policy, grants, ...(recordScopes ? { recordScopes } : {}) };
   })
@@ -151,7 +165,8 @@ export const operationPolicySchema = policyShape
  * Stored full maps can outlive a catalog change that protects an operation.
  * Remove only known nondelegable keys on read; their authority is enforced by
  * operationDecision. Preserve every other grant, denial, scope and visibility
- * setting, and keep unknown/malformed input fail closed. Writes stay strict.
+ * setting, and keep unknown/malformed input fail closed. Unknown and protected
+ * policy writes remain strict.
  */
 export const storedOperationPolicySchema = policyShape
   .transform((policy) => {

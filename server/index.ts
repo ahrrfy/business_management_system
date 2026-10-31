@@ -26,6 +26,7 @@ import { nanoid } from "nanoid";
 import { createServer } from "http";
 import net from "net";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createContext } from "./context";
 import {
   getDb,
@@ -152,7 +153,7 @@ async function startServer() {
   if (isMultiTenantModeActive()) validateTenantConnectionBudget();
   await awaitInventoryActivationRelease({
     name: "erp-server",
-    bundle: process.argv[1],
+    bundle: fileURLToPath(import.meta.url),
     readIdentity: async () => {
       const db = getDb();
       if (!db) throw new Error("INVENTORY_BOOT_DATABASE_MISSING");

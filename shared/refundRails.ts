@@ -78,6 +78,7 @@ export const RefundRailContextSchema = z.object({
   sourceDocType: z.enum(REFUND_SOURCE_DOC_TYPES),
   sourceDocId: z.number().int().positive(),
   amount: z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح").optional(),
+  workOrderDisposition: z.enum(["RETURN_TO_READY", "CANCEL_FINAL"]).optional(),
 });
 export type RefundRailContext = z.infer<typeof RefundRailContextSchema>;
 

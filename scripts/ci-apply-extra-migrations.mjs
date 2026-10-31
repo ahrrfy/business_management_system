@@ -256,6 +256,7 @@ const EXTRA_MIGRATIONS = [
   "drizzle/migrations/0414_installment_receipt_allocations.sql",
   "drizzle/migrations/0415_branch_stock_natural_primary.sql",
   "drizzle/migrations/0416_purchase_return_owner_exception.sql",
+  "drizzle/migrations/0419_purchase_return_physical_only_reversal.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without

@@ -226,7 +226,10 @@ export async function workOrderRefundPreflight(
 export async function consignmentReturnPreflight(
   tx: Tx,
   consignmentId: number,
-  opts: { exposeCash: boolean },
+  opts: {
+    exposeCash: boolean;
+    workOrderDisposition?: "RETURN_TO_READY" | "CANCEL_FINAL";
+  },
 ): Promise<RefundPreflight | null> {
   const members = await loadShipmentMembersTx(tx, consignmentId);
   if (!members.length) return null;
@@ -235,26 +238,30 @@ export async function consignmentReturnPreflight(
   let paid = money(0);
   let feeNet = money(0);
   for (const cn of members) {
-    if (cn.invoiceId != null) {
-    const inv = (
-      await tx.select({ paidAmount: invoices.paidAmount }).from(invoices)
-        .where(eq(invoices.id, Number(cn.invoiceId))).limit(1)
-    )[0];
-    const caps = await loadRefundCaps(tx, Number(cn.invoiceId));
-    const cashNet = money(caps.netByMethod.get("CASH") ?? "0");
-    const paidAmount = money(inv?.paidAmount ?? "0");
-    if (cashNet.gt(0) && paidAmount.gt(0)) paid = paid.plus(cashNet.lt(paidAmount) ? cashNet : paidAmount);
-  }
+    const isMemberReturnToReady =
+      cn.workOrderId != null && opts.workOrderDisposition === "RETURN_TO_READY";
+    if (cn.invoiceId != null && !isMemberReturnToReady) {
+      const inv = (
+        await tx.select({ paidAmount: invoices.paidAmount }).from(invoices)
+          .where(eq(invoices.id, Number(cn.invoiceId))).limit(1)
+      )[0];
+      const caps = await loadRefundCaps(tx, Number(cn.invoiceId));
+      const cashNet = money(caps.netByMethod.get("CASH") ?? "0");
+      const paidAmount = money(inv?.paidAmount ?? "0");
+      if (cashNet.gt(0) && paidAmount.gt(0)) paid = paid.plus(cashNet.lt(paidAmount) ? cashNet : paidAmount);
+    }
     /**
      * ⚠️ **مراجعُ الأجرة ليست `DLV-FEE-CN-…`** (مراجعة Codex P1، الجولة الثانية): ذلك نمطٌ
      * اخترعتُه قياساً على `DLV-FEE-WO-` ولا وجودَ له في المستودع. الاستقبالُ يكتب
-     * `DLV-FEE-INV-{invoiceId}` وصفوفُ صرف المندوب تحمل **اسم الإرسالية** — وهما ما يفحصه
-     * [`returns.ts`](../delivery/returns.ts)، مع شرطٍ ثالث: `feeSettledAt == null` (المُسوّاة
-     * لا تُردّ). فبمرجعٍ لا يطابق شيئاً كان الصافي صفراً دائماً ⇒ طردٌ بأجرةٍ محتجزةٍ وحدها
-     * يُبلَّغ «لا نقد» ⇒ لا منتقيَ ⇒ الخادمُ يرفض بلا مخرج: **الحائطُ الأصليّ يعود**.
+     * `DLV-FEE-INV-{invoiceId}` أو `DLV-FEE-WO-{workOrderId}` وصفوفُ صرف المندوب تحمل **اسم الإرسالية** —
+     * وهي نفسُ الروافد التي يفحصها [`returns.ts`](../delivery/returns.ts)، مع شرطٍ ثالث:
+     * `feeSettledAt == null` (المُسوّاة لا تُردّ). فبمرجعٍ لا يطابق شيئاً كان الصافي صفراً دائماً
+     * ⇒ طردٌ بأجرةٍ محتجزةٍ وحدها يُبلَّغ «لا نقد» ⇒ لا منتقيَ ⇒ الخادمُ يرفض بلا مخرج: **الحائطُ الأصليّ يعود**.
      */
     if (cn.feeSettledAt == null) {
-    const feeRefs = [`DLV-FEE-INV-${Number(cn.invoiceId)}`,
+      const feeRefs = [
+        `DLV-FEE-INV-${Number(cn.invoiceId)}`,
+        ...(cn.workOrderId == null ? [] : [`DLV-FEE-WO-${Number(cn.workOrderId)}`]),
         String(cn.consignmentNumber ?? ""),
       ].filter((r) => r && !r.endsWith("null"));
       if (feeRefs.length) {
@@ -267,7 +274,12 @@ export async function consignmentReturnPreflight(
             .where(
               and(
                 inArray(receipts.referenceNumber, feeRefs),
-                eq(receipts.invoiceId, Number(cn.invoiceId)),
+                cn.workOrderId == null
+                  ? eq(receipts.invoiceId, Number(cn.invoiceId))
+                  : or(
+                      eq(receipts.invoiceId, Number(cn.invoiceId)),
+                      eq(receipts.workOrderId, Number(cn.workOrderId)),
+                    ),
                 eq(receipts.paymentMethod, "CASH"),
                 // نفسُ مجموعة الحالات التي يستعملها التنفيذ (`returns.ts`): REVERSED حدثٌ نقديّ
                 // تاريخيّ يرافقه تعويضيٌّ معاكس، فإسقاطُه يترك OUT بلا IN ⇒ صافٍ سالبٌ يُخفي المنتقي.

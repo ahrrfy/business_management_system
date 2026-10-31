@@ -489,7 +489,11 @@ export function createLinuxActivationOperations({
         if (identity?.uid === uid) permitted.push(identity);
       }
       descendants(permitted, inventory);
-      permitted.push(...inventory.filter((p) => ancestors.has(p.pid)));
+      // The ownership census covers this service UID; sudo/SSH ancestors of
+      // another UID are not exemptions and may deny access to cwd/exe.
+      permitted.push(
+        ...inventory.filter((p) => p.uid === uid && ancestors.has(p.pid)),
+      );
       // Descendant expansion above must never make ERP children exempt via the
       // PM2 daemon/control ancestry: remove every already-owned ERP identity.
       allowedProcesses = permitted
@@ -570,8 +574,15 @@ export function createLinuxActivationOperations({
           );
           if (actual.some((r) => r.name === "erp-provision-worker"))
             throw new Error("INVENTORY_PROVISION_REAPPEARED");
-          candidateIdentities = actual.map((r) => currentIdentity(r.pid));
-          if (candidateIdentities.some((i) => !i || i.uid !== uid))
+          // Keep live identities available for rollback without poisoning the
+          // ownership census when PM2 reports a stopped/restarting candidate.
+          candidateIdentities = actual
+            .map((r) => currentIdentity(r.pid))
+            .filter(Boolean);
+          if (
+            candidateIdentities.length !== actual.length ||
+            candidateIdentities.some((i) => i.uid !== uid)
+          )
             throw new Error("INVENTORY_CANDIDATE_PID_MISSING");
           for (const r of actual) {
             const artifact = journal.artifacts.find((a) => a.name === r.name);

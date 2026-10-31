@@ -131,6 +131,7 @@ export const WO_TIMELINE_LABEL: Record<string, string> = {
   "workOrder.release": "أُعيد الأمر إلى الطابور",
   // الموجة ١ (٣٠/٨/٢٦) — إشارةُ الفنّيّ (NORMAL/READY/BLOCKED) داخل المرحلة.
   "workOrder.setKanbanState": "تغيّرت إشارةُ الفنّيّ",
+  "workOrder.shelfAuditDeliver": "سُلّم ضمن جرد الرفّ",
 };
 
 /** الأفعال التي **يجب** أن يغطّيها القاموس — يطابقها الاختبار مع الراوتر. */

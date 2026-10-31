@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, eq, getTableColumns, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
 import { payrollItemNeedsAttention } from "@shared/hr";
 import {
@@ -7,9 +7,9 @@ import {
   employeePenalties,
   employeeSpotBonuses,
   employeeTerminations,
-  employees,
   payrollAccountingEvents,
   payrollItems,
+  payrollObligations,
   payrollRuns,
 } from "../../../drizzle/schema";
 import { type Actor, withTx } from "../tx";
@@ -22,6 +22,47 @@ import { getRun } from "./queries";
 import { assertPayrollActiveOwnerChecker } from "./settlement";
 import { decodeTerminationWageCoverage } from "./terminationCoverage";
 import { assertCommissionArtifactReadyForPayrollTx } from "../commissions/payrollReadiness";
+import { syncAllAdvancesForDraftRunTx } from "./syncAdvances";
+import {
+  assertPayrollEmployeeMembershipStable,
+  lockPayrollEmployeesTx,
+  payrollEmployeeMembership,
+} from "./employeeLocks";
+
+function isNowaitConflict(error: unknown): boolean {
+  let current: unknown = error;
+  for (
+    let depth = 0;
+    depth < 5 && current && typeof current === "object";
+    depth += 1
+  ) {
+    const value = current as {
+      code?: unknown;
+      errno?: unknown;
+      cause?: unknown;
+    };
+    if (value.code === "ER_LOCK_NOWAIT" || Number(value.errno) === 3572)
+      return true;
+    current = value.cause;
+  }
+  return false;
+}
+
+async function currentPayrollSourceRead<T>(read: PromiseLike<T>): Promise<T> {
+  try {
+    return await read;
+  } catch (error) {
+    if (!isNowaitConflict(error)) throw error;
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر تثبيت مصادر مسيّر الرواتب الآن",
+        why: "تتغيّر حالياً مكافأة أو عقوبة تدخل في المسيّر",
+        doThis: "انتظر اكتمال التعديل ثم أعد اعتماد المسيّر",
+      }),
+    });
+  }
+}
 
 /** اعتماد الاستحقاق الشهري؛ لا نقد ولا إيصال في هذه المرحلة. */
 export async function approveRun(id: number, actor: Actor) {
@@ -37,6 +78,18 @@ export async function approveRun(id: number, actor: Actor) {
       actor,
       [preview.createdBy],
       "اعتماد استحقاق مسيّر الرواتب",
+    );
+    const itemMembershipPreview = payrollEmployeeMembership(
+      await tx
+        .select({ id: payrollItems.id, employeeId: payrollItems.employeeId })
+        .from(payrollItems)
+        .where(eq(payrollItems.runId, id))
+        .orderBy(payrollItems.id),
+    );
+    const lockedEmployees = await lockPayrollEmployeesTx(
+      tx,
+      itemMembershipPreview,
+      "اعتماد مسيّر الرواتب",
     );
     const [run] = await tx
       .select()
@@ -84,18 +137,111 @@ export async function approveRun(id: number, actor: Actor) {
         message: `تشغيلة عمولات معتمدة (#${uncaptured.id}) لشهر ${uncaptured.period} غير ملتقطة — أعد توليد المسيّر.`,
       });
     }
-    const runToApprove = run;
-
-    const items = await tx
-      .select({
-        ...getTableColumns(payrollItems),
-        currentBranchId: employees.branchId,
-      })
+    // التوليد يلتقط المكافآت والعقوبات لموظفي بنود المسير فقط؛ ذمم الموظفين
+    // المستبعدين تبقى معلّقة بمصادرها ولا تعطل اعتماد رواتب موظفين آخرين.
+    const sourceScope = await tx
+      .select({ employeeId: payrollItems.employeeId })
       .from(payrollItems)
-      .leftJoin(employees, eq(payrollItems.employeeId, employees.id))
+      .where(eq(payrollItems.runId, id))
+      .orderBy(payrollItems.id)
+      .for("share");
+    const sourceEmployeeIds = sourceScope.map((item) =>
+      Number(item.employeeId),
+    );
+    const [uncapturedBonus] = await currentPayrollSourceRead(
+      tx
+        .select({ id: employeeSpotBonuses.id })
+        .from(employeeSpotBonuses)
+        .where(
+          and(
+            inArray(employeeSpotBonuses.employeeId, sourceEmployeeIds),
+            eq(employeeSpotBonuses.status, "APPROVED"),
+            eq(employeeSpotBonuses.disbursementType, "PAYROLL_ADDITION"),
+            isNull(employeeSpotBonuses.payrollRunId),
+            // نفس أهلية التوليد: الالتزام القديم/الإرثي غير الملتقط يمنع اعتماد مسودة
+            // لا تحتويه، أما اعتماد شهر مستقبلي فلا يخص مسيّر الفترة الحالية.
+            or(
+              isNull(employeeSpotBonuses.approvedAt),
+              sql`DATE_FORMAT(CONVERT_TZ(${employeeSpotBonuses.approvedAt}, '+00:00', '+03:00'), '%Y-%m') <= ${run.period}`,
+            ),
+          ),
+        )
+        .orderBy(employeeSpotBonuses.id)
+        .for("update", { noWait: true })
+        .limit(1),
+    );
+    const [uncapturedPenalty] = await currentPayrollSourceRead(
+      tx
+        .select({ id: employeePenalties.id })
+        .from(employeePenalties)
+        .where(
+          and(
+            inArray(employeePenalties.employeeId, sourceEmployeeIds),
+            eq(employeePenalties.status, "APPROVED"),
+            isNull(employeePenalties.payrollRunId),
+            sql`${employeePenalties.deductionAmount} > 0`,
+            // نفس أهلية التوليد: عقوبة قديمة غير ملتقطة تمنع اعتماد مسودة ناقصة،
+            // أما قرار شهر مستقبلي فلا يخص الفترة الحالية.
+            sql`DATE_FORMAT(${employeePenalties.decisionDate}, '%Y-%m') <= ${run.period}`,
+          ),
+        )
+        .orderBy(employeePenalties.id)
+        .for("update", { noWait: true })
+        .limit(1),
+    );
+    if (uncapturedBonus || uncapturedPenalty) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "لا يمكن اعتماد مسيّر لا يلتقط كل إضافات واستقطاعات الموظفين",
+          why: [
+            uncapturedBonus ? `مكافأة #${uncapturedBonus.id}` : null,
+            uncapturedPenalty ? `عقوبة #${uncapturedPenalty.id}` : null,
+          ]
+            .filter(Boolean)
+            .join(" و "),
+          doThis:
+            "احذف المسودة غير المعتمدة، ثم ولّد المسيّر مجدداً لالتقاط القيم قبل الاعتماد",
+        }),
+      });
+    }
+    // آخر بوابة قبل تجميد اللقطة: التقط كل سلف الشهر وأزل أي خصم أُلغي من المسودة.
+    await syncAllAdvancesForDraftRunTx(tx, id);
+    // قراءة حالية بعد القفل والمزامنة؛ لقطة preview قد تسبق تعديلاً متزامناً للبنود.
+    const [runToApprove] = await tx
+      .select()
+      .from(payrollRuns)
+      .where(eq(payrollRuns.id, id))
+      .for("update")
+      .limit(1);
+    if (!runToApprove || runToApprove.status !== "draft") {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد مسيّر الرواتب",
+          why: "تغيّرت حالة المسيّر أثناء مزامنة سلف الشهر",
+          doThis: "حدّث شاشة المسيّر وراجع حالته قبل إعادة المحاولة",
+        }),
+      });
+    }
+
+    const currentItems = await tx
+      .select()
+      .from(payrollItems)
       .where(eq(payrollItems.runId, id))
       .orderBy(payrollItems.id)
       .for("update");
+    assertPayrollEmployeeMembershipStable(
+      itemMembershipPreview,
+      payrollEmployeeMembership(currentItems),
+      lockedEmployees,
+      "اعتماد مسيّر الرواتب",
+    );
+    const items = currentItems.map((item) => ({
+      ...item,
+      currentBranchId:
+        lockedEmployees.get(Number(item.employeeId))?.branchId ?? null,
+    }));
     if (items.length !== Number(run.employeeCount)) {
       throw new TRPCError({
         code: "CONFLICT",
@@ -235,6 +381,33 @@ export async function cancelRun(
       [preview.createdBy],
       "إلغاء أو إعادة فتح مسيّر الرواتب",
     );
+    const itemMembershipPreview = payrollEmployeeMembership(
+      await tx
+        .select({ id: payrollItems.id, employeeId: payrollItems.employeeId })
+        .from(payrollItems)
+        .where(eq(payrollItems.runId, id))
+        .orderBy(payrollItems.id),
+    );
+    const obligationMembershipPreview = payrollEmployeeMembership(
+      await tx
+        .select({
+          id: payrollObligations.id,
+          employeeId: payrollObligations.employeeId,
+        })
+        .from(payrollObligations)
+        .where(
+          and(
+            eq(payrollObligations.runId, id),
+            eq(payrollObligations.revisionNo, Number(preview.revisionNo)),
+          ),
+        )
+        .orderBy(payrollObligations.id),
+    );
+    const lockedEmployees = await lockPayrollEmployeesTx(
+      tx,
+      [...itemMembershipPreview, ...obligationMembershipPreview],
+      "إلغاء أو إعادة فتح مسيّر الرواتب",
+    );
     const [run] = await tx
       .select()
       .from(payrollRuns)
@@ -274,6 +447,38 @@ export async function cancelRun(
         });
       }
     }
+    const currentObligations = await tx
+      .select({
+        id: payrollObligations.id,
+        employeeId: payrollObligations.employeeId,
+      })
+      .from(payrollObligations)
+      .where(
+        and(
+          eq(payrollObligations.runId, id),
+          eq(payrollObligations.revisionNo, Number(run.revisionNo)),
+        ),
+      )
+      .orderBy(payrollObligations.id)
+      .for("update");
+    assertPayrollEmployeeMembershipStable(
+      obligationMembershipPreview,
+      payrollEmployeeMembership(currentObligations),
+      lockedEmployees,
+      "إلغاء أو إعادة فتح مسيّر الرواتب",
+    );
+    const currentItems = await tx
+      .select({ id: payrollItems.id, employeeId: payrollItems.employeeId })
+      .from(payrollItems)
+      .where(eq(payrollItems.runId, id))
+      .orderBy(payrollItems.id)
+      .for("update");
+    assertPayrollEmployeeMembershipStable(
+      itemMembershipPreview,
+      payrollEmployeeMembership(currentItems),
+      lockedEmployees,
+      "إلغاء أو إعادة فتح مسيّر الرواتب",
+    );
     if (run.status === "draft") {
       const [history] = await tx
         .select({ id: payrollAccountingEvents.id })
@@ -303,14 +508,8 @@ export async function cancelRun(
       actorUserId: actor.userId,
       occurredAt: new Date(),
     });
-    await tx
-      .update(employeePenalties)
-      .set({ payrollRunId: null, status: "APPROVED" })
-      .where(eq(employeePenalties.payrollRunId, id));
-    await tx
-      .update(employeeSpotBonuses)
-      .set({ payrollRunId: null })
-      .where(eq(employeeSpotBonuses.payrollRunId, id));
+    // إعادة الفتح لا تعيد توليد البنود؛ إبقاء المصادر مربوطة يمنع التقاط المكافأة/العقوبة
+    // مرة ثانية في مسيّر لاحق، ويجعل إعادة الاعتماد/الدفع تسوّي المصدر نفسه.
     await tx
       .update(payrollRuns)
       .set({

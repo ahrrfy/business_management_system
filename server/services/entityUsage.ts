@@ -21,6 +21,7 @@ import {
   employeeContracts,
   employeeCustody,
   employeeDocuments,
+  employeeAdvances,
   employeeLoanRequests,
   employeePenalties,
   employeePromotions,
@@ -123,10 +124,22 @@ export async function getUserUsage(userId: number, conn?: any): Promise<UsageSum
     [
       "workOrders",
       "طلبات خدمة",
-      countRows(db, workOrders, or(eq(workOrders.createdBy, userId), eq(workOrders.assignedTo, userId))),
+      countRows(
+        db,
+        workOrders,
+        or(eq(workOrders.createdBy, userId), eq(workOrders.assignedTo, userId)),
+      ),
     ],
-    ["quotations", "عروض أسعار", countRows(db, quotations, eq(quotations.createdBy, userId))],
-    ["receipts", "سندات قبض/صرف", countRows(db, receipts, eq(receipts.createdBy, userId))],
+    [
+      "quotations",
+      "عروض أسعار",
+      countRows(db, quotations, eq(quotations.createdBy, userId)),
+    ],
+    [
+      "receipts",
+      "سندات قبض/صرف",
+      countRows(db, receipts, eq(receipts.createdBy, userId)),
+    ],
     [
       "payroll",
       "رواتب",
@@ -201,18 +214,32 @@ export async function getProductUsage(productId: number, conn?: any): Promise<Us
   const unitIds: number[] = unitRows.map((r: any) => Number(r.id));
 
   // شرط زائف بلا نتائج حين لا متغيّرات/وحدات — يتجنّب inArray(col, []) غير الصالحة في drizzle.
-  const vCond = (col: any) => (variantIds.length ? inArray(col, variantIds) : sql`1=0`);
-  const uCond = (col: any) => (unitIds.length ? inArray(col, unitIds) : sql`1=0`);
+  const vCond = (col: any) =>
+    variantIds.length ? inArray(col, variantIds) : sql`1=0`;
+  const uCond = (col: any) =>
+    unitIds.length ? inArray(col, unitIds) : sql`1=0`;
 
   const defs: Array<[string, string, Promise<number>]> = [
     ["movements", "حركات مخزون", countRows(db, inventoryMovements, vCond(inventoryMovements.variantId))],
     [
       "stockOnHand",
       "رصيد مخزون حالي (فروع برصيد ≠ صفر)",
-      countRows(db, branchStock, and(vCond(branchStock.variantId), sql`${branchStock.quantity} <> 0`)),
+      countRows(
+        db,
+        branchStock,
+        and(vCond(branchStock.variantId), sql`${branchStock.quantity} <> 0`),
+      ),
     ],
-    ["invoiceItems", "بنود فواتير بيع", countRows(db, invoiceItems, vCond(invoiceItems.variantId))],
-    ["quotationItems", "بنود عروض أسعار", countRows(db, quotationItems, vCond(quotationItems.variantId))],
+    [
+      "invoiceItems",
+      "بنود فواتير بيع",
+      countRows(db, invoiceItems, vCond(invoiceItems.variantId)),
+    ],
+    [
+      "quotationItems",
+      "بنود عروض أسعار",
+      countRows(db, quotationItems, vCond(quotationItems.variantId)),
+    ],
     // ش٢ (V17): FKs المسوّدات RESTRICT ⇒ الحذف يحتاج تسمية المصدر. **محصورٌ بـOPEN** عمداً —
     // مسوّدةٌ ملغاة/منقضية لا تمنع حذف منتجٍ للأبد (§٥.٢).
     [
@@ -279,20 +306,115 @@ export async function getProductUsage(productId: number, conn?: any): Promise<Us
 export async function getEmployeeUsage(employeeId: number, conn?: any): Promise<UsageSummary> {
   const db = conn ?? requireDb();
   const defs: Array<[string, string, Promise<number>]> = [
-    ["attendance", "سجلّات حضور", countRows(db, attendance, eq(attendance.employeeId, employeeId))],
-    ["assetCustodyCurrent", "عُهد حالية", countRows(db, fixedAssets, eq(fixedAssets.custodianId, employeeId))],
-    ["assetCustodyLog", "سجلّ عُهد", countRows(db, assetCustodyLog, eq(assetCustodyLog.employeeId, employeeId))],
-    ["payroll", "مفردات رواتب", countRows(db, payrollItems, eq(payrollItems.employeeId, employeeId))],
-    ["leaves", "إجازات", countRows(db, leaveRequests, eq(leaveRequests.employeeId, employeeId))],
-    ["promotions", "ترقيات", countRows(db, employeePromotions, eq(employeePromotions.employeeId, employeeId))],
-    ["terminations", "إنهاءات خدمة", countRows(db, employeeTerminations, eq(employeeTerminations.employeeId, employeeId))],
-    ["documents", "مستندات رسمية", countRows(db, employeeDocuments, eq(employeeDocuments.employeeId, employeeId))],
-    ["penalties", "عقوبات وإنذارات", countRows(db, employeePenalties, eq(employeePenalties.employeeId, employeeId))],
-    ["contracts", "عقود عمل", countRows(db, employeeContracts, eq(employeeContracts.employeeId, employeeId))],
-    ["custody", "عُهد عينية", countRows(db, employeeCustody, eq(employeeCustody.employeeId, employeeId))],
-    ["transfers", "تنقلات إدارية", countRows(db, employeeTransfers, eq(employeeTransfers.employeeId, employeeId))],
-    ["loans", "طلبات سلف", countRows(db, employeeLoanRequests, eq(employeeLoanRequests.employeeId, employeeId))],
-    ["spotBonuses", "مكافآت استثنائية", countRows(db, employeeSpotBonuses, eq(employeeSpotBonuses.employeeId, employeeId))],
+    [
+      "attendance",
+      "سجلّات حضور",
+      countRows(db, attendance, eq(attendance.employeeId, employeeId)),
+    ],
+    [
+      "assetCustodyCurrent",
+      "عُهد حالية",
+      countRows(db, fixedAssets, eq(fixedAssets.custodianId, employeeId)),
+    ],
+    [
+      "assetCustodyLog",
+      "سجلّ عُهد",
+      countRows(
+        db,
+        assetCustodyLog,
+        eq(assetCustodyLog.employeeId, employeeId),
+      ),
+    ],
+    [
+      "payroll",
+      "مفردات رواتب",
+      countRows(db, payrollItems, eq(payrollItems.employeeId, employeeId)),
+    ],
+    [
+      "leaves",
+      "إجازات",
+      countRows(db, leaveRequests, eq(leaveRequests.employeeId, employeeId)),
+    ],
+    [
+      "promotions",
+      "ترقيات",
+      countRows(
+        db,
+        employeePromotions,
+        eq(employeePromotions.employeeId, employeeId),
+      ),
+    ],
+    [
+      "terminations",
+      "إنهاءات خدمة",
+      countRows(
+        db,
+        employeeTerminations,
+        eq(employeeTerminations.employeeId, employeeId),
+      ),
+    ],
+    [
+      "documents",
+      "مستندات رسمية",
+      countRows(
+        db,
+        employeeDocuments,
+        eq(employeeDocuments.employeeId, employeeId),
+      ),
+    ],
+    [
+      "penalties",
+      "عقوبات وإنذارات",
+      countRows(
+        db,
+        employeePenalties,
+        eq(employeePenalties.employeeId, employeeId),
+      ),
+    ],
+    [
+      "contracts",
+      "عقود عمل",
+      countRows(
+        db,
+        employeeContracts,
+        eq(employeeContracts.employeeId, employeeId),
+      ),
+    ],
+    [
+      "custody",
+      "عُهد عينية",
+      countRows(
+        db,
+        employeeCustody,
+        eq(employeeCustody.employeeId, employeeId),
+      ),
+    ],
+    [
+      "transfers",
+      "تنقلات إدارية",
+      countRows(
+        db,
+        employeeTransfers,
+        eq(employeeTransfers.employeeId, employeeId),
+      ),
+    ],
+    [
+      "loans",
+      "طلبات وسجلات سلف",
+      countAny(db, [
+        [employeeLoanRequests, eq(employeeLoanRequests.employeeId, employeeId)],
+        [employeeAdvances, eq(employeeAdvances.employeeId, employeeId)],
+      ]),
+    ],
+    [
+      "spotBonuses",
+      "مكافآت استثنائية",
+      countRows(
+        db,
+        employeeSpotBonuses,
+        eq(employeeSpotBonuses.employeeId, employeeId),
+      ),
+    ],
   ];
   const counts = await Promise.all(defs.map((d) => d[2]));
   const categories = defs.map((d, i) => ({ key: d[0], label: d[1], count: counts[i] }));

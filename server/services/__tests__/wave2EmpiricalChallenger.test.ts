@@ -261,7 +261,7 @@ describe("Adversarial Empirical Verification — Wave 2 (GAP-03 & GAP-04)", () =
         status: "APPROVED",
         createdById: 1,
         approvedById: 2,
-        approvedAt: new Date(),
+        approvedAt: new Date("2026-08-15T12:00:00.000Z"),
       });
 
       const run = await generatePayroll("2026-08", ACTOR);

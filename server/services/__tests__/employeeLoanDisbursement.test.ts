@@ -1,7 +1,7 @@
 /**
  * اختبارات صرف سلف الموظفين والحوكمة النقدية والمحاسبية الذرية (GAP-02):
  *  1) الصرف مع وردية مفتوحة: ينشئ إيصال صرف نقدي OUT مع ربط shiftId و DRAWER، وينشئ سلفة ACTIVE مع receiptId، ويسجل قيد PAYMENT_OUT.
- *  2) الصرف بدون وردية مفتوحة: ينشئ إيصال صرف نقدي OUT بدلو TREASURY و shiftId = null.
+ *  2) الصرف بدون وردية مفتوحة: يُرفض بلا أي رجوع تلقائي إلى الخزينة.
  *  3) سجل السلفة في employeeAdvances يحمل receiptId وحالة ACTIVE والمتبقي يطابق مبلغ السلفة.
  *  4) تسجيل قيد محاسبي PAYMENT_OUT مع receiptId والمبلغ والفرع ورمز عدم التكرار dedupeKey.
  *  5) التراجع الذري الكامل (Atomic Rollback): عند حدوث أي خطأ أثناء الصرف يتراجع كل شيء (لا إيصال، لا سلفة، لا قيد، وبقاء الطلب APPROVED).
@@ -21,11 +21,14 @@ import {
   reviewEmployeeLoanRequest,
 } from "../employeeLoanService";
 import * as ledgerSvc from "../ledgerService";
+import { baghdadToday } from "../businessDay";
+import { cancelVoucher } from "../voucher/cancel";
 
 const TABLES = [
   "journalLines",
   "journalEntries",
   "accountingEntries",
+  "idempotencyKeys",
   "receipts",
   "employeeAdvances",
   "employeeLoanRequests",
@@ -53,6 +56,13 @@ async function resetDb() {
 const adminActor: Actor = { userId: 1, branchId: 1, role: "admin" };
 const cashierActor: Actor = { userId: 2, branchId: 1, role: "cashier" };
 
+function monthlyRequestIdentity(key: string) {
+  return {
+    payrollPeriod: baghdadToday().slice(0, 7),
+    clientRequestId: `employee-loan-test-${key}`,
+  };
+}
+
 async function seedBaseData() {
   const d = db();
   await d.insert(s.branches).values([
@@ -61,19 +71,61 @@ async function seedBaseData() {
   ]);
 
   await d.insert(s.users).values([
-    { id: 1, openId: "test-loan-admin", name: "أحمد الإداري", role: "admin", branchId: 1 },
-    { id: 2, openId: "test-loan-cashier", name: "محمد الكاشير", role: "cashier", branchId: 1 },
+    {
+      id: 1,
+      openId: "test-loan-admin",
+      name: "أحمد الإداري",
+      role: "admin",
+      branchId: 1,
+      operationPolicy: {
+        version: 1,
+        grants: {
+          "operation.payroll.advanceGrant": true,
+          "operation.hrEnterprise.loans.request": true,
+          "operation.hrEnterprise.loans.review": true,
+          "operation.hrEnterprise.loans.cancel": true,
+          "operation.hrEnterprise.loans.disburse": true,
+        },
+      },
+    },
+    {
+      id: 2,
+      openId: "test-loan-cashier",
+      name: "محمد الكاشير",
+      role: "cashier",
+      branchId: 1,
+      operationPolicy: {
+        version: 1,
+        grants: {
+          "operation.payroll.advanceGrant": true,
+          "operation.hrEnterprise.loans.review": true,
+          "operation.hrEnterprise.loans.disburse": true,
+        },
+      },
+    },
+    {
+      id: 99,
+      openId: "test-loan-other-branch",
+      name: "مستخدم فرع آخر",
+      role: "cashier",
+      branchId: 2,
+      operationPolicy: {
+        version: 1,
+        grants: { "operation.payroll.advanceGrant": true },
+      },
+    },
   ]);
 
   await d.insert(s.employees).values([
     {
       id: 10,
+      userId: 2,
       branchId: 1,
       firstName: "علي",
       fatherName: "حسين",
       grandfatherName: "محمد",
       lastName: "الساعدي",
-      salary: "1500000.00",
+      salary: "15000000.00",
       payType: "monthly",
       employmentStatus: "active",
     },
@@ -84,7 +136,7 @@ async function seedBaseData() {
       fatherName: "كاظم",
       grandfatherName: "جواد",
       lastName: "الشمري",
-      salary: "1200000.00",
+      salary: "12000000.00",
       payType: "monthly",
       employmentStatus: "active",
     },
@@ -136,6 +188,7 @@ describe("GAP-02: صرف سلف الموظفين والحوكمة النقدية
       status: "APPROVED",
       createdById: 1,
       reviewedById: 1,
+      ...monthlyRequestIdentity("success"),
     });
     const loanId = loanReq.insertId;
 
@@ -158,9 +211,13 @@ describe("GAP-02: صرف سلف الموظفين والحوكمة النقدية
     expect(receipt.direction).toBe("OUT");
     expect(receipt.amount).toBe("300000.00");
     expect(receipt.paymentMethod).toBe("CASH");
-    expect(receipt.referenceNumber).toBe(`EMP-LOAN:${loanId}`);
+    expect(receipt.referenceNumber).toMatch(/^EMP-ADV-10-[a-f0-9]{16}$/);
     expect(receipt.status).toBe("COMPLETED");
     expect(receipt.approvalStatus).toBe("APPROVED");
+    expect(receipt.createdBy).toBe(1);
+    expect(receipt.approvedBy).toBe(1);
+    expect(receipt.executedBy).toBe(2);
+    expect(receipt.voucherNumber).toMatch(/^PV-1-/);
     expect(receipt.partyType).toBe("OTHER");
     expect(receipt.counterpartyName).toBe("علي حسين محمد الساعدي");
     expect(receipt.description).toContain(`صرف سلفة موظف #${loanId}`);
@@ -187,7 +244,9 @@ describe("GAP-02: صرف سلف الموظفين والحوكمة النقدية
     expect(advance.branchId).toBe(1);
     expect(advance.amount).toBe("300000.00");
     expect(advance.remaining).toBe("300000.00");
-    expect(advance.monthlyDeduction).toBe("50000.00");
+    expect(advance.monthlyDeduction).toBe("300000.00");
+    expect(advance.sourceType).toBe("SALARY_ADVANCE");
+    expect(advance.payrollPeriod).toBe(baghdadToday().slice(0, 7));
     expect(advance.status).toBe("ACTIVE");
     expect(advance.receiptId).toBe(res.receiptId);
 
@@ -198,9 +257,11 @@ describe("GAP-02: صرف سلف الموظفين والحوكمة النقدية
       .where(eq(s.employeeLoanRequests.id, loanId));
     expect(updatedReq.status).toBe("DISBURSED");
     expect(updatedReq.advanceId).toBe(res.advanceId);
+    expect(updatedReq.receiptId).toBe(res.receiptId);
+    expect(updatedReq.disbursedById).toBe(2);
   });
 
-  it("الصرف بدون وردية مفتوحة: ينشئ إيصال OUT في TREASURY مع shiftId = null", async () => {
+  it("الصرف بدون وردية مفتوحة: يُرفض ولا ينشئ إيصالاً أو قيداً أو سلفة", async () => {
     const d = db();
 
     // إنشاء طلب سلفة معتمد للموظفة زينب
@@ -214,25 +275,31 @@ describe("GAP-02: صرف سلف الموظفين والحوكمة النقدية
       status: "APPROVED",
       createdById: 1,
       reviewedById: 1,
+      ...monthlyRequestIdentity("no-open-shift"),
     });
     const loanId = loanReq.insertId;
 
-    // الصرف بواسطة adminActor (لا يملك أي وردية مفتوحة)
-    const res = await disburseEmployeeLoan(adminActor, loanId);
+    // الصرف بواسطة adminActor (لا يملك أي وردية مفتوحة) يجب أن يفشل مغلقاً.
+    await expect(disburseEmployeeLoan(adminActor, loanId)).rejects.toThrow(
+      /وردية مفتوحة.*درج/i,
+    );
 
-    expect(res.status).toBe("DISBURSED");
-
-    // التحقق من إيصال الصرف النقدي بدلو الخزينة
-    const [receipt] = await d.select().from(s.receipts).where(eq(s.receipts.id, res.receiptId));
-    expect(receipt).toBeDefined();
-    expect(receipt.branchId).toBe(1);
-    expect(receipt.shiftId).toBeNull();
-    expect(receipt.cashBucket).toBe("TREASURY");
-    expect(receipt.direction).toBe("OUT");
-    expect(receipt.amount).toBe("200000.00");
-    expect(receipt.paymentMethod).toBe("CASH");
-    expect(receipt.referenceNumber).toBe(`EMP-LOAN:${loanId}`);
-    expect(receipt.counterpartyName).toBe("زينب كاظم جواد الشمري");
+    const receipts = await d
+      .select()
+      .from(s.receipts)
+      .where(eq(s.receipts.direction, "OUT"));
+    expect(receipts).toHaveLength(0);
+    const advances = await d
+      .select()
+      .from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.employeeId, 11));
+    expect(advances).toHaveLength(0);
+    const [request] = await d
+      .select()
+      .from(s.employeeLoanRequests)
+      .where(eq(s.employeeLoanRequests.id, loanId));
+    expect(request.status).toBe("APPROVED");
+    expect(request.advanceId).toBeNull();
   });
 
   it("الاسم المستعار disburseLoan يعمل بشكل مطابق لـ disburseEmployeeLoan", async () => {
@@ -246,6 +313,7 @@ describe("GAP-02: صرف سلف الموظفين والحوكمة النقدية
       monthlyDeduction: "50000.00",
       status: "APPROVED",
       createdById: 1,
+      ...monthlyRequestIdentity("alias"),
     });
     const loanId = loanReq.insertId;
 
@@ -266,6 +334,7 @@ describe("GAP-02: صرف سلف الموظفين والحوكمة النقدية
       monthlyDeduction: "50000.00",
       status: "APPROVED",
       createdById: 1,
+      ...monthlyRequestIdentity("rollback"),
     });
     const loanId = loanReq.insertId;
 
@@ -284,7 +353,7 @@ describe("GAP-02: صرف سلف الموظفين والحوكمة النقدية
     const receiptsList = await d
       .select()
       .from(s.receipts)
-      .where(eq(s.receipts.referenceNumber, `EMP-LOAN:${loanId}`));
+      .where(eq(s.receipts.direction, "OUT"));
     expect(receiptsList).toHaveLength(0);
 
     // 2. لا قيد محاسبي تم تسجيله
@@ -310,7 +379,7 @@ describe("GAP-02: صرف سلف الموظفين والحوكمة النقدية
     expect(loanAfter.advanceId).toBeNull();
   });
 
-  it("حظر الصرف المتكرر: محاولة إعادة صرف سلفة مصروفة مسبقاً تُرفض مع الحفاظ على البيانات", async () => {
+  it("إعادة صرف الطلب نفسه تعيد النتيجة ذاتها بلا إيصال أو قيد أو سلفة ثانية", async () => {
     const d = db();
 
     const [loanReq] = await d.insert(s.employeeLoanRequests).values({
@@ -321,6 +390,7 @@ describe("GAP-02: صرف سلف الموظفين والحوكمة النقدية
       monthlyDeduction: "50000.00",
       status: "APPROVED",
       createdById: 1,
+      ...monthlyRequestIdentity("replay"),
     });
     const loanId = loanReq.insertId;
 
@@ -328,10 +398,19 @@ describe("GAP-02: صرف سلف الموظفين والحوكمة النقدية
     const firstRes = await disburseEmployeeLoan(cashierActor, loanId);
     expect(firstRes.status).toBe("DISBURSED");
 
-    // محاولة الصرف الثانية تُرفض
-    await expect(disburseEmployeeLoan(cashierActor, loanId)).rejects.toThrow(
-      /تم صرف طلب السلفة مسبقاً/,
-    );
+    // إعادة الإرسال بعد فقدان الرد idempotent: نفس المعرّفات وأثر مالي واحد.
+    const replay = await disburseEmployeeLoan(cashierActor, loanId);
+    expect(replay).toEqual({ ...firstRes, replayed: true });
+    const receipts = await d
+      .select()
+      .from(s.receipts)
+      .where(eq(s.receipts.id, firstRes.receiptId));
+    expect(receipts).toHaveLength(1);
+    const advances = await d
+      .select()
+      .from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.employeeId, 10));
+    expect(advances).toHaveLength(1);
   });
 
   it("حظر صرف سلفة غير معتمدة: رفض حالات PENDING و REJECTED و CANCELLED", async () => {
@@ -345,6 +424,7 @@ describe("GAP-02: صرف سلف الموظفين والحوكمة النقدية
       monthlyDeduction: "50000.00",
       status: "PENDING",
       createdById: 1,
+      ...monthlyRequestIdentity("pending"),
     });
     await expect(disburseEmployeeLoan(cashierActor, pendingReq.insertId)).rejects.toThrow(
       /حالة السلفة الحالية هي \(PENDING\) ولم تعتمدها الإدارة بعد/,
@@ -358,6 +438,7 @@ describe("GAP-02: صرف سلف الموظفين والحوكمة النقدية
       monthlyDeduction: "50000.00",
       status: "REJECTED",
       createdById: 1,
+      ...monthlyRequestIdentity("rejected"),
     });
     await expect(disburseEmployeeLoan(cashierActor, rejectedReq.insertId)).rejects.toThrow(
       /حالة السلفة الحالية هي \(REJECTED\) ولم تعتمدها الإدارة بعد/,
@@ -371,6 +452,7 @@ describe("GAP-02: صرف سلف الموظفين والحوكمة النقدية
       monthlyDeduction: "50000.00",
       status: "CANCELLED",
       createdById: 1,
+      ...monthlyRequestIdentity("cancelled"),
     });
     await expect(disburseEmployeeLoan(cashierActor, cancelledReq.insertId)).rejects.toThrow(
       /حالة السلفة الحالية هي \(CANCELLED\) ولم تعتمدها الإدارة بعد/,
@@ -383,6 +465,45 @@ describe("GAP-02: صرف سلف الموظفين والحوكمة النقدية
     );
   });
 
+  it("يثبّت عدم التكرار وفصل المهام وعزل الفرع قبل أي أثر مالي", async () => {
+    const input = {
+      employeeId: 10,
+      amount: "100000.00",
+      reason: "طلب حوكمة",
+      clientRequestId: "loan-governance-idempotency-1",
+    };
+    const first = await requestEmployeeLoan(cashierActor, input);
+    const replay = await requestEmployeeLoan(cashierActor, input);
+    expect(replay).toMatchObject({
+      id: first.id,
+      status: "PENDING",
+      replayed: true,
+    });
+    await expect(
+      reviewEmployeeLoanRequest(cashierActor, {
+        id: first.id,
+        action: "APPROVE",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(
+      requestEmployeeLoan(
+        { userId: 99, branchId: 2, role: "cashier" },
+        { ...input, clientRequestId: "loan-governance-wrong-branch-1" },
+      ),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    const [requests, outReceipts, entries, advances] = await Promise.all([
+      db().select().from(s.employeeLoanRequests),
+      db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT")),
+      db().select().from(s.accountingEntries),
+      db().select().from(s.employeeAdvances),
+    ]);
+    expect(requests).toHaveLength(1);
+    expect(outReceipts).toHaveLength(0);
+    expect(entries).toHaveLength(0);
+    expect(advances).toHaveLength(0);
+  });
+
   it("دورة الحياة المتكاملة: من تقديم الطلب إلى الاعتماد ثم الصرف النقدي", async () => {
     const d = db();
 
@@ -393,6 +514,7 @@ describe("GAP-02: صرف سلف الموظفين والحوكمة النقدية
       installmentsCount: 4,
       monthlyDeduction: "60000.00",
       reason: "شراء قرطاسية ومستلزمات دراسية",
+      clientRequestId: "employee-loan-lifecycle-1",
     });
     expect(requestRes.status).toBe("PENDING");
 
@@ -414,8 +536,65 @@ describe("GAP-02: صرف سلف الموظفين والحوكمة النقدية
       .where(eq(s.employeeAdvances.id, disburseRes.advanceId));
     expect(adv.amount).toBe("240000.00");
     expect(adv.remaining).toBe("240000.00");
-    expect(adv.monthlyDeduction).toBe("60000.00");
+    expect(adv.monthlyDeduction).toBe("240000.00");
+    expect(adv.sourceType).toBe("SALARY_ADVANCE");
+    expect(adv.payrollPeriod).toBe(baghdadToday().slice(0, 7));
     expect(adv.status).toBe("ACTIVE");
     expect(adv.receiptId).toBe(disburseRes.receiptId);
+  });
+
+  it("يعكس سلفة ذاتية مصروفة حتى بعد نقل الموظف وإنهاء خدمته دون حبس النقد", async () => {
+    const d = db();
+    const request = await requestEmployeeLoan(cashierActor, {
+      employeeId: 10,
+      amount: "180000.00",
+      reason: "سلفة ذاتية قابلة للعكس",
+      clientRequestId: "employee-loan-self-reversal-1",
+    });
+    await reviewEmployeeLoanRequest(adminActor, {
+      id: request.id,
+      action: "APPROVE",
+    });
+    const disbursed = await disburseEmployeeLoan(cashierActor, request.id);
+
+    await d
+      .update(s.users)
+      .set({ isOwner: true })
+      .where(eq(s.users.id, adminActor.userId));
+    await d
+      .update(s.employees)
+      .set({ branchId: 2, isActive: false, employmentStatus: "terminated" })
+      .where(eq(s.employees.id, 10));
+
+    const reversed = await cancelVoucher(disbursed.receiptId, adminActor);
+    expect(reversed.status).toBe("REVERSED");
+
+    const [original] = await d
+      .select()
+      .from(s.receipts)
+      .where(eq(s.receipts.id, disbursed.receiptId));
+    const [advance] = await d
+      .select()
+      .from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.id, disbursed.advanceId));
+    const compensating = await d
+      .select()
+      .from(s.receipts)
+      .where(
+        eq(s.receipts.referenceNumber, `CANCEL-VCH-${disbursed.receiptId}`),
+      );
+
+    expect(original.status).toBe("REVERSED");
+    expect(advance.status).toBe("CANCELLED");
+    expect(advance.remaining).toBe("0.00");
+    expect(compensating).toHaveLength(1);
+    expect(compensating[0]).toMatchObject({
+      direction: "IN",
+      amount: "180000.00",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      shiftId: 101,
+      cashBucket: "DRAWER",
+    });
   });
 });

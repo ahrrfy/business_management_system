@@ -3,7 +3,7 @@ import { VOIDED_INVOICE_STATUSES } from "@shared/invoiceStatus";
 import { getDb } from "../../db";
 import { money, toDbMoney } from "../money";
 import {
-  componentRightsRawCostSql,
+  reportPaidLineCostSql,
   reportInvoiceDeliveryRevenueSql,
   reportInvoiceGoodsRevenueSql,
   reportWorkOrderCogsSql,
@@ -17,13 +17,14 @@ export async function loadSalesInvoiceProjection(invoiceIds: readonly number[]) 
   if (!db) throw new Error("Sales report database unavailable");
   const ids = sql.join(invoiceIds.map(id => sql`${id}`), sql`, `);
   const voided = sql.join(VOIDED_INVOICE_STATUSES.map(status => sql`${status}`), sql`, `);
-  const lineCost = componentRightsRawCostSql(sql`CASE
+  const lineCost = reportPaidLineCostSql(sql`CASE
     WHEN ii.baseQuantity <= 0 THEN ii.lineCost
     WHEN ii.returnedRestockedBaseQuantity >= ii.baseQuantity THEN 0
     ELSE ii.lineCost - ROUND(ii.lineCost * ii.returnedRestockedBaseQuantity / ii.baseQuantity, 2) END`);
   // Same invoice revenue and source-linked costs as the canonical sales register.
   // No item weighting is needed at invoice granularity. No-item legacy invoices retain
   // their saved cost; WORKORDER always prefers actual SALE/RETURN material/labour COGS.
+  // Gifts belong to GIFT_OUT, including their returns. Keep gift-only groups at zero.
   const netRevenue = sql`CASE WHEN i.invoiceStatus IN (${voided}) THEN 0
     ELSE (${reportInvoiceGoodsRevenueSql()}) + (${reportInvoiceDeliveryRevenueSql()}) END`;
   const netCost = sql`CASE WHEN i.invoiceStatus IN (${voided}) THEN 0

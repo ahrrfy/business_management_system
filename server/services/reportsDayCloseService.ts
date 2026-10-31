@@ -610,7 +610,7 @@ export async function getDayCloseReconciliation(opts: {
         counterpartyName: receipts.counterpartyName,
         description: receipts.description,
         createdAt: receipts.createdAt,
-        createdBy: receipts.createdBy,
+        createdBy: sql<number | null>`COALESCE(${receipts.executedBy}, ${receipts.createdBy})`,
         createdByName: receiptUsers.name,
         custodyEvidenceReceiptId: custodySourceEvidence.receiptId,
         // Invoices
@@ -644,7 +644,10 @@ export async function getDayCloseReconciliation(opts: {
         shifts,
         and(eq(shifts.id, receipts.shiftId), eq(shifts.branchId, receipts.branchId)),
       )
-      .leftJoin(receiptUsers, eq(receiptUsers.id, receipts.createdBy))
+      .leftJoin(
+        receiptUsers,
+        eq(receiptUsers.id, sql<number>`COALESCE(${receipts.executedBy}, ${receipts.createdBy})`),
+      )
       .leftJoin(expenses, eq(expenses.receiptId, receipts.id))
       .leftJoin(purchaseCharges, eq(purchaseCharges.paymentReceiptId, receipts.id))
       .leftJoin(expenseCategories, eq(expenseCategories.id, expenses.expenseCategoryId))

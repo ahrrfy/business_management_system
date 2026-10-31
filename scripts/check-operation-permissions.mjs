@@ -16,8 +16,18 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
+import { verifyOperationPolicyUpgrade } from "./lib/operation-policy-compatibility.mjs";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 if (process.argv.includes("--selftest")) {
+  execFileSync(
+    process.execPath,
+    [
+      "--test",
+      resolve(root, "scripts/lib/operation-policy-compatibility.test.mjs"),
+      resolve(root, "scripts/lib/operation-policy-login.test.mjs"),
+    ],
+    { stdio: "inherit" },
+  );
   const fixture = mkdtempSync(resolve(tmpdir(), "operation-permissions-test-"));
   const generate = (args = []) =>
     execFileSync(
@@ -247,4 +257,11 @@ if (
 }
 console.log(
   `Operation permissions: ${entries.length} mounted paths verified; ${entries.filter((e) => e.delegable).length} independently delegable.`,
+);
+const compatibility = verifyOperationPolicyUpgrade({
+  root,
+  currentCatalog: entries,
+});
+console.log(
+  `Policy upgrade compatibility: ${compatibility.baselines.length} baselines verified; ${compatibility.retiredKeys} explicitly retired keys.`,
 );

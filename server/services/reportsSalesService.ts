@@ -15,14 +15,14 @@ import { money, toDbMoney } from "./money";
 import { VOIDED_INVOICE_STATUSES } from "@shared/invoiceStatus";
 import { openBalanceExpr } from "@shared/predicates/openBalance";
 import {
-  componentRightsRawCostSql,
+  reportPaidLineCostSql,
   invoiceLineReportProjectionSql,
   reportInvoiceDeliveryRevenueSql,
   reportInvoiceGoodsRevenueSql, reportInvoiceOriginalGoodsRevenueSql, reportWorkOrderCogsSql,
 } from "./fulfillment/componentRightsReportSql";
 
 const rightsLineRevenueSql = sql`rp.revenue`;
-const rawLineCostSql = componentRightsRawCostSql(
+const rawLineCostSql = reportPaidLineCostSql(
   sql`CASE WHEN ii.baseQuantity <= 0 THEN ii.lineCost WHEN ii.returnedRestockedBaseQuantity >= ii.baseQuantity THEN 0 ELSE ii.lineCost - ROUND(ii.lineCost * ii.returnedRestockedBaseQuantity / ii.baseQuantity, 2) END`,
 );
 const rightsLineCostSql = sql`COALESCE(rp.workOrderCost, ${rawLineCostSql})`;

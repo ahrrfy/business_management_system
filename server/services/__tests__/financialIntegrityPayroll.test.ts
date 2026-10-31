@@ -59,9 +59,78 @@ beforeEach(async () => {
     referenceNumber: "TEST-TREASURY-FUND",
     createdBy: 2,
   });
+  await d.insert(s.shifts).values({ id: 901, branchId: 1, userId: 2, openingBalance: "100000000.00", status: "OPEN", shiftType: "RETAIL", openGuard: "1:2:RETAIL" });
 });
 
 describe("financial integrity — payroll", () => {
+  it("لا تعطل عقوبة موظف خارج نطاق التوليد اعتماد رواتب بقية الموظفين", async () => {
+    const included = await createEmployee({
+      firstName: "موظف",
+      lastName: "ضمن المسيّر",
+      payType: "monthly",
+      salary: "300000",
+      hireDate: "2020-01-01",
+      branchId: 1,
+    });
+    const excluded = await createEmployee({
+      firstName: "موظف",
+      lastName: "منتهية خدمته قبل الفترة",
+      payType: "monthly",
+      salary: "100000",
+      hireDate: "2020-01-01",
+      branchId: 1,
+    });
+    await db().update(s.employees).set({
+      employmentStatus: "terminated",
+      terminationDate: "2026-05-31",
+      isActive: false,
+    }).where(eq(s.employees.id, excluded!.id));
+    await db().insert(s.employeePenalties).values({
+      employeeId: excluded!.id,
+      branchId: 1,
+      penaltyType: "SALARY_DEDUCTION",
+      decisionNumber: "OUTSIDE-PAYROLL-SCOPE",
+      decisionDate: "2026-06-15",
+      reason: "عقوبة معتمدة لموظف خارج نطاق مسيّر الفترة",
+      deductionAmount: "5000.00",
+      status: "APPROVED",
+      createdById: MAKER.userId,
+      approvedById: CHECKER.userId,
+    });
+    const run = await generatePayroll("2026-06", MAKER);
+    if (run?.id == null || run.items == null) throw new Error("Expected a generated draft payroll");
+    expect(run.items.map(item => Number(item.employeeId))).toEqual([included!.id]);
+    await expect(approveRun(run.id, CHECKER)).resolves.toMatchObject({ status: "approved" });
+    const [penalty] = await db().select().from(s.employeePenalties);
+    expect(penalty).toMatchObject({ status: "APPROVED", payrollRunId: null });
+  });
+
+  it("يبقي حظر اعتماد عقوبة جديدة غير ملتقطة لموظف داخل المسيّر", async () => {
+    const employee = await createEmployee({
+      firstName: "موظف",
+      lastName: "بعقوبة لاحقة للتوليد",
+      payType: "monthly",
+      salary: "300000",
+      hireDate: "2020-01-01",
+      branchId: 1,
+    });
+    const run = await generatePayroll("2026-06", MAKER);
+    if (run?.id == null) throw new Error("Expected a generated draft payroll");
+    await db().insert(s.employeePenalties).values({
+      employeeId: employee!.id,
+      branchId: 1,
+      penaltyType: "SALARY_DEDUCTION",
+      decisionNumber: "UNCAPTURED-IN-PAYROLL",
+      decisionDate: "2026-06-15",
+      reason: "عقوبة اعتمدت بعد توليد مسودة الراتب",
+      deductionAmount: "5000.00",
+      status: "APPROVED",
+      createdById: MAKER.userId,
+      approvedById: CHECKER.userId,
+    });
+    await expect(approveRun(run.id, CHECKER)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
+
   it("يرفض استقطاعاً يجعل صافي بند الموظف سالباً", async () => {
     await createEmployee({
       firstName: "علي",
@@ -181,6 +250,6 @@ describe("financial integrity — advances", () => {
     receipts = await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"));
     expect(advances).toHaveLength(1);
     expect(receipts).toHaveLength(1);
-    expect(receipts[0]).toMatchObject({ status: "COMPLETED", approvalStatus: "APPROVED", cashBucket: "TREASURY" });
+    expect(receipts[0]).toMatchObject({ status: "COMPLETED", approvalStatus: "APPROVED", cashBucket: "DRAWER" });
   });
 });

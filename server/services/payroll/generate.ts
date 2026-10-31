@@ -3,7 +3,7 @@
 // استقطاع السلفة المقترح، وخصم الإجازة بلا راتب (أو نموذج الأجر بالحضور عند تفعيله).
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
 import { hasUnclosedAttendancePunch } from "@shared/attendanceHours";
 import { PAYROLL_ITEM_ATTENTION_PREFIX, fullEmployeeName } from "@shared/hr";
@@ -21,7 +21,7 @@ import {
   payrollItems,
   payrollRuns,
 } from "../../../drizzle/schema";
-import { extractInsertId } from "../../lib/insertId";
+import { extractAffectedRows, extractInsertId } from "../../lib/insertId";
 import { logger } from "../../logger";
 import { processPendingFolds } from "../hrDevices";
 import { suggestDeductionsTx } from "../advances";
@@ -190,22 +190,41 @@ export async function generatePayroll(period: string, actor: Actor) {
     }
 
     // GAP-03: استعلام المكافآت الفورية الاستثنائية المعتمدة للإضافة إلى الراتب (PAYROLL_ADDITION)
-    const approvedSpotBonuses = await tx
-      .select({
-        id: employeeSpotBonuses.id,
-        employeeId: employeeSpotBonuses.employeeId,
-        amount: employeeSpotBonuses.amount,
-        reason: employeeSpotBonuses.reason,
-      })
-      .from(employeeSpotBonuses)
-      .where(
-        and(
-          eq(employeeSpotBonuses.status, "APPROVED"),
-          eq(employeeSpotBonuses.disbursementType, "PAYROLL_ADDITION"),
-          isNull(employeeSpotBonuses.payrollRunId),
-        ),
-      )
-      .for("update");
+    const eligiblePayrollEmployeeIds = emps.map((employee) =>
+      Number(employee.id),
+    );
+    const approvedSpotBonuses =
+      eligiblePayrollEmployeeIds.length > 0
+        ? await tx
+            .select({
+              id: employeeSpotBonuses.id,
+              employeeId: employeeSpotBonuses.employeeId,
+              amount: employeeSpotBonuses.amount,
+              reason: employeeSpotBonuses.reason,
+            })
+            .from(employeeSpotBonuses)
+            .where(
+              and(
+                inArray(
+                  employeeSpotBonuses.employeeId,
+                  eligiblePayrollEmployeeIds,
+                ),
+                eq(employeeSpotBonuses.status, "APPROVED"),
+                eq(
+                  employeeSpotBonuses.disbursementType,
+                  "PAYROLL_ADDITION",
+                ),
+                isNull(employeeSpotBonuses.payrollRunId),
+                // ذمم قديمة معتمدة لم يلتقطها مسيّر شهرها تبقى مستحقة لأول مسيّر تالٍ؛
+                // NULL إرثي يُسترد تحفظياً، بينما اعتماد شهرٍ مستقبلي لا يُعجّل صرفه.
+                or(
+                  isNull(employeeSpotBonuses.approvedAt),
+                  sql`DATE_FORMAT(CONVERT_TZ(${employeeSpotBonuses.approvedAt}, '+00:00', '+03:00'), '%Y-%m') <= ${p}`,
+                ),
+              ),
+            )
+            .for("update")
+        : [];
 
     const spotBonusByEmp = new Map<number, { total: Decimal; ids: number[]; reasons: string[] }>();
     for (const b of approvedSpotBonuses) {
@@ -389,27 +408,35 @@ export async function generatePayroll(period: string, actor: Actor) {
 
     // advances (بند 12ج، ٧/٧): اقتراح استقطاع السلف من أقدم سلفة نشطة لكل موظف —
     // يُملأ advanceDeduction ويدخل **ضمن** deductions (لا فوقها) فيَنقص net تلقائياً.
-    const advanceByEmp = await suggestDeductionsTx(tx, emps.map((e) => Number(e.id)));
+    const advanceByEmp = await suggestDeductionsTx(
+      tx,
+      emps.map((e) => Number(e.id)),
+      p,
+    );
 
     // استقطاعات العقوبات والإنذارات الانضباطية المعتمدة غير المطبقة:
     const empIds = emps.map((e) => Number(e.id));
-    const approvedPenalties = empIds.length > 0
-      ? await tx
-          .select({
-            id: employeePenalties.id,
-            employeeId: employeePenalties.employeeId,
-            deductionAmount: employeePenalties.deductionAmount,
-          })
-          .from(employeePenalties)
-          .where(
-            and(
-              inArray(employeePenalties.employeeId, empIds),
-              eq(employeePenalties.status, "APPROVED"),
-              isNull(employeePenalties.payrollRunId),
-              sql`${employeePenalties.deductionAmount} > 0`,
-            ),
-          )
-      : [];
+    const approvedPenalties =
+      empIds.length > 0
+        ? await tx
+            .select({
+              id: employeePenalties.id,
+              employeeId: employeePenalties.employeeId,
+              deductionAmount: employeePenalties.deductionAmount,
+            })
+            .from(employeePenalties)
+            .where(
+              and(
+                inArray(employeePenalties.employeeId, empIds),
+                eq(employeePenalties.status, "APPROVED"),
+                isNull(employeePenalties.payrollRunId),
+                sql`${employeePenalties.deductionAmount} > 0`,
+                // عقوبة مالية قديمة معتمدة لم يلتقطها شهر القرار تبقى مستحقة لأول
+                // مسيّر تالٍ، بينما قرار شهر مستقبلي لا يُعجّل استقطاعه.
+                sql`DATE_FORMAT(${employeePenalties.decisionDate}, '%Y-%m') <= ${p}`,
+              ),
+            )
+        : [];
     const penaltiesByEmp = new Map<number, { total: Decimal; ids: number[] }>();
     for (const pen of approvedPenalties) {
       const empId = Number(pen.employeeId);
@@ -760,10 +787,26 @@ export async function generatePayroll(period: string, actor: Actor) {
     // ربط العقوبات المستقطعة برقم المسيّر وتحديث حالتها إلى APPLIED
     const allAppliedPenaltyIds = Array.from(penaltiesByEmp.values()).flatMap((p) => p.ids);
     if (allAppliedPenaltyIds.length > 0) {
-      await tx
+      const appliedPenalties = await tx
         .update(employeePenalties)
         .set({ payrollRunId: runId, status: "APPLIED" })
-        .where(inArray(employeePenalties.id, allAppliedPenaltyIds));
+        .where(
+          and(
+            inArray(employeePenalties.id, allAppliedPenaltyIds),
+            eq(employeePenalties.status, "APPROVED"),
+            isNull(employeePenalties.payrollRunId),
+          ),
+        );
+      if (extractAffectedRows(appliedPenalties) !== allAppliedPenaltyIds.length) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "لم يكتمل توليد مسيّر الرواتب",
+            why: "تغيّرت عقوبة مالية ملتقطة أثناء التوليد",
+            doThis: "حدّث بيانات العقوبات ثم أعد توليد المسيّر",
+          }),
+        });
+      }
     }
 
     // GAP-03: ربط المكافآت الفورية المستحقة برقم المسيّر
