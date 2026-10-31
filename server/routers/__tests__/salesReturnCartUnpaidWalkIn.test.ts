@@ -1,4 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
+import mysql from "mysql2/promise";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import type { TrpcContext } from "../../context";
@@ -7,7 +8,10 @@ import { createSale } from "../../services/saleService";
 import { recordStaffDeliveryConfirmation } from "../../services/delivery/companyStatement";
 import { reconcileCustomerBalances } from "../../services/reconcileService";
 import { returnRouter } from "../returnRouter";
+import { router } from "../../trpc";
+import { assertIsolatedActivationTestTarget } from "../../services/__tests__/activationTestTarget";
 
+const api = router({ returns: returnRouter });
 const db = () => getDb()!;
 const cashier = { userId: 2, branchId: 1, role: "cashier" as const };
 const owner = { userId: 1, branchId: 1, role: "admin" as const };
@@ -54,6 +58,77 @@ async function cart(invoiceNumber: string, quantity: number, amount: string, key
 }
 
 describe("sales return portal — no cash, no invented customer account", () => {
+  it.each(["no-receipt", "purchase"] as const)("%s stock writer waits for the exclusive financial gate", async route => {
+    const raw = process.env.DATABASE_URL!;
+    assertIsolatedActivationTestTarget(raw);
+    await db().insert(s.suppliers).values({ id: 1, name: "مورد الاختبار", currentBalance: "0.00" });
+    const admin = api.createCaller({
+      req: { headers: {} }, res: {},
+      user: { id: 1, role: "admin", branchId: 1, isActive: true, isOwner: true, name: "مالك" },
+    } as TrpcContext).returns;
+    const gate = await mysql.createConnection(raw);
+    const observer = await mysql.createConnection(raw);
+    let pending: Promise<unknown> | undefined;
+    let settled = false;
+    try {
+      await observer.query("INSERT INTO monthCloseSequence(id) VALUES(1) ON DUPLICATE KEY UPDATE id=id");
+      const [[identity]] = await gate.query<mysql.RowDataPacket[]>("SELECT CONNECTION_ID() id, DATABASE() db");
+      await gate.beginTransaction();
+      await gate.query("SELECT id FROM monthCloseSequence WHERE id=1 FOR UPDATE");
+      pending = route === "no-receipt"
+        ? admin.executeNoReceiptOrExchange({
+            mode: "STORE_CREDIT",
+            returnItems: [{ variantId: 1, productUnitId: 1, productName: "دفتر", quantity: 1, unitPrice: "1000", disposition: "RESTOCK" }],
+            settlement: { returnTotal: "1000", differenceAmount: "0" },
+          })
+        : admin.executePurchaseReturnCart({
+            supplierId: 1,
+            reference: "GATE-SUPPLIER-ACK", evidenceType: "SUPPLIER_ACKNOWLEDGEMENT",
+            items: [{ variantId: 1, productUnitId: 1, productName: "دفتر", quantity: 1, unitCost: "500" }],
+            settlement: { method: "CREDIT_OFFSET", totalAmount: "500" },
+            reason: "مرتجع اختبار البوابة", clientRequestId: "purchase-financial-gate",
+          });
+      void pending.then(() => { settled = true; }, () => { settled = true; });
+      const deadline = Date.now() + 5000;
+      let observed = false;
+      let waitingTransaction: string | number | undefined;
+      do {
+        const [waits] = await observer.query<mysql.RowDataPacket[]>(
+          `SELECT w.REQUESTING_ENGINE_TRANSACTION_ID
+           FROM performance_schema.data_lock_waits w
+           JOIN performance_schema.threads b ON b.THREAD_ID=w.BLOCKING_THREAD_ID
+           JOIN performance_schema.data_locks l ON l.ENGINE_LOCK_ID=w.REQUESTING_ENGINE_LOCK_ID AND l.ENGINE=w.ENGINE
+           WHERE b.PROCESSLIST_ID=? AND l.OBJECT_SCHEMA=? AND l.OBJECT_NAME='monthCloseSequence'
+             AND l.INDEX_NAME='PRIMARY' AND l.LOCK_DATA='1'`,
+          [identity.id, identity.db],
+        );
+        if (waits.length) { observed = true; waitingTransaction = waits[0].REQUESTING_ENGINE_TRANSACTION_ID; break; }
+        if (settled) break;
+        await new Promise(resolve => setTimeout(resolve, 10));
+      } while (Date.now() < deadline);
+      expect(observed).toBe(true);
+      expect(settled).toBe(false);
+      const [domainLocks] = await observer.query<mysql.RowDataPacket[]>(
+        `SELECT DISTINCT OBJECT_NAME FROM performance_schema.data_locks
+         WHERE ENGINE_TRANSACTION_ID=? AND OBJECT_SCHEMA=? AND LOCK_STATUS='GRANTED'
+           AND OBJECT_NAME IN ('productVariants','branchStock','inventoryMovements','receipts')`,
+        [waitingTransaction, identity.db],
+      );
+      expect(domainLocks).toEqual([]);
+      expect((await db().select().from(s.branchStock))[0].quantity).toBe(100);
+      expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
+      expect(await db().select().from(s.receipts)).toHaveLength(0);
+      await gate.rollback();
+      await expect(pending).resolves.toMatchObject(route === "no-receipt" ? { ok: true } : { mode: "EXECUTED" });
+      expect((await db().select().from(s.branchStock))[0].quantity).toBe(route === "no-receipt" ? 101 : 99);
+      expect(await db().select().from(s.inventoryMovements)).toHaveLength(1);
+    } finally {
+      await gate.rollback();
+      if (pending) await Promise.allSettled([pending]);
+      await Promise.all([gate.end(), observer.end()]);
+    }
+  });
+
   it("cashier returns another maker's old unpaid walk-in invoice partially then fully, replaying once", async () => {
     const sale = await unpaid();
     await db().update(s.invoices).set({ invoiceDate: new Date("2026-10-01T12:00:00Z") }).where(eq(s.invoices.id, sale.invoiceId));
