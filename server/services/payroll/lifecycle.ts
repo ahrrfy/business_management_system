@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, eq, getTableColumns, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
 import { payrollItemNeedsAttention } from "@shared/hr";
 import {
@@ -7,9 +7,9 @@ import {
   employeePenalties,
   employeeSpotBonuses,
   employeeTerminations,
-  employees,
   payrollAccountingEvents,
   payrollItems,
+  payrollObligations,
   payrollRuns,
 } from "../../../drizzle/schema";
 import { type Actor, withTx } from "../tx";
@@ -23,6 +23,11 @@ import { assertPayrollActiveOwnerChecker } from "./settlement";
 import { decodeTerminationWageCoverage } from "./terminationCoverage";
 import { assertCommissionArtifactReadyForPayrollTx } from "../commissions/payrollReadiness";
 import { syncAllAdvancesForDraftRunTx } from "./syncAdvances";
+import {
+  assertPayrollEmployeeMembershipStable,
+  lockPayrollEmployeesTx,
+  payrollEmployeeMembership,
+} from "./employeeLocks";
 
 /** اعتماد الاستحقاق الشهري؛ لا نقد ولا إيصال في هذه المرحلة. */
 export async function approveRun(id: number, actor: Actor) {
@@ -38,6 +43,18 @@ export async function approveRun(id: number, actor: Actor) {
       actor,
       [preview.createdBy],
       "اعتماد استحقاق مسيّر الرواتب",
+    );
+    const itemMembershipPreview = payrollEmployeeMembership(
+      await tx
+        .select({ id: payrollItems.id, employeeId: payrollItems.employeeId })
+        .from(payrollItems)
+        .where(eq(payrollItems.runId, id))
+        .orderBy(payrollItems.id),
+    );
+    const lockedEmployees = await lockPayrollEmployeesTx(
+      tx,
+      itemMembershipPreview,
+      "اعتماد مسيّر الرواتب",
     );
     const [run] = await tx
       .select()
@@ -161,16 +178,23 @@ export async function approveRun(id: number, actor: Actor) {
       });
     }
 
-    const items = await tx
-      .select({
-        ...getTableColumns(payrollItems),
-        currentBranchId: employees.branchId,
-      })
+    const currentItems = await tx
+      .select()
       .from(payrollItems)
-      .leftJoin(employees, eq(payrollItems.employeeId, employees.id))
       .where(eq(payrollItems.runId, id))
       .orderBy(payrollItems.id)
       .for("update");
+    assertPayrollEmployeeMembershipStable(
+      itemMembershipPreview,
+      payrollEmployeeMembership(currentItems),
+      lockedEmployees,
+      "اعتماد مسيّر الرواتب",
+    );
+    const items = currentItems.map((item) => ({
+      ...item,
+      currentBranchId:
+        lockedEmployees.get(Number(item.employeeId))?.branchId ?? null,
+    }));
     if (items.length !== Number(run.employeeCount)) {
       throw new TRPCError({
         code: "CONFLICT",
@@ -310,6 +334,33 @@ export async function cancelRun(
       [preview.createdBy],
       "إلغاء أو إعادة فتح مسيّر الرواتب",
     );
+    const itemMembershipPreview = payrollEmployeeMembership(
+      await tx
+        .select({ id: payrollItems.id, employeeId: payrollItems.employeeId })
+        .from(payrollItems)
+        .where(eq(payrollItems.runId, id))
+        .orderBy(payrollItems.id),
+    );
+    const obligationMembershipPreview = payrollEmployeeMembership(
+      await tx
+        .select({
+          id: payrollObligations.id,
+          employeeId: payrollObligations.employeeId,
+        })
+        .from(payrollObligations)
+        .where(
+          and(
+            eq(payrollObligations.runId, id),
+            eq(payrollObligations.revisionNo, Number(preview.revisionNo)),
+          ),
+        )
+        .orderBy(payrollObligations.id),
+    );
+    const lockedEmployees = await lockPayrollEmployeesTx(
+      tx,
+      [...itemMembershipPreview, ...obligationMembershipPreview],
+      "إلغاء أو إعادة فتح مسيّر الرواتب",
+    );
     const [run] = await tx
       .select()
       .from(payrollRuns)
@@ -349,6 +400,38 @@ export async function cancelRun(
         });
       }
     }
+    const currentObligations = await tx
+      .select({
+        id: payrollObligations.id,
+        employeeId: payrollObligations.employeeId,
+      })
+      .from(payrollObligations)
+      .where(
+        and(
+          eq(payrollObligations.runId, id),
+          eq(payrollObligations.revisionNo, Number(run.revisionNo)),
+        ),
+      )
+      .orderBy(payrollObligations.id)
+      .for("update");
+    assertPayrollEmployeeMembershipStable(
+      obligationMembershipPreview,
+      payrollEmployeeMembership(currentObligations),
+      lockedEmployees,
+      "إلغاء أو إعادة فتح مسيّر الرواتب",
+    );
+    const currentItems = await tx
+      .select({ id: payrollItems.id, employeeId: payrollItems.employeeId })
+      .from(payrollItems)
+      .where(eq(payrollItems.runId, id))
+      .orderBy(payrollItems.id)
+      .for("update");
+    assertPayrollEmployeeMembershipStable(
+      itemMembershipPreview,
+      payrollEmployeeMembership(currentItems),
+      lockedEmployees,
+      "إلغاء أو إعادة فتح مسيّر الرواتب",
+    );
     if (run.status === "draft") {
       const [history] = await tx
         .select({ id: payrollAccountingEvents.id })

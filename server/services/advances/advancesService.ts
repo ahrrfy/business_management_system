@@ -10,14 +10,17 @@ import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { fullEmployeeName } from "@shared/hr";
 import { appErrorMessage } from "@shared/errors";
 import { levelSatisfies } from "@shared/permissions";
+import { voucherApprovalTrigger } from "@shared/approvalTriggers";
 import {
   advanceSettlements,
   branches,
+  employeeAdvanceRepaymentAllocations,
   employeeAdvances,
   employeeLoanRequests,
   employees,
   idempotencyKeys,
   receipts,
+  terminationAdvanceAllocations,
   voucherCategories,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
@@ -43,6 +46,9 @@ import {
   assertOperationAuthorityTx,
   type StoredOperationSnapshot,
 } from "../authorization/operationAuthority";
+import { planApproval, resolveApprovalActor } from "../approval/ownerGate";
+import { requireOpenShiftIdTx } from "../shiftService";
+import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 
 function currentHrWriteAllowed(current: StoredOperationSnapshot): boolean {
   return (
@@ -674,7 +680,48 @@ export async function grantAdvance(input: GrantAdvanceInput, actor: Actor) {
   }
 
   return withTx(async (tx) => {
-    const [emp] = await tx.select().from(employees).where(eq(employees.id, input.employeeId)).for("update").limit(1);
+    const resolvedActor = await resolveApprovalActor(tx, actor);
+    const ownerAutoApproves =
+      resolvedActor.isOwner &&
+      planApproval({
+        actor: resolvedActor,
+        trigger: voucherApprovalTrigger("OUT", "EMPLOYEE_ADVANCE"),
+      }).executeNow;
+    if (ownerAutoApproves) {
+      const [existingVoucherKey] = await tx
+        .select({ refId: idempotencyKeys.refId })
+        .from(idempotencyKeys)
+        .where(
+          and(
+            eq(idempotencyKeys.operation, "voucher.create"),
+            eq(
+              idempotencyKeys.clientRequestId,
+              `ADVANCE:${input.clientRequestId}`,
+            ),
+          ),
+        )
+        .limit(1);
+      if (!existingVoucherKey) {
+        // مسار المالك وحده سينفّذ الصرف الآن: درج المنفّذ يسبق أقفال الفرع/الموظف.
+        // الطلب المعلّق وreplay الملتزم لا يحتاجان وردية جديدة ولا أثراً نقدياً جديداً.
+        const shiftId = await requireOpenShiftIdTx(
+          tx,
+          resolvedActor.userId,
+          input.branchId,
+          "صرف سلفة موظف من درج المنفّذ",
+        );
+        await lockCashSourceForUpdate(tx, {
+          branchId: input.branchId,
+          cashBucket: "DRAWER",
+          shiftId,
+        });
+      }
+    }
+
+    // لقطة أهلية واسم لطلبٍ صفر الأثر فقط؛ لا نقفل الموظف قبل درج الصرف.
+    // عند اعتماد المالك يعيد activateAdvanceForApprovedVoucherTx التحقق ويقفل الموظف
+    // بعد أن يكون مسار الاعتماد قد قفل مصدر النقد/الوردية بالترتيب الحاكم.
+    const [emp] = await tx.select().from(employees).where(eq(employees.id, input.employeeId)).limit(1);
     if (!emp) throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير موجود" });
     if (!emp.isActive || emp.employmentStatus === "terminated") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا تُمنح سلفة لموظف معطَّل أو منتهي الخدمة" });
@@ -750,7 +797,57 @@ export async function grantAdvance(input: GrantAdvanceInput, actor: Actor) {
 /* ─────────────────────────── إلغاء سلفة ─────────────────────────── */
 
 /**
- * إلغاء سلفة — فقط قبل أي خصم (remaining == amount) **وبعد عكس سند صرفها**.
+ * A restored balance is not an untouched balance: APPLY/REVERSE rows are an
+ * immutable recovery history. Lock every recovery ledger in the same order as
+ * voucher cancellation before deciding that direct cancellation is safe.
+ */
+async function assertNoAdvanceRecoveryHistoryTx(
+  tx: Tx,
+  advanceId: number,
+): Promise<void> {
+  const settlement = (
+    await tx
+      .select({ id: advanceSettlements.id })
+      .from(advanceSettlements)
+      .where(eq(advanceSettlements.advanceId, advanceId))
+      .for("update")
+      .limit(1)
+  )[0];
+  const repaymentAllocation = (
+    await tx
+      .select({ id: employeeAdvanceRepaymentAllocations.id })
+      .from(employeeAdvanceRepaymentAllocations)
+      .where(eq(employeeAdvanceRepaymentAllocations.advanceId, advanceId))
+      .for("update")
+      .limit(1)
+  )[0];
+  const terminationAllocation = (
+    await tx
+      .select({ id: terminationAdvanceAllocations.id })
+      .from(terminationAdvanceAllocations)
+      .where(eq(terminationAdvanceAllocations.advanceId, advanceId))
+      .for("update")
+      .limit(1)
+  )[0];
+  if (settlement || repaymentAllocation || terminationAllocation) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "لا يمكن إلغاء السلفة بعد استعمالها أو تسويتها كلياً أو جزئياً",
+        why: "توجد قيود استيفاء مرتبطة بالسلفة، حتى إن أُعيد رصيدها بعد العكس",
+        doThis: "راجع قيود الاستيفاء المرتبطة وصحّح الالتزام عبر مسار تسوية موثّق يحفظ تاريخ الاسترداد",
+      }),
+    });
+  }
+}
+
+/**
+ * إلغاء التزام موظف غير مستعمل، بحسب مصدره:
+ * - SALARY_ADVANCE: بعد عكس/رفض سند الصرف وإثبات عودة النقد فقط.
+ * - OTHER_DEDUCTION بلا سند: إسقاط الاستقطاع التشغيلي وحده؛ يبقى قيد المصدر
+ *   (مثل خسارة العهدة) وحالة العهدة كما هما، ولا تُنشأ حركة نقد أو مخزون.
+ * - كل سجل مرتبط بسند، بصرف النظر عن تصنيفه التاريخي: يمرّ بحارس عكس/رفض
+ *   السند نفسه. التصنيف الخشن لا يلغي دليلاً نقدياً صالحاً ولا يستبدله.
  *
  * ⚠️ لماذا يُشترط عكس السند أولاً (ثغرة حرجة كانت مفتوحة): إلغاء السلفة يمحو التزام
  * السداد (لا تُخصم من الرواتب بعدها)، بينما النقد خرج فعلاً من الخزينة لحظة المنح.
@@ -795,17 +892,25 @@ export async function cancelAdvance(input: { advanceId: number; reason?: string 
           "لا تُلغى سلفة خُصم منها فعلاً — بقيّتها تُخصم من الرواتب القادمة حتى التسوية",
       });
     }
-    if (adv.receiptId == null) {
-      throw new TRPCError({
-        code: "CONFLICT",
-        message: appErrorMessage({
-          what: "لا يمكن إلغاء السلفة",
-          why: "رابط سند الصرف مفقود، لذلك لا يمكن إثبات عودة النقد",
-          doThis: "نفّذ مطابقة مالية لسند الصرف قبل إعادة الإلغاء",
-        }),
-      });
-    }
-    {
+    await assertNoAdvanceRecoveryHistoryTx(tx, Number(adv.id));
+
+    const isNoncashWaiver =
+      adv.sourceType === "OTHER_DEDUCTION" && adv.receiptId == null;
+    let voucherNotice: string;
+    if (isNoncashWaiver) {
+      voucherNotice =
+        "أُلغي الاستقطاع غير النقدي بلا حركة نقد أو مخزون؛ بقي أثر المصدر وقيده محفوظين.";
+    } else {
+      if (adv.receiptId == null) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "لا يمكن إلغاء السلفة",
+            why: "رابط سند الصرف مفقود، لذلك لا يمكن إثبات عودة النقد",
+            doThis: "نفّذ مطابقة مالية لسند الصرف قبل إعادة الإلغاء",
+          }),
+        });
+      }
       const [rc] = await tx
         .select({ status: receipts.status, voucherNumber: receipts.voucherNumber, approvalStatus: receipts.approvalStatus })
         .from(receipts)
@@ -831,9 +936,19 @@ export async function cancelAdvance(input: { advanceId: number; reason?: string 
           message: `لا تُلغى السلفة وسند صرفها ما زال سارياً — النقد خرج من الخزينة، وإلغاء السلفة وحده يمحو التزام السداد. ألغِ السند ${rc.voucherNumber ?? ""} من شاشة السندات أولاً (يمرّ بفصل المهام) ثم أعد الإلغاء.`.trim(),
         });
       }
+      voucherNotice =
+        "أُلغيت السلفة بعد عكس سند صرفها — لا نقد خارج الخزينة بلا التزام.";
     }
     const reason = input.reason?.trim();
-    const note = [adv.note, reason ? `إلغاء: ${reason}` : "أُلغيت"]
+    const cancellationNote =
+      isNoncashWaiver
+        ? reason
+          ? `إلغاء استقطاع غير نقدي: ${reason}`
+          : "أُلغي الاستقطاع غير النقدي"
+        : reason
+          ? `إلغاء: ${reason}`
+          : "أُلغيت";
+    const note = [adv.note, cancellationNote]
       .filter(Boolean)
       .join(" — ")
       .slice(0, 255);
@@ -861,7 +976,7 @@ export async function cancelAdvance(input: { advanceId: number; reason?: string 
       id: input.advanceId,
       status: "CANCELLED" as const,
       receiptId: adv.receiptId != null ? Number(adv.receiptId) : null,
-      voucherNotice: "أُلغيت السلفة بعد عكس سند صرفها — لا نقد خارج الخزينة بلا التزام.",
+      voucherNotice,
     };
   });
 }

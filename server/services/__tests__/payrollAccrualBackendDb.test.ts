@@ -2,7 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MySql2PreparedQuery } from "drizzle-orm/mysql2/session";
 import * as s from "../../../drizzle/schema";
-import { getDb } from "../../db";
+import { getDb, getPool } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { money, toDateStr } from "../money";
 import { POSTING_POLICY_HASH } from "../accounting/postingEngine";
@@ -10,9 +10,11 @@ import { readSalarySettlementEvidence } from "../payroll/settlementEvidence";
 import { payrollHash } from "../payroll/helpers";
 import { PAYROLL_LEGAL_DEFAULTS } from "../payrollLegalService";
 import { approveRun as approveCommissionRun } from "../commissions/runs";
+import { disburseEmployeeLoan } from "../employeeLoanService";
 import { withTx } from "../tx";
 import {
   cancelLockedEmployeeAdvanceTx,
+  grantAdvance,
   lockUntouchedEmployeeAdvanceForCancellationTx,
 } from "../advances";
 import { buildPayrollLegalPolicyEvidence } from "../payroll/legalSnapshot";
@@ -53,7 +55,10 @@ const TABLES = [
   "journalLines",
   "journalEntries",
   "accountingEntries",
+  "idempotencyKeys",
   "receipts",
+  "employeeLoanRequests",
+  "shifts",
   "financialPeriods",
   "payrollItems",
   "payrollRuns",
@@ -61,6 +66,7 @@ const TABLES = [
   "employeeTerminations",
   "employees",
   "payrollLegalSettings",
+  "documentCounters",
   "branches",
   "users",
 ];
@@ -287,6 +293,95 @@ async function seedZeroNetStatutoryDraft(period = "2026-07") {
     net: "0.00",
   });
   return runId;
+}
+
+const PAYROLL_LOCK_TEST_NOW = new Date("2026-10-31T12:00:00.000Z");
+const PAYROLL_LOCK_TEST_PERIOD = "2026-10";
+
+async function seedPayerShift() {
+  const runner = db();
+  await runner.insert(s.shifts).values({
+    id: 901,
+    branchId: 1,
+    userId: PAYER.userId,
+    openingBalance: "10000.00",
+    status: "OPEN",
+    shiftType: "RETAIL",
+    openGuard: `1:${PAYER.userId}:RETAIL`,
+  });
+}
+
+async function seedApprovedLoanForPayer(key: string) {
+  const runner = db();
+  await seedPayerShift();
+  const inserted = await runner.insert(s.employeeLoanRequests).values({
+    employeeId: 10,
+    branchId: 1,
+    amount: "100.00",
+    installmentsCount: 1,
+    monthlyDeduction: "100.00",
+    payrollPeriod: PAYROLL_LOCK_TEST_PERIOD,
+    clientRequestId: `payroll-lock-${key}`,
+    reason: "اختبار ترتيب أقفال السلفة والمسيّر",
+    status: "APPROVED",
+    createdById: MAKER.userId,
+    reviewedById: CHECKER.userId,
+    reviewedAt: new Date(),
+  });
+  return extractInsertId(inserted);
+}
+
+function pauseNextForUpdate(table: "employees" | "payrollRuns" | "shifts") {
+  const execute = MySql2PreparedQuery.prototype.execute;
+  let locked!: () => void;
+  let release!: () => void;
+  let paused = false;
+  const lockReached = new Promise<void>((resolve) => {
+    locked = resolve;
+  });
+  const mayContinue = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const spy = vi
+    .spyOn(MySql2PreparedQuery.prototype, "execute")
+    .mockImplementation(async function (
+      this: typeof MySql2PreparedQuery.prototype,
+      values,
+    ) {
+      const query = (this as unknown as { query: { sql: string } }).query.sql;
+      const result = await execute.call(this, values);
+      if (
+        !paused &&
+        query.includes(`from \`${table}\``) &&
+        query.includes("for update")
+      ) {
+        paused = true;
+        locked();
+        await mayContinue;
+      }
+      return result;
+    });
+  return {
+    lockReached,
+    release,
+    restore: () => spy.mockRestore(),
+  };
+}
+
+async function waitForPayrollLockWait(): Promise<void> {
+  for (let attempt = 0; attempt < 150; attempt += 1) {
+    const [rows] = await getPool().query(
+      `SELECT COUNT(*) AS n
+         FROM performance_schema.data_lock_waits w
+         JOIN performance_schema.data_locks requested
+           ON requested.ENGINE_LOCK_ID = w.REQUESTING_ENGINE_LOCK_ID
+        WHERE requested.OBJECT_SCHEMA = DATABASE()
+          AND requested.OBJECT_NAME IN ('employees', 'payrollRuns', 'shifts')`,
+    );
+    if (Number((rows as Array<{ n: number }>)[0]?.n ?? 0) > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("لم يصل سباق السلفة/المسيّر إلى انتظار القفل المتوقع");
 }
 
 beforeEach(async () => {
@@ -1077,6 +1172,307 @@ describe("payroll accrual lifecycle — DB invariants", () => {
     expect(run.status).toBe("approved");
     expect(run.totalNet).toBe(outcomes[0].status === "fulfilled" ? "920.00" : "900.00");
   });
+
+  it("rejects a new payroll employee discovered after the ordered employee locks", async () => {
+    const runner = db();
+    const runId = await seedDraft();
+    const barrier = pauseNextForUpdate("employees");
+    const approval = approveRun(runId, CHECKER);
+    try {
+      await barrier.lockReached;
+      await runner.insert(s.payrollItems).values({
+        runId,
+        employeeId: 11,
+        branchIdSnapshot: 1,
+        payType: "monthly",
+        gross: "400.00",
+        net: "400.00",
+      });
+      barrier.release();
+      await expect(approval).rejects.toMatchObject({ code: "CONFLICT" });
+      const [run] = await runner
+        .select()
+        .from(s.payrollRuns)
+        .where(eq(s.payrollRuns.id, runId));
+      expect(run.status).toBe("draft");
+      expect(await runner.select().from(s.payrollObligations)).toHaveLength(0);
+      expect(
+        await runner.select().from(s.payrollAccountingEvents),
+      ).toHaveLength(0);
+      expect(await runner.select().from(s.accountingEntries)).toHaveLength(0);
+    } finally {
+      barrier.release();
+      await Promise.allSettled([approval]);
+      barrier.restore();
+    }
+  });
+
+  it("orders approval before a concurrent loan disbursement without deadlock or partial loan money", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(PAYROLL_LOCK_TEST_NOW);
+    const runner = db();
+    const runId = await seedDraft(PAYROLL_LOCK_TEST_PERIOD);
+    const loanId = await seedApprovedLoanForPayer("approve-disburse");
+    const barrier = pauseNextForUpdate("payrollRuns");
+    let approval: ReturnType<typeof approveRun> | undefined;
+    let disbursement: ReturnType<typeof disburseEmployeeLoan> | undefined;
+    try {
+      approval = approveRun(runId, CHECKER);
+      await barrier.lockReached;
+      disbursement = disburseEmployeeLoan(PAYER, loanId);
+      await waitForPayrollLockWait();
+      barrier.release();
+      const [approved, disbursed] = await Promise.allSettled([
+        approval,
+        disbursement,
+      ]);
+      expect(approved.status).toBe("fulfilled");
+      expect(disbursed).toMatchObject({
+        status: "rejected",
+        reason: { code: "PRECONDITION_FAILED" },
+      });
+      if (disbursed.status === "rejected") {
+        expect(String(disbursed.reason)).not.toMatch(
+          /ER_LOCK_DEADLOCK|deadlock/i,
+        );
+      }
+
+      const [loan] = await runner
+        .select()
+        .from(s.employeeLoanRequests)
+        .where(eq(s.employeeLoanRequests.id, loanId));
+      expect(loan).toMatchObject({
+        status: "APPROVED",
+        advanceId: null,
+        receiptId: null,
+      });
+      expect(
+        await runner
+          .select()
+          .from(s.employeeAdvances)
+          .where(eq(s.employeeAdvances.sourceType, "SALARY_ADVANCE")),
+      ).toHaveLength(0);
+      expect(
+        await runner
+          .select()
+          .from(s.receipts)
+          .where(
+            and(
+              eq(s.receipts.direction, "OUT"),
+              eq(s.receipts.cashBucket, "DRAWER"),
+            ),
+          ),
+      ).toHaveLength(0);
+      expect(
+        await runner
+          .select()
+          .from(s.accountingEntries)
+          .where(
+            eq(
+              s.accountingEntries.dedupeKey,
+              `EMPLOYEE_LOAN_DISBURSEMENT:${loanId}`,
+            ),
+          ),
+      ).toHaveLength(0);
+      expect(await runner.select().from(s.idempotencyKeys)).toHaveLength(0);
+    } finally {
+      barrier.release();
+      const pending: Promise<unknown>[] = [];
+      if (approval) pending.push(approval);
+      if (disbursement) pending.push(disbursement);
+      await Promise.allSettled(pending);
+      barrier.restore();
+      vi.useRealTimers();
+    }
+  }, 15_000);
+
+  it("orders salary pay before a concurrent loan disbursement and commits only the salary payment", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(PAYROLL_LOCK_TEST_NOW);
+    const runner = db();
+    const runId = await seedDraft(PAYROLL_LOCK_TEST_PERIOD);
+    await approveRun(runId, CHECKER);
+    const loanId = await seedApprovedLoanForPayer("pay-disburse");
+    const barrier = pauseNextForUpdate("payrollRuns");
+    let payment: ReturnType<typeof payRun> | undefined;
+    let disbursement: ReturnType<typeof disburseEmployeeLoan> | undefined;
+    try {
+      payment = payRun(runId, PAYER, {
+        paymentMethod: "CASH",
+        paymentDate: "2026-10-31",
+      });
+      await barrier.lockReached;
+      disbursement = disburseEmployeeLoan(PAYER, loanId);
+      await waitForPayrollLockWait();
+      barrier.release();
+      const [paid, disbursed] = await Promise.allSettled([
+        payment,
+        disbursement,
+      ]);
+      expect(paid.status).toBe("fulfilled");
+      expect(disbursed).toMatchObject({
+        status: "rejected",
+        reason: { code: "PRECONDITION_FAILED" },
+      });
+      if (disbursed.status === "rejected") {
+        expect(String(disbursed.reason)).not.toMatch(
+          /ER_LOCK_DEADLOCK|deadlock/i,
+        );
+      }
+
+      const [run] = await runner
+        .select()
+        .from(s.payrollRuns)
+        .where(eq(s.payrollRuns.id, runId));
+      expect(run.status).toBe("paid");
+      const salaryEvents = await runner
+        .select()
+        .from(s.payrollAccountingEvents)
+        .where(
+          and(
+            eq(s.payrollAccountingEvents.runId, runId),
+            eq(s.payrollAccountingEvents.eventKind, "SALARY_PAYMENT"),
+          ),
+        );
+      expect(salaryEvents).toHaveLength(1);
+      expect(
+        await runner
+          .select()
+          .from(s.receipts)
+          .where(
+            and(
+              eq(s.receipts.direction, "OUT"),
+              eq(s.receipts.cashBucket, "TREASURY"),
+            ),
+          ),
+      ).toHaveLength(1);
+      expect(
+        await runner
+          .select()
+          .from(s.receipts)
+          .where(
+            and(
+              eq(s.receipts.direction, "OUT"),
+              eq(s.receipts.cashBucket, "DRAWER"),
+            ),
+          ),
+      ).toHaveLength(0);
+      expect(
+        await runner
+          .select()
+          .from(s.accountingEntries)
+          .where(
+            eq(
+              s.accountingEntries.dedupeKey,
+              `EMPLOYEE_LOAN_DISBURSEMENT:${loanId}`,
+            ),
+          ),
+      ).toHaveLength(0);
+      expect(
+        await runner
+          .select()
+          .from(s.employeeAdvances)
+          .where(eq(s.employeeAdvances.sourceType, "SALARY_ADVANCE")),
+      ).toHaveLength(0);
+    } finally {
+      barrier.release();
+      const pending: Promise<unknown>[] = [];
+      if (payment) pending.push(payment);
+      if (disbursement) pending.push(disbursement);
+      await Promise.allSettled(pending);
+      barrier.restore();
+      vi.useRealTimers();
+    }
+  }, 15_000);
+
+  it("orders DRAWER salary pay before a legacy owner-auto-approved advance without deadlock or duplicate effects", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(PAYROLL_LOCK_TEST_NOW);
+    const runner = db();
+    const runId = await seedDraft(PAYROLL_LOCK_TEST_PERIOD);
+    await approveRun(runId, CHECKER);
+    await seedPayerShift();
+    const barrier = pauseNextForUpdate("shifts");
+    let payment: ReturnType<typeof payRun> | undefined;
+    let grant: ReturnType<typeof grantAdvance> | undefined;
+    try {
+      payment = payRun(runId, PAYER, {
+        paymentMethod: "CASH",
+        cashBucket: "DRAWER",
+        shiftId: 901,
+        paymentDate: "2026-10-31",
+      });
+      await barrier.lockReached;
+      grant = grantAdvance(
+        {
+          employeeId: 10,
+          branchId: 1,
+          amount: "100.00",
+          monthlyDeduction: "100.00",
+          clientRequestId: "payroll-lock-legacy-grant",
+        },
+        PAYER,
+      );
+      await waitForPayrollLockWait();
+      barrier.release();
+      const [paid, granted] = await Promise.allSettled([payment, grant]);
+      expect(paid.status).toBe("fulfilled");
+      expect(granted).toMatchObject({
+        status: "rejected",
+        reason: { code: "PRECONDITION_FAILED" },
+      });
+      for (const outcome of [paid, granted]) {
+        if (outcome.status === "rejected") {
+          expect(String(outcome.reason)).not.toMatch(
+            /ER_LOCK_DEADLOCK|deadlock/i,
+          );
+        }
+      }
+
+      const [run] = await runner
+        .select()
+        .from(s.payrollRuns)
+        .where(eq(s.payrollRuns.id, runId));
+      expect(run.status).toBe("paid");
+      expect(
+        await runner
+          .select()
+          .from(s.payrollAccountingEvents)
+          .where(
+            and(
+              eq(s.payrollAccountingEvents.runId, runId),
+              eq(s.payrollAccountingEvents.eventKind, "SALARY_PAYMENT"),
+            ),
+          ),
+      ).toHaveLength(1);
+      const drawerPayments = await runner
+        .select()
+        .from(s.receipts)
+        .where(
+          and(
+            eq(s.receipts.direction, "OUT"),
+            eq(s.receipts.cashBucket, "DRAWER"),
+          ),
+        );
+      expect(drawerPayments).toHaveLength(1);
+      expect(drawerPayments[0]?.shiftId).toBe(901);
+      expect(
+        await runner
+          .select()
+          .from(s.employeeAdvances)
+          .where(eq(s.employeeAdvances.sourceType, "SALARY_ADVANCE")),
+      ).toHaveLength(0);
+      expect(await runner.select().from(s.idempotencyKeys)).toHaveLength(0);
+    } finally {
+      barrier.release();
+      const pending: Promise<unknown>[] = [];
+      if (payment) pending.push(payment);
+      if (grant) pending.push(grant);
+      await Promise.allSettled(pending);
+      barrier.restore();
+      vi.useRealTimers();
+    }
+  }, 15_000);
 
   it("serializes legal-policy updates against approval and rejects a stale generated snapshot", async () => {
     const runner = db();

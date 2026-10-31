@@ -10,6 +10,7 @@ import {
   employeePenalties,
   employees,
   employeeSpotBonuses,
+  leaveRequests,
   payrollItems,
   payrollRuns,
 } from "../../drizzle/schema";
@@ -21,6 +22,7 @@ import {
   computeLegalComponents,
   getPayrollLegalSettings,
 } from "./payrollLegalService";
+import { countDaysWithin } from "./payroll/helpers";
 import { assertPeriodOpen } from "./periodLockService";
 import { withTx } from "./tx";
 
@@ -164,7 +166,7 @@ export async function getEmployeeAdvanceCapacityTx(
   if (statement.needsHealing || statement.totals.openDays > 0) {
     blockers.push("توجد بصمات حضور مفتوحة أو غير محسومة حتى اليوم");
   }
-  const earnedCompensation = money(statement.expectedEarnedGrossWages);
+  const statementEarnedCompensation = money(statement.expectedEarnedGrossWages);
 
   const bonusRows = await tx
     .select({ amount: employeeSpotBonuses.amount })
@@ -204,11 +206,81 @@ export async function getEmployeeAdvanceCapacityTx(
           ),
         )
     : [];
+  const approvedSpotBonuses = round2(
+    bonusRows.reduce((sum, row) => sum.plus(money(row.amount)), ZERO),
+  );
+  const approvedCommissions = round2(
+    commissionRows.reduce((sum, row) => sum.plus(money(row.amount)), ZERO),
+  );
+
+  /*
+   * كشف الموظف يعيد fixedPay للراتب الثابت/المعفى قبل خصم الإجازة بلا راتب، بينما
+   * generatePayroll يضيف المكافأة الفورية إلى gross ثم يطوي الإجازة في deductions؛
+   * العمولة تبقى عموداً مستقلاً لا تستهلكه الإجازة. نكرر تركيب التوليد حرفياً داخل
+   * نافذة الخدمة حتى asOf، أما مسارا الحضور والساعي فاستبعدا الإجازة من الأجر أصلاً.
+   */
+  const fixedPayPath =
+    statement.dueBasis === "fixedSalary" || statement.dueBasis === "exempt";
+  let earnedLeaveDeduction = ZERO;
+  if (fixedPayPath) {
+    const unpaidLeaves = await tx
+      .select({
+        from: leaveRequests.fromDate,
+        to: leaveRequests.toDate,
+      })
+      .from(leaveRequests)
+      .where(
+        and(
+          eq(leaveRequests.employeeId, options.employeeId),
+          eq(leaveRequests.paid, false),
+          eq(leaveRequests.status, "approved"),
+          sql`${leaveRequests.fromDate} <= ${statement.to} AND ${leaveRequests.toDate} >= ${statement.from}`,
+        ),
+      );
+    const unpaidLeaveDays = countDaysWithin(
+      unpaidLeaves.map((leave) => ({
+        from: String(leave.from),
+        to: String(leave.to),
+      })),
+      statement.from,
+      statement.to,
+    );
+    const activeServiceDays = countDaysWithin(
+      [{ from: statement.from, to: statement.to }],
+      statement.from,
+      statement.to,
+    );
+    const grossSubjectToLeave = round2(
+      statementEarnedCompensation.plus(approvedSpotBonuses),
+    );
+    const fullyOnUnpaidLeave =
+      activeServiceDays > 0 && unpaidLeaveDays >= activeServiceDays;
+    const dailyRate = round2(money(employee.salary ?? 0).div(30));
+    earnedLeaveDeduction = fullyOnUnpaidLeave
+      ? grossSubjectToLeave
+      : unpaidLeaveDays > 0
+        ? Decimal.min(
+            round2(dailyRate.times(unpaidLeaveDays)),
+            grossSubjectToLeave,
+          )
+        : ZERO;
+  }
+  const wageLeaveDeduction = Decimal.min(
+    statementEarnedCompensation,
+    earnedLeaveDeduction,
+  );
+  const spotBonusLeaveDeduction = Decimal.min(
+    approvedSpotBonuses,
+    Decimal.max(0, earnedLeaveDeduction.minus(wageLeaveDeduction)),
+  );
+  const earnedCompensation = round2(
+    Decimal.max(0, statementEarnedCompensation.minus(wageLeaveDeduction)),
+  );
+  const payableSpotBonuses = round2(
+    Decimal.max(0, approvedSpotBonuses.minus(spotBonusLeaveDeduction)),
+  );
   const approvedAdditions = round2(
-    [...bonusRows, ...commissionRows].reduce(
-      (sum, row) => sum.plus(money(row.amount)),
-      ZERO,
-    ),
+    approvedSpotBonuses.plus(approvedCommissions),
   );
 
   const penaltyRows = await tx
@@ -227,14 +299,19 @@ export async function getEmployeeAdvanceCapacityTx(
   );
   const legalSettings = await getPayrollLegalSettings(tx);
   const legal = computeLegalComponents(legalSettings, {
-    // تقدير محافظ: كامل الإضافات المعتمدة يدخل وعاء الإجمالي كي لا نقلّل حجز القانوني.
+    // generatePayroll يضم المكافأة الفورية إلى gross القانوني، بينما العمولة عمود مستقل.
     // basic يبقى الأجر المكتسب نفسه عند تعذر فصل الراتب الأساس من الكشف.
     basic: earnedCompensation,
-    gross: round2(earnedCompensation.plus(approvedAdditions)),
+    gross: round2(earnedCompensation.plus(payableSpotBonuses)),
     dailyRate: round2(money(employee.salary ?? 0).div(30)),
   });
   const legalDeductions = round2(
     legal.socialSecurityEmployee.plus(legal.incomeTax),
+  );
+  // approvedAdditions إفصاحٌ عن كامل الإضافات المعتمدة؛ الجزء الذي استهلكته الإجازة
+  // من المكافأة يُحجز هنا كي يبقى العقد الحسابي ظاهراً ولا تتحول المكافأة إلى سلفة متاحة.
+  const requiredBeforeDraft = round2(
+    legalDeductions.plus(spotBonusLeaveDeduction),
   );
 
   const [draftItem] =
@@ -257,14 +334,18 @@ export async function getEmployeeAdvanceCapacityTx(
     ? Decimal.max(
         0,
         round2(
-          money(draftItem.deductions).minus(money(draftItem.advanceDeduction)),
+          money(draftItem.deductions)
+            .minus(money(draftItem.advanceDeduction))
+            // جزء الإجازة الذي استهلك الأجر خُفض من earnedCompensation أعلاه. أما الجزء
+            // الذي استهلك المكافأة فيبقى استقطاعاً مقابل approvedAdditions المعلنة.
+            .minus(wageLeaveDeduction),
         ),
       )
     : ZERO;
   // خصومات المسودة قد تحتوي القانوني والعقوبات التي رُبطت بها. العقوبات الجديدة غير
   // المربوطة تُضاف فوق الأكبر من المسودة/القانوني، لا تدخل max فتضيع من الحجز.
   const mandatoryDeductions = round2(
-    Decimal.max(legalDeductions, draftNonAdvance).plus(penalties),
+    Decimal.max(requiredBeforeDraft, draftNonAdvance).plus(penalties),
   );
 
   let advanceQuery = tx

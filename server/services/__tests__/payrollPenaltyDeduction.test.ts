@@ -20,6 +20,7 @@ import {
   payrollBreakdown,
 } from "../payroll/helpers";
 import { generatePayroll } from "../payrollService";
+import { approveEmployeePenalty, createEmployeePenalty } from "../employeePenaltyService";
 
 const TABLES = [
   "accountingEntries",
@@ -231,6 +232,73 @@ describe("Payroll Generation & Approval with Penalties — Integration DB Tests"
     await resetDb();
     await seedBaseData();
   });
+
+  it.each(["draft", "approved", "paid"] as const)(
+    "approves nonfinancial disciplinary records while payroll is %s",
+    async (status) => {
+      const employee = await createEmployee({
+        firstName: "موظف",
+        lastName: "بقرار انضباطي دون استقطاع",
+        payType: "monthly",
+        salary: "1000000",
+        branchId: 1,
+      });
+      if (!employee) throw new Error("Expected employee fixture");
+      await db().insert(s.payrollRuns).values({
+        id: 1000, period: "2026-06", status, createdBy: 1,
+      });
+      const actor = { userId: 1, role: "admin", branchId: 1 };
+      for (const penaltyType of ["ATTENTION", "WARNING", "SUSPENSION", "DISMISSAL"] as const) {
+        const penalty = await createEmployeePenalty(actor, {
+          employeeId: employee.id,
+          penaltyType,
+          decisionNumber: `NONFIN-${status}-${penaltyType}`,
+          decisionDate: "2026-06-15",
+          reason: "قرار انضباطي لا يغير استحقاق الراتب",
+          deductionDays: 1,
+          deductionAmount: "50000.00",
+        });
+        await expect(approveEmployeePenalty(actor, penalty.id)).resolves.toMatchObject({ status: "APPROVED" });
+      }
+      const rows = await db().select().from(s.employeePenalties);
+      expect(rows).toHaveLength(4);
+      expect(rows.every(row => row.status === "APPROVED" && row.deductionAmount === "0.00")).toBe(true);
+      const [run] = await db().select().from(s.payrollRuns).where(eq(s.payrollRuns.id, 1000));
+      expect(run.status).toBe(status);
+      expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+      expect(await db().select().from(s.receipts)).toHaveLength(1);
+    },
+  );
+
+  it.each(["draft", "approved", "paid"] as const)(
+    "still rejects a new monetary penalty while payroll is %s",
+    async (status) => {
+      const employee = await createEmployee({
+        firstName: "موظف",
+        lastName: "باستقطاع مالي لاحق للمسير",
+        payType: "monthly",
+        salary: "1000000",
+        branchId: 1,
+      });
+      if (!employee) throw new Error("Expected employee fixture");
+      const actor = { userId: 1, role: "admin", branchId: 1 };
+      const penalty = await createEmployeePenalty(actor, {
+        employeeId: employee.id,
+        penaltyType: "SALARY_DEDUCTION",
+        decisionNumber: `FIN-${status}`,
+        decisionDate: "2026-06-15",
+        reason: "استقطاع مالي لم تلتقطه لقطة المسير",
+        deductionAmount: "50000.00",
+      });
+      await db().insert(s.payrollRuns).values({
+        id: 1000, period: "2026-06", status, createdBy: 1,
+      });
+      await expect(approveEmployeePenalty(actor, penalty.id)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+      const [row] = await db().select().from(s.employeePenalties).where(eq(s.employeePenalties.id, penalty.id));
+      expect(row.status).toBe("DRAFT");
+      expect(row.approvedById).toBeNull();
+    },
+  );
 
   it("successfully generates and auto-approves payroll for an employee with penalty within 10% cap", async () => {
     const emp = await createEmployee({

@@ -24,6 +24,7 @@ import {
   suggestDeductionsForPeriod,
   type GrantAdvanceInput,
 } from "../advances";
+import { assignEmployeeCustody, returnEmployeeCustody } from "../employeeCustodyService";
 import { createEmployee } from "../employeeService";
 import { approveRun, cancelRun, generatePayroll, getRun, payRun, returnSalaryPayment, updateItem } from "../payrollService";
 import { approveVoucher } from "../voucherService";
@@ -55,8 +56,11 @@ const TABLES = [
   "receipts",
   "shifts",
   "idempotencyKeys",
+  "employeeAdvanceRepaymentAllocations",
+  "terminationAdvanceAllocations",
   "advanceSettlements",
   "employeeAdvances",
+  "employeeCustody",
   "payrollItems",
   "payrollRuns",
   "attendance",
@@ -106,6 +110,22 @@ afterAll(() => vi.useRealTimers());
 async function seedEmployee(salary = "1000000") {
   const e = await createEmployee({ firstName: "علي", lastName: "العبيدي", payType: "monthly", salary, allowances: "0", branchId: 1 });
   return e!;
+}
+
+async function createCustodyDeduction(employeeId: number, amount = "120000") {
+  const custody = await assignEmployeeCustody(ACTOR, {
+    employeeId,
+    itemType: "DEVICE",
+    itemName: `قارئ باركود للاختبار ${++requestSeq}`,
+    handoverDate: baghdadToday(),
+  });
+  return returnEmployeeCustody(ACTOR, {
+    id: Number(custody.id),
+    actualReturnDate: baghdadToday(),
+    status: "LOST",
+    damageAmount: amount,
+    returnNotes: "تعويض مثبت من مسار العهدة الحقيقي",
+  });
 }
 
 /** دورة توليد→اعتماد→دفع لشهر معيّن، تعيد المسيّر المدفوع. */
@@ -518,6 +538,145 @@ describe("advancesService — الإلغاء وتعدّد السلف", () => {
     await expect(
       cancelAdvance({ advanceId: Number(a2.id), reason: "متأخر" }, ACTOR),
     ).rejects.toThrow(/نشطة|خُصم/);
+  });
+
+  it("يلغي استقطاع عهدة غير نقدي بلا اختلاق سند أو عكس قيد الخسارة", async () => {
+    const employee = await seedEmployee();
+    const loss = await createCustodyDeduction(employee.id);
+    expect(loss.advanceId).toBeTypeOf("number");
+    expect(loss.accountingEntryId).toBeTypeOf("number");
+
+    const receiptsBefore = await db().select({ id: s.receipts.id }).from(s.receipts);
+    const entriesBefore = await db().select({ id: s.accountingEntries.id }).from(s.accountingEntries);
+    const [sourceEntryBefore] = await db().select().from(s.accountingEntries)
+      .where(eq(s.accountingEntries.id, Number(loss.accountingEntryId)));
+
+    const cancelled = await cancelAdvance(
+      { advanceId: Number(loss.advanceId), reason: "اعتماد إعفاء الموظف من التعويض" },
+      ACTOR,
+    );
+    expect(cancelled).toMatchObject({
+      status: "CANCELLED",
+      receiptId: null,
+      voucherNotice: expect.stringContaining("بلا حركة نقد أو مخزون"),
+    });
+
+    const [advanceAfter] = await db().select().from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.id, Number(loss.advanceId)));
+    const [custodyAfter] = await db().select().from(s.employeeCustody)
+      .where(eq(s.employeeCustody.id, Number(loss.id)));
+    const [sourceEntryAfter] = await db().select().from(s.accountingEntries)
+      .where(eq(s.accountingEntries.id, Number(loss.accountingEntryId)));
+    expect(advanceAfter.status).toBe("CANCELLED");
+    expect(advanceAfter.note).toContain("إلغاء استقطاع غير نقدي");
+    expect(custodyAfter.status).toBe("LOST");
+    expect(sourceEntryAfter).toMatchObject({
+      id: sourceEntryBefore.id,
+      entryType: "ADJUST",
+      dedupeKey: `CUSTODY_LOSS:${loss.id}`,
+      amount: sourceEntryBefore.amount,
+    });
+    expect(await db().select({ id: s.receipts.id }).from(s.receipts)).toHaveLength(receiptsBefore.length);
+    expect(await db().select({ id: s.accountingEntries.id }).from(s.accountingEntries)).toHaveLength(entriesBefore.length);
+
+    await expect(cancelAdvance({ advanceId: Number(loss.advanceId) }, ACTOR))
+      .rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(await db().select({ id: s.receipts.id }).from(s.receipts)).toHaveLength(receiptsBefore.length);
+    expect(await db().select({ id: s.accountingEntries.id }).from(s.accountingEntries)).toHaveLength(entriesBefore.length);
+  });
+
+  it("يرفض السلفة النقدية أو التاريخية بلا رابط سند يثبت عودة النقد", async () => {
+    const employee = await seedEmployee();
+    const inserted = await db().insert(s.employeeAdvances).values([
+      {
+        employeeId: employee.id, branchId: 1, amount: "100000.00", remaining: "100000.00",
+        sourceType: "SALARY_ADVANCE", payrollPeriod: CURRENT_PERIOD, status: "ACTIVE",
+        receiptId: null, createdBy: ACTOR.userId,
+      },
+      {
+        employeeId: employee.id, branchId: 1, amount: "20000.00", remaining: "20000.00",
+        sourceType: "LEGACY_UNCLASSIFIED", payrollPeriod: null, status: "ACTIVE",
+        receiptId: null, createdBy: ACTOR.userId,
+      },
+    ]).$returningId();
+
+    await expect(cancelAdvance({ advanceId: Number(inserted[0].id) }, ACTOR))
+      .rejects.toMatchObject({ code: "CONFLICT", message: expect.stringContaining("رابط سند الصرف مفقود") });
+    await expect(cancelAdvance({ advanceId: Number(inserted[1].id) }, ACTOR))
+      .rejects.toMatchObject({ code: "CONFLICT", message: expect.stringContaining("رابط سند الصرف مفقود") });
+
+    const stillActive = await db().select({ status: s.employeeAdvances.status })
+      .from(s.employeeAdvances)
+      .where(inArray(s.employeeAdvances.id, inserted.map((row) => Number(row.id))));
+    expect(stillActive.every((row) => row.status === "ACTIVE")).toBe(true);
+  });
+
+  it("يقبل السجل التاريخي أو الاستقطاع المرتبط بعد عكس سند صرفه الفعلي", async () => {
+    const employee = await seedEmployee();
+    const historicalSources = ["LEGACY_UNCLASSIFIED", "OTHER_DEDUCTION"] as const;
+
+    for (const sourceType of historicalSources) {
+      const advance = await grantAdvance(
+        { employeeId: employee.id, branchId: 1, amount: "40000" },
+        ACTOR,
+      );
+      await db().update(s.employeeAdvances)
+        .set({ sourceType, payrollPeriod: null })
+        .where(eq(s.employeeAdvances.id, Number(advance.id)));
+
+      await expect(cancelAdvance({ advanceId: Number(advance.id) }, ACTOR))
+        .rejects.toThrow(/سند صرفها ما زال سارياً/);
+      await db().update(s.receipts)
+        .set({ status: "REVERSED" })
+        .where(eq(s.receipts.id, Number(advance.receiptId)));
+
+      const cancelled = await cancelAdvance(
+        { advanceId: Number(advance.id), reason: "تصحيح سجل تاريخي موثق" },
+        ACTOR,
+      );
+      expect(cancelled).toMatchObject({
+        status: "CANCELLED",
+        receiptId: Number(advance.receiptId),
+        voucherNotice: expect.stringContaining("بعد عكس سند صرفها"),
+      });
+      const [stored] = await db().select().from(s.employeeAdvances)
+        .where(eq(s.employeeAdvances.id, Number(advance.id)));
+      expect(stored.status).toBe("CANCELLED");
+      expect(stored.note).not.toContain("إلغاء استقطاع غير نقدي");
+    }
+  });
+
+  it("يرفض إلغاء استقطاع عهدة استُوفي جزئياً أو أُعيد رصيده بعد العكس", async () => {
+    const employee = await seedEmployee();
+    const loss = await createCustodyDeduction(employee.id);
+    await db().update(s.employeeAdvances).set({ monthlyDeduction: "50000.00" })
+      .where(eq(s.employeeAdvances.id, Number(loss.advanceId)));
+
+    const paidRun = await fullPayCycle(CURRENT_PERIOD);
+    const [partiallyRecovered] = await db().select().from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.id, Number(loss.advanceId)));
+    expect(partiallyRecovered).toMatchObject({ status: "ACTIVE", remaining: "70000.00" });
+    await expect(cancelAdvance({ advanceId: Number(loss.advanceId) }, ACTOR))
+      .rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("خُصم منها فعلاً") });
+
+    await returnPaidSalary(Number(paidRun!.id));
+    await cancelRun(Number(paidRun!.id), APPROVER);
+    const [restored] = await db().select().from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.id, Number(loss.advanceId)));
+    expect(restored).toMatchObject({ status: "ACTIVE", remaining: "120000.00" });
+    const history = await db().select({ direction: s.advanceSettlements.direction })
+      .from(s.advanceSettlements)
+      .where(eq(s.advanceSettlements.advanceId, Number(loss.advanceId)));
+    expect(history.map((row) => row.direction).sort()).toEqual(["APPLY", "REVERSE"]);
+
+    await expect(cancelAdvance({ advanceId: Number(loss.advanceId) }, ACTOR))
+      .rejects.toMatchObject({
+        code: "PRECONDITION_FAILED",
+        message: expect.stringContaining("بعد استعمالها"),
+      });
+    const [afterRejectedCancel] = await db().select().from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.id, Number(loss.advanceId)));
+    expect(afterRejectedCancel).toMatchObject({ status: "ACTIVE", remaining: "120000.00" });
   });
 
   it("السلفة الملغاة قبل الاعتماد تُزامن إلى خصم صفر ولا تنتقل إلى الراتب", async () => {

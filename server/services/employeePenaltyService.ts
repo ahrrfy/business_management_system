@@ -116,13 +116,17 @@ export async function approveEmployeePenalty(
         }),
       });
     }
+    // نفس قفل التجميع في السلف والمسيّر: الموظف قبل رأس الشهر ثم القرار.
+    await lockHrEmployeeTx(tx, currentActor, preview.employeeId, preview.branchId);
     const penaltyPeriod = String(preview.decisionDate).slice(0, 7);
-    const [existingRun] = await tx
-      .select({ id: payrollRuns.id, status: payrollRuns.status })
-      .from(payrollRuns)
-      .where(eq(payrollRuns.period, penaltyPeriod))
-      .for("update")
-      .limit(1);
+    const [existingRun] = money(preview.deductionAmount).gt(0)
+      ? await tx
+          .select({ id: payrollRuns.id, status: payrollRuns.status })
+          .from(payrollRuns)
+          .where(eq(payrollRuns.period, penaltyPeriod))
+          .for("update")
+          .limit(1)
+      : [];
     if (existingRun) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
@@ -141,7 +145,12 @@ export async function approveEmployeePenalty(
       .where(eq(employeePenalties.id, id))
       .for("update")
       .limit(1);
-    if (!p || p.status !== preview.status) {
+    if (
+      !p || p.status !== preview.status ||
+      p.employeeId !== preview.employeeId || p.branchId !== preview.branchId ||
+      String(p.decisionDate) !== String(preview.decisionDate) ||
+      !money(p.deductionAmount).eq(money(preview.deductionAmount))
+    ) {
       throw new TRPCError({
         code: "CONFLICT",
         message: appErrorMessage({
@@ -152,7 +161,6 @@ export async function approveEmployeePenalty(
       });
     }
 
-    await lockHrEmployeeTx(tx, currentActor, p.employeeId, p.branchId);
     if (p.status !== "DRAFT") {
       throw new TRPCError({
         code: "BAD_REQUEST",

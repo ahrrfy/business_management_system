@@ -54,6 +54,22 @@ async function seedAttendance(input: {
     });
 }
 
+async function seedUnpaidLeave(fromDate: string, toDate: string, days: number) {
+  await db()
+    .insert(s.leaveRequests)
+    .values({
+      employeeId: EMPLOYEE_ID,
+      leaveType: "بدون راتب",
+      paid: false,
+      fromDate,
+      toDate,
+      days,
+      status: "approved",
+      decidedBy: ACTOR.userId,
+      decidedAt: new Date(`${fromDate}T12:00:00.000Z`),
+    });
+}
+
 async function currentCapacity(): Promise<EmployeeAdvanceCapacity> {
   return getEmployeeAdvanceCapacity({
     employeeId: EMPLOYEE_ID,
@@ -109,6 +125,258 @@ beforeEach(async () => {
 });
 
 describe("employee advance earned-capacity contract", () => {
+  it("يستهلك كامل الإجازة الأجر والمكافأة الفورية دون العمولة ويبقى ثابتاً بعد المسودة", async () => {
+    const connection = db();
+    await connection
+      .update(s.employees)
+      .set({ payType: "monthly", attendanceExempt: true })
+      .where(eq(s.employees.id, EMPLOYEE_ID));
+    await seedUnpaidLeave("2030-06-01", "2030-06-30", 30);
+    await connection.insert(s.employeeSpotBonuses).values({
+      employeeId: EMPLOYEE_ID,
+      branchId: BRANCH_ID,
+      amount: "100.00",
+      reason: "مكافأة يستهلكها كامل الإجازة بلا راتب",
+      disbursementType: "PAYROLL_ADDITION",
+      status: "APPROVED",
+      createdById: ACTOR.userId,
+      approvedById: ACTOR.userId,
+      approvedAt: new Date("2030-06-06T12:00:00.000Z"),
+    });
+    await connection.insert(s.commissionPlans).values({
+      id: 30,
+      name: "خطة عمولة حد السلفة",
+      createdBy: ACTOR.userId,
+    });
+    await connection.insert(s.commissionRuns).values({
+      id: 31,
+      period: FIXED_PERIOD,
+      status: "approved",
+      employeeCount: 1,
+      totalCommission: "50.00",
+      createdBy: ACTOR.userId,
+      approvedBy: ACTOR.userId,
+      approvedAt: new Date("2030-06-30T12:00:00.000Z"),
+    });
+    await connection.insert(s.commissionRunLines).values({
+      runId: 31,
+      employeeId: EMPLOYEE_ID,
+      userId: ACTOR.userId,
+      branchId: BRANCH_ID,
+      planId: 30,
+      commissionAmount: "50.00",
+    });
+    const input = {
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: FIXED_PERIOD,
+      asOf: "2030-06-30",
+    };
+
+    const beforeDraft = await getEmployeeAdvanceCapacity(input);
+    expect(beforeDraft).toMatchObject({
+      earnedCompensation: "0.00",
+      approvedAdditions: "150.00",
+      mandatoryDeductions: "100.00",
+      maxAvailable: "50.00",
+    });
+
+    await connection.insert(s.payrollRuns).values({
+      id: 1,
+      period: FIXED_PERIOD,
+      status: "draft",
+      createdBy: ACTOR.userId,
+      employeeCount: 1,
+      totalGross: "3100.00",
+      totalCommission: "50.00",
+      totalDeductions: "3100.00",
+      totalNet: "50.00",
+    });
+    await connection.insert(s.payrollItems).values({
+      runId: 1,
+      employeeId: EMPLOYEE_ID,
+      payType: "monthly",
+      gross: "3100.00",
+      commission: "50.00",
+      deductions: "3100.00",
+      wageReduction: "3100.00",
+      net: "50.00",
+    });
+    await connection
+      .update(s.employeeSpotBonuses)
+      .set({ payrollRunId: 1 })
+      .where(eq(s.employeeSpotBonuses.employeeId, EMPLOYEE_ID));
+    await connection
+      .update(s.commissionRuns)
+      .set({ payrollRunId: 1 })
+      .where(eq(s.commissionRuns.id, 31));
+
+    const afterDraft = await getEmployeeAdvanceCapacity(input);
+    expect(afterDraft).toMatchObject({
+      earnedCompensation: beforeDraft.earnedCompensation,
+      approvedAdditions: beforeDraft.approvedAdditions,
+      mandatoryDeductions: beforeDraft.mandatoryDeductions,
+      maxAvailable: beforeDraft.maxAvailable,
+    });
+  });
+
+  it("يصفّر الأجر المكتسب والقانوني عند إجازة بلا راتب تغطي نافذة الخدمة حتى اليوم", async () => {
+    await db()
+      .update(s.employees)
+      .set({ payType: "monthly", attendanceExempt: true })
+      .where(eq(s.employees.id, EMPLOYEE_ID));
+    await seedUnpaidLeave("2030-06-01", "2030-06-30", 30);
+
+    const capacity = await getEmployeeAdvanceCapacity({
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: FIXED_PERIOD,
+      asOf: FIXED_AS_OF,
+    });
+
+    expect(capacity).toMatchObject({
+      earnedCompensation: "0.00",
+      mandatoryDeductions: "0.00",
+      maxAvailable: "0.00",
+      blocked: false,
+    });
+  });
+
+  it("يقص الإجازة بلا راتب عند التعيين وasOf قبل إنشاء المسودة", async () => {
+    await db()
+      .update(s.employees)
+      .set({
+        payType: "monthly",
+        attendanceExempt: false,
+        hireDate: "2030-06-10",
+      })
+      .where(eq(s.employees.id, EMPLOYEE_ID));
+    // لا يُحسب 1-9 قبل التعيين ولا 16-20 بعد asOf؛ أيام الإجازة المكتسبة فعلياً = 3.
+    await seedUnpaidLeave("2030-06-01", "2030-06-12", 12);
+    await seedUnpaidLeave("2030-06-16", "2030-06-20", 5);
+    const input = {
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: FIXED_PERIOD,
+      asOf: FIXED_AS_OF,
+    };
+
+    const capacity = await getEmployeeAdvanceCapacity(input);
+    // نافذة الخدمة 6 أيام: 600 ثابت - 3 × (3000 ÷ 30) = 300 مكتسب.
+    // القانوني على 300 المكتسبة: ضمان 30 + ضريبة 27 = 57؛ المتاح 243.
+    expect(capacity).toMatchObject({
+      earnedCompensation: "300.00",
+      mandatoryDeductions: "57.00",
+      maxAvailable: "243.00",
+    });
+  });
+
+  it("لا يحتسب خصم الإجازة مرة ثانية بعد التقاطه في مسودة الراتب", async () => {
+    await db()
+      .update(s.employees)
+      .set({ payType: "monthly", attendanceExempt: false })
+      .where(eq(s.employees.id, EMPLOYEE_ID));
+    await seedUnpaidLeave("2030-06-05", "2030-06-09", 5);
+    const input = {
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: FIXED_PERIOD,
+      asOf: "2030-06-30",
+    };
+
+    const beforeDraft = await getEmployeeAdvanceCapacity(input);
+    expect(beforeDraft).toMatchObject({
+      earnedCompensation: "2500.00",
+      mandatoryDeductions: "475.00",
+      maxAvailable: "2025.00",
+    });
+
+    await db().insert(s.payrollRuns).values({
+      id: 1,
+      period: FIXED_PERIOD,
+      status: "draft",
+      createdBy: ACTOR.userId,
+      employeeCount: 1,
+      totalGross: "3000.00",
+      totalDeductions: "975.00",
+      totalNet: "2025.00",
+    });
+    await db().insert(s.payrollItems).values({
+      runId: 1,
+      employeeId: EMPLOYEE_ID,
+      payType: "monthly",
+      gross: "3000.00",
+      deductions: "975.00",
+      wageReduction: "500.00",
+      socialSecurityEmployee: "250.00",
+      incomeTax: "225.00",
+      net: "2025.00",
+    });
+
+    const afterDraft = await getEmployeeAdvanceCapacity(input);
+    expect(afterDraft).toMatchObject({
+      earnedCompensation: beforeDraft.earnedCompensation,
+      mandatoryDeductions: beforeDraft.mandatoryDeductions,
+      maxAvailable: beforeDraft.maxAvailable,
+    });
+  });
+
+  it("يطابق تقريب المعدل اليومي قبل ضرب أيام الإجازة", async () => {
+    await db()
+      .update(s.employees)
+      .set({
+        payType: "monthly",
+        attendanceExempt: true,
+        salary: "1000.00",
+      })
+      .where(eq(s.employees.id, EMPLOYEE_ID));
+    await seedUnpaidLeave("2030-06-01", "2030-06-02", 2);
+
+    const capacity = await getEmployeeAdvanceCapacity({
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: FIXED_PERIOD,
+      asOf: "2030-06-30",
+    });
+
+    // round2(1000 ÷ 30) = 33.33؛ يومان = 66.66 لا 66.67.
+    expect(capacity).toMatchObject({
+      earnedCompensation: "933.34",
+      mandatoryDeductions: "177.33",
+      maxAvailable: "756.01",
+    });
+  });
+
+  it("لا يخصم الإجازة مرتين من أجر الحضور المكتسب", async () => {
+    await db()
+      .update(s.employees)
+      .set({ payType: "monthly", attendanceExempt: false })
+      .where(eq(s.employees.id, EMPLOYEE_ID));
+    await db().insert(s.hrAttendanceSettings).values({
+      id: 1,
+      attendancePayEnabled: true,
+      attendancePayFrom: "2030-06-01",
+      updatedBy: ACTOR.userId,
+    });
+    await seedAttendance({ date: "2030-06-05", amount: "115.38" });
+    await seedAttendance({ date: "2030-06-06", amount: "115.38" });
+    await seedUnpaidLeave("2030-06-05", "2030-06-05", 1);
+
+    const capacity = await getEmployeeAdvanceCapacity({
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: FIXED_PERIOD,
+      asOf: FIXED_AS_OF,
+    });
+
+    // نواة الحضور أسقطت 5 حزيران بالفعل؛ يبقى أجر 6 حزيران ولا يُطرح منه 100 ثانيةً.
+    expect(capacity).toMatchObject({
+      earnedCompensation: "115.38",
+      mandatoryDeductions: "21.92",
+      maxAvailable: "93.46",
+    });
+  });
+
   it("يبقي المكافأة المعتمدة ضمن الحد بعد التقاطها في مسودة الراتب", async () => {
     await seedAttendance({ date: "2030-06-05", amount: "300.00" });
     await db()

@@ -23,6 +23,7 @@ import { appErrorMessage } from "@shared/errors";
 import { requireDb } from "../services/tx";
 import * as loanSvc from "../services/employeeLoanService";
 import { getEmployeeAdvanceCapacity } from "../services/employeeAdvanceCapacityService";
+import { baghdadToday } from "../services/businessDay";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
 const hrWrite = protectedProcedure.use(requireModule("hr", "FULL"));
@@ -55,6 +56,40 @@ function scopedPayrollBranch(user: {
     throw new TRPCError({ code: "FORBIDDEN", message: "نطاق الفرع مطلوب." });
   }
   return branchId;
+}
+
+function isAdvanceCapacityReadBlock(error: unknown): error is TRPCError {
+  if (!(error instanceof TRPCError)) return false;
+  return (
+    (error.code === "PRECONDITION_FAILED" &&
+      error.message.includes("الموظف ليس على رأس العمل بحالة نشطة")) ||
+    (error.code === "FORBIDDEN" &&
+      error.message.includes("الفترة المالية مُقفَلة حتى"))
+  );
+}
+
+function blockedAdvanceCapacity(
+  employeeId: number,
+  scopedBranchId: number | undefined,
+  error: TRPCError,
+) {
+  const asOf = baghdadToday();
+  return {
+    employeeId,
+    // المالك قد يقرأ الرصيد عبر الفروع؛ لا نختلق فرعاً حين يتعذر احتساب الحد.
+    branchId: scopedBranchId ?? null,
+    period: asOf.slice(0, 7),
+    asOf,
+    earnedCompensation: "0.00",
+    approvedAdditions: "0.00",
+    mandatoryDeductions: "0.00",
+    existingSalaryAdvances: "0.00",
+    otherEmployeeDeductions: "0.00",
+    reservedRequests: "0.00",
+    maxAvailable: "0.00",
+    blocked: true,
+    blockers: [error.message],
+  };
 }
 
 async function notifyPayrollUsers(runId: number, periodValue: string, stage: "approved" | "paid", actorName?: string | null) {
@@ -571,6 +606,9 @@ export const payrollRouter = router({
         getEmployeeAdvanceCapacity({
           employeeId: input.employeeId,
           scopedBranchId: branchId,
+        }).catch((error: unknown) => {
+          if (!isAdvanceCapacityReadBlock(error)) throw error;
+          return blockedAdvanceCapacity(input.employeeId, branchId, error);
         }),
       ]);
       return { ...balance, capacity };
