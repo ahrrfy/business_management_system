@@ -1,5 +1,5 @@
 // حوار تعديل تفاصيل أمر الشغل — مستخرج من WorkOrders.tsx لخفض حجم الصفحة.
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -13,6 +13,8 @@ import { D, fmtAr, round2 } from "@/lib/money";
 import { canCancelWorkOrder } from "@/lib/workOrderRefundPolicy";
 import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import { newClientRequestId } from "@/lib/countQueue";
+import { editorDate } from "@/lib/editorDate";
+import { confirm } from "@/lib/confirm";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { WORK_ORDER_CHANNELS, receptionChannelOptions } from "@shared/receptionChannel";
 import {
@@ -57,21 +59,44 @@ export function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrd
   const me = trpc.auth.me.useQuery();
   const [form, setForm] = useState<EditForm | null>(null);
   const [reason, setReason] = useState("");
+  const [baseline, setBaseline] = useState<typeof detail.data>(undefined);
+  const [baselineDirect, setBaselineDirect] = useState(false);
+  const [reloadGeneration, setReloadGeneration] = useState<number | null>(null);
   const requestKeyRef = useRef<{ fingerprint: string; key: string } | null>(null);
+  // Both reads are independent cache entries: never borrow routing from another order/revision.
+  const coherentSnapshot = detail.data && preflight.data && !detail.error && !preflight.error &&
+    detail.data.id === workOrderId && preflight.data.workOrderId === workOrderId &&
+    detail.data.version === preflight.data.version
+      ? { detail: detail.data, direct: preflight.data.controlRequired.commercial === false }
+      : null;
+  const generationRef = useRef({ id: workOrderId, value: 0 });
+  if (generationRef.current.id !== workOrderId) {
+    generationRef.current = { id: workOrderId, value: generationRef.current.value + 1 };
+  }
+  const latestSnapshotRef = useRef({ generation: generationRef.current.value, snapshot: coherentSnapshot });
+  latestSnapshotRef.current = { generation: generationRef.current.value, snapshot: coherentSnapshot };
+  const baselineGenerationRef = useRef<number | null>(null);
+  const recoveryGenerationRef = useRef<number | null>(null);
   const hasDirectAuthority = canLifecycleOperation(me.data, "workOrders.update", canCancelWorkOrder(me.data?.role, me.data?.permissionsOverride ?? null));
   const canRequestControl = canLifecycleOperation(me.data, "workOrders.requestControl", true);
 
   // يعبّئ النموذج من بيانات الخادم عند فتح طلبٍ جديد — لا يُعيد الكتابة فوق تعديلات المستخدم
   // الجارية إن أُعيد جلب نفس الطلب (invalidate) أثناء الفتح.
-  useEffect(() => {
-    const d = detail.data;
+  function hydrate(snapshot: NonNullable<typeof coherentSnapshot>) {
+    const d = snapshot.detail;
+    baselineGenerationRef.current = generationRef.current.value;
+    setBaseline(d);
+    setBaselineDirect(snapshot.direct);
+    setReloadGeneration(null);
+    setReason("");
+    requestKeyRef.current = null;
     setForm(
       d
         ? {
             title: d.title,
             customizationText: d.customizationText ?? "",
             salePrice: d.salePrice,
-            dueDate: d.dueDate ? String(d.dueDate).slice(0, 10) : "",
+            dueDate: editorDate(d.dueDate),
             priority: (d.priority as EditForm["priority"]) ?? "NORMAL",
             customerId: d.customerId ?? null,
             contactName: d.contactName ?? "",
@@ -81,7 +106,30 @@ export function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrd
           }
         : null,
     );
-  }, [detail.data?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }
+  useEffect(() => {
+    if (workOrderId == null) { setBaseline(undefined); setForm(null); setReloadGeneration(null); return; }
+    if (coherentSnapshot && (baselineGenerationRef.current !== generationRef.current.value || reloadGeneration === generationRef.current.value)) {
+      hydrate(coherentSnapshot);
+    }
+  }, [workOrderId, detail.data, detail.error, preflight.data, preflight.error, reloadGeneration]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function refreshSnapshot() {
+    // Refresh only the missing/older side. One automatic attempt per opening/entity;
+    // persistent failures stay visible and may be retried explicitly, never in a loop.
+    const refreshDetail = !detail.data || detail.data.id !== workOrderId || !!detail.error ||
+      (!!preflight.data && preflight.data.workOrderId === workOrderId && preflight.data.version > detail.data.version);
+    const refreshPreflight = !preflight.data || preflight.data.workOrderId !== workOrderId || !!preflight.error ||
+      (!!detail.data && detail.data.id === workOrderId && detail.data.version > preflight.data.version);
+    if (refreshDetail && !detail.isFetching) void detail.refetch();
+    if (refreshPreflight && !preflight.isFetching) void preflight.refetch();
+  }
+  useEffect(() => {
+    if (workOrderId == null || coherentSnapshot || detail.isLoading || preflight.isLoading || detail.isFetching || preflight.isFetching) return;
+    if (recoveryGenerationRef.current === generationRef.current.value) return;
+    recoveryGenerationRef.current = generationRef.current.value;
+    refreshSnapshot();
+  }, [workOrderId, detail.data, detail.error, detail.isLoading, detail.isFetching, preflight.data, preflight.error, preflight.isLoading, preflight.isFetching]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const update = trpc.workOrders.update.useMutation({
     onSuccess: () => { notify.ok("حُفظ التعديل"); onSaved(); },
@@ -99,16 +147,22 @@ export function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrd
   });
 
   if (workOrderId == null) return null;
-  const d = detail.data;
+  const d = baseline?.id === workOrderId && baselineGenerationRef.current === generationRef.current.value ? baseline : undefined;
+  const snapshotPending = !coherentSnapshot;
+  const stale = !!d && (
+    snapshotPending ||
+    (!!detail.data && detail.data.version !== d.version) ||
+    (!!preflight.data && preflight.data.version !== d.version)
+  );
   const locked = !!d && (d.status === "DELIVERED" || d.status === "CANCELLED");
   const deposit = D(d?.deposit ?? 0);
   const canDirect =
     hasDirectAuthority &&
-    preflight.data?.controlRequired.commercial === false;
+    baselineDirect;
 
   function submit() {
     if (!canDirect && !canRequestControl) { notify.err("تتطلب حالة الأمر تفويض طلب التعديل واعتماده من مراجع مستقل."); return; }
-    if (!form) return;
+    if (!form || !d || locked) return;
     const title = form.title.trim();
     if (!title) { notify.err("عنوان الطلب مطلوب"); return; }
     const priceD = D(form.salePrice);
@@ -152,15 +206,35 @@ export function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrd
         <DialogHeader>
           <DialogTitle>تعديل طلب الخدمة{d ? ` — ${d.orderNumber}` : ""}</DialogTitle>
           <DialogDescription>
-            {locked
+            {!d
+              ? "ننتظر تطابق بيانات الأمر مع حالة التعديل قبل فتح النموذج."
+              : locked
               ? "هذا الطلب مُسلَّم أو مُلغى — لا يمكن تعديله بعد الآن."
               : canDirect
                 ? "يسري التعديل فوراً لأن الأمر لم يبدأ ولم يُقبض عليه شيء. الكمية والمواد لا تُعدَّلان من هنا."
                 : "سيُرسل التعديل بلا أثر فوري إلى مراجع مستقل لأن الأمر بدأ أو قُبض عليه مبلغ."}
           </DialogDescription>
         </DialogHeader>
+        {stale && <div role="alert" className="rounded-md border p-3 text-sm">
+          تغيّر هذا الأمر لدى مستخدم آخر. مدخلاتك محفوظة ومرتبطة بالنسخة الأصلية؛ راجع الأحدث قبل الحفظ.
+          <button type="button" className="wob-btn wob-btn-ghost" disabled={update.isPending || requestControl.isPending} onClick={async () => {
+            const generation = generationRef.current.value;
+            if (await confirm({ title: "تحميل النسخة الأحدث", description: "ستُلغى تعديلاتك الحالية ويُحمّل الأمر الأحدث كاملاً.", confirmText: "تحميل الأحدث" })) {
+              // Confirmation may outlive a refetch or navigation: use the current pair only.
+              if (latestSnapshotRef.current.generation !== generation) return;
+              if (latestSnapshotRef.current.snapshot) hydrate(latestSnapshotRef.current.snapshot);
+              else setReloadGeneration(generation);
+            }
+          }}>تحميل الأحدث وإلغاء تعديلاتي</button>
+        </div>}
+        {snapshotPending && <div role="status" className="rounded-md border p-3 text-sm">
+          {detail.error || preflight.error
+            ? "تعذّر تحميل حالة التعديل. مدخلاتك محفوظة؛ أعد المحاولة للحصول على نسخة متطابقة."
+            : "ننتظر تطابق بيانات الأمر وحالة التعديل؛ مدخلاتك محفوظة حتى اكتمال القراءة."}
+          <button type="button" className="wob-btn wob-btn-ghost" disabled={detail.isFetching || preflight.isFetching} onClick={refreshSnapshot}>إعادة المحاولة</button>
+        </div>}
         {!d || !form ? (
-          <div className="py-8 text-center text-sm text-muted-foreground">{detail.isLoading ? ACTION_LABELS.loading : "تعذّر العثور على الطلب."}</div>
+          <div className="py-8 text-center text-sm text-muted-foreground">{ACTION_LABELS.loading}</div>
         ) : locked ? (
           <DialogFooter><button className="wob-btn wob-btn-ghost" onClick={onClose}>إغلاق</button></DialogFooter>
         ) : (
