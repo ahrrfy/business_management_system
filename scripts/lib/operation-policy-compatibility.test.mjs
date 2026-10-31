@@ -284,7 +284,11 @@ test("uses local merge-base and supports legacy monolithic catalogs", async (t) 
     const head = commit(root, "delete without manifest");
     writeRetirements(root, [RETURN]);
     assert.deepEqual(
-      verifyOperationPolicyUpgrade({ root, currentCatalog: [operation(SALE)] }),
+      verifyOperationPolicyUpgrade({
+        root,
+        currentCatalog: [operation(SALE)],
+        env: {},
+      }),
       { baselines: [head, base], retiredKeys: 1 },
     );
   });
