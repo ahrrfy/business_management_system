@@ -22,7 +22,11 @@ import {
   getPayrollLegalSettings,
   getPayrollLegalSettingsForUpdate,
 } from "./payrollLegalService";
-import { capPenaltyDeduction, countDaysWithin } from "./payroll/helpers";
+import {
+  capPenaltyDeduction,
+  countDaysWithin,
+  periodAccrualDate,
+} from "./payroll/helpers";
 import { assertPeriodOpen } from "./periodLockService";
 import { withTx } from "./tx";
 
@@ -152,6 +156,23 @@ export async function getEmployeeAdvanceCapacityTx(
         what: "السلفة غير متاحة",
         why: "الموظف ليس على رأس العمل بحالة نشطة",
         doThis: "راجع الحالة الوظيفية قبل إنشاء طلب سلفة",
+      }),
+    });
+  }
+  const periodStart = `${period}-01`;
+  const periodEnd = periodAccrualDate(period);
+  if (
+    (employee.hireDate != null && String(employee.hireDate) > periodEnd) ||
+    (employee.terminationDate != null &&
+      String(employee.terminationDate) < periodStart)
+  ) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "السلفة غير متاحة",
+        why: "الموظف خارج نافذة الخدمة في شهر السلفة",
+        doThis:
+          "راجع تاريخي التعيين وإنهاء الخدمة والحالة الوظيفية قبل إنشاء طلب سلفة",
       }),
     });
   }

@@ -1056,6 +1056,47 @@ describe("employee advance earned-capacity contract", () => {
     expect(await db().select().from(s.employeeLoanRequests)).toHaveLength(0);
   });
 
+  it("يرفض موظفاً يبدأ بعد نهاية الشهر ولا يحوّل مكافأته القديمة إلى سعة", async () => {
+    const year = Number(CURRENT_PERIOD.slice(0, 4));
+    const month = Number(CURRENT_PERIOD.slice(5, 7));
+    const nextMonthStart = new Date(Date.UTC(year, month, 1))
+      .toISOString()
+      .slice(0, 10);
+    await db()
+      .update(s.employees)
+      .set({
+        payType: "monthly",
+        attendanceExempt: true,
+        hireDate: nextMonthStart,
+      })
+      .where(eq(s.employees.id, EMPLOYEE_ID));
+    await db().insert(s.employeeSpotBonuses).values({
+      employeeId: EMPLOYEE_ID,
+      branchId: BRANCH_ID,
+      amount: "100.00",
+      reason: "مكافأة قديمة لموظف لم تبدأ خدمته",
+      disbursementType: "PAYROLL_ADDITION",
+      status: "APPROVED",
+      createdById: ACTOR.userId,
+      approvedById: ACTOR.userId,
+      approvedAt: new Date(
+        `${previousPeriod(CURRENT_PERIOD)}-15T12:00:00.000Z`,
+      ),
+    });
+
+    await expect(currentCapacity()).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+    });
+    await expect(
+      requestEmployeeLoan(ACTOR, {
+        employeeId: EMPLOYEE_ID,
+        amount: "1.00",
+        clientRequestId: "future-hire-bonus-capacity-blocked",
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(await db().select().from(s.employeeLoanRequests)).toHaveLength(0);
+  });
+
   it("يسقف العقوبة من الأجر القابل للاستيعاب ويبقي السعة ثابتة بعد التقاطها في المسودة", async () => {
     const connection = db();
     await connection
