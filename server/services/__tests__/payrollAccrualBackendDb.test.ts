@@ -1062,6 +1062,7 @@ describe("payroll accrual lifecycle — DB invariants", () => {
       updateItem(Number(item.id), { overtime: "120.00" }, MAKER),
       approveRun(runId, CHECKER),
     ]);
+    if (outcomes[1].status === "rejected") throw outcomes[1].reason;
     expect(outcomes[1].status).toBe("fulfilled");
     if (outcomes[0].status === "rejected") {
       expect(outcomes[0].reason).toMatchObject({ code: "BAD_REQUEST" });
@@ -1074,6 +1075,7 @@ describe("payroll accrual lifecycle — DB invariants", () => {
       .from(s.payrollRuns)
       .where(eq(s.payrollRuns.id, runId));
     expect(run.status).toBe("approved");
+    expect(run.totalNet).toBe(outcomes[0].status === "fulfilled" ? "920.00" : "900.00");
   });
 
   it("serializes legal-policy updates against approval and rejects a stale generated snapshot", async () => {

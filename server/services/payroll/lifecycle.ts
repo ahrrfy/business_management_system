@@ -143,10 +143,12 @@ export async function approveRun(id: number, actor: Actor) {
     }
     // آخر بوابة قبل تجميد اللقطة: التقط كل سلف الشهر وأزل أي خصم أُلغي من المسودة.
     await syncAllAdvancesForDraftRunTx(tx, id);
+    // قراءة حالية بعد القفل والمزامنة؛ لقطة preview قد تسبق تعديلاً متزامناً للبنود.
     const [runToApprove] = await tx
       .select()
       .from(payrollRuns)
       .where(eq(payrollRuns.id, id))
+      .for("update")
       .limit(1);
     if (!runToApprove || runToApprove.status !== "draft") {
       throw new TRPCError({
