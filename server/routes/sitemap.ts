@@ -3,6 +3,7 @@ import path from "node:path";
 import { Router } from "express";
 import { generateStorefrontSitemapXml } from "../services/storefrontSitemapService";
 import { generateGoogleMerchantFeedXml } from "../services/storefrontMerchantFeedService";
+import { publicResourceHandler } from "../middleware/storefrontAdmission";
 
 export const sitemapRouter = Router();
 
@@ -19,7 +20,7 @@ sitemapRouter.get("/robots.txt", (_req, res) => {
   res.status(200).send(fallback);
 });
 
-const handleSitemap = async (_req: import("express").Request, res: import("express").Response) => {
+const handleSitemap = publicResourceHandler(async (_req, res) => {
   try {
     // الأصل من PUBLIC_SITE_ORIGIN لا من ترويسة Host: الترويسة يتحكم بها المُرسِل، فتسمّم الكاش.
     const xml = await generateStorefrontSitemapXml();
@@ -29,12 +30,12 @@ const handleSitemap = async (_req: import("express").Request, res: import("expre
   } catch (err) {
     res.status(500).send("Error generating sitemap");
   }
-};
+});
 
 sitemapRouter.get("/sitemap.xml", handleSitemap);
 sitemapRouter.get("/store/sitemap.xml", handleSitemap);
 
-const handleMerchantFeed = async (_req: import("express").Request, res: import("express").Response) => {
+const handleMerchantFeed = publicResourceHandler(async (_req, res) => {
   try {
     // الأصل من PUBLIC_SITE_ORIGIN لا من ترويسة Host: الترويسة يتحكم بها المُرسِل، فتسمّم الكاش.
     const xml = await generateGoogleMerchantFeedXml();
@@ -44,7 +45,7 @@ const handleMerchantFeed = async (_req: import("express").Request, res: import("
   } catch (err) {
     res.status(500).send("Error generating Google Merchant feed");
   }
-};
+});
 
 sitemapRouter.get("/feeds/google-merchant.xml", handleMerchantFeed);
 sitemapRouter.get("/api/feeds/google-merchant.xml", handleMerchantFeed);

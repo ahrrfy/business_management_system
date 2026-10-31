@@ -2,6 +2,50 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTtlCache } from "../ttlCache";
 
+describe("bounded pending cache opt-in", () => {
+  it("SF-02 bounds 32 distinct keys before loader and keeps same-key dedupe", async () => {
+    const cache = createTtlCache<string, number>({ ttlMs: 1000, maxEntries: 2, maxInFlight: 2 });
+    let started = 0; let finish!: (n: number) => void;
+    const hold = new Promise<number>((resolve) => { finish = resolve; });
+    const loader = () => { started++; return hold; };
+    const requests = Array.from({ length: 32 }, (_, n) => cache.get(String(n), loader));
+    const same = cache.get("0", loader);
+    const settled = Promise.allSettled(requests);
+    expect(started).toBe(2); expect(cache.snapshot().inFlight).toBe(2);
+    finish(7);
+    expect(await same).toBe(7);
+    const outcomes = await settled;
+    expect(outcomes.filter((r) => r.status === "fulfilled")).toHaveLength(2);
+    expect(cache.snapshot().inFlight).toBe(0);
+  });
+  it.each(["invalidate", "clear"] as const)("%s retains old occupancy, never returns invalidated pending data", async (method) => {
+    const cache = createTtlCache<string, number>({ ttlMs: 1000, maxInFlight: 1 });
+    let finish!: (n: number) => void;
+    const old = cache.get("k", () => new Promise<number>((resolve) => { finish = resolve; }));
+    if (method === "clear") cache.clear(); else cache.invalidate("k");
+    await expect(cache.get("k", async () => 2)).rejects.toMatchObject({ httpStatus: 503 });
+    expect(cache.snapshot().inFlight).toBe(1); finish(1); expect(await old).toBe(1);
+    expect(await cache.get("k", async () => 2)).toBe(2);
+  });
+  it("loader rejection frees capacity and observe can leave limits disabled", async () => {
+    const cache = createTtlCache<string, number>({ ttlMs: 1000, maxInFlight: () => 1 });
+    await expect(cache.get("a", async () => { throw new Error("loader"); })).rejects.toThrow("loader");
+    expect(await cache.get("b", async () => 2)).toBe(2);
+    await expect(cache.get("c", () => { throw new Error("sync loader"); })).rejects.toThrow("sync loader");
+    expect(cache.snapshot().inFlight).toBe(0);
+    expect(await cache.get("c", async () => 3)).toBe(3);
+  });
+  it("invalidating another key preserves dedupe of unaffected pending work", async () => {
+    const cache = createTtlCache<string, number>({ ttlMs: 1000, maxInFlight: 2 });
+    let finish!: (n: number) => void; let loads = 0;
+    const first = cache.get("b", () => { loads++; return new Promise<number>((resolve) => { finish = resolve; }); });
+    cache.invalidate("a");
+    const second = cache.get("b", async () => { loads++; return 3; });
+    expect(loads).toBe(1); finish(2);
+    expect(await first).toBe(2); expect(await second).toBe(2);
+  });
+});
+
 describe("createTtlCache", () => {
   beforeEach(() => {
     vi.useFakeTimers();

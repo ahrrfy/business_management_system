@@ -20,6 +20,8 @@ import {
   readInternalProxySecretsFromEnv,
   resolveNginxContract,
   verifyLiveNginxContract,
+  nginxRuntimeMode,
+  renderNginxRuntimeSource,
 } from "./nginx-contract.mjs";
 import { verifyNginxConfiguration } from "./verify-nginx-abuse-controls.mjs";
 
@@ -1676,16 +1678,18 @@ function stageContract(contract, options, secretAttestation, manifest) {
         path.dirname(entry.target),
         `.alroya-${path.basename(entry.target)}-stage-${token}`,
       );
-      fs.copyFileSync(entry.source, temporary, fs.constants.COPYFILE_EXCL);
+      const sourceContent = fs.readFileSync(entry.source);
+      assertReleaseHash(sourceContent, relativeSource, manifest);
+      fs.writeFileSync(temporary, renderNginxRuntimeSource(sourceContent, entry.source, options.runtimeMode), { flag: "wx" });
       applyOwnerAndMode(temporary, entry.mode, options);
       fsyncFile(temporary);
-      assertReleaseHash(fs.readFileSync(temporary), relativeSource, manifest);
       staged.push(
         Object.freeze({
           kind: "file",
           temporary,
           target: entry.target,
           relativeSource,
+          renderedHash: createHash("sha256").update(fs.readFileSync(temporary)).digest("hex"),
         }),
       );
     }
@@ -1910,6 +1914,7 @@ function normalizeOptions(options) {
   return Object.freeze({
     projectRoot,
     nginxRoot,
+    runtimeMode: nginxRuntimeMode({ ...options, projectRoot }),
     appEnvPath: path.resolve(
       options.appEnvPath ?? path.join(projectRoot, ".env"),
     ),
@@ -2000,7 +2005,7 @@ export function installNginxContract(input = {}) {
     options.operations.nginxTest();
     options.operations.reload();
     verifyLiveNginxContract(
-      liveContractOptions(options, contract, releaseManifest),
+      liveContractOptions(options, staged),
     );
     options.operations.smoke();
     clearPendingJournal(options.backupRoot);
@@ -2317,18 +2322,13 @@ function verifyReleaseInputs(contract, options) {
   return Object.freeze(manifest);
 }
 
-function liveContractOptions(options, contract, releaseManifest) {
-  if (!releaseManifest) return options;
+function liveContractOptions(options, staged) {
   return {
     ...options,
     expectedFileHashes: Object.fromEntries(
-      contract.files.map((entry) => [
+      staged.filter((entry) => entry.renderedHash).map((entry) => [
         entry.target,
-        decodeReleaseHash(
-          releaseManifest.files[
-            releaseRelativePath(options.projectRoot, entry.source)
-          ],
-        ),
+        entry.renderedHash,
       ]),
     ),
   };

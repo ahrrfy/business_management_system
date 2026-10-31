@@ -1,3 +1,4 @@
+import { runtimeWorkDrain } from "../../lib/workDrain";
 /**
  * كنّاس الحجوزات المنتهية — يستدعي `expireDueReservations` دورياً على العامل الخلفيّ (worker 0)
  * حصراً (يُغلَّف بحارس `isBackgroundJobRunner` في `server/index.ts`). النمط مطابقٌ لـwaOutboxSweeper
@@ -49,10 +50,10 @@ export function startReservationsSweeper(): void {
   expiryCronTask = cron.schedule(
     expiryCronExpr,
     async () => {
-      if (expiryIsRunning) return; // قفل تنفيذ متداخل — يمنع تراكب دورةٍ ثقيلة مع التالية.
+      if (expiryIsRunning || !runtimeWorkDrain.isAccepting) return; // قفل تنفيذ متداخل — يمنع تراكب دورةٍ ثقيلة مع التالية.
       expiryIsRunning = true;
       try {
-        const r = await sweepExpiredReservationsOnce();
+        const r = await runtimeWorkDrain.run(() => sweepExpiredReservationsOnce());
         if (r.expired > 0) logger.info({ expired: r.expired }, "[reservations] expiry sweep cycle");
       } catch (e) {
         logger.error({ err: e }, "[reservations] expiry sweep cron threw");
@@ -65,10 +66,10 @@ export function startReservationsSweeper(): void {
   nearExpiryCronTask = cron.schedule(
     nearExpiryCronExpr,
     async () => {
-      if (nearExpiryIsRunning) return;
+      if (nearExpiryIsRunning || !runtimeWorkDrain.isAccepting) return;
       nearExpiryIsRunning = true;
       try {
-        const r = await notifyNearExpiryReservationsOnce();
+        const r = await runtimeWorkDrain.run(() => notifyNearExpiryReservationsOnce());
         if (r.notified > 0) logger.info(r, "[reservations] near-expiry notification cycle");
       } catch (e) {
         logger.error({ err: e }, "[reservations] near-expiry notification cron threw");

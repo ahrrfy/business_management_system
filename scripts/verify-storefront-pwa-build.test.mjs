@@ -37,7 +37,10 @@ function privateMatches(pathname) {
 }
 
 assert.equal(privateMatches("/api/img/inventory-product/42?v=abc"), true);
-assert.equal(privateMatches("/api/img/count-product/session-code/42?v=abc"), true);
+assert.equal(
+  privateMatches("/api/img/count-product/session-code/42?v=abc"),
+  true,
+);
 assert.equal(privateMatches("/api/img/kiosk-product/42?v=abc"), true);
 assert.equal(privateMatches("/api/img/product/42?v=abc"), false);
 
@@ -47,7 +50,11 @@ const manifest = {
     isEntry: true,
     imports: ["_framework.js"],
     css: ["assets/index-aaa.css"],
-    dynamicImports: ["src/pages/Storefront.tsx", "src/pages/Admin.tsx", "src/App.tsx"],
+    dynamicImports: [
+      "src/pages/Storefront.tsx",
+      "src/pages/Admin.tsx",
+      "src/App.tsx",
+    ],
   },
   "src/pages/Storefront.tsx": {
     file: "assets/Storefront-bbb.js",
@@ -64,9 +71,18 @@ const manifest = {
     isDynamicEntry: true,
   },
   "_framework.js": { file: "assets/framework-ddd.js" },
-  "_UnifiedSearchInput.js": { file: "assets/UnifiedSearchInput-search.js", imports: ["_BarcodeSearchCue.js", "_useBarcodeInput.js"] },
-  "_BarcodeSearchCue.js": { file: "assets/BarcodeSearchCue-cue.js", imports: ["_framework.js"] },
-  "_dialog.js": { file: "assets/dialog-dialoghash.js", imports: ["_framework.js"] },
+  "_UnifiedSearchInput.js": {
+    file: "assets/UnifiedSearchInput-search.js",
+    imports: ["_BarcodeSearchCue.js", "_useBarcodeInput.js"],
+  },
+  "_BarcodeSearchCue.js": {
+    file: "assets/BarcodeSearchCue-cue.js",
+    imports: ["_framework.js"],
+  },
+  "_dialog.js": {
+    file: "assets/dialog-dialoghash.js",
+    imports: ["_framework.js"],
+  },
   "_useBarcodeInput.js": { file: "assets/useBarcodeInput-barcodehash.js" },
   "_date.js": {
     file: "assets/date-eee.js",
@@ -90,7 +106,10 @@ const completeSw = `self.__WB_MANIFEST = [
   {"url":"assets/useBarcodeInput-barcodehash.js","revision":null}
 ];`;
 
-const result = assertStorefrontPrecacheClosure({ manifest, swSource: completeSw });
+const result = assertStorefrontPrecacheClosure({
+  manifest,
+  swSource: completeSw,
+});
 assert.deepEqual(result.requiredFiles, [
   "assets/BarcodeSearchCue-cue.js",
   "assets/Storefront-bbb.css",
@@ -108,20 +127,34 @@ assert.deepEqual(result.requiredFiles, [
 // The canonical allowlist must cover the storefront's shared search-input graph,
 // including the dialog and barcode chunks emitted after the Vite 7.3.7 patch.
 // Unrelated ERP pages and ERP RBAC/offline/chart chunks must remain excluded.
-const shellChunkNames = STOREFRONT_SHELL_CHUNK_GLOB.match(/^assets\/\{([^}]+)\}-\*\.js$/)?.[1].split(",");
+const shellChunkNames = STOREFRONT_SHELL_CHUNK_GLOB.match(
+  /^assets\/\{([^}]+)\}-\*\.js$/,
+)?.[1].split(",");
 assert.ok(shellChunkNames, "storefront shell glob has explicit chunk names");
 for (const file of result.requiredFiles.filter(
   (file) => file.endsWith(".js") && !file.startsWith("assets/app-"),
 )) {
   const chunkName = file.replace(/^assets\//, "").replace(/-[^-]+\.js$/, "");
-  assert.ok(shellChunkNames.includes(chunkName), `${chunkName} must be included in storefront shell precache`);
+  assert.ok(
+    shellChunkNames.includes(chunkName),
+    `${chunkName} must be included in storefront shell precache`,
+  );
 }
 
-const shellCssNames = STOREFRONT_SHELL_CSS_GLOB.match(/^assets\/\{([^}]+)\}-\*\.css$/)?.[1].split(",");
+const shellCssNames = STOREFRONT_SHELL_CSS_GLOB.match(
+  /^assets\/\{([^}]+)\}-\*\.css$/,
+)?.[1].split(",");
 assert.deepEqual(shellCssNames, ["index", "Storefront"]);
-for (const cssFile of result.requiredFiles.filter((file) => file.endsWith(".css"))) {
-  const cssChunkName = cssFile.replace(/^assets\//, "").replace(/-[^-]+\.css$/, "");
-  assert.ok(shellCssNames.includes(cssChunkName), `${cssChunkName} CSS must be included in storefront shell CSS glob`);
+for (const cssFile of result.requiredFiles.filter((file) =>
+  file.endsWith(".css"),
+)) {
+  const cssChunkName = cssFile
+    .replace(/^assets\//, "")
+    .replace(/-[^-]+\.css$/, "");
+  assert.ok(
+    shellCssNames.includes(cssChunkName),
+    `${cssChunkName} CSS must be included in storefront shell CSS glob`,
+  );
 }
 
 for (const forbiddenChunk of [
@@ -145,8 +178,16 @@ for (const forbiddenChunk of [
   "legacy-permissions",
   "permission-extensions",
 ]) {
-  assert.equal(shellChunkNames.includes(forbiddenChunk), false, `${forbiddenChunk} must not be in storefront shell glob`);
-  assert.equal(shellCssNames.includes(forbiddenChunk), false, `${forbiddenChunk} must not be in storefront shell CSS glob`);
+  assert.equal(
+    shellChunkNames.includes(forbiddenChunk),
+    false,
+    `${forbiddenChunk} must not be in storefront shell glob`,
+  );
+  assert.equal(
+    shellCssNames.includes(forbiddenChunk),
+    false,
+    `${forbiddenChunk} must not be in storefront shell CSS glob`,
+  );
 }
 
 for (const erpChunkFile of [
@@ -168,9 +209,14 @@ for (const erpChunkFile of [
     () =>
       assertStorefrontPrecacheClosure({
         manifest,
-        swSource: completeSw.replace("];", `,{"url":"${erpChunkFile}","revision":null}];`),
+        swSource: completeSw.replace(
+          "];",
+          `,{"url":"${erpChunkFile}","revision":null}];`,
+        ),
       }),
-    new RegExp(`STOREFRONT_PRECACHE_ERP_CHUNK_FORBIDDEN:${erpChunkFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+    new RegExp(
+      `STOREFRONT_PRECACHE_ERP_CHUNK_FORBIDDEN:${erpChunkFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
+    ),
   );
 }
 
@@ -179,49 +225,67 @@ for (const missingCss of ["index-aaa", "Storefront-bbb"]) {
     () =>
       assertStorefrontPrecacheClosure({
         manifest,
-        swSource: completeSw.replace(`{"url":"assets/${missingCss}.css","revision":null}`, ""),
+        swSource: completeSw.replace(
+          `{"url":"assets/${missingCss}.css","revision":null}`,
+          "",
+        ),
       }),
     /STOREFRONT_PRECACHE_STATIC_IMPORT_MISSING/,
   );
 }
 
-for (const missingChunk of ["UnifiedSearchInput-search", "BarcodeSearchCue-cue", "dialog-dialoghash", "useBarcodeInput-barcodehash"]) {
-  assert.throws(() => assertStorefrontPrecacheClosure({
-    manifest,
-    swSource: completeSw.replace(`{"url":"assets/${missingChunk}.js","revision":null}`, ""),
-  }), /STOREFRONT_PRECACHE_STATIC_IMPORT_MISSING/);
+for (const missingChunk of [
+  "UnifiedSearchInput-search",
+  "BarcodeSearchCue-cue",
+  "dialog-dialoghash",
+  "useBarcodeInput-barcodehash",
+]) {
+  assert.throws(
+    () =>
+      assertStorefrontPrecacheClosure({
+        manifest,
+        swSource: completeSw.replace(
+          `{"url":"assets/${missingChunk}.js","revision":null}`,
+          "",
+        ),
+      }),
+    /STOREFRONT_PRECACHE_STATIC_IMPORT_MISSING/,
+  );
 }
 
 assert.throws(
-  () => assertStorefrontPrecacheClosure({
-    manifest,
-    swSource: completeSw.replace(
-      '{"url":"assets/numberNormalize-fff.js","revision":null}',
-      "",
-    ),
-  }),
+  () =>
+    assertStorefrontPrecacheClosure({
+      manifest,
+      swSource: completeSw.replace(
+        '{"url":"assets/numberNormalize-fff.js","revision":null}',
+        "",
+      ),
+    }),
   /STOREFRONT_PRECACHE_STATIC_IMPORT_MISSING:assets\/numberNormalize-fff\.js/,
 );
 
 assert.throws(
-  () => assertStorefrontPrecacheClosure({
-    manifest,
-    swSource: completeSw.replace(
-      "];",
-      ',{"url":"assets/Admin-ccc.js","revision":null}];',
-    ),
-  }),
+  () =>
+    assertStorefrontPrecacheClosure({
+      manifest,
+      swSource: completeSw.replace(
+        "];",
+        ',{"url":"assets/Admin-ccc.js","revision":null}];',
+      ),
+    }),
   /STOREFRONT_PRECACHE_ADMIN_ENTRY_FORBIDDEN:assets\/Admin-ccc\.js/,
 );
 
 assert.throws(
-  () => assertStorefrontPrecacheClosure({
-    manifest,
-    swSource: completeSw.replace(
-      "];",
-      ',{"url":"assets\/ort-runtime.wasm","revision":null}];',
-    ),
-  }),
+  () =>
+    assertStorefrontPrecacheClosure({
+      manifest,
+      swSource: completeSw.replace(
+        "];",
+        ',{"url":"assets\/ort-runtime.wasm","revision":null}];',
+      ),
+    }),
   /STOREFRONT_PRECACHE_HEAVY_ASSET_FORBIDDEN:assets\/ort-runtime\.wasm/,
 );
 
@@ -246,26 +310,56 @@ const unminifiedRuntimePolicy = [
     new NetworkOnly({ "cacheName": "api-no-cache" }),
   )`,
 ].join(";\n");
-assert.doesNotThrow(() => assertStorefrontImageRuntimePolicy(unminifiedRuntimePolicy));
+assert.doesNotThrow(() =>
+  assertStorefrontImageRuntimePolicy(unminifiedRuntimePolicy),
+);
 
 assert.throws(
-  () => assertStorefrontImageRuntimePolicy(runtimePolicy.replace("NetworkOnly", "CacheFirst")),
+  () =>
+    assertStorefrontImageRuntimePolicy(
+      runtimePolicy.replace("NetworkOnly", "CacheFirst"),
+    ),
   /STOREFRONT_SW_PRIVATE_IMAGE_CACHE_FORBIDDEN/,
 );
 assert.throws(
-  () => assertStorefrontImageRuntimePolicy(runtimePolicy.replace("inventory-product", "product")),
+  () =>
+    assertStorefrontImageRuntimePolicy(
+      runtimePolicy.replace("inventory-product", "product"),
+    ),
   /STOREFRONT_SW_PRIVATE_IMAGE_POLICY_INVALID:inventory-product/,
 );
 
 assert.doesNotThrow(() =>
-  assertStorefrontPrecacheNavigationPolicy("precacheAndRoute(self.__WB_MANIFEST,{directoryIndex:null})"),
+  assertStorefrontPrecacheNavigationPolicy(
+    "precacheAndRoute(self.__WB_MANIFEST,{directoryIndex:null})",
+  ),
 );
 assert.doesNotThrow(() =>
-  assertStorefrontPrecacheNavigationPolicy('precacheAndRoute(self.__WB_MANIFEST, { "directoryIndex": null })'),
+  assertStorefrontPrecacheNavigationPolicy(
+    'precacheAndRoute(self.__WB_MANIFEST, { "directoryIndex": null })',
+  ),
 );
 assert.throws(
-  () => assertStorefrontPrecacheNavigationPolicy("precacheAndRoute(self.__WB_MANIFEST,{})"),
+  () =>
+    assertStorefrontPrecacheNavigationPolicy(
+      "precacheAndRoute(self.__WB_MANIFEST,{})",
+    ),
   /STOREFRONT_SW_DIRECTORY_INDEX_MUST_BE_NULL/,
 );
 
 console.log("storefront PWA build contract test: OK");
+
+// Split output names may be shared with public lazy components without a src key.
+const isolatedManifest = structuredClone(manifest);
+isolatedManifest["storefront.html"] = isolatedManifest["index.html"];
+delete isolatedManifest["index.html"];
+isolatedManifest["_Storefront-bbb.js"] = {
+  ...isolatedManifest["src/pages/Storefront.tsx"],
+  name: "Storefront",
+};
+delete isolatedManifest["_Storefront-bbb.js"].src;
+delete isolatedManifest["src/pages/Storefront.tsx"];
+assertStorefrontPrecacheClosure({
+  manifest: isolatedManifest,
+  swSource: completeSw,
+});

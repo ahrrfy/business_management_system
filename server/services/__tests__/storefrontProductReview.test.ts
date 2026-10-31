@@ -13,6 +13,7 @@ import {
   submitPublicStorefrontReview,
 } from "../storefrontProductReviewService";
 import { truncateAllTables } from "./__testUtils__";
+import { runWithResourceTailScope } from "../../lib/resourceAdmission";
 
 function db() {
   const instance = getDb();
@@ -56,6 +57,14 @@ beforeEach(async () => {
 });
 
 describe("storefront product review integrity", () => {
+  it("registers its detached manager-notification query before returning the review response", async () => {
+    let active = 0;
+    const result = await runWithResourceTailScope({ beginWork() { active++; return () => { active--; }; } }, () => submitPublicStorefrontReview({ productId: 1, rating: 5, reviewerName: "Synthetic visitor", comment: "Synthetic useful review text" }));
+    expect(result).toEqual({ ok: true, status: "PENDING" });
+    expect(active).toBe(1);
+    for (let n = 0; n < 100 && active; n++) await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(active).toBe(0);
+  });
   it("rejects a review before verified delivery and stores nothing", async () => {
     await createOrder({
       id: 1,

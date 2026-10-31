@@ -533,6 +533,7 @@ describe("Milestone 2 Backend Services — 100% Mathematical Reconciliation Veri
       const internalByRole = new Map(internal.map((row) => [row.systemRole, Number(row.id)]));
 
       let profileId = 0;
+      let statutoryCashAccountId = 0;
       await withTx(async (tx) => {
         profileId = (
           await createStatutoryProfile(
@@ -570,6 +571,7 @@ describe("Milestone 2 Backend Services — 100% Mathematical Reconciliation Veri
           .from(s.statutoryAccounts)
           .where(sql`${s.statutoryAccounts.profileId} = ${profileId}`);
         const statutoryByCode = new Map(statutoryRows.map((row) => [row.code, Number(row.id)]));
+        statutoryCashAccountId = statutoryByCode.get("181")!;
 
         await replaceStatutoryMappings(
           tx,
@@ -624,11 +626,11 @@ describe("Milestone 2 Backend Services — 100% Mathematical Reconciliation Veri
         ),
       );
 
-      const cashAccount = internal.find((a) => a.systemRole === "CASH");
+      expect(statutoryCashAccountId).toBeGreaterThan(0);
       const ledger = await getStatutoryAccountLedger({
         from: "2026-08-01",
         to: "2026-08-31",
-        accountId: cashAccount!.id,
+        accountId: statutoryCashAccountId,
       });
 
       expect(ledger.available).toBe(true);

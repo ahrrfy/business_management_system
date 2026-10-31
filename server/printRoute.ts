@@ -17,6 +17,7 @@ import {
 import { assertDirectPrintBridgeAuthorized } from "./services/invoicePrintAuthorization";
 import { logAudit } from "./services/auditService";
 import { logger } from "./logger";
+import { runtimeWorkDrain } from "./lib/workDrain";
 
 // حدّ base64 لطلب الطباعة الخام: ١٤M حرف ≈ ١٠MB ثنائي (base64 يضخّم ~4/3).
 // متّسق مع حدّ /api/print/raw في server/index.ts ⇒ يُرفض كلاهما قبل تشكيل Buffer.
@@ -142,7 +143,7 @@ export function printRouter(): Router {
   const r = Router();
 
   // حالة الجسر — يستعملها العميل ليقرّر: جسر الخادم أم WebUSB أم حوار المتصفّح.
-  r.get("/status", async (req, res) => {
+  r.get("/status", (req, res) => runtimeWorkDrain.run(async () => {
     const user = await resolveAuthorizedPrintUser(req, res);
     if (!user) return;
     const target = getConfiguredTarget();
@@ -151,10 +152,10 @@ export function printRouter(): Router {
       enabled: target != null,
       description: describeTarget(target),
     });
-  });
+  }));
 
   // طباعة بايتات ESC/POS خام (base64). العميل يولّد النقطية (raster) فالعربية تُرسَّم على Canvas لديه.
-  r.post("/raw", async (req, res) => {
+  r.post("/raw", (req, res) => runtimeWorkDrain.run(async () => {
     const user = await resolveAuthorizedPrintUser(req, res);
     if (!user) return;
     if (!isBridgeEnabled()) {
@@ -220,10 +221,10 @@ export function printRouter(): Router {
       logger.error({ err: e }, "print bridge raw failed");
       res.status(502).json({ ok: false, error: "فشل إرسال الطباعة للطابعة." });
     }
-  });
+  }));
 
   // تذكرة اختبار (ASCII) — للتحقق من سلامة المسار والقاطع.
-  r.post("/test", async (req, res) => {
+  r.post("/test", (req, res) => runtimeWorkDrain.run(async () => {
     const user = await resolveAuthorizedPrintUser(req, res);
     if (!user) return;
     if (!isBridgeEnabled()) {
@@ -248,7 +249,7 @@ export function printRouter(): Router {
       logger.error({ err: e }, "print bridge test failed");
       res.status(502).json({ ok: false, error: "فشل اختبار الطباعة." });
     }
-  });
+  }));
 
   return r;
 }

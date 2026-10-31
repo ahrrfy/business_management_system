@@ -15,6 +15,7 @@ import { getDb } from "../db";
 import { loadVariantAvailability } from "./catalog/variantAvailability";
 import { evaluateStorefrontUnitEligibility } from "./storefrontEligibilityService";
 import { createTtlCache } from "../lib/ttlCache";
+import { storefrontReadCacheEnabled, storefrontCacheGet } from "../lib/storefrontCachePolicy";
 import { getCurrentCompanyId } from "../tenancy/context";
 
 export interface StorefrontSearchSuggestionInput extends StorefrontSearchScope {
@@ -208,5 +209,5 @@ export async function storefrontSearchSuggestions(
     };
   };
   // Publication and ATP are revalidated by the bounded catalog hydration. Result TTL is deliberately short.
-  return process.env.NODE_ENV === "test" ? load() : resultCache.get(key, load);
+  return !storefrontReadCacheEnabled() ? load() : storefrontCacheGet(resultCache, "suggestions", key, load);
 }

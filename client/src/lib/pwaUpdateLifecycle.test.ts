@@ -271,6 +271,7 @@ describe("waiting worker stream release protocol", () => {
         self: {
           location: { origin: "https://erp.example" },
           navigator: { onLine: online },
+          clients: { matchAll: async () => [] },
           skipWaiting,
           addEventListener: (_type: string, handler: any) =>
             handlers.push(handler),
@@ -393,3 +394,21 @@ describe("waiting worker stream release protocol", () => {
   });
 });
 
+describe("storefront unresolved checkout activation", () => {
+  it("blocks a durable retry key even after its HTTP request ended", async () => {
+    const { storefrontActivationIsSafe } = await import("./pwaUpdateLifecycle");
+    expect(storefrontActivationIsSafe({ getItem: () => null })).toBe(true);
+    expect(
+      storefrontActivationIsSafe({
+        getItem: () => '{"clientRequestId":"lost-response"}',
+      }),
+    ).toBe(false);
+    expect(
+      storefrontActivationIsSafe({
+        getItem: () => {
+          throw new Error("storage unavailable");
+        },
+      }),
+    ).toBe(false);
+  });
+});

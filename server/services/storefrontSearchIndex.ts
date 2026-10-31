@@ -9,6 +9,7 @@ import {
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { createTtlCache } from "../lib/ttlCache";
+import { storefrontReadCacheEnabled, storefrontCacheGet } from "../lib/storefrontCachePolicy";
 import { getCurrentCompanyId } from "../tenancy/context";
 import { storefrontPublishableCondition } from "./storefrontEligibilityService";
 import {
@@ -81,9 +82,9 @@ export async function loadStorefrontSearchMatches(
   allowSimilar = false,
 ) {
   const rows =
-    process.env.NODE_ENV === "test"
+    !storefrontReadCacheEnabled()
       ? await readCandidates()
-      : await indexCache.get(
+      : await storefrontCacheGet(indexCache, "index",
           String(getCurrentCompanyId() ?? 0),
           readCandidates,
         );

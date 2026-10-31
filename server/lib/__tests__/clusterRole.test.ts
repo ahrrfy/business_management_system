@@ -15,6 +15,12 @@ import {
 const env = (v: Record<string, string | undefined>) => v as NodeJS.ProcessEnv;
 
 describe("isBackgroundJobRunner — الوظائف الخلفيّة في عاملٍ واحد", () => {
+  it("never runs jobs in public instance zero or an unnumbered public process", () => {
+    for (const NODE_APP_INSTANCE of [undefined, "0", "1"]) {
+      expect(isBackgroundJobRunner(env({ WEB_RUNTIME_ROLE: "public", NODE_APP_INSTANCE }))).toBe(false);
+    }
+    expect(isBackgroundJobRunner(env({ WEB_RUNTIME_ROLE: "admin", NODE_APP_INSTANCE: "0" }))).toBe(true);
+  });
   it("العامل 0 من العنقود ⇒ نعم", () => {
     expect(isBackgroundJobRunner(env({ NODE_APP_INSTANCE: "0" }))).toBe(true);
   });

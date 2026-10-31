@@ -64,6 +64,31 @@ function sha256(buffer) {
   return createHash("sha256").update(buffer).digest("hex");
 }
 
+/** Only a fixed loopback topology can be selected; arbitrary proxy destinations are forbidden. */
+export function nginxRuntimeMode(options = {}) {
+  if (options.runtimeMode !== undefined) {
+    if (!["legacy", "split"].includes(options.runtimeMode)) throw contractError("NGINX_RUNTIME_MODE_INVALID");
+    return options.runtimeMode;
+  }
+  const file = path.resolve(options.appEnvPath ?? path.join(options.projectRoot ?? PROJECT_ROOT, ".env"));
+  if (!fs.existsSync(file)) return "legacy";
+  assertPlainFile(file, "NGINX_APP_ENV_INVALID");
+  const values = [...fs.readFileSync(file, "utf8").matchAll(/^\s*(?:export\s+)?WEB_RUNTIME_MODE\s*=\s*(.*?)\s*$/gm)];
+  if (values.length > 1) throw contractError("NGINX_RUNTIME_MODE_INVALID");
+  const mode = (values[0]?.[1] ?? "legacy").replace(/^(["'])(.*)\1$/, "$2");
+  if (!["legacy", "split"].includes(mode)) throw contractError("NGINX_RUNTIME_MODE_INVALID");
+  return mode;
+}
+
+export function renderNginxRuntimeSource(content, source, mode = "legacy") {
+  if (!["legacy", "split"].includes(mode)) throw contractError("NGINX_RUNTIME_MODE_INVALID");
+  const text = Buffer.isBuffer(content) ? content.toString("utf8") : content;
+  if (mode !== "split" || path.basename(source) !== "nginx-public.conf") return Buffer.from(text);
+  const marker = "set $alroya_backend http://127.0.0.1:3000; # runtime-public-target";
+  if (text.split(marker).length !== 2) throw contractError("NGINX_PUBLIC_RUNTIME_TARGET_INVALID");
+  return Buffer.from(text.replace(marker, "set $alroya_backend http://127.0.0.1:3001; # runtime-public-target"));
+}
+
 function fingerprintsMatch(left, right) {
   const a = Buffer.from(left, "utf8");
   const b = Buffer.from(right, "utf8");
@@ -651,7 +676,7 @@ export function verifyLiveNginxContract(options = {}) {
     }
     const expectedHash =
       normalized.expectedFileHashes?.[entry.target] ??
-      sha256(fs.readFileSync(entry.source));
+      sha256(renderNginxRuntimeSource(fs.readFileSync(entry.source), entry.source, nginxRuntimeMode(options)));
     if (!/^[a-f0-9]{64}$/u.test(expectedHash)) {
       issues.push(`NGINX_LIVE_FILE_EXPECTATION_INVALID:${entry.target}`);
       continue;

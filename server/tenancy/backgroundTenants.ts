@@ -1,3 +1,4 @@
+import { runtimeWorkDrain } from "../lib/workDrain";
 import { getCurrentCompanyId, runWithCompany } from "./context";
 import { isMultiTenantModeActive, withTenantDb } from "../db";
 import { logger } from "../logger";
@@ -90,6 +91,13 @@ export async function runAcrossActiveTenants<T>(
   job: string,
   operation: () => Promise<T>,
 ): Promise<T[]> {
+  // New ticks stop at the boundary; descendants of accepted jobs retain their
+  // scope through awaits and can finish post-commit notification/audit work.
+  if (!runtimeWorkDrain.isAccepting && !runtimeWorkDrain.hasActiveParent) return [];
+  return runtimeWorkDrain.run(() => runAcrossActiveTenantsWork(job, operation));
+}
+
+async function runAcrossActiveTenantsWork<T>(job: string, operation: () => Promise<T>): Promise<T[]> {
   if (!isMultiTenantModeActive() || getCurrentCompanyId() != null) {
     try {
       const result = await runInBackgroundOperationScope(job, operation);

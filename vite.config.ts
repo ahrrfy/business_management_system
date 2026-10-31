@@ -2,7 +2,9 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { sentryVitePlugin } from "@sentry/vite-plugin";
 import path from "node:path";
-import { defineConfig, loadEnv, type Plugin } from "vite";
+import fs from "node:fs";
+import { storefrontRuntimeSources } from "./scripts/build-web.mjs";
+import { defineConfig, loadEnv, type Plugin, type UserConfig } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
 import {
   CHUNK_SIZE_WARNING_LIMIT_KB,
@@ -234,9 +236,7 @@ export function cssAssetBudgetViolation(output: {
   }
   const source = output.source ?? "";
   const bytes =
-    typeof source === "string"
-      ? Buffer.byteLength(source)
-      : source.byteLength;
+    typeof source === "string" ? Buffer.byteLength(source) : source.byteLength;
   return bytes > CSS_ASSET_BUDGET_BYTES
     ? `CSS_BUDGET_EXCEEDED ${output.fileName}: ${bytes} > ${CSS_ASSET_BUDGET_BYTES}`
     : null;
@@ -271,7 +271,11 @@ function enforceSentryBuildContract(
   };
 }
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(async ({ mode }): Promise<UserConfig> => {
+  const storefront = process.env.WEB_BUILD_TARGET === "storefront";
+  const publicSources: string[] = storefront
+    ? await storefrontRuntimeSources(projectRoot)
+    : [];
   const envDir = resolveViteEnvDir(process.env, projectRoot);
   const fileEnvironment = envDir === false ? {} : loadEnv(mode, envDir, "");
   const environment = { ...fileEnvironment, ...process.env };
@@ -286,246 +290,355 @@ export default defineConfig(({ mode }) => {
         ["SENTRY_ORG", sentryOrg],
         ["SENTRY_PROJECT", sentryProject],
         ["SENTRY_RELEASE", sentryRelease],
-      ].filter(([, value]) => !value).map(([key]) => key)
+      ]
+        .filter(([, value]) => !value)
+        .map(([key]) => key)
     : [];
   const sentryUploadEnabled =
-    clientSentryDsn.length > 0 && missingSentryBuildValues.length === 0;
+    !storefront &&
+    clientSentryDsn.length > 0 &&
+    missingSentryBuildValues.length === 0;
 
   return {
-  plugins: [
-    react(),
-    tailwindcss(),
-    splitErpStylesForBuild(),
-    enforceBuildContracts(),
-    VitePWA({
-      // الإصدار الجديد يثبت في الخلفية ويبقى waiting. هذا السلوك يمنع خلط حزم
-      // إصدارين ويصون الإدخال الجاري؛ PwaUpdateManager يطلب قرار الموظف ثم
-      // يرسل SKIP_WAITING بعد حفظ لقطة استرداد محلية.
-      registerType: "prompt",
-      includeAssets: ["favicon.png", "apple-touch-icon.png", "icon-192.png", "icon-512.png"],
-      // PWA المتجر تحفظ قشرة /store فقط. بيانات المنتجات والأسعار والطلب تبقى شبكة فقط؛
-      // لا ندّعي تشغيل التجارة كاملةً دون اتصال ولا نعيد صفحات ERP من fallback مخبّأ.
-      workbox: {
-        // حزمة القشرة المشتركة أكبر من 2MiB؛ الرفع يمنع إسقاط ملف واجهة لازم لفتح /store.
-        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
-        // precache مقصور على دخول التطبيق + Storefront واعتماداته المشتركة. أسماء الصفحات
-        // الإدارية الأخرى لا تطابق هذه القائمة، فلا يتحول SW إلى نسخة أوفلاين كاملة للـERP.
-        globPatterns: [
-          "index.html",
-          "assets/app-*.js",
-          STOREFRONT_SHELL_CSS_GLOB,
-          STOREFRONT_SHELL_CHUNK_GLOB,
-          "fonts/*.woff2",
-        ],
-        // استبعاد أصول ML الضخمة من precache الـSW: wasm الخاصّ بـonnxruntime (يُجمَّع عبر @imgly،
-        // ~24م.ب) + أصول @imgly المستضافة ذاتياً في /imgly-assets — تتجاوز سقف 5م.ب وتُحمَّل عند
-        // الطلب (مسار CUT) لا من الـSW. بدونه يفشل بناء الإنتاج (vite-plugin-pwa). راجع
-        // client/src/lib/imageStudio/README.md.
-        globIgnores: ["**/ort-*.wasm", "**/imgly-assets/**"],
-        // حقن معالج Web Push المخصَّص في SW المولَّد (دون التخلّي عن generateSW — يُبقي
-        // آليّة autoUpdate وworkbox precache/runtimeCaching كما هي). الملف في public/ ⇒ يُنسَخ
-        // إلى /push-handler.js حرفياً، فيصير مُتاحاً لـimportScripts داخل SW.
-        importScripts: ["/pwa-update-worker.js", "/push-handler.js"],
-        // تفعيل الإصدار الجديد لا يتم إلا برسالة SKIP_WAITING من الموظف. الإعداد
-        // الافتراضي false يضيف مستقبل الرسالة الآمن في Workbox.
-        skipWaiting: false,
-        clientsClaim: false,
-        cleanupOutdatedCaches: true,
-        // عطّل directoryIndex الافتراضي ("index.html") في PrecacheRoute: كان يلتقط طلب الجذر "/"
-        // (لوحة التحكم/الدخول في ERP) ويُعيد index.html القديم من precache متجاوزاً navigateFallbackAllowlist.
-        directoryIndex: null,
-        navigateFallback: "/index.html",
-        // قشرة Storefront وحدها قابلة للفتح من precache. كل مسار آخر يحتاج الخادم.
-        navigateFallbackAllowlist: [/^\/store(?:\/|$)/],
-        runtimeCaching: [
-          {
-            // صور inventory/count/kiosk تعتمد على جلسة أو تكليف أو جهاز. يجب أن تصل إلى
-            // بوابة الخادم كل مرة؛ CacheStorage لا يجوز أن يعيد رداً صادراً لمستخدم سابق.
-            urlPattern: storefrontPrivateImageNetworkMatcher,
-            handler: "NetworkOnly",
-            options: { cacheName: "private-images-no-cache" },
-          },
-          {
-            // الاستثناء المخبّأ محصور في نقاط الصور العامة المعلنة في imageRoute:
-            // banner وproduct وcompany/:companyCode/product فقط. يحمل الرابط بصمة المحتوى.
-            urlPattern: storefrontPublicImageCacheMatcher,
-            handler: "CacheFirst",
-            options: {
-              cacheName: "store-images",
-              // ٣٠٠ مُدخَلاً (كان ١٢٠ حين كانت البنرات وحدها): صور المنتجات انضمّت ⇒ صفحةُ
-              // كتالوجٍ واحدة تجلب حتى ٦٠ صورة، فسقفُ ١٢٠ يطرد صور البنرات بعد تصفّح صفحتين
-              // (LRU) فتُجلَب من جديد ⇒ يُبطل نصف المكسب بصمت. والطرد يبقى مضبوطاً بالسقف والعمر.
-              expiration: { maxEntries: 300, maxAgeSeconds: 60 * 60 * 24 * 60 }, // ٦٠ يوماً
-              cacheableResponse: { statuses: [0, 200] },
+    plugins: [
+      ...(storefront
+        ? [
+            {
+              name: "storefront-release-boundary",
+              enforce: "pre" as const,
+              transform(code: string, id: string) {
+                if (
+                  normalizeCssModuleId(id) !==
+                  normalizeCssModuleId(
+                    path.join(projectRoot, "client/src/index.css"),
+                  )
+                )
+                  return null;
+                const sources = publicSources
+                  .map((file) => `@source "${file.replace(/\\/g, "/")}";`)
+                  .join("\n");
+                return code
+                  .replace(/^@source .*;\r?\n/gm, "")
+                  .replace(
+                    '@import "tailwindcss" source(none);',
+                    `@import "tailwindcss" source(none);\n${sources}`,
+                  );
+              },
+              writeBundle(options: { dir?: string }) {
+                const directory = options.dir!;
+                fs.renameSync(
+                  path.join(directory, "storefront.html"),
+                  path.join(directory, "index.html"),
+                );
+              },
             },
-          },
-          {
-            // كل API آخر، بما فيه أي مسار صورة خاص جديد، شبكة فقط افتراضياً.
-            urlPattern: storefrontApiNetworkMatcher,
-            handler: "NetworkOnly",
-            options: { cacheName: "api-no-cache" },
-          },
-          {
-            urlPattern: ({ url }) => url.pathname.startsWith("/assets"),
-            handler: "StaleWhileRevalidate",
-            options: { cacheName: "static-assets" },
-          },
+          ]
+        : []),
+      react(),
+      tailwindcss(),
+      splitErpStylesForBuild(),
+      enforceBuildContracts(),
+      VitePWA({
+        // الإصدار الجديد يثبت في الخلفية ويبقى waiting. هذا السلوك يمنع خلط حزم
+        // إصدارين ويصون الإدخال الجاري؛ PwaUpdateManager يطلب قرار الموظف ثم
+        // يرسل SKIP_WAITING بعد حفظ لقطة استرداد محلية.
+        registerType: "prompt",
+        includeAssets: [
+          "favicon.png",
+          "apple-touch-icon.png",
+          "icon-192.png",
+          "icon-512.png",
         ],
-      },
-      manifest: {
-        id: "/store",
-        name: "الرؤية العربية",
-        short_name: "الرؤية العربية",
-        description: "نظام إدارة أعمال الرؤية العربية والمكتبة للطباعة والقرطاسية والتجارة",
-        lang: "ar",
-        dir: "rtl",
-        theme_color: "#1e4a63",
-        background_color: "#fff8ef",
-        display: "standalone",
-        start_url: "/",
-        // النطاق على الجذر لتمكين تثبيت PWA بهوية النظام كاملة (المتجر العام والنظام الإداري)،
-        // مع بقاء navigation fallback محصوراً بـ /store فلا يُقدَّم ERP أوفلاين من كاش غير متصل.
-        scope: "/",
-        categories: ["business", "shopping"],
-        icons: [
-          { src: "/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
-          { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
-          { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
-        ],
-      },
-    }),
-    enforceSentryBuildContract(clientSentryDsn, missingSentryBuildValues),
-    ...(sentryUploadEnabled
-      ? [
-          sentryVitePlugin({
-            org: sentryOrg,
-            project: sentryProject,
-            authToken: sentryAuthToken,
-            telemetry: false,
-            release: {
-              name: sentryRelease,
-              inject: true,
-              setCommits: false,
+        // PWA المتجر تحفظ قشرة /store فقط. بيانات المنتجات والأسعار والطلب تبقى شبكة فقط؛
+        // لا ندّعي تشغيل التجارة كاملةً دون اتصال ولا نعيد صفحات ERP من fallback مخبّأ.
+        workbox: {
+          // حزمة القشرة المشتركة أكبر من 2MiB؛ الرفع يمنع إسقاط ملف واجهة لازم لفتح /store.
+          maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+          cacheId: storefront ? "alarabiya-storefront" : "alarabiya-erp",
+          // precache مقصور على دخول التطبيق + Storefront واعتماداته المشتركة. أسماء الصفحات
+          // الإدارية الأخرى لا تطابق هذه القائمة، فلا يتحول SW إلى نسخة أوفلاين كاملة للـERP.
+          globPatterns: storefront
+            ? ["index.html", "assets/*.{js,css}", "fonts/*.woff2"]
+            : [
+                "index.html",
+                "assets/app-*.js",
+                STOREFRONT_SHELL_CSS_GLOB,
+                STOREFRONT_SHELL_CHUNK_GLOB,
+                "fonts/*.woff2",
+              ],
+          // استبعاد أصول ML الضخمة من precache الـSW: wasm الخاصّ بـonnxruntime (يُجمَّع عبر @imgly،
+          // ~24م.ب) + أصول @imgly المستضافة ذاتياً في /imgly-assets — تتجاوز سقف 5م.ب وتُحمَّل عند
+          // الطلب (مسار CUT) لا من الـSW. بدونه يفشل بناء الإنتاج (vite-plugin-pwa). راجع
+          // client/src/lib/imageStudio/README.md.
+          globIgnores: ["**/ort-*.wasm", "**/imgly-assets/**"],
+          // حقن معالج Web Push المخصَّص في SW المولَّد (دون التخلّي عن generateSW — يُبقي
+          // آليّة autoUpdate وworkbox precache/runtimeCaching كما هي). الملف في public/ ⇒ يُنسَخ
+          // إلى /push-handler.js حرفياً، فيصير مُتاحاً لـimportScripts داخل SW.
+          importScripts: ["/pwa-update-worker.js", "/push-handler.js"],
+          // تفعيل الإصدار الجديد لا يتم إلا برسالة SKIP_WAITING من الموظف. الإعداد
+          // الافتراضي false يضيف مستقبل الرسالة الآمن في Workbox.
+          skipWaiting: false,
+          clientsClaim: false,
+          cleanupOutdatedCaches: false,
+          // عطّل directoryIndex الافتراضي ("index.html") في PrecacheRoute: كان يلتقط طلب الجذر "/"
+          // (لوحة التحكم/الدخول في ERP) ويُعيد index.html القديم من precache متجاوزاً navigateFallbackAllowlist.
+          directoryIndex: null,
+          navigateFallback: "/index.html",
+          // قشرة Storefront وحدها قابلة للفتح من precache. كل مسار آخر يحتاج الخادم.
+          navigateFallbackAllowlist: [/^\/store(?:\/|$)/],
+          runtimeCaching: [
+            {
+              // صور inventory/count/kiosk تعتمد على جلسة أو تكليف أو جهاز. يجب أن تصل إلى
+              // بوابة الخادم كل مرة؛ CacheStorage لا يجوز أن يعيد رداً صادراً لمستخدم سابق.
+              urlPattern: storefrontPrivateImageNetworkMatcher,
+              handler: "NetworkOnly",
+              options: {
+                cacheName: storefront
+                  ? "storefront-private-images-no-cache"
+                  : "private-images-no-cache",
+              },
             },
-            sourcemaps: {
-              assets: "./dist/public/assets/**",
-              filesToDeleteAfterUpload: "./dist/public/**/*.map",
+            {
+              // الاستثناء المخبّأ محصور في نقاط الصور العامة المعلنة في imageRoute:
+              // banner وproduct وcompany/:companyCode/product فقط. يحمل الرابط بصمة المحتوى.
+              urlPattern: storefrontPublicImageCacheMatcher,
+              handler: "CacheFirst",
+              options: {
+                cacheName: storefront
+                  ? "storefront-store-images"
+                  : "store-images",
+                // ٣٠٠ مُدخَلاً (كان ١٢٠ حين كانت البنرات وحدها): صور المنتجات انضمّت ⇒ صفحةُ
+                // كتالوجٍ واحدة تجلب حتى ٦٠ صورة، فسقفُ ١٢٠ يطرد صور البنرات بعد تصفّح صفحتين
+                // (LRU) فتُجلَب من جديد ⇒ يُبطل نصف المكسب بصمت. والطرد يبقى مضبوطاً بالسقف والعمر.
+                expiration: {
+                  maxEntries: 300,
+                  maxAgeSeconds: 60 * 60 * 24 * 60,
+                }, // ٦٠ يوماً
+                cacheableResponse: { statuses: [0, 200] },
+              },
             },
-          }),
-        ]
-      : []),
-  ],
-  define: {
-    "import.meta.env.VITE_SENTRY_RELEASE": JSON.stringify(
-      sentryUploadEnabled ? sentryRelease : "",
-    ),
-  },
-  resolve: {
-    alias: {
-      "@": path.resolve(projectRoot, "client", "src"),
-      "@shared": path.resolve(projectRoot, "shared"),
-    },
-  },
-  // مرشح النشر يرث VITE_* العامة صراحةً من المتحكّم، ولا يطلب من Vite قراءة
-  // ملف إنتاج يحوي NODE_ENV وأسرار الخادم. التطوير المحلي يبقى على السلوك المعتاد.
-  envDir,
-  root: path.resolve(projectRoot, "client"),
-  publicDir: path.resolve(projectRoot, "client", "public"),
-  build: {
-    // الخرائط لا تُولَّد إلا عندما يكون رفع Sentry كاملاً؛ hidden تمنع نشر رابطها في JS،
-    // وfilesToDeleteAfterUpload يحذفها من artifact العام بعد نجاح الرفع.
-    sourcemap: sentryUploadEnabled ? "hidden" : false,
-    // بوابة artifact تستخدم مخطط Vite الرسمي لإغلاق imports الثابتة لقشرة Storefront.
-    manifest: true,
-    outDir: path.resolve(projectRoot, "dist/public"),
-    emptyOutDir: true,
-    // ExcelJS حزمة تصدير اختيارية معزولة (~937KB). نرفع تحذير Vite العام لها فقط عملياً،
-    // بينما enforceBuildContracts يبقي كل حزمة أخرى تحت 500KB وExcel تحت 950KB.
-    chunkSizeWarningLimit: CHUNK_SIZE_WARNING_LIMIT_KB,
-    rollupOptions: {
-      output: {
-        // اسمٌ مميز لدخول SPA يمنع glob قشرة PWA من التقاط أي chunk آخر اسمه index
-        // (مثل مكتبة ماسح الباركود) لمجرد تشابه الاسم.
-        entryFileNames: "assets/app-[hash].js",
-        chunkFileNames(chunkInfo) {
-          if (chunkInfo.name === "App") return "assets/erp-routes-[hash].js";
-          return "assets/[name]-[hash].js";
+            {
+              // كل API آخر، بما فيه أي مسار صورة خاص جديد، شبكة فقط افتراضياً.
+              urlPattern: storefrontApiNetworkMatcher,
+              handler: "NetworkOnly",
+              options: {
+                cacheName: storefront
+                  ? "storefront-api-no-cache"
+                  : "api-no-cache",
+              },
+            },
+            {
+              urlPattern: ({ url }) => url.pathname.startsWith("/assets"),
+              handler: "StaleWhileRevalidate",
+              options: {
+                cacheName: storefront
+                  ? "storefront-static-assets"
+                  : "erp-static-assets",
+              },
+            },
+          ],
         },
-        manualChunks(id) {
-          // Legacy permission dictionaries remain needed for untouched roles, but do not
-          // belong in the account-sharing or application entry chunks.
-          if (id.includes("/shared/atomicPermissionExtensions.ts")) return "permission-extensions";
-          if (id.includes("/shared/atomicPermissions.ts")) return "legacy-permissions";
-          // The ERP shell is reused by every operational page; isolate its common
-          // dependencies instead of accumulating them in the SPA entry.
-          // AppLayout is dynamically reached via lazy("./App") from BootstrapApp.
-          if (id.includes("/client/src/lib/navVisibility.ts") || id.includes("/client/src/lib/moduleRegistry.ts")) return "erp-navigation";
-          if (id.includes("/shared/operationPermissionCatalog.part1.generated")) return "operation-catalog-1";
-          if (id.includes("/shared/operationPermissionCatalog.part2.generated")) return "operation-catalog-2";
-          if (id.includes("/node_modules/@casl/") || id.includes("/node_modules/sift/")) return "authorization-vendor";
-          if (id.includes("/node_modules/zod/")) return "validation-vendor";
-          // كل أيقونات lucide في حُزمة واحدة بدل ~٨٠ ملفاً صغيراً. كان كل أيقونة حُزمةً
-          // منفصلة ⇒ كل صفحة تطلب عشرات ملفات الأصول دفعةً واحدة، فتُشبع خادم الأصول
-          // (Express + compression على threadpool ٤ خيوط) وتتعلّق الطلبات على «جار التحميل».
-          if (id.includes("node_modules/lucide-react")) return "icons";
-          // الرسوم البيانية (~400KB) تُستعمل عند فتح لوحات التحليل فقط. عزل Recharts
-          // يمنع ابتلاعها داخل حزمة صفحة الخزينة وتجاوز سقف 500KB لبقية الشاشات.
-          if (id.includes("node_modules/recharts")) return "charts";
-          // حزمة Excel ضخمة (~936KB) ومطلوبة فقط عند التصدير ⇒ افصلها كي لا تُثقل أي صفحة أخرى.
-          if (id.includes("node_modules/exceljs")) return EXCEL_CHUNK_NAME;
-          // حزم الحركة والتأثيرات البصرية المستقلة (framer-motion)
-          if (
-            id.includes("/node_modules/framer-motion/") ||
-            id.includes("/node_modules/motion-dom/") ||
-            id.includes("/node_modules/motion-utils/")
-          ) return "motion";
-          // مكتبات البنية المشتركة تتغير بوتيرة أبطأ من شيفرة النظام. فصلها يقلل
-          // حجم الحزمة الأساسية ويحافظ على كاش المتصفح عند نشر تعديلات الشاشات.
-          if (
-            id.includes("/node_modules/react/") ||
-            id.includes("/node_modules/react-dom/") ||
-            id.includes("/node_modules/scheduler/") ||
-            id.includes("/node_modules/wouter/")
-          ) return "framework";
-          if (
-            id.includes("/node_modules/@tanstack/") ||
-            id.includes("/node_modules/@trpc/") ||
-            id.includes("/node_modules/superjson/") ||
-            id.includes("/node_modules/decimal.js/")
-          ) return "data-client";
-          if (
-            id.includes("/node_modules/@radix-ui/") ||
-            id.includes("/node_modules/@floating-ui/") ||
-            id.includes("/node_modules/cmdk/") ||
-            id.includes("/node_modules/vaul/") ||
-            id.includes("/node_modules/tailwind-merge/") ||
-            id.includes("/node_modules/clsx/") ||
-            id.includes("/node_modules/sonner/") ||
-            id.includes("/node_modules/input-otp/") ||
-            id.includes("/node_modules/qrcode/")
-          ) return "ui-vendor";
-          if (id.includes("/node_modules/@sentry/")) return "observability";
-          if (id.includes("/node_modules/dexie/")) return "offline-store";
+        manifest: {
+          // Manifest identity already includes its origin. Keep the deployed ID so installed clients retain identity.
+          id: "/store",
+          name: "الرؤية العربية",
+          short_name: "الرؤية العربية",
+          description:
+            "نظام إدارة أعمال الرؤية العربية والمكتبة للطباعة والقرطاسية والتجارة",
+          lang: "ar",
+          dir: "rtl",
+          theme_color: "#1e4a63",
+          background_color: "#fff8ef",
+          display: "standalone",
+          start_url: storefront ? "/store" : "/",
+          // النطاق على الجذر لتمكين تثبيت PWA بهوية النظام كاملة (المتجر العام والنظام الإداري)،
+          // مع بقاء navigation fallback محصوراً بـ /store فلا يُقدَّم ERP أوفلاين من كاش غير متصل.
+          scope: "/",
+          categories: ["business", "shopping"],
+          icons: [
+            {
+              src: "/icon-192.png",
+              sizes: "192x192",
+              type: "image/png",
+              purpose: "any",
+            },
+            {
+              src: "/icon-512.png",
+              sizes: "512x512",
+              type: "image/png",
+              purpose: "any",
+            },
+            {
+              src: "/icon-512.png",
+              sizes: "512x512",
+              type: "image/png",
+              purpose: "maskable",
+            },
+          ],
+        },
+      }),
+      enforceSentryBuildContract(
+        storefront ? "" : clientSentryDsn,
+        missingSentryBuildValues,
+      ),
+      ...(sentryUploadEnabled
+        ? [
+            sentryVitePlugin({
+              org: sentryOrg,
+              project: sentryProject,
+              authToken: sentryAuthToken,
+              telemetry: false,
+              release: {
+                name: sentryRelease,
+                inject: true,
+                setCommits: false,
+              },
+              sourcemaps: {
+                assets: "./dist/public/assets/**",
+                filesToDeleteAfterUpload: "./dist/public/**/*.map",
+              },
+            }),
+          ]
+        : []),
+    ],
+    define: {
+      "import.meta.env.VITE_SENTRY_RELEASE": JSON.stringify(
+        sentryUploadEnabled ? sentryRelease : "",
+      ),
+    },
+    resolve: {
+      alias: {
+        "@": path.resolve(projectRoot, "client", "src"),
+        "@shared": path.resolve(projectRoot, "shared"),
+      },
+    },
+    // مرشح النشر يرث VITE_* العامة صراحةً من المتحكّم، ولا يطلب من Vite قراءة
+    // ملف إنتاج يحوي NODE_ENV وأسرار الخادم. التطوير المحلي يبقى على السلوك المعتاد.
+    envDir,
+    root: path.resolve(projectRoot, "client"),
+    publicDir: path.resolve(projectRoot, "client", "public"),
+    build: {
+      // الخرائط لا تُولَّد إلا عندما يكون رفع Sentry كاملاً؛ hidden تمنع نشر رابطها في JS،
+      // وfilesToDeleteAfterUpload يحذفها من artifact العام بعد نجاح الرفع.
+      sourcemap: sentryUploadEnabled ? "hidden" : false,
+      // بوابة artifact تستخدم مخطط Vite الرسمي لإغلاق imports الثابتة لقشرة Storefront.
+      manifest: true,
+      outDir: path.resolve(
+        projectRoot,
+        storefront ? "dist/storefront" : "dist/public",
+      ),
+      emptyOutDir: true,
+      // ExcelJS حزمة تصدير اختيارية معزولة (~937KB). نرفع تحذير Vite العام لها فقط عملياً،
+      // بينما enforceBuildContracts يبقي كل حزمة أخرى تحت 500KB وExcel تحت 950KB.
+      chunkSizeWarningLimit: CHUNK_SIZE_WARNING_LIMIT_KB,
+      rollupOptions: {
+        input: path.resolve(
+          projectRoot,
+          storefront ? "client/storefront.html" : "client/index.html",
+        ),
+        output: {
+          // اسمٌ مميز لدخول SPA يمنع glob قشرة PWA من التقاط أي chunk آخر اسمه index
+          // (مثل مكتبة ماسح الباركود) لمجرد تشابه الاسم.
+          entryFileNames: "assets/app-[hash].js",
+          chunkFileNames(chunkInfo) {
+            if (chunkInfo.name === "App") return "assets/erp-routes-[hash].js";
+            return "assets/[name]-[hash].js";
+          },
+          manualChunks(id) {
+            // Legacy permission dictionaries remain needed for untouched roles, but do not
+            // belong in the account-sharing or application entry chunks.
+            if (id.includes("/shared/atomicPermissionExtensions.ts"))
+              return "permission-extensions";
+            if (id.includes("/shared/atomicPermissions.ts"))
+              return "legacy-permissions";
+            // The ERP shell is reused by every operational page; isolate its common
+            // dependencies instead of accumulating them in the SPA entry.
+            // AppLayout is dynamically reached via lazy("./App") from BootstrapApp.
+            if (
+              id.includes("/client/src/lib/navVisibility.ts") ||
+              id.includes("/client/src/lib/moduleRegistry.ts")
+            )
+              return "erp-navigation";
+            if (
+              id.includes("/shared/operationPermissionCatalog.part1.generated")
+            )
+              return "operation-catalog-1";
+            if (
+              id.includes("/shared/operationPermissionCatalog.part2.generated")
+            )
+              return "operation-catalog-2";
+            if (
+              id.includes("/node_modules/@casl/") ||
+              id.includes("/node_modules/sift/")
+            )
+              return "authorization-vendor";
+            if (id.includes("/node_modules/zod/")) return "validation-vendor";
+            // كل أيقونات lucide في حُزمة واحدة بدل ~٨٠ ملفاً صغيراً. كان كل أيقونة حُزمةً
+            // منفصلة ⇒ كل صفحة تطلب عشرات ملفات الأصول دفعةً واحدة، فتُشبع خادم الأصول
+            // (Express + compression على threadpool ٤ خيوط) وتتعلّق الطلبات على «جار التحميل».
+            if (id.includes("node_modules/lucide-react")) return "icons";
+            // الرسوم البيانية (~400KB) تُستعمل عند فتح لوحات التحليل فقط. عزل Recharts
+            // يمنع ابتلاعها داخل حزمة صفحة الخزينة وتجاوز سقف 500KB لبقية الشاشات.
+            if (id.includes("node_modules/recharts")) return "charts";
+            // حزمة Excel ضخمة (~936KB) ومطلوبة فقط عند التصدير ⇒ افصلها كي لا تُثقل أي صفحة أخرى.
+            if (id.includes("node_modules/exceljs")) return EXCEL_CHUNK_NAME;
+            // حزم الحركة والتأثيرات البصرية المستقلة (framer-motion)
+            if (
+              id.includes("/node_modules/framer-motion/") ||
+              id.includes("/node_modules/motion-dom/") ||
+              id.includes("/node_modules/motion-utils/")
+            )
+              return "motion";
+            // مكتبات البنية المشتركة تتغير بوتيرة أبطأ من شيفرة النظام. فصلها يقلل
+            // حجم الحزمة الأساسية ويحافظ على كاش المتصفح عند نشر تعديلات الشاشات.
+            if (
+              id.includes("/node_modules/react/") ||
+              id.includes("/node_modules/react-dom/") ||
+              id.includes("/node_modules/scheduler/") ||
+              id.includes("/node_modules/wouter/")
+            )
+              return "framework";
+            if (
+              id.includes("/node_modules/@tanstack/") ||
+              id.includes("/node_modules/@trpc/") ||
+              id.includes("/node_modules/superjson/") ||
+              id.includes("/node_modules/decimal.js/")
+            )
+              return "data-client";
+            if (
+              id.includes("/node_modules/@radix-ui/") ||
+              id.includes("/node_modules/@floating-ui/") ||
+              id.includes("/node_modules/cmdk/") ||
+              id.includes("/node_modules/vaul/") ||
+              id.includes("/node_modules/tailwind-merge/") ||
+              id.includes("/node_modules/clsx/") ||
+              id.includes("/node_modules/sonner/") ||
+              id.includes("/node_modules/input-otp/") ||
+              id.includes("/node_modules/qrcode/")
+            )
+              return "ui-vendor";
+            if (id.includes("/node_modules/@sentry/")) return "observability";
+            if (id.includes("/node_modules/dexie/")) return "offline-store";
+          },
         },
       },
     },
-  },
-  server: {
-    host: true,
-    // Allow the temporary Manus preview proxy without accepting arbitrary Host headers.
-    allowedHosts: [".manus.computer", "localhost"],
-    // The preview consumes the current public storefront API; no database copy or mock catalog.
-    proxy: {
-      "/api": {
-        target: "https://alarabiya.online",
-        changeOrigin: true,
-        secure: true,
+    server: {
+      host: true,
+      // Allow the temporary Manus preview proxy without accepting arbitrary Host headers.
+      allowedHosts: [".manus.computer", "localhost"],
+      // The preview consumes the current public storefront API; no database copy or mock catalog.
+      proxy: {
+        "/api": {
+          target: "https://alarabiya.online",
+          changeOrigin: true,
+          secure: true,
+        },
+      },
+      fs: {
+        strict: true,
+        deny: ["**/.*"],
       },
     },
-    fs: {
-      strict: true,
-      deny: ["**/.*"],
-    },
-  },
   };
 });

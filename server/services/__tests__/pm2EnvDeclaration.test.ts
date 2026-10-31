@@ -19,6 +19,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { buildSync } from "esbuild";
 import ts from "typescript";
+import vm from "node:vm";
+import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 
 const ecosystem = readFileSync(
@@ -113,6 +115,13 @@ describe("compiled web entry inventory artifact identity", () => {
   });
 });
 
+function evaluate(env: Record<string, string>) {
+  const module = { exports: {} as { apps: Array<{ name: string; instances: number | string; env: Record<string, string> }> } };
+  const actualRequire = createRequire(path.resolve(process.cwd(), "ecosystem.config.cjs"));
+  vm.runInNewContext(ecosystem, { module, __dirname: process.cwd(), process: { env: { ...env }, execPath: process.execPath }, require: (name: string) => name === "dotenv" ? { config: () => ({}) } : actualRequire(name) });
+  return module.exports.apps;
+}
+
 /** كتلة `env` لتطبيق erp-server وحدها (لا كتل التطبيقات الأخرى). */
 function webEnvBlock(): string {
   const appStart = ecosystem.indexOf('name: "erp-server"');
@@ -180,6 +189,34 @@ const FORBIDDEN_WEB_ENV_KEYS = [
 ] as const;
 
 describe("عقد تصريح بيئة PM2 لعامل الويب", () => {
+  it("keeps legacy default and creates split1+2 with global membership and fixed role ports", () => {
+    expect(evaluate({})[0].name).toBe("erp-server");
+    const apps = evaluate({ WEB_RUNTIME_MODE: "split", WEB_INSTANCES: "3" });
+    expect(apps.slice(0, 2).map((a) => [a.name, a.instances, a.env.WEB_RUNTIME_ROLE, a.env.PORT, a.env.WEB_INSTANCES])).toEqual([
+      ["erp-admin", 2, "admin", "3000", "3"], ["erp-public", 1, "public", "3001", "3"],
+    ]);
+    expect(apps.filter((a) => a.name === "erp-server")).toHaveLength(0);
+    expect(() => evaluate({ WEB_RUNTIME_MODE: "split", WEB_INSTANCES: "2" })).toThrow();
+  });
+  it.each([undefined, "150", "275"])("gives only split public its explicit 900ms default with generic wait %s", (generic) => {
+    const env: Record<string, string> = generic === undefined ? {} : { STOREFRONT_RESOURCE_WAIT_MS: generic };
+    const [admin, publicApp] = evaluate({ ...env, WEB_RUNTIME_MODE: "split", WEB_INSTANCES: "3" });
+    expect(publicApp.env.STOREFRONT_RESOURCE_WAIT_MS).toBe("900");
+    expect(admin.env.STOREFRONT_RESOURCE_WAIT_MS).toBe(generic);
+    expect(evaluate(env)[0].env.STOREFRONT_RESOURCE_WAIT_MS).toBe(generic);
+  });
+  it.each(["1", "450", "5000"])("exports public loader override %s only as its effective wait", (wait) => {
+    const [admin, publicApp] = evaluate({ WEB_RUNTIME_MODE: "split", WEB_INSTANCES: "3", STOREFRONT_RESOURCE_WAIT_MS: "150", PUBLIC_STOREFRONT_RESOURCE_WAIT_MS: wait });
+    expect(publicApp.env.STOREFRONT_RESOURCE_WAIT_MS).toBe(wait);
+    expect(admin.env.STOREFRONT_RESOURCE_WAIT_MS).toBe("150");
+    expect(publicApp.env).not.toHaveProperty("PUBLIC_STOREFRONT_RESOURCE_WAIT_MS");
+    expect(admin.env).not.toHaveProperty("PUBLIC_STOREFRONT_RESOURCE_WAIT_MS");
+  });
+  it.each(["0", "5001", "-1", "1.5", "invalid"])("rejects invalid public wait %s only in split configuration", (wait) => {
+    const env = { STOREFRONT_RESOURCE_WAIT_MS: "150", PUBLIC_STOREFRONT_RESOURCE_WAIT_MS: wait };
+    expect(() => evaluate({ ...env, WEB_RUNTIME_MODE: "split", WEB_INSTANCES: "3" })).toThrow("Invalid PUBLIC_STOREFRONT_RESOURCE_WAIT_MS");
+    expect(evaluate(env)[0].env.STOREFRONT_RESOURCE_WAIT_MS).toBe("150");
+  });
   it("كل مفتاح ضبطٍ تشغيليّ مُصرَّحٌ في كتلة env (وإلّا تجمّد على أوّل تشغيل)", () => {
     const block = webEnvBlock();
     for (const key of REQUIRED_WEB_ENV_KEYS) {

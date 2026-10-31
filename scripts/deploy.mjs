@@ -9,6 +9,7 @@
  * rollback; database restoration is deliberately never automatic.
  */
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import process from "node:process";
 import { randomUUID, createHash } from "node:crypto";
@@ -16,7 +17,6 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { tmpdir, userInfo } from "node:os";
 import { createServer as createNetServer } from "node:net";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
 import { assertActivationRecoveryAllowed, readActivationJournal, activeInventoryManifest, JOURNAL_NAME } from "./lib/inventory-activation-journal.mjs";
 const hashFile = file => createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 
@@ -1923,11 +1923,36 @@ export function normalizeSentryBuildEnvironment(environment) {
 
 function reloadWebProcess() {
   assertActivationRecoveryAllowed(inventoryJournalFile());
+  assertInstalledLegacyWebTopology();
   run(
     "pm2",
     ["reload", "ecosystem.config.cjs", "--only", "erp-server", "--update-env"],
     { timeoutMs: 2 * 60_000 },
   );
+}
+
+/** Split activation needs a measured maintenance/rollback plan; legacy reload
+ * also starts transient compatibility workers and must not silently operate it. */
+export function assertLegacyWebDeployment(environment, processes = [], inherited = process.env) {
+  // dotenv.config() in ecosystem preserves every inherited key, including "".
+  environment = { ...environment, ...inherited };
+  const mode = environment.WEB_RUNTIME_MODE || "legacy";
+  const role = environment.WEB_RUNTIME_ROLE || "legacy";
+  if (mode !== "legacy" || role !== "legacy" || processes.some((entry) =>
+    ["erp-public", "erp-admin"].includes(entry.name) ||
+    ["public", "admin"].includes(entry.pm2_env?.WEB_RUNTIME_ROLE)))
+    throw codedError("WEB_RUNTIME_SPLIT_DEPLOY_REQUIRES_VERIFIED_MAINTENANCE_PLAN");
+}
+
+function assertInstalledLegacyWebTopology() {
+  const file = path.join(PROJECT_ROOT, ".env");
+  assertPlainFile(file, "WEB_RUNTIME_ENV_INVALID");
+  // Same parser and inherited-value precedence as ecosystem's dotenv.config().
+  // Resolve lazily: controller synchronization still loads only Node built-ins.
+  const environment = createRequire(import.meta.url)("dotenv").parse(fs.readFileSync(file));
+  const rows = JSON.parse(capture("pm2", ["jlist"], 10_000));
+  if (!Array.isArray(rows)) throw codedError("WEB_RUNTIME_PM2_INVENTORY_INVALID");
+  assertLegacyWebDeployment(environment, rows);
 }
 
 const INTERNAL_WEB_HEALTH_SCRIPT = String.raw`
@@ -2564,6 +2589,9 @@ export function reconcileCommittedBridge(
 }
 
 async function deploy(expectedHead) {
+  assertInstalledLegacyWebTopology();
+  // Import repository release helpers only after synchronization/re-exec.
+  const { prepareStorefrontRelease, activateStorefrontRelease, pruneStorefrontReleases } = await import("./storefront-release.mjs");
   const [
     { default: policy },
     releaseModule,
@@ -2639,6 +2667,7 @@ async function deploy(expectedHead) {
     );
     let webArtifact = null;
     let webCandidate = null;
+    let storefrontRelease = null;
     let candidate = null;
     let committed = null;
     let smokeStarted = false;
@@ -2650,6 +2679,7 @@ async function deploy(expectedHead) {
           expectedSha: expectedHead,
           viteBuildEnvironment,
         });
+        storefrontRelease = prepareStorefrontRelease(PROJECT_ROOT, path.join(webCandidate.distPath, "storefront"));
         webArtifact = snapshotWebArtifact(PROJECT_ROOT, {
           id: `web-${Date.now()}-${expectedHead.slice(0, 12)}`,
         });
@@ -2770,6 +2800,11 @@ async function deploy(expectedHead) {
 
       smokeStarted = true;
       step("10/12 فحص المتجر خارجياً عبر المضيفين", () => {
+        // The inventory fence has released and new workers are healthy. Until
+        // now the public origin keeps its prior complete frontend. A backend
+        // or administrative-only change leaves this content pointer untouched.
+        const frontend = activateStorefrontRelease(PROJECT_ROOT, storefrontRelease.fingerprint);
+        console.log(`STOREFRONT_RELEASE ${frontend.fingerprint} changed=${frontend.changed}`);
         run(
           process.execPath,
           ["scripts/verify-nginx-storefront-readiness.mjs"],
@@ -2778,6 +2813,8 @@ async function deploy(expectedHead) {
           },
         );
         commitWebArtifact(webArtifact);
+        try { pruneStorefrontReleases(PROJECT_ROOT); }
+        catch { console.warn("STOREFRONT_RELEASE_RETENTION_DEFERRED"); }
       });
     } catch (candidateError) {
       // The fence alone owns rollback/invalidation. After RELEASED, business
@@ -2946,6 +2983,8 @@ async function main() {
   assertDeploymentIdentity();
   process.chdir(PROJECT_ROOT);
   assertDeploymentNodeRuntime();
+  // Before recovery, package installation, backups, migrations or web changes.
+  assertInstalledLegacyWebTopology();
   const releaseSyncLock = acquirePrePullLock();
   try {
     assertActivationRecoveryAllowed(inventoryJournalFile(), { allowReleased: true });
