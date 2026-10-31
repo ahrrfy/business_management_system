@@ -34,7 +34,9 @@ import { eq } from "drizzle-orm";
 import { invoices, users } from "../../../drizzle/schema";
 import { returnSaleInTx, type ReturnSaleInput } from "../returnService";
 import { withTx, type Actor } from "../tx";
+import type { Tx } from "../../db";
 import { assertCaptureWindow, assertCashOnly } from "./captureWindow";
+import { assertOfflineReplayNotDiscardedTx } from "./replayStatus";
 
 export interface ReplayOfflineReturnInput {
   invoiceId: number;
@@ -61,47 +63,65 @@ export async function replayOfflineReturn(
   actor: Actor,
   options?: { skipCaptureWindow?: boolean },
 ) {
-  assertCaptureWindow(input.capturedAt, { allowAged: options?.skipCaptureWindow });
+  return withTx((tx) => replayOfflineReturnInTx(tx, input, actor, options));
+}
+
+/** Composes with the recovery row transaction; never opens an independent commit. */
+export async function replayOfflineReturnInTx(
+  tx: Tx,
+  input: ReplayOfflineReturnInput,
+  actor: Actor,
+  options?: { skipCaptureWindow?: boolean },
+) {
+  await assertOfflineReplayNotDiscardedTx(tx, input.clientRequestId);
+  assertCaptureWindow(input.capturedAt, {
+    allowAged: options?.skipCaptureWindow,
+  });
   assertCashOnly(input.refund.method);
   const reason = input.reason.trim().replace(/\s+/g, " ");
   if (reason.length < 3 || reason.length > 500) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "سبب المرتجع الأوفلاينيّ إلزاميّ (3-500 محرف)" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "سبب المرتجع الأوفلاينيّ إلزاميّ (3-500 محرف)",
+    });
   }
 
-  return withTx(async (tx) => {
-    // سلطةُ التنفيذ تُقرأ من القاعدة داخل المعاملة — لا من رايةِ جلسةٍ قد تكون شاخت
-    // بين الالتقاط والترحيل (نفس اشتراط `returnSaleAsOwner` و`assertTreasuryOutException`).
-    const [owner] = await tx
-      .select({ isActive: users.isActive, isOwner: users.isOwner })
-      .from(users)
-      .where(eq(users.id, actor.userId))
-      .for("share")
-      .limit(1);
-    if (!owner?.isActive || !owner.isOwner) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message:
-          "المرتجع الأوفلاينيّ يُرحَّل بحساب مالكٍ نشط — سجّل الدخول بحساب المالك أو نفّذ المرتجع أونلاين بمسار الطلب والاعتماد",
-      });
-    }
-    /**
-     * ⭐ **الزبونُ العابر يلزمه `resolution` لا `refund`** (أمسكه Codex على PR #932، P1).
-     *
-     * `returnSaleInTx` يشترط للفاتورة بلا `customerId` تسويةً صريحة (`IMMEDIATE_REFUND`)
-     * **ويرفض `refund` معها**. فكان كلُّ ترحيلٍ أوفلاينيّ يُرسل `refund` وحده ⇒ **مرتجعُ
-     * الزبون العابر يفشل حتماً** — وهو أكثرُ حالات التجزئة شيوعاً، والشاشةُ تقول للموظّف
-     * «التُقط… يُرحَّل تلقائياً». نُحوّل الحمولةَ إلى الشكل الذي يقبله المسار الأونلاينيّ
-     * نفسه، محتفظين بالسبب ومصير البضاعة الملتقَطين.
-     */
-    const [invoiceRow] = await tx
-      .select({ customerId: invoices.customerId })
-      .from(invoices)
-      .where(eq(invoices.id, input.invoiceId))
-      .limit(1);
-    if (!invoiceRow) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
-    const isWalkIn = invoiceRow.customerId == null;
+  // سلطةُ التنفيذ تُقرأ من القاعدة داخل المعاملة — لا من رايةِ جلسةٍ قد تكون شاخت
+  // بين الالتقاط والترحيل (نفس اشتراط `returnSaleAsOwner` و`assertTreasuryOutException`).
+  const [owner] = await tx
+    .select({ isActive: users.isActive, isOwner: users.isOwner })
+    .from(users)
+    .where(eq(users.id, actor.userId))
+    .for("share")
+    .limit(1);
+  if (!owner?.isActive || !owner.isOwner) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message:
+        "المرتجع الأوفلاينيّ يُرحَّل بحساب مالكٍ نشط — سجّل الدخول بحساب المالك أو نفّذ المرتجع أونلاين بمسار الطلب والاعتماد",
+    });
+  }
+  /**
+   * ⭐ **الزبونُ العابر يلزمه `resolution` لا `refund`** (أمسكه Codex على PR #932، P1).
+   *
+   * `returnSaleInTx` يشترط للفاتورة بلا `customerId` تسويةً صريحة (`IMMEDIATE_REFUND`)
+   * **ويرفض `refund` معها**. فكان كلُّ ترحيلٍ أوفلاينيّ يُرسل `refund` وحده ⇒ **مرتجعُ
+   * الزبون العابر يفشل حتماً** — وهو أكثرُ حالات التجزئة شيوعاً، والشاشةُ تقول للموظّف
+   * «التُقط… يُرحَّل تلقائياً». نُحوّل الحمولةَ إلى الشكل الذي يقبله المسار الأونلاينيّ
+   * نفسه، محتفظين بالسبب ومصير البضاعة الملتقَطين.
+   */
+  const [invoiceRow] = await tx
+    .select({ customerId: invoices.customerId })
+    .from(invoices)
+    .where(eq(invoices.id, input.invoiceId))
+    .limit(1);
+  if (!invoiceRow)
+    throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
+  const isWalkIn = invoiceRow.customerId == null;
 
-    return returnSaleInTx(tx, {
+  return returnSaleInTx(
+    tx,
+    {
       invoiceId: input.invoiceId,
       lines: input.lines,
       ...(isWalkIn
@@ -112,7 +132,9 @@ export async function replayOfflineReturn(
               amount: input.refund.amount,
               shiftId: input.refund.shiftId ?? null,
               reason,
-              disposition: input.restock ? ("RESTOCK" as const) : ("DAMAGED" as const),
+              disposition: input.restock
+                ? ("RESTOCK" as const)
+                : ("DAMAGED" as const),
             },
           }
         : {
@@ -125,6 +147,7 @@ export async function replayOfflineReturn(
             operatorReason: reason,
           }),
       clientRequestId: input.clientRequestId,
-    }, actor);
-  });
+    },
+    actor,
+  );
 }
