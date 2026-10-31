@@ -222,7 +222,11 @@ export async function getEmployeeAdvanceCapacityTx(
             ? eq(employeeSpotBonuses.payrollRunId, Number(run.id))
             : undefined,
         ),
-        sql`DATE_FORMAT(CONVERT_TZ(${employeeSpotBonuses.approvedAt}, '+00:00', '+03:00'), '%Y-%m') = ${period}`,
+        // نفس أهلية التوليد والاعتماد: استرداد القديم وNULL الإرثي، دون تعجيل المستقبل.
+        or(
+          isNull(employeeSpotBonuses.approvedAt),
+          sql`DATE_FORMAT(CONVERT_TZ(${employeeSpotBonuses.approvedAt}, '+00:00', '+03:00'), '%Y-%m') <= ${period}`,
+        ),
       ),
     );
   const bonusRows = options.lock

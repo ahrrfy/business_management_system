@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
 import { payrollItemNeedsAttention } from "@shared/hr";
 import {
@@ -110,7 +110,12 @@ export async function approveRun(id: number, actor: Actor) {
           eq(employeeSpotBonuses.status, "APPROVED"),
           eq(employeeSpotBonuses.disbursementType, "PAYROLL_ADDITION"),
           isNull(employeeSpotBonuses.payrollRunId),
-          sql`DATE_FORMAT(CONVERT_TZ(${employeeSpotBonuses.approvedAt}, '+00:00', '+03:00'), '%Y-%m') = ${run.period}`,
+          // نفس أهلية التوليد: الالتزام القديم/الإرثي غير الملتقط يمنع اعتماد مسودة
+          // لا تحتويه، أما اعتماد شهر مستقبلي فلا يخص مسيّر الفترة الحالية.
+          or(
+            isNull(employeeSpotBonuses.approvedAt),
+            sql`DATE_FORMAT(CONVERT_TZ(${employeeSpotBonuses.approvedAt}, '+00:00', '+03:00'), '%Y-%m') <= ${run.period}`,
+          ),
         ),
       )
       .orderBy(employeeSpotBonuses.id)

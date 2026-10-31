@@ -1139,6 +1139,62 @@ describe("employee advance earned-capacity contract", () => {
     });
   });
 
+  it("يدخل المكافأة القديمة والإرثية غير الملتقطة في السعة ولا يعجّل المستقبلية", async () => {
+    const connection = db();
+    await seedAttendance({ date: "2030-06-05", amount: "300.00" });
+    await connection.insert(s.employeeSpotBonuses).values([
+      {
+        employeeId: EMPLOYEE_ID,
+        branchId: BRANCH_ID,
+        amount: "100.00",
+        reason: "مكافأة قديمة غير ملتقطة",
+        disbursementType: "PAYROLL_ADDITION",
+        status: "APPROVED",
+        createdById: ACTOR.userId,
+        approvedById: ACTOR.userId,
+        approvedAt: new Date("2030-05-31T20:30:00.000Z"),
+      },
+      {
+        employeeId: EMPLOYEE_ID,
+        branchId: BRANCH_ID,
+        amount: "25.00",
+        reason: "مكافأة إرثية بلا وقت اعتماد",
+        disbursementType: "PAYROLL_ADDITION",
+        status: "APPROVED",
+        createdById: ACTOR.userId,
+        approvedById: ACTOR.userId,
+        approvedAt: null,
+      },
+      {
+        employeeId: EMPLOYEE_ID,
+        branchId: BRANCH_ID,
+        amount: "999.00",
+        reason: "مكافأة مستقبلية لا تدخل مبكراً",
+        disbursementType: "PAYROLL_ADDITION",
+        status: "APPROVED",
+        createdById: ACTOR.userId,
+        approvedById: ACTOR.userId,
+        // 00:30 بغداد في 1 تموز، فلا تدخل سعة حزيران.
+        approvedAt: new Date("2030-06-30T21:30:00.000Z"),
+      },
+    ]);
+
+    const capacity = await getEmployeeAdvanceCapacity({
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: FIXED_PERIOD,
+      asOf: FIXED_AS_OF,
+    });
+
+    // 300 + 125 - (42.50 ضمان + 38.25 ضريبة) = 344.25.
+    expect(capacity).toMatchObject({
+      earnedCompensation: "300.00",
+      approvedAdditions: "125.00",
+      mandatoryDeductions: "80.75",
+      maxAvailable: "344.25",
+    });
+  });
+
   it("يبني الحد من الأجر المكتسب والإضافات المعتمدة بعد القانوني والعقوبات والاستقطاعات الأخرى", async () => {
     const connection = db();
     await seedAttendance({ date: "2030-06-05", amount: "300.00" });
@@ -1169,12 +1225,12 @@ describe("employee advance earned-capacity contract", () => {
       employeeId: EMPLOYEE_ID,
       branchId: BRANCH_ID,
       amount: "999.00",
-      reason: "مكافأة شهر سابق لا تُرحّل",
+      reason: "مكافأة شهر مستقبلي لا تُعجّل",
       disbursementType: "PAYROLL_ADDITION",
       status: "APPROVED",
       createdById: ACTOR.userId,
       approvedById: ACTOR.userId,
-      approvedAt: new Date("2030-05-20T12:00:00.000Z"),
+      approvedAt: new Date("2030-07-20T12:00:00.000Z"),
     });
     await connection.insert(s.employeePenalties).values({
       employeeId: EMPLOYEE_ID,

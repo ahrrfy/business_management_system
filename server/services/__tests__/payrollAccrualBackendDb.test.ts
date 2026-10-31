@@ -62,6 +62,7 @@ const TABLES = [
   "financialPeriods",
   "payrollItems",
   "payrollRuns",
+  "employeeSpotBonuses",
   "employeeAdvances",
   "employeeTerminations",
   "employees",
@@ -1683,6 +1684,118 @@ describe("payroll accrual lifecycle — DB invariants", () => {
       expect(Number(commission.payrollRunId)).toBe(Number(run.id));
       expect(item.commission).toBe("100.00");
     }
+  });
+
+  it("carries uncaptured historical payroll bonuses once and excludes future approvals", async () => {
+    const runner = db();
+    await runner.insert(s.payrollRuns).values({
+      period: "2026-06",
+      status: "paid",
+      employeeCount: 1,
+      totalGross: "1000.00",
+      totalNet: "1000.00",
+      createdBy: MAKER.userId,
+      approvedBy: CHECKER.userId,
+      approvedAt: new Date("2026-06-30T17:00:00.000Z"),
+      paidBy: PAYER.userId,
+      paidAt: new Date("2026-06-30T18:00:00.000Z"),
+    });
+    await runner.insert(s.employeeSpotBonuses).values([
+      {
+        id: 201,
+        employeeId: 10,
+        branchId: 1,
+        amount: "100.00",
+        reason: "مكافأة اعتمدت بعد دفع مسيّر شهرها",
+        disbursementType: "PAYROLL_ADDITION",
+        status: "APPROVED",
+        createdById: MAKER.userId,
+        approvedById: CHECKER.userId,
+        // 23:30 بغداد في 30 حزيران، وبعد دفع مسيّر حزيران.
+        approvedAt: new Date("2026-06-30T20:30:00.000Z"),
+      },
+      {
+        id: 202,
+        employeeId: 10,
+        branchId: 1,
+        amount: "25.00",
+        reason: "مكافأة إرثية معتمدة بلا وقت اعتماد",
+        disbursementType: "PAYROLL_ADDITION",
+        status: "APPROVED",
+        createdById: MAKER.userId,
+        approvedById: CHECKER.userId,
+        approvedAt: null,
+      },
+      {
+        id: 203,
+        employeeId: 10,
+        branchId: 1,
+        amount: "75.00",
+        reason: "مكافأة شهر مستقبلي لا تُعجّل",
+        disbursementType: "PAYROLL_ADDITION",
+        status: "APPROVED",
+        createdById: MAKER.userId,
+        approvedById: CHECKER.userId,
+        // 00:30 بغداد في 1 آب، فلا تدخل مسيّر تموز.
+        approvedAt: new Date("2026-07-31T21:30:00.000Z"),
+      },
+    ]);
+
+    const staleDraftId = await seedDraft("2026-07");
+    await expect(approveRun(staleDraftId, CHECKER)).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+    });
+    await expect(
+      cancelRun(staleDraftId, MAKER, "إعادة توليد لالتقاط مكافآت معلقة"),
+    ).resolves.toMatchObject({ deleted: true });
+
+    const first = await generatePayroll("2026-07", MAKER);
+    const firstItem = first?.items?.find(
+      (item) => Number(item.employeeId) === 10,
+    );
+    expect(firstItem).toMatchObject({
+      gross: "1125.00",
+      net: "1025.00",
+    });
+    let bonuses = await runner
+      .select({
+        id: s.employeeSpotBonuses.id,
+        runId: s.employeeSpotBonuses.payrollRunId,
+      })
+      .from(s.employeeSpotBonuses)
+      .orderBy(s.employeeSpotBonuses.id);
+    expect(bonuses).toEqual([
+      { id: 201, runId: Number(first?.id) },
+      { id: 202, runId: Number(first?.id) },
+      { id: 203, runId: null },
+    ]);
+
+    await expect(
+      cancelRun(Number(first?.id), MAKER, "إثبات عدم تكرار المكافأة عند إعادة التوليد"),
+    ).resolves.toMatchObject({ deleted: true });
+    const regenerated = await generatePayroll("2026-07", MAKER);
+    const regeneratedItem = regenerated?.items?.find(
+      (item) => Number(item.employeeId) === 10,
+    );
+    expect(regeneratedItem).toMatchObject({
+      gross: "1125.00",
+      net: "1025.00",
+    });
+    bonuses = await runner
+      .select({
+        id: s.employeeSpotBonuses.id,
+        runId: s.employeeSpotBonuses.payrollRunId,
+      })
+      .from(s.employeeSpotBonuses)
+      .orderBy(s.employeeSpotBonuses.id);
+    expect(bonuses).toEqual([
+      { id: 201, runId: Number(regenerated?.id) },
+      { id: 202, runId: Number(regenerated?.id) },
+      { id: 203, runId: null },
+    ]);
+    await expect(
+      approveRun(Number(regenerated?.id), CHECKER),
+    ).resolves.toMatchObject({ status: "approved" });
   });
 
   it("posts reopen reversal to the original accrual date and reapproval keeps one net July expense", async () => {

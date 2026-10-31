@@ -3,7 +3,7 @@
 // استقطاع السلفة المقترح، وخصم الإجازة بلا راتب (أو نموذج الأجر بالحضور عند تفعيله).
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
 import { hasUnclosedAttendancePunch } from "@shared/attendanceHours";
 import { PAYROLL_ITEM_ATTENTION_PREFIX, fullEmployeeName } from "@shared/hr";
@@ -203,7 +203,12 @@ export async function generatePayroll(period: string, actor: Actor) {
           eq(employeeSpotBonuses.status, "APPROVED"),
           eq(employeeSpotBonuses.disbursementType, "PAYROLL_ADDITION"),
           isNull(employeeSpotBonuses.payrollRunId),
-          sql`DATE_FORMAT(CONVERT_TZ(${employeeSpotBonuses.approvedAt}, '+00:00', '+03:00'), '%Y-%m') = ${p}`,
+          // ذمم قديمة معتمدة لم يلتقطها مسيّر شهرها تبقى مستحقة لأول مسيّر تالٍ؛
+          // NULL إرثي يُسترد تحفظياً، بينما اعتماد شهرٍ مستقبلي لا يُعجّل صرفه.
+          or(
+            isNull(employeeSpotBonuses.approvedAt),
+            sql`DATE_FORMAT(CONVERT_TZ(${employeeSpotBonuses.approvedAt}, '+00:00', '+03:00'), '%Y-%m') <= ${p}`,
+          ),
         ),
       )
       .for("update");
