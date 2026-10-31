@@ -90,6 +90,7 @@ export async function getEmployeeAdvanceCapacityTx(
     .select({
       id: employees.id,
       branchId: employees.branchId,
+      isActive: employees.isActive,
       employmentStatus: employees.employmentStatus,
       salary: employees.salary,
     })
@@ -113,7 +114,7 @@ export async function getEmployeeAdvanceCapacityTx(
       }),
     });
   }
-  if (employee.employmentStatus !== "active") {
+  if (!employee.isActive || employee.employmentStatus !== "active") {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message: appErrorMessage({
@@ -221,8 +222,8 @@ export async function getEmployeeAdvanceCapacityTx(
   );
   const legalSettings = await getPayrollLegalSettings(tx);
   const legal = computeLegalComponents(legalSettings, {
-    // مطابق للمسيّر: المكافآت والعمولات تدخل gross قبل الضمان والضريبة.
-    // basic يبقى الأجر المكتسب نفسه، وهو تقدير محافظ عند تعذر فصل الراتب الأساس من الكشف.
+    // تقدير محافظ: كامل الإضافات المعتمدة يدخل وعاء الإجمالي كي لا نقلّل حجز القانوني.
+    // basic يبقى الأجر المكتسب نفسه عند تعذر فصل الراتب الأساس من الكشف.
     basic: earnedCompensation,
     gross: round2(earnedCompensation.plus(approvedAdditions)),
     dailyRate: round2(money(employee.salary ?? 0).div(30)),

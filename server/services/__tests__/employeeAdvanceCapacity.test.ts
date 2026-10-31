@@ -1,4 +1,5 @@
 import Decimal from "decimal.js";
+import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -108,6 +109,24 @@ beforeEach(async () => {
 });
 
 describe("employee advance earned-capacity contract", () => {
+  it("يرفض الموظف المعطّل حتى لو بقيت حالته الوظيفية active", async () => {
+    await db()
+      .update(s.employees)
+      .set({ isActive: false })
+      .where(eq(s.employees.id, EMPLOYEE_ID));
+    await expect(currentCapacity()).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+    });
+    await expect(
+      requestEmployeeLoan(ACTOR, {
+        employeeId: EMPLOYEE_ID,
+        amount: "1.00",
+        clientRequestId: "inactive-employee-advance-blocked",
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(await db().select().from(s.employeeLoanRequests)).toHaveLength(0);
+  });
+
   it("يبني الحد من الأجر المكتسب والإضافات المعتمدة بعد القانوني والعقوبات والاستقطاعات الأخرى", async () => {
     const connection = db();
     await seedAttendance({ date: "2030-06-05", amount: "300.00" });
