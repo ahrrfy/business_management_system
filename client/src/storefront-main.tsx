@@ -1,9 +1,13 @@
 import { ConfirmHost } from "@/components/ConfirmHost";
 import { Toaster } from "@/components/ui/sonner";
 import { PwaUpdateManager } from "@/components/PwaUpdateManager";
+import { InteractionDraftSafety } from "@/components/InteractionDraftSafety";
 import { trpc } from "@/lib/trpc";
 import { createErpTrpcClient } from "@/lib/trpcClient";
 import { initConnectivity } from "@/lib/offline/connectivity";
+import { applyStoredDisplayScale } from "@/lib/displayScale";
+import { installGlobalInteractionAudio } from "@/lib/audioFeedback";
+import { installDateTimeInputLocaleGuard } from "@/lib/dateTimeInputLocale";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TRPCClientError } from "@trpc/client";
 import { ThemeProvider } from "next-themes";
@@ -15,6 +19,10 @@ import "./lib/theme/tokens.css";
 import "./lib/theme/semantic-utilities.css";
 import "./lib/theme/comfort.css";
 import "./sentry";
+
+applyStoredDisplayScale();
+installGlobalInteractionAudio();
+installDateTimeInputLocaleGuard();
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -51,6 +59,7 @@ createRoot(document.getElementById("root")!).render(
         disableTransitionOnChange
       >
         <StorefrontBootstrap />
+        <InteractionDraftSafety />
         <PwaUpdateManager />
         <ConfirmHost />
         <Toaster richColors position="top-center" dir="rtl" />

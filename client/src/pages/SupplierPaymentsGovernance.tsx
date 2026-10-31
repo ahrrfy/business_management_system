@@ -150,30 +150,35 @@ export default function SupplierPaymentsGovernance() {
   );
 
   async function invalidateAll() {
-    await Promise.all([
+    const results = await Promise.allSettled([
       utils.supplierPayments.paymentSources.invalidate(),
       utils.supplierPayments.refundSources.invalidate(),
       utils.supplierPayments.pendingPayments.invalidate(),
       utils.supplierPayments.pendingRefunds.invalidate(),
       utils.purchaseIntegrity.monthCloseBlockers.invalidate(),
     ]);
+    if (results.some(result => result.status === "rejected")) notify.err("العملية مسجلة", "تعذّر تحديث بعض القوائم؛ حدّث الصفحة دون إنشاء طلب بديل.");
   }
   const requestPayment = trpc.supplierPayments.requestPayment.useMutation({
-    onSuccess: async () => {
-      notify.info(
-        "تم إرسال طلب السداد للاعتماد",
-        "لم تتغير ذمة المورد ولم يخرج مال بعد",
-      );
+    onSuccess: async (result) => {
+      if (result.status === "PENDING") {
+        notify.info("تم إرسال طلب السداد للاعتماد", "لم تتغير ذمة المورد ولم يخرج مال بعد");
+      } else {
+        const message = governanceDecisionMessage(result.status);
+        result.status === "APPROVED" ? notify.ok(message) : notify.info(message);
+      }
       await invalidateAll();
     },
     onError: (error) => notify.err(error),
   });
   const requestRefund = trpc.supplierPayments.requestRefund.useMutation({
-    onSuccess: async () => {
-      notify.info(
-        "تم إرسال طلب استرداد الدفعة",
-        "لم يدخل مال ولم تتغير التخصيصات بعد",
-      );
+    onSuccess: async (result) => {
+      if (result.status === "PENDING") {
+        notify.info("تم إرسال طلب استرداد الدفعة", "لم يدخل مال ولم تتغير التخصيصات بعد");
+      } else {
+        const message = governanceDecisionMessage(result.status);
+        result.status === "APPROVED" ? notify.ok(message) : notify.info(message);
+      }
       await invalidateAll();
     },
     onError: (error) => notify.err(error),

@@ -1,4 +1,5 @@
 import express from "express";
+import fs from "node:fs";
 import { createServer, request, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
@@ -11,7 +12,7 @@ import {
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createOverloadGuard } from "../overloadGuard";
 import { classifyRequestLane } from "../requestPriority";
 import {
@@ -341,6 +342,99 @@ describe("independent storefront static release", () => {
       expect((await get("/store/product/42")).body).toBe(erpRoot);
     } finally {
       await writeFile(filename, "shell-1");
+    }
+  });
+  it("serves a current hash without enumerating retained releases", async () => {
+    const enumeration = vi.spyOn(fs, "readdirSync").mockImplementation(() => {
+      throw new Error("Retained releases must not be read for a current asset");
+    });
+    try {
+      const result = await get("/assets/entry-hash0001.js");
+      expect(result.status).toBe(200);
+      expect(result.body).toBe("release-1");
+      expect(enumeration).not.toHaveBeenCalled();
+    } finally {
+      enumeration.mockRestore();
+    }
+  });
+  it("never serves unpublished assets from a release staging directory", async () => {
+    const staging = path.join(
+      fixture,
+      ".runtime/storefront-releases/.stage-unpublished",
+    );
+    await mkdir(path.join(staging, "assets"), { recursive: true });
+    await writeFile(path.join(staging, "index.html"), "unfinished shell");
+    await writeFile(
+      path.join(staging, "assets/entry-stage0001.js"),
+      "unpublished code",
+    );
+    const result = await get("/assets/entry-stage0001.js");
+    expect(result.status).toBe(404);
+    expect(result.cache).toBe("no-store");
+    expect(result.body).not.toContain("unpublished code");
+  });
+  it("serves a retained hash when another release is pruned after enumeration", async () => {
+    const releases = path.join(fixture, ".runtime/storefront-releases");
+    const retired = path.join(releases, "pruned-during-enumeration");
+    await mkdir(retired);
+    await writeFile(path.join(retired, "index.html"), "retired shell");
+    const readDirectory = fs.readdirSync;
+    let removed = false;
+    const enumeration = vi
+      .spyOn(fs, "readdirSync")
+      .mockImplementation((directory, options) => {
+        const entries = Reflect.apply(readDirectory, fs, [directory, options]);
+        if (String(directory) === releases && !removed) {
+          expect(path.dirname(path.resolve(retired))).toBe(
+            path.resolve(releases),
+          );
+          expect(
+            path.resolve(retired).startsWith(path.resolve(fixture) + path.sep),
+          ).toBe(true);
+          removed = true;
+          fs.rmSync(retired, { recursive: true });
+        }
+        return entries;
+      });
+    try {
+      const result = await get("/assets/entry-hash0003.js");
+      expect(removed).toBe(true);
+      expect(result.status).toBe(200);
+      expect(result.body).toBe("release-3");
+    } finally {
+      enumeration.mockRestore();
+    }
+  });
+  it("skips a release pruned between its completeness and containment checks", async () => {
+    const releases = path.join(fixture, ".runtime/storefront-releases");
+    const retired = path.join(releases, "pruned-during-validation");
+    await mkdir(retired);
+    await writeFile(path.join(retired, "index.html"), "retired shell");
+    const exists = fs.existsSync;
+    let removed = false;
+    const validation = vi
+      .spyOn(fs, "existsSync")
+      .mockImplementation((filename) => {
+        const result = exists(filename);
+        if (String(filename) === path.join(retired, "index.html") && !removed) {
+          expect(path.dirname(path.resolve(retired))).toBe(
+            path.resolve(releases),
+          );
+          expect(
+            path.resolve(retired).startsWith(path.resolve(fixture) + path.sep),
+          ).toBe(true);
+          removed = true;
+          fs.rmSync(retired, { recursive: true });
+        }
+        return result;
+      });
+    try {
+      const result = await get("/assets/entry-hash0003.js");
+      expect(removed).toBe(true);
+      expect(result.status).toBe(200);
+      expect(result.body).toBe("release-3");
+    } finally {
+      validation.mockRestore();
     }
   });
 });

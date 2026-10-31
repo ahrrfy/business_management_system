@@ -15,6 +15,7 @@ const state = vi.hoisted(() => ({
   rails: vi.fn(),
   invalidate: vi.fn(async () => {}),
   enqueue: vi.fn(async () => true),
+  captureGate: vi.fn(async (_amount: number, _kind?: string) => ({ ok: true })),
   pending: false,
 }));
 vi.mock("@/hooks/useOperationPermission", () => ({
@@ -105,7 +106,7 @@ vi.mock("@/lib/notify", () => ({
 }));
 vi.mock("@/lib/offline/outbox", () => ({
   isOfflineSaleEnabled: async () => true,
-  assertCanCapture: async () => ({ ok: true }),
+  assertCanCapture: (amount: number, kind?: string) => state.captureGate(amount, kind),
   allocateOfflineReceiptNumber: async () => "OFF-44",
   enqueueOfflineReturn: (...args: unknown[]) => state.enqueue(...args),
 }));
@@ -117,6 +118,7 @@ describe("return form recovery", () => {
   let root: Root;
   let client: QueryClient;
   beforeEach(() => {
+    vi.spyOn(window, "open").mockReturnValue(null);
     state.owner = false;
     state.direct = false;
     state.railAllowed = false;
@@ -169,6 +171,7 @@ describe("return form recovery", () => {
     act(() => root.unmount());
     host.remove();
     client.clear();
+    vi.restoreAllMocks();
   });
   function render() {
     act(() =>
@@ -321,6 +324,7 @@ describe("return form recovery", () => {
     );
   });
   it("captures the submitted intent after a transport failure instead of the subsequently reset editor", async () => {
+    state.captureGate.mockClear();
     paidRegisteredInvoice();
     render();
     await act(async () => button("تنفيذ المرتجع الآن")!.click());
@@ -342,6 +346,7 @@ describe("return form recovery", () => {
         }),
       }),
     );
+    expect(state.captureGate).toHaveBeenCalledExactlyOnceWith(1000, "RETURN");
   });
   it("locks quantity and reset controls while the submitted return is pending", async () => {
     paidRegisteredInvoice();

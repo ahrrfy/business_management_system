@@ -228,6 +228,17 @@ describe("عقد تصريح بيئة PM2 لعامل الويب", () => {
     expect(() => evaluate({ ...env, WEB_RUNTIME_MODE: "split", WEB_INSTANCES: "3" })).toThrow("Invalid PUBLIC_STOREFRONT_RESOURCE_WAIT_MS");
     expect(evaluate(env)[0].env.STOREFRONT_RESOURCE_WAIT_MS).toBe("150");
   });
+  it.each(["0", "1"])("passes the mobile-push switch %s into the actual legacy web definition", value => {
+    const directory = mkdtempSync(path.join(tmpdir(), "erp-mobile-push-pm2-"));
+    const script = `const apps=require(${JSON.stringify(path.resolve("ecosystem.config.cjs"))}).apps.filter(app=>app.name==='erp-server');console.log(JSON.stringify(apps.map(app=>app.env.STOREFRONT_MOBILE_PUSH_ENABLED)));`;
+    const environment = Object.fromEntries(Object.entries({
+      PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: process.env.TEMP, TMP: process.env.TMP,
+      NODE_ENV: "production", HR_BRIDGE_ECOSYSTEM_ARTIFACT_SMOKE: "1", STOREFRONT_MOBILE_PUSH_ENABLED: value,
+    }).filter(([, item]) => item !== undefined));
+    const result = spawnSync(process.execPath, ["-e", script], { cwd: directory, env: environment, encoding: "utf8", timeout: 10000 });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout.trim())).toEqual([value]);
+  });
   it("كل مفتاح ضبطٍ تشغيليّ مُصرَّحٌ في كتلة env (وإلّا تجمّد على أوّل تشغيل)", () => {
     const block = webEnvBlock();
     for (const key of REQUIRED_WEB_ENV_KEYS) {

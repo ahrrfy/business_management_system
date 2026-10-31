@@ -8,6 +8,11 @@ import fs from "node:fs";
 import { isPublicStorefrontHost } from "./publicStorefrontHost";
 import path from "node:path";
 
+function isMissingPath(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
 /** Local public files do not need the database-backed request lanes. Keep this
  * router ahead of load shedding, behind host/security/rate-limit middleware. */
 export function runtimePublicRoot(
@@ -32,13 +37,33 @@ export function retainedRuntimeAssetRoots(
   if (!storefrontRoot) return [erpRoot];
   const runtimeRoot = path.dirname(path.resolve(storefrontRoot));
   const recent = (directory: string) => {
-    if (!fs.existsSync(directory)) return [];
-    return fs
-      .readdirSync(directory, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
-      .map((entry) => path.join(directory, entry.name))
-      .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)
-      .slice(0, 3);
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(directory, { withFileTypes: true });
+    } catch (error) {
+      if (isMissingPath(error)) return [];
+      throw error;
+    }
+    return entries
+      .filter(
+        (entry) =>
+          !entry.name.startsWith(".") &&
+          entry.isDirectory() &&
+          !entry.isSymbolicLink(),
+      )
+      .flatMap((entry) => {
+        const root = path.join(directory, entry.name);
+        try {
+          const stat = fs.lstatSync(root);
+          return stat.isDirectory() ? [{ root, mtimeMs: stat.mtimeMs }] : [];
+        } catch (error) {
+          if (isMissingPath(error)) return [];
+          throw error;
+        }
+      })
+      .sort((a, b) => b.mtimeMs - a.mtimeMs)
+      .slice(0, 3)
+      .map((entry) => entry.root);
   };
   const candidates = [
     storefrontRoot,
@@ -51,20 +76,25 @@ export function retainedRuntimeAssetRoots(
     path.resolve(runtimeRoot, "../dist/public"),
   ];
   return Array.from(new Set(candidates)).filter((directory) => {
-    if (!fs.existsSync(path.join(directory, "index.html"))) return false;
-    if (
-      [
-        storefrontRoot,
-        erpRoot,
-        path.resolve(runtimeRoot, "../dist/public"),
-      ].includes(directory)
-    )
-      return true;
-    const relative = path.relative(
-      fs.realpathSync(runtimeRoot),
-      fs.realpathSync(directory),
-    );
-    return !relative.startsWith("..") && !path.isAbsolute(relative);
+    try {
+      if (!fs.existsSync(path.join(directory, "index.html"))) return false;
+      if (
+        [
+          storefrontRoot,
+          erpRoot,
+          path.resolve(runtimeRoot, "../dist/public"),
+        ].includes(directory)
+      )
+        return true;
+      const relative = path.relative(
+        fs.realpathSync(runtimeRoot),
+        fs.realpathSync(directory),
+      );
+      return !relative.startsWith("..") && !path.isAbsolute(relative);
+    } catch (error) {
+      if (isMissingPath(error)) return false;
+      throw error;
+    }
   });
 }
 
@@ -90,17 +120,26 @@ export function createRuntimeFrontendAssets(
       return;
     }
     const selected = runtimePublicRoot(req, erpRoot, storefrontRoot);
-    const roots = [
-      selected,
-      ...retainedRuntimeAssetRoots(erpRoot, storefrontRoot).filter(
-        (root) => root !== selected,
-      ),
-    ];
+    const roots = [selected];
+    let retainedLoaded = false;
     let index = 0;
     const serve = (error?: unknown): void => {
       if (error) {
         next(error);
         return;
+      }
+      if (index >= roots.length && !retainedLoaded) {
+        retainedLoaded = true;
+        try {
+          roots.push(
+            ...retainedRuntimeAssetRoots(erpRoot, storefrontRoot).filter(
+              (root) => root !== selected,
+            ),
+          );
+        } catch (enumerationError) {
+          next(enumerationError);
+          return;
+        }
       }
       const root = roots[index++];
       if (!root) {
