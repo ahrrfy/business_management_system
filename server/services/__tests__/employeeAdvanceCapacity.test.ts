@@ -7,6 +7,7 @@ import { getDb, getPool } from "../../db";
 import { baghdadToday } from "../businessDay";
 import {
   getEmployeeAdvanceCapacity,
+  getEmployeeAdvanceCapacityTx,
   type EmployeeAdvanceCapacity,
 } from "../employeeAdvanceCapacityService";
 import { getEmployeeStatement } from "../hr/employeeStatement";
@@ -338,6 +339,14 @@ describe("employee advance earned-capacity contract", () => {
       maxAvailable: "0.00",
       blocked: false,
     });
+    const enforced = await withTx((tx) => getEmployeeAdvanceCapacityTx(tx, {
+      employeeId: EMPLOYEE_ID,
+      scopedBranchId: BRANCH_ID,
+      period: FIXED_PERIOD,
+      asOf: FIXED_AS_OF,
+      lock: true,
+    }));
+    expect(enforced).toEqual(capacity);
   });
 
   it("يقص الإجازة بلا راتب عند التعيين وasOf قبل إنشاء المسودة", async () => {

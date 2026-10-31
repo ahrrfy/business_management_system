@@ -1207,6 +1207,81 @@ describe("payroll accrual lifecycle — DB invariants", () => {
     }
   });
 
+  it("approves with the advance committed while approval waited for the employee lock", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(PAYROLL_LOCK_TEST_NOW);
+    const runner = db();
+    const runId = await seedDraft(PAYROLL_LOCK_TEST_PERIOD);
+    const loanId = await seedApprovedLoanForPayer("disburse-before-approval");
+    const barrier = pauseNextForUpdate("employees");
+    let disbursement: ReturnType<typeof disburseEmployeeLoan> | undefined;
+    let approval: ReturnType<typeof approveRun> | undefined;
+    try {
+      disbursement = disburseEmployeeLoan(PAYER, loanId);
+      await barrier.lockReached;
+      approval = approveRun(runId, CHECKER);
+      await waitForPayrollLockWait();
+      barrier.release();
+      const [disbursed, approved] = await Promise.allSettled([
+        disbursement,
+        approval,
+      ]);
+      expect(disbursed.status).toBe("fulfilled");
+      expect(approved.status).toBe("fulfilled");
+      for (const outcome of [disbursed, approved]) {
+        if (outcome.status === "rejected") {
+          expect(String(outcome.reason)).not.toMatch(
+            /ER_LOCK_DEADLOCK|deadlock/i,
+          );
+        }
+      }
+
+      const [run] = await runner
+        .select()
+        .from(s.payrollRuns)
+        .where(eq(s.payrollRuns.id, runId));
+      expect(run).toMatchObject({
+        status: "approved",
+        totalDeductions: "350.00",
+        totalNet: "800.00",
+      });
+      const [item] = await runner
+        .select()
+        .from(s.payrollItems)
+        .where(eq(s.payrollItems.runId, runId));
+      expect(item).toMatchObject({
+        advanceDeduction: "200.00",
+        deductions: "350.00",
+        net: "800.00",
+      });
+      expect(
+        await runner
+          .select()
+          .from(s.employeeAdvances)
+          .where(eq(s.employeeAdvances.sourceType, "SALARY_ADVANCE")),
+      ).toHaveLength(1);
+      expect(
+        await runner
+          .select()
+          .from(s.receipts)
+          .where(
+            and(
+              eq(s.receipts.direction, "OUT"),
+              eq(s.receipts.cashBucket, "DRAWER"),
+            ),
+          ),
+      ).toHaveLength(1);
+    } finally {
+      barrier.release();
+      const pending: Promise<unknown>[] = [];
+      if (disbursement) pending.push(disbursement);
+      if (approval) pending.push(approval);
+      await Promise.allSettled(pending);
+      barrier.restore();
+      vi.useRealTimers();
+    }
+  }, 15_000);
+
   it("orders approval before a concurrent loan disbursement without deadlock or partial loan money", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(PAYROLL_LOCK_TEST_NOW);

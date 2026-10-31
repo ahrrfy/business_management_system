@@ -276,7 +276,7 @@ export async function getEmployeeAdvanceCapacityTx(
     statement.dueBasis === "fixedSalary" || statement.dueBasis === "exempt";
   let earnedLeaveDeduction = ZERO;
   if (fixedPayPath) {
-    const unpaidLeaves = (statement.approvedLeaveSpans ?? []).filter(
+    const unpaidLeaves = statement.approvedLeaveSpans.filter(
       (leave) =>
         !leave.paid && leave.from <= statement.to && leave.to >= statement.from,
     );

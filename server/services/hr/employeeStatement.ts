@@ -498,13 +498,11 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     schedule,
     attendancePayEnabled,
     hasOwnSchedule,
-    approvedLeaveSpans: input.lockFinancialInputs
-      ? leaves.map((leave) => ({
-          paid: !!leave.paid,
-          from: String(leave.fromDate),
-          to: String(leave.toDate),
-        }))
-      : undefined,
+    approvedLeaveSpans: leaves.map((leave) => ({
+      paid: !!leave.paid,
+      from: String(leave.fromDate),
+      to: String(leave.toDate),
+    })),
     /** مجموع `attendance.amount` — ما يدفعه المسيّر للساعيّ فعلاً. */
     actualPaidAmount: actualPaid.toFixed(2),
     /** (الراتب + البدلات) × تناسب أيام العمل — ما يدفعه المسيّر لغير الخاضع للحضور. */

@@ -997,14 +997,19 @@ export async function suggestDeductionsTx(
   tx: Tx,
   employeeIds: number[],
   payrollPeriod?: string,
+  options: { lockCurrent?: boolean } = {},
 ): Promise<Map<number, SuggestedDeduction>> {
   const out = new Map<number, SuggestedDeduction>();
-  if (employeeIds.length === 0) return out;
-  const rows = await tx
+  const scopedEmployeeIds = Array.from(new Set(employeeIds.map(Number))).sort(
+    (left, right) => left - right,
+  );
+  if (scopedEmployeeIds.length === 0) return out;
+  const query = tx
     .select()
     .from(employeeAdvances)
-    .where(and(inArray(employeeAdvances.employeeId, employeeIds), eq(employeeAdvances.status, "ACTIVE")))
+    .where(and(inArray(employeeAdvances.employeeId, scopedEmployeeIds), eq(employeeAdvances.status, "ACTIVE")))
     .orderBy(asc(employeeAdvances.id));
+  const rows = options.lockCurrent ? await query.for("update") : await query;
   for (const adv of rows) {
     const empId = Number(adv.employeeId);
     const remaining = money(adv.remaining);
